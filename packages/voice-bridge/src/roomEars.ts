@@ -8,7 +8,10 @@
  * registers no barge-in consumer so its behavior is unchanged; /eleven uses
  * it as the local flush fast path.
  */
-import { EarsReceiver } from "./audio/EarsReceiver.js";
+import {
+	EarsReceiver,
+	type EarsSelfFilterProof,
+} from "./audio/EarsReceiver.js";
 import { superviseVoiceConnection } from "./audio/VoiceConnSupervisor.js";
 import type { DiscordDeps } from "./bots/discordWiring.js";
 import type { VoiceRoomRuntime } from "./VoiceRoomRuntime.js";
@@ -31,11 +34,16 @@ export interface WireRoomEarsOptions {
 	guildId: string;
 	allowUserIds?: string[];
 	backchannelMs?: number;
+	bargeInMinRms?: number;
 	bargeInHoldoffMs?: number;
+	outputBotUserId?: string;
+	earsBotUserId?: string;
+	founderUserId?: string;
 	log?: (msg: string) => void;
 }
 
 export interface RoomEarsRuntime {
+	selfFilterProof(): EarsSelfFilterProof;
 	dispose(): void;
 }
 
@@ -49,6 +57,7 @@ export function wireRoomEars(opts: WireRoomEarsOptions): RoomEarsRuntime {
 		isHuman: deps.isHumanFactory(opts.earsClient, opts.guildId),
 		allowUserIds: opts.allowUserIds,
 		backchannelMs: opts.backchannelMs,
+		bargeInMinRms: opts.bargeInMinRms,
 		bargeInHoldoffMs: opts.bargeInHoldoffMs,
 		onFrame: (frame) =>
 			room.routeFrame(frame, {
@@ -77,6 +86,15 @@ export function wireRoomEars(opts: WireRoomEarsOptions): RoomEarsRuntime {
 			})
 		: undefined;
 	return {
+		selfFilterProof: () => {
+			if (!opts.outputBotUserId || !opts.earsBotUserId || !opts.founderUserId)
+				throw new Error("resident_voice_self_filter_identity_missing");
+			return ears.selfFilterProof({
+				outputBotUserId: opts.outputBotUserId,
+				earsBotUserId: opts.earsBotUserId,
+				allowedHumanUserId: opts.founderUserId,
+			});
+		},
 		dispose: () => {
 			unsubDown();
 			unsubUp();

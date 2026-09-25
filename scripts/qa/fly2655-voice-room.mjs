@@ -400,6 +400,17 @@ export function buildVoiceProcessEnv(input) {
 		input.meetingNotesPath,
 	])
 		contained(input.slotDir, path);
+	const engineEnv = Object.fromEntries(
+		[
+			"FLYWHEEL_VOICE_ENGINE",
+			"FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD",
+			"FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED",
+		].flatMap((name) =>
+			typeof input.baseEnv[name] === "string"
+				? [[name, input.baseEnv[name]]]
+				: [],
+		),
+	);
 	return {
 		HOME: input.baseEnv.HOME,
 		PATH: input.baseEnv.PATH,
@@ -418,6 +429,7 @@ export function buildVoiceProcessEnv(input) {
 		FLYWHEEL_VOICE_BUILD_SHA: input.buildSha,
 		FLYWHEEL_VOICE_HOST_CONFIG: input.voiceHostPath,
 		FLYWHEEL_MEETING_NOTES_CONFIG: input.meetingNotesPath,
+		...engineEnv,
 		FLYWHEEL_DIR: input.repoRoot,
 		FLYWHEEL_COMM_CLI: join(
 			input.repoRoot,
@@ -425,6 +437,22 @@ export function buildVoiceProcessEnv(input) {
 			"flywheel-comm",
 			"dist",
 			"index.js",
+		),
+	};
+}
+
+export function voiceProcessBaseEnv(env = process.env) {
+	return {
+		HOME: env.HOME ?? homedir(),
+		PATH: env.PATH ?? "/usr/bin:/bin",
+		...Object.fromEntries(
+			[
+				"FLYWHEEL_VOICE_ENGINE",
+				"FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD",
+				"FLYWHEEL_HEADPHONE_BACKGROUND_ENABLED",
+			].flatMap((name) =>
+				typeof env[name] === "string" ? [[name, env[name]]] : [],
+			),
 		),
 	};
 }
@@ -680,7 +708,7 @@ function voiceEnv(context) {
 		buildSha: context.topology.expectedHead,
 		voiceHostPath: context.fixtureReceipt.voiceHostPath,
 		meetingNotesPath: context.fixtureReceipt.meetingNotesPath,
-		baseEnv: { HOME: homedir(), PATH: process.env.PATH ?? "/usr/bin:/bin" },
+		baseEnv: voiceProcessBaseEnv(),
 	});
 }
 

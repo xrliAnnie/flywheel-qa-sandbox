@@ -105,6 +105,7 @@ export class VoiceSessionRuntime {
 				"live",
 				"ending",
 			])) {
+				if (session.carrierKind !== "daemon") continue;
 				if (
 					!session.leaseToken ||
 					!this.deps.store.getActiveVoiceLease(
@@ -158,6 +159,7 @@ export class VoiceSessionRuntime {
 		this.wakeTicking = true;
 		try {
 			for (const session of this.deps.store.listVoiceSessions(["desired"])) {
+				if (session.carrierKind !== "daemon") continue;
 				const at = this.now();
 				const attemptId =
 					this.deps.newAttemptId?.() ?? `${session.sessionId}:${at}`;
@@ -169,6 +171,7 @@ export class VoiceSessionRuntime {
 					attemptId,
 					now: at,
 				});
+				if (admission.status === "ineligible") continue;
 				if (admission.status === "deferred") continue;
 				if (admission.status === "exhausted") {
 					this.deps.store.failVoiceSessionAdmission(

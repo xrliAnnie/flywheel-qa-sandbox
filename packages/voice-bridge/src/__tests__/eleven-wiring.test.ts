@@ -51,6 +51,15 @@ function makeFakes() {
 	const deps = {
 		createPlayer: () => ({ play() {}, stop() {}, on() {} }),
 		createResource: (src: unknown) => src,
+		speakingEvents: () => ({ on() {} }),
+		subscribeManual: () => () =>
+			({ on() {}, pipe() {}, unpipe() {} }) as unknown as NodeJS.ReadableStream,
+		createDecoder: () =>
+			({ on() {}, pipe() {}, end() {}, destroy() {} }) as never,
+		onVoiceStateUpdate: () => () => {},
+		userVoiceChannelId: async () => CONFIG.voiceChannelId,
+		voiceChannelHumanCount: async () => 1,
+		memberDisplayName: async () => undefined,
 		registerGuildCommand: vi.fn(
 			async (_c: unknown, _g: unknown, spec: never) => {
 				registered.push(spec);
@@ -65,7 +74,10 @@ function makeFakes() {
 		leaveVoice: vi.fn(),
 	} as unknown as DiscordDeps;
 	const registry = {
-		client: () => ({ id: "client" }),
+		client: (id: string) => ({
+			id: "client",
+			user: { id: id === "note-taker" ? "ears-bot" : "orchestrator-bot" },
+		}),
 		join: vi.fn(async () => ({ conn: "orch" })),
 	};
 	return { deps, registry, registered, commandHandlers, messages };
@@ -87,6 +99,7 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 			eleven: ELEVEN,
 			registry: f.registry,
 			deps: f.deps,
+			earsConnection: { conn: "ears" },
 			room,
 			env: { ELEVENLABS_API_KEY: "xi-key" } as NodeJS.ProcessEnv,
 			log: () => {},
@@ -127,12 +140,14 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 		await vi.waitFor(() => {
 			if (h.room.slot.current()?.mode !== "eleven") throw new Error("not yet");
 		});
+		await vi.waitFor(() => {
+			if (h.wsHandlers.length !== 1) throw new Error("ws not live yet");
+		});
 		// orchestrator joined deaf (the ears bot hears; the mouth must not echo)
 		expect(h.registry.join).toHaveBeenCalledWith(
 			"orchestrator",
 			expect.objectContaining({ selfMute: false, selfDeaf: true }),
 		);
-		expect(h.wsHandlers).toHaveLength(1);
 		await h.runtime.close();
 		expect(h.room.slot.current()).toBe(null);
 	});
@@ -177,16 +192,19 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 		// share this ONE player (the production shape).
 		const events: string[] = [];
 		const idleCbs: (() => void)[] = [];
+		const playingCbs: (() => void)[] = [];
 		const player = {
 			play: (resource: unknown) => {
 				const src = resource as { kind: string };
 				events.push(`play:${src.kind}`);
+				for (const cb of playingCbs) cb();
 			},
 			stop: () => {
 				events.push("stop");
 			},
 			on: (event: string, cb: () => void) => {
 				if (event === "idle") idleCbs.push(cb);
+				if (event === "playing") playingCbs.push(cb);
 			},
 		};
 		const fireIdle = () => {
@@ -203,13 +221,22 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 		await vi.waitFor(() => {
 			if (h.wsHandlers.length === 0) throw new Error("not live yet");
 		});
+		events.length = 0; // ignore RoomIO's startup stream/transition
 
 		// founder finished speaking → cue starts and LOOPS while waiting
 		h.room.routeSpeakingEnd();
-		expect(events).toEqual(["play:file"]);
+		expect(events.at(-1)).toBe("play:file");
+		expect(events.filter((event) => event === "play:file")).toHaveLength(1);
 		fireIdle(); // the 1.4s clip ended — the wait is ~9s, replay
+		await vi.waitFor(() => {
+			if (events.filter((event) => event === "play:file").length < 2)
+				throw new Error("cue not replayed yet");
+		});
 		fireIdle();
-		expect(events).toEqual(["play:file", "play:file", "play:file"]);
+		await vi.waitFor(() => {
+			if (events.filter((event) => event === "play:file").length < 3)
+				throw new Error("cue not replayed twice yet");
+		});
 
 		// the real answer's onset: cue off (one stop), then the turn stream
 		h.wsHandlers[0].onAudio(Buffer.alloc(480));
@@ -368,6 +395,7 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 					eleven: { ...ELEVEN, leadId: "eng-lead" },
 					registry: f.registry,
 					deps: f.deps,
+					earsConnection: { conn: "ears" },
 					room,
 					env: {
 						ELEVENLABS_API_KEY: "xi-key",

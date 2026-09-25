@@ -18,6 +18,7 @@
  * "/eleven stop" tears the live session down.
  */
 import { randomUUID } from "node:crypto";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import type { SessionSlot } from "../SessionSlot.js";
 import { ELEVEN_SLOT_MODE } from "./config.js";
 
@@ -38,10 +39,12 @@ export interface ElevenCommandOptions {
 	preflight(): Promise<ElevenPreflightResult>;
 	/** FLY-1160: mint the kickoff issue the resident brain lands minutes on. */
 	createIssue(title: string): Promise<{ identifier: string; url?: string }>;
+	claimSession?(): Promise<ResidentVoiceLease>;
 	startSession(args: {
 		sessionId: string;
 		issueId: string;
 		topic?: string;
+		lease?: ResidentVoiceLease;
 	}): Promise<void>;
 	/** stop the live session (undefined result = nothing live). */
 	stopSession(): Promise<boolean>;
@@ -78,9 +81,26 @@ export class ElevenCommand {
 			return;
 		}
 
-		const sessionId = randomUUID();
-		const acquired = this.opts.slot.acquire(ELEVEN_SLOT_MODE, sessionId);
+		let lease: ResidentVoiceLease | undefined;
+		try {
+			lease = await this.opts.claimSession?.();
+		} catch (err) {
+			await inv.reply(
+				`/${this.name} 没起起来:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
+			);
+			return;
+		}
+		const sessionId = lease?.sessionId ?? randomUUID();
+		const slotLease = lease?.toSlotLease(ELEVEN_SLOT_MODE);
+		const acquired = slotLease
+			? this.opts.slot.acquireLease(slotLease)
+			: this.opts.slot.acquire(ELEVEN_SLOT_MODE, sessionId);
 		if (!acquired.ok) {
+			await lease?.close("failed", "slot_busy").catch((err: unknown) => {
+				this.opts.log?.(
+					`[eleven-command] resident lease cleanup failed: ${String((err as Error).message ?? err)}`,
+				);
+			});
 			await inv.reply(acquired.message);
 			return;
 		}
@@ -102,7 +122,15 @@ export class ElevenCommand {
 			identifier = created.identifier;
 			issueUrl = created.url;
 		} catch (err) {
-			this.opts.slot.release(ELEVEN_SLOT_MODE, sessionId);
+			if (slotLease) this.opts.slot.releaseLease(slotLease);
+			else this.opts.slot.release(ELEVEN_SLOT_MODE, sessionId);
+			await lease
+				?.close("failed", "issue_creation_failed")
+				.catch((cleanupError: unknown) => {
+					this.opts.log?.(
+						`[eleven-command] resident lease cleanup failed: ${String((cleanupError as Error).message ?? cleanupError)}`,
+					);
+				});
 			await inv.reply(
 				`/${this.name} 没起起来:立项 issue 创建失败(${String((err as Error).message ?? err)})。稍后再试。`,
 			);
@@ -130,9 +158,18 @@ export class ElevenCommand {
 				sessionId,
 				issueId: identifier,
 				topic: inv.topic,
+				...(lease ? { lease } : {}),
 			});
 		} catch (err) {
-			this.opts.slot.release(ELEVEN_SLOT_MODE, sessionId);
+			if (slotLease) this.opts.slot.releaseLease(slotLease);
+			else this.opts.slot.release(ELEVEN_SLOT_MODE, sessionId);
+			await lease
+				?.close("failed", "session_start_failed")
+				.catch((cleanupError: unknown) => {
+					this.opts.log?.(
+						`[eleven-command] resident lease cleanup failed: ${String((cleanupError as Error).message ?? cleanupError)}`,
+					);
+				});
 			// the session's abort path may have already closed the kickoff issue
 			// (flagged on the error) — the founder-facing reply must not lie.
 			const issueClosed =

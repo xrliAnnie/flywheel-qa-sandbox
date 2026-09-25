@@ -144,6 +144,7 @@ import {
 	type TuiWindowSpec,
 } from "./tui-window.js";
 import { createTuiWindowAlertGuard } from "./tui-window-alert.js";
+import { resolveVoiceReplyDeliveryContext } from "./voice-reply-delivery-context.js";
 import { WsTransport } from "./WsTransport.js";
 
 const execFileP = promisify(execFile);
@@ -1282,6 +1283,11 @@ export function buildTuiGeneration(
 								leadId: config.leadId,
 								channelId: config.chatChannelId,
 								dbPath: config.outboxDbPath,
+								resolveDeliveryContext: (entryId) =>
+									resolveVoiceReplyDeliveryContext(
+										config.leadId,
+										journal.listMemberIds(entryId),
+									),
 							})
 						: new DirectDiscordOutboundSender({
 								botToken: config.botToken,
@@ -1582,6 +1588,13 @@ export function buildTuiGeneration(
 								) {
 									externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
 								}
+							},
+							onRuntimeTimelineEvent: (event) => {
+								if (event.memberIds.length === 0) return;
+								console.info("[lead-inbox-timeline]", {
+									leadId: config.leadId,
+									...event,
+								});
 							},
 							onInputAccepted: (entry) => {
 								lastActivityAt = Date.now();

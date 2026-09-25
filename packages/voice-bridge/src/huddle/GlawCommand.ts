@@ -15,6 +15,7 @@
  * anyone; a stranger must not be able to spin up Lead sessions / issues).
  */
 import type { CreatedIssue } from "../linear/BridgeLinearClient.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 
 export interface GlawUserLike {
 	id: string;
@@ -59,6 +60,7 @@ export interface GlawInvocation {
 	/** first @-named Lead — host/recorder (PRD R9). */
 	hostLeadId: string;
 	initiatorChannelId: string;
+	lease?: ResidentVoiceLease;
 }
 
 export interface GlawCommandOptions {
@@ -80,6 +82,7 @@ export interface GlawCommandOptions {
 	isBusy: () => boolean;
 	/** zero-tap move; only called when moveMembers is on. */
 	moveFounderToVc?: () => Promise<"moved" | "not-in-voice" | "failed">;
+	claimSession?(leadId: string): Promise<ResidentVoiceLease>;
 	onMeet: (invocation: GlawInvocation) => void | Promise<void>;
 	now?: () => Date;
 	log?: (line: string) => void;
@@ -169,6 +172,15 @@ export class GlawCommand {
 		// boundaries (Bridge→Linear, MOVE_MEMBERS) and can blow the 3s
 		// interaction window — ack FIRST, deliver the receipt via editReply.
 		await interaction.deferReply();
+		let lease: ResidentVoiceLease | undefined;
+		try {
+			lease = await this.opts.claimSession?.(host.leadId);
+		} catch (err) {
+			await interaction.editReply({
+				content: `/${this.opts.commandName} 没起起来:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
+			});
+			return;
+		}
 
 		let issue: CreatedIssue;
 		try {
@@ -185,6 +197,9 @@ export class GlawCommand {
 				].join("\n"),
 			});
 		} catch (err) {
+			await lease
+				?.close("failed", "issue_creation_failed")
+				.catch(() => undefined);
 			this.opts.log?.(
 				`[glaw] kickoff issue failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
@@ -228,6 +243,7 @@ export class GlawCommand {
 			participants,
 			hostLeadId: host.leadId,
 			initiatorChannelId: interaction.channelId,
+			...(lease ? { lease } : {}),
 		});
 	}
 }

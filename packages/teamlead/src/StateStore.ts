@@ -53,6 +53,8 @@ import {
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { HeadphoneInboxStore } from "./bridge/headphone-inbox.js";
+import { VoiceHandoffStore } from "./bridge/voice-handoff-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -2693,6 +2695,23 @@ export type VoiceSessionState =
 	| "ended"
 	| "cancelled"
 	| "failed";
+export type VoiceSessionCarrierKind = "daemon" | "resident";
+export interface ResidentVoiceBindingProof {
+	version: 1;
+	projectName: string;
+	guildId: string;
+	voiceChannelId: string;
+	ownerBootId: string;
+	sessionGeneration: number;
+	outputBotUserId: string;
+	earsBotUserId: string;
+	outputBotDropped: boolean;
+	earsBotDropped: boolean;
+	unknownDropped: boolean;
+	allowedHumanPassed: boolean;
+	observedAt: string;
+	expiresAt: string;
+}
 export type VoiceOutboundPhase =
 	| "queued"
 	| "claimed"
@@ -2732,6 +2751,10 @@ export interface VoiceSessionRow {
 	requestedBy: string;
 	credentialTier: VoiceCredentialTier;
 	state: VoiceSessionState;
+	carrierKind: VoiceSessionCarrierKind;
+	ownerBootId: string | null;
+	sessionGeneration: number;
+	residentBindingProof: ResidentVoiceBindingProof | null;
 	reason: string | null;
 	daemonBootId: string | null;
 	leaseToken: string | null;
@@ -2956,6 +2979,7 @@ function voiceHealthReasonClassSql(row: "OLD" | "NEW"): string {
 const VOICE_HEALTH_DEMAND_TRIGGER_SQL = {
 	insert: `CREATE TRIGGER voice_health_demand_sessions_insert
 		AFTER INSERT ON voice_sessions
+		WHEN NEW.carrier_kind = 'daemon'
 		BEGIN
 			INSERT INTO voice_health_demand_events (
 				mutation, session_id, project_id, meeting_id, old_state, new_state,
@@ -2971,6 +2995,7 @@ const VOICE_HEALTH_DEMAND_TRIGGER_SQL = {
 		END`,
 	delete: `CREATE TRIGGER voice_health_demand_sessions_delete
 		AFTER DELETE ON voice_sessions
+		WHEN OLD.carrier_kind = 'daemon'
 		BEGIN
 			INSERT INTO voice_health_demand_events (
 				mutation, session_id, project_id, meeting_id, old_state, new_state,
@@ -2986,11 +3011,12 @@ const VOICE_HEALTH_DEMAND_TRIGGER_SQL = {
 		END`,
 	update: `CREATE TRIGGER voice_health_demand_sessions_update
 		AFTER UPDATE OF state, reason, cancel_requested_at, ending_started_at, ended_at ON voice_sessions
-		WHEN OLD.state IS NOT NEW.state
+		WHEN OLD.carrier_kind = 'daemon' AND (
+			OLD.state IS NOT NEW.state
 			OR OLD.reason IS NOT NEW.reason
 			OR OLD.cancel_requested_at IS NOT NEW.cancel_requested_at
 			OR OLD.ending_started_at IS NOT NEW.ending_started_at
-			OR OLD.ended_at IS NOT NEW.ended_at
+			OR OLD.ended_at IS NOT NEW.ended_at)
 		BEGIN
 			INSERT INTO voice_health_demand_events (
 				mutation, session_id, project_id, meeting_id, old_state, new_state,
@@ -3025,6 +3051,7 @@ const VOICE_HEALTH_DEMAND_TRIGGER_DIGEST = createHash("sha256")
 	.digest("hex");
 const VOICE_HEALTH_DEMAND_LEGACY_TRIGGER_DIGESTS = new Set([
 	"bc7da93194749ebf189112778862d7f0515e839d3ae702ee1acfbacc4eaa8cf7",
+	"701ae014d7f58809a34a7dde5f6232c895cefb13121df2f1052a97774f7ec049",
 ]);
 
 export interface DiscordConfigRow {
@@ -3132,6 +3159,32 @@ export function openWithDatabaseIdentity<T extends { close(): void }>(
 }
 
 export class StateStore {
+	private voiceHandoffStoreCache?: {
+		db: BetterDb;
+		store: VoiceHandoffStore;
+	};
+	get voiceHandoffs(): VoiceHandoffStore {
+		const db = this.db.raw;
+		if (this.voiceHandoffStoreCache?.db !== db) {
+			const store = new VoiceHandoffStore(db);
+			store.migrate();
+			this.voiceHandoffStoreCache = { db, store };
+		}
+		return this.voiceHandoffStoreCache.store;
+	}
+	private headphoneInboxStoreCache?: {
+		db: BetterDb;
+		store: HeadphoneInboxStore;
+	};
+	get headphoneInbox(): HeadphoneInboxStore {
+		const db = this.db.raw;
+		if (this.headphoneInboxStoreCache?.db !== db) {
+			const store = new HeadphoneInboxStore(db);
+			store.migrate();
+			this.headphoneInboxStoreCache = { db, store };
+		}
+		return this.headphoneInboxStoreCache.store;
+	}
 	private workflowScorecardStoreCache?: {
 		db: BetterDb;
 		store: WorkflowScorecardStore;
@@ -3700,6 +3753,19 @@ export class StateStore {
 				return null;
 			}
 		};
+		const residentBindingProof = (
+			value: unknown,
+		): ResidentVoiceBindingProof | null => {
+			if (typeof value !== "string") return null;
+			try {
+				const parsed = JSON.parse(value);
+				return parsed && typeof parsed === "object"
+					? (parsed as ResidentVoiceBindingProof)
+					: null;
+			} catch {
+				return null;
+			}
+		};
 		return {
 			sessionId: String(row.session_id),
 			mode: row.mode as VoiceSessionMode,
@@ -3725,6 +3791,11 @@ export class StateStore {
 			requestedBy: String(row.requested_by),
 			credentialTier: row.credential_tier as VoiceCredentialTier,
 			state: row.state as VoiceSessionState,
+			carrierKind:
+				(row.carrier_kind as VoiceSessionCarrierKind | undefined) ?? "daemon",
+			ownerBootId: (row.owner_boot_id as string | null) ?? null,
+			sessionGeneration: Number(row.session_generation ?? 1),
+			residentBindingProof: residentBindingProof(row.resident_binding_proof),
 			reason: (row.reason as string | null) ?? null,
 			daemonBootId: (row.daemon_boot_id as string | null) ?? null,
 			leaseToken: (row.lease_token as string | null) ?? null,
@@ -3786,7 +3857,7 @@ export class StateStore {
 	getDesiredVoiceSession(): VoiceSessionRow | undefined {
 		return this.voiceSessionFromRow(
 			this.workflowSelectAll(
-				"SELECT * FROM voice_sessions WHERE state = 'desired' ORDER BY created_at, session_id LIMIT 1",
+				"SELECT * FROM voice_sessions WHERE state = 'desired' AND carrier_kind = 'daemon' ORDER BY created_at, session_id LIMIT 1",
 				[],
 			)[0],
 		);
@@ -4006,7 +4077,8 @@ export class StateStore {
 					`SELECT session_id, project_name, meeting_id, state, reason,
 						cancel_requested_at, ending_started_at, ended_at, updated_at
 					 FROM voice_sessions
-					 WHERE state NOT IN ('ended', 'cancelled', 'failed')
+					 WHERE carrier_kind = 'daemon'
+					   AND state NOT IN ('ended', 'cancelled', 'failed')
 					 ORDER BY session_id`,
 				)
 				.all() as Array<Record<string, unknown>>;
@@ -4496,10 +4568,12 @@ export class StateStore {
 		now: string;
 	}):
 		| { status: "admitted" }
+		| { status: "ineligible" }
 		| { status: "deferred"; nextAttemptAt: string }
 		| { status: "exhausted"; provenFailures: number; failureClass: string | null } {
 		let result:
 			| { status: "admitted" }
+			| { status: "ineligible" }
 			| { status: "deferred"; nextAttemptAt: string }
 			| {
 					status: "exhausted";
@@ -4507,6 +4581,15 @@ export class StateStore {
 					failureClass: string | null;
 			  } = { status: "admitted" };
 		this.db.transaction(() => {
+			const session = this.getVoiceSession(input.sessionId);
+			if (
+				!session ||
+				session.carrierKind !== "daemon" ||
+				session.state !== "desired"
+			) {
+				result = { status: "ineligible" };
+				return;
+			}
 			const budget = this.getVoiceLaunchBudget(input.sessionId, input.now);
 			if (budget.provenFailures >= VOICE_LAUNCH_MAX_PROVEN_FAILURES) {
 				// The failure class, when there is one, names *why* it ended — the
@@ -5366,7 +5449,7 @@ export class StateStore {
 				 lease_token = ?, lease_expires_at = ?, updated_at = ?,
 				 receive_health = NULL, receive_health_observed_at = NULL,
 				 receive_health_boot_id = NULL, receive_card_digest = NULL
-				 WHERE session_id = ? AND state = 'desired'`,
+				 WHERE session_id = ? AND state = 'desired' AND carrier_kind = 'daemon'`,
 				[
 					input.daemonBootId,
 					leaseToken,
@@ -5386,12 +5469,160 @@ export class StateStore {
 		return claimed;
 	}
 
+	reserveAndClaimResidentVoiceSession(input: {
+		projectName: string;
+		leadId: string;
+		requestId: string;
+		inputDigest: string;
+		ownerBootId: string;
+		sessionGeneration: number;
+		bindingProof: ResidentVoiceBindingProof;
+		leaseTtlMs: number;
+		reservation: VoiceSessionReservation;
+	}):
+		| {
+				status: "inserted" | "replayed";
+				leaseToken: string;
+				leaseExpiresAt: string;
+				session: VoiceSessionRow;
+		  }
+		| { status: "intent_conflict" | "session_active" } {
+		if (
+			!input.requestId ||
+			!input.inputDigest ||
+			!input.ownerBootId ||
+			!input.bindingProof ||
+			!Number.isSafeInteger(input.sessionGeneration) ||
+			input.sessionGeneration < 1 ||
+			!Number.isSafeInteger(input.leaseTtlMs) ||
+			input.leaseTtlMs < 1 ||
+			input.reservation.projectName !== input.projectName ||
+			input.reservation.leadId !== input.leadId ||
+			input.reservation.credentialTier !== "master" ||
+			input.bindingProof.version !== 1 ||
+			input.bindingProof.projectName !== input.projectName ||
+			input.bindingProof.guildId !== input.reservation.guildId ||
+			input.bindingProof.voiceChannelId !==
+				input.reservation.voiceChannelId ||
+			input.bindingProof.ownerBootId !== input.ownerBootId ||
+			input.bindingProof.sessionGeneration !== input.sessionGeneration ||
+			input.bindingProof.outputBotUserId !==
+				input.reservation.voiceBotUserId ||
+			!/^[0-9]{17,20}$/.test(input.reservation.voiceBotUserId)
+		)
+			throw new Error("resident_voice_binding_invalid");
+		let result:
+			| {
+					status: "inserted" | "replayed";
+					leaseToken: string;
+					leaseExpiresAt: string;
+					session: VoiceSessionRow;
+			  }
+			| { status: "intent_conflict" | "session_active" } = {
+			status: "session_active",
+		};
+		this.db.transaction(() => {
+			const prior = this.getVoiceIntent(
+				input.projectName,
+				input.leadId,
+				input.requestId,
+			);
+			if (prior) {
+				const session = prior.sessionId
+					? this.getVoiceSession(prior.sessionId)
+					: undefined;
+				if (
+					prior.operationId !== "voice.session.resident.start" ||
+					prior.inputDigest !== input.inputDigest ||
+					!session ||
+					session.carrierKind !== "resident" ||
+					!session.leaseToken ||
+					!session.leaseExpiresAt
+				) {
+					result = { status: "intent_conflict" };
+					return;
+				}
+				result = {
+					status: "replayed",
+					leaseToken: session.leaseToken,
+					leaseExpiresAt: session.leaseExpiresAt,
+					session,
+				};
+				return;
+			}
+			const activeRoom = this.workflowSelectAll(
+				`SELECT 1 AS present FROM voice_sessions WHERE voice_channel_id = ?
+				 AND state NOT IN ('ended','cancelled','failed') LIMIT 1`,
+				[input.reservation.voiceChannelId],
+			)[0];
+			if (activeRoom) return;
+			const leaseToken = randomBytes(32).toString("hex");
+			const leaseExpiresAt = new Date(
+				Date.parse(input.reservation.createdAt) + input.leaseTtlMs,
+			).toISOString();
+			this.db.run(
+				`INSERT INTO voice_sessions
+				 (session_id, mode, project_name, lead_id, guild_id, voice_channel_id,
+				  voice_bot_user_id, provisioning_step, requested_by, credential_tier,
+				  state, carrier_kind, owner_boot_id, session_generation, resident_binding_proof, lease_token,
+				  lease_expires_at, meeting_id, evidence_dir, topic, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'done', ?, ?, 'claimed', 'resident', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.reservation.sessionId,
+					input.reservation.mode,
+					input.reservation.projectName,
+					input.reservation.leadId,
+					input.reservation.guildId,
+					input.reservation.voiceChannelId,
+					input.reservation.voiceBotUserId,
+					input.reservation.requestedBy,
+					input.reservation.credentialTier,
+					input.ownerBootId,
+					input.sessionGeneration,
+					JSON.stringify(input.bindingProof),
+					leaseToken,
+					leaseExpiresAt,
+					input.reservation.meetingId ?? null,
+					input.reservation.evidenceDir ?? null,
+					input.reservation.topic ?? null,
+					input.reservation.createdAt,
+					input.reservation.createdAt,
+				],
+			);
+			this.db.run(
+				`INSERT INTO voice_intents
+				 (project_name, lead_id, request_id, operation_id, input_digest,
+				  session_id, result_state, created_at)
+				 VALUES (?, ?, ?, 'voice.session.resident.start', ?, ?, 'claimed', ?)`,
+				[
+					input.projectName,
+					input.leadId,
+					input.requestId,
+					input.inputDigest,
+					input.reservation.sessionId,
+					input.reservation.createdAt,
+				],
+			);
+			result = {
+				status: "inserted",
+				leaseToken,
+				leaseExpiresAt,
+				session: this.getVoiceSession(input.reservation.sessionId)!,
+			};
+		});
+		if ("leaseToken" in result) this.save();
+		return result;
+	}
+
 	renewVoiceSession(input: {
 		sessionId: string;
 		leaseToken: string;
 		now: string;
 		leaseTtlMs: number;
 		receiveHealth?: unknown;
+		ownerBootId?: string;
+		sessionGeneration?: number;
+		bindingProof?: ResidentVoiceBindingProof;
 	}):
 		| {
 				state: VoiceSessionState;
@@ -5417,6 +5648,9 @@ export class StateStore {
 			if (
 				!current ||
 				current.leaseToken !== input.leaseToken ||
+				!this.residentLeaseIdentityMatches(current, input) ||
+				(current.carrierKind === "resident" &&
+					!this.residentBindingProofMatches(current, input.bindingProof)) ||
 				!current.leaseExpiresAt ||
 				Date.parse(current.leaseExpiresAt) <= Date.parse(input.now) ||
 				new Set<VoiceSessionState>(["ended", "cancelled", "failed"]).has(
@@ -5452,7 +5686,8 @@ export class StateStore {
 				`UPDATE voice_sessions SET lease_expires_at = ?, updated_at = ?,
 				 receive_health = CASE WHEN ? THEN ? ELSE receive_health END,
 				 receive_health_observed_at = CASE WHEN ? THEN ? ELSE receive_health_observed_at END,
-				 receive_health_boot_id = CASE WHEN ? THEN ? ELSE receive_health_boot_id END
+				 receive_health_boot_id = CASE WHEN ? THEN ? ELSE receive_health_boot_id END,
+				 resident_binding_proof = CASE WHEN carrier_kind = 'resident' THEN ? ELSE resident_binding_proof END
 				 WHERE session_id = ? AND lease_token = ?`,
 				[
 					leaseExpiresAt,
@@ -5463,6 +5698,7 @@ export class StateStore {
 					input.now,
 					acceptsHealth ? 1 : 0,
 					current.daemonBootId,
+					input.bindingProof ? JSON.stringify(input.bindingProof) : null,
 					input.sessionId,
 					input.leaseToken,
 				],
@@ -5487,6 +5723,8 @@ export class StateStore {
 		reason?: string;
 		now: string;
 		abandonedCount?: number;
+		ownerBootId?: string;
+		sessionGeneration?: number;
 	}): boolean {
 		// FLY-2701 plan §7: nobody turning up for a booked meeting is a normal
 		// ending, not a fault, so `warming` may reach `ended` — but only for that
@@ -5502,7 +5740,12 @@ export class StateStore {
 		let changed = false;
 		this.db.transaction(() => {
 			const current = this.getVoiceSession(input.sessionId);
-			if (!current || current.leaseToken !== input.leaseToken) return;
+			if (
+				!current ||
+				current.leaseToken !== input.leaseToken ||
+				!this.residentLeaseIdentityMatches(current, input)
+			)
+				return;
 			if (!(allowed[current.state] ?? []).includes(input.state)) return;
 			const expired =
 				!current.leaseExpiresAt ||
@@ -5738,11 +5981,13 @@ export class StateStore {
 		sessionId: string,
 		leaseToken: string,
 		now: string,
+		identity: { ownerBootId?: string; sessionGeneration?: number } = {},
 	): VoiceSessionRow | undefined {
 		const session = this.getVoiceSession(sessionId);
 		if (
 			!session ||
 			session.leaseToken !== leaseToken ||
+			!this.residentLeaseIdentityMatches(session, identity) ||
 			!session.leaseExpiresAt ||
 			Date.parse(session.leaseExpiresAt) <= Date.parse(now) ||
 			new Set<VoiceSessionState>(["ended", "cancelled", "failed"]).has(
@@ -5907,12 +6152,39 @@ export class StateStore {
 	listRecoverableVoiceProvisioning(staleBefore: string): VoiceSessionRow[] {
 		return this.workflowSelectAll(
 			`SELECT * FROM voice_sessions
-			 WHERE state = 'provisioning' AND updated_at < ?
+			 WHERE state = 'provisioning' AND carrier_kind = 'daemon' AND updated_at < ?
 			 ORDER BY updated_at, session_id`,
 			[staleBefore],
 		)
 			.map((row) => this.voiceSessionFromRow(row))
 			.filter((row): row is VoiceSessionRow => row !== undefined);
+	}
+
+	private residentLeaseIdentityMatches(
+		session: VoiceSessionRow,
+		input: { ownerBootId?: string; sessionGeneration?: number },
+	): boolean {
+		return (
+			session.carrierKind === "daemon" ||
+			(session.ownerBootId === input.ownerBootId &&
+				session.sessionGeneration === input.sessionGeneration)
+		);
+	}
+
+	private residentBindingProofMatches(
+		session: VoiceSessionRow,
+		proof: ResidentVoiceBindingProof | undefined,
+	): boolean {
+		return (
+			proof?.version === 1 &&
+			proof.projectName === session.projectName &&
+			proof.guildId === session.guildId &&
+			proof.voiceChannelId === session.voiceChannelId &&
+			proof.ownerBootId === session.ownerBootId &&
+			proof.sessionGeneration === session.sessionGeneration &&
+			proof.outputBotUserId === session.voiceBotUserId &&
+			/^[0-9]{17,20}$/.test(proof.earsBotUserId)
+		);
 	}
 
 	/** Bridge admission failure: preserve evidence and fence all further lease effects. */
@@ -10256,6 +10528,10 @@ export class StateStore {
 				requested_by TEXT NOT NULL,
 				credential_tier TEXT NOT NULL CHECK(credential_tier IN ('master','ingest')),
 				state TEXT NOT NULL CHECK(state IN ('provisioning','desired','claimed','warming','live','ending','ended','cancelled','failed')),
+				carrier_kind TEXT NOT NULL DEFAULT 'daemon' CHECK(carrier_kind IN ('daemon','resident')),
+				owner_boot_id TEXT,
+				session_generation INTEGER NOT NULL DEFAULT 1,
+				resident_binding_proof TEXT,
 				reason TEXT,
 				daemon_boot_id TEXT,
 				lease_token TEXT,
@@ -10272,6 +10548,22 @@ export class StateStore {
 		`);
 		this.addColumnIfMissing("voice_sessions", "topic", "TEXT");
 		this.addColumnIfMissing("voice_sessions", "voice_bot_user_id", "TEXT");
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"carrier_kind",
+			"TEXT NOT NULL DEFAULT 'daemon' CHECK(carrier_kind IN ('daemon','resident'))",
+		);
+		this.addColumnIfMissing("voice_sessions", "owner_boot_id", "TEXT");
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"session_generation",
+			"INTEGER NOT NULL DEFAULT 1",
+		);
+		this.addColumnIfMissing(
+			"voice_sessions",
+			"resident_binding_proof",
+			"TEXT",
+		);
 		// Additive migration: ending age must not be rejuvenated by lease/poller writes.
 		this.addColumnIfMissing("voice_sessions", "ending_started_at", "TEXT");
 		this.addColumnIfMissing("voice_sessions", "root_requested_at", "TEXT");
@@ -10298,6 +10590,8 @@ export class StateStore {
 			"UPDATE voice_sessions SET ending_started_at = created_at WHERE state = 'ending' AND ending_started_at IS NULL",
 		);
 		this.migrateVoiceHealthDemandProjection();
+		this.headphoneInbox.migrate();
+		this.voiceHandoffs.migrate();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS voice_sessions_active_room
 			ON voice_sessions(voice_channel_id)
@@ -72790,6 +73084,22 @@ export class StateStore {
 			"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
 			[questionId],
 		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	getWorkflowGateHolderByCardMessageId(
+		cardMessageId: string,
+	): WorkflowGateHolderRow | undefined {
+		if (!cardMessageId) return undefined;
+		const rows = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE card_message_id = ?
+			  ORDER BY updated_at DESC, question_id ASC
+			  LIMIT 2`,
+			[cardMessageId],
+		);
+		return rows.length === 1
+			? (rows[0] as unknown as WorkflowGateHolderRow)
+			: undefined;
 	}
 
 	listWorkflowGateHoldersForCardVoid(

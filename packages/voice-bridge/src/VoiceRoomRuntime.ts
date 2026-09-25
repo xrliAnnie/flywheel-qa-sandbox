@@ -14,6 +14,8 @@
  * clears a successor's registration; onDown / onUp fan out to every
  * subscriber. Both semantics are exactly the FLY-967 wiring's.
  */
+
+import type { RoomIO } from "flywheel-voice-core";
 import { SessionSlot } from "./SessionSlot.js";
 
 export type RoomFrameCb = (frame: Buffer, format: unknown) => void;
@@ -26,9 +28,49 @@ export class VoiceRoomRuntime {
 	private bargeIn: (() => void) | null = null;
 	private readonly downCbs = new Set<() => void>();
 	private readonly upCbs = new Set<() => void>();
+	private roomIO?: RoomIO;
+	private roomIODetach?: () => void;
 
 	constructor(slot: SessionSlot = new SessionSlot()) {
 		this.slot = slot;
+	}
+
+	attachRoomIO(roomIO: RoomIO): () => void {
+		this.roomIODetach?.();
+		this.roomIO = roomIO;
+		let receiveDown = false;
+		const unsubs = [
+			roomIO.onFrame((frame) => this.routeFrame(frame.pcm, frame.format)),
+			roomIO.onUtterance((event) => {
+				if (event.phase === "start") this.routeSpeakingStart();
+				else this.routeSpeakingEnd();
+			}),
+			roomIO.onBargeIn((event) => {
+				if (event.phase === "sustained") this.routeBargeIn();
+			}),
+			roomIO.onReceiveHealth((health) => {
+				if (health.state === "degraded" && !receiveDown) {
+					receiveDown = true;
+					this.fireDown();
+				} else if (health.state === "receiving" && receiveDown) {
+					receiveDown = false;
+					this.fireUp();
+				}
+			}),
+		];
+		const detach = () => {
+			for (const unsub of unsubs.splice(0)) unsub();
+			if (this.roomIO === roomIO) {
+				this.roomIO = undefined;
+				this.roomIODetach = undefined;
+			}
+		};
+		this.roomIODetach = detach;
+		return detach;
+	}
+
+	currentRoomIO(): RoomIO | undefined {
+		return this.roomIO;
 	}
 
 	// ---- consumer surface (the active session's wiring registers) ----

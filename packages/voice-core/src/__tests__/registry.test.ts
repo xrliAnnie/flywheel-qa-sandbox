@@ -14,6 +14,8 @@ const caps = (
 ): VoiceBackendCapabilities => ({
 	announce: false,
 	converse: false,
+	verbatim: false,
+	attribution: false,
 	bargeIn: false,
 	toolCallScheduling: "none",
 	transcriptGranularity: "final-only",

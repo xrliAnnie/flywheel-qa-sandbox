@@ -82,6 +82,61 @@ describe("VoiceRoomRuntime (FLY-1006 S5b)", () => {
 		room.fireDown();
 		expect([d1, d2]).toEqual([2, 1]);
 	});
+
+	it("adapts one canonical RoomIO into the legacy engine callback surface", () => {
+		const listeners: Record<string, (value: never) => void> = {};
+		const io = {
+			identity: { instanceId: "room-1" },
+			onFrame: (cb: (value: never) => void) => {
+				listeners.frame = cb;
+				return () => delete listeners.frame;
+			},
+			onUtterance: (cb: (value: never) => void) => {
+				listeners.utterance = cb;
+				return () => delete listeners.utterance;
+			},
+			onBargeIn: (cb: (value: never) => void) => {
+				listeners.barge = cb;
+				return () => delete listeners.barge;
+			},
+			onReceiveHealth: (cb: (value: never) => void) => {
+				listeners.health = cb;
+				return () => delete listeners.health;
+			},
+		} as never;
+		const room = new VoiceRoomRuntime();
+		const got = { frames: 0, starts: 0, ends: 0, barges: 0, down: 0, up: 0 };
+		room.onFrame((_frame, format) => {
+			got.frames++;
+			expect(format).toMatchObject({ sampleRateHz: 24_000 });
+		});
+		room.onSpeakingStart(() => got.starts++);
+		room.onSpeakingEnd(() => got.ends++);
+		room.onBargeIn(() => got.barges++);
+		room.onDown(() => got.down++);
+		room.onUp(() => got.up++);
+		const detach = room.attachRoomIO(io);
+		expect(room.currentRoomIO()).toBe(io);
+		listeners.frame?.({
+			pcm: Buffer.alloc(4),
+			format: { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 },
+		} as never);
+		listeners.utterance?.({ phase: "start" } as never);
+		listeners.utterance?.({ phase: "end" } as never);
+		listeners.barge?.({ phase: "sustained" } as never);
+		listeners.health?.({ state: "degraded" } as never);
+		listeners.health?.({ state: "receiving" } as never);
+		expect(got).toEqual({
+			frames: 1,
+			starts: 1,
+			ends: 1,
+			barges: 1,
+			down: 1,
+			up: 1,
+		});
+		detach();
+		expect(room.currentRoomIO()).toBeUndefined();
+	});
 });
 
 describe("wireRoomEars (FLY-1006 S5b)", () => {

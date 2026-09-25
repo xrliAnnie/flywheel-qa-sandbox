@@ -515,6 +515,11 @@
 			"disposition": "standalone_runtime_bounded"
 		},
 		{
+			"file": "packages/voice-core/src/audio/FfmpegPcmDecoder.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime_bounded"
+		},
+		{
 			"file": "packages/voice-core/src/audio/FilePlayer.ts",
 			"raw_spawn": 1,
 			"disposition": "standalone_runtime"
@@ -528,6 +533,11 @@
 			"file": "packages/voice-core/src/audio/StreamPlayer.ts",
 			"raw_spawn": 1,
 			"disposition": "standalone_runtime"
+		},
+		{
+			"file": "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime_bounded"
 		},
 		{
 			"file": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",

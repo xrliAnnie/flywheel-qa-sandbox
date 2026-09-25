@@ -4,6 +4,8 @@ import { validateVoiceBridgeUrl } from "./config.js";
 
 export interface VoiceSessionProjection {
 	sessionId: string;
+	/** Durable resident generation used by V1 RoomIO and reply binding. */
+	sessionGeneration?: number;
 	voiceBotUserId: string;
 	mode: "meeting" | "rg";
 	projectName: string;

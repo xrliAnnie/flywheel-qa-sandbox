@@ -339,6 +339,11 @@ export class LeadJournal {
 		return this.store.listUnfinished();
 	}
 
+	/** Ordered immutable mailbox delivery ids bound to this journal entry. */
+	listMemberIds(entryId: string): string[] {
+		return this.store.listMemberIds(entryId);
+	}
+
 	countCompletedSince(sinceMs: number): number {
 		return this.store.countCompletedSince(sinceMs);
 	}

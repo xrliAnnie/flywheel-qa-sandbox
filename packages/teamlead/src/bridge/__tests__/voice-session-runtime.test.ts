@@ -293,6 +293,81 @@ describe("VoiceSessionRuntime", () => {
 		);
 		expect(store.getVoiceSession(SESSION_ID)?.state).toBe("claimed");
 	});
+
+	it("validates resident sessions but never provisions, wakes, or daemon-polls them", async () => {
+		const residentId = "10000000-0000-4000-8000-000000000099";
+		store.reserveAndClaimResidentVoiceSession({
+			projectName: "flywheel",
+			leadId: "lead-resident",
+			requestId: "resident-request",
+			inputDigest: "resident-digest",
+			ownerBootId: "bridge-boot",
+			sessionGeneration: 2,
+			bindingProof: {
+				version: 1,
+				projectName: "flywheel",
+				guildId: "100000000000000001",
+				voiceChannelId: "100000000000000099",
+				ownerBootId: "bridge-boot",
+				sessionGeneration: 2,
+				outputBotUserId: "100000000000000006",
+				earsBotUserId: "100000000000000007",
+				outputBotDropped: true,
+				earsBotDropped: true,
+				unknownDropped: true,
+				allowedHumanPassed: true,
+				observedAt: T0,
+				expiresAt: "2026-09-08T20:20:00.000Z",
+			},
+			leaseTtlMs: 600_000,
+			reservation: {
+				sessionId: residentId,
+				mode: "rg",
+				projectName: "flywheel",
+				leadId: "lead-resident",
+				guildId: "100000000000000001",
+				voiceBotUserId: "100000000000000006",
+				voiceChannelId: "100000000000000099",
+				requestedBy: "master",
+				credentialTier: "master",
+				createdAt: T0,
+			},
+		});
+		const provision = vi.fn(async () => {});
+		const requestWake = vi.fn(async () => "accepted" as const);
+		const poll = vi.fn(async () => {});
+		const validateSession = vi.fn(async () => {});
+		const runtime = new VoiceSessionRuntime({
+			store,
+			timing: {
+				leaseTtlMs: 15_000,
+				leaseRenewMs: 4_000,
+				leaseHttpTimeoutMs: 2_000,
+				clockSkewGraceMs: 5_000,
+				provisioningStaleMs: 120_000,
+				endingTimeoutMs: 30_000,
+				pollIntervalMs: 3_000,
+			},
+			now: () => "2026-09-08T20:00:01.000Z",
+			provision,
+			poll,
+			requestWake,
+			validateSession,
+		});
+		await runtime.tick();
+		await runtime.wakeTick();
+		expect(validateSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: residentId,
+				carrierKind: "resident",
+			}),
+		);
+		expect(provision).not.toHaveBeenCalled();
+		expect(requestWake).not.toHaveBeenCalled();
+		expect(poll).not.toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId: residentId }),
+		);
+	});
 });
 
 const timing = {

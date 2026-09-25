@@ -230,6 +230,7 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_VOICE_CONVERSE_BACKEND",
 	"FLYWHEEL_VOICE_EDGE_TTS_ARGS",
 	"FLYWHEEL_VOICE_EDGE_TTS_CMD",
+	"FLYWHEEL_VOICE_ENGINE",
 	"FLYWHEEL_VOICE_FFMPEG",
 	"FLYWHEEL_VOICE_FFPLAY",
 	"FLYWHEEL_VOICE_GEMINI_KEY_ENV",
@@ -244,6 +245,24 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD:
+		"FLY-2798 executable path for the incremental Edge TTS helper, not an on/off gate",
+	FLYWHEEL_VOICE_EDGE_TTS_STREAM_MAX_BYTES:
+		"FLY-2798 bounded unread-audio byte limit for incremental Edge TTS, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_BACKEND:
+		"FLY-2798 backend selector for Lead readback on the Live session, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_VOICE:
+		"FLY-2798 voice identifier for Lead readback on the Live session, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_LIVE_CONTEXT_MAX_TOKENS:
+		"FLY-2798 bounded Live-session context token limit, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_LIVE_ENDPOINT:
+		"FLY-2798 OpenAI Live websocket endpoint coordinate, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_LIVE_KEY_ENV:
+		"FLY-2798 name of the environment variable carrying the Live credential, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_LIVE_MODEL:
+		"FLY-2798 configured OpenAI Live model identifier, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_LIVE_VOICE:
+		"FLY-2798 configured OpenAI Live frontend voice identifier, not an on/off gate",
 	FLYWHEEL_CLAUDE_BIN:
 		"FLY-2775 plumbing: path override for the claude binary the Opus model sync probes, not an on/off gate",
 	FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION:

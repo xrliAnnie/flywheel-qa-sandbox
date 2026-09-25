@@ -14,6 +14,7 @@
  * so every path is fake-timer testable.
  */
 
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import type { SessionSlot } from "../SessionSlot.js";
 import type { LandingResult } from "./AssistantLanding.js";
 import type { BriefingResult } from "./BriefingEngine.js";
@@ -40,7 +41,7 @@ export interface SpeakerLike {
 
 export interface VoicePresence {
 	join(): Promise<void>;
-	leave(): void;
+	leave(): Promise<void> | void;
 	founderPresent(): boolean;
 	onFounderJoin(cb: () => void): () => void;
 	onFounderLeave(cb: () => void): () => void;
@@ -66,6 +67,8 @@ export interface AssistantSessionOptions {
 	sessionId: string;
 	topic?: string;
 	slot: SessionSlot;
+	/** Persistent carrier lease projected into slot by GeminiCommand. */
+	lease?: ResidentVoiceLease;
 	briefing: { compose(topic?: string): BriefingResult };
 	/** FLY-1065: receives the assistant sessionId so the transcript sink lands
 	 * where the landing reads (assistantTranscriptPath alignment contract). */
@@ -175,6 +178,7 @@ export class AssistantSession {
 	private audioChunksTotal = 0;
 	private audioChunksThisTurn = 0;
 	private framesThisUtterance = 0;
+	private stopLeaseRenewing?: () => void;
 
 	constructor(private readonly opts: AssistantSessionOptions) {}
 
@@ -193,6 +197,13 @@ export class AssistantSession {
 		// forever with zero log lines (onFounderJoin never registered, wireEars
 		// never ran) and, on the throw path, a zombie orchestrator in the VC.
 		try {
+			if (this.opts.lease) {
+				await this.opts.lease.setState("warming");
+				this.stopLeaseRenewing = this.opts.lease.startRenewing((error) => {
+					this.log(`resident lease lost: ${error.message}`);
+					void this.teardown("failed", "resident_voice_lease_lost");
+				});
+			}
 			await this.opts.voice.join();
 			this.log("voice joined — orchestrator in the VC");
 			const brief = this.opts.briefing.compose(this.opts.topic);
@@ -297,6 +308,12 @@ export class AssistantSession {
 	private enterLive(source: string): void {
 		this._state = "live";
 		this.log(`state -> live (${source})`);
+		void this.opts.lease?.setState("live").catch((error: unknown) => {
+			this.log(
+				`resident live-state update failed: ${String((error as Error).message ?? error)}`,
+			);
+			void this.teardown("failed", "resident_voice_live_failed");
+		});
 		this.opts.tiv.status("🎙 listening");
 		this.conv?.sendText(OPENING_PROMPT);
 		this.log("OPENING prompt sent to Gemini");
@@ -546,7 +563,7 @@ export class AssistantSession {
 				`启动失败的收尾也失败:${String((err as Error).message ?? err)}——请人工处理 ${this.opts.issueId}。`,
 			);
 		}
-		await this.teardown();
+		await this.teardown("failed", "assistant_start_failed");
 		return issueClosed;
 	}
 
@@ -564,10 +581,13 @@ export class AssistantSession {
 				`没开成的收尾失败:${String((err as Error).message ?? err)}——请人工处理 ${this.opts.issueId}。`,
 			);
 		}
-		await this.teardown();
+		await this.teardown("failed", "founder_no_show");
 	}
 
-	private async teardown(): Promise<void> {
+	private async teardown(
+		leaseState: "ended" | "failed" = "ended",
+		leaseReason?: string,
+	): Promise<void> {
 		if (this.done) return;
 		this.done = true;
 		this.clearTimer("join");
@@ -583,8 +603,23 @@ export class AssistantSession {
 			);
 		}
 		this.conv = null;
-		this.opts.voice.leave();
-		this.opts.slot.release(ASSISTANT_SLOT_MODE, this.opts.sessionId);
+		await this.opts.voice.leave();
+		this.stopLeaseRenewing?.();
+		this.stopLeaseRenewing = undefined;
+		if (this.opts.lease) {
+			this.opts.slot.releaseLease(
+				this.opts.lease.toSlotLease(ASSISTANT_SLOT_MODE),
+			);
+			try {
+				await this.opts.lease.close(leaseState, leaseReason);
+			} catch (error) {
+				this.log(
+					`resident lease close failed: ${String((error as Error).message ?? error)}`,
+				);
+			}
+		} else {
+			this.opts.slot.release(ASSISTANT_SLOT_MODE, this.opts.sessionId);
+		}
 		this._state = "idle";
 	}
 

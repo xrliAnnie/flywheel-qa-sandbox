@@ -1144,6 +1144,81 @@ globalThis.fetch = async () => {
 	});
 
 	describe("chat-ingest", () => {
+		it("rings the inbox doorbell from the child environment with canonical URL precedence", () => {
+			const fetchLog = join(tmpDir, "chat-ingest-nudge-fetch.log");
+			const preload = join(tmpDir, "chat-ingest-nudge-preload.mjs");
+			writeFileSync(
+				preload,
+				`import fs from "node:fs";
+globalThis.fetch = async function(url) {
+  fs.appendFileSync(process.env.FLY2798_FETCH_LOG, String(url) + "\\n");
+  return new Response(null, { status: 202 });
+};
+`,
+			);
+
+			const ingest = (
+				messageId: string,
+				env: Record<string, string | undefined>,
+			) =>
+				runCliWithInput(
+					[
+						"chat-ingest",
+						"--db",
+						dbPath,
+						"--lead",
+						"product-lead",
+						"--chat-id",
+						"123456789012345678",
+						"--origin-channel-id",
+						"123456789012345678",
+						"--message-id",
+						messageId,
+						"--author-id",
+						"323456789012345678",
+						"--author-name",
+						"Founder",
+						"--ts",
+						"2026-09-23T21:00:00.000Z",
+						"--msg-kind",
+						"guild",
+						"--content-stdin",
+					],
+					"please ask the Lead",
+					{
+						BRIDGE_URL: undefined,
+						FLYWHEEL_BRIDGE_URL: undefined,
+						FLY2798_FETCH_LOG: fetchLog,
+						NODE_OPTIONS:
+							`${process.env.NODE_OPTIONS ?? ""} --import=${preload}`.trim(),
+						...env,
+					},
+				);
+
+			const canonical = ingest("223456789012345671", {
+				FLYWHEEL_BRIDGE_URL: "http://canonical.test",
+			});
+			expect(canonical.exitCode, canonical.stderr).toBe(0);
+			expect(
+				ingest("223456789012345672", {
+					BRIDGE_URL: "http://legacy.test",
+				}),
+			).toMatchObject({ exitCode: 0 });
+			expect(
+				ingest("223456789012345673", {
+					FLYWHEEL_BRIDGE_URL: "http://canonical-wins.test",
+					BRIDGE_URL: "http://legacy-loses.test",
+				}),
+			).toMatchObject({ exitCode: 0 });
+			expect(ingest("223456789012345674", {})).toMatchObject({ exitCode: 0 });
+
+			expect(readFileSync(fetchLog, "utf8").trim().split("\n")).toEqual([
+				"http://canonical.test/api/lead-inbox/nudge",
+				"http://legacy.test/api/lead-inbox/nudge",
+				"http://canonical-wins.test/api/lead-inbox/nudge",
+			]);
+		});
+
 		it("accepts attachment ids and marks legacy three-field input unavailable", () => {
 			const run = (messageId: string, attachments: unknown[]) =>
 				runCliWithInput(

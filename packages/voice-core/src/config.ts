@@ -9,7 +9,12 @@ import { VoiceError } from "./types.js";
 
 export interface VoiceCoreConfig {
 	/** announce face: edge-tts invocation, split so no default assumes a venv. */
-	edgeTts: { command: string; args: string[] };
+	edgeTts: {
+		command: string;
+		args: string[];
+		streamCommand: string;
+		streamMaxBufferedBytes: number;
+	};
 	/** mp3 file playback (announce). */
 	afplayBin: string;
 	/** streaming PCM playback (converse). */
@@ -28,6 +33,19 @@ export interface VoiceCoreConfig {
 	voice: string;
 	/** converse backend (Gemini Live). */
 	gemini: { model: string; apiKeyEnv: string };
+	/** OpenAI Live converse backend (engine A). */
+	openaiLive: {
+		model: string;
+		endpoint: string;
+		apiKeyEnv: string;
+		protocolVersion: 1;
+		/** Per-event silent context ceiling. Runtime enforces a UTF-8 token upper bound. */
+		contextMaxTokens: number;
+		voice: string;
+		delegation: "client";
+		announcerBackendId: string;
+		announcerVoice: string;
+	};
 	defaultAnnounceBackendId: string;
 	defaultConverseBackendId: string;
 	timeouts: { ttsMs: number; brainMs: number };
@@ -35,14 +53,17 @@ export interface VoiceCoreConfig {
 
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
 const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview";
+const DEFAULT_OPENAI_LIVE_MODEL = "gpt-live-1";
+const DEFAULT_OPENAI_LIVE_ENDPOINT = "wss://api.openai.com/v1/live/sessions";
 const DEFAULT_TIMEOUTS = { ttsMs: 30_000, brainMs: 120_000 };
 
 export type ConfigOverrides = Partial<
-	Omit<VoiceCoreConfig, "edgeTts" | "timeouts" | "gemini">
+	Omit<VoiceCoreConfig, "edgeTts" | "timeouts" | "gemini" | "openaiLive">
 > & {
 	edgeTts?: Partial<VoiceCoreConfig["edgeTts"]>;
 	timeouts?: Partial<VoiceCoreConfig["timeouts"]>;
 	gemini?: Partial<VoiceCoreConfig["gemini"]>;
+	openaiLive?: Partial<VoiceCoreConfig["openaiLive"]>;
 };
 
 function pick(...vals: (string | undefined)[]): string {
@@ -79,6 +100,16 @@ export function resolveConfig(
 			args:
 				overrides.edgeTts?.args ??
 				(edgeArgsEnv ? edgeArgsEnv.split(" ").filter(Boolean) : []),
+			streamCommand: pick(
+				overrides.edgeTts?.streamCommand,
+				env.FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD,
+				"python3",
+			),
+			streamMaxBufferedBytes:
+				pickNum(
+					overrides.edgeTts?.streamMaxBufferedBytes,
+					env.FLYWHEEL_VOICE_EDGE_TTS_STREAM_MAX_BYTES,
+				) ?? 1024 * 1024,
 		},
 		afplayBin: pick(overrides.afplayBin, env.FLYWHEEL_VOICE_AFPLAY, "afplay"),
 		ffplayBin: pick(overrides.ffplayBin, env.FLYWHEEL_VOICE_FFPLAY, "ffplay"),
@@ -112,6 +143,47 @@ export function resolveConfig(
 				"GEMINI_API_KEY",
 			),
 		},
+		openaiLive: {
+			model: pick(
+				overrides.openaiLive?.model,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_MODEL,
+				DEFAULT_OPENAI_LIVE_MODEL,
+			),
+			endpoint: pick(
+				overrides.openaiLive?.endpoint,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_ENDPOINT,
+				DEFAULT_OPENAI_LIVE_ENDPOINT,
+			),
+			apiKeyEnv: pick(
+				overrides.openaiLive?.apiKeyEnv,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_KEY_ENV,
+				"OPENAI_API_KEY",
+			),
+			protocolVersion: overrides.openaiLive?.protocolVersion ?? 1,
+			contextMaxTokens:
+				pickNum(
+					overrides.openaiLive?.contextMaxTokens,
+					env.FLYWHEEL_VOICE_OPENAI_LIVE_CONTEXT_MAX_TOKENS,
+				) ?? 500,
+			voice: pick(
+				overrides.openaiLive?.voice,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_VOICE,
+				"marin",
+			),
+			delegation: overrides.openaiLive?.delegation ?? "client",
+			announcerBackendId: pick(
+				overrides.openaiLive?.announcerBackendId,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_BACKEND,
+				"edge-tts",
+			),
+			announcerVoice: pick(
+				overrides.openaiLive?.announcerVoice,
+				env.FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_VOICE,
+				overrides.voice,
+				env.FLYWHEEL_VOICE_VOICE,
+				DEFAULT_VOICE,
+			),
+		},
 		defaultAnnounceBackendId: pick(
 			overrides.defaultAnnounceBackendId,
 			env.FLYWHEEL_VOICE_ANNOUNCE_BACKEND,
@@ -143,6 +215,21 @@ export function verifyAnnounceComponents(config: VoiceCoreConfig): void {
 			"edge-tts command not set (set FLYWHEEL_VOICE_EDGE_TTS_CMD, e.g. edge-tts or python with args -m edge_tts)",
 		);
 	}
+	if (!config.edgeTts.streamCommand) {
+		throw new VoiceError(
+			"component-missing",
+			"edge-tts streaming command not set (FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD)",
+		);
+	}
+	if (
+		!Number.isSafeInteger(config.edgeTts.streamMaxBufferedBytes) ||
+		config.edgeTts.streamMaxBufferedBytes <= 0
+	) {
+		throw new VoiceError(
+			"component-missing",
+			"edge-tts streaming buffer limit must be a positive integer",
+		);
+	}
 }
 
 /** converse face fail-fast: GEMINI_API_KEY present + model pinned. */
@@ -161,6 +248,53 @@ export function verifyConverseComponents(
 			"component-missing",
 			`${config.gemini.apiKeyEnv} not set — the converse (Gemini Live) face needs an API key`,
 		);
+	}
+}
+
+/** Engine A fail-fast admission: exact protocol plus a TLS OpenAI endpoint. */
+export function verifyOpenAiLiveComponents(
+	config: VoiceCoreConfig,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
+	const unavailable = (detail: string): never => {
+		throw new VoiceError("component-missing", `语音不可用: ${detail}`);
+	};
+	if (!config.openaiLive.model) unavailable("OpenAI Live model is not set");
+	if (
+		config.openaiLive.protocolVersion !== 1 ||
+		config.openaiLive.delegation !== "client"
+	) {
+		unavailable("OpenAI Live protocol must be v1 with client delegation");
+	}
+	if (!config.openaiLive.voice) unavailable("OpenAI Live voice is not set");
+	if (
+		!Number.isSafeInteger(config.openaiLive.contextMaxTokens) ||
+		config.openaiLive.contextMaxTokens <= 0
+	) {
+		unavailable("OpenAI Live context token ceiling must be a positive integer");
+	}
+	if (config.openaiLive.announcerBackendId !== "edge-tts") {
+		unavailable("OpenAI Live announcer must use edge-tts");
+	}
+	if (!config.openaiLive.announcerVoice) {
+		unavailable("OpenAI Live edge-tts announcer voice is not set");
+	}
+	try {
+		const endpoint = new URL(config.openaiLive.endpoint);
+		if (
+			endpoint.protocol !== "wss:" ||
+			endpoint.hostname !== "api.openai.com" ||
+			endpoint.username ||
+			endpoint.password
+		) {
+			unavailable("OpenAI Live endpoint is outside the TLS allowlist");
+		}
+	} catch (error) {
+		if (error instanceof VoiceError) throw error;
+		unavailable("OpenAI Live endpoint is outside the TLS allowlist");
+	}
+	if (!env[config.openaiLive.apiKeyEnv]) {
+		unavailable(`${config.openaiLive.apiKeyEnv} is not set`);
 	}
 }
 

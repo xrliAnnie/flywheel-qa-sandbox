@@ -24,6 +24,7 @@ import type {
 	CodexLeadOutboundHandler,
 	OutboundSendBody,
 } from "./codex/CodexLeadOutboundHandler.js";
+import { isVoiceReplyDeliveryContext } from "./codex/voice-reply-delivery-context.js";
 
 /**
  * Resolve a Lead's Discord bot token by leadId (= `LeadConfig.agentId`), mirroring
@@ -138,9 +139,16 @@ export function buildLeadOutboundExpressHandler(
 ): (req: OutboundReq, res: OutboundRes) => Promise<void> {
 	return async (req, res) => {
 		const body = req.body ?? {};
+		const deliveryContext =
+			typeof body.leadId === "string" &&
+			typeof body.deliveryContext === "string" &&
+			isVoiceReplyDeliveryContext(body.leadId, body.deliveryContext)
+				? body.deliveryContext
+				: undefined;
 		const outcome = await handler.handle({
 			body,
 			providedToken: extractToken(req.headers),
+			...(deliveryContext ? { deliveryContext } : {}),
 		});
 		const auditValue = (value: unknown) =>
 			typeof value === "string" && value

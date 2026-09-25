@@ -58,6 +58,10 @@ export interface VoiceBackendCapabilities {
 	announce: boolean;
 	/** provides createConversation (speech-in + out). */
 	converse: boolean;
+	/** Every text-bearing call can produce a per-utterance content proof. */
+	verbatim: boolean;
+	/** User utterances can be bound to a known RoomIO speaker. */
+	attribution: boolean;
 	bargeIn: boolean;
 	toolCallScheduling: "none" | "basic" | "scheduled";
 	transcriptGranularity: "final-only" | "partial";
@@ -204,6 +208,14 @@ export type ConversationEventMap = {
 	/** emitted after any interrupt; no assistant transcript follows for that turn. */
 	"response-cancelled": [];
 	"tool-call": [{ callId: string; name: string; args: unknown }];
+	"delegation-created": [
+		{
+			delegationId: string;
+			generation: number;
+			offsetMs?: number;
+			target: "client";
+		},
+	];
 	/** Gemini goAway.timeLeft maps here. */
 	"session-expiring": [{ inSec: number }];
 	error: [VoiceError];
@@ -246,6 +258,18 @@ export interface ConversationSession {
 	close(): Promise<ResumeHandle | undefined>;
 }
 
+/** Capabilities after session config and generation fencing are applied. */
+export interface EffectiveConversationCapabilities {
+	verbatim: boolean;
+	attribution: boolean;
+	turnCancelOrSuppress: boolean;
+}
+
+export interface CapabilityAwareConversationSession
+	extends ConversationSession {
+	readonly effectiveCapabilities: EffectiveConversationCapabilities;
+}
+
 export interface BrainAdapter {
 	respond(
 		turn: { text: string; history: Turn[] },
@@ -262,11 +286,51 @@ export interface TtsEngine {
 	): Promise<{ audio: Buffer; format: AudioFormat; ttsFirstByteMs: number }>;
 }
 
+export interface StreamingTtsChunk {
+	audio: Buffer;
+	format: AudioFormat;
+	/** Present only on the first emitted media chunk. */
+	ttsFirstByteMs?: number;
+}
+
+/** Additive streaming face; legacy synthesize() remains byte-compatible. */
+export interface StreamingTtsEngine extends TtsEngine {
+	synthesizeStream(
+		text: string,
+		voice: VoiceRef,
+		opts: { signal: AbortSignal },
+	): AsyncIterable<StreamingTtsChunk>;
+}
+
+export type VoiceAttribution =
+	| { kind: "known"; speakerUserId: string; speakerName?: string | null }
+	| { kind: "unknown"; reason: string };
+
+export interface TranscriptDurabilityReceipt {
+	version: 1;
+	durable: boolean;
+	sessionId: string;
+	transcriptId: string;
+	contentDigest: string;
+	persistedAt: string;
+}
+
 export interface TranscriptSink {
 	/** failures throw explicitly — never swallowed. */
 	append(entry: TranscriptEntry): void;
 	/** drain pending writes (async sinks); readers await this first. */
 	flush?(): Promise<void>;
+}
+
+export interface DurableTranscriptSink extends TranscriptSink {
+	appendDurable(
+		entry: DurableTranscriptEntry,
+	): Promise<TranscriptDurabilityReceipt>;
+	readReceipt(
+		sessionId: string,
+		transcriptId: string,
+		contentDigest: string,
+	): Promise<TranscriptDurabilityReceipt | undefined>;
 }
 
 export type TranscriptEntry = {
@@ -280,3 +344,87 @@ export type TranscriptEntry = {
 	/** FLY-1065: the turn was cut short by a barge-in (recorded as-said). */
 	interrupted?: boolean;
 };
+
+export type DurableTranscriptEntry = TranscriptEntry & {
+	transcriptId: string;
+	utteranceId: string;
+	generation: number;
+	sequence: number;
+	timestamp: string;
+	attribution: VoiceAttribution;
+	source: string;
+};
+
+export type SpeakKind =
+	| "brief"
+	| "question"
+	| "readback"
+	| "heartbeat"
+	| "cue"
+	| "control";
+export type SpeakVerification = "required" | "best_effort" | "none";
+export type SpeakTransport = "none" | "submitted" | "playback_drained";
+export type SpeakContentProof =
+	| "none"
+	| "deterministic_tts"
+	| "transcript_equivalent";
+
+type SpeakReceiptIdentity = {
+	pendingKey: string;
+	requestDigest: string;
+};
+
+/** `SpeakReceipt.reason` when the founder's barge-in cancelled the speech.
+ * It is an interruption to resume later, not a delivery failure. */
+export const SPEAK_BARGE_IN_REASON = "barge-in";
+
+export type SpeakReceipt = SpeakReceiptIdentity &
+	(
+		| {
+				outcome: "rejected";
+				reason: string;
+				transport: "none";
+				contentProof: "none";
+		  }
+		| {
+				outcome: "failed";
+				reason: string;
+				transport: "none" | "submitted";
+				contentProof: SpeakContentProof;
+		  }
+		| {
+				outcome: "completed";
+				transport: "submitted" | "playback_drained";
+				contentProof: SpeakContentProof;
+		  }
+	);
+
+export interface VoiceUtterance extends DurableTranscriptEntry {
+	role: "user" | "assistant";
+}
+
+export interface VoiceV1Capabilities {
+	audioIn: readonly AudioFormat[];
+	audioOut: readonly AudioFormat[];
+	onUtterance: boolean;
+	verbatim: boolean;
+	attribution: boolean;
+	/** Old-generation audio, captions, and effects are synchronously fenced. */
+	turnCancelOrSuppress: boolean;
+}
+
+export interface VoiceV1Session {
+	readonly sessionId: string;
+	readonly generation: number;
+	readonly backendId: string;
+	readonly capabilities: VoiceV1Capabilities;
+	open(initialSessionContext: string): Promise<void>;
+	speak(
+		text: string,
+		kind: SpeakKind,
+		opts: { pendingKey: string; verification: SpeakVerification },
+	): Promise<SpeakReceipt>;
+	onUtterance(listener: (utterance: VoiceUtterance) => void): () => void;
+	injectContext(text: string): Promise<void> | void;
+	close(): Promise<void>;
+}

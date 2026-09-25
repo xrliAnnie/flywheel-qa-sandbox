@@ -26,6 +26,8 @@
  * lines (🎙 在听 / 🧠 正在处理… / 💬 回话中) plus both sides' transcript as
  * text, posted to the voice channel's text area by the wiring.
  */
+
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import type { SessionSlot } from "../SessionSlot.js";
 
 /** the streaming mouth — AssistantSpeaker satisfies this as-is. */
@@ -125,12 +127,14 @@ export interface ElevenSessionOptions {
 	 * releases it (mirror of the Gemini ownership handoff). */
 	slot: SessionSlot;
 	slotMode: string;
+	/** Persistent carrier lease projected into slot by ElevenCommand. */
+	lease?: ResidentVoiceLease;
 	ears: ElevenEars;
 	/** connects the platform WS with this session's handlers (real impl:
 	 * ElevenWs; injected offline in tests). */
 	connect(handlers: ElevenWsHandlers): Promise<ElevenWsLike>;
 	speaker: ElevenSpeakerLike;
-	voice: { join(): Promise<void>; leave(): void };
+	voice: { join(): Promise<void>; leave(): Promise<void> | void };
 	/** M2 追加要求②: the audible "thinking" cue between founder speech-end
 	 * and the first audio frame. Optional and off when absent. */
 	cue?: { start(): void; stop(): void };
@@ -214,6 +218,7 @@ export class ElevenSession {
 	/** set by abortClose() when it CONFIRMS the kickoff issue closed — the
 	 * start-failure reply must not claim a close that failed (Codex #552 M9). */
 	private issueClosedByAbort = false;
+	private stopLeaseRenewing?: () => void;
 
 	constructor(private readonly opts: ElevenSessionOptions) {}
 
@@ -230,6 +235,13 @@ export class ElevenSession {
 	async start(): Promise<void> {
 		const { opts } = this;
 		try {
+			if (opts.lease) {
+				await opts.lease.setState("warming");
+				this.stopLeaseRenewing = opts.lease.startRenewing((error) => {
+					opts.log?.(`[eleven-session] resident lease lost: ${error.message}`);
+					void this.stop("ws-error");
+				});
+			}
 			// FLY-1160 §4.2-3 (Codex #552 R1 HIGH-4): pre-heat the resident brain
 			// BEFORE the WS connects — key eleven:<sessionId> must exist or every
 			// shim turn 404s. A preheat FAILURE is a start-failure: the catch
@@ -244,7 +256,7 @@ export class ElevenSession {
 			if (this.isEnded()) return;
 			await opts.voice.join();
 			if (this.isEnded()) {
-				this.opts.voice.leave();
+				await this.opts.voice.leave();
 				return;
 			}
 			this.ws = await opts.connect({
@@ -292,7 +304,7 @@ export class ElevenSession {
 			if (this.isEnded()) {
 				this.ws?.close();
 				this.ws = null;
-				this.opts.voice.leave();
+				await this.opts.voice.leave();
 				return;
 			}
 			// FLY-1160 §4.2-4 (Codex #552 R2 HIGH-3): the no-show path is driven
@@ -319,6 +331,8 @@ export class ElevenSession {
 				}),
 				opts.ears.onBargeIn(() => this.onLocalBargeIn()),
 			);
+			await opts.lease?.setState("live");
+			if (this.isEnded()) return;
 			this.state = "live";
 			this.trail({ type: "session_live", sessionId: opts.sessionId });
 			this.setStatus(STATUS_LISTENING);
@@ -492,7 +506,7 @@ export class ElevenSession {
 		this.opts.speaker.flush();
 		this.ws?.close();
 		this.ws = null;
-		this.opts.voice.leave();
+		await this.opts.voice.leave();
 
 		// ④ interrupt the in-flight brain turn and AWAIT its barrier before the
 		// minutes turn (a real meeting only — start-failure never had a turn).
@@ -533,7 +547,25 @@ export class ElevenSession {
 			);
 		} finally {
 			// ⑦ slot release ALWAYS — the meeting is over regardless of landing
-			this.opts.slot.release(this.opts.slotMode, this.opts.sessionId);
+			this.stopLeaseRenewing?.();
+			this.stopLeaseRenewing = undefined;
+			if (this.opts.lease) {
+				this.opts.slot.releaseLease(
+					this.opts.lease.toSlotLease(this.opts.slotMode),
+				);
+				try {
+					await this.opts.lease.close(
+						reason === "manual" || reason === "shutdown" ? "ended" : "failed",
+						reason,
+					);
+				} catch (error) {
+					this.opts.log?.(
+						`[eleven-session] resident lease close failed: ${String((error as Error).message ?? error)}`,
+					);
+				}
+			} else {
+				this.opts.slot.release(this.opts.slotMode, this.opts.sessionId);
+			}
 			this.opts.onEnded?.();
 		}
 	}

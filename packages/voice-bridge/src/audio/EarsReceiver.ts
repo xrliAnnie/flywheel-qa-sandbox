@@ -66,6 +66,13 @@ export interface EarsReceiverOptions {
 	onError?: (err: Error, userId: string) => void;
 }
 
+export interface EarsSelfFilterProof {
+	outputBotDropped: boolean;
+	earsBotDropped: boolean;
+	unknownDropped: boolean;
+	allowedHumanPassed: boolean;
+}
+
 const DEFAULT_BACKCHANNEL_MS = 350;
 const DEFAULT_BARGE_IN_MIN_RMS = 0;
 const DEFAULT_BARGE_HOLDOFF_MS = 1000;
@@ -104,6 +111,22 @@ export class EarsReceiver {
 	attach(): void {
 		this.opts.speaking.on("start", (userId) => this.onStart(userId));
 		this.opts.speaking.on("end", (userId) => this.onEnd(userId));
+	}
+
+	/** Exercise the exact admission predicate used by speaking-start before a
+	 * resident lease is minted. Member-cache misses remain fail closed. */
+	selfFilterProof(input: {
+		outputBotUserId: string;
+		earsBotUserId: string;
+		allowedHumanUserId: string;
+		unknownUserId?: string;
+	}): EarsSelfFilterProof {
+		return {
+			outputBotDropped: !this.admitted(input.outputBotUserId),
+			earsBotDropped: !this.admitted(input.earsBotUserId),
+			unknownDropped: !this.admitted(input.unknownUserId ?? "0"),
+			allowedHumanPassed: this.admitted(input.allowedHumanUserId),
+		};
 	}
 
 	detach(): void {

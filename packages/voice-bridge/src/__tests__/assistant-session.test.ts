@@ -10,6 +10,7 @@
 import { TypedEmitter } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantSession } from "../assistant/AssistantSession.js";
+import type { ResidentVoiceLease } from "../resident-voice-session.js";
 import { SessionSlot } from "../SessionSlot.js";
 
 type ConvEvents = {
@@ -92,11 +93,37 @@ class FakeSpeaker {
 	}
 }
 
+function residentLease(sessionId = "sess-1"): ResidentVoiceLease {
+	return {
+		mode: "rg",
+		sessionId,
+		sessionGeneration: 7,
+		leaseToken: "lease-token",
+		leaseTtlMs: 30_000,
+		toSlotLease: (mode = "rg") => ({
+			mode,
+			sessionId,
+			sessionGeneration: 7,
+			leaseToken: "lease-token",
+		}),
+		assertActive: vi.fn(),
+		renew: vi.fn(async () => {}),
+		setState: vi.fn(async () => {}),
+		startRenewing: vi.fn(() => vi.fn()),
+		close: vi.fn(async () => {}),
+	};
+}
+
 function harness(over: Record<string, unknown> = {}) {
 	const conv = new FakeConversation();
 	const speaker = new FakeSpeaker();
 	const slot = new SessionSlot();
-	expect(slot.acquire("gemini", "sess-1").ok).toBe(true); // command layer did this
+	const lease = over.lease as ResidentVoiceLease | undefined;
+	expect(
+		lease
+			? slot.acquireLease(lease.toSlotLease("gemini")).ok
+			: slot.acquire("gemini", "sess-1").ok,
+	).toBe(true); // command layer did this
 	let founderJoined: (() => void) | undefined;
 	let founderLeft: (() => void) | undefined;
 	let earsDown: (() => void) | undefined;
@@ -249,6 +276,20 @@ describe("AssistantSession (FLY-967 P6b)", () => {
 		expect(h.voice.leave).toHaveBeenCalled();
 		expect(h.slot.acquire("meet", "x").ok).toBe(true); // released
 		expect(h.session.state).toBe("idle");
+	});
+
+	it("keeps the resident lease warm/live and closes its exact slot projection", async () => {
+		const lease = residentLease();
+		const h = harness({ lease });
+		await h.session.start();
+		await settle();
+		expect(lease.setState).toHaveBeenNthCalledWith(1, "warming");
+		expect(lease.setState).toHaveBeenNthCalledWith(2, "live");
+		expect(lease.startRenewing).toHaveBeenCalledTimes(1);
+
+		await h.session.stop();
+		expect(lease.close).toHaveBeenCalledWith("ended", undefined);
+		expect(h.slot.current()).toBeNull();
 	});
 
 	it("10-min founder no-show aborts: 未开成 comment + close, no landing", async () => {

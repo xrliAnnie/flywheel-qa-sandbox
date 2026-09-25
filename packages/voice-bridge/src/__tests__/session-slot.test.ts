@@ -56,4 +56,52 @@ describe("SessionSlot", () => {
 		slot.acquire("meet", "FLY-1001");
 		expect(slot.current()?.since).toBe("2026-07-07T10:00:00.000Z");
 	});
+
+	it("projects a persistent lease and fences a stale generation release", () => {
+		const slot = new SessionSlot();
+		expect(
+			slot.acquireLease({
+				mode: "gemini",
+				sessionId: "session-1",
+				sessionGeneration: 8,
+				leaseToken: "lease-8",
+			}).ok,
+		).toBe(true);
+		expect(slot.current()).toMatchObject({
+			mode: "gemini",
+			holder: "session-1",
+			sessionId: "session-1",
+			sessionGeneration: 8,
+		});
+		expect(
+			slot.releaseLease({
+				mode: "gemini",
+				sessionId: "session-1",
+				sessionGeneration: 7,
+				leaseToken: "lease-7",
+			}),
+		).toBe(false);
+		expect(slot.current()?.sessionGeneration).toBe(8);
+		expect(
+			slot.releaseLease({
+				mode: "gemini",
+				sessionId: "session-1",
+				sessionGeneration: 8,
+				leaseToken: "lease-8",
+			}),
+		).toBe(true);
+		expect(slot.current()).toBeNull();
+	});
+
+	it("does not let the legacy release surface clear a leased projection", () => {
+		const slot = new SessionSlot();
+		slot.acquireLease({
+			mode: "eleven",
+			sessionId: "session-2",
+			sessionGeneration: 3,
+			leaseToken: "lease-3",
+		});
+		expect(slot.release("eleven", "session-2")).toBe(false);
+		expect(slot.current()?.sessionGeneration).toBe(3);
+	});
 });

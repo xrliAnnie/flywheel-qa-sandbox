@@ -6,6 +6,10 @@
  * pluggable behind one dual-face (announce / converse) contract.
  */
 
+export {
+	FfmpegPcmDecoder,
+	type FfmpegPcmDecoderOptions,
+} from "./audio/FfmpegPcmDecoder.js";
 // audio
 export {
 	type AudioPlayer,
@@ -42,6 +46,24 @@ export type {
 	LiveConnectParams,
 	LiveServerEvent,
 } from "./backends/gemini/transport.js";
+export {
+	CompositeSpeech,
+	type CompositeSpeechOptions,
+} from "./backends/openai-live/CompositeSpeech.js";
+export {
+	GptLiveBackend,
+	type GptLiveBackendOptions,
+	type OpenAiLiveConnector,
+	type OpenAiLiveConversationSession,
+	type OpenAiLiveTranscriptDelta,
+} from "./backends/openai-live/GptLiveBackend.js";
+export {
+	type LiveDelegationSeal,
+	type LiveInputTranscriptDelta,
+	type LiveReplaySegment,
+	LiveUtteranceAssembler,
+	type LiveUtteranceAssemblerOptions,
+} from "./backends/openai-live/LiveUtteranceAssembler.js";
 // backends + registry
 export {
 	assertBackendConsistent,
@@ -78,6 +100,7 @@ export {
 	verifyAnnounceComponents,
 	verifyBrainComponents,
 	verifyConverseComponents,
+	verifyOpenAiLiveComponents,
 } from "./config.js";
 export { TypedEmitter } from "./emitter.js";
 export { mapProcessError } from "./errors.js";
@@ -86,11 +109,14 @@ export {
 	type AnnounceWiring,
 	buildEdgeTtsBackend,
 	buildGeminiBackend,
+	buildGptLiveBackend,
 	buildHeadlessBrain,
 	buildRegistry,
 	type ConverseWiring,
+	type OpenAiLiveWiring,
 	type RegistryWiring,
 } from "./factory.js";
+export * from "./handoff.js";
 // headphone mode (FLY-546) — pure logic layer
 export * from "./headphone/index.js";
 export {
@@ -112,6 +138,7 @@ export {
 	type ReceiveReason,
 	type ReceiveState,
 } from "./receive-health.js";
+export * from "./room-io.js";
 // secret red line (FLY-1065) — every transcript exit passes through this
 export { scrubTranscript } from "./scrub.js";
 export {
@@ -121,6 +148,7 @@ export {
 // shared layer
 export {
 	clearTranscriptWriteFailure,
+	durableTranscriptContentDigest,
 	getTranscriptWriteFailure,
 	JsonlTranscriptSink,
 	MemoryTranscriptSink,

@@ -20,7 +20,18 @@ function goodBody(over: Partial<OutboundSendBody> = {}): OutboundSendBody {
 	};
 }
 
-function make(opts: { send?: DiscordSendFn } = {}) {
+function make(
+	opts: {
+		send?: DiscordSendFn;
+		produceVoiceLeadResult?: (input: {
+			projectName: string;
+			sourceLeadId: string;
+			sourceDeliveryId: string;
+			operationId: string;
+			text: string;
+		}) => unknown;
+	} = {},
+) {
 	const store = new InMemoryOutboundDedupStore();
 	const sendCalls: Array<{
 		projectName: string;
@@ -40,10 +51,67 @@ function make(opts: { send?: DiscordSendFn } = {}) {
 		store,
 		send,
 		expectedApiToken: TOKEN,
+		produceVoiceLeadResult: opts.produceVoiceLeadResult,
 		logger: { warn: vi.fn() },
 	});
 	return { store, sendCalls, handler };
 }
+
+describe("CodexLeadOutboundHandler — voice result binding", () => {
+	it("commits the authenticated voice result before attempting the Discord mirror", async () => {
+		const order: string[] = [];
+		const produceVoiceLeadResult = vi.fn(() => order.push("result"));
+		const { handler } = make({
+			produceVoiceLeadResult,
+			send: vi.fn(async () => {
+				order.push("discord");
+				return "message-1";
+			}),
+		});
+		const delivery =
+			"chat:lead-a:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc";
+
+		await expect(
+			handler.handle({
+				body: goodBody(),
+				providedToken: TOKEN,
+				deliveryContext: delivery,
+			}),
+		).resolves.toMatchObject({ status: "sent" });
+		expect(produceVoiceLeadResult).toHaveBeenCalledWith({
+			projectName: "proj-a",
+			sourceLeadId: "lead-a",
+			sourceDeliveryId: delivery,
+			operationId: "e1:out",
+			text: "hello",
+		});
+		expect(order).toEqual(["result", "discord"]);
+	});
+
+	it("fails before Discord and leaves the durable send claim retryable when result commit fails", async () => {
+		const send = vi.fn(async () => "message-1");
+		const { handler, store } = make({
+			send,
+			produceVoiceLeadResult: () => {
+				throw new Error("comm unavailable");
+			},
+		});
+		const result = await handler.handle({
+			body: goodBody(),
+			providedToken: TOKEN,
+			deliveryContext:
+				"chat:lead-a:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc",
+		});
+
+		expect(result).toMatchObject({
+			httpStatus: 503,
+			status: "rejected",
+			reason: "voice_result_commit_failed",
+		});
+		expect(send).not.toHaveBeenCalled();
+		expect(store.get("e1:out")).toBeUndefined();
+	});
+});
 
 describe("CodexLeadOutboundHandler — auth (reserved endpoint, fail-closed)", () => {
 	it("requires expectedApiToken at construction", () => {

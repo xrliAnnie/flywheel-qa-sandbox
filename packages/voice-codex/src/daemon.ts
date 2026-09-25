@@ -153,6 +153,8 @@ export interface VoiceDaemonOptions {
 	bridge: VoiceDaemonBridge;
 	stateStore: VoiceSessionStore;
 	bootId: string;
+	/** Engine A receives Lead replies through its push subscription. */
+	legacyOutboundPolling?: boolean;
 	createSession(
 		context: VoiceSessionContext,
 	): ActiveVoiceSession | Promise<ActiveVoiceSession>;
@@ -162,6 +164,10 @@ export interface VoiceDaemonOptions {
 	): Promise<number>;
 	sleep(ms: number, signal?: AbortSignal): Promise<void>;
 	health?: VoiceHealthObserver;
+	recordSessionEvidence?(
+		context: VoiceSessionContext,
+		record: Record<string, unknown>,
+	): void;
 	now?: () => Date;
 	monotonicNow?: () => number;
 	timing: {
@@ -541,6 +547,7 @@ export class VoiceDaemon {
 			| {
 					reasonClass: VoiceHealthReasonClass;
 					operation: VoiceHealthOperation;
+					causeCode?: string;
 			  }
 			| undefined;
 		let liveAt: string | undefined;
@@ -627,7 +634,8 @@ export class VoiceDaemon {
 				await lifetime.wait(() => session.markLive());
 				liveAt = this.nowIso();
 				for (;;) {
-					await this.deliverOutbound(context, session, lifetime);
+					if (this.options.legacyOutboundPolling !== false)
+						await this.deliverOutbound(context, session, lifetime);
 					await lifetime.wait(
 						() =>
 							new Promise<void>((resolve) => {
@@ -653,6 +661,7 @@ export class VoiceDaemon {
 				failureClassification = {
 					reasonClass: "lease_lost",
 					operation: diagnostic?.operation ?? "renew",
+					...(diagnostic ? { causeCode: diagnostic.causeCode } : {}),
 				};
 			} else {
 				context.lease.fence();
@@ -662,6 +671,7 @@ export class VoiceDaemon {
 					failureClassification = {
 						reasonClass: diagnostic.reasonClass,
 						operation: diagnostic.operation,
+						causeCode: diagnostic.causeCode,
 					};
 				} else {
 					outcome = {
@@ -671,9 +681,10 @@ export class VoiceDaemon {
 				}
 			}
 			if (outcome.kind === "failed" && !failureClassification) {
+				const runtimeReason = outcome.reason;
 				outcome = {
 					kind: "failed",
-					reason: this.safeRuntimeReason(outcome.reason),
+					reason: this.safeRuntimeReason(runtimeReason),
 				};
 				if (outcome.reason !== "daemon_shutdown")
 					failureClassification = {
@@ -683,6 +694,7 @@ export class VoiceDaemon {
 								: "session_runtime_failed",
 						operation:
 							outcome.reason === "lease_lost" ? "renew" : "session_runtime",
+						causeCode: this.safeRuntimeCauseCode(runtimeReason),
 					};
 			}
 		} finally {
@@ -713,6 +725,7 @@ export class VoiceDaemon {
 				context,
 				failureClassification?.reasonClass ?? "session_runtime_failed",
 				failureClassification?.operation ?? "session_runtime",
+				failureClassification?.causeCode,
 			);
 		// An unattended meeting never went live, so `liveAt` is unset and no
 		// completed-call health event is emitted for it — correct: it is neither
@@ -811,10 +824,19 @@ export class VoiceDaemon {
 		return "session_runtime_failed";
 	}
 
+	private safeRuntimeCauseCode(reason: string): string {
+		if (reason === "discord_audio:Cannot perform IP discovery - socket closed")
+			return "discord_audio_ip_discovery_socket_closed";
+		if (reason.startsWith("discord_audio:")) return "discord_audio_failure";
+		if (reason === "codex_process_exit") return "codex_process_exit";
+		return "unknown_runtime_error";
+	}
+
 	private observeSessionFailure(
 		context: VoiceSessionContext,
 		reasonClass: VoiceHealthReasonClass,
 		operation: VoiceHealthOperation,
+		causeCode?: string,
 	): void {
 		this.observeHealth({
 			kind: "session_failed",
@@ -824,6 +846,19 @@ export class VoiceDaemon {
 			demandId: this.demandId(context),
 			attemptId: context.sessionId,
 		});
+		if (reasonClass !== "session_runtime_failed" || !causeCode) return;
+		try {
+			this.options.recordSessionEvidence?.(context, {
+				kind: "voice_session_runtime_failed",
+				reasonClass,
+				operation,
+				causeCode,
+			});
+		} catch {
+			console.error(
+				"[voice] session failure evidence unavailable reasonClass=session_runtime_failed operation=session_runtime",
+			);
+		}
 	}
 
 	private demandId(context: VoiceSessionContext): string {

@@ -5,6 +5,56 @@ import { describe, expect, it, vi } from "vitest";
 import { nudgeLeadInboxBestEffort } from "../lead-inbox-nudge.js";
 
 describe("FLY-1373 lead inbox doorbell", () => {
+	it("returns explicit outcomes when configuration or delivery fails", async () => {
+		const fetchImpl = vi.fn<typeof fetch>();
+		const warn = vi.fn();
+
+		await expect(
+			nudgeLeadInboxBestEffort({ leadId: "lead", fetchImpl, warn }),
+		).resolves.toEqual({
+			status: "skipped",
+			reason: "bridge_url_missing",
+		});
+		await expect(
+			nudgeLeadInboxBestEffort({
+				bridgeUrl: "not a URL",
+				leadId: "lead",
+				fetchImpl,
+				warn,
+			}),
+		).resolves.toEqual({
+			status: "failed",
+			reason: "bridge_url_invalid",
+		});
+		await expect(
+			nudgeLeadInboxBestEffort({
+				bridgeUrl: "http://bridge",
+				leadId: "lead",
+				fetchImpl: async () => new Response(null, { status: 503 }),
+				warn,
+			}),
+		).resolves.toEqual({
+			status: "failed",
+			reason: "http_error",
+			httpStatus: 503,
+		});
+		await expect(
+			nudgeLeadInboxBestEffort({
+				bridgeUrl: "http://bridge",
+				leadId: "lead",
+				fetchImpl: async () => {
+					throw new Error("connection refused");
+				},
+				warn,
+			}),
+		).resolves.toEqual({
+			status: "failed",
+			reason: "request_error",
+		});
+
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
 	it("FLY-1956: allows a one-second doorbell response but bounds a stalled request at 1500ms", async () => {
 		vi.useFakeTimers();
 		try {
@@ -90,7 +140,7 @@ describe("FLY-1373 lead inbox doorbell", () => {
 				},
 				warn,
 			}),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: "failed", reason: "request_error" });
 		expect(warn).toHaveBeenCalledWith(
 			"[flywheel-comm] lead inbox doorbell not delivered (connection refused); durable queue row retained — a healthy Lead loop retries on its next poll (nominally <=30 s)",
 		);

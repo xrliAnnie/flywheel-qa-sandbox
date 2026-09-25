@@ -1,0 +1,39 @@
+erDiagram
+ SESSION ||--o{ GENERATION : contains
+ GENERATION ||--o{ TRANSCRIPT : captures
+ GENERATION ||--o{ DELEGATION : receives
+ TRANSCRIPT ||--o{ HANDOFF : grounds
+ DELEGATION }o--|| HANDOFF : binds
+ HANDOFF ||--o{ RESULT : produces
+ RESULT ||--o{ SPEAK_RECEIPT : speaks
+ SESSION {
+  string sessionId
+  string roomLease
+ }
+ GENERATION {
+  string generationId
+  boolean cancelled
+ }
+ TRANSCRIPT {
+  string transcriptId
+  string speakerAttribution
+  string contentDigest
+ }
+ DELEGATION {
+  string delegationId
+ }
+ HANDOFF {
+  string handoffId
+  string idempotencyKey
+  string requestDigest
+ }
+ RESULT {
+  string resultId
+  int sequence
+ }
+ SPEAK_RECEIPT {
+  string pendingKey
+  string requestDigest
+  string outcome
+  string contentProof
+ }

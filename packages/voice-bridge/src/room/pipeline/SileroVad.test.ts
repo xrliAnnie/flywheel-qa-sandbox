@@ -19,7 +19,7 @@ import {
 } from "./SileroVad.js";
 
 const modelPath = fileURLToPath(
-	new URL("../../models/silero_vad.onnx", import.meta.url),
+	new URL("../../../models/silero_vad.onnx", import.meta.url),
 );
 
 afterAll(() => {

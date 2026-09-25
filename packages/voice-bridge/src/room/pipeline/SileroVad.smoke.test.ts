@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { createInitialSileroState, SileroVad } from "./SileroVad.js";
 
 const modelPath = fileURLToPath(
-	new URL("../../models/silero_vad.onnx", import.meta.url),
+	new URL("../../../models/silero_vad.onnx", import.meta.url),
 );
 const speechPath = fileURLToPath(
 	new URL("./fixtures/true-speech.wav", import.meta.url),

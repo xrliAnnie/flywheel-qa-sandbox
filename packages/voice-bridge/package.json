@@ -9,7 +9,8 @@
 		"flywheel-voice-bridge": "dist/cli.js"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"models"
 	],
 	"scripts": {
 		"build": "tsc",
@@ -25,6 +26,7 @@
 		"discord.js": "14.26.4",
 		"flywheel-edge-worker": "workspace:*",
 		"flywheel-voice-core": "workspace:*",
+		"onnxruntime-node": "1.29.0",
 		"opusscript": "0.0.8",
 		"prism-media": "1.3.5"
 	},

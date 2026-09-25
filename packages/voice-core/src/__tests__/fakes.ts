@@ -17,6 +17,9 @@ export class FakeProcessHandle implements ProcessHandle {
 	/** every kill() call in order (dispose sequencing assertions). */
 	kills: NodeJS.Signals[] = [];
 	written: string[] = [];
+	stdoutPaused = false;
+	stdoutPauseCount = 0;
+	stdoutResumeCount = 0;
 	ended = false;
 	stdinClosed = false;
 	/** backpressure knob: write() returns true this many times, then false
@@ -30,6 +33,12 @@ export class FakeProcessHandle implements ProcessHandle {
 		code: number | null,
 		sig: NodeJS.Signals | null,
 	) => void)[] = [];
+	private closeCbs: ((
+		code: number | null,
+		sig: NodeJS.Signals | null,
+	) => void)[] = [];
+	/** false = emitExit leaves stdio open until an explicit emitClose(). */
+	closeOnExit = true;
 	private drainCbs: (() => void)[] = [];
 	private errorCbs: ((err: Error) => void)[] = [];
 	private exitWaiters: ((
@@ -43,11 +52,22 @@ export class FakeProcessHandle implements ProcessHandle {
 	onStdout(cb: (chunk: Buffer) => void): void {
 		this.stdoutCbs.push(cb);
 	}
+	pauseStdout(): void {
+		this.stdoutPaused = true;
+		this.stdoutPauseCount++;
+	}
+	resumeStdout(): void {
+		this.stdoutPaused = false;
+		this.stdoutResumeCount++;
+	}
 	onStderr(cb: (chunk: Buffer) => void): void {
 		this.stderrCbs.push(cb);
 	}
 	onExit(cb: (code: number | null, sig: NodeJS.Signals | null) => void): void {
 		this.exitCbs.push(cb);
+	}
+	onClose(cb: (code: number | null, sig: NodeJS.Signals | null) => void): void {
+		this.closeCbs.push(cb);
 	}
 	write(data: Buffer | string): boolean {
 		this.written.push(String(data));
@@ -106,6 +126,10 @@ export class FakeProcessHandle implements ProcessHandle {
 		const waiters = [...this.exitWaiters];
 		this.exitWaiters = [];
 		for (const w of waiters) w(this.exitInfo);
+		if (this.closeOnExit) this.emitClose(code, sig);
+	}
+	emitClose(code: number | null = 0, sig: NodeJS.Signals | null = null): void {
+		for (const cb of [...this.closeCbs]) cb(code, sig);
 	}
 	emitDrain(unblockWrites = Number.POSITIVE_INFINITY): void {
 		this.writesBeforeBlock = unblockWrites;

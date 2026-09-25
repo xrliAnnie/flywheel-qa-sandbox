@@ -3,6 +3,11 @@
  * Everything here is I/O-free: the voice-headphone daemon composes these
  * with Discord gateway / Bridge / audio adapters.
  */
+
+export * from "./ExitProtocol.js";
+export * from "./FakeV1Session.js";
+export * from "./HeadphoneMode.js";
+export * from "./InboxReader.js";
 export {
 	APPROVE_INTENT,
 	CONFIRM,
@@ -21,6 +26,8 @@ export {
 	type QueueItem,
 	type QueueSnapshot,
 } from "./queue.js";
+export * from "./SpeechBrief.js";
+export * from "./speak-request.js";
 export {
 	shouldEnqueue,
 	type TapConfig,

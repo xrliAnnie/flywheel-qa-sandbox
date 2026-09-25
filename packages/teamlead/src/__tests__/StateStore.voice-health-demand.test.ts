@@ -107,16 +107,21 @@ describe("StateStore voice-health demand projection", () => {
 			.all() as Array<{ name: string; sql: string }>;
 		for (const trigger of triggers) {
 			db.exec(`DROP TRIGGER ${trigger.name}`);
+			// Reinstall the immediately previous daemon-demand contract: it had
+			// the same reason taxonomy but did not yet separate resident carriers.
 			db.exec(
-				trigger.sql.replace(
-					/\s+WHEN (?:NEW|OLD)\.reason IN \('no_human', 'daemon_shutdown'\) THEN NULL/,
-					"",
-				),
+				trigger.sql
+					.replace("WHEN OLD.carrier_kind = 'daemon' AND (", "WHEN")
+					.replace(/\s+WHEN (?:NEW|OLD)\.carrier_kind = 'daemon'/, "")
+					.replace(
+						/OLD\.ended_at IS NOT NEW\.ended_at\)\s+BEGIN/,
+						"OLD.ended_at IS NOT NEW.ended_at\n\t\tBEGIN",
+					),
 			);
 		}
 		db.prepare(
 			"UPDATE voice_health_demand_source SET trigger_digest = ? WHERE singleton = 1",
-		).run("bc7da93194749ebf189112778862d7f0515e839d3ae702ee1acfbacc4eaa8cf7");
+		).run("701ae014d7f58809a34a7dde5f6232c895cefb13121df2f1052a97774f7ec049");
 		db.close();
 
 		store = await StateStore.create(path);

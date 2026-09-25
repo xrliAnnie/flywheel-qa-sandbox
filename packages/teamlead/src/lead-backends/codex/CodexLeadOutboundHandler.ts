@@ -43,6 +43,7 @@ export interface OutboundSendBody {
 	idempotencyKey?: unknown;
 	nonce?: unknown;
 	replyTo?: unknown;
+	deliveryContext?: unknown;
 }
 
 export type OutboundSendStatus =
@@ -146,6 +147,13 @@ export interface CodexLeadOutboundHandlerOptions {
 		leadId: string,
 		channelId: string,
 	) => boolean | "unavailable" | Promise<boolean | "unavailable">;
+	produceVoiceLeadResult?: (input: {
+		projectName: string;
+		sourceLeadId: string;
+		sourceDeliveryId: string;
+		operationId: string;
+		text: string;
+	}) => unknown | Promise<unknown>;
 	logger?: { warn: (m: string, c?: unknown) => void };
 }
 
@@ -159,6 +167,7 @@ export class CodexLeadOutboundHandler {
 		leadId: string,
 		channelId: string,
 	) => boolean | "unavailable" | Promise<boolean | "unavailable">;
+	private readonly produceVoiceLeadResult?: CodexLeadOutboundHandlerOptions["produceVoiceLeadResult"];
 	private readonly logger: { warn: (m: string, c?: unknown) => void };
 
 	constructor(opts: CodexLeadOutboundHandlerOptions) {
@@ -172,6 +181,7 @@ export class CodexLeadOutboundHandler {
 		this.send = opts.send;
 		this.expectedApiToken = opts.expectedApiToken;
 		this.authorizeLeadChannel = opts.authorizeLeadChannel;
+		this.produceVoiceLeadResult = opts.produceVoiceLeadResult;
 		this.logger = opts.logger ?? { warn: () => {} };
 	}
 
@@ -180,7 +190,8 @@ export class CodexLeadOutboundHandler {
 		providedToken: string | undefined;
 		/** Supplied only by trusted in-process adapter; HTTP handlers do not read it from body. */
 		guard?: ChatThreadWriteGuard;
-		/** Trusted parent journal entry only. Never read from model input or the HTTP body. */
+		/** Trusted parent journal entry, or a canonical voice envelope promoted by
+		 * the authenticated HTTP adapter and revalidated by the result producer. */
 		deliveryContext?: string;
 	}): Promise<OutboundSendOutcome> {
 		// 1. Auth — reserved endpoint, fail-closed.
@@ -227,12 +238,13 @@ export class CodexLeadOutboundHandler {
 		if (req.body.roundtableEngage === true) return this.handleProactive(v);
 		if (v.probe) return { httpStatus: 200, status: "authorized" };
 		const { text, nonce, replyTo } = v.value;
+		const deliveryContext = req.deliveryContext;
 		if (
-			req.deliveryContext !== undefined &&
-			(typeof req.deliveryContext !== "string" ||
-				!req.deliveryContext ||
-				req.deliveryContext.length > 512 ||
-				[...req.deliveryContext].some(
+			deliveryContext !== undefined &&
+			(typeof deliveryContext !== "string" ||
+				!deliveryContext ||
+				deliveryContext.length > 512 ||
+				[...deliveryContext].some(
 					(character) =>
 						character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
 				))
@@ -245,14 +257,14 @@ export class CodexLeadOutboundHandler {
 		// Both send paths share the existing durable claim. Unknown claims remain
 		// ambiguous; only a confirmed sent record can suppress a second delivery.
 		const idempotencyKey =
-			req.deliveryContext === undefined
+			deliveryContext === undefined
 				? v.value.idempotencyKey
 				: `delivery-context:${createHash("sha256")
 						.update(
 							JSON.stringify([
 								projectName,
 								leadId,
-								req.deliveryContext,
+								deliveryContext,
 								channelId,
 								replyTo ?? null,
 								createHash("sha256").update(text).digest("hex"),
@@ -269,6 +281,35 @@ export class CodexLeadOutboundHandler {
 				status: "rejected",
 				reason: "outbound_scope_revoked",
 			};
+		}
+		const voicePrefix = `chat:${leadId}:voice-handoff:`;
+		if (deliveryContext?.startsWith(voicePrefix)) {
+			if (!this.produceVoiceLeadResult)
+				return {
+					httpStatus: 503,
+					status: "rejected",
+					reason: "voice_result_producer_unavailable",
+				};
+			try {
+				await this.produceVoiceLeadResult({
+					projectName,
+					sourceLeadId: leadId,
+					sourceDeliveryId: deliveryContext,
+					operationId: v.value.idempotencyKey,
+					text,
+				});
+			} catch (error) {
+				this.logger.warn("voice result commit failed before Discord mirror", {
+					projectName,
+					leadId,
+					error: (error as Error).message,
+				});
+				return {
+					httpStatus: 503,
+					status: "rejected",
+					reason: "voice_result_commit_failed",
+				};
+			}
 		}
 
 		// 4. Durable dedup — fast path on an existing record.
@@ -516,6 +557,12 @@ function validateBody(body: OutboundSendBody):
 		(typeof body.replyTo !== "string" || !/^\d{17,20}$/.test(body.replyTo))
 	)
 		return { ok: false, reason: "invalid_reply_target" };
+	if (
+		body.deliveryContext !== undefined &&
+		(typeof body.deliveryContext !== "string" ||
+			!/^[A-Za-z0-9_.:-]{1,512}$/u.test(body.deliveryContext))
+	)
+		return { ok: false, reason: "invalid_delivery_context" };
 	return {
 		ok: true,
 		probe: false,

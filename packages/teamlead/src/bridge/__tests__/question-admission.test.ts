@@ -220,6 +220,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(await consumer.tick()).toEqual({
 			ok: true,
 			protocolConsumed: 0,
+			transportReceipted: 0,
 			modelConsumed: 0,
 		});
 		expect(adapter.deliverBatch).not.toHaveBeenCalled();

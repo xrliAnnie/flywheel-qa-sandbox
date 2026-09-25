@@ -19,6 +19,21 @@ export interface LeadInboxNudgeArgs {
 	warn?: (message: string) => void;
 }
 
+export type LeadInboxNudgeResult =
+	| { status: "accepted"; httpStatus: number }
+	| { status: "skipped"; reason: "bridge_url_missing" }
+	| {
+			status: "failed";
+			reason: "bridge_url_invalid" | "http_error" | "request_error";
+			httpStatus?: number;
+	  };
+
+export function resolveLeadInboxBridgeUrl(
+	env: NodeJS.ProcessEnv,
+): string | undefined {
+	return env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL;
+}
+
 function readCurrentBridgeApiToken(path: string): string | undefined {
 	try {
 		const content = readFileSync(path, "utf8");
@@ -37,12 +52,25 @@ function readCurrentBridgeApiToken(path: string): string | undefined {
  */
 export async function nudgeLeadInboxBestEffort(
 	args: LeadInboxNudgeArgs,
-): Promise<void> {
+): Promise<LeadInboxNudgeResult> {
 	const bridgeUrl = args.bridgeUrl?.trim();
-	if (!bridgeUrl) return;
-	const timeoutMs = args.timeoutMs ?? 1500;
 	const warn =
 		args.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
+	if (!bridgeUrl) {
+		return { status: "skipped", reason: "bridge_url_missing" };
+	}
+	try {
+		const parsed = new URL(bridgeUrl);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+			throw new Error("unsupported protocol");
+		}
+	} catch {
+		warn(
+			"[flywheel-comm] lead inbox doorbell not delivered (invalid Bridge URL); durable queue row retained",
+		);
+		return { status: "failed", reason: "bridge_url_invalid" };
+	}
+	const timeoutMs = args.timeoutMs ?? 1500;
 	const fetchImpl = args.fetchImpl ?? fetch;
 	const masterToken = normalizeOptionalBearer(args.apiToken);
 	const ingestToken = normalizeOptionalBearer(args.ingestToken);
@@ -93,10 +121,17 @@ export async function nudgeLeadInboxBestEffort(
 			warn(
 				`[flywheel-comm] lead inbox doorbell returned ${response.status}; durable queue row retained — a healthy Lead loop retries on its next poll (nominally <=30 s)`,
 			);
+			return {
+				status: "failed",
+				reason: "http_error",
+				httpStatus: response.status,
+			};
 		}
+		return { status: "accepted", httpStatus: response.status };
 	} catch (error) {
 		warn(
 			`[flywheel-comm] lead inbox doorbell not delivered (${(error as Error).message}); durable queue row retained — a healthy Lead loop retries on its next poll (nominally <=30 s)`,
 		);
+		return { status: "failed", reason: "request_error" };
 	}
 }

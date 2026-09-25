@@ -1,8 +1,11 @@
-import type { ReceiveHealth } from "flywheel-voice-core";
+import type {
+	ReceiveHealth,
+	RoomAudioOwner,
+	RoomIO,
+} from "flywheel-voice-core";
 import type { VoiceSessionProjection } from "./bridge-client.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
-import type { RealtimeAudioOwner } from "./realtime.js";
 import type { PreparedSpeech } from "./speech.js";
 
 export interface FrontendHandlers {
@@ -24,7 +27,7 @@ export interface FrontendHandlers {
 }
 
 export interface RoomHandlers {
-	onAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
+	onAudio(frame: Buffer, metadata: RoomAudioOwner): void;
 	onFounderPresence(present: boolean): void;
 	onReceiveHealth(snapshot: ReceiveHealth): void;
 	onError(error: Error): void;
@@ -33,13 +36,14 @@ export interface RoomHandlers {
 
 interface FrontendLike {
 	start(signal?: AbortSignal): Promise<void>;
-	appendAudio(frame: Buffer, metadata: RealtimeAudioOwner): void;
+	appendAudio(frame: Buffer, metadata: RoomAudioOwner): void;
 	appendSpeech(speech: PreparedSpeech): Promise<void>;
 	cancelSpeech(speechId: string): void;
 	stop(): Promise<void>;
 }
 
 interface RoomLike {
+	readonly roomIO?: RoomIO;
 	start(signal?: AbortSignal): Promise<{ founderPresent: boolean }>;
 	playSpeech(speechId: string, pcm24Mono: Buffer): Promise<void>;
 	cancelSpeech?(speechId: string): void;
@@ -54,6 +58,13 @@ export interface GenericVoiceSessionOptions {
 	delivery: { capture(input: CapturedTranscript): Promise<boolean> | boolean };
 	createFrontend(handlers: FrontendHandlers): FrontendLike;
 	createRoom(handlers: RoomHandlers): RoomLike;
+	/** V2 mode injection seam. A/B adapters supply the complete V1 engine to
+	 * flywheel-voice-headphone; this carrier only exposes the canonical room.
+	 * `control.fail` ends the session when the engine is lost for good. */
+	createHeadphoneSession?(
+		room: RoomIO,
+		control: HeadphoneControl,
+	): HeadphoneCarrier;
 	lifecycle(
 		state: "ready" | "live" | "interrupted" | "ended",
 		reason?: string,
@@ -86,6 +97,16 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 
 type SpeechReceipt = "confirmed" | "unconfirmed" | "failed";
 
+interface HeadphoneCarrier {
+	start(): Promise<void>;
+	close(): Promise<void>;
+	speak?(text: string, pendingKey: string): Promise<SpeechReceipt>;
+}
+
+export interface HeadphoneControl {
+	fail(reason: string): void;
+}
+
 export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly frontend: FrontendLike;
 	private readonly room: RoomLike;
@@ -108,6 +129,8 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private presenceObserved = false;
 	private presenceWaiters: Array<(present: boolean) => void> = [];
 	private latestReceiveHealth?: ReceiveHealth;
+	private headphone?: HeadphoneCarrier;
+	private headphoneStart?: Promise<boolean>;
 	private pendingSpeech?: {
 		speech: PreparedSpeech;
 		resolve(status: SpeechReceipt): void;
@@ -151,6 +174,20 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.options.assertLease?.();
 		const result = await this.startBranches();
 		this.options.assertLease?.();
+		if (this.options.createHeadphoneSession) {
+			try {
+				if (!this.room.roomIO) throw new Error("headphone_room_io_required");
+				// Built now, started in markLive(): its entry briefing speaks and
+				// ACKs inbox items, which must not happen to an empty room.
+				this.headphone = this.options.createHeadphoneSession(this.room.roomIO, {
+					fail: (reason) => this.finish({ kind: "failed", reason }),
+				});
+			} catch (error) {
+				await this.room.stop().catch(() => undefined);
+				await this.frontend.stop().catch(() => undefined);
+				throw error;
+			}
+		}
 		this.admitted = true;
 		// Only apply the room's reading if nothing newer arrived while the other
 		// start branch was still running.
@@ -330,6 +367,25 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		}
 		this.live = true;
 		await this.options.lifecycle("live");
+		this.startHeadphone();
+	}
+
+	private startHeadphone(): void {
+		const headphone = this.headphone;
+		if (!headphone || this.headphoneStart || this.stopping) return;
+		this.headphoneStart = headphone.start().then(
+			() => true,
+			(error: unknown) => {
+				if (this.stopping) return false;
+				this.options.evidence({
+					ts: this.now().toISOString(),
+					kind: "headphone_start_failed",
+					reason: error instanceof Error ? error.message : String(error),
+				});
+				this.finish({ kind: "failed", reason: "headphone_start_failed" });
+				return false;
+			},
+		);
 	}
 
 	waitForEnd(): Promise<VoiceEnd> {
@@ -350,6 +406,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (this.pendingSpeech || this.stopping || !this.admitted || !this.live)
 			return "failed";
 		this.room.setWaiting?.(false);
+		if (this.headphone?.speak) {
+			if (!(await this.headphoneStart) || this.stopping) return "failed";
+			return this.headphone.speak(speech.spokenText, speech.speechId);
+		}
 		return new Promise<SpeechReceipt>((resolve) => {
 			this.pendingSpeech = { speech, resolve };
 			void this.frontend.appendSpeech(speech).catch(() => {
@@ -380,6 +440,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				);
 			}
 		} finally {
+			await this.headphone?.close().catch(() => undefined);
 			await this.room.stop().catch(() => undefined);
 			await this.frontend.stop().catch(() => undefined);
 			this.options.cleanup?.();

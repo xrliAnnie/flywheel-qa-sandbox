@@ -13,7 +13,8 @@ import type { HuddleBridgeConfig } from "../config.js";
 
 function fakeDeps(): DiscordDeps {
 	return {
-		createClient: () => ({
+		createClient: (token: string) => ({
+			user: { id: `bot-${token}` },
 			login: async () => "ok",
 			isReady: () => true,
 			once: () => {},

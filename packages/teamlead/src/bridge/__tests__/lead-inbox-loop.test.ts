@@ -222,7 +222,11 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			},
 		);
 
-		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 3 });
+		expect(await consumer.tick()).toMatchObject({
+			ok: true,
+			transportReceipted: 3,
+			modelConsumed: 0,
+		});
 		expect(delivered.batchId).toBe("batch-1#r0");
 		expect(delivered.members.map(({ deliveryId }) => deliveryId)).toEqual([
 			"A#r0",
@@ -268,7 +272,11 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			},
 		);
 
-		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 2 });
+		expect(await consumer.tick()).toMatchObject({
+			ok: true,
+			transportReceipted: 2,
+			modelConsumed: 0,
+		});
 		const inbox = JSON.parse(await readFile(inboxPath, "utf8")) as Array<{
 			text: string;
 		}>;
@@ -303,7 +311,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 				queueConfig,
 				batchIdFactory: () => "batch-before-rebirth",
 			}).tick(),
-		).toMatchObject({ ok: true, modelConsumed: 2 });
+		).toMatchObject({ ok: true, transportReceipted: 2, modelConsumed: 0 });
 		const oldInbox = JSON.parse(await readFile(inboxPath, "utf8")) as Array<{
 			text: string;
 			read: boolean;
@@ -332,7 +340,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 				queueConfig,
 				batchIdFactory: () => "batch-after-rebirth",
 			}).tick(),
-		).toMatchObject({ ok: true, modelConsumed: 2 });
+		).toMatchObject({ ok: true, transportReceipted: 2, modelConsumed: 0 });
 
 		const rebornInbox = JSON.parse(await readFile(inboxPath, "utf8")) as Array<{
 			text: string;
@@ -350,6 +358,79 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			lease_retry_count: 1,
 		});
 	});
+
+	it("coalesces repeated doorbells during a busy tick and compensates immediately", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "doorbell-busy");
+		let delivered!: LeadDeliveryBatch;
+		let release!: (value: DurableAcceptReceipt) => void;
+		const blocked = new Promise<DurableAcceptReceipt>((resolve) => {
+			release = resolve;
+		});
+		const adapter = {
+			deliverBatch: vi.fn(async (batch: LeadDeliveryBatch) => {
+				delivered = batch;
+				return blocked;
+			}),
+		};
+		const reconcile = vi.spyOn(queue, "reconcileExpiredLeases");
+		const consumer = loop(queue, adapter);
+		try {
+			consumer.start();
+			await vi.waitFor(() =>
+				expect(adapter.deliverBatch).toHaveBeenCalledOnce(),
+			);
+			consumer.nudge();
+			consumer.nudge();
+			release(receipt(delivered));
+			await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(2));
+			expect(adapter.deliverBatch).toHaveBeenCalledOnce();
+		} finally {
+			consumer.stop();
+		}
+	});
+
+	it("scans durable pending work on restart without waiting for another doorbell", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "pending-before-restart");
+		const adapter = {
+			deliverBatch: vi.fn(async (batch: LeadDeliveryBatch) => receipt(batch)),
+		};
+		const restarted = loop(queue, adapter, {
+			batchIdFactory: () => "batch-after-restart",
+		});
+		try {
+			restarted.start();
+			await vi.waitFor(() =>
+				expect(adapter.deliverBatch).toHaveBeenCalledOnce(),
+			);
+			expect(adapter.deliverBatch.mock.calls[0]?.[0]).toMatchObject({
+				batchId: "batch-after-restart#r0",
+				members: [
+					expect.objectContaining({
+						deliveryId: "pending-before-restart#r0",
+					}),
+				],
+			});
+		} finally {
+			restarted.stop();
+		}
+	});
+
+	it("does not report an adapter transport receipt as model consumption", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "transport-only");
+		const adapter = {
+			deliverBatch: vi.fn(async (batch: LeadDeliveryBatch) => receipt(batch)),
+		};
+
+		await expect(loop(queue, adapter).tick()).resolves.toMatchObject({
+			ok: true,
+			transportReceipted: 1,
+			modelConsumed: 0,
+		});
+	});
+
 	it("records heartbeat and delivery only after adapter receipt plus audit", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "A");
@@ -372,7 +453,11 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		await vi.waitFor(() => expect(batch.batchId).toBe("batch-1#r0"));
 		expect(queue.getById("A")?.state).toBe("LEASED");
 		release(receipt(batch));
-		expect(await ticking).toMatchObject({ ok: true, modelConsumed: 1 });
+		expect(await ticking).toMatchObject({
+			ok: true,
+			transportReceipted: 1,
+			modelConsumed: 0,
+		});
 		expect(audit).toHaveBeenCalledTimes(1);
 		expect(queue.getById("A")).toMatchObject({
 			state: "LEASED",
@@ -448,7 +533,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		);
 		expect(
 			await loop(queue, adapter, { revalidateModel }).tick(),
-		).toMatchObject({ ok: true, modelConsumed: 2 });
+		).toMatchObject({ ok: true, transportReceipted: 2, modelConsumed: 0 });
 		expect(revalidateModel).toHaveBeenCalledTimes(1);
 		expect(revalidateModel).toHaveBeenCalledWith(
 			expect.objectContaining({ id: "B" }),
@@ -490,7 +575,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 				revalidateModel,
 				batchIdFactory: () => "batch-after-crash",
 			}).tick(),
-		).toMatchObject({ ok: true, modelConsumed: 2 });
+		).toMatchObject({ ok: true, transportReceipted: 2, modelConsumed: 0 });
 		expect(revalidateModel).not.toHaveBeenCalled();
 		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
 			expect.objectContaining({ deliveryId: "A#r0" }),
@@ -543,7 +628,11 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			source_ref: null,
 			delivery_content: null,
 		});
-		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+		expect(await consumer.tick()).toMatchObject({
+			ok: true,
+			transportReceipted: 1,
+			modelConsumed: 0,
+		});
 		expect(revalidateModel).toHaveBeenCalledTimes(2);
 		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
 			expect.objectContaining({
@@ -603,6 +692,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(await consumer.tick()).toEqual({
 			ok: true,
 			protocolConsumed: 0,
+			transportReceipted: 0,
 			modelConsumed: 0,
 		});
 		expect(queue.getById("review-question")).toMatchObject({
@@ -644,7 +734,8 @@ describe("LeadInboxLoop mailbox consumption", () => {
 
 		expect(await consumer.tick()).toMatchObject({
 			ok: true,
-			modelConsumed: 1,
+			transportReceipted: 1,
+			modelConsumed: 0,
 		});
 		expect(queue.getById("review-question")).toMatchObject({
 			state: "QUEUED",
@@ -674,7 +765,12 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
 		expect(
 			await loop(queue, adapter, { handleProtocol: protocol }).tick(),
-		).toMatchObject({ ok: true, protocolConsumed: 1, modelConsumed: 1 });
+		).toMatchObject({
+			ok: true,
+			protocolConsumed: 1,
+			transportReceipted: 1,
+			modelConsumed: 0,
+		});
 		expect(queue.getById("protocol-1")?.state).toBe("ACKED");
 		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
 			expect.objectContaining({ deliveryId: "model-1#r0" }),
@@ -725,7 +821,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 				},
 				{ queueConfig: () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG }) },
 			).tick(),
-		).toMatchObject({ ok: true, modelConsumed: 2 });
+		).toMatchObject({ ok: true, transportReceipted: 2, modelConsumed: 0 });
 		expect(delivered[0]).toMatchObject({
 			kind: "discord_chat",
 			replyChannelId: "423456789012345678",
@@ -758,7 +854,8 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			await loop(queue, adapter, { batchIdFactory: () => "batch-2" }).tick(),
 		).toMatchObject({
 			ok: true,
-			modelConsumed: 1,
+			transportReceipted: 1,
+			modelConsumed: 0,
 		});
 	});
 

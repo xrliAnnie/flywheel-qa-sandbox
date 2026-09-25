@@ -234,6 +234,19 @@ describe("ProjectEntry.huddle", () => {
 		);
 	});
 
+	it("accepts a validated ears bot user id without requiring it for old huddles", () => {
+		expect(() =>
+			parseAndValidateProjects([entry({ huddle: validHuddle })]),
+		).not.toThrow();
+		const huddle = {
+			...validHuddle,
+			earsBotUserId: "123456789012345679",
+		};
+		expect(parseAndValidateProjects([entry({ huddle })])[0]!.huddle).toEqual(
+			huddle,
+		);
+	});
+
 	it("rejects a malformed orchestrator bot user id", () => {
 		for (const orchestratorBotUserId of ["", "bot-1", 123]) {
 			expect(() =>
@@ -241,6 +254,16 @@ describe("ProjectEntry.huddle", () => {
 					entry({ huddle: { ...validHuddle, orchestratorBotUserId } }),
 				]),
 			).toThrow(/orchestratorBotUserId/);
+		}
+	});
+
+	it("rejects a malformed ears bot user id", () => {
+		for (const earsBotUserId of ["", "bot-1", 123]) {
+			expect(() =>
+				parseAndValidateProjects([
+					entry({ huddle: { ...validHuddle, earsBotUserId } }),
+				]),
+			).toThrow(/earsBotUserId/);
 		}
 	});
 

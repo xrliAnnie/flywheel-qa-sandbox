@@ -1,0 +1,138 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "4d8297f7-3f79-4590-8d9a-6f4999f82db9",
+  "round": 2,
+  "findings": [
+    {
+      "id": "cross-unit-file-ownership-collision-with-2796",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 75,
+      "title": "§2.1 已按 c7189944e 对齐九项方法名，但 §3 落点表与 §9 T2 证据路径未按同一份 2796 草案的所有权/迁移切线校对",
+      "detail": "本轮新引入的 pin 基线 `c7189944e:engineering/doc/FLY-2796-headphone-mode/plan.md` §2「所有权与文件切线」把 voice-codex 的音频/房间闭包整体搬走：`voice-codex/src/{discord-room,audio}.ts` 降级为转导出 shim，`audio/{AudioClock,FrameQueue,JitterBuffer,Resample,Silence}.ts`、`pipeline/{Uplink,UplinkSpeechGate,SileroVad}.ts`、`receive-health.ts`、`speaker-attribution.ts` 全部迁入 `voice-bridge/src/room/`；同表还把 `voice-codex/src/{cli,session}.ts` 划给 2796「模式 I/O」、把 `flywheel-comm/src/{chat-delivery-envelope,discord-chat-ingest}.ts` 划给 2796，而 §7.1⑤ 又要求 2796「同时修改 delivery/journal 的新 capture 字段以保存完整原话」。本单 §3 同时认领 `voice-codex/src/{config,cli,session,daemon,bridge-client}.ts`（:75）与 `voice-codex/src/{delivery,adapters}.ts`（:80），§9 T2（:183）还把「voice-codex audio/session/discord-room 相关套件」写成证据路径——2796 落地后这些套件所在文件已是 shim。§2 只有一句「两单共享冲突通过正常合并解决」，§2 表第 4 行的同源导出规则只覆盖 `voice-core/types.ts` 的 V1 类型，没覆盖上述四处。既然本轮已经把 2796 草案拿在手里逐条 pin 方法名，建议一并把这几处写成明确分工（谁改 `VoiceDelivery.capture` 的 canonical 字段、cli/session 由谁改哪一半、T2 证据路径按迁移后位置写），否则两个在飞分支会在同一 hunk 互撞。",
+      "findingKey": "cross-unit-file-ownership-collision-with-2796"
+    },
+    {
+      "id": "result-event-unique-key-field-missing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 60,
+      "title": "pin 下来的 `voice_handoff_results` 合同里，唯一键引用了字段清单中不存在的 `resultEventId`，而本单的崩溃恢复去重正建在它上面",
+      "detail": "§2.1（:60）逐字抄录上游合同：字段 `{seq,handoffId,requestDigest,sourceLeadId,sourceDeliveryId,resultKind,text,createdAt}`，唯一键 `(handoffId,resultEventId)` —— `resultEventId` 不在该字段清单里。核对 `c7189944e:engineering/doc/FLY-2796-headphone-mode/plan.md §7.1⑦`，上游原文同样如此，所以抄录本身忠实、问题在上游合同。但本单是消费方且已经把它当实现依据：§8.1（:164）写「canonical resultEventId 对应一次正文」「崩溃后…以 (handoffId,resultEventId) 唯一插入」。若该字段最终不存在，崩溃恢复只能退回按 `seq` 去重，而 `seq` 的作用域（每 handoff 还是全局流）在两份文档里都没定义 —— 直接后果是同一条 Lead 结果被重复插入 voice_outbound、重复朗读，正是 §8.1 要防的「不能生成多次朗读」。§2 的「2796 定稿后核对…差异退回 Lead 对齐」能在 T0 兜住，但这条现在就可以提回 2796，不必等到 T0：请在 §2.1 标注「字段清单与唯一键不自洽，已退回 2796」，并写明 `seq` 的作用域。",
+      "findingKey": "result-event-unique-key-field-missing"
+    },
+    {
+      "id": "close-rejection-unhandled-in-rotator",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 98,
+      "title": "R1 close 语义的修法引入新的 unhandledRejection 路径：共享 rotator 的 close() 不 catch",
+      "detail": "§4 close 行（:98）新增「超时也清理资源但发 typed close_incomplete error 并写 audit，**reject close Promise**」。同一行上方的 sendText 行明确要求「无 unhandledRejection」，但 close 这条没做同样的检查。实际链路：`V1ConversationSession extends ConversationSession` ⇒ 任何持有 `ConversationSession` 的既有代码都可能拿到 A 会话。`voice-core/src/TalkSessionRotator.ts:76-80` 的 `close()` 是 `return s?.close();`，没有 catch；它的调用方 `voice-core/src/cli.ts:191` 是 `void rotator.close().finally(() => finish());` —— `void` + `.finally()` 不吞 rejection，Node 默认会把 unhandledRejection 升级为进程退出。（`rotate()` 内部的 `await old.close()` 有 try/catch，`AssistantSession.ts:491,579`、`wireMeeting.ts:502,536,550` 也都包了，所以目前只有这一条裸路径。）本单范围内 A 由 voice-codex daemon 直接持有、不经 rotator，所以现在不可达；但 §2 明说 V1 接口「提供给 V2/V3/B 使用」，V3 正是走 rotator。请在 §4 补一句：要么 close 超时不 reject（只发 typed error + audit，仍 resolve undefined），要么明确把 rotator/cli 的兜底 catch 列为本单必改点并进 typecheck/测试范围。",
+      "findingKey": "close-rejection-unhandled-in-rotator"
+    },
+    {
+      "id": "followup-question-has-no-frontend-context",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 149,
+      "title": "§6.5.5 的结构边界使前台对「刚才那个再说一遍」这类指代性追问失去全部上下文，续问路径只写了服务端一半",
+      "detail": "§6.5.5（:149）为消除双声道复述，规定新连接的任务状态「仅含 opaque handoffId 与 delivered/spoken/pending 标志；不得含已完成问题文本或结果片段」，§6.3、§7 也同步改成排除已播报 Lead 内容与已完成原问题。这条把复述风险结构性消掉了（正确的修法），但同时意味着重建后的 Live 对founder刚问过什么、Lead 刚答了什么一无所知。§6.5.5 给的续问路径是「前台把新问题交给只读 Lead query，服务端从业务记录定位既有结果」——只写了服务端那一半：前台在零上下文下如何判断「刚才那个」值得委托、如何构造一个服务端可解析的 query、以及这个 query 如何与既有 handoffId 绑定（§5.2 又明确禁止「latest utterance 猜测」），都没有规定。安全侧是好的（§6.5.5「不重新执行原 action」），所以不阻断；但 §1 给 founder 看的那段仍写着「简单问题由前台直接答」，没有披露「凡是提到上一轮 Lead 结果的问题都会再走一次 Lead」。请补前台侧的指代消解/绑定规则，并在 §1 或 §10 如实披露这条体验后果。",
+      "findingKey": "followup-question-has-no-frontend-context"
+    },
+    {
+      "id": "two-cursor-spaces-not-disambiguated",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 166,
+      "title": "§8.1 现在同时存在两个 seq/cursor 空间，但用同一组措辞描述",
+      "detail": "本轮把结果来源换成 2796 的 `voice_handoff_results`（:162「本单按其 seq 读取事件，投影到既有 voice_outbound」），而 daemon 侧订阅的 `GET /api/voice/sessions/:id/events` 用的是 voice_outbound 的 seq/cursor（:166「按持久 cursor 补读…绝不跳过 seq」）。两处都只说「seq」「cursor」，中间还夹着 :164 的 `(handoffId,resultEventId)` 插入键。三个标识空间用同一组词，实现时很容易把 handoff-results 游标当成 outbound 游标续读，症状是静默跳段或重播。建议在 §8.1 给每个游标起明确名字（例如 `handoffResultSeq` / `voiceOutboundSeq`）并写明各自的持久化位置与作用域。",
+      "findingKey": "two-cursor-spaces-not-disambiguated"
+    },
+    {
+      "id": "no-simple-question-latency-test-right-after-delegation",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 209,
+      "title": "§10.1 的邻接体验测试覆盖了插话/announcer 之后，漏了「delegation 刚封存、连接重建中」这个必然状态",
+      "detail": "§10.1（:209）新增「插话/announcer 后紧接简单问题也列入体验测试，不能只测长期空闲态」，方向对。但 §6.5.1 规定「收到 delegation 时…等当前发言窗口关闭后关旧连接」——也就是说每一次复杂请求都必然把连接封存重建，而这发生在 Lead 还没回答、announcer 还没开口之前。founder 说完「帮我查一下 X」紧跟着问一句简单话，正好落在重建窗口里（§6.3 的 30s 输入缓冲）。这是本设计里最高频的邻接场景，却不在测试矩阵。建议把「delegation 触发后、Lead 结果到达前的简单问题」单列一行，并给它单独的时延判据或明确的降级话术。",
+      "findingKey": "no-simple-question-latency-test-right-after-delegation"
+    },
+    {
+      "id": "validation-doc-titled-as-research",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/validation.md",
+      "line": 1,
+      "title": "validation.md 的标题与 frontmatter 是从 research.md 复制的，标成了「调研」",
+      "detail": "新增的 `validation.md` 第 1 行是 `# FLY-2798 前台快答与后台 Lead — 调研`、第 4 行 `基于: plan.md`，与同目录 `research.md` 的标题完全重名，但内容是交付前检查与 R1 处置记录（含 mmdc 本地渲染失败的如实记录，这部分写得很好）。按 CLAUDE.md 的文档生命周期约定，Research 与其他产物的归档规则不同，标题重名会让后续归档/索引把它当成第二份 research。改成「交付验证」之类的标题即可，内容不用动。",
+      "findingKey": "validation-doc-titled-as-research"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "cross-unit-file-ownership-collision-with-2796",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 75,
+      "title": "§2.1 已按 c7189944e 对齐九项方法名，但 §3 落点表与 §9 T2 证据路径未按同一份 2796 草案的所有权/迁移切线校对",
+      "detail": "本轮新引入的 pin 基线 `c7189944e:engineering/doc/FLY-2796-headphone-mode/plan.md` §2「所有权与文件切线」把 voice-codex 的音频/房间闭包整体搬走：`voice-codex/src/{discord-room,audio}.ts` 降级为转导出 shim，`audio/{AudioClock,FrameQueue,JitterBuffer,Resample,Silence}.ts`、`pipeline/{Uplink,UplinkSpeechGate,SileroVad}.ts`、`receive-health.ts`、`speaker-attribution.ts` 全部迁入 `voice-bridge/src/room/`；同表还把 `voice-codex/src/{cli,session}.ts` 划给 2796「模式 I/O」、把 `flywheel-comm/src/{chat-delivery-envelope,discord-chat-ingest}.ts` 划给 2796，而 §7.1⑤ 又要求 2796「同时修改 delivery/journal 的新 capture 字段以保存完整原话」。本单 §3 同时认领 `voice-codex/src/{config,cli,session,daemon,bridge-client}.ts`（:75）与 `voice-codex/src/{delivery,adapters}.ts`（:80），§9 T2（:183）还把「voice-codex audio/session/discord-room 相关套件」写成证据路径——2796 落地后这些套件所在文件已是 shim。§2 只有一句「两单共享冲突通过正常合并解决」，§2 表第 4 行的同源导出规则只覆盖 `voice-core/types.ts` 的 V1 类型，没覆盖上述四处。既然本轮已经把 2796 草案拿在手里逐条 pin 方法名，建议一并把这几处写成明确分工（谁改 `VoiceDelivery.capture` 的 canonical 字段、cli/session 由谁改哪一半、T2 证据路径按迁移后位置写），否则两个在飞分支会在同一 hunk 互撞。",
+      "findingKey": "cross-unit-file-ownership-collision-with-2796"
+    },
+    {
+      "id": "result-event-unique-key-field-missing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 60,
+      "title": "pin 下来的 `voice_handoff_results` 合同里，唯一键引用了字段清单中不存在的 `resultEventId`，而本单的崩溃恢复去重正建在它上面",
+      "detail": "§2.1（:60）逐字抄录上游合同：字段 `{seq,handoffId,requestDigest,sourceLeadId,sourceDeliveryId,resultKind,text,createdAt}`，唯一键 `(handoffId,resultEventId)` —— `resultEventId` 不在该字段清单里。核对 `c7189944e:engineering/doc/FLY-2796-headphone-mode/plan.md §7.1⑦`，上游原文同样如此，所以抄录本身忠实、问题在上游合同。但本单是消费方且已经把它当实现依据：§8.1（:164）写「canonical resultEventId 对应一次正文」「崩溃后…以 (handoffId,resultEventId) 唯一插入」。若该字段最终不存在，崩溃恢复只能退回按 `seq` 去重，而 `seq` 的作用域（每 handoff 还是全局流）在两份文档里都没定义 —— 直接后果是同一条 Lead 结果被重复插入 voice_outbound、重复朗读，正是 §8.1 要防的「不能生成多次朗读」。§2 的「2796 定稿后核对…差异退回 Lead 对齐」能在 T0 兜住，但这条现在就可以提回 2796，不必等到 T0：请在 §2.1 标注「字段清单与唯一键不自洽，已退回 2796」，并写明 `seq` 的作用域。",
+      "findingKey": "result-event-unique-key-field-missing"
+    },
+    {
+      "id": "close-rejection-unhandled-in-rotator",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 98,
+      "title": "R1 close 语义的修法引入新的 unhandledRejection 路径：共享 rotator 的 close() 不 catch",
+      "detail": "§4 close 行（:98）新增「超时也清理资源但发 typed close_incomplete error 并写 audit，**reject close Promise**」。同一行上方的 sendText 行明确要求「无 unhandledRejection」，但 close 这条没做同样的检查。实际链路：`V1ConversationSession extends ConversationSession` ⇒ 任何持有 `ConversationSession` 的既有代码都可能拿到 A 会话。`voice-core/src/TalkSessionRotator.ts:76-80` 的 `close()` 是 `return s?.close();`，没有 catch；它的调用方 `voice-core/src/cli.ts:191` 是 `void rotator.close().finally(() => finish());` —— `void` + `.finally()` 不吞 rejection，Node 默认会把 unhandledRejection 升级为进程退出。（`rotate()` 内部的 `await old.close()` 有 try/catch，`AssistantSession.ts:491,579`、`wireMeeting.ts:502,536,550` 也都包了，所以目前只有这一条裸路径。）本单范围内 A 由 voice-codex daemon 直接持有、不经 rotator，所以现在不可达；但 §2 明说 V1 接口「提供给 V2/V3/B 使用」，V3 正是走 rotator。请在 §4 补一句：要么 close 超时不 reject（只发 typed error + audit，仍 resolve undefined），要么明确把 rotator/cli 的兜底 catch 列为本单必改点并进 typecheck/测试范围。",
+      "findingKey": "close-rejection-unhandled-in-rotator"
+    },
+    {
+      "id": "followup-question-has-no-frontend-context",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 149,
+      "title": "§6.5.5 的结构边界使前台对「刚才那个再说一遍」这类指代性追问失去全部上下文，续问路径只写了服务端一半",
+      "detail": "§6.5.5（:149）为消除双声道复述，规定新连接的任务状态「仅含 opaque handoffId 与 delivered/spoken/pending 标志；不得含已完成问题文本或结果片段」，§6.3、§7 也同步改成排除已播报 Lead 内容与已完成原问题。这条把复述风险结构性消掉了（正确的修法），但同时意味着重建后的 Live 对founder刚问过什么、Lead 刚答了什么一无所知。§6.5.5 给的续问路径是「前台把新问题交给只读 Lead query，服务端从业务记录定位既有结果」——只写了服务端那一半：前台在零上下文下如何判断「刚才那个」值得委托、如何构造一个服务端可解析的 query、以及这个 query 如何与既有 handoffId 绑定（§5.2 又明确禁止「latest utterance 猜测」），都没有规定。安全侧是好的（§6.5.5「不重新执行原 action」），所以不阻断；但 §1 给 founder 看的那段仍写着「简单问题由前台直接答」，没有披露「凡是提到上一轮 Lead 结果的问题都会再走一次 Lead」。请补前台侧的指代消解/绑定规则，并在 §1 或 §10 如实披露这条体验后果。",
+      "findingKey": "followup-question-has-no-frontend-context"
+    },
+    {
+      "id": "two-cursor-spaces-not-disambiguated",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 166,
+      "title": "§8.1 现在同时存在两个 seq/cursor 空间，但用同一组措辞描述",
+      "detail": "本轮把结果来源换成 2796 的 `voice_handoff_results`（:162「本单按其 seq 读取事件，投影到既有 voice_outbound」），而 daemon 侧订阅的 `GET /api/voice/sessions/:id/events` 用的是 voice_outbound 的 seq/cursor（:166「按持久 cursor 补读…绝不跳过 seq」）。两处都只说「seq」「cursor」，中间还夹着 :164 的 `(handoffId,resultEventId)` 插入键。三个标识空间用同一组词，实现时很容易把 handoff-results 游标当成 outbound 游标续读，症状是静默跳段或重播。建议在 §8.1 给每个游标起明确名字（例如 `handoffResultSeq` / `voiceOutboundSeq`）并写明各自的持久化位置与作用域。",
+      "findingKey": "two-cursor-spaces-not-disambiguated"
+    },
+    {
+      "id": "no-simple-question-latency-test-right-after-delegation",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 209,
+      "title": "§10.1 的邻接体验测试覆盖了插话/announcer 之后，漏了「delegation 刚封存、连接重建中」这个必然状态",
+      "detail": "§10.1（:209）新增「插话/announcer 后紧接简单问题也列入体验测试，不能只测长期空闲态」，方向对。但 §6.5.1 规定「收到 delegation 时…等当前发言窗口关闭后关旧连接」——也就是说每一次复杂请求都必然把连接封存重建，而这发生在 Lead 还没回答、announcer 还没开口之前。founder 说完「帮我查一下 X」紧跟着问一句简单话，正好落在重建窗口里（§6.3 的 30s 输入缓冲）。这是本设计里最高频的邻接场景，却不在测试矩阵。建议把「delegation 触发后、Lead 结果到达前的简单问题」单列一行，并给它单独的时延判据或明确的降级话术。",
+      "findingKey": "no-simple-question-latency-test-right-after-delegation"
+    },
+    {
+      "id": "validation-doc-titled-as-research",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/validation.md",
+      "line": 1,
+      "title": "validation.md 的标题与 frontmatter 是从 research.md 复制的，标成了「调研」",
+      "detail": "新增的 `validation.md` 第 1 行是 `# FLY-2798 前台快答与后台 Lead — 调研`、第 4 行 `基于: plan.md`，与同目录 `research.md` 的标题完全重名，但内容是交付前检查与 R1 处置记录（含 mmdc 本地渲染失败的如实记录，这部分写得很好）。按 CLAUDE.md 的文档生命周期约定，Research 与其他产物的归档规则不同，标题重名会让后续归档/索引把它当成第二份 research。改成「交付验证」之类的标题即可，内容不用动。",
+      "findingKey": "validation-doc-titled-as-research"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

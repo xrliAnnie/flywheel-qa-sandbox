@@ -11,6 +11,8 @@
  * SIGTERM/SIGINT, single-instance guarded by the wrapper (PID file + port
  * preflight on the health port), secrets only via env (never argv/logs).
  */
+
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +22,7 @@ import {
 	EdgeTts,
 	GeminiLiveBackend,
 	ResidentBrainManager,
+	type RoomIO,
 } from "flywheel-voice-core";
 import {
 	type AssistantModeConfig,
@@ -30,7 +33,6 @@ import {
 	wireAssistantMode,
 } from "./assistant/wiring.js";
 import { ensureDefaultCues } from "./audio/defaultCues.js";
-import { EarsReceiver } from "./audio/EarsReceiver.js";
 import { LeadSpeaker } from "./audio/LeadSpeaker.js";
 import type { TextTurnSpeaker } from "./audio/TextTurnMouth.js";
 import { BotRegistry } from "./bots/BotRegistry.js";
@@ -51,6 +53,15 @@ import {
 } from "./huddle/wireMeeting.js";
 import { BridgeLinearClient } from "./linear/BridgeLinearClient.js";
 import { type BinaryProbe, verifyPlaybackStack } from "./preflight.js";
+import {
+	type ResidentSelfFilterProof,
+	type ResidentVoiceLease,
+	ResidentVoiceSessionClient,
+} from "./resident-voice-session.js";
+import {
+	createBorrowedRoomIOAdapter,
+	type RoomIOAdapter,
+} from "./room/adapter.js";
 import { type RoomEarsRuntime, wireRoomEars } from "./roomEars.js";
 import { VoiceRoomRuntime } from "./VoiceRoomRuntime.js";
 
@@ -215,9 +226,12 @@ export async function runVoiceBridge(
 	let brainPort: BrainPort | undefined;
 
 	let activeMeeting: WiredMeeting | undefined;
+	let activeMeetingLease: ResidentVoiceLease | undefined;
+	let activeMeetingLive = false;
 	let assistantRuntime: AssistantRuntime | undefined;
 	let elevenRuntime: ElevenRuntime | undefined;
 	let roomEars: RoomEarsRuntime | undefined;
+	let activeCanonicalRoom: RoomIO | undefined;
 	try {
 		if (config.brain?.port !== undefined) {
 			const brainToken = process.env[BRAIN_PORT_TOKEN_ENV];
@@ -301,6 +315,121 @@ export async function runVoiceBridge(
 		// modes go live at once and founder audio would feed two sessions.
 		const room = new VoiceRoomRuntime();
 		const slot = room.slot;
+		const orchestratorUserId = (
+			registry.client(ORCHESTRATOR) as { user?: { id?: string } }
+		).user?.id;
+		const earsUserId = (
+			registry.client(NOTE_TAKER) as { user?: { id?: string } }
+		).user?.id;
+		if (!orchestratorUserId || !earsUserId)
+			throw new Error("resident_voice_bot_identity_unavailable");
+		const wireIdleRoomEars = (): void => {
+			if (roomEars || state.shuttingDown) return;
+			roomEars = wireRoomEars({
+				room,
+				deps,
+				earsConnection,
+				earsClient: registry.client(NOTE_TAKER),
+				guildId: config.guildId,
+				allowUserIds: config.allowUserIds,
+				backchannelMs: config.backchannelMs,
+				bargeInMinRms: config.bargeInMinRms,
+				bargeInHoldoffMs: config.bargeInHoldoffMs,
+				outputBotUserId: orchestratorUserId,
+				earsBotUserId: earsUserId,
+				founderUserId: config.founderUserId,
+				log,
+			});
+		};
+		wireIdleRoomEars();
+		const canonicalAdapter = createBorrowedRoomIOAdapter({
+			deps,
+			token: config.orchestratorToken,
+			inputClient: registry.client(NOTE_TAKER),
+			inputConnection: earsConnection,
+			outputClient: registry.client(ORCHESTRATOR),
+			inputBotUserId: earsUserId,
+			outputBotUserId: orchestratorUserId,
+			guildId: config.guildId,
+			voiceChannelId: config.voiceChannelId,
+			threadId: config.voiceChannelId,
+			founderUserId: config.founderUserId,
+			qaAllowUserIds: config.allowUserIds,
+			allowedClipPaths: [
+				config.earconPath,
+				config.fillerPath,
+				eleven?.waitingCuePath,
+			].filter((path): path is string => !!path),
+			buildSha: process.env.FLYWHEEL_BUILD_SHA ?? null,
+			onDiagnostic: (record) => log(`[room-io] ${JSON.stringify(record)}`),
+			onError: (error) => log(`[room-io] ${error.message}`),
+		});
+		const roomIOAdapter: RoomIOAdapter = {
+			activate: async (input) => {
+				if (activeCanonicalRoom) throw new Error("room_io_adapter_busy");
+				roomEars?.dispose();
+				try {
+					const active = await canonicalAdapter.activate(input);
+					activeCanonicalRoom = active;
+					roomEars = undefined;
+					return active;
+				} catch (error) {
+					roomEars = undefined;
+					wireIdleRoomEars();
+					throw error;
+				}
+			},
+			deactivate: async (active) => {
+				try {
+					await canonicalAdapter.deactivate(active);
+				} finally {
+					if (activeCanonicalRoom === active) activeCanonicalRoom = undefined;
+					wireIdleRoomEars();
+				}
+			},
+		};
+		const residentSessions = new ResidentVoiceSessionClient({
+			bridgeUrl: config.bridgeUrl,
+			apiToken: config.apiToken,
+			projectName: config.projectName,
+			guildId: config.guildId,
+			voiceChannelId: config.voiceChannelId,
+			outputBotUserId: orchestratorUserId,
+			earsBotUserId: earsUserId,
+			ownerBootId: randomUUID(),
+			selfFilterProof: () => {
+				if (activeCanonicalRoom) {
+					return (
+						activeCanonicalRoom as RoomIO & {
+							selfFilterProof(input: {
+								outputBotUserId: string;
+								earsBotUserId: string;
+								allowedHumanUserId: string;
+							}): ResidentSelfFilterProof;
+						}
+					).selfFilterProof({
+						outputBotUserId: orchestratorUserId,
+						earsBotUserId: earsUserId,
+						allowedHumanUserId: config.founderUserId,
+					});
+				}
+				if (!roomEars)
+					throw new Error("resident_voice_self_filter_unavailable");
+				return roomEars.selfFilterProof();
+			},
+			fetchImpl:
+				opts.assistantWiring?.fetchImpl ?? opts.elevenWiring?.fetchImpl,
+		});
+		const markActiveMeetingLive = (): void => {
+			if (!activeMeetingLease || activeMeetingLive) return;
+			activeMeetingLive = true;
+			void activeMeetingLease.setState("live").catch((error: unknown) => {
+				activeMeetingLive = false;
+				log(
+					`glaw resident live-state update failed: ${String((error as Error).message ?? error)}`,
+				);
+			});
+		};
 
 		// mentioned bot user → configured Lead (built after login: user ids are
 		// only known once each Lead client is ready).
@@ -311,36 +440,15 @@ export async function runVoiceBridge(
 			if (uid) leadByUserId.set(uid, lead.agentId);
 		}
 
-		// ONE resident EarsReceiver for the daemon's lifetime — its callbacks
-		// route to whatever meeting is active. Attaching per meeting would pile
-		// listeners onto the same resident connection's speaking emitter every
-		// /glaw (Codex R1 MEDIUM: detach() flags but cannot remove them).
-		const FMT16K: AudioFormat = {
-			encoding: "pcm16",
-			sampleRateHz: 16_000,
-			channels: 1,
-		};
-		const ears = new EarsReceiver({
-			speaking: deps.speakingEvents(earsConnection),
-			subscribe: deps.subscribeManual(earsConnection),
-			createDecoder: deps.createDecoder,
-			isHuman: deps.isHumanFactory(registry.client(NOTE_TAKER), config.guildId),
-			allowUserIds: config.allowUserIds,
-			backchannelMs: config.backchannelMs,
-			bargeInMinRms: config.bargeInMinRms,
-			onFrame: (frame) =>
-				activeMeeting?.huddle.handleFounderFrame(frame, FMT16K),
-			// QA R2 F2b/F3: the Discord-side speaking-end is the RELIABLE
-			// "she stopped talking" signal (Gemini's server VAD misses it under
-			// Discord silence-suppression) — it drives the thinking cue AND the
-			// founder-transcript flush. This was never wired before: no cue, no
-			// founder captions, and the conclude/confirm flow never saw her words.
-			onSpeakingEnd: () => activeMeeting?.huddle.handleFounderSpeechStopped(),
-			onBargeIn: () => activeMeeting?.huddle.handleBargeIn(),
-			onError: (err, userId) =>
-				log(`ears pipeline error (${userId}): ${err.message}`),
-		});
-		ears.attach();
+		// /glaw consumes the same routed receiver as /gemini and /eleven. The
+		// shared slot means these callbacks can only reach the current meeting.
+		room.onFrame((frame, format) =>
+			activeMeeting?.huddle.handleFounderFrame(frame, format as AudioFormat),
+		);
+		room.onSpeakingEnd(() =>
+			activeMeeting?.huddle.handleFounderSpeechStopped(),
+		);
+		room.onBargeIn(() => activeMeeting?.huddle.handleBargeIn());
 
 		const startMeeting = async (
 			invocation: Parameters<
@@ -544,7 +652,18 @@ export async function runVoiceBridge(
 										.catch(() => undefined);
 								}
 							}
-							slot.release("glaw", invocation.issue.identifier);
+							if (invocation.lease) {
+								slot.releaseLease(invocation.lease.toSlotLease("glaw"));
+								await invocation.lease
+									.close("ended", "voice-stop")
+									.catch((error: unknown) =>
+										log(
+											`glaw resident lease close failed: ${String((error as Error).message ?? error)}`,
+										),
+									);
+							} else slot.release("glaw", invocation.issue.identifier);
+							activeMeetingLease = undefined;
+							activeMeetingLive = false;
 							activeMeeting = undefined;
 							log(`meeting ${invocation.issue.identifier} released`);
 						},
@@ -552,6 +671,8 @@ export async function runVoiceBridge(
 					},
 				);
 				activeMeeting = meeting;
+				activeMeetingLease = invocation.lease;
+				activeMeetingLive = false;
 				meeting.huddle.start();
 				log(`meeting ${invocation.issue.identifier} assembling`);
 				// initial-check (QA R2 follow-on): if she is ALREADY in the VC
@@ -564,6 +685,7 @@ export async function runVoiceBridge(
 					.userVoiceChannelId(orchClient, config.guildId, config.founderUserId)
 					.then((channelId) => {
 						if (channelId === config.voiceChannelId) {
+							markActiveMeetingLive();
 							meeting.huddle.handleFounderVoiceState(true);
 						}
 					})
@@ -611,16 +733,33 @@ export async function runVoiceBridge(
 					config.founderUserId,
 					config.voiceChannelId,
 				),
+			claimSession: (leadId) =>
+				residentSessions.claim({
+					requestId: randomUUID(),
+					mode: "meeting",
+					leadId,
+				}),
 			onMeet: async (invocation) => {
-				const acquired = slot.acquire("glaw", invocation.issue.identifier);
+				const slotLease = invocation.lease?.toSlotLease("glaw");
+				const acquired = slotLease
+					? slot.acquireLease(slotLease)
+					: slot.acquire("glaw", invocation.issue.identifier);
 				if (!acquired.ok) {
+					await invocation.lease
+						?.close("failed", "slot_busy")
+						.catch(() => undefined);
 					tiv.warn(acquired.message);
 					return;
 				}
 				try {
+					await invocation.lease?.setState("warming");
 					await startMeeting(invocation);
 				} catch (err) {
-					slot.release("glaw", invocation.issue.identifier);
+					if (slotLease) slot.releaseLease(slotLease);
+					else slot.release("glaw", invocation.issue.identifier);
+					await invocation.lease
+						?.close("failed", "session_start_failed")
+						.catch(() => undefined);
 					const m = err instanceof Error ? err.message : String(err);
 					log(`meeting start failed: ${m}`);
 					tiv.warn(
@@ -658,6 +797,7 @@ export async function runVoiceBridge(
 		});
 		deps.onVoiceStateUpdate(orchClient, (u) => {
 			if (u.userId !== config.founderUserId) return;
+			if (u.toChannelId === config.voiceChannelId) markActiveMeetingLive();
 			activeMeeting?.huddle.handleFounderVoiceState(
 				u.toChannelId === config.voiceChannelId,
 			);
@@ -668,17 +808,6 @@ export async function runVoiceBridge(
 		// for every voice mode — /gemini and /eleven contend for the SAME slot
 		// and consume the SAME physical receiver.
 		if (assistant || eleven) {
-			roomEars = wireRoomEars({
-				room,
-				deps,
-				earsConnection,
-				earsClient: registry.client(NOTE_TAKER),
-				guildId: config.guildId,
-				allowUserIds: config.allowUserIds,
-				backchannelMs: config.backchannelMs,
-				bargeInHoldoffMs: config.bargeInHoldoffMs,
-				log,
-			});
 			// FLY-967: /gemini assistant mode — only when the config opts in.
 			if (assistant) {
 				assistantRuntime = await wireAssistantMode({
@@ -690,6 +819,13 @@ export async function runVoiceBridge(
 					room,
 					log,
 					...opts.assistantWiring,
+					roomIOAdapter,
+					claimSession: () =>
+						residentSessions.claim({
+							requestId: randomUUID(),
+							mode: "rg",
+							leadId: assistant.leadId,
+						}),
 					// FLY-1160 §3.3 Phase 1: 命令下架 during shutdown
 					isShuttingDown: () => state.shuttingDown,
 				});
@@ -703,12 +839,20 @@ export async function runVoiceBridge(
 					eleven,
 					registry,
 					deps,
+					earsConnection,
 					room,
 					log,
 					// FLY-1160 §4.2: the resident brain the /eleven meeting speaks
 					// with — the SAME daemon-owned manager the BrainPort serves.
 					brainManager,
 					...opts.elevenWiring,
+					roomIOAdapter,
+					claimSession: () =>
+						residentSessions.claim({
+							requestId: randomUUID(),
+							mode: "rg",
+							leadId: eleven.leadId,
+						}),
 					isShuttingDown: () => state.shuttingDown,
 				});
 				state.eleven = elevenRuntime.commandName;
@@ -721,6 +865,7 @@ export async function runVoiceBridge(
 		// reaped before the error propagates (FLY-1148: who spawns, reaps) —
 		// an earlier step's rejection must never skip the brain cleanup.
 		try {
+			roomEars?.dispose();
 			await new Promise<void>((resolve) => health.close(() => resolve()));
 			await registry.destroyAll();
 		} finally {

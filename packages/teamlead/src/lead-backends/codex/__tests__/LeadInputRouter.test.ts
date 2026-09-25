@@ -118,6 +118,49 @@ describe("LeadInputRouter — happy path", () => {
 		]);
 	});
 
+	it("records model consumption and result commit from the bound runtime turn", async () => {
+		const store = new InMemoryJournalStore();
+		const journal = new LeadJournal({
+			store,
+			idFactory: () => "entry-timeline",
+			now: () => 1,
+		});
+		const timeline = vi.fn();
+		const router = new LeadInputRouter({
+			leadId: "lead-x",
+			threadId: "th-1",
+			journal,
+			executor: new FakeExecutor(),
+			sender: new FakeSender(),
+			onRuntimeTimelineEvent: timeline,
+			logger: silent,
+		});
+
+		router.submitBatch({
+			batchId: "batch-timeline",
+			memberIds: ["delivery-timeline#r0"],
+			payload: "timeline payload",
+		});
+		await router.whenIdle();
+
+		expect(timeline.mock.calls.map(([event]) => event)).toEqual([
+			expect.objectContaining({
+				eventId: "entry-timeline:model_consumed",
+				stage: "model_consumed",
+				entryId: "entry-timeline",
+				memberIds: ["delivery-timeline#r0"],
+				turnId: "turn-1",
+			}),
+			expect.objectContaining({
+				eventId: "entry-timeline:lead_result_committed",
+				stage: "lead_result_committed",
+				entryId: "entry-timeline",
+				memberIds: ["delivery-timeline#r0"],
+				turnId: "turn-1",
+			}),
+		]);
+	});
+
 	it("does not requeue an identical batch and rejects changed membership", async () => {
 		const { router, executor } = make();
 		const batch = {

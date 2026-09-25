@@ -46,7 +46,10 @@ export function parseVoiceProjection(
 		(row.presenceDeadlineAt != null && !instant(row.presenceDeadlineAt)) ||
 		(row.scheduleRevision != null &&
 			(!Number.isSafeInteger(row.scheduleRevision) ||
-				(row.scheduleRevision as number) < 1))
+				(row.scheduleRevision as number) < 1)) ||
+		(row.sessionGeneration != null &&
+			(!Number.isSafeInteger(row.sessionGeneration) ||
+				(row.sessionGeneration as number) < 1))
 	) {
 		throw new Error("voice_projection_invalid");
 	}

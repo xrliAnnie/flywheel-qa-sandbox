@@ -1,6 +1,6 @@
 /**
- * Assembly helpers — build the announce backend (Edge TTS), the converse backend
- * (Gemini Live), the brain, and the backend registry from a resolved config.
+ * Assembly helpers — build the announce backend (Edge TTS), converse backends
+ * (Gemini Live / OpenAI Live), the brain, and the backend registry from config.
  * Kept separate from cli.ts so the wiring is unit-testable without a terminal.
  */
 
@@ -14,9 +14,18 @@ import {
 } from "./backends/gemini/GeminiLiveBackend.js";
 import { createGenaiTransport } from "./backends/gemini/genaiConnector.js";
 import type { GeminiLiveTransport } from "./backends/gemini/transport.js";
+import {
+	GptLiveBackend,
+	type OpenAiLiveConnector,
+} from "./backends/openai-live/GptLiveBackend.js";
+import { OpenAiLiveTransport } from "./backends/openai-live/liveTransport.js";
 import { BackendRegistry } from "./backends/registry.js";
 import { HeadlessClaudeBrain } from "./brain/HeadlessClaudeBrain.js";
-import { type VoiceCoreConfig, verifyAnnounceComponents } from "./config.js";
+import {
+	type VoiceCoreConfig,
+	verifyAnnounceComponents,
+	verifyOpenAiLiveComponents,
+} from "./config.js";
 import type { ProcessRunner } from "./process.js";
 import type { BrainAdapter } from "./types.js";
 
@@ -36,6 +45,8 @@ export function buildEdgeTtsBackend(
 		command: config.edgeTts.command,
 		baseArgs: config.edgeTts.args,
 		timeoutMs: config.timeouts.ttsMs,
+		streamCommand: config.edgeTts.streamCommand,
+		streamMaxBufferedBytes: config.edgeTts.streamMaxBufferedBytes,
 		runner: wiring.runner,
 	});
 	const player =
@@ -75,6 +86,36 @@ export function buildGeminiBackend(
 	return new GeminiLiveBackend({ transport, profile });
 }
 
+export interface OpenAiLiveWiring {
+	/** Injected transport for tests; defaults to the configured public endpoint. */
+	transport?: OpenAiLiveConnector;
+	/** Explicit credential override; otherwise resolved from config.apiKeyEnv. */
+	apiKey?: string;
+}
+
+export function buildGptLiveBackend(
+	config: VoiceCoreConfig,
+	wiring: OpenAiLiveWiring = {},
+): GptLiveBackend {
+	const apiKey =
+		wiring.apiKey ?? process.env[config.openaiLive.apiKeyEnv] ?? "";
+	verifyOpenAiLiveComponents(config, {
+		[config.openaiLive.apiKeyEnv]: wiring.transport ? "injected" : apiKey,
+	});
+	const transport =
+		wiring.transport ??
+		new OpenAiLiveTransport({
+			endpoint: config.openaiLive.endpoint,
+			apiKey,
+		});
+	return new GptLiveBackend({
+		transport,
+		model: config.openaiLive.model,
+		voice: config.openaiLive.voice,
+		contextMaxTokens: config.openaiLive.contextMaxTokens,
+	});
+}
+
 export function buildHeadlessBrain(
 	config: VoiceCoreConfig,
 	runner?: ProcessRunner,
@@ -90,14 +131,14 @@ export function buildHeadlessBrain(
 export interface RegistryWiring {
 	announce?: AnnounceWiring;
 	converse?: ConverseWiring;
+	openaiLive?: OpenAiLiveWiring;
 	/** register the converse (gemini) backend (needs a key or an injected transport). */
 	enableConverse?: boolean;
 }
 
 /**
- * Registry with the edge-tts announce backend (always) and, when enabled, the
- * gemini-live converse backend. Factories are lazy, so registering gemini does
- * not construct its transport until it is selected.
+ * Registry with edge-tts (always) and optional Gemini/OpenAI converse backends.
+ * Factories stay lazy, so transports are not constructed until selected.
  */
 export function buildRegistry(
 	config: VoiceCoreConfig,
@@ -110,6 +151,11 @@ export function buildRegistry(
 	if (wiring.enableConverse || wiring.converse?.transport) {
 		registry.register("gemini-live", () =>
 			buildGeminiBackend(config, wiring.converse),
+		);
+	}
+	if (wiring.openaiLive) {
+		registry.register("openai-live", () =>
+			buildGptLiveBackend(config, wiring.openaiLive),
 		);
 	}
 	return registry;

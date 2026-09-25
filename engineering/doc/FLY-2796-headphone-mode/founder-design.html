@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>FLY-2796 · 耳机里主动告诉你</title>
+<style>
+:root{color-scheme:light;font-family:-apple-system,system-ui,sans-serif;color:#1d1d1f;background:#f5f5f7;line-height:1.65}*{box-sizing:border-box}body{max-width:960px;margin:auto;padding:36px 20px 70px}h1{font-size:clamp(30px,5vw,48px);line-height:1.2;letter-spacing:-.035em}h2{font-size:23px;margin-top:0}h3{font-size:18px}p{margin:12px 0}.eyebrow{color:#007aff;font-size:13px;font-weight:700;letter-spacing:.08em}.card{background:#fff;border-radius:12px;padding:28px;margin:20px 0;box-shadow:0 1px 3px #0000000f;border-left:4px solid #007aff}.amber{border-left-color:#ff9500}.purple{border-left-color:#af52de}.muted{color:#68686d;font-size:14px}.pending{border:1px dashed #c77d00;border-radius:10px;background:#fff9ed;padding:24px;color:#714800}.tag{display:inline-block;background:#eef3ff;color:#1755a8;border-radius:7px;padding:3px 9px;font-size:13px}table{border-collapse:collapse;width:100%;font-size:15px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e8e8ed;padding:12px 6px}th{color:#68686d;font-weight:500}label{display:block;margin-top:24px;font-size:14px;font-weight:600}textarea{width:100%;min-height:82px;border:1px solid #d3d3da;border-radius:8px;padding:12px;font:inherit;background:#fbfbfd;resize:vertical}textarea:focus{outline:2px solid #007aff;outline-offset:2px}button{border:0;border-radius:8px;background:#007aff;color:white;padding:11px 16px;font:inherit;cursor:pointer;margin:8px 8px 8px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;padding:16px;border-radius:8px;font-size:14px}code{font-family:ui-monospace,monospace}details{margin-top:12px}a{color:#0066cc}.chunk{border-top:1px solid #eee;margin-top:16px}svg{max-width:100%;height:auto}@media(max-width:600px){body{padding:22px 12px 45px}.card{padding:20px 16px}th,td{font-size:14px;padding:10px 4px}}
+</style></head><body>
+<header><div class="eyebrow">FLY-2796 · 第一批耳机模式</div><h1>一进来，就知道现在什么情况。</h1><p>主动念待办、会中念新消息、安静时报平安；两个引擎共用同一套规则。</p><span class="tag">设计方案 · 尚未实现</span> <span class="tag">2026-09-23</span></header>
+<section class="card" data-section="核心流程"><h2>你会听到什么</h2><p>不用先问一句。进房先主动开场，再说明等你决定的事情和各位 Lead 的汇报。Lead 就是各项目的负责人。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地绘图工具被系统权限阻止，标准重试仍失败。保留 Mermaid 图源；Mermaid 是用文字描述流程、再生成图形的格式。本页没有用方框箭头冒充成图。</p></div><details><summary>查看流程图源</summary><pre>flowchart TD
+  A[她进入耳机模式] --&gt; B[立即主动开场]
+  B --&gt; C[读取所有待办：先问题 后汇报]
+  C --&gt; D[同一模式调用 A 或 B 引擎]
+  N[会中出现新消息] --&gt; C
+  H[安静五分钟：可调整] --&gt; D
+  D --&gt; E[同一房间实现播放]
+  E --&gt; F[本地已提交且内容核对通过]
+  F --&gt; G[逐条保存播报回执]
+  X[失败或来源没读全] --&gt; Y[明确提醒并保留待办]
+  C --&gt; X</pre></details><p>新消息等当前一段结束就插入；这一批不加入打断。第一批全部纳入，文案坏了也不会把整条悄悄漏掉。</p><label for="c-flow">这部分的意见</label><textarea id="c-flow" data-comment placeholder="例如：开场先说哪些内容更有用？"></textarea></section>
+<section class="card" data-section="保存什么"><h2>什么会被可靠记住</h2><p>持久回执，是写入存储后还能读回核对的证明。它帮助区分“发过请求”和“确实记下来了”。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>数据关系图本地渲染失败；对应图源已随设计保存。</p></div><details><summary>查看数据图源</summary><pre>flowchart LR
+  S[来源消息与原始身份] --&gt; I[持久收件箱与独立游标]
+  I --&gt; P[单条播报与回执]
+  R[房间：说话人和会话代次] --&gt; T[完整原话与落盘证明]
+  T --&gt; H[请求记录：查询 判断 办事]
+  H --&gt; L[Lead 信箱：稳定投递编号]
+  L --&gt; O[授权结果记录与重放游标]
+  O --&gt; P</pre></details><table><thead><tr><th>保存的东西</th><th>解决什么问题</th></tr></thead><tbody><tr><td>问题、汇报及来源编号</td><td>关闭耳机模式时也能积累；重新进来补上。</td></tr><tr><td>逐条播报回执</td><td>成功记下的条目不重复播；失败继续保留。</td></tr><tr><td>完整原话与说话人</td><td>不会把长话截掉尾部，也不让归不清来源的话触发动作。</td></tr><tr><td>投递编号与结果位置</td><td>结果没回来时可以查同一件事，断线后可以补读。</td></tr></tbody></table><p class="muted">游标就是“上次读到哪里”的位置。它与“这条已播报”的回执分别保存。</p><label for="c-data">这部分的意见</label><textarea id="c-data" data-comment></textarea></section>
+<section class="card purple" data-section="同一房间与引擎"><h2>换引擎，不换房间规则</h2><p>RoomIO 是共同的房间接口，统一负责收音、播放、谁在说话和连接健康。以现有运行底座提取，版本为一；现有 voice-bridge 程序保留，通过适配接入。</p><p>同一间房只允许一个活动会话。每场记录实际使用的实现与版本；之后比较四场时，可以核对它们是否真的共用底座。</p><p>给引擎的接口同时提供流式播放、取消、等待播放容量和持续发言事件。这些基础接口不等于第一批已经开放“打断”。</p><p><code>/gemini</code> 与 <code>/eleven</code> 都要在改造后各开一场真实语音，验证能收能放。</p><label for="c-room">这部分的意见</label><textarea id="c-room" data-comment></textarea></section>
+<section class="card amber" data-section="默认值与取舍"><h2>先用起来，再调的地方</h2><table><thead><tr><th>选择</th><th>收益与代价</th></tr></thead><tbody><tr><td>安静五分钟报平安</td><td>可配置的工程默认，待你用过再定；不是你已选定的产品间隔。</td></tr><tr><td>第一批全部纳入</td><td>宁可多说；首次恢复历史可能比较多，会告知恢复进度。</td></tr><tr><td>文案不合格时读原文</td><td>不编造三段摘要；可能较长，会分段念完。</td></tr><tr><td>沿用已有房间与信箱</td><td>避免第三套底座；需要认真验证旧命令没有退化。</td></tr></tbody></table><p>排除的方案：另造房间实现、只盯 Codex 发出的消息、把文字发送当成语音成功、把“已投信箱”说成“已办完”。</p><label for="c-trade">这部分的意见</label><textarea id="c-trade" data-comment></textarea></section>
+<section class="card amber" data-section="诚实边界"><h2>这次做到哪里</h2><p>做：主动播报、可靠积压、报平安、共同房间接口、完整转写，以及把有来源的请求送给 Lead 并查回执。</p><p>这一批不做：筛选记忆、用嘴批 ship、打断、动手前念专名编号。ship 指把审核过的改动正式交付；本单不增加这项执行权限。</p><p>本地播放提交不证明你已经听到。<code>audibleTail</code>（估算）是播放尾部还剩多久的估计，也不是人耳确认。</p><p>如果某些消息来源读不全，会明确提醒；声音或转写失败也不会假报成功。极端崩溃可能导致一段重播，不能承诺声音绝不重复。</p><p class="muted">A/B 真机比较交给后续 V6，即四场真人对比任务。当前尚无这次实现的真机验收证据；邮箱等待延迟的原因也尚未证实。</p><label for="c-boundary">这部分的意见</label><textarea id="c-boundary" data-comment></textarea></section>
+<section class="card" data-section="验收"><h2>怎样才算做成</h2><p>用完整假引擎验证：不问就主动开场；新消息主动插入；安静到期报平安。假引擎是测试替身，也必须提供真实接口要求的上行转写事件。</p><p>再验证失败与恢复：关模式也不漏消息、重复读取不重复确认、长话尾部不丢、未知说话人不触发交办、旧会话回执不能冒充新会话。</p><p>最后，旧两条语音命令各有一场真实兼容证据。A/B 的真人体验与四场同源核验在 V6 单独完成。</p><label for="c-qa">这部分的意见</label><textarea id="c-qa" data-comment></textarea></section>
+<section class="card purple" data-section="整体意见"><h2>意见汇总</h2><p class="muted">意见仅保存在当前浏览器、本页面的本地存储。需要复制后发回，才会成为修订输入；不代表通过设计。</p><label for="c-general">整体意见</label><textarea id="c-general" data-comment></textarea><button id="copy-all" type="button">复制全部意见</button><span id="copy-status" role="status" aria-live="polite"></span><div id="comment-summary" aria-live="polite"></div></section>
+<script nonce="__CSP_NONCE__">
+(() => {
+  const marker = '【页面意见汇总】FLY-2796';
+  const prefix = 'flywheel-comments:' + location.pathname + ':';
+  const inputs = Array.from(document.querySelectorAll('[data-comment]'));
+  const summary = document.getElementById('comment-summary');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  async function copy(text) {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('unavailable');
+      await navigator.clipboard.writeText(text);
+      status.textContent = '已复制';
+    } catch (_) {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.left = '-9999px';
+      document.body.appendChild(area);
+      area.select();
+      try { status.textContent = document.execCommand('copy') ? '已复制' : '复制未成功，请手动选择汇总文字'; }
+      catch (_) { status.textContent = '复制未成功，请手动选择汇总文字'; }
+      area.remove();
+    }
+  }
+  function refresh() {
+    chunks = [];
+    let current = marker;
+    for (const input of inputs) {
+      const value = input.value.trim();
+      if (!value) continue;
+      const title = input.closest('[data-section]').dataset.section;
+      const heading = '\n\n【' + title + '】\n';
+      let remaining = Array.from(value);
+      while (remaining.length) {
+        const room = 1800 - Array.from(current + heading).length;
+        if (room <= 0) { chunks.push(current); current = marker; continue; }
+        current += heading + remaining.splice(0, room).join('');
+        if (remaining.length) { chunks.push(current); current = marker; }
+      }
+    }
+    if (current !== marker || !chunks.length) chunks.push(current);
+    summary.replaceChildren();
+    chunks.forEach((part, index) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'chunk';
+      const pre = document.createElement('pre');
+      pre.textContent = part;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = '复制第 ' + (index + 1) + ' 段';
+      button.addEventListener('click', () => { void copy(part); });
+      wrapper.append(pre, button);
+      summary.appendChild(wrapper);
+    });
+  }
+  for (const input of inputs) {
+    try { input.value = localStorage.getItem(prefix + input.id) || ''; } catch (_) {}
+    input.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + input.id, input.value); }
+      catch (_) { status.textContent = '浏览器禁止保存；请复制意见后再离开'; }
+      refresh();
+    });
+  }
+  document.getElementById('copy-all').addEventListener('click', () => { void copy(chunks.join('\n\n')); });
+  refresh();
+})();
+</script></body></html>

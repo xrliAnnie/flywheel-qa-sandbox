@@ -1,0 +1,147 @@
+{
+  "reviewVerdict": "CHANGES_REQUESTED",
+  "reviewerVerdict": "CHANGES_REQUESTED",
+  "requestId": "16c48913-5c24-4820-b791-8e232e685f7f",
+  "round": 1,
+  "findings": [
+    {
+      "id": "delegation-closure-and-live-restate",
+      "severity": "HIGH",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 119,
+      "title": "client delegation 的终结机制未定且无 fallback；Live 复述已播报 Lead 结果无任何约束",
+      "detail": "仓内唯一已证的 delegation 应答路径是 `session.commentary.append` 携原 `delegation.id`（`git show 15fe2c875:engineering/doc/FLY-2799-codex-voice-container/gpt-live-handoff.md`「给 FLY-2798 用」），而该路径的副作用正是**让模型把结果说出来**。本计划刻意不走它（Lead 结果交 announcer 逐字念），只在 §6.2 第 4 条写「可回 thinking.append 做背景；正确 id 只用于尚存的原代」。三处缺口：(1) `thinking.append` 能否承载/终结一个 `delegation.id` 从未被证实 —— §4 只把 `delegation_id=null` 的 injectContext 标为待验 silent，`session.commentary.append`/`thinking.append` 的**委托生命周期**（能否 resolve、不 resolve 会超时还是重发、模型会不会开口说「还在等」）既不在 §2.1 的九项待对齐里，也不在 §9 T2 的验收用例里，更没有「未证明则 unsupported / fail closed」的退路 —— 而这正是本计划对 injectContext 用过的纪律；(2) 若实现期发现只能用 commentary.append，就会退回「Live 改写着念 Lead 结果」，那恰恰是整个 composite 架构要消除的 verbatim 失效，届时无路可退；(3) 即便 thinking.append 可用，把 Lead 结果文本喂进 Live 上下文后，**没有任何机制阻止 Live 自己再说一遍** —— §6.2 只写了一句「不用它重复念结果」的规范，无抑制、无检测、无用例；§6.3 的重建路径「注入已播报结果与未完成任务状态」与 §7「启动上下文仅含…已确认结果」同样暴露。后果是 announcer 逐字 + Live 改写双声道重复，且这段 Lead 内容按 §6.4 会被标成「🤖 前台」；§10 字幕行只覆盖了反方向（前台新话错标 Lead）。请补：把 delegation 终结/超时/重发列入待验清单与 T2 RED 用例、给出只能用 commentary 时的 fail-closed 处置、并为「Live 复述已播报结果」定义可检出的抑制或检测 + §10 验收格。",
+      "findingKey": "delegation-closure-and-live-restate"
+    },
+    {
+      "id": "shared-type-surface-typecheck-scope",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 167,
+      "title": "改 voice-core/types.ts 与 index.ts，却只 typecheck voice-core/voice-codex 两个包",
+      "detail": "§3 第一行要改 `voice-core/src/types.ts、index.ts`（加 V1 导出、verbatim/attribution、source/身份字段），但 §9 收尾只列 `pnpm --filter flywheel-voice-core typecheck` 与 `flywheel-voice-codex typecheck`，teamlead/flywheel-comm「仅针对变更」。实际消费 `flywheel-voice-core` 的是五个包：voice-bridge、voice-headphone、voice-codex、teamlead、gemini-agent（`grep -rln flywheel-voice-core packages/`）。其中 voice-bridge 有多处 `class FakeSession implements ConversationSession`（`src/__tests__/qa-fly545-r4.test.ts:30`、`wire-meeting.test.ts:21`、`wire-meeting-resident.test.ts:26`）与 `JsonlTranscriptSink` 直接消费（`src/assistant/wiring.ts:28,779`）。只要 `TranscriptEntry` / `ConversationEventMap.transcript` 的新字段是必填，这些实现体全部红。§11 声称「老调用不变」但无验证手段。请把 voice-bridge、voice-headphone、gemini-agent 的 typecheck 加进 T1 的证据列（仍是单包命令，不违反禁全量）。",
+      "findingKey": "shared-type-surface-typecheck-scope"
+    },
+    {
+      "id": "doorbell-bridge-url-env-name-split",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 150,
+      "title": "§8.2「A 启动必须校验有效 BRIDGE_URL」定位错层，漏掉一个可验证的静默跳过路径",
+      "detail": "语音侧按门铃的并不是 A 进程自己：`voice-codex/src/adapters.ts:61` 用 `spawn(process.execPath, …)`（不传 env ⇒ 继承）起 `flywheel-comm chat-ingest` 子进程，门铃在子进程里发。而 `flywheel-comm/src/index.ts:976`（正是 chat-ingest 提交后那一处）只读 `process.env.BRIDGE_URL`，同文件另三处（`:622`、`:693`、`:2361`）读的是 `process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL`。配合 `lead-inbox-nudge.ts:41` 的 `if (!bridgeUrl) return;`，任何只设了 `FLYWHEEL_BRIDGE_URL` 的部署，会让**每一条语音原话**静默跳过门铃、退回 Lead 的自适应轮询——与 FLY-2786 观察到的 12.7s 空等症状吻合。在 A 进程启动时校验「有效 BRIDGE_URL」并不覆盖这条（校验的可能是另一个名字、也不是同一个进程）。请把 §8.2 的校验点钉到「门铃实际读取的那个变量、在实际发门铃的那个进程」，并把这条 env 名不一致作为 §8.2『缺 URL』回归的具名用例。",
+      "findingKey": "doorbell-bridge-url-env-name-split"
+    },
+    {
+      "id": "announcer-takeover-rebuilds-live-unconditionally",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 125,
+      "title": "announcer 接管无条件关闭并重建 Live 连接，未按「Live 当前是否在输出」分档",
+      "detail": "§6.3 写的是无条件序列：「announcer 占用前 fence 并关闭 Live 旧输出代…announcer 结束/取消再新建 Live，注入已播报结果与未完成任务状态，回放输入一次」，输入缓冲上限 30s。但 §6.2 把 **所有** text-bearing speak（brief/question/readback/**heartbeat**/cue）都归给 announcer。于是一次存活信号 heartbeat、或 §5 末尾补发的一句 frontend cue「我问下 Lead」，都会拆掉整条 Live 连接、缓冲用户输入、再重建并重注上下文。「同一房间只有一个 output owner」这条约束只在 Live 正在产出音频时才咬人；Live 空闲时的 announcer 播报不需要 teardown。这与 §10「每次 ≤2s」和会话连续性直接冲突，而 §6.3 只笼统地说「这个声音切换与恢复等待是已获 Lead 接受的成本」。请按 Live 输出状态分档（空闲 ⇒ 只占 output owner，不关连接），并把 heartbeat/cue 明确排除在 teardown 之外。",
+      "findingKey": "announcer-takeover-rebuilds-live-unconditionally"
+    },
+    {
+      "id": "no-latency-budget-for-2s-gate",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 172,
+      "title": "≤2s 判据没有延迟预算分解，也没有未达标时的处置",
+      "detail": "§1/§10 把「人声结束 → 听到首个实际回答字 ≤2000ms，10/10」定为完成标准，但全文没有把这 2s 拆成分项预算。唯一存在的实测数是 `15fe2c875` 的 1175.0ms（GPT-Live-1，本机、无真实房间、口径是「开口命令 → 首个非静音音频」，同场 Realtime 2.1 对照 619.7ms），而真实链路还要叠加：Discord 上行 + end-of-speech 判定（今天靠 Discord silence-suppression 驱动 `endUserTurn`，见 types.ts:236 注释）+ §6.3 默认 100ms 抖动缓冲 + Discord 下行。余量很薄且未被任何人算过。§10 也没写 10/10 不达标时是改判据、改架构、还是退回 Lead 裁。请补一张分项预算表（每段的来源：实测/估算/未知）与未达标时的处置路径。",
+      "findingKey": "no-latency-budget-for-2s-gate"
+    },
+    {
+      "id": "t0-hard-gate-blocks-everything",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 158,
+      "title": "T0 作为硬闸置于最前，但 FLY-2796 在仓内不存在任何设计产物，实施顺序未标出可离线执行的子集",
+      "detail": "§9 把 T0「锁 2796 依赖版本及 public exports」放在第一位；§2.1 的九项依赖全部是「依赖 2796，待对齐」。但仓内搜不到任何 FLY-2796 文档（`find engineering/doc -iname '*2796*'` 为空），能找到的只有 FLY-2795 plan.md:98 记着「🔴 闸 G1 —— RoomIO 的收敛 owner 未定」和 plan.md:131「入场条件：闸 G1 先解决」。§2 给了降级路径（「可以完成离线 adapter 测试，但不得宣称 room integration」），但 §9 的任务表没有把这条降级映射进去 —— 没有标出 T1–T7 中哪些在 T0 未完成时可以先做（T1 的 types/config/factory、T2 的 Live transport 协议 fixture、T4 的 streaming TTS 显然可以）。implement 拿到这张表会整单阻塞在一个不存在的上游上。请在 §9 给每个任务标注「T0 前可执行 / T0 后才可执行」。",
+      "findingKey": "t0-hard-gate-blocks-everything"
+    },
+    {
+      "id": "sendtext-to-speak-receipt-dropped",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 84,
+      "title": "sendText → speak(kind=control) 的兼容映射会丢掉 receipt",
+      "detail": "现有 `ConversationSession.sendText(text): void` 是同步返回（types.ts:213），而 `speak` 返回 `Promise<SpeakReceipt>`。§4 把前者映射到后者会产生 floating promise；§6.2 又要求 control「有限控制请求若无法证明完成，超时 failed」，但同步 void 的调用方（`voice-core/src/TalkSessionRotator.ts:62`、`voice-bridge/src/assistant/AssistantSession.ts:301,345,435`、`huddle/HuddleSession.ts:1119`）根本接不到那个 failed。§6.2 已经要求 V3 的开场/提问改用 brief/question，但没说剩下的 legacy `sendText` 调用其 receipt 去哪、未处理的 rejection 怎么办。请写明 receipt 的落点（丢弃需显式声明，并保证不产生 unhandledRejection）。",
+      "findingKey": "sendtext-to-speak-receipt-dropped"
+    },
+    {
+      "id": "close-resumehandle-contract-unstated",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 88,
+      "title": "§4 的 close 行未交代现有 ResumeHandle 返回契约",
+      "detail": "现有契约是 `close(): Promise<ResumeHandle | undefined>`（types.ts:246，注释「returns the latest resume handle (if the backend supports it)」）。§4 的 close 行只描述 fence/取消播放/flush/session.close/有界超时记 incomplete/释放订阅，没说 A 返回什么。Live 侧没有任何 resume 证据（§7 明确「旧代永不恢复」），所以 A 恒返回 undefined；但调用方无法区分「该 backend 不支持 resume」与「关闭异常」。请在 §4 明写 A 的 close 返回值语义，以及 §4 提到的「有界超时记 incomplete」如何对外可见。",
+      "findingKey": "close-resumehandle-contract-unstated"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "shared-type-surface-typecheck-scope",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 167,
+      "title": "改 voice-core/types.ts 与 index.ts，却只 typecheck voice-core/voice-codex 两个包",
+      "detail": "§3 第一行要改 `voice-core/src/types.ts、index.ts`（加 V1 导出、verbatim/attribution、source/身份字段），但 §9 收尾只列 `pnpm --filter flywheel-voice-core typecheck` 与 `flywheel-voice-codex typecheck`，teamlead/flywheel-comm「仅针对变更」。实际消费 `flywheel-voice-core` 的是五个包：voice-bridge、voice-headphone、voice-codex、teamlead、gemini-agent（`grep -rln flywheel-voice-core packages/`）。其中 voice-bridge 有多处 `class FakeSession implements ConversationSession`（`src/__tests__/qa-fly545-r4.test.ts:30`、`wire-meeting.test.ts:21`、`wire-meeting-resident.test.ts:26`）与 `JsonlTranscriptSink` 直接消费（`src/assistant/wiring.ts:28,779`）。只要 `TranscriptEntry` / `ConversationEventMap.transcript` 的新字段是必填，这些实现体全部红。§11 声称「老调用不变」但无验证手段。请把 voice-bridge、voice-headphone、gemini-agent 的 typecheck 加进 T1 的证据列（仍是单包命令，不违反禁全量）。",
+      "findingKey": "shared-type-surface-typecheck-scope"
+    },
+    {
+      "id": "doorbell-bridge-url-env-name-split",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 150,
+      "title": "§8.2「A 启动必须校验有效 BRIDGE_URL」定位错层，漏掉一个可验证的静默跳过路径",
+      "detail": "语音侧按门铃的并不是 A 进程自己：`voice-codex/src/adapters.ts:61` 用 `spawn(process.execPath, …)`（不传 env ⇒ 继承）起 `flywheel-comm chat-ingest` 子进程，门铃在子进程里发。而 `flywheel-comm/src/index.ts:976`（正是 chat-ingest 提交后那一处）只读 `process.env.BRIDGE_URL`，同文件另三处（`:622`、`:693`、`:2361`）读的是 `process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL`。配合 `lead-inbox-nudge.ts:41` 的 `if (!bridgeUrl) return;`，任何只设了 `FLYWHEEL_BRIDGE_URL` 的部署，会让**每一条语音原话**静默跳过门铃、退回 Lead 的自适应轮询——与 FLY-2786 观察到的 12.7s 空等症状吻合。在 A 进程启动时校验「有效 BRIDGE_URL」并不覆盖这条（校验的可能是另一个名字、也不是同一个进程）。请把 §8.2 的校验点钉到「门铃实际读取的那个变量、在实际发门铃的那个进程」，并把这条 env 名不一致作为 §8.2『缺 URL』回归的具名用例。",
+      "findingKey": "doorbell-bridge-url-env-name-split"
+    },
+    {
+      "id": "announcer-takeover-rebuilds-live-unconditionally",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 125,
+      "title": "announcer 接管无条件关闭并重建 Live 连接，未按「Live 当前是否在输出」分档",
+      "detail": "§6.3 写的是无条件序列：「announcer 占用前 fence 并关闭 Live 旧输出代…announcer 结束/取消再新建 Live，注入已播报结果与未完成任务状态，回放输入一次」，输入缓冲上限 30s。但 §6.2 把 **所有** text-bearing speak（brief/question/readback/**heartbeat**/cue）都归给 announcer。于是一次存活信号 heartbeat、或 §5 末尾补发的一句 frontend cue「我问下 Lead」，都会拆掉整条 Live 连接、缓冲用户输入、再重建并重注上下文。「同一房间只有一个 output owner」这条约束只在 Live 正在产出音频时才咬人；Live 空闲时的 announcer 播报不需要 teardown。这与 §10「每次 ≤2s」和会话连续性直接冲突，而 §6.3 只笼统地说「这个声音切换与恢复等待是已获 Lead 接受的成本」。请按 Live 输出状态分档（空闲 ⇒ 只占 output owner，不关连接），并把 heartbeat/cue 明确排除在 teardown 之外。",
+      "findingKey": "announcer-takeover-rebuilds-live-unconditionally"
+    },
+    {
+      "id": "no-latency-budget-for-2s-gate",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 172,
+      "title": "≤2s 判据没有延迟预算分解，也没有未达标时的处置",
+      "detail": "§1/§10 把「人声结束 → 听到首个实际回答字 ≤2000ms，10/10」定为完成标准，但全文没有把这 2s 拆成分项预算。唯一存在的实测数是 `15fe2c875` 的 1175.0ms（GPT-Live-1，本机、无真实房间、口径是「开口命令 → 首个非静音音频」，同场 Realtime 2.1 对照 619.7ms），而真实链路还要叠加：Discord 上行 + end-of-speech 判定（今天靠 Discord silence-suppression 驱动 `endUserTurn`，见 types.ts:236 注释）+ §6.3 默认 100ms 抖动缓冲 + Discord 下行。余量很薄且未被任何人算过。§10 也没写 10/10 不达标时是改判据、改架构、还是退回 Lead 裁。请补一张分项预算表（每段的来源：实测/估算/未知）与未达标时的处置路径。",
+      "findingKey": "no-latency-budget-for-2s-gate"
+    },
+    {
+      "id": "t0-hard-gate-blocks-everything",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 158,
+      "title": "T0 作为硬闸置于最前，但 FLY-2796 在仓内不存在任何设计产物，实施顺序未标出可离线执行的子集",
+      "detail": "§9 把 T0「锁 2796 依赖版本及 public exports」放在第一位；§2.1 的九项依赖全部是「依赖 2796，待对齐」。但仓内搜不到任何 FLY-2796 文档（`find engineering/doc -iname '*2796*'` 为空），能找到的只有 FLY-2795 plan.md:98 记着「🔴 闸 G1 —— RoomIO 的收敛 owner 未定」和 plan.md:131「入场条件：闸 G1 先解决」。§2 给了降级路径（「可以完成离线 adapter 测试，但不得宣称 room integration」），但 §9 的任务表没有把这条降级映射进去 —— 没有标出 T1–T7 中哪些在 T0 未完成时可以先做（T1 的 types/config/factory、T2 的 Live transport 协议 fixture、T4 的 streaming TTS 显然可以）。implement 拿到这张表会整单阻塞在一个不存在的上游上。请在 §9 给每个任务标注「T0 前可执行 / T0 后才可执行」。",
+      "findingKey": "t0-hard-gate-blocks-everything"
+    },
+    {
+      "id": "sendtext-to-speak-receipt-dropped",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 84,
+      "title": "sendText → speak(kind=control) 的兼容映射会丢掉 receipt",
+      "detail": "现有 `ConversationSession.sendText(text): void` 是同步返回（types.ts:213），而 `speak` 返回 `Promise<SpeakReceipt>`。§4 把前者映射到后者会产生 floating promise；§6.2 又要求 control「有限控制请求若无法证明完成，超时 failed」，但同步 void 的调用方（`voice-core/src/TalkSessionRotator.ts:62`、`voice-bridge/src/assistant/AssistantSession.ts:301,345,435`、`huddle/HuddleSession.ts:1119`）根本接不到那个 failed。§6.2 已经要求 V3 的开场/提问改用 brief/question，但没说剩下的 legacy `sendText` 调用其 receipt 去哪、未处理的 rejection 怎么办。请写明 receipt 的落点（丢弃需显式声明，并保证不产生 unhandledRejection）。",
+      "findingKey": "sendtext-to-speak-receipt-dropped"
+    },
+    {
+      "id": "close-resumehandle-contract-unstated",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2798-live-front-lead/plan.md",
+      "line": 88,
+      "title": "§4 的 close 行未交代现有 ResumeHandle 返回契约",
+      "detail": "现有契约是 `close(): Promise<ResumeHandle | undefined>`（types.ts:246，注释「returns the latest resume handle (if the backend supports it)」）。§4 的 close 行只描述 fence/取消播放/flush/session.close/有界超时记 incomplete/释放订阅，没说 A 返回什么。Live 侧没有任何 resume 证据（§7 明确「旧代永不恢复」），所以 A 恒返回 undefined；但调用方无法区分「该 backend 不支持 resume」与「关闭异常」。请在 §4 明写 A 的 close 返回值语义，以及 §4 提到的「有界超时记 incomplete」如何对外可见。",
+      "findingKey": "close-resumehandle-contract-unstated"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1"
+}

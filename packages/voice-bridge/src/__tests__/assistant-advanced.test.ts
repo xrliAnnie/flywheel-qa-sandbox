@@ -3,7 +3,10 @@ import { buildAdvancedDelegateTool } from "../assistant/advanced.js";
 import { resolveAssistantConfig } from "../assistant/config.js";
 
 const rawProjects = (assistant: Record<string, unknown>) => [
-	{ huddle: { assistant } },
+	{
+		leads: [{ agentId: "flywheel-eng-lead" }],
+		huddle: { assistant: { leadId: "flywheel-eng-lead", ...assistant } },
+	},
 ];
 
 describe("retired assistant.advanced mode", () => {

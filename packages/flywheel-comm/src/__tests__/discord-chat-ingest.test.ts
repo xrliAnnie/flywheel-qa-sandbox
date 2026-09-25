@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	chatDeliveryId,
 	encodeChatDeliveryEnvelope,
 	normalizeChatDeliveryEnvelope,
 	parseChatDeliveryEnvelope,
@@ -47,6 +48,82 @@ function fixture() {
 }
 
 describe("FLY-1574 Discord mailbox ingest", () => {
+	it("accepts a synthetic message identity only for a bound typed voice handoff", () => {
+		const { args, dbPath } = fixture();
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";
+		const voiceHandoff = {
+			version: 1 as const,
+			handoffId,
+			intentKind: "action" as const,
+			requestDigest: "a".repeat(64),
+			targetLeadId: args.leadId,
+			transcriptId: "transcript-1",
+			utteranceId: "utterance-1",
+			sessionGeneration: 4,
+		};
+		const messageId = `voice-handoff:${handoffId}`;
+		const identity = {
+			origin: "voice" as const,
+			voiceSessionId: "voice-session",
+			voiceHandoff,
+		};
+		const deliveryId = chatDeliveryId(args.leadId, messageId, identity);
+
+		const envelope = normalizeChatDeliveryEnvelope({
+			v: 1,
+			deliveryId,
+			priority: 1,
+			...args,
+			messageId,
+			...identity,
+		});
+		expect(
+			parseChatDeliveryEnvelope(encodeChatDeliveryEnvelope(envelope)),
+		).toEqual(envelope);
+		expect(renderDiscordChatContent(envelope)).toContain(
+			'handoff_id="018f47d2-7b64-7b42-a3df-123456789abc"',
+		);
+		expect(
+			ingestDiscordChat({
+				dbPath,
+				...args,
+				messageId,
+				...identity,
+				founderId: args.authorId,
+			}),
+		).toMatchObject({ lane: "inserted_inbox" });
+	});
+
+	it("keeps synthetic message identities closed outside the exact voice handoff binding", () => {
+		const { args } = fixture();
+		const handoffId = "018f47d2-7b64-7b42-a3df-123456789abc";
+		const messageId = `voice-handoff:${handoffId}`;
+		const metadata = {
+			version: 1,
+			handoffId,
+			intentKind: "query",
+			requestDigest: "b".repeat(64),
+			targetLeadId: args.leadId,
+			transcriptId: "transcript-1",
+			utteranceId: "utterance-1",
+			sessionGeneration: 4,
+		};
+
+		expect(() => chatDeliveryId(args.leadId, messageId)).toThrow(
+			"synthetic messageId requires voice session binding",
+		);
+		expect(() =>
+			chatDeliveryId(args.leadId, messageId, {
+				origin: "voice",
+				voiceSessionId: "voice-session",
+				voiceHandoff: {
+					...metadata,
+					handoffId: "018f47d2-7b64-7b42-a3df-abcdefabcdef",
+				},
+			}),
+		).toThrow("voice handoff messageId does not match handoffId");
+	});
+
 	it("preserves attachment identity and exposes missing identity as unavailable metadata", () => {
 		const { args } = fixture();
 		const identified = normalizeChatDeliveryEnvelope({
@@ -547,6 +624,95 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		expect(claimed.map(({ source_ref }) => source_ref)).toEqual([
 			`chat:${args.leadId}:223456789012345678`,
 			`chat:${args.leadId}:223456789012345679`,
+		]);
+		queue.close();
+	});
+
+	it("claims every voice handoff as its own batch even beside same-route chat", () => {
+		const { dbPath, args } = fixture();
+		const handoffIds = [
+			"018f47d2-7b64-7b42-a3df-123456789abc",
+			"018f47d2-7b64-7b42-a3df-123456789abd",
+		];
+		const ingestHandoff = (handoffId: string, ts: string) =>
+			ingestDiscordChat({
+				dbPath,
+				leadId: args.leadId,
+				chatId: args.chatId,
+				originChannelId: args.chatId,
+				messageId: `voice-handoff:${handoffId}`,
+				authorId: args.authorId,
+				authorName: "Founder voice",
+				founderId: args.authorId,
+				ts,
+				msgKind: "guild",
+				attachments: [],
+				text: `question ${handoffId}`,
+				origin: "voice",
+				voiceSessionId: "voice-session",
+				voiceHandoff: {
+					version: 1,
+					handoffId,
+					intentKind: "query",
+					requestDigest: "a".repeat(64),
+					targetLeadId: args.leadId,
+					transcriptId: `transcript-${handoffId}`,
+					utteranceId: `utterance-${handoffId}`,
+					sessionGeneration: 4,
+				},
+			});
+		ingestHandoff(handoffIds[0]!, "2026-08-10T12:00:00.000Z");
+		ingestDiscordChat({
+			dbPath,
+			leadId: args.leadId,
+			chatId: args.chatId,
+			originChannelId: args.chatId,
+			messageId: "223456789012345679",
+			authorId: args.authorId,
+			authorName: "Founder",
+			founderId: args.authorId,
+			ts: "2026-08-10T12:00:05.000Z",
+			msgKind: "guild",
+			attachments: [],
+			text: "plain chat in the same Lead channel",
+		});
+		ingestHandoff(handoffIds[1]!, "2026-08-10T12:00:10.000Z");
+		const queue = new MailboxQueue(dbPath);
+		expect(
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "owner",
+				now: "2026-08-10T12:00:20.000Z",
+				leaseTtlMs: 60_000,
+			}),
+		).toBe(true);
+		const claim = (batchId: string) => {
+			const rows = queue.claimLeadBatchQueue({
+				toAgent: args.leadId,
+				msgClass: "model",
+				ownerEpoch: "owner",
+				batchId,
+				now: "2026-08-10T12:00:20.000Z",
+				transportClaimTtlMs: 60_000,
+				batchWindowMs: 30_000,
+				batchMaxSize: 10,
+				inflightMaxBatches: 5,
+				partitionKey: discordBatchPartitionKey,
+			});
+			expect(
+				queue.ackBatch({
+					batchId,
+					ownerEpoch: "owner",
+					memberIds: rows.map(({ delivery_id }) => delivery_id),
+					now: "2026-08-10T12:00:20.000Z",
+				}),
+			).toBe(true);
+			return rows.map(({ source_ref }) => source_ref);
+		};
+
+		expect([claim("b1"), claim("b2"), claim("b3")]).toEqual([
+			[`chat:${args.leadId}:voice-handoff:${handoffIds[0]}`],
+			[`chat:${args.leadId}:223456789012345679`],
+			[`chat:${args.leadId}:voice-handoff:${handoffIds[1]}`],
 		]);
 		queue.close();
 	});

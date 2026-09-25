@@ -48,6 +48,7 @@ function make(
 		dbPath?: string;
 		now?: () => number;
 		proactiveEventIdTtlMs?: number;
+		resolveDeliveryContext?: (entryId: string) => string | undefined;
 	} = {},
 ) {
 	return new CodexOutboundSender({
@@ -60,6 +61,7 @@ function make(
 		post: opts.post,
 		now: opts.now ?? (() => 1000),
 		proactiveEventIdTtlMs: opts.proactiveEventIdTtlMs,
+		resolveDeliveryContext: opts.resolveDeliveryContext,
 	});
 }
 
@@ -571,13 +573,20 @@ it("persists parent delivery context across outbox restart and refuses a changed
 			status: 200,
 			body: JSON.stringify({ status: "sent", messageId: "message" }),
 		}));
-		sender = make({ dbPath: path, post });
+		sender = make({
+			dbPath: path,
+			post,
+			resolveDeliveryContext: (entryId) =>
+				entryId === "entry-1"
+					? "chat:lead-1:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc"
+					: undefined,
+		});
 		await sender.deliver("entry-1:out");
 		expect(post.mock.calls[0]?.[0]).toMatchObject({
 			deliveryContext: "entry-1",
 		});
-		expect(JSON.parse(post.mock.calls[0]![0].body)).not.toHaveProperty(
-			"deliveryContext",
+		expect(JSON.parse(post.mock.calls[0]![0].body).deliveryContext).toBe(
+			"chat:lead-1:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc",
 		);
 		expect(() =>
 			sender.getDeliveryStatus("entry-1:out", {
@@ -594,10 +603,19 @@ it("persists parent delivery context across outbox restart and refuses a changed
 	}
 });
 
-it("refuses a context-bearing row on the legacy HTTP transport without a network call", async () => {
-	const fetcher = vi.fn();
+it("keeps the local journal entry private while sending only its normalized voice delivery binding", async () => {
+	const fetcher = vi.fn(async (_url: string, init: { body: string }) => ({
+		status: 200,
+		text: async () => JSON.stringify({ status: "sent", messageId: "message" }),
+		requestBody: init.body,
+	}));
 	vi.stubGlobal("fetch", fetcher);
-	const sender = make();
+	const sender = make({
+		resolveDeliveryContext: (entryId) =>
+			entryId === "entry"
+				? "chat:lead-1:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc"
+				: undefined,
+	});
 	try {
 		const id = await sender.enqueue({
 			leadId: "lead-1",
@@ -605,10 +623,13 @@ it("refuses a context-bearing row on the legacy HTTP transport without a network
 			idempotencyKey: "entry:out",
 			deliveryContext: "entry",
 		});
-		await expect(sender.deliver(id)).rejects.toThrow(
-			"delivery_context_transport_required",
+		await expect(sender.deliver(id)).resolves.toBeUndefined();
+		expect(fetcher).toHaveBeenCalledOnce();
+		const body = JSON.parse(fetcher.mock.calls[0]![1].body);
+		expect(body.deliveryContext).toBe(
+			"chat:lead-1:voice-handoff:018f47d2-7b64-7b42-a3df-123456789abc",
 		);
-		expect(fetcher).not.toHaveBeenCalled();
+		expect(JSON.stringify(body)).not.toContain('"entry"');
 	} finally {
 		sender.close();
 		vi.unstubAllGlobals();

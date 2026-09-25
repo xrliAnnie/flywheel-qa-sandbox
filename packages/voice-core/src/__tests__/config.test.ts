@@ -4,6 +4,7 @@ import {
 	verifyAnnounceComponents,
 	verifyBrainComponents,
 	verifyConverseComponents,
+	verifyOpenAiLiveComponents,
 } from "../config.js";
 import type { VoiceError } from "../types.js";
 
@@ -41,6 +42,18 @@ describe("resolveConfig", () => {
 		expect(c.edgeTts.args).toEqual(["-m", "edge_tts"]);
 	});
 
+	it("configures bounded incremental edge-tts separately from the legacy CLI", () => {
+		const defaults = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		expect(defaults.edgeTts.streamCommand).toBe("python3");
+		expect(defaults.edgeTts.streamMaxBufferedBytes).toBe(1024 * 1024);
+		const configured = resolveConfig({}, {
+			FLYWHEEL_VOICE_EDGE_TTS_STREAM_CMD: "/venv/bin/python",
+			FLYWHEEL_VOICE_EDGE_TTS_STREAM_MAX_BYTES: "2048",
+		} as NodeJS.ProcessEnv);
+		expect(configured.edgeTts.streamCommand).toBe("/venv/bin/python");
+		expect(configured.edgeTts.streamMaxBufferedBytes).toBe(2048);
+	});
+
 	it("defaults edge-tts command + gemini apiKeyEnv", () => {
 		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
 		expect(c.edgeTts.command).toBe("edge-tts");
@@ -50,6 +63,40 @@ describe("resolveConfig", () => {
 	it("defaults gemini model to the live-verified gemini-3.1-flash-live-preview", () => {
 		const c = resolveConfig({}, {});
 		expect(c.gemini.model).toBe("gemini-3.1-flash-live-preview");
+	});
+
+	it("pins the OpenAI Live protocol while keeping model and endpoint configurable", () => {
+		const defaults = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		expect(defaults.openaiLive).toEqual({
+			model: "gpt-live-1",
+			endpoint: "wss://api.openai.com/v1/live/sessions",
+			apiKeyEnv: "OPENAI_API_KEY",
+			protocolVersion: 1,
+			contextMaxTokens: 500,
+			voice: "marin",
+			delegation: "client",
+			announcerBackendId: "edge-tts",
+			announcerVoice: "zh-CN-XiaoxiaoNeural",
+		});
+
+		const configured = resolveConfig(
+			{
+				openaiLive: {
+					model: "gpt-live-override",
+					endpoint: "wss://api.openai.com/override",
+					contextMaxTokens: 321,
+				},
+			},
+			{
+				FLYWHEEL_VOICE_OPENAI_LIVE_MODEL: "gpt-live-env",
+				FLYWHEEL_VOICE_OPENAI_LIVE_ENDPOINT: "wss://api.openai.com/from-env",
+			} as NodeJS.ProcessEnv,
+		);
+		expect(configured.openaiLive.model).toBe("gpt-live-override");
+		expect(configured.openaiLive.endpoint).toBe(
+			"wss://api.openai.com/override",
+		);
+		expect(configured.openaiLive.contextMaxTokens).toBe(321);
 	});
 
 	it("resolves micDevice: override > env > ':default'", () => {
@@ -69,7 +116,11 @@ describe("fail-fast component checks", () => {
 		// resolveConfig itself always defaults the command, so hand-build the bad shape.
 		const c = {
 			...resolveConfig({}, {} as NodeJS.ProcessEnv),
-			edgeTts: { command: "", args: [] },
+			edgeTts: {
+				...resolveConfig({}, {} as NodeJS.ProcessEnv).edgeTts,
+				command: "",
+				args: [],
+			},
 		};
 		const err = catchErr(() => verifyAnnounceComponents(c));
 		expect((err as VoiceError).code).toBe("component-missing");
@@ -94,6 +145,45 @@ describe("fail-fast component checks", () => {
 		expect(() =>
 			verifyConverseComponents(c, { GEMINI_API_KEY: "k" } as NodeJS.ProcessEnv),
 		).not.toThrow();
+	});
+
+	it("OpenAI Live: rejects missing credentials and endpoints outside the TLS allowlist", () => {
+		const config = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		expect(() =>
+			verifyOpenAiLiveComponents(config, {} as NodeJS.ProcessEnv),
+		).toThrow(/语音不可用.*OPENAI_API_KEY/);
+		expect(() =>
+			verifyOpenAiLiveComponents(
+				{
+					...config,
+					openaiLive: {
+						...config.openaiLive,
+						endpoint: "ws://attacker.invalid/live",
+					},
+				},
+				{ OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+			),
+		).toThrow(/语音不可用.*TLS allowlist/);
+		expect(() =>
+			verifyOpenAiLiveComponents(config, {
+				OPENAI_API_KEY: "test-key",
+			} as NodeJS.ProcessEnv),
+		).not.toThrow();
+	});
+
+	it("OpenAI Live: rejects a missing or non-Edge announcer face", () => {
+		const config = resolveConfig({}, {} as NodeJS.ProcessEnv);
+		for (const announcerBackendId of ["", "gemini-live"]) {
+			expect(() =>
+				verifyOpenAiLiveComponents(
+					{
+						...config,
+						openaiLive: { ...config.openaiLive, announcerBackendId },
+					},
+					{ OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+				),
+			).toThrow(/语音不可用.*announcer.*edge-tts/i);
+		}
 	});
 
 	it("brain: throws when identity file unset or missing", () => {

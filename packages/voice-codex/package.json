@@ -9,8 +9,7 @@
 		"flywheel-voice": "dist/cli.js"
 	},
 	"files": [
-		"dist",
-		"models"
+		"dist"
 	],
 	"scripts": {
 		"build": "tsc",
@@ -22,7 +21,7 @@
 		"flywheel-teamlead": "workspace:*",
 		"flywheel-voice-bridge": "workspace:*",
 		"flywheel-voice-core": "workspace:*",
-		"onnxruntime-node": "1.29.0",
+		"flywheel-voice-headphone": "workspace:*",
 		"@discordjs/voice": "0.19.2",
 		"ws": "8.19.0"
 	},
