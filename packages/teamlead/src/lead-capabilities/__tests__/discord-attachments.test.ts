@@ -157,6 +157,71 @@ it("applies the narrow inbound text policy and preserves an allowed UTF-8 charse
 	).toBeNull();
 });
 
+it("evaluates an untyped attachment independently from a valid image in the same message", async () => {
+	const badAttachmentId = "444444444444444444";
+	const image = Buffer.alloc(24);
+	Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").copy(image);
+	image.writeUInt32BE(2, 16);
+	image.writeUInt32BE(3, 20);
+	const message = {
+		id: messageId,
+		channel_id: threadId,
+		attachments: [
+			{
+				id: badAttachmentId,
+				size: 10,
+				url: `https://cdn.discordapp.com/attachments/${threadId}/${badAttachmentId}/unknown.bin`,
+			},
+			{
+				id: attachmentId,
+				size: image.length,
+				content_type: "image/png",
+				url: `https://cdn.discordapp.com/attachments/${threadId}/${attachmentId}/image.png`,
+			},
+		],
+	};
+	const fetchImpl = vi.fn<typeof fetch>(async (url) =>
+		String(url).includes("/api/v10/")
+			? Response.json(message)
+			: new Response(image, {
+					headers: {
+						"content-length": String(image.length),
+						"content-type": "image/png",
+					},
+				}),
+	);
+	const common = {
+		threadId,
+		messageId,
+		botToken: "PRIVATE_TOKEN",
+		secrets: ["PRIVATE_TOKEN"],
+		signal: AbortSignal.timeout(15_000),
+		assertCurrent: () => {},
+		fetchImpl,
+	};
+
+	await expect(
+		fetchInboundDiscordAttachment({
+			...common,
+			attachmentId,
+			expected: { mimeType: "image/png", sizeBytes: image.length },
+		}),
+	).resolves.toEqual({ data: image, mimeType: "image/png" });
+	await expect(
+		fetchInboundDiscordAttachment({
+			...common,
+			attachmentId: badAttachmentId,
+			expected: { mimeType: "image/png", sizeBytes: 10 },
+		}),
+	).rejects.toMatchObject({ reason: "invalid_metadata" });
+	expect(fetchImpl).toHaveBeenCalledTimes(3);
+	expect(
+		fetchImpl.mock.calls.some(([url]) =>
+			String(url).includes(`/${badAttachmentId}/`),
+		),
+	).toBe(false);
+});
+
 it("revalidates authority at fetch boundaries instead of every body chunk", async () => {
 	const data = Buffer.alloc(64, 0x61);
 	const assertCurrent = vi.fn();

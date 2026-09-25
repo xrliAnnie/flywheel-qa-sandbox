@@ -64,7 +64,7 @@ const inboundAttachmentSchema = z.object({
 const inboundMessageSchema = z.object({
 	id: snowflake,
 	channel_id: snowflake,
-	attachments: z.array(inboundAttachmentSchema).max(10),
+	attachments: z.array(z.looseObject({})).max(10),
 });
 const inboundLimits = new Map<string, number>([
 	["image/png", 5 * 1024 * 1024],
@@ -255,7 +255,12 @@ export async function fetchInboundDiscordAttachment(options: {
 		);
 		if (matches.length === 0) throw inboundFailure("not_found");
 		if (matches.length !== 1) throw inboundFailure("invalid_metadata");
-		const attachment = matches[0]!;
+		let attachment: z.infer<typeof inboundAttachmentSchema>;
+		try {
+			attachment = inboundAttachmentSchema.parse(matches[0]);
+		} catch {
+			throw inboundFailure("invalid_metadata");
+		}
 		const declaredMime = normalizeInboundMime(attachment.content_type);
 		if (!declaredMime) throw inboundFailure("unsupported_type");
 		if (
