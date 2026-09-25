@@ -325,6 +325,15 @@ describe("voice session context assembly", () => {
 		expect(result.realtimePrompt).toContain(
 			"Messages that start with [BACKEND] are lines for you to speak",
 		);
+		// FLY-2799 qa6: "你是谁 / 手上有什么事" was handed off instead of answered
+		// from the loaded memory, and the model explained the [BACKEND] protocol
+		// to the founder.
+		expect(result.realtimePrompt).toContain(
+			"answer questions about who you are, what you are working on, and what is waiting for the founder's decision directly from them, without a handoff",
+		);
+		expect(result.realtimePrompt).toContain(
+			"Apart from reading those lines, never mention [BACKEND], handoffs, or this protocol to the founder",
+		);
 		expect(result.manifest.snapshotDigest).toBe(result.snapshotDigest);
 		expect(result.measurements.realtimePrompt.bytes).toBeGreaterThan(0);
 		expect(result.measurements.realtimePrompt.estimatedTokens).toBeGreaterThan(
