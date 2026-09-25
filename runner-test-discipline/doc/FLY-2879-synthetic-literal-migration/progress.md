@@ -1,14 +1,14 @@
 ---
 issue: FLY-2879
 phase: implement
-phaseCursor: 4/5
-updated: 2026-09-25T10:21:28.609Z
-nextStep: Commit the verified migration, finalize progress, and add milestone as
-  the last commit
+phaseCursor: 5/5
+updated: 2026-09-25T10:21:48.396Z
+nextStep: Add the required milestone as the last commit, request exact-head code
+  review, then open the PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2879 progress
-**phase**: implement (4/5)
-**next**: Commit the verified migration, finalize progress, and add milestone as the last commit
+**phase**: implement (5/5)
+**next**: Add the required milestone as the last commit, request exact-head code review, then open the PR
