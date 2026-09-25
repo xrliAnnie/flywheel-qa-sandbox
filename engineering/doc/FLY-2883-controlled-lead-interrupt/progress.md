@@ -1,13 +1,13 @@
 ---
 issue: FLY-2883
-phase: design
-phaseCursor: 7/7
-updated: 2026-09-25T20:56:14.251Z
-nextStep: design complete (plan v4 approved R4); implement only after FLY-2882 merges
+phase: implement
+phaseCursor: 0/8
+updated: 2026-09-25T20:57:31.718Z
+nextStep: audit code; StateStore lead_interrupts tables (TDD)
 chunks: []
 pointers: {}
 ---
 
 # FLY-2883 progress
-**phase**: design (7/7)
-**next**: design complete (plan v4 approved R4); implement only after FLY-2882 merges
+**phase**: implement (0/8)
+**next**: audit code; StateStore lead_interrupts tables (TDD)
