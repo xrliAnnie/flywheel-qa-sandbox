@@ -18,6 +18,7 @@ import {
 	LeadInboxRuntime,
 	resolveCodexLeadStateDir,
 } from "../lead-inbox-runtime.js";
+import { leadInterruptEnqueueInput } from "../lead-interrupt-routes.js";
 import type { LeadEventEnvelope, LeadRuntime } from "../lead-runtime.js";
 import { RuntimeRegistry } from "../runtime-registry.js";
 
@@ -2301,4 +2302,105 @@ it("rejects audit-only queue admission even after archival and raw registry disp
 		store.close();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+describe("FLY-2883 controlled interrupt wiring", () => {
+	it("steers a Codex Lead's letter through deliverInterrupt and mails a Claude Lead's", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2883-runtime-"));
+		const dbPath = join(root, "project-a.db");
+		new CommDB(dbPath).close();
+		const store = await StateStore.create(":memory:");
+		const twoLeads: ProjectEntry[] = [
+			{
+				...projects[0]!,
+				leads: [
+					...projects[0]!.leads,
+					{
+						agentId: "lead-codex",
+						summaryRole: "producer",
+						chatChannel: "chat-codex",
+						match: { labels: ["Ops"] },
+						backend: "codex-app-server",
+					},
+				],
+			},
+		];
+		const queue = new MailboxQueue(dbPath);
+		const seed = (
+			interruptId: string,
+			leadId: string,
+			backend: "claude-code" | "codex-app-server",
+		) => {
+			const row = store.leadInterrupts.createRequested({
+				interruptId,
+				initiatorKind: "voice_session",
+				initiatorRef: "10000000-0000-4000-8000-000000000001",
+				idempotencyKey: `idem-${interruptId}`,
+				requestDigest: "a".repeat(64),
+				founderMessageId: "300000000000000001",
+				targetProject: "project-a",
+				targetLeadId: leadId,
+				targetBackend: backend,
+				body: "你现在在做什么?",
+				bodyDigest: "b".repeat(64),
+				now: new Date().toISOString(),
+			});
+			queue.enqueue(leadInterruptEnqueueInput(row));
+			store.leadInterrupts.transition({
+				interruptId,
+				from: ["requested"],
+				to: "queued",
+				event: "enqueued",
+				now: new Date().toISOString(),
+			});
+		};
+		const codexId = "li_00000000-0000-4000-8000-00000000c0de";
+		const claudeId = "li_00000000-0000-4000-8000-00000000c1a0";
+		seed(codexId, "lead-codex", "codex-app-server");
+		seed(claudeId, "lead-a", "claude-code");
+		queue.close();
+		const receiptFor = (batch: {
+			batchId: string;
+			members: readonly { deliveryId: string }[];
+		}) => ({
+			batchId: batch.batchId,
+			memberIds: batch.members.map((member) => member.deliveryId),
+			status: "accepted_new" as const,
+		});
+		const deliverBatch = vi.fn(async (batch) => receiptFor(batch));
+		const deliverInterrupt = vi.fn(async (batch) => ({
+			outcome: "steered" as const,
+			receipt: receiptFor(batch),
+		}));
+		const runtime = new LeadInboxRuntime({
+			projects: twoLeads,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2883",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch, deliverInterrupt }),
+		});
+		runtimes.push(runtime);
+		try {
+			runtime.start();
+			await vi.waitFor(() => {
+				expect(store.leadInterrupts.get(codexId)?.disposition).toBe("steered");
+				expect(store.leadInterrupts.get(claudeId)?.disposition).toBe(
+					"mailbox_only",
+				);
+			});
+			expect(deliverInterrupt).toHaveBeenCalledTimes(1);
+			expect(deliverInterrupt.mock.calls[0]?.[0].leadId).toBe("lead-codex");
+			expect(deliverBatch).toHaveBeenCalledTimes(1);
+			expect(deliverBatch.mock.calls[0]?.[0].leadId).toBe("lead-a");
+			expect(store.leadInterrupts.get(claudeId)?.dispositionReason).toBe(
+				"pane_judge_unavailable",
+			);
+		} finally {
+			runtime.close();
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });

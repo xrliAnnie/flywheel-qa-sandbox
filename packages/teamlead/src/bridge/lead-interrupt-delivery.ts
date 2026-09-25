@@ -18,6 +18,7 @@
 
 import type { MailboxRow } from "flywheel-comm/mailbox-queue";
 import type {
+	CodexInterruptResult,
 	DurableAcceptReceipt,
 	LeadDeliveryBatch,
 } from "./lead-delivery-adapter.js";
@@ -63,17 +64,7 @@ export interface LeadInterruptLoopHooks {
 	): Promise<LeadInterruptDecision>;
 }
 
-export type CodexInterruptResult =
-	| {
-			outcome: "steered" | "queued_turn";
-			receipt: DurableAcceptReceipt;
-	  }
-	| {
-			outcome: "mailbox_only";
-			reason: "steer_unsupported";
-			receipt: DurableAcceptReceipt;
-	  }
-	| { outcome: "steer_failed"; detail: string };
+export type { CodexInterruptResult } from "./lead-delivery-adapter.js";
 
 export type ClaudePaneAssessment =
 	| { state: "busy_safe" }

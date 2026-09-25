@@ -353,20 +353,28 @@ export class LeadInboxRuntime {
 						lead.backend,
 						process.env.FLYWHEEL_LEAD_BACKEND,
 					).backend;
+					const adapter = adapterForLead(project, lead);
 					const loop = new LeadInboxLoop({
 						queue,
 						leadId: lead.agentId,
 						ownerEpoch: this.ownerEpoch,
-						adapter: adapterForLead(project, lead),
-						// FLY-2883: controlled interrupt letters. The Codex steer and the
-						// Claude pane nudge plug in here; until then both fall back to
-						// ordinary mail (recorded as mailbox_only).
+						adapter,
+						// FLY-2883: controlled interrupt letters. Codex steers through the
+						// sidecar (ordinary input when it lacks the capability); the Claude
+						// pane nudge plugs in here with the FLY-2882 pane reader, until
+						// then Claude letters are ordinary mail (recorded mailbox_only).
 						interruptHooks: createLeadInterruptHooks({
 							interrupts: () => opts.store.leadInterrupts,
 							projectName: project.projectName,
 							leadId: lead.agentId,
 							backend: leadBackend,
 							now: () => new Date().toISOString(),
+							...(leadBackend === "codex-app-server" && adapter.deliverInterrupt
+								? {
+										codexDeliverInterrupt: (batch) =>
+											adapter.deliverInterrupt!(batch),
+									}
+								: {}),
 						}),
 						queueConfig: resolveMailboxQueueConfig,
 						recipientState: () =>
