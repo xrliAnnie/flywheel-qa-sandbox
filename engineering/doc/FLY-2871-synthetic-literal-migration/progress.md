@@ -1,13 +1,13 @@
 ---
 issue: FLY-2871
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-25T07:13:56.453Z
-nextStep: Update exact assertions and capture expected RED
+phaseCursor: 2/4
+updated: 2026-09-25T07:15:44.616Z
+nextStep: Apply minimal production literal migration; run targeted GREEN verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2871 progress
-**phase**: implement (1/4)
-**next**: Update exact assertions and capture expected RED
+**phase**: implement (2/4)
+**next**: Apply minimal production literal migration; run targeted GREEN verification
