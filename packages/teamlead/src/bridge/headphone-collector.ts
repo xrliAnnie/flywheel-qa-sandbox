@@ -152,6 +152,12 @@ export async function fetchDiscordHeadphonePage(
 	return { kind: "page", messages };
 }
 
+/** FLY-2863 F1: a backfill reads history no older than this (the agenda never
+ * replays history; its own windows are 24 h). */
+export const DEFAULT_HEADPHONE_BOOTSTRAP_WINDOW_MS = 86_400_000;
+/** FLY-2863 F1: hard backstop when a channel is busier than the window allows. */
+export const DEFAULT_HEADPHONE_BOOTSTRAP_MAX_PAGES = 10;
+
 export interface HeadphoneCollectorOptions {
 	store: HeadphoneInboxStore;
 	listScopes(): readonly HeadphoneCollectorScope[];
@@ -184,6 +190,10 @@ export interface HeadphoneCollectorOptions {
 	now?: () => number;
 	minimumPageIntervalMs?: number;
 	notificationsPending?(): boolean;
+	/** A backfill ends at the first page whose oldest message is older than this. */
+	bootstrapWindowMs?: number;
+	/** A backfill ends after this many history pages, whichever bound comes first. */
+	bootstrapMaxPages?: number;
 }
 
 export type HeadphoneCollectorTick =
@@ -228,12 +238,21 @@ function sourceTime(state: HeadphoneInboxSourceState | undefined): number {
 export class HeadphoneInboxCollector {
 	private readonly now: () => number;
 	private readonly minimumPageIntervalMs: number;
+	private readonly bootstrapWindowMs: number;
+	private readonly bootstrapMaxPages: number;
 	private nextPageAt = 0;
 	private running?: Promise<HeadphoneCollectorTick>;
 
 	constructor(private readonly options: HeadphoneCollectorOptions) {
 		this.now = options.now ?? Date.now;
 		this.minimumPageIntervalMs = options.minimumPageIntervalMs ?? 5_000;
+		this.bootstrapWindowMs =
+			options.bootstrapWindowMs ?? DEFAULT_HEADPHONE_BOOTSTRAP_WINDOW_MS;
+		this.bootstrapMaxPages =
+			options.bootstrapMaxPages ?? DEFAULT_HEADPHONE_BOOTSTRAP_MAX_PAGES;
+		for (const value of [this.bootstrapWindowMs, this.bootstrapMaxPages])
+			if (!Number.isSafeInteger(value) || value < 1)
+				throw new Error("headphone_bootstrap_bound_invalid");
 	}
 
 	tick(): Promise<HeadphoneCollectorTick> {
@@ -412,7 +431,16 @@ export class HeadphoneInboxCollector {
 					.sort(snowflakeCompare)
 					.at(-1)
 			: candidate.state?.highWatermark;
-		const bootstrapComplete = bootstrap && result.messages.length < 100;
+		// A backfill pages only backwards, so new messages wait for it to end
+		// (FLY-2863 F1): end at a short page, the time window, or the page cap.
+		const bootstrapPages =
+			(candidate.state?.bootstrapPages ?? 0) + (bootstrap ? 1 : 0);
+		const oldestAt = ordered[0] ? Date.parse(ordered[0].timestamp) : Number.NaN;
+		const bootstrapComplete =
+			bootstrap &&
+			(result.messages.length < 100 ||
+				oldestAt < nowMs - this.bootstrapWindowMs ||
+				bootstrapPages >= this.bootstrapMaxPages);
 		const cursor = bootstrap
 			? bootstrapComplete
 				? highWatermark
@@ -437,6 +465,7 @@ export class HeadphoneInboxCollector {
 				highWatermark: highWatermark ?? undefined,
 				bootstrapComplete:
 					(candidate.state?.bootstrapComplete ?? false) || bootstrapComplete,
+				bootstrapPages,
 				health: "healthy",
 				nextAllowedAt: new Date(this.nextPageAt).toISOString(),
 				updatedAt,

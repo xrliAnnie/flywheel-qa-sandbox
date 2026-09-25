@@ -11718,6 +11718,7 @@ export async function startBridge(
 			store: store.headphoneInbox,
 			listScopes: listHeadphoneScopes,
 			fetchPage: fetchDiscordHeadphonePage,
+			bootstrapWindowMs: config.headphoneBootstrapWindowMs,
 			classifyMessages: (scope, messages) =>
 				headphoneQuestionAuthority.classifyMessages(scope, messages),
 			projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),

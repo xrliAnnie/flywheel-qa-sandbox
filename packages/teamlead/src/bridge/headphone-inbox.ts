@@ -85,6 +85,8 @@ export interface HeadphoneInboxSourceState {
 	updatedAt: string;
 	/** Latest founder message seen in this channel (reply watermark). */
 	founderLastMessageAt: string | null;
+	/** FLY-2863 F1: history pages read so far by this source's backfill. */
+	bootstrapPages: number;
 }
 
 export interface HeadphoneInboxUpsertInput {
@@ -310,9 +312,14 @@ export class HeadphoneInboxStore {
 			this.db.exec(
 				`ALTER TABLE voice_headphone_inbox ADD COLUMN origin_class TEXT CHECK(origin_class IS NULL OR origin_class IN (${HEADPHONE_ORIGIN_CLASSES.map((value) => `'${value}'`).join(",")}))`,
 			);
-		if (!columns("voice_headphone_source").has("founder_last_message_at"))
+		const sourceColumns = columns("voice_headphone_source");
+		if (!sourceColumns.has("founder_last_message_at"))
 			this.db.exec(
 				"ALTER TABLE voice_headphone_source ADD COLUMN founder_last_message_at TEXT",
+			);
+		if (!sourceColumns.has("bootstrap_pages"))
+			this.db.exec(
+				"ALTER TABLE voice_headphone_source ADD COLUMN bootstrap_pages INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_pages >= 0)",
 			);
 		const claimColumns = columns("voice_headphone_claim");
 		if (!claimColumns.has("attempt"))
@@ -928,6 +935,8 @@ export class HeadphoneInboxStore {
 		nextAllowedAt?: string;
 		updatedAt: string;
 		founderLastMessageAt?: string;
+		/** Omitted keeps the stored count (0 for a new source). */
+		bootstrapPages?: number;
 	}): void {
 		const founderLastMessageAt =
 			input.founderLastMessageAt === undefined
@@ -938,10 +947,11 @@ export class HeadphoneInboxStore {
 				`INSERT INTO voice_headphone_source
 				 (project_name, founder_user_id, channel_id, cursor, high_watermark,
 				  bootstrap_complete, health, health_reason, next_allowed_at, updated_at,
-				  founder_last_message_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				  founder_last_message_at, bootstrap_pages)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0))
 				 ON CONFLICT(project_name, founder_user_id, channel_id) DO UPDATE SET
 				 cursor=excluded.cursor, high_watermark=excluded.high_watermark,
+				 bootstrap_pages=COALESCE(?, bootstrap_pages),
 				 bootstrap_complete=excluded.bootstrap_complete, health=excluded.health,
 				 health_reason=excluded.health_reason, next_allowed_at=excluded.next_allowed_at,
 				 updated_at=excluded.updated_at,
@@ -963,6 +973,8 @@ export class HeadphoneInboxStore {
 				input.nextAllowedAt ?? null,
 				input.updatedAt,
 				founderLastMessageAt,
+				input.bootstrapPages ?? null,
+				input.bootstrapPages ?? null,
 			);
 	}
 
@@ -975,7 +987,7 @@ export class HeadphoneInboxStore {
 			.prepare(
 				`SELECT project_name, founder_user_id, channel_id, cursor, high_watermark,
 				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at,
-				 founder_last_message_at
+				 founder_last_message_at, bootstrap_pages
 				 FROM voice_headphone_source
 				 WHERE project_name = ? AND founder_user_id = ? AND channel_id = ?`,
 			)
@@ -1007,7 +1019,7 @@ export class HeadphoneInboxStore {
 				.prepare(
 					`SELECT project_name, founder_user_id, channel_id, cursor, high_watermark,
 				 bootstrap_complete, health, health_reason, next_allowed_at, updated_at,
-				 founder_last_message_at
+				 founder_last_message_at, bootstrap_pages
 				 FROM voice_headphone_source WHERE project_name = ? AND founder_user_id = ?
 				 ORDER BY channel_id`,
 				)
@@ -1036,6 +1048,7 @@ export class HeadphoneInboxStore {
 				typeof row.founder_last_message_at === "string"
 					? row.founder_last_message_at
 					: null,
+			bootstrapPages: Number(row.bootstrap_pages ?? 0),
 		};
 	}
 }

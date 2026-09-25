@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseVoiceSessionTiming } from "../config.js";
+import {
+	parseHeadphoneBootstrapWindowMs,
+	parseVoiceSessionTiming,
+} from "../config.js";
 
 describe("voice session timing config", () => {
 	it("uses the reviewed lease and recovery defaults", () => {
@@ -31,5 +34,25 @@ describe("voice session timing config", () => {
 		expect(() =>
 			parseVoiceSessionTiming({ FLYWHEEL_VOICE_ENDING_TIMEOUT_MS: "1.5" }),
 		).toThrow(/FLYWHEEL_VOICE_ENDING_TIMEOUT_MS/);
+	});
+});
+
+describe("headphone backfill window config (FLY-2863 F1)", () => {
+	it("defaults to 24 hours and accepts a positive integer override", () => {
+		expect(parseHeadphoneBootstrapWindowMs({})).toBe(86_400_000);
+		expect(
+			parseHeadphoneBootstrapWindowMs({
+				FLYWHEEL_HEADPHONE_BOOTSTRAP_WINDOW_MS: "3600000",
+			}),
+		).toBe(3_600_000);
+	});
+
+	it("rejects a window that is not a positive integer", () => {
+		for (const bad of ["0", "1.5", "24h", ""])
+			expect(() =>
+				parseHeadphoneBootstrapWindowMs({
+					FLYWHEEL_HEADPHONE_BOOTSTRAP_WINDOW_MS: bad,
+				}),
+			).toThrow(/FLYWHEEL_HEADPHONE_BOOTSTRAP_WINDOW_MS/);
 	});
 });

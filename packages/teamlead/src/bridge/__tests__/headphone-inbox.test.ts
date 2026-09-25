@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
 import { speakRequestDigest, splitSpeechText } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,7 @@ import {
 	type HeadphoneCollectorOptions,
 	HeadphoneInboxCollector,
 } from "../headphone-collector.js";
+import { HeadphoneInboxStore } from "../headphone-inbox.js";
 import { HeadphoneQuestionAuthority } from "../headphone-question-authority.js";
 
 const T0 = "2026-09-23T20:00:00.000Z";
@@ -88,8 +90,12 @@ function createSession(suffix = "1", leaseTtlMs = 15_000) {
 	};
 }
 
-/** Discord channel history that honors `before` / `after` paging, newest first. */
-function fakeDiscordHistory(channelSizes: Record<string, number>) {
+/** Discord channel history that honors `before` / `after` paging, newest first.
+ * Message `n` is stamped `T0 + n × spacingMs`. */
+function fakeDiscordHistory(
+	channelSizes: Record<string, number>,
+	{ spacingMs = 1 }: { spacingMs?: number } = {},
+) {
 	const history = new Map<string, HeadphoneCollectorMessage[]>(
 		Object.keys(channelSizes).map((channelId) => [channelId, []]),
 	);
@@ -100,7 +106,9 @@ function fakeDiscordHistory(channelSizes: Record<string, number>) {
 			id: String(100_000_000_000_000_000n + seq),
 			authorId: "lead-1",
 			content,
-			timestamp: new Date(Date.parse(T0) + Number(seq)).toISOString(),
+			timestamp: new Date(
+				Date.parse(T0) + Number(seq) * spacingMs,
+			).toISOString(),
 		};
 		history.get(channelId)?.push(message);
 		return message;
@@ -126,7 +134,9 @@ function fakeDiscordHistory(channelSizes: Record<string, number>) {
 					.slice(-limit);
 		return { kind: "page", messages: [...page].reverse() };
 	};
-	return { fetchPage, pulls, post };
+	/** Just after the newest message posted so far. */
+	const nowAfterHistory = () => Date.parse(T0) + (Number(seq) + 1) * spacingMs;
+	return { fetchPage, pulls, post, nowAfterHistory };
 }
 
 function collectedMessageIds(channelId: string): Set<string> {
@@ -1106,5 +1116,205 @@ describe("HeadphoneInboxCollector", () => {
 				reason: "production_down",
 			}),
 		]);
+	});
+
+	// FLY-2863 QA@3 F1: a backfill only pages backwards, so new messages wait
+	// for it to finish. It must be bounded (time window, then a page cap).
+	async function backfillMainBesideThreads(input: {
+		spacingMs: number;
+		collectorOptions?: Record<string, unknown>;
+	}) {
+		const threads = Array.from({ length: 8 }, (_, index) =>
+			threadChannel(index),
+		);
+		const discord = fakeDiscordHistory(
+			{
+				[MAIN_CHANNEL]: 5000,
+				...Object.fromEntries(threads.map((channelId) => [channelId, 2])),
+			},
+			{ spacingMs: input.spacingMs },
+		);
+		let now = discord.nowAfterHistory();
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => [MAIN_CHANNEL, ...threads].map(sharedTokenScope),
+			fetchPage: discord.fetchPage,
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+			...input.collectorOptions,
+		});
+		const mainState = () =>
+			store.headphoneInbox.getSourceState(
+				"flywheel",
+				"founder-1",
+				MAIN_CHANNEL,
+			);
+		for (let tick = 0; tick < 120 && !mainState()?.bootstrapComplete; tick++) {
+			expect(await collector.tick()).toBe("collected");
+			now += 5_000;
+		}
+		const backfill = {
+			state: mainState(),
+			pulls: discord.pulls.get(MAIN_CHANNEL) ?? 0,
+		};
+		const live = discord.post(MAIN_CHANNEL, "FLY-9110 上线时间想跟你对一下");
+		// One rotation: each of the 9 sources is pulled once.
+		for (let tick = 0; tick < 9; tick++) {
+			expect(await collector.tick()).toBe("collected");
+			now += 5_000;
+		}
+		return { backfill, live, discord, threads };
+	}
+
+	it("caps a 5000-message main-channel backfill beside 8 threads and reads a new message within one rotation", async () => {
+		// Every message is inside the window, so the page cap (default 10) ends it.
+		const { backfill, live, discord, threads } =
+			await backfillMainBesideThreads({ spacingMs: 1 });
+
+		expect(backfill.state).toMatchObject({
+			bootstrapComplete: true,
+			bootstrapPages: 10,
+		});
+		expect(backfill.pulls).toBe(10);
+		const main = collectedMessageIds(MAIN_CHANNEL);
+		expect(main).toContain(live.id);
+		expect(main.size).toBe(10 * 100 + 1);
+		for (const channelId of threads)
+			expect(discord.pulls.get(channelId)).toBeGreaterThanOrEqual(1);
+	});
+
+	it("stops a backfill at the default 24 h window and reads a new message within one rotation", async () => {
+		// 5 minutes apart: a page spans 8 h 20 m, so page 3 reaches past 24 h.
+		const { backfill, live } = await backfillMainBesideThreads({
+			spacingMs: 300_000,
+		});
+
+		expect(backfill.state).toMatchObject({
+			bootstrapComplete: true,
+			bootstrapPages: 3,
+		});
+		expect(backfill.pulls).toBe(3);
+		expect(collectedMessageIds(MAIN_CHANNEL)).toContain(live.id);
+	});
+
+	it("honors a configured backfill window", async () => {
+		const { backfill, live } = await backfillMainBesideThreads({
+			spacingMs: 300_000,
+			collectorOptions: { bootstrapWindowMs: 10 * 3_600_000 },
+		});
+
+		expect(backfill.state).toMatchObject({
+			bootstrapComplete: true,
+			bootstrapPages: 2,
+		});
+		expect(collectedMessageIds(MAIN_CHANNEL)).toContain(live.id);
+	});
+
+	it("keeps the backfill page count across a collector restart", async () => {
+		const discord = fakeDiscordHistory({ [MAIN_CHANNEL]: 1000 });
+		let now = discord.nowAfterHistory();
+		const options = {
+			store: store.headphoneInbox,
+			listScopes: () => [sharedTokenScope(MAIN_CHANNEL)],
+			fetchPage: discord.fetchPage,
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+			bootstrapMaxPages: 3,
+		};
+		const mainState = () =>
+			store.headphoneInbox.getSourceState(
+				"flywheel",
+				"founder-1",
+				MAIN_CHANNEL,
+			);
+		const first = new HeadphoneInboxCollector(options);
+		for (let tick = 0; tick < 2; tick++) {
+			expect(await first.tick()).toBe("collected");
+			now += 5_000;
+		}
+		expect(mainState()).toMatchObject({
+			bootstrapComplete: false,
+			bootstrapPages: 2,
+		});
+
+		const restarted = new HeadphoneInboxCollector(options);
+		expect(await restarted.tick()).toBe("collected");
+		expect(mainState()).toMatchObject({
+			bootstrapComplete: true,
+			bootstrapPages: 3,
+		});
+		expect(discord.pulls.get(MAIN_CHANNEL)).toBe(3);
+	});
+
+	it("refuses a backfill bound that is not a positive integer", () => {
+		const base = {
+			store: store.headphoneInbox,
+			listScopes: () => [],
+			fetchPage: async () => ({ kind: "page" as const, messages: [] }),
+		};
+		for (const bad of [
+			{ bootstrapWindowMs: 0 },
+			{ bootstrapWindowMs: 1.5 },
+			{ bootstrapMaxPages: 0 },
+			{ bootstrapMaxPages: Number.NaN },
+		])
+			expect(() => new HeadphoneInboxCollector({ ...base, ...bad })).toThrow(
+				/headphone_bootstrap_bound_invalid/,
+			);
+	});
+});
+
+describe("HeadphoneInboxStore — backfill page count migration", () => {
+	it("adds the page count to a pre-FLY-2863 source table and keeps it when a write omits it", () => {
+		const db = new Database(":memory:");
+		try {
+			db.exec(`CREATE TABLE voice_headphone_source (
+				project_name TEXT NOT NULL,
+				founder_user_id TEXT NOT NULL,
+				channel_id TEXT NOT NULL,
+				cursor TEXT,
+				high_watermark TEXT,
+				bootstrap_complete INTEGER NOT NULL DEFAULT 0 CHECK(bootstrap_complete IN (0,1)),
+				health TEXT NOT NULL DEFAULT 'recovering' CHECK(health IN ('healthy','recovering','rate_limited','source_gap')),
+				health_reason TEXT,
+				next_allowed_at TEXT,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY(project_name, founder_user_id, channel_id)
+			)`);
+			db.prepare(
+				`INSERT INTO voice_headphone_source
+				 (project_name, founder_user_id, channel_id, cursor, bootstrap_complete, health, updated_at)
+				 VALUES ('flywheel', 'founder-1', 'legacy-channel', '100000000000000005', 0, 'healthy', ?)`,
+			).run(T0);
+			const inbox = new HeadphoneInboxStore(db);
+			inbox.migrate();
+
+			expect(
+				inbox.getSourceState("flywheel", "founder-1", "legacy-channel"),
+			).toMatchObject({
+				cursor: "100000000000000005",
+				bootstrapComplete: false,
+				bootstrapPages: 0,
+			});
+			const write = (bootstrapPages?: number) =>
+				inbox.setSourceState({
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					channelId: "legacy-channel",
+					cursor: "100000000000000004",
+					bootstrapComplete: false,
+					health: "healthy",
+					updatedAt: T1,
+					...(bootstrapPages === undefined ? {} : { bootstrapPages }),
+				});
+			write(4);
+			write();
+			expect(
+				inbox.getSourceState("flywheel", "founder-1", "legacy-channel")
+					?.bootstrapPages,
+			).toBe(4);
+		} finally {
+			db.close();
+		}
 	});
 });

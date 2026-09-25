@@ -97,6 +97,8 @@ export interface BridgeConfig {
 		/** How long the bot waits in the room for the founder before giving up. */
 		presenceGraceMs?: number;
 	};
+	/** FLY-2863 F1: headphone inbox backfill window (FLYWHEEL_HEADPHONE_BOOTSTRAP_WINDOW_MS). */
+	headphoneBootstrapWindowMs?: number;
 }
 
 // ──────────────────────────────────────────────────────────────────────

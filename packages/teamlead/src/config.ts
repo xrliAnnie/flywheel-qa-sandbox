@@ -21,6 +21,17 @@ function parsePositiveInt(
 	return n;
 }
 
+/** FLY-2863 F1: how far back a headphone inbox backfill reads (default 24 h). */
+export function parseHeadphoneBootstrapWindowMs(
+	env: Readonly<Record<string, string | undefined>>,
+): number {
+	const name = "FLYWHEEL_HEADPHONE_BOOTSTRAP_WINDOW_MS";
+	const raw = env[name];
+	if (raw !== undefined && !/^[1-9]\d*$/.test(raw))
+		throw new Error(`Invalid ${name}: ${raw} (must be a positive integer)`);
+	return parsePositiveInt(raw, 86_400_000, name);
+}
+
 export function parseVoiceSessionTiming(
 	env: Readonly<Record<string, string | undefined>>,
 ): NonNullable<BridgeConfig["voiceSessionTiming"]> {
@@ -246,5 +257,6 @@ export function loadConfig(): BridgeConfig {
 		// when unset, invalid-without-master, or blank — byte-compatible).
 		geminiAgentToken,
 		voiceSessionTiming: parseVoiceSessionTiming(process.env),
+		headphoneBootstrapWindowMs: parseHeadphoneBootstrapWindowMs(process.env),
 	};
 }
