@@ -66,6 +66,14 @@ export {
 	LiveUtteranceAssembler,
 	type LiveUtteranceAssemblerOptions,
 } from "./backends/openai-live/LiveUtteranceAssembler.js";
+export {
+	assertOpenAiTtsEndpoint,
+	DEFAULT_OPENAI_TTS_ENDPOINT,
+	DEFAULT_OPENAI_TTS_MODEL,
+	OPENAI_TTS_BACKEND_ID,
+	OpenAiTts,
+	type OpenAiTtsOptions,
+} from "./backends/openai-tts/OpenAiTts.js";
 // backends + registry
 export {
 	assertBackendConsistent,

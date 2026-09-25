@@ -8,9 +8,8 @@ import { createDiscordDeps } from "flywheel-voice-bridge";
 import {
 	buildGptLiveBackend,
 	CompositeSpeech,
-	EdgeTts,
-	FfmpegPcmDecoder,
 	JsonlTranscriptSink,
+	OpenAiTts,
 	type RoomIO,
 	resolveConfig as resolveVoiceCoreConfig,
 	type VoiceHandoffIntentKind,
@@ -32,7 +31,10 @@ import {
 import { VoiceDaemon, type VoiceSessionContext } from "./daemon.js";
 import { VoiceDelivery } from "./delivery.js";
 import { DiscordVoiceRoom } from "./discord-room.js";
-import { createEngineAHeadphoneSession } from "./engine-a-composition.js";
+import {
+	createEngineAHeadphoneSession,
+	resolveEngineAVoice,
+} from "./engine-a-composition.js";
 import { EvidenceLog } from "./evidence.js";
 import {
 	logVoiceHealthSuccess,
@@ -353,6 +355,12 @@ export async function main(): Promise<void> {
 							control: HeadphoneControl,
 						) => {
 							const coreConfig = resolveVoiceCoreConfig({}, process.env);
+							// FLY-2863 §5: the Lead's own GPT voice for the Live face and
+							// the announcer alike; never a synthetic (edge-tts) voice.
+							const speaker = resolveEngineAVoice(
+								context.projection,
+								process.env,
+							);
 							const liveBackend = buildGptLiveBackend(coreConfig, {
 								apiKey: config.realtimeApiKey,
 							});
@@ -370,26 +378,27 @@ export async function main(): Promise<void> {
 										message: error.message,
 									}),
 							);
-							const tts = new EdgeTts({
-								command: coreConfig.edgeTts.command,
-								baseArgs: coreConfig.edgeTts.args,
+							const tts = new OpenAiTts({
+								apiKey: config.realtimeApiKey,
+								model: coreConfig.openaiLive.announcerModel,
+								endpoint: coreConfig.openaiLive.announcerEndpoint,
 								timeoutMs: coreConfig.timeouts.ttsMs,
-								streamCommand: coreConfig.edgeTts.streamCommand,
-								streamMaxBufferedBytes:
-									coreConfig.edgeTts.streamMaxBufferedBytes,
 							});
-							const decoder = new FfmpegPcmDecoder({
-								ffmpegBin: coreConfig.ffmpegBin,
-								timeoutMs: coreConfig.timeouts.ttsMs,
+							evidence.appendBuffered({
+								ts: new Date().toISOString(),
+								kind: "voice_speaker_resolved",
+								ttsEngine: "openai",
+								voice: speaker.voice,
+								mode: speaker.mode,
+								leadId: context.projection.leadId,
 							});
 							const speech = new CompositeSpeech({
 								sessionId: context.sessionId,
 								generation: generation as number,
 								room: roomIO,
 								tts,
-								voice: coreConfig.openaiLive.announcerVoice,
+								voice: speaker.voice,
 								beforeSpeak: async () => undefined,
-								decode: (source, options) => decoder.decode(source, options),
 							});
 							const headphoneBridge = new HeadphoneBridgeVoiceClient({
 								bridgeUrl: config.bridgeUrl,
@@ -405,10 +414,15 @@ export async function main(): Promise<void> {
 								founderUserId: context.projection.founderUserId,
 								bridge: headphoneBridge,
 								room: roomIO,
+								mode: speaker.mode,
 								transcriptSink,
 								baseInstructions:
-									"简单问题由前台直接回答；需要查询、执行或判断时先说我问下 Lead，再使用 client delegation。",
-								createEngine: ({ registerHandoff, submitHandoff }) =>
+									"简单问题由前台直接回答；需要查询、执行或判断时先说我问下 Lead，再使用 client delegation。不要主动播报进度或状态，要她拍板的事由 Lead 自己跟她说。",
+								createEngine: ({
+									registerHandoff,
+									submitHandoff,
+									agendaTurns,
+								}) =>
 									new LiveLeadAdapter({
 										sessionId: context.sessionId,
 										generation: generation as number,
@@ -428,13 +442,14 @@ export async function main(): Promise<void> {
 													},
 												},
 												systemPreamble: initialSessionContext,
-												voice: coreConfig.openaiLive.voice,
+												voice: speaker.voice,
 											}),
 										transcriptSink,
 										speech,
 										classifyIntent: classifyLeadIntent,
 										submitHandoff,
 										registerHandoff,
+										agendaTurns,
 										record: (record) => evidence.appendBuffered(record),
 										onUnavailable: (cause) => control.fail(cause),
 									}),

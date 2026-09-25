@@ -4,7 +4,14 @@
  * missing components fail-fast with install guidance (plan.md r2 §3). Round-1
  * carries no whisper/standalone-STT config (deferred).
  */
+
 import { existsSync } from "node:fs";
+import {
+	assertOpenAiTtsEndpoint,
+	DEFAULT_OPENAI_TTS_ENDPOINT,
+	DEFAULT_OPENAI_TTS_MODEL,
+	OPENAI_TTS_BACKEND_ID,
+} from "./backends/openai-tts/OpenAiTts.js";
 import { VoiceError } from "./types.js";
 
 export interface VoiceCoreConfig {
@@ -43,8 +50,10 @@ export interface VoiceCoreConfig {
 		contextMaxTokens: number;
 		voice: string;
 		delegation: "client";
+		/** FLY-2863: must be `openai-tts` — the Lead's GPT voice, never edge-tts. */
 		announcerBackendId: string;
-		announcerVoice: string;
+		announcerModel: string;
+		announcerEndpoint: string;
 	};
 	defaultAnnounceBackendId: string;
 	defaultConverseBackendId: string;
@@ -174,14 +183,17 @@ export function resolveConfig(
 			announcerBackendId: pick(
 				overrides.openaiLive?.announcerBackendId,
 				env.FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_BACKEND,
-				"edge-tts",
+				OPENAI_TTS_BACKEND_ID,
 			),
-			announcerVoice: pick(
-				overrides.openaiLive?.announcerVoice,
-				env.FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_VOICE,
-				overrides.voice,
-				env.FLYWHEEL_VOICE_VOICE,
-				DEFAULT_VOICE,
+			announcerModel: pick(
+				overrides.openaiLive?.announcerModel,
+				env.FLYWHEEL_VOICE_OPENAI_TTS_MODEL,
+				DEFAULT_OPENAI_TTS_MODEL,
+			),
+			announcerEndpoint: pick(
+				overrides.openaiLive?.announcerEndpoint,
+				env.FLYWHEEL_VOICE_OPENAI_TTS_ENDPOINT,
+				DEFAULT_OPENAI_TTS_ENDPOINT,
 			),
 		},
 		defaultAnnounceBackendId: pick(
@@ -273,12 +285,17 @@ export function verifyOpenAiLiveComponents(
 	) {
 		unavailable("OpenAI Live context token ceiling must be a positive integer");
 	}
-	if (config.openaiLive.announcerBackendId !== "edge-tts") {
-		unavailable("OpenAI Live announcer must use edge-tts");
+	// FLY-2863 §5.2: one GPT voice for everything the room hears; a synthetic
+	// (edge-tts) announcer refuses to start rather than silently mixing voices.
+	if (config.openaiLive.announcerBackendId !== OPENAI_TTS_BACKEND_ID) {
+		unavailable(
+			"OpenAI Live announcer must use the GPT voice (openai-tts); edge-tts is not allowed",
+		);
 	}
-	if (!config.openaiLive.announcerVoice) {
-		unavailable("OpenAI Live edge-tts announcer voice is not set");
+	if (!config.openaiLive.announcerModel) {
+		unavailable("OpenAI Live GPT voice model is not set");
 	}
+	assertOpenAiTtsEndpoint(config.openaiLive.announcerEndpoint);
 	try {
 		const endpoint = new URL(config.openaiLive.endpoint);
 		if (

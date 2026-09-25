@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	type AgendaState,
 	FakeV1Session,
 	JsonlTranscriptSink,
 	type VoiceUtterance,
@@ -45,23 +46,50 @@ function utterance(
 }
 
 function bridge(overrides: Partial<BridgeVoiceClient> = {}) {
+	let stored: AgendaState | undefined;
 	return {
+		// FLY-2796 inbox calls must never be used to speak (FLY-2863 §2.2).
 		listHeadphoneItems: vi.fn(async () => []),
 		claimHeadphoneItem: vi.fn(async () => undefined),
 		ackHeadphoneClaim: vi.fn(async () => undefined),
-		getHeadphoneSourceHealth: vi.fn(async () => ({
-			healthy: true,
-			sourceGap: false,
-			sources: [],
+		getAgendaSnapshot: vi.fn(async () => ({
+			snapshotId: "s",
+			asOf: "2026-09-23T20:00:00.000Z",
+			items: [],
+			sourceStatus: {},
+			complete: true,
+			olderUnspokenCount: 0,
 		})),
+		getAgendaState: vi.fn(async () => stored),
+		putAgendaState: vi.fn(
+			async (
+				_binding: unknown,
+				input: { state: AgendaState; expectedVersion: number },
+			) => {
+				if ((stored?.stateVersion ?? 0) !== input.expectedVersion)
+					return { ok: false as const };
+				stored = input.state;
+				return { ok: true as const };
+			},
+		),
+		requestAgendaBrief: vi.fn(async () => ({
+			requestId: "018f47d2-7b64-7b42-a3df-000000000001",
+		})),
+		bindAgendaTurn: vi.fn(async () => undefined),
+		subscribeReplies: vi.fn(() => () => undefined),
 		handoffToLead: vi.fn(),
-		listVoiceHandoffResults: vi.fn(),
+		listVoiceHandoffResults: vi.fn(async () => ({
+			events: [],
+			highWatermark: 0,
+			nextCursor: 0,
+		})),
 		...overrides,
 	} as unknown as BridgeVoiceClient;
 }
 
 function room() {
 	return {
+		onBargeIn: () => () => undefined,
 		audibleTail: () => ({
 			estimated: true as const,
 			remainingMs: 0,
@@ -80,25 +108,36 @@ function transcriptSink() {
 }
 
 describe("HeadphoneSession", () => {
-	it("composes the Bridge inbox with one complete V1 engine", async () => {
+	it("opens the engine, briefs the Lead and speaks only the Lead's words — never the inbox", async () => {
 		const engine = new FakeV1Session({ sessionId: "session-1", generation: 3 });
-		const client = bridge({
-			listHeadphoneItems: vi.fn(async () => [
+		let wake: ((event: { handoffId: string }) => void) | undefined;
+		const requestId = "018f47d2-7b64-7b42-a3df-000000000001";
+		const results = {
+			events: [
 				{
-					id: "item-1",
-					revision: 1,
-					createdAt: "2026-09-23T20:00:00.000Z",
-					needsDecision: true,
-					text: "请决定是否继续。",
+					resultEventId: "e1",
+					seq: 1,
+					handoffId: requestId,
+					requestDigest: "d",
+					sourceLeadId: "raya",
+					sourceDeliveryId: "x",
+					resultKind: "agenda_say",
+					text: "我在，现在没什么要你拍的。",
+					agenda: { kind: "say", itemKey: null },
+					createdAt: "2026-09-23T20:00:01.000Z",
 				},
-			]),
-			claimHeadphoneItem: vi.fn(async (_binding, item) => ({
-				item,
-				claimToken: "claim-1",
-				attempt: 1,
-				pendingKey: "inbox:item-1:1:session-1:3:1",
-			})),
-			ackHeadphoneClaim: vi.fn(async () => undefined),
+			],
+			highWatermark: 1,
+			nextCursor: 1,
+		};
+		const client = bridge({
+			subscribeReplies: vi.fn((_binding, listener) => {
+				wake = listener as typeof wake;
+				return () => undefined;
+			}),
+			listVoiceHandoffResults: vi.fn(async (_binding, _id, after: number) =>
+				after >= 1 ? { events: [], highWatermark: 1, nextCursor: 1 } : results,
+			),
 		});
 		const session = new HeadphoneSession({
 			engine,
@@ -116,14 +155,23 @@ describe("HeadphoneSession", () => {
 		});
 
 		await session.start();
-
 		expect(engine.initialSessionContext).toContain("退出语音的规则");
-		expect(engine.speakCalls.map((call) => call.text)).toEqual([
-			"我正在整理现在的情况和等你决定的事。",
-			"请决定是否继续。",
-		]);
-		expect(client.ackHeadphoneClaim).toHaveBeenCalledOnce();
+		expect(client.requestAgendaBrief).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId: "session-1" }),
+			expect.objectContaining({ purpose: "open", itemKey: null }),
+		);
+		expect(engine.speakCalls).toEqual([]);
+		wake?.({ handoffId: requestId });
+		await vi.waitFor(() =>
+			expect(engine.speakCalls.map((call) => call.text)).toEqual([
+				"我在，现在没什么要你拍的。",
+			]),
+		);
+		expect(client.listHeadphoneItems).not.toHaveBeenCalled();
+		expect(client.claimHeadphoneItem).not.toHaveBeenCalled();
+		expect(client.ackHeadphoneClaim).not.toHaveBeenCalled();
 		await session.close();
+		expect(engine.closed).toBe(true);
 	});
 
 	it("closes only after the durable founder exit request and assistant sentence", async () => {

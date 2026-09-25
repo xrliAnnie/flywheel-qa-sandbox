@@ -593,3 +593,116 @@ describe("BridgeVoiceClient", () => {
 		expect(res.reason).toContain("disabled_by_kill_switch");
 	});
 });
+
+describe("BridgeVoiceClient — FLY-2863 agenda", () => {
+	const client = (
+		handler: Parameters<typeof fakeFetch>[0],
+	): { client: BridgeVoiceClient; calls: Call[] } => {
+		const { calls, fetchFn } = fakeFetch(handler);
+		return {
+			client: new BridgeVoiceClient({
+				bridgeUrl: "http://bridge",
+				token: "tok",
+				fetchFn,
+			}),
+			calls,
+		};
+	};
+
+	it("reads the snapshot with the lease and rejects a malformed one", async () => {
+		const ok = client(() => ({
+			status: 200,
+			body: {
+				snapshotId: "s",
+				asOf: "t",
+				items: [
+					{ itemKey: "blocked:I:t", sourceKey: "titles:p", class: "blocked" },
+				],
+				sourceStatus: {},
+				complete: true,
+				olderUnspokenCount: 0,
+			},
+		}));
+		await expect(ok.client.getAgendaSnapshot(SESSION)).resolves.toMatchObject({
+			snapshotId: "s",
+		});
+		expect(ok.calls[0]?.url).toBe(
+			"http://bridge/api/voice/agenda?sessionId=voice-session&generation=7",
+		);
+		expect(
+			(ok.calls[0]?.init?.headers as Record<string, string>)["x-voice-lease"],
+		).toBe("lease-token");
+		const bad = client(() => ({
+			status: 200,
+			body: { snapshotId: "s", items: [{ itemKey: "k" }] },
+		}));
+		await expect(bad.client.getAgendaSnapshot(SESSION)).rejects.toThrow(
+			/response invalid/,
+		);
+	});
+
+	it("maps a CAS conflict to ok:false with the current state", async () => {
+		const { client: c } = client(() => ({
+			status: 409,
+			body: { ok: false, current: { stateVersion: 4 } },
+		}));
+		await expect(
+			c.putAgendaState(SESSION, {
+				state: {} as never,
+				expectedVersion: 3,
+				dispositions: [],
+			}),
+		).resolves.toEqual({ ok: false, current: { stateVersion: 4 } });
+	});
+
+	it("refuses a rejected brief and never invents a request id", async () => {
+		const rejected = client(() => ({
+			status: 200,
+			body: { requestId: "r", state: "rejected" },
+		}));
+		await expect(
+			rejected.client.requestAgendaBrief(SESSION, {
+				purpose: "open",
+				itemKey: null,
+				clientRequestId: "c",
+			}),
+		).rejects.toThrow(/rejected/);
+		const missing = client(() => ({ status: 200, body: {} }));
+		await expect(
+			missing.client.requestAgendaBrief(SESSION, {
+				purpose: "open",
+				itemKey: null,
+				clientRequestId: "c",
+			}),
+		).rejects.toThrow(/response invalid/);
+		const ok = client(() => ({
+			status: 200,
+			body: { requestId: "req-1", state: "committed" },
+		}));
+		await expect(
+			ok.client.requestAgendaBrief(SESSION, {
+				purpose: "item",
+				itemKey: "blocked:I:t",
+				clientRequestId: "c2",
+			}),
+		).resolves.toEqual({ requestId: "req-1" });
+		expect(JSON.parse(String(ok.calls[0]?.init?.body))).toEqual({
+			sessionId: "voice-session",
+			generation: 7,
+			purpose: "item",
+			itemKey: "blocked:I:t",
+			clientRequestId: "c2",
+		});
+	});
+
+	it("surfaces a turn-binding conflict", async () => {
+		const { client: c } = client(() => ({ status: 409, body: {} }));
+		await expect(
+			c.bindAgendaTurn(SESSION, {
+				utteranceId: "u",
+				turnId: "turn:1",
+				itemKey: "k",
+			}),
+		).rejects.toThrow(/HTTP 409/);
+	});
+});

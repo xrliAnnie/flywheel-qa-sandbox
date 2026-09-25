@@ -75,8 +75,9 @@ describe("resolveConfig", () => {
 			contextMaxTokens: 500,
 			voice: "marin",
 			delegation: "client",
-			announcerBackendId: "edge-tts",
-			announcerVoice: "zh-CN-XiaoxiaoNeural",
+			announcerBackendId: "openai-tts",
+			announcerModel: "gpt-4o-mini-tts",
+			announcerEndpoint: "https://api.openai.com/v1/audio/speech",
 		});
 
 		const configured = resolveConfig(
@@ -171,9 +172,9 @@ describe("fail-fast component checks", () => {
 		).not.toThrow();
 	});
 
-	it("OpenAI Live: rejects a missing or non-Edge announcer face", () => {
+	it("OpenAI Live (FLY-2863): refuses any announcer but the GPT voice, edge-tts included", () => {
 		const config = resolveConfig({}, {} as NodeJS.ProcessEnv);
-		for (const announcerBackendId of ["", "gemini-live"]) {
+		for (const announcerBackendId of ["", "gemini-live", "edge-tts"]) {
 			expect(() =>
 				verifyOpenAiLiveComponents(
 					{
@@ -182,8 +183,25 @@ describe("fail-fast component checks", () => {
 					},
 					{ OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
 				),
-			).toThrow(/语音不可用.*announcer.*edge-tts/i);
+			).toThrow(/语音不可用.*GPT voice.*edge-tts is not allowed/i);
 		}
+		expect(
+			resolveConfig({}, {
+				FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_BACKEND: "edge-tts",
+			} as NodeJS.ProcessEnv).openaiLive.announcerBackendId,
+		).toBe("edge-tts");
+		expect(() =>
+			verifyOpenAiLiveComponents(
+				{
+					...config,
+					openaiLive: {
+						...config.openaiLive,
+						announcerEndpoint: "https://attacker.invalid/v1/audio/speech",
+					},
+				},
+				{ OPENAI_API_KEY: "test-key" } as NodeJS.ProcessEnv,
+			),
+		).toThrow(/语音不可用.*TLS allowlist/);
 	});
 
 	it("brain: throws when identity file unset or missing", () => {

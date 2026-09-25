@@ -14,6 +14,10 @@
  */
 
 import type {
+	AgendaBriefRequestInput,
+	AgendaDispositionRecord,
+	AgendaSnapshot,
+	AgendaState,
 	HeadphoneInboxClaim,
 	HeadphoneInboxItem,
 	SpeakReceipt,
@@ -587,6 +591,136 @@ export class BridgeVoiceClient {
 			void reader?.cancel().catch(() => undefined);
 			reader = undefined;
 		};
+	}
+
+	// ── FLY-2863 voice agenda (lease-bound) ──
+
+	async getAgendaSnapshot(
+		binding: HeadphoneSessionBinding,
+	): Promise<AgendaSnapshot> {
+		const query = new URLSearchParams({
+			sessionId: binding.sessionId,
+			generation: String(binding.generation),
+		});
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/agenda?${query}`,
+			{ headers: this.headphoneHeaders(binding) },
+		);
+		if (!res.ok) throw new Error(`voice agenda failed: HTTP ${res.status}`);
+		const body = (await res.json()) as AgendaSnapshot;
+		if (
+			typeof body.snapshotId !== "string" ||
+			!Array.isArray(body.items) ||
+			typeof body.complete !== "boolean" ||
+			!body.sourceStatus ||
+			typeof body.sourceStatus !== "object" ||
+			!Number.isSafeInteger(body.olderUnspokenCount) ||
+			body.items.some(
+				(item) =>
+					typeof item?.itemKey !== "string" ||
+					typeof item.sourceKey !== "string" ||
+					typeof item.class !== "string",
+			)
+		)
+			throw new Error("voice agenda response invalid");
+		return body;
+	}
+
+	async getAgendaState(
+		binding: HeadphoneSessionBinding,
+	): Promise<AgendaState | undefined> {
+		const query = new URLSearchParams({
+			sessionId: binding.sessionId,
+			generation: String(binding.generation),
+		});
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/agenda/state?${query}`,
+			{ headers: this.headphoneHeaders(binding) },
+		);
+		if (!res.ok)
+			throw new Error(`voice agenda state failed: HTTP ${res.status}`);
+		const body = (await res.json()) as { state?: AgendaState | null };
+		return body.state ?? undefined;
+	}
+
+	async putAgendaState(
+		binding: HeadphoneSessionBinding,
+		input: {
+			state: AgendaState;
+			expectedVersion: number;
+			dispositions: readonly AgendaDispositionRecord[];
+		},
+	): Promise<{ ok: true } | { ok: false; current?: AgendaState }> {
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/agenda/state`,
+			{
+				method: "PUT",
+				headers: this.headphoneHeaders(binding, true),
+				body: JSON.stringify({
+					sessionId: binding.sessionId,
+					generation: binding.generation,
+					...input,
+				}),
+			},
+		);
+		if (res.status === 409) {
+			const body = (await res.json()) as { current?: AgendaState };
+			return { ok: false, ...(body.current ? { current: body.current } : {}) };
+		}
+		if (!res.ok)
+			throw new Error(`voice agenda state write failed: HTTP ${res.status}`);
+		return { ok: true };
+	}
+
+	async requestAgendaBrief(
+		binding: HeadphoneSessionBinding,
+		input: AgendaBriefRequestInput,
+	): Promise<{ requestId: string }> {
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/agenda/requests`,
+			{
+				method: "POST",
+				headers: this.headphoneHeaders(binding, true),
+				body: JSON.stringify({
+					sessionId: binding.sessionId,
+					generation: binding.generation,
+					...input,
+				}),
+			},
+		);
+		if (!res.ok)
+			throw new Error(`voice agenda request failed: HTTP ${res.status}`);
+		const body = (await res.json()) as { requestId?: unknown; state?: unknown };
+		if (typeof body.requestId !== "string" || !body.requestId)
+			throw new Error("voice agenda request response invalid");
+		if (body.state === "rejected" || body.state === "needs_human")
+			throw new Error(`voice agenda request ${String(body.state)}`);
+		// Replayed on reconnect like a handoff, so no Lead answer is missed.
+		const key = this.bindingKey(binding);
+		const handoffs = this.registeredHandoffs.get(key) ?? new Set<string>();
+		handoffs.add(body.requestId);
+		this.registeredHandoffs.set(key, handoffs);
+		return { requestId: body.requestId };
+	}
+
+	async bindAgendaTurn(
+		binding: HeadphoneSessionBinding,
+		input: { utteranceId: string; turnId: string; itemKey: string },
+	): Promise<void> {
+		const res = await this.fetchFn(
+			`${this.opts.bridgeUrl}/api/voice/agenda/turns`,
+			{
+				method: "POST",
+				headers: this.headphoneHeaders(binding, true),
+				body: JSON.stringify({
+					sessionId: binding.sessionId,
+					generation: binding.generation,
+					...input,
+				}),
+			},
+		);
+		if (!res.ok)
+			throw new Error(`voice agenda turn bind failed: HTTP ${res.status}`);
 	}
 
 	async listVoiceHandoffResults(

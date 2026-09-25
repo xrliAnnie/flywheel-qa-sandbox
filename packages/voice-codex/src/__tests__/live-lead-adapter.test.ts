@@ -13,7 +13,10 @@ import type {
 } from "flywheel-voice-core";
 import { describe, expect, it, vi } from "vitest";
 import { createEngineAHeadphoneSession } from "../engine-a-composition.js";
-import { LiveLeadAdapter } from "../live-lead-adapter.js";
+import {
+	type AgendaTurnRouter,
+	LiveLeadAdapter,
+} from "../live-lead-adapter.js";
 
 const PCM = { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 } as const;
 
@@ -180,6 +183,7 @@ function harness(
 		maxSuspendedInputMs?: number;
 		founderTurnSettleTimeoutMs?: number;
 		founderTurnMaxHoldMs?: number;
+		agendaTurns?: AgendaTurnRouter;
 	} = {},
 ) {
 	const live = new FakeLive();
@@ -191,6 +195,7 @@ function harness(
 		handoffId: string;
 		requestDigest: string;
 		targetLeadId: string;
+		agendaUtteranceId?: string;
 	}> = [];
 	const utterances: VoiceUtterance[] = [];
 	const record = vi.fn();
@@ -272,6 +277,7 @@ function harness(
 		...(overrides.founderTurnMaxHoldMs === undefined
 			? {}
 			: { founderTurnMaxHoldMs: overrides.founderTurnMaxHoldMs }),
+		...(overrides.agendaTurns ? { agendaTurns: overrides.agendaTurns } : {}),
 		record,
 		onUnavailable,
 	});
@@ -290,6 +296,64 @@ function harness(
 		setNow(value: number) {
 			now = value;
 		},
+	};
+}
+
+/** FLY-2863: Bridge agenda stubs (the inbox is never read out any more). */
+function agendaStubs(
+	options: {
+		items?: Array<Record<string, unknown>>;
+		results?: Record<string, Array<Record<string, unknown>>>;
+	} = {},
+) {
+	let stored: unknown;
+	let requests = 0;
+	return {
+		getAgendaSnapshot: vi.fn(async () => ({
+			snapshotId: "s",
+			asOf: "2026-09-24T00:00:00.000Z",
+			items: options.items ?? [],
+			sourceStatus: {},
+			complete: true,
+			olderUnspokenCount: 0,
+		})),
+		getAgendaState: vi.fn(async () => stored),
+		putAgendaState: vi.fn(
+			async (_binding: unknown, input: { state: unknown }) => {
+				stored = input.state;
+				return { ok: true as const };
+			},
+		),
+		requestAgendaBrief: vi.fn(async () => ({
+			requestId: `agenda-${++requests}`,
+		})),
+		bindAgendaTurn: vi.fn(async () => undefined),
+		listVoiceHandoffResults: vi.fn(
+			async (_binding: unknown, handoffId: string, after: number) => {
+				const events = (options.results?.[handoffId] ?? []).filter(
+					(event) => (event.seq as number) > after,
+				);
+				const high = (options.results?.[handoffId] ?? []).length;
+				return { events, highWatermark: high, nextCursor: high };
+			},
+		),
+	};
+}
+
+function blockedItem() {
+	return {
+		itemKey: "blocked:I1:t",
+		class: "blocked",
+		projectName: "flywheel",
+		leadId: "flywheel-eng-lead",
+		leadName: "flywheel eng",
+		issueIdentifier: "FLY-2796",
+		issueTitle: "耳机",
+		threadUrl: "https://discord.com/channels/1/2",
+		since: "2026-09-24T00:00:00.000Z",
+		urgent: null,
+		pointers: { messageIds: [] },
+		sourceKey: "titles:flywheel",
 	};
 }
 
@@ -1068,32 +1132,12 @@ describe("LiveLeadAdapter", () => {
 			},
 			founderUserId: "founder-1",
 			bridge: {
-				listHeadphoneItems: vi.fn(async () => []),
-				claimHeadphoneItem: vi.fn(async () => undefined),
-				ackHeadphoneClaim: vi.fn(async () => undefined),
-				getHeadphoneSourceHealth: vi.fn(async () => ({
-					healthy: true,
-					sourceGap: false,
-					sources: [],
-				})),
+				...agendaStubs(),
 				handoffToLead: vi.fn(),
-				listVoiceHandoffResults: vi.fn(async () => ({
-					events: [],
-					highWatermark: 0,
-					nextCursor: 0,
-				})),
 				subscribeReplies: vi.fn(() => () => undefined),
 			} as never,
-			room: {
-				audibleTail: () => ({
-					estimated: true as const,
-					remainingMs: 0,
-					drained: true,
-					observedAt: 0,
-					sessionId: "voice-session",
-					generation: 9,
-				}),
-			},
+			room: h.room.io,
+			mode: "headphone",
 			transcriptSink: h.transcriptSink as never,
 			baseInstructions: "Engine A",
 			createEngine: () => h.adapter,
@@ -1526,88 +1570,67 @@ describe("LiveLeadAdapter", () => {
 		);
 	});
 
-	it("answers a barge-in during an inbox readback before resuming it, and re-reads the item uncounted", async () => {
+	it("FLY-2863: a barge-in during an agenda say cancels it and her turn goes to the Lead, never the inbox", async () => {
 		const h = harness();
-		const items = [
-			{
-				id: "item-a",
-				revision: 1,
-				createdAt: "2026-09-24T00:00:00.000Z",
-				needsDecision: false,
-				text: "第一条很长的汇报。",
-			},
-			{
-				id: "item-b",
-				revision: 1,
-				createdAt: "2026-09-24T00:00:01.000Z",
-				needsDecision: false,
-				text: "第二条汇报。",
-			},
-		];
-		const acked: string[] = [];
-		const claimCalls: string[] = [];
-		const claims = new Map<string, unknown>();
-		const bridge = {
-			listHeadphoneItems: vi.fn(async () =>
-				items.filter((item) => !acked.includes(item.id)),
-			),
-			claimHeadphoneItem: vi.fn(async (_binding, item: (typeof items)[0]) => {
-				claimCalls.push(item.id);
-				const prior = claims.get(item.id);
-				if (prior) return prior;
-				const claim = {
-					item,
-					claimToken: `claim:${item.id}`,
-					attempt: 1,
-					pendingKey: `inbox:${item.id}:1:voice-session:9:1`,
-				};
-				claims.set(item.id, claim);
-				return claim;
-			}),
-			ackHeadphoneClaim: vi.fn(
-				async (_binding, claim: { item: { id: string } }) => {
-					acked.push(claim.item.id);
-				},
-			),
-			getHeadphoneSourceHealth: vi.fn(async () => ({
-				healthy: true,
-				sourceGap: false,
-				sources: [],
-			})),
-			handoffToLead: vi.fn(),
-			listVoiceHandoffResults: vi.fn(async () => ({
-				events: [],
-				highWatermark: 0,
-				nextCursor: 0,
-			})),
-			subscribeReplies: vi.fn(() => () => undefined),
+		const inbox = {
+			listHeadphoneItems: vi.fn(async () => []),
+			claimHeadphoneItem: vi.fn(async () => undefined),
+			ackHeadphoneClaim: vi.fn(async () => undefined),
 		};
-		const spokenTexts: string[] = [];
-		let interruptFirstA = true;
-		let pendingA:
+		const stubs = agendaStubs({
+			items: [blockedItem()],
+			results: {
+				"agenda-1": [
+					{
+						resultEventId: "r1",
+						seq: 1,
+						handoffId: "agenda-1",
+						requestDigest: "d",
+						sourceLeadId: "flywheel-eng-lead",
+						sourceDeliveryId: "x",
+						resultKind: "agenda_say",
+						text: "一张受阻，卡在权限，要你授权。",
+						agenda: { kind: "say", itemKey: "blocked:I1:t" },
+						createdAt: "2026-09-24T00:00:01.000Z",
+					},
+				],
+			},
+		});
+		const handoffToLead = vi.fn(
+			async (_binding, request: VoiceHandoffRequest) => ({
+				handoffId: request.handoffId,
+				requestDigest: request.requestDigest,
+				state: "committed" as const,
+				providerOperationId: "mailbox-1",
+			}),
+		);
+		const wakes: Array<(event: { handoffId: string }) => void> = [];
+		const wake = (event: { handoffId: string }) => {
+			for (const listener of wakes) listener(event);
+		};
+		const bridge = {
+			...inbox,
+			...stubs,
+			handoffToLead,
+			subscribeReplies: vi.fn((_binding, listener) => {
+				wakes.push(listener);
+				return () => undefined;
+			}),
+		};
+		let pending:
 			| { pendingKey: string; resolve(receipt: SpeakReceipt): void }
 			| undefined;
-		h.speech.speak.mockImplementation(async (text, _kind, opts) => {
-			spokenTexts.push(text);
-			if (text === "第一条很长的汇报。" && interruptFirstA) {
-				interruptFirstA = false;
-				return new Promise<SpeakReceipt>((resolve) => {
-					pendingA = { pendingKey: opts.pendingKey, resolve };
-				});
-			}
-			return {
-				pendingKey: opts.pendingKey,
-				requestDigest: "speech-digest",
-				outcome: "completed",
-				transport: "submitted",
-				contentProof: "deterministic_tts",
-			};
-		});
+		h.speech.speak.mockImplementation(
+			async (_text, _kind, opts) =>
+				new Promise<SpeakReceipt>((resolve) => {
+					pending = { pendingKey: opts.pendingKey, resolve };
+				}),
+		);
 		h.speech.cancel.mockImplementation((reason: string) => {
-			const pending = pendingA;
-			pendingA = undefined;
-			pending?.resolve({
-				pendingKey: pending.pendingKey,
+			const current = pending;
+			pending = undefined;
+			current?.resolve({
+				pendingKey: current.pendingKey,
 				requestDigest: "speech-digest",
 				outcome: "failed",
 				reason,
@@ -1616,6 +1639,9 @@ describe("LiveLeadAdapter", () => {
 			});
 		});
 		const record = vi.fn();
+		let callbacks!: Parameters<
+			Parameters<typeof createEngineAHeadphoneSession>[0]["createEngine"]
+		>[0];
 		const session = createEngineAHeadphoneSession({
 			binding: {
 				sessionId: "voice-session",
@@ -1625,15 +1651,35 @@ describe("LiveLeadAdapter", () => {
 			founderUserId: "founder-1",
 			bridge: bridge as never,
 			room: h.room.io,
+			mode: "headphone",
 			transcriptSink: h.transcriptSink as never,
 			baseInstructions: "Engine A",
-			createEngine: () => h.adapter,
+			createEngine: (value) => {
+				callbacks = value;
+				return new LiveLeadAdapter({
+					sessionId: "voice-session",
+					generation: 9,
+					projectName: "flywheel",
+					founderUserId: "founder-1",
+					targetLeadId: "flywheel-eng-lead",
+					room: h.room.io,
+					createConversation: vi.fn(async () => h.live),
+					transcriptSink: h.transcriptSink as never,
+					speech: h.speech,
+					classifyIntent: () => "query",
+					submitHandoff: value.submitHandoff,
+					registerHandoff: value.registerHandoff,
+					agendaTurns: value.agendaTurns,
+					record,
+					now: () => 1_000,
+				});
+			},
 			captionSink: { caption: vi.fn() },
 			record,
 		});
-		const started = session.start();
-		await vi.waitFor(() => expect(pendingA).toBeDefined());
-		expect(claimCalls).toEqual(["item-a"]);
+		await session.start();
+		wake({ handoffId: "agenda-1" });
+		await vi.waitFor(() => expect(pending).toBeDefined());
 
 		h.room.emitUtterance({
 			sessionId: "voice-session",
@@ -1653,14 +1699,18 @@ describe("LiveLeadAdapter", () => {
 			durationMs: 300,
 			phase: "sustained",
 		} as never);
-		await started;
-		const spokenAtBarge = spokenTexts.length;
-
-		// Two poll ticks while she is still talking: nothing is pulled or spoken.
-		await new Promise((resolve) => setTimeout(resolve, 2_200));
-		expect(claimCalls).toEqual(["item-a"]);
-		expect(spokenTexts).toHaveLength(spokenAtBarge);
-
+		await vi.waitFor(() =>
+			expect(record).toHaveBeenCalledWith(
+				expect.objectContaining({ kind: "agenda_speech_interrupted" }),
+			),
+		);
+		expect(stubs.bindAgendaTurn).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				utteranceId: "u-barge",
+				itemKey: "blocked:I1:t",
+			}),
+		);
 		h.live.emitLiveTranscript({
 			type: "transcript-delta",
 			direction: "input",
@@ -1668,33 +1718,24 @@ describe("LiveLeadAdapter", () => {
 			eventId: "barge-delta",
 			startMs: 100,
 			endMs: 200,
-			delta: "一加一等于几",
+			delta: "好，授权",
 		});
 		endUtterance(h, "u-barge", 1_250);
 		h.live.emit("response-started");
 		h.live.emit("transcript", {
 			role: "assistant",
-			text: "等于二",
+			text: "好的我来授权",
 			final: true,
 		});
-
-		await vi.waitFor(() => expect(acked).toEqual(["item-a", "item-b"]), {
-			timeout: 5_000,
+		await vi.waitFor(() => expect(handoffToLead).toHaveBeenCalledOnce());
+		expect(handoffToLead.mock.calls[0]?.[1].originalText).toBe("好，授权");
+		expect(callbacks.agendaTurns.bindTurn("u-barge")).toEqual({
+			owner: "agenda",
+			itemKey: "blocked:I1:t",
 		});
-		expect(claimCalls).toEqual(["item-a", "item-a", "item-b"]);
-		expect(spokenTexts.slice(spokenAtBarge)).toEqual([
-			"第一条很长的汇报。",
-			"第二条汇报。",
-		]);
-		expect(record).not.toHaveBeenCalledWith(
-			expect.objectContaining({ kind: "inbox_speech_retry_scheduled" }),
-		);
-		expect(h.utterances).toContainEqual(
-			expect.objectContaining({ role: "user", text: "一加一等于几" }),
-		);
-		expect(h.utterances).toContainEqual(
-			expect.objectContaining({ role: "assistant", text: "等于二" }),
-		);
+		expect(inbox.listHeadphoneItems).not.toHaveBeenCalled();
+		expect(inbox.claimHeadphoneItem).not.toHaveBeenCalled();
+		expect(h.room.io.writeSpeech).not.toHaveBeenCalled();
 		await session.close();
 	}, 15_000);
 
@@ -1717,11 +1758,7 @@ describe("LiveLeadAdapter", () => {
 				sources: [],
 			})),
 			handoffToLead: vi.fn(),
-			listVoiceHandoffResults: vi.fn(async () => ({
-				events: [],
-				highWatermark: 0,
-				nextCursor: 0,
-			})),
+			...agendaStubs(),
 			subscribeReplies: vi.fn(() => () => undefined),
 		};
 		const session = createEngineAHeadphoneSession({
@@ -1733,6 +1770,7 @@ describe("LiveLeadAdapter", () => {
 			founderUserId: "founder-1",
 			bridge: bridge as never,
 			room: h.room.io,
+			mode: "headphone",
 			transcriptSink: h.transcriptSink as never,
 			baseInstructions: "Engine A",
 			createEngine: () => h.adapter,
@@ -1783,6 +1821,7 @@ describe("LiveLeadAdapter", () => {
 				sourceGap: false,
 				sources: [],
 			})),
+			...agendaStubs(),
 			handoffToLead: vi.fn(),
 			listVoiceHandoffResults: vi.fn(async () => ({
 				events: [
@@ -1815,6 +1854,7 @@ describe("LiveLeadAdapter", () => {
 			founderUserId: "founder-1",
 			bridge: bridge as never,
 			room: h.room.io,
+			mode: "headphone",
 			transcriptSink: h.transcriptSink as never,
 			baseInstructions: "Engine A",
 			createEngine: (callbacks) => {
@@ -1895,3 +1935,148 @@ function founderSays(
 	});
 	if (options.end !== false) endUtterance(h, utteranceId, 1_250);
 }
+
+describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
+	function router(owner: "agenda" | "front") {
+		const bound: string[] = [];
+		const waited: string[] = [];
+		const agendaTurns: AgendaTurnRouter = {
+			bindTurn: (utteranceId) => {
+				bound.push(utteranceId);
+				return owner === "agenda"
+					? { owner, itemKey: "blocked:I1:t" }
+					: { owner, itemKey: null };
+			},
+			whenTurnBound: async (utteranceId) => {
+				waited.push(utteranceId);
+			},
+		};
+		return { agendaTurns, bound, waited };
+	}
+
+	function speakTurn(h: ReturnType<typeof harness>, text: string) {
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_100,
+			phase: "start",
+		});
+		h.live.emitLiveTranscript({
+			type: "transcript-delta",
+			direction: "input",
+			generation: 1,
+			eventId: "delta-1",
+			startMs: 100,
+			endMs: 200,
+			delta: text,
+		});
+		h.room.emitUtterance({
+			sessionId: "voice-session",
+			generation: 9,
+			utteranceId: "u1",
+			attribution: { kind: "known", speakerUserId: "founder-1" },
+			observedAt: 1_250,
+			phase: "end",
+		});
+	}
+
+	function frontendAnswers(h: ReturnType<typeof harness>, text: string) {
+		h.live.emit("response-started");
+		h.live.emit("response-audio", Buffer.from([1, 0]), PCM);
+		h.live.emit("transcript", { role: "assistant", text, final: true });
+	}
+
+	it("silences a frontend that answers an agenda turn and hands her words to the Lead once", async () => {
+		const r = router("agenda");
+		const h = harness({ agendaTurns: r.agendaTurns });
+		await h.adapter.open("context");
+		speakTurn(h, "好，授权");
+		frontendAnswers(h, "好的，我帮你授权了。");
+		await vi.waitFor(() => expect(h.handoffs).toHaveLength(1));
+		expect(r.bound).toEqual(["u1"]);
+		expect(r.waited).toEqual(["u1"]);
+		expect(h.handoffs[0]?.originalText).toBe("好，授权");
+		expect(h.handoffBindings[0]?.agendaUtteranceId).toBe("u1");
+		// Zero frontend playback, no frontend caption, no "我问下 Lead" cue.
+		expect(h.room.io.startSpeech).not.toHaveBeenCalled();
+		expect(h.room.io.writeSpeech).not.toHaveBeenCalled();
+		expect(
+			h.utterances.filter(
+				(u) => u.role === "assistant" && u.source === "frontend",
+			),
+		).toEqual([]);
+		expect(h.speech.speak).not.toHaveBeenCalled();
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "live_frontend_answer_suppressed" }),
+		);
+		await h.adapter.close();
+	});
+
+	it("a delegation for an agenda turn that was already handed off is not sent twice", async () => {
+		const r = router("agenda");
+		const h = harness({ agendaTurns: r.agendaTurns });
+		await h.adapter.open("context");
+		speakTurn(h, "好，授权");
+		frontendAnswers(h, "我问下 Lead");
+		await vi.waitFor(() => expect(h.handoffs).toHaveLength(1));
+		h.live.emit("delegation-created", {
+			delegationId: "provider-1",
+			generation: 1,
+			offsetMs: 200,
+			target: "client",
+		});
+		await vi.waitFor(() =>
+			expect(h.record).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "live_delegation_deduplicated_for_agenda",
+				}),
+			),
+		);
+		expect(h.handoffs).toHaveLength(1);
+		await h.adapter.close();
+	});
+
+	it("a Live delegation of an agenda turn is the one handoff, without the cue", async () => {
+		const r = router("agenda");
+		const h = harness({ agendaTurns: r.agendaTurns });
+		await h.adapter.open("context");
+		speakTurn(h, "那就先放着");
+		h.live.emit("delegation-created", {
+			delegationId: "provider-1",
+			generation: 1,
+			offsetMs: 200,
+			target: "client",
+		});
+		await vi.waitFor(() => expect(h.handoffs).toHaveLength(1));
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "我问下 Lead",
+			final: true,
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(h.handoffs).toHaveLength(1);
+		expect(h.handoffBindings[0]?.agendaUtteranceId).toBe("u1");
+		expect(h.speech.speak).not.toHaveBeenCalledWith(
+			"我问下 Lead",
+			"cue",
+			expect.anything(),
+		);
+		await h.adapter.close();
+	});
+
+	it("an idle turn keeps the frontend quick answer", async () => {
+		const r = router("front");
+		const h = harness({ agendaTurns: r.agendaTurns });
+		await h.adapter.open("context");
+		speakTurn(h, "现在几点");
+		frontendAnswers(h, "三点。");
+		await vi.waitFor(() => expect(h.room.io.writeSpeech).toHaveBeenCalled());
+		expect(h.handoffs).toEqual([]);
+		expect(h.utterances).toContainEqual(
+			expect.objectContaining({ role: "assistant", text: "三点。" }),
+		);
+		await h.adapter.close();
+	});
+});

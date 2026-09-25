@@ -250,11 +250,13 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_VOICE_EDGE_TTS_STREAM_MAX_BYTES:
 		"FLY-2798 bounded unread-audio byte limit for incremental Edge TTS, not an on/off gate",
 	FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_BACKEND:
-		"FLY-2798 backend selector for Lead readback on the Live session, not an on/off gate",
-	FLYWHEEL_VOICE_OPENAI_LIVE_ANNOUNCER_VOICE:
-		"FLY-2798 voice identifier for Lead readback on the Live session, not an on/off gate",
+		"FLY-2798 backend selector for Lead readback on the Live session (FLY-2863: only openai-tts starts), not an on/off gate",
 	FLYWHEEL_VOICE_OPENAI_LIVE_CONTEXT_MAX_TOKENS:
 		"FLY-2798 bounded Live-session context token limit, not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_TTS_ENDPOINT:
+		"FLY-2863 GPT voice speech endpoint coordinate (api.openai.com allowlist), not an on/off gate",
+	FLYWHEEL_VOICE_OPENAI_TTS_MODEL:
+		"FLY-2863 GPT voice speech model identifier for the announcer, not an on/off gate",
 	FLYWHEEL_VOICE_OPENAI_LIVE_ENDPOINT:
 		"FLY-2798 OpenAI Live websocket endpoint coordinate, not an on/off gate",
 	FLYWHEEL_VOICE_OPENAI_LIVE_KEY_ENV:

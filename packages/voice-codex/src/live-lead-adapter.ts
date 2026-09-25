@@ -52,6 +52,16 @@ export interface LiveLeadSpeech {
 	cancel(reason: string): void;
 }
 
+/** FLY-2863 §4.4 R-T1: the agenda decides who owns a founder turn the moment
+ * it starts; an agenda-owned turn is answered only by the Lead. */
+export interface AgendaTurnRouter {
+	bindTurn(utteranceId: string): {
+		owner: "agenda" | "front";
+		itemKey: string | null;
+	};
+	whenTurnBound(utteranceId: string): Promise<void>;
+}
+
 export interface LiveLeadAdapterOptions {
 	sessionId: string;
 	generation: number;
@@ -67,6 +77,7 @@ export interface LiveLeadAdapterOptions {
 	classifyIntent(utterance: VoiceUtterance): VoiceHandoffIntentKind;
 	submitHandoff(request: VoiceHandoffRequest): Promise<VoiceHandoffReceipt>;
 	registerHandoff(binding: LiveLeadResultBinding): void;
+	agendaTurns?: AgendaTurnRouter;
 	now?: () => number;
 	nextId?: () => string;
 	delegationEndTimeoutMs?: number;
@@ -98,6 +109,9 @@ export interface LiveLeadResultBinding {
 	handoffId: string;
 	requestDigest: string;
 	targetLeadId: string;
+	/** Set when the handoff came from an agenda-owned turn: its answer belongs
+	 * to the agenda, not to the frontend readback. */
+	agendaUtteranceId?: string;
 }
 
 interface FrontendSpeech {
@@ -177,6 +191,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private founderTurnResponding = false;
 	private founderTurnCueHeard = false;
 	private delegationsInFlight = 0;
+	// FLY-2863 R-T2: agenda-owned turns (utterance id → handed to the Lead).
+	private readonly agendaTurns = new Map<string, { handedOff: boolean }>();
+	private agendaOwnsFrontend = false;
 	private founderTurnTimer?: ReturnType<typeof setTimeout>;
 	private founderTurnHoldTimer?: ReturnType<typeof setTimeout>;
 
@@ -425,6 +442,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					this.openFounderUtterances.clear();
 					this.openFounderUtterances.add(event.utteranceId);
 					this.openFounderTurn();
+					this.bindAgendaTurn(event.utteranceId);
 				} else {
 					this.openFounderUtterances.delete(event.utteranceId);
 					this.maybeSettleFounderTurn();
@@ -447,7 +465,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				void this.enqueueFace(() => this.replaceAfterBargeIn(live));
 			}),
 			live.on("response-started", () => {
-				this.startFrontendSpeech();
+				if (this.agendaOwnsFrontend)
+					this.options.record({ kind: "live_frontend_suppressed_for_agenda" });
+				else this.startFrontendSpeech();
 				if (!this.founderTurnPending) return;
 				this.founderTurnResponding = true;
 				this.clearFounderTurnTimer();
@@ -464,8 +484,20 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			live.on("transcript", (event) => {
 				if (event.role !== "assistant" || !event.final) return;
 				// The founder's turn precedes the answer to it in the V1 stream.
-				for (const utterance of this.assembler.sealEndedRoomUtterances())
-					this.emitUserUtterance(utterance);
+				this.sealEndedTurns();
+				if (this.agendaOwnsFrontend) {
+					// The Lead answers agenda turns; the frontend line was never played.
+					this.options.record({
+						kind: "live_frontend_answer_suppressed",
+						chars: event.text.length,
+					});
+					if (this.founderTurnPending) {
+						this.founderTurnResponding = false;
+						this.founderTurnAnswered = true;
+						this.maybeSettleFounderTurn();
+					}
+					return;
+				}
 				const timestamp = new Date(this.now()).toISOString();
 				this.emitUtterance({
 					ts: timestamp,
@@ -579,108 +611,180 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		if (this.closing) return;
 		await this.suspendLive(live, "delegation-sealed");
 		try {
-			await this.ensureLeadCue(delegation.generation, bindingKey);
 			const utterance = this.assembler.sealDelegation({
 				generation: delegation.generation,
 				delegationId: delegation.delegationId,
 				offsetMs: delegation.offsetMs,
 			});
-			this.emitUserUtterance(utterance);
-			if (utterance.attribution.kind !== "known" || !utterance.text) {
-				const reason =
-					utterance.attribution.kind === "unknown"
-						? utterance.attribution.reason
-						: "empty_transcript";
+			const agendaTurn = this.agendaTurns.get(utterance.utteranceId);
+			if (agendaTurn?.handedOff) {
+				// R-T2: this turn already went to the Lead once.
 				this.options.record({
-					kind: "live_lead_clarification_required",
-					reason,
+					kind: "live_delegation_deduplicated_for_agenda",
 					binding: bindingKey,
 				});
-				// Never drop her words silently: ask her to say it again.
-				await this.promptFounder(
-					CLARIFY_PROMPT,
-					`clarify:${bindingKey}`,
-					reason,
-					true,
-				);
 				return;
 			}
-			const durability =
-				await this.options.transcriptSink.appendDurable(utterance);
-			const reread = await this.options.transcriptSink.readReceipt(
-				utterance.sessionId,
-				utterance.transcriptId,
-				durability.contentDigest,
-			);
-			if (
-				!durability.durable ||
-				!reread?.durable ||
-				reread.sessionId !== utterance.sessionId ||
-				reread.transcriptId !== utterance.transcriptId ||
-				reread.contentDigest !== durability.contentDigest
-			) {
-				throw new Error("live_lead_transcript_not_durable");
-			}
-			const intentKind = this.options.classifyIntent(utterance);
-			const handoffId = this.nextId();
-			const idempotencyKey = voiceHandoffIdempotencyKey({
-				transcriptId: utterance.transcriptId,
-				targetLeadId: this.options.targetLeadId,
-				intentKind,
-			});
-			const withoutDigest: Omit<VoiceHandoffRequest, "requestDigest"> = {
-				handoffId,
-				idempotencyKey,
-				intentKind,
-				payload: {
-					targetLeadId: this.options.targetLeadId,
-					text: utterance.text,
-					quotes: [utterance.text],
-				},
-				sessionId: this.sessionId,
-				generation: this.generation,
-				transcriptId: utterance.transcriptId,
-				utteranceId: utterance.utteranceId,
-				originalText: utterance.text,
-				authorityBinding: {
-					projectName: this.options.projectName,
-					founderUserId: this.options.founderUserId,
-					targetLeadId: this.options.targetLeadId,
-					sessionId: this.sessionId,
-					generation: this.generation,
-					transcriptId: utterance.transcriptId,
-					transcriptDigest: durability.contentDigest,
-				},
-				transcriptDurabilityReceipt: durability,
-				delegationBinding: `openai-live:${bindingKey}`,
-			};
-			const request: VoiceHandoffRequest = {
-				...withoutDigest,
-				requestDigest: voiceHandoffRequestDigest(withoutDigest),
-			};
-			const receipt = await this.options.submitHandoff(request);
-			if (
-				receipt.handoffId !== request.handoffId ||
-				receipt.requestDigest !== request.requestDigest ||
-				receipt.state !== "committed"
-			) {
-				throw new Error(`live_lead_handoff_${receipt.state}`);
-			}
-			this.options.registerHandoff({
-				sessionId: this.sessionId,
-				generation: this.generation,
-				handoffId,
-				requestDigest: request.requestDigest,
-				targetLeadId: this.options.targetLeadId,
-			});
-			this.options.record({
-				kind: "live_lead_handoff_committed",
-				handoffId,
-				providerOperationId: receipt.providerOperationId,
-				binding: bindingKey,
-			});
+			// An agenda turn is already a conversation with the Lead: no cue.
+			if (!agendaTurn)
+				await this.ensureLeadCue(delegation.generation, bindingKey);
+			await this.submitFounderHandoff(utterance, bindingKey, true);
 		} finally {
 			if (!this.closing) await this.resumeLive(live);
+		}
+	}
+
+	/** Durable transcript → one user handoff → reply binding. Shared by Live
+	 * delegations and by agenda-owned turns the frontend did not delegate. */
+	private async submitFounderHandoff(
+		utterance: VoiceUtterance,
+		bindingKey: string,
+		liveSuspended: boolean,
+	): Promise<void> {
+		this.emitUserUtterance(utterance);
+		const agendaTurn = this.agendaTurns.get(utterance.utteranceId);
+		if (utterance.attribution.kind !== "known" || !utterance.text) {
+			const reason =
+				utterance.attribution.kind === "unknown"
+					? utterance.attribution.reason
+					: "empty_transcript";
+			this.options.record({
+				kind: "live_lead_clarification_required",
+				reason,
+				binding: bindingKey,
+			});
+			// Never drop her words silently: ask her to say it again.
+			await this.promptFounder(
+				CLARIFY_PROMPT,
+				`clarify:${bindingKey}`,
+				reason,
+				liveSuspended,
+			);
+			return;
+		}
+		if (agendaTurn) agendaTurn.handedOff = true;
+		const durability =
+			await this.options.transcriptSink.appendDurable(utterance);
+		const reread = await this.options.transcriptSink.readReceipt(
+			utterance.sessionId,
+			utterance.transcriptId,
+			durability.contentDigest,
+		);
+		if (
+			!durability.durable ||
+			!reread?.durable ||
+			reread.sessionId !== utterance.sessionId ||
+			reread.transcriptId !== utterance.transcriptId ||
+			reread.contentDigest !== durability.contentDigest
+		) {
+			throw new Error("live_lead_transcript_not_durable");
+		}
+		const intentKind = this.options.classifyIntent(utterance);
+		const handoffId = this.nextId();
+		const idempotencyKey = voiceHandoffIdempotencyKey({
+			transcriptId: utterance.transcriptId,
+			targetLeadId: this.options.targetLeadId,
+			intentKind,
+		});
+		const withoutDigest: Omit<VoiceHandoffRequest, "requestDigest"> = {
+			handoffId,
+			idempotencyKey,
+			intentKind,
+			payload: {
+				targetLeadId: this.options.targetLeadId,
+				text: utterance.text,
+				quotes: [utterance.text],
+			},
+			sessionId: this.sessionId,
+			generation: this.generation,
+			transcriptId: utterance.transcriptId,
+			utteranceId: utterance.utteranceId,
+			originalText: utterance.text,
+			authorityBinding: {
+				projectName: this.options.projectName,
+				founderUserId: this.options.founderUserId,
+				targetLeadId: this.options.targetLeadId,
+				sessionId: this.sessionId,
+				generation: this.generation,
+				transcriptId: utterance.transcriptId,
+				transcriptDigest: durability.contentDigest,
+			},
+			transcriptDurabilityReceipt: durability,
+			delegationBinding: `openai-live:${bindingKey}`,
+		};
+		const request: VoiceHandoffRequest = {
+			...withoutDigest,
+			requestDigest: voiceHandoffRequestDigest(withoutDigest),
+		};
+		// The server derives the agenda binding from the turn table: it must
+		// exist before the handoff is authorized.
+		if (agendaTurn)
+			await this.options.agendaTurns?.whenTurnBound(utterance.utteranceId);
+		const receipt = await this.options.submitHandoff(request);
+		if (
+			receipt.handoffId !== request.handoffId ||
+			receipt.requestDigest !== request.requestDigest ||
+			receipt.state !== "committed"
+		) {
+			throw new Error(`live_lead_handoff_${receipt.state}`);
+		}
+		this.options.registerHandoff({
+			sessionId: this.sessionId,
+			generation: this.generation,
+			handoffId,
+			requestDigest: request.requestDigest,
+			targetLeadId: this.options.targetLeadId,
+			...(agendaTurn ? { agendaUtteranceId: utterance.utteranceId } : {}),
+		});
+		this.options.record({
+			kind: "live_lead_handoff_committed",
+			handoffId,
+			providerOperationId: receipt.providerOperationId,
+			binding: bindingKey,
+			...(agendaTurn ? { agenda: true } : {}),
+		});
+	}
+
+	/** R-T1: record who owns this founder turn; the frontend stays silent for
+	 * the whole of an agenda-owned turn. */
+	private bindAgendaTurn(utteranceId: string): void {
+		const router = this.options.agendaTurns;
+		if (!router) return;
+		let owner: "agenda" | "front" = "front";
+		try {
+			owner = router.bindTurn(utteranceId).owner;
+		} catch (error) {
+			this.options.record({
+				kind: "live_agenda_turn_bind_failed",
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+		this.agendaOwnsFrontend = owner === "agenda";
+		if (owner !== "agenda") return;
+		this.agendaTurns.set(utteranceId, { handedOff: false });
+		this.cancelFrontendSpeech();
+	}
+
+	/** Seal every ended window; hand each agenda-owned one the frontend did not
+	 * delegate to the Lead exactly once (R-T2, including late finals R-T4). */
+	private sealEndedTurns(): void {
+		for (const utterance of this.assembler.sealEndedRoomUtterances()) {
+			const agendaTurn = this.agendaTurns.get(utterance.utteranceId);
+			if (!agendaTurn || agendaTurn.handedOff) {
+				this.emitUserUtterance(utterance);
+				continue;
+			}
+			const bindingKey = `agenda:${utterance.utteranceId}`;
+			void this.enqueueFace(async () => {
+				if (agendaTurn.handedOff || this.closing) return;
+				await this.submitFounderHandoff(utterance, bindingKey, false);
+			}).catch((error) =>
+				this.options.record({
+					kind: "live_lead_delegation_failed",
+					binding: bindingKey,
+					message: error instanceof Error ? error.message : String(error),
+				}),
+			);
 		}
 	}
 
@@ -749,6 +853,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				kind: "live_lead_founder_turn_hold_exceeded",
 				holdMs: this.founderTurnMaxHoldMs,
 			});
+			// An agenda turn the frontend never answered still reaches the Lead.
+			this.sealEndedTurns();
 			this.promptIfCueWithoutDelegation();
 			this.settleFounderTurn();
 		}, this.founderTurnMaxHoldMs);
@@ -767,6 +873,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					kind: "live_lead_founder_turn_unanswered",
 					timeoutMs: this.founderTurnSettleTimeoutMs,
 				});
+				this.sealEndedTurns();
 				this.promptIfCueWithoutDelegation();
 				this.settleFounderTurn();
 			});
@@ -1144,7 +1251,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	}
 
 	private enqueueFrontendAudio(chunk: Buffer, format: AudioFormat): void {
-		if (this.closing) return;
+		// R-T2: nothing the frontend says during an agenda-owned turn is played.
+		if (this.closing || this.agendaOwnsFrontend) return;
 		if (
 			format.encoding !== PCM24.encoding ||
 			format.sampleRateHz !== PCM24.sampleRateHz ||

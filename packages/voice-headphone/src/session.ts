@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import type {
+	AgendaPorts,
+	AgendaResult,
 	DurableTranscriptSink,
 	RoomIO,
 	VoiceHandoffReceipt,
@@ -7,9 +10,8 @@ import type {
 	VoiceV1Session,
 } from "flywheel-voice-core";
 import {
+	AgendaConductor,
 	composeStartInstructions,
-	HeadphoneMode,
-	InboxReader,
 	SpokenExitGuard,
 } from "flywheel-voice-core";
 import type {
@@ -19,40 +21,46 @@ import type {
 	VoiceReplyListener,
 } from "./bridge-client.js";
 
-export const DEFAULT_HEADPHONE_POLL_INTERVAL_MS = 1_000;
+/** FLY-2863: the voice mode a session runs (Bridge mode `rg` is headphone). */
+export type HeadphoneVoiceMode = "headphone" | "meeting";
 
 export interface HeadphoneUtteranceProjection {
 	start(): void;
 	close(): void;
 }
 
+export type HeadphoneSessionBridge = Pick<
+	BridgeVoiceClient,
+	| "getAgendaSnapshot"
+	| "getAgendaState"
+	| "putAgendaState"
+	| "requestAgendaBrief"
+	| "bindAgendaTurn"
+	| "handoffToLead"
+	| "listVoiceHandoffResults"
+	| "subscribeReplies"
+>;
+
 export interface HeadphoneSessionOptions {
 	engine: VoiceV1Session;
-	room: Pick<RoomIO, "audibleTail">;
-	bridge: Pick<
-		BridgeVoiceClient,
-		| "listHeadphoneItems"
-		| "claimHeadphoneItem"
-		| "ackHeadphoneClaim"
-		| "getHeadphoneSourceHealth"
-		| "handoffToLead"
-		| "listVoiceHandoffResults"
-		| "subscribeReplies"
-	>;
+	room: Pick<RoomIO, "audibleTail" | "onBargeIn">;
+	bridge: HeadphoneSessionBridge;
 	binding: HeadphoneSessionBinding;
 	founderUserId: string;
 	transcriptSink: DurableTranscriptSink;
 	baseInstructions: string;
+	/** Default headphone; a meeting briefs only its own Lead's work. */
+	mode?: HeadphoneVoiceMode;
 	createUtteranceProjection?(
 		session: Pick<VoiceV1Session, "onUtterance">,
 	): HeadphoneUtteranceProjection;
-	heartbeatIntervalMs?: number;
-	pollIntervalMs?: number;
+	/** Quiet time before the Lead checks in (default 600000, founder-set). */
+	checkinIntervalMs?: number;
+	agendaPollIntervalMs?: number;
+	leadReplyTimeoutMs?: number;
 	record(event: Record<string, unknown>): void;
 	textStatus?(message: string): void;
 	onSpokenExit?(): Promise<void> | void;
-	setTimeoutFn?: typeof setTimeout;
-	clearTimeoutFn?: typeof clearTimeout;
 }
 
 function supportsRequiredV1(session: VoiceV1Session): boolean {
@@ -73,16 +81,92 @@ function supportsRequiredV1(session: VoiceV1Session): boolean {
 	);
 }
 
-/** Engine-independent headphone composition. Engine adapters supply only the
- * V1 session; Bridge inbox and durable-exit rules stay identical for A/B. */
+/** RoomIO utterance ids are opaque; the Bridge turn id is a safe digest. */
+export function agendaTurnId(utteranceId: string): string {
+	return `turn:${createHash("sha256").update(utteranceId).digest("hex").slice(0, 32)}`;
+}
+
+/** Bridge-backed agenda ports: every call carries the session lease. */
+export function bridgeAgendaPorts(
+	bridge: HeadphoneSessionBridge,
+	binding: HeadphoneSessionBinding,
+	record: (event: Record<string, unknown>) => void,
+): AgendaPorts {
+	return {
+		fetchSnapshot: () => bridge.getAgendaSnapshot(binding),
+		loadState: () => bridge.getAgendaState(binding),
+		saveState: (input) => bridge.putAgendaState(binding, input),
+		requestBrief: (input) => bridge.requestAgendaBrief(binding, input),
+		bindTurn: ({ utteranceId, itemKey }) =>
+			bridge.bindAgendaTurn(binding, {
+				utteranceId,
+				turnId: agendaTurnId(utteranceId),
+				itemKey,
+			}),
+		async listResults(requestId, after) {
+			const results: AgendaResult[] = [];
+			let cursor = after;
+			for (;;) {
+				const page: VoiceHandoffResultsPage =
+					await bridge.listVoiceHandoffResults(binding, requestId, cursor, 100);
+				for (const event of page.events) {
+					const base = {
+						requestId,
+						resultEventId: event.resultEventId,
+						seq: event.seq,
+					};
+					if (event.resultKind === "agenda_say" && event.agenda?.kind === "say")
+						results.push({
+							...base,
+							kind: "say",
+							itemKey: event.agenda.itemKey,
+							...(event.agenda.order ? { order: event.agenda.order } : {}),
+							text: event.text,
+						});
+					else if (
+						event.resultKind === "agenda_close" &&
+						event.agenda?.kind === "close"
+					)
+						results.push({
+							...base,
+							kind: "close",
+							itemKey: event.agenda.itemKey,
+							disposition: event.agenda.disposition,
+							...(event.agenda.evidence
+								? { evidence: event.agenda.evidence }
+								: {}),
+							reason: event.agenda.reason,
+						});
+					else if (event.resultKind === "lead_reply")
+						results.push({ ...base, kind: "lead_reply", text: event.text });
+					else
+						record({
+							kind: "agenda_result_kind_ignored",
+							requestId,
+							resultKind: event.resultKind,
+						});
+				}
+				if (page.nextCursor <= cursor || page.nextCursor >= page.highWatermark)
+					return results;
+				cursor = page.nextCursor;
+			}
+		},
+	};
+}
+
+/**
+ * Engine-independent voice mode composition (FLY-2796 + FLY-2863). Engine
+ * adapters supply only the V1 session; the agenda, the durable transcript
+ * and the spoken-exit rule stay identical for engines A and B. The inbox is
+ * never read out: only the Lead's own words about the current agenda are.
+ */
 export class HeadphoneSession {
-	private readonly mode: HeadphoneMode;
+	readonly agenda: AgendaConductor;
 	private readonly exit: SpokenExitGuard;
-	private sourceHealthy = false;
 	private started = false;
 	private closing = false;
-	private pollTimer?: ReturnType<typeof setTimeout>;
 	private unsubscribeUtterance?: () => void;
+	private unsubscribeReplies?: () => void;
 	private readonly utteranceProjection?: HeadphoneUtteranceProjection;
 	private transcriptWork: Promise<void> = Promise.resolve();
 
@@ -97,37 +181,24 @@ export class HeadphoneSession {
 		this.utteranceProjection = options.createUtteranceProjection?.(
 			options.engine,
 		);
-		const inbox = new InboxReader({
-			list: async () => {
-				try {
-					return await options.bridge.listHeadphoneItems(options.binding);
-				} catch (error) {
-					this.sourceHealthy = false;
-					options.record({
-						kind: "headphone_inbox_list_failed",
-						message: error instanceof Error ? error.message : String(error),
-					});
-					return [];
-				}
-			},
-			claim: (item) => options.bridge.claimHeadphoneItem(options.binding, item),
-			ack: (claim, receipts) =>
-				options.bridge.ackHeadphoneClaim(options.binding, claim, receipts),
-			speak: (text, kind, speakOptions) =>
-				options.engine.speak(text, kind, speakOptions),
-			record: options.record,
-			now: Date.now,
-		});
-		this.mode = new HeadphoneMode({
+		this.agenda = new AgendaConductor({
+			mode: options.mode ?? "headphone",
+			sessionId: options.binding.sessionId,
+			generation: options.binding.generation,
 			engine: options.engine,
-			inbox,
 			room: options.room,
-			...(options.heartbeatIntervalMs === undefined
-				? {}
-				: { heartbeatIntervalMs: options.heartbeatIntervalMs }),
-			sourceHealthy: () => this.sourceHealthy,
+			ports: bridgeAgendaPorts(options.bridge, options.binding, options.record),
 			record: options.record,
 			...(options.textStatus ? { textStatus: options.textStatus } : {}),
+			...(options.checkinIntervalMs === undefined
+				? {}
+				: { checkinIntervalMs: options.checkinIntervalMs }),
+			...(options.agendaPollIntervalMs === undefined
+				? {}
+				: { pollIntervalMs: options.agendaPollIntervalMs }),
+			...(options.leadReplyTimeoutMs === undefined
+				? {}
+				: { leadReplyTimeoutMs: options.leadReplyTimeoutMs }),
 		});
 		this.exit = new SpokenExitGuard(
 			options.binding.sessionId,
@@ -139,26 +210,32 @@ export class HeadphoneSession {
 	async start(): Promise<void> {
 		if (this.started) throw new Error("headphone_session_already_started");
 		this.started = true;
-		await this.refreshSourceHealth();
 		this.unsubscribeUtterance = this.options.engine.onUtterance((utterance) =>
 			this.observeUtterance(utterance),
 		);
 		try {
 			this.utteranceProjection?.start();
-			await this.mode.start(
+			await this.options.engine.open(
 				composeStartInstructions(this.options.baseInstructions, true),
 			);
-			this.armPoll();
+			// Reply wakes are hints; the conductor rereads durable results.
+			this.unsubscribeReplies = this.options.bridge.subscribeReplies(
+				this.options.binding,
+				(wake) => {
+					void this.agenda.notifyResults(wake.handoffId);
+				},
+			);
+			await this.agenda.start();
 		} catch (error) {
 			await this.close();
 			throw error;
 		}
 	}
 
+	/** A source may have changed (the conductor also polls on its own). */
 	async notifyInboxChanged(): Promise<void> {
 		if (this.closing) return;
-		await this.refreshSourceHealth();
-		await this.mode.notifyInboxChanged();
+		await this.agenda.notifySourceChanged();
 	}
 
 	handoffToLead(request: VoiceHandoffRequest): Promise<VoiceHandoffReceipt> {
@@ -185,11 +262,10 @@ export class HeadphoneSession {
 	async close(): Promise<void> {
 		if (this.closing) return;
 		this.closing = true;
-		if (this.pollTimer)
-			(this.options.clearTimeoutFn ?? clearTimeout)(this.pollTimer);
-		this.pollTimer = undefined;
 		this.unsubscribeUtterance?.();
 		this.unsubscribeUtterance = undefined;
+		this.unsubscribeReplies?.();
+		this.unsubscribeReplies = undefined;
 		try {
 			this.utteranceProjection?.close();
 		} catch (error) {
@@ -198,7 +274,8 @@ export class HeadphoneSession {
 				message: error instanceof Error ? error.message : String(error),
 			});
 		}
-		await this.mode.close();
+		await this.agenda.close();
+		await this.options.engine.close();
 	}
 
 	private observeUtterance(utterance: VoiceUtterance): void {
@@ -228,34 +305,5 @@ export class HeadphoneSession {
 					message: error instanceof Error ? error.message : String(error),
 				}),
 			);
-	}
-
-	private async refreshSourceHealth(): Promise<void> {
-		try {
-			this.sourceHealthy = (
-				await this.options.bridge.getHeadphoneSourceHealth(this.options.binding)
-			).healthy;
-		} catch (error) {
-			this.sourceHealthy = false;
-			this.options.record({
-				kind: "headphone_source_health_failed",
-				message: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-
-	private armPoll(): void {
-		if (this.closing) return;
-		this.pollTimer = (this.options.setTimeoutFn ?? setTimeout)(() => {
-			void this.notifyInboxChanged()
-				.catch((error) =>
-					this.options.record({
-						kind: "headphone_poll_failed",
-						message: error instanceof Error ? error.message : String(error),
-					}),
-				)
-				.finally(() => this.armPoll());
-		}, this.options.pollIntervalMs ?? DEFAULT_HEADPHONE_POLL_INTERVAL_MS);
-		this.pollTimer.unref?.();
 	}
 }
