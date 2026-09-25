@@ -692,6 +692,17 @@ export class AgendaConductor {
 		previous?: AgendaBriefRequestInput["previous"],
 		rewriteReason?: AgendaSayRejection,
 	): Promise<boolean> {
+		// Review R8: the fence sits here, not only in the callers — no brief is
+		// asked for while a closing line is unheard; finishClosing() advances.
+		if (this.closingPending()) {
+			this.options.record({
+				kind: "agenda_request_deferred",
+				purpose,
+				itemKey,
+				reason: "closing_pending",
+			});
+			return false;
+		}
 		const requestId = await this.issue({
 			purpose,
 			itemKey,

@@ -1243,6 +1243,55 @@ describe("AgendaConductor — review R7 (closing line, refusal and check-in writ
 		expect(second.bridge.stored?.closing ?? null).toBeNull();
 	});
 
+	it("a late reply cannot start work ahead of an urgent item's pending closing line (review R8)", async () => {
+		let interrupted = false;
+		const h = await harness(THREE, {
+			respond: (call) => {
+				if (!call.pendingKey.startsWith("agenda-closing:") || interrupted)
+					return undefined as never;
+				interrupted = true;
+				return receipt(call, SPEAK_BARGE_IN_REASON);
+			},
+		});
+		await h.conductor.start();
+		h.bridge.say("req-1", "先说受阻。", "blocked:C");
+		await wake(h, "req-1");
+		h.bridge.snapshot.items.push(
+			item("said:U", "lead_said", 5, {
+				urgent: { source: "lead_flag", reason: "production_down" },
+			}),
+		);
+		await h.conductor.notifySourceChanged();
+		await settle();
+		const urgentRequest = h.bridge.last().requestId;
+		h.bridge.say(urgentRequest, "插一句急的：生产挂了。", "said:U");
+		await wake(h, urgentRequest);
+		// Two turns on the urgent item; the newer one closes it.
+		h.conductor.bindTurn("utt-old");
+		h.conductor.bindTurn("utt-new");
+		await h.conductor.adoptReply({
+			utteranceId: "utt-new",
+			handoffId: "h-new",
+		});
+		h.bridge.close("h-new", "said:U", "resolved", "msg:restart", LINE);
+		await wake(h, "h-new");
+		expect(h.bridge.stored?.closing?.itemKey).toBe("said:U");
+		const before = h.bridge.requests.length;
+		// The older turn's handoff converges late and its answer arrives.
+		await h.conductor.adoptReply({
+			utteranceId: "utt-old",
+			handoffId: "h-old",
+		});
+		h.bridge.say("h-old", "刚才那件已经处理了。", null);
+		await wake(h, "h-old");
+		expect(h.bridge.requests).toHaveLength(before);
+		await h.clock.advance(8_000);
+		expect(h.spoken().filter((text) => text === LINE)).toHaveLength(2);
+		expect(h.bridge.requests.slice(before)).toEqual([
+			expect.objectContaining({ purpose: "resume", itemKey: "blocked:C" }),
+		]);
+	});
+
 	for (const failure of ["throw", "conflict"] as const)
 		it(`a refused result keeps the Lead timer even when recording it fails (${failure})`, async () => {
 			const h = await harness(THREE);

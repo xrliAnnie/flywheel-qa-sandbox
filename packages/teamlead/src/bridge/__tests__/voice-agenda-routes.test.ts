@@ -2,6 +2,7 @@
  * FLY-2863 plan §3-§4 Bridge face: lease-bound snapshot/state/turn/request
  * routes and the Lead result route used by `flywheel-comm voice agenda`.
  */
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import Database from "better-sqlite3";
@@ -309,35 +310,87 @@ describe("PUT /api/voice/agenda/state (CAS)", () => {
 		expect(read.body.state.stateVersion).toBe(1);
 	});
 
-	it("keeps a pending closing line verbatim so a restart can say it first (review R7)", async () => {
-		const { base } = await start();
+	it("stores a closing line only as proven by the Lead's own close result (review R7, R8)", async () => {
+		const { base, handoffs } = await start();
 		await call(base, `/agenda?sessionId=${SESSION_ID}&generation=3`);
+		const item = await call(base, "/agenda/requests", {
+			method: "POST",
+			body: {
+				sessionId: SESSION_ID,
+				generation: 3,
+				purpose: "item",
+				itemKey: "blocked:I1:t",
+				clientRequestId: "c-close",
+			},
+		});
+		const requestId = item.body.requestId as string;
+		const record = handoffs.get(requestId);
+		const answerKey =
+			record?.agenda?.kind === "brief" ? record.agenda.answerKey : "";
+		const LINE = "记下你批了，你在讨论串里点一下就行。";
+		const closed = await call(base, "/agenda/lead/results", {
+			method: "POST",
+			token: INGEST,
+			lease: "",
+			body: {
+				requestId,
+				leadId: "raya",
+				answerKey,
+				clientResultId: "r-close",
+				kind: "close",
+				itemKey: "blocked:I1:t",
+				disposition: "decision_recorded",
+				reason: "她口头批了",
+				say: LINE,
+			},
+		});
+		expect(closed.status).toBe(200);
 		const closing = {
 			itemKey: "blocked:I1:t",
 			closedAs: "decision_recorded",
 			wasUrgent: false,
-			text: "记下你批了，你在讨论串里点一下就行。",
-			requestId: "turn-1",
-			resultEventId: "turn-1:e1",
+			text: LINE,
+			requestId,
+			resultEventId: closed.body.resultEventId as string,
 			attempts: 1,
 			failures: 0,
 		};
-		const saved = await call(base, "/agenda/state", {
-			method: "PUT",
-			body: {
-				sessionId: SESSION_ID,
-				generation: 3,
-				expectedVersion: 0,
-				state: freshState(3, { active: null, closing }),
-				dispositions: [],
-			},
-		});
+		let version = 0;
+		const put = (value: unknown) =>
+			call(base, "/agenda/state", {
+				method: "PUT",
+				body: {
+					sessionId: SESSION_ID,
+					generation: 3,
+					expectedVersion: version,
+					state: freshState(3, {
+						stateVersion: version + 1,
+						active: null,
+						closing: value,
+					} as Partial<AgendaState>),
+					dispositions: [],
+				},
+			});
+		for (const forged of [
+			{ ...closing, text: "替她编的一句话。" },
+			{ ...closing, closedAs: "resolved" },
+			{ ...closing, itemKey: "approve:I2:t" },
+			{ ...closing, resultEventId: "voice-agenda:forged" },
+			{ ...closing, requestId: randomUUID() },
+			{ ...closing, attempts: -1 },
+			{ ...closing, extra: true },
+			{ itemKey: "blocked:I1:t", text: LINE },
+		])
+			expect((await put(forged)).status).toBe(400);
+		const saved = await put(closing);
 		expect(saved.status).toBe(200);
+		version = 1;
+		expect((await put(null)).status).toBe(200);
 		const read = await call(
 			base,
 			`/agenda/state?sessionId=${SESSION_ID}&generation=3`,
 		);
-		expect(read.body.state.closing).toEqual(closing);
+		expect(read.body.state.closing).toBeNull();
 	});
 });
 

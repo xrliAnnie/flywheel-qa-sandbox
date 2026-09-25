@@ -301,6 +301,54 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 		const served = (key: unknown) =>
 			typeof key === "string" &&
 			!!deps.agenda.getServedItem(session.sessionId, key);
+		// Review R8: a pending closing line is founder speech, so it is stored
+		// only as the exact copy of this session's own authenticated close.
+		const closingProven = (value: unknown): boolean => {
+			if (value === undefined || value === null) return true;
+			const closing = exactObject(value, [
+				"itemKey",
+				"closedAs",
+				"wasUrgent",
+				"text",
+				"requestId",
+				"resultEventId",
+				"attempts",
+				"failures",
+			]);
+			const count = (entry: unknown) =>
+				Number.isSafeInteger(entry) &&
+				(entry as number) >= 0 &&
+				(entry as number) <= 1_000;
+			if (
+				!closing ||
+				!served(closing.itemKey) ||
+				!AGENDA_DISPOSITIONS.includes(
+					closing.closedAs as AgendaDispositionRecord["disposition"],
+				) ||
+				typeof closing.wasUrgent !== "boolean" ||
+				!text(closing.text, MAX_SAY_TEXT) ||
+				!text(closing.requestId, 64) ||
+				!text(closing.resultEventId, 256) ||
+				!count(closing.attempts) ||
+				!count(closing.failures)
+			)
+				return false;
+			const record = deps.handoffs.get(closing.requestId);
+			const result = deps.handoffs.getResult(
+				closing.requestId,
+				closing.resultEventId,
+			);
+			return (
+				record?.sessionId === session.sessionId &&
+				record.projectName === session.projectName &&
+				result?.resultKind === "agenda_close" &&
+				result.agenda?.kind === "close" &&
+				result.agenda.itemKey === closing.itemKey &&
+				result.agenda.disposition === closing.closedAs &&
+				result.agenda.say === closing.text &&
+				result.text === closing.text
+			);
+		};
 		if (
 			!state ||
 			typeof state !== "object" ||
@@ -319,6 +367,7 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 				state.active,
 				state.activeUrgent,
 			].every((key) => key === null || served(key)) ||
+			!closingProven((state as { closing?: unknown }).closing) ||
 			!Array.isArray(dispositions) ||
 			dispositions.some(
 				(record) =>
