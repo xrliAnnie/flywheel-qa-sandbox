@@ -85,3 +85,11 @@ QA 在真 slot-3 Bridge + 真 Codex Lead + 生产引擎 A 组合上确认了四�
 不在本轮做：QA 的非阻塞观察（换件等待 60–75 秒、Lead 之间 @ 对话会被当成对她说的、slot shell 缺 Bridge 地址）与设计稿一致或属于环境差异，留给 Lead 定；R6 MEDIUM（turnOrder 用墙钟）仍按 Lead 裁定留在 PR Follow-ups。
 
 本轮本机验证（只跑相关测试）：voice-core related 48（agenda-conductor 42）；teamlead 直接消费者 6 个文件 50 条（voice-agenda-routes 19、voice-agenda-source 14、voice-agenda-store、voice-runtime-route-order、StateStore.voice-session-schema、required-wall-clock-thresholds），`plugin.ts` 是 hub，`vitest related` 会展开成接近整包，未跑，只改了一个薄的 `readQuestionText` 接线，由 source 用例覆盖依赖；retention 守卫 node 测试 10/10 + 生产守卫 `ok:true`；flywheel-comm voice-agenda 6；voice-headphone session 5 + bridge-client 20；voice-codex live-lead-adapter 47 + engine-a-composition/config 30。根 `pnpm lint` 0 error；`flywheel-teamlead...`、`flywheel-voice-codex...`、`flywheel-voice-headphone...` 构建通过；voice-core、flywheel-comm、voice-headphone 的全部依赖方 typecheck 通过。exact-head full CI 与真房复测交 QA。
+
+**返工后的 Codex 复审 R7**（同线程，xhigh，头 `3e24ffeae`）提出 1 HIGH、2 MEDIUM，都出在本轮新改的模式层，均已修复：
+
+- HIGH：收尾句被她打断、TTS 失败或会话关闭时直接进下一件，close 已落盘，这句永久丢失。改为收尾句与 close 同一次提交存进 `AgendaState.closing`，**她听完才进下一件**；她打断不算失败，下个安全边界（间隔 8 秒）换新 pendingKey 重念；真失败两次就丢弃并记录，议程不会卡死；重启或新 generation 先念它。开新件、urgent 插播、报平安都等它；如果它自己的清除写入失败，就搭在下一次成功写入上一起清掉。
+- MEDIUM：拒收结果的写入失败或 CAS 冲突时，Lead 计时器没有恢复。改为无论写没写成，都按当前状态重新计时。
+- MEDIUM：报平安退役写入失败时仍播兜底句，迟到的 Lead 回话还会再念。改为确认退役后才播兜底句；否则只念 Lead 那一句。
+
+回归：conductor 7 条新用例（打断重念、失败两次丢弃、重启先念、拒收写失败 ×2、报平安退役失败 ×2），另加路由用例锁住 `closing` 原样往返。负对照：去掉「收尾句待念时不开新件」的守卫，打断用例失败。复跑：voice-core related 55、voice-codex 77、voice-headphone 25、teamlead 议程 34，根 lint 0 error，`flywheel-voice-core...` 等构建与 voice-core 全部依赖方 typecheck 通过。
