@@ -1,13 +1,14 @@
 ---
 issue: FLY-2879
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-25T10:16:47.806Z
-nextStep: Run RED verifier, then update exact assertions before production literals
+phaseCursor: 2/5
+updated: 2026-09-25T10:18:41.010Z
+nextStep: Change only the eight production literals, preserving claude-opus-50
+  and unrelated labels
 chunks: []
 pointers: {}
 ---
 
 # FLY-2879 progress
-**phase**: implement (1/5)
-**next**: Run RED verifier, then update exact assertions before production literals
+**phase**: implement (2/5)
+**next**: Change only the eight production literals, preserving claude-opus-50 and unrelated labels
