@@ -1001,6 +1001,39 @@ test("FLY-2876 a naturally ended run is closed by stop and an old stop never tou
 	}
 });
 
+test("FLY-2876 no start while the slot's last run is unstopped, even with its lease gone", () => {
+	const room = fly2876Room();
+	const dead = fly2876DeadPid();
+	try {
+		// Stop A has released A's lease but not yet recorded STOPPED.
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-a",
+			leaseId: "lease-a",
+			pid: dead,
+			processIdentity: "gone daemon",
+		});
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			false,
+		);
+		assert.deepEqual(readdirSync(room.root), []);
+
+		// Once A is recorded STOPPED, the next start creates its lease.
+		fly2876WriteReceipt(room.slot, {
+			status: "STOPPED",
+			sessionId: "session-a",
+			leaseId: "lease-a",
+		});
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			true,
+		);
+	} finally {
+		room.cleanup();
+	}
+});
+
 test("FLY-2876 an unreadable or symlinked run receipt keeps the same-slot lease", () => {
 	const room = fly2876Room();
 	const outside = mkdtempSync(join(tmpdir(), "fly2876-outside-"));

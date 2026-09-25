@@ -920,6 +920,9 @@ export function acquireVoiceRoomLease(topology, options = {}) {
 	const orphaned = (owner) =>
 		owner?.slotDir === topology.slotDir && orphanedSameSlotLease(owner);
 	for (let attempt = 0; attempt < 2; attempt += 1) {
+		// FLY-2876: `stop` releases the lease before it records STOPPED; until
+		// then the slot's last run still owns the room even with no lease left.
+		if (liveRunReceipt(topology.slotDir)) return { path, created: false };
 		// FLY-2876: a generation per created lease, so a stop from an earlier run
 		// of the same slot can never release a lease this start reclaimed.
 		const leaseId = randomUUID();
