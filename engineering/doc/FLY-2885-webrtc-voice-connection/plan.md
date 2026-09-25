@@ -3,7 +3,7 @@ Issue: FLY-2885 (https://linear.app/geoforge3d/issue/FLY-2885/语音b核心连�
 日期: 2026-09-25
 基于: research.md
 
-状态:v2(按设计评审 R1 修订),待重审。本文只设计,不含实现。
+状态:v3(按设计评审 R1、R2 修订),待重审。本文只设计,不含实现。
 
 ## 0. 边界与验收映射
 
@@ -109,47 +109,51 @@ flowchart LR
 - `CodexVoiceBackend` 去掉按 assistant item 开 `openAudio` 的逐项输出;改为会话级 `downlink` 接口 `{push(payload, meta), cut(), mute(), unmute()}`。
   `response-audio` 事件不再发 PCM;`response-started/done` 改由**下行能量**判定:未静音时 300 ms 内有有声帧 = 正在说(WebRTC 腿旁路解码给出 `voiced`)。
 
-### T5 本地插话(`codex/CodexVoiceBackend.ts`;`session.ts` 触发条件不改)
+### T5 本地插话(`codex/CodexVoiceBackend.ts` + `audio/OpusDownlink.ts`;`session.ts` 触发条件不改)
 
 触发点沿用 `GenericVoiceSession`:founder 的音频离开门(门确认人声 ≥200 ms 的那一刻)且 `frontendResponseActive` ⇒ `frontend.cancelSpeech` ⇒ `CodexVoiceSession.interrupt()` 与 `room.cancelAllSpeech()`。
-`interrupt()` 在 WebRTC 下**不再 `restart()`**,改为下面的静音状态机。
+`interrupt()` 在 WebRTC 下**不再 `restart()`**,改为下面的「静音 + 有界回放」状态机。
 
-**核心不变量:只在下行「静音边界」解除静音。** 服务端判定插话时会截断旧回答(2884:10/10),截断之后到新回答开始之间必有一段静音(你还在说 + 模型起答时间,≥约 1 s)。
-所以不用任何「事件到达时刻」当音频边界(R1-1:assistant `turn.created` 比该回答第一个有声包晚约 0.9 s,probe-2/3 实测 915 / 968 ms),而是看下行音频本身:
+**事实前提(不是协议保证,是设计依据)**:① 事件比音频晚且不定——assistant `turn.created` 比该回答首个有声包晚 915/968 ms(probe-2/3),用户证据可能晚于新回答开头(R2-1 的 s3 重放与合成反例);`turn.start_ms` 与下行有声段起点偏差 770–930 ms 且不恒定(本单对 2884 s6 复算),**不能**逐包划分新旧回答。② 服务端判定插话时截断旧回答(2884:10/10)。③ 新回答只能在 founder 说完、服务端判定轮次结束、模型起答之后才出声。
+
+因此只承诺「**有界**地保住新回答句首」,边界用「cut 之后最长的一段下行静音」来估计,并给出延迟上限与失败结果:
 
 ```mermaid
 stateDiagram-v2
   [*] --> Playing
-  Playing --> Muted: founder 开口且模型在说·cut 清队列·记 cutAt
-  Muted --> Armed: cutAt 后见到用户回合证据
-  Muted --> Armed: 误判兜底·cutAt 后 3s 无用户回合证据且 founder 已停 1.5s
-  Armed --> Playing: 下行连续 200ms 无声(边界)·从下一有声包起放行
-  Playing --> Playing: 其余下行包原样推送
+  Playing --> Muted: founder 开口且模型在说·cut 清队列·开始缓冲下行
+  Muted --> Deciding: 用户回合证据到达(且 founder 门已关)
+  Muted --> Deciding: 误判兜底·cutAt 后 3s 无证据且 founder 门已关 1.5s
+  Deciding --> Playing: 缓冲里已有最长静音段之后的有声包·从该处回放
+  Deciding --> WaitGap: 还没有合格静音段
+  WaitGap --> Playing: 出现合格静音段后第一个有声包·直接放行
 ```
 
-- Muted/Armed 期间每个下行包都换成预编码 20 ms Opus 静音帧继续推(播放器不断粮)。
-- **用户回合证据**(逐次插话判定,不按「本代有没有事件」):数据通道 `turn.created{role:user}`,或 app-server `transcript/delta{role:user}`,取先到;只认 `cutAt` 之后到达的。
-- **Armed → Playing 只看音频**:连续 10 个下行包(200 ms)`voiced=false` 后解除;解除后的第一个有声包就是新回答的句首,原样播放(不吞句首)。
-- 误判兜底(咳一声、服务端没当回事):3 s 内无用户回合证据且门已关 1.5 s ⇒ 进入 Armed,**同样要等静音边界**才放 ⇒ 旧回答只会从句间停顿处接着播,不会从半个字处冒出来。
-- 你持续说话超过 15 s:仍保持静音直到上述条件满足(期间服务端早已截断旧回答,下行本就无声),不设「到点强放」。
-- 进入静音时:在途朗读按 `speech_interrupted` 结算(T5b)、发 `response-cancelled`、证据 `codex_barge_in_local_cut{cutAt}`;解除时证据带 `reason: user_turn|unconfirmed` 与静音时长。
+- **Muted**:每个下行包仍换成预编码 20 ms 静音帧推给播放器(不断粮);同时把**原始**包连同 `voiced` 标记追加进回放缓冲(环形,最多 75 包 = 1.5 s,超出丢最旧)。
+- **用户回合证据**(逐次插话判定):数据通道 `turn.created{role:user}` 或 app-server `transcript/delta{role:user}`,取先到;只认 `cutAt` 之后到达的。进入 Deciding 还要求 founder 的门已关(她还在说时新回答不可能开始,不急着判)。
+- **合格静音段**:cut 之后、连续 `voiced=false` ≥ 400 ms(20 包)的一段。400 ms 而不是 200 ms,是为了避开句内/句间正常停顿;截断后的静音 = founder 剩余说话 + 服务端判停 + 模型起答,通常明显更长。有多段时取**最长**的一段(截断静音最可能是最长的),并列取最后一段。
+- **Deciding**:若缓冲里合格静音段之后已有有声包 ⇒ 把该段之后的全部缓冲包(原始负载)按顺序推给播放器再接上实时包(**回放**),新回答句首完整,代价是额外延迟 = 当前时刻 − 该段结束时刻(≤1.5 s,缓冲上限)。若该段已被挤出缓冲 ⇒ 从当前实时包放行(句首丢失,记 `barge_head_lost{lostMs}`,这是有界失败)。
+- **WaitGap**:缓冲里还没有合格静音段(证据先到、新回答还没开始,常见情形)⇒ 继续静音,等到合格静音段之后的第一个有声包直接放行(零额外延迟)。
+- **回放造成的积压**在下一段停顿里消化:队列 >3 包时收到的 `voiced=false` 包直接丢弃(只丢静音,不丢人声);回放包不受 T4「>25 包裁剪」规则影响。
+- **误判兜底**:3 s 内无证据且 founder 门已关 1.5 s ⇒ 进入 Deciding,同样按最长静音段处理 ⇒ 旧回答只会在一段 ≥400 ms 的低能量间隙之后接着播(不承诺那一定是句子边界,只是不在半个音节处冒出)。
+- **founder 持续说话**:门不关就一直 Muted(期间服务端已截断,下行本就无声);缓冲只保最近 1.5 s,不设「到点强放」。
+- 进入静音时:在途朗读按 T5b 结算、发 `response-cancelled`、证据 `codex_barge_in_local_cut{cutAt}`;解除时证据带 `{trigger: user_turn|unconfirmed, boundary: replay|live|head_lost, replayMs, lostMs, mutedMs}`,QA 用它统计。
 - 取消:v3 没有客户端取消事件(research R6),**不发任何数据通道客户端事件**;旧回答由服务端判定插话时自己截断。
 - 协议说明(Bridge,T8)加一句:被打断就放弃没说完的话、直接回应新问题,不要接着说完或重复。
 
-### T5b 朗读回执在 v3 下的绑定(`codex/CodexProofSpeaker.ts`、`codex/CodexVoiceBackend.ts`)
+### T5b 朗读回执在 v3 下的准入与绑定(`codex/CodexProofSpeaker.ts`、`codex/CodexVoiceBackend.ts`)
 
-今天的回执靠 assistant item id + 同 id 的 final 转写 + 逐 item 播放完成(`CodexProofSpeaker.ts:154-208`、`CodexVoiceBackend.ts:797-825`),v3 三样都没有(R1-3)。新契约:
+今天的回执靠 assistant item id + 同 id 的 final 转写 + 逐 item 播放完成(`CodexProofSpeaker.ts:154-208`、`CodexVoiceBackend.ts:797-825`),v3 三样都没有;`appendSpeech` RPC 成功只表示请求入队(`C156 turn_processor.rs:1339-1361`),不带 turn id。
+R2-2 指出:在自然回答进行中发朗读,迟到的自然回答 `turn.created` 会被错绑。新契约先**准入**再绑定:
 
-| 步骤 | 依据 | 失败时 |
-|---|---|---|
-| 绑定 | 某块 `appendSpeech` RPC 成功之后,本代数据通道里**第一个** `turn.created{role:assistant}` 的 `turn.id`;若这之前先出现用户回合证据 ⇒ 不绑定 | `speech_preempted`,`transport:none` |
-| 转写 | 同一 `turn.id` 的 `turn.done.transcript`,用现有 `isFiniteSpeechEquivalent` 判等价 | required 且不等价 ⇒ `speech_not_equivalent` |
-| 已提交播放 | 同一 `turn.id` 的 `turn.done` 到达,且从该块 RPC 成功到 `turn.done` 之间 `OpusDownlink` 以**未静音**状态推出过 ≥1 个有声包,且期间没有 cut | 否则 `transport:none` |
-| 中断 | 期间发生本地插话 cut、换代或会话关闭 | `speech_interrupted` / `generation_changed`,已推出有声包则 `transport:submitted` |
-| 无法关联 | 超时(沿用 30 s)内没有可绑定的 `turn.created`,或 `turn.done` 缺失 | `speech_binding_unavailable`,`transport:none` ⇒ 前端判 `failed`(诚实:我们不知道它念没念) |
-
-- 不用能量活动、时间邻近或 RPC 成功本身当「已播放」证据;多块朗读逐块按上表,前一块未结算不发下一块(现有串行不变)。
-- 数据通道事件缺失时的退化结果是 `failed` 而不是假的 `unconfirmed`;QA 报绑定成功率与逐字率。
+1. **空闲准入**(每一块发送前):同时满足才发 `appendSpeech`——① 没有未结束的 assistant 回合(见过 `turn.created{assistant}` 而没见到同 id `turn.done` 的都算未结束);② 最近 600 ms 下行没有未静音的有声包;③ founder 门关着,且最近一次用户回合证据之后已经出现过 assistant `turn.done`(没有「用户说完、回答还没来」的空窗);④ 不在 Muted/Deciding/WaitGap。
+   不满足就等,最多 10 s;仍不满足 ⇒ 该块 `rejected{reason:"busy_conversation"}`、`transport:none`(前端判 `failed`,走现有「没能念出」路径)。准入后到结算前,新的用户回合证据 ⇒ `speech_preempted`。
+2. **绑定**:准入并发出后,本代第一个 `turn.created{role:assistant}` 的 `turn.id`。因为准入保证此刻没有在途的自然回答,这个回合只能由本次朗读引起;若在它之前出现用户回合证据 ⇒ 不绑定(`speech_preempted`)。
+3. **转写**:同一 `turn.id` 的 `turn.done.transcript`,用现有 `isFiniteSpeechEquivalent` 判等价。
+4. **已提交播放**:从发出到同 id `turn.done` 之间,`OpusDownlink` 以未静音状态推出过 ≥1 个有声包,且期间**没有** cut、没有 T4 裁剪、没有静音丢包(准入保证这段下行只属于本次朗读)。发生裁剪 ⇒ `failed{reason:"playback_trimmed", transport:"submitted"}`。
+5. **中断**:期间本地插话 cut ⇒ `speech_interrupted`;换代 / 会话关闭 ⇒ `generation_changed`;已推出过有声包则 `transport:submitted`,否则 `none`。
+6. **无法关联**:30 s 内没有可绑定的 `turn.created`,或 `turn.done` 缺失 ⇒ `speech_binding_unavailable`、`transport:none` ⇒ 前端 `failed`(诚实:不知道它念没念)。
+7. 多块朗读逐块走 1–6,前一块结算前不发下一块;每块都重新做空闲准入(前一块尾音与下一块不会重叠)。
 
 ### T6 上行门:开后追帧 + 句级峰值门(`pipeline/UplinkSpeechGate.ts`、`pipeline/Uplink.ts`、`discord-room.ts`)
 
@@ -188,9 +192,28 @@ stateDiagram-v2
 - 新一代用**同一份上下文快照**(不重新拉取);实时会话里之前的对话历史不回放(§8)。
 - app-server 退出 ⇒ 不重连,直接结束(已有行为)。
 - 收尾顺序(幂等):停止写上行 → `downlink.cut()` → `thread/realtime/stop`(等 closed,5 s)→ 腿 `close()` → `process.stop()`(已有 TERM→KILL 与退出确认)→ 删 root → 证据 `codex_voice_container_closed`。
-- **遗留目录(R1-5,已简化)**:本单实测 app-server 在父进程被 `SIGKILL` 后 1 s 内因 stdin 关闭自行退出(`evidence/orphan-parent-kill.*`),WebRTC 腿在我们进程里随之消失 ⇒ **不会有孤儿进程,只可能遗留临时目录**。
-  守护进程在拿到 `voice.lock`(`cli.ts:177-207`)**之后、接受任何会话之前**,扫 `codex-containers/container-*`:此时本进程还没开过容器,且锁保证没有别的守护进程,所以这些目录都属已死的旧进程。
-  删除前再查一次:`lsof -d cwd -Fn` 若有任何进程的 cwd 落在该目录下 ⇒ 不删、记 `codex_voice_stale_root_busy`(不杀任何进程);否则 `rm`(按 lstat 不跟随软链)并记 `codex_voice_stale_root_removed`。不需要 PID 接口、owner 文件或新的进程监管。
+- **遗留目录(R1-5 简化;R2-4 措辞校准)**:本单实验(`evidence/orphan-parent-kill.*`,只覆盖 initialize 之后、无活动 thread 的情形)里,父进程被 `SIGKILL` 后 app-server 1 s 内退出;固定版本源码在 stdin EOF 后启动关停,并有 45 s 的退出兜底(`C156 app-server-transport/src/transport/stdio.rs:125-133,168-180`),正常关停还会先收尾后台任务。WebRTC 腿在我们进程里随之消失 ⇒ **孤儿进程至多存活到这个有界收尾结束,之后只可能遗留临时目录**。
+  守护进程在拿到 `voice.lock`(`cli.ts:177-207`)**之后、接受任何会话之前**,扫 `codex-containers/container-*`:锁保证没有别的守护进程,本进程也还没开过容器。
+  删除前查一次 `lsof -d cwd -Fn`:有进程的 cwd 落在该目录下(旧子进程仍在收尾)⇒ 不删、记 `codex_voice_stale_root_busy`;`lsof` 不可用或出错 ⇒ **同样保留**并记 `codex_voice_stale_root_unverified`(不能当作确认空闲);确认无人使用才 `rm`(按 lstat 不跟随软链)并记 `codex_voice_stale_root_removed`。不杀任何进程,不需要 PID 接口或 owner 文件。
+
+### T8 上下文装配:prompt + initialItems(teamlead `bridge/voice-session-context.ts`;voice-codex `codex/CodexVoiceContainer.ts`、`codex/RealtimeTransport.ts`)
+
+Lead 已批准(§9②)。服务端实测上限与本地计量见 research R3:`Instructions must not exceed 16384 tokens`(probe-1:17,012 o200k 被拒;probe-2:13,662 通过);`initialItems` 由 Codex 客户端按「字节/4」估计、单条与合计 ≤8,192(`C156 realtime_conversation.rs:104-106,1442-1459`),probe-3 证实 item 里的事实模型能用上。
+
+**Bridge 侧装配(`buildVoiceSessionContext`)**
+- `baseInstructions` 不变:头 + 身份 + 边界 + **全部记忆** + 状态 + 会议 + 退出规则,只给 backing thread 的 `thread/start`(那里没有 16k 限制)。
+- 新增 `realtime` 块,确定性生成:
+  - `prompt` = 头 + 身份 + 只读边界 + 状态快照 + 会议上下文 + 退出规则 + **v3 协议说明** +(若有)「# Selected Lead memory (continued)」里放不进 items 的记忆段。
+  - `initialItems` = 记忆文件按 manifest 顺序、按行切段(不在行中间切),每段一条 `{role:"developer", text:"【记忆文件 <relativePath> 第 i/n 段·只读数据】\n<段落>"}`;按顺序装,直到再加一条会使合计超过 32,000 字节(Codex 估计 8,000,留 192 余量)或超过 128 条为止;剩余段按原顺序进 prompt 的 continued 块。单个无法切到 ≤32,000 字节的超长行 ⇒ 整段进 prompt。
+  - v3 协议说明:删去 `[BACKEND]` 句(v3 没有此前缀,research R4),改为「追加给你的可朗读内容要逐字念出,不要回答、改写或转交」;加 T5 的被打断规则。其余句子不变。
+- 预算(不截断、不摘要):`realtime.prompt` ≤15,500 o200k 且 ≤128 KB;`initialItems` 合计 ≤32,000 字节、≤128 条;`baseInstructions` 沿用现有 128 KB / 32,768 预算。任一超限 ⇒ `context_too_large{block, bytes, estimatedTokens, limits}`(不含内容)。
+- `snapshotDigest` 改为覆盖 `{baseInstructions 所用 assembled, realtime.prompt, realtime.initialItems, leaseBindingDigest, manifest, rosterDigest, sessionId}`;`manifest.version = 2`;`measurements` 增加 `realtimePrompt{bytes,estimatedTokens}` 与 `initialItems{count,bytes,codexEstimatedTokens}`。
+- 路由 `GET /api/voice/sessions/:sessionId/context`(`voice-session-routes.ts:374`)原样返回新形状;只有引擎 B 调它(`cli.ts` 的 `loadContext`),无其他消费者需要兼容。
+
+**容器侧**
+- `CodexVoiceContextSnapshot` 改为 `{baseInstructions, realtime:{prompt, initialItems}, snapshotDigest, manifest(version 2), measurements}`;删除 `realtimePrompt` 字段。
+- `assertContext` 改写:删去 `realtimePrompt.startsWith(baseInstructions)` 不变量(拆分后必然不成立);改为 ① `baseInstructions` 与 `realtime.prompt` 都以同一 `[voice-context version=2 snapshotDigest=… sessionId=…]` 头开头;② manifest.version=2 且 digest 一致;③ 字节与 token 复核(prompt ≤15,500 / 128 KB,items 字节 ≤32,000、条数 ≤128、每条 `role==="developer"` 且 `text` 为非空字符串);④ 新鲜度检查不变。任何不符 ⇒ `context_invalid`。
+- `thread/start.baseInstructions = snapshot.baseInstructions`(不变);`thread/realtime/start.prompt = snapshot.realtime.prompt`、`initialItems = snapshot.realtime.initialItems`(T3 原样透传,每次换代用同一份)。
 
 ### T9 声线字段(teamlead `ProjectConfig.ts`、`realtime-voices.ts`、`bridge/voice-session-services.ts`;voice-codex `projection.ts`、`bridge-client.ts`、`cli.ts`)
 
@@ -232,11 +255,11 @@ stateDiagram-v2
 | T2 | 新 `__tests__/webrtc-leg.test.ts`(werift 两个本地 PeerConnection 回环:编码上行、非 960 拒、数据通道容错、lost 判定) |
 | T3 | `__tests__/codex-transport.test.ts`、`realtime-transport.test.ts`(先 started 后 sdp 的顺序、started 版本不符即失败、异步 error 失败、outputAudio 出现即 fence、handoff/turn 拦截不变、退休 transport 收不到通知) |
 | T4 | 新 `__tests__/opus-downlink.test.ts`(首包同步入流;积压 10/25 包且播放器已取走部分时 `cut()` 后消费不到旧包、随后新首包正常;租约失效停止;idle 重建);`discord-room.test.ts`(缺省 pcm-mouth 不变、opus 模式 `cancelAllSpeech` 走 cut);voice-bridge `discordWiring` 资源工厂单测 |
-| T5 | `__tests__/codex-room.test.ts`(新回答事件比音频晚 ~1 s 时句首完整;当前轮缺数据通道事件改用 app-server 用户转写;用户转写晚于 2 s;founder 连说 >15 s;误判只在静音边界恢复、不从半个字处冒;不再 restart) |
-| T5b | `__tests__/codex-speak.test.ts`(单块/多块正常绑定、插话中断、先出现用户回合、无 turn 事件 ⇒ `speech_binding_unavailable`、换代 ⇒ `generation_changed`) |
+| T5 | `__tests__/codex-room.test.ts` + 新 `opus-downlink.test.ts`(按实际推给播放器的包序列断言:R2-1 合成反例——cut=0、旧音到 800、静音 800–1800、新回答 1800–2600、用户证据 2200 ⇒ 从 1800 回放、句首 40 包都播;2884 s3 时间线夹具;证据先到且新回答未开始 ⇒ 零延迟放行;两路事件都缺失走兜底;回答内 200–350 ms 停顿不被当边界;合格静音段已被挤出缓冲 ⇒ `head_lost` 有界;回放积压在下一段静音内消化;founder 连说 >15 s;不再 restart) |
+| T5b | `__tests__/codex-speak.test.ts`(空闲准入:自然回答音频已到而 `turn.created` 迟到时不发朗读、10 s 后 `busy_conversation`;准入后先出现用户回合 ⇒ `speech_preempted`;单块/多块正常绑定;等价的旧转写不会被借用;裁剪 ⇒ `playback_trimmed`;插话中断;无 turn 事件 ⇒ `speech_binding_unavailable`;换代 ⇒ `generation_changed`);`codex-room.test.ts` 里 Lead 回复朗读的现有用例改到新契约 |
 | T6 | `pipeline/UplinkSpeechGate.test.ts`、`Uplink.test.ts`、`UplinkSpeechGate.preroll.smoke.test.ts`(开后追帧、峰值门;用 2884 s4 远处人声与 s7 founder 帧电平时间线做夹具;旧默认不变) |
 | T7 | `__tests__/codex-container.test.ts`(合并多重故障为一次换代;stop 超时无 closed ⇒ 干净结束;屏障内迟到 closed/error 归旧代;ICE/answer 等待中 abort 关腿;上限与退避;收尾顺序;启动清扫 busy/removed 两分支) |
-| T8 | teamlead `src/__tests__/voice-session-context.test.ts`(Raya/Honey 规模夹具:拆分确定性、两项预算、超限报错不截断) |
+| T8 | teamlead `src/__tests__/voice-session-context.test.ts`(Raya/Honey 规模夹具:拆分确定性、按行切段、items 32,000 字节/128 条边界、prompt 15,500 边界、超长单行进 prompt、超限报错不截断、digest 覆盖 prompt 与 items);voice-codex `codex-container.test.ts`(v2 快照校验通过/各类不符 ⇒ `context_invalid`,同一快照把完整 prompt 与 items 原样传给 `realtime/start`,换代复用同一份);teamlead voice-session-routes 路由形状测试 |
 | T9 | teamlead `ProjectConfig` 校验测试、`voice-session-services` 投影测试;voice-codex `projection.test.ts`、`session-state.test.ts`、`recovery.test.ts`(缺 `liveVoice` 的旧投影照常解析与恢复,非法值拒绝) |
 | T10 | `config.test.ts`、`scripts/__tests__/fly2655-voice-room.test.mjs`、wrapper 测试(codex 分支 exec 环境无 key,旧引擎分支照旧) |
 | 2799 回归 | 回环按来源排除:`voice-codex/src/__tests__/codex-handoff-transcript.test.ts`、teamlead `src/bridge/__tests__/voice-session-poller.test.ts`;句首补音:`UplinkSpeechGate.preroll.smoke.test.ts`、`discord-room.test.ts` pre-roll 用例;首帧即播:新 `opus-downlink.test.ts` 首包用例 |
@@ -284,3 +307,8 @@ T10 → T1 → T2 → T3 → T8 → T9 → T4 → T6 → T5 → T5b → T7 → �
   7. 启动壳在 exec 前 unset key,保证措辞收窄为「不要求、不使用、不传给」(T10、§5)。
   8. QA-3 拆成恢复/干净结束/收尾三段,检查绑定本场 root 与子进程;补 2799 回环排除回归测试、修正 T8 测试路径(§6)。
   9. 更正 v3 顺序为先 started 后 sdp,started 时仍校验版本(T3)。
+- v3(2026-09-25):设计评审 R2(新 thread;原 thread 因 15:38–16:44 PDT 共享 Codex 登录故障不可用)3 HIGH / 1 LOW 全部接受:
+  1. T5 改为「静音 + 1.5 s 有界回放缓冲」,边界取 cut 后最长的 ≥400 ms 下行静音段;证据迟到时从该段之后回放保住句首(额外延迟 ≤1.5 s,挤出缓冲则记 `head_lost`),回放积压在下一段静音里消化;不再把低能量间隙称作句间停顿。复算 2884 s6:`turn.start_ms` 与有声起点偏差 770–930 ms 且不恒定,故不用它逐包划分。
+  2. T5b 增加「空闲准入」:无未结束 assistant 回合、600 ms 无有声下行、founder 未说话且无待答用户回合时才发朗读,否则等待 ≤10 s 后 `busy_conversation`;绑定、播放证明、裁剪、抢占的结算逐条写明。
+  3. 恢复 v2 误删的 T8,并补全端到端契约:Bridge 快照 v2 字段、digest/measurements、容器 `assertContext` 改写(去掉 startsWith 不变量)、`realtime/start` 透传与测试。
+  4. 遗留目录一节改为引用源码的 EOF 退出兜底(45 s),实验只作 initialize 场景证据;`lsof` 失败也保留目录。
