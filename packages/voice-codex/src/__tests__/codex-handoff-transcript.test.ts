@@ -1,4 +1,4 @@
-import type { VoiceUtterance } from "flywheel-voice-core";
+import { isVoiceMirrorText, type VoiceUtterance } from "flywheel-voice-core";
 import { describe, expect, it, vi } from "vitest";
 import {
 	buildCodexDelegateHandoff,
@@ -109,5 +109,39 @@ describe("Codex voice handoff and visible transcript", () => {
 				messageId: "discord-assistant",
 			}),
 		);
+	});
+
+	it("marks every mirrored line so the Bridge poller never reads it back as a Lead reply", async () => {
+		// FLY-2799 qa6: the founder's own lines were read back to her because the
+		// poller did not recognise the 🎙️ mirror prefix.
+		const mirror = vi.fn(async () => ({ messageId: "discord-message" }));
+		const publisher = new CodexTranscriptPublisher({
+			sessionId: "session-a",
+			founderUserId: "founder",
+			displayName: "Raya",
+			mirror,
+			evidence: vi.fn(),
+		});
+		await publisher.publish(founderUtterance);
+		await publisher.publish({
+			...founderUtterance,
+			transcriptId: "transcript-unknown",
+			attribution: { kind: "unknown", reason: "input_gap" },
+		});
+		await publisher.publish({
+			...founderUtterance,
+			transcriptId: "transcript-assistant",
+			role: "assistant",
+			source: "engine_audio",
+			text: "我确认一下。",
+			attribution: { kind: "unknown", reason: "engine_output" },
+		});
+
+		const texts = mirror.mock.calls.map(([input]) => input.text);
+		expect(texts).toHaveLength(3);
+		expect(texts[0]).toBe(
+			"🎙️ **你（语音）**：你帮我去看一下2799现在是什么状态。",
+		);
+		expect(texts.every((text) => isVoiceMirrorText(text))).toBe(true);
 	});
 });

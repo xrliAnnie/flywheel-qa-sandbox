@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { scrubTranscript, type VoiceUtterance } from "flywheel-voice-core";
+import {
+	scrubTranscript,
+	VOICE_MIRROR_MARKS,
+	type VoiceUtterance,
+} from "flywheel-voice-core";
 import type {
 	VoiceHandoffReceipt,
 	VoiceHandoffToLeadInput,
@@ -86,13 +90,15 @@ export class CodexTranscriptPublisher {
 			.slice(0, 1_800)
 			.join("");
 		if (!safeText) return;
+		// The Bridge poller reads this thread for Lead replies; the shared marks
+		// keep these mirror lines from being read back aloud (FLY-2799 qa6).
 		const speaker =
 			utterance.role === "assistant"
-				? `🤖 **${this.options.displayName.replace(/[*_~`\\]/gu, "").slice(0, 80)} 语音分身**`
+				? `${VOICE_MIRROR_MARKS.assistantTranscript} **${this.options.displayName.replace(/[*_~`\\]/gu, "").slice(0, 80)} 语音分身**`
 				: utterance.attribution.kind === "known" &&
 						utterance.attribution.speakerUserId === this.options.founderUserId
-					? "🎙️ **你（语音）**"
-					: "🎙️ **语音输入**";
+					? `${VOICE_MIRROR_MARKS.userTranscript} **你（语音）**`
+					: `${VOICE_MIRROR_MARKS.userTranscript} **语音输入**`;
 		const mirrored = await this.options.mirror({
 			text: `${speaker}：${safeText}`,
 			nonce: nonce(this.options.sessionId, utterance.transcriptId),

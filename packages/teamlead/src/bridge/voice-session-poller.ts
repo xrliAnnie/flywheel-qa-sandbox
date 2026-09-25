@@ -1,4 +1,4 @@
-import { scrubTranscript } from "flywheel-voice-core";
+import { isVoiceMirrorText, scrubTranscript } from "flywheel-voice-core";
 import type { StateStore } from "../StateStore.js";
 import { DISCORD_API } from "./discord-utils.js";
 
@@ -8,8 +8,6 @@ export interface VoiceDiscordMessage {
 	content: string;
 	timestamp: string;
 }
-
-const VOICE_PREFIXES = ["📻", "🗣️", "🤖"];
 
 export function recordVoiceOutboundDiscordPage(input: {
 	store: StateStore;
@@ -38,7 +36,7 @@ export function recordVoiceOutboundDiscordPage(input: {
 			message.author.id !== input.leadBotUserId ||
 			message.id === input.rootMessageId ||
 			!text ||
-			VOICE_PREFIXES.some((prefix) => text.startsWith(prefix))
+			isVoiceMirrorText(text)
 		) {
 			return [];
 		}

@@ -158,3 +158,37 @@ it("filters own voice mirrors and status from a mixed page while queuing a norma
 		"100000000000000023",
 	);
 });
+
+it("never reads the Codex transcript mirror of the founder's own words back as a Lead reply", () => {
+	// FLY-2799 qa6: engine B mirrors every final line to the session thread as
+	// the Lead bot. The founder's own lines came back as voice_outbound rows and
+	// were read aloud to her.
+	const leaseToken = claim().leaseToken;
+	const messages = [
+		"🎙️ **你（语音）**：是谁手上有什么事情呢?",
+		"🎙️ **语音输入**：說話",
+		"🎙 **你（语音）**：without the emoji variation selector",
+		"🤖 **flywheel-test-2 语音分身**：我确认一下。",
+		"2799 目前还是 In Progress。",
+	].map((content, index) => ({
+		id: `10000000000000003${index}`,
+		author: { id: LEAD_BOT },
+		content,
+		timestamp: T0,
+	}));
+	expect(
+		recordVoiceOutboundDiscordPage({
+			store,
+			sessionId: SESSION_ID,
+			leaseToken,
+			channelId: CHANNEL,
+			leadBotUserId: LEAD_BOT,
+			rootMessageId: ROOT,
+			now: T0,
+			messages,
+		}),
+	).toBe(true);
+	expect(
+		store.listVoiceOutbound(SESSION_ID, leaseToken, T0).map(({ text }) => text),
+	).toEqual(["2799 目前还是 In Progress。"]);
+});
