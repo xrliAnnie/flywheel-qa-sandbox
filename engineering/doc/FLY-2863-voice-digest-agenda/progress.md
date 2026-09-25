@@ -1,15 +1,15 @@
 ---
 issue: FLY-2863
 phase: implement
-phaseCursor: 3/7
-updated: 2026-09-25T06:17:18.268Z
-nextStep: "c4: flywheel-comm voice agenda say|close|urgent; then c5 engine A
-  wiring (conductor replaces InboxReader, meeting/headphone split, agenda turn
-  ownership)"
+phaseCursor: 6/7
+updated: 2026-09-25T06:32:23.205Z
+nextStep: "c7: S0 GPT voice probe evidence, consumer sweep,
+  lint/build/typecheck, docs (plan addendum for founder overrides), PR body,
+  codex review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2863 progress
-**phase**: implement (3/7)
-**next**: c4: flywheel-comm voice agenda say|close|urgent; then c5 engine A wiring (conductor replaces InboxReader, meeting/headphone split, agenda turn ownership)
+**phase**: implement (6/7)
+**next**: c7: S0 GPT voice probe evidence, consumer sweep, lint/build/typecheck, docs (plan addendum for founder overrides), PR body, codex review
