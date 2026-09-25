@@ -810,6 +810,7 @@ test("FLY-2876 a same-slot lease nothing alive stands behind is reclaimed", () =
 		assert.equal(claimed.created, true);
 		const owner = fly2867Owner(room.root, room.topology);
 		assert.equal(owner.slotDir, room.slot);
+		assert.equal(owner.leaseId, claimed.leaseId);
 		assert.equal(owner.holder.pid, process.pid);
 		assert.equal(owner.daemon, undefined);
 		assert.deepEqual(
@@ -817,8 +818,8 @@ test("FLY-2876 a same-slot lease nothing alive stands behind is reclaimed", () =
 			[],
 		);
 
-		// A voice session that ended naturally: its daemon exited while the
-		// receipt still says STARTED.
+		// A start that died before writing its own receipt, after an earlier
+		// run of the slot was stopped.
 		rmSync(join(room.root, room.name), { recursive: true });
 		fly2867WriteLease(room.root, room.name, {
 			schemaVersion: 1,
@@ -827,7 +828,7 @@ test("FLY-2876 a same-slot lease nothing alive stands behind is reclaimed", () =
 			daemon: { pid: dead, processIdentity: "gone daemon" },
 		});
 		fly2876WriteReceipt(room.slot, {
-			status: "STARTED",
+			status: "STOPPED",
 			pid: dead,
 			processIdentity: "gone daemon",
 		});
@@ -847,25 +848,42 @@ test("FLY-2876 a same-slot lease nothing alive stands behind is reclaimed", () =
 test("FLY-2876 a same-slot lease with a live start, daemon, or STARTED receipt is kept", () => {
 	const room = fly2876Room();
 	const live = fly2867LiveDaemon();
+	const dead = fly2876DeadPid();
 	const leasePath = join(room.root, room.name);
-	const owners = [
+	const cases = [
 		// A concurrent `start` is still between lease creation and spawn.
-		{ schemaVersion: 1, slotDir: room.slot, holder: live },
-		{ schemaVersion: 1, slotDir: room.slot, daemon: live },
+		{ owner: { schemaVersion: 1, slotDir: room.slot, holder: live } },
+		{ owner: { schemaVersion: 1, slotDir: room.slot, daemon: live } },
 		// A lease from before daemon records existed, still backed by its run.
-		{ schemaVersion: 1, slotDir: room.slot },
+		{
+			owner: { schemaVersion: 1, slotDir: room.slot },
+			receipt: {
+				status: "STARTED",
+				pid: live.pid,
+				processIdentity: live.processIdentity,
+			},
+		},
+		// A run whose daemon exited on its own is closed by `stop`, never
+		// taken over by a start: an in-flight stop runs in exactly this state.
+		{
+			owner: {
+				schemaVersion: 1,
+				slotDir: room.slot,
+				holder: { pid: dead, processIdentity: "gone start" },
+				daemon: { pid: dead, processIdentity: "gone daemon" },
+			},
+			receipt: {
+				status: "STARTED",
+				pid: dead,
+				processIdentity: "gone daemon",
+			},
+		},
 	];
 	try {
-		for (const [index, owner] of owners.entries()) {
+		for (const [index, { owner, receipt }] of cases.entries()) {
 			rmSync(leasePath, { recursive: true, force: true });
 			rmSync(join(room.slot, "voice-run-receipt.json"), { force: true });
-			if (index === 2) {
-				fly2876WriteReceipt(room.slot, {
-					status: "STARTED",
-					pid: live.pid,
-					processIdentity: live.processIdentity,
-				});
-			}
+			if (receipt) fly2876WriteReceipt(room.slot, receipt);
 			fly2867WriteLease(room.root, room.name, owner);
 			assert.equal(
 				acquireVoiceRoomLease(room.topology, { root: room.root }).created,
@@ -880,13 +898,12 @@ test("FLY-2876 a same-slot lease with a live start, daemon, or STARTED receipt i
 	}
 });
 
-test("FLY-2876 an old stop never releases or overwrites a newer same-slot run", () => {
+test("FLY-2876 a naturally ended run is closed by stop and an old stop never touches the next run", () => {
 	const room = fly2876Room();
 	const dead = fly2876DeadPid();
 	const receiptPath = join(room.slot, "voice-run-receipt.json");
 	try {
-		// Run A's start and daemon have exited; its stop has already read A's
-		// receipt.
+		// Run A's start and daemon have exited; its receipt still says STARTED.
 		const leaseA = acquireVoiceRoomLease(room.topology, { root: room.root });
 		const ownerAPath = join(room.root, room.name, "owner.json");
 		writeFileSync(
@@ -894,6 +911,7 @@ test("FLY-2876 an old stop never releases or overwrites a newer same-slot run", 
 			`${JSON.stringify({
 				...JSON.parse(readFileSync(ownerAPath, "utf8")),
 				holder: { pid: dead, processIdentity: "gone start" },
+				daemon: { pid: dead, processIdentity: "gone daemon" },
 			})}\n`,
 		);
 		fly2876WriteReceipt(room.slot, {
@@ -905,7 +923,26 @@ test("FLY-2876 an old stop never releases or overwrites a newer same-slot run", 
 		});
 		const runA = JSON.parse(readFileSync(receiptPath, "utf8"));
 
-		// Start B reclaims the orphan and publishes its own run receipt.
+		// While A is unstopped, start B cannot take the lease over.
+		assert.equal(
+			acquireVoiceRoomLease(room.topology, { root: room.root }).created,
+			false,
+		);
+
+		// Stop A releases A's generation and records STOPPED.
+		assert.equal(
+			settleStoppedVoiceRun(room.topology, receiptPath, runA, "ended", {
+				root: room.root,
+			}).status,
+			"STOPPED",
+		);
+		assert.deepEqual(readdirSync(room.root), []);
+		assert.equal(
+			JSON.parse(readFileSync(receiptPath, "utf8")).status,
+			"STOPPED",
+		);
+
+		// Start B now creates a new generation and publishes its receipt.
 		const leaseB = acquireVoiceRoomLease(room.topology, { root: room.root });
 		assert.equal(leaseB.created, true);
 		assert.equal(typeof leaseB.leaseId, "string");
@@ -916,15 +953,10 @@ test("FLY-2876 an old stop never releases or overwrites a newer same-slot run", 
 			leaseId: leaseB.leaseId,
 		});
 
-		// Stop A finishes afterwards: B's lease and receipt must survive.
-		const settled = settleStoppedVoiceRun(
-			room.topology,
-			receiptPath,
-			runA,
-			"ended",
-			{ root: room.root },
-		);
-		assert.equal(settled.status, "STOPPED");
+		// A replayed stop A never releases B's lease or overwrites B's receipt.
+		settleStoppedVoiceRun(room.topology, receiptPath, runA, "ended", {
+			root: room.root,
+		});
 		assert.equal(
 			fly2867Owner(room.root, room.topology).leaseId,
 			leaseB.leaseId,
@@ -934,8 +966,7 @@ test("FLY-2876 an old stop never releases or overwrites a newer same-slot run", 
 		assert.equal(receipt.status, "STARTED");
 
 		// B's own stop releases B's generation and records STOPPED.
-		const runB = JSON.parse(readFileSync(receiptPath, "utf8"));
-		settleStoppedVoiceRun(room.topology, receiptPath, runB, "ended", {
+		settleStoppedVoiceRun(room.topology, receiptPath, receipt, "ended", {
 			root: room.root,
 		});
 		assert.deepEqual(readdirSync(room.root), []);

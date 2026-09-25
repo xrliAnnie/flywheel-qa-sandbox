@@ -848,26 +848,24 @@ function recordedDaemonAlive(owner) {
 	return recordedProcessAlive(owner.daemon);
 }
 
-// FLY-2876: a run receipt vouches for its lease until `stop` marks it STOPPED
-// or its daemon is gone; a receipt that cannot be read or trusted is treated
-// as alive.
+// FLY-2876: a run receipt vouches for its lease until `stop` marks it STOPPED,
+// even after its daemon exited on its own: that is the state an in-flight
+// `stop` runs in, so only `stop` (or teardown) may close such a run. A receipt
+// that cannot be read or trusted is treated as alive.
 function liveRunReceipt(slotDir) {
-	let run;
 	try {
-		run = json(trusted(slotDir, join(slotDir, "voice-run-receipt.json")));
+		return (
+			json(trusted(slotDir, join(slotDir, "voice-run-receipt.json"))).status !==
+			"STOPPED"
+		);
 	} catch (error) {
 		return error?.code !== "ENOENT";
 	}
-	if (run?.status === "STOPPED") return false;
-	return recordedProcessAlive({
-		pid: run?.pid,
-		processIdentity: run?.processIdentity,
-	});
 }
 
 // FLY-2876: the same slot redeployed after a teardown that never ran `stop`
 // finds its own old lease. It is an orphan only when neither the start that
-// created it, nor its recorded daemon, nor a STARTED run receipt is alive.
+// created it, nor its recorded daemon, nor an unstopped run receipt remains.
 function orphanedSameSlotLease(owner) {
 	return (
 		!recordedProcessAlive(owner.holder) &&
