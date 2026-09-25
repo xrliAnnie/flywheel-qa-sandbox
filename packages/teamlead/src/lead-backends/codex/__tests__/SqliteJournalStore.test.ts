@@ -391,3 +391,87 @@ describe("completed-since rotation eligibility", () => {
 		}
 	});
 });
+
+describe("findEntryIdsByTurnId (FLY-2882)", () => {
+	const stores: Array<[string, () => SqliteJournalStore | InMemoryJournalStore]> =
+		[
+			["sqlite", () => new SqliteJournalStore(":memory:")],
+			["in-memory", () => new InMemoryJournalStore()],
+		];
+	for (const [label, make] of stores) {
+		it(`${label}: reports zero, one and two entries bound to a turn`, () => {
+			const store = make();
+			const dispatch = (id: string, turnId: string) => {
+				store.transition({
+					id,
+					expectedFrom: ["accepted"],
+					to: "dispatching",
+					patch: { clientCorrelationId: `c-${id}`, updatedAt: 2 },
+				});
+				store.transition({
+					id,
+					expectedFrom: ["dispatching"],
+					to: "dispatched",
+					patch: { turnId, updatedAt: 3 },
+				});
+			};
+			store.insertAcceptedBatch(
+				entry({ id: "e1", idempotencyKey: "b1", source: "mailbox" }),
+				["d1#r0", "d2#r0"],
+			);
+			store.insertAccepted(entry({ id: "e2", idempotencyKey: "k2" }));
+			store.insertAccepted(entry({ id: "e3", idempotencyKey: "k3" }));
+			expect(store.findEntryIdsByTurnId("turn-a")).toEqual([]);
+			dispatch("e1", "turn-a");
+			expect(store.findEntryIdsByTurnId("turn-a")).toEqual(["e1"]);
+			expect(store.listMemberIds("e1")).toEqual(["d1#r0", "d2#r0"]);
+			dispatch("e2", "turn-b");
+			dispatch("e3", "turn-b");
+			expect(store.findEntryIdsByTurnId("turn-b").sort()).toEqual([
+				"e2",
+				"e3",
+			]);
+			const journal = new LeadJournal({ store });
+			expect(journal.findEntryIdsByTurnId("turn-a")).toEqual(["e1"]);
+			expect(journal.listMemberIds("e1")).toEqual(["d1#r0", "d2#r0"]);
+			if (store instanceof SqliteJournalStore) store.close();
+		});
+	}
+
+	it("sqlite: selects only ids (never payload) and is bounded to two rows", () => {
+		const store = new SqliteJournalStore(":memory:");
+		const db = (store as unknown as { db: { prepare(sql: string): unknown } })
+			.db;
+		const seen: string[] = [];
+		const prepare = db.prepare.bind(db);
+		db.prepare = (sql: string) => {
+			seen.push(sql);
+			return prepare(sql);
+		};
+		for (const id of ["x1", "x2", "x3"]) {
+			store.insertAccepted(
+				entry({ id, idempotencyKey: `k-${id}`, payload: "SENTINEL-PAYLOAD" }),
+			);
+			store.transition({
+				id,
+				expectedFrom: ["accepted"],
+				to: "dispatching",
+				patch: { clientCorrelationId: `c-${id}`, updatedAt: 2 },
+			});
+			store.transition({
+				id,
+				expectedFrom: ["dispatching"],
+				to: "dispatched",
+				patch: { turnId: "turn-many", updatedAt: 3 },
+			});
+		}
+		seen.length = 0;
+		const ids = store.findEntryIdsByTurnId("turn-many");
+		expect(ids).toHaveLength(2);
+		expect(JSON.stringify(ids)).not.toContain("SENTINEL");
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatch(/SELECT id FROM journal WHERE turn_id = \? LIMIT 2/);
+		expect(seen[0]).not.toMatch(/payload|\*/);
+		store.close();
+	});
+});

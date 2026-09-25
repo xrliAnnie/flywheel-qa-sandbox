@@ -329,6 +329,69 @@ export async function boundedTurnsList(
 	}
 }
 
+export interface LatestTurn {
+	id: string;
+	status: "inProgress" | "completed" | "interrupted" | "failed";
+	/** Server unix seconds; always present for an in-progress turn. */
+	startedAt: number | null;
+}
+
+const latestTurnResponse = z.object({
+	result: z.object({
+		data: z
+			.array(
+				z.object({
+					id: z.string().min(1).max(128),
+					status: z.enum(["inProgress", "completed", "interrupted", "failed"]),
+					startedAt: z.number().int().positive().nullable(),
+				}),
+			)
+			.max(1),
+	}),
+});
+
+/**
+ * FLY-2882: the newest turn of `threadId`, or null when the thread has none.
+ * Only `id/status/startedAt` leave this function (items/error bodies are never
+ * copied). Anything else — malformed rows, an in-progress turn without a start
+ * time, request failure or timeout — throws, so a caller can never mistake a
+ * failed read for "idle".
+ */
+export async function readLatestTurn(
+	request: (
+		method: string,
+		params: Record<string, unknown>,
+	) => Promise<unknown>,
+	threadId: string,
+): Promise<LatestTurn | null> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const response = await Promise.race([
+			request("thread/turns/list", {
+				threadId,
+				limit: 1,
+				sortDirection: "desc",
+				itemsView: "notLoaded",
+			}),
+			new Promise<never>((_resolve, reject) => {
+				timer = setTimeout(
+					() => reject(new Error("turns_list_timeout")),
+					TURNS_LIST_TIMEOUT_MS,
+				);
+			}),
+		]);
+		const parsed = latestTurnResponse.safeParse(response);
+		if (!parsed.success) throw new Error("turns_list_invalid");
+		const row = parsed.data.result.data[0];
+		if (!row) return null;
+		if (row.status === "inProgress" && row.startedAt === null)
+			throw new Error("turns_list_invalid");
+		return { id: row.id, status: row.status, startedAt: row.startedAt };
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
+
 export function rolloutTimestampFor(
 	codexHome: string,
 	threadId: string,

@@ -149,6 +149,11 @@ export interface JournalStore {
 	): BatchAcceptResult;
 	/** Ordered delivery ids bound to an entry. */
 	listMemberIds(entryId: string): string[];
+	/**
+	 * FLY-2882: ids (never payloads) of entries dispatched as `turnId`, at most
+	 * two — enough to tell none / exactly one / ambiguous.
+	 */
+	findEntryIdsByTurnId(turnId: string): string[];
 	/** Returns a COPY, or undefined. */
 	getById(id: string): JournalEntry | undefined;
 	/** Returns a COPY, or undefined. */
@@ -348,6 +353,15 @@ export class LeadJournal {
 		return this.store.getByIdempotencyKey(key);
 	}
 
+	/** FLY-2882: read-only turn → entry lookup for the turn-state snapshot. */
+	findEntryIdsByTurnId(turnId: string): string[] {
+		return this.store.findEntryIdsByTurnId(turnId);
+	}
+
+	listMemberIds(entryId: string): string[] {
+		return this.store.listMemberIds(entryId);
+	}
+
 	/**
 	 * Conservative recovery action for an unfinished entry (Phase 0A §7). Never
 	 * returns an action that would auto-re-run the model from an unprovable state.
@@ -450,6 +464,13 @@ export class InMemoryJournalStore implements JournalStore {
 
 	listMemberIds(entryId: string): string[] {
 		return [...(this.membersByEntry.get(entryId) ?? [])];
+	}
+
+	findEntryIdsByTurnId(turnId: string): string[] {
+		return [...this.byId.values()]
+			.filter((entry) => entry.turnId === turnId)
+			.slice(0, 2)
+			.map((entry) => entry.id);
 	}
 
 	getById(id: string): JournalEntry | undefined {

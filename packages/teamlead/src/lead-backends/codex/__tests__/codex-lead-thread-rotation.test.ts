@@ -10,6 +10,7 @@ import {
 	ROTATION_QUIET_MS,
 	ROTATION_RETRY_BACKOFF_MS,
 	type RotationLedger,
+	readLatestTurn,
 	readRotationLedger,
 	readThreadIdStrict,
 	reconcileRotationLedger,
@@ -402,6 +403,114 @@ describe("bounded authoritative turns/list", () => {
 		reject(new Error("late"));
 		await Promise.resolve();
 		expect(vi.getTimerCount()).toBe(0);
+	});
+});
+
+describe("readLatestTurn (FLY-2882 seed read)", () => {
+	const TURN = "019eaf5d-a5b7-7a72-b73f-cd1063892ab1";
+	const turn = (over: Record<string, unknown> = {}) => ({
+		id: TURN,
+		items: [],
+		itemsView: "notLoaded",
+		status: "inProgress",
+		error: null,
+		startedAt: 1_787_180_262,
+		completedAt: null,
+		durationMs: null,
+		...over,
+	});
+	it("requests the newest turn without items and returns null for an empty thread", async () => {
+		const request = vi.fn().mockResolvedValue({ result: { data: [] } });
+		expect(await readLatestTurn(request, OLD)).toBeNull();
+		expect(request).toHaveBeenCalledWith("thread/turns/list", {
+			threadId: OLD,
+			limit: 1,
+			sortDirection: "desc",
+			itemsView: "notLoaded",
+		});
+	});
+	it.each(["inProgress", "completed", "interrupted", "failed"])(
+		"accepts %s and returns only id/status/startedAt",
+		async (status) => {
+			const result = await readLatestTurn(
+				async () => ({
+					jsonrpc: "2.0",
+					id: 7,
+					result: {
+						data: [
+							turn({
+								status,
+								error: { message: "SENTINEL error body" },
+								items: [{ text: "SENTINEL item" }],
+							}),
+						],
+						nextCursor: null,
+						backwardsCursor: "c",
+					},
+				}),
+				OLD,
+			);
+			expect(result).toEqual({ id: TURN, status, startedAt: 1_787_180_262 });
+			expect(JSON.stringify(result)).not.toContain("SENTINEL");
+		},
+	);
+	it("accepts a terminal turn without startedAt", async () => {
+		expect(
+			await readLatestTurn(
+				async () => ({
+					result: { data: [turn({ status: "completed", startedAt: null })] },
+				}),
+				OLD,
+			),
+		).toEqual({ id: TURN, status: "completed", startedAt: null });
+	});
+	it.each([
+		["no response", undefined],
+		["an error envelope", { error: { code: -1 } }],
+		["two rows", { result: { data: [turn(), turn({ id: "t2" })] } }],
+		["a null row", { result: { data: [null] } }],
+		["a missing id", { result: { data: [turn({ id: undefined })] } }],
+		["an empty id", { result: { data: [turn({ id: "" })] } }],
+		["an oversized id", { result: { data: [turn({ id: "x".repeat(129) })] } }],
+		["a missing status", { result: { data: [turn({ status: undefined })] } }],
+		["an unknown status", { result: { data: [turn({ status: "queued" })] } }],
+		["a string startedAt", { result: { data: [turn({ startedAt: "1787" })] } }],
+		["a fractional startedAt", { result: { data: [turn({ startedAt: 1.5 })] } }],
+		["a negative startedAt", { result: { data: [turn({ startedAt: -5 })] } }],
+		[
+			"an in-progress turn without startedAt",
+			{ result: { data: [turn({ startedAt: null })] } },
+		],
+		["data not an array", { result: { data: {} } }],
+	])("throws (seed failure) on %s", async (_label, value) => {
+		await expect(readLatestTurn(async () => value, OLD)).rejects.toThrow();
+	});
+	it("throws on request errors and on timeout without leaking a timer", async () => {
+		await expect(
+			readLatestTurn(async () => {
+				throw new Error("gone");
+			}, OLD),
+		).rejects.toThrow();
+		vi.useFakeTimers();
+		const promise = readLatestTurn(() => new Promise(() => {}), OLD);
+		const settled = expect(promise).rejects.toThrow("turns_list_timeout");
+		await vi.advanceTimersByTimeAsync(TURNS_LIST_TIMEOUT_MS);
+		await settled;
+		expect(vi.getTimerCount()).toBe(0);
+	});
+	it("leaves boundedTurnsList terminal-only (regression)", async () => {
+		expect(
+			await boundedTurnsList(
+				async () => ({ result: { data: [turn({ status: "inProgress" })] } }),
+				OLD,
+			),
+		).toBe(false);
+		expect(
+			await boundedTurnsList(
+				async () => ({ result: { data: [turn({ status: "completed" })] } }),
+				OLD,
+			),
+		).toBe(true);
 	});
 });
 

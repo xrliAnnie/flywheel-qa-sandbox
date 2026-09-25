@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -6,10 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	CodexLeadInboxServer,
 	probeCodexLeadInboxCapabilities,
+	readCodexLeadTurnState,
 	submitCodexLeadInboxBatch,
 } from "../CodexLeadInboxSocket.js";
 import { LeadInputRouter } from "../LeadInputRouter.js";
 import { InMemoryJournalStore, LeadJournal } from "../LeadJournal.js";
+import type { TurnStateSnapshot } from "../LeadTurnStateTracker.js";
 
 const servers: CodexLeadInboxServer[] = [];
 afterEach(async () => {
@@ -19,6 +22,7 @@ afterEach(async () => {
 function harness(
 	afterCommit?: () => void | Promise<void>,
 	ignoredAuthorIds?: string[],
+	turnState?: { snapshot(): TurnStateSnapshot },
 ) {
 	const dir = mkdtempSync(join(tmpdir(), "fly1373-codex-inbox-"));
 	const socketPath = join(dir, "inbox.sock");
@@ -55,6 +59,7 @@ function harness(
 		authSecret: "lead-bot-token",
 		ignoredAuthorIds,
 		...(afterCommit ? { afterCommit } : {}),
+		...(turnState ? { turnState } : {}),
 	});
 	servers.push(server);
 	return { server, socketPath, router, store, getTurns: () => turns };
@@ -270,5 +275,131 @@ describe("CodexLeadInboxSocket", () => {
 			await closing;
 		}
 		expect(completed).toBe(true);
+	});
+});
+
+describe("CodexLeadInboxSocket — readTurnState (FLY-2882)", () => {
+	const snapshot: TurnStateSnapshot = {
+		schema: "turn-state.v1",
+		generation: "gen-1",
+		connected: true,
+		seeded: true,
+		activeTurns: [
+			{
+				origin: "message",
+				turnId: "turn-1",
+				startedAtMs: 1_790_366_370_000,
+				binding: { status: "bound", deliveryIds: ["d-1"] },
+			},
+			{ origin: "founder_terminal", turnId: "turn-2", startedAtMs: 1_790_366_380_000 },
+		],
+	};
+	const client = (h: { socketPath: string }, over: Record<string, string> = {}) => ({
+		socketPath: h.socketPath,
+		leadId: "lead-a",
+		authSecret: "lead-bot-token",
+		...over,
+	});
+
+	async function raw(socketPath: string, body: Record<string, unknown>) {
+		return await new Promise<Record<string, unknown>>((resolve, reject) => {
+			const chunks: Buffer[] = [];
+			const socket = createConnection(socketPath);
+			socket.once("connect", () => socket.end(`${JSON.stringify(body)}\n`));
+			socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+			socket.once("error", reject);
+			socket.once("end", () =>
+				resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))),
+			);
+		});
+	}
+	const sign = (unsigned: Record<string, unknown>) =>
+		createHmac("sha256", "lead-bot-token")
+			.update(
+				JSON.stringify({
+					version: unsigned.version,
+					method: unsigned.method,
+					leadId: unsigned.leadId,
+				}),
+			)
+			.digest("hex");
+
+	it("advertises turn_state_v1 and returns only the provider snapshot", async () => {
+		let calls = 0;
+		const h = harness(undefined, undefined, {
+			snapshot: () => {
+				calls++;
+				return snapshot;
+			},
+		});
+		await h.server.listen();
+		const caps = await probeCodexLeadInboxCapabilities(client(h));
+		expect(caps.features).toContain("turn_state_v1");
+		await expect(readCodexLeadTurnState(client(h))).resolves.toEqual(snapshot);
+		expect(calls).toBe(1);
+		expect(h.store.listUnfinished()).toEqual([]);
+		expect(h.getTurns()).toBe(0);
+	});
+
+	it("neither advertises nor serves the method without a provider (headless shape)", async () => {
+		const h = harness();
+		await h.server.listen();
+		const caps = await probeCodexLeadInboxCapabilities(client(h));
+		expect(caps.features).not.toContain("turn_state_v1");
+		await expect(readCodexLeadTurnState(client(h))).rejects.toThrow(
+			"unsupported inbox method",
+		);
+	});
+
+	it("rejects a wrong Lead or a wrong secret before reading state", async () => {
+		let calls = 0;
+		const h = harness(undefined, undefined, {
+			snapshot: () => {
+				calls++;
+				return snapshot;
+			},
+		});
+		await h.server.listen();
+		await expect(
+			readCodexLeadTurnState(client(h, { leadId: "lead-b" })),
+		).rejects.toThrow("lead binding mismatch");
+		await expect(
+			readCodexLeadTurnState(client(h, { authSecret: "attacker" })),
+		).rejects.toThrow("authentication rejected");
+		expect(calls).toBe(0);
+	});
+
+	it.each([
+		["a missing version", { method: "readTurnState", leadId: "lead-a" }],
+		["version 1", { version: 1, method: "readTurnState", leadId: "lead-a" }],
+		["a missing leadId", { version: 2, method: "readTurnState" }],
+		["an empty leadId", { version: 2, method: "readTurnState", leadId: " " }],
+		[
+			"an extra field",
+			{ version: 2, method: "readTurnState", leadId: "lead-a", issueId: "FLY-1" },
+		],
+	])("rejects %s even when signed", async (_label, unsigned) => {
+		let calls = 0;
+		const h = harness(undefined, undefined, {
+			snapshot: () => {
+				calls++;
+				return snapshot;
+			},
+		});
+		await h.server.listen();
+		const response = await raw(h.socketPath, {
+			...unsigned,
+			auth: sign(unsigned),
+		});
+		expect(response).toMatchObject({ ok: false });
+		expect(calls).toBe(0);
+	});
+
+	it("rejects a request without auth", async () => {
+		const h = harness(undefined, undefined, { snapshot: () => snapshot });
+		await h.server.listen();
+		expect(
+			await raw(h.socketPath, { version: 2, method: "readTurnState", leadId: "lead-a" }),
+		).toMatchObject({ ok: false });
 	});
 });

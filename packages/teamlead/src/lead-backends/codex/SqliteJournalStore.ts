@@ -117,6 +117,7 @@ export class SqliteJournalStore implements JournalStore {
 			);
 			CREATE INDEX IF NOT EXISTS journal_member_entry_idx
 				ON journal_member(entry_id, member_index);
+			CREATE INDEX IF NOT EXISTS journal_turn_idx ON journal(turn_id);
 		`);
 		this.migrate();
 		this.operationReceipts = new OperationReceiptStore(this.db);
@@ -261,6 +262,14 @@ export class SqliteJournalStore implements JournalStore {
 				)
 				.all(entryId) as Array<{ delivery_id: string }>
 		).map(({ delivery_id }) => delivery_id);
+	}
+
+	findEntryIdsByTurnId(turnId: string): string[] {
+		return (
+			this.db
+				.prepare("SELECT id FROM journal WHERE turn_id = ? LIMIT 2")
+				.all(turnId) as Array<{ id: string }>
+		).map(({ id }) => id);
 	}
 
 	getById(id: string): JournalEntry | undefined {
