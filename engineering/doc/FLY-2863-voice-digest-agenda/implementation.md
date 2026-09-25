@@ -100,3 +100,18 @@ QA 在真 slot-3 Bridge + 真 Codex Lead + 生产引擎 A 组合上确认了四�
 - MEDIUM：「收尾句待念时不开新件」的守卫只加在上层包装函数，R-T5 迟到回复的分支会直接调 `request()`。守卫下沉到 `request()` 本身，收尾句念完后由 `finishClosing()` 推进。新增 urgent 收尾被打断 + 旧回合迟到回复的回归用例（先复现出多发一个请求，修后通过）。
 
 复跑：voice-core related 56、teamlead 议程 46、voice-codex 77、voice-headphone 25，根 lint 0 error，构建与 voice-core 全部依赖方 typecheck 通过。
+
+## 7. QA@2 返工：B5 收件箱采集器饿死（QA claim 1541 在头 `6ad259a86` 判 FAIL，2026-09-25）
+
+QA@2 确认 B1–B4 与报平安连说两次已翻转为通过，精确头全量 CI 36125051001 绿。唯一阻塞 B5 出在 FLY-2796 的采集器（提交 `7a2d0b6b7` / `62ffc4ee7`），按 Lead 裁定在本分支修，不动 #1309。
+
+| 项 | 内容 |
+|---|---|
+| 现象 | slot 3 真机：Lead 主频道 10:43:20 起冻结 24 分钟，只有一个 thread 源每 5 秒被拉，另 7 个 thread 源从未拉到；Lead 主频道消息与 urgent 标记进不了收件箱，`lead_said` 与 U1 插播失效 |
+| 根因 | `headphone-collector.ts` 的候选排序把 `bootstrapComplete=true` 的源永远排在前面，而所有源共用同一 token、每 5 秒只拉一页。第一个完成回溯的 thread 源此后每个 tick 都赢，仍在回溯的源（历史最长的 Lead 主频道）与从未拉过的源被永久压住 |
+| 修法 | 候选只按**上次拉取时间**轮转（从未拉过的最先，频道 id 作平局），不再按是否完成回溯分先后。同 token 共享节流（`nextAllowedAt` 取同 token 最大值 + 进程内 5 秒间隔）不变。全部源完成后的稳态节奏与原来相同（原来已在完成的源之间按拉取时间轮转），差别只在回溯期间：每个源都轮得到 |
+| 回归 | `headphone-inbox.test.ts` 两条新用例，真 `HeadphoneInboxCollector` + 真 `StateStore` + 按 `before`/`after` 分页的假 Discord：①主频道 500 条 + thread 2 条，60 tick：主频道完成回溯、500 条全进收件箱、thread 也拉到，60 tick 恰好 60 页（共享节流未变，5 秒内第二次 tick 为 `waiting`）；②slot 3 形状，主频道 500 条 + 8 个 thread 各 2 条，60 tick：8 个 thread 全部拉到并完成，主频道完成回溯后新发的 `🚨[urgent:production_down]` Lead 消息在下一轮进收件箱并记下 U1 标记。修复前两条都红（①主频道 `bootstrapComplete=false`；②主频道从未完成回溯，live 消息没机会发出），修复后绿 |
+
+仍然存在、本轮不改的设计性质（写给 QA 与 Lead）：回溯期间一个源的新消息要等它自己回溯完才读得到（回溯只向更早翻页）。轮转后，一个 P 页历史的源在 N 个同 token 源里大约需要 P × N × 5 秒完成回溯；slot 3 真机复验时主频道要等这段时间过去，新发的 Lead 消息才会进议程。
+
+本机只跑相关测试：`headphone-inbox` 17、`voice-agenda-store` 10、`voice-agenda-source` 14；teamlead `vitest related src/bridge/headphone-collector.ts` 105 个文件 1218 条通过；`flywheel-teamlead...` 构建通过；改动文件 biome 0 error。根 `pnpm lint` 在本 worktree 里被一个被忽略的嵌套 QA worktree（`worktrees/qa-room2/biome.json`，不在仓库内）挡住配置解析，未改动它，改为对改动文件直接跑 biome。导出与类型没有变化，不需要依赖方 typecheck。exact-head full CI 与 slot 3 真机复验交 QA@3。
