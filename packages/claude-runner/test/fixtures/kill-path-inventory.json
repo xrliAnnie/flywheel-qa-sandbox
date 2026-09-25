@@ -2328,6 +2328,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(live.pid, \"SIGTERM\");#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(live.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly2829-node-registry.test.sh:if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi#1",
 		"path": "scripts/__tests__/fly2829-node-registry.test.sh",
 		"code": "if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi",

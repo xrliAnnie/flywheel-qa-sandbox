@@ -824,25 +824,56 @@ function slotDirAliases(slotDir) {
 	return aliases;
 }
 
-// A recorded daemon counts as alive only while the same process (pid plus
+// A recorded process counts as alive only while the same process (pid plus
 // start time and argv) still runs; a malformed record is treated as alive.
-function recordedDaemonAlive(owner) {
-	const daemon = owner.daemon;
-	if (daemon === undefined) return false;
+function recordedProcessAlive(record) {
+	if (record === undefined) return false;
 	if (
-		!Number.isInteger(daemon?.pid) ||
-		daemon.pid <= 1 ||
-		typeof daemon.processIdentity !== "string" ||
-		!daemon.processIdentity
+		!Number.isInteger(record?.pid) ||
+		record.pid <= 1 ||
+		typeof record.processIdentity !== "string" ||
+		!record.processIdentity
 	) {
 		return true;
 	}
-	if (!processAlive(daemon.pid)) return false;
+	if (!processAlive(record.pid)) return false;
 	try {
-		return processIdentity(daemon.pid) === daemon.processIdentity;
+		return processIdentity(record.pid) === record.processIdentity;
 	} catch {
 		return false;
 	}
+}
+
+function recordedDaemonAlive(owner) {
+	return recordedProcessAlive(owner.daemon);
+}
+
+// FLY-2876: a run receipt vouches for its lease until `stop` marks it STOPPED
+// or its daemon is gone; a receipt that cannot be read or trusted is treated
+// as alive.
+function liveRunReceipt(slotDir) {
+	let run;
+	try {
+		run = json(trusted(slotDir, join(slotDir, "voice-run-receipt.json")));
+	} catch (error) {
+		return error?.code !== "ENOENT";
+	}
+	if (run?.status === "STOPPED") return false;
+	return recordedProcessAlive({
+		pid: run?.pid,
+		processIdentity: run?.processIdentity,
+	});
+}
+
+// FLY-2876: the same slot redeployed after a teardown that never ran `stop`
+// finds its own old lease. It is an orphan only when neither the start that
+// created it, nor its recorded daemon, nor a STARTED run receipt is alive.
+function orphanedSameSlotLease(owner) {
+	return (
+		!recordedProcessAlive(owner.holder) &&
+		!recordedDaemonAlive(owner) &&
+		!liveRunReceipt(owner.slotDir)
+	);
 }
 
 // FLY-2867: a teardown that never ran `stop` leaves the lease behind. It is
@@ -865,7 +896,7 @@ function staleVoiceRoomOwner(owner) {
 
 // Move the stale lease aside before deleting it so two reclaimers cannot both
 // win; if what was moved turns out not to be stale, put it back.
-function reclaimStaleVoiceRoomLease(path) {
+function reclaimStaleVoiceRoomLease(path, stillStale, reason) {
 	const tombstone = `${path}.stale-${process.pid}-${Date.now()}`;
 	try {
 		renameSync(path, tombstone);
@@ -873,15 +904,23 @@ function reclaimStaleVoiceRoomLease(path) {
 		if (error?.code === "ENOENT") return;
 		throw error;
 	}
-	if (!staleVoiceRoomOwner(json(join(tombstone, "owner.json")))) {
+	if (!stillStale(json(join(tombstone, "owner.json")))) {
 		renameSync(tombstone, path);
-		check(false, "voice_room_lease_conflict");
+		check(false, reason);
 	}
 	rmSync(tombstone, { recursive: true, force: true });
 }
 
 export function acquireVoiceRoomLease(topology, options = {}) {
 	const path = roomLeasePath(topology, options.root);
+	// FLY-2876: record this start so a concurrent one keeps honouring the lease
+	// before the daemon and the run receipt exist.
+	const holder = {
+		pid: process.pid,
+		processIdentity: processIdentity(process.pid),
+	};
+	const orphaned = (owner) =>
+		owner?.slotDir === topology.slotDir && orphanedSameSlotLease(owner);
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		try {
 			mkdirSync(path, { mode: 0o700 });
@@ -891,17 +930,30 @@ export function acquireVoiceRoomLease(topology, options = {}) {
 				projectName: topology.projectName,
 				leadId: topology.leadId,
 				voiceChannelId: topology.voiceChannelId,
+				holder,
 			});
 			return { path, created: true };
 		} catch (error) {
 			if (error?.code !== "EEXIST") throw error;
 			const owner = json(join(path, "owner.json"));
-			if (owner.slotDir === topology.slotDir) return { path, created: false };
+			if (owner.slotDir === topology.slotDir) {
+				if (attempt > 0 || !orphaned(owner)) return { path, created: false };
+				reclaimStaleVoiceRoomLease(
+					path,
+					orphaned,
+					"voice_room_lease_already_owned",
+				);
+				continue;
+			}
 			check(
 				attempt === 0 && staleVoiceRoomOwner(owner),
 				"voice_room_lease_conflict",
 			);
-			reclaimStaleVoiceRoomLease(path);
+			reclaimStaleVoiceRoomLease(
+				path,
+				staleVoiceRoomOwner,
+				"voice_room_lease_conflict",
+			);
 		}
 	}
 	check(false, "voice_room_lease_conflict");
