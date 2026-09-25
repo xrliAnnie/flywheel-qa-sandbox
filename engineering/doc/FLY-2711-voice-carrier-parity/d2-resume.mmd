@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant D as Discord 服务器
+    participant J as discord.js 库
+    participant G as 自身过滤器
+    participant L as Lead 收件箱
+    Note over D,J: 网络闪断
+    J->>G: shardReconnecting 连接中断
+    Note over G: PR28 旧写法 关门 丢弃一切
+    D->>J: 补发断线期间的 founder 消息
+    J->>G: messageCreate founder
+    alt PR28 原样
+        G--xL: 被丢弃 founder 消息静默丢失
+    else 本方案
+        G->>L: 作者不是自己 放行 记诊断行
+    end
+    D->>J: RESUMED 补发结束
+    J->>G: shardResume 连接恢复

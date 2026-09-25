@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant F as Founder
+    participant B as Bridge 语音入口
+    participant P as Claude 插件 0.0.8
+    participant V as 语音进程
+    F->>B: 开始语音 start
+    B->>B: 检查机器人身份 房间权限 频道权限
+    B->>P: 探针 请求 带一次性随机数和签名
+    P->>P: 用真正处理消息的同一个过滤函数自检
+    P-->>B: 签名回执 ready 自己被挡 别人放行
+    alt 回执有效
+        B->>V: 开会话
+        V-->>F: 机器人进房 状态 live
+    else 没有回执或签名不对
+        B-->>F: 503 语音不可用 保持关门
+    end
