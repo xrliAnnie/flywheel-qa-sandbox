@@ -543,7 +543,7 @@ describe("LiveLeadAdapter", () => {
 
 			await vi.advanceTimersByTimeAsync(25);
 			expect(h.handoffs).toHaveLength(0);
-			expect(h.utterances.at(-1)).toMatchObject({
+			expect(h.utterances.find((u) => u.role === "user")).toMatchObject({
 				text: "这句不能丢",
 				attribution: {
 					kind: "unknown",
@@ -556,6 +556,11 @@ describe("LiveLeadAdapter", () => {
 					reason: "room_utterance_incomplete",
 				}),
 			);
+			// Preserved but not dropped silently: she is asked to say it again.
+			expect(h.utterances.at(-1)).toMatchObject({
+				role: "assistant",
+				text: "刚才那句我没对上，你再说一次。",
+			});
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1424,6 +1429,83 @@ describe("LiveLeadAdapter", () => {
 		);
 		expect(h.record).not.toHaveBeenCalledWith(
 			expect.objectContaining({ kind: "live_lead_clarification_required" }),
+		);
+	});
+
+	it("tells her when a delegation cannot be attributed instead of dropping it silently", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		founderSays(h, "u1", "帮我查一下状态");
+		h.live.emit("delegation-created", {
+			delegationId: "provider-unbound",
+			generation: 1,
+			offsetMs: 5_000,
+			target: "client",
+		});
+
+		await vi.waitFor(() =>
+			expect(h.record).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "live_lead_clarification_prompted",
+					reason: "delegation_not_uniquely_attributed",
+					outcome: "completed",
+				}),
+			),
+		);
+		expect(
+			vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+		).toContain("刚才那句我没对上，你再说一次。");
+		expect(h.utterances).toContainEqual(
+			expect.objectContaining({
+				role: "assistant",
+				source: "frontend",
+				text: "刚才那句我没对上，你再说一次。",
+			}),
+		);
+		expect(h.handoffs).toHaveLength(0);
+	});
+
+	it("tells her when a delegation arrives without an offset", async () => {
+		const h = harness();
+		await h.adapter.open("context");
+		founderSays(h, "u1", "帮我查一下状态");
+		h.live.emit("delegation-created", {
+			delegationId: "provider-no-offset",
+			generation: 1,
+			target: "client",
+		});
+
+		await vi.waitFor(() =>
+			expect(h.record).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "live_lead_clarification_prompted",
+					reason: "delegation_offset_missing",
+				}),
+			),
+		);
+		expect(
+			vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+		).toContain("刚才那句我没对上，你再说一次。");
+		expect(h.live.resume).toHaveBeenCalled();
+	});
+
+	it("tells her when the frontend promised Lead but never delegated", async () => {
+		const h = harness({ founderTurnSettleTimeoutMs: 30 });
+		await h.adapter.open("context");
+		founderSays(h, "u1", "帮我查一下状态");
+		h.live.emit("transcript", {
+			role: "assistant",
+			text: "我问下 Lead",
+			final: true,
+		});
+
+		await vi.waitFor(() =>
+			expect(
+				vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+			).toContain("刚才那句我没能交给 Lead，你再说一次。"),
+		);
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "live_lead_cue_without_delegation" }),
 		);
 	});
 

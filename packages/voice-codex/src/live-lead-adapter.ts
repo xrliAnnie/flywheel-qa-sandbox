@@ -32,6 +32,8 @@ const DEFAULT_FRONTEND_AUDIO_IDLE_MS = 1_000;
 const DEFAULT_FOUNDER_TURN_SETTLE_TIMEOUT_MS = 10_000;
 const DEFAULT_FOUNDER_TURN_MAX_HOLD_MS = 45_000;
 const UNKNOWN_TAIL_RECHECK_MS = 250;
+const CLARIFY_PROMPT = "刚才那句我没对上，你再说一次。";
+const CUE_WITHOUT_DELEGATION_PROMPT = "刚才那句我没能交给 Lead，你再说一次。";
 
 function isLeadCue(text: string): boolean {
 	return text
@@ -173,6 +175,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private founderTurnPending = false;
 	private founderTurnAnswered = false;
 	private founderTurnResponding = false;
+	private founderTurnCueHeard = false;
 	private delegationsInFlight = 0;
 	private founderTurnTimer?: ReturnType<typeof setTimeout>;
 	private founderTurnHoldTimer?: ReturnType<typeof setTimeout>;
@@ -486,8 +489,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				// "我问下 Lead" only announces a delegation (answered once that is
 				// handled), and an interrupted final is the reply she talked over,
 				// not an answer to what she is saying now.
-				if (!isLeadCue(event.text) && !event.interrupted)
-					this.founderTurnAnswered = true;
+				if (isLeadCue(event.text)) this.founderTurnCueHeard = true;
+				else if (!event.interrupted) this.founderTurnAnswered = true;
 				this.maybeSettleFounderTurn();
 			}),
 			live.onLiveTranscript((delta) => {
@@ -560,6 +563,12 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				reason: "delegation_offset_missing",
 				binding: bindingKey,
 			});
+			await this.promptFounder(
+				CLARIFY_PROMPT,
+				`clarify:${bindingKey}`,
+				"delegation_offset_missing",
+				false,
+			);
 			return;
 		}
 		await this.waitForDelegationWindow({
@@ -578,14 +587,22 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			});
 			this.emitUserUtterance(utterance);
 			if (utterance.attribution.kind !== "known" || !utterance.text) {
+				const reason =
+					utterance.attribution.kind === "unknown"
+						? utterance.attribution.reason
+						: "empty_transcript";
 				this.options.record({
 					kind: "live_lead_clarification_required",
-					reason:
-						utterance.attribution.kind === "unknown"
-							? utterance.attribution.reason
-							: "empty_transcript",
+					reason,
 					binding: bindingKey,
 				});
+				// Never drop her words silently: ask her to say it again.
+				await this.promptFounder(
+					CLARIFY_PROMPT,
+					`clarify:${bindingKey}`,
+					reason,
+					true,
+				);
 				return;
 			}
 			const durability =
@@ -721,6 +738,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private openFounderTurn(): void {
 		this.founderTurnPending = true;
 		this.founderTurnAnswered = false;
+		this.founderTurnCueHeard = false;
 		this.clearFounderTurnTimer();
 		if (this.founderTurnHoldTimer)
 			this.clearTimeoutFn(this.founderTurnHoldTimer);
@@ -731,6 +749,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				kind: "live_lead_founder_turn_hold_exceeded",
 				holdMs: this.founderTurnMaxHoldMs,
 			});
+			this.promptIfCueWithoutDelegation();
 			this.settleFounderTurn();
 		}, this.founderTurnMaxHoldMs);
 		this.founderTurnHoldTimer.unref?.();
@@ -748,6 +767,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					kind: "live_lead_founder_turn_unanswered",
 					timeoutMs: this.founderTurnSettleTimeoutMs,
 				});
+				this.promptIfCueWithoutDelegation();
 				this.settleFounderTurn();
 			});
 			return;
@@ -775,6 +795,75 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.settleFounderTurn();
 	}
 
+	/** The frontend said "我问下 Lead" but no delegation came: tell her, queued
+	 * ahead of any readback the settling turn releases. */
+	private promptIfCueWithoutDelegation(): void {
+		if (!this.founderTurnCueHeard || this.delegationsInFlight > 0) return;
+		this.founderTurnCueHeard = false;
+		this.options.record({ kind: "live_lead_cue_without_delegation" });
+		void this.enqueueFace(() =>
+			this.promptFounder(
+				CUE_WITHOUT_DELEGATION_PROMPT,
+				`cue-fallback:${this.nextId()}`,
+				"cue_without_delegation",
+				false,
+			),
+		);
+	}
+
+	/** Speaks a short frontend line to the founder. `liveSuspended` is true
+	 * inside a delegation (Live already handed over); otherwise the announcer
+	 * takes over Live for the line. Must run on the face queue. */
+	private async promptFounder(
+		text: string,
+		pendingKey: string,
+		reason: string,
+		liveSuspended: boolean,
+	): Promise<void> {
+		let receipt: SpeakReceipt;
+		try {
+			receipt = liveSuspended
+				? await this.options.speech.speak(text, "cue", {
+						pendingKey,
+						verification: "none",
+					})
+				: await this.runSpeak(text, "cue", {
+						pendingKey,
+						verification: "none",
+					});
+		} catch (error) {
+			this.options.record({
+				kind: "live_lead_clarification_prompt_failed",
+				reason,
+				message: error instanceof Error ? error.message : String(error),
+			});
+			return;
+		}
+		this.options.record({
+			kind: "live_lead_clarification_prompted",
+			reason,
+			outcome: receipt.outcome,
+		});
+		if (receipt.outcome !== "completed") return;
+		const timestamp = new Date(this.now()).toISOString();
+		this.emitUtterance({
+			ts: timestamp,
+			timestamp,
+			sessionId: this.sessionId,
+			generation: this.generation,
+			sequence: ++this.utteranceSequence,
+			transcriptId: `frontend-prompt:${pendingKey}`,
+			utteranceId: `frontend-prompt:${pendingKey}`,
+			backendId: this.backendId,
+			source: "frontend",
+			face: "announce",
+			role: "assistant",
+			text,
+			final: true,
+			attribution: { kind: "unknown", reason: "assistant_output" },
+		});
+	}
+
 	private settleFounderTurn(): void {
 		this.clearFounderTurnTimer();
 		if (this.founderTurnHoldTimer)
@@ -783,6 +872,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.founderTurnPending = false;
 		this.founderTurnAnswered = false;
 		this.founderTurnResponding = false;
+		this.founderTurnCueHeard = false;
 		for (const resolve of [...this.founderTurnWaiters]) resolve();
 		this.founderTurnWaiters.clear();
 	}
