@@ -1,15 +1,15 @@
 ---
 issue: FLY-2863
 phase: implement
-phaseCursor: 6/7
-updated: 2026-09-25T06:32:23.205Z
-nextStep: "c7: S0 GPT voice probe evidence, consumer sweep,
-  lint/build/typecheck, docs (plan addendum for founder overrides), PR body,
-  codex review"
+phaseCursor: 7/7
+updated: 2026-09-25T06:42:58.880Z
+nextStep: "milestone (literal last) → push → PR #1314 body → stage pr_created →
+  codex code review → await-codex-gate code → check inbox → complete
+  needs_review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2863 progress
-**phase**: implement (6/7)
-**next**: c7: S0 GPT voice probe evidence, consumer sweep, lint/build/typecheck, docs (plan addendum for founder overrides), PR body, codex review
+**phase**: implement (7/7)
+**next**: milestone (literal last) → push → PR #1314 body → stage pr_created → codex code review → await-codex-gate code → check inbox → complete needs_review
