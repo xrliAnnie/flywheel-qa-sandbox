@@ -93,3 +93,10 @@ QA 在真 slot-3 Bridge + 真 Codex Lead + 生产引擎 A 组合上确认了四�
 - MEDIUM：报平安退役写入失败时仍播兜底句，迟到的 Lead 回话还会再念。改为确认退役后才播兜底句；否则只念 Lead 那一句。
 
 回归：conductor 7 条新用例（打断重念、失败两次丢弃、重启先念、拒收写失败 ×2、报平安退役失败 ×2），另加路由用例锁住 `closing` 原样往返。负对照：去掉「收尾句待念时不开新件」的守卫，打断用例失败。复跑：voice-core related 55、voice-codex 77、voice-headphone 25、teamlead 议程 34，根 lint 0 error，`flywheel-voice-core...` 等构建与 voice-core 全部依赖方 typecheck 通过。
+
+**Codex 复审 R8**（头 `dee20e614`）提出 1 HIGH、1 MEDIUM，均已修复：
+
+- HIGH：`state.closing` 由语音客户端写入，Bridge 没有校验，持有 master+lease 的一方可以塞一句任意文本，重启后被念出来，绕过 answer key。改为 PUT state 校验它的精确形状与边界，且必须与**本会话一条已提交、已认证的 `agenda_close` 结果**逐项一致（同一 handoff 会话与项目、同一件、同一处置、同一句 say 与结果正文），否则 400。新增 8 种伪造负例（改文本、改处置、改件、伪造结果 id、别的请求、负计数、多余字段、缺字段）。
+- MEDIUM：「收尾句待念时不开新件」的守卫只加在上层包装函数，R-T5 迟到回复的分支会直接调 `request()`。守卫下沉到 `request()` 本身，收尾句念完后由 `finishClosing()` 推进。新增 urgent 收尾被打断 + 旧回合迟到回复的回归用例（先复现出多发一个请求，修后通过）。
+
+复跑：voice-core related 56、teamlead 议程 46、voice-codex 77、voice-headphone 25，根 lint 0 error，构建与 voice-core 全部依赖方 typecheck 通过。
