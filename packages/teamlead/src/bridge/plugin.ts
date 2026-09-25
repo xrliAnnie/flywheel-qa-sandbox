@@ -6745,6 +6745,12 @@ export async function startBridge(
 										(lead) => [lead.key, lead.tuning] as const,
 									),
 								),
+							runtimeSettingsByLead: () =>
+								new Map(
+									(fleetPoller.snapshot()?.leads ?? []).map(
+										(lead) => [lead.key, lead.runtimeSettings] as const,
+									),
+								),
 							projects: () => managementProjects,
 							projectsRevision: () => managementProjectsRevision,
 							projectConfigs: () => ffConfigCache.current(),

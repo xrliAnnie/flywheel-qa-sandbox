@@ -5,19 +5,20 @@ import type {
 	ResolvedAgentConfig,
 	ResolvedProjectRegistry,
 } from "flywheel-config";
-import { getModelRegistryEntry } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import {
 	computeLeadCapabilities,
 	DISABLED_BACKEND_SWITCH,
 	leadTuningWriteCapability,
+	leadVendorForBackend,
 } from "./fleet-capabilities.js";
 import type { LeadConfigView } from "./lead-config-service.js";
+import { leadDispatchSelection } from "./lead-dispatch-selection.js";
 import {
 	buildTargetId,
+	type LeadRuntimeSettingsView,
 	type ManagementLeadView,
 	type ManagementProjectView,
-	type ModelSelection,
 	type PresentationGroupView,
 	registrySourceRevision,
 } from "./management-console-contract.js";
@@ -42,6 +43,10 @@ export interface TopologyView {
 
 export interface BuildTopologyInput {
 	tuningByLead?: ReadonlyMap<string, LeadConfigView | undefined>;
+	runtimeSettingsByLead?: ReadonlyMap<
+		string,
+		LeadRuntimeSettingsView | undefined
+	>;
 	codexHotConfigAvailable?: boolean;
 	projects: ProjectEntry[];
 	configs: ReadonlyMap<string, LoadedProjectConfig>;
@@ -89,20 +94,6 @@ function githubSourceLink(
 	};
 }
 
-function currentLeadSelection(
-	lead: ProjectEntry["leads"][number],
-): ModelSelection | null {
-	if (!lead.model) return null;
-	const registered = getModelRegistryEntry(lead.model);
-	return {
-		provider:
-			registered?.provider ??
-			(lead.backend === "codex-app-server" ? "openai" : "anthropic"),
-		model: registered?.id ?? lead.model,
-		effort: lead.effort ?? null,
-	};
-}
-
 function buildLead(
 	project: ProjectEntry,
 	lead: ProjectEntry["leads"][number],
@@ -110,6 +101,7 @@ function buildLead(
 	onlineByLead?: BuildTopologyInput["onlineByLead"],
 	codexHotConfigAvailable = false,
 	tuning?: LeadConfigView,
+	runtimeSettings?: LeadRuntimeSettingsView,
 ): ManagementLeadView {
 	const capabilities = computeLeadCapabilities(lead);
 	const presentationGroup =
@@ -118,6 +110,7 @@ function buildLead(
 	return {
 		id: `${project.projectName}/${lead.agentId}`,
 		...(tuning ? { tuning } : {}),
+		...(runtimeSettings ? { runtimeSettings } : {}),
 		leadId: lead.agentId,
 		displayName: lead.agentId,
 		department: lead.department,
@@ -127,13 +120,18 @@ function buildLead(
 		backend: capabilities.currentBackend,
 		backendWritable: false,
 		backendDisabledReason: DISABLED_BACKEND_SWITCH,
+		vendor: leadVendorForBackend(capabilities.currentBackend),
+		configured: {
+			model: lead.model ?? null,
+			effort: lead.effort ?? null,
+		},
 		dispatch: {
 			targetId: buildTargetId("lead", [
 				project.projectName,
 				lead.agentId,
 				"dispatch",
 			]),
-			current: currentLeadSelection(lead),
+			current: leadDispatchSelection(lead),
 			source: {
 				kind: "projects_json",
 				revision: projectsRevision,
@@ -142,6 +140,7 @@ function buildLead(
 			writeCapability: leadTuningWriteCapability(
 				capabilities.currentBackend,
 				codexHotConfigAvailable,
+				lead.model !== undefined && lead.model !== null,
 			),
 		},
 	};
@@ -237,6 +236,9 @@ export function buildTopologyView(input: BuildTopologyInput): TopologyView {
 						input.onlineByLead,
 						input.codexHotConfigAvailable,
 						input.tuningByLead?.get(`${project.projectName}-${lead.agentId}`),
+						input.runtimeSettingsByLead?.get(
+							`${project.projectName}-${lead.agentId}`,
+						),
 					),
 				),
 			roles,

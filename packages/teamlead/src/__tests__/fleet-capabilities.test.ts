@@ -13,6 +13,8 @@ import {
 	DISABLED_WRITE_LEAD_CODEX,
 	EFFORT_OPTIONS,
 	isCodexEligible,
+	leadTuningWriteCapability,
+	leadVendorForBackend,
 } from "../bridge/fleet-capabilities.js";
 import type { LeadConfig } from "../ProjectConfig.js";
 
@@ -298,5 +300,37 @@ describe("fleet-capabilities — computeLeadCapabilities bundle", () => {
 		);
 		expect(cap.currentBackend).toBe("codex-app-server");
 		expect(cap.allowedModelTargets).toEqual([null]);
+	});
+});
+
+describe("fleet-capabilities — FLY-2760 backend-derived vendor and unpinned Codex authority", () => {
+	it("derives the company from backend instead of a nullable model", () => {
+		expect(leadVendorForBackend("codex-app-server")).toEqual({
+			provider: "openai",
+			label: "OpenAI",
+		});
+		expect(leadVendorForBackend("claude-code")).toEqual({
+			provider: "anthropic",
+			label: "Anthropic",
+		});
+	});
+
+	it("keeps unpinned Codex read-only while preserving existing writable branches", () => {
+		expect(
+			leadTuningWriteCapability("codex-app-server", true, false),
+		).toMatchObject({
+			writable: false,
+			consequence: "governance-readonly",
+			reason: expect.stringContaining("projects.json"),
+		});
+		expect(
+			leadTuningWriteCapability("codex-app-server", true, true),
+		).toMatchObject({ writable: true, consequence: "next-turn" });
+		expect(leadTuningWriteCapability("claude-code", true, false)).toMatchObject(
+			{
+				writable: true,
+				consequence: "restart-lead",
+			},
+		);
 	});
 });

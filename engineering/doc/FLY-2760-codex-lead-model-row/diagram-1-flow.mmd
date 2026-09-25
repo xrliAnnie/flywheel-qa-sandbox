@@ -1,0 +1,15 @@
+flowchart LR
+  PJ["projects.json<br/>backend / effort / model?"] --> TS["Bridge 投影<br/>公司按 backend<br/>effort 原样"]
+  RT["Codex Lead 进程<br/>启动时 thread/read"] -->|写| EV["thread-settings.json<br/>model / effort / threadId"]
+  EV -->|只读 + 校验| FP["Bridge 舰队巡检"]
+  FP --> TS
+  TS --> UI["管理台 Lead 行"]
+  UI --> A["公司 = OpenAI"]
+  UI --> B{"有运行时证据?"}
+  B -->|有| C["型号 = 运行中 · GPT-6 Astra · 未钉"]
+  B -->|无| DD["型号 = Codex 默认 · 未钉型号"]
+  UI --> E["effort = high"]
+  style A fill:#e6f4ea,stroke:#248a3d
+  style C fill:#e6f4ea,stroke:#248a3d
+  style DD fill:#fff4e5,stroke:#b25e09
+  style E fill:#e6f4ea,stroke:#248a3d

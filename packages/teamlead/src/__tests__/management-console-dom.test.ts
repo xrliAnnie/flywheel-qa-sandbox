@@ -63,35 +63,50 @@ function flag(
 
 function catalog(surface: string) {
 	const efforts = surface === "cron" ? [] : ["low", "medium", "high", "xhigh"];
+	const providers = [
+		{
+			id: "anthropic",
+			label: "Anthropic",
+			models: [
+				{
+					id: "claude-fable-5-1",
+					label: "Fable 5.1",
+					runtimeVendor: "claude",
+					efforts,
+				},
+				{
+					id: "claude-fable-5",
+					label: "Fable 5",
+					runtimeVendor: "claude",
+					efforts,
+				},
+				{
+					id: "claude-opus-4-8",
+					label: "Opus 5 (1M)",
+					runtimeVendor: "claude",
+					efforts,
+				},
+			],
+		},
+	];
+	if (surface === "lead") {
+		providers.push({
+			id: "openai",
+			label: "OpenAI",
+			models: [
+				{
+					id: "gpt-6-astra",
+					label: "GPT-6 Astra",
+					runtimeVendor: "codex",
+					efforts: ["low", "medium", "high", "xhigh", "max"],
+				},
+			],
+		});
+	}
 	return {
 		version: 1,
 		surface,
-		providers: [
-			{
-				id: "anthropic",
-				label: "Anthropic",
-				models: [
-					{
-						id: "claude-fable-5-1",
-						label: "Fable 5.1",
-						runtimeVendor: "claude",
-						efforts,
-					},
-					{
-						id: "claude-fable-5",
-						label: "Fable 5",
-						runtimeVendor: "claude",
-						efforts,
-					},
-					{
-						id: "claude-opus-4-8",
-						label: "Opus 5 (1M)",
-						runtimeVendor: "claude",
-						efforts,
-					},
-				],
-			},
-		],
+		providers,
 	};
 }
 
@@ -143,6 +158,8 @@ function snapshot() {
 						department: "product",
 						backend: "claude-code",
 						online: "online",
+						vendor: { provider: "anthropic", label: "Anthropic" },
+						configured: { model: null, effort: null },
 						dispatch: managed("lead-target", null, "restart-lead"),
 					},
 					{
@@ -151,6 +168,8 @@ function snapshot() {
 						department: "infra",
 						backend: "claude-code",
 						online: "online",
+						vendor: { provider: "anthropic", label: "Anthropic" },
+						configured: { model: "claude-opus-4-8", effort: "high" },
 						dispatch: managed(
 							"lead-infra-target",
 							{
@@ -439,6 +458,8 @@ function snapshot() {
 						department: "infra",
 						backend: "claude-code",
 						online: "degraded",
+						vendor: { provider: "anthropic", label: "Anthropic" },
+						configured: { model: null, effort: null },
 						dispatch: managed("lead-beta-infra-target", null, "restart-lead"),
 					},
 				],
@@ -575,6 +596,21 @@ describe("management console browser interactions", () => {
 		vi.unstubAllGlobals();
 		document.documentElement.innerHTML = "";
 	});
+
+	async function reloadWith(
+		value: ReturnType<typeof snapshot>,
+		ready: () => void,
+	): Promise<void> {
+		vi.mocked(fetch).mockImplementationOnce(
+			async () =>
+				new Response(JSON.stringify(value), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
+		(document.getElementById("discard") as HTMLButtonElement).click();
+		await vi.waitFor(ready);
+	}
 
 	it("renders the ordinary project and derived Infra group once with distinct detail", () => {
 		expect(
@@ -1028,6 +1064,227 @@ describe("management console browser interactions", () => {
 				) as HTMLSelectElement
 			).value,
 		).toBe("");
+	});
+
+	it("renders unpinned Codex Leads from backend, registry effort, and runtime evidence only", async () => {
+		const current = snapshot();
+		current.projects[0]!.leads = [
+			{
+				id: "codex-absent",
+				displayName: "Generic Codex absent",
+				department: "growth",
+				backend: "codex-app-server",
+				online: "online",
+				vendor: { provider: "openai", label: "OpenAI" },
+				configured: { model: null, effort: "high" },
+				runtimeSettings: {
+					model: "gpt-6-astra",
+					effort: "high",
+					threadId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+					observedAt: "2026-09-24T09:00:00.000Z",
+					source: "thread_read",
+				},
+				dispatch: readOnlyManaged(
+					"codex-absent-target",
+					null,
+					"projects.json 未钉型号",
+				),
+			},
+			{
+				id: "codex-null",
+				displayName: "Generic Codex null",
+				department: "infra",
+				backend: "codex-app-server",
+				online: "online",
+				vendor: { provider: "openai", label: "OpenAI" },
+				configured: { model: null, effort: "high" },
+				dispatch: readOnlyManaged(
+					"codex-null-target",
+					null,
+					"projects.json 未钉型号",
+				),
+			},
+			{
+				id: "codex-pinned",
+				displayName: "Pinned Codex",
+				department: "product",
+				backend: "codex-app-server",
+				online: "online",
+				vendor: { provider: "openai", label: "OpenAI" },
+				configured: { model: "gpt-6-astra", effort: "high" },
+				runtimeSettings: {
+					model: "gpt-6-astra",
+					effort: "high",
+					threadId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+					observedAt: "2026-09-24T09:01:00.000Z",
+					source: "thread_read",
+				},
+				dispatch: managed(
+					"codex-pinned-target",
+					{ provider: "openai", model: "gpt-6-astra", effort: "high" },
+					"next-turn",
+				),
+			},
+			{
+				id: "claude-unpinned",
+				displayName: "Unpinned Claude",
+				department: "product",
+				backend: "claude-code",
+				online: "online",
+				vendor: { provider: "anthropic", label: "Anthropic" },
+				configured: { model: null, effort: "high" },
+				dispatch: managed("claude-unpinned-target", null, "restart-lead"),
+			},
+			{
+				id: "codex-xss",
+				displayName: "Codex XSS guard",
+				department: "product",
+				backend: "codex-app-server",
+				online: "online",
+				vendor: { provider: "openai", label: "OpenAI" },
+				configured: { model: null, effort: "high" },
+				runtimeSettings: {
+					model: '<img id="runtime-model-xss">',
+					effort: "high",
+					threadId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+					observedAt: "2026-09-24T09:02:00.000Z",
+					source: "thread_read",
+				},
+				dispatch: readOnlyManaged(
+					"codex-xss-target",
+					null,
+					"projects.json 未钉型号",
+				),
+			},
+		];
+		await reloadWith(current, () => {
+			expect(
+				document.querySelector('[data-model-target="codex-absent-target"]'),
+			).not.toBeNull();
+		});
+
+		const absent = document.querySelector(
+			'[data-model-target="codex-absent-target"]',
+		)!;
+		expect(
+			(
+				absent.querySelector(
+					'[data-model-part="provider"]',
+				) as HTMLSelectElement
+			).value,
+		).toBe("openai");
+		expect(
+			(
+				absent.querySelector(
+					'[data-model-part="provider"]',
+				) as HTMLSelectElement
+			).selectedOptions[0]?.textContent,
+		).toBe("OpenAI");
+		expect(
+			(absent.querySelector('[data-model-part="model"]') as HTMLSelectElement)
+				.selectedOptions[0]?.textContent,
+		).toBe("运行中 · GPT-6 Astra · 未钉");
+		const absentEffort = absent.querySelector(
+			'[data-model-part="effort"]',
+		) as HTMLSelectElement;
+		expect(absentEffort.value).toBe("high");
+		expect(absentEffort.disabled).toBe(true);
+		expect(absent.textContent).toContain("2026-09-24T09:00:00.000Z");
+		expect(absent.textContent).toContain("projects.json 未钉型号");
+
+		const missing = document.querySelector(
+			'[data-model-target="codex-null-target"]',
+		)!;
+		expect(
+			(missing.querySelector('[data-model-part="model"]') as HTMLSelectElement)
+				.selectedOptions[0]?.textContent,
+		).toBe("Codex 默认 · 未钉型号");
+		expect(missing.textContent).toContain(
+			"运行时证据待 Lead 以新版本重启后出现",
+		);
+
+		const pinned = document.querySelector(
+			'[data-model-target="codex-pinned-target"]',
+		)!;
+		expect(pinned.textContent).not.toContain("未钉");
+		expect(
+			(pinned.querySelector('[data-model-part="model"]') as HTMLSelectElement)
+				.value,
+		).toBe("gpt-6-astra");
+
+		const claude = document.querySelector(
+			'[data-model-target="claude-unpinned-target"]',
+		)!;
+		expect(claude.textContent).not.toContain("运行时证据");
+		expect(
+			(claude.querySelector('[data-model-part="effort"]') as HTMLSelectElement)
+				.disabled,
+		).toBe(true);
+		expect(document.getElementById("runtime-model-xss")).toBeNull();
+	});
+
+	it("uses backend vendor and registry values when the Lead catalog is empty", async () => {
+		const current = snapshot();
+		current.modelCatalog.lead.providers = [];
+		await reloadWith(current, () => {
+			expect(document.getElementById("detail")?.textContent).toContain(
+				"真实 registry 在此层没有可用型号",
+			);
+		});
+		const lead = document.querySelector('[data-model-target="lead-target"]')!;
+		expect(lead.textContent).toContain("Anthropic / 未钉 / 未设置");
+		expect(lead.textContent).toContain("真实 registry 在此层没有可用型号");
+	});
+
+	it("preserves explicit null effort drafts for a pinned Codex Lead", async () => {
+		const current = snapshot();
+		current.projects[0]!.leads = [
+			{
+				id: "codex-pinned",
+				displayName: "Pinned Codex",
+				department: "product",
+				backend: "codex-app-server",
+				online: "online",
+				vendor: { provider: "openai", label: "OpenAI" },
+				configured: { model: "gpt-6-astra", effort: "high" },
+				dispatch: managed(
+					"codex-pinned-target",
+					{ provider: "openai", model: "gpt-6-astra", effort: "high" },
+					"next-turn",
+				),
+			},
+		];
+		await reloadWith(current, () => {
+			expect(
+				document.querySelector('[data-model-target="codex-pinned-target"]'),
+			).not.toBeNull();
+		});
+		const effort = document.querySelector(
+			'[data-model-target="codex-pinned-target"] [data-model-part="effort"]',
+		) as HTMLSelectElement;
+		effort.value = "";
+		effort.dispatchEvent(new Event("change", { bubbles: true }));
+		(document.getElementById("stage") as HTMLButtonElement).click();
+		await vi.waitFor(() =>
+			expect(
+				requests.some((request) => request.path === "/api/fleet/changes/stage"),
+			).toBe(true),
+		);
+		const staged = requests.find(
+			(request) => request.path === "/api/fleet/changes/stage",
+		)!;
+		expect(staged.body).toMatchObject({
+			changes: [
+				{
+					targetId: "codex-pinned-target",
+					desiredValue: {
+						provider: "openai",
+						model: "gpt-6-astra",
+						effort: null,
+					},
+				},
+			],
+		});
 	});
 
 	it("changing a model preserves account-default effort instead of pinning low", async () => {

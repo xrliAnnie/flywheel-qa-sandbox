@@ -129,6 +129,60 @@ describe("management writer registry", () => {
 });
 
 describe("existing management writer adapters", () => {
+	it("keeps an unpinned Codex Lead read-only even when the hot service exists", async () => {
+		const unpinned = (): ProjectEntry[] => [
+			{
+				projectName: "growth",
+				projectRoot: "/server/growth",
+				leads: [
+					{
+						agentId: "generic-codex-lead",
+						backend: "codex-app-server",
+						effort: "high",
+					},
+				],
+			},
+		];
+		const { lead } = createExistingManagementWriters({
+			projects: unpinned,
+			projectsRevision: () => PROJECTS_REVISION,
+			projectConfigs: () => new Map(),
+			readProjectConfig: () => "",
+			readEnvFile: () => "",
+			envPath: "/server/.flywheel/.env",
+			env: {},
+			leadConfig: {
+				stage: async () => {
+					throw new Error("must not stage");
+				},
+				apply: async () => {
+					throw new Error("must not apply");
+				},
+			},
+			applyLeadCanonical: async () => ({ status: "applied" }),
+		});
+		const targetId = buildTargetId("lead", [
+			"growth",
+			"generic-codex-lead",
+			"dispatch",
+		]);
+		const target = await lead.resolve(targetId);
+		expect(target).toMatchObject({
+			currentValue: null,
+			writeCapability: {
+				writable: false,
+				reason: expect.stringContaining("projects.json"),
+			},
+		});
+		expect(
+			await lead.preflight(
+				target!,
+				{ provider: "openai", model: "gpt-6-astra", effort: "high" },
+				PROJECTS_REVISION,
+			),
+		).toMatchObject({ ok: false });
+	});
+
 	it("Lead reuses the Fleet canonical path and refuses provider/backend forgery", async () => {
 		const applied: unknown[] = [];
 		const { lead } = createExistingManagementWriters({

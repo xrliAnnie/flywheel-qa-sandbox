@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { writeAtomic } from "flywheel-comm/lead-registry-file-io";
 import { getModelConfigSnapshot } from "flywheel-config";
 import {
 	readLeadRuntimeSource,
@@ -24,6 +25,9 @@ export class NativeLeadRuntimeConfig {
 	private owner = () => false;
 	private readonly host: LeadRuntimeConfigHost;
 	private observing = false;
+	private refreshing = false;
+	private refreshPending = false;
+	private lastRecorded?: { threadId: string; model: string; effort: string };
 	private readonly modelContext = new LeadModelContextGuard();
 	private turnTargets = new Map<string, LeadRuntimeConfigTarget>();
 	private pendingObservations = new Map<string, LeadRuntimeConfigTarget>();
@@ -99,15 +103,22 @@ export class NativeLeadRuntimeConfig {
 			this.modelContext.observe(params);
 			return;
 		}
+		const raw = params as
+			| { threadId?: unknown; turn?: { id?: unknown } }
+			| undefined;
+		if (
+			!this.closed &&
+			method === "turn/completed" &&
+			raw?.threadId === this.threadId
+		) {
+			void this.refreshThreadSettings(raw.threadId);
+		}
 		if (
 			this.closed ||
 			!this.ready ||
 			(method !== "turn/started" && method !== "turn/completed")
 		)
 			return;
-		const raw = params as
-			| { threadId?: unknown; turn?: { id?: unknown } }
-			| undefined;
 		if (
 			raw?.threadId !== this.threadId ||
 			typeof raw.turn?.id !== "string" ||
@@ -143,6 +154,67 @@ export class NativeLeadRuntimeConfig {
 			this.deps.log("runtime turn source unavailable; observation withheld");
 		}
 	};
+	private recordThreadSettings(
+		threadId: string,
+		pair: { model: string; effort: string },
+	): boolean {
+		try {
+			writeAtomic(
+				join(this.deps.config.stateDir, "thread-settings.json"),
+				`${JSON.stringify({
+					version: 1,
+					threadId,
+					model: pair.model,
+					effort: pair.effort,
+					observedAt: new Date().toISOString(),
+					source: "thread_read",
+					buildSha: this.deps.build.artifactBuildSha,
+				})}\n`,
+			);
+			this.lastRecorded = { threadId, model: pair.model, effort: pair.effort };
+			return true;
+		} catch (error) {
+			this.deps.log(
+				"thread settings evidence unavailable: " +
+					(error instanceof Error ? error.message : String(error)),
+			);
+			return false;
+		}
+	}
+	private async refreshThreadSettings(threadId: string): Promise<void> {
+		if (this.refreshing) {
+			this.refreshPending = true;
+			return;
+		}
+		this.refreshing = true;
+		try {
+			do {
+				this.refreshPending = false;
+				try {
+					const pair = await this.deps.process.readThreadSettings(threadId);
+					if (this.closed || threadId !== this.threadId) return;
+					if (
+						this.lastRecorded?.threadId !== threadId ||
+						this.lastRecorded.model !== pair.model ||
+						this.lastRecorded.effort !== pair.effort
+					) {
+						this.recordThreadSettings(threadId, pair);
+					}
+				} catch (error) {
+					this.deps.log(
+						"thread settings evidence unavailable: " +
+							(error instanceof Error ? error.message : String(error)),
+					);
+				}
+			} while (
+				!this.closed &&
+				threadId === this.threadId &&
+				this.refreshPending
+			);
+		} finally {
+			this.refreshing = false;
+		}
+	}
 	private async drainObservations(): Promise<void> {
 		if (this.observing) return;
 		this.observing = true;
@@ -205,6 +277,7 @@ export class NativeLeadRuntimeConfig {
 		try {
 			const pair = await this.deps.process.readThreadSettings(threadId);
 			if (this.closed) return;
+			this.recordThreadSettings(threadId, pair);
 			if (
 				!tuning.model ||
 				!tuning.reasoningEffort ||
@@ -276,6 +349,7 @@ export class NativeLeadRuntimeConfig {
 	close(): void {
 		this.closed = true;
 		this.ready = false;
+		this.refreshPending = false;
 		this.pendingObservations.clear();
 		this.turnTargets.clear();
 		this.deps.process.off("notification", this.onTurn);

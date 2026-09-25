@@ -222,6 +222,7 @@ export {
 	isModelSelectionSupported,
 	MODEL_ALIASES,
 	MODEL_IDS,
+	MODEL_PROVIDERS,
 	MODEL_REGISTRY,
 	resolveCurrentModel,
 } from "./model-registry.js";

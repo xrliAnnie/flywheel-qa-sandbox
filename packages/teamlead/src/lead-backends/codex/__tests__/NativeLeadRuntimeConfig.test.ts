@@ -1,7 +1,14 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as fileIo from "flywheel-comm/lead-registry-file-io";
 import * as modelConfig from "flywheel-config";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as runtimeSource from "../../../lead-runtime-tuning.js";
@@ -130,6 +137,16 @@ it("does not advertise capability or overwrite a mismatched native bootstrap pai
 			model: "gpt-6-astra",
 			reasoningEffort: "high",
 		});
+		expect(
+			JSON.parse(readFileSync(join(dir, "thread-settings.json"), "utf8")),
+		).toMatchObject({
+			version: 1,
+			threadId: "thread",
+			model: "gpt-6-astra",
+			effort: "low",
+			source: "thread_read",
+			buildSha: "a".repeat(40),
+		});
 		expect(runtime.hooks.isSupported()).toBe(false);
 		expect(proc.updateThreadSettings).not.toHaveBeenCalled();
 		runtime.bindOwner(() => runtime.hooks.isSupported());
@@ -138,6 +155,267 @@ it("does not advertise capability or overwrite a mismatched native bootstrap pai
 		expect(() => admission.assertCurrent?.()).not.toThrow();
 	} finally {
 		runtime.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+it("records pinned bootstrap settings and refreshes changed settings after a completed turn", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "native-config-evidence-"));
+	const threadId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	let pair = { model: "gpt-6-astra", effort: "high" };
+	const proc = Object.assign(new EventEmitter(), {
+		updateThreadSettings: vi.fn(async () => {}),
+		readThreadSettings: vi.fn(async () => ({ ...pair })),
+	});
+	const writeSpy = vi.spyOn(fileIo, "writeAtomic");
+	const runtime = new NativeLeadRuntimeConfig({
+		config: {
+			stateDir: dir,
+			projectName: "raya",
+			leadId: "raya",
+			leadKey: "raya-raya",
+			identityDigest: "id",
+			botUserId: "123",
+		},
+		process: proc,
+		build: {
+			artifactBuildSha: "b".repeat(40),
+			bootstrapBuildSha: "b".repeat(40),
+		},
+		log: vi.fn(),
+	});
+	const evidencePath = join(dir, "thread-settings.json");
+	try {
+		await runtime.bootstrap(threadId, {
+			model: pair.model,
+			reasoningEffort: pair.effort,
+		});
+		expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toMatchObject({
+			threadId,
+			model: "gpt-6-astra",
+			effort: "high",
+			source: "thread_read",
+		});
+		const writesAfterBootstrap = writeSpy.mock.calls.filter(
+			([path]) => path === evidencePath,
+		).length;
+
+		pair = { model: "gpt-6-astra", effort: "low" };
+		proc.emit("notification", "turn/completed", { threadId });
+		await vi.waitFor(() => {
+			expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toMatchObject({
+				effort: "low",
+			});
+		});
+		const writesAfterChange = writeSpy.mock.calls.filter(
+			([path]) => path === evidencePath,
+		).length;
+		expect(writesAfterChange).toBe(writesAfterBootstrap + 1);
+
+		proc.emit("notification", "turn/completed", { threadId });
+		await vi.waitFor(() => {
+			expect(proc.readThreadSettings.mock.calls.length).toBeGreaterThanOrEqual(
+				4,
+			);
+		});
+		expect(
+			writeSpy.mock.calls.filter(([path]) => path === evidencePath),
+		).toHaveLength(writesAfterChange);
+	} finally {
+		runtime.close();
+		writeSpy.mockRestore();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+it("logs refresh failures and discards a late refresh after close", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "native-config-evidence-"));
+	const threadId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	let refreshResolve:
+		| ((value: { model: string; effort: string }) => void)
+		| null = null;
+	const refresh = new Promise<{ model: string; effort: string }>((resolve) => {
+		refreshResolve = resolve;
+	});
+	const proc = Object.assign(new EventEmitter(), {
+		updateThreadSettings: vi.fn(async () => {}),
+		readThreadSettings: vi
+			.fn()
+			.mockResolvedValueOnce({ model: "gpt-6-astra", effort: "high" })
+			.mockResolvedValueOnce({ model: "gpt-6-astra", effort: "high" })
+			.mockRejectedValueOnce(new Error("rpc unavailable"))
+			.mockImplementationOnce(() => refresh),
+	});
+	const log = vi.fn();
+	const runtime = new NativeLeadRuntimeConfig({
+		config: {
+			stateDir: dir,
+			projectName: "raya",
+			leadId: "raya",
+			leadKey: "raya-raya",
+			identityDigest: "id",
+			botUserId: "123",
+		},
+		process: proc,
+		build: {
+			artifactBuildSha: "c".repeat(40),
+			bootstrapBuildSha: "c".repeat(40),
+		},
+		log,
+	});
+	const evidencePath = join(dir, "thread-settings.json");
+	try {
+		await runtime.bootstrap(threadId, {
+			model: "gpt-6-astra",
+			reasoningEffort: "high",
+		});
+		proc.emit("notification", "turn/completed", { threadId });
+		await vi.waitFor(() =>
+			expect(log).toHaveBeenCalledWith(
+				expect.stringContaining("thread settings evidence unavailable"),
+			),
+		);
+		proc.emit("notification", "turn/completed", { threadId });
+		await vi.waitFor(() =>
+			expect(proc.readThreadSettings).toHaveBeenCalledTimes(4),
+		);
+		runtime.close();
+		refreshResolve?.({ model: "gpt-6-astra", effort: "low" });
+		await refresh;
+		await Promise.resolve();
+		expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toMatchObject({
+			effort: "high",
+		});
+	} finally {
+		runtime.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+it("does not let an old-thread refresh overwrite a newer bootstrap", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "native-config-evidence-"));
+	const oldThread = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	const newThread = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+	let oldResolve: ((value: { model: string; effort: string }) => void) | null =
+		null;
+	const oldRefresh = new Promise<{ model: string; effort: string }>(
+		(resolve) => {
+			oldResolve = resolve;
+		},
+	);
+	const proc = Object.assign(new EventEmitter(), {
+		updateThreadSettings: vi.fn(async () => {}),
+		readThreadSettings: vi
+			.fn()
+			.mockResolvedValueOnce({ model: "gpt-6-astra", effort: "high" })
+			.mockResolvedValueOnce({ model: "gpt-6-astra", effort: "high" })
+			.mockImplementationOnce(() => oldRefresh)
+			.mockResolvedValueOnce({ model: "gpt-6-astra", effort: "high" })
+			.mockResolvedValueOnce({ model: "gpt-6-astra", effort: "high" }),
+	});
+	const runtime = new NativeLeadRuntimeConfig({
+		config: {
+			stateDir: dir,
+			projectName: "raya",
+			leadId: "raya",
+			leadKey: "raya-raya",
+			identityDigest: "id",
+			botUserId: "123",
+		},
+		process: proc,
+		build: {
+			artifactBuildSha: "e".repeat(40),
+			bootstrapBuildSha: "e".repeat(40),
+		},
+		log: vi.fn(),
+	});
+	const evidencePath = join(dir, "thread-settings.json");
+	try {
+		await runtime.bootstrap(oldThread, {
+			model: "gpt-6-astra",
+			reasoningEffort: "high",
+		});
+		proc.emit("notification", "turn/completed", { threadId: oldThread });
+		await vi.waitFor(() =>
+			expect(proc.readThreadSettings).toHaveBeenCalledTimes(3),
+		);
+		await runtime.bootstrap(newThread, {
+			model: "gpt-6-astra",
+			reasoningEffort: "high",
+		});
+		expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toMatchObject({
+			threadId: newThread,
+			effort: "high",
+		});
+		oldResolve?.({ model: "gpt-6-astra", effort: "low" });
+		await oldRefresh;
+		await Promise.resolve();
+		expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toMatchObject({
+			threadId: newThread,
+			effort: "high",
+		});
+	} finally {
+		runtime.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+it("retries an identical pair after an evidence write failure", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "native-config-evidence-"));
+	const threadId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+	const evidencePath = join(dir, "thread-settings.json");
+	const originalWrite = fileIo.writeAtomic;
+	let evidenceAttempts = 0;
+	const writeSpy = vi
+		.spyOn(fileIo, "writeAtomic")
+		.mockImplementation((path, contents, mode) => {
+			if (path === evidencePath && ++evidenceAttempts === 1) {
+				throw new Error("disk full");
+			}
+			return originalWrite(path, contents, mode);
+		});
+	const proc = Object.assign(new EventEmitter(), {
+		updateThreadSettings: vi.fn(async () => {}),
+		readThreadSettings: vi.fn(async () => ({
+			model: "gpt-6-astra",
+			effort: "high",
+		})),
+	});
+	const log = vi.fn();
+	const runtime = new NativeLeadRuntimeConfig({
+		config: {
+			stateDir: dir,
+			projectName: "raya",
+			leadId: "raya",
+			leadKey: "raya-raya",
+			identityDigest: "id",
+			botUserId: "123",
+		},
+		process: proc,
+		build: {
+			artifactBuildSha: "d".repeat(40),
+			bootstrapBuildSha: "d".repeat(40),
+		},
+		log,
+	});
+	try {
+		await runtime.bootstrap(threadId, {
+			model: "gpt-6-astra",
+			reasoningEffort: "high",
+		});
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining("thread settings evidence unavailable"),
+		);
+		expect(evidenceAttempts).toBe(1);
+		proc.emit("notification", "turn/completed", { threadId });
+		await vi.waitFor(() => expect(evidenceAttempts).toBe(2));
+		expect(JSON.parse(readFileSync(evidencePath, "utf8"))).toMatchObject({
+			model: "gpt-6-astra",
+			effort: "high",
+		});
+	} finally {
+		runtime.close();
+		writeSpy.mockRestore();
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

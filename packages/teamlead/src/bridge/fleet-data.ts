@@ -22,9 +22,18 @@ import type { LeadConfigView } from "./lead-config-service.js";
  */
 
 import { execFile } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import {
+	closeSync,
+	constants as fsConstants,
+	fstatSync,
+	lstatSync,
+	openSync,
+	readFileSync,
+	readSync,
+	statSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { withSyncOpMarker } from "flywheel-claude-runner";
 import {
 	type CarrierEvidenceEntry,
@@ -32,13 +41,17 @@ import {
 	readCarrierRuntimeAssertion,
 	writeCarrierAuthorizationEvidenceSnapshot,
 } from "flywheel-comm/lead-lease";
+import { ROLE_EFFORT_LEVELS } from "flywheel-config";
 import { deriveLeadSocketPath } from "../lead-address.js";
+import { readThreadIdStrict } from "../lead-backends/codex/codex-lead-thread-rotation.js";
 import {
 	DEFAULT_LEAD_BACKEND,
 	effectiveLeadBackend,
 	type LeadBackendId,
 } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
+import { resolveCodexLeadStateDir } from "./lead-inbox-runtime.js";
+import type { LeadRuntimeSettingsView } from "./management-console-contract.js";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -61,6 +74,7 @@ export type FleetPresentation =
 
 export interface FleetLeadState {
 	tuning?: LeadConfigView;
+	runtimeSettings?: LeadRuntimeSettingsView;
 	project: string;
 	leadId: string;
 	/** Exact key: `${project}-${leadId}` — the launchd/manifest identity. */
@@ -208,7 +222,109 @@ export interface FleetProbeDeps {
 	homeDir(): string;
 	/** Runtime state root; defaults to $HOME/.flywheel. */
 	stateDir?(): string;
+	/** Resolve the trusted state directory for one Codex Lead. */
+	codexLeadStateDir?(projectName: string, leadId: string): string;
+	/** Bounded, no-follow evidence reader; injectable for adverse-path tests. */
+	readEvidenceFile?(
+		path: string,
+		maxBytes: number,
+	):
+		| { kind: "ok"; text: string }
+		| {
+				kind: "missing" | "symlink_or_irregular" | "oversize" | "unreadable";
+		  };
 	now(): Date;
+}
+
+const THREAD_SETTINGS_MAX_BYTES = 4096;
+const THREAD_ID_PATTERN = /^[0-9a-f-]{36}$/;
+const THREAD_MODEL_PATTERN = /^[A-Za-z0-9._[\]-]{1,64}$/;
+
+type EvidenceFileRead = ReturnType<
+	NonNullable<FleetProbeDeps["readEvidenceFile"]>
+>;
+
+function readEvidenceFile(path: string, maxBytes: number): EvidenceFileRead {
+	let fd: number | undefined;
+	try {
+		const parent = lstatSync(dirname(path));
+		if (!parent.isDirectory() || parent.isSymbolicLink()) {
+			return { kind: "symlink_or_irregular" };
+		}
+		const leaf = lstatSync(path);
+		if (!leaf.isFile() || leaf.isSymbolicLink()) {
+			return { kind: "symlink_or_irregular" };
+		}
+		fd = openSync(
+			path,
+			fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+		);
+		const stat = fstatSync(fd);
+		if (!stat.isFile()) return { kind: "symlink_or_irregular" };
+		if (stat.size > maxBytes) return { kind: "oversize" };
+		const buffer = Buffer.alloc(maxBytes);
+		const bytesRead = readSync(fd, buffer, 0, maxBytes, 0);
+		return { kind: "ok", text: buffer.subarray(0, bytesRead).toString("utf8") };
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return { kind: "missing" };
+		if (code === "ELOOP") return { kind: "symlink_or_irregular" };
+		return { kind: "unreadable" };
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
+export function readThreadSettingsEvidence(
+	dir: string,
+	deps: Pick<FleetProbeDeps, "readEvidenceFile">,
+): { value?: LeadRuntimeSettingsView; reason?: string } {
+	const read = deps.readEvidenceFile ?? readEvidenceFile;
+	const evidence = read(
+		join(dir, "thread-settings.json"),
+		THREAD_SETTINGS_MAX_BYTES,
+	);
+	if (evidence.kind === "missing") return {};
+	if (evidence.kind !== "ok") return { reason: "thread-settings-invalid" };
+
+	let raw: unknown;
+	try {
+		raw = JSON.parse(evidence.text);
+	} catch {
+		return { reason: "thread-settings-invalid" };
+	}
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		return { reason: "thread-settings-invalid" };
+	}
+	const record = raw as Record<string, unknown>;
+	if (
+		record.version !== 1 ||
+		typeof record.threadId !== "string" ||
+		!THREAD_ID_PATTERN.test(record.threadId) ||
+		typeof record.model !== "string" ||
+		!THREAD_MODEL_PATTERN.test(record.model) ||
+		typeof record.effort !== "string" ||
+		!ROLE_EFFORT_LEVELS.includes(record.effort as never) ||
+		typeof record.observedAt !== "string" ||
+		!Number.isFinite(Date.parse(record.observedAt)) ||
+		record.source !== "thread_read"
+	) {
+		return { reason: "thread-settings-invalid" };
+	}
+
+	const currentThread = readThreadIdStrict(join(dir, "thread-id"));
+	if (currentThread.kind !== "ok" || currentThread.id !== record.threadId) {
+		return { reason: "thread-settings-stale" };
+	}
+	return {
+		value: {
+			model: record.model,
+			effort: record.effort,
+			threadId: record.threadId,
+			observedAt: record.observedAt,
+			source: "thread_read",
+		},
+	};
 }
 
 const PLIST_PREFIX = "com.flywheel.lead";
@@ -555,8 +671,26 @@ export async function collectFleetSnapshot(
 					reasons.push("lead-tuning-unavailable");
 				}
 			}
+			let runtimeSettings: LeadRuntimeSettingsView | undefined;
+			if (eff.backend === "codex-app-server") {
+				let codexStateDir: string | undefined;
+				try {
+					codexStateDir = (deps.codexLeadStateDir ?? resolveCodexLeadStateDir)(
+						project.projectName,
+						lead.agentId,
+					);
+				} catch {
+					reasons.push("thread-settings-unresolved");
+				}
+				if (codexStateDir) {
+					const evidence = readThreadSettingsEvidence(codexStateDir, deps);
+					runtimeSettings = evidence.value;
+					if (evidence.reason) reasons.push(evidence.reason);
+				}
+			}
 			leads.push({
 				...(tuning ? { tuning } : {}),
+				...(runtimeSettings ? { runtimeSettings } : {}),
 				project: project.projectName,
 				leadId: lead.agentId,
 				key,
@@ -1050,6 +1184,9 @@ export function buildDefaultFleetProbeDeps(): FleetProbeDeps {
 		homeDir: () => homedir(),
 		stateDir: () =>
 			process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
+		codexLeadStateDir: (projectName, leadId) =>
+			resolveCodexLeadStateDir(projectName, leadId),
+		readEvidenceFile,
 		now: () => new Date(),
 	};
 }
