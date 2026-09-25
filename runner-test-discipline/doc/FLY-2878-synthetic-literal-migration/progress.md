@@ -1,9 +1,10 @@
 ---
 issue: FLY-2878
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-25T09:16:00.133Z
-nextStep: Commit implementation, request code review, then create milestone and PR
+phaseCursor: 4/4
+updated: 2026-09-25T09:20:27.276Z
+nextStep: Add milestone as final commit, push final head, verify exact-head CI,
+  and complete needs_review
 chunks:
   - id: onboard
     order: 1
@@ -19,8 +20,8 @@ pointers: {}
 ---
 
 # FLY-2878 progress
-**phase**: implement (3/4)
-**next**: Commit implementation, request code review, then create milestone and PR
+**phase**: implement (4/4)
+**next**: Add milestone as final commit, push final head, verify exact-head CI, and complete needs_review
 
 ## chunks
 - ✅ onboard — 
