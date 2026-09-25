@@ -1,13 +1,13 @@
 ---
 issue: FLY-2883
 phase: design
-phaseCursor: 4/7
-updated: 2026-09-25T20:39:29.460Z
-nextStep: Codex design review R3 (plan v3); founder HTML drafted
+phaseCursor: 7/7
+updated: 2026-09-25T20:56:14.251Z
+nextStep: design complete (plan v4 approved R4); implement only after FLY-2882 merges
 chunks: []
 pointers: {}
 ---
 
 # FLY-2883 progress
-**phase**: design (4/7)
-**next**: Codex design review R3 (plan v3); founder HTML drafted
+**phase**: design (7/7)
+**next**: design complete (plan v4 approved R4); implement only after FLY-2882 merges
