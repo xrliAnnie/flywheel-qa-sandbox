@@ -1,10 +1,9 @@
 ---
 issue: FLY-2878
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-25T09:13:39.157Z
-nextStep: Run discovered concrete tests, related selection, verifier, lint, and
-  literal sweeps
+phaseCursor: 3/4
+updated: 2026-09-25T09:16:00.133Z
+nextStep: Commit implementation, request code review, then create milestone and PR
 chunks:
   - id: onboard
     order: 1
@@ -20,8 +19,8 @@ pointers: {}
 ---
 
 # FLY-2878 progress
-**phase**: implement (2/4)
-**next**: Run discovered concrete tests, related selection, verifier, lint, and literal sweeps
+**phase**: implement (3/4)
+**next**: Commit implementation, request code review, then create milestone and PR
 
 ## chunks
 - ✅ onboard — 
