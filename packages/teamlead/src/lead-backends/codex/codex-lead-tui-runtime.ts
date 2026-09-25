@@ -88,6 +88,7 @@ import {
 import {
 	appendRotationReceipt,
 	boundedTurnsList,
+	readLatestTurn,
 	FENCE_IDLE_WAIT_MS,
 	isRotationDue,
 	ROTATION_CHECK_INTERVAL_MS,
@@ -111,6 +112,10 @@ import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import {
+	LeadTurnStateTracker,
+	seedTurnStateWithRetry,
+} from "./LeadTurnStateTracker.js";
 import { tryResolveLeadAttachmentContext } from "./lead-actions/attachment-context.js";
 import {
 	assertFullAccessLeadActionsConfigGate,
@@ -383,6 +388,8 @@ export function wireDemuxedProcess(args: {
 	onTokenUsage?: (params: unknown) => void;
 	onActivity?: () => void;
 	log?: (m: string) => void;
+	/** FLY-2882: turn lifecycle feed for the read-only turn-state snapshot. */
+	turnState?: Pick<LeadTurnStateTracker, "onTurnStarted" | "onTurnCompleted">;
 }): DemuxedWiring {
 	const listeners = {
 		notification: [] as Array<(method: string, params: unknown) => void>,
@@ -406,7 +413,10 @@ export function wireDemuxedProcess(args: {
 	};
 	const demux = new TurnDemux({
 		toExecutor: (method, params) => {
+			if (method === "turn/started")
+				args.turnState?.onTurnStarted(params, "message");
 			if (method === "turn/completed") {
+				args.turnState?.onTurnCompleted(params);
 				const id = extractTurnId(params);
 				for (const cb of listeners.turnCompleted) cb(params);
 				if (id) {
@@ -421,9 +431,11 @@ export function wireDemuxedProcess(args: {
 			// One observe row per founder turn — keyed on its completion (bounded,
 			// idempotent; deltas are visible live in the TUI anyway).
 			if (method === "turn/started") {
+				args.turnState?.onTurnStarted(params, "founder_terminal");
 				const id = extractTurnId(params);
 				if (id) args.onFounderTurnStarted?.(id);
 			} else if (method === "turn/completed") {
+				args.turnState?.onTurnCompleted(params);
 				const id = extractTurnId(params);
 				if (id) args.onFounderTurnCompleted(id);
 			}
@@ -435,9 +447,13 @@ export function wireDemuxedProcess(args: {
 		if (method === "thread/tokenUsage/updated") args.onTokenUsage?.(params);
 		demux.route(method, params);
 	});
-	args.proc.on("turnCompleted", (params) =>
-		demux.route("turn/completed", params),
-	);
+	args.proc.on("turnCompleted", (params) => {
+		// FLY-2882: completions are recorded BEFORE demux routing so a completion
+		// the demux holds (pre-claim) or drops (tombstoned after a timeout) still
+		// clears the turn-state snapshot; the tracker ignores a later replayed start.
+		args.turnState?.onTurnCompleted(params);
+		demux.route("turn/completed", params);
+	});
 
 	const facade: CodexProcessLike = {
 		on(event: "notification" | "turnCompleted" | "exit", cb: never): void {
@@ -659,6 +675,9 @@ export function buildTuiGeneration(
 		let nativeConfig: NativeLeadRuntimeConfig | undefined;
 		let residencyLifecycle: ResidentCodexLeadLifecycleObserver | null = null;
 		let lostCb: (() => void) | undefined;
+		// FLY-2882: one turn-state tracker per proc generation (dead on exit/stop).
+		let turnState: LeadTurnStateTracker | undefined;
+		let turnSeed: { cancel(): void } | undefined;
 		// Generation-owned TUI lifecycle (review HIGH-1): the window is no longer
 		// fire-and-forget — a liveness cadence re-creates it if the founder closes
 		// it (only when actually dead, so a healthy session is never disrupted),
@@ -1091,6 +1110,8 @@ export function buildTuiGeneration(
 			if (closing) return closing;
 			closing = (async () => {
 				stopped = true;
+				turnSeed?.cancel();
+				turnState?.markDisconnected();
 				nativeConfig?.close();
 				if (rotationTimer) clearInterval(rotationTimer);
 				rotationTimer = null;
@@ -1210,6 +1231,11 @@ export function buildTuiGeneration(
 							log: (message) => logger.warn(message),
 						})
 					: undefined;
+				const generationTurnState = new LeadTurnStateTracker({
+					binding: journal,
+				});
+				turnState = generationTurnState;
+				proc.on("exit", () => generationTurnState.markDisconnected());
 				if (lostCb) proc.on("exit", () => lostCb?.());
 				const inventory = capabilityV2 ? new McpInventoryWatcher() : undefined;
 				if (inventory)
@@ -1245,6 +1271,7 @@ export function buildTuiGeneration(
 							payload: "founder terminal turn (observed; see TUI/rollout)",
 						});
 					},
+					turnState: generationTurnState,
 					...(config.contextUsagePath && config.contextUsageUnavailablePath
 						? {
 								onTokenUsage: (params: unknown) => {
@@ -1509,6 +1536,12 @@ export function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
+						generationTurnState.bindThread(threadId);
+						turnSeed?.cancel();
+						turnSeed = seedTurnStateWithRetry({
+							tracker: generationTurnState,
+							read: () => readLatestTurn(p.request.bind(p), threadId),
+						});
 						await nativeConfig?.bootstrap(threadId, bootstrapTuning);
 						residencyLifecycle = createResidentCodexLeadLifecycleForGeneration({
 							config,
@@ -1606,6 +1639,9 @@ export function buildTuiGeneration(
 								(): import("../../voice-self-filter-contract.js").VoiceSelfFilterObservation =>
 									gateway.probeVoiceSelfFilter(),
 							ignoredAuthorIds: config.ignoredAuthorIds,
+							turnState: {
+								snapshot: () => generationTurnState.snapshot(),
+							},
 							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
 							leadId: config.leadId,
 							router,

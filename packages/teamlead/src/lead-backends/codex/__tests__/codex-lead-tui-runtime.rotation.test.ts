@@ -12,6 +12,7 @@ import {
 } from "../codex-lead-tui-runtime.js";
 import type { LeadInputRouter } from "../LeadInputRouter.js";
 import { LeadJournal } from "../LeadJournal.js";
+import type { TurnStateSnapshot } from "../LeadTurnStateTracker.js";
 import type { VerifiedPersona } from "../persona-startup-gate.js";
 import { SqliteJournalStore } from "../SqliteJournalStore.js";
 
@@ -40,6 +41,7 @@ const mocks = vi.hoisted(() => ({
 		terminalTail: ["Resuming session…"],
 	})),
 	router: null as LeadInputRouter | null,
+	turnState: null as { snapshot(): TurnStateSnapshot } | null,
 	gatewayStart: vi.fn(async () => {}),
 	gatewayStop: vi.fn(async () => {}),
 }));
@@ -85,8 +87,12 @@ vi.mock("../tui-window.js", async (importOriginal) => ({
 vi.mock("../CodexLeadInboxSocket.js", async (importOriginal) => ({
 	...(await importOriginal<object>()),
 	CodexLeadInboxServer: class {
-		constructor(options: { router: LeadInputRouter }) {
+		constructor(options: {
+			router: LeadInputRouter;
+			turnState?: { snapshot(): TurnStateSnapshot };
+		}) {
 			mocks.router = options.router;
+			mocks.turnState = options.turnState ?? null;
 		}
 	},
 }));
@@ -115,6 +121,15 @@ const baseLedger = (): rotation.RotationLedger => ({
 let dir: string;
 let flagStore: StateStore;
 const generations: Array<{ stop(): Promise<void> }> = [];
+/**
+ * FLY-2882: every generation seeds its turn-state tracker with its own
+ * `thread/turns/list` read once the thread is established (plus bounded
+ * retries). Rotation assertions below count only the OTHER turns/list calls.
+ */
+let seedReads: ReturnType<typeof vi.spyOn>;
+const rotationTurnsLists = (requests: Array<{ method: string }>) =>
+	requests.filter((r) => r.method === "thread/turns/list").length -
+	seedReads.mock.calls.length;
 beforeEach(async () => {
 	vi.useFakeTimers({
 		toFake: [
@@ -126,6 +141,7 @@ beforeEach(async () => {
 		],
 	});
 	vi.setSystemTime(NOW);
+	seedReads = vi.spyOn(rotation, "readLatestTurn");
 	dir = fs.mkdtempSync(join(tmpdir(), "fly2550-runtime-"));
 	flagStore = await StateStore.create(join(dir, "teamlead.db"));
 	initializeFlagStore(flagStore, {});
@@ -134,6 +150,7 @@ beforeEach(async () => {
 	mocks.proofMode = "immediate";
 	mocks.proofs.splice(0);
 	mocks.router = null;
+	mocks.turnState = null;
 	mocks.create.mockClear();
 	mocks.kill.mockClear();
 	mocks.readExitEvidence.mockClear();
@@ -537,7 +554,10 @@ describe("rotation pending and replay", () => {
 			h.requests
 				.filter((r) => r.method.startsWith("thread/"))
 				.map((r) => r.method),
-		).toEqual(["thread/turns/list", "thread/start"]);
+			// trailing turns/list = the FLY-2882 turn-state seed on the NEW thread
+		).toEqual(["thread/turns/list", "thread/start", "thread/turns/list"]);
+		expect(seedReads).toHaveBeenCalledTimes(1);
+		expect(seedReads.mock.calls[0]?.[1]).toBe(NEW);
 		expect(
 			h.requests.find((r) => r.method === "thread/start")?.params
 				.developerInstructions,
@@ -625,11 +645,8 @@ describe("rotation pending and replay", () => {
 		expect(fs.readFileSync(h.path, "utf8")).toBe(before);
 		expect(h.receipts()).toEqual([]);
 		expect(h.requests.some((r) => r.method === "thread/resume")).toBe(true);
-		expect(
-			h.requests.some((r) =>
-				["thread/start", "thread/turns/list"].includes(r.method),
-			),
-		).toBe(false);
+		expect(h.requests.some((r) => r.method === "thread/start")).toBe(false);
+		expect(rotationTurnsLists(h.requests)).toBe(0);
 	});
 	it("a store change is read by the next generation before pending consumption", async () => {
 		const h = harness({ pending: true, off: true });
@@ -667,11 +684,8 @@ describe("rotation pending and replay", () => {
 		await vi.advanceTimersByTimeAsync(8 * 86400000);
 		expect(fs.readFileSync(h.path, "utf8")).toBe(before);
 		expect(h.receipts()).toEqual([]);
-		expect(
-			h.requests.some((r) =>
-				["thread/start", "thread/turns/list"].includes(r.method),
-			),
-		).toBe(false);
+		expect(h.requests.some((r) => r.method === "thread/start")).toBe(false);
+		expect(rotationTurnsLists(h.requests)).toBe(0);
 	});
 	it.each(["", "bad-id", "x".repeat(257)])(
 		"invalid saved id fails loudly: %s",
@@ -1174,4 +1188,69 @@ it("sends no thread request when fresh source validation fails", async () => {
 			(r) => r.method === "thread/start" || r.method === "thread/resume",
 		),
 	).toBe(false);
+});
+
+describe("turn-state provider wiring (FLY-2882)", () => {
+	it("serves a per-generation snapshot: seeded from turns/list, live events, dead after stop", async () => {
+		const h = harness();
+		h.respond((method) => {
+			if (method === "thread/start" || method === "thread/resume")
+				return { thread: { id: OLD } };
+			if (method === "thread/turns/list")
+				return {
+					data: [
+						{
+							id: "prev-turn",
+							items: [],
+							itemsView: "notLoaded",
+							status: "completed",
+							error: null,
+							startedAt: Math.floor(NOW / 1000) - 600,
+							completedAt: Math.floor(NOW / 1000) - 590,
+							durationMs: 10_000,
+						},
+					],
+				};
+			return {};
+		});
+		const generation = h.make();
+		await generation.start();
+		await vi.advanceTimersByTimeAsync(0);
+		const provider = mocks.turnState!;
+		expect(provider.snapshot()).toMatchObject({
+			schema: "turn-state.v1",
+			connected: true,
+			seeded: true,
+			activeTurns: [],
+		});
+		h.emit("turn/started", {
+			threadId: OLD,
+			turn: {
+				id: "founder-live",
+				status: "inProgress",
+				startedAt: Math.floor(NOW / 1000) - 20,
+			},
+		});
+		expect(provider.snapshot().activeTurns).toEqual([
+			{
+				origin: "founder_terminal",
+				turnId: "founder-live",
+				startedAtMs: (Math.floor(NOW / 1000) - 20) * 1000,
+			},
+		]);
+		h.emit("turn/completed", {
+			threadId: OLD,
+			turn: { id: "founder-live", status: "completed" },
+		});
+		expect(provider.snapshot().activeTurns).toEqual([]);
+		const firstGeneration = provider.snapshot().generation;
+		await generation.stop();
+		expect(provider.snapshot()).toMatchObject({
+			connected: false,
+			seeded: false,
+			activeTurns: [],
+		});
+		await h.make().start();
+		expect(mocks.turnState!.snapshot().generation).not.toBe(firstGeneration);
+	});
 });
