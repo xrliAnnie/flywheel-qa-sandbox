@@ -67,3 +67,21 @@ Issue: FLY-2863 (https://linear.app/geoforge3d/issue/FLY-2863/语音v7-播报内
 | S0 真接口探针 | 同一段中文用 marin / verse / alloy 各合成一次：PCM 24kHz、每块偶数字节、首字节 1.5 / 0.8 / 1.5 秒、RMS 2.7k / 2.6k / 3.7k，约 70% 帧有声。音频在 `~/.flywheel/artifacts/FLY-2863/s0-gpt-voice/` |
 
 测试中发现并修掉的真实问题：`INSERT OR IGNORE` 会吞掉 CHECK（无 evidence 的 resolved 会被静默丢弃）；投递信封要求 snowflake 作者；通用 `/api` 鉴权把 Lead 命令的 ingest token 拦在 401；报平安请求发出后 1ms 反复重排。
+
+## 6. QA@1 返工（QA d519329c 在头 41cc8d96c 判 FAIL，2026-09-25）
+
+QA 在真 slot-3 Bridge + 真 Codex Lead + 生产引擎 A 组合上确认了四类过滤、逐件、排队尾、U1 插播、10 分钟报平安、marin 声线与 0 次 edge-tts，同时提出 3 个阻塞项和 1 个高优先级项。逐条处理如下：
+
+| QA 项 | 根因 | 修法 | 回归证据 |
+|---|---|---|---|
+| B1a Quick Gate retention consumer | `voice-agenda-store.ts` 读 `chat_threads` 没登记 | 按精确 file/relation/baseTable/usage 登记为 `candidate_guarded`（只读未归档 thread）；B4 新增的 `session_events` 读取同样登记 | 守卫 `ok:true`，node 测试 10/10 |
+| B1b teamlead schema 测试 | 期望的 `voice_%` 表清单漏了 7 张议程表 | 按字母序补齐 | 4/4 |
+| B1c 墙钟阈值守卫 | R4 新测试用 `Date.now()` 断言 close 耗时 < 1s | 改成状态证明：close 能返回（阻塞会撞测试超时）、所有尝试的 signal 已 abort、close 后不再重发 | 守卫 + 两条用例通过 |
+| B2 开场被静默丢弃 | Bridge 只校验 `--order` 是不是完整排列；模式层却要求不带 `--order` 时 `--item` 必须是默认队首，于是 Bridge 回 200、模式层按 matrix 拒收，Lead 不知道 | ①模式层：开场点名的那件（开场简报里的任意一件）直接成为当前件，其余保持原序（隐式重排）；②Bridge 在 say 时按同一套静态规则校验（开场件必须在开场简报内、item 请求只能说本件、报平安只能 `--item none`、机械校验 URL/markdown/代码/长度），不合规回 400，附 `reason` 和中文 `hint`，CLI 原样打印；③被拒的结果不再算「已回答」，过渡句和兜底句照常触发 | conductor 3 条、routes 3 条新用例 |
+| B3 收尾那句从来播不出 | 真 Lead 把要对她说的话写进 `close --reason`，模式层从不念 reason | `close` 新增必填 `--say`：她拍完马上听到的那句，念完才进下一件，也是结果 `text`；`--reason` 只进台账，不念。Bridge 缺 `--say` 回 400 `say_required`，`--say` 同样过机械校验 | conductor 2 条、routes 1 条、CLI 2 条新用例 |
+| B4（高）简报没有素材 | 简报每件只有键、类别、单号、标题、thread 链接 | Bridge 给每件附 `material`（只给 Lead 读、不念、发给语音客户端的快照里剥掉）：她被问的原话（Lead 在 thread 里问她的 excerpt，或待答问题原文）、该单最近一次 QA 结论摘要和报告链接、受阻的阶段和记录的错误、PR 号。每项读取都是尽力而为，读不到就缺省。开场简报给精简版（问题 ≤200 字、QA 摘要 ≤300 字），单件简报给完整版。无 session 的「要你答」thread 也能报出单号。runbook 与简报指引改为「依据看 material，没有的不编，直说详情在讨论串里」 | source 3 条、routes 1 条新用例 |
+| ④ 小瑕疵：报平安连说两次 | Lead 24 秒才回，先播兜底句，4 秒后又播 Lead 的话 | 兜底句播出前先把这次报平安请求退役，迟到的 Lead 回话不再念 | conductor 1 条新用例；负对照：去掉退役这一步，该用例失败 |
+
+不在本轮做：QA 的非阻塞观察（换件等待 60–75 秒、Lead 之间 @ 对话会被当成对她说的、slot shell 缺 Bridge 地址）与设计稿一致或属于环境差异，留给 Lead 定；R6 MEDIUM（turnOrder 用墙钟）仍按 Lead 裁定留在 PR Follow-ups。
+
+本轮本机验证（只跑相关测试）：voice-core related 48（agenda-conductor 42）；teamlead 直接消费者 6 个文件 50 条（voice-agenda-routes 19、voice-agenda-source 14、voice-agenda-store、voice-runtime-route-order、StateStore.voice-session-schema、required-wall-clock-thresholds），`plugin.ts` 是 hub，`vitest related` 会展开成接近整包，未跑，只改了一个薄的 `readQuestionText` 接线，由 source 用例覆盖依赖；retention 守卫 node 测试 10/10 + 生产守卫 `ok:true`；flywheel-comm voice-agenda 6；voice-headphone session 5 + bridge-client 20；voice-codex live-lead-adapter 47 + engine-a-composition/config 30。根 `pnpm lint` 0 error；`flywheel-teamlead...`、`flywheel-voice-codex...`、`flywheel-voice-headphone...` 构建通过；voice-core、flywheel-comm、voice-headphone 的全部依赖方 typecheck 通过。exact-head full CI 与真房复测交 QA。
