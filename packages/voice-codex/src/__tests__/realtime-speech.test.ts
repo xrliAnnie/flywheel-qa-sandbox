@@ -59,6 +59,17 @@ describe("realtime speech projection", () => {
 		expect(isFiniteSpeechEquivalent(expected, actual)).toBe(false);
 	});
 
+	it("numbers the parts of one reply so a continuation is never mistaken for a new answer", () => {
+		const prepared = prepareReplySpeech(
+			"现在是晚上十一点。今天有三件事要你决定。",
+			12,
+		);
+		expect(prepared.map((item) => item.part)).toEqual([0, 1]);
+		expect(prepareReplySpeech("收到。", 80).map((item) => item.part)).toEqual([
+			0,
+		]);
+	});
+
 	it("returns no speech for decoration-only input", () => {
 		expect(prepareReplySpeech("📻✨ ** **", 80)).toEqual([]);
 	});

@@ -38,7 +38,7 @@ export interface VoiceDaemonConfig {
 	presenceGraceMs: number;
 	speechChunkTokens: number;
 	confirmationMs: number;
-	/** FLY-2796: waiting-sound ceiling before "reply unavailable" is spoken. */
+	/** FLY-2796: quiet ceiling before "reply unavailable" is spoken. */
 	replyWaitMs: number;
 	discordTimeoutMs: number;
 	mirrorRetries: number;

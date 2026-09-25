@@ -1,7 +1,6 @@
 import type {
 	ReceiveHealth,
 	RoomAudioOwner,
-	RoomBargeInEvent,
 	RoomIO,
 } from "flywheel-voice-core";
 import type { HeadphoneSession } from "flywheel-voice-headphone";
@@ -10,7 +9,7 @@ import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
 import { type PreparedSpeech, prepareReplySpeech } from "./speech.js";
 
-/** FLY-2796: default waiting-sound ceiling; FLYWHEEL_VOICE_REPLY_WAIT_MS. */
+/** FLY-2796: default quiet ceiling for an answer; FLYWHEEL_VOICE_REPLY_WAIT_MS. */
 export const DEFAULT_REPLY_WAIT_MS = 15_000;
 const REPLY_UNAVAILABLE = "📻 回话暂时不通，你可以再说一遍";
 const DELIVERY_LOST = "📻 有一句可能没送到，请再说一遍";
@@ -40,7 +39,6 @@ export interface FrontendHandlers {
 export interface RoomHandlers {
 	onAudio(frame: Buffer, metadata: RoomAudioOwner): void;
 	onFounderPresence(present: boolean): void;
-	onBargeIn(event: RoomBargeInEvent): void;
 	onReceiveHealth(snapshot: ReceiveHealth): void;
 	onError(error: Error): void;
 	assertLease(): void;
@@ -61,8 +59,6 @@ interface RoomLike {
 	cancelSpeech?(speechId: string): void;
 	status(text: string): Promise<void>;
 	stop(): Promise<void>;
-	setBedEnabled?(enabled: boolean): void;
-	setWaiting?(waiting: boolean): void;
 }
 
 export interface GenericVoiceSessionOptions {
@@ -83,8 +79,9 @@ export interface GenericVoiceSessionOptions {
 	/** Retained for config compatibility; playback uses an audio-duration budget. */
 	confirmationMs: number;
 	/**
-	 * FLY-2796: longest the waiting sound plays for a delivered sentence before
-	 * the session stops it and says the reply is unavailable. Defaults to
+	 * FLY-2796: longest the room stays quiet after a delivered sentence before
+	 * the session says the reply is unavailable. Only quiet counts: time spent
+	 * saying or queueing a reply or prompt does not. Defaults to
 	 * DEFAULT_REPLY_WAIT_MS until she has used it and picks a value.
 	 */
 	replyWaitMs?: number;
@@ -157,11 +154,12 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	 */
 	private readonly speechQueue: QueuedSpeech[] = [];
 	private readonly queuedPrompts = new Set<string>();
-	/** FLY-2796: the latest delivered sentence still waiting for an answer. */
-	private replyWait?: { seq: number; timer: ReturnType<typeof setTimeout> };
+	/**
+	 * FLY-2796: the latest delivered sentence still waiting for an answer. The
+	 * timer exists only while the room is quiet.
+	 */
+	private replyWait?: { seq: number; timer?: ReturnType<typeof setTimeout> };
 	private replyWaitSeq = 0;
-	private speakerTalking = false;
-	private waitingSound = false;
 
 	constructor(private readonly options: GenericVoiceSessionOptions) {
 		this.now = options.now ?? (() => new Date());
@@ -185,7 +183,6 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 					this.frontend.appendAudio(frame, metadata);
 				}),
 			onFounderPresence: (present) => this.founderPresence(present),
-			onBargeIn: (event) => this.bargeIn(event),
 			onReceiveHealth: (snapshot) => {
 				if (!this.stopping) this.latestReceiveHealth = { ...snapshot };
 			},
@@ -412,13 +409,15 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 
 	async speak(speech: PreparedSpeech): Promise<SpeechReceipt> {
 		if (this.stopping || !this.admitted || !this.live) return "failed";
-		this.endReplyWait("reply");
+		// Only the first part of a reply is an answer. Later parts finish the
+		// same answer, so a sentence she said while it played is still owed one.
+		if (speech.part === 0) this.endReplyWait("reply");
 		return this.enqueueSpeech(speech, "reply");
 	}
 
 	/**
 	 * The daemon calls this when a Lead reply had nothing to read aloud. That
-	 * is an answer too: the waiting sound stops at once and she hears why.
+	 * is an answer too: the wait ends at once and she hears why.
 	 */
 	notify(text: string): void {
 		this.endReplyWait("reply_unspeakable");
@@ -429,7 +428,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (this.stopping) return;
 		this.stopping = true;
 		this.admitted = false;
-		if (this.replyWait) clearTimeout(this.replyWait.timer);
+		if (this.replyWait?.timer) clearTimeout(this.replyWait.timer);
 		this.replyWait = undefined;
 		for (const queued of this.speechQueue.splice(0)) queued.resolve("failed");
 		const pending = this.pendingSpeech;
@@ -477,10 +476,6 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		if (input.ownerUserId === this.options.projection.founderUserId) {
 			if (command === "退出语音模式") {
 				this.finish({ kind: "ended", reason: "voice-stop" });
-				return;
-			}
-			if (command === "等待音关掉" || command === "等待音打开") {
-				this.room.setBedEnabled?.(command.endsWith("打开"));
 				return;
 			}
 		}
@@ -590,7 +585,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private pumpSpeech(): void {
 		while (!this.pendingSpeech) {
 			const next = this.speechQueue.shift();
-			if (!next) return;
+			if (!next) break;
 			if (this.stopping || !this.admitted || !this.live) {
 				next.resolve("failed");
 				continue;
@@ -601,6 +596,13 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				this.settleSpeech(speechId, "failed");
 			});
 		}
+		if (this.speaking()) this.pauseReplyWait();
+		else this.armReplyWait();
+	}
+
+	/** Something is being said, or is queued to be said. */
+	private speaking(): boolean {
+		return this.pendingSpeech !== undefined || this.speechQueue.length > 0;
 	}
 
 	/**
@@ -633,63 +635,54 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	}
 
 	/**
-	 * FLY-2796 founder bounce: the waiting sound ran for minutes when an
-	 * answer never came. Each delivered sentence starts (or restarts) one
-	 * bounded wait; a reply, an unspeakable reply or a failed delivery ends it
-	 * early, and running out ends it with a spoken "reply unavailable".
+	 * FLY-2796 founder bounce: she once waited minutes for an answer that
+	 * never came. Each delivered sentence starts (or restarts) one bounded
+	 * wait; the first part of a reply, an unspeakable reply or a failed
+	 * delivery ends it early, and running out says "reply unavailable".
+	 *
+	 * QA r7: the ceiling measures quiet only. While a reply or prompt is being
+	 * said or is queued the clock stops, and each quiet stretch gets the full
+	 * ceiling again, so the notice can never cut into a reply or land ahead of
+	 * one that is already on its way. There is no waiting sound (founder
+	 * ruling 2026-09-24 23:44 PDT): no news is silence.
 	 */
 	private startReplyWait(): number {
-		if (this.replyWait) clearTimeout(this.replyWait.timer);
+		if (this.replyWait?.timer) clearTimeout(this.replyWait.timer);
 		const seq = ++this.replyWaitSeq;
-		const timer = setTimeout(() => {
+		this.replyWait = { seq };
+		this.armReplyWait();
+		return seq;
+	}
+
+	private armReplyWait(): void {
+		const wait = this.replyWait;
+		if (!wait || wait.timer || this.speaking()) return;
+		const { seq } = wait;
+		wait.timer = setTimeout(() => {
 			if (this.endReplyWait("timeout", seq)) this.prompt(REPLY_UNAVAILABLE);
 		}, this.options.replyWaitMs ?? DEFAULT_REPLY_WAIT_MS);
-		timer.unref?.();
-		this.replyWait = { seq, timer };
-		this.applyWaiting();
-		return seq;
+		wait.timer.unref?.();
+	}
+
+	private pauseReplyWait(): void {
+		const wait = this.replyWait;
+		if (!wait?.timer) return;
+		clearTimeout(wait.timer);
+		wait.timer = undefined;
 	}
 
 	/** Ends the wait; with `seq`, only if no newer sentence has replaced it. */
 	private endReplyWait(reason: string, seq?: number): boolean {
 		const wait = this.replyWait;
 		if (!wait || (seq !== undefined && wait.seq !== seq)) return false;
-		clearTimeout(wait.timer);
+		if (wait.timer) clearTimeout(wait.timer);
 		this.replyWait = undefined;
-		this.applyWaiting();
 		this.options.evidence({
 			ts: this.now().toISOString(),
 			kind: "reply_wait_ended",
 			reason,
 		});
 		return true;
-	}
-
-	/** The waiting sound plays only while an answer is owed and nobody talks. */
-	private applyWaiting(): void {
-		const waiting = this.replyWait !== undefined && !this.speakerTalking;
-		if (waiting === this.waitingSound) return;
-		this.waitingSound = waiting;
-		this.room.setWaiting?.(waiting);
-	}
-
-	/**
-	 * FLY-2796: talking over the waiting sound stops it. Her words still go
-	 * through the normal transcript path; the pending wait keeps its ceiling.
-	 */
-	private bargeIn(event: RoomBargeInEvent): void {
-		if (this.stopping || !this.admitted || !this.live) return;
-		const talking = event.phase !== "end";
-		if (talking === this.speakerTalking) return;
-		this.speakerTalking = talking;
-		const wasWaiting = this.waitingSound;
-		this.applyWaiting();
-		if (wasWaiting && !this.waitingSound)
-			this.options.evidence({
-				ts: this.now().toISOString(),
-				kind: "waiting_interrupted",
-				utteranceId: event.utteranceId,
-			});
 	}
 
 	/**

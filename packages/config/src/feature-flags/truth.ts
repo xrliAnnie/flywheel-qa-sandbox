@@ -387,7 +387,7 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_VOICE_IDLE_EXIT_MS:
 		"FLY-2701 numeric tuning: how long the on-demand daemon stays after its last successful empty read before exiting 0, not an on/off gate",
 	FLYWHEEL_VOICE_REPLY_WAIT_MS:
-		"FLY-2796 numeric tuning: waiting-sound ceiling (default 15000ms) before the voice session stops it and says the reply is unavailable, not an on/off gate",
+		"FLY-2796 numeric tuning: quiet ceiling (default 15000ms) after a delivered sentence before the voice session says the reply is unavailable, not an on/off gate",
 	...Object.fromEntries(
 		[
 			"FLYWHEEL_VOICE_CLOCK_SKEW_GRACE_MS",
