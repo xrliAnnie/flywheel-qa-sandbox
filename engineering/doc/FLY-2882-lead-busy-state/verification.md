@@ -109,10 +109,10 @@ QA(exec `df988ce0`)在头 `2acf312c4` 判 FAIL。与本单代码有关的只有�
 - **原因**:`mailbox` 是 FLY-2006 保留窗清扫(有效窗口 14 天;目录名里的 30-day 是历史命名)的目标表;任何生产源码里 `FROM/JOIN` 目标表的读者都必须在 `scripts/fly-2006-retention-consumer-gate.config.json` 里按 `file + relation + baseTable + usage` 登记处置。这本清册是**扫全部生产源码的 CI 脚本**,不是依赖改动文件的测试,所以 §4 按「谁引用了我的文件」做的消费者扫描找不到它——漏检的是我。
 - **修复**(`5c33ef82a`):登记为 `candidate_guarded`(与其它普通 `mailbox` 读者一致)。依据:归因读者能容忍行被清扫——成员行缺失只会答 `unmapped_delivery`(「判断不了」),既不会给出单号,也不会影响 busy/idle;它不把「行不存在」当作任何权威。
 - **本地验证**:`node scripts/fly-2006-retention-consumer-gate.mjs` → `ok:true`、0 error;`node --test scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs` 10/0;biome 干净。该守卫就是 Quick Gate 的最后一步,前面 25 步在 exact-head CI 上已全部通过;同一次 CI 的其它 unit / script 分片也都通过。
-- **Script Tests 5/6 E 的红(Lead 要求核实)**:`scripts/__tests__/qa-fly-1986-load-probe.test.sh` 一条断言在 exact-head CI `36194820697` 失败:「an all-401 block was certified as 'incomplete_expected=3'」。核实结论:**不是本单引起,也不是 main 上稳定复现的既有失败,而是负载相关的时序偶发**。
+- **Script Tests 5/6 E 的红(Lead 要求核实)**:`scripts/__tests__/qa-fly-1986-load-probe.test.sh` 一条断言在 exact-head CI `36194820697` 失败:「an all-401 block was certified as 'incomplete_expected=3'」。核实结论:**不是本单引起,也不是 main 上稳定复现的既有失败;表现为间歇性失败,确切根因未证实**。
   - 同一分片在 main `9e3ba1175`(run `36195488444`)、main `ef47e9a05`(run `36188390006`)、FLY-2830 `ce128505c`(run `36192986884`)上都是 success。
   - 失败的头 `2acf312c4` 相对 main 的 diff 完全没有碰 `scripts/`;该测试只驱动 `scripts/qa-fly-1986-load-probe.sh` 去打本地 python mock 的 `/health` 与 `/api/sessions`,不经过本单任何代码。
-  - 机理:该用例用 9 秒区块、要求 ≥3 个样本;CI 机器负载下样本不足,区块先被判成 `incomplete_expected=3`,还没轮到「全 401 拒绝认证」那条判定(同一用例里「401 被归类为 invalid_auth」的断言是通过的)。
+  - 直接触发点:探针的汇总在样本数与期望值**不相等**时(`n != expected`,见 `scripts/qa-fly-1986-load-probe.sh` 汇总段)先判 `incomplete_expected=3` 并退出,不再走「全 401 拒绝认证」那条判定;该用例的 9 秒区块期望恰好 3 个样本,所以这次 CI 里样本数不是 3(多或少都会这样)。同一用例里「401 被归类为 invalid_auth」的断言是通过的。为什么这次样本数不是 3,没有直接证据;调度 / 负载导致的时序差异只是推测,未证实。
   - 本地在本分支头上跑 `passed=62 failed=0`。
   - 修它属于 FLY-1986 的测试,不在本单范围;按规矩也不自行重跑 CI,交 Lead 裁定。
 - 529 房没进成(slot 2 launchd bootstrap I/O error)与 QA 机制问题属 QA 侧,本节点不处理。
