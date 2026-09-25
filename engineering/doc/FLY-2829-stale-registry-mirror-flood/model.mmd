@@ -1,0 +1,41 @@
+flowchart LR
+  classDef file fill:#ffffff,stroke:#007aff,color:#1d1d1f
+  classDef newf fill:#e9f9ee,stroke:#34c759,color:#1d1d1f
+  classDef proc fill:#f5e9fb,stroke:#af52de,color:#1d1d1f
+  classDef ext fill:#f2f2f7,stroke:#86868b,color:#1d1d1f
+
+  subgraph 输入["输入 (只读)"]
+    BR["Bridge 名册<br/>在跑 / 最近 48 小时结束"]:::ext
+    TM["tmux 窗口清单"]:::ext
+    MK["维护标记文件<br/>cmux-maintenance"]:::ext
+  end
+
+  W["watcher 进程<br/>flywheel-cmux-sync --watch"]:::proc
+
+  subgraph 三本账["节点存在面的三本账 (已有)"]
+    REG["注册表 cmux-node-registry<br/>一行一个 execution<br/>修前 1800 行 → 修后 ≈ 在跑数 + ≤30"]:::file
+    LED["回执账本 cmux-node-ledger<br/>一行一个已建页面 (只收 node:* 名字)"]:::file
+    ST["状态文件目录 cmux-node-status<br/>页面里显示的文字"]:::file
+  end
+
+  subgraph 护栏["新增护栏 (本单)"]
+    CL["创建流水账 cmux-node-create-ledger<br/>每建一个记一行, 24 小时裁剪"]:::newf
+    LA["自停闩 cmux-node-runaway<br/>存在 = 不再建; 人工删除才恢复"]:::newf
+    BK["剪枝前备份<br/>cmux-node-registry.pre-FLY-2829"]:::newf
+  end
+
+  CM["cmux 侧栏工作区<br/>(founder 看到的页面)"]:::ext
+  AL["告警 (flywheel_alert)"]:::ext
+
+  BR --> W
+  TM --> W
+  MK -. 每行检查 .-> W
+  W --> REG
+  W --> LED
+  W --> ST
+  W --> CL
+  CL -- "10 分钟 ≥ 60" --> LA
+  LA -. 闩上则零创建 .-> W
+  REG -. 首次大剪前 .-> BK
+  W -- "建 / 关 (受预算与闩约束)" --> CM
+  W -- "预算耗尽 / 闩上 / 超上限" --> AL

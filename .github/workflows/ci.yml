@@ -496,6 +496,13 @@ jobs:
       - name: Test — FLY-2664 merged worktree read-only audit
         run: node --test scripts/__tests__/audit-merged-worktrees.test.mjs
 
+      # FLY-2829 qa@2 measured this suite at 181s. Keep it intact on shard A
+      # after shard D crossed FLY-1870's 1020s capacity tripwire.
+      - name: Test — FLY-2829 node soak smoke
+        env:
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: bash scripts/__tests__/fly2829-node-soak-smoke.test.sh
+
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
@@ -668,6 +675,13 @@ jobs:
         run: |
           bash scripts/__tests__/test-reap-worktree-lib.test.sh
           bash scripts/__tests__/test-worktree-removal-contract.test.sh
+
+      # FLY-2829 qa@2 measured this suite at 183s. Keep it intact on shard B
+      # after shard D crossed FLY-1870's 1020s capacity tripwire.
+      - name: Test — FLY-2829 node soak restart
+        env:
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: bash scripts/__tests__/fly2829-node-soak-restart.test.sh
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
@@ -874,6 +888,13 @@ jobs:
         run: |
           bash scripts/__tests__/converge-nonlead-daemons.test.sh
 
+      # FLY-2829 qa@2 measured this suite at 41s. Keep it intact on shard C
+      # after shard D crossed FLY-1870's 1020s capacity tripwire.
+      - name: Test — FLY-2829 prod watchdog
+        env:
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: bash scripts/__tests__/fly2829-prod-watchdog.test.sh
+
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
@@ -946,6 +967,8 @@ jobs:
           bash scripts/__tests__/fly1884-view-attach.test.sh
           bash scripts/__tests__/fly1884-attach-recovery.test.sh
           bash scripts/__tests__/fly1884-node-presence.test.sh
+          bash scripts/__tests__/fly2829-node-registry.test.sh
+          bash scripts/__tests__/fly2829-workspace-convergence.test.sh
           bash scripts/__tests__/tmux-server-rescue.test.sh
           bash scripts/__tests__/tmux-server-rescue-lock.test.sh
           bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh

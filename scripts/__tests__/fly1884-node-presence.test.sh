@@ -10,6 +10,8 @@ export FLYWHEEL_CMUX_NODE_PRESENCE=1
 export NODE_LEDGER="$SB/node-ledger"
 export NODE_REGISTRY="$SB/node-registry"
 export NODE_STATUS_DIR="$SB/status"
+export NODE_CREATE_LEDGER="$SB/create-ledger"   # FLY-2829: never touch the real create ledger
+export NODE_RUNAWAY_LATCH="$SB/runaway"
 export CLEANUP_SNAPSHOT="$SB/cleanup-snapshot"
 export CLEANUP_PENDING="$SB/cleanup-pending"
 export VIEW_LEDGER="$SB/view-ledger"
@@ -77,9 +79,7 @@ else
   ok "malformed snapshot fails closed"
 fi
 
-# Exercise the real node receipt/create/default-title recovery/close path with
-# a minimal mutation-faithful cmux model. New workspaces intentionally start as
-# `Terminal 52`, matching the production rename-lag incident.
+# Exercise founder A retirement with a minimal mutation-faithful cmux model.
 WS_FILE="$SB/workspaces"; SURFACE_FILE="$SB/surfaces"; : > "$WS_FILE"; : > "$SURFACE_FILE"
 assert_or_reuse_owned_lease() { return 0; }
 cmux_socket_identity() { printf 'generation-node-test\n'; }
@@ -132,40 +132,16 @@ if admit_node_identity_for_window runner-flywheel @77 FLY-1884-qa-codex \
 else
   bad "short-lived event identity was not durably admitted"
 fi
-status_a="$(node_status_path exec-alpha)"; mkdir -p "$(dirname "$status_a")"; printf 'ready\n' > "$status_a"
-if ensure_node_workspace exec-alpha "$title_a" "$status_a" \
-   && [[ "$(cat "$WS_FILE")" == "workspace:52|$title_a" ]] \
-   && [[ "$(cat "$SURFACE_FILE")" == "workspace:52|$title_a" ]] \
-   && grep -qxF "committed|generation-node-test|workspace:52|exec-alpha|$title_a" "$NODE_LEDGER"; then
-  ok "default Terminal title is retried and committed under exact node receipt"
-else
-  bad "node workspace did not recover default title: ws=[$(cat "$WS_FILE")] ledger=[$(cat "$NODE_LEDGER" 2>/dev/null)]"
-fi
-printf 'workspace:52|shell changed its title\n' > "$SURFACE_FILE"
-if node_workspace_ready exec-alpha "$title_a"; then
-  ok "committed node authority tolerates a dynamic surface title"
-else
-  bad "dynamic surface title incorrectly invalidated committed node authority"
-fi
-printf 'workspace:52|%s\n' "$title_a" > "$SURFACE_FILE"
 printf 'exec-alpha|%s|FLY-1884-qa|active-windowless|1|100-2|0|2|0|0|FLY-1884-qa-codex|100-2|0\n' "$title_a" > "$NODE_REGISTRY"
-printf 'snapshot|100|3|102|complete\n' > "$CLEANUP_SNAPSHOT"
-if node_cleanup_freshness_allows FLY-1884-qa-codex 101 100 2; then
-  ok "committed placeholder releases the dead mirror cleanup fence"
+printf 'workspace:52|%s\n' "$title_a" > "$WS_FILE"
+printf 'workspace:52|%s\n' "$title_a" > "$SURFACE_FILE"
+printf 'committed|generation-node-test|workspace:52|exec-alpha|%s\n' "$title_a" > "$NODE_LEDGER"
+status_a="$(node_status_path exec-alpha)"; mkdir -p "$(dirname "$status_a")"; printf 'ready\n' > "$status_a"
+if reconcile_node_ledger \
+   && [[ ! -s "$WS_FILE" && ! -s "$NODE_LEDGER" && ! -e "$status_a" ]]; then
+  ok "legacy node card and status file retire under their exact receipt"
 else
-  bad "ready placeholder did not release mirror cleanup"
-fi
-printf 'exec-alpha|%s|FLY-1884-qa|active-windowed|1|100-2|2|0|0|0|FLY-1884-qa-codex|100-2|0\n' "$title_a" > "$NODE_REGISTRY"
-if node_cleanup_freshness_allows FLY-1884-qa-codex 101 100 2; then
-  bad "active-windowed execution authorized mirror cleanup"
-else
-  ok "active-windowed execution stays protected until placeholder takeover"
-fi
-if close_node_workspace exec-alpha "$title_a" superseded-by-mirror \
-   && [[ ! -s "$WS_FILE" && ! -s "$NODE_LEDGER" ]]; then
-  ok "exact committed node surface closes only after mirror supersede state"
-else
-  bad "guarded node close did not converge"
+  bad "legacy node card did not retire: ws=[$(cat "$WS_FILE")] ledger=[$(cat "$NODE_LEDGER" 2>/dev/null)]"
 fi
 
 RUNNER_EXPECTED_STATE=ok
@@ -184,7 +160,9 @@ ensure_node_workspace() { ENSURED+="${ENSURED:+$'\n'}$1|$2"; return 0; }
 node_mirror_surface_ready() { return 1; }
 close_node_workspace() { return 0; }
 
-printf 'missing-exec|node:missing|FLY-missing|active-windowless|1|1-1|0|2|0|0|-|1-1|0\n' > "$NODE_REGISTRY"
+# FLY-2829: last_seen must be recent — a row not seen for the summary TTL is
+# now pruned at round start instead of being carried into a summary.
+printf 'missing-exec|node:missing|FLY-missing|active-windowless|%s|1-1|0|2|0|0|-|1-1|0\n' "$(date +%s)" > "$NODE_REGISTRY"
 mutator_lease_owned_by_self() { return 0; }
 begin_cmux_additive_round
 round_one="$CMUX_ADDITIVE_ROUND_ID"
@@ -198,9 +176,10 @@ else
   bad "additive rounds did not produce distinct production identities: $round_one $round_two"
 fi
 missing_status="$(node_status_path missing-exec)"
-if [[ "$(awk -F'|' '$1 == "missing-exec" {print $4}' "$NODE_REGISTRY")" == unresolved-summary ]] \
-   && grep -q '^状态: 失联 · 无法确认终态$' "$missing_status"; then
-  ok "two complete negative rounds retain a visible unresolved summary"
+if [[ "$(awk -F'|' '$1 == "missing-exec" {print $4}' "$NODE_REGISTRY")" == unresolved-summary \
+      && "$(awk -F'|' '$1 == "missing-exec" {print $2}' "$NODE_REGISTRY")" == - \
+      && ! -e "$missing_status" ]]; then
+  ok "two negative rounds retain only an internal unresolved summary"
 else
   bad "missing execution was silently removed or falsely marked terminal"
 fi
@@ -210,10 +189,11 @@ CMUX_ADDITIVE_ROUND_ID="$round_one"
 reconcile_node_presence
 CMUX_ADDITIVE_ROUND_ID="$round_two"
 reconcile_node_presence
-if [[ "$(printf '%s\n' "$ENSURED" | awk -F'|' '$1 ~ /^exec-[0-9]+$/ && !seen[$1]++ {n++} END {print n+0}')" == 31 ]]; then
-  ok "all 31 active windowless nodes receive individual surfaces"
+if [[ -z "$ENSURED" \
+      && "$(awk -F'|' '$1 ~ /^exec-[0-9]+$/ && $2 == "-" {n++} END {print n+0}' "$NODE_REGISTRY")" == 31 ]]; then
+  ok "all 31 active nodes stay registry-only with no node surfaces"
 else
-  bad "active-node cap swallowed a surface"
+  bad "active nodes recreated node surfaces ensured=[$ENSURED]"
 fi
 
 cleanup_owner_sequence=0

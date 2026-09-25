@@ -1,0 +1,22 @@
+sequenceDiagram
+  autonumber
+  participant Lead as Lead (撤标记)
+  participant W as watcher 进程
+  participant REG as 注册表 (1800 行)
+  participant CMUX as cmux 侧栏
+
+  Lead->>W: 16:33 撤掉维护标记
+  W->>REG: 从第 1 行开始走 (前 43 行是 admitted, 只计数不建)
+  Note over W: 16:35–16:52 进程 9 次重启, 每次从第 1 行重走
+  Lead-->>Lead: 16:38 看了 4 分 40 秒, 工作区 58→60, 判"没失控"
+  W->>REG: 16:52 新一轮, 走到第 44 行起的 146 行"失联"行
+  loop 每一行 (约 5.6 秒)
+    W->>CMUX: new-workspace (名字是哨兵 "-")
+    CMUX-->>W: OK, 标题 Terminal N
+    W->>W: 写回执: 名字不是 node:* → 拒绝
+    Note over W,CMUX: 页面留在侧栏, 账本零行 → 下一轮再建一个
+  end
+  Lead->>W: 17:05 放回标记
+  Note over W: 循环内不看标记, 继续建到 17:10
+  Lead->>W: 17:10 --wait-for-watcher-exit 杀进程
+  Note over CMUX: 154 个 Terminal N 空壳 (58→220)

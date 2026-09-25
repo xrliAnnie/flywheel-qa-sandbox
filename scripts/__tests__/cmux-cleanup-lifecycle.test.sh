@@ -204,5 +204,26 @@ else
   fail 'source-closed episode did not replay the marker'
 fi
 
+printf 'Test: source-closed replay cannot directly dismantle a same-title restarted runner\n'
+rm -f "$CLOSE_REQUEST_FILE"
+printf 'terminalv1|%s|%s|3|500-3|source-closed|FLY-2207-runner|-|-|-|-|-|-\n' \
+  "$EXEC_ID" "$(_cmux_alert_hash "$TERMINAL_ROW")" > "$TERMINAL_TEARDOWN_STATE"
+DIRECT_DISMANTLES=0
+SAFE_CLOSE_CHECKS=0
+dismantle_view_display() { DIRECT_DISMANTLES=$((DIRECT_DISMANTLES + 1)); return 0; }
+close_orphan_workspace_pin_if_still_orphan() {
+  SAFE_CLOSE_CHECKS=$((SAFE_CLOSE_CHECKS + 1))
+  return 1 # same-title restarted runner: predicate skip, never close
+}
+CMUX_ADDITIVE_ROUND_ID=500-4
+terminal_teardown_observe "$EXEC_ID" "$TERMINAL_ROW" 'FLY-2207-runner' || true
+process_close_requests
+if [[ "$DIRECT_DISMANTLES" == 0 && "$SAFE_CLOSE_CHECKS" == 1 \
+    && ! -e "$CLOSE_REQUEST_FILE" ]]; then
+  pass 'durable replay delegates to the current-state close guard, which preserves a restarted runner'
+else
+  fail "source-closed replay bypassed guard dismantles=$DIRECT_DISMANTLES guard_checks=$SAFE_CLOSE_CHECKS"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]]

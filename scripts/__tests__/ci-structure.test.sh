@@ -1086,6 +1086,7 @@ expected_shard_tests = {
         "Test — FLY-1959 updater sources + body provenance contracts",
         "Test — FLY-2102 startup flag freeze residue guard",
         "Test — FLY-2664 merged worktree read-only audit",
+        "Test — FLY-2829 node soak smoke",
     ],
     "script-tests-2": [
         "Test — FLY-2331 Bridge async-child guard regression",
@@ -1103,6 +1104,7 @@ expected_shard_tests = {
         "Test — FLY-1393 flag truth CLI",
         "Test — FLY-1338 matrix coverage parity (QA)",
         "Test — FLY-1759 reap-first worktree teardown",
+        "Test — FLY-2829 node soak restart",
     ],
     "script-tests-3": [
         "Test — FLY-1434 unified restart + quota caller",
@@ -1120,6 +1122,7 @@ expected_shard_tests = {
         "Test — FLY-1944 host terminal cutover brake",
         "Test — FLY-2446 two-Lead voice driver",
         "Test — FLY-1830 non-Lead daemon convergence",
+        "Test — FLY-2829 prod watchdog",
     ],
     "script-tests-4": [
         "Test — FLY-1364 cmux sync repair",
@@ -1457,8 +1460,9 @@ require(
 )
 
 # FLY-1364: the cmux authority/cleanup matrix and every shell-side delivery
-# seam must be visible in the required PR gate. Keep this as one named step so
-# a future workflow edit cannot silently strand one of the constituent suites.
+# seam must be visible in the required PR gate. FLY-2829's three long-running
+# soak/watchdog suites are pinned to lighter shards below; the node-registry
+# suite stays with this named cmux step.
 fly1364_steps = [
     step
     for job_steps in all_script_steps
@@ -1491,6 +1495,8 @@ expected_fly1364_commands = [
     "bash scripts/__tests__/fly1884-view-attach.test.sh",
     "bash scripts/__tests__/fly1884-attach-recovery.test.sh",
     "bash scripts/__tests__/fly1884-node-presence.test.sh",
+    "bash scripts/__tests__/fly2829-node-registry.test.sh",
+    "bash scripts/__tests__/fly2829-workspace-convergence.test.sh",
     "bash scripts/__tests__/tmux-server-rescue.test.sh",
     "bash scripts/__tests__/tmux-server-rescue-lock.test.sh",
     "bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",
@@ -1509,6 +1515,52 @@ require(
     fly1364_commands == expected_fly1364_commands,
     f"FLY-1364 CI command set/order drifted: {fly1364_commands}",
 )
+require(
+    fly1364_step in script_steps_4,
+    "FLY-1364 cmux sync repair must remain in script-tests-4",
+)
+
+# FLY-2829 qa@2: these suites added 542s to shard D and crossed FLY-1870's
+# 1020s tripwire. Move intact commands to the three lightest shards by measured
+# duration; do not raise the cap or weaken mandatory/modern-Bash semantics.
+fly2829_rebalanced = [
+    (
+        "script-tests",
+        script_steps,
+        "Test — FLY-2829 node soak smoke",
+        "bash scripts/__tests__/fly2829-node-soak-smoke.test.sh",
+    ),
+    (
+        "script-tests-2",
+        script_steps_2,
+        "Test — FLY-2829 node soak restart",
+        "bash scripts/__tests__/fly2829-node-soak-restart.test.sh",
+    ),
+    (
+        "script-tests-3",
+        script_steps_3,
+        "Test — FLY-2829 prod watchdog",
+        "bash scripts/__tests__/fly2829-prod-watchdog.test.sh",
+    ),
+]
+for job_id, expected_steps, step_name, command in fly2829_rebalanced:
+    matches = [
+        step
+        for job_steps in all_script_steps
+        for step in job_steps
+        if isinstance(step, dict) and step.get("name") == step_name
+    ]
+    require(len(matches) == 1, f"{step_name} must run exactly once across script shards")
+    step = matches[0]
+    require(step in expected_steps, f"{step_name} must run in {job_id}")
+    require(str(step.get("run", "")).strip() == command, f"{step_name} command drifted")
+    require("if" not in step, f"{step_name} must not be conditional")
+    require("continue-on-error" not in step, f"{step_name} must fail the PR gate")
+    step_env = mapping(step.get("env"), f"{step_name} env")
+    require(
+        str(step_env.get("FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH")) == "1",
+        f"{step_name} must opt into the modern-Bash compatibility pass",
+    )
 
 # FLY-1830: the non-Lead daemon convergence is the only thing that puts a
 # launchd label back after it leaves the domain. A suite that quietly falls out

@@ -529,8 +529,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: attach sends reserved before one native pane rebuild (FLY-1884)",
 	FLYWHEEL_CMUX_NODE_STATUS_BIN:
 		"plumbing: absolute windowless-node status helper path (FLY-1884)",
-	FLYWHEEL_CMUX_NODE_STATUS_DIR:
-		"plumbing: atomic status-file directory for windowless node surfaces (FLY-1884)",
 	FLYWHEEL_CMUX_NODE_RECENT_HOURS:
 		"tuning knob: recent operational-terminal roster lookback hours (FLY-1884)",
 	FLYWHEEL_CMUX_NODE_SUMMARY_TTL_HOURS:
@@ -543,6 +541,20 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: determinate drift passes before stale prepared receipt release (FLY-1884)",
 	FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS:
 		"tuning knob: minimum prepared receipt age before recovery counters advance (FLY-1884)",
+	FLYWHEEL_CMUX_CREATE_BURST_MAX:
+		"tuning knob: cmux new-workspace calls allowed inside the short rolling burst window (FLY-2829)",
+	FLYWHEEL_CMUX_CREATE_BURST_SECONDS:
+		"tuning knob: short rolling burst window length for cmux workspace creation (FLY-2829)",
+	FLYWHEEL_CMUX_CREATE_WINDOW_SECONDS:
+		"tuning knob: long rolling window length after which the runaway latch is judged (FLY-2829)",
+	FLYWHEEL_CMUX_CREATE_WINDOW_MAX:
+		"tuning knob: reservations inside the long window that latch workspace creation off (FLY-2829)",
+	FLYWHEEL_CMUX_WORKSPACE_CEILING:
+		"tuning knob: cmux workspace total at which creation pauses (FLY-2829)",
+	FLYWHEEL_CMUX_NODE_CREATE_LEDGER:
+		"plumbing: durable workspace-create reservation ledger path override (FLY-2829)",
+	FLYWHEEL_CMUX_NODE_RUNAWAY_LATCH:
+		"plumbing: workspace-create runaway latch path override (FLY-2829)",
 	FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR:
 		"test-only census path for isolated launch-agent fixtures (FLY-2190), not a runtime gate",
 	FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR:

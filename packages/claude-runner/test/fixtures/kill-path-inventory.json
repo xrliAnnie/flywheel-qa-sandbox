@@ -2310,6 +2310,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2829-node-registry.test.sh:if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi#1",
+		"path": "scripts/__tests__/fly2829-node-registry.test.sh",
+		"code": "if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/flywheel-log-janitor.test.sh:if [[ \"$signal_pid\" =~ ^[0-9]+$ ]] && kill -TERM \"$signal_pid\" 2>/dev/null; then#1",
 		"path": "scripts/__tests__/flywheel-log-janitor.test.sh",
 		"code": "if [[ \"$signal_pid\" =~ ^[0-9]+$ ]] && kill -TERM \"$signal_pid\" 2>/dev/null; then",
@@ -3300,6 +3306,12 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "scripts/flywheel-cmux-sync.sh:[[ \"${FLYWHEEL_CMUX_PRUNE_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "[[ \"${FLYWHEEL_CMUX_PRUNE_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "scripts/flywheel-cmux-sync.sh:[[ \"${FLYWHEEL_CMUX_REBIND_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"#1",
 		"path": "scripts/flywheel-cmux-sync.sh",
 		"code": "[[ \"${FLYWHEEL_CMUX_REBIND_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"",
@@ -4155,6 +4167,90 @@
 		"key": "scripts/qa/fly2655-voice-room.mjs:process.kill(run.pid, \"SIGTERM\");#1",
 		"path": "scripts/qa/fly2655-voice-room.mjs",
 		"code": "process.kill(run.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:[[ -n \"$BRIDGE_PID\" ]] && { kill -TERM \"$BRIDGE_PID\" 2>/dev/null || true; wait \"$BRIDGE_PID\" 2>/dev/null || true; }#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "[[ -n \"$BRIDGE_PID\" ]] && { kill -TERM \"$BRIDGE_PID\" 2>/dev/null || true; wait \"$BRIDGE_PID\" 2>/dev/null || true; }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:[[ -n \"$SOCKET_PID\" ]] && { kill -TERM \"$SOCKET_PID\" 2>/dev/null || true; wait \"$SOCKET_PID\" 2>/dev/null || true; }#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "[[ -n \"$SOCKET_PID\" ]] && { kill -TERM \"$SOCKET_PID\" 2>/dev/null || true; wait \"$SOCKET_PID\" 2>/dev/null || true; }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:[[ -n \"$WATCHER_PID\" ]] && kill -0 \"$WATCHER_PID\" 2>/dev/null && alive=1#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "[[ -n \"$WATCHER_PID\" ]] && kill -0 \"$WATCHER_PID\" 2>/dev/null && alive=1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:for i in $(seq 1 300); do kill -0 \"$WATCHER_PID\" 2>/dev/null || break; sleep 0.1; done#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "for i in $(seq 1 300); do kill -0 \"$WATCHER_PID\" 2>/dev/null || break; sleep 0.1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:if [[ -n \"$WATCHER_PID\" ]] && kill -0 \"$WATCHER_PID\" 2>/dev/null; then#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "if [[ -n \"$WATCHER_PID\" ]] && kill -0 \"$WATCHER_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:if kill -0 \"$WATCHER_PID\" 2>/dev/null; then#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "if kill -0 \"$WATCHER_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:kill -0 \"$WATCHER_PID\" 2>/dev/null || { INVALID_REASON=\"replacement-${INSTANCE}-not-alive-after-10s\"; break; }#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "kill -0 \"$WATCHER_PID\" 2>/dev/null || { INVALID_REASON=\"replacement-${INSTANCE}-not-alive-after-10s\"; break; }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:kill -0 \"$WATCHER_PID\" 2>/dev/null || { INVALID_REASON=\"watcher-${INSTANCE}-died-at-start\"; return 1; }#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "kill -0 \"$WATCHER_PID\" 2>/dev/null || { INVALID_REASON=\"watcher-${INSTANCE}-died-at-start\"; return 1; }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:kill -0 \"$WATCHER_PID\" 2>/dev/null || { INVALID_REASON=\"watcher-${INSTANCE}-died-at-start\"; return 1; }#2",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "kill -0 \"$WATCHER_PID\" 2>/dev/null || { INVALID_REASON=\"watcher-${INSTANCE}-died-at-start\"; return 1; }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:kill -KILL \"$WATCHER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "kill -KILL \"$WATCHER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:kill -TERM \"$WATCHER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "kill -TERM \"$WATCHER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-node-soak.sh:kill -TERM \"$WATCHER_PID\" 2>/dev/null || true#2",
+		"path": "scripts/qa/fly2829-node-soak.sh",
+		"code": "kill -TERM \"$WATCHER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-prod-watchdog.sh:for i in $(seq 1 200); do kill -0 \"$pid\" 2>/dev/null || break; sleep 0.1; done#1",
+		"path": "scripts/qa/fly2829-prod-watchdog.sh",
+		"code": "for i in $(seq 1 200); do kill -0 \"$pid\" 2>/dev/null || break; sleep 0.1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa/fly2829-prod-watchdog.sh:if kill -0 \"$pid\" 2>/dev/null; then kill -TERM \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; rm -f \"$tmp\"; echo NA; return; fi#1",
+		"path": "scripts/qa/fly2829-prod-watchdog.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then kill -TERM \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null; rm -f \"$tmp\"; echo NA; return; fi",
 		"classification": "qa-only"
 	},
 	{
