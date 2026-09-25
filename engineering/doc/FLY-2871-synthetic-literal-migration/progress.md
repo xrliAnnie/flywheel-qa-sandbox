@@ -1,13 +1,14 @@
 ---
 issue: FLY-2871
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-25T07:15:44.616Z
-nextStep: Apply minimal production literal migration; run targeted GREEN verification
+phaseCursor: 3/4
+updated: 2026-09-25T07:16:57.203Z
+nextStep: Run literal re-audit, lint, affected build, and diff checks; commit
+  implementation
 chunks: []
 pointers: {}
 ---
 
 # FLY-2871 progress
-**phase**: implement (2/4)
-**next**: Apply minimal production literal migration; run targeted GREEN verification
+**phase**: implement (3/4)
+**next**: Run literal re-audit, lint, affected build, and diff checks; commit implementation
