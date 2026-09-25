@@ -94,6 +94,15 @@ describe("StateStore.recordVoiceLeadReplyFailure", () => {
 		]);
 	});
 
+	it("ignores a session whose daemon lease has expired (the daemon could never read it)", () => {
+		const lease = claim();
+		const expired = "2026-09-24T21:48:20.000Z";
+		expect(
+			store.recordVoiceLeadReplyFailure({ ...report, now: expired }),
+		).toBeUndefined();
+		expect(store.listVoiceOutbound(SESSION_ID, lease, T0)).toEqual([]);
+	});
+
 	it("ignores another Lead, another thread, and a session no daemon holds", () => {
 		expect(store.recordVoiceLeadReplyFailure(report)).toBeUndefined();
 		claim();

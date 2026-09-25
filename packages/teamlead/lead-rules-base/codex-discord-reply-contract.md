@@ -10,10 +10,11 @@ with `discord.reply(chat_id=…)`, use this carrier's real paths instead:
   is needed. A `[voice]` reply is read aloud to the speaker, so it must be this
   final answer, in that thread.
 - **Acknowledging a mailbox batch (`ack_batch`) is transport, not a reply.** A
-  founder message or `[voice]` utterance always owes a non-empty final answer
-  unless the whole reply already went out through another real path. An empty
-  final answer posts nothing; use it only when no reply is owed, such as a
-  peer's acknowledgement or a tick that needs no words.
+  founder message or `[voice]` utterance always owes a non-empty final answer.
+  If its substance went to issue threads, the final answer is a short pointer
+  to where it went; the runtime treats an empty answer to the founder as a
+  failed reply. An empty final answer posts nothing; use it only when no reply
+  is owed, such as a peer's acknowledgement or a tick that needs no words.
 - **Starting a message with no inbound to answer**: use the runtime's advertised
   proactive send tool (for example `lead_actions` `discord_send` with a channel
   alias).

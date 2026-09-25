@@ -5816,8 +5816,8 @@ export class StateStore {
 
 	/**
 	 * FLY-2862: a Codex Lead reported that its reply to a turn in `threadId` failed
-	 * (an empty final answer, so nothing was posted). When a daemon-held voice
-	 * session owns that thread, queue one fixed status line: the daemon speaks it,
+	 * (an empty final answer, so nothing was posted). When a voice session with a
+	 * live daemon lease owns that thread, queue one fixed status line: the daemon speaks it,
 	 * which also stops the waiting tone. Idempotent per report key. Returns the
 	 * matched session id, or undefined when no such session exists.
 	 */
@@ -5831,13 +5831,19 @@ export class StateStore {
 	}): string | undefined {
 		let sessionId: string | undefined;
 		this.db.transaction(() => {
+			// Only a live daemon lease can read the row back (listVoiceOutbound
+			// checks the same lease), so an expired holder does not count.
 			const session = this.workflowSelectAll(
-				`SELECT session_id, voice_bot_user_id FROM voice_sessions
+				`SELECT session_id, voice_bot_user_id, lease_expires_at FROM voice_sessions
 				 WHERE project_name = ? AND lead_id = ? AND thread_id = ?
 				   AND state IN ('claimed','warming','live')
-				 ORDER BY created_at DESC LIMIT 1`,
+				   AND lease_token IS NOT NULL
+				 ORDER BY created_at DESC`,
 				[input.projectName, input.leadId, input.threadId],
-			)[0];
+			).find(
+				(row) =>
+					Date.parse(String(row.lease_expires_at)) > Date.parse(input.now),
+			);
 			if (!session) return;
 			sessionId = String(session.session_id);
 			this.db.run(

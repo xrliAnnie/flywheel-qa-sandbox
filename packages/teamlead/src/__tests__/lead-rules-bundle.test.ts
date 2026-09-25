@@ -791,6 +791,10 @@ describe("FLY-2862 — Codex carrier reply contract", () => {
 		expect(rule).toContain("final answer");
 		expect(rule).toContain("[voice]");
 		expect(rule).toContain("ack_batch");
+		// The router cannot see tool receipts, so an owed reply is never allowed
+		// to end empty — even when its substance went out another way.
+		expect(rule).not.toContain("already went out");
+		expect(rule).toContain("short pointer");
 		expect(rule).toContain("discord.thread.reply");
 		expect(rule).toContain("lead_operation");
 	});
