@@ -1,15 +1,14 @@
 ---
 issue: FLY-2863
 phase: implement
-phaseCursor: 3/6
-updated: 2026-09-25T09:48:28.725Z
-nextStep: "B4: AgendaItem.material (question / latest QA verdict / blocked
-  phase+reason / PR) in snapshot, stripped from client; brief includes it;
-  retention registry for session_events read"
+phaseCursor: 5/6
+updated: 2026-09-25T09:55:57.613Z
+nextStep: milestone (literal last) → push → Codex R7 same thread on QA@1 delta →
+  fix/re-review → inbox check → complete needs_review --pr 1314
 chunks: []
 pointers: {}
 ---
 
 # FLY-2863 progress
-**phase**: implement (3/6)
-**next**: B4: AgendaItem.material (question / latest QA verdict / blocked phase+reason / PR) in snapshot, stripped from client; brief includes it; retention registry for session_events read
+**phase**: implement (5/6)
+**next**: milestone (literal last) → push → Codex R7 same thread on QA@1 delta → fix/re-review → inbox check → complete needs_review --pr 1314
