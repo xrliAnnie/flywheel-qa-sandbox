@@ -12,7 +12,7 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 | 字段 | schema 原文要点 | 本单用法 |
 |---|---|---|
 | `clientManagedHandoffs` | 「把 Codex 回答的交回留给客户端显式 append，而不是自动转发。默认 false」 | **true** |
-| `delegationAckFiller` | 「V3 委派时是否产生确认填充语；省略 = Realtime API 默认」 | **false**（「我去看一下」由我们说，见 §4） |
+| `delegationAckFiller` | 「V3 委派时是否产生确认填充语；省略 = Realtime API 默认」 | **false**（关掉服务端默认填充语，「我去看一下」由模型按 prompt 说，见 §4） |
 | `realtimeStartInstructions` | 「实时会话开始时给 backing Codex model 的 developer 指令」 | 后台 agent 的行为规约（口语稿格式、写操作日志、并发规则） |
 | `realtimeEndInstructions` | 「实时会话结束时给 backing Codex model 的 developer 指令」 | 不用；纪要沿用现有 voice-minutes |
 | `initialItems` | 「仅 V3，≤128 条、≤8,192 估算 token」 | 连接层换 V3 后，开场简报搬进这里；V2 下仍用 `prompt` |
@@ -29,7 +29,7 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 |---|---|---|
 | 结果回前台 | 自动 `conversation.handoff.append`，前台自由发挥 | 我们在 `turn/completed` 拿 final_answer 决定何时、以何稿说 |
 | 关键字段一字不差 | 无检查点，前台可能改写数字 | 说之前确定性检查 |
-| 等待话术 / 20 秒补话 | 只能靠 prompt，次数不可控 | 客户端计时器，最多两次可测 |
+| 20 秒补话 | 只能靠 prompt，次数不可控 | 客户端计时器，最多两次可测 |
 | 打断后结果不丢 | 取决于服务端，插话后常被吞（FLY-2884：4/10 先续旧话） | 结果进会话级信箱，空闲后再说 |
 | 实测先例 | FLY-2881 v4（WS V2 + API key） | FLY-2881 v5、FLY-2884 s1-s7、Codex TUI 本身 |
 
@@ -58,7 +58,7 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 
 ## 4. 等待话术与结果信箱
 
-- 「我去看一下」：收到 `handoff_request` 时，若前台本次回应**尚未出声**，我们 `appendSpeech("我去看一下。")`；若前台已出声则不再补（证据记 `ack_source=model`），避免双说。前台 prompt 同时要求「交后台时不要自己说话」。
+- 「我去看一下」：**只由模型说**（前台 prompt 固定措辞；V3 设 `delegationAckFiller:false`）。客户端不播确认语、不补漏——两个生产者在迟到音频下无法可靠去重（design review R2#5）。
 - 「还在查」：以最早未完成的委派为锚，20 秒、40 秒各一次，只在「地板空闲」时说；结果到了立即取消；每会话每批委派最多两次。
 - 地板空闲（floor free）= 无进行中的用户语音段（`input_audio_buffer.speech_started` 未收到对应 completed/final）且无正在播放的前台输出，并持续 ≥800ms。
 - 结果信箱（ResultMailbox）按会话、不按 generation：插话导致的实时重开（V2 下是 stop+start）不清空信箱；后台回合是线程级的，实时腿重开不影响它（实现 Step 0 实测确认）。

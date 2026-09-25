@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  participant F as 你（founder）
+  participant RT as 前台（只负责说话）
+  participant BC as 大脑协调器
+  participant BG as 后台助手（Lead 同权）
+  F->>RT: 「2886 的 PR 现在什么状态」
+  RT->>F: 「我去看一下。」（只由前台说一次）
+  RT->>BC: 交给后台（handoff_request）
+  BC->>BG: 同一对话里开一轮后台回合
+  BG->>BG: 用 Lead 的工具查 GitHub / Linear / Bridge
+  Note over BC,RT: 20 秒还没好且你没在说话：「还在查。」（最多两次）
+  BG->>BC: 口语稿 + 文字版
+  BC->>BC: 关键字段核对（单号·数字·人名须在原始结果里逐字出现）
+  alt 核对通过
+    BC->>RT: 等你说完、空闲时照稿说
+  else 不通过
+    BC->>RT: 「这条我发到 thread 了，编号以文字为准。」
+  end
+  BC-->>F: 链接和长内容发到会话 thread

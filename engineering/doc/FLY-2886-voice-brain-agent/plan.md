@@ -3,11 +3,15 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 日期: 2026-09-25
 基于: exploration.md、research.md
 
-状态：draft（待 design review）。本文只设计，不含实现。
+状态：v3 draft（R2 CHANGES_REQUESTED 后修订，待 R3）。本文只设计，不含实现。
+
+修订记录：
+- v3（R2）：义务结算不再按段数推断、迟到交办有明确终态；授权合同贯穿 provider / envelope / Bridge scope / runner 路由；常驻优先改为 Bridge 托管的目标锁（语音与 Codex broker 写互斥），Claude 常驻路径如实写为尽力预检；地板以房间本地 VAD 为权威、按语音段身份复位、跨重开保留；确认语改为模型独占；改稿用独立的「无工具 + 订阅」配置档；拒绝按目录 classification 分类。
+- v2（R1 + Lead 指令 ad0b344d）：后台并发改按「单活动回合 + start/steer」真实语义（删 3+1）；语音能力 parent 与常驻 Lead 的共存、授权、回执、撤销写清；C1 启动链改为专用启动档并列出准入改动；常驻优先改为 broker 目标级冲突检查 + 失败交接带操作账本；保真来源排除回答自身；后台事件订阅挂在进程级、不依赖实时腿；地板信号与唯一播报仲裁点；reserved 拒绝按真实错误码、只在确有卡片/回执时才说「已提交」；浏览器三档作为能力装配的可信输入、founder Chrome 走同一门面与回执钩子；权限下限 = 所有 Lead 权限并集；三条建议（议程收尾、改稿隔离、事件时效）纳入。
 
 ## 1. 一句话
 
-把语音会话里 Codex 自带的后台 agent 从「一出现就被掐掉」改成「带着该 Lead 的全部工具、走订阅真正干活」，前台只负责说话：先说「我去看一下」，查到后用口语讲、编号数字人名一字不差，插话不丢结果；开场就知道自己是谁、在哪个房、能做什么。
+把语音会话里 Codex 自带的后台 agent 从「一出现就被掐掉」改成「带着 Lead 的全部工具、走订阅真正干活」，前台只负责说话：先说「我去看一下」，查到后用口语讲、编号数字人名一字不差，插话不丢结果；开场就知道自己是谁、在哪个房、能做什么。
 
 ## 2. 架构
 
@@ -15,206 +19,292 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 flowchart LR
   subgraph Room[语音容器 voice-codex]
     RT[实时前台<br/>只说话]
-    BC[BrainCoordinator<br/>交接·等待话术·信箱·议程]
-    SW[改稿线程<br/>无工具 ephemeral]
+    ER[ThreadEventRouter<br/>进程级·按 threadId/turnId 分发]
+    BC[BrainCoordinator<br/>义务登记·信箱·议程]
+    SA[SpeechArbiter<br/>唯一播报仲裁点]
     FG[保真检查<br/>纯函数]
   end
+  SW[改稿进程<br/>voice-only 无工具档]
   subgraph Thread[同一 Codex 线程]
-    BG[后台 agent<br/>Lead 能力包 v2 + 订阅]
+    BG[后台 agent<br/>语音能力包 + 订阅]
   end
-  BR[Bridge] -->|①开场简报| RT
-  BR -->|①后台指令+memory 路径| BG
-  RT -- handoff_request --> BC
-  BC -- 「我去看一下」/「还在查」 --> RT
-  BG -- turn/completed 口语稿 --> FG
-  BR -- ③voice_outbound tell --> SW --> FG
-  BR -- ③voice_outbound context --> RT
-  FG -- 过 --> BC -- appendSpeech --> RT
-  FG -- 不过 --> TH[thread 文字 + 兜底一句]
-  BG -- ②lead_operation --> BK[能力 broker<br/>reserved=founder 门]
-  BG -- 写操作日志 --> LI[Lead 本体信箱]
+  subgraph Bridge
+    VP[语音能力 parent<br/>voice:sessionId]
+    BK[broker<br/>reserved 拒绝·目标冲突检查]
+    LI[Lead 本体信箱]
+  end
+  RT -- handoff_request --> ER --> BC
+  BG -- turn/item 事件 --> ER
+  BC --> FG --> SA --> RT
+  SW --> FG
+  BG -- lead_operation / browser.* --> BK
+  VP --- BK
+  BK -- 写回执 --> LI
 ```
 
 原则：
-- **一个线程两个角色**：实时前台（realtime model）与后台 agent（backing Codex model）共用一条 Codex 线程；前台没有工具，后台有 Lead 的全部工具。
-- **大脑在传输之上**：所有新逻辑只依赖 `thread/*`、`turn/*`、`thread/realtime/itemAdded|appendSpeech|appendText` 与「用户语音开始/结束、前台输出开始/结束」四个信号；连接层换 WebRTC 时不动大脑。
-- **单一真源**：「同权」= 复用 Lead 能力目录与 manifest 生成器，不另列工具清单；关键字段名册 = Bridge roster；founder-only 列表 = 目录 `reserved`。
-- **开关即回滚**：每 Lead `voiceBackground.enabled=false` 时行为与今天完全一致（后台立即中断 + 交 Lead 本体 + 逐字念）。
+- **一个线程两个角色**：实时前台没有工具；后台 agent（backing Codex model）有语音能力包。
+- **大脑在传输之上**：后台事件由进程级路由收取，不依赖实时腿是否 active；连接层换 WebRTC 时只换实时腿。
+- **单一真源**：能力 = Lead 能力目录（`catalog.ts`）；founder-only = 目录 `reserved`；关键字段名册 = Bridge roster。
+- **开关即回滚**：`voiceBackground.enabled=false` 时行为与今天完全一致。
 
-## 3. 交接模式决策
+## 3. 交接与并发（R1#1）
 
-`clientManagedHandoffs: true`（理由见 research §2）。`delegationAckFiller: false`（V3 生效，V2 忽略）。后台回合不再被 `turn/interrupt`；只在以下情况中断：会话结束、同会话已有 3 个后台回合在跑（第 4 个排队而非丢弃，见 §6.4）、开关关闭。
+- `clientManagedHandoffs: true`：只意味着 Codex 不自动回送回答（schema 原文）；**不给客户端准入控制**。
+- 真实语义（`core/src/session/turn_input.rs` `StartOrSteer`）：线程同一时刻最多一个活动后台回合；活动回合存在时，新的 handoff 输入被 steer 进该回合，不一定产生新的 `turn/started`。
+- 因此 BrainCoordinator 以**义务（obligation）**建模：每个 `handoff_request` 生成一条义务（handoff_id、input_transcript、到达时刻）。归属规则（R2#1）：
+  - 到达时有活动回合 → 挂该回合。
+  - 到达时无活动回合 → 挂「待定」；5 秒内出现 `turn/started` → 挂新回合；5 秒内没有，但上一回合在义务到达前 ≤2 秒内终态（上游先路由输入、后发通知，可能已被上一回合处理）→ 挂上一回合并**只能结算为「未确认」**；两者都不是 → 结算为「未确认」。
+  - 「未确认」口语一句「刚才那件我没接上，你再说一次？」，不无限等待。
+  - 同一 handoff_id 重复到达只保留第一条。
+- 回合终态时，其下所有义务一起结算。**不按回答段数推断哪件完成**：后台规约要求最终回答逐件回答（每件一段【口语】），答不了的件必须在回答里写一段【未完成】并说明；容器只播回答里实际写出的内容，不替模型宣称任何一件「已完成」或「没查完」。
+- 测试：`started→completed→handoff`（迟到）、回合交界迟到通知、只答第二问、回答乱序；这些都只影响「未确认」提示与播出内容，不产生错误的完成声明。
+- 不中断后台回合，除非：会话结束、开关关闭。**不设回合数上限**。
+- Step 0 增加实测：第一个任务未完成时连续提第二、三个查询，记录 handoff/turn/steer 事件顺序与最终回答覆盖情况；与上述模型不符即停下改 plan。
 
-## 4. 组件与文件落点
+## 4. 与 Lead 同权（Lead 指令 ad0b344d + R1#2/#3/#8/#9）
 
-| # | 组件 | 文件 | 说明 |
-|---|---|---|---|
-| C1 | 订阅登录 + 能力化 Codex 家 | `voice-codex/src/codex-home.ts`、`codex/CodexVoiceContainer.ts` | 新配置档 `VOICE_CODEX_HOME_CONFIG_V2`：去掉 `forced_login_method="api"` 与 ephemeral 凭据；`auth.json` 软链接到宿主真源（照 `claude-runner/src/codex-home.ts`）；app-server 带 Bridge 下发的能力 `-c` argv；`thread/start` 用 `permissions:"flywheel-lead-v2"`、`cwd`=Lead 项目根、`approvalPolicy:"never"`、`developerInstructions`=后台规约；`assertThreadReceipt` 改为按档位断言（enabled 档断言 permission profile 与 MCP 清单，关闭档保持旧断言）；启动后 `account/read` 断言 `authMode=chatgpt` |
-| C2 | 语音会话能力激活 | `teamlead/src/lead-capabilities/runtime-factory.ts`（加入口）、新 `teamlead/src/bridge/voice-background-capability.ts` | Bridge 以 `activationId = voice:<sessionId>` 为所选 Lead 起一个能力 parent（同目录、同 manifest 生成器、同权限档、独立 broker socket 与 artifact 根）；会话结束或租约失效即 `close()`；返回给容器的只有受信路径与 argv，模型拿不到 |
-| C3 | 浏览器 | 同 C2 | `founder_chrome`：追加 `chrome_devtools_founder` MCP = `chrome-devtools-mcp@<pin> --auto-connect --channel=stable`，`default_tools_approval_mode="approve"`；`isolated`：沿用 v2 门面；`off`：不给。每 Lead 配置 |
-| C4 | BrainCoordinator | 新 `voice-codex/src/codex/BrainCoordinator.ts` | 交接登记（handoff_id↔turnId）、等待话术计时器、结果信箱、地板空闲判定、议程队列、重投上限；纯状态机 + 注入时钟，便于单测 |
-| C5 | 口语稿与保真检查 | 新 `voice-codex/src/codex/SpokenScript.ts` | 解析后台最终回答（口语段 + `【文字版】` 段）；`checkFidelity(script, sources, roster)`；兜底稿 |
-| C6 | 改稿线程 | 新 `voice-codex/src/codex/ScriptWriter.ts` | 同 app-server 的第二条 ephemeral 线程，read-only、无工具、`turn/start` + `outputSchema {spoken:string, threadText:string|null}`；超时 15s → 兜底稿 |
-| C7 | 实时适配改造 | `codex/RealtimeTransport.ts`、`codex/CodexVoiceBackend.ts` | enabled 档：`turn/started` 不中断，改为上报 `onBackgroundTurn{started}`；新增 `turn/completed` 解析（final_answer 文本、status）；`input_audio_buffer.speech_started/stopped` 上报为地板信号；`handoffRequest` 改交 C4，不再 `handoffToLead` |
-| C8 | 去掉逐字 | `codex/CodexProofSpeaker.ts`、`codex/CodexRoomFrontend.ts`、`daemon.ts` | enabled 档：`speak` 默认 `verification:"best_effort"`，不再因转写不等价失败；关键字段是否出现在转写里只记证据 `codex_spoken_key_fields`；`daemon.deliverOutbound` 不再逐段 `readback`，而是把行交给 C4 议程 |
-| C9 | 三层上下文 | `teamlead/src/bridge/voice-session-context.ts`、`voice-session-services.ts` | 拆成 `realtimePrompt`（前台简报）与 `backgroundInstructions`（后台规约）；前台用 `formatBootstrap` + founder 注意力 + 受阻；memory 只放索引摘要；后台拿到 memory 文件的只读路径清单；删除 `:519` 只读边界与 `:540` 逐字规则（仅 enabled 档） |
-| C10 | 新事件背景追加 | `teamlead/src/bridge/voice-session-poller.ts`、`StateStore.ts`、`voice-session-routes.ts` | `voice_outbound` 加列 `delivery_class TEXT NOT NULL DEFAULT 'tell'`（`tell`/`context`）与 `source TEXT NOT NULL DEFAULT 'thread'`（`thread`/`bridge_event`）；poller 每 tick 对比「简报键集」与当前状态，新键以 `message_id = bridge-event:<sessionId>:<key>` 入队（`INSERT OR IGNORE` 天然去重） |
-| C11 | 写操作动作日志 | C2 的 broker 回执钩子 → `teamlead/src/bridge/voice-handoff.ts` 旁路 | 每个 `classification=write` 的 `lead_operation` 成功回执，追加一条动作日志到该 Lead 本体信箱（kind `voice_background_action`，含 operationId、目标、回执 id、会话 id），纯通知不要求 Lead 回复 |
-| C12 | 2799 遗留 MEDIUM | `StateStore.claimVoiceOutbound`、`voice-session-routes.ts:593-610`、`voice-codex/src/daemon.ts:190-197,872-903` | claim 三态；`not_claimable` → 410 `voice_outbound_not_claimable`；daemon 跳过继续，只有 409 才判失租约 |
-| C13 | 配置 | `teamlead/src/ProjectConfig.ts`（Lead 字段）、`voice-codex/src/config.ts` | `lead.voiceBackground?: { enabled: boolean; browser: "founder_chrome" \| "isolated" \| "off" }`，缺省 `{enabled:false}`；边界校验同 `codexVoiceActions` |
+### 4.1 权限下限 = 所有 Lead 权限并集
 
-## 5. 三层装载（回答 founder 13:18 的问题）
+- 能力清单：目录中**所有非 reserved 操作**，按本项目在宿主上实际具备凭据的集成（bridge、discord、linear、github、memory、docs、report、runner 派活、browser…）装配；**不以所选 Lead 自身的载体/档位裁剪**（Claude Lead 的语音分身也拿到同一并集）。
+- 文件与命令：`flywheel-lead-v2` 权限档（凭据 deny、localhost deny、受管代理、写根 = 项目 worktrees）。读写代码能力在；按 Lead 裁定默认派 runner，不在 Lead 工作区直接改产品代码（规约级）。
+- 浏览器：§4.4。memory：`memory.add/search` 读写 + memory 文件只读路径。
+- founder-only：目录 `reserved`（ship/merge/terminate/restart/park/unpark/approve_to_ship、terminal.close）不进可执行清单。
 
-### 5.1 第 1 层 开场简报（前台 `prompt`；连接层上 V3 后放 `initialItems`）
+### 4.2 语音能力 parent：授权、回执、共存、撤销（R1#2）
 
-按顺序，总量 ≤ 6,000 token（超出按 §5.4 规则收缩，永不整体失败）：
+新增可信解析器 `resolveVoiceBackgroundCapabilities({project, leadId, sessionId, browserMode})`（`teamlead/src/lead-capabilities/voice-resolve.ts`），**不复用** `resolve.ts` 的 Codex department Lead 准入，不伪造 backend/profile：
 
-1. **我是谁**：「我是 <Lead 名> 的语音分身，在 Flywheel 里替 <Lead 名> 跟你说话。」+ persona 的说话风格段（≤800 字符）。称呼她用「你」，不用 ChatGPT 账号上的名字。
+| 项 | 设计 |
+|---|---|
+| 授权 | 新授权种类 `voice_session`：Bridge 校验「语音租约活跃 + 所选 Lead 在注册表当前 + 会话开关开启」，替代 `validateLeadCarrierAuthorization` 的载体授权；不抢占、不读写常驻 carrier 记录 |
+| 身份 | manifest `leadId` = 所选 Lead，`activationId = voice:<sessionId>`，`actor = voice`；所有回执带 actor |
+| journal | 每会话独立 journal 文件（`<stateDir>/voice-capability/<sessionId>/journal.db`）；**恢复只扫本会话 activation**，不调用按 project/Lead 全扫的 `recoverInterruptedParent`（避免把常驻在途回执改成 unknown） |
+| delivery context | 每个后台回合一个 journal entry（entryId = turnId），回合开始进入、终态退出；同会话单活动回合与 §3 一致 |
+| 撤销 | 会话结束 / 失租约 / 开关关闭 → `close()`：关 broker socket、关 providers、删除会话 artifact 根；在途 dispatched 回执标 unknown 并进纪要 |
+| 验收 | 集成测试：常驻 Lead 有 dispatched 写时启动并关闭语音 parent，常驻回执状态不变 |
+
+**授权合同贯穿到底（R2#2）**。现有 provider 与 Bridge 路由各自再校验 carrier（`runtime-context.ts:30-47,74-88`、`handlers/bridge-read.ts:143-155,219-227`、`bridge/lead-capability-scope.ts:35-48`、`bridge/lead-capability-runners.ts:20-33,92-134`）。改为一个显式的授权联合类型，沿整条链传递：
+
+```ts
+type LeadCapabilityAuthority =
+  | { kind: "carrier"; carrierClaim: CarrierClaim }            // 常驻：原路径，字节不变
+  | { kind: "voice_session"; projectName: string; leadId: string;
+      sessionId: string; leaseFence: string };                 // 语音
+```
+
+- `runtime-context.ts`：构造 authority；`voice_session` 不走 Codex department 准入与 carrier 查询。
+- 所有发 `carrierClaim` 的 handler（实现期 `git grep carrierClaim packages/teamlead/src/lead-capabilities/handlers` 全量改）改为发 `authority` envelope；strict envelope schema 接受两种 kind 之一。
+- `lead-capability-scope.ts` 与 runner 路由：`carrier` 保持原检查；`voice_session` 校验「语音租约活跃且 fence 相符 + Lead 在注册表当前 + `voiceBackground.enabled`」，**在最终副作用前**再校验一次（撤销即时生效）。
+- Step 1 用真实 Claude Lead 身份经完整链路完成一次读取与一次非 reserved 写；失租约 / 关开关后写被拒；常驻 Codex Lead 的既有路径回归不变。
+
+### 4.3 常驻 Lead 优先（R1#4）
+
+现有幂等键只在同一 requestId 内有效，跨 actor 不相撞，也没有资源版本 CAS；回执里也没有目标字段（`receipts.ts:31-38`）。常驻 Codex Lead 的 broker 在它自己的进程里，所以保护必须放在两边共享的 Bridge（R2#3）：
+
+- **目标键**：目录为每个 write 操作新增 `targetKey(input)`，按业务目标归一化（linear issue → 规范化 identifier，如 `linear:FLY-2886`，UUID 与 identifier 别名先经 provider 解析到同一键；runner 派活 → `issue:FLY-2886`；github PR → `github:<repo>#<n>`；discord → `discord:<channel>:<thread>`）。缺 `targetKey` 的 write 对语音 actor fail-closed（测试覆盖全部 write 操作）。
+- **Bridge 目标锁**：新表 `capability_target_locks(target_key PK, holder_actor, holder_activation, request_id, fence, acquired_at, expires_at, state)`（补 `fly-2006-retention-tables` 分类片段）与路由 `POST /api/lead-capabilities/target-lock/{acquire,release}`。语音 broker 与常驻 **Codex broker** 在各自「最终副作用」之前 acquire、回执终态后 release；持锁期间另一方 acquire 返回 `target_busy`。
+  - 常驻优先：常驻 acquire 遇到语音持锁时**排队等待**（不失败），语音 acquire 遇到常驻持锁或常驻排队时**立即拒绝** `resident_lead_active_on_target`。
+  - 语音已派发后常驻到来：常驻等语音这次写结束再执行（常驻后写，结果以常驻为准）。
+  - 回执 unknown：锁不按计时释放，转 `state=unknown`，语音侧对该目标一律拒绝，直到对账（常驻或人工）把它结清；常驻 acquire 遇 unknown 照常执行并在其回执里记「覆盖未知在途写」。
+  - 回执表增加 `target_key` 列与索引，两边都写，用于对账与纪要。
+- **诚实边界**：Claude 常驻 Lead 的写不经 Codex broker，拿不到这把锁。对 Claude Lead，语音侧只能做「写前查 Bridge 最近动作 + 写后动作日志通知」，**不能保证**不被在途写覆盖；HTML 与口语能力说明如实写。
+- runner 派活另有 Bridge 既有准入（同 issue 活跃 session 冲突），错误码原样分类。
+- **文案按真实回执**：只有回执来源确为常驻 Lead 时才说「Lead 那边已经在处理」。
+- **失败交接带账本**：撞额度或会话异常回退「交 Lead 本体」时，handoff payload 附本会话操作账本（成功 / 未执行 / 结果未知，各带 requestId、operationId、目标键）；成功项不重做，unknown 由 Lead 先对账。
+- 验收：两个 actor、不同 requestId、同目标；写成功后额度耗尽；回执 unknown 后交接。
+
+### 4.4 浏览器三档（R1#9，Lead 已同意默认 founder_chrome）
+
+浏览器模式是能力装配的**可信输入**，同时决定 provider、manifest、MCP、有效配置断言与生命周期：
+
+| 档 | provider | 暴露给模型 |
+|---|---|---|
+| `founder_chrome`（默认） | 新 provider：chrome-devtools-mcp `--auto-connect --channel=stable` 连她的 Chrome（首次连接 Chrome 弹允许框） | 同一个浏览器门面 `chrome_devtools`（`browser-capability-proxy.ts`），只有一套浏览器 |
+| `isolated` | 现有隔离 Seatbelt worker | 同上 |
+| `off` | 无浏览器 provider；**保留**模型网络代理 | 无浏览器工具；manifest 无 `browser.*`、有效配置断言相应变化 |
+
+- founder Chrome 的调用仍经门面 → broker，沿用目录对 `browser.*` 的 read/write 分类与回执，因此 §6.6 的写日志钩子覆盖它；写回执成功而通知失败时按同一回执幂等补送。
+- 三档都用实际工具发现（MCP tools/list）验证，不只比配置字符串。
+- 诚实边界：在她 Chrome 里，founder-only 对网页按钮是规约级约束（与 Claude Lead 现状同等暴露）。
+
+### 4.5 founder-only 拒绝怎么说（R1#8）
+
+- 真实错误码：模型调用 manifest 外操作得到 `operation_not_in_manifest`（`lead-capability-proxy.ts:196-201`），直达 broker 得到 `reserved_operation`（`broker.ts:164-165`）。按请求 operationId 在可信目录里的 classification 分类（R2#7）：`reserved` → `founder_only_denied`；非 reserved 但不在本会话 manifest（缺凭据、browser=off）→ `unavailable`，口语「这场没开这个能力」；目录里不存在 → `invalid`。只有 `founder_only_denied` 走下面的文案与 Lead 信箱记录。
+- manifest 的能力说明从目录 `reserved` 生成「不能做」清单（进开场简报与后台规约）。
+- 本单**不新增** founder 请求提交入口。口语只说真的事实：若 founder 注意力里已有对应卡片（ship 卡 / founder gate）→「这个要你在 Discord 卡片上批」；否则 →「这个只能你本人做，我已经记给 <Lead 名>」，且必须拿到 Lead 信箱写入回执后才这么说；写入失败 →「这个只能你本人做」。
+- 验收：merge、停 runner 均被拒并按上述文案说出；Lead 信箱有对应记录。
+
+## 5. 三层装载（回答 founder 13:18）
+
+### 5.1 第 1 层 开场简报（前台 `prompt`；V3 后放 `initialItems`）
+
+总量 ≤ 6,000 token，超出按 §5.4 收缩，永不整体失败：
+1. **我是谁**：「我是 <Lead 名> 的语音分身」+ persona 说话风格段（≤800 字符）；称呼她用「你」，不用 ChatGPT 账号名。
 2. **我在哪**：「你在 Discord <服务器名> 的语音房 <房名> 跟我说话；逐句文字和链接发在这个会话的文字 thread。」
-3. **我能做什么 / 不能做什么**（由目录生成，不手写）：
-   - 我自己：聊天、回答开场简报里就有的事。
-   - 后台助手（有 <Lead 名> 的全部工具）：查 Linear / Bridge / 代码 / memory、改 issue、派 runner、开浏览器操作网页（你的 Chrome / 隔离浏览器 / 无，按配置）。
-   - 不能：合并、ship、停 runner、批准 —— 这些要你本人在 Discord 卡片上批；我能帮你把请求提上去。
-   - 我看不到你的屏幕；给不了可点的链接，链接我发到 thread。
-   - **不确定能不能做时，先让后台查，查清再答；不夸口。**
-4. **什么时候交后台**：「绝大多数问题你自己答：闲聊、常识、看法、简报里有的。只有需要查最新状态、读文件、上网、或者动手时才交给后台。交后台时你自己不要说话。」「只有她对你说话时才回应；背景里别人的声音不答。」「被打断就停，不续说旧话。」
-5. **此刻状态**（`formatBootstrap` 格式化，标识符不截断）：在跑的单（issue、阶段、runner）、等你答的（ship 卡、founder gate、founder_ask，来自 `readFounderAttentionFacts`）、受阻的（stuck / parked / failed）。每节 ≤10 行，超出给「另有 N 条」。
-6. **memory 索引摘要**：所选 Lead 的 MEMORY.md 只取索引行（`- [标题](文件) — 钩子`），≤4,000 字符；正文不进前台。
+3. **能做 / 不能做**（由语音能力 manifest 与目录 reserved 生成）：我自己聊天、答简报里有的；后台助手有所有 Lead 的工具（列类别）；不能：合并、ship、停 runner、批准；看不到你的屏幕；链接发 thread。**不确定能不能做时先让后台查，不夸口。**
+4. **何时交后台**：闲聊、常识、看法、简报里有的自己答；要查最新状态、读文件、上网、动手才交；交后台前说且只说「我去看一下」；只回应对你说的话；被打断就停，不续旧话。
+5. **此刻状态**：`formatBootstrap` 格式（每节 ≤10 行、标识符不截断），加 founder 注意力（`readFounderAttentionFacts`）与受阻（stuck / parked / failed）。
+6. **memory 索引摘要**：MEMORY.md 索引行，≤4,000 字符。
 
-### 5.2 第 2 层 细节现查（后台 `developerInstructions` + 工具）
+### 5.2 第 2 层 细节现查（后台 `developerInstructions`）
 
-后台规约（`backgroundInstructions`，≤ 32,768 token，沿用现有上限）包含：身份全文、memory 文件只读路径清单（后台自己读，不再把正文塞进 prompt）、此刻状态全量（`formatBootstrap` 12,000 字符版）、以及以下规则：
+≤ 32,768 token：身份全文、memory 文件只读路径清单、状态全量（12,000 字符版）、规则：
+- 最终回答格式：每个请求一段，段首 `【口语】`（短句、无 markdown、无链接、编号数字人名照原文、≤120 字），可选 `【文字版】`（链接与长内容，容器发 thread）。不要直接往本会话 thread 发消息。
+- 写操作用 `lead_operation`；被 `resident_lead_active_on_target` 拒绝即停，照实说。
+- 改代码默认派 runner。
+- founder-only 被拒不重试、不绕路（浏览器里也不点 merge/ship/批准按钮）。
 
-- 最终回答格式：第一段是**要说给她听的口语稿**（短句、无 markdown、无链接、编号数字人名用原文阿拉伯数字与原样拼写、≤ 120 字）；如有链接或长内容，另起一段以 `【文字版】` 开头，容器会发到 thread。不要自己往本会话 thread 发消息。
-- 写操作：用 `lead_operation`；遇到 409 / 幂等冲突 / 「已由常驻 Lead 处理」一律以常驻 Lead 为准，口语稿里说明「<Lead 名> 那边已经在处理了」。
-- 改代码：默认派 runner，不在工作区直接改产品代码（Lead 裁定）。
-- founder-only 操作被拒（`founder-workflow-required`）时，口语稿说「这个要你本人批，我已经把请求提上去了 / 你可以在 Discord 卡片上批」，不重试、不绕路（浏览器里也不点 merge / ship 按钮）。
-
-### 5.3 第 3 层 会话中新事件（Bridge → `voice_outbound`）
-
-事件键（简报时刻的键集写进 `voice_sessions.brief_keys_json`，poller 只推新键）：
+### 5.3 第 3 层 会话中新事件（R1#12）
 
 | 事件 | 键 | 投递类 |
 |---|---|---|
-| 新的 founder 注意力项（待批 ship、founder gate、founder_ask） | `attention:<kind>:<id>` | `tell` |
+| 新 founder 注意力项 | `attention:<kind>:<id>` | `tell` |
 | 该 Lead 的 runner 失败 / 受阻 | `session:<executionId>:<status>` | `tell` |
-| 该 Lead 的 runner 开始 / 完成 / 进入 QA | `session:<executionId>:<status>` | `context` |
+| runner 开始 / 完成 / 进 QA | `session:<executionId>:<status>` | `context` |
 | Lead 本体在会话 thread 的回复（现有） | Discord message id | `tell` |
 
-- `context`：容器 `appendText(role:"developer", "[背景] …只供你知道，不要主动念")`，合并节流 ≤1 条 / 10 秒，每条 ≤600 字符。
-- `tell`：进议程（C4），经改稿 + 保真检查，在地板空闲时说；她正在说话或后台结果在说时排队。
+- 只为 `voiceBackground.enabled` 且引擎 B 的会话生产；关闭档与 Engine A 不产生新行（测试）。
+- 键集：简报时刻写入 `voice_sessions.brief_keys_json`；poller 推新键，`message_id = bridge-event:<sessionId>:<key>`（`INSERT OR IGNORE` 去重）。
+- `tell` 播前复核：注意力项已解决 / 状态已变 → 丢弃（证据 `agenda_stale_dropped`）。
+- `context`：`appendText(developer, "[背景] …只供你知道，不要主动念")`，合并节流 ≤1 条/10s、≤600 字符；同时写入会话「最近背景」环（≤10 条），实时腿重开时与最新简报一起重新装入 prompt。
+- 关闭开关 / 回滚：未投递的 `context` 行置 `dropped`；旧 daemon 只按 `delivery_class` 缺省 `tell` 理解（新列默认值），enabled 会话之外不会出现 `context` 行。
 
 ### 5.4 体积与失败
 
-- 前台简报超 6,000 token：先删 memory 索引、再按节从尾部删整行（`formatBootstrap` 既有规则），标识符永不截断；仍超 → 只保留 1-4 项 + 「状态我让后台去查」。
-- 状态读取失败：该节写「现在读不到 <节名>，要的话我让后台查」，不再整场失败（`unavailable` 标志如实填，不再硬写 false）。
+超 6,000 token：先删 memory 索引，再按节从尾部删整行（`formatBootstrap` 规则），标识符永不截断；仍超 → 只保留 1-4 项 + 「状态我让后台去查」。状态读取失败：该节如实写「现在读不到」，`unavailable` 如实填。
 
 ## 6. 运行时行为
 
-### 6.1 一次委派的完整时序
+### 6.1 一次委派时序
 
 ```mermaid
 sequenceDiagram
   participant F as founder
   participant RT as 前台
-  participant BC as BrainCoordinator
+  participant BC as Brain+Arbiter
   participant BG as 后台 agent
   F->>RT: 「2886 的 PR 现在什么状态」
-  RT->>BC: handoff_request(h1)
-  BC->>RT: appendSpeech「我去看一下。」（前台未出声时）
-  Note over BG: turn/started(t1) 登记 h1↔t1
-  BG->>BG: lead_operation github.pr.status …
-  BC-->>RT: 20s 空闲 → 「还在查。」（最多两次）
-  BG->>BC: turn/completed(t1) final_answer
-  BC->>BC: 解析口语稿 → 保真检查（来源 = 本回合所有工具输出 + final_answer）
-  BC->>RT: 地板空闲 → appendSpeech(口语稿)
-  BC->>BC: 【文字版】→ thread（mirror 标记，poller 不回读）
+  RT->>BC: handoff_request(h1) → 义务 o1
+  RT->>F: 模型自己说「我去看一下」（唯一生产者）
+  Note over BG: turn/started(t1)，o1 挂到 t1；途中 h2 被 steer 进 t1 → o2 也挂 t1
+  BG->>BG: lead_operation github / linear …
+  BC-->>RT: 锚 o1：20s / 40s 地板空闲 → 「还在查。」（≤2）
+  BG->>BC: turn/completed(t1) 两段【口语】
+  BC->>BC: 每段保真检查（来源 = t1 工具输出 + 可信上下文）
+  BC->>RT: 地板空闲 → appendSpeech(段1)，再 appendSpeech(段2)
 ```
 
-### 6.2 关键字段保真检查（C5）
+### 6.2 进程级后台事件（R1#6）
 
-- 输入：口语稿 `S`、来源集 `C`（后台：本回合全部 `mcpToolCall` / `commandExecution` 输出文本 + final_answer 全文；改稿：Lead 原文）、名册 `N`。
-- 规则 A（不凭空）：`S` 中每个关键字段在 `C` 中逐字出现。
-- 规则 B（不丢号，仅改稿来源）：`C` 中的单号/PR 号必须出现在 `S`，除非 `S` 以 thread 指针结尾。
-- 不过 → 兜底稿「这条我发到 thread 了，编号以文字为准。」+ 原文/`【文字版】`进 thread；证据 `codex_fidelity_rejected {rule, token}`。
-- 关键字段正则见 research §3；只做大小写与全角/半角归一。
+- `ThreadEventRouter`（`voice-codex/src/codex/ThreadEventRouter.ts`）在 `CodexVoiceProcess` 启动时订阅一次通知，按 `threadId`/`turnId` 分发 `turn/started|completed`、`item/started|completed`、handoff 相关事件；**不依赖** `RealtimeTransport` 的 active 状态。`RealtimeTransport` 只处理 `thread/realtime/*` 音频与转写，按 generation 隔离。
+- enabled 档：`item/started`（commandExecution/mcpToolCall）不再 `turn/interrupt`；关闭档保持原中断与 fence。
+- 终态：`completed` 且有最终回答 → 结算；`completed` 无最终回答 / `failed` / `interrupted` → 义务结算为失败，口语「这件没查成」+ 原因类别（额度 / 权限 / 出错），细节进 thread。
+- 测试：完成事件分别落在「旧 transport cancel 等待中」「新 transport opening」「新 transport started 后」三个位置都进入信箱；真实工具 item 序列不被中断。
 
-### 6.3 地板、等待话术、打断
+### 6.3 关键字段保真检查（R1#5）
 
-- 地板空闲：无进行中用户语音段、无前台输出播放中，持续 ≥800ms。
-- 「我去看一下。」：`handoff_request` 到达时若当前前台回应无音频帧 → 由我们说；已有音频帧 → 不补（证据 `ack_source`）。
-- 「还在查。」：锚 = 最早未完成委派；20s、40s 各一次，需地板空闲（不空闲则顺延到空闲，但超过下一档时间点就跳过该次）；结果到即取消；每批委派最多两次。
-- 打断：沿用现有「前台立停」；若被打断的是结果稿 / 议程稿，稿回到信箱队首（`attempts+1`），地板空闲后以「刚才查到的：」开头重说；`attempts>2` → 发 thread + 一句指针。插话导致的实时 generation 变化不清空信箱与委派登记。
+- 来源集 `C`：本回合**实际完成的工具结果**（`mcpToolCall` / `commandExecution` 输出，保留 itemId）、本会话可信上下文（开场简报快照、Bridge 事件文本）、她本次请求的转写。**排除**最终回答本身及其 `【文字版】`。改稿来源 = Lead 原文。
+- 规则 A（不凭空）：`S` 中每个关键字段须在 `C` 中以**完整 token** 出现（边界匹配：`12` 不能由 `312` 支撑；`FLY-28` 不能由 `FLY-2886` 支撑）。
+- 规则 B（不丢号，仅改稿）：Lead 原文中的单号 / PR 号须出现在稿中，除非稿以 thread 指针结尾。
+- 不过 → 兜底稿「这条我发到 thread 了，编号以文字为准。」+ `【文字版】`或原文进 thread；**只有 thread 发布成功才说这句**，否则说「编号我没核对上，等下再给你」并进纪要。
+- 测试含循环来源反例（工具返回 FLY-2886 / PR #2886，回答写 FLY-9999 / PR #9876 → 必走兜底）。
 
-### 6.4 并发与上限
+### 6.4 地板信号与唯一仲裁点（R1#7）
 
-- 同会话并行后台回合 ≤3；第 4 个 handoff 排队到有空位（不中断、不丢）。无「每场回合数」上限（FLY-2884 证明会挤掉真需求）。
-- 多个结果同时就绪：按完成顺序说，每条之间留地板空闲。
-- 会话结束时仍在跑的回合：`turn/interrupt`；已完成未说出的结果写进纪要的「未播结果」节交 Lead 本体。
+- `SpeechArbiter` 是所有非前台自发语音（补话、结果、议程、兜底）的唯一出口；一次只放一条。确认语不经它（模型独占，见下）。
+- user-active（R2#4）：**以房间本地 VAD（RoomIO 上行 Silero 语音段）为权威**，它按说话人的语音段（utteranceId）开始/结束，不受实时腿重开影响（重开期间房间音频照常经 VAD，并被缓存回放）。provider 的 `speech_started{item_id}` 只作补充：记为「开放段 item_id」，只由**同一 item_id** 的 completed / final 关闭；迟到的旧段 final 不能关闭新段。user-active = 任一本地语音段未结束 或 任一 provider 开放段未关闭。实时 generation 切换**不**复位 user-active；provider 开放段在 generation 切换时丢弃（本地 VAD 仍在）。无任何输入帧 3 秒 → 视为结束（兜底）。V3 的 provider 信号由连接层接缝提供，本地 VAD 规则不变。
+- output-active：`response-started` 置位，`response-done` / `response-cancelled` / 播放结束复位；断线 / generation 切换复位（输出取消只释放播放，不影响 user-active）。
+- 地板空闲 = 两者皆否且持续 ≥800ms。
+- 「我去看一下」只有一个生产者（R2#5）：**模型独占**。前台 prompt 固定「交后台前说且只说『我去看一下』」；V3 同时设 `delegationAckFiller:false`，关掉服务端默认填充语；客户端**永不**播确认语，SpeechArbiter 不含确认语出口。模型漏说时不补（避免与迟到的模型音频竞争）；Step 0 实测措辞遵从率，作为兼容性证据写进报告，不作为去重机制。
+- 「还在查」：锚 = 最早未结算义务；20s、40s 各一次，需地板空闲（顺延不越过下一档）；结算即取消；≤2。
+- 打断：结果 / 议程稿被打断 → 回队首，`attempts+1`，每次重投用新 pendingKey（`<业务 id>:attempt:<n>`，业务 id 稳定）；以「刚才查到的：」开头；`attempts>2` → 发 thread + 一句指针。
 
-### 6.5 写操作与 Lead 本体同步（C11）
+### 6.5 议程收尾与纪要（R1#10）
 
-`lead_operation` 回执为 write 类且成功 → Lead 本体信箱一条 `voice_background_action`（纯通知）。409 / 幂等命中 → 不写日志、口语稿说明常驻 Lead 已在处理。
+- `daemon.deliverOutbound` 对 `tell` 行：claim → 交 BrainCoordinator → **等其终态**（spoken / fallback_posted / stale_dropped / failed）→ 才提交 receipt（`confirmed`=spoken、`dropped`=stale、`failed`=其余）。
+- 会话关闭：先把未播结果与未投递议程导出到现有纪要（`cli.ts:609-629` 的 minutes 输入新增 `unplayed[]`），再释放容器；后台在途回合 `turn/interrupt`，其义务写「未完成」。
 
-## 7. 实现顺序（每步可单独验证）
+### 6.6 写操作日志（C11）
+
+broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Lead 本体信箱 `voice_background_action`（operationId、目标键、回执 id、会话 id；通知按回执 id 幂等）。
+
+### 6.7 改稿（R1#11）
+
+改稿不在后台线程所在进程里做（那里装了可写 MCP）。新增独立配置档 **voice-scribe**（R2#6），把「工具策略」与「登录策略」分开：
+- 工具策略：沿用 voice-only 的禁用集（`mcpArgv: []`、shell / unified_exec / web_search / memories / apps / plugins / browser_use / computer_use / multi_agent / hooks 全关，read-only，ephemeral）。
+- 登录策略：订阅；独立受管 home（`<scratch>/scribe-<sessionId>/home`），`auth.json` 软链接宿主真源，**不写** `forced_login_method="api"`，子进程 env 不含 `OPENAI_API_KEY` 与业务 MCP 变量。
+- 新常量 `VOICE_SCRIBE_HOME_CONFIG` + `assertVoiceScribeHome`；旧 voice-only 档与 `assertVoiceCodexHome` 原样保留。
+- 构造与销毁：由容器随会话创建、会话结束删除（与现有 container root 同法）。
+- 启动断言：`account.type === "chatgpt"`、`config/read` 与工具发现为空工具集、一次普通 `turn/start` 成功。
+- 用法：`turn/start` + `outputSchema {spoken: string, threadText: string|null}`，输入作为数据；本地校验 JSON 与长度；15s 超时 → `turn/interrupt` 该回合、丢弃迟到结果、走兜底。
+
+## 7. 组件与文件落点
+
+| # | 组件 | 文件 |
+|---|---|---|
+| C1 | 语音能力启动档（R1#3） | `teamlead/src/lead-backends/codex/codex-lead-runtime.ts`：`spawnCodexAppServer` 新增显式 `profile: "voice-capability"` 分支（可同时带 `capabilityModelEnv` 与实时腿临时 `voiceProfile`），**不放宽**其他调用方的互斥守卫；`voice-codex/src/codex-home.ts` 新增 `VOICE_CAPABILITY_HOME` 校验（home/config 唯一构造者 = 语音能力 parent）；`native-skill-baseline.ts` 为语音所用二进制版本补采基线（按现有采集流程，不放宽比较）；`CodexVoiceContainer.ts`：账户断言 `account.type === "chatgpt"`，权限按 thread 回执 + `config/read`，MCP 按有效配置 + tools/list |
+| C2 | 语音能力 parent | 新 `teamlead/src/lead-capabilities/voice-resolve.ts`、`voice-capability-parent.ts`；`runtime-parent.ts` 抽出「按 activation 恢复」入口；`broker.ts` 加 actor 与目标冲突检查（§4.3）；`catalog.ts` 为 write 操作加 `targetKey`；授权联合类型贯穿 `runtime-context.ts`、全部发 carrierClaim 的 handlers、`bridge/lead-capability-scope.ts`、`bridge/lead-capability-runners.ts`；Bridge 目标锁表 + `bridge/lead-capability-target-lock.ts` 路由 + retention 片段；回执表加 `target_key`；常驻 Codex broker 接入 acquire/release |
+| C3 | 浏览器三档 | `lead-capabilities/browser-provider.ts` 加 founder-chrome provider；`buildCodexLeadMcpArgv.ts` 接受 browserMode；有效配置断言按档 |
+| C4 | BrainCoordinator + SpeechArbiter | 新 `voice-codex/src/codex/{BrainCoordinator,SpeechArbiter}.ts` |
+| C5 | 口语稿与保真 | 新 `voice-codex/src/codex/SpokenScript.ts` |
+| C6 | 改稿 | 新 `voice-codex/src/codex/ScriptWriter.ts`（新 voice-scribe 档进程：`VOICE_SCRIBE_HOME_CONFIG` + `assertVoiceScribeHome`） |
+| C7 | 进程级事件路由 + 实时适配 | 新 `ThreadEventRouter.ts`；`RealtimeTransport.ts`、`CodexVoiceBackend.ts`、`CodexVoiceContainer.ts`（按档） |
+| C8 | 去逐字 | `CodexProofSpeaker.ts`（enabled 档 `best_effort`、关键字段只记证据）、`CodexRoomFrontend.ts`、`daemon.ts`（§6.5） |
+| C9 | 三层上下文 | `teamlead/src/bridge/voice-session-context.ts`、`voice-session-services.ts` |
+| C10 | 新事件 | `voice-session-poller.ts`、`StateStore.ts`（`voice_outbound` 加 `delivery_class`、`source`；`voice_sessions` 加 `brief_keys_json`）、`voice-session-routes.ts` |
+| C11 | 写日志 | C2 broker 回执钩子 → Lead 信箱 |
+| C12 | 2799 MEDIUM | `StateStore.claimVoiceOutbound` 三态；路由 410 `voice_outbound_not_claimable`；`daemon.ts:190-197,872-903` 跳过继续 |
+| C13 | 配置 | `ProjectConfig.ts` `lead.voiceBackground?: {enabled, browser}`，缺省 `{enabled:false}`；`voice-codex/src/config.ts` |
+
+## 8. 实现顺序
 
 | Step | 内容 | 验证 |
 |---|---|---|
-| 0 | 协议实测（订阅、单账号、≤3 场 ≤2 分钟）：① 0.156.1 WS V2 下 auth.json 订阅 + env API key 实时腿，后台回合是否走 chatgpt；② 实时腿 stop+start 重开时，进行中的后台回合是否继续并 `turn/completed`；③ `appendText(developer)` 在 V2 是否静默 | 证据 JSONL 进 `evidence/`；任何一条与本设计假设不符 → 停下报 Lead，改 plan |
-| 1 | C2 能力激活打通：Bridge 为 `voice:<sessionId>` 起能力 parent，app-server 拿到 v2 MCP + 权限档；`lead_operation bridge.read sessions.list` 成功；`bridge.merge` 得到 `founder-workflow-required` | 集成测试 + 一次真 broker 调用 |
-| 2 | C1 + C7：订阅家、能力 thread、后台不再中断、turn/completed 解析 | 单测 + Step 0 台架复跑 |
-| 3 | C5 + C6：口语稿解析、保真检查、改稿线程 | 纯函数表驱动单测（含全角、大小写、缺号、凭空号） |
-| 4 | C4：BrainCoordinator 状态机 | 注入时钟单测：20/40s 补话、最多两次、打断重投、并发 3+1 排队 |
-| 5 | C8 + C9：去逐字、三层简报 | 快照测试（体积上限、收缩顺序、标识符不截断、unavailable 如实） |
-| 6 | C10 + C11 + C12：新事件、动作日志、MEDIUM 修复 | StateStore / 路由 / daemon 单测；新列走迁移测试 |
-| 7 | C3 浏览器 + C13 配置 | 配置边界单测；手动：后台打开一个网页并读标题 |
+| 0 | 协议实测（订阅、单账号、≤4 场 ≤2 分钟）：① WS V2 下 auth.json 订阅 + env API key 实时腿，后台回合 `account.type=chatgpt`；② 实时腿 stop+start 时进行中回合继续且客户端（进程级订阅）收到 `turn/completed`；③ `appendText(developer)` V2 静默；④ 活动回合中连续提第二、三个查询的 handoff/turn/steer 顺序；⑤ 模型确认语措辞遵从率（10 次，只作兼容性证据）；⑥ 改稿 voice-scribe 档订阅 + 空工具集 | 证据 JSONL 进 `evidence/`；与假设不符 → 停下报 Lead 改 plan |
+| 1 | C2 + C1：语音能力 parent 与启动档；read 成功、reserved 被拒（真实错误码）；**常驻 Lead 有在途写时启停语音 parent，常驻回执不变**；关闭后 socket 不可连；授权联合类型贯穿（真实 Claude Lead 身份一读一写、失租约/关开关后写被拒、常驻 Codex 路径回归不变） | 集成测试 + 一次真 broker 读写 |
+| 2 | C7：事件路由、enabled 不中断、终态处理、三种完成时机 | 单测 + Step 0 台架复跑 |
+| 3 | C5 + C6：口语稿、保真（含循环来源反例、token 边界）、改稿进程空工具集 | 表驱动单测 |
+| 4 | C4：义务归属（迟到 / 交界 / 只答第二问 / 乱序）、仲裁、本地 VAD 地板（旧段 final 迟到、跨 restart 连续说话）、补话 ≤2、打断重投新 key | 注入时钟单测 |
+| 5 | C8 + C9：去逐字、三层简报 | 快照测试（体积、收缩、标识符不截断、unavailable 如实） |
+| 6 | C10 + C11 + C12 + §4.3 | StateStore/路由/daemon/broker 单测：目标锁两种到达顺序、慢 provider、超时 unknown 锁不自释放、别名归一、额度耗尽带账本、410 跳过 |
+| 7 | C3 + C13 | 三档实际工具发现；founder Chrome 写操作有 Lead 信箱记录 |
 
-## 8. 测试计划（本机只跑相关测试）
+## 9. 测试计划（本机只跑相关测试）
 
-- 单测（vitest，按包过滤，逐文件跑，排除 `**/tmux-viewer.macos.test.ts`）：
-  - `voice-codex`：`SpokenScript`、`BrainCoordinator`、`ScriptWriter`（假 RPC）、`RealtimeTransport`（turn/completed、speech_started、enabled 档不中断）、`CodexVoiceContainer`（新家配置、授权断言、receipt 断言两档）、`daemon`（410 跳过、409 终止、议程投递）。
-  - `teamlead`：`voice-session-context`（三层拆分、6,000 token 收缩、founder 注意力节）、`voice-session-poller`（事件键去重、delivery_class）、`StateStore`（新列迁移、claim 三态）、`voice-session-routes`（410）、`voice-background-capability`（manifest 与 Lead 同源、reserved 拒绝、close）、`ProjectConfig`（`voiceBackground` 校验）。
-- 负向守卫：
-  - 关闭档行为逐字节不变（现有测试全绿即证）。
-  - 后台 agent 的 shell 读不到 `auth.json` 以外的凭据、连不上 127.0.0.1（沿用 `verifyModelIsolation`）。
-  - 口语稿含未在来源出现的单号 → 必走兜底。
-  - 前台 prompt 不含「逐字」「exactly as written」。
-  - 后台往会话 thread 直接发的消息不会被念回（poller 过滤 + 测试）。
-- 新增 StateStore 列不需新表，但需补迁移测试；若实现期改为新表，必须补 `fly-2006-retention-tables` 分类片段。
-- 新增 spawn（改稿线程在同进程，不新增子进程；chrome-devtools-mcp 由 app-server 拉起）——若实现期新增任何 `spawn`/`kill`，按四本清册登记。
+- 按包、按文件跑 vitest；排除 `**/tmux-viewer.macos.test.ts`；teamlead 里起 Bridge 的用例先隔离 `FLYWHEEL_CODEX_HOMES_ROOT`。
+- 负向守卫：关闭档行为不变（既有测试全绿）；shell 读不到凭据、连不上 127.0.0.1（`verifyModelIsolation`）；保真循环来源反例；前台 prompt 不含「逐字」「exactly as written」；后台直发会话 thread 的消息不被念回；非 enabled 会话不产生 `context` 行；常驻回执不被语音 parent 恢复逻辑改写；写操作缺 `targetKey` 时语音 actor fail-closed。
+- 迁移：新列带默认值 + 迁移测试；新表 `capability_target_locks` 必须补 `fly-2006-retention-tables` 片段。
+- 新增 spawn（改稿进程、founder-chrome provider）按 shell 枚举 / child-process census / kill-path inventory 清册登记。
 
-## 9. QA 验收映射（issue 验收 1-6）
+## 10. QA 验收映射
 
-| 验收 | 怎么测 | 通过判据 |
+| 验收 | 测法 | 判据 |
 |---|---|---|
-| 1 问需要查的事 | 真房（codex slot、`TEST_CODEX_LEAD_OUTBOUND_MODE=bridge`、`FLYWHEEL_VOICE_BACKEND=codex-realtime`），问「FLY-xxxx 的 PR 状态」 | 前台第一句「我去看一下」；结果口语、单号与 PR 号与 GitHub 一致；`account/read` authMode=chatgpt、后台腿无 API key 调用。实时腿在连接层落地前仍用 key，报告如实写 |
-| 2 20 秒以上查询 | 让后台做一件 >45s 的查询 | 「还在查」出现 1-2 次，不多于 2 |
-| 3 查询中插话 | 后台在跑时插话聊别的 | 前台立停；她说完后主动补「刚才查到的：…」；事件证据 `result_redelivered` |
-| 4 开场简报一致 | 开场后抽 3 项与 `GET /api/sessions` / founder 注意力对照；会话中造一条待批 | 3/3 一致；新待批在她停顿后被说出，不打断 |
-| 5 写操作与 founder 门 | 测试房里让它改测试 issue 状态 / 派空活；再让它 merge、停 runner | 前者成功且 Lead 信箱有动作日志；后者得到 founder-workflow-required，口语说明要她批 |
-| 5b 浏览器 | 让它打开一个网页读标题 | `founder_chrome` 档在她 Chrome 打开并读出标题 |
-| 6 纪律 | 只跑相关测试；拆 529 房前 ask Lead | 报告附命令与计数 |
+| 1 | 真房（codex slot、`TEST_CODEX_LEAD_OUTBOUND_MODE=bridge`、`FLYWHEEL_VOICE_BACKEND=codex-realtime`）问「FLY-xxxx 的 PR 状态」 | 先「我去看一下」；口语结果单号/PR 号与 GitHub 一致；后台 `account.type=chatgpt`。实时腿在连接层落地前仍用 key，报告如实写 |
+| 2 | >45s 查询 | 「还在查」1-2 次 |
+| 3 | 后台在跑时插话 | 前台立停；她说完补「刚才查到的：…」 |
+| 4 | 开场抽 3 项对照 Bridge；会话中造一条待批 | 3/3；新待批在停顿时说出；已解决的不说 |
+| 5 | 改测试 issue 状态 / 派空活；再让它 merge、停 runner | 前者成功且 Lead 信箱有动作日志；后者被拒，文案符合 §4.5 |
+| 5b | 打开网页读标题（founder_chrome） | 成功；若是写操作有日志 |
+| 5c | 常驻 Codex Lead 正在改同一张单时让语音改它；以及语音先写、常驻后到 | 前者被 `resident_lead_active_on_target` 拒并照实说；后者常驻排队后执行，结果以常驻为准。Claude 常驻按 §4.3 诚实边界只验预检与日志 |
+| 6 | 纪律 | 只跑相关测试；拆 529 房前 ask Lead |
 
-## 10. 发布与回滚
+## 11. 发布与回滚
 
-- 合并后默认 `voiceBackground.enabled=false`，行为不变；QA 在测试 Lead 上开启；founder 验收后由 Lead 按 Lead 开启。
-- 回滚：关开关即回到今天路径；数据库只加列（默认值兼容旧代码）。
-- 部署仍由独立 updater 在其窗口执行；本单不部署、不重启服务。
+合并后默认 `enabled=false`；QA 在测试 Lead 开；founder 验收后按 Lead 开。回滚 = 关开关；数据库只加列。部署由独立 updater 执行，本单不部署、不重启。
 
-## 11. 依赖与风险
+## 12. 依赖与风险
 
-| 项 | 说明 | 处置 |
-|---|---|---|
-| 连接层（兄弟单） | 实时腿订阅化、V3 `initialItems` | 本单与之并行；大脑只依赖线程级接口；验收 1「全程不走 API key」在连接层落地后整体成立 |
-| 能力 parent 能否按会话起 | 它挂在 Lead activation 上（journal、delivery context） | Step 1 先打通；打不通停下报 Lead，不降级只读 |
-| 订阅额度共享 | 后台回合与所有 Codex Lead / runner 共用账号 | 撞额度 → 口语「后台额度用完了，我先记下，稍后让 <Lead 名> 处理」+ 走旧交 Lead 路径；不自动换号 |
-| 她的 Chrome 的规则级风险 | 见 research §5 | 可配置 `isolated`；HTML 如实写 |
-| auth.json 刷新竞争 | 多进程共享真源 | 软链接真源（与 FLY-2358 runner 同法），不复制、不写 |
-| 模型仍把闲聊交后台 | prompt 只能降低概率 | 证据计数 `handoff_smalltalk_suspect`（handoff 输入 <8 字且无单号/动词）供调 prompt；不做硬拦截 |
+| 项 | 处置 |
+|---|---|
+| 连接层（兄弟单） | 大脑只依赖进程级事件与 `appendSpeech/appendText`；地板信号接缝写明；验收 1「全程不走 API key」待连接层整体成立 |
+| 语音能力 parent 与常驻共存 | Step 1 集成测试先行；不成立即停下报 Lead，不降级只读 |
+| 订阅额度共享 | 撞额度 → 口语说明 + 带账本回退交 Lead；不自动换号 |
+| 她的 Chrome 规约级风险 | 可切 `isolated`；HTML 如实写 |
+| auth.json 刷新竞争 | 软链接宿主真源（FLY-2358 同法），不复制不写 |
+| 模型仍把闲聊交后台 | 证据计数 `handoff_smalltalk_suspect`，不硬拦 |
 
-## 12. 不做什么
+## 13. 不做什么
 
-- 不做 WebRTC / V3 传输、Discord Opus 直转（连接层）。
-- 不改 founder 门本身、不新增 founder-only 类别。
-- 不在语音里念链接；不做多语言。
-- 不改 Engine A（`openai-realtime`）与 `/gemini`、`/eleven`。
+不做 WebRTC/V3 传输与 Opus 直转；不改 founder 门、不新增 founder 请求入口；不在语音里念链接；不改 Engine A、`/gemini`、`/eleven`；不建线程池或第二套消息存储。
