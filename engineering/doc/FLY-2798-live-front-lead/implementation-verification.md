@@ -228,3 +228,13 @@ founder 16:12 PDT 打回：播报中插话，播报停了，但她的话没人�
 - `close-blocked-by-gated-reply-drain`：组装层 `close()` 改为先关 engine 再关 reply events。先红：Lead 回复 drain 卡在闸门时 close 1 秒内不返回；修复后立即返回。
 
 本地证据：voice-codex adapter/composition/room-io/session 71/71、related 3 文件 34/34；Teamlead adapter→route 1/1（exit 0）；`flywheel-voice-codex...` build 16 个 package，`...flywheel-voice-codex` typecheck 通过；根 `pnpm lint` 5251 files、0 errors、26 warnings；Biome 与 `git diff --check` 通过。只改 `live-lead-adapter.ts` 与 `engine-a-composition.ts`（consumer 同上轮：`cli.ts`、composition/adapter 测试、adapter→route 配对测试）。没有请求 full CI。
+
+## qa@2 返工（头 6ee3c7dd2 → 播报中插复杂问题被丢）
+
+QA 70277118 2/2 稳定复现：播报中插约 5.4 秒复杂问题 → 前台「我问下 Lead」→ `delegation_not_uniquely_attributed`，无 handoff、无提示。台架时间线（q6）：barge start +12.76 s，resume 完成 +14.62 s（缓存约 1.85 s），她说完 +17.41 s，800 ms founder 静音后 end，+22.36 s 归属失败。根因：resume 以恢复时刻为新 generation 起点，再一次性灌入缓存，provider 偏移整体晚了缓存时长，委派点落到窗口外。
+
+- ① 缓存帧保留 RoomIO `capturedAt`；`flushBufferedInput` 返回实际送出的分段（连续帧合并），`startProviderGeneration(gen, now, replay)` 记录分段；assembler 的所有 provider 偏移（委派点、增量区间、封口）统一经 `absoluteTime()`：落在灌入段内按该段采集时间，之后按 `now + (偏移 − 灌入总长)`。先红：assembler 单元（两段带间隔的灌入 + 实时尾段，旧实现 `unbound`）与 adapter 单元（播报中插话、缓存 1 s、resume 延迟、委派偏移 3 s，旧实现 0 handoff）。
+- ② 任何归属失败（not uniquely attributed / overlapping / incomplete / empty / 缺偏移）都说「刚才那句我没对上，你再说一次。」并记 `live_lead_clarification_prompted`、出前台字幕；前台说了「我问下 Lead」却没有 delegation 时，话轮超时或总上限先排「刚才那句我没能交给 Lead，你再说一次。」（`live_lead_cue_without_delegation`）再放行播报。先红 3 条；原「RoomIO end 超时」用例改为断言保留原话并出声提示。
+- ③ 排查：前台指令在 `GptLiveBackend.FRONTEND_INSTRUCTIONS` 与 `cli.ts` `baseInstructions` 两处，均为「先说『我问下 Lead』，再创建 client delegation」，`64cb70d4e..HEAD` 未改；「只说不委派」2/6 为模型非确定性（旧头 0/9，样本小）。未改提示词（本地无法用 gpt-live-1 验证，且 Lead 要求其余不动）；建议措辞与延迟观察见 `follow-ups.md`。② 保证此情形至少有出声兜底。
+
+本地证据：voice-core assembler 7/7、related 3 文件 13/13；voice-codex adapter/composition/room-io/session 75/75、related 2 文件 37/37；voice-headphone 68/68；Teamlead adapter→route 1/1（exit 0）；`flywheel-voice-codex...` build 16 个 package、`...flywheel-voice-core` typecheck 11 个 package；根 `pnpm lint` 5251 files、0 errors、26 warnings；Biome 与 `git diff --check` 通过。改动文件：`LiveUtteranceAssembler.ts`、voice-core `index.ts`（新增类型导出）、`live-lead-adapter.ts` 及测试；consumer 同前两轮（assembler 仅被 adapter 使用；adapter 被 cli/composition/测试使用）。没有请求 full CI。

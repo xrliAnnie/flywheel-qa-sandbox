@@ -120,3 +120,11 @@ R3 在 `28b983d22` APPROVED；三条 MEDIUM（interrupted 字幕、闸门总上�
 | sealed-user-turn-may-be-partial-or-late | LOW | `packages/voice-core/src/backends/openai-live/LiveUtteranceAssembler.ts:293` | Unchanged since round 2: sealEndedRoomUtterances seals with whatever input deltas have arrived at the first assistant final |
 | speak-before-headphone-start-window | LOW | `packages/voice-codex/src/session.ts:368` | Unchanged since round 2: speak() between live=true and startHeadphone() returns failed |
 | test-evidence-and-host-coupled-failures | LOW | `packages/voice-codex/src/__tests__/live-lead-adapter.test.ts:1` | Round 3 test evidence: all changed-package suites green at 28b983d22 after rebuilding voice-core and voice-codex dist |
+
+## qa@2 返工观察项（不判红）
+
+| 事项 | 级别 | 后续处置 |
+|---|---|---|
+| 前台「只说我问下 Lead 不委派」 | MEDIUM | 指令在 `GptLiveBackend.FRONTEND_INSTRUCTIONS` 与 voice-codex `cli.ts` `baseInstructions`，均为「先说再委派」，本返工链未改；新头 2/6 次只说不委派。建议措辞（待 Lead 定、QA 台架量）：「需要查询、执行或判断时，在同一个回复里说『我问下 Lead』并立即创建 client delegation；只说不委派会让她的问题丢失。」本轮已加出声兜底，不再静默。 |
+| 委派出声延迟 | LOW | QA 观测「我问下 Lead」出声延迟本轮 3139/4595/4370 ms（上轮 2422/2351/2566 ms），指令与委派路径均未改，样本小；待真人会话再量，若稳定变慢再查 face 队列与 RoomIO end 等待。 |
+| 灌入段内的停顿 | LOW | 只缓存 founder 帧，灌入段之间的停顿被压缩；分段映射按各段 `capturedAt` 恢复，段内无误差，段间停顿不影响归属。若将来缓存非 founder 帧，需要同样携带 `capturedAt`。 |
