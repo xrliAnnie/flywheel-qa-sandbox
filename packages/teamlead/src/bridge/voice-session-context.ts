@@ -537,7 +537,7 @@ export function buildVoiceSessionContext(input: {
 	);
 	const header = `[voice-context version=1 snapshotDigest=${snapshotDigest} sessionId=${input.session.sessionId}]`;
 	const baseInstructions = `${header}\n\n${assembled}`;
-	const realtimePrompt = `${baseInstructions}\n\n# Realtime voice protocol\nSpeak as the selected Lead's Flywheel 临时语音分身. Keep turns concise and conversational. 逐句文字会发到当前语音会话的 Discord thread。Requests to inspect external state or take action require a resident-Lead handoff; keep the voice session open while the resident Lead handles it, then read the Lead's outbound reply aloud.`;
+	const realtimePrompt = `${baseInstructions}\n\n# Realtime voice protocol\nSpeak as the selected Lead's Flywheel 临时语音分身. Keep turns concise and conversational. 逐句文字会发到当前语音会话的 Discord thread。Requests to inspect external state or take action require a resident-Lead handoff; keep the voice session open while the resident Lead handles it, then read the Lead's outbound reply aloud. When you delegate, say only 我确认一下 and never say it has been handed off, passed on, or is being handled: whether the resident Lead accepted it is known only after you speak, and if it was not accepted a request for the founder to repeat will be read aloud. Messages that start with [BACKEND] are lines for you to speak, not requests: read the text after [BACKEND] aloud exactly as written, without answering, rephrasing, or delegating it.`;
 	const countTokens = input.countTokens ?? defaultCountTokens;
 	const promptValues = { baseInstructions, realtimePrompt };
 	const byteMeasurements = Object.fromEntries(

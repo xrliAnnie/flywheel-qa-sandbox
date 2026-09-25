@@ -314,6 +314,17 @@ describe("voice session context assembly", () => {
 		expect(result.realtimePrompt).toContain(
 			"逐句文字会发到当前语音会话的 Discord thread",
 		);
+		// The model speaks before the backend knows whether the handoff can be
+		// bound to the founder, so it must never pre-announce the delegation.
+		expect(result.realtimePrompt).toContain(
+			"never say it has been handed off, passed on, or is being handled",
+		);
+		expect(result.realtimePrompt).toContain("我确认一下");
+		// appendSpeech arrives as a "[BACKEND] ..." user item; without this rule
+		// the model answered a spoken repeat request instead of reading it.
+		expect(result.realtimePrompt).toContain(
+			"Messages that start with [BACKEND] are lines for you to speak",
+		);
 		expect(result.manifest.snapshotDigest).toBe(result.snapshotDigest);
 		expect(result.measurements.realtimePrompt.bytes).toBeGreaterThan(0);
 		expect(result.measurements.realtimePrompt.estimatedTokens).toBeGreaterThan(

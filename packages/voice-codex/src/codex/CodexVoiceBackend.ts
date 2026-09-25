@@ -28,6 +28,7 @@ import {
 	type CodexRealtimeInputOwner,
 	type CodexRealtimeItem,
 	type CodexRealtimeTranscript,
+	type CodexRealtimeUnsettledInput,
 } from "./RealtimeTransport.js";
 
 const PCM24_MONO: AudioFormat = {
@@ -53,12 +54,22 @@ export const CODEX_VOICE_CAPABILITIES: VoiceBackendCapabilities = {
 	audioOut: [PCM24_MONO],
 };
 
+/**
+ * Spoken, not just posted to the thread: the founder is on a headset. Only
+ * "。" separates clauses so prepareReplySpeech leaves the text byte-identical.
+ */
+export const CODEX_HANDOFF_UNCONFIRMED_PROMPT =
+	"刚才这件事还没有交给 Lead。我没能确认那句话是你说的。请再说一遍。";
+export const CODEX_HANDOFF_FAILED_PROMPT =
+	"刚才这件事没能交给 Lead。请再说一遍。";
+
 interface CodexTransportLike {
 	appendAudio(
 		frame: Buffer,
 		generation: number,
 		owner: CodexRealtimeInputOwner,
 	): CodexRealtimeAppendOutcome;
+	unsettledInput?(): CodexRealtimeUnsettledInput;
 	appendSpeech(text: string, generation: number): Promise<void>;
 	appendText(
 		text: string,
@@ -170,6 +181,10 @@ class CodexVoiceSession implements ConversationSession {
 		persisted: Promise<boolean>;
 	};
 	private readonly handoffKeys = new Set<string>();
+	/** Latest user final of the current generation, and the one handed off. */
+	private latestUserTranscriptId?: string;
+	private handedOffTranscriptId?: string;
+	private repeatPromptSequence = 0;
 	private readonly outputFrameState = new Map<
 		string,
 		{ frameIndex: number; observedAt: number; durationMs: number }
@@ -277,13 +292,36 @@ class CodexVoiceSession implements ConversationSession {
 
 	interrupt(): void {
 		if (this.closing || this.restarting || !this.live) return;
+		// A barge-in only breaks attribution when the old generation really
+		// loses speech: bytes it never transcribed, or a VAD segment/committed
+		// item still awaiting its final. The barge-in audio itself is queued and
+		// replayed into the next generation. A transport that cannot measure this
+		// is treated as lossy.
+		const unsettled =
+			this.options.conversation.transport.unsettledInput?.() ?? null;
+		const inputGap =
+			unsettled === null ||
+			unsettled.droppedBytes > 0 ||
+			unsettled.providerInputPending;
+		const lost = {
+			generation: this.generation,
+			droppedBytes: unsettled?.droppedBytes ?? null,
+			providerInputPending: unsettled?.providerInputPending ?? null,
+		};
 		this.restarting = true;
-		this.markInputGap();
-		this.options.onEvidence?.({
-			kind: "codex_input_gap",
-			reason: "generation_changed",
-			droppedBytes: 0,
-		});
+		this.options.onEvidence?.({ kind: "codex_barge_in", ...lost, inputGap });
+		if (inputGap) {
+			this.markInputGap();
+			this.options.onEvidence?.({
+				kind: "codex_input_gap",
+				reason: "generation_changed",
+				...lost,
+			});
+		}
+		// Whatever the founder says next is a new request; nothing from before the
+		// barge-in may authorize a delegation that arrives ahead of its final.
+		this.latestKnownUser = undefined;
+		this.latestUserTranscriptId = undefined;
 		this.speaker.interrupt();
 		this.audio.clear();
 		this.outputFrameState.clear();
@@ -495,6 +533,7 @@ class CodexVoiceSession implements ConversationSession {
 		const persisted = this.persist(utterance, transcript);
 		if (utterance.role === "user") {
 			this.inputGapSinceUserFinal = false;
+			this.latestUserTranscriptId = utterance.transcriptId;
 			this.latestKnownUser =
 				utterance.attribution.kind === "known"
 					? { utterance, persisted }
@@ -523,13 +562,26 @@ class CodexVoiceSession implements ConversationSession {
 			return;
 		const candidate = this.latestKnownUser;
 		if (!candidate || !this.options.handoffToLead) {
+			// A later execution item of a request that already went to the Lead
+			// is not a new request; everything else must not pass silently.
+			const alreadyHandedOff =
+				!candidate &&
+				this.latestUserTranscriptId !== undefined &&
+				this.latestUserTranscriptId === this.handedOffTranscriptId;
+			const reason = alreadyHandedOff
+				? "already_handed_off"
+				: candidate
+					? "handoff_sink_missing"
+					: "known_user_missing";
 			this.options.onEvidence?.({
 				kind: "codex_execution_handoff_skipped",
 				generation: intent.generation,
 				backendIntentKind: intent.kind,
 				backendMethod: intent.method,
-				reason: candidate ? "handoff_sink_missing" : "known_user_missing",
+				reason,
 			});
+			if (!alreadyHandedOff)
+				this.askForRepeat(CODEX_HANDOFF_UNCONFIRMED_PROMPT, reason);
 			return;
 		}
 		const key = `${intent.generation}:${intent.kind}:${intent.itemId ?? intent.method}:${candidate.utterance.transcriptId}`;
@@ -538,6 +590,7 @@ class CodexVoiceSession implements ConversationSession {
 		// One user request may surface several backend execution items. Consume the
 		// authorization candidate before dispatch so only the first can hand off.
 		this.latestKnownUser = undefined;
+		this.handedOffTranscriptId = candidate.utterance.transcriptId;
 		void candidate.persisted
 			.then(async (durable) => {
 				if (!durable) throw new Error("codex_handoff_transcript_not_durable");
@@ -557,6 +610,10 @@ class CodexVoiceSession implements ConversationSession {
 					handoffId: receipt.handoffId,
 					state: receipt.state,
 				});
+				// ambiguous/needs_human are still owned by the Bridge; only an
+				// explicit rejection is known not to have reached the Lead.
+				if (receipt.state === "rejected")
+					this.askForRepeat(CODEX_HANDOFF_FAILED_PROMPT, "handoff_rejected");
 			})
 			.catch((error) => {
 				this.options.onEvidence?.({
@@ -567,7 +624,24 @@ class CodexVoiceSession implements ConversationSession {
 					transcriptId: candidate.utterance.transcriptId,
 					reason: error instanceof Error ? error.message : "unknown_error",
 				});
+				this.askForRepeat(CODEX_HANDOFF_FAILED_PROMPT, "handoff_failed");
 			});
+	}
+
+	/**
+	 * The model may already have said it is passing the request on; say out
+	 * loud that it did not happen, instead of leaving only a thread note.
+	 */
+	private askForRepeat(prompt: string, reason: string): void {
+		if (this.closing) return;
+		const pendingKey = `${this.sessionId}:handoff-repeat:${++this.repeatPromptSequence}`;
+		this.options.onEvidence?.({
+			kind: "codex_handoff_repeat_prompt",
+			reason,
+			pendingKey,
+		});
+		// required: the receipt must say whether the words were actually read.
+		void this.speak(prompt, "cue", { pendingKey, verification: "required" });
 	}
 
 	observeBackgroundTurn(turn: CodexRealtimeBackgroundTurn): void {

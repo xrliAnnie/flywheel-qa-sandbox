@@ -163,6 +163,32 @@ function freshInputOwnership(): InputOwnership {
 	return { valid: true, sawAudio: false };
 }
 
+/**
+ * Discord ends speech with opus silence frames that decode to exact zeros, and
+ * the room forwards nothing between utterances, so an all-zero frame carries no
+ * speech that a restart could lose.
+ */
+function isSilentFrame(frame: Buffer): boolean {
+	return !frame.some((byte) => byte !== 0);
+}
+
+function carriesInputAudio(item: Record<string, unknown>): boolean {
+	return (
+		Array.isArray(item.content) &&
+		item.content.some((part) => record(part)?.type === "input_audio")
+	);
+}
+
+/**
+ * What a generation would lose if it stopped now: speech bytes sent since the
+ * input last settled, and whether the provider still holds speech it has not
+ * transcribed (open VAD segment or committed item without a final).
+ */
+export interface CodexRealtimeUnsettledInput {
+	droppedBytes: number;
+	providerInputPending: boolean;
+}
+
 function sameOwner(
 	left: CodexRealtimeInputOwner,
 	right: CodexRealtimeInputOwner,
@@ -194,6 +220,9 @@ export class CodexRealtimeTransport {
 	private readonly inputOwnershipByItem = new Map<string, InputOwnership>();
 	private readonly reportedExecutionIntents = new Set<string>();
 	private readonly turnInterrupts = new Map<string, Promise<void>>();
+	private speechBytesSinceSettled = 0;
+	private openSpeechItemId?: string;
+	private pendingProviderFinals = 0;
 	private closedReported = false;
 
 	constructor(
@@ -299,6 +328,7 @@ export class CodexRealtimeTransport {
 
 		this.observeInputOwner(owner);
 		this.pendingAudioBytes += frame.length;
+		if (!isSilentFrame(frame)) this.speechBytesSinceSettled += frame.length;
 		const ownership = this.inputOwnership;
 		const data = frame.toString("base64");
 		const send = this.audioTail.then(async () => {
@@ -341,6 +371,14 @@ export class CodexRealtimeTransport {
 
 	invalidateInputOwnership(): void {
 		this.inputOwnership.valid = false;
+	}
+
+	unsettledInput(): CodexRealtimeUnsettledInput {
+		return {
+			droppedBytes: this.speechBytesSinceSettled,
+			providerInputPending:
+				this.openSpeechItemId !== undefined || this.pendingProviderFinals > 0,
+		};
 	}
 
 	async appendText(
@@ -459,6 +497,7 @@ export class CodexRealtimeTransport {
 				item.item_id.length > 0
 			) {
 				this.activeInputItemId = item.item_id;
+				this.openSpeechItemId = item.item_id;
 				this.inputOwnershipByItem.set(item.item_id, this.inputOwnership);
 				return;
 			}
@@ -469,6 +508,12 @@ export class CodexRealtimeTransport {
 			) {
 				this.lastItemByRole.set(item.role, item.id);
 				if (item.role === "user" && item.status === "completed") {
+					// Injected text items never get a user transcript; spoken ones do.
+					if (item.id === this.openSpeechItemId || carriesInputAudio(item)) {
+						this.pendingProviderFinals += 1;
+					}
+					if (item.id === this.openSpeechItemId)
+						this.openSpeechItemId = undefined;
 					if (this.activeInputItemId === item.id) {
 						this.inputOwnershipByItem.set(item.id, this.inputOwnership);
 					} else {
@@ -714,6 +759,11 @@ export class CodexRealtimeTransport {
 		});
 		if (final && role === "user" && itemId)
 			this.inputOwnershipByItem.delete(itemId);
+		if (final && role === "user") {
+			this.pendingProviderFinals = Math.max(0, this.pendingProviderFinals - 1);
+			if (this.pendingProviderFinals === 0 && !this.openSpeechItemId)
+				this.speechBytesSinceSettled = 0;
+		}
 	}
 
 	private observeInputOwner(owner: CodexRealtimeInputOwner): void {
