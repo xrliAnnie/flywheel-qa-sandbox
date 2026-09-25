@@ -1,14 +1,13 @@
 ---
 issue: FLY-2885
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-25T22:12:53.797Z
-nextStep: exploration.md (audit voice-codex engine B + FLY-2884 findings), then
-  research (codex 0.157.0 v3 webrtc source facts)
+phaseCursor: 2/6
+updated: 2026-09-25T22:22:50.899Z
+nextStep: research.md written from source facts + 3 probes; then plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: design (1/6)
-**next**: exploration.md (audit voice-codex engine B + FLY-2884 findings), then research (codex 0.157.0 v3 webrtc source facts)
+**phase**: design (2/6)
+**next**: research.md written from source facts + 3 probes; then plan.md
