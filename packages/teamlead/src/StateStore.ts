@@ -6462,6 +6462,7 @@ export class StateStore {
 			| "conflict"
 			| "not_found"
 			| "lease_conflict" = "lease_conflict";
+		let changed = false;
 		this.db.transaction(() => {
 			if (
 				!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)
@@ -6492,8 +6493,9 @@ export class StateStore {
 				[input.sessionId, input.messageId],
 			);
 			result = "recorded";
+			changed = true;
 		});
-		if (result === "recorded") this.save();
+		if (changed) this.save();
 		return result;
 	}
 
