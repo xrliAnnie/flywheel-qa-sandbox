@@ -127,3 +127,5 @@ export {
 } from "./transcript.js";
 // contract
 export * from "./types.js";
+// voice-thread mirror marks shared by the posters and the Bridge poller
+export { isVoiceMirrorText, VOICE_MIRROR_MARKS } from "./voice-mirror.js";

@@ -991,6 +991,10 @@ import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
 import {
+	VoiceHandoffService,
+	validateCodexVoiceDelegateBinding,
+} from "./voice-handoff.js";
+import {
 	createVoiceHealthBridgeGuard,
 	createVoiceHealthExportReader,
 	createVoiceHealthIntentNotifier,
@@ -9496,10 +9500,35 @@ export async function startBridge(
 	}
 
 	const leadGithubProvider = createLazyLeadGithubClient(process.env);
+	const voiceHandoffService = new VoiceHandoffService({
+		store,
+		founderUserIds: () =>
+			config.discordOwnerUserId ? [config.discordOwnerUserId] : [],
+		// A delegation only queues the founder's durable words to the resident Lead;
+		// it grants the voice container no mutation authority. All action intents stay
+		// fail-closed here until their separate capability gates land.
+		validateAuthorityBinding: validateCodexVoiceDelegateBinding,
+		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		inspectDeliveryState: (deliveryId, handoff) => {
+			const settlement = leadInboxRuntime.readHandoffSettlement(
+				handoff.leadId,
+				deliveryId,
+			);
+			if (settlement.kind === "absent_identity") return { kind: "absent" };
+			if (
+				settlement.kind === "unknown_lead" ||
+				settlement.kind === "torn_identity"
+			)
+				return { kind: "torn_identity" };
+			return { kind: settlement.kind, state: settlement.state };
+		},
+	});
+	const voiceHandoffReconcilerOwner = `bridge-${randomUUID()}`;
 	const voiceSessionServices = createVoiceSessionServices({
 		store,
 		projects,
 		config,
+		voiceHandoffs: voiceHandoffService,
 	});
 	const xhsWriteService = createXhsBridgeWriteService({
 		apiToken: config.apiToken ?? "",
@@ -9938,6 +9967,7 @@ export async function startBridge(
 	voiceSessionServices.runtime.start();
 	voiceSessionServices.scheduleRuntime.start();
 	voiceSessionServices.cardProjector.start();
+	voiceHandoffService.startReconciler(voiceHandoffReconcilerOwner);
 
 	await new Promise<void>((resolve, reject) => {
 		server.once("listening", resolve);
@@ -16081,6 +16111,7 @@ export async function startBridge(
 		voiceSessionServices.runtime.stop();
 		voiceSessionServices.scheduleRuntime.stop();
 		voiceSessionServices.cardProjector.stop();
+		voiceHandoffService.stopReconciler();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.

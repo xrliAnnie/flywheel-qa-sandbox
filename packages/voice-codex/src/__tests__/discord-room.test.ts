@@ -1,6 +1,9 @@
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscordVoiceRoom } from "../discord-room.js";
+import {
+	DEFAULT_UPLINK_PREROLL_MS,
+	DiscordVoiceRoom,
+} from "../discord-room.js";
 
 function pcm16(samples: number[]): Buffer {
 	const output = Buffer.alloc(samples.length * 2);
@@ -39,6 +42,7 @@ describe("DiscordVoiceRoom", () => {
 					createResource: vi.fn(),
 					speakingEvents: vi.fn(),
 					memberDisplayName: vi.fn(),
+					voiceChannelHumanCount: vi.fn(),
 					userVoiceChannelId: vi.fn(),
 					onVoiceStateUpdate: vi.fn(),
 					leaveVoice: vi.fn(),
@@ -103,6 +107,7 @@ describe("DiscordVoiceRoom", () => {
 						on: (event, callback) => speaking.set(event, callback),
 					}),
 					memberDisplayName: vi.fn(async () => "Annie"),
+					voiceChannelHumanCount: vi.fn(async () => 2),
 					userVoiceChannelId: vi.fn(async () => "voice-channel"),
 					onVoiceStateUpdate: (_client, callback) => {
 						voiceState = callback;
@@ -124,6 +129,7 @@ describe("DiscordVoiceRoom", () => {
 			});
 
 			expect(await room.start()).toEqual({ founderPresent: true });
+			expect(room.soleHuman()).toBeNull();
 			await vi.advanceTimersByTimeAsync(40);
 			expect(onAudio).toHaveBeenCalledTimes(2);
 			expect(onAudio.mock.calls[0]?.[0]).toEqual(Buffer.alloc(960));
@@ -166,6 +172,7 @@ describe("DiscordVoiceRoom", () => {
 				toChannelId: null,
 			});
 			expect(onFounderPresence).toHaveBeenCalledWith(false);
+			expect(room.soleHuman()).toEqual({ userId: "qa", name: null });
 			await room.stop();
 			const sentBeforeStop = onAudio.mock.calls.length;
 			await vi.advanceTimersByTimeAsync(100);
@@ -219,6 +226,7 @@ describe("DiscordVoiceRoom", () => {
 					isSpeaking: (userId) => userId === "founder",
 				}),
 				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
 				userVoiceChannelId: vi.fn(async () => "voice-channel"),
 				onVoiceStateUpdate: () => () => {},
 				sendMessage: vi.fn(async () => {}),
@@ -303,6 +311,7 @@ describe("DiscordVoiceRoom", () => {
 					isSpeaking: (userId) => speakingUsers.has(userId),
 				}),
 				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
 				userVoiceChannelId: vi.fn(async () => "voice-channel"),
 				onVoiceStateUpdate: () => () => {},
 				sendMessage: vi.fn(async () => {}),
@@ -380,6 +389,7 @@ describe("DiscordVoiceRoom", () => {
 					isSpeaking: (userId) => speakingUsers.has(userId),
 				}),
 				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 2),
 				userVoiceChannelId: vi.fn(async () => "voice-channel"),
 				onVoiceStateUpdate: () => () => {},
 				sendMessage: vi.fn(async () => {}),
@@ -456,6 +466,7 @@ describe("DiscordVoiceRoom honours an aborted start promptly", () => {
 				createResource: vi.fn(),
 				speakingEvents: vi.fn(() => ({ on: vi.fn() })),
 				memberDisplayName: vi.fn(),
+				voiceChannelHumanCount: vi.fn(async () => 1),
 				userVoiceChannelId: vi.fn(
 					options.userVoiceChannelId ?? (async () => "voice"),
 				),
@@ -530,5 +541,77 @@ describe("DiscordVoiceRoom honours an aborted start promptly", () => {
 		await expect(test.instance.start(controller.signal)).rejects.toThrow();
 		expect(userVoiceChannelId).not.toHaveBeenCalled();
 		expect(test.leaveVoice).toHaveBeenCalled();
+	});
+});
+
+describe("DiscordVoiceRoom uplink pre-roll (FLY-2798 on the engine B room path)", () => {
+	it("gates founder uplink with a 200 ms VAD pre-roll unless configured otherwise", async () => {
+		for (const [configured, expected] of [
+			[undefined, DEFAULT_UPLINK_PREROLL_MS],
+			[0, 0],
+		] as const) {
+			vi.useFakeTimers();
+			const speaking = new Map<string, (userId: string) => void>();
+			const opus = new PassThrough();
+			const decoder = new PassThrough();
+			const diagnostics: Array<Record<string, unknown>> = [];
+			const room = new DiscordVoiceRoom({
+				createVad: async () => ({
+					score: async (_samples, state) => ({ probability: 1, next: state }),
+					close: async () => {},
+				}),
+				deps: {
+					createClient: () => ({
+						user: { id: "voice-bot" },
+						login: vi.fn(async () => {}),
+						isReady: () => true,
+						once: vi.fn(),
+						destroy: vi.fn(async () => {}),
+					}),
+					joinVoice: vi.fn(async () => ({})),
+					subscribeManual: () => vi.fn(() => opus),
+					createDecoder: () => decoder,
+					createPlayer: () => ({ play: vi.fn(), stop: vi.fn(), on: vi.fn() }),
+					createResource: vi.fn(),
+					speakingEvents: () => ({
+						on: (event, callback) => speaking.set(event, callback),
+					}),
+					memberDisplayName: vi.fn(async () => "Annie"),
+					voiceChannelHumanCount: vi.fn(async () => 1),
+					userVoiceChannelId: vi.fn(async () => "voice-channel"),
+					onVoiceStateUpdate: () => () => {},
+					sendMessage: vi.fn(async () => {}),
+					leaveVoice: vi.fn(),
+				},
+				token: "token",
+				expectedBotUserId: "voice-bot",
+				guildId: "guild",
+				voiceChannelId: "voice-channel",
+				threadId: "thread",
+				founderUserId: "founder",
+				qaAllowUserIds: [],
+				...(configured === undefined ? {} : { uplinkPrerollMs: configured }),
+				onAudio: vi.fn(),
+				onFounderPresence: vi.fn(),
+				onDiagnostic: (record) => diagnostics.push(record),
+				onError: vi.fn(),
+			});
+			try {
+				await room.start();
+				speaking.get("start")?.("founder");
+				for (let frame = 0; frame < 30; frame += 1) {
+					opus.write(pcm16(Array(1_920).fill(2_500)));
+					await vi.advanceTimersByTimeAsync(20);
+				}
+				speaking.get("end")?.("founder");
+				await vi.advanceTimersByTimeAsync(2_000);
+				expect(
+					diagnostics.find((record) => record.kind === "uplink_gate_utterance"),
+				).toMatchObject({ prerollMs: expected });
+			} finally {
+				await room.stop();
+				vi.useRealTimers();
+			}
+		}
 	});
 });

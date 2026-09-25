@@ -30,10 +30,10 @@ describe("JsonlTranscriptSink", () => {
 		dirs.push(dir);
 		const file = join(dir, "nested", "session.jsonl");
 		const sink = new JsonlTranscriptSink(file);
-		sink.append(
+		const first = sink.append(
 			entry({ face: "announce", role: "assistant", text: "播报内容" }),
 		);
-		sink.append(
+		const second = sink.append(
 			entry({
 				face: "converse",
 				backendId: "gemini-live",
@@ -41,7 +41,9 @@ describe("JsonlTranscriptSink", () => {
 				text: "你好",
 			}),
 		);
-		await sink.flush(); // QA R4: writes are async now — drain before reading
+		expect(await first).toMatchObject({ outcome: "durable" });
+		expect(await second).toMatchObject({ outcome: "durable" });
+		expect(await sink.flush()).toEqual({ outcome: "durable" });
 		const lines = readFileSync(file, "utf8").trim().split("\n");
 		expect(lines).toHaveLength(2);
 		expect(JSON.parse(lines[0])).toMatchObject({
@@ -57,10 +59,16 @@ describe("JsonlTranscriptSink", () => {
 });
 
 describe("MemoryTranscriptSink", () => {
-	it("collects entries in order", () => {
+	it("collects entries in order with explicit in-memory receipts", async () => {
 		const sink = new MemoryTranscriptSink();
-		sink.append(entry({ text: "a" }));
-		sink.append(entry({ text: "b" }));
+		expect(await sink.append(entry({ text: "a" }))).toEqual({
+			outcome: "durable",
+			medium: "memory",
+		});
+		expect(await sink.append(entry({ text: "b" }))).toEqual({
+			outcome: "durable",
+			medium: "memory",
+		});
 		expect(sink.entries.map((e) => e.text)).toEqual(["a", "b"]);
 	});
 });
@@ -71,10 +79,17 @@ describe("QA R4 (d) — async sink: ordered writes, drain, fail-once", () => {
 		dirs.push(dir);
 		const path = join(dir, "t.jsonl");
 		const sink = new JsonlTranscriptSink(path);
-		sink.append(entry({ text: "one" }));
-		sink.append(entry({ text: "two" }));
-		sink.append(entry({ text: "three" }));
-		await sink.flush();
+		const writes = [
+			sink.append(entry({ text: "one" })),
+			sink.append(entry({ text: "two" })),
+			sink.append(entry({ text: "three" })),
+		];
+		expect(await sink.flush()).toEqual({ outcome: "durable" });
+		expect(await Promise.all(writes)).toEqual([
+			{ outcome: "durable", medium: "jsonl" },
+			{ outcome: "durable", medium: "jsonl" },
+			{ outcome: "durable", medium: "jsonl" },
+		]);
 		const lines = readFileSync(path, "utf8").trim().split("\n");
 		expect(lines.map((l) => JSON.parse(l).text)).toEqual([
 			"one",
@@ -83,7 +98,7 @@ describe("QA R4 (d) — async sink: ordered writes, drain, fail-once", () => {
 		]);
 	});
 
-	it("a write failure surfaces ONCE via onError and never throws at append()", async () => {
+	it("a write failure surfaces once and returns a non-authorizing receipt", async () => {
 		const errors: string[] = [];
 		// a path whose parent is a FILE → mkdir/append must fail
 		const dir = mkdtempSync(join(tmpdir(), "sink-r4-bad-"));
@@ -94,9 +109,11 @@ describe("QA R4 (d) — async sink: ordered writes, drain, fail-once", () => {
 		const sink = new JsonlTranscriptSink(join(blocker, "t.jsonl"), (e) =>
 			errors.push(e.message),
 		);
-		sink.append(entry({ text: "a" }));
-		sink.append(entry({ text: "b" }));
-		await sink.flush();
+		const first = sink.append(entry({ text: "a" }));
+		const second = sink.append(entry({ text: "b" }));
+		expect(await first).toMatchObject({ outcome: "failed" });
+		expect(await second).toMatchObject({ outcome: "failed" });
+		expect(await sink.flush()).toMatchObject({ outcome: "failed" });
 		expect(errors).toHaveLength(1); // fail-once, no spam, no throw
 	});
 });

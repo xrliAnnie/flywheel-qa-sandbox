@@ -1,0 +1,12 @@
+stateDiagram-v2
+  [*] --> authorized
+  authorized --> dispatching: 持久化后才发
+  authorized --> rejected
+  dispatching --> dispatched: 本体信箱受理回执
+  dispatching --> ambiguous: 超时或重启
+  dispatched --> committed: 本体执行证明
+  dispatched --> rejected
+  dispatched --> ambiguous
+  ambiguous --> committed: 只读对账
+  ambiguous --> rejected: 只读对账
+  ambiguous --> needs_human: 有界退避用尽

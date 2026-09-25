@@ -1331,7 +1331,9 @@ globalThis.fetch = async () => {
 				"not written",
 			);
 			expect(result.exitCode).toBe(1);
-			expect(result.stderr).toContain("origin must be discord or voice");
+			expect(result.stderr).toContain(
+				"origin must be discord, voice or voice_minutes",
+			);
 			const db = new CommDB(dbPath);
 			expect(
 				db.inspectMailboxDeliveryState("chat:product-lead:223456789012345678"),

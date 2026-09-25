@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -29,6 +30,7 @@ import {
 	buildVoiceProcessEnv,
 	loadSlot,
 	releaseVoiceRoomLease,
+	releaseVoiceRoomLeasesForSlot,
 	summarizeVoiceEvidence,
 	validateDiscordThreadPermissions,
 	validateDiscordVoicePermissions,
@@ -549,32 +551,208 @@ test("test-deploy keeps the voice fixture opt-in and installs it before Lead sta
 
 test("voice room lease is same-slot idempotent and never releases a foreign owner", () => {
 	const suffix = String(process.pid).padStart(6, "0").slice(-6);
+	const root = mkdtempSync(join(tmpdir(), "fly2867-voice-lease-"));
+	// FLY-2867: a live owner is one whose 529 slot directory still exists.
+	const liveOwnerSlot = `/tmp/flywheel-test-slot-2655${suffix}`;
+	mkdirSync(liveOwnerSlot);
 	const topology = {
 		guildId: `999999999999${suffix}`,
 		voiceChannelId: `888888888888${suffix}`,
-		slotDir: "/tmp/flywheel-test-slot-2655",
+		slotDir: liveOwnerSlot,
 		projectName: "test-slot-2655",
 		leadId: "flywheel-test-2655",
 	};
 	try {
-		assert.equal(acquireVoiceRoomLease(topology).created, true);
-		assert.equal(acquireVoiceRoomLease(topology).created, false);
+		assert.equal(acquireVoiceRoomLease(topology, { root }).created, true);
+		assert.equal(acquireVoiceRoomLease(topology, { root }).created, false);
 		assert.throws(
 			() =>
-				acquireVoiceRoomLease({
-					...topology,
-					slotDir: "/tmp/flywheel-test-slot-2656",
-				}),
+				acquireVoiceRoomLease(
+					{ ...topology, slotDir: "/tmp/flywheel-test-slot-2656" },
+					{ root },
+				),
 			/voice_room_lease_conflict/,
 		);
-		assert.equal(releaseVoiceRoomLease(topology), true);
-		assert.equal(releaseVoiceRoomLease(topology), false);
+		assert.equal(releaseVoiceRoomLease(topology, { root }), true);
+		assert.equal(releaseVoiceRoomLease(topology, { root }), false);
 	} finally {
-		try {
-			releaseVoiceRoomLease(topology);
-		} catch {
-			// A failing assertion still must not leave a synthetic QA-room lease.
-		}
+		rmSync(root, { recursive: true, force: true });
+		rmSync(liveOwnerSlot, { recursive: true, force: true });
+	}
+});
+
+function fly2867LeaseTopology(slotDir) {
+	const suffix = String(process.pid).padStart(6, "0").slice(-6);
+	return {
+		guildId: `999999999999${suffix}`,
+		voiceChannelId: `777777777777${suffix}`,
+		slotDir,
+		projectName: "test-slot-2867",
+		leadId: "flywheel-test-2867",
+	};
+}
+
+function fly2867Owner(root, topology) {
+	return JSON.parse(
+		readFileSync(
+			join(
+				root,
+				`flywheel-voice-room-${topology.guildId}-${topology.voiceChannelId}.lock`,
+				"owner.json",
+			),
+			"utf8",
+		),
+	);
+}
+
+function fly2867WriteLease(root, name, owner) {
+	mkdirSync(join(root, name), { mode: 0o700 });
+	writeFileSync(join(root, name, "owner.json"), `${JSON.stringify(owner)}\n`);
+}
+
+function fly2867LiveDaemon() {
+	const child = spawnSync("sh", ["-c", "sleep 30 >/dev/null 2>&1 & echo $!"], {
+		encoding: "utf8",
+	});
+	const pid = Number(child.stdout.trim());
+	const identity = spawnSync(
+		"ps",
+		["-o", "lstart=,command=", "-p", String(pid)],
+		{
+			encoding: "utf8",
+		},
+	).stdout.trim();
+	return { pid, processIdentity: identity };
+}
+
+test("FLY-2867 a lease whose owner slot directory is gone is reclaimed atomically", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2867-voice-lease-"));
+	const gone = `/tmp/flywheel-test-slot-2867${process.pid}`;
+	const next = `/tmp/flywheel-test-slot-2868${process.pid}`;
+	try {
+		assert.equal(
+			acquireVoiceRoomLease(fly2867LeaseTopology(gone), { root }).created,
+			true,
+		);
+		// The owner's room was torn down without `stop`: its slot dir is gone.
+		const claimed = acquireVoiceRoomLease(fly2867LeaseTopology(next), { root });
+		assert.equal(claimed.created, true);
+		assert.equal(fly2867Owner(root, fly2867LeaseTopology(next)).slotDir, next);
+		assert.deepEqual(
+			readdirSync(root).filter((name) => name.includes(".stale-")),
+			[],
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2867 a gone owner with a live recorded daemon, or a non-slot owner, is never reclaimed", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2867-voice-lease-"));
+	const daemon = fly2867LiveDaemon();
+	const gone = `/tmp/flywheel-test-slot-2869${process.pid}`;
+	const topology = fly2867LeaseTopology(gone);
+	const name = `flywheel-voice-room-${topology.guildId}-${topology.voiceChannelId}.lock`;
+	try {
+		fly2867WriteLease(root, name, { schemaVersion: 1, slotDir: gone, daemon });
+		assert.throws(
+			() =>
+				acquireVoiceRoomLease(
+					fly2867LeaseTopology(`/tmp/flywheel-test-slot-2870${process.pid}`),
+					{ root },
+				),
+			/voice_room_lease_conflict/,
+		);
+		rmSync(join(root, name), { recursive: true });
+		fly2867WriteLease(root, name, {
+			schemaVersion: 1,
+			slotDir: "/Users/someone/room",
+		});
+		assert.throws(
+			() =>
+				acquireVoiceRoomLease(
+					fly2867LeaseTopology(`/tmp/flywheel-test-slot-2870${process.pid}`),
+					{ root },
+				),
+			/voice_room_lease_conflict/,
+		);
+	} finally {
+		process.kill(daemon.pid, "SIGTERM");
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2867 teardown releases only its own slot's leases and keeps one with a live daemon", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2867-voice-lease-"));
+	const daemon = fly2867LiveDaemon();
+	const slot = `/tmp/flywheel-test-slot-2871${process.pid}`;
+	const other = `/tmp/flywheel-test-slot-2872${process.pid}`;
+	try {
+		// The owner record carries the canonical /private/tmp spelling.
+		fly2867WriteLease(root, "flywheel-voice-room-1-11.lock", {
+			schemaVersion: 1,
+			slotDir: `/private${slot}`,
+		});
+		fly2867WriteLease(root, "flywheel-voice-room-1-12.lock", {
+			schemaVersion: 1,
+			slotDir: slot,
+			daemon,
+		});
+		fly2867WriteLease(root, "flywheel-voice-room-1-13.lock", {
+			schemaVersion: 1,
+			slotDir: other,
+		});
+		mkdirSync(join(root, "flywheel-voice-room-unrelated"));
+		const result = releaseVoiceRoomLeasesForSlot(slot, { root });
+		assert.deepEqual(result.released, [
+			join(root, "flywheel-voice-room-1-11.lock"),
+		]);
+		assert.deepEqual(result.retained, [
+			join(root, "flywheel-voice-room-1-12.lock"),
+		]);
+		assert.deepEqual(readdirSync(root).sort(), [
+			"flywheel-voice-room-1-12.lock",
+			"flywheel-voice-room-1-13.lock",
+			"flywheel-voice-room-unrelated",
+		]);
+		assert.throws(
+			() => releaseVoiceRoomLeasesForSlot("/Users/someone/room", { root }),
+			/529_slot_directory_required/,
+		);
+	} finally {
+		process.kill(daemon.pid, "SIGTERM");
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("FLY-2867 release-slot-leases CLI needs only the slot directory", () => {
+	const root = mkdtempSync(join(tmpdir(), "fly2867-voice-lease-"));
+	const slot = `/tmp/flywheel-test-slot-2873${process.pid}`;
+	try {
+		fly2867WriteLease(root, "flywheel-voice-room-2-21.lock", {
+			schemaVersion: 1,
+			slotDir: slot,
+		});
+		const run = spawnSync(
+			process.execPath,
+			[
+				fileURLToPath(new URL("../qa/fly2655-voice-room.mjs", import.meta.url)),
+				"release-slot-leases",
+				"--slot-dir",
+				slot,
+				"--lease-root",
+				root,
+			],
+			{ encoding: "utf8" },
+		);
+		assert.equal(run.status, 0, run.stderr);
+		assert.deepEqual(JSON.parse(run.stdout.trim().split("\n").at(-1)), {
+			released: [join(root, "flywheel-voice-room-2-21.lock")],
+			retained: [],
+		});
+		assert.deepEqual(readdirSync(root), []);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 

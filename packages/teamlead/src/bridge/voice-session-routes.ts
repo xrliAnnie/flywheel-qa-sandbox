@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import express, { type RequestHandler } from "express";
 import { parseReceiveHealth, type ReceiveHealth } from "flywheel-voice-core";
 import type {
@@ -6,6 +7,11 @@ import type {
 	VoiceSessionReservation,
 	VoiceSessionRow,
 } from "../StateStore.js";
+import {
+	VoiceHandoffError,
+	type VoiceHandoffService,
+} from "./voice-handoff.js";
+import { VoiceSessionContextError } from "./voice-session-context.js";
 
 export class VoiceSessionHttpError extends Error {
 	constructor(
@@ -33,6 +39,11 @@ export interface VoiceSessionRouterDeps {
 	) => void | Promise<void>;
 	projectSession: (session: VoiceSessionRow) => Record<string, unknown>;
 	validateSession?: (session: VoiceSessionRow) => void | Promise<void>;
+	getSessionContext?: (
+		session: VoiceSessionRow,
+		authority: { leaseBindingDigest: string; requestedAt: string },
+	) => Record<string, unknown> | Promise<Record<string, unknown>>;
+	voiceHandoffs?: Pick<VoiceHandoffService, "recordUtterance" | "handoff">;
 }
 
 const DAEMON_ONLY = "daemon_credential_required";
@@ -56,8 +67,37 @@ function lease(req: express.Request): string {
 	return req.header("X-Voice-Lease") ?? "";
 }
 
+function leaseBindingDigest(sessionId: string, leaseToken: string): string {
+	return createHash("sha256")
+		.update(`voice-session-lease-v1\0${sessionId}\0${leaseToken}`)
+		.digest("hex");
+}
+
 function param(value: string | string[] | undefined): string {
 	return typeof value === "string" ? value : "";
+}
+
+function voiceRequest(
+	body: unknown,
+	sessionId: string,
+	leaseToken: string,
+): Record<string, unknown> {
+	if (!body || typeof body !== "object" || Array.isArray(body)) {
+		return { sessionId, leaseToken, body };
+	}
+	const input = body as Record<string, unknown>;
+	if (Object.hasOwn(input, "sessionId") || Object.hasOwn(input, "leaseToken")) {
+		return { sessionId, leaseToken, ...input, pathAuthorityConflict: true };
+	}
+	return { ...input, sessionId, leaseToken };
+}
+
+function voiceError(res: express.Response, error: unknown): void {
+	if (error instanceof VoiceHandoffError) {
+		res.status(error.status).json({ error: error.code });
+		return;
+	}
+	res.status(500).json({ error: "voice_handoff_failed" });
 }
 
 function renewReceiveHealth(body: unknown): ReceiveHealth | undefined {
@@ -329,6 +369,126 @@ export function createVoiceSessionRouter(
 			return;
 		}
 		res.json({ ...renewed, leaseTtlMs: deps.leaseTtlMs });
+	});
+
+	router.get("/:sessionId/context", masterOnly(), async (req, res) => {
+		const sessionId = param(req.params.sessionId);
+		const leaseToken = lease(req);
+		const requestedAt = now();
+		const session = deps.store.getActiveVoiceLease(
+			sessionId,
+			leaseToken,
+			requestedAt,
+		);
+		if (!session) {
+			res.status(409).json(LEASE_CONFLICT);
+			return;
+		}
+		if (!deps.getSessionContext) {
+			res.status(503).json({
+				error: "voice_unavailable",
+				reason: "context_source_unresolved",
+			});
+			return;
+		}
+		try {
+			res.json(
+				await deps.getSessionContext(session, {
+					leaseBindingDigest: leaseBindingDigest(sessionId, leaseToken),
+					requestedAt,
+				}),
+			);
+		} catch (error) {
+			const reason =
+				error instanceof VoiceSessionContextError
+					? error.code
+					: "context_state_unavailable";
+			res.status(503).json({ error: "voice_unavailable", reason });
+		}
+	});
+
+	router.post("/:sessionId/utterances", masterOnly(), (req, res) => {
+		if (!deps.voiceHandoffs) {
+			res.status(503).json({
+				error: "voice_unavailable",
+				reason: "voice_handoff_unconfigured",
+			});
+			return;
+		}
+		try {
+			const result = deps.voiceHandoffs.recordUtterance(
+				voiceRequest(
+					req.body,
+					param(req.params.sessionId),
+					lease(req),
+				) as unknown as Parameters<VoiceHandoffService["recordUtterance"]>[0],
+			);
+			res.status(result.status === "inserted" ? 201 : 200).json(result);
+		} catch (error) {
+			voiceError(res, error);
+		}
+	});
+
+	// FLY-2799 qa6: the voice side reports the Discord message it posted as a
+	// line's visible transcript, so the outbound poller excludes it by source
+	// rather than by its emoji prefix alone.
+	router.post("/:sessionId/utterance-mirrors", masterOnly(), (req, res) => {
+		const transcriptId = req.body?.transcriptId;
+		const messageId = req.body?.messageId;
+		if (
+			typeof transcriptId !== "string" ||
+			transcriptId.length === 0 ||
+			transcriptId.length > 512 ||
+			typeof messageId !== "string" ||
+			!/^\d{1,32}$/.test(messageId)
+		) {
+			res.status(400).json({ error: "voice_mirror_invalid" });
+			return;
+		}
+		const result = deps.store.recordVoiceUtteranceMirror({
+			sessionId: param(req.params.sessionId),
+			leaseToken: lease(req),
+			transcriptId,
+			messageId,
+			now: now(),
+		});
+		if (result === "recorded" || result === "replayed") {
+			res.status(result === "recorded" ? 201 : 200).json({ status: result });
+			return;
+		}
+		if (result === "not_found") {
+			res.status(404).json({ error: "voice_transcript_not_found" });
+			return;
+		}
+		res
+			.status(409)
+			.json(
+				result === "conflict"
+					? { error: "voice_mirror_conflict" }
+					: LEASE_CONFLICT,
+			);
+	});
+
+	router.post("/:sessionId/handoffs", masterOnly(), async (req, res) => {
+		if (!deps.voiceHandoffs) {
+			res.status(503).json({
+				error: "voice_unavailable",
+				reason: "voice_handoff_unconfigured",
+			});
+			return;
+		}
+		try {
+			const result = await deps.voiceHandoffs.handoff(
+				voiceRequest(
+					req.body,
+					param(req.params.sessionId),
+					lease(req),
+				) as unknown as Parameters<VoiceHandoffService["handoff"]>[0],
+			);
+			res.status(result.state === "dispatched" ? 202 : 200).json(result);
+		} catch (error) {
+			voiceError(res, error);
+		}
 	});
 
 	// FLY-2701: a prewarmed meeting reports "in the room, model up" before its

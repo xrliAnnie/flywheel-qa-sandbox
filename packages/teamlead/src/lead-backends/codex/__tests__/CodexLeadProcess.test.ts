@@ -16,18 +16,26 @@ class FakeChild implements ChildTransport {
 	readonly writes: string[] = [];
 	stdinEnded = false;
 	killed: NodeJS.Signals | undefined;
+	readonly kills: NodeJS.Signals[] = [];
+	acceptWrites = true;
 	private stdoutCb?: (chunk: string) => void;
 	private stderrCb?: (chunk: string) => void;
 	private exitCb?: (code: number | null, signal: NodeJS.Signals | null) => void;
+	private drainCb?: () => void;
 
-	writeStdin(data: string): void {
+	writeStdin(data: string): boolean {
 		this.writes.push(data);
+		return this.acceptWrites;
+	}
+	onStdinDrain(cb: () => void): void {
+		this.drainCb = cb;
 	}
 	endStdin(): void {
 		this.stdinEnded = true;
 	}
 	kill(signal?: NodeJS.Signals): void {
 		this.killed = signal ?? "SIGTERM";
+		this.kills.push(this.killed);
 	}
 	onStdout(cb: (chunk: string) => void): void {
 		this.stdoutCb = cb;
@@ -58,6 +66,9 @@ class FakeChild implements ChildTransport {
 	}
 	pushStderr(chunk: string): void {
 		this.stderrCb?.(chunk);
+	}
+	drainStdin(): void {
+		this.drainCb?.();
 	}
 	exit(code: number | null, signal: NodeJS.Signals | null = null): void {
 		this.exitCb?.(code, signal);
@@ -131,8 +142,11 @@ describe("CodexLeadProcess — handshake", () => {
 		// CR HIGH-1: an initialize error must NOT be treated as success.
 		const { child, proc } = make();
 		const startP = proc.start();
+		const rejected = expect(startP).rejects.toMatchObject({ kind: "protocol" });
 		child.respondError(1, -32000, "init refused");
-		await expect(startP).rejects.toMatchObject({ kind: "protocol" });
+		await vi.waitFor(() => expect(child.stdinEnded).toBe(true));
+		child.exit(1);
+		await rejected;
 		expect(child.frames().some((f) => f.method === "initialized")).toBe(false);
 	});
 });
@@ -167,8 +181,10 @@ describe("CodexLeadProcess — request/response", () => {
 	});
 
 	it("rejects requests after close", async () => {
-		const { proc } = await started();
-		await proc.stop();
+		const { child, proc } = await started();
+		const stop = proc.stop();
+		child.exit(0);
+		await stop;
 		await expect(proc.request("anything")).rejects.toBeInstanceOf(
 			CodexLeadProcessError,
 		);
@@ -321,6 +337,60 @@ describe("CodexLeadProcess — robustness", () => {
 		// "é" is 2 bytes, "😀" is 4 bytes — feed > cap of multibyte chars.
 		child.pushStderr("éééé😀😀");
 		expect(proc.stderrByteLength).toBeLessThanOrEqual(4);
+	});
+
+	it("bounds an unterminated stdout frame and fails pending work closed", async () => {
+		const { child, proc } = make({
+			maxJsonLineBytes: 64,
+			shutdownGraceMs: 1,
+			shutdownTermMs: 1,
+			shutdownKillMs: 1,
+		});
+		const start = proc.start();
+		const rejected = expect(start).rejects.toMatchObject({ kind: "protocol" });
+		child.pushStdoutRaw("x".repeat(65));
+		await vi.waitFor(() => expect(child.stdinEnded).toBe(true));
+		expect(proc.stdoutBufferedByteLength).toBeLessThanOrEqual(64);
+		child.exit(null, "SIGTERM");
+		await rejected;
+	});
+
+	it("allows resident thread/resume responses larger than the voice frame cap by default", async () => {
+		const { child, proc } = await started();
+		const request = proc.request("thread/resume", { threadId: "long-thread" });
+		const id = child.lastFrame().id as number;
+		const history = "x".repeat(1024 * 1024 + 32_768);
+		child.respond(id, { thread: { id: "long-thread", history } });
+
+		await expect(request).resolves.toMatchObject({
+			result: { thread: { id: "long-thread", history } },
+		});
+		expect(proc.hasExited).toBe(false);
+	});
+
+	it("queues writes after stdin backpressure and rejects queue overflow", async () => {
+		const { child, proc } = make({ maxStdinQueueBytes: 96 });
+		const start = proc.start();
+		child.respond(1, {});
+		await start;
+
+		child.acceptWrites = false;
+		const first = proc.request("a");
+		const firstId = child.lastFrame().id as number;
+		const writesAfterFirst = child.writes.length;
+		const second = proc.request("b");
+		expect(child.writes).toHaveLength(writesAfterFirst);
+		const overflow = proc.request("c", { payload: "x".repeat(96) });
+		await expect(overflow).rejects.toMatchObject({ kind: "protocol" });
+
+		child.acceptWrites = true;
+		child.drainStdin();
+		expect(child.writes).toHaveLength(writesAfterFirst + 1);
+		const secondId = child.lastFrame().id as number;
+		child.respond(firstId, {});
+		child.respond(secondId, {});
+		await expect(first).resolves.toMatchObject({ result: {} });
+		await expect(second).resolves.toMatchObject({ result: {} });
 	});
 });
 
@@ -534,12 +604,40 @@ describe("CodexLeadProcess — thread/turn", () => {
 });
 
 describe("CodexLeadProcess — shutdown", () => {
-	it("stop() ends stdin and rejects pending", async () => {
-		const { child, proc } = await started();
+	it("stop() rejects pending, waits for exit, and escalates TERM then KILL", async () => {
+		vi.useFakeTimers();
+		const { child, proc } = make({
+			shutdownGraceMs: 10,
+			shutdownTermMs: 20,
+			shutdownKillMs: 30,
+		});
+		const start = proc.start();
+		child.respond(1, {});
+		await start;
 		const reqP = proc.request("thread/read");
-		await proc.stop();
+		const stopP = proc.stop();
 		expect(child.stdinEnded).toBe(true);
 		await expect(reqP).rejects.toMatchObject({ kind: "closed" });
+		expect(child.kills).toEqual([]);
+		await vi.advanceTimersByTimeAsync(11);
+		expect(child.kills).toEqual(["SIGTERM"]);
+		await vi.advanceTimersByTimeAsync(20);
+		expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
+		child.exit(null, "SIGKILL");
+		await expect(stopP).resolves.toBeUndefined();
+		vi.useRealTimers();
+	});
+
+	it("closing during initialize rejects startup and never sends initialized", async () => {
+		const { child, proc } = make();
+		const startP = proc.start();
+		const rejected = expect(startP).rejects.toMatchObject({ kind: "closed" });
+		const stopP = proc.stop();
+		expect(child.frames().some((frame) => frame.method === "initialized")).toBe(
+			false,
+		);
+		child.exit(0);
+		await Promise.all([rejected, stopP]);
 	});
 });
 

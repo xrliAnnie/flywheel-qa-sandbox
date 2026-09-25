@@ -69,7 +69,8 @@ cleanup() {
     "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}.lock" \
     "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}" \
     "/tmp/flywheel-test-slot-${CODEX_SLOT}" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}" \
-    "/tmp/flywheel-test-codex-fixture-${$}" "$SB"
+    "/tmp/flywheel-test-codex-fixture-${$}" "$SB" \
+    "/tmp/flywheel-voice-room-99286700${$}-1.lock" "/tmp/flywheel-voice-room-99286700${$}-2.lock"
 }
 trap cleanup EXIT
 
@@ -107,7 +108,15 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/runner-workspace-trust.sh" \
   "$FR/scripts/lib/"
 echo "// fixture" > "$FR/scripts/run-bridge.ts"
+# FLY-2867: teardown releases the slot's voice-room leases through this CLI.
+mkdir -p "$FR/scripts/qa"
+cp "${SCRIPT_DIR}/qa/fly2655-voice-room.mjs" "$FR/scripts/qa/"
+cp "${SCRIPT_DIR}/lib/fly2655-voice-fixture.mjs" "$FR/scripts/lib/"
 echo "FLYWHEEL_RUNNER_START_POINT fixture" > "$FR/packages/edge-worker/dist/WorktreeManager.js"
+# FLY-2867: the preflight asserts the MCP servers claude-lead.sh loads.
+mkdir -p "$FR/packages/inbox-mcp/dist" "$FR/packages/terminal-mcp/dist"
+echo "// fixture" > "$FR/packages/inbox-mcp/dist/index.js"
+echo "// fixture" > "$FR/packages/terminal-mcp/dist/index.js"
 echo "fake-binding" > "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
 ln -s "${SCRIPT_DIR}/../packages/claude-runner" "$FR/packages/claude-runner"
 cat > "$FR/scripts/lib/qa-reap-codex-slot-daemons.mjs" <<'REAPSTUB'
@@ -192,6 +201,12 @@ echo $$ > "$SD/lead-shell-pid.txt"
 mkdir -p "$FLYWHEEL_COMM_ROOT/$PROJ"
 if [[ "$AGENT" != "flywheel-test-30" ]]; then
   printf '{"pid": %s}\n' $$ > "$FLYWHEEL_COMM_ROOT/$PROJ/.inbox-ready-$AGENT"
+else
+  # FLY-2867 shape: claude-lead.sh wrote an MCP config without flywheel-inbox
+  # (inbox-mcp dist absent), so no lease can ever appear.
+  mkdir -p "$LEAD_WORKSPACE"
+  printf '%s\n' '{"mcpServers":{"flywheel-terminal":{"command":"node","args":["fixture"]}}}' \
+    > "$LEAD_WORKSPACE/.mcp.json"
 fi
 sleep 300
 STUBCARRIER
@@ -415,6 +430,8 @@ exit 0
 EOF
 cat > "$STUB_BIN/pnpm" <<'EOF'
 #!/bin/bash
+# FLY-2867: record the preflight build order (the fake HOME is per-test).
+printf '%s\n' "$*" >> "${HOME:-/nonexistent}/pnpm-calls.log" 2>/dev/null || true
 exit 0
 EOF
 cat > "$STUB_BIN/node" <<'EOF'
@@ -1027,6 +1044,7 @@ run_teardown() {  # <home> <slot>
       FLY1389_CODEX_RUNTIME="$repo_root/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
       FLY1389_PS_LOG="$SB/codex-ps.log" \
       FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
+      FLYWHEEL_QA_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
       FLYWHEEL_QA_TMUX="${FLY1389_QA_TMUX:-$STUB_BIN/tmux}" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
@@ -1061,6 +1079,50 @@ else
   fail "D: failed teardown did not preserve actionable CI diagnostics" "$(cat "$TEARDOWN_DIAGNOSTIC")"
 fi
 mv "$TEARDOWN_CENSUS_SAVED" "$TEARDOWN_CENSUS_LIB"
+
+# ── P: FLY-2867 preflight refuses a checkout without the inbox MCP dist ─────
+# The stub pnpm "builds" nothing, exactly like a build that produced no dist.
+# Without the assertion the deploy would continue and the Claude Lead's lease
+# would time out 120 s later with no cause.
+rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
+mv "$FR/packages/inbox-mcp/dist" "$SB/inbox-mcp-dist.parked"
+rm -f "$FH1/pnpm-calls.log"
+P1_OUT="$SB/p1-out.json"; P1_ERR="$SB/p1-err.log"
+if run_deploy "$FH1" "$LEAD_SLOT" "$P1_OUT" "$P1_ERR" --lead-ready-timeout 1; then
+  fail "P1: preflight must reject a checkout without packages/inbox-mcp/dist"
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+elif grep -qF 'Claude Lead MCP artifacts missing after build: packages/inbox-mcp/dist/index.js' "$P1_ERR" \
+    && ! grep -qF 'packages/terminal-mcp/dist/index.js' "$P1_ERR" \
+    && grep -qF 'ERROR [pre-flight]' "$P1_ERR" \
+    && [[ ! -e "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]]; then
+  pass "P1: preflight names the missing inbox MCP dist and claims no slot"
+else
+  fail "P1: missing inbox MCP dist was not a named preflight failure" "$(tail -5 "$P1_ERR")"
+fi
+# The preflight must BUILD both MCP packages (after flywheel-comm, whose types
+# they import), not merely check for a dist someone else produced.
+P1_BUILDS="$(grep -nE -- '--filter (flywheel-comm|flywheel-inbox-mcp|flywheel-terminal-mcp) build$' "$FH1/pnpm-calls.log" 2>/dev/null | cut -d' ' -f2 | tr '\n' ' ')"
+if [[ "$P1_BUILDS" == "flywheel-comm flywheel-inbox-mcp flywheel-terminal-mcp " ]]; then
+  pass "P1b: preflight builds inbox-mcp and terminal-mcp after flywheel-comm"
+else
+  fail "P1b: preflight build order for the Claude Lead MCP packages" \
+    "calls=[$(tr '\n' ';' < "$FH1/pnpm-calls.log" 2>/dev/null)]"
+fi
+mv "$SB/inbox-mcp-dist.parked" "$FR/packages/inbox-mcp/dist"
+
+mv "$FR/packages/terminal-mcp/dist" "$SB/terminal-mcp-dist.parked"
+P2_OUT="$SB/p2-out.json"; P2_ERR="$SB/p2-err.log"
+if run_deploy "$FH1" "$LEAD_SLOT" "$P2_OUT" "$P2_ERR" --lead-ready-timeout 1; then
+  fail "P2: preflight must reject a checkout without packages/terminal-mcp/dist"
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+elif grep -qF 'Claude Lead MCP artifacts missing after build: packages/terminal-mcp/dist/index.js' "$P2_ERR" \
+    && ! grep -qF 'packages/inbox-mcp/dist/index.js' "$P2_ERR" \
+    && [[ ! -e "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]]; then
+  pass "P2: preflight names the missing terminal MCP dist and claims no slot"
+else
+  fail "P2: missing terminal MCP dist was not a named preflight failure" "$(tail -5 "$P2_ERR")"
+fi
+mv "$SB/terminal-mcp-dist.parked" "$FR/packages/terminal-mcp/dist"
 
 # ── A: --alerts respects wrapper-v2's single Lead identity source ──────────
 rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
@@ -1150,7 +1212,8 @@ else
   if jq -e '.live == false and .reason == "gateway_socket_missing"' "$D2_RUNTIME/channel-liveness.json" >/dev/null 2>&1 \
       && jq -e '.phase == "channel" and .reason == "channel:gateway_socket_missing"' "$D2_RUNTIME/channel-failure.json" >/dev/null 2>&1 \
       && [[ "$(mode_of "$D2_RUNTIME/channel-failure.json")" == "600" ]] \
-      && grep -qF 'phase=channel' "$D2_ERR"; then
+      && grep -qF 'phase=channel' "$D2_ERR" \
+      && grep -qF 'Lead did not become ready: phase=channel reason=channel_not_live ' "$D2_ERR"; then
     pass "D2: missing socket rejects a ready lease and preserves private channel evidence"
   else
     fail "D2: channel failure lost its socket reason or evidence" "$(tail -20 "$D2_ERR")"
@@ -1497,10 +1560,26 @@ NODE
   done
   WORKER_SENTINEL_PID=""; DAEMON_SENTINEL_PID=""; TMUX_SENTINEL_PID=""
   [[ "$E_OK" == "1" ]] && pass "E: Lead-ful E2E — sanitize + cwd/PID parity + marker isolation + noLead=false"
+  # FLY-2867: a voice room torn down without `stop` left its lease in /tmp.
+  # Synthetic guild/channel ids never collide with a real room's lease.
+  E_VOICE_OWN="/tmp/flywheel-voice-room-99286700$$-1.lock"
+  E_VOICE_FOREIGN="/tmp/flywheel-voice-room-99286700$$-2.lock"
+  mkdir -p "$E_VOICE_OWN" "$E_VOICE_FOREIGN"
+  printf '{"schemaVersion":1,"slotDir":"/private/tmp/flywheel-test-slot-%s"}\n' "$LEAD_SLOT" \
+    > "$E_VOICE_OWN/owner.json"
+  printf '{"schemaVersion":1,"slotDir":"/private/tmp/flywheel-test-slot-99"}\n' \
+    > "$E_VOICE_FOREIGN/owner.json"
   run_teardown "$FH1" "$LEAD_SLOT"
   [[ ! -d "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]] \
     && pass "E2: teardown releases the Lead-ful slot" \
     || fail "E2: teardown left the lock behind"
+  if [[ ! -e "$E_VOICE_OWN" && -f "$E_VOICE_FOREIGN/owner.json" ]]; then
+    pass "E3: teardown releases its own voice-room lease and leaves another slot's"
+  else
+    fail "E3: teardown voice-room lease disposition" \
+      "own=$([[ -e "$E_VOICE_OWN" ]] && echo kept || echo released) foreign=$([[ -e "$E_VOICE_FOREIGN" ]] && echo kept || echo released) teardown=[$(grep -i 'voice\|Step\|ERROR' "$SB/teardown-slot-${LEAD_SLOT}.stderr.log" 2>/dev/null | tail -8 | tr '\n' ';')]"
+  fi
+  rm -rf "$E_VOICE_OWN" "$E_VOICE_FOREIGN"
 else
   fail "E: Lead-ful hermetic deploy failed" "$(tail -20 "$E_ERR")"
   run_teardown "$FH1" "$LEAD_SLOT" || true
@@ -1733,6 +1812,8 @@ else
     || { C_OK=0; fail "C: owner complete-marker env missing"; }
   grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${C_OWNER_DIR}/state/complete-failed$" "$C_EXTRA_DIR/lead-env.txt" \
     || { C_OK=0; fail "C: extra complete-marker env missing"; }
+  grep -qF "extra Lead flywheel-test-30 did not become ready within 1s (phase=lease reason=inbox_mcp_unregistered;" "$C_ERR" \
+    || { C_OK=0; fail "C: FLY-2867 extra-Lead timeout does not name the unregistered inbox MCP" "$(grep -F 'did not become ready' "$C_ERR" | tail -2)"; }
   for dead_pid in "$C_MAIN_PID" "$C_EXTRA_PID"; do
     for _poll in $(seq 1 20); do
       kill -0 "$dead_pid" 2>/dev/null || break

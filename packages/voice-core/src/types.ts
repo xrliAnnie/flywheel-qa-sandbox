@@ -59,6 +59,10 @@ export interface VoiceBackendCapabilities {
 	/** provides createConversation (speech-in + out). */
 	converse: boolean;
 	bargeIn: boolean;
+	/** Every requested utterance has a bound positive proof or a detectable failure. */
+	verbatim: boolean;
+	/** Final user utterances can be uniquely bound to a RoomIO speaker. */
+	attribution: boolean;
 	toolCallScheduling: "none" | "basic" | "scheduled";
 	transcriptGranularity: "final-only" | "partial";
 	supportsResume: boolean;
@@ -127,6 +131,11 @@ export interface ConversationOptions {
 	 */
 	systemPreamble?: string;
 	/**
+	 * Identity, memory, mode, and meeting context loaded exactly once at open.
+	 * Kept distinct from the silent, in-session injectContext operation.
+	 */
+	initialSessionContext?: string;
+	/**
 	 * FLY-967 round-5: voice barge-in switch. true (default) keeps the
 	 * backend's native interruption (server VAD cancels the live response when
 	 * the user starts speaking — right for headphone users). false pins
@@ -175,6 +184,82 @@ export interface SpeakResult {
 	durationMs: number;
 }
 
+export type VoiceSpeakKind =
+	| "brief"
+	| "question"
+	| "readback"
+	| "heartbeat"
+	| "cue"
+	| "control";
+
+export type VoiceSpeakVerification = "required" | "best_effort" | "none";
+export type VoiceContentProof =
+	| "none"
+	| "deterministic_tts"
+	| "transcript_equivalent";
+export type VoiceTransportProof = "none" | "submitted" | "playback_drained";
+
+interface SpeakReceiptBinding {
+	pendingKey: string;
+	requestDigest: string;
+}
+
+/** Illegal outcome/transport/proof combinations are unrepresentable. */
+export type SpeakReceipt = SpeakReceiptBinding &
+	(
+		| {
+				outcome: "rejected";
+				reason: string;
+				transport: "none";
+				contentProof: "none";
+		  }
+		| {
+				outcome: "failed";
+				reason: string;
+				transport: VoiceTransportProof;
+				contentProof: VoiceContentProof;
+		  }
+		| {
+				outcome: "completed";
+				transport: Exclude<VoiceTransportProof, "none">;
+				contentProof: VoiceContentProof;
+		  }
+	);
+
+export interface VoiceSpeakOptions {
+	pendingKey: string;
+	verification?: VoiceSpeakVerification;
+	/** Binds identical wording to the action it is allowed to arm. */
+	authorityBinding?: unknown;
+	/** Adapter-specific test/configuration seam; production default is bounded. */
+	chunkCharacters?: number;
+}
+
+export interface AudibleTailEstimate {
+	drained: boolean;
+	/** Always true: this is an estimate, not proof that a human heard audio. */
+	estimate: true;
+}
+
+/** The contract's single arm predicate. Transport is intentionally absent. */
+export function canArmVoiceAction(
+	receipt: SpeakReceipt,
+	input: {
+		expectedPendingKey: string;
+		expectedRequestDigest: string;
+		audibleTail: AudibleTailEstimate;
+	},
+): boolean {
+	return (
+		receipt.outcome === "completed" &&
+		(receipt.contentProof === "deterministic_tts" ||
+			receipt.contentProof === "transcript_equivalent") &&
+		receipt.pendingKey === input.expectedPendingKey &&
+		receipt.requestDigest === input.expectedRequestDigest &&
+		input.audibleTail.drained === true
+	);
+}
+
 export interface AnnouncerSession {
 	readonly sessionId: string;
 	/** serial queue: each speak() plays in order; abort/interrupt clears the rest. */
@@ -198,6 +283,7 @@ export type ConversationEventMap = {
 			interrupted?: boolean;
 		},
 	];
+	utterance: [VoiceUtterance];
 	"response-started": [];
 	"response-audio": [chunk: Buffer, format: AudioFormat];
 	"response-done": [];
@@ -219,6 +305,12 @@ export interface ConversationSession {
 	 * verbatim-quote pools built from user entries can never pick them up.
 	 */
 	sendText(text: string): void;
+	/** Proof-bound spoken output. Legacy adapters may leave it unsupported. */
+	speak?(
+		text: string,
+		kind: VoiceSpeakKind,
+		opts: VoiceSpeakOptions,
+	): Promise<SpeakReceipt>;
 	/**
 	 * FLY-545: SILENT context feed — catch this session up on meeting facts it
 	 * did not hear (the huddle's gated multi-session orchestration feeds the
@@ -246,6 +338,25 @@ export interface ConversationSession {
 	close(): Promise<ResumeHandle | undefined>;
 }
 
+export type VoiceAttribution =
+	| { kind: "known"; speakerUserId: string }
+	| { kind: "unknown"; reason: string };
+
+export interface VoiceUtterance {
+	sessionId: string;
+	sessionGeneration: number;
+	utteranceId: string;
+	transcriptId: string;
+	ts: string;
+	sequence: number;
+	source: "room_audio" | "engine_audio" | "engine_text";
+	role: "user" | "assistant";
+	text: string;
+	final: boolean;
+	interrupted?: boolean;
+	attribution: VoiceAttribution;
+}
+
 export interface BrainAdapter {
 	respond(
 		turn: { text: string; history: Turn[] },
@@ -263,11 +374,19 @@ export interface TtsEngine {
 }
 
 export interface TranscriptSink {
-	/** failures throw explicitly — never swallowed. */
-	append(entry: TranscriptEntry): void;
+	/** Local durability only; this receipt never authorizes a business action. */
+	append(entry: TranscriptEntry): Promise<TranscriptWriteReceipt>;
 	/** drain pending writes (async sinks); readers await this first. */
-	flush?(): Promise<void>;
+	flush?(): Promise<TranscriptFlushReceipt>;
 }
+
+export type TranscriptWriteReceipt =
+	| { outcome: "durable"; medium: "jsonl" | "memory" }
+	| { outcome: "failed"; medium: "jsonl" | "memory"; reason: string };
+
+export type TranscriptFlushReceipt =
+	| { outcome: "durable" }
+	| { outcome: "failed"; reason: string };
 
 export type TranscriptEntry = {
 	ts: string;
@@ -279,4 +398,11 @@ export type TranscriptEntry = {
 	final: boolean;
 	/** FLY-1065: the turn was cut short by a barge-in (recorded as-said). */
 	interrupted?: boolean;
+	/** Present for the normalized V1 utterance path; legacy records omit them. */
+	sessionGeneration?: number;
+	utteranceId?: string;
+	transcriptId?: string;
+	sequence?: number;
+	source?: VoiceUtterance["source"];
+	attribution?: VoiceAttribution;
 };

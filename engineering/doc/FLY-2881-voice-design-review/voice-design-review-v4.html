@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音第四版：订阅能不能用</title>
+<style>
+:root{
+  --bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;
+  --redbg:#fff1f0;--amberbg:#fff7e8;--bluebg:#eef5ff;--greenbg:#eefaf1;--purplebg:#f7efff;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px;color:var(--navy)}
+h2{font-size:19px;margin:0 0 4px;color:var(--navy)}
+h3{font-size:15px;margin:14px 0 6px}
+.sub{color:var(--dim);font-size:13px}
+.section{margin-top:28px}
+.num{display:inline-block;min-width:26px;height:26px;border-radius:13px;background:var(--navy);color:#fff;font-size:13px;text-align:center;line-height:26px;margin-right:8px;vertical-align:2px}
+.lead{color:#3a3a3c;margin:6px 0 12px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin:12px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card p{margin:6px 0}
+.tldr{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin-top:16px}
+.tldr li{margin:4px 0}
+ul{padding-left:20px;margin:6px 0}
+.badge{display:inline-block;font-size:12px;line-height:1;padding:4px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.b-proven{background:var(--greenbg);color:#1e7d32}
+.b-suspect{background:var(--amberbg);color:#a35a00}
+.b-unknown{background:#f0f0f2;color:#5a5a5e}
+.b-rec{background:var(--navy);color:#fff}
+code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px}
+.path{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--dim);word-break:break-all}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 10px;color:#3a3a3c;margin:8px 0}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th,.tbl td{text-align:left;vertical-align:top;padding:8px 6px;border-top:1px solid var(--line)}
+.tbl th{font-size:12px;color:var(--dim);font-weight:600;border-top:none}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.diagram{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px;margin:12px 0}
+.diagram svg{width:100%;max-width:520px;height:auto;display:block;margin:0 auto}
+.timeline{list-style:none;padding:0;margin:8px 0}
+.timeline li{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}
+.timeline li:first-child{border-top:none}
+.timeline .t{flex:0 0 58px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);padding-top:2px}
+.timeline .who-her{color:var(--blue);font-weight:600}
+.timeline .who-bot{color:var(--purple);font-weight:600}
+.timeline .who-sys{color:var(--red);font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:640px){.grid2{grid-template-columns:1fr}.tbl{font-size:13px}}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;font-size:14px;margin-top:8px}
+.kv .k{color:var(--dim)}
+.opt-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.q{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px 16px;margin:10px 0;border-left:4px solid var(--purple)}
+.q b{color:var(--navy)}
+.foot{margin-top:28px;font-size:12.5px;color:var(--dim)}
+.foot li{margin:3px 0}
+.ok{color:#1e7d32;font-weight:600}.no{color:#c4271d;font-weight:600}.mid{color:#a35a00;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>语音第四版：用 Codex 自带的后台 agent + 你的订阅，行不行</h1>
+<div class="sub">回答你 12:54 在第三版上的追问 · 2026-09-25 · 查证 + 一次最小实验（实时会话开了 2 次，每次不到 20 秒，只读）</div>
+
+<div class="tldr">
+<b>结论</b>
+<ul>
+<li><b>行，实测跑通了。</b>在同一个 Codex 会话里：实时语音那一路用 API key；后台 agent 那一路用<b>你的 ChatGPT 订阅</b>（school 号，Pro）。模型自己决定把「读一个文件」交给后台；后台在只读沙盒里读完，<b>0.3 秒后前台就用口语说出了结果</b>。从提问到说出结论约 7 秒。</li>
+<li><b>你的直觉是对的：Codex CLI 自己就能语音，而且用订阅就行。</b>它的 <span class="path">/voice</span>（F8）走的是 WebRTC 这种连接方式，用 ChatGPT 登录就能跑。<b>只有我们 B 现在用的 WebSocket 连接</b>才非得要 API key。第三版里「实时语音只能用 API key」这句话说得太死，这里更正。</li>
+<li><b>方案②（另开一个专用文字 agent）可以不要了。</b>Codex 自带的后台 agent 就是你说的 sub-agent：同一个对话，走订阅，结果会自动交回，前台用口语讲出来。</li>
+<li>Codex App（桌面）的语音叫 ChatGPT Voice，用订阅就能语音操作电脑、指挥 Codex。但它没有公开给第三方用的接口。</li>
+</ul>
+</div>
+
+<div class="section">
+<h2><span class="num">A</span>实验：一半用 API key，一半用订阅</h2>
+<p class="lead">做法：建了一个临时的 Codex 配置目录，登录文件用<b>软链</b>指向你现有的 ChatGPT 登录（没有复制，没有跑任何登录命令）；API key 只放在进程的环境变量里。会话设成只读沙盒、不联网、不需要审批。实时会话用文字输出（不出声音，省钱），发一句「请读取 hello.txt 的第一行」进去。</p>
+<div class="scroll">
+<table class="tbl" style="background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+<tr><th style="padding-left:12px">时间（第 2 次）</th><th>发生了什么</th></tr>
+<tr><td style="padding-left:12px">0.5 秒</td><td>登录识别为 <b>ChatGPT · Pro</b>（school 号）；后台的对话模型是 gpt-6-astra，只读沙盒，不联网</td></tr>
+<tr><td style="padding-left:12px">1.2 秒</td><td>实时会话连上（用的是 API key）</td></tr>
+<tr><td style="padding-left:12px">1.6 秒</td><td>实时模型<b>自己调用了「交给后台 agent」</b>，带着原话</td></tr>
+<tr><td style="padding-left:12px">1.8 秒</td><td>后台回合开始（走订阅）</td></tr>
+<tr><td style="padding-left:12px">4.6 秒</td><td>后台的进度「我来读取 hello.txt 的第一行」<b>自动</b>推回实时会话，作为背景、不出声</td></tr>
+<tr><td style="padding-left:12px">5.6 秒</td><td>后台在只读沙盒里执行 <span class="path">head -n 1 hello.txt</span>，0.1 秒完成</td></tr>
+<tr><td style="padding-left:12px">7.5 秒</td><td>后台回合完成：「第一行是：hello from fly2881 experiment」</td></tr>
+<tr><td style="padding-left:12px">7.7 秒</td><td>Codex 自动把「后台完成」作为那次委托的回答交回</td></tr>
+<tr><td style="padding-left:12px"><b>8.0 秒</b></td><td>前台说完：「<b>文件的第一行是 "hello from fly2881 experiment"。</b>」（口语转述，内容一字不差）</td></tr>
+</table>
+</div>
+<ul class="sub" style="margin-top:8px">
+<li>第 1 次实验结果相同（委托 2.6 秒，后台回合 6.2 秒）；那次一完成就关了会话，没看到念结果那一步，所以做了第 2 次。实时会话一共开了 2 次（8.8 秒、16.5 秒），第 3 次没用。</li>
+<li>你的 ChatGPT 登录文件实验前后<b>完全没变</b>：修改时间、账号、上次刷新时间都一样。实验用到的临时软链已删除。</li>
+<li>13:00 时这把 API key 还能开实时会话；余额还剩多少没查。</li>
+<li>源码依据：用订阅登录时，实时语音会<b>回退</b>去读环境变量里的 API key，源码注释写明这是「临时做法」（<span class="path">codex-rs/core/src/realtime_conversation.rs:1873-1895</span>）；后台回合就是这个对话里的一轮普通回合（<span class="path">session/turn_input.rs:567-586</span>）。</li>
+<li>这次<b>没有</b>测到的：真的声音（用的是文字输入输出）、Lead 的身份和记忆（没装）、需要联网的查询（Linear、Bridge 状态）。</li>
+</ul>
+<p class="sub">实验脚本和日志（已去掉密钥，邮箱已打码）：<span class="path">engineering/doc/FLY-2881-voice-design-review/evidence-exp/</span>（run.mjs、log-1.jsonl、log-2.jsonl），Codex CLI 0.157.0。</p>
+</div>
+
+<div class="section">
+<h2><span class="num">B</span>Codex CLI 自己的语音</h2>
+<ul>
+<li><b>有。</b>斜杠命令 <span class="path">/voice</span>，F8 开关，Ctrl+X 静音（<span class="path">tui/src/slash_command.rs:42,136</span>、<span class="path">tui/src/keymap.rs:1661-1662</span>）。从 0.156.0（9-22）起默认开启（<a href="https://learn.chatgpt.com/docs/changelog">发布说明</a>）。</li>
+<li><b>它走 WebRTC 连接，用的是新一代实时模型 gpt-live-1-codex</b>（<span class="path">tui/src/app_server_session/realtime.rs:20-57</span>、<span class="path">core/src/realtime_conversation.rs:112</span>）。这条路<b>用 ChatGPT 登录就能跑</b>：连到 chatgpt.com 的 Codex 实时通话接口，带的是你的订阅凭据（<span class="path">core/src/client.rs:679-713</span>；Codex 自己的测试 <span class="path">core/tests/suite/realtime_conversation.rs:807-940</span> 断言的就是这件事）。</li>
+<li><b>只有 WebSocket 连接才要 API key</b>（<span class="path">realtime_conversation.rs:1407-1415,1873-1897</span>），源码里有待办写着以后会去掉这个限制。我们 B 用的正是 WebSocket。</li>
+<li>源码依据是 openai/codex @44a9bfa（和 0.157.0 同一天）。WebRTC + 订阅这条路这次<b>没有实测</b>：它要求客户端能发起一个 WebRTC 连接，Node 里要另外接一个 WebRTC 库，今天做不完。</li>
+</ul>
+</div>
+
+<div class="section">
+<h2><span class="num">C</span>Codex App（桌面）的语音：只看公开资料</h2>
+<ul>
+<li>桌面上叫 <b>ChatGPT Voice</b>，由 GPT-Live 驱动，2026-07-23 发布。官方原话：「只用声音就能操作电脑、指挥在 ChatGPT Work 或 Codex 里运行的多个 agent」。Plus、Pro、Business、Edu、Enterprise 套餐都能用，走订阅（<a href="https://learn.chatgpt.com/docs/features/voice">官方文档</a>、<a href="https://community.openai.com/t/chatgpt-voice-is-now-in-the-desktop-app/1388031">社区公告</a>、<a href="https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan">订阅用 Codex 的说明</a>）。</li>
+<li>另有一个「听写」功能，只是把话转成文字填进输入框，和 ChatGPT Voice 是两回事。</li>
+<li><b>给第三方用的接口：查不到公开资料。</b>它是不是复用 Codex app-server 的实时接口，也查不到公开资料。</li>
+</ul>
+</div>
+
+<div class="section">
+<h2><span class="num">D</span>「Codex 自带后台 agent + 订阅」能替代方案② 吗？还差什么</h2>
+<p class="lead"><b>能替代。</b>第三版的做法①（让语音会话里 Codex 自带的后台 agent 去查）之所以当时判不行，是因为 2799 的容器被特意设成了「只认 API key、后台回合一开就掐掉、没有任何工具」。这些都是我们自己加的限制，不是 Codex 做不到。还差的是：</p>
+<div class="scroll">
+<table class="tbl" style="background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+<tr><th style="padding-left:12px">#</th><th>还差什么</th><th>多大</th></tr>
+<tr><td style="padding-left:12px">1</td><td>2799 的容器改成：登录用<b>订阅</b>，API key 只给语音那一路；「客户端自己管交接」关掉；<b>不再掐后台回合</b>。实验里的配置就是这个样子</td><td>小（改配置和几处代码）</td></tr>
+<tr><td style="padding-left:12px">2</td><td>把 Lead 的身份和记忆装进这个对话（2799 已经有这一步），让后台 agent 也带着它们</td><td>小</td></tr>
+<tr><td style="padding-left:12px">3</td><td>后台 agent 的<b>只读</b>工具：读代码（实验已证可行）；查 Linear、Bridge 状态需要只读的连接或只读的 MCP（现在沙盒不联网，<b>未测</b>）</td><td>中</td></tr>
+<tr><td style="padding-left:12px">4</td><td>「动手」的边界：后台 agent 只读；派活、批准、改东西要有一个「交给 Lead 本体」的出口（走 Bridge）</td><td>中</td></tr>
+<tr><td style="padding-left:12px">5</td><td>额度：后台回合走当前活跃的订阅号（今天只有 school 可用，其余号本周已满），和所有 Lead 共用</td><td>风险，不是代码</td></tr>
+<tr><td style="padding-left:12px">6</td><td>如果连语音那一路也要走订阅：改用 WebRTC 连接（CLI 的 /voice 就是这条路），需要在我们的 Discord 房间进程里接一个 WebRTC 端点。服务端是否接受我们这种接法，<b>未验证</b></td><td>大，可以放到后面</td></tr>
+<tr><td style="padding-left:12px">7</td><td>真声音、真房间里测一次（这次是文字）</td><td>QA</td></tr>
+</table>
+</div>
+<p class="sub" style="margin-top:8px">要你拍板的只有一条：<b>语音那一路先继续用 API key</b>（改动小，今天就能按实验的配置做），WebRTC + 订阅作为之后的第二步。可以吗？</p>
+</div>
+
+</div>
+</body>
+</html>

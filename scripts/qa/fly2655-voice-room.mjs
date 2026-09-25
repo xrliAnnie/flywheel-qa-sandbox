@@ -400,6 +400,15 @@ export function buildVoiceProcessEnv(input) {
 		input.meetingNotesPath,
 	])
 		contained(input.slotDir, path);
+	const codexBackendRequested =
+		input.backendId !== undefined || input.codexBin !== undefined;
+	if (codexBackendRequested) {
+		check(input.backendId === "codex-realtime", "voice_backend_invalid");
+		check(
+			typeof input.codexBin === "string" && isAbsolute(input.codexBin),
+			"voice_codex_binary_absolute_required",
+		);
+	}
 	return {
 		HOME: input.baseEnv.HOME,
 		PATH: input.baseEnv.PATH,
@@ -416,6 +425,12 @@ export function buildVoiceProcessEnv(input) {
 		FLYWHEEL_VOICE_STATE_DIR: join(stateDir, "voice"),
 		FLYWHEEL_VOICE_CODEX_HOME: join(stateDir, "voice-codex-home"),
 		FLYWHEEL_VOICE_BUILD_SHA: input.buildSha,
+		...(codexBackendRequested
+			? {
+					FLYWHEEL_VOICE_BACKEND: input.backendId,
+					FLYWHEEL_CODEX_BIN: input.codexBin,
+				}
+			: {}),
 		FLYWHEEL_VOICE_HOST_CONFIG: input.voiceHostPath,
 		FLYWHEEL_MEETING_NOTES_CONFIG: input.meetingNotesPath,
 		FLYWHEEL_DIR: input.repoRoot,
@@ -678,6 +693,8 @@ function voiceEnv(context) {
 		projectsJson: context.projectsJson,
 		projectName: context.topology.projectName,
 		buildSha: context.topology.expectedHead,
+		backendId: process.env.FLYWHEEL_VOICE_BACKEND,
+		codexBin: process.env.FLYWHEEL_CODEX_BIN,
 		voiceHostPath: context.fixtureReceipt.voiceHostPath,
 		meetingNotesPath: context.fixtureReceipt.meetingNotesPath,
 		baseEnv: { HOME: homedir(), PATH: process.env.PATH ?? "/usr/bin:/bin" },
@@ -782,38 +799,161 @@ async function prepare(args) {
 	return receipt;
 }
 
-function roomLeasePath(topology) {
-	return `/tmp/flywheel-voice-room-${topology.guildId}-${topology.voiceChannelId}.lock`;
+const VOICE_ROOM_LEASE_ROOT = "/tmp";
+const VOICE_ROOM_LEASE_RE = /^flywheel-voice-room-[0-9]+-[0-9]+\.lock$/;
+
+function roomLeasePath(topology, root = VOICE_ROOM_LEASE_ROOT) {
+	return join(
+		root,
+		`flywheel-voice-room-${topology.guildId}-${topology.voiceChannelId}.lock`,
+	);
 }
 
-export function acquireVoiceRoomLease(topology) {
-	const path = roomLeasePath(topology);
-	let created = false;
+// FLY-2867: the spellings one 529 slot directory can carry in an owner record.
+function slotDirAliases(slotDir) {
+	const aliases = new Set([slotDir]);
 	try {
-		mkdirSync(path, { mode: 0o700 });
-		created = true;
-		privateWrite(join(path, "owner.json"), {
-			schemaVersion: 1,
-			slotDir: topology.slotDir,
-			projectName: topology.projectName,
-			leadId: topology.leadId,
-			voiceChannelId: topology.voiceChannelId,
-		});
-	} catch (error) {
-		if (error?.code !== "EEXIST") throw error;
-		const owner = json(join(path, "owner.json"));
-		check(owner.slotDir === topology.slotDir, "voice_room_lease_conflict");
+		aliases.add(realpathSync(slotDir));
+	} catch {
+		// A torn-down slot has no realpath; the textual aliases still apply.
 	}
-	return { path, created };
+	for (const alias of [...aliases]) {
+		if (alias.startsWith("/private/tmp/")) aliases.add(alias.slice(8));
+		else if (alias.startsWith("/tmp/")) aliases.add(`/private${alias}`);
+	}
+	return aliases;
 }
 
-export function releaseVoiceRoomLease(topology) {
-	const path = roomLeasePath(topology);
+// A recorded daemon counts as alive only while the same process (pid plus
+// start time and argv) still runs; a malformed record is treated as alive.
+function recordedDaemonAlive(owner) {
+	const daemon = owner.daemon;
+	if (daemon === undefined) return false;
+	if (
+		!Number.isInteger(daemon?.pid) ||
+		daemon.pid <= 1 ||
+		typeof daemon.processIdentity !== "string" ||
+		!daemon.processIdentity
+	) {
+		return true;
+	}
+	if (!processAlive(daemon.pid)) return false;
+	try {
+		return processIdentity(daemon.pid) === daemon.processIdentity;
+	} catch {
+		return false;
+	}
+}
+
+// FLY-2867: a teardown that never ran `stop` leaves the lease behind. It is
+// stale only when its owner is a 529 slot whose directory no longer exists and
+// no recorded voice daemon of that owner is still running.
+function staleVoiceRoomOwner(owner) {
+	if (typeof owner?.slotDir !== "string" || !SLOT_RE.test(owner.slotDir)) {
+		return false;
+	}
+	for (const alias of slotDirAliases(owner.slotDir)) {
+		try {
+			lstatSync(alias);
+			return false;
+		} catch (error) {
+			if (error?.code !== "ENOENT") return false;
+		}
+	}
+	return !recordedDaemonAlive(owner);
+}
+
+// Move the stale lease aside before deleting it so two reclaimers cannot both
+// win; if what was moved turns out not to be stale, put it back.
+function reclaimStaleVoiceRoomLease(path) {
+	const tombstone = `${path}.stale-${process.pid}-${Date.now()}`;
+	try {
+		renameSync(path, tombstone);
+	} catch (error) {
+		if (error?.code === "ENOENT") return;
+		throw error;
+	}
+	if (!staleVoiceRoomOwner(json(join(tombstone, "owner.json")))) {
+		renameSync(tombstone, path);
+		check(false, "voice_room_lease_conflict");
+	}
+	rmSync(tombstone, { recursive: true, force: true });
+}
+
+export function acquireVoiceRoomLease(topology, options = {}) {
+	const path = roomLeasePath(topology, options.root);
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			mkdirSync(path, { mode: 0o700 });
+			privateWrite(join(path, "owner.json"), {
+				schemaVersion: 1,
+				slotDir: topology.slotDir,
+				projectName: topology.projectName,
+				leadId: topology.leadId,
+				voiceChannelId: topology.voiceChannelId,
+			});
+			return { path, created: true };
+		} catch (error) {
+			if (error?.code !== "EEXIST") throw error;
+			const owner = json(join(path, "owner.json"));
+			if (owner.slotDir === topology.slotDir) return { path, created: false };
+			check(
+				attempt === 0 && staleVoiceRoomOwner(owner),
+				"voice_room_lease_conflict",
+			);
+			reclaimStaleVoiceRoomLease(path);
+		}
+	}
+	check(false, "voice_room_lease_conflict");
+}
+
+// FLY-2867: record the detached daemon so a later reclaim or teardown can tell
+// a live voice room from a leftover lease.
+function recordVoiceRoomDaemon(lease, pid) {
+	const ownerPath = join(lease.path, "owner.json");
+	privateWrite(ownerPath, {
+		...json(ownerPath),
+		daemon: { pid, processIdentity: processIdentity(pid) },
+	});
+}
+
+export function releaseVoiceRoomLease(topology, options = {}) {
+	const path = roomLeasePath(topology, options.root);
 	if (!existsSync(path)) return false;
 	const owner = json(join(path, "owner.json"));
 	check(owner.slotDir === topology.slotDir, "voice_room_lease_not_owned");
 	rmSync(path, { recursive: true });
 	return true;
+}
+
+// FLY-2867: teardown removes every lease its slot still owns unless the
+// recorded voice daemon is alive (that lease is reported, never deleted).
+export function releaseVoiceRoomLeasesForSlot(slotDir, options = {}) {
+	check(SLOT_RE.test(slotDir), "529_slot_directory_required");
+	const root = options.root ?? VOICE_ROOM_LEASE_ROOT;
+	const aliases = slotDirAliases(slotDir);
+	const released = [];
+	const retained = [];
+	for (const name of readdirSync(root).sort()) {
+		if (!VOICE_ROOM_LEASE_RE.test(name)) continue;
+		const path = join(root, name);
+		let owner;
+		try {
+			owner = json(join(path, "owner.json"));
+		} catch {
+			continue;
+		}
+		if (typeof owner?.slotDir !== "string" || !aliases.has(owner.slotDir)) {
+			continue;
+		}
+		if (recordedDaemonAlive(owner)) {
+			retained.push(path);
+			continue;
+		}
+		rmSync(path, { recursive: true, force: true });
+		released.push(path);
+	}
+	return { released, retained };
 }
 
 function parseCliJson(output, reason) {
@@ -900,6 +1040,7 @@ async function start(args) {
 		check(child?.pid, "voice_spawn_failed");
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 1000));
 		check(processAlive(child.pid), "voice_process_exited_early");
+		recordVoiceRoomDaemon(lease, child.pid);
 		session = parseCliJson(
 			execFileSync(process.execPath, command, {
 				cwd: repo,
@@ -1128,7 +1269,9 @@ async function verify(args) {
 function commandArgs(argv) {
 	const command = argv[0];
 	check(
-		["prepare", "start", "stop", "verify"].includes(command),
+		["prepare", "start", "stop", "verify", "release-slot-leases"].includes(
+			command,
+		),
 		"prepare_start_stop_or_verify_required",
 	);
 	const { values } = parseArgs({
@@ -1139,9 +1282,19 @@ function commandArgs(argv) {
 			mode: { type: "string" },
 			topic: { type: "string" },
 			session: { type: "string" },
+			"lease-root": { type: "string" },
 		},
 		allowPositionals: false,
 	});
+	// FLY-2867: teardown releases leases without a room head to verify.
+	if (command === "release-slot-leases") {
+		check(values["slot-dir"], "slot_dir_required");
+		return {
+			command,
+			slotDir: values["slot-dir"],
+			leaseRoot: values["lease-root"],
+		};
+	}
 	check(
 		values["slot-dir"] && values["expected-head"],
 		"slot_dir_and_expected_head_required",
@@ -1174,13 +1327,15 @@ function commandArgs(argv) {
 async function main(argv) {
 	const args = commandArgs(argv);
 	const result =
-		args.command === "prepare"
-			? await prepare(args)
-			: args.command === "start"
-				? await start(args)
-				: args.command === "stop"
-					? await stop(args)
-					: await verify(args);
+		args.command === "release-slot-leases"
+			? releaseVoiceRoomLeasesForSlot(args.slotDir, { root: args.leaseRoot })
+			: args.command === "prepare"
+				? await prepare(args)
+				: args.command === "start"
+					? await start(args)
+					: args.command === "stop"
+						? await stop(args)
+						: await verify(args);
 	process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 

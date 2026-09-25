@@ -8,8 +8,10 @@
  */
 import {
 	chmodSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -71,6 +73,73 @@ it("spawned app-server env carries NO action secrets but keeps CODEX_HOME + plai
 	// and no secret VALUE survived under any name
 	const values = Object.values(childEnv).join("\n");
 	expect(values).not.toContain("leak-me-not");
+});
+
+it("an explicit voice profile preserves only its supplied API key and cwd", async () => {
+	const envDump = join(dir, "voice-env.json");
+	const cwdDump = join(dir, "voice-cwd.txt");
+	const voiceCwd = join(dir, "voice-work");
+	mkdirSync(voiceCwd);
+	const stub = join(dir, "codex-voice-stub.js");
+	writeFileSync(
+		stub,
+		`#!/usr/bin/env node\nrequire("fs").writeFileSync(${JSON.stringify(envDump)}, JSON.stringify(process.env)); require("fs").writeFileSync(${JSON.stringify(cwdDump)}, process.cwd());\n`,
+	);
+	chmodSync(stub, 0o755);
+	const base = {
+		PATH: process.env.PATH,
+		OPENAI_API_KEY: "wrong-parent-key",
+		DISCORD_BOT_TOKEN: "business-secret",
+		FLYWHEEL_API_TOKEN: "carrier-secret",
+		SAFE_NAME: "keep-me",
+	};
+	for (const incompatible of [
+		{ washSecrets: false },
+		{ carrierInstanceId: "business-carrier" },
+	]) {
+		expect(() =>
+			spawnCodexAppServer({
+				codexBin: stub,
+				mcpArgv: [],
+				codexHome: join(dir, "invalid-voice-home"),
+				voiceProfile: { openAiApiKey: "voice-api-key" },
+				baseEnv: base,
+				...incompatible,
+			}),
+		).toThrow("voice_profile_incompatible_with_business_credentials");
+	}
+
+	const transport = spawnCodexAppServer({
+		codexBin: stub,
+		mcpArgv: [],
+		codexHome: join(dir, "voice-home"),
+		cwd: voiceCwd,
+		voiceProfile: { openAiApiKey: "voice-api-key" },
+		baseEnv: base,
+	});
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(
+			() => reject(new Error("stub did not exit")),
+			5000,
+		);
+		transport.onExit(() => {
+			clearTimeout(timer);
+			resolve();
+		});
+	});
+
+	const childEnv = JSON.parse(readFileSync(envDump, "utf8")) as Record<
+		string,
+		string
+	>;
+	expect(childEnv.OPENAI_API_KEY).toBe("voice-api-key");
+	expect(childEnv.DISCORD_BOT_TOKEN).toBeUndefined();
+	expect(childEnv.FLYWHEEL_API_TOKEN).toBeUndefined();
+	expect(childEnv.SAFE_NAME).toBe("keep-me");
+	expect(JSON.stringify(childEnv)).not.toContain("wrong-parent-key");
+	expect(JSON.stringify(childEnv)).not.toContain("business-secret");
+	expect(JSON.stringify(childEnv)).not.toContain("carrier-secret");
+	expect(readFileSync(cwdDump, "utf8")).toBe(realpathSync(voiceCwd));
 });
 
 it("prefixes optional feature argv while keeping the default argv byte-identical", async () => {

@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音设计复盘</title>
+<style>
+:root{
+  --bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;
+  --redbg:#fff1f0;--amberbg:#fff7e8;--bluebg:#eef5ff;--greenbg:#eefaf1;--purplebg:#f7efff;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px;color:var(--navy)}
+h2{font-size:19px;margin:0 0 4px;color:var(--navy)}
+h3{font-size:15px;margin:14px 0 6px}
+.sub{color:var(--dim);font-size:13px}
+.section{margin-top:28px}
+.num{display:inline-block;min-width:26px;height:26px;border-radius:13px;background:var(--navy);color:#fff;font-size:13px;text-align:center;line-height:26px;margin-right:8px;vertical-align:2px}
+.lead{color:#3a3a3c;margin:6px 0 12px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin:12px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card p{margin:6px 0}
+.tldr{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin-top:16px}
+.tldr li{margin:4px 0}
+ul{padding-left:20px;margin:6px 0}
+.badge{display:inline-block;font-size:12px;line-height:1;padding:4px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.b-proven{background:var(--greenbg);color:#1e7d32}
+.b-suspect{background:var(--amberbg);color:#a35a00}
+.b-unknown{background:#f0f0f2;color:#5a5a5e}
+.b-rec{background:var(--navy);color:#fff}
+code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px}
+.path{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--dim);word-break:break-all}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 10px;color:#3a3a3c;margin:8px 0}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th,.tbl td{text-align:left;vertical-align:top;padding:8px 6px;border-top:1px solid var(--line)}
+.tbl th{font-size:12px;color:var(--dim);font-weight:600;border-top:none}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.diagram{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px;margin:12px 0}
+.diagram svg{width:100%;max-width:520px;height:auto;display:block;margin:0 auto}
+.timeline{list-style:none;padding:0;margin:8px 0}
+.timeline li{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}
+.timeline li:first-child{border-top:none}
+.timeline .t{flex:0 0 58px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);padding-top:2px}
+.timeline .who-her{color:var(--blue);font-weight:600}
+.timeline .who-bot{color:var(--purple);font-weight:600}
+.timeline .who-sys{color:var(--red);font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:640px){.grid2{grid-template-columns:1fr}.tbl{font-size:13px}}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;font-size:14px;margin-top:8px}
+.kv .k{color:var(--dim)}
+.opt-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.q{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px 16px;margin:10px 0;border-left:4px solid var(--purple)}
+.q b{color:var(--navy)}
+.foot{margin-top:28px;font-size:12.5px;color:var(--dim)}
+.foot li{margin:3px 0}
+.ok{color:#1e7d32;font-weight:600}.no{color:#c4271d;font-weight:600}.mid{color:#a35a00;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>语音设计复盘：引擎 A、B 各坏在哪，修完怎么验</h1>
+<div class="sub">给你当面讨论用 · 2026-09-25 · 依据：你今天 11:08–11:31 测 A、B 的现场记录、两份 QA 取证、代码、PRD 和你之前定的原则 · 只整理，没有改任何东西</div>
+
+<div class="tldr">
+<b>先说结论</b>
+<ul>
+<li><b>你 11:31 已经定了：A、B 都打回，各自修完后再在真房里对比。</b>这一页不替你选，只把结构、问题、修法和验收讲清楚。</li>
+<li><b>A 的毛病偏结构性。</b>三个会说话的角色（前台快答模型、播报器、后台 Lead）共用一个喇叭，却没有统一记录「现在谁拿着麦」。房间里一点小声响就被当成「你在说话」，于是所有人一起闭嘴（<span class="badge b-proven">已证实</span>）。「交不交给 Lead」由最不懂项目的前台模型决定，所以你问 PR 状态时没人接。「换声音」是设计本来如此。</li>
+<li><b>B 的三个毛病原因都已查到，都是能修的实现问题。</b>它复述你的问题，是我们自己的回环；等待音乐来自主干上一版没更新的旧房间；卡顿出在播放那一侧。</li>
+<li><b>有几样是两边共有的：</b>卡顿里的一环（声音的转换方式）、旧底座、播报照念原文，以及在真房里出了事看不见。</li>
+<li>第 6 部分是供讨论的长期结构方向，不改变你的决定。</li>
+</ul>
+</div>
+
+<!-- ============ 1 ============ -->
+<div class="section">
+<h2><span class="num">1</span>现在的结构：A 和 B 各长什么样</h2>
+<p class="lead">两边都是三层：<b>房间层</b>是耳朵和喇叭，<b>对话引擎</b>负责听懂和回答，<b>模式层</b>决定什么时候主动开口。区别在中间一层：<b>A</b> 有两个脑子、两个嗓子（前台快答 + 后台 Lead）；<b>B</b> 只有一个会说话的，是带着 Raya 身份和记忆的实时会话，要动手的事它交给 Lead 本体去做。</p>
+
+<h3>引擎 A（你 11:08–11:21 测的）</h3>
+<div class="diagram">
+<svg viewBox="0 0 360 820" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="语音三层架构图：房间层、引擎 A、模式层">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a365d"/></marker>
+    <marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#007aff"/></marker>
+    <marker id="arp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#af52de"/></marker>
+  </defs>
+  <style>
+    .bx{fill:#fff;stroke:#d1d1d6;stroke-width:1}
+    .t1{font:600 14px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1d1d1f}
+    .t2{font:12.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#3a3a3c}
+    .t3{font:10.5px "SF Mono",Menlo,monospace;fill:#86868b}
+    .lt{font:700 11.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#86868b}
+    .al{font:11.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1a365d}
+    .ln{stroke:#1a365d;stroke-width:1.5;fill:none}
+  </style>
+  <rect x="105" y="6" width="150" height="36" rx="18" fill="#1a365d"/>
+  <text x="180" y="29" text-anchor="middle" class="t1" style="fill:#fff">你（Discord 语音房）</text>
+  <path class="ln" d="M180,42 L180,82" marker-end="url(#ar)"/>
+  <text x="188" y="66" class="al">你的声音</text>
+
+  <text x="24" y="98" class="lt">① 房间层 · 耳朵</text>
+  <rect class="bx" x="24" y="104" width="306" height="70" rx="10"/>
+  <text x="36" y="127" class="t1">收音 + 「是不是人声」门</text>
+  <text x="36" y="147" class="t2">把房间声音切成一段段「她开口了」</text>
+  <text x="36" y="164" class="t3">voice-bridge/src/room/RoomIO.ts</text>
+  <path class="ln" d="M180,174 L180,210" marker-end="url(#ar)"/>
+
+  <text x="24" y="206" class="lt">② 对话引擎 A</text>
+  <rect x="24" y="212" width="306" height="92" rx="10" fill="#eef5ff" stroke="#007aff"/>
+  <text x="36" y="235" class="t1">前台快答模型（OpenAI 实时）</text>
+  <text x="36" y="255" class="t2">简单题自己答；复杂的由它决定交不交</text>
+  <text x="36" y="274" class="t2">嗓子：它自带的 <tspan font-weight="700">marin</tspan></text>
+  <text x="36" y="293" class="t3">voice-codex/src/live-lead-adapter.ts</text>
+  <path class="ln" d="M180,304 L180,334" marker-end="url(#ar)"/>
+  <text x="188" y="324" class="al">交接（前台说了算）</text>
+  <rect class="bx" x="24" y="336" width="306" height="74" rx="10"/>
+  <text x="36" y="359" class="t1">后台 Lead 本体（Raya）</text>
+  <text x="36" y="379" class="t2">有项目记忆，能真的查、真的做</text>
+  <text x="36" y="398" class="t3">Bridge 交接 → Lead 信箱 → 回执</text>
+  <rect x="24" y="420" width="306" height="56" rx="10" fill="#fff1f0" stroke="#ff3b30"/>
+  <text x="36" y="443" class="t1" style="fill:#c4271d">「谁拿着麦」没有统一记录</text>
+  <text x="36" y="463" class="t2">约 8 个零散开关 + 几个计时器互相等</text>
+
+  <text x="24" y="500" class="lt">③ 模式层 · 什么时候主动说</text>
+  <rect class="bx" x="24" y="506" width="306" height="92" rx="10"/>
+  <text x="36" y="529" class="t1">耳机模式</text>
+  <text x="36" y="549" class="t2">开场白 → 收件箱逐条念 → 5 分钟报平安</text>
+  <text x="36" y="568" class="t2">都要等「她这一轮被回答完」才开口</text>
+  <text x="36" y="587" class="t3">headphone/HeadphoneMode.ts · InboxReader.ts</text>
+  <path class="ln" d="M180,598 L180,628" marker-end="url(#ar)"/>
+  <text x="188" y="618" class="al">稿子</text>
+  <rect x="24" y="630" width="306" height="74" rx="10" fill="#f7efff" stroke="#af52de"/>
+  <text x="36" y="653" class="t1">播报器：另一个嗓子「晓晓」</text>
+  <text x="36" y="673" class="t2">微软 edge-tts；Lead 的回答也由它念</text>
+  <text x="36" y="692" class="t3">voice-core/src/config.ts · edge-tts</text>
+  <path class="ln" d="M180,704 L180,734" marker-end="url(#ar)"/>
+
+  <text x="24" y="730" class="lt">① 房间层 · 喇叭</text>
+  <rect class="bx" x="24" y="736" width="306" height="70" rx="10"/>
+  <text x="36" y="759" class="t1">唯一的喇叭（一个出口）</text>
+  <text x="36" y="779" class="t2">两个嗓子都从这里放出去</text>
+  <text x="36" y="796" class="t3">RoomIO.ts · WaitingMouth</text>
+
+  <path d="M330,258 L352,258 L352,768 L332,768" stroke="#007aff" stroke-width="1.5" fill="none" marker-end="url(#arb)"/>
+  <path d="M330,373 L342,373 L342,666 L332,666" stroke="#af52de" stroke-width="1.5" fill="none" marker-end="url(#arp)"/>
+  <path class="ln" d="M24,771 L10,771 L10,24 L103,24" marker-end="url(#ar)"/>
+</svg>
+<p class="sub" style="margin:6px 4px 0">左侧线：喇叭放出的声音回到你耳朵。右侧蓝线：前台模型的声音（marin）直接进喇叭。右侧紫线：Lead 的回答变成文字，交给播报器用晓晓念。</p>
+</div>
+
+
+<h3>引擎 B（你 11:26–11:31 测的）</h3>
+<div class="diagram">
+<svg viewBox="0 0 360 700" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="引擎 B 结构图：旧底座房间层、Codex 语音容器、Lead 本体">
+  <defs>
+    <marker id="br" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a365d"/></marker>
+    <marker id="brr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff3b30"/></marker>
+  </defs>
+  <style>
+    .bx{fill:#fff;stroke:#d1d1d6;stroke-width:1}
+    .t1{font:600 14px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1d1d1f}
+    .t2{font:12.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#3a3a3c}
+    .t3{font:10.5px "SF Mono",Menlo,monospace;fill:#86868b}
+    .lt{font:700 11.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#86868b}
+    .al{font:11.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1a365d}
+    .ln{stroke:#1a365d;stroke-width:1.5;fill:none}
+  </style>
+  <rect x="105" y="6" width="150" height="36" rx="18" fill="#1a365d"/>
+  <text x="180" y="29" text-anchor="middle" class="t1" style="fill:#fff">你（Discord 语音房）</text>
+  <path class="ln" d="M180,42 L180,82" marker-end="url(#br)"/>
+  <text x="188" y="66" class="al">你的声音</text>
+
+  <text x="24" y="98" class="lt">① 房间层 · 主干上的旧房间</text>
+  <rect class="bx" x="24" y="104" width="306" height="70" rx="10"/>
+  <text x="36" y="127" class="t1">收音 + 「是不是人声」门</text>
+  <text x="36" y="147" class="t2">底座那一单的新改动一条都没有</text>
+  <text x="36" y="164" class="t3">voice-codex/src/discord-room.ts</text>
+  <path class="ln" d="M180,174 L180,210" marker-end="url(#br)"/>
+
+  <text x="24" y="206" class="lt">② 对话引擎 B · 一个会说话的</text>
+  <rect x="24" y="212" width="306" height="92" rx="10" fill="#eef5ff" stroke="#007aff"/>
+  <text x="36" y="235" class="t1">本场 Codex 语音会话（Raya 身份）</text>
+  <text x="36" y="255" class="t2">带着 Raya 的身份和记忆，自己听、自己说</text>
+  <text x="36" y="274" class="t2">嗓子：只有 <tspan font-weight="700">marin</tspan> 一个</text>
+  <text x="36" y="293" class="t3">voice-codex · CodexVoiceBackend.ts</text>
+  <path class="ln" d="M180,304 L180,334" marker-end="url(#br)"/>
+  <text x="188" y="324" class="al">要动手的发交接请求</text>
+  <rect class="bx" x="24" y="336" width="306" height="74" rx="10"/>
+  <text x="36" y="359" class="t1">核对你的原话和权限 → Lead 信箱</text>
+  <text x="36" y="379" class="t2">另外把你的原话镜像到 thread（🎙️，文字版）</text>
+  <text x="36" y="398" class="t3">voice-handoff.ts · CodexVoiceHandoff.ts</text>
+  <path class="ln" d="M180,410 L180,436" marker-end="url(#br)"/>
+  <rect class="bx" x="24" y="438" width="306" height="56" rx="10"/>
+  <text x="36" y="461" class="t1">Lead 本体（Raya）在频道里回复</text>
+  <text x="36" y="481" class="t2">真的去查、去做</text>
+  <path class="ln" d="M180,494 L180,520" marker-end="url(#br)"/>
+  <rect x="24" y="522" width="306" height="74" rx="10" fill="#fff1f0" stroke="#ff3b30"/>
+  <text x="36" y="545" class="t1" style="fill:#c4271d">轮询收 Lead 机器人的消息 → 会话转述</text>
+  <text x="36" y="565" class="t2">不认 🎙️，把镜像的原话也当成回复</text>
+  <text x="36" y="584" class="t3">voice-session-poller.ts</text>
+
+  <text x="24" y="622" class="lt">① 房间层 · 喇叭（旧版）</text>
+  <rect class="bx" x="24" y="628" width="306" height="66" rx="10"/>
+  <text x="36" y="651" class="t1">喇叭 + 等待音乐（没有上限）</text>
+  <text x="36" y="671" class="t2">你说完就响，直到下一条回复开念</text>
+  <text x="36" y="687" class="t3">voice-codex · session.ts setWaiting · audio.ts</text>
+
+  <path d="M330,248 L350,248 L350,660 L332,660" stroke="#007aff" stroke-width="1.5" fill="none" marker-end="url(#br)"/>
+  <path d="M330,559 L342,559 L342,236 L332,236" stroke="#ff3b30" stroke-width="1.5" fill="none" stroke-dasharray="5 4" marker-end="url(#brr)"/>
+  <path class="ln" d="M24,661 L10,661 L10,24 L103,24" marker-end="url(#br)"/>
+</svg>
+<p class="sub" style="margin:6px 4px 0">右侧蓝线：会话的声音（marin）进喇叭。右侧红虚线：Lead 机器人发的消息被收回来，交给会话用自己的话转述。为了给你留文字版，系统会把你的原话也以 Lead 机器人的身份镜像一份；这一份也被当成回复收了回来，所以它「一直复述我的问题」。</p>
+</div>
+
+<div class="card navy">
+<b>对照：谁在说话、用谁的嗓子、交接怎么走</b>
+<div class="scroll">
+<table class="tbl">
+<tr><th></th><th>引擎 A</th><th>引擎 B</th></tr>
+<tr><td>谁跟你说话</td><td>前台快答模型；Lead 的话由播报器念</td><td>一个带 Raya 身份的实时会话，全部由它说</td></tr>
+<tr><td>嗓子</td><td><b>两个</b>：marin（前台）+ 晓晓（播报器，微软合成音）</td><td><b>一个</b>：marin。另外还有房间的等待音乐</td></tr>
+<tr><td>交给 Lead</td><td>前台模型自己决定交不交 → 交接记录 → Lead 信箱 → 回执</td><td>会话发交接请求 → 核对原话和权限 → Lead 信箱 → Lead 在频道回复 → 轮询收回来</td></tr>
+<tr><td>Lead 的原话</td><td>播报器<b>逐字</b>念（晓晓）</td><td>会话<b>转述</b>（marin），不保证逐字</td></tr>
+<tr><td>插话</td><td>能停，但停下之后常常没人接话（见第 2 部分）</td><td>一插话就停（今天已过）</td></tr>
+<tr><td>房间层版本</td><td>底座那一单 9-23 的中间版</td><td>更早的主干旧房间（底座的改动一条都没有）</td></tr>
+<tr><td></td><td colspan="2">去掉等待音的底座最终版还没合进主干，<b>两个引擎都没用上</b></td></tr>
+</table>
+</div>
+<p class="sub">A 的「换声」就是这么来的：播报（晓晓）→ 你插话 → 前台模型接话（marin）。你 9-24 定的「耳机模式统一用 Raya 声线、⛔ 合成音」，A 目前还没做到。议程那一单打算把播报器改成 marin 的 GPT 合成音，但「实时模型说的 marin」和「合成出来的 marin」听起来是否一样，还没有真人听过。</p>
+</div>
+</div>
+
+<!-- ============ 2 ============ -->
+<div class="section">
+<h2><span class="num">2</span>引擎 A：你这两场，每一处坏在哪一步</h2>
+<p class="lead">来源：两场的会话记录 + QA 复盘。<span class="badge b-proven">已证实</span> = 记录和台架复现都对得上；<span class="badge b-suspect">怀疑</span> = 有线索没证据；<span class="badge b-unknown">未查明</span> = 现在的记录不够，写了怎么查。</p>
+
+<div class="card red">
+<div class="opt-head"><b>第一场（11:14–11:15）：你开口两次，完全没人理，也没有字幕</b> <span class="badge b-unknown">未查明</span></div>
+<ul class="timeline">
+<li><span class="t">11:14:11</span><span>你进房，会话开始</span></li>
+<li><span class="t">11:14:13–25</span><span class="who-sys">房间里有三段「不是说话的小声响」，系统都当成「你开口了」</span></li>
+<li><span class="t">11:14:26</span><span class="who-her">你说话（约 2 秒，人声门判定为人声）</span></li>
+<li><span class="t">11:14:39</span><span class="who-her">你又说一句（约 2.4 秒，人声门通过）</span></li>
+<li><span class="t">11:15:06</span><span>你离开。开场白一句都没念，收件箱一条没开始</span></li>
+</ul>
+<p><b>坏在哪一步：</b>连开场白「我正在整理现在的情况」都没念出来，说明卡在「开场」这一步之前或当中。按代码，开场白要等前台模型连上、并且等「她这一轮说完被回答」；而播报器说话期间，前台模型是被「暂停」的，你的话只会先存起来。两个可能：前台模型没连上；或者开场白卡在播报器里，前台一直被暂停，所以没听到你。</p>
+<p><b>为什么查不到：</b>引擎 A 不记录「前台连上了没有」「你的话被听成了什么」「前台有没有开口」。<b>怎么查：</b>先补这三类记录，再让你进一次房。</p>
+</div>
+
+<div class="card amber">
+<b>第二场（11:17–11:21）：你说的四件事</b>
+<ul class="timeline">
+<li><span class="t">11:17:01</span><span class="who-bot">开场白念完，开始念收件箱第一条（晓晓）</span></li>
+<li><span class="t">11:17:10–20</span><span class="who-sys">8 段非人声小声响，每段都被当成「你开口」，播报时断时续地等</span></li>
+<li><span class="t">11:17:21</span><span class="who-her">你插话问「一加一等于几」→ 播报被停</span></li>
+<li><span class="t">11:17:29</span><span class="who-bot">前台（marin）：「我在呢。你想聊埃及的什么呀？」</span></li>
+<li><span class="t">11:17:40–43</span><span class="who-her">你说了两句 → 无回应</span></li>
+<li><span class="t">11:18:01</span><span><span class="who-her">你说话</span> → <span class="who-bot">11:18:06「嗯嗯，怎么啦？」</span></span></li>
+<li><span class="t">11:18:21</span><span class="who-her">你说话（很可能是「帮我查 2798 的 PR 状态」）→ 无回应，也没有交给 Lead</span></li>
+<li><span class="t">11:19:06</span><span class="who-sys">「等她说完」计时满 45 秒被强制放行 → 播报从<b>同一条的开头</b>重念</span></li>
+<li><span class="t">11:19:20</span><span class="who-her">你说话 → 播报又被停</span></li>
+<li><span class="t">11:19:40</span><span><span class="who-her">「一加一等于」</span> → <span class="who-bot">11:19:43「二。」</span></span></li>
+<li><span class="t">11:19:52</span><span class="who-her">你说话（很可能是第二次问 PR 状态）→ 无回应，没有交接</span></li>
+<li><span class="t">11:20:37</span><span class="who-sys">又满 45 秒放行 → 播报第三次从头念</span></li>
+<li><span class="t">11:20:45</span><span><span class="who-her">你说话 → 播报第三次被停</span> → <span class="who-bot">11:20:52「不客气…」</span></span></li>
+<li><span class="t">11:21:39</span><span>结束。全场：9 次你开口，前台答了 4 句；交给 Lead 0 次；播报念完 0 条</span></li>
+</ul>
+<p class="sub">说明：「11:18:21 / 11:19:52 那两句就是问 PR」是按你的描述和时间对上的推断——系统没存下你那两句被听成了什么。</p>
+</div>
+
+<div class="scroll">
+<table class="tbl" style="background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+<tr><th style="padding-left:12px">你说的</th><th>坏在哪一步</th><th>状态</th></tr>
+<tr><td style="padding-left:12px">「播报到一半我问 1+1，它就停下来了」</td><td><b>这一步是对的</b>：插话能停播报。问题在后面——停了之后，播报下次会从同一条<b>开头</b>重念（被打断不算念完）。</td><td><span class="badge b-proven">已证实</span></td></tr>
+<tr><td style="padding-left:12px">「然后换了另外一个声音」</td><td>停下的是播报器（晓晓），接话的是前台模型（marin）。设计如此。</td><td><span class="badge b-proven">已证实</span></td></tr>
+<tr><td style="padding-left:12px">「回答了我埃及的一些东西」</td><td>前台模型把「一加一」听成了「埃及」。怀疑句首的「一」被人声门吃掉了（门打开前的一小段被静音）→「加一」≈「埃及」。第二次（11:19:40）它就听对了，答「二」。</td><td><span class="badge b-suspect">怀疑</span><br><span class="sub">要补「你的话被听成了什么」的记录才能证实</span></td></tr>
+<tr><td style="padding-left:12px">「后面就没有声音了」</td><td>房间里的非人声小声响被当成「你在说话」，而且每来一段就把「最多等 45 秒」重新计时。播报器按规矩要等你说完，于是一直等。台架上复现了：只放噪声 75 秒，播报 0 次开口。</td><td><span class="badge b-proven">已证实</span></td></tr>
+<tr><td style="padding-left:12px">「帮我查 2798 的 PR 状态 → 彻底没人回」</td><td>这句没有被交给 Lead（交接记录 0 条）。交不交是前台模型自己决定的：它要主动发起一次「交给 Lead」。它没发起，也没自己答。至于它是没听到、听错了、还是听到了不交，记录里分不出来。<br><span class="sub">测试环境里的 Lead 同时在报「健康检查失败」，但因为根本没交出去，这不是这次没人回的原因；它会不会成为下一个坑，未查明。</span></td><td><span class="badge b-proven">没交接：已证实</span><br><span class="badge b-unknown">为什么：未查明</span></td></tr>
+<tr><td style="padding-left:12px">「又问一遍，中间发了一点声音然后又没了」</td><td>45 秒计时满了被强制放行 → 播报器从同一条的开头重念 → 你一开口它又停。那「一点声音」大概率是被重启又被打断的播报。</td><td><span class="badge b-suspect">高度怀疑</span><br><span class="sub">时间完全对得上，但没录音</span></td></tr>
+<tr><td style="padding-left:12px">第一场零响应</td><td>见上面第一场。</td><td><span class="badge b-unknown">未查明</span></td></tr>
+</table>
+</div>
+<p class="sub" style="margin-top:10px">另外两件你没说出来、但记录里看得到的：①收件箱里当时堆着 <b>1011 条</b>待念（测试环境），系统从最早的一条开始念；②那一条缺少「口语稿」，所以按消息原文念——这正是你 9-24 说的「原封不动把 plan text 念给我」。</p>
+<div class="card blue">
+<b>为什么昨晚台架判「通过」，今天真人就推翻了</b>
+<p>台架用的是真的前台模型，但房间是替身：没有真实的环境声，也不会把句首截掉。所以台架测到的是「安静房间里、话说得很清楚时」的行为。今天真房里连续的非人声小声响才是触发点，而台架上一段都没有。另外，引擎 A 不记录「你的话被听成了什么」，台架通过也没法说明真房里会怎样。<b>教训：以后测试房必须放真实的环境声，并且要有记录可查。</b></p>
+</div>
+</div>
+
+<!-- ============ 3 ============ -->
+<div class="section">
+<h2><span class="num">3</span>引擎 B：你说的三件事，原因都已查到</h2>
+<div class="scroll">
+<table class="tbl" style="background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+<tr><th style="padding-left:12px">你说的</th><th>原因</th><th>状态</th></tr>
+<tr><td style="padding-left:12px">「它一直复述我的问题」（问「你是谁」「手上有什么事」，它又复述一遍）</td><td><b>我们自己的回环。</b>为了给你留文字版，B 把你的原话以 Lead 机器人的身份镜像到 thread，前面带 🎙️。读 Lead 回复的那个轮询不认 🎙️，把它当成 Lead 的回复交给会话念回给你，今天一共 5 次。它还顺带解释了内部标记（[BACKEND]）。这些回流把真正的 Lead 回复堵了大约 32 秒。</td><td><span class="badge b-proven">已证实</span></td></tr>
+<tr><td style="padding-left:12px">「中间的等待音乐没必要」</td><td>B 用的是主干上的旧房间，等待音默认开着：你每说完一句它就响，一直响到下一条回复开始念，没有上限。你 9-24 已经为底座定了不要等待音，底座最终版也去掉了，但还没合进主干。</td><td><span class="badge b-proven">已证实</span></td></tr>
+<tr><td style="padding-left:12px">「声音一直卡顿，有点奇怪」</td><td>问题出在播放这一侧，不在上游：模型送来的声音比实时还快，一次也没断过。原因有三：①要等<b>一整句话</b>定稿才开始播；②每 20 毫秒放一小段的时钟晚到了 51 次，又没有预先垫一点缓冲；③声音从 24k 转成 48k 时用的是最粗糙的方法，<b>这一环 A 也在用</b>。</td><td><span class="badge b-proven">①② 已证实</span><br><span class="badge b-suspect">③ 推断</span></td></tr>
+</table>
+</div>
+<p class="sub" style="margin-top:10px">今天 B 的 Lead 回复有 2 条，<b>完整念出 0 条</b>：第 1 条被回环堵住，刚开始念就被你打断；第 2 条只念了第一段，还被转述得走了样（原文「仍是…尚未验收完成」念成「还是…还没有验收完成」）。另外，「一加一」它答的是「2。It's 2. Simple, clean, no drama.」，中英混着说。</p>
+<p class="sub">今天 B 已经做对的：一插话就停；两次交给 Lead 都送到了；人声只有 marin 一种。9-24 那场「交办就掉线、文字版没发」这次没再出现。你说「应该是可以修好的」，和取证结论一致：B 的三条都不是结构问题。</p>
+</div>
+
+<!-- ============ 4 ============ -->
+<div class="section">
+<h2><span class="num">4</span>根上的问题：哪些是 A 的，哪些两边都有</h2>
+
+<div class="card red">
+<b>根 1 · 三个角色抢一个喇叭，却没有「谁拿着麦」的统一记录</b> <span class="badge b-unknown">A</span>
+<p>播报器开口时前台被「暂停」，前台回答时播报要「等」，你开口时所有人都「等你说完、并且被回答」。这些规则靠约 8 个零散开关和几个计时器拼起来，没有一个地方能回答「现在该谁说」。只要一个开关卡在「有人在说」，所有人就一起闭嘴，也没有谁会发现。这次卡住的是「小声响算开口」这一处；它修好以后，同类的卡死还可能从别的开关冒出来。</p>
+<p>另外，前台每次被播报打断后，按代码看都是重新开一个，不带之前聊过的内容（<span class="badge b-suspect">怀疑</span>，未在真房验证）。它一上来就说「我在呢，你想聊埃及的什么」，可能与此有关。</p>
+<p class="sub">B 只有一个会说话的，没有三方抢麦的问题。今天 B 一插话就停，也印证了这一点。</p>
+</div>
+
+<div class="card red">
+<b>根 2 · 「交不交给 Lead」由最不懂项目的那个模型决定</b> <span class="badge b-unknown">A</span>
+<p>前台模型手里只有一小段开场背景（配置上限约 500 词元），没有项目记忆。它的规则是简单的自己答、复杂的交出去。可「2798 的 PR 状态」它答不了，也没交出去，结果就是没人管，系统也不知道这件事被漏了。昨晚台架上 3 次都交出去了，今天真房里你问了两次，一次都没交。为什么台架能交、真房不交，<span class="badge b-unknown">未查明</span>。</p>
+<p class="sub">B 里做这个判断的是带 Raya 记忆的会话本身，今天交了 2 次，都送到了。</p>
+</div>
+
+<div class="card amber">
+<b>根 3 · 两个嗓子是 A 这种结构自带的；B 只有一个嗓子，代价是 Lead 的原话会被转述</b> <span class="badge b-unknown">A · B 取舍</span>
+<p>A 的前台模型只能用自己的嗓子，Lead 的话只能另找一个合成音来念。B 全部由一个会话来说，嗓子统一了，但 Lead 的原话是它转述出来的，专名和编号可能被改。今天 B 就出现了一次：Lead 原文「仍是…尚未验收完成」被念成了「还是…还没有验收完成」。这不是 bug，是两种结构各自要付的代价，需要你定更看重哪一边（第 7 部分 Q2）。</p>
+</div>
+
+<div class="card amber">
+<b>根 4 · 两个引擎都没用上最新的底座</b> <span class="badge b-unknown">A + B</span>
+<p>底座那一单已经按你 9-24 的话去掉了等待音，但还没合进主干。A 接的是它 9-23 的中间版，B 接的是更早的主干旧房间，所以都带着老毛病：等待音乐、放音没有预缓冲、声音转换太粗糙。<b>这些只修一处就够，不该在 A、B 里各修一遍。</b></p>
+</div>
+
+<div class="card amber">
+<b>根 5 · 播报的单位是「一条原始消息」，不是「要跟你说的一件事」</b> <span class="badge b-unknown">A + B</span>
+<p>今天 A 的收件箱里堆了 1011 条（测试环境），从最早的一条开始念。缺了口语稿就念原文，被打断就从头再念。这正是你 9-24 说的「原封不动把 plan text 念给我」。议程那一单在改这一层：话由 Lead 想好，只播待批、受阻、要你答、主动找你这四类，一件一件过。<b>这一层和选 A 还是选 B 无关</b>，但它现在是搭在 A 上做的，B 也要接上。</p>
+</div>
+
+<div class="card blue">
+<b>根 6 · 看不见，也测不真</b> <span class="badge b-unknown">A + B</span>
+<p>A 不记录「你的话被听成了什么」「前台什么时候开口、什么时候停」「为什么被打断」，真房里出了事只能猜。台架用的是替身房间，没有环境声，于是台架全绿、真房全坏。B 的回环在台架上也没被抓到。到今天为止，<b>还没有哪一次「通过」是你本人在新代码上真人测过的。</b></p>
+</div>
+</div>
+
+<!-- ============ 5 ============ -->
+<div class="section">
+<h2><span class="num">5</span>这一轮各修什么、在哪张单、修完怎么验</h2>
+<p class="lead">下面是两张返工单里已经写定的内容，这里换成了白话。两单修完后，先由 QA 在测试房自测（测试环境允许 QA 机器人扮演你开口），全部过了才请你进真房，然后再做 A/B 对比。</p>
+<div class="scroll">
+<table class="tbl" style="background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+<tr><th style="padding-left:12px">修什么</th><th>哪张单</th><th>修完怎么验（测试房自测）</th></tr>
+<tr><td style="padding-left:12px"><b>A-0</b>：环境小声响不再算「你开口」：只有人声门判定为人声、并且累计约 0.25 秒才算；非人声不开「等你说完」、也不重置 45 秒上限；误开的短时间内撤销，播报接着念</td><td>引擎 A（2798）</td><td>只放 75 秒环境声、不说话：0 次误开、0 次卡满上限、播报不停</td></tr>
+<tr><td style="padding-left:12px"><b>A-1</b>：句首被截：先证实或排除；如果是，就在人声门打开时把前面约 0.2–0.3 秒一起补上</td><td>引擎 A（2798）</td><td>「一加一等于几」被听对</td></tr>
+<tr><td style="padding-left:12px"><b>A-2</b>：问 Lead 没回音、出一点声就断、第一场零响应：<b>先补诊断记录</b>（你的话被听成什么、前台出声的开始/结束/取消和原因、打断原因、交接请求/回话/超时），在真房复现、定位后再修，⛔ 猜着修</td><td>引擎 A（2798）</td><td>「帮我查 PR 状态」40–60 秒内念出 Lead 的回答且不被截断；一进房就有响应</td></tr>
+<tr><td style="padding-left:12px"><b>A-3</b>：换声：播报也改用同一个实时声线 marin（要动底座或议程时先和 Lead 确认）</td><td>引擎 A（2798）</td><td>全程只有一个声音</td></tr>
+
+<tr><td style="padding-left:12px"><b>B-1</b>（最要紧）：拆掉回环：按来源排除你的原话，不再当成 Lead 回复念回；内部标记不说给你</td><td>引擎 B（2799）</td><td>你的话被念回 0 次</td></tr>
+<tr><td style="padding-left:12px"><b>B-2</b>：等待音乐：B 默认关（只有特别长的等待、达到可配置的阈值才放）；底座合入后切到新房间层</td><td>引擎 B（2799）</td><td>一问一答之间 0 等待音</td></tr>
+<tr><td style="padding-left:12px"><b>B-3</b>：卡顿：边收边播；放音加预缓冲、容忍时钟晚到；声音转换改成更平滑的方式（这一环 A 也用得上）</td><td>引擎 B（2799）</td><td>连续 5 分钟听不到断口；第一声不用等整句</td></tr>
+<tr><td style="padding-left:12px"><b>B-4</b>：「你是谁」这类身份问题自己答，不交给 Lead</td><td>引擎 B（2799）</td><td>今天已经过的项不倒退；全套自动测试通过</td></tr>
+
+<tr><td style="padding-left:12px"><b>两边共用</b>：底座最终版（已按你 9-24 的话去掉等待音）合进主干，A、B 都换上；B-3 里的放音和转换改进也放在这一层，两边共享</td><td>底座（2796）</td><td>录音里等待音乐 0 秒；放音无断口</td></tr>
+<tr><td style="padding-left:12px"><b>两边共用</b>：播报内容由 Lead 消化后讲，只播四类，一件一件过</td><td>议程（2863），B 也要接上</td><td>议程只含四类；念出来的是 Lead 想好的话，0 条原文照念</td></tr>
+<tr><td style="padding-left:12px"><b>两边共用</b>：测试房固定放真实环境声，并用只听的机器人录音</td><td>A/B 对比（2800）</td><td>这是上面所有验收的前提</td></tr>
+</table>
+</div>
+
+<div class="card green">
+<b>什么时候再请你做 A/B 对比</b>
+<ul>
+<li><b>前提：</b>A、B 在测试房把上表各自的验收项全部通过；两边换上同一版底座（没有等待音乐）、接上同一份议程；版本冻结。</li>
+<li><b>方式：</b>同一天连着测两边，用<b>同一份 10 分钟脚本</b>：①进房听开场；②播报中插一句简单题；③问一件要查的事（例如某张单的 PR 状态）；④问「你是谁、手上有什么事」；⑤安静 2 分钟，看它会不会乱说话、会不会报平安。</li>
+<li><b>你打分：</b>每边 5 项，各打 1–5 分：听得清、像对话、不抢话也不冷场、只有一个嗓子、事情真的动了。</li>
+</ul>
+</div>
+</div>
+
+<!-- ============ 6 ============ -->
+<div class="section">
+<h2><span class="num">6</span>供讨论：长期的结构方向</h2>
+<p class="lead"><b>你已经定了：先把 A、B 各自今天的问题修完，修完后在真房里比。</b>下面三个方向是讨论题：一是修完对比时从哪个角度看，二是如果两边都不稳，退到哪里。它们不替代你的决定。</p>
+
+<div class="card navy">
+<div class="opt-head"><b>方向一 · 「一个脑子一个嗓子」：房里只有 Raya 本人</b>（就是 B 的路子）</div>
+<p>房里只有一个会说话的：带着 Raya 身份和记忆的实时会话。播报、回答、报平安都由它用同一个嗓子说，要动手的事交给 Lead 本体。模式层只负责递议程，自己不出声。</p>
+<div class="kv">
+<div class="k">你会听到</div><div>从头到尾一个声音，像跟 Raya 打电话，能对话、能打断。专名和编号偶尔可能被说错（它是转述，不是逐字念）。</div>
+<div class="k">要改哪层</div><div>引擎用 B；播报器不再自己出声，改成把稿子递给会话去说；房间层保留。</div>
+<div class="k">工作量</div><div>中。今天 B 的三条都是实现问题；新增的活是把议程接到 B 上。</div>
+<div class="k">风险</div><div>逐字准确度；依赖 Codex 额度；在真房里的稳定性只测过两场。</div>
+<div class="k">和原则</div><div><span class="ok">符合</span>随身语音 PRD 里的「由总管兼任、载体是 Codex」，以及用 Raya 声线；<span class="ok">符合</span>先简单（只有一个会说话的）。<span class="mid">有张力</span>：转述时保不住专名和编号逐字准确。</div>
+</div>
+</div>
+
+<div class="card amber">
+<div class="opt-head"><b>方向二 · 保留 A，重做「谁拿着麦」</b></div>
+<p>保留前台快答 + 后台 Lead。把那一堆开关换成一个明确的「持麦」状态（空闲 / 你在说 / 前台在答 / 播报在念 / 等 Lead）：以人声门为准，上限不能被重置；播报器改用 marin 合成音；把诊断记录补齐。</p>
+<div class="kv">
+<div class="k">你会听到</div><div>简单题最快，约 1–2 秒。复杂题是两段式：前台先应一句，过一会儿再念 Lead 的话。两段都叫 marin，但一个是实时模型、一个是合成音，听起来可能仍有差别（还没人听过）。</div>
+<div class="k">要改哪层</div><div>重写 A 的仲裁；播报器换嗓子；补诊断记录；改真房验收流程。</div>
+<div class="k">工作量</div><div>大，而且「交不交给 Lead 由前台决定」这个根还在。</div>
+<div class="k">风险</div><div>零件最多、状态最多，最容易再出今天这种「所有人一起闭嘴」。</div>
+<div class="k">和原则</div><div><span class="no">冲突</span>：先简单（它的部件最多）。<span class="mid">有张力</span>：统一声线还没验证过。</div>
+</div>
+</div>
+
+<div class="card green">
+<div class="opt-head"><b>方向三 · 保底：一问一答</b></div>
+<p>不要前台快答模型。房里只做两件事：①把 Lead 想好的话一件一件念给你，只用 Raya 一个嗓子；②你说一句 → 整句转成文字 → 直接交给 Lead 本体 → Lead 回一句，再念给你。你一开口它就停，全程只有「你在说」和「它在说」两种状态。</p>
+<div class="kv">
+<div class="k">你会听到</div><div>一个声音；不会抢话、不会瞎答、不会没人管。代价是慢：问完要等 Lead 想好，几秒到几十秒不等，中间它会说一句「我去看一下」。更像对讲机，不像闲聊。</div>
+<div class="k">要改哪层</div><div>拿掉引擎层，房间层 + 模式层（议程）直接对 Lead 本体。零件大多现成：底座的旧引擎本来就是「转写 + 用同一个嗓子逐字念稿」，议程和 Lead 信箱也都有。</div>
+<div class="k">工作量</div><div>三个方向里最小，主要的活是把议程从 A 上挪到底座上。</div>
+<div class="k">风险</div><div>节奏慢，可能不够「像对话」；会议模式要的「聊清楚」它撑不起来。</div>
+<div class="k">和原则</div><div><span class="ok">最符合</span>先简单、只播要你动作的、一件一件过、Lead 先想清楚再讲、只用一个真人声线。</div>
+</div>
+</div>
+
+<div class="card navy">
+<b>我的看法（供讨论，不替代你的对比）</b>
+<ul>
+<li>按今天的证据，<b>结构上最干净的是方向一</b>：B 的三个问题都是实现层面的，A 的问题有一半出在结构上。但它能不能用，要看修完之后你在真房里的对比。</li>
+<li><b>方向三是保底</b>：如果两边修完后在真房里都还不稳，就先退到它，让语音至少能稳定地用起来。它用到的底座、议程、Lead 交接，方向一也都要用，不会白做。</li>
+<li>引擎 A 的代码不删。不管最后选哪条，都能退回去。</li>
+</ul>
+</div>
+</div>
+
+<!-- ============ 7 ============ -->
+<div class="section">
+<h2><span class="num">7</span>要你当场拍板的问题</h2>
+<div class="q"><b>Q1.</b> 修完对比时，你更看重<b>快、能对话</b>，还是<b>稳、一问一答</b>？</div>
+<div class="q"><b>Q2.</b> Lead 的原话是<b>逐字念</b>（编号不会错，但像念稿），还是<b>让它用自己的话讲</b>（更自然，专名偶尔可能说错）？</div>
+<div class="q"><b>Q3.</b> 你问了一件要查的事以后，最多能等多久？中间要不要一句「我去看一下」？（不是等待音乐）</div>
+<div class="q"><b>Q4.</b> 以后每一版都先过测试房的自测清单（含真实环境声），过了再请你进真房；A/B 对比用同一份 10 分钟脚本。这样可以吗？</div>
+<div class="q"><b>Q5.</b> 如果两边修完，真房里都还不稳，你是否接受先退到方向三（一问一答、一个嗓子）？</div>
+</div>
+
+<div class="foot">
+<b>证据与出处（给工程核对用）</b>
+<ul>
+<li>A 两场会话记录：<span class="path">~/.flywheel/qa-evidence/FLY-2798/qa5/founder-room/{6da17e86…,4977ff7e…}/events.jsonl、transcript.jsonl</span>；测试版本 <span class="path">d3485eb91</span>（2798 头 aec9c805b + QA 部署提交；底座为 9-23 快照）</li>
+<li>A 真人复盘（时间线、字幕原文、噪声台架复现）：FLY-2798 QA founder-room 报告；<span class="path">qa5/noise-repro1.jsonl、noise-only.jsonl</span></li>
+<li>A 仲裁开关与 45 秒上限：<span class="path">packages/voice-codex/src/live-lead-adapter.ts</span>（openFounderTurn / whenFounderTurnSettled / suspendLive / onBargeIn）</li>
+<li>A 被打断从头念、缺口语稿念原文：<span class="path">packages/voice-core/src/headphone/InboxReader.ts</span>（runPoll）；开场白先于收件箱：<span class="path">HeadphoneMode.ts</span>（start）</li>
+<li>A 两个嗓子：<span class="path">packages/voice-core/src/config.ts</span>（openaiLive.voice 默认 marin；announcerBackendId 默认 edge-tts；DEFAULT_VOICE zh-CN-XiaoxiaoNeural）</li>
+<li>B 真人取证：会话 3cedfff5，测试版本 <span class="path">00f2a1dd5</span>（2799 头 dd6be6bf7 + 部署脚本修复）；<span class="path">~/.flywheel/artifacts/FLY-2799-qa/qa6-slot2-founder-live/</span>；回环 <span class="path">CodexVoiceHandoff.ts:94</span> + <span class="path">voice-session-poller.ts:12</span>；等待音 <span class="path">session.ts:454、audio.ts:114</span>；卡顿 <span class="path">CodexVoiceBackend.ts:543</span> + AudioClock</li>
+<li>返工清单原文：FLY-2798 描述「▶ 返工追加 · founder 9-25 真人测两场后」（rework ea79bad5）；FLY-2799 描述「▶ 返工 · founder 9-25 真人场 FAIL」（rework 007b5486）</li>
+<li>原则出处：随身语音 PRD（FLY-1850）、会议模式 PRD（FLY-1851）、总管 PRD §2.5（FLY-1846）、语音 Epic（FLY-1451）9-24 播报原则、你 9-24 22:35Z 的反馈原文</li>
+</ul>
+</div>
+
+</div>
+</body>
+</html>

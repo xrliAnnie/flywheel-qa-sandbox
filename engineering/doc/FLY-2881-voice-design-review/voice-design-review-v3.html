@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音第三版：B 目标设计</title>
+<style>
+:root{
+  --bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;
+  --redbg:#fff1f0;--amberbg:#fff7e8;--bluebg:#eef5ff;--greenbg:#eefaf1;--purplebg:#f7efff;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px;color:var(--navy)}
+h2{font-size:19px;margin:0 0 4px;color:var(--navy)}
+h3{font-size:15px;margin:14px 0 6px}
+.sub{color:var(--dim);font-size:13px}
+.section{margin-top:28px}
+.num{display:inline-block;min-width:26px;height:26px;border-radius:13px;background:var(--navy);color:#fff;font-size:13px;text-align:center;line-height:26px;margin-right:8px;vertical-align:2px}
+.lead{color:#3a3a3c;margin:6px 0 12px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin:12px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card p{margin:6px 0}
+.tldr{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin-top:16px}
+.tldr li{margin:4px 0}
+ul{padding-left:20px;margin:6px 0}
+.badge{display:inline-block;font-size:12px;line-height:1;padding:4px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.b-proven{background:var(--greenbg);color:#1e7d32}
+.b-suspect{background:var(--amberbg);color:#a35a00}
+.b-unknown{background:#f0f0f2;color:#5a5a5e}
+.b-rec{background:var(--navy);color:#fff}
+code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px}
+.path{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--dim);word-break:break-all}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 10px;color:#3a3a3c;margin:8px 0}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th,.tbl td{text-align:left;vertical-align:top;padding:8px 6px;border-top:1px solid var(--line)}
+.tbl th{font-size:12px;color:var(--dim);font-weight:600;border-top:none}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.diagram{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px;margin:12px 0}
+.diagram svg{width:100%;max-width:520px;height:auto;display:block;margin:0 auto}
+.timeline{list-style:none;padding:0;margin:8px 0}
+.timeline li{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}
+.timeline li:first-child{border-top:none}
+.timeline .t{flex:0 0 58px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);padding-top:2px}
+.timeline .who-her{color:var(--blue);font-weight:600}
+.timeline .who-bot{color:var(--purple);font-weight:600}
+.timeline .who-sys{color:var(--red);font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:640px){.grid2{grid-template-columns:1fr}.tbl{font-size:13px}}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:4px 10px;font-size:14px;margin-top:8px}
+.kv .k{color:var(--dim)}
+.opt-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.q{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px 16px;margin:10px 0;border-left:4px solid var(--purple)}
+.q b{color:var(--navy)}
+.foot{margin-top:28px;font-size:12.5px;color:var(--dim)}
+.foot li{margin:3px 0}
+.ok{color:#1e7d32;font-weight:600}.no{color:#c4271d;font-weight:600}.mid{color:#a35a00;font-weight:600}
+
+.seqwrap{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:8px;margin:12px 0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.seqwrap svg{display:block}
+.hint{font-size:12px;color:var(--dim);margin:4px 2px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;margin:8px 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:22px;height:0;border-top:3px solid}
+details{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:10px 14px;margin:8px 0}
+details summary{cursor:pointer;font-weight:600;color:var(--navy)}
+.steps{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+.steps td{border-top:1px solid var(--line);padding:6px 4px;vertical-align:top}
+.steps td:first-child{color:var(--dim);width:24px}
+.steps .path{font-size:11px}
+.stopped{display:inline-block;background:#fff1f0;color:#c4271d;font-size:12px;font-weight:700;padding:3px 8px;border-radius:8px;margin-left:6px;vertical-align:2px}
+.in{color:#1e7d32;font-weight:600;white-space:nowrap}.new{color:#a35a00;font-weight:600;white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>语音第三版：B 的目标设计（耳机模式 / 开会模式）</h1>
+<div class="sub">回答你 12:2x–12:34 在第二版上的新方向 · 2026-09-25 · 第二版保留不动 · 只读整理，没有改代码、没有调任何 API、没有往任何终端窗格输入</div>
+
+<div class="tldr">
+<b>先回答你的问题：成熟的语音助手，前台和后台用的是不同的模型吗？</b>
+<p style="margin:6px 0"><b>是。</b>我们看过的四家都分成两个模型：前台是反应快的<b>实时语音模型</b>，只负责对话和把活交出去；后台是更强的<b>文字模型</b>，工具都在它手里。</p>
+<div class="scroll">
+<table class="tbl">
+<tr><th>项目</th><th>前台（说话）</th><th>后台（干活）</th><th>出处</th></tr>
+<tr><td>OpenAI chat-supervisor 示例</td><td>gpt-4o-realtime</td><td>gpt-4.1（只有它有工具）</td><td class="path">src/app/api/session/route.ts:14 · chatSupervisor/supervisorAgent.ts:285 · README.md:19,32（@94c9e91）</td></tr>
+<tr><td>Codex 自己的实时语音</td><td>gpt-realtime-1.5（新协议是 gpt-live-1-codex）</td><td>这个对话本来配置的 Codex 模型：交给后台，就是在同一个对话里开一轮普通的 Codex 回合</td><td class="path">codex-rs/core/src/realtime_conversation.rs:111-112,1552-1560,1764-1772 · session/turn_input.rs:567-586（@44a9bfa）</td></tr>
+<tr><td>Pipecat</td><td>gpt-realtime-2.1 或 gpt-live-1</td><td>可以接任意后台：示例里有 gpt-5.x，也有 Claude（带读代码工具）</td><td class="path">services/openai/live/llm.py:71,124-176 · examples/realtime/realtime-openai-live-client-delegation.py（@c972284）</td></tr>
+<tr><td>LiveKit Agents</td><td>gpt-live-1</td><td>默认后台模型 gpt-5.6-luna；工具归后台，前台的工具列表必须是空的</td><td class="path">plugins/openai/realtime/gpt_live_model.py:37,39,159 · examples/voice_agents/gpt-live/client_delegation.py:23-24,113（@121810c）</td></tr>
+</table>
+</div>
+<p style="margin:8px 0 0">所以你说的「简单的马上答，复杂的先说一声，再开一个 sub-agent 去查」，就是业界的标准做法。唯一要注意的是：后台那一个要用<b>更强的文字模型、并且带工具</b>，不能让前台的实时模型自己去查。</p>
+</div>
+
+<div class="card red">
+<b>⚠️ 先说一个会卡住一切的前提：B 的实时语音本身必须用 OpenAI API key</b>
+<p>Codex 的实时语音只接受 API key 认证，用 ChatGPT 订阅登录会直接报「realtime conversation requires API key auth」（<span class="path">realtime_conversation.rs:1873-1895</span>；2799 用 Pro 订阅做过对照实测，记在 <span class="path">FLY-2799 research.md:8,16</span>）。所以<b>如果 API 余额真的用完了，B 连语音都起不来</b>，下面的设计都要等余额补上才能测。后台查东西的那个 agent 可以改走 ChatGPT 订阅，不受这个影响。</p>
+</div>
+
+<div class="card green">
+<b>你 12:33 已定（这一版按此设计，不再问）</b>
+<ul>
+<li>Lead 的回答用<b>口语转述</b>，编号、单号、数字、人名一字不差。两种模式都适用。</li>
+<li>等待时只说一句「我去看一下」，<b>不放音乐</b>；约 20 秒还没结果，补一句「还在查」。两种模式都适用。</li>
+<li>你打断之后结果才到：<b>等你说完，它主动补一句</b>。两种模式都适用。</li>
+<li>耳机模式全程只有 Raya 一个声音，议程只播四类（Lead 主动说的、待批、受阻、要你答）。</li>
+<li>开会模式：用那个 Lead 自己的身份、记忆和声音；复杂题开专用后台 agent，<b>不走 Bridge</b>。</li>
+</ul>
+</div>
+
+<!-- ============ 1 ============ -->
+<div class="section">
+<h2><span class="num">1</span>「sub-agent」用什么做：三种做法核实下来的结果</h2>
+<p class="lead">你问：既然实时会话已经装了 Lead 的身份和记忆，复杂题能不能不交给 Lead 本体，自己开个 sub-agent 去查？能，但 sub-agent <b>不能</b>直接用语音容器里现成的那个。</p>
+<div class="scroll">
+<table class="tbl" style="background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+<tr><th style="padding-left:12px">做法</th><th>带 Lead 记忆？</th><th>能查东西吗</th><th>走哪个号</th><th>多快</th><th>问题</th></tr>
+<tr><td style="padding-left:12px"><b>① 让语音容器里 Codex 自带的后台 agent 去跑</b></td><td>能（开会那一刻的快照）</td><td><b>现在什么工具都没有</b>：没有 shell、没有外部连接、不能联网。要给它工具，就得拆掉 2799 特意做的隔离</td><td>现在是 API key，而后台回合读不到这个 key，所以 401；要改登录方式</td><td>回合启动约 3 毫秒（实测）；做完估计十几秒到一分钟（未测）</td><td>破坏隔离；API 没余额时连语音一起挂；用的模型是默认值（未查）</td></tr>
+<tr><td style="padding-left:12px"><b>② 另开一个专用的 Codex 文字 agent</b> <span class="badge b-rec">建议</span></td><td>能：复用同一份身份+记忆快照</td><td>可以精确配成<b>只读</b>：读 Lead 工作区的代码、只读地查 Linear 和 Bridge 状态；关掉一切写操作</td><td>ChatGPT 订阅（和其他 Lead 共用当前活跃号，推定；未核对）</td><td>估计十几秒到一分钟（未测）</td><td>要新写「结果交回语音」这一段；要单独建一个 Codex home（只共用登录），不能直接用 Raya 那份带写权限的配置</td></tr>
+<tr><td style="padding-left:12px"><b>③ 仍走 Bridge 找 Lead 本体</b></td><td>完整（活的 Lead）</td><td>全部工具</td><td>Lead 自己的号</td><td>数十秒到几分钟，<b>Lead 在忙就得排队</b>（未测）</td><td>最慢。你说的「Lead 忙了 30 分钟我就得等 30 分钟」正是它</td></tr>
+</table>
+</div>
+<p class="sub" style="margin-top:8px">所以新设计里：<b>查东西</b> → ② 专用后台 agent；<b>问别的 Lead 的实时情况</b>（只在耳机模式）→ ③ 走 Bridge，但 1 分钟看一次忙闲；<b>动手</b>（派活 / 批准 / 改东西）→ ③ 交 Lead 本体。出处：<span class="path">CodexVoiceContainer.ts:658-676</span>、<span class="path">codex-home.ts:11-30</span>（@dd6be6bf7）；<span class="path">realtime_conversation.rs:926-928,1172-1174</span>（@44a9bfa）；2799 实测 <span class="path">impl-rework-real-handoff/bench.jsonl:204→208</span>。</p>
+</div>
+
+<!-- ============ 2 ============ -->
+<div class="section">
+<h2><span class="num">2</span>耳机模式目标时序图（Raya 在前台）</h2>
+<p class="lead">全程只有 Raya 一个声音（蓝色）。★ 是新工作。分界线：<b>只有「动手」（派活 / 批准 / 改东西）才交给 Lead 本体</b>（S5）；查东西由专用后台 agent 自己查（S3）；问别的 Lead 的实时情况走 Bridge，1 分钟没回就看他在忙什么，再问你是等还是打断（S4）。</p>
+<div class="legend"><span><i style="border-color:#007aff"></i>Raya 的声线出声</span><span><i style="border-color:#34a853"></i>开会的那个 Lead 的声线出声</span><span><i style="border-color:#1a365d"></i>不出声的内部步骤</span><span><i style="border-color:#1a365d;border-top-style:dashed"></i>虚线 = 未核实</span><span>★ = 新工作</span></div>
+<div class="seqwrap"><svg viewBox="0 0 696 1460" width="696" height="1460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="耳机模式目标时序图"><defs><marker id="mhmarin" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#007aff"/></marker><marker id="mhxiao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#af52de"/></marker><marker id="mhbed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff9500"/></marker><marker id="mhn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a365d"/></marker><marker id="mhbug" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff3b30"/></marker><marker id="mhlead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#34a853"/></marker></defs><style>.ph{font:600 12.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#fff}.ml{font:12px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1d1d1f}.sx{font:700 12.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1a365d}.nt{font:11.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#a35a00}</style><line x1="68.0" y1="64" x2="68.0" y2="1454" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="18.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="68.0" y="37.0" text-anchor="middle" class="ph">你</text><line x1="180.0" y1="64" x2="180.0" y2="1454" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="130.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="180.0" y="29.5" text-anchor="middle" class="ph">Raya 实时会话</text><text x="180.0" y="44.5" text-anchor="middle" class="ph">(唯一的嗓子)</text><line x1="292.0" y1="64" x2="292.0" y2="1454" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="242.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="292.0" y="29.5" text-anchor="middle" class="ph">专用后台 agent</text><text x="292.0" y="44.5" text-anchor="middle" class="ph">(只读，查东西)</text><line x1="404.0" y1="64" x2="404.0" y2="1454" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="354.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="404.0" y="29.5" text-anchor="middle" class="ph">议程调度</text><text x="404.0" y="44.5" text-anchor="middle" class="ph">(模式层)</text><line x1="516.0" y1="64" x2="516.0" y2="1454" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="466.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="516.0" y="37.0" text-anchor="middle" class="ph">Bridge</text><line x1="628.0" y1="64" x2="628.0" y2="1454" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="578.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="628.0" y="29.5" text-anchor="middle" class="ph">其他 Lead</text><text x="628.0" y="44.5" text-anchor="middle" class="ph">/ Lead 本体</text><rect x="12" y="82" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="98.5" class="sx">S1 你进房：开场议程</text><line x1="404.0" y1="130" x2="512.0" y2="130" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="460.0" y="124" text-anchor="middle" class="ml" style="fill:#1d1d1f">1 取议程：只取要你动手的几类，不回放历史</text><line x1="404.0" y1="164" x2="296.0" y2="164" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="348.0" y="158" text-anchor="middle" class="ml" style="fill:#1d1d1f">2 ★ 把第一件整理成要说的话（读 thread/QA 报告）</text><line x1="292.0" y1="198" x2="400.0" y2="198" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="348.0" y="192" text-anchor="middle" class="ml" style="fill:#1d1d1f">3 ★ 口语稿：要点 + 关键编号</text><line x1="404.0" y1="232" x2="184.0" y2="232" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="292.0" y="226" text-anchor="middle" class="ml" style="fill:#1d1d1f">4 ★ 等房间安静，递稿（一次开口）</text><line x1="180.0" y1="266" x2="72.0" y2="266" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="260" text-anchor="middle" class="ml" style="fill:#007aff">5 ★ 「有两件要你拍，先说 2796……」</text><rect x="12" y="294" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="310.5" class="sx">S2 简单题</text><line x1="68.0" y1="342" x2="176.0" y2="342" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="124.0" y="336" text-anchor="middle" class="ml" style="fill:#1d1d1f">6 「现在几点？」</text><line x1="180.0" y1="376" x2="72.0" y2="376" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="370" text-anchor="middle" class="ml" style="fill:#007aff">7 马上答</text><rect x="12" y="404" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="420.5" class="sx">S3 复杂题（查东西，不动手）</text><line x1="68.0" y1="452" x2="176.0" y2="452" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="124.0" y="446" text-anchor="middle" class="ml" style="fill:#1d1d1f">8 「帮我查一下 2798 的 PR 状态」</text><line x1="180.0" y1="486" x2="72.0" y2="486" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="480" text-anchor="middle" class="ml" style="fill:#007aff">9 ★ 「我查一下。」</text><line x1="180.0" y1="520" x2="288.0" y2="520" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="236.0" y="514" text-anchor="middle" class="ml" style="fill:#1d1d1f">10 ★ 开一个后台 agent，带你的原话</text><rect x="34.4" y="540" width="291.2" height="22" rx="4" fill="#fff7e8" stroke="#ff9500" stroke-width=".8"/><text x="180.0" y="555" text-anchor="middle" class="nt">等的时候你可以接着聊，它照样秒回；约 20 秒没结果补一句「还在查」</text><path d="M292.0,576 h26 v14 h-24" stroke="#1a365d" stroke-width="1.5" fill="none" marker-end="url(#mhn)"/><text x="322.0" y="587" class="ml">11 ★ 只读地查：代码、Linear、Bridge 状态</text><line x1="292.0" y1="622" x2="184.0" y2="622" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="236.0" y="616" text-anchor="middle" class="ml" style="fill:#1d1d1f">12 ★ 结果挂回这次委托交回</text><line x1="180.0" y1="656" x2="72.0" y2="656" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="650" text-anchor="middle" class="ml" style="fill:#007aff">13 ★ 等你说完，用口语讲结论（编号不错）</text><rect x="12" y="684" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="700.5" class="sx">S4 问别的 Lead 的实时情况：走 Bridge；1 分钟没回就看他在忙什么</text><line x1="68.0" y1="732" x2="176.0" y2="732" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="124.0" y="726" text-anchor="middle" class="ml" style="fill:#1d1d1f">14 「问下 Tadashi，2863 现在怎样」</text><line x1="180.0" y1="766" x2="72.0" y2="766" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="760" text-anchor="middle" class="ml" style="fill:#007aff">15 ★ 「我去问 Tadashi。」</text><line x1="180.0" y1="800" x2="512.0" y2="800" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="348.0" y="794" text-anchor="middle" class="ml" style="fill:#1d1d1f">16 交接请求（原话 + 权限）</text><line x1="516.0" y1="834" x2="624.0" y2="834" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="572.0" y="828" text-anchor="middle" class="ml" style="fill:#1d1d1f">17 进 Tadashi 的信箱</text><rect x="34.4" y="854" width="291.2" height="22" rx="4" fill="#fff7e8" stroke="#ff9500" stroke-width=".8"/><text x="180.0" y="869" text-anchor="middle" class="nt">1 分钟内回了 → 直接挂回、安静时讲（同 S3 第 12–13 步）</text><line x1="180.0" y1="898" x2="512.0" y2="898" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="348.0" y="892" text-anchor="middle" class="ml" style="fill:#1d1d1f">18 ★ 1 分钟没回：查 Tadashi 忙不忙、在做什么</text><line x1="180.0" y1="932" x2="72.0" y2="932" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="926" text-anchor="middle" class="ml" style="fill:#007aff">19 ★ 「他在跑 2877 的 QA，已经 20 分钟。等他，还是打断他先答？」</text><line x1="68.0" y1="966" x2="176.0" y2="966" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="124.0" y="960" text-anchor="middle" class="ml" style="fill:#1d1d1f">20 「打断他」</text><line x1="180.0" y1="1000" x2="512.0" y2="1000" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="348.0" y="994" text-anchor="middle" class="ml" style="fill:#1d1d1f">21 ★ 受控打断：先写审计，再标「加急」</text><line x1="516.0" y1="1034" x2="624.0" y2="1034" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="572.0" y="1028" text-anchor="middle" class="ml" style="fill:#1d1d1f">22 ★ 插进他当前这一轮（下一次调工具时读到，不取消手上的活）</text><line x1="628.0" y1="1068" x2="520.0" y2="1068" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="572.0" y="1062" text-anchor="middle" class="ml" style="fill:#1d1d1f">23 Tadashi 回复</text><line x1="516.0" y1="1102" x2="184.0" y2="1102" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="348.0" y="1096" text-anchor="middle" class="ml" style="fill:#1d1d1f">24 ★ 回复挂回这次交接，排队等安静</text><line x1="180.0" y1="1136" x2="72.0" y2="1136" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="1130" text-anchor="middle" class="ml" style="fill:#007aff">25 ★ 「Tadashi 回了：……」（选「等」则先说已知，回了再补）</text><rect x="12" y="1164" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="1180.5" class="sx">S5 动手类：派活 / 批准 / 改东西 —— 只有这类才交给 Lead 本体</text><line x1="68.0" y1="1212" x2="176.0" y2="1212" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="124.0" y="1206" text-anchor="middle" class="ml" style="fill:#1d1d1f">26 「让 Tadashi 把 2863 先停了」</text><line x1="180.0" y1="1246" x2="512.0" y2="1246" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="348.0" y="1240" text-anchor="middle" class="ml" style="fill:#1d1d1f">27 交给 Lead 本体执行（原话 + 权限核对）</text><line x1="516.0" y1="1280" x2="624.0" y2="1280" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="572.0" y="1274" text-anchor="middle" class="ml" style="fill:#1d1d1f">28 Lead 按现有权限去做</text><line x1="180.0" y1="1314" x2="72.0" y2="1314" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="1308" text-anchor="middle" class="ml" style="fill:#007aff">29 ★ 「交给 Tadashi 了，办完告诉你」</text><rect x="12" y="1342" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="1358.5" class="sx">S6 新消息 / 报平安</text><line x1="404.0" y1="1390" x2="184.0" y2="1390" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mhn)"/><text x="292.0" y="1384" text-anchor="middle" class="ml" style="fill:#1d1d1f">30 新的一件（排队尾）或 10 分钟报平安，等安静再递</text><line x1="180.0" y1="1424" x2="72.0" y2="1424" stroke="#007aff" stroke-width="2.2" marker-end="url(#mhmarin)"/><text x="124.0" y="1418" text-anchor="middle" class="ml" style="fill:#007aff">31 ★ 「刚又来了一件……」/「我还在，没卡住」</text></svg></div><div class="hint">手机上左右滑动看全图</div><details><summary>逐步：谁出声、哪些是新工作</summary><table class="steps"><tr><td></td><td><b>这一步</b></td><td><b>出声</b></td><td><b>现有 / 新工作</b></td></tr><tr><td></td><td colspan="3"><b>S1 你进房：开场议程</b></td></tr><tr><td>1</td><td>取议程：只取要你动手的几类，不回放历史</td><td>—</td><td class="">V7 规则，接到 B</td></tr><tr><td>2</td><td>把第一件整理成要说的话（读 thread/QA 报告）</td><td>—</td><td class="new">新</td></tr><tr><td>3</td><td>口语稿：要点 + 关键编号</td><td>—</td><td class="new">新</td></tr><tr><td>4</td><td>等房间安静，递稿（一次开口）</td><td>—</td><td class="new">新</td></tr><tr><td>5</td><td>「有两件要你拍，先说 2796……」</td><td>Raya 的声线</td><td class="new">新</td></tr><tr><td></td><td colspan="3"><b>S2 简单题</b></td></tr><tr><td>6</td><td>「现在几点？」</td><td>—</td><td class="">—</td></tr><tr><td>7</td><td>马上答</td><td>Raya 的声线</td><td class="">现有</td></tr><tr><td></td><td colspan="3"><b>S3 复杂题（查东西，不动手）</b></td></tr><tr><td>8</td><td>「帮我查一下 2798 的 PR 状态」</td><td>—</td><td class="">—</td></tr><tr><td>9</td><td>「我查一下。」</td><td>Raya 的声线</td><td class="new">新</td></tr><tr><td>10</td><td>开一个后台 agent，带你的原话</td><td>—</td><td class="new">新</td></tr><tr><td>11</td><td>只读地查：代码、Linear、Bridge 状态</td><td>—</td><td class="new">新</td></tr><tr><td>12</td><td>结果挂回这次委托交回</td><td>—</td><td class="new">新</td></tr><tr><td>13</td><td>等你说完，用口语讲结论（编号不错）</td><td>Raya 的声线</td><td class="new">新</td></tr><tr><td></td><td colspan="3"><b>S4 问别的 Lead 的实时情况：走 Bridge；1 分钟没回就看他在忙什么</b></td></tr><tr><td>14</td><td>「问下 Tadashi，2863 现在怎样」</td><td>—</td><td class="">—</td></tr><tr><td>15</td><td>「我去问 Tadashi。」</td><td>Raya 的声线</td><td class="new">新</td></tr><tr><td>16</td><td>交接请求（原话 + 权限）</td><td>—</td><td class="">现有</td></tr><tr><td>17</td><td>进 Tadashi 的信箱</td><td>—</td><td class="">现有</td></tr><tr><td>18</td><td>1 分钟没回：查 Tadashi 忙不忙、在做什么</td><td>—</td><td class="new">新（需要新建忙闲接口）</td></tr><tr><td>19</td><td>「他在跑 2877 的 QA，已经 20 分钟。等他，还是打断他先答？」</td><td>Raya 的声线</td><td class="new">新</td></tr><tr><td>20</td><td>「打断他」</td><td>—</td><td class="">—</td></tr><tr><td>21</td><td>受控打断：先写审计，再标「加急」</td><td>—</td><td class="new">新（受控打断接口）</td></tr><tr><td>22</td><td>插进他当前这一轮（下一次调工具时读到，不取消手上的活）</td><td>—</td><td class="new">新</td></tr><tr><td>23</td><td>Tadashi 回复</td><td>—</td><td class="">现有</td></tr><tr><td>24</td><td>回复挂回这次交接，排队等安静</td><td>—</td><td class="new">新</td></tr><tr><td>25</td><td>「Tadashi 回了：……」（选「等」则先说已知，回了再补）</td><td>Raya 的声线</td><td class="new">新</td></tr><tr><td></td><td colspan="3"><b>S5 动手类：派活 / 批准 / 改东西 —— 只有这类才交给 Lead 本体</b></td></tr><tr><td>26</td><td>「让 Tadashi 把 2863 先停了」</td><td>—</td><td class="">—</td></tr><tr><td>27</td><td>交给 Lead 本体执行（原话 + 权限核对）</td><td>—</td><td class="">现有</td></tr><tr><td>28</td><td>Lead 按现有权限去做</td><td>—</td><td class="">现有</td></tr><tr><td>29</td><td>「交给 Tadashi 了，办完告诉你」</td><td>Raya 的声线</td><td class="new">新</td></tr><tr><td></td><td colspan="3"><b>S6 新消息 / 报平安</b></td></tr><tr><td>30</td><td>新的一件（排队尾）或 10 分钟报平安，等安静再递</td><td>—</td><td class="">V7 规则，接到 B</td></tr><tr><td>31</td><td>「刚又来了一件……」/「我还在，没卡住」</td><td>Raya 的声线</td><td class="new">新</td></tr></table></details>
+<div class="card amber">
+<b>「打断别的 Lead」核实下来是怎么回事（S4 第 18–22 步）</b>
+<ul>
+<li><b>读忙闲：现在没有现成的接口。</b>Bridge 只知道 Lead 的进程活不活着，不知道他在不在一轮活里。零件是有的：Claude 载体的 Lead 可以看终端画面底部有没有「esc to interrupt」（已有识别规则）；Codex 载体的 Lead 由 sidecar 在内存里记着忙闲，Codex 自己也会发「对话状态变化」事件。但都没接出来，要新建一个「Lead 在忙什么」的只读接口。</li>
+<li><b>直接往他的终端窗格打字，不会让他停下手上的活。</b>两种载体都是在他<b>下一次调用工具时</b>把这句话插进当前这一轮（Codex 叫 steer），手上的活照做；真正让他停下要按 Esc。Claude 载体这一条来自源码快照，生产版本未核实。</li>
+<li><b>但直接打字有三个问题</b>：没有审计记录；他会把这句话当成<b>你本人</b>在终端里说的，等于绕过了权限核对；他的回复不一定能回到 Raya，Codex Lead 空闲时在终端里打字，回复不会回传。</li>
+<li><b>规则上</b>：现有「不许往终端自由输入语义指令」管的是 Lead→Runner（<span class="path">lead-rules-base/stuck-runner-remanage.md:28</span>、<span class="path">runner-recovery-nudge.ts:6-9</span>）；Lead 之间、语音→Lead 目前没有条文，也没有机制。</li>
+<li><b>建议的受控做法</b>：新建一个「打断 Lead」接口。先写审计（谁发起、引用你的哪句话、目标、内容摘要），审计写不进就不发。正文放进信箱并标「加急」，再按载体插进去：Codex Lead 用现成但还没接线的 steer；Claude Lead 只往终端打一句固定的提示「有急件，看信箱」，正文留在信箱里。「让他停下」（Esc）是另一个动作，必须你明说才做。</li>
+</ul>
+<p class="sub">出处：origin/main <span class="path">e1fde75c2</span>：<span class="path">lead-recipient-liveness.ts:8-34</span>、<span class="path">pane-blocked-classifier.ts:102</span>、<span class="path">LeadInputRouter.ts:21-23,242</span>、<span class="path">CodexLeadProcess.ts:536-544</span>（steerTurn，没有调用方）、<span class="path">codex-lead-tui-runtime.ts:30,1243-1246</span>；codex @44a9bfa <span class="path">tui thread_routing.rs:751-760</span>、<span class="path">app-server-protocol v2/thread.rs:1649-1666</span>。</p>
+</div>
+</div>
+
+<!-- ============ 3 ============ -->
+<div class="section">
+<h2><span class="num">3</span>开会模式目标时序图（例：和 Honey Lemon 开会）</h2>
+<p class="lead">起一个装着 Honey Lemon 身份和记忆的实时会话，用她自己的声音（绿色）。开会不需要那么多实时信息，所以<b>复杂题也不走 Bridge</b>：说「我查一下」，开专用后台 agent 查，查完用口语讲。只有「动手」才交给 Lead 本体。和耳机模式的区别：没有议程播报和报平安，不去问别的 Lead，会前把会议主题和材料备好，结束时出纪要。</p>
+<div class="legend"><span><i style="border-color:#007aff"></i>Raya 的声线出声</span><span><i style="border-color:#34a853"></i>开会的那个 Lead 的声线出声</span><span><i style="border-color:#1a365d"></i>不出声的内部步骤</span><span><i style="border-color:#1a365d;border-top-style:dashed"></i>虚线 = 未核实</span><span>★ = 新工作</span></div>
+<div class="seqwrap"><svg viewBox="0 0 696 912" width="696" height="912" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="开会模式目标时序图"><defs><marker id="mmmarin" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#007aff"/></marker><marker id="mmxiao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#af52de"/></marker><marker id="mmbed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff9500"/></marker><marker id="mmn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a365d"/></marker><marker id="mmbug" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff3b30"/></marker><marker id="mmlead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#34a853"/></marker></defs><style>.ph{font:600 12.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#fff}.ml{font:12px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1d1d1f}.sx{font:700 12.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#1a365d}.nt{font:11.5px -apple-system,system-ui,"PingFang SC",sans-serif;fill:#a35a00}</style><line x1="68.0" y1="64" x2="68.0" y2="906" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="18.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="68.0" y="37.0" text-anchor="middle" class="ph">你</text><line x1="180.0" y1="64" x2="180.0" y2="906" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="130.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="180.0" y="29.5" text-anchor="middle" class="ph">Honey Lemon</text><text x="180.0" y="44.5" text-anchor="middle" class="ph">实时会话(唯一嗓子)</text><line x1="292.0" y1="64" x2="292.0" y2="906" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="242.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="292.0" y="29.5" text-anchor="middle" class="ph">专用后台 agent</text><text x="292.0" y="44.5" text-anchor="middle" class="ph">(只读，查东西)</text><line x1="404.0" y1="64" x2="404.0" y2="906" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="354.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="404.0" y="29.5" text-anchor="middle" class="ph">会议调度</text><text x="404.0" y="44.5" text-anchor="middle" class="ph">(主题/纪要)</text><line x1="516.0" y1="64" x2="516.0" y2="906" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="466.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="516.0" y="37.0" text-anchor="middle" class="ph">Bridge</text><line x1="628.0" y1="64" x2="628.0" y2="906" stroke="#c7c7cc" stroke-width="1" stroke-dasharray="3 3"/><rect x="578.0" y="8" width="100" height="48" rx="8" fill="#1a365d"/><text x="628.0" y="29.5" text-anchor="middle" class="ph">Lead 本体</text><text x="628.0" y="44.5" text-anchor="middle" class="ph">(只管动手)</text><rect x="12" y="82" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="98.5" class="sx">S1 开会：会前备好材料</text><line x1="404.0" y1="130" x2="184.0" y2="130" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="292.0" y="124" text-anchor="middle" class="ml" style="fill:#1d1d1f">1 ★ 装入该 Lead 的身份、记忆、会议主题和材料</text><line x1="68.0" y1="164" x2="176.0" y2="164" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="124.0" y="158" text-anchor="middle" class="ml" style="fill:#1d1d1f">2 你进会议房</text><line x1="180.0" y1="198" x2="72.0" y2="198" stroke="#34a853" stroke-width="2.2" marker-end="url(#mmlead)"/><text x="124.0" y="192" text-anchor="middle" class="ml" style="fill:#34a853">3 ★ 「今天聊 X，我先说一下现状……」</text><rect x="12" y="226" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="242.5" class="sx">S2 简单题</text><line x1="68.0" y1="274" x2="176.0" y2="274" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="124.0" y="268" text-anchor="middle" class="ml" style="fill:#1d1d1f">4 提问</text><line x1="180.0" y1="308" x2="72.0" y2="308" stroke="#34a853" stroke-width="2.2" marker-end="url(#mmlead)"/><text x="124.0" y="302" text-anchor="middle" class="ml" style="fill:#34a853">5 马上答</text><rect x="12" y="336" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="352.5" class="sx">S3 复杂题：不走 Bridge 找 Lead 本体</text><line x1="68.0" y1="384" x2="176.0" y2="384" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="124.0" y="378" text-anchor="middle" class="ml" style="fill:#1d1d1f">6 「这个方案上次 QA 为什么没过？」</text><line x1="180.0" y1="418" x2="72.0" y2="418" stroke="#34a853" stroke-width="2.2" marker-end="url(#mmlead)"/><text x="124.0" y="412" text-anchor="middle" class="ml" style="fill:#34a853">7 ★ 「我查一下。」</text><line x1="180.0" y1="452" x2="288.0" y2="452" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="236.0" y="446" text-anchor="middle" class="ml" style="fill:#1d1d1f">8 ★ 开一个后台 agent，带原话</text><rect x="42.8" y="472" width="274.5" height="22" rx="4" fill="#fff7e8" stroke="#ff9500" stroke-width=".8"/><text x="180.0" y="487" text-anchor="middle" class="nt">会照常聊；你插话它就停，后台不停，结果不丢</text><path d="M292.0,508 h26 v14 h-24" stroke="#1a365d" stroke-width="1.5" fill="none" marker-end="url(#mmn)"/><text x="322.0" y="519" class="ml">9 ★ 只读地查：代码、Linear、QA 报告</text><line x1="292.0" y1="554" x2="184.0" y2="554" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="236.0" y="548" text-anchor="middle" class="ml" style="fill:#1d1d1f">10 ★ 结果挂回这次委托交回</text><line x1="180.0" y1="588" x2="72.0" y2="588" stroke="#34a853" stroke-width="2.2" marker-end="url(#mmlead)"/><text x="124.0" y="582" text-anchor="middle" class="ml" style="fill:#34a853">11 ★ 等你说完，口语讲结论</text><rect x="12" y="616" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="632.5" class="sx">S4 动手类：只有这类才交给 Lead 本体</text><line x1="68.0" y1="664" x2="176.0" y2="664" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="124.0" y="658" text-anchor="middle" class="ml" style="fill:#1d1d1f">12 「那就按方案二改，派给 runner」</text><line x1="180.0" y1="698" x2="400.0" y2="698" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="292.0" y="692" text-anchor="middle" class="ml" style="fill:#1d1d1f">13 ★ 记进会议纪要的待办</text><line x1="180.0" y1="732" x2="512.0" y2="732" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="348.0" y="726" text-anchor="middle" class="ml" style="fill:#1d1d1f">14 交给 Lead 本体执行（原话 + 权限核对）</text><line x1="516.0" y1="766" x2="624.0" y2="766" stroke="#1a365d" stroke-width="1.5" marker-end="url(#mmn)"/><text x="572.0" y="760" text-anchor="middle" class="ml" style="fill:#1d1d1f">15 Lead 按现有权限派活</text><line x1="180.0" y1="800" x2="72.0" y2="800" stroke="#34a853" stroke-width="2.2" marker-end="url(#mmlead)"/><text x="124.0" y="794" text-anchor="middle" class="ml" style="fill:#34a853">16 ★ 「记下了，交给 Honey Lemon 去派」</text><rect x="12" y="828" width="672" height="24" rx="6" fill="#f5f5f7"/><text x="20" y="844.5" class="sx">S5 结束</text><line x1="404.0" y1="876" x2="512.0" y2="876" stroke="#1a365d" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#mmn)"/><text x="460.0" y="870" text-anchor="middle" class="ml" style="fill:#1d1d1f">17 纪要和待办交给 Lead 本体</text></svg></div><div class="hint">手机上左右滑动看全图</div><details><summary>逐步：谁出声、哪些是新工作</summary><table class="steps"><tr><td></td><td><b>这一步</b></td><td><b>出声</b></td><td><b>现有 / 新工作</b></td></tr><tr><td></td><td colspan="3"><b>S1 开会：会前备好材料</b></td></tr><tr><td>1</td><td>装入该 Lead 的身份、记忆、会议主题和材料</td><td>—</td><td class="new">新（按 Lead 起会话）</td></tr><tr><td>2</td><td>你进会议房</td><td>—</td><td class="">—</td></tr><tr><td>3</td><td>「今天聊 X，我先说一下现状……」</td><td>该 Lead 的声线</td><td class="new">新</td></tr><tr><td></td><td colspan="3"><b>S2 简单题</b></td></tr><tr><td>4</td><td>提问</td><td>—</td><td class="">—</td></tr><tr><td>5</td><td>马上答</td><td>该 Lead 的声线</td><td class="">现有</td></tr><tr><td></td><td colspan="3"><b>S3 复杂题：不走 Bridge 找 Lead 本体</b></td></tr><tr><td>6</td><td>「这个方案上次 QA 为什么没过？」</td><td>—</td><td class="">—</td></tr><tr><td>7</td><td>「我查一下。」</td><td>该 Lead 的声线</td><td class="new">新</td></tr><tr><td>8</td><td>开一个后台 agent，带原话</td><td>—</td><td class="new">新</td></tr><tr><td>9</td><td>只读地查：代码、Linear、QA 报告</td><td>—</td><td class="new">新</td></tr><tr><td>10</td><td>结果挂回这次委托交回</td><td>—</td><td class="new">新</td></tr><tr><td>11</td><td>等你说完，口语讲结论</td><td>该 Lead 的声线</td><td class="new">新</td></tr><tr><td></td><td colspan="3"><b>S4 动手类：只有这类才交给 Lead 本体</b></td></tr><tr><td>12</td><td>「那就按方案二改，派给 runner」</td><td>—</td><td class="">—</td></tr><tr><td>13</td><td>记进会议纪要的待办</td><td>—</td><td class="new">新</td></tr><tr><td>14</td><td>交给 Lead 本体执行（原话 + 权限核对）</td><td>—</td><td class="">现有</td></tr><tr><td>15</td><td>Lead 按现有权限派活</td><td>—</td><td class="">现有</td></tr><tr><td>16</td><td>「记下了，交给 Honey Lemon 去派」</td><td>该 Lead 的声线</td><td class="new">新</td></tr><tr><td></td><td colspan="3"><b>S5 结束</b></td></tr><tr><td>17</td><td>纪要和待办交给 Lead 本体</td><td>—</td><td class="">现有设计（未核实代码）</td></tr></table></details>
+<p class="sub">注意：现在配置里所有 Lead 的声线都是 marin，所以「用 Honey Lemon 自己的声音」要先把各 Lead 的声线写进配置（你 8-21 给过分配表，一直没写进去）。</p>
+</div>
+
+<!-- ============ 4 ============ -->
+<div class="section">
+<h2><span class="num">4</span>B 的改法清单（按新方向更新）和顺序</h2>
+<p class="lead">「返工内」= 已经在 2799 这一轮返工里（拆回环、去等待音乐、卡顿、身份问题自己答）。其余都是新工作。</p>
+<div class="scroll">
+<table class="tbl" style="background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+<tr><th style="padding-left:12px">#</th><th>改什么</th><th>哪种模式</th><th>和 2799 返工的关系</th></tr>
+<tr><td style="padding-left:12px">0</td><td><b>补上 OpenAI API 余额</b>（实时语音只能用 API key）</td><td>两种</td><td>前提，不是代码</td></tr>
+<tr><td style="padding-left:12px">1</td><td>拆回环（你的原话被当成 Lead 回复念回来）</td><td>两种</td><td><span class="in">返工内（B-1）</span></td></tr>
+<tr><td style="padding-left:12px">2</td><td>去掉等待音乐，换成一句「我去看一下」，20 秒后补一句</td><td>两种</td><td><span class="in">去音乐：返工内（B-2）</span> · <span class="new">补话：新</span></td></tr>
+<tr><td style="padding-left:12px">3</td><td>播放不卡（边收边播、预缓冲）</td><td>两种</td><td><span class="in">返工内（B-3）</span></td></tr>
+<tr><td style="padding-left:12px">4</td><td>「你是谁」这类身份问题自己答</td><td>两种</td><td><span class="in">返工内（B-4）</span></td></tr>
+<tr><td style="padding-left:12px">5</td><td><b>专用后台 agent</b>：单独的 Codex 文字线程，带 Lead 身份+记忆，只读工具（Lead 工作区代码、Linear、Bridge 状态），走订阅号</td><td>两种</td><td><span class="new">新（核心）</span></td></tr>
+<tr><td style="padding-left:12px">6</td><td><b>交出去的三条路分流</b>：查东西 → 后台 agent；问别的 Lead → Bridge；动手 → Lead 本体。分流判断由会话自己做（工具分成三个），拿不准时按「查东西」处理，不擅自动手</td><td>两种（「问别的 Lead」只在耳机模式）</td><td><span class="new">新</span>，取代现在「一律交 Lead 本体」</td></tr>
+<tr><td style="padding-left:12px">7</td><td><b>结果交回</b>：挂回当初那次委托，等房间安静了只开口一次；你打断后结果不丢，等你说完主动补一句</td><td>两种</td><td><span class="new">新</span></td></tr>
+<tr><td style="padding-left:12px">8</td><td>口语转述：去掉逐字核对，只核编号、单号、数字、人名</td><td>两种</td><td><span class="new">新</span></td></tr>
+<tr><td style="padding-left:12px">9</td><td><b>问别的 Lead：1 分钟看忙闲 → 问你等还是打断 → 受控打断</b></td><td>耳机</td><td><span class="new">新</span></td></tr>
+<tr><td style="padding-left:12px">10</td><td>耳机模式层接到 B：议程（四类）、一件一件过、10 分钟报平安（V7 规则），全部由 Raya 的会话说</td><td>耳机</td><td><span class="new">新</span>（V7 的调度器从 A 挪到 B）</td></tr>
+<tr><td style="padding-left:12px">11</td><td><b>开会模式</b>：按 Lead 起会话（身份、记忆、声线、会议主题和材料提前备好），不走 Bridge 查东西，结束出纪要</td><td>开会</td><td><span class="new">新</span></td></tr>
+<tr><td style="padding-left:12px">12</td><td>各 Lead 的声线写进配置（现在全是 marin）</td><td>开会</td><td><span class="new">新（配置）</span></td></tr>
+</table>
+</div>
+<div class="card navy">
+<b>建议顺序</b>
+<ol style="margin:6px 0;padding-left:20px">
+<li><b>0</b>（余额）+ <b>1–4</b>（2799 返工收尾）：先让 B 在耳机模式里「能用、不出怪声」。</li>
+<li><b>5 → 6 → 7 → 8</b>：新交接模型的核心，四条改的是同一条通道，一起做。做完你就能「复杂题我查一下、查完口语讲」。</li>
+<li><b>11 + 12</b>（开会模式）：它只依赖 5–8，不需要议程，比耳机模式的完整版更早能用。</li>
+<li><b>9 + 10</b>（耳机模式完整版）：问别的 Lead 的忙闲和打断，以及 V7 议程接入。</li>
+</ol>
+<p class="sub" style="margin:4px 0 0">2799 现在的返工（1–4）按原计划做完、过 QA 即可，不用等新设计。5 以后建议开新单，不塞进 2799。</p>
+</div>
+</div>
+
+<!-- ============ 5 ============ -->
+<div class="section">
+<h2><span class="num">5</span>要你当场拍板的问题（按新方向重写）</h2>
+<div class="q"><b>Q1.</b> OpenAI API 余额要补上，B 的实时语音才能跑（订阅号跑不了实时语音）。可以补吗？预算上限多少？</div>
+<div class="q"><b>Q2.</b> 专用后台 agent 走 <b>ChatGPT 订阅号</b>（和其他 Lead 共用额度），不走 API 余额。可以吗？</div>
+<div class="q"><b>Q3.</b> 后台 agent 只给<b>只读</b>权限（读代码、Linear、Bridge 状态），任何写操作都必须交 Lead 本体。这条边界对吗？</div>
+<div class="q"><b>Q4.</b> 「打断别的 Lead」用<b>受控接口</b>（先记审计，内容走信箱、标加急，只往他当前这一轮里插一句，不让他停下手上的活），而不是直接往他的终端窗格敲你的原话。可以吗？「让他立刻停下」要不要也支持？</div>
+<div class="q"><b>Q5.</b> 开会模式先做（它比耳机模式完整版更早能用），耳机模式的「问别的 Lead / 打断」和议程放在后面。这个顺序可以吗？</div>
+</div>
+
+<div class="foot">
+<b>出处</b>
+<ul>
+<li>外部仓库均为只读浅克隆（/tmp）：openai-realtime-agents @94c9e91，openai/codex @44a9bfa，pipecat @c972284，livekit/agents @121810c</li>
+<li>B 容器与认证：flywheel-FLY-2799 头 <span class="path">dd6be6bf7</span>：<span class="path">packages/voice-codex/src/codex/CodexVoiceContainer.ts:143-165,639,658-676</span>、<span class="path">codex-home.ts:11-30,45-51</span>、<span class="path">voice-codex/src/config.ts:121</span>、<span class="path">teamlead voice-session-context.ts:255-269,376-401,539-540</span></li>
+<li>2799 实测：<span class="path">engineering/doc/FLY-2799-codex-voice-container/research.md:8,16,18</span>、<span class="path">evidence/impl-rework-real-handoff/bench.jsonl:204→208</span></li>
+<li>延迟都是估计，未测（本机未调用任何 API）</li>
+</ul>
+</div>
+
+</div>
+</body>
+</html>
