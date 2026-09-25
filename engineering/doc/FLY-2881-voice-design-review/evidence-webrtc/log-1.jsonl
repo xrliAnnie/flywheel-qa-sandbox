@@ -1,0 +1,83 @@
+{"t":"0.039","kind":"request","data":{"method":"initialize"}}
+{"t":"0.158","kind":"response","data":{"method":"initialize","error":null,"keys":["userAgent","codexHome","platformFamily","platformOs"]}}
+{"t":"0.158","kind":"request","data":{"method":"account/read"}}
+{"t":"0.514","kind":"notify","data":{"method":"account/updated","params":{"authMode":"chatgpt","planType":"pro"}}}
+{"t":"0.515","kind":"response","data":{"method":"account/read","error":null,"keys":["account","requiresOpenaiAuth","workspaceRouting"],"account":{"type":"chatgpt","planType":"pro"}}}
+{"t":"0.515","kind":"request","data":{"method":"thread/start"}}
+{"t":"3.835","kind":"response","data":{"method":"thread/start","error":null,"keys":["thread","model","modelProvider","serviceTier","disabledPluginIds","cwd","runtimeWorkspaceRoots","instructionSources","approvalPolicy","approvalsReviewer","sandbox","activePermissionProfile","reasoningEffort","multiAgentMode"],"thread":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","model":"gpt-6-astra","sandbox":{"type":"readOnly","networkAccess":false}}}
+{"t":"3.925","kind":"ice_state","data":{"s":"checking"}}
+{"t":"3.926","kind":"ice_state","data":{"s":"completed"}}
+{"t":"3.926","kind":"mark","data":{"k":"offer_ready","ms":3926}}
+{"t":"3.926","kind":"mark","data":{"k":"realtime_start_sent","ms":3926}}
+{"t":"3.926","kind":"request","data":{"method":"thread/realtime/start"}}
+{"t":"3.966","kind":"response","data":{"method":"thread/realtime/start","error":null,"keys":[]}}
+{"t":"4.956","kind":"notify","data":{"method":"thread/realtime/started","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","realtimeSessionId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","version":"v3"}}}
+{"t":"4.958","kind":"notify","data":{"method":"thread/realtime/sdp","sdpLines":["a=ice-lite","m=audio 9 UDP/TLS/RTP/SAVPF 111","a=setup:passive","a=rtpmap:111 opus/48000/2","m=application 9 UDP/DTLS/SCTP webrtc-datachannel","a=setup:passive"]}}
+{"t":"4.958","kind":"mark","data":{"k":"answer_sdp","ms":4958}}
+{"t":"4.961","kind":"remote_track","data":{"kind":"audio"}}
+{"t":"4.963","kind":"pc_state","data":{"s":"connecting"}}
+{"t":"4.963","kind":"ice_state","data":{"s":"checking"}}
+{"t":"4.967","kind":"mark","data":{"k":"realtime_started","ms":4967}}
+{"t":"5.096","kind":"ice_state","data":{"s":"connected"}}
+{"t":"5.577","kind":"pc_state","data":{"s":"connected"}}
+{"t":"5.578","kind":"mark","data":{"k":"pc_connected","ms":5578}}
+{"t":"5.664","kind":"datachannel","data":{"state":"open"}}
+{"t":"6.182","kind":"mark","data":{"k":"first_rtp_in","ms":6182}}
+{"t":"6.400","kind":"mark","data":{"k":"speech_send_start","ms":6400}}
+{"t":"7.436","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"请"}}}
+{"t":"8.073","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"读取"}}}
+{"t":"8.311","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"hello"}}}
+{"t":"8.692","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"."}}}
+{"t":"9.687","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"txt"}}}
+{"t":"10.887","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":" 这个"}}}
+{"t":"11.385","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"文件"}}}
+{"t":"11.511","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"的"}}}
+{"t":"11.927","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"第一"}}}
+{"t":"12.060","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"行"}}}
+{"t":"12.756","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":",告诉"}}}
+{"t":"12.860","kind":"mark","data":{"k":"speech_send_end","ms":12860}}
+{"t":"13.126","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"我"}}}
+{"t":"13.300","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"写"}}}
+{"t":"13.608","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"了"}}}
+{"t":"13.822","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","delta":"什么"}}}
+{"t":"13.835","kind":"notify","data":{"method":"thread/realtime/itemAdded","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","item":{"type":"handoff_request","handoff_id":"item_ES6ZFN83kdoklxACwdp1a","item_id":"item_ES6ZFN83kdoklxACwdp1a","input_transcript":"请读取hello.txt 这个文件的第一行,告诉我写了什么","active_transcript":[{"role":"user","text":"请读取hello.txt 这个文件的第一行,告诉我写了什么"}]}}}}
+{"t":"13.835","kind":"notify","data":{"method":"turn/started","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","turn":{"id":"01a0da32-8061-7f61-b3de-278381e35333","items":[],"itemsView":"notLoaded","status":"inProgress","error":null,"startedAt":1790367137,"completedAt":null,"durationMs":null}}}}
+{"t":"13.835","kind":"mark","data":{"k":"bg_turn_started","ms":13835}}
+{"t":"13.835","kind":"bg_turn_count","data":1}
+{"t":"14.003","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"我来"}}}
+{"t":"14.028","kind":"mark","data":{"k":"first_voice_in","ms":14028}}
+{"t":"14.123","kind":"notify","data":{"method":"item/completed","params":{"item":{"type":"userMessage","id":"01a0da32-818a-7460-b5a5-7742a34972b6","clientId":null,"content":[{"type":"text","text":"<realtime_delegation>\n  <input>请读取hello.txt 这个文件的第一行,告诉我写了什么</input>\n  <transcript_delta>user: 请读取hello.txt 这个文件的第一行,告诉我写了什么</transcript_delta>\n</realtime_delegation>","text_elements":[]}]},"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","turnId":"01a0da32-8061-7f61-b3de-278381e35333","completedAtMs":1790367138186}}}
+{"t":"14.233","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"读一下"}}}
+{"t":"14.409","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":","}}}
+{"t":"14.659","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"稍"}}}
+{"t":"14.666","kind":"notify","data":{"method":"thread/realtime/transcript/done","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"user","text":"请读取hello.txt 这个文件的第一行,告诉我写了什么"}}}
+{"t":"14.855","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"等"}}}
+{"t":"14.986","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"。"}}}
+{"t":"16.009","kind":"notify","data":{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_0cc6f7a0795aceb9016ab6d5a3766087d09fde2ed175180168","text":"我来读取 hello.txt 的第一行。\n","phase":"commentary","memoryCitation":null,"delivery":null,"questions":null},"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","turnId":"01a0da32-8061-7f61-b3de-278381e35333","completedAtMs":1790367140067}}}
+{"t":"17.111","kind":"notify","data":{"method":"thread/realtime/transcript/done","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","text":"我来读一下,稍等。"}}}
+{"t":"19.437","kind":"notify","data":{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"exec-4b6c0e4b-8762-4422-bfd7-4d9aa3c07d6f","pluginId":null,"scriptPath":null,"command":"/bin/zsh -lc 'head -n 1 hello.txt'","cwd":"/tmp/fly2881-webrtc/work","processId":"60626","source":"unifiedExecStartup","status":"completed","commandActions":[{"type":"read","command":"head -n 1 hello.txt","name":"hello.txt","path":"/tmp/fly2881-webrtc/work/hello.txt"}],"aggregatedOutput":"hello from fly2881 webrtc\n","exitCode":0,"durationMs":2211},"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","turnId":"01a0da32-8061-7f61-b3de-278381e35333","completedAtMs":1790367143469}}}
+{"t":"21.715","kind":"notify","data":{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_0cc6f7a0795aceb9016ab6d5a94b3887d0a1e1b5a024401643","text":"第一行是：`hello from fly2881 webrtc`","phase":"final_answer","memoryCitation":null,"delivery":null,"questions":null},"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","turnId":"01a0da32-8061-7f61-b3de-278381e35333","completedAtMs":1790367145739}}}
+{"t":"21.715","kind":"notify","data":{"method":"turn/completed","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","turn":{"id":"01a0da32-8061-7f61-b3de-278381e35333","items":[{"type":"agentMessage","id":"msg_0cc6f7a0795aceb9016ab6d5a94b3887d0a1e1b5a024401643","text":"第一行是：`hello from fly2881 webrtc`","phase":"final_answer","memoryCitation":null,"delivery":null,"questions":null}],"itemsView":"summary","status":"completed","error":null,"startedAt":1790367137,"completedAt":1790367145,"durationMs":7852}}}}
+{"t":"21.715","kind":"mark","data":{"k":"bg_turn_completed","ms":21715}}
+{"t":"21.715","kind":"mark","data":{"k":"append_speech_sent","ms":21715}}
+{"t":"21.715","kind":"request","data":{"method":"thread/realtime/appendSpeech"}}
+{"t":"21.998","kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null,"keys":[]}}
+{"t":"22.614","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"第一行"}}}
+{"t":"22.971","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"是"}}}
+{"t":"23.004","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":":hello"}}}
+{"t":"23.456","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":" from"}}}
+{"t":"23.817","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":" fly288"}}}
+{"t":"23.911","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"1"}}}
+{"t":"24.289","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":" webrtc"}}}
+{"t":"24.989","kind":"notify","data":{"method":"thread/realtime/transcript/delta","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","delta":"。"}}}
+{"t":"26.970","kind":"notify","data":{"method":"thread/realtime/transcript/done","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","role":"assistant","text":"第一行是:hello from fly2881 webrtc。"}}}
+{"t":"31.000","kind":"finish","data":{"why":"result_spoken_window","marks":{"offer_ready":3926,"realtime_start_sent":3926,"answer_sdp":4958,"realtime_started":4967,"pc_connected":5578,"first_rtp_in":6182,"speech_send_start":6400,"speech_send_end":12860,"bg_turn_started":13835,"first_voice_in":14028,"bg_turn_completed":21715,"append_speech_sent":21715}}}
+{"t":"31.000","kind":"request","data":{"method":"thread/realtime/stop"}}
+{"t":"31.037","kind":"response","data":{"method":"thread/realtime/stop","error":null,"keys":[]}}
+{"t":"31.039","kind":"pc_state","data":{"s":"closed"}}
+{"t":"31.039","kind":"datachannel","data":{"state":"closed"}}
+{"t":"31.040","kind":"ice_state","data":{"s":"closed"}}
+{"t":"31.044","kind":"voice_segments_ms","data":[[14028,15174],[22614,22660],[22967,25590]]}
+{"t":"31.044","kind":"recv_seconds","data":23.78}
+{"t":"31.044","kind":"notify","data":{"method":"thread/realtime/closed","params":{"threadId":"01a0da32-4dfe-7a11-9241-70477bb5d3c6","reason":"requested"}}}
+{"t":"31.215","kind":"exit","data":{"code":0,"sig":null}}
