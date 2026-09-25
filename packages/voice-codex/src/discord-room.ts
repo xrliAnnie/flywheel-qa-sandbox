@@ -7,7 +7,7 @@ import {
 } from "flywheel-voice-bridge";
 import type { ReceiveHealth } from "flywheel-voice-core";
 import { AudioClock } from "./audio/AudioClock.js";
-import { WaitingMouth } from "./audio.js";
+import { type SpeechStream, WaitingMouth } from "./audio.js";
 import {
 	createInitialSileroState,
 	type SileroState,
@@ -226,6 +226,7 @@ export class DiscordVoiceRoom {
 			createResource: this.options.deps.createResource,
 			assertLease: this.options.assertLease,
 			onError: this.options.onError,
+			onDiagnostic: (record) => this.options.onDiagnostic?.({ ...record }),
 		});
 		this.mouth.start();
 		this.clock = new AudioClock({
@@ -353,6 +354,12 @@ export class DiscordVoiceRoom {
 			this.mouth?.playSpeech(speechId, pcm24Mono) ??
 			Promise.reject(new Error("speech_room_not_ready"))
 		);
+	}
+
+	/** Streamed playback: audio is appended while the speech already plays. */
+	openSpeech(speechId: string): SpeechStream {
+		if (!this.mouth) throw new Error("speech_room_not_ready");
+		return this.mouth.openSpeech(speechId);
 	}
 
 	cancelSpeech(speechId: string): void {

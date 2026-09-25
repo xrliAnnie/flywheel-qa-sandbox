@@ -96,11 +96,15 @@ export interface CodexVoiceBackendOptions {
 	voice: string;
 	container: CodexContainerLike;
 	loadContext: () => Promise<CodexVoiceContextSnapshot>;
-	playAudio?: (input: {
+	/**
+	 * Opens the room playback for one assistant item. Audio is appended as it
+	 * arrives, so an answer starts on its first frame instead of after its
+	 * final transcript (FLY-2799 qa6: a 19s answer waited 4.8s).
+	 */
+	openAudio?: (input: {
 		itemId: string;
-		pcm24Mono: Buffer;
 		generation: number;
-	}) => Promise<void>;
+	}) => CodexAudioOutput;
 	persistUtterance?: (
 		utterance: VoiceUtterance,
 		captureDigest: string,
@@ -118,6 +122,14 @@ export interface CodexVoiceBackendOptions {
 	monotonicNow?: () => number;
 	onEvidence?: (record: Record<string, unknown>) => void;
 	confirmTimeoutMs?: number;
+}
+
+/** One assistant item's playback, fed while its audio is still arriving. */
+export interface CodexAudioOutput {
+	append(pcm24Mono: Buffer): boolean;
+	end(): void;
+	cancel(): void;
+	readonly done: Promise<void>;
 }
 
 export class CodexVoiceBackend implements VoiceBackend {
@@ -167,7 +179,9 @@ class CodexVoiceSession implements ConversationSession {
 	private readonly speaker: CodexProofSpeaker;
 	private readonly now: () => Date;
 	private readonly monotonicNow: () => number;
-	private readonly audio = new Map<string, Buffer[]>();
+	private readonly output = new Map<string, CodexAudioOutput>();
+	/** Items whose final arrived; audio after it is not played. */
+	private readonly outputEnded = new Set<string>();
 	private readonly outputStarted = new Set<string>();
 	private readonly restartAudio: Array<{
 		frame: Buffer;
@@ -323,7 +337,7 @@ class CodexVoiceSession implements ConversationSession {
 		this.latestKnownUser = undefined;
 		this.latestUserTranscriptId = undefined;
 		this.speaker.interrupt();
-		this.audio.clear();
+		this.cancelOutputs();
 		this.outputFrameState.clear();
 		this.outputStarted.clear();
 		this.events.emit("response-cancelled");
@@ -372,6 +386,7 @@ class CodexVoiceSession implements ConversationSession {
 	private async closeOnce(): Promise<undefined> {
 		this.closing = true;
 		this.live = false;
+		this.cancelOutputs();
 		try {
 			await this.durabilityTail;
 			const flush = await this.options.transcriptSink?.flush?.();
@@ -407,7 +422,6 @@ class CodexVoiceSession implements ConversationSession {
 	observeAudio(delta: CodexRealtimeAudioDelta): void {
 		if (this.closing || this.restarting || delta.generation !== this.generation)
 			return;
-		const chunks = this.audio.get(delta.itemId) ?? [];
 		const observedAt = this.monotonicNow();
 		const samples = delta.samplesPerChannel ?? delta.pcm24Mono.length / 2;
 		const durationMs = samples / 24;
@@ -434,9 +448,8 @@ class CodexVoiceSession implements ConversationSession {
 			intervalMs,
 			underloadMs,
 		});
-		chunks.push(delta.pcm24Mono);
-		this.audio.set(delta.itemId, chunks);
 		this.events.emit("response-audio", delta.pcm24Mono, PCM24_MONO);
+		this.streamAudio(delta.itemId, delta.generation, delta.pcm24Mono);
 	}
 
 	observeTranscript(transcript: CodexRealtimeTranscript): void {
@@ -540,7 +553,7 @@ class CodexVoiceSession implements ConversationSession {
 					: undefined;
 		}
 		if (transcript.role === "assistant" && transcript.itemId)
-			void this.play(transcript.itemId, transcript.generation);
+			this.endOutput(transcript.itemId);
 	}
 
 	observeInputGap(input: { reason: string; droppedBytes: number }): void {
@@ -760,48 +773,97 @@ class CodexVoiceSession implements ConversationSession {
 		return persisted;
 	}
 
-	private async play(itemId: string, generation: number): Promise<void> {
-		const chunks = this.audio.get(itemId) ?? [];
-		this.audio.delete(itemId);
-		this.outputFrameState.delete(itemId);
-		if (chunks.length === 0) return;
-		if (!this.options.playAudio) {
+	private streamAudio(itemId: string, generation: number, pcm24Mono: Buffer) {
+		if (this.outputEnded.has(itemId)) {
+			this.options.onEvidence?.({
+				kind: "codex_output_late_audio_dropped",
+				itemId,
+				generation,
+				pcmBytes: pcm24Mono.length,
+			});
+			return;
+		}
+		let output = this.output.get(itemId);
+		if (!output) {
+			// Assistant items play in order; one whose final never came must not
+			// hold the next one behind it.
+			for (const openItemId of [...this.output.keys()])
+				this.endOutput(openItemId);
+			output = this.openOutput(itemId, generation);
+		}
+		output?.append(pcm24Mono);
+	}
+
+	private openOutput(
+		itemId: string,
+		generation: number,
+	): CodexAudioOutput | undefined {
+		if (!this.options.openAudio) {
+			this.outputEnded.add(itemId);
 			this.options.onEvidence?.({
 				kind: "codex_output_unsubmitted",
 				itemId,
 				generation,
 				reason: "playback_sink_missing",
 			});
-			return;
+			return undefined;
 		}
+		let output: CodexAudioOutput;
+		try {
+			output = this.options.openAudio({ itemId, generation });
+		} catch (error) {
+			this.outputEnded.add(itemId);
+			this.playbackFailed(error, generation);
+			return undefined;
+		}
+		this.output.set(itemId, output);
 		this.pendingPlaybackCount += 1;
 		let completed = false;
-		try {
-			await this.options.playAudio({
-				itemId,
-				pcm24Mono: Buffer.concat(chunks),
-				generation,
+		void output.done
+			.then(
+				() => {
+					this.speaker.observePlaybackSubmitted({ generation, itemId });
+					completed = true;
+				},
+				(error) => this.playbackFailed(error, generation),
+			)
+			.finally(() => {
+				this.pendingPlaybackCount -= 1;
+				if (
+					completed &&
+					this.pendingPlaybackCount === 0 &&
+					!this.closing &&
+					!this.restarting &&
+					generation === this.generation
+				) {
+					this.events.emit("response-done");
+				}
 			});
-			this.speaker.observePlaybackSubmitted({ generation, itemId });
-			completed = true;
-		} catch (error) {
-			if (this.closing || this.restarting || generation !== this.generation)
-				return;
-			this.transportError(
-				error instanceof Error ? error : new Error(String(error)),
-			);
-		} finally {
-			this.pendingPlaybackCount -= 1;
-			if (
-				completed &&
-				this.pendingPlaybackCount === 0 &&
-				!this.closing &&
-				!this.restarting &&
-				generation === this.generation
-			) {
-				this.events.emit("response-done");
-			}
-		}
+		return output;
+	}
+
+	private endOutput(itemId: string): void {
+		const output = this.output.get(itemId);
+		this.output.delete(itemId);
+		this.outputEnded.add(itemId);
+		this.outputFrameState.delete(itemId);
+		output?.end();
+	}
+
+	/** Barge-in / close: open outputs belong to a response that is over. */
+	private cancelOutputs(): void {
+		const open = [...this.output.values()];
+		this.output.clear();
+		this.outputEnded.clear();
+		for (const output of open) output.cancel();
+	}
+
+	private playbackFailed(error: unknown, generation: number): void {
+		if (this.closing || this.restarting || generation !== this.generation)
+			return;
+		this.transportError(
+			error instanceof Error ? error : new Error(String(error)),
+		);
 	}
 
 	private unsupported(message: string): void {

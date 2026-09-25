@@ -15,6 +15,7 @@ import { CodexVoiceBackend } from "../codex/CodexVoiceBackend.js";
 import { CodexVoiceContainerError } from "../codex/CodexVoiceContainer.js";
 import { CodexTranscriptPublisher } from "../codex/CodexVoiceHandoff.js";
 import { GenericVoiceSession, type RoomHandlers } from "../session.js";
+import { simulatedPlayer } from "./playback-harness.js";
 
 const brain: BrainAdapter = {
 	async *respond() {
@@ -42,6 +43,80 @@ function conversation(
 			pendingKey: opts.pendingKey,
 			requestDigest: "d".repeat(64),
 		})),
+	};
+}
+
+/** Records what the backend streams into room playback, one item each. */
+function recordedOutputs() {
+	const opened: Array<{
+		itemId: string;
+		generation: number;
+		chunks: Buffer[];
+		endedBeforeFinal?: boolean;
+		state: "open" | "ended" | "cancelled";
+	}> = [];
+	const openAudio = vi.fn(
+		({ itemId, generation }: { itemId: string; generation: number }) => {
+			const record = {
+				itemId,
+				generation,
+				chunks: [] as Buffer[],
+				state: "open" as "open" | "ended" | "cancelled",
+			};
+			opened.push(record);
+			let settle!: { resolve(): void; reject(error: Error): void };
+			const done = new Promise<void>((resolve, reject) => {
+				settle = { resolve, reject };
+			});
+			void done.catch(() => undefined);
+			return {
+				append: (pcm24Mono: Buffer) => {
+					if (record.state !== "open") return false;
+					record.chunks.push(pcm24Mono);
+					return true;
+				},
+				end: () => {
+					if (record.state !== "open") return;
+					record.state = "ended";
+					settle.resolve();
+				},
+				cancel: () => {
+					if (record.state !== "open") return;
+					record.state = "cancelled";
+					settle.reject(new Error("speech_playback_stopped"));
+				},
+				done,
+			};
+		},
+	);
+	return { opened, openAudio };
+}
+
+/** One frame per tick with no lead: pins queue order, not lead buffering. */
+function lockstepMouth(renderedFrames: Buffer[]) {
+	let now = 0;
+	let callback!: () => void;
+	const mouth = new WaitingMouth({
+		player: { play: vi.fn(), stop: vi.fn() },
+		createResource: (source) => {
+			source.stream.on("data", (frame: Buffer) => renderedFrames.push(frame));
+			return source;
+		},
+		setIntervalFn: ((next: () => void) => {
+			callback = next;
+			return 1 as unknown as NodeJS.Timeout;
+		}) as unknown as typeof setInterval,
+		clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+		now: () => now,
+		speechLeadFrames: 0,
+		idleLeadFrames: 0,
+	});
+	return {
+		mouth,
+		tick: () => {
+			now += 20;
+			callback();
+		},
 	};
 }
 
@@ -127,14 +202,14 @@ describe("Codex room composition", () => {
 				};
 			}),
 		};
-		const played = vi.fn(async () => undefined);
+		const outputs = recordedOutputs();
 		const persisted = vi.fn(async () => undefined);
 		const actual = new CodexVoiceBackend({
 			sessionId: "session-v2",
 			voice: "marin",
 			container,
 			loadContext: vi.fn(),
-			playAudio: played,
+			openAudio: outputs.openAudio,
 			persistUtterance: persisted,
 			onEvidence: evidence,
 		});
@@ -188,7 +263,7 @@ describe("Codex room composition", () => {
 			final: true,
 			raw: {},
 		} as never);
-		await vi.waitFor(() => expect(played).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(outputs.openAudio).toHaveBeenCalledOnce());
 		await expect(speechReceipt).resolves.toMatchObject({
 			outcome: "completed",
 			transport: "submitted",
@@ -202,9 +277,13 @@ describe("Codex room composition", () => {
 				contentProof: "transcript_equivalent",
 			}),
 		);
-		expect(played).toHaveBeenCalledWith(
-			expect.objectContaining({ itemId: "assistant-1" }),
-		);
+		expect(outputs.opened).toEqual([
+			expect.objectContaining({
+				itemId: "assistant-1",
+				chunks: [Buffer.alloc(960)],
+				state: "ended",
+			}),
+		]);
 		expect(utterances).toEqual([
 			expect.objectContaining({
 				role: "assistant",
@@ -488,7 +567,7 @@ describe("Codex room composition", () => {
 			}),
 			close: vi.fn(async () => undefined),
 		};
-		const played = vi.fn(async () => undefined);
+		const outputs = recordedOutputs();
 		const actual = new CodexVoiceBackend({
 			sessionId: "session-interrupt",
 			voice: "marin",
@@ -499,7 +578,7 @@ describe("Codex room composition", () => {
 				}),
 			},
 			loadContext: vi.fn(),
-			playAudio: played,
+			openAudio: outputs.openAudio,
 		});
 		const session = await actual.createConversation({ brain });
 		const owned = session as ConversationSession & {
@@ -568,20 +647,8 @@ describe("Codex room composition", () => {
 
 	it("queues consecutive assistant sentences without ending the conversation", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
-		let tick!: () => void;
 		const renderedFrames: Buffer[] = [];
-		const mouth = new WaitingMouth({
-			player: { play: vi.fn(), stop: vi.fn() },
-			createResource: (source) => {
-				source.stream.on("data", (frame: Buffer) => renderedFrames.push(frame));
-				return source;
-			},
-			setIntervalFn: (callback) => {
-				tick = callback;
-				return 1 as unknown as NodeJS.Timeout;
-			},
-			clearIntervalFn: vi.fn(),
-		});
+		const { mouth, tick } = lockstepMouth(renderedFrames);
 		mouth.start();
 		const playbacks: Promise<void>[] = [];
 		const actual = new CodexVoiceBackend({
@@ -604,10 +671,10 @@ describe("Codex room composition", () => {
 				}),
 			},
 			loadContext: vi.fn(),
-			playAudio: ({ itemId, pcm24Mono }) => {
-				const playback = mouth.playSpeech(itemId, pcm24Mono);
-				playbacks.push(playback);
-				return playback;
+			openAudio: ({ itemId }) => {
+				const output = mouth.openSpeech(itemId);
+				playbacks.push(output.done);
+				return output;
 			},
 		});
 		const conversation = await actual.createConversation({ brain });
@@ -679,6 +746,191 @@ describe("Codex room composition", () => {
 		mouth.stop();
 	});
 
+	it("streams an answer into the room from its first audio frame, before its final transcript", async () => {
+		// FLY-2799 qa6: whole-item buffering held a 19.45s answer until its final
+		// arrived 4.8s after the first frame.
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		const outputs = recordedOutputs();
+		const evidence = vi.fn();
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-streamed-output",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						close: vi.fn(async () => undefined),
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+			openAudio: outputs.openAudio,
+			onEvidence: evidence,
+		});
+		const conversation = await actual.createConversation({ brain });
+		let responseDone = 0;
+		conversation.on("response-done", () => {
+			responseDone += 1;
+		});
+		const audio = (itemId: string, fill: number) =>
+			callbacks.onAudio({
+				generation: 1,
+				itemId,
+				pcm24Mono: Buffer.alloc(960, fill),
+				sampleRate: 24_000,
+				numChannels: 1,
+				samplesPerChannel: 480,
+				raw: {},
+			} as never);
+		const final = (itemId: string) =>
+			callbacks.onTranscript({
+				generation: 1,
+				itemId,
+				association: "preceding_item",
+				role: "assistant",
+				text: itemId,
+				final: true,
+				raw: {},
+			} as never);
+		callbacks.onItem({
+			generation: 1,
+			itemId: "answer",
+			role: "assistant",
+			raw: {},
+		} as never);
+
+		audio("answer", 1);
+		expect(outputs.opened).toEqual([
+			expect.objectContaining({
+				itemId: "answer",
+				chunks: [Buffer.alloc(960, 1)],
+				state: "open",
+			}),
+		]);
+		audio("answer", 2);
+		expect(outputs.opened[0]?.chunks).toEqual([
+			Buffer.alloc(960, 1),
+			Buffer.alloc(960, 2),
+		]);
+		final("answer");
+		expect(outputs.opened[0]?.state).toBe("ended");
+		await vi.waitFor(() => expect(responseDone).toBe(1));
+
+		// Audio after the final is not played through a second output.
+		audio("answer", 3);
+		expect(outputs.openAudio).toHaveBeenCalledOnce();
+		expect(evidence).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "codex_output_late_audio_dropped",
+				itemId: "answer",
+			}),
+		);
+
+		// An item whose final never comes does not hold the next one.
+		audio("unfinished", 4);
+		audio("next", 5);
+		expect(outputs.opened.map(({ itemId, state }) => [itemId, state])).toEqual([
+			["answer", "ended"],
+			["unfinished", "ended"],
+			["next", "open"],
+		]);
+
+		// A barge-in cancels what is still streaming.
+		conversation.interrupt();
+		expect(outputs.opened.at(-1)?.state).toBe("cancelled");
+		await conversation.close();
+	});
+
+	it("stops a still-streaming answer the player already has queued when the founder barges in", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
+		const simulated = simulatedPlayer();
+		let tickMouth!: () => void;
+		const mouth = new WaitingMouth({
+			player: simulated.player,
+			createResource: simulated.createResource,
+			setIntervalFn: ((next: () => void) => {
+				tickMouth = next;
+				return 1 as unknown as NodeJS.Timeout;
+			}) as unknown as typeof setInterval,
+			clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+		});
+		mouth.start();
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-streamed-barge-in",
+			voice: "marin",
+			container: {
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio: vi.fn(() => "sent" as const),
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						restart: vi.fn(async () => 2),
+						close: vi.fn(async () => undefined),
+					};
+				}),
+			},
+			loadContext: vi.fn(),
+			openAudio: ({ itemId }) => mouth.openSpeech(itemId),
+		});
+		const conversation = await actual.createConversation({ brain });
+		const errors: Error[] = [];
+		conversation.on("error", (error) => errors.push(error));
+		callbacks.onItem({
+			generation: 1,
+			itemId: "long-answer",
+			role: "assistant",
+			raw: {},
+		} as never);
+		// 400ms of speech has arrived; more is still coming.
+		callbacks.onAudio({
+			generation: 1,
+			itemId: "long-answer",
+			pcm24Mono: Buffer.alloc(19_200, 7),
+			sampleRate: 24_000,
+			numChannels: 1,
+			samplesPerChannel: 9_600,
+			raw: {},
+		} as never);
+		tickMouth();
+		await Promise.resolve();
+		for (let slot = 0; slot < 4; slot += 1) simulated.read();
+		const speechSample = Buffer.alloc(2, 7).readInt16LE(0);
+		// The answer is audible before the barge-in, while its audio still streams.
+		expect(simulated.heard.at(-1)?.readInt16LE(0)).toBe(speechSample);
+
+		conversation.interrupt();
+		mouth.cancelAllSpeech();
+		const heardAtBargeIn = simulated.heard.length;
+		for (let slot = 0; slot < 15; slot += 1) {
+			simulated.read();
+			tickMouth();
+			await Promise.resolve();
+		}
+		expect(
+			simulated.heard
+				.slice(heardAtBargeIn)
+				.every((frame) => frame === null || frame.every((byte) => byte === 0)),
+		).toBe(true);
+		// Barge-in handed the player a fresh output instead of letting the queued
+		// lead play out.
+		expect(simulated.player.play).toHaveBeenCalledTimes(2);
+		expect(errors).toEqual([]);
+		await conversation.close();
+		mouth.stop();
+	});
+
 	it("stops real queued playback on founder barge-in and continues on the next generation", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
 		let roomHandlers!: RoomHandlers;
@@ -715,20 +967,8 @@ describe("Codex room composition", () => {
 			}),
 			close: vi.fn(async () => undefined),
 		};
-		let tick!: () => void;
 		const renderedFrames: Buffer[] = [];
-		const mouth = new WaitingMouth({
-			player: { play: vi.fn(), stop: vi.fn() },
-			createResource: (source) => {
-				source.stream.on("data", (frame: Buffer) => renderedFrames.push(frame));
-				return source;
-			},
-			setIntervalFn: (callback) => {
-				tick = callback;
-				return 1 as unknown as NodeJS.Timeout;
-			},
-			clearIntervalFn: vi.fn(),
-		});
+		const { mouth, tick } = lockstepMouth(renderedFrames);
 		mouth.start();
 		const playbacks: Promise<void>[] = [];
 		const actual = new CodexVoiceBackend({
@@ -741,10 +981,10 @@ describe("Codex room composition", () => {
 				}),
 			},
 			loadContext: vi.fn(),
-			playAudio: ({ itemId, pcm24Mono }) => {
-				const playback = mouth.playSpeech(itemId, pcm24Mono);
-				playbacks.push(playback);
-				return playback;
+			openAudio: ({ itemId }) => {
+				const output = mouth.openSpeech(itemId);
+				playbacks.push(output.done);
+				return output;
 			},
 		});
 		const room = {

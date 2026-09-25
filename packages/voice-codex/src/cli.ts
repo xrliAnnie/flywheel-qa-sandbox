@@ -425,10 +425,10 @@ export async function main(): Promise<void> {
 							contextDigest = snapshot.snapshotDigest;
 							return snapshot;
 						},
-						playAudio: async ({ itemId, pcm24Mono }) => {
+						openAudio: ({ itemId }) => {
 							context.lease.assert();
 							if (!room) throw new Error("speech_room_not_ready");
-							await room.playSpeech(itemId, pcm24Mono);
+							return room.openSpeech(itemId);
 						},
 						persistUtterance: async (utterance, captureDigest) => {
 							const {
