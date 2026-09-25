@@ -974,6 +974,7 @@ import {
 	VoiceAgendaPriorityCache,
 } from "./voice-agenda-source.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
+import { voiceHandoffDeliveryMatches } from "./voice-handoff-delivery-proof.js";
 import { createVoiceHandoffRouter } from "./voice-handoff-routes.js";
 import type { VoiceHandoffRecord } from "./voice-handoff-store.js";
 import { verifyVoiceHandoffTranscript } from "./voice-handoff-transcript.js";
@@ -11665,39 +11666,7 @@ export async function startBridge(
 			} catch {
 				return "conflict";
 			}
-			if (record.requestKind === "agenda_brief") {
-				const agenda = record.agenda;
-				return agenda?.kind === "brief" &&
-					envelope.deliveryId === record.providerOperationId &&
-					envelope.leadId === record.targetLeadId &&
-					envelope.messageId === record.messageId &&
-					envelope.authorId === agenda.authorId &&
-					envelope.text === agenda.text &&
-					envelope.origin === "voice" &&
-					envelope.voiceSessionId === record.sessionId &&
-					envelope.voiceHandoff?.handoffId === record.handoffId &&
-					envelope.voiceHandoff.requestDigest === record.requestDigest &&
-					envelope.voiceHandoff.targetLeadId === record.targetLeadId &&
-					envelope.voiceHandoff.sessionGeneration === record.generation &&
-					envelope.voiceHandoff.agenda?.kind === "brief" &&
-					envelope.voiceHandoff.agenda.purpose === agenda.purpose
-					? "found"
-					: "conflict";
-			}
-			return envelope.deliveryId === record.providerOperationId &&
-				envelope.leadId === record.targetLeadId &&
-				envelope.messageId === record.messageId &&
-				envelope.authorId === record.founderUserId &&
-				envelope.text === record.request.originalText &&
-				envelope.origin === "voice" &&
-				envelope.voiceSessionId === record.sessionId &&
-				envelope.voiceHandoff?.handoffId === record.handoffId &&
-				envelope.voiceHandoff.intentKind === record.request.intentKind &&
-				envelope.voiceHandoff.requestDigest === record.requestDigest &&
-				envelope.voiceHandoff.targetLeadId === record.targetLeadId &&
-				envelope.voiceHandoff.transcriptId === record.request.transcriptId &&
-				envelope.voiceHandoff.utteranceId === record.request.utteranceId &&
-				envelope.voiceHandoff.sessionGeneration === record.generation
+			return voiceHandoffDeliveryMatches(envelope, record)
 				? "found"
 				: "conflict";
 		};

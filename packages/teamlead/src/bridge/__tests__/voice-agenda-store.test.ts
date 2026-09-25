@@ -217,6 +217,37 @@ describe("VoiceAgendaStore", () => {
 		).toBe("2026-09-24T05:00:00.000Z");
 	});
 
+	it("drops a legacy body-claimed urgent table instead of trusting it", () => {
+		db = new Database(":memory:");
+		db.exec(
+			"CREATE TABLE chat_threads (thread_id TEXT, channel_id TEXT, issue_id TEXT, lead_id TEXT, archived_at TEXT, discord_missing_at TEXT)",
+		);
+		new HeadphoneInboxStore(db).migrate();
+		db.exec(`CREATE TABLE voice_agenda_urgent (
+			project_name TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL,
+			lead_id TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL,
+			PRIMARY KEY(channel_id, message_id))`);
+		db.prepare(
+			"INSERT INTO voice_agenda_urgent VALUES ('p','c','m','forged-lead','security','t')",
+		).run();
+		const store = new VoiceAgendaStore(db);
+		store.migrate("2026-09-01T00:00:00.000Z");
+		store.migrate("2026-09-01T00:00:00.000Z");
+		expect(store.getUrgent("c", "m")).toBeUndefined();
+		store.recordUrgent({
+			projectName: "p",
+			channelId: "c",
+			messageId: "m2",
+			authorId: "bot",
+			reason: "security",
+			now: "t",
+		});
+		expect(store.getUrgent("c", "m2")).toEqual({
+			authorId: "bot",
+			reason: "security",
+		});
+	});
+
 	it("rejects an urgent flag outside the enumerated reasons", () => {
 		const store = open();
 		expect(() =>
@@ -332,5 +363,52 @@ describe("HeadphoneInboxCollector — FLY-2863 U1 marker", () => {
 		expect(
 			inbox.getSourceState("raya", "founder-1", "chan-1")?.founderLastMessageAt,
 		).toBe("2026-09-24T00:00:04.000Z");
+	});
+});
+
+describe("HeadphoneInboxCollector — urgent marks commit with the page", () => {
+	it("a failed urgent write does not advance the cursor; the next tick records it", async () => {
+		db = new Database(":memory:");
+		const inbox = new HeadphoneInboxStore(db);
+		inbox.migrate();
+		let fail = true;
+		const marks: string[] = [];
+		const collector = new HeadphoneInboxCollector({
+			store: inbox,
+			minimumPageIntervalMs: 0,
+			listScopes: () => [
+				{
+					projectName: "raya",
+					founderUserId: "founder-1",
+					channelId: "chan-1",
+					allowedAuthorIds: ["lead-bot"],
+					leadAuthorIds: ["lead-bot"],
+					token: "t",
+				},
+			],
+			fetchPage: async () => ({
+				kind: "page",
+				messages: [
+					{
+						id: "100000000000000001",
+						authorId: "lead-bot",
+						content: "🚨[urgent:security] 有人在试密码",
+						timestamp: "2026-09-24T00:00:01.000Z",
+					},
+				],
+			}),
+			recordUrgent: (mark) => {
+				if (fail) throw new Error("SQLITE_BUSY");
+				marks.push(mark.messageId);
+			},
+		});
+		await expect(collector.tick()).rejects.toThrow("SQLITE_BUSY");
+		expect(inbox.getSourceState("raya", "founder-1", "chan-1")).toBeUndefined();
+		fail = false;
+		expect(await collector.tick()).toBe("collected");
+		expect(marks).toEqual(["100000000000000001"]);
+		expect(inbox.getSourceState("raya", "founder-1", "chan-1")?.health).toBe(
+			"healthy",
+		);
 	});
 });

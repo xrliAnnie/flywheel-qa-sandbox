@@ -43,6 +43,7 @@ Issue: FLY-2863 (https://linear.app/geoforge3d/issue/FLY-2863/语音v7-播报内
 4. **议程请求的作者。** 投递信封要求作者是 Discord snowflake：用会话的语音 bot（缺省时用 Bridge bot），绝不是 founder。对账按记录里存的同一作者核对。
 5. **刷新节奏。** 收件箱没有推送，所以 Q9 的「每次变更触发」落为：Lead 的回话经 SSE 立即唤醒，来源变化靠 30 秒轮询。
 6. **报平安间隔可配置**：`FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS`，默认 600000（她定的数）。
+7. **她在议程件里说的话怎么交出去**（Codex 代码审查 R1/R2）：只有 Bridge 确认已提交才算交出；提交前失败（落盘、turn 绑定）或被明确拒绝，让她听到「你再说一次」；提交后结果不明（响应丢失、ambiguous）用**同一个请求**重试（Bridge 按 handoff id 幂等），仍不明就保持登记、等载体自己的对账，不让她重说，避免动作被执行两次。对账时逐项核对议程字段和 answer key，缺一不算已投递。U1 标记与收件箱页、游标同一事务提交，写失败游标不前进。
 
 ## 4. 没做的与留给 Lead 决定的
 

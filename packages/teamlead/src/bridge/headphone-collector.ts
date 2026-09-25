@@ -419,6 +419,15 @@ export class HeadphoneInboxCollector {
 			: (last ?? candidate.state?.cursor);
 		this.options.store.ingestPage({
 			items: accepted,
+			// An urgent mark commits with the page: if it fails, the cursor does
+			// not move and the next tick reads the same page again.
+			...(urgentMarks.length > 0 && this.options.recordUrgent
+				? {
+						withinPage: () => {
+							for (const mark of urgentMarks) this.options.recordUrgent?.(mark);
+						},
+					}
+				: {}),
 			source: {
 				projectName: candidate.scope.projectName,
 				founderUserId: candidate.scope.founderUserId,
@@ -433,15 +442,6 @@ export class HeadphoneInboxCollector {
 				...(founderLastMessageAt ? { founderLastMessageAt } : {}),
 			},
 		});
-		for (const mark of urgentMarks) {
-			try {
-				this.options.recordUrgent?.(mark);
-			} catch (error) {
-				console.warn(
-					`[headphone-inbox] urgent flag not recorded for ${mark.channelId}/${mark.messageId}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-		}
 		return "collected";
 	}
 }

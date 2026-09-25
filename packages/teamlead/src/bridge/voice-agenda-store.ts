@@ -106,6 +106,34 @@ export class VoiceAgendaStore {
 				PRIMARY KEY(channel_id, message_id)
 			);
 		`);
+		// Review R2: an earlier revision stored a body-claimed `lead_id` for U1.
+		// Those rows were never authenticated, so they are dropped, not
+		// backfilled as authors.
+		const urgentColumns = new Set(
+			(
+				this.db
+					.prepare("PRAGMA table_info(voice_agenda_urgent)")
+					.all() as Array<{
+					name: string;
+				}>
+			).map((column) => column.name),
+		);
+		if (!urgentColumns.has("author_id")) {
+			this.db.transaction(() => {
+				this.db.exec(`
+					DROP TABLE voice_agenda_urgent;
+					CREATE TABLE voice_agenda_urgent (
+						project_name TEXT NOT NULL,
+						channel_id TEXT NOT NULL,
+						message_id TEXT NOT NULL,
+						author_id TEXT NOT NULL,
+						reason TEXT NOT NULL CHECK(reason IN ('production_down','data_loss_risk','security','deadline_within_1h','founder_requested')),
+						created_at TEXT NOT NULL,
+						PRIMARY KEY(channel_id, message_id)
+					);
+				`);
+			})();
+		}
 		// Plan §2.2: history before the agenda shipped is never spoken.
 		this.db
 			.prepare(

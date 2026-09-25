@@ -34,6 +34,8 @@ const DEFAULT_FOUNDER_TURN_MAX_HOLD_MS = 45_000;
 const UNKNOWN_TAIL_RECHECK_MS = 250;
 const CLARIFY_PROMPT = "刚才那句我没对上，你再说一次。";
 const CUE_WITHOUT_DELEGATION_PROMPT = "刚才那句我没能交给 Lead，你再说一次。";
+const AGENDA_SUBMIT_ATTEMPTS = 3;
+const AGENDA_SUBMIT_BACKOFF_MS = 500;
 
 function isLeadCue(text: string): boolean {
 	return text
@@ -194,7 +196,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	// FLY-2863 R-T2: agenda-owned turns (utterance id → handed to the Lead).
 	private readonly agendaTurns = new Map<
 		string,
-		{ state: "open" | "submitting" | "committed" | "failed" }
+		{ state: "open" | "submitting" | "committed" | "ambiguous" | "failed" }
 	>();
 	private agendaOwnsFrontend = false;
 	private founderTurnTimer?: ReturnType<typeof setTimeout>;
@@ -671,12 +673,23 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			await this.commitFounderHandoff(utterance, bindingKey, false);
 			return;
 		}
-		// Only a Bridge-committed handoff is terminal. An agenda turn's frontend
-		// answer is suppressed, so a failure must be heard, never swallowed.
+		// An agenda turn's frontend answer is suppressed, so a definite failure
+		// (nothing reached the Lead) must be heard. An unknown outcome after
+		// submit is not a failure: asking her to repeat could run an action
+		// twice, so it waits for the carrier's own reconciliation instead.
 		agendaTurn.state = "submitting";
 		try {
-			await this.commitFounderHandoff(utterance, bindingKey, true);
-			agendaTurn.state = "committed";
+			const outcome = await this.commitFounderHandoff(
+				utterance,
+				bindingKey,
+				true,
+			);
+			agendaTurn.state = outcome;
+			if (outcome === "ambiguous")
+				this.options.record({
+					kind: "live_agenda_handoff_ambiguous",
+					binding: bindingKey,
+				});
 		} catch (error) {
 			agendaTurn.state = "failed";
 			this.options.record({
@@ -698,7 +711,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		utterance: VoiceUtterance,
 		bindingKey: string,
 		agendaTurn: boolean,
-	): Promise<void> {
+	): Promise<"committed" | "ambiguous"> {
 		const durability =
 			await this.options.transcriptSink.appendDurable(utterance);
 		const reread = await this.options.transcriptSink.readReceipt(
@@ -756,28 +769,79 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		// exist before the handoff is authorized.
 		if (agendaTurn)
 			await this.options.agendaTurns?.whenTurnBound(utterance.utteranceId);
-		const receipt = await this.options.submitHandoff(request);
-		if (
-			receipt.handoffId !== request.handoffId ||
-			receipt.requestDigest !== request.requestDigest ||
-			receipt.state !== "committed"
-		) {
-			throw new Error(`live_lead_handoff_${receipt.state}`);
+		const register = () =>
+			this.options.registerHandoff({
+				sessionId: this.sessionId,
+				generation: this.generation,
+				handoffId,
+				requestDigest: request.requestDigest,
+				targetLeadId: this.options.targetLeadId,
+				...(agendaTurn ? { agendaUtteranceId: utterance.utteranceId } : {}),
+			});
+		if (!agendaTurn) {
+			const receipt = await this.options.submitHandoff(request);
+			if (
+				receipt.handoffId !== request.handoffId ||
+				receipt.requestDigest !== request.requestDigest ||
+				receipt.state !== "committed"
+			) {
+				throw new Error(`live_lead_handoff_${receipt.state}`);
+			}
+			register();
+			this.options.record({
+				kind: "live_lead_handoff_committed",
+				handoffId,
+				providerOperationId: receipt.providerOperationId,
+				binding: bindingKey,
+			});
+			return "committed";
 		}
-		this.options.registerHandoff({
-			sessionId: this.sessionId,
-			generation: this.generation,
-			handoffId,
-			requestDigest: request.requestDigest,
-			targetLeadId: this.options.targetLeadId,
-			...(agendaTurn ? { agendaUtteranceId: utterance.utteranceId } : {}),
-		});
-		this.options.record({
-			kind: "live_lead_handoff_committed",
-			handoffId,
-			providerOperationId: receipt.providerOperationId,
-			binding: bindingKey,
-			...(agendaTurn ? { agenda: true } : {}),
+		// The same request is idempotent at the Bridge (handoff id and
+		// idempotency key), so a lost response is retried, never re-minted.
+		for (let attempt = 1; attempt <= AGENDA_SUBMIT_ATTEMPTS; attempt++) {
+			let receipt: VoiceHandoffReceipt;
+			try {
+				receipt = await this.options.submitHandoff(request);
+			} catch (error) {
+				this.options.record({
+					kind: "live_agenda_handoff_submit_retry",
+					binding: bindingKey,
+					attempt,
+					message: error instanceof Error ? error.message : String(error),
+				});
+				if (attempt < AGENDA_SUBMIT_ATTEMPTS)
+					await this.pause(AGENDA_SUBMIT_BACKOFF_MS * attempt);
+				continue;
+			}
+			if (
+				receipt.handoffId !== request.handoffId ||
+				receipt.requestDigest !== request.requestDigest
+			)
+				throw new Error("live_lead_handoff_receipt_mismatch");
+			if (receipt.state === "rejected")
+				throw new Error("live_lead_handoff_rejected");
+			// Registered either way: a reconciled handoff's answer still arrives.
+			register();
+			if (receipt.state === "committed") {
+				this.options.record({
+					kind: "live_lead_handoff_committed",
+					handoffId,
+					providerOperationId: receipt.providerOperationId,
+					binding: bindingKey,
+					agenda: true,
+				});
+				return "committed";
+			}
+			return "ambiguous";
+		}
+		register();
+		return "ambiguous";
+	}
+
+	private pause(ms: number): Promise<void> {
+		return new Promise((resolve) => {
+			const timer = this.setTimeoutFn(resolve, ms);
+			timer.unref?.();
 		});
 	}
 

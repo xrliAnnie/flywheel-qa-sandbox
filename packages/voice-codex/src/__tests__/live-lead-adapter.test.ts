@@ -2066,13 +2066,17 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		await h.adapter.close();
 	});
 
-	it("a failed Bridge commit is heard as 'say it again', never swallowed", async () => {
+	it("a rejected handoff is heard as 'say it again', never swallowed", async () => {
 		const r = router("agenda");
 		const h = harness({
 			agendaTurns: r.agendaTurns,
-			submitHandoff: async () => {
-				throw new Error("bridge_unreachable");
-			},
+			submitHandoff: async (request) =>
+				({
+					handoffId: request.handoffId,
+					requestDigest: request.requestDigest,
+					state: "rejected",
+					providerOperationId: "x",
+				}) as never,
 		});
 		await h.adapter.open("context");
 		speakTurn(h, "好，授权");
@@ -2086,9 +2090,62 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		expect(h.record).toHaveBeenCalledWith(
 			expect.objectContaining({
 				kind: "live_agenda_handoff_failed",
-				message: "bridge_unreachable",
+				message: "live_lead_handoff_rejected",
 			}),
 		);
+		await h.adapter.close();
+	});
+
+	it("a lost response is retried with the same request, not re-said", async () => {
+		const r = router("agenda");
+		const seen: VoiceHandoffRequest[] = [];
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			submitHandoff: async (request) => {
+				seen.push(request);
+				if (seen.length === 1) throw new Error("socket hang up");
+				return {
+					handoffId: request.handoffId,
+					requestDigest: request.requestDigest,
+					state: "committed" as const,
+					providerOperationId: "x",
+				};
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "好，授权");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(() => expect(h.handoffBindings).toHaveLength(1), {
+			timeout: 5_000,
+		});
+		expect(seen).toHaveLength(2);
+		expect(seen[1]).toEqual(seen[0]);
+		expect(vi.mocked(h.speech.speak)).not.toHaveBeenCalled();
+		await h.adapter.close();
+	});
+
+	it("an unknown outcome waits for reconciliation instead of asking her to repeat", async () => {
+		const r = router("agenda");
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			submitHandoff: async (request) => ({
+				handoffId: request.handoffId,
+				requestDigest: request.requestDigest,
+				state: "ambiguous" as never,
+				providerOperationId: "x",
+			}),
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "去部署");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(() =>
+			expect(h.record).toHaveBeenCalledWith(
+				expect.objectContaining({ kind: "live_agenda_handoff_ambiguous" }),
+			),
+		);
+		// Still bound, so a reconciled handoff's answer reaches the agenda.
+		expect(h.handoffBindings[0]?.agendaUtteranceId).toBe("u1");
+		expect(vi.mocked(h.speech.speak)).not.toHaveBeenCalled();
 		await h.adapter.close();
 	});
 

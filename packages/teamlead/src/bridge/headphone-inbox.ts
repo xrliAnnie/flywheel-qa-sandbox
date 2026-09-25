@@ -988,9 +988,12 @@ export class HeadphoneInboxStore {
 	ingestPage(input: {
 		items: readonly HeadphoneInboxUpsertInput[];
 		source: Parameters<HeadphoneInboxStore["setSourceState"]>[0];
+		/** FLY-2863: writes that must commit with the page and its cursor. */
+		withinPage?: () => void;
 	}): void {
 		this.db.transaction(() => {
 			for (const item of input.items) this.upsert(item);
+			input.withinPage?.();
 			this.setSourceState(input.source);
 		})();
 	}
