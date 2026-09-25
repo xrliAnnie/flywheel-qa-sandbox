@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { CodexVoiceBackend } from "../codex/CodexVoiceBackend.js";
 import {
 	CODEX_REALTIME_INPUT_QUEUE_BYTES,
 	type CodexRealtimeRpc,
@@ -86,6 +87,7 @@ function harness(generation = 7) {
 	const gaps = vi.fn();
 	const violations = vi.fn();
 	const executionIntents = vi.fn();
+	const backgroundTurns = vi.fn();
 	const closed = vi.fn();
 	const errors = vi.fn();
 	const transport = new CodexRealtimeTransport({
@@ -107,6 +109,7 @@ function harness(generation = 7) {
 		onInputGap: gaps,
 		onCapabilityViolation: violations,
 		onExecutionIntent: executionIntents,
+		onBackgroundTurn: backgroundTurns,
 		onClosed: closed,
 		onError: errors,
 	});
@@ -118,6 +121,7 @@ function harness(generation = 7) {
 		gaps,
 		violations,
 		executionIntents,
+		backgroundTurns,
 		closed,
 		errors,
 	};
@@ -584,6 +588,109 @@ describe("Codex V2 realtime transport", () => {
 		).toBe("dropped:closed");
 	});
 
+	it("reports a provider handoff_request once and interrupts its background turn once", async () => {
+		const h = harness();
+		await start(h);
+		const interrupted = h.rpc.defer("turn/interrupt");
+		// Shape recorded from codex-standalone 0.156.1 with clientManagedHandoffs.
+		const handoffRequest = {
+			threadId: "thread-a",
+			item: {
+				type: "handoff_request",
+				handoff_id: "call_Rw5sqBJh4CgdDbt3",
+				item_id: "item_ERo5QDh2q5KPmqu0F4lim",
+				input_transcript: "你帮我去看一下 2799 现在是什么状态",
+				active_transcript: [
+					{
+						role: "user",
+						text: "你帮我去看一下两千七百九十九现在是什么状态。",
+					},
+				],
+			},
+		};
+
+		h.rpc.emit("thread/realtime/itemAdded", handoffRequest);
+		h.rpc.emit("thread/realtime/itemAdded", handoffRequest);
+		expect(h.executionIntents).toHaveBeenCalledOnce();
+		expect(h.executionIntents).toHaveBeenCalledWith({
+			generation: 7,
+			kind: "handoffRequest",
+			method: "thread/realtime/itemAdded",
+			itemId: "call_Rw5sqBJh4CgdDbt3",
+			params: handoffRequest,
+		});
+
+		h.rpc.emit("turn/started", {
+			threadId: "thread-a",
+			turn: { id: "turn-bg", status: "inProgress" },
+		});
+		h.rpc.emit("item/started", {
+			threadId: "thread-a",
+			turnId: "turn-bg",
+			item: { id: "exec-bg", type: "commandExecution", status: "inProgress" },
+		});
+		expect(
+			h.rpc.requests.filter((request) => request.method === "turn/interrupt"),
+		).toEqual([
+			{
+				method: "turn/interrupt",
+				params: { threadId: "thread-a", turnId: "turn-bg" },
+			},
+		]);
+		interrupted.resolve({ result: {} });
+
+		await vi.waitFor(() =>
+			expect(h.backgroundTurns).toHaveBeenCalledWith({
+				generation: 7,
+				turnId: "turn-bg",
+				outcome: "interrupted",
+			}),
+		);
+		await vi.waitFor(() => expect(h.executionIntents).toHaveBeenCalledTimes(2));
+		expect(h.executionIntents).toHaveBeenLastCalledWith(
+			expect.objectContaining({ kind: "commandExecution", itemId: "exec-bg" }),
+		);
+		expect(h.violations).not.toHaveBeenCalled();
+		expect(h.errors).not.toHaveBeenCalled();
+		expect(
+			h.transport.appendAudio(Buffer.alloc(960), 7, {
+				utteranceId: "after-handoff-request",
+				ownerUserId: "founder",
+			}),
+		).toMatch(/^sent/u);
+	});
+
+	it("keeps the conversation when a bare background turn cannot be interrupted", async () => {
+		const h = harness();
+		await start(h);
+		const interrupted = h.rpc.defer("turn/interrupt");
+
+		h.rpc.emit("turn/started", {
+			threadId: "thread-a",
+			turn: { id: "turn-bg", status: "inProgress" },
+		});
+		interrupted.resolve({
+			error: { code: -32_000, message: "turn already completed" },
+		});
+
+		await vi.waitFor(() =>
+			expect(h.backgroundTurns).toHaveBeenCalledWith({
+				generation: 7,
+				turnId: "turn-bg",
+				outcome: "interrupt_failed",
+				reason: "turn/interrupt: turn already completed",
+			}),
+		);
+		expect(h.violations).not.toHaveBeenCalled();
+		expect(h.errors).not.toHaveBeenCalled();
+		expect(
+			h.transport.appendAudio(Buffer.alloc(960), 7, {
+				utteranceId: "after-bare-turn",
+				ownerUserId: "founder",
+			}),
+		).toMatch(/^sent/u);
+	});
+
 	it("fails attribution closed after mixed ownership or an input gap", async () => {
 		const h = harness();
 		await start(h);
@@ -701,5 +808,222 @@ describe("Codex V2 realtime transport", () => {
 			generation: 7,
 			reason: "requested",
 		});
+	});
+});
+
+/**
+ * Replays the notification order recorded by FLY-2799 QA against the real
+ * codex-standalone 0.156.1 binary (qa4-real-codex-bench/run2): a sole-user
+ * request, the model's spoken acknowledgement, the provider handoff_request,
+ * then the background delegation turn that can only fail with 401.
+ */
+function emitRecordedHandoffTrace(rpc: FakeRpc): void {
+	const threadId = "thread-real";
+	rpc.emit("thread/realtime/itemAdded", {
+		threadId,
+		item: { type: "input_audio_buffer.speech_started", item_id: "item_user_1" },
+	});
+	rpc.emit("thread/realtime/itemAdded", {
+		threadId,
+		item: {
+			type: "message",
+			id: "item_user_1",
+			role: "user",
+			status: "completed",
+		},
+	});
+	rpc.emit("thread/realtime/itemAdded", {
+		threadId,
+		item: {
+			type: "message",
+			id: "item_bot_1",
+			role: "assistant",
+			status: "in_progress",
+		},
+	});
+	rpc.emit("thread/realtime/transcript/done", {
+		threadId,
+		role: "user",
+		text: "你帮我去看一下两千七百九十九现在是什么状态。",
+	});
+	rpc.emit("thread/realtime/itemAdded", {
+		threadId,
+		item: { type: "function_call", status: "in_progress" },
+	});
+	rpc.emit("thread/realtime/transcript/done", {
+		threadId,
+		role: "assistant",
+		text: "好的，我来把你的这个请求转给后台代理，请它去查状态。",
+	});
+	rpc.emit("thread/realtime/itemAdded", {
+		threadId,
+		item: {
+			type: "handoff_request",
+			handoff_id: "call_Rw5sqBJh4CgdDbt3",
+			item_id: "item_ERo5QDh2q5KPmqu0F4lim",
+			input_transcript: "你帮我去看一下 2799 现在是什么状态",
+			active_transcript: [
+				{ role: "user", text: "你帮我去看一下两千七百九十九现在是什么状态。" },
+			],
+		},
+	});
+	rpc.emit("turn/started", {
+		threadId,
+		turn: { id: "turn-delegation", items: [], status: "inProgress" },
+	});
+	rpc.emit("item/started", {
+		threadId,
+		turnId: "turn-delegation",
+		item: { type: "userMessage", id: "delegation-input", content: [] },
+	});
+	rpc.emit("error", {
+		threadId,
+		turnId: "turn-delegation",
+		willRetry: true,
+		error: { message: "Reconnecting... 2/5" },
+	});
+}
+
+async function realHandoffSession(
+	soleRoomUser: { userId: string; name: string | null } | null,
+) {
+	const rpc = new FakeRpc();
+	const evidence = vi.fn();
+	const handoffToLead = vi.fn(async () => ({
+		handoffId: "handoff-real",
+		state: "dispatched" as const,
+		idempotencyKey: "codex-delegate:real",
+		requestDigest: "d".repeat(64),
+	}));
+	const backend = new CodexVoiceBackend({
+		sessionId: "session-real",
+		voice: "marin",
+		container: {
+			open: async (input) => {
+				const transport = new CodexRealtimeTransport({
+					rpc,
+					sessionId: input.sessionId,
+					threadId: "thread-real",
+					generation: 1,
+					start: { outputModality: "audio", clientManagedHandoffs: true },
+					...input.realtime,
+				});
+				const opening = transport.start();
+				rpc.emit("thread/realtime/started", {
+					threadId: "thread-real",
+					realtimeSessionId: "realtime-real",
+					version: "v2",
+				});
+				await opening;
+				return { generation: 1, transport, close: async () => undefined };
+			},
+		},
+		loadContext: vi.fn(),
+		persistUtterance: vi.fn(async () => undefined),
+		handoffToLead,
+		resolveSoleRoomUser: () => soleRoomUser,
+		onEvidence: evidence,
+	});
+	const session = await backend.createConversation({
+		brain: { async *respond() {} },
+	});
+	const errors = vi.fn();
+	session.on("error", errors);
+	const sendFounderAudio = (utteranceId: string) =>
+		(
+			session as typeof session & {
+				sendOwnedAudio(
+					frame: Buffer,
+					owner: {
+						utteranceId: string;
+						ownerUserId: string;
+						ownerName: string;
+					},
+				): void;
+			}
+		).sendOwnedAudio(Buffer.alloc(960), {
+			utteranceId,
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		});
+	return { rpc, evidence, handoffToLead, session, errors, sendFounderAudio };
+}
+
+describe("Codex 0.156.1 handoff_request end to end", () => {
+	it("delivers the sole room user's request to the Lead and keeps the call alive", async () => {
+		const real = await realHandoffSession({ userId: "founder", name: "Annie" });
+		real.sendFounderAudio("discord-founder-request");
+
+		emitRecordedHandoffTrace(real.rpc);
+
+		await vi.waitFor(() => expect(real.handoffToLead).toHaveBeenCalledOnce());
+		expect(real.handoffToLead).toHaveBeenCalledWith({
+			utterance: expect.objectContaining({
+				role: "user",
+				text: "你帮我去看一下两千七百九十九现在是什么状态。",
+				attribution: { kind: "known", speakerUserId: "founder" },
+			}),
+			intent: expect.objectContaining({
+				kind: "handoffRequest",
+				itemId: "call_Rw5sqBJh4CgdDbt3",
+			}),
+		});
+		expect(real.rpc.requests).toContainEqual({
+			method: "turn/interrupt",
+			params: { threadId: "thread-real", turnId: "turn-delegation" },
+		});
+		await vi.waitFor(() =>
+			expect(real.evidence).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "codex_execution_handoff",
+					backendIntentKind: "handoffRequest",
+					handoffId: "handoff-real",
+				}),
+			),
+		);
+		expect(real.evidence).toHaveBeenCalledWith({
+			kind: "codex_background_turn",
+			generation: 1,
+			turnId: "turn-delegation",
+			outcome: "interrupted",
+		});
+		expect(real.errors).not.toHaveBeenCalled();
+
+		const appendsBefore = real.rpc.requests.filter(
+			(request) => request.method === "thread/realtime/appendAudio",
+		).length;
+		real.sendFounderAudio("discord-founder-next-turn");
+		await vi.waitFor(() =>
+			expect(
+				real.rpc.requests.filter(
+					(request) => request.method === "thread/realtime/appendAudio",
+				),
+			).toHaveLength(appendsBefore + 1),
+		);
+		await real.session.close();
+	});
+
+	it("does not hand off when no single room user can be bound to the request", async () => {
+		const real = await realHandoffSession(null);
+		real.sendFounderAudio("discord-ambiguous-request");
+
+		emitRecordedHandoffTrace(real.rpc);
+
+		await vi.waitFor(() =>
+			expect(real.evidence).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "codex_execution_handoff_skipped",
+					backendIntentKind: "handoffRequest",
+					reason: "known_user_missing",
+				}),
+			),
+		);
+		expect(real.handoffToLead).not.toHaveBeenCalled();
+		expect(real.rpc.requests).toContainEqual({
+			method: "turn/interrupt",
+			params: { threadId: "thread-real", turnId: "turn-delegation" },
+		});
+		expect(real.errors).not.toHaveBeenCalled();
+		await real.session.close();
 	});
 });

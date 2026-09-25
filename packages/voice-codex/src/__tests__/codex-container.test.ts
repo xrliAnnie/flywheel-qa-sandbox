@@ -521,13 +521,19 @@ describe("Codex voice container", () => {
 			}),
 		);
 		expect(process.stopCount).toBe(0);
-		expect(executionIntents).toHaveBeenCalledWith(
-			expect.objectContaining({
-				kind: "commandExecution",
-				method: "item/started",
-				itemId: "exec-a",
-			}),
+		await vi.waitFor(() =>
+			expect(executionIntents).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "commandExecution",
+					method: "item/started",
+					itemId: "exec-a",
+				}),
+			),
 		);
+		// turn/started and the execution item share one interrupt of that turn.
+		expect(
+			process.requests.filter((request) => request.method === "turn/interrupt"),
+		).toHaveLength(1);
 		expect(existsSync(opened.root)).toBe(true);
 		await opened.close("test-complete");
 		expect(process.stopCount).toBe(1);

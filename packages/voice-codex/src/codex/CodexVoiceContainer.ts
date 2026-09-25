@@ -14,6 +14,7 @@ import {
 } from "../codex-home.js";
 import {
 	type CodexRealtimeAudioDelta,
+	type CodexRealtimeBackgroundTurn,
 	type CodexRealtimeExecutionIntent,
 	type CodexRealtimeItem,
 	type CodexRealtimeTranscript,
@@ -513,6 +514,7 @@ export interface CodexVoiceOpenInput {
 			params: unknown;
 		}): void;
 		onExecutionIntent?(input: CodexRealtimeExecutionIntent): void;
+		onBackgroundTurn?(input: CodexRealtimeBackgroundTurn): void;
 		onClosed?(input: { generation: number; reason: string }): void;
 		onError?(error: Error): void;
 	};

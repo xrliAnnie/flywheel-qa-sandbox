@@ -64,10 +64,22 @@ export interface CodexRealtimeItem {
 
 export interface CodexRealtimeExecutionIntent {
 	generation: number;
-	kind: "commandExecution" | "mcpToolCall";
+	/**
+	 * handoffRequest is the provider's own delegation signal under
+	 * clientManagedHandoffs; the other two are execution items that surfaced
+	 * inside an (interrupted) background turn.
+	 */
+	kind: "handoffRequest" | "commandExecution" | "mcpToolCall";
 	method: string;
 	itemId?: string;
 	params: unknown;
+}
+
+export interface CodexRealtimeBackgroundTurn {
+	generation: number;
+	turnId: string | null;
+	outcome: "interrupted" | "interrupt_failed";
+	reason?: string;
 }
 
 export class CodexRealtimeServerError extends Error {
@@ -181,6 +193,7 @@ export class CodexRealtimeTransport {
 	private activeInputItemId?: string;
 	private readonly inputOwnershipByItem = new Map<string, InputOwnership>();
 	private readonly reportedExecutionIntents = new Set<string>();
+	private readonly turnInterrupts = new Map<string, Promise<void>>();
 	private closedReported = false;
 
 	constructor(
@@ -206,6 +219,7 @@ export class CodexRealtimeTransport {
 				params: unknown;
 			}): void;
 			onExecutionIntent?(input: CodexRealtimeExecutionIntent): void;
+			onBackgroundTurn?(input: CodexRealtimeBackgroundTurn): void;
 			onClosed?(input: { generation: number; reason: string }): void;
 			onError?(error: Error): void;
 			startTimeoutMs?: number;
@@ -429,9 +443,16 @@ export class CodexRealtimeTransport {
 		}
 
 		if (this.state !== "active") return;
-		if (method === "turn/started") return;
+		if (method === "turn/started") {
+			this.backgroundTurnStarted(params);
+			return;
+		}
 		if (method === "thread/realtime/itemAdded") {
 			const item = record(params.item);
+			if (item?.type === "handoff_request") {
+				this.handoffRequest(item, value);
+				return;
+			}
 			if (
 				item?.type === "input_audio_buffer.speech_started" &&
 				typeof item.item_id === "string" &&
@@ -506,16 +527,87 @@ export class CodexRealtimeTransport {
 		}
 	}
 
+	/**
+	 * Under clientManagedHandoffs the provider announces delegation with a
+	 * handoff_request item. It is only a request signal: the Lead body decides
+	 * and acts, never the container.
+	 */
+	private handoffRequest(item: Record<string, unknown>, params: unknown): void {
+		const itemId =
+			typeof item.handoff_id === "string" && item.handoff_id.length > 0
+				? item.handoff_id
+				: typeof item.item_id === "string" && item.item_id.length > 0
+					? item.item_id
+					: undefined;
+		if (itemId) {
+			const key = `handoffRequest:${itemId}`;
+			if (this.reportedExecutionIntents.has(key)) return;
+			this.reportedExecutionIntents.add(key);
+		}
+		this.options.onExecutionIntent?.({
+			generation: this.options.generation,
+			kind: "handoffRequest",
+			method: "thread/realtime/itemAdded",
+			...(itemId ? { itemId } : {}),
+			params,
+		});
+	}
+
+	/**
+	 * The container never starts turns itself, so every turn is the provider's
+	 * background delegation. It carries no business credentials and its output
+	 * is never forwarded under clientManagedHandoffs; stop it instead of letting
+	 * it retry a request that can only fail. The conversation stays up either way.
+	 */
+	private backgroundTurnStarted(params: Record<string, unknown>): void {
+		const turn = record(params.turn);
+		const turnId =
+			typeof turn?.id === "string" && turn.id.length > 0 ? turn.id : null;
+		const generation = this.options.generation;
+		if (!turnId) {
+			this.options.onBackgroundTurn?.({
+				generation,
+				turnId,
+				outcome: "interrupt_failed",
+				reason: "turn_id_missing",
+			});
+			return;
+		}
+		this.interruptTurn(turnId).then(
+			() =>
+				this.options.onBackgroundTurn?.({
+					generation,
+					turnId,
+					outcome: "interrupted",
+				}),
+			(error: unknown) =>
+				this.options.onBackgroundTurn?.({
+					generation,
+					turnId,
+					outcome: "interrupt_failed",
+					reason: error instanceof Error ? error.message : String(error),
+				}),
+		);
+	}
+
+	/** One interrupt per turn, shared by turn/started and any execution item. */
+	private interruptTurn(turnId: string): Promise<void> {
+		let pending = this.turnInterrupts.get(turnId);
+		if (!pending) {
+			pending = this.options.rpc
+				.request("turn/interrupt", { threadId: this.options.threadId, turnId })
+				.then((response) => rpcError("turn/interrupt", response));
+			this.turnInterrupts.set(turnId, pending);
+		}
+		return pending;
+	}
+
 	private async interruptExecution(
 		turnId: string,
 		intent: CodexRealtimeExecutionIntent,
 	): Promise<void> {
 		try {
-			const response = await this.options.rpc.request("turn/interrupt", {
-				threadId: this.options.threadId,
-				turnId,
-			});
-			rpcError("turn/interrupt", response);
+			await this.interruptTurn(turnId);
 			if (this.state === "active") this.options.onExecutionIntent?.(intent);
 		} catch {
 			this.fenceExecution(

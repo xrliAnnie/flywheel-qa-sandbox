@@ -23,6 +23,7 @@ import {
 	CODEX_REALTIME_INPUT_QUEUE_BYTES,
 	type CodexRealtimeAppendOutcome,
 	type CodexRealtimeAudioDelta,
+	type CodexRealtimeBackgroundTurn,
 	type CodexRealtimeExecutionIntent,
 	type CodexRealtimeInputOwner,
 	type CodexRealtimeItem,
@@ -133,6 +134,8 @@ export class CodexVoiceBackend implements VoiceBackend {
 					callbacks.session?.capabilityViolation(input.method),
 				onExecutionIntent: (input) =>
 					callbacks.session?.observeExecutionIntent(input),
+				onBackgroundTurn: (input) =>
+					callbacks.session?.observeBackgroundTurn(input),
 				onClosed: (input) => callbacks.session?.transportClosed(input),
 				onError: (error) => callbacks.session?.transportError(error),
 			},
@@ -565,6 +568,11 @@ class CodexVoiceSession implements ConversationSession {
 					reason: error instanceof Error ? error.message : "unknown_error",
 				});
 			});
+	}
+
+	observeBackgroundTurn(turn: CodexRealtimeBackgroundTurn): void {
+		if (this.closing) return;
+		this.options.onEvidence?.({ kind: "codex_background_turn", ...turn });
 	}
 
 	transportClosed(input: { generation: number; reason: string }): void {
