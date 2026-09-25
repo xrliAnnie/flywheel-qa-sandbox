@@ -1,0 +1,160 @@
+{
+ "run": "s2",
+ "mode": "latency",
+ "why": "scenario_done",
+ "calibration": {
+  "floorMedian": 0,
+  "th": 300
+ },
+ "roomSegments": [
+  {
+   "start": 15565.1,
+   "end": 16925.1,
+   "voicedMs": 1360
+  },
+  {
+   "start": 27070.7,
+   "end": 28668.3,
+   "voicedMs": 1620
+  },
+  {
+   "start": 30042,
+   "end": 31916,
+   "voicedMs": 1940
+  },
+  {
+   "start": 41338.7,
+   "end": 44536.2,
+   "voicedMs": 2940
+  },
+  {
+   "start": 52155.5,
+   "end": 52887.5,
+   "voicedMs": 740
+  },
+  {
+   "start": 60775.4,
+   "end": 61354.1,
+   "voicedMs": 540
+  },
+  {
+   "start": 73338.9,
+   "end": 74694.6,
+   "voicedMs": 1360
+  }
+ ],
+ "utterances": [
+  {
+   "label": "q1",
+   "file": "q1.wav",
+   "kind": "speech",
+   "frames": 102,
+   "playStart": 12450,
+   "lastVoicedPull": 14130.7,
+   "playEnd": 14590,
+   "wallStart": 1790369566790,
+   "wallEnd": 1790369568954
+  },
+  {
+   "label": "q2",
+   "file": "q2.wav",
+   "kind": "speech",
+   "frames": 188,
+   "playStart": 21511.4,
+   "lastVoicedPull": 24912.2,
+   "playEnd": 25372.1,
+   "wallStart": 1790369575875,
+   "wallEnd": 1790369579736
+  },
+  {
+   "label": "q3",
+   "file": "q3.wav",
+   "kind": "speech",
+   "frames": 189,
+   "playStart": 36535.5,
+   "lastVoicedPull": 39956.2,
+   "playEnd": 40415.8,
+   "wallStart": 1790369590899,
+   "wallEnd": 1790369594780
+  },
+  {
+   "label": "q4",
+   "file": "q4.wav",
+   "kind": "speech",
+   "frames": 104,
+   "playStart": 49129,
+   "lastVoicedPull": 50848.8,
+   "playEnd": 51308.7,
+   "wallStart": 1790369603493,
+   "wallEnd": 1790369605673
+  },
+  {
+   "label": "q5",
+   "file": "q5.wav",
+   "kind": "speech",
+   "frames": 101,
+   "playStart": 57502.2,
+   "lastVoicedPull": 59182.9,
+   "playEnd": 59622.8,
+   "wallStart": 1790369611866,
+   "wallEnd": 1790369613987
+  },
+  {
+   "label": "bg",
+   "file": "bg.wav",
+   "kind": "speech",
+   "frames": 311,
+   "playStart": 65898,
+   "lastVoicedPull": 71778.9,
+   "playEnd": 72218.2,
+   "wallStart": 1790369620262,
+   "wallEnd": 1790369626583
+  }
+ ],
+ "latency": [
+  {
+   "label": "q1",
+   "userEnd": 14130.7,
+   "roomStart": 15565.1,
+   "latencyMs": 1434,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "q2",
+   "userEnd": 24912.2,
+   "roomStart": 27070.7,
+   "latencyMs": 2159,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "q3",
+   "userEnd": 39956.2,
+   "roomStart": 41338.7,
+   "latencyMs": 1383,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "q4",
+   "userEnd": 50848.8,
+   "roomStart": 52155.5,
+   "latencyMs": 1307,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "q5",
+   "userEnd": 59182.9,
+   "roomStart": 60775.4,
+   "latencyMs": 1593,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "bg",
+   "userEnd": 71778.9,
+   "roomStart": 73338.9,
+   "latencyMs": 1560,
+   "overlappedModelSpeech": false
+  }
+ ],
+ "barge": [],
+ "bargeEval": []
+}
