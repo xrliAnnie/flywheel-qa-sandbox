@@ -1,6 +1,6 @@
 import { canonicalJsonString } from "flywheel-config";
 import { discordThreadLinkPair } from "./discord-link.js";
-import type { Cell, MissingReason, RuleId } from "./model.js";
+import type { Cell, MissingReason, Provenance, RuleId } from "./model.js";
 import { EpicPageSchemaError } from "./schema-error.js";
 
 export const ATTENTION_V1 = {
@@ -112,6 +112,39 @@ export function validDiscordId(value: unknown): value is string {
 		typeof value === "string" &&
 		/^[1-9][0-9]{0,19}$/.test(value) &&
 		BigInt(value) <= 18446744073709551615n
+	);
+}
+/** Identifier form of a Linear issue key, e.g. FLY-2736. */
+export const ISSUE_IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/;
+// FLY-2761: a founder_ask row names its own issue. That local identity is
+// accepted only when it cites one of this row's own asks, whose fact and since
+// both come from that same ask row, and it never claims a Linear title.
+function founderAskIdentity(
+	item: AttentionItem,
+	provenance: Provenance,
+): boolean {
+	const namesAsk = (candidate: Provenance, askId: string) =>
+		candidate.kind === "statestore" &&
+		candidate.table === "founder_ask" &&
+		Object.keys(candidate.key).length === 1 &&
+		candidate.key.ask_id === askId;
+	const askId =
+		provenance.kind === "statestore" ? provenance.key.ask_id : undefined;
+	return (
+		typeof askId === "string" &&
+		askId !== "" &&
+		namesAsk(provenance, askId) &&
+		item.issue_id.value !== null &&
+		ISSUE_IDENTIFIER.test(item.issue_id.value) &&
+		item.identifier.value === item.issue_id.value &&
+		item.title.value === null &&
+		item.sources.some(
+			(source) =>
+				source.fact.value?.kind === "founder_ask" &&
+				source.fact.value.id === askId &&
+				namesAsk(source.fact.provenance, askId) &&
+				namesAsk(source.since.provenance, askId),
+		)
 	);
 }
 function derived<T>(
@@ -566,8 +599,11 @@ export function assertAttention(
 			for (const leaf of ["issue_id", "identifier", "title"] as const) {
 				const provenance = item[leaf].provenance;
 				if (
-					provenance.kind !== "linear" ||
-					provenance.id !== item.issue_id.value
+					!(
+						provenance.kind === "linear" &&
+						provenance.id === item.issue_id.value
+					) &&
+					!founderAskIdentity(item, provenance)
 				)
 					fail(`${path}/${leaf}/provenance`);
 			}

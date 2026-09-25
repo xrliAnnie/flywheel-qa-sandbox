@@ -369,3 +369,163 @@ it("selects the newest question by instant when timestamp precision differs", as
 	expect(selected.item.since.value).toBe("2026-09-09T09:00:00.999Z");
 	expect(selected.olderQuestions).toBe(1);
 });
+
+// FLY-2761: a founder-facing list filters only on "does this still need her",
+// never on "can we render it".
+describe("founder attention without a Discord link", () => {
+	const at = new Date("2026-09-09T12:00:00Z");
+	function founderPage(): EpicPageV2 {
+		return generateAttentionEpicPage({
+			snapshot: null,
+			itemFacts: [],
+			now: at,
+			projectName: "example",
+			trigger: "manual",
+			scopeBinding: { team: "FLY" },
+			attention: attentionFixture(),
+		});
+	}
+	it.each(["guild", "thread", "thread_url"] as const)(
+		"keeps a founder item whose %s is missing in the founder audience",
+		async (field) => {
+			const { attentionAudience, attentionLink } = await import(
+				"../attention-presentation.js"
+			);
+			const page = founderPage();
+			if (field === "guild") page.discord.guild_id.value = null;
+			else page.attention[0]![field].value = null;
+			const founder = attentionAudience(page, true);
+			expect(founder.map(({ item }) => item.identifier.value)).toEqual([
+				"FLY-1",
+			]);
+			expect(attentionLink(page, founder[0]!.item).url).toBeNull();
+		},
+	);
+});
+
+describe("founder_ask-sourced identity validation", () => {
+	const at = new Date("2026-09-09T12:00:00Z");
+	type Mutable = ReturnType<typeof askCandidate>;
+	function askCandidate(askId: string, issue = "FLY-2736") {
+		const provenance = () => ({
+			kind: "statestore" as const,
+			table: "founder_ask",
+			key: { ask_id: askId } as Record<string, string>,
+		});
+		const cell = <T>(value: T | null, reason?: "issue_title_unknown") => ({
+			value,
+			provenance: provenance(),
+			observed_at: "2026-09-09T10:00:00Z",
+			...(reason ? { missing: { reason } } : {}),
+		});
+		return {
+			key: `ask:${askId}`,
+			issue_id: cell<string>(issue),
+			identifier: cell<string>(issue),
+			title: cell<string>(null, "issue_title_unknown"),
+			sources: [
+				{
+					fact: cell({ id: askId, kind: "founder_ask", state: "pending" }),
+					since: cell<string>("2026-09-09T10:00:00Z"),
+				},
+			],
+			thread: sourceCell(
+				{ thread_id: "456", channel_id: "321" },
+				"statestore",
+				"chat_threads",
+			),
+		};
+	}
+	function page(...candidates: Mutable[]): EpicPageV2 {
+		const input = attentionFixture();
+		input.candidates = candidates;
+		input.reads.gates.value = { count: candidates.length };
+		input.reads.questions.value = { count: 0 };
+		input.reads.founder_review.value = { count: 0 };
+		return generateAttentionEpicPage({
+			snapshot: null,
+			itemFacts: [],
+			now: at,
+			projectName: "example",
+			trigger: "manual",
+			scopeBinding: { team: "FLY" },
+			attention: input,
+		});
+	}
+	it("accepts an identity that names one of the row's own asks", async () => {
+		const { attentionAudience, attentionLink } = await import(
+			"../attention-presentation.js"
+		);
+		const result = page(askCandidate("ask-a"));
+		expect(result.attention[0]!.key).toBe("issue:FLY-2736");
+		expect(result.attention_sources.identity.value).toEqual({
+			resolved: 1,
+			unresolved: 0,
+		});
+		const founder = attentionAudience(result, true);
+		expect(attentionLink(result, founder[0]!.item).url).toBe(
+			"https://discord.com/channels/123/456",
+		);
+		expect(() => assertEpicPage(result)).not.toThrow();
+	});
+	it("accepts two asks on one issue merged into one row", () => {
+		const result = page(askCandidate("ask-a"), askCandidate("ask-b"));
+		expect(result.attention).toHaveLength(1);
+		expect(result.attention[0]!.sources).toHaveLength(2);
+		expect(() => assertEpicPage(result)).not.toThrow();
+	});
+	it.each([
+		[
+			"fact id differs from the identity's ask id",
+			(c: Mutable) => {
+				c.sources[0]!.fact.value!.id = "ask-other";
+			},
+		],
+		[
+			"identity provenance has no ask id",
+			(c: Mutable) => {
+				for (const leaf of [c.issue_id, c.identifier, c.title])
+					leaf.provenance.key = {};
+			},
+		],
+		[
+			"identity provenance carries an extra key",
+			(c: Mutable) => {
+				for (const leaf of [c.issue_id, c.identifier, c.title])
+					leaf.provenance.key = { ask_id: "ask-a", issue_id: "FLY-2736" };
+			},
+		],
+		[
+			"since provenance names another ask",
+			(c: Mutable) => {
+				c.sources[0]!.since.provenance.key = { ask_id: "ask-other" };
+			},
+		],
+		[
+			"issue id is not identifier-shaped",
+			(c: Mutable) => {
+				c.issue_id.value = "missing";
+				c.identifier.value = "missing";
+			},
+		],
+		[
+			"identifier differs from the issue id",
+			(c: Mutable) => {
+				c.identifier.value = "FLY-1";
+			},
+		],
+		[
+			"title claims a value no ask row carries",
+			(c: Mutable) => {
+				c.title = { ...c.title, value: "Forged", missing: undefined } as never;
+				delete (c.title as { missing?: unknown }).missing;
+			},
+		],
+	])("rejects the identity when %s", (_name, mutate) => {
+		const candidate = askCandidate("ask-a");
+		mutate(candidate);
+		expect(() => page(candidate)).toThrow(
+			/\/attention\/0\/(issue_id|identifier|title)\/provenance/,
+		);
+	});
+});

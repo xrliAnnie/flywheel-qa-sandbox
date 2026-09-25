@@ -79,6 +79,11 @@ export interface LeadBootstrap {
 	tokenSavingsEnabled?: boolean;
 	leadId: string;
 	activeSessions: BootstrapSession[];
+	/**
+	 * This Lead's recent sessions in `awaiting_review` only. It does not cover
+	 * founder asks (`founder_ask`) or anything else waiting on the founder; the
+	 * pinned page's 「现在要你看」 is that list (FLY-2761). Not a gauge for it.
+	 */
 	pendingDecisions: BootstrapDecision[];
 	recentFailures: BootstrapFailure[];
 	/** Events delivered in the last 5 min — may need re-processing after crash. */

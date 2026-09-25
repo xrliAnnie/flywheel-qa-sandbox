@@ -185,6 +185,147 @@ describe("independent attention sources", () => {
 		expect(renderEpicPageHtml(page, now)).not.toContain("audit only");
 	});
 
+	// FLY-2761: the ask row names its own issue; Linear metadata or Epic scope
+	// must not decide whether the founder sees that the ask is waiting on her.
+	const ask = (askId: string, issueId: string) =>
+		({
+			ask_id: askId,
+			project_name: "example",
+			issue_id: issueId,
+			channel_id: "789",
+			thread_id: "456",
+			lead_id: "lead",
+			message_id: "999",
+			question_id: null,
+			excerpt: "audit only",
+			asked_at: now.toISOString(),
+			settled_at: null,
+		}) as never;
+	it("backfills an identifier-shaped ask's identity from its own row when Linear is unavailable", async () => {
+		const { attentionAudience, attentionLink } = await import(
+			"../attention-presentation.js"
+		);
+		const { deps } = setup();
+		deps.stateStore.listOpenFounderAsks = () => [ask("orphan", "FLY-2736")];
+		deps.fetchIssueMetadata.mockResolvedValue({
+			items: [],
+			rawCount: 0,
+			missing: { reason: "source_unavailable" },
+			fetchedAt: now.toISOString(),
+		});
+		const binding = vi.fn(deps.stateStore.resolveAttentionThreadBinding);
+		deps.stateStore.resolveAttentionThreadBinding = binding;
+		const attention = await readAttentionSources(deps as never, {
+			projectName: "example",
+			binding: { team: "EPX" },
+			apiKey: "test",
+			channelIds: ["789"],
+			now,
+		});
+		const candidate = attention.candidates.find((c) => c.key === "ask:orphan")!;
+		expect(candidate.issue_id.value).toBe("FLY-2736");
+		expect(candidate.identifier.value).toBe("FLY-2736");
+		expect(candidate.title.value).toBeNull();
+		expect(candidate.title.missing?.reason).toBe("issue_title_unknown");
+		for (const leaf of [candidate.issue_id, candidate.identifier])
+			expect(leaf.provenance).toEqual({
+				kind: "statestore",
+				table: "founder_ask",
+				key: { ask_id: "orphan" },
+			});
+		expect(binding).toHaveBeenCalledWith(
+			expect.objectContaining({
+				aliases: ["FLY-2736", "FLY-2736"],
+				authoritativeChannelId: "789",
+			}),
+		);
+		const page = generateAttentionEpicPage({
+			snapshot: null,
+			scopeBinding: { team: "EPX" },
+			itemFacts: [],
+			attention,
+			projectName: "example",
+			trigger: "manual",
+			now,
+		});
+		const row = page.attention.find((item) => item.key === "issue:FLY-2736")!;
+		expect(attentionLink(page, row).url).toBe(
+			"https://discord.com/channels/123/456",
+		);
+		expect(
+			attentionAudience(page, true).map(({ item }) => item.identifier.value),
+		).toContain("FLY-2736");
+		// The failed Linear read still marks the list incomplete.
+		expect(renderEpicPageHtml(page, now)).toContain("清单不完整");
+	});
+
+	it("lists a non-identifier ask without identity or link instead of dropping it", async () => {
+		const { attentionAudience, attentionLink } = await import(
+			"../attention-presentation.js"
+		);
+		const { deps } = setup();
+		deps.stateStore.listOpenFounderAsks = () => [ask("orphan", "missing")];
+		const attention = await readAttentionSources(deps as never, {
+			projectName: "example",
+			binding: { team: "EPX" },
+			apiKey: "test",
+			channelIds: ["789"],
+			now,
+		});
+		const page = generateAttentionEpicPage({
+			snapshot: null,
+			scopeBinding: { team: "EPX" },
+			itemFacts: [],
+			attention,
+			projectName: "example",
+			trigger: "manual",
+			now,
+		});
+		const row = attentionAudience(page, true).find(
+			({ item }) => item.key === "ask:orphan",
+		)!;
+		expect(row.item.issue_id.value).toBeNull();
+		expect(attentionLink(page, row.item).url).toBeNull();
+		expect(renderEpicPageHtml(page, now)).toContain("（无讨论串链接）");
+	});
+
+	it("merges an identifier ask into the Linear-resolved row of the same issue", async () => {
+		const { attentionAudience } = await import("../attention-presentation.js");
+		const { deps } = setup();
+		// question-b resolves to uuid-b (EPX-2) through Linear metadata.
+		deps.stateStore.listOpenFounderAsks = () => [ask("on-epx-2", "EPX-2")];
+		const attention = await readAttentionSources(deps as never, {
+			projectName: "example",
+			binding: { team: "EPX" },
+			apiKey: "test",
+			channelIds: ["789"],
+			now,
+		});
+		const page = generateAttentionEpicPage({
+			snapshot: null,
+			scopeBinding: { team: "EPX" },
+			itemFacts: [],
+			attention,
+			projectName: "example",
+			trigger: "manual",
+			now,
+		});
+		const rows = page.attention.filter(
+			(item) => item.identifier.value === "EPX-2",
+		);
+		expect(rows.map((item) => item.key)).toEqual(["issue:uuid-b"]);
+		expect(rows[0]!.issue_id.provenance.kind).toBe("linear");
+		expect(
+			rows[0]!.sources.map((source) => source.fact.value?.id).sort(),
+		).toEqual(["on-epx-2", "question-b"]);
+		const founder = attentionAudience(page, true).find(
+			({ item }) => item.key === "issue:uuid-b",
+		)!;
+		expect(
+			founder.item.sources.map((source) => source.fact.value?.kind),
+		).toEqual(["founder_ask"]);
+	});
+
 	it("counts holder plus explicit ask as two StateStore facts and validates the rendered page", async () => {
 		const { deps } = setup();
 		deps.stateStore.listOpenFounderAsks = () =>

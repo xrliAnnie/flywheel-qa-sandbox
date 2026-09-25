@@ -16,6 +16,7 @@ import type { StateStore } from "../StateStore.js";
 import {
 	type AttentionCandidate,
 	type AttentionInput,
+	ISSUE_IDENTIFIER,
 	validDiscordId,
 } from "./attention.js";
 import { discordThreadLinkPair } from "./discord-link.js";
@@ -215,10 +216,44 @@ export async function readAttentionSources(
 			? (metadata.get(p.issue) ??
 				[...metadata.values()].find((v) => v.identifier === p.issue))
 			: undefined;
+	// FLY-2761: a founder_ask row is a project-scoped local record naming its own
+	// issue. Missing Linear/Epic metadata must not hide the founder's pending ask,
+	// so the row's identifier stands in, cited as the ask row, never as Linear.
+	const identityFor = (
+		p: Pending,
+	):
+		| {
+				id: string;
+				identifier: string;
+				title: string | null;
+				provenance: Provenance;
+		  }
+		| undefined => {
+		const issue = issueFor(p);
+		if (issue)
+			return {
+				id: issue.id,
+				identifier: issue.identifier,
+				title: issue.title,
+				provenance: linear(issue.id),
+			};
+		if (
+			p.source.fact.value?.kind === "founder_ask" &&
+			p.issue &&
+			ISSUE_IDENTIFIER.test(p.issue)
+		)
+			return {
+				id: p.issue,
+				identifier: p.issue,
+				title: null,
+				provenance: p.source.fact.provenance,
+			};
+		return undefined;
+	};
 	const gateChannels = new Map<string, Set<string>>();
 	const otherChannels = new Map<string, Set<string>>();
 	for (const p of pending) {
-		const issue = issueFor(p);
+		const issue = identityFor(p);
 		if (!issue || !p.channel) continue;
 		const map = p.key.startsWith("holder:") ? gateChannels : otherChannels;
 		const channels = map.get(issue.id) ?? new Set<string>();
@@ -229,8 +264,13 @@ export async function readAttentionSources(
 	const visible = pending.filter((p) => {
 		const kindLevel = founderAttentionLevel([p.source.fact.value?.kind ?? ""]);
 		if (!kindLevel) return true;
+		// FLY-2761 qa@1: an unsettled founder ask waits on her until it is
+		// answered, whatever the issue's session, run or thread state says. The
+		// FLY-2597 title projection (no answer badge once completed) governs only
+		// the ordinary answer badge, never whether this page shows her ask.
+		if (p.source.fact.value?.kind === "founder_ask") return true;
 		if (!p.issue) return true;
-		const issue = issueFor(p);
+		const issue = identityFor(p);
 		const aliases = issue ? [issue.id, issue.identifier] : [p.issue];
 		const markUnavailable = () => {
 			const bucket =
@@ -267,8 +307,8 @@ export async function readAttentionSources(
 		if (reads[bucket].value) reads[bucket].value!.count--;
 	}
 	const candidates: AttentionCandidate[] = visible.map((p) => {
-		const issue = issueFor(p);
-		const provenance = issue ? linear(issue.id) : p.source.fact.provenance;
+		const issue = identityFor(p);
+		const provenance = issue?.provenance ?? p.source.fact.provenance;
 		let thread: AttentionCandidate["thread"];
 		const threadKey = state("chat_threads", { issue_id: issue?.id ?? p.key });
 		if (!issue) thread = cell<never>(null, threadKey, "issue_identity_unknown");
@@ -317,7 +357,7 @@ export async function readAttentionSources(
 			title: cell(
 				issue?.title ?? null,
 				provenance,
-				issue ? undefined : "issue_title_unknown",
+				issue?.title ? undefined : "issue_title_unknown",
 			),
 			sources: [p.source],
 			thread,
