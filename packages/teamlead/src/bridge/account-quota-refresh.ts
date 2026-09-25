@@ -163,3 +163,70 @@ export function createAccountQuotaRefresh(
 		return codexResult.value;
 	});
 }
+
+export type AccountReadingsLeg = { ok: true } | { ok: false; error: unknown };
+
+export interface AccountReadingsRefreshOutcome {
+	codex: AccountReadingsLeg;
+	claude: AccountReadingsLeg;
+}
+
+export interface AccountReadingsRefreshDeps {
+	ceilingMs: number;
+	/** The shared single-flight Codex round. */
+	refreshCodex: () => Promise<AccountQuotaRefreshResult>;
+	observeClaudeAccountDetails: (
+		signal: AbortSignal,
+	) => Promise<ClaudeAccountDetailStore>;
+	writeClaudeAccountDetailStore: (store: ClaudeAccountDetailStore) => void;
+}
+
+/**
+ * FLY-2830: Codex readings plus Claude cards/subscriptions — never Vercel —
+ * for the reading scheduler and the post-switch refresh. The two legs are
+ * independent; each outcome is reported, neither hides the other.
+ */
+export function createAccountReadingsRefresh(
+	deps: AccountReadingsRefreshDeps,
+): () => Promise<AccountReadingsRefreshOutcome> {
+	const leg = (result: PromiseSettledResult<unknown>): AccountReadingsLeg =>
+		result.status === "fulfilled"
+			? { ok: true }
+			: { ok: false, error: result.reason };
+	return singleFlight(async () => {
+		const [codex, claude] = await Promise.allSettled([
+			deps.refreshCodex(),
+			withCeiling(deps.ceilingMs, async (signal) => {
+				deps.writeClaudeAccountDetailStore(
+					await deps.observeClaudeAccountDetails(signal),
+				);
+			}),
+		]);
+		return { codex: leg(codex), claude: leg(claude) };
+	});
+}
+
+const LEG_CODE = /^[a-z0-9_:.-]{1,60}$/;
+
+export function accountReadingsFailureCode(error: unknown): string {
+	const message = error instanceof Error ? error.message : "";
+	return LEG_CODE.test(message) ? message : "error";
+}
+
+/**
+ * The reading scheduler's view: only the Codex leg can fail the round (it
+ * drives the FLY-2869 reading_stale episode); a Claude failure is a log line.
+ */
+export function scheduledReadingsRefresh(
+	refresh: () => Promise<AccountReadingsRefreshOutcome>,
+	log: (line: string) => void = (line) => console.warn(line),
+): () => Promise<void> {
+	return async () => {
+		const outcome = await refresh();
+		if (!outcome.claude.ok)
+			log(
+				`[reading-scheduler] claude_details_failed:${accountReadingsFailureCode(outcome.claude.error)}`,
+			);
+		if (!outcome.codex.ok) throw outcome.codex.error;
+	};
+}

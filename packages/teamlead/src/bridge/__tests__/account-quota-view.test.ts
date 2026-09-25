@@ -122,7 +122,8 @@ describe("account quota shared view", () => {
 		expect(shopping.subscriptionTier).toMatchObject({
 			display: "Max 20x",
 			source: "machine",
-			observedAt: generatedAt,
+			// FLY-2830: dated by its own detail reading, not the page time.
+			observedAt: "2026-09-18T00:41:00.000Z",
 		});
 		// FLY-2864: prepaid tranches are no longer shown; without reset-card
 		// facts the cell names why it cannot read them.
@@ -135,7 +136,7 @@ describe("account quota shared view", () => {
 		expect(
 			view.claude.find((row) => row.name === "business")?.credits,
 		).toMatchObject({
-			display: "1 张\n#1 到期 2026/10/15\n确认人 founder",
+			display: "1 张\n#1 到期 10/15 17:00\n确认人 founder",
 			source: "manual",
 		});
 		const canceled = view.claude.find((row) => row.name === "personal1")!;
@@ -404,7 +405,7 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 
 		const shopping = view.codex.find((row) => row.name === "shopping")!;
 		expect(shopping.credits.display).toBe(
-			"2 张\n#1 到期 2026/9/30\n还有 1 张，明细未给全",
+			"2 张\n#1 到期 09/30 17:00\n还有 1 张，明细未给全",
 		);
 		expect(shopping.note).toBe("使用中，本次未读");
 		expect(shopping.weeklyUsage.stale).toBe(true);
@@ -442,7 +443,7 @@ describe("FLY-2688 — real Codex readings, ordering and exhaustion", () => {
 		expect(html).toContain("<th>Fable 周用量</th>");
 		expect(html).toContain('<tr class="quota-row active-account">');
 		expect(html).toContain(
-			'<span class="card-line">2 张</span><span class="card-line">#1 到期 2026/9/30</span><span class="card-line">还有 1 张，明细未给全</span>',
+			'<span class="card-line">2 张</span><span class="card-line">#1 到期 09/30 17:00</span><span class="card-line">还有 1 张，明细未给全</span>',
 		);
 		expect(html).toContain(
 			'.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}',
@@ -555,6 +556,9 @@ describe("FLY-2869 — stale Codex readings are unknown in the view and the tick
 		value.staleAfterMinutes = 30;
 		Object.assign(value.accounts[0], {
 			// 35 minutes before generatedAt: stale for Codex, fresh for Claude's 120.
+			// Quota and cards read together (FLY-2830: cards older than the quota
+			// reading are the in-use carry and render a reason instead).
+			observedAt: "2026-09-18T00:10:00.000Z",
 			resetCreditsObservedAt: "2026-09-18T00:10:00.000Z",
 		});
 		const view = buildAccountQuotaView({
@@ -729,7 +733,7 @@ describe("FLY-2864 — Claude reset-card cell", () => {
 				resetGrants: grants([1, 1, "2026-10-22T16:00:00.000Z"]),
 			}),
 		).toMatchObject({
-			display: "1 张\n#1 到期 2026/10/22",
+			display: "1 张\n#1 到期 10/22 09:00",
 			source: "machine",
 			observedAt: "2026-09-24T23:25:00.000Z",
 		});
@@ -737,7 +741,7 @@ describe("FLY-2864 — Claude reset-card cell", () => {
 			cardsOf({
 				resetGrants: grants([2, 2, "2026-10-22T16:00:00.000Z"], [1, 1, null]),
 			}).display,
-		).toBe("2 张\n#1 到期 2026/10/22 · 剩 2 次\n#2 到期未知");
+		).toBe("2 张\n#1 到期 10/22 09:00 · 剩 2 次\n#2 到期未知");
 	});
 
 	it("does not count spent or expired cards and says 0 only when known", () => {
@@ -749,7 +753,7 @@ describe("FLY-2864 — Claude reset-card cell", () => {
 					[1, 1, "2026-11-02T16:00:00.000Z"],
 				),
 			}).display,
-		).toBe("1 张\n#1 到期 2026/11/2");
+		).toBe("1 张\n#1 到期 11/02 08:00");
 		expect(cardsOf({ resetGrants: grants() }).display).toBe("0 张");
 		expect(
 			cardsOf({
@@ -848,7 +852,7 @@ describe("FLY-2864 — Claude reset-card cell", () => {
 		// A deadline or network blip keeps showing the carried cards.
 		expect(
 			cardsOf({ usageStatus: "deadline", resetGrants: history }).display,
-		).toBe("1 张\n#1 到期 2026/10/22");
+		).toBe("1 张\n#1 到期 10/22 09:00");
 	});
 
 	it("keeps the manual card fallback and the canceled row as before", () => {
@@ -862,7 +866,7 @@ describe("FLY-2864 — Claude reset-card cell", () => {
 					cards: [{ expiresAt: "2026-10-16T00:00:00.000Z" }],
 				},
 			}).display,
-		).toBe("1 张\n#1 到期 2026/10/15\n确认人 founder");
+		).toBe("1 张\n#1 到期 10/15 17:00\n确认人 founder");
 		const canceled = claudeView([
 			claudeAccount("personal1", {
 				subscriptionStatus: "canceled",
@@ -932,12 +936,15 @@ describe("FLY-2864 — Claude next charge date", () => {
 			view.claude.map((row) => [row.name, row.nextCharge.display]),
 		);
 		expect(next).toMatchObject({
-			business: "读不到（Anthropic 接口不给）",
+			business:
+				"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
 			personal1: "已取消",
 			"manual-canceled": "已取消 · 10/05 周一 到期",
 			"manual-canceled-undated": "已取消",
-			"manual-active": "读不到（Anthropic 接口不给）",
-			"manual-mismatch": "读不到（Anthropic 接口不给）",
+			"manual-active":
+				"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
+			"manual-mismatch":
+				"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
 		});
 		expect(failures).toEqual([
 			{
@@ -1126,6 +1133,239 @@ describe("FLY-2864 — Codex next charge date", () => {
 			personal: "10/22 周四",
 			personal1: "已取消 · 10/14 周三 到期",
 			shopping: "读不到（接口未返回）",
+		});
+	});
+});
+
+describe("FLY-2830 — presentation: card minutes, reading times, reasons", () => {
+	const base = () => ({
+		generatedAt,
+		quota: { ...quota(), codex: codexQuota() },
+	});
+	const withCodex = (name: string, patch: Record<string, unknown>) => {
+		const snapshot = base();
+		snapshot.quota.codex.accounts = snapshot.quota.codex.accounts.map(
+			(account) =>
+				account.name === name ? ({ ...account, ...patch } as never) : account,
+		);
+		return snapshot;
+	};
+	const codexRow = (snapshot: ReturnType<typeof base>, name: string) =>
+		buildAccountQuotaView(snapshot).codex.find((row) => row.name === name)!;
+
+	it("shows every card expiry to the Pacific minute", () => {
+		const row = codexRow(
+			withCodex("shopping", {
+				resetCredits: {
+					known: true,
+					value: "2",
+					availableCount: 2,
+					credits: [
+						{
+							id: "a",
+							status: "available",
+							expiresAt: "2026-10-22T20:22:00.000Z",
+						},
+						{
+							id: "b",
+							status: "available",
+							expiresAt: "2026-10-22T20:40:00.000Z",
+						},
+					],
+				},
+			}),
+			"shopping",
+		);
+		expect(row.credits.display).toBe(
+			"2 张\n#1 到期 10/22 13:22\n#2 到期 10/22 13:40",
+		);
+	});
+
+	it("names why the occupancy inventory skipped an account", () => {
+		expect(
+			codexRow(
+				withCodex("shopping", {
+					note: "inventory_unavailable",
+					noteDetail: "canonical_identity_unreadable",
+				}),
+				"shopping",
+			).note,
+		).toBe(
+			"占用盘点失败（canonical_identity_unreadable），本次未读，沿用 13:00 读数",
+		);
+		expect(
+			codexRow(
+				withCodex("shopping", {
+					note: "inventory_unavailable",
+					observedAt: "2026-09-18T00:30:00.000Z",
+				}),
+				"shopping",
+			).note,
+		).toBe("占用盘点失败，本次未读，沿用 17:30 读数");
+		expect(
+			codexRow(
+				withCodex("shopping", {
+					note: "inventory_unavailable",
+					noteDetail: "guard_failed",
+					observedAt: null,
+				}),
+				"shopping",
+			).note,
+		).toBe("占用盘点失败（guard_failed），本次未读，从未读到");
+	});
+
+	it("says which HTTP refusal stopped a readonly read", () => {
+		expect(
+			codexRow(
+				withCodex("shopping", { note: "readonly_forbidden" }),
+				"shopping",
+			).note,
+		).toBe("被 chatgpt.com 拒绝（HTTP 403）");
+		expect(
+			codexRow(
+				withCodex("shopping", { note: "readonly_unauthorized" }),
+				"shopping",
+			).note,
+		).toBe("只读凭据已过期（HTTP 401）");
+	});
+
+	it("escapes a hostile noteDetail on the rendered page", () => {
+		const html = renderAccountsPageHtml(
+			buildAccountQuotaView(
+				withCodex("shopping", {
+					note: "inventory_unavailable",
+					noteDetail: "<script>x</script>",
+				}),
+			),
+		);
+		expect(html).not.toContain("<script>x");
+		expect(html).toContain("&lt;script&gt;");
+	});
+
+	it("says exactly why the Claude next charge day is not read", () => {
+		const view = buildAccountQuotaView(base());
+		expect(
+			view.claude.find((row) => row.name === "shopping")!.nextCharge.display,
+		).toBe(
+			"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
+		);
+		expect(
+			view.claude.find((row) => row.name === "personal1")!.nextCharge.display,
+		).toBe("已取消");
+	});
+
+	it("carries each row's data-source reading times", () => {
+		const snapshot = withCodex("shopping", {
+			resetCreditsObservedAt: "2026-09-17T19:00:00.000Z",
+			subscription: {
+				status: "none",
+				renewsAt: null,
+				endsAt: null,
+				observedAt: "2026-09-18T00:44:00.000Z",
+				note: null,
+			},
+		});
+		const view = buildAccountQuotaView(snapshot);
+		// Cards older than the quota reading = the in-use WHAM carry (rework O2):
+		// the cell states the reason, dated like the quota reading.
+		expect(view.codex.find((row) => row.name === "shopping")!.sources).toEqual({
+			provider: "Codex",
+			quota: "2026-09-17T20:00:00.000Z",
+			resetCredits: "2026-09-17T20:00:00.000Z",
+			subscription: "2026-09-18T00:44:00.000Z",
+		});
+		expect(view.codex.find((row) => row.name === "personal")!.sources).toEqual({
+			provider: "Codex",
+			quota: "2026-09-18T00:40:00.000Z",
+			resetCredits: "2026-09-18T00:40:00.000Z",
+			subscription: null,
+		});
+		expect(view.claude.find((row) => row.name === "shopping")!.sources).toEqual(
+			{
+				provider: "Claude",
+				usage: "2026-09-18T00:40:00.000Z",
+				detail: "2026-09-18T00:41:00.000Z",
+			},
+		);
+		// The Claude tier cell is dated by its own detail reading now.
+		expect(
+			view.claude.find((row) => row.name === "shopping")!.subscriptionTier
+				.observedAt,
+		).toBe("2026-09-18T00:41:00.000Z");
+	});
+
+	it("exempts a Claude account the operator marked unavailable", () => {
+		const snapshot = base();
+		(snapshot.quota.claude as { unavailable?: string[] }).unavailable = [
+			"structural: account_unavailable:business",
+		];
+		const view = buildAccountQuotaView(snapshot);
+		expect(
+			view.claude.find((row) => row.name === "business")!.sources,
+		).toBeUndefined();
+		expect(
+			view.claude.find((row) => row.name === "shopping")!.sources,
+		).toBeDefined();
+	});
+});
+
+describe("FLY-2830 rework — canceled and in-use-carried cells are not 'pending refresh'", () => {
+	const base = () => ({
+		generatedAt,
+		quota: { ...quota(), codex: codexQuota() },
+	});
+
+	it("O1: exempts a canceled Claude account whose usage can no longer be read", () => {
+		const view = buildAccountQuotaView(base());
+		const personal1 = view.claude.find((row) => row.name === "personal1")!;
+		expect(personal1.weeklyUsage.display).toBe("已取消");
+		expect(personal1.sources).toBeUndefined();
+		const html = renderAccountsPageHtml(view, undefined, {
+			lastSwitch: { at: "2026-09-18T00:30:00.000Z", vendor: "Codex" },
+		});
+		const personal1Row =
+			html
+				.split("</tr>")
+				.find(
+					(tr) => tr.includes(">personal1</div>") && tr.includes("已取消"),
+				) ?? "";
+		expect(personal1Row).not.toContain("switch-stale");
+	});
+
+	it("O2: says why an in-use account's reset cards were not re-read instead of showing the carried list", () => {
+		const snapshot = base();
+		snapshot.quota.codex.accounts = snapshot.quota.codex.accounts.map(
+			(account) =>
+				account.name === "personal"
+					? ({
+							...account,
+							resetCredits: {
+								known: true,
+								value: "1",
+								availableCount: 1,
+								credits: [
+									{
+										id: "old-card",
+										status: "available",
+										expiresAt: "2026-10-22T20:22:00.000Z",
+									},
+								],
+							},
+							// carried from a read before the in-use WHAM reading
+							resetCreditsObservedAt: "2026-09-17T05:48:00.000Z",
+						} as never)
+					: account,
+		);
+		const row = buildAccountQuotaView(snapshot).codex.find(
+			(r) => r.name === "personal",
+		)!;
+		expect(row.credits.display).toBe(
+			"读不到（在用中，只读接口不给兑换卡明细）",
+		);
+		expect(row.credits.display).not.toContain("10/22");
+		expect(row.sources).toMatchObject({
+			provider: "Codex",
+			resetCredits: "2026-09-18T00:40:00.000Z",
 		});
 	});
 });

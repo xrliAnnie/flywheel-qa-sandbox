@@ -1978,10 +1978,10 @@ describe("FLY-2864 — research responses end to end", () => {
 			'<div class="account-tier">Max 20x</div>',
 		);
 		expect(rowOf("claude")).toContain(
-			'<span class="card-line">1 张</span><span class="card-line">#1 到期 2026/10/22</span>',
+			'<span class="card-line">1 张</span><span class="card-line">#1 到期 10/22 09:00</span>',
 		);
 		expect(rowOf("claude")).toContain(
-			'<span class="next-charge">读不到（Anthropic 接口不给）</span>',
+			'<span class="next-charge">读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）</span>',
 		);
 		expect(rowOf("codex")).toContain(
 			'<span class="next-charge">10/22 周四</span>',

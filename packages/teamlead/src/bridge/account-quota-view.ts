@@ -1,5 +1,7 @@
 import {
+	type AccountQuotaPageOptions,
 	formatAccountQuotaPageCalendarDate,
+	formatAccountQuotaPageClock,
 	formatAccountQuotaPageDate,
 	renderAccountQuotaPageHtml,
 } from "./account-quota-page.js";
@@ -80,7 +82,32 @@ export interface AccountQuotaRow {
 	note: string | null;
 	/** The moment this row next gets better; null sorts last. FLY-2688 ordering key. */
 	sortAt: string | null;
+	/**
+	 * FLY-2830: validated reading times of the data sources behind the cells,
+	 * taken from each store (not from the display cells, which drop the time of
+	 * a machine negative such as "no subscription"). Absent = exempt from the
+	 * switch-refresh marks (an operator-marked unavailable Claude account).
+	 */
+	sources?: AccountQuotaRowSources;
 }
+
+export type AccountQuotaRowSources =
+	| {
+			provider: "Codex";
+			/** codex-accounts.json observedAt: usage, resets, plan. */
+			quota: string | null;
+			/** resetCreditsObservedAt ?? observedAt: the reset-card cell. */
+			resetCredits: string | null;
+			/** codex-subscriptions.json observedAt: the next-charge cell. */
+			subscription: string | null;
+	  }
+	| {
+			provider: "Claude";
+			/** claude-accounts.json lastObservedAt: usage and resets. */
+			usage: string | null;
+			/** account-details.json observedAt: cards, tier, cancellation. */
+			detail: string | null;
+	  };
 
 export const CODEX_MACHINE_SOURCE_LABEL = "机器读数 · account/rateLimits/read";
 export type CodexSourceLabel = "无数值源" | typeof CODEX_MACHINE_SOURCE_LABEL;
@@ -178,9 +205,10 @@ function formatExpiry(iso: string): string {
 	return `${parts.month}/${parts.day}`;
 }
 
+/** FLY-2830: to the Pacific minute, e.g. "10/22 13:22". */
 function formatCardExpiry(iso: string): string {
 	const parts = zonedParts(iso);
-	return `${parts.year}/${parts.month}/${parts.day}`;
+	return `${parts.month!.padStart(2, "0")}/${parts.day!.padStart(2, "0")} ${parts.hour}:${parts.minute}`;
 }
 
 /** Pacific calendar day as a sortable `YYYY-MM-DD` key. */
@@ -214,10 +242,28 @@ const NOTE_LABELS: Readonly<Record<string, string>> = {
 	auth_unusable: "凭据不可用，需人工处理",
 	recovery_uncertain: "凭据写回未确认，待人工核",
 	identity_mismatch: "身份不符，已跳过",
-	readonly_unauthorized: "只读凭据已过期，本次未读",
-	readonly_forbidden: "只读接口拒绝，本次未读",
+	readonly_unauthorized: "只读凭据已过期（HTTP 401）",
+	readonly_forbidden: "被 chatgpt.com 拒绝（HTTP 403）",
 	missing: "无凭据",
 };
+
+/**
+ * FLY-2830: an occupancy-inventory skip says why and how old the carried
+ * reading is, instead of a bare "occupancy unknown".
+ */
+function codexNoteLabel(
+	account: CodexAccountProjection,
+	generatedAt: string,
+): string | null {
+	if (account.note !== "inventory_unavailable") return noteLabel(account.note);
+	const reason = account.noteDetail ? `（${account.noteDetail}）` : "";
+	const observedAt = validInstant(account.observedAt);
+	const carried =
+		observedAt === null
+			? "从未读到"
+			: `沿用 ${formatAccountQuotaPageClock(observedAt, generatedAt)} 读数`;
+	return `占用盘点失败${reason}，本次未读，${carried}`;
+}
 
 function noteLabel(note: string | null): string | null {
 	if (note === null) return null;
@@ -614,7 +660,9 @@ function claudeNextChargeCell(
 			false,
 		);
 	}
-	return missingCell("读不到（Anthropic 接口不给）");
+	return missingCell(
+		"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
+	);
 }
 
 function codexSubscriptionReason(note: string | null): string {
@@ -743,6 +791,13 @@ function buildClaudeRows(
 	];
 	const discrepancies: string[] = [];
 	const warnings: string[] = [];
+	// FLY-2830: an operator-marked unavailable account is never re-read.
+	const operatorUnavailable = new Set(
+		(quota.unavailable ?? []).flatMap((token) => {
+			const match = /^structural: account_unavailable:(.+)$/.exec(token);
+			return match ? [match[1]!] : [];
+		}),
+	);
 	const rows = order.map((name): AccountQuotaRow => {
 		const account = byName.get(name);
 		const manual = manualByName.get(name);
@@ -839,7 +894,11 @@ function buildClaudeRows(
 			subscriptionTier: canceled
 				? canceledCell()
 				: account && subscriptionTier
-					? machineCell(subscriptionTier, snapshot.generatedAt, false)
+					? machineCell(
+							subscriptionTier,
+							validInstant(account.detailObservedAt ?? null),
+							false,
+						)
 					: missingCell("未知"),
 			weeklyReset: canceled
 				? canceledCell(account?.weeklyResetAt)
@@ -914,6 +973,17 @@ function buildClaudeRows(
 					: null,
 			// An auth-dead account is not quota-capped: waiting does not fix it.
 			note: unusable ? noteLabel("auth_unusable") : null,
+			// FLY-2830 rework O1: a canceled account whose usage can no longer be
+			// read is never re-read either — exempt it like an unavailable one.
+			...(account && !operatorUnavailable.has(name) && !canceled
+				? {
+						sources: {
+							provider: "Claude" as const,
+							usage: validInstant(account.observedAt),
+							detail: validInstant(account.detailObservedAt ?? null),
+						},
+					}
+				: {}),
 			sortAt: unusable
 				? null
 				: nextImprovementAt(
@@ -984,6 +1054,13 @@ function buildMachineCodexRows(
 			resetCreditsObservedAt !== null &&
 			Date.parse(snapshot.generatedAt) - Date.parse(resetCreditsObservedAt) >
 				staleAfterMinutes * 60_000;
+		// FLY-2830 rework O2: only the in-use readonly (WHAM) read refreshes the
+		// quota without the cards; the cards are then carried from an older read.
+		// Say so instead of showing that older list.
+		const cardsCarried =
+			observedAt !== null &&
+			resetCreditsObservedAt !== null &&
+			Date.parse(resetCreditsObservedAt) < Date.parse(observedAt);
 		const pct = (value: number | null): QuotaCell =>
 			value === null
 				? missingCell()
@@ -1000,7 +1077,7 @@ function buildMachineCodexRows(
 				rawInstant: instant,
 			};
 		};
-		const note = noteLabel(account.note);
+		const note = codexNoteLabel(account, snapshot.generatedAt);
 		if (note !== null) warnings.push(`Codex ${account.name}：${note}`);
 		if (account.tokenState === "读数过期") {
 			warnings.push(
@@ -1033,7 +1110,9 @@ function buildMachineCodexRows(
 			fiveHUsage: pct(account.fiveHPct),
 			weeklyUsage: pct(account.weeklyPct),
 			fableUsage: missingCell("—"),
-			credits: creditsCell(account, resetCreditsObservedAt, resetCreditsStale),
+			credits: cardsCarried
+				? missingCell("读不到（在用中，只读接口不给兑换卡明细）")
+				: creditsCell(account, resetCreditsObservedAt, resetCreditsStale),
 			expiry: missingCell(),
 			nextCharge: codexNextChargeCell(
 				account,
@@ -1058,6 +1137,13 @@ function buildMachineCodexRows(
 						},
 						snapshot.generatedAt,
 					),
+			sources: {
+				provider: "Codex",
+				quota: observedAt,
+				// The carried-cards reason is as current as the quota reading.
+				resetCredits: cardsCarried ? observedAt : resetCreditsObservedAt,
+				subscription: validInstant(account.subscription?.observedAt ?? null),
+			},
 		};
 	});
 	return { rows, warnings };
@@ -1227,6 +1313,7 @@ export function formatAccountQuotaTickLines(view: AccountQuotaView): string[] {
 export function renderAccountsPageHtml(
 	view: AccountQuotaView,
 	vercel?: VercelQuotaSection,
+	options: AccountQuotaPageOptions = {},
 ): string {
-	return renderAccountQuotaPageHtml(view, vercel);
+	return renderAccountQuotaPageHtml(view, vercel, options);
 }

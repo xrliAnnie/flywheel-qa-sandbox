@@ -186,3 +186,46 @@ describe("FLY-2688 — Codex account quota store", () => {
 		);
 	});
 });
+
+describe("FLY-2830 — occupancy reason detail", () => {
+	it("round-trips a bounded noteDetail", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2830-store-"));
+		const path = join(dir, "codex-accounts.json");
+		const value = store();
+		value.accounts[1] = {
+			...value.accounts[1]!,
+			note: "inventory_unavailable",
+			noteDetail: "collector_failed:process_authority_invalid",
+		};
+		writeCodexAccountQuotaStore(path, value);
+		expect(readCodexAccountQuotaStore(path)?.accounts[1]?.noteDetail).toBe(
+			"collector_failed:process_authority_invalid",
+		);
+	});
+
+	it.each([
+		["markup", "<script>"],
+		["a path", "/Users/x/.codex"],
+		["over 80 characters", "a".repeat(81)],
+		["uppercase", "Collector_Failed"],
+	])(
+		"refuses to write a noteDetail with %s and keeps the old file",
+		(_n, detail) => {
+			const dir = mkdtempSync(join(tmpdir(), "fly2830-store-"));
+			const path = join(dir, "codex-accounts.json");
+			writeCodexAccountQuotaStore(path, store());
+			const before = readFileSync(path, "utf8");
+			const value = store();
+			value.accounts[1] = {
+				...value.accounts[1]!,
+				note: "inventory_unavailable",
+				noteDetail: detail,
+			};
+			expect(() => writeCodexAccountQuotaStore(path, value)).toThrow();
+			expect(readFileSync(path, "utf8")).toBe(before);
+			// A hand-edited file with the same value is rejected on read too.
+			writeFileSync(path, JSON.stringify(value));
+			expect(readCodexAccountQuotaStore(path)).toBeNull();
+		},
+	);
+});

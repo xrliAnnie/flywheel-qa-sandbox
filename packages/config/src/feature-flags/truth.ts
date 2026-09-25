@@ -744,6 +744,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: tmux socket name for isolated quota revive scans (FLY-1256)",
 	FLYWHEEL_QUOTA_STATE_PATH:
 		"plumbing: external quota-monitor durable state path (FLY-1256)",
+	FLYWHEEL_CLAUDE_SWEEP_REQUEST_PATH:
+		"plumbing: path override for the post-switch Claude sweep-request file shared by the Bridge writer and quota-monitor (FLY-2830), not an on/off gate",
 	FLYWHEEL_QUOTA_CONFIRMATION_DIR:
 		"plumbing: durable quota-switch confirmation evidence directory (FLY-1182)",
 	FLYWHEEL_QUOTA_API_BASE:

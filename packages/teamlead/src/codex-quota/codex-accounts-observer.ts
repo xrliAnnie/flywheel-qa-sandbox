@@ -25,6 +25,7 @@ import type {
 	CodexAccountQuotaStore,
 	CodexAccountReading,
 } from "./codex-account-quota-store.js";
+import type { OccupancyAnswer } from "./occupancy.js";
 import { CodexCandidateWorkspace, codexQuotaIdentityReader } from "./probe.js";
 import { readCodexQuota } from "./quota-reader.js";
 import { parseCodexRateLimitDetail } from "./rate-limit-detail.js";
@@ -54,14 +55,14 @@ export interface CodexAccountsObserverOptions {
 	 * "unknown" when the host inventory could not be read (also skips the probe,
 	 * but must not be reported to the founder as "in use").
 	 */
-	isInUse?: (accountKey: string, slot: string) => CodexInUseVerdict;
+	isInUse?: (accountKey: string, slot: string) => OccupancyAnswer;
 	/**
 	 * Re-reads the in-use inventory right before each slot, mirroring
 	 * `CodexQuotaRuntime.observe()`. A round can run for a minute, so a Lead that
 	 * launches mid-round must still be seen.
 	 */
 	refreshInUse?: () => Promise<
-		(accountKey: string, slot: string) => CodexInUseVerdict
+		(accountKey: string, slot: string) => OccupancyAnswer
 	>;
 	readInUseQuota?: (
 		options: ReadCodexReadonlyUsageOptions,
@@ -337,7 +338,7 @@ export async function observeCodexAccounts(
 			null;
 		if (accountKey === canonicalAccountKey) activeAccount = slot;
 		const reading = (
-			extra: Pick<CodexAccountReading, "authHealth" | "note"> &
+			extra: Pick<CodexAccountReading, "authHealth" | "note" | "noteDetail"> &
 				ReturnType<typeof carried>,
 		): CodexAccountReading => ({
 			...base,
@@ -358,14 +359,23 @@ export async function observeCodexAccounts(
 			continue;
 		}
 		const guard = options.refreshInUse
-			? await options.refreshInUse().catch(() => () => "unknown" as const)
+			? await options.refreshInUse().catch(
+					() => (): OccupancyAnswer => ({
+						verdict: "unknown",
+						detail: "guard_failed",
+					}),
+				)
 			: options.isInUse;
-		const inUse = guard?.(accountKey, slot) ?? false;
+		const answer: OccupancyAnswer = guard?.(accountKey, slot) ?? {
+			verdict: false,
+		};
+		const inUse = answer.verdict;
 		if (inUse === "unknown") {
 			accounts.push(
 				reading({
 					authHealth: "unknown",
 					note: "inventory_unavailable",
+					...(answer.detail ? { noteDetail: answer.detail } : {}),
 					...carried(previous, accountKey),
 				}),
 			);

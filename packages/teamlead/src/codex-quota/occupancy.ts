@@ -11,6 +11,53 @@ type Inventory = Awaited<ReturnType<CollectHomes>> & {
 
 export type CodexAccountInUse = boolean | "unknown";
 
+/** FLY-2830: an answer plus a bounded, path-free reason when it is "unknown". */
+export interface OccupancyAnswer {
+	verdict: CodexAccountInUse;
+	detail?: string;
+}
+
+export const OCCUPANCY_DETAIL_RE = /^[a-z0-9_:.-]{1,80}$/;
+
+export type CanonicalIdentity =
+	| { known: true; accountKey: string }
+	| { known: false; detail: string };
+
+function chainActive(inventory: Inventory): boolean {
+	return (
+		inventory.canonicalChainActive === true ||
+		inventory.homes.some(
+			(home) => home.ownership === "managed" && home.activity === "active",
+		)
+	);
+}
+
+/**
+ * FLY-2830: one account's occupancy from ONE collection. An unshared active
+ * home proves "in use"; an idle canonical chain proves "free"; an active chain
+ * is the canonical account — and when that identity cannot be read, nothing
+ * the first rule did not prove may be called free.
+ */
+export function occupancyVerdict(
+	inventory: Inventory,
+	accountKey: string,
+	canonical: CanonicalIdentity,
+): OccupancyAnswer {
+	if ((inventory.activeUnsharedAccountKeys ?? []).includes(accountKey))
+		return { verdict: true };
+	if (!chainActive(inventory)) return { verdict: false };
+	if (canonical.known) return { verdict: canonical.accountKey === accountKey };
+	return { verdict: "unknown", detail: canonical.detail };
+}
+
+function collectorFailure(error: unknown): string {
+	const code = error instanceof Error ? error.message : "";
+	const detail = `collector_failed:${code}`;
+	return code && OCCUPANCY_DETAIL_RE.test(detail)
+		? detail
+		: "collector_failed:error";
+}
+
 type Snapshot =
 	| { known: false }
 	| {
@@ -43,12 +90,7 @@ export class CodexAccountOccupancy {
 		if (generation === this.started) {
 			this.snapshot = {
 				known: true,
-				canonicalChainActive:
-					inventory.canonicalChainActive === true ||
-					inventory.homes.some(
-						(home) =>
-							home.ownership === "managed" && home.activity === "active",
-					),
+				canonicalChainActive: chainActive(inventory),
 				activeUnsharedAccountKeys: new Set(
 					inventory.activeUnsharedAccountKeys ?? [],
 				),
@@ -77,18 +119,34 @@ export class CodexAccountOccupancy {
 		}
 	}
 
-	/** Collect now, then answer per account; failures answer "unknown". */
+	/**
+	 * Collect now, then answer per account from THIS collection (FLY-2830: the
+	 * shared snapshot may already be blanked by a newer collection that started
+	 * meanwhile — the maintenance tick collects every 3 s). Failures answer
+	 * "unknown" with a reason.
+	 */
 	async guard(
 		canonicalAuthPath: string,
 		pool: () => CodexAccountPool,
-	): Promise<(accountKey: string) => CodexAccountInUse> {
+	): Promise<(accountKey: string) => OccupancyAnswer> {
+		let inventory: Inventory;
 		try {
-			await this.collect();
-			const current = pool();
-			return (accountKey) =>
-				this.isInUse(accountKey, current, canonicalAuthPath);
-		} catch {
-			return () => "unknown";
+			inventory = (await this.collect()) as Inventory;
+		} catch (error) {
+			const detail = collectorFailure(error);
+			return () => ({ verdict: "unknown", detail });
 		}
+		let canonical: CanonicalIdentity;
+		try {
+			canonical = {
+				known: true,
+				accountKey: codexQuotaIdentityReader(pool())(
+					readFileSync(canonicalAuthPath, "utf8"),
+				).accountKey,
+			};
+		} catch {
+			canonical = { known: false, detail: "canonical_identity_unreadable" };
+		}
+		return (accountKey) => occupancyVerdict(inventory, accountKey, canonical);
 	}
 }

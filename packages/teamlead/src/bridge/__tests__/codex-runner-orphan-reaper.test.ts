@@ -1,13 +1,16 @@
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +25,7 @@ import {
 	CODEX_APP_SERVER_ORPHAN_MIN_ELAPSED_SECONDS,
 	type CodexAppServerProcess,
 	defaultListCodexHomeExecutionIds,
+	defaultSocketHolderPids,
 	parseCodexAppServerProcessRow,
 	sweepCodexRunnerOrphans,
 	sweepStaleCodexHomeLeases,
@@ -952,5 +956,84 @@ describe("Bridge maintenance wiring", () => {
 		expect(source.slice(codexSweep, mcpSweep)).not.toContain(
 			'event !== "codex_app_server_orphan_reaped"',
 		);
+	});
+});
+
+describe("FLY-2830 symlinked app-server socket (Codex 0.157 --listen)", () => {
+	async function listeningSymlink() {
+		// darwin lsof matches a unix socket by its bound name; Codex binds at the
+		// canonical /private/tmp target, so the fixture binds canonically too.
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "f2830-")));
+		const target = join(root, "real");
+		const link = join(root, "link.sock");
+		const server = createServer();
+		await new Promise<void>((done) => server.listen(target, () => done()));
+		symlinkSync(target, link);
+		return {
+			root,
+			link,
+			async close() {
+				await new Promise<void>((done) => server.close(() => done()));
+				rmSync(root, { recursive: true, force: true });
+			},
+		};
+	}
+
+	it("finds the live holder through the link with the default lsof probe", async () => {
+		const f = await listeningSymlink();
+		try {
+			const probe = await defaultSocketHolderPids(f.link);
+			expect(probe.status).toBe("ok");
+			expect(probe.status === "ok" ? probe.pids : []).toContain(process.pid);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("reports unknown when the link points at a regular file", async () => {
+		const f = await listeningSymlink();
+		try {
+			const decoy = join(f.root, "decoy");
+			writeFileSync(decoy, "not a socket");
+			rmSync(f.link);
+			symlinkSync(decoy, f.link);
+			expect(await defaultSocketHolderPids(f.link)).toEqual({
+				status: "unknown",
+				error: "link_target_not_socket",
+			});
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("reaps a symlinked orphan and unlinks only the link, never its target", async () => {
+		const root = mkdtempSync(join(tmpdir(), "f2830-reap-"));
+		try {
+			const env = testEnv(root);
+			const executionId = "symlinked-orphan";
+			const link = resolveDaemonSocketPath(executionId, env);
+			mkdirSync(join(root, "sockets"), { recursive: true });
+			const target = join(root, "codex-daemon-target");
+			writeFileSync(target, "codex-owned");
+			symlinkSync(target, link);
+			const process = appServerProcess({ executionId, env });
+			const h = harness({
+				env,
+				rows: [process],
+				homeExecutionIds: [executionId],
+			});
+
+			const result = await sweepCodexRunnerOrphans(
+				{ activeExecutionIds: new Set() },
+				{ ...h.deps, removeSocket: undefined },
+			);
+
+			expect(result.reaped).toBe(1);
+			expect(h.signals).toEqual([{ pgid: process.pgid, signal: "SIGTERM" }]);
+			expect(() => lstatSync(link)).toThrow();
+			expect(readFileSync(target, "utf8")).toBe("codex-owned");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

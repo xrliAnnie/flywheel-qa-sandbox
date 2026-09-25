@@ -92,6 +92,23 @@ export function codexObservationResetElapsed(
 		)
 	);
 }
+/**
+ * The observation the selector judges for each pool profile: that profile's
+ * latest reading (older history and profiles outside the pool are ignored).
+ * FLY-2830: the pool-exhausted alert snapshot is built from exactly this proof.
+ */
+export function latestPoolObservations(
+	observations: readonly CodexQuotaObservation[],
+	pool: readonly string[],
+): (CodexQuotaObservation | undefined)[] {
+	return pool.map(
+		(p) =>
+			observations
+				.filter((o) => o.profile === p)
+				.sort((a, b) => b.observedAt - a.observedAt)[0],
+	);
+}
+
 export function selectCodexQuotaCandidate(
 	observations: readonly CodexQuotaObservation[],
 	options: {
@@ -108,12 +125,7 @@ export function selectCodexQuotaCandidate(
 		new Set(options.pool).size !== options.pool.length
 	)
 		throw new Error("invalid_codex_quota_pool");
-	const pool = options.pool.map(
-		(p) =>
-			observations
-				.filter((o) => o.profile === p)
-				.sort((a, b) => b.observedAt - a.observedAt)[0],
-	);
+	const pool = latestPoolObservations(observations, options.pool);
 	const fresh = (o: CodexQuotaObservation) =>
 		Number.isFinite(o.observedAt) &&
 		o.observedAt <= now &&

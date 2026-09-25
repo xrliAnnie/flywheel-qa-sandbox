@@ -15,8 +15,13 @@ import type {
 } from "../codex-quota/availability.js";
 import {
 	type CodexQuotaObservation,
+	latestPoolObservations,
 	selectCodexQuotaCandidate,
 } from "../codex-quota/candidate-selector.js";
+import {
+	buildPoolExhaustedAlertSnapshot,
+	type PoolExhaustedAlertDetails,
+} from "../codex-quota/pool-exhausted-alert.js";
 import type { CodexSwitchNotificationSnapshot } from "../codex-quota/switch-notification.js";
 
 export type CodexQuotaRoot = {
@@ -1692,6 +1697,18 @@ export class CodexQuotaStore {
 				"pool_exhausted",
 				new Date(input.nextAttemptAt).toISOString(),
 			);
+			// FLY-2830: freeze who comes back when, from exactly this evidence, so
+			// the founder alert (and any replay of it) never reads a later fact.
+			const alertSnapshot = buildPoolExhaustedAlertSnapshot(
+				latestPoolObservations(input.observations, poolNames).filter(
+					(observation) => observation !== undefined,
+				),
+				input.observedAt,
+			);
+			if (alertSnapshot === null)
+				console.warn(
+					`[codex-quota] pool_exhausted_snapshot_dropped incident=${input.incidentId}`,
+				);
 			this.enqueueOutbox({
 				incidentId: input.incidentId,
 				kind: "founder_alert",
@@ -1701,9 +1718,51 @@ export class CodexQuotaStore {
 					reason: "pool_exhausted",
 					incidentId: input.incidentId,
 					nextAttemptAt: input.nextAttemptAt,
+					...(alertSnapshot === null
+						? {}
+						: {
+								alertSnapshot,
+								alertDetails: this.poolExhaustedAlertDetails(
+									input.incidentId,
+									incident.target_profile,
+								),
+							}),
 				},
 			});
 		})();
+	}
+	/**
+	 * FLY-2830 R1: the trigger/run line as of the exhaustion fact, frozen into
+	 * the alert payload (same inputs the outbox used to read live).
+	 */
+	private poolExhaustedAlertDetails(
+		incidentId: string,
+		targetProfile: unknown,
+	): PoolExhaustedAlertDetails {
+		let source = "unknown";
+		let resetAt: string | null = null;
+		try {
+			const row = this.listOutbox().find(
+				(item) => item.event_id === `${incidentId}:usage_limit`,
+			);
+			const data = JSON.parse(String(row?.payload_json ?? "{}"));
+			if (isCodexIdentityLabel(data.profile)) source = data.profile;
+			if (typeof data.resetsAt === "number" && Number.isFinite(data.resetsAt))
+				resetAt = new Date(data.resetsAt).toISOString();
+		} catch {
+			/* unknown source/reset */
+		}
+		const runs = this.listTargets(incidentId).filter(
+			(target) => target.target_kind === "runner",
+		);
+		return {
+			source,
+			resetAt,
+			target: isCodexSlotName(targetProfile) ? String(targetProfile) : "none",
+			affectedRuns: runs.length,
+			restartedRuns: runs.filter((target) => target.state === "recovered")
+				.length,
+		};
 	}
 	private latestCapacityEvidence(incidentId: string): {
 		legacy: boolean;

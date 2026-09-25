@@ -39,12 +39,14 @@ import {
 } from "./quota-incident.js";
 import type { DeliveryReport } from "./quota-monitor-alert.js";
 import type { LoadedQuotaMonitorConfig } from "./quota-monitor-config.js";
-import type {
-	BlockedEpisode,
-	IdentityMismatchCheckpoint,
-	IdentityMismatchEpisode,
-	PendingSwitchFailure,
-	QuotaMonitorState,
+import {
+	type BlockedEpisode,
+	type IdentityMismatchCheckpoint,
+	type IdentityMismatchEpisode,
+	MAX_SWEEP_REQUEST_ATTEMPTS,
+	type PendingSwitchFailure,
+	type QuotaMonitorState,
+	type SweepRequestOutcome,
 } from "./quota-monitor-state.js";
 import type { QuotaPaneSnapshot } from "./quota-revive-scan.js";
 import {
@@ -53,6 +55,7 @@ import {
 	type ValidatedUsagePayload,
 } from "./quota-usage-api.js";
 import type { QuotaWitnessReadResult } from "./quota-witness.js";
+import type { SweepRequest } from "./sweep-request.js";
 import type {
 	ApplyProfileReport,
 	SwitchInput,
@@ -182,6 +185,27 @@ export interface QuotaMonitorDeps {
 	) => Promise<QuotaMonitorState>;
 	alert: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
 	log: (message: string) => void;
+	/**
+	 * FLY-2830: the Bridge's "re-read every account now" request (written after
+	 * any account switch). Absent = request mode off.
+	 */
+	readSweepRequest?: () => SweepRequest | null;
+}
+
+/** FLY-2830: why one sweep-request round could not read everything. */
+type SweepAbort =
+	| "no_active_credential"
+	| "identity_failed"
+	| "identity_mismatch"
+	| "witness_changed";
+type SweepReadOutcome = "updated" | { failed: string };
+interface SweepCandidatesResult {
+	/** Only the accounts that should be read (pool, not unavailable, not active). */
+	candidates: { name: string; outcome: SweepReadOutcome }[];
+	aborted?: SweepAbort;
+}
+interface SweepRoundResult extends SweepCandidatesResult {
+	active: SweepReadOutcome;
 }
 
 export type PollOutcome =
@@ -375,18 +399,21 @@ async function sweepCandidates(
 	snapshot: AccountSnapshot,
 	state: QuotaMonitorState,
 	attemptedIdentityLabels: Set<string>,
-): Promise<void> {
+): Promise<SweepCandidatesResult> {
 	const now = deps.now();
 	state.lastCandidateSweepAt = now;
 	await deps.persistState(state);
+	const candidates: SweepCandidatesResult["candidates"] = [];
 	if (snapshot.activeCredential === null || snapshot.activeName === null)
-		return;
+		return { candidates, aborted: "no_active_credential" };
 	const liveIdentity = await deps.fetchIdentity(
 		snapshot.activeCredential.accessToken,
 	);
-	if ("error" in liveIdentity) return;
+	if ("error" in liveIdentity)
+		return { candidates, aborted: "identity_failed" };
 	const liveName = await deps.resolveIdentityName(liveIdentity);
-	if (liveName !== snapshot.activeName) return;
+	if (liveName !== snapshot.activeName)
+		return { candidates, aborted: "identity_mismatch" };
 	const witness = await deps.withAccountsLock(() => deps.readSnapshot());
 	if (
 		witness.activeName !== snapshot.activeName ||
@@ -394,7 +421,7 @@ async function sweepCandidates(
 		witness.activeCredential?.accessToken !==
 			snapshot.activeCredential.accessToken
 	) {
-		return;
+		return { candidates, aborted: "witness_changed" };
 	}
 
 	const names = [
@@ -413,21 +440,96 @@ async function sweepCandidates(
 			continue;
 		}
 		const checked = await readCandidateCredential(deps, snapshot, name, true);
-		if (checked.reason === "active_witness_changed") return;
+		if (checked.reason === "active_witness_changed")
+			return { candidates, aborted: "witness_changed" };
 		const { credential } = checked;
-		if (credential === null || credential.expiresAt <= now) continue;
+		if (credential === null) {
+			// "freshness_stale: <detail>" → the bare code; details stay out of logs.
+			const code = (checked.reason ?? "credential_missing").split(":")[0]!;
+			candidates.push({ name, outcome: { failed: code } });
+			continue;
+		}
+		if (credential.expiresAt <= now) {
+			candidates.push({ name, outcome: { failed: "credential_expired" } });
+			continue;
+		}
 		const candidateUsage = await deps.fetchUsage(credential.accessToken);
 		if ("ok" in candidateUsage) {
-			await projectObservation(
+			const projection = await projectObservation(
 				deps,
 				name,
 				candidateUsage.ok,
 				snapshot.store.generation,
 			);
+			candidates.push({
+				name,
+				outcome: projection === "updated" ? "updated" : { failed: projection },
+			});
+		} else {
+			candidates.push({
+				name,
+				outcome: { failed: `usage_${candidateUsage.error}` },
+			});
 		}
 	}
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 	await deps.persistState(state);
+	return { candidates };
+}
+
+function ackSweepRequest(
+	deps: QuotaMonitorDeps,
+	state: QuotaMonitorState,
+	requestId: string,
+	outcome: SweepRequestOutcome,
+): void {
+	state.lastSweepRequestId = requestId;
+	state.lastSweepRequestOutcome = outcome;
+	state.pendingSweepRequest = null;
+	deps.log(`[quota-monitor] sweep_request_ack outcome=${outcome}`);
+}
+
+/**
+ * FLY-2830: the request is done only when the active account and every account
+ * that should be read were actually recorded. A failed round counts toward the
+ * cap; at the cap the request is closed `partial` so one bad account cannot
+ * force a full sweep (and a token refresh per candidate) every minute.
+ */
+function settleSweepRequest(
+	deps: QuotaMonitorDeps,
+	state: QuotaMonitorState,
+	requestId: string,
+	activeName: string,
+	round: SweepRoundResult,
+): void {
+	const failures: { name: string; reason: string }[] = [];
+	if (round.active !== "updated")
+		failures.push({ name: activeName, reason: round.active.failed });
+	if (round.aborted !== undefined)
+		failures.push({ name: activeName, reason: round.aborted });
+	for (const candidate of round.candidates)
+		if (candidate.outcome !== "updated")
+			failures.push({ name: candidate.name, reason: candidate.outcome.failed });
+	if (failures.length === 0) {
+		ackSweepRequest(deps, state, requestId, "swept");
+		return;
+	}
+	const attempts =
+		(state.pendingSweepRequest?.requestId === requestId
+			? state.pendingSweepRequest.attempts
+			: 0) + 1;
+	if (attempts < MAX_SWEEP_REQUEST_ATTEMPTS) {
+		state.pendingSweepRequest = { requestId, attempts };
+		deps.log(
+			`[quota-monitor] sweep_request_retry attempt=${attempts} failures=${failures.map((failure) => `${failure.name}:${failure.reason}`).join(",")}`,
+		);
+		return;
+	}
+	for (const failure of failures)
+		deps.log(
+			`[quota-monitor] sweep_request_partial name=${failure.name} reason=${failure.reason}`,
+		);
+	ackSweepRequest(deps, state, requestId, "partial");
 }
 
 type PanoramaEntry = CandidatePanoramaEntry;
@@ -1558,6 +1660,36 @@ export async function pollOnce(
 	};
 	const now = deps.now();
 	let state = structuredClone(deps.state);
+	// FLY-2830: an unacknowledged "re-read every account" request.
+	let sweepRequest: SweepRequest | null = null;
+	try {
+		sweepRequest = deps.readSweepRequest?.() ?? null;
+	} catch (error) {
+		deps.log(
+			`[quota-monitor] sweep_request_read_failed error=${error instanceof Error ? error.name : "unknown"}`,
+		);
+	}
+	if (sweepRequest?.requestId === state.lastSweepRequestId) sweepRequest = null;
+	if (sweepRequest !== null) {
+		if (deps.config.monitorOnly) {
+			// Monitor-only never reads candidates: a final refusal, not a retry.
+			ackSweepRequest(
+				deps,
+				state,
+				sweepRequest.requestId,
+				"blocked_monitor_only",
+			);
+			await deps.persistState(state);
+			sweepRequest = null;
+		} else if (
+			state.pendingSweepRequest?.requestId !== sweepRequest.requestId
+		) {
+			state.pendingSweepRequest = {
+				requestId: sweepRequest.requestId,
+				attempts: 0,
+			};
+		}
+	}
 	let witnessDue = false;
 	let witnessDigest: string | null = null;
 	if (deps.readWitness !== undefined) {
@@ -1768,6 +1900,8 @@ export async function pollOnce(
 		return finish(outcome);
 	}
 
+	// FLY-2830: a pending request reads the active account first, this round.
+	if (sweepRequest !== null) state.nextUsageDueAt = now;
 	if (
 		state.nextUsageDueAt > now &&
 		detectedModels.length === 0 &&
@@ -1946,7 +2080,7 @@ export async function pollOnce(
 		deps.log("quota observation discarded: account identity changed");
 		return finish("stale_snapshot", false);
 	}
-	await projectObservation(
+	const activeProjection = await projectObservation(
 		deps,
 		snapshot.activeName,
 		currentUsage.ok,
@@ -2005,9 +2139,30 @@ export async function pollOnce(
 		!deps.config.monitorOnly &&
 		scope === null &&
 		modelDetection === null &&
-		sweepDue
+		(sweepDue || sweepRequest !== null)
 	) {
-		await sweepCandidates(deps, snapshot, state, attemptedIdentityLabels);
+		const swept = await sweepCandidates(
+			deps,
+			snapshot,
+			state,
+			attemptedIdentityLabels,
+		);
+		if (sweepRequest !== null) {
+			settleSweepRequest(
+				deps,
+				state,
+				sweepRequest.requestId,
+				snapshot.activeName,
+				{
+					...swept,
+					active:
+						activeProjection === "updated"
+							? "updated"
+							: { failed: activeProjection },
+				},
+			);
+			await deps.persistState(state);
+		}
 	}
 	if (scope === null && modelDetection === null) {
 		if (state.pendingSwitchFailure !== null) {
