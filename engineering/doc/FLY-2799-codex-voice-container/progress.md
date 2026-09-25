@@ -1,17 +1,15 @@
 ---
 issue: FLY-2799
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-25T18:46:44.958Z
-nextStep: "qa6 rework (QA 52137bb6 FAIL @dd6be6bf7): 1) poller must not read
-  back 🎙️ transcript mirrors (shared echo prefixes in voice-core) 2) no waiting
-  bed 3) WaitingMouth wall-clock lead buffer + hard flush + linear upsample +
-  streaming item playback 4) prompt: answer identity/current work from memory,
-  never explain [BACKEND]"
+phaseCursor: 2/5
+updated: 2026-09-25T18:48:45.234Z
+nextStep: "WaitingMouth: wall-clock paced adaptive lead (idle 2 / speech 10
+  frames) + hard flush on cancel + linear upsample + streaming open/append/end;
+  backend streams item audio from first delta; playback underrun diagnostics"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2799 progress
-**phase**: implement (1/5)
-**next**: qa6 rework (QA 52137bb6 FAIL @dd6be6bf7): 1) poller must not read back 🎙️ transcript mirrors (shared echo prefixes in voice-core) 2) no waiting bed 3) WaitingMouth wall-clock lead buffer + hard flush + linear upsample + streaming item playback 4) prompt: answer identity/current work from memory, never explain [BACKEND]
+**phase**: implement (2/5)
+**next**: WaitingMouth: wall-clock paced adaptive lead (idle 2 / speech 10 frames) + hard flush on cancel + linear upsample + streaming open/append/end; backend streams item audio from first delta; playback underrun diagnostics
