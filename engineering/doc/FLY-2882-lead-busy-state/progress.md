@@ -1,14 +1,14 @@
 ---
 issue: FLY-2882
 phase: implement
-phaseCursor: 8/9
-updated: 2026-09-25T21:12:34.512Z
-nextStep: targeted verification sweep (git grep consumers), build, live
-  read-only smoke, codex review, PR
+phaseCursor: 9/9
+updated: 2026-09-25T21:55:31.529Z
+nextStep: PR opened; milestone last commit; final-head delta review +
+  await-codex-gate code; complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2882 progress
-**phase**: implement (8/9)
-**next**: targeted verification sweep (git grep consumers), build, live read-only smoke, codex review, PR
+**phase**: implement (9/9)
+**next**: PR opened; milestone last commit; final-head delta review + await-codex-gate code; complete needs_review
