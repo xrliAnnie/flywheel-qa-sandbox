@@ -6,6 +6,8 @@
  * pluggable behind one dual-face (announce / converse) contract.
  */
 
+// voice agenda (FLY-2863) — engine-independent mode layer
+export * from "./agenda/index.js";
 export {
 	FfmpegPcmDecoder,
 	type FfmpegPcmDecoderOptions,
