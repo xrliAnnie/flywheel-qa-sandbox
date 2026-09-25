@@ -567,7 +567,6 @@ import {
 import { resolveFounderGateBotToken } from "./founder-gate-bot-token.js";
 import { isDiscordSnowflake } from "./founder-notify-utils.js";
 import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
-import { createLeadInterruptLeadRouter } from "./lead-interrupt-routes.js";
 import {
 	type FounderThreadIngressOwner,
 	type FounderThreadIngressRollout,
@@ -675,6 +674,7 @@ import {
 } from "./lead-dual-active-scan.js";
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadInboundAttachmentRouter } from "./lead-inbound-attachment.js";
+import { createLeadInterruptLeadRouter } from "./lead-interrupt-routes.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
 import { createLeadNoteRouter } from "./lead-note-route.js";
