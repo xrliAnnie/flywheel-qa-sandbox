@@ -265,19 +265,14 @@ export class WaitingMouth {
 		return {
 			append: (pcm24Mono) => this.appendSpeech(speech, pcm24Mono),
 			end: () => this.endSpeech(speech),
-			cancel: () => this.cancelSpeech(speechId),
+			cancel: () => this.stopSpeech(speech),
 			done,
 		};
 	}
 
 	cancelSpeech(speechId: string): void {
-		const index = this.speechQueue.findIndex(
-			(speech) => speech.id === speechId,
-		);
-		if (index < 0) return;
-		const [cancelled] = this.speechQueue.splice(index, 1);
-		cancelled?.reject(new Error("speech_playback_stopped"));
-		if (index === 0 && (cancelled?.offset ?? 0) > 0) this.dropQueuedOutput();
+		const speech = this.speechQueue.find((queued) => queued.id === speechId);
+		if (speech) this.stopSpeech(speech);
 	}
 
 	cancelAllSpeech(): void {
@@ -289,8 +284,7 @@ export class WaitingMouth {
 		for (const speech of pending) {
 			speech.reject(new Error("speech_playback_stopped"));
 		}
-		if (this.speechWrittenUntil > this.consumedFrames())
-			this.dropQueuedOutput();
+		this.dropQueuedSpeech();
 	}
 
 	setWaiting(waiting: boolean): void {
@@ -310,6 +304,20 @@ export class WaitingMouth {
 		this.flush();
 		this.stream.end();
 		this.options.player.stop();
+	}
+
+	private stopSpeech(speech: QueuedSpeech): void {
+		const index = this.speechQueue.indexOf(speech);
+		if (index < 0) return;
+		this.speechQueue.splice(index, 1);
+		speech.reject(new Error("speech_playback_stopped"));
+		if (index === 0 && speech.offset > 0) this.dropQueuedSpeech();
+	}
+
+	/** Speech frames already handed to the player but not yet played. */
+	private dropQueuedSpeech(): void {
+		if (this.speechWrittenUntil > this.consumedFrames())
+			this.dropQueuedOutput();
 	}
 
 	private appendSpeech(speech: QueuedSpeech, pcm24Mono: Buffer): boolean {
