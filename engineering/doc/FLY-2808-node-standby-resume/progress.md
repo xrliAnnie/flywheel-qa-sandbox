@@ -1,14 +1,13 @@
 ---
 issue: FLY-2808
 phase: implement
-phaseCursor: 0/3
-updated: 2026-09-25T05:46:04.297Z
-nextStep: "record read-only verification of real PR #1299 in sandbox fixture,
-  open sandbox PR"
+phaseCursor: 2/3
+updated: 2026-09-25T05:46:55.069Z
+nextStep: "code review gate on sandbox PR #243 head, then complete needs_review --pr 243"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2808 progress
-**phase**: implement (0/3)
-**next**: record read-only verification of real PR #1299 in sandbox fixture, open sandbox PR
+**phase**: implement (2/3)
+**next**: code review gate on sandbox PR #243 head, then complete needs_review --pr 243
