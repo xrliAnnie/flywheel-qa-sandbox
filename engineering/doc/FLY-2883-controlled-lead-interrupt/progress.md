@@ -1,13 +1,13 @@
 ---
 issue: FLY-2883
 phase: design
-phaseCursor: 1/7
-updated: 2026-09-25T20:04:48.019Z
-nextStep: "exploration: voice handoff path, carrier injection, audit/auth"
+phaseCursor: 3/7
+updated: 2026-09-25T20:14:24.438Z
+nextStep: write plan.md, then Codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2883 progress
-**phase**: design (1/7)
-**next**: exploration: voice handoff path, carrier injection, audit/auth
+**phase**: design (3/7)
+**next**: write plan.md, then Codex design review
