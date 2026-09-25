@@ -1,13 +1,13 @@
 ---
 issue: FLY-2870
 phase: implement
-phaseCursor: 4/5
-updated: 2026-09-25T06:18:29.561Z
-nextStep: Create draft PR, add milestone as final commit, and request code review
+phaseCursor: 5/5
+updated: 2026-09-25T06:26:10.139Z
+nextStep: Await replacement exact-head CI and hand off PR 245 for review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2870 progress
-**phase**: implement (4/5)
-**next**: Create draft PR, add milestone as final commit, and request code review
+**phase**: implement (5/5)
+**next**: Await replacement exact-head CI and hand off PR 245 for review
