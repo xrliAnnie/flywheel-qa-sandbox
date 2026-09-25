@@ -11,8 +11,9 @@ import { assertLoopbackCarrierUrl } from "../lead-lease.js";
  * unknown are all answers); non-zero = the call itself failed.
  */
 
+// The Bridge cuts each Lead at 8s and reads the fleet 6 at a time (17 Leads ≤ 24s).
 const SINGLE_TIMEOUT_MS = 15_000;
-const FLEET_TIMEOUT_MS = 30_000;
+const FLEET_TIMEOUT_MS = 45_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const IDENTITY_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const USAGE =

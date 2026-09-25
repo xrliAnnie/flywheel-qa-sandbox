@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../../ProjectConfig.js";
 import { LeadActivityService } from "../lead-activity-service.js";
 import { isValidLeadActivity, isValidLeadActivityFleet } from "../types.js";
@@ -182,7 +182,7 @@ describe("LeadActivityService.readFleet", () => {
 			"raya/raya",
 			"raya/weird-lead",
 		]);
-		expect(peak).toBeLessThanOrEqual(4);
+		expect(peak).toBeLessThanOrEqual(6);
 		expect(peak).toBeGreaterThan(1);
 	});
 
@@ -201,5 +201,77 @@ describe("LeadActivityService.readFleet", () => {
 			["weird-lead", "unknown"],
 		]);
 		expect(fleet).toMatchObject({ schema: "lead-activity-fleet.v1" });
+	});
+});
+
+describe("LeadActivityService — carrier resolution and deadline", () => {
+	afterEach(() => vi.useRealTimers());
+
+	it("honours the Bridge-wide legacy backend override like the delivery adapter", async () => {
+		const readClaude = vi.fn();
+		const readCodex = vi.fn(async () => ({
+			reading: { state: "idle" as const },
+			observedAtMs: NOW,
+		}));
+		const svc = new LeadActivityService({
+			projects: roster,
+			readClaude,
+			readCodex,
+			now: () => NOW,
+			legacyBackend: () => "codex-app-server",
+		});
+		const dto = await svc.read("flywheel", "flywheel-eng-lead");
+		expect(dto).toMatchObject({ carrier: "codex-app-server", state: "idle" });
+		expect(readCodex).toHaveBeenCalledWith("flywheel", "flywheel-eng-lead");
+		expect(readClaude).not.toHaveBeenCalled();
+	});
+
+	it("an explicit backend still wins over the legacy override", async () => {
+		const readClaude = vi.fn(async () => ({
+			reading: { state: "idle" as const },
+			observedAtMs: NOW,
+		}));
+		const svc = new LeadActivityService({
+			projects: () => {
+				const base = roster();
+				base[0]!.leads[0]!.backend = "claude-code";
+				return base;
+			},
+			readClaude,
+			readCodex: vi.fn(),
+			now: () => NOW,
+			legacyBackend: () => "codex-app-server",
+		});
+		expect(await svc.read("flywheel", "flywheel-eng-lead")).toMatchObject({
+			carrier: "claude-code",
+		});
+	});
+
+	it("answers read_timed_out when one Lead's read exceeds the deadline", async () => {
+		vi.useFakeTimers();
+		const svc = new LeadActivityService({
+			projects: roster,
+			readClaude: () => new Promise(() => {}),
+			readCodex: async () => ({
+				reading: { state: "idle" },
+				observedAtMs: NOW,
+			}),
+			now: () => Date.now(),
+			deadlineMs: 8_000,
+		});
+		const pending = svc.readFleet();
+		await vi.advanceTimersByTimeAsync(8_000);
+		const fleet = await pending;
+		expect(fleet.leads.map((l) => [l.leadId, l.state])).toEqual([
+			["flywheel-eng-lead", "unknown"],
+			["codex-infra-bot-lead", "idle"],
+			["raya", "idle"],
+			["weird-lead", "unknown"],
+		]);
+		expect(fleet.leads[0]).toMatchObject({
+			unknown: { reason: "read_timed_out" },
+		});
+		expect(isValidLeadActivityFleet(fleet)).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });

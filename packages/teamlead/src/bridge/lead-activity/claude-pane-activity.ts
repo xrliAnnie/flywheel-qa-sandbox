@@ -35,6 +35,7 @@ const IN_PROGRESS = new RegExp(
 	"u",
 );
 const DONE = /^[✻✶✳✢✽·*] \S+ for (?:\d+[dhms]\s*)+·\s*done\b/u;
+const DAY_FORMAT_MIDPOINT_MS = 30_000;
 // Same FLY-193 frozen-foreground markers as pane-blocked-classifier.ts.
 const BLOCKED = [/compacting conversation/i, /\besc\b[^\n]*\bto cancel\b/i];
 
@@ -87,7 +88,13 @@ export function parseClaudeLeadPaneActivity(
 		if (groups && groups.dur!.trim().length > 0) {
 			return {
 				state: "busy",
-				elapsedMs: durationMs(groups),
+				// ≥1 day, Claude's en() floors the minutes and drops seconds: the
+				// true value lies in [shown, shown + 60s), so report the midpoint.
+				elapsedMs:
+					durationMs(groups) +
+					(groups.d !== undefined && groups.s === undefined
+						? DAY_FORMAT_MIDPOINT_MS
+						: 0),
 				precision: groups.s === undefined ? "minute" : "second",
 			};
 		}

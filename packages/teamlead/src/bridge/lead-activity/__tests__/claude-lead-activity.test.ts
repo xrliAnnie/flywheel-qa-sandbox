@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LeadWindowRef } from "../../../LeadWindowLocator.js";
+import type {
+	LeadWindowRef,
+	V2LeadClaudeProcess,
+} from "../../../LeadWindowLocator.js";
 import {
 	CLAUDE_PANE_CAPTURE_LINES,
 	readClaudeLeadActivity,
@@ -27,15 +30,20 @@ function pane(slot: string): string {
 	].join("\n");
 }
 
+const RUNNING: V2LeadClaudeProcess = { state: "running", pid: "19966" };
+
 function deps(over: {
 	locate?: () => Promise<LeadWindowRef | null>;
 	capture?: () => Promise<string>;
+	claudePids?: V2LeadClaudeProcess[];
 }) {
+	const pids = [...(over.claudePids ?? [RUNNING, RUNNING])];
 	return {
 		locate: vi.fn(over.locate ?? (async () => REF)),
 		capture: vi.fn(
 			over.capture ?? (async () => pane("✻ Worked for 3s · done 1:00 PM")),
 		),
+		claudeProcess: vi.fn(async () => pids.shift() ?? RUNNING),
 		now: () => NOW,
 	};
 }
@@ -119,6 +127,60 @@ describe("readClaudeLeadActivity", () => {
 			expect(result.reading).toEqual({ state: "unknown", reason });
 			if (reason === "lead_window_unavailable" && _label.startsWith("locate"))
 				expect(d.capture).not.toHaveBeenCalled();
+		},
+	);
+});
+
+describe("readClaudeLeadActivity — Claude process liveness (design-correction C2)", () => {
+	const ABSENT: V2LeadClaudeProcess = { state: "absent" };
+	const UNSURE: V2LeadClaudeProcess = { state: "indeterminate" };
+	it("checks the same live Claude pid before and after the capture", async () => {
+		const d = deps({});
+		const result = await readClaudeLeadActivity("flywheel", LEAD, d);
+		expect(result.reading).toEqual({ state: "idle" });
+		expect(d.claudeProcess).toHaveBeenCalledTimes(2);
+		expect(d.claudeProcess).toHaveBeenNthCalledWith(1, REF);
+		expect(d.claudeProcess.mock.invocationCallOrder[0]).toBeLessThan(
+			d.capture.mock.invocationCallOrder[0]!,
+		);
+		expect(d.claudeProcess.mock.invocationCallOrder[1]).toBeGreaterThan(
+			d.capture.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it.each([
+		[
+			"Claude already gone before the capture",
+			[ABSENT],
+			"lead_process_not_running",
+		],
+		[
+			"Claude gone by the end of the capture",
+			[RUNNING, ABSENT],
+			"lead_process_not_running",
+		],
+		[
+			"liveness unknowable before the capture",
+			[UNSURE],
+			"lead_process_unverified",
+		],
+		[
+			"liveness unknowable after the capture",
+			[RUNNING, UNSURE],
+			"lead_process_unverified",
+		],
+		[
+			"a different Claude process after the capture",
+			[RUNNING, { state: "running", pid: "777" }],
+			"lead_process_unverified",
+		],
+	] as const)(
+		"%s → unknown even though the old screen still says done",
+		async (_label, claudePids, reason) => {
+			const d = deps({ claudePids: [...claudePids] });
+			const result = await readClaudeLeadActivity("flywheel", LEAD, d);
+			expect(result.reading).toEqual({ state: "unknown", reason });
+			if (claudePids.length === 1) expect(d.capture).not.toHaveBeenCalled();
 		},
 	);
 });

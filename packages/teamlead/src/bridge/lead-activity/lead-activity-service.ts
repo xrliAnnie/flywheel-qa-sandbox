@@ -7,12 +7,14 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { readV2LeadClaudePid } from "../../LeadWindowLocator.js";
 import {
 	probeCodexLeadInboxCapabilities,
 	readCodexLeadTurnState,
 	resolveCodexLeadInboxSocketPath,
 } from "../../lead-backends/codex/CodexLeadInboxSocket.js";
 import { buildResolveBotToken } from "../../lead-backends/codexLeadBridgeWiring.js";
+import { effectiveLeadBackend } from "../../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { resolveCommDbPath } from "../commdb-session-prune.js";
@@ -31,7 +33,14 @@ import {
 	type LeadActivityV1,
 } from "./types.js";
 
-export const FLEET_CONCURRENCY = 4;
+/**
+ * Budget (design-correction A1): every Lead's whole read chain is cut at
+ * `LEAD_READ_DEADLINE_MS` (→ unknown/read_timed_out); the fleet runs
+ * `FLEET_CONCURRENCY` reads at once, so 17 Leads cost at most ⌈17/6⌉×8s = 24s.
+ * CLI timeouts sit above both (single 15s, --all 45s).
+ */
+export const FLEET_CONCURRENCY = 6;
+export const LEAD_READ_DEADLINE_MS = 8_000;
 
 type CarrierRead = (
 	projectName: string,
@@ -44,13 +53,23 @@ export interface LeadActivityServiceDeps {
 	readCodex: CarrierRead;
 	now(): number;
 	log?(message: string): void;
+	/** Bridge-wide legacy backend (`FLYWHEEL_LEAD_BACKEND`), as the delivery adapter reads it. */
+	legacyBackend?(): string | undefined;
+	deadlineMs?: number;
 }
 
-function carrierOf(lead: LeadConfig): LeadActivityCarrier | undefined {
-	const backend = lead.backend as unknown;
-	if (backend === undefined || backend === "claude-code") return "claude-code";
-	if (backend === "codex-app-server") return "codex-app-server";
-	return undefined;
+function carrierOf(
+	lead: LeadConfig,
+	legacy: string | undefined,
+): LeadActivityCarrier | undefined {
+	const explicit = lead.backend as unknown;
+	if (
+		explicit !== undefined &&
+		explicit !== "claude-code" &&
+		explicit !== "codex-app-server"
+	)
+		return undefined;
+	return effectiveLeadBackend(lead.backend, legacy).backend;
 }
 
 export class LeadActivityService {
@@ -100,7 +119,7 @@ export class LeadActivityService {
 		projectName: string,
 		lead: LeadConfig,
 	): Promise<LeadActivityV1> {
-		const carrier = carrierOf(lead);
+		const carrier = carrierOf(lead, this.deps.legacyBackend?.());
 		const build = (
 			reading: LeadActivityReading,
 			observedAtMs: number,
@@ -118,19 +137,35 @@ export class LeadActivityService {
 				{ state: "unknown", reason: "carrier_unsupported" },
 				this.deps.now(),
 			);
+		const read =
+			carrier === "codex-app-server"
+				? this.deps.readCodex
+				: this.deps.readClaude;
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			const read =
-				carrier === "codex-app-server"
-					? this.deps.readCodex
-					: this.deps.readClaude;
-			const { reading, observedAtMs } = await read(projectName, lead.agentId);
-			return build(reading, observedAtMs);
+			const result = await Promise.race([
+				read(projectName, lead.agentId),
+				new Promise<"timeout">((resolve) => {
+					timer = setTimeout(
+						() => resolve("timeout"),
+						this.deps.deadlineMs ?? LEAD_READ_DEADLINE_MS,
+					);
+				}),
+			]);
+			if (result === "timeout")
+				return build(
+					{ state: "unknown", reason: "read_timed_out" },
+					this.deps.now(),
+				);
+			return build(result.reading, result.observedAtMs);
 		} catch {
 			this.deps.log?.("[lead-activity] read_failed");
 			return build(
 				{ state: "unknown", reason: "read_failed" },
 				this.deps.now(),
 			);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
 		}
 	}
 }
@@ -151,6 +186,7 @@ export function createProductionLeadActivityService(args: {
 		projects: () => args.projects,
 		now: Date.now,
 		log,
+		legacyBackend: () => env.FLYWHEEL_LEAD_BACKEND,
 		readClaude: (projectName, leadId) =>
 			readClaudeLeadActivity(projectName, leadId, {
 				locate: (p, l) =>
@@ -160,13 +196,16 @@ export function createProductionLeadActivityService(args: {
 						readFile: (path) => readFileSync(path, "utf8"),
 					}),
 				capture,
+				claudeProcess: (window) => readV2LeadClaudePid(window),
 				now: Date.now,
 			}),
 		readCodex: (projectName, leadId) =>
 			readCodexLeadActivity(projectName, leadId, {
 				resolveSocketPath: async (p, l) =>
 					resolveCodexLeadInboxSocketPath(resolveCodexLeadStateDir(p, l)),
-				resolveAuthSecret: resolveBotToken,
+				// Same secret precedence as the delivery adapter that talks to this socket.
+				resolveAuthSecret: (p, l) =>
+					resolveBotToken(p, l) ?? env.DISCORD_BOT_TOKEN,
 				probeCapabilities: probeCodexLeadInboxCapabilities,
 				readTurnState: readCodexLeadTurnState,
 				attribute: (p, l, deliveryIds) =>

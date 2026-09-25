@@ -28,6 +28,10 @@ export const UNKNOWN_REASON_DETAIL = {
 	lead_window_unavailable:
 		"找不到或无法确认这个 Lead 的终端窗口(没配置、tmux 不通或身份对不上)",
 	pane_capture_failed: "读取这个 Lead 的终端画面失败",
+	lead_process_not_running:
+		"这个 Lead 的 Claude 进程已经不在了(终端外壳还在,屏上是旧画面)",
+	lead_process_unverified:
+		"确认不了这个 Lead 的 Claude 进程是否还活着(查询失败、有多个候选或读取期间换了进程)",
 	pane_unrecognized:
 		"终端画面里找不到这个 Lead 的输入框(可能停在菜单/弹窗,或 Claude 进程不在)",
 	no_turn_status_line:
@@ -40,9 +44,10 @@ export const UNKNOWN_REASON_DETAIL = {
 		"这个 Codex Lead 的 sidecar 不支持忙闲查询(需要重启到新版本)",
 	sidecar_protocol_invalid: "sidecar 回包格式不合法",
 	observer_disconnected: "sidecar 与 Codex 后台的连接已断开",
-	turn_state_not_seeded: "sidecar 还没拿到可信的忙闲初值",
+	turn_state_not_seeded: "sidecar 还没拿到(或刚作废了)可信的忙闲状态,正在重建",
 	carrier_unsupported: "这个 Lead 的载体类型不受支持",
 	read_failed: "读取忙闲时出现意外错误",
+	read_timed_out: "读取这个 Lead 的忙闲超时",
 } as const;
 export type UnknownReason = keyof typeof UNKNOWN_REASON_DETAIL;
 

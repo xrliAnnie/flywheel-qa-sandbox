@@ -29,7 +29,11 @@ describe("parseClaudeLeadPaneActivity — busy", () => {
 		["✶ Spelunking… (8s · ↓ 298 tokens)", 8_000, "second"],
 		["· Spelunking… (1m 4s · ↓ 547 tokens)", 64_000, "second"],
 		["✻ Churning… (2h 3m 4s · ↓ 1.2k tokens)", 7_384_000, "second"],
-		["✽ Bunning… (1d 2h 3m · ↓ 1.5k tokens)", 93_780_000, "minute"],
+		// ≥1 day: Claude's en() floors minutes and drops seconds, so the true
+		// value is in [shown, shown + 60s) — the midpoint (+30s) bounds the error.
+		["✽ Bunning… (1d 2h 3m · ↓ 1.5k tokens)", 93_810_000, "minute"],
+		["✽ Bunning… (1d 0h 0m · ↓ 1.5k tokens)", 86_430_000, "minute"],
+		["✽ Bunning… (1d 23h 59m)", 172_770_000, "minute"],
 		["✢ Thinking… (40s)", 40_000, "second"],
 		["✳ Pondering… (8.5s · ↓ 3 tokens)", 8_500, "second"],
 		["* Working… (5m · ↓ 3 tokens)", 300_000, "minute"],
