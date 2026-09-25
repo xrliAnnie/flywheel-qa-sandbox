@@ -11891,6 +11891,17 @@ export async function startBridge(
 							? { guildId: config.discordGuildId }
 							: {}),
 						issuePriority: (issueId) => agendaIssuePriority.get(issueId),
+						readQuestionText: (projectName, questionId) => {
+							const db = CommDB.openReadonly(commDbPathForProject(projectName));
+							try {
+								const message = db.getMessageById(questionId);
+								return message?.type === "question" && message.content.trim()
+									? message.content
+									: null;
+							} finally {
+								db.close();
+							}
+						},
 						leadBotUserId: (lead) =>
 							lead.botUserId ?? botUserIdFromToken(lead.botToken) ?? undefined,
 						observeBlockedIssues: (issueIds) =>

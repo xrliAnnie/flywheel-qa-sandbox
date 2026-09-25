@@ -13,6 +13,7 @@ import {
 	type AgendaClass,
 	type AgendaDispositionRecord,
 	type AgendaItem,
+	type AgendaItemMaterial,
 	type AgendaSnapshot,
 	type AgendaState,
 	type VoiceAgendaResultPayload,
@@ -144,7 +145,32 @@ function classCounts(
 	return counts;
 }
 
-function briefItem(item: AgendaItem): Record<string, unknown> {
+function clip(value: string, max: number): string {
+	const chars = Array.from(value);
+	return chars.length > max ? chars.slice(0, max).join("") : value;
+}
+
+/** QA@1 B4: the opening lists every item in a sentence each, so it gets a
+ * compact copy; an item brief gets everything the Bridge knows. */
+function briefMaterial(
+	material: AgendaItemMaterial,
+	detail: "compact" | "full",
+): AgendaItemMaterial {
+	if (detail === "full") return material;
+	return {
+		...(material.question ? { question: clip(material.question, 200) } : {}),
+		...(material.qa
+			? { qa: { ...material.qa, summary: clip(material.qa.summary, 300) } }
+			: {}),
+		...(material.blocked ? { blocked: material.blocked } : {}),
+		...(material.prNumber !== undefined ? { prNumber: material.prNumber } : {}),
+	};
+}
+
+function briefItem(
+	item: AgendaItem,
+	detail: "compact" | "full",
+): Record<string, unknown> {
 	return {
 		itemKey: item.itemKey,
 		class: CLASS_WORD[item.class],
@@ -156,6 +182,18 @@ function briefItem(item: AgendaItem): Record<string, unknown> {
 		since: item.since,
 		...(item.urgent ? { urgent: item.urgent.reason } : {}),
 		...(item.sourceText ? { leadMessage: item.sourceText } : {}),
+		...(item.material
+			? { material: briefMaterial(item.material, detail) }
+			: {}),
+	};
+}
+
+/** The voice client needs keys, classes and spoken facts, never the Lead's
+ * material (QA@1 B4). */
+function clientSnapshot(snapshot: AgendaSnapshot): AgendaSnapshot {
+	return {
+		...snapshot,
+		items: snapshot.items.map(({ material: _material, ...item }) => item),
 	};
 }
 
@@ -217,7 +255,7 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 			return;
 		}
 		try {
-			res.json(snapshotFor(session));
+			res.json(clientSnapshot(snapshotFor(session)));
 		} catch (error) {
 			res.status(503).json({
 				error: "voice_agenda_source_unavailable",
@@ -402,7 +440,7 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 				brief = {
 					purpose,
 					mode: session.mode === "rg" ? "headphone" : "meeting",
-					items: snapshot.items.map(briefItem),
+					items: snapshot.items.map((entry) => briefItem(entry, "compact")),
 					olderUnspokenCount: snapshot.olderUnspokenCount,
 					sourcesComplete: snapshot.complete,
 				};
@@ -414,7 +452,7 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 				brief = {
 					purpose,
 					mode: session.mode === "rg" ? "headphone" : "meeting",
-					...(item ? { item: briefItem(item) } : {}),
+					...(item ? { item: briefItem(item, "full") } : {}),
 					currentItemKey: state?.activeUrgent ?? state?.active ?? null,
 					queueAfter: {
 						count: queued.length + (state?.urgentQueue.length ?? 0),

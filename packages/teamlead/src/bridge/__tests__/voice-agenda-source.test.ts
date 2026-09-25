@@ -261,6 +261,144 @@ describe("buildVoiceAgendaSnapshot — title classes (same judgment as the threa
 	});
 });
 
+describe("buildVoiceAgendaSnapshot — material for the digesting Lead (QA@1 B4)", () => {
+	function qaVerdict(issue: string, status: "pass" | "fail", summary: string) {
+		seq += 1;
+		store.insertEvent({
+			event_id: `wd-${issue}-${seq}`,
+			execution_id: `qa-${issue}-${seq}`,
+			issue_id: issue,
+			project_name: PROJECT,
+			event_type: "workflow_decision",
+			source: "test",
+			payload: {
+				status,
+				predicate: status === "pass" ? "qa_passed" : "qa_failed",
+				targetExecutionId: "x",
+				subjectHead: "abc",
+				summary,
+			},
+		});
+	}
+
+	it("carries the question she is asked, the latest QA verdict, why it is blocked, and the PR", () => {
+		issueSession("a", LEAD_CH, "failed");
+		store.upsertSession({
+			execution_id: "exec-a-1",
+			issue_id: "a",
+			project_name: PROJECT,
+			status: "failed",
+			last_error: "goal ended non-complete: usageLimited",
+		});
+		issueSession("b", LEAD_CH, "running", "approve");
+		store.upsertSession({
+			execution_id: "exec-b-2",
+			issue_id: "b",
+			project_name: PROJECT,
+			status: "running",
+			pr_number: 1314,
+		});
+		qaVerdict("FLY-b", "fail", "QA FAIL: 开场被丢。");
+		qaVerdict(
+			"FLY-b",
+			"pass",
+			"QA PASS @abc (PR #1314). Report: https://reports.example/r/xyz/ . 四类过滤通过，https://github.com/o/r/pull/1314 已绿。",
+		);
+		store.upsertChatThread("thread-c", LEAD_CH, "c", "lead-one");
+		store.insertFounderAsk({
+			ask_id: "ask-c",
+			project_name: PROJECT,
+			issue_id: "c",
+			channel_id: LEAD_CH,
+			thread_id: "thread-c",
+			lead_id: "lead-one",
+			question_id: null,
+			excerpt: "登录页的文案用 A 版还是 B 版？",
+			asked_at: new Date(T0).toISOString(),
+		});
+		store.backfillFounderAskMessage("ask-c", "500000000000000001");
+		const snapshot = buildVoiceAgendaSnapshot(deps(T0), session());
+		const material = Object.fromEntries(
+			snapshot.items.map((item) => [item.itemKey.split(":")[1], item.material]),
+		);
+		expect(material.a).toEqual({
+			blocked: {
+				phase: "main",
+				reason: "goal ended non-complete: usageLimited",
+			},
+		});
+		expect(material.b).toEqual({
+			qa: {
+				verdict: "pass",
+				summary:
+					"QA PASS @abc (PR #1314). Report: https://reports.example/r/xyz/ . 四类过滤通过，https://github.com/o/r/pull/1314 已绿。",
+				reportUrl: "https://reports.example/r/xyz/",
+			},
+			prNumber: 1314,
+		});
+		expect(material.c).toEqual({ question: "登录页的文案用 A 版还是 B 版？" });
+	});
+
+	it("reads a pending question's own text when the Lead has not asked in the thread", () => {
+		issueSession("c", LEAD_CH, "running", "implement");
+		const reads: string[] = [];
+		const snapshot = buildVoiceAgendaSnapshot(
+			deps(T0, {
+				openAttentionCommReadonly: () => ({
+					listAttentionQuestions: () => ({
+						questions: [
+							{
+								id: "q-legacy",
+								created_at: new Date(T0).toISOString(),
+								execution_id: "exec-c-1",
+								since: new Date(T0).toISOString(),
+								kind: "founder_gate",
+								checkpoint: "founder_review",
+								recipient_role: "lead",
+								state: "pending" as const,
+								classification_unknown: false,
+							},
+						],
+						rawCount: 1,
+						nextCursor: null,
+					}),
+					isQuestionPending: () => true,
+					close: () => {},
+				}),
+				readQuestionText: (project, id) => {
+					reads.push(`${project}:${id}`);
+					return "设计卡两版，你要哪一版？".repeat(100);
+				},
+			}),
+			session(),
+		);
+		const item = snapshot.items.find((entry) => entry.class === "needs_answer");
+		expect(reads).toEqual([`${PROJECT}:q-legacy`]);
+		expect(Array.from(item?.material?.question ?? "")).toHaveLength(600);
+	});
+
+	it("names the issue of a needs-answer thread that has no session", () => {
+		store.upsertChatThread("thread-7", LEAD_CH, "FLY-7", "lead-one");
+		store.insertFounderAsk({
+			ask_id: "ask-7",
+			project_name: PROJECT,
+			issue_id: "FLY-7",
+			channel_id: LEAD_CH,
+			thread_id: "thread-7",
+			lead_id: "lead-one",
+			question_id: null,
+			excerpt: "要你答",
+			asked_at: new Date(T0).toISOString(),
+		});
+		store.backfillFounderAskMessage("ask-7", "500000000000000007");
+		const [answer] = buildVoiceAgendaSnapshot(deps(T0), session()).items;
+		expect(answer).toMatchObject({
+			class: "needs_answer",
+			issueIdentifier: "FLY-7",
+		});
+	});
+});
+
 describe("buildVoiceAgendaSnapshot — Lead said (plan §2.2: no history replay)", () => {
 	it("speaks only Lead-authored main-channel messages inside the window", () => {
 		source(LEAD_CH, T0 - 1_000);

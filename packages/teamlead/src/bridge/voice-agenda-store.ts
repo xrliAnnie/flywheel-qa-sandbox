@@ -435,6 +435,35 @@ export class VoiceAgendaStore {
 	}
 
 	/** Candidate issues: every live main thread (the title exists only there). */
+	/** QA@1 B4: the newest QA verdict recorded for any alias of one issue. */
+	latestQaVerdict(
+		issueIds: readonly string[],
+	): { verdict: "pass" | "fail"; summary: string } | null {
+		const ids = [...new Set(issueIds.filter(Boolean))];
+		if (ids.length === 0) return null;
+		const row = this.db
+			.prepare(
+				`SELECT payload FROM session_events
+				 WHERE issue_id IN (${ids.map(() => "?").join(", ")})
+				   AND event_type = 'workflow_decision'
+				   AND json_valid(payload)
+				   AND json_extract(payload, '$.predicate') IN ('qa_passed', 'qa_failed')
+				 ORDER BY id DESC LIMIT 1`,
+			)
+			.get(...ids) as { payload: string } | undefined;
+		if (!row) return null;
+		const payload = JSON.parse(row.payload) as {
+			predicate?: unknown;
+			summary?: unknown;
+		};
+		if (typeof payload.summary !== "string" || !payload.summary.trim())
+			return null;
+		return {
+			verdict: payload.predicate === "qa_passed" ? "pass" : "fail",
+			summary: payload.summary,
+		};
+	}
+
 	listLiveIssueThreads(): Array<{
 		threadId: string;
 		channelId: string;

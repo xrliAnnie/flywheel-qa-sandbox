@@ -31,6 +31,21 @@ export type AgendaUrgent =
 	| { source: "lead_flag"; reason: AgendaLeadUrgentReason }
 	| { source: "priority_urgent_blocked"; reason: "priority_urgent_blocked" };
 
+/** Facts the Bridge attaches for the Lead that digests an item (QA@1 B4):
+ * what she is asked, the latest QA verdict, where it is stuck. Read by the
+ * Lead, never spoken verbatim, and stripped before a snapshot reaches the
+ * voice client. Absent fields are unknown, not empty. */
+export interface AgendaItemMaterial {
+	/** needs_answer / awaiting_approval: the pending question to her — the
+	 * Lead's own thread ask, or the waiting question's text. */
+	question?: string;
+	/** awaiting_approval / blocked: the latest QA verdict for the issue. */
+	qa?: { verdict: "pass" | "fail"; summary: string; reportUrl?: string };
+	/** blocked: the phase that stopped and the error it recorded. */
+	blocked?: { phase: string; reason: string };
+	prNumber?: number;
+}
+
 export interface AgendaItem {
 	/** Stable per episode: a re-entry into the same class is a new key. */
 	itemKey: string;
@@ -51,6 +66,8 @@ export interface AgendaItem {
 	/** lead_said only: the Lead's own words, for the digesting Lead to read.
 	 * Never spoken verbatim. */
 	sourceText?: string;
+	/** Bridge-side only; see {@link AgendaItemMaterial}. */
+	material?: AgendaItemMaterial;
 }
 
 export const AGENDA_SOURCE_HEALTH = [

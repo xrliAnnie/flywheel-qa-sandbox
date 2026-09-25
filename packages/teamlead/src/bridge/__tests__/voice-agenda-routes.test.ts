@@ -842,6 +842,63 @@ describe("QA@1: the Bridge refuses at say time what the mode layer would drop (B
 		expect(ok.status).toBe(200);
 	});
 
+	it("the voice client never receives material; the opening carries it compact, the item brief in full (B4)", async () => {
+		const material = {
+			question: "问".repeat(600),
+			qa: {
+				verdict: "pass" as const,
+				summary: "很长".repeat(400),
+				reportUrl: "https://reports.example/r/xyz/",
+			},
+			prNumber: 1314,
+		};
+		const { base, handoffs } = await start({
+			items: [
+				{ ...item("approve:I2:t", "awaiting_approval"), material },
+				item("blocked:I1:t", "blocked"),
+			],
+		});
+		const served = await call(
+			base,
+			`/agenda?sessionId=${SESSION_ID}&generation=3`,
+		);
+		expect(served.status).toBe(200);
+		for (const entry of served.body.items)
+			expect(entry.material).toBeUndefined();
+		const open = await openRequest(base);
+		const openAgenda = handoffs.get(open.body.requestId)?.agenda;
+		const openItem = (
+			openAgenda?.kind === "brief"
+				? (openAgenda.brief.items as Array<Record<string, unknown>>)
+				: []
+		).find((entry) => entry.itemKey === "approve:I2:t");
+		const compact = openItem?.material as typeof material;
+		expect(Array.from(compact.question)).toHaveLength(200);
+		expect(Array.from(compact.qa.summary)).toHaveLength(300);
+		expect(compact.qa.reportUrl).toBe("https://reports.example/r/xyz/");
+		expect(compact.prNumber).toBe(1314);
+		const response = await call(base, "/agenda/requests", {
+			method: "POST",
+			body: {
+				sessionId: SESSION_ID,
+				generation: 3,
+				purpose: "item",
+				itemKey: "approve:I2:t",
+				clientRequestId: "c-item-full",
+			},
+		});
+		const itemAgenda = handoffs.get(response.body.requestId)?.agenda;
+		const full =
+			itemAgenda?.kind === "brief"
+				? ((itemAgenda.brief.item as Record<string, unknown>)
+						.material as typeof material)
+				: undefined;
+		expect(full).toEqual(material);
+		expect(itemAgenda?.kind === "brief" ? itemAgenda.text : "").toContain(
+			"很长很长",
+		);
+	});
+
 	it("a close must carry the line she hears; it is the result text, the reason stays a record", async () => {
 		const { base, handoffs } = await opened();
 		const item = await itemRequest(base, handoffs);

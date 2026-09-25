@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type {
 	AgendaClass,
 	AgendaItem,
+	AgendaItemMaterial,
 	AgendaSnapshot,
 	AgendaSourceStatus,
 } from "flywheel-voice-core";
@@ -24,6 +25,34 @@ import {
 export const DEFAULT_AGENDA_SOURCE_FRESHNESS_MS = 60_000;
 const MAX_SOURCE_TEXT = 4_000;
 const LINEAR_PRIORITY_URGENT = 1;
+/** QA@1 B4 material bounds (code points). */
+const MAX_QUESTION_TEXT = 600;
+const MAX_QA_SUMMARY = 1_200;
+const MAX_BLOCKED_REASON = 300;
+const ISSUE_IDENTIFIER = /^[A-Z][A-Z0-9]*-\d+$/u;
+const BLOCKED_STATUSES: ReadonlySet<string> = new Set([
+	"failed",
+	"terminated",
+	"blocked",
+	"rejected",
+]);
+
+function clip(value: string, max: number): string {
+	const chars = Array.from(value.trim());
+	return chars.length > max ? chars.slice(0, max).join("") : chars.join("");
+}
+
+/** The hosted report a QA summary points at (never a GitHub PR/CI link). */
+function reportUrl(summary: string): string | undefined {
+	for (const match of summary.matchAll(/https:\/\/[^\s"'<>()，。；]+/gu)) {
+		try {
+			if (new URL(match[0]).hostname !== "github.com") return match[0];
+		} catch {
+			/* not a URL */
+		}
+	}
+	return undefined;
+}
 
 export interface VoiceAgendaSession {
 	sessionId: string;
@@ -47,6 +76,8 @@ export interface VoiceAgendaSourceDeps {
 	projects: readonly ProjectEntry[];
 	guildId?: string;
 	openAttentionCommReadonly?: FounderAttentionFactsDeps["openCommReadonly"];
+	/** QA@1 B4: a waiting question's text, for the Lead to digest. */
+	readQuestionText?(projectName: string, questionId: string): string | null;
 	/** Cached Linear priority (1 = Urgent) for U2; null when unknown. */
 	issuePriority?(issueId: string): number | null;
 	/** Invoked with blocked issue ids so an async cache can learn priorities. */
@@ -123,6 +154,78 @@ export function buildVoiceAgendaSnapshot(
 		leads.map((entry) => [entry.lead.chatChannel, entry] as const),
 	);
 	const readTitle = deps.readTitle ?? readIssueTitleState;
+	/** QA@1 B4: the facts the Lead needs to say what she is asked to do.
+	 * Every read is best-effort; a failed one leaves its field unknown. */
+	const itemMaterial = (input: {
+		agendaClass: Exclude<AgendaClass, "lead_said">;
+		projectName: string;
+		issueId: string;
+		aliases: readonly string[];
+		anySession: ReturnType<VoiceAgendaSourceDeps["store"]["getSessionByIssue"]>;
+		pending: ReturnType<typeof readFounderAttentionFacts>["pending"];
+	}): AgendaItemMaterial | undefined => {
+		const material: AgendaItemMaterial = {};
+		if (input.agendaClass !== "blocked") {
+			const ask = input.pending.find((pending) => pending.excerpt?.trim());
+			let question = ask?.excerpt ?? null;
+			for (const pending of input.pending) {
+				if (question) break;
+				const id = pending.source.fact.value?.id;
+				if (!id || pending.key.startsWith("ask:")) continue;
+				try {
+					question =
+						deps.readQuestionText?.(input.projectName, id)?.trim() || null;
+				} catch {
+					question = null;
+				}
+			}
+			if (question) material.question = clip(question, MAX_QUESTION_TEXT);
+		}
+		let phaseSessions: ReturnType<
+			VoiceAgendaSourceDeps["store"]["getLatestPhaseSessionsForIssue"]
+		> = [];
+		try {
+			phaseSessions = deps.store.getLatestPhaseSessionsForIssue(input.issueId);
+		} catch {
+			phaseSessions = [];
+		}
+		if (input.agendaClass === "blocked") {
+			const stopped =
+				phaseSessions.find((row) => BLOCKED_STATUSES.has(row.status)) ??
+				(input.anySession && BLOCKED_STATUSES.has(input.anySession.status)
+					? input.anySession
+					: undefined);
+			if (stopped)
+				material.blocked = {
+					phase: stopped.session_role ?? "main",
+					reason: clip(
+						stopped.last_error?.trim() || stopped.status,
+						MAX_BLOCKED_REASON,
+					),
+				};
+		}
+		if (input.agendaClass !== "needs_answer") {
+			let verdict: ReturnType<VoiceAgendaStore["latestQaVerdict"]> = null;
+			try {
+				verdict = deps.agenda.latestQaVerdict(input.aliases);
+			} catch {
+				verdict = null;
+			}
+			if (verdict) {
+				const url = reportUrl(verdict.summary);
+				material.qa = {
+					verdict: verdict.verdict,
+					summary: clip(verdict.summary, MAX_QA_SUMMARY),
+					...(url ? { reportUrl: url } : {}),
+				};
+			}
+		}
+		const prNumber =
+			input.anySession?.pr_number ??
+			phaseSessions.find((row) => typeof row.pr_number === "number")?.pr_number;
+		if (typeof prNumber === "number") material.prNumber = prNumber;
+		return Object.keys(material).length > 0 ? material : undefined;
+	};
 
 	// ── title classes ──
 	const threads = deps.agenda.listLiveIssueThreads().filter((thread) => {
@@ -143,6 +246,7 @@ export function buildVoiceAgendaSnapshot(
 		owner: ScopedLead;
 		identifier: string | null;
 		title: string | null;
+		material: AgendaItemMaterial | undefined;
 	}> = [];
 	const completeIssueIds = new Set<string>();
 	const titleProjects = new Set(
@@ -217,8 +321,22 @@ export function buildVoiceAgendaSnapshot(
 				agendaClass,
 				threadId: thread.threadId,
 				owner: leadByChannel.get(thread.channelId)!,
-				identifier: anySession?.issue_identifier ?? null,
+				identifier:
+					anySession?.issue_identifier ??
+					(ISSUE_IDENTIFIER.test(thread.issueId) ? thread.issueId : null),
 				title: anySession?.issue_title ?? null,
+				material: itemMaterial({
+					agendaClass,
+					projectName,
+					issueId: thread.issueId,
+					aliases,
+					anySession,
+					pending: facts.available
+						? facts.pending.filter((pending) =>
+								attentionFactMatchesIssue(pending, aliases),
+							)
+						: [],
+				}),
 			});
 		}
 		sourceStatus[key] = !facts.available
@@ -264,6 +382,7 @@ export function buildVoiceAgendaSnapshot(
 			urgent,
 			pointers: { messageIds: [] },
 			sourceKey: `titles:${entry.owner.project.projectName}`,
+			...(entry.material ? { material: entry.material } : {}),
 		});
 	}
 

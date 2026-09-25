@@ -860,8 +860,7 @@ export class AgendaConductor {
 					itemKey !== null &&
 					this.state.active === null &&
 					this.state.queue.includes(itemKey);
-				allowed =
-					itemKey === null || queued || itemKey === this.state.active;
+				allowed = itemKey === null || queued || itemKey === this.state.active;
 				activateItem = queued;
 				break;
 			}

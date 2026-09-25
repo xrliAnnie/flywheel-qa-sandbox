@@ -744,6 +744,13 @@
 			"baseTable": "chat_threads",
 			"usage": "read",
 			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/voice-agenda-store.ts",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
 		}
 	]
 }
