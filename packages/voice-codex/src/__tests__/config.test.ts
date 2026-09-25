@@ -154,10 +154,28 @@ describe("voice daemon config", () => {
 			mirrorRetries: 1,
 			ingestRetries: 1,
 			deliveryRetryMs: 500,
+			agendaCheckinIntervalMs: 600_000,
 			healthStateRoot: "/Users/tester/.flywheel",
 			voiceHealthHelperPath:
 				"/Users/tester/Dev/flywheel/scripts/lib/voice-health.py",
 		});
+	});
+
+	it("FLY-2863: the check-in interval defaults to ten minutes and must be a positive integer", () => {
+		const base = { TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" };
+		expect(
+			loadVoiceDaemonConfig(
+				{ ...base, FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS: "60000" },
+				"/Users/tester",
+			).agendaCheckinIntervalMs,
+		).toBe(60_000);
+		for (const bad of ["0", "-1", "1.5", "ten"])
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{ ...base, FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS: bad },
+					"/Users/tester",
+				),
+			).toThrow(/FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS/);
 	});
 
 	it("keeps the legacy engine by default and enables Engine A only explicitly", () => {

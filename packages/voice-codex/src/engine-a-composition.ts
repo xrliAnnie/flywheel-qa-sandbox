@@ -46,6 +46,7 @@ export interface EngineAHeadphoneSessionOptions {
 	room: Pick<RoomIO, "audibleTail" | "onBargeIn">;
 	/** Bridge mode `rg` is headphone; a meeting briefs only its own Lead. */
 	mode: HeadphoneVoiceMode;
+	checkinIntervalMs?: number;
 	transcriptSink: DurableTranscriptSink;
 	baseInstructions: string;
 	createEngine(callbacks: EngineACompositionCallbacks): EngineAAdapter;
@@ -118,6 +119,9 @@ export function createEngineAHeadphoneSession(
 		transcriptSink: options.transcriptSink,
 		baseInstructions: options.baseInstructions,
 		mode: options.mode,
+		...(options.checkinIntervalMs === undefined
+			? {}
+			: { checkinIntervalMs: options.checkinIntervalMs }),
 		createUtteranceProjection: (session) =>
 			new LiveCaptionProjection({
 				session,

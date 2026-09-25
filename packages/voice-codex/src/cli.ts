@@ -415,6 +415,7 @@ export async function main(): Promise<void> {
 								bridge: headphoneBridge,
 								room: roomIO,
 								mode: speaker.mode,
+								checkinIntervalMs: config.agendaCheckinIntervalMs,
 								transcriptSink,
 								baseInstructions:
 									"简单问题由前台直接回答；需要查询、执行或判断时先说我问下 Lead，再使用 client delegation。不要主动播报进度或状态，要她拍板的事由 Lead 自己跟她说。",

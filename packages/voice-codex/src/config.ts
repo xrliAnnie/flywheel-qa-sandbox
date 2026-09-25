@@ -44,6 +44,8 @@ export interface VoiceDaemonConfig {
 	mirrorRetryWindowMs: number;
 	ingestRetries: number;
 	deliveryRetryMs: number;
+	/** FLY-2863 §4.3: quiet time before the Lead checks in (founder: 10 min). */
+	agendaCheckinIntervalMs: number;
 }
 
 export function validateVoiceBridgeUrl(value: string): string {
@@ -204,6 +206,11 @@ export function loadVoiceDaemonConfig(
 		),
 		ingestRetries: integer(env, "FLYWHEEL_VOICE_INGEST_ATTEMPTS", 2) - 1,
 		deliveryRetryMs: integer(env, "FLYWHEEL_VOICE_DELIVERY_RETRY_MS", 500),
+		agendaCheckinIntervalMs: integer(
+			env,
+			"FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS",
+			600_000,
+		),
 	};
 }
 

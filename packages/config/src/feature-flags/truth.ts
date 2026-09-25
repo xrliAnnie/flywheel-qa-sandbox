@@ -403,6 +403,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2696 per-invocation projected persona generation identity consumed by the startup barrier, not an on/off gate",
 	FLYWHEEL_VOICE_IDLE_HTTP_TIMEOUT_MS:
 		"FLY-2693 numeric tuning: positive-integer idle Bridge request timeout, not an on/off gate",
+	FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS:
+		"FLY-2863 numeric tuning: quiet time before the Lead checks in (founder default 600000), not an on/off gate",
 	FLYWHEEL_VOICE_IDLE_EXIT_MS:
 		"FLY-2701 numeric tuning: how long the on-demand daemon stays after its last successful empty read before exiting 0, not an on/off gate",
 	...Object.fromEntries(
