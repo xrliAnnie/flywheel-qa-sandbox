@@ -1,13 +1,14 @@
 ---
 issue: FLY-2886
 phase: design
-phaseCursor: 4/7
-updated: 2026-09-25T22:18:24.025Z
-nextStep: codex design review R1 (gpt-6-astra) + founder HTML
+phaseCursor: 5/7
+updated: 2026-09-25T22:47:41.648Z
+nextStep: "await Lead ruling 018ff5ab: scoped R3 at 21:04 on personal1 or
+  effective APPROVED; then gate, publish HTML, complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: design (4/7)
-**next**: codex design review R1 (gpt-6-astra) + founder HTML
+**phase**: design (5/7)
+**next**: await Lead ruling 018ff5ab: scoped R3 at 21:04 on personal1 or effective APPROVED; then gate, publish HTML, complete
