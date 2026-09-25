@@ -173,6 +173,7 @@ class CodexVoiceSession implements ConversationSession {
 	>();
 	private sequence = 0;
 	private pendingPlaybackCount = 0;
+	private inputGapSinceUserFinal = false;
 	private generation: number;
 	private live = true;
 	private restarting = false;
@@ -274,7 +275,12 @@ class CodexVoiceSession implements ConversationSession {
 	interrupt(): void {
 		if (this.closing || this.restarting || !this.live) return;
 		this.restarting = true;
-		this.latestKnownUser = undefined;
+		this.markInputGap();
+		this.options.onEvidence?.({
+			kind: "codex_input_gap",
+			reason: "generation_changed",
+			droppedBytes: 0,
+		});
 		this.speaker.interrupt();
 		this.audio.clear();
 		this.outputFrameState.clear();
@@ -408,14 +414,17 @@ class CodexVoiceSession implements ConversationSession {
 		if (!transcript.final) return;
 		const sequence = ++this.sequence;
 		const itemId = transcript.itemId ?? `unattributed-${sequence}`;
+		const inputHadGap =
+			transcript.role === "user" && this.inputGapSinceUserFinal;
 		const providerInputOwner =
 			transcript.role === "user" &&
+			!inputHadGap &&
 			transcript.inputOwner?.utteranceId &&
 			transcript.inputOwner.ownerUserId
 				? transcript.inputOwner
 				: undefined;
 		const soleRoomUser =
-			transcript.role === "user" && !providerInputOwner
+			transcript.role === "user" && !inputHadGap && !providerInputOwner
 				? (this.options.resolveSoleRoomUser?.() ?? undefined)
 				: undefined;
 		const inputOwner =
@@ -455,18 +464,20 @@ class CodexVoiceSession implements ConversationSession {
 			attribution:
 				transcript.role === "assistant"
 					? { kind: "unknown", reason: "engine_output" }
-					: inputOwner
-						? {
-								kind: "known",
-								speakerUserId: inputOwner.ownerUserId!,
-							}
-						: {
-								kind: "unknown",
-								reason:
-									transcript.association !== "unattributed"
-										? "provider_item_not_speaker_bound"
-										: "provider_item_unattributed",
-							},
+					: inputHadGap
+						? { kind: "unknown", reason: "input_gap" }
+						: inputOwner
+							? {
+									kind: "known",
+									speakerUserId: inputOwner.ownerUserId!,
+								}
+							: {
+									kind: "unknown",
+									reason:
+										transcript.association !== "unattributed"
+											? "provider_item_not_speaker_bound"
+											: "provider_item_unattributed",
+								},
 		};
 		if (utterance.role === "user" && utterance.attribution.kind === "unknown") {
 			this.options.onEvidence?.({
@@ -480,6 +491,7 @@ class CodexVoiceSession implements ConversationSession {
 		this.events.emit("utterance", utterance);
 		const persisted = this.persist(utterance, transcript);
 		if (utterance.role === "user") {
+			this.inputGapSinceUserFinal = false;
 			this.latestKnownUser =
 				utterance.attribution.kind === "known"
 					? { utterance, persisted }
@@ -490,6 +502,7 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	observeInputGap(input: { reason: string; droppedBytes: number }): void {
+		this.markInputGap();
 		this.options.onEvidence?.({ kind: "codex_input_gap", ...input });
 	}
 
@@ -722,6 +735,7 @@ class CodexVoiceSession implements ConversationSession {
 			CODEX_REALTIME_INPUT_QUEUE_BYTES
 		) {
 			this.restartInputGap = true;
+			this.markInputGap();
 			this.options.onEvidence?.({
 				kind: "codex_input_gap",
 				reason: "restart_backpressure",
@@ -755,11 +769,17 @@ class CodexVoiceSession implements ConversationSession {
 		droppedBytes: number,
 	): void {
 		if (!outcome.startsWith("dropped:")) return;
+		this.markInputGap();
 		this.options.onEvidence?.({
 			kind: "codex_audio_dropped",
 			outcome,
 			droppedBytes,
 			generation: this.generation,
 		});
+	}
+
+	private markInputGap(): void {
+		this.inputGapSinceUserFinal = true;
+		this.latestKnownUser = undefined;
 	}
 }

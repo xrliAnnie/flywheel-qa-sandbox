@@ -367,6 +367,7 @@ describe("Codex room composition", () => {
 	});
 
 	it("records backpressure as a gap without ending the room session", async () => {
+		let callbacks!: Record<string, (...args: never[]) => void>;
 		const appendAudio = vi
 			.fn()
 			.mockReturnValueOnce("dropped:backpressure" as const)
@@ -376,24 +377,30 @@ describe("Codex room composition", () => {
 			sessionId: "session-backpressure",
 			voice: "marin",
 			container: {
-				open: vi.fn(async () => ({
-					generation: 1,
-					transport: {
-						appendAudio,
-						appendSpeech: vi.fn(async () => undefined),
-						appendText: vi.fn(async () => undefined),
-						cancel: vi.fn(async () => undefined),
-					},
-					restart: vi.fn(async () => 2),
-					close: vi.fn(async () => undefined),
-				})),
+				open: vi.fn(async (input: { realtime: typeof callbacks }) => {
+					callbacks = input.realtime;
+					return {
+						generation: 1,
+						transport: {
+							appendAudio,
+							appendSpeech: vi.fn(async () => undefined),
+							appendText: vi.fn(async () => undefined),
+							cancel: vi.fn(async () => undefined),
+						},
+						restart: vi.fn(async () => 2),
+						close: vi.fn(async () => undefined),
+					};
+				}),
 			},
 			loadContext: vi.fn(),
+			resolveSoleRoomUser: () => ({ userId: "founder", name: "Annie" }),
 			onEvidence: evidence,
 		});
 		const session = await actual.createConversation({ brain });
 		const errors: Error[] = [];
+		const utterances: Array<{ attribution: unknown; text: string }> = [];
 		session.on("error", (error) => errors.push(error));
+		session.on("utterance", (utterance) => utterances.push(utterance));
 
 		session.sendAudio(Buffer.alloc(960), {
 			encoding: "pcm16",
@@ -408,6 +415,46 @@ describe("Codex room composition", () => {
 
 		expect(appendAudio).toHaveBeenCalledTimes(2);
 		expect(errors).toEqual([]);
+
+		callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "背压缺口后的句子",
+			final: true,
+			raw: {},
+		} as never);
+		expect(utterances.at(-1)).toMatchObject({
+			text: "背压缺口后的句子",
+			attribution: { kind: "unknown", reason: "input_gap" },
+		});
+
+		callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "无缺口的重说",
+			final: true,
+			raw: {},
+		} as never);
+		expect(utterances.at(-1)).toMatchObject({
+			text: "无缺口的重说",
+			attribution: { kind: "known", speakerUserId: "founder" },
+		});
+
+		callbacks.onInputGap({ reason: "rpc_error", droppedBytes: 960 });
+		callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "RPC 缺口后的句子",
+			final: true,
+			raw: {},
+		} as never);
+		expect(utterances.at(-1)).toMatchObject({
+			text: "RPC 缺口后的句子",
+			attribution: { kind: "unknown", reason: "input_gap" },
+		});
 	});
 
 	it("restarts after interrupt, replays queued founder audio, and can speak on the new generation", async () => {
@@ -916,6 +963,12 @@ describe("Codex room composition", () => {
 			invalidateInputOwnership: vi.fn(),
 		};
 		const evidence = vi.fn();
+		const handoffToLead = vi.fn(async () => ({
+			handoffId: "handoff-after-restart-gap",
+			state: "dispatched" as const,
+			idempotencyKey: "restart-gap-handoff",
+			requestDigest: "d".repeat(64),
+		}));
 		const conversation = {
 			generation: 1,
 			get transport() {
@@ -939,9 +992,14 @@ describe("Codex room composition", () => {
 				}),
 			},
 			loadContext: vi.fn(),
+			resolveSoleRoomUser: () => ({ userId: "founder", name: "Annie" }),
+			persistUtterance: vi.fn(async () => undefined),
+			handoffToLead,
 			onEvidence: evidence,
 		});
 		const session = await actual.createConversation({ brain });
+		const utterances: Array<{ attribution: unknown; text: string }> = [];
+		session.on("utterance", (utterance) => utterances.push(utterance));
 		const owned = session as ConversationSession & {
 			sendOwnedAudio(
 				frame: Buffer,
@@ -977,6 +1035,44 @@ describe("Codex room composition", () => {
 		expect(
 			secondTransport.invalidateInputOwnership.mock.invocationCallOrder[0],
 		).toBeLessThan(secondTransport.appendAudio.mock.invocationCallOrder[0]!);
+
+		callbacks.onTranscript({
+			generation: 2,
+			association: "unattributed",
+			role: "user",
+			text: "不要把丢掉否定词的句子交办",
+			final: true,
+			raw: {},
+		} as never);
+		callbacks.onExecutionIntent({
+			generation: 2,
+			kind: "commandExecution",
+			method: "item/started",
+			itemId: "exec-after-gap",
+			params: { item: { type: "commandExecution" } },
+		} as never);
+		expect(utterances.at(-1)).toMatchObject({
+			text: "不要把丢掉否定词的句子交办",
+			attribution: { kind: "unknown", reason: "input_gap" },
+		});
+		expect(handoffToLead).not.toHaveBeenCalled();
+
+		callbacks.onTranscript({
+			generation: 2,
+			association: "unattributed",
+			role: "user",
+			text: "我重说一次，请交给本体",
+			final: true,
+			raw: {},
+		} as never);
+		callbacks.onExecutionIntent({
+			generation: 2,
+			kind: "commandExecution",
+			method: "item/started",
+			itemId: "exec-after-repeat",
+			params: { item: { type: "commandExecution" } },
+		} as never);
+		await vi.waitFor(() => expect(handoffToLead).toHaveBeenCalledOnce());
 	});
 
 	it("turns a continuously owned user item into known attribution", async () => {
