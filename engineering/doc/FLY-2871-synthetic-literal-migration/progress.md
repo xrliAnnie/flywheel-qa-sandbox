@@ -1,14 +1,14 @@
 ---
 issue: FLY-2871
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-25T07:23:10.083Z
-nextStep: Update milestone as literal last commit; push revised head; obtain
-  fresh code review; open PR
+phaseCursor: 6/6
+updated: 2026-09-25T07:26:23.971Z
+nextStep: Complete implement handoff via needs_review; QA and ship remain with
+  the DAG orchestrator
 chunks: []
 pointers: {}
 ---
 
 # FLY-2871 progress
-**phase**: implement (5/6)
-**next**: Update milestone as literal last commit; push revised head; obtain fresh code review; open PR
+**phase**: implement (6/6)
+**next**: Complete implement handoff via needs_review; QA and ship remain with the DAG orchestrator
