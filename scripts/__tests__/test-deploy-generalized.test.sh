@@ -214,7 +214,7 @@ assert_eq "${contract_render_count:-0}" '1' \
 generalized_bridge_launch="$(awk '
 	/^if \[\[ "\$GENERALIZED" == "1" \]\]; then$/ { block=$0 ORS; capture=1; next }
 	capture { block=block $0 ORS }
-	capture && /^elif \[\[ "\$\{TEST_REPLY_BY_ISSUE:-0\}" == "1" \]\]; then$/ {
+	capture && /^elif \[\[ -n "\$TEST_TEAMLEAD_API_TOKEN" \]\]; then$/ {
 		selected=block; capture=0
 	}
 	END { printf "%s", selected }

@@ -60,12 +60,16 @@ mkdir -p "$slot/state/comm" "$slot/state/codex-homes" \
   "$slot/state/codex-home" "$slot/state/kill-ledger" \
   "$slot/state/reports" "$slot/state/complete-failed" \
   "$slot/state/loop-diagnostics" "$slot/bin" "$slot/hooks" \
-  "$slot/state/lead-identity-failures" "$slot/tmp"
+  "$slot/state/lead-identity-failures" "$slot/state/carrier-assertions" \
+  "$slot/state/carrier-receipts" "$slot/tmp"
 slot_env=(
   FLYWHEEL_ISOLATION_ROOT="$slot"
   FLYWHEEL_ISOLATION_CONTRACT="$TMP/contract.json"
   FLYWHEEL_STATE_DIR="$slot"
   TEAMLEAD_DB_PATH="$slot/teamlead.db"
+  FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE="$slot/state/lead-carrier-evidence.json"
+  FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR="$slot/state/carrier-assertions"
+  FLYWHEEL_LEAD_RECEIPT_DIR="$slot/state/carrier-receipts"
   FLYWHEEL_COMM_ROOT="$slot/state/comm"
   FLYWHEEL_CODEX_HOMES_ROOT="$slot/state/codex-homes"
   FLYWHEEL_CODEX_SESSION_DIR="$slot/state/codex-sessions"
