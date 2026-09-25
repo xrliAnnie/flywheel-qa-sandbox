@@ -179,6 +179,22 @@ trap -p EXIT`,
 		])
 			expect(rules).toContain(operationId);
 		expect(rules).toContain("不要恢复旧 CoS voiceIntent");
+		// FLY-2796 founder ruling: "what's new" is answered from current state,
+		// in both token-savings modes.
+		for (const source of [
+			rules,
+			readFileSync(
+				join(
+					BASE_RULES_DIR,
+					"legacy-token-savings",
+					"department-lead-rules.md",
+				),
+				"utf8",
+			),
+		]) {
+			expect(source).toContain("「现在有什么新情况」");
+			expect(source).toContain("没有新情况就直接说没有");
+		}
 
 		const syntheticFutureLead = runBundle(
 			"dept",
