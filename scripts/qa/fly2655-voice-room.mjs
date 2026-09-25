@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 // FLY-2655: QA-owned lifecycle for one generalized 529 slot voice process.
 // This script never installs launchd state and never targets the production bot/room.
 import {
@@ -922,6 +922,9 @@ export function acquireVoiceRoomLease(topology, options = {}) {
 	const orphaned = (owner) =>
 		owner?.slotDir === topology.slotDir && orphanedSameSlotLease(owner);
 	for (let attempt = 0; attempt < 2; attempt += 1) {
+		// FLY-2876: a generation per created lease, so a stop from an earlier run
+		// of the same slot can never release a lease this start reclaimed.
+		const leaseId = randomUUID();
 		try {
 			mkdirSync(path, { mode: 0o700 });
 			privateWrite(join(path, "owner.json"), {
@@ -930,9 +933,10 @@ export function acquireVoiceRoomLease(topology, options = {}) {
 				projectName: topology.projectName,
 				leadId: topology.leadId,
 				voiceChannelId: topology.voiceChannelId,
+				leaseId,
 				holder,
 			});
-			return { path, created: true };
+			return { path, created: true, leaseId };
 		} catch (error) {
 			if (error?.code !== "EEXIST") throw error;
 			const owner = json(join(path, "owner.json"));
@@ -974,8 +978,43 @@ export function releaseVoiceRoomLease(topology, options = {}) {
 	if (!existsSync(path)) return false;
 	const owner = json(join(path, "owner.json"));
 	check(owner.slotDir === topology.slotDir, "voice_room_lease_not_owned");
+	// FLY-2876: only the generation that created the lease releases it; a lease
+	// and run from before generations existed both carry none and still pair up.
+	if (owner.leaseId !== options.leaseId) return false;
 	rmSync(path, { recursive: true });
 	return true;
+}
+
+// FLY-2876: finish `stop` without touching a newer run of the same slot. After
+// this stop read its receipt, a start may have reclaimed the lease and written
+// its own receipt; the lease generation and session id tell the runs apart.
+export function settleStoppedVoiceRun(
+	topology,
+	runPath,
+	run,
+	sessionState,
+	options = {},
+) {
+	releaseVoiceRoomLease(topology, { root: options.root, leaseId: run.leaseId });
+	const stopped = {
+		...run,
+		status: "STOPPED",
+		stoppedAt: new Date().toISOString(),
+		sessionState,
+	};
+	let current;
+	try {
+		current = json(runPath);
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	if (
+		current?.sessionId === run.sessionId &&
+		current?.leaseId === run.leaseId
+	) {
+		privateWrite(runPath, stopped);
+	}
+	return stopped;
 }
 
 // FLY-2867: teardown removes every lease its slot still owns unless the
@@ -1175,6 +1214,7 @@ async function start(args) {
 		pid: child.pid,
 		processIdentity: processIdentity(child.pid),
 		leasePath: lease.path,
+		leaseId: lease.leaseId,
 		logPath,
 		evidencePath: evidenceDir
 			? join(evidenceDir, "voice-evidence", "events.jsonl")
@@ -1243,12 +1283,7 @@ async function stop(args) {
 		process.kill(run.pid, "SIGTERM");
 		await waitForProcessExit(run.pid);
 	}
-	releaseVoiceRoomLease(context.topology);
-	run.status = "STOPPED";
-	run.stoppedAt = new Date().toISOString();
-	run.sessionState = terminal.state;
-	privateWrite(runPath, run);
-	return run;
+	return settleStoppedVoiceRun(context.topology, runPath, run, terminal.state);
 }
 
 async function verify(args) {

@@ -41,6 +41,20 @@ flowchart TD
    不在 voice-codex 里加退出钩子（跨包耦合且 daemon 被 SIGKILL 时钩子也不跑）。
 5. `start()` 本身不改：它仍要求 `lease.created`，只是孤儿锁现在会在 acquire 里被回收成 `created:true`。
 
+## 代码评审 R1 后补充：锁代次（leaseId）
+
+Codex R1（HIGH）指出回收引入的 ABA：旧 run 的 `stop` 读完自己的回执后，新 `start` 把锁判为孤儿并重建；
+旧 `stop` 再调 `releaseVoiceRoomLease` 时只比 slotDir，会删掉新锁，还会用自己的 `STOPPED` 回执覆盖新 run 的回执。
+修复前同 slot 的锁从不被回收，所以这是本单打开的新窗口。
+
+6. 每次新建租约生成 `leaseId`（`randomUUID`），写进 owner.json，`acquire` 返回它，`start` 写进运行回执。
+7. `releaseVoiceRoomLease` 要求 `owner.leaseId === options.leaseId`，不等就返回 `false`、不删。
+   合入前的旧锁与旧回执都没有 `leaseId`（两边都是 `undefined`），照旧配对释放。
+8. `stop` 的收尾抽成导出函数 `settleStoppedVoiceRun`：按代次释放；写 `STOPPED` 回执前重读磁盘上的回执，
+   只有 `sessionId` 与 `leaseId` 都仍是本 run 时才写，否则保持新 run 的回执不动。
+9. 确定性交错测试：A 的 stop 已读回执 → B 回收并写回执 → A 收尾不删 B 的锁、不覆盖 B 的回执；B 自己的收尾正常释放；
+   旧格式锁+回执仍能释放。变异（去掉代次比较 / 总是覆盖回执 / 代次固定为常量）全部被杀。
+
 ## 已知限制
 
 - 合入前遗留的租约没有 `holder`/`daemon` 字段；若其回执也已删除，但一个未登记的旧 daemon 仍在跑，本判定无法识别，会按孤儿回收。

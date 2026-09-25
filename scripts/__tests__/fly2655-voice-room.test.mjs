@@ -31,6 +31,7 @@ import {
 	loadSlot,
 	releaseVoiceRoomLease,
 	releaseVoiceRoomLeasesForSlot,
+	settleStoppedVoiceRun,
 	summarizeVoiceEvidence,
 	validateDiscordThreadPermissions,
 	validateDiscordVoicePermissions,
@@ -563,7 +564,8 @@ test("voice room lease is same-slot idempotent and never releases a foreign owne
 		leadId: "flywheel-test-2655",
 	};
 	try {
-		assert.equal(acquireVoiceRoomLease(topology, { root }).created, true);
+		const lease = acquireVoiceRoomLease(topology, { root });
+		assert.equal(lease.created, true);
 		assert.equal(acquireVoiceRoomLease(topology, { root }).created, false);
 		assert.throws(
 			() =>
@@ -573,8 +575,19 @@ test("voice room lease is same-slot idempotent and never releases a foreign owne
 				),
 			/voice_room_lease_conflict/,
 		);
-		assert.equal(releaseVoiceRoomLease(topology, { root }), true);
-		assert.equal(releaseVoiceRoomLease(topology, { root }), false);
+		// FLY-2876: only the generation that created the lease releases it.
+		assert.equal(
+			releaseVoiceRoomLease(topology, { root, leaseId: "another-run" }),
+			false,
+		);
+		assert.equal(
+			releaseVoiceRoomLease(topology, { root, leaseId: lease.leaseId }),
+			true,
+		);
+		assert.equal(
+			releaseVoiceRoomLease(topology, { root, leaseId: lease.leaseId }),
+			false,
+		);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 		rmSync(liveOwnerSlot, { recursive: true, force: true });
@@ -863,6 +876,96 @@ test("FLY-2876 a same-slot lease with a live start, daemon, or STARTED receipt i
 		}
 	} finally {
 		process.kill(live.pid, "SIGTERM");
+		room.cleanup();
+	}
+});
+
+test("FLY-2876 an old stop never releases or overwrites a newer same-slot run", () => {
+	const room = fly2876Room();
+	const dead = fly2876DeadPid();
+	const receiptPath = join(room.slot, "voice-run-receipt.json");
+	try {
+		// Run A's start and daemon have exited; its stop has already read A's
+		// receipt.
+		const leaseA = acquireVoiceRoomLease(room.topology, { root: room.root });
+		const ownerAPath = join(room.root, room.name, "owner.json");
+		writeFileSync(
+			ownerAPath,
+			`${JSON.stringify({
+				...JSON.parse(readFileSync(ownerAPath, "utf8")),
+				holder: { pid: dead, processIdentity: "gone start" },
+			})}\n`,
+		);
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-a",
+			leaseId: leaseA.leaseId,
+			pid: dead,
+			processIdentity: "gone daemon",
+		});
+		const runA = JSON.parse(readFileSync(receiptPath, "utf8"));
+
+		// Start B reclaims the orphan and publishes its own run receipt.
+		const leaseB = acquireVoiceRoomLease(room.topology, { root: room.root });
+		assert.equal(leaseB.created, true);
+		assert.equal(typeof leaseB.leaseId, "string");
+		assert.notEqual(leaseB.leaseId, leaseA.leaseId);
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-b",
+			leaseId: leaseB.leaseId,
+		});
+
+		// Stop A finishes afterwards: B's lease and receipt must survive.
+		const settled = settleStoppedVoiceRun(
+			room.topology,
+			receiptPath,
+			runA,
+			"ended",
+			{ root: room.root },
+		);
+		assert.equal(settled.status, "STOPPED");
+		assert.equal(
+			fly2867Owner(room.root, room.topology).leaseId,
+			leaseB.leaseId,
+		);
+		const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+		assert.equal(receipt.sessionId, "session-b");
+		assert.equal(receipt.status, "STARTED");
+
+		// B's own stop releases B's generation and records STOPPED.
+		const runB = JSON.parse(readFileSync(receiptPath, "utf8"));
+		settleStoppedVoiceRun(room.topology, receiptPath, runB, "ended", {
+			root: room.root,
+		});
+		assert.deepEqual(readdirSync(room.root), []);
+		assert.equal(
+			JSON.parse(readFileSync(receiptPath, "utf8")).status,
+			"STOPPED",
+		);
+
+		// A lease and run from before generations existed still pair up.
+		fly2867WriteLease(room.root, room.name, {
+			schemaVersion: 1,
+			slotDir: room.slot,
+		});
+		fly2876WriteReceipt(room.slot, {
+			status: "STARTED",
+			sessionId: "session-legacy",
+		});
+		settleStoppedVoiceRun(
+			room.topology,
+			receiptPath,
+			JSON.parse(readFileSync(receiptPath, "utf8")),
+			"ended",
+			{ root: room.root },
+		);
+		assert.deepEqual(readdirSync(room.root), []);
+		assert.equal(
+			JSON.parse(readFileSync(receiptPath, "utf8")).status,
+			"STOPPED",
+		);
+	} finally {
 		room.cleanup();
 	}
 });
