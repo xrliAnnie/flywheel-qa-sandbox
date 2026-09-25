@@ -109,5 +109,22 @@ QA(exec `df988ce0`)在头 `2acf312c4` 判 FAIL。与本单代码有关的只有�
 - **原因**:`mailbox` 是 FLY-2006 30 天清扫的目标表;任何生产源码里 `FROM/JOIN` 目标表的读者都必须在 `scripts/fly-2006-retention-consumer-gate.config.json` 里按 `file + relation + baseTable + usage` 登记处置。这本清册是**扫全部生产源码的 CI 脚本**,不是依赖改动文件的测试,所以 §4 按「谁引用了我的文件」做的消费者扫描找不到它——漏检的是我。
 - **修复**(`5c33ef82a`):登记为 `candidate_guarded`(与其它普通 `mailbox` 读者一致)。依据:归因读者能容忍行被清扫——成员行缺失只会答 `unmapped_delivery`(「判断不了」),既不会给出单号,也不会影响 busy/idle;它不把「行不存在」当作任何权威。
 - **本地验证**:`node scripts/fly-2006-retention-consumer-gate.mjs` → `ok:true`、0 error;`node --test scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs` 10/0;biome 干净。该守卫就是 Quick Gate 的最后一步,前面 25 步在 exact-head CI 上已全部通过;同一次 CI 的其它 unit / script 分片也都通过。
-- **与本单无关的红**:Script Tests 5/6 E 里 `scripts/__tests__/qa-fly-1986-load-probe.test.sh` 一条断言(「an all-401 block was certified as 'incomplete_expected=3'」)在 CI 上失败;本分支不改该脚本及其探针,本地在本分支头上跑 `passed=62 failed=0`。按规矩不自行重跑 CI,交 Lead。
+- **Script Tests 5/6 E 的红(Lead 要求核实)**:`scripts/__tests__/qa-fly-1986-load-probe.test.sh` 一条断言在 exact-head CI `36194820697` 失败:「an all-401 block was certified as 'incomplete_expected=3'」。核实结论:**不是本单引起,也不是 main 上稳定复现的既有失败,而是负载相关的时序偶发**。
+  - 同一分片在 main `9e3ba1175`(run `36195488444`)、main `ef47e9a05`(run `36188390006`)、FLY-2830 `ce128505c`(run `36192986884`)上都是 success。
+  - 失败的头 `2acf312c4` 相对 main 的 diff 完全没有碰 `scripts/`;该测试只驱动 `scripts/qa-fly-1986-load-probe.sh` 去打本地 python mock 的 `/health` 与 `/api/sessions`,不经过本单任何代码。
+  - 机理:该用例用 9 秒区块、要求 ≥3 个样本;CI 机器负载下样本不足,区块先被判成 `incomplete_expected=3`,还没轮到「全 401 拒绝认证」那条判定(同一用例里「401 被归类为 invalid_auth」的断言是通过的)。
+  - 本地在本分支头上跑 `passed=62 failed=0`。
+  - 修它属于 FLY-1986 的测试,不在本单范围;按规矩也不自行重跑 CI,交 Lead 裁定。
 - 529 房没进成(slot 2 launchd bootstrap I/O error)与 QA 机制问题属 QA 侧,本节点不处理。
+
+### 生产只读探测「17 个 Lead 全部 unknown」是预期还是缺陷(Lead 要求核实)
+
+QA 的生产只读探测列出了全部 17 个 Lead,全部 fail-closed 答 unknown。结论:**预期行为,不是缺陷**——QA 是沙箱里的 Codex 体,连不上各 Lead 私有的 tmux socket、也没有 Codex Lead 的 bot token,读取器按设计全部答 unknown 并给出原因,没有一个被误答成 idle。
+
+对照:同一天从非沙箱的 Claude runner 用**生产装配工厂** `createProductionLeadActivityService` 只读跑一次 `readFleet()`(只打印 leadId / 载体 / 状态 / 原因):
+
+- 17 个 Lead,fleet DTO 通过严格校验,耗时 2.8 s。
+- 14 个 Claude Lead:11 `idle`,2 `busy`(`flywheel-cos-lead` 14 s、`flywheel-eng-lead` 58 s,trigger 为 `causality_unproven`),1 `unknown / no_turn_status_line`(`tidal-echo-cos-lead`,与之前两次冒烟一致)。
+- 3 个 Codex Lead:`unknown / sidecar_unreachable`。原因是这三个 Lead 的 bot token 都经 `MUFASA_BOT_TOKEN` / `CODEX_INFRA_BOT_TOKEN` / `RAYA_BOT_TOKEN` 注入,runner 环境里没有这些变量(也没有 `DISCORD_BOT_TOKEN`),读取器在碰 socket 之前就因认证不可用答 unknown。Bridge 进程里有这些变量,会真正连上 sidecar;在 sidecar 进程重启到本分支代码之前,答案会是 `sidecar_lacks_turn_state`。
+
+没有向任何 pane 输入,没有落盘画面文字;Codex sidecar 这次没有被连接。
