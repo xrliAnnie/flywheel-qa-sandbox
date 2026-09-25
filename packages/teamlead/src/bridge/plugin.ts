@@ -212,6 +212,16 @@ import {
 	SHIP_JUDGMENT_POLICY_MESSAGE_ID,
 	SHIP_JUDGMENT_POLICY_THREAD_ID,
 } from "../ship-judgment/policy-provenance.js";
+import { observeVercelAccount } from "../vercel-quota/vercel-account-reader.js";
+import {
+	createVercelAccountLatest,
+	defaultVercelAccountStorePath,
+	discardVercelAccountStore,
+	readVercelAccountStore,
+	type VercelAccountStore,
+	vercelAccountFailure,
+	writeVercelAccountStore,
+} from "../vercel-quota/vercel-account-store.js";
 import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
 import { migrateFly2602WorkflowEffort } from "../workflow-effort-migration.js";
 import {
@@ -243,6 +253,10 @@ import {
 	createAccountQuotaRefresh,
 	createCodexAccountQuotaRefresh,
 } from "./account-quota-refresh.js";
+import {
+	buildVercelQuotaSection,
+	type VercelQuotaSection,
+} from "./account-quota-vercel.js";
 import {
 	buildAccountQuotaView,
 	renderAccountsPageHtml,
@@ -1643,6 +1657,14 @@ export interface BridgeAppOptions {
 		path: string;
 		stateDir: string;
 	};
+	/**
+	 * FLY-2875: the account page's Vercel table. Absent ⇒ no table. `latest`
+	 * is this process's newest refresh attempt and wins over the file.
+	 */
+	accountPageVercel?: {
+		storePath: string;
+		latest?: () => VercelAccountStore | null;
+	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
 		healthSnapshot(): EventLoopHealthSnapshot;
@@ -2101,6 +2123,23 @@ export function createBridgeApp(
 							);
 						}
 					}
+					// FLY-2875: a Vercel failure degrades only its own table.
+					let vercelSection: VercelQuotaSection | undefined;
+					const vercelPage = opts?.accountPageVercel;
+					if (vercelPage) {
+						try {
+							vercelSection = buildVercelQuotaSection(
+								vercelPage.latest?.() ??
+									readVercelAccountStore(vercelPage.storePath),
+								{ generatedAt: snapshot.generatedAt, claudeEmails },
+							);
+						} catch {
+							vercelSection = buildVercelQuotaSection(
+								vercelAccountFailure("refresh_failed", new Date()),
+								{ generatedAt: snapshot.generatedAt },
+							);
+						}
+					}
 					const html = renderAccountsPageHtml(
 						buildAccountQuotaView(snapshot, {
 							claudeEmails,
@@ -2115,6 +2154,7 @@ export function createBridgeApp(
 									),
 							},
 						}),
+						vercelSection,
 					);
 					res.type("html").send(html);
 				} catch {
@@ -8952,6 +8992,10 @@ export async function startBridge(
 	// once so the writers and the readers cannot drift.
 	const codexSubscriptionStorePath = defaultCodexSubscriptionStorePath();
 	const claudeAccountDetailStorePath = defaultClaudeAccountDetailStorePath();
+	// FLY-2875: report-hosting Vercel account, read-only, on the page refresh
+	// only (never on the FLY-2869 Codex reading scheduler).
+	const vercelAccountStorePath = defaultVercelAccountStorePath();
+	const vercelAccountLatest = createVercelAccountLatest();
 	// FLY-2869: one Codex round shared by the account page and the reading
 	// scheduler, so the two never run concurrent Codex reads.
 	const refreshCodexReadings = createCodexAccountQuotaRefresh({
@@ -9006,6 +9050,23 @@ export async function startBridge(
 			}),
 		writeClaudeAccountDetailStore: (details) =>
 			writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details),
+		vercel: {
+			observe: (signal) =>
+				observeVercelAccount({
+					// Re-read per refresh: a retarget rewrites .env without a restart.
+					token: reportHostingCredentials.snapshot(
+						"REPORT_HOSTING_VERCEL_TOKEN",
+					).value,
+					resolveStoreApiId: () =>
+						hostedReportRegistry.hostingBinding().storeApiId,
+					signal,
+				}),
+			publish: (reading) => vercelAccountLatest.set(reading),
+			write: (reading) =>
+				writeVercelAccountStore(vercelAccountStorePath, reading),
+			discardStale: () => discardVercelAccountStore(vercelAccountStorePath),
+			now: () => new Date(),
+		},
 	});
 	// FLY-2869: rides the existing GatePoller tick (see onLandOperationTick).
 	const codexReadingScheduler = createCodexReadingScheduler({
@@ -9435,6 +9496,10 @@ export async function startBridge(
 						readingIdentityKeys,
 					);
 				},
+			},
+			accountPageVercel: {
+				storePath: vercelAccountStorePath,
+				latest: () => vercelAccountLatest.get(),
 			},
 			vercelToken,
 			reportBlobStore,

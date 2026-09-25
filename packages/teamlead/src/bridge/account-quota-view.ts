@@ -3,6 +3,7 @@ import {
 	formatAccountQuotaPageDate,
 	renderAccountQuotaPageHtml,
 } from "./account-quota-page.js";
+import type { VercelQuotaSection } from "./account-quota-vercel.js";
 import {
 	resolveAccountSubscriptionConfirmation,
 	type SubscriptionConfirmation,
@@ -1223,6 +1224,9 @@ export function formatAccountQuotaTickLines(view: AccountQuotaView): string[] {
 	return ["- 额度 Claude", claude, `- Codex ${view.codexSourceLabel}`, codex];
 }
 
-export function renderAccountsPageHtml(view: AccountQuotaView): string {
-	return renderAccountQuotaPageHtml(view);
+export function renderAccountsPageHtml(
+	view: AccountQuotaView,
+	vercel?: VercelQuotaSection,
+): string {
+	return renderAccountQuotaPageHtml(view, vercel);
 }

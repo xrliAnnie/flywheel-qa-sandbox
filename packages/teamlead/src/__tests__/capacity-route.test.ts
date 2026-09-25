@@ -11,6 +11,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { identityKey as claudeIdentityKey } from "../account-heal/account-identity.js";
+import { formatAccountQuotaPageDate } from "../bridge/account-quota-page.js";
+import {
+	createAccountQuotaRefresh,
+	createCodexAccountQuotaRefresh,
+} from "../bridge/account-quota-refresh.js";
 import type { CapacitySnapshot } from "../bridge/capacity-snapshot.js";
 import { formatPatrolTick } from "../bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
@@ -18,6 +23,14 @@ import { createBridgeApp } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { StateStore } from "../StateStore.js";
+import {
+	createVercelAccountLatest,
+	discardVercelAccountStore,
+	readVercelAccountStore,
+	type VercelAccountStore,
+	vercelAccountFailure,
+	writeVercelAccountStore,
+} from "../vercel-quota/vercel-account-store.js";
 
 const scratch: string[] = [];
 const servers: http.Server[] = [];
@@ -88,6 +101,10 @@ async function start(
 		stateDir: string;
 		readAccountIdentityKeys?: () => Readonly<Record<string, string>>;
 	},
+	accountPageVercel?: {
+		storePath: string;
+		latest?: () => VercelAccountStore | null;
+	},
 ): Promise<string> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
@@ -109,7 +126,7 @@ async function start(
 		undefined,
 		undefined,
 		undefined,
-		refreshAccountQuota || accountPage
+		refreshAccountQuota || accountPage || accountPageVercel
 			? {
 					...(refreshAccountQuota || accountPage?.readAccountIdentityKeys
 						? {
@@ -134,6 +151,7 @@ async function start(
 								},
 							}
 						: {}),
+					...(accountPageVercel ? { accountPageVercel } : {}),
 				}
 			: undefined,
 	);
@@ -967,5 +985,251 @@ describe("FLY-2688 — on-demand Codex refresh", () => {
 		expect(html).toContain('data-group="full"');
 		expect(html).toContain("background:var(--active-bg)!important");
 		expect(html).not.toContain("恢复 ");
+	});
+});
+
+describe("FLY-2875 — Vercel table on GET /api/accounts-page.html", () => {
+	const EMAIL = "Owner.Person@example.test";
+	const auth = { headers: { Authorization: "Bearer master-token" } };
+	// Relative to the real clock: the route stamps generatedAt itself.
+	const periodEnd = new Date(
+		Math.floor(Date.now() / 1000) * 1000 + 20 * 24 * 60 * 60 * 1000,
+	).toISOString();
+
+	function success(): VercelAccountStore {
+		return {
+			version: 1,
+			observedAt: new Date(Math.floor(Date.now() / 1000) * 1000).toISOString(),
+			account: {
+				emailSha256: createHash("sha256")
+					.update(EMAIL.toLowerCase())
+					.digest("hex"),
+				username: "xrliannie",
+				teamSlug: "xrliannies-projects",
+				plan: "pro",
+				billingStatus: "active",
+				periodEnd,
+				canceled: false,
+			},
+			accountNote: null,
+			blob: {
+				status: "available",
+				sizeBytes: 1_051_925,
+				count: 23,
+				usageQuotaExceeded: false,
+			},
+			blobNote: null,
+		};
+	}
+
+	function config(): BridgeConfig {
+		return makeConfig({
+			apiToken: "master-token",
+			capacityProbes: {
+				accountStorePath: writeAccountStore({
+					generation: 1,
+					activeAccount: "personal",
+					accounts: [
+						{
+							name: "personal",
+							quotaExhaustedUntil: null,
+							weeklyResetAt: "2026-09-22T16:00:00.000Z",
+							fiveHResetAt: "2026-09-18T02:00:00.000Z",
+							lastObservedAt: "2026-09-18T00:40:00.000Z",
+							observedFiveHPct: 10,
+							observedSevenDPct: 24,
+							identity: { email: EMAIL, setAt: "2026-09-17T00:00:00.000Z" },
+						},
+					],
+				}),
+				readMemoryFreePct: async () => ({
+					freePct: 50,
+					observedAt: "2026-09-18T00:40:00.000Z",
+				}),
+			},
+		});
+	}
+
+	function storePath(): string {
+		const dir = mkdtempSync(join(tmpdir(), "fly2875-route-vercel-"));
+		scratch.push(dir);
+		return join(dir, "vercel-quota", "vercel-account.json");
+	}
+
+	function vercelSection(html: string): string {
+		const start = html.indexOf(
+			'<section class="provider-table provider-vercel">',
+		);
+		expect(start).toBeGreaterThan(-1);
+		return html.slice(start, html.indexOf("</section>", start) + 10);
+	}
+
+	async function page(
+		vercel: { storePath: string; latest?: () => VercelAccountStore | null },
+		refresh?: () => Promise<{ generatedAt: string; accountCount: number }>,
+		query = "",
+	): Promise<{ status: number; html: string }> {
+		const url = await start(
+			config(),
+			undefined,
+			"/api/accounts-page.html",
+			refresh,
+			undefined,
+			vercel,
+		);
+		const response = await fetch(`${url}${query}`, auth);
+		return { status: response.status, html: await response.text() };
+	}
+
+	it("renders the stored Pro account as the in-use row under its Claude alias", async () => {
+		const path = storePath();
+		writeVercelAccountStore(path, success());
+		const { status, html } = await page({ storePath: path });
+		expect(status).toBe(200);
+		const vercel = vercelSection(html);
+		expect(vercel).toContain(
+			'<div class="account-name"><span class="active-dot"></span><span class="active-chip">在用</span>personal</div><div class="account-tier">Pro</div>',
+		);
+		expect(vercel).toContain(
+			`<span class="next-charge">${formatAccountQuotaPageDate(periodEnd)}</span>`,
+		);
+		expect(vercel).toContain("已停用，不再使用");
+		expect(html).not.toContain(EMAIL);
+		expect(html).not.toContain(EMAIL.toLowerCase());
+		expect(html).not.toContain("example.test");
+	});
+
+	it("still renders the whole page when the store is missing or corrupt", async () => {
+		const missing = storePath();
+		const corrupt = storePath();
+		writeVercelAccountStore(corrupt, success());
+		writeFileSync(corrupt, "{broken");
+		for (const path of [missing, corrupt]) {
+			const { status, html } = await page({ storePath: path });
+			expect(status).toBe(200);
+			expect(html).toContain("<h2>Claude</h2>");
+			expect(html).toContain("<h2>Codex</h2>");
+			const vercel = vercelSection(html);
+			expect(vercel).toContain("读不到（尚未读取）");
+			expect(vercel).not.toContain('class="quota-row active-account"');
+		}
+	});
+
+	it("prefers the latest failed attempt over an older successful file", async () => {
+		const path = storePath();
+		writeVercelAccountStore(path, success());
+		const { status, html } = await page({
+			storePath: path,
+			latest: () => vercelAccountFailure("unauthorized", new Date()),
+		});
+		expect(status).toBe(200);
+		const vercel = vercelSection(html);
+		expect(vercel).toContain("读不到（token 已失效）");
+		expect(vercel).not.toContain('class="quota-row active-account"');
+	});
+
+	it("renders no Vercel table when the option is absent", async () => {
+		const url = await start(config(), undefined, "/api/accounts-page.html");
+		const html = await (await fetch(url, auth)).text();
+		expect(html).toContain("账号额度一览");
+		expect(html).not.toContain("provider-vercel");
+	});
+
+	it("never calls out on a plain page GET", async () => {
+		const path = storePath();
+		writeVercelAccountStore(path, success());
+		const url = await start(
+			config(),
+			undefined,
+			"/api/accounts-page.html",
+			undefined,
+			undefined,
+			{ storePath: path },
+		);
+		const spy = vi.spyOn(globalThis, "fetch");
+		try {
+			await fetch(url, auth);
+			const external = spy.mock.calls.filter(
+				([input]) => new URL(String(input)).hostname !== "127.0.0.1",
+			);
+			expect(external).toHaveLength(0);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("shows 读不到 after an API failure whose write also failed, then recovers", async () => {
+		const path = storePath();
+		writeVercelAccountStore(path, success());
+		const latest = createVercelAccountLatest();
+		const readings = [
+			vercelAccountFailure("unauthorized", new Date()),
+			success(),
+		];
+		let writes = 0;
+		const refresh = createAccountQuotaRefresh({
+			ceilingMs: 10_000,
+			refreshCodex: createCodexAccountQuotaRefresh({
+				ceilingMs: 10_000,
+				observeCodexAccounts: async () =>
+					({
+						version: 1,
+						generatedAt: new Date().toISOString(),
+						activeAccount: null,
+						accounts: [],
+					}) as never,
+				writeCodexAccountQuotaStore: () => {},
+				observeCodexSubscriptions: async () => ({
+					version: 1,
+					generatedAt: new Date().toISOString(),
+					accounts: [],
+				}),
+				writeCodexSubscriptionStore: () => {},
+			}),
+			observeClaudeAccountDetails: async () => ({
+				version: 1,
+				generatedAt: new Date().toISOString(),
+				accounts: [],
+			}),
+			writeClaudeAccountDetailStore: () => {},
+			vercel: {
+				observe: async () => readings.shift()!,
+				publish: (reading) => latest.set(reading),
+				write: (reading) => {
+					writes += 1;
+					if (writes === 1) throw new Error("ENOSPC");
+					writeVercelAccountStore(path, reading);
+				},
+				discardStale: () => {
+					discardVercelAccountStore(path);
+					throw new Error("EROFS after unlink");
+				},
+				now: () => new Date(),
+			},
+			warn: () => {},
+		});
+		const url = await start(
+			config(),
+			undefined,
+			"/api/accounts-page.html",
+			refresh,
+			undefined,
+			{ storePath: path, latest: () => latest.get() },
+		);
+		const refreshed = await fetch(`${url}?refresh=1`, auth);
+		expect(refreshed.status).toBe(200);
+		const failedHtml = vercelSection(await refreshed.text());
+		expect(failedHtml).toContain("读不到（token 已失效）");
+		expect(failedHtml).not.toContain('class="quota-row active-account"');
+		const plain = vercelSection(await (await fetch(url, auth)).text());
+		expect(plain).toContain("读不到（token 已失效）");
+		expect(readVercelAccountStore(path)).toBeNull();
+
+		const recovered = vercelSection(
+			await (await fetch(`${url}?refresh=1`, auth)).text(),
+		);
+		expect(recovered).toContain('<tr class="quota-row active-account">');
+		expect(recovered).toContain(formatAccountQuotaPageDate(periodEnd));
+		expect(readVercelAccountStore(path)).not.toBeNull();
 	});
 });

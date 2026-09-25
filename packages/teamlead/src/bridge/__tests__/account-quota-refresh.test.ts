@@ -3,6 +3,12 @@ import type { ClaudeAccountDetailStore } from "../../claude-quota/account-detail
 import type { CodexAccountQuotaStore } from "../../codex-quota/codex-account-quota-store.js";
 import type { CodexSubscriptionStore } from "../../codex-quota/codex-subscription-store.js";
 import {
+	createVercelAccountLatest,
+	type VercelAccountStore,
+	vercelAccountFailure,
+} from "../../vercel-quota/vercel-account-store.js";
+import {
+	type AccountQuotaRefreshDeps,
 	type CodexAccountQuotaRefreshDeps,
 	createAccountQuotaRefresh,
 	createCodexAccountQuotaRefresh,
@@ -30,6 +36,7 @@ type HarnessDeps = CodexAccountQuotaRefreshDeps & {
 		signal: AbortSignal,
 	) => Promise<ClaudeAccountDetailStore>;
 	writeClaudeAccountDetailStore: (store: ClaudeAccountDetailStore) => void;
+	vercel?: AccountQuotaRefreshDeps["vercel"];
 };
 
 function harness(overrides: Partial<HarnessDeps> = {}) {
@@ -73,6 +80,8 @@ function harness(overrides: Partial<HarnessDeps> = {}) {
 			refreshCodex,
 			observeClaudeAccountDetails: deps.observeClaudeAccountDetails,
 			writeClaudeAccountDetailStore: deps.writeClaudeAccountDetailStore,
+			vercel: deps.vercel,
+			warn: deps.warn,
 		}),
 	};
 }
@@ -229,5 +238,190 @@ describe("FLY-2864 — account quota refresh composition", () => {
 		await refreshCodex();
 		expect(deps.observeCodexAccounts).toHaveBeenCalledTimes(2);
 		expect(deps.observeClaudeAccountDetails).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("FLY-2875 — Vercel branch of the account refresh", () => {
+	const FAKE = "vcp_FAKE7777SECRET_do_not_leak";
+	const NOW = new Date("2026-09-25T08:00:00.000Z");
+	const success: VercelAccountStore = {
+		version: 1,
+		observedAt: "2026-09-25T08:00:00.000Z",
+		account: {
+			emailSha256: "a".repeat(64),
+			username: "xrliannie",
+			teamSlug: "xrliannies-projects",
+			plan: "pro",
+			billingStatus: "active",
+			periodEnd: "2026-10-24T07:00:00.000Z",
+			canceled: false,
+		},
+		accountNote: null,
+		blob: {
+			status: "available",
+			sizeBytes: 1,
+			count: 1,
+			usageQuotaExceeded: false,
+		},
+		blobNote: null,
+	};
+
+	function vercelHarness(
+		vercel: Partial<NonNullable<AccountQuotaRefreshDeps["vercel"]>> = {},
+		overrides: Partial<HarnessDeps> = {},
+	) {
+		const latest = createVercelAccountLatest();
+		const order: string[] = [];
+		const deps = {
+			observe: vi.fn(async () => {
+				order.push("observe");
+				return success;
+			}),
+			publish: vi.fn((store: VercelAccountStore) => {
+				order.push("publish");
+				latest.set(store);
+			}),
+			write: vi.fn(() => {
+				order.push("write");
+			}),
+			discardStale: vi.fn(() => {
+				order.push("discardStale");
+			}),
+			now: () => NOW,
+			...vercel,
+		};
+		const built = harness({ vercel: deps, ...overrides });
+		return { ...built, latest, order, vercel: deps };
+	}
+
+	function warnText(warn: unknown): string {
+		return JSON.stringify((warn as ReturnType<typeof vi.fn>).mock.calls);
+	}
+
+	it("publishes the reading before writing it and keeps the refresh result", async () => {
+		const { refresh, latest, order } = vercelHarness();
+		await expect(refresh()).resolves.toEqual({
+			generatedAt: "2026-09-24T23:30:00.000Z",
+			accountCount: 2,
+		});
+		expect(order).toEqual(["observe", "publish", "write"]);
+		expect(latest.get()).toEqual(success);
+	});
+
+	it("publishes a fixed failure when the observer throws, without leaking what it threw", async () => {
+		const tokenError = new Error(`boom ${FAKE}`);
+		tokenError.name = `Name${FAKE}`;
+		for (const thrown of [tokenError, FAKE, { token: FAKE }]) {
+			const { refresh, latest, deps, vercel } = vercelHarness({
+				observe: vi.fn(async () => {
+					throw thrown;
+				}),
+			});
+			await expect(refresh()).resolves.toMatchObject({ accountCount: 2 });
+			expect(latest.get()).toEqual(vercelAccountFailure("refresh_failed", NOW));
+			expect(vercel.write).toHaveBeenCalledWith(
+				vercelAccountFailure("refresh_failed", NOW),
+			);
+			expect(deps.warn).toHaveBeenCalledWith(
+				"[Bridge] Vercel account refresh failed",
+				"",
+			);
+			expect(warnText(deps.warn)).not.toContain(FAKE.slice(0, 8));
+		}
+	});
+
+	it("keeps the published attempt and discards the stale file when the write fails", async () => {
+		const unauthorized = vercelAccountFailure("unauthorized", NOW);
+		const { refresh, latest, deps, order } = vercelHarness({
+			observe: vi.fn(async () => {
+				order.push("observe");
+				return unauthorized;
+			}),
+			write: vi.fn(() => {
+				order.push("write");
+				throw new Error(`ENOSPC ${FAKE}`);
+			}),
+		});
+		await expect(refresh()).resolves.toMatchObject({ accountCount: 2 });
+		expect(order).toEqual(["observe", "publish", "write", "discardStale"]);
+		expect(latest.get()).toEqual(unauthorized);
+		expect(deps.warn).toHaveBeenCalledWith(
+			"[Bridge] Vercel account store write failed",
+			"",
+		);
+		expect(warnText(deps.warn)).not.toContain(FAKE.slice(0, 8));
+	});
+
+	it("survives a discard that throws too", async () => {
+		const { refresh, latest } = vercelHarness({
+			write: vi.fn(() => {
+				throw new Error("EROFS");
+			}),
+			discardStale: vi.fn(() => {
+				throw new Error("EROFS");
+			}),
+		});
+		await expect(refresh()).resolves.toMatchObject({ accountCount: 2 });
+		expect(latest.get()).toEqual(success);
+	});
+
+	it("still reads Vercel when Codex fails, and Codex failure still fails the refresh", async () => {
+		const { refresh, vercel } = vercelHarness(
+			{},
+			{
+				observeCodexAccounts: vi.fn(async () => {
+					throw new Error("codex_quota_runtime_unavailable");
+				}),
+			},
+		);
+		await expect(refresh()).rejects.toThrow("codex_quota_runtime_unavailable");
+		expect(vercel.publish).toHaveBeenCalledWith(success);
+		expect(vercel.write).toHaveBeenCalledWith(success);
+	});
+
+	it("aborts a hung Vercel read at its own ceiling without failing the refresh", async () => {
+		vi.useFakeTimers();
+		try {
+			const signals: AbortSignal[] = [];
+			const { refresh, latest, deps } = vercelHarness(
+				{
+					observe: vi.fn(
+						(signal: AbortSignal) =>
+							new Promise<never>((_resolve, reject) => {
+								signals.push(signal);
+								signal.addEventListener(
+									"abort",
+									() => reject(new Error(`aborted ${FAKE}`)),
+									{ once: true },
+								);
+							}),
+					),
+				},
+				{ ceilingMs: 1_000 },
+			);
+			const pending = refresh();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(signals).toHaveLength(1);
+			expect(signals[0]?.aborted).toBe(false);
+			expect(
+				(deps.observeCodexAccounts as ReturnType<typeof vi.fn>).mock
+					.calls[0]?.[0],
+			).not.toBe(signals[0]);
+			await vi.advanceTimersByTimeAsync(1_000);
+			await expect(pending).resolves.toMatchObject({ accountCount: 2 });
+			expect(signals[0]?.aborted).toBe(true);
+			expect(latest.get()).toEqual(vercelAccountFailure("refresh_failed", NOW));
+			expect(warnText(deps.warn)).not.toContain(FAKE.slice(0, 8));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("FLY-2869: the scheduled Codex round never reads Vercel", async () => {
+		const { refreshCodex, refresh, vercel } = vercelHarness();
+		await refreshCodex();
+		expect(vercel.observe).not.toHaveBeenCalled();
+		await refresh();
+		expect(vercel.observe).toHaveBeenCalledTimes(1);
 	});
 });

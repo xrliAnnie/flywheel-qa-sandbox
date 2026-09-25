@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import type { VercelAccountStore } from "../../vercel-quota/vercel-account-store.js";
 import {
 	buildAccountQuotaPageSections,
 	formatAccountQuotaPageCalendarDate,
@@ -7,6 +9,7 @@ import {
 	reconcileCodexAccountSubscriptionIdentityKeys,
 	renderAccountQuotaPageHtml,
 } from "../account-quota-page.js";
+import { buildVercelQuotaSection } from "../account-quota-vercel.js";
 import type {
 	AccountQuotaRow,
 	AccountQuotaView,
@@ -618,5 +621,131 @@ describe("FLY-2864 — next-charge date format", () => {
 		for (const bad of ["2026-02-30", "2026-10-5", "10/05", ""]) {
 			expect(() => formatAccountQuotaPageCalendarDate(bad)).toThrow();
 		}
+	});
+});
+
+describe("FLY-2875 — Vercel section markup", () => {
+	const emailDigest = createHash("sha256")
+		.update("owner.person@example.test")
+		.digest("hex");
+	const reading: VercelAccountStore = {
+		version: 1,
+		observedAt: "2026-09-25T08:00:00.000Z",
+		account: {
+			emailSha256: emailDigest,
+			username: "xrliannie",
+			teamSlug: "xrliannies-projects",
+			plan: "pro",
+			billingStatus: "active",
+			periodEnd: "2026-10-24T07:00:00.000Z",
+			canceled: false,
+		},
+		accountNote: null,
+		blob: {
+			status: "available",
+			sizeBytes: 1_051_925,
+			count: 23,
+			usageQuotaExceeded: false,
+		},
+		blobNote: null,
+	};
+	const section = (store: VercelAccountStore | null) =>
+		buildVercelQuotaSection(store, {
+			generatedAt: "2026-09-25T08:30:00.000Z",
+			claudeEmails: { personal: "Owner.Person@example.test" },
+		});
+	const vercelHtml = (html: string) => {
+		const start = html.indexOf(
+			'<section class="provider-table provider-vercel">',
+		);
+		expect(start).toBeGreaterThan(-1);
+		return html.slice(start, html.indexOf("</section>", start) + 10);
+	};
+
+	it("renders no Vercel table without a section", () => {
+		const html = renderAccountQuotaPageHtml(view([row("personal", 20, null)]));
+		expect(html).not.toContain("provider-vercel");
+		expect(html).not.toContain("<h2>Vercel</h2>");
+	});
+
+	it("renders the in-use Pro account and the retired account after Codex", () => {
+		const html = renderAccountQuotaPageHtml(
+			view(
+				[row("personal", 20, null)],
+				[row("personal2", 10, null, { provider: "Codex" })],
+			),
+			section(reading),
+		);
+		expect(html.indexOf("<h2>Codex</h2>")).toBeLessThan(
+			html.indexOf("<h2>Vercel</h2>"),
+		);
+		const vercel = vercelHtml(html);
+		expect(vercel).toContain(
+			"<thead><tr><th>账号</th><th>下次扣费日</th><th>报告托管 Blob</th></tr></thead>",
+		);
+		expect(vercel).toContain(
+			'<div class="section-caption">读于 09/25 周五 01:00</div>',
+		);
+		expect(vercel.match(/<tr class="quota-row active-account">/g)).toHaveLength(
+			1,
+		);
+		expect(vercel).toContain(
+			'<tr class="quota-row active-account"><td class="account-cell"><div class="account-name"><span class="active-dot"></span><span class="active-chip">在用</span>personal</div><div class="account-tier">Pro</div><span class="account-note">team xrliannies-projects</span></td><td><span class="next-charge">10/24 周六</span></td><td><div class="card-lines"><span class="card-line">正常</span><span class="card-line">已存 1.1 MB · 23 个对象</span><span class="card-line">本期占比：读不到（接口不给额度上限）</span></div></td></tr>',
+		);
+		expect(vercel).toContain(
+			'<tr class="quota-row retired-account"><td class="account-cell"><div class="account-name">personal2</div><div class="account-tier">Hobby</div><span class="account-note">已停用，不再使用</span></td><td><span class="next-charge">已停用</span></td><td><div class="card-lines"><span class="card-line">不再使用</span></div></td></tr>',
+		);
+		expect(html).not.toContain("owner.person@example.test");
+		expect(html).not.toContain("Owner.Person@example.test");
+	});
+
+	it("shows 读不到 without an in-use row while other tables keep theirs", () => {
+		const failure: VercelAccountStore = {
+			...reading,
+			account: null,
+			accountNote: "unauthorized",
+			blob: null,
+			blobNote: "unauthorized",
+		};
+		for (const store of [failure, null]) {
+			const html = renderAccountQuotaPageHtml(
+				view([row("personal", 20, null, { active: true })]),
+				section(store),
+			);
+			const vercel = vercelHtml(html);
+			expect(vercel).not.toContain('class="quota-row active-account"');
+			expect(vercel).toContain(
+				store === null ? "读不到（尚未读取）" : "读不到（token 已失效）",
+			);
+			expect(vercel).toContain("personal2");
+			expect(html).toContain('<tr class="quota-row active-account">');
+			if (store === null) expect(vercel).not.toContain("section-caption");
+		}
+	});
+
+	it("escapes every Vercel cell", () => {
+		const html = renderAccountQuotaPageHtml(view([]), {
+			observedAt: null,
+			rows: [
+				{
+					name: "a<b",
+					planDisplay: 'P&"',
+					team: "team x<y",
+					active: true,
+					retired: false,
+					note: "n'>",
+					nextCharge: "<i>",
+					blobLines: ["<s>", "ok"],
+				},
+			],
+		});
+		const vercel = vercelHtml(html);
+		expect(vercel).toContain("a&lt;b");
+		expect(vercel).toContain("P&amp;&quot;");
+		expect(vercel).toContain("team x&lt;y");
+		expect(vercel).toContain("n&#39;&gt;");
+		expect(vercel).toContain("&lt;i&gt;");
+		expect(vercel).toContain("&lt;s&gt;");
+		expect(vercel).not.toMatch(/<(b|i|s|y)>/);
 	});
 });
