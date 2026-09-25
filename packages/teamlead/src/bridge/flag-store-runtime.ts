@@ -456,6 +456,12 @@ export function storeWorkflowNodeReuseEnabled(
 	return readBoolean(runtime, "workflow_node_reuse");
 }
 
+export function storeNodeStandbyResumeEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "node_standby_resume");
+}
+
 export function storeSkillFrameworkModeControl(
 	runtime: FlagStoreRuntime,
 ): FlagStoreRawValue {

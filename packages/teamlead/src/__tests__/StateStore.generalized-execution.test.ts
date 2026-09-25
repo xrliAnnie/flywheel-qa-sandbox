@@ -168,7 +168,17 @@ function createRun(
 
 function createAdmittedEngineRun(
 	store: StateStore,
-	options: { output?: boolean; templateId?: string; loopTarget?: boolean } = {},
+	options: {
+		output?: boolean;
+		templateId?: string;
+		loopTarget?: boolean;
+		standbyLifecycle?: boolean;
+		dispatchResolution?: NonNullable<
+			Parameters<
+				StateStore["admitGeneralizedWorkflowExecution"]
+			>[0]["dispatchResolution"]
+		>;
+	} = {},
 ): { markerPath: string; outputCredential?: string; activationId: string } {
 	createRun(store, options);
 	const db = (
@@ -194,6 +204,8 @@ function createAdmittedEngineRun(
 		absoluteDeadlineAt: "2026-07-16T00:00:00.000Z",
 		now: "2026-07-15T00:00:00.000Z",
 		env: enabled,
+		standbyResumeEnabled: options.standbyLifecycle === true,
+		dispatchResolution: options.dispatchResolution,
 	});
 	if (!admitted.ok) throw new Error(`admission failed: ${admitted.reason}`);
 	const markerRoot = mkdtempSync(join(tmpdir(), "fly1423-unlaunched-"));
@@ -221,6 +233,734 @@ const DECLARED_NESTED_PR = {
 };
 
 describe("generalized execution admission and terminal contracts", () => {
+	it.each([
+		{
+			vendor: "claude" as const,
+			alias: "fable",
+			canonical: "claude-fable-5-1",
+		},
+		{
+			vendor: "codex" as const,
+			alias: "astra",
+			canonical: "gpt-6-astra",
+		},
+	])(
+		"canonicalizes a pinned $vendor model alias before enrolling its process body",
+		async ({ vendor, alias, canonical }) => {
+			const store = await StateStore.create(":memory:");
+			createAdmittedEngineRun(store, {
+				standbyLifecycle: true,
+				dispatchResolution: {
+					dispatch: { vendor, model: alias },
+					source: "pinned_snapshot",
+					audit: true,
+				},
+			});
+
+			expect(store.getWorkflowExecutionRuntime("exec-1")).toMatchObject({
+				vendor,
+				model: canonical,
+			});
+			expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+				state: "active",
+				generation: 1,
+			});
+		},
+	);
+
+	it("keeps the process-body lifecycle disabled unless the run is explicitly enrolled", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toBeUndefined();
+	});
+
+	it("persists active -> retiring -> standby and resumes the exact process body", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			execution_id: "exec-1",
+			generation: 1,
+			state: "active",
+		});
+		expect(
+			store.beginWorkflowExecutionRetirement({
+				executionId: "exec-1",
+				completionEventId: "completion-1",
+				manifestDigest: "a".repeat(64),
+				now: "2026-09-22T01:00:00.000Z",
+			}),
+		).toEqual({ ok: true, generation: 1, idempotentReplay: false });
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "working",
+			transition: "retiring",
+			canResume: false,
+		});
+		expect(
+			store.confirmWorkflowExecutionStandby({
+				executionId: "exec-1",
+				generation: 1,
+				reasonCode: "process_tree_gone",
+				now: "2026-09-22T01:00:01.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "standby",
+			transition: "standby",
+			canResume: true,
+		});
+
+		const resume = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-1",
+			ownerClaimId: "owner-1",
+			now: "2026-09-22T01:00:02.000Z",
+		});
+		expect(resume).toEqual({
+			ok: true,
+			generation: 2,
+			attempt: 1,
+			idempotentReplay: false,
+		});
+		const finishInput = {
+			executionId: "exec-1",
+			generation: 2,
+			demandId: "rework-1",
+			ownerClaimId: "owner-1",
+			expectedSessionId: "thread-original",
+			observedSessionId: "thread-original",
+			expectedModel: "gpt-5.6-sol",
+			observedModel: "gpt-5.6-sol",
+			expectedCwd: "/tmp/worktree",
+			observedCwd: "/tmp/worktree",
+			queueMs: 8,
+			startupMs: 120,
+			totalMs: 140,
+			now: "2026-09-22T01:00:03.000Z",
+		};
+		expect(store.finishWorkflowExecutionResume(finishInput)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.finishWorkflowExecutionResume(finishInput)).toEqual({
+			ok: true,
+			idempotentReplay: true,
+		});
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			generation: 2,
+			state: "active",
+			current_demand_id: null,
+		});
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "working",
+			transition: "active",
+		});
+	});
+
+	it("keeps a parked body's session non-terminal while its resume runs or fails, and records the failed attempt's evidence", async () => {
+		// FLY-2808 QA: the resumed launch's own exit rewrote ship_parked to a
+		// terminal status, so resume cleanup was refused (crash_preserve) and
+		// every failure latched cleanup_unconfirmed with no timing or identity.
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "ship_parked",
+			workflow_node_id: "execute",
+		});
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-1",
+			manifestDigest: "a".repeat(64),
+			now: "2026-09-22T01:00:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T01:00:01.000Z",
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "rework-1",
+				ownerClaimId: "owner-1",
+				now: "2026-09-22T01:00:02.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 2 });
+
+		expect(
+			store.recordEnrolledTerminalSignal({
+				executionId: "exec-1",
+				sourceEventId: "resumed-carrier-failed",
+				signal: "failed",
+				lastError: "launch_snapshot_mismatch",
+				source: "direct-event-sink",
+				now: "2026-09-22T01:00:03.000Z",
+			}),
+		).toMatchObject({
+			ok: true,
+			effectiveStatus: "ship_parked",
+			statusPreserved: true,
+			statusChanged: false,
+		});
+		expect(store.workflowProcessOwnsParkedSession("exec-1")).toBe(true);
+
+		expect(
+			store.failWorkflowExecutionResume({
+				executionId: "exec-1",
+				generation: 2,
+				demandId: "rework-1",
+				ownerClaimId: "owner-1",
+				reasonCode: "cleanup_unconfirmed",
+				attemptReasonCode: "resume_session_start_timeout",
+				evidence: {
+					expectedSessionId: "session-original",
+					expectedModel: "claude-opus-5-5",
+					expectedCwd: "/tmp/worktree",
+					totalMs: 180_000,
+				},
+				now: "2026-09-22T01:03:02.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "resume_failed",
+			reason_code: "cleanup_unconfirmed",
+		});
+		const attemptRows = (
+			store as unknown as { db: { raw: Database.Database } }
+		).db.raw
+			.prepare(
+				`SELECT state, reason_code, expected_session_id, expected_model,
+				        expected_cwd, total_ms, observed_session_id
+				   FROM workflow_execution_resume_attempt
+				  WHERE execution_id = 'exec-1' ORDER BY attempt`,
+			)
+			.all();
+		expect(attemptRows).toEqual([
+			expect.objectContaining({
+				state: "failed",
+				reason_code: "resume_session_start_timeout",
+				expected_session_id: "session-original",
+				expected_model: "claude-opus-5-5",
+				expected_cwd: "/tmp/worktree",
+				total_ms: 180_000,
+				observed_session_id: null,
+			}),
+		]);
+
+		expect(
+			store.recordEnrolledTerminalSignal({
+				executionId: "exec-1",
+				sourceEventId: "late-resumed-carrier-completed",
+				signal: "completed",
+				source: "direct-event-sink",
+				now: "2026-09-22T01:03:03.000Z",
+			}),
+		).toMatchObject({ ok: true, effectiveStatus: "ship_parked" });
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "ship_parked",
+			terminal_at: undefined,
+		});
+		store.close();
+	});
+
+	it("cancels an in-grace retirement for rework without changing the live process generation", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		expect(
+			store.beginWorkflowExecutionRetirement({
+				executionId: "exec-1",
+				completionEventId: "completion-before-rework",
+				manifestDigest: "c".repeat(64),
+				now: "2026-09-22T01:05:00.000Z",
+			}),
+		).toEqual({ ok: true, generation: 1, idempotentReplay: false });
+
+		const cancelled = store.cancelWorkflowExecutionRetirementForRework({
+			executionId: "exec-1",
+			demandId: "rework-during-grace",
+			now: "2026-09-22T01:05:20.000Z",
+		});
+		expect(cancelled).toEqual({
+			ok: true,
+			generation: 1,
+			idempotentReplay: false,
+		});
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "active",
+			generation: 1,
+			completion_event_id: null,
+			manifest_digest: null,
+			retirement_requested_at: null,
+		});
+		expect(
+			store.cancelWorkflowExecutionRetirementForRework({
+				executionId: "exec-1",
+				demandId: "rework-during-grace",
+				now: "2026-09-22T01:05:21.000Z",
+			}),
+		).toEqual({ ok: true, generation: 1, idempotentReplay: true });
+
+		// A replay of the completion that was explicitly superseded by rework
+		// must not re-arm the old retirement grace deadline.
+		expect(
+			store.beginWorkflowExecutionRetirement({
+				executionId: "exec-1",
+				completionEventId: "completion-before-rework",
+				manifestDigest: "c".repeat(64),
+				now: "2026-09-22T01:05:22.000Z",
+			}),
+		).toEqual({ ok: false, reason: "retirement_cancelled_for_rework" });
+		// The rework's own later completion remains eligible to retire normally.
+		expect(
+			store.beginWorkflowExecutionRetirement({
+				executionId: "exec-1",
+				completionEventId: "completion-after-rework",
+				manifestDigest: "d".repeat(64),
+				now: "2026-09-22T01:06:00.000Z",
+			}),
+		).toEqual({ ok: true, generation: 1, idempotentReplay: false });
+	});
+
+	it("latches an unconfirmed forced retirement instead of leaving the process retiring", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-unconfirmed",
+			manifestDigest: "f".repeat(64),
+			now: "2026-09-22T01:10:00.000Z",
+		});
+
+		const failure = {
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "retirement_unconfirmed" as const,
+			now: "2026-09-22T01:11:00.000Z",
+		};
+		expect(store.failWorkflowExecutionRetirement(failure)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.failWorkflowExecutionRetirement(failure)).toEqual({
+			ok: true,
+			idempotentReplay: true,
+		});
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "resume_failed",
+			reason_code: "retirement_unconfirmed",
+		});
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "problem",
+			canResume: false,
+			reason: "retirement_unconfirmed",
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "rework-retirement-unconfirmed",
+				ownerClaimId: "bridge-a:1",
+				now: "2026-09-22T01:11:01.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_retirement_unconfirmed" });
+
+		expect(
+			store.reopenWorkflowExecutionResume({
+				executionId: "exec-1",
+				actor: "master-api-token",
+				reason: "verified the retired process tree is gone",
+				now: "2026-09-22T01:11:02.000Z",
+			}),
+		).toEqual({ ok: true, demandId: null, previousAttemptCount: 0 });
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "problem",
+			canResume: true,
+			reason: "operator_reopened",
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "rework-after-retirement-audit",
+				ownerClaimId: "bridge-b:1",
+				now: "2026-09-22T01:11:03.000Z",
+			}),
+		).toMatchObject({ ok: true, attempt: 1 });
+	});
+
+	it("keeps cleanup-unconfirmed latched until an audited Lead reopen restores the resume budget", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-reopen",
+			manifestDigest: "e".repeat(64),
+			now: "2026-09-22T01:20:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T01:20:01.000Z",
+		});
+		const first = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-a:1",
+			now: "2026-09-22T01:20:02.000Z",
+		});
+		if (!first.ok) throw new Error(first.reason);
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: first.generation,
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-a:1",
+			reasonCode: "cleanup_unconfirmed",
+			now: "2026-09-22T01:20:03.000Z",
+		});
+
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "problem",
+			canResume: false,
+			reason: "cleanup_unconfirmed",
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "rework-reopen",
+				ownerClaimId: "bridge-b:1",
+				now: "2026-09-22T01:20:04.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_cleanup_unconfirmed" });
+
+		expect(
+			store.reopenWorkflowExecutionResume({
+				executionId: "exec-1",
+				actor: "master-api-token",
+				reason: "verified the retired process tree is gone",
+				now: "2026-09-22T01:20:05.000Z",
+			}),
+		).toMatchObject({ ok: true, previousAttemptCount: 1 });
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "problem",
+			canResume: true,
+			reason: "operator_reopened",
+		});
+		expect(store.listWorkflowExecutionResumeReopenReceipts("exec-1")).toEqual([
+			expect.objectContaining({
+				executionId: "exec-1",
+				demandId: "rework-reopen",
+				actor: "master-api-token",
+				reason: "verified the retired process tree is gone",
+				previousAttemptCount: 1,
+				reopenedAt: "2026-09-22T01:20:05.000Z",
+			}),
+		]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.some((event) => event.kind === "workflow_process_resume_reopened"),
+		).toBe(true);
+
+		const second = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:2",
+			now: "2026-09-22T01:20:06.000Z",
+		});
+		expect(second).toMatchObject({ ok: true, attempt: 2 });
+		if (!second.ok) throw new Error(second.reason);
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: second.generation,
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:2",
+			reasonCode: "startup_timeout",
+			now: "2026-09-22T01:20:07.000Z",
+		});
+		const third = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:3",
+			now: "2026-09-22T01:20:08.000Z",
+		});
+		expect(third).toMatchObject({ ok: true, attempt: 3 });
+		if (!third.ok) throw new Error(third.reason);
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: third.generation,
+			demandId: "rework-reopen",
+			ownerClaimId: "bridge-b:3",
+			reasonCode: "startup_timeout",
+			now: "2026-09-22T01:20:09.000Z",
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "rework-reopen",
+				ownerClaimId: "bridge-b:4",
+				now: "2026-09-22T01:20:10.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_attempt_limit" });
+	});
+
+	it("closes every process body only when the whole workflow becomes terminal", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-terminal",
+			manifestDigest: "c".repeat(64),
+			now: "2026-09-22T01:10:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T01:10:01.000Z",
+		});
+
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-1'",
+		);
+
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "closed",
+			reason_code: "workflow_run_terminal",
+		});
+		expect(store.getWorkflowExecutionActivity("exec-1")).toBeUndefined();
+	});
+
+	it("fails closed on identity drift and keeps resume/fallback out of the fault budget", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-1",
+			manifestDigest: "b".repeat(64),
+			now: "2026-09-22T02:00:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T02:00:01.000Z",
+		});
+		const first = store.beginWorkflowExecutionResume({
+			executionId: "exec-1",
+			demandId: "mail-1",
+			ownerClaimId: "owner-1",
+			now: "2026-09-22T02:00:02.000Z",
+		});
+		if (!first.ok) throw new Error(first.reason);
+		expect(
+			store.finishWorkflowExecutionResume({
+				executionId: "exec-1",
+				generation: first.generation,
+				demandId: "mail-1",
+				ownerClaimId: "owner-1",
+				expectedSessionId: "thread-original",
+				observedSessionId: "thread-new",
+				expectedModel: "gpt-5.6-sol",
+				observedModel: "gpt-5.6-sol",
+				expectedCwd: "/tmp/worktree",
+				observedCwd: "/tmp/worktree",
+				queueMs: 1,
+				startupMs: 2,
+				totalMs: 3,
+				now: "2026-09-22T02:00:03.000Z",
+			}),
+		).toEqual({ ok: false, reason: "session_identity_mismatch" });
+
+		store.failWorkflowExecutionResume({
+			executionId: "exec-1",
+			generation: first.generation,
+			demandId: "mail-1",
+			ownerClaimId: "owner-1",
+			reasonCode: "session_identity_mismatch",
+			now: "2026-09-22T02:00:04.000Z",
+		});
+		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, requested_at)
+				 VALUES ('mail-1', 'run-1', 'source-mail-1', 'engine', 'execute', 1,
+				         ?, '{"authority":"engine"}', 'digest-mail-1',
+				         '2026-09-22T02:00:01.000Z')`,
+			)
+			.run("a".repeat(40));
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES ('mail-1', 1, 'execute', 1, 'exec-1', '["execute"]',
+				         '["code_review"]', 'engine:test', 'resume test',
+				         '2026-09-22T02:00:01.000Z')`,
+			)
+			.run();
+		raw
+			.prepare(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES ('mail-1', 1, 'pending', '2026-09-22T02:00:01.000Z')`,
+			)
+			.run();
+		store.baselineWorkflowDeliveryContracts("2026-09-22T02:00:01.000Z");
+		const fallback = store.allocateWorkflowResumeFallback({
+			executionId: "exec-1",
+			demandId: "mail-1",
+			newExecutionId: "exec-fallback",
+			now: "2026-09-22T02:00:05.000Z",
+		});
+		expect(fallback).toMatchObject({ ok: true, launchOrdinal: 2 });
+		expect(store.getWorkflowRunNode("run-1", "execute", 1)).toMatchObject({
+			state: "pending",
+			execution_id: "exec-fallback",
+		});
+		expect(store.getLatestWorkflowReworkRoute("mail-1")).toMatchObject({
+			revision: 2,
+			preferred_actor_execution_id: "exec-fallback",
+			interpreted_by: "engine:resume_fallback",
+		});
+		expect(store.getWorkflowReworkDelivery("mail-1")).toMatchObject({
+			state: "replacement_pending",
+			route_revision: 2,
+		});
+		expect(store.getWorkflowActor("exec-fallback")).toMatchObject({
+			role: "execute",
+		});
+		expect(store.countWorkflowFaultReplacements("run-1", "execute", 1)).toBe(0);
+		// FLY-2808 QA: a fresh fallback loses the original conversation, and the
+		// body and ledger must say so instead of looking like an initial launch.
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			context_loss: 1,
+		});
+		expect(
+			(store as unknown as { db: { raw: Database.Database } }).db.raw
+				.prepare(
+					`SELECT kind, state FROM workflow_execution_resume_attempt
+					  WHERE execution_id = 'exec-1' AND kind = 'fresh_fallback'`,
+				)
+				.all(),
+		).toEqual([{ kind: "fresh_fallback", state: "allocated" }]);
+		expect(
+			store.allocateWorkflowResumeFallback({
+				executionId: "exec-1",
+				demandId: "mail-1",
+				newExecutionId: "exec-fallback-2",
+				now: "2026-09-22T02:00:06.000Z",
+			}),
+		).toEqual({
+			ok: true,
+			executionId: "exec-fallback",
+			launchOrdinal: 2,
+			idempotentReplay: true,
+		});
+	});
+
+	it("latches an expired resuming owner until an audited reopen restores the original-session budget", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.beginWorkflowExecutionRetirement({
+			executionId: "exec-1",
+			completionEventId: "completion-lease",
+			manifestDigest: "d".repeat(64),
+			now: "2026-09-22T03:00:00.000Z",
+		});
+		store.confirmWorkflowExecutionStandby({
+			executionId: "exec-1",
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			now: "2026-09-22T03:00:01.000Z",
+		});
+
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "mail-lease",
+				ownerClaimId: "bridge-a:1",
+				now: "2026-09-22T03:00:02.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 2, attempt: 1 });
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "mail-lease",
+				ownerClaimId: "bridge-b:1",
+				now: "2026-09-22T03:04:59.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_owner_conflict" });
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "mail-lease",
+				ownerClaimId: "bridge-b:2",
+				now: "2026-09-22T03:05:03.000Z",
+			}),
+		).toEqual({ ok: false, reason: "resume_lease_expired_unconfirmed" });
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "resume_failed",
+			generation: 2,
+			owner_claim_id: null,
+			reason_code: "resume_lease_expired",
+		});
+		expect(store.getWorkflowExecutionActivity("exec-1")).toMatchObject({
+			activityState: "problem",
+			canResume: false,
+			reason: "resume_lease_expired",
+		});
+		expect(
+			store.reopenWorkflowExecutionResume({
+				executionId: "exec-1",
+				actor: "master-api-token",
+				reason: "verified the expired owner process is gone",
+				now: "2026-09-22T03:05:04.000Z",
+			}),
+		).toEqual({
+			ok: true,
+			demandId: "mail-lease",
+			previousAttemptCount: 1,
+		});
+		expect(
+			store.beginWorkflowExecutionResume({
+				executionId: "exec-1",
+				demandId: "mail-lease",
+				ownerClaimId: "bridge-b:2",
+				now: "2026-09-22T03:05:05.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 3, attempt: 2 });
+
+		const attempts = (
+			store as unknown as {
+				db: { raw: Database.Database };
+			}
+		).db.raw
+			.prepare(
+				`SELECT attempt, state, reason_code
+				   FROM workflow_execution_resume_attempt
+				  WHERE execution_id = 'exec-1' AND demand_id = 'mail-lease'
+				  ORDER BY attempt`,
+			)
+			.all();
+		expect(attempts).toEqual([
+			{ attempt: 1, state: "failed", reason_code: "resume_lease_expired" },
+			{ attempt: 2, state: "started", reason_code: null },
+		]);
+	});
+
 	it("refreshes the same-run worktree binding cohort only inside an accepted completion", async () => {
 		const store = await StateStore.create(":memory:");
 		createAdmittedEngineRun(store);
@@ -2663,6 +3403,223 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T00:02:01.000Z",
 			}),
 		).toMatchObject({ ok: true, idempotentReplay: true });
+		store.close();
+	});
+
+	it("projects an enrolled completion to retiring standby instead of a terminal session", async () => {
+		const store = await StateStore.create(":memory:");
+		createRun(store, { output: true });
+		const admitted = store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "exec-1",
+			attempt: 1,
+			expiresAt: "2026-09-22T01:00:00.000Z",
+			absoluteDeadlineAt: "2026-09-23T00:00:00.000Z",
+			now: "2026-09-22T00:00:00.000Z",
+			env: enabled,
+			standbyResumeEnabled: true,
+		});
+		if (!admitted.ok || !admitted.outputCredential) {
+			throw new Error("admission failed");
+		}
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential,
+				clientRequestId: "standby-output",
+				payload: '{"ok":true}',
+				now: "2026-09-22T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		expect(
+			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "standby-completion",
+				completionSubmission: { decision: { route: "needs_review" } },
+				now: "2026-09-22T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(store.getSession("exec-1")).toMatchObject({
+			status: "ship_parked",
+			terminal_at: undefined,
+		});
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "retiring",
+			generation: 1,
+			completion_event_id: expect.any(String),
+			manifest_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
+		});
+		expect(
+			store.listWorkflowExecutionRetirementWork({
+				dueBefore: "2026-09-22T00:01:59.999Z",
+				limit: 3,
+			}),
+		).toEqual([]);
+		expect(
+			store.listWorkflowExecutionRetirementWork({
+				dueBefore: "2026-09-22T00:02:00.000Z",
+				limit: 3,
+			}),
+		).toEqual([
+			{
+				executionId: "exec-1",
+				generation: 1,
+				issueId: "FLY-X",
+				projectName: "flywheel",
+				vendor: "codex",
+				retirementRequestedAt: "2026-09-22T00:02:00.000Z",
+			},
+		]);
+		expect(
+			store.confirmWorkflowExecutionStandby({
+				executionId: "exec-1",
+				generation: 1,
+				reasonCode: "process_tree_gone",
+				now: "2026-09-22T00:03:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.listWorkflowExecutionRetirementWork({
+				dueBefore: "2026-09-22T00:03:00.000Z",
+				limit: 3,
+			}),
+		).toEqual([]);
+		store.close();
+	});
+
+	it.each([
+		{ vendor: "claude" as const, model: "claude-fable-5-1" },
+		{ vendor: "codex" as const, model: "gpt-6-astra" },
+	])(
+		"keeps a settled $vendor retirement non-terminal when its carrier reports a late completion",
+		async ({ vendor, model }) => {
+			const store = await StateStore.create(":memory:");
+			const admitted = createAdmittedEngineRun(store, {
+				output: true,
+				standbyLifecycle: true,
+				dispatchResolution: {
+					dispatch: { vendor, model, effort: "low" },
+					source: "pinned_snapshot",
+					audit: true,
+				},
+			});
+			if (!admitted.outputCredential)
+				throw new Error("output credential missing");
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "FLY-X",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "execute",
+			});
+			expect(
+				store.submitWorkflowNodeOutput({
+					token: admitted.outputCredential,
+					clientRequestId: `late-${vendor}-output`,
+					payload: '{"ok":true}',
+					now: "2026-07-15T00:01:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
+					executionId: "exec-1",
+					route: "needs_review",
+					sourceEventId: `late-${vendor}-completion`,
+					completionSubmission: { decision: { route: "needs_review" } },
+					now: "2026-07-15T00:02:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.confirmWorkflowExecutionStandby({
+					executionId: "exec-1",
+					generation: 1,
+					reasonCode: "process_tree_gone",
+					now: "2026-07-15T00:03:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+
+			const late = store.recordEnrolledTerminalSignal({
+				executionId: "exec-1",
+				sourceEventId: `late-${vendor}-carrier-completed`,
+				signal: "completed",
+				source: "direct-event-sink",
+				now: "2026-07-15T00:03:01.000Z",
+			});
+
+			expect(late).toMatchObject({
+				ok: true,
+				attemptedStatus: "completed",
+				effectiveStatus: "ship_parked",
+				statusPreserved: true,
+				statusChanged: false,
+			});
+			expect(store.getSession("exec-1")).toMatchObject({
+				status: "ship_parked",
+				terminal_at: undefined,
+			});
+			expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+				state: "standby",
+				generation: 1,
+				reason_code: "process_tree_gone",
+			});
+			expect(
+				store.recordEnrolledTerminalSignal({
+					executionId: "exec-1",
+					sourceEventId: `late-${vendor}-carrier-completed`,
+					signal: "completed",
+					source: "direct-event-sink",
+					now: "2026-07-15T00:03:02.000Z",
+				}),
+			).toMatchObject({
+				ok: true,
+				idempotentReplay: true,
+				effectiveStatus: "ship_parked",
+				statusPreserved: true,
+				statusChanged: false,
+			});
+			store.close();
+		},
+	);
+
+	it("does not suppress a terminal signal for an active process body", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store, { standbyLifecycle: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "ship_parked",
+			workflow_node_id: "execute",
+		});
+
+		expect(
+			store.recordEnrolledTerminalSignal({
+				executionId: "exec-1",
+				sourceEventId: "active-carrier-completed",
+				signal: "completed",
+				source: "direct-event-sink",
+				now: "2026-07-15T00:01:00.000Z",
+			}),
+		).toMatchObject({
+			ok: true,
+			effectiveStatus: "completed",
+			statusPreserved: false,
+			statusChanged: true,
+		});
+		expect(store.getWorkflowExecutionProcessBody("exec-1")).toMatchObject({
+			state: "active",
+		});
 		store.close();
 	});
 

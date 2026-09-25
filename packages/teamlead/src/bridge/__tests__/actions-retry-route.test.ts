@@ -260,6 +260,18 @@ beforeEach(async () => {
 			undefined,
 			{ defaultLeadAgentId: "flywheel-eng-lead" } as never,
 			makeStubDispatcher(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ nodeStandbyResumeEnabled: () => true },
 		),
 	);
 	server = createServer(app);
@@ -460,6 +472,11 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		);
 		expect(store.getSession("pred-1")?.status).toBe("failed");
 		const admission = admit.mock.calls[0]?.[0];
+		expect(admission?.standbyResumeEnabled).toBe(true);
+		expect(store.getWorkflowExecutionProcessBody(SUCC)).toMatchObject({
+			state: "active",
+			generation: 1,
+		});
 		expect(Date.parse(admission!.expiresAt) - Date.parse(admission!.now!)).toBe(
 			60 * 60_000,
 		);

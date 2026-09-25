@@ -91,6 +91,33 @@ describe("HookCallbackServer", () => {
 		expect(typeof events[0].timestamp).toBe("number");
 	});
 
+	it("carries observed SessionStart identity fields", async () => {
+		const server = await createServer();
+		const promise = server.waitForEvent(UUID, "SessionStart", 2_000, SESSION);
+		const query = new URLSearchParams({
+			token: UUID,
+			sessionId: SESSION,
+			issueId: "GEO-42",
+			eventType: "SessionStart",
+			model: "claude-fable-5-1",
+			cwd: "/tmp/flywheel worktree",
+			source: "resume",
+		});
+		const response = await post(
+			server.getPort(),
+			`/hook/complete?${query.toString()}`,
+		);
+
+		expect(response.status).toBe(200);
+		await expect(promise).resolves.toMatchObject({
+			sessionId: SESSION,
+			eventType: "SessionStart",
+			model: "claude-fable-5-1",
+			cwd: "/tmp/flywheel worktree",
+			source: "resume",
+		});
+	});
+
 	it("POST missing token → 400", async () => {
 		const server = await createServer();
 		const res = await post(

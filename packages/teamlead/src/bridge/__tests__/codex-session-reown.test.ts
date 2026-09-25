@@ -464,6 +464,17 @@ describe("FLY-2211 Codex session re-owner", () => {
 		expect(h.revive).not.toHaveBeenCalled();
 	});
 
+	it("does not auto-reown a no-demand workflow standby", async () => {
+		const h = harness({ liveness: "absent" });
+		h.deps.isIntentionalStandby = vi.fn(() => true);
+
+		await new CodexSessionReowner(h.deps).runPass();
+
+		expect(h.deps.probe).not.toHaveBeenCalled();
+		expect(h.claim).not.toHaveBeenCalled();
+		expect(h.revive).not.toHaveBeenCalled();
+	});
+
 	it("reconciles a live daemon turn before publishing the watch-arm event", async () => {
 		const h = harness({ liveness: "alive", gateHeld: false });
 		const sequence: string[] = [];

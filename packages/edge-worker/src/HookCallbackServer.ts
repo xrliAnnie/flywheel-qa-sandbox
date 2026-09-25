@@ -1,17 +1,11 @@
 import { EventEmitter } from "node:events";
 import http from "node:http";
-import type { IHookCallbackServer } from "flywheel-core";
+import type { HookCallbackEvent, IHookCallbackServer } from "flywheel-core";
 
 const UUID_RE =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export interface HookEvent {
-	token: string;
-	sessionId: string;
-	issueId: string;
-	eventType: string;
-	timestamp: number;
-}
+export interface HookEvent extends HookCallbackEvent {}
 
 /**
  * Lightweight HTTP server that receives session-end callbacks from Claude Code hooks.
@@ -160,6 +154,9 @@ export class HookCallbackServer
 		const sessionId = url.searchParams.get("sessionId") ?? "";
 		const issueId = url.searchParams.get("issueId") ?? "";
 		const eventType = url.searchParams.get("eventType") ?? "";
+		const model = url.searchParams.get("model") ?? "";
+		const cwd = url.searchParams.get("cwd") ?? "";
+		const source = url.searchParams.get("source") ?? "";
 
 		if (!token || !UUID_RE.test(token)) {
 			res.writeHead(400);
@@ -181,6 +178,11 @@ export class HookCallbackServer
 			res.end("missing eventType");
 			return;
 		}
+		if (eventType === "SessionStart" && (!model || !cwd || !source)) {
+			res.writeHead(400);
+			res.end("missing SessionStart identity evidence");
+			return;
+		}
 
 		const event: HookEvent = {
 			token,
@@ -188,6 +190,9 @@ export class HookCallbackServer
 			issueId,
 			eventType,
 			timestamp: Date.now(),
+			...(model ? { model } : {}),
+			...(cwd ? { cwd } : {}),
+			...(source ? { source } : {}),
 		};
 
 		this.emit("hook", event);

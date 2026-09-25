@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { buildReworkWakeId, type CommDB } from "flywheel-comm/db";
 import type {
 	GeneralizedWorkflowAdmissionResult,
@@ -24,6 +25,16 @@ import {
 } from "./phase-actor-reentry.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
 import { buildWorkflowReworkContext } from "./workflow-rework-context.js";
+
+/** FLY-2808: what a failed standby resume expected and how long it ran. */
+export interface WorkflowResumeFailureEvidence {
+	expectedSessionId?: string;
+	expectedModel?: string;
+	expectedCwd?: string;
+	queueMs?: number;
+	startupMs?: number;
+	totalMs?: number;
+}
 
 export interface WorkflowReworkTurnInput {
 	issueId: string;
@@ -94,6 +105,79 @@ export function grantWorkflowReworkTurn(
 }
 
 export interface WorkflowReworkCoordinatorStore {
+	getWorkflowExecutionProcessBody?(executionId: string):
+		| {
+				generation: number;
+				state:
+					| "active"
+					| "retiring"
+					| "standby"
+					| "resuming"
+					| "resume_failed"
+					| "closed";
+				current_demand_id: string | null;
+				owner_claim_id: string | null;
+		  }
+		| undefined;
+	cancelWorkflowExecutionRetirementForRework?(input: {
+		executionId: string;
+		demandId: string;
+		now: string;
+	}):
+		| { ok: true; generation: number; idempotentReplay: boolean }
+		| { ok: false; reason: string };
+	beginWorkflowExecutionResume?(input: {
+		executionId: string;
+		demandId: string;
+		ownerClaimId: string;
+		now: string;
+	}):
+		| {
+				ok: true;
+				generation: number;
+				attempt: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string };
+	finishWorkflowExecutionResume?(input: {
+		executionId: string;
+		generation: number;
+		demandId: string;
+		ownerClaimId: string;
+		expectedSessionId: string;
+		observedSessionId: string;
+		expectedModel: string;
+		observedModel: string;
+		expectedCwd: string;
+		observedCwd: string;
+		queueMs: number;
+		startupMs: number;
+		totalMs: number;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
+	failWorkflowExecutionResume?(input: {
+		executionId: string;
+		generation: number;
+		demandId: string;
+		ownerClaimId: string;
+		reasonCode: string;
+		attemptReasonCode?: string;
+		evidence?: WorkflowResumeFailureEvidence;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
+	allocateWorkflowResumeFallback?(input: {
+		executionId: string;
+		demandId: string;
+		newExecutionId: string;
+		now: string;
+	}):
+		| {
+				ok: true;
+				executionId: string;
+				launchOrdinal: number;
+				idempotentReplay: boolean;
+		  }
+		| { ok: false; reason: string };
 	getWorkflowReworkRequest(
 		requestId: string,
 	): WorkflowReworkRequestRow | undefined;
@@ -189,6 +273,7 @@ export interface WorkflowReworkCoordinatorStore {
 		absoluteDeadlineAt: string;
 		now?: string;
 		env?: Record<string, string | undefined>;
+		standbyResumeEnabled?: boolean;
 	}): GeneralizedWorkflowAdmissionResult;
 	rotateGeneralizedWorkflowOutputCredential(input: {
 		executionId: string;
@@ -228,10 +313,49 @@ export interface WorkflowReworkCoordinatorEffects {
 	assertWorktreeReady(
 		session: WorkflowActorSession,
 		expectedHeadSha: string,
+		options?: { allowDirty?: boolean },
 	): Promise<{ ok: boolean; reason?: string }>;
 	activateActorForWake?(
 		session: WorkflowActorSession,
 	): Promise<{ ok: boolean; error?: string }>;
+	resumeStandbyActor?(input: {
+		session: WorkflowActorSession;
+		demandId: string;
+		ownerId: string;
+		ownerGeneration: number;
+		processGeneration: number;
+		expectedHeadSha: string;
+	}): Promise<
+		| {
+				ok: true;
+				expectedSessionId: string;
+				observedSessionId: string;
+				expectedModel: string;
+				observedModel: string;
+				expectedCwd: string;
+				observedCwd: string;
+				queueMs: number;
+				startupMs: number;
+				totalMs: number;
+		  }
+		| {
+				ok: false;
+				error: string;
+				cleanupRequired: boolean;
+				evidence?: WorkflowResumeFailureEvidence;
+		  }
+	>;
+	cleanupFailedStandbyResume(input: {
+		session: WorkflowActorSession;
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		routeRevision: number;
+		executionId: string;
+		processGeneration: number;
+		demandId: string;
+		ownerClaimId: string;
+	}): Promise<{ ok: boolean; error?: string }>;
 	closeActorForReworkSupersession(input: {
 		session: WorkflowActorSession;
 		requestId: string;
@@ -296,7 +420,7 @@ export class WorkflowReworkCoordinator {
 				nodeId: string,
 				now: Date,
 			) => { expiresAt: string; absoluteDeadlineAt: string };
-			env?: Record<string, string | undefined>;
+			nodeStandbyResumeEnabled?: () => boolean;
 			reentryEnabled?: () => boolean;
 		},
 	) {
@@ -516,33 +640,152 @@ export class WorkflowReworkCoordinator {
 				reason: "actor_session_missing",
 			});
 		}
-		const reentry = await classifyPhaseActorReentry({
-			session: actor,
-			probeRegistered: this.deps.effects.probeRegistered,
-			probePersisted: this.deps.effects.probePersisted,
-			hasHostProcess: this.deps.effects.hasHostProcess,
-		});
-		if (reentry.kind === "hold") {
-			if (observingReceipt) {
-				return this.deferReceiptProbe({
+		let worktreeReady = false;
+		let standbyResume:
+			| { ownerClaimId: string; processGeneration: number }
+			| undefined;
+		let processBody = this.deps.store.getWorkflowExecutionProcessBody?.(
+			actor.execution_id,
+		);
+		if (!observingReceipt && processBody?.state === "retiring") {
+			if (!this.deps.store.cancelWorkflowExecutionRetirementForRework) {
+				return this.releaseRetryable({
 					requestId,
 					generation: claim.generation,
-					state: delivery.state as "awaiting_receipt" | "wake_delivered",
-					executionId: actor.execution_id,
-					reason: reentry.reason,
+					reason: "retirement_cancel_not_wired",
 				});
 			}
-			return this.releaseRetryable({
-				requestId,
-				generation: claim.generation,
-				reason: reentry.reason,
-				...(reentry.reason === "persisted_target_missing"
-					? { onExhausted: "handoff_held_pane_loss" as const }
-					: {}),
-			});
+			const cancelled =
+				this.deps.store.cancelWorkflowExecutionRetirementForRework({
+					executionId: actor.execution_id,
+					demandId: requestId,
+					now: this.now().toISOString(),
+				});
+			if (!cancelled.ok) {
+				const racedBody = this.deps.store.getWorkflowExecutionProcessBody?.(
+					actor.execution_id,
+				);
+				if (
+					racedBody &&
+					(cancelled.reason === `process_body_${racedBody.state}` ||
+						cancelled.reason === "retirement_cancellation_cas_failed") &&
+					(racedBody.state === "standby" ||
+						racedBody.state === "resuming" ||
+						racedBody.state === "resume_failed")
+				) {
+					processBody = racedBody;
+				} else {
+					return this.releaseRetryable({
+						requestId,
+						generation: claim.generation,
+						reason: `retirement_cancel_failed:${cancelled.reason}`,
+					});
+				}
+			}
 		}
-		if (reentry.kind === "replace") {
-			return markReplacementPending(actor.execution_id, reentry.reason);
+		if (
+			!observingReceipt &&
+			(processBody?.state === "standby" ||
+				processBody?.state === "resuming" ||
+				processBody?.state === "resume_failed")
+		) {
+			const ready = await this.deps.effects.assertWorktreeReady(
+				actor,
+				request.base_revision,
+				{ allowDirty: true },
+			);
+			if (!ready.ok) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
+				});
+			}
+			worktreeReady = true;
+			if (
+				!this.deps.effects.resumeStandbyActor ||
+				!this.deps.effects.cleanupFailedStandbyResume ||
+				!this.deps.store.beginWorkflowExecutionResume ||
+				!this.deps.store.finishWorkflowExecutionResume ||
+				!this.deps.store.failWorkflowExecutionResume
+			) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: "standby_resume_not_wired",
+				});
+			}
+			const ownerClaimId = `${this.deps.ownerId}:${claim.generation}`;
+			const begun = this.deps.store.beginWorkflowExecutionResume({
+				executionId: actor.execution_id,
+				demandId: requestId,
+				ownerClaimId,
+				now: this.now().toISOString(),
+			});
+			if (!begun.ok) {
+				if (
+					begun.reason === "resume_attempt_limit" &&
+					this.deps.store.allocateWorkflowResumeFallback
+				) {
+					const fallbackExecutionId = randomUUID();
+					const fallback = this.deps.store.allocateWorkflowResumeFallback({
+						executionId: actor.execution_id,
+						demandId: requestId,
+						newExecutionId: fallbackExecutionId,
+						now: this.now().toISOString(),
+					});
+					if (fallback.ok) {
+						return {
+							kind: "replacement_converged",
+							executionId: fallback.executionId,
+						};
+					}
+					return this.releaseRetryable({
+						requestId,
+						generation: claim.generation,
+						reason: `standby_fallback_failed:${fallback.reason}`,
+					});
+				}
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `standby_resume_begin_failed:${begun.reason}`,
+				});
+			}
+			standbyResume = {
+				ownerClaimId,
+				processGeneration: begun.generation,
+			};
+		}
+		if (!standbyResume) {
+			const reentry = await classifyPhaseActorReentry({
+				session: actor,
+				probeRegistered: this.deps.effects.probeRegistered,
+				probePersisted: this.deps.effects.probePersisted,
+				hasHostProcess: this.deps.effects.hasHostProcess,
+			});
+			if (reentry.kind === "hold") {
+				if (observingReceipt) {
+					return this.deferReceiptProbe({
+						requestId,
+						generation: claim.generation,
+						state: delivery.state as "awaiting_receipt" | "wake_delivered",
+						executionId: actor.execution_id,
+						reason: reentry.reason,
+					});
+				}
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: reentry.reason,
+					...(reentry.reason === "persisted_target_missing"
+						? { onExhausted: "handoff_held_pane_loss" as const }
+						: {}),
+				});
+			}
+			if (reentry.kind === "replace") {
+				return markReplacementPending(actor.execution_id, reentry.reason);
+			}
 		}
 		if (observingReceipt) {
 			return this.deferReceiptProbe({
@@ -557,52 +800,62 @@ export class WorkflowReworkCoordinator {
 			});
 		}
 
-		const ready = await this.deps.effects.assertWorktreeReady(
-			actor,
-			request.base_revision,
-		);
-		if (!ready.ok) {
-			return this.releaseRetryable({
-				requestId,
-				generation: claim.generation,
-				reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
-			});
-		}
-		const holderActivation =
-			await this.deps.effects.activateActorForWake?.(actor);
-		if (holderActivation && !holderActivation.ok) {
-			const activationError = holderActivation.error ?? "unknown";
-			const statusPrefix = "state_not_revivable:";
-			const terminalStatus = activationError.startsWith(statusPrefix)
-				? activationError.slice(statusPrefix.length).trim()
-				: undefined;
-			let reason = `holder_activation_failed:${activationError}`;
-			if (isStateStoreIrreversibleTerminalForZombie(terminalStatus)) {
-				try {
-					const close = await this.deps.effects.closeActorForReworkSupersession(
-						{
-							session: actor,
-							requestId,
-							ownerId: this.deps.ownerId,
-							generation: claim.generation,
-							routeRevision: route.revision,
-							executionId: actor.execution_id,
-						},
-					);
-					if (!close.ok) {
-						reason += `:supersession_close_failed:${close.error ?? "unknown"}`;
-					}
-				} catch (error) {
-					reason += `:supersession_close_failed:${
-						error instanceof Error ? error.message : String(error)
-					}`;
-				}
+		if (!worktreeReady) {
+			const ready = await this.deps.effects.assertWorktreeReady(
+				actor,
+				request.base_revision,
+			);
+			if (!ready.ok) {
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
+				});
 			}
-			return this.releaseRetryable({
-				requestId,
-				generation: claim.generation,
-				reason,
-			});
+		}
+		const activateHolder = async (): Promise<
+			WorkflowReworkCoordinatorOutcome | undefined
+		> => {
+			const holderActivation =
+				await this.deps.effects.activateActorForWake?.(actor);
+			if (holderActivation && !holderActivation.ok) {
+				const activationError = holderActivation.error ?? "unknown";
+				const statusPrefix = "state_not_revivable:";
+				const terminalStatus = activationError.startsWith(statusPrefix)
+					? activationError.slice(statusPrefix.length).trim()
+					: undefined;
+				let reason = `holder_activation_failed:${activationError}`;
+				if (isStateStoreIrreversibleTerminalForZombie(terminalStatus)) {
+					try {
+						const close =
+							await this.deps.effects.closeActorForReworkSupersession({
+								session: actor,
+								requestId,
+								ownerId: this.deps.ownerId,
+								generation: claim.generation,
+								routeRevision: route.revision,
+								executionId: actor.execution_id,
+							});
+						if (!close.ok) {
+							reason += `:supersession_close_failed:${close.error ?? "unknown"}`;
+						}
+					} catch (error) {
+						reason += `:supersession_close_failed:${
+							error instanceof Error ? error.message : String(error)
+						}`;
+					}
+				}
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason,
+				});
+			}
+			return undefined;
+		};
+		if (!standbyResume) {
+			const activationFailure = await activateHolder();
+			if (activationFailure) return activationFailure;
 		}
 
 		const activationId = `activation:${requestId}`;
@@ -650,7 +903,7 @@ export class WorkflowReworkCoordinator {
 			expiresAt: credentialWindow.expiresAt,
 			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 			now: now.toISOString(),
-			env: this.deps.env,
+			standbyResumeEnabled: this.deps.nodeStandbyResumeEnabled?.() ?? false,
 		});
 		if (!admission.ok) {
 			return this.releaseRetryable({
@@ -786,6 +1039,104 @@ export class WorkflowReworkCoordinator {
 				generation: claim.generation,
 				reason: `turn_projection_failed:${projected.reason}`,
 			});
+		}
+		if (standbyResume) {
+			const resumed = await this.deps.effects.resumeStandbyActor!({
+				session: actor,
+				demandId: requestId,
+				ownerId: this.deps.ownerId,
+				ownerGeneration: claim.generation,
+				processGeneration: standbyResume.processGeneration,
+				expectedHeadSha: request.base_revision,
+			});
+			const failAfterCleanup = async (
+				reasonCode: string,
+				releaseReason: string,
+				cleanupRequired: boolean,
+				evidence?: WorkflowResumeFailureEvidence,
+			): Promise<WorkflowReworkCoordinatorOutcome> => {
+				let cleanupError: string | undefined;
+				if (cleanupRequired) {
+					try {
+						const cleanup = await this.deps.effects.cleanupFailedStandbyResume!(
+							{
+								session: actor,
+								requestId,
+								ownerId: this.deps.ownerId,
+								generation: claim.generation,
+								routeRevision: route.revision,
+								executionId: actor.execution_id,
+								processGeneration: standbyResume.processGeneration,
+								demandId: requestId,
+								ownerClaimId: standbyResume.ownerClaimId,
+							},
+						);
+						if (!cleanup.ok) cleanupError = cleanup.error ?? "unknown";
+					} catch (error) {
+						cleanupError =
+							error instanceof Error ? error.message : String(error);
+					}
+				}
+				const failed = this.deps.store.failWorkflowExecutionResume!({
+					executionId: actor.execution_id,
+					generation: standbyResume.processGeneration,
+					demandId: requestId,
+					ownerClaimId: standbyResume.ownerClaimId,
+					reasonCode: cleanupError ? "cleanup_unconfirmed" : reasonCode,
+					// FLY-2808: the cleanup latch keeps the body held, but the attempt
+					// keeps the real cause and what it expected.
+					attemptReasonCode: reasonCode,
+					...(evidence ? { evidence } : {}),
+					now: this.now().toISOString(),
+				});
+				if (!failed.ok) {
+					return this.releaseRetryable({
+						requestId,
+						generation: claim.generation,
+						reason: `standby_resume_failure_record_failed:${failed.reason}`,
+					});
+				}
+				return this.releaseRetryable({
+					requestId,
+					generation: claim.generation,
+					reason: cleanupError
+						? `standby_resume_cleanup_unconfirmed:${cleanupError}:${reasonCode}`
+						: releaseReason,
+				});
+			};
+			if (!resumed.ok) {
+				return failAfterCleanup(
+					resumed.error,
+					`standby_resume_failed:${resumed.error}`,
+					resumed.cleanupRequired,
+					resumed.evidence,
+				);
+			}
+			const verified = this.deps.store.finishWorkflowExecutionResume!({
+				executionId: actor.execution_id,
+				generation: standbyResume.processGeneration,
+				demandId: requestId,
+				ownerClaimId: standbyResume.ownerClaimId,
+				...resumed,
+				now: this.now().toISOString(),
+			});
+			if (!verified.ok) {
+				return failAfterCleanup(
+					`verification_${verified.reason}`,
+					`standby_resume_verification_failed:${verified.reason}`,
+					true,
+					{
+						expectedSessionId: resumed.expectedSessionId,
+						expectedModel: resumed.expectedModel,
+						expectedCwd: resumed.expectedCwd,
+						queueMs: resumed.queueMs,
+						startupMs: resumed.startupMs,
+						totalMs: resumed.totalMs,
+					},
+				);
+			}
+			const activationFailure = await activateHolder();
+			if (activationFailure) return activationFailure;
 		}
 		if (delivery.state === "pending") {
 			const advanced = this.deps.store.advanceWorkflowReworkDelivery({

@@ -825,8 +825,23 @@ async function runDrillSteps(context) {
 				"SELECT * FROM sessions WHERE execution_id = ?",
 				node.execution_id,
 			);
-			if (session?.status !== "completed" || !session.terminal_at) return false;
-			return { node, session };
+			const park = currentPark(db, node.execution_id);
+			const processBody = one(
+				db,
+				"SELECT * FROM workflow_execution_process_body WHERE execution_id = ?",
+				node.execution_id,
+			);
+			const liveness = probeExecution(slotDir, commDb, node.execution_id);
+			if (
+				session?.status !== "ship_parked" ||
+				session.terminal_at != null ||
+				park?.event !== "park_opened" ||
+				park.reason !== "process_retirement_pending" ||
+				processBody?.state !== "standby" ||
+				liveness.liveness !== "dead"
+			)
+				return false;
+			return { node, session, park, processBody, liveness };
 		},
 		timeoutMs,
 	);
@@ -834,7 +849,7 @@ async function runDrillSteps(context) {
 		...new Set([...owner.executionIds, design.node.execution_id]),
 	];
 	writeJsonAtomic(ownerPath, owner);
-	writeStep(2, "design completed without ship parking", design);
+	writeStep(2, "design retired into resumable standby", design);
 
 	const implement1 = await waitFor(
 		"step 3 implement dispatch",
@@ -880,13 +895,19 @@ async function runDrillSteps(context) {
 				currentExecutionId,
 			);
 			const park = currentPark(db, currentExecutionId);
+			const processBody = one(
+				db,
+				"SELECT * FROM workflow_execution_process_body WHERE execution_id = ?",
+				currentExecutionId,
+			);
 			const liveness = probeExecution(slotDir, commDb, currentExecutionId);
 			if (
 				session?.status !== "ship_parked" ||
 				session.terminal_at != null ||
 				park?.event !== "park_opened" ||
-				park.reason !== "rework_reachable_wait" ||
-				liveness.liveness !== "alive"
+				park.reason !== "process_retirement_pending" ||
+				processBody?.state !== "standby" ||
+				liveness.liveness !== "dead"
 			)
 				return false;
 			const pr = resolveOwnedPrEvidence(
@@ -895,7 +916,7 @@ async function runDrillSteps(context) {
 				runId,
 				owner.executionIds,
 			);
-			return pr ? { node, session, park, liveness, pr } : false;
+			return pr ? { node, session, park, processBody, liveness, pr } : false;
 		},
 		timeoutMs,
 	);
@@ -903,7 +924,7 @@ async function runDrillSteps(context) {
 	const attempt1ExecutionId = implementExecutionId;
 	owner.pr = parked1.pr;
 	writeJsonAtomic(ownerPath, owner);
-	writeStep(4, "implement is alive in rework-reachable ship_parked", parked1);
+	writeStep(4, "implement retired into resumable standby", parked1);
 
 	const qa1Ready = await waitFor(
 		"QA attempt 1 release boundary",

@@ -991,6 +991,18 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// patchSessionMetadata / markEvidenceGapCompletion), so it is unaffected.
 		if (
 			preExistingSession &&
+			this.store.workflowProcessOwnsParkedSession(
+				env.executionId,
+				preExistingSession.status,
+			)
+		) {
+			console.warn(
+				`[DirectEventSink] FLY-2808: ignoring "${status}" completion for ${env.executionId}; the parked session is owned by its standby process lifecycle`,
+			);
+			return;
+		}
+		if (
+			preExistingSession &&
 			isNoOutEdgeTerminalStatus(preExistingSession.status)
 		) {
 			console.warn(
@@ -1475,6 +1487,18 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// FLY-793: pre-failure snapshot so a failure signal doesn't downgrade a
 		// dispatched phase role (sister of the event-route failed guard).
 		const preFailureSession = this.store.getSession(env.executionId);
+		if (
+			preFailureSession &&
+			this.store.workflowProcessOwnsParkedSession(
+				env.executionId,
+				preFailureSession.status,
+			)
+		) {
+			console.warn(
+				`[DirectEventSink] FLY-2808: ignoring "${terminalStatus}" failure for ${env.executionId} (${terminalError}); the parked session is owned by its standby process lifecycle`,
+			);
+			return;
+		}
 
 		this.store.insertEvent({
 			event_id: sourceEventId,

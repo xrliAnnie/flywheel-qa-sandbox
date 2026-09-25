@@ -1,0 +1,17 @@
+{
+  "url": "https://fw-reports-356a6d.vercel.app/r/26fd140eb5edba1cbc40ad3555a79561/",
+  "reportId": "26fd140eb5edba1cbc40ad3555a79561",
+  "publishOnly": true,
+  "messageId": null,
+  "delivered": false,
+  "httpStatus": 200,
+  "noncePlaceholderCount": 0,
+  "matchingCspNonce": true,
+  "inlineScriptMatchesSource": true,
+  "noExternalAssets": true,
+  "diagramFallbackCount": 2,
+  "sourceSha256": "622a0eacf9ff147398609616ee40dd5f80ebf2cc9a75dbb424525309502ffaab",
+  "hostedSha256": "0ff1ce1c415214b3cc694378068f22d1bbf8311d3e05226b92d82cc9bd4e50c2",
+  "browserLayoutVerified": false,
+  "browserCspExecutionVerified": false
+}

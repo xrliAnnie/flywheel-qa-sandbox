@@ -588,6 +588,37 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: workflow_node_reuse observes an opt-in store write at call time",
 	},
+	{
+		name: "node_standby_resume",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_NODE_STANDBY_RESUME",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: false,
+		description:
+			"FLY-2808: enroll newly admitted workflow actors in the process-body standby and exact-session resume lifecycle",
+		whenOn:
+			"让之后新启动的工作流节点在主动退下后保留可核验的原会话身份，并能按同一进程体拉起",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflowEngineDispatcher",
+				"storeNodeStandbyResumeEnabled",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflowReworkCoordinatorHolder.current",
+				"storeNodeStandbyResumeEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: node standby resume observes the next opt-in store write",
+		note: "Default off and admission-scoped: toggling affects only later workflow actor admissions; existing actors keep their original lifecycle semantics.",
+	},
 
 	// ─── FLY-1041: founder-approval binding — single bindable ship gate ───
 	// ─── value-type env (non-boolean) → readonly display ───

@@ -244,6 +244,10 @@ const FLY1455_NON_FLAG_ENV = [
 ] as const;
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_CLAUDE_SESSION_DIR:
+		"FLY-2808 plumbing: durable Claude session-manifest directory coordinate for exact-session resume, not an on/off gate",
+	FLYWHEEL_RESUME_IDENTITY_MANIFEST:
+		"FLY-2808 per-launch owner-only Claude SessionStart identity manifest coordinate, not an on/off gate",
 	FLYWHEEL_CLAUDE_BIN:
 		"FLY-2775 plumbing: path override for the claude binary the Opus model sync probes, not an on/off gate",
 	FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION:

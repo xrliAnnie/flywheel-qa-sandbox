@@ -110,7 +110,7 @@ const savedEnv: Record<string, string | undefined> = {};
 const cleanups: Array<() => void> = [];
 let server: Server | undefined;
 
-function v2Seed() {
+function v2Seed(vendor: "claude" | "codex" = "codex") {
 	const seed = {
 		templateId: "tpl_fly1385_v2_entry",
 		name: "FLY-1385 v2 entry",
@@ -121,8 +121,8 @@ function v2Seed() {
 				{
 					id: "generic",
 					type: "generic" as const,
-					vendor: "codex" as const,
-					model: "gpt-5.6-sol",
+					vendor,
+					model: vendor === "claude" ? "claude-sonnet-4-5" : "gpt-5.6-sol",
 					effort: "low" as const,
 					agent_file: "agents/generic.md",
 				},
@@ -205,6 +205,8 @@ async function startHarness(options: {
 		project: ProjectEntry;
 	}) => boolean;
 	onEpicChange?: (projectName: string, reason: "run_started") => void;
+	nodeStandbyResumeEnabled?: boolean;
+	entryVendor?: "claude" | "codex";
 }): Promise<Harness> {
 	if (options.menuMode) linearMock.labels = ["Engineering"];
 	// Isolate HOME so launch-commit markers never touch the real ~/.flywheel.
@@ -303,7 +305,7 @@ async function startHarness(options: {
 		const seed = options.menuMode
 			? { templateId: options.bindingTemplateId ?? "tpl_code" }
 			: options.templateSchema === 2
-				? v2Seed()
+				? v2Seed(options.entryVendor)
 				: legacyWorkflowSeeds().find(
 						(candidate) => candidate.templateId === "tpl_eng_heavy",
 					)!;
@@ -395,6 +397,8 @@ async function startHarness(options: {
 			false,
 			undefined,
 			{
+				nodeStandbyResumeEnabled: () =>
+					options.nodeStandbyResumeEnabled ?? false,
 				masterToken: MASTER,
 				scopedToken: SCOPED,
 				verifyWorkflowResumeAnchor: options.verifyWorkflowResumeAnchor,
@@ -761,6 +765,60 @@ describe("FLY-1436 staging cutover fixture", () => {
 });
 
 describe("FLY-1385 schema-v2 entry compatibility", () => {
+	it("enrolls the first generalized node when standby resume is enabled", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			nodeStandbyResumeEnabled: true,
+			entryVendor: "claude",
+		});
+		const result = await post(h.url, {});
+		expect(result.status, JSON.stringify(result.json)).toBe(200);
+		const generalizedExecution = h.calls[0]?.generalizedExecution;
+		const executionId = generalizedExecution?.executionId;
+		expect(executionId).toBeTruthy();
+		expect(h.store.getWorkflowExecutionRuntime(executionId!)?.vendor).toBe(
+			"claude",
+		);
+		expect(h.store.getWorkflowExecutionProcessBody(executionId!)).toMatchObject(
+			{
+				state: "active",
+				generation: 1,
+			},
+		);
+		const lifecycle = generalizedExecution?.processLifecycle;
+		expect(lifecycle).toMatchObject({
+			mode: "initial",
+			generation: 1,
+		});
+		expect(lifecycle?.retirementApproved?.()).toBe(false);
+
+		const retirementRequestedAt = "2026-08-15T01:03:00.000Z";
+		expect(
+			h.store.beginWorkflowExecutionRetirement({
+				executionId: executionId!,
+				completionEventId: "entry-completion",
+				manifestDigest: "a".repeat(64),
+				now: retirementRequestedAt,
+			}),
+		).toMatchObject({ ok: true, generation: 1 });
+		expect(lifecycle?.retirementApproved?.()).toBe(true);
+		expect(lifecycle?.retirementRequestedAt?.()).toBe(retirementRequestedAt);
+
+		lifecycle?.onRetired?.({
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			retiredAt: "2026-08-15T01:04:00.000Z",
+		});
+		expect(h.store.getWorkflowExecutionProcessBody(executionId!)).toMatchObject(
+			{
+				state: "standby",
+				generation: 1,
+				reason_code: "process_tree_gone",
+			},
+		);
+		expect(lifecycle?.retirementApproved?.()).toBe(true);
+	});
+
 	it("FLY-2143 refreshes after one generalized materialization and not its replay", async () => {
 		const onEpicChange = vi.fn();
 		const h = await startHarness({ templateSchema: 2, onEpicChange });

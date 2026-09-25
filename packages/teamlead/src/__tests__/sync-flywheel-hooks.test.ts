@@ -115,6 +115,25 @@ describe("syncFlywheelHooks", () => {
 		}
 	});
 
+	it("FLY-2808: deploys the Claude resume identity gate by default", async () => {
+		await writeFile(
+			join(ctx.sourceDir, "flywheel-session-identity.sh"),
+			"#!/bin/bash\nidentity\n",
+		);
+
+		const result = await syncFlywheelHooks({
+			sourceDir: ctx.sourceDir,
+			targetDir: ctx.targetDir,
+			log: () => {},
+		});
+
+		expect(result.synced).toEqual(["flywheel-session-identity.sh"]);
+		const deployed = await stat(
+			join(ctx.targetDir, "flywheel-session-identity.sh"),
+		);
+		expect(deployed.mode & 0o755).toBe(0o755);
+	});
+
 	it("source / runtime checksum diverge: copies new content", async () => {
 		await writeFile(
 			join(ctx.sourceDir, "inbox-check.sh"),
@@ -199,6 +218,7 @@ describe("syncFlywheelHooks", () => {
 		expect(result.missingSource).toEqual([
 			"inbox-check.sh",
 			"runner-stop-notify.sh",
+			"flywheel-session-identity.sh",
 		]);
 		expect(result.synced).toEqual([]);
 		expect(result.errors).toEqual([]);

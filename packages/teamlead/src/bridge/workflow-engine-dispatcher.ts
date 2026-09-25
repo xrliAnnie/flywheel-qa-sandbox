@@ -70,6 +70,7 @@ import { RESIDENT_EXPIRY_FAST_RETRY_MS } from "./resident-hold.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
+import { isWorkflowProcessRetirementApproved } from "./workflow-process-retirement.js";
 import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
 import {
 	buildWorkflowReworkContext,
@@ -94,6 +95,7 @@ interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
 	workflowReworkReentryEnabled?: () => boolean;
+	nodeStandbyResumeEnabled?: () => boolean;
 	/** FLY-2076: hot master switch; false preserves durable alert attempts. */
 	alertsEnabled?: () => boolean;
 	env?: Record<string, string | undefined>;
@@ -2057,11 +2059,12 @@ export class WorkflowEngineDispatcher {
 						undefined,
 					);
 					if (!latest || latest.execution_id !== node.execution_id) continue;
-					if (launches.length <= MAX_BLIND_REPLACEMENTS) {
+					const faultReplacementCount = launches.filter(
+						(launch) => launch.purpose === "fault_replacement",
+					).length;
+					if (faultReplacementCount < MAX_BLIND_REPLACEMENTS) {
 						const delay =
-							WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[
-								Math.max(0, launches.length - 1)
-							]!;
+							WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[faultReplacementCount]!;
 						const launchedAt = parseSqliteUtcMs(latest.created_at);
 						if (
 							launchedAt !== null &&
@@ -2842,6 +2845,8 @@ export class WorkflowEngineDispatcher {
 			now: now.toISOString(),
 			expiresAt: credentialExpiry.expiresAt,
 			absoluteDeadlineAt: credentialExpiry.absoluteDeadlineAt,
+			env: this.env,
+			standbyResumeEnabled: this.options.nodeStandbyResumeEnabled?.() ?? false,
 			...(reworkReplacementRequestId
 				? {
 						activationMode: "replacement" as const,
@@ -2869,6 +2874,9 @@ export class WorkflowEngineDispatcher {
 					}
 				: {}),
 		};
+		const processBody = store.getWorkflowExecutionProcessBody(
+			intent.execution_id,
+		);
 
 		const ownerId = this.ownerId;
 		const markerPath = join(this.stateRoot, intent.execution_id);
@@ -3105,6 +3113,61 @@ export class WorkflowEngineDispatcher {
 					idempotencyKey: `engine:${intent.run_id}:${intent.node_id}:${intent.attempt}`,
 					launchGateToken,
 					launchGeneration,
+					...(processBody && {
+						processLifecycle: {
+							mode: "initial" as const,
+							generation: processBody.generation,
+							expectedModel: runtime.model,
+							retirementApproved: () => {
+								const current = store.getWorkflowExecutionProcessBody(
+									intent.execution_id,
+								);
+								return isWorkflowProcessRetirementApproved(
+									current,
+									processBody.generation,
+								);
+							},
+							retirementRequestedAt: () => {
+								const current = store.getWorkflowExecutionProcessBody(
+									intent.execution_id,
+								);
+								return current?.generation === processBody.generation &&
+									current.state === "retiring"
+									? (current.retirement_requested_at ?? undefined)
+									: undefined;
+							},
+							onRetired: (evidence: {
+								generation: number;
+								reasonCode: "process_tree_gone";
+								retiredAt: string;
+							}) => {
+								const retired = store.confirmWorkflowExecutionStandby({
+									executionId: intent.execution_id,
+									generation: evidence.generation,
+									reasonCode: evidence.reasonCode,
+									now: evidence.retiredAt,
+								});
+								if (!retired.ok) {
+									throw new Error(
+										`engine_process_retirement_${retired.reason}`,
+									);
+								}
+							},
+							onRetirementFailed: (evidence) => {
+								const failed = store.failWorkflowExecutionRetirement({
+									executionId: intent.execution_id,
+									generation: evidence.generation,
+									reasonCode: evidence.reasonCode,
+									now: evidence.failedAt,
+								});
+								if (!failed.ok) {
+									throw new Error(
+										`engine_process_retirement_failure_${failed.reason}`,
+									);
+								}
+							},
+						},
+					}),
 					commitWorkflowLaunch,
 					prepareWorkflowIssueDelivery,
 					projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),

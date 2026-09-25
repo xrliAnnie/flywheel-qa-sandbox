@@ -1,0 +1,104 @@
+{
+  "reviewVerdict": "APPROVED",
+  "reviewerVerdict": "APPROVED",
+  "requestId": "1f35923f-ea52-4f3b-8e4b-53650e105e75",
+  "round": 2,
+  "findings": [
+    {
+      "id": "sweep-scope-misses-core-and-claude-runner",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 135,
+      "title": "§7 的消费者普查命令根目录仍少 packages/core 与 packages/claude-runner，而 N5 验收以该普查为完整性依据（R1 未修）",
+      "detail": "R2 的 diff 只改了第 6 行状态句并追加 §11，§7 第 135 行逐字未动，本条仍成立。已在 ca9ea312e 的树上复核（该 commit range 对 packages/ 与 scripts/ 的 diff 为空，代码未变）：`rg 'ship_parked|runner_declared_states|status.*completed' packages/teamlead packages/flywheel-comm scripts` 这三个 root 之外仍有两个真实持有 ship_parked 的生产文件 —— packages/core/src/workflow-fsm.ts（ship_parked 的 FSM 出入边表，正是 §3.1『留在非终态 ship_parked』与 §5 恢复 ship_parked→running 所依赖的权威）与 packages/claude-runner/src/codex-home.ts（retireCodexExecutionHome，§3.4『Codex home lease 可释放并清敏感 credential，保留会话数据』的落点）。已确认 packages/config 无命中、仓库无 apps/ 目录，缺口精确就是这两个包。research.md 的『补充消费者核对』单独点名了 codex-home.ts:2448，但那是人工补录，§7 那条命令本身仍扫不到它，也扫不到 workflow-fsm.ts。本单立论就是『六个打断点不是消费者全集』，把一条可证漏的命令当成完整性保证，复现的正是它要防的失效模式。建议把 root 改为 packages/ + scripts/，或显式列出被排除的 root 与理由；另建议把 `keepalive_park|design_done|getActiveSessions|getReadoptCandidateSessions` 加进模式 —— 已核实 StateStore.getActiveSessions() 与 getReadoptCandidateSessions() 的 live 状态集合都含 ship_parked，是待命语义真正的放大器。",
+      "findingKey": "sweep-scope-misses-core-and-claude-runner"
+    },
+    {
+      "id": "stale-worktree-context-after-head-advance",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 97,
+      "title": "§5.2 允许共享分支 HEAD 前移后恢复原会话，仍未定义把 HEAD/文件漂移告知被恢复会话的动作（R1 未修）",
+      "detail": "第 97 行在 R2 中逐字未变，本条仍成立。§5.2 明确『共享分支 HEAD 可因后续节点合法提交而前移；不要求退下时 HEAD 相等』，§2.1 的 resume manifest 也记录了 lastObservedHead，但全文没有任何一处规定恢复时要拿 lastObservedHead 与当前 HEAD 求差并把结果作为首轮业务输入交给模型。失败场景具体：design 节点在 HEAD=A 时退下（其 transcript 里缓存着 A 时刻的文件内容），implement 节点合法推进到 HEAD=B 并改写同一批文件，design 被打回恢复 —— 模型基于 A 的缓存作答或直接发起 edit。§5.4 的 TURN/activation 门只裁决『谁能写』，不裁决『写的依据是否过期』，兜不住这一格。这是原会话恢复相对 fresh fallback 的独有风险面：fresh 会重新读盘，resume 不会。§10 只承诺『不承诺模型永远逐字记忆』，覆盖不到。建议在 §5.3『首次工作输入』之前加一步：恢复后第一条业务输入必须携带 lastObservedHead→当前 HEAD 的提交/文件变更摘要与 dirty 摘要差异，并把该摘要成功注入纳入 resume_verified 的条件；§8.1 场景 E 目前只断言『合法前移通过』，应补断言『前移信息已送达被恢复会话』。",
+      "findingKey": "stale-worktree-context-after-head-advance"
+    },
+    {
+      "id": "single-issue-scope-vs-incremental-pr-landing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 199,
+      "title": "新增的 §11『不可分割』论证与 §8『N3/N4 可分别合入默认关闭的实现』存在读法冲突，未言明一张单不等于一个 PR",
+      "detail": "这是 R2 唯一实质新增内容引入的问题。§11 为『建议一张实现单』给出的理由是『生命周期事务、completion 投影、两 adapter、消息和 TURN 消费者是一条不可分割的跨层合同；按引擎/载体分单会增加中间不兼容状态』。§11 同时声明『N2–N5 的范围/前置/测试保持 §8 不变』，而 §8 恰恰写着『N3/N4 技术可分别合入默认关闭的实现，最终启用同时覆盖所有节点两 vendor』，§9 也写着『feature 默认关闭；只有 controller + CommDB projector + 两 adapter + 全消费者均声明 lifecycleVersion=1 …才启用整套新语义』—— 这两处的 rollout 合同本来就建立在增量、默认关闭落地之上。问题在于 §11 的『不可分割』只限定了建单粒度，却未限定 PR 粒度，只读 §11 的实现者完全可能理解成要一个 PR 落全部。实测该实现面的体量：packages/teamlead/src/StateStore.ts 87012 行（近 14 天已有 53 个 commit 触碰它，是典型共享写点），加 CodexTmuxAdapter.ts 2763 行、TmuxAdapter.ts 2443 行，再加六处消费者与 CommDB 投影。按本仓 CLAUDE.md 记录的 FLY-2045 教训，共享写点上的大 hunk 会让在飞分支 100% 冲突并失去 CI 能力。建议在 §11 补一句显式的粒度声明：一张 issue，但按 §8 的 N2→N3/N4→N5 分多个默认关闭的 PR 依次落地，启用开关统一在最后一个 PR 打开；这样 §11 的治理决定与 §8/§9 的 rollout 合同就不再有歧义。",
+      "findingKey": "single-issue-scope-vs-incremental-pr-landing"
+    },
+    {
+      "id": "pane-loss-reconcile-missing-from-closure-list",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 80,
+      "title": "§4 周边闭包清单仍漏 pane-loss-reconcile，它会对每个待命节点产生 pane-loss 事件/告警（R1 未修）",
+      "detail": "第 80 行在 R2 中逐字未变，本条仍成立。§4 末段列了 finalizeProvenGoneSession、done-running-reconciler、commdb-session-prune、cmux-watcher-patrol、worktree/branch cleanup，但没有 packages/teamlead/src/bridge/pane-loss-reconcile.ts。已复核：reconcilePaneLoss 扫的是 store.getReadoptCandidateSessions()，该查询状态集合为 ('running','ship_parked','awaiting_review','design_done','approved_to_ship')，含本设计下的全部待命节点；待命节点 body 确实 absent，过 launchGraceMs（默认 10 分钟）后会走到 store.insertEvent({event_id:`pane-loss-<execId>`}) 并按 advisory_absence_unproven / advisory_generation_superseded 归类。定为 LOW 的依据同样已核实：evaluatePaneLossEvidence 只在 input.status === 'running' 时返回 action:'fail'，待命最多拿到 advisory 不会被终态化；event_id 按 execId 定死意味着去重、不会每轮重复刷。但它与 §7『正常长时间待命不报死亡』、§4 第 5 行负例『indeterminate 不冒充无进程』属同一族要求，应与 HeartbeatService.readoptParkedPhase（已核实：非 alive 即 emitMonitorLostOnce，仅告警不改状态）一并进入 §4 第 5 行必改清单，并在 §8.1 场景 L 补断言：待命期间不产生 pane-loss / monitor-lost 告警。",
+      "findingKey": "pane-loss-reconcile-missing-from-closure-list"
+    },
+    {
+      "id": "carrier-term-collides-with-existing-ship-gate-carrier",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 34,
+      "title": "新表名 workflow_execution_carrier 与仓库既有 ship-gate 'carrier' 概念同名异义（R1 未修）",
+      "detail": "第 34 行在 R2 中逐字未变，本条仍成立。仓库里 carrier 已是被占用的词，指承载 ship gate 的那个节点：workflow_run.gate_carrier_epoch、resolveWorkflowGateAuthority(...).carrierNodeId、packages/teamlead/src/bridge/workflow-ship-carrier-coordinator.ts。本计划把 carrier/『载体』重新定义为进程生命周期记录（§2、§2.1、§4『整单终态会在事务中 close carrier』、§7『以 StateStore carrier 推导』）。两者在同一 run 上下文共存，且都会被 §7 规定的 rg 式普查扫到；§11 定稿为一张实现单后，四个工作包跨两个 vendor 全在同一单内推进，读串的窗口反而更长。§4『整单终态会在事务中 close carrier』这句单独看就无法判断关的是进程载体还是 ship gate carrier。功能上无缺陷，纯属可读性与后续评审成本。建议改名为 workflow_execution_body / workflow_process_carrier 之类无歧义的名字，或在 §2 开头加一行术语声明：本文的『载体/carrier』一律指进程载体，与 gate carrier 无关。",
+      "findingKey": "carrier-term-collides-with-existing-ship-gate-carrier"
+    }
+  ],
+  "advisories": [
+    {
+      "id": "sweep-scope-misses-core-and-claude-runner",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 135,
+      "title": "§7 的消费者普查命令根目录仍少 packages/core 与 packages/claude-runner，而 N5 验收以该普查为完整性依据（R1 未修）",
+      "detail": "R2 的 diff 只改了第 6 行状态句并追加 §11，§7 第 135 行逐字未动，本条仍成立。已在 ca9ea312e 的树上复核（该 commit range 对 packages/ 与 scripts/ 的 diff 为空，代码未变）：`rg 'ship_parked|runner_declared_states|status.*completed' packages/teamlead packages/flywheel-comm scripts` 这三个 root 之外仍有两个真实持有 ship_parked 的生产文件 —— packages/core/src/workflow-fsm.ts（ship_parked 的 FSM 出入边表，正是 §3.1『留在非终态 ship_parked』与 §5 恢复 ship_parked→running 所依赖的权威）与 packages/claude-runner/src/codex-home.ts（retireCodexExecutionHome，§3.4『Codex home lease 可释放并清敏感 credential，保留会话数据』的落点）。已确认 packages/config 无命中、仓库无 apps/ 目录，缺口精确就是这两个包。research.md 的『补充消费者核对』单独点名了 codex-home.ts:2448，但那是人工补录，§7 那条命令本身仍扫不到它，也扫不到 workflow-fsm.ts。本单立论就是『六个打断点不是消费者全集』，把一条可证漏的命令当成完整性保证，复现的正是它要防的失效模式。建议把 root 改为 packages/ + scripts/，或显式列出被排除的 root 与理由；另建议把 `keepalive_park|design_done|getActiveSessions|getReadoptCandidateSessions` 加进模式 —— 已核实 StateStore.getActiveSessions() 与 getReadoptCandidateSessions() 的 live 状态集合都含 ship_parked，是待命语义真正的放大器。",
+      "findingKey": "sweep-scope-misses-core-and-claude-runner"
+    },
+    {
+      "id": "stale-worktree-context-after-head-advance",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 97,
+      "title": "§5.2 允许共享分支 HEAD 前移后恢复原会话，仍未定义把 HEAD/文件漂移告知被恢复会话的动作（R1 未修）",
+      "detail": "第 97 行在 R2 中逐字未变，本条仍成立。§5.2 明确『共享分支 HEAD 可因后续节点合法提交而前移；不要求退下时 HEAD 相等』，§2.1 的 resume manifest 也记录了 lastObservedHead，但全文没有任何一处规定恢复时要拿 lastObservedHead 与当前 HEAD 求差并把结果作为首轮业务输入交给模型。失败场景具体：design 节点在 HEAD=A 时退下（其 transcript 里缓存着 A 时刻的文件内容），implement 节点合法推进到 HEAD=B 并改写同一批文件，design 被打回恢复 —— 模型基于 A 的缓存作答或直接发起 edit。§5.4 的 TURN/activation 门只裁决『谁能写』，不裁决『写的依据是否过期』，兜不住这一格。这是原会话恢复相对 fresh fallback 的独有风险面：fresh 会重新读盘，resume 不会。§10 只承诺『不承诺模型永远逐字记忆』，覆盖不到。建议在 §5.3『首次工作输入』之前加一步：恢复后第一条业务输入必须携带 lastObservedHead→当前 HEAD 的提交/文件变更摘要与 dirty 摘要差异，并把该摘要成功注入纳入 resume_verified 的条件；§8.1 场景 E 目前只断言『合法前移通过』，应补断言『前移信息已送达被恢复会话』。",
+      "findingKey": "stale-worktree-context-after-head-advance"
+    },
+    {
+      "id": "single-issue-scope-vs-incremental-pr-landing",
+      "severity": "MEDIUM",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 199,
+      "title": "新增的 §11『不可分割』论证与 §8『N3/N4 可分别合入默认关闭的实现』存在读法冲突，未言明一张单不等于一个 PR",
+      "detail": "这是 R2 唯一实质新增内容引入的问题。§11 为『建议一张实现单』给出的理由是『生命周期事务、completion 投影、两 adapter、消息和 TURN 消费者是一条不可分割的跨层合同；按引擎/载体分单会增加中间不兼容状态』。§11 同时声明『N2–N5 的范围/前置/测试保持 §8 不变』，而 §8 恰恰写着『N3/N4 技术可分别合入默认关闭的实现，最终启用同时覆盖所有节点两 vendor』，§9 也写着『feature 默认关闭；只有 controller + CommDB projector + 两 adapter + 全消费者均声明 lifecycleVersion=1 …才启用整套新语义』—— 这两处的 rollout 合同本来就建立在增量、默认关闭落地之上。问题在于 §11 的『不可分割』只限定了建单粒度，却未限定 PR 粒度，只读 §11 的实现者完全可能理解成要一个 PR 落全部。实测该实现面的体量：packages/teamlead/src/StateStore.ts 87012 行（近 14 天已有 53 个 commit 触碰它，是典型共享写点），加 CodexTmuxAdapter.ts 2763 行、TmuxAdapter.ts 2443 行，再加六处消费者与 CommDB 投影。按本仓 CLAUDE.md 记录的 FLY-2045 教训，共享写点上的大 hunk 会让在飞分支 100% 冲突并失去 CI 能力。建议在 §11 补一句显式的粒度声明：一张 issue，但按 §8 的 N2→N3/N4→N5 分多个默认关闭的 PR 依次落地，启用开关统一在最后一个 PR 打开；这样 §11 的治理决定与 §8/§9 的 rollout 合同就不再有歧义。",
+      "findingKey": "single-issue-scope-vs-incremental-pr-landing"
+    },
+    {
+      "id": "pane-loss-reconcile-missing-from-closure-list",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 80,
+      "title": "§4 周边闭包清单仍漏 pane-loss-reconcile，它会对每个待命节点产生 pane-loss 事件/告警（R1 未修）",
+      "detail": "第 80 行在 R2 中逐字未变，本条仍成立。§4 末段列了 finalizeProvenGoneSession、done-running-reconciler、commdb-session-prune、cmux-watcher-patrol、worktree/branch cleanup，但没有 packages/teamlead/src/bridge/pane-loss-reconcile.ts。已复核：reconcilePaneLoss 扫的是 store.getReadoptCandidateSessions()，该查询状态集合为 ('running','ship_parked','awaiting_review','design_done','approved_to_ship')，含本设计下的全部待命节点；待命节点 body 确实 absent，过 launchGraceMs（默认 10 分钟）后会走到 store.insertEvent({event_id:`pane-loss-<execId>`}) 并按 advisory_absence_unproven / advisory_generation_superseded 归类。定为 LOW 的依据同样已核实：evaluatePaneLossEvidence 只在 input.status === 'running' 时返回 action:'fail'，待命最多拿到 advisory 不会被终态化；event_id 按 execId 定死意味着去重、不会每轮重复刷。但它与 §7『正常长时间待命不报死亡』、§4 第 5 行负例『indeterminate 不冒充无进程』属同一族要求，应与 HeartbeatService.readoptParkedPhase（已核实：非 alive 即 emitMonitorLostOnce，仅告警不改状态）一并进入 §4 第 5 行必改清单，并在 §8.1 场景 L 补断言：待命期间不产生 pane-loss / monitor-lost 告警。",
+      "findingKey": "pane-loss-reconcile-missing-from-closure-list"
+    },
+    {
+      "id": "carrier-term-collides-with-existing-ship-gate-carrier",
+      "severity": "LOW",
+      "file": "engineering/doc/FLY-2808-node-standby-resume/plan.md",
+      "line": 34,
+      "title": "新表名 workflow_execution_carrier 与仓库既有 ship-gate 'carrier' 概念同名异义（R1 未修）",
+      "detail": "第 34 行在 R2 中逐字未变，本条仍成立。仓库里 carrier 已是被占用的词，指承载 ship gate 的那个节点：workflow_run.gate_carrier_epoch、resolveWorkflowGateAuthority(...).carrierNodeId、packages/teamlead/src/bridge/workflow-ship-carrier-coordinator.ts。本计划把 carrier/『载体』重新定义为进程生命周期记录（§2、§2.1、§4『整单终态会在事务中 close carrier』、§7『以 StateStore carrier 推导』）。两者在同一 run 上下文共存，且都会被 §7 规定的 rg 式普查扫到；§11 定稿为一张实现单后，四个工作包跨两个 vendor 全在同一单内推进，读串的窗口反而更长。§4『整单终态会在事务中 close carrier』这句单独看就无法判断关的是进程载体还是 ship gate carrier。功能上无缺陷，纯属可读性与后续评审成本。建议改名为 workflow_execution_body / workflow_process_carrier 之类无歧义的名字，或在 §2 开头加一行术语声明：本文的『载体/carrier』一律指进程载体，与 gate carrier 无关。",
+      "findingKey": "carrier-term-collides-with-existing-ship-gate-carrier"
+    }
+  ],
+  "settled": [],
+  "policyNote": "medium_low_findings_are_non_blocking_v1",
+  "questionId": "d0cf1a21-fa94-4d23-9663-63df581f0d15",
+  "planSha256": "c551e0bd8ab73868ab2f5a6f979e56ba4c803c56b85a4cc0a61532c8f712ea41"
+}

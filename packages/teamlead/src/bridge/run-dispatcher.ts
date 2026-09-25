@@ -1083,6 +1083,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
 					workflowSubmissionExpected: true,
+					workflowProcessLifecycle: req.generalizedExecution.processLifecycle,
 				}),
 				...runnerSpawn,
 				// FLY-751: recompute the MCP slim profile on retry from the persisted
@@ -1645,11 +1646,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			throw error;
 		}
 
-		const launchOutcome = req.generalizedExecution
-			? createLaunchOutcomeDeferred(
-					req.generalizedExecution.commitWorkflowLaunch,
-				)
-			: undefined;
+		const launchOutcome =
+			req.generalizedExecution || req.observeLaunchOutcome
+				? createLaunchOutcomeDeferred(
+						req.generalizedExecution?.commitWorkflowLaunch,
+					)
+				: undefined;
 		const entry = {
 			executionId,
 			promise: null! as Promise<void>,
@@ -1718,8 +1720,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// Legacy non-engine dispatches remain byte-compatible and grant nothing.
 			const engineOwnedSpawn = req.generalizedExecution?.engineOwned === true;
 			if (
-				engineOwnedSpawn ||
-				(req.shareParentBranch === true && isWorkflowPhaseRole(role))
+				!req.processLifecycle &&
+				(engineOwnedSpawn ||
+					(req.shareParentBranch === true && isWorkflowPhaseRole(role)))
 			) {
 				const turnPhase = isWorkflowPhaseRole(role)
 					? role
@@ -1812,6 +1815,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					workflowSubmissionCredential:
 						req.generalizedExecution.submissionCredential,
 					workflowSubmissionExpected: true,
+					workflowProcessLifecycle: req.generalizedExecution.processLifecycle,
+				}),
+				...(req.processLifecycle && {
+					workflowProcessLifecycle: req.processLifecycle,
+				}),
+				...(req.previousSession && {
+					workflowPreviousSession: req.previousSession,
 				}),
 				launchCommitPath: workflowLaunchCommitPath,
 				launchGateToken: req.generalizedExecution?.launchGateToken,

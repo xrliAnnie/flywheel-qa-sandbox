@@ -210,6 +210,25 @@ export interface CloseRunnerResult {
 	error?: string;
 }
 
+export interface WorkflowResumeCleanupOpts {
+	executionId: string;
+	issueId: string;
+	projectName: string;
+	generation: number;
+	demandId: string;
+	ownerClaimId: string;
+	authorityCheck?: () => Promise<{ ok: boolean; reason?: string }>;
+}
+
+export interface WorkflowProcessRetirementOpts {
+	executionId: string;
+	issueId: string;
+	projectName: string;
+	generation: number;
+	vendor: string;
+	retirementRequestedAt: string;
+}
+
 export async function closeRunner(
 	opts: CloseRunnerOpts,
 	store: StateStore,
@@ -250,6 +269,116 @@ export async function closeRunner(
 		}
 	}
 	return result;
+}
+
+/** Physical cleanup for a failed process-body resume. It is authorized only
+ * while the exact resume generation/demand/owner fence remains current, leaves
+ * workflow and CommDB lifecycle records intact for retry, and proves execution-
+ * wide death before reporting success. */
+export async function cleanupWorkflowResumeAttempt(
+	opts: WorkflowResumeCleanupOpts,
+	store: StateStore,
+): Promise<CloseRunnerResult> {
+	const authorityCheck = async () => {
+		const external = await opts.authorityCheck?.();
+		if (external && !external.ok) return external;
+		const body = store.getWorkflowExecutionProcessBody(opts.executionId);
+		return body?.state === "resuming" &&
+			body.generation === opts.generation &&
+			body.current_demand_id === opts.demandId &&
+			body.owner_claim_id === opts.ownerClaimId
+			? { ok: true as const }
+			: { ok: false as const, reason: "resume_cleanup_fence_changed" };
+	};
+	const cleanup = () =>
+		closeRunnerInner(
+			{
+				executionId: opts.executionId,
+				issueId: opts.issueId,
+				projectName: opts.projectName,
+				executorType: "phase",
+				reason: `workflow_resume_cleanup:${opts.demandId}`,
+				deferCommunicationFinalization: true,
+				authorityCheck,
+			},
+			store,
+			{ workflowProcessCleanup: true },
+		);
+	const result = lifecycleCloseGuard
+		? await lifecycleCloseGuard.withIssueMutex(
+				lifecycleCloseGuard.resolveLockKeys(store, opts.issueId),
+				cleanup,
+			)
+		: await cleanup();
+	if (!result.closed) return result;
+	const liveness = await probeRunExecutionLiveness(
+		store.getSession(opts.executionId),
+		opts.executionId,
+		opts.projectName,
+	);
+	return liveness === "dead"
+		? result
+		: {
+				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: `resume_cleanup_liveness_${liveness}`,
+			};
+}
+
+/** Deadline backstop for an adapter that did not finish its own retirement.
+ * The durable process-body generation and request timestamp authorize cleanup;
+ * workflow and CommDB identity stay intact until the reconciler records the
+ * resulting standby or visible failure state. */
+export async function retireWorkflowProcessBody(
+	opts: WorkflowProcessRetirementOpts,
+	store: StateStore,
+): Promise<CloseRunnerResult> {
+	const authorityCheck = async () => {
+		const body = store.getWorkflowExecutionProcessBody(opts.executionId);
+		return body?.state === "retiring" &&
+			body.generation === opts.generation &&
+			body.retirement_requested_at === opts.retirementRequestedAt
+			? { ok: true as const }
+			: {
+					ok: false as const,
+					reason: "retirement_cleanup_fence_changed",
+				};
+	};
+	const cleanup = () =>
+		closeRunnerInner(
+			{
+				executionId: opts.executionId,
+				issueId: opts.issueId,
+				projectName: opts.projectName,
+				executorType: "phase",
+				reason: `workflow_process_retirement:${opts.vendor}`,
+				deferCommunicationFinalization: true,
+				authorityCheck,
+			},
+			store,
+			{ workflowProcessCleanup: true },
+		);
+	const result = lifecycleCloseGuard
+		? await lifecycleCloseGuard.withIssueMutex(
+				lifecycleCloseGuard.resolveLockKeys(store, opts.issueId),
+				cleanup,
+			)
+		: await cleanup();
+	if (!result.closed) return result;
+	const liveness = await probeRunExecutionLiveness(
+		store.getSession(opts.executionId),
+		opts.executionId,
+		opts.projectName,
+	);
+	return liveness === "dead"
+		? { ...result, physicalGone: true }
+		: {
+				closed: false,
+				commDbFinalized: false,
+				retiredGateCount: 0,
+				error: `retirement_cleanup_liveness_${liveness}`,
+			};
 }
 
 async function closeRunnerWithRunAuthority(
@@ -338,6 +467,7 @@ async function closeRunnerWithRunAuthority(
 async function closeRunnerInner(
 	opts: CloseRunnerOpts,
 	store: StateStore,
+	mode: { workflowProcessCleanup?: boolean } = {},
 ): Promise<CloseRunnerResult> {
 	let session = store.getSession(opts.executionId);
 	if (!session) {
@@ -453,6 +583,8 @@ async function closeRunnerInner(
 
 	const isPreserveState = CRASH_PRESERVE_STATES.has(session.status);
 	const forceClose = !!opts.forcePreserved && isPreserveState;
+	const workflowProcessCleanup =
+		mode.workflowProcessCleanup === true && session.status === "ship_parked";
 
 	// FLY-116 preserve gate: don't close failed/blocked unless forced.
 	if (isPreserveState && !opts.forcePreserved) {
@@ -484,7 +616,8 @@ async function closeRunnerInner(
 	if (
 		!AUTO_CLOSE_STATES.has(session.status) &&
 		!forceClose &&
-		!opts.issueTerminalOverride
+		!opts.issueTerminalOverride &&
+		!workflowProcessCleanup
 	) {
 		const err = `status_not_eligible:${session.status}`;
 		store.insertEvent({
@@ -615,7 +748,7 @@ async function closeRunnerInner(
 	// drain first; only a proven orphan may use the legacy direct kill below.
 	// Claude phases and ordinary Codex executions are not applicable and remain
 	// byte-compatible.
-	if (isResidentCodexPhase(session)) {
+	if (!workflowProcessCleanup && isResidentCodexPhase(session)) {
 		const preShutdownLost = await authorityLostReason();
 		if (preShutdownLost) {
 			return abortAuthorityLost("pre_phase_shutdown", preShutdownLost);

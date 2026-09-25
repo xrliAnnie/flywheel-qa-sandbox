@@ -343,6 +343,7 @@ describe("FLY-1869 launch command budget", () => {
 			"FLYWHEEL_MARKER_DIR",
 			"FLYWHEEL_PROGRESS_PATH",
 			"FLYWHEEL_PROJECT_NAME",
+			"FLYWHEEL_RESUME_IDENTITY_MANIFEST",
 			"FLYWHEEL_RUNNER_MEMORY_DIR",
 			"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
 			"FLYWHEEL_RUNNER_STATE_DIR",
@@ -419,6 +420,7 @@ function makeMockExec(
 		hasSessionError?: boolean;
 		killWindowThrows?: boolean;
 		listWindows?: string;
+		listWindowsThrows?: boolean;
 	} = {},
 ) {
 	const calls: ExecCall[] = [];
@@ -431,6 +433,7 @@ function makeMockExec(
 		// FLY-758: `list-windows` output for pruneScaffoldWindow. Default "" is
 		// byte-compatible — an empty inventory means <2 windows → no prune.
 		listWindows = "",
+		listWindowsThrows = false,
 	} = options;
 
 	const fn = (cmd: string, args: string[]): { stdout: string } => {
@@ -483,7 +486,14 @@ function makeMockExec(
 			}
 
 			if (subcommand === "list-windows") {
+				if (listWindowsThrows) throw new Error("tmux list-windows failed");
 				return { stdout: listWindows };
+			}
+
+			// tmux 3.7c exits 0 and falls back to the current window when the
+			// requested target is gone; it does not throw for that condition.
+			if (subcommand === "display-message" && args.at(-1) === "#{window_id}") {
+				return { stdout: "@0\n" };
 			}
 		}
 
@@ -698,6 +708,56 @@ describe("TmuxAdapter", () => {
 		expect(newSession).toBeUndefined();
 	});
 
+	it.each([
+		["set-environment", "no such session: =flywheel"],
+		["new-window", "can't find window: flywheel"],
+	])(
+		"re-ensures the runner session when it vanished before %s",
+		async (subcommand, message) => {
+			// FLY-2808 QA: a retiring predecessor killed the session's last window
+			// after this launch ensured the session; tmux destroyed the session and
+			// the successor launch failed instead of recreating it.
+			const { fn: base, calls } = makeMockExec({ paneDead: true });
+			let failed = false;
+			const fn = (cmd: string, args: string[]) => {
+				if (cmd === "tmux" && args[0] === subcommand && !failed) {
+					failed = true;
+					calls.push({ cmd, args });
+					throw new Error(message);
+				}
+				return base(cmd, args);
+			};
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			expect(
+				calls.filter((c) => c.cmd === "tmux" && c.args[0] === "new-session"),
+			).toHaveLength(2);
+			expect(
+				calls.filter((c) => c.cmd === "tmux" && c.args[0] === subcommand),
+			).toHaveLength(2);
+		},
+	);
+
+	it("does not mask a launch failure while the runner session still exists", async () => {
+		const { fn: base } = makeMockExec({
+			hasSessionError: false,
+			paneDead: true,
+		});
+		const fn = (cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "new-window") {
+				throw new Error("create window failed: index in use");
+			}
+			return base(cmd, args);
+		};
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await expect(adapter.execute(makeCtx())).rejects.toThrow(
+			"create window failed",
+		);
+	});
+
 	// ─── R5/R6 HIGH-3: durable commit-gated launch (gateway-retry path) ───────
 
 	it("R5/R6: the gateway path opens a TOKEN-gated shell; the commit file holds this launch's token", async () => {
@@ -860,13 +920,8 @@ describe("TmuxAdapter", () => {
 			) {
 				staleKilled = true;
 			}
-			if (
-				cmd === "tmux" &&
-				args[0] === "display-message" &&
-				args.includes("=flywheel:@7") &&
-				staleKilled
-			) {
-				throw new Error("window not found");
+			if (cmd === "tmux" && args[0] === "list-windows" && staleKilled) {
+				return { stdout: "" };
 			}
 			return base.fn(cmd, args);
 		};
@@ -1455,7 +1510,7 @@ describe("TmuxAdapter", () => {
 
 	// ─── Claude args ────────────────────────────────
 
-	it("passes --session-id <uuid> to claude (ignores previousSession)", async () => {
+	it("resumes the exact Claude session without forking or allocating a new id", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
@@ -1465,12 +1520,437 @@ describe("TmuxAdapter", () => {
 
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const claudeArgs = newWindow!.args;
-		// Should contain --session-id with a UUID, not "old-session-id"
-		const sessionIdx = claudeArgs.indexOf("--session-id");
-		expect(sessionIdx).toBeGreaterThan(-1);
-		const sessionId = claudeArgs[sessionIdx + 1]!;
-		expect(sessionId).not.toBe("old-session-id");
-		expect(sessionId).toMatch(/^[0-9a-f-]{36}$/); // UUID format
+		expect(claudeArgs).not.toContain("--session-id");
+		expect(claudeArgs).not.toContain("--fork-session");
+		const resumeIdx = claudeArgs.indexOf("--resume");
+		expect(resumeIdx).toBeGreaterThan(-1);
+		expect(claudeArgs[resumeIdx + 1]).toBe("old-session-id");
+	});
+
+	it("reports Claude resume identity only after an observed SessionStart and launch commit", async () => {
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2808-claude-resume-"));
+		const cwd = mkdtempSync(join(tmpdir(), "fly2808-claude-resume-cwd-"));
+		const priorRoot = process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+		process.env.FLYWHEEL_CLAUDE_SESSION_DIR = stateRoot;
+		try {
+			const order: string[] = [];
+			let resumeVerified = false;
+			const waitForEvent = vi.fn(async (token: string) => ({
+				token,
+				sessionId: "old-session-id",
+				issueId: "GEO-TEST",
+				eventType: "SessionStart",
+				timestamp: Date.now(),
+				model: "claude-fable-5-1",
+				cwd: realpathSync(cwd),
+				source: "resume",
+			}));
+			const hookServer = {
+				getPort: vi.fn(() => 9876),
+				waitForEvent,
+				waitForCompletion: vi.fn(async (token: string) => ({
+					token,
+					sessionId: "old-session-id",
+					issueId: "GEO-TEST",
+				})),
+				cancelWait: vi.fn(),
+			};
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30_000,
+				hookServer as never,
+			);
+			const onIdentityVerified = vi.fn(() => {
+				order.push("identity");
+				resumeVerified = true;
+			});
+
+			await adapter.execute(
+				makeCtx({
+					executionId: "fly2808-claude-resume",
+					cwd,
+					model: "claude-fable-5-1",
+					previousSession: {
+						sessionId: "old-session-id",
+						vendor: "claude",
+						resolvedModel: "claude-fable-5-1",
+						cwd: realpathSync(cwd),
+					},
+					launchCommitPath: join(stateRoot, "launch.commit"),
+					launchGeneration: 2,
+					launchFingerprint: "resume-fingerprint",
+					commitWorkflowLaunch: () => {
+						order.push("commit");
+						return { ok: true };
+					},
+					processLifecycle: {
+						mode: "resume",
+						generation: 2,
+						expectedSessionId: "old-session-id",
+						expectedModel: "claude-fable-5-1",
+						expectedCwd: realpathSync(cwd),
+						onIdentityVerified,
+						resumeVerificationStatus: () =>
+							resumeVerified ? "accepted" : "pending",
+					} as NonNullable<AdapterExecutionContext["processLifecycle"]>,
+				}),
+			);
+
+			expect(order.slice(0, 2)).toEqual(["commit", "identity"]);
+			expect(waitForEvent).toHaveBeenCalledWith(
+				expect.any(String),
+				"SessionStart",
+				expect.any(Number),
+				"old-session-id",
+			);
+			expect(onIdentityVerified).toHaveBeenCalledWith({
+				sessionId: "old-session-id",
+				model: "claude-fable-5-1",
+				cwd: realpathSync(cwd),
+				verifiedAt: expect.any(String),
+			});
+			const newWindow = calls.find((call) => call.args[0] === "new-window");
+			const env = paneEnvValues(newWindow!.args).join("\n");
+			expect(env).toContain("FLYWHEEL_RESUME_IDENTITY_MANIFEST=");
+			const settingsIndex = newWindow!.args.indexOf("--settings");
+			const settings = JSON.parse(
+				newWindow!.args[settingsIndex + 1] as string,
+			) as { hooks?: Record<string, unknown> };
+			expect(settings.hooks).toMatchObject({
+				SessionStart: expect.any(Array),
+				PreToolUse: expect.any(Array),
+			});
+		} finally {
+			if (priorRoot === undefined)
+				delete process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+			else process.env.FLYWHEEL_CLAUDE_SESSION_DIR = priorRoot;
+			rmSync(stateRoot, { recursive: true, force: true });
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("fails closed when a Claude resume request has no session id", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await expect(
+			adapter.execute(makeCtx({ previousSession: { sessionId: "" } })),
+		).rejects.toThrow("Claude resume session id is missing");
+		expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
+	});
+
+	it("fails closed before launch when workflow resume lacks a SessionStart observer", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "fly2808-claude-no-hook-"));
+		try {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await expect(
+				adapter.execute(
+					makeCtx({
+						cwd,
+						model: "claude-fable-5-1",
+						previousSession: {
+							sessionId: "old-session-id",
+							vendor: "claude",
+							resolvedModel: "claude-fable-5-1",
+							cwd: realpathSync(cwd),
+						},
+						processLifecycle: {
+							mode: "resume",
+							generation: 2,
+							expectedSessionId: "old-session-id",
+							expectedModel: "claude-fable-5-1",
+							expectedCwd: realpathSync(cwd),
+							onIdentityVerified: () => {},
+							resumeVerificationStatus: () => "pending",
+						} as NonNullable<AdapterExecutionContext["processLifecycle"]>,
+					}),
+				),
+			).rejects.toThrow(/SessionStart identity callback is unavailable/);
+			expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("persists and reports the exact Claude process identity before release", async () => {
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2808-claude-state-"));
+		const priorRoot = process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+		process.env.FLYWHEEL_CLAUDE_SESSION_DIR = stateRoot;
+		try {
+			const cwd = mkdtempSync(join(tmpdir(), "fly2808-claude-cwd-"));
+			const { fn } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+			const onIdentityVerified = vi.fn();
+			const onRetired = vi.fn();
+
+			const result = await adapter.execute(
+				makeCtx({
+					executionId: "fly2808-claude",
+					cwd,
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						retirementApproved: () => false,
+						onIdentityVerified,
+						onRetired,
+					},
+				}),
+			);
+
+			expect(onIdentityVerified).toHaveBeenCalledWith({
+				sessionId: result.sessionId,
+				model: null,
+				cwd: realpathSync(cwd),
+				verifiedAt: expect.any(String),
+			});
+			expect(onRetired).not.toHaveBeenCalled();
+			expect(
+				JSON.parse(
+					readFileSync(
+						join(stateRoot, "fly2808-claude", "session.json"),
+						"utf8",
+					),
+				),
+			).toMatchObject({
+				schemaVersion: 1,
+				executionId: "fly2808-claude",
+				vendor: "claude",
+				sessionId: result.sessionId,
+				cwd: realpathSync(cwd),
+			});
+			rmSync(cwd, { recursive: true, force: true });
+		} finally {
+			if (priorRoot === undefined)
+				delete process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+			else process.env.FLYWHEEL_CLAUDE_SESSION_DIR = priorRoot;
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("settles an approved retirement when the exact window leaves the tmux inventory", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		const onRetired = vi.fn();
+
+		const result = await adapter.execute(
+			makeCtx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					onRetired,
+				},
+			}),
+		);
+
+		expect(result).toMatchObject({ success: true, timedOut: false });
+		expect(onRetired).toHaveBeenCalledWith({
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			retiredAt: expect.any(String),
+		});
+		expect(calls.some((call) => call.args[0] === "list-windows")).toBe(true);
+		expect(
+			calls.some(
+				(call) =>
+					call.args[0] === "display-message" &&
+					call.args.at(-1) === "#{window_id}",
+			),
+		).toBe(false);
+	});
+
+	it("forces an approved Claude retirement when its grace expires", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: false });
+		const adapter = new TmuxAdapter("flywheel", fn, 10, 1_000);
+		const onRetired = vi.fn();
+		const retirementApproved = vi.fn(() => true);
+
+		await expect(
+			adapter.execute(
+				makeCtx({
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						retirementGraceMs: 30,
+						retirementRequestedAt: () => "2000-01-01T00:00:00.000Z",
+						retirementApproved,
+						onRetired,
+					},
+				}),
+			),
+		).resolves.toMatchObject({ success: true, timedOut: false });
+		expect(retirementApproved.mock.calls.length).toBeGreaterThanOrEqual(4);
+		expect(killWindowTargets(calls)).toContain("=flywheel:@42");
+		expect(onRetired).toHaveBeenCalledOnce();
+	});
+
+	it("keeps retirement pending when exact-window inventory is unreadable", async () => {
+		const { fn } = makeMockExec({ paneDead: true, listWindowsThrows: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		const onRetired = vi.fn();
+		const onRetirementFailed = vi.fn();
+
+		await expect(
+			adapter.execute(
+				makeCtx({
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						retirementApproved: () => true,
+						onRetired,
+						onRetirementFailed,
+					},
+				}),
+			),
+		).resolves.toMatchObject({ success: true, timedOut: false });
+		expect(onRetired).not.toHaveBeenCalled();
+		expect(onRetirementFailed).not.toHaveBeenCalled();
+	});
+
+	it("logs every retirement watchdog wait reason with the execution id", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const cases: Array<{
+			executionId: string;
+			processLifecycle?: AdapterExecutionContext["processLifecycle"];
+			reasonCode: string;
+		}> = [
+			{
+				executionId: "retirement-log-missing",
+				reasonCode: "retirement_lifecycle_missing",
+			},
+			{
+				executionId: "retirement-log-not-approved",
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => false,
+				},
+				reasonCode: "retirement_not_approved",
+			},
+			{
+				executionId: "retirement-log-unreadable",
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => {
+						throw new Error("store unavailable");
+					},
+				},
+				reasonCode: "retirement_approval_unreadable",
+			},
+			{
+				executionId: "retirement-log-grace",
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementGraceMs: 1_000,
+					retirementApproved: () => true,
+				},
+				reasonCode: "retirement_grace_pending",
+			},
+		];
+
+		try {
+			for (const testCase of cases) {
+				const { fn } = makeMockExec({ paneDead: true });
+				await new TmuxAdapter("flywheel", fn, 10).execute(
+					makeCtx({
+						executionId: testCase.executionId,
+						...(testCase.processLifecycle
+							? { processLifecycle: testCase.processLifecycle }
+							: {}),
+					}),
+				);
+			}
+
+			const messages = warn.mock.calls.flat().join("\n");
+			for (const testCase of cases) {
+				expect(messages).toContain(`execution=${testCase.executionId}`);
+				expect(messages).toContain(`reason_code=${testCase.reasonCode}`);
+			}
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("accepts an already-absent exact window when audited cleanup is refused", () => {
+		const priorIsolationRoot = process.env.FLYWHEEL_ISOLATION_ROOT;
+		const isolationRoot = mkdtempSync(
+			join(tmpdir(), "fly2808-retire-boundary-"),
+		);
+		process.env.FLYWHEEL_ISOLATION_ROOT = isolationRoot;
+		const calls: string[][] = [];
+		const exec = (_cmd: string, args: string[]): { stdout: string } => {
+			calls.push(args);
+			if (args[0] === "display-message" && args.at(-1) === "#{socket_path}") {
+				return { stdout: "/outside/isolation/tmux.sock\n" };
+			}
+			if (args[0] === "display-message" && args.at(-1) === "#{window_id}") {
+				throw new Error("window gone");
+			}
+			return { stdout: "" };
+		};
+
+		try {
+			const adapter = new TmuxAdapter("flywheel", exec, 10);
+			const cleanup = adapter as unknown as {
+				cleanupExactWindow(target: string): "cleaned" | "present" | "unknown";
+			};
+			expect(cleanup.cleanupExactWindow("=flywheel:@42")).toBe("cleaned");
+			expect(calls.some((args) => args[0] === "list-windows")).toBe(true);
+			expect(
+				calls.some(
+					(args) =>
+						args[0] === "display-message" && args.at(-1) === "#{window_id}",
+				),
+			).toBe(false);
+		} finally {
+			if (priorIsolationRoot === undefined) {
+				delete process.env.FLYWHEEL_ISOLATION_ROOT;
+			} else {
+				process.env.FLYWHEEL_ISOLATION_ROOT = priorIsolationRoot;
+			}
+			rmSync(isolationRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("does not replace a completed result when standby confirmation loses a race", async () => {
+		const stateRoot = mkdtempSync(join(tmpdir(), "fly2808-claude-race-"));
+		const priorRoot = process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+		process.env.FLYWHEEL_CLAUDE_SESSION_DIR = stateRoot;
+		try {
+			const cwd = mkdtempSync(join(tmpdir(), "fly2808-claude-race-cwd-"));
+			const { fn } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await expect(
+				adapter.execute(
+					makeCtx({
+						executionId: "fly2808-claude-race",
+						cwd,
+						processLifecycle: {
+							mode: "initial",
+							generation: 1,
+							retirementApproved: () => true,
+							onRetired: () => {
+								throw new Error("process_body_closed");
+							},
+						},
+					}),
+				),
+			).resolves.toMatchObject({ success: true });
+			rmSync(cwd, { recursive: true, force: true });
+		} finally {
+			if (priorRoot === undefined)
+				delete process.env.FLYWHEEL_CLAUDE_SESSION_DIR;
+			else process.env.FLYWHEEL_CLAUDE_SESSION_DIR = priorRoot;
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("does NOT include --print or --output-format", async () => {

@@ -328,8 +328,10 @@ import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
 import {
 	CLOSE_ELIGIBLE_STATES,
+	cleanupWorkflowResumeAttempt,
 	closeRunner,
 	registerLifecycleCloseGuard,
+	retireWorkflowProcessBody,
 } from "./close-runner.js";
 import {
 	createHostCmuxWatcherPatrol,
@@ -515,6 +517,7 @@ import {
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
+	storeNodeStandbyResumeEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
@@ -1008,14 +1011,24 @@ import {
 } from "./workflow-gate-card-lifecycle.js";
 import { materializeWorkflowGateWithFailLoud } from "./workflow-gate-materialization-alert.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
+import {
+	isWorkflowProcessRetirementApproved,
+	runWorkflowProcessRetirementTick,
+} from "./workflow-process-retirement.js";
 import { resolveWorkflowReplacementLeadIntent } from "./workflow-replacement-lead-event.js";
 import {
 	GitWorkflowResumeCheckpointStore,
 	reconcileWorkflowResumeCheckpoint,
 } from "./workflow-resume-checkpoint.js";
+import {
+	buildStandbyResumeStartRequest,
+	frozenLaunchLeadId,
+	observeWorkflowResumeLaunchFailure,
+} from "./workflow-resume-identity.js";
 import { runWorkflowResumeShadowTick } from "./workflow-resume-shadow.js";
 import {
 	grantWorkflowReworkTurn,
+	type WorkflowResumeFailureEvidence,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
 import { renderWorkflowReworkWakeContent } from "./workflow-rework-wake-copy.js";
@@ -1972,6 +1985,8 @@ export function createBridgeApp(
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
 	const workflowDecisionRoutes = () =>
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
+	const nodeStandbyResumeEnabled = () =>
+		flagStore ? storeNodeStandbyResumeEnabled(flagStore) : false;
 	const buildIdentity = resolveBridgeBuildIdentity();
 	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
@@ -2544,6 +2559,53 @@ export function createBridgeApp(
 		});
 	}
 
+	// FLY-2808: cleanup/retirement-unconfirmed and expired resume ownership are
+	// fail-closed safety latches. Only the master-token operator path may reopen
+	// them, and StateStore records the server-derived actor, timestamp, reason,
+	// and restored attempt boundary.
+	if (config.apiToken) {
+		app.post(
+			"/api/workflow-resume/reopen",
+			tokenAuthMiddleware(config.apiToken),
+			(req, res) => {
+				const executionId =
+					typeof req.body?.executionId === "string"
+						? req.body.executionId.trim()
+						: "";
+				const reason =
+					typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+				if (!executionId || !reason || reason.length > 500) {
+					res.status(400).json({
+						ok: false,
+						error:
+							"executionId and a reason of at most 500 characters are required",
+					});
+					return;
+				}
+				const reopened = store.reopenWorkflowExecutionResume({
+					executionId,
+					actor: "master-api-token",
+					reason,
+					now: new Date().toISOString(),
+				});
+				if (!reopened.ok) {
+					res
+						.status(reopened.reason === "process_body_not_enrolled" ? 404 : 409)
+						.json({ ok: false, reason: reopened.reason });
+					return;
+				}
+				res.json(reopened);
+			},
+		);
+	} else {
+		app.post("/api/workflow-resume/reopen", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				error: "workflow resume reopen requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
 	// FLY-1285: supervisor observations are bearer-authenticated inside this
 	// dedicated router (including an explicit 503 when apiToken is absent) and
 	// hydrate the durable hold before any heartbeat reaper can act.
@@ -2959,6 +3021,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			{ nodeStandbyResumeEnabled },
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -3655,6 +3718,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			{ nodeStandbyResumeEnabled },
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -5645,6 +5709,7 @@ export function createBridgeApp(
 			config.chatThreadsEnabled,
 			staleBlockerGuard,
 			{
+				nodeStandbyResumeEnabled,
 				codexQuotaRootKey: () => opts?.codexQuota?.rootKey,
 				verifyCodexQuotaRecovery: opts?.codexQuota?.canRecover,
 				masterToken: config.apiToken,
@@ -9274,6 +9339,8 @@ export async function startBridge(
 				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
+				nodeStandbyResumeEnabled: () =>
+					storeNodeStandbyResumeEnabled(flagStore),
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				armResidentReceiver: (executionId, source) =>
 					residentReceiverSupervisor.arm(executionId, source),
@@ -9977,6 +10044,12 @@ export async function startBridge(
 	};
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
+		isIntentionalStandby: (executionId) => {
+			const state = store.getWorkflowExecutionProcessBody(executionId)?.state;
+			return (
+				state === "retiring" || state === "standby" || state === "resuming"
+			);
+		},
 		alertIdentity: (session) => {
 			const bound = store.getCodexRecoveryAlertBinding(session.execution_id);
 			if (!bound) return undefined;
@@ -12926,6 +12999,18 @@ export async function startBridge(
 				}
 			: {}),
 		onReconcilePatrolTick: async () => {
+			await runWorkflowProcessRetirementTick({
+				store,
+				now: new Date().toISOString(),
+				retireProcess: async (candidate) => {
+					const result = await retireWorkflowProcessBody(candidate, store);
+					return {
+						physicalGone: result.physicalGone === true,
+						error: result.error,
+					};
+				},
+				log: (message) => console.warn(message),
+			});
 			// First rollout window: inventory historical terminal-run residue but do
 			// not create a collection receipt or tear anything down. Explicit
 			// force-cancel receipts above are safe to resume immediately.
@@ -14217,17 +14302,18 @@ export async function startBridge(
 		const assertWorkflowActorWorktreeReady = async (
 			session: WorkflowActorSession,
 			expectedHeadSha: string,
+			options?: { allowDirty?: boolean },
 		) => {
 			const worktree = store.getSession(session.execution_id)?.worktree_path;
 			if (!worktree)
 				return { ok: false as const, reason: "worktree_path_missing" };
-			return assertWorkflowWorktreeReady(worktree, expectedHeadSha);
+			return assertWorkflowWorktreeReady(worktree, expectedHeadSha, options);
 		};
 
 		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
 			store,
 			ownerId: `bridge:${process.pid}`,
-			env: process.env,
+			nodeStandbyResumeEnabled: () => storeNodeStandbyResumeEnabled(flagStore),
 			reentryEnabled: () => storeWorkflowReworkReentryEnabled(flagStore),
 			resolveAlertIdentity: (run) =>
 				resolveWorkflowRunAlertIdentity({
@@ -14256,8 +14342,325 @@ export async function startBridge(
 				},
 				hasHostProcess: hasHostProcessByExecutionId,
 				assertWorktreeReady: assertWorkflowActorWorktreeReady,
+				resumeStandbyActor: async ({
+					session,
+					demandId,
+					processGeneration,
+					expectedHeadSha,
+				}) => {
+					// FLY-2808: once the launch identity is known, a failed attempt
+					// still records what it expected and how long it ran.
+					const launchIdentity: {
+						current?: {
+							expectedSessionId: string;
+							expectedModel: string;
+							expectedCwd: string;
+							requestedAt: number;
+						};
+					} = {};
+					const failed = (error: string, cleanupRequired = false) => {
+						const known = launchIdentity.current;
+						const evidence: WorkflowResumeFailureEvidence | undefined =
+							known && {
+								expectedSessionId: known.expectedSessionId,
+								expectedModel: known.expectedModel,
+								expectedCwd: known.expectedCwd,
+								totalMs: Math.max(0, Date.now() - known.requestedAt),
+							};
+						return {
+							ok: false as const,
+							error,
+							cleanupRequired,
+							...(evidence ? { evidence } : {}),
+						};
+					};
+					if (!startDispatcher) {
+						return failed("start_dispatcher_unavailable");
+					}
+					const runtime = store.getWorkflowExecutionRuntime(
+						session.execution_id,
+					);
+					const binding = store.resolveCurrentWorkflowActivation(
+						session.execution_id,
+					);
+					if (!runtime || binding.kind !== "current") {
+						return failed("resume_runtime_unavailable");
+					}
+					const manifestPath =
+						runtime.vendor === "codex"
+							? join(codexSessionStateDir(session.execution_id), "session.json")
+							: join(
+									process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
+										join(homedir(), ".flywheel", "state", "claude-sessions"),
+									session.execution_id,
+									"session.json",
+								);
+					let manifest: Record<string, unknown>;
+					try {
+						manifest = JSON.parse(
+							ffReadFileSync(manifestPath, "utf8"),
+						) as Record<string, unknown>;
+					} catch {
+						return failed("resume_manifest_unavailable");
+					}
+					const expectedSessionId =
+						runtime.vendor === "codex" ? manifest.threadId : manifest.sessionId;
+					const manifestModel = manifest.resolvedModel;
+					const manifestCwd = manifest.cwd;
+					if (
+						typeof expectedSessionId !== "string" ||
+						!expectedSessionId.trim()
+					) {
+						return failed("resume_session_identity_missing");
+					}
+					if (manifestModel !== runtime.model) {
+						return failed("resume_model_mismatch");
+					}
+					if (typeof manifestCwd !== "string" || !manifestCwd.trim()) {
+						return failed("resume_cwd_missing");
+					}
+					let expectedCwd: string;
+					try {
+						expectedCwd = voiceRealpathSync(manifestCwd);
+					} catch {
+						return failed("resume_cwd_unavailable");
+					}
+					let observedWorktree: string | undefined;
+					try {
+						observedWorktree = session.worktree_path
+							? voiceRealpathSync(session.worktree_path)
+							: undefined;
+					} catch {
+						observedWorktree = undefined;
+					}
+					if (observedWorktree !== expectedCwd) {
+						return failed("resume_worktree_mismatch");
+					}
+					let currentHead = expectedHeadSha;
+					let dirty = false;
+					try {
+						const [head, status] = await Promise.all([
+							execFileP("git", ["-C", expectedCwd, "rev-parse", "HEAD"], {
+								timeout: 5_000,
+							}),
+							execFileP(
+								"git",
+								["-C", expectedCwd, "status", "--porcelain=v1", "-uno"],
+								{ timeout: 5_000 },
+							),
+						]);
+						currentHead = head.stdout.trim();
+						dirty = status.stdout.trim().length > 0;
+					} catch {
+						return failed("resume_git_identity_unavailable");
+					}
+					const priorHead =
+						typeof manifest.lastObservedHead === "string"
+							? manifest.lastObservedHead
+							: undefined;
+					const headDriftNotice =
+						priorHead && (priorHead !== currentHead || dirty)
+							? `Workflow resume context: the shared worktree moved from ${priorHead} to ${currentHead}${dirty ? " and currently has uncommitted changes" : ""}. Re-read the current files before acting; TURN remains the only write authority.`
+							: undefined;
+					// FLY-2808: reproduce the Lead frozen at the original registration —
+					// it owns the CommDB root and mailbox identity in the launch snapshot.
+					let leadId: string | undefined;
+					try {
+						const leadDb = new CommDB(
+							commDbPathForProject(
+								session.project_name ?? binding.run.project_name,
+							),
+						);
+						try {
+							leadId = frozenLaunchLeadId(leadDb, session.execution_id);
+						} finally {
+							leadDb.close();
+						}
+					} catch {
+						return failed("resume_lead_identity_unavailable");
+					}
+					const requestedAt = Date.now();
+					launchIdentity.current = {
+						expectedSessionId,
+						expectedModel: runtime.model,
+						expectedCwd,
+						requestedAt,
+					};
+					let resolveIdentity!: (value: {
+						sessionId: string;
+						model: string | null;
+						cwd: string;
+					}) => void;
+					let rejectIdentity!: (reason: Error) => void;
+					const identity = new Promise<{
+						sessionId: string;
+						model: string | null;
+						cwd: string;
+					}>((resolveIdentityPromise, rejectIdentityPromise) => {
+						resolveIdentity = resolveIdentityPromise;
+						rejectIdentity = rejectIdentityPromise;
+					});
+					let identityTimeout: ReturnType<typeof setTimeout> | undefined;
+					let cleanupRequired = false;
+					try {
+						const startResult = await startDispatcher.start(
+							buildStandbyResumeStartRequest({
+								session,
+								runProjectName: binding.run.project_name,
+								runtime,
+								leadId,
+								expectedSessionId,
+								expectedCwd,
+								currentHead,
+								lifecycle: {
+									generation: processGeneration,
+									demandId,
+									...(headDriftNotice ? { headDriftNotice } : {}),
+									retirementApproved: () => {
+										const current = store.getWorkflowExecutionProcessBody(
+											session.execution_id,
+										);
+										return isWorkflowProcessRetirementApproved(
+											current,
+											processGeneration,
+										);
+									},
+									retirementRequestedAt: () => {
+										const current = store.getWorkflowExecutionProcessBody(
+											session.execution_id,
+										);
+										return current?.generation === processGeneration &&
+											current.state === "retiring"
+											? (current.retirement_requested_at ?? undefined)
+											: undefined;
+									},
+									onIdentityVerified: resolveIdentity,
+									onIdentityVerificationFailed: (reasonCode) =>
+										rejectIdentity(new Error(reasonCode)),
+									resumeVerificationStatus: () => {
+										const current = store.getWorkflowExecutionProcessBody(
+											session.execution_id,
+										);
+										if (!current || current.generation !== processGeneration) {
+											return "rejected";
+										}
+										if (current.state === "active") return "accepted";
+										return current.state === "resuming" &&
+											current.current_demand_id === demandId
+											? "pending"
+											: "rejected";
+									},
+									onRetired: (evidence) => {
+										const retired = store.confirmWorkflowExecutionStandby({
+											executionId: session.execution_id,
+											generation: evidence.generation,
+											reasonCode: evidence.reasonCode,
+											now: evidence.retiredAt,
+										});
+										if (!retired.ok) {
+											console.warn(
+												`[workflow-rework] standby confirmation refused for ${session.execution_id}: ${retired.reason}`,
+											);
+										}
+									},
+									onRetirementFailed: (evidence) => {
+										const failed = store.failWorkflowExecutionRetirement({
+											executionId: session.execution_id,
+											generation: evidence.generation,
+											reasonCode: evidence.reasonCode,
+											now: evidence.failedAt,
+										});
+										if (!failed.ok) {
+											console.warn(
+												`[workflow-rework] retirement failure latch refused for ${session.execution_id}: ${failed.reason}`,
+											);
+										}
+									},
+								},
+							}),
+						);
+						cleanupRequired = true;
+						const launchFailure = observeWorkflowResumeLaunchFailure(
+							startResult.launchOutcome,
+						);
+						const observed = await Promise.race([
+							identity.then((value) => ({ kind: "identity" as const, value })),
+							new Promise<never>((_, reject) => {
+								identityTimeout = setTimeout(
+									() => reject(new Error("resume_identity_timeout")),
+									180_000,
+								);
+							}),
+							...(launchFailure ? [launchFailure] : []),
+						]);
+						if (observed.kind === "launch") {
+							return failed(
+								observed.outcome.failure.reason,
+								observed.outcome.failure.physicalEvidence === "unknown",
+							);
+						}
+						const totalMs = Math.max(0, Date.now() - requestedAt);
+						if (observed.value.model === null) {
+							return failed("resume_observed_model_missing", true);
+						}
+						return {
+							ok: true,
+							expectedSessionId,
+							observedSessionId: observed.value.sessionId,
+							expectedModel: runtime.model,
+							observedModel: observed.value.model,
+							expectedCwd,
+							observedCwd: observed.value.cwd,
+							queueMs: 0,
+							startupMs: totalMs,
+							totalMs,
+						};
+					} catch (error) {
+						return failed(
+							error instanceof Error ? error.message : String(error),
+							cleanupRequired,
+						);
+					} finally {
+						if (identityTimeout) clearTimeout(identityTimeout);
+					}
+				},
 				activateActorForWake: (session) =>
 					activateWakeHolder(session, "workflow_rework"),
+				cleanupFailedStandbyResume: async ({
+					session,
+					requestId,
+					ownerId,
+					generation,
+					routeRevision,
+					executionId,
+					processGeneration,
+					demandId,
+					ownerClaimId,
+				}) => {
+					const result = await cleanupWorkflowResumeAttempt(
+						{
+							executionId,
+							issueId: session.issue_id,
+							projectName: session.project_name ?? "",
+							generation: processGeneration,
+							demandId,
+							ownerClaimId,
+							authorityCheck: async () =>
+								store.checkWorkflowReworkSupersessionAuthority({
+									requestId,
+									ownerId,
+									generation,
+									routeRevision,
+									executionId,
+								}),
+						},
+						store,
+					);
+					return {
+						ok: result.closed,
+						...(result.error ? { error: result.error } : {}),
+					};
+				},
 				closeActorForReworkSupersession: async ({
 					session,
 					requestId,

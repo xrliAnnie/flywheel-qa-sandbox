@@ -384,6 +384,44 @@ describe("FLY-2268 resident hold replay", () => {
 		]);
 	});
 
+	it("keeps a durable process standby beyond the legacy three-hour grace", async () => {
+		store = await residentStore();
+		const entered = store.enterResidentHold({
+			executionId: "exec-1",
+			activationId: "activation:exec-1:run-1:repair-any-name:1",
+			nodeId: "repair-any-name",
+			boundarySeq: 1,
+			nowMs: T0,
+		});
+		if (!entered.ok) throw new Error(entered.reason);
+		const db = rawDb(store);
+		db.prepare(
+			`INSERT INTO workflow_execution_runtime (
+			   execution_id, run_id, node_id, attempt, vendor, model, effort,
+			   resolved_family, capabilities_digest, created_at
+			 ) VALUES ('exec-1', 'run-1', 'repair-any-name', 1, 'claude',
+			           'sonnet', 'medium', 'claude', ?, ?)`,
+		).run("b".repeat(64), new Date(T0).toISOString());
+		db.prepare(
+			`INSERT INTO workflow_execution_process_body (
+			   execution_id, generation, state, started_at, updated_at,
+			   standby_at, reason_code
+			 ) VALUES ('exec-1', 1, 'standby', ?, ?, ?, 'process_tree_gone')`,
+		).run(
+			new Date(T0).toISOString(),
+			new Date(T0 + 1).toISOString(),
+			new Date(T0 + 1).toISOString(),
+		);
+
+		expect(
+			store.expireResidentHoldsTx(
+				new Date(T0 + RESIDENT_GRACE_MS + 1).toISOString(),
+			),
+		).toEqual([]);
+		expect(store.getResidentHold("exec-1")?.state).toBe("resident");
+		expect(store.getSession("exec-1")?.status).toBe("running");
+	});
+
 	it("fails an expiry once and reuses the delivery-operation alert identity", async () => {
 		store = await residentStore();
 		const entered = store.enterResidentHold({

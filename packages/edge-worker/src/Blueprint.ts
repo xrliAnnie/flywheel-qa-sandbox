@@ -712,6 +712,9 @@ export interface BlueprintContext {
 		/** FLY-1441: frozen run-level gate-carrier behavior epoch. */
 		gateCarrierEpoch?: number;
 	};
+	/** FLY-2808: Bridge-owned process body, threaded unchanged to the adapter. */
+	workflowProcessLifecycle?: AdapterExecutionContext["processLifecycle"];
+	workflowPreviousSession?: Record<string, unknown>;
 	workflowCapabilities?: Record<string, boolean | string>;
 	workflowAgentContent?: string;
 	workflowOutputCredential?: string;
@@ -1000,7 +1003,13 @@ export class Blueprint {
 				const resolvedIdentity = resolveRunnerMemoryIdentity({
 					backend,
 					projectName: ctx.projectName,
-					nodeId: ctx.generalizedExecutionContext?.nodeId,
+					// FLY-2808: a process-body resume must reopen the home that owns the
+					// frozen thread; it has no generalized context of its own.
+					nodeId:
+						ctx.generalizedExecutionContext?.nodeId ??
+						(ctx.workflowProcessLifecycle?.mode === "resume"
+							? ctx.workflowProcessLifecycle.nodeId
+							: undefined),
 				});
 				if (resolvedIdentity.ok) {
 					codexAgentHome = await this.codexAgentHomeAdmitter({
@@ -1413,7 +1422,57 @@ export class Blueprint {
 						).path,
 					)
 					.catch(() => false));
-			if (ctx.workflowResume) {
+			const processBodyResume = ctx.workflowProcessLifecycle?.mode === "resume";
+			if (processBodyResume) {
+				const expected = this.worktreeManager.expectedWorktree(
+					projectRoot,
+					projectName,
+					worktreeIssueId,
+				);
+				const expectedCwd = ctx.workflowProcessLifecycle?.expectedCwd;
+				let registered = false;
+				try {
+					registered =
+						!!expectedCwd &&
+						fs.realpathSync(expected.path) === fs.realpathSync(expectedCwd) &&
+						(await this.worktreeManager.isRegistered(
+							projectRoot,
+							expected.path,
+						));
+				} catch {
+					registered = false;
+				}
+				if (!registered) {
+					return {
+						success: false,
+						error: "workflow_process_resume_worktree_mismatch",
+						worktreePath: expected.path,
+						launchFailure: {
+							code: "LAUNCH_PRECOMMIT_FAILED",
+							reason: "workflow_process_resume_worktree_mismatch",
+							physicalEvidence: "absent",
+						},
+					};
+				}
+				let generation = "";
+				try {
+					generation =
+						(await this.worktreeManager.readWorktreeGeneration?.(
+							expected.path,
+						)) ?? "";
+				} catch {
+					generation = "";
+				}
+				worktreeInfo = {
+					projectName,
+					issueId: worktreeIssueId,
+					worktreePath: expected.path,
+					branch: expected.branch,
+					mainRepoPath: projectRoot,
+					generation,
+				};
+				cwd = expected.path;
+			} else if (ctx.workflowResume) {
 				const resume = ctx.workflowResume;
 				if (
 					ctx.startPoint?.toLowerCase() !== resume.anchorCommit.toLowerCase()
@@ -1650,7 +1709,9 @@ export class Blueprint {
 		}
 
 		// ── Git preflight (existing — THROWS on failure) ──────
-		await this.gitChecker.assertCleanTree(cwd);
+		if (ctx.workflowProcessLifecycle?.mode !== "resume") {
+			await this.gitChecker.assertCleanTree(cwd);
+		}
 		const baseSha = await this.gitChecker.captureBaseline(cwd);
 		if (ctx.prepareWorkflowIssueDelivery) {
 			try {
@@ -1759,7 +1820,8 @@ export class Blueprint {
 		// its independence coming from being its own session on the QA-tier model.
 		const isQaPhase =
 			ctx.shareParentBranch === true && ctx.sessionRole === "qa";
-		const sharedPhaseKeepAlive = ctx.shareParentBranch === true;
+		const sharedPhaseKeepAlive =
+			ctx.shareParentBranch === true && !ctx.workflowProcessLifecycle;
 		const phaseKeepAlive: AdapterExecutionContext["phaseKeepAlive"] =
 			isCodexRunner && sharedPhaseKeepAlive
 				? isDesignPhase
@@ -3042,6 +3104,12 @@ export class Blueprint {
 						}
 					: {}),
 				...(phaseKeepAlive && { phaseKeepAlive }),
+				...(ctx.workflowProcessLifecycle && {
+					processLifecycle: ctx.workflowProcessLifecycle,
+				}),
+				...(ctx.workflowPreviousSession && {
+					previousSession: ctx.workflowPreviousSession,
+				}),
 				...(residentLoopTarget && { residentLoopTarget }),
 				...(ctx.sessionRole && { sessionRole: ctx.sessionRole }),
 				timeoutMs,

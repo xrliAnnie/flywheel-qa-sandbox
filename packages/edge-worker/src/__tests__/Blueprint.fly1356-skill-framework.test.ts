@@ -126,6 +126,8 @@ interface RunOpts {
 		handle: AdmitCodexAgentHomeResult["handle"],
 	) => Promise<unknown>;
 	projectRoot?: string;
+	/** FLY-2808: a process-body resume requires the frozen worktree registered. */
+	worktreeRegistered?: boolean;
 	inspectPending?: (state: {
 		pending: Promise<unknown>;
 		startedCalls: () => number;
@@ -158,7 +160,7 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 						path: projectRoot,
 						branch: "flywheel-FLY-1395",
 					})),
-					isRegistered: vi.fn(async () => false),
+					isRegistered: vi.fn(async () => opts.worktreeRegistered === true),
 					removeIfExists: vi.fn(async () => true),
 					create: vi.fn(async () => ({
 						projectName: "testproj",
@@ -428,6 +430,50 @@ describe("FLY-2358 Blueprint keyed agent home admission", () => {
 			codexAgentHomeAdmitter: admit,
 		});
 		expect(admit).not.toHaveBeenCalled();
+	});
+
+	it("admits the frozen node's home when a standby Codex body resumes", async () => {
+		// FLY-2808 QA: a resume carries no generalized context, so without the
+		// frozen node id the thread's owning home was never admitted and the
+		// resumed daemon started in an unrelated per-execution CODEX_HOME.
+		const projectRoot = fs.realpathSync(
+			fs.mkdtempSync(path.join(os.tmpdir(), "fly2808-codex-resume-")),
+		);
+		execFileSync("git", ["init", "-q"], { cwd: projectRoot });
+		const admit = vi.fn(async () => admittedHome());
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const { execArgs } = await runBlueprint({
+			envValue: "bare",
+			projectRoot,
+			worktreeRegistered: true,
+			ctxExtra: {
+				runnerBackend: "codex-tmux",
+				sessionRole: "implement",
+				shareParentBranch: true,
+				workflowProcessLifecycle: {
+					mode: "resume",
+					generation: 2,
+					nodeId: "implement",
+					expectedSessionId: "thread-1",
+					expectedModel: "gpt-5.6-sol",
+					expectedCwd: projectRoot,
+				},
+				workflowPreviousSession: { threadId: "thread-1" },
+			},
+			codexProbe: () => ({ disableNames: [] }),
+			codexAgentHomeAdmitter: admit,
+		});
+		expect(warn).not.toHaveBeenCalledWith(
+			expect.stringContaining("identity_unresolved"),
+		);
+		expect(admit).toHaveBeenCalledWith(
+			expect.objectContaining({ project: "testproj", role: "implement" }),
+		);
+		expect(execArgs.codexAgentHome).toMatchObject({
+			project: "testproj",
+			role: "implement",
+			home: "/tmp/codex-agent-home",
+		});
 	});
 });
 

@@ -7,13 +7,14 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	unlinkSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import {
 	buildNonLeadClaudeSettings,
@@ -26,6 +27,7 @@ import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
 	AdapterHealthCheck,
+	HookCallbackEvent,
 	IAdapter,
 	IHookCallbackServer,
 	LaunchPrecommitFailure,
@@ -33,6 +35,10 @@ import type {
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
 import type { BoundaryEvidence } from "./isolation-boundary.js";
 import { auditedSignal } from "./kill-ledger.js";
+import {
+	processRetirementGraceMs,
+	tmuxWindowPresence,
+} from "./process-retirement.js";
 import {
 	readSyncOpMarker,
 	syncOpMarkerPath,
@@ -67,6 +73,7 @@ export interface ExecFileOpts {
 }
 
 export const DEFAULT_SYNC_EXEC_TIMEOUT_MS = 20_000;
+const CLAUDE_RESUME_IDENTITY_TIMEOUT_MS = 180_000;
 
 export type ExecFileFn = (
 	cmd: string,
@@ -496,12 +503,83 @@ export class TmuxAdapter implements IAdapter {
 		let windowName = this.sanitizeWindowName(
 			ctx.label ?? `issue-${Date.now()}`,
 		);
-		const claudeSessionId = randomUUID();
+		let claudeSessionId: string;
+		if (ctx.previousSession !== undefined) {
+			const resumedSessionId = ctx.previousSession.sessionId;
+			if (
+				typeof resumedSessionId !== "string" ||
+				resumedSessionId.trim().length === 0
+			) {
+				throw new Error("Claude resume session id is missing");
+			}
+			const expectedVendor = ctx.previousSession.vendor;
+			if (expectedVendor !== undefined && expectedVendor !== "claude") {
+				throw new Error("Claude resume vendor mismatch");
+			}
+			if (typeof ctx.previousSession.resolvedModel === "string") {
+				const resolvedModel = ctx.model
+					? resolveAllowedCanonicalModel(ctx.model, {
+							surface: "runner",
+							runtimeVendor: "claude",
+						})
+					: undefined;
+				if (resolvedModel !== ctx.previousSession.resolvedModel) {
+					throw new Error("Claude resume model mismatch");
+				}
+			}
+			if (typeof ctx.previousSession.cwd === "string") {
+				let observedCwd = ctx.cwd;
+				try {
+					observedCwd = realpathSync(ctx.cwd);
+				} catch {
+					// The launch path reports the missing worktree separately.
+				}
+				if (observedCwd !== ctx.previousSession.cwd) {
+					throw new Error("Claude resume cwd mismatch");
+				}
+			}
+			claudeSessionId = resumedSessionId;
+		} else {
+			claudeSessionId = randomUUID();
+		}
+		if (ctx.processLifecycle) {
+			if (
+				!Number.isSafeInteger(ctx.processLifecycle.generation) ||
+				ctx.processLifecycle.generation < 1
+			) {
+				throw new Error("Claude process generation is invalid");
+			}
+			if (
+				ctx.processLifecycle.mode === "resume" &&
+				ctx.previousSession === undefined
+			) {
+				throw new Error("Claude resume manifest is missing");
+			}
+			if (
+				ctx.processLifecycle.expectedSessionId !== undefined &&
+				ctx.processLifecycle.expectedSessionId !== claudeSessionId
+			) {
+				throw new Error("Claude resume session identity mismatch");
+			}
+		}
 		const start = Date.now();
 		const effectiveTimeoutMs = ctx.timeoutMs ?? this.defaultTimeoutMs;
 
 		// Generate per-run callback token if hookServer available
 		const callbackToken = this.hookServer ? randomUUID() : undefined;
+		const resumeIdentityRequired =
+			this.type === "claude-tmux" && ctx.processLifecycle?.mode === "resume";
+		if (
+			resumeIdentityRequired &&
+			(!callbackToken ||
+				!this.hookServer?.waitForEvent ||
+				!ctx.processLifecycle?.onIdentityVerified ||
+				!ctx.processLifecycle.resumeVerificationStatus)
+		) {
+			throw new Error(
+				"Claude resume SessionStart identity callback is unavailable",
+			);
+		}
 
 		// FLY-1638: a completed generation can leave a same-name window behind.
 		// Resolve those exact identities before the capacity guard runs; otherwise
@@ -512,13 +590,15 @@ export class TmuxAdapter implements IAdapter {
 		await this.ensureSession();
 
 		// Unset CLAUDECODE to prevent nested Claude hang/refuse
-		this.execFileFn("tmux", [
-			"set-environment",
-			"-t",
-			`=${this.sessionName}`,
-			"-u",
-			"CLAUDECODE",
-		]);
+		await this.inEnsuredSession(() =>
+			this.execFileFn("tmux", [
+				"set-environment",
+				"-t",
+				`=${this.sessionName}`,
+				"-u",
+				"CLAUDECODE",
+			]),
+		);
 
 		// GEO-269: allow-rename ON so Claude CLI's --name can set the tmux window title.
 		// Previously OFF to prevent random title overwrites, but now we pass a meaningful
@@ -541,6 +621,42 @@ export class TmuxAdapter implements IAdapter {
 				? join(tmpdir(), "flywheel-launch-gates", `launch-${launchToken}`)
 				: undefined;
 		const gateFile = commitFile ?? directGateFile;
+		let processObservedCwd = ctx.cwd;
+		let processResolvedModel: string | null = null;
+		if (ctx.processLifecycle) {
+			try {
+				processObservedCwd = realpathSync(ctx.cwd);
+			} catch {
+				// Launch/worktree validation owns the missing-path error.
+			}
+			processResolvedModel = ctx.model
+				? resolveAllowedCanonicalModel(ctx.model, {
+						surface: "runner",
+						runtimeVendor: "claude",
+					})
+				: null;
+		}
+		if (
+			ctx.processLifecycle?.expectedModel !== undefined &&
+			ctx.processLifecycle.expectedModel !== processResolvedModel
+		) {
+			throw new Error("Claude resume model mismatch");
+		}
+		if (
+			ctx.processLifecycle?.expectedCwd !== undefined &&
+			ctx.processLifecycle.expectedCwd !== processObservedCwd
+		) {
+			throw new Error("Claude resume cwd mismatch");
+		}
+		const resumeIdentityManifest = resumeIdentityRequired
+			? this.prepareClaudeResumeIdentityManifest(
+					ctx,
+					claudeSessionId,
+					processResolvedModel,
+					processObservedCwd,
+					launchToken!,
+				)
+			: undefined;
 
 		// Build CLI args (interactive mode — NO --print, NO --output-format).
 		// FLY-493: `buildCliArgs` is an overridable seam; the Claude default
@@ -576,6 +692,12 @@ export class TmuxAdapter implements IAdapter {
 			// v0.1.1 compatibility must be per-window: a session-level value would
 			// be discarded by the positive environment boundary.
 			appendPaneEnv("FLYWHEEL_MARKER_DIR", FLYWHEEL_MARKER_DIR);
+		}
+		if (resumeIdentityManifest) {
+			appendPaneEnv(
+				"FLYWHEEL_RESUME_IDENTITY_MANIFEST",
+				resumeIdentityManifest.manifestPath,
+			);
 		}
 
 		// GEO-206: Inject comm DB path for flywheel-comm CLI
@@ -880,7 +1002,9 @@ export class TmuxAdapter implements IAdapter {
 			}
 			throw error;
 		}
-		const launchResult = this.execFileFn("tmux", tmuxLaunchArgs);
+		const launchResult = await this.inEnsuredSession(() =>
+			this.execFileFn("tmux", tmuxLaunchArgs),
+		);
 		// Both capture and later probe use tmux's raw `#{start_time}` decimal
 		// POSIX epoch seconds. Do not format it through Date/local timezone.
 		const launchFields = launchResult.stdout.trim().split("|");
@@ -942,7 +1066,8 @@ export class TmuxAdapter implements IAdapter {
 					{
 						code: "LAUNCH_WINDOW_IDENTITY_FAILED",
 						reason: "identity_publish_failed",
-						physicalEvidence,
+						physicalEvidence:
+							physicalEvidence === "present" ? "unknown" : physicalEvidence,
 					},
 					`[TmuxAdapter] workflow identity publish failed for ${exactWindowTarget}: ${(err as Error).message}`,
 				);
@@ -1014,12 +1139,40 @@ export class TmuxAdapter implements IAdapter {
 					{
 						code: "LAUNCH_WINDOW_IDENTITY_FAILED",
 						reason: "generation_record_failed",
-						physicalEvidence,
+						physicalEvidence:
+							physicalEvidence === "present" ? "unknown" : physicalEvidence,
 					},
 					`[TmuxAdapter] launch aborted before generation commit for ${ctx.executionId}: ${(err as Error).message}`,
 				);
 			}
 		}
+		if (ctx.processLifecycle && !resumeIdentityRequired) {
+			try {
+				await this.persistClaudeSessionState(
+					ctx,
+					claudeSessionId,
+					processResolvedModel,
+					processObservedCwd,
+				);
+				ctx.processLifecycle.onIdentityVerified?.({
+					sessionId: claudeSessionId,
+					model: processResolvedModel,
+					cwd: processObservedCwd,
+					verifiedAt: new Date().toISOString(),
+				});
+			} catch (error) {
+				this.cleanupExactWindow(exactWindowTarget);
+				throw error;
+			}
+		}
+		const resumeIdentityEvent = resumeIdentityManifest
+			? this.hookServer!.waitForEvent!(
+					callbackToken!,
+					"SessionStart",
+					CLAUDE_RESUME_IDENTITY_TIMEOUT_MS,
+					claudeSessionId,
+				)
+			: undefined;
 
 		// FLY-245 R5/R6 HIGH-3: write THIS launch's token to the durable COMMIT file
 		// = release ONLY this launch's gated shell. The file's existence is the
@@ -1043,6 +1196,9 @@ export class TmuxAdapter implements IAdapter {
 					chmodSync(gateFile, 0o600);
 				}
 			} catch (err) {
+				if (resumeIdentityEvent && callbackToken) {
+					this.hookServer?.cancelWait(callbackToken);
+				}
 				const physicalEvidence = this.cleanupExactWindow(exactWindowTarget);
 				if (directGateFile) {
 					try {
@@ -1055,11 +1211,30 @@ export class TmuxAdapter implements IAdapter {
 					{
 						code: "LAUNCH_PRECOMMIT_FAILED",
 						reason: `launch_commit_failed:${(err as Error).message}`,
-						physicalEvidence,
+						physicalEvidence:
+							physicalEvidence === "present" ? "unknown" : physicalEvidence,
 					},
 					`[TmuxAdapter] launch aborted: could not write durable commit for ${ctx.executionId} ` +
 						`(Claude never started; gated shell self-reaps): ${(err as Error).message}`,
 				);
+			}
+		}
+		if (resumeIdentityEvent && resumeIdentityManifest) {
+			try {
+				await this.verifyClaudeResumeIdentity(
+					ctx,
+					resumeIdentityManifest,
+					resumeIdentityEvent,
+				);
+			} catch (error) {
+				const reason =
+					error instanceof Error ? error.message : "resume_identity_unverified";
+				try {
+					ctx.processLifecycle?.onIdentityVerificationFailed?.(reason);
+				} finally {
+					this.cleanupExactWindow(exactWindowTarget);
+				}
+				throw error;
 			}
 		}
 
@@ -1129,8 +1304,17 @@ export class TmuxAdapter implements IAdapter {
 			sessionStatus = "timeout";
 			throw err;
 		} finally {
+			let retirementApproved = false;
+			try {
+				retirementApproved =
+					ctx.processLifecycle?.retirementApproved?.() === true;
+			} catch {
+				// Controller state is authoritative; an unreadable approval fails closed.
+			}
+			const retiringToStandby =
+				sessionStatus === "completed" && retirementApproved;
 			// GEO-206 Phase 2: Update session status
-			if (registeredSession && ctx.commDbPath) {
+			if (!retiringToStandby && registeredSession && ctx.commDbPath) {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
 					commDb.updateSessionStatusIfRunning(ctx.executionId, sessionStatus);
@@ -1149,6 +1333,33 @@ export class TmuxAdapter implements IAdapter {
 					);
 				} catch {
 					// Window may already be gone — non-fatal
+				}
+			}
+			if (retiringToStandby) {
+				const physicalRetirement = this.cleanupExactWindow(
+					exactWindowTarget,
+					"workflow_process_standby",
+				);
+				if (physicalRetirement === "cleaned") {
+					try {
+						ctx.processLifecycle!.onRetired?.({
+							generation: ctx.processLifecycle!.generation,
+							reasonCode: "process_tree_gone",
+							retiredAt: new Date().toISOString(),
+						});
+					} catch {
+						// A controller race after physical retirement must not rewrite success.
+					}
+				} else if (physicalRetirement === "present") {
+					try {
+						ctx.processLifecycle!.onRetirementFailed?.({
+							generation: ctx.processLifecycle!.generation,
+							reasonCode: "retirement_unconfirmed",
+							failedAt: new Date().toISOString(),
+						});
+					} catch {
+						// The process result is already final; controller failure remains visible.
+					}
 				}
 			}
 			if (ctx.workflowActivationId && ctx.onWorkflowUsageEvent) {
@@ -1191,6 +1402,182 @@ export class TmuxAdapter implements IAdapter {
 			durationMs: Date.now() - start,
 			timedOut,
 		};
+	}
+
+	private prepareClaudeResumeIdentityManifest(
+		ctx: AdapterExecutionContext,
+		sessionId: string,
+		resolvedModel: string | null,
+		cwd: string,
+		launchToken: string,
+	): { manifestPath: string; ackPath: string; launchToken: string } {
+		if (!resolvedModel) {
+			throw new Error("Claude resume observed model is unavailable");
+		}
+		const lifecycle = ctx.processLifecycle;
+		if (!lifecycle || lifecycle.mode !== "resume") {
+			throw new Error("Claude resume lifecycle is unavailable");
+		}
+		const stateRoot =
+			process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
+			join(homedir(), ".flywheel", "state", "claude-sessions");
+		const stateDir = join(stateRoot, ctx.executionId);
+		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+		chmodSync(stateDir, 0o700);
+		const manifestPath = join(
+			stateDir,
+			`resume-identity-${lifecycle.generation}-${launchToken}.json`,
+		);
+		const ackPath = `${manifestPath}.verified`;
+		try {
+			unlinkSync(ackPath);
+		} catch {
+			// Expected on a fresh physical launch.
+		}
+		const manifest = {
+			schemaVersion: 1,
+			executionId: ctx.executionId,
+			generation: lifecycle.generation,
+			launchToken,
+			expectedSessionId: sessionId,
+			expectedModel: resolvedModel,
+			expectedCwd: cwd,
+			ackPath,
+		};
+		const tempPath = `${manifestPath}.${process.pid}.${randomUUID()}.tmp`;
+		writeFileSync(tempPath, `${JSON.stringify(manifest)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		chmodSync(tempPath, 0o600);
+		renameSync(tempPath, manifestPath);
+		return { manifestPath, ackPath, launchToken };
+	}
+
+	private async verifyClaudeResumeIdentity(
+		ctx: AdapterExecutionContext,
+		manifest: { manifestPath: string; ackPath: string; launchToken: string },
+		eventPromise: Promise<HookCallbackEvent | null>,
+	): Promise<void> {
+		const lifecycle = ctx.processLifecycle;
+		if (!lifecycle || lifecycle.mode !== "resume") {
+			throw new Error("resume_lifecycle_unavailable");
+		}
+		const event = await eventPromise;
+		if (!event) throw new Error("resume_session_start_timeout");
+		if (
+			event.source !== "resume" ||
+			event.sessionId !== lifecycle.expectedSessionId ||
+			event.model !== lifecycle.expectedModel ||
+			event.cwd !== lifecycle.expectedCwd
+		) {
+			throw new Error("resume_session_start_identity_mismatch");
+		}
+		await this.persistClaudeSessionState(
+			ctx,
+			event.sessionId,
+			event.model ?? null,
+			event.cwd ?? ctx.cwd,
+		);
+		lifecycle.onIdentityVerified?.({
+			sessionId: event.sessionId,
+			model: event.model ?? null,
+			cwd: event.cwd ?? ctx.cwd,
+			verifiedAt: new Date(event.timestamp).toISOString(),
+		});
+		const deadline = Date.now() + CLAUDE_RESUME_IDENTITY_TIMEOUT_MS;
+		for (;;) {
+			const status = lifecycle.resumeVerificationStatus?.() ?? "rejected";
+			if (status === "accepted") break;
+			if (status === "rejected") {
+				throw new Error("resume_durable_verification_rejected");
+			}
+			if (Date.now() >= deadline) {
+				throw new Error("resume_durable_verification_timeout");
+			}
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+		}
+		const ack = {
+			schemaVersion: 1,
+			executionId: ctx.executionId,
+			generation: lifecycle.generation,
+			launchToken: manifest.launchToken,
+			sessionId: event.sessionId,
+			model: event.model,
+			cwd: event.cwd,
+			verifiedAt: new Date().toISOString(),
+		};
+		const tempPath = `${manifest.ackPath}.${process.pid}.${randomUUID()}.tmp`;
+		writeFileSync(tempPath, `${JSON.stringify(ack)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		chmodSync(tempPath, 0o600);
+		renameSync(tempPath, manifest.ackPath);
+	}
+
+	private async persistClaudeSessionState(
+		ctx: AdapterExecutionContext,
+		sessionId: string,
+		resolvedModel: string | null,
+		cwd: string,
+	): Promise<void> {
+		const stateRoot =
+			process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
+			join(homedir(), ".flywheel", "state", "claude-sessions");
+		const stateDir = join(stateRoot, ctx.executionId);
+		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+		chmodSync(stateDir, 0o700);
+		const git = async (...args: string[]): Promise<string | null> => {
+			try {
+				return (
+					await defaultAsyncExecFile("git", ["-C", cwd, ...args], {
+						timeoutMs: 5_000,
+					})
+				).stdout.trim();
+			} catch {
+				return null;
+			}
+		};
+		const [commonDir, dirty, worktree, branch, lastObservedHead] =
+			await Promise.all([
+				git("rev-parse", "--git-common-dir"),
+				git("status", "--porcelain=v1", "-uno"),
+				git("rev-parse", "--show-toplevel"),
+				git("symbolic-ref", "--quiet", "--short", "HEAD"),
+				git("rev-parse", "HEAD"),
+			]);
+		const state = {
+			schemaVersion: 1,
+			executionId: ctx.executionId,
+			issueId: ctx.issueId,
+			vendor: "claude",
+			sessionId,
+			resolvedModel,
+			effort: ctx.effort ?? null,
+			cwd,
+			gitCommonDir: commonDir
+				? isAbsolute(commonDir)
+					? commonDir
+					: resolve(cwd, commonDir)
+				: null,
+			worktree,
+			branch,
+			lastObservedHead,
+			dirty: dirty === null ? null : dirty.length > 0,
+			validatedAt: new Date().toISOString(),
+		};
+		const path = join(stateDir, "session.json");
+		const temp = join(
+			stateDir,
+			`.session.json.${process.pid}.${randomUUID()}.tmp`,
+		);
+		writeFileSync(temp, `${JSON.stringify(state)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		chmodSync(temp, 0o600);
+		renameSync(temp, path);
 	}
 
 	/**
@@ -1252,7 +1639,8 @@ export class TmuxAdapter implements IAdapter {
 	): BuiltCliArgs {
 		// CLI syntax: claude [options] [prompt] — options MUST come before prompt
 		const args: string[] = [];
-		args.push("--session-id", sessionId);
+		if (ctx.previousSession !== undefined) args.push("--resume", sessionId);
+		else args.push("--session-id", sessionId);
 		if (ctx.permissionMode) args.push("--permission-mode", ctx.permissionMode);
 		if (ctx.appendSystemPrompt) {
 			// FLY-154 hotfix: tmux `new-window` parser has an internal command
@@ -1338,24 +1726,40 @@ export class TmuxAdapter implements IAdapter {
 				: ctx.runnerMemory?.status === "disabled"
 					? { autoMemoryEnabled: false }
 					: undefined;
-		const usageSettings = ctx.workflowActivationId
-			? {
-					hooks: {
-						UserPromptSubmit: [
-							{
-								hooks: [
-									{
-										type: "command",
-										command:
-											'node "$FLYWHEEL_COMM_CLI" workflow-usage-source --event turn-start',
-										timeout: 10,
-									},
-								],
-							},
-						],
-					},
-				}
-			: undefined;
+		const hooks: Record<string, unknown[]> = {};
+		if (ctx.workflowActivationId) {
+			hooks.UserPromptSubmit = [
+				{
+					hooks: [
+						{
+							type: "command",
+							command:
+								'node "$FLYWHEEL_COMM_CLI" workflow-usage-source --event turn-start',
+							timeout: 10,
+						},
+					],
+				},
+			];
+		}
+		if (ctx.processLifecycle?.mode === "resume") {
+			const identityHook = {
+				type: "command",
+				command: '"$HOME/.flywheel/hooks/flywheel-session-identity.sh"',
+				timeout: 190,
+			};
+			const guardHook = {
+				type: "command",
+				command: '"$HOME/.flywheel/hooks/flywheel-session-identity.sh"',
+				timeout: 10,
+			};
+			hooks.SessionStart = [{ hooks: [identityHook] }];
+			hooks.UserPromptSubmit = [
+				...(hooks.UserPromptSubmit ?? []),
+				{ hooks: [guardHook] },
+			];
+			hooks.PreToolUse = [{ matcher: "*", hooks: [guardHook] }];
+		}
+		const usageSettings = Object.keys(hooks).length > 0 ? { hooks } : undefined;
 		args.push(
 			"--settings",
 			JSON.stringify(
@@ -1372,12 +1776,14 @@ export class TmuxAdapter implements IAdapter {
 		}
 		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
-		// NOTE: previousSession intentionally ignored — no resume in interactive tmux mode
+		const effectivePrompt = ctx.processLifecycle?.headDriftNotice
+			? `${ctx.processLifecycle.headDriftNotice}\n\n${ctx.prompt}`
+			: ctx.prompt;
 		// Blank prompts must stay inline: shell command substitution strips trailing
 		// newlines, so externalizing whitespace-only input would turn it into an
 		// empty file-backed prompt and fail the launch gate.
-		if (ctx.prompt.trim() === "") {
-			args.push(ctx.prompt);
+		if (effectivePrompt.trim() === "") {
+			args.push(effectivePrompt);
 			return { args };
 		}
 		if (!launchToken) {
@@ -1394,7 +1800,7 @@ export class TmuxAdapter implements IAdapter {
 		mkdirSync(promptDir, { recursive: true, mode: 0o700 });
 		chmodSync(promptDir, 0o700);
 		const windowPromptFile = join(promptDir, `prompt-${launchToken}.md`);
-		writeFileSync(windowPromptFile, ctx.prompt, {
+		writeFileSync(windowPromptFile, effectivePrompt, {
 			encoding: "utf-8",
 			mode: 0o600,
 		});
@@ -1509,6 +1915,15 @@ export class TmuxAdapter implements IAdapter {
 			let gracePollerRef: ReturnType<typeof setInterval> | null = null;
 			const start = Date.now();
 			let residentCompletionObserved = false;
+			let retirementObservedAtMs: number | undefined;
+			const loggedRetirementWaitReasons = new Set<string>();
+			const logRetirementWait = (reasonCode: string): void => {
+				if (loggedRetirementWaitReasons.has(reasonCode)) return;
+				loggedRetirementWaitReasons.add(reasonCode);
+				console.warn(
+					`[TmuxAdapter] Process retirement wait: reason_code=${reasonCode} execution=${ctx.executionId}`,
+				);
+			};
 
 			// GEO-206 Phase 2: Lazy-opened readonly DB handle for dynamic timeout
 			const commDbHandle: { db: CommDB | null } = { db: null };
@@ -1537,6 +1952,37 @@ export class TmuxAdapter implements IAdapter {
 					this.hookServer.cancelWait(callbackToken);
 				}
 				resolve(timedOut);
+			};
+			const retirementGraceExpired = (): boolean => {
+				const lifecycle = ctx.processLifecycle;
+				if (!lifecycle?.retirementApproved) {
+					logRetirementWait("retirement_lifecycle_missing");
+					return false;
+				}
+				try {
+					if (!lifecycle.retirementApproved()) {
+						retirementObservedAtMs = undefined;
+						logRetirementWait("retirement_not_approved");
+						return false;
+					}
+				} catch {
+					logRetirementWait("retirement_approval_unreadable");
+					return false;
+				}
+				const now = Date.now();
+				retirementObservedAtMs ??= now;
+				if (
+					now - retirementObservedAtMs <
+					processRetirementGraceMs(lifecycle)
+				) {
+					logRetirementWait("retirement_grace_pending");
+					return false;
+				}
+				console.warn(
+					`[TmuxAdapter] Process retirement grace expired for ${ctx.executionId}; forcing exact window teardown.`,
+				);
+				settle(false);
+				return true;
 			};
 
 			// FLY-159 Codex r2 HIGH: when ctx.waitingTimeoutMs is set (production
@@ -1584,6 +2030,7 @@ export class TmuxAdapter implements IAdapter {
 
 					// Heartbeat: report liveness each poll cycle
 					ctx.onHeartbeat?.(ctx.executionId);
+					if (retirementGraceExpired()) return;
 
 					// GEO-206 Phase 2: Dynamic timeout check (query DB first, then check elapsed)
 					if (ctx.commDbPath) {
@@ -1690,6 +2137,7 @@ export class TmuxAdapter implements IAdapter {
 
 					// Heartbeat: report liveness each poll cycle
 					ctx.onHeartbeat?.(ctx.executionId);
+					if (retirementGraceExpired()) return;
 
 					// GEO-206 Phase 2: Dynamic timeout check (query DB first, then check elapsed)
 					if (ctx.commDbPath) {
@@ -1749,32 +2197,28 @@ export class TmuxAdapter implements IAdapter {
 		});
 	}
 
-	private cleanupExactWindow(exactWindowTarget: string): "cleaned" | "unknown" {
+	private cleanupExactWindow(
+		exactWindowTarget: string,
+		reason = "exact_window_cleanup",
+	): "cleaned" | "present" | "unknown" {
 		try {
-			if (
-				!auditedTmuxKillWindow(
-					this.execFileFn,
-					exactWindowTarget,
-					"exact_window_cleanup",
-				)
-			) {
-				return "unknown";
-			}
+			auditedTmuxKillWindow(this.execFileFn, exactWindowTarget, reason);
 		} catch {
 			// Verification below is authoritative; the window may already be absent.
 		}
-		try {
-			this.execFileFn("tmux", [
-				"display-message",
-				"-p",
-				"-t",
-				exactWindowTarget,
-				"#{window_id}",
-			]);
-			return "unknown";
-		} catch {
-			return "cleaned";
-		}
+		const targetPrefix = `=${this.sessionName}:`;
+		const exactWindowId = exactWindowTarget.startsWith(targetPrefix)
+			? exactWindowTarget.slice(targetPrefix.length)
+			: "";
+		if (!/^@\d+$/.test(exactWindowId)) return "unknown";
+		const presence = tmuxWindowPresence(this.execFileFn, this.sessionName, {
+			windowId: exactWindowId,
+		});
+		return presence === "absent"
+			? "cleaned"
+			: presence === "present"
+				? "present"
+				: "unknown";
 	}
 
 	private purgeTerminalSameNameWorkflowWindows(
@@ -1862,6 +2306,34 @@ export class TmuxAdapter implements IAdapter {
 			};
 		}
 		await ensureRunnerSession(this.execFileFn, this.sessionName, options);
+	}
+
+	/**
+	 * FLY-2808: a retiring predecessor may kill the session's last window after
+	 * this launch ensured the session, and tmux then destroys the session. When a
+	 * session-targeted call fails and the session is really gone, ensure it again
+	 * and retry once; any other failure is rethrown unchanged.
+	 */
+	private async inEnsuredSession<T>(run: () => T): Promise<T> {
+		try {
+			return run();
+		} catch (error) {
+			if (this.runnerSessionPresent()) throw error;
+			console.warn(
+				`[TmuxAdapter] runner session ${this.sessionName} vanished after ensure; re-ensuring once`,
+			);
+			await this.ensureSession();
+			return run();
+		}
+	}
+
+	private runnerSessionPresent(): boolean {
+		try {
+			this.execFileFn("tmux", ["has-session", "-t", `=${this.sessionName}`]);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	sanitizeWindowName(name: string): string {

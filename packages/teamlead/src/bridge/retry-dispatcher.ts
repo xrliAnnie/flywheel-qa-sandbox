@@ -8,7 +8,10 @@ import type {
 	SkillFrameworkMode,
 	WorkflowDispatchVendor,
 } from "flywheel-config";
-import type { LaunchPrecommitOutcome } from "flywheel-core";
+import type {
+	AdapterExecutionContext,
+	LaunchPrecommitOutcome,
+} from "flywheel-core";
 import type {
 	WorkflowIssueDeliveryInput,
 	WorkflowResumeContext,
@@ -51,6 +54,8 @@ export interface GeneralizedExecutionDispatch {
 	}) => { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
 	/** Current launch-owner generation, used to bind physical tmux identity. */
 	launchGeneration?: number;
+	/** FLY-2808: durable process identity/retirement contract for this execution. */
+	processLifecycle?: AdapterExecutionContext["processLifecycle"];
 }
 
 export interface RetryRequest {
@@ -306,6 +311,12 @@ export interface StartRequest {
 	 */
 	/** FLY-1281: Bridge-internal, pre-bound generalized node execution. */
 	generalizedExecution?: GeneralizedExecutionDispatch;
+	/** FLY-2808: exact-session relaunch on the same execution id. Bridge-internal. */
+	processLifecycle?: AdapterExecutionContext["processLifecycle"];
+	/** Return a typed Blueprint launch outcome without enrolling a generalized run. */
+	observeLaunchOutcome?: boolean;
+	/** Provider identity persisted by the first launch; never accepted from HTTP. */
+	previousSession?: Record<string, unknown>;
 }
 
 export interface StartResult {

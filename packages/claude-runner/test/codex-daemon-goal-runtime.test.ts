@@ -45,6 +45,8 @@ class FakeClient {
 	initialized = 0;
 	started: string[] = [];
 	resumed: string[] = [];
+	resumeOptions: Array<{ strictIdentity?: boolean } | undefined> = [];
+	observedResumes: string[] = [];
 	closed = 0;
 	constructor(private readonly threadId: string) {}
 	isClosed(): boolean {
@@ -57,9 +59,21 @@ class FakeClient {
 		this.started.push(this.threadId);
 		return this.threadId;
 	}
-	async resumeThread(id: string): Promise<string> {
+	async resumeThread(
+		id: string,
+		options?: { strictIdentity?: boolean },
+	): Promise<string> {
 		this.resumed.push(id);
+		this.resumeOptions.push(options);
 		return id;
+	}
+	async resumeThreadObserved(id: string): Promise<{
+		threadId: string;
+		model: string;
+		cwd: string;
+	}> {
+		this.observedResumes.push(id);
+		return { threadId: id, model: "gpt-5.6-sol", cwd: "/work" };
 	}
 	close(): void {
 		this.closed += 1;
@@ -246,6 +260,80 @@ describe("CodexDaemonGoalRuntime", () => {
 			},
 		});
 		expect(out.result.succeeded).toBe(true);
+		rt.stop();
+	});
+
+	it("fails closed on an identity-handler error when strict standby resume is requested", async () => {
+		const h = makeHarness({ runGoalScript: [COMPLETE] });
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		await expect(
+			rt.runGoal({
+				objective: "x",
+				resumeThreadId: "prior-thread",
+				strictResumeIdentity: true,
+				failOnThreadReadyError: true,
+				onThreadReady: () => {
+					throw new Error("identity mismatch");
+				},
+			}),
+		).rejects.toThrow("identity mismatch");
+		expect(h.clients[0].observedResumes).toEqual(["prior-thread"]);
+	});
+
+	it("passes app-server observed identity to a strict standby resume hook", async () => {
+		const h = makeHarness({ runGoalScript: [COMPLETE] });
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const ready: unknown[] = [];
+		await rt.runGoal({
+			objective: "x",
+			resumeThreadId: "prior-thread",
+			strictResumeIdentity: true,
+			onThreadReady: (...args) => ready.push(args),
+		});
+		expect(ready).toEqual([
+			[
+				"prior-thread",
+				0,
+				{
+					threadId: "prior-thread",
+					model: "gpt-5.6-sol",
+					cwd: "/work",
+				},
+			],
+		]);
+		rt.stop();
+	});
+
+	it("awaits durable resume verification before sending goal input", async () => {
+		let releaseVerification!: () => void;
+		const verification = new Promise<void>((resolve) => {
+			releaseVerification = resolve;
+		});
+		let goalStarted = false;
+		const h = makeHarness({
+			runGoalScript: [COMPLETE],
+			runGoalFn: (async () => {
+				goalStarted = true;
+				return COMPLETE;
+			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const running = rt.runGoal({
+			objective: "x",
+			resumeThreadId: "prior-thread",
+			strictResumeIdentity: true,
+			failOnThreadReadyError: true,
+			onThreadReady: async () => verification,
+		});
+		await vi.waitFor(() => {
+			expect(h.clients[0]?.observedResumes).toEqual(["prior-thread"]);
+		});
+		expect(goalStarted).toBe(false);
+		releaseVerification();
+		await expect(running).resolves.toMatchObject({
+			result: { succeeded: true },
+		});
+		expect(goalStarted).toBe(true);
 		rt.stop();
 	});
 

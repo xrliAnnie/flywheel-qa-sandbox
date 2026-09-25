@@ -789,6 +789,29 @@ fi
 assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
 	'actorOutcome:' \
 	'step 7 evidence distinguishes original-body wake from replacement completion'
+step2_contract="$(sed -n '/const design = await waitFor(/,/const implement1 = await waitFor/p' \
+	"$ROOT/scripts/qa-529-generalized-e2e.mjs")"
+assert_contains "$step2_contract" \
+	'session?.status !== "ship_parked"' \
+	'step 2 waits for the enrolled design actor to remain ship parked'
+assert_contains "$step2_contract" \
+	'session.terminal_at != null' \
+	'step 2 rejects a terminal timestamp for the enrolled design actor'
+assert_contains "$step2_contract" \
+	'processBody?.state !== "standby"' \
+	'step 2 waits for the enrolled design process body to reach standby'
+assert_contains "$step2_contract" \
+	'liveness.liveness !== "dead"' \
+	'step 2 requires the enrolled design actor to release its process'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'park.reason !== "process_retirement_pending"' \
+	'step 4 requires the standby-enrolled retirement park reason'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'processBody?.state !== "standby"' \
+	'step 4 waits for the enrolled process body to reach standby'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'liveness.liveness !== "dead"' \
+	'step 4 requires the retired standby actor to release its process'
 if rg -q '"if-match"' "$ROOT/scripts/qa-529-generalized-e2e.mjs"; then
 	echo 'FAIL: driver claims unsupported GitHub If-Match write authority' >&2
 	failures=$((failures + 1))

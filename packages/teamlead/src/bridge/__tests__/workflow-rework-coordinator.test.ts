@@ -156,6 +156,23 @@ function makeHarness(input: {
 	targetNode?: "implement" | "qa";
 	implementProducesOutput?: boolean;
 	turnSourceProbeError?: string;
+	processBodyState?: "retiring" | "standby" | "resuming" | "resume_failed";
+	retirementCancelRacesToStandby?: boolean;
+	cleanupResult?: { ok: boolean; error?: string };
+	resumeResult?:
+		| {
+				ok: true;
+				expectedSessionId: string;
+				observedSessionId: string;
+				expectedModel: string;
+				observedModel: string;
+				expectedCwd: string;
+				observedCwd: string;
+				queueMs: number;
+				startupMs: number;
+				totalMs: number;
+		  }
+		| { ok: false; error: string; cleanupRequired: boolean };
 }) {
 	const targetNode = input.targetNode ?? "implement";
 	const request: WorkflowReworkRequestRow = {
@@ -203,8 +220,66 @@ function makeHarness(input: {
 	let projected = false;
 	let turnSourceFrozen = false;
 	let failProjection = input.failTurnProjectionOnce ?? false;
+	let processBodyState = input.processBodyState;
+	let processGeneration = 1;
 
 	const store: WorkflowReworkCoordinatorStore = {
+		getWorkflowExecutionProcessBody: vi.fn(() =>
+			processBodyState
+				? {
+						execution_id: session.execution_id,
+						generation: processGeneration,
+						state: processBodyState,
+						current_demand_id: null,
+						owner_claim_id: null,
+					}
+				: undefined,
+		),
+		cancelWorkflowExecutionRetirementForRework: vi.fn(() => {
+			if (processBodyState !== "retiring") {
+				return {
+					ok: false as const,
+					reason: `process_body_${processBodyState}`,
+				};
+			}
+			if (input.retirementCancelRacesToStandby) {
+				processBodyState = "standby";
+				return {
+					ok: false as const,
+					reason: "process_body_standby",
+				};
+			}
+			processBodyState = undefined;
+			return {
+				ok: true as const,
+				generation: processGeneration,
+				idempotentReplay: false,
+			};
+		}),
+		beginWorkflowExecutionResume: vi.fn(() => {
+			processGeneration += 1;
+			processBodyState = "resume_failed";
+			return {
+				ok: true as const,
+				generation: processGeneration,
+				attempt: 1,
+				idempotentReplay: false,
+			};
+		}),
+		finishWorkflowExecutionResume: vi.fn(() => {
+			processBodyState = undefined;
+			return { ok: true as const, idempotentReplay: false };
+		}),
+		failWorkflowExecutionResume: vi.fn(() => {
+			processBodyState = "resume_failed";
+			return { ok: true as const, idempotentReplay: false };
+		}),
+		allocateWorkflowResumeFallback: vi.fn((fallback) => ({
+			ok: true as const,
+			executionId: fallback.newExecutionId,
+			launchOrdinal: 2,
+			idempotentReplay: false,
+		})),
 		getWorkflowReworkRequest: vi.fn(() => request),
 		getLatestWorkflowReworkRoute: vi.fn(() => route),
 		getWorkflowReworkDelivery: vi.fn(() => ({ ...delivery })),
@@ -370,13 +445,37 @@ function makeHarness(input: {
 	};
 
 	const wakeResults = [...(input.wakeResults ?? [{ ok: true }])];
+	let resumed = false;
 	const effects = {
 		getActorSession: vi.fn(() => session),
-		probeRegistered: vi.fn(async () => input.registered ?? "alive"),
+		probeRegistered: vi.fn(async () =>
+			resumed ? "alive" : (input.registered ?? "alive"),
+		),
 		probePersisted: vi.fn(async () => input.persisted ?? "absent"),
 		assertWorktreeReady: vi.fn(async () => input.ready ?? { ok: true }),
 		activateActorForWake: vi.fn(async () => ({ ok: true })),
-		closeActorForReworkSupersession: vi.fn(async () => ({ ok: true })),
+		resumeStandbyActor: vi.fn(async () => {
+			const result = input.resumeResult ?? {
+				ok: true as const,
+				expectedSessionId: "session-1",
+				observedSessionId: "session-1",
+				expectedModel: "sonnet",
+				observedModel: "sonnet",
+				expectedCwd: "/tmp/worktree",
+				observedCwd: "/tmp/worktree",
+				queueMs: 1,
+				startupMs: 2,
+				totalMs: 3,
+			};
+			if (result.ok) resumed = true;
+			return result;
+		}),
+		closeActorForReworkSupersession: vi.fn(
+			async () => input.cleanupResult ?? { ok: true },
+		),
+		cleanupFailedStandbyResume: vi.fn(
+			async () => input.cleanupResult ?? { ok: true },
+		),
 		hasTurnSource: vi.fn(async () => {
 			if (input.turnSourceProbeError) {
 				throw new Error(input.turnSourceProbeError);
@@ -511,6 +610,266 @@ describe("WorkflowReworkCoordinator", () => {
 		);
 		expect(h.getDelivery().state).toBe("awaiting_receipt");
 		expect(h.getDelivery().next_retry_at).toBe("2026-07-23T00:03:00.000Z");
+	});
+
+	it("cancels in-grace retirement before waking the still-live original actor", async () => {
+		const h = makeHarness({
+			processBodyState: "retiring",
+			registered: "alive",
+			implementProducesOutput: true,
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "awaiting_receipt",
+			executionId: "implement-exec",
+		});
+		expect(
+			h.store.cancelWorkflowExecutionRetirementForRework,
+		).toHaveBeenCalledWith({
+			executionId: "implement-exec",
+			demandId: "rework-1",
+			now: NOW,
+		});
+		expect(h.effects.resumeStandbyActor).not.toHaveBeenCalled();
+		expect(h.effects.activateActorForWake).toHaveBeenCalledWith(session);
+		expect(h.effects.wakeActor).toHaveBeenCalledOnce();
+		expect(
+			vi.mocked(h.store.cancelWorkflowExecutionRetirementForRework!).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.effects.grantTurn.mock.invocationCallOrder[0]!);
+	});
+
+	it("resumes standby when retirement cancellation loses the confirmation race", async () => {
+		const h = makeHarness({
+			processBodyState: "retiring",
+			retirementCancelRacesToStandby: true,
+			registered: "absent",
+			persisted: "absent",
+			implementProducesOutput: true,
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "awaiting_receipt",
+			executionId: "implement-exec",
+		});
+		expect(
+			h.store.cancelWorkflowExecutionRetirementForRework,
+		).toHaveBeenCalledOnce();
+		expect(h.effects.resumeStandbyActor).toHaveBeenCalledWith(
+			expect.objectContaining({
+				session,
+				demandId: "rework-1",
+				processGeneration: 2,
+			}),
+		);
+		expect(
+			h.effects.resumeStandbyActor.mock.invocationCallOrder[0],
+		).toBeLessThan(h.effects.wakeActor.mock.invocationCallOrder[0]!);
+	});
+
+	it("admits and grants TURN before resuming a confirmed standby process body", async () => {
+		const h = makeHarness({
+			processBodyState: "standby",
+			registered: "absent",
+			persisted: "absent",
+			implementProducesOutput: true,
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "awaiting_receipt",
+			executionId: "implement-exec",
+		});
+		expect(h.effects.resumeStandbyActor).toHaveBeenCalledWith({
+			session,
+			demandId: "rework-1",
+			ownerId: "coordinator-a",
+			ownerGeneration: 1,
+			processGeneration: 2,
+			expectedHeadSha: HEAD,
+		});
+		expect(
+			vi.mocked(h.store.beginWorkflowExecutionResume!).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.effects.resumeStandbyActor.mock.invocationCallOrder[0]!);
+		expect(
+			vi.mocked(h.store.admitGeneralizedWorkflowExecution).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.effects.resumeStandbyActor.mock.invocationCallOrder[0]!);
+		expect(h.effects.grantTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			h.effects.resumeStandbyActor.mock.invocationCallOrder[0]!,
+		);
+		expect(
+			vi.mocked(h.store.recordWorkflowActivationTurn).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.effects.resumeStandbyActor.mock.invocationCallOrder[0]!);
+		expect(
+			h.effects.resumeStandbyActor.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			vi.mocked(h.store.finishWorkflowExecutionResume!).mock
+				.invocationCallOrder[0]!,
+		);
+		expect(
+			vi.mocked(h.store.finishWorkflowExecutionResume!).mock
+				.invocationCallOrder[0],
+		).toBeLessThan(h.effects.activateActorForWake.mock.invocationCallOrder[0]!);
+		expect(
+			h.effects.activateActorForWake.mock.invocationCallOrder[0],
+		).toBeLessThan(h.effects.wakeActor.mock.invocationCallOrder[0]!);
+	});
+
+	it("records a failed standby resume after granting TURN and never wakes", async () => {
+		const h = makeHarness({
+			processBodyState: "standby",
+			registered: "absent",
+			persisted: "absent",
+			resumeResult: {
+				ok: false,
+				error: "session_identity_mismatch",
+				cleanupRequired: true,
+			},
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "standby_resume_failed:session_identity_mismatch",
+		});
+		expect(h.store.failWorkflowExecutionResume).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "implement-exec",
+				demandId: "rework-1",
+				reasonCode: "session_identity_mismatch",
+			}),
+		);
+		expect(h.store.finishWorkflowExecutionResume).not.toHaveBeenCalled();
+		expect(h.effects.cleanupFailedStandbyResume).toHaveBeenCalledWith({
+			session,
+			requestId: "rework-1",
+			ownerId: "coordinator-a",
+			generation: 1,
+			routeRevision: 1,
+			executionId: "implement-exec",
+			processGeneration: 2,
+			demandId: "rework-1",
+			ownerClaimId: "coordinator-a:1",
+		});
+		expect(
+			h.effects.cleanupFailedStandbyResume.mock.invocationCallOrder[0],
+		).toBeLessThan(
+			vi.mocked(h.store.failWorkflowExecutionResume!).mock
+				.invocationCallOrder[0]!,
+		);
+		expect(h.effects.activateActorForWake).not.toHaveBeenCalled();
+		expect(h.effects.grantTurn).toHaveBeenCalledOnce();
+		expect(h.effects.grantTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			h.effects.resumeStandbyActor.mock.invocationCallOrder[0]!,
+		);
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+	});
+
+	it("records a pre-launch resume failure without tearing down the parked body", async () => {
+		const h = makeHarness({
+			processBodyState: "standby",
+			registered: "absent",
+			persisted: "absent",
+			resumeResult: {
+				ok: false,
+				error: "resume_git_identity_unavailable",
+				cleanupRequired: false,
+			},
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "standby_resume_failed:resume_git_identity_unavailable",
+		});
+		expect(h.effects.cleanupFailedStandbyResume).not.toHaveBeenCalled();
+		expect(h.effects.closeActorForReworkSupersession).not.toHaveBeenCalled();
+		expect(h.store.failWorkflowExecutionResume).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reasonCode: "resume_git_identity_unavailable",
+			}),
+		);
+	});
+
+	it("fails closed without another launch when failed-resume cleanup is unconfirmed", async () => {
+		const h = makeHarness({
+			processBodyState: "standby",
+			registered: "absent",
+			persisted: "absent",
+			resumeResult: {
+				ok: false,
+				error: "resume_identity_timeout",
+				cleanupRequired: true,
+				evidence: {
+					expectedSessionId: "session-original",
+					expectedModel: "claude-opus-5-5",
+					expectedCwd: "/tmp/worktree",
+					totalMs: 180_000,
+				},
+			},
+			cleanupResult: { ok: false, error: "process_still_alive" },
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason:
+				"standby_resume_cleanup_unconfirmed:process_still_alive:resume_identity_timeout",
+		});
+		// FLY-2808 QA: the latch must not erase why the resume failed.
+		expect(h.store.failWorkflowExecutionResume).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reasonCode: "cleanup_unconfirmed",
+				attemptReasonCode: "resume_identity_timeout",
+				evidence: {
+					expectedSessionId: "session-original",
+					expectedModel: "claude-opus-5-5",
+					expectedCwd: "/tmp/worktree",
+					totalMs: 180_000,
+				},
+			}),
+		);
+		expect(h.effects.grantTurn).toHaveBeenCalledOnce();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+	});
+
+	it("routes a resuming process body back through durable lease recovery", async () => {
+		const h = makeHarness({
+			processBodyState: "resuming",
+			registered: "absent",
+			persisted: "absent",
+			implementProducesOutput: true,
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "awaiting_receipt",
+			executionId: "implement-exec",
+		});
+		expect(h.store.beginWorkflowExecutionResume).toHaveBeenCalled();
+	});
+
+	it("allocates a separate fallback dispatch after the resume budget is exhausted", async () => {
+		const h = makeHarness({
+			processBodyState: "resume_failed",
+			registered: "absent",
+			persisted: "absent",
+		});
+		vi.mocked(h.store.beginWorkflowExecutionResume!).mockReturnValue({
+			ok: false,
+			reason: "resume_attempt_limit",
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "replacement_converged",
+			executionId: expect.any(String),
+		});
+		expect(h.store.allocateWorkflowResumeFallback).toHaveBeenCalledWith({
+			executionId: "implement-exec",
+			demandId: "rework-1",
+			newExecutionId: expect.any(String),
+			now: NOW,
+		});
+		expect(h.effects.resumeStandbyActor).not.toHaveBeenCalled();
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
 	});
 
 	it("reprobes an unacked actor on the durable cadence without granting or waking again", async () => {

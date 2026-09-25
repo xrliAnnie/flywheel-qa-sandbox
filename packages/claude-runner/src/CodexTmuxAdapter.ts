@@ -41,7 +41,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import {
 	defaultGateMarkerDir,
@@ -73,7 +73,10 @@ import {
 	enforceObjectiveLimit,
 	goalQuotaFailure,
 } from "./codex-daemon-adapter-helpers.js";
-import type { CodexDaemonEvents } from "./codex-daemon-client.js";
+import type {
+	CodexDaemonEvents,
+	CodexResumeObservation,
+} from "./codex-daemon-client.js";
 import {
 	GOAL_OBJECTIVE_MAX_CHARS,
 	GoalRunError,
@@ -138,11 +141,16 @@ import {
 	CodexTranscriptSink,
 	type CodexTranscriptSinkOptions,
 } from "./codex-transcript-sink.js";
+import {
+	processRetirementGraceMs,
+	tmuxWindowPresence,
+} from "./process-retirement.js";
 
 /** Bound protocol-side resume attempts without undercutting tmux rescue. */
 export const TUI_OPEN_MAX_ATTEMPTS = 3;
 export const TUI_OPEN_DEADLINE_MS = 2 * 210_000 + 60_000;
 export const TUI_OPEN_RETRY_DELAYS_MS = [5_000, 15_000] as const;
+const CODEX_RESUME_IDENTITY_TIMEOUT_MS = 180_000;
 /** @deprecated Use the deadline-aware ladder. Retained for package API parity. */
 export const TUI_OPEN_RETRY_GAP_MS = TUI_OPEN_RETRY_DELAYS_MS[0];
 
@@ -252,9 +260,9 @@ export type CodexRecoveryOptions =
 	| { founderWindow: "open"; windowName?: string }
 	| { founderWindow: "suppressed"; windowName?: never };
 
-interface CodexRecoveryExecution {
+interface CodexSnapshotExecution {
 	snapshot: CodexLaunchSnapshot;
-	hooks: CodexRecoveryCommitHooks;
+	recoveryHooks?: CodexRecoveryCommitHooks;
 	founderWindow: CodexRecoveryOptions["founderWindow"];
 	windowName?: string;
 }
@@ -419,6 +427,32 @@ export function readCodexLaunchSnapshot(
 		(parsed as Record<string, unknown>).launchSnapshot,
 		executionId,
 	);
+}
+
+function rehydrateSnapshotCapabilities(
+	ctx: AdapterExecutionContext,
+	snapshot: CodexLaunchSnapshot,
+): AdapterExecutionContext {
+	const raw = snapshot.rehydrationContext;
+	if (!raw) {
+		throw new Error(
+			`immutable launch snapshot for ${ctx.executionId} lacks rehydration context`,
+		);
+	}
+	const rehydrated: AdapterExecutionContext = {
+		...ctx,
+		allowedTools: [...raw.allowedTools],
+		enablePonytail: raw.enablePonytail,
+		codexSkillDisableNames: [...raw.codexSkillDisableNames],
+		workflowSubmissionExpected: raw.workflowSubmissionExpected,
+		founderReviewRequired: raw.founderReviewRequired,
+	};
+	if (raw.codexMattSkillsSourceDir === null) {
+		delete rehydrated.codexMattSkillsSourceDir;
+	} else {
+		rehydrated.codexMattSkillsSourceDir = raw.codexMattSkillsSourceDir;
+	}
+	return rehydrated;
 }
 
 /** Shared durable gate posture for adapter restart and Bridge re-ownership. */
@@ -655,6 +689,63 @@ export class CodexTmuxAdapter implements IAdapter {
 		this.executionOwners = deps.executionOwners;
 	}
 
+	private startProcessRetirementWatchdog(
+		ctx: AdapterExecutionContext,
+	): { promise: Promise<void>; cancel: () => void } | undefined {
+		const lifecycle = ctx.processLifecycle;
+		if (!lifecycle?.retirementApproved) return undefined;
+		let timer: ReturnType<typeof setInterval> | undefined;
+		let retirementObservedAtMs: number | undefined;
+		let settled = false;
+		let resolvePromise!: () => void;
+		const cancel = (): void => {
+			if (timer) clearInterval(timer);
+			timer = undefined;
+		};
+		const poll = (): void => {
+			if (settled) return;
+			try {
+				if (!lifecycle.retirementApproved!()) {
+					retirementObservedAtMs = undefined;
+					return;
+				}
+			} catch {
+				return;
+			}
+			const now = this.now();
+			retirementObservedAtMs ??= now;
+			if (now - retirementObservedAtMs < processRetirementGraceMs(lifecycle)) {
+				return;
+			}
+			settled = true;
+			cancel();
+			this.log(
+				`[CodexTmuxAdapter] Process retirement grace expired for ${ctx.executionId}; stopping and draining the owned daemon.`,
+			);
+			resolvePromise();
+		};
+		const promise = new Promise<void>((resolve) => {
+			resolvePromise = resolve;
+			const intervalMs = Math.max(
+				1,
+				Math.min(this.pollIntervalMs, processRetirementGraceMs(lifecycle) || 1),
+			);
+			timer = setInterval(poll, intervalMs);
+			(timer as { unref?: () => void }).unref?.();
+			poll();
+		});
+		return { promise, cancel };
+	}
+
+	private founderTuiWindowPresence(
+		windowName: string,
+		windowId?: string,
+	): "present" | "absent" | "unknown" {
+		return tmuxWindowPresence(this.execFileFn, this.sessionName, {
+			...(windowId ? { windowId } : { windowName }),
+		});
+	}
+
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
 		// PRECONDITION (QA Finding 2): `codex exec` hard-refuses a non-git cwd
 		// ("Not inside a trusted directory") unless --skip-git-repo-check is
@@ -759,6 +850,26 @@ export class CodexTmuxAdapter implements IAdapter {
 	}
 
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+		if (ctx.processLifecycle?.mode === "resume") {
+			let snapshot: CodexLaunchSnapshot;
+			try {
+				snapshot = readCodexLaunchSnapshot(ctx.executionId);
+			} catch (error) {
+				return this.ownershipFailureResult(ctx, error, "context");
+			}
+			try {
+				return this.runWithOwnership(
+					rehydrateSnapshotCapabilities(ctx, snapshot),
+					"dispatch",
+					{
+						snapshot,
+						founderWindow: "open",
+					},
+				);
+			} catch (error) {
+				return this.ownershipFailureResult(ctx, error, "context");
+			}
+		}
 		return this.runWithOwnership(ctx, "dispatch");
 	}
 
@@ -795,7 +906,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		let ownershipCommitted = false;
 		return this.runWithOwnership(ctx, "rescue", {
 			snapshot,
-			hooks: {
+			recoveryHooks: {
 				isRecoveryCommitted: () =>
 					hooks.isRecoveryCommitted?.() ?? ownershipCommitted,
 				onRecoveryOwnershipEstablished: async (receipt) => {
@@ -813,7 +924,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	private async runWithOwnership(
 		ctx: AdapterExecutionContext,
 		kind: CodexExecutionOwnerKind,
-		recovery?: CodexRecoveryExecution,
+		snapshotExecution?: CodexSnapshotExecution,
 	): Promise<AdapterExecutionResult> {
 		const lease = this.executionOwners?.claim(ctx.executionId, kind);
 		if (this.executionOwners && !lease) {
@@ -850,12 +961,17 @@ export class CodexTmuxAdapter implements IAdapter {
 		let result: AdapterExecutionResult | undefined;
 		let ownershipHeldUntil: Promise<void> | undefined;
 		try {
-			result = await this.executeOwned(ctx, recovery, retireOnce, (settled) => {
-				ownershipHeldUntil = settled;
-			});
+			result = await this.executeOwned(
+				ctx,
+				snapshotExecution,
+				retireOnce,
+				(settled) => {
+					ownershipHeldUntil = settled;
+				},
+			);
 		} catch (error) {
 			// Dispatch callers retain their existing preflight throw contract.
-			if (!recovery) throw error;
+			if (!snapshotExecution) throw error;
 			result = this.ownershipFailureResult(ctx, error, "preflight");
 		} finally {
 			// FLY-2877: while a late founder window can still start a codex
@@ -882,7 +998,10 @@ export class CodexTmuxAdapter implements IAdapter {
 								resultText: result.resultText,
 							});
 					result.recoveryFailure = withRecoveryCleanup(primary, "unconfirmed");
-					if (recovery && !recovery.hooks.isRecoveryCommitted?.())
+					if (
+						snapshotExecution?.recoveryHooks &&
+						!snapshotExecution.recoveryHooks.isRecoveryCommitted?.()
+					)
 						result.resultText = result.recoveryFailure.summary;
 					result.success = false;
 				}
@@ -1046,7 +1165,7 @@ export class CodexTmuxAdapter implements IAdapter {
 
 	private async executeOwned(
 		ctx: AdapterExecutionContext,
-		recovery?: CodexRecoveryExecution,
+		snapshotExecution?: CodexSnapshotExecution,
 		retireOnce: (options?: RetireOptions) => Promise<void> = (options) =>
 			this.retireExecutionCredential(ctx, options),
 		holdOwnershipUntil?: (settled: Promise<void>) => void,
@@ -1075,13 +1194,44 @@ export class CodexTmuxAdapter implements IAdapter {
 		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
 		const sandboxCwd = realpathSync(ctx.cwd);
 		const gitWritableDirs = await this.resolveGitWritableDirs(sandboxCwd);
+		if (ctx.processLifecycle) {
+			if (
+				!Number.isSafeInteger(ctx.processLifecycle.generation) ||
+				ctx.processLifecycle.generation < 1
+			) {
+				throw new Error("Codex process generation is invalid");
+			}
+			if (
+				ctx.processLifecycle.expectedCwd !== undefined &&
+				ctx.processLifecycle.expectedCwd !== sandboxCwd
+			) {
+				throw new Error("Codex resume cwd mismatch");
+			}
+			if (
+				ctx.processLifecycle.expectedModel !== undefined &&
+				ctx.processLifecycle.expectedModel !== (ctx.model ?? null)
+			) {
+				throw new Error("Codex resume model mismatch");
+			}
+			if (
+				ctx.processLifecycle.mode === "resume" &&
+				(!ctx.processLifecycle.onIdentityVerified ||
+					!ctx.processLifecycle.resumeVerificationStatus)
+			) {
+				throw new Error("Codex resume identity callback is unavailable");
+			}
+		}
+		const processGitIdentity = ctx.processLifecycle
+			? await this.captureProcessGitIdentity(sandboxCwd)
+			: undefined;
 		// Build and validate in the fail-loud zone. This must stay before GitHub
 		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
 		const gateMarkerDir = defaultGateMarkerDir();
 		const daemonEnv = this.buildDaemonEnv(ctx, gateMarkerDir);
 		this.assertWorkflowCapabilities(ctx, daemonEnv);
-		const founderWindowSuppressed = recovery?.founderWindow === "suppressed";
-		const recoveredWindowName = recovery?.windowName;
+		const founderWindowSuppressed =
+			snapshotExecution?.founderWindow === "suppressed";
+		const recoveredWindowName = snapshotExecution?.windowName;
 		if (!ctx.label && !recoveredWindowName && !founderWindowSuppressed) {
 			throw new Error(
 				`runner-tui-window: missing founder window label for ${ctx.executionId}`,
@@ -1182,6 +1332,13 @@ export class CodexTmuxAdapter implements IAdapter {
 			() => {};
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
+		let processRetirementControllerApproved = false;
+		let processRetirementApproved = false;
+		let processRetirementFailureConfirmed = false;
+		// FLY-2808: a resume reports its identity verdict exactly once, so a
+		// failure before verification must still reach the controller now.
+		let resumeIdentitySettled = false;
+		let cancelProcessRetirementWatchdog: (() => void) | undefined;
 		let teardownError: unknown;
 		let controlledShutdownRequestId: string | undefined;
 		let workflowUsageImported = false;
@@ -1278,9 +1435,18 @@ export class CodexTmuxAdapter implements IAdapter {
 				: ctx.appendSystemPrompt;
 			let objective: string;
 			let kickText: string;
-			if (recovery) {
-				const snapshot = recovery.snapshot;
+			if (snapshotExecution) {
+				const snapshot = snapshotExecution.snapshot;
 				const expectedContext = snapshot.launchContext;
+				// Bridge process-resume requests intentionally omit resident-loop
+				// plumbing: the durable process lifecycle owns this launch, and the
+				// resident holder is activated only after identity verification. Use
+				// the immutable snapshot as the comparison input without installing a
+				// second resident lifecycle on the resumed adapter.
+				const loopTargetNodeId =
+					ctx.processLifecycle?.mode === "resume"
+						? (expectedContext.loopTargetNodeId ?? null)
+						: (ctx.residentLoopTarget?.nodeId ?? null);
 				const checks = {
 					cwd: snapshot.cwd !== sandboxCwd,
 					model: expectedContext.model !== (ctx.model ?? null),
@@ -1292,8 +1458,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						expectedContext.phaseRole !== (ctx.phaseKeepAlive?.role ?? null),
 					loopTargetNodeId:
 						expectedContext.loopTargetNodeId !== undefined &&
-						expectedContext.loopTargetNodeId !==
-							(ctx.residentLoopTarget?.nodeId ?? null),
+						expectedContext.loopTargetNodeId !== loopTargetNodeId,
 					capabilityDigest:
 						expectedContext.capabilityDigest !==
 						capabilityDigest(ctx, { phaseRole: expectedContext.phaseRole }),
@@ -1356,6 +1521,9 @@ export class CodexTmuxAdapter implements IAdapter {
 					},
 				});
 			}
+			if (ctx.processLifecycle?.headDriftNotice) {
+				kickText = `${ctx.processLifecycle.headDriftNotice}\n\n${kickText}`;
+			}
 			const transcriptPath = join(
 				codexSessionStateDir(ctx.executionId),
 				"transcript.log",
@@ -1403,7 +1571,10 @@ export class CodexTmuxAdapter implements IAdapter {
 					: {}),
 			});
 
-			if (ctx.phaseKeepAlive || ctx.residentLoopTarget) {
+			if (
+				!ctx.processLifecycle &&
+				(ctx.phaseKeepAlive || ctx.residentLoopTarget)
+			) {
 				if (!ctx.commDbPath) {
 					throw new Error(
 						`resident lifecycle requires commDbPath for ${ctx.executionId}`,
@@ -1759,8 +1930,79 @@ export class CodexTmuxAdapter implements IAdapter {
 			// AUTHORITATIVE own-thread hook: persist the resume handle, bind the
 			// transcript filter, and asynchronously attach the native TUI. The 0ms
 			// scheduled attempt keeps goal setup and the machine turn non-blocking.
-			const onThreadReady = (threadId: string, restarts: number): void => {
-				this.persistSessionState(ctx, threadId);
+			const onThreadReady = async (
+				threadId: string,
+				restarts: number,
+				observedIdentity?: CodexResumeObservation,
+			): Promise<void> => {
+				if (
+					ctx.processLifecycle?.expectedSessionId !== undefined &&
+					ctx.processLifecycle.expectedSessionId !== threadId
+				) {
+					throw new Error("Codex resume session identity mismatch");
+				}
+				let verifiedModel = ctx.model ?? null;
+				let verifiedCwd = sandboxCwd;
+				try {
+					if (ctx.processLifecycle?.mode === "resume") {
+						if (
+							!observedIdentity ||
+							observedIdentity.threadId !== threadId ||
+							observedIdentity.threadId.trim().length === 0 ||
+							observedIdentity.model.trim().length === 0 ||
+							observedIdentity.cwd.trim().length === 0
+						) {
+							throw new Error("Codex resume identity evidence is missing");
+						}
+						verifiedModel = observedIdentity.model;
+						verifiedCwd = realpathSync(observedIdentity.cwd);
+						if (
+							ctx.processLifecycle.expectedModel !== undefined &&
+							ctx.processLifecycle.expectedModel !== verifiedModel
+						) {
+							throw new Error("Codex resume observed model mismatch");
+						}
+						if (
+							ctx.processLifecycle.expectedCwd !== undefined &&
+							realpathSync(ctx.processLifecycle.expectedCwd) !== verifiedCwd
+						) {
+							throw new Error("Codex resume observed cwd mismatch");
+						}
+					}
+					this.persistSessionState(ctx, threadId, processGitIdentity);
+					resumeIdentitySettled = true;
+					ctx.processLifecycle?.onIdentityVerified?.({
+						sessionId: threadId,
+						model: verifiedModel,
+						cwd: verifiedCwd,
+						verifiedAt: new Date().toISOString(),
+					});
+					if (ctx.processLifecycle?.mode === "resume") {
+						const deadline = Date.now() + CODEX_RESUME_IDENTITY_TIMEOUT_MS;
+						for (;;) {
+							const status =
+								ctx.processLifecycle.resumeVerificationStatus?.() ?? "rejected";
+							if (status === "accepted") break;
+							if (status === "rejected") {
+								throw new Error("resume_durable_verification_rejected");
+							}
+							if (Date.now() >= deadline) {
+								throw new Error("resume_durable_verification_timeout");
+							}
+							await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+						}
+					}
+				} catch (error) {
+					if (ctx.processLifecycle?.mode === "resume") {
+						resumeIdentitySettled = true;
+						ctx.processLifecycle.onIdentityVerificationFailed?.(
+							error instanceof Error
+								? error.message
+								: "resume_identity_unverified",
+						);
+					}
+					throw error;
+				}
 				tuiThreadId = threadId;
 				usageFreshSession = !resumeThreadId || resumeThreadId !== threadId;
 				if (ctx.workflowActivationId && ctx.onWorkflowUsageEvent) {
@@ -1846,6 +2088,19 @@ export class CodexTmuxAdapter implements IAdapter {
 				(typeof ctx.previousSession?.threadId === "string"
 					? (ctx.previousSession.threadId as string)
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
+			if (
+				ctx.processLifecycle?.mode === "resume" &&
+				(!resumeThreadId || resumeThreadId.trim().length === 0)
+			) {
+				throw new Error("Codex resume session id is missing");
+			}
+			if (
+				ctx.processLifecycle?.mode === "resume" &&
+				ctx.processLifecycle?.expectedSessionId !== undefined &&
+				ctx.processLifecycle.expectedSessionId !== resumeThreadId
+			) {
+				throw new Error("Codex resume session identity mismatch");
+			}
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
 			const turnDbPath = ctx.commDbPath;
 			const turnLifecycle = turnDbPath
@@ -1925,6 +2180,12 @@ export class CodexTmuxAdapter implements IAdapter {
 					writeGateHoldLatch: (held) =>
 						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
+					...(ctx.processLifecycle?.mode === "resume"
+						? {
+								strictResumeIdentity: true,
+								failOnThreadReadyError: true,
+							}
+						: {}),
 					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 					onThreadReady,
 					// FLY-1940: this hard callback runs synchronously before socket
@@ -1940,10 +2201,11 @@ export class CodexTmuxAdapter implements IAdapter {
 						}
 					},
 					onGoalActive,
-					...(recovery
+					...(snapshotExecution?.recoveryHooks
 						? {
 								onRecoveryOwnershipEstablished:
-									recovery.hooks.onRecoveryOwnershipEstablished,
+									snapshotExecution.recoveryHooks
+										.onRecoveryOwnershipEstablished,
 							}
 						: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
@@ -1962,39 +2224,51 @@ export class CodexTmuxAdapter implements IAdapter {
 					},
 				},
 			);
+			type RunSettlement =
+				| { kind: "goal"; outcome: RunGoalOutcome }
+				| { kind: "error"; error: unknown }
+				| { kind: "shutdown"; requestId: string }
+				| { kind: "retirement" };
+			const settledGoal: Promise<RunSettlement> = goalPromise.then(
+				(value) => ({ kind: "goal", outcome: value }),
+				(error: unknown) => ({ kind: "error", error }),
+			);
+			const retirementWatchdog = this.startProcessRetirementWatchdog(ctx);
+			cancelProcessRetirementWatchdog = retirementWatchdog?.cancel;
+			const settlements: Array<Promise<RunSettlement>> = [settledGoal];
 			if (phaseLifecycle) {
-				type GoalSettled =
-					| { kind: "goal"; outcome: RunGoalOutcome }
-					| { kind: "error"; error: unknown };
-				const settledGoal: Promise<GoalSettled> = goalPromise.then(
-					(value) => ({ kind: "goal", outcome: value }),
-					(error: unknown) => ({ kind: "error", error }),
+				settlements.push(
+					phaseLifecycle.waitForShutdown().then(({ requestId }) => ({
+						kind: "shutdown",
+						requestId,
+					})),
 				);
-				const first = await Promise.race([
-					settledGoal,
-					phaseLifecycle
-						.waitForShutdown()
-						.then(
-							({ requestId }) => ({ kind: "shutdown", requestId }) as const,
-						),
-				]);
-				if (first.kind === "shutdown") {
-					controlledShutdownRequestId = first.requestId;
-					runtime.stop();
-					const settled = await settledGoal;
-					if (settled.kind === "goal") outcome = settled.outcome;
-					else caughtError = settled.error;
-				} else if (first.kind === "goal") {
-					outcome = first.outcome;
-				} else {
-					throw first.error;
-				}
+			}
+			if (retirementWatchdog) {
+				settlements.push(
+					retirementWatchdog.promise.then(() => ({ kind: "retirement" })),
+				);
+			}
+			const first = await Promise.race(settlements);
+			cancelProcessRetirementWatchdog?.();
+			cancelProcessRetirementWatchdog = undefined;
+			if (first.kind === "shutdown") {
+				controlledShutdownRequestId = first.requestId;
+				runtime.stop();
+				const settled = await settledGoal;
+				if (settled.kind === "goal") outcome = settled.outcome;
+				else if (settled.kind === "error") caughtError = settled.error;
+			} else if (first.kind === "retirement") {
+				runtime.stop();
+			} else if (first.kind === "goal") {
+				outcome = first.outcome;
 			} else {
-				outcome = await goalPromise;
+				throw first.error;
 			}
 		} catch (err) {
 			caughtError = err;
 		} finally {
+			cancelProcessRetirementWatchdog?.();
 			// FLY-1239: cancel any pending founder-window reopen BEFORE teardown — so a
 			// scheduled retry cannot fire during `await runtime.drained()` and spawn a
 			// window pointing at a now-dead daemon socket. In its OWN no-throw boundary
@@ -2121,10 +2395,53 @@ export class CodexTmuxAdapter implements IAdapter {
 						);
 					}
 				}
+				try {
+					processRetirementControllerApproved =
+						ctx.processLifecycle?.retirementApproved?.() === true;
+					processRetirementApproved =
+						controlledShutdownSucceeded() &&
+						processRetirementControllerApproved;
+				} catch {
+					processRetirementControllerApproved = false;
+					processRetirementApproved = false;
+				}
+				importWorkflowUsage();
+				if (!lateTuiWindowPossible) await this.awaitLeaseHoldersGone(ctx);
+				try {
+					await retireOnce(
+						lateTuiWindowPossible
+							? { keepLease: "late_tui_window" }
+							: undefined,
+					);
+				} catch (err) {
+					teardownError ??= err;
+				}
+				// The founder window was killed before the drain; an approved
+				// retirement still has to prove it is gone.
+				if (windowName && processRetirementApproved) {
+					const presence = this.founderTuiWindowPresence(
+						windowName,
+						founderWindowId,
+					);
+					if (presence !== "absent") {
+						processRetirementApproved = false;
+						processRetirementFailureConfirmed = presence === "present";
+						teardownError ??= new Error(`founder TUI retirement ${presence}`);
+					}
+				}
 				await closeTranscript(
-					controlledShutdownSucceeded() ? "completed" : "timeout",
+					processRetirementControllerApproved && !processRetirementApproved
+						? "timeout"
+						: controlledShutdownSucceeded()
+							? "completed"
+							: "timeout",
 				);
-				if (registeredSession && ctx.commDbPath) {
+				if (
+					(!processRetirementControllerApproved ||
+						processRetirementFailureConfirmed) &&
+					registeredSession &&
+					ctx.commDbPath
+				) {
 					let commDb: CommDB | undefined;
 					try {
 						commDb = new CommDB(ctx.commDbPath);
@@ -2137,17 +2454,6 @@ export class CodexTmuxAdapter implements IAdapter {
 					} finally {
 						commDb?.close();
 					}
-				}
-				importWorkflowUsage();
-				if (!lateTuiWindowPossible) await this.awaitLeaseHoldersGone(ctx);
-				try {
-					await retireOnce(
-						lateTuiWindowPossible
-							? { keepLease: "late_tui_window" }
-							: undefined,
-					);
-				} catch (err) {
-					teardownError ??= err;
 				}
 				try {
 					phaseLifecycle.ackAllPendingShutdowns(
@@ -2192,16 +2498,40 @@ export class CodexTmuxAdapter implements IAdapter {
 					caughtError,
 				});
 				const closeBlocked = outcome?.result.status === "blocked";
+				try {
+					processRetirementControllerApproved =
+						ctx.processLifecycle?.retirementApproved?.() === true;
+				} catch {
+					processRetirementControllerApproved = false;
+				}
 				const closeCompleted =
-					(closeClassification.success || controlledShutdownSucceeded()) &&
+					(processRetirementControllerApproved ||
+						closeClassification.success ||
+						controlledShutdownSucceeded()) &&
 					!teardownError;
-				const closeStatus = closeCompleted
+				processRetirementApproved =
+					closeCompleted && processRetirementControllerApproved;
+				// The founder window was killed before the drain; an approved
+				// retirement still has to prove it is gone.
+				if (processRetirementApproved && windowName) {
+					const presence = this.founderTuiWindowPresence(
+						windowName,
+						founderWindowId,
+					);
+					if (presence !== "absent") {
+						processRetirementApproved = false;
+						processRetirementFailureConfirmed = presence === "present";
+						teardownError ??= new Error(`founder TUI retirement ${presence}`);
+					}
+				}
+				const settledCloseCompleted = closeCompleted && !teardownError;
+				const closeStatus = settledCloseCompleted
 					? "completed"
 					: closeBlocked
 						? "blocked"
 						: "timeout";
 				await closeTranscript(
-					closeCompleted
+					settledCloseCompleted
 						? "completed"
 						: closeBlocked
 							? "blocked"
@@ -2216,7 +2546,12 @@ export class CodexTmuxAdapter implements IAdapter {
 						teardownError ??= err;
 					}
 				}
-				if (registeredSession && ctx.commDbPath) {
+				if (
+					(!processRetirementControllerApproved ||
+						processRetirementFailureConfirmed) &&
+					registeredSession &&
+					ctx.commDbPath
+				) {
 					try {
 						const commDb = new CommDB(ctx.commDbPath);
 						commDb.updateSessionStatusIfRunning(ctx.executionId, closeStatus);
@@ -2246,13 +2581,49 @@ export class CodexTmuxAdapter implements IAdapter {
 			executionId: ctx.executionId,
 			observedAt: new Date().toISOString(),
 		});
+		if (processRetirementApproved) {
+			try {
+				processRetirementControllerApproved =
+					ctx.processLifecycle?.retirementApproved?.() === true;
+			} catch {
+				processRetirementControllerApproved = false;
+			}
+			processRetirementApproved = processRetirementControllerApproved;
+		}
 		// HIGH-6: an unconfirmed daemon teardown fails the run (a live daemon +
 		// "completed" would be a lie).
 		const success =
-			(cls.success || controlledShutdownSucceeded()) &&
+			(processRetirementApproved ||
+				cls.success ||
+				controlledShutdownSucceeded()) &&
 			!teardownError &&
 			!quotaFailure;
-		const threadId = outcome?.threadId;
+		if (ctx.processLifecycle && processRetirementApproved) {
+			try {
+				ctx.processLifecycle.onRetired?.({
+					generation: ctx.processLifecycle.generation,
+					reasonCode: "process_tree_gone",
+					retiredAt: new Date().toISOString(),
+				});
+			} catch {
+				// A controller race after physical retirement must not rewrite success.
+			}
+		} else if (
+			ctx.processLifecycle &&
+			processRetirementControllerApproved &&
+			processRetirementFailureConfirmed
+		) {
+			try {
+				ctx.processLifecycle.onRetirementFailed?.({
+					generation: ctx.processLifecycle.generation,
+					reasonCode: "retirement_unconfirmed",
+					failedAt: new Date().toISOString(),
+				});
+			} catch {
+				// The run result is already final; controller failure remains visible.
+			}
+		}
+		const threadId = outcome?.threadId ?? tuiThreadId;
 		const result: AdapterExecutionResult = {
 			success,
 			sessionId: threadId ?? ctx.executionId,
@@ -2290,7 +2661,23 @@ export class CodexTmuxAdapter implements IAdapter {
 							});
 			}
 			result.recoveryFailure = diagnostic;
-			if (recovery && !recovery.hooks.isRecoveryCommitted?.())
+			const diagnosticReason = diagnostic.mismatchFields?.length
+				? `${diagnostic.code}:${diagnostic.mismatchFields.join(",")}`
+				: diagnostic.code;
+			if (ctx.processLifecycle?.mode === "resume" && !resumeIdentitySettled) {
+				resumeIdentitySettled = true;
+				try {
+					ctx.processLifecycle.onIdentityVerificationFailed?.(diagnosticReason);
+				} catch (error) {
+					this.log(
+						`[CodexTmuxAdapter] resume failure report failed (ignored): ${safeErr(error)}`,
+					);
+				}
+			}
+			if (
+				snapshotExecution?.recoveryHooks &&
+				!snapshotExecution.recoveryHooks.isRecoveryCommitted?.()
+			)
 				result.resultText = diagnostic.summary;
 			const reason =
 				cls.failureReason ??
@@ -2299,7 +2686,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					: undefined);
 			if (reason)
 				console.error(
-					`[CodexTmuxAdapter] ${ctx.executionId} failed: ${reason}`,
+					`[CodexTmuxAdapter] ${ctx.executionId} failed: ${reason}${diagnostic.mismatchFields?.length ? ` (${diagnosticReason})` : ""}`,
 				);
 		}
 		return result;
@@ -2422,6 +2809,13 @@ export class CodexTmuxAdapter implements IAdapter {
 	private persistSessionState(
 		ctx: AdapterExecutionContext,
 		threadId: string,
+		gitIdentity?: {
+			gitCommonDir: string | null;
+			worktree: string | null;
+			branch: string | null;
+			lastObservedHead: string | null;
+			dirty: boolean | null;
+		},
 	): void {
 		try {
 			this.mergeSessionState(ctx.executionId, {
@@ -2430,12 +2824,60 @@ export class CodexTmuxAdapter implements IAdapter {
 				cwd: ctx.cwd,
 				vendor: "codex",
 				threadId,
+				resolvedModel: ctx.model ?? null,
+				effort: ctx.effort ?? null,
+				...(ctx.processLifecycle
+					? {
+							schemaVersion: 1,
+							processGeneration: ctx.processLifecycle.generation,
+							validatedAt: new Date().toISOString(),
+							...(gitIdentity ?? {}),
+						}
+					: {}),
 			});
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
 			);
 		}
+	}
+
+	private async captureProcessGitIdentity(cwd: string): Promise<{
+		gitCommonDir: string | null;
+		worktree: string | null;
+		branch: string | null;
+		lastObservedHead: string | null;
+		dirty: boolean | null;
+	}> {
+		const git = async (...args: string[]): Promise<string | null> => {
+			try {
+				return (
+					await this.asyncExecFileFn("git", ["-C", cwd, ...args], {
+						timeoutMs: 5_000,
+					})
+				).stdout.trim();
+			} catch {
+				return null;
+			}
+		};
+		const [commonDir, worktree, branch, head, dirty] = await Promise.all([
+			git("rev-parse", "--git-common-dir"),
+			git("rev-parse", "--show-toplevel"),
+			git("symbolic-ref", "--quiet", "--short", "HEAD"),
+			git("rev-parse", "HEAD"),
+			git("status", "--porcelain=v1", "-uno"),
+		]);
+		return {
+			gitCommonDir: commonDir
+				? isAbsolute(commonDir)
+					? commonDir
+					: resolve(cwd, commonDir)
+				: null,
+			worktree,
+			branch,
+			lastObservedHead: head,
+			dirty: dirty === null ? null : dirty.length > 0,
+		};
 	}
 
 	/** Window identity is a separate commit: a name is never durable evidence. */

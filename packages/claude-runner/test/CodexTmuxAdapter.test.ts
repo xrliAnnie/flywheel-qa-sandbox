@@ -97,6 +97,8 @@ class FakeExec {
 	ghCalls: string[][] = [];
 	tmuxCalls: string[][] = [];
 	displayMessageOut = `${WINDOW_ID}\n`;
+	listWindowsOut = "";
+	listWindowsThrows = false;
 
 	exec = (cmd: string, args: string[]): { stdout: string } => {
 		if (cmd === "tmux") {
@@ -104,6 +106,10 @@ class FakeExec {
 			if (args[0] === "-V") return { stdout: "tmux 3.4" };
 			if (args[0] === "display-message")
 				return { stdout: this.displayMessageOut };
+			if (args[0] === "list-windows") {
+				if (this.listWindowsThrows) throw new Error("tmux list-windows failed");
+				return { stdout: this.listWindowsOut };
+			}
 			return { stdout: "" };
 		}
 		if (cmd === "codex") return { stdout: "codex-cli 0.144.1" };
@@ -1421,6 +1427,251 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		// daemon confirmed torn down
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
+	});
+
+	it("verifies identity and retires when the Codex process tree disappears before grace", async () => {
+		const onIdentityVerified = vi.fn();
+		const onRetired = vi.fn();
+		const cwd = realpathSync(dir);
+
+		const res = await makeAdapter().execute(
+			ctx({
+				model: "gpt-5.6-sol",
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					expectedSessionId: THREAD_ID,
+					expectedModel: "gpt-5.6-sol",
+					expectedCwd: cwd,
+					onIdentityVerified,
+					onRetired,
+				},
+			}),
+		);
+
+		expect(res.error).toBeUndefined();
+		expect(res.success).toBe(true);
+		expect(onIdentityVerified).toHaveBeenCalledWith({
+			sessionId: THREAD_ID,
+			model: "gpt-5.6-sol",
+			cwd,
+			verifiedAt: expect.any(String),
+		});
+		expect(onRetired).toHaveBeenCalledWith({
+			generation: 1,
+			reasonCode: "process_tree_gone",
+			retiredAt: expect.any(String),
+		});
+		expect(
+			JSON.parse(
+				readFileSync(
+					join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId, "session.json"),
+					"utf8",
+				),
+			),
+		).toMatchObject({
+			schemaVersion: 1,
+			processGeneration: 1,
+			threadId: THREAD_ID,
+			resolvedModel: "gpt-5.6-sol",
+			cwd,
+		});
+	});
+
+	it("settles standby when an approved Codex process exits before grace", async () => {
+		const onRetired = vi.fn();
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			input.onGoalActive?.();
+			throw new Error("daemon exited");
+		});
+
+		await expect(
+			makeAdapter().execute(
+				ctx({
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						retirementApproved: () => true,
+						onRetired,
+					},
+				}),
+			),
+		).resolves.toMatchObject({ success: true, timedOut: false });
+		expect(runtime.drainedCalls).toBeGreaterThan(0);
+		expect(onRetired).toHaveBeenCalledOnce();
+	});
+
+	it("forces an approved Codex retirement when its grace expires", async () => {
+		vi.useFakeTimers();
+		const onRetired = vi.fn();
+		let settled = false;
+		let execution:
+			| Promise<Awaited<ReturnType<CodexTmuxAdapter["execute"]>>>
+			| undefined;
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			input.onGoalActive?.();
+			return await new Promise<RunGoalOutcome>(() => {});
+		});
+
+		try {
+			execution = makeAdapter()
+				.execute(
+					ctx({
+						processLifecycle: {
+							mode: "initial",
+							generation: 1,
+							retirementGraceMs: 20,
+							retirementRequestedAt: () => "2000-01-01T00:00:00.000Z",
+							retirementApproved: () => true,
+							onRetired,
+						},
+					}),
+				)
+				.then((result) => {
+					settled = true;
+					return result;
+				});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(settled).toBe(false);
+			await vi.advanceTimersByTimeAsync(100);
+			expect(settled).toBe(true);
+			await expect(execution).resolves.toMatchObject({ success: true });
+			expect(runtime.stopped).toBeGreaterThan(0);
+			expect(runtime.drainedCalls).toBeGreaterThan(0);
+			expect(onRetired).toHaveBeenCalledWith({
+				generation: 1,
+				reasonCode: "process_tree_gone",
+				retiredAt: expect.any(String),
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("fails closed when forced retirement loses controller approval before settlement", async () => {
+		vi.useFakeTimers();
+		let approved = true;
+		const onRetired = vi.fn();
+		const onRetirementFailed = vi.fn();
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			input.onGoalActive?.();
+			return await new Promise<RunGoalOutcome>(() => {});
+		});
+		const drained = runtime.drained.bind(runtime);
+		runtime.drained = async () => {
+			approved = false;
+			await drained();
+		};
+
+		try {
+			const execution = makeAdapter().execute(
+				ctx({
+					processLifecycle: {
+						mode: "initial",
+						generation: 1,
+						retirementGraceMs: 20,
+						retirementApproved: () => approved,
+						onRetired,
+						onRetirementFailed,
+					},
+				}),
+			);
+			await vi.advanceTimersByTimeAsync(100);
+			await expect(execution).resolves.toMatchObject({ success: false });
+			expect(onRetired).not.toHaveBeenCalled();
+			expect(onRetirementFailed).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("fails retirement when the founder TUI remains after exact cleanup", async () => {
+		fake.listWindowsOut = `${WINDOW_ID}|FLY-1188\n`;
+		const onRetired = vi.fn();
+		const onRetirementFailed = vi.fn();
+
+		const result = await makeAdapter().execute(
+			ctx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					onRetired,
+					onRetirementFailed,
+				},
+			}),
+		);
+
+		expect(result.success).toBe(false);
+		expect(onRetired).not.toHaveBeenCalled();
+		expect(onRetirementFailed).toHaveBeenCalledWith({
+			generation: 1,
+			reasonCode: "retirement_unconfirmed",
+			failedAt: expect.any(String),
+		});
+	});
+
+	it("keeps retirement pending when founder-window inventory is unreadable", async () => {
+		fake.listWindowsThrows = true;
+		const onRetired = vi.fn();
+		const onRetirementFailed = vi.fn();
+
+		await makeAdapter().execute(
+			ctx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					onRetired,
+					onRetirementFailed,
+				},
+			}),
+		);
+
+		expect(onRetired).not.toHaveBeenCalled();
+		expect(onRetirementFailed).not.toHaveBeenCalled();
+	});
+
+	it("does not declare standby when the controller has not approved retirement", async () => {
+		const onRetired = vi.fn();
+		const cwd = realpathSync(dir);
+
+		const res = await makeAdapter().execute(
+			ctx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					expectedSessionId: THREAD_ID,
+					expectedCwd: cwd,
+					retirementApproved: () => false,
+					onRetired,
+				},
+			}),
+		);
+
+		expect(res.success).toBe(true);
+		expect(onRetired).not.toHaveBeenCalled();
+	});
+
+	it("does not replace a completed result when standby confirmation loses a race", async () => {
+		const res = await makeAdapter().execute(
+			ctx({
+				processLifecycle: {
+					mode: "initial",
+					generation: 1,
+					retirementApproved: () => true,
+					onRetired: () => {
+						throw new Error("process_body_closed");
+					},
+				},
+			}),
+		);
+
+		expect(res).toMatchObject({ success: true });
 	});
 
 	it("FLY-2170 does not post-publish identity after a verified window result", async () => {
@@ -3273,6 +3524,193 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			ctx({ previousSession: { threadId: "prior-thread-xyz" } }),
 		);
 		expect(runtime.runGoalInputs[0]?.resumeThreadId).toBe("prior-thread-xyz");
+	});
+
+	it("uses strict daemon identity checks only for a standby process resume", async () => {
+		await makeAdapter().execute(ctx());
+		runtime = new FakeRuntime(async (input) => {
+			await (input.onThreadReady as NonNullable<RunGoalInput["onThreadReady"]>)(
+				THREAD_ID,
+				0,
+				{
+					threadId: THREAD_ID,
+					model: "gpt-5.6-sol",
+					cwd: realpathSync(dir),
+				},
+			);
+			return complete();
+		});
+		await makeAdapter().execute(
+			ctx({
+				previousSession: { threadId: THREAD_ID },
+				processLifecycle: {
+					mode: "resume",
+					generation: 2,
+					expectedSessionId: THREAD_ID,
+					expectedCwd: realpathSync(dir),
+					onIdentityVerified: () => {},
+					resumeVerificationStatus: () => "accepted",
+				},
+			}),
+		);
+
+		expect(runtime.runGoalInputs[0]).toMatchObject({
+			resumeThreadId: THREAD_ID,
+			strictResumeIdentity: true,
+			failOnThreadReadyError: true,
+		});
+	});
+
+	it("uses the frozen launch snapshot for standby resume while rework text rides the later wake", async () => {
+		await makeAdapter().execute(
+			ctx({
+				prompt: "original launch instructions",
+				model: "gpt-5.6-sol",
+				allowedTools: ["mcp__flywheel__turn"],
+				workflowSubmissionExpected: true,
+				founderReviewRequired: true,
+				residentLoopTarget: { nodeId: "implement" },
+				processLifecycle: { mode: "initial", generation: 1 },
+			}),
+		);
+		const snapshot = readCodexLaunchSnapshot(execId);
+		const cwd = realpathSync(dir);
+		const onIdentityVerified = vi.fn();
+		capturedOpts = undefined;
+		runtime = new FakeRuntime(async (input) => {
+			await (input.onThreadReady as NonNullable<RunGoalInput["onThreadReady"]>)(
+				THREAD_ID,
+				0,
+				{
+					threadId: THREAD_ID,
+					model: "gpt-5.6-sol",
+					cwd,
+				},
+			);
+			input.onGoalActive?.();
+			return complete();
+		});
+
+		const result = await makeAdapter().execute(
+			ctx({
+				prompt: "new rework instructions must not replace launch identity",
+				model: "gpt-5.6-sol",
+				previousSession: { threadId: THREAD_ID },
+				processLifecycle: {
+					mode: "resume",
+					generation: 2,
+					demandId: "rework-1",
+					expectedSessionId: THREAD_ID,
+					expectedModel: "gpt-5.6-sol",
+					expectedCwd: cwd,
+					onIdentityVerified,
+					resumeVerificationStatus: () => "accepted",
+				},
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(runtime.runGoalInputs[0]?.objective).toBe(snapshot.objective);
+		expect(runtime.runGoalInputs[0]?.kickText).toBe(snapshot.kickText);
+		expect(runtime.runGoalInputs[0]?.kickText).not.toContain(
+			"new rework instructions",
+		);
+		expect(runtime.runGoalInputs[0]?.resumeThreadId).toBe(THREAD_ID);
+		expect(capturedOpts?.env?.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
+		expect(capturedOpts?.env?.FLYWHEEL_FOUNDER_REVIEW_REQUIRED).toBe("1");
+		expect(onIdentityVerified).toHaveBeenCalledWith({
+			sessionId: THREAD_ID,
+			model: "gpt-5.6-sol",
+			cwd,
+			verifiedAt: expect.any(String),
+		});
+	});
+
+	it("rejects a standby resume when app-server observes a different model", async () => {
+		await makeAdapter().execute(
+			ctx({ prompt: "original launch instructions", model: "gpt-5.6-sol" }),
+		);
+		const cwd = realpathSync(dir);
+		const onIdentityVerified = vi.fn();
+		capturedOpts = undefined;
+		runtime = new FakeRuntime(async (input) => {
+			await (input.onThreadReady as NonNullable<RunGoalInput["onThreadReady"]>)(
+				THREAD_ID,
+				0,
+				{
+					threadId: THREAD_ID,
+					model: "gpt-5.5",
+					cwd,
+				},
+			);
+			return complete();
+		});
+
+		await expect(
+			makeAdapter().execute(
+				ctx({
+					model: "gpt-5.6-sol",
+					previousSession: { threadId: THREAD_ID },
+					processLifecycle: {
+						mode: "resume",
+						generation: 2,
+						expectedSessionId: THREAD_ID,
+						expectedModel: "gpt-5.6-sol",
+						expectedCwd: cwd,
+						onIdentityVerified,
+						resumeVerificationStatus: () => "accepted",
+					},
+				}),
+			),
+		).resolves.toMatchObject({ success: false });
+		expect(runtime.runGoalInputs).toHaveLength(1);
+		expect(onIdentityVerified).not.toHaveBeenCalled();
+	});
+
+	it("reports a standby resume snapshot mismatch to the controller with the changed fields", async () => {
+		// FLY-2808 QA: a frozen-launch mismatch failed before identity
+		// verification, so the controller waited out its 180s timeout and
+		// latched a reason that hid the drifting field.
+		await makeAdapter().execute(ctx({ model: "gpt-5.6-sol", effort: "high" }));
+		const cwd = realpathSync(dir);
+		const onIdentityVerified = vi.fn();
+		const onIdentityVerificationFailed = vi.fn();
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const result = await makeAdapter().execute(
+			ctx({
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				previousSession: { threadId: THREAD_ID },
+				processLifecycle: {
+					mode: "resume",
+					generation: 2,
+					expectedSessionId: THREAD_ID,
+					expectedModel: "gpt-5.6-sol",
+					expectedCwd: cwd,
+					onIdentityVerified,
+					onIdentityVerificationFailed,
+					resumeVerificationStatus: () => "pending",
+				},
+			}),
+		);
+
+		expect(result).toMatchObject({
+			success: false,
+			recoveryFailure: {
+				code: "launch_snapshot_mismatch",
+				mismatchFields: ["effort"],
+			},
+		});
+		expect(onIdentityVerified).not.toHaveBeenCalled();
+		expect(onIdentityVerificationFailed).toHaveBeenCalledOnce();
+		expect(onIdentityVerificationFailed).toHaveBeenCalledWith(
+			"launch_snapshot_mismatch:effort",
+		);
+		expect(runtime.runGoalInputs).toHaveLength(1);
+		expect(errors).toHaveBeenCalledWith(
+			expect.stringContaining("launch_snapshot_mismatch:effort"),
+		);
 	});
 
 	it("HIGH-4: self-contained resume — reads the persisted session.json when previousSession is absent", async () => {

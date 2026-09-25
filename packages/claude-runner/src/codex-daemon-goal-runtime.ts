@@ -24,6 +24,7 @@ import {
 	CodexDaemonClient,
 	CodexDaemonError,
 	type CodexDaemonEvents,
+	type CodexResumeObservation,
 	type DaemonTransport,
 	type GoalPhaseLifecycle,
 	GoalRunError,
@@ -146,6 +147,10 @@ export interface RunGoalInput {
 	tokenBudget?: number;
 	/** Resume an existing thread instead of starting a fresh one. */
 	resumeThreadId?: string;
+	/** Require thread/resume to report the exact requested identity. */
+	strictResumeIdentity?: boolean;
+	/** Propagate an authoritative identity-hook error before any goal input. */
+	failOnThreadReadyError?: boolean;
 	/** The ACTIVE ceiling (cap when NOT waiting on a gate). */
 	overallTimeoutMs?: number;
 	/** FLY-1188 MED-7: the EXTENDED ceiling used only while a gate is open. */
@@ -174,7 +179,11 @@ export interface RunGoalInput {
 	 * opening the founder window / writing the FLY-245 launch commit / persisting
 	 * the resume handle.
 	 */
-	onThreadReady?: (threadId: string, restarts: number) => void;
+	onThreadReady?: (
+		threadId: string,
+		restarts: number,
+		identity?: CodexResumeObservation,
+	) => void | Promise<void>;
 	/**
 	 * FLY-1188 M4d: fired the INSTANT the goal is confirmed SET (after `setGoal`
 	 * resolves, inside the goal loop) — the safe FLY-245 launch-commit point. Fires
@@ -505,17 +514,30 @@ export class CodexDaemonGoalRuntime {
 	private async ensureThread(
 		session: DaemonSession,
 		existingThreadId: string | undefined,
-	): Promise<string> {
+		strictIdentity: boolean,
+	): Promise<{
+		threadId: string;
+		identity?: CodexResumeObservation;
+	}> {
 		if (existingThreadId) {
-			return session.client.resumeThread(existingThreadId);
+			if (strictIdentity) {
+				const identity =
+					await session.client.resumeThreadObserved(existingThreadId);
+				return { threadId: identity.threadId, identity };
+			}
+			return {
+				threadId: await session.client.resumeThread(existingThreadId),
+			};
 		}
-		return session.client.startThread({
-			cwd: this.opts.cwd,
-			sandbox: this.opts.sandbox ?? "workspace-write",
-			approvalPolicy: this.opts.approvalPolicy ?? "never",
-			model: this.opts.model,
-			baseInstructions: this.opts.baseInstructions,
-		});
+		return {
+			threadId: await session.client.startThread({
+				cwd: this.opts.cwd,
+				sandbox: this.opts.sandbox ?? "workspace-write",
+				approvalPolicy: this.opts.approvalPolicy ?? "never",
+				model: this.opts.model,
+				baseInstructions: this.opts.baseInstructions,
+			}),
+		};
 	}
 
 	/** Signal the current session dead + drop it; returns the dying daemon so
@@ -638,15 +660,25 @@ export class CodexDaemonGoalRuntime {
 						if (this.stopped)
 							throw new Error("runtime stopped during admission");
 					}
-					threadId = await this.ensureThread(session, threadId);
+					const readyThread = await this.ensureThread(
+						session,
+						threadId,
+						input.strictResumeIdentity === true,
+					);
+					threadId = readyThread.threadId;
 					// AUTHORITATIVE own-thread signal (FLY-1188 M4d): the thread is
 					// confirmed ours here (not a raw notification, which can be
 					// foreign). Fires on each restart/resume too; a throwing handler
 					// must never break the run.
 					if (input.onThreadReady) {
 						try {
-							input.onThreadReady(threadId, restarts);
+							await input.onThreadReady(
+								threadId,
+								restarts,
+								readyThread.identity,
+							);
 						} catch (err) {
+							if (input.failOnThreadReadyError) throw err;
 							this.safeLog(
 								`onThreadReady handler threw (ignored): ${err instanceof Error ? err.message : String(err)}`,
 							);

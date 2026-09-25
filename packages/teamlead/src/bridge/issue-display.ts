@@ -20,7 +20,12 @@ import {
 } from "flywheel-config";
 
 /** Unified per-phase founder display state (plan 1a). */
-export type PhaseDisplayState = "pending" | "active" | "done" | "blocked";
+export type PhaseDisplayState =
+	| "pending"
+	| "active"
+	| "standby"
+	| "done"
+	| "blocked";
 
 /**
  * Tri-state CommDB park probe. "unknown" = CommDB missing / table missing /
@@ -39,6 +44,8 @@ export interface PhaseDisplayInput {
 	park: ParkProbe;
 	/** Durable evidence that a terminated row is post-conclusion cleanup. */
 	issueConcluded?: boolean;
+	/** FLY-2808 process-body activity, independent from workflow progress. */
+	activity?: "working" | "standby" | "problem";
 }
 
 /**
@@ -103,9 +110,12 @@ export function derivePhaseDisplayState(
 	p: PhaseDisplayInput,
 ): PhaseDisplayState {
 	if (!p.status) return "pending";
+	if (p.activity === "problem") return "blocked";
 	if (PHASE_DONE_STATUSES.has(p.status)) return "done";
 	if (p.status === "terminated" && p.issueConcluded) return "done";
 	if (PHASE_BLOCKED_STATUSES.has(p.status)) return "blocked";
+	if (p.activity === "standby") return "standby";
+	if (p.activity === "working") return "active";
 	// An explicit park marker = the runner itself declared "this round's work
 	// is handed off" — regardless of which live status it parks at.
 	if (p.park === "parked") return "done";
@@ -307,6 +317,7 @@ export const PHASE_DISPLAY_GLYPH_PARTS: Readonly<
 	active: { symbol: "▶", label: "进行中" },
 	pending: { symbol: "◾", label: "未开始" },
 	blocked: { symbol: "🔴", label: "受阻" },
+	standby: { symbol: "💤", label: "待命" },
 };
 
 /** Composed `symbol + label` badge per state (face B row vocabulary). */
@@ -316,6 +327,7 @@ export const PHASE_DISPLAY_GLYPHS: Readonly<Record<PhaseDisplayState, string>> =
 		active: `${PHASE_DISPLAY_GLYPH_PARTS.active.symbol} ${PHASE_DISPLAY_GLYPH_PARTS.active.label}`,
 		pending: `${PHASE_DISPLAY_GLYPH_PARTS.pending.symbol} ${PHASE_DISPLAY_GLYPH_PARTS.pending.label}`,
 		blocked: `${PHASE_DISPLAY_GLYPH_PARTS.blocked.symbol} ${PHASE_DISPLAY_GLYPH_PARTS.blocked.label}`,
+		standby: `${PHASE_DISPLAY_GLYPH_PARTS.standby.symbol} ${PHASE_DISPLAY_GLYPH_PARTS.standby.label}`,
 	};
 
 /**

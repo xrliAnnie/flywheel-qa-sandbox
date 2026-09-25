@@ -764,6 +764,42 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 			raw.close();
 		}
 	});
+
+	it("drops the new identity trigger before backfilling rows written by a rolled-back binary", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1232-ledger-rollforward-"));
+		const dbPath = join(dir, "state.db");
+		const first = await StateStore.create(dbPath);
+		dispatchBatch(first, "initial-exec");
+		first.close();
+
+		const rollback = new Database(dbPath);
+		try {
+			rollback
+				.prepare(
+					`INSERT INTO workflow_side_effect_ledger
+					   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state)
+					 VALUES ('run-shadow-1', 'design', 1, 'dispatch', 2,
+					         'rollback-exec', 'intent_recorded')`,
+				)
+				.run();
+		} finally {
+			rollback.close();
+		}
+
+		const rolledForward = await StateStore.create(dbPath);
+		try {
+			const row = (
+				rolledForward as unknown as { db: { raw: Database.Database } }
+			).db.raw
+				.prepare(
+					"SELECT purpose FROM workflow_side_effect_ledger WHERE execution_id = 'rollback-exec'",
+				)
+				.get() as { purpose: string };
+			expect(row.purpose).toBe("fault_replacement");
+		} finally {
+			rolledForward.close();
+		}
+	});
 });
 
 describe("applyWorkflowLedgerBatch — per-statement fault injection (B6: no torn writes)", () => {
