@@ -141,6 +141,7 @@ fi
 source "$ROOT/scripts/lib/qa-multilead.sh"
 source "$ROOT/scripts/lib/qa-launchd-lead.sh"
 source "$ROOT/scripts/lib/qa-lead-artifacts.sh"
+source "$ROOT/scripts/lib/qa-slot-env-contract.sh"
 layer_home="$TMP/home"
 layer_project_root="$TMP/project"
 layer_state="$TMP/discord-state"
@@ -294,6 +295,75 @@ if [[ -z "$companion_profile" && "$full_profile" == "$expected_full_profile" \
   pass "Codex profile projector emits exactly the five full-access assignments"
 else
   fail "Codex full-access assignment projection"
+fi
+
+outbound_matrix_ok=1
+[[ "$(qa_codex_effective_outbound_mode full-access "" 2>/dev/null || true)" == bridge ]] \
+  || outbound_matrix_ok=0
+[[ "$(qa_codex_effective_outbound_mode companion "" 2>/dev/null || true)" == direct ]] \
+  || outbound_matrix_ok=0
+[[ "$(qa_codex_effective_outbound_mode full-access direct 2>/dev/null || true)" == direct ]] \
+  || outbound_matrix_ok=0
+[[ "$(qa_codex_effective_outbound_mode companion bridge 2>/dev/null || true)" == bridge ]] \
+  || outbound_matrix_ok=0
+qa_codex_effective_outbound_mode full-access invalid-mode \
+  >"$TMP/outbound-invalid.out" 2>"$TMP/outbound-invalid.err" \
+  && outbound_matrix_ok=0
+if [[ "$outbound_matrix_ok" == 1 \
+    && ! -s "$TMP/outbound-invalid.out" \
+    && "$(cat "$TMP/outbound-invalid.err")" == *TEST_CODEX_LEAD_OUTBOUND_MODE* ]]; then
+  pass "Codex outbound mode defaults by profile and explicit direct/bridge wins"
+else
+  fail "Codex outbound effective-mode matrix"
+fi
+
+transport_ok=1
+bridge_transport=$(qa_codex_transport_assignments bridge \
+  http://localhost:4242 fixture-api-token 2>/dev/null || true)
+direct_transport=$(qa_codex_transport_assignments direct "" "" 2>/dev/null || true)
+expected_bridge_transport=$(cat <<'EOF'
+FLYWHEEL_CODEX_LEAD_OUTBOUND=bridge
+FLYWHEEL_BRIDGE_URL=http://localhost:4242
+FLYWHEEL_API_TOKEN=fixture-api-token
+EOF
+)
+[[ "$bridge_transport" == "$expected_bridge_transport" \
+    && "$direct_transport" == FLYWHEEL_CODEX_LEAD_OUTBOUND=direct ]] \
+  || transport_ok=0
+qa_codex_transport_assignments bridge "" fixture-api-token \
+  >"$TMP/transport-url.out" 2>"$TMP/transport-url.err" \
+  && transport_ok=0
+qa_codex_transport_assignments bridge http://localhost:4242 "" \
+  >"$TMP/transport-token.out" 2>"$TMP/transport-token.err" \
+  && transport_ok=0
+if [[ "$transport_ok" == 1 \
+    && ! -s "$TMP/transport-url.out" && ! -s "$TMP/transport-token.out" \
+    && "$(cat "$TMP/transport-url.err")" == *FLYWHEEL_BRIDGE_URL* \
+    && "$(cat "$TMP/transport-token.err")" == *FLYWHEEL_API_TOKEN* \
+    && "$(cat "$TMP/transport-url.err" "$TMP/transport-token.err")" != *fixture-api-token* ]]; then
+  pass "Codex transport assignments fail loud without logging missing secret values"
+else
+  fail "Codex transport assignment contract"
+fi
+
+carrier_contract=$(qa_slot_env_contract_render /tmp/flywheel-test-slot-7 test-slot-7)
+if jq -e '
+    def redirect($name; $value):
+      any(.[]; .name == $name and .disposition == "redirect" and
+        .value == $value and .boot == "mustBeUnderRoot");
+    redirect("FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE";
+      "${SLOT_DIR}/state/lead-carrier-evidence.json") and
+    redirect("FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR";
+      "${SLOT_DIR}/state/carrier-assertions") and
+    redirect("FLYWHEEL_LEAD_RECEIPT_DIR";
+      "${SLOT_DIR}/state/carrier-receipts")
+  ' "$ROOT/scripts/lib/qa-slot-env-contract.json" >/dev/null \
+    && grep -Fxq 'FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE=/tmp/flywheel-test-slot-7/state/lead-carrier-evidence.json' <<<"$carrier_contract" \
+    && grep -Fxq 'FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR=/tmp/flywheel-test-slot-7/state/carrier-assertions' <<<"$carrier_contract" \
+    && grep -Fxq 'FLYWHEEL_LEAD_RECEIPT_DIR=/tmp/flywheel-test-slot-7/state/carrier-receipts' <<<"$carrier_contract"; then
+  pass "QA slot contract renders all carrier state beneath the slot root"
+else
+  fail "QA slot carrier-state redirect contract"
 fi
 
 runtime_env_json="$TMP/runtime-env.json"
