@@ -163,6 +163,17 @@ function headphoneItem(value: unknown): HeadphoneInboxItem {
 	};
 }
 
+/** A Bridge answer with a definite HTTP status (as opposed to a lost request). */
+export class BridgeHttpError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+	) {
+		super(message);
+		this.name = "BridgeHttpError";
+	}
+}
+
 export class BridgeVoiceClient {
 	private readonly fetchFn: FetchLike;
 	private readonly contextCache = new Map<string, VoiceContext>();
@@ -364,7 +375,10 @@ export class BridgeVoiceClient {
 			},
 		);
 		if (!res.ok && res.status !== 202)
-			throw new Error(`voice handoff failed: HTTP ${res.status}`);
+			throw new BridgeHttpError(
+				`voice handoff failed: HTTP ${res.status}`,
+				res.status,
+			);
 		const body = (await res.json()) as VoiceHandoffReceipt;
 		if (
 			body.handoffId !== request.handoffId ||

@@ -184,6 +184,7 @@ function harness(
 		founderTurnSettleTimeoutMs?: number;
 		founderTurnMaxHoldMs?: number;
 		agendaTurns?: AgendaTurnRouter;
+		agendaSubmitWindowMs?: number;
 	} = {},
 ) {
 	const live = new FakeLive();
@@ -278,6 +279,9 @@ function harness(
 			? {}
 			: { founderTurnMaxHoldMs: overrides.founderTurnMaxHoldMs }),
 		...(overrides.agendaTurns ? { agendaTurns: overrides.agendaTurns } : {}),
+		...(overrides.agendaSubmitWindowMs === undefined
+			? {}
+			: { agendaSubmitWindowMs: overrides.agendaSubmitWindowMs }),
 		record,
 		onUnavailable,
 	});
@@ -2148,6 +2152,99 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		expect(vi.mocked(h.speech.speak)).not.toHaveBeenCalled();
 		await h.adapter.close();
 	});
+
+	it("a Bridge that never answers is a spoken failure, not a silent registration", async () => {
+		const r = router("agenda");
+		let calls = 0;
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			agendaSubmitWindowMs: 2_500,
+			submitHandoff: async () => {
+				calls += 1;
+				h.setNow(1_000 + calls * 1_000);
+				throw new TypeError("fetch failed");
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "好，授权");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(
+			() =>
+				expect(
+					vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+				).toContain("刚才那句我没能交给 Lead，你再说一次。"),
+			{ timeout: 8_000 },
+		);
+		expect(calls).toBeGreaterThan(1);
+		expect(h.handoffBindings).toEqual([]);
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "live_agenda_handoff_failed",
+				message: "live_lead_handoff_unreachable",
+			}),
+		);
+		await h.adapter.close();
+	}, 12_000);
+
+	it("a definite Bridge rejection (HTTP 403) is spoken at once", async () => {
+		const r = router("agenda");
+		let calls = 0;
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			submitHandoff: async () => {
+				calls += 1;
+				throw Object.assign(new Error("voice handoff failed: HTTP 403"), {
+					status: 403,
+				});
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "好，授权");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(() =>
+			expect(
+				vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+			).toContain("刚才那句我没能交给 Lead，你再说一次。"),
+		);
+		expect(calls).toBe(1);
+		expect(h.handoffBindings).toEqual([]);
+		await h.adapter.close();
+	});
+
+	it("a handoff stuck in dispatching is asked again, then spoken as a failure", async () => {
+		const r = router("agenda");
+		let calls = 0;
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			agendaSubmitWindowMs: 2_500,
+			submitHandoff: async (request) => {
+				calls += 1;
+				h.setNow(1_000 + calls * 1_000);
+				return {
+					handoffId: request.handoffId,
+					requestDigest: request.requestDigest,
+					state: "dispatching" as never,
+					providerOperationId: "x",
+				};
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "好，授权");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(
+			() =>
+				expect(h.record).toHaveBeenCalledWith(
+					expect.objectContaining({
+						kind: "live_agenda_handoff_failed",
+						message: "live_lead_handoff_stuck_dispatching",
+					}),
+				),
+			{ timeout: 8_000 },
+		);
+		expect(calls).toBeGreaterThan(1);
+		expect(h.handoffBindings).toEqual([]);
+		await h.adapter.close();
+	}, 12_000);
 
 	it("a failed turn binding fails closed: no unbound handoff reaches the Lead", async () => {
 		const submitted: VoiceHandoffRequest[] = [];

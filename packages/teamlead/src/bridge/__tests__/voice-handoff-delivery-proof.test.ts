@@ -114,7 +114,7 @@ describe("voiceHandoffDeliveryMatches (FLY-2863 review R2)", () => {
 			authorId: "400000000000000001",
 			answerKey: KEY,
 			brief: {},
-			text: "【语音议程·item】",
+			text: `【语音议程·item】 say --request x --key ${KEY} --item blocked:I1:t`,
 		};
 		const carried = {
 			kind: "brief" as const,
@@ -123,7 +123,7 @@ describe("voiceHandoffDeliveryMatches (FLY-2863 review R2)", () => {
 		};
 		const base = {
 			authorId: "400000000000000001",
-			text: "【语音议程·item】",
+			text: brief.text,
 		};
 		expect(
 			voiceHandoffDeliveryMatches(envelope(carried, base), record(brief)),
@@ -138,6 +138,34 @@ describe("voiceHandoffDeliveryMatches (FLY-2863 review R2)", () => {
 			voiceHandoffDeliveryMatches(
 				envelope(carried, { ...base, text: "别的" }),
 				record(brief),
+			),
+		).toBe(false);
+	});
+
+	it("never proves a legacy record that has no answer key (upgrade)", () => {
+		const legacyTurn = { ...TURN, answerKey: undefined } as never;
+		expect(
+			voiceHandoffDeliveryMatches(envelope(legacyTurn), record(legacyTurn)),
+		).toBe(false);
+		const legacyBrief = {
+			kind: "brief" as const,
+			purpose: "item" as const,
+			itemKey: "blocked:I1:t",
+			clientRequestId: "c",
+			authorId: "400000000000000001",
+			brief: {},
+			text: "【语音议程·item】 old text without a key",
+		} as never;
+		expect(
+			voiceHandoffDeliveryMatches(
+				envelope(
+					{ kind: "brief", purpose: "item", itemKey: "blocked:I1:t" },
+					{
+						authorId: "400000000000000001",
+						text: "【语音议程·item】 old text without a key",
+					},
+				),
+				record(legacyBrief),
 			),
 		).toBe(false);
 	});

@@ -5,6 +5,7 @@
  * Discord + Bridge + an audio face.
  */
 export {
+	BridgeHttpError,
 	BridgeVoiceClient,
 	type BridgeVoiceClientOptions,
 	type FetchLike,

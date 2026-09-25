@@ -34,8 +34,11 @@ const DEFAULT_FOUNDER_TURN_MAX_HOLD_MS = 45_000;
 const UNKNOWN_TAIL_RECHECK_MS = 250;
 const CLARIFY_PROMPT = "刚才那句我没对上，你再说一次。";
 const CUE_WITHOUT_DELEGATION_PROMPT = "刚才那句我没能交给 Lead，你再说一次。";
-const AGENDA_SUBMIT_ATTEMPTS = 3;
+/** An agenda turn's handoff keeps re-sending the same request this long for
+ * a state the Bridge persisted; after that the failure is spoken. */
+const DEFAULT_AGENDA_SUBMIT_WINDOW_MS = 60_000;
 const AGENDA_SUBMIT_BACKOFF_MS = 500;
+const AGENDA_SUBMIT_MAX_BACKOFF_MS = 8_000;
 
 function isLeadCue(text: string): boolean {
 	return text
@@ -80,6 +83,8 @@ export interface LiveLeadAdapterOptions {
 	submitHandoff(request: VoiceHandoffRequest): Promise<VoiceHandoffReceipt>;
 	registerHandoff(binding: LiveLeadResultBinding): void;
 	agendaTurns?: AgendaTurnRouter;
+	/** Bound on converging an agenda turn's handoff (default 60000). */
+	agendaSubmitWindowMs?: number;
 	now?: () => number;
 	nextId?: () => string;
 	delegationEndTimeoutMs?: number;
@@ -163,6 +168,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private readonly frontendAudioIdleMs: number;
 	private readonly founderTurnSettleTimeoutMs: number;
 	private readonly founderTurnMaxHoldMs: number;
+	private readonly agendaSubmitWindowMs: number;
 	private readonly setTimeoutFn: typeof setTimeout;
 	private readonly clearTimeoutFn: typeof clearTimeout;
 	private live?: OpenAiLiveConversationSession;
@@ -217,6 +223,13 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.founderTurnMaxHoldMs =
 			options.founderTurnMaxHoldMs ?? DEFAULT_FOUNDER_TURN_MAX_HOLD_MS;
 		this.maxSuspendedInputBytes = maxSuspendedInputMs * 48;
+		this.agendaSubmitWindowMs =
+			options.agendaSubmitWindowMs ?? DEFAULT_AGENDA_SUBMIT_WINDOW_MS;
+		if (
+			!Number.isSafeInteger(this.agendaSubmitWindowMs) ||
+			this.agendaSubmitWindowMs < 1
+		)
+			throw new Error("live_lead_agenda_submit_window_invalid");
 		this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
 		this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
 		if (
@@ -797,45 +810,65 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			return "committed";
 		}
 		// The same request is idempotent at the Bridge (handoff id and
-		// idempotency key), so a lost response is retried, never re-minted.
-		for (let attempt = 1; attempt <= AGENDA_SUBMIT_ATTEMPTS; attempt++) {
-			let receipt: VoiceHandoffReceipt;
+		// idempotency key): re-sending it is how a lost answer is recovered, never
+		// a new handoff. Only a state the Bridge persisted ends the loop.
+		const deadline = this.now() + this.agendaSubmitWindowMs;
+		for (let attempt = 1; ; attempt++) {
+			let receipt: VoiceHandoffReceipt | undefined;
 			try {
 				receipt = await this.options.submitHandoff(request);
 			} catch (error) {
+				const status = (error as { status?: unknown }).status;
+				if (typeof status === "number" && status >= 400 && status < 500)
+					throw new Error(`live_lead_handoff_http_${status}`);
 				this.options.record({
 					kind: "live_agenda_handoff_submit_retry",
 					binding: bindingKey,
 					attempt,
 					message: error instanceof Error ? error.message : String(error),
 				});
-				if (attempt < AGENDA_SUBMIT_ATTEMPTS)
-					await this.pause(AGENDA_SUBMIT_BACKOFF_MS * attempt);
-				continue;
 			}
-			if (
-				receipt.handoffId !== request.handoffId ||
-				receipt.requestDigest !== request.requestDigest
-			)
-				throw new Error("live_lead_handoff_receipt_mismatch");
-			if (receipt.state === "rejected")
-				throw new Error("live_lead_handoff_rejected");
-			// Registered either way: a reconciled handoff's answer still arrives.
-			register();
-			if (receipt.state === "committed") {
-				this.options.record({
-					kind: "live_lead_handoff_committed",
-					handoffId,
-					providerOperationId: receipt.providerOperationId,
-					binding: bindingKey,
-					agenda: true,
-				});
-				return "committed";
+			if (receipt) {
+				if (
+					receipt.handoffId !== request.handoffId ||
+					receipt.requestDigest !== request.requestDigest
+				)
+					throw new Error("live_lead_handoff_receipt_mismatch");
+				if (receipt.state === "committed") {
+					register();
+					this.options.record({
+						kind: "live_lead_handoff_committed",
+						handoffId,
+						providerOperationId: receipt.providerOperationId,
+						binding: bindingKey,
+						agenda: true,
+					});
+					return "committed";
+				}
+				// Persisted as ambiguous: the carrier's reconciler owns it now and a
+				// reconciled handoff's answer still reaches the agenda.
+				if (receipt.state === "ambiguous") {
+					register();
+					return "ambiguous";
+				}
+				if (receipt.state === "rejected" || receipt.state === "needs_human")
+					throw new Error(`live_lead_handoff_${receipt.state}`);
+				// authorized / dispatching: another attempt is mid-flight; ask again.
 			}
-			return "ambiguous";
+			if (this.closing) throw new Error("live_lead_handoff_session_closed");
+			if (this.now() >= deadline)
+				throw new Error(
+					receipt
+						? `live_lead_handoff_stuck_${receipt.state}`
+						: "live_lead_handoff_unreachable",
+				);
+			await this.pause(
+				Math.min(
+					AGENDA_SUBMIT_MAX_BACKOFF_MS,
+					AGENDA_SUBMIT_BACKOFF_MS * 2 ** (attempt - 1),
+				),
+			);
 		}
-		register();
-		return "ambiguous";
 	}
 
 	private pause(ms: number): Promise<void> {

@@ -1,6 +1,14 @@
 import type { ChatDeliveryEnvelopeV1 } from "flywheel-comm/discord-chat-ingest";
 import type { VoiceHandoffRecord } from "./voice-handoff-store.js";
 
+const ANSWER_KEY = /^[A-Za-z0-9_-]{16,64}$/u;
+
+/** A record without a well-formed key predates answer keys; its Lead could
+ * never answer it, so it is never proven delivered. */
+function hasAnswerKey(value: unknown): value is string {
+	return typeof value === "string" && ANSWER_KEY.test(value);
+}
+
 /** The agenda facts an envelope must carry for its record (FLY-2863): a brief
  * proves purpose and item; a bound founder turn proves item, turn, item state
  * and the answer key; an unbound handoff carries none. */
@@ -11,6 +19,7 @@ function agendaMatches(
 	const carried = envelope.voiceHandoff?.agenda;
 	const expected = record.agenda;
 	if (!expected) return carried === undefined;
+	if (!hasAnswerKey(expected.answerKey)) return false;
 	if (expected.kind === "brief")
 		return (
 			carried?.kind === "brief" &&
@@ -50,7 +59,9 @@ export function voiceHandoffDeliveryMatches(
 		return (
 			record.agenda?.kind === "brief" &&
 			envelope.authorId === record.agenda.authorId &&
-			envelope.text === record.agenda.text
+			envelope.text === record.agenda.text &&
+			// The Lead reads its key from this text; prove the delivery carries it.
+			envelope.text.includes(`--key ${record.agenda.answerKey}`)
 		);
 	return (
 		envelope.authorId === record.founderUserId &&
