@@ -1,4 +1,25 @@
-import type { AgendaClass, AgendaItem } from "./types.js";
+import {
+	AGENDA_LEAD_URGENT_REASONS,
+	type AgendaClass,
+	type AgendaItem,
+	type AgendaLeadUrgentReason,
+} from "./types.js";
+
+/** U1 (plan §4.2): a Lead marks one of its own main-channel messages urgent by
+ * starting it with `🚨[urgent:<reason>]`. The Bridge trusts it only from that
+ * Lead's own bot, so Discord authorship is the identity. */
+export const AGENDA_URGENT_MARKER_PREFIX = "🚨[urgent:";
+
+export function parseAgendaUrgentMarker(
+	content: string,
+): AgendaLeadUrgentReason | null {
+	const match = /^🚨\[urgent:([a-z0-9_]+)\]/u.exec(content.trimStart());
+	const reason = match?.[1];
+	return reason &&
+		AGENDA_LEAD_URGENT_REASONS.includes(reason as AgendaLeadUrgentReason)
+		? (reason as AgendaLeadUrgentReason)
+		: null;
+}
 
 /** Prefixes of voice echoes posted back into Discord (📻 room status, 🗣️
  * transcript mirror). One definition for every consumer (plan §2.1 R1-9). */

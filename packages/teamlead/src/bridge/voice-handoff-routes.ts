@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import express from "express";
 import { chatDeliveryId } from "flywheel-comm/discord-chat-ingest";
 import {
@@ -54,7 +55,9 @@ export interface VoiceHandoffRouterDeps {
 		sessionId: string;
 		generation: number;
 		utteranceId: string;
-	}): Extract<VoiceHandoffAgenda, { kind: "turn" }> | undefined;
+	}):
+		| Omit<Extract<VoiceHandoffAgenda, { kind: "turn" }>, "answerKey">
+		| undefined;
 	now?: () => Date;
 }
 
@@ -295,11 +298,15 @@ export function createVoiceHandoffRouter(
 			res.status(403).json({ error: "voice_handoff_transcript_unverified" });
 			return;
 		}
-		const agenda = deps.agendaTurn?.({
+		const turn = deps.agendaTurn?.({
 			sessionId: request.sessionId,
 			generation: request.generation,
 			utteranceId: request.utteranceId,
 		});
+		// A retry keeps the stored key: authorize() returns the first record.
+		const agenda = turn
+			? { ...turn, answerKey: randomBytes(18).toString("base64url") }
+			: undefined;
 		const metadata = {
 			version: 1 as const,
 			handoffId: request.handoffId,

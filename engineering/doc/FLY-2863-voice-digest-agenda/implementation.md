@@ -25,7 +25,7 @@ Issue: FLY-2863 (https://linear.app/geoforge3d/issue/FLY-2863/语音v7-播报内
 | §2.3 收件箱 `originClass` | `headphone-collector.ts` 在采集时用 `AUTOMATED_MESSAGE_PREFIX` 与 voice-core `VOICE_ECHO_PREFIXES` 判定；`voice_headphone_source.founder_last_message_at` 记录 founder 回复水位 |
 | §2.1 `GET /api/voice/agenda` 与逐来源 `sourceStatus` | `voice-agenda-routes.ts`；served items 记入 `voice_agenda_items`，客户端之后只能按 key 引用 |
 | §3.1 议程请求（不是用户 handoff） | `POST /api/voice/agenda/requests` → `voice_handoffs.request_kind='agenda_brief'`（CHECK：只有 agenda_brief 可以没有 transcript），走同一个投递/对账/结果流 |
-| §3.2 `voice agenda say/close` | `flywheel-comm voice agenda say|close|urgent` → `POST /api/voice/agenda/lead/results`，结果写进 `voice_handoff_results`（新增 `agenda_say`/`agenda_close` 与 `agenda_json`，旧表一次性重建） |
+| §3.2 `voice agenda say/close` | `flywheel-comm voice agenda say|close --key` → `POST /api/voice/agenda/lead/results`，结果写进 `voice_handoff_results`（新增 `agenda_say`/`agenda_close` 与 `agenda_json`，旧表一次性重建） |
 | §3.3 runbook | `teamlead/lead-rules-base/runbooks/voice-agenda.md`；请求正文本身写明「不是 founder 说的话」、这一件要她做什么、要跑的命令 |
 | §3.4/§3.5 机械校验、过渡句、兜底句 | `voice-core/src/agenda/speech.ts` + conductor 的两段超时 |
 | §4 AgendaConductor | `voice-core/src/agenda/AgendaConductor.ts`（Q1–Q9、U1/U2、报平安、R-T1..R-T5、CAS 持久化） |
@@ -38,8 +38,8 @@ Issue: FLY-2863 (https://linear.app/geoforge3d/issue/FLY-2863/语音v7-播报内
 ## 3. 实现细化（合同没写死的地方，按合同意图落地）
 
 1. **逐来源证明移除。** 合同允许「任一来源不完整就整体不移除」的简单做法，但收件箱采集是 5 秒一页、上百个来源轮转，Lead 主频道几乎不可能每次都在 60 秒新鲜度内，整体规则会让「她点了批准、标题已变」的待批永远关不掉。实现改为：一件只有在**它自己的来源**完整时才能被证明已不在（`AgendaItem.sourceKey`）。不完整的来源仍然不能证明任何移除，R1-6 的意图不变。
-2. **U1 标记走命令。** Lead 主频道消息的发送路径有两条（Codex 的 capability outbound、Claude 的 Discord 插件，后者在仓库外），给两条都加 `urgent` 元数据代价大。实现为 `flywheel-comm voice agenda urgent --channel --message --reason`：Lead 发完消息后用发送成功的 messageId 标记，原因必须是五个枚举之一，频道必须是该 Lead 自己的主频道。
-3. **say/close 的鉴权。** 与 `flywheel-comm voice-session` 同一信任边界（master 或 ingest token），另加：请求 id 必须是投递给**这个 Lead** 的议程请求或绑定了议程回合的 handoff、会话仍 live 且 generation 未变；每条结果先落一行 CommDB `response` 审计记录。Lead 直接回复那条语音消息（已认证的 outbound 路径）也会作为 say 播出，但不能结束一件。
+2. **U1 标记写在消息里。** Lead 主频道消息的发送路径有两条（Codex 的 capability outbound、Claude 的 Discord 插件，后者在仓库外）。实现为：Lead 在自己主频道发的消息以 `🚨[urgent:<枚举原因>]` 开头，收件箱采集器识别后持久化（`voice_agenda_urgent`，按 messageId 关联）；读议程时只认**该频道所属 Lead 自己的 bot** 写的标记。身份由 Discord 作者证明，不信任何请求体（Codex 代码审查 R1 HIGH）。
+3. **say/close 的鉴权。** 共享 token（master 或 ingest）只算传输凭证；每个议程请求、每个绑定了议程回合的 handoff 都由 Bridge 生成一个 answer key，只放在投递给**这个 Lead** 的那条信箱消息里。`voice agenda say|close` 必须带上它（常数时间比较），另要求会话仍 live、generation 未变，并先写一行 CommDB `response` 审计记录。另一个 Lead 即使拿到请求 id 和共享 token，没有那条投递也写不进来（Codex 代码审查 R1 HIGH）。Lead 直接回复那条语音消息（已认证的 outbound 路径）也会作为 say 播出，但不能结束一件。
 4. **议程请求的作者。** 投递信封要求作者是 Discord snowflake：用会话的语音 bot（缺省时用 Bridge bot），绝不是 founder。对账按记录里存的同一作者核对。
 5. **刷新节奏。** 收件箱没有推送，所以 Q9 的「每次变更触发」落为：Lead 的回话经 SSE 立即唤醒，来源变化靠 30 秒轮询。
 6. **报平安间隔可配置**：`FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS`，默认 600000（她定的数）。

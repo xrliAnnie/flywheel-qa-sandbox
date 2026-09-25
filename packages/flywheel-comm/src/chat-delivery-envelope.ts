@@ -36,6 +36,8 @@ export type VoiceHandoffAgendaMetadata =
 			itemKey: string;
 			turnId: string;
 			itemState: "active" | "closed";
+			/** Proves a `voice agenda` answer came from this delivery's reader. */
+			answerKey?: string;
 	  };
 
 export interface VoiceHandoffMetadata {
@@ -51,6 +53,7 @@ export interface VoiceHandoffMetadata {
 }
 
 const AGENDA_KEY = /^[A-Za-z0-9_.:@+-]{1,256}$/u;
+const AGENDA_ANSWER_KEY = /^[A-Za-z0-9_-]{16,64}$/u;
 
 function normalizeVoiceAgenda(value: unknown): VoiceHandoffAgendaMetadata {
 	if (!value || typeof value !== "object" || Array.isArray(value))
@@ -83,11 +86,20 @@ function normalizeVoiceAgenda(value: unknown): VoiceHandoffAgendaMetadata {
 	if (input.kind === "turn") {
 		if (input.itemState !== "active" && input.itemState !== "closed")
 			throw new Error("voiceHandoff.agenda.itemState is invalid");
+		if (
+			input.answerKey !== undefined &&
+			(typeof input.answerKey !== "string" ||
+				!AGENDA_ANSWER_KEY.test(input.answerKey))
+		)
+			throw new Error("voiceHandoff.agenda.answerKey is invalid");
 		return {
 			kind: "turn",
 			itemKey: key(input.itemKey, "voiceHandoff.agenda.itemKey"),
 			turnId: key(input.turnId, "voiceHandoff.agenda.turnId"),
 			itemState: input.itemState,
+			...(input.answerKey === undefined
+				? {}
+				: { answerKey: input.answerKey as string }),
 		};
 	}
 	throw new Error("voiceHandoff.agenda.kind is invalid");

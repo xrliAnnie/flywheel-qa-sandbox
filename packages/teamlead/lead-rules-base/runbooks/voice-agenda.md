@@ -19,12 +19,12 @@
 ## 命令
 
 ```sh
-flywheel-comm voice agenda say   --request <id> --item <itemKey|none> [--order k1,k2,k3] --text "<要说的话>"
-flywheel-comm voice agenda close --request <id> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <依据>] --reason "<一句话>"
-flywheel-comm voice agenda urgent --channel <你的主频道 id> --message <已发消息 id> --reason production_down|data_loss_risk|security|deadline_within_1h|founder_requested
+flywheel-comm voice agenda say   --request <id> --key <key> --item <itemKey|none> [--order k1,k2,k3] --text "<要说的话>"
+flywheel-comm voice agenda close --request <id> --key <key> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <依据>] --reason "<一句话>"
 ```
 
-- `--request`：议程请求就用请求里的 id；她在议程件进行中说的话，用那条 `[voice handoff]` 的 `handoff_id`。
+- `--request` 和 `--key`：议程请求就用请求里写的 id 和 key；她在议程件进行中说的话，用那条 `[voice handoff]` 里的 `handoff_id` 和 key。key 只在投递给你的那条消息里，证明回答来自你。
+- `--order`（仅开场）：必须把开场列出的每一件都排进去，不能少。
 - 她说的话和当前件无关：照样回答她，`--item none`；想顺手带回当前件就 `--item <当前件>`。
 - 普通回复（不用命令，直接回复那条语音消息）也会被念出来，但**不能**结束一件。
 
@@ -40,7 +40,7 @@ flywheel-comm voice agenda urgent --channel <你的主频道 id> --message <已�
 
 ## 插播只有两种
 
-- 你在主频道发了急事，发完用 `voice agenda urgent` 标上枚举原因（没有原因不收）。
+- 你在**自己的主频道**发急事时，消息开头写 `🚨[urgent:<原因>]`，原因只能是 `production_down`、`data_loss_risk`、`security`、`deadline_within_1h`、`founder_requested` 之一（写错不算）。只认你自己的 bot 发的。
 - Linear 优先级为 Urgent 的单进入受阻。
 
 其余都排队，不打断她正在谈的那件。

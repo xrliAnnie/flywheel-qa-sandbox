@@ -79,7 +79,7 @@ function voiceDeliveryPreamble(
 	if (agenda?.kind === "brief")
 		return `[voice agenda] 这是语音模式层发给你的议程请求（purpose=${agenda.purpose}），不是 founder 说的话。请按下文写出你要对她说的话，用 \`flywheel-comm voice agenda say --request ${handoff.handoffId} …\` 提交；不要把原文或清单交给她念。`;
 	if (agenda?.kind === "turn")
-		return `[voice handoff] 这是 founder 明确交给 Lead 的请求；她是在语音议程件 ${agenda.itemKey}（${agenda.itemState === "active" ? "当前正在谈" : "已经结束"}）进行中说的。请用 \`flywheel-comm voice agenda say --request ${handoff.handoffId} --item ${agenda.itemKey} …\` 回答${agenda.itemState === "active" ? "，她拍板后用 `voice agenda close` 处置这一件" : "（这件已结束，只做说明，不能 close）"}。`;
+		return `[voice handoff] 这是 founder 明确交给 Lead 的请求；她是在语音议程件 ${agenda.itemKey}（${agenda.itemState === "active" ? "当前正在谈" : "已经结束"}）进行中说的。请用 \`flywheel-comm voice agenda say --request ${handoff.handoffId}${agenda.answerKey ? ` --key ${agenda.answerKey}` : ""} --item ${agenda.itemKey} …\` 回答${agenda.itemState === "active" ? "，她拍板后用 `voice agenda close` 处置这一件" : "（这件已结束，只做说明，不能 close）"}。`;
 	return "[voice handoff] 这是 founder 明确交给 Lead 的请求；请由 Lead 判断和执行，并在回复中保留 handoff 关联。";
 }
 

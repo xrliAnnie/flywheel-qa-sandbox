@@ -80,6 +80,7 @@ function deps(
 		}),
 		readTitle: (input) =>
 			readIssueTitleState({ ...input, parkFor: () => "not_parked" }),
+		leadBotUserId: (lead) => lead.botUserId,
 		now: () => new Date(now),
 		...extra,
 	};
@@ -359,20 +360,27 @@ describe("buildVoiceAgendaSnapshot — Lead said (plan §2.2: no history replay)
 
 	it("marks a stale inbox source partial and a flagged message urgent (U1)", () => {
 		said("600000000000000001", T0 - 60_000);
+		said("600000000000000002", T0 - 50_000, { author: OTHER_BOT });
 		source(LEAD_CH, T0 - 5 * 60_000);
-		store.voiceAgenda.recordUrgent({
-			projectName: PROJECT,
-			channelId: LEAD_CH,
-			messageId: "600000000000000001",
-			leadId: "lead-one",
-			reason: "production_down",
-			now: new Date(T0).toISOString(),
-		});
+		for (const [messageId, authorId] of [
+			["600000000000000001", LEAD_BOT],
+			["600000000000000002", OTHER_BOT],
+		] as const)
+			store.voiceAgenda.recordUrgent({
+				projectName: PROJECT,
+				channelId: LEAD_CH,
+				messageId,
+				authorId,
+				reason: "production_down",
+				now: new Date(T0).toISOString(),
+			});
 		const snapshot = buildVoiceAgendaSnapshot(deps(T0), session());
 		expect(snapshot.items[0]?.urgent).toEqual({
 			source: "lead_flag",
 			reason: "production_down",
 		});
+		// Another Lead's bot cannot make this channel's owner interrupt her.
+		expect(snapshot.items[1]?.urgent).toBeNull();
 		expect(snapshot.sourceStatus[`inbox:${PROJECT}:${LEAD_CH}`]).toMatchObject({
 			status: "partial",
 			reason: "stale",

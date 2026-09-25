@@ -20,6 +20,9 @@ export type VoiceHandoffAgenda =
 			turnId: string;
 			itemKey: string;
 			itemState: "active" | "closed";
+			/** Delivered only in this Lead's mailbox; `voice agenda say|close`
+			 * must present it (FLY-2863 review R1). */
+			answerKey: string;
 	  }
 	| {
 			kind: "brief";
@@ -29,6 +32,8 @@ export type VoiceHandoffAgenda =
 			/** Snowflake the brief is delivered as (a voice/Bridge bot, never
 			 * the founder). */
 			authorId: string;
+			/** Delivered only in the brief text in this Lead's mailbox. */
+			answerKey: string;
 			brief: Record<string, unknown>;
 			text: string;
 	  };

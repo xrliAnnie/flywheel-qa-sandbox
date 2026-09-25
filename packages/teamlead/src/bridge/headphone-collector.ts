@@ -1,4 +1,9 @@
-import { extractSpeechBrief, VOICE_ECHO_PREFIXES } from "flywheel-voice-core";
+import {
+	type AgendaLeadUrgentReason,
+	extractSpeechBrief,
+	parseAgendaUrgentMarker,
+	VOICE_ECHO_PREFIXES,
+} from "flywheel-voice-core";
 import { AUTOMATED_MESSAGE_PREFIX } from "./automated-message.js";
 import { DISCORD_API } from "./discord-utils.js";
 import type {
@@ -168,6 +173,14 @@ export interface HeadphoneCollectorOptions {
 		}
 	>;
 	projectQuestions?(): void;
+	/** FLY-2863 U1: a Lead-authored message that carries the urgent marker. */
+	recordUrgent?(input: {
+		projectName: string;
+		channelId: string;
+		messageId: string;
+		authorId: string;
+		reason: AgendaLeadUrgentReason;
+	}): void;
 	now?: () => number;
 	minimumPageIntervalMs?: number;
 	notificationsPending?(): boolean;
@@ -326,6 +339,9 @@ export class HeadphoneInboxCollector {
 			snowflakeCompare(left.id, right.id),
 		);
 		const accepted: HeadphoneInboxUpsertInput[] = [];
+		const urgentMarks: Array<
+			Parameters<NonNullable<HeadphoneCollectorOptions["recordUrgent"]>>[0]
+		> = [];
 		const allowed = new Set(candidate.scope.allowedAuthorIds);
 		let founderLastMessageAt: string | undefined;
 		for (const message of ordered)
@@ -354,6 +370,7 @@ export class HeadphoneInboxCollector {
 			const text = readableText(message);
 			if (!text) continue;
 			const question = authority?.get(message.id);
+			const originClass = classifyHeadphoneOrigin(candidate.scope, message);
 			accepted.push({
 				...(question ? { questionId: question.questionId } : {}),
 				projectName: candidate.scope.projectName,
@@ -371,8 +388,20 @@ export class HeadphoneInboxCollector {
 				}),
 				sourceCreatedAt: message.timestamp,
 				sourceResolved: question?.resolved ?? message.resolved,
-				originClass: classifyHeadphoneOrigin(candidate.scope, message),
+				originClass,
 			});
+			const urgent =
+				originClass === "lead_authored"
+					? parseAgendaUrgentMarker(message.content)
+					: null;
+			if (urgent)
+				urgentMarks.push({
+					projectName: candidate.scope.projectName,
+					channelId: candidate.scope.channelId,
+					messageId: message.id,
+					authorId: message.authorId,
+					reason: urgent,
+				});
 		}
 		const first = ordered[0]?.id;
 		const last = ordered.at(-1)?.id;
@@ -404,6 +433,15 @@ export class HeadphoneInboxCollector {
 				...(founderLastMessageAt ? { founderLastMessageAt } : {}),
 			},
 		});
+		for (const mark of urgentMarks) {
+			try {
+				this.options.recordUrgent?.(mark);
+			} catch (error) {
+				console.warn(
+					`[headphone-inbox] urgent flag not recorded for ${mark.channelId}/${mark.messageId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 		return "collected";
 	}
 }

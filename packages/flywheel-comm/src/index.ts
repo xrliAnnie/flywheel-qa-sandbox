@@ -167,9 +167,9 @@ Commands:
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
-  voice     FLY-2863 voice agenda (Lead use): voice agenda say|close|urgent —
-            answer a voice agenda request with the words to speak, close the
-            current item with a disposition, or flag a sent message urgent
+  voice     FLY-2863 voice agenda (Lead use): voice agenda say|close —
+            answer a voice agenda request with the words to speak, or close
+            the current item with a disposition (--key from the delivery)
   voice-session  Start, stop, inspect, or schedule a generic Codex realtime voice session
                  (start|stop|status|schedule-status|reschedule|cancel-schedule)
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)

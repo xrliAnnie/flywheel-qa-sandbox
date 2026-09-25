@@ -6,9 +6,12 @@ import { normalizeOptionalBearer } from "flywheel-config";
  * FLY-2863 plan §3.2: the Lead answers a voice agenda request with structured
  * commands — never parsed out of natural language.
  *
- *   voice agenda say    --request <id> --item <itemKey|none> [--order k1,k2] --text "<words>"
- *   voice agenda close  --request <id> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason "<one line>"
- *   voice agenda urgent --channel <id> --message <id> --reason production_down|data_loss_risk|security|deadline_within_1h|founder_requested
+ *   voice agenda say    --request <id> --key <key> --item <itemKey|none> [--order k1,k2] --text "<words>"
+ *   voice agenda close  --request <id> --key <key> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason "<one line>"
+ *
+ * `--key` comes from the delivery the Lead received; it binds the answer to
+ * that Lead. An urgent main-channel message is marked in the message itself
+ * (`🚨[urgent:<reason>]`), not by a command.
  */
 
 export interface VoiceAgendaCommandDeps {
@@ -20,26 +23,18 @@ export interface VoiceAgendaCommandDeps {
 }
 
 const DISPOSITIONS = ["resolved", "decision_recorded", "deferred"] as const;
-const URGENT_REASONS = [
-	"production_down",
-	"data_loss_risk",
-	"security",
-	"deadline_within_1h",
-	"founder_requested",
-] as const;
 const UUID =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const KEY = /^[A-Za-z0-9_.:@+-]{1,256}$/u;
-const SNOWFLAKE = /^\d{17,20}$/u;
+const ANSWER_KEY = /^[A-Za-z0-9_-]{16,64}$/u;
 
 class UsageError extends Error {}
 
 function usage(): string {
 	return [
 		"usage:",
-		"  flywheel-comm voice agenda say --request <id> --item <itemKey|none> [--order k1,k2] --text <words> [--lead <id>]",
-		"  flywheel-comm voice agenda close --request <id> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason <line> [--lead <id>]",
-		"  flywheel-comm voice agenda urgent --channel <id> --message <id> --reason <enum> [--lead <id>]",
+		"  flywheel-comm voice agenda say --request <id> --key <key> --item <itemKey|none> [--order k1,k2] --text <words> [--lead <id>]",
+		"  flywheel-comm voice agenda close --request <id> --key <key> --item <itemKey> --disposition resolved|decision_recorded|deferred [--evidence <ref>] --reason <line> [--lead <id>]",
 	].join("\n");
 }
 
@@ -63,8 +58,7 @@ export async function runVoiceAgendaCommand(
 				disposition: { type: "string" },
 				evidence: { type: "string" },
 				reason: { type: "string" },
-				channel: { type: "string" },
-				message: { type: "string" },
+				key: { type: "string" },
 				lead: { type: "string" },
 			},
 			allowPositionals: false,
@@ -77,6 +71,11 @@ export async function runVoiceAgendaCommand(
 			const requestId = values.request?.trim();
 			if (!requestId || !UUID.test(requestId))
 				throw new UsageError("--request must be the request id from the brief");
+			const answerKey = values.key?.trim();
+			if (!answerKey || !ANSWER_KEY.test(answerKey))
+				throw new UsageError(
+					"--key must be the key from the delivery you are answering",
+				);
 			const item = values.item?.trim();
 			if (!item)
 				throw new UsageError("--item is required (use none for no item)");
@@ -97,6 +96,7 @@ export async function runVoiceAgendaCommand(
 				body = {
 					requestId,
 					leadId,
+					answerKey,
 					clientResultId: (deps.nextId ?? randomUUID)(),
 					kind: "say",
 					itemKey: item === "none" ? null : item,
@@ -122,6 +122,7 @@ export async function runVoiceAgendaCommand(
 				body = {
 					requestId,
 					leadId,
+					answerKey,
 					clientResultId: (deps.nextId ?? randomUUID)(),
 					kind: "close",
 					itemKey: item,
@@ -133,24 +134,6 @@ export async function runVoiceAgendaCommand(
 				};
 			}
 			path = "/api/voice/agenda/lead/results";
-		} else if (action === "urgent") {
-			const reason = values.reason as (typeof URGENT_REASONS)[number];
-			if (!URGENT_REASONS.includes(reason))
-				throw new UsageError(
-					`--reason must be one of ${URGENT_REASONS.join(", ")}`,
-				);
-			if (
-				!SNOWFLAKE.test(values.channel ?? "") ||
-				!SNOWFLAKE.test(values.message ?? "")
-			)
-				throw new UsageError("--channel and --message must be Discord ids");
-			body = {
-				leadId,
-				channelId: values.channel,
-				messageId: values.message,
-				reason,
-			};
-			path = "/api/voice/agenda/lead/urgent";
 		} else {
 			throw new UsageError("unknown voice agenda action");
 		}
@@ -179,7 +162,12 @@ export async function runVoiceAgendaCommand(
 		stderr(`voice agenda: Bridge rejected (HTTP ${response.status})`);
 		return 2;
 	} catch (error) {
-		if (error instanceof UsageError) {
+		const parseError =
+			error instanceof Error &&
+			String((error as NodeJS.ErrnoException).code ?? "").startsWith(
+				"ERR_PARSE_ARGS",
+			);
+		if (error instanceof UsageError || parseError) {
 			stderr(`voice agenda: ${error.message}\n${usage()}`);
 			return 64;
 		}

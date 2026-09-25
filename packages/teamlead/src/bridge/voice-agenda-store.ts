@@ -100,7 +100,7 @@ export class VoiceAgendaStore {
 				project_name TEXT NOT NULL,
 				channel_id TEXT NOT NULL,
 				message_id TEXT NOT NULL,
-				lead_id TEXT NOT NULL,
+				author_id TEXT NOT NULL,
 				reason TEXT NOT NULL CHECK(reason IN ('production_down','data_loss_risk','security','deadline_within_1h','founder_requested')),
 				created_at TEXT NOT NULL,
 				PRIMARY KEY(channel_id, message_id)
@@ -326,12 +326,13 @@ export class VoiceAgendaStore {
 		})();
 	}
 
-	/** U1: recorded on the real send path, keyed by the sent message id. */
+	/** U1: recorded by the collector from the message itself (its author is
+	 * the Discord-authenticated identity), keyed by the sent message id. */
 	recordUrgent(input: {
 		projectName: string;
 		channelId: string;
 		messageId: string;
-		leadId: string;
+		authorId: string;
 		reason: AgendaLeadUrgentReason;
 		now: string;
 	}): void {
@@ -339,7 +340,7 @@ export class VoiceAgendaStore {
 			throw new Error("voice_agenda_urgent_reason_invalid");
 		this.db
 			.prepare(
-				`INSERT INTO voice_agenda_urgent(project_name, channel_id, message_id, lead_id, reason, created_at)
+				`INSERT INTO voice_agenda_urgent(project_name, channel_id, message_id, author_id, reason, created_at)
 				 VALUES (?, ?, ?, ?, ?, ?)
 				 ON CONFLICT(channel_id, message_id) DO NOTHING`,
 			)
@@ -347,7 +348,7 @@ export class VoiceAgendaStore {
 				input.projectName,
 				input.channelId,
 				input.messageId,
-				input.leadId,
+				input.authorId,
 				input.reason,
 				input.now,
 			);
@@ -356,15 +357,15 @@ export class VoiceAgendaStore {
 	getUrgent(
 		channelId: string,
 		messageId: string,
-	): { leadId: string; reason: AgendaLeadUrgentReason } | undefined {
+	): { authorId: string; reason: AgendaLeadUrgentReason } | undefined {
 		const row = this.db
 			.prepare(
-				"SELECT lead_id, reason FROM voice_agenda_urgent WHERE channel_id = ? AND message_id = ?",
+				"SELECT author_id, reason FROM voice_agenda_urgent WHERE channel_id = ? AND message_id = ?",
 			)
 			.get(channelId, messageId) as
-			| { lead_id: string; reason: AgendaLeadUrgentReason }
+			| { author_id: string; reason: AgendaLeadUrgentReason }
 			| undefined;
-		return row ? { leadId: row.lead_id, reason: row.reason } : undefined;
+		return row ? { authorId: row.author_id, reason: row.reason } : undefined;
 	}
 
 	/** Latest revision of each lead-authored inbox message in the channels. */

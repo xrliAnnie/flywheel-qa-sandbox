@@ -117,10 +117,6 @@ async function start(
 		dispatchBrief,
 		recordLeadResult: (_record, input) => `audit:${input.resultEventId}`,
 		briefAuthorId: () => "400000000000000001",
-		leadMainChannel: (leadId) =>
-			leadId === "raya"
-				? { projectName: "raya", channelId: "100000000000000009" }
-				: undefined,
 		now: () => new Date(NOW),
 	});
 	const app = express();
@@ -445,7 +441,11 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 	async function opened() {
 		const harness = await start();
 		const open = await openRequest(harness.base);
-		return { ...harness, requestId: open.body.requestId as string };
+		const requestId = open.body.requestId as string;
+		const record = harness.handoffs.get(requestId);
+		const answerKey =
+			record?.agenda?.kind === "brief" ? record.agenda.answerKey : "";
+		return { ...harness, requestId, answerKey };
 	}
 	const result = (base: string, body: unknown, token = INGEST) =>
 		call(base, "/agenda/lead/results", {
@@ -456,10 +456,11 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 		});
 
 	it("appends a say bound to the delivered Lead and wakes the session", async () => {
-		const { base, requestId, notify, handoffs } = await opened();
+		const { base, requestId, notify, handoffs, answerKey } = await opened();
 		const say = await result(base, {
 			requestId,
 			leadId: "raya",
+			answerKey,
 			clientResultId: "r-1",
 			kind: "say",
 			itemKey: "blocked:I1:t",
@@ -481,6 +482,7 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 		const again = await result(base, {
 			requestId,
 			leadId: "raya",
+			answerKey,
 			clientResultId: "r-1",
 			kind: "say",
 			itemKey: "blocked:I1:t",
@@ -491,13 +493,48 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 		expect(handoffs.listResults(requestId, 0, 10).events).toHaveLength(1);
 	});
 
+	it("refuses a missing or wrong answer key even with the right Lead id", async () => {
+		const { base, requestId, answerKey } = await opened();
+		expect(answerKey).toMatch(/^[A-Za-z0-9_-]{24}$/u);
+		for (const key of [undefined, "", `${answerKey.slice(1)}x`])
+			expect(
+				(
+					await result(base, {
+						requestId,
+						leadId: "raya",
+						...(key === undefined ? {} : { answerKey: key }),
+						clientResultId: `r-key-${key}`,
+						kind: "say",
+						itemKey: null,
+						text: "hi",
+					})
+				).status,
+			).toBe(403);
+	});
+
+	it("an opening order must be a full permutation of the frozen brief", async () => {
+		const { base, requestId, answerKey } = await opened();
+		const partial = await result(base, {
+			requestId,
+			leadId: "raya",
+			answerKey,
+			clientResultId: "r-partial",
+			kind: "say",
+			itemKey: null,
+			order: ["blocked:I1:t"],
+			text: "hi",
+		});
+		expect(partial.status).toBe(400);
+	});
+
 	it("refuses another Lead, a foreign order, a resolved close without evidence", async () => {
-		const { base, requestId } = await opened();
+		const { base, requestId, answerKey } = await opened();
 		expect(
 			(
 				await result(base, {
 					requestId,
 					leadId: "flywheel-eng-lead",
+					answerKey,
 					clientResultId: "r-2",
 					kind: "say",
 					itemKey: null,
@@ -510,6 +547,7 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 				await result(base, {
 					requestId,
 					leadId: "raya",
+					answerKey,
 					clientResultId: "r-3",
 					kind: "say",
 					itemKey: null,
@@ -523,6 +561,7 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 				await result(base, {
 					requestId,
 					leadId: "raya",
+					answerKey,
 					clientResultId: "r-4",
 					kind: "close",
 					itemKey: "blocked:I1:t",
@@ -538,6 +577,7 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 					{
 						requestId,
 						leadId: "raya",
+						answerKey,
 						clientResultId: "r-5",
 						kind: "say",
 						itemKey: null,
@@ -597,6 +637,7 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 				await result(base, {
 					requestId: idle.handoffId,
 					leadId: "raya",
+					answerKey: "a".repeat(24),
 					clientResultId: "r-6",
 					kind: "say",
 					itemKey: null,
@@ -628,15 +669,39 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 			body: bound,
 		});
 		expect(posted.status).toBe(200);
-		expect(handoffs.get(bound.handoffId)?.agenda).toEqual({
+		const boundAgenda = handoffs.get(bound.handoffId)?.agenda;
+		expect(boundAgenda).toMatchObject({
 			kind: "turn",
 			turnId: "utt-agenda",
 			itemKey: "blocked:I1:t",
 			itemState: "active",
+			answerKey: expect.stringMatching(/^[A-Za-z0-9_-]{24}$/u),
 		});
+		const turnKey = boundAgenda?.kind === "turn" ? boundAgenda.answerKey : "";
+		// The brief's key does not answer the founder's handoff.
+		expect(
+			(
+				await result(base, {
+					requestId: bound.handoffId,
+					leadId: "raya",
+					answerKey: (
+						handoffs.get(
+							(
+								await openRequest(base, "c-other")
+							).body.requestId as string,
+						)?.agenda as { answerKey: string }
+					).answerKey,
+					clientResultId: "r-wrong",
+					kind: "say",
+					itemKey: null,
+					text: "hi",
+				})
+			).status,
+		).toBe(403);
 		const close = await result(base, {
 			requestId: bound.handoffId,
 			leadId: "raya",
+			answerKey: turnKey,
 			clientResultId: "r-7",
 			kind: "close",
 			itemKey: "blocked:I1:t",
@@ -649,53 +714,6 @@ describe("POST /api/voice/agenda/results (voice agenda say|close)", () => {
 			kind: "close",
 			disposition: "resolved",
 		});
-	});
-});
-
-describe("POST /api/voice/agenda/lead/urgent (U1)", () => {
-	it("records an enumerated flag on the Lead's own main channel only", async () => {
-		const { base, agenda } = await start();
-		const flag = (body: unknown) =>
-			call(base, "/agenda/lead/urgent", {
-				method: "POST",
-				token: INGEST,
-				lease: "",
-				body,
-			});
-		expect(
-			(
-				await flag({
-					leadId: "raya",
-					channelId: "100000000000000009",
-					messageId: "600000000000000001",
-					reason: "production_down",
-				})
-			).status,
-		).toBe(200);
-		expect(
-			agenda.getUrgent("100000000000000009", "600000000000000001"),
-		).toEqual({ leadId: "raya", reason: "production_down" });
-		for (const body of [
-			{
-				leadId: "raya",
-				channelId: "100000000000000009",
-				messageId: "600000000000000002",
-				reason: "because",
-			},
-			{
-				leadId: "raya",
-				channelId: "100000000000000008",
-				messageId: "600000000000000003",
-				reason: "security",
-			},
-			{
-				leadId: "someone",
-				channelId: "100000000000000009",
-				messageId: "600000000000000004",
-				reason: "security",
-			},
-		])
-			expect((await flag(body)).status).toBe(400);
 	});
 });
 

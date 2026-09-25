@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { HeadphoneInboxCollector } from "../headphone-collector.js";
 import { HeadphoneInboxStore } from "../headphone-inbox.js";
 import { VoiceAgendaStore } from "../voice-agenda-store.js";
 import { VoiceHandoffStore } from "../voice-handoff-store.js";
@@ -126,6 +127,7 @@ describe("VoiceHandoffStore FLY-2863 migration", () => {
 				itemKey: null,
 				clientRequestId: "c",
 				authorId: "400000000000000001",
+				answerKey: "k".repeat(24),
 				brief: {},
 				text: "brief",
 			},
@@ -151,6 +153,7 @@ describe("VoiceHandoffStore FLY-2863 migration", () => {
 						itemKey: null,
 						clientRequestId: "c",
 						authorId: "400000000000000001",
+						answerKey: "k".repeat(24),
 						brief: {},
 						text: "brief",
 					},
@@ -221,7 +224,7 @@ describe("VoiceAgendaStore", () => {
 				projectName: "p",
 				channelId: "c",
 				messageId: "m",
-				leadId: "l",
+				authorId: "l",
 				reason: "because" as never,
 				now: "2026-09-24T00:00:00.000Z",
 			}),
@@ -263,5 +266,71 @@ describe("VoiceAgendaStore", () => {
 			}),
 		).toThrow(/CHECK/u);
 		expect(store.getState("s")).toBeUndefined();
+	});
+});
+
+describe("HeadphoneInboxCollector — FLY-2863 U1 marker", () => {
+	it("records an urgent marker only on a Lead-authored message with an enumerated reason", async () => {
+		db = new Database(":memory:");
+		const inbox = new HeadphoneInboxStore(db);
+		inbox.migrate();
+		const marks: unknown[] = [];
+		const collector = new HeadphoneInboxCollector({
+			store: inbox,
+			listScopes: () => [
+				{
+					projectName: "raya",
+					founderUserId: "founder-1",
+					channelId: "chan-1",
+					allowedAuthorIds: ["lead-bot", "bridge-bot"],
+					leadAuthorIds: ["lead-bot"],
+					token: "t",
+				},
+			],
+			fetchPage: async () => ({
+				kind: "page",
+				messages: [
+					{
+						id: "100000000000000001",
+						authorId: "lead-bot",
+						content: "🚨[urgent:production_down] 生产挂了，要你拍",
+						timestamp: "2026-09-24T00:00:01.000Z",
+					},
+					{
+						id: "100000000000000002",
+						authorId: "lead-bot",
+						content: "🚨[urgent:because] 我觉得急",
+						timestamp: "2026-09-24T00:00:02.000Z",
+					},
+					{
+						id: "100000000000000003",
+						authorId: "bridge-bot",
+						content: "🤖[自动] 🚨[urgent:security] 状态",
+						timestamp: "2026-09-24T00:00:03.000Z",
+					},
+					{
+						id: "100000000000000004",
+						authorId: "founder-1",
+						content: "🚨[urgent:security] 我自己说",
+						timestamp: "2026-09-24T00:00:04.000Z",
+					},
+				],
+			}),
+			recordUrgent: (mark) => marks.push(mark),
+			now: () => Date.parse("2026-09-24T00:00:05.000Z"),
+		});
+		expect(await collector.tick()).toBe("collected");
+		expect(marks).toEqual([
+			{
+				projectName: "raya",
+				channelId: "chan-1",
+				messageId: "100000000000000001",
+				authorId: "lead-bot",
+				reason: "production_down",
+			},
+		]);
+		expect(
+			inbox.getSourceState("raya", "founder-1", "chan-1")?.founderLastMessageAt,
+		).toBe("2026-09-24T00:00:04.000Z");
 	});
 });

@@ -11752,6 +11752,13 @@ export async function startBridge(
 			classifyMessages: (scope, messages) =>
 				headphoneQuestionAuthority.classifyMessages(scope, messages),
 			projectQuestions: () => headphoneQuestionAuthority.projectQuestions(),
+			// FLY-2863 U1: the marker counts only from the channel owner's bot
+			// (checked again when the agenda is read).
+			recordUrgent: (mark) =>
+				store.voiceAgenda.recordUrgent({
+					...mark,
+					now: new Date().toISOString(),
+				}),
 		});
 		const collectHeadphonePage = () =>
 			void headphoneCollector
@@ -11847,6 +11854,7 @@ export async function startBridge(
 											itemKey: record.agenda.itemKey,
 											turnId: record.agenda.turnId,
 											itemState: record.agenda.itemState,
+											answerKey: record.agenda.answerKey,
 										},
 									}
 								: {}),
@@ -11914,6 +11922,8 @@ export async function startBridge(
 							? { guildId: config.discordGuildId }
 							: {}),
 						issuePriority: (issueId) => agendaIssuePriority.get(issueId),
+						leadBotUserId: (lead) =>
+							lead.botUserId ?? botUserIdFromToken(lead.botToken) ?? undefined,
 						observeBlockedIssues: (issueIds) =>
 							agendaIssuePriority.observe(issueIds),
 						now: () => new Date(),
@@ -12009,17 +12019,6 @@ export async function startBridge(
 				store.getVoiceSession(session.sessionId)?.voiceBotUserId ??
 				botUserIdFromToken(config.discordBotToken) ??
 				undefined,
-			leadMainChannel: (leadId) => {
-				const matches = projects.flatMap((project) =>
-					project.leads
-						.filter((lead) => lead.agentId === leadId && !!lead.chatChannel)
-						.map((lead) => ({
-							projectName: project.projectName,
-							channelId: lead.chatChannel,
-						})),
-				);
-				return matches.length === 1 ? matches[0] : undefined;
-			},
 		});
 		voiceAgendaRouterHolder.current = agendaRoutes.sessionRouter;
 		voiceAgendaLeadRouterHolder.current = agendaRoutes.leadRouter;

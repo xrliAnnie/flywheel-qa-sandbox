@@ -52,6 +52,8 @@ export interface VoiceAgendaSourceDeps {
 	/** Invoked with blocked issue ids so an async cache can learn priorities. */
 	observeBlockedIssues?(issueIds: readonly string[]): void;
 	readTitle?: typeof readIssueTitleState;
+	/** A Lead's own bot id; U1 counts only from the channel owner's bot. */
+	leadBotUserId?(lead: LeadConfig): string | undefined;
 	now(): Date;
 	lookbackMs?: number;
 	freshnessMs?: number;
@@ -335,10 +337,19 @@ export function buildVoiceAgendaSnapshot(
 			olderUnspokenCount++;
 			continue;
 		}
-		const flag = deps.agenda.getUrgent(
+		const mark = deps.agenda.getUrgent(
 			candidate.channelId,
 			candidate.sourceMessageId,
 		);
+		const ownerBot = deps.leadBotUserId?.(owner.lead);
+		// U1 counts only when the channel owner's own bot wrote the marked message.
+		const flag =
+			mark &&
+			ownerBot &&
+			mark.authorId === ownerBot &&
+			candidate.authorId === ownerBot
+				? mark
+				: undefined;
 		items.push({
 			itemKey,
 			class: "lead_said",

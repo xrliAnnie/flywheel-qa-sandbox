@@ -2066,6 +2066,63 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		await h.adapter.close();
 	});
 
+	it("a failed Bridge commit is heard as 'say it again', never swallowed", async () => {
+		const r = router("agenda");
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			submitHandoff: async () => {
+				throw new Error("bridge_unreachable");
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "好，授权");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(() =>
+			expect(
+				vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+			).toContain("刚才那句我没能交给 Lead，你再说一次。"),
+		);
+		expect(h.handoffBindings).toEqual([]);
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "live_agenda_handoff_failed",
+				message: "bridge_unreachable",
+			}),
+		);
+		await h.adapter.close();
+	});
+
+	it("a failed turn binding fails closed: no unbound handoff reaches the Lead", async () => {
+		const submitted: VoiceHandoffRequest[] = [];
+		const h = harness({
+			agendaTurns: {
+				bindTurn: () => ({ owner: "agenda", itemKey: "blocked:I1:t" }),
+				whenTurnBound: async () => {
+					throw new Error("voice agenda turn bind failed: HTTP 503");
+				},
+			},
+			submitHandoff: async (request) => {
+				submitted.push(request);
+				return {
+					handoffId: request.handoffId,
+					requestDigest: request.requestDigest,
+					state: "committed" as const,
+					providerOperationId: "x",
+				};
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "那就先放着");
+		frontendAnswers(h, "好");
+		await vi.waitFor(() =>
+			expect(
+				vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+			).toContain("刚才那句我没能交给 Lead，你再说一次。"),
+		);
+		expect(submitted).toEqual([]);
+		await h.adapter.close();
+	});
+
 	it("an idle turn keeps the frontend quick answer", async () => {
 		const r = router("front");
 		const h = harness({ agendaTurns: r.agendaTurns });

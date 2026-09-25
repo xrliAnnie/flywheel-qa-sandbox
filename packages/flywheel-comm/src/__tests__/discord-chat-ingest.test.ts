@@ -144,14 +144,23 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 				itemKey: "blocked:I1:t",
 				turnId: "utt-1",
 				itemState: "closed",
+				answerKey: "AbCdEfGhIjKlMnOpQrStUvWx",
 			}),
 		);
 		expect(turn).toContain('agenda_item="blocked:I1:t"');
+		expect(turn).toContain("--key AbCdEfGhIjKlMnOpQrStUvWx");
 		expect(turn).toContain("不能 close");
 		for (const bad of [
 			{ kind: "brief", purpose: "shout", itemKey: null },
 			{ kind: "turn", itemKey: "k", turnId: "t", itemState: "maybe" },
 			{ kind: "turn", itemKey: "has space", turnId: "t", itemState: "active" },
+			{
+				kind: "turn",
+				itemKey: "k",
+				turnId: "t",
+				itemState: "active",
+				answerKey: "short",
+			},
 			{ kind: "other" },
 		])
 			expect(() => envelopeFor(bad)).toThrow(/voiceHandoff\.agenda/u);

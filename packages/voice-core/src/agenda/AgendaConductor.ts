@@ -31,7 +31,8 @@ export const DEFAULT_AGENDA_LEAD_REPLY_TIMEOUT_MS = 20_000;
 export const DEFAULT_AGENDA_RESUME_GAP_MS = 8_000;
 export const DEFAULT_AGENDA_POLL_INTERVAL_MS = 30_000;
 const SAFE_BOUNDARY_RECHECK_MS = 250;
-const DEFAULT_SAFE_BOUNDARY_MAX_WAIT_MS = 30_000;
+/** A barge-in that never reported its end stops counting after this long. */
+const DEFAULT_FOUNDER_SPEAKING_STALE_MS = 20_000;
 const MAX_APPLIED_REQUESTS = 64;
 
 export interface AgendaBriefRequestInput {
@@ -72,7 +73,7 @@ export interface AgendaConductorOptions {
 	resumeGapMs?: number;
 	pollIntervalMs?: number;
 	maxSayCodePoints?: number;
-	safeBoundaryMaxWaitMs?: number;
+	founderSpeakingStaleMs?: number;
 	now?: () => number;
 	setTimeoutFn?: typeof setTimeout;
 	clearTimeoutFn?: typeof clearTimeout;
@@ -109,12 +110,15 @@ export function defaultAgendaOrder(items: readonly AgendaItem[]): AgendaItem[] {
 	);
 }
 
-function isPermutation(order: readonly string[], keys: readonly string[]) {
-	return (
-		order.length === keys.length &&
-		new Set(order).size === order.length &&
-		order.every((key) => keys.includes(key))
-	);
+/** The Bridge already checked `order` against the frozen opening brief; here
+ * it only reorders what is still queued. Later arrivals and keys the brief
+ * never had keep their place behind it (Q3). */
+function applyOpeningOrder(
+	order: readonly string[],
+	queue: readonly string[],
+): string[] {
+	const ordered = order.filter((key) => queue.includes(key));
+	return [...ordered, ...queue.filter((key) => !ordered.includes(key))];
 }
 
 /**
@@ -129,7 +133,7 @@ export class AgendaConductor {
 	private readonly resumeGapMs: number;
 	private readonly pollIntervalMs: number;
 	private readonly maxSayCodePoints: number;
-	private readonly safeBoundaryMaxWaitMs: number;
+	private readonly founderSpeakingStaleMs: number;
 	private readonly now: () => number;
 	private readonly setTimeoutFn: typeof setTimeout;
 	private readonly clearTimeoutFn: typeof clearTimeout;
@@ -139,6 +143,7 @@ export class AgendaConductor {
 	private started = false;
 	private closing = false;
 	private founderSpeaking = false;
+	private lastBargeEventAt = 0;
 	private sourceHealthy = true;
 	private lastActivity: number;
 	private lastCheckinAttempt = Number.NEGATIVE_INFINITY;
@@ -175,9 +180,9 @@ export class AgendaConductor {
 			options.maxSayCodePoints ?? DEFAULT_AGENDA_MAX_SAY_CODE_POINTS,
 			"maxSayCodePoints",
 		);
-		this.safeBoundaryMaxWaitMs = positiveMs(
-			options.safeBoundaryMaxWaitMs ?? DEFAULT_SAFE_BOUNDARY_MAX_WAIT_MS,
-			"safeBoundaryMaxWaitMs",
+		this.founderSpeakingStaleMs = positiveMs(
+			options.founderSpeakingStaleMs ?? DEFAULT_FOUNDER_SPEAKING_STALE_MS,
+			"founderSpeakingStaleMs",
 		);
 		this.now = options.now ?? Date.now;
 		this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
@@ -211,6 +216,7 @@ export class AgendaConductor {
 				)
 					return;
 				this.founderSpeaking = event.phase !== "end";
+				this.lastBargeEventAt = this.now();
 				if (event.phase === "start") this.lastFounderUtteranceAt = this.now();
 			}),
 		);
@@ -255,18 +261,20 @@ export class AgendaConductor {
 				utteranceId,
 				itemKey: binding.itemKey,
 			});
-			this.turnWork.set(
+			// Keep the rejection: a handoff must not proceed without the server
+			// binding (it would reach the Lead as an unbound ordinary request).
+			const work = this.options.ports.bindTurn({
 				utteranceId,
-				this.options.ports
-					.bindTurn({ utteranceId, itemKey: binding.itemKey })
-					.catch((error) =>
-						this.options.record({
-							kind: "agenda_turn_bind_failed",
-							utteranceId,
-							message: error instanceof Error ? error.message : String(error),
-						}),
-					),
+				itemKey: binding.itemKey,
+			});
+			work.catch((error) =>
+				this.options.record({
+					kind: "agenda_turn_bind_failed",
+					utteranceId,
+					message: error instanceof Error ? error.message : String(error),
+				}),
 			);
+			this.turnWork.set(utteranceId, work);
 		}
 		return binding;
 	}
@@ -275,7 +283,8 @@ export class AgendaConductor {
 		return this.turns.get(utteranceId);
 	}
 
-	/** Resolves once the server has the turn binding (before its handoff). */
+	/** Resolves once the server has the turn binding (before its handoff);
+	 * rejects when binding failed, so the caller fails closed. */
 	whenTurnBound(utteranceId: string): Promise<void> {
 		return this.turnWork.get(utteranceId) ?? Promise.resolve();
 	}
@@ -462,7 +471,18 @@ export class AgendaConductor {
 						snapshot.sourceStatus[entry.item.sourceKey]?.status === "complete"),
 			)
 			.map((entry) => entry.item.itemKey);
-		if (added.length === 0 && gone.length === 0) {
+		// An open item can change in place: its urgent flag in particular may
+		// arrive after it was queued (U2 learns priority asynchronously; U1 may
+		// be flagged after the message is collected).
+		const changed = snapshot.items.filter((item) => {
+			const entry = this.state.items[item.itemKey];
+			return (
+				entry !== undefined &&
+				entry.status !== "closed" &&
+				JSON.stringify(entry.item) !== JSON.stringify(item)
+			);
+		});
+		if (added.length === 0 && gone.length === 0 && changed.length === 0) {
 			await this.maybeStartWork();
 			return;
 		}
@@ -500,8 +520,31 @@ export class AgendaConductor {
 			}
 			if (outstandingItem && gone.includes(outstandingItem))
 				state.outstanding = null;
+			for (const item of changed) {
+				const entry = state.items[item.itemKey];
+				if (!entry) continue;
+				entry.item = item;
+				if (entry.status !== "queued") continue;
+				const key = item.itemKey;
+				if (item.urgent && state.queue.includes(key)) {
+					state.queue = state.queue.filter((candidate) => candidate !== key);
+					state.urgentQueue.push(key);
+				} else if (!item.urgent && state.urgentQueue.includes(key)) {
+					state.urgentQueue = state.urgentQueue.filter(
+						(candidate) => candidate !== key,
+					);
+					state.queue.push(key);
+				}
+			}
 		});
 		if (!committed) return;
+		for (const item of changed)
+			if (item.urgent && this.state.urgentQueue.includes(item.itemKey))
+				this.options.record({
+					kind: "agenda_item_promoted_urgent",
+					itemKey: item.itemKey,
+					urgent: item.urgent,
+				});
 		for (const item of added)
 			this.options.record({
 				kind: "agenda_item_enqueued",
@@ -772,8 +815,16 @@ export class AgendaConductor {
 		let activateHead = false;
 		switch (outstanding.purpose) {
 			case "open": {
-				if (order && !isPermutation(order, this.state.queue)) break;
-				const head = (order ?? this.state.queue)[0] ?? null;
+				if (
+					order &&
+					(new Set(order).size !== order.length ||
+						!order.every((key) => this.state.items[key]))
+				)
+					break;
+				const head =
+					(order
+						? applyOpeningOrder(order, this.state.queue)
+						: this.state.queue)[0] ?? null;
 				allowed =
 					itemKey === null ||
 					(this.state.active === null && itemKey === head) ||
@@ -834,7 +885,7 @@ export class AgendaConductor {
 		}
 		const committed = await this.commit((state) => {
 			this.markApplied(state, result);
-			if (order) state.queue = [...order];
+			if (order) state.queue = applyOpeningOrder(order, state.queue);
 			if (activateHead && itemKey) {
 				state.queue = state.queue.filter((key) => key !== itemKey);
 				state.active = itemKey;
@@ -1110,7 +1161,7 @@ export class AgendaConductor {
 		const since = Math.max(this.lastActivity, this.lastCheckinAttempt);
 		if (this.now() - since < this.checkinIntervalMs) return;
 		if (this.checkinPending) return;
-		if (this.founderSpeaking || !this.options.room.audibleTail().drained) {
+		if (this.isFounderSpeaking() || !this.options.room.audibleTail().drained) {
 			this.noteActivity();
 			return;
 		}
@@ -1132,8 +1183,18 @@ export class AgendaConductor {
 
 	// ── speech ──
 
+	private isFounderSpeaking(): boolean {
+		return (
+			this.founderSpeaking &&
+			this.now() - this.lastBargeEventAt < this.founderSpeakingStaleMs
+		);
+	}
+
+	/** Q6: speak only when she is not talking and our own audio has drained.
+	 * An unsafe boundary is never waited out into speech; it only ends when the
+	 * room says so (or a barge-in that lost its end goes stale). */
 	private async waitSafeBoundary(): Promise<boolean> {
-		const deadline = this.now() + this.safeBoundaryMaxWaitMs;
+		let waitingRecorded = false;
 		while (!this.closing) {
 			let drained = true;
 			try {
@@ -1141,10 +1202,14 @@ export class AgendaConductor {
 			} catch {
 				drained = true;
 			}
-			if (!this.founderSpeaking && drained) return true;
-			if (this.now() >= deadline) {
-				this.options.record({ kind: "agenda_safe_boundary_timeout" });
-				return true;
+			if (!this.isFounderSpeaking() && drained) return true;
+			if (!waitingRecorded) {
+				waitingRecorded = true;
+				this.options.record({
+					kind: "agenda_safe_boundary_waiting",
+					founderSpeaking: this.isFounderSpeaking(),
+					drained,
+				});
 			}
 			await new Promise<void>((resolve) => {
 				const timer = this.setTimeoutFn(resolve, SAFE_BOUNDARY_RECHECK_MS);

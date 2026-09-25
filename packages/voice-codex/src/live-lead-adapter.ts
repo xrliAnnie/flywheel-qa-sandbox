@@ -192,7 +192,10 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private founderTurnCueHeard = false;
 	private delegationsInFlight = 0;
 	// FLY-2863 R-T2: agenda-owned turns (utterance id → handed to the Lead).
-	private readonly agendaTurns = new Map<string, { handedOff: boolean }>();
+	private readonly agendaTurns = new Map<
+		string,
+		{ state: "open" | "submitting" | "committed" | "failed" }
+	>();
 	private agendaOwnsFrontend = false;
 	private founderTurnTimer?: ReturnType<typeof setTimeout>;
 	private founderTurnHoldTimer?: ReturnType<typeof setTimeout>;
@@ -617,7 +620,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				offsetMs: delegation.offsetMs,
 			});
 			const agendaTurn = this.agendaTurns.get(utterance.utteranceId);
-			if (agendaTurn?.handedOff) {
+			if (agendaTurn && agendaTurn.state !== "open") {
 				// R-T2: this turn already went to the Lead once.
 				this.options.record({
 					kind: "live_delegation_deduplicated_for_agenda",
@@ -643,6 +646,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	): Promise<void> {
 		this.emitUserUtterance(utterance);
 		const agendaTurn = this.agendaTurns.get(utterance.utteranceId);
+		if (agendaTurn && agendaTurn.state !== "open") return;
 		if (utterance.attribution.kind !== "known" || !utterance.text) {
 			const reason =
 				utterance.attribution.kind === "unknown"
@@ -654,6 +658,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 				binding: bindingKey,
 			});
 			// Never drop her words silently: ask her to say it again.
+			if (agendaTurn) agendaTurn.state = "failed";
 			await this.promptFounder(
 				CLARIFY_PROMPT,
 				`clarify:${bindingKey}`,
@@ -662,7 +667,38 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			);
 			return;
 		}
-		if (agendaTurn) agendaTurn.handedOff = true;
+		if (!agendaTurn) {
+			await this.commitFounderHandoff(utterance, bindingKey, false);
+			return;
+		}
+		// Only a Bridge-committed handoff is terminal. An agenda turn's frontend
+		// answer is suppressed, so a failure must be heard, never swallowed.
+		agendaTurn.state = "submitting";
+		try {
+			await this.commitFounderHandoff(utterance, bindingKey, true);
+			agendaTurn.state = "committed";
+		} catch (error) {
+			agendaTurn.state = "failed";
+			this.options.record({
+				kind: "live_agenda_handoff_failed",
+				binding: bindingKey,
+				message: error instanceof Error ? error.message : String(error),
+			});
+			await this.promptFounder(
+				CUE_WITHOUT_DELEGATION_PROMPT,
+				`agenda-retry:${bindingKey}`,
+				"agenda_handoff_failed",
+				liveSuspended,
+			);
+			throw error;
+		}
+	}
+
+	private async commitFounderHandoff(
+		utterance: VoiceUtterance,
+		bindingKey: string,
+		agendaTurn: boolean,
+	): Promise<void> {
 		const durability =
 			await this.options.transcriptSink.appendDurable(utterance);
 		const reread = await this.options.transcriptSink.readReceipt(
@@ -761,7 +797,7 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		}
 		this.agendaOwnsFrontend = owner === "agenda";
 		if (owner !== "agenda") return;
-		this.agendaTurns.set(utteranceId, { handedOff: false });
+		this.agendaTurns.set(utteranceId, { state: "open" });
 		this.cancelFrontendSpeech();
 	}
 
@@ -770,13 +806,13 @@ export class LiveLeadAdapter implements VoiceV1Session {
 	private sealEndedTurns(): void {
 		for (const utterance of this.assembler.sealEndedRoomUtterances()) {
 			const agendaTurn = this.agendaTurns.get(utterance.utteranceId);
-			if (!agendaTurn || agendaTurn.handedOff) {
+			if (!agendaTurn || agendaTurn.state !== "open") {
 				this.emitUserUtterance(utterance);
 				continue;
 			}
 			const bindingKey = `agenda:${utterance.utteranceId}`;
 			void this.enqueueFace(async () => {
-				if (agendaTurn.handedOff || this.closing) return;
+				if (agendaTurn.state !== "open" || this.closing) return;
 				await this.submitFounderHandoff(utterance, bindingKey, false);
 			}).catch((error) =>
 				this.options.record({

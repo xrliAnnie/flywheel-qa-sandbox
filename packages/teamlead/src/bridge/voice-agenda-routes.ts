@@ -1,9 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
+import {
+	createHash,
+	randomBytes,
+	randomUUID,
+	timingSafeEqual,
+} from "node:crypto";
 import express from "express";
 import { chatDeliveryId } from "flywheel-comm/discord-chat-ingest";
 import {
 	AGENDA_DISPOSITIONS,
-	AGENDA_LEAD_URGENT_REASONS,
 	AGENDA_PURPOSES,
 	type AgendaBriefPurpose,
 	type AgendaClass,
@@ -52,10 +56,6 @@ export interface VoiceAgendaRouterDeps {
 	): string;
 	/** Snowflake to deliver briefs as: a voice/Bridge bot, never the founder. */
 	briefAuthorId(session: VoiceAgendaRouteSession): string | undefined;
-	/** U1: the Lead's own main channel, from the registry. */
-	leadMainChannel(
-		leadId: string,
-	): { projectName: string; channelId: string } | undefined;
 	now?: () => Date;
 }
 
@@ -71,6 +71,13 @@ function exactObject(
 
 const text = (value: unknown, max: number): value is string =>
 	typeof value === "string" && value.trim().length > 0 && value.length <= max;
+
+/** The answer key proves the caller read this Lead's own delivery. */
+function keyMatches(given: unknown, expected: string): boolean {
+	if (typeof given !== "string" || given.length !== expected.length)
+		return false;
+	return timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+}
 
 function digest(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -96,6 +103,7 @@ const PURPOSE_GUIDE: Record<AgendaBriefPurpose, string> = {
 /** The brief the Lead reads. It is a request to the Lead, not founder speech. */
 export function renderAgendaBriefText(input: {
 	requestId: string;
+	answerKey: string;
 	purpose: AgendaBriefPurpose;
 	itemKey: string | null;
 	brief: Record<string, unknown>;
@@ -105,11 +113,11 @@ export function renderAgendaBriefText(input: {
 		`【语音议程·${input.purpose}】request=${input.requestId}（语音模式层发给你的请求，不是 founder 说的话；你想好的话会原样念给她听）`,
 		PURPOSE_GUIDE[input.purpose],
 		"口语规则：单号按数字念（二七九六）；不念 URL、markdown、代码、路径、状态流水；不编造，没做的事不说做了；不说「已批准」。",
-		`写好后运行：flywheel-comm voice agenda say --request ${input.requestId} --item ${itemFlag}${input.purpose === "open" ? " [--order k1,k2,…]" : ""} --text "<要说的话>"`,
+		`写好后运行：flywheel-comm voice agenda say --request ${input.requestId} --key ${input.answerKey} --item ${itemFlag}${input.purpose === "open" ? " [--order k1,k2,…]" : ""} --text "<要说的话>"`,
 		...(input.purpose === "checkin" || input.purpose === "open"
 			? []
 			: [
-					`她拍板后：能用现有权限办完的先办，再 flywheel-comm voice agenda close --request <她那句话的 handoff> --item ${itemFlag} --disposition resolved --evidence <依据> --reason "<一句话>"；ship 批准办不了就如实请她在 thread 点，disposition=decision_recorded；她说回头再看用 deferred。`,
+					`她拍板后：能用现有权限办完的先办，再 flywheel-comm voice agenda close --request <她那句话的 handoff> --key <那条消息里的 key> --item ${itemFlag} --disposition resolved --evidence <依据> --reason "<一句话>"；ship 批准办不了就如实请她在 thread 点，disposition=decision_recorded；她说回头再看用 deferred。`,
 				]),
 		"完整规则：packages/teamlead/lead-rules-base/runbooks/voice-agenda.md",
 		"议程数据（给你读，不要原样念给她）：",
@@ -442,6 +450,7 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 			return;
 		}
 		const handoffId = randomUUID();
+		const answerKey = randomBytes(18).toString("base64url");
 		const idempotencyKey = `agenda:${session.sessionId}:${session.sessionGeneration}:${body.clientRequestId}`;
 		const requestDigest = digest({
 			idempotencyKey,
@@ -454,9 +463,11 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 			itemKey,
 			clientRequestId: String(body.clientRequestId),
 			authorId,
+			answerKey,
 			brief,
 			text: renderAgendaBriefText({
 				requestId: handoffId,
+				answerKey,
 				purpose,
 				itemKey,
 				brief,
@@ -533,46 +544,11 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 
 	/** `flywheel-comm voice agenda say|close`: bound to the Lead the request was
 	 * delivered to, the live session and its generation (plan §3.2). */
-	/** U1 (plan §4.2): a Lead flags one message it already sent in its own main
-	 * channel as urgent, with an enumerated reason. Keyed by the sent id. */
-	leadRouter.post("/urgent", (req, res) => {
-		const body = exactObject(req.body, [
-			"leadId",
-			"channelId",
-			"messageId",
-			"reason",
-		]);
-		const channel =
-			body && typeof body.leadId === "string"
-				? deps.leadMainChannel(body.leadId)
-				: undefined;
-		if (
-			!body ||
-			!channel ||
-			body.channelId !== channel.channelId ||
-			!/^\d{17,20}$/u.test(String(body.messageId)) ||
-			!AGENDA_LEAD_URGENT_REASONS.includes(
-				body.reason as (typeof AGENDA_LEAD_URGENT_REASONS)[number],
-			)
-		) {
-			res.status(400).json({ error: "voice_agenda_urgent_invalid" });
-			return;
-		}
-		deps.agenda.recordUrgent({
-			projectName: channel.projectName,
-			channelId: channel.channelId,
-			messageId: body.messageId as string,
-			leadId: body.leadId as string,
-			reason: body.reason as (typeof AGENDA_LEAD_URGENT_REASONS)[number],
-			now: now().toISOString(),
-		});
-		res.json({ ok: true });
-	});
-
 	leadRouter.post("/results", (req, res) => {
 		const body = exactObject(req.body, [
 			"requestId",
 			"leadId",
+			"answerKey",
 			"clientResultId",
 			"kind",
 			"itemKey",
@@ -594,8 +570,14 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 		}
 		const record = deps.handoffs.get(body.requestId as string);
 		const session = record ? deps.getSession(record.sessionId) : undefined;
+		const expectedKey =
+			record?.agenda?.kind === "brief" || record?.agenda?.kind === "turn"
+				? record.agenda.answerKey
+				: undefined;
 		if (
 			!record ||
+			!expectedKey ||
+			!keyMatches(body.answerKey, expectedKey) ||
 			record.state !== "committed" ||
 			record.targetLeadId !== body.leadId ||
 			record.founderUserId !== deps.founderUserId ||
@@ -624,6 +606,7 @@ export function createVoiceAgendaRouter(deps: VoiceAgendaRouterDeps): {
 				(order !== undefined &&
 					(!openKeys ||
 						!Array.isArray(order) ||
+						order.length !== openKeys.length ||
 						new Set(order).size !== order.length ||
 						!order.every(
 							(key) => typeof key === "string" && openKeys.includes(key),

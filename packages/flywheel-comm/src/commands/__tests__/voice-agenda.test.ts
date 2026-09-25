@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { runVoiceAgendaCommand } from "../voice-agenda.js";
 
 const REQUEST = "018f47d2-7b64-7b42-a3df-123456789abc";
+const KEY = "k3yk3yk3yk3yk3yk3yk3yk3y";
 const ENV = {
 	FLYWHEEL_BRIDGE_URL: "http://bridge.test/",
 	FLYWHEEL_INGEST_TOKEN: "ingest",
@@ -50,6 +51,8 @@ describe("flywheel-comm voice agenda", () => {
 			"say",
 			"--request",
 			REQUEST,
+			"--key",
+			KEY,
 			"--item",
 			"blocked:I1:t",
 			"--order",
@@ -65,6 +68,7 @@ describe("flywheel-comm voice agenda", () => {
 				body: {
 					requestId: REQUEST,
 					leadId: "raya",
+					answerKey: KEY,
 					clientResultId: "client-1",
 					kind: "say",
 					itemKey: "blocked:I1:t",
@@ -82,6 +86,8 @@ describe("flywheel-comm voice agenda", () => {
 			"say",
 			"--request",
 			REQUEST,
+			"--key",
+			KEY,
 			"--item",
 			"none",
 			"--text",
@@ -98,6 +104,8 @@ describe("flywheel-comm voice agenda", () => {
 				"close",
 				"--request",
 				REQUEST,
+				"--key",
+				KEY,
 				"--item",
 				"blocked:I1:t",
 				"--disposition",
@@ -112,6 +120,8 @@ describe("flywheel-comm voice agenda", () => {
 				"close",
 				"--request",
 				REQUEST,
+				"--key",
+				KEY,
 				"--item",
 				"blocked:I1:t",
 				"--disposition",
@@ -127,6 +137,8 @@ describe("flywheel-comm voice agenda", () => {
 				"close",
 				"--request",
 				REQUEST,
+				"--key",
+				KEY,
 				"--item",
 				"approve:I2:t",
 				"--disposition",
@@ -142,18 +154,18 @@ describe("flywheel-comm voice agenda", () => {
 		});
 	});
 
-	it("urgent accepts only the enumerated reasons", async () => {
+	it("refuses an answer without the delivery key, and has no urgent command", async () => {
 		const h = harness();
 		expect(
 			await h.run([
 				"agenda",
-				"urgent",
-				"--channel",
-				"100000000000000009",
-				"--message",
-				"600000000000000001",
-				"--reason",
-				"i-feel-like-it",
+				"say",
+				"--request",
+				REQUEST,
+				"--item",
+				"none",
+				"--text",
+				"hi",
 			]),
 		).toBe(64);
 		expect(
@@ -167,10 +179,8 @@ describe("flywheel-comm voice agenda", () => {
 				"--reason",
 				"security",
 			]),
-		).toBe(0);
-		expect(h.calls[0]?.url).toBe(
-			"http://bridge.test/api/voice/agenda/lead/urgent",
-		);
+		).toBe(64);
+		expect(h.calls).toEqual([]);
 	});
 
 	it("reports a Bridge refusal and missing identity or credentials", async () => {
@@ -181,6 +191,8 @@ describe("flywheel-comm voice agenda", () => {
 				"say",
 				"--request",
 				REQUEST,
+				"--key",
+				KEY,
 				"--item",
 				"none",
 				"--text",
@@ -196,6 +208,8 @@ describe("flywheel-comm voice agenda", () => {
 					"say",
 					"--request",
 					REQUEST,
+					"--key",
+					KEY,
 					"--item",
 					"none",
 					"--text",
@@ -211,6 +225,8 @@ describe("flywheel-comm voice agenda", () => {
 					"say",
 					"--request",
 					REQUEST,
+					"--key",
+					KEY,
 					"--item",
 					"none",
 					"--text",

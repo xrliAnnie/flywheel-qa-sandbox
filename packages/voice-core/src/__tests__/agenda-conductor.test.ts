@@ -336,18 +336,42 @@ describe("AgendaConductor — opening (plan §3.1, §4.1 Q1/Q2)", () => {
 		expect(h.bridge.stored?.active).toBe("blocked:C");
 	});
 
-	it("rejects an order that is not a permutation of the opening batch", async () => {
+	it("rejects an order naming unknown or duplicate items", async () => {
 		const h = await harness(THREE);
 		await h.conductor.start();
-		h.bridge.say("req-1", "先说一件。", null, ["blocked:C", "approve:A"]);
+		h.bridge.say("req-1", "先说一件。", null, ["blocked:C", "approve:NOPE"]);
+		await wake(h, "req-1");
+		h.bridge.say("req-1", "再说一件。", null, ["blocked:C", "blocked:C"]);
 		await wake(h, "req-1");
 		expect(h.spoken()).toEqual([]);
-		expect(h.events).toContainEqual(
-			expect.objectContaining({
-				kind: "agenda_result_rejected",
-				reason: "matrix",
-			}),
-		);
+		expect(
+			h.events.filter(
+				(event) =>
+					event.kind === "agenda_result_rejected" && event.reason === "matrix",
+			),
+		).toHaveLength(2);
+	});
+
+	it("applies the brief's order to what is queued; a later arrival keeps its tail place", async () => {
+		const h = await harness((bridge) => {
+			bridge.snapshot.items = [
+				item("approve:A", "awaiting_approval", 1),
+				item("blocked:C", "blocked", 3),
+			];
+		});
+		await h.conductor.start();
+		// D arrives while the Lead is still writing the opening.
+		h.bridge.snapshot.items.push(item("approve:D", "awaiting_approval", 9));
+		await h.conductor.notifySourceChanged();
+		await settle();
+		h.bridge.say("req-1", "两件，先说批的那张。", "approve:A", [
+			"approve:A",
+			"blocked:C",
+		]);
+		await wake(h, "req-1");
+		expect(h.spoken()).toEqual(["两件，先说批的那张。"]);
+		expect(h.bridge.stored?.active).toBe("approve:A");
+		expect(h.bridge.stored?.queue).toEqual(["blocked:C", "approve:D"]);
 	});
 
 	it("still asks the Lead to open an empty agenda (natural first line)", async () => {
@@ -635,6 +659,84 @@ describe("AgendaConductor — urgent (§4.2)", () => {
 			itemKey: "blocked:C",
 		});
 		expect(h.bridge.stored?.active).toBe("blocked:C");
+	});
+});
+
+describe("AgendaConductor — review R1 regressions", () => {
+	it("promotes an already-queued item that turns urgent (U2 cold cache, late U1 flag)", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.bridge.say("req-1", "先说受阻。", "blocked:C");
+		await wake(h, "req-1");
+		// approve:B was queued plain; the next read carries its urgent flag.
+		h.bridge.snapshot.items = h.bridge.snapshot.items.map((entry) =>
+			entry.itemKey === "approve:B"
+				? {
+						...entry,
+						urgent: { source: "lead_flag", reason: "security" } as const,
+					}
+				: entry,
+		);
+		await h.conductor.notifySourceChanged();
+		await settle();
+		expect(h.bridge.last()).toMatchObject({
+			purpose: "urgent",
+			itemKey: "approve:B",
+		});
+		expect(h.bridge.stored?.queue).toEqual(["approve:A"]);
+		expect(h.events).toContainEqual(
+			expect.objectContaining({
+				kind: "agenda_item_promoted_urgent",
+				itemKey: "approve:B",
+			}),
+		);
+	});
+
+	it("never speaks while she is still talking, however long that takes", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.room.bargeIn("start");
+		h.bridge.say("req-1", "先说受阻。", "blocked:C");
+		const woken = h.conductor.notifyResults("req-1");
+		for (let second = 0; second < 60; second += 5) {
+			h.room.bargeIn("sustained");
+			await h.clock.advance(5_000);
+		}
+		expect(h.spoken()).toEqual([]);
+		h.room.bargeIn("end");
+		await h.clock.advance(300);
+		await woken;
+		expect(h.spoken()).toEqual(["先说受阻。"]);
+	});
+
+	it("a barge-in that lost its end stops blocking once it goes stale", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.room.bargeIn("start");
+		h.bridge.say("req-1", "先说受阻。", "blocked:C");
+		const woken = h.conductor.notifyResults("req-1");
+		await h.clock.advance(19_000);
+		expect(h.spoken()).toEqual([]);
+		await h.clock.advance(2_000);
+		await woken;
+		expect(h.spoken()).toEqual(["先说受阻。"]);
+	});
+
+	it("keeps a failed turn binding visible so the handoff can fail closed", async () => {
+		const h = await harness(THREE);
+		await h.conductor.start();
+		h.bridge.say("req-1", "先说受阻。", "blocked:C");
+		await wake(h, "req-1");
+		h.bridge.bindTurn = async () => {
+			throw new Error("bridge_down");
+		};
+		expect(h.conductor.bindTurn("utt-x").owner).toBe("agenda");
+		await expect(h.conductor.whenTurnBound("utt-x")).rejects.toThrow(
+			"bridge_down",
+		);
+		expect(h.events).toContainEqual(
+			expect.objectContaining({ kind: "agenda_turn_bind_failed" }),
+		);
 	});
 });
 
