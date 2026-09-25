@@ -275,6 +275,25 @@ export class VoiceHandoffStore {
 		).map(recordFromRow);
 	}
 
+	/** FLY-2863 review R4: a dispatch that outlived its process (the Bridge
+	 * stopped between the mailbox write and finishDispatch) is an unknown
+	 * outcome, so it joins the read-only mailbox reconciliation instead of
+	 * staying `dispatching` forever. A late finishDispatch then fails its
+	 * attempt-token fence. */
+	promoteStaleDispatching(now: string, staleMs: number): number {
+		if (!Number.isSafeInteger(staleMs) || staleMs < 1)
+			throw new Error("voice_handoff_stale_dispatch_ms_invalid");
+		const cutoff = new Date(Date.parse(now) - staleMs).toISOString();
+		return this.db
+			.prepare(
+				`UPDATE voice_handoffs
+				 SET state='ambiguous', attempt_token=NULL, terminal_reason='dispatch_interrupted',
+				     next_reconcile_at=NULL, state_version=state_version+1, updated_at=?
+				 WHERE state='dispatching' AND updated_at<=?`,
+			)
+			.run(now, cutoff).changes;
+	}
+
 	recordReconcile(input: {
 		handoffId: string;
 		found: boolean;

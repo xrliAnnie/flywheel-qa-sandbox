@@ -360,6 +360,7 @@ export class BridgeVoiceClient {
 	async handoffToLead(
 		binding: HeadphoneSessionBinding,
 		request: VoiceHandoffRequest,
+		opts: { signal?: AbortSignal } = {},
 	): Promise<VoiceHandoffReceipt> {
 		if (
 			request.sessionId !== binding.sessionId ||
@@ -372,6 +373,7 @@ export class BridgeVoiceClient {
 				method: "POST",
 				headers: this.headphoneHeaders(binding, true),
 				body: JSON.stringify(request),
+				...(opts.signal ? { signal: opts.signal } : {}),
 			},
 		);
 		if (!res.ok && res.status !== 202)

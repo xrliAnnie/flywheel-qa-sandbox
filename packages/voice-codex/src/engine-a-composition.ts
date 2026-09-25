@@ -34,7 +34,10 @@ export interface EngineAAdapter extends VoiceV1Session {
 
 export interface EngineACompositionCallbacks {
 	registerHandoff(binding: LiveLeadResultBinding): void;
-	submitHandoff(request: VoiceHandoffRequest): Promise<VoiceHandoffReceipt>;
+	submitHandoff(
+		request: VoiceHandoffRequest,
+		opts?: { signal?: AbortSignal },
+	): Promise<VoiceHandoffReceipt>;
 	/** FLY-2863 R-T1: the agenda owns turns that start on a live item. */
 	agendaTurns: AgendaTurnRouter;
 }
@@ -106,8 +109,8 @@ export function createEngineAHeadphoneSession(
 			if (replies) replies.register(binding);
 			else pendingBindings.push(binding);
 		},
-		submitHandoff: (request) =>
-			options.bridge.handoffToLead(options.binding, request),
+		submitHandoff: (request, submitOptions) =>
+			options.bridge.handoffToLead(options.binding, request, submitOptions),
 		agendaTurns,
 	});
 	const session = new HeadphoneSession({

@@ -43,7 +43,7 @@ Issue: FLY-2863 (https://linear.app/geoforge3d/issue/FLY-2863/语音v7-播报内
 4. **议程请求的作者。** 投递信封要求作者是 Discord snowflake：用会话的语音 bot（缺省时用 Bridge bot），绝不是 founder。对账按记录里存的同一作者核对。
 5. **刷新节奏。** 收件箱没有推送，所以 Q9 的「每次变更触发」落为：Lead 的回话经 SSE 立即唤醒，来源变化靠 30 秒轮询。
 6. **报平安间隔可配置**：`FLYWHEEL_VOICE_AGENDA_CHECKIN_INTERVAL_MS`，默认 600000（她定的数）。
-7. **她在议程件里说的话怎么交出去**（Codex 代码审查 R1/R2）：只有 Bridge 确认已提交才算交出；提交前失败（落盘、turn 绑定）或被明确拒绝，让她听到「你再说一次」；提交后没拿到 Bridge 已持久的状态（网络丢失、authorized/dispatching）就用**同一个请求**继续重发（Bridge 按 handoff id 幂等，重发即查询），直到拿到 committed、Bridge 已持久的 ambiguous（交给载体对账，保持登记、不让她重说，避免动作执行两次）、明确拒绝（4xx / rejected / needs_human，提示重说）；60 秒内仍收敛不了，就明说没交出去、请她重说，绝不静默登记一个 Bridge 根本没有的 handoff。对账证明还要求记录里有合法 answer key、简报正文确实带着它，旧的无 key 记录永不判为已投递。对账时逐项核对议程字段和 answer key，缺一不算已投递。U1 标记与收件箱页、游标同一事务提交，写失败游标不前进。
+7. **她在议程件里说的话怎么交出去**（Codex 代码审查 R1–R4）：只有 Bridge 已持久的状态才算数。committed：交出；Bridge 已持久的 ambiguous：交给载体的只读对账，保持登记等回答；提交前失败（落盘、turn 绑定）或明确拒绝（HTTP 4xx、rejected）：让她听到「你再说一次」。其余都是**结果不明**（网络丢失、单次提交超时、authorized/dispatching 迟迟不收敛、needs_human）：如实告诉她「这句我还在确认有没有交到 Lead，先别重复说」，绝不让她重说（重说是新的 handoff，动作可能执行两次），也不静默登记一个 Bridge 没有的 handoff；同一个幂等请求继续在后台收敛（不占播报队列，会话关闭即中止），收敛到 committed/ambiguous 才登记。每次提交都有 10 秒上限且可中止。Bridge 端：卡在 dispatching 超过 30 秒的 handoff（进程在邮箱写入与 finishDispatch 之间退出）由对账定时器提升为 ambiguous，进入只读对账，迟到的 finishDispatch 被 attempt token 挡住。对账证明逐项核对议程字段与合法 answer key，简报正文必须带着它；旧的无 key 记录永不判为已投递。U1 标记与收件箱页、游标同一事务提交。
 
 ## 4. 没做的与留给 Lead 决定的
 

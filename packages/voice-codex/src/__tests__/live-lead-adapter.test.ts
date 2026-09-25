@@ -2153,7 +2153,7 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		await h.adapter.close();
 	});
 
-	it("a Bridge that never answers is a spoken failure, not a silent registration", async () => {
+	it("a Bridge that never answers is told truthfully and never re-said; it keeps converging", async () => {
 		const r = router("agenda");
 		let calls = 0;
 		const h = harness({
@@ -2166,25 +2166,81 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 			},
 		});
 		await h.adapter.open("context");
-		speakTurn(h, "好，授权");
+		speakTurn(h, "去部署");
 		frontendAnswers(h, "好的");
 		await vi.waitFor(
 			() =>
 				expect(
 					vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
-				).toContain("刚才那句我没能交给 Lead，你再说一次。"),
+				).toContain("这句我还在确认有没有交到 Lead，先别重复说。"),
 			{ timeout: 8_000 },
 		);
-		expect(calls).toBeGreaterThan(1);
+		expect(
+			vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+		).not.toContain("刚才那句我没能交给 Lead，你再说一次。");
 		expect(h.handoffBindings).toEqual([]);
-		expect(h.record).toHaveBeenCalledWith(
-			expect.objectContaining({
-				kind: "live_agenda_handoff_failed",
-				message: "live_lead_handoff_unreachable",
-			}),
-		);
+		const before = calls;
+		await new Promise((resolve) => setTimeout(resolve, 1_200));
+		expect(calls).toBeGreaterThan(before);
+		const started = Date.now();
 		await h.adapter.close();
-	}, 12_000);
+		expect(Date.now() - started).toBeLessThan(1_000);
+	}, 15_000);
+
+	it("a submit that never settles is bounded per attempt and never blocks close", async () => {
+		const r = router("agenda");
+		let calls = 0;
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			agendaSubmitWindowMs: 400,
+			submitHandoff: (_request, opts) => {
+				calls += 1;
+				h.setNow(1_000 + calls * 1_000);
+				expect(opts?.signal).toBeInstanceOf(AbortSignal);
+				return new Promise(() => undefined);
+			},
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "去部署");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(
+			() =>
+				expect(
+					vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+				).toContain("这句我还在确认有没有交到 Lead，先别重复说。"),
+			{ timeout: 8_000 },
+		);
+		expect(h.handoffBindings).toEqual([]);
+		const started = Date.now();
+		await h.adapter.close();
+		expect(Date.now() - started).toBeLessThan(1_000);
+	}, 15_000);
+
+	it("needs_human is unconfirmed, not rejected: she is not asked to repeat", async () => {
+		const r = router("agenda");
+		const h = harness({
+			agendaTurns: r.agendaTurns,
+			submitHandoff: async (request) => ({
+				handoffId: request.handoffId,
+				requestDigest: request.requestDigest,
+				state: "needs_human" as never,
+				providerOperationId: "x",
+			}),
+		});
+		await h.adapter.open("context");
+		speakTurn(h, "去部署");
+		frontendAnswers(h, "好的");
+		await vi.waitFor(() =>
+			expect(
+				vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+			).toContain("这句我还在确认有没有交到 Lead，先别重复说。"),
+		);
+		expect(
+			vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+		).not.toContain("刚才那句我没能交给 Lead，你再说一次。");
+		expect(h.handoffBindings).toEqual([]);
+		await h.adapter.close();
+	});
 
 	it("a definite Bridge rejection (HTTP 403) is spoken at once", async () => {
 		const r = router("agenda");
@@ -2211,7 +2267,7 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		await h.adapter.close();
 	});
 
-	it("a handoff stuck in dispatching is asked again, then spoken as a failure", async () => {
+	it("a stale dispatching handoff is asked again until the Bridge persists ambiguous", async () => {
 		const r = router("agenda");
 		let calls = 0;
 		const h = harness({
@@ -2223,28 +2279,30 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 				return {
 					handoffId: request.handoffId,
 					requestDigest: request.requestDigest,
-					state: "dispatching" as never,
+					// The Bridge reconciler promotes a stale dispatch to ambiguous.
+					state: (calls < 5 ? "dispatching" : "ambiguous") as never,
 					providerOperationId: "x",
 				};
 			},
 		});
 		await h.adapter.open("context");
-		speakTurn(h, "好，授权");
+		speakTurn(h, "去部署");
 		frontendAnswers(h, "好的");
-		await vi.waitFor(
-			() =>
-				expect(h.record).toHaveBeenCalledWith(
-					expect.objectContaining({
-						kind: "live_agenda_handoff_failed",
-						message: "live_lead_handoff_stuck_dispatching",
-					}),
-				),
-			{ timeout: 8_000 },
+		await vi.waitFor(() => expect(h.handoffBindings).toHaveLength(1), {
+			timeout: 12_000,
+		});
+		expect(h.handoffBindings[0]?.agendaUtteranceId).toBe("u1");
+		expect(
+			vi.mocked(h.speech.speak).mock.calls.map(([text]) => text),
+		).not.toContain("刚才那句我没能交给 Lead，你再说一次。");
+		expect(h.record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "live_agenda_handoff_converged",
+				state: "ambiguous",
+			}),
 		);
-		expect(calls).toBeGreaterThan(1);
-		expect(h.handoffBindings).toEqual([]);
 		await h.adapter.close();
-	}, 12_000);
+	}, 20_000);
 
 	it("a failed turn binding fails closed: no unbound handoff reaches the Lead", async () => {
 		const submitted: VoiceHandoffRequest[] = [];

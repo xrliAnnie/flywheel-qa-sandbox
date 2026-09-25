@@ -37,8 +37,10 @@ const CUE_WITHOUT_DELEGATION_PROMPT = "刚才那句我没能交给 Lead，你再
 /** An agenda turn's handoff keeps re-sending the same request this long for
  * a state the Bridge persisted; after that the failure is spoken. */
 const DEFAULT_AGENDA_SUBMIT_WINDOW_MS = 60_000;
+const AGENDA_SUBMIT_ATTEMPT_MS = 10_000;
 const AGENDA_SUBMIT_BACKOFF_MS = 500;
 const AGENDA_SUBMIT_MAX_BACKOFF_MS = 8_000;
+const AGENDA_UNCONFIRMED_PROMPT = "这句我还在确认有没有交到 Lead，先别重复说。";
 
 function isLeadCue(text: string): boolean {
 	return text
@@ -80,7 +82,11 @@ export interface LiveLeadAdapterOptions {
 	transcriptSink: DurableTranscriptSink;
 	speech: LiveLeadSpeech;
 	classifyIntent(utterance: VoiceUtterance): VoiceHandoffIntentKind;
-	submitHandoff(request: VoiceHandoffRequest): Promise<VoiceHandoffReceipt>;
+	/** `signal` aborts one attempt (agenda turns bound every attempt). */
+	submitHandoff(
+		request: VoiceHandoffRequest,
+		opts?: { signal?: AbortSignal },
+	): Promise<VoiceHandoffReceipt>;
 	registerHandoff(binding: LiveLeadResultBinding): void;
 	agendaTurns?: AgendaTurnRouter;
 	/** Bound on converging an agenda turn's handoff (default 60000). */
@@ -205,6 +211,10 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		{ state: "open" | "submitting" | "committed" | "ambiguous" | "failed" }
 	>();
 	private agendaOwnsFrontend = false;
+	private readonly agendaConvergence = new Map<
+		AbortController,
+		Promise<void>
+	>();
 	private founderTurnTimer?: ReturnType<typeof setTimeout>;
 	private founderTurnHoldTimer?: ReturnType<typeof setTimeout>;
 
@@ -422,6 +432,8 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		this.clearBufferedInput();
 		this.cancelFrontendSpeech();
 		for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
+		for (const controller of this.agendaConvergence.keys()) controller.abort();
+		await Promise.allSettled([...this.agendaConvergence.values()]);
 		await Promise.allSettled([...this.delegationWork.values()]);
 		await this.faceWork.catch(() => undefined);
 		await this.outputWork.catch(() => undefined);
@@ -691,18 +703,9 @@ export class LiveLeadAdapter implements VoiceV1Session {
 		// submit is not a failure: asking her to repeat could run an action
 		// twice, so it waits for the carrier's own reconciliation instead.
 		agendaTurn.state = "submitting";
+		let outcome: "committed" | "ambiguous" | "unconfirmed";
 		try {
-			const outcome = await this.commitFounderHandoff(
-				utterance,
-				bindingKey,
-				true,
-			);
-			agendaTurn.state = outcome;
-			if (outcome === "ambiguous")
-				this.options.record({
-					kind: "live_agenda_handoff_ambiguous",
-					binding: bindingKey,
-				});
+			outcome = await this.commitFounderHandoff(utterance, bindingKey, true);
 		} catch (error) {
 			agendaTurn.state = "failed";
 			this.options.record({
@@ -718,13 +721,31 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			);
 			throw error;
 		}
+		agendaTurn.state = outcome === "committed" ? "committed" : "ambiguous";
+		if (outcome === "committed") return;
+		this.options.record({
+			kind:
+				outcome === "ambiguous"
+					? "live_agenda_handoff_ambiguous"
+					: "live_agenda_handoff_unconfirmed",
+			binding: bindingKey,
+		});
+		// Unknown is not failure: she is told the truth and asked NOT to repeat,
+		// because a repeat would be a new handoff and could act twice.
+		if (outcome === "unconfirmed")
+			await this.promptFounder(
+				AGENDA_UNCONFIRMED_PROMPT,
+				`agenda-unconfirmed:${bindingKey}`,
+				"agenda_handoff_unconfirmed",
+				liveSuspended,
+			);
 	}
 
 	private async commitFounderHandoff(
 		utterance: VoiceUtterance,
 		bindingKey: string,
 		agendaTurn: boolean,
-	): Promise<"committed" | "ambiguous"> {
+	): Promise<"committed" | "ambiguous" | "unconfirmed"> {
 		const durability =
 			await this.options.transcriptSink.appendDurable(utterance);
 		const reread = await this.options.transcriptSink.readReceipt(
@@ -809,18 +830,68 @@ export class LiveLeadAdapter implements VoiceV1Session {
 			});
 			return "committed";
 		}
-		// The same request is idempotent at the Bridge (handoff id and
-		// idempotency key): re-sending it is how a lost answer is recovered, never
-		// a new handoff. Only a state the Bridge persisted ends the loop.
-		const deadline = this.now() + this.agendaSubmitWindowMs;
+		const result = await this.convergeAgendaSubmit(
+			request,
+			this.now() + this.agendaSubmitWindowMs,
+			bindingKey,
+		);
+		switch (result.kind) {
+			case "committed":
+				register();
+				this.options.record({
+					kind: "live_lead_handoff_committed",
+					handoffId,
+					providerOperationId: result.providerOperationId,
+					binding: bindingKey,
+					agenda: true,
+				});
+				return "committed";
+			case "ambiguous":
+				// Persisted as ambiguous: the carrier's reconciler owns it and a
+				// reconciled handoff's answer still reaches the agenda.
+				register();
+				return "ambiguous";
+			case "rejected":
+				throw new Error(result.reason);
+			case "needs_human":
+				return "unconfirmed";
+			case "unknown":
+				this.convergeInBackground(request, bindingKey, register);
+				return "unconfirmed";
+		}
+	}
+
+	/** Re-sends the same idempotent request (handoff id + idempotency key) until
+	 * the Bridge answers with a persisted state or the deadline passes. Each
+	 * attempt is bounded and abortable; a lost answer is recovered, never
+	 * re-minted. Only an explicit rejection counts as "nothing was sent". */
+	private async convergeAgendaSubmit(
+		request: VoiceHandoffRequest,
+		deadline: number,
+		bindingKey: string,
+		signal?: AbortSignal,
+	): Promise<
+		| { kind: "committed"; providerOperationId: string | null }
+		| { kind: "ambiguous" }
+		| { kind: "rejected"; reason: string }
+		| { kind: "needs_human" }
+		| { kind: "unknown" }
+	> {
 		for (let attempt = 1; ; attempt++) {
+			if (this.closing || signal?.aborted) return { kind: "unknown" };
+			const budget = Number.isFinite(deadline)
+				? Math.max(1, Math.min(AGENDA_SUBMIT_ATTEMPT_MS, deadline - this.now()))
+				: AGENDA_SUBMIT_ATTEMPT_MS;
 			let receipt: VoiceHandoffReceipt | undefined;
 			try {
-				receipt = await this.options.submitHandoff(request);
+				receipt = await this.attemptSubmit(request, budget, signal);
 			} catch (error) {
 				const status = (error as { status?: unknown }).status;
 				if (typeof status === "number" && status >= 400 && status < 500)
-					throw new Error(`live_lead_handoff_http_${status}`);
+					return {
+						kind: "rejected",
+						reason: `live_lead_handoff_http_${status}`,
+					};
 				this.options.record({
 					kind: "live_agenda_handoff_submit_retry",
 					binding: bindingKey,
@@ -833,48 +904,124 @@ export class LiveLeadAdapter implements VoiceV1Session {
 					receipt.handoffId !== request.handoffId ||
 					receipt.requestDigest !== request.requestDigest
 				)
-					throw new Error("live_lead_handoff_receipt_mismatch");
-				if (receipt.state === "committed") {
-					register();
-					this.options.record({
-						kind: "live_lead_handoff_committed",
-						handoffId,
+					return {
+						kind: "rejected",
+						reason: "live_lead_handoff_receipt_mismatch",
+					};
+				if (receipt.state === "committed")
+					return {
+						kind: "committed",
 						providerOperationId: receipt.providerOperationId,
-						binding: bindingKey,
-						agenda: true,
-					});
-					return "committed";
-				}
-				// Persisted as ambiguous: the carrier's reconciler owns it now and a
-				// reconciled handoff's answer still reaches the agenda.
-				if (receipt.state === "ambiguous") {
-					register();
-					return "ambiguous";
-				}
-				if (receipt.state === "rejected" || receipt.state === "needs_human")
-					throw new Error(`live_lead_handoff_${receipt.state}`);
-				// authorized / dispatching: another attempt is mid-flight; ask again.
+					};
+				if (receipt.state === "ambiguous") return { kind: "ambiguous" };
+				if (receipt.state === "rejected")
+					return { kind: "rejected", reason: "live_lead_handoff_rejected" };
+				// The carrier stopped reconciling without proof either way.
+				if (receipt.state === "needs_human") return { kind: "needs_human" };
+				// authorized / dispatching: in flight (a stale dispatch is promoted
+				// to ambiguous by the Bridge reconciler); ask again.
 			}
-			if (this.closing) throw new Error("live_lead_handoff_session_closed");
-			if (this.now() >= deadline)
-				throw new Error(
-					receipt
-						? `live_lead_handoff_stuck_${receipt.state}`
-						: "live_lead_handoff_unreachable",
-				);
+			if (this.now() >= deadline) return { kind: "unknown" };
 			await this.pause(
 				Math.min(
 					AGENDA_SUBMIT_MAX_BACKOFF_MS,
 					AGENDA_SUBMIT_BACKOFF_MS * 2 ** (attempt - 1),
 				),
+				signal,
 			);
 		}
 	}
 
-	private pause(ms: number): Promise<void> {
+	/** One bounded attempt: aborts the request and stops waiting at `ms`. */
+	private attemptSubmit(
+		request: VoiceHandoffRequest,
+		ms: number,
+		outer?: AbortSignal,
+	): Promise<VoiceHandoffReceipt> {
+		const controller = new AbortController();
+		const abort = () => controller.abort();
+		outer?.addEventListener("abort", abort, { once: true });
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const stopped = new Promise<never>((_resolve, reject) => {
+			const fail = () =>
+				reject(new Error("live_agenda_submit_attempt_timeout"));
+			controller.signal.addEventListener("abort", fail, { once: true });
+			timer = this.setTimeoutFn(abort, ms);
+			timer.unref?.();
+		});
+		return Promise.race([
+			this.options.submitHandoff(request, { signal: controller.signal }),
+			stopped,
+		]).finally(() => {
+			if (timer) this.clearTimeoutFn(timer);
+			outer?.removeEventListener("abort", abort);
+		});
+	}
+
+	/** After an unknown outcome the same request keeps converging off the face
+	 * queue until the session closes; its answer is registered only once the
+	 * Bridge has persisted it. */
+	private convergeInBackground(
+		request: VoiceHandoffRequest,
+		bindingKey: string,
+		register: () => void,
+	): void {
+		const controller = new AbortController();
+		const work = this.convergeAgendaSubmit(
+			request,
+			Number.POSITIVE_INFINITY,
+			bindingKey,
+			controller.signal,
+		)
+			.then(async (result) => {
+				if (this.closing) return;
+				if (result.kind === "committed" || result.kind === "ambiguous") {
+					register();
+					this.options.record({
+						kind: "live_agenda_handoff_converged",
+						binding: bindingKey,
+						state: result.kind,
+					});
+					return;
+				}
+				this.options.record({
+					kind: "live_agenda_handoff_unresolved",
+					binding: bindingKey,
+					result: result.kind,
+				});
+				if (result.kind === "rejected")
+					await this.enqueueFace(() =>
+						this.promptFounder(
+							CUE_WITHOUT_DELEGATION_PROMPT,
+							`agenda-retry:${bindingKey}`,
+							"agenda_handoff_failed",
+							false,
+						),
+					);
+			})
+			.catch((error) =>
+				this.options.record({
+					kind: "live_agenda_handoff_unresolved",
+					binding: bindingKey,
+					message: error instanceof Error ? error.message : String(error),
+				}),
+			)
+			.finally(() => this.agendaConvergence.delete(controller));
+		this.agendaConvergence.set(controller, work);
+	}
+
+	private pause(ms: number, signal?: AbortSignal): Promise<void> {
 		return new Promise((resolve) => {
 			const timer = this.setTimeoutFn(resolve, ms);
 			timer.unref?.();
+			signal?.addEventListener(
+				"abort",
+				() => {
+					this.clearTimeoutFn(timer);
+					resolve();
+				},
+				{ once: true },
+			);
 		});
 	}
 

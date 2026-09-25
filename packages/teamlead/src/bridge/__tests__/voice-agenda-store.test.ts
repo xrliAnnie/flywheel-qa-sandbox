@@ -97,6 +97,68 @@ describe("VoiceHandoffStore FLY-2863 migration", () => {
 		).toThrow(/agenda_invalid/u);
 	});
 
+	it("promotes a stale dispatch to ambiguous and fences its late finish", () => {
+		db = new Database(":memory:");
+		const store = new VoiceHandoffStore(db);
+		store.migrate();
+		const brief = (id: string) =>
+			store.authorizeAgendaBrief({
+				handoffId: id,
+				idempotencyKey: `agenda:s:1:${id}`,
+				requestDigest: "b".repeat(64),
+				projectName: "p",
+				founderUserId: "f",
+				targetLeadId: "l",
+				sessionId: "s",
+				generation: 1,
+				messageId: `voice-handoff:${id}`,
+				providerOperationId: `chat:l:voice-handoff:${id}`,
+				agenda: {
+					kind: "brief",
+					purpose: "open",
+					itemKey: null,
+					clientRequestId: id,
+					authorId: "400000000000000001",
+					answerKey: "k".repeat(24),
+					brief: {},
+					text: "brief",
+				},
+				now: "2026-01-01T00:00:00.000Z",
+			});
+		brief("018f47d2-7b64-7b42-a3df-00000000000b");
+		brief("018f47d2-7b64-7b42-a3df-00000000000c");
+		const stale = store.beginDispatch(
+			"018f47d2-7b64-7b42-a3df-00000000000b",
+			"2026-01-01T00:00:00.000Z",
+		);
+		store.beginDispatch(
+			"018f47d2-7b64-7b42-a3df-00000000000c",
+			"2026-01-01T00:00:50.000Z",
+		);
+		expect(
+			store.promoteStaleDispatching("2026-01-01T00:01:00.000Z", 30_000),
+		).toBe(1);
+		expect(store.get("018f47d2-7b64-7b42-a3df-00000000000b")?.state).toBe(
+			"ambiguous",
+		);
+		expect(store.get("018f47d2-7b64-7b42-a3df-00000000000c")?.state).toBe(
+			"dispatching",
+		);
+		expect(
+			store.finishDispatch({
+				handoffId: "018f47d2-7b64-7b42-a3df-00000000000b",
+				attemptToken: stale!.attemptToken!,
+				state: "committed",
+				now: "2026-01-01T00:01:01.000Z",
+			}),
+		).toBeUndefined();
+		expect(
+			store
+				.listAmbiguous("2026-01-01T00:01:02.000Z")
+				.map((record) => record.handoffId),
+		).toEqual(["018f47d2-7b64-7b42-a3df-00000000000b"]);
+	});
+
 	it("only an agenda brief may exist without a founder transcript", () => {
 		db = new Database(":memory:");
 		const store = new VoiceHandoffStore(db);

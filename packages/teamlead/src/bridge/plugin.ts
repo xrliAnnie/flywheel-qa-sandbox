@@ -11993,6 +11993,7 @@ export async function startBridge(
 		voiceAgendaLeadRouterHolder.current = agendaRoutes.leadRouter;
 		const reconcileVoiceHandoffs = () => {
 			const now = new Date().toISOString();
+			store.voiceHandoffs.promoteStaleDispatching(now, 30_000);
 			for (const record of store.voiceHandoffs.listAmbiguous(now)) {
 				let outcome: "found" | "not_found" | "unavailable" | "conflict" =
 					"unavailable";
