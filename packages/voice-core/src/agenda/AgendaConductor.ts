@@ -16,6 +16,7 @@ import {
 import {
 	AGENDA_CLASSES,
 	type AgendaBriefPurpose,
+	type AgendaClosing,
 	type AgendaDisposition,
 	type AgendaDispositionRecord,
 	type AgendaItem,
@@ -34,6 +35,11 @@ const SAFE_BOUNDARY_RECHECK_MS = 250;
 /** A barge-in that never reported its end stops counting after this long. */
 const DEFAULT_FOUNDER_SPEAKING_STALE_MS = 20_000;
 const MAX_APPLIED_REQUESTS = 64;
+/** A closing line that fails this often (not counting her barge-ins) is
+ * dropped so the agenda never stalls on a broken voice path. */
+const MAX_CLOSING_FAILURES = 2;
+
+type SpeakOutcome = "completed" | "interrupted" | "failed" | "closed";
 
 export interface AgendaBriefRequestInput {
 	purpose: AgendaBriefPurpose;
@@ -158,6 +164,10 @@ export class AgendaConductor {
 	private checkinTimer?: Timer;
 	private pollTimer?: Timer;
 	private resumeTimer?: Timer;
+	private closingTimer?: Timer;
+	/** resultEventId of a closing line already heard or dropped; the durable
+	 * clear rides on the next successful write if its own write failed. */
+	private closingHandled: string | null = null;
 	private lastFounderUtteranceAt = 0;
 	private readonly unsubscribers: Array<() => void> = [];
 
@@ -351,10 +361,11 @@ export class AgendaConductor {
 			this.checkinTimer,
 			this.pollTimer,
 			this.resumeTimer,
+			this.closingTimer,
 		])
 			if (timer) this.clearTimeoutFn(timer);
 		this.leadTimer = this.checkinTimer = this.pollTimer = undefined;
-		this.resumeTimer = undefined;
+		this.resumeTimer = this.closingTimer = undefined;
 		for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
 		await this.work.catch(() => undefined);
 	}
@@ -400,9 +411,13 @@ export class AgendaConductor {
 		} else {
 			if (this.state.generation !== this.options.generation) {
 				await this.adoptGeneration();
-			} else if (this.state.outstanding) {
-				await this.drain();
-				this.armLeadTimer();
+			} else {
+				if (this.state.outstanding) {
+					await this.drain();
+					this.armLeadTimer();
+				}
+				// Review R7: a closing line she never heard is said first.
+				if (this.closingPending()) await this.finishClosing();
 			}
 			if (snapshot) await this.merge(snapshot);
 		}
@@ -473,6 +488,10 @@ export class AgendaConductor {
 			generation: this.options.generation,
 			itemKey: target,
 		});
+		if (this.closingPending()) {
+			await this.finishClosing();
+			return;
+		}
 		if (target) await this.request("resume", target);
 		else await this.startNext(undefined);
 	}
@@ -594,7 +613,7 @@ export class AgendaConductor {
 	}
 
 	private async maybeStartWork(): Promise<void> {
-		if (!this.state.opened || this.closing) return;
+		if (!this.state.opened || this.closing || this.closingPending()) return;
 		if (this.state.urgentQueue.length > 0 && !this.state.activeUrgent) {
 			await this.startUrgent();
 			return;
@@ -616,6 +635,8 @@ export class AgendaConductor {
 	private async startNext(
 		previous: AgendaBriefRequestInput["previous"],
 	): Promise<void> {
+		// Nothing new starts until the last closing line was heard (review R7).
+		if (this.closingPending()) return;
 		if (this.state.urgentQueue.length > 0 && !this.state.activeUrgent) {
 			await this.startUrgent();
 			return;
@@ -633,6 +654,7 @@ export class AgendaConductor {
 	}
 
 	private async startUrgent(): Promise<void> {
+		if (this.closingPending()) return;
 		if (!(await this.waitSafeBoundary())) return;
 		const key = this.state.urgentQueue[0];
 		if (!key || this.state.activeUrgent) return;
@@ -651,6 +673,7 @@ export class AgendaConductor {
 	private async afterUrgentClosed(
 		previous: NonNullable<AgendaBriefRequestInput["previous"]>,
 	): Promise<void> {
+		if (this.closingPending()) return;
 		if (this.state.urgentQueue.length > 0) {
 			await this.startUrgent();
 			return;
@@ -808,10 +831,10 @@ export class AgendaConductor {
 			resultKind: result.kind,
 			reason,
 		});
-		const committed = await this.commit((state) =>
-			this.markSeen(state, result),
-		);
-		if (committed) this.armLeadTimer();
+		await this.commit((state) => this.markSeen(state, result));
+		// Review R7: re-arm from whatever is current now, written or not; the
+		// timer itself ignores a request that is gone or already answered.
+		this.armLeadTimer();
 	}
 
 	private targetItem(outstanding: AgendaOutstanding): string | null {
@@ -1005,9 +1028,34 @@ export class AgendaConductor {
 		}
 		const wasUrgent = this.state.activeUrgent === result.itemKey;
 		const createdAt = new Date(this.now()).toISOString();
+		// QA@1 B3: she hears how the item ended ("记下了，你在 thread 点一下")
+		// before the next one; the reason stays a ledger record. The line is
+		// stored with the close so a barge-in or restart cannot lose it (R7).
+		let closing: AgendaClosing | null = null;
+		if (result.say !== undefined) {
+			const validation = validateAgendaSay(result.say, this.maxSayCodePoints);
+			if (validation.ok)
+				closing = {
+					itemKey: result.itemKey,
+					closedAs: result.disposition,
+					wasUrgent,
+					text: result.say,
+					requestId: result.requestId,
+					resultEventId: result.resultEventId,
+					attempts: 0,
+					failures: 0,
+				};
+			else
+				this.options.record({
+					kind: "agenda_say_invalid",
+					requestId: result.requestId,
+					reason: validation.reason,
+				});
+		}
 		const committed = await this.commit(
 			(state) => {
 				this.markApplied(state, result);
+				state.closing = closing;
 				const entry = state.items[result.itemKey];
 				if (entry) {
 					entry.status = "closed";
@@ -1036,26 +1084,105 @@ export class AgendaConductor {
 			disposition: result.disposition,
 			requestId: result.requestId,
 		});
-		// QA@1 B3: she hears how the item ended ("记下了，你在 thread 点一下")
-		// before the next one; the reason stays a ledger record.
-		if (result.say !== undefined) {
-			const validation = validateAgendaSay(result.say, this.maxSayCodePoints);
-			if (validation.ok)
-				await this.speak(result.say, "brief", {
-					pendingKey: `agenda:${result.requestId}:${result.resultEventId}`,
-					purpose: outstanding.purpose,
-					itemKey: result.itemKey,
-				});
-			else
-				this.options.record({
-					kind: "agenda_say_invalid",
-					requestId: result.requestId,
-					reason: validation.reason,
-				});
+		if (closing) {
+			await this.finishClosing();
+			return;
 		}
 		const previous = { itemKey: result.itemKey, closedAs: result.disposition };
 		if (wasUrgent) await this.afterUrgentClosed(previous);
 		else await this.startNext(previous);
+	}
+
+	// ── closing line (QA@1 B3, review R7) ──
+
+	private closingPending(): boolean {
+		const closing = this.state.closing;
+		return !!closing && closing.resultEventId !== this.closingHandled;
+	}
+
+	/** Speaks the stored closing line; the talk moves on only once she heard
+	 * it. Her barge-in is not a failure: the line waits for the next safe
+	 * boundary. Real failures are bounded so the agenda never stalls. */
+	private async finishClosing(): Promise<void> {
+		this.clearClosingTimer();
+		const closing = this.state.closing;
+		if (!closing || this.closing) return;
+		if (closing.resultEventId === this.closingHandled) {
+			await this.afterClosing(closing);
+			return;
+		}
+		const attempt = closing.attempts + 1;
+		const counted = await this.commit((state) => {
+			if (state.closing?.resultEventId === closing.resultEventId)
+				state.closing.attempts = attempt;
+		});
+		if (!counted) {
+			this.armClosingRetry();
+			return;
+		}
+		const outcome = await this.speakOutcome(closing.text, "brief", {
+			pendingKey: `agenda-closing:${closing.resultEventId}:${attempt}`,
+			purpose: "closing",
+			itemKey: closing.itemKey,
+		});
+		if (outcome === "closed") return;
+		if (outcome === "interrupted") {
+			this.options.record({
+				kind: "agenda_closing_interrupted",
+				itemKey: closing.itemKey,
+				attempt,
+			});
+			this.armClosingRetry();
+			return;
+		}
+		if (outcome === "failed" && closing.failures + 1 < MAX_CLOSING_FAILURES) {
+			await this.commit((state) => {
+				if (state.closing?.resultEventId === closing.resultEventId)
+					state.closing.failures = closing.failures + 1;
+			});
+			this.armClosingRetry();
+			return;
+		}
+		if (outcome === "failed")
+			this.options.record({
+				kind: "agenda_closing_dropped",
+				itemKey: closing.itemKey,
+				attempts: attempt,
+			});
+		this.closingHandled = closing.resultEventId;
+		await this.commit((state) => {
+			if (state.closing?.resultEventId === closing.resultEventId)
+				state.closing = null;
+		});
+		await this.afterClosing(closing);
+	}
+
+	private async afterClosing(closing: AgendaClosing): Promise<void> {
+		// Her own turn during the line keeps the floor (R-T5): its answer
+		// continues the talk.
+		if (
+			this.state.outstanding?.purpose === "reply" &&
+			!this.state.outstanding.answered
+		)
+			return;
+		const previous = { itemKey: closing.itemKey, closedAs: closing.closedAs };
+		if (closing.wasUrgent) await this.afterUrgentClosed(previous);
+		else await this.startNext(previous);
+	}
+
+	private armClosingRetry(): void {
+		this.clearClosingTimer();
+		if (this.closing) return;
+		this.closingTimer = this.setTimeoutFn(() => {
+			this.closingTimer = undefined;
+			void this.enqueue(() => this.finishClosing());
+		}, this.resumeGapMs);
+		this.closingTimer.unref?.();
+	}
+
+	private clearClosingTimer(): void {
+		if (this.closingTimer) this.clearTimeoutFn(this.closingTimer);
+		this.closingTimer = undefined;
 	}
 
 	// ── timers ──
@@ -1102,13 +1229,22 @@ export class AgendaConductor {
 			stage: stage + 1,
 		});
 		if (outstanding.purpose === "checkin") {
-			this.checkinPending = null;
-			// The fixed line answered this check-in: a late Lead line would say
-			// the same thing twice, so the request is retired first.
+			// The fixed line answers this check-in: a late Lead line would say
+			// the same thing twice, so the request is retired first — and only a
+			// confirmed retirement lets the fixed line play (review R7).
 			await this.commit((state) => {
 				if (state.outstanding?.requestId === requestId)
 					state.outstanding = null;
 			});
+			if (this.state.outstanding?.requestId === requestId) {
+				this.options.record({
+					kind: "agenda_checkin_retire_failed",
+					requestId,
+				});
+				this.armLeadTimer();
+				return;
+			}
+			this.checkinPending = null;
 			await this.speakCheckinFallback(requestId);
 			this.armCheckin();
 			return;
@@ -1211,7 +1347,7 @@ export class AgendaConductor {
 	}
 
 	private async checkCheckin(): Promise<void> {
-		if (this.closing || !this.state.opened) return;
+		if (this.closing || !this.state.opened || this.closingPending()) return;
 		const since = Math.max(this.lastActivity, this.lastCheckinAttempt);
 		if (this.now() - since < this.checkinIntervalMs) return;
 		if (this.checkinPending) return;
@@ -1282,7 +1418,19 @@ export class AgendaConductor {
 			itemKey: string | null;
 		},
 	): Promise<boolean> {
-		if (!(await this.waitSafeBoundary())) return false;
+		return (await this.speakOutcome(text, kind, meta)) === "completed";
+	}
+
+	private async speakOutcome(
+		text: string,
+		kind: SpeakKind,
+		meta: {
+			pendingKey: string;
+			purpose: AgendaOutstanding["purpose"] | "fallback" | "fixed" | "closing";
+			itemKey: string | null;
+		},
+	): Promise<SpeakOutcome> {
+		if (!(await this.waitSafeBoundary())) return "closed";
 		let receipt: SpeakReceipt;
 		try {
 			receipt = await this.options.engine.speak(text, kind, {
@@ -1291,7 +1439,7 @@ export class AgendaConductor {
 			});
 		} catch (error) {
 			this.voiceUnavailable(error);
-			return false;
+			return "failed";
 		}
 		this.options.record({
 			kind: "agenda_spoken",
@@ -1303,7 +1451,7 @@ export class AgendaConductor {
 		});
 		if (receipt.outcome === "completed") {
 			this.noteActivity();
-			return true;
+			return "completed";
 		}
 		if (
 			receipt.outcome === "failed" &&
@@ -1313,10 +1461,10 @@ export class AgendaConductor {
 				kind: "agenda_speech_interrupted",
 				pendingKey: meta.pendingKey,
 			});
-			return false;
+			return "interrupted";
 		}
 		this.voiceUnavailable(receipt.reason);
-		return false;
+		return "failed";
 	}
 
 	private async speakFallback(
@@ -1361,6 +1509,12 @@ export class AgendaConductor {
 	): Promise<boolean> {
 		const next = structuredClone(this.state);
 		mutate(next);
+		// A closing line already heard stays cleared even if its own write failed.
+		if (
+			this.closingHandled &&
+			next.closing?.resultEventId === this.closingHandled
+		)
+			next.closing = null;
 		next.stateVersion = this.state.stateVersion + 1;
 		next.lastActivityAt = new Date(this.lastActivity).toISOString();
 		let outcome: Awaited<ReturnType<AgendaPorts["saveState"]>>;

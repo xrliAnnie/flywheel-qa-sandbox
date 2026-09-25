@@ -13,9 +13,12 @@ import {
 	defaultAgendaOrder,
 	validateAgendaSay,
 } from "../agenda/index.js";
-import { FakeV1Session } from "../headphone/FakeV1Session.js";
+import {
+	FakeV1Session,
+	type FakeV1SessionOptions,
+} from "../headphone/FakeV1Session.js";
 import type { RoomBargeInEvent } from "../room-io.js";
-import type { VoiceUtterance } from "../types.js";
+import { SPEAK_BARGE_IN_REASON, type VoiceUtterance } from "../types.js";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 
@@ -70,6 +73,8 @@ class FakeBridge implements AgendaPorts {
 	results = new Map<string, AgendaResult[]>();
 	turns: Array<{ utteranceId: string; itemKey: string }> = [];
 	failSnapshot = false;
+	/** One-shot save failure: a thrown write or a CAS conflict. */
+	failSave: "throw" | "conflict" | null = null;
 	private nextRequest = 0;
 	private nextSeq = new Map<string, number>();
 
@@ -85,6 +90,14 @@ class FakeBridge implements AgendaPorts {
 		expectedVersion: number;
 		dispositions: readonly AgendaDispositionRecord[];
 	}) {
+		const fail = this.failSave;
+		this.failSave = null;
+		if (fail === "throw") throw new Error("bridge_write_failed");
+		if (fail === "conflict")
+			return {
+				ok: false as const,
+				...(this.stored ? { current: structuredClone(this.stored) } : {}),
+			};
 		if ((this.stored?.stateVersion ?? 0) !== input.expectedVersion)
 			return {
 				ok: false as const,
@@ -234,11 +247,13 @@ interface Harness {
 
 async function harness(
 	setup: (bridge: FakeBridge) => void = () => undefined,
-	options: Partial<AgendaConductorOptions> & {
+	harnessOptions: Partial<AgendaConductorOptions> & {
 		bridge?: FakeBridge;
 		generation?: number;
+		respond?: FakeV1SessionOptions["respond"];
 	} = {},
 ): Promise<Harness> {
+	const { respond, ...options } = harnessOptions;
 	const clock = new FakeClock();
 	const bridge = options.bridge ?? new FakeBridge();
 	setup(bridge);
@@ -246,6 +261,7 @@ async function harness(
 	const engine = new FakeV1Session({
 		sessionId: SESSION,
 		generation: options.generation ?? 1,
+		...(respond ? { respond } : {}),
 	});
 	await engine.open("ctx");
 	const events: Record<string, unknown>[] = [];
@@ -1127,6 +1143,132 @@ describe("AgendaConductor — QA@1 regressions (B2, B3)", () => {
 		await wake(h, checkin.requestId);
 		expect(h.spoken()).toHaveLength(before);
 	});
+});
+
+describe("AgendaConductor — review R7 (closing line, refusal and check-in writes)", () => {
+	const LINE = "记下你批了，你在这件的讨论串里点一下发布审批就行。";
+	function receipt(
+		call: { pendingKey: string; requestDigest: string },
+		reason: string,
+	) {
+		return {
+			pendingKey: call.pendingKey,
+			requestDigest: call.requestDigest,
+			outcome: "failed" as const,
+			reason,
+			transport: "none" as const,
+			contentProof: "none" as const,
+		};
+	}
+	async function closeWithLine(h: Harness): Promise<void> {
+		await h.conductor.start();
+		h.bridge.say("req-1", "三件，先说受阻那张。", "blocked:C");
+		await wake(h, "req-1");
+		h.conductor.bindTurn("utt-1");
+		await h.conductor.adoptReply({ utteranceId: "utt-1", handoffId: "turn-1" });
+		h.bridge.close("turn-1", "blocked:C", "decision_recorded", undefined, LINE);
+		await wake(h, "turn-1");
+	}
+	const itemRequests = (h: Harness) =>
+		h.bridge.requests.filter((request) => request.purpose === "item");
+
+	it("a barged-in closing line is said again at the next safe boundary before the next item", async () => {
+		let interrupted = false;
+		const h = await harness(THREE, {
+			respond: (call) => {
+				if (!call.pendingKey.startsWith("agenda-closing:") || interrupted)
+					return undefined as never;
+				interrupted = true;
+				return receipt(call, SPEAK_BARGE_IN_REASON);
+			},
+		});
+		await closeWithLine(h);
+		expect(h.spoken().filter((text) => text === LINE)).toHaveLength(1);
+		expect(itemRequests(h)).toEqual([]);
+		expect(h.bridge.stored?.closing).toMatchObject({
+			itemKey: "blocked:C",
+			text: LINE,
+		});
+		// A source refresh while the line is pending starts nothing new.
+		await h.conductor.notifySourceChanged();
+		await settle();
+		expect(itemRequests(h)).toEqual([]);
+		await h.clock.advance(8_000);
+		expect(h.spoken().filter((text) => text === LINE)).toHaveLength(2);
+		expect(itemRequests(h)).toEqual([
+			expect.objectContaining({
+				itemKey: "approve:A",
+				previous: { itemKey: "blocked:C", closedAs: "decision_recorded" },
+			}),
+		]);
+		expect(h.bridge.stored?.closing ?? null).toBeNull();
+	});
+
+	it("a closing line that keeps failing is dropped after two tries and the talk moves on", async () => {
+		const h = await harness(THREE, {
+			respond: (call) =>
+				call.pendingKey.startsWith("agenda-closing:")
+					? receipt(call, "tts_down")
+					: (undefined as never),
+		});
+		await closeWithLine(h);
+		expect(itemRequests(h)).toEqual([]);
+		await h.clock.advance(8_000);
+		expect(h.spoken().filter((text) => text === LINE)).toHaveLength(2);
+		expect(h.events).toContainEqual(
+			expect.objectContaining({ kind: "agenda_closing_dropped" }),
+		);
+		expect(itemRequests(h)).toEqual([
+			expect.objectContaining({ itemKey: "approve:A" }),
+		]);
+	});
+
+	it("a restart speaks a closing line that was never heard, then continues", async () => {
+		const first = await harness(THREE, {
+			respond: (call) =>
+				call.pendingKey.startsWith("agenda-closing:")
+					? receipt(call, SPEAK_BARGE_IN_REASON)
+					: (undefined as never),
+		});
+		await closeWithLine(first);
+		await first.conductor.close();
+		expect(first.bridge.stored?.closing?.text).toBe(LINE);
+		const second = await harness(() => undefined, { bridge: first.bridge });
+		await second.conductor.start();
+		await settle();
+		expect(second.spoken()).toEqual([LINE]);
+		expect(itemRequests(second)).toEqual([
+			expect.objectContaining({ itemKey: "approve:A" }),
+		]);
+		expect(second.bridge.stored?.closing ?? null).toBeNull();
+	});
+
+	for (const failure of ["throw", "conflict"] as const)
+		it(`a refused result keeps the Lead timer even when recording it fails (${failure})`, async () => {
+			const h = await harness(THREE);
+			await h.conductor.start();
+			h.bridge.failSave = failure;
+			h.bridge.say("req-1", "先说一件。", "approve:NOPE");
+			await wake(h, "req-1");
+			await h.clock.advance(20_000);
+			expect(h.spoken()).toEqual(["我在整理，有 3 件要你拍，马上说。"]);
+		});
+
+	for (const failure of ["throw", "conflict"] as const)
+		it(`a check-in that could not be retired is never answered twice (${failure})`, async () => {
+			const h = await harness();
+			await h.conductor.start();
+			h.bridge.say("req-1", "我在。");
+			await wake(h, "req-1");
+			await h.clock.advance(600_000);
+			const checkin = h.bridge.requests.find((r) => r.purpose === "checkin")!;
+			h.bridge.failSave = failure;
+			await h.clock.advance(20_000);
+			expect(h.spoken()).toEqual(["我在。"]);
+			h.bridge.say(checkin.requestId, "Annie，我在，这边没新事。");
+			await wake(h, checkin.requestId);
+			expect(h.spoken()).toEqual(["我在。", "Annie，我在，这边没新事。"]);
+		});
 });
 
 describe("defaultAgendaOrder", () => {

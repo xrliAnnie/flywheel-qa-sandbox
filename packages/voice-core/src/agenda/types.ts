@@ -171,6 +171,22 @@ export interface AgendaOutstanding {
 	turnOrder?: number;
 }
 
+/** The line she hears as an item ends (QA@1 B3). It is stored with the close,
+ * and nothing new starts until it has been heard (review R7): a barge-in over
+ * it is not a failure; a restart speaks it first. */
+export interface AgendaClosing {
+	itemKey: string;
+	closedAs: AgendaDisposition;
+	wasUrgent: boolean;
+	text: string;
+	requestId: string;
+	resultEventId: string;
+	/** Attempts so far; each attempt speaks under a fresh pendingKey. */
+	attempts: number;
+	/** Attempts that failed for a reason other than her barge-in. */
+	failures: number;
+}
+
 /** Durable queue state (plan §4.1 Q8). The Bridge stores it verbatim under a
  * CAS `stateVersion`; session truth stays with VoiceSessionState. */
 export interface AgendaState {
@@ -188,6 +204,8 @@ export interface AgendaState {
 	/** requestId → last applied result seq. */
 	applied: Record<string, number>;
 	lastActivityAt: string;
+	/** A closing line not yet heard; absent on states written before it. */
+	closing?: AgendaClosing | null;
 }
 
 export interface AgendaDispositionRecord {

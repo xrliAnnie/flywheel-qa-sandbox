@@ -308,6 +308,37 @@ describe("PUT /api/voice/agenda/state (CAS)", () => {
 		);
 		expect(read.body.state.stateVersion).toBe(1);
 	});
+
+	it("keeps a pending closing line verbatim so a restart can say it first (review R7)", async () => {
+		const { base } = await start();
+		await call(base, `/agenda?sessionId=${SESSION_ID}&generation=3`);
+		const closing = {
+			itemKey: "blocked:I1:t",
+			closedAs: "decision_recorded",
+			wasUrgent: false,
+			text: "记下你批了，你在讨论串里点一下就行。",
+			requestId: "turn-1",
+			resultEventId: "turn-1:e1",
+			attempts: 1,
+			failures: 0,
+		};
+		const saved = await call(base, "/agenda/state", {
+			method: "PUT",
+			body: {
+				sessionId: SESSION_ID,
+				generation: 3,
+				expectedVersion: 0,
+				state: freshState(3, { active: null, closing }),
+				dispositions: [],
+			},
+		});
+		expect(saved.status).toBe(200);
+		const read = await call(
+			base,
+			`/agenda/state?sessionId=${SESSION_ID}&generation=3`,
+		);
+		expect(read.body.state.closing).toEqual(closing);
+	});
 });
 
 describe("POST /api/voice/agenda/turns", () => {
