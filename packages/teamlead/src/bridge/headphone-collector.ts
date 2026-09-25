@@ -277,12 +277,13 @@ export class HeadphoneInboxCollector {
 				Math.max(tokenNextAllowed.get(scope.token) ?? 0, next),
 			);
 		}
+		// Rotate by last pull time only (FLY-2863 B5): the shared token pages one
+		// source per interval, so ranking finished sources first starved every
+		// source still backfilling, including the Lead's main channel.
 		const candidates = states
 			.filter(({ scope }) => (tokenNextAllowed.get(scope.token) ?? 0) <= nowMs)
 			.sort(
 				(left, right) =>
-					Number(right.state?.bootstrapComplete ?? false) -
-						Number(left.state?.bootstrapComplete ?? false) ||
 					sourceTime(left.state) - sourceTime(right.state) ||
 					left.scope.channelId.localeCompare(right.scope.channelId),
 			);

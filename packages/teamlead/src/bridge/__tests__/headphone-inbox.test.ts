@@ -5,7 +5,11 @@ import { CommDB } from "flywheel-comm/db";
 import { speakRequestDigest, splitSpeechText } from "flywheel-voice-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
-import { HeadphoneInboxCollector } from "../headphone-collector.js";
+import {
+	type HeadphoneCollectorMessage,
+	type HeadphoneCollectorOptions,
+	HeadphoneInboxCollector,
+} from "../headphone-collector.js";
 import { HeadphoneQuestionAuthority } from "../headphone-question-authority.js";
 
 const T0 = "2026-09-23T20:00:00.000Z";
@@ -82,6 +86,64 @@ function createSession(suffix = "1", leaseTtlMs = 15_000) {
 		sessionGeneration,
 		leaseToken: claimed.leaseToken,
 	};
+}
+
+/** Discord channel history that honors `before` / `after` paging, newest first. */
+function fakeDiscordHistory(channelSizes: Record<string, number>) {
+	const history = new Map<string, HeadphoneCollectorMessage[]>(
+		Object.keys(channelSizes).map((channelId) => [channelId, []]),
+	);
+	let seq = 0n;
+	const post = (channelId: string, content: string) => {
+		seq += 1n;
+		const message: HeadphoneCollectorMessage = {
+			id: String(100_000_000_000_000_000n + seq),
+			authorId: "lead-1",
+			content,
+			timestamp: new Date(Date.parse(T0) + Number(seq)).toISOString(),
+		};
+		history.get(channelId)?.push(message);
+		return message;
+	};
+	for (const [channelId, size] of Object.entries(channelSizes))
+		for (let index = 0; index < size; index++)
+			post(channelId, `${channelId} report ${index}`);
+	const pulls = new Map<string, number>();
+	const fetchPage: HeadphoneCollectorOptions["fetchPage"] = async ({
+		scope,
+		before,
+		after,
+		limit,
+	}) => {
+		pulls.set(scope.channelId, (pulls.get(scope.channelId) ?? 0) + 1);
+		const all = history.get(scope.channelId) ?? [];
+		const page = after
+			? all
+					.filter((message) => BigInt(message.id) > BigInt(after))
+					.slice(0, limit)
+			: all
+					.filter((message) => !before || BigInt(message.id) < BigInt(before))
+					.slice(-limit);
+		return { kind: "page", messages: [...page].reverse() };
+	};
+	return { fetchPage, pulls, post };
+}
+
+function collectedMessageIds(channelId: string): Set<string> {
+	const ids = new Set<string>();
+	let cursor: string | undefined;
+	do {
+		const page = store.headphoneInbox.snapshot({
+			projectName: "flywheel",
+			founderUserId: "founder-1",
+			limit: 100,
+			...(cursor ? { cursor } : {}),
+		});
+		for (const item of page.items)
+			if (item.channelId === channelId) ids.add(item.sourceMessageId);
+		cursor = page.nextCursor ?? undefined;
+	} while (cursor);
+	return ids;
 }
 
 function addItem(overrides: Record<string, unknown> = {}) {
@@ -937,5 +999,112 @@ describe("HeadphoneInboxCollector", () => {
 		});
 		expect(await restarted.tick()).toBe("waiting");
 		expect(fetchPage).toHaveBeenCalledOnce();
+	});
+
+	// FLY-2863 QA@2 B5: a finished thread source must not starve a Lead main
+	// channel that is still backfilling behind the same shared-token throttle.
+	const MAIN_CHANNEL = "100000000000000010";
+	const threadChannel = (index: number) =>
+		String(100000000000000020n + BigInt(index));
+	const sharedTokenScope = (channelId: string) => ({
+		projectName: "flywheel",
+		founderUserId: "founder-1",
+		channelId,
+		allowedAuthorIds: ["lead-1"],
+		leadAuthorIds: ["lead-1"],
+		token: "shared-secret",
+	});
+
+	it("finishes a 500-message main-channel backfill beside a finished thread within 60 ticks", async () => {
+		let now = Date.parse(T0);
+		const discord = fakeDiscordHistory({
+			[MAIN_CHANNEL]: 500,
+			[threadChannel(0)]: 2,
+		});
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => [MAIN_CHANNEL, threadChannel(0)].map(sharedTokenScope),
+			fetchPage: discord.fetchPage,
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+		});
+
+		expect(await collector.tick()).toBe("collected");
+		now += 1_000;
+		// The shared-token throttle still holds: one page per 5 s across sources.
+		expect(await collector.tick()).toBe("waiting");
+		now += 4_000;
+		for (let tick = 1; tick < 60; tick++) {
+			expect(await collector.tick()).toBe("collected");
+			now += 5_000;
+		}
+
+		expect(
+			[...discord.pulls.values()].reduce((sum, count) => sum + count, 0),
+		).toBe(60);
+		expect(
+			store.headphoneInbox.getSourceState(
+				"flywheel",
+				"founder-1",
+				MAIN_CHANNEL,
+			),
+		).toMatchObject({ bootstrapComplete: true, health: "healthy" });
+		expect(discord.pulls.get(MAIN_CHANNEL)).toBeGreaterThanOrEqual(6);
+		expect(discord.pulls.get(threadChannel(0))).toBeGreaterThanOrEqual(1);
+		expect(collectedMessageIds(MAIN_CHANNEL).size).toBe(500);
+	});
+
+	it("reaches every thread source and a live Lead main-channel message while threads exist", async () => {
+		let now = Date.parse(T0);
+		const threads = Array.from({ length: 8 }, (_, index) =>
+			threadChannel(index),
+		);
+		const discord = fakeDiscordHistory({
+			[MAIN_CHANNEL]: 500,
+			...Object.fromEntries(threads.map((channelId) => [channelId, 2])),
+		});
+		const marks: unknown[] = [];
+		const collector = new HeadphoneInboxCollector({
+			store: store.headphoneInbox,
+			listScopes: () => [MAIN_CHANNEL, ...threads].map(sharedTokenScope),
+			fetchPage: discord.fetchPage,
+			recordUrgent: (mark) => marks.push(mark),
+			now: () => now,
+			minimumPageIntervalMs: 5_000,
+		});
+
+		let live: HeadphoneCollectorMessage | undefined;
+		for (let tick = 0; tick < 60; tick++) {
+			expect(await collector.tick()).toBe("collected");
+			now += 5_000;
+			if (
+				!live &&
+				store.headphoneInbox.getSourceState(
+					"flywheel",
+					"founder-1",
+					MAIN_CHANNEL,
+				)?.bootstrapComplete
+			)
+				live = discord.post(
+					MAIN_CHANNEL,
+					"🚨[urgent:production_down] 生产挂了，要你拍",
+				);
+		}
+
+		expect(live).toBeDefined();
+		for (const channelId of threads) {
+			expect(discord.pulls.get(channelId)).toBeGreaterThanOrEqual(1);
+			expect(
+				store.headphoneInbox.getSourceState("flywheel", "founder-1", channelId),
+			).toMatchObject({ bootstrapComplete: true });
+		}
+		expect(collectedMessageIds(MAIN_CHANNEL)).toContain(live?.id);
+		expect(marks).toEqual([
+			expect.objectContaining({
+				channelId: MAIN_CHANNEL,
+				messageId: live?.id,
+				reason: "production_down",
+			}),
+		]);
 	});
 });
