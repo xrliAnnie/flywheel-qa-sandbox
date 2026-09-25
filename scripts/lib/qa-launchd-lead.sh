@@ -1141,6 +1141,55 @@ qa_launchd_stop_codex_updaters() {
   [[ "$failed" == 0 ]]
 }
 
+# FLY-2867: a slot home running the managed Codex daemon has no
+# pid-update-loop, and the managed daemon records itself under a different
+# pid-file name, so neither "updater stopped" nor one pid file proves the home
+# is quiet. Convergence is the absence of any process whose argv references
+# this exact home (as given, canonical, or the /tmp <-> /private/tmp alias, not
+# followed by another path-name character). The daemon, its code-mode-host
+# child, a straggling TUI client, or an updater with drifted argv all keep the
+# stop fail-closed. stdout: residue pids; nonzero = probe failure.
+qa_launchd_codex_home_residue_pids() {
+  local codex_home="$1" processes
+  qa_launchd_require_absolute "$codex_home" || return 1
+  processes=$(LC_ALL=C ps -ww -axo pid=,command= 2>/dev/null) || return 1
+  python3 -c '
+import os
+import re
+import sys
+
+home = sys.argv[1].rstrip("/")
+paths = {home, os.path.realpath(home)}
+for path in list(paths):
+    if path.startswith("/private/tmp/"):
+        paths.add(path[len("/private"):])
+    elif path.startswith("/tmp/"):
+        paths.add("/private" + path)
+pattern = re.compile(
+    "(?:" + "|".join(re.escape(p) for p in sorted(paths, key=len, reverse=True)) + ")"
+    + r"(?![A-Za-z0-9._-])"
+)
+for raw in sys.stdin:
+    match = re.fullmatch(r"\s*([1-9][0-9]*)\s+(.+)", raw.rstrip("\n"))
+    if match and pattern.search(match.group(2)):
+        print(match.group(1))
+' "$codex_home" <<<"$processes"
+}
+
+# Bounded like the sibling waits (150 x 0.2s). Returns 0 once the census is
+# empty; otherwise prints the last residue pids comma-separated so an
+# operator can inspect them (empty on probe failure). Never signals anything.
+qa_launchd_codex_home_residue_wait() {
+  local codex_home="$1" i pids=""
+  for i in $(seq 1 150); do
+    pids=$(qa_launchd_codex_home_residue_pids "$codex_home") || return 1
+    [[ -z "$pids" ]] && return 0
+    sleep 0.2
+  done
+  printf '%s\n' "$pids" | paste -sd, -
+  return 1
+}
+
 qa_launchd_validate_codex_tmux_socket() {
   local socket_path="$1"
   python3 - "$socket_path" <<'PY'
@@ -1295,8 +1344,8 @@ PY
 qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
-  local daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
-  local slot_root runtime_started=0 failed=0
+  local daemon_pid_file managed_daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
+  local slot_root home_residue updater_disposition="" runtime_started=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
   IFS=$'\t' read -r entry_state label codex_home codex_bin state_dir runtime_pid_file tmux_bin <<<"$validated"
@@ -1339,7 +1388,10 @@ qa_launchd_stop_codex_entry() {
 
   daemon_pid_file="${codex_home}/app-server-daemon/app-server.pid"
   daemon_socket="${codex_home}/app-server-control/app-server-control.sock"
+  # FLY-2867: the managed daemon records itself as daemon.pid instead.
+  managed_daemon_pid_file="${codex_home}/app-server-daemon/daemon.pid"
   if [[ -e "$daemon_pid_file" || -L "$daemon_pid_file" \
+      || -e "$managed_daemon_pid_file" || -L "$managed_daemon_pid_file" \
       || -e "$daemon_socket" || -L "$daemon_socket" ]]; then
     runtime_started=1
   fi
@@ -1369,20 +1421,29 @@ qa_launchd_stop_codex_entry() {
   qa_launchd_stop_codex_updaters "$codex_bin" "$codex_home"
   updater_rc=$?
   case "$updater_rc" in
-    0) ;;
-    "$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND")
-      if [[ "$runtime_started" == 0 ]]; then
-        :
-      else
-      qa_launchd_err "carrier=codex-tui step=updater-converge result=not-found"
-      failed=1
-      fi
-      ;;
+    0) updater_disposition=stopped ;;
+    # FLY-2867: a slot home under managed-daemon Codex runs no updater at all.
+    # Absence is not a failure by itself; the residue census below decides.
+    "$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND") updater_disposition=not-found ;;
     *)
       qa_launchd_err "carrier=codex-tui step=updater-converge result=failed"
       failed=1
       ;;
   esac
+  # FLY-2867: the uniform convergence contract before retirement is that no
+  # process references this home anymore -- daemon (whatever its pid-record
+  # name), its code-mode-host child, a TUI client, or an unmatched updater.
+  # A TUI client orphaned by a crashed runtime also blocks retirement: this
+  # stop never signals it, so the lock stays held for the operator.
+  if [[ "$failed" == 0 && "$runtime_started" == 1 ]] \
+      && ! home_residue=$(qa_launchd_codex_home_residue_wait "$codex_home"); then
+    if [[ -n "$home_residue" ]]; then
+      qa_launchd_err "carrier=codex-tui step=home-residue updater=${updater_disposition} residue=$(awk -F, '{print NF}' <<<"$home_residue") pids=${home_residue}"
+    else
+      qa_launchd_err "carrier=codex-tui step=home-residue updater=${updater_disposition} residue=unknown"
+    fi
+    failed=1
+  fi
   if [[ "$failed" == 0 ]]; then
     slot_root=$(dirname "$registry")
     if ! qa_launchd_retire_codex_home "$codex_home" "$slot_root"; then

@@ -564,6 +564,16 @@ trap release_preflight_lock EXIT
   #    invisible to the running Bridge — it still serves the old dist. QA hit
   #    this exact trap on the first FLY-162 deploy ("404 not found" on /send).
   pnpm --filter flywheel-comm build || exit 18
+  # 5b. FLY-2867: claude-lead.sh loads its MCP servers from this checkout and
+  #     silently skips flywheel-inbox when packages/inbox-mcp/dist is absent,
+  #     so a Claude-carrier Lead could never write its .inbox-ready lease.
+  #     Neither package is in teamlead's dependency closure; build and assert.
+  pnpm --filter flywheel-inbox-mcp build || exit 20
+  pnpm --filter flywheel-terminal-mcp build || exit 20
+  if ! CLAUDE_LEAD_MCP_MISSING=$(qa_room_claude_lead_mcp_missing "$REPO_ROOT"); then
+    echo "ERROR: Claude Lead MCP artifacts missing after build: $(tr '\n' ' ' <<<"$CLAUDE_LEAD_MCP_MISSING")" >&2
+    exit 20
+  fi
   pnpm --filter flywheel-teamlead build || exit 15
   if [[ -n "$VOICE_FIXTURE" ]]; then
     pnpm --filter flywheel-voice-core build || exit 19
@@ -576,7 +586,7 @@ trap release_preflight_lock EXIT
   #    someone forgets to rebuild after editing src.
   grep -q 'FLYWHEEL_RUNNER_START_POINT' \
     "$REPO_ROOT/packages/edge-worker/dist/WorktreeManager.js" || exit 14
-) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, claude-runner, teamlead, and dist freshness."
+) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, claude-runner, inbox-mcp, terminal-mcp, teamlead, and dist freshness."
 
 release_preflight_lock
 trap - EXIT
@@ -2034,7 +2044,14 @@ else
 fi
 
 if [[ "$LEAD_READY" != "true" ]]; then
-  log "ERROR: Lead did not become ready: phase=${LEAD_NOT_READY_PHASE} leaseBudget=${LEAD_READY_TIMEOUT_SEC}s channelBudget=${LEAD_CHANNEL_TIMEOUT_SEC}s"
+  LEAD_NOT_READY_REASON=""
+  if [[ "$SLOT_BACKEND" != codex-app-server && "$LEAD_NOT_READY_PHASE" == lease ]]; then
+    LEAD_NOT_READY_REASON=" reason=$(qa_room_claude_lease_diagnosis "${SLOT_DIR}/lead-workspace" "$LEASE_FILE" \
+      "${SLOT_DIR}/launchd/${AGENT_ID}/lead.plist")"
+  elif [[ "$LEAD_NOT_READY_PHASE" == channel ]]; then
+    LEAD_NOT_READY_REASON=" reason=channel_not_live"
+  fi
+  log "ERROR: Lead did not become ready: phase=${LEAD_NOT_READY_PHASE}${LEAD_NOT_READY_REASON} leaseBudget=${LEAD_READY_TIMEOUT_SEC}s channelBudget=${LEAD_CHANNEL_TIMEOUT_SEC}s"
   if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
     if qa_slot_evidence_allows_release; then
       QA_LEAD_REGISTRY=""
@@ -2218,10 +2235,12 @@ EOF
       _xlead_manifest="$_xlead_carrier_home"
       confirm_dev_channels_prompt "$XLEAD_SOCKET" "$XAGENT"
       XLEASE_FILE="${LEASE_DIR}/.inbox-ready-${XAGENT}"
+      XLEAD_NOT_READY_PHASE=lease
       for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
         if [[ -f "$XLEASE_FILE" ]]; then
           XLEASE_PID=$(jq -r '.pid' "$XLEASE_FILE" 2>/dev/null || echo "")
           if [[ -n "$XLEASE_PID" ]] && kill -0 "$XLEASE_PID" 2>/dev/null; then
+            XLEAD_NOT_READY_PHASE=channel
             if qa_slot_channel_ready "$XAGENT" "$_xlead_label" "$XLEAD_LOG"; then
               XLEAD_READY=true
             fi
@@ -2230,8 +2249,15 @@ EOF
         fi
         sleep 2
       done
-      [[ "$XLEAD_READY" == "true" ]] \
-        || campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (log: ${XLEAD_LOG})"
+      if [[ "$XLEAD_READY" != "true" ]]; then
+        # FLY-2867: never abort anonymously — name the missing half.
+        XLEAD_NOT_READY_REASON=channel_not_live
+        if [[ "$XLEAD_NOT_READY_PHASE" == lease ]]; then
+          XLEAD_NOT_READY_REASON=$(qa_room_claude_lease_diagnosis "${XDIR}/lead-workspace" "$XLEASE_FILE" \
+            "${SLOT_DIR}/launchd/${XAGENT}/lead.plist")
+        fi
+        campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (phase=${XLEAD_NOT_READY_PHASE} reason=${XLEAD_NOT_READY_REASON}; log: ${XLEAD_LOG})"
+      fi
       log "Extra Lead ${XAGENT} ready (lease and channel live)"
     fi
   done < <(jq -c '.[]' <<<"$EXTRA_LEADS_JSON")

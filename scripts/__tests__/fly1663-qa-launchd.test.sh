@@ -1294,6 +1294,185 @@ else
   fail "Codex retired-home registry retry"
 fi
 
+# FLY-2867: a slot home running the managed Codex daemon has no
+# pid-update-loop and records its daemon as app-server-daemon/daemon.pid (no
+# app-server.pid). Retirement requires that no process references the home;
+# absence of an updater alone is neither success nor failure.
+make_managed_home() {  # <root> <name> [ran]
+  local root="$1" name="$2" ran="${3:-ran}" home="$1/cdxh/$2"
+  mkdir -p "$home/packages/standalone/releases/r1" \
+    "$home/app-server-daemon" "$home/app-server-control"
+  cat > "$home/packages/standalone/releases/r1/codex" <<CODEX
+#!/bin/bash
+printf '%s\\n' 'managed-$name-stopped' >> '$TMP/stop-matrix.calls'
+rm -f "\$CODEX_HOME/app-server-daemon/daemon.pid" "\$CODEX_HOME/app-server-control/app-server-control.sock"
+exit 0
+CODEX
+  chmod +x "$home/packages/standalone/releases/r1/codex"
+  ln -s releases/r1 "$home/packages/standalone/current"
+  printf '%s\n' '{"pid":6101,"processStartTime":"Wed Sep  3 12:00:04 2026"}' \
+    > "$home/app-server-daemon/daemon.pid"
+  : > "$home/app-server-daemon/daemon.pid.lock"
+  : > "$home/app-server-daemon/daemon-updater.pid.lock"
+  printf '%s\n' '{"tokens":{"refresh_token":"fixture-managed"}}' > "$home/auth.json"
+  if [[ "$ran" == ran ]]; then
+    : > "$home/app-server-control/app-server-control.sock"
+    : > "$home/.flywheel-qa-launch-started"
+    mkdir -p "$root/launchd/$name"
+    printf '%s\n' 4343 > "$root/launchd/$name/pid"
+  fi
+  qa_launchd_register "$root/launchd-leads.json" \
+    "com.flywheel.qa.lead.slot-${root##*-}.$name" "/tmp/$name.plist" '' codex-tui \
+    "$home" "$home/packages/standalone/current/codex" "$root/q/$name" \
+    "$root/launchd/$name/pid" "$codex_tmux_bin"
+}
+FLY2867_PS_ROOT=""
+FLY2867_PS_EXTRA=""
+FLY2867_UPDATER=""
+ps() {
+  case "$*" in
+    '-ww -axo pid=,command=')
+      printf ' 777 /usr/sbin/unrelated --flag\n'
+      # A sibling home whose name merely extends this one is not residue.
+      printf ' 778 %s/cdxh/managed0/packages/standalone/current/codex app-server\n' "$FLY2867_PS_ROOT"
+      [[ -n "$FLY2867_UPDATER" && -f "$FLY2867_UPDATER" ]] \
+        && printf ' 6464 %s app-server daemon pid-update-loop\n' "$FLY2867_UPDATER_BIN"
+      [[ -n "$FLY2867_PS_EXTRA" ]] && printf '%s\n' "$FLY2867_PS_EXTRA"
+      return 0
+      ;;
+    '-ww -o command= -p 6464')
+      [[ -f "$FLY2867_UPDATER" ]] && printf '%s app-server daemon pid-update-loop\n' "$FLY2867_UPDATER_BIN"
+      ;;
+    'eww -p 6464 -o command=')
+      [[ -f "$FLY2867_UPDATER" ]] \
+        && printf '%s app-server daemon pid-update-loop CODEX_HOME=%s\n' \
+          "$FLY2867_UPDATER_BIN" "$FLY2867_UPDATER_HOME"
+      ;;
+    '-o stat= -p 6464') [[ -f "$FLY2867_UPDATER" ]] && printf 'S\n' ;;
+    '-o lstart= -p 6464') [[ -f "$FLY2867_UPDATER" ]] && printf 'Wed Sep  3 12:00:05 2026\n' ;;
+    *) return 1 ;;
+  esac
+}
+kill() {
+  case "$*" in
+    '-TERM 6464'|'-TERM -- 6464') rm -f "$FLY2867_UPDATER"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+managed_root="/tmp/flywheel-test-slot-$((984000 + $$))"
+make_managed_home "$managed_root" managed
+FLY2867_PS_ROOT="$managed_root"
+if qa_launchd_stop_registry "$managed_root/launchd-leads.json" \
+    >/dev/null 2>"$TMP/stop-managed.err" \
+    && [[ "$(jq -c . "$managed_root/launchd-leads.json")" == '[]' \
+      && ! -e "$managed_root/cdxh/managed" ]] \
+    && grep -Fxq managed-managed-stopped "$TMP/stop-matrix.calls" \
+    && [[ ! -s "$TMP/stop-managed.err" ]]; then
+  pass "Codex registry converges a managed-daemon home that ran without any updater"
+else
+  fail "Codex managed-daemon home without updater did not converge" \
+    "$(tr '\n' ';' < "$TMP/stop-managed.err")"
+fi
+
+residue_root="/tmp/flywheel-test-slot-$((985000 + $$))"
+make_managed_home "$residue_root" residue
+FLY2867_PS_ROOT="$residue_root"
+# An updater whose argv drifted off the exact suffix still references the
+# home: the exact matcher cannot stop it, so the home must not be retired.
+FLY2867_PS_EXTRA=" 779 $residue_root/cdxh/residue/packages/app-server-daemon/releases/r/bin/codex app-server daemon pid-update-loop --restore-release"
+if ! qa_launchd_stop_registry "$residue_root/launchd-leads.json" \
+    >/dev/null 2>"$TMP/stop-residue.err" \
+    && grep -Fq 'carrier=codex-tui step=home-residue updater=not-found residue=1 pids=779' "$TMP/stop-residue.err" \
+    && [[ -f "$residue_root/cdxh/residue/auth.json" ]] \
+    && [[ "$(jq -r 'length' "$residue_root/launchd-leads.json")" == 1 ]]; then
+  pass "Codex registry keeps a home fail-closed while any process still references it"
+else
+  fail "Codex residue after a missing updater was treated as convergence" \
+    "$(tr '\n' ';' < "$TMP/stop-residue.err")"
+fi
+
+found_root="/tmp/flywheel-test-slot-$((986000 + $$))"
+make_managed_home "$found_root" found
+FLY2867_PS_ROOT="$found_root"
+FLY2867_UPDATER="$TMP/fly2867-updater.alive"
+FLY2867_UPDATER_BIN="$found_root/cdxh/found/packages/standalone/current/codex"
+FLY2867_UPDATER_HOME="$found_root/cdxh/found"
+: > "$FLY2867_UPDATER"
+# The updater is found and stopped, but the managed daemon still runs.
+FLY2867_PS_EXTRA=" 780 /private$found_root/cdxh/found/packages/app-server-daemon/releases/r/bin/codex app-server --remote-control --listen unix:// --managed-daemon"
+if ! qa_launchd_stop_registry "$found_root/launchd-leads.json" \
+    >/dev/null 2>"$TMP/stop-found.err" \
+    && [[ ! -e "$FLY2867_UPDATER" ]] \
+    && grep -Fq 'carrier=codex-tui step=home-residue updater=stopped residue=1' "$TMP/stop-found.err" \
+    && [[ -f "$found_root/cdxh/found/auth.json" ]]; then
+  pass "Codex registry does not retire a home after stopping its updater while the daemon lives"
+else
+  fail "Codex home retired under a live managed daemon after its updater stopped" \
+    "$(tr '\n' ';' < "$TMP/stop-found.err")"
+fi
+FLY2867_UPDATER=""
+
+orphan_root="/tmp/flywheel-test-slot-$((989000 + $$))"
+make_managed_home "$orphan_root" orphan
+FLY2867_PS_ROOT="$orphan_root"
+# The runtime crashed before killing its window, so the TUI client survives
+# the daemon. This stop never signals it: the home and lock stay for the
+# operator instead of deleting the link under a live Codex client.
+FLY2867_PS_EXTRA=" 782 $orphan_root/cdxh/orphan/packages/standalone/current/codex resume --remote unix://$orphan_root/cdxh/orphan/app-server-control/app-server-control.sock -C $orphan_root/lead-workspace"
+if ! qa_launchd_stop_registry "$orphan_root/launchd-leads.json" \
+    >/dev/null 2>"$TMP/stop-orphan.err" \
+    && grep -Fq 'carrier=codex-tui step=home-residue updater=not-found residue=1 pids=782' "$TMP/stop-orphan.err" \
+    && [[ -f "$orphan_root/cdxh/orphan/auth.json" ]]; then
+  pass "Codex registry keeps a home whose TUI client outlived a crashed runtime"
+else
+  fail "Codex home retired under an orphaned TUI client" \
+    "$(tr '\n' ';' < "$TMP/stop-orphan.err")"
+fi
+
+evidence_root="/tmp/flywheel-test-slot-$((987000 + $$))"
+make_managed_home "$evidence_root" evidence not-ran
+FLY2867_PS_ROOT="$evidence_root"
+# No launch marker, runtime pid, or socket: only the managed daemon.pid says
+# the home ran. The census must still run and see the live daemon.
+FLY2867_PS_EXTRA=" 781 $evidence_root/cdxh/evidence/packages/app-server-daemon/releases/r/bin/codex app-server --managed-daemon"
+if ! qa_launchd_stop_registry "$evidence_root/launchd-leads.json" \
+    >/dev/null 2>"$TMP/stop-evidence.err" \
+    && grep -Fq 'carrier=codex-tui step=home-residue updater=not-found residue=1' "$TMP/stop-evidence.err" \
+    && [[ -f "$evidence_root/cdxh/evidence/auth.json" ]]; then
+  pass "Codex registry treats the managed daemon.pid as evidence that the home ran"
+else
+  fail "Codex managed daemon.pid was not treated as run evidence" \
+    "$(tr '\n' ';' < "$TMP/stop-evidence.err")"
+fi
+unset -f ps kill
+FLY2867_PS_ROOT=""
+FLY2867_PS_EXTRA=""
+
+census_home="/tmp/flywheel-test-slot-$((988000 + $$))/cdxh/qa-lead"
+census_out=$(ps() {
+  case "$*" in
+    '-ww -axo pid=,command=')
+      printf ' 801 /private%s/packages/app-server-daemon/releases/r/bin/codex app-server --managed-daemon\n' "$census_home"
+      printf ' 802 codex resume --remote unix://%s/app-server-control/app-server-control.sock\n' "$census_home"
+      printf ' 803 env CODEX_HOME=%s codex exec\n' "$census_home"
+      printf ' 808 codex app-server -c sandbox_workspace_write.writable_roots=[%s]\n' "$census_home"
+      printf ' 809 helper %s,/tmp/other\n' "$census_home"
+      printf ' 804 %s0/packages/standalone/current/codex app-server\n' "$census_home"
+      printf ' 805 %s-b/packages/standalone/current/codex app-server\n' "$census_home"
+      printf ' 806 %s.bak/auth.json\n' "$census_home"
+      printf ' 807 /usr/bin/true\n'
+      ;;
+    *) return 1 ;;
+  esac
+}; qa_launchd_codex_home_residue_pids "$census_home")
+census_rc=$?
+if [[ "$census_rc" == 0 && "$census_out" == $'801\n802\n803\n808\n809' ]]; then
+  pass "Codex home residue census binds the exact home and its /private/tmp alias"
+else
+  fail "Codex home residue census boundary" "rc=$census_rc out=[$census_out]"
+fi
+
 saved_qa_tmux="$FLYWHEEL_QA_TMUX"
 absent_tmux_root="/tmp/flywheel-test-slot-$((980000 + $$))"
 absent_tmux_socket="$absent_tmux_root/tmux-$(id -u)/default"
@@ -1458,7 +1637,8 @@ fi
 
 unset -f sleep
 rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root" \
-  "$stop_unstarted_root" "$stop_retired_root"
+  "$stop_unstarted_root" "$stop_retired_root" "$managed_root" "$residue_root" \
+  "$found_root" "$evidence_root" "$orphan_root"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

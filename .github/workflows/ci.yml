@@ -1407,6 +1407,7 @@ jobs:
           bash scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh
           bash scripts/__tests__/fly1663-bridge-launchd.test.sh
           bash scripts/__tests__/fly1663-qa-launchd.test.sh
+          bash scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh
           node --test scripts/__tests__/qa-lead-diagnostics.test.mjs
           bash scripts/__tests__/qa-lead-artifact-fixtures.test.sh
           bash scripts/__tests__/fly1663-qa-launchd-mutants.test.sh

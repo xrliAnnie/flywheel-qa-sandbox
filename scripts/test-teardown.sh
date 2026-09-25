@@ -1248,6 +1248,29 @@ teardown_slot() {
     log "WARN: slot ${SLOT} isolation evidence archive incomplete; continuing teardown"
   fi
 
+  # ── Step 6b (FLY-2867): Release this slot's voice-room leases ──
+  # A room torn down without `fly2655-voice-room.mjs stop` left its
+  # /tmp/flywheel-voice-room-*.lock behind and blocked every other slot from
+  # that voice channel. A lease whose recorded voice daemon still runs is kept
+  # and reported; lease problems never block the slot teardown itself.
+  # The CLI only runs its main() when argv[1] is its real path, so resolve
+  # symlinked checkouts (e.g. under /tmp -> /private/tmp) first.
+  local VOICE_ROOM_SCRIPT="" VOICE_LEASES=""
+  if [[ -f "${TEARDOWN_SCRIPT_DIR}/qa/fly2655-voice-room.mjs" ]]; then
+    VOICE_ROOM_SCRIPT="$(cd "${TEARDOWN_SCRIPT_DIR}/qa" && pwd -P)/fly2655-voice-room.mjs"
+  fi
+  if [[ -n "$VOICE_ROOM_SCRIPT" ]]; then
+    if VOICE_LEASES=$("${FLYWHEEL_QA_NODE:-node}" "$VOICE_ROOM_SCRIPT" release-slot-leases \
+        --slot-dir "/tmp/flywheel-test-slot-${SLOT}" 2>&1) \
+        && [[ "$VOICE_LEASES" == '{"released":['* ]]; then
+      if [[ "$VOICE_LEASES" != '{"released":[],"retained":[]}' ]]; then
+        log "voice-room leases for slot ${SLOT}: ${VOICE_LEASES}"
+      fi
+    else
+      log "WARN: voice-room lease release failed for slot ${SLOT}: ${VOICE_LEASES:-no output}"
+    fi
+  fi
+
   # ── Step 7: Clean temp files + CommDB ─────────────────
   local COMMDB_DIR="${SLOT_DIR}/state/comm/${PROJECT_NAME}"
   if [[ -d "$COMMDB_DIR" ]]; then

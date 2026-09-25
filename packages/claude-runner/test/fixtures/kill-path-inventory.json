@@ -2316,9 +2316,45 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(daemon.pid, \"SIGTERM\");#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(daemon.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(daemon.pid, \"SIGTERM\");#2",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(daemon.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly2829-node-registry.test.sh:if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi#1",
 		"path": "scripts/__tests__/fly2829-node-registry.test.sh",
 		"code": "if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:[[ \"$lease_pid\" == \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "[[ \"$lease_pid\" == \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:kill -TERM \"$l2_live\" 2>/dev/null; wait \"$l2_live\" 2>/dev/null#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "kill -TERM \"$l2_live\" 2>/dev/null; wait \"$l2_live\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:kill -TERM \"$pid\" 2>/dev/null#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null",
 		"classification": "qa-only"
 	},
 	{
@@ -3843,6 +3879,12 @@
 		"key": "scripts/lib/qa-report-host-bridge-wrapper.sh:kill -0 \"$stub\" 2>/dev/null || break#1",
 		"path": "scripts/lib/qa-report-host-bridge-wrapper.sh",
 		"code": "kill -0 \"$stub\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-room.sh:if [[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/qa-room.sh",
+		"code": "if [[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null; then",
 		"classification": "qa-only"
 	},
 	{
