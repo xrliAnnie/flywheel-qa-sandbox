@@ -302,6 +302,12 @@ describe("FLY-2883 lead interrupt store", () => {
 		expect(store.leadInterrupts.get(row.interruptId)?.disposition).toBe(
 			"steered",
 		);
+		expect(
+			store.leadInterrupts.listAudit(row.interruptId).at(-1),
+		).toMatchObject({
+			event: "mailbox_only",
+			detail: "disposition_conflict:steered:lead_idle",
+		});
 	});
 
 	it("moves queued -> delivered when a disposition is recorded", () => {

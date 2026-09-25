@@ -52,6 +52,7 @@ import {
 import type { DeliverySecretProvider } from "./lead-event-delivery.js";
 import { enqueueLeadEvent as enqueueEvent } from "./lead-event-queue.js";
 import { LeadInboxLoop } from "./lead-inbox-loop.js";
+import { createLeadInterruptHooks } from "./lead-interrupt-delivery.js";
 import {
 	type LeadLeaseReader,
 	readLeadRecipientState,
@@ -348,11 +349,25 @@ export class LeadInboxRuntime {
 						queue,
 						secretProvider,
 					});
+					const leadBackend = effectiveLeadBackend(
+						lead.backend,
+						process.env.FLYWHEEL_LEAD_BACKEND,
+					).backend;
 					const loop = new LeadInboxLoop({
 						queue,
 						leadId: lead.agentId,
 						ownerEpoch: this.ownerEpoch,
 						adapter: adapterForLead(project, lead),
+						// FLY-2883: controlled interrupt letters. The Codex steer and the
+						// Claude pane nudge plug in here; until then both fall back to
+						// ordinary mail (recorded as mailbox_only).
+						interruptHooks: createLeadInterruptHooks({
+							interrupts: () => opts.store.leadInterrupts,
+							projectName: project.projectName,
+							leadId: lead.agentId,
+							backend: leadBackend,
+							now: () => new Date().toISOString(),
+						}),
 						queueConfig: resolveMailboxQueueConfig,
 						recipientState: () =>
 							readLeadRecipientState({
@@ -361,10 +376,7 @@ export class LeadInboxRuntime {
 								processTupleState: this.processLeadTupleState,
 							}),
 						ackInstruction:
-							effectiveLeadBackend(
-								lead.backend,
-								process.env.FLYWHEEL_LEAD_BACKEND,
-							).backend === "codex-app-server"
+							leadBackend === "codex-app-server"
 								? "lead_actions.ack_batch"
 								: "flywheel_inbox_ack_batch",
 						hasLiveSession: () =>

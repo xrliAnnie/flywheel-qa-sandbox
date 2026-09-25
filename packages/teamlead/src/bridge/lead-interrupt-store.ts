@@ -420,9 +420,15 @@ export class LeadInterruptStore {
 			const row = this.get(input.interruptId);
 			if (!row) return "invalid_state" as const;
 			if (row.disposition !== null) {
-				return row.disposition === input.disposition
-					? ("replayed" as const)
-					: ("conflict" as const);
+				if (row.disposition === input.disposition) return "replayed" as const;
+				// Fail closed: keep the first disposition, but leave a trail.
+				this.insertAuditFor(
+					row,
+					input.event,
+					`disposition_conflict:${row.disposition}${input.reason ? `:${input.reason}` : ""}`,
+					input.now,
+				);
+				return "conflict" as const;
 			}
 			if (!["queued", "delivered", "replied"].includes(row.state)) {
 				return "invalid_state" as const;
