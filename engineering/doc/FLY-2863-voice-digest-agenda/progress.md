@@ -1,14 +1,14 @@
 ---
 issue: FLY-2863
 phase: implement
-phaseCursor: 1/4
-updated: 2026-09-25T11:29:38.102Z
-nextStep: "B5 rework: red regression test (main 500 + threads) → LRU source
-  rotation fix → targeted tests → review → push → complete"
+phaseCursor: 3/4
+updated: 2026-09-25T11:37:59.165Z
+nextStep: milestone (literal last) → push → stage pr_created → Codex code review
+  → await-codex-gate code → inbox check → complete needs_review --pr 1314
 chunks: []
 pointers: {}
 ---
 
 # FLY-2863 progress
-**phase**: implement (1/4)
-**next**: B5 rework: red regression test (main 500 + threads) → LRU source rotation fix → targeted tests → review → push → complete
+**phase**: implement (3/4)
+**next**: milestone (literal last) → push → stage pr_created → Codex code review → await-codex-gate code → inbox check → complete needs_review --pr 1314
