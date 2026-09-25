@@ -1,0 +1,1 @@
+{"date":"2026-09-25","binary":"codex-cli 0.156.1","scenario":"parent node SIGKILL after initialize response","result":"app-server child exited within 1s (kill -0 fails at first 1s poll)"}
