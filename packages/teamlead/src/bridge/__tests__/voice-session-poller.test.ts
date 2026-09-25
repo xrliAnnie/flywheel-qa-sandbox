@@ -192,3 +192,123 @@ it("never reads the Codex transcript mirror of the founder's own words back as a
 		store.listVoiceOutbound(SESSION_ID, leaseToken, T0).map(({ text }) => text),
 	).toEqual(["2799 目前还是 In Progress。"]);
 });
+
+describe("voice transcript mirrors are excluded by source", () => {
+	function liveWithUtterance() {
+		const leaseToken = claim().leaseToken;
+		for (const state of ["warming", "live"] as const) {
+			store.setVoiceSessionState({
+				sessionId: SESSION_ID,
+				leaseToken,
+				state,
+				now: T0,
+			});
+		}
+		store.recordVoiceUtterance({
+			sessionId: SESSION_ID,
+			leaseToken,
+			transcriptId: "transcript-mirrored",
+			utteranceId: "utterance-mirrored",
+			sessionGeneration: 1,
+			sequence: 1,
+			source: "room_audio",
+			role: "user",
+			text: "是谁手上有什么事情呢?",
+			final: true,
+			attribution: { kind: "known", speakerUserId: "founder" },
+			captureDigest: "c".repeat(64),
+			now: T0,
+		});
+		return leaseToken;
+	}
+
+	function page(leaseToken: string, id: string, content: string) {
+		return recordVoiceOutboundDiscordPage({
+			store,
+			sessionId: SESSION_ID,
+			leaseToken,
+			channelId: CHANNEL,
+			leadBotUserId: LEAD_BOT,
+			rootMessageId: ROOT,
+			now: T0,
+			messages: [{ id, author: { id: LEAD_BOT }, content, timestamp: T0 }],
+		});
+	}
+
+	it("skips a thread message the voice side registered as its own mirror, whatever its text", () => {
+		// FLY-2799 qa6 (Lead 353a5633): the exclusion must not depend on the
+		// mirror's emoji prefix staying in sync with the poller.
+		const leaseToken = liveWithUtterance();
+		expect(
+			store.recordVoiceUtteranceMirror({
+				sessionId: SESSION_ID,
+				leaseToken,
+				transcriptId: "transcript-mirrored",
+				messageId: "100000000000000041",
+				now: T0,
+			}),
+		).toBe("recorded");
+		expect(
+			page(leaseToken, "100000000000000041", "是谁手上有什么事情呢?"),
+		).toBe(true);
+		expect(page(leaseToken, "100000000000000042", "这是 Lead 的回复")).toBe(
+			true,
+		);
+		expect(
+			store
+				.listVoiceOutbound(SESSION_ID, leaseToken, T0)
+				.map(({ text }) => text),
+		).toEqual(["这是 Lead 的回复"]);
+	});
+
+	it("withdraws the mirror if the poller queued it before the voice side registered it", () => {
+		const leaseToken = liveWithUtterance();
+		expect(
+			page(leaseToken, "100000000000000043", "是谁手上有什么事情呢?"),
+		).toBe(true);
+		expect(store.listVoiceOutbound(SESSION_ID, leaseToken, T0)).toHaveLength(1);
+		expect(
+			store.recordVoiceUtteranceMirror({
+				sessionId: SESSION_ID,
+				leaseToken,
+				transcriptId: "transcript-mirrored",
+				messageId: "100000000000000043",
+				now: T0,
+			}),
+		).toBe("recorded");
+		expect(store.listVoiceOutbound(SESSION_ID, leaseToken, T0)).toEqual([]);
+		// Replays are idempotent; a second, different id for one line is refused.
+		const again = {
+			sessionId: SESSION_ID,
+			leaseToken,
+			transcriptId: "transcript-mirrored",
+			now: T0,
+		};
+		expect(
+			store.recordVoiceUtteranceMirror({
+				...again,
+				messageId: "100000000000000043",
+			}),
+		).toBe("replayed");
+		expect(
+			store.recordVoiceUtteranceMirror({
+				...again,
+				messageId: "100000000000000044",
+			}),
+		).toBe("conflict");
+		expect(
+			store.recordVoiceUtteranceMirror({
+				...again,
+				transcriptId: "transcript-unknown",
+				messageId: "100000000000000045",
+			}),
+		).toBe("not_found");
+		expect(
+			store.recordVoiceUtteranceMirror({
+				...again,
+				leaseToken: "wrong-lease",
+				messageId: "100000000000000043",
+			}),
+		).toBe("lease_conflict");
+	});
+});

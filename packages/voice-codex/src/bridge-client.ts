@@ -553,6 +553,29 @@ export class BridgeVoiceClient {
 	}
 
 	/**
+	 * FLY-2799 qa6: tell the Bridge which Discord message is this line's visible
+	 * transcript, so its outbound poller never reads the line back as a reply.
+	 */
+	async recordUtteranceMirror(
+		sessionId: string,
+		leaseToken: string,
+		lease: VoiceLease,
+		input: { transcriptId: string; messageId: string },
+	): Promise<{ status: "recorded" | "replayed" }> {
+		lease.assert();
+		return this.request(
+			`/api/voice/sessions/${encodeURIComponent(sessionId)}/utterance-mirrors`,
+			{
+				operation: "utterance",
+				routeTemplate: "/api/voice/sessions/:sessionId/utterance-mirrors",
+				method: "POST",
+				leaseToken,
+				body: input,
+			},
+		);
+	}
+
+	/**
 	 * Explicit trusted-mode seam. The client never classifies transcripts or
 	 * calls this automatically; FLY-2796/2797 own intent selection and bindings.
 	 */

@@ -6402,7 +6402,11 @@ export class StateStore {
 				this.db.run(
 					`INSERT OR IGNORE INTO voice_outbound
 					 (session_id, message_id, channel_id, author_id, text, observed_at)
-					 VALUES (?, ?, ?, ?, ?, ?)`,
+					 SELECT ?, ?, ?, ?, ?, ?
+					 WHERE NOT EXISTS (
+					   SELECT 1 FROM voice_utterances
+					   WHERE session_id = ? AND mirror_message_id = ?
+					 )`,
 					[
 						input.sessionId,
 						message.messageId,
@@ -6410,6 +6414,8 @@ export class StateStore {
 						message.authorId,
 						message.text,
 						message.observedAt,
+						input.sessionId,
+						message.messageId,
 					],
 				);
 			}
@@ -6435,6 +6441,60 @@ export class StateStore {
 		});
 		if (changed) this.save();
 		return changed;
+	}
+
+	/**
+	 * FLY-2799 qa6: the voice side registers the Discord message it posted as a
+	 * line's visible transcript. The poller then skips that message by id; if it
+	 * already queued it (the page landed before this call), the queued row is
+	 * withdrawn. Claimed rows are left alone: they are already being spoken.
+	 */
+	recordVoiceUtteranceMirror(input: {
+		sessionId: string;
+		leaseToken: string;
+		transcriptId: string;
+		messageId: string;
+		now: string;
+	}): "recorded" | "replayed" | "conflict" | "not_found" | "lease_conflict" {
+		let result:
+			| "recorded"
+			| "replayed"
+			| "conflict"
+			| "not_found"
+			| "lease_conflict" = "lease_conflict";
+		this.db.transaction(() => {
+			if (
+				!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)
+			)
+				return;
+			const row = this.workflowSelectAll(
+				`SELECT mirror_message_id FROM voice_utterances
+				 WHERE session_id = ? AND transcript_id = ?`,
+				[input.sessionId, input.transcriptId],
+			)[0] as { mirror_message_id: string | null } | undefined;
+			if (!row) {
+				result = "not_found";
+				return;
+			}
+			if (row.mirror_message_id !== null) {
+				result =
+					row.mirror_message_id === input.messageId ? "replayed" : "conflict";
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_utterances SET mirror_message_id = ?
+				 WHERE session_id = ? AND transcript_id = ?`,
+				[input.messageId, input.sessionId, input.transcriptId],
+			);
+			this.db.run(
+				`DELETE FROM voice_outbound
+				 WHERE session_id = ? AND message_id = ? AND phase = 'queued'`,
+				[input.sessionId, input.messageId],
+			);
+			result = "recorded";
+		});
+		if (result === "recorded") this.save();
+		return result;
 	}
 
 	listVoiceOutbound(
@@ -11104,6 +11164,10 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS voice_utterances_receipt ON voice_utterances(receipt_id)",
 		);
+		// FLY-2799 qa6: the Discord message the voice side posted as this line's
+		// visible transcript. The outbound poller skips it by id, so the founder's
+		// own words are never read back as a Lead reply.
+		this.addColumnIfMissing("voice_utterances", "mirror_message_id", "TEXT");
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS voice_handoffs (
 				handoff_id TEXT PRIMARY KEY,

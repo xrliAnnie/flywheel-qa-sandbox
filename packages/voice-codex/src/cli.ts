@@ -390,6 +390,14 @@ export async function main(): Promise<void> {
 					context.lease.assert();
 					return mirror.post(context.projection.threadId, text, nonce);
 				},
+				recordMirror: async (input) => {
+					await bridge.recordUtteranceMirror(
+						context.sessionId,
+						context.leaseToken,
+						context.lease,
+						input,
+					);
+				},
 				evidence: (record) =>
 					evidence.appendBuffered({
 						ts: new Date().toISOString(),

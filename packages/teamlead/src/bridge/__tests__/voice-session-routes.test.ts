@@ -683,3 +683,106 @@ describe("voice session start meets an existing booking (FLY-2701)", () => {
 		expect(store.getVoiceSession(SESSION_ID)).toBeUndefined();
 	});
 });
+
+describe("voice transcript mirror receipts (FLY-2799 qa6)", () => {
+	it("records the Discord id of a mirrored line so the poller never reads it back", async () => {
+		const { base } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claimed = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		const lease = (claimed.body as { leaseToken: string }).leaseToken;
+		for (const state of ["warming", "live"]) {
+			await call(base, `/${SESSION_ID}/state`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { state },
+			});
+		}
+		store.recordVoiceUtterance({
+			sessionId: SESSION_ID,
+			leaseToken: lease,
+			transcriptId: `${SESSION_ID}:1:item-a:1`,
+			utteranceId: "utterance-a",
+			sessionGeneration: 1,
+			sequence: 1,
+			source: "room_audio",
+			role: "user",
+			text: "你是谁",
+			final: true,
+			attribution: { kind: "known", speakerUserId: "founder" },
+			captureDigest: "c".repeat(64),
+			now: NOW,
+		});
+		const body = {
+			transcriptId: `${SESSION_ID}:1:item-a:1`,
+			messageId: "100000000000000050",
+		};
+		expect(
+			await call(base, `/${SESSION_ID}/utterance-mirrors`, {
+				method: "POST",
+				token: INGEST,
+				lease,
+				body,
+			}),
+		).toMatchObject({ status: 403 });
+		expect(
+			await call(base, `/${SESSION_ID}/utterance-mirrors`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body,
+			}),
+		).toEqual({ status: 201, body: { status: "recorded" } });
+		expect(
+			await call(base, `/${SESSION_ID}/utterance-mirrors`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body,
+			}),
+		).toEqual({ status: 200, body: { status: "replayed" } });
+		expect(
+			await call(base, `/${SESSION_ID}/utterance-mirrors`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { ...body, messageId: "100000000000000051" },
+			}),
+		).toMatchObject({ status: 409, body: { error: "voice_mirror_conflict" } });
+		expect(
+			await call(base, `/${SESSION_ID}/utterance-mirrors`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { ...body, transcriptId: "missing" },
+			}),
+		).toMatchObject({
+			status: 404,
+			body: { error: "voice_transcript_not_found" },
+		});
+		expect(
+			await call(base, `/${SESSION_ID}/utterance-mirrors`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { ...body, messageId: "not-a-snowflake" },
+			}),
+		).toMatchObject({ status: 400, body: { error: "voice_mirror_invalid" } });
+		expect(
+			await call(base, `/${SESSION_ID}/utterance-mirrors`, {
+				method: "POST",
+				token: MASTER,
+				lease: "stale-lease",
+				body,
+			}),
+		).toMatchObject({ status: 409 });
+	});
+});

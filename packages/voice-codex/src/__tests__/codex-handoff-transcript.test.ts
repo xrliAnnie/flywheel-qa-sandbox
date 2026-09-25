@@ -144,4 +144,47 @@ describe("Codex voice handoff and visible transcript", () => {
 		);
 		expect(texts.every((text) => isVoiceMirrorText(text))).toBe(true);
 	});
+
+	it("registers each mirrored line's Discord id so the Bridge excludes it by source", async () => {
+		const mirror = vi
+			.fn()
+			.mockResolvedValueOnce({ messageId: "100000000000000061" })
+			.mockResolvedValueOnce({ messageId: "100000000000000062" });
+		const recordMirror = vi
+			.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("voice_transcript_not_found"));
+		const evidence = vi.fn();
+		const publisher = new CodexTranscriptPublisher({
+			sessionId: "session-a",
+			founderUserId: "founder",
+			displayName: "Raya",
+			mirror,
+			recordMirror,
+			evidence,
+		});
+		await publisher.publish(founderUtterance);
+		await publisher.publish({
+			...founderUtterance,
+			transcriptId: "transcript-not-durable",
+		});
+
+		expect(recordMirror.mock.calls).toEqual([
+			[{ transcriptId: "transcript-a", messageId: "100000000000000061" }],
+			[
+				{
+					transcriptId: "transcript-not-durable",
+					messageId: "100000000000000062",
+				},
+			],
+		]);
+		// A failed registration is recorded, not thrown: the line is already
+		// visible, and its mirror prefix still keeps the poller off it.
+		expect(evidence).toHaveBeenCalledWith({
+			kind: "codex_transcript_mirror_unregistered",
+			transcriptId: "transcript-not-durable",
+			messageId: "100000000000000062",
+			reason: "voice_transcript_not_found",
+		});
+	});
 });

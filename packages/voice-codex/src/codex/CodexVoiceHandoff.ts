@@ -74,6 +74,14 @@ export class CodexTranscriptPublisher {
 				text: string;
 				nonce: string;
 			}): Promise<{ messageId: string }>;
+			/**
+			 * Tells the Bridge which message is this line's mirror, so its outbound
+			 * poller excludes it by source, not only by the mark (FLY-2799 qa6).
+			 */
+			recordMirror?(input: {
+				transcriptId: string;
+				messageId: string;
+			}): Promise<void>;
 			evidence(record: Record<string, unknown>): void;
 		},
 	) {}
@@ -109,6 +117,20 @@ export class CodexTranscriptPublisher {
 			role: utterance.role,
 			messageId: mirrored.messageId,
 		});
+		try {
+			await this.options.recordMirror?.({
+				transcriptId: utterance.transcriptId,
+				messageId: mirrored.messageId,
+			});
+		} catch (error) {
+			// The line is already visible; its mark still keeps the poller off it.
+			this.options.evidence({
+				kind: "codex_transcript_mirror_unregistered",
+				transcriptId: utterance.transcriptId,
+				messageId: mirrored.messageId,
+				reason: error instanceof Error ? error.message : "unknown_error",
+			});
+		}
 	}
 }
 

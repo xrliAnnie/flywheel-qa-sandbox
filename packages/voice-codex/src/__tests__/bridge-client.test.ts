@@ -143,6 +143,34 @@ describe("BridgeVoiceClient safe request diagnostics", () => {
 		);
 	});
 
+	it("reports a mirrored line's Discord id through the leased master route", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(response('{"status":"recorded"}', 201));
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+		expect(
+			await bridge.recordUtteranceMirror("session-a", "lease-a", lease, {
+				transcriptId: "t-1",
+				messageId: "100000000000000050",
+			}),
+		).toEqual({ status: "recorded" });
+		const [url, request] = fetchImpl.mock.calls[0]!;
+		expect(String(url)).toBe(
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/utterance-mirrors`,
+		);
+		expect(request?.method).toBe("POST");
+		expect(request?.headers).toMatchObject({
+			Authorization: "Bearer master-secret-token",
+			"X-Voice-Lease": "lease-a",
+		});
+		expect(JSON.parse(String(request?.body))).toEqual({
+			transcriptId: "t-1",
+			messageId: "100000000000000050",
+		});
+	});
+
 	it("exposes an explicit handoffToLead seam without forwarding transcripts by itself", async () => {
 		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
 			response(

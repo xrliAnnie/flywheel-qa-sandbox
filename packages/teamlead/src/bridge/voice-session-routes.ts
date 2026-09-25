@@ -429,6 +429,46 @@ export function createVoiceSessionRouter(
 		}
 	});
 
+	// FLY-2799 qa6: the voice side reports the Discord message it posted as a
+	// line's visible transcript, so the outbound poller excludes it by source
+	// rather than by its emoji prefix alone.
+	router.post("/:sessionId/utterance-mirrors", masterOnly(), (req, res) => {
+		const transcriptId = req.body?.transcriptId;
+		const messageId = req.body?.messageId;
+		if (
+			typeof transcriptId !== "string" ||
+			transcriptId.length === 0 ||
+			transcriptId.length > 512 ||
+			typeof messageId !== "string" ||
+			!/^\d{1,32}$/.test(messageId)
+		) {
+			res.status(400).json({ error: "voice_mirror_invalid" });
+			return;
+		}
+		const result = deps.store.recordVoiceUtteranceMirror({
+			sessionId: param(req.params.sessionId),
+			leaseToken: lease(req),
+			transcriptId,
+			messageId,
+			now: now(),
+		});
+		if (result === "recorded" || result === "replayed") {
+			res.status(result === "recorded" ? 201 : 200).json({ status: result });
+			return;
+		}
+		if (result === "not_found") {
+			res.status(404).json({ error: "voice_transcript_not_found" });
+			return;
+		}
+		res
+			.status(409)
+			.json(
+				result === "conflict"
+					? { error: "voice_mirror_conflict" }
+					: LEASE_CONFLICT,
+			);
+	});
+
 	router.post("/:sessionId/handoffs", masterOnly(), async (req, res) => {
 		if (!deps.voiceHandoffs) {
 			res.status(503).json({
