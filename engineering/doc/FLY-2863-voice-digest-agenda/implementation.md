@@ -115,3 +115,20 @@ QA@2 确认 B1–B4 与报平安连说两次已翻转为通过，精确头全量
 仍然存在、本轮不改的设计性质（写给 QA 与 Lead）：回溯期间一个源的新消息要等它自己回溯完才读得到（回溯只向更早翻页）。轮转后，一个 P 页历史的源在 N 个同 token 源里大约需要 P × N × 5 秒完成回溯；slot 3 真机复验时主频道要等这段时间过去，新发的 Lead 消息才会进议程。
 
 本机只跑相关测试：`headphone-inbox` 17、`voice-agenda-store` 10、`voice-agenda-source` 14；teamlead `vitest related src/bridge/headphone-collector.ts` 105 个文件 1218 条通过；`flywheel-teamlead...` 构建通过；改动文件 biome 0 error。根 `pnpm lint` 在本 worktree 里被一个被忽略的嵌套 QA worktree（`worktrees/qa-room2/biome.json`，不在仓库内）挡住配置解析，未改动它，改为对改动文件直接跑 biome。导出与类型没有变化，不需要依赖方 typecheck。exact-head full CI 与 slot 3 真机复验交 QA@3。
+
+## 8. QA@3 返工：F1 回溯没有上限（QA 2822736a 在头 `3ca7bb0fe` 判 FAIL，2026-09-25）
+
+QA@3 确认 B5 已修好：精确头全量 CI 36131267039 17/17 绿；slot 3 真机上主频道在 8 个已完成 thread 旁 4 分 05 秒回溯完成，9 个源都拉到；3 条真 Lead 主频道消息 15–29 秒进议程，urgent 标记 12.7 秒生效。阻塞项 F1 按 Lead 裁定在本轮修：
+
+| 项 | 内容 |
+|---|---|
+| 现象 | 回溯只带 `before` 往前翻，直到某页不满 100 条才算完成，既没有页数上限也没有时间窗；回溯期间新消息进不来。第一次上线时主频道新消息的延迟约为「历史页数 × 源数 × 5 秒」，生产长频道会到几个小时 |
+| 修法（Lead 写死的范围） | 回溯在以下三者**先到者**结束：①某页不满 100 条（原规则）；②**时间窗**：该页最老一条早于 `now − 窗口`，窗口由 `FLYWHEEL_HEADPHONE_BOOTSTRAP_WINDOW_MS` 配置，默认 86400000（24 小时，与议程自己的 24 小时窗一致），Bridge 启动时校验必须是正整数，否则启动失败；③**硬页数上限**：默认 10 页（1000 条）。结束后游标跳到高水位、改用 `after` 读新消息（与原来完成回溯后的路径相同）。同 token 共享 5 秒节流不变 |
+| 持久化 | 回溯页数存在 `voice_headphone_source.bootstrap_pages`（增量迁移 `INTEGER NOT NULL DEFAULT 0 CHECK(>=0)`），Bridge 重启不清零；写入时不带该字段就保留原值。正在回溯中的旧行从 0 开始计，下一页多半就会碰到时间窗而结束 |
+| 回归 | `headphone-inbox.test.ts` 6 条新用例（真采集器 + 真 StateStore + 分页假 Discord）：①主频道 5000 条 + 8 个 thread，全部在窗内 → 第 10 页（上限）结束，1000 条进收件箱，之后新发的主频道消息**一轮轮转（9 tick）内**进收件箱；②同形状、消息间隔 5 分钟 → 默认 24 小时窗在第 3 页结束，新消息一轮内进收件箱；③配置 10 小时窗 → 第 2 页结束；④页数跨采集器重启保留（上限 3：先 2 页、重启后第 3 页结束）；⑤非正整数的窗口/上限在构造时被拒；⑥旧表迁移补列、旧行读出 0、写入不带该字段时保留原值。另有 config 解析 2 条（默认、覆盖、`0`/`1.5`/`24h`/空串被拒）。修复前 6 条采集器用例全红（120 tick 后主频道仍未完成回溯等），修复后全绿 |
+
+取舍（写给 Lead 与 QA）：碰到页数上限说明该频道 24 小时内超过 1000 条消息，此时窗口内更早的 Lead 消息不会进议程。回复水位只来自已读到的页，不会因截止而读错；截止只让更早的历史不进收件箱，不会让已有条目「消失」，议程的逐来源移除证明不受影响。
+
+不在本轮（写进 PR Follow-ups）：F2 轮转回访周期随源数线性增长（9 个源时 p50 55 秒、最大 80 秒），5 秒定时器可能早于 `nextPageAt` 触发而白等一轮；Lead 裁定不阻塞、不强求。
+
+本机只跑相关测试：`headphone-inbox` 23、`voice-session-config` 5；teamlead `vitest related`（collector、inbox、config.ts）580 个文件 8176 条，其中 6 个文件在全包并发下因环境失败（runner TMPDIR 过长导致 Unix socket `listen EINVAL`、5 秒超时），用短 TMPDIR 单独重跑 240/240 通过；config `vitest related truth.ts` 18 个文件 326 条；配置漂移守卫 150 条，负对照：去掉 `truth.ts` 的登记，`feature-flag drift guard` 两条失败；`flywheel-teamlead...` 构建通过，teamlead 与 config 的全部依赖方（13 个包）typecheck 通过；改动文件 biome 0 error（plugin.ts 两条既有 warning 与本改动无关）。
