@@ -29,3 +29,20 @@
 - 超过提前量的卡顿仍会断，但每次都落一条 `playback_underrun`（`queuedFrames`、
   `sincePreviousPumpMs`、`upstreamStarved`），下次能把听到的断口对到具体卡顿。
 - 音色（线性插值替代零阶保持）是推断，本回放不能证明，需要真人再听。
+
+## 重采样听感对照（Lead 353a5633：「改后要听感对照录音」）
+
+`node resample-ab.mjs <assistant.pcm> <outDir> 0 20` 把同一段真实引擎 B 输出（QA 台架
+`qa6-dd6be6bf7-bench/plainSole/assistant.pcm`，marin，24 kHz 单声道）的前 20 秒渲染两遍：
+`zoh.wav` 走旧的 voice-bridge 零阶保持，`linear.wav` 取真 `WaitingMouth` 实际写出的帧。
+两段录音在本机 `~/.flywheel/artifacts/FLY-2799-impl/qa6-resample-ab/`（各 3.8 MB，不入库），供真人 A/B 试听。
+
+客观指标（`resample-ab.json`，左声道功率谱；24 kHz 源在 12 kHz 以上没有内容，那里的能量全是上采样镜像）：
+
+| | 12 kHz 以上 | 16 kHz 以上 |
+|---|---|---|
+| 零阶保持（旧） | -22.2 dB | -24.2 dB |
+| 线性插值（新） | -29.5 dB | -34.3 dB |
+
+线性插值把镜像压低 7–10 dB，但没有消除。「音色奇怪」是否由此而来仍要靠真人试听确认；
+如果试听后仍觉得刺，下一步是带限 FIR 插值（可压到 -50 dB 以下），本轮不做。
