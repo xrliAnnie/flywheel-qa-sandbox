@@ -26,6 +26,13 @@ describe("StateStore voice session schema", () => {
 			.all()
 			.map((row) => (row as { name: string }).name);
 		expect(names).toEqual([
+			"voice_agenda_dispositions",
+			"voice_agenda_episodes",
+			"voice_agenda_items",
+			"voice_agenda_meta",
+			"voice_agenda_state",
+			"voice_agenda_turns",
+			"voice_agenda_urgent",
 			"voice_handoff_results",
 			"voice_handoffs",
 			"voice_headphone_ack",

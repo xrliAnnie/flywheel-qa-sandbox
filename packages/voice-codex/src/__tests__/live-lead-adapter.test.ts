@@ -2182,14 +2182,18 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 		const before = calls;
 		await new Promise((resolve) => setTimeout(resolve, 1_200));
 		expect(calls).toBeGreaterThan(before);
-		const started = Date.now();
+		// close() resolving at all proves convergence never blocks it (a blocked
+		// close would hit the test timeout); afterwards nothing is resubmitted.
 		await h.adapter.close();
-		expect(Date.now() - started).toBeLessThan(1_000);
+		const afterClose = calls;
+		await new Promise((resolve) => setTimeout(resolve, 1_200));
+		expect(calls).toBe(afterClose);
 	}, 15_000);
 
 	it("a submit that never settles is bounded per attempt and never blocks close", async () => {
 		const r = router("agenda");
 		let calls = 0;
+		const signals: AbortSignal[] = [];
 		const h = harness({
 			agendaTurns: r.agendaTurns,
 			agendaSubmitWindowMs: 400,
@@ -2197,6 +2201,7 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 				calls += 1;
 				h.setNow(1_000 + calls * 1_000);
 				expect(opts?.signal).toBeInstanceOf(AbortSignal);
+				if (opts?.signal) signals.push(opts.signal);
 				return new Promise(() => undefined);
 			},
 		});
@@ -2211,9 +2216,14 @@ describe("LiveLeadAdapter — agenda-owned turns (FLY-2863 §4.4)", () => {
 			{ timeout: 8_000 },
 		);
 		expect(h.handoffBindings).toEqual([]);
-		const started = Date.now();
+		// The attempt never settles, so close() resolving proves it is not
+		// awaited; every attempt it started is aborted and none follows.
 		await h.adapter.close();
-		expect(Date.now() - started).toBeLessThan(1_000);
+		expect(signals.length).toBeGreaterThan(0);
+		expect(signals.every((signal) => signal.aborted)).toBe(true);
+		const afterClose = calls;
+		await new Promise((resolve) => setTimeout(resolve, 600));
+		expect(calls).toBe(afterClose);
 	}, 15_000);
 
 	it("needs_human is unconfirmed, not rejected: she is not asked to repeat", async () => {

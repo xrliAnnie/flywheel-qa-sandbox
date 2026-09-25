@@ -737,6 +737,13 @@
 			"baseTable": "workflow_run_event",
 			"usage": "read",
 			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/voice-agenda-store.ts",
+			"relation": "chat_threads",
+			"baseTable": "chat_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
 		}
 	]
 }
