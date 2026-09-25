@@ -567,6 +567,7 @@ import {
 import { resolveFounderGateBotToken } from "./founder-gate-bot-token.js";
 import { isDiscordSnowflake } from "./founder-notify-utils.js";
 import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
+import { createLeadInterruptLeadRouter } from "./lead-interrupt-routes.js";
 import {
 	type FounderThreadIngressOwner,
 	type FounderThreadIngressRollout,
@@ -1835,6 +1836,8 @@ export interface BridgeAppOptions {
 	voiceScheduleRouter?: express.Router;
 	leadVoiceCapabilityRouter?: express.Router;
 	leadVoiceCapabilityReceiptRouter?: express.Router;
+	/** FLY-2883: Lead-side controlled-interrupt read + reply. */
+	leadInterruptLeadRouter?: express.Router;
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -6073,6 +6076,19 @@ export function createBridgeApp(
 			opts.leadVoiceCapabilityRouter,
 		);
 	}
+	if (opts?.leadInterruptLeadRouter) {
+		app.use(
+			"/api/lead-interrupts",
+			config.apiToken
+				? tokenAuthMiddleware(config.apiToken, undefined)
+				: (((_req, res) => {
+						res.status(503).json({
+							error: "lead interrupt API requires TEAMLEAD_API_TOKEN",
+						});
+					}) as express.RequestHandler),
+			opts.leadInterruptLeadRouter,
+		);
+	}
 	if (opts?.leadVoiceCapabilityReceiptRouter && config.apiToken) {
 		app.use(
 			"/api/lead-capabilities/voice-receipt",
@@ -9920,6 +9936,11 @@ export async function startBridge(
 			leadVoiceCapabilityRouter: voiceSessionServices.leadCapabilityRouter,
 			leadVoiceCapabilityReceiptRouter:
 				voiceSessionServices.leadCapabilityReceiptRouter,
+			leadInterruptLeadRouter: createLeadInterruptLeadRouter({
+				store,
+				mailboxForProject: (projectName) =>
+					leadInboxRuntime.leadInterruptMailbox(projectName),
+			}),
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},

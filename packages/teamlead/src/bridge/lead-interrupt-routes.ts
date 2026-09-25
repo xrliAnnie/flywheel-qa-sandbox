@@ -11,9 +11,14 @@
  * followed by a side effect.
  */
 
-import type { RequestHandler } from "express";
+import { type RequestHandler, Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import { parseChatDeliveryEnvelope } from "flywheel-comm/discord-chat-ingest";
+import {
+	authorizeLeadWrite,
+	forwardedLeadAuthorizationEnv,
+	type LeadWriteAuthorizationDeps,
+} from "flywheel-comm/lead-lease";
 import type {
 	EnqueueMailboxInput,
 	EnqueueMailboxResult,
@@ -28,6 +33,7 @@ import {
 	LEAD_INTERRUPT_BODY_MAX_CODE_POINTS,
 	LEAD_INTERRUPT_FROM_PREFIX,
 	LEAD_INTERRUPT_MESSAGE_TYPE,
+	LEAD_INTERRUPT_REPLY_MAX_CODE_POINTS,
 	LEAD_INTERRUPT_SOURCE_KIND,
 	type LeadInterruptBackend,
 	leadInterruptRequestDigest,
@@ -488,4 +494,196 @@ export function createLeadInterruptVoiceHandlers(
 	};
 
 	return { create, get };
+}
+
+/*
+ * Lead side (mounted under /api/lead-interrupts, master token + Lead write
+ * authorization rebuilt from the request body, same as founder-routing):
+ *   POST /pending/query           — the Lead reads its held/delivered letters
+ *   POST /:interruptId/reply      — the Lead answers by interrupt id
+ */
+
+export interface LeadInterruptAuthRequest {
+	leadId: string;
+	projectName: string;
+	identityDigest: string;
+	leaseClaim?: { leaseKey: string; generation: number };
+	carrierClaim?: string;
+}
+
+export interface LeadInterruptLeadDeps {
+	store: StateStore;
+	mailboxForProject: (projectName: string) => LeadInterruptMailbox | undefined;
+	/** Test seam; throws to deny. Production uses authorizeLeadWrite. */
+	authorizeLeadRequest?: (input: LeadInterruptAuthRequest) => void;
+	leadLeaseEnv?: NodeJS.ProcessEnv;
+	leadWriteAuthorizationDeps?: LeadWriteAuthorizationDeps;
+	now?: () => string;
+	logger?: { warn: (message: string) => void };
+}
+
+const leadIdentitySchema = {
+	project: z.string().min(1).max(64),
+	leadId: z.string().min(1).max(64),
+	identityDigest: z.string().min(1).max(256),
+	leaseClaim: z
+		.object({
+			leaseKey: z.string().min(1).max(256),
+			generation: z.number().int().positive(),
+		})
+		.strict()
+		.optional(),
+	carrierClaim: z.string().min(1).max(1024).optional(),
+};
+const pendingSchema = z.object(leadIdentitySchema).strict();
+const replySchema = z
+	.object({ ...leadIdentitySchema, text: z.string() })
+	.strict();
+
+function defaultAuthorize(
+	deps: LeadInterruptLeadDeps,
+	input: LeadInterruptAuthRequest,
+): void {
+	authorizeLeadWrite(
+		{
+			claimedLeadId: input.leadId,
+			env: forwardedLeadAuthorizationEnv(
+				{
+					claimedLeadId: input.leadId,
+					projectName: input.projectName,
+					identityDigest: input.identityDigest,
+					...(input.leaseClaim ? { leaseClaim: input.leaseClaim } : {}),
+					...(input.carrierClaim ? { carrierClaim: input.carrierClaim } : {}),
+				},
+				deps.leadLeaseEnv ?? process.env,
+			),
+		},
+		deps.leadWriteAuthorizationDeps,
+	);
+}
+
+export function createLeadInterruptLeadRouter(
+	deps: LeadInterruptLeadDeps,
+): Router {
+	const router = Router();
+	const now = deps.now ?? (() => new Date().toISOString());
+	const warn = (message: string) =>
+		(deps.logger ?? console).warn(`[lead-interrupt] ${message}`);
+	const authorized = (
+		data: z.infer<typeof pendingSchema>,
+		res: Parameters<RequestHandler>[1],
+	): boolean => {
+		const request: LeadInterruptAuthRequest = {
+			leadId: data.leadId,
+			projectName: data.project,
+			identityDigest: data.identityDigest,
+			...(data.leaseClaim ? { leaseClaim: data.leaseClaim } : {}),
+			...(data.carrierClaim ? { carrierClaim: data.carrierClaim } : {}),
+		};
+		try {
+			if (deps.authorizeLeadRequest) deps.authorizeLeadRequest(request);
+			else defaultAuthorize(deps, request);
+			return true;
+		} catch (error) {
+			warn(`Lead authorization denied: ${describe(error)}`);
+			res.status(403).json({ error: "lead_write_unauthorized" });
+			return false;
+		}
+	};
+
+	router.post("/pending/query", (req, res) => {
+		const parsed = pendingSchema.safeParse(req.body);
+		if (!parsed.success) {
+			res.status(400).json({ error: "invalid_lead_interrupt_request" });
+			return;
+		}
+		if (!authorized(parsed.data, res)) return;
+		try {
+			res.json({
+				interrupts: deps.store.leadInterrupts
+					.listPendingForLead(parsed.data.project, parsed.data.leadId)
+					.map((row) => ({
+						interruptId: row.interruptId,
+						founderMessageId: row.founderMessageId,
+						body: row.body,
+						createdAt: row.createdAt,
+						relayedBy: row.initiatorKind,
+						notFounderTyped: true,
+					})),
+			});
+		} catch (error) {
+			warn(`pending query failed: ${describe(error)}`);
+			res.status(503).json({ error: "lead_interrupt_unavailable" });
+		}
+	});
+
+	router.post("/:interruptId/reply", (req, res) => {
+		const parsed = replySchema.safeParse(req.body);
+		const text = parsed.success
+			? normalizeInterruptText(
+					parsed.data.text,
+					LEAD_INTERRUPT_REPLY_MAX_CODE_POINTS,
+				)
+			: undefined;
+		if (!parsed.success || text === undefined) {
+			res.status(400).json({ error: "invalid_lead_interrupt_request" });
+			return;
+		}
+		if (!authorized(parsed.data, res)) return;
+		const interruptId = param(req.params.interruptId);
+		try {
+			const row = deps.store.leadInterrupts.get(interruptId);
+			if (!row) {
+				res.status(404).json({ error: "lead_interrupt_not_found" });
+				return;
+			}
+			if (
+				row.targetLeadId !== parsed.data.leadId ||
+				row.targetProject !== parsed.data.project
+			) {
+				res.status(403).json({ error: "not_target_lead" });
+				return;
+			}
+			const at = now();
+			const outcome = deps.store.leadInterrupts.recordReply({
+				interruptId,
+				text,
+				replyDigest: sha256Hex(text),
+				now: at,
+			});
+			if (outcome === "conflict") {
+				res.status(409).json({ error: "already_replied" });
+				return;
+			}
+			if (outcome === "not_found") {
+				res.status(404).json({ error: "lead_interrupt_not_found" });
+				return;
+			}
+			if (outcome === "invalid_state") {
+				res.status(409).json({ error: "lead_interrupt_not_replyable" });
+				return;
+			}
+			// The reply is authoritative now. Consuming the letter is best-effort:
+			// the delivery loop acks a replied letter before it would deliver it.
+			try {
+				const mailbox = deps.mailboxForProject(row.targetProject);
+				if (!mailbox) throw new Error("mailbox_unavailable");
+				mailbox.ack(row.deliveryId, at);
+			} catch (error) {
+				warn(
+					`letter ack after reply failed for ${interruptId}: ${describe(error)}`,
+				);
+			}
+			res.json({
+				interruptId,
+				state: "replied",
+				replayed: outcome === "replayed",
+			});
+		} catch (error) {
+			warn(`reply failed for ${interruptId}: ${describe(error)}`);
+			res.status(503).json({ error: "lead_interrupt_unavailable" });
+		}
+	});
+
+	return router;
 }
