@@ -737,6 +737,13 @@
 			"baseTable": "workflow_run_event",
 			"usage": "read",
 			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-activity/turn-trigger-attribution.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
 		}
 	]
 }
