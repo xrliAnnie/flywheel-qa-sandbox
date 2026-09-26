@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, lstatSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { dirname, isAbsolute, normalize } from "node:path";
+import { dirname, isAbsolute, join, normalize } from "node:path";
 import {
 	leadOperationRequestBytes,
 	leadOperationServerSocketTimeoutMs,
@@ -11,6 +11,12 @@ export interface LeadCapabilitySocketOptions {
 	socketPath: string;
 	/** Only a trusted typed broker engine may be supplied here. */
 	dispatch(request: unknown): Promise<unknown>;
+}
+/** A Unix socket path above this does not bind reliably on macOS (sun_path 104). */
+export const LEAD_BROKER_SOCKET_MAX_BYTES = 100;
+/** Bytes of the socket a parent binds under this root: `<root>/run-XXXXXX/broker.sock`. */
+export function leadBrokerSocketBytes(activationRoot: string): number {
+	return Buffer.byteLength(join(activationRoot, "run-XXXXXX", "broker.sock"));
 }
 const rejection = (errorCode: string, status = "rejected") => ({
 	requestId: null,
@@ -29,7 +35,7 @@ export class LeadCapabilitySocket {
 		if (
 			!isAbsolute(socketPath) ||
 			normalize(socketPath) !== socketPath ||
-			Buffer.byteLength(socketPath) > 100
+			Buffer.byteLength(socketPath) > LEAD_BROKER_SOCKET_MAX_BYTES
 		)
 			throw new Error("invalid_broker_socket_path");
 		const directory = lstatSync(dirname(socketPath));

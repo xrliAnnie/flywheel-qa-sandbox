@@ -17,6 +17,10 @@ import type { VoiceBackgroundBrowserMode } from "../ProjectConfig.js";
 import { parseAndValidateProjects } from "../ProjectConfig.js";
 import { resolveLeadMenus } from "../workflow-menu.js";
 import { LeadArtifactStore } from "./artifacts.js";
+import {
+	LEAD_BROKER_SOCKET_MAX_BYTES,
+	leadBrokerSocketBytes,
+} from "./broker-socket.js";
 import { leadCredentialAliases } from "./credential-paths.js";
 import { verifyLeadDeployment } from "./deployment.js";
 import { preparePinnedNativeSkillHome } from "./native-home.js";
@@ -81,6 +85,10 @@ export async function startVoiceCapabilityParent(
 		resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
 	);
 	const activationRoot = realpathSync(input.activationRoot);
+	// The broker socket is bound under this root much later; a root that cannot
+	// hold it is refused here, before anything starts (QA@3 B1).
+	if (leadBrokerSocketBytes(activationRoot) > LEAD_BROKER_SOCKET_MAX_BYTES)
+		throw new Error("voice_capability_broker_socket_too_long");
 	const codexHome = realpathSync(input.codexHome);
 	const codexPath = realpathSync(input.codexBin);
 	const nodePath = realpathSync(process.execPath);

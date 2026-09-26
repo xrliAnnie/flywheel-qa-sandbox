@@ -103,20 +103,24 @@ vi.mock("../artifacts.js", () => ({
 }));
 
 let root: string;
+let activation: string;
 beforeEach(() => {
 	root = realpathSync(mkdtempSync(join(tmpdir(), "voice-parent-")));
+	// Like the container: a short private root, whatever TMPDIR is.
+	activation = realpathSync(mkdtempSync(join(realpathSync("/tmp"), "vp-a-")));
 	state.projectRoot = join(root, "project");
-	for (const dir of ["project", "home", "activation", "state"])
+	for (const dir of ["project", "home", "state"])
 		mkdirSync(join(root, dir), { mode: 0o700 });
 });
 afterEach(() => {
 	rmSync(root, { recursive: true, force: true });
+	rmSync(activation, { recursive: true, force: true });
 	state.options = undefined;
 	state.parentClosed = 0;
 	state.events = [];
 });
 
-async function start(env: NodeJS.ProcessEnv) {
+async function start(env: NodeJS.ProcessEnv, activationRoot = activation) {
 	const { startVoiceCapabilityParent } = await import(
 		"../voice-capability-parent.js"
 	);
@@ -128,7 +132,7 @@ async function start(env: NodeJS.ProcessEnv) {
 		browserMode: "off",
 		codexHome: join(root, "home"),
 		codexBin: process.execPath,
-		activationRoot: join(root, "activation"),
+		activationRoot,
 		projectsPath: process.execPath,
 		stateDir: join(root, "state"),
 		assertLeaseCurrent: () => {},
@@ -144,6 +148,35 @@ it("fails before any allocation when the Bridge is not configured", async () => 
 		"voice_capability_bridge_unavailable",
 	);
 	expect(state.options).toBeUndefined();
+});
+
+it("refuses an activation root whose broker socket cannot fit, before starting anything (QA@3 B1)", async () => {
+	const { LEAD_BROKER_SOCKET_MAX_BYTES, leadBrokerSocketBytes } = await import(
+		"../broker-socket.js"
+	);
+	const env = {
+		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:1",
+		FLYWHEEL_API_TOKEN: "token",
+	};
+	// A child directory named with n bytes adds n + 1 bytes to the socket path.
+	const child = (bytes: number, fill: string) => {
+		const n = bytes - leadBrokerSocketBytes(activation) - 1;
+		const path = join(activation, fill.repeat(n));
+		mkdirSync(path, { mode: 0o700 });
+		return path;
+	};
+	const over = child(LEAD_BROKER_SOCKET_MAX_BYTES + 1, "x");
+	expect(leadBrokerSocketBytes(over)).toBe(LEAD_BROKER_SOCKET_MAX_BYTES + 1);
+	await expect(start(env, over)).rejects.toThrow(
+		"voice_capability_broker_socket_too_long",
+	);
+	expect(state.options).toBeUndefined();
+	expect(state.events).toEqual([]);
+	// Exactly at the limit starts.
+	const at = child(LEAD_BROKER_SOCKET_MAX_BYTES, "y");
+	expect(leadBrokerSocketBytes(at)).toBe(LEAD_BROKER_SOCKET_MAX_BYTES);
+	const parent = await start(env, at);
+	await parent.close();
 });
 
 it("starts without LINEAR_API_KEY and asks the factory to omit unavailable integrations", async () => {
