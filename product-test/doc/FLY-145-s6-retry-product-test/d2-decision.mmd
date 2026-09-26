@@ -1,0 +1,17 @@
+flowchart TD
+    A[收到 issue 标签列表] --> B{项目已配置?}
+    B -- 否 --> R1[project_unknown]
+    B -- 是 --> C{Lead 在项目里?}
+    C -- 否 --> R2[lead_unknown]
+    C -- 是 --> D{Lead 允许 spawn?}
+    D -- 否 --> R3[lead_cannot_spawn<br/>flywheel-test-1 落在这里]
+    D -- 是 --> E{有几个部门标签命中<br/>可 spawn 的 Lead?}
+    E -- 0 --> R4[issue_no_department_label]
+    E -- 多个 --> R5[issue_multiple_department_labels]
+    E -- 恰好 1 --> F{命中的就是我?}
+    F -- 否 --> R6[label_mismatch<br/>flywheel-test-3 / 4 落在这里]
+    F -- 是 --> OK[ok → 允许 spawn<br/>flywheel-test-2 落在这里]
+    classDef reject fill:#ffe5e3,stroke:#ff3b30,color:#1d1d1f
+    classDef pass fill:#e3f8e9,stroke:#34c759,color:#1d1d1f
+    class R1,R2,R3,R4,R5,R6 reject
+    class OK pass

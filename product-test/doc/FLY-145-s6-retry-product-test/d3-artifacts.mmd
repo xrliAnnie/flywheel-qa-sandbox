@@ -1,0 +1,11 @@
+flowchart LR
+    subgraph DOC[product-test/doc/FLY-145-s6-retry-product-test/]
+        E[exploration.md] --> R[research.md] --> P[plan.md]
+        P --> T[S6-product-test-matrix.template.json<br/>实现节点新增]
+        P --> G[s6-evidence-guide.md<br/>实现节点新增]
+        H[design-founder.html<br/>本页]
+    end
+    T -. QA 填 observed* .-> V[verdict PASS / FAIL]
+    G -. 说明怎么填 .-> V
+    classDef new fill:#e6f0ff,stroke:#007aff,color:#1d1d1f
+    class T,G new

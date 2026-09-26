@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-145 S6 沙箱单设计</title>
+<style>
+:root{--bg:#f5f5f7;--fg:#1d1d1f;--dim:#86868b;--blue:#007aff;--green:#34c759;--red:#ff3b30;--amber:#ff9500;--navy:#1a365d;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;font-size:15px;line-height:1.65}
+main{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+header{margin-bottom:20px}
+header h1{font-size:24px;margin:0 0 6px;color:var(--navy)}
+header .meta{color:var(--dim);font-size:13px}
+header .meta code,.id{font-family:"SF Mono",Menlo,monospace;color:var(--navy)}
+.card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px;margin:0 0 18px;border-left:4px solid var(--blue)}
+.card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card h2{font-size:18px;margin:0 0 12px;color:var(--navy)}
+.card h3{font-size:15px;margin:14px 0 6px}
+.lead{font-size:17px;font-weight:500}
+.note{color:var(--dim);font-size:13px}
+.term{border-bottom:1px dotted var(--dim)}
+table{width:100%;border-collapse:collapse;font-size:14px;margin:10px 0}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eee;vertical-align:top}
+th{color:var(--dim);font-weight:600}
+code{font-family:"SF Mono",Menlo,monospace;font-size:13px;background:#f2f2f5;padding:1px 5px;border-radius:4px}
+.badge{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px;margin-right:6px}
+.badge.ok{background:#e3f8e9;color:#1f7a3a}.badge.no{background:#ffe5e3;color:#b3261e}.badge.dim{background:#eee;color:#555}
+.svgwrap{overflow-x:auto;background:#fff;border:1px solid #eee;border-radius:10px;padding:8px}
+.svgwrap svg{max-width:100%;height:auto}
+figure{margin:8px 0 12px}
+figcaption{color:var(--dim);font-size:13px;margin-top:6px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.tile{border:1px solid #eee;border-radius:10px;padding:12px}
+.tile-h{font-weight:600;margin-bottom:6px;color:var(--navy)}
+.ok{margin:4px 0;padding-left:10px;border-left:3px solid var(--green)}
+.no{margin:4px 0;padding-left:10px;border-left:3px solid var(--red);color:#444}
+ul,ol{padding-left:20px;margin:6px 0}
+.comment{margin-top:14px;border-top:1px dashed #e5e5ea;padding-top:10px}
+.comment label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+textarea{width:100%;min-height:64px;border:1px solid #d2d2d7;border-radius:8px;padding:8px;font:inherit;font-size:14px;resize:vertical;background:#fafafa}
+.summary pre{white-space:pre-wrap;word-break:break-word;background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px;font-size:13px;font-family:"SF Mono",Menlo,monospace}
+button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer;margin:6px 8px 0 0}
+button.secondary{background:#e5e5ea;color:var(--fg)}
+.status{font-size:13px;color:var(--dim);margin-left:4px}
+@media (max-width:600px){.card{padding:16px}header h1{font-size:20px}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>FLY-145 · S6 沙箱单：只交付文档，不动代码</h1>
+<div class="meta">Issue <code>FLY-145</code> · 2026-09-25 · 设计节点 eng_design · 分支 <code>project-slot-1-FLY-145</code></div>
+</header>
+
+<section class="card green" data-section="s1" data-title="一句话总结">
+<h2>1. 一句话总结</h2>
+<p class="lead">FLY-145 是一张用来测试「部门范围检查」的假单，本设计决定<strong>一行代码都不改</strong>，实现节点只交一个纯文档 PR：里面放 S6 的预期结果表和证据模板，让 QA 在 Discord 里对着填。</p>
+<p class="note">名词：<span class="term">部门范围检查（dept-scope）</span>——Bridge 服务端按 issue 标签判断哪个 Lead 有资格启动 Runner 的那道关卡。<span class="term">Bridge</span> 是 Flywheel 的调度中枢服务；<span class="term">Lead</span> 是常驻 Discord 的部门主管 bot；<span class="term">Runner</span> 是被 Lead 启动去真正干活的 Claude Code 会话。</p>
+<div class="comment"><label for="c-s1">对这一段的意见</label><textarea id="c-s1" data-comment-for="s1" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card" data-section="s2" data-title="核心流程">
+<h2>2. 核心流程：四个 Lead 看到同一张单会发生什么</h2>
+<p>QA 把 <code>FLY-145</code> 贴进 cos-test 频道，四个测试 Lead 都会看到。每个 Lead 都<strong>不自己猜</strong>，直接去问 Bridge「我能不能启动」，由 Bridge 统一裁决。这就是 FLY-127 定下的规则：Lead 信 Bridge，不预先过滤。</p>
+<figure>
+<div class="svgwrap">{{D1}}</div>
+<figcaption>图 1 · 时序图（按时间从上到下读）：只有 flywheel-test-2 拿到 200 并启动；其余三个拿到 403 拒绝，最多回一行话就停。</figcaption>
+</figure>
+<p class="note">名词：<span class="term">spawn</span>——Lead 通过 Bridge 启动一个 Runner 的动作。<span class="term">403 DEPT_SCOPE_REJECT</span>——Bridge 返回的"你不在范围内"错误码，Lead 收到后按规则不重试。</p>
+<div class="comment"><label for="c-s2">对这一段的意见</label><textarea id="c-s2" data-comment-for="s2" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card navy" data-section="s3" data-title="数据与决策模型">
+<h2>3. 数据与决策模型：Bridge 怎么判、预期表长什么样</h2>
+<p>Bridge 里负责裁决的模块叫 <span class="term">department-registry</span>（部门注册表：记录每个 Lead 管哪个部门标签、能不能启动 Runner）。它按固定顺序做判断，先命中先返回：</p>
+<figure>
+<div class="svgwrap">{{D2}}</div>
+<figcaption>图 2 · 决策流程图：红色是拒绝结果，绿色是放行。四个测试 Lead 分别落在哪一格已标在图里。</figcaption>
+</figure>
+<h3>预期矩阵（唯一事实来源，模板 JSON 由它派生）</h3>
+<table>
+<thead><tr><th>Lead</th><th>部门标签</th><th>预期结论</th><th>预期 Discord 表现</th><th>启动 Runner</th></tr></thead>
+<tbody>
+<tr><td class="id">flywheel-test-2</td><td>Product-Test</td><td><span class="badge ok">ok</span></td><td>认领 + 启动通知</td><td>是</td></tr>
+<tr><td class="id">flywheel-test-3</td><td>Ops-Test</td><td><span class="badge no">label_mismatch</span></td><td>至多一行「这是 test-2 的范围，我不启动」</td><td>否</td></tr>
+<tr><td class="id">flywheel-test-4</td><td>Finance-Test</td><td><span class="badge no">label_mismatch</span></td><td>同上</td><td>否</td></tr>
+<tr><td class="id">flywheel-test-1</td><td>PM-Test（cos）</td><td><span class="badge no">lead_cannot_spawn</span></td><td>沉默，或至多一行「我不负责启动」</td><td>否</td></tr>
+</tbody>
+</table>
+<p class="note">为什么 test-1 是 <code>lead_cannot_spawn</code> 而不是 <code>label_mismatch</code>：配置加载器强制要求标签里带 "PM" 的 Lead 显式声明不能启动 Runner，否则整个 Bridge 起不来；而"能不能启动"这一步在"标签对不对"之前判。</p>
+<h3>证据模板（实现节点新增的 JSON，QA 填空）</h3>
+<table>
+<thead><tr><th>字段</th><th>谁填</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><code>expectedReason</code> / <code>expectedSpawned</code></td><td>实现节点（预填）</td><td>上表的预期结论</td></tr>
+<tr><td><code>observedReason</code> / <code>observedSpawned</code></td><td>QA</td><td>实际看到的 Bridge 结论与是否启动</td></tr>
+<tr><td><code>discordReply</code></td><td>QA</td><td>Lead 在频道里那一行回复的原文，沉默填 null</td></tr>
+<tr><td><code>evidenceRef</code></td><td>QA</td><td>消息链接或日志路径</td></tr>
+<tr><td><code>verdict</code></td><td>QA</td><td>四行全对为 PASS，否则 FAIL</td></tr>
+</tbody>
+</table>
+<div class="comment"><label for="c-s3">对这一段的意见</label><textarea id="c-s3" data-comment-for="s3" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card purple" data-section="s4" data-title="交付物结构">
+<h2>4. 交付物结构：这个 PR 里到底有什么</h2>
+<figure>
+<div class="svgwrap">{{D3}}</div>
+<figcaption>图 3 · 文件关系图：蓝色两个文件由实现节点新增，其余是本设计阶段已经写好的。整个 PR 只碰这一个文件夹。</figcaption>
+</figure>
+<p class="note">名词：<span class="term">docs-only PR</span>——只改文档、不改代码的合并请求；仓库的 CI（自动检查流水线）会识别出这种 PR 并跳过重型测试。</p>
+<div class="comment"><label for="c-s4">对这一段的意见</label><textarea id="c-s4" data-comment-for="s4" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card amber" data-section="s5" data-title="关键取舍与被否决的方案">
+<h2>5. 关键取舍与被否决的方案</h2>
+<div class="two">
+<div class="tile"><div class="tile-h">✅ 选定：零改动，纯文档 PR</div>
+<p class="ok">忠于 issue 原话「不需要任何代码工作」。</p>
+<p class="ok">S6 的价值在 Discord 侧的证据，不在仓库代码。</p>
+<p class="ok">给 QA 一份预填好的对照表，减少人肉推导出错。</p></div>
+<div class="tile"><div class="tile-h">❌ 否决：顺手加一个 S6 单元测试</div>
+<p class="no">注册表的拒绝路径已有测试覆盖（PR #170 说明），再加是重复。</p>
+<p class="no">违反项目规则「不在本 issue 修顺便发现的东西」。</p></div>
+<div class="tile"><div class="tile-h">❌ 否决：直接标 blocked 或空转完成</div>
+<p class="no">设计节点的完成契约要求探索、调研、计划、设计页齐全并过评审。</p>
+<p class="no">跳过会让后继实现节点没有输入。</p></div>
+<div class="tile"><div class="tile-h">⚖️ 取舍：证据格式沿用旧例</div>
+<p class="ok">对齐 FLY-1189 的 QA 证据 JSON 形状，QA 用同一套工具汇总。</p>
+<p class="no">代价是模板里有几个 QA 永远不会用到的字段（如 campaign_id 可能为空）。</p></div>
+</div>
+<div class="comment"><label for="c-s5">对这一段的意见</label><textarea id="c-s5" data-comment-for="s5" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card red" data-section="s6" data-title="诚实边界">
+<h2>6. 诚实边界：这个设计做什么、不做什么</h2>
+<div class="two">
+<div class="tile"><div class="tile-h">做</div>
+<ul>
+<li>写清四个 Lead 的预期结论与依据。</li>
+<li>给 QA 一份可直接填写的 JSON 模板和填表说明。</li>
+<li>把设计文档随 PR 合进 main，留档。</li>
+</ul></div>
+<div class="tile"><div class="tile-h">不做</div>
+<ul>
+<li>不改 Bridge 注册表、Lead 规则、部署脚本；不加测试。</li>
+<li>不去 Discord 贴 issue 号，不代 QA 填证据，不判 PASS / FAIL。</li>
+<li>不归档 issue（S6 PASS 后由 QA / Lead 处理）。</li>
+</ul></div>
+</div>
+<h3>两个没法在本会话闭合的事</h3>
+<ul>
+<li><strong>本次执行是由 flywheel-test-1 派发的</strong>，而 issue 说 test-1 应该沉默。已非阻塞问 Lead 这是否为 S6 重试的手动派发；设计本身不依赖答案。</li>
+<li><strong>Linear 在本会话无法读取</strong>（鉴权失败），issue 当前标签是否仍只有 Product-Test 未能核实。QA 跑之前应再看一眼。</li>
+</ul>
+<div class="comment"><label for="c-s6">对这一段的意见</label><textarea id="c-s6" data-comment-for="s6" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card summary purple" data-section="s7" data-title="页面意见汇总">
+<h2>页面意见汇总</h2>
+<p class="note">下面实时汇总你在每段留下的意见；点「复制全部」把它贴回 Discord 给 Lead。超过 1800 字会自动分块，每块都带同一个标记行。这份汇总是修改意见，不是通过信号。</p>
+<div id="summary-blocks"></div>
+<div><button type="button" id="copy-all">复制全部意见</button><button type="button" class="secondary" id="clear-all">清空本页意见</button><span class="status" id="copy-status"></span></div>
+</section>
+</main>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var MARK = '【页面意见汇总】FLY-145';
+  var PREFIX = 'fly145-comment:' + location.pathname + ':';
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-comment-for]'));
+  function load(id){ try { return localStorage.getItem(PREFIX + id) || ''; } catch (e) { return ''; } }
+  function save(id, v){ try { if (v) localStorage.setItem(PREFIX + id, v); else localStorage.removeItem(PREFIX + id); } catch (e) {} }
+  function titleOf(id){ var s = document.querySelector('section[data-section="' + id + '"]'); return s ? (s.getAttribute('data-title') || id) : id; }
+  function collect(){
+    var parts = [];
+    areas.forEach(function(a){ var v = a.value.trim(); if (v) parts.push('■ ' + titleOf(a.getAttribute('data-comment-for')) + '\n' + v); });
+    return parts;
+  }
+  function chunks(){
+    var parts = collect(); if (!parts.length) return [];
+    var out = [], cur = MARK;
+    parts.forEach(function(p){
+      var cand = cur + '\n\n' + p;
+      if (cand.length > 1800 && cur !== MARK) { out.push(cur); cur = MARK + '\n\n' + p; } else { cur = cand; }
+    });
+    out.push(cur); return out;
+  }
+  var blocks = document.getElementById('summary-blocks');
+  function render(){
+    while (blocks.firstChild) blocks.removeChild(blocks.firstChild);
+    var cs = chunks();
+    if (!cs.length) { var p = document.createElement('p'); p.className = 'note'; p.textContent = '还没有意见。'; blocks.appendChild(p); return; }
+    cs.forEach(function(c, i){
+      var pre = document.createElement('pre'); pre.textContent = c; blocks.appendChild(pre);
+      if (cs.length > 1) { var b = document.createElement('button'); b.type = 'button'; b.className = 'secondary'; b.textContent = '复制第 ' + (i + 1) + ' 块'; b.addEventListener('click', function(){ copyText(c); }); blocks.appendChild(b); }
+    });
+  }
+  var status = document.getElementById('copy-status');
+  function setStatus(t){ status.textContent = t; setTimeout(function(){ if (status.textContent === t) status.textContent = ''; }, 3000); }
+  function legacyCopy(t){
+    var ta = document.createElement('textarea'); ta.value = t; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.select();
+    var ok = false; try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta); return ok;
+  }
+  function copyText(t){
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(function(){ setStatus('已复制'); }, function(){ setStatus(legacyCopy(t) ? '已复制' : '复制失败，请手动选择'); });
+    } else { setStatus(legacyCopy(t) ? '已复制' : '复制失败，请手动选择'); }
+  }
+  areas.forEach(function(a){
+    var id = a.getAttribute('data-comment-for');
+    a.value = load(id);
+    a.addEventListener('input', function(){ save(id, a.value); render(); });
+  });
+  document.getElementById('copy-all').addEventListener('click', function(){
+    var cs = chunks(); if (!cs.length) { setStatus('没有可复制的意见'); return; }
+    copyText(cs.join('\n\n'));
+  });
+  document.getElementById('clear-all').addEventListener('click', function(){
+    areas.forEach(function(a){ a.value = ''; save(a.getAttribute('data-comment-for'), ''); }); render(); setStatus('已清空');
+  });
+  render();
+})();
+</script>
+</body>
+</html>

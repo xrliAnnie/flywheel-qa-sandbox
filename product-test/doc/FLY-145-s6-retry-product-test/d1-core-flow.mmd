@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    participant QA as QA agent
+    participant CH as Discord cos-test 频道
+    participant L2 as flywheel-test-2<br/>(Product-Test)
+    participant L3 as flywheel-test-3 / 4<br/>(Ops-Test / Finance-Test)
+    participant L1 as flywheel-test-1<br/>(cos, PM-Test)
+    participant BR as Bridge<br/>department-registry
+    QA->>CH: 贴出 FLY-145
+    CH-->>L2: 收到消息
+    CH-->>L3: 收到消息
+    CH-->>L1: 收到消息
+    L2->>BR: POST /api/runs/start
+    BR-->>L2: 200 ok (canonical = test-2)
+    L2->>CH: 认领 + spawn 通知
+    L3->>BR: POST /api/runs/start
+    BR-->>L3: 403 DEPT_SCOPE_REJECT label_mismatch
+    L3->>CH: 至多一行「不是我的范围」
+    L1->>BR: POST /api/runs/start
+    BR-->>L1: 403 DEPT_SCOPE_REJECT lead_cannot_spawn
+    L1->>CH: 沉默或一行「我不负责启动」
+    QA->>QA: 抄录到 S6 证据模板，判 PASS / FAIL
