@@ -1,13 +1,14 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 2/14
-updated: 2026-09-26T01:00:28.192Z
-nextStep: T2 WebRtcLeg (werift) + loopback test
+phaseCursor: 3/14
+updated: 2026-09-26T01:08:13.595Z
+nextStep: T3 v3 transport over WebRTC (started then sdp), conversation-owned
+  notification routing
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (2/14)
-**next**: T2 WebRtcLeg (werift) + loopback test
+**phase**: implement (3/14)
+**next**: T3 v3 transport over WebRTC (started then sdp), conversation-owned notification routing
