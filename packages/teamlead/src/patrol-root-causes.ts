@@ -985,3 +985,70 @@ export function verifyRootCauseEvidence(
 	const unique = [...new Set(errors)];
 	return { valid: unique.length === 0, errors: unique };
 }
+
+const SCHEDULE_IDENTITY_QUERY = `query RootCauseScheduleIdentity($id: String!) {
+ issue(id: $id) { id identifier title description parent { id identifier } }
+}`;
+
+/**
+ * Send-path identity: the server re-reads the category child and computes the
+ * schedule key itself, so a model can never bind an ask to a key it chose.
+ */
+export async function resolveRootCauseScheduleIdentity(input: {
+	request: LinearRequest;
+	issueUuid: string;
+	projectName: string;
+	leadId: string;
+}): Promise<{ scheduleKey: string; identifier: string; parentUuid: string }> {
+	if (rootCauseScope(input.projectName, input.leadId))
+		throw new RootCauseSourceError("patrol_schedule_scope");
+	if (!UUID.test(input.issueUuid))
+		throw new RootCauseSourceError("patrol_schedule_issue_invalid");
+	let response: {
+		data?: {
+			issue?: {
+				id?: unknown;
+				identifier?: unknown;
+				title?: unknown;
+				description?: unknown;
+				parent?: { id?: unknown; identifier?: unknown } | null;
+			} | null;
+		};
+	};
+	try {
+		response = await input.request(SCHEDULE_IDENTITY_QUERY, {
+			id: input.issueUuid,
+		});
+	} catch {
+		throw new RootCauseSourceError("linear_request_failed");
+	}
+	const issue = response?.data?.issue;
+	if (
+		!issue ||
+		issue.id !== input.issueUuid ||
+		typeof issue.identifier !== "string" ||
+		!IDENTIFIER.test(issue.identifier) ||
+		typeof issue.title !== "string" ||
+		(issue.description !== null && typeof issue.description !== "string") ||
+		issue.parent?.identifier !== ROOT_CAUSE_PARENT_IDENTIFIER ||
+		typeof issue.parent.id !== "string" ||
+		!UUID.test(issue.parent.id)
+	)
+		throw new RootCauseSourceError("patrol_schedule_not_category");
+	const meta = parseRootCauseMetadata(
+		issue.title,
+		(issue.description as string | null) ?? null,
+	);
+	if (!meta.category)
+		throw new RootCauseSourceError("patrol_schedule_not_category");
+	return {
+		identifier: issue.identifier,
+		parentUuid: issue.parent.id,
+		scheduleKey: rootCauseScheduleKey({
+			projectName: input.projectName,
+			parentUuid: issue.parent.id,
+			childUuid: input.issueUuid,
+			classKey: meta.classKey,
+		}),
+	};
+}

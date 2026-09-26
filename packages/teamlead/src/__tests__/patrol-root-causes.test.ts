@@ -12,6 +12,7 @@ import {
 	type RootCauseChild,
 	type RootCauseFacts,
 	renderRootCauseLines,
+	resolveRootCauseScheduleIdentity,
 	rootCauseScheduleKey,
 	selectRootCauseCandidates,
 	validateRootCauseStructure,
@@ -713,5 +714,64 @@ describe("FLY-2914 trusted evidence", () => {
 				fresh: both,
 			}).errors,
 		).toContain("root_cause_snapshot_stale");
+	});
+});
+
+describe("FLY-2914 send-path schedule identity", () => {
+	const c = child(7, "[病根] drain · ×34", `class_key: ${"7".repeat(64)}`);
+	const request = (parent: { id: string; identifier: string } | null) =>
+		(async () => ({
+			data: {
+				issue: {
+					id: c.id,
+					identifier: c.identifier,
+					title: c.title,
+					description: c.description,
+					parent,
+				},
+			},
+		})) as unknown as LinearRequest;
+	it("computes the same key the collector lists", async () => {
+		const identity = await resolveRootCauseScheduleIdentity({
+			request: request({ id: PARENT, identifier: "FLY-2072" }),
+			issueUuid: c.id,
+			projectName: "flywheel",
+			leadId: "flywheel-eng-lead",
+		});
+		const facts = await factsFor([c]);
+		expect(identity).toEqual({
+			identifier: c.identifier,
+			parentUuid: PARENT,
+			scheduleKey: facts.candidates[0]!.scheduleKey,
+		});
+	});
+	it.each([
+		[
+			"a non-owner Lead",
+			"flywheel-product-lead",
+			{ id: PARENT, identifier: "FLY-2072" },
+			"patrol_schedule_scope",
+		],
+		[
+			"a child of another Epic",
+			"flywheel-eng-lead",
+			{ id: PARENT, identifier: "FLY-1" },
+			"patrol_schedule_not_category",
+		],
+		[
+			"an orphan issue",
+			"flywheel-eng-lead",
+			null,
+			"patrol_schedule_not_category",
+		],
+	])("rejects %s", async (_name, leadId, parent, token) => {
+		await expect(
+			resolveRootCauseScheduleIdentity({
+				request: request(parent),
+				issueUuid: c.id,
+				projectName: "flywheel",
+				leadId,
+			}),
+		).rejects.toMatchObject({ token });
 	});
 });

@@ -258,7 +258,10 @@ it("FLY-2914 binds at most one open patrol ask per project + schedule key", asyn
 			ask_id: "77777777-7777-4777-8777-777777777777",
 			patrol_schedule_key: undefined,
 		});
-		expect(store.getFounderAsk("77777777-7777-4777-8777-777777777777")?.patrol_schedule_key).toBeNull();
+		expect(
+			store.getFounderAsk("77777777-7777-4777-8777-777777777777")
+				?.patrol_schedule_key,
+		).toBeNull();
 	} finally {
 		store.close();
 	}
@@ -283,7 +286,9 @@ it("FLY-2914 migrates a legacy founder_ask table with a NULL schedule key", asyn
 		const store = await StateStore.create(path);
 		try {
 			expect(store.getFounderAsk("old")?.patrol_schedule_key).toBeNull();
-			expect(store.getOpenPatrolScheduleAsk("flywheel", "a".repeat(64))).toBeUndefined();
+			expect(
+				store.getOpenPatrolScheduleAsk("flywheel", "a".repeat(64)),
+			).toBeUndefined();
 		} finally {
 			store.close();
 		}
@@ -316,7 +321,9 @@ it("FLY-2914 finds only strictly active runs through identifier or UUID aliases"
 		expect(
 			store.getActiveWorkflowRunIdForAliases("flywheel", ["FLY-2373", uuid]),
 		).toBeUndefined();
-		expect(store.getActiveWorkflowRunIdForAliases("flywheel", [])).toBeUndefined();
+		expect(
+			store.getActiveWorkflowRunIdForAliases("flywheel", []),
+		).toBeUndefined();
 	} finally {
 		store.close();
 	}

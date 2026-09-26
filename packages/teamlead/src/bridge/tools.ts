@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import {
+	resolveRootCauseScheduleIdentity,
+	rootCauseMessageMarker,
+} from "../patrol-root-causes.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type {
 	ChatThreadCreator,
@@ -18,6 +22,7 @@ import {
 } from "./done-thread-archiver.js";
 import type { ReconcileLinearLookup } from "./done-thread-reconcile.js";
 import { filterSessionsByLead } from "./lead-scope.js";
+import { createLinearRequest } from "./linear-epic-query.js";
 import { lookupLinearIssueByIdentifier } from "./linear-query.js";
 import {
 	type ChatClassification,
@@ -31,6 +36,29 @@ import {
 	type CaptureResult,
 	isCaptureError,
 } from "./session-capture.js";
+
+async function defaultRootCauseScheduleResolver(
+	issueUuid: string,
+	projectName: string,
+	leadId: string,
+): Promise<{ scheduleKey: string; identifier: string }> {
+	const apiKey = process.env.LINEAR_API_KEY;
+	if (!apiKey)
+		throw Object.assign(new Error("linear_unconfigured"), {
+			token: "linear_unconfigured",
+		});
+	const request = await createLinearRequest(
+		apiKey,
+		Date.now() + 15_000,
+		() => new Date(),
+	);
+	return resolveRootCauseScheduleIdentity({
+		request: (query, variables) => request(query, variables),
+		issueUuid,
+		projectName,
+		leadId,
+	});
+}
 
 export type CaptureSessionFn = (
 	executionId: string,
@@ -96,6 +124,15 @@ export interface QueryRouterOptions {
 	dutyWritePath?: () => "configured" | "unconfigured";
 	ledgerWriteErrors?: () => number;
 	reroutedCount?: () => number;
+	/**
+	 * FLY-2914: server-side root-cause schedule identity for founderAsk.patrolSchedule.
+	 * Defaults to a fresh read-only Linear lookup; tests inject a stub.
+	 */
+	resolveRootCauseSchedule?: (
+		issueUuid: string,
+		projectName: string,
+		leadId: string,
+	) => Promise<{ scheduleKey: string; identifier: string }>;
 }
 
 function omitIssueId(
@@ -765,19 +802,43 @@ export function createQueryRouter(
 			return;
 		}
 
+		// FLY-2914: a patrol root-cause schedule ask names only the category child;
+		// the server derives the schedule key and never trusts a model-chosen one.
+		let patrolScheduleIssue: string | undefined;
 		if (founderAsk !== undefined) {
+			const schedule =
+				founderAsk &&
+				typeof founderAsk === "object" &&
+				!Array.isArray(founderAsk)
+					? (founderAsk as { patrolSchedule?: unknown }).patrolSchedule
+					: undefined;
 			if (
 				!founderAsk ||
 				typeof founderAsk !== "object" ||
 				Array.isArray(founderAsk) ||
-				Object.keys(founderAsk).some((k) => k !== "questionId") ||
+				Object.keys(founderAsk).some(
+					(k) => k !== "questionId" && k !== "patrolSchedule",
+				) ||
 				("questionId" in founderAsk &&
 					(typeof founderAsk.questionId !== "string" ||
-						!/^[A-Za-z0-9:_-]{1,128}$/.test(founderAsk.questionId)))
+						!/^[A-Za-z0-9:_-]{1,128}$/.test(founderAsk.questionId))) ||
+				("patrolSchedule" in founderAsk &&
+					(!schedule ||
+						typeof schedule !== "object" ||
+						Array.isArray(schedule) ||
+						Object.keys(schedule).length !== 1 ||
+						typeof (schedule as { issueUuid?: unknown }).issueUuid !==
+							"string" ||
+						!isLinearUuid((schedule as { issueUuid: string }).issueUuid) ||
+						bodyIssueId !== (schedule as { issueUuid: string }).issueUuid ||
+						bodyIdentifier !== undefined ||
+						[...text].length > 1800))
 			) {
 				res.status(400).json({ error: "invalid_founder_ask" });
 				return;
 			}
+			if (schedule)
+				patrolScheduleIssue = (schedule as { issueUuid: string }).issueUuid;
 			if (!apiTokenConfigured) {
 				res.status(503).json({ error: "API token not configured" });
 				return;
@@ -892,6 +953,46 @@ export function createQueryRouter(
 			resolvedIdentifier ??
 			resolvedIssueId;
 
+		let patrolScheduleKey: string | undefined;
+		if (patrolScheduleIssue) {
+			let identity: { scheduleKey: string; identifier: string };
+			try {
+				identity = await (
+					opts?.resolveRootCauseSchedule ?? defaultRootCauseScheduleResolver
+				)(patrolScheduleIssue, projectName, leadId);
+			} catch (err) {
+				const token = (err as { token?: unknown }).token;
+				res.status(token === "patrol_schedule_scope" ? 403 : 502).json({
+					error:
+						typeof token === "string" ? token : "patrol_schedule_unverified",
+				});
+				return;
+			}
+			if (
+				identity.identifier !== resolvedIdentifier ||
+				!/^[0-9a-f]{64}$/.test(identity.scheduleKey) ||
+				!new RegExp(`(^|[^A-Za-z0-9-])${identity.identifier}(?![0-9])`).test(
+					text,
+				)
+			) {
+				res.status(400).json({ error: "invalid_founder_ask" });
+				return;
+			}
+			const open = store.getOpenPatrolScheduleAsk(
+				projectName,
+				identity.scheduleKey,
+			);
+			if (open) {
+				res.status(409).json({
+					error: "patrol_schedule_ask_open",
+					founderAskId: open.ask_id,
+					messageId: open.message_id,
+				});
+				return;
+			}
+			patrolScheduleKey = identity.scheduleKey;
+		}
+
 		// Lead-attributed writes may use only that canonical Lead's credential.
 		const botToken = validation.leadConfig.botToken;
 		if (!botToken) {
@@ -952,18 +1053,37 @@ export function createQueryRouter(
 		}
 
 		const founderAskId = founderAsk !== undefined ? randomUUID() : undefined;
-		if (founderAskId)
-			store.insertFounderAsk({
-				ask_id: founderAskId,
-				project_name: projectName,
-				issue_id: resolvedIssueId,
-				channel_id: channelId,
-				thread_id: threadId,
-				lead_id: leadId,
-				question_id: (founderAsk as { questionId?: string }).questionId ?? null,
-				excerpt: text,
-				asked_at: new Date().toISOString(),
+		const askRow = founderAskId
+			? {
+					ask_id: founderAskId,
+					project_name: projectName,
+					issue_id: resolvedIssueId,
+					channel_id: channelId,
+					thread_id: threadId,
+					lead_id: leadId,
+					question_id:
+						(founderAsk as { questionId?: string }).questionId ?? null,
+					excerpt: text,
+					asked_at: new Date().toISOString(),
+				}
+			: undefined;
+		if (askRow && patrolScheduleKey) {
+			const reservation = store.reservePatrolScheduleAsk({
+				...askRow,
+				patrol_schedule_key: patrolScheduleKey,
 			});
+			if (!reservation.reserved) {
+				res.status(409).json({
+					error: "patrol_schedule_ask_open",
+					founderAskId: reservation.ask.ask_id,
+					messageId: reservation.ask.message_id,
+				});
+				return;
+			}
+		} else if (askRow) store.insertFounderAsk(askRow);
+		const outboundText = patrolScheduleKey
+			? `${text}\n\`${rootCauseMessageMarker(patrolScheduleKey)}\``
+			: text;
 		const finishFounderAsk = (messageId?: string) => {
 			if (!founderAskId) return;
 			if (messageId)
@@ -976,7 +1096,7 @@ export function createQueryRouter(
 		const { postDiscordMessageToChannel } = await import("./discord-utils.js");
 		let postResult = await postDiscordMessageToChannel(
 			threadId,
-			text,
+			outboundText,
 			botToken,
 			{ origin: "lead_authored", ...(replyTo ? { replyTo } : {}) },
 			opts?.discordFetch,
@@ -1022,7 +1142,7 @@ export function createQueryRouter(
 			created = created || recovery.created;
 			postResult = await postDiscordMessageToChannel(
 				threadId,
-				text,
+				outboundText,
 				botToken,
 				{ origin: "lead_authored", ...(replyTo ? { replyTo } : {}) },
 				opts.discordFetch,
