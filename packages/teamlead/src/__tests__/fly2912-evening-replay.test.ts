@@ -15,8 +15,14 @@ import type BetterSqlite3 from "better-sqlite3";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import type { EventEnvelope } from "flywheel-edge-worker";
 import { afterEach, expect, it, vi } from "vitest";
-import { EventFilter } from "../bridge/EventFilter.js";
-import { initializeFlagStore } from "../bridge/flag-store-runtime.js";
+import {
+	EventFilter,
+	leadNotificationDecision,
+} from "../bridge/EventFilter.js";
+import {
+	initializeFlagStore,
+	storeLeadTokenSavingsEnabled,
+} from "../bridge/flag-store-runtime.js";
 import {
 	ClaudeLeadDeliveryAdapter,
 	type LeadDeliveryBatch,
@@ -132,8 +138,9 @@ it("retains the seven hash-frozen exports and all 257 ordered inputs", () => {
 /**
  * A carries the observed source disposition at the producer append boundary;
  * it is not an execution of an unavailable historical binary. B/C use current
- * producers. Unknown historical projection/obligation state is a visible test
- * ingress extension, never silently converted into absent pending work.
+ * producers with the exported stage ingress unchanged. Evidence gaps are report
+ * metadata, never injected into classifier input. No review/dispatch/probe
+ * authority is synthesized from export-time mutable records. Historical stage\n * obligation absence is explicitly unknown at the proof boundary.
  */
 async function replay(world: "A" | "B" | "C") {
 	const directory = mkdtempSync(join(tmpdir(), `fly2912-evening-${world}-`));
@@ -144,9 +151,22 @@ async function replay(world: "A" | "B" | "C") {
 		.raw;
 	const queue = new MailboxQueue(join(directory, "comm.db"));
 	const registry = new RuntimeRegistry();
-	initializeFlagStore(store, {
-		FLYWHEEL_LEAD_TOKEN_SAVINGS: world === "C" ? "0" : "1",
-	});
+	initializeFlagStore(store, {});
+	expect(
+		store.applyScopedFlagValueChange({
+			name: "lead_token_savings",
+			scope: PROJECT,
+			op: "set",
+			rawTo: world === "C" ? "0" : "1",
+			expectedChangeSeq: store.getFlagValueChangeSeq(
+				"lead_token_savings",
+				PROJECT,
+			),
+			actor: "isolated-replay",
+			reason: `FLY-2912 replay world ${world}`,
+		}).ok,
+	).toBe(true);
+	expect(storeLeadTokenSavingsEnabled({ store }, PROJECT)).toBe(world !== "C");
 	const lead = {
 		agentId: LEAD,
 		chatChannel: "replay-isolated-channel",
@@ -213,22 +233,48 @@ async function replay(world: "A" | "B" | "C") {
 	);
 	let source: Input | undefined;
 	const originalAppend = store.appendLeadEvent.bind(store);
-	const sourcePolicy =
-		world === "A"
-			? vi
-					.spyOn(store, "appendLeadNotification")
-					.mockImplementation((input) => {
-						if (!source) throw new Error("baseline source record missing");
-						return originalAppend(
-							input.binding.leadId,
-							input.binding.eventId,
-							input.eventType,
-							source.payload,
-							source.session_key,
-							source.delivery_disposition,
-						);
-					})
-			: undefined;
+	const originalNotification = store.appendLeadNotification.bind(store);
+	const sourcePolicy = vi
+		.spyOn(store, "appendLeadNotification")
+		.mockImplementation((input) => {
+			if (!source) throw new Error("source record missing");
+			if (world === "A")
+				return originalAppend(
+					input.binding.leadId,
+					input.binding.eventId,
+					input.eventType,
+					source.payload,
+					source.session_key,
+					source.delivery_disposition,
+				);
+			// A fresh fixture session is not evidence that historical obligations were
+			// absent. Substitute the explicit unknown authority at the proof boundary,
+			// then run the real policy and persistence. Never alter producer ingress.
+			if (input.evidence?.kind === "stage") {
+				const evidence = {
+					...input.evidence,
+					proof: {
+						...input.evidence.proof,
+						action: { state: "unknown" as const },
+					},
+				};
+				return originalNotification({
+					...input,
+					evidence,
+					decision: leadNotificationDecision(
+						input.eventType,
+						JSON.parse(rawStages.get(source.event_id)!.payload),
+						evidence,
+						{
+							binding: input.binding,
+							enabled: storeLeadTokenSavingsEnabled({ store }, PROJECT),
+							projection: JSON.parse(input.payload),
+						},
+					),
+				});
+			}
+			return originalNotification(input);
+		});
 	const records: Array<Record<string, unknown>> = [];
 	const batches: Array<{
 		batchId: string;
@@ -243,11 +289,45 @@ async function replay(world: "A" | "B" | "C") {
 	mkdirSync(join(directory, "claude"));
 	const concrete = new ClaudeLeadDeliveryAdapter({ inboxPath, sidecarPath });
 	try {
+		let now = new Date(iso(inputs[0]!.created_at));
+		let batchOrdinal = 0;
+		const loop = new LeadInboxLoop({
+			queue,
+			leadId: LEAD,
+			ownerEpoch: `isolated-replay-${world}`,
+			hasLiveSession: () => false,
+			handleProtocol: async () => ({ disposition: "not_expected" }),
+			now: () => now,
+			queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
+			batchIdFactory: () =>
+				`replay-${world}-${String(++batchOrdinal).padStart(4, "0")}`,
+			adapter: {
+				deliverBatch: async (batch: LeadDeliveryBatch) => {
+					const receipt = await concrete.deliverBatch(batch);
+					batches.push({
+						batchId: batch.batchId,
+						memberIds: batch.members.map((member) => member.deliveryId),
+						memberContentSha256: batch.members.map((member) =>
+							hash(member.content),
+						),
+						acceptedAt: now.toISOString(),
+						payloadSha256: hash(batch.modelPayload),
+						receiptStatus: receipt.status,
+					});
+					return receipt;
+				},
+			},
+			markAuditDelivered: (row) => {
+				if (row.source_ref)
+					store.markLeadEventDelivered(Number(row.source_ref));
+			},
+		});
 		for (const [ordinal, input] of inputs.entries()) {
 			source = input;
 			const projection = JSON.parse(input.payload) as Record<string, unknown>;
 			const currentTime = iso(input.created_at);
-			vi.setSystemTime(new Date(currentTime));
+			now = new Date(currentTime);
+			vi.setSystemTime(now);
 			const raw = rawStages.get(input.event_id);
 			const priorSeq = Number(
 				(
@@ -310,15 +390,11 @@ async function replay(world: "A" | "B" | "C") {
 							project_name: PROJECT,
 							event_type: "stage_changed",
 							source: raw!.source,
-							payload: {
-								...JSON.parse(raw!.payload),
-								replay_unverified_projection: ingressAdaptation,
-							},
+							payload: JSON.parse(raw!.payload),
 						}),
 					});
 					expect(response.status).toBe(200);
-					path =
-						"actual_http_stage_producer_with_explicit_unverified_projection_extension";
+					path = "actual_http_stage_producer_original_ingress";
 				} else {
 					expect(direct?.rawPayloadAvailable).toBe(false);
 					const envelope: EventEnvelope = {
@@ -408,7 +484,7 @@ async function replay(world: "A" | "B" | "C") {
 					null,
 				originalRawPayloadSha256: raw ? hash(raw.payload) : null,
 				originalProjectionSha256: hash(input.payload),
-				replayUnverifiedProjection: ingressAdaptation,
+				historicalEvidenceMetadata: ingressAdaptation,
 				beforeDisposition: input.delivery_disposition,
 				afterDisposition: row.delivery_disposition,
 				proofRef: row.notification_proof_ref ?? null,
@@ -441,58 +517,41 @@ async function replay(world: "A" | "B" | "C") {
 				adapterWakeRequestId: null,
 				observedModelTurnIdentity: null,
 			});
+			// Same-second exported inputs share an inbox tick.
+			// Never count an end-of-window backlog drain as a wake timeline.
+			if (inputs[ordinal + 1]?.created_at !== input.created_at) {
+				for (
+					let tick = 0;
+					tick < 257 &&
+					batches.reduce((sum, batch) => sum + batch.memberIds.length, 0) <
+						records.filter((record) => record.deliveryId !== null).length;
+					tick++
+				) {
+					const firstNewBatch = batches.length;
+					const result = await loop.tick();
+					expect(result.ok).toBe(true);
+					expect(
+						result.modelConsumed,
+						"deterministic ready queue must make progress",
+					).toBeGreaterThan(0);
+					// Synthetic healthy recipient: settle only the model batches just
+					// submitted, so advancing history does not manufacture lease retries.
+					// This is a harness assumption, not observed model consumption.
+					for (const batch of batches.slice(firstNewBatch)) {
+						expect(
+							queue.ackBatchByRecipient({
+								batchId: batch.batchId.replace(/#r\d+$/, ""),
+								fromAgent: LEAD,
+								now: now.toISOString(),
+							}),
+						).toBe("applied");
+					}
+				}
+			}
 		}
-		const now = new Date("2026-09-26T04:01:00.000Z");
-		vi.setSystemTime(now);
-		let batchOrdinal = 0;
-		const loop = new LeadInboxLoop({
-			queue,
-			leadId: LEAD,
-			ownerEpoch: `isolated-replay-${world}`,
-			hasLiveSession: () => false,
-			handleProtocol: async () => ({ disposition: "not_expected" }),
-			now: () => now,
-			queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
-			batchIdFactory: () =>
-				`replay-${world}-${String(++batchOrdinal).padStart(4, "0")}`,
-			adapter: {
-				deliverBatch: async (batch: LeadDeliveryBatch) => {
-					const receipt = await concrete.deliverBatch(batch);
-					batches.push({
-						batchId: batch.batchId,
-						memberIds: batch.members.map((member) => member.deliveryId),
-						memberContentSha256: batch.members.map((member) =>
-							hash(member.content),
-						),
-						acceptedAt: now.toISOString(),
-						payloadSha256: hash(batch.modelPayload),
-						receiptStatus: receipt.status,
-					});
-					return receipt;
-				},
-			},
-			markAuditDelivered: (row) => {
-				if (row.source_ref)
-					store.markLeadEventDelivered(Number(row.source_ref));
-			},
-		});
 		const expectedMembers = records.filter(
 			(record) => record.deliveryId !== null,
 		).length;
-		for (
-			let tick = 0;
-			tick < 257 &&
-			batches.reduce((sum, batch) => sum + batch.memberIds.length, 0) <
-				expectedMembers;
-			tick++
-		) {
-			const result = await loop.tick();
-			expect(result.ok).toBe(true);
-			expect(
-				result.modelConsumed,
-				"deterministic ready queue must make progress",
-			).toBeGreaterThan(0);
-		}
 		const actualIds = batches.flatMap((batch) => batch.memberIds);
 		expect(new Set(actualIds).size).toBe(expectedMembers);
 		const inbox = readFileSync(inboxPath, "utf8");
@@ -563,15 +622,45 @@ async function replay(world: "A" | "B" | "C") {
 
 it("replays every source through isolated producer/store/queue/concrete adapter worlds without inventing authority", async () => {
 	vi.useFakeTimers({ toFake: ["Date"] });
+	const transportedStagePayloads: Array<{ eventId: string; payload: unknown }> =
+		[];
+	const originalFetch = globalThis.fetch;
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+		const event = JSON.parse(String(init?.body));
+		transportedStagePayloads.push({
+			eventId: event.event_id,
+			payload: event.payload,
+		});
+		return originalFetch(url, init);
+	});
 	const worlds = [];
 	for (const world of ["A", "B", "C"] as const)
 		worlds.push(await replay(world));
+	for (const sent of transportedStagePayloads)
+		expect(
+			sent.payload,
+			`unaltered historical ingress ${sent.eventId}`,
+		).toEqual(JSON.parse(rawStages.get(sent.eventId)!.payload));
+	for (const world of worlds) {
+		expect(
+			new Set(world.batches.map((batch) => batch.acceptedAt)).size,
+		).toBeGreaterThan(1);
+		for (const record of world.records) {
+			if (!record.deliveryId) continue;
+			const batch = world.batches.find(
+				(item) => item.batchId === record.batchId,
+			)!;
+			expect(Date.parse(batch.acceptedAt)).toBe(
+				Date.parse(iso(String(record.originalCreatedAt))),
+			);
+		}
+	}
 	expect(worlds.map((world) => world.counts.input_events)).toEqual([
 		257, 257, 257,
 	]);
-	expect(worlds.map((world) => world.counts.model_candidates)).toEqual([
-		169, 257, 257,
-	]);
+	expect(worlds[0]!.counts.model_candidates).toBe(169);
+	expect(worlds[1]!.counts.model_candidates).toBe(257);
+	expect(worlds[2]!.counts.model_candidates).toBe(257);
 	const [baseline, enabled, disabled] = worlds;
 	expect(enabled!.records.map((row) => row.eventId)).toEqual(
 		disabled!.records.map((row) => row.eventId),
@@ -586,9 +675,116 @@ it("replays every source through isolated producer/store/queue/concrete adapter 
 			before.actionableEnqueueLatencyMs,
 		);
 	}
+
+	const carrier = JSON.parse(
+		readFileSync(join(EVIDENCE, "carrier-observation.json"), "utf8"),
+	) as {
+		inputTimeline: Array<{
+			uuid: string;
+			timestamp: string;
+			sourceEventSeqs: number[];
+		}>;
+	};
+	const bindingRows = jsonl<{
+		execution_id: string;
+		bound_at: string;
+		mode: string;
+		attempt: number;
+	}>("execution-binding-v3.jsonl");
+	const sourceBySeq = new Map(inputs.map((input) => [input.seq, input]));
+	const enabledBySeq = new Map(
+		enabled!.records.map((row) => [row.originalSeq, row]),
+	);
+	const observedCohorts = carrier.inputTimeline.map((input) => {
+		const matched = input.sourceEventSeqs
+			.map((seq) => sourceBySeq.get(seq))
+			.filter((row): row is Input => !!row);
+		const completeSourceJoin =
+			matched.length > 0 && matched.length === input.sourceEventSeqs.length;
+		// This is only a ceiling: type/binding alone does not prove quiet eligibility.
+		const onlyPotentialQuietTypes =
+			completeSourceJoin &&
+			matched.every(
+				(row) =>
+					row.event_type === "stage_changed" ||
+					row.event_type === "session_started",
+			);
+		const temporallyBoundCandidate =
+			onlyPotentialQuietTypes &&
+			matched.every((row) => {
+				const payload = JSON.parse(row.payload);
+				return bindingRows.some(
+					(binding) =>
+						binding.execution_id === payload.execution_id &&
+						Date.parse(binding.bound_at) <= Date.parse(iso(row.created_at)) &&
+						(row.event_type !== "session_started" ||
+							(binding.mode === "spawn" && binding.attempt === 1)),
+				);
+			});
+		const retainedByConservativeReplay =
+			!completeSourceJoin ||
+			matched.some(
+				(row) => enabledBySeq.get(row.seq)?.afterDisposition !== "audit_only",
+			);
+		return {
+			inputId: input.uuid,
+			at: input.timestamp,
+			sourceSeqs: input.sourceEventSeqs,
+			matchedWindowSeqs: matched.map((row) => row.seq),
+			completeSourceJoin,
+			onlyPotentialQuietTypes,
+			temporallyBoundCandidate,
+			retainedByConservativeReplay,
+		};
+	});
+	expect(observedCohorts).toHaveLength(99);
+	expect(
+		observedCohorts.filter((row) => !row.matchedWindowSeqs.length),
+	).toHaveLength(32);
+	expect(
+		observedCohorts.filter((row) => row.onlyPotentialQuietTypes),
+	).toHaveLength(12);
+	expect(
+		observedCohorts.filter((row) => row.temporallyBoundCandidate),
+	).toHaveLength(7);
+	for (const cohort of observedCohorts.filter((row) => !row.completeSourceJoin))
+		expect(cohort.retainedByConservativeReplay).toBe(true);
+	const observedInputAnalysis = {
+		metric: "historical consumed user inputs, not sleep-to-awake transitions",
+		beforeObserved: observedCohorts.length,
+		afterObserved: null,
+		conservativeRetainedOriginalCohorts: observedCohorts.filter(
+			(row) => row.retainedByConservativeReplay,
+		).length,
+		noWindowSourceJoin: 32,
+		conditionalEstimateRetainedOriginalCohorts: observedCohorts.filter(
+			(row) => !row.temporallyBoundCandidate,
+		).length,
+		optimisticFloorRetainedOriginalCohorts: observedCohorts.filter(
+			(row) => !row.onlyPotentialQuietTypes,
+		).length,
+		newModelEventsNotPresentInBaseline: enabled!.records
+			.filter(
+				(row) =>
+					row.beforeDisposition === "audit_only" &&
+					row.afterDisposition === "model",
+			)
+			.map((row) => ({
+				seq: row.originalSeq,
+				at: row.originalCreatedAt,
+				reason: row.reason,
+				unresolved: row.unresolved,
+			})),
+		limitations: [
+			"99 is observed historical consumed inputs. Counterfactual cohort counts hold the original input membership/timing fixed and exclude new model events; they are not a net after-wake total.",
+			"92 is conditional on all missing startup/owner/action proofs becoming available for the seven structurally bound cohorts; 87 ignores authority for all twelve target-only cohorts. Neither number is measured savings.",
+			"Unknown/unjoined traffic stays present. Newly immediate events and counterfactual carrier busy/idle timing prevent computing a production after-wake count.",
+		],
+		cohorts: observedCohorts,
+	};
 	const result = {
-		schemaVersion: 1,
-		scope: "full_denominator_missing_evidence_upper_bound_replay",
+		schemaVersion: 2,
+		scope: "chronological_source_tick_replay_with_explicit_historical_gaps",
 		windowUtc: ["2026-09-26T01:30:00Z", "2026-09-26T04:00:00Z"],
 		project: PROJECT,
 		lead: LEAD,
@@ -603,16 +799,18 @@ it("replays every source through isolated producer/store/queue/concrete adapter 
 		assumptions: [
 			"Same 257 ordered inputs; separate shared temporary DB per world; Date follows each original input timestamp.",
 			"No workflow dispatch purpose, historical reviewer, pending-action closure, probe episode, or carrier busy/idle state is fabricated.",
-			"Stage ingress carries an explicit replay_unverified_projection extension; untouched sanitized raw/projection hashes and the extension are separately recorded.",
+			"Stage ingress is exactly the exported raw payload. Historical obligation state is absent from the export: at appendLeadNotification the replay replaces the synthetic session proof action with unknown and re-runs the real policy. This explicit proof-boundary substitution prevents treating an empty fixture database as evidence of no historical tasks; no field is added to the ingress.",
 			"Direct startup uses emitStarted+flush and known identities/display fields; unknown workflow identity uses stable set-once source started_at fallback, with original IDs retained.",
 			"World A carries recorded source dispositions at the producer append boundary; it does not execute a missing historical binary.",
-			"All model rows enter the actual durable queue on their input tick. Every world drains at 04:01Z with the same default batch configuration, healthy concrete Claude mailbox adapter and no live model.",
+			"All model rows enter the durable queue on their input tick. Same-second inputs share a tick, drained immediately with default batching and the concrete Claude mailbox adapter. The assumed carrier is always idle: these are chronological submissions, not historical busy/idle transitions.",
 			"adapter_wake_requests counts actual deliverBatch invocations, not physical wakes or model rounds; observed_model_turns remains null.",
+			"A synthetic healthy recipient ACKs submitted model batches within each input tick to exclude invented lease-expiry retries. Audit-only rows receive no ACK. This assumption is identical in all worlds and is not a real carrier receipt.",
 			"156 inputs lack raw producer ingress and use canonical journal ingress. Synthetic producer-positive tests remain outside the 257 denominator.",
 			"Canonical journal ingress uses the authoritative outer event_type column when it is absent from the rendered payload; original payload hashes remain unchanged.",
 		],
 		historicalCarrierEvidence:
 			"engineering/doc/FLY-2912-quiet-notification-expansion/evidence/carrier-observation.json",
+		observedInputAnalysis,
 		worlds,
 	};
 	if (process.env.FLY2912_WRITE_REPLAY_RESULT === "1")

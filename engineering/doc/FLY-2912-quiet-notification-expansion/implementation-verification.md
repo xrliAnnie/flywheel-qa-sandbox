@@ -3,6 +3,8 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912)
 日期: 2026-09-25
 基于: plan.md, implementation.md
 
+本页保存首轮验证记录。QA 返工发现原回放排空口径、stage 扩展字段和 OFF 开关设置错误；下文旧 99/121/121 对比已作废。当前修正、时间序列结果与验证边界见 [rework.md](rework.md)。
+
 ## 恢复与范围
 
 本执行 `d5f75d56-6938-40b2-a56b-e5aa8e92240e` 从 WIP `8b29f69cd` 接续 implement 4/6，取得 implement TURN epoch 4。已批准设计字节不变，不重做设计。前执行红绿证据见 implementation.md；本次重新验证实际代码及保留消费者。
