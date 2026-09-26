@@ -65,6 +65,7 @@ import {
 import { recoverPinnedVoiceSession } from "./recovery.js";
 import { GenericVoiceSession } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
+import { exitAfterShutdown } from "./shutdown-exit.js";
 import {
 	reportFatalStartupFailure,
 	reportStartupRefusal,
@@ -770,7 +771,10 @@ export async function main(): Promise<void> {
 	}
 }
 
-main().catch((error) => {
-	reportFatalStartupFailure(error);
-	process.exitCode = 1;
-});
+main()
+	.catch((error) => {
+		reportFatalStartupFailure(error);
+		process.exitCode = 1;
+	})
+	// FLY-2885 QA@1: a leaked handle must never leave an orphan daemon.
+	.finally(() => exitAfterShutdown());
