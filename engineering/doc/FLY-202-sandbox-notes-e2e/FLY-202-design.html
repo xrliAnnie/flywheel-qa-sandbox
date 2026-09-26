@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-202 设计总览</title>
+<style>
+:root{--bg:#f5f5f7;--fg:#1d1d1f;--dim:#86868b;--card:#fff;--navy:#1a365d;--blue:#007aff;--green:#34c759;--amber:#ff9500;--red:#ff3b30;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,sans-serif;line-height:1.6}
+main{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+header{padding:8px 4px 6px}
+header h1{margin:0 0 4px;color:var(--navy);font-size:30px;letter-spacing:-.02em}
+header .meta{color:var(--dim);font-size:14px}
+.mono,code{font-family:'SF Mono',ui-monospace,monospace;font-size:.9em}
+code{background:#f0f0f3;padding:1px 5px;border-radius:5px}
+.card{background:var(--card);border-left:4px solid var(--dim);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);margin:18px 0;padding:20px 22px}
+.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}.card.amber{border-left-color:var(--amber)}
+.card.red{border-left-color:var(--red)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card h2{color:var(--navy);font-size:21px;margin:0 0 10px}.card h3{font-size:16px;margin:14px 0 4px}
+.lead{font-size:18px;margin-top:4px}.muted{color:var(--dim)}
+.badge{background:#eef5ff;border-radius:999px;color:#0757a6;display:inline-block;font-size:12px;font-weight:650;margin-right:6px;padding:2px 9px}
+.badge.good{background:#edfaef;color:#1d7a34}.badge.warn{background:#fff5e8;color:#a85800}
+.diagram-pending{background:#fffaf0;border:1px dashed #d88900;border-radius:10px;color:#714100;margin:14px 0;padding:18px;text-align:center}
+.diagram-pending strong{display:block;font-family:'SF Mono',ui-monospace,monospace;font-size:14px;letter-spacing:.02em}
+.diagram-pending span{display:block;font-size:13px;margin-top:5px}
+table{border-collapse:collapse;font-size:14px;margin:10px 0;width:100%}
+th,td{border-bottom:1px solid #ececf0;padding:8px 9px;text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:600}td.ok{color:#248a3d;font-weight:650}td.no{color:#d70015;font-weight:650}
+.two{display:grid;gap:16px;grid-template-columns:1fr 1fr}.two>div{background:#fafafd;border-radius:9px;padding:4px 14px}
+@media(max-width:680px){.two{grid-template-columns:1fr}.card{padding:18px 16px}header h1{font-size:26px}}
+.comment-label{color:var(--dim);display:block;font-size:13px;margin-top:16px}
+textarea{background:#fbfbfd;border:1px solid #d2d2d7;border-radius:8px;font:inherit;font-size:14px;margin-top:4px;min-height:68px;padding:9px 10px;resize:vertical;width:100%}
+textarea:focus{border-color:var(--blue);outline:2px solid #007aff33}
+.summary pre{background:#f5f5f7;border-radius:8px;font-size:13px;min-height:42px;padding:10px;white-space:pre-wrap;word-break:break-word}
+.chunk{margin:10px 0}
+button{background:var(--blue);border:0;border-radius:8px;color:#fff;cursor:pointer;font:inherit;font-size:14px;margin-right:8px;padding:8px 14px}
+button.secondary{background:#e8e8ed;color:var(--fg)}
+.status{color:var(--dim);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>FLY-202 设计总览</h1>
+<div class="meta"><span class="mono">FLY-202</span> · test-slot-4 真实 Runner 测试夹具 · 2026-09-26 · 设计评审 APPROVED · PR <span class="mono">#194</span>（保持开放，不合并）</div>
+</header>
+
+<section class="card blue" data-sid="summary" data-title="一句话总结">
+<h2>一句话总结</h2>
+<p class="lead">现有沙箱笔记在结构上满足五项任务；评审另标记一条 production Discord 表述过宽的非阻塞意见，下一步先重新验证当前事实，再只修真正失效或被明确收紧的内容。</p>
+<p><span class="badge good">推荐方向</span>验证优先、最小修复、最终版本与 PR 的提交编号严格一致。</p>
+<ul>
+<li><strong>fixture（测试夹具）</strong>：专门供自动化测试重复使用的真实输入；它不是产品功能。</li>
+<li><strong>Runner</strong>：执行具体仓库任务的 AI 工作者；这里运行在隔离的 QA 沙箱里。</li>
+<li><strong>幂等</strong>：重复运行不会为了制造变化而改写已经正确的文件。</li>
+</ul>
+<label class="comment-label" for="comment-summary">我的意见</label>
+<textarea id="comment-summary" class="comment" data-sid="summary" placeholder="对这一节有意见就写在这里（自动保存在本浏览器）"></textarea>
+</section>
+
+<section class="card green" data-sid="flow" data-title="核心流程">
+<h2>核心流程</h2>
+<p>实现节点先拿到共享分支的写入轮次（TURN，表示当前只有这个节点可以改工作树），再验证内容、来源和 PR。任何异常都停下并把证据交给 Lead。</p>
+<div class="diagram-pending" role="img" aria-label="核心流程图等待本地渲染">
+<strong>DIAGRAM PENDING LOCAL RENDER</strong>
+<span>本地 mmdc 两次都因 Chromium 权限失败；Mermaid 源码：FLY-202-d1-flow.mmd</span>
+</div>
+<p class="muted">图的关键分叉：全绿时保持 <code>sandbox-notes.md</code> 原样；有红项时只修红项并完整复验；最后 push 后核对本地、远端和 PR 三个提交编号。</p>
+<label class="comment-label" for="comment-flow">我的意见</label>
+<textarea id="comment-flow" class="comment" data-sid="flow" placeholder="对这一节有意见就写在这里（自动保存在本浏览器）"></textarea>
+</section>
+
+<section class="card purple" data-sid="model" data-title="数据与结构模型">
+<h2>数据与结构模型</h2>
+<p>这里没有新数据库。数据模型是“事实来源 → 沙箱笔记 → feature branch → PR #194”；设计文档跟随同一分支，但放在 <code>engineering/doc/</code>，不会改变任务要求保存的 <code>doc/</code> 文件清单。</p>
+<div class="diagram-pending" role="img" aria-label="数据与结构模型图等待本地渲染">
+<strong>DIAGRAM PENDING LOCAL RENDER</strong>
+<span>本地 mmdc 两次都因 Chromium 权限失败；Mermaid 源码：FLY-202-d2-model.mmd</span>
+</div>
+<table>
+<tr><th>来源</th><th>派生内容</th><th>当前证据</th></tr>
+<tr><td>Git tracked tree</td><td>顶层目录表</td><td>17 行，集合完全一致</td></tr>
+<tr><td><code>packages/qa-framework/README.md</code></td><td>框架摘要</td><td>10 条，覆盖 11 个二级主题</td></tr>
+<tr><td><code>ls -R doc/ | head -50</code></td><td>文件清单 fenced block</td><td>50 行逐字一致</td></tr>
+<tr><td>README + alert scripts</td><td>告警隔离边界</td><td><code>--alerts</code> + 测试频道才隔离</td></tr>
+</table>
+<label class="comment-label" for="comment-model">我的意见</label>
+<textarea id="comment-model" class="comment" data-sid="model" placeholder="对这一节有意见就写在这里（自动保存在本浏览器）"></textarea>
+</section>
+
+<section class="card amber" data-sid="evidence" data-title="当前证据">
+<h2>当前证据</h2>
+<table>
+<tr><th>检查</th><th>结果</th><th>备注</th></tr>
+<tr><td>用途段落</td><td class="ok">PASS</td><td>3 段（要求 2–3）</td></tr>
+<tr><td>顶层目录</td><td class="ok">PASS</td><td>17 个 tracked 目录，0 个空描述</td></tr>
+<tr><td>README 摘要</td><td class="ok">PASS</td><td>10 条</td></tr>
+<tr><td><code>doc/</code> 清单</td><td class="ok">PASS</td><td>现场输出与 fenced block 都是 50 行</td></tr>
+<tr><td>PR #194</td><td class="ok">OPEN</td><td>base=main，head=project-slot-4-FLY-202</td></tr>
+<tr><td>继承 head CI</td><td class="ok">PASS</td><td>只证明 <code>77ed18b</code>；新设计 push 后必须重新看 exact-head 状态</td></tr>
+</table>
+<p><span class="badge warn">诚实标注</span>本页不是 QA 通过证明，也不是 merge 授权。它只说明设计时重新读取到的证据。</p>
+<label class="comment-label" for="comment-evidence">我的意见</label>
+<textarea id="comment-evidence" class="comment" data-sid="evidence" placeholder="对这一节有意见就写在这里（自动保存在本浏览器）"></textarea>
+</section>
+
+<section class="card blue" data-sid="review" data-title="设计评审">
+<h2>设计评审</h2>
+<p><span class="badge good">APPROVED</span>本轮 plan 在第一次显式 review request 中通过。Reviewer 给出 3 条 MEDIUM 和 4 条 LOW advisory；它们不阻塞 design gate，但已经完整报告给 Lead。</p>
+<div class="diagram-pending" role="img" aria-label="设计评审时序图等待本地渲染">
+<strong>DIAGRAM PENDING LOCAL RENDER</strong>
+<span>本地 mmdc 两次都因 Chromium 权限失败；Mermaid 源码：FLY-202-d3-review.mmd</span>
+</div>
+<ul>
+<li>最重要的建议：最终范围检查要抓 rename 和白名单外修改；baseline 要写进可恢复 ledger。</li>
+<li>已知内容边界：notes 里的 “without touching production Discord channels” 过宽，因为未启用 <code>--alerts</code> 时告警仍走 production-default path。</li>
+<li>其余建议：固定 BSD <code>/bin/ls</code>、保留 PR 的 Linear section、允许 GitHub SHA 短暂延迟、刷新本轮 review 记录。</li>
+</ul>
+<label class="comment-label" for="comment-review">我的意见</label>
+<textarea id="comment-review" class="comment" data-sid="review" placeholder="对这一节有意见就写在这里（自动保存在本浏览器）"></textarea>
+</section>
+
+<section class="card red" data-sid="tradeoffs" data-title="关键取舍与放弃方案">
+<h2>关键取舍与放弃方案</h2>
+<table>
+<tr><th>方案</th><th>结论</th><th>理由</th></tr>
+<tr><td>先验证，只修失败项</td><td class="ok">采用</td><td>保留 fixture 稳定性；当前内容已全绿。</td></tr>
+<tr><td>每轮整份重写</td><td class="no">放弃</td><td>制造噪音，可能重新引入已修过的事实错误。</td></tr>
+<tr><td>新建第二个 PR</td><td class="no">放弃</td><td>分裂 CI、评审和 fixture 历史；已有 PR #194。</td></tr>
+<tr><td>提交临时验证脚本</td><td class="no">放弃</td><td>任务只需文档与 PR wiring；脚本会扩大范围。</td></tr>
+<tr><td>顺手清理旧 FLY-202 文件夹</td><td class="no">放弃</td><td>超出范围，还会使 <code>doc/</code> 快照失效。</td></tr>
+</table>
+<label class="comment-label" for="comment-tradeoffs">我的意见</label>
+<textarea id="comment-tradeoffs" class="comment" data-sid="tradeoffs" placeholder="对这一节有意见就写在这里（自动保存在本浏览器）"></textarea>
+</section>
+
+<section class="card navy" data-sid="boundary" data-title="诚实边界">
+<h2>诚实边界</h2>
+<div class="two">
+<div>
+<h3>这个设计会做</h3>
+<ul>
+<li>把 5 项任务拆成 V1–V9 的可复验合同</li>
+<li>保留稳定路径、分支、PR 和继承 marker</li>
+<li>要求最终 push 后证明三个 SHA 一致</li>
+<li>将过程文档限制在 <code>engineering/doc/</code></li>
+</ul>
+</div>
+<div>
+<h3>这个设计不会做</h3>
+<ul>
+<li>不修改产品代码或生产资源</li>
+<li>不 merge、不部署、不请求 ship 权限</li>
+<li>不派发 implement 或 QA 节点</li>
+<li>不把旧 head 的 CI 冒充为新 head 的 CI</li>
+</ul>
+</div>
+</div>
+<label class="comment-label" for="comment-boundary">我的意见</label>
+<textarea id="comment-boundary" class="comment" data-sid="boundary" placeholder="对这一节有意见就写在这里（自动保存在本浏览器）"></textarea>
+</section>
+
+<section class="card navy summary" data-sid="comments" data-title="意见汇总">
+<h2>意见汇总</h2>
+<p class="status">每节意见会自动保存在当前浏览器并汇总。复制文本是修改反馈，不是通过信号。</p>
+<div id="commentChunks"></div>
+<button id="copyAllComments" type="button">复制全部意见</button>
+<span id="copyStatus" class="status"></span>
+<label class="comment-label" for="comment-comments">对汇总方式的意见</label>
+<textarea id="comment-comments" class="comment" data-sid="comments" placeholder="这条意见也会进入汇总（自动保存在本浏览器）"></textarea>
+</section>
+</main>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var MARKER = "【页面意见汇总】FLY-202";
+  var STORAGE_PREFIX = "flywheel-founder-comments:" + location.pathname + ":";
+  var CHUNK_LIMIT = 1800;
+  var COMMENT_PART_LIMIT = 1300;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea.comment"));
+  var chunksBox = document.getElementById("commentChunks");
+  var copyStatus = document.getElementById("copyStatus");
+
+  function loadValue(key){
+    try { return localStorage.getItem(STORAGE_PREFIX + key) || ""; }
+    catch (error) { return ""; }
+  }
+
+  function saveValue(key, value){
+    try { localStorage.setItem(STORAGE_PREFIX + key, value); }
+    catch (error) {}
+  }
+
+  function commentBlocks(){
+    var blocks = [];
+    areas.forEach(function(area){
+      var value = area.value.trim();
+      if (!value) return;
+      var section = area.closest("section");
+      var title = section ? section.getAttribute("data-title") : area.getAttribute("data-sid");
+      var total = Math.max(1, Math.ceil(value.length / COMMENT_PART_LIMIT));
+      for (var index = 0; index < total; index += 1) {
+        var suffix = total > 1 ? "（续 " + (index + 1) + "/" + total + "）" : "";
+        var part = value.slice(index * COMMENT_PART_LIMIT, (index + 1) * COMMENT_PART_LIMIT);
+        blocks.push("【" + title + suffix + "】\n" + part);
+      }
+    });
+    return blocks;
+  }
+
+  function buildChunks(){
+    var blocks = commentBlocks();
+    if (!blocks.length) return [];
+    var result = [];
+    var current = MARKER;
+    blocks.forEach(function(block){
+      var addition = "\n\n" + block;
+      if (current !== MARKER && current.length + addition.length > CHUNK_LIMIT) {
+        result.push(current);
+        current = MARKER + addition;
+      } else {
+        current += addition;
+      }
+    });
+    if (current !== MARKER) result.push(current);
+    if (result.length > 1) {
+      result = result.map(function(chunk, index){
+        return chunk.replace(MARKER, MARKER + "\n(" + (index + 1) + "/" + result.length + ")");
+      });
+    }
+    return result;
+  }
+
+  function copyText(text, statusNode){
+    function fallback(){
+      var helper = document.createElement("textarea");
+      helper.value = text;
+      helper.setAttribute("readonly", "");
+      helper.style.position = "fixed";
+      helper.style.opacity = "0";
+      document.body.appendChild(helper);
+      helper.select();
+      var copied = false;
+      try { copied = document.execCommand("copy"); }
+      catch (error) { copied = false; }
+      document.body.removeChild(helper);
+      statusNode.textContent = copied ? "已复制" : "复制失败，请手动选择";
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function(){
+        statusNode.textContent = "已复制";
+      }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function renderSummary(){
+    while (chunksBox.firstChild) chunksBox.removeChild(chunksBox.firstChild);
+    var chunks = buildChunks();
+    if (!chunks.length) {
+      var empty = document.createElement("pre");
+      empty.textContent = "（还没有意见）";
+      chunksBox.appendChild(empty);
+      return;
+    }
+    chunks.forEach(function(chunk, index){
+      var wrap = document.createElement("div");
+      wrap.className = "chunk";
+      var preview = document.createElement("pre");
+      preview.textContent = chunk;
+      wrap.appendChild(preview);
+      if (chunks.length > 1) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        button.textContent = "复制第 " + (index + 1) + " 段";
+        var status = document.createElement("span");
+        status.className = "status";
+        button.addEventListener("click", function(){ copyText(chunk, status); });
+        wrap.appendChild(button);
+        wrap.appendChild(status);
+      }
+      chunksBox.appendChild(wrap);
+    });
+  }
+
+  areas.forEach(function(area){
+    var key = area.getAttribute("data-sid");
+    area.value = loadValue(key);
+    area.addEventListener("input", function(){
+      saveValue(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById("copyAllComments").addEventListener("click", function(){
+    var chunks = buildChunks();
+    if (!chunks.length) {
+      copyStatus.textContent = "还没有意见";
+      return;
+    }
+    copyText(chunks.join("\n\n"), copyStatus);
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

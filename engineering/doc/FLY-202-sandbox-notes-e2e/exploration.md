@@ -1,44 +1,70 @@
-# Exploration: QA Sandbox Fixture — slot-2 real-Runner E2E（sandbox-notes 重建轮）— FLY-202
-
-**Issue**: FLY-202 — https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up
-**Date**: 2026-07-19
-**基于**: 本轮 dispatch 任务描述 + 历史轮次（sandbox PR #29/#30/#57、exec 48a781ff 等）设计文档
+# FLY-202 QA 沙箱 fixture 笔记 — 探索
+Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up)
+日期: 2026-09-26
+基于: 无（本轮 re-dispatch 任务描述 + 分支 `origin/project-slot-4-FLY-202@77ed18b` + PR #194）
 
 ---
 
-## 1. 这个 issue 是什么
+## 1. 一句话方向
 
-FLY-202 **不是产品需求，是 QA 基础设施的 fixture（测试夹具）**。
+把 FLY-202 当作 test-slot 专用的真实 Runner 测试夹具：在继承的开放 PR #194 上验证五项交付仍与当前仓库一致，只在发现漂移时做最小修复，并保持 PR 开放、绝不合入 main。
 
-test-slot E2E 框架（FLY-96 + FLY-115）不支持 synthetic 模式——每个 slot 必须 spawn 一个
-**real Runner** 走完整 pipeline。spawn 需要 `scripts/inject-linear-issue.sh`
-（内部 `POST /api/runs/start`）拿到一个真实存在、PreHydrator 可见的 Linear issue。
-FLY-197 发现文档引用的 `FLY-SBX-1` 并不存在，FLY-202 就是填这个洞的常驻 fixture issue。
+## 2. 任务目的
 
-「do not pick up」是对**生产** Lead/Runner 的守卫；本 session 是 slot-2 harness 有意
-spawn 的沙箱 Runner，属于该 issue 的预期消费者。
+FLY-202 不是产品功能，而是 QA 基础设施的 fixture（测试夹具，指为了稳定复现测试流程而保留的真实输入）。`scripts/inject-linear-issue.sh` 通过 `POST /api/runs/start` 启动真实 Runner；PreHydrator 必须能从 Linear 读取到真实 issue，文档里并不存在的 `FLY-SBX-1` 无法满足这条路径。这个 issue 因而给 test-slot harness 一个长期可见、工作量小但有多个中间步骤的目标，方便 QA 在 Runner 工作中途观察状态。
 
-## 2. 本轮的具体任务（issue 原文五步）
+“do not pick up” 约束生产 Lead 和生产 Runner。本执行由 test-slot-4 明确启动，execution id 为 `cd41d8e7-9d88-45e1-9921-4f0e91b42485`，DAG 节点为 `eng_design`，属于预期消费者。
 
-1. 创建 `doc/qa/sandbox-notes.md`，2-3 段说明 `flywheel-qa-sandbox` 仓库的用途。
-2. 追加一张表：仓库每个顶层**目录** + 一行描述。
-3. 追加一节：`packages/qa-framework/README.md` 的 ~10 条 bullet 摘要。
-4. 运行 `ls -R doc/ | head -50`，输出放进 fenced block。
-5. 在 feature branch 上 commit，向 sandbox 仓库 main 开 PR。
+## 3. 明确交付
 
-任务刻意「小、稳、多步」——给 QA harness 一个可观测的 mid-work 窗口。
+最终内容产物是 `doc/qa/sandbox-notes.md`，必须同时满足：
 
-## 3. 关键前提变化（相对上一轮）
+1. 2–3 个正文段落说明 `flywheel-qa-sandbox` 的用途。
+2. 表格逐项覆盖仓库每个顶层目录，并给出非空的一行描述。
+3. 用约 10 条 bullet 概括 `packages/qa-framework/README.md`。
+4. fenced code block 逐字保存 `ls -R doc/ | head -50` 的输出。
+5. 内容位于 feature branch 上，并通过开放 PR 指向 sandbox 仓库的 `main`。
 
-- `doc/qa/sandbox-notes.md` 在当前分支 tip（`7049f719`）**不存在**：#29 创建、#30 刷新，
-  随后 #58（FLY-1286 大规模 tree 同步）把它移除了。所以本轮 step 1 是**干净新建**，
-  不是刷新——无合并冲突包袱。
-- 本 sandbox clone 现在带 `.flywheel/config.yaml`，`doc_flow.enabled: true`、
-  department=engineering → 过程文档落 `engineering/doc/FLY-202-sandbox-notes-e2e/`
-  （旧轮次的 `doc/qa/exploration/FLY-202/`、`docs/superpowers/plans/` 位置已过时）。
+## 4. 继承状态
 
-## 4. 边界
+| 事实 | 当前值 |
+|---|---|
+| 分支基线 | `project-slot-4-FLY-202@77ed18b` |
+| 开放 PR | #194，base=`main`，head=`project-slot-4-FLY-202` |
+| PR 状态 | OPEN、MERGEABLE、exact-head 两个 CI check 均成功 |
+| 现有内容 | `doc/qa/sandbox-notes.md` 已包含五项要求，且告警隔离措辞已按源码修正 |
+| 本轮 design 写入 | `engineering/doc/FLY-202-sandbox-notes-e2e/` 下过程文档与 founder HTML |
 
-- 一切写操作留在沙箱 clone（`/private/tmp/flywheel-test-slot-2/project-slot-2-FLY-202`）。
-- 不碰生产资源；不 merge PR（ship 由 founder gate 决定，不属于任何 runner 节点）。
-- 三段式:本文档属 design 段;implement 段在同一分支继续;QA 段最后验证。
+本轮不是从零开始。先前 design 和 implement 已经把任务做完；当前 design 节点必须基于继承头重新核验，并给后续 implement 节点一个幂等执行合同（幂等，指重复执行不会制造额外变化），而不是为了“有改动”重写正确产物。
+
+## 5. 方案比较
+
+### A. 验证优先，只修漂移（推荐）
+
+重新计算目录集合、README 摘要数量、`doc/` 快照、PR 绑定和内容事实。全部通过时，implement 节点不改内容，只记录核验并收尾；有红项时仅修对应段落或表格行。
+
+- 优点：保留 PR 历史与稳定 fixture；最小化 `doc/` 快照被设计流程自我干扰的风险。
+- 代价：需要把验收断言写得足够明确，避免“看起来没问题”的弱核验。
+
+### B. 每轮完整重建 `sandbox-notes.md`
+
+- 优点：流程表面上简单。
+- 缺点：制造无意义 diff，容易改坏已经正确的告警边界、继承 marker 或快照；拒绝。
+
+### C. 新建分支和第二个 PR
+
+- 优点：本轮历史独立。
+- 缺点：同一个 head 目标已有开放 PR，重复 PR 会分裂 CI、评审和 fixture 状态；拒绝。
+
+## 6. 关键约束与负向守卫
+
+- 所有写操作只在 sandbox clone 与当前 feature branch 内进行；不触碰生产资源。
+- 过程文档继续复用 `engineering/doc/FLY-202-sandbox-notes-e2e/`，不创建第二个 FLY-202 doc-flow 文件夹。
+- 不在 `doc/` 下新增或删除文件；该目录的文件名本身会改变第 4 项快照。
+- 保留 `doc/qa/sandbox-notes.md` 最后的 `- FLY-2456 drill marker r1 B1`。
+- 不另开 PR、不 merge、不 rebase、不 force-push、不请求 ship approval、不 dispatch 后继节点。
+- 分支分叉、PR 关闭、越界冲突或来源事实无法确认时停止内容修改并上报 Lead。
+
+## 7. 成功标准
+
+设计完成时应有：最新的探索、调研和实施计划；新 execution 绑定的有效 APPROVED design review；包含真实 Mermaid 本地渲染图和逐节评论层的 founder HTML；所有文档与 HTML 已提交并 fast-forward push；HTML 已发布、自验并向 Lead 报告。此节点不实现 `sandbox-notes.md`，也不推进、合并或关闭 PR。

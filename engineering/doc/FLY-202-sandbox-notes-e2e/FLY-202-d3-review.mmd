@@ -1,0 +1,10 @@
+sequenceDiagram
+  participant D as Design Runner
+  participant B as Flywheel Bridge
+  participant R as Design Reviewer
+  D->>B: Open review_design gate (question b4bc52e6)
+  D->>B: Register request-review (request 005ed472)
+  B->>R: Review committed plan blob ba34275c
+  R-->>B: APPROVED with MEDIUM and LOW advisories
+  B-->>D: Effective reviewVerdict APPROVED
+  D->>B: Report advisory summary to Lead
