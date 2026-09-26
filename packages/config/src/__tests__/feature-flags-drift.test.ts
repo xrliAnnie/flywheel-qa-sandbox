@@ -43,6 +43,7 @@ const sources = collectProductionSources(REPO_ROOT);
 const trackedConfigFiles = execFileSync("git", ["ls-files", "-z"], {
 	cwd: REPO_ROOT,
 	encoding: "utf8",
+	maxBuffer: 64 * 1024 * 1024,
 })
 	.split("\0")
 	.filter((file) => file === "config.yaml" || file.endsWith("/config.yaml"));

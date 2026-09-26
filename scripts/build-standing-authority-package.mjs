@@ -37,6 +37,7 @@ if (existsSync(output)) throw new Error(`output already exists: ${output}`);
 const tracked = spawnSync("git", ["ls-files", "-z"], {
 	cwd: repo,
 	encoding: "utf8",
+	maxBuffer: 64 * 1024 * 1024,
 });
 if (tracked.status !== 0)
 	throw new Error(

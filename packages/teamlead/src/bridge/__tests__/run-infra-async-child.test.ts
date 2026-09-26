@@ -69,7 +69,7 @@ describe("FLY-2331 run-infra async child funnels", () => {
 		clearInterval(interval);
 	});
 
-	it("bounds restart-resume git reads at 20 seconds and fails safe", async () => {
+	it("bounds restart-resume git reads by time and output size and fails safe", async () => {
 		const execFile = vi
 			.fn()
 			.mockResolvedValueOnce({ stdout: "abc\n", stderr: "" })
@@ -83,6 +83,7 @@ describe("FLY-2331 run-infra async child funnels", () => {
 		).resolves.toBeNull();
 		expect(execFile).toHaveBeenNthCalledWith(1, "git", ["rev-parse", "HEAD"], {
 			cwd: "/repo",
+			maxBuffer: 64 * 1024 * 1024,
 			timeoutMs: 20_000,
 		});
 	});
