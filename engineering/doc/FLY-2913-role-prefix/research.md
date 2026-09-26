@@ -1,7 +1,9 @@
 # FLY-2913 逐角色精简固定前缀 — 调研
 Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913/token8-给-claude-runner-评审-qa-各配精简固定前缀逐角色只加载真正用到的工具插件mcp-与规则)
-日期: 2026-09-25
+日期: 2026-09-26
 基于: exploration.md
+
+> 当前有效范围（2026-09-26 founder 返工）：只把前缀选择从全局 FlagStore 移到 DAG 模板版本。下文原设计与旧裁定保留作历史；以 plan.md §九及 design-correction.md 为当前实施合同。role-v1 内容与已验能力不重做；旧 APPROVED 不覆盖本次修订。
 
 ## 结论
 
@@ -67,3 +69,22 @@ Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913/token8-给-claude-
 ## R1 补查：任务技能声明缺口
 
 `Blueprint.ts` 的 workflowCapabilities 并不包含技能。`scripts/meeting-notes-scheduler.ts:525` 和 `scripts/xiaohongshu-scheduler.ts:236` 都通过 runs/start 启动普通 runner，当前 payload 没有能力集合。`lead-capabilities/skill-adapters.ts:58` 明确两种小红书学习是 Runner 工作流。修订计划新增有限 ID 声明及 pinned 传递；所有没声明的来源走可见 legacy，不以 phase 推断为纯工程任务。
+
+
+## 2026-09-26 返工研究：当前代码事实
+
+| 源码 | 已确认行为 | 修订落点 |
+|---|---|---|
+| workflow-template.ts:47 / workflow-menu.ts:330 | 节点无 prefix 字段；菜单编译 schema 3 manifest | 增加有界枚举节点字段，保留未知字段拒绝；仅工程模板候选 |
+| workflow-template-publication.ts:117,272 | stage 冻结 manifest/current revision/digest/registry/build，apply 消费 confirmation 后 createAndPublish | 发布保留；rollback 改为同等守卫的历史指针发布 |
+| StateStore.ts:36058,36251 | createAndPublish 同事务插 revision/publication/audit/receipt，CAS 指针；旧 publishWorkflowTemplate 没有完整受管守卫 | 扩展受管事务，不把旧低级发布裸露为新入口 |
+| workflow-run-snapshot.ts:346,431,750 | schema1 和 generalized 两分支；exact-key parser，digest 校验 | manifest 保留字段即可，不增加重复 resolved 字段；历史缺字段不注入默认值改变 digest |
+| workflow-prefix-context.ts:17 | execution runtime → run snapshot；核 run/template/revision/digest/node；仅工程 design/implement/qa | 从已封存 manifest 节点取配置，返回 templateRevision 与字段来源 |
+| bridge/run-dispatcher.ts:645 / run-infra.ts:1270 | 每启动从 FlagStore 读 mode，再查绑定上下文 | 删除 store 参数，改为一次已封存节点选择；覆盖 entry/downstream/retry/resume |
+| bridge/review-prefix-profile.ts:29 / plugin.ts:8524 | Claude review 根据作者 runtime + reviewType；初轮/续轮/新 session fallback 每次调用 | 独立 review_prefix_profile，不受 Codex 作者 runner 分支短路影响 |
+| review-request-coordinator.ts:1595 / land-content-review.ts:181 | 两条 Claude review 启动入口 | 都从作者/提交执行的持久绑定取版本，不从当前模板或 job 文本取值 |
+| config/runner-prefix-profiles.ts:233,446 | stamp 有 templateId/runId/nodeId/snapshotDigest，没有 template revision | 加 revision 与 requested/effective/reason；保留 settings 生成字节 |
+
+本轮只读核验 PR #1361 的 head 与工作树相同。PR 的旧五角色配对数字保留作历史；最新 Lead 指示记录 QA@2 implement -11.3%、QA -10.1% 与 legacy 字节一致。本轮没有重跑这些房内任务，交接时须引用 QA@2 原始 receipt/冻结 SHA，不把旧 PR 表当 QA@2。
+
+发布服务当前拒绝 active/held run 内未 dispatchPinned 的节点，且 rollback 会重新验证 model registry。新方案必须保留这些守卫；历史目标模型失效时拒绝回退，不能偷偷改旧内容，或把 run 重钉为当前版本。模板回退不是二进制回滚，旧 parser 未必能读新字段。

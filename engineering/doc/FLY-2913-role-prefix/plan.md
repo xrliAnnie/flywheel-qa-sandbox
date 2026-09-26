@@ -1,7 +1,9 @@
 # FLY-2913 逐角色精简固定前缀 — 实施计划
 Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913/token8-给-claude-runner-评审-qa-各配精简固定前缀逐角色只加载真正用到的工具插件mcp-与规则)
-日期: 2026-09-25
+日期: 2026-09-26
 基于: research.md
+
+> 当前有效范围（2026-09-26 founder 返工）：只把前缀选择从全局 FlagStore 移到 DAG 模板版本。下文原设计与旧裁定保留作历史；以 plan.md §九及 design-correction.md 为当前实施合同。role-v1 内容与已验能力不重做；旧 APPROVED 不覆盖本次修订。
 
 ## 一、交付给 founder 的变化
 
@@ -236,3 +238,12 @@ Lead 重派说明（08:0xZ）裁定，替换 §二.5 与 T6 中的直接 env 语
 - **验收口径**：固定前缀以首轮真实 API usage 为准。`get_context_usage` 只作辅助，并且对 skillOverrides **不可靠**：它把被隐藏技能的 token 挪进 “System tools”，还把 name-only 报成总量不变。
 - **Follow-up（本单不做，也不另开新单）**：子代理描述（诊断约 8.8K）与插件技能/子代理（everything-claude-code 约 2.4K）在当前 CLI 上没有按启动生效的逐项控制。已写好的离线选定组件插件副本编译器留作后续手段，v1 不接入生产。
 - 房内开关不需要设置：探针配对不依赖房内开关。带开关的真实任务验收由 QA 在自己的房里用 `qa-generalized seed-project-flags` 播种。
+
+
+## 九、Founder 裁定修订：DAG 模板版本负责切换（当前唯一实施合同）
+
+2026-09-26 07:56–07:57 PDT founder 已授权「改」。本节及 [design-correction.md](design-correction.md) 完整替代 §二的开关/热重编译语义、§七 FlagStore 与 T6 默认启用；§六工程来源与§八 name-only 实测结论保留。上一轮实现基线为 PR #1361 @2022d92d07e618beb142b20416ebde7ad862abd8。只实现 correction 的 C1–C6；不重写已验 profile 内容，不重做七天统计或配对测量。
+
+一句话：模板发布决定以后新任务用哪套说明；已经开工的任务继续用自己起跑时保存的版本，回退将模板指针切回指定历史版本。
+
+详细节点字段、两类评审绑定、老 run 兼容、受管 rollback 事务、完整命令、查询与失败路径、测试矩阵均见 correction。修订必须获得新有效 APPROVED；旧审批不能代替本节审查。设计节点不实现、不发布生产模板、不装/拆房、不改变 PR 代码或请求 ship。
