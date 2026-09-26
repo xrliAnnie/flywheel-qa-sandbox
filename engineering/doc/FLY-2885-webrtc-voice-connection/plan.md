@@ -389,58 +389,98 @@ T10 → T1 → T2 → T3 → T8 → T9 → T4 → T6 → T5 → T5b → T5c → 
 - R5 LOW(`speech_binding_unavailable` 口径不一)与 R6 LOW(无声分支文字连写)已分别在 v6 / v6.1 直接修正,无需开单。
 - (写 `liveVoice` 的受控写入按 Lead 裁定 `54c3646c` 归本单 T9 实施,不是 follow-up。)
 
-## 12. T8 修订（probe4 实测）
+## 12. T8 修订（probe4 / probe7 实测）
 
-Lead 裁定 `0ee0c065`（2026-09-25）：只追加本节，不重写全案；外部 Codex 只复核本节。**本节收紧 §3 T8 的 `initialItems` 预算**。原 T8 的数字（合计 ≤32,000 字节、≤128 条，prompt ≤15,500 o200k / 128 KB）全部保留、继续生效；本节在它们之上**再加一道真实 token 上限**，并写清超限时怎么处理。
+Lead 裁定 `0ee0c065`（2026-09-25）：只追加本节，不重写全案；外部 Codex 只复核本节。**本节收紧 §3 T8 的 `initialItems` 预算，并补上 T8 的分段规则、上下文错误的 HTTP 传播和测试**。原 T8 的数字（合计 ≤32,000 字节、≤128 条，prompt ≤15,500 o200k / 128 KB）全部保留、继续生效；本节在它们之上再加一道真实 token 上限。
+
+修订 r2（Lead 指令 `564f9436`，§12 复核 `d13bfbb89` 的 1 HIGH + 2 MEDIUM）：
+- 12.1、12.3 补了多条目实测（probe7），并按实测校准每条包装余量；
+- 12.3 收窄了保证的范围，新增 12.6 重验条件；
+- 新增 12.4 分段规则；
+- 12.5 补了 HTTP 错误传播契约；
+- 12.7 测试相应扩充。
 
 ### 12.1 实测依据
 
-- 证据：`evidence/probe4-initialitems-summary.md`（commit `e1bd108b2`、`df76230ef`），台架 `evidence/probe4.mjs`，30 场日志 `evidence/probe-run{4,5,6}-*.jsonl`。环境同 research：固定 0.156.1、v3、WebRTC、gpt-live-1-codex、订阅、无 key。
-- developer 角色**被接受**：30 场零 `thread/realtime/error`、零提前 `closed`；未超限时条目里的事实被用上 8/8（另有 research probe-run3 1/1）。所以 T8 保持 developer 角色（与 FLY-2886 的 V2 `appendText(developer)` 不是一条路径）。
-- **服务端有一道不报错的上限**：条目合计 7,951 个 o200k token（27,309 字节）2/2 能用上，8,251 个（28,353 字节）起就**整体看不到**。超限的 20 场是 0/20：事实放第 1 条或第 3 条、放条首或条中、用 developer 还是 user+「[旁注,勿回应]」都一样，没有任何错误事件，模型编一个答案。
-  上限与 8,192 吻合。Codex 客户端只按「字节/4」估算（上限 8,192），中文每 token 约 3.4 字节，这道检查拦不住（失败的 28–30 KB 在它的估算里只有 7,088–7,610）。
-- 结论：原 T8 的「≤32,000 字节」在中文记忆上会让 Raya 这种大记忆 Lead **静默丢掉全部记忆**。必须按真实 o200k 计数限额。
+- 证据：`evidence/probe4-initialitems-summary.md`（commit `e1bd108b2`、`df76230ef`，r2 的探针 7 一节随本次提交），台架 `evidence/probe4.mjs`，条目生成器 `evidence/probe7-gen-items.mjs`，41 场日志 `evidence/probe-run{4,5,6,7}-*.jsonl`。环境同 research：固定 0.156.1、v3、WebRTC、gpt-live-1-codex、订阅、无 key。
+- developer 角色**被接受**：41 场零 `thread/realtime/error`、零提前 `closed`。未超限时条目里的事实被用上 16/16：1、3、16、128 条，事实放在首、中、尾条，文本混合中英文、数字和编号。
+- **服务端有一道不报错的上限**，超过后条目**整体**看不到，与事实放在哪一条、用哪个角色无关，也没有任何错误事件：
+  - 3 条：内容 7,951 token 能用上，8,251 就看不到了（0/20 场）；
+  - 128 条：内容 7,267 能用上，7,580 就看不到了（0/3 场）。
+- **每条包装开销**：把服务端计数设为「内容 + w·条数」，上面两组边界给出 125·w ∈ (371, 984)，即 **w ∈ (2.97, 7.87) token/条**。
+- Codex 客户端只按「字节/4」估算（上限 8,192）。中文每 token 约 3.4 字节，这道检查拦不住（失败组在它的估算里只有 5,897–7,610）。
+- 结论：原 T8 的「≤32,000 字节」在中文记忆上会让大记忆的 Lead **静默丢掉全部记忆**，必须按真实 o200k 计数，并计入每条的包装开销。
 
 ### 12.2 计数方法
 
-- 实现：`js-tiktoken`，**精确钉在 1.0.21**，编码 `o200k_base`。这是 Bridge 现在已经在用的计数器（`VOICE_CONTEXT_TOKENIZER = "js-tiktoken@1.0.21/o200k_base"`，`teamlead/package.json` 里就是精确版本）。
-- 离线可用：rank 表随 npm 包打包在 `dist/ranks` 里，`getEncoding("o200k_base")` 不联网。
-- Bridge 与 container 用**同一实现、同一版本**：voice-codex 新增依赖 `js-tiktoken: 1.0.21`（同一个 lockfile 条目）。container 的 `assertContext` 先核 `manifest.tokenizer === "js-tiktoken@1.0.21/o200k_base"`，不一致就 `context_invalid`；再对每条 item 重新计数，与快照 `measurements.initialItems` 逐项比对。
-- 计数口径：`itemsTokens = Σ o200k(item.text) + 8 × 条数`。每条加 8 个 token，是给服务端每条消息的包装开销（角色、分隔）留的余量，不依赖服务端的具体实现。
-- **计数失败即 fail-closed**：编码器加载失败或 `encode` 抛错时，Bridge 报新错误码 `context_token_count_unavailable`（同 `context_too_large` 走 503 `voice_unavailable`），container 报 `context_invalid`。**任何一侧都不许退回只按字节限额**，因为那正是本节要堵的静默丢失路径。
+- 实现：`js-tiktoken`，**精确钉在 1.0.21**，编码 `o200k_base`。这是 Bridge 已经在用的计数器（`VOICE_CONTEXT_TOKENIZER = "js-tiktoken@1.0.21/o200k_base"`）。rank 表随 npm 包打包，`getEncoding("o200k_base")` 不联网。
+- Bridge 与 container 用**同一实现、同一版本**：voice-codex 新增依赖 `js-tiktoken: 1.0.21`（同一个 lockfile 条目）。container 的 `assertContext` 先核 `manifest.tokenizer === "js-tiktoken@1.0.21/o200k_base"`，不一致就 `context_invalid`；再对每条 item 重新计数，与快照 `measurements.initialItems` 逐项比对。同一计数器只能证明两侧一致；这个口径和服务端之间的关系，由 12.3 的实测和 12.6 的重验来保证。
+- 计数口径：`itemsTokens = Σ o200k(item.text) + 8 × 条数`。每条 +8 是包装开销的上界，依据是 12.1 的 w < 7.87。
+- **计数失败即 fail-closed**：编码器加载失败或 `encode` 抛错时，Bridge 报新错误码 `context_token_count_unavailable`，container 报 `context_invalid`。**任何一侧都不许退回只按字节限额。**
 
-### 12.3 上限 7,600 的余量
+### 12.3 上限 7,600 与余量
 
-- `initialItems`：`itemsTokens ≤ 7,600`，同时仍满足原 T8 的 ≤32,000 字节（即 Codex 客户端估算 ≤8,000）和 ≤128 条。三条都满足才算放得下。
-- 余量 592（约 7%），理由：
-  ① 实测只把服务端上限夹在 7,951–8,251 之间，不知道准确值；
-  ② 服务端怎么计包装开销不透明，我们按每条 +8 估，条数多时估算偏差会累积；
-  ③ 服务端分词版本可能漂移。
-  7,600 同时低于实测能用上的 7,951，本身就是一个已证可用的量级。
-- 仍按行切段、按 manifest 顺序装：再加一段会使任一条件超限就停，剩下的段按原顺序进下一步。
+- `initialItems` 同时满足三条才算放得下：`itemsTokens ≤ 7,600`；≤32,000 字节（Codex 估算 ≤8,000）；≤128 条。
+- 余量（以 12.1 的实测为准，不依赖对服务端实现的假设）：
+  - 128 条时，规则最多装 6,576 个内容 token，比同条数实测能用上的 7,267 **低 691**；
+  - 16 条时，规则最多装 7,472，实测 7,471 能用上；
+  - 按 12.1 的线性包装模型，任意条数下规则允许的最大值都比「一定能用上」的下界低至少约 **375**。
+- 这个余量也覆盖分词器版本在两侧的小幅偏差。
+- **保证的范围**：以上只对**已实测的组合**成立——固定二进制 0.156.1（sha256 `0196e89f…255a`）、模型 `gpt-live-1-codex`、v3、WebRTC，以及 probe4/7 期间的服务端行为。服务端上限或计数方式变了，本地计数无法察觉；12.6 规定何时必须重验，重验未过不得上线。
 
-### 12.4 溢出回填与「双超」
+### 12.4 分段规则（T8「按行切段」的具体化）
 
-1. 放不进 items 的段，按 T8 原有路径依次进 `realtime.prompt` 的「# Selected Lead memory (continued)」块。
-2. 回填后按原 T8 预算复核 prompt：≤15,500 o200k 且 ≤128 KB（加头后的实际发送文本）。
-3. **双超**（items 已按 12.3 装满，回填后 prompt 仍超）：**不截断、不摘要、不丢任何一段**，整场不开：
-   - Bridge 抛 `context_too_large{block:"realtime.prompt", bytes, estimatedTokens, itemsTokens, limits}`（不含正文），并 `console.warn` 一行同样的字段；
-   - container 把 Bridge 的 `context_too_large` 与 `context_token_count_unavailable` 映射为新原因 `context_too_large` / `context_invalid`，不再落进笼统的 `codex_open_failed`；
-   - founder 可见：语音 thread 发「📻 语音不可用：这位 Lead 的记忆与上下文超出语音会话上限」（计数不可用时发「📻 语音不可用：上下文无法核对大小」）。thread 在 Lead 自己的频道里，Lead 同样可见；
-   - 证据 `codex_voice_container_open_failed{reason}` 带上 Bridge 给的 limits 字段。
-4. 不存在「部分记忆被默默丢掉」的路径：一段记忆要么在 items 里（计数证明 ≤7,600），要么在 prompt 里（计数证明 ≤15,500），要么整场不开、明示原因。
-5. 容量估算（research R3）：Raya 记忆约 11,991 o200k，items 装 ≈7,600，其余约 4,400 回填进 prompt。prompt 约为身份 3,634 + 状态/会议/边界/协议约 2,000 + 4,400 ≈ 10,000，低于 15,500。Honey Lemon 记忆 6,492 全部装进 items。两者都不触发双超。
+- 每个记忆文件按 manifest 顺序、**只在行边界**切段。一段连同标题（`【记忆文件 <relativePath> 第 i/n 段·只读数据】\n`）和 +8 包装，必须同时满足：
+  - **≤ 2,000 o200k**：保证至少 3 段能进 items，头一段大也不会挤掉整份记忆；
+  - **≤ 8,000 字节**：远低于 Codex 单条 8,192 的估算上限。
+  逐行累加，再加一行会超出任一条件就收段。n 在切完后确定，标题里的 i/n 对切段结果没有影响：切段时按 n 取最大可能位数预留标题长度。
+- 单行本身就超过 2,000 token 或 8,000 字节的，自成一段，标记为「只能进 prompt」。
+- 装配：按顺序把段装进 items，直到下一段会使 `itemsTokens`、字节或条数任一超限，或者下一段是「只能进 prompt」的超长行为止。之后的全部段**按原顺序**进 prompt 的「# Selected Lead memory (continued)」块，保证记忆不乱序、不重复、不缺失。
+- 容量复核（research R3 的 Raya 数字）：Raya 记忆约 11,991 o200k。按 ≤2,000 token 切段后，items 装到 ≤7,600，其余约 4,400 回填进 prompt。prompt 约为身份 3,634 + 状态/会议/边界/协议约 2,000 + 4,400 ≈ 10,000，低于 15,500。Honey Lemon 记忆 6,492，全部进 items。§12 复核里构造的 12,000-token 多行夹具，按新规则可以装配成功，见 12.7。
 
-### 12.5 测试（并入 §6 的 T8 行）
+### 12.5 溢出回填、双超与错误传播
+
+1. 放不进 items 的段依次回填 prompt（12.4）。
+2. 回填后按原 T8 预算复核 prompt：≤15,500 o200k 且 ≤128 KB，按加头后的实际发送文本计。
+3. **双超**（items 已按 12.3/12.4 装满，回填后 prompt 仍超）：**不截断、不摘要、不丢任何一段**，整场不开，并明示原因。
+4. **HTTP 错误契约**。今天的路由只返回 `{error, reason}`，客户端在非 2xx 时丢弃正文，container 只看到笼统的开会话失败。本节规定：
+   - **Bridge 路由**（`GET /api/voice/sessions/:sessionId/context`）：`VoiceSessionContextError` 返回 503，正文为 `{error:"voice_unavailable", reason, details}`。`details` 只取白名单字段，且只收数字或短 ASCII 标识：`block`、`bytes`、`estimatedTokens`、`itemsTokens`、`itemsCount`、`maxBytes`、`maxEstimatedTokens`、`maxItemsTokens`、`tokenizer`。任何正文、路径、文件内容都不返回。
+   - **voice-codex 客户端**：非 2xx 时解析 JSON 正文。`reason` 是已知上下文错误码（`context_too_large`、`context_token_count_unavailable`、`context_stale`、`context_source_unresolved`、`context_state_unavailable`）时，把 `reason` 和按同一白名单过滤后的 `details` 挂在 `BridgeVoiceHttpError` 上；未知形状照旧，只有状态码。
+   - **container**：`loadContext` 失败且带 `reason=context_too_large` 时报 `CodexVoiceContainerError("context_too_large")`；带 `context_token_count_unavailable` 时报 `context_invalid`。证据 `codex_voice_container_open_failed` 带 `reason` 和白名单 `details`。
+   - **前端提示**（`CodexRoomFrontend.unavailableCopy`）：
+     - `context_too_large` →「📻 语音不可用：这位 Lead 的记忆与上下文超出语音会话上限」；
+     - `context_invalid` →「📻 语音不可用：上下文无法核对大小」。
+     两句都发在 Lead 自己频道的语音 thread 里，founder 和 Lead 都能看到。Bridge 另 `console.warn` 一行同样的白名单字段。
+5. 在 12.3 的保证范围内，一段记忆只有三种去处：在 items 里（计数证明 ≤7,600）；在 prompt 里（计数证明 ≤15,500）；或者整场不开并明示原因。
+
+### 12.6 重验条件
+
+以下任一发生，上线前重跑探针 7 的最小矩阵：16 条和 128 条各贴近 7,600（首、尾事实），再加 128 条内容 ≥7,580 的越界点。
+- `CODEX_VOICE_BINARY_VERSION` 或 sha256 变了（升级 Codex）；
+- `CODEX_VOICE_REALTIME_MODEL`、`version`、`transport` 变了；
+- 新增或替换条目的包装格式（标题、角色）；
+- QA 或 founder 报告模型答不出记忆里的事实。本单 QA-1 加一问：取 items 中间一段里的一条事实，要求答对。
+
+重验判据：
+- 贴近 7,600 的各组全部答对，且越界点仍然不能用上；
+- 按 12.1 的方法重算 w，仍 < 8。
+
+任一条不满足，就按新数据改 +8 或 7,600，或者收紧条数上限，再复核。
+
+### 12.7 测试（并入 §6 的 T8 行）
 
 teamlead `voice-session-context.test.ts`：
-- **边界**：记忆恰好 `itemsTokens = 7,600` 时全部进 items；多出一段就把这段回填到 prompt；再构造「字节未超、token 超」的中文夹具，证明是 token 这一条在起作用。
-- **溢出回填**：Raya 规模夹具。items 的 `itemsTokens ≤ 7,600`；其余段按原顺序出现在 continued 块；所有记忆段在 items 与 prompt 里恰好各出现一次，不重复、不缺失。
-- **双超**：回填后 prompt > 15,500，抛 `context_too_large`；错误里带 limits，不带正文；不返回任何被截断的快照。
+- **边界**：记忆恰好 `itemsTokens = 7,600` 时全部进 items；多出一段就回填 prompt；「字节未超、token 超」的中文夹具证明 token 这一条在起作用。
+- **分段**：每段 ≤2,000 token 且 ≤8,000 字节，只在行边界切；12,000-token 多行夹具（§12 复核的反例）装配成功，items ≤7,600，其余按序进 prompt，prompt ≤15,500；超长单行自成一段进 prompt，其后的段也按序进 prompt。
+- **溢出回填**：Raya 规模夹具。所有记忆段在 items 与 prompt 里恰好各出现一次，不重复、不缺失、不乱序。
+- **双超**：回填后 prompt > 15,500，抛 `context_too_large`，带白名单 details，不带正文，不返回任何被截断的快照。
 - **计数器不可用**：注入抛错的 `countTokens`，抛 `context_token_count_unavailable`，不产生只按字节放行的快照。
 
-voice-codex `codex-container.test.ts`：
-- `manifest.tokenizer` 不一致、item 复算 token 不符或超过 7,600、计数器抛错，都报 `context_invalid`，且不 spawn 进程；
-- Bridge 返回 `context_too_large`，映射为 `context_too_large` 并给出对应 thread 文案。
+teamlead `voice-session-routes.test.ts`：两类错误返回 503 + `{reason, details}`，`details` 只有白名单字段，正文里没有任何记忆内容。
+
+voice-codex：
+- `bridge-client.test.ts`：**真实 HTTP**（本地 http server）返回上面两类 503 正文。客户端的 `BridgeVoiceHttpError` 带 `reason` 和过滤后的 `details`；多余字段被丢弃；非 JSON 正文只保留状态码。
+- `codex-container.test.ts`：`loadContext` 以上面的错误失败时，分别报 `context_too_large` / `context_invalid`，且不 spawn 进程。`manifest.tokenizer` 不一致、item 复算 token 不符或超过 7,600、计数器抛错，也都报 `context_invalid`，且不 spawn 进程。
+- `codex-room.test.ts`：两类原因走到前端提示回调，文案正确，且不含任何上下文正文。
 
 原 §6 的 T8 用例（按字节和条数的边界等）照旧保留。

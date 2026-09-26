@@ -170,6 +170,8 @@ const layouts = {
 			{ role: ROLE, text: `${head(3, 3)}${filler(size)}` },
 		];
 	},
+	// probe 7: items generated elsewhere (varied text, counted with o200k).
+	file: () => JSON.parse(readFileSync(process.env.PROBE_ITEMS_FILE, "utf8")).items,
 	prompt: () => [
 		{ role: ROLE, text: `${head(1, 3)}${filler(10_000)}` },
 		{ role: ROLE, text: `${head(2, 3)}${filler(10_000)}` },
