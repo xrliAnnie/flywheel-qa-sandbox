@@ -15,9 +15,9 @@
   "files": [
     {
       "file": "lead-events-v2.jsonl",
-      "fixtureBytes": 427352,
-      "fixtureSha256": "5bd7ba7f841c765158aff1a2019b3e1ac0f354ca4cd6b0d28e533cf1c38e5460",
-      "redactedStringOccurrences": 874,
+      "fixtureBytes": 429451,
+      "fixtureSha256": "7c76ea129c5abf91b2fd7f51993d9042c3e5b543b6966c5b21c9418cb7004b2a",
+      "redactedStringOccurrences": 773,
       "rows": 257,
       "sourceCountVerified": true,
       "sourceHashVerified": true,
@@ -171,7 +171,7 @@
     }
   ],
   "project": "flywheel",
-  "replayIndexSha256": "b1d9e85ace9e0ac4919af7168986724a9558288b17e970488cba0f7e64dfb5dd",
+  "replayIndexSha256": "7d400caab6a39b020f6d065d31c838cc79ef65f567187ae3d7f587b0df03e8da",
   "sanitization": {
     "aliasesAreNotProducerTemplates": true,
     "emptyAndNullValuesPreserved": true,
@@ -182,8 +182,13 @@
     ],
     "objectKeysArrayOrderAndScalarTypesPreserved": true,
     "privateTextDigestsCommitted": false,
-    "redactedStringOccurrences": 1336,
+    "publicTemplateAuthority": "Exact byte match to public EventFilter literals; no historical action/ownership proof inferred",
+    "redactedStringOccurrences": 1235,
     "strategy": "allowlisted_identity_enum_timestamp_strings_else_stable_opaque_alias",
+    "verifiedPublicStaticNotificationContexts": [
+      "default \u2014 no matching rule",
+      "session started \u2014 Lead announces to Annie in Chat"
+    ],
     "version": 1
   },
   "schemaVersion": 1,

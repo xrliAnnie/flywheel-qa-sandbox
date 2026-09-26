@@ -7,6 +7,7 @@ import hashlib
 import json
 import pathlib
 import re
+import subprocess
 
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -49,6 +50,10 @@ SECRET_KEYS = {"token", "challengeId", "credential", "password", "secret"}
 METADATA_TOKEN = re.compile(r"[A-Za-z0-9_.:#/@+|=,\-]{1,512}\Z")
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[T ][0-9:.]+(?:Z|[+-][0-9:]+)?\Z")
 ALIASES = {}
+PUBLIC_STATIC_NOTIFICATION_CONTEXTS = {
+    "default — no matching rule",
+    "session started — Lead announces to Annie in Chat",
+}
 
 
 def dump(value):
@@ -78,6 +83,11 @@ def sanitize(value, key, path, changes):
         return [sanitize(v, key, f"{path}[{i}]", changes) for i, v in enumerate(value)]
     if not isinstance(value, str) or value == "":
         return value
+    if key == "notification_context" and value in PUBLIC_STATIC_NOTIFICATION_CONTEXTS:
+        # Keep existing opaque aliases stable, but disclose only exact public
+        # EventFilter literals. This verifies text, never historical authority.
+        redact(value)
+        return value
     if key in JSON_FIELDS:
         try:
             parsed = json.loads(value)
@@ -98,7 +108,15 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def format_package_metadata(path):
+    subprocess.run(["pnpm", "exec", "biome", "format", "--write", str(path)],
+                   cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+
+
 def main():
+    event_filter = (ROOT / "packages/teamlead/src/bridge/EventFilter.ts").read_text()
+    for template in PUBLIC_STATIC_NOTIFICATION_CONTEXTS:
+        assert f'"{template}"' in event_filter, "Public notification template drift"
     sources = []
     original = {}
     sanitized = {}
@@ -204,6 +222,7 @@ def main():
     assert all(len(row["producerRaw"]["directCandidates"]) == 1 for row in entries if row["eventType"] == "session_started")
     index_path = HERE / "replay-index.json"
     write_json(index_path, {"schemaVersion": 1, "entries": entries})
+    format_package_metadata(index_path)
     counts = collections.Counter((row["event_type"], row["delivery_disposition"]) for row in leads)
     expected_counts = json.loads((EVIDENCE / MANIFESTS[0]).read_text())["counts"]
     assert counts == {(row["type"], row["disposition"]): row["count"] for row in expected_counts}
@@ -226,6 +245,8 @@ def main():
                          "objectKeysArrayOrderAndScalarTypesPreserved": True,
                          "jsonEncodedColumnsReencoded": sorted(JSON_FIELDS),
                          "aliasesAreNotProducerTemplates": True,
+                         "verifiedPublicStaticNotificationContexts": sorted(PUBLIC_STATIC_NOTIFICATION_CONTEXTS),
+                         "publicTemplateAuthority": "Exact byte match to public EventFilter literals; no historical action/ownership proof inferred",
                          "redactedStringOccurrences": sum(file["redactedStringOccurrences"] for file in sources)},
         "replayIndexSha256": sha(index_path.read_bytes()),
         "limitations": [
@@ -242,6 +263,7 @@ def main():
         "unresolvedPolicy": "Missing or redacted authority cannot mint quiet proof; replay must retain conservative model handling and disclose unresolved acceptance evidence.",
     }
     write_json(HERE / "manifest.json", verification)
+    format_package_metadata(HERE / "manifest.json")
     write_json(EVIDENCE / "replay-input-verification.json", verification)
     print(json.dumps({"verifiedSources": len(sources), "leadRows": len(entries), "fixtureRows": sum(file["rows"] for file in sources), "replayExecuted": False}))
 

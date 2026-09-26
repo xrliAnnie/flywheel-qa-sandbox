@@ -1,196 +1,198 @@
 {
-  "checks": {
-    "allSevenSourcesMatch": true,
-    "directStartSourceCorrelations": 21,
-    "directStartSourcePayloadsMissing": 21,
-    "dispatchPurposePresent": false,
-    "leadRowsRetained": 257,
-    "leadRowsWithExactMailboxLink": 161,
-    "originalLeadOrderIdsSeqPreserved": true,
-    "originalTimestampsPreserved": true,
-    "separateCarrierTurnTimelineAvailable": false,
-    "stageRawExactIdMatches": 80,
-    "workflowEventsAfterWindowRetainedAsLaterEvidence": 10
-  },
-  "files": [
-    {
-      "file": "lead-events-v2.jsonl",
-      "fixtureBytes": 427352,
-      "fixtureSha256": "5bd7ba7f841c765158aff1a2019b3e1ac0f354ca4cd6b0d28e533cf1c38e5460",
-      "redactedStringOccurrences": 874,
-      "rows": 257,
-      "sourceCountVerified": true,
-      "sourceHashVerified": true,
-      "sourceManifest": "evening-manifest-v2.json",
-      "sourceSha256": "828f36983f7f504b92cd11ba67d61af188144ec62f73e80ab09bff549f4251b7"
-    },
-    {
-      "file": "session-events-v2.jsonl",
-      "fixtureBytes": 24498,
-      "fixtureSha256": "c64cbfc992029cc53afd0ad1ce7f12dbb790d82197c4985f2a40b3f89586e525",
-      "redactedStringOccurrences": 3,
-      "rows": 80,
-      "sourceCountVerified": true,
-      "sourceHashVerified": true,
-      "sourceManifest": "evening-manifest-v2.json",
-      "sourceSha256": "a809c204b22f89da92d66cad502ed27e4928d28749dec6bc5952f20c974476a2"
-    },
-    {
-      "file": "mailbox-v2.jsonl",
-      "fixtureBytes": 271004,
-      "fixtureSha256": "a9a1b24ecb12fc2da1f2b3972e65dc254e79fb3a1f9b2b1d3d84537f9712e110",
-      "redactedStringOccurrences": 342,
-      "rows": 206,
-      "sourceCountVerified": true,
-      "sourceHashVerified": true,
-      "sourceManifest": "evening-manifest-v2.json",
-      "sourceSha256": "d2c4aabfd60f020fd36215fc2884928e117d32ca892702bcc1789d16e8cce31e"
-    },
-    {
-      "file": "direct-start-source-v3.jsonl",
-      "fixtureBytes": 6048,
-      "fixtureSha256": "95205121090ab2fd7b29daf61ed1f0046a9623f3d6f197e7cc542586c6eb9d47",
-      "redactedStringOccurrences": 0,
-      "rows": 21,
-      "sourceCountVerified": true,
-      "sourceHashVerified": true,
-      "sourceManifest": "producer-authority-manifest-v3.json",
-      "sourceSha256": "a9b36d2ebaefeb57429e87cdf650cd6e7e1dc1345eb576f0678b4cdaea387663"
-    },
-    {
-      "file": "dispatch-ledger-v3.jsonl",
-      "fixtureBytes": 8334,
-      "fixtureSha256": "ed893a1e11274b97f03faeaa129f554074de15f940427a7978be1bc04f242b72",
-      "redactedStringOccurrences": 0,
-      "rows": 21,
-      "sourceCountVerified": true,
-      "sourceHashVerified": true,
-      "sourceManifest": "producer-authority-manifest-v3.json",
-      "sourceSha256": "f3081bd7d5512aad8fa6c8f16d9ff002bd62d766e11407b92379c9f2e601e456"
-    },
-    {
-      "file": "execution-binding-v3.jsonl",
-      "fixtureBytes": 7246,
-      "fixtureSha256": "ae3d0afe933899abbe223bac34f9dd9e9d1c63ef85b11f3170bee8278f3696e7",
-      "redactedStringOccurrences": 0,
-      "rows": 22,
-      "sourceCountVerified": true,
-      "sourceHashVerified": true,
-      "sourceManifest": "producer-authority-manifest-v3.json",
-      "sourceSha256": "e5fb11d58fb1b3e35c0a775ffeac1a8b42a0424ef43042f8b0d2e3adaa14381a"
-    },
-    {
-      "file": "workflow-events-v3.jsonl",
-      "fixtureBytes": 115501,
-      "fixtureSha256": "a0bbec8da7ac2b9bafc0c68817db37de8e02330965c02fdf158ac4266989e488",
-      "redactedStringOccurrences": 117,
-      "rows": 191,
-      "sourceCountVerified": true,
-      "sourceHashVerified": true,
-      "sourceManifest": "producer-authority-manifest-v3.json",
-      "sourceSha256": "fb0ba2b137e5469be7819d9d379e50f26ce975db94ed8a6fbe244aa7b8ad936b"
-    }
-  ],
-  "lead": "flywheel-eng-lead",
-  "limitations": [
-    "The 257 retained rows are journal inputs, not wake or model turn counts.",
-    "Only 80 stage rows have exact linked raw payloads; 21 direct source rows have NULL payload; other producer ingress is absent.",
-    "Direct notification IDs differ from raw source IDs; the index records candidate correlation and timestamp delta, not fabricated ID equality.",
-    "All dispatch purpose fields are absent. No initial, retry, replacement, or resume purpose is inferred from default values or nearby events.",
-    "V3 rows were captured after the window. Mutable ledger values are observations at export, not at-event authority; later workflow evidence is separated.",
-    "Mailbox row batch IDs and delivery timestamps are retained, but busy/idle state and model turn receipts are missing.",
-    "Private free text and machine paths are redacted; the fixture cannot prove original payload byte equality or classify redacted text as actionless.",
-    "Historical obligation, review ownership, alert/episode, runtime build, and policy flag snapshots are incomplete or absent.",
-    "No counterfactual disposition, actionable latency, adapter wake count, or model consumption result is asserted by this artifact."
-  ],
-  "observedJournalCounts": [
-    {
-      "count": 2,
-      "disposition": "model",
-      "eventType": "epic_intake"
-    },
-    {
-      "count": 5,
-      "disposition": "model",
-      "eventType": "founder_reply"
-    },
-    {
-      "count": 7,
-      "disposition": "model",
-      "eventType": "gate_question"
-    },
-    {
-      "count": 2,
-      "disposition": "model",
-      "eventType": "patrol_tick"
-    },
-    {
-      "count": 91,
-      "disposition": "model",
-      "eventType": "runner_question"
-    },
-    {
-      "count": 26,
-      "disposition": "audit_only",
-      "eventType": "session_monitoring_reestablished"
-    },
-    {
-      "count": 12,
-      "disposition": "model",
-      "eventType": "session_monitoring_reestablished"
-    },
-    {
-      "count": 21,
-      "disposition": "model",
-      "eventType": "session_started"
-    },
-    {
-      "count": 62,
-      "disposition": "audit_only",
-      "eventType": "stage_changed"
-    },
-    {
-      "count": 18,
-      "disposition": "model",
-      "eventType": "stage_changed"
-    },
-    {
-      "count": 2,
-      "disposition": "model",
-      "eventType": "workflow_claim_recorded"
-    },
-    {
-      "count": 7,
-      "disposition": "model",
-      "eventType": "workflow_engine_escalation"
-    },
-    {
-      "count": 2,
-      "disposition": "model",
-      "eventType": "workflow_replacement_eligibility"
-    }
-  ],
-  "project": "flywheel",
-  "replayIndexSha256": "b1d9e85ace9e0ac4919af7168986724a9558288b17e970488cba0f7e64dfb5dd",
-  "sanitization": {
-    "aliasesAreNotProducerTemplates": true,
-    "emptyAndNullValuesPreserved": true,
-    "jsonEncodedColumnsReencoded": [
-      "payload",
-      "routing_snapshot",
-      "sender_ref"
-    ],
-    "objectKeysArrayOrderAndScalarTypesPreserved": true,
-    "privateTextDigestsCommitted": false,
-    "redactedStringOccurrences": 1336,
-    "strategy": "allowlisted_identity_enum_timestamp_strings_else_stable_opaque_alias",
-    "version": 1
-  },
-  "schemaVersion": 1,
-  "scope": "frozen_input_verification_only_no_replay_results",
-  "unresolvedPolicy": "Missing or redacted authority cannot mint quiet proof; replay must retain conservative model handling and disclose unresolved acceptance evidence.",
-  "windowUtc": [
-    "2026-09-26T01:30:00Z",
-    "2026-09-26T04:00:00Z"
-  ]
+	"checks": {
+		"allSevenSourcesMatch": true,
+		"directStartSourceCorrelations": 21,
+		"directStartSourcePayloadsMissing": 21,
+		"dispatchPurposePresent": false,
+		"leadRowsRetained": 257,
+		"leadRowsWithExactMailboxLink": 161,
+		"originalLeadOrderIdsSeqPreserved": true,
+		"originalTimestampsPreserved": true,
+		"separateCarrierTurnTimelineAvailable": false,
+		"stageRawExactIdMatches": 80,
+		"workflowEventsAfterWindowRetainedAsLaterEvidence": 10
+	},
+	"files": [
+		{
+			"file": "lead-events-v2.jsonl",
+			"fixtureBytes": 429451,
+			"fixtureSha256": "7c76ea129c5abf91b2fd7f51993d9042c3e5b543b6966c5b21c9418cb7004b2a",
+			"redactedStringOccurrences": 773,
+			"rows": 257,
+			"sourceCountVerified": true,
+			"sourceHashVerified": true,
+			"sourceManifest": "evening-manifest-v2.json",
+			"sourceSha256": "828f36983f7f504b92cd11ba67d61af188144ec62f73e80ab09bff549f4251b7"
+		},
+		{
+			"file": "session-events-v2.jsonl",
+			"fixtureBytes": 24498,
+			"fixtureSha256": "c64cbfc992029cc53afd0ad1ce7f12dbb790d82197c4985f2a40b3f89586e525",
+			"redactedStringOccurrences": 3,
+			"rows": 80,
+			"sourceCountVerified": true,
+			"sourceHashVerified": true,
+			"sourceManifest": "evening-manifest-v2.json",
+			"sourceSha256": "a809c204b22f89da92d66cad502ed27e4928d28749dec6bc5952f20c974476a2"
+		},
+		{
+			"file": "mailbox-v2.jsonl",
+			"fixtureBytes": 271004,
+			"fixtureSha256": "a9a1b24ecb12fc2da1f2b3972e65dc254e79fb3a1f9b2b1d3d84537f9712e110",
+			"redactedStringOccurrences": 342,
+			"rows": 206,
+			"sourceCountVerified": true,
+			"sourceHashVerified": true,
+			"sourceManifest": "evening-manifest-v2.json",
+			"sourceSha256": "d2c4aabfd60f020fd36215fc2884928e117d32ca892702bcc1789d16e8cce31e"
+		},
+		{
+			"file": "direct-start-source-v3.jsonl",
+			"fixtureBytes": 6048,
+			"fixtureSha256": "95205121090ab2fd7b29daf61ed1f0046a9623f3d6f197e7cc542586c6eb9d47",
+			"redactedStringOccurrences": 0,
+			"rows": 21,
+			"sourceCountVerified": true,
+			"sourceHashVerified": true,
+			"sourceManifest": "producer-authority-manifest-v3.json",
+			"sourceSha256": "a9b36d2ebaefeb57429e87cdf650cd6e7e1dc1345eb576f0678b4cdaea387663"
+		},
+		{
+			"file": "dispatch-ledger-v3.jsonl",
+			"fixtureBytes": 8334,
+			"fixtureSha256": "ed893a1e11274b97f03faeaa129f554074de15f940427a7978be1bc04f242b72",
+			"redactedStringOccurrences": 0,
+			"rows": 21,
+			"sourceCountVerified": true,
+			"sourceHashVerified": true,
+			"sourceManifest": "producer-authority-manifest-v3.json",
+			"sourceSha256": "f3081bd7d5512aad8fa6c8f16d9ff002bd62d766e11407b92379c9f2e601e456"
+		},
+		{
+			"file": "execution-binding-v3.jsonl",
+			"fixtureBytes": 7246,
+			"fixtureSha256": "ae3d0afe933899abbe223bac34f9dd9e9d1c63ef85b11f3170bee8278f3696e7",
+			"redactedStringOccurrences": 0,
+			"rows": 22,
+			"sourceCountVerified": true,
+			"sourceHashVerified": true,
+			"sourceManifest": "producer-authority-manifest-v3.json",
+			"sourceSha256": "e5fb11d58fb1b3e35c0a775ffeac1a8b42a0424ef43042f8b0d2e3adaa14381a"
+		},
+		{
+			"file": "workflow-events-v3.jsonl",
+			"fixtureBytes": 115501,
+			"fixtureSha256": "a0bbec8da7ac2b9bafc0c68817db37de8e02330965c02fdf158ac4266989e488",
+			"redactedStringOccurrences": 117,
+			"rows": 191,
+			"sourceCountVerified": true,
+			"sourceHashVerified": true,
+			"sourceManifest": "producer-authority-manifest-v3.json",
+			"sourceSha256": "fb0ba2b137e5469be7819d9d379e50f26ce975db94ed8a6fbe244aa7b8ad936b"
+		}
+	],
+	"lead": "flywheel-eng-lead",
+	"limitations": [
+		"The 257 retained rows are journal inputs, not wake or model turn counts.",
+		"Only 80 stage rows have exact linked raw payloads; 21 direct source rows have NULL payload; other producer ingress is absent.",
+		"Direct notification IDs differ from raw source IDs; the index records candidate correlation and timestamp delta, not fabricated ID equality.",
+		"All dispatch purpose fields are absent. No initial, retry, replacement, or resume purpose is inferred from default values or nearby events.",
+		"V3 rows were captured after the window. Mutable ledger values are observations at export, not at-event authority; later workflow evidence is separated.",
+		"Mailbox row batch IDs and delivery timestamps are retained, but busy/idle state and model turn receipts are missing.",
+		"Private free text and machine paths are redacted; the fixture cannot prove original payload byte equality or classify redacted text as actionless.",
+		"Historical obligation, review ownership, alert/episode, runtime build, and policy flag snapshots are incomplete or absent.",
+		"No counterfactual disposition, actionable latency, adapter wake count, or model consumption result is asserted by this artifact."
+	],
+	"observedJournalCounts": [
+		{
+			"count": 2,
+			"disposition": "model",
+			"eventType": "epic_intake"
+		},
+		{
+			"count": 5,
+			"disposition": "model",
+			"eventType": "founder_reply"
+		},
+		{
+			"count": 7,
+			"disposition": "model",
+			"eventType": "gate_question"
+		},
+		{
+			"count": 2,
+			"disposition": "model",
+			"eventType": "patrol_tick"
+		},
+		{
+			"count": 91,
+			"disposition": "model",
+			"eventType": "runner_question"
+		},
+		{
+			"count": 26,
+			"disposition": "audit_only",
+			"eventType": "session_monitoring_reestablished"
+		},
+		{
+			"count": 12,
+			"disposition": "model",
+			"eventType": "session_monitoring_reestablished"
+		},
+		{
+			"count": 21,
+			"disposition": "model",
+			"eventType": "session_started"
+		},
+		{
+			"count": 62,
+			"disposition": "audit_only",
+			"eventType": "stage_changed"
+		},
+		{
+			"count": 18,
+			"disposition": "model",
+			"eventType": "stage_changed"
+		},
+		{
+			"count": 2,
+			"disposition": "model",
+			"eventType": "workflow_claim_recorded"
+		},
+		{
+			"count": 7,
+			"disposition": "model",
+			"eventType": "workflow_engine_escalation"
+		},
+		{
+			"count": 2,
+			"disposition": "model",
+			"eventType": "workflow_replacement_eligibility"
+		}
+	],
+	"project": "flywheel",
+	"replayIndexSha256": "7d400caab6a39b020f6d065d31c838cc79ef65f567187ae3d7f587b0df03e8da",
+	"sanitization": {
+		"aliasesAreNotProducerTemplates": true,
+		"emptyAndNullValuesPreserved": true,
+		"jsonEncodedColumnsReencoded": [
+			"payload",
+			"routing_snapshot",
+			"sender_ref"
+		],
+		"objectKeysArrayOrderAndScalarTypesPreserved": true,
+		"privateTextDigestsCommitted": false,
+		"publicTemplateAuthority": "Exact byte match to public EventFilter literals; no historical action/ownership proof inferred",
+		"redactedStringOccurrences": 1235,
+		"strategy": "allowlisted_identity_enum_timestamp_strings_else_stable_opaque_alias",
+		"verifiedPublicStaticNotificationContexts": [
+			"default \u2014 no matching rule",
+			"session started \u2014 Lead announces to Annie in Chat"
+		],
+		"version": 1
+	},
+	"schemaVersion": 1,
+	"scope": "frozen_input_verification_only_no_replay_results",
+	"unresolvedPolicy": "Missing or redacted authority cannot mint quiet proof; replay must retain conservative model handling and disclose unresolved acceptance evidence.",
+	"windowUtc": ["2026-09-26T01:30:00Z", "2026-09-26T04:00:00Z"]
 }

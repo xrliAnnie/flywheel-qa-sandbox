@@ -52,6 +52,12 @@ across files; there is no committed text-to-alias map or per-text digest.
 Aliases preserve nonempty string shape only. They are **not producer templates**,
 proof of absent actionable content, valid credentials, or real message text.
 
+An exact allowlist restores 101 `notification_context` values that byte-match
+two public static `EventFilter.ts` literals (80 stage defaults and 21 startup
+announcements). The generator verifies those literals against source and keeps
+all other aliases stable. These public strings prove template text only; they
+do not reconstruct historical decision, registration, dispatch, or owner state.
+
 The fixture is complete with respect to the seven frozen export files, not with
 respect to every fact required for the planned producer replay. In particular:
 
