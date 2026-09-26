@@ -1372,7 +1372,10 @@ describe("tell relevance", () => {
 			skipReason: "receipt_only",
 		}));
 		await expect(
-			test.session.deliverTell({ businessId: "tell:ack", text: "收到，已排队。" }),
+			test.session.deliverTell({
+				businessId: "tell:ack",
+				text: "收到，已排队。",
+			}),
 		).resolves.toBe("skipped");
 		expect(test.frontend.appendSpeech).not.toHaveBeenCalled();
 		expect(test.evidence).toHaveBeenCalledWith(

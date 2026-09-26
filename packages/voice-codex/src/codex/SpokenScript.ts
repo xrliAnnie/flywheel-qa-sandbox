@@ -160,7 +160,8 @@ const POSITIVE_OUTCOMES = [
 ];
 const NEGATIVE_WORDS =
 	/\b(?:fail(?:ed|ing|ure)?|rejected|changes[ _]requested|not merged|unmerged)\b/giu;
-const POSITIVE_WORDS = /\b(?:pass(?:ed|es)?|approved|merged|succeeded|success)\b/giu;
+const POSITIVE_WORDS =
+	/\b(?:pass(?:ed|es)?|approved|merged|succeeded|success)\b/giu;
 
 function outcomeTokens(value: string): ProtectedToken[] {
 	let rest = value.toLocaleLowerCase("en-US");
@@ -305,8 +306,7 @@ export function repairSpokenScript(input: {
 	mode?: "background_result" | "rewrite";
 }): SpokenScriptRepair {
 	const sentences =
-		input.spoken.match(/[^。！？!?；;\n]+[。！？!?；;\n]*/gu) ??
-		[];
+		input.spoken.match(/[^。！？!?；;\n]+[。！？!?；;\n]*/gu) ?? [];
 	const kept: string[] = [];
 	const droppedSentences: string[] = [];
 	for (const sentence of sentences) {

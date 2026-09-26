@@ -137,7 +137,8 @@ describe("spoken script protected-field fidelity", () => {
 describe("key-fact guard for free paraphrase", () => {
 	it("passes a free paraphrase that keeps every key fact", () => {
 		const result = validateSpokenScript({
-			spoken: "2886 那张单的 PR #1360 已经合进去了，CI 都过了，Tadashi 20:19 确认的。",
+			spoken:
+				"2886 那张单的 PR #1360 已经合进去了，CI 都过了，Tadashi 20:19 确认的。",
 			sources: [
 				source(
 					"lead",

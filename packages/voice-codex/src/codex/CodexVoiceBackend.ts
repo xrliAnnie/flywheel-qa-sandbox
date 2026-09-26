@@ -35,7 +35,7 @@ import {
 	type CodexRealtimeTranscript,
 	type CodexRealtimeUnsettledInput,
 } from "./RealtimeTransport.js";
-import type { ScriptWriterResult } from "./ScriptWriter.js";
+import type { ScriptWriterInput, ScriptWriterResult } from "./ScriptWriter.js";
 import type { SpokenScriptSource } from "./SpokenScript.js";
 import type { ThreadCompletedItem } from "./ThreadEventRouter.js";
 
@@ -101,10 +101,7 @@ interface CodexConversationLike {
 	readonly background?:
 		| { state: "enabled" }
 		| { state: "degraded"; reason: VoiceBackgroundDegradedReason };
-	rewriteSpeech?(input: {
-		sourceText: string;
-		rosterNames: readonly string[];
-	}): Promise<ScriptWriterResult>;
+	rewriteSpeech?(input: ScriptWriterInput): Promise<ScriptWriterResult>;
 	readonly transport: CodexTransportLike;
 	restart?(): Promise<number>;
 	close(reason?: string): Promise<void>;
@@ -392,10 +389,7 @@ class CodexVoiceSession implements ConversationSession {
 		this.unsupported("freeform text control is disabled");
 	}
 
-	rewriteSpeech(input: {
-		sourceText: string;
-		rosterNames: readonly string[];
-	}): Promise<ScriptWriterResult> {
+	rewriteSpeech(input: ScriptWriterInput): Promise<ScriptWriterResult> {
 		if (
 			!this.options.backgroundEnabled ||
 			!this.options.conversation.rewriteSpeech ||

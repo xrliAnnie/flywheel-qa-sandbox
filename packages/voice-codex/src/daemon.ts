@@ -61,7 +61,7 @@ export interface ActiveVoiceSession {
 		businessId: string;
 		text: string;
 		revalidate?: () => Promise<boolean>;
-	}): Promise<SpeechArbiterTerminal | "disabled">;
+	}): Promise<SpeechArbiterTerminal | "disabled" | "skipped">;
 	receiveHealth(): ReceiveHealth | undefined;
 	start(): Promise<{ founderPresent: boolean }>;
 	waitForFounder(timeoutMs: number): Promise<boolean>;
@@ -947,7 +947,8 @@ export class VoiceDaemon {
 					status =
 						terminal === "spoken"
 							? "confirmed"
-							: terminal === "stale_dropped"
+							: // A relevance skip is logged by the session and final.
+								terminal === "stale_dropped" || terminal === "skipped"
 								? "dropped"
 								: "failed";
 				} else {

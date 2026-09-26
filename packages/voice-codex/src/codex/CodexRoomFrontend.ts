@@ -10,7 +10,7 @@ import type { RealtimeAudioOwner } from "../realtime.js";
 import type { PreparedSpeech } from "../speech.js";
 import type { BackgroundTurnTerminal } from "./BrainCoordinator.js";
 import { CodexVoiceContainerError } from "./CodexVoiceContainer.js";
-import type { ScriptWriterResult } from "./ScriptWriter.js";
+import type { ScriptWriterInput, ScriptWriterResult } from "./ScriptWriter.js";
 
 export interface CodexRoomFrontendHandlers {
 	onCoordinatedSpeech?(input: { businessId: string; text: string }): void;
@@ -168,15 +168,9 @@ export class CodexRoomFrontend {
 			: "failed";
 	}
 
-	rewriteSpeech(input: {
-		sourceText: string;
-		rosterNames: readonly string[];
-	}): Promise<ScriptWriterResult> {
+	rewriteSpeech(input: ScriptWriterInput): Promise<ScriptWriterResult> {
 		const session = this.requireSession() as ConversationSession & {
-			rewriteSpeech?: (input: {
-				sourceText: string;
-				rosterNames: readonly string[];
-			}) => Promise<ScriptWriterResult>;
+			rewriteSpeech?: (input: ScriptWriterInput) => Promise<ScriptWriterResult>;
 		};
 		if (!this.allowParaphrase() || !session.rewriteSpeech)
 			return Promise.reject(new Error("script_writer_unavailable"));

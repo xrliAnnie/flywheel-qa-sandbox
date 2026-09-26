@@ -55,7 +55,14 @@ function active(
 }
 
 describe("VoiceDaemon", () => {
-	it.each(["spoken", "fallback_posted", "stale_dropped", "failed"] as const)(
+	// "skipped" (FLY-2886 Lead 1c8019f8): a relevance skip is final, not failed.
+	it.each([
+		"spoken",
+		"fallback_posted",
+		"stale_dropped",
+		"skipped",
+		"failed",
+	] as const)(
 		"delivers raw tell once and waits for %s before the receipt",
 		async (terminal) => {
 			let end!: (value: { kind: "ended"; reason: "voice-stop" }) => void;
@@ -140,7 +147,7 @@ describe("VoiceDaemon", () => {
 				"attempt-1",
 				terminal === "spoken"
 					? "confirmed"
-					: terminal === "stale_dropped"
+					: terminal === "stale_dropped" || terminal === "skipped"
 						? "dropped"
 						: "failed",
 			);

@@ -183,7 +183,10 @@ const OUTPUT_SCHEMA = {
 		spoken: { type: "string", maxLength: MAX_SPOKEN_CHARACTERS },
 		threadText: { type: ["string", "null"] },
 		tell: { type: "boolean" },
-		skipReason: { type: ["string", "null"], enum: [...TELL_SKIP_REASONS, null] },
+		skipReason: {
+			type: ["string", "null"],
+			enum: [...TELL_SKIP_REASONS, null],
+		},
 	},
 } as const;
 

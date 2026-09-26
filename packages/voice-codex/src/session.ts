@@ -166,7 +166,9 @@ function mustTell(
 		new Set(
 			extractProtectedTokens(value, rosterNames)
 				.filter((token) => token.kind !== "outcome")
-				.map((token) => token.token.normalize("NFKC").toLocaleLowerCase("en-US")),
+				.map((token) =>
+					token.token.normalize("NFKC").toLocaleLowerCase("en-US"),
+				),
 		);
 	const source = keys(text);
 	for (const ask of recentAsks)
@@ -561,11 +563,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				if (this.stopping) return "failed";
 				if (rewrite.tell === false) {
 					const reason = rewrite.skipReason ?? "unspecified";
-					const override = mustTell(
-						input.text,
-						recentFounderAsks,
-						rosterNames,
-					);
+					const override = mustTell(input.text, recentFounderAsks, rosterNames);
 					if (!override) {
 						// Never silent: QA audits every skip (FLY-2886 Lead 1c8019f8).
 						this.options.evidence({

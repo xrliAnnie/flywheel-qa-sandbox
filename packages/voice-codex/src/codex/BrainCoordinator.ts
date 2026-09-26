@@ -5,8 +5,8 @@ import type {
 	SpeechArbiterTerminal,
 } from "./SpeechArbiter.js";
 import {
-	type SpokenScriptSource,
 	repairSpokenScript,
+	type SpokenScriptSource,
 	THREAD_POINTER_SENTENCE,
 	validateSpokenScript,
 } from "./SpokenScript.js";
@@ -347,15 +347,10 @@ export class BrainCoordinator {
 						`这件没查成：${turn.reasonCategory ?? "出错"}。${posted ? "细节我发到 thread。" : ""}`,
 					]
 				: valid && (!needsPost || posted)
-					? repaired &&
-						!validations.some((result) => result.usedThreadPointer)
+					? repaired && !validations.some((result) => result.usedThreadPointer)
 						? [...kept, THREAD_POINTER_SENTENCE]
 						: kept
-					: [
-							posted
-								? THREAD_POINTER_SENTENCE
-								: "编号我没核对上，等下再给你",
-						];
+					: [posted ? THREAD_POINTER_SENTENCE : "编号我没核对上，等下再给你"];
 		for (const [index, text] of speech.entries()) {
 			void this.options.speech.enqueue({
 				businessId: `turn:${turn.turnId}:result:${index}`,

@@ -44,7 +44,11 @@ import {
 	type CodexRealtimeTranscript,
 	CodexRealtimeTransport,
 } from "./RealtimeTransport.js";
-import { ScriptWriter, type ScriptWriterResult } from "./ScriptWriter.js";
+import {
+	ScriptWriter,
+	type ScriptWriterInput,
+	type ScriptWriterResult,
+} from "./ScriptWriter.js";
 import {
 	type ThreadCompletedItem,
 	ThreadEventRouter,
@@ -804,10 +808,7 @@ export class CodexVoiceConversation {
 		this.currentGeneration = transport.generation;
 	}
 
-	rewriteSpeech(input: {
-		sourceText: string;
-		rosterNames: readonly string[];
-	}): Promise<ScriptWriterResult> {
+	rewriteSpeech(input: ScriptWriterInput): Promise<ScriptWriterResult> {
 		if (this.closePromise || !this.capability)
 			return Promise.reject(new Error("voice_scribe_unavailable"));
 		return this.capability.writer.rewrite(input);

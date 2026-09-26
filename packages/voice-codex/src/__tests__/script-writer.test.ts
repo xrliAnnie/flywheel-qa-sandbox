@@ -249,9 +249,7 @@ describe("subscription-backed voice ScriptWriter", () => {
 			recentFounderAsks: ["2886 的 PR 怎么样了"],
 		});
 		const params = await started(process);
-		expect(JSON.stringify(params.input)).toContain(
-			"recentFounderAsks",
-		);
+		expect(JSON.stringify(params.input)).toContain("recentFounderAsks");
 		expect(JSON.stringify(params.input)).toContain("2886 的 PR 怎么样了");
 		complete(process, {
 			spoken: "收到。",
