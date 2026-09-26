@@ -1,16 +1,16 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 7/14
-updated: 2026-09-26T02:31:51.868Z
-nextStep: "backend rewrite: session-level downlink (replace openAudio), T5 local
-  barge-in controller (Muted/Deciding/WaitGap replay), T5b/T5c speaker on
-  data-channel turns; cli wiring opus-passthrough + onset gate; rewrite
-  codex-room tests"
+phaseCursor: 11/14
+updated: 2026-09-26T02:49:53.956Z
+nextStep: "T7 reconnect: conversation Draining/Reopening/Closed state machine
+  (close barrier, ≤3 attempts 0/2/5 s backoff 20 s each, abort), backend
+  generation lost/ready hooks + status lines, stale container root sweep in cli;
+  T8 after Lead relays §12 review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (7/14)
-**next**: backend rewrite: session-level downlink (replace openAudio), T5 local barge-in controller (Muted/Deciding/WaitGap replay), T5b/T5c speaker on data-channel turns; cli wiring opus-passthrough + onset gate; rewrite codex-room tests
+**phase**: implement (11/14)
+**next**: T7 reconnect: conversation Draining/Reopening/Closed state machine (close barrier, ≤3 attempts 0/2/5 s backoff 20 s each, abort), backend generation lost/ready hooks + status lines, stale container root sweep in cli; T8 after Lead relays §12 review
