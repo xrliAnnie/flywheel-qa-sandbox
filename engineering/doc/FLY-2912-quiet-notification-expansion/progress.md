@@ -2,16 +2,16 @@
 issue: FLY-2912
 phase: implement
 phaseCursor: 5/6
-updated: 2026-09-26T06:44:43.014Z
-nextStep: "Local verification complete: 59 unique files, 992 passed/1
-  pre-existing skip; lint/build/dependent typechecks pass. Full257 conservative
-  replay complete; historical savings and real model consumption remain
-  disclosed gaps per Lead. Final milestone, push, PR, effective code review then
-  needs_review."
+updated: 2026-09-26T06:52:23.731Z
+nextStep: PR1355 opened. First CI c316fad97 failed only missing
+  notification-audit-store lead_events read registration; precise entry fixed,
+  retention gate+10 tests pass. Local 992 tests/1 existing skip plus 10 gate
+  tests pass. Refresh milestone/push, new exact-head review+scope CI,
+  needs_review.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
 **phase**: implement (5/6)
-**next**: Local verification complete: 59 unique files, 992 passed/1 pre-existing skip; lint/build/dependent typechecks pass. Full257 conservative replay complete; historical savings and real model consumption remain disclosed gaps per Lead. Final milestone, push, PR, effective code review then needs_review.
+**next**: PR1355 opened. First CI c316fad97 failed only missing notification-audit-store lead_events read registration; precise entry fixed, retention gate+10 tests pass. Local 992 tests/1 existing skip plus 10 gate tests pass. Refresh milestone/push, new exact-head review+scope CI, needs_review.
