@@ -148,3 +148,22 @@ R2 确认 container 复算的修复完整。剩 1 条 HIGH：final 晚于 2 s �
 - 负对照：不留记录时，房间和插话两条失败。
 
 验证：`pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-voice-codex" typecheck` 全部 exit 0；voice-codex `vitest related src/codex/CodexProofSpeaker.ts` 4 个文件 81/81 过。
+
+## 代码评审 R3 的修复（`43906d4bd`，Lead 裁定 `205bea02` 的最后一轮）
+
+R3 只审 `407daf94d`：正常的晚到 final 路径已经正确，但单个「final 待核」记录在几种事件顺序下有归属漏洞，共 3 HIGH、2 MEDIUM。已改为按发出顺序的待收 final 队列（`owed`）：v3 的 final 不带回合 id，但按回合顺序到达，所以下一个 final 归最早的待收项，并对照该项自己的句子检查。
+
+| 问题 | 修复 | 复现用例（负对照） |
+|---|---|---|
+| H1 founder 抢占后，记录被重建，她的回答被误判越界 | 被抢占的块不入队；她的回合在结算之后清空队列 | 同时去掉排除和顺序，用例失败 |
+| H2 绑定前被打断的块，被自己迟到的 `turn.created` 作废 | 未绑定的待收项认领第一个未结束的 assistant 回合 | 去掉认领，用例失败 |
+| H3 无声尝试迟到的 final 顶替了重试块自己的 final | 无声尝试也入队，final 先归它；同句重试不被阻挡，同句越界直接切断当前重试 | 恢复「无声不入队」，用例失败 |
+| M1 传输被拒的块也挡住后续朗读 | 传输失败不入队 | 去掉排除，用例失败 |
+| M2 晚到越界的审计缺 `stopLatencyMs` | 与所有越界共用 500 ms 窗口计量 | 晚到越界时不写该字段，用例失败 |
+
+**残余边界（按 Lead 裁定写明）**：新的用户回合或另一 assistant 回合开始之后，仍未到达的旧朗读 final 不再检查，按普通 final 持久化。原因是 final 不带回合 id，新回合开始后下一个 final 可能是新回合自己的。在「漏截断一段旧朗读」和「误伤她的回答（静音加截断）」之间，选前者。这需要旧 final 晚到超过新回合的开始，而 v3 实测 final 只比 `turn.done` 晚约 12 ms。
+
+验证：
+- `pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-voice-codex" typecheck` 全部 exit 0；
+- voice-codex `vitest related src/codex/CodexProofSpeaker.ts` 4 个文件 85/85 过；
+- 五条负对照各自单独失败，还原后全过。
