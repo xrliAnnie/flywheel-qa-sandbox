@@ -1,0 +1,70 @@
+RED-DUMP {
+ "sent": [
+  {
+   "text": "我有 Peter 的角色背景,但没有读取他的完整 memory。",
+   "atMs": 0
+  }
+ ],
+ "receipts": [
+  "failed"
+ ],
+ "admission": [
+  {
+   "kind": "codex_speak_receipt",
+   "speechKind": "readback",
+   "pendingKey": "c8f0458a-aabe-4ca0-9a16-c6f4ae416dd3",
+   "requestDigest": "cc9eb30b1366d9bb7d053ee7a908a8abfa92bc42ac3c19fd9fc01cf22c0cd9b8",
+   "outcome": "failed",
+   "transport": "submitted",
+   "contentProof": "none",
+   "reason": "speech_overrun"
+  },
+  {
+   "kind": "codex_speech_admission_timeout",
+   "pendingKey": "0d0bb46d-1290-40ca-a90b-321619f05452",
+   "busy": "assistant_turn_open"
+  },
+  {
+   "kind": "codex_speak_receipt",
+   "speechKind": "readback",
+   "pendingKey": "0d0bb46d-1290-40ca-a90b-321619f05452",
+   "requestDigest": "921dc860c2627fb711659b066525dcecf955725526e97cddcfb9383f1fdebce8",
+   "outcome": "rejected",
+   "transport": "none",
+   "contentProof": "none",
+   "reason": "busy_conversation"
+  },
+  {
+   "kind": "codex_speech_admission_timeout",
+   "pendingKey": "5f44bdb9-0f43-4033-9400-5b0c266194a4",
+   "busy": "assistant_turn_open"
+  },
+  {
+   "kind": "codex_speak_receipt",
+   "speechKind": "readback",
+   "pendingKey": "5f44bdb9-0f43-4033-9400-5b0c266194a4",
+   "requestDigest": "a9b7fbcc2ce8819839a29e4775975b5da0cccdadb023870bb46daf29f1c234ca",
+   "outcome": "rejected",
+   "transport": "none",
+   "contentProof": "none",
+   "reason": "busy_conversation"
+  }
+ ],
+ "overrun": [
+  {
+   "kind": "codex_speech_overrun",
+   "pendingKey": "c8f0458a-aabe-4ca0-9a16-c6f4ae416dd3",
+   "turnId": "turn_ESP3BYyuD6D5SIa4HpRh0",
+   "expectedChars": 27,
+   "unalignedChars": 9,
+   "extraTextSha256": "082fcea9d0d91ce7ccaa723ead27bf3c788c3ab448f257d87b9aaa825c734bfc",
+   "detectedAtMs": 4266,
+   "stopLatencyMs": 0
+  },
+  {
+   "generation": 1,
+   "kind": "codex_speech_overrun_resumed",
+   "discardMs": 4974
+  }
+ ]
+}

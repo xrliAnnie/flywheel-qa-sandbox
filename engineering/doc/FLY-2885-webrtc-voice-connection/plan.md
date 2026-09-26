@@ -501,3 +501,53 @@ voice-codex：
 - `codex-room.test.ts`：两类原因走到前端提示回调，文案正确，且不含任何上下文正文。
 
 原 §6 的 T8 用例（按字节和条数的边界等）照旧保留。
+
+## 13. founder 朗读返工（2026-09-26，Lead 打回 `rework:48e91c59`）
+
+founder 原话（FLY-2885 thread，09:24 PDT）：「越界保护是什么东西？你可以修，你可以先修一下。」证据：真人会话 `1043b4a4`（`~/.flywheel/artifacts/FLY-2885-qa/founder-live/readback-evidence.json`）。Lead 回了两句，语音只念了第一句：第一块越界被截断；后两块各等 10 s 准入（`busy=assistant_turn_open`，她一直在和模型对话）后被拒，`phase=failed`，没有任何提示。**只改朗读这条路径**，其余行为不动。
+
+### 13.1 结构
+
+引擎 B 把整条 Lead 回复一次交给说话者，由它负责读完：`daemon.deliverOutbound → GenericVoiceSession.speakReply → CodexRoomFrontend.appendReply → CodexVoiceSession.readReply → CodexProofSpeaker.readReply`。切块与以前相同（`prepareReplySpeech`，80 字）。引擎 A 的前端没有 `appendReply`，daemon 仍按块逐个 `speak`，行为不变。非朗读类（`cue` 提示等）也仍走原来的逐块、首错即停、10 s 准入。
+
+### 13.2 A：越界后从下一个没念的句子接着念
+
+- 越界时，按句（`。！？!?；;\n`）把本块切开，用逐字对齐（LCS）看转写覆盖到哪一句。一句只要除 1–6 字改写外都对齐上（容差 `min(6, ⌊len/4⌋)`，与越界守卫的改写容差同口径），就算念过。
+- 从最后一个念过的句子之后接着念；本块都念过了就进下一块。已念过的不再重复。
+- 镜像（thread / 持久化）只保留实际念过的句子，后面标「（已截断越界内容）」。
+- 本块一句都没念到：同一段重念一次；再一次仍没进展，就停下，计为未读（走 C）。
+
+### 13.3 B：等她说完、等轮次结束再念，上限按时间
+
+- 每块发送前等对话出现停顿，准入条件仍是 T5b 的五条。
+- 放弃条件按时间，不按次数：
+  - 房间已安静 **8 s**（没人说话、没有可听下行、没有插话静音或越界丢弃态），却仍然不能准入。这时忙碌状态是卡住了，不是在对话。
+  - 或者一共等满 **120 s**。
+- 等待期间不占用说话者：`cue` 提示可以先说，说完再轮到回复。回复到达时正在说 `cue`，也是排队，不会被拒。
+- 换代重连（T7）期间继续等，接到新一代后在新一代上念。
+- 证据 `codex_speech_admission_timeout` 增加 `limit: quiet|ceiling`、`waitedMs` 和 `quietMs`。
+
+### 13.4 C：真的念不了，要说一句
+
+- 以下情况停下，把剩下的块计为未读：
+  - 等不到停顿；
+  - 她插话打断了朗读，或朗读刚发出就被她抢先；
+  - 两次确认无声；
+  - 传输失败；
+  - 在途块遇到换代；
+  - 会话关闭。
+- 念过、只是没证明的块（改写不等价、回放被裁剪、绑定不上但已播放），照旧进下一块，和原来的逐块循环一致。
+- 有未读时：
+  - 先说「剩下的内容在频道里。」，按 B 的规则等停顿，最长 30 s；
+  - 说不出来，或者会话已在关闭，就在 thread 发「📻 剩下的内容在频道里」。
+- 证据 `codex_readback_unfinished{pendingKey, reason, unreadChunks}`。
+
+### 13.5 Handoff ID 关联行不念（Lead 答复 `7bec9fc5`）
+
+Lead 按 hook 要求附上的「关联 Handoff ID：<uuid>」只在朗读投影里去掉。规则只匹配整行：`(关联)? Handoff ID [:：] <uuid>`。thread 文字不变，正文里带 ID 的句子不受影响。
+
+### 13.6 D：先红后绿
+
+- `codex-readback-replay.test.ts`：用 `fixtures/fly2885-founder-readback-1043b4a4.json` 走生产路径回放。只模拟了 provider 事件和房间播放器；daemon → session → 前端 → 后端 → 说话者 → OpusDownlink 都是真实代码。
+- 修复前，回放逐项复现了证据：越界 27/9 字、4266 ms；丢弃态 4974 ms（录制值 4994）；两次 `assistant_turn_open` 准入超时；只发出第一句。修复后两句都发出，第二句在她那轮问答结束后发出。
+- 第二个回放：她连续说 32 s，回复一直排队，等她那一轮结束后念出。修复前这条在 10 s 时被丢。

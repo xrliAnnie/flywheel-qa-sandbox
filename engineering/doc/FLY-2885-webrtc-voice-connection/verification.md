@@ -307,3 +307,53 @@ kill-path 清单新增的 3 条及理由：
 - 3 条 vitest 守卫：`bridge-child-process-census.test.ts`、`required-wall-clock-thresholds.test.ts`（teamlead `--project=parallel`）、claude-runner `kill-path-inventory.test.ts`，全部通过。
 - `origin/main` 比本分支多 3 个提交（`eabcd72a5`、`af729d662`、`6145a4038`）：`git merge-tree` 无冲突，也没有改到任何守卫清单，所以本轮没有同步 main。
 - 消费者排查（`git grep -lF` 查完整路径和文件名）：`shutdown-exit` → `cli.ts`（无单测，已用构建产物按 ②i 原命令验证）、`leaky-daemon.mjs`（由 `shutdown-exit.test.ts` 覆盖）；`health-alert` → `health-alert.test.ts`、`leaky-daemon.mjs`、两份清单。排除项：`voice-health-alert-route.*`、`ci.yml`、`ci-structure.test.sh`、`lead-alert.sh` 只是子串命中，与本文件无关；`engineering/doc/**` 为文档；`ci-test-costs.json` 为耗时数据。
+
+## founder 朗读返工（`d40acabc9`，Lead 打回 `rework:48e91c59`，2026-09-26）
+
+设计见 `plan.md` §13。本轮只动朗读路径。
+
+**先红后绿**
+
+| | 修复前（base `aebc7e3c3`） | 修复后 |
+|---|---|---|
+| 回放 `1043b4a4`（`codex-readback-replay.test.ts` 第 1 条） | 红：只发出第一句。回放复现了录制的越界（27/9 字，4266 ms）、丢弃态 4974 ms（录制 4994 ms）、两次准入超时 `busy=assistant_turn_open`、回执 `failed`。见 `evidence/readback-rework/red-replay-before-fix.txt` | 绿：两句都发出，第二句在 T1+25.27 s（她的问答轮结束、安静 600 ms 后）发出。没有准入超时，没有「剩下的内容」提示，镜像第一行与真实 thread 一致。回执 `unconfirmed`（首块越界，未得到证明）。见 `evidence/readback-rework/green-replay-after-fix.txt` |
+| 她连续说 32 s 时回复排队（第 2 条） | 红：10 s 后被丢弃，一句都没发出 | 绿：她那轮答完后念出，回执 `confirmed` |
+
+**负对照**（逐个去掉守卫，确认有测试变红，之后恢复）：
+
+| 去掉的守卫 | 变红的测试 |
+|---|---|
+| 越界后一律停止（去掉 A） | 回放第 1 条，以及「接着念」「整块念完进下一块」等 8 条 |
+| 忽略房间活动，改用固定窗口（去掉 B） | 两条回放，以及「等过 10 s」「8 s 安静放弃」「120 s 上限」 |
+| 不做未读提示（去掉 C） | WebRTC 房间的 3 条（插话后口头提示；提示说不出来时发 thread；会话结束时发 thread） |
+| 念出 Handoff ID 行 | 回放第 1 条 |
+| 重连期间不等待 | 「等重连后在新一代上念」的两条（说话者层、房间层各一条） |
+
+**新增、修改的测试**
+
+- `codex-speak.test.ts` 新增 14 条：
+  - 等待：等过 10 s；安静 8 s 放弃；120 s 放弃；
+  - 越界：从下一句接着念；整块念完进下一块；零进展重念一次后停；
+  - 停止：插话即停并计未读；会话关闭时全部计未读；
+  - 继续：已播放、未证明的块照旧进下一块；
+  - 并发：等待中 `cue` 先说；`cue` 进行中回复排队；同时只念一条回复；
+  - 重连：等重连后在新一代念。
+- 原「10 s 放弃」用例改用 `cue`：10 s 规则现在只对非朗读类生效。
+- `speech-overrun.test.ts`：切句、已念前缀（改写容差、被编造内容擦到的句子、全部念过、一句没念、纯标点尾巴）、Handoff ID 整行匹配（3 种会去掉，4 种不去掉）。
+- `codex-room-webrtc.test.ts` 新增 4 条：插话后口头提示；提示说不出来时发 thread；会话结束时发 thread 且不开口；重连后在第 2 代念出。
+- `session.test.ts`：只有前端支持时才暴露 `speakReply`；回复与 `speak` 互斥；stop 时把挂起的回复结算为 `failed`。
+- `daemon.test.ts`：运行时有 `speakReply` 时，整条交给它，不再逐块 `speak`，回执照转。
+
+**本机验证**（按规定只跑相关测试）
+
+- `pnpm lint`：exit 0（25 个 warning，都在既有 `scripts/*`）。
+- `pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-voice-codex" typecheck`：都通过。
+- voice-codex `vitest related`（7 个改动的源文件）：12 个文件、239 条通过。另有 `realtime-live.test.ts` 3 条跳过：它按环境变量门控，是既有的跳过。
+- 消费者：teamlead 的 `StateStore.voice-session.test.ts`、`voice-handoff.test.ts`（直接 import `daemon` / `CodexVoiceBackend`），36/36 通过。
+  - 排除 `scripts/__tests__/flywheel-voice-wrapper.test.sh`：它只把 `daemon.ts` 的路径字符串当作 `classify_changes` 的输入，与文件内容无关。
+  - `session`、`speech`、`daemon` 这类短文件名的其余命中，都是无关文件里的子串。
+- 上一轮的 CI 守卫仍然全绿：
+  - `required-wall-clock-thresholds.test.ts`、`bridge-child-process-census.test.ts`（teamlead `--project=parallel`）；
+  - `kill-path-inventory.test.ts` 5/5。
+  - 本轮没有新增进程、kill 或真实时长断言：新测试全部使用 fake timers。
+- CI 按包分片跑 voice-codex，没有逐个列出测试文件，新测试文件不需要登记。
