@@ -218,11 +218,7 @@ export class CodexProofSpeaker {
 			return;
 		}
 		const pending = this.pending;
-		if (
-			!pending?.sent ||
-			pending.boundTurnId ||
-			this.ended.has(input.turnId)
-		)
+		if (!pending?.sent || pending.boundTurnId || this.ended.has(input.turnId))
 			return;
 		pending.boundTurnId = input.turnId;
 	}
@@ -484,18 +480,15 @@ export class CodexProofSpeaker {
 		pending.consumedAtSend = this.host.consumedVoiced();
 		pending.interferenceAtSend = this.host.interference();
 		pending.trimsAtSend = this.host.trims();
-		const timer = setTimeout(
-			() => {
-				if (pending.settled) return;
-				this.settle(pending, {
-					ok: false,
-					transport: this.consumedSince(pending) > 0 ? "submitted" : "none",
-					contentProof: "none",
-					reason: "speech_binding_unavailable",
-				});
-			},
-			this.host.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS,
-		);
+		const timer = setTimeout(() => {
+			if (pending.settled) return;
+			this.settle(pending, {
+				ok: false,
+				transport: this.consumedSince(pending) > 0 ? "submitted" : "none",
+				contentProof: "none",
+				reason: "speech_binding_unavailable",
+			});
+		}, this.host.confirmTimeoutMs ?? DEFAULT_CONFIRM_TIMEOUT_MS);
 		timer.unref?.();
 		pending.timers.push(timer);
 		void this.host
@@ -557,32 +550,29 @@ export class CodexProofSpeaker {
 	private checkSilent(pending: PendingChunk): void {
 		if (pending.silenceCheck) return;
 		pending.silenceCheck = true;
-		const timer = setTimeout(
-			() => {
-				if (pending.settled) return;
-				if (this.consumedSince(pending) > 0 || this.host.queuedVoiced() > 0) {
-					this.evaluate(pending);
-					return;
-				}
-				if (this.host.interference() !== pending.interferenceAtSend) {
-					this.settle(pending, {
-						ok: false,
-						transport: "none",
-						contentProof: "none",
-						reason: "speech_binding_unavailable",
-					});
-					return;
-				}
+		const timer = setTimeout(() => {
+			if (pending.settled) return;
+			if (this.consumedSince(pending) > 0 || this.host.queuedVoiced() > 0) {
+				this.evaluate(pending);
+				return;
+			}
+			if (this.host.interference() !== pending.interferenceAtSend) {
 				this.settle(pending, {
 					ok: false,
 					transport: "none",
 					contentProof: "none",
-					reason: "speech_silent",
-					silent: true,
+					reason: "speech_binding_unavailable",
 				});
-			},
-			this.host.silenceConfirmMs ?? DEFAULT_SILENCE_CONFIRM_MS,
-		);
+				return;
+			}
+			this.settle(pending, {
+				ok: false,
+				transport: "none",
+				contentProof: "none",
+				reason: "speech_silent",
+				silent: true,
+			});
+		}, this.host.silenceConfirmMs ?? DEFAULT_SILENCE_CONFIRM_MS);
 		timer.unref?.();
 		pending.timers.push(timer);
 	}

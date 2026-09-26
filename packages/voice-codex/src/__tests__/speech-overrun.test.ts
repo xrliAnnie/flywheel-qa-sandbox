@@ -18,8 +18,12 @@ const readback = JSON.parse(
 
 describe("read-aloud overrun alignment (FLY-2885 T5c)", () => {
 	it("counts nothing unaligned for a faithful reading", () => {
-		expect(speechAlignment("测试已经完成，谢谢你的配合。", "测试已经完成,谢谢你的配合。"))
-			.toMatchObject({ unaligned: 0, overrun: false });
+		expect(
+			speechAlignment(
+				"测试已经完成，谢谢你的配合。",
+				"测试已经完成,谢谢你的配合。",
+			),
+		).toMatchObject({ unaligned: 0, overrun: false });
 	});
 
 	it("tolerates the 1-6 character rewrites v3 makes", () => {

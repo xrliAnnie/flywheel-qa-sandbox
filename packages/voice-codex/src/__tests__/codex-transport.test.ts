@@ -963,7 +963,12 @@ function emitRecordedHandoffTrace(rpc: FakeRpc, data: DataEvent): void {
 		item: { type: "function_call", status: "in_progress" },
 	});
 	// v3 reports the spoken acknowledgement as a data-channel turn.
-	data({ type: "turn.created", turnId: "turn-ack", role: "assistant", transcript: null });
+	data({
+		type: "turn.created",
+		turnId: "turn-ack",
+		role: "assistant",
+		transcript: null,
+	});
 	rpc.emit("thread/realtime/transcript/done", {
 		threadId,
 		role: "assistant",
@@ -1036,7 +1041,12 @@ function emitHandoffRequest(
 		threadId,
 		item: { type: "function_call", status: "in_progress" },
 	});
-	data({ type: "turn.created", turnId: `ack-${handoffId}`, role: "assistant", transcript: null });
+	data({
+		type: "turn.created",
+		turnId: `ack-${handoffId}`,
+		role: "assistant",
+		transcript: null,
+	});
 	rpc.emit("thread/realtime/transcript/done", {
 		threadId,
 		role: "assistant",
@@ -1346,7 +1356,12 @@ describe("Codex 0.156.1 local barge-in followed by a handoff (FLY-2885 T5)", () 
 			"你帮我去看一下2799现在是什么状态。",
 		);
 		real.sendSilence();
-		emitHandoffRequest(real.rpc, real.data, "call_after_barge", "turn-after-barge");
+		emitHandoffRequest(
+			real.rpc,
+			real.data,
+			"call_after_barge",
+			"turn-after-barge",
+		);
 
 		await vi.waitFor(() => expect(real.handoffToLead).toHaveBeenCalledOnce());
 		expect(real.handoffToLead).toHaveBeenCalledWith({

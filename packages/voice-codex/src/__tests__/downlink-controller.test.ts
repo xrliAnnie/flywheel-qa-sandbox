@@ -22,7 +22,9 @@ function recordingSink() {
 		sink: {
 			push: (payload: Buffer, meta: OpusDownlinkPacketMeta) => {
 				pushed.push({
-					id: payload.equals(OPUS_SILENCE_FRAME) ? "fill" : payload.readUInt16BE(1),
+					id: payload.equals(OPUS_SILENCE_FRAME)
+						? "fill"
+						: payload.readUInt16BE(1),
 					meta,
 				});
 				return true;
