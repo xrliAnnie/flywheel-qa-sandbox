@@ -1,7 +1,7 @@
 # FLY-2922 held 后统一重派当前节点 — 实施计划
 Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-held-回滚之后有出口只留一个统一恢复口放行必须真铸出派发关死体不连带终结-run9-张-37)
 日期: 2026-09-26
-基于: 无
+基于: research.md
 
 状态：R1 CHANGES_REQUESTED 已修订，待 R2 设计审阅。设计节点，不含实现或生产验证。基线 `af853328d`。
 
@@ -125,7 +125,7 @@ type RecoveryReceipt = {
 1. 事务外由可信服务读取精确旧 execution 的 liveness、launch owner、cancellation generation、marker/window 证据。沿用 dead/unlaunched recovery 探测；不得接受 HTTP 客户端自报 dead。Runner alive/unknown 拒绝物理替换；land 是引擎工作，不套用 Runner liveness，改核对 land owner 的 lease/generation/进程死亡或无 owner 证据。无旧 execution 的 legacy pending 必须能由旧 rollback UID 唯一定位，不能按最新 issue session 猜。
 2. 事务内读取 canonical 相同请求的 receipt；否则重验 run engine-owned 且 held（或 §5 的唯一 active orphan 例外）、snapshot/current tuple/holdSetDigest、旧节点无已提交 completion/transition、所有相关 owner generation 未变。检查同 project/issue 不存在别的 active run（否则 409 issue_has_active_run，终止之前不写）；已完成或已取消/终结 run 不恢复。存在有效 completion 则由原完成幂等路径回放，本操作返回 completion_already_committed，不派新体。
 3. 废止旧体写权限：复用精确 execution 的 cancellation fence、未消费 submission/output credential revoke、binding/activation supersede/close、lease 结算。保留所有历史证据；不把 started/launch_committed 的账本倒写 abandoned。仅有 pre-commit 非启动正证据的 intent 能 abandon。
-4. 固定 current nodeId 和 attempt；服务端生成新 executionId。调用 `allocateWorkflowLaunchOrdinalTx`（purpose=fault_replacement，不新增 purpose），得到新 ledger ID 与递增 ordinal。将节点绑定为 pending/new execution；不清空成 NULL。新 activation、输出 credential、submission credential 仍由现有 admission 铸造，绝不复用旧凭据。
+4. 固定 current nodeId 和 attempt；服务端生成新 executionId。调用 `allocateWorkflowLaunchOrdinalTx`（purpose=fault_replacement，不新增 purpose），得到递增 ordinal；该方法当前只返回 ordinal，须用完整 run/node/attempt/execution/ordinal 精确读取新 ledger ID 写入 receipt，不能把 ordinal 当作 ledger ID。将节点绑定为 pending/new execution；不清空成 NULL。新 activation、输出 credential、submission credential 仍由现有 admission 铸造，绝不复用旧凭据。
 5. 关联对象归一（下面 §3.4）：只更新这个节点/请求/操作；保持原 snapshot、runId、worktree、branch、业务 attempt、批准 head 不变。参数化 SQL 每个 CAS 必须恰好一行；不成功就 throw 回滚。
 6. 同事务写新 `node_dispatched`、恢复 receipt、逐个 source UID 的 `hold_resumed`（供历史消费者关闭），清除此次 episode；run held→active（active orphan 保持 active）。同事务调用现有 `reviveHeldWorkflowCarrierDeliveriesTx`，只复活 run_inactive 派生的 carrier，不清除 carrier 自身 needs_lead。其他真实未解决 run blocker存在则在步骤 2 拒绝，不能 mint 后依然 held。多条同故障旧日志不算新 blocker。
 7. commit 后由现有 dispatcher 消费。提交后进程崩溃或 HTTP 丢包无需补偿删除，重启扫描同一 ledger。启动失败形成新的统一 episode，恢复按钮持续可用；重复 request 仍返回旧回执，新 episode 才允许再次 mint。
