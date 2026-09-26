@@ -1,0 +1,41 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (6 tests | 1 failed) 17ms
+   ✓ resident target-lock rollback policy > does not acquire locks for a disabled Lead with no outstanding writes 5ms
+   ✓ resident target-lock rollback policy > continues checking outstanding targets while draining 2ms
+   ✓ resident target-lock rollback policy > never applies the resident disabled shortcut to voice 2ms
+   ✓ resident target-lock rollback policy > fails closed if the read-only policy lookup cannot be verified 1ms
+   ✓ resident target-lock rollback policy > rechecks authority even when the disabled policy has been cached 1ms
+   × retains only a matched settlement ticket after activation revocation 5ms
+     → promise rejected "Error: revoked" instead of resolving
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > retains only a matched settlement ticket after activation revocation
+AssertionError: promise rejected "Error: revoked" instead of resolving
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:122:77
+    120|  f.current.mockImplementation(() => { throw new Error("revoked"); });
+    121|  const { deadline: _deadline, ...terminal } = input();
+    122|  await expect(f.client.release({ ...terminal, fence, outcome: "succeed…
+       |                                                                             ^
+    123|  await expect(f.client.release({ ...terminal, fence: "30000000-0000-40…
+    124|  await expect(f.client.acquire(input())).rejects.toThrow("revoked");
+
+Caused by: Error: revoked
+ ❯ Object.<anonymous> src/lead-capabilities/__tests__/target-lock-client.test.ts:120:45
+ ❯ call src/lead-capabilities/target-lock-client.ts:102:11
+ ❯ Object.release src/lead-capabilities/target-lock-client.ts:173:10
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:122:24
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 5 passed (6)
+   Start at  23:56:49
+   Duration  1.58s (transform 113ms, setup 26ms, collect 196ms, tests 17ms, environment 0ms, prepare 108ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/target-lock-client.test.ts

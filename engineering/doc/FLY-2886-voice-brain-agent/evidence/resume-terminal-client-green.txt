@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (6 tests) 21ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  23:57:20
+   Duration  1.49s (transform 141ms, setup 108ms, collect 446ms, tests 21ms, environment 0ms, prepare 197ms)
+

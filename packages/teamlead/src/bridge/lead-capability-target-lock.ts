@@ -7,6 +7,7 @@ import {
 	leadCapabilityAuthorityFields,
 	leadCapabilityAuthorityFromEnvelope,
 } from "../lead-capabilities/authority.js";
+import { effectiveVoiceBackground } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
 
@@ -60,6 +61,12 @@ export function createLeadCapabilityTargetLockRouter(options: {
 		join(home, ".flywheel/projects.json");
 	const authorize = (body: z.infer<typeof cancelSchema>) => {
 		const authority = leadCapabilityAuthorityFromEnvelope(body);
+		if (
+			!body.targetKey.startsWith(`${body.projectName}:`) ||
+			(authority.kind === "voice_session" &&
+				body.activationId !== `voice:${authority.sessionId}`)
+		)
+			throw denied();
 		const claimEnv =
 			authority.kind === "carrier"
 				? forwardedLeadAuthorizationEnv(
@@ -87,6 +94,28 @@ export function createLeadCapabilityTargetLockRouter(options: {
 		scope.assertSourceCurrent();
 		return { authority, scope };
 	};
+	router.post("/policy", (req, res) => {
+		try {
+			const body = acquireSchema.parse(req.body);
+			const { authority, scope } = authorize(body);
+			if (authority.kind !== "carrier") throw denied();
+			const locks = options.store.listCapabilityTargetLocks(
+				body.projectName,
+				body.leadId,
+				options.now?.() ?? Date.now(),
+			);
+			res.json({
+				requestId: body.requestId,
+				status: effectiveVoiceBackground(scope.lead).enabled
+					? "enabled"
+					: locks.length
+						? "draining"
+						: "disabled",
+			});
+		} catch {
+			res.status(403).json({ error: "target lock scope denied" });
+		}
+	});
 	router.post("/acquire", (req, res) => {
 		try {
 			const body = acquireSchema.parse(req.body);
@@ -103,6 +132,9 @@ export function createLeadCapabilityTargetLockRouter(options: {
 				requestId: body.requestId,
 				now,
 				deadline: body.deadline,
+				checkOnly:
+					authority.kind === "carrier" &&
+					!effectiveVoiceBackground(scope.lead).enabled,
 			});
 			res.json({ requestId: body.requestId, ...result });
 		} catch {
@@ -132,8 +164,24 @@ export function createLeadCapabilityTargetLockRouter(options: {
 	router.post("/release", (req, res) => {
 		try {
 			const body = releaseSchema.parse(req.body);
-			const { authority, scope } = authorize(body);
-			scope.assertSourceCurrent();
+			// The random fence is a parent-only settlement ticket issued before
+			// dispatch. It can settle this exact write even after lease/config
+			// revocation; it grants no acquire/mark or provider permission.
+			const authority = leadCapabilityAuthorityFromEnvelope(body);
+			const lock = options.store.getCapabilityTargetLock(body.targetKey);
+			if (
+				!lock ||
+				lock.projectName !== body.projectName ||
+				lock.leadId !== body.leadId ||
+				lock.holderActivation !== body.activationId ||
+				lock.requestId !== body.requestId ||
+				lock.fence !== body.fence ||
+				lock.holderActor !==
+					(authority.kind === "voice_session" ? "voice" : "resident") ||
+				(authority.kind === "voice_session" &&
+					body.activationId !== `voice:${authority.sessionId}`)
+			)
+				throw denied();
 			const status = options.store.releaseCapabilityTargetLock({
 				targetKey: body.targetKey,
 				activationId: body.activationId,
@@ -142,7 +190,11 @@ export function createLeadCapabilityTargetLockRouter(options: {
 				outcome: body.outcome,
 				reason: body.reason,
 			});
-			if (authority.kind === "voice_session" && body.outcome === "succeeded")
+			if (
+				status === "released" &&
+				authority.kind === "voice_session" &&
+				body.outcome === "succeeded"
+			)
 				options.store.tryClaimLeadEvent(
 					body.leadId,
 					`voice-background-action:${body.requestId}`,

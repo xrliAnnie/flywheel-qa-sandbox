@@ -1,0 +1,15 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/__tests__/StateStore.voice-target-lock.test.ts (7 tests) 2253ms
+   ✓ voice capability target locks > drains held and unknown targets without admitting another write or acquiring unrelated targets  321ms
+   ✓ voice capability target locks > recovers only expired undispatched holders and preserves dispatched uncertainty across restart  360ms
+   ✓ voice capability target locks > retains a dispatched lock when a lost mark reply is reported as not dispatched  309ms
+   ✓ voice capability target locks > gives a queued resident the target after a voice write finishes  315ms
+   ✓ voice capability target locks > safely releases an undispatched expired holder  394ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  23:46:09
+   Duration  9.66s (transform 4.26s, setup 28ms, collect 6.68s, tests 2.25s, environment 0ms, prepare 104ms)
+

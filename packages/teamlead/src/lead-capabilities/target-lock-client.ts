@@ -4,6 +4,7 @@ import { resolveLeadCapabilityRuntimeAuthority } from "./runtime-authority.js";
 
 export type LeadTargetLockAcquireStatus =
 	| { status: "acquired"; fence: string }
+	| { status: "unguarded" }
 	| {
 			status:
 				| "waiting"
@@ -92,13 +93,20 @@ export function createLeadTargetLockClient(
 		authority,
 		activationId: options.activationId,
 	};
+	const settlementTickets = new Map<string, string>();
+	const ticketKey = (input: Record<string, unknown>) =>
+		JSON.stringify([input.operationId, input.requestId, input.targetKey]);
 	async function call(
-		action: "acquire" | "mark-dispatched" | "release" | "cancel",
+		action: "policy" | "acquire" | "mark-dispatched" | "release" | "cancel",
 		input: Record<string, unknown> & { requestId: string; signal: AbortSignal },
 	) {
 		const { signal, ...fields } = input;
 		signal.throwIfAborted();
-		trusted.assertActivationCurrent();
+		const settlement =
+			action === "release" &&
+			settlementTickets.get(ticketKey(fields)) === fields.fence;
+		if (action === "release" && !settlement) throw denied();
+		if (!settlement) trusted.assertActivationCurrent();
 		const response = await fetchImpl(
 			new URL(`/api/lead-capabilities/target-lock/${action}`, origin),
 			{
@@ -126,15 +134,37 @@ export function createLeadTargetLockClient(
 		const parsed = reply.parse(JSON.parse(text));
 		if (parsed.requestId !== input.requestId) throw denied();
 		signal.throwIfAborted();
-		trusted.assertActivationCurrent();
+		if (!settlement) trusted.assertActivationCurrent();
 		return parsed;
 	}
+	let disabledWithoutLocks = false;
 	return Object.freeze<LeadTargetLockClient>({
 		actor: authority.kind === "voice_session" ? "voice" : "resident",
 		acquire: async (input) => {
+			input.signal.throwIfAborted();
+			const row = trusted.assertActivationCurrent();
+			const background = row.lead.voiceBackground;
+			const enabled =
+				background !== null &&
+				typeof background === "object" &&
+				"enabled" in background &&
+				background.enabled === true;
+			if (authority.kind === "carrier" && !enabled) {
+				if (disabledWithoutLocks) return { status: "unguarded" };
+				const policy = await call("policy", input);
+				if (policy.status === "disabled") {
+					disabledWithoutLocks = true;
+					return { status: "unguarded" };
+				}
+				if (policy.status !== "draining") throw denied();
+			} else disabledWithoutLocks = false;
 			const result = await call("acquire", input);
-			if (result.status === "acquired" && result.fence)
+			if (result.status === "unguarded" && authority.kind === "carrier")
+				return { status: "unguarded" };
+			if (result.status === "acquired" && result.fence) {
+				settlementTickets.set(ticketKey(input), result.fence);
 				return { status: "acquired", fence: result.fence };
+			}
 			if (
 				[
 					"waiting",
@@ -149,7 +179,9 @@ export function createLeadTargetLockClient(
 		markDispatched: async (input) =>
 			(await call("mark-dispatched", input)).status === "marked",
 		release: async (input) => {
-			await call("release", input);
+			const result = await call("release", input);
+			if (result.status === "released" || result.status === "not_owner")
+				settlementTickets.delete(ticketKey(input));
 		},
 		cancel: async (input) => {
 			await call("cancel", input);

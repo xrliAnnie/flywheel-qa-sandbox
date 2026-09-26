@@ -1,0 +1,87 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (3 tests | 1 failed) 2477ms
+   ✓ serves disabled/draining policy and checks only existing targets after rollback  1046ms
+   ✓ rejects a voice activation alias and foreign project target before creating a lock  786ms
+   × accepts only the original fence for terminal settlement after authority revocation 645ms
+     → expected { error: 'target lock scope denied' } to match object { status: 'released' }
+(1 matching property omitted from actual)
+ ❯ |parallel| src/lead-capabilities/__tests__/broker.test.ts (26 tests | 1 failed) 340ms
+   ✓ trusted operation broker engine > preserves the nonsecret baseline drift failure without exposing provider details 19ms
+   ✓ trusted operation broker engine > binds the validated request UUID into the trusted handler context 10ms
+   ✓ trusted operation broker engine > executes a validated write once and canonicalizes parsed input for retries 31ms
+   ✓ trusted operation broker engine > fences voice writes before dispatch and records the normalized target 12ms
+   × trusted operation broker engine > retains a timed-out provider success as terminal proof before allowing another writer 25ms
+     → expected 'unknown' to be 'released' // Object.is equality
+   ✓ trusted operation broker engine > rejects malformed oversized unknown reserved and exact-input violations without side effects 6ms
+   ✓ trusted operation broker engine > rechecks current activation and manifest after asynchronous authorization 5ms
+   ✓ trusted operation broker engine > passes a live guard and abort signal into the trusted handler 4ms
+   ✓ trusted operation broker engine > makes thrown or invalid/secret provider output unknown without leaking or retrying 11ms
+   ✓ trusted operation broker engine > times out at fifteen seconds, aborts handler and never resends 4ms
+   ✓ trusted operation broker engine > keeps patrol snapshots alive through the handler budget before the broker aborts 3ms
+   ✓ trusted operation broker engine > uses only explicit read-only reconciliation for unknown receipts 3ms
+   ✓ keeps failed read-only reconciliation unknown and never retries provider writes 3ms
+   ✓ bounds read output and rejects secret-bearing read data without persistence 3ms
+   ✓ reconciles across activation without dispatching or mutating the old receipt 3ms
+   ✓ handler guard refuses side effects after authorization is revoked during an await 3ms
+   ✓ returns pending for a concurrent duplicate instead of invoking its handler 76ms
+   ✓ applies the result byte limit to the complete protocol envelope 8ms
+   ✓ denies tier C git.feature.push before any injected provider or old receipt replay 3ms
+   ✓ denies tier C github.pr.create before any injected provider or old receipt replay 2ms
+   ✓ denies tier C github.issue.comment before any injected provider or old receipt replay 2ms
+   ✓ closing broker cancels pending authorize before journal teardown and refuses new work 10ms
+   ✓ closing broker cancels pending execute before journal teardown and refuses new work 86ms
+   ✓ captures parent delivery context and rejects it if released during authorization 2ms
+   ✓ refuses a reply outside the parent journal binding when the parent supplies the context authority 2ms
+   ✓ preserves an unavailable native browser as an explicit rejection 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/broker.test.ts > trusted operation broker engine > retains a timed-out provider success as terminal proof before allowing another writer
+AssertionError: expected 'unknown' to be 'released' // Object.is equality
+
+Expected: "released"
+Received: "unknown"
+
+ ❯ src/lead-capabilities/__tests__/broker.test.ts:201:21
+    199|   complete({ status: "succeeded", providerRef: "message:456", data: ou…
+    200|   await vi.advanceTimersByTimeAsync(1);
+    201|   expect(lockState).toBe("released");
+       |                     ^
+    202|   expect(store.operationReceipts.get({ projectName: "flywheel", leadId…
+    203|   expect(execute).toHaveBeenCalledTimes(1);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts > accepts only the original fence for terminal settlement after authority revocation
+AssertionError: expected { error: 'target lock scope denied' } to match object { status: 'released' }
+(1 matching property omitted from actual)
+
+- Expected
++ Received
+
+  {
+-   "status": "released",
++   "error": "target lock scope denied",
+  }
+
+ ❯ src/bridge/__tests__/lead-capability-target-lock.test.ts:56:58
+     54|  const terminal = { ...base, activationId: owner.activationId, authori…
+     55|  expect((await post("/release", { ...terminal, fence: "30000000-0000-4…
+     56|  expect(await (await post("/release", terminal)).json()).toMatchObject…
+       |                                                          ^
+     57|  expect(store.getCapabilityTargetLock(base.targetKey)).toBeUndefined();
+     58|  expect((await post("/acquire", { ...base, deadline: 5_000 })).status)…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  2 failed | 27 passed (29)
+   Start at  23:54:51
+   Duration  25.46s (transform 12.07s, setup 107ms, collect 20.38s, tests 2.82s, environment 0ms, prepare 493ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/broker.test.ts src/bridge/__tests__/lead-capability-target-lock.test.ts

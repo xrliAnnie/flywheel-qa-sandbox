@@ -1,0 +1,23 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/broker.test.ts (29 tests) 490ms
+ ✓ |parallel| src/__tests__/StateStore.voice-target-lock.test.ts (7 tests) 6280ms
+   ✓ voice capability target locks > drains held and unknown targets without admitting another write or acquiring unrelated targets  807ms
+   ✓ voice capability target locks > recovers only expired undispatched holders and preserves dispatched uncertainty across restart  1219ms
+   ✓ voice capability target locks > cannot mark an expired fence as dispatched  873ms
+   ✓ voice capability target locks > retains a dispatched lock when a lost mark reply is reported as not dispatched  1199ms
+   ✓ voice capability target locks > gives a queued resident the target after a voice write finishes  786ms
+   ✓ voice capability target locks > rejects voice behind a resident and preserves dispatched uncertainty  797ms
+   ✓ voice capability target locks > safely releases an undispatched expired holder  592ms
+ ✓ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (3 tests) 2425ms
+   ✓ serves disabled/draining policy and checks only existing targets after rollback  1314ms
+   ✓ rejects a voice activation alias and foreign project target before creating a lock  560ms
+   ✓ accepts only the original fence for terminal settlement after authority revocation  550ms
+ ✓ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (6 tests) 56ms
+
+ Test Files  4 passed (4)
+      Tests  45 passed (45)
+   Start at  23:58:23
+   Duration  38.90s (transform 11.20s, setup 237ms, collect 24.05s, tests 9.25s, environment 1ms, prepare 1.13s)
+

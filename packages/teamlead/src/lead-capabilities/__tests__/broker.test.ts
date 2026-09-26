@@ -177,6 +177,112 @@ describe("trusted operation broker engine", () => {
 			})?.targetKey,
 		).toBe("flywheel:discord:123:thread");
 	});
+	it("retains a timed-out provider success as terminal proof before allowing another writer", async () => {
+		vi.useFakeTimers();
+		const store = new SqliteJournalStore(":memory:");
+		stores.push(store);
+		let complete!: (value: {
+			status: "succeeded";
+			providerRef: string;
+			data: typeof output;
+		}) => void;
+		const provider = new Promise<{
+			status: "succeeded";
+			providerRef: string;
+			data: typeof output;
+		}>((resolve) => {
+			complete = resolve;
+		});
+		let lockState = "held";
+		const release = vi.fn(async (input: { outcome: string }) => {
+			lockState = input.outcome === "succeeded" ? "released" : "unknown";
+		});
+		const execute = vi.fn(() => provider);
+		const broker = new LeadCapabilityBroker({
+			projectName: "flywheel",
+			leadId: "product",
+			activationId: "voice:session",
+			receipts: store.operationReceipts,
+			allowedOperationIds: () => new Set([request.operationId]),
+			assertCurrent: async () => {},
+			secrets: [],
+			handlers: new Map([
+				[request.operationId, { authorize: async () => {}, execute }],
+			]),
+			targetLocks: {
+				actor: "voice",
+				acquire: async () => ({ status: "acquired", fence: "fence" }),
+				markDispatched: async () => true,
+				release,
+				cancel: async () => {},
+			},
+		});
+		const pending = broker.execute(request);
+		await vi.advanceTimersByTimeAsync(15_001);
+		expect(await pending).toMatchObject({
+			status: "unknown",
+			errorCode: "operation_timeout",
+		});
+		expect(lockState).toBe("unknown");
+		complete({ status: "succeeded", providerRef: "message:456", data: output });
+		await vi.advanceTimersByTimeAsync(1);
+		expect(lockState).toBe("released");
+		expect(
+			store.operationReceipts.get({
+				projectName: "flywheel",
+				leadId: "product",
+				operationId: request.operationId,
+				requestId: request.requestId,
+			})?.state,
+		).toBe("succeeded");
+		expect(execute).toHaveBeenCalledTimes(1);
+		await broker.close();
+	});
+	it.each([
+		[undefined, "unknown"],
+		["provider_rejected", "rejected"],
+		["not_dispatched", "rejected"],
+	] as const)(
+		"requires explicit terminal evidence for provider refusal (%s)",
+		async (terminalEvidence, expected) => {
+			const store = new SqliteJournalStore(":memory:");
+			stores.push(store);
+			const release = vi.fn(async () => {});
+			const broker = new LeadCapabilityBroker({
+				projectName: "flywheel",
+				leadId: "product",
+				activationId: "voice:session",
+				receipts: store.operationReceipts,
+				allowedOperationIds: () => new Set([request.operationId]),
+				assertCurrent: async () => {},
+				secrets: [],
+				handlers: new Map([
+					[
+						request.operationId,
+						{
+							authorize: async () => {},
+							execute: async () => ({
+								status: "rejected" as const,
+								...(terminalEvidence ? { terminalEvidence } : {}),
+							}),
+						},
+					],
+				]),
+				targetLocks: {
+					actor: "voice",
+					acquire: async () => ({ status: "acquired", fence: "fence" }),
+					markDispatched: async () => true,
+					release,
+					cancel: async () => {},
+				},
+			});
+			expect((await broker.execute(request)).status).toBe(expected);
+			expect(release).toHaveBeenCalledWith(
+				expect.objectContaining({ outcome: expected }),
+			);
+			await broker.close();
+		},
+	);
 	it("rejects malformed oversized unknown reserved and exact-input violations without side effects", async () => {
 		const { broker, execute } = setup();
 		for (const invalid of [

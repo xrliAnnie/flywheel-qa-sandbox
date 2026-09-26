@@ -40,6 +40,8 @@ export interface LeadOperationContext {
 	assertCurrent(): Promise<void>;
 }
 export interface HandlerOutcome {
+	/** Trusted adapter evidence only; generic errors/aborts/5xx are not terminal refusal. */
+	terminalEvidence?: "not_dispatched" | "provider_rejected";
 	/** Only pinned terminal rejection codes are exposed by the broker. */
 	errorCode?: string;
 	status: "succeeded" | "rejected" | "unknown";
@@ -329,6 +331,13 @@ export class LeadCapabilityBroker {
 							deadline,
 							signal: context.signal,
 						});
+						if (
+							lock.status === "unguarded" &&
+							this.options.targetLocks.actor === "resident"
+						) {
+							waitingForTarget = false;
+							break;
+						}
 						if (lock.status === "acquired") {
 							targetFence = lock.fence;
 							waitingForTarget = false;
@@ -370,10 +379,18 @@ export class LeadCapabilityBroker {
 			// No await between this guard resolving and invoking the trusted handler.
 			await context.assertCurrent();
 			const outcome = await handler.execute(input, context);
-			await context.assertCurrent();
+			// Terminal provider evidence remains valid after the caller times out.
+			// Settle only the original receipt/fence before checking delivery authority.
+			const evidencedOutcome =
+				dispatched &&
+				targetFence &&
+				outcome.status === "rejected" &&
+				!outcome.terminalEvidence
+					? { status: "unknown" as const }
+					: outcome;
 			const result = this.validateOutcome(
 				operation,
-				outcome,
+				evidencedOutcome,
 				request.requestId,
 				operation.classification === "write",
 			);
@@ -384,16 +401,27 @@ export class LeadCapabilityBroker {
 						: result.status === "rejected"
 							? "rejected"
 							: "unknown";
-				this.options.receipts.transition({
-					...writeInput,
-					now: Date.now(),
-					from: "dispatched",
-					to,
-					...(result.resourceRefs[0]
-						? { providerRef: result.resourceRefs[0] }
-						: {}),
-					...(result.errorCode ? { errorCode: result.errorCode } : {}),
-				});
+				try {
+					const prior = this.options.receipts.get(key);
+					if (
+						prior?.state === "dispatched" ||
+						(prior?.state === "unknown" && to !== "unknown")
+					)
+						this.options.receipts.transition({
+							...writeInput,
+							now: Date.now(),
+							from: prior.state,
+							to,
+							...(result.resourceRefs[0]
+								? { providerRef: result.resourceRefs[0] }
+								: {}),
+							...(result.errorCode ? { errorCode: result.errorCode } : {}),
+						});
+				} catch (error) {
+					// Parent shutdown may have closed its journal; the Bridge fence can
+					// still accept terminal proof, without re-opening operation admission.
+					if (!controller.signal.aborted && !this.closed) throw error;
+				}
 				if (targetFence && this.options.targetLocks) {
 					await this.options.targetLocks.release({
 						...targetInput(),
@@ -405,12 +433,13 @@ export class LeadCapabilityBroker {
 									? "rejected"
 									: "unknown",
 						...(result.errorCode ? { reason: result.errorCode } : {}),
-						signal: context.signal,
+						signal: AbortSignal.timeout(2000),
 					});
 					targetReleased = true;
 				}
 			}
 			finished = true;
+			await context.assertCurrent();
 			return result;
 		};
 		let onAbort = () => {};

@@ -1,0 +1,48 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+stderr | src/bridge/__tests__/lead-capability-target-lock.test.ts > rejects a voice activation alias and foreign project target before creating a lock
+[slow-sql] {"databaseKind":"teamlead","sqlId":"ce922519a3c3ecaf","method":"transaction","durationMs":297.1660840000004}
+[slow-sql] {"databaseKind":"teamlead","sqlId":"0801074aeaef699f","method":"exec","durationMs":273.8088749999988}
+[slow-sql] {"databaseKind":"teamlead","sqlId":"ce922519a3c3ecaf","method":"transaction","durationMs":275.0614999999998}
+
+ ❯ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (2 tests | 2 failed) 2930ms
+   × serves disabled/draining policy and checks only existing targets after rollback 1324ms
+     → Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+   × rejects a voice activation alias and foreign project target before creating a lock 1604ms
+     → expected 200 to be 403 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts > serves disabled/draining policy and checks only existing targets after rollback
+SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts > rejects a voice activation alias and foreign project target before creating a lock
+AssertionError: expected 200 to be 403 // Object.is equality
+
+- Expected
++ Received
+
+- 403
++ 200
+
+ ❯ src/bridge/__tests__/lead-capability-target-lock.test.ts:44:110
+     42| });
+     43| it("rejects a voice activation alias and foreign project target before…
+     44|  expect((await post("/acquire", { ...base, targetKey: "foreign:linear:…
+       |                                                                                                              ^
+     45|  expect((await post("/acquire", { ...base, authority: { kind: "voice_s…
+     46|  expect(store.getCapabilityTargetLock(base.targetKey)).toBeUndefined();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed (2)
+   Start at  23:48:23
+   Duration  25.38s (transform 11.93s, setup 240ms, collect 18.29s, tests 2.93s, environment 0ms, prepare 715ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/lead-capability-target-lock.test.ts

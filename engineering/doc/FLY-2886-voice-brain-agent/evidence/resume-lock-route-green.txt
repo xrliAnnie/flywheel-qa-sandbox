@@ -1,0 +1,12 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/bridge/__tests__/lead-capability-target-lock.test.ts (2 tests) 864ms
+   ✓ serves disabled/draining policy and checks only existing targets after rollback  446ms
+   ✓ rejects a voice activation alias and foreign project target before creating a lock  417ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  23:52:07
+   Duration  15.14s (transform 6.69s, setup 126ms, collect 9.99s, tests 864ms, environment 0ms, prepare 246ms)
+

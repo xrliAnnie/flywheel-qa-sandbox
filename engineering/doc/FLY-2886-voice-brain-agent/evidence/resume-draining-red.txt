@@ -1,0 +1,58 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/__tests__/StateStore.voice-target-lock.test.ts (7 tests | 2 failed) 2987ms
+   × voice capability target locks > drains held and unknown targets without admitting another write or acquiring unrelated targets 555ms
+     → expected { status: 'waiting' } to deeply equal { status: 'target_pending_reconcile' }
+   × voice capability target locks > recovers only expired undispatched holders and preserves dispatched uncertainty across restart 593ms
+     → reopened.listCapabilityTargetLocks is not a function
+   ✓ voice capability target locks > cannot mark an expired fence as dispatched  407ms
+   ✓ voice capability target locks > retains a dispatched lock when a lost mark reply is reported as not dispatched  465ms
+   ✓ voice capability target locks > gives a queued resident the target after a voice write finishes  365ms
+   ✓ voice capability target locks > rejects voice behind a resident and preserves dispatched uncertainty  320ms
+   ✓ voice capability target locks > safely releases an undispatched expired holder 279ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/__tests__/StateStore.voice-target-lock.test.ts > voice capability target locks > drains held and unknown targets without admitting another write or acquiring unrelated targets
+AssertionError: expected { status: 'waiting' } to deeply equal { status: 'target_pending_reconcile' }
+
+- Expected
++ Received
+
+  {
+-   "status": "target_pending_reconcile",
++   "status": "waiting",
+  }
+
+ ❯ src/__tests__/StateStore.voice-target-lock.test.ts:33:56
+     31|    store.markCapabilityTargetLockDispatched({ ...holder, now: 1_100 });
+     32|    const resident = { ...owner, actor: "resident" as const, activation…
+     33|    expect(store.acquireCapabilityTargetLock(resident)).toEqual({ statu…
+       |                                                        ^
+     34|    expect(store.getCapabilityTargetLock(owner.targetKey)?.state).toBe(…
+     35|    expect(store.acquireCapabilityTargetLock({ ...resident, targetKey: …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/__tests__/StateStore.voice-target-lock.test.ts > voice capability target locks > recovers only expired undispatched holders and preserves dispatched uncertainty across restart
+TypeError: reopened.listCapabilityTargetLocks is not a function
+ ❯ src/__tests__/StateStore.voice-target-lock.test.ts:54:20
+     52|   const reopened = await StateStore.create(join(root, "teamlead.db"));
+     53|   try {
+     54|    expect(reopened.listCapabilityTargetLocks("flywheel", "eng", 2_001)…
+       |                    ^
+     55|    expect(reopened.listCapabilityTargetLocks("other", "eng", 2_001)).t…
+     56|   } finally { reopened.close(); }
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 5 passed (7)
+   Start at  23:45:14
+   Duration  15.46s (transform 7.11s, setup 39ms, collect 10.83s, tests 2.99s, environment 0ms, prepare 186ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/__tests__/StateStore.voice-target-lock.test.ts

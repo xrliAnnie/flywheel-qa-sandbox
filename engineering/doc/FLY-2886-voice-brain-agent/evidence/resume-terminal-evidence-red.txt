@@ -1,0 +1,62 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/broker.test.ts (29 tests | 1 failed) 281ms
+   ✓ trusted operation broker engine > preserves the nonsecret baseline drift failure without exposing provider details 19ms
+   ✓ trusted operation broker engine > binds the validated request UUID into the trusted handler context 5ms
+   ✓ trusted operation broker engine > executes a validated write once and canonicalizes parsed input for retries 18ms
+   ✓ trusted operation broker engine > fences voice writes before dispatch and records the normalized target 8ms
+   ✓ trusted operation broker engine > retains a timed-out provider success as terminal proof before allowing another writer 22ms
+   × trusted operation broker engine > requires explicit terminal evidence for provider refusal (undefined) 8ms
+     → expected 'rejected' to be 'unknown' // Object.is equality
+   ✓ trusted operation broker engine > requires explicit terminal evidence for provider refusal (provider_rejected) 3ms
+   ✓ trusted operation broker engine > requires explicit terminal evidence for provider refusal (not_dispatched) 3ms
+   ✓ trusted operation broker engine > rejects malformed oversized unknown reserved and exact-input violations without side effects 4ms
+   ✓ trusted operation broker engine > rechecks current activation and manifest after asynchronous authorization 3ms
+   ✓ trusted operation broker engine > passes a live guard and abort signal into the trusted handler 2ms
+   ✓ trusted operation broker engine > makes thrown or invalid/secret provider output unknown without leaking or retrying 4ms
+   ✓ trusted operation broker engine > times out at fifteen seconds, aborts handler and never resends 8ms
+   ✓ trusted operation broker engine > keeps patrol snapshots alive through the handler budget before the broker aborts 3ms
+   ✓ trusted operation broker engine > uses only explicit read-only reconciliation for unknown receipts 2ms
+   ✓ keeps failed read-only reconciliation unknown and never retries provider writes 2ms
+   ✓ bounds read output and rejects secret-bearing read data without persistence 2ms
+   ✓ reconciles across activation without dispatching or mutating the old receipt 4ms
+   ✓ handler guard refuses side effects after authorization is revoked during an await 17ms
+   ✓ returns pending for a concurrent duplicate instead of invoking its handler 75ms
+   ✓ applies the result byte limit to the complete protocol envelope 13ms
+   ✓ denies tier C git.feature.push before any injected provider or old receipt replay 8ms
+   ✓ denies tier C github.pr.create before any injected provider or old receipt replay 7ms
+   ✓ denies tier C github.issue.comment before any injected provider or old receipt replay 7ms
+   ✓ closing broker cancels pending authorize before journal teardown and refuses new work 22ms
+   ✓ closing broker cancels pending execute before journal teardown and refuses new work 5ms
+   ✓ captures parent delivery context and rejects it if released during authorization 1ms
+   ✓ refuses a reply outside the parent journal binding when the parent supplies the context authority 1ms
+   ✓ preserves an unavailable native browser as an explicit rejection 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/broker.test.ts > trusted operation broker engine > requires explicit terminal evidence for provider refusal (undefined)
+AssertionError: expected 'rejected' to be 'unknown' // Object.is equality
+
+Expected: "unknown"
+Received: "rejected"
+
+ ❯ src/lead-capabilities/__tests__/broker.test.ts:218:50
+    216|    targetLocks: { actor: "voice", acquire: async () => ({ status: "acq…
+    217|   });
+    218|   expect((await broker.execute(request)).status).toBe(expected);
+       |                                                  ^
+    219|   expect(release).toHaveBeenCalledWith(expect.objectContaining({ outco…
+    220|   await broker.close();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 28 passed (29)
+   Start at  23:57:56
+   Duration  3.35s (transform 937ms, setup 30ms, collect 1.72s, tests 281ms, environment 0ms, prepare 206ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/broker.test.ts

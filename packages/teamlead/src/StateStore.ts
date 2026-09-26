@@ -2727,6 +2727,7 @@ export interface CapabilityTargetLockRow {
 }
 export type CapabilityTargetLockAcquireResult =
 	| { status: "acquired"; fence: string; state: "held" }
+	| { status: "unguarded" }
 	| { status: "waiting" }
 	| { status: "resident_lead_active_on_target" }
 	| { status: "target_busy" }
@@ -6045,6 +6046,27 @@ export class StateStore {
 		);
 	}
 
+	/** Bridge-owned recovery: dispatched uncertainty never expires into permission. */
+	listCapabilityTargetLocks(
+		projectName: string,
+		leadId: string,
+		now: number,
+	): CapabilityTargetLockRow[] {
+		if (!Number.isSafeInteger(now)) throw new Error("capability_target_lock_input_invalid");
+		return this.db.raw.transaction(() => {
+			this.db.raw.prepare(
+				"DELETE FROM capability_target_locks WHERE project_name = ? AND lead_id = ? AND state = 'held' AND dispatched_at IS NULL AND deadline <= ?",
+			).run(projectName, leadId, now);
+			this.db.raw.prepare(
+				"UPDATE capability_target_locks SET state = 'unknown', reason = 'holder_deadline_expired' WHERE project_name = ? AND lead_id = ? AND state = 'held' AND dispatched_at IS NOT NULL AND deadline <= ?",
+			).run(projectName, leadId, now);
+			return (this.db.raw.prepare(
+				"SELECT * FROM capability_target_locks WHERE project_name = ? AND lead_id = ? ORDER BY acquired_at, target_key",
+			).all(projectName, leadId) as Record<string, unknown>[])
+				.map((row) => this.capabilityTargetLockFromRow(row)!);
+		}).immediate();
+	}
+
 	acquireCapabilityTargetLock(input: {
 		targetKey: string;
 		projectName: string;
@@ -6054,6 +6076,8 @@ export class StateStore {
 		requestId: string;
 		now: number;
 		deadline: number;
+		/** Trusted Bridge policy only: rollback checks existing targets without new locks. */
+		checkOnly?: boolean;
 	}): CapabilityTargetLockAcquireResult {
 		if (
 			!input.targetKey ||
@@ -6071,11 +6095,17 @@ export class StateStore {
 			) ||
 			!Number.isSafeInteger(input.now) ||
 			!Number.isSafeInteger(input.deadline) ||
-			input.deadline <= input.now
+			input.deadline <= input.now ||
+			(input.checkOnly === true && input.actor !== "resident")
 		)
 			throw new Error("capability_target_lock_input_invalid");
 		return this.db.raw
 			.transaction((): CapabilityTargetLockAcquireResult => {
+				if (input.checkOnly) {
+					return this.getCapabilityTargetLock(input.targetKey)
+						? { status: "target_pending_reconcile" }
+						: { status: "unguarded" };
+				}
 				this.db.raw
 					.prepare(
 						"DELETE FROM capability_target_lock_waiters WHERE deadline <= ?",

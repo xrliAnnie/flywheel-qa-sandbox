@@ -21,6 +21,108 @@ async function fixture() {
 }
 
 describe("voice capability target locks", () => {
+	it("drains held and unknown targets without admitting another write or acquiring unrelated targets", async () => {
+		const { store } = await fixture();
+		try {
+			const owner = {
+				targetKey: "flywheel:linear:fly-4",
+				projectName: "flywheel",
+				leadId: "eng",
+				actor: "voice" as const,
+				activationId: "voice:session",
+				requestId: request("10"),
+				now: 1_000,
+				deadline: 2_000,
+			};
+			const lock = store.acquireCapabilityTargetLock(owner);
+			if (lock.status !== "acquired") throw new Error("fixture");
+			const holder = { ...owner, fence: lock.fence };
+			store.markCapabilityTargetLockDispatched({ ...holder, now: 1_100 });
+			const resident = {
+				...owner,
+				actor: "resident" as const,
+				activationId: "resident:1",
+				requestId: request("11"),
+				now: 1_200,
+				deadline: 3_000,
+				checkOnly: true,
+			};
+			expect(store.acquireCapabilityTargetLock(resident)).toEqual({
+				status: "target_pending_reconcile",
+			});
+			expect(store.getCapabilityTargetLock(owner.targetKey)?.state).toBe(
+				"held",
+			);
+			expect(
+				store.acquireCapabilityTargetLock({
+					...resident,
+					targetKey: "flywheel:linear:fly-other",
+				}),
+			).toEqual({ status: "unguarded" });
+			expect(
+				store.getCapabilityTargetLock("flywheel:linear:fly-other"),
+			).toBeUndefined();
+			store.releaseCapabilityTargetLock({ ...holder, outcome: "unknown" });
+			expect(
+				store.acquireCapabilityTargetLock({
+					...resident,
+					now: 100_000,
+					deadline: 115_000,
+				}),
+			).toEqual({ status: "target_pending_reconcile" });
+			store.releaseCapabilityTargetLock({ ...holder, outcome: "succeeded" });
+			expect(store.acquireCapabilityTargetLock(resident)).toEqual({
+				status: "unguarded",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("recovers only expired undispatched holders and preserves dispatched uncertainty across restart", async () => {
+		const { store, root } = await fixture();
+		const owner = {
+			targetKey: "flywheel:linear:fly-5",
+			projectName: "flywheel",
+			leadId: "eng",
+			actor: "voice" as const,
+			activationId: "voice:session",
+			requestId: request("12"),
+			now: 1_000,
+			deadline: 2_000,
+		};
+		const lock = store.acquireCapabilityTargetLock(owner);
+		if (lock.status !== "acquired") throw new Error("fixture");
+		store.markCapabilityTargetLockDispatched({
+			...owner,
+			fence: lock.fence,
+			now: 1_100,
+		});
+		store.acquireCapabilityTargetLock({
+			...owner,
+			targetKey: "flywheel:linear:fly-6",
+			requestId: request("13"),
+		});
+		store.close();
+		const reopened = await StateStore.create(join(root, "teamlead.db"));
+		try {
+			expect(
+				reopened.listCapabilityTargetLocks("flywheel", "eng", 2_001),
+			).toMatchObject([
+				{
+					targetKey: owner.targetKey,
+					state: "unknown",
+					reason: "holder_deadline_expired",
+				},
+			]);
+			expect(reopened.listCapabilityTargetLocks("other", "eng", 2_001)).toEqual(
+				[],
+			);
+		} finally {
+			reopened.close();
+		}
+	});
+
 	it("cannot mark an expired fence as dispatched", async () => {
 		const { store } = await fixture();
 		try {

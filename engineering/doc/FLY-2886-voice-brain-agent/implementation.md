@@ -36,3 +36,11 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886)
 已对 64 个变更生产 TS 文件逐个执行 `git grep -lF`，查询全路径、文件名、父目录；初次发现 78 个测试匹配（跨包的结构守卫也保留）。全量原始清单暂在 `/tmp/fly2886-consumers.json`、`/tmp/fly2886-retained-tests.txt`，实现最终稳定后刷新并归档。非测试文档/源码引用从直接测试清单排除；TS import 还需 owning package 的 `vitest related <files> --run`。计划指定的 tmux-viewer.macos 排除。当前仅启动授权边界四文件的 related 验证，整单相关测试与 retained matches 尚未全跑。没有本机全包套件，没有请求 full CI。
 
 恢复修复已推送 `56dee3c79`。授权四文件 related 命令仍在运行（exec session `60899`，日志 `/tmp/fly2886-authority-related.log`）；它经路由依赖选中了 actions/event-route 等间接测试，目前不将未终态输出计作通过证据。继续时先轮询现有 handle，不要重启同一测试。
+
+## 2026-09-26 目标锁恢复批次
+
+新增关闭开关后的 policy/draining 路径：Bridge 恢复过期持锁者，未派发安全释放，已派发转 unknown；常驻 disabled 无存量锁只查一次 policy，draining 只检查已有目标，不新建无关锁。配置/身份变化仍使缓存失效。跨 project target 与 voice activation 别名 fail-closed。
+
+broker 在回合超时后保留原 provider 调用的可信终态，并先结算原回执/fence，再检查是否可向当前回合返回结果。原 fence 是 parent-only 结算票据，只能结算原目标/请求/activation；失权不重新授予 acquire/mark 权限。泛化 rejected 没有明确未派发或 provider 拒绝证据时保持 unknown。真实适配器的证据标注、canonical alias、对账与日志仍在后续批次，不能据此宣称 §4.3 全部完成。
+
+4 个定向测试文件 45/45 通过，红绿证据在 evidence/resume-{draining,lock-client,lock-route,late-terminal,terminal-client,terminal-evidence,lock-batch}*.txt。浏览器三档独立修改已通过其定向验证，但尚未连同容器集成提交；并行实现文件不能算本次锁提交内容。

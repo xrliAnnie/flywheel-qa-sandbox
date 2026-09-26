@@ -1,0 +1,90 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (5 tests | 3 failed) 52ms
+   × resident target-lock rollback policy > does not acquire locks for a disabled Lead with no outstanding writes 11ms
+     → expected { status: 'target_pending_reconcile' } to deeply equal { status: 'unguarded' }
+   × resident target-lock rollback policy > continues checking outstanding targets while draining 3ms
+     → expected [ 'acquire', 'acquire' ] to deeply equal [ 'policy', 'acquire', 'policy', …(1) ]
+   ✓ resident target-lock rollback policy > never applies the resident disabled shortcut to voice 6ms
+   × resident target-lock rollback policy > fails closed if the read-only policy lookup cannot be verified 13ms
+     → promise resolved "{ status: 'target_pending_reconcile' }" instead of rejecting
+   ✓ resident target-lock rollback policy > rechecks authority even when the disabled policy has been cached 10ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > resident target-lock rollback policy > does not acquire locks for a disabled Lead with no outstanding writes
+AssertionError: expected { status: 'target_pending_reconcile' } to deeply equal { status: 'unguarded' }
+
+- Expected
++ Received
+
+  {
+-   "status": "unguarded",
++   "status": "target_pending_reconcile",
+  }
+
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:34:43
+     32|  it("does not acquire locks for a disabled Lead with no outstanding wr…
+     33|   const f = fixture(false);
+     34|   expect(await f.client.acquire(input())).toEqual({ status: "unguarded…
+       |                                           ^
+     35|   expect(await f.client.acquire(input())).toEqual({ status: "unguarded…
+     36|   expect(f.calls).toEqual(["policy"]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > resident target-lock rollback policy > continues checking outstanding targets while draining
+AssertionError: expected [ 'acquire', 'acquire' ] to deeply equal [ 'policy', 'acquire', 'policy', …(1) ]
+
+- Expected
++ Received
+
+  [
+-   "policy",
+    "acquire",
+-   "policy",
+    "acquire",
+  ]
+
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:43:19
+     41|   expect(await f.client.acquire(input())).toEqual({ status: "target_pe…
+     42|   expect(await f.client.acquire(input())).toEqual({ status: "target_pe…
+     43|   expect(f.calls).toEqual(["policy", "acquire", "policy", "acquire"]);
+       |                   ^
+     44|  });
+     45|  it("never applies the resident disabled shortcut to voice", async () …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > resident target-lock rollback policy > fails closed if the read-only policy lookup cannot be verified
+AssertionError: promise resolved "{ status: 'target_pending_reconcile' }" instead of rejecting
+
+- Expected
++ Received
+
+- Error {
+-   "message": "rejected promise",
++ {
++   "status": "target_pending_reconcile",
+  }
+
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:53:41
+     51|   const f = fixture(false);
+     52|   f.setMode("unknown");
+     53|   await expect(f.client.acquire(input())).rejects.toThrow("target_lock…
+       |                                         ^
+     54|   expect(f.calls).toEqual(["policy"]);
+     55|  });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 2 passed (5)
+   Start at  23:46:54
+   Duration  1.43s (transform 171ms, setup 151ms, collect 220ms, tests 52ms, environment 0ms, prepare 169ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/target-lock-client.test.ts
