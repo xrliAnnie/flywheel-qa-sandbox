@@ -1,14 +1,14 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 5/6
-updated: 2026-09-26T12:01:20.235Z
-nextStep: "Task 5: milestone commit (last), push, verify PR #196 head, report +
-  complete needs_review"
+phase: design
+phaseCursor: 1/8
+updated: 2026-09-26T20:51:50.265Z
+nextStep: Audit inherited FLY-202 artifacts, current source inputs, PR state,
+  and implementation delta
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (5/6)
-**next**: Task 5: milestone commit (last), push, verify PR #196 head, report + complete needs_review
+**phase**: design (1/8)
+**next**: Audit inherited FLY-202 artifacts, current source inputs, PR state, and implementation delta
