@@ -45,7 +45,7 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886)
 - §3 重复义务：按 Lead 裁定（问询 `cd6d1609`）实现写入前防重门，plan §3.1 为真源。`voice-repeat-gate.ts` + broker `repeatGate` + 回执可空列 `dedupe_digest`；确认只认拦截所在回合结束后、说话人已归属的 founder 第一句终稿转写。Lead 必测三例先红（`resume2-repeat-red.txt`，11 项红）后绿（29/29）。
 - 每 turn 回执关联：`lead_operation_receipt_deliveries` + `listByDelivery`（WIP 先红的 2 项转绿）；Backend 优先用 parent `turnActionLedger(turnId)`，缺失时回退原差集（`codex-repeat-confirmation.test.ts` 先红后绿 4/4）。
 - 后台规约追加：带 `data.spokenText` 的拒绝，【口语】即该原文；`duplicate_recent_write` 后本回合不再调用，只在她下一句明确要求再做时用新 requestId 调一次。
-- 待 Lead 裁：`browser.*` 除 7 个只读工具外均为 write，字面规则下 10 分钟内参数完全相同的第二次浏览器动作也会被拦下确认（问询 `dac7093e`，默认保持字面）。
+- Lead 补充裁定（问询 `dac7093e`）：防重门只跨后台回合生效，同回合 agent 自己的连续相同动作（含浏览器）不拦；回执所属回合取第一条投递关联。已先红（2 项）后绿（36/36）。残余边界：她重复原话时若第一个回合仍在跑、被 steer 进同一回合，则不拦（已在报告中写明）。
 
 ### 最终相关验证（合并后 HEAD）
 
@@ -65,3 +65,15 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886)
 | `vitest related` | voice-codex 27 文件 393/393；voice-core 9 文件 69/69；teamlead 叶子模块（voice-repeat-gate / voice-capability-session / voice-capability-parent）2 文件 33/33 |
 
 teamlead 13 项失败分诊：`runtime-parent` 4 项与 `codex-runner-orphan-reaper` 2 项是 runner 的超长 `TMPDIR` 使 unix socket 路径超过 103 字节（`invalid v2 socket path` / `listen EINVAL`），`TMPDIR=/tmp/f2886t` 复跑全过；`default-parent-integration`、`StateStore.fly2341-terminal-archive` 与 event-route 的 409 一项在同一复跑中通过；event-route 两项 PR 声明用例在负载下 5s 超时，`--testTimeout=30000` 复跑 2.3–3.1s 通过。枢纽文件（StateStore.ts、plugin.ts、catalog.ts 等）不跑 `vitest related`（会退化为整包 1606 文件），由清册的 git grep 消费者覆盖。排除 `**/tmux-viewer.macos.test.ts`（plan §9）。没有本机全包套件，没有请求 full CI；真房语音、订阅真请求、founder 门与 Chrome 接管仍归 QA。
+
+### 补充：按 `.js` 导入说明符的消费者发现与两处常驻回归
+
+字面清册用 `broker.ts` 这类文件名检索，而 ESM 测试 import 的是 `broker.js`，因此漏掉一批直接消费者。补做两轮：
+
+1. `receipts.js` / `broker.js` / `voice-repeat-gate.js` / `SqliteJournalStore.js` 的 teamlead 直接消费者 51 个（首跑 8 文件 18 项红）。分诊出两处相对 main 的真回归并修复（`3a28c9463`）：
+   - `resolveLeadCapabilityRuntimeAuthority` 在 handler 构造时就因缺 `FLYWHEEL_LEAD_CARRIER_INSTANCE_ID` 抛错（main 只在派发边界校验），导致只用 `trusted` 的 context7 / xiaohongshu / upstream / patrol handler 无法构造。改为读取 `authority`/`authoritySecret` 时才解析；新增 `runtime-authority.test.ts` 先红后绿。
+   - broker 对所有 actor 接受中止后的迟到终态并把 unknown 结算为 succeeded，违背 plan §2「关闭档写路径不变」。收窄为「本请求持有目标锁 fence，或 broker 属于 `voice:` activation（含 Bridge 内层为语音请求建的 broker）」；main 的 `lead-memory` 用例即常驻守卫，`github-terminal-evidence` 参数化覆盖语音结算/常驻不结算两支。
+   - report publish/verify 夹具随已批准的 authority 信封更新（`stagePublish` 只挑 4 个字段，不落盘 carrier 机密）。
+   复跑 52 文件 790/790。
+2. 对全部非枢纽变更生产文件做 `/<basename>.js"` 检索，新增未跑消费者：teamlead 59 文件 677/677、voice-codex 7 文件 51/51；claude-runner 与 voice-headphone 的命中是同名不同模块（各自的 `codex-home.ts` / `bridge-client.ts`），排除。
+3. 枢纽中 `catalog.js` 已无未跑消费者；`ProjectConfig.js` 与 `plugin.js` 的 166 个未跑消费者 2368/2368。`StateStore.js` 另有 476 个未跑消费者（约等于整包），按枢纽规则不在本机跑，留给 QA 冻结头的 full CI；语音相关的 StateStore 用例已在保留集中跑过。
