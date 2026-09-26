@@ -910,6 +910,86 @@ export async function sendKeysToWindow(
 }
 
 /**
+ * FLY-2883: type the fixed controlled-interrupt phrase into a private Claude
+ * Lead body pane, then Enter. Accepts ONLY `LEAD_INTERRUPT_PHRASE` (anything
+ * else throws before tmux is touched), so no interrupt body can ever reach a
+ * pane. Immediately before typing it re-proves the pane identity (capture
+ * strength: `bash lead-body.sh` in the private socket) and that exactly one
+ * direct Claude child is running with the pid the caller judged. A running
+ * Claude Lead's foreground command is `bash`, which is why the `send` probe
+ * strength (which requires a claude foreground) cannot be used here.
+ */
+export async function sendLiteralLineToLeadPane(
+	window: import("../LeadWindowLocator.js").LeadWindowRef,
+	text: string,
+	opts: {
+		expectedClaudePid: string;
+		execFn?: import("../LeadWindowLocator.js").ExecFn;
+	},
+): Promise<{ sent: boolean; error?: string }> {
+	const { LEAD_INTERRUPT_PHRASE } = await import(
+		"./lead-interrupt-contract.js"
+	);
+	if (text !== LEAD_INTERRUPT_PHRASE) {
+		throw new Error(
+			"sendLiteralLineToLeadPane only types the fixed interrupt phrase",
+		);
+	}
+	const execFn =
+		opts.execFn ??
+		(execFileAsync as unknown as import("../LeadWindowLocator.js").ExecFn);
+	try {
+		const { probeV2LeadPane, readV2LeadClaudePid } = await import(
+			"../LeadWindowLocator.js"
+		);
+		if (!(await probeV2LeadPane(window, execFn, "capture", TMUX_TIMEOUT))) {
+			return {
+				sent: false,
+				error: "private Lead body pane identity is indeterminate",
+			};
+		}
+		const claude = await readV2LeadClaudePid(window, execFn, TMUX_TIMEOUT);
+		if (claude.state !== "running" || claude.pid !== opts.expectedClaudePid) {
+			return {
+				sent: false,
+				error: "Claude process changed since the judgment",
+			};
+		}
+		await execFn(
+			"tmux",
+			[
+				"-S",
+				window.socketPath,
+				"send-keys",
+				"-t",
+				window.bodyPaneTarget,
+				"-l",
+				"--",
+				LEAD_INTERRUPT_PHRASE,
+			],
+			{ timeout: TMUX_TIMEOUT },
+		);
+		await execFn(
+			"tmux",
+			[
+				"-S",
+				window.socketPath,
+				"send-keys",
+				"-t",
+				window.bodyPaneTarget,
+				"Enter",
+			],
+			{ timeout: TMUX_TIMEOUT },
+		);
+		return { sent: true };
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		console.error(`[tmux-lookup] interrupt phrase send error: ${msg}`);
+		return { sent: false, error: msg };
+	}
+}
+
+/**
  * FLY-368: send a bare Enter to a tmux window (no text typed first).
  *
  * Accepting the "Resume from summary (recommended)" default is a single Enter,

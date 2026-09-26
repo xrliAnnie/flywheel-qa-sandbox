@@ -705,6 +705,7 @@ import {
 } from "./lead-dual-active-scan.js";
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadInboundAttachmentRouter } from "./lead-inbound-attachment.js";
+import { createProductionClaudeInterruptPane } from "./lead-interrupt-claude-pane-production.js";
 import { createLeadInterruptLeadRouter } from "./lead-interrupt-routes.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
@@ -7304,6 +7305,13 @@ export async function startBridge(
 	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const leadInboxRuntime = new LeadInboxRuntime({
 		dispatcherUserId: () => alertDutyDispatcherBotUserId.current,
+		// FLY-2883: Claude Leads receive the fixed interrupt phrase only when
+		// the FLY-2882 pane reader proves they are busy with an empty prompt.
+		claudeInterruptPaneForLead: (project, lead) =>
+			createProductionClaudeInterruptPane({
+				projectName: project.projectName,
+				leadId: lead.agentId,
+			}),
 		leadLeaseDbPath:
 			process.env.FLYWHEEL_LEAD_LEASE_DB ??
 			join(homedir(), ".flywheel", "lead-lease.db"),

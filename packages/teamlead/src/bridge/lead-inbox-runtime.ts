@@ -53,7 +53,10 @@ import {
 import type { DeliverySecretProvider } from "./lead-event-delivery.js";
 import { enqueueLeadEvent as enqueueEvent } from "./lead-event-queue.js";
 import { LeadInboxLoop } from "./lead-inbox-loop.js";
-import { createLeadInterruptHooks } from "./lead-interrupt-delivery.js";
+import {
+	type ClaudeInterruptPane,
+	createLeadInterruptHooks,
+} from "./lead-interrupt-delivery.js";
 import {
 	type LeadLeaseReader,
 	readLeadRecipientState,
@@ -108,6 +111,14 @@ export interface LeadInboxRuntimeOptions {
 		project: ProjectEntry,
 		lead: LeadConfig,
 	) => LeadDeliveryAdapter;
+	/**
+	 * FLY-2883: Claude Lead pane judge + fixed-phrase typing for controlled
+	 * interrupts. Absent = Claude interrupt letters are ordinary mail.
+	 */
+	claudeInterruptPaneForLead?: (
+		project: ProjectEntry,
+		lead: LeadConfig,
+	) => ClaudeInterruptPane | undefined;
 	runnerAdapterForProject?: (
 		project: ProjectEntry,
 		dbPath: string,
@@ -381,6 +392,14 @@ export class LeadInboxRuntime {
 											adapter.deliverInterrupt!(batch),
 									}
 								: {}),
+							...(() => {
+								if (leadBackend !== "claude-code") return {};
+								const claudePane = opts.claudeInterruptPaneForLead?.(
+									project,
+									lead,
+								);
+								return claudePane ? { claudePane } : {};
+							})(),
 						}),
 						queueConfig: resolveMailboxQueueConfig,
 						recipientState: () =>

@@ -2689,4 +2689,72 @@ describe("FLY-2883 controlled interrupt wiring", () => {
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("types the fixed phrase through the injected Claude pane and holds the letter", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2883-runtime-claude-"));
+		const dbPath = join(root, "project-a.db");
+		new CommDB(dbPath).close();
+		const store = await StateStore.create(":memory:");
+		const queue = new MailboxQueue(dbPath);
+		const id = "li_00000000-0000-4000-8000-00000000c1a1";
+		const row = store.leadInterrupts.createRequested({
+			interruptId: id,
+			initiatorKind: "voice_session",
+			initiatorRef: "10000000-0000-4000-8000-000000000001",
+			idempotencyKey: `idem-${id}`,
+			requestDigest: "a".repeat(64),
+			founderMessageId: "300000000000000001",
+			targetProject: "project-a",
+			targetLeadId: "lead-a",
+			targetBackend: "claude-code",
+			body: "你现在在做什么?",
+			bodyDigest: "b".repeat(64),
+			now: new Date().toISOString(),
+		});
+		queue.enqueue(leadInterruptEnqueueInput(row));
+		store.leadInterrupts.transition({
+			interruptId: id,
+			from: ["requested"],
+			to: "queued",
+			event: "enqueued",
+			now: new Date().toISOString(),
+		});
+		const deliverBatch = vi.fn();
+		const typePhrase = vi.fn(async (guard: () => void) => {
+			guard();
+			return { outcome: "nudged" as const };
+		});
+		const paneFor = vi.fn(() => ({
+			assess: async () => ({ state: "busy_safe" as const }),
+			typePhrase,
+		}));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2883-claude",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch }),
+			claudeInterruptPaneForLead: paneFor,
+		});
+		runtimes.push(runtime);
+		try {
+			runtime.start();
+			await vi.waitFor(() =>
+				expect(store.leadInterrupts.get(id)?.disposition).toBe("nudged"),
+			);
+			expect(paneFor).toHaveBeenCalledWith(projects[0], projects[0]!.leads[0]);
+			expect(typePhrase).toHaveBeenCalledTimes(1);
+			expect(deliverBatch).not.toHaveBeenCalled();
+			expect(queue.getById(`lead-interrupt:${id}`)).toMatchObject({
+				state: "QUEUED",
+			});
+		} finally {
+			runtime.close();
+			queue.close();
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
