@@ -51,6 +51,7 @@ button{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 
 <tr><td>node 在沙箱里起不来</td><td>给后台助手用的工具程序是用 node 跑的；「沙箱」只放行了 node 本身，没放行它运行要用的配套库文件</td><td>把配套库文件精确地加进放行清单；常驻 Lead 那边同一个毛病一起修</td></tr>
 <tr><td>缺 Linear 密钥</td><td>没有 Linear 的访问密钥</td><td>不装 Linear，其他照开</td></tr>
 </table>
+<p><span class="badge b-green">已通过</span>技术评审（另一个 AI 模型 Codex 专门挑毛病）共 7 轮，每轮挑出的阻断问题数 5 → 2 → 2 → 1 → 2 → 1 → 0，全部改进了设计；这页不需要你批准，实现可以直接往下做，你的意见写在每节下面，我们增量修改。</p>
 <p class="note">「后台 parent」＝ 给后台助手提供工具的那个本机程序；它起不来，后台助手就什么也做不了。<br>「沙箱」＝ 限制程序只能读写指定文件、不能乱碰电脑其他地方的安全围栏。</p>
 <div class="comment"><label>对这一节的意见</label><textarea data-section="s0" data-title="0. 为什么有这一版"></textarea></div>
 </div>
