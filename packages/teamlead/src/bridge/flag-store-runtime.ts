@@ -236,6 +236,33 @@ export function storeNodeDwellThresholdHours(
 	return value;
 }
 
+export function storeLeadAlertWakeDedupEnabled(
+	runtime: { store: ScopedFlagStore },
+	projectName: string,
+): boolean {
+	try {
+		return readScopedBoolean(
+			{
+				store: {
+					getFlagValueRow(name, scope) {
+						const row = runtime.store.getFlagValueRow(name, scope);
+						if (row?.hasOverride && row.raw !== "0" && row.raw !== "1")
+							throw new Error("invalid lead_alert_wake_dedup value");
+						return row;
+					},
+				},
+			},
+			"lead_alert_wake_dedup",
+			projectName,
+		);
+	} catch (error) {
+		console.warn(
+			`[alert-wake-dedup] flag unavailable; restoring per-letter delivery: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return false;
+	}
+}
+
 export function storeLeadTokenSavingsEnabled(
 	runtime: { store: ScopedFlagStore },
 	projectName: string,

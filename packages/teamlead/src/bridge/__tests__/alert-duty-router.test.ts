@@ -93,6 +93,67 @@ describe("alert duty router", () => {
 		});
 	});
 
+	it("FLY-2910 exposes only the last 24 hours of wake dedup behind duty auth", async () => {
+		const now = Date.now();
+		const currentAt = new Date(now - 60_000).toISOString();
+		for (const [fingerprint, nowIso] of [
+			["recent-info", currentAt],
+			["old-info", new Date(now - 25 * 3_600_000).toISOString()],
+		]) {
+			store.bumpAlertWakeInfo({
+				leadId: "lead-a",
+				projectName: "flywheel",
+				fingerprint,
+				eventType: "review_advisory_pass",
+				categoryKey: fingerprint,
+				categoryTitle: "Review passed",
+				nowIso,
+			});
+		}
+		const read = vi.spyOn(store, "listAlertWakeDedup");
+		const app = express();
+		app.use(
+			"/duty",
+			dutyAuth("duty-token"),
+			createAlertDutyRouter({
+				store,
+				projects: [],
+				getAlertHub: () => undefined,
+			}),
+		);
+		for (const token of [undefined, "shared-token"]) {
+			expect(
+				(
+					await request(app, {
+						method: "GET",
+						path: "/duty/alert-board",
+						token,
+					})
+				).status,
+			).toBe(403);
+		}
+		expect(read).not.toHaveBeenCalled();
+		const board = await request(app, {
+			method: "GET",
+			path: "/duty/alert-board",
+			token: "duty-token",
+		});
+		expect(board.status).toBe(200);
+		expect(board.body.wakeDedup).toEqual([
+			{
+				leadId: "lead-a",
+				eventType: "review_advisory_pass",
+				categoryTitle: "Review passed",
+				infoOnly: true,
+				occurrences: 1,
+				suppressed: 1,
+				windowStartedAt: currentAt,
+				lastSeenAt: currentAt,
+			},
+		]);
+		expect(store.listAlertWakeDedup("1970-01-01")).toHaveLength(2);
+	});
+
 	it.each([
 		[{ resolved_at: "2026-09-06T00:00:00.000Z" }, "resolved"],
 		[{ resolved_at: null, ticket_status: "ESCALATED" }, "handed_off"],

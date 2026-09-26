@@ -515,6 +515,12 @@ describe("feature-flag drift guard", () => {
 					"storeDatabaseArchiveEnabled",
 				],
 				[
+					"lead_alert_wake_dedup",
+					"packages/teamlead/src/bridge/alert-wake-dedup.ts",
+					"AlertWakeDedup.revalidate",
+					"storeLeadAlertWakeDedupEnabled",
+				],
+				[
 					"lead_token_savings",
 					"packages/teamlead/src/bridge/bootstrap-generator.ts",
 					"generateBootstrap",

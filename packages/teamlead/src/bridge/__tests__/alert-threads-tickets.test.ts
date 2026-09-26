@@ -439,6 +439,7 @@ describe("FLY-2386 mailbox alert ledger", () => {
 
 		expect(result).toEqual({
 			disposition: "merged",
+			canonicalEventId: "evt-mailbox-1",
 			deliveryProjection: {
 				eventId: "evt-mailbox-2",
 				deliveryId: "infra_alert:evt-mailbox-2",

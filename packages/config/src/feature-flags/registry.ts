@@ -775,6 +775,29 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "lead_alert_wake_dedup",
+		configKey: "lead.alert_wake_dedup_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"Lead alert wake deduplication. Disable: feature-flags set --name lead_alert_wake_dedup --to off --project <p> --reason <r>. Changes apply to the next letter.",
+		whenOn:
+			"同一 Lead 6 小时内与已送达告警完全等价（同类别、同标题、同对象与处理要求、未升级、同代工单）的告警只记账不叫醒；info（带待办的除外）进下一次叫醒的摘要。",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/alert-wake-dedup.ts",
+				"AlertWakeDedup.revalidate",
+				"storeLeadAlertWakeDedupEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "lead_token_savings",
 		configKey: "lead.token_savings_enabled",
 		category: "feature",
