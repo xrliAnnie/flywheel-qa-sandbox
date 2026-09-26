@@ -1,14 +1,13 @@
 ---
 issue: FLY-2909
 phase: implement
-phaseCursor: 4/5
-updated: 2026-09-26T04:20:49.185Z
-nextStep: Commit the verified implementation, add the milestone as the final
-  commit, then request code review
+phaseCursor: 5/5
+updated: 2026-09-26T04:21:12.021Z
+nextStep: Push the frozen implementation head, obtain code review, and open the PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2909 progress
-**phase**: implement (4/5)
-**next**: Commit the verified implementation, add the milestone as the final commit, then request code review
+**phase**: implement (5/5)
+**next**: Push the frozen implementation head, obtain code review, and open the PR
