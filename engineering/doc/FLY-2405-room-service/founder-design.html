@@ -135,6 +135,19 @@ Bridge 检查通过后在罩外执行,拆房前先把房里的数据库和日志
   <label class="cmt-label" for="c-pits">我的意见(自动保存在本机浏览器)</label>
   <textarea class="cmt" id="c-pits" data-key="pits" rows="3" placeholder="写下对这一节的意见…"></textarea>
 </section>
+<section class="card amber" data-section="alertduty" data-title="范围追加:带告警值守的房">
+  <h2><span style="color:#ff9500">●</span> 范围追加:带告警值守的房</h2>
+  <div class="body"><p><b>告警值守</b> = 专门一个 Lead(生产里是 Claw)负责接住系统告警、跟进处理;<b>B 类工单帖</b> = 告警发到告警频道的帖子,值守 Lead 读到后建单处理。今天测试房里这条链路完全跑不起来,原因有四:</p>
+<ol>
+<li>值守 Lead 的名字在 6 处代码里写死成生产的 Claw,测试房的 Lead 名字不同,告警找不到主人;</li>
+<li>值守接口需要的口令房里从不配置;</li>
+<li>发帖的「dispatcher 机器人」身份在测试房里被刻意清掉,硬塞进去 Bridge 还会拒绝启动;</li>
+<li>测试 Lead 的频道订阅里没有告警频道。</li>
+</ol>
+<p><b>方案:</b>起房时可选打开「告警值守」:每间房随机生成一次性口令;值守 Lead 名字改成从一个统一入口读取,<b>只有在测试房里</b>才允许改成测试 Lead,生产里无论环境怎么配都还是 Claw;发帖只用<b>测试机器人</b>,绝不把生产机器人口令放进房;测试 Lead 自动订阅告警频道。前提:Discord 里要先给测试机器人开告警频道权限(这是运维动作,没开会明确报错,不会假装成功)。</p></div>
+  <label class="cmt-label" for="c-alertduty">我的意见(自动保存在本机浏览器)</label>
+  <textarea class="cmt" id="c-alertduty" data-key="alertduty" rows="3" placeholder="写下对这一节的意见…"></textarea>
+</section>
 <section class="card purple" data-section="boundary" data-title="诚实边界:做什么 / 不做什么">
   <h2><span style="color:#af52de">●</span> 诚实边界:做什么 / 不做什么</h2>
   <div class="body"><p><b>做:</b>runner 一条命令起房/拆房;房位归属与口令防误拆;版本核对;负载排队;证据快照;审计;两个拆房坑;QA 规则改成「要房就调服务」。</p>

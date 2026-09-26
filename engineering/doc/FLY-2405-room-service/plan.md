@@ -42,6 +42,7 @@ Bridge(在沙箱外、由 launchd 起的常驻进程)新增一个**起房 / 拆�
 - G3 修拆房坑 A(悬空 / 合法软链 socket)与坑 B(陈旧 launch marker),顺带修 F6 stdout 不纯。
 - G4 QA 规则与 runner 指引改为「要房就调起房服务」,Codex / Claude 一视同仁。
 - G5 对 `codex:rescue` 与诊断类嵌套 codex 给出评估结论(§12),本单不实现。
+- G6(范围追加,Linear 评论 1ae93545,来自 FLY-2910 QA@2):支持**带告警值守的房**——可选注入值守 token + dispatcher 身份 + 值守 Lead 身份映射到 slot Lead,使 `/duty/alert-board` 与 B 类工单帖能在整房里 E2E(§10b)。
 
 **非目标**
 
@@ -158,6 +159,7 @@ stateDiagram-v2
 | `lead_label` | 同上字符集 | `--lead-label` |
 | `lead_ready_timeout_sec` / `lead_channel_timeout_sec` | 1..3600 | 对应 flag |
 | `digest_channel` | 17–20 位数字 | `--digest` |
+| `alert_duty` | bool,要求 `alerts=true` | `--alert-duty`(新,§10b) |
 | `env` | 仅允许键:`TEST_REPLY_BY_ISSUE ∈ {0,1}`、`TEST_BRIDGE_DEPT_SCOPE_REJECT ∈ {on,off}`、`TEST_CODEX_LEAD_OUTBOUND_MODE ∈ {direct,bridge}` | 注入包装器环境 |
 
 `POST /api/qa-rooms/:id/teardown` body:`{execution_id?, request_id, credential?, skip_snapshot?: bool, reason?: string(1..200)}`;`skip_snapshot=true` 时 `reason` **必填**,否则禁止出现。
@@ -177,6 +179,9 @@ stateDiagram-v2
   - `test-deploy.sh claim_slot()` 与 `qa_multilead_claim_set`:锁目录存在且 `service-claim` 的 token == `FLYWHEEL_QA_ROOM_CLAIM` ⇒ **收养**(视为已认领);
   - 锁目录带 `service-claim` 但 token 不匹配(或调用方没给 token)⇒ **一律不自动回收**(不走 `claiming>300s` / 死 PID 回收分支),返回占用;
   - `test-teardown.sh`:若设置了 `FLYWHEEL_QA_ROOM_CLAIM`,在**任何**破坏性步骤前核对主房位与 campaign 借位锁的 `service-claim` token,不符 ⇒ exit 1 `claim_mismatch`,什么都不动;
+  - **失败清理不得删认领(自检补)**:`test-deploy.sh` 现有 `cleanup_on_failure` trap 与约 15 处早退路径直接 `rm -rf /tmp/flywheel-test-slot-N.lock`(`test-deploy.sh:697-887,1084-1151`)。改为统一调用新 helper `qa_release_slot_lock <lockdir>`:若 `FLYWHEEL_QA_ROOM_CLAIM` 已设且该锁 `service-claim` token 相符 ⇒ **保留锁目录**(把 `pid` 改写为 `service-failed`,log 一行),否则按原逻辑删除。这样服务侧 `failed` 房一定仍持有物理认领,后续 token 核对的 teardown 能清残留。
+  - **回滚不删收养锁(自检补)**:`qa_multilead_claim_set` 失败回滚现在对本次认领的所有锁 `rm -rf`(`qa-multilead.sh:462-489`);改为只删「本次调用新 mkdir 的」,收养的锁原样保留。
+  - `service-failed` 与 `diagnostic-evidence-pending` / `cycle-failed` 同级:任何自动回收路径都不碰。
   - 未设置该 env(Lead 手工路径)行为不变。
 - 服务从不在请求 slot 上看到「锁目录已存在」时继续:`queued` 受理时检查一次、认领时 mkdir 原子判定一次。
 - `released` 路径:prepare 失败时 test-deploy 未被调用,Bridge 核对 `service-claim` token 相符后删除自己建的锁目录,再释放预留。
@@ -265,6 +270,21 @@ teardown 结果与 `status` 返回 `evidence_dir`(最新成功 attempt 的目录
 - home-residue 普查在 `runtime_started=1 || launch_attempted=1` 时都跑(保住「有逃逸进程就不退役 home」的安全性);marker-only 且普查为空 ⇒ 正常退役 home。
 
 **F6 — `test-deploy.sh` stdout 纯化:** preflight 构建子 shell 的 stdout 重定向到 stderr(`>&2`),让 stdout 只剩最终 JSON。服务端解析仍容忍前置噪声(旧 head 的房也能用)。
+
+## 10b. 带告警值守的房(G6)
+
+**现状(读码核对):** 房里起不了告警值守的四个结构性原因——
+1. 值守 Lead id 写死:TS 3 处(`infra-event-router.ts:110 ALERT_DUTY_LEAD_ID`、`infra-alert-mailbox.ts:3 INFRA_ALERT_OWNER_LEAD_ID`、`alert-duty-seat.ts:2 ALERT_DUTY_SEAT.leadId`)+ shell 3 处(`packages/teamlead/scripts/lead-body.sh:184`、`claude-lead.sh:2504-2509`、`scripts/flywheel-lead-wrapper-v2.sh:457-458`),全是 `claude-infra-bot-lead`;slot Lead 叫 `flywheel-test-N` ⇒ `lead-inbox-runtime.ts:804-806` 抛 `unknown infra alert owner`。无任何覆盖入口。
+2. 值守 token:`FLYWHEEL_ALERT_DUTY_TOKEN`(`config.ts:155-171`,不得等于 API/ingest token)房里从不设置,且被 `test-deploy.sh:905-930` 的通配清洗剥掉 ⇒ `/duty/*` 503。
+3. dispatcher:`FLYWHEEL_ALERT_SENDER_TOKEN_ENV`(存的是**变量名**)在 `qa-generalized.sh:13` 清洗名单里,`qa-generalized-bridge-wrapper.sh:10` 发现非空会**直接让 Bridge 启动失败**。
+4. 收件:B 类帖要进 Lead,需要 slot 的 `access.json` 有告警频道组、`requireMention:false`、dispatcher bot id 在 `allowBots`(`apply-alert-duty-gate.sh:56-60` 只改已存在的组);现在 `test-deploy.sh:1363-1371` 只写 chat/roundtable 组。
+
+**设计(新 flag `--alert-duty`,必须同时 `--alerts`;服务字段 `alert_duty`):**
+- **值守 Lead id 单一来源**:新增 `resolveAlertDutyLeadId(env)`(放在 `alert-duty-seat.ts`),返回 `FLYWHEEL_ALERT_DUTY_LEAD_ID`——**仅当 `FLYWHEEL_ISOLATION_ROOT` 已设(即房内)才采信**,否则恒为 `claude-infra-bot-lead`(生产拼错变量也改不了路由)。TS 三处常量改为调用它;shell 三处守卫改为读同一变量、同样只在隔离根存在时采信。房注入 `FLYWHEEL_ALERT_DUTY_LEAD_ID=<slot Lead agentId>`。
+- **值守 token**:每房随机生成(与 API/ingest token 不同),经 `BRIDGE_EXTRA_ENV` 注入 slot Bridge,并注入 slot Lead 环境(值守 seat 的 shell 守卫据上一条放行);在 `qa-slot-env-contract.json` 登记为 `clear`/`unchecked`,确保环境里残留的任何值先被剥掉。token 值写 `SLOT_DIR/alert-duty-token`(0600),房 JSON 只给路径。
+- **dispatcher 身份**:只用**测试 bot**。`test-slots.json` 的 `alertChannel` 新增可选 `dispatcherTokenEnv`,默认取 `repairBotTokenEnv`;若它等于本房主 Lead 或任一 extra-lead 的 `tokenEnvVar` ⇒ 部署拒绝(bot 看不到自己发的帖)。房注入 `FLYWHEEL_ALERT_SENDER_TOKEN_ENV=<该测试变量名>` 与该变量的值;`qa-generalized.sh` 的清洗名单与包装器断言在 `--alert-duty` 时对**这一个名字**豁免(断言改为:要么为空,要么等于显式注入的测试名)。生产 `FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN`、`CLAUDE_INFRA_BOT_TOKEN`、`CASS_BOT_TOKEN` 等一律不进房(通配清洗 + 合同 `clear`)。
+- **收件**:`--alert-duty` 时在 slot Lead 的 `access.json` 追加告警频道组(`requireMention:false`,`allowBots` 含 dispatcher bot 的用户 id,部署时用该 token 调 Discord `/users/@me` 解析);复用 `--alerts` 已有的频道读写预检,把 dispatcher token 加进被探测列表。
+- **前提(运维,非代码)**:记忆记录 slot 2/3/4 的 bot 对告警频道 GET 403;频道权限需 Lead 在 Discord 侧授予。部署预检失败会明确报 `alert_channel_forbidden`,不静默降级。
 
 ## 11. QA 规则与 runner 指引(G4)
 
@@ -367,14 +387,15 @@ erDiagram
 
 | Chunk | 内容 | 主要文件 | 测试 |
 |---|---|---|---|
-| C1 | 坑 A + 坑 B + F6 + §6.1 认领合同(收养 / 拒自动回收 / teardown token 核对) | `scripts/lib/qa-reap-codex-slot-daemons.mjs`、`scripts/lib/qa-launchd-lead.sh`、`scripts/test-deploy.sh`、`scripts/lib/qa-multilead.sh`、`scripts/test-teardown.sh` | 新增 `scripts/__tests__/fly2405-teardown-pits.test.sh`:悬空软链 → 通过并 unlink;合法目标活 socket → 计 residual;非法目标 → 仍拒;marker-only + 无进程 → 退役成功;marker + 活 pid → 原失败语义不变。新增 `fly2405-service-claim.test.sh`:token 相符收养;token 不符 / 无 token 时 `claiming>300s` 与死 PID 分支都不回收;teardown token 不符零破坏;无 env 手工路径不变;campaign 借位同理。F6 用 stub pnpm 断言 stdout 纯 JSON。回归 `fly1663-qa-launchd.test.sh`、`test-deploy-generalized.test.sh` |
+| C1 | 坑 A + 坑 B + F6 + §6.1 认领合同(收养 / 拒自动回收 / teardown token 核对) | `scripts/lib/qa-reap-codex-slot-daemons.mjs`、`scripts/lib/qa-launchd-lead.sh`、`scripts/test-deploy.sh`、`scripts/lib/qa-multilead.sh`、`scripts/test-teardown.sh` | 新增 `scripts/__tests__/fly2405-teardown-pits.test.sh`:悬空软链 → 通过并 unlink;合法目标活 socket → 计 residual;非法目标 → 仍拒;marker-only + 无进程 → 退役成功;marker + 活 pid → 原失败语义不变。新增 `fly2405-service-claim.test.sh`:token 相符收养;带 token 的 deploy 在早退 / trap 失败路径后锁目录仍在且 `pid=service-failed`;campaign 回滚只删新建锁、收养锁保留;token 不符 / 无 token 时 `claiming>300s` 与死 PID 分支都不回收;teardown token 不符零破坏;无 env 手工路径不变;campaign 借位同理。F6 用 stub pnpm 断言 stdout 纯 JSON。回归 `fly1663-qa-launchd.test.sh`、`test-deploy-generalized.test.sh` |
 | C2 | StateStore 表 + 方法 | `packages/teamlead/src/StateStore.ts`(或新 `qa-room-store.ts` 由 StateStore 调用) | 迁移幂等;`qa_room_slot` PK 互斥;`UNIQUE(actor_key,request_id)` 对 Lead 无 exec 的真实约束;审计触发器拒改;状态 CHECK |
 | C3 | 受信包装器 | `scripts/lib/qa-room-job.sh` | `scripts/__tests__/fly2405-room-job.test.sh`:stub git/pnpm/test-deploy;`owner.json` 先于副作用;收据带 operation_id 且原子;快照用真实目录层级(`state/comm/<p>/comm.db`)+ WAL 未 checkpoint 的已提交行 → 两库 rowset 都在;半快照后重试、快照成功后脚本失败再重试都能走通;token 文件排除;skip-snapshot |
 | C4 | Bridge 服务 + 路由 | 新 `packages/teamlead/src/bridge/qa-room-service.ts`、`qa-room-routes.ts`;`plugin.ts` 挂载 + runner-tier 旁路 + 启动 reconcile | vitest:schema(未知字段 / 生产 label / 越界 slot 拒并审计)、授权四分支、幂等(同 digest 回原操作 / 异 digest 409)、auto slot、认领 mkdir 竞争、负载门(注入 loadavg,覆盖 `==阈值`)、并发上限、超时杀组、spawn 后落库失败杀组、reconcile 三分支(含第二次 teardown 中重启)、buildSha 不符、JSON 容错解析、残留观测非空 |
 | C5 | CLI | `packages/flywheel-comm/src/commands/room.ts` + `index.ts` switch | 参数校验、`deploy/teardown` 默认 `--wait` 至多 30 min、`wait` 续等;退出码 0 = ready/torn_down,1 = 失败/拒绝,2 = 传输失败,3 = 仍在进行(打印 room_id,供工具超时后续等);重试沿用 evidence-run 的 3 次退避与脱敏;Lead 模式自动带 `X-Flywheel-Lead-Id` |
+| C7 | 带告警值守的房(§10b) | `alert-duty-seat.ts`、`infra-event-router.ts`、`infra-alert-mailbox.ts`、`lead-inbox-runtime.ts`、`lead-body.sh`、`claude-lead.sh`、`flywheel-lead-wrapper-v2.sh`、`test-deploy.sh`、`qa-room.sh`、`qa-generalized.sh`、`qa-generalized-bridge-wrapper.sh`、`qa-slot-env-contract.json` | vitest:`resolveAlertDutyLeadId` 无隔离根时忽略覆盖、有隔离根时采信;三处调用点走同一函数(grep 守卫测试:仓内不再有第二个 `claude-infra-bot-lead` 字面量常量用于路由)。shell:`--alert-duty` 无 `--alerts` 拒绝;dispatcher 与 slot bot 相同拒绝;access.json 追加组;生产 token 名不进房 env(env dump 断言);generalized 包装器仅豁免显式测试名 |
 | C6 | 指引与文档 + 房内开关 | `.flywheel/agents/nodes/qa.md`、`Blueprint.ts:1989`、`doc/qa/framework/*`、`packages/qa-framework/*`、`scripts/lib/qa-slot-env-contract.json`、`test-deploy.sh` 知识点 | Blueprint 相关快照测试更新;env contract 测试 |
 
-顺序:C1 → C2 → C3 → C4 → C5 → C6(C4 依赖 C1 的认领合同与 C3 的收据格式)。
+顺序:C1 → C2 → C3 → C4 → C5 → C6;C7 与 C2–C5 无依赖,可在 C1 之后任意位置做(C4 依赖 C1 的认领合同与 C3 的收据格式)。
 
 测试纪律:只跑相关测试(`pnpm --filter flywheel-teamlead exec vitest run <files>`、`pnpm --filter flywheel-comm exec vitest run <files>`、`bash scripts/__tests__/<file>`);**排除** `**/tmux-viewer.macos.test.ts`;任何调 `startBridge` 的 vitest 先 export 隔离 `FLYWHEEL_CODEX_HOMES_ROOT`(记忆 FLY-2877)。
 
@@ -386,7 +407,8 @@ erDiagram
    - 同样再派一个 Claude runner 走一遍。
 2. **越权**:runner A 拆 runner B 的房 → 403 + 审计 `refused/room_not_owned`;请求里带 `com.flywheel.bridge` → 400 + 审计 `production_target_refused`;未知字段 → 400 + 审计。
 3. **拆房坑回归**:房 M 用 `--codex-runner` 跑过真 Codex 后 teardown 一次通过(坑 A);在一个 codex home 放陈旧 marker 后 teardown 通过(坑 B)。
-4. **合并后生产冒烟**(ship 后第一次真实使用即验证):一个真实 Codex QA 体用生产服务起房 → 验证 → 拆房,Lead 零手工。
+4. **告警值守房**:服务起一间 `alerts + alert_duty` 房 → 用房 JSON 给的 duty token 调房 Bridge `/duty/alert-board` 得 200;在房内触发一条 B 类(founder 升级类)告警 → 由测试 dispatcher bot 发帖 → slot Lead 的 mailbox 出现对应 `discord_chat` 行并被投递;拆房后生产 `~/.flywheel` 告警目录前后无变化。若告警频道权限未授予,如实记为前提未满足,不算通过。
+5. **合并后生产冒烟**(ship 后第一次真实使用即验证):一个真实 Codex QA 体用生产服务起房 → 验证 → 拆房,Lead 零手工。
 
 ## 18. 诚实边界 / 已知限制
 
@@ -399,6 +421,8 @@ erDiagram
 - L7 每房独立源码目录 ⇒ 每次起房都要 `pnpm install` + 全量构建(数分钟、吃 CPU);为了正确性放弃跨房复用(评审 R1 #4),优化留 follow-up。
 - L8 部署中 Bridge 被 updater 重启:操作不中断(detached);若包装器也被系统杀掉则 `interrupted`,需 teardown 清场。
 - L9 手工路径(不带 `FLYWHEEL_QA_ROOM_CLAIM`)的 teardown 不核 token —— 这是给 Lead 保留的逃生口,不是 runner 路径。
+
+- L10 告警值守房依赖 Discord 侧把测试 bot 加进告警频道(运维前提);值守 Lead id 覆盖只在房内生效,生产路由不可被环境变量改写(有意为之)。
 
 ## 19. Follow-ups(不在本单)
 
