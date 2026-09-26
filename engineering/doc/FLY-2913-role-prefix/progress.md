@@ -2,17 +2,17 @@
 issue: FLY-2913
 phase: implement
 phaseCursor: 5/6
-updated: 2026-09-26T18:12:40.946Z
-nextStep: "HIGH role-v1 resume identity hooks fixed in 4e8e4774e: 10 focused
-  tests green, 8-file related preflight and checks complete with documented
-  real-tmux timeout/rerun; build/lint green. Old room partial evidence only and
-  torn down. Push new milestone head, obtain new effective code review, then ask
-  Lead for fresh C6 room. PR Follow-ups contains all six nonblocking
-  advisories."
+updated: 2026-09-26T21:16:16.212Z
+nextStep: "QA rework epoch21: merged origin/main fdd1b404d in41390bed7; upstream
+  FLY2934 removes stale flag count while exact founder-copy map and prefix
+  retirement guard remain. Registry58 + related58, affected build/lint green.
+  Finish bounded integration and lexical checks, new milestone/push/effective
+  code review, then needs_review for QA retest; missing Claude review-code/QA
+  room cells remain unproven."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
 **phase**: implement (5/6)
-**next**: HIGH role-v1 resume identity hooks fixed in 4e8e4774e: 10 focused tests green, 8-file related preflight and checks complete with documented real-tmux timeout/rerun; build/lint green. Old room partial evidence only and torn down. Push new milestone head, obtain new effective code review, then ask Lead for fresh C6 room. PR Follow-ups contains all six nonblocking advisories.
+**next**: QA rework epoch21: merged origin/main fdd1b404d in41390bed7; upstream FLY2934 removes stale flag count while exact founder-copy map and prefix retirement guard remain. Registry58 + related58, affected build/lint green. Finish bounded integration and lexical checks, new milestone/push/effective code review, then needs_review for QA retest; missing Claude review-code/QA room cells remain unproven.
