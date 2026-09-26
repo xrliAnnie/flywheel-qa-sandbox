@@ -18,6 +18,7 @@ describe("Quota retention protection", () => {
 			"observation",
 			"outbox",
 			"outbox_attempt",
+			"reading_episode",
 			"review_model",
 			"root",
 			"switch_audit",

@@ -80,6 +80,7 @@ test("same-token voice and carrier clients do not re-ingest mirrors after reconn
 			createResource: () => ({}),
 			speakingEvents: () => new EventEmitter(),
 			memberDisplayName: async () => "",
+			voiceChannelHumanCount: async () => 0,
 			userVoiceChannelId: async () => null,
 			onVoiceStateUpdate: () => () => {},
 			leaveVoice: () => {},

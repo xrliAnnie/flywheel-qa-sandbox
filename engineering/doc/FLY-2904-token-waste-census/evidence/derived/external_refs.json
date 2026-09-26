@@ -1,0 +1,11 @@
+{
+ "FLY-2893": {
+  "source": "origin/flywheel-FLY-2893:engineering/doc/FLY-2893-codex-failure-census/evidence/derived/classes.csv",
+  "commit": "4fc15a46e53a8b384b64eb00834ef73bc5ba6733",
+  "pr": 1336,
+  "merged": false,
+  "codex_fault_successor_first_turn_tokens": 4048946998,
+  "codex_fault_post_terminal_tokens": 1207045528,
+  "note": "successor first turn contains real work and cannot be separated (FLY-2893 build_report.py:150-155); reference only, never a saving"
+ }
+}

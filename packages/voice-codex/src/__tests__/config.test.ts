@@ -143,6 +143,7 @@ describe("voice daemon config", () => {
 		);
 		expect(config).toMatchObject({
 			engine: "legacy-realtime",
+			backendId: "openai-realtime",
 			realtimeApiKey: "api-key",
 			buildSha: "a".repeat(40),
 			speechChunkTokens: 80,
@@ -221,6 +222,79 @@ describe("voice daemon config", () => {
 				"/Users/tester",
 			),
 		).toThrow("FLYWHEEL_VOICE_REPLY_WAIT_MS must be a positive integer");
+	});
+
+	it("enables Codex only explicitly and requires an absolute standalone binary", () => {
+		expect(
+			loadVoiceDaemonConfig(
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_VOICE_BACKEND: "codex-realtime",
+					FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
+				},
+				"/Users/tester",
+			),
+		).toMatchObject({
+			backendId: "codex-realtime",
+			codexBin: "/opt/flywheel/codex-0.156.1/codex",
+		});
+		for (const env of [
+			{ FLYWHEEL_VOICE_BACKEND: "unknown" },
+			{
+				FLYWHEEL_VOICE_BACKEND: "codex-realtime",
+				FLYWHEEL_CODEX_BIN: "codex",
+			},
+		]) {
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{
+						TEAMLEAD_API_TOKEN: "master",
+						OPENAI_API_KEY: "api-key",
+						...env,
+					},
+					"/Users/tester",
+				),
+			).toThrow(/voice backend|standalone Codex binary/);
+		}
+	});
+
+	it("refuses Engine A together with the Codex backend", () => {
+		expect(() =>
+			loadVoiceDaemonConfig(
+				{
+					TEAMLEAD_API_TOKEN: "master",
+					OPENAI_API_KEY: "api-key",
+					FLYWHEEL_VOICE_ENGINE: "openai-live",
+					FLYWHEEL_VOICE_BACKEND: "codex-realtime",
+					FLYWHEEL_CODEX_BIN: "/opt/flywheel/codex-0.156.1/codex",
+				},
+				"/Users/tester",
+			),
+		).toThrow(
+			/openai-live cannot run with FLYWHEEL_VOICE_BACKEND=codex-realtime/,
+		);
+	});
+
+	it("defaults the uplink VAD pre-roll to 200 ms and accepts an explicit override", () => {
+		const base = { TEAMLEAD_API_TOKEN: "master", OPENAI_API_KEY: "api-key" };
+		expect(loadVoiceDaemonConfig(base, "/Users/tester").uplinkPrerollMs).toBe(
+			200,
+		);
+		expect(
+			loadVoiceDaemonConfig(
+				{ ...base, FLYWHEEL_VOICE_UPLINK_PREROLL_MS: "0" },
+				"/Users/tester",
+			).uplinkPrerollMs,
+		).toBe(0);
+		for (const value of ["-1", "1001", "0.5", "abc"]) {
+			expect(() =>
+				loadVoiceDaemonConfig(
+					{ ...base, FLYWHEEL_VOICE_UPLINK_PREROLL_MS: value },
+					"/Users/tester",
+				),
+			).toThrow("FLYWHEEL_VOICE_UPLINK_PREROLL_MS");
+		}
 	});
 
 	it("rejects a malformed voice build identity", () => {

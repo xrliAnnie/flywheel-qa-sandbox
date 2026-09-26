@@ -8,7 +8,11 @@ import type {
 	SkillFrameworkMode,
 	WorkflowDispatchVendor,
 } from "flywheel-config";
-import type { LaunchPrecommitOutcome } from "flywheel-core";
+import type {
+	AdapterExecutionContext,
+	LaunchPrecommitOutcome,
+} from "flywheel-core";
+import type { TakeoverRescuePermit } from "flywheel-edge-worker";
 import type {
 	WorkflowIssueDeliveryInput,
 	WorkflowResumeContext,
@@ -51,6 +55,8 @@ export interface GeneralizedExecutionDispatch {
 	}) => { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
 	/** Current launch-owner generation, used to bind physical tmux identity. */
 	launchGeneration?: number;
+	/** FLY-2808: durable process identity/retirement contract for this execution. */
+	processLifecycle?: AdapterExecutionContext["processLifecycle"];
 }
 
 export interface RetryRequest {
@@ -306,6 +312,27 @@ export interface StartRequest {
 	 */
 	/** FLY-1281: Bridge-internal, pre-bound generalized node execution. */
 	generalizedExecution?: GeneralizedExecutionDispatch;
+	/**
+	 * FLY-2901 §3: engine-computed proof that no predecessor on the shared
+	 * branch-B worktree can still write. Bridge-INTERNAL — set ONLY by the
+	 * workflow engine for shared-branch phase dispatches; never accepted from
+	 * the public `/api/runs/start` body. Threaded to
+	 * `BlueprintContext.takeoverRescuePermit`; absent ⇒ Blueprint treats the
+	 * permit as `permit_indeterminate`.
+	 */
+	takeoverRescuePermit?: TakeoverRescuePermit;
+	/**
+	 * FLY-2901 §7: call-time snapshot of the `worktree_takeover_rescue_disabled`
+	 * kill switch taken at dispatch. Bridge-INTERNAL; threaded to
+	 * `BlueprintContext.takeoverRescueDisabled`.
+	 */
+	takeoverRescueDisabled?: boolean;
+	/** FLY-2808: exact-session relaunch on the same execution id. Bridge-internal. */
+	processLifecycle?: AdapterExecutionContext["processLifecycle"];
+	/** Return a typed Blueprint launch outcome without enrolling a generalized run. */
+	observeLaunchOutcome?: boolean;
+	/** Provider identity persisted by the first launch; never accepted from HTTP. */
+	previousSession?: Record<string, unknown>;
 }
 
 export interface StartResult {

@@ -18,6 +18,7 @@ export interface VoiceBotBinding {
 
 export interface VoiceDaemonConfig {
 	engine: "legacy-realtime" | "openai-live";
+	backendId: "openai-realtime" | "codex-realtime";
 	buildSha: string | null;
 	realtimeApiKey: string;
 	apiToken: string;
@@ -38,6 +39,8 @@ export interface VoiceDaemonConfig {
 	leaseMissMax: number;
 	presenceGraceMs: number;
 	speechChunkTokens: number;
+	/** Uplink VAD pre-roll for the room's speech gate; see FLY-2798/FLY-2799. */
+	uplinkPrerollMs: number;
 	confirmationMs: number;
 	/** FLY-2796: quiet ceiling before "reply unavailable" is spoken. */
 	replyWaitMs: number;
@@ -89,6 +92,20 @@ function integer(
 	return value;
 }
 
+function boundedMs(
+	env: Readonly<Record<string, string | undefined>>,
+	name: string,
+	fallback: number,
+	max: number,
+): number {
+	const raw = env[name];
+	const value = raw === undefined ? fallback : Number(raw);
+	if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+		throw new Error(`${name} must be an integer between 0 and ${max}`);
+	}
+	return value;
+}
+
 const VOICE_CODEX_ENV_NAMES = [
 	"HOME",
 	"PATH",
@@ -135,6 +152,23 @@ export function loadVoiceDaemonConfig(
 	const voiceRoot = env.FLYWHEEL_VOICE_STATE_DIR ?? join(stateDir, "voice");
 	const commDbPath = env.FLYWHEEL_COMM_DB?.trim();
 	const buildSha = env.FLYWHEEL_VOICE_BUILD_SHA?.trim() || null;
+	const backendId = env.FLYWHEEL_VOICE_BACKEND?.trim() || "openai-realtime";
+	if (!new Set(["openai-realtime", "codex-realtime"]).has(backendId)) {
+		throw new Error("voice backend must be openai-realtime or codex-realtime");
+	}
+	// Engine A (FLY-2798) and the Codex backend (FLY-2799) each own the whole
+	// session; one daemon runs one of them.
+	if (engine === "openai-live" && backendId === "codex-realtime") {
+		throw new Error(
+			"FLYWHEEL_VOICE_ENGINE=openai-live cannot run with FLYWHEEL_VOICE_BACKEND=codex-realtime",
+		);
+	}
+	const codexBin = env.FLYWHEEL_CODEX_BIN ?? "codex";
+	if (backendId === "codex-realtime" && !isAbsolute(codexBin)) {
+		throw new Error(
+			"codex-realtime requires an absolute standalone Codex binary",
+		);
+	}
 	if (buildSha && !/^[0-9a-f]{40}$/u.test(buildSha)) {
 		throw new Error(
 			"FLYWHEEL_VOICE_BUILD_SHA must be a full lowercase git SHA",
@@ -162,6 +196,7 @@ export function loadVoiceDaemonConfig(
 	}
 	return {
 		engine,
+		backendId: backendId as VoiceDaemonConfig["backendId"],
 		buildSha,
 		apiToken,
 		realtimeApiKey,
@@ -175,7 +210,7 @@ export function loadVoiceDaemonConfig(
 			"voice-health.py",
 		),
 		codexHome: env.FLYWHEEL_VOICE_CODEX_HOME ?? join(voiceRoot, "codex-home"),
-		codexBin: env.FLYWHEEL_CODEX_BIN ?? "codex",
+		codexBin,
 		commCliPath:
 			env.FLYWHEEL_COMM_CLI ??
 			join(flywheelDir, "packages", "flywheel-comm", "dist", "index.js"),
@@ -198,6 +233,13 @@ export function loadVoiceDaemonConfig(
 		// FLY-2655 lowered this to 80; keep it — it belongs to the recovered
 		// receive path, not to anything this issue changed.
 		speechChunkTokens: integer(env, "FLYWHEEL_VOICE_SPEECH_CHUNK_TOKENS", 80),
+		// FLY-2798: soft sentence starts were silenced by the uplink VAD gate.
+		uplinkPrerollMs: boundedMs(
+			env,
+			"FLYWHEEL_VOICE_UPLINK_PREROLL_MS",
+			200,
+			1_000,
+		),
 		confirmationMs: integer(env, "FLYWHEEL_VOICE_CONFIRMATION_MS", 15_000),
 		// FLY-2796 founder bounce: 15s is a starting value, not her decision —
 		// retune once she has lived with it.

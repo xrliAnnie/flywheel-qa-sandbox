@@ -26,14 +26,14 @@ const record = (value: unknown): value is Record<string, unknown> =>
 
 function parseAccount(
 	value: unknown,
-	kind: "source" | "target",
+	kind: "source" | "target" | "manual_target",
 ): CodexSwitchNotificationAccount | null {
 	if (
 		!record(value) ||
 		typeof value.profile !== "string" ||
-		!(kind === "source"
-			? isCodexIdentityLabel(value.profile)
-			: isCodexSlotName(value.profile)) ||
+		!(kind === "target"
+			? isCodexSlotName(value.profile)
+			: isCodexIdentityLabel(value.profile)) ||
 		typeof value.accountKey !== "string" ||
 		value.accountKey.length < 1 ||
 		value.accountKey.length > 512 ||
@@ -67,12 +67,21 @@ function parseAccount(
 	};
 }
 
+/**
+ * FLY-2869: a manual switch can land on any canonical identity (someone ran
+ * `codex login` or `codex-profile use`), so its target is an identity label;
+ * an automatic switch only ever installs a pool slot.
+ */
 export function parseCodexSwitchNotificationSnapshot(
 	value: unknown,
+	options: { manual?: boolean } = {},
 ): CodexSwitchNotificationSnapshot | null {
 	if (!record(value) || value.version !== 1) return null;
 	const from = parseAccount(value.from, "source");
-	const to = parseAccount(value.to, "target");
+	const to = parseAccount(
+		value.to,
+		options.manual ? "manual_target" : "target",
+	);
 	return from && to ? { version: 1, from, to } : null;
 }
 
@@ -129,13 +138,21 @@ function accountLines(
 	];
 }
 
+/** Automatic switches are quota-triggered; FLY-2869 manual ones say so. */
+export type CodexSwitchTrigger = "quota" | "manual";
+const TRIGGER_LABEL: Record<CodexSwitchTrigger, string> = {
+	quota: "quota:weekly",
+	manual: "手动",
+};
+
 /** PRD §6.2 / D.2: Claude's N1 shape with only provider and window rows changed. */
 export function formatCodexSwitchNotification(
 	snapshot: CodexSwitchNotificationSnapshot,
 	timezone: string,
+	trigger: CodexSwitchTrigger = "quota",
 ): string {
 	return [
-		`Codex 已切号：**${snapshot.from.profile} → ${snapshot.to.profile}**（quota:weekly）`,
+		`Codex 已切号：**${snapshot.from.profile} → ${snapshot.to.profile}**（${TRIGGER_LABEL[trigger]}）`,
 		"",
 		...accountLines("原账号", snapshot.from, timezone),
 		"",

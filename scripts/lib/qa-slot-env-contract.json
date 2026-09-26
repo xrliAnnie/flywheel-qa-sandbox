@@ -34,6 +34,24 @@
 		"boot": "mustBeUnderRoot"
 	},
 	{
+		"name": "FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/lead-carrier-evidence.json",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/carrier-assertions",
+		"boot": "mustBeUnderRoot"
+	},
+	{
+		"name": "FLYWHEEL_LEAD_RECEIPT_DIR",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/state/carrier-receipts",
+		"boot": "mustBeUnderRoot"
+	},
+	{
 		"name": "FLYWHEEL_COMM_ROOT",
 		"disposition": "redirect",
 		"value": "${SLOT_DIR}/state/comm",

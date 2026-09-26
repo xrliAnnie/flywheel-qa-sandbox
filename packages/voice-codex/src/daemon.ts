@@ -676,7 +676,7 @@ export class VoiceDaemon {
 				} else {
 					outcome = {
 						kind: "failed",
-						reason: (error as Error).message || "session_failed",
+						reason: this.runtimeErrorReason(error),
 					};
 				}
 			}
@@ -684,7 +684,7 @@ export class VoiceDaemon {
 				const runtimeReason = outcome.reason;
 				outcome = {
 					kind: "failed",
-					reason: this.safeRuntimeReason(runtimeReason),
+					reason: this.runtimeReason(runtimeReason),
 				};
 				if (outcome.reason !== "daemon_shutdown")
 					failureClassification = {
@@ -720,6 +720,10 @@ export class VoiceDaemon {
 							sessionId: context.sessionId,
 							reason: outcome.reason,
 						};
+		if (result.kind === "session_failed")
+			console.error(
+				`[voice] session failed sessionId=${context.sessionId} reason=${result.reason}`,
+			);
 		if (result.kind === "session_failed")
 			this.observeSessionFailure(
 				context,
@@ -807,21 +811,28 @@ export class VoiceDaemon {
 		return this.options.monotonicNow?.() ?? performance.now();
 	}
 
-	private safeRuntimeReason(reason: string): string {
-		// A closed allowlist: anything else may carry host paths or error text.
-		// meeting_floor_unreachable is on it deliberately — it is the one way to
-		// tell "never reached its meeting time" apart from a generic runtime
-		// failure, and the Bridge cannot diagnose it otherwise.
-		if (
-			[
-				"daemon_shutdown",
-				"lease_lost",
-				"no_human",
-				"meeting_floor_unreachable",
-			].includes(reason)
-		)
-			return reason;
-		return "session_runtime_failed";
+	private runtimeReason(reason: string): string {
+		const original = Array.from(reason, (character) => {
+			const code = character.charCodeAt(0);
+			return code < 32 || code === 127 ? " " : character;
+		})
+			.join("")
+			.trim();
+		if (!original) return "session_failed";
+		return original.length <= 500
+			? original
+			: `${original.slice(0, 488)}:[truncated]`;
+	}
+
+	private runtimeErrorReason(error: unknown): string {
+		if (error instanceof Error) {
+			const parts = [error.name, error.message];
+			if (error.cause instanceof Error)
+				parts.push(error.cause.name, error.cause.message);
+			else if (typeof error.cause === "string") parts.push(error.cause);
+			return this.runtimeReason(parts.filter(Boolean).join(":"));
+		}
+		return this.runtimeReason(String(error));
 	}
 
 	private safeRuntimeCauseCode(reason: string): string {

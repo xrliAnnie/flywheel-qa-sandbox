@@ -114,6 +114,12 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1279: shared branch-B takeover was refused (dirty/head drift). Separate
 	// from generic handoff failures so the Lead sees the exact recovery class.
 	"three_stage_takeover_failed",
+	// FLY-2901: shared branch-B takeover SUCCEEDED only after Bridge preserved
+	// the predecessor's work (rescue refs pushed / nested repos moved aside) —
+	// head_diverged and nested_repo classes. An info receipt, not an incident:
+	// same issue-progress routing as the refusal kind above, but informational
+	// (no ticket/thread/ARC lifecycle). Refusals keep using the refusal kind.
+	"worktree_takeover_rescued",
 	// FLY-1385: the workflow engine exhausted dead-execution recovery, found a
 	// non-retryable quota/auth failure, or used the one approved design fallback.
 	// The run/node has already been durably held or reassigned; this alert gives
@@ -255,6 +261,8 @@ export const ALERT_EVENT_TYPES = [
 	"quota_choice",
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
+	// FLY-2869: the Codex quota readings stopped refreshing (one per episode).
+	"codex_quota_reading_stale",
 	"quota_no_target",
 	"quota_blocked_recovered",
 	"quota_read_blind",
@@ -359,6 +367,10 @@ export const ALERT_EVENT_TYPES = [
 	// its business-level heartbeat independently proved stalled. Recovery remains
 	// tuple-bound.
 	"codex_lead_residency_stalled",
+	// FLY-2903: a terminal Codex execution still has a live body or keeps
+	// burning quota. Unrostered in ticket-owner-map on purpose: the default
+	// owner (the Claude infra bot) handles the Codex side.
+	"codex_terminal_body_alive",
 	// FLY-2207: the existing watcher patrol remained unhealthy for its bounded
 	// recovery window. This is the founder-facing face, not an ordinary ticket.
 	"cmux_watcher_unrecovered",
@@ -394,6 +406,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"model_cap_unknown",
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
+	"codex_quota_reading_stale",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
@@ -401,6 +414,8 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"flag_scan_handoff",
 	"shuttle_unit_unhealthy",
 	"voice_daemon_unhealthy",
+	// FLY-2901: "nothing was lost" receipt — no ticket, thread, or ARC to run.
+	"worktree_takeover_rescued",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {
@@ -413,6 +428,7 @@ const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"account_switch_degraded",
 	"quota_switch_confirmation",
 	"codex_quota_automation_disabled",
+	"codex_quota_reading_stale",
 ]);
 
 function hasValidDeliveryStyle(

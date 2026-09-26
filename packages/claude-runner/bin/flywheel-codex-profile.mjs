@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
+	codexReadingFreshness,
 	identifyCodexAuth,
 	loadCodexAccountPool,
 	recordCodexAccountObservation,
@@ -363,7 +364,14 @@ function exhausted(reading) {
 	);
 }
 
-function tokenStatus(reading, problem) {
+// FLY-2869: an old or reset-elapsed reading is unknown, never "打满".
+const FRESHNESS_TOKEN_STATUS = {
+	stale: "读数过期",
+	reset_elapsed: "已过重置待探",
+	unobserved: "未探",
+};
+
+function tokenStatus(reading, problem, freshness) {
 	if (problem === "not_logged_in") return "未登录";
 	if (problem === "invalid_credential") return "凭据损坏";
 	if (problem === "duplicate_email") return "重复登录";
@@ -375,8 +383,10 @@ function tokenStatus(reading, problem) {
 	if (reading.note === "invalid_credential") return "凭据损坏";
 	if (reading.note === "duplicate_email") return "重复登录";
 	if (reading.authHealth === "in_use_unshared") return "在用未探";
-	if (reading.authHealth === "valid")
+	if (reading.authHealth === "valid") {
+		if (freshness !== "fresh") return FRESHNESS_TOKEN_STATUS[freshness];
 		return exhausted(reading) ? "打满" : "正常";
+	}
 	return "未探";
 }
 
@@ -392,11 +402,13 @@ function snapshotReading(snapshot, slot) {
 		: null;
 }
 
-function resetAt(reading, key) {
+function resetAt(reading, key, freshness, nowMs) {
 	const value = reading?.[key];
-	return isRecord(value) && typeof value.resetAt === "string"
-		? value.resetAt
-		: null;
+	if (!isRecord(value) || typeof value.resetAt !== "string") return null;
+	// A non-fresh reading may still carry a future reset instant; a past one is gone.
+	if (freshness !== "fresh" && !(Date.parse(value.resetAt) > nowMs))
+		return null;
+	return value.resetAt;
 }
 
 async function refreshQuotaSnapshot(context) {
@@ -443,20 +455,35 @@ async function list(context) {
 	const problemByName = new Map(
 		context.pool.problems.map((problem) => [problem.name, problem.code]),
 	);
+	const nowMs = Date.now();
 	const accounts = context.pool.slots
 		.filter((slot) => slot.state !== "invalid_name")
 		.map((slot) => {
 			const profile = profileByName.get(slot.name);
 			const problem = problemByName.get(slot.name) ?? null;
 			const reading = snapshotReading(snapshot, slot);
+			const freshness = reading
+				? codexReadingFreshness(
+						{
+							observedAt:
+								typeof reading.observedAt === "string"
+									? reading.observedAt
+									: null,
+							fiveH: isRecord(reading.fiveH) ? reading.fiveH : null,
+							weekly: isRecord(reading.weekly) ? reading.weekly : null,
+						},
+						nowMs,
+					)
+				: "unobserved";
 			return {
 				name: slot.name,
 				role: profile?.role ?? null,
 				email: slot.identity?.email ?? null,
 				plan: slot.identity?.plan ?? null,
-				tokenStatus: tokenStatus(reading, problem),
-				fiveHResetAt: resetAt(reading, "fiveH"),
-				weeklyResetAt: resetAt(reading, "weekly"),
+				tokenStatus: tokenStatus(reading, problem, freshness),
+				freshness,
+				fiveHResetAt: resetAt(reading, "fiveH", freshness, nowMs),
+				weeklyResetAt: resetAt(reading, "weekly", freshness, nowMs),
 				observedAt:
 					reading && typeof reading.observedAt === "string"
 						? reading.observedAt

@@ -55,7 +55,7 @@ CODEX_SLOT=34; CODEX_EXTRA_SLOT=35
 WORKER_SENTINEL_PID=""; DAEMON_SENTINEL_PID=""; TMUX_SENTINEL_PID=""
 # Per-process high ports keep repeated/parallel hermetic runs independent. A
 # force-stopped prior test must not make a new run accept its orphan listener.
-FIXTURE_PORT_BASE=$((20000 + ($$ % 5000)))
+FIXTURE_PORT_BASE=$((21000 + ($$ % 4000)))
 LEAD_PORT=$FIXTURE_PORT_BASE
 NOLEAD_PORT=$((FIXTURE_PORT_BASE + 1))
 cleanup() {
@@ -69,7 +69,8 @@ cleanup() {
     "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}.lock" \
     "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}" \
     "/tmp/flywheel-test-slot-${CODEX_SLOT}" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}" \
-    "/tmp/flywheel-test-codex-fixture-${$}" "$SB"
+    "/tmp/flywheel-test-codex-fixture-${$}" "$SB" \
+    "/tmp/flywheel-voice-room-99286700${$}-1.lock" "/tmp/flywheel-voice-room-99286700${$}-2.lock"
 }
 trap cleanup EXIT
 
@@ -77,7 +78,7 @@ trap cleanup EXIT
 FR="$SB/repo"
 mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/scripts" \
   "$FR/packages/teamlead/dist/bin" \
-  "$FR/packages/flywheel-comm" "$FR/packages/inbox-mcp" \
+  "$FR/packages/flywheel-comm" "$FR/packages/inbox-mcp/dist" \
   "$FR/packages/edge-worker/dist" \
   "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release"
 cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" \
@@ -100,6 +101,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-report-host.mjs" \
   "${SCRIPT_DIR}/lib/qa-report-host-bridge-wrapper.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge.sh" \
+  "${SCRIPT_DIR}/lib/qa-slot-pool.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-env-contract.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-env-contract.json" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" \
@@ -107,7 +109,15 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/runner-workspace-trust.sh" \
   "$FR/scripts/lib/"
 echo "// fixture" > "$FR/scripts/run-bridge.ts"
+# FLY-2867: teardown releases the slot's voice-room leases through this CLI.
+mkdir -p "$FR/scripts/qa"
+cp "${SCRIPT_DIR}/qa/fly2655-voice-room.mjs" "$FR/scripts/qa/"
+cp "${SCRIPT_DIR}/lib/fly2655-voice-fixture.mjs" "$FR/scripts/lib/"
 echo "FLYWHEEL_RUNNER_START_POINT fixture" > "$FR/packages/edge-worker/dist/WorktreeManager.js"
+# FLY-2867: the preflight asserts the MCP servers claude-lead.sh loads.
+mkdir -p "$FR/packages/inbox-mcp/dist" "$FR/packages/terminal-mcp/dist"
+echo "// fixture" > "$FR/packages/inbox-mcp/dist/index.js"
+echo "// fixture" > "$FR/packages/terminal-mcp/dist/index.js"
 echo "fake-binding" > "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
 ln -s "${SCRIPT_DIR}/../packages/claude-runner" "$FR/packages/claude-runner"
 cat > "$FR/scripts/lib/qa-reap-codex-slot-daemons.mjs" <<'REAPSTUB'
@@ -192,6 +202,12 @@ echo $$ > "$SD/lead-shell-pid.txt"
 mkdir -p "$FLYWHEEL_COMM_ROOT/$PROJ"
 if [[ "$AGENT" != "flywheel-test-30" ]]; then
   printf '{"pid": %s}\n' $$ > "$FLYWHEEL_COMM_ROOT/$PROJ/.inbox-ready-$AGENT"
+else
+  # FLY-2867 shape: claude-lead.sh wrote an MCP config without flywheel-inbox
+  # (inbox-mcp dist absent), so no lease can ever appear.
+  mkdir -p "$LEAD_WORKSPACE"
+  printf '%s\n' '{"mcpServers":{"flywheel-terminal":{"command":"node","args":["fixture"]}}}' \
+    > "$LEAD_WORKSPACE/.mcp.json"
 fi
 sleep 300
 STUBCARRIER
@@ -208,6 +224,10 @@ mkdir -p "$FR/packages/teamlead/scripts/lib" \
   "$FR/packages/inbox-mcp/node_modules"
 cp "${SCRIPT_DIR}/../packages/teamlead/scripts/codex-lead.sh" \
   "$FR/packages/teamlead/scripts/codex-lead.sh"
+cp "${SCRIPT_DIR}/../packages/teamlead/scripts/lead-rules-bundle.sh" \
+  "$FR/packages/teamlead/scripts/lead-rules-bundle.sh"
+cp -R "${SCRIPT_DIR}/../packages/teamlead/lead-rules-base/." \
+  "$FR/packages/teamlead/lead-rules-base/"
 printf '%s\n' '// hermetic launch-fence fixture; the test node shim accepts the call' \
   > "$FR/scripts/codex-home-launch-fence.mjs"
 cp "${SCRIPT_DIR}/../packages/teamlead/scripts/lib/canonical-lead-identity.sh" \
@@ -256,9 +276,15 @@ const required = [
   "FLYWHEEL_CANONICAL_IDENTITY_RESOLVED", "FLYWHEEL_LEAD_ID",
   "FLYWHEEL_PROJECT_NAME", "FLYWHEEL_LEAD_KEY", "FLYWHEEL_LEAD_BACKEND",
   "FLYWHEEL_PROJECTS_FILE", "FLYWHEEL_CODEX_LEAD_STATE_DIR", "CODEX_HOME",
+  "FLYWHEEL_CODEX_BIN",
   "DISCORD_BOT_TOKEN", "FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
   "FLYWHEEL_CODEX_LEAD_OUTBOUND",
+  "FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE",
+  "FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR", "FLYWHEEL_LEAD_RECEIPT_DIR",
 ];
+if (process.env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge") {
+  required.push("FLYWHEEL_BRIDGE_URL", "FLYWHEEL_API_TOKEN");
+}
 for (const key of required) {
   if (!process.env[key]) throw new Error(`missing canonical env ${key}`);
 }
@@ -273,6 +299,16 @@ const row = JSON.parse(readFileSync(process.env.FLYWHEEL_PROJECTS_FILE, "utf8"))
 if (row.length !== 1 || row[0].backend !== "codex-app-server" ||
     row[0].chatChannel !== process.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID) {
   throw new Error("projects row drift");
+}
+// The real full-access runtime owns ensure-daemon after its config gate. This
+// dump-only fixture must preserve that lifecycle effect so teardown/updater
+// assertions continue to exercise the production topology.
+if (process.env.FLYWHEEL_CODEX_LEAD_PROFILE === "full-access") {
+  execFileSync(process.env.FLYWHEEL_CODEX_BIN,
+    ["remote-control", "start", "--json"], {
+      env: { ...process.env, CODEX_HOME: process.env.CODEX_HOME },
+      stdio: "ignore",
+    });
 }
 
 const tmux = "tmux";
@@ -311,8 +347,15 @@ const publish = (state) => {
 };
 publish("online");
 const runtimeEvidence = join(process.env.FLYWHEEL_STATE_DIR, "codex-runtime-env.json");
+const evidenceKeys = [...new Set([
+  ...required, "FLYWHEEL_CODEX_LEAD_PROFILE", "FLYWHEEL_BRIDGE_URL",
+  "FLYWHEEL_API_TOKEN",
+])];
 writeFileSync(runtimeEvidence, JSON.stringify(Object.fromEntries(
-  required.map((key) => [key, key === "DISCORD_BOT_TOKEN" ? "[present]" : process.env[key]])
+  evidenceKeys.map((key) => [key,
+    key === "DISCORD_BOT_TOKEN" || key === "FLYWHEEL_API_TOKEN"
+      ? (process.env[key] ? "[present]" : null)
+      : (process.env[key] ?? null)])
 ) , null, 2) + "\n", { mode: 0o600 });
 
 const stop = () => {
@@ -388,6 +431,8 @@ exit 0
 EOF
 cat > "$STUB_BIN/pnpm" <<'EOF'
 #!/bin/bash
+# FLY-2867: record the preflight build order (the fake HOME is per-test).
+printf '%s\n' "$*" >> "${HOME:-/nonexistent}/pnpm-calls.log" 2>/dev/null || true
 exit 0
 EOF
 cat > "$STUB_BIN/node" <<'EOF'
@@ -889,7 +934,7 @@ make_slots_json() {  # slots 30..35 carry real fixture values
             { id: 34, bridgePort: ($leadPort + 4), botName: "flywheel-test-34",
               tokenEnvVar: "TEST_BOT_TOKEN_34", botAppId: "34343434343434343",
               channelId: "34343434343434344", role: "lead", identitySource: "product-lead",
-              backend: "codex-app-server", codexProfile: "companion" },
+              backend: "codex-app-server", codexProfile: "full-access" },
             { id: 35, bridgePort: ($leadPort + 5), botName: "flywheel-test-35",
               tokenEnvVar: "TEST_BOT_TOKEN_35", botAppId: "35353535353535353",
               channelId: "35353535353535354", role: "lead", identitySource: "ops-lead",
@@ -1000,6 +1045,7 @@ run_teardown() {  # <home> <slot>
       FLY1389_CODEX_RUNTIME="$repo_root/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
       FLY1389_PS_LOG="$SB/codex-ps.log" \
       FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
+      FLYWHEEL_QA_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
       FLYWHEEL_QA_TMUX="${FLY1389_QA_TMUX:-$STUB_BIN/tmux}" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
@@ -1034,6 +1080,50 @@ else
   fail "D: failed teardown did not preserve actionable CI diagnostics" "$(cat "$TEARDOWN_DIAGNOSTIC")"
 fi
 mv "$TEARDOWN_CENSUS_SAVED" "$TEARDOWN_CENSUS_LIB"
+
+# ── P: FLY-2867 preflight refuses a checkout without the inbox MCP dist ─────
+# The stub pnpm "builds" nothing, exactly like a build that produced no dist.
+# Without the assertion the deploy would continue and the Claude Lead's lease
+# would time out 120 s later with no cause.
+rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
+mv "$FR/packages/inbox-mcp/dist" "$SB/inbox-mcp-dist.parked"
+rm -f "$FH1/pnpm-calls.log"
+P1_OUT="$SB/p1-out.json"; P1_ERR="$SB/p1-err.log"
+if run_deploy "$FH1" "$LEAD_SLOT" "$P1_OUT" "$P1_ERR" --lead-ready-timeout 1; then
+  fail "P1: preflight must reject a checkout without packages/inbox-mcp/dist"
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+elif grep -qF 'Claude Lead MCP artifacts missing after build: packages/inbox-mcp/dist/index.js' "$P1_ERR" \
+    && ! grep -qF 'packages/terminal-mcp/dist/index.js' "$P1_ERR" \
+    && grep -qF 'ERROR [pre-flight]' "$P1_ERR" \
+    && [[ ! -e "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]]; then
+  pass "P1: preflight names the missing inbox MCP dist and claims no slot"
+else
+  fail "P1: missing inbox MCP dist was not a named preflight failure" "$(tail -5 "$P1_ERR")"
+fi
+# The preflight must BUILD both MCP packages (after flywheel-comm, whose types
+# they import), not merely check for a dist someone else produced.
+P1_BUILDS="$(grep -nE -- '--filter (flywheel-comm|flywheel-inbox-mcp|flywheel-terminal-mcp) build$' "$FH1/pnpm-calls.log" 2>/dev/null | cut -d' ' -f2 | tr '\n' ' ')"
+if [[ "$P1_BUILDS" == "flywheel-comm flywheel-inbox-mcp flywheel-terminal-mcp " ]]; then
+  pass "P1b: preflight builds inbox-mcp and terminal-mcp after flywheel-comm"
+else
+  fail "P1b: preflight build order for the Claude Lead MCP packages" \
+    "calls=[$(tr '\n' ';' < "$FH1/pnpm-calls.log" 2>/dev/null)]"
+fi
+mv "$SB/inbox-mcp-dist.parked" "$FR/packages/inbox-mcp/dist"
+
+mv "$FR/packages/terminal-mcp/dist" "$SB/terminal-mcp-dist.parked"
+P2_OUT="$SB/p2-out.json"; P2_ERR="$SB/p2-err.log"
+if run_deploy "$FH1" "$LEAD_SLOT" "$P2_OUT" "$P2_ERR" --lead-ready-timeout 1; then
+  fail "P2: preflight must reject a checkout without packages/terminal-mcp/dist"
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+elif grep -qF 'Claude Lead MCP artifacts missing after build: packages/terminal-mcp/dist/index.js' "$P2_ERR" \
+    && ! grep -qF 'packages/inbox-mcp/dist/index.js' "$P2_ERR" \
+    && [[ ! -e "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]]; then
+  pass "P2: preflight names the missing terminal MCP dist and claims no slot"
+else
+  fail "P2: missing terminal MCP dist was not a named preflight failure" "$(tail -5 "$P2_ERR")"
+fi
+mv "$SB/terminal-mcp-dist.parked" "$FR/packages/terminal-mcp/dist"
 
 # ── A: --alerts respects wrapper-v2's single Lead identity source ──────────
 rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
@@ -1123,7 +1213,8 @@ else
   if jq -e '.live == false and .reason == "gateway_socket_missing"' "$D2_RUNTIME/channel-liveness.json" >/dev/null 2>&1 \
       && jq -e '.phase == "channel" and .reason == "channel:gateway_socket_missing"' "$D2_RUNTIME/channel-failure.json" >/dev/null 2>&1 \
       && [[ "$(mode_of "$D2_RUNTIME/channel-failure.json")" == "600" ]] \
-      && grep -qF 'phase=channel' "$D2_ERR"; then
+      && grep -qF 'phase=channel' "$D2_ERR" \
+      && grep -qF 'Lead did not become ready: phase=channel reason=channel_not_live ' "$D2_ERR"; then
     pass "D2: missing socket rejects a ready lease and preserves private channel evidence"
   else
     fail "D2: channel failure lost its socket reason or evidence" "$(tail -20 "$D2_ERR")"
@@ -1470,10 +1561,26 @@ NODE
   done
   WORKER_SENTINEL_PID=""; DAEMON_SENTINEL_PID=""; TMUX_SENTINEL_PID=""
   [[ "$E_OK" == "1" ]] && pass "E: Lead-ful E2E — sanitize + cwd/PID parity + marker isolation + noLead=false"
+  # FLY-2867: a voice room torn down without `stop` left its lease in /tmp.
+  # Synthetic guild/channel ids never collide with a real room's lease.
+  E_VOICE_OWN="/tmp/flywheel-voice-room-99286700$$-1.lock"
+  E_VOICE_FOREIGN="/tmp/flywheel-voice-room-99286700$$-2.lock"
+  mkdir -p "$E_VOICE_OWN" "$E_VOICE_FOREIGN"
+  printf '{"schemaVersion":1,"slotDir":"/private/tmp/flywheel-test-slot-%s"}\n' "$LEAD_SLOT" \
+    > "$E_VOICE_OWN/owner.json"
+  printf '{"schemaVersion":1,"slotDir":"/private/tmp/flywheel-test-slot-99"}\n' \
+    > "$E_VOICE_FOREIGN/owner.json"
   run_teardown "$FH1" "$LEAD_SLOT"
   [[ ! -d "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]] \
     && pass "E2: teardown releases the Lead-ful slot" \
     || fail "E2: teardown left the lock behind"
+  if [[ ! -e "$E_VOICE_OWN" && -f "$E_VOICE_FOREIGN/owner.json" ]]; then
+    pass "E3: teardown releases its own voice-room lease and leaves another slot's"
+  else
+    fail "E3: teardown voice-room lease disposition" \
+      "own=$([[ -e "$E_VOICE_OWN" ]] && echo kept || echo released) foreign=$([[ -e "$E_VOICE_FOREIGN" ]] && echo kept || echo released) teardown=[$(grep -i 'voice\|Step\|ERROR' "$SB/teardown-slot-${LEAD_SLOT}.stderr.log" 2>/dev/null | tail -8 | tr '\n' ';')]"
+  fi
+  rm -rf "$E_VOICE_OWN" "$E_VOICE_FOREIGN"
 else
   fail "E: Lead-ful hermetic deploy failed" "$(tail -20 "$E_ERR")"
   run_teardown "$FH1" "$LEAD_SLOT" || true
@@ -1706,6 +1813,8 @@ else
     || { C_OK=0; fail "C: owner complete-marker env missing"; }
   grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${C_OWNER_DIR}/state/complete-failed$" "$C_EXTRA_DIR/lead-env.txt" \
     || { C_OK=0; fail "C: extra complete-marker env missing"; }
+  grep -qF "extra Lead flywheel-test-30 did not become ready within 1s (phase=lease reason=inbox_mcp_unregistered;" "$C_ERR" \
+    || { C_OK=0; fail "C: FLY-2867 extra-Lead timeout does not name the unregistered inbox MCP" "$(grep -F 'did not become ready' "$C_ERR" | tail -2)"; }
   for dead_pid in "$C_MAIN_PID" "$C_EXTRA_PID"; do
     for _poll in $(seq 1 20); do
       kill -0 "$dead_pid" 2>/dev/null || break
@@ -1828,8 +1937,7 @@ run_codex_drill() {  # <slot> <crash|kickstart> <evidence-root> <stdout> <stderr
 
 rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
 CX_OUT="$SB/cx-out.json"; CX_ERR="$SB/cx-err.log"
-if TEST_CODEX_LEAD_OUTBOUND_MODE=bridge \
-    FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
     run_deploy "$FH1" "$CODEX_SLOT" "$CX_OUT" "$CX_ERR" --lead-ready-timeout 5; then
   CX_JSON="$(extract_json "$CX_OUT")"
   CX_SLOT_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
@@ -1875,15 +1983,42 @@ PY
   [[ "$($REAL_TMUX -S "$CX_SOCKET" list-windows -t '=flywheel' -F '#{window_name}')" == \
       "test-slot-34-flywheel-test-34" ]] \
     || { CX_OK=0; fail "CX: main Codex TUI window is not unique on the private socket"; }
-  jq -e --arg state "$CX_STATE" '.FLYWHEEL_CANONICAL_IDENTITY_RESOLVED == "1" and
+  jq -e --arg state "$CX_STATE" --arg slot "$CX_SLOT_DIR" \
+      --arg bridge "$(jq -r '.bridgeUrl' <<<"$CX_JSON")" '
+      .FLYWHEEL_CANONICAL_IDENTITY_RESOLVED == "1" and
       .FLYWHEEL_LEAD_BACKEND == "codex-app-server" and
       .FLYWHEEL_LEAD_ID == "flywheel-test-34" and
       .FLYWHEEL_PROJECT_NAME == "test-slot-34" and
       .FLYWHEEL_CODEX_LEAD_STATE_DIR == $state and
+      .FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
       .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
+      .FLYWHEEL_BRIDGE_URL == $bridge and
+      .FLYWHEEL_API_TOKEN == "[present]" and
+      .FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE == ($slot + "/state/lead-carrier-evidence.json") and
+      .FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR == ($slot + "/state/carrier-assertions") and
+      .FLYWHEEL_LEAD_RECEIPT_DIR == ($slot + "/state/carrier-receipts") and
       .DISCORD_BOT_TOKEN == "[present]"' \
     "$CX_SLOT_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
     || { CX_OK=0; fail "CX: true launcher/canonical resolver did not reach the bridge-mode runtime"; }
+  if ! (set -a
+      # shellcheck disable=SC1090
+      source "$CX_SLOT_DIR/q/34/.env"
+      set +a
+      [[ "$FLYWHEEL_BRIDGE_URL" == "$(jq -r '.bridgeUrl' <<<"$CX_JSON")" \
+        && -n "$FLYWHEEL_API_TOKEN" \
+        && "$(jq -r '.TEAMLEAD_API_TOKEN // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_API_TOKEN" \
+        && "$(jq -r '.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE" \
+        && "$(jq -r '.FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR" \
+        && "$(jq -r '.FLYWHEEL_LEAD_RECEIPT_DIR // ""' "$CX_SLOT_DIR/bridge-env.json")" == "$FLYWHEEL_LEAD_RECEIPT_DIR" \
+        && "$FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE" == "$CX_SLOT_DIR/state/lead-carrier-evidence.json" \
+        && "$FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR" == "$CX_SLOT_DIR/state/carrier-assertions" \
+        && "$FLYWHEEL_LEAD_RECEIPT_DIR" == "$CX_SLOT_DIR/state/carrier-receipts" \
+        && "$FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE" != "$FH1/.flywheel/"* \
+        && "$FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR" != "$FH1/.flywheel/"* \
+        && "$FLYWHEEL_LEAD_RECEIPT_DIR" != "$FH1/.flywheel/"* ]]); then
+    CX_OK=0
+    fail "CX: Bridge and runtime did not receive identical slot-local auth/carrier coordinates"
+  fi
   if ! (unset FLYWHEEL_COMM_DB
       # shellcheck disable=SC1090
       source "$CX_SLOT_DIR/q/34/.env"
@@ -1956,6 +2091,33 @@ else
     run_teardown "$FH1" "$CODEX_SLOT" || true
 fi
 
+# A full-access room can retain the old direct transport explicitly. This is
+# the documented rollback for QA recipes that have not moved to Bridge output.
+rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
+CXD_OUT="$SB/cxd-out.json"; CXD_ERR="$SB/cxd-err.log"
+if TEST_CODEX_LEAD_OUTBOUND_MODE=direct \
+    FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_deploy "$FH1" "$CODEX_SLOT" "$CXD_OUT" "$CXD_ERR" --lead-ready-timeout 5; then
+  CXD_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
+  if jq -e '
+      .FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
+      .FLYWHEEL_CODEX_LEAD_OUTBOUND == "direct" and
+      .FLYWHEEL_BRIDGE_URL == null and .FLYWHEEL_API_TOKEN == null
+    ' "$CXD_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
+      && [[ -z "$(jq -r '.TEAMLEAD_API_TOKEN // ""' "$CXD_DIR/bridge-env.json")" ]]; then
+    pass "CXD: explicit direct keeps full-access on direct without Bridge auth"
+  else
+    fail "CXD: full-access direct rollback inherited Bridge coordinates or auth"
+  fi
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || fail "CXD: explicit-direct teardown"
+else
+  fail "CXD: explicit direct full-access deploy failed" \
+    "$(tail -30 "$CXD_ERR") | lead-log: $(tail -30 "/tmp/flywheel-test-slot-${CODEX_SLOT}/lead.log" 2>/dev/null || true)"
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || true
+fi
+
 # Main + extra Codex Leads share one Bridge but retain distinct home/state/window
 # coordinates and a single convergent lifecycle registry.
 rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}" \
@@ -1985,9 +2147,14 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
       && [[ "$(wc -l <<<"$CXX_MATCHED_UPDATERS" | tr -d ' ')" == 2 ]] \
       && [[ -f "$CXX_DIR/q/34/codex-runtime-env.json" \
           && -f "$CXX_DIR/q/35/codex-runtime-env.json" ]] \
-      && jq -e '.FLYWHEEL_CODEX_LEAD_OUTBOUND == "direct"' \
-        "$CXX_DIR/q/34/codex-runtime-env.json" "$CXX_DIR/q/35/codex-runtime-env.json" \
-        >/dev/null 2>&1 \
+      && jq -e '.FLYWHEEL_CODEX_LEAD_PROFILE == "full-access" and
+          .FLYWHEEL_CODEX_LEAD_OUTBOUND == "bridge" and
+          .FLYWHEEL_API_TOKEN == "[present]"' \
+        "$CXX_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
+      && jq -e '.FLYWHEEL_CODEX_LEAD_PROFILE == null and
+          .FLYWHEEL_CODEX_LEAD_OUTBOUND == "direct" and
+          .FLYWHEEL_API_TOKEN == null' \
+        "$CXX_DIR/q/35/codex-runtime-env.json" >/dev/null 2>&1 \
       && while IFS= read -r cxx_home; do
         [[ -L "$cxx_home/auth.json" ]] || exit 1
       done < <(jq -r '.[].codexHome' "$CXX_DIR/launchd-leads.json"); then

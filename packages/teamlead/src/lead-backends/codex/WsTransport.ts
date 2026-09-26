@@ -67,8 +67,8 @@ export class WsTransport implements ChildTransport {
 		});
 	}
 
-	writeStdin(data: string): void {
-		if (this.exited) return; // mirrors writing to a dead child's pipe (no-op here)
+	writeStdin(data: string): boolean {
+		if (this.exited) return true; // mirrors writing to a dead child's pipe (no-op here)
 		this.outBuffer += data;
 		const lines = this.outBuffer.split("\n");
 		this.outBuffer = lines.pop() ?? ""; // partial trailing line waits
@@ -76,6 +76,7 @@ export class WsTransport implements ChildTransport {
 			if (line.length === 0) continue; // blank lines never become frames
 			this.ws.send(line);
 		}
+		return true;
 	}
 
 	endStdin(): void {

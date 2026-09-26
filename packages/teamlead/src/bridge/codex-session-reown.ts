@@ -115,6 +115,8 @@ export interface CodexSessionReownDeps {
 	nowMs(): number;
 	holderId: string;
 	isExcluded(session: Session): boolean;
+	/** FLY-2808: no-demand standby is healthy absence, not crash recovery input. */
+	isIntentionalStandby?(executionId: string): boolean;
 }
 
 export interface CodexReownPassResult {
@@ -362,7 +364,16 @@ export async function prepareCodexRecoveryAgentHome(
 			},
 		};
 	} catch (error) {
-		if (admission?.createdLease) await deps.release(admission.handle);
+		if (admission?.createdLease) {
+			// FLY-2877: a daemon from the previous Bridge may still read the home;
+			// then the lease stays and the release is reported, not forced.
+			const outcome = await deps.release(admission.handle);
+			if (outcome?.released === false) {
+				console.warn(
+					`[codex-session-reown] keyed_home_lease_retained exec=${input.session.execution_id} reason=${outcome.reason}`,
+				);
+			}
+		}
 		console.warn(
 			`[codex-session-reown] ${error instanceof Error ? error.message : String(error)} exec=${input.session.execution_id}`,
 		);
@@ -518,7 +529,8 @@ export class CodexSessionReowner {
 	private async inspectCandidate(session: Session): Promise<void> {
 		if (
 			session.adapter_type !== "codex-tmux" ||
-			this.deps.isExcluded(session)
+			this.deps.isExcluded(session) ||
+			this.deps.isIntentionalStandby?.(session.execution_id) === true
 		) {
 			return;
 		}

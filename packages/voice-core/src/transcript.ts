@@ -5,12 +5,11 @@
  *
  * QA R4 (d): append used to be appendFileSync ON THE EVENT PATH — every
  * turn-final blocked the event loop on a disk write, and under load that
- * starves the ws keepalives of EVERY live Gemini session on this loop (the
+ * starves the ws keepalives of EVERY live voice session on this loop (the
  * repeated-abort root). Writes are now an ordered async chain; the first
  * failure surfaces ONCE through onError (default: stderr) and further writes
  * are dropped fail-visibly instead of throwing where no caller can catch.
- * Readers that consume the file (landing/record) must await flush() first —
- * GeminiLiveBackend.close() drains it before resolving.
+ * Readers that consume the file (landing/record) must await flush() first.
  */
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, open, readFile, stat } from "node:fs/promises";
@@ -20,6 +19,8 @@ import type {
 	DurableTranscriptSink,
 	TranscriptDurabilityReceipt,
 	TranscriptEntry,
+	TranscriptFlushReceipt,
+	TranscriptWriteReceipt,
 	VoiceAttribution,
 } from "./types.js";
 
@@ -52,6 +53,7 @@ export class JsonlTranscriptSink implements DurableTranscriptSink {
 				}
 		  >
 		| undefined;
+	private failure?: Error;
 
 	constructor(
 		private readonly filePath: string,
@@ -62,23 +64,42 @@ export class JsonlTranscriptSink implements DurableTranscriptSink {
 			),
 	) {}
 
-	append(entry: TranscriptEntry): void {
+	append(entry: TranscriptEntry): Promise<TranscriptWriteReceipt> {
 		const line = `${JSON.stringify(entry)}\n`;
+		let settle!: (receipt: TranscriptWriteReceipt) => void;
+		const receipt = new Promise<TranscriptWriteReceipt>((resolve) => {
+			settle = resolve;
+		});
 		this.tail = this.tail.then(async () => {
-			if (this.failed) return;
+			if (this.failure) {
+				settle({
+					outcome: "failed",
+					medium: "jsonl",
+					reason: this.failure.message,
+				});
+				return;
+			}
 			try {
 				if (!this.dirEnsured) {
 					await mkdir(dirname(this.filePath), { recursive: true });
 					this.dirEnsured = true;
 				}
 				await appendFile(this.filePath, line, { encoding: "utf8" });
+				settle({ outcome: "durable", medium: "jsonl" });
 			} catch (err) {
-				this.failed = true;
 				const e = err instanceof Error ? err : new Error(String(err));
+				this.failed = true;
+				this.failure = e;
 				writeFailures.set(this.filePath, e);
 				this.onError(e);
+				settle({
+					outcome: "failed",
+					medium: "jsonl",
+					reason: e.message,
+				});
 			}
 		});
+		return receipt;
 	}
 
 	appendDurable(
@@ -152,8 +173,11 @@ export class JsonlTranscriptSink implements DurableTranscriptSink {
 	}
 
 	/** drain pending writes — call before READING the file back. */
-	flush(): Promise<void> {
-		return this.tail;
+	async flush(): Promise<TranscriptFlushReceipt> {
+		await this.tail;
+		return this.failure
+			? { outcome: "failed", reason: this.failure.message }
+			: { outcome: "durable" };
 	}
 
 	private async ensureDirectory(): Promise<void> {
@@ -210,6 +234,7 @@ export class JsonlTranscriptSink implements DurableTranscriptSink {
 	private recordFailure(error: Error): void {
 		if (this.failed) return;
 		this.failed = true;
+		this.failure = error;
 		writeFailures.set(this.filePath, error);
 		this.onError(error);
 	}
@@ -218,8 +243,9 @@ export class JsonlTranscriptSink implements DurableTranscriptSink {
 /** In-memory sink for tests and dry runs. */
 export class MemoryTranscriptSink implements DurableTranscriptSink {
 	readonly entries: TranscriptEntry[] = [];
-	append(entry: TranscriptEntry): void {
+	async append(entry: TranscriptEntry): Promise<TranscriptWriteReceipt> {
 		this.entries.push(entry);
+		return { outcome: "durable", medium: "memory" };
 	}
 
 	async appendDurable(

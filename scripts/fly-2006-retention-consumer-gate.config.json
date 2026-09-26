@@ -751,6 +751,13 @@
 			"baseTable": "session_events",
 			"usage": "read",
 			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/qa-529-generalized-e2e.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "protect"
 		}
 	]
 }

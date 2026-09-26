@@ -11,12 +11,14 @@ import type {
 	VoiceSessionRow,
 } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
+import { generateBootstrap } from "./bootstrap-generator.js";
 import {
 	editDiscordMessageInChannel,
 	postDiscordMessageToChannel,
 } from "./discord-utils.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
 import type { BridgeConfig } from "./types.js";
+import type { VoiceHandoffService } from "./voice-handoff.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
 import {
 	kickstartVoiceOnDemand,
@@ -30,6 +32,13 @@ import {
 import { VoiceScheduleRuntime } from "./voice-schedule-runtime.js";
 import { probeVoiceSelfFilter } from "./voice-self-filter-probe.js";
 import { VoiceSessionCardProjector } from "./voice-session-card.js";
+import {
+	buildVoiceSessionContext,
+	deriveVoiceContextBinding,
+	digestVoiceContextRoster,
+	resolveVoiceContextSources,
+	VoiceSessionContextError,
+} from "./voice-session-context.js";
 import { pollVoiceSessionOnce } from "./voice-session-poller.js";
 import { preflightVoiceSession } from "./voice-session-preflight.js";
 import {
@@ -46,6 +55,39 @@ import {
 	resolveLeadVoiceBinding,
 } from "./voice-session-start.js";
 
+/** FLY-2796 resident carrier: the bot and room ids of the huddle block that
+ * FLY-2860 retired to an untyped legacy marker. Absent or malformed ⇒ none. */
+interface ResidentHuddleBinding {
+	guildId: string;
+	voiceChannelId: string;
+	orchestratorBotUserId?: string;
+	earsBotUserId?: string;
+}
+
+function residentHuddleBinding(
+	project: ProjectEntry | undefined,
+): ResidentHuddleBinding | undefined {
+	const huddle = project?.huddle;
+	if (!huddle || typeof huddle !== "object" || Array.isArray(huddle))
+		return undefined;
+	const value = huddle as Record<string, unknown>;
+	if (
+		typeof value.guildId !== "string" ||
+		typeof value.voiceChannelId !== "string"
+	)
+		return undefined;
+	return {
+		guildId: value.guildId,
+		voiceChannelId: value.voiceChannelId,
+		...(typeof value.orchestratorBotUserId === "string"
+			? { orchestratorBotUserId: value.orchestratorBotUserId }
+			: {}),
+		...(typeof value.earsBotUserId === "string"
+			? { earsBotUserId: value.earsBotUserId }
+			: {}),
+	};
+}
+
 export function createVoiceSessionServices(input: {
 	store: StateStore;
 	projects: ProjectEntry[];
@@ -55,6 +97,7 @@ export function createVoiceSessionServices(input: {
 	cwd?: string;
 	fetchImpl?: typeof fetch;
 	probeSelfFilter?: typeof probeVoiceSelfFilter;
+	voiceHandoffs?: VoiceHandoffService;
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
 	scheduleRouter: ReturnType<typeof createVoiceScheduleRouter>;
@@ -161,7 +204,7 @@ export function createVoiceSessionServices(input: {
 				(candidate) => candidate.agentId === session.leadId,
 			) ?? [];
 		const lead = leads[0];
-		const huddle = project?.huddle;
+		const huddle = residentHuddleBinding(project);
 		const proof = session.residentBindingProof;
 		if (
 			projects.length !== 1 ||
@@ -241,7 +284,7 @@ export function createVoiceSessionServices(input: {
 			const leads =
 				project?.leads.filter((candidate) => candidate.agentId === leadId) ??
 				[];
-			const huddle = project?.huddle;
+			const huddle = residentHuddleBinding(project);
 			if (
 				projects.length !== 1 ||
 				leads.length !== 1 ||
@@ -468,6 +511,41 @@ export function createVoiceSessionServices(input: {
 				: {}),
 		};
 	};
+	const getSessionContext = async (
+		session: VoiceSessionRow,
+		authority: { leaseBindingDigest: string },
+	) => {
+		const { project, lead } = resolveDaemon(session);
+		const binding = deriveVoiceContextBinding({ project, lead, homeDir });
+		const sources = await resolveVoiceContextSources({
+			project,
+			lead,
+			binding,
+		});
+		const state = await generateBootstrap(
+			lead.agentId,
+			input.store,
+			input.projects,
+		).catch(() => {
+			throw new VoiceSessionContextError("context_state_unavailable");
+		});
+		const capturedAt = new Date().toISOString();
+		return buildVoiceSessionContext({
+			sources,
+			rosterDigest: digestVoiceContextRoster(input.projects),
+			leaseBindingDigest: authority.leaseBindingDigest,
+			capturedAt,
+			openInitiatedAt: capturedAt,
+			state,
+			session: {
+				sessionId: session.sessionId,
+				mode: session.mode,
+				meetingId: session.meetingId,
+				topic: session.topic,
+				priorMinutes: null,
+			},
+		});
+	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
 		await validateSession(session);
 		const { lead, token } = resolveDaemon(session);
@@ -595,6 +673,8 @@ export function createVoiceSessionServices(input: {
 				postStatus(session, `📻 有 ${count} 条语音没有送达`),
 			projectSession,
 			validateSession,
+			getSessionContext,
+			voiceHandoffs: input.voiceHandoffs,
 		}),
 		runtime,
 		cardProjector,

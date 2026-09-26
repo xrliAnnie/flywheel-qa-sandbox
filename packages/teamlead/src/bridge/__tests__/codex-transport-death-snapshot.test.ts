@@ -185,4 +185,46 @@ describe("recordCodexTransportDeathSnapshot", () => {
 		await completion;
 		expect(insertEvent).toHaveBeenCalledTimes(1);
 	});
+
+	it("FLY-2903 marks a restart refusal and omits the flag otherwise", async () => {
+		const payloads: Array<Record<string, unknown>> = [];
+		const store = {
+			getSession: () => ({ issue_id: "issue-1", project_name: "flywheel" }),
+			insertEvent: (event: { payload: Record<string, unknown> }) => {
+				payloads.push(event.payload);
+			},
+		};
+		const deps = {
+			existsSync: () => false,
+			execFile: async () => ({ stdout: "" }),
+			randomId: () => "fixed",
+		};
+		const base = {
+			executionId: "exec-42",
+			socketPath: "/tmp/codex.sock",
+			at: "2026-09-25T20:00:00.000Z",
+			trigger: "transport_close" as const,
+		};
+		await recordCodexTransportDeathSnapshot(
+			store,
+			{
+				...base,
+				reason: "restart_refused:refused_by_owner",
+				restartRefused: true,
+			},
+			[],
+			deps,
+		);
+		await recordCodexTransportDeathSnapshot(
+			store,
+			{ ...base, reason: "socket reset" },
+			[],
+			deps,
+		);
+		expect(payloads[0]).toMatchObject({
+			reason: "restart_refused:refused_by_owner",
+			restartRefused: true,
+		});
+		expect(payloads[1]).not.toHaveProperty("restartRefused");
+	});
 });

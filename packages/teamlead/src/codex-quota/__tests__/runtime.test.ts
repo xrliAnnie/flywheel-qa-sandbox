@@ -246,6 +246,45 @@ it("successful probe journals before canonical rename and installs the proven by
 	).toBe("proven");
 	await f.runtime.stop();
 });
+it("FLY-2869: a reset-elapsed candidate's notification never claims its stale 100%", async () => {
+	const f = await fixture(true);
+	await writeFile(
+		f.binary,
+		`#!${process.execPath}\nconst fs=require('fs');const p=process.env.CODEX_HOME+'/auth.json';const a=JSON.parse(fs.readFileSync(p));a.tokens.refresh_token='proven';fs.writeFileSync(p,JSON.stringify(a));fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message')+1],'ok');`,
+		{ mode: 0o700 },
+	);
+	const candidate = {
+		profile: "personal",
+		accountKey: (await import("../probe.js")).codexQuotaIdentityReader(f.pool)(
+			auth("old"),
+		).accountKey,
+		observedAt: Date.now(),
+		identityVerified: true,
+		authHealth: "valid" as const,
+		windows: [{ usedPercent: 100, resetsAt: Date.now() - 60_000 }],
+		scopeKnown: true,
+	};
+	f.getRoot.mockReturnValue({
+		rootKey: "root",
+		accountKey: "business-key",
+		profile: "business",
+		generation: 1,
+	});
+	const rotated = await f.runtime.rotate(
+		{ incident_id: "incident", root_key: "root" },
+		candidate,
+		{ pool: f.pool, observations: [candidate] },
+	);
+	expect(rotated.ok).toBe(true);
+	expect(f.recordInstalling).toHaveBeenCalledWith(
+		expect.objectContaining({
+			notification: expect.objectContaining({
+				to: expect.objectContaining({ profile: "personal", windows: [] }),
+			}),
+		}),
+	);
+	await f.runtime.stop();
+});
 it("the tick coordinator wiring forwards the same observation snapshot to rotation", async () => {
 	const { StateStore } = await import("../../StateStore.js");
 	const store = await StateStore.create(":memory:");
@@ -468,6 +507,287 @@ it("a manual canonical identity change advances observed generation without gran
 	}
 });
 
+it("FLY-2869: a real `codex-profile use` produces exactly one manual N1 and no probe", async () => {
+	const { StateStore } = await import("../../StateStore.js");
+	const { execFile } = await import("node:child_process");
+	const { promisify } = await import("node:util");
+	const { existsSync } = await import("node:fs");
+	const store = await StateStore.create(":memory:");
+	const f = await fixture(true, store);
+	const marker = join(f.canonicalHome, "..", "probe-ran");
+	await writeFile(
+		f.binary,
+		`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(marker)},'1');process.exit(1);`,
+		{ mode: 0o700 },
+	);
+	try {
+		const first = await f.runtime.credential();
+		expect(first.profile).toBe("personal");
+		const cli = new URL(
+			"../../../../claude-runner/bin/flywheel-codex-profile.mjs",
+			import.meta.url,
+		).pathname;
+		const registry = new URL(
+			"../../../../claude-runner/agents/codex-account-registry.json",
+			import.meta.url,
+		).pathname;
+		await promisify(execFile)(process.execPath, [
+			cli,
+			"--home",
+			f.canonicalHome,
+			"--profiles",
+			f.profilesRoot,
+			"--ledger-root",
+			join(f.canonicalHome, "..", "ledger"),
+			"--registry",
+			registry,
+			"use",
+			"business",
+		]);
+		const next = await f.runtime.credential();
+		expect(next).toMatchObject({
+			profile: "business",
+			generation: first.generation + 1,
+		});
+		await f.runtime.credential();
+		const rows = store.codexQuota
+			.listOutbox()
+			.filter((row) => row.kind === "switch_notification");
+		expect(rows).toHaveLength(1);
+		const payload = JSON.parse(String(rows[0]!.payload_json));
+		expect(payload).toMatchObject({
+			reason: "manual_switch",
+			generation: first.generation + 1,
+		});
+		expect(JSON.parse(payload.notification)).toMatchObject({
+			from: {
+				profile: "personal",
+				email: "personal@example.test",
+				windows: [],
+			},
+			to: { profile: "business", email: "business@example.test", windows: [] },
+		});
+		expect(store.codexQuota.listIncidents()).toEqual([]);
+		expect(existsSync(marker)).toBe(false);
+	} finally {
+		await f.runtime.stop();
+		store.close();
+	}
+});
+it("FLY-2869: the standalone canonical reconciliation carries fresh readings into the manual N1", async () => {
+	const { StateStore } = await import("../../StateStore.js");
+	const { reconcileCodexCanonicalRoot } = await import("../runtime.js");
+	const store = await StateStore.create(":memory:");
+	const f = await fixture(true, store);
+	try {
+		const readingWindows = vi.fn((profile: string) =>
+			profile === "personal"
+				? [
+						{
+							usedPercent: 100,
+							resetsAt: Date.parse("2026-09-30T20:59:55.000Z"),
+						},
+					]
+				: [],
+		);
+		const first = await reconcileCodexCanonicalRoot({
+			store,
+			canonicalHome: f.canonicalHome,
+			pool: f.pool,
+			readingWindows,
+		});
+		await writeFile(
+			join(f.canonicalHome, "auth.json"),
+			await readFile(join(f.profilesRoot, "business", "auth.json"), "utf8"),
+		);
+		const next = await reconcileCodexCanonicalRoot({
+			store,
+			canonicalHome: f.canonicalHome,
+			pool: f.pool,
+			readingWindows,
+		});
+		expect(next.generation).toBe(first.generation + 1);
+		const row = store.codexQuota
+			.listOutbox()
+			.find((item) => item.kind === "switch_notification");
+		expect(
+			JSON.parse(JSON.parse(String(row!.payload_json)).notification).from
+				.windows,
+		).toEqual([
+			{ usedPercent: 100, resetsAt: Date.parse("2026-09-30T20:59:55.000Z") },
+		]);
+		readingWindows.mockImplementation(() => {
+			throw new Error("store unreadable");
+		});
+		await writeFile(
+			join(f.canonicalHome, "auth.json"),
+			await readFile(join(f.profilesRoot, "personal", "auth.json"), "utf8"),
+		);
+		await expect(
+			reconcileCodexCanonicalRoot({
+				store,
+				canonicalHome: f.canonicalHome,
+				pool: f.pool,
+				readingWindows,
+			}),
+		).resolves.toMatchObject({ profile: "personal" });
+	} finally {
+		await f.runtime.stop();
+		store.close();
+	}
+});
+it("FLY-2869: availability refreshes the shared occupancy the mutation path fences on", async () => {
+	const { CodexAccountOccupancy } = await import("../occupancy.js");
+	const { CodexQuotaAvailability } = await import("../availability.js");
+	const { checkCodexQuotaReadiness } = await import("../readiness.js");
+	const { codexQuotaIdentityReader } = await import("../probe.js");
+	const f = await fixture(true);
+	const businessKey = codexQuotaIdentityReader(f.pool)(
+		await readFile(join(f.profilesRoot, "business", "auth.json"), "utf8"),
+	).accountKey;
+	let activeUnsharedAccountKeys: string[] = [];
+	const occupancy = new CodexAccountOccupancy(async () => ({
+		complete: true,
+		homes: [],
+		activeUnsharedAccountKeys,
+	}));
+	const availability = new CodexQuotaAvailability({
+		enabled: () => true,
+		runtimeAvailable: () => true,
+		check: () =>
+			checkCodexQuotaReadiness({
+				canonicalAuthPath: join(f.canonicalHome, "auth.json"),
+				collectHomes: occupancy.collect,
+			}),
+	});
+	const recordInstalling = vi.fn();
+	const runtime = new CodexQuotaRuntime({
+		canonicalHome: f.canonicalHome,
+		profilesRoot: f.profilesRoot,
+		stateRoot: join(f.canonicalHome, "..", "state-2869"),
+		rawBinary: f.binary,
+		pool: () => f.pool,
+		model: "fixture",
+		limitId: "codex",
+		collectHomes: async () => {
+			throw new Error("runtime must use the shared occupancy");
+		},
+		occupancy,
+		availability,
+		store: {
+			codexQuota: { recordInstalling, getRoot: () => undefined },
+		} as never,
+		recover: async () => {},
+	});
+	try {
+		activeUnsharedAccountKeys = [businessKey];
+		await availability.refresh();
+		const round = await runtime.observe();
+		expect(
+			round.observations.find((item) => item.profile === "business")
+				?.authHealth,
+		).toBe("in_use_unshared");
+		expect(
+			JSON.parse(
+				await readFile(join(f.profilesRoot, "business", "auth.json"), "utf8"),
+			).tokens.refresh_token,
+		).toBe("old");
+		const candidate = {
+			profile: "business",
+			accountKey: businessKey,
+			observedAt: Date.now(),
+			identityVerified: true,
+			authHealth: "valid" as const,
+			windows: [{ usedPercent: 10, resetsAt: null }],
+			scopeKnown: true,
+		};
+		expect(
+			await runtime.rotate(
+				{ incident_id: "incident", root_key: "root" },
+				candidate,
+				round,
+			),
+		).toEqual({ ok: false });
+		expect(recordInstalling).not.toHaveBeenCalled();
+	} finally {
+		await runtime.stop();
+		await f.runtime.stop();
+	}
+});
+it("FLY-2869: an account that becomes in use during the probe is never installed", async () => {
+	const { CodexAccountOccupancy } = await import("../occupancy.js");
+	const { CodexQuotaAvailability } = await import("../availability.js");
+	const { checkCodexQuotaReadiness } = await import("../readiness.js");
+	const { codexQuotaIdentityReader } = await import("../probe.js");
+	const { existsSync } = await import("node:fs");
+	const f = await fixture(true);
+	const marker = join(f.canonicalHome, "..", "now-in-use");
+	await writeFile(
+		f.binary,
+		`#!${process.execPath}\nconst fs=require('fs');fs.writeFileSync(${JSON.stringify(marker)},'1');const p=process.env.CODEX_HOME+'/auth.json';const a=JSON.parse(fs.readFileSync(p));a.tokens.refresh_token='proven';fs.writeFileSync(p,JSON.stringify(a));fs.writeFileSync(process.argv[process.argv.indexOf('--output-last-message')+1],'ok');`,
+		{ mode: 0o700 },
+	);
+	const businessKey = codexQuotaIdentityReader(f.pool)(
+		await readFile(join(f.profilesRoot, "business", "auth.json"), "utf8"),
+	).accountKey;
+	const occupancy = new CodexAccountOccupancy(async () => ({
+		complete: true,
+		homes: [],
+		activeUnsharedAccountKeys: existsSync(marker) ? [businessKey] : [],
+	}));
+	const availability = new CodexQuotaAvailability({
+		enabled: () => true,
+		runtimeAvailable: () => true,
+		check: () =>
+			checkCodexQuotaReadiness({
+				canonicalAuthPath: join(f.canonicalHome, "auth.json"),
+				collectHomes: occupancy.collect,
+			}),
+	});
+	const recordInstalling = vi.fn();
+	const runtime = new CodexQuotaRuntime({
+		canonicalHome: f.canonicalHome,
+		profilesRoot: f.profilesRoot,
+		stateRoot: join(f.canonicalHome, "..", "state-2869-flip"),
+		rawBinary: f.binary,
+		pool: () => f.pool,
+		model: "fixture",
+		limitId: "codex",
+		collectHomes: occupancy.collect,
+		occupancy,
+		availability,
+		store: {
+			codexQuota: { recordInstalling, getRoot: () => undefined },
+		} as never,
+		recover: async () => {},
+	});
+	try {
+		const candidate = {
+			profile: "business",
+			accountKey: businessKey,
+			observedAt: Date.now(),
+			identityVerified: true,
+			authHealth: "valid" as const,
+			windows: [{ usedPercent: 10, resetsAt: null }],
+			scopeKnown: true,
+		};
+		const rotated = await runtime.rotate(
+			{ incident_id: "incident", root_key: "root" },
+			candidate,
+			{ pool: f.pool, observations: [candidate] },
+		);
+		expect(existsSync(marker)).toBe(true);
+		expect(rotated).toEqual({ ok: false });
+		expect(recordInstalling).not.toHaveBeenCalled();
+		expect(
+			JSON.parse(await readFile(join(f.canonicalHome, "auth.json"), "utf8"))
+				.tokens.refresh_token,
+		).toBe("old");
+	} finally {
+		await runtime.stop();
+		await f.runtime.stop();
+	}
+});
 it("the active canonical account is never refreshed as an isolated candidate", async () => {
 	const f = await fixture(true);
 	const identity = (await import("../probe.js")).codexQuotaIdentityReader(

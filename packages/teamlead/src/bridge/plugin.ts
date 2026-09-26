@@ -86,7 +86,7 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
-import { WorktreeManager } from "flywheel-edge-worker";
+import { resolveWorktreeKey, WorktreeManager } from "flywheel-edge-worker";
 import { identityKey as claudeIdentityKey } from "../account-heal/account-identity.js";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
@@ -106,6 +106,7 @@ import {
 } from "../account-heal/detection-classifier.js";
 import { defaultMachinePoolDir } from "../account-heal/machine-account.js";
 import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
+import { writeSweepRequest } from "../account-heal/sweep-request.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -114,10 +115,22 @@ import { confirmStandingAuthorityCandidate } from "../bin/standing-authority-act
 import { resolveStandingAuthorityStateDir } from "../bin/standing-authority-confirmation-ledger.js";
 import { observeClaudeAccountDetails } from "../claude-quota/account-detail-observer.js";
 import {
+	type ClaudeAccountDetailStore,
 	defaultClaudeAccountDetailStorePath,
 	readClaudeAccountDetailStore,
 	writeClaudeAccountDetailStore,
 } from "../claude-quota/account-detail-store.js";
+import {
+	claudeChargeTargets,
+	createGogRunner,
+	observeClaudeCharges,
+} from "../claude-quota/charge-receipt-observer.js";
+import { createClaudeChargeScheduler } from "../claude-quota/charge-receipt-scheduler.js";
+import {
+	defaultClaudeChargeStorePath,
+	readClaudeChargeStore,
+	writeClaudeChargeStore,
+} from "../claude-quota/charge-receipt-store.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
@@ -138,9 +151,14 @@ import {
 	createRegisteredCodexQuotaHostCollectorOptions,
 } from "../codex-quota/host-readiness.js";
 import { createCodexQuotaMaintenance } from "../codex-quota/maintenance.js";
+import { CodexAccountOccupancy } from "../codex-quota/occupancy.js";
 import { createCodexQuotaOutboxDelivery } from "../codex-quota/outbox.js";
 import { codexQuotaIdentityReader } from "../codex-quota/probe.js";
 import { checkCodexQuotaReadiness } from "../codex-quota/readiness.js";
+import {
+	codexNotificationWindows,
+	createCodexReadingScheduler,
+} from "../codex-quota/reading-scheduler.js";
 import { createResidentHomeEvidence } from "../codex-quota/resident-home-evidence.js";
 import { createCodexQuotaRunRecovery } from "../codex-quota/run-recovery.js";
 import {
@@ -148,8 +166,10 @@ import {
 	CodexQuotaRuntime,
 	createCodexQuotaFailureReporter,
 	initializeCodexQuotaRuntime,
+	reconcileCodexCanonicalRoot,
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
+import type { TakeoverRescuedAlertHook } from "../DirectEventSink.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	readAttentionSources,
@@ -209,6 +229,16 @@ import {
 	SHIP_JUDGMENT_POLICY_MESSAGE_ID,
 	SHIP_JUDGMENT_POLICY_THREAD_ID,
 } from "../ship-judgment/policy-provenance.js";
+import { observeVercelAccount } from "../vercel-quota/vercel-account-reader.js";
+import {
+	createVercelAccountLatest,
+	defaultVercelAccountStorePath,
+	discardVercelAccountStore,
+	readVercelAccountStore,
+	type VercelAccountStore,
+	vercelAccountFailure,
+	writeVercelAccountStore,
+} from "../vercel-quota/vercel-account-store.js";
 import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
 import { migrateFly2602WorkflowEffort } from "../workflow-effort-migration.js";
 import {
@@ -236,7 +266,17 @@ import {
 } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import { reconcileCodexAccountSubscriptionIdentityKeys } from "./account-quota-page.js";
-import { createAccountQuotaRefresh } from "./account-quota-refresh.js";
+import {
+	createAccountQuotaRefresh,
+	createAccountReadingsRefresh,
+	createClaudeChargeRefresh,
+	createCodexAccountQuotaRefresh,
+	scheduledReadingsRefresh,
+} from "./account-quota-refresh.js";
+import {
+	buildVercelQuotaSection,
+	type VercelQuotaSection,
+} from "./account-quota-vercel.js";
 import {
 	buildAccountQuotaView,
 	renderAccountsPageHtml,
@@ -308,14 +348,20 @@ import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
 import {
 	CLOSE_ELIGIBLE_STATES,
+	cleanupWorkflowResumeAttempt,
 	closeRunner,
 	registerLifecycleCloseGuard,
+	retireWorkflowProcessBody,
 } from "./close-runner.js";
 import {
 	createHostCmuxWatcherPatrol,
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import {
+	codexTerminalTeardownDeps,
+	reapCodexDaemonForSession,
+	registerCodexTerminalTeardown,
+} from "./codex-daemon-teardown.js";
 import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
@@ -329,7 +375,10 @@ import { createCodexQuotaRouter } from "./codex-quota-route.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
-import { sweepCodexRunnerOrphans } from "./codex-runner-orphan-reaper.js";
+import {
+	sweepCodexRunnerOrphans,
+	sweepStaleCodexHomeLeases,
+} from "./codex-runner-orphan-reaper.js";
 import {
 	acceptReownTurnReconciliation,
 	buildCodexRecoveryContext,
@@ -338,6 +387,11 @@ import {
 	prepareCodexRecoveryAgentHome,
 	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
+import {
+	createCodexTerminalCloseAttemptRecorder,
+	terminalBodiesForQuotaPage,
+} from "./codex-terminal-close-ledger.js";
+import { createBridgeCodexTerminalSweep } from "./codex-terminal-sweep-runtime.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
 import { prepareBridgeCommDbRebuilds } from "./commdb-fly2268-preflight.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -489,10 +543,12 @@ import {
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeHeadphoneBackgroundEnabled,
 	storeLoopProfilerEnabled,
+	storeNodeStandbyResumeEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
@@ -502,6 +558,7 @@ import {
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeWorktreeTakeoverRescueDisabled,
 	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
@@ -570,9 +627,10 @@ import {
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
 import {
+	describeIdleThreadSweepDenial,
 	IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
 	makeIdleThreadArchiveSweep,
-	resolveIdleThreadSweepChannelIds,
+	resolveIdleThreadSweepGroups,
 } from "./idle-thread-archive-sweep.js";
 import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
@@ -667,6 +725,7 @@ import {
 } from "./lead-persona-activation.js";
 import { createLeadPersonaRouter } from "./lead-persona-routes.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
+import { createLeadReplyFailedHandler } from "./lead-reply-failed-route.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
@@ -768,7 +827,11 @@ import {
 } from "./project-runner-model-source.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
-import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
+import {
+	createQuotaDaemonWaker,
+	shouldWakeQuotaDaemon,
+	wakeQuotaDaemon,
+} from "./quota-daemon-wake.js";
 import { loadReclosePeerNative } from "./reclose-peer-native.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { appendBugVersionFooter } from "./release-readiness/bug-footer.js";
@@ -925,6 +988,17 @@ import { listSummaryPulls } from "./summary-delivery-ledger.js";
 import { readSummaryLinearActivity } from "./summary-linear-activity.js";
 import { SummaryPresentationController } from "./summary-presentation-controller.js";
 import {
+	defaultSwitchRecordPath,
+	readSwitchRecord,
+	resolvePageLastSwitch,
+	type SwitchRecord,
+	writeSwitchRecord,
+} from "./switch-record.js";
+import {
+	createClaudeSweepRequester,
+	createSwitchRefreshTrigger,
+} from "./switch-refresh-trigger.js";
+import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
 } from "./terminal-commdb-sync.js";
@@ -976,6 +1050,10 @@ import {
 	VoiceAgendaPriorityCache,
 } from "./voice-agenda-source.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
+import {
+	VoiceHandoffService,
+	validateCodexVoiceDelegateBinding,
+} from "./voice-handoff.js";
 import { voiceHandoffDeliveryMatches } from "./voice-handoff-delivery-proof.js";
 import { createVoiceHandoffRouter } from "./voice-handoff-routes.js";
 import type { VoiceHandoffRecord } from "./voice-handoff-store.js";
@@ -1008,14 +1086,24 @@ import {
 } from "./workflow-gate-card-lifecycle.js";
 import { materializeWorkflowGateWithFailLoud } from "./workflow-gate-materialization-alert.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
+import {
+	isWorkflowProcessRetirementApproved,
+	runWorkflowProcessRetirementTick,
+} from "./workflow-process-retirement.js";
 import { resolveWorkflowReplacementLeadIntent } from "./workflow-replacement-lead-event.js";
 import {
 	GitWorkflowResumeCheckpointStore,
 	reconcileWorkflowResumeCheckpoint,
 } from "./workflow-resume-checkpoint.js";
+import {
+	buildStandbyResumeStartRequest,
+	frozenLaunchLeadId,
+	observeWorkflowResumeLaunchFailure,
+} from "./workflow-resume-identity.js";
 import { runWorkflowResumeShadowTick } from "./workflow-resume-shadow.js";
 import {
 	grantWorkflowReworkTurn,
+	type WorkflowResumeFailureEvidence,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
 import { renderWorkflowReworkWakeContent } from "./workflow-rework-wake-copy.js";
@@ -1654,11 +1742,30 @@ export interface BridgeAppOptions {
 		}>;
 		/** FLY-2803: local, non-secret account identity digests for page confirmations. */
 		readAccountIdentityKeys?: () => Readonly<Record<string, string>>;
+		/** FLY-2830: in-process last switch (survives a failed disk write). */
+		latestSwitchRecord?: () => SwitchRecord | null;
+		/** FLY-2830: test seam; production uses defaultSwitchRecordPath(). */
+		switchRecordPath?: string;
 	};
 	/** FLY-2803: fixed page-only manual input seam; production uses stateDir. */
 	accountSubscriptionManual?: {
 		path: string;
 		stateDir: string;
+	};
+	/**
+	 * FLY-2875: the account page's Vercel table. Absent ⇒ no table. `latest`
+	 * is this process's newest refresh attempt and wins over the file.
+	 */
+	accountPageVercel?: {
+		storePath: string;
+		latest?: () => VercelAccountStore | null;
+	};
+	/**
+	 * FLY-2897: the Claude charge-receipt readings behind the next-charge
+	 * cells. Absent ⇒ never read (tests stay off the machine's real file).
+	 */
+	accountPageClaudeCharges?: {
+		storePath: string;
 	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
@@ -1984,6 +2091,8 @@ export function createBridgeApp(
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
 	const workflowDecisionRoutes = () =>
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
+	const nodeStandbyResumeEnabled = () =>
+		flagStore ? storeNodeStandbyResumeEnabled(flagStore) : false;
 	const buildIdentity = resolveBridgeBuildIdentity();
 	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
@@ -2135,9 +2244,52 @@ export function createBridgeApp(
 							);
 						}
 					}
+					// FLY-2875: a Vercel failure degrades only its own table.
+					let vercelSection: VercelQuotaSection | undefined;
+					const vercelPage = opts?.accountPageVercel;
+					if (vercelPage) {
+						try {
+							vercelSection = buildVercelQuotaSection(
+								vercelPage.latest?.() ??
+									readVercelAccountStore(vercelPage.storePath),
+								{ generatedAt: snapshot.generatedAt, claudeEmails },
+							);
+						} catch {
+							vercelSection = buildVercelQuotaSection(
+								vercelAccountFailure("refresh_failed", new Date()),
+								{ generatedAt: snapshot.generatedAt },
+							);
+						}
+					}
+					// FLY-2830: best effort — a broken record means no marks, never
+					// a broken page.
+					let lastSwitch: ReturnType<typeof resolvePageLastSwitch> = null;
+					try {
+						lastSwitch = resolvePageLastSwitch(
+							opts?.codexQuota?.latestSwitchRecord?.() ?? null,
+							() =>
+								readSwitchRecord(
+									opts?.codexQuota?.switchRecordPath ??
+										defaultSwitchRecordPath(),
+								),
+						);
+					} catch {
+						lastSwitch = null;
+					}
+					// FLY-2897: a broken receipt file only drops the receipt facts.
+					let claudeCharges: ReturnType<typeof readClaudeChargeStore> = null;
+					const chargesPage = opts?.accountPageClaudeCharges;
+					if (chargesPage) {
+						try {
+							claudeCharges = readClaudeChargeStore(chargesPage.storePath);
+						} catch {
+							claudeCharges = null;
+						}
+					}
 					const html = renderAccountsPageHtml(
 						buildAccountQuotaView(snapshot, {
 							claudeEmails,
+							claudeCharges,
 							subscriptionManual: {
 								confirmations: manual.data?.confirmations ?? [],
 								identityKeys,
@@ -2149,6 +2301,12 @@ export function createBridgeApp(
 									),
 							},
 						}),
+						vercelSection,
+						{
+							lastSwitch,
+							// FLY-2903: best effort — a ledger failure is an empty banner.
+							terminalBodies: terminalBodiesForQuotaPage(store, new Date()),
+						},
 					);
 					res.type("html").send(html);
 				} catch {
@@ -2534,6 +2692,53 @@ export function createBridgeApp(
 			res.status(503).json({
 				ok: false,
 				error: "DOA backoff reset requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
+	// FLY-2808: cleanup/retirement-unconfirmed and expired resume ownership are
+	// fail-closed safety latches. Only the master-token operator path may reopen
+	// them, and StateStore records the server-derived actor, timestamp, reason,
+	// and restored attempt boundary.
+	if (config.apiToken) {
+		app.post(
+			"/api/workflow-resume/reopen",
+			tokenAuthMiddleware(config.apiToken),
+			(req, res) => {
+				const executionId =
+					typeof req.body?.executionId === "string"
+						? req.body.executionId.trim()
+						: "";
+				const reason =
+					typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+				if (!executionId || !reason || reason.length > 500) {
+					res.status(400).json({
+						ok: false,
+						error:
+							"executionId and a reason of at most 500 characters are required",
+					});
+					return;
+				}
+				const reopened = store.reopenWorkflowExecutionResume({
+					executionId,
+					actor: "master-api-token",
+					reason,
+					now: new Date().toISOString(),
+				});
+				if (!reopened.ok) {
+					res
+						.status(reopened.reason === "process_body_not_enrolled" ? 404 : 409)
+						.json({ ok: false, reason: reopened.reason });
+					return;
+				}
+				res.json(reopened);
+			},
+		);
+	} else {
+		app.post("/api/workflow-resume/reopen", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				error: "workflow resume reopen requires TEAMLEAD_API_TOKEN",
 			});
 		});
 	}
@@ -2953,6 +3158,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			{ nodeStandbyResumeEnabled },
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -3650,6 +3856,7 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
 			opts?.epicPageRefresher?.requestRefresh,
+			{ nodeStandbyResumeEnabled },
 			() => opts?.codexQuota?.rootKey,
 		),
 	);
@@ -3850,6 +4057,13 @@ export function createBridgeApp(
 				void codexLeadOutbound(req, res);
 			},
 		);
+		// FLY-2862: a Codex Lead's owed reply came back empty; tell its live voice
+		// session (if any) so the daemon speaks a status line instead of waiting.
+		app.post(
+			"/api/lead-outbound/reply-failed",
+			tokenAuthMiddleware(config.apiToken),
+			createLeadReplyFailedHandler({ store }),
+		);
 
 		const rayaIdentities = projects.flatMap((project) =>
 			(project.leads ?? [])
@@ -3947,6 +4161,7 @@ export function createBridgeApp(
 				store,
 				session,
 				"bridge.close-tmux",
+				codexTerminalTeardownDeps("close_tmux"),
 			);
 			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
@@ -5641,6 +5856,7 @@ export function createBridgeApp(
 			config.chatThreadsEnabled,
 			staleBlockerGuard,
 			{
+				nodeStandbyResumeEnabled,
 				codexQuotaRootKey: () => opts?.codexQuota?.rootKey,
 				verifyCodexQuotaRecovery: opts?.codexQuota?.canRecover,
 				masterToken: config.apiToken,
@@ -7133,7 +7349,9 @@ export async function startBridge(
 			replayAfterAmbiguousAttempt: boolean;
 		}) => Promise<void>;
 	} = {};
+	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const leadInboxRuntime = new LeadInboxRuntime({
+		dispatcherUserId: () => alertDutyDispatcherBotUserId.current,
 		leadLeaseDbPath:
 			process.env.FLYWHEEL_LEAD_LEASE_DB ??
 			join(homedir(), ".flywheel", "lead-lease.db"),
@@ -7669,8 +7887,12 @@ export async function startBridge(
 		current: ReviewRequestCoordinator | undefined;
 	} = { current: undefined };
 
+	// FLY-2901: the takeover-rescued INFO alert hook rides this holder too — the
+	// DirectEventSink is built inside setupRunInfrastructure, and this is the
+	// reference it already receives (run-infra copies it onto the sink).
 	const turnBeltReconcilerHolder: {
 		current: TurnBeltReconciler | undefined;
+		alertWorktreeTakeoverRescued?: TakeoverRescuedAlertHook;
 	} = { current: undefined };
 	const workflowReworkCoordinatorHolder: {
 		current: WorkflowReworkCoordinator | undefined;
@@ -8185,7 +8407,6 @@ export async function startBridge(
 	const terminalArchiveEnqueue = (issueId: string) =>
 		terminalArchiveBuffer.enqueue(issueId);
 	const infraDiscordIdentity = resolveInfraDiscordIdentity();
-	const idleThreadSweepChannelIds = resolveIdleThreadSweepChannelIds();
 	const listDiscordOpenThreadIds = infraDiscordIdentity
 		? async () => {
 				const listed = await listGuildActiveThreads(infraDiscordIdentity);
@@ -8200,6 +8421,13 @@ export async function startBridge(
 	// FLY-2211: one process-local authority shared by first dispatch, rescue,
 	// boot reconciliation, and the adjacent orphan reaper.
 	const codexExecutionOwners = new CodexExecutionOwnershipRegistry();
+	// FLY-2903: every Bridge terminal path (terminate / closeRunner /
+	// process retirement / close-tmux) stops this process's goal runtime before
+	// reaping its daemon and records the attempt for the terminal sweep.
+	const disposeCodexTerminalTeardown = registerCodexTerminalTeardown({
+		owners: codexExecutionOwners,
+		closeLedger: createCodexTerminalCloseAttemptRecorder(store),
+	});
 	const codexRecoveryRuntimes = new Map<string, CodexRecoveryRuntime>();
 	const codexMaintenanceTicks: string[] = [];
 
@@ -8879,6 +9107,24 @@ export async function startBridge(
 			),
 		}),
 	);
+	// FLY-2869: one occupancy owner for availability, the mutation runtime and
+	// the account readings; every readiness refresh updates the mutation fence.
+	const codexAccountOccupancy = new CodexAccountOccupancy(
+		codexQuotaCollectHomes,
+	);
+	// Declared before the runtime exists: its canonical reconciliation (and the
+	// runtime-free one below) reads fresh readings for the manual-switch N1.
+	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
+	const codexNotificationReadingWindows = (
+		profile: string,
+		accountKey: string,
+	) =>
+		codexNotificationWindows(
+			readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+			profile,
+			accountKey,
+			Date.now(),
+		);
 	const codexQuotaAvailability = new CodexQuotaAvailability({
 		enabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
 		runtimeAvailable: () => codexQuotaRuntime !== undefined,
@@ -8890,7 +9136,7 @@ export async function startBridge(
 					})
 				: checkCodexQuotaReadiness({
 						canonicalAuthPath: join(codexQuotaCanonicalHome, "auth.json"),
-						collectHomes: codexQuotaCollectHomes,
+						collectHomes: codexAccountOccupancy.collect,
 					}),
 	});
 	store.codexQuotaAvailability = () => codexQuotaAvailability.snapshot();
@@ -8914,6 +9160,17 @@ export async function startBridge(
 		flushOutbox: async () => codexQuotaOutboxHolder.flush?.(),
 		projectAudit: () =>
 			projectCodexQuotaAudit(store.codexQuota, dirname(codexQuotaStateRoot)),
+		// FLY-2869: manual switches still reach #notifications when the
+		// auto-switch runtime is not constructed (flag off at boot).
+		reconcileCanonical: async () => {
+			if (process.env.VITEST) return;
+			await reconcileCodexCanonicalRoot({
+				store,
+				canonicalHome: codexQuotaCanonicalHome,
+				pool: getCodexQuotaAccountPool(),
+				readingWindows: codexNotificationReadingWindows,
+			});
+		},
 	});
 	await codexQuotaMaintenance.bootstrap();
 	codexQuotaRuntime = await initializeCodexQuotaRuntime(
@@ -8969,6 +9226,8 @@ export async function startBridge(
 				autoEnabled: () => storeCodexQuotaAutoSwitchEnabled(flagStore),
 				availability: codexQuotaAvailability,
 				collectHomes: codexQuotaCollectHomes,
+				occupancy: codexAccountOccupancy,
+				readingWindows: codexNotificationReadingWindows,
 			});
 			if (!store.codexQuota.getRoot(codexQuotaRootKey))
 				await codexQuotaRuntime.credential();
@@ -8978,21 +9237,25 @@ export async function startBridge(
 	);
 	await codexQuotaMaintenance.bootstrap();
 
-	// FLY-2688 / FLY-2807 / FLY-2864: on-demand account readings for the
-	// account quota page. Single-flight and never scheduled. Live Codex accounts
+	// FLY-2688 / FLY-2807 / FLY-2864: account readings for the account quota
+	// page. FLY-2869: the Codex branch is also scheduled (reading scheduler
+	// below) so the readings can no longer silently freeze. Live Codex accounts
 	// use the direct readonly WHAM path, which never shares or rotates their
 	// refresh token. Same paths the capacity snapshot reads by default; derived
 	// once so the writers and the readers cannot drift.
-	const codexAccountQuotaStorePath = defaultCodexAccountQuotaStorePath();
 	const codexSubscriptionStorePath = defaultCodexSubscriptionStorePath();
 	const claudeAccountDetailStorePath = defaultClaudeAccountDetailStorePath();
-	const refreshCodexAccountQuota = createAccountQuotaRefresh({
+	// FLY-2875: report-hosting Vercel account, read-only, on the page refresh
+	// only (never on the FLY-2869 Codex reading scheduler).
+	const vercelAccountStorePath = defaultVercelAccountStorePath();
+	const vercelAccountLatest = createVercelAccountLatest();
+	// FLY-2869: one Codex round shared by the account page and the reading
+	// scheduler, so the two never run concurrent Codex reads.
+	const refreshCodexReadings = createCodexAccountQuotaRefresh({
 		// Hard ceiling above the observers' own round deadlines so a wedged
 		// app-server cannot hold the request open.
 		ceilingMs: 90_000,
 		observeCodexAccounts: (signal) => {
-			const runtime = codexQuotaRuntime;
-			if (!runtime) throw new Error("codex_quota_runtime_unavailable");
 			const canonicalHome = voiceRealpathSync(codexQuotaCanonicalHome);
 			return observeCodexAccounts({
 				profilesRoot: codexQuotaProfilesRoot,
@@ -9003,8 +9266,13 @@ export async function startBridge(
 				limitId: "codex",
 				previous: readCodexAccountQuotaStore(codexAccountQuotaStorePath),
 				signal,
-				// Re-read per slot: a Lead can launch mid-round.
-				refreshInUse: () => runtime.accountInUseGuard(),
+				// Re-read per slot: a Lead can launch mid-round. FLY-2869: the shared
+				// occupancy works with or without the auto-switch runtime.
+				refreshInUse: () =>
+					codexAccountOccupancy.guard(
+						join(canonicalHome, "auth.json"),
+						getCodexQuotaAccountPool,
+					),
 			});
 		},
 		writeCodexAccountQuotaStore: (codexStore) =>
@@ -9022,15 +9290,100 @@ export async function startBridge(
 			}),
 		writeCodexSubscriptionStore: (subscriptions) =>
 			writeCodexSubscriptionStore(codexSubscriptionStorePath, subscriptions),
-		observeClaudeAccountDetails: (signal) =>
-			observeClaudeAccountDetails({
-				profilesRoot:
-					config.capacityProbes?.claudeProfilesDir ?? defaultMachinePoolDir(),
-				previous: readClaudeAccountDetailStore(claudeAccountDetailStorePath),
+	});
+	// FLY-2830: one Claude card/subscription reader for every refresh path.
+	const observeClaudeDetails = (signal: AbortSignal) =>
+		observeClaudeAccountDetails({
+			profilesRoot:
+				config.capacityProbes?.claudeProfilesDir ?? defaultMachinePoolDir(),
+			previous: readClaudeAccountDetailStore(claudeAccountDetailStorePath),
+			signal,
+		});
+	const writeClaudeDetails = (details: ClaudeAccountDetailStore) =>
+		writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details);
+	// FLY-2897: one Claude charge-receipt round (gog, Anthropic receipt mail
+	// only) for the page refresh, the post-switch refresh and the daily tick.
+	const claudeChargeStorePath = defaultClaudeChargeStorePath();
+	const runGog = createGogRunner();
+	const refreshClaudeCharges = createClaudeChargeRefresh({
+		ceilingMs: 90_000,
+		observe: (signal) =>
+			observeClaudeCharges({
+				// Re-read per round: an account or mailbox change needs no restart.
+				targets: claudeChargeTargets(readStoreStrict(defaultStorePath())),
+				previous: readClaudeChargeStore(claudeChargeStorePath),
+				runGog,
 				signal,
 			}),
-		writeClaudeAccountDetailStore: (details) =>
-			writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details),
+		write: (charges) => writeClaudeChargeStore(claudeChargeStorePath, charges),
+	});
+	const claudeChargeScheduler = createClaudeChargeScheduler({
+		refresh: refreshClaudeCharges,
+		readStore: () => readClaudeChargeStore(claudeChargeStorePath),
+	});
+	const refreshCodexAccountQuota = createAccountQuotaRefresh({
+		ceilingMs: 90_000,
+		refreshCodex: refreshCodexReadings,
+		observeClaudeAccountDetails: observeClaudeDetails,
+		writeClaudeAccountDetailStore: writeClaudeDetails,
+		vercel: {
+			observe: (signal) =>
+				observeVercelAccount({
+					// Re-read per refresh: a retarget rewrites .env without a restart.
+					token: reportHostingCredentials.snapshot(
+						"REPORT_HOSTING_VERCEL_TOKEN",
+					).value,
+					resolveStoreApiId: () =>
+						hostedReportRegistry.hostingBinding().storeApiId,
+					signal,
+				}),
+			publish: (reading) => vercelAccountLatest.set(reading),
+			write: (reading) =>
+				writeVercelAccountStore(vercelAccountStorePath, reading),
+			discardStale: () => discardVercelAccountStore(vercelAccountStorePath),
+			now: () => new Date(),
+		},
+		refreshClaudeCharges,
+	});
+	// FLY-2830: Codex readings + Claude cards/subscriptions (never Vercel),
+	// shared by the reading scheduler and the post-switch refresh.
+	const refreshAccountReadings = createAccountReadingsRefresh({
+		ceilingMs: 90_000,
+		refreshCodex: refreshCodexReadings,
+		observeClaudeAccountDetails: observeClaudeDetails,
+		writeClaudeAccountDetailStore: writeClaudeDetails,
+	});
+	// FLY-2830: every account switch (Codex or Claude, manual or automatic)
+	// re-reads every account. Rides the GatePoller tick like the scheduler.
+	const switchRecordPath = defaultSwitchRecordPath();
+	const switchRefreshTrigger = createSwitchRefreshTrigger({
+		readCodexGeneration: () =>
+			store.codexQuota.getRoot(codexQuotaRootKey)?.generation ?? null,
+		readClaudeGeneration: () => {
+			const accounts = readStoreStrict(defaultStorePath());
+			return accounts === null ? null : (accounts.lastSwitch?.generation ?? 0);
+		},
+		// A dedicated waker: its 60 s throttle is not shared with alert wakes.
+		requestClaudeSweep: createClaudeSweepRequester({
+			write: (input) => writeSweepRequest(input),
+			wake: createQuotaDaemonWaker(),
+		}),
+		refreshBridge: async () => {
+			const outcome = await refreshAccountReadings();
+			if (!outcome.codex.ok) throw outcome.codex.error;
+			if (!outcome.claude.ok) throw new Error("claude_details_failed");
+		},
+		refreshClaudeCharges,
+		persistSwitchRecord: (record) =>
+			writeSwitchRecord(switchRecordPath, record),
+		readPersistedSwitchRecord: () => readSwitchRecord(switchRecordPath),
+	});
+	// FLY-2869: rides the existing GatePoller tick (see onLandOperationTick).
+	const codexReadingScheduler = createCodexReadingScheduler({
+		refresh: scheduledReadingsRefresh(refreshAccountReadings),
+		readStore: () => readCodexAccountQuotaStore(codexAccountQuotaStorePath),
+		observePipeline: (report) =>
+			store.codexQuota.observeCodexReadingPipeline(report),
 	});
 
 	for (const dispatcher of new Set([startDispatcher, retryDispatcher]))
@@ -9231,6 +9584,30 @@ export async function startBridge(
 				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
+				nodeStandbyResumeEnabled: () =>
+					storeNodeStandbyResumeEnabled(flagStore),
+				// FLY-2901 §7: call-time kill switch snapshot for the successor's
+				// shared-worktree takeover (the dispatcher treats a reader failure
+				// as off; an opt-in kill switch cannot be asserted by an unreadable
+				// flag).
+				takeoverRescueDisabled: () =>
+					storeWorktreeTakeoverRescueDisabled(flagStore),
+				// FLY-2901 §3/§4.6: the shared branch-B worktree exactly as Blueprint
+				// derives it (same manager, projectRoot, projectName and shared key).
+				resolveSharedWorktree: ({ projectName, issueId }) => {
+					const projectRoot = resolveProjectRootByName(projectName);
+					if (!projectRoot) return undefined;
+					const expected = lifecycleWorktreeManager.expectedWorktree(
+						projectRoot,
+						projectName,
+						resolveWorktreeKey(issueId, { shareParentBranch: true }),
+					);
+					return {
+						projectRoot,
+						path: expected.path,
+						branch: expected.branch,
+					};
+				},
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				armResidentReceiver: (executionId, source) =>
 					residentReceiverSupervisor.arm(executionId, source),
@@ -9349,7 +9726,6 @@ export async function startBridge(
 	// below only when the rescue runtime is built (self-heal on + unified Alerts
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
-	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
 	const oncallReceiptStore = new OncallReceiptStore(
 		join(
@@ -9386,10 +9762,35 @@ export async function startBridge(
 	const voiceAgendaLeadRouterHolder: NonNullable<
 		BridgeAppOptions["voiceAgendaLeadRouter"]
 	> = {};
+	const voiceHandoffService = new VoiceHandoffService({
+		store,
+		founderUserIds: () =>
+			config.discordOwnerUserId ? [config.discordOwnerUserId] : [],
+		// A delegation only queues the founder's durable words to the resident Lead;
+		// it grants the voice container no mutation authority. All action intents stay
+		// fail-closed here until their separate capability gates land.
+		validateAuthorityBinding: validateCodexVoiceDelegateBinding,
+		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		inspectDeliveryState: (deliveryId, handoff) => {
+			const settlement = leadInboxRuntime.readHandoffSettlement(
+				handoff.leadId,
+				deliveryId,
+			);
+			if (settlement.kind === "absent_identity") return { kind: "absent" };
+			if (
+				settlement.kind === "unknown_lead" ||
+				settlement.kind === "torn_identity"
+			)
+				return { kind: "torn_identity" };
+			return { kind: settlement.kind, state: settlement.state };
+		},
+	});
+	const voiceHandoffReconcilerOwner = `bridge-${randomUUID()}`;
 	const voiceSessionServices = createVoiceSessionServices({
 		store,
 		projects,
 		config,
+		voiceHandoffs: voiceHandoffService,
 	});
 	const xhsWriteService = createXhsBridgeWriteService({
 		apiToken: config.apiToken ?? "",
@@ -9437,6 +9838,7 @@ export async function startBridge(
 				rootKey: codexQuotaRootKey,
 				canRecover: codexQuotaCanRecover,
 				refreshAccountQuota: refreshCodexAccountQuota,
+				latestSwitchRecord: () => switchRefreshTrigger.latestSwitchRecord(),
 				readAccountIdentityKeys: () => {
 					const pool = getCodexQuotaAccountPool();
 					const problems = new Set(
@@ -9472,6 +9874,11 @@ export async function startBridge(
 					);
 				},
 			},
+			accountPageVercel: {
+				storePath: vercelAccountStorePath,
+				latest: () => vercelAccountLatest.get(),
+			},
+			accountPageClaudeCharges: { storePath: claudeChargeStorePath },
 			vercelToken,
 			reportBlobStore,
 			reportHostingCredentials,
@@ -9829,6 +10236,7 @@ export async function startBridge(
 	voiceSessionServices.runtime.start();
 	voiceSessionServices.scheduleRuntime.start();
 	voiceSessionServices.cardProjector.start();
+	voiceHandoffService.startReconciler(voiceHandoffReconcilerOwner);
 
 	await new Promise<void>((resolve, reject) => {
 		server.once("listening", resolve);
@@ -9946,8 +10354,33 @@ export async function startBridge(
 			);
 		}
 	};
+	// FLY-2903: late-bound sink for the terminal-body sweep, bound with the
+	// routed alert sink below. Unbound → the sweep keeps the alert pending and
+	// retries it next tick.
+	const codexTerminalSweepAlertHolder: {
+		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	} = {};
+	// Only this process's own ownership registry can say whether a terminal
+	// body is still owned; an injected dispatcher does not share it. Disabled
+	// under VITEST (same boundary as the codex health probe): general Bridge
+	// suites must never read the host's process table or its real socket root.
+	const codexTerminalSweep =
+		opts?.startDispatcher || process.env.VITEST
+			? undefined
+			: createBridgeCodexTerminalSweep({
+					store,
+					owners: codexExecutionOwners,
+					reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
+					alertSink: codexTerminalSweepAlertHolder,
+				});
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
+		isIntentionalStandby: (executionId) => {
+			const state = store.getWorkflowExecutionProcessBody(executionId)?.state;
+			return (
+				state === "retiring" || state === "standby" || state === "resuming"
+			);
+		},
 		alertIdentity: (session) => {
 			const bound = store.getCodexRecoveryAlertBinding(session.execution_id);
 			if (!bound) return undefined;
@@ -10486,6 +10919,24 @@ export async function startBridge(
 					}`,
 				);
 			}
+			// FLY-2903: after recovery claimed what it may, give every terminal
+			// Codex body a verified close verdict (single-flight, 30s soft budget).
+			if (codexTerminalSweep) {
+				try {
+					const swept = await codexTerminalSweep.tick();
+					if (swept.evaluated > 0 || swept.deferred > 0) {
+						console.log(
+							`[codex-terminal-sweep] evaluated=${swept.evaluated} deferred=${swept.deferred} skippedBodies=${swept.skippedBodies} states=${JSON.stringify(swept.states)}`,
+						);
+					}
+				} catch (error) {
+					console.warn(
+						`[codex-terminal-sweep] pass failed closed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
+			}
 			try {
 				await residentReceiverSupervisor.healthTick();
 			} catch (error) {
@@ -10736,6 +11187,50 @@ export async function startBridge(
 			} catch (error) {
 				console.warn(
 					`[codex-orphan-reaper] sweep failed (maintenance continues): ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+			// FLY-2877: a keyed-home lease whose codex processes have all exited
+			// (closeout kept it while one lingered, or the daemon died after its
+			// session ended) would otherwise stay until the next Bridge restart
+			// and keep that home's readiness at lease_without_process. Same tick,
+			// same master switch; the primitive re-checks the processes under the
+			// home lock, so a live runner's lease is never removed.
+			try {
+				const activeExecutionIds = new Set(
+					codexCandidateSnapshot.map((session) => session.execution_id),
+				);
+				await sweepStaleCodexHomeLeases(
+					{
+						readoptExecutionIds: activeExecutionIds,
+						isExecutionOwned: (executionId) =>
+							codexExecutionOwners.isExecutionOwned(executionId),
+					},
+					{
+						audit: (event, detail) => {
+							console.warn(`[codex-home-lease-sweep] ${event}`, detail);
+							try {
+								store.insertEvent({
+									event_id: `codex-home-lease-${event}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+									execution_id: String(
+										detail.executionId ?? "codex-home-lease-sweep",
+									),
+									issue_id: "maintenance",
+									project_name: "bridge",
+									event_type: event,
+									source: "bridge.codex-home-lease-sweep",
+									payload: detail,
+								});
+							} catch {
+								/* audit only */
+							}
+						},
+					},
+				);
+			} catch (error) {
+				console.warn(
+					`[codex-home-lease-sweep] sweep failed (maintenance continues): ${
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);
@@ -10995,33 +11490,39 @@ export async function startBridge(
 		projects: projects ?? [],
 		enqueue: doneThreadReconcile.enqueueThread,
 	});
-	const idleThreadSweep =
-		infraDiscordIdentity && idleThreadSweepChannelIds.length > 0
-			? makeIdleThreadArchiveSweep({
-					identity: infraDiscordIdentity,
-					channelIds: idleThreadSweepChannelIds,
-					log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-					onDenied: ({ status, context }) => {
-						void metaAlertNotifier.notify({
-							reason: "idle_thread_sweep_denied",
-							title: "Discord idle-thread sweep denied",
-							body: `Discord HTTP ${status} during ${context}; check claw-infra-bot VIEW_CHANNEL and MANAGE_THREADS permissions.`,
-						});
-					},
-				})
-			: undefined;
-	const idleThreadSweepScheduler = idleThreadSweep
-		? startDoneThreadReconcileScheduler({
-				runOnce: (shouldAbort) => idleThreadSweep.runOnce(shouldAbort),
+	// FLY-2916: each channel group (production, QA Testing) sweeps with its own
+	// bot identity on its own scheduler, so neither can spend the other's budget.
+	const idleThreadSweepSchedulers = resolveIdleThreadSweepGroups().map(
+		(group) => {
+			const tag =
+				group.name === "production"
+					? "idle-thread-sweep"
+					: "qa-idle-thread-sweep";
+			const log = (message: string) => console.log(`[${tag}] ${message}`);
+			const sweep = makeIdleThreadArchiveSweep({
+				identity: group.identity,
+				...(group.name === "production"
+					? { channelIds: group.channelIds }
+					: { qaTestingCategoryId: group.qaTestingCategoryId }),
+				log,
+				onDenied: (detail) =>
+					metaAlertNotifier
+						.notify(describeIdleThreadSweepDenial(group, detail))
+						.then((result) => !result.debounced),
+			});
+			const scheduler = startDoneThreadReconcileScheduler({
+				runOnce: (shouldAbort) => sweep.runOnce(shouldAbort),
 				resolveConfig: () => IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
-				log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-			})
-		: undefined;
-	if (idleThreadSweepScheduler) {
-		console.log(
-			`[Bridge] idle-thread sweep ready — channels=${idleThreadSweepChannelIds.join(",")}`,
-		);
-	}
+				log,
+			});
+			console.log(
+				group.name === "production"
+					? `[Bridge] idle-thread sweep ready — channels=${group.channelIds.join(",")}`
+					: `[Bridge] QA idle-thread sweep ready — category=${group.qaTestingCategoryId} identity=${group.tokenEnv}`,
+			);
+			return scheduler;
+		},
+	);
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -13178,7 +13679,22 @@ export async function startBridge(
 		onLandOperationTick: async () => {
 			await landOperationTick();
 			if (process.env.VITEST) return;
-			await codexQuotaMaintenance.tick();
+			try {
+				await codexQuotaMaintenance.tick();
+			} finally {
+				// FLY-2869: never let the maintenance chain short-circuit the readings.
+				codexReadingScheduler.tick();
+				// FLY-2830: after the maintenance reconcile, so a manual
+				// `codex-profile use` is seen in the same tick.
+				switchRefreshTrigger.tick();
+				// FLY-2897: daily receipt round; its own try so it can never
+				// skip the triggers above.
+				try {
+					claudeChargeScheduler.tick();
+				} catch {
+					console.warn("[claude-charge] scheduler tick failed");
+				}
+			}
 		},
 		onAutoNarrowGateTick: async () => {
 			const mode = readAutoNarrowRuntimeControl(flagStore, "flywheel").mode;
@@ -13325,6 +13841,18 @@ export async function startBridge(
 				}
 			: {}),
 		onReconcilePatrolTick: async () => {
+			await runWorkflowProcessRetirementTick({
+				store,
+				now: new Date().toISOString(),
+				retireProcess: async (candidate) => {
+					const result = await retireWorkflowProcessBody(candidate, store);
+					return {
+						physicalGone: result.physicalGone === true,
+						error: result.error,
+					};
+				},
+				log: (message) => console.warn(message),
+			});
 			// First rollout window: inventory historical terminal-run residue but do
 			// not create a collection receipt or tear anything down. Explicit
 			// force-cancel receipts above are safe to resume immediately.
@@ -14613,20 +15141,81 @@ export async function startBridge(
 			logger: { warn: (message) => console.warn(`[turn-belt] ${message}`) },
 		});
 
+		// FLY-2901 §4.8 item 4: Lead INFO alert once a head_diverged / nested_repo
+		// shared-worktree takeover rescue has been cleaned. DirectEventSink fires
+		// it right after the checked `worktree_takeover_cleaned` event lands (and
+		// never on a deduped replay). Same Lead resolution as the sibling
+		// alertWorktreeTakeoverFailure above; paths are data inside the body only.
+		turnBeltReconcilerHolder.alertWorktreeTakeoverRescued = async ({
+			session,
+			rescueEventUid,
+			rescue,
+		}) => {
+			const projectName = session.project_name;
+			let leadId: string | undefined;
+			try {
+				leadId = resolveLeadForIssue(
+					projects,
+					projectName,
+					parseJsonStringArray(
+						store.getSession(session.execution_id)?.issue_labels,
+					),
+				).lead.agentId;
+			} catch {
+				console.error(
+					`[workflow] worktree takeover rescue has no Lead: ${rescueEventUid}`,
+				);
+				return;
+			}
+			const lines = [
+				`class: ${rescue.class}`,
+				`branch: ${rescue.branch}`,
+				`target: ${rescue.target}`,
+				`worktree: ${rescue.canonicalPath}`,
+				`manifest: ${rescue.manifestPath} (sha256 ${rescue.manifestSha256})`,
+				`event: ${rescueEventUid}`,
+			];
+			if (rescue.rescues.length > 0) {
+				lines.push("rescue refs:");
+				for (const ref of rescue.rescues) {
+					lines.push(`  ${ref.kind}: ${ref.remoteBranch}@${ref.tip}`);
+				}
+			} else {
+				lines.push("rescue refs: none (nothing unique to preserve)");
+			}
+			if (rescue.nestedMoves.length > 0) {
+				lines.push("nested repos moved:");
+				for (const move of rescue.nestedMoves) {
+					lines.push(`  ${move.source} → ${move.destination}`);
+				}
+			}
+			await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+				leadId,
+				projectName,
+				eventId: `workflow-worktree-takeover-rescued:${rescueEventUid}`,
+				eventType: "worktree_takeover_rescued",
+				title: `Workflow worktree takeover rescued — ${session.issue_identifier ?? session.issue_id}`,
+				body: lines.join("\n"),
+				severity: "info",
+				sessionKey: session.execution_id,
+			});
+		};
+
 		const assertWorkflowActorWorktreeReady = async (
 			session: WorkflowActorSession,
 			expectedHeadSha: string,
+			options?: { allowDirty?: boolean },
 		) => {
 			const worktree = store.getSession(session.execution_id)?.worktree_path;
 			if (!worktree)
 				return { ok: false as const, reason: "worktree_path_missing" };
-			return assertWorkflowWorktreeReady(worktree, expectedHeadSha);
+			return assertWorkflowWorktreeReady(worktree, expectedHeadSha, options);
 		};
 
 		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
 			store,
 			ownerId: `bridge:${process.pid}`,
-			env: process.env,
+			nodeStandbyResumeEnabled: () => storeNodeStandbyResumeEnabled(flagStore),
 			reentryEnabled: () => storeWorkflowReworkReentryEnabled(flagStore),
 			resolveAlertIdentity: (run) =>
 				resolveWorkflowRunAlertIdentity({
@@ -14655,8 +15244,325 @@ export async function startBridge(
 				},
 				hasHostProcess: hasHostProcessByExecutionId,
 				assertWorktreeReady: assertWorkflowActorWorktreeReady,
+				resumeStandbyActor: async ({
+					session,
+					demandId,
+					processGeneration,
+					expectedHeadSha,
+				}) => {
+					// FLY-2808: once the launch identity is known, a failed attempt
+					// still records what it expected and how long it ran.
+					const launchIdentity: {
+						current?: {
+							expectedSessionId: string;
+							expectedModel: string;
+							expectedCwd: string;
+							requestedAt: number;
+						};
+					} = {};
+					const failed = (error: string, cleanupRequired = false) => {
+						const known = launchIdentity.current;
+						const evidence: WorkflowResumeFailureEvidence | undefined =
+							known && {
+								expectedSessionId: known.expectedSessionId,
+								expectedModel: known.expectedModel,
+								expectedCwd: known.expectedCwd,
+								totalMs: Math.max(0, Date.now() - known.requestedAt),
+							};
+						return {
+							ok: false as const,
+							error,
+							cleanupRequired,
+							...(evidence ? { evidence } : {}),
+						};
+					};
+					if (!startDispatcher) {
+						return failed("start_dispatcher_unavailable");
+					}
+					const runtime = store.getWorkflowExecutionRuntime(
+						session.execution_id,
+					);
+					const binding = store.resolveCurrentWorkflowActivation(
+						session.execution_id,
+					);
+					if (!runtime || binding.kind !== "current") {
+						return failed("resume_runtime_unavailable");
+					}
+					const manifestPath =
+						runtime.vendor === "codex"
+							? join(codexSessionStateDir(session.execution_id), "session.json")
+							: join(
+									process.env.FLYWHEEL_CLAUDE_SESSION_DIR?.trim() ||
+										join(homedir(), ".flywheel", "state", "claude-sessions"),
+									session.execution_id,
+									"session.json",
+								);
+					let manifest: Record<string, unknown>;
+					try {
+						manifest = JSON.parse(
+							ffReadFileSync(manifestPath, "utf8"),
+						) as Record<string, unknown>;
+					} catch {
+						return failed("resume_manifest_unavailable");
+					}
+					const expectedSessionId =
+						runtime.vendor === "codex" ? manifest.threadId : manifest.sessionId;
+					const manifestModel = manifest.resolvedModel;
+					const manifestCwd = manifest.cwd;
+					if (
+						typeof expectedSessionId !== "string" ||
+						!expectedSessionId.trim()
+					) {
+						return failed("resume_session_identity_missing");
+					}
+					if (manifestModel !== runtime.model) {
+						return failed("resume_model_mismatch");
+					}
+					if (typeof manifestCwd !== "string" || !manifestCwd.trim()) {
+						return failed("resume_cwd_missing");
+					}
+					let expectedCwd: string;
+					try {
+						expectedCwd = voiceRealpathSync(manifestCwd);
+					} catch {
+						return failed("resume_cwd_unavailable");
+					}
+					let observedWorktree: string | undefined;
+					try {
+						observedWorktree = session.worktree_path
+							? voiceRealpathSync(session.worktree_path)
+							: undefined;
+					} catch {
+						observedWorktree = undefined;
+					}
+					if (observedWorktree !== expectedCwd) {
+						return failed("resume_worktree_mismatch");
+					}
+					let currentHead = expectedHeadSha;
+					let dirty = false;
+					try {
+						const [head, status] = await Promise.all([
+							execFileP("git", ["-C", expectedCwd, "rev-parse", "HEAD"], {
+								timeout: 5_000,
+							}),
+							execFileP(
+								"git",
+								["-C", expectedCwd, "status", "--porcelain=v1", "-uno"],
+								{ timeout: 5_000 },
+							),
+						]);
+						currentHead = head.stdout.trim();
+						dirty = status.stdout.trim().length > 0;
+					} catch {
+						return failed("resume_git_identity_unavailable");
+					}
+					const priorHead =
+						typeof manifest.lastObservedHead === "string"
+							? manifest.lastObservedHead
+							: undefined;
+					const headDriftNotice =
+						priorHead && (priorHead !== currentHead || dirty)
+							? `Workflow resume context: the shared worktree moved from ${priorHead} to ${currentHead}${dirty ? " and currently has uncommitted changes" : ""}. Re-read the current files before acting; TURN remains the only write authority.`
+							: undefined;
+					// FLY-2808: reproduce the Lead frozen at the original registration —
+					// it owns the CommDB root and mailbox identity in the launch snapshot.
+					let leadId: string | undefined;
+					try {
+						const leadDb = new CommDB(
+							commDbPathForProject(
+								session.project_name ?? binding.run.project_name,
+							),
+						);
+						try {
+							leadId = frozenLaunchLeadId(leadDb, session.execution_id);
+						} finally {
+							leadDb.close();
+						}
+					} catch {
+						return failed("resume_lead_identity_unavailable");
+					}
+					const requestedAt = Date.now();
+					launchIdentity.current = {
+						expectedSessionId,
+						expectedModel: runtime.model,
+						expectedCwd,
+						requestedAt,
+					};
+					let resolveIdentity!: (value: {
+						sessionId: string;
+						model: string | null;
+						cwd: string;
+					}) => void;
+					let rejectIdentity!: (reason: Error) => void;
+					const identity = new Promise<{
+						sessionId: string;
+						model: string | null;
+						cwd: string;
+					}>((resolveIdentityPromise, rejectIdentityPromise) => {
+						resolveIdentity = resolveIdentityPromise;
+						rejectIdentity = rejectIdentityPromise;
+					});
+					let identityTimeout: ReturnType<typeof setTimeout> | undefined;
+					let cleanupRequired = false;
+					try {
+						const startResult = await startDispatcher.start(
+							buildStandbyResumeStartRequest({
+								session,
+								runProjectName: binding.run.project_name,
+								runtime,
+								leadId,
+								expectedSessionId,
+								expectedCwd,
+								currentHead,
+								lifecycle: {
+									generation: processGeneration,
+									demandId,
+									...(headDriftNotice ? { headDriftNotice } : {}),
+									retirementApproved: () => {
+										const current = store.getWorkflowExecutionProcessBody(
+											session.execution_id,
+										);
+										return isWorkflowProcessRetirementApproved(
+											current,
+											processGeneration,
+										);
+									},
+									retirementRequestedAt: () => {
+										const current = store.getWorkflowExecutionProcessBody(
+											session.execution_id,
+										);
+										return current?.generation === processGeneration &&
+											current.state === "retiring"
+											? (current.retirement_requested_at ?? undefined)
+											: undefined;
+									},
+									onIdentityVerified: resolveIdentity,
+									onIdentityVerificationFailed: (reasonCode) =>
+										rejectIdentity(new Error(reasonCode)),
+									resumeVerificationStatus: () => {
+										const current = store.getWorkflowExecutionProcessBody(
+											session.execution_id,
+										);
+										if (!current || current.generation !== processGeneration) {
+											return "rejected";
+										}
+										if (current.state === "active") return "accepted";
+										return current.state === "resuming" &&
+											current.current_demand_id === demandId
+											? "pending"
+											: "rejected";
+									},
+									onRetired: (evidence) => {
+										const retired = store.confirmWorkflowExecutionStandby({
+											executionId: session.execution_id,
+											generation: evidence.generation,
+											reasonCode: evidence.reasonCode,
+											now: evidence.retiredAt,
+										});
+										if (!retired.ok) {
+											console.warn(
+												`[workflow-rework] standby confirmation refused for ${session.execution_id}: ${retired.reason}`,
+											);
+										}
+									},
+									onRetirementFailed: (evidence) => {
+										const failed = store.failWorkflowExecutionRetirement({
+											executionId: session.execution_id,
+											generation: evidence.generation,
+											reasonCode: evidence.reasonCode,
+											now: evidence.failedAt,
+										});
+										if (!failed.ok) {
+											console.warn(
+												`[workflow-rework] retirement failure latch refused for ${session.execution_id}: ${failed.reason}`,
+											);
+										}
+									},
+								},
+							}),
+						);
+						cleanupRequired = true;
+						const launchFailure = observeWorkflowResumeLaunchFailure(
+							startResult.launchOutcome,
+						);
+						const observed = await Promise.race([
+							identity.then((value) => ({ kind: "identity" as const, value })),
+							new Promise<never>((_, reject) => {
+								identityTimeout = setTimeout(
+									() => reject(new Error("resume_identity_timeout")),
+									180_000,
+								);
+							}),
+							...(launchFailure ? [launchFailure] : []),
+						]);
+						if (observed.kind === "launch") {
+							return failed(
+								observed.outcome.failure.reason,
+								observed.outcome.failure.physicalEvidence === "unknown",
+							);
+						}
+						const totalMs = Math.max(0, Date.now() - requestedAt);
+						if (observed.value.model === null) {
+							return failed("resume_observed_model_missing", true);
+						}
+						return {
+							ok: true,
+							expectedSessionId,
+							observedSessionId: observed.value.sessionId,
+							expectedModel: runtime.model,
+							observedModel: observed.value.model,
+							expectedCwd,
+							observedCwd: observed.value.cwd,
+							queueMs: 0,
+							startupMs: totalMs,
+							totalMs,
+						};
+					} catch (error) {
+						return failed(
+							error instanceof Error ? error.message : String(error),
+							cleanupRequired,
+						);
+					} finally {
+						if (identityTimeout) clearTimeout(identityTimeout);
+					}
+				},
 				activateActorForWake: (session) =>
 					activateWakeHolder(session, "workflow_rework"),
+				cleanupFailedStandbyResume: async ({
+					session,
+					requestId,
+					ownerId,
+					generation,
+					routeRevision,
+					executionId,
+					processGeneration,
+					demandId,
+					ownerClaimId,
+				}) => {
+					const result = await cleanupWorkflowResumeAttempt(
+						{
+							executionId,
+							issueId: session.issue_id,
+							projectName: session.project_name ?? "",
+							generation: processGeneration,
+							demandId,
+							ownerClaimId,
+							authorityCheck: async () =>
+								store.checkWorkflowReworkSupersessionAuthority({
+									requestId,
+									ownerId,
+									generation,
+									routeRevision,
+									executionId,
+								}),
+						},
+						store,
+					);
+					return {
+						ok: result.closed,
+						...(result.error ? { error: result.error } : {}),
+					};
+				},
 				closeActorForReworkSupersession: async ({
 					session,
 					requestId,
@@ -15767,6 +16673,7 @@ export async function startBridge(
 	// FLY-927: via the Router — runner_lead_pending_unhandled is an issue-progress
 	// kind, so with routing ON it lands in the issue's own thread.
 	leadPendingAlertHolder.current = routedAlertSink;
+	codexTerminalSweepAlertHolder.current = routedAlertSink;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
@@ -16054,6 +16961,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		disposeCodexTerminalTeardown();
 		landReclosePeerServer?.close();
 		await xhsWriteService.close();
 		await leadGithubProvider?.close();
@@ -16064,6 +16972,7 @@ export async function startBridge(
 		voiceSessionServices.runtime.stop();
 		voiceSessionServices.scheduleRuntime.stop();
 		voiceSessionServices.cardProjector.stop();
+		voiceHandoffService.stopReconciler();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.
@@ -16120,7 +17029,9 @@ export async function startBridge(
 		// FLY-1165: drain the done-thread reconcile (cooperative abort + await
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
-		await idleThreadSweepScheduler?.stop();
+		await Promise.all(
+			idleThreadSweepSchedulers.map((scheduler) => scheduler.stop()),
+		);
 		stopWatchingBotSends();
 		await doneThreadReconcile.stop();
 		await xhsNotificationService.close();

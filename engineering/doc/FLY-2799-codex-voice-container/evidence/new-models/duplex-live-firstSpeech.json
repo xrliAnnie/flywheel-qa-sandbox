@@ -1,0 +1,1 @@
+{"text": " The purple lantern is ready.", "segments": [{"id": 0, "seek": 0, "start": 0.0, "end": 2.0, "text": " The purple lantern is ready.", "tokens": [50364, 440, 9656, 34031, 307, 1919, 13, 50464], "temperature": 0.0, "avg_logprob": -0.331330140431722, "compression_ratio": 0.7777777777777778, "no_speech_prob": 0.008839677087962627}], "language": "en"}

@@ -28,8 +28,13 @@ if (process.argv[2] === "app-server") {
 		if (request.method === "account/rateLimits/read") {
 			record("quota_read");
 			const state = authority();
+			// FLY-2869 reset_elapsed: every account reads 100%, but school's
+			// reset passed an hour ago (the server snapshot has not flipped yet).
+			const elapsed = state.scenario === "reset_elapsed";
 			const used =
-				state.scenario === "exhausted" || fixture.profile === "business"
+				elapsed ||
+				state.scenario === "exhausted" ||
+				fixture.profile === "business"
 					? 100
 					: 20;
 			result = {
@@ -39,7 +44,11 @@ if (process.argv[2] === "app-server") {
 							usedPercent: used,
 							resetsAt:
 								Math.floor(Date.now() / 1000) +
-								(fixture.profile === "school" ? 120 : 240),
+								(elapsed && fixture.profile === "school"
+									? -3600
+									: fixture.profile === "school"
+										? 120
+										: 240),
 						},
 						secondary: null,
 					},

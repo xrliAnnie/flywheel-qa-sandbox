@@ -6,7 +6,21 @@
 #   recover_restored_transactions (can close cmux workspaces) and
 #   reconcile_prepared_ledger (renames workspaces/tabs and commits receipts).
 #   It holds the mutator lease for all of it and is admitted while the
-#   maintenance marker is present; the lease, not the marker, is the exclusion.
+#   maintenance marker is present; the lease, not the marker, is the exclusion
+#   between mutators. FLY-2829: the marker is nevertheless re-read inside a
+#   running pass — once per row of every node-presence loop and at every
+#   phase boundary — so a marker placed mid-pass stops the next mutation
+#   instead of waiting for the next process start.
+#
+# FLY-2829: stale node registry flood. After the FLY-2770 marker was lifted,
+# the watcher walked an 1800-row registry of long-finished sessions and
+# minted an unreceipted `Terminal N` shell per row per round (154 in 33 min).
+# Fixes: node titles must be `node:*` before any cmux call (C1), loop 1 mints
+# titles for admitted `-` rows (C2), loop 2 never creates for sessions outside
+# the live roster (C3), stale rows are pruned at round start with receipt and
+# liveness fences (C4, C4-b), the marker is honored per row (C5), and every
+# `new-workspace` goes through one reservation-ledger chokepoint with a burst
+# budget, a long-window runaway latch and a workspace ceiling (C6).
 #
 # FLY-102: --watch uses event-signaled polling architecture:
 #   - tmux hooks (after-new-window, pane-exited, pane-died, session-created)
@@ -133,15 +147,24 @@ LEDGER_CONFLICT_STATE="${LEDGER_CONFLICT_STATE:-$HOME/.flywheel/state/cmux-ledge
 ROSTER_EPISODE_STATE="${ROSTER_EPISODE_STATE:-$HOME/.flywheel/state/cmux-roster-episodes}"
 CMUX_LOG_EPISODE_STATE="${CMUX_LOG_EPISODE_STATE:-$HOME/.flywheel/state/cmux-log-episodes}"
 PREPARED_STALL_STATE="${PREPARED_STALL_STATE:-$HOME/.flywheel/state/cmux-prepared-stall}"
+DUPLICATE_STATE="${DUPLICATE_STATE:-$HOME/.flywheel/state/cmux-duplicate-proof}"
 CMUX_ADDITIVE_ROUND_STATE="${CMUX_ADDITIVE_ROUND_STATE:-$HOME/.flywheel/state/cmux-additive-round}"
 CMUX_ADDITIVE_ROUND_ID="${CMUX_ADDITIVE_ROUND_ID:-}"
-# FLY-1884: execution-scoped presence surfaces for runners that temporarily or
-# permanently have no local tmux window. This namespace is intentionally
-# separate from the view ledger: a node is keyed by execution_id, while a view
-# is keyed by one tmux window title.
+# FLY-1884 legacy node-card receipts. Founder A retired the visible node-card
+# surface; these paths now exist only long enough to prove and remove old cards
+# and their status files. New/live executions remain registry-only.
 NODE_LEDGER="${NODE_LEDGER:-$HOME/.flywheel/state/cmux-node-ledger}"
 NODE_REGISTRY="${NODE_REGISTRY:-$HOME/.flywheel/state/cmux-node-registry}"
-NODE_STATUS_DIR="${NODE_STATUS_DIR:-${FLYWHEEL_CMUX_NODE_STATUS_DIR:-$HOME/.flywheel/state/cmux-node-status}}"
+NODE_STATUS_DIR="${NODE_STATUS_DIR:-$HOME/.flywheel/state/cmux-node-status}"
+# FLY-2829: workspace creation is rate-limited by a durable reservation ledger
+# (`epoch|kind|subject|ref|round|status`) and a runaway latch whose mere
+# presence disables creation until an operator removes it. Node summaries for
+# sessions outside the live roster are never created (`never` is the only
+# implemented policy arm; see reconcile_node_presence loop 2).
+NODE_CREATE_LEDGER="${NODE_CREATE_LEDGER:-${FLYWHEEL_CMUX_NODE_CREATE_LEDGER:-$HOME/.flywheel/state/cmux-node-create-ledger}}"
+NODE_RUNAWAY_LATCH="${NODE_RUNAWAY_LATCH:-${FLYWHEEL_CMUX_NODE_RUNAWAY_LATCH:-$HOME/.flywheel/state/cmux-node-runaway}}"
+NODE_SUMMARY_CREATE_POLICY=never
+PRUNE_BATCH_MAX=200
 CLEANUP_SNAPSHOT="${CLEANUP_SNAPSHOT:-$HOME/.flywheel/state/cmux-cleanup-snapshot}"
 CLEANUP_SNAPSHOT_EPISODE_STATE="${CLEANUP_SNAPSHOT_EPISODE_STATE:-$HOME/.flywheel/state/cmux-cleanup-snapshot-episode}"
 TERMINAL_TEARDOWN_STATE="${TERMINAL_TEARDOWN_STATE:-$HOME/.flywheel/state/cmux-terminal-teardown}"
@@ -551,6 +574,269 @@ cmux_call_guarded() {
   fi
   rm -f "$err_file" "$timeout_marker"
   return $rc
+}
+
+# ── FLY-2829 C6: workspace-create rate limit ──────────────────────────────
+# Every `new-workspace` in this file goes through reserved_new_workspace,
+# the one chokepoint. A pass opens the gate once: it validates the durable
+# reservation ledger, honors the runaway latch, counts a short burst window
+# and a long window from the ledger itself (so restarts and bootstraps share
+# the same budget), reads the cmux workspace total against a ceiling, and
+# derives this pass's budget. A reservation row is written BEFORE cmux is
+# called and kept on any outcome except a guard block, so a crash after the
+# call still counts. Fail-closed: an uninitialized pass, an untrusted ledger,
+# an unreadable cmux snapshot, or the latch all mean zero creation — closes,
+# status files and pruning continue, and the process never exits (a KeepAlive
+# restart storm is exactly the amplifier this issue is about).
+WATCHER_PASS_SEQ=""
+CREATE_GATE_PASS=""
+CREATE_GATE_STATE=uninitialized
+CREATE_BUDGET_LEFT=0
+CREATE_VIEW_CAP=0
+CREATE_VIEW_USED=0
+CREATE_NODE_RESERVE=0
+CREATE_GATE_WORKSPACE_COUNT=0
+CREATE_RESERVATION_LINE=""
+WORKSPACE_CREATE_REFUSED=0
+_RESERVED_INNER_GUARD=""
+
+_create_gate_knob() {
+  # _create_gate_knob NAME DEFAULT MIN MAX → validated integer on stdout.
+  local name="$1" default="$2" min="$3" max="$4" value=""
+  eval "value=\${$name:-}"
+  case "$value" in ''|*[!0-9]*) printf '%s\n' "$default"; return 0 ;; esac
+  (( ${#value} <= 6 )) || { printf '%s\n' "$default"; return 0; }
+  value=$((10#$value))
+  if (( value < min || value > max )); then printf '%s\n' "$default"; return 0; fi
+  printf '%s\n' "$value"
+}
+
+_create_ledger_owner_uid() {
+  local uid
+  if uid=$(stat -c '%u' "$1" 2>/dev/null); then
+    case "$uid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$uid"; return 0 ;; esac
+  fi
+  if uid=$(stat -f '%u' "$1" 2>/dev/null); then
+    case "$uid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$uid"; return 0 ;; esac
+  fi
+  return 1
+}
+
+_create_ledger_valid() {
+  [[ -e "$NODE_CREATE_LEDGER" || -L "$NODE_CREATE_LEDGER" ]] || return 0
+  [[ -f "$NODE_CREATE_LEDGER" && ! -L "$NODE_CREATE_LEDGER" && -r "$NODE_CREATE_LEDGER" ]] || return 1
+  [[ "$(_create_ledger_owner_uid "$NODE_CREATE_LEDGER")" == "$(id -u)" ]] || return 1
+  python3 - "$NODE_CREATE_LEDGER" <<'PY' >/dev/null 2>&1
+import re,sys
+round_id=re.compile(r"[0-9]{1,12}-[0-9]{1,6}")
+for raw in open(sys.argv[1], encoding="utf-8"):
+    line=raw.rstrip("\n")
+    if not line: continue
+    p=line.split("|")
+    if len(p) != 6: raise SystemExit(1)
+    epoch,kind,subject,ref,rnd,status=p
+    if not epoch.isdigit() or len(epoch) > 18: raise SystemExit(1)
+    if kind not in {"node","view"}: raise SystemExit(1)
+    if not subject or any(c in subject for c in "\t\r\n"): raise SystemExit(1)
+    if ref != "-" and not re.fullmatch(r"workspace:[0-9]+", ref): raise SystemExit(1)
+    if rnd != "-" and not round_id.fullmatch(rnd): raise SystemExit(1)
+    if status not in {"reserved","created"}: raise SystemExit(1)
+PY
+}
+
+_create_ledger_write() {
+  # stdin → ledger; atomic replace of an owner-only regular file.
+  local dir tmp
+  dir=$(dirname "$NODE_CREATE_LEDGER"); mkdir -p "$dir" || return 1
+  tmp=$(mktemp "${NODE_CREATE_LEDGER}.XXXX") || return 1
+  chmod 600 "$tmp" 2>/dev/null || true
+  cat > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$NODE_CREATE_LEDGER" || { rm -f "$tmp"; return 1; }
+}
+
+_create_ledger_count_since() {
+  [[ -f "$NODE_CREATE_LEDGER" ]] || { printf '0\n'; return 0; }
+  awk -F'|' -v f="$1" 'NF == 6 && $1 >= f {n++} END {print n+0}' "$NODE_CREATE_LEDGER"
+}
+
+_workspace_count_from_json() {
+  printf '%s' "$1" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("workspaces",[])))'
+}
+
+_write_runaway_latch() {
+  local count="$1" window="$2" dir tmp
+  dir=$(dirname "$NODE_RUNAWAY_LATCH"); mkdir -p "$dir" || return 1
+  tmp=$(mktemp "${NODE_RUNAWAY_LATCH}.XXXX") || return 1
+  printf 'runawayv1|%s|%s|%s|%s\n' "$(date +%s)" "$count" "$window" "$$" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$NODE_RUNAWAY_LATCH"
+}
+
+_create_runaway_procedure() {
+  printf 'Recovery, in this order: 1) write the maintenance marker %s; 2) wait until `flywheel-cmux-sync --probe-lease` returns 0 (watcher has yielded the lease); 3) replace %s with an empty owner-only file via a temporary file and mv (or keep only rows older than 24h); 4) rm the latch %s; 5) remove the marker. The latch is a symptom record and the ledger is the fact: removing the latch alone re-latches on the next pass while the window is still over budget. Never edit the ledger while a watcher holds the lease.' \
+    "$CMUX_MAINTENANCE_MARKER" "$NODE_CREATE_LEDGER" "$NODE_RUNAWAY_LATCH"
+}
+
+workspace_create_gate_begin() {
+  local now burst_max burst_seconds window_seconds window_max ceiling raw
+  local window_count burst_count workspace_count budget by_window by_ceiling total kept
+  CREATE_GATE_PASS="${WATCHER_PASS_SEQ:-}"
+  CREATE_GATE_STATE=fail-closed
+  CREATE_BUDGET_LEFT=0; CREATE_VIEW_CAP=0; CREATE_VIEW_USED=0; CREATE_NODE_RESERVE=0; CREATE_GATE_WORKSPACE_COUNT=0
+  [[ -n "$CREATE_GATE_PASS" ]] || return 1
+  now=$(date +%s) || return 1
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  burst_max=$(_create_gate_knob FLYWHEEL_CMUX_CREATE_BURST_MAX 20 1 200)
+  burst_seconds=$(_create_gate_knob FLYWHEEL_CMUX_CREATE_BURST_SECONDS 60 15 600)
+  window_seconds=$(_create_gate_knob FLYWHEEL_CMUX_CREATE_WINDOW_SECONDS 600 60 3600)
+  window_max=$(_create_gate_knob FLYWHEEL_CMUX_CREATE_WINDOW_MAX 60 1 1000)
+  ceiling=$(_create_gate_knob FLYWHEEL_CMUX_WORKSPACE_CEILING 150 10 2000)
+  if ! _create_ledger_valid; then
+    _alert_cmux_cleanup "cmux workspace create ledger untrusted" \
+      "The workspace-create ledger is malformed, a symlink, or not owned by this user; workspace creation is disabled until an operator restores it as an owner-only regular file of 6-column rows: path=$NODE_CREATE_LEDGER." \
+      "cmux_cleanup|create-ledger-malformed|path=$NODE_CREATE_LEDGER"
+    return 1
+  fi
+  if [[ -f "$NODE_CREATE_LEDGER" ]]; then
+    total=$(grep -c . "$NODE_CREATE_LEDGER" || true)
+    kept=$(_create_ledger_count_since $((now - 86400)))
+    if [[ "$total" != "$kept" ]]; then
+      awk -F'|' -v f=$((now - 86400)) 'NF == 6 && $1 >= f {print}' "$NODE_CREATE_LEDGER" | _create_ledger_write || return 1
+    fi
+  fi
+  if [[ -e "$NODE_RUNAWAY_LATCH" || -L "$NODE_RUNAWAY_LATCH" ]]; then
+    CREATE_GATE_STATE=latched
+    return 1
+  fi
+  window_count=$(_create_ledger_count_since $((now - window_seconds)))
+  if (( window_count >= window_max )); then
+    _write_runaway_latch "$window_count" "$window_seconds" \
+      || log "ERROR: runaway latch could not be written path=$NODE_RUNAWAY_LATCH"
+    _alert_cmux_cleanup "cmux workspace creation runaway latched" \
+      "cmux-sync reserved or created $window_count workspaces within ${window_seconds}s (limit $window_max) and latched itself at $NODE_RUNAWAY_LATCH: no workspace will be created until an operator clears it. $(_create_runaway_procedure)" \
+      "cmux_cleanup|workspace-create-runaway|epoch=$now"
+    CREATE_GATE_STATE=latched
+    return 1
+  fi
+  raw=$(get_cmux_workspaces_json) || return 1
+  workspace_count=$(_workspace_count_from_json "$raw") || return 1
+  CREATE_GATE_WORKSPACE_COUNT="$workspace_count"
+  if (( workspace_count >= ceiling )); then
+    _alert_cmux_cleanup "cmux workspace ceiling reached" \
+      "cmux holds $workspace_count workspaces (ceiling $ceiling); workspace creation is paused until the total falls below the ceiling." \
+      "cmux_cleanup|workspace-ceiling|generation=$(cmux_socket_identity 2>/dev/null || printf 'unavailable')|ceiling=$ceiling"
+    CREATE_GATE_STATE=ceiling
+    return 1
+  fi
+  burst_count=$(_create_ledger_count_since $((now - burst_seconds)))
+  budget=$((burst_max - burst_count))
+  by_window=$((window_max - window_count)); (( by_window < budget )) && budget=$by_window
+  by_ceiling=$((ceiling - workspace_count)); (( by_ceiling < budget )) && budget=$by_ceiling
+  (( budget < 0 )) && budget=0
+  CREATE_BUDGET_LEFT=$budget
+  # Fairness: node surfaces keep a reserve views cannot spend; nodes may use
+  # whatever views leave over.
+  CREATE_NODE_RESERVE=$((budget / 4))
+  (( CREATE_NODE_RESERVE < 2 )) && CREATE_NODE_RESERVE=2
+  (( CREATE_NODE_RESERVE > budget )) && CREATE_NODE_RESERVE=$budget
+  CREATE_VIEW_CAP=$((budget - CREATE_NODE_RESERVE))
+  (( CREATE_VIEW_CAP < 0 )) && CREATE_VIEW_CAP=0
+  CREATE_GATE_STATE=open
+  return 0
+}
+
+workspace_create_admitted() {
+  local kind="$1"
+  WORKSPACE_CREATE_REFUSED=0
+  [[ -n "${WATCHER_PASS_SEQ:-}" ]] || { WORKSPACE_CREATE_REFUSED=1; return 1; }
+  if [[ "$CREATE_GATE_PASS" != "$WATCHER_PASS_SEQ" ]]; then
+    workspace_create_gate_begin || true
+  fi
+  [[ "$CREATE_GATE_STATE" == open ]] || { WORKSPACE_CREATE_REFUSED=1; return 1; }
+  (( CREATE_BUDGET_LEFT > 0 )) || { WORKSPACE_CREATE_REFUSED=1; return 1; }
+  if [[ "$kind" == view ]]; then
+    (( CREATE_VIEW_USED < CREATE_VIEW_CAP )) || { WORKSPACE_CREATE_REFUSED=1; return 1; }
+  fi
+  return 0
+}
+
+workspace_create_reserve() {
+  local kind="$1" subject="$2" now round line
+  case "$kind" in node|view) ;; *) return 1 ;; esac
+  [[ -n "$subject" ]] || return 1
+  case "$subject" in *'|'*|*$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+  now=$(date +%s) || return 1
+  round="${CMUX_ADDITIVE_ROUND_ID:-}"
+  [[ -n "$round" ]] && _additive_round_id_valid "$round" || round=-
+  line="$now|$kind|$subject|-|$round|reserved"
+  { [[ -f "$NODE_CREATE_LEDGER" ]] && cat "$NODE_CREATE_LEDGER"; printf '%s\n' "$line"; } | _create_ledger_write || return 1
+  CREATE_RESERVATION_LINE="$line"
+  CREATE_BUDGET_LEFT=$((CREATE_BUDGET_LEFT - 1))
+  [[ "$kind" == view ]] && CREATE_VIEW_USED=$((CREATE_VIEW_USED + 1))
+  return 0
+}
+
+workspace_create_cancel() {
+  local line="$CREATE_RESERVATION_LINE" kind
+  [[ -n "$line" && -f "$NODE_CREATE_LEDGER" ]] || return 1
+  FLY2829_LINE="$line" awk '!done && $0 == ENVIRON["FLY2829_LINE"] {done=1; next} {print}' "$NODE_CREATE_LEDGER" \
+    | _create_ledger_write || return 1
+  kind=$(printf '%s' "$line" | cut -d'|' -f2)
+  CREATE_BUDGET_LEFT=$((CREATE_BUDGET_LEFT + 1))
+  [[ "$kind" == view ]] && CREATE_VIEW_USED=$((CREATE_VIEW_USED - 1))
+  CREATE_RESERVATION_LINE=""
+  return 0
+}
+
+workspace_create_commit() {
+  local ref="$1" line="$CREATE_RESERVATION_LINE" replaced
+  [[ "$ref" =~ ^workspace:[0-9]+$ && -n "$line" && -f "$NODE_CREATE_LEDGER" ]] || return 1
+  replaced=$(printf '%s\n' "$line" | awk -F'|' -v OFS='|' -v r="$ref" '{$4=r; $6="created"; print}')
+  FLY2829_LINE="$line" FLY2829_NEXT="$replaced" \
+    awk '!done && $0 == ENVIRON["FLY2829_LINE"] {print ENVIRON["FLY2829_NEXT"]; done=1; next} {print}' "$NODE_CREATE_LEDGER" \
+    | _create_ledger_write || return 1
+  CREATE_RESERVATION_LINE=""
+  return 0
+}
+
+_workspace_ceiling_guard() {
+  local raw count ceiling
+  ceiling=$(_create_gate_knob FLYWHEEL_CMUX_WORKSPACE_CEILING 150 10 2000)
+  raw=$(get_cmux_workspaces_json) || return 1
+  count=$(_workspace_count_from_json "$raw") || return 1
+  (( count < ceiling ))
+}
+
+_reserved_create_guard() {
+  "$_RESERVED_INNER_GUARD" || return 1
+  _workspace_ceiling_guard
+}
+
+reserved_new_workspace() {
+  # reserved_new_workspace <guard_fn> <kind> <subject> -- <new-workspace args…>
+  # The only place in this file that spawns `new-workspace`. Sets
+  # WORKSPACE_CREATE_REFUSED=1 when the gate (not cmux) declined.
+  local guard_fn="$1" kind="$2" subject="$3" rc=0
+  shift 3
+  [[ "${1:-}" == -- ]] && shift
+  GUARD_WAS_BLOCKED=0
+  if ! workspace_create_admitted "$kind"; then
+    log "workspace create refused by gate kind=$kind subject=$subject gate=$CREATE_GATE_STATE budget_left=$CREATE_BUDGET_LEFT view_used=$CREATE_VIEW_USED/$CREATE_VIEW_CAP"
+    return 1
+  fi
+  if ! workspace_create_reserve "$kind" "$subject"; then
+    WORKSPACE_CREATE_REFUSED=1
+    log "workspace create refused: reservation write failed kind=$kind subject=$subject path=$NODE_CREATE_LEDGER"
+    return 1
+  fi
+  _RESERVED_INNER_GUARD="$guard_fn"
+  cmux_call_guarded _reserved_create_guard new-workspace "$@" || rc=$?
+  if [[ "$GUARD_WAS_BLOCKED" == 1 ]]; then
+    # The guard is the last step before spawn, so cmux was provably not
+    # called; the reservation is returned to the budget.
+    workspace_create_cancel || log "WARN: reservation cancel failed; reservation stays counted subject=$subject"
+    return 1
+  fi
+  return "$rc"
 }
 
 # FLY-254 guard: generation pin only (focus/restore mutations). Sets the
@@ -1410,11 +1696,16 @@ node_status_path() {
   printf '%s/%s.status\n' "$NODE_STATUS_DIR" "$digest"
 }
 
-build_node_status_command() {
-  local status_file="$1" helper="${FLYWHEEL_CMUX_NODE_STATUS_BIN:-$HOME/.flywheel/bin/flywheel-node-status.sh}"
+_node_status_command_literal() {
+  local status_file="$1" helper="${2:-${FLYWHEEL_CMUX_NODE_STATUS_BIN:-$HOME/.flywheel/bin/flywheel-node-status.sh}}"
   case "$status_file" in /*) ;; *) return 1 ;; esac
   case "$helper" in /*) ;; *) return 1 ;; esac
   case "$status_file$helper" in *"'"*|*$'\n'*|*$'\r'*) return 1 ;; esac
+  printf "env -u TMUX '%s' '%s'" "$helper" "$status_file"
+}
+
+build_node_status_command() {
+  local status_file="$1" helper="${FLYWHEEL_CMUX_NODE_STATUS_BIN:-$HOME/.flywheel/bin/flywheel-node-status.sh}"
   [[ -x "$helper" ]] || {
     _alert_cmux_cleanup \
       "cmux node status helper unavailable" \
@@ -1422,7 +1713,7 @@ build_node_status_command() {
       "cmux_cleanup|helper-missing|node-status|helper=$helper"
     return 1
   }
-  printf "env -u TMUX '%s' '%s'" "$helper" "$status_file"
+  _node_status_command_literal "$status_file" "$helper"
 }
 
 node_status_label() {
@@ -1777,6 +2068,10 @@ terminal_teardown_clear() {
 terminal_teardown_finish_source_closed() {
   local exec_id="$1" mirror_title="$2"
   is_managed_runner_title "$mirror_title" || return 1
+  # A durable source-closed row proves only what was true when the source was
+  # removed. Queue the title through the ordinary ref-keyed close path so its
+  # final guard re-reads current tmux/cmux state and preserves a same-title
+  # runner that may have restarted before this transaction was replayed.
   printf '%s\n' "$mirror_title" >> "$CLOSE_REQUEST_FILE" || return 1
   terminal_teardown_clear "$exec_id"
 }
@@ -1834,14 +2129,32 @@ terminal_teardown_source_transaction() {
   read_runner_tmux_node_inventory || return 1
   [[ "$RUNNER_NODE_TMUX_STATE" == ok ]] || return 1
   inv=$(printf '%s\n' "$RUNNER_NODE_TMUX_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e { print; exit }')
-  if [[ -z "$inv" && "$phase" == intent ]]; then
-    [[ "$prior_hash" == "$terminal_hash" && "$prior_mirror" == "$mirror_title" \
-        && "$prior_tmux_hash" == "$tmux_hash" && "$prior_cmux_hash" == "$cmux_hash" ]] || return 1
-    [[ "$(ledger_exact_receipt_state "$cmux_generation" "$prior_ref" "$mirror_title" 2>/dev/null || true)" == committed ]] || return 1
-    [[ "$(ledger_exact_receipt_uuid "$cmux_generation" "$prior_ref" "$mirror_title" 2>/dev/null || true)" == "$prior_uuid" ]] || return 1
-    workspace_identity_matches "$prior_ref" "$mirror_title" "$prior_uuid" || return 1
+  if [[ -z "$inv" ]]; then
+    # The source can already be absent on the first terminal observation. The
+    # old transaction only accepted absence after it had killed a dead pane,
+    # leaving already-finished mirrors forever. Exact terminal evidence,
+    # unique registry ownership, an exact UUID-bound receipt and a second
+    # inventory read prove the same terminal fact without guessing.
+    refs=$(ledger_refs_for_title "$cmux_generation" "$mirror_title") || return 1
+    [[ "$(printf '%s\n' "$refs" | grep -c . || true)" == 1 ]] || return 1
+    ref="$refs"
+    receipt=$(ledger_exact_receipt_state "$cmux_generation" "$ref" "$mirror_title") || return 1
+    [[ "$receipt" == committed ]] || return 1
+    uuid=$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$mirror_title") || return 1
+    [[ "$uuid" != __LEGACY__ ]] || return 1
+    workspace_identity_matches "$ref" "$mirror_title" "$uuid" || return 1
+    terminal_teardown_roster_still_exact "$exec_id" "$terminal_hash" || return 1
+    node_mirror_has_unique_execution_owner "$exec_id" "$mirror_title" || return 1
+    [[ "$(tmux_server_generation 2>/dev/null || true)" == "$tmux_generation" \
+        && "$(cmux_socket_identity 2>/dev/null || true)" == "$cmux_generation" ]] || return 1
+    read_runner_tmux_node_inventory || return 1
+    [[ "$RUNNER_NODE_TMUX_STATE" == ok ]] || return 1
+    printf '%s\n' "$RUNNER_NODE_TMUX_ROWS" \
+      | awk -F'|' -v e="$exec_id" '$1 == e { found=1 } END { exit(found ? 0 : 1) }' \
+      && return 1
+    watcher_mutation_latch_clear || return 1
     terminal_teardown_state_upsert \
-      "terminalv1|$exec_id|$terminal_hash|$count|$round|source-closed|$mirror_title|$prior_session|$prior_wid|$tmux_hash|$cmux_hash|$prior_ref|$prior_uuid" \
+      "terminalv1|$exec_id|$terminal_hash|$count|$round|source-closed|$mirror_title|-|-|$tmux_hash|$cmux_hash|$ref|$uuid" \
       || return 1
     terminal_teardown_crash_point after-source-close
     terminal_teardown_finish_source_closed "$exec_id" "$mirror_title"
@@ -1981,8 +2294,17 @@ _node_workspace_guard() {
   local current raw count workspace surface receipt registry
   current=$(cmux_socket_identity) || return 1
   [[ -n "$current" && "$current" == "$_GUARD_NODE_GENERATION" ]] || return 1
-  registry=$(node_registry_row "$_GUARD_NODE_EXEC") || return 1
-  [[ "$(printf '%s' "$registry" | cut -d'|' -f2)" == "$_GUARD_NODE_TITLE" ]] || return 1
+  registry=$(node_registry_row "$_GUARD_NODE_EXEC" 2>/dev/null || true)
+  if [[ -n "$registry" ]]; then
+    [[ "$(printf '%s' "$registry" | cut -d'|' -f2)" == "$_GUARD_NODE_TITLE" ]] || return 1
+  else
+    # Founder A retirement may encounter an exact legacy receipt after its
+    # registry row was already pruned. The receipt plus the exact workspace
+    # and surface identity below is sufficient cleanup authority; no other
+    # node operation may proceed without the registry owner row.
+    [[ "$_GUARD_NODE_REQUIRE_ABSENT" == 0 \
+        && "$_GUARD_NODE_CLOSE_REASON" == retired-node-card ]] || return 1
+  fi
   if [[ "$_GUARD_NODE_REQUIRE_ABSENT" == 1 ]]; then
     raw=$(get_cmux_workspaces_json) || return 1
     count=$(printf '%s' "$raw" | python3 -c '
@@ -2002,7 +2324,7 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
       [[ "$workspace" == "$_GUARD_NODE_TITLE" && -n "$surface" ]] || return 1
     else
       [[ "$workspace" == "$_GUARD_NODE_TITLE" || "$workspace" == "$_GUARD_NODE_COMMAND" \
-         || "$workspace" == '~' || "$workspace" =~ ^Terminal\ [0-9]+$ ]] || return 1
+         || "$workspace" =~ ^Terminal\ [0-9]+$ ]] || return 1
       [[ "$surface" == "$_GUARD_NODE_TITLE" || "$surface" == "$_GUARD_NODE_COMMAND" ]] || return 1
     fi
   fi
@@ -2037,9 +2359,50 @@ complete_node_title_migration() {
   _node_ledger_upsert committed "$generation" "$ref" "$exec_id" "$title"
 }
 
+_workspace_title_in_snapshot() {
+  # Exact-ref workspace title from an already-read list-workspaces snapshot.
+  local raw="$1" ref="$2"
+  printf '%s' "$raw" | python3 -c '
+import json,sys
+r=sys.argv[1]
+matches=[w for w in json.load(sys.stdin).get("workspaces", [])
+         if isinstance(w, dict) and w.get("ref") == r]
+if len(matches) != 1 or not isinstance(matches[0].get("title"), str): sys.exit(1)
+print(matches[0]["title"])
+' "$ref"
+}
+
+retire_node_status_state_if_unused() {
+  local path base
+  [[ ! -s "$NODE_LEDGER" ]] || return 0
+  [[ -e "$NODE_STATUS_DIR" || -L "$NODE_STATUS_DIR" ]] || return 0
+  [[ -d "$NODE_STATUS_DIR" && ! -L "$NODE_STATUS_DIR" ]] || return 1
+  for path in "$NODE_STATUS_DIR"/*.status; do
+    [[ -f "$path" && ! -L "$path" ]] || continue
+    base=${path##*/}
+    [[ "$base" =~ ^[0-9a-f]{64}\.status$ ]] || continue
+    rm -f "$path" || return 1
+  done
+  rmdir "$NODE_STATUS_DIR" 2>/dev/null || true
+}
+
+# FLY-2829 C4-b: the node ledger's absent/drift convergence. Before this
+# issue, a current-generation committed receipt whose workspace had vanished
+# (close succeeded, `_node_ledger_remove` never ran) had no recoverer: the
+# `node-absent`/`node-drift` sidecar kinds existed only in the validator. A
+# receipt that still exists blocks the stale-registry prune (the workspace
+# guard re-reads the registry row), so without this reconciler such a row
+# would stay deferred forever. Absent refs are counted across rounds with the
+# same min-age/pass thresholds as prepared view receipts and removed once
+# conclusive; drift (founder-renamed pages) only alerts and is never GC'd or
+# renamed back.
 reconcile_node_ledger() {
   local generation raw refs state row_generation ref exec_id title command
-  [[ -f "$NODE_LEDGER" ]] || return 0
+  local absent_passes drift_passes count workspace surface drift
+  if [[ ! -f "$NODE_LEDGER" ]]; then
+    retire_node_status_state_if_unused || true
+    return 0
+  fi
   generation=$(cmux_socket_identity) || return 1
   raw=$(get_cmux_workspaces_json) || return 1
   refs=$(printf '%s' "$raw" | python3 -c '
@@ -2047,8 +2410,13 @@ import json,sys
 for row in json.load(sys.stdin).get("workspaces", []):
     if isinstance(row,dict) and isinstance(row.get("ref"),str): print(row["ref"])
 ') || return 1
+  absent_passes=$(validated_int_env FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES \
+    "${FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES:-3}" 3 100 | tail -1)
+  drift_passes=$(validated_int_env FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES \
+    "${FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES:-5}" 5 100 | tail -1)
   while IFS='|' read -r state row_generation ref exec_id title; do
     [[ -n "$state" ]] || continue
+    watcher_mutation_latch_clear || return 0
     if [[ "$row_generation" != "$generation" ]]; then
       if ! printf '%s\n' "$refs" | grep -qxF "$ref"; then
         _node_ledger_remove "$row_generation" "$ref" "$exec_id" "$title" || return 1
@@ -2059,15 +2427,110 @@ for row in json.load(sys.stdin).get("workspaces", []):
       fi
       continue
     fi
-    [[ "$state" == prepared ]] || continue
-    command=$(build_node_status_command "$(node_status_path "$exec_id")") || continue
-    complete_node_title_migration "$generation" "$ref" "$exec_id" "$title" "$command" || true
+    if ! printf '%s\n' "$refs" | grep -qxF "$ref"; then
+      count=$(_prepared_stall_observe node-absent "$generation" "$ref" "$title") || continue
+      if (( 10#$count >= 10#$absent_passes )); then
+        _node_ledger_remove "$generation" "$ref" "$exec_id" "$title" || continue
+        _prepared_stall_clear node-absent "$generation" "$ref" "$title" || true
+        log "[audit] node ledger absent-gc generation=$generation ref=$ref exec=$exec_id title=$title state=$state passes=$count"
+      fi
+      continue
+    fi
+    _prepared_stall_clear node-absent "$generation" "$ref" "$title" || true
+    # Founder A retires the node-card product surface. Current-generation
+    # receipts are now cleanup authority only: close the exact old card and
+    # remove its status file. A founder-renamed workspace (especially `~`)
+    # fails the guarded close and remains byte-for-byte untouched.
+    if close_node_workspace "$exec_id" "$title" retired-node-card; then
+      command=$(node_status_path "$exec_id")
+      rm -f "$command"
+      rmdir "$NODE_STATUS_DIR" 2>/dev/null || true
+      _prepared_stall_clear node-drift "$generation" "$ref" "$title" || true
+      continue
+    fi
+    drift=1
+    if [[ "$drift" == 1 ]]; then
+      count=$(_prepared_stall_observe node-drift "$generation" "$ref" "$title") || continue
+      if (( 10#$count >= 10#$drift_passes )); then
+        _prepared_stall_clear node-drift "$generation" "$ref" "$title" || {
+          log "WARN: node drift evidence could not be re-armed ref=$ref title=$title; preserving receipt"
+          continue
+        }
+        _alert_cmux_cleanup "cmux node receipt drift preserved" \
+          "A node workspace no longer carries its receipted title and was preserved unchanged for $count determinate passes; nothing was renamed or closed: ref=$ref title=$title state=$state execution=$exec_id." \
+          "cmux_cleanup|node-receipt-drift|generation=$generation|ref=$ref|title=$title"
+      fi
+    else
+      _prepared_stall_clear node-drift "$generation" "$ref" "$title" || true
+    fi
   done < "$NODE_LEDGER"
+  retire_node_status_state_if_unused || true
+}
+
+NODE_CREATE_RECOVERY_STATE=none
+recover_reserved_node_workspace() {
+  # A watcher can receive TERM after cmux has created the workspace but before
+  # ensure_node_workspace observes its ref. Recover only the exact transaction
+  # shape we can prove: one durable node reservation for this exec and one
+  # unreceipted Terminal workspace whose sole surface runs this exec's status
+  # command. Ambiguity freezes creation; this is not a general orphan sweeper.
+  local exec_id="$1" title="$2" command="$3" generation="$4" raw="$5"
+  local reservation="" reservation_rc=0 refs ref surface candidate="" candidates=0
+  NODE_CREATE_RECOVERY_STATE=none
+  [[ "$title" == node:* ]] || return 1
+  _create_ledger_valid || { NODE_CREATE_RECOVERY_STATE=inconclusive; return 1; }
+  [[ -f "$NODE_CREATE_LEDGER" ]] || return 1
+  reservation=$(awk -F'|' -v e="$exec_id" '
+    $2 == "node" && $3 == e && $4 == "-" && $6 == "reserved" { n++; row=$0 }
+    END { if (n == 1) { print row; exit 0 } exit(n == 0 ? 1 : 2) }
+  ' "$NODE_CREATE_LEDGER") || reservation_rc=$?
+  case "$reservation_rc" in
+    0) ;;
+    1) return 1 ;;
+    *)
+      NODE_CREATE_RECOVERY_STATE=inconclusive
+      log "WARN: node create recovery deferred: reservation is not unique exec=$exec_id"
+      return 1
+      ;;
+  esac
+  refs=$(printf '%s' "$raw" | python3 -c '
+import json,re,sys
+for row in json.load(sys.stdin).get("workspaces", []):
+    ref=row.get("ref"); title=row.get("title")
+    if isinstance(ref,str) and isinstance(title,str) and re.fullmatch(r"Terminal [0-9]+", title): print(ref)
+') || { NODE_CREATE_RECOVERY_STATE=inconclusive; return 1; }
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    awk -F'|' -v r="$ref" '$3 == r { found=1 } END { exit(found ? 0 : 1) }' "$NODE_LEDGER" 2>/dev/null && continue
+    surface=$(workspace_single_surface_title "$ref") \
+      || { NODE_CREATE_RECOVERY_STATE=inconclusive; return 1; }
+    [[ "$surface" == "$command" ]] || continue
+    candidate="$ref"
+    candidates=$((candidates + 1))
+  done < <(printf '%s\n' "$refs")
+  if (( candidates == 0 )); then return 1; fi
+  if (( candidates != 1 )) || [[ "$(cmux_socket_identity)" != "$generation" ]]; then
+    NODE_CREATE_RECOVERY_STATE=inconclusive
+    log "WARN: node create recovery deferred: candidate is not unique exec=$exec_id candidates=$candidates"
+    return 1
+  fi
+  _node_ledger_upsert prepared "$generation" "$candidate" "$exec_id" "$title" \
+    || { NODE_CREATE_RECOVERY_STATE=inconclusive; return 1; }
+  NODE_CREATE_RECOVERY_STATE=adopted
+  CREATE_RESERVATION_LINE="$reservation"
+  workspace_create_commit "$candidate" \
+    || log "WARN: recovered create reservation could not be committed exec=$exec_id ref=$candidate"
+  log "[audit] node create recovered exec=$exec_id title=$title ref=$candidate round=${CMUX_ADDITIVE_ROUND_ID:-0-0}"
+  complete_node_title_migration "$generation" "$candidate" "$exec_id" "$title" "$command"
 }
 
 ensure_node_workspace() {
   local exec_id="$1" title="$2" status_file="$3" command generation raw refs_before refs_after new_refs ref count state
   local create_rc=0 workspace surface
+  # FLY-2829 C1: a node workspace can only ever be born under a node authority
+  # title. The pre-fix birth point was the ledger upsert *after* new-workspace
+  # rejecting title `-`, leaving an unreceipted `Terminal N` shell per round.
+  [[ "$title" == node:* ]] || { log "WARN: node workspace refused: title is not a node authority title exec=$exec_id title=$title"; return 1; }  # FLY-2829 C1 title guard
   command=$(build_node_status_command "$status_file") || return 1
   generation=$(cmux_socket_identity) || return 1
   reconcile_node_ledger || return 1
@@ -2079,14 +2542,19 @@ ensure_node_workspace() {
     state=$(node_ledger_exact_state "$generation" "$ref" "$exec_id" "$title") || return 1
     if [[ "$state" == committed ]]; then
       node_workspace_ready "$exec_id" "$title" && return 0
-      printf '%s' "$raw" | python3 -c 'import json,sys; r=sys.argv[1]; sys.exit(0 if any(w.get("ref")==r for w in json.load(sys.stdin).get("workspaces",[])) else 1)' "$ref" \
-        && return 1
-      _node_ledger_remove "$generation" "$ref" "$exec_id" "$title" || return 1
+      # FLY-2829 C4-b: a committed receipt whose ref is missing from one
+      # snapshot is not removed here any more. reconcile_node_ledger owns the
+      # multi-round absent verdict, so committed-absent has one path and one
+      # threshold; this call simply declines to create until it settles.
+      return 1
     else
       complete_node_title_migration "$generation" "$ref" "$exec_id" "$title" "$command" && return 0
       return 1
     fi
   fi
+
+  recover_reserved_node_workspace "$exec_id" "$title" "$command" "$generation" "$raw" && return 0
+  [[ "$NODE_CREATE_RECOVERY_STATE" == none ]] || return 1
 
   count=$(printf '%s' "$raw" | python3 -c '
 import json,sys
@@ -2106,7 +2574,7 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", []) if w.get("title"
   _GUARD_NODE_TITLE="$title"
   _GUARD_NODE_COMMAND="$command"
   _GUARD_NODE_REQUIRE_ABSENT=1
-  cmux_call_guarded _node_workspace_guard new-workspace --command "$command" || create_rc=$?
+  reserved_new_workspace _node_workspace_guard node "$exec_id" -- --command "$command" || create_rc=$?
   [[ "$create_rc" == 0 && "$GUARD_WAS_BLOCKED" != 1 ]] || return 1
   raw=$(get_cmux_workspaces_json) || return 1
   [[ "$(cmux_socket_identity)" == "$generation" ]] || return 1
@@ -2116,6 +2584,9 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", []) if w.get("title"
   ref=$(printf '%s\n' "$new_refs" | head -1)
   [[ "$ref" =~ ^workspace:[0-9]+$ ]] || return 1
   _node_ledger_upsert prepared "$generation" "$ref" "$exec_id" "$title" || return 1
+  workspace_create_commit "$ref" || log "WARN: create reservation could not be committed exec=$exec_id ref=$ref"
+  NODE_ROUND_CREATED=$((${NODE_ROUND_CREATED:-0} + 1))
+  log "[audit] node create exec=$exec_id title=$title ref=$ref round=${CMUX_ADDITIVE_ROUND_ID:-0-0}"
   complete_node_title_migration "$generation" "$ref" "$exec_id" "$title" "$command"
 }
 
@@ -2123,10 +2594,19 @@ _GUARD_NODE_CLOSE_REASON=""
 _node_close_guard() {
   local registry state current
   _node_workspace_guard || return 1
-  registry=$(node_registry_row "$_GUARD_NODE_EXEC") || return 1
+  registry=$(node_registry_row "$_GUARD_NODE_EXEC" 2>/dev/null || true)
   state=$(printf '%s' "$registry" | cut -d'|' -f4)
   case "$_GUARD_NODE_CLOSE_REASON:$state" in
+    retired-node-card:) ;;
+    retired-node-card:admitted|retired-node-card:active-windowed|retired-node-card:active-windowless|retired-node-card:unresolved-summary|retired-node-card:terminal-summary) ;;
     superseded-by-mirror:active-windowed|summary-ttl:unresolved-summary|summary-cap:unresolved-summary|summary-ttl:terminal-summary|summary-cap:terminal-summary) ;;
+    stale-registry:admitted|stale-registry:active-windowed|stale-registry:active-windowless|stale-registry:unresolved-summary|stale-registry:terminal-summary)
+      # FLY-2829 C4: a stale-registry close re-fetches the live roster at the
+      # mutation boundary; live or indeterminate both block.
+      local live_rc=0
+      node_exec_live_now "$_GUARD_NODE_EXEC" || live_rc=$?
+      [[ "$live_rc" == 1 ]] || return 1
+      ;;
     *) return 1 ;;
   esac
   current=$(cmux_socket_identity) || return 1
@@ -2138,18 +2618,153 @@ close_node_workspace() {
   generation=$(cmux_socket_identity) || return 1
   [[ -f "$NODE_LEDGER" ]] || return 0
   ref=$(awk -F'|' -v g="$generation" -v e="$exec_id" -v t="$title" \
-    '$1 == "committed" && $2 == g && $4 == e && $5 == t {n++; r=$3} END {if(n==1) print r}' "$NODE_LEDGER")
+    '($1 == "prepared" || $1 == "committed") && $2 == g && $4 == e && $5 == t {n++; r=$3} END {if(n==1) print r}' "$NODE_LEDGER")
   [[ -n "$ref" ]] || return 0
   _GUARD_NODE_GENERATION="$generation"
   _GUARD_NODE_REF="$ref"
   _GUARD_NODE_EXEC="$exec_id"
   _GUARD_NODE_TITLE="$title"
-  _GUARD_NODE_COMMAND=$(build_node_status_command "$(node_status_path "$exec_id")") || return 1
+  _GUARD_NODE_COMMAND=$(_node_status_command_literal "$(node_status_path "$exec_id")") || return 1
   _GUARD_NODE_REQUIRE_ABSENT=0
   _GUARD_NODE_CLOSE_REASON="$reason"
   cmux_call_guarded_close_with_attach_reap "$ref" "" _node_close_guard || rc=$?
   [[ "$rc" == 0 && "$GUARD_WAS_BLOCKED" != 1 ]] || return 1
-  _node_ledger_remove "$generation" "$ref" "$exec_id" "$title"
+  node_prune_crash_point after-close-before-ledger-remove
+  _node_ledger_remove "$generation" "$ref" "$exec_id" "$title" || return 1
+  NODE_ROUND_CLOSED=$((${NODE_ROUND_CLOSED:-0} + 1))
+  log "[audit] node close exec=$exec_id title=$title ref=$ref reason=$reason"
+}
+
+# FLY-2829 C4: liveness re-check at a destructive boundary. rc=0 live,
+# rc=1 conclusively not in the live roster, rc=2 indeterminate (fetch/parse
+# failure). Callers treat anything but 1 as "preserve".
+node_exec_live_now() {
+  local exec_id="$1" response parsed
+  response=$(_fetch_runner_roster_json 'mode=live') || return 2
+  parsed=$(printf '%s' "$response" | _parse_runner_roster_json live) || return 2
+  printf '%s\n' "$parsed" | awk -F'|' -v e="$exec_id" '$1 == e {found=1} END {exit(found ? 0 : 1)}'
+}
+
+# Test seam only (never set in production): kill the process at a named
+# point of the prune transaction so recovery from every crash window is
+# exercised. Same shape as terminal_teardown_crash_point.
+node_prune_crash_point() {
+  [[ "${FLYWHEEL_CMUX_PRUNE_CRASH_AT:-}" == "$1" ]] && kill -KILL "$$"
+  return 0
+}
+
+_node_summary_ttl_seconds() {
+  local ttl="${FLYWHEEL_CMUX_NODE_SUMMARY_TTL_HOURS:-24}"
+  case "$ttl" in ''|*[!0-9]*) ttl=24 ;; esac
+  (( ${#ttl} <= 3 && 10#$ttl >= 1 && 10#$ttl <= 168 )) || ttl=24
+  printf '%s\n' $((10#$ttl * 3600))
+}
+
+_node_registry_touch_last_seen() {
+  local exec_id="$1" now="$2" old
+  old=$(node_registry_row "$exec_id") || return 1
+  node_registry_upsert_row "$(printf '%s\n' "$old" | awk -F'|' -v OFS='|' -v n="$now" '{$5=n; print}')"
+}
+
+# FLY-2829 C4: shrink the registry at the start of every round. A row that is
+# outside the live roster and has not been seen for the summary TTL is
+# removed — after its receipt identity is settled, after cmux is proven to
+# hold no same-title workspace, and after one more live-roster read at the
+# mutation boundary. Rows with any receipt other than exactly one committed
+# current-generation receipt are deferred to reconcile_node_ledger; a
+# receipt must never outlive its registry row, because the workspace guard
+# re-reads that row. Bounded to PRUNE_BATCH_MAX rows per round.
+PRUNE_LAST_PRUNED=0
+PRUNE_LAST_DEFERRED=0
+prune_stale_node_rows() {
+  local now="$1" ttl_seconds snapshot candidates pruned=0 deferred=0 skipped=0 generation backup
+  local exec_id title alias state last_seen rest receipts committed live_rc json_raw="" json_state=unknown count command path
+  PRUNE_LAST_PRUNED=0; PRUNE_LAST_DEFERRED=0
+  [[ "$RUNNER_EXPECTED_STATE" == ok ]] || return 0
+  [[ -f "$NODE_REGISTRY" ]] || return 0
+  ttl_seconds=$(_node_summary_ttl_seconds)
+  generation=$(cmux_socket_identity) || return 0
+  [[ -n "$generation" ]] || return 0
+  snapshot=$(cat "$NODE_REGISTRY" 2>/dev/null) || return 0
+  # macOS awk rejects a newline inside -v; live ids are tab-joined (the roster
+  # parser already refuses tabs inside an execution id).
+  candidates=$(printf '%s\n' "$snapshot" | awk -F'|' -v now="$now" -v ttl="$ttl_seconds" \
+    -v live="$(printf '%s\n' "$RUNNER_EXPECTED_EXEC_IDS" | tr '\n' '\t')" '
+    BEGIN { n = split(live, a, "\t"); for (i = 1; i <= n; i++) if (a[i] != "") L[a[i]] = 1 }
+    NF == 13 && !($1 in L) && $5 ~ /^[0-9]+$/ && (now - $5) >= ttl { c++ }
+    END { print c + 0 }')
+  (( candidates > 0 )) || return 0
+  if (( candidates > 100 )); then
+    backup="${NODE_REGISTRY}.pre-FLY-2829"
+    if [[ ! -e "$backup" && ! -L "$backup" ]]; then
+      cp "$NODE_REGISTRY" "$backup" || { log "WARN: node registry backup failed; prune deferred path=$backup"; return 0; }
+      log "node registry backup written before first bulk prune path=$backup candidates=$candidates"
+    fi
+  fi
+  while IFS='|' read -r exec_id title alias state last_seen rest; do
+    [[ -n "$exec_id" ]] || continue
+    (( pruned < PRUNE_BATCH_MAX )) || break
+    watcher_mutation_latch_clear || break
+    printf '%s\n' "$RUNNER_EXPECTED_EXEC_IDS" | grep -qxF "$exec_id" && continue
+    case "$last_seen" in ''|*[!0-9]*) continue ;; esac
+    (( now - 10#$last_seen >= ttl_seconds )) || continue
+    receipts=0; committed=""
+    if [[ -f "$NODE_LEDGER" ]]; then
+      receipts=$(awk -F'|' -v e="$exec_id" -v t="$title" \
+        'NF == 5 && ($4 == e || (t != "-" && $5 == t)) {n++} END {print n+0}' "$NODE_LEDGER")
+      committed=$(awk -F'|' -v g="$generation" -v e="$exec_id" -v t="$title" \
+        '$1 == "committed" && $2 == g && $4 == e && $5 == t {n++; r=$3} END {if (n == 1) print r}' "$NODE_LEDGER")
+    fi
+    if (( receipts > 0 )); then
+      if [[ -n "$committed" && "$receipts" == 1 ]]; then
+        live_rc=0; node_exec_live_now "$exec_id" || live_rc=$?
+        if [[ "$live_rc" == 0 ]]; then _node_registry_touch_last_seen "$exec_id" "$now" || true; continue; fi
+        [[ "$live_rc" == 1 ]] || { skipped=$((skipped + 1)); continue; }
+        if ! close_node_workspace "$exec_id" "$title" stale-registry; then
+          log "node prune deferred: close refused exec=$exec_id title=$title state=$state"
+          deferred=$((deferred + 1)); continue
+        fi
+        node_prune_crash_point after-close
+        path=$(node_status_path "$exec_id"); rm -f "$path"
+        node_prune_crash_point after-status
+        node_registry_remove_exec "$exec_id" || continue
+        pruned=$((pruned + 1))
+        log "[audit] node prune exec=$exec_id title=$title state=$state age=$((now - 10#$last_seen))s receipt=closed"
+      else
+        log "node prune deferred: receipt pending exec=$exec_id title=$title state=$state receipts=$receipts"
+        deferred=$((deferred + 1))
+      fi
+      continue
+    fi
+    if [[ "$title" != "-" ]]; then
+      if [[ "$json_state" == unknown ]]; then
+        if json_raw=$(get_cmux_workspaces_json); then json_state=ok; else json_state=fail; fi
+      fi
+      [[ "$json_state" == ok ]] || { skipped=$((skipped + 1)); continue; }
+      command=$(_node_status_command_literal "$(node_status_path "$exec_id")") \
+        || { skipped=$((skipped + 1)); continue; }
+      count=$(printf '%s' "$json_raw" | python3 -c '
+import json,sys
+t,c=sys.argv[1:3]
+print(sum(1 for w in json.load(sys.stdin).get("workspaces", []) if w.get("title") in {t,c}))
+' "$title" "$command") || { skipped=$((skipped + 1)); continue; }
+      if [[ "$count" != 0 ]]; then
+        log "node prune deferred: unreceipted same-title workspace present exec=$exec_id title=$title"
+        deferred=$((deferred + 1)); continue
+      fi
+    fi
+    live_rc=0; node_exec_live_now "$exec_id" || live_rc=$?
+    if [[ "$live_rc" == 0 ]]; then _node_registry_touch_last_seen "$exec_id" "$now" || true; continue; fi
+    [[ "$live_rc" == 1 ]] || { skipped=$((skipped + 1)); continue; }
+    path=$(node_status_path "$exec_id"); rm -f "$path"
+    node_prune_crash_point after-status
+    node_registry_remove_exec "$exec_id" || continue
+    pruned=$((pruned + 1))
+    log "[audit] node prune exec=$exec_id title=$title state=$state age=$((now - 10#$last_seen))s receipt=none"
+  done < <(printf '%s\n' "$snapshot")
+  PRUNE_LAST_PRUNED=$pruned; PRUNE_LAST_DEFERRED=$deferred
+  log "node prune round candidates=$candidates pruned=$pruned deferred=$deferred skipped=$skipped"
+  return 0
 }
 
 node_terminal_workspace_was_closed() {
@@ -2199,7 +2814,7 @@ enforce_node_summary_limits() {
 reconcile_node_presence() {
   local active_count now round row exec_id node_id identifier role status adapter heartbeat issue_title last_activity route pr_number issue_url
   local old title alias old_state last_seen last_ok windowed windowless missing summary last_mirror classification terminal_epoch
-  local inv inv_state wid mirror_title source new_state status_path terminal_row terminal_seen
+  local inv inv_state wid mirror_title source new_state terminal_row terminal_seen
   [[ "$RUNNER_EXPECTED_STATE" == ok && "$RUNNER_NODE_TMUX_STATE" == ok ]] || return 0
   node_registry_valid || {
     _alert_cmux_cleanup "cmux node registry malformed" \
@@ -2207,7 +2822,6 @@ reconcile_node_presence() {
       "cmux_cleanup|node-registry-malformed"
     return 0
   }
-  build_node_status_command "$(node_status_path probe)" >/dev/null || return 0
   now=$(date +%s)
   round="${CMUX_ADDITIVE_ROUND_ID:-0-0}"
   _additive_round_id_valid "$round" || return 0
@@ -2217,9 +2831,30 @@ reconcile_node_presence() {
       "The active runner roster contains $active_count executions; every execution remains visible, but the roster may be unhealthy." \
       "cmux_cleanup|active-node-count|over-100"
   fi
+  NODE_ROUND_CREATED=0; NODE_ROUND_CLOSED=0
+
+  # FLY-2829 C4: ledger convergence and pruning run before roster accounting.
+  # An inconclusive ledger round preserves the whole node round. Summary
+  # limits run at both ends so a historical backlog cannot block reclaim and
+  # this round's new internal summaries are still capped.
+  watcher_mutation_latch_clear || return 0
+  if ! reconcile_node_ledger; then
+    log "node ledger reconcile inconclusive; node presence round preserved"
+    return 0
+  fi
+  watcher_mutation_latch_clear || return 0
+  prune_stale_node_rows "$now"
+  watcher_mutation_latch_clear || return 0
+  enforce_node_summary_limits "$now"
+  # FLY-2829 C6: open the pass's create gate now so the round-end audit line
+  # reports the budget even when no create is attempted.
+  [[ "${CREATE_GATE_PASS:-}" == "${WATCHER_PASS_SEQ:-}" && -n "${WATCHER_PASS_SEQ:-}" ]] || workspace_create_gate_begin || true
 
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
+    # FLY-2829 C5: the maintenance marker is checked once per row, not once
+    # per process start, so a marker placed mid-round stops the next mutation.
+    watcher_mutation_latch_clear || return 0
     IFS='|' read -r exec_id node_id identifier role status adapter heartbeat issue_title last_activity route pr_number issue_url < <(printf '%s\n' "$row")
     terminal_teardown_clear "$exec_id" || {
       _alert_cmux_cleanup \
@@ -2233,8 +2868,18 @@ reconcile_node_presence() {
       if [[ "$old_state" == unresolved-summary || "$old_state" == terminal-summary ]]; then
         old_state=admitted; windowed=0; windowless=0; summary=0; terminal_epoch=0
       fi
+      # A receipt that could not be retired (for example a founder-renamed
+      # `~` workspace) keeps its old registry key solely so the exact cleanup
+      # proof can be retried. Otherwise the retired node-card title is removed.
+      if ! awk -F'|' -v e="$exec_id" '$4 == e { found=1 } END { exit(found ? 0 : 1) }' \
+          "$NODE_LEDGER" 2>/dev/null; then
+        title=-
+        rm -f "$(node_status_path "$exec_id")"
+        rmdir "$NODE_STATUS_DIR" 2>/dev/null || true
+      fi
+      alias=$(node_display_alias "$identifier" "$role" "$exec_id")
     else
-      title=$(node_allocate_authority_title "$exec_id" "$identifier" "$role") || continue
+      title=-
       alias=$(node_display_alias "$identifier" "$role" "$exec_id")
       old_state=admitted; windowed=0; windowless=0; summary=0; last_mirror=-; terminal_epoch=0
     fi
@@ -2256,13 +2901,6 @@ reconcile_node_presence() {
       (( windowless >= 2 )) && new_state=active-windowless
     fi
     node_registry_upsert_row "$exec_id|$title|$alias|$new_state|$now|$round|$windowed|$windowless|0|0|$last_mirror|$round|0" || continue
-    node_write_status_file "$row" "$new_state" 0 || continue
-    status_path=$(node_status_path "$exec_id")
-    if [[ "$new_state" == active-windowed ]] && node_mirror_surface_ready "$last_mirror"; then
-      close_node_workspace "$exec_id" "$title" superseded-by-mirror || true
-    else
-      ensure_node_workspace "$exec_id" "$title" "$status_path" || true
-    fi
   done < <(printf '%s\n' "$RUNNER_ACTIVE_ROWS")
 
   # Missing active rows are never guessed terminal from one read. An exact
@@ -2270,9 +2908,16 @@ reconcile_node_presence() {
   # rounds retain a useful last-known summary.
   while IFS= read -r old; do
     [[ -n "$old" ]] || continue
+    watcher_mutation_latch_clear || return 0
     IFS='|' read -r exec_id title alias old_state last_seen last_ok windowed windowless missing summary last_mirror classification terminal_epoch < <(printf '%s\n' "$old")
     printf '%s\n' "$RUNNER_ACTIVE_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e {found=1} END {exit(found ? 0 : 1)}' && continue
     [[ "$RUNNER_TERMINAL_STATE" == ok ]] || continue
+    if ! awk -F'|' -v e="$exec_id" '$4 == e { found=1 } END { exit(found ? 0 : 1) }' \
+        "$NODE_LEDGER" 2>/dev/null; then
+      title=-
+      rm -f "$(node_status_path "$exec_id")"
+      rmdir "$NODE_STATUS_DIR" 2>/dev/null || true
+    fi
     terminal_row=$(printf '%s\n' "$RUNNER_TERMINAL_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e {print; exit}')
     terminal_seen=0; [[ -n "$terminal_row" ]] && terminal_seen=1
     (( 10#${missing:-0} < 2 )) && missing=$((10#${missing:-0} + 1)) || missing=2
@@ -2296,18 +2941,16 @@ reconcile_node_presence() {
         continue
       fi
     fi
-    local summary_state=terminal-summary terminal_flag=1
+    local summary_state=terminal-summary
     if [[ -z "$terminal_row" ]]; then
       terminal_row="$exec_id|-|$alias|-|last-known|-|-|最后已知节点状态|$last_seen|-|-|-"
       summary_state=unresolved-summary
-      terminal_flag=0
       terminal_teardown_clear "$exec_id" || true
     fi
     if [[ "$old_state" != "$summary_state" || "${terminal_epoch:-0}" == 0 ]]; then
       terminal_epoch="$now"
     fi
     node_registry_upsert_row "$exec_id|$title|$alias|$summary_state|$last_seen|$round|0|0|$missing|1|$last_mirror|$round|$terminal_epoch" || continue
-    node_write_status_file "$terminal_row" "$summary_state" "$terminal_flag" || continue
     if [[ "$terminal_seen" == 1 && "$last_mirror" != - ]]; then
       terminal_teardown_observe "$exec_id" "$terminal_row" "$last_mirror" || {
         _alert_cmux_cleanup \
@@ -2316,13 +2959,119 @@ reconcile_node_presence() {
           "cmux_cleanup|terminal-teardown-deferred|execution=$exec_id"
       }
     fi
-    status_path=$(node_status_path "$exec_id")
-    ensure_node_workspace "$exec_id" "$title" "$status_path" || true
+    # FLY-2829 C3: a session outside the live roster never gets a node tab.
+    # The summary remains internal until TTL/cap pruning; cmux only shows the
+    # execution's terminal mirror while it is actually alive.
+    case "$NODE_SUMMARY_CREATE_POLICY" in
+      never) ;;
+      *) log "ERROR: unsupported NODE_SUMMARY_CREATE_POLICY=$NODE_SUMMARY_CREATE_POLICY; summary create stays disabled" ;;
+    esac
   done < <(cat "$NODE_REGISTRY" 2>/dev/null || true)
 
   enforce_node_summary_limits "$now"
   node_publish_cleanup_snapshot || true
+  log "node presence round=$round live=$active_count created=${NODE_ROUND_CREATED:-0} closed=${NODE_ROUND_CLOSED:-0} pruned=${PRUNE_LAST_PRUNED:-0} deferred=${PRUNE_LAST_DEFERRED:-0} budget_left=${CREATE_BUDGET_LEFT:-0} gate=${CREATE_GATE_STATE:-uninitialized}"
   return 0
+}
+
+_GUARD_HUSK_GENERATION=""
+_GUARD_HUSK_REF=""
+_GUARD_HUSK_UUID=""
+_GUARD_HUSK_BIRTH=""
+_GUARD_HUSK_SURFACE=""
+_managed_husk_birth_guard() {
+  local current raw matches birth surface
+  current=$(cmux_socket_identity) || return 1
+  [[ "$current" == "$_GUARD_HUSK_GENERATION" ]] || return 1
+  raw=$(get_cmux_workspaces_json) || return 1
+  matches=$(printf '%s' "$raw" | python3 -c '
+import json,re,sys
+r,u=sys.argv[1:3]
+print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
+          if w.get("ref") == r and w.get("id") == u
+          and isinstance(w.get("title"), str)
+          and re.fullmatch(r"Terminal [0-9]+", w["title"])))
+' "$_GUARD_HUSK_REF" "$_GUARD_HUSK_UUID") || return 1
+  [[ "$matches" == 1 ]] || return 1
+  birth=$(cmux_workspace_birth_record "$_GUARD_HUSK_REF" "$_GUARD_HUSK_UUID") || return 1
+  [[ "$birth" == "$_GUARD_HUSK_BIRTH" ]] || return 1
+  surface=$(workspace_terminal_surface_identity "$_GUARD_HUSK_REF" "$_GUARD_HUSK_UUID") || return 1
+  [[ "$surface" == "$_GUARD_HUSK_SURFACE" ]] || return 1
+  surface_looks_like_bare_shell "$_GUARD_HUSK_REF" "${surface#*|}" 1 || return 1
+  current=$(cmux_socket_identity) || return 1
+  [[ "$current" == "$_GUARD_HUSK_GENERATION" ]]
+}
+
+reap_proven_managed_husks() {
+  # Founder A hard boundary: title shape alone is never cleanup authority.
+  # Only an exact legacy node receipt, or an immutable managed-attach birth
+  # record whose exact surface is still a bare shell, may close a Terminal N
+  # shell. `~`, other founder titles, live attaches and unproven Terminal
+  # shells are invisible to this reaper.
+  local raw generation births birth ref title node_row node_count state row row_ref row_uuid
+  local title_b64 surface kind target_b64 token birth_count rc view_rows node_exec node_title identity
+  watcher_mutation_latch_clear || return 0
+  generation=$(cmux_socket_identity) || return 0
+  raw=$(get_cmux_workspaces_json) || return 0
+  births=$(cmux_attach_birth_records "$raw" 2>/dev/null || true)
+  while IFS='|' read -r ref title; do
+    [[ "$ref" =~ ^workspace:[0-9]+$ && "$title" =~ ^Terminal\ [0-9]+$ ]] || continue
+    watcher_mutation_latch_clear || return 0
+    node_row=""; node_count=0
+    if [[ -f "$NODE_LEDGER" ]]; then
+      node_row=$(awk -F'|' -v g="$generation" -v r="$ref" \
+        '($1 == "prepared" || $1 == "committed") && $2 == g && $3 == r { n++; row=$0 } END { if (n == 1) print row }' \
+        "$NODE_LEDGER")
+      node_count=$(awk -F'|' -v g="$generation" -v r="$ref" \
+        '($1 == "prepared" || $1 == "committed") && $2 == g && $3 == r { n++ } END { print n+0 }' \
+        "$NODE_LEDGER")
+    fi
+    if [[ "$node_count" == 1 && -n "$node_row" ]]; then
+      IFS='|' read -r state _ _ node_exec node_title < <(printf '%s\n' "$node_row")
+      if close_node_workspace "$node_exec" "$node_title" retired-node-card; then
+        rm -f "$(node_status_path "$node_exec")"
+        rmdir "$NODE_STATUS_DIR" 2>/dev/null || true
+      fi
+      continue
+    fi
+    birth_count=0; row=""
+    while IFS= read -r birth; do
+      [[ -n "$birth" ]] || continue
+      row_ref="${birth%%|*}"
+      if [[ "$row_ref" == "$ref" ]]; then birth_count=$((birth_count + 1)); row="$birth"; fi
+    done < <(printf '%s\n' "$births")
+    [[ "$birth_count" == 1 ]] || continue
+    IFS='|' read -r _ row_uuid title_b64 surface kind target_b64 token < <(printf '%s\n' "$row")
+    case "$kind" in view|lead) ;; *) continue ;; esac
+    _workspace_uuid_valid "$row_uuid" || continue
+    # The born surface is a UUID; match it by UUID, then read the screen
+    # through the same surface's live `surface:N` handle.
+    identity=$(workspace_terminal_surface_identity "$ref" "$row_uuid" 2>/dev/null) || continue
+    [[ "${identity%%|*}" == "$surface" ]] || continue
+    surface_looks_like_bare_shell "$ref" "${identity#*|}" 1 || continue
+    _GUARD_HUSK_GENERATION="$generation"
+    _GUARD_HUSK_REF="$ref"
+    _GUARD_HUSK_UUID="$row_uuid"
+    _GUARD_HUSK_BIRTH="$row"
+    _GUARD_HUSK_SURFACE="$identity"
+    rc=0
+    cmux_call_guarded_close_with_attach_reap "$ref" "$row_uuid" _managed_husk_birth_guard || rc=$?
+    [[ "$GUARD_WAS_BLOCKED" == 0 && "$rc" == 0 ]] || continue
+    view_rows=0
+    if [[ -f "$VIEW_LEDGER" ]]; then
+      view_rows=$(awk -F'|' -v g="$generation" -v r="$ref" \
+        '(NF == 4 || NF == 5) && ($1 == "prepared" || $1 == "committed") && $2 == g && $3 == r { n++ } END { print n+0 }' \
+        "$VIEW_LEDGER")
+      [[ "$view_rows" == 1 ]] && _ledger_remove "$generation" "$ref" || true
+    fi
+    log "[audit] managed Terminal husk closed generation=$generation ref=$ref kind=$kind"
+  done < <(printf '%s' "$raw" | python3 -c '
+import json,re,sys
+for w in json.load(sys.stdin).get("workspaces", []):
+    ref=w.get("ref"); title=w.get("title")
+    if isinstance(ref,str) and isinstance(title,str) and re.fullmatch(r"Terminal [0-9]+", title):
+        print(ref,title,sep="|")
+' 2>/dev/null || true)
 }
 
 reconcile_runner_roster() {
@@ -3546,6 +4295,31 @@ try:
 except Exception:
     sys.exit(1)
 ' || return 1
+}
+
+# FLY-2829 founder A (qa@1 D2): birth records bind the terminal surface UUID,
+# while the default list-pane-surfaces id format returns only `surface:N`
+# refs, so a ref can never equal a born surface. Print `uuid|ref` for the
+# workspace's single terminal surface, bound to the expected workspace UUID.
+# No terminal, several terminals, or any id drift fails closed.
+workspace_terminal_surface_identity() {
+  local ref="$1" expected_uuid="$2" raw
+  raw=$(cmux_call --json --id-format both list-pane-surfaces --workspace "$ref") || return 1
+  printf '%s' "$raw" | python3 -c '
+import json,re,sys
+uuid_re=re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+try: data=json.load(sys.stdin)
+except Exception: raise SystemExit(1)
+if not isinstance(data,dict) or data.get("workspace_id")!=sys.argv[1]: raise SystemExit(1)
+rows=data.get("surfaces")
+if not isinstance(rows,list): raise SystemExit(1)
+terms=[row for row in rows if isinstance(row,dict) and row.get("type")=="terminal"]
+if len(terms)!=1: raise SystemExit(1)
+surface_id=terms[0].get("id"); surface_ref=terms[0].get("ref")
+if not isinstance(surface_id,str) or not uuid_re.fullmatch(surface_id): raise SystemExit(1)
+if not isinstance(surface_ref,str) or not re.fullmatch(r"surface:[0-9]+",surface_ref): raise SystemExit(1)
+print(surface_id,surface_ref,sep="|")
+' "$expected_uuid" || return 1
 }
 
 # Tri-state SHELL gate (FLY-254 upgraded; rc=1/2 both read as fail-closed by
@@ -5158,6 +5932,84 @@ _v2_lead_heal_surface() {
   [[ "$recovery_rc" == 0 || "$recovery_rc" == 2 ]]
 }
 
+duplicate_state_valid() {
+  local version key kind generation keeper extra relation count round tail bytes
+  [[ -e "$DUPLICATE_STATE" || -L "$DUPLICATE_STATE" ]] || return 0
+  [[ -f "$DUPLICATE_STATE" && ! -L "$DUPLICATE_STATE" ]] || return 1
+  bytes=$(wc -c < "$DUPLICATE_STATE" 2>/dev/null | tr -d ' ') || return 1
+  case "$bytes" in ''|*[!0-9]*) return 1 ;; esac
+  (( bytes <= 1048576 )) || return 1
+  while IFS='|' read -r version key kind generation keeper extra relation count round tail \
+      || [[ -n "$version$key$kind$generation$keeper$extra$relation$count$round${tail:-}" ]]; do
+    [[ "$version" == dupv1 && -z "${tail:-}" ]] || return 1
+    [[ "$key" =~ ^[0-9a-f]{64}$ ]] || return 1
+    case "$kind" in view|lead) ;; *) return 1 ;; esac
+    case "$keeper:$extra" in workspace:[0-9]*:workspace:[0-9]*) ;; *) return 1 ;; esac
+    case "${keeper#workspace:}${extra#workspace:}" in ''|*[!0-9]*) return 1 ;; esac
+    case "$relation" in live-dead|dead-live) ;; *) return 1 ;; esac
+    case "$count" in 1|2) ;; *) return 1 ;; esac
+    _additive_round_id_valid "$round" || return 1
+    case "$generation" in ''|*'|'*|*$'\t'*|*$'\n'*|*$'\r'*) return 1 ;; esac
+  done < "$DUPLICATE_STATE"
+}
+
+duplicate_proof_key() {
+  _cmux_alert_hash "$1|$2|$3|$4|$5|$6"
+}
+
+duplicate_proof_observe() {
+  local kind="$1" generation="$2" title="$3" keeper="$4" extra="$5" relation="$6"
+  local round="${CMUX_ADDITIVE_ROUND_ID:-}" key prior_count=0 prior_round="" count dir tmp
+  assert_or_reuse_owned_lease || return 1
+  _additive_round_id_valid "$round" || return 1
+  duplicate_state_valid || return 1
+  key=$(duplicate_proof_key "$kind" "$generation" "$title" "$keeper" "$extra" "$relation") || return 1
+  if [[ -f "$DUPLICATE_STATE" ]]; then
+    IFS='|' read -r _ _ _ _ _ _ _ prior_count prior_round \
+      < <(awk -F'|' -v k="$key" '$2 == k { print; exit }' "$DUPLICATE_STATE")
+  fi
+  case "$prior_count" in 1|2) ;; *) prior_count=0 ;; esac
+  count=$prior_count
+  if [[ "$prior_round" != "$round" ]]; then count=$((count + 1)); fi
+  (( count <= 2 )) || count=2
+  dir=$(dirname "$DUPLICATE_STATE"); mkdir -p "$dir" 2>/dev/null || return 1
+  tmp=$(mktemp "${DUPLICATE_STATE}.XXXX" 2>/dev/null) || return 1
+  if [[ -f "$DUPLICATE_STATE" ]]; then
+    awk -F'|' -v k="$key" '$2 != k { print }' "$DUPLICATE_STATE" > "$tmp" \
+      || { rm -f "$tmp"; return 1; }
+  fi
+  printf 'dupv1|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+    "$key" "$kind" "$generation" "$keeper" "$extra" "$relation" "$count" "$round" >> "$tmp" \
+    || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$DUPLICATE_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  duplicate_state_valid || return 1
+  printf '%s\n' "$count"
+}
+
+duplicate_proof_clear() {
+  local kind="$1" generation="$2" title="$3" keeper="$4" extra="$5" relation="$6" key tmp
+  assert_or_reuse_owned_lease || return 1
+  duplicate_state_valid || return 1
+  [[ -f "$DUPLICATE_STATE" ]] || return 0
+  key=$(duplicate_proof_key "$kind" "$generation" "$title" "$keeper" "$extra" "$relation") || return 1
+  tmp=$(mktemp "${DUPLICATE_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v k="$key" '$2 != k { print }' "$DUPLICATE_STATE" > "$tmp" \
+    && mv "$tmp" "$DUPLICATE_STATE" \
+    || { rm -f "$tmp"; return 1; }
+}
+
+duplicate_proof_sweep_kind() {
+  local kind="$1" round="${CMUX_ADDITIVE_ROUND_ID:-}" tmp
+  assert_or_reuse_owned_lease || return 1
+  _additive_round_id_valid "$round" || return 1
+  duplicate_state_valid || return 1
+  [[ -f "$DUPLICATE_STATE" ]] || return 0
+  tmp=$(mktemp "${DUPLICATE_STATE}.XXXX" 2>/dev/null) || return 1
+  awk -F'|' -v k="$kind" -v r="$round" '$3 != k || $9 == r { print }' "$DUPLICATE_STATE" > "$tmp" \
+    && mv "$tmp" "$DUPLICATE_STATE" \
+    || { rm -f "$tmp"; return 1; }
+}
+
 _GUARD_V2_KEEPER_REF=""
 _GUARD_V2_LOSER_REF=""
 _GUARD_V2_TARGET_B64=""
@@ -5190,11 +6042,21 @@ _v2_lead_flip_close_guard() {
 
 _v2_lead_promote_live_duplicate() {
   local generation="$1" keeper_ref="$2" title="$3" socket="$4" loser_ref="$5" target_b64="$6" births="${7:-}"
-  : "$generation" "$socket" "$target_b64" "$births"
-  _alert_cmux_cleanup "cmux v2 Lead duplicate preserved (report-only)" \
-    "A single render sample classified the committed keeper dead and a sibling live. Automatic close/promotion is disabled until a distinct-round activity proof exists: title=$title keeper=$keeper_ref sibling=$loser_ref." \
-    "cmux_cleanup|v2-duplicate-report-only|title=$title|keeper=$keeper_ref|sibling=$loser_ref"
-  return 1
+  local count
+  count=$(duplicate_proof_observe lead "$generation" "$title" "$keeper_ref" "$loser_ref" dead-live) || return 1
+  (( count >= 2 )) || return 1
+  _GUARD_V2_FLIP_GENERATION="$generation"
+  _GUARD_V2_FLIP_KEEPER_REF="$keeper_ref"
+  _GUARD_V2_FLIP_LOSER_REF="$loser_ref"
+  _GUARD_V2_FLIP_TITLE="$title"
+  _GUARD_V2_FLIP_SOCKET="$socket"
+  _GUARD_V2_FLIP_TARGET_B64="$target_b64"
+  _GUARD_V2_BIRTHS="$births"
+  close_ledger_workspace_ref "$generation" "$keeper_ref" "$title" \
+    duplicate-dead-keeper _v2_lead_flip_close_guard || return 1
+  duplicate_proof_clear lead "$generation" "$title" "$keeper_ref" "$loser_ref" dead-live || true
+  log "[audit] v2 Lead duplicate dead keeper retired title=$title keeper=$keeper_ref live=$loser_ref"
+  return 0
 }
 
 _v2_lead_duplicate_close_guard() {
@@ -5218,7 +6080,7 @@ _v2_lead_duplicate_close_guard() {
 
 _v2_lead_cleanup_duplicates() {
   local generation="$1" keeper_ref="$2" title="$3" socket="$4" canonical="$5"
-  local raw candidates births birth_candidates target_b64 kind loser_ref _pinned _selected _number keeper_liveness loser_liveness
+  local raw candidates births birth_candidates target_b64 kind loser_ref _pinned _selected _number keeper_liveness loser_liveness count
   raw=$(get_cmux_workspaces_json) || return 1
   candidates=$(workspace_title_candidates "$raw" "$title" "$canonical") || return 1
   births=$(cmux_attach_birth_records "$raw" 2>/dev/null || true)
@@ -5238,12 +6100,24 @@ _v2_lead_cleanup_duplicates() {
       continue
     fi
     if [[ "$keeper_liveness" != live || "$loser_liveness" != dead ]]; then
+      duplicate_proof_clear lead "$generation" "$title" "$keeper_ref" "$loser_ref" live-dead || true
+      duplicate_proof_clear lead "$generation" "$title" "$keeper_ref" "$loser_ref" dead-live || true
       log "WARN: duplicate v2 Lead preserved pending liveness title=$title keeper=$keeper_ref:$keeper_liveness loser=$loser_ref:$loser_liveness"
       continue
     fi
-    _alert_cmux_cleanup "cmux v2 Lead duplicate preserved (report-only)" \
-      "A single render sample classified a sibling dead. Automatic duplicate close is disabled until a distinct-round activity proof exists: title=$title keeper=$keeper_ref sibling=$loser_ref." \
-      "cmux_cleanup|v2-duplicate-report-only|title=$title|keeper=$keeper_ref|sibling=$loser_ref"
+    count=$(duplicate_proof_observe lead "$generation" "$title" "$keeper_ref" "$loser_ref" live-dead) || continue
+    (( count >= 2 )) || continue
+    _GUARD_V2_GENERATION="$generation"
+    _GUARD_V2_KEEPER_REF="$keeper_ref"
+    _GUARD_V2_LOSER_REF="$loser_ref"
+    _GUARD_V2_TITLE="$title"
+    _GUARD_V2_SOCKET="$socket"
+    _GUARD_V2_TARGET_B64="$target_b64"
+    _GUARD_V2_BIRTHS="$births"
+    if cmux_call_guarded_close_with_attach_reap "$loser_ref" "" _v2_lead_duplicate_close_guard; then
+      duplicate_proof_clear lead "$generation" "$title" "$keeper_ref" "$loser_ref" live-dead || true
+      log "[audit] v2 Lead duplicate closed title=$title keeper=$keeper_ref sibling=$loser_ref"
+    fi
   done < <(printf '%s\n' "$candidates")
   return 0
 }
@@ -5383,8 +6257,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   _GUARD_V2_RAW="$create_command"
   _GUARD_V2_REF=""
   _GUARD_V2_REQUIRE_ABSENT=1
-  cmux_call_guarded _v2_lead_workspace_guard \
-    new-workspace --command "$create_command" || create_rc=$?
+  reserved_new_workspace _v2_lead_workspace_guard view "$title" -- --command "$create_command" || create_rc=$?
   [[ "$create_rc" -eq 0 && "$GUARD_WAS_BLOCKED" != "1" ]] || return 1
   raw=$(get_cmux_workspaces_json) || return 1
   [[ "$(cmux_socket_identity)" == "$generation" ]] || return 1
@@ -5398,6 +6271,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   [[ "$(printf '%s\n' "$new_refs" | grep -c . || true)" == "1" ]] || return 1
   ref=$(printf '%s\n' "$new_refs" | head -1)
   [[ "$ref" =~ ^workspace:[0-9]+$ ]] || return 1
+  workspace_create_commit "$ref" || log "WARN: create reservation could not be committed title=$title ref=$ref"
   _v2_lead_prepare_and_name "$generation" "$ref" "$title" "$socket" "$create_command" || return 1
   _v2_lead_cleanup_duplicates "$generation" "$ref" "$title" "$socket" "$create_command" || true
   [[ -z "$V2_LEAD_PROMOTED_REF" ]] || ref="$V2_LEAD_PROMOTED_REF"
@@ -5518,6 +6392,7 @@ reconcile_v2_lead_workspaces() {
         ;;
     esac
   done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
+  duplicate_proof_sweep_kind lead || true
   return 0
 }
 
@@ -5626,8 +6501,18 @@ validated_int_env() {
 # stat — zero IPC. Empty output when the socket is missing/unreadable.
 # Overridable in tests.
 cmux_socket_identity() {
-  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
-  stat -f '%d:%i:%B' "$socket" 2>/dev/null || true
+  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}" identity
+  # GNU stat must run first: its -f flag means filesystem status and can emit
+  # a multi-line report before failing. Darwin rejects -c without stdout.
+  if identity=$(stat -c '%d:%i:%W' "$socket" 2>/dev/null); then
+    [[ "$identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] \
+      && { printf '%s\n' "$identity"; return 0; }
+  fi
+  if identity=$(stat -f '%d:%i:%B' "$socket" 2>/dev/null); then
+    [[ "$identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] \
+      && { printf '%s\n' "$identity"; return 0; }
+  fi
+  return 0
 }
 
 # FLY-254: socket presence probe (bash builtin test — one stat syscall, no
@@ -8564,6 +9449,8 @@ _fly1605_duplicate_close_guard() {
   current=$(cmux_socket_identity)
   [[ -n "$current" && "$current" == "$_GUARD_DUP_GENERATION" ]] || return 1
   title_keeper_ready "$current" "$_GUARD_DUP_KEEPER_REF" "$_GUARD_DUP_TITLE" || return 1
+  [[ "$(ledger_candidate_receipt_state "$current" \
+    "$_GUARD_DUP_EXTRA_REF" "$_GUARD_DUP_TITLE")" == none ]] || return 1
   keeper_liveness=$(workspace_attach_liveness "$_GUARD_DUP_KEEPER_REF" view "$_GUARD_DUP_TARGET_B64" "$_GUARD_DUP_BIRTHS") || return 1
   extra_liveness=$(workspace_attach_liveness "$_GUARD_DUP_EXTRA_REF" view "$_GUARD_DUP_TARGET_B64" "$_GUARD_DUP_BIRTHS") || return 1
   [[ "$keeper_liveness" == live && "$extra_liveness" == dead ]] || return 1
@@ -8596,11 +9483,22 @@ _duplicate_flip_close_guard() {
 
 promote_live_duplicate() {
   local source="$1" wid="$2" title="$3" generation="$4" keeper_ref="$5" extra_ref="$6" target_b64="$7" births="${8:-}"
-  : "$source" "$wid" "$generation" "$target_b64" "$births"
-  _alert_cmux_cleanup "cmux view duplicate preserved (report-only)" \
-    "A single render sample classified the committed keeper dead and a sibling live. Automatic close/promotion is disabled until a distinct-round activity proof exists: title=$title keeper=$keeper_ref sibling=$extra_ref." \
-    "cmux_cleanup|view-duplicate-report-only|title=$title|keeper=$keeper_ref|sibling=$extra_ref"
-  return 1
+  local count
+  count=$(duplicate_proof_observe view "$generation" "$title" "$keeper_ref" "$extra_ref" dead-live) || return 1
+  (( count >= 2 )) || return 1
+  _GUARD_FLIP_SOURCE="$source"
+  _GUARD_FLIP_WID="$wid"
+  _GUARD_FLIP_GENERATION="$generation"
+  _GUARD_FLIP_KEEPER_REF="$keeper_ref"
+  _GUARD_FLIP_EXTRA_REF="$extra_ref"
+  _GUARD_FLIP_TITLE="$title"
+  _GUARD_FLIP_TARGET_B64="$target_b64"
+  _GUARD_FLIP_BIRTHS="$births"
+  close_ledger_workspace_ref "$generation" "$keeper_ref" "$title" \
+    duplicate-dead-keeper _duplicate_flip_close_guard || return 1
+  duplicate_proof_clear view "$generation" "$title" "$keeper_ref" "$extra_ref" dead-live || true
+  log "[audit] view duplicate dead keeper retired title=$title keeper=$keeper_ref live=$extra_ref"
+  return 0
 }
 
 # Select one deterministic candidate. Input rows are
@@ -8721,7 +9619,7 @@ reconcile_workspace_titles() {
   local tmux_windows="$1" generation raw_json births="" source wid title canonical_raw candidates
   local named_rows raw_rows birth_rows candidate_births named_count keeper keeper_kind keeper_ref state
   local extra_rows extra_ref rc expected_target expected_target_b64 birth_owned receipt_uuid keeper_liveness extra_liveness
-  local current_refusals="" refusal_key
+  local current_refusals="" refusal_key count
   generation=$(cmux_socket_identity)
   [[ -n "$generation" ]] || return 0
   raw_json=$(get_cmux_workspaces_json) || return 0
@@ -8851,14 +9749,28 @@ reconcile_workspace_titles() {
         continue
       fi
       if [[ "$keeper_liveness" != live || "$extra_liveness" != dead ]]; then
+        duplicate_proof_clear view "$generation" "$title" "$keeper_ref" "$extra_ref" live-dead || true
+        duplicate_proof_clear view "$generation" "$title" "$keeper_ref" "$extra_ref" dead-live || true
         log "WARN: duplicate workspace preserved pending liveness proof title=$title keeper=$keeper_ref:$keeper_liveness extra=$extra_ref:$extra_liveness"
         continue
       fi
-      _alert_cmux_cleanup "cmux view duplicate preserved (report-only)" \
-        "A single render sample classified a sibling dead. Automatic duplicate close is disabled until a distinct-round activity proof exists: title=$title keeper=$keeper_ref sibling=$extra_ref." \
-        "cmux_cleanup|view-duplicate-report-only|title=$title|keeper=$keeper_ref|sibling=$extra_ref"
+      count=$(duplicate_proof_observe view "$generation" "$title" "$keeper_ref" "$extra_ref" live-dead) || continue
+      (( count >= 2 )) || continue
+      _GUARD_DUP_SOURCE="$source"
+      _GUARD_DUP_WID="$wid"
+      _GUARD_DUP_GENERATION="$generation"
+      _GUARD_DUP_KEEPER_REF="$keeper_ref"
+      _GUARD_DUP_EXTRA_REF="$extra_ref"
+      _GUARD_DUP_TITLE="$title"
+      _GUARD_DUP_TARGET_B64="$expected_target_b64"
+      _GUARD_DUP_BIRTHS="$births"
+      if close_workspace_by_ref --guarded "$extra_ref" duplicate-dead-sibling; then
+        duplicate_proof_clear view "$generation" "$title" "$keeper_ref" "$extra_ref" live-dead || true
+        log "[audit] view duplicate closed title=$title keeper=$keeper_ref sibling=$extra_ref"
+      fi
     done < <(printf '%s\n' "$extra_rows")
   done < <(printf '%s\n' "$tmux_windows")
+  duplicate_proof_sweep_kind view || true
   CMUX_TITLE_TOPOLOGY_REFUSED_KEYS="$current_refusals"
   return 0
 }
@@ -9004,7 +9916,32 @@ _prepared_stall_sweep_orphans() {
     $2 == g && (($2 "|" $3 "|" $4) in live) { print }
   ' "$PREPARED_STALL_STATE" > "$tmp" 2>/dev/null \
     || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$PREPARED_STALL_STATE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  # FLY-2829 C4-b: the node kinds now have a producer (reconcile_node_ledger),
+  # so their orphans are swept the same way against the node ledger. An
+  # unreadable node ledger is uncertainty and preserves the file.
+  local node_source node_tmp
+  if [[ -e "$NODE_LEDGER" || -L "$NODE_LEDGER" ]]; then
+    [[ -f "$NODE_LEDGER" && ! -L "$NODE_LEDGER" && -r "$NODE_LEDGER" ]] || { rm -f "$tmp"; return 1; }
+    node_source="$NODE_LEDGER"
+  else
+    node_source=/dev/null
+  fi
+  node_tmp=$(mktemp "${PREPARED_STALL_STATE}.XXXX" 2>/dev/null) || { rm -f "$tmp"; return 1; }
+  awk -F'|' -v g="$generation" -v ledger="$node_source" '
+    BEGIN {
+      while ((getline_rc = (getline line < ledger)) > 0) {
+        n = split(line, f, "|")
+        if (n == 5 && (f[1] == "prepared" || f[1] == "committed")) { live[f[2] "|" f[3] "|" f[5]] = 1 }
+      }
+      close(ledger)
+      if (getline_rc < 0) { exit 2 }
+    }
+    $1 != "node-absent" && $1 != "node-drift" { print; next }
+    $2 == g && (($2 "|" $3 "|" $4) in live) { print }
+  ' "$tmp" > "$node_tmp" 2>/dev/null \
+    || { rm -f "$tmp" "$node_tmp"; return 1; }
+  rm -f "$tmp"
+  mv "$node_tmp" "$PREPARED_STALL_STATE" 2>/dev/null || { rm -f "$node_tmp"; return 1; }
 }
 
 _prepared_stall_purge_ref() {
@@ -10404,9 +11341,10 @@ for w in json.load(sys.stdin).get("workspaces", []):
   }
   local create_rc=0
   _GUARD_CREATE_GENERATION="$cmux_generation"
-  cmux_call_guarded _create_generation_guard new-workspace --command "$attach_cmd" || create_rc=$?
+  reserved_new_workspace _create_generation_guard view "$window_name" -- --command "$attach_cmd" || create_rc=$?
   if [[ "$create_rc" -ne 0 ]]; then
-    log "WARN: cmux new-workspace failed for $window_name (see prior log lines)"
+    [[ "$WORKSPACE_CREATE_REFUSED" == 1 || "$GUARD_WAS_BLOCKED" == 1 ]] \
+      || log "WARN: cmux new-workspace failed for $window_name (see prior log lines)"
     return 0
   fi
 
@@ -10430,6 +11368,9 @@ for w in json.load(sys.stdin).get("workspaces", []):
   new_refs=$(grep -vFxf <(printf '%s' "$refs_before") <(printf '%s' "$refs_after") || true)
   new_ref_count=$(printf '%s\n' "$new_refs" | grep -c . || true)
   new_ref=$(printf '%s\n' "$new_refs" | head -1 || true)
+  if [[ "$new_ref_count" == 1 ]]; then
+    workspace_create_commit "$new_ref" || log "WARN: create reservation could not be committed title=$window_name ref=$new_ref"
+  fi
   new_uuid=$(printf '%s' "$raw_after" | python3 -c '
 import json,sys
 r=sys.argv[1]
@@ -11698,6 +12639,8 @@ sync_additive_bootstrap() {
   watcher_mutation_latch_clear || return 0
   if [[ -z "$tmux_windows" ]]; then
     reconcile_node_presence
+    watcher_mutation_latch_clear || return 0
+    reap_proven_managed_husks
     return 0
   fi
 
@@ -11725,6 +12668,8 @@ sync_additive_bootstrap() {
   done < <(printf '%s\n' "$tmux_windows")
   watcher_mutation_latch_clear || return 0
   reconcile_node_presence
+  watcher_mutation_latch_clear || return 0
+  reap_proven_managed_husks
   watcher_mutation_latch_clear || return 0
 
   # 4. (FLY-169) One-shot attach self-heal sweep — covers watcher startup /
@@ -11793,6 +12738,8 @@ sync_additive() {
     watcher_mutation_latch_clear || return 0
     reconcile_node_presence
     watcher_mutation_latch_clear || return 0
+    reap_proven_managed_husks
+    watcher_mutation_latch_clear || return 0
     cleanup_stale_conservative
     watcher_mutation_latch_clear || return 0
     # Even with no agent windows, reap ghosts so cmux UI clutter doesn't
@@ -11829,6 +12776,8 @@ sync_additive() {
   done < <(printf '%s\n' "$tmux_windows")
   watcher_mutation_latch_clear || return 0
   reconcile_node_presence
+  watcher_mutation_latch_clear || return 0
+  reap_proven_managed_husks
   watcher_mutation_latch_clear || return 0
 
   # FLY-1364 R6: recover killed/exited attach clients even when no create or
@@ -12811,6 +13760,7 @@ run_rebuild_views() {
     fi
   fi
   if [[ "$rc" -eq 0 ]]; then
+    WATCHER_PASS_SEQ=$((${WATCHER_PASS_SEQ:-0} + 1))  # FLY-2829 C6: the audited rebuild is a pass
     execute_ops_rebuild_targets "$refreshed" || rc=$?
   fi
   write_ops_rebuild_report "$preflight" "$rc" || {
@@ -14075,6 +15025,9 @@ release_mutator_lease() {
 }
 
 watcher_begin_pass() {
+  # FLY-2829 C6: every pass entry advances the sequence; the create gate is
+  # opened lazily once per sequence value.
+  WATCHER_PASS_SEQ=$((${WATCHER_PASS_SEQ:-0} + 1))
   WATCHER_PASS_ACTIVE=1
   WATCHER_AUTHORITY_LOST=0
   WATCHER_MAINTENANCE_STOP=0
@@ -14274,6 +15227,7 @@ run_mutator_once() {
     fi
     return 0
   fi
+  WATCHER_PASS_SEQ=$((${WATCHER_PASS_SEQ:-0} + 1))  # FLY-2829 C6: one-shot mutators are a pass too
   "$fn" || rc=$?
   release_mutator_lease
   trap - EXIT INT TERM

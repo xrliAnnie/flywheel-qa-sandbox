@@ -48,7 +48,11 @@ import { fileURLToPath } from "node:url";
 import { isGlobalBinDir, isTempOrWorktreeRoot } from "./path-hygiene.js";
 
 /** Hooks that this module is allowed to write into the runtime directory. */
-const HOOKS_TO_DEPLOY = ["inbox-check.sh", "runner-stop-notify.sh"] as const;
+const HOOKS_TO_DEPLOY = [
+	"inbox-check.sh",
+	"runner-stop-notify.sh",
+	"flywheel-session-identity.sh",
+] as const;
 
 /**
  * Hook files MUST be readable + executable by the running user — without

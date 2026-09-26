@@ -100,6 +100,51 @@ qa_room_inject_alert_into_projects() {
 	'
 }
 
+# Bind a slot Codex Lead's voice context to the same resident identity and
+# native memory used by its isolated carrier. Production homes follow the
+# canonical ~/.codex-<lead> layout; QA carriers deliberately live below their
+# slot root, so relying on the production fallback makes Bridge context loading
+# fail before realtime starts. Reads projects JSON on stdin and writes the
+# patched JSON to stdout.
+# Args: projectName agentId identityPath codexHome
+qa_room_bind_codex_voice_context() {
+	local project_name="$1" agent_id="$2" identity_path="$3" codex_home="$4"
+	case "$identity_path" in
+		/*) ;;
+		*) echo "Codex voice identity path must be absolute" >&2; return 1 ;;
+	esac
+	case "$codex_home" in
+		/*) ;;
+		*) echo "Codex voice home must be absolute" >&2; return 1 ;;
+	esac
+	[[ "$identity_path" != *$'\n'* && "$codex_home" != *$'\n'* ]] || return 1
+	jq -e --arg project "$project_name" --arg aid "$agent_id" \
+		--arg identity "$identity_path" \
+		--arg memory "${codex_home%/}/memories/memory_summary.md" '
+		([.[] | select(.projectName == $project) | .leads[]? |
+		  select(.agentId == $aid)] | length) as $matches
+		| if $matches != 1 then error("expected exactly one Codex voice Lead")
+		  else map(
+			if .projectName == $project then
+			  .leads |= map(
+				if .agentId == $aid then
+				  if (.backend // "claude-code") != "codex-app-server"
+				  then error("voice context target is not a Codex Lead")
+				  else . + {cosContext: {
+					displayName: .agentId,
+					aliases: [],
+					workingSubdirectory: ".",
+					identityPath: $identity,
+					memoryPaths: [$memory],
+					writableRoots: []
+				  }} end
+				else . end
+			  )
+			else . end
+		  ) end
+	'
+}
+
 # Compute the access.json allowBots array for a roundtable slot: self + the
 # OTHER roundtable participant bots (hostSlot ∪ memberSlots, minus self) so
 # cross-Lead bot delivery in the shared channel survives the plugin's pre-gate
@@ -191,4 +236,68 @@ qa_room_resolve_lead_channel_timeout() {
 		return 1
 	fi
 	echo "$((10#$v))"
+}
+
+# FLY-2867: claude-lead.sh loads its MCP servers from the checkout under test
+# (packages/teamlead/scripts/../../<pkg>/dist) and only warns in its pane when
+# one is missing. Without flywheel-inbox no .inbox-ready lease can ever appear,
+# so the 529 preflight builds both and asserts their entries here.
+# Args: repoRoot → stdout: each missing entry (repo-relative), one per line.
+# Returns 0 only when none is missing.
+qa_room_claude_lead_mcp_missing() {
+	local repo_root="$1" entry missing=0
+	for entry in packages/inbox-mcp/dist/index.js packages/terminal-mcp/dist/index.js; do
+		if [[ ! -f "${repo_root}/${entry}" ]]; then
+			printf '%s\n' "$entry"
+			missing=1
+		fi
+	done
+	(( missing == 0 ))
+}
+
+# FLY-2867: name why a Claude-carrier Lead's .inbox-ready lease is not live at
+# the readiness deadline, so a timeout is never anonymous. Reads only the key
+# set of the Lead's .mcp.json (the file carries credentials; no value is ever
+# printed). launchRef, when given, is a file rendered before this launch (the
+# Lead's lead.plist): a .mcp.json not newer than it belongs to an earlier run.
+# Args: leadWorkspace leaseFile [launchRef] → stdout: one token among
+# lease_live | lease_pid_dead | mcp_config_missing | mcp_config_stale |
+# mcp_config_unreadable | inbox_mcp_unregistered | lease_absent.
+qa_room_claude_lease_diagnosis() {
+	local workspace="$1" lease_file="$2" launch_ref="${3:-}"
+	local mcp_config="${workspace}/.mcp.json" pid registered newer
+	if [[ -f "$lease_file" ]]; then
+		pid=$(jq -r '.pid // empty' "$lease_file" 2>/dev/null || true)
+		if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+			echo lease_live
+		else
+			echo lease_pid_dead
+		fi
+		return 0
+	fi
+	if [[ ! -f "$mcp_config" ]]; then
+		echo mcp_config_missing
+		return 0
+	fi
+	# find -newer compares sub-second mtimes on BSD and GNU; bash 3.2's -nt
+	# only compares whole seconds. A failing find proves nothing about age.
+	if [[ -n "$launch_ref" && -e "$launch_ref" ]] \
+		&& newer=$(find "$mcp_config" -newer "$launch_ref" -print 2>/dev/null) \
+		&& [[ -z "$newer" ]]; then
+		echo mcp_config_stale
+		return 0
+	fi
+	if ! registered=$(jq -r '
+		if type != "object" then error("not an object") else . end
+		| (if has("mcpServers") then .mcpServers else . end)
+		| if type != "object" then error("servers not an object") else has("flywheel-inbox") end
+	' "$mcp_config" 2>/dev/null); then
+		echo mcp_config_unreadable
+		return 0
+	fi
+	if [[ "$registered" == true ]]; then
+		echo lease_absent
+	else
+		echo inbox_mcp_unregistered
+	fi
 }

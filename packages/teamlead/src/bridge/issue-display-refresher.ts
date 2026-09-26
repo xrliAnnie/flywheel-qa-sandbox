@@ -442,7 +442,9 @@ export function computeSessionsFingerprint(
 		| "getActiveWorkflowRunForIssue"
 		| "getLatestPhaseSessionsForIssue"
 		| "getSessionByIssue"
-	>,
+	> & {
+		getWorkflowExecutionActivity?: StateStore["getWorkflowExecutionActivity"];
+	},
 	issueId: string,
 	activeWorkflowRun?: WorkflowRunRow | null,
 ): string {
@@ -450,6 +452,7 @@ export function computeSessionsFingerprint(
 		r: s.chat_thread_role ?? "",
 		st: s.status,
 		e: s.execution_id,
+		a: store.getWorkflowExecutionActivity?.(s.execution_id)?.activityState,
 	}));
 	const main = store.getSessionByIssue(issueId);
 	const workflowRun =

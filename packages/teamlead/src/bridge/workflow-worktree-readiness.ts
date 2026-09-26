@@ -9,6 +9,8 @@ export interface WorkflowWorktreeReadinessDeps {
 	exists?: (path: string) => boolean;
 	clean?: typeof gitWorktreeClean;
 	execGit?: (args: string[]) => Promise<{ stdout: string }>;
+	/** A standby process resume preserves local edits instead of rebuilding. */
+	allowDirty?: boolean;
 }
 
 export type WorkflowWorktreeReadiness =
@@ -27,7 +29,7 @@ export async function assertWorkflowWorktreeReady(
 		return { ok: false, reason: `worktree_missing:${worktree}` };
 	}
 	const clean = await (deps.clean ?? gitWorktreeClean)(worktree);
-	if (clean !== true) {
+	if (clean !== true && !(deps.allowDirty === true && clean === false)) {
 		return {
 			ok: false,
 			reason: clean === false ? "worktree_dirty" : "worktree_unverifiable",

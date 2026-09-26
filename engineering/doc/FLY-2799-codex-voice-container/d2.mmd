@@ -1,0 +1,42 @@
+classDiagram
+  class VoiceSession {
+    sessionId
+    projectName
+    leadId
+    leaseEpoch
+    state
+  }
+  class ContextSnapshot {
+    snapshotDigest
+    capturedAt
+    rosterDigest
+    identityDigest
+    memoryFileDigests
+    activeIssues
+    pendingDecisions
+  }
+  class Container {
+    threadId
+    processGeneration
+    sessionGeneration
+    binaryDigest
+    effectiveConfigDigest
+  }
+  class Utterance {
+    transcriptId
+    utteranceId
+    contentDigest
+    attribution
+    durabilityReceipt
+  }
+  class Handoff {
+    handoffId
+    idempotencyKey
+    requestDigest
+    stateVersion
+    state
+  }
+  VoiceSession "1" --> "1" ContextSnapshot
+  VoiceSession "1" --> "1" Container
+  VoiceSession "1" --> "many" Utterance
+  Utterance "1" --> "many" Handoff

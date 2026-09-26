@@ -105,6 +105,31 @@ function normalizeVoiceAgenda(value: unknown): VoiceHandoffAgendaMetadata {
 	throw new Error("voiceHandoff.agenda.kind is invalid");
 }
 
+export const CHAT_DELIVERY_ORIGINS = [
+	"discord",
+	"voice",
+	"voice_minutes",
+] as const;
+export type ChatDeliveryOrigin = (typeof CHAT_DELIVERY_ORIGINS)[number];
+
+function parseOrigin(value: unknown): ChatDeliveryOrigin | undefined {
+	if (value === undefined) return undefined;
+	if (
+		typeof value === "string" &&
+		(CHAT_DELIVERY_ORIGINS as readonly string[]).includes(value)
+	) {
+		return value as ChatDeliveryOrigin;
+	}
+	throw new Error("origin must be discord, voice or voice_minutes");
+}
+
+/** Origins that are bound to one voice session and must carry its id. */
+export function isVoiceSessionOrigin(
+	origin: ChatDeliveryOrigin | undefined,
+): boolean {
+	return origin === "voice" || origin === "voice_minutes";
+}
+
 export interface ChatDeliveryEnvelopeV1 {
 	v: 1;
 	deliveryId: string;
@@ -119,7 +144,12 @@ export interface ChatDeliveryEnvelopeV1 {
 	msgKind: ChatDeliveryMessageKind;
 	attachments: ChatDeliveryAttachment[];
 	text: string;
-	origin?: "discord" | "voice";
+	/**
+	 * `voice` is a live founder utterance the Lead answers in the thread.
+	 * `voice_minutes` is the after-the-fact record of an already-ended voice
+	 * session: it carries no founder authority and asks for no spoken reply.
+	 */
+	origin?: ChatDeliveryOrigin;
 	voiceSessionId?: string;
 	voiceHandoff?: VoiceHandoffMetadata;
 	heldSince?: string;
@@ -151,7 +181,7 @@ function snowflake(value: unknown, field: string): string {
 }
 
 export interface ChatDeliveryIdentityContext {
-	origin?: "discord" | "voice";
+	origin?: ChatDeliveryOrigin;
 	voiceSessionId?: string;
 	voiceHandoff?: VoiceHandoffMetadata | Record<string, unknown>;
 }
@@ -221,19 +251,17 @@ export function normalizeChatDeliveryEnvelope(
 ): ChatDeliveryEnvelopeV1 {
 	if (value.v !== 1) throw new Error("chat delivery v1 envelope is required");
 	const leadId = requiredText(value.leadId, "leadId");
-	if (
-		value.origin !== undefined &&
-		value.origin !== "discord" &&
-		value.origin !== "voice"
-	)
-		throw new Error("origin must be discord or voice");
-	if ((value.origin === "voice") !== (value.voiceSessionId !== undefined))
+	const origin = parseOrigin(value.origin);
+	if (isVoiceSessionOrigin(origin) !== (value.voiceSessionId !== undefined))
 		throw new Error("origin and voiceSessionId must be provided together");
 	const voiceSessionId =
 		value.voiceSessionId === undefined
 			? undefined
 			: requiredText(value.voiceSessionId, "voiceSessionId");
-	if (value.voiceHandoff !== undefined && !voiceSessionId)
+	if (
+		value.voiceHandoff !== undefined &&
+		(origin !== "voice" || !voiceSessionId)
+	)
 		throw new Error("voiceHandoff requires a voice session binding");
 	const voiceHandoff =
 		value.voiceHandoff === undefined
@@ -249,7 +277,7 @@ export function normalizeChatDeliveryEnvelope(
 	if (
 		deliveryId !==
 		chatDeliveryId(leadId, messageId, {
-			origin: value.origin as "discord" | "voice" | undefined,
+			origin,
 			voiceSessionId,
 			voiceHandoff,
 		})
@@ -423,7 +451,7 @@ export function normalizeChatDeliveryEnvelope(
 		msgKind: value.msgKind,
 		attachments,
 		text: value.text,
-		...(value.origin ? { origin: value.origin } : {}),
+		...(origin ? { origin } : {}),
 		...(voiceSessionId ? { voiceSessionId } : {}),
 		...(voiceHandoff ? { voiceHandoff } : {}),
 		...(heldSince ? { heldSince, heldReason } : {}),

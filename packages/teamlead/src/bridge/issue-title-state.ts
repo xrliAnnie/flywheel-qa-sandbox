@@ -58,7 +58,9 @@ export type IssueTitleStateStore = IssueConclusionStore &
 		| "getLatestPhaseSessionsForIssue"
 		| "getSessionByIssue"
 		| "getActiveWorkflowRunForIssue"
-	>;
+	> & {
+		getWorkflowExecutionActivity?: StateStore["getWorkflowExecutionActivity"];
+	};
 
 export function readIssueTitleState(input: {
 	store: IssueTitleStateStore;
@@ -92,6 +94,8 @@ export function readIssueTitleState(input: {
 				status: s.status,
 				park: parkFor(s),
 				issueConcluded,
+				activity: store.getWorkflowExecutionActivity?.(s.execution_id)
+					?.activityState,
 			}),
 		);
 	}

@@ -1,0 +1,114 @@
+[
+  {
+    "mode": "excludes-file",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/excludes-file-CXcLT0",
+    "H": "b70ffefb7588cc6aaf80dacef64ff12ac8f2df01",
+    "S": "da5e77677b4472189a2ec2fc64949033672797dd",
+    "beforeStatus": "",
+    "guard": {
+      "allowed": true,
+      "I": [
+        "drafts/"
+      ],
+      "P": [
+        ".gitignore",
+        "project.ignore",
+        "tracked"
+      ],
+      "collision": [],
+      "G": [
+        ".gitignore"
+      ],
+      "ignoreCase": true,
+      "ignoreChanged": [],
+      "ignoreComparisons": [
+        {
+          "path": ".gitignore",
+          "current": "ae6951bc3baf1030489c373e63895e4c46b637ab",
+          "target": "ae6951bc3baf1030489c373e63895e4c46b637ab",
+          "changed": false
+        }
+      ]
+    },
+    "reset": "HEAD is now at da5e776 S\n",
+    "afterReset": true,
+    "clean": "Removing drafts/\n",
+    "afterClean": false,
+    "ignoreCase": "true"
+  },
+  {
+    "mode": "uppercase-ignore",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/uppercase-ignore-g8sUtP",
+    "H": "1e2b27f605971fa03196e3bc2f63386c7418a976",
+    "S": "dc9fb4753428c925b16f237e85b3385c634bccd5",
+    "beforeStatus": "",
+    "guard": {
+      "allowed": true,
+      "I": [
+        "drafts/"
+      ],
+      "P": [
+        ".GITIGNORE",
+        "tracked"
+      ],
+      "collision": [],
+      "G": [],
+      "ignoreCase": true,
+      "ignoreChanged": [],
+      "ignoreComparisons": []
+    },
+    "reset": "HEAD is now at dc9fb47 S\n",
+    "afterReset": true,
+    "clean": "Removing drafts/\n",
+    "afterClean": false,
+    "ignoreCase": "true"
+  },
+  {
+    "mode": "index-added-file-to-dir",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/index-added-file-to-dir-6T9fwW",
+    "H": "6f49a7f464ed789a9d4c650f43f67d86fba0cacd",
+    "S": "c97eec94980f71b89d5a5cb89be6381d548643f8",
+    "beforeStatus": "1 AD N... 000000 100644 000000 0000000000000000000000000000000000000000 8d7beab599dd3071a85d502b2b2223bb0ce94f76 drafts\n",
+    "guard": {
+      "allowed": true,
+      "I": []
+    },
+    "reset": "HEAD is now at c97eec9 S\n",
+    "afterReset": true,
+    "clean": "",
+    "afterClean": true,
+    "ignoreCase": "true"
+  },
+  {
+    "mode": "head-removed-file-to-dir",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/head-removed-file-to-dir-Msoo81",
+    "H": "cedec1dc0af4f3558d1db05bcdefb9009e55b9b4",
+    "S": "093ed1a76445635e5d877167e222f65902b66b16",
+    "beforeStatus": "1 .D N... 100644 100644 000000 59449329ffbdd976981a56d2aced8b3e6e4e0b61 59449329ffbdd976981a56d2aced8b3e6e4e0b61 drafts\n",
+    "guard": {
+      "allowed": true,
+      "I": []
+    },
+    "reset": "HEAD is now at 093ed1a S\n",
+    "afterReset": true,
+    "clean": "",
+    "afterClean": true,
+    "ignoreCase": "true"
+  },
+  {
+    "mode": "head-preserved-file-to-dir",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r3-2b38itsm/head-preserved-file-to-dir-QDu4Fb",
+    "H": "82a0a06ede26bc62c55ed2cb899660af13b15789",
+    "S": "14f2117b5d8455b177541320022e96d88e20ad7d",
+    "beforeStatus": "1 .D N... 100644 100644 000000 59449329ffbdd976981a56d2aced8b3e6e4e0b61 59449329ffbdd976981a56d2aced8b3e6e4e0b61 drafts\n",
+    "guard": {
+      "allowed": true,
+      "I": []
+    },
+    "reset": "HEAD is now at 14f2117 S\n",
+    "afterReset": false,
+    "clean": "",
+    "afterClean": false,
+    "ignoreCase": "true"
+  }
+]

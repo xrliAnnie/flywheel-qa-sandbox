@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2829 空壳刷屏病根与修法</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Helvetica Neue",sans-serif; line-height:1.55; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:26px; margin:0 0 6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:22px; }
+  .sub code { font-family:"SF Mono",Menlo,monospace; color:#1a365d; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:20px 22px; margin:0 0 18px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; } .card.amber { border-left-color:#ff9500; } .card.green { border-left-color:#34c759; } .card.purple { border-left-color:#af52de; } .card.gray { border-left-color:#86868b; } .card.navy { border-left-color:#1a365d; }
+  .card h2 { font-size:18px; margin:0 0 10px; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; margin-right:6px; vertical-align:middle; }
+  .badge.new { background:#e9f9ee; color:#1f8a3b; } .badge.update { background:#fff4e5; color:#b85c00; } .badge.candidate { background:#f5e9fb; color:#7a2ea8; } .badge.urgent { background:#ffe9e7; color:#c0271d; } .badge.medium { background:#f2f2f7; color:#5c5c61; }
+  p { margin:8px 0; }
+  ul { margin:6px 0 6px 20px; padding:0; } li { margin:4px 0; }
+  ol { margin:6px 0 6px 22px; padding:0; } ol li { margin:6px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:8px 0; }
+  th, td { border-bottom:1px solid #eee; padding:7px 8px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; font-weight:600; }
+  code { font-family:"SF Mono",Menlo,monospace; font-size:13px; background:#f2f2f7; padding:1px 5px; border-radius:4px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .note { color:#86868b; font-size:13px; }
+  .diagram { margin:12px 0 4px; padding:10px; background:#fafafa; border:1px solid #e5e5ea; border-radius:10px; overflow-x:auto; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:13px; color:#86868b; margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:64px; box-sizing:border-box; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fff; }
+  .comment textarea:focus { outline:none; border-color:#007aff; box-shadow:0 0 0 3px rgba(0,122,255,.15); }
+  .summary pre { background:#f2f2f7; color:#1d1d1f; white-space:pre-wrap; word-break:break-word; padding:12px 14px; border-radius:8px; font-size:13px; }
+  .btn { background:#007aff; color:#fff; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#f2f2f7; color:#1d1d1f; }
+  .status { font-size:13px; color:#86868b; margin-left:4px; }
+  .chunk { margin:10px 0; padding:10px; border:1px solid #e5e5ea; border-radius:8px; }
+  .quad { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:12px 0 4px; }
+  .q { border-radius:10px; padding:14px 16px; background:#fafafa; border-top:3px solid #007aff; }
+  .q.move { border-top-color:#34c759; } .q.keep { border-top-color:#007aff; } .q.guard { border-top-color:#ff9500; } .q.card4 { border-top-color:#af52de; }
+  .q .lbl { font-size:12px; font-weight:700; letter-spacing:.04em; color:#86868b; text-transform:uppercase; }
+  .q .big { font-size:19px; font-weight:700; margin:4px 0 2px; color:#1d1d1f; }
+  .q .small { font-size:13px; color:#5c5c61; }
+  .legend span { display:inline-block; font-size:12px; padding:1px 8px; border-radius:6px; margin-right:6px; border:1px solid #ccc; }
+  @media (max-width:600px){ .quad { grid-template-columns:1fr; } .card { padding:16px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2829 撤维护标记后 33 分钟刷出 154 个空壳 — 病根与修法</h1>
+  <div class="sub">Issue FLY-2829 · 2026-09-24 · 只设计,不改代码 · Lead 已裁定两项取舍 · Codex 四轮 8→6→4→3 全部采纳,leadAcceptance 放行</div>
+
+  <!-- 1 一句话 -->
+  <div class="card green" data-section="一句话">
+    <h2><span class="badge new">第一屏</span>一句话</h2>
+    <p><span class="term">watcher</span>(常驻后台的同步器进程,把 tmux 里的 runner 窗口同步成 cmux 侧栏页面)在撤掉<span class="term">维护标记</span>(一个文件,存在时 watcher 暂停)之后,把<span class="term">注册表</span>(一个 1800 行的文本文件,一行记一个 runner execution 的存在状态)里 1787 行<b>没有正式名字</b>的历史行逐条当成「失联」去补建侧栏页面;这些行永远写不进<span class="term">回执账本</span>(记录「哪个页面属于哪个 execution」的文件),所以每轮每行都新开一个叫 <code>Terminal N</code> 的空页面,永不收敛。修法四件事:<b>先剪枝再创建、不在跑的会话一个都不建、没正式名字零创建、每处理一行看一次标记</b>,外加一道跨重启的限速闩。</p>
+    <div class="quad">
+      <div class="q guard"><div class="lbl">病根</div><div class="big">1787 / 1800 行名字是哨兵「-」</div><div class="small">FLY-1884 的设计说「正式名字留到第一次建页面时取」,但实现从没给已存在的行取过名。建页面 → 写回执被拒 → 页面留着、账上没有 → 下一轮再建一个。9-23 夜 154 个空壳全部来自同一轮的 146 行「失联」行。</div></div>
+      <div class="q move"><div class="lbl">修什么</div><div class="big">四个缺口一起堵</div><div class="small">① 注册表轮首剪枝(24 小时没见过且不在跑 → 删);② 循环 2 不再建页面;③ 名字不是 <code>node:*</code> 一个 cmux 调用都不发;④ 两个循环每行都看维护标记。</div></div>
+      <div class="q keep"><div class="lbl">护栏</div><div class="big">三层限速 + 自停闩</div><div class="small">任意 60 秒内最多建 20 个;10 分钟内累计 ≥ 60 就写一个「自停闩」文件并告警,之后零创建直到人工按流程清闩;侧栏总数 ≥ 150 也零创建。计数记在文件里,进程重启也认。</div></div>
+      <div class="q card4"><div class="lbl">你要做什么</div><div class="big">看两份 30 分钟曲线</div><div class="small">QA 会贴两份:hermetic soak(不碰生产 cmux 的沙盒)修复前「涨」、修复后「平」;然后生产上带看门狗观察 30 分钟。通过后 Lead 才永久撤标记。你不用按任何授权卡。</div></div>
+    </div>
+    <p class="note">名词:<span class="term">execution</span>= 一次 runner 运行(一个 issue 的 design/implement/qa 各算一次)。<span class="term">镜像</span>= 有 tmux 窗的 runner 在侧栏的页面。<span class="term">节点页</span>= 没有 tmux 窗的 runner 在侧栏占的那个页面(显示状态文字)。<span class="term">租约</span>= 同一时刻只允许一个进程改 cmux 的锁。</p>
+    <div class="comment"><label for="c1">你的意见(自动存在本机浏览器)</label><textarea id="c1" data-key="s1" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 2 事故复盘 -->
+  <div class="card red" data-section="事故复盘">
+    <h2><span class="badge urgent">发生了什么</span>9-23 夜的时间线:为什么 4 分 40 秒看不出来</h2>
+    <div class="diagram"><!--SVG:incident--></div>
+    <ul>
+      <li><b>前 4 分钟很温和</b>是因为 watcher 在走注册表的前 43 行「admitted」行——这种行第一次不在跑只是记一笔「missing=1」,不建页面;真正会建页面的 146 行「失联」行排在后面。</li>
+      <li><b>16:35–16:52 进程重启了 9 次</b>(launchd 的 KeepAlive 每次拉起),每次都从注册表第 1 行重走。重启原因不在本单范围(FLY-2207 / FLY-2770 的地盘),但本单的限速闩必须跨重启持久,否则每次重启预算都被清零。</li>
+      <li><b>16:52 之后进程活下来了</b>,才连续走到「失联」行:每行约 5.6 秒(每行要跟 cmux 说 4 次话,还要给账本里 8 个卡住的旧页面各重试一次改名),14 分钟建了 136 个。</li>
+      <li><b>17:05 放回标记没用</b>:标记在每轮开头、每个阶段之间都会被看,唯独这两个循环里面不看;1800 行没走完之前不会再看。</li>
+      <li><b>这不是第一次</b>:9-20 也刷过一次(77 → 138,10 分钟),就在 FLY-2656 让节点分类第一次真正跑起来的两天后。FLY-1884 在 8-21 上线时 tmux 3.7c 把分隔符打成了下划线,整个节点分类静默失效了 4 周,注册表只进不出攒到 1800 行;FLY-2656 修好分隔符后,历史账一口气开始补。</li>
+      <li><b>为什么 FLY-2770 挡不住</b>:它修的是「已经有回执的页面因为默认标题 <code>Terminal N</code> 改不了名」;本单的空壳根本没有回执,那套机器看不见它们。</li>
+    </ul>
+    <div class="comment"><label for="c2">你的意见</label><textarea id="c2" data-key="s2" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 3 核心流程 -->
+  <div class="card navy" data-section="核心流程">
+    <h2><span class="badge medium">怎么修</span>修复后的一轮同步:先剪枝、再回收、最后才创建</h2>
+    <div class="diagram"><!--SVG:flow--></div>
+    <p class="legend"><span style="background:#fff;border-color:#007aff">原有步骤</span><span style="background:#e9f9ee;border-color:#34c759">本单新增 / 改动</span><span style="background:#fff4e5;border-color:#ff9500">判断门</span><span style="background:#ffe9e7;border-color:#ff3b30">整轮不动</span></p>
+    <ul>
+      <li><b>顺序反过来</b>:原来是「先为每一行建页面,走完 1800 行才回收」,而那一轮从来没走完过;现在剪枝和回收放在轮首,建页面放最后,且任意 60 秒内最多建 20 个(node 页保底 2 个,不会被镜像抢光)。</li>
+      <li><b>剪枝规则只有一条</b>:不在「在跑名册」里、且 24 小时没见过的行 → 删掉注册行和状态文件;如果它真有一个已建好的页面(账本里有回执),先按原有守卫把页面关掉,关不掉就整行留着下轮再试——不会出现「账上有页面、注册表没人」的孤儿。首次大剪(> 100 行)前自动备份一份注册表。</li>
+      <li><b>不在跑的会话一个都不建</b>(Lead 裁定,依据你 9-20 定的 cmux 契约第②条「跑完的自动拿掉」):只有已经存在的节点页才会就地改成『已结束』/『失联』,再按 24 小时 / 30 个的规则回收。FLY-1884 原来有的「事后给已结束会话补建『已结束』页」功能被去掉——不是为省事,是它本身违反契约。</li>
+      <li><b>每行看一次标记</b>:复用现有的 <code>watcher_mutation_latch_clear</code>(它同时认维护标记、QA 拆房 claim、ops 重建 claim 三种「请让路」),放回标记后最多一行(约 6 秒)就停。</li>
+      <li><b>没正式名字零创建</b>:<code>ensure_node_workspace</code> 第一行就拒绝非 <code>node:*</code> 的名字,在任何 cmux 调用之前——这是结构性保证,不是补丁。同时循环 1 给还没取名的在跑行取名,所以「先有窗、后失窗」的活 runner 仍然能得到节点页。</li>
+    </ul>
+    <div class="comment"><label for="c3">你的意见</label><textarea id="c3" data-key="s3" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 4 结构模型 -->
+  <div class="card" data-section="结构模型">
+    <h2><span class="badge medium">长什么样</span>结构模型:三本账不变,新增两个护栏文件</h2>
+    <div class="diagram"><!--SVG:model--></div>
+    <p class="legend"><span style="background:#fff;border-color:#007aff">已有文件</span><span style="background:#e9f9ee;border-color:#34c759">本单新增</span><span style="background:#f5e9fb;border-color:#af52de">进程</span><span style="background:#f2f2f7;border-color:#86868b">外部</span></p>
+    <table>
+      <tr><th style="width:36%">文件</th><th style="width:12%">状态</th><th>说明</th></tr>
+      <tr><td><code>~/.flywheel/state/cmux-node-registry</code></td><td>已有</td><td>注册表。修前 1800 行;修后 ≈ 在跑数 + 最多 30 条摘要。首次大剪前备份到 <code>…registry.pre-FLY-2829</code></td></tr>
+      <tr><td><code>~/.flywheel/state/cmux-node-ledger</code></td><td>已有</td><td>回执账本,只收 <code>node:*</code> 名字(这条规则不变,前面加一道门让它永远不会被绕到)</td></tr>
+      <tr><td><code>~/.flywheel/state/cmux-node-status/</code></td><td>已有</td><td>状态文件目录(830 个文件),随注册行一起剪</td></tr>
+      <tr><td><code>~/.flywheel/state/cmux-node-create-ledger</code></td><td><b>新增</b></td><td>创建流水账:<b>在跟 cmux 说话之前</b>先记一行「预约」,建成后补上 ref;24 小时裁剪;畸形 → 视为「不许建」。所以进程在建到一半时被杀,额度也不会丢</td></tr>
+      <tr><td><code>~/.flywheel/state/cmux-node-runaway</code></td><td><b>新增</b></td><td>自停闩:10 分钟内建 ≥ 60 个就写它;存在(哪怕内容坏了)= 零创建;只能按「挂标记 → 等 watcher 让出租约 → 换账本 → 删闩 → 撤标记」的顺序人手恢复</td></tr>
+      <tr><td><code>scripts/qa/fly2829-node-soak.sh</code></td><td><b>新增</b></td><td>沙盒 soak:cmux 用假的记账 shim、tmux 私有 socket、Bridge 名册用本地固定应答,跑真 watcher 30 分钟</td></tr>
+      <tr><td><code>scripts/qa/fly2829-prod-watchdog.sh</code></td><td><b>新增</b></td><td>生产看门狗:每 60 秒数一次侧栏页面,连续 3 次采样算斜率,超了就自动放回维护标记 + 告警,并且跑满整个窗口不提前退场</td></tr>
+      <tr><td>5 个数值旋钮</td><td><b>新增</b></td><td>60 秒内 20 个 / 600 秒内 60 个即闩 / 侧栏总数上限 150;登记进 <code>truth.ts</code>。没有「关掉限速」的开关——限速是安全属性</td></tr>
+    </table>
+    <div class="comment"><label for="c4">你的意见</label><textarea id="c4" data-key="s4" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 5 取舍 -->
+  <div class="card amber" data-section="取舍与被否决的方案">
+    <h2><span class="badge update">取舍</span>三个关键取舍,以及被否决的方案</h2>
+    <table>
+      <tr><th style="width:26%">问题</th><th style="width:30%">选了</th><th>没选(为什么)</th></tr>
+      <tr><td>怎么判断「会话真的还活着」</td><td><b>Bridge 的「在跑名册」就是唯一真相</b>:不在名册 = 不建。</td><td>每行再去问一次 Bridge 的单条接口——1800 次 HTTP 换不来更多真相;只对「最近 48 小时结束」的补建——仍会给没人关心的会话建页,且违反契约第②条。</td></tr>
+      <tr><td>超阈值时「自停」是什么</td><td><b>停创建,不停进程</b>:写闩文件 + 告警,关页面/改状态照常。</td><td>让进程退出——launchd 会立刻拉起,每次拉起都从注册表第 1 行重走,这恰恰是 9-23 夜的放大器。</td></tr>
+      <tr><td>30 分钟验收在哪跑</td><td><b>沙盒 soak(修复前必须真的复现出空壳,否则沙盒无效)+ 生产带看门狗观察</b>。</td><td>只在生产上跑阴性对照——就是再刷一次 154 个空壳;9-23 夜已经是生产侧的阴性对照,Lead 同意不必再造。</td></tr>
+      <tr><td>要不要顺手清历史空壳</td><td>不做(154 个已人手清完)。</td><td>给 <code>Terminal N</code> 无回执页加自动清扫权——现有清扫机器按设计「不认识节点命名空间」,加清扫权是另一张单的架构决定。</td></tr>
+    </table>
+    <div class="comment"><label for="c5">你的意见</label><textarea id="c5" data-key="s5" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 6 评审 -->
+  <div class="card purple" data-section="评审抓到了什么">
+    <h2><span class="badge candidate">评审</span>Codex 设计评审抓到了什么</h2>
+    <p>Codex(OpenAI 的代码评审模型,以 xhigh 强度独立读源码后给意见)四轮共 21 条,<b>全部采纳、零驳回</b>;没有一条是方向问题,全是「安全属性有没有闭合」。第三轮后按规则问了 Lead,Lead 批第四轮并裁定「剩余若都是小修,采纳后放行」。</p>
+    <table>
+      <tr><th style="width:10%">轮次</th><th style="width:16%">结论</th><th>抓到的要点</th></tr>
+      <tr><td>R1</td><td>8 条,4 阻断</td><td>① 有回执(哪怕是「准备中」)的行不能直删,否则恢复机器再也找不到身份;② 「不在跑」要在真正删之前<b>重新问一次 Bridge</b>,不能用几分钟前的快照;③ 限速要在跟 cmux 说话<b>之前</b>先记账,否则进程半路被杀就漏数;④ 三个建页面的入口都要过门,不止两个;另有公平配额、回收要轮首轮末各一次、旧脚本要整棵树才跑得起来、看门狗采样全失败不能算通过。</td></tr>
+      <tr><td>R2</td><td>6 条,4 阻断</td><td>① 我引用的「回执孤儿收敛器」在现有代码里<b>根本不存在</b>——只有名字没有实现,于是本单自己补;② 「每轮 20 个」按 15 秒一趟会被反复重置;③ 表格里 5 列、正文里 6 列自相矛盾;④ 人手清账本会跟 watcher 抢文件;⑤ 阴性对照会把真复现判成失败;⑥ 样本数公式分钟除以秒。</td></tr>
+      <tr><td>R3</td><td>4 条,3 阻断</td><td>① 新加的收敛器没接进每轮必经的路径;② 「按轮计预算」会被真实重启清零 → 改成 60 秒滚动窗口,天然跨重启;③ 上限检查塞进了复用的改名/关闭守卫,会误伤恢复操作 → 只在唯一的创建包装器里组合;④ 阴性对照要求「其它形态的新增 = 0」。</td></tr>
+      <tr><td>R4</td><td>3 条,3 阻断(小修)</td><td>① 账本里「无轮次」写 <code>-</code> 会被校验拒绝 → 明写合法;② founder 只改了 tab 标题(页面标题没动)这种形态永远进不了任何收敛分支 → 判定改成跟守卫同源、同时看两个标题;③ 重启测试的判据跟普通 smoke 互斥 → 拆成独立结论,日志加 watcher 身份列。按 Lead 裁定采纳后放行,不开第五轮。</td></tr>
+    </table>
+    <p class="note">四轮的原文都存在 <code>design-review-round1..4.md</code>,每条的处置写在 plan §9.1。</p>
+    <div class="comment"><label for="c6">你的意见</label><textarea id="c6" data-key="s6" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 7 诚实边界 -->
+  <div class="card gray" data-section="诚实边界">
+    <h2><span class="badge medium">诚实边界</span>这张单做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>堵住四个缺口(剪枝 / 零创建 / 名字门 / 轮内看标记),加三层限速和自停闩,每次建页、关页、剪枝都写审计日志(9-23 夜的 154 次创建在日志里是静默的);顺手补上 FLY-1884 缺席的「回执孤儿收敛器」——账上有页面、侧栏里没有的行,连续几轮确认后自动销账。</li>
+      <li>沙盒 soak 脚本(含修复前阴性对照)、生产看门狗脚本、单元测试约 23 例、CI 里跑 2 分钟的 smoke。</li>
+      <li>上线后第一轮会剪掉约 1700 行注册表(先备份),这是预期行为;自 8-25 起冻结的「清理快照」会重新发布,它会解除一批死镜像的清理封印——这是 FLY-1884 设计内的行为,QA 要点里要求记录清掉了哪些。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li><b>不修 watcher 重启风暴的根因</b>(9 次重启、<code>exit=1</code>),那是 FLY-2207 / FLY-2770 的范畴;本单只保证护栏跨重启有效。</li>
+      <li><b>不动</b> FLY-2770 的改名机器、镜像清扫、Bridge 接口、launchd。</li>
+      <li><b>不自动清</b>历史空壳;<b>不永久撤标记</b>——那是上线、soak、生产观察都通过之后 Lead 的动作。在那之前拆 529 房仍需 Lead 临时摘标记。</li>
+      <li>去掉「事后补建『已结束』页」后,一个从没有过本地窗、又从没被建过节点页的 remote/headless 体结束后,侧栏不会有『已结束』页;它活着的时候有。</li>
+    </ul>
+    <div class="comment"><label for="c7">你的意见</label><textarea id="c7" data-key="s7" placeholder="对这一节有什么想法…"></textarea></div>
+  </div>
+
+  <!-- 汇总 -->
+  <div class="card summary" data-section="汇总">
+    <h2><span class="badge medium">汇总</span>把你的意见一次性复制给我</h2>
+    <p class="note">上面每一节的意见都存在你这台设备的浏览器里。点下面的按钮复制,贴回 Discord 给我就行。复制出来的第一行固定是 <code>【页面意见汇总】FLY-2829</code>,它表示「有修订意见」,不是通过信号。</p>
+    <div id="summaryChunks"></div>
+    <button class="btn" id="copyAll" type="button">复制全部意见</button>
+    <button class="btn secondary" id="clearAll" type="button">清空本页意见</button>
+    <span class="status" id="copyStatus"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2829';
+  var MARK = '【页面意见汇总】' + ISSUE;
+  var PREFIX = 'fly2829-comments:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  function lsDel(k) { try { localStorage.removeItem(PREFIX + k); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(ta) {
+    var card = ta.closest('.card');
+    return card && card.getAttribute('data-section') ? card.getAttribute('data-section') : ta.getAttribute('data-key');
+  }
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push('[' + sectionTitle(ta) + '] ' + v);
+    });
+    return parts;
+  }
+  function chunk(parts) {
+    var chunks = [], cur = MARK;
+    parts.forEach(function (p) {
+      var next = cur + '\n' + p;
+      if (next.length > LIMIT && cur !== MARK) { chunks.push(cur); cur = MARK + '\n' + p; }
+      else cur = next;
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+  function render() {
+    var box = document.getElementById('summaryChunks');
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var parts = collect();
+    var chunks = chunk(parts);
+    chunks.forEach(function (c, i) {
+      var d = document.createElement('div'); d.className = 'chunk';
+      var h = document.createElement('div'); h.className = 'note';
+      h.textContent = chunks.length > 1 ? ('第 ' + (i + 1) + ' / ' + chunks.length + ' 块') : (parts.length ? '共 ' + parts.length + ' 条意见' : '还没有意见');
+      var pre = document.createElement('pre'); pre.textContent = c;
+      d.appendChild(h); d.appendChild(pre); box.appendChild(d);
+    });
+  }
+  areas.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () { lsSet(ta.getAttribute('data-key'), ta.value); render(); });
+  });
+  function setStatus(t) { document.getElementById('copyStatus').textContent = t; }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.top = '-1000px';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  document.getElementById('copyAll').addEventListener('click', function () {
+    var text = chunk(collect()).join('\n\n');
+    var done = function (ok) { setStatus(ok ? '已复制 ' + text.length + ' 字' : '复制失败，请手动选中上方文本'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  });
+  document.getElementById('clearAll').addEventListener('click', function () {
+    areas.forEach(function (ta) { ta.value = ''; lsDel(ta.getAttribute('data-key')); });
+    render(); setStatus('已清空');
+  });
+  render();
+})();
+</script>
+</body>
+</html>

@@ -102,6 +102,123 @@ describe("BridgeVoiceClient desired response decoding", () => {
 });
 
 describe("BridgeVoiceClient safe request diagnostics", () => {
+	it("loads leased context and persists normalized utterances through master routes", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(response('{"snapshotDigest":"digest"}'))
+			.mockResolvedValueOnce(
+				response('{"status":"inserted","receipt":{"transcriptId":"t-1"}}', 201),
+			);
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+		expect(await bridge.context("session-a", "lease-a", lease)).toMatchObject({
+			snapshotDigest: "digest",
+		});
+		expect(
+			await bridge.recordUtterance("session-a", "lease-a", lease, {
+				transcriptId: "t-1",
+				utteranceId: "u-1",
+				sessionGeneration: 1,
+				sequence: 1,
+				source: "room_audio",
+				role: "user",
+				text: "原话",
+				final: true,
+				attribution: { kind: "unknown", reason: "not_bound" },
+				captureDigest: "a".repeat(64),
+			}),
+		).toMatchObject({ receipt: { transcriptId: "t-1" } });
+		expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/context`,
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/utterances`,
+		]);
+		const utteranceRequest = fetchImpl.mock.calls[1]?.[1];
+		expect(utteranceRequest?.headers).toMatchObject({
+			Authorization: "Bearer master-secret-token",
+			"X-Voice-Lease": "lease-a",
+		});
+		expect(JSON.parse(String(utteranceRequest?.body))).not.toHaveProperty(
+			"sessionId",
+		);
+	});
+
+	it("reports a mirrored line's Discord id through the leased master route", async () => {
+		const fetchImpl = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(response('{"status":"recorded"}', 201));
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+		expect(
+			await bridge.recordUtteranceMirror("session-a", "lease-a", lease, {
+				transcriptId: "t-1",
+				messageId: "100000000000000050",
+			}),
+		).toEqual({ status: "recorded" });
+		const [url, request] = fetchImpl.mock.calls[0]!;
+		expect(String(url)).toBe(
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/utterance-mirrors`,
+		);
+		expect(request?.method).toBe("POST");
+		expect(request?.headers).toMatchObject({
+			Authorization: "Bearer master-secret-token",
+			"X-Voice-Lease": "lease-a",
+		});
+		expect(JSON.parse(String(request?.body))).toEqual({
+			transcriptId: "t-1",
+			messageId: "100000000000000050",
+		});
+	});
+
+	it("exposes an explicit handoffToLead seam without forwarding transcripts by itself", async () => {
+		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+			response(
+				JSON.stringify({
+					handoffId: "handoff-a",
+					state: "dispatched",
+					idempotencyKey: "action-a",
+					requestDigest: "d".repeat(64),
+				}),
+				202,
+			),
+		);
+		const bridge = client(fetchImpl);
+		const lease = new VoiceLease(() => 100);
+		lease.install(100, 15_000, 2_000);
+
+		await expect(
+			bridge.handoffToLead("session-a", "lease-a", lease, {
+				intentKind: "create_issue",
+				payload: { title: "跟进 FLY-2799" },
+				transcriptId: "transcript-action",
+				originalText: "请给 FLY-2799 开一个后续单",
+				idempotencyKey: "action-a",
+				authorityBinding: { issueId: "FLY-2799", epoch: 3 },
+			}),
+		).resolves.toMatchObject({
+			handoffId: "handoff-a",
+			state: "dispatched",
+		});
+		expect(fetchImpl).toHaveBeenCalledOnce();
+		const [url, request] = fetchImpl.mock.calls[0]!;
+		expect(String(url)).toBe(
+			`${LOOPBACK_URL}/api/voice/sessions/session-a/handoffs`,
+		);
+		expect(request?.headers).toMatchObject({
+			Authorization: "Bearer master-secret-token",
+			"X-Voice-Lease": "lease-a",
+		});
+		expect(JSON.parse(String(request?.body))).toEqual({
+			intentKind: "create_issue",
+			payload: { title: "跟进 FLY-2799" },
+			transcriptId: "transcript-action",
+			originalText: "请给 FLY-2799 开一个后续单",
+			idempotencyKey: "action-a",
+			authorityBinding: { issueId: "FLY-2799", epoch: 3 },
+		});
+	});
+
 	it("reports a closed diagnostic envelope without raw request or error data", async () => {
 		let mono = 100;
 		const fetchImpl = vi.fn<typeof fetch>(async () => {

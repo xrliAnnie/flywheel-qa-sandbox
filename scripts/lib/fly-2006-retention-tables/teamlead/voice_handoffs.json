@@ -1,5 +1,5 @@
 {
 	"database": "teamlead",
 	"table": "voice_handoffs",
-	"classification": "protectedCurrentOrReference"
+	"classification": "deleteTarget"
 }

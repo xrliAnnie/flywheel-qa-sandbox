@@ -238,6 +238,54 @@ export interface AdapterExecutionContext {
 	/** FLY-1269: existing shared Codex phase lifetime and mailbox eligibility. */
 	phaseKeepAlive?: { role: "design" | "implement" | "qa" };
 	/**
+	 * FLY-2808: durable process-body lifecycle. Unlike a gate carrier, this
+	 * controls the physical vendor process for one workflow execution.
+	 */
+	processLifecycle?: {
+		mode: "initial" | "resume";
+		generation: number;
+		demandId?: string;
+		/**
+		 * Frozen workflow node of a resumed body. A resume carries no generalized
+		 * context, and Codex needs the node to reopen the thread's owning home.
+		 */
+		nodeId?: string;
+		expectedSessionId?: string;
+		expectedModel?: string;
+		expectedCwd?: string;
+		/** Bounded HEAD/dirty delta injected before the first resumed work turn. */
+		headDriftNotice?: string;
+		/** True only after the controller durably accepted this generation's stop. */
+		retirementApproved?: () => boolean;
+		/** Bounded physical teardown grace; absent uses the adapter's 60s default. */
+		retirementGraceMs?: number;
+		/** Durable controller timestamp used so an adapter restart cannot reset grace. */
+		retirementRequestedAt?: () => string | undefined;
+		onIdentityVerified?: (evidence: {
+			sessionId: string;
+			model: string | null;
+			cwd: string;
+			verifiedAt: string;
+		}) => void;
+		/** Post-commit identity failures wake the resume coordinator immediately. */
+		onIdentityVerificationFailed?: (reasonCode: string) => void;
+		/**
+		 * Keeps Claude's first prompt/tool entry gated until the controller has
+		 * durably committed resume_verified for this generation.
+		 */
+		resumeVerificationStatus?: () => "pending" | "accepted" | "rejected";
+		onRetired?: (evidence: {
+			generation: number;
+			reasonCode: "process_tree_gone";
+			retiredAt: string;
+		}) => void;
+		onRetirementFailed?: (evidence: {
+			generation: number;
+			reasonCode: "retirement_unconfirmed";
+			failedAt: string;
+		}) => void;
+	};
+	/**
 	 * FLY-2268: exact loop-target identity for resident grace/drain semantics.
 	 * This is independent from the existing Codex phase/mailbox lifetime and is
 	 * also supplied to Claude workers.
@@ -251,7 +299,8 @@ export interface AdapterExecutionContext {
 	/**
 	 * State from a previous execution for session resume.
 	 *
-	 * NOTE: TmuxAdapter ignores this (tmux interactive mode doesn't support resume).
+	 * TmuxAdapter uses `previousSession.sessionId` with `--resume` and fails
+	 * closed when the exact provider identity cannot be proven.
 	 * ClaudeCodeAdapter uses `previousSession.sessionId` with `--resume` flag.
 	 * ClaudeAdapter (SDK) uses `previousSession.sessionId` with `resumeSessionId`.
 	 */
@@ -523,7 +572,7 @@ export type LaunchPrecommitFailure =
 	| {
 			code: "LAUNCH_PRECOMMIT_FAILED";
 			reason: string;
-			physicalEvidence: "cleaned" | "unknown";
+			physicalEvidence: "absent" | "cleaned" | "unknown";
 	  };
 
 export type LaunchPrecommitOutcome =

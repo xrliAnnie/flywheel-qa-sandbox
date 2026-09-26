@@ -16,6 +16,11 @@ import {
 	type ReapTarget,
 	reapWorktreeProcesses,
 } from "./worktree-process-reaper.js";
+import {
+	runTakeoverTransaction,
+	type TakeoverTransactionInput,
+	type TakeoverTransactionResult,
+} from "./worktree-takeover-transaction.js";
 
 export { canonicalizeWorktreePath } from "./worktree-paths.js";
 
@@ -41,7 +46,7 @@ export type WorktreeExecFn = (
 	cmd: string,
 	args: string[],
 	cwd: string,
-	options?: { env?: NodeJS.ProcessEnv },
+	options?: { env?: NodeJS.ProcessEnv; timeoutMs?: number },
 ) => Promise<{ stdout: string }>;
 
 export type BgDeleteFn = (cmd: string, args: string[]) => void;
@@ -74,6 +79,10 @@ export interface WorktreeConfig {
 	pushGuardStateDir?: string;
 	/** @internal — package-layout override for push-guard tests. */
 	pushGuardSourcePath?: string;
+	/** @internal — FLY-2901 takeover-rescue evidence root override for tests. */
+	takeoverRescueStateDir?: string;
+	/** @internal — FLY-2901 deterministic post-add failure injection in create(). */
+	createFaultHook?: (step: "post_add_exclude" | "hooks" | "generation") => void;
 }
 
 export interface WorktreeInfo {
@@ -179,7 +188,7 @@ function createDefaultExec(timeoutMs: number): WorktreeExecFn {
 	return async (cmd, args, cwd, options) => {
 		const { stdout } = await defaultAsyncExecFile(cmd, args, {
 			cwd,
-			timeoutMs,
+			timeoutMs: options?.timeoutMs ?? timeoutMs,
 			...(options?.env && {
 				env: options.env,
 				envMode: "replace" as const,
@@ -309,6 +318,8 @@ export class WorktreeManager {
 	) => Promise<T>;
 	private readonly pushGuardStateDir: string;
 	private readonly pushGuardSourcePath: string;
+	private readonly takeoverRescueStateDir: string;
+	private readonly createFaultHook?: WorktreeConfig["createFaultHook"];
 
 	constructor(config?: WorktreeConfig, execFn?: WorktreeExecFn) {
 		this.baseDir = config?.baseDir;
@@ -328,6 +339,11 @@ export class WorktreeManager {
 		this.pushGuardSourcePath = path.resolve(
 			config?.pushGuardSourcePath ?? defaultPushGuardSourcePath(),
 		);
+		this.takeoverRescueStateDir = path.resolve(
+			config?.takeoverRescueStateDir ??
+				path.join(flywheelRoot, "state", "takeover-rescue"),
+		);
+		this.createFaultHook = config?.createFaultHook;
 	}
 
 	/** FLY-1185 §2.11: run inside the injected repo lock (no-op when absent). */
@@ -572,297 +588,20 @@ export class WorktreeManager {
 					)
 				).stdout;
 				if (suffixHead !== anchor || status.length > 0) {
-					const tempDir = fs.mkdtempSync(
-						path.join(os.tmpdir(), "flywheel-resume-index-"),
-					);
-					const tempIndex = path.join(tempDir, "index");
-					const gitEnv = {
-						...process.env,
-						GIT_INDEX_FILE: tempIndex,
-						GIT_CONFIG_GLOBAL: "/dev/null",
-						GIT_CONFIG_SYSTEM: "/dev/null",
-					};
-					try {
-						const entries = parseResumeStatus(status);
-						if (
-							entries.some(
-								(entry) =>
-									entry.kind === "unmerged" ||
-									("sub" in entry &&
-										entry.sub.startsWith("S") &&
-										(entry.sub[2] !== "." || entry.sub[3] !== ".")),
-							)
-						) {
-							return {
-								ok: false,
-								reason: "quarantine_overflow",
-								detail: "unrepresentable_index",
-							};
-						}
-						const stagedNames = (
-							await safeExec(
-								"git",
-								[
-									"-C",
-									worktreePath,
-									"diff",
-									"--cached",
-									"--name-only",
-									"-z",
-									suffixHead,
-								],
-								worktreePath,
-							)
-						).stdout
-							.split("\0")
-							.filter(Boolean);
-						const changedPaths = new Set(stagedNames);
-						let totalBytes = 0;
-						for (const rel of stagedNames) {
-							const staged = (
-								await safeExec(
-									"git",
-									["-C", worktreePath, "ls-files", "--stage", "--", rel],
-									worktreePath,
-								)
-							).stdout.match(/^(\d+) ([0-9a-f]{40,64}) 0\t/);
-							if (staged && staged[1] !== "160000") {
-								totalBytes += Number(
-									(
-										await safeExec(
-											"git",
-											["-C", worktreePath, "cat-file", "-s", staged[2]!],
-											worktreePath,
-										)
-									).stdout.trim(),
-								);
-							}
-						}
-						const worktreePaths = entries.flatMap((entry) =>
-							entry.kind === "rename"
-								? [entry.path, entry.originalPath]
-								: [entry.path],
-						);
-						for (const rel of worktreePaths) changedPaths.add(rel);
-						if (changedPaths.size > limits.maxFiles) {
-							return {
-								ok: false,
-								reason: "quarantine_overflow",
-								detail: "file_limit",
-							};
-						}
-						for (const entry of entries) {
-							const needsBytes =
-								entry.kind === "untracked" ||
-								(entry.kind !== "unmerged" &&
-									entry.xy[1] !== "." &&
-									entry.xy[1] !== "D");
-							if (!needsBytes) continue;
-							const target = path.resolve(worktreePath, entry.path);
-							if (
-								!target.startsWith(`${path.resolve(worktreePath)}${path.sep}`)
-							) {
-								return {
-									ok: false,
-									reason: "quarantine_overflow",
-									detail: "path_escape",
-								};
-							}
-							const stat = fs.lstatSync(target);
-							if (stat.isFile()) totalBytes += stat.size;
-							else if (stat.isSymbolicLink())
-								totalBytes += Buffer.byteLength(fs.readlinkSync(target));
-							else if (
-								!stat.isDirectory() ||
-								!("mode" in entry) ||
-								entry.mode !== "160000"
-							) {
-								return {
-									ok: false,
-									reason: "quarantine_overflow",
-									detail: "unsupported_file_type",
-								};
-							}
-						}
-						if (totalBytes > limits.maxBytes) {
-							return {
-								ok: false,
-								reason: "quarantine_overflow",
-								detail: "byte_limit",
-							};
-						}
-
-						const indexTree = (
-							await safeExec(
-								"git",
-								["-C", worktreePath, "write-tree"],
-								worktreePath,
-							)
-						).stdout.trim();
-						const headTree = (
-							await safeExec(
-								"git",
-								["-C", worktreePath, "rev-parse", `${suffixHead}^{tree}`],
-								worktreePath,
-							)
-						).stdout.trim();
-						let indexCommit = suffixHead;
-						if (indexTree !== headTree) {
-							indexCommit = (
-								await safeExec(
-									"git",
-									[
-										"-C",
-										worktreePath,
-										"-c",
-										"user.name=Flywheel Resume",
-										"-c",
-										"user.email=resume@flywheel.local",
-										"commit-tree",
-										indexTree,
-										"-p",
-										suffixHead,
-										"-m",
-										`FLY-1707 staged quarantine ${opts.admissionKey}`,
-									],
-									worktreePath,
-								)
-							).stdout.trim();
-						}
-						await safeExec(
-							"git",
-							["-C", worktreePath, "read-tree", indexTree],
-							worktreePath,
-							{ env: gitEnv },
-						);
-
-						const removePath = async (rel: string) => {
-							await safeExec(
-								"git",
-								[
-									"-C",
-									worktreePath,
-									"update-index",
-									"--force-remove",
-									"--",
-									rel,
-								],
-								worktreePath,
-								{ env: gitEnv },
-							);
-						};
-						const writePath = async (rel: string, declaredMode?: string) => {
-							if (path.isAbsolute(rel) || rel.split("/").includes(".."))
-								throw new Error("path_escape");
-							const source = path.join(worktreePath, rel);
-							const stat = fs.lstatSync(source);
-							let mode: string;
-							let oid: string;
-							if (stat.isDirectory() && declaredMode === "160000") {
-								mode = "160000";
-								oid = (
-									await safeExec(
-										"git",
-										["-C", source, "rev-parse", "HEAD"],
-										source,
-									)
-								).stdout.trim();
-							} else {
-								mode = stat.isSymbolicLink()
-									? "120000"
-									: stat.mode & 0o111
-										? "100755"
-										: "100644";
-								let hashSource = source;
-								if (stat.isSymbolicLink()) {
-									hashSource = path.join(tempDir, `symlink-${randomUUID()}`);
-									fs.writeFileSync(hashSource, fs.readlinkSync(source));
-								}
-								oid = (
-									await safeExec(
-										"git",
-										[
-											"-C",
-											worktreePath,
-											"hash-object",
-											"--no-filters",
-											"-w",
-											hashSource,
-										],
-										worktreePath,
-									)
-								).stdout.trim();
-							}
-							await safeExec(
-								"git",
-								[
-									"-C",
-									worktreePath,
-									"update-index",
-									"--add",
-									"--cacheinfo",
-									mode,
-									oid,
-									rel,
-								],
-								worktreePath,
-								{ env: gitEnv },
-							);
-						};
-						for (const entry of entries) {
-							if (entry.kind === "untracked") {
-								await writePath(entry.path);
-							} else if (entry.kind === "ordinary" && entry.xy[1] !== ".") {
-								if (entry.xy[1] === "D") await removePath(entry.path);
-								else await writePath(entry.path, entry.mode);
-							} else if (entry.kind === "rename" && entry.xy[1] !== ".") {
-								if (entry.score.startsWith("R"))
-									await removePath(entry.originalPath);
-								else if (!entry.score.startsWith("C"))
-									throw new Error("rename_score_unknown");
-								await writePath(entry.path, entry.mode);
-							}
-						}
-						const worktreeTree = (
-							await safeExec(
-								"git",
-								["-C", worktreePath, "write-tree"],
-								worktreePath,
-								{ env: gitEnv },
-							)
-						).stdout.trim();
-						quarantineTip = indexCommit;
-						if (worktreeTree !== indexTree) {
-							quarantineTip = (
-								await safeExec(
-									"git",
-									[
-										"-C",
-										worktreePath,
-										"-c",
-										"user.name=Flywheel Resume",
-										"-c",
-										"user.email=resume@flywheel.local",
-										"commit-tree",
-										worktreeTree,
-										"-p",
-										indexCommit,
-										"-m",
-										`FLY-1707 worktree quarantine ${opts.admissionKey}`,
-									],
-									worktreePath,
-								)
-							).stdout.trim();
-						}
-					} catch (error) {
-						return {
-							ok: false,
-							reason: "quarantine_overflow",
-							detail: error instanceof Error ? error.message : String(error),
-						};
-					} finally {
-						fs.rmSync(tempDir, { recursive: true, force: true });
-					}
+					const snapshot = await this.snapshotWorktreeState({
+						worktreePath,
+						head: suffixHead,
+						status,
+						limits,
+						identity: {
+							userName: "Flywheel Resume",
+							userEmail: "resume@flywheel.local",
+							stagedMessage: `FLY-1707 staged quarantine ${opts.admissionKey}`,
+							worktreeMessage: `FLY-1707 worktree quarantine ${opts.admissionKey}`,
+						},
+					});
+					if (!snapshot.ok) return snapshot;
+					quarantineTip = snapshot.worktreeCommit;
 					quarantineTip ??= suffixHead;
 					quarantineRef = `refs/flywheel/quarantine/${opts.runId}/${opts.admissionKey}`;
 					const existing = await safeExec(
@@ -921,6 +660,314 @@ export class WorktreeManager {
 				...(quarantineRef ? { quarantineRef, quarantineTip } : {}),
 			};
 		});
+	}
+
+	/**
+	 * FLY-1707 archive algorithm, shared with the FLY-2901 takeover rescue:
+	 * snapshot the index and the physical worktree into two commits on top of
+	 * `head` through a TEMPORARY index (`GIT_INDEX_FILE`) — the real index and
+	 * worktree bytes are never touched. `status` is the caller's
+	 * `status --porcelain=v2 -z --untracked-files=all` output; untracked paths in
+	 * `skipUntracked` (FLY-2901 nested repositories, preserved by moving the
+	 * whole directory instead) are left out. Unrepresentable state or an
+	 * over-limit tree fails closed as `quarantine_overflow`.
+	 */
+	private async snapshotWorktreeState(opts: {
+		worktreePath: string;
+		head: string;
+		status: string;
+		limits: { maxFiles: number; maxBytes: number };
+		identity: {
+			userName: string;
+			userEmail: string;
+			stagedMessage: string;
+			worktreeMessage: string;
+		};
+		skipUntracked?: ReadonlySet<string>;
+	}): Promise<
+		| { ok: true; stagedCommit: string; worktreeCommit: string }
+		| { ok: false; reason: "quarantine_overflow"; detail: string }
+	> {
+		const safeExec: WorktreeExecFn = (cmd, args, cwd, options) =>
+			this.exec(cmd, [...RESUME_GIT_SAFE_CONFIG, ...args], cwd, options);
+		const { worktreePath, limits } = opts;
+		const tempDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), "flywheel-resume-index-"),
+		);
+		const tempIndex = path.join(tempDir, "index");
+		const gitEnv = {
+			...process.env,
+			GIT_INDEX_FILE: tempIndex,
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_CONFIG_SYSTEM: "/dev/null",
+		};
+		try {
+			const entries = parseResumeStatus(opts.status).filter(
+				(entry) =>
+					!(entry.kind === "untracked" && opts.skipUntracked?.has(entry.path)),
+			);
+			if (
+				entries.some(
+					(entry) =>
+						entry.kind === "unmerged" ||
+						("sub" in entry &&
+							entry.sub.startsWith("S") &&
+							(entry.sub[2] !== "." || entry.sub[3] !== ".")),
+				)
+			) {
+				return {
+					ok: false,
+					reason: "quarantine_overflow",
+					detail: "unrepresentable_index",
+				};
+			}
+			const stagedNames = (
+				await safeExec(
+					"git",
+					[
+						"-C",
+						worktreePath,
+						"diff",
+						"--cached",
+						"--name-only",
+						"-z",
+						opts.head,
+					],
+					worktreePath,
+				)
+			).stdout
+				.split("\0")
+				.filter(Boolean);
+			const changedPaths = new Set(stagedNames);
+			let totalBytes = 0;
+			for (const rel of stagedNames) {
+				const staged = (
+					await safeExec(
+						"git",
+						["-C", worktreePath, "ls-files", "--stage", "--", rel],
+						worktreePath,
+					)
+				).stdout.match(/^(\d+) ([0-9a-f]{40,64}) 0\t/);
+				if (staged && staged[1] !== "160000") {
+					totalBytes += Number(
+						(
+							await safeExec(
+								"git",
+								["-C", worktreePath, "cat-file", "-s", staged[2]!],
+								worktreePath,
+							)
+						).stdout.trim(),
+					);
+				}
+			}
+			const worktreePaths = entries.flatMap((entry) =>
+				entry.kind === "rename"
+					? [entry.path, entry.originalPath]
+					: [entry.path],
+			);
+			for (const rel of worktreePaths) changedPaths.add(rel);
+			if (changedPaths.size > limits.maxFiles) {
+				return {
+					ok: false,
+					reason: "quarantine_overflow",
+					detail: "file_limit",
+				};
+			}
+			for (const entry of entries) {
+				const needsBytes =
+					entry.kind === "untracked" ||
+					(entry.kind !== "unmerged" &&
+						entry.xy[1] !== "." &&
+						entry.xy[1] !== "D");
+				if (!needsBytes) continue;
+				const target = path.resolve(worktreePath, entry.path);
+				if (!target.startsWith(`${path.resolve(worktreePath)}${path.sep}`)) {
+					return {
+						ok: false,
+						reason: "quarantine_overflow",
+						detail: "path_escape",
+					};
+				}
+				const stat = fs.lstatSync(target);
+				if (stat.isFile()) totalBytes += stat.size;
+				else if (stat.isSymbolicLink())
+					totalBytes += Buffer.byteLength(fs.readlinkSync(target));
+				else if (
+					!stat.isDirectory() ||
+					!("mode" in entry) ||
+					entry.mode !== "160000"
+				) {
+					return {
+						ok: false,
+						reason: "quarantine_overflow",
+						detail: "unsupported_file_type",
+					};
+				}
+			}
+			if (totalBytes > limits.maxBytes) {
+				return {
+					ok: false,
+					reason: "quarantine_overflow",
+					detail: "byte_limit",
+				};
+			}
+
+			const indexTree = (
+				await safeExec("git", ["-C", worktreePath, "write-tree"], worktreePath)
+			).stdout.trim();
+			const headTree = (
+				await safeExec(
+					"git",
+					["-C", worktreePath, "rev-parse", `${opts.head}^{tree}`],
+					worktreePath,
+				)
+			).stdout.trim();
+			let indexCommit = opts.head;
+			if (indexTree !== headTree) {
+				indexCommit = (
+					await safeExec(
+						"git",
+						[
+							"-C",
+							worktreePath,
+							"-c",
+							`user.name=${opts.identity.userName}`,
+							"-c",
+							`user.email=${opts.identity.userEmail}`,
+							"commit-tree",
+							indexTree,
+							"-p",
+							opts.head,
+							"-m",
+							opts.identity.stagedMessage,
+						],
+						worktreePath,
+					)
+				).stdout.trim();
+			}
+			await safeExec(
+				"git",
+				["-C", worktreePath, "read-tree", indexTree],
+				worktreePath,
+				{ env: gitEnv },
+			);
+
+			const removePath = async (rel: string) => {
+				await safeExec(
+					"git",
+					["-C", worktreePath, "update-index", "--force-remove", "--", rel],
+					worktreePath,
+					{ env: gitEnv },
+				);
+			};
+			const writePath = async (rel: string, declaredMode?: string) => {
+				if (path.isAbsolute(rel) || rel.split("/").includes(".."))
+					throw new Error("path_escape");
+				const source = path.join(worktreePath, rel);
+				const stat = fs.lstatSync(source);
+				let mode: string;
+				let oid: string;
+				if (stat.isDirectory() && declaredMode === "160000") {
+					mode = "160000";
+					oid = (
+						await safeExec("git", ["-C", source, "rev-parse", "HEAD"], source)
+					).stdout.trim();
+				} else {
+					mode = stat.isSymbolicLink()
+						? "120000"
+						: stat.mode & 0o111
+							? "100755"
+							: "100644";
+					let hashSource = source;
+					if (stat.isSymbolicLink()) {
+						hashSource = path.join(tempDir, `symlink-${randomUUID()}`);
+						fs.writeFileSync(hashSource, fs.readlinkSync(source));
+					}
+					oid = (
+						await safeExec(
+							"git",
+							[
+								"-C",
+								worktreePath,
+								"hash-object",
+								"--no-filters",
+								"-w",
+								hashSource,
+							],
+							worktreePath,
+						)
+					).stdout.trim();
+				}
+				await safeExec(
+					"git",
+					[
+						"-C",
+						worktreePath,
+						"update-index",
+						"--add",
+						"--cacheinfo",
+						mode,
+						oid,
+						rel,
+					],
+					worktreePath,
+					{ env: gitEnv },
+				);
+			};
+			for (const entry of entries) {
+				if (entry.kind === "untracked") {
+					await writePath(entry.path);
+				} else if (entry.kind === "ordinary" && entry.xy[1] !== ".") {
+					if (entry.xy[1] === "D") await removePath(entry.path);
+					else await writePath(entry.path, entry.mode);
+				} else if (entry.kind === "rename" && entry.xy[1] !== ".") {
+					if (entry.score.startsWith("R")) await removePath(entry.originalPath);
+					else if (!entry.score.startsWith("C"))
+						throw new Error("rename_score_unknown");
+					await writePath(entry.path, entry.mode);
+				}
+			}
+			const worktreeTree = (
+				await safeExec(
+					"git",
+					["-C", worktreePath, "write-tree"],
+					worktreePath,
+					{ env: gitEnv },
+				)
+			).stdout.trim();
+			let worktreeCommit = indexCommit;
+			if (worktreeTree !== indexTree) {
+				worktreeCommit = (
+					await safeExec(
+						"git",
+						[
+							"-C",
+							worktreePath,
+							"-c",
+							`user.name=${opts.identity.userName}`,
+							"-c",
+							`user.email=${opts.identity.userEmail}`,
+							"commit-tree",
+							worktreeTree,
+							"-p",
+							indexCommit,
+							"-m",
+							opts.identity.worktreeMessage,
+						],
+						worktreePath,
+					)
+				).stdout.trim();
+			}
+			return { ok: true, stagedCommit: indexCommit, worktreeCommit };
+		} catch (error) {
+			return {
+				ok: false,
+				reason: "quarantine_overflow",
+				detail: error instanceof Error ? error.message : String(error),
+			};
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
 	}
 
 	/** FLY-1759: derive the kill target from WorktreeManager's path authority. */
@@ -1207,6 +1254,12 @@ export class WorktreeManager {
 		projectName: string;
 		issueId: string;
 		startPoint?: string;
+		/**
+		 * @internal FLY-2901: the takeover transaction rebuilds a registered
+		 * worktree whose directory vanished as the SAME worktree (same repo lock,
+		 * already-preserved target) and carries its admin-area generation.
+		 */
+		carryGeneration?: string;
 	}): Promise<WorktreeInfo> {
 		return this.locked(opts.mainRepoPath, async () => {
 			const branch = this.worktreeName(opts.mainRepoPath, opts.issueId);
@@ -1261,6 +1314,7 @@ export class WorktreeManager {
 					worktreePath,
 				);
 
+				this.createFaultHook?.("hooks");
 				const guardPath = this.ensurePushGuardInstalled();
 				const existingHooksDir =
 					await this.resolveExistingHooksDir(worktreePath);
@@ -1299,9 +1353,30 @@ export class WorktreeManager {
 				// Creator-written, porcelain-invisible; a rebuild gets a fresh nonce.
 				// A marker-write failure fails the create (fail-closed: a worktree
 				// without a generation could never be classified as session-owned).
-				const generation = randomUUID();
+				if (
+					opts.carryGeneration !== undefined &&
+					(!opts.carryGeneration || /\s/.test(opts.carryGeneration))
+				) {
+					throw new Error("invalid_carry_generation");
+				}
+				const generation = opts.carryGeneration ?? randomUUID();
+				this.createFaultHook?.("generation");
 				const markerPath = await this.resolveGenerationMarkerPath(worktreePath);
 				fs.writeFileSync(markerPath, `${generation}\n`, "utf8");
+
+				// FLY-2901 §6: exact-line `.flywheel/runs/` + `.flywheel/review-targets/`
+				// excludes before the worktree is handed to anyone. Warn-and-continue
+				// here (today's non-shared semantics); the shared takeover transaction
+				// runs the same helper FIRST and fails closed on it.
+				this.createFaultHook?.("post_add_exclude");
+				try {
+					await this.ensureFlywheelExcludes(worktreePath);
+				} catch (error) {
+					logger.warn("worktree_exclude_setup_failed", {
+						worktreePath,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 
 				return {
 					projectName: opts.projectName,
@@ -1327,6 +1402,114 @@ export class WorktreeManager {
 				throw error;
 			}
 		});
+	}
+
+	/**
+	 * FLY-2901 §6: make sure the shared `info/exclude` (common dir — one file
+	 * for every worktree of the repo) carries the two EXACT lines
+	 * `.flywheel/runs/` and `.flywheel/review-targets/`. Whole-line match, missing
+	 * lines appended, third-party lines preserved, temp+rename, re-read verify.
+	 * Callers hold the repo lock (concurrent writers are serialized by it).
+	 */
+	private async ensureFlywheelExcludes(cwd: string): Promise<void> {
+		const resolved = (
+			await this.exec(
+				"git",
+				[
+					"-C",
+					cwd,
+					"rev-parse",
+					"--path-format=absolute",
+					"--git-path",
+					"info/exclude",
+				],
+				cwd,
+			)
+		).stdout.trim();
+		if (!resolved) throw new Error("exclude_path_unresolved");
+		const excludeFile = path.resolve(cwd, resolved);
+		let content = "";
+		try {
+			content = fs.readFileSync(excludeFile, "utf8");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		const present = new Set(content.split(/\r?\n/));
+		const missing = FLYWHEEL_EXCLUDE_LINES.filter((line) => !present.has(line));
+		if (missing.length > 0) {
+			fs.mkdirSync(path.dirname(excludeFile), { recursive: true });
+			const prefix =
+				content === "" || content.endsWith("\n") ? content : `${content}\n`;
+			const temp = `${excludeFile}.${process.pid}.${randomUUID()}.tmp`;
+			try {
+				fs.writeFileSync(temp, `${prefix}${missing.join("\n")}\n`, {
+					flag: "wx",
+				});
+				fs.renameSync(temp, excludeFile);
+			} finally {
+				fs.rmSync(temp, { force: true });
+			}
+		}
+		const verify = new Set(fs.readFileSync(excludeFile, "utf8").split(/\r?\n/));
+		for (const line of FLYWHEEL_EXCLUDE_LINES) {
+			if (!verify.has(line)) throw new Error(`exclude_verify_failed:${line}`);
+		}
+	}
+
+	/**
+	 * FLY-2901: the shared branch-B takeover transaction (see
+	 * worktree-takeover-transaction.ts). Runs in ONE repo-lock critical section;
+	 * a missing injected lock makes every destructive branch refuse with
+	 * `repo_lock_unavailable` (today's reuse / fresh-create paths still work).
+	 */
+	async runTakeoverTransaction(
+		input: TakeoverTransactionInput,
+	): Promise<TakeoverTransactionResult> {
+		const expected = this.expectedWorktree(
+			input.mainRepoPath,
+			input.projectName,
+			input.issueId,
+		);
+		const safeGit = async (
+			args: string[],
+			cwd: string,
+			opts?: { env?: NodeJS.ProcessEnv; timeoutMs?: number },
+		) =>
+			(await this.exec("git", [...RESUME_GIT_SAFE_CONFIG, ...args], cwd, opts))
+				.stdout;
+		return this.locked(input.mainRepoPath, () =>
+			runTakeoverTransaction(
+				{
+					git: safeGit,
+					lockAvailable: this.repoLock !== undefined,
+					expected: () => expected,
+					listRegistered: () => this.list(input.mainRepoPath),
+					readGeneration: (worktreePath) =>
+						this.readWorktreeGeneration(worktreePath),
+					snapshot: (opts) => this.snapshotWorktreeState(opts),
+					create: (opts) =>
+						this.create({
+							mainRepoPath: input.mainRepoPath,
+							projectName: input.projectName,
+							issueId: input.issueId,
+							startPoint: opts.startPoint,
+							...(opts.carryGeneration !== undefined && {
+								carryGeneration: opts.carryGeneration,
+							}),
+						}),
+					removeIfExistsUnlocked: async () => {
+						await this.removeIfExistsUnlocked(
+							input.mainRepoPath,
+							input.projectName,
+							input.issueId,
+						);
+					},
+					ensureExcludes: (cwd) => this.ensureFlywheelExcludes(cwd),
+					rescueStateDir: this.takeoverRescueStateDir,
+				},
+				input,
+			),
+		);
 	}
 
 	/** FLY-1185 §2.1: absolute admin-area path of the generation marker. */
@@ -1900,6 +2083,11 @@ export class WorktreeManager {
 		});
 	}
 }
+
+const FLYWHEEL_EXCLUDE_LINES = [
+	".flywheel/runs/",
+	".flywheel/review-targets/",
+] as const;
 
 // ─── Porcelain parser ────────────────────────────
 

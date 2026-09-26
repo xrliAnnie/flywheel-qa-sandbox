@@ -231,11 +231,19 @@ export class CodexDaemonError extends Error {
 			| "rpc_error"
 			| "timeout"
 			| "handshake"
-			| "no_thread",
+			| "no_thread"
+			| "thread_mismatch"
+			| "identity_unavailable",
 	) {
 		super(message);
 		this.name = "CodexDaemonError";
 	}
+}
+
+export interface CodexResumeObservation {
+	threadId: string;
+	model: string;
+	cwd: string;
 }
 
 export class CodexDaemonClient {
@@ -484,9 +492,60 @@ export class CodexDaemonClient {
 	}
 
 	/** thread/resume — the same-account daemon-restart recovery path. */
-	async resumeThread(threadId: string): Promise<string> {
+	async resumeThread(
+		threadId: string,
+		options: { strictIdentity?: boolean } = {},
+	): Promise<string> {
 		const res = await this.request("thread/resume", { threadId });
-		return extractThreadId(res.result) ?? threadId;
+		const resumedId = extractThreadId(res.result);
+		if (options.strictIdentity && !resumedId) {
+			throw new CodexDaemonError("thread/resume returned no id", "no_thread");
+		}
+		if (options.strictIdentity && resumedId !== threadId) {
+			throw new CodexDaemonError(
+				"thread/resume returned a different id",
+				"thread_mismatch",
+			);
+		}
+		return resumedId ?? threadId;
+	}
+
+	/**
+	 * Strict standby resume identity from the app-server response itself. Launch
+	 * inputs are deliberately not accepted as observations here.
+	 */
+	async resumeThreadObserved(
+		threadId: string,
+	): Promise<CodexResumeObservation> {
+		const res = await this.request("thread/resume", { threadId });
+		const resumedId = extractThreadId(res.result);
+		if (!resumedId) {
+			throw new CodexDaemonError("thread/resume returned no id", "no_thread");
+		}
+		if (resumedId !== threadId) {
+			throw new CodexDaemonError(
+				"thread/resume returned a different id",
+				"thread_mismatch",
+			);
+		}
+		const result =
+			typeof res.result === "object" && res.result !== null
+				? (res.result as Record<string, unknown>)
+				: undefined;
+		const model = result?.model;
+		const cwd = result?.cwd;
+		if (
+			typeof model !== "string" ||
+			model.trim().length === 0 ||
+			typeof cwd !== "string" ||
+			cwd.trim().length === 0
+		) {
+			throw new CodexDaemonError(
+				"thread/resume returned no observable model or cwd",
+				"identity_unavailable",
+			);
+		}
+		return { threadId: resumedId, model, cwd };
 	}
 
 	/** thread/read with turns — used by durable injection reconciliation. */

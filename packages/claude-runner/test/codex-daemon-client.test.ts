@@ -208,6 +208,82 @@ describe("CodexDaemonClient — handshake + protocol", () => {
 		expect(await c.resumeThread("th-42")).toBe("th-42");
 	});
 
+	it("preserves legacy daemon-restart recovery when thread/resume omits the id", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({}));
+		const c = makeClient(d);
+		expect(await c.resumeThread("th-42")).toBe("th-42");
+	});
+
+	it("fails closed when a strict thread/resume omits the actual resumed id", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({}));
+		const c = makeClient(d);
+		await expect(
+			c.resumeThread("th-42", { strictIdentity: true }),
+		).rejects.toMatchObject({
+			kind: "no_thread",
+		});
+	});
+
+	it("fails closed when a strict thread/resume reports a different thread", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({ thread: { id: "th-new" } }));
+		const c = makeClient(d);
+		await expect(
+			c.resumeThread("th-42", { strictIdentity: true }),
+		).rejects.toMatchObject({
+			kind: "thread_mismatch",
+		});
+	});
+
+	it("returns the app-server observed model and cwd for a strict resume", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({
+			thread: { id: "th-42" },
+			model: "gpt-5.6-sol",
+			cwd: "/work/observed",
+		}));
+		const c = makeClient(d);
+
+		await expect(c.resumeThreadObserved("th-42")).resolves.toEqual({
+			threadId: "th-42",
+			model: "gpt-5.6-sol",
+			cwd: "/work/observed",
+		});
+	});
+
+	it.each([
+		["missing id", { thread: {}, model: "gpt-5.6-sol", cwd: "/work" }],
+		["empty model", { thread: { id: "th-42" }, model: "", cwd: "/work" }],
+		["empty cwd", { thread: { id: "th-42" }, model: "gpt-5.6-sol", cwd: "" }],
+	])(
+		"fails closed on %s in observed resume identity",
+		async (_label, response) => {
+			const d = new FakeDaemon();
+			d.responders.set("thread/resume", () => response);
+			const c = makeClient(d);
+
+			await expect(c.resumeThreadObserved("th-42")).rejects.toMatchObject({
+				kind: expect.stringMatching(/no_thread|identity_unavailable/),
+			});
+		},
+	);
+
+	it("fails closed when observed resume returns a different thread", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/resume", () => ({
+			thread: { id: "th-other" },
+			model: "gpt-5.6-sol",
+			cwd: "/work",
+		}));
+		const c = makeClient(d);
+
+		await expect(c.resumeThreadObserved("th-42")).rejects.toMatchObject({
+			kind: "thread_mismatch",
+		});
+	});
+
 	it("goal/set forwards objective + budget + active status", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/goal/set", () => ({}));

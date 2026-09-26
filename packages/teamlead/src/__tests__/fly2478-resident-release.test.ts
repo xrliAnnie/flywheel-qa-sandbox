@@ -26,7 +26,11 @@ function rawDb(store: StateStore): Database.Database {
 	return (store as unknown as { db: { raw: Database.Database } }).db.raw;
 }
 
-async function verdictStore(secondLoopTarget = false, shipCarrier = false) {
+async function verdictStore(
+	secondLoopTarget = false,
+	shipCarrier = false,
+	parkReason?: "rework_reachable_wait" | "process_retirement_pending",
+) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	const manifest = shipCarrier
@@ -97,7 +101,8 @@ async function verdictStore(secondLoopTarget = false, shipCarrier = false) {
 	if (!entered.ok) throw new Error(entered.reason);
 	openPark(
 		store,
-		shipCarrier ? "runner_ship_gate_wait" : "rework_reachable_wait",
+		parkReason ??
+			(shipCarrier ? "runner_ship_gate_wait" : "rework_reachable_wait"),
 	);
 	return store;
 }
@@ -323,11 +328,15 @@ describe("FLY-2478 resident release", () => {
 		});
 		expect(store.countDueResidentHolds(now)).toBe(0);
 	});
-	it.each(["pass", "timeout"] as const)(
-		"projects %s into a terminal session and settles its rework park",
-		async (cause) => {
-			const store = await verdictStore();
-			openPark(store);
+	it.each([
+		{ cause: "pass", reason: "rework_reachable_wait" },
+		{ cause: "timeout", reason: "rework_reachable_wait" },
+		{ cause: "pass", reason: "process_retirement_pending" },
+		{ cause: "timeout", reason: "process_retirement_pending" },
+	] as const)(
+		"projects $reason after $cause into a terminal session and settles its park",
+		async ({ cause, reason }) => {
+			const store = await verdictStore(false, false, reason);
 			if (cause === "pass")
 				expect(verdict(store, "qa_pass")).toMatchObject({ ok: true });
 			const now =
@@ -372,6 +381,36 @@ describe("FLY-2478 resident release", () => {
 				ok: true,
 				idempotentReplay: true,
 			});
+		},
+	);
+
+	it.each(["rework_reachable_wait", "process_retirement_pending"] as const)(
+		"settles an open %s park during terminal run closeout",
+		async (reason) => {
+			const store = await verdictStore(false, false, reason);
+			const settlement = store as unknown as {
+				settleWorkflowEngineParksForRunTx(
+					runId: string,
+					at: string,
+					reasons: string[],
+				): void;
+			};
+			expect(() =>
+				settlement.settleWorkflowEngineParksForRunTx("run-1", VERDICT_AT, [
+					reason,
+				]),
+			).not.toThrow();
+			expect(store.getSession("impl-1")).toMatchObject({
+				status: "completed",
+				terminal_at: expect.any(String),
+			});
+			expect(
+				rawDb(store)
+					.prepare(
+						"SELECT event FROM workflow_engine_park_outbox ORDER BY generation DESC LIMIT 1",
+					)
+					.get(),
+			).toEqual({ event: "park_cleared" });
 		},
 	);
 	it("requests release at the committed pass verdict and replays once", async () => {

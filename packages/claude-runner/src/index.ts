@@ -87,6 +87,7 @@ export {
 	CodexDaemonGoalRuntime,
 	type CodexDaemonGoalRuntimeOptions,
 	type CodexTransportCloseEvidence,
+	type RestartDecision,
 	type RunGoalInput,
 	type RunGoalOutcome,
 	type Sandbox,
@@ -115,6 +116,10 @@ export {
 	probeCodexDaemonProcessBinding,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
+	resolveSocketProbePath,
+	type SocketProbePath,
+	type SocketProbePathDeps,
+	type SocketProbePathUntrustedReason,
 	type SpawnCodexDaemonOptions,
 	SUN_PATH_MAX,
 	spawnCodexDaemon,
@@ -128,9 +133,14 @@ export {
 	type WsLike,
 } from "./codex-daemon-transport.js"; // FLY-1188 M4b
 export {
+	CODEX_STOP_WAIT_MS,
+	type CodexExecutionClaimOptions,
 	type CodexExecutionOwnerKind,
 	type CodexExecutionOwnershipLease,
 	CodexExecutionOwnershipRegistry,
+	type CodexOwnershipState,
+	type CodexStopReason,
+	type CodexStopResult,
 } from "./codex-execution-ownership.js";
 // FLY-123 WS-A/WS-B/WS-C/P5: per-runner CODEX_HOME provisioning + credential
 // lifecycle + repo-owned same-account daemon launcher resolver
@@ -142,6 +152,8 @@ export {
 	type CodexAgentHomeSessionSnapshot,
 	type CodexCredentialMigrationResult,
 	type CodexCredentialMigrationState,
+	type CodexLeaseGuardOptions,
+	type CodexLeaseReleaseOutcome,
 	codexAgentHomeDir,
 	codexCredentialTruthPath,
 	codexHomeDir,
@@ -155,12 +167,14 @@ export {
 	provisionCodexAgentHome,
 	provisionCodexHome,
 	rawCodexBin,
+	reassertCodexAgentHomeLease,
 	releaseCodexAgentHomeLease,
 	removeCodexHome,
 	renderCodexHomeConfig,
 	resolveExecutionCodexHome,
 	retireCodexExecutionHome,
 	SECRET_ENV_VARS,
+	scrubCodexAgentHomeLeaseEntry,
 	scrubCodexHomeCredential,
 	scrubOrphanedCodexAgentHomes,
 	scrubOrphanedCodexHomes,
@@ -202,8 +216,21 @@ export {
 	publishCodexMemorySeed,
 	readCodexMemorySeedManifest,
 } from "./codex-memory-seed.js";
+// FLY-2877: the lease guard's process authority (FLY-2869 contract copy)
+export {
+	type CodexLeaseHolderProbe,
+	type CodexLeaseHolderProbeResult,
+	type CodexProcessRecord,
+	type CodexProcessSnapshot,
+	type CodexUnattributedProcess,
+	captureCodexProcessSnapshot,
+	defaultCodexLeaseHolderProbe,
+	holdersFromSnapshot,
+	parseCodexProcessSnapshot,
+} from "./codex-process-snapshot.js";
 export {
 	type CodexRolloutMtimeProbe,
+	findCodexRolloutPath, // FLY-2903: terminal-body token watch
 	probeCodexRolloutMtime,
 } from "./codex-rollout-probe.js";
 export {

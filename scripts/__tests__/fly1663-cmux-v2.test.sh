@@ -22,6 +22,8 @@ export VIEW_ABSENT_STATE="$TMP/view-absent"
 export CMUX_FLAG_STATE="$TMP/cmux-flags"
 export LEDGER_CONFLICT_STATE="$TMP/ledger-conflicts"
 export ROSTER_EPISODE_STATE="$TMP/roster-episodes"
+export NODE_CREATE_LEDGER="$TMP/node-create-ledger"
+export NODE_RUNAWAY_LATCH="$TMP/node-runaway-latch"
 export FLYWHEEL_ENV_FILE="$TMP/home/.flywheel/.env"
 export FLYWHEEL_PROJECTS_FILE="$TMP/home/.flywheel/projects.json"
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMP/maintenance"
@@ -33,7 +35,8 @@ printf '%s\n' '[{"projectName":"demo","leads":[{"agentId":"ops-lead"}]}]' \
 for writable_path in \
   "$HOME" "$FLYWHEEL_STATE_DIR" "$VIEW_WAL_DIR" "$VIEW_LEDGER" \
   "$KEEPER_INVENTORY" "$VIEW_ABSENT_STATE" "$CMUX_FLAG_STATE" \
-  "$LEDGER_CONFLICT_STATE" "$ROSTER_EPISODE_STATE"; do
+  "$LEDGER_CONFLICT_STATE" "$ROSTER_EPISODE_STATE" \
+  "$NODE_CREATE_LEDGER" "$NODE_RUNAWAY_LATCH"; do
   case "$writable_path" in
     "$TMP"|"$TMP"/*) ;;
     *) echo "FATAL: writable test path escaped sandbox: $writable_path" >&2; exit 99 ;;
@@ -150,19 +153,13 @@ else
 fi
 
 calls="$TMP/direct-calls"
-counter="$TMP/json-counter"
 : > "$calls"
-printf '0\n' > "$counter"
 workspace_title=""
 surface_title=""
 send_payload=""
 cmux_socket_identity() { printf '%s\n' gen-1; }
 get_cmux_workspaces_json() {
-  local n
-  n=$(cat "$counter")
-  n=$((n + 1))
-  printf '%s\n' "$n" > "$counter"
-  if (( n < 3 )); then
+  if [[ -z "$workspace_title" ]]; then
     printf '%s\n' '{"workspaces":[]}'
   else
     printf '{"workspaces":[{"ref":"workspace:9","title":"%s"}]}\n' "$expected"
@@ -192,6 +189,11 @@ cmux_call_guarded() {
     rename-tab) surface_title="demo-ops-lead" ;;
   esac
 }
+WATCHER_PASS_SEQ=1
+CREATE_GATE_PASS=""
+CREATE_GATE_STATE=uninitialized
+CREATE_RESERVATION_LINE=""
+rm -f "$NODE_CREATE_LEDGER" "$NODE_RUNAWAY_LATCH"
 if ensure_v2_lead_workspace demo-ops-lead "$socket" \
     && [[ "$(tr '\n' ',' < "$calls")" == \
       "cmux:new-workspace,ledger:prepared:workspace:9,cmux:rename-workspace,cmux:rename-tab,ledger:committed:workspace:9," ]]; then

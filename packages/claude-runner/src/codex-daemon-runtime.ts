@@ -28,6 +28,7 @@ import {
 	mkdirSync,
 	openSync,
 	readSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	unlinkSync,
@@ -1391,17 +1392,84 @@ function defaultProcessStartIdentity(pid: number): string | undefined {
 	}
 }
 
+export type SocketProbePathUntrustedReason =
+	| "lstat_failed"
+	| "link_unresolvable"
+	| "link_target_not_socket"
+	| "link_target_foreign_owner";
+
+export type SocketProbePath =
+	| { kind: "plain"; path: string }
+	| { kind: "link"; path: string }
+	| { kind: "untrusted"; reason: SocketProbePathUntrustedReason };
+
+export interface SocketProbePathDeps {
+	lstat?: (p: string) => { isSymbolicLink(): boolean };
+	realpath?: (p: string) => string;
+	stat?: (p: string) => { isSocket(): boolean; uid: number };
+	/** `null` = platform without uids (skip the owner check). */
+	uid?: number | null;
+}
+
+/**
+ * FLY-2830: since Codex 0.157 the `--listen unix://<p>` path is a SYMLINK to
+ * the real socket under `/private/tmp/codex-daemon-<uid>/`, and `lsof -- <link>`
+ * finds no holder (darwin lsof matches a unix socket by its bound name). The
+ * holder probe must look at the resolved target — but only a socket owned by
+ * us: anything else is no evidence. Resolving never widens who may be killed;
+ * the holder still has to sit in the ledger-recorded group.
+ *
+ * A missing path stays `plain` so lsof keeps answering "no holder" exactly as
+ * it did before links existed.
+ */
+export function resolveSocketProbePath(
+	p: string,
+	deps: SocketProbePathDeps = {},
+): SocketProbePath {
+	let isLink: boolean;
+	try {
+		isLink = (deps.lstat ?? lstatSync)(p).isSymbolicLink();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT")
+			return { kind: "plain", path: p };
+		return { kind: "untrusted", reason: "lstat_failed" };
+	}
+	if (!isLink) return { kind: "plain", path: p };
+	let target: string;
+	let targetStat: { isSocket(): boolean; uid: number };
+	try {
+		target = (deps.realpath ?? realpathSync)(p);
+		targetStat = (deps.stat ?? statSync)(target);
+	} catch {
+		return { kind: "untrusted", reason: "link_unresolvable" };
+	}
+	if (!targetStat.isSocket())
+		return { kind: "untrusted", reason: "link_target_not_socket" };
+	const uid =
+		deps.uid !== undefined
+			? deps.uid
+			: typeof process.getuid === "function"
+				? process.getuid()
+				: null;
+	if (uid !== null && targetStat.uid !== uid)
+		return { kind: "untrusted", reason: "link_target_foreign_owner" };
+	return { kind: "link", path: target };
+}
+
 /**
  * FLY-1188 HIGH-3 R2: the pids currently holding the unix socket at `p`, from
  * the OS (`lsof -t -- <p>`). This is the AUTHORITATIVE identity check the reap
  * gates on — a persisted pid is killed only if it appears here. Bounded (2s, no
  * shell) and total: any failure (lsof missing/ENOENT, no holder, parse error)
  * yields `[]`, which the caller treats as "not provable" → refuse to kill.
+ * FLY-2830: a symlinked socket is probed at its verified target.
  */
 function defaultSocketHolderPids(p: string): number[] {
+	const probe = resolveSocketProbePath(p);
+	if (probe.kind === "untrusted") return [];
 	try {
 		const out = withSyncOpMarker("codex-daemon:lsof-socket", () =>
-			execFileSync("lsof", ["-t", "--", p], {
+			execFileSync("lsof", ["-t", "--", probe.path], {
 				encoding: "utf8",
 				timeout: 2000,
 				stdio: ["ignore", "pipe", "ignore"],

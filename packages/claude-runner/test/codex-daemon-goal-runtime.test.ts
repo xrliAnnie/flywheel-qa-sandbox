@@ -45,6 +45,8 @@ class FakeClient {
 	initialized = 0;
 	started: string[] = [];
 	resumed: string[] = [];
+	resumeOptions: Array<{ strictIdentity?: boolean } | undefined> = [];
+	observedResumes: string[] = [];
 	closed = 0;
 	constructor(private readonly threadId: string) {}
 	isClosed(): boolean {
@@ -57,9 +59,21 @@ class FakeClient {
 		this.started.push(this.threadId);
 		return this.threadId;
 	}
-	async resumeThread(id: string): Promise<string> {
+	async resumeThread(
+		id: string,
+		options?: { strictIdentity?: boolean },
+	): Promise<string> {
 		this.resumed.push(id);
+		this.resumeOptions.push(options);
 		return id;
+	}
+	async resumeThreadObserved(id: string): Promise<{
+		threadId: string;
+		model: string;
+		cwd: string;
+	}> {
+		this.observedResumes.push(id);
+		return { threadId: id, model: "gpt-5.6-sol", cwd: "/work" };
 	}
 	close(): void {
 		this.closed += 1;
@@ -246,6 +260,80 @@ describe("CodexDaemonGoalRuntime", () => {
 			},
 		});
 		expect(out.result.succeeded).toBe(true);
+		rt.stop();
+	});
+
+	it("fails closed on an identity-handler error when strict standby resume is requested", async () => {
+		const h = makeHarness({ runGoalScript: [COMPLETE] });
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		await expect(
+			rt.runGoal({
+				objective: "x",
+				resumeThreadId: "prior-thread",
+				strictResumeIdentity: true,
+				failOnThreadReadyError: true,
+				onThreadReady: () => {
+					throw new Error("identity mismatch");
+				},
+			}),
+		).rejects.toThrow("identity mismatch");
+		expect(h.clients[0].observedResumes).toEqual(["prior-thread"]);
+	});
+
+	it("passes app-server observed identity to a strict standby resume hook", async () => {
+		const h = makeHarness({ runGoalScript: [COMPLETE] });
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const ready: unknown[] = [];
+		await rt.runGoal({
+			objective: "x",
+			resumeThreadId: "prior-thread",
+			strictResumeIdentity: true,
+			onThreadReady: (...args) => ready.push(args),
+		});
+		expect(ready).toEqual([
+			[
+				"prior-thread",
+				0,
+				{
+					threadId: "prior-thread",
+					model: "gpt-5.6-sol",
+					cwd: "/work",
+				},
+			],
+		]);
+		rt.stop();
+	});
+
+	it("awaits durable resume verification before sending goal input", async () => {
+		let releaseVerification!: () => void;
+		const verification = new Promise<void>((resolve) => {
+			releaseVerification = resolve;
+		});
+		let goalStarted = false;
+		const h = makeHarness({
+			runGoalScript: [COMPLETE],
+			runGoalFn: (async () => {
+				goalStarted = true;
+				return COMPLETE;
+			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const running = rt.runGoal({
+			objective: "x",
+			resumeThreadId: "prior-thread",
+			strictResumeIdentity: true,
+			failOnThreadReadyError: true,
+			onThreadReady: async () => verification,
+		});
+		await vi.waitFor(() => {
+			expect(h.clients[0]?.observedResumes).toEqual(["prior-thread"]);
+		});
+		expect(goalStarted).toBe(false);
+		releaseVerification();
+		await expect(running).resolves.toMatchObject({
+			result: { succeeded: true },
+		});
+		expect(goalStarted).toBe(true);
 		rt.stop();
 	});
 
@@ -1138,4 +1226,124 @@ describe("FLY-2505 connect readiness provenance", () => {
 			});
 		},
 	);
+});
+
+describe("FLY-2903 restart gate (mayRestartAfterTransportDeath)", () => {
+	it("FLY-2814 counterexample: an owner-refused transport death does not restart and propagates the death", async () => {
+		const logs: string[] = [];
+		const death = new GoalRunError("killed by bridge", "transport_closed");
+		const h = makeHarness({
+			runGoalScript: [death, COMPLETE],
+			logger: (m) => logs.push(m),
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const decisions: unknown[] = [];
+		await expect(
+			rt.runGoal({
+				objective: "x",
+				mayRestartAfterTransportDeath: () => false,
+				onRestartDecision: (d) => decisions.push(d),
+			}),
+		).rejects.toBe(death);
+		expect(h.spawns).toEqual(["/home/a"]);
+		expect(decisions).toEqual([
+			{ restarts: 0, allowed: false, reason: "refused_by_owner" },
+		]);
+		expect(logs.some((l) => l.includes("restart refused"))).toBe(true);
+	});
+
+	it("a throwing predicate fails closed (no restart, predicate_threw)", async () => {
+		const h = makeHarness({
+			runGoalScript: [new GoalRunError("d", "transport_closed"), COMPLETE],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const decisions: Array<{ reason: string }> = [];
+		await expect(
+			rt.runGoal({
+				objective: "x",
+				mayRestartAfterTransportDeath: () => {
+					throw new Error("lifecycle read failed");
+				},
+				onRestartDecision: (d) => decisions.push(d),
+			}),
+		).rejects.toBeInstanceOf(GoalRunError);
+		expect(h.spawns).toEqual(["/home/a"]);
+		expect(decisions.map((d) => d.reason)).toEqual(["predicate_threw"]);
+	});
+
+	it("a non-true predicate value is a refusal", async () => {
+		const h = makeHarness({
+			runGoalScript: [new GoalRunError("d", "transport_closed"), COMPLETE],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		await expect(
+			rt.runGoal({
+				objective: "x",
+				mayRestartAfterTransportDeath: (() =>
+					undefined) as unknown as () => boolean,
+			}),
+		).rejects.toBeInstanceOf(GoalRunError);
+		expect(h.spawns).toEqual(["/home/a"]);
+	});
+
+	it("a true predicate keeps today's restart and reports the allowed decision", async () => {
+		const logs: string[] = [];
+		const h = makeHarness({
+			runGoalScript: [new GoalRunError("d", "transport_closed"), COMPLETE],
+			logger: (m) => logs.push(m),
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const decisions: unknown[] = [];
+		const out = await rt.runGoal({
+			objective: "x",
+			mayRestartAfterTransportDeath: () => true,
+			onRestartDecision: (d) => decisions.push(d),
+		});
+		expect(out.restarts).toBe(1);
+		expect(h.spawns).toEqual(["/home/a", "/home/a"]);
+		expect(decisions).toEqual([
+			{ restarts: 1, allowed: true, reason: "allowed" },
+		]);
+		expect(logs.some((l) => l.includes("rotating account"))).toBe(false);
+		expect(
+			logs.some((l) => l.includes("(same home; credential re-read)")),
+		).toBe(true);
+	});
+
+	it("a predicate that turns false on the second death restarts exactly once", async () => {
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("d1", "transport_closed"),
+				new GoalRunError("d2", "transport_closed"),
+				COMPLETE,
+			],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		let calls = 0;
+		await expect(
+			rt.runGoal({
+				objective: "x",
+				mayRestartAfterTransportDeath: () => {
+					calls += 1;
+					return calls < 2;
+				},
+			}),
+		).rejects.toBeInstanceOf(GoalRunError);
+		expect(h.spawns).toEqual(["/home/a", "/home/a"]);
+	});
+
+	it("a throwing onRestartDecision never changes the decision", async () => {
+		const h = makeHarness({
+			runGoalScript: [new GoalRunError("d", "transport_closed"), COMPLETE],
+		});
+		const rt = new CodexDaemonGoalRuntime(h.opts);
+		const out = await rt.runGoal({
+			objective: "x",
+			mayRestartAfterTransportDeath: () => true,
+			onRestartDecision: () => {
+				throw new Error("sink down");
+			},
+		});
+		expect(out.restarts).toBe(1);
+	});
 });

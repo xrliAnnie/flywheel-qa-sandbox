@@ -1,0 +1,16 @@
+{
+  "kind": "local-publisher-preflight-not-hosted-or-browser",
+  "accepted": true,
+  "bytes": 325925,
+  "svgRootIds": [
+    "fly2799-d1",
+    "fly2799-d2",
+    "fly2799-d3"
+  ],
+  "duplicateIds": [],
+  "nonceInjected": true,
+  "externalScriptTags": 0,
+  "externalResourceReferences": [],
+  "idCount": 86,
+  "htmlSha256": "d43224ecbeac7a0b558dbdc375d8d5e98e1792a092012c106b80603550679825"
+}

@@ -1,0 +1,16 @@
+{
+  "static": "PASS",
+  "interaction_vm": "PASS",
+  "cases": [
+    "7 comment inputs",
+    "pathname-scoped storage",
+    "storage-denied recovery",
+    "live aggregation",
+    "1800-codepoint chunks",
+    "clipboard success",
+    "clipboard absent fallback",
+    "clipboard rejection fallback"
+  ],
+  "browser_visual": "NOT RUN: local Chromium sandbox launch denied",
+  "product_qa": "NOT RUN: design only"
+}

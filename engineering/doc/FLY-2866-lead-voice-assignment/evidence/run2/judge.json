@@ -1,0 +1,202 @@
+{
+ "A-alloy-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "清晰有力",
+  "content": "嘿，你好，我是 Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "A-ash-trim": {
+  "gender": "男声",
+  "age": "中年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "声音低沉温和",
+  "content": "安妮，你好，我是Tadashi。现在有两件事要你看。",
+  "issues": "无"
+ },
+ "A-ballad-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "标准普通话口音",
+  "timbre": "清晰温和",
+  "content": "安妮你好我是策略师现在有两件事要你做",
+  "issues": "无"
+ },
+ "A-cedar-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准无明显地方口音",
+  "timbre": "清晰明亮",
+  "content": "安妮你好，我是田田。现在有两件事要你看。",
+  "issues": "无"
+ },
+ "A-coral-trim": {
+  "gender": "男声",
+  "age": "中年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "沉稳有磁性",
+  "content": "您好，我是特派员，现在有两件事要",
+  "issues": "截断"
+ },
+ "A-echo-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "标准普通话口音",
+  "timbre": "清晰有力",
+  "content": "Annie 你好，我是Tadashi，现在有两件",
+  "issues": "无"
+ },
+ "A-marin-trim": {
+  "gender": "男声",
+  "age": "中年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "温和沉稳",
+  "content": "Amy 你好，我是Tadashi，现在有两件事要你看",
+  "issues": "无"
+ },
+ "A-sage-trim": {
+  "gender": "男声",
+  "age": "中年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "沉稳有磁性",
+  "content": "你好，我是他的谁，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "A-shimmer-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "标准普通话口音",
+  "timbre": "清晰有活力",
+  "content": "你好，我是Tedashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "A-verse-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准无明显地方口音",
+  "timbre": "清晰有力",
+  "content": "你好，我是Tadashi。现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-alloy-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "标准普通话",
+  "timbre": "清晰明亮",
+  "content": "你好，我是Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-ash-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "清晰有力",
+  "content": "Annie，你好，我是Tadashi，现在有两件事要你看",
+  "issues": "无"
+ },
+ "B-ballad-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "沉稳清晰",
+  "content": "安妮你好 我是Tadashi 现在有两件事要你看",
+  "issues": "无"
+ },
+ "B-cedar-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "清晰有活力",
+  "content": "你好，我是Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-coral-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "清晰有力",
+  "content": "安妮你好，我是Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-echo-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "标准普通话，无明显地方口音",
+  "timbre": "清晰明亮",
+  "content": "安妮你好，我是Tadashi。现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-marin-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "清亮有活力",
+  "content": "Annie，你好，我是Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-sage-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "标准普通话口音",
+  "timbre": "清晰温和",
+  "content": "阿尼你好，我是Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-shimmer-trim": {
+  "gender": "男声",
+  "age": "中年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "沉稳温和",
+  "content": "安妮你好，我是Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ },
+ "B-verse-trim": {
+  "gender": "男声",
+  "age": "青年",
+  "pace": "适中",
+  "mandarin_naturalness": 5,
+  "accent": "普通话标准口音",
+  "timbre": "清晰有力",
+  "content": "安妮，你好，我是Tadashi，现在有两件事要你看。",
+  "issues": "无"
+ }
+}

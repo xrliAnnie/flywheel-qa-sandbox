@@ -1,0 +1,19 @@
+flowchart TD
+  A[派发前 admit<br/>写入 lease 与 token] --> B[启动前 provision<br/>确认 lease 存在]
+  B --> C[启动 daemon 与 TUI<br/>进程环境带 home 与 exec id]
+  C --> D{运行中<br/>独立定时器每 60 秒复核}
+  D -->|还在| D
+  D -->|被删了| E[用同一 token 放回<br/>一次只跑一个, 记日志 restored]
+  E --> D
+  D -->|任务结束或受控关停| F0[停定时器<br/>等在途复核结束]
+  F0 --> F1[停 daemon]
+  F1 --> F[关 TUI 窗口]
+  F --> G[确认 daemon 退出]
+  G --> H[等进程归零<br/>总共最多 5 秒]
+  H --> I{守卫: 还有这个 exec 的<br/>codex 进程吗?}
+  I -->|没有| J[删除 lease<br/>最后一个则擦凭据]
+  I -->|有 或 看不清| K[保留 lease<br/>记日志 retained]
+  K --> L[维护 tick 清扫<br/>无进程 且 不在候选 且 超过 10 分钟<br/>不依赖 session 记录]
+  L --> I
+  M[Bridge 启动 janitor] --> I
+  N[派发未交接 / rescue / reown 回滚] --> I

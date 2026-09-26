@@ -1,0 +1,45 @@
+// Read-only replay of the production Codex quota host collector (no evidence writes).
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+const R = "/Users/xiaorongli/Dev/flywheel-FLY-2869";
+const { probeCodexDaemonProcessBinding, readCodexLaunchSnapshot, resolveExecutionCodexHome } = await import(`${R}/packages/claude-runner/dist/index.js`);
+const { createCodexQuotaHostCollector, createRegisteredCodexQuotaHostCollectorOptions } = await import(`${R}/packages/teamlead/dist/codex-quota/host-readiness.js`);
+const { checkCodexQuotaReadiness } = await import(`${R}/packages/teamlead/dist/codex-quota/readiness.js`);
+const { createResidentHomeEvidence } = await import(`${R}/packages/teamlead/dist/codex-quota/resident-home-evidence.js`);
+const { parseAndValidateProjects } = await import(`${R}/packages/teamlead/dist/ProjectConfig.js`);
+const { StateStore } = await import(`${R}/packages/teamlead/dist/StateStore.js`);
+const stateRoot = join(homedir(), ".flywheel");
+const projects = parseAndValidateProjects(JSON.parse(readFileSync(join(stateRoot, "projects.json"), "utf8")));
+const store = await StateStore.openForMaintenance(join(stateRoot, "teamlead.db"), { readonly: true });
+try {
+  const collect = createCodexQuotaHostCollector(createRegisteredCodexQuotaHostCollectorOptions(projects, {
+    homesRoot: join(stateRoot, "codex-homes"),
+    canonicalHome: join(homedir(), ".codex"),
+    commRoot: join(stateRoot, "comm"),
+    projectNames: projects.map((p) => p.projectName),
+    approvedManifestPath: join(stateRoot, "codex-quota", "readiness-receipt.json"),
+    leadAuthorityScript: join(R, "scripts", "resident-codex-lead-recover.sh"),
+    residentEvidence: createResidentHomeEvidence({
+      getSession: (id) => store.getSession(id),
+      resolveExecutionHome: resolveExecutionCodexHome,
+      readLaunchSnapshot: readCodexLaunchSnapshot,
+      probeDaemonProcessBinding: probeCodexDaemonProcessBinding,
+    }),
+  }));
+  const summarize = (inv) => {
+    const counts = {};
+    for (const d of inv.diagnostics) counts[`${d.scope}:${d.reason}`] = (counts[`${d.scope}:${d.reason}`] ?? 0) + 1;
+    return { complete: inv.complete, registeredComplete: inv.registeredComplete, counts,
+      blocking: inv.diagnostics.filter((d) => d.scope !== "info").map((d) => ({ reason: d.reason, scope: d.scope, executionId: d.executionId, home: d.home })),
+      info: inv.diagnostics.filter((d) => d.scope === "info").map((d) => ({ reason: d.reason, executionId: d.executionId, pid: d.pid, startedAt: d.startedAt, home: d.home })),
+      homes: inv.homes, unattributed: inv.unattributedReaders, failureReasons: inv.failureReasons };
+  };
+  const first = await collect();
+  console.log("ROUND1", JSON.stringify(summarize(first), null, 1));
+  await new Promise((r) => setTimeout(r, 65_000));
+  const inv = await collect();
+  console.log("ROUND2", JSON.stringify(summarize(inv), null, 1));
+  const r = await checkCodexQuotaReadiness({ canonicalAuthPath: join(homedir(), ".codex", "auth.json"), collectHomes: async () => inv });
+  console.log("readiness", JSON.stringify(r));
+} finally { store.close(); }

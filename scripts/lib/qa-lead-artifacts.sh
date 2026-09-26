@@ -192,3 +192,58 @@ qa_codex_profile_assignments() {
       ;;
   esac
 }
+
+# Resolve the 529-room Codex outbound transport without ambient state. An
+# explicit test knob always wins; otherwise full-access follows the Lead entry
+# used by slot 2 while companion preserves the existing direct QA behavior.
+qa_codex_effective_outbound_mode() {
+  local profile="${1:-}" override="${2:-}"
+  case "$override" in
+    direct|bridge)
+      printf '%s\n' "$override"
+      return 0
+      ;;
+    "") ;;
+    *)
+      printf 'ERROR: TEST_CODEX_LEAD_OUTBOUND_MODE must be direct or bridge\n' >&2
+      return 1
+      ;;
+  esac
+  case "$profile" in
+    full-access) printf '%s\n' bridge ;;
+    companion) printf '%s\n' direct ;;
+    *)
+      printf 'ERROR: unsupported QA Codex profile\n' >&2
+      return 1
+      ;;
+  esac
+}
+
+# Render only the transport-owned runtime assignments. Diagnostics identify a
+# missing coordinate by name and never echo a token value.
+qa_codex_transport_assignments() {
+  local mode="${1:-}" bridge_url="${2:-}" api_token="${3:-}"
+  case "$mode" in
+    direct)
+      printf '%s\n' 'FLYWHEEL_CODEX_LEAD_OUTBOUND=direct'
+      ;;
+    bridge)
+      if [[ -z "$bridge_url" ]]; then
+        printf 'ERROR: bridge Codex Lead requires FLYWHEEL_BRIDGE_URL\n' >&2
+        return 1
+      fi
+      if [[ -z "$api_token" ]]; then
+        printf 'ERROR: bridge Codex Lead requires FLYWHEEL_API_TOKEN\n' >&2
+        return 1
+      fi
+      printf '%s\n' \
+        'FLYWHEEL_CODEX_LEAD_OUTBOUND=bridge' \
+        "FLYWHEEL_BRIDGE_URL=${bridge_url}" \
+        "FLYWHEEL_API_TOKEN=${api_token}"
+      ;;
+    *)
+      printf 'ERROR: unsupported QA Codex outbound mode\n' >&2
+      return 1
+      ;;
+  esac
+}

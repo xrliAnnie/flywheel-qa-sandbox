@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexQuotaCoordinator } from "../../codex-quota/coordinator.js";
 import { createCodexQuotaOutboxDelivery } from "../../codex-quota/outbox.js";
 import type { AlertPayload } from "../../LeadAlertNotifier.js";
@@ -485,3 +485,212 @@ for (const exhausted of [false, true]) {
 		);
 	});
 }
+
+describe("FLY-2869 — manual switch N1", () => {
+	const manualSnapshot = {
+		version: 1 as const,
+		from: {
+			profile: "business",
+			accountKey: "business-key",
+			email: "business@example.test",
+			windows: [
+				{ usedPercent: 100, resetsAt: Date.parse("2026-09-30T20:59:55.000Z") },
+			],
+		},
+		to: {
+			profile: "school",
+			accountKey: "school-key",
+			email: "school@example.test",
+			windows: [],
+		},
+	};
+	async function manualStore(
+		notification: typeof manualSnapshot | null = manualSnapshot,
+	) {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		store.codexQuota.initializeRoot({
+			rootKey: "root",
+			accountKey: "business-key",
+			profile: "business",
+			generation: 11,
+		});
+		store.codexQuota.reconcileExternalRoot({
+			rootKey: "root",
+			expectedGeneration: 11,
+			accountKey: "school-key",
+			profile: "school",
+			authDigest: "a".repeat(64),
+			notification,
+		});
+		return store;
+	}
+	const deliver = (store: StateStore, messages: AlertPayload[]) =>
+		createCodexQuotaOutboxDelivery({
+			store,
+			founderUserId: "123456789012345678",
+			timezone: () => "America/Los_Angeles",
+			send: async (payload) => {
+				messages.push(payload);
+				store.recordAlertDeliveryReceipt(
+					payload.eventId,
+					"queued_durable",
+					"2026-09-25T04:08:00.000Z",
+				);
+			},
+		})();
+
+	it("sends the same N1 shape as an automatic switch, labelled manual, exactly once", async () => {
+		const store = await manualStore();
+		const messages: AlertPayload[] = [];
+		await deliver(store, messages);
+		// A fresh delivery instance after a restart sends nothing again.
+		await deliver(store, messages);
+		expect(messages).toHaveLength(1);
+		expect(messages[0]).toMatchObject({
+			eventId: "codex:root:12:manual_switch",
+			eventType: "quota_switch_confirmation",
+			severity: "info",
+			deliveryStyle: "plain",
+			metadata: {
+				codexQuota: {
+					vendor: "codex",
+					incidentId: "codex:root:12",
+					generation: 12,
+				},
+			},
+		});
+		expect(messages[0]).not.toHaveProperty("mentionUserId");
+		expect(messages[0]?.body.split("\n")[0]).toBe(
+			"Codex 已切号：**business → school**（手动）",
+		);
+		expect(messages[0]?.body).toContain(
+			"原账号 **business**\nbusiness@example.test",
+		);
+		expect(messages[0]?.body).toContain(
+			"weekly  100%   0%     09-30 Wed 13:59",
+		);
+		expect(messages[0]?.body).toContain(
+			"新账号 **school**\nschool@example.test\n```text\nwindow  used   left   reset (PT)\nweekly  n/a    n/a    n/a",
+		);
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.find((row) => row.event_id === "codex:root:12:manual_switch"),
+		).toMatchObject({ delivery_state: "delivered" });
+	});
+
+	it("degrades a snapshot that disagrees with the recorded generation to verified profiles only", async () => {
+		const store = await manualStore({
+			...manualSnapshot,
+			to: {
+				...manualSnapshot.to,
+				profile: "personal",
+				accountKey: "personal-key",
+			},
+		});
+		const messages: AlertPayload[] = [];
+		await deliver(store, messages);
+		expect(messages).toHaveLength(1);
+		expect(messages[0]?.body.split("\n")[0]).toBe(
+			"Codex 已切号：**business → school**（手动）",
+		);
+		expect(messages[0]?.body).not.toContain("@example.test");
+		expect(messages[0]?.body).not.toContain("100%");
+	});
+
+	it("degrades a missing snapshot and keeps a row without its generation pending", async () => {
+		const store = await manualStore(null);
+		const messages: AlertPayload[] = [];
+		await deliver(store, messages);
+		expect(messages[0]?.body.split("\n")[0]).toBe(
+			"Codex 已切号：**unknown → school**（手动）",
+		);
+
+		store.codexQuota.enqueueOutbox({
+			incidentId: null,
+			kind: "switch_notification",
+			eventId: "codex:root:99:manual_switch",
+			destination: "founder",
+			payload: {
+				reason: "manual_switch",
+				rootKey: "root",
+				generation: 99,
+				notification: JSON.stringify(manualSnapshot),
+			},
+		});
+		await deliver(store, messages);
+		expect(messages).toHaveLength(1);
+		expect(
+			store.codexQuota
+				.listOutbox()
+				.find((row) => row.event_id === "codex:root:99:manual_switch"),
+		).toMatchObject({ delivery_state: "pending" });
+	});
+});
+
+describe("FLY-2869 — Codex readings stopped alert", () => {
+	it("renders one plain informational alert with a frozen body, including the never-observed case", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		const T0 = Date.parse("2026-09-25T04:00:00.000Z");
+		const at = (minutes: number) =>
+			new Date(T0 + minutes * 60_000).toISOString();
+		store.codexQuota.observeCodexReadingPipeline({
+			nowIso: at(0),
+			latestObservedAt: at(-40),
+			failureCode: "codex_quota_runtime_unavailable",
+		});
+		store.codexQuota.observeCodexReadingPipeline({
+			nowIso: at(1),
+			latestObservedAt: at(1),
+			failureCode: null,
+		});
+		store.codexQuota.observeCodexReadingPipeline({
+			nowIso: at(2),
+			latestObservedAt: null,
+			failureCode: "no_observation_advanced",
+		});
+		store.codexQuota.observeCodexReadingPipeline({
+			nowIso: at(33),
+			latestObservedAt: null,
+			failureCode: "no_observation_advanced",
+		});
+		const messages: AlertPayload[] = [];
+		const deliver = (now: number) =>
+			createCodexQuotaOutboxDelivery({
+				store,
+				now: () => now,
+				timezone: () => "America/Los_Angeles",
+				send: async (payload) => {
+					messages.push(payload);
+				},
+			})();
+		await deliver(T0 + 34 * 60_000);
+		// No receipt was recorded: a later ambiguous replay must render the same body.
+		await deliver(T0 + 70 * 60_000);
+		const bodies = messages.map((message) => message.body);
+		expect(
+			messages.every((m) => m.eventType === "codex_quota_reading_stale"),
+		).toBe(true);
+		expect(messages[0]).toMatchObject({
+			title: "Codex 额度读数停更",
+			severity: "warning",
+			deliveryStyle: "plain",
+		});
+		expect(messages[0]).not.toHaveProperty("mentionUserId");
+		expect(bodies).toContain(
+			"⚠️ Codex 额度读数已 40 分钟没有刷新成功（最后一次成功读数 09-24 Thu 20:20 PT）。capacity / tick / codex-profile list 已把各号显示为「读数过期」，不据此判断无号可切；需要时请真探。最近一次失败：codex_quota_runtime_unavailable",
+		);
+		expect(bodies).toContain(
+			"⚠️ Codex 额度读数已 31 分钟没有刷新成功（最后一次成功读数：从未观测到）。capacity / tick / codex-profile list 已把各号显示为「读数过期」，不据此判断无号可切；需要时请真探。最近一次失败：no_observation_advanced",
+		);
+		const byEvent = new Map<string, Set<string>>();
+		for (const message of messages)
+			byEvent.set(
+				message.eventId,
+				(byEvent.get(message.eventId) ?? new Set()).add(message.body),
+			);
+		expect([...byEvent.values()].every((set) => set.size === 1)).toBe(true);
+	});
+});

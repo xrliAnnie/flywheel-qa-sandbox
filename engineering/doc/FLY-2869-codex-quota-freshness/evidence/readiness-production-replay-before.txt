@@ -1,0 +1,2 @@
+# before this branch (production dist 637752fc, same host, 2026-09-25)
+old collector: complete=false, first failure comm_shard_unsafe (529 slot links); after that, per exploration §3.2: archive dirs ENOENT, vendor-null rows, 85 comm_orphan, process_home_unknown (desktop + env-text misclassification), unapproved slot homes

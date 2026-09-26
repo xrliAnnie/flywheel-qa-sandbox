@@ -45,7 +45,10 @@ import {
 	closeRunner,
 	type RunCloseAuthority,
 } from "./close-runner.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import {
+	codexTerminalTeardownDeps,
+	reapCodexDaemonForSession,
+} from "./codex-daemon-teardown.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
@@ -680,6 +683,7 @@ async function handleRetry(
 	ceoContext?: string,
 	registry?: RuntimeRegistry,
 	gatewayDispatch?: GatewayRetryDispatch,
+	nodeStandbyResumeEnabled?: () => boolean,
 	codexQuotaRootKey?: (projectName: string) => string | undefined,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
@@ -992,6 +996,7 @@ async function handleRetry(
 			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 			now: now.toISOString(),
 			dispatchResolution,
+			standbyResumeEnabled: nodeStandbyResumeEnabled?.() ?? false,
 		});
 		if (!admitted.ok) {
 			return {
@@ -1636,7 +1641,14 @@ export async function handleTerminate(
 	// as cleanup-pending rather than a false success.
 	let cleanupError: string | undefined;
 	let physicalGone = false;
-	await reapCodexDaemonForSession(store, session, "bridge.terminate");
+	// FLY-2903: stop the in-process goal runtime first so this kill is never
+	// resumed as a mid-goal crash.
+	await reapCodexDaemonForSession(
+		store,
+		session,
+		"bridge.terminate",
+		codexTerminalTeardownDeps("terminate"),
+	);
 	const lookup = session.project_name
 		? lookupTmuxTarget(executionId, session.project_name)
 		: ({ kind: "gone" } as const);
@@ -1837,6 +1849,7 @@ export function createActionRouter(
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
 	onEpicChange?: (projectName: string, reason: "linear_done") => void,
+	runtime?: { nodeStandbyResumeEnabled?: () => boolean },
 	codexQuotaRootKey?: (projectName: string) => string | undefined,
 ): Router {
 	const router = Router();
@@ -2057,6 +2070,7 @@ export function createActionRouter(
 									successorExecutionId: gwSuccessorId as string,
 								}
 							: undefined,
+						runtime?.nodeStandbyResumeEnabled,
 						codexQuotaRootKey,
 					);
 					if (retryResult.success) {

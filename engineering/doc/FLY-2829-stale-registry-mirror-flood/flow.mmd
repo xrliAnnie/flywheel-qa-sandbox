@@ -1,0 +1,32 @@
+flowchart TD
+  classDef gate fill:#fff4e5,stroke:#ff9500,color:#1d1d1f
+  classDef new fill:#e9f9ee,stroke:#34c759,color:#1d1d1f
+  classDef old fill:#ffffff,stroke:#007aff,color:#1d1d1f
+  classDef stop fill:#ffe9e7,stroke:#ff3b30,color:#1d1d1f
+
+  A["每 60 秒一轮<br/>先读三份名册: Bridge 在跑名册 / 最近结束名册 / tmux 窗口清单"]:::old
+  B{"名册齐全?"}:::gate
+  Z["整轮不动<br/>(原有行为)"]:::stop
+  L0["看一眼维护标记<br/>有就立刻让出"]:::new
+  R["限速闸: 读自停闩 + 60 秒/10 分钟内已建数 + 工作区总数<br/>→ 现在还能建几个 (账本记在文件里, 重启不丢)"]:::new
+  P["先剪枝: 不在跑 且 24 小时没见过 的行<br/>直接删 (有回执的才关工作区)"]:::new
+  E["再回收: 摘要超 24 小时 / 超 30 个 → 关"]:::new
+  L1["循环 1: 在跑名册每一行"]:::old
+  L1a["每行先看标记"]:::new
+  L1b["没有正式名字的行 → 先取名<br/>node:issue-role·指纹"]:::new
+  L1c{"有 tmux 窗且镜像就绪?"}:::old
+  L1d["关掉节点页 (镜像接管)"]:::old
+  L1e["建节点页: 名字必须 node:* 且预算未用完<br/>否则一个都不建"]:::new
+  L2["循环 2: 注册表里不在跑的行"]:::old
+  L2a["每行先看标记"]:::new
+  L2b["计数 / 转『已结束』『失联』/ 改状态文件"]:::old
+  L2c["不再新建任何页面"]:::new
+  S["发布清理快照 + 一行轮次审计:<br/>created / closed / pruned / budget_left"]:::new
+
+  A --> B
+  B -- 否 --> Z
+  B -- 是 --> L0 --> R --> P --> E --> L1
+  L1 --> L1a --> L1b --> L1c
+  L1c -- 是 --> L1d
+  L1c -- 否 --> L1e
+  L1 --> L2 --> L2a --> L2b --> L2c --> S

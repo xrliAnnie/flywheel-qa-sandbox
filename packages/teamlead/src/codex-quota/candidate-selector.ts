@@ -73,6 +73,42 @@ export interface CodexCandidateSelection {
 	candidate?: CodexQuotaObservation;
 	nextAttemptAt?: number;
 }
+/**
+ * FLY-2869: every exhausted window reports a reset that has already passed, so
+ * the 100% no longer holds. Such an account is a candidate that must pass the
+ * real `codex exec` probe in rotate() before it is installed. A reset of null,
+ * or any exhausted window still in the future, keeps the account limited.
+ */
+export function codexObservationResetElapsed(
+	o: Pick<CodexQuotaObservation, "windows">,
+	now: number,
+): boolean {
+	const exhausted = o.windows.filter((w) => w.usedPercent === 100);
+	return (
+		exhausted.length > 0 &&
+		exhausted.every(
+			(w) =>
+				w.resetsAt !== null && Number.isFinite(w.resetsAt) && w.resetsAt <= now,
+		)
+	);
+}
+/**
+ * The observation the selector judges for each pool profile: that profile's
+ * latest reading (older history and profiles outside the pool are ignored).
+ * FLY-2830: the pool-exhausted alert snapshot is built from exactly this proof.
+ */
+export function latestPoolObservations(
+	observations: readonly CodexQuotaObservation[],
+	pool: readonly string[],
+): (CodexQuotaObservation | undefined)[] {
+	return pool.map(
+		(p) =>
+			observations
+				.filter((o) => o.profile === p)
+				.sort((a, b) => b.observedAt - a.observedAt)[0],
+	);
+}
+
 export function selectCodexQuotaCandidate(
 	observations: readonly CodexQuotaObservation[],
 	options: {
@@ -89,18 +125,15 @@ export function selectCodexQuotaCandidate(
 		new Set(options.pool).size !== options.pool.length
 	)
 		throw new Error("invalid_codex_quota_pool");
-	const pool = options.pool.map(
-		(p) =>
-			observations
-				.filter((o) => o.profile === p)
-				.sort((a, b) => b.observedAt - a.observedAt)[0],
-	);
+	const pool = latestPoolObservations(observations, options.pool);
 	const fresh = (o: CodexQuotaObservation) =>
 		Number.isFinite(o.observedAt) &&
 		o.observedAt <= now &&
 		now - o.observedAt <= 60_000;
 	const valid = (o: CodexQuotaObservation) =>
 		o.identityVerified && o.authHealth === "valid";
+	// A past reset is only meaningful on an exhausted window (FLY-2869); on any
+	// other window it still makes the observation untrustworthy.
 	const windowsValid = (o: CodexQuotaObservation) =>
 		o.windows.every(
 			(w) =>
@@ -108,10 +141,16 @@ export function selectCodexQuotaCandidate(
 				w.usedPercent >= 0 &&
 				w.usedPercent <= 100 &&
 				(w.resetsAt === null ||
-					(Number.isFinite(w.resetsAt) && w.resetsAt > now)),
+					(Number.isFinite(w.resetsAt) &&
+						(w.resetsAt > now || w.usedPercent === 100))),
 		);
+	const resetElapsed = (o: CodexQuotaObservation) =>
+		codexObservationResetElapsed(o, now);
+	// `reached` comes from the same snapshot as the windows, so it is stale too
+	// once every exhausted window has reset.
 	const limited = (o: CodexQuotaObservation) =>
-		o.reached === true || o.windows.some((w) => w.usedPercent === 100);
+		(o.reached === true || o.windows.some((w) => w.usedPercent === 100)) &&
+		!resetElapsed(o);
 	const eligible = pool.filter(
 		(o): o is CodexQuotaObservation =>
 			!!o &&
@@ -121,7 +160,16 @@ export function selectCodexQuotaCandidate(
 			!limited(o) &&
 			!options.excludedProfiles?.includes(o.profile),
 	);
-	const known = eligible.filter((o) => o.scopeKnown && o.windows.length > 0);
+	const known = eligible.filter(
+		(o) => o.scopeKnown && o.windows.length > 0 && !resetElapsed(o),
+	);
+	const probeRequired = eligible
+		.filter((o) => o.scopeKnown && o.windows.length > 0 && resetElapsed(o))
+		.sort((a, b) =>
+			a.profile < b.profile ? -1 : a.profile > b.profile ? 1 : 0,
+		);
+	if (!known.length && probeRequired[0])
+		return { kind: "selected", candidate: probeRequired[0] };
 	const candidates = known.length
 		? known
 		: eligible.filter((o) => o.windows.length === 0 || !o.scopeKnown);

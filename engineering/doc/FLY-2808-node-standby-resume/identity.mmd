@@ -1,0 +1,22 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','primaryColor':'#edf5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b'}}}%%
+classDiagram
+ direction LR
+ class Node["原来的节点"] {
+   工作流与节点编号
+   当前轮次与写权限
+ }
+ class Carrier["可停止的进程"] {
+   运行或待命
+   每次拉起的新代数
+ }
+ class Conversation["保留的会话"] {
+   原对话编号与模型
+   原目录与分支
+ }
+ class Receipt["每次拉起的记录"] {
+   触发原因与耗时
+   成功或失败与兜底
+ }
+ Node "1" --> "1" Carrier : 管理
+ Carrier "1" --> "1" Conversation : 恢复
+ Carrier "1" --> "多" Receipt : 留痕

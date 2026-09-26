@@ -1,0 +1,13 @@
+ROUND1 complete false registeredComplete false
+  info {"test_slot_comm_shard_skipped":3,"unregistered_comm_dir_skipped":2,"pending_preregistration_skipped":5,"desktop_codex_excluded":1,"test_slot_home_excluded":4,"terminal_session_residue":81}
+  blocking [{"reason":"comm_orphan","scope":"registered","executionId":"e0c055e7-2e2a-4189-969a-d37d3109aed6"},{"reason":"comm_orphan","scope":"registered","executionId":"fa22d94c-042b-420f-99f3-5b9518b99e46"},{"reason":"comm_orphan","scope":"registered","executionId":"35b23197-342c-4f5f-b506-7cad0b175e93"},{"reason":"comm_orphan","scope":"registered","executionId":"cf70ee17-21cd-48e5-a993-63f246ac2a48"},{"reason":"comm_orphan","scope":"registered","executionId":"37624e3d-2f56-4ee3-afdc-944f2666c229"},{"reason":"comm_orphan","scope":"registered","executionId":"b6c738ca-d135-4cb7-9116-17267466406b"}]
+  unattributed []
+  homes ["~/.codex-infra-bot:active","~/.codex-mufasa:active","~/.codex-raya:active","~/.flywheel/codex-homes/agents/flywheel/eng_design:drained","~/.flywheel/codex-homes/agents/flywheel/implement:unknown"]
+  stale_running []
+ROUND2 complete false registeredComplete false
+  info {"test_slot_comm_shard_skipped":3,"unregistered_comm_dir_skipped":2,"pending_preregistration_skipped":5,"desktop_codex_excluded":1,"test_slot_home_excluded":2,"terminal_session_residue":81,"comm_stale_running":4}
+  blocking [{"reason":"comm_orphan","scope":"registered","executionId":"37624e3d-2f56-4ee3-afdc-944f2666c229"},{"reason":"comm_orphan","scope":"registered","executionId":"b6c738ca-d135-4cb7-9116-17267466406b"}]
+  unattributed []
+  homes ["~/.codex-infra-bot:active","~/.codex-mufasa:active","~/.codex-raya:active","~/.flywheel/codex-homes/agents/flywheel/eng_design:drained","~/.flywheel/codex-homes/agents/flywheel/implement:unknown"]
+  stale_running ["e0c055e7-2e2a-4189-969a-d37d3109aed6@2026-09-15 19:01:12","fa22d94c-042b-420f-99f3-5b9518b99e46@2026-09-16 03:13:42","35b23197-342c-4f5f-b506-7cad0b175e93@2026-09-16 05:44:17","cf70ee17-21cd-48e5-a993-63f246ac2a48@2026-09-23 00:07:22"]
+readiness {"ready":false,"failures":[{"reason":"authority_unavailable"},{"home":"/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement","reason":"authority_unavailable"}]}

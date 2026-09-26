@@ -354,7 +354,7 @@ describe("VoiceDaemon health observations", () => {
 		}
 	});
 
-	it("records a runtime failure before a rejected terminal receipt and retains recovery state", async () => {
+	it("records the original runtime failure before a rejected terminal receipt and retains recovery state", async () => {
 		const raw = "runtime terminal secret-token /private/session/path";
 		const runtimeError =
 			"discord_audio:Cannot perform IP discovery - socket closed";
@@ -413,10 +413,16 @@ describe("VoiceDaemon health observations", () => {
 			await expect(daemon.runOnce()).resolves.toEqual({
 				kind: "session_failed",
 				sessionId: SESSION_ID,
-				reason: "session_runtime_failed",
+				reason: "Error:runtime primary raw secret",
 			});
 			expect(order).toEqual(["health", "evidence", "terminal"]);
-			expect(health.observe).toHaveBeenCalledTimes(1);
+			expect(health.observe).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "session_failed",
+					reasonClass: "session_runtime_failed",
+					operation: "session_runtime",
+				}),
+			);
 			expect(recordSessionEvidence).toHaveBeenCalledWith(
 				expect.objectContaining({ sessionId: SESSION_ID }),
 				{
@@ -430,7 +436,9 @@ describe("VoiceDaemon health observations", () => {
 				runtimeError,
 			);
 			expect(remove).not.toHaveBeenCalled();
-			expect(log.mock.calls.flat().join(" ")).not.toContain(raw);
+			const logged = log.mock.calls.flat().join(" ");
+			expect(logged).toContain("Error:runtime primary raw secret");
+			expect(logged).not.toContain(raw);
 		} finally {
 			log.mockRestore();
 		}

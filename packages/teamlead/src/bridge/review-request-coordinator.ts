@@ -44,6 +44,7 @@ import type {
 	Session,
 	StateStore,
 } from "../StateStore.js";
+import { loadLocalTestPolicy } from "../workflow-phase-protocol.js";
 import {
 	recordWorkflowReviewRoute,
 	resolveWorkflowReviewRouteForExecution,
@@ -2424,11 +2425,13 @@ export class ReviewRequestCoordinator {
 			job.review_type === "design"
 				? `"reviewedPlanBlobSha": "<the exact committed plan blob you reviewed>"`
 				: `"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"`;
+		const localTestPolicy = loadLocalTestPolicy().trim();
 		const legacyContract =
+			`${localTestPolicy}\n\n` +
 			`You are the CROSS-FAMILY REVIEWER for ${job.issue_id ?? job.execution_id} ` +
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
-			`Run only single-package tests for the changed package and related test files. Never run \`pnpm -r\`. ` +
+			`Follow the marked local-test policy above exactly; review does not authorize a package test alias or any other local full-suite command. ` +
 			// FLY-2547: the reviewer used to background a long suite and end its
 			// turn "to wait for the completion notification". `claude -p` is one
 			// headless session: ending the turn ends the session, the notification

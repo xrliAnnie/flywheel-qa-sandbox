@@ -1,0 +1,38 @@
+{
+ "requests": [
+  "GET /v2/user",
+  "GET /v2/teams/team_*",
+  "GET /v1/storage/stores/store_*"
+ ],
+ "accountNote": null,
+ "blobNote": null,
+ "rows": [
+  {
+   "name": "personal",
+   "plan": "Pro",
+   "team": "team xrliannies-projects",
+   "active": true,
+   "next": "10/24 周六",
+   "blob": [
+    "正常",
+    "已存 1.1 MB · 27 个对象",
+    "本期占比：读不到（接口不给额度上限）"
+   ],
+   "note": null
+  },
+  {
+   "name": "personal2",
+   "plan": "Hobby",
+   "team": null,
+   "active": false,
+   "next": "已停用",
+   "blob": [
+    "不再使用"
+   ],
+   "note": "已停用，不再使用"
+  }
+ ],
+ "tokenPrefixInHtml": false,
+ "tokenPrefixInStore": false,
+ "emailInHtml": false
+}

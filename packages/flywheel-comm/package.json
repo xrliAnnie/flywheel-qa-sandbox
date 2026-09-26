@@ -10,6 +10,7 @@
 		"./db": "./dist/lib.js",
 		"./utils": "./dist/utils/content-ref.js",
 		"./wake": "./dist/wake.js",
+		"./completion-obligations": "./dist/completion-obligations.js",
 		"./respond": "./dist/commands/respond.js",
 		"./send": "./dist/commands/send.js",
 		"./runner-start": "./dist/runner-start-key.js",

@@ -264,6 +264,10 @@ export function titleFor(kind: AlertEventType): string {
 			return "DAG workflow stuck";
 		case "three_stage_takeover_failed":
 			return "DAG workflow worktree takeover failed";
+		// FLY-2901: the takeover went through only after Bridge preserved the
+		// predecessor's work (rescue refs pushed / nested repos moved aside).
+		case "worktree_takeover_rescued":
+			return "DAG workflow worktree takeover rescued predecessor work";
 		case "workflow_engine_escalation":
 			return "Workflow engine recovery escalated";
 		case "workflow_engine_issue_alert":
@@ -397,6 +401,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Claude quota switch recovery confirmation";
 		case "codex_quota_automation_disabled":
 			return "Codex 自动切号关着";
+		case "codex_quota_reading_stale":
+			return "Codex 额度读数停更";
 		case "quota_no_target":
 			return "No Claude account has quota";
 		case "quota_blocked_recovered":
@@ -456,6 +462,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "cmux watcher is stalled or unsupervised";
 		case "codex_lead_residency_stalled":
 			return "Resident Codex Lead business-liveness stalled";
+		case "codex_terminal_body_alive":
+			return "终态 Codex 体仍在运行 / 仍在用额度";
 		case "cmux_watcher_unrecovered":
 			return "cmux watcher recovery did not converge";
 		case "flag_scan_failed":
@@ -479,12 +487,15 @@ export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 	if (kind === "activation_probe") return "info";
 	if (kind === "model_family_updated") return "info";
 	if (kind === "codex_quota_automation_disabled") return "info";
+	// FLY-2901: a success receipt — the predecessor's work was preserved.
+	if (kind === "worktree_takeover_rescued") return "info";
 	if (
 		kind === "crash_loop" ||
 		kind === "login_expired" ||
 		kind === "runner_login_expired" ||
 		kind === "cmux_watcher_stalled" ||
 		kind === "codex_lead_residency_stalled" ||
+		kind === "codex_terminal_body_alive" ||
 		kind === "cmux_watcher_unrecovered"
 	)
 		return "severe";
@@ -560,6 +571,11 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A DAG workflow handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
 		case "three_stage_takeover_failed":
 			return "A shared branch-B worktree was dirty or at an unexpected HEAD, so Flywheel refused the in-place phase takeover. Inspect and preserve the parked phase's work before retrying.";
+		// FLY-2901: the caller's body lists the class, target, rescue refs and
+		// moved paths; this static copy says what happened and where the
+		// evidence lives.
+		case "worktree_takeover_rescued":
+			return "A shared branch-B worktree could not be reused as-is (its HEAD had diverged, or it held nested repositories), so Flywheel preserved the predecessor's work before the successor took it over: rescue refs were pushed to origin as flywheel-rescue/<issue>/… branches and nested repositories were moved aside into the rescue directory. Nothing was lost and no action is needed. The class, target, rescue refs and moved paths are listed in this alert's body and mirrored in <worktree>/.flywheel/runs/takeover/<successorExec>.json; the successor's first progress carries a rescue= pointer to them.";
 		case "workflow_engine_escalation":
 			return "A workflow execution died without a completion receipt. The engine either held the run after a non-retryable/exhausted failure or used the approved design Fable→GPT-5.6 fallback. Inspect the run audit and use the quiescence-gated hold/terminate endpoints.";
 		case "workflow_engine_issue_alert":
@@ -675,6 +691,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The external quota monitor rechecked every recorded affected pane after the switch and reported the five-state recovery result.";
 		case "codex_quota_automation_disabled":
 			return "Codex 自动切号不可用；本次额度事件已交 Lead 手工处理。";
+		case "codex_quota_reading_stale":
+			return "Codex 额度读数超过 30 分钟没有刷新成功；各号读数按过期处理，不据此判断无号可切。";
 		case "quota_no_target":
 			return "The external quota monitor found no fresh, usable target account under the configured thresholds.";
 		case "quota_blocked_recovered":
@@ -733,6 +751,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The resident cmux watcher failed its launchd, owner, heartbeat, or event-backlog health contract. Review the supplied branch and canonical recovery outcome; uncertainty branches intentionally did not signal a process.";
 		case "codex_lead_residency_stalled":
 			return "An explicitly rostered resident Codex Lead generation failed its business-liveness contract. Review the supplied target, lifecycle, poll, turn, gateway, and tuple-bound recovery evidence; identity uncertainty and controlled replacement waves intentionally suppress mutation.";
+		case "codex_terminal_body_alive":
+			return "A Codex execution that already reached a terminal status still has a live body, or its rollout kept growing after terminal. The sweep already asked the in-process owner to stop or reaped the identity-proven daemon where it could; this alert means the rest could not be proven. Inspect the named execution's codex processes and quota usage before signalling anything by hand.";
 		case "cmux_watcher_unrecovered":
 			return "The resident cmux watcher stayed unhealthy beyond the bounded recovery window. Inspect the latest branch and recovery evidence before intervening; planned maintenance parks suppress this escalation.";
 		case "flag_scan_failed":

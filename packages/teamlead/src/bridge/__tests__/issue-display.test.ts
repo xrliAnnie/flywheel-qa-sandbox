@@ -52,6 +52,41 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 		).toBe("done");
 	});
 
+	it("uses process lifecycle activity for the founder-facing three-state view", () => {
+		expect(
+			derivePhaseDisplayState({
+				role: "implement",
+				status: "ship_parked",
+				park: "parked",
+				activity: "standby",
+			}),
+		).toBe("standby");
+		expect(
+			derivePhaseDisplayState({
+				role: "implement",
+				status: "ship_parked",
+				park: "parked",
+				activity: "problem",
+			}),
+		).toBe("blocked");
+		expect(
+			derivePhaseDisplayState({
+				role: "implement",
+				status: "ship_parked",
+				park: "parked",
+				activity: "working",
+			}),
+		).toBe("active");
+		expect(
+			derivePhaseDisplayState({
+				role: "implement",
+				status: "failed",
+				park: "unknown",
+				activity: "working",
+			}),
+		).toBe("blocked");
+	});
+
 	it("completed / merged → done UNCONDITIONALLY (post-ship finalization contract: a finalized QA phase has no park marker and must never flip back to active)", () => {
 		for (const status of ["completed", "merged"]) {
 			for (const park of ["parked", "not_parked", "unknown"] as const) {
@@ -651,10 +686,11 @@ describe("deriveFounderGateTitleState (FLY-2408)", () => {
 });
 
 describe("PHASE_DISPLAY_GLYPHS (plan 1c vocabulary — Annie's glyphs)", () => {
-	it("uses green ✅ for done, ▶ active, dark-grey ◾ pending (NOT white ⬜), 🔴 blocked", () => {
+	it("distinguishes done, active, standby, pending, and blocked", () => {
 		expect(PHASE_DISPLAY_GLYPHS).toEqual({
 			done: "✅ 完成",
 			active: "▶ 进行中",
+			standby: "💤 待命",
 			pending: "◾ 未开始",
 			blocked: "🔴 受阻",
 		});

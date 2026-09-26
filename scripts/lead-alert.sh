@@ -135,7 +135,7 @@ VOICE_ROUTE_TOKEN_ENV=""
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation codex_quota_automation_disabled quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock shuttle_unit_unhealthy voice_daemon_unhealthy"
+INFORMATIONAL_KINDS="activation_probe account_switched model_family_updated model_cap_switched model_cap_unknown quota_switch_confirmation codex_quota_automation_disabled codex_quota_reading_stale quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock shuttle_unit_unhealthy voice_daemon_unhealthy worktree_takeover_rescued"
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
@@ -226,6 +226,7 @@ fi
 
 case "$KIND" in
   codex_quota_automation_disabled) ;;
+  codex_quota_reading_stale) ;;
   # FLY-871 §12 W2: tui_window_lost — the windowed Codex Lead's silent-no-pane
   # guard fires this via lead-alert.sh (Discord-independent path). Kept in the TS
   # AlertEventType union too (LeadAlertNotifier.ts) so the shared type face has no drift.
@@ -253,7 +254,7 @@ case "$KIND" in
   # Covers BOTH sources; pressure vs panic is encoded in the body + signature,
   # because a validated occupancy climb and a fresh panic report are the same
   # incident class with the same (absent) remediation posture.
-  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|shuttle_unit_unhealthy|voice_daemon_unhealthy|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident|codex_home_migration_overdue) ;;
+  activation_probe|rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|calendar_wild_write|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|shuttle_unit_unhealthy|voice_daemon_unhealthy|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|worktree_takeover_rescued|account_switched|account_dead|account_switch_degraded|machine_account_conflict|model_config|model_family_updated|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|codex_lead_residency_stalled|cmux_watcher_unrecovered|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|meeting_notes_failed|host_voucher_incident|codex_home_migration_overdue) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

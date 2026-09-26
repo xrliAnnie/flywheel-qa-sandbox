@@ -1,0 +1,34 @@
+{
+ "requests": [
+  "GET /v2/user"
+ ],
+ "accountNote": "unauthorized",
+ "blobNote": "unauthorized",
+ "rows": [
+  {
+   "name": "报告托管账号",
+   "plan": "读不到（token 已失效）",
+   "team": null,
+   "active": false,
+   "next": "读不到（token 已失效）",
+   "blob": [
+    "读不到（token 已失效）"
+   ],
+   "note": null
+  },
+  {
+   "name": "personal2",
+   "plan": "Hobby",
+   "team": null,
+   "active": false,
+   "next": "已停用",
+   "blob": [
+    "不再使用"
+   ],
+   "note": "已停用，不再使用"
+  }
+ ],
+ "tokenPrefixInHtml": false,
+ "tokenPrefixInStore": false,
+ "emailInHtml": false
+}

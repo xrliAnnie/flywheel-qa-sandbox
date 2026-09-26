@@ -1,0 +1,8 @@
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2869/packages/teamlead
+   × FLY-2869: an exhausted account whose reset passed is probed for real, installed and announced 1197ms
+     → {"incident_id":"codex:4ae0d181edd23aef6780dbda6059b0afff2aa6d89b8d9a886e3edf8939eb69ab:1","root_key":"4ae0d181edd23aef6780dbda6059b0afff2aa6d89b8d9a886e3edf8939eb69ab","generation":1,"state":"retry_wait","first_seen_at":"2026-09-25T07:12:58.499Z","next_attempt_at":"2026-09-25T07:13:59.087Z","selection_id":null,"target_profile":null,"probe_result":null,"probe_at":null,"prior_auth_digest":null,"installed_auth_digest":null,"installed_generation":null,"failure_code":"observation_unavailable"}: expected [ 'waiting', 'waiting', …(4) ] to deeply equal [ 'recovered', 'recovered', …(4) ]
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |serial| src/bridge/__tests__/codex-quota-bench.test.ts > FLY-2869: an exhausted account whose reset passed is probed for real, installed and announced
+AssertionError: {"incident_id":"codex:4ae0d181edd23aef6780dbda6059b0afff2aa6d89b8d9a886e3edf8939eb69ab:1","root_key":"4ae0d181edd23aef6780dbda6059b0afff2aa6d89b8d9a886e3edf8939eb69ab","generation":1,"state":"retry_wait","first_seen_at":"2026-09-25T07:12:58.499Z","next_attempt_at":"2026-09-25T07:13:59.087Z","selection_id":null,"target_profile":null,"probe_result":null,"probe_at":null,"prior_auth_digest":null,"installed_auth_digest":null,"installed_generation":null,"failure_code":"observation_unavailable"}: expected [ 'waiting', 'waiting', …(4) ] to deeply equal [ 'recovered', 'recovered', …(4) ]
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 skipped (7)

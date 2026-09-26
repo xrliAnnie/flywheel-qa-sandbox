@@ -24,6 +24,7 @@ import {
 	CodexDaemonClient,
 	CodexDaemonError,
 	type CodexDaemonEvents,
+	type CodexResumeObservation,
 	type DaemonTransport,
 	type GoalPhaseLifecycle,
 	GoalRunError,
@@ -132,6 +133,8 @@ export interface CodexTransportCloseEvidence {
 	socketPath: string;
 	reason: string;
 	at: string;
+	/** FLY-2903: the adapter refused to resume after this death. */
+	restartRefused?: boolean;
 }
 
 export interface RunGoalInput {
@@ -146,6 +149,10 @@ export interface RunGoalInput {
 	tokenBudget?: number;
 	/** Resume an existing thread instead of starting a fresh one. */
 	resumeThreadId?: string;
+	/** Require thread/resume to report the exact requested identity. */
+	strictResumeIdentity?: boolean;
+	/** Propagate an authoritative identity-hook error before any goal input. */
+	failOnThreadReadyError?: boolean;
 	/** The ACTIVE ceiling (cap when NOT waiting on a gate). */
 	overallTimeoutMs?: number;
 	/** FLY-1188 MED-7: the EXTENDED ceiling used only while a gate is open. */
@@ -174,7 +181,11 @@ export interface RunGoalInput {
 	 * opening the founder window / writing the FLY-245 launch commit / persisting
 	 * the resume handle.
 	 */
-	onThreadReady?: (threadId: string, restarts: number) => void;
+	onThreadReady?: (
+		threadId: string,
+		restarts: number,
+		identity?: CodexResumeObservation,
+	) => void | Promise<void>;
 	/**
 	 * FLY-1188 M4d: fired the INSTANT the goal is confirmed SET (after `setGoal`
 	 * resolves, inside the goal loop) — the safe FLY-245 launch-commit point. Fires
@@ -205,6 +216,22 @@ export interface RunGoalInput {
 	 * ownership persistence is therefore a hard precondition, not telemetry.
 	 */
 	onSpawnIdentity?: (pgid: number) => void;
+	/**
+	 * FLY-2903: asked after every restartable transport death. A Bridge
+	 * terminal path that stopped or reaped this execution on purpose answers
+	 * false, so the kill is never mistaken for a mid-goal crash and resumed
+	 * (FLY-2814). Absent → allowed (legacy callers). Any value other than
+	 * `true`, or a throw, refuses the restart (fail-closed).
+	 */
+	mayRestartAfterTransportDeath?: () => boolean;
+	/** FLY-2903: observes each restart decision; a throwing handler is swallowed. */
+	onRestartDecision?: (decision: RestartDecision) => void;
+}
+
+export interface RestartDecision {
+	restarts: number;
+	allowed: boolean;
+	reason: "allowed" | "refused_by_owner" | "predicate_threw";
 }
 
 export interface RunGoalOutcome {
@@ -505,17 +532,30 @@ export class CodexDaemonGoalRuntime {
 	private async ensureThread(
 		session: DaemonSession,
 		existingThreadId: string | undefined,
-	): Promise<string> {
+		strictIdentity: boolean,
+	): Promise<{
+		threadId: string;
+		identity?: CodexResumeObservation;
+	}> {
 		if (existingThreadId) {
-			return session.client.resumeThread(existingThreadId);
+			if (strictIdentity) {
+				const identity =
+					await session.client.resumeThreadObserved(existingThreadId);
+				return { threadId: identity.threadId, identity };
+			}
+			return {
+				threadId: await session.client.resumeThread(existingThreadId),
+			};
 		}
-		return session.client.startThread({
-			cwd: this.opts.cwd,
-			sandbox: this.opts.sandbox ?? "workspace-write",
-			approvalPolicy: this.opts.approvalPolicy ?? "never",
-			model: this.opts.model,
-			baseInstructions: this.opts.baseInstructions,
-		});
+		return {
+			threadId: await session.client.startThread({
+				cwd: this.opts.cwd,
+				sandbox: this.opts.sandbox ?? "workspace-write",
+				approvalPolicy: this.opts.approvalPolicy ?? "never",
+				model: this.opts.model,
+				baseInstructions: this.opts.baseInstructions,
+			}),
+		};
 	}
 
 	/** Signal the current session dead + drop it; returns the dying daemon so
@@ -638,15 +678,25 @@ export class CodexDaemonGoalRuntime {
 						if (this.stopped)
 							throw new Error("runtime stopped during admission");
 					}
-					threadId = await this.ensureThread(session, threadId);
+					const readyThread = await this.ensureThread(
+						session,
+						threadId,
+						input.strictResumeIdentity === true,
+					);
+					threadId = readyThread.threadId;
 					// AUTHORITATIVE own-thread signal (FLY-1188 M4d): the thread is
 					// confirmed ours here (not a raw notification, which can be
 					// foreign). Fires on each restart/resume too; a throwing handler
 					// must never break the run.
 					if (input.onThreadReady) {
 						try {
-							input.onThreadReady(threadId, restarts);
+							await input.onThreadReady(
+								threadId,
+								restarts,
+								readyThread.identity,
+							);
 						} catch (err) {
+							if (input.failOnThreadReadyError) throw err;
 							this.safeLog(
 								`onThreadReady handler threw (ignored): ${err instanceof Error ? err.message : String(err)}`,
 							);
@@ -756,11 +806,28 @@ export class CodexDaemonGoalRuntime {
 						restarts < maxRestarts &&
 						!this.stopped
 					) {
+						const gate = this.restartGate(input);
+						if (!gate.allowed) {
+							this.safeLog(
+								`daemon died mid-goal — restart refused (${gate.reason}) thread ${threadId}`,
+							);
+							this.reportRestartDecision(input, {
+								restarts,
+								allowed: false,
+								reason: gate.reason,
+							});
+							throw err;
+						}
 						restarts += 1;
+						this.reportRestartDecision(input, {
+							restarts,
+							allowed: true,
+							reason: "allowed",
+						});
 						this.safeLog(
-							`daemon died mid-goal — restart ${restarts}/${maxRestarts} (rotating account) + resume thread ${threadId}`,
+							`daemon died mid-goal — restart ${restarts}/${maxRestarts} (same home; credential re-read) + resume thread ${threadId}`,
 						);
-						continue; // resume the SAME threadId on a new daemon/account
+						continue; // resume the SAME threadId on a new daemon
 					}
 					throw err;
 				}
@@ -774,6 +841,32 @@ export class CodexDaemonGoalRuntime {
 			if (this.stopped) await this.teardownDone;
 			settle();
 			this.inflight = null;
+		}
+	}
+
+	/** FLY-2903: fail-closed evaluation of the caller's restart predicate. */
+	private restartGate(
+		input: RunGoalInput,
+	): { allowed: true } | { allowed: false; reason: RestartDecision["reason"] } {
+		const predicate = input.mayRestartAfterTransportDeath;
+		if (!predicate) return { allowed: true };
+		try {
+			return predicate() === true
+				? { allowed: true }
+				: { allowed: false, reason: "refused_by_owner" };
+		} catch {
+			return { allowed: false, reason: "predicate_threw" };
+		}
+	}
+
+	private reportRestartDecision(
+		input: RunGoalInput,
+		decision: RestartDecision,
+	): void {
+		try {
+			input.onRestartDecision?.(decision);
+		} catch {
+			// Observation only — never changes the decision.
 		}
 	}
 

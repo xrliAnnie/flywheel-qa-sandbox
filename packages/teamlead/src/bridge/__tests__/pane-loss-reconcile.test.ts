@@ -207,6 +207,33 @@ describe("pane-loss reconciler (FLY-1628)", () => {
 		).toHaveLength(1);
 	});
 
+	it("does not classify an intentionally retired workflow body as pane loss", async () => {
+		seed("workflow-standby", { status: "ship_parked" });
+		vi.spyOn(store, "getWorkflowExecutionProcessBody").mockReturnValue({
+			execution_id: "workflow-standby",
+			generation: 1,
+			state: "standby",
+			completion_event_id: "done-1",
+			manifest_digest: "a".repeat(64),
+			current_demand_id: null,
+			owner_claim_id: null,
+			started_at: "2026-08-04T11:00:00.000Z",
+			updated_at: "2026-08-04T11:01:00.000Z",
+			retirement_requested_at: "2026-08-04T11:00:30.000Z",
+			standby_at: "2026-08-04T11:01:00.000Z",
+			reason_code: "process_tree_gone",
+			last_resume_ms: null,
+			context_loss: 0,
+		});
+		const d = deps();
+
+		const result = await reconcilePaneLoss("flywheel", d);
+
+		expect(result).toMatchObject({ scanned: 1, kept: 1, advisories: 0 });
+		expect(d.lookupTarget).not.toHaveBeenCalled();
+		expect(d.notify).not.toHaveBeenCalled();
+	});
+
 	it("keeps parked and same-generation rows active, with class-specific truthful advisory debt", async () => {
 		seed("parked-lost", { status: "ship_parked" });
 		seed("same-generation");

@@ -28,7 +28,12 @@ import {
 	DEFAULT_QUOTA_MONITOR_CONFIG,
 	type LoadedQuotaMonitorConfig,
 } from "../account-heal/quota-monitor-config.js";
-import { emptyQuotaMonitorState } from "../account-heal/quota-monitor-state.js";
+import {
+	emptyQuotaMonitorState,
+	loadQuotaMonitorState,
+	type QuotaMonitorState,
+	writeQuotaMonitorState,
+} from "../account-heal/quota-monitor-state.js";
 import type {
 	QuotaPaneRef,
 	QuotaPaneSnapshot,
@@ -3510,4 +3515,253 @@ it("keeps retired monitor-only passes scheduled and reports invalid configuratio
 	).toHaveLength(2);
 	expect(h.switchImpl).not.toHaveBeenCalled();
 	expect(h.verifyCandidate).not.toHaveBeenCalled();
+});
+
+describe("FLY-2830 — sweep request mode", () => {
+	const A = "3f2a8c1e-4b5d-4e6f-8a9b-0c1d2e3f4a5b";
+	const B = "9e8d7c6b-5a49-4382-9716-0a1b2c3d4e5f";
+	const request = (requestId = A) => ({
+		schemaVersion: 1 as const,
+		requestId,
+		requestedAt: new Date(NOW - 5_000).toISOString(),
+		reason: "claude_switch" as const,
+	});
+	/** A monitor that just polled and swept: nothing is due on its own. */
+	function quietState(): QuotaMonitorState {
+		return {
+			...emptyQuotaMonitorState(4),
+			lastPollAt: NOW - 60_000,
+			lastSuccessfulUsageAt: NOW - 60_000,
+			nextUsageDueAt: NOW + 240_000,
+			nextPaneScanDueAt: NOW + 60_000,
+			lastCandidateSweepAt: NOW - 60_000,
+			lastSwitchAt: NOW - 3_600_000,
+		};
+	}
+	let current: ReturnType<typeof request> | null;
+	beforeEach(() => {
+		current = request();
+		h.deps.state = quietState();
+		h.deps.readSweepRequest = () => current;
+	});
+	const logs = () =>
+		(h.deps.log as ReturnType<typeof vi.fn>).mock.calls.map(([line]) =>
+			String(line),
+		);
+	async function round(offsetMs: number) {
+		h.setNow(NOW + offsetMs);
+		const result = await pollOnce(h.deps);
+		h.deps.state = result.state;
+		return result;
+	}
+
+	it("forces the active read and a full sweep on a new request and acks swept", async () => {
+		const result = await round(0);
+		expect(h.fetchUsage.mock.calls.map(([token]) => token)).toEqual([
+			"secret-shopping",
+			"secret-school",
+			"secret-business",
+		]);
+		expect(h.verifyCandidate.mock.calls.map(([name]) => name)).toEqual([
+			"school",
+			"business",
+		]);
+		expect(result.state).toMatchObject({
+			lastSweepRequestId: A,
+			lastSweepRequestOutcome: "swept",
+			pendingSweepRequest: null,
+			lastCandidateSweepAt: NOW,
+		});
+		expect(h.persisted.at(-1)).toMatchObject({ lastSweepRequestId: A });
+	});
+
+	it("does not force again once the same request is acknowledged", async () => {
+		await round(0);
+		h.fetchUsage.mockClear();
+		h.verifyCandidate.mockClear();
+		const second = await round(30_000);
+		expect(second.outcome).toBe("local_scan");
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+	});
+
+	it("keeps a normal round unforced when there is no request", async () => {
+		current = null;
+		const result = await round(0);
+		expect(result.outcome).toBe("local_scan");
+		expect(h.fetchUsage).not.toHaveBeenCalled();
+		expect(result.state.lastSweepRequestId).toBeNull();
+	});
+
+	it.each([
+		[
+			"the active projection fails",
+			() => {
+				h.recordObservation.mockResolvedValueOnce("write_failed");
+			},
+		],
+		[
+			"a candidate usage read fails",
+			() => {
+				h.usages.set("secret-school", { error: "network" });
+			},
+		],
+		[
+			"a candidate projection is stale",
+			() => {
+				h.recordObservation
+					.mockResolvedValueOnce("updated")
+					.mockResolvedValueOnce("stale_generation");
+			},
+		],
+		[
+			"the live identity cannot be read",
+			() => {
+				h.fetchIdentity.mockResolvedValueOnce({ error: "profile_network" });
+			},
+		],
+		[
+			"the active witness changes",
+			() => {
+				h.fetchIdentity.mockImplementationOnce(async () => {
+					h.setIdentity("school", 5);
+					return { email: "shopping@example.com", uuid: "uuid-shopping" };
+				});
+			},
+		],
+	])(
+		"does not ack when %s, and acks on the next clean round",
+		async (_label, breakIt) => {
+			breakIt();
+			const first = await round(0);
+			expect(first.state).toMatchObject({
+				lastSweepRequestId: null,
+				pendingSweepRequest: { requestId: A, attempts: 1 },
+			});
+			h.setIdentity("shopping", 4);
+			h.usages.set("secret-school", usage(10, 30));
+			const second = await round(60_000);
+			expect(second.state).toMatchObject({
+				lastSweepRequestId: A,
+				lastSweepRequestOutcome: "swept",
+				pendingSweepRequest: null,
+			});
+		},
+	);
+
+	it("acks partial after three failed rounds, logs each failure, then stops forcing", async () => {
+		h.usages.set("secret-school", { error: "network" });
+		await round(0);
+		await round(60_000);
+		expect(h.deps.state.pendingSweepRequest).toEqual({
+			requestId: A,
+			attempts: 2,
+		});
+		const third = await round(120_000);
+		expect(third.state).toMatchObject({
+			lastSweepRequestId: A,
+			lastSweepRequestOutcome: "partial",
+			pendingSweepRequest: null,
+		});
+		expect(logs()).toContain(
+			"[quota-monitor] sweep_request_partial name=school reason=usage_network",
+		);
+		expect(
+			logs().filter((line) => line.includes("sweep_request_partial")),
+		).toHaveLength(1);
+		h.verifyCandidate.mockClear();
+		await round(150_000);
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+	});
+
+	it("restarts the count for a request that replaced a failing one", async () => {
+		h.usages.set("secret-school", { error: "network" });
+		await round(0);
+		await round(60_000);
+		expect(h.deps.state.pendingSweepRequest?.attempts).toBe(2);
+		current = request(B);
+		const third = await round(120_000);
+		expect(third.state.pendingSweepRequest).toEqual({
+			requestId: B,
+			attempts: 1,
+		});
+		expect(third.state.lastSweepRequestId).toBeNull();
+		h.usages.set("secret-school", usage(10, 30));
+		const fourth = await round(180_000);
+		expect(fourth.state).toMatchObject({
+			lastSweepRequestId: B,
+			lastSweepRequestOutcome: "swept",
+		});
+	});
+
+	it("continues the count across a daemon restart", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2830-restart-"));
+		try {
+			const statePath = join(dir, "state.json");
+			h.usages.set("secret-school", { error: "network" });
+			const first = await round(0);
+			writeQuotaMonitorState(first.state, statePath);
+			h.deps.state = loadQuotaMonitorState(statePath, {
+				nowMs: NOW + 60_000,
+				storeGeneration: 4,
+			}).state;
+			expect(h.deps.state.pendingSweepRequest).toEqual({
+				requestId: A,
+				attempts: 1,
+			});
+			const second = await round(60_000);
+			expect(second.state.pendingSweepRequest?.attempts).toBe(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("neither reads nor counts an account marked unavailable", async () => {
+		const pool = store();
+		pool.accounts[2]!.unavailable = {
+			reason: "dead",
+			markedAt: new Date(NOW - 3_600_000).toISOString(),
+			evidence: "operator",
+			markedBy: "operator",
+		};
+		h.setStore(pool);
+		const result = await round(0);
+		expect(h.verifyCandidate.mock.calls.map(([name]) => name)).toEqual([
+			"school",
+		]);
+		expect(result.state.lastSweepRequestOutcome).toBe("swept");
+	});
+
+	it("acks blocked_monitor_only without touching any credential", async () => {
+		h.deps.config = {
+			...h.deps.config,
+			monitorOnly: true,
+			config: { ...h.deps.config.config, order: [] },
+		};
+		const result = await round(0);
+		expect(result.state).toMatchObject({
+			lastSweepRequestId: A,
+			lastSweepRequestOutcome: "blocked_monitor_only",
+			pendingSweepRequest: null,
+		});
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+	});
+
+	it("neither acks nor counts while a quota trigger gates the sweep", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		h.deps.state = { ...quietState(), lastSwitchAt: NOW - 60_000 };
+		const result = await round(0);
+		expect(result.outcome).toBe("cooldown");
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(result.state).toMatchObject({
+			lastSweepRequestId: null,
+			pendingSweepRequest: { requestId: A, attempts: 0 },
+		});
+	});
+
+	it("still processes an unacknowledged request after a restart", async () => {
+		h.deps.state = { ...quietState(), pendingSweepRequest: null };
+		const result = await round(0);
+		expect(result.state.lastSweepRequestOutcome).toBe("swept");
+	});
 });

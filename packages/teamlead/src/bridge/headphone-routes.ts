@@ -50,7 +50,7 @@ function completedReceipt(value: unknown): SpeakReceipt | undefined {
 			receipt.contentProof !== "transcript_equivalent")
 	)
 		return;
-	return receipt as SpeakReceipt;
+	return receipt as unknown as SpeakReceipt;
 }
 
 function publicHeadphoneItem(item: HeadphoneInboxItemRecord) {

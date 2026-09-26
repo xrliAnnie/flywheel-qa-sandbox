@@ -184,8 +184,6 @@ ts_append_writers=(
   packages/teamlead/src/lead-backends/codex/lead-actions/lead-actions-main.ts
   packages/teamlead/src/lead-backends/codex/discord-send-core.ts
   packages/teamlead/src/lead-backends/codex/gateway/gateway-main.ts
-  packages/gemini-agent/src/audit.ts
-  packages/gemini-agent/src/delegate.ts
 )
 for relative in "${ts_append_writers[@]}"; do
   grep -q 'appendRotatedLogSync' "$REPO_ROOT/$relative" \

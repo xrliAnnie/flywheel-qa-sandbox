@@ -16,12 +16,19 @@ import {
 	writeStore,
 } from "../account-heal/account-store.js";
 import { createModelDetectionIntent } from "../account-heal/quota-incident.js";
-import { makeQuotaMonitorRuntime } from "../account-heal/quota-monitor-runtime.js";
+import {
+	defaultQuotaMonitorPaths,
+	makeQuotaMonitorRuntime,
+} from "../account-heal/quota-monitor-runtime.js";
 import {
 	emptyQuotaMonitorState,
 	writeQuotaMonitorState,
 } from "../account-heal/quota-monitor-state.js";
 import { writeQuotaWitness } from "../account-heal/quota-witness.js";
+import {
+	defaultSweepRequestPath,
+	writeSweepRequest,
+} from "../account-heal/sweep-request.js";
 import { usageResult } from "./quota-monitor-test-helpers.js";
 
 const NOW = Date.parse("2026-07-14T20:00:00Z");
@@ -942,5 +949,101 @@ describe("makeQuotaMonitorRuntime", () => {
 		const cached = JSON.parse(readFileSync(cachePath, "utf8"));
 		expect(cached.five_hour).toEqual({ utilization: 0, resets_at: null });
 		expect(cached.seven_day.resets_at).toBe("2026-07-21T14:00:00.000Z");
+	});
+});
+
+describe("FLY-2830 — sweep request", () => {
+	it("reads the Bridge's request from the configured path and sweeps once", async () => {
+		writeConfig(99);
+		for (const name of ["shopping", "school"]) {
+			writeFileSync(
+				join(poolDir, name, "identity-anchor.json"),
+				JSON.stringify({
+					accountUuid: `uuid-${name}`,
+					anchoredAt: "2026-08-13T12:45:00.000Z",
+					anchoredBy: "founder",
+					confirmedBy: "oauth-profile",
+					email: `${name}@example.com`,
+				}),
+				{ mode: 0o600 },
+			);
+		}
+		const state = emptyQuotaMonitorState(4);
+		state.lastCandidateSweepAt = NOW - 60_000;
+		state.nextUsageDueAt = NOW + 15 * 60_000;
+		state.nextPaneScanDueAt = NOW + 15 * 60_000;
+		writeQuotaMonitorState(state, statePath);
+		const request = writeSweepRequest(
+			{ reason: "codex_switch" },
+			{ path: join(dir, "claude-quota", "sweep-request.json"), now: () => NOW },
+		);
+		const fetchUsage = vi.fn(async () => usageResult(20, 20));
+		const verifyCandidate = vi.fn(async () => ({
+			fresh: "refreshed" as const,
+			expiresAt: NOW + 3_600_000,
+		}));
+		const runtime = makeQuotaMonitorRuntime({
+			now: () => NOW,
+			paths: {
+				poolDir,
+				configPath,
+				statePath,
+				storePath,
+				cachePath,
+				lockPath,
+				claudeJsonPath,
+				sweepRequestPath: join(dir, "claude-quota", "sweep-request.json"),
+			},
+			reconcileMachine: noMachineDrift,
+			readKeychainCredential: async () => ({
+				accessToken: "active-secret",
+				expiresAt: NOW + 3_600_000,
+			}),
+			fetchUsage,
+			fetchIdentity: async () => ({
+				email: "shopping@example.com",
+				uuid: "uuid-shopping",
+			}),
+			verifyCandidate,
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true }),
+			},
+			alert: async () => ({ primary: "sent" }),
+		});
+
+		await runtime.tick();
+		expect(verifyCandidate.mock.calls.map(([name]) => name)).toEqual([
+			"school",
+		]);
+		expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+			lastSweepRequestId: request.requestId,
+			lastSweepRequestOutcome: "swept",
+			pendingSweepRequest: null,
+		});
+
+		fetchUsage.mockClear();
+		await runtime.tick();
+		expect(fetchUsage).not.toHaveBeenCalled();
+	});
+});
+
+describe("FLY-2830 R1 — one request path for Bridge and daemon", () => {
+	it("defaults to the Bridge writer's path, independent of the state file override", () => {
+		const before = process.env.FLYWHEEL_QUOTA_STATE_PATH;
+		process.env.FLYWHEEL_QUOTA_STATE_PATH =
+			"/elsewhere/quota-monitor-state.json";
+		try {
+			expect(defaultQuotaMonitorPaths().sweepRequestPath).toBe(
+				defaultSweepRequestPath(),
+			);
+			expect(defaultQuotaMonitorPaths().sweepRequestPath).not.toContain(
+				"/elsewhere/",
+			);
+		} finally {
+			if (before === undefined) delete process.env.FLYWHEEL_QUOTA_STATE_PATH;
+			else process.env.FLYWHEEL_QUOTA_STATE_PATH = before;
+		}
 	});
 });

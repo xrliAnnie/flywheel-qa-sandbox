@@ -1,6 +1,6 @@
 /**
  * VoiceCoreConfig — component paths + tunables resolved from explicit overrides
- * then env (FLYWHEEL_VOICE_* / GEMINI_API_KEY) then defaults. No path hardcoded;
+ * then env (FLYWHEEL_VOICE_*) then defaults. No path hardcoded;
  * missing components fail-fast with install guidance (plan.md r2 §3). Round-1
  * carries no whisper/standalone-STT config (deferred).
  */
@@ -38,8 +38,6 @@ export interface VoiceCoreConfig {
 	transcriptDir: string;
 	/** default edge-tts voice id. */
 	voice: string;
-	/** converse backend (Gemini Live). */
-	gemini: { model: string; apiKeyEnv: string };
 	/** OpenAI Live converse backend (engine A). */
 	openaiLive: {
 		model: string;
@@ -56,22 +54,21 @@ export interface VoiceCoreConfig {
 		announcerEndpoint: string;
 	};
 	defaultAnnounceBackendId: string;
+	/** no converse backend is bundled (FLY-2860); empty unless configured. */
 	defaultConverseBackendId: string;
 	timeouts: { ttsMs: number; brainMs: number };
 }
 
 const DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural";
-const DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview";
 const DEFAULT_OPENAI_LIVE_MODEL = "gpt-live-1";
 const DEFAULT_OPENAI_LIVE_ENDPOINT = "wss://api.openai.com/v1/live/sessions";
 const DEFAULT_TIMEOUTS = { ttsMs: 30_000, brainMs: 120_000 };
 
 export type ConfigOverrides = Partial<
-	Omit<VoiceCoreConfig, "edgeTts" | "timeouts" | "gemini" | "openaiLive">
+	Omit<VoiceCoreConfig, "edgeTts" | "timeouts" | "openaiLive">
 > & {
 	edgeTts?: Partial<VoiceCoreConfig["edgeTts"]>;
 	timeouts?: Partial<VoiceCoreConfig["timeouts"]>;
-	gemini?: Partial<VoiceCoreConfig["gemini"]>;
 	openaiLive?: Partial<VoiceCoreConfig["openaiLive"]>;
 };
 
@@ -140,18 +137,6 @@ export function resolveConfig(
 			"./voice-transcripts",
 		),
 		voice: pick(overrides.voice, env.FLYWHEEL_VOICE_VOICE, DEFAULT_VOICE),
-		gemini: {
-			model: pick(
-				overrides.gemini?.model,
-				env.FLYWHEEL_VOICE_GEMINI_MODEL,
-				DEFAULT_GEMINI_MODEL,
-			),
-			apiKeyEnv: pick(
-				overrides.gemini?.apiKeyEnv,
-				env.FLYWHEEL_VOICE_GEMINI_KEY_ENV,
-				"GEMINI_API_KEY",
-			),
-		},
 		openaiLive: {
 			model: pick(
 				overrides.openaiLive?.model,
@@ -204,7 +189,6 @@ export function resolveConfig(
 		defaultConverseBackendId: pick(
 			overrides.defaultConverseBackendId,
 			env.FLYWHEEL_VOICE_CONVERSE_BACKEND,
-			"gemini-live",
 		),
 		timeouts: {
 			ttsMs:
@@ -240,25 +224,6 @@ export function verifyAnnounceComponents(config: VoiceCoreConfig): void {
 		throw new VoiceError(
 			"component-missing",
 			"edge-tts streaming buffer limit must be a positive integer",
-		);
-	}
-}
-
-/** converse face fail-fast: GEMINI_API_KEY present + model pinned. */
-export function verifyConverseComponents(
-	config: VoiceCoreConfig,
-	env: NodeJS.ProcessEnv = process.env,
-): void {
-	if (!config.gemini.model) {
-		throw new VoiceError(
-			"component-missing",
-			"Gemini model not set (FLYWHEEL_VOICE_GEMINI_MODEL)",
-		);
-	}
-	if (!env[config.gemini.apiKeyEnv]) {
-		throw new VoiceError(
-			"component-missing",
-			`${config.gemini.apiKeyEnv} not set — the converse (Gemini Live) face needs an API key`,
 		);
 	}
 }

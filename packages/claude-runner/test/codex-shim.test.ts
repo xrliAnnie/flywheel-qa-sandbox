@@ -298,11 +298,13 @@ describe("flywheel-codex-profile manual identity control", () => {
 	it("uses a matching identityKey snapshot for token state and reset times", () => {
 		const snapshot = join(stateDir, "codex-quota", "codex-accounts.json");
 		mkdirSync(dirname(snapshot), { recursive: true });
+		const now = Date.now();
+		const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
 		writeFileSync(
 			snapshot,
 			JSON.stringify({
 				version: 1,
-				generatedAt: "2026-09-22T20:00:00.000Z",
+				generatedAt: iso(-5 * 60_000),
 				activeAccount: "shopping",
 				accounts: [
 					{
@@ -316,14 +318,14 @@ describe("flywheel-codex-profile manual identity control", () => {
 						fiveH: {
 							usedPercent: 100,
 							windowMinutes: 300,
-							resetAt: "2026-09-22T21:00:00.000Z",
+							resetAt: iso(60 * 60_000),
 						},
 						weekly: {
 							usedPercent: 50,
 							windowMinutes: 10080,
-							resetAt: "2026-09-25T21:00:00.000Z",
+							resetAt: iso(3 * 86_400_000),
 						},
-						observedAt: "2026-09-22T20:00:00.000Z",
+						observedAt: iso(-5 * 60_000),
 					},
 				],
 			}),
@@ -336,9 +338,86 @@ describe("flywheel-codex-profile manual identity control", () => {
 			),
 		).toMatchObject({
 			tokenStatus: "打满",
-			fiveHResetAt: "2026-09-22T21:00:00.000Z",
-			weeklyResetAt: "2026-09-25T21:00:00.000Z",
+			freshness: "fresh",
+			fiveHResetAt: iso(60 * 60_000),
+			weeklyResetAt: iso(3 * 86_400_000),
 		});
+	});
+
+	it("FLY-2869: never judges exhaustion from a stale or reset-elapsed reading", () => {
+		const snapshot = join(stateDir, "codex-quota", "codex-accounts.json");
+		mkdirSync(dirname(snapshot), { recursive: true });
+		const now = Date.now();
+		const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
+		const identityKey = createHash("sha256")
+			.update("shopping:acct-shopping")
+			.digest("hex");
+		const cases = [
+			{
+				reading: {
+					authHealth: "valid",
+					note: null,
+					observedAt: iso(-35 * 60_000),
+					fiveH: { usedPercent: 100, resetAt: iso(60 * 60_000) },
+					weekly: { usedPercent: 100, resetAt: iso(-60 * 60_000) },
+				},
+				expected: {
+					tokenStatus: "读数过期",
+					freshness: "stale",
+					fiveHResetAt: iso(60 * 60_000),
+					weeklyResetAt: null,
+				},
+			},
+			{
+				reading: {
+					authHealth: "valid",
+					note: null,
+					observedAt: iso(-5 * 60_000),
+					fiveH: null,
+					weekly: { usedPercent: 100, resetAt: iso(-60_000) },
+				},
+				expected: {
+					tokenStatus: "已过重置待探",
+					freshness: "reset_elapsed",
+					weeklyResetAt: null,
+				},
+			},
+			{
+				reading: {
+					authHealth: "valid",
+					note: null,
+					fiveH: { usedPercent: 100, resetAt: iso(60 * 60_000) },
+					weekly: null,
+				},
+				expected: { tokenStatus: "未探", freshness: "unobserved" },
+			},
+			{
+				reading: {
+					authHealth: "refresh_invalid",
+					note: "token_revoked",
+					observedAt: iso(-35 * 60_000),
+					fiveH: null,
+					weekly: null,
+				},
+				expected: { tokenStatus: "已吊销", freshness: "stale" },
+			},
+		];
+		for (const { reading, expected } of cases) {
+			writeFileSync(
+				snapshot,
+				JSON.stringify({
+					version: 1,
+					generatedAt: iso(0),
+					accounts: [{ name: "shopping", identityKey, ...reading }],
+				}),
+			);
+			const result = JSON.parse(runProfile(homeA, ["list", "--json"]));
+			expect(
+				result.accounts.find(
+					(entry: { name: string }) => entry.name === "shopping",
+				),
+			).toMatchObject(expected);
+		}
 	});
 
 	it("matches the shared account-page token-state vectors", () => {
@@ -359,6 +438,7 @@ describe("flywheel-codex-profile manual identity control", () => {
 							identityKey,
 							authHealth: vector.authHealth,
 							note: vector.note,
+							observedAt: new Date().toISOString(),
 							fiveH:
 								vector.usedPercent === null
 									? null

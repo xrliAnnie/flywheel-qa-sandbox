@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant Op as QA 操作者
+  participant S as retire-legacy-voice.mjs
+  participant D as Discord API
+  participant L as launchd
+  Op->>S: 必查目标清单 (bot 变量名 + guild, 不含口令)
+  S->>D: 每个 bot 取 appId, 与清单核对
+  S->>D: 每个 guild 与全局列命令
+  D-->>S: 命令列表 或 403 / 404
+  S-->>Op: 回执 覆盖状态 + 命中 (默认只看不删)
+  Op->>S: --apply
+  S->>D: 只删 斜杠类型 且 名字精确匹配 的四个命令
+  S->>D: 再列一次
+  S->>L: 若残留 voice-bridge 单元则 bootout + 改名 plist
+  S-->>Op: 必查目标全部查到 + remaining 为空 才算通过

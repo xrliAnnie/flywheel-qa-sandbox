@@ -4,8 +4,8 @@
  * Round-1 abstracts voice as TWO independent capability faces:
  *   - announce (speech-out only)  — a Lead "speaks" (read a report / standup).
  *   - converse (speech-in + out)  — a full voice conversation with a Lead.
- * A backend implements one or both. Edge TTS = announce only; Gemini Live =
- * converse only (its ASR is built in, so round-1 needs no standalone STT).
+ * A backend implements one or both. Edge TTS = announce only; converse
+ * backends (voice-codex) bring their own speech recognition.
  *
  * The brain (reasoning + memory) lives in-repo, orthogonal to the backend; only
  * the converse face needs it (surfaced to the model as an ask_lead tool).
@@ -25,7 +25,7 @@ export type ResumeHandle = { backendId: string; payload: unknown };
 
 export type ToolResult = { callId: string; output: string };
 
-/** Gemini's async function-response scheduling positions. */
+/** Async function-response scheduling positions for realtime tool calls. */
 export type ScheduleHint = "silent" | "when_idle" | "interrupt";
 
 /** Every failure path surfaces as a VoiceError with a machine code. */
@@ -95,8 +95,7 @@ export interface AnnouncerOptions {
 }
 
 /** A full function declaration the backend passes to the model verbatim
- * (structurally identical to the Gemini transport's LiveToolDeclaration —
- * kept here so the orchestrator-facing contract has no backend import). */
+ * (kept here so the orchestrator-facing contract has no backend import). */
 export interface ToolDeclaration {
 	name: string;
 	description: string;
@@ -131,6 +130,11 @@ export interface ConversationOptions {
 	 */
 	systemPreamble?: string;
 	/**
+	 * Identity, memory, mode, and meeting context loaded exactly once at open.
+	 * Kept distinct from the silent, in-session injectContext operation.
+	 */
+	initialSessionContext?: string;
+	/**
 	 * FLY-967 round-5: voice barge-in switch. true (default) keeps the
 	 * backend's native interruption (server VAD cancels the live response when
 	 * the user starts speaking — right for headphone users). false pins
@@ -141,7 +145,7 @@ export interface ConversationOptions {
 	bargeIn?: boolean;
 	transcriptSink?: TranscriptSink;
 	/**
-	 * resume is injected at creation time (Gemini configures sessionResumption at
+	 * resume is injected at creation time (a backend configures resumption at
 	 * connect). supportsResume=false + a handle → VoiceError("unsupported").
 	 */
 	resumeHandle?: ResumeHandle;
@@ -153,13 +157,8 @@ export interface ConversationOptions {
 }
 
 export interface VoiceBackend {
-	readonly id:
-		| "edge-tts"
-		| "gemini-live"
-		| "openai-realtime"
-		| "cosyvoice"
-		| (string & {});
-	/** For Gemini: derived from the config-pinned model, never hardcoded. */
+	readonly id: "edge-tts" | "openai-realtime" | "cosyvoice" | (string & {});
+	/** Derived from the backend's configured model, never hardcoded. */
 	readonly capabilities: VoiceBackendCapabilities;
 	/** required when capabilities.announce is true (registry enforces). */
 	createAnnouncer?(opts: AnnouncerOptions): Promise<AnnouncerSession>;
@@ -177,6 +176,82 @@ export interface SpeakResult {
 	 */
 	playbackStartMs: number;
 	durationMs: number;
+}
+
+export type VoiceSpeakKind =
+	| "brief"
+	| "question"
+	| "readback"
+	| "heartbeat"
+	| "cue"
+	| "control";
+
+export type VoiceSpeakVerification = "required" | "best_effort" | "none";
+export type VoiceContentProof =
+	| "none"
+	| "deterministic_tts"
+	| "transcript_equivalent";
+export type VoiceTransportProof = "none" | "submitted" | "playback_drained";
+
+interface SpeakReceiptBinding {
+	pendingKey: string;
+	requestDigest: string;
+}
+
+/** Illegal outcome/transport/proof combinations are unrepresentable. */
+export type SpeakReceipt = SpeakReceiptBinding &
+	(
+		| {
+				outcome: "rejected";
+				reason: string;
+				transport: "none";
+				contentProof: "none";
+		  }
+		| {
+				outcome: "failed";
+				reason: string;
+				transport: VoiceTransportProof;
+				contentProof: VoiceContentProof;
+		  }
+		| {
+				outcome: "completed";
+				transport: Exclude<VoiceTransportProof, "none">;
+				contentProof: VoiceContentProof;
+		  }
+	);
+
+export interface VoiceSpeakOptions {
+	pendingKey: string;
+	verification?: VoiceSpeakVerification;
+	/** Binds identical wording to the action it is allowed to arm. */
+	authorityBinding?: unknown;
+	/** Adapter-specific test/configuration seam; production default is bounded. */
+	chunkCharacters?: number;
+}
+
+export interface ArmAudibleTail {
+	drained: boolean;
+	/** Always true: this is an estimate, not proof that a human heard audio. */
+	estimate: true;
+}
+
+/** The contract's single arm predicate. Transport is intentionally absent. */
+export function canArmVoiceAction(
+	receipt: SpeakReceipt,
+	input: {
+		expectedPendingKey: string;
+		expectedRequestDigest: string;
+		audibleTail: ArmAudibleTail;
+	},
+): boolean {
+	return (
+		receipt.outcome === "completed" &&
+		(receipt.contentProof === "deterministic_tts" ||
+			receipt.contentProof === "transcript_equivalent") &&
+		receipt.pendingKey === input.expectedPendingKey &&
+		receipt.requestDigest === input.expectedRequestDigest &&
+		input.audibleTail.drained === true
+	);
 }
 
 export interface AnnouncerSession {
@@ -202,6 +277,7 @@ export type ConversationEventMap = {
 			interrupted?: boolean;
 		},
 	];
+	utterance: [ConversationUtterance];
 	"response-started": [];
 	"response-audio": [chunk: Buffer, format: AudioFormat];
 	"response-done": [];
@@ -216,7 +292,7 @@ export type ConversationEventMap = {
 			target: "client";
 		},
 	];
-	/** Gemini goAway.timeLeft maps here. */
+	/** A backend's server-side session-expiry notice maps here. */
 	"session-expiring": [{ inSec: number }];
 	error: [VoiceError];
 };
@@ -231,14 +307,17 @@ export interface ConversationSession {
 	 * verbatim-quote pools built from user entries can never pick them up.
 	 */
 	sendText(text: string): void;
+	/** Proof-bound spoken output. Legacy adapters may leave it unsupported. */
+	speak?(
+		text: string,
+		kind: VoiceSpeakKind,
+		opts: VoiceSpeakOptions,
+	): Promise<SpeakReceipt>;
 	/**
 	 * FLY-545: SILENT context feed — catch this session up on meeting facts it
-	 * did not hear (the huddle's gated multi-session orchestration feeds the
-	 * non-addressed Leads this way). Unlike sendText it must NEVER trigger
-	 * speech: FLY-968 measured realtime text frames break silence on
-	 * gemini-3.1, while sendClientContent(turnComplete:false) injects with
-	 * 0 bytes of audio and the facts stay quotable. Nothing is written to the
-	 * transcript sink (these are minutes, not new conversation).
+	 * did not hear. Unlike sendText it must NEVER trigger speech; the facts
+	 * stay quotable. Nothing is written to the transcript sink (these are
+	 * minutes, not new conversation).
 	 */
 	injectContext(text: string): void;
 	/**
@@ -268,6 +347,22 @@ export interface EffectiveConversationCapabilities {
 export interface CapabilityAwareConversationSession
 	extends ConversationSession {
 	readonly effectiveCapabilities: EffectiveConversationCapabilities;
+}
+
+/** FLY-2799: one normalized conversation utterance (the `utterance` event). */
+export interface ConversationUtterance {
+	sessionId: string;
+	sessionGeneration: number;
+	utteranceId: string;
+	transcriptId: string;
+	ts: string;
+	sequence: number;
+	source: "room_audio" | "engine_audio" | "engine_text";
+	role: "user" | "assistant";
+	text: string;
+	final: boolean;
+	interrupted?: boolean;
+	attribution: VoiceAttribution;
 }
 
 export interface BrainAdapter {
@@ -316,10 +411,10 @@ export interface TranscriptDurabilityReceipt {
 }
 
 export interface TranscriptSink {
-	/** failures throw explicitly — never swallowed. */
-	append(entry: TranscriptEntry): void;
+	/** Local durability only; this receipt never authorizes a business action. */
+	append(entry: TranscriptEntry): Promise<TranscriptWriteReceipt>;
 	/** drain pending writes (async sinks); readers await this first. */
-	flush?(): Promise<void>;
+	flush?(): Promise<TranscriptFlushReceipt>;
 }
 
 export interface DurableTranscriptSink extends TranscriptSink {
@@ -333,6 +428,14 @@ export interface DurableTranscriptSink extends TranscriptSink {
 	): Promise<TranscriptDurabilityReceipt | undefined>;
 }
 
+export type TranscriptWriteReceipt =
+	| { outcome: "durable"; medium: "jsonl" | "memory" }
+	| { outcome: "failed"; medium: "jsonl" | "memory"; reason: string };
+
+export type TranscriptFlushReceipt =
+	| { outcome: "durable" }
+	| { outcome: "failed"; reason: string };
+
 export type TranscriptEntry = {
 	ts: string;
 	sessionId: string;
@@ -343,6 +446,14 @@ export type TranscriptEntry = {
 	final: boolean;
 	/** FLY-1065: the turn was cut short by a barge-in (recorded as-said). */
 	interrupted?: boolean;
+	/** Present for the normalized V1 utterance path; legacy records omit them. */
+	sessionGeneration?: number;
+	utteranceId?: string;
+	transcriptId?: string;
+	sequence?: number;
+	/** V1 durable records (FLY-2796) also carry their own source labels. */
+	source?: ConversationUtterance["source"] | (string & {});
+	attribution?: VoiceAttribution;
 };
 
 export type DurableTranscriptEntry = TranscriptEntry & {
@@ -369,35 +480,9 @@ export type SpeakContentProof =
 	| "deterministic_tts"
 	| "transcript_equivalent";
 
-type SpeakReceiptIdentity = {
-	pendingKey: string;
-	requestDigest: string;
-};
-
 /** `SpeakReceipt.reason` when the founder's barge-in cancelled the speech.
  * It is an interruption to resume later, not a delivery failure. */
 export const SPEAK_BARGE_IN_REASON = "barge-in";
-
-export type SpeakReceipt = SpeakReceiptIdentity &
-	(
-		| {
-				outcome: "rejected";
-				reason: string;
-				transport: "none";
-				contentProof: "none";
-		  }
-		| {
-				outcome: "failed";
-				reason: string;
-				transport: "none" | "submitted";
-				contentProof: SpeakContentProof;
-		  }
-		| {
-				outcome: "completed";
-				transport: "submitted" | "playback_drained";
-				contentProof: SpeakContentProof;
-		  }
-	);
 
 export interface VoiceUtterance extends DurableTranscriptEntry {
 	role: "user" | "assistant";

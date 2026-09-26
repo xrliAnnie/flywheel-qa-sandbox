@@ -37,7 +37,6 @@ scripts/__tests__/supervisor.test.sh
 scripts/__tests__/test-auto-approve-identity.test.sh
 scripts/__tests__/test-deploy-discord-pointer.test.sh
 scripts/__tests__/test-deploy-qa-room.test.sh
-scripts/__tests__/voice-bridge-wrapper.test.sh
 
 # Fleet/deploy suites that mutate a managed host or require an operator fixture.
 scripts/__tests__/daily-digest-env-override.test.sh

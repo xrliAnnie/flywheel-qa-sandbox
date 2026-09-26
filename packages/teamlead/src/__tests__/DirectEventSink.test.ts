@@ -145,6 +145,54 @@ describe("DirectEventSink — FLY-2143 Epic refresh matrix", () => {
 	});
 });
 
+describe("DirectEventSink — FLY-2808 parked process body", () => {
+	it.each(["completed", "failed"] as const)(
+		"keeps a parked session when a resumed launch reports %s through the legacy path",
+		async (signal) => {
+			// FLY-2808 QA: a failed standby resume of a superseded attempt is not
+			// a current generalized binding, so its exit took the legacy path and
+			// rewrote ship_parked to blocked/failed, refusing resume cleanup.
+			const store = await StateStore.create(":memory:");
+			try {
+				store.upsertSession({
+					execution_id: "exec-1",
+					issue_id: "issue-1",
+					project_name: "geoforge3d",
+					status: "ship_parked",
+				});
+				vi.spyOn(store, "workflowProcessOwnsParkedSession").mockReturnValue(
+					true,
+				);
+				const sink = new DirectEventSink(store, makeConfig(), testProjects);
+				const onEpicChange = vi.fn();
+				sink.onEpicChange = onEpicChange;
+				const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+				if (signal === "completed") {
+					await sink.emitCompleted(makeEnvelope(), {
+						success: false,
+						decision: { route: "blocked", reasoning: "Zero commits" },
+						evidence: { partial: false, durationMs: 1 },
+					} as unknown as BlueprintResult);
+				} else {
+					await sink.emitFailed(makeEnvelope(), "launch_snapshot_mismatch");
+				}
+
+				expect(store.getSession("exec-1")).toMatchObject({
+					status: "ship_parked",
+					terminal_at: undefined,
+				});
+				expect(onEpicChange).not.toHaveBeenCalled();
+				expect(warn).toHaveBeenCalledWith(
+					expect.stringContaining("owned by its standby process lifecycle"),
+				);
+			} finally {
+				store.close();
+			}
+		},
+	);
+});
+
 describe("DirectEventSink — FLY-1609 D-arm attribution", () => {
 	it("persists bare-ponytail and effective on:arm together", async () => {
 		const store = await StateStore.create(":memory:");

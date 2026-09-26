@@ -189,6 +189,9 @@ jobs:
           node --test scripts/__tests__/qa-codex-lead-parity-drill.test.mjs
           node --test scripts/__tests__/qa-fly-2519-529-drill.test.mjs scripts/__tests__/qa-fly-2519-browser-node.test.mjs scripts/__tests__/qa-fly-2519-browser-process.test.mjs
           node --test scripts/__tests__/raya-cos-cli-dist.test.mjs
+          node --test scripts/__tests__/fly2799-codex-container.test.mjs
+          node --test scripts/__tests__/remove-retired-dist.test.mjs
+          node --test scripts/__tests__/retire-legacy-voice.test.mjs
 
       - name: Test — FLY-2519 bounded patrol GitHub facts
         run: bash scripts/__tests__/lead-patrol-github-facts.test.sh
@@ -369,6 +372,11 @@ jobs:
           bash scripts/__tests__/test-deploy-fly1389.test.sh
           bash scripts/__tests__/test-deploy-preflight-github.test.sh
 
+      - name: Test — FLY-2874 six-slot pool contract
+        run: |
+          bash scripts/__tests__/fly2874-slot-pool.test.sh
+          node --test scripts/__tests__/fly2874-test-slot-capacity.test.mjs
+
       - name: Test — FLY-2598 voice host configuration
         run: |
           pnpm --filter flywheel-teamlead... build
@@ -495,6 +503,13 @@ jobs:
       # classifying real Git worktrees against a SQLite snapshot.
       - name: Test — FLY-2664 merged worktree read-only audit
         run: node --test scripts/__tests__/audit-merged-worktrees.test.mjs
+
+      # FLY-2829 qa@2 measured this suite at 181s. Keep it intact on shard A
+      # after shard D crossed FLY-1870's 1020s capacity tripwire.
+      - name: Test — FLY-2829 node soak smoke
+        env:
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: bash scripts/__tests__/fly2829-node-soak-smoke.test.sh
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
@@ -668,6 +683,13 @@ jobs:
         run: |
           bash scripts/__tests__/test-reap-worktree-lib.test.sh
           bash scripts/__tests__/test-worktree-removal-contract.test.sh
+
+      # FLY-2829 qa@2 measured this suite at 183s. Keep it intact on shard B
+      # after shard D crossed FLY-1870's 1020s capacity tripwire.
+      - name: Test — FLY-2829 node soak restart
+        env:
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: bash scripts/__tests__/fly2829-node-soak-restart.test.sh
 
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
@@ -874,6 +896,13 @@ jobs:
         run: |
           bash scripts/__tests__/converge-nonlead-daemons.test.sh
 
+      # FLY-2829 qa@2 measured this suite at 41s. Keep it intact on shard C
+      # after shard D crossed FLY-1870's 1020s capacity tripwire.
+      - name: Test — FLY-2829 prod watchdog
+        env:
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: bash scripts/__tests__/fly2829-prod-watchdog.test.sh
+
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
@@ -946,6 +975,8 @@ jobs:
           bash scripts/__tests__/fly1884-view-attach.test.sh
           bash scripts/__tests__/fly1884-attach-recovery.test.sh
           bash scripts/__tests__/fly1884-node-presence.test.sh
+          bash scripts/__tests__/fly2829-node-registry.test.sh
+          bash scripts/__tests__/fly2829-workspace-convergence.test.sh
           bash scripts/__tests__/tmux-server-rescue.test.sh
           bash scripts/__tests__/tmux-server-rescue-lock.test.sh
           bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh
@@ -1045,13 +1076,6 @@ jobs:
           bash scripts/__tests__/lead-backend-migration-load.test.sh
           bash scripts/__tests__/lead-backend-migration-wave.test.sh
 
-      # FLY-1018: gemini-agent static guard. Pure grep assertions over
-      # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
-      # imports, zero privileged credentials, exactly 6 tool declarations.
-      # Widening the agent's surface must be an explicit, reviewable act.
-      - name: Test — FLY-1018 gemini-agent guard
-        run: bash scripts/gemini-agent-guard.sh
-
       # FLY-880: internal PM agent role .md contract guard. Pure text assertions
       # (no external deps) — defends the 40k injection-truncation red line and the
       # product-co-creation (mode A) + inherited docs/design (mode B) anchors
@@ -1094,13 +1118,13 @@ jobs:
       - name: Test — FLY-1981 runtime role auto-QA retirement
         run: bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
 
-      # FLY-1715: runner credential tier and managed voice replacement are
-      # deployment boundaries. Explicitly registered because script-tests
-      # does not glob.
+      # FLY-1715: runner credential tier and the deploy restart flow are
+      # deployment boundaries (FLY-2860: the voice-bridge restart step is
+      # retired). Explicitly registered because script-tests does not glob.
       - name: Test — FLY-1715 runner boundary shell contracts
         run: |
           bash scripts/__tests__/runner-tier-token-preflight.test.sh
-          bash scripts/__tests__/restart-services-voice-bridge.test.sh
+          bash scripts/__tests__/restart-services-no-voice-bridge.test.sh
 
       - name: Test — FLY-1945 trusted patrol helper closure
         run: bash scripts/__tests__/patrol-continuity-launcher.test.sh
@@ -1383,6 +1407,7 @@ jobs:
           bash scripts/__tests__/fly2266-cmux-lead-attach-health.test.sh
           bash scripts/__tests__/fly1663-bridge-launchd.test.sh
           bash scripts/__tests__/fly1663-qa-launchd.test.sh
+          bash scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh
           node --test scripts/__tests__/qa-lead-diagnostics.test.mjs
           bash scripts/__tests__/qa-lead-artifact-fixtures.test.sh
           bash scripts/__tests__/fly1663-qa-launchd-mutants.test.sh
@@ -1470,6 +1495,15 @@ jobs:
           node --test scripts/__tests__/qa-generalized-helper.test.mjs
           node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
           node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
+
+      # FLY-2802: prompt policy consistency, command-event semantics, and the
+      # explicit real-room deployment mode are hermetic here. The four live
+      # model cells remain a 529 exact-head acceptance artifact.
+      - name: Test — FLY-2802 Runner local-test discipline
+        run: |
+          node --test scripts/__tests__/runner-test-discipline.test.mjs
+          node --test scripts/__tests__/runner-test-policy.test.mjs
+          bash scripts/__tests__/runner-test-discipline-deploy.test.sh
 
       # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
       # contracts. Explicitly registered because script-tests does not glob.

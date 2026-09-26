@@ -95,6 +95,12 @@ export interface ProgressPointers {
 	research?: string;
 	pr?: string;
 	reviewedSha?: string;
+	/**
+	 * FLY-2901 §4.8: the worktree-takeover rescue evidence pointer written by the
+	 * stand-in's FIRST progress call — `encodeRescuePointer()` output
+	 * (`event:<rescueEventUid>[ refs:<remoteBranch>@<tip>,…]`), always non-empty.
+	 */
+	rescue?: string;
 }
 
 /** The light execution-state cursor for one issue branch B. */
@@ -223,6 +229,7 @@ function parsePointers(raw: unknown): ProgressPointers {
 		"research",
 		"pr",
 		"reviewedSha",
+		"rescue",
 	] as const) {
 		const v = str(o[k]);
 		if (v) p[k] = v;

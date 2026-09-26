@@ -109,6 +109,12 @@ export class FlywheelCommDelivery {
 		authorName: string;
 		text: string;
 		ts: string;
+		/**
+		 * `voice` (default) is a live founder utterance; `voice_minutes` is the
+		 * after-the-fact record of an ended session and must never be rendered
+		 * to the Lead as founder dictation.
+		 */
+		origin?: "voice" | "voice_minutes";
 	}): Promise<{ lane: IngestLane; deliveryId: string }> {
 		const result = json(
 			(
@@ -135,7 +141,7 @@ export class FlywheelCommDelivery {
 						"--msg-kind",
 						"guild",
 						"--origin",
-						"voice",
+						input.origin ?? "voice",
 						"--voice-session",
 						input.voiceSessionId,
 						"--founder-id",

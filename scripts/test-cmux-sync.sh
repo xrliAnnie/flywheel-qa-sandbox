@@ -78,11 +78,14 @@ export LEDGER_CONFLICT_STATE="$TMPDIR_ROOT/ledger-conflict.state"  # FLY-1446
 export ROSTER_EPISODE_STATE="$TMPDIR_ROOT/roster-episodes.state"  # FLY-1446
 export CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"  # FLY-1596
 export PREPARED_STALL_STATE="$TMPDIR_ROOT/prepared-stall.state"  # FLY-1884
+export DUPLICATE_STATE="$TMPDIR_ROOT/duplicate-proof.state"  # FLY-2829 founder A
 export CMUX_ADDITIVE_ROUND_STATE="$TMPDIR_ROOT/cmux-additive-round.state"  # FLY-1884
 export NODE_LEDGER="$TMPDIR_ROOT/cmux-node-ledger"  # FLY-2102: node presence is always on
 export NODE_REGISTRY="$TMPDIR_ROOT/cmux-node-registry"  # FLY-2102
 export NODE_STATUS_DIR="$TMPDIR_ROOT/cmux-node-status"  # FLY-2102
 export CLEANUP_SNAPSHOT="$TMPDIR_ROOT/cmux-cleanup-snapshot"  # FLY-2102
+export NODE_CREATE_LEDGER="$TMPDIR_ROOT/cmux-node-create-ledger"  # FLY-2829: never the real ledger
+export NODE_RUNAWAY_LATCH="$TMPDIR_ROOT/cmux-node-runaway"  # FLY-2829
 export FLYWHEEL_CMUX_TMUX_GENERATION="tmux-test-generation"  # FLY-1272
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
@@ -1132,6 +1135,11 @@ kill() {
 export -f tmux cmux ps pgrep kill
 
 reset_mocks() {
+  # FLY-2829: every legacy scenario models one fresh mutator pass with an
+  # empty create ledger, so the per-pass create gate opens with a full budget.
+  WATCHER_PASS_SEQ=$((${WATCHER_PASS_SEQ:-0} + 1))
+  CREATE_GATE_PASS=""; CREATE_GATE_STATE=uninitialized; CREATE_RESERVATION_LINE=""
+  rm -f "$NODE_CREATE_LEDGER" "$NODE_RUNAWAY_LATCH" 2>/dev/null || true
   MOCK_TOPOLOGY_MODE="compat"
   MOCK_TOPO_LINK_FAIL="0"
   MOCK_TOPO_UNLINK_FAIL="0"
@@ -1286,13 +1294,14 @@ reset_mocks() {
   CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"
   rm -f "$CMUX_LOG_EPISODE_STATE"
   PREPARED_STALL_STATE="$TMPDIR_ROOT/prepared-stall.state"
+  DUPLICATE_STATE="$TMPDIR_ROOT/duplicate-proof.state"
   CMUX_ADDITIVE_ROUND_STATE="$TMPDIR_ROOT/cmux-additive-round.state"
   CMUX_ADDITIVE_ROUND_ID=""
   FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=""
   FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES=""
   FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES=""
   unset FLYWHEEL_CMUX_CLEANUP_PENDING_TTL_DAYS
-  rm -f "$PREPARED_STALL_STATE" "$CMUX_ADDITIVE_ROUND_STATE"
+  rm -f "$PREPARED_STALL_STATE" "$DUPLICATE_STATE" "$CMUX_ADDITIVE_ROUND_STATE"
   rm -f "$NODE_LEDGER" "$NODE_REGISTRY" "$CLEANUP_SNAPSHOT"
   rm -rf "$NODE_STATUS_DIR"
   rm -f "$TMPDIR_ROOT/fly1364-alert-args"
@@ -11906,7 +11915,7 @@ test_fly1605_raw_stock_with_foreign_surface_has_zero_authority() {
 }
 
 test_fly1605_raw_duplicates_converge_through_guarded_close() {
-  echo "Test: FLY-1944 round-3 — raw duplicates migrate the winner but preserve the loser report-only"
+  echo "Test: FLY-2829 founder A — raw duplicates close after two distinct liveness rounds"
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=1
   MOCK_SOCK_IDENT="cmux-generation-1"
@@ -11924,9 +11933,9 @@ workspace:100;;surface:100;;terminal;;true;;$raw"
   workspace_attach_liveness() {
     [[ "$1" == workspace:99 ]] && printf 'live\n' || printf 'dead\n'
   }
+  CMUX_ADDITIVE_ROUND_ID=100-1
   MOCK_CMUX_OPS=""
   reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
-  eval "$saved_liveness"
   local ok=1
   [[ "$rc" -eq 0 \
       && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|cmux-generation-1|workspace:99|$title" ]] \
@@ -11938,17 +11947,23 @@ workspace:100;;surface:100;;terminal;;true;;$raw"
   if grep -qF "close-workspace --workspace workspace:100" <<< "$MOCK_CMUX_OPS"; then
     fail "single-sample raw loser crossed the report-only fence ops=[$MOCK_CMUX_OPS]"; ok=0
   fi
-  [[ "$ok" == "1" ]] && pass "raw duplicates choose and finish the numeric-min winner without destructive cleanup"
+  [[ "$ok" == "1" ]] && pass "first round chooses the winner and preserves the sibling"
 
   before=$(cat "$VIEW_LEDGER" 2>/dev/null)
   MOCK_CMUX_OPS=""
   rc=0
+  CMUX_ADDITIVE_ROUND_ID=100-2
   reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
-  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "$before" ]]; then
-    pass "raw duplicate convergence is cmux-mutation-free and ledger-byte-idempotent on the second pass"
+  eval "$saved_liveness"
+  if [[ "$rc" -eq 0 \
+      && "$MOCK_CMUX_OPS" == *'close-workspace --workspace workspace:100'* \
+      && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "$before" \
+      && "$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c 'import json,sys; print(sum(1 for w in json.load(sys.stdin)["workspaces"] if w.get("ref")=="workspace:100"))')" == 0 ]]; then
+    pass "second distinct round closes only the proven-dead sibling"
   else
-    fail "raw duplicate second pass mutated rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+    fail "raw duplicate did not converge on round two rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
   fi
+  CMUX_ADDITIVE_ROUND_ID=""
 }
 
 test_fly1605_named_keeper_closes_raw_extra_after_tab_ready() {
@@ -12009,13 +12024,13 @@ test_fly1605_generation_flip_blocks_stock_rename() {
 }
 
 test_fly1605_report_only_preserves_raw_extra_and_alerts() {
-  echo "Test: FLY-1944 round-3 — duplicate report-only path preserves the raw extra and alerts"
+  echo "Test: FLY-2829 founder A — duplicate proof is non-destructive in its first round"
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=1
   MOCK_SOCK_IDENT="cmux-generation-1"
   MOCK_CMUX_MUTATE_JSON=1
   MOCK_CMUX_MUTATE_SURFACES=1
-  local title="FLY-1605-design-claude" raw roster rc=0 remaining saved_liveness saved_alert alerts
+  local title="FLY-1605-design-claude" raw roster rc=0 remaining saved_liveness
   fly1605_seed_strict_managed_window "runner-flywheel" "@1605" "$title"
   roster="runner-flywheel|@1605|$title"
   raw=$(build_attach_command "cmux-$title")
@@ -12027,12 +12042,8 @@ workspace:100;;surface:100;;terminal;;true;;$raw"
   workspace_attach_liveness() {
     [[ "$1" == workspace:200 ]] && printf 'live\n' || printf 'dead\n'
   }
-  alerts="$TMPDIR_ROOT/fly1605-report-only-alerts"
-  : > "$alerts"
-  saved_alert=$(declare -f flywheel_alert)
-  flywheel_alert() { printf '%s|%s\n' "$1" "$5" >> "$alerts"; return 0; }
+  CMUX_ADDITIVE_ROUND_ID=100-1
   reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
-  eval "$saved_alert"
   eval "$saved_liveness"
   remaining=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
 import json,sys
@@ -12041,11 +12052,12 @@ print(sum(1 for w in json.load(sys.stdin)["workspaces"] if w.get("ref") == "work
   if [[ "$rc" -eq 0 && "$remaining" == "1" \
       && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|cmux-generation-1|workspace:200|$title" \
       && "$MOCK_CMUX_OPS" != *'close-workspace --workspace workspace:100'* \
-      && "$(cat "$alerts")" == "cmux_cleanup|cmux_cleanup|view-duplicate-report-only|title=$title|keeper=workspace:200|sibling=workspace:100" ]]; then
-    pass "duplicate report-only path preserves the extra, attempts no close, and emits the keyed alert"
+      && -s "$DUPLICATE_STATE" ]]; then
+    pass "first-round duplicate sample preserves the extra and records durable proof"
   else
-    fail "report-only duplicate drifted rc=$rc remaining=$remaining ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] alerts=[$(cat "$alerts")]"
+    fail "first-round duplicate fence drifted rc=$rc remaining=$remaining ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] proof=[$(cat "$DUPLICATE_STATE" 2>/dev/null)]"
   fi
+  CMUX_ADDITIVE_ROUND_ID=""
 }
 
 test_fly1605_winner_order_ignores_stale_receipt_and_prefers_pin() {
@@ -13023,6 +13035,9 @@ test_fly2770_migration_evidence_is_bound_to_the_receipt_lifecycle() {
   printf 'drift|cmux-generation-1|workspace:8|live-one|1|%s|100-1\n' "$old" >> "$PREPARED_STALL_STATE"
   printf 'node-absent|cmux-generation-1|workspace:9|foreign-kind|1|%s|100-1\n' "$old" >> "$PREPARED_STALL_STATE"
   printf 'prepared|cmux-generation-1|workspace:8|live-one|%s\n' "$_fly2770_uuid" > "$VIEW_LEDGER"
+  # FLY-2829: node kinds now have a producer and are swept against the node
+  # ledger; this row survives because its exact node receipt exists.
+  printf 'committed|cmux-generation-1|workspace:9|exec-foreign|foreign-kind\n' > "$NODE_LEDGER"
   # Drive the sweep directly here: routing through a full reconcile pass would
   # let the __ABSENT__ arm clear workspace:8's own evidence for its own reasons,
   # which would hide over-deletion rather than prove its absence.

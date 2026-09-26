@@ -1,0 +1,162 @@
+{
+  "issue": "FLY-2799",
+  "executionId": "764b8e3f-2f3c-4e1e-83c3-0e35e9cbbac0",
+  "leadInstructions": [
+    "f32792b4-6fbf-49ca-a4d6-607a7e22302f",
+    "31ca8913-1543-45c4-9eae-f073cd117c3d"
+  ],
+  "keySource": "Existing com.flywheel.voice managed .env; environment only; no key stored",
+  "testedModels": [
+    "gpt-live-1",
+    "gpt-realtime-2.1"
+  ],
+  "codexBinary": "Official 0.156.1 standalone; original probe-summary.json pins digest",
+  "transportResults": {
+    "codexV3Live1": "access denied",
+    "publicLiveClientDelegation": "passed",
+    "codexV2Realtime21": "passed",
+    "publicRealtime21FunctionCalling": "passed"
+  },
+  "backendBoundary": "Only local fixed probe_status=blue fixture; no Responses backend, no Lead production mailbox, no shell or business side effects",
+  "input": "../external-audio-in.wav, resampled mono PCM24k, 100ms frame pacing. Barge-in after output RMS>200 and 500ms delay.",
+  "limitations": [
+    "single sample per configuration",
+    "no human acoustic playback or Discord room",
+    "no full latency distribution",
+    "no end-to-end Lead mailbox test",
+    "public Live adapter is experiment only, not production implementation"
+  ],
+  "sources": [
+    "https://developers.openai.com/api/docs/guides/voice-websockets",
+    "https://developers.openai.com/api/docs/guides/live-delegation",
+    "https://developers.openai.com/api/docs/models/gpt-live-1",
+    "https://developers.openai.com/api/docs/models/gpt-realtime-2.1"
+  ],
+  "files": [
+    {
+      "path": "api-v2-gpt-realtime-2.1-appendSpeech.wav",
+      "bytes": 96044,
+      "sha256": "accc9fcc782dc1cb5ba6d4cb73ac530ba6315c95fb082d966cdeaed8078a360e"
+    },
+    {
+      "path": "api-v2-gpt-realtime-2.1-externalAudio.wav",
+      "bytes": 124844,
+      "sha256": "d197fb9553afc4e5487e103556db034d101fb49e045d12736006b8abeb9ad371"
+    },
+    {
+      "path": "api-v2-gpt-realtime-2.1.jsonl",
+      "bytes": 54062,
+      "sha256": "2b0cae20b870f054c6dec8946612af185b52270f776602e1316dff952ab993a7"
+    },
+    {
+      "path": "api-v3-gpt-live-1.jsonl",
+      "bytes": 6756,
+      "sha256": "fcb3a1a94f66609809d74a19bdffe0fe818a81ee2c56474eb53ce58ed61100f0"
+    },
+    {
+      "path": "duplex-live-close.wav",
+      "bytes": 28844,
+      "sha256": "0b9e427fb429f33f0f9a2ddd2c7389c7aba96c3a9411ba203367ac9c06779b32"
+    },
+    {
+      "path": "duplex-live-firstSpeech.json",
+      "bytes": 357,
+      "sha256": "aa53a4e2b2d88c5a16284a50a1b0fa5a74e45ddc8f6996d8ee8cad309c80f589"
+    },
+    {
+      "path": "duplex-live-firstSpeech.wav",
+      "bytes": 264044,
+      "sha256": "5904574aecd5acbe715da18a5b96ed5472a938647e5e9761b2ab2d0bdf32b008"
+    },
+    {
+      "path": "duplex-live-interruption.json",
+      "bytes": 454,
+      "sha256": "33a82e73a39d5c7ee2a00dbfa2923cf55321b106bca74c77e6af0fba79a68d70"
+    },
+    {
+      "path": "duplex-live-interruption.wav",
+      "bytes": 854444,
+      "sha256": "29cc4b80114ecac0794abdd660c227761d772bbec917a0ab8dafb75bad4a7828"
+    },
+    {
+      "path": "duplex-live-tool.json",
+      "bytes": 659,
+      "sha256": "2301d3ee3322bb69fc89ad1f7f210fa32596900a122a5842d86b9d1dfdeea849"
+    },
+    {
+      "path": "duplex-live-tool.wav",
+      "bytes": 720044,
+      "sha256": "942256f5b057cd7352a3a68b5e7000cf95e1f754976b419c0658229bf0d0bb1d"
+    },
+    {
+      "path": "duplex-live.jsonl",
+      "bytes": 241385,
+      "sha256": "496972aae4c5d879d1d92de1ac78d1109e05990478b82bf562d59a016a89d52d"
+    },
+    {
+      "path": "duplex-probe.py",
+      "bytes": 8257,
+      "sha256": "56c4d8e217dcb0f195bbabd69506adc23e0c0ab21cc38da39278d65be5f6c967"
+    },
+    {
+      "path": "duplex-realtime-firstSpeech.wav",
+      "bytes": 98444,
+      "sha256": "73a031de89f87eb37b824330fcc304e071f67244862dbfebac2dbf443d7e2dde"
+    },
+    {
+      "path": "duplex-realtime-interruption.json",
+      "bytes": 730,
+      "sha256": "5d4da48448c69bc6b2984afacf14e97acdba3efaf0b873ba96ee89b2ba13f9e4"
+    },
+    {
+      "path": "duplex-realtime-interruption.wav",
+      "bytes": 276044,
+      "sha256": "144740b7e365471b71cb53ea2c0beb695323a09ba248ad5849dab38a6c7026de"
+    },
+    {
+      "path": "duplex-realtime-tool.json",
+      "bytes": 838,
+      "sha256": "eb8dee8740eb9dbbcc491537d15a6977e4cb152afbb4c0d82162a32cef7e4dcd"
+    },
+    {
+      "path": "duplex-realtime-tool.wav",
+      "bytes": 276044,
+      "sha256": "d0d519aea74eb53bf2672a2d57ca7719c9755b58aa6acfc8960bc88390ad7b7d"
+    },
+    {
+      "path": "duplex-realtime.jsonl",
+      "bytes": 185555,
+      "sha256": "30e58f7628fcf8a5be2e82d06d33f8b6bde7721a2d986904d75ee42d92b15586"
+    },
+    {
+      "path": "key-env-run.py",
+      "bytes": 674,
+      "sha256": "a209fe3ec2b93ba82b85dc4d1a8c97b80966db817865443a0c4a959594e2b23e"
+    },
+    {
+      "path": "measure-duplex.py",
+      "bytes": 3988,
+      "sha256": "50a36690b09fafe67a9c55e86101f87d0a0fbf36edbfdcf7779e00cedaa71e91"
+    },
+    {
+      "path": "model-probe.py",
+      "bytes": 7310,
+      "sha256": "66fc46232306cee57946f8d0d0bc01e6d4cda58fecb1c79d36ded49c6a65761d"
+    },
+    {
+      "path": "new-model-summary.json",
+      "bytes": 2549,
+      "sha256": "71344480ecf9a519ab8dc51463af32e96561a5a951c19f6a07db5d5b6cdfe6fa"
+    },
+    {
+      "path": "public-live-smoke.jsonl",
+      "bytes": 117363,
+      "sha256": "c0cc5aa3d3293aae9fe69865d50ec3a9b4b6c119224f7f814fce4a4bd2aa722e"
+    },
+    {
+      "path": "public-live-smoke.py",
+      "bytes": 3484,
+      "sha256": "2d8aee352c304a37d3d6bf385e747c8db571ff99873493b9595ebb3ade011b05"
+    }
+  ]
+}

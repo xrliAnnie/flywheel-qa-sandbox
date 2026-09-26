@@ -1,0 +1,8 @@
+{"t":"2026-09-25T06:37:49.123Z","event":"setup","canonical":"school","A":"personal2","B":"personal1","link":"/Users/xiaorongli/.codex/profiles/personal2/auth.json"}
+{"t":"2026-09-25T06:37:49.127Z","event":"spawned","pid":8200}
+{"t":"2026-09-25T06:37:49.244Z","event":"initialized","ok":true}
+{"t":"2026-09-25T06:37:51.109Z","event":"before_swap","accountEmail":"x***@gmail.com","accountError":null,"matches":{"A":true,"B":false},"limits":{"planType":"prolite","primary":{"usedPercent":100,"resetsAt":1790544346},"secondary":null},"limitsError":null}
+{"t":"2026-09-25T06:37:51.109Z","event":"swapped","link":"/Users/xiaorongli/.codex/profiles/personal1/auth.json"}
+{"t":"2026-09-25T06:37:51.469Z","event":"after_swap_immediate","accountEmail":"x***@gmail.com","accountError":null,"matches":{"A":true,"B":false},"limits":{"planType":"prolite","primary":{"usedPercent":100,"resetsAt":1790544346},"secondary":null},"limitsError":null}
+{"t":"2026-09-25T06:38:06.950Z","event":"after_swap_15s","accountEmail":"x***@gmail.com","accountError":null,"matches":{"A":true,"B":false},"limits":{"planType":"prolite","primary":{"usedPercent":100,"resetsAt":1790544346},"secondary":null},"limitsError":null}
+{"t":"2026-09-25T06:38:07.002Z","event":"teardown","homeAuthIsSymlink":true,"homeAuthTarget":"/Users/xiaorongli/.codex/profiles/personal1/auth.json","slotBytesUnchanged":{"personal2":true,"personal1":true},"stderrTail":""}

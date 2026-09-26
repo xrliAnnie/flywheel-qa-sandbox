@@ -33,22 +33,6 @@ export {
 	type EdgeTtsOptions,
 } from "./backends/edge-tts/EdgeTtsEngine.js";
 export {
-	deriveCapabilities,
-	GeminiLiveBackend,
-	type GeminiLiveBackendOptions,
-	type GeminiModelProfile,
-} from "./backends/gemini/GeminiLiveBackend.js";
-export {
-	createGenaiTransport,
-	type GenaiConnectorOptions,
-} from "./backends/gemini/genaiConnector.js";
-export type {
-	GeminiLiveTransport,
-	LiveConnection,
-	LiveConnectParams,
-	LiveServerEvent,
-} from "./backends/gemini/transport.js";
-export {
 	CompositeSpeech,
 	type CompositeSpeechOptions,
 } from "./backends/openai-live/CompositeSpeech.js";
@@ -86,17 +70,6 @@ export {
 	type HeadlessClaudeBrainOptions,
 	parseStreamLine,
 } from "./brain/HeadlessClaudeBrain.js";
-// resident brain (FLY-1160)
-export {
-	ResidentBrainManager,
-	type ResidentBrainManagerOptions,
-} from "./brain/ResidentBrainManager.js";
-export {
-	type ResidentBrainEvent,
-	type ResidentBrainOptions,
-	type ResidentBrainState,
-	ResidentClaudeBrain,
-} from "./brain/ResidentClaudeBrain.js";
 export {
 	type ParsedStreamEvent,
 	parseStreamEvent,
@@ -109,7 +82,6 @@ export {
 	type VoiceCoreConfig,
 	verifyAnnounceComponents,
 	verifyBrainComponents,
-	verifyConverseComponents,
 	verifyOpenAiLiveComponents,
 } from "./config.js";
 export { TypedEmitter } from "./emitter.js";
@@ -118,11 +90,9 @@ export { mapProcessError } from "./errors.js";
 export {
 	type AnnounceWiring,
 	buildEdgeTtsBackend,
-	buildGeminiBackend,
 	buildGptLiveBackend,
 	buildHeadlessBrain,
 	buildRegistry,
-	type ConverseWiring,
 	type OpenAiLiveWiring,
 	type RegistryWiring,
 } from "./factory.js";
@@ -151,10 +121,6 @@ export {
 export * from "./room-io.js";
 // secret red line (FLY-1065) — every transcript exit passes through this
 export { scrubTranscript } from "./scrub.js";
-export {
-	TalkSessionRotator,
-	type TalkSessionRotatorOptions,
-} from "./TalkSessionRotator.js";
 // shared layer
 export {
 	clearTranscriptWriteFailure,
@@ -165,3 +131,5 @@ export {
 } from "./transcript.js";
 // contract
 export * from "./types.js";
+// voice-thread mirror marks shared by the posters and the Bridge poller
+export { isVoiceMirrorText, VOICE_MIRROR_MARKS } from "./voice-mirror.js";

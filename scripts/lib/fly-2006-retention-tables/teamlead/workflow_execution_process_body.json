@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "workflow_execution_process_body",
+	"classification": "protectedCurrentOrReference"
+}

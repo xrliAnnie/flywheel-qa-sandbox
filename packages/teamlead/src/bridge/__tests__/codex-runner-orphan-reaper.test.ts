@@ -1,15 +1,22 @@
 import {
+	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	admitCodexAgentHome,
+	type CodexLeaseHolderProbe,
+	type CodexLeaseHolderProbeResult,
 	releaseCodexAgentHomeLease,
 	resolveDaemonSocketPath,
 } from "flywheel-claude-runner";
@@ -18,8 +25,10 @@ import {
 	CODEX_APP_SERVER_ORPHAN_MIN_ELAPSED_SECONDS,
 	type CodexAppServerProcess,
 	defaultListCodexHomeExecutionIds,
+	defaultSocketHolderPids,
 	parseCodexAppServerProcessRow,
 	sweepCodexRunnerOrphans,
+	sweepStaleCodexHomeLeases,
 } from "../codex-runner-orphan-reaper.js";
 
 describe("FLY-2358 keyed Codex home inventory", () => {
@@ -709,6 +718,209 @@ describe("sweepCodexRunnerOrphans", () => {
 	});
 });
 
+describe("FLY-2877 stale keyed lease sweep", () => {
+	const NOW = Date.parse("2026-09-25T12:00:00.000Z");
+	const OLD = new Date(NOW - 11 * 60_000);
+	const FRESH = new Date(NOW - 60_000);
+	const LIVE: CodexLeaseHolderProbeResult = { status: "ok", holders: [91] };
+	const NONE: CodexLeaseHolderProbeResult = { status: "ok", holders: [] };
+	const UNKNOWN: CodexLeaseHolderProbeResult = {
+		status: "unknown",
+		reason: "probe_failed",
+	};
+
+	async function withRoot(
+		body: (root: string, env: NodeJS.ProcessEnv) => Promise<void>,
+	) {
+		const root = mkdtempSync(join(tmpdir(), "fly2877-sweep-"));
+		try {
+			await body(root, testEnv(root));
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}
+
+	async function staleLease(
+		env: NodeJS.ProcessEnv,
+		executionId: string,
+		options: {
+			project?: string;
+			role?: string;
+			age?: Date;
+			session?: "missing" | "corrupt";
+		} = {},
+	) {
+		const admission = await admitCodexAgentHome(
+			{
+				project: options.project ?? "flywheel",
+				role: options.role ?? "implement",
+				executionId,
+				requestedAssemblyArm: "bare",
+			},
+			env,
+		);
+		const lease = join(admission.handle.home, ".flywheel-leases", executionId);
+		utimesSync(lease, options.age ?? OLD, options.age ?? OLD);
+		if (options.session === "corrupt") {
+			const dir = join(env.FLYWHEEL_CODEX_SESSION_DIR!, executionId);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "session.json"), "{broken");
+		}
+		return { home: admission.handle.home, lease };
+	}
+
+	const probeOf = (result: CodexLeaseHolderProbeResult) =>
+		vi.fn<CodexLeaseHolderProbe>(async () => result);
+
+	it.each([
+		["session.json missing", { session: "missing" as const }],
+		["session.json corrupt", { session: "corrupt" as const }],
+		["an upper-case project", { project: "FlyWheel" }],
+		["a role containing --", { role: "qa--x" }],
+	])("releases an old lease nobody holds (%s)", async (_label, options) => {
+		await withRoot(async (_root, env) => {
+			const { home, lease } = await staleLease(env, "exec-stale", options);
+			const audit = vi.fn();
+			const probe = probeOf(NONE);
+			await expect(
+				sweepStaleCodexHomeLeases(
+					{ readoptExecutionIds: new Set(), now: () => NOW },
+					{ env, probe, audit },
+				),
+			).resolves.toEqual({ released: 1, retained: 0, skipped: 0, invalid: 0 });
+			expect(probe).toHaveBeenCalledWith(home, "exec-stale");
+			expect(existsSync(lease)).toBe(false);
+			expect(audit).toHaveBeenCalledWith(
+				"codex_home_lease_swept",
+				expect.objectContaining({ executionId: "exec-stale", home }),
+			);
+		});
+	});
+
+	it.each([
+		["live holders", LIVE],
+		["an unknown probe", UNKNOWN],
+	])("keeps an old lease with %s", async (_label, result) => {
+		await withRoot(async (_root, env) => {
+			const { lease } = await staleLease(env, "exec-held");
+			const audit = vi.fn();
+			await expect(
+				sweepStaleCodexHomeLeases(
+					{ readoptExecutionIds: new Set(), now: () => NOW },
+					{ env, probe: probeOf(result), audit },
+				),
+			).resolves.toEqual({ released: 0, retained: 1, skipped: 0, invalid: 0 });
+			expect(existsSync(lease)).toBe(true);
+			expect(audit).toHaveBeenCalledWith(
+				"codex_home_lease_retained",
+				expect.objectContaining({ executionId: "exec-held" }),
+			);
+		});
+	});
+
+	it("does not touch a fresh, readopted or in-process-owned lease", async () => {
+		await withRoot(async (_root, env) => {
+			const fresh = await staleLease(env, "exec-fresh", { age: FRESH });
+			const readopt = await staleLease(env, "exec-readopt");
+			const owned = await staleLease(env, "exec-owned");
+			const probe = probeOf(NONE);
+			await expect(
+				sweepStaleCodexHomeLeases(
+					{
+						readoptExecutionIds: new Set(["exec-readopt"]),
+						isExecutionOwned: (id) => id === "exec-owned",
+						now: () => NOW,
+					},
+					{ env, probe, audit: vi.fn() },
+				),
+			).resolves.toEqual({ released: 0, retained: 0, skipped: 3, invalid: 0 });
+			expect(probe).not.toHaveBeenCalled();
+			for (const { lease } of [fresh, readopt, owned])
+				expect(existsSync(lease)).toBe(true);
+		});
+	});
+
+	it("reports an ambiguous marker as invalid and keeps the lease", async () => {
+		await withRoot(async (_root, env) => {
+			const { home, lease } = await staleLease(env, "exec-bad-marker");
+			writeFileSync(join(home, ".flywheel-agent-home.json"), "{broken");
+			const audit = vi.fn();
+			const probe = probeOf(NONE);
+			await expect(
+				sweepStaleCodexHomeLeases(
+					{ readoptExecutionIds: new Set(), now: () => NOW },
+					{ env, probe, audit },
+				),
+			).resolves.toEqual({ released: 0, retained: 0, skipped: 0, invalid: 1 });
+			expect(existsSync(lease)).toBe(true);
+			expect(probe).not.toHaveBeenCalled();
+			expect(audit).toHaveBeenCalledWith(
+				"codex_home_lease_entry_invalid",
+				expect.objectContaining({ executionId: "exec-bad-marker" }),
+			);
+		});
+	});
+
+	it("ignores unsafe inventory entries without following them", async () => {
+		await withRoot(async (root, env) => {
+			const { home } = await staleLease(env, "exec-real");
+			const leases = join(home, ".flywheel-leases");
+			symlinkSync(join(leases, "exec-real"), join(leases, "exec-link"));
+			writeFileSync(join(leases, "bad name"), "x");
+			const target = join(root, "elsewhere");
+			mkdirSync(join(target, ".flywheel-leases"), { recursive: true });
+			writeFileSync(join(target, ".flywheel-leases", "exec-foreign"), "x");
+			symlinkSync(
+				target,
+				join(env.FLYWHEEL_CODEX_HOMES_ROOT!, "agents", "flywheel", "linked"),
+			);
+			const probe = probeOf(NONE);
+			await sweepStaleCodexHomeLeases(
+				{ readoptExecutionIds: new Set(), now: () => NOW },
+				{ env, probe, audit: vi.fn() },
+			);
+			expect(probe.mock.calls.map((call) => call[1])).toEqual(["exec-real"]);
+			expect(existsSync(join(target, ".flywheel-leases", "exec-foreign"))).toBe(
+				true,
+			);
+		});
+	});
+
+	it("is a no-op when the homes root has no agents directory", async () => {
+		await withRoot(async (_root, env) => {
+			await expect(
+				sweepStaleCodexHomeLeases(
+					{ readoptExecutionIds: new Set(), now: () => NOW },
+					{ env, probe: probeOf(NONE), audit: vi.fn() },
+				),
+			).resolves.toEqual({ released: 0, retained: 0, skipped: 0, invalid: 0 });
+		});
+	});
+
+	it("rides the guarded maintenance tick after the orphan sweep", () => {
+		const source = readFileSync(
+			join(import.meta.dirname, "..", "plugin.ts"),
+			"utf8",
+		);
+		const guard = source.indexOf("if (!worktreeAutocleanEnabled()) return;");
+		const codexSweep = source.indexOf("await sweepCodexRunnerOrphans(", guard);
+		const leaseSweep = source.indexOf(
+			"await sweepStaleCodexHomeLeases(",
+			guard,
+		);
+		const mcpSweep = source.indexOf("await reapMcpOrphans(", guard);
+		expect(guard).toBeGreaterThan(-1);
+		expect(leaseSweep).toBeGreaterThan(codexSweep);
+		expect(mcpSweep).toBeGreaterThan(leaseSweep);
+		expect(source.slice(leaseSweep, mcpSweep)).toMatch(
+			/readoptExecutionIds: activeExecutionIds/,
+		);
+		expect(source.slice(leaseSweep, mcpSweep)).toMatch(
+			/isExecutionOwned: \(executionId\) =>\s+codexExecutionOwners\.isExecutionOwned\(executionId\)/,
+		);
+	});
+});
+
 describe("Bridge maintenance wiring", () => {
 	it("runs the Codex orphan sweep on the existing guarded maintenance tick", () => {
 		const source = readFileSync(
@@ -744,5 +956,84 @@ describe("Bridge maintenance wiring", () => {
 		expect(source.slice(codexSweep, mcpSweep)).not.toContain(
 			'event !== "codex_app_server_orphan_reaped"',
 		);
+	});
+});
+
+describe("FLY-2830 symlinked app-server socket (Codex 0.157 --listen)", () => {
+	async function listeningSymlink() {
+		// darwin lsof matches a unix socket by its bound name; Codex binds at the
+		// canonical /private/tmp target, so the fixture binds canonically too.
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "f2830-")));
+		const target = join(root, "real");
+		const link = join(root, "link.sock");
+		const server = createServer();
+		await new Promise<void>((done) => server.listen(target, () => done()));
+		symlinkSync(target, link);
+		return {
+			root,
+			link,
+			async close() {
+				await new Promise<void>((done) => server.close(() => done()));
+				rmSync(root, { recursive: true, force: true });
+			},
+		};
+	}
+
+	it("finds the live holder through the link with the default lsof probe", async () => {
+		const f = await listeningSymlink();
+		try {
+			const probe = await defaultSocketHolderPids(f.link);
+			expect(probe.status).toBe("ok");
+			expect(probe.status === "ok" ? probe.pids : []).toContain(process.pid);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("reports unknown when the link points at a regular file", async () => {
+		const f = await listeningSymlink();
+		try {
+			const decoy = join(f.root, "decoy");
+			writeFileSync(decoy, "not a socket");
+			rmSync(f.link);
+			symlinkSync(decoy, f.link);
+			expect(await defaultSocketHolderPids(f.link)).toEqual({
+				status: "unknown",
+				error: "link_target_not_socket",
+			});
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("reaps a symlinked orphan and unlinks only the link, never its target", async () => {
+		const root = mkdtempSync(join(tmpdir(), "f2830-reap-"));
+		try {
+			const env = testEnv(root);
+			const executionId = "symlinked-orphan";
+			const link = resolveDaemonSocketPath(executionId, env);
+			mkdirSync(join(root, "sockets"), { recursive: true });
+			const target = join(root, "codex-daemon-target");
+			writeFileSync(target, "codex-owned");
+			symlinkSync(target, link);
+			const process = appServerProcess({ executionId, env });
+			const h = harness({
+				env,
+				rows: [process],
+				homeExecutionIds: [executionId],
+			});
+
+			const result = await sweepCodexRunnerOrphans(
+				{ activeExecutionIds: new Set() },
+				{ ...h.deps, removeSocket: undefined },
+			);
+
+			expect(result.reaped).toBe(1);
+			expect(h.signals).toEqual([{ pgid: process.pgid, signal: "SIGTERM" }]);
+			expect(() => lstatSync(link)).toThrow();
+			expect(readFileSync(target, "utf8")).toBe("codex-owned");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

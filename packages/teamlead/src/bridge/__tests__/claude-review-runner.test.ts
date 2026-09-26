@@ -56,6 +56,23 @@ describe("buildClaudeReviewArgv", () => {
 		expect(reround.filter((arg) => arg === "--settings")).toHaveLength(1);
 	});
 
+	it("carries mechanical delegation policy injection when the reviewer prompt has the marked policy", () => {
+		const argv = buildClaudeReviewArgv({
+			prompt:
+				"<!-- FLYWHEEL_LOCAL_TEST_POLICY:BEGIN -->\npolicy\n<!-- FLYWHEEL_LOCAL_TEST_POLICY:END -->\nreview this",
+			sessionId: "uuid-policy",
+			resume: false,
+		});
+		const settings = JSON.parse(argv.at(-1) as string) as {
+			hooks?: { PreToolUse?: Array<{ matcher: string }> };
+		};
+		expect(settings.hooks?.PreToolUse).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ matcher: "Agent || Task || Skill" }),
+			]),
+		);
+	});
+
 	it("rejects an unresolvable reviewer model before spawn", () => {
 		expect(() =>
 			buildClaudeReviewArgv({

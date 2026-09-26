@@ -1,0 +1,13 @@
+sequenceDiagram
+  participant P as 生产 Bridge
+  participant H as 共享 home 的 lease 目录
+  participant T as 另一个 worktree 里的 vitest
+  participant R as Codex runner 进程
+  P->>H: admit: 写入 lease(37624e3d)
+  P->>R: 启动 daemon 与 TUI
+  T->>T: startBridge() 用真实 HOME 启动
+  T->>H: 启动 janitor: 对照测试自己的空 StateStore
+  Note over T,H: 生产 lease 全部被当作孤儿
+  T-->>H: unlink lease(37624e3d)  无日志
+  R->>R: 进程继续活着 十几小时
+  Note over H,R: 进程数 != lease 数 → 就绪判定恒 unknown

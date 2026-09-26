@@ -43,6 +43,7 @@ const sources = collectProductionSources(REPO_ROOT);
 const trackedConfigFiles = execFileSync("git", ["ls-files", "-z"], {
 	cwd: REPO_ROOT,
 	encoding: "utf8",
+	maxBuffer: 64 * 1024 * 1024,
 })
 	.split("\0")
 	.filter((file) => file === "config.yaml" || file.endsWith("/config.yaml"));
@@ -130,7 +131,7 @@ describe("feature-flag drift guard", () => {
 
 	it("finds exempt env gates but no raw skill-mode store read", () => {
 		const found = new Set(scan.rawCodeHits.map((hit) => hit.name));
-		expect(found.has("FLYWHEEL_GEMINI_AUTOSTART")).toBe(true);
+		expect(found.has("FLYWHEEL_LINEAR_STARTED_SYNC")).toBe(true);
 		expect(found.has("FLYWHEEL_SKILL_FRAMEWORK_MODE")).toBe(false);
 	});
 
@@ -406,6 +407,19 @@ describe("feature-flag drift guard", () => {
 					resolverSymbol: "storeOpusModelSyncDisabled",
 				},
 			},
+			// FLY-2901: read by the workflow engine dispatcher at each handoff so
+			// the successor's Blueprint ctx carries the current kill-switch value.
+			{
+				name: "worktree_takeover_rescue_disabled",
+				site: {
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "workflowEngineDispatcher",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeWorktreeTakeoverRescueDisabled",
+				},
+			},
 			...[
 				["cmux_rebind_disabled", "storeCmuxRebindDisabled"],
 				["headphone_background", "storeHeadphoneBackgroundEnabled"],
@@ -417,6 +431,7 @@ describe("feature-flag drift guard", () => {
 				["account_switch_wake_sweep", "storeAccountSwitchWakeSweepEnabled"],
 				["loop_profiler", "storeLoopProfilerEnabled"],
 				["shipped_husk_force", "storeShippedHuskForceEnabled"],
+				["codex_terminal_reap_enabled", "storeCodexTerminalReapEnabled"],
 			].map(([name, resolverSymbol]) => ({
 				name,
 				site: {
@@ -465,6 +480,18 @@ describe("feature-flag drift guard", () => {
 					"storeWorkflowNodeReuseEnabled",
 				],
 				[
+					"node_standby_resume",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"workflowEngineDispatcher",
+					"storeNodeStandbyResumeEnabled",
+				],
+				[
+					"node_standby_resume",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"workflowReworkCoordinatorHolder.current",
+					"storeNodeStandbyResumeEnabled",
+				],
+				[
 					"codex_lead_thread_rotation",
 					"packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts",
 					"buildTuiGeneration",
@@ -487,6 +514,12 @@ describe("feature-flag drift guard", () => {
 					"packages/teamlead/src/bridge/plugin.ts",
 					"databaseArchiveEnabled",
 					"storeDatabaseArchiveEnabled",
+				],
+				[
+					"lead_alert_wake_dedup",
+					"packages/teamlead/src/bridge/alert-wake-dedup.ts",
+					"AlertWakeDedup.revalidate",
+					"storeLeadAlertWakeDedupEnabled",
 				],
 				[
 					"lead_token_savings",

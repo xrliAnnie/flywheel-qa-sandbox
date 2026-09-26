@@ -12,6 +12,10 @@
  *          → [sender.enqueue → output_pending(outboxId) → sender.deliver]
  *          → completed
  *
+ * An empty final answer is never sent (FLY-2862): it closes as completed
+ * (`silent_no_reply`) when the inbound owed nothing, else as dead_letter
+ * (`empty_final_answer`) plus the `onReplyFailed` report.
+ *
  * On any failure mid-flight the entry goes to `ambiguous` (NOT auto-retried) so
  * a crash/error can never double-fire a tool side-effect. On startup, `recover()`
  * drains unfinished journal rows by their conservative `recoveryAction`.
@@ -29,7 +33,12 @@ import type {
 	LeadJournal,
 	RecoveryAction,
 } from "./LeadJournal.js";
+import { replyObligation } from "./reply-obligation.js";
 import type { RoundtableReplyRoute } from "./roundtable-reply-route.js";
+
+/** FLY-2862: why an entry whose turn produced no reply text closed without a send. */
+export const SILENT_NO_REPLY = "silent_no_reply";
+export const EMPTY_FINAL_ANSWER = "empty_final_answer";
 
 /** Abstracts the app-server turn mechanics (real impl wraps CodexLeadProcess). */
 export interface TurnExecutor {
@@ -161,6 +170,13 @@ export interface LeadInputRouterOptions {
 	 * input and after its result is committed to the journal, respectively.
 	 */
 	onRuntimeTimelineEvent?: (event: LeadRuntimeTimelineEvent) => void;
+	/** FLY-2862: an inbound that owes a reply (founder message, voice turn) got an
+	 * empty final answer. Nothing was sent; the entry is dead-lettered with the
+	 * reason. Fire-and-forget; a throw is logged and never reopens the entry. */
+	onReplyFailed?: (
+		entry: import("./LeadJournal.js").JournalEntry,
+		reason: typeof EMPTY_FINAL_ANSWER,
+	) => void;
 	logger?: {
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
@@ -181,6 +197,7 @@ export class LeadInputRouter {
 	private readonly onInputAccepted?: LeadInputRouterOptions["onInputAccepted"];
 	private readonly onEntryCompleted?: LeadInputRouterOptions["onEntryCompleted"];
 	private readonly onRuntimeTimelineEvent?: LeadInputRouterOptions["onRuntimeTimelineEvent"];
+	private readonly onReplyFailed?: LeadInputRouterOptions["onReplyFailed"];
 	private readonly enterDeliveryContext?: LeadInputRouterOptions["enterDeliveryContext"];
 	private readonly corr: () => string;
 	private readonly logger: {
@@ -206,6 +223,7 @@ export class LeadInputRouter {
 		this.onInputAccepted = opts.onInputAccepted;
 		this.onEntryCompleted = opts.onEntryCompleted;
 		this.onRuntimeTimelineEvent = opts.onRuntimeTimelineEvent;
+		this.onReplyFailed = opts.onReplyFailed;
 		this.enterDeliveryContext = opts.enterDeliveryContext;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
@@ -346,15 +364,19 @@ export class LeadInputRouter {
 				// outbox enqueue, recovery can still resend from the journal.
 				const modelCompleted = this.journal.toModelCompleted(id, output);
 				this.publishRuntimeTimeline("lead_result_committed", modelCompleted);
-				// FLY-267 回: route the reply to the inbound source channel (cross-dept
-				// inputs carry replyChannelId; chat/core/mailbox leave it undefined → chat).
-				await this.deliverOutput(
-					id,
-					output,
-					entry.replyChannelId,
-					entry.replyRoute,
-				);
-				this.markCompleted(id);
+				if (isBlank(output)) {
+					this.closeWithoutReply(entry);
+				} else {
+					// FLY-267 回: route the reply to the inbound source channel (cross-dept
+					// inputs carry replyChannelId; chat/core/mailbox leave it undefined → chat).
+					await this.deliverOutput(
+						id,
+						output,
+						entry.replyChannelId,
+						entry.replyRoute,
+					);
+					this.markCompleted(id);
+				}
 			} finally {
 				this.typing?.stop(entry.replyChannelId);
 			}
@@ -468,6 +490,10 @@ export class LeadInputRouter {
 							modelCompleted,
 						);
 					}
+					if (isBlank(r.output)) {
+						this.closeWithoutReply(entry);
+						return;
+					}
 					// FLY-267: recovery resend must target the same source channel.
 					await this.deliverOutput(
 						entry.id,
@@ -493,6 +519,9 @@ export class LeadInputRouter {
 					await this.ensureReplyRouteIfNeeded(entry.replyRoute);
 					await this.sender.deliver(entry.outboxId);
 					this.markCompleted(entry.id);
+				} else if (entry.output !== undefined && isBlank(entry.output)) {
+					// FLY-2862: the persisted answer is empty — never resend it.
+					this.closeWithoutReply(entry);
 				} else if (entry.output !== undefined) {
 					// model_completed: output was persisted in the journal (CR HIGH-1)
 					// → re-enqueue with the deterministic key (idempotent) + deliver.
@@ -517,8 +546,42 @@ export class LeadInputRouter {
 	}
 
 	// ── helpers ───────────────────────────────────────────────────────────────
+	/**
+	 * FLY-2862: the turn ended with no reply text. Never post it (Discord rejects
+	 * an empty message and the entry used to go ambiguous). An inbound that owes
+	 * nothing closes as completed-silent; one that owes a reply is dead-lettered
+	 * with a diagnosable reason and reported so a voice room can stop waiting.
+	 */
+	private closeWithoutReply(entry: JournalEntry): void {
+		if (replyObligation(entry) === "not_owed") {
+			const completed = this.journal.toCompletedWithoutReply(
+				entry.id,
+				SILENT_NO_REPLY,
+			);
+			this.notifyCompleted(completed);
+			return;
+		}
+		const failed = this.journal.toDeadLetter(entry.id, EMPTY_FINAL_ANSWER);
+		this.logger.warn("empty final answer on an inbound that owes a reply", {
+			id: entry.id,
+			replyChannelId: entry.replyChannelId,
+		});
+		try {
+			this.onReplyFailed?.(failed, EMPTY_FINAL_ANSWER);
+		} catch (error) {
+			this.logger.error("reply-failed hook failed", {
+				id: entry.id,
+				error: (error as Error).message,
+			});
+		}
+	}
+
 	private markCompleted(id: string): void {
-		const completed = this.journal.toCompleted(id);
+		this.notifyCompleted(this.journal.toCompleted(id));
+	}
+
+	private notifyCompleted(completed: JournalEntry): void {
+		const id = completed.id;
 		try {
 			this.onEntryCompleted?.(completed);
 		} catch (error) {
@@ -570,4 +633,8 @@ export class LeadInputRouter {
 			});
 		}
 	}
+}
+
+function isBlank(output: string): boolean {
+	return output.trim().length === 0;
 }

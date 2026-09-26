@@ -41,7 +41,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import {
 	defaultGateMarkerDir,
@@ -73,7 +73,10 @@ import {
 	enforceObjectiveLimit,
 	goalQuotaFailure,
 } from "./codex-daemon-adapter-helpers.js";
-import type { CodexDaemonEvents } from "./codex-daemon-client.js";
+import type {
+	CodexDaemonEvents,
+	CodexResumeObservation,
+} from "./codex-daemon-client.js";
 import {
 	GOAL_OBJECTIVE_MAX_CHARS,
 	GoalRunError,
@@ -81,6 +84,7 @@ import {
 import type {
 	CodexDaemonGoalRuntimeOptions,
 	CodexTransportCloseEvidence,
+	RestartDecision,
 	RunGoalInput,
 	RunGoalOutcome,
 } from "./codex-daemon-goal-runtime.js";
@@ -93,15 +97,19 @@ import {
 import type {
 	CodexExecutionOwnerKind,
 	CodexExecutionOwnershipRegistry,
+	CodexStopReason,
 } from "./codex-execution-ownership.js";
 import {
 	assertCodexSourceIdentity,
 	type CodexAgentHomeHandle,
 	type CodexAgentHomeIdentity,
+	type CodexLeaseGuardOptions,
+	type CodexLeaseReleaseOutcome,
 	flywheelCodexBin,
 	provisionCodexAgentHome,
 	provisionCodexHome,
 	rawCodexBin,
+	reassertCodexAgentHomeLease,
 	releaseCodexAgentHomeLease,
 	removeCodexHome,
 	resolveExecutionCodexHome,
@@ -115,6 +123,11 @@ import {
 	CodexPhaseLifecycleController,
 	type CodexPhaseLifecycleControllerOptions,
 } from "./codex-phase-lifecycle.js";
+import {
+	type CodexLeaseHolderProbe,
+	type CodexLeaseHolderProbeResult,
+	defaultCodexLeaseHolderProbe,
+} from "./codex-process-snapshot.js";
 import { findCodexRolloutPath } from "./codex-rollout-probe.js";
 import {
 	ensureRunnerTuiWindow,
@@ -130,11 +143,16 @@ import {
 	CodexTranscriptSink,
 	type CodexTranscriptSinkOptions,
 } from "./codex-transcript-sink.js";
+import {
+	processRetirementGraceMs,
+	tmuxWindowPresence,
+} from "./process-retirement.js";
 
 /** Bound protocol-side resume attempts without undercutting tmux rescue. */
 export const TUI_OPEN_MAX_ATTEMPTS = 3;
 export const TUI_OPEN_DEADLINE_MS = 2 * 210_000 + 60_000;
 export const TUI_OPEN_RETRY_DELAYS_MS = [5_000, 15_000] as const;
+const CODEX_RESUME_IDENTITY_TIMEOUT_MS = 180_000;
 /** @deprecated Use the deadline-aware ladder. Retained for package API parity. */
 export const TUI_OPEN_RETRY_GAP_MS = TUI_OPEN_RETRY_DELAYS_MS[0];
 
@@ -244,11 +262,29 @@ export type CodexRecoveryOptions =
 	| { founderWindow: "open"; windowName?: string }
 	| { founderWindow: "suppressed"; windowName?: never };
 
-interface CodexRecoveryExecution {
+interface CodexSnapshotExecution {
 	snapshot: CodexLaunchSnapshot;
-	hooks: CodexRecoveryCommitHooks;
+	recoveryHooks?: CodexRecoveryCommitHooks;
 	founderWindow: CodexRecoveryOptions["founderWindow"];
 	windowName?: string;
+}
+
+/**
+ * FLY-2903: a Bridge terminal path asked this execution's owner to stop.
+ * `promise` resolves once, from the registry's synchronous stop callback;
+ * `reason()` reads the lease mark (null while no stop was requested).
+ */
+interface CodexTerminationSignal {
+	promise: Promise<CodexStopReason>;
+	reason: () => CodexStopReason | null;
+}
+
+/** FLY-2903: raised before any process-starting step once a stop was requested. */
+class CodexTerminationRequestedError extends Error {
+	constructor(readonly reason: CodexStopReason) {
+		super(`termination requested (${reason})`);
+		this.name = "CodexTerminationRequestedError";
+	}
 }
 
 function requireNullableString(value: unknown, field: string): string | null {
@@ -413,6 +449,32 @@ export function readCodexLaunchSnapshot(
 	);
 }
 
+function rehydrateSnapshotCapabilities(
+	ctx: AdapterExecutionContext,
+	snapshot: CodexLaunchSnapshot,
+): AdapterExecutionContext {
+	const raw = snapshot.rehydrationContext;
+	if (!raw) {
+		throw new Error(
+			`immutable launch snapshot for ${ctx.executionId} lacks rehydration context`,
+		);
+	}
+	const rehydrated: AdapterExecutionContext = {
+		...ctx,
+		allowedTools: [...raw.allowedTools],
+		enablePonytail: raw.enablePonytail,
+		codexSkillDisableNames: [...raw.codexSkillDisableNames],
+		workflowSubmissionExpected: raw.workflowSubmissionExpected,
+		founderReviewRequired: raw.founderReviewRequired,
+	};
+	if (raw.codexMattSkillsSourceDir === null) {
+		delete rehydrated.codexMattSkillsSourceDir;
+	} else {
+		rehydrated.codexMattSkillsSourceDir = raw.codexMattSkillsSourceDir;
+	}
+	return rehydrated;
+}
+
 /** Shared durable gate posture for adapter restart and Bridge re-ownership. */
 export function readCodexGateHoldLatch(executionId: string): boolean {
 	const p = join(codexSessionStateDir(executionId), "session.json");
@@ -446,6 +508,12 @@ function capabilityDigest(
 	return createHash("sha256")
 		.update(JSON.stringify(stableCapabilities))
 		.digest("hex");
+}
+
+/** FLY-2877: how closeout retires the execution's keyed-home lease. */
+interface RetireOptions {
+	/** Keep the lease without probing; the value is the logged reason. */
+	keepLease?: "late_tui_window";
 }
 
 /** Injected collaborators for daemon-mode execute() (default to the real ones). */
@@ -503,6 +571,18 @@ export interface CodexDaemonAdapterDeps {
 	/** FLY-1269: credential retirement seam used to prove scrub precedes the
 	 * request-bound success acknowledgement. */
 	scrubCredential?: (executionId: string) => void;
+	/** FLY-2877: which codex processes still hold this execution's home lease.
+	 * Forwarded to every lease release/retirement. */
+	codexLeaseHolderProbe?: CodexLeaseHolderProbe;
+	/** FLY-2877: total deadline (probes included) for the holders to exit after
+	 * the daemon drains, before the lease is retired. Default 5000. */
+	leaseHolderWaitMs?: number;
+	/** FLY-2877: pause between holder probes during that wait. Default 500. */
+	leaseHolderPollMs?: number;
+	/** FLY-2877: wall-clock period of the lease self-heal check (a second
+	 * `startHeartbeat` timer, independent of daemon traffic). Default 60_000;
+	 * <= 0 disables it (tests only). */
+	leaseReassertIntervalMs?: number;
 }
 
 export class CodexTmuxAdapter implements IAdapter {
@@ -545,6 +625,10 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly scrubCredential: NonNullable<
 		CodexDaemonAdapterDeps["scrubCredential"]
 	>;
+	private readonly codexLeaseHolderProbe: CodexLeaseHolderProbe;
+	private readonly leaseHolderWaitMs: number;
+	private readonly leaseHolderPollMs: number;
+	private readonly leaseReassertIntervalMs: number;
 	private readonly codexAccountRegistryPath?: string;
 	private readonly codexAccountLedgerRoot?: string;
 	private readonly executionOwners?: CodexExecutionOwnershipRegistry;
@@ -615,9 +699,103 @@ export class CodexTmuxAdapter implements IAdapter {
 				return () => clearInterval(timer);
 			});
 		this.scrubCredential = deps.scrubCredential ?? scrubCodexHomeCredential;
+		this.codexLeaseHolderProbe =
+			deps.codexLeaseHolderProbe ?? defaultCodexLeaseHolderProbe;
+		this.leaseHolderWaitMs = deps.leaseHolderWaitMs ?? 5_000;
+		this.leaseHolderPollMs = deps.leaseHolderPollMs ?? 500;
+		this.leaseReassertIntervalMs = deps.leaseReassertIntervalMs ?? 60_000;
 		this.codexAccountRegistryPath = deps.codexAccountRegistryPath;
 		this.codexAccountLedgerRoot = deps.codexAccountLedgerRoot;
 		this.executionOwners = deps.executionOwners;
+	}
+
+	private startProcessRetirementWatchdog(
+		ctx: AdapterExecutionContext,
+	): { promise: Promise<void>; cancel: () => void } | undefined {
+		const lifecycle = ctx.processLifecycle;
+		if (!lifecycle?.retirementApproved) return undefined;
+		let timer: ReturnType<typeof setInterval> | undefined;
+		let retirementObservedAtMs: number | undefined;
+		let settled = false;
+		let resolvePromise!: () => void;
+		const cancel = (): void => {
+			if (timer) clearInterval(timer);
+			timer = undefined;
+		};
+		const poll = (): void => {
+			if (settled) return;
+			try {
+				if (!lifecycle.retirementApproved!()) {
+					retirementObservedAtMs = undefined;
+					return;
+				}
+			} catch {
+				return;
+			}
+			const now = this.now();
+			retirementObservedAtMs ??= now;
+			if (now - retirementObservedAtMs < processRetirementGraceMs(lifecycle)) {
+				return;
+			}
+			settled = true;
+			cancel();
+			this.log(
+				`[CodexTmuxAdapter] Process retirement grace expired for ${ctx.executionId}; stopping and draining the owned daemon.`,
+			);
+			resolvePromise();
+		};
+		const promise = new Promise<void>((resolve) => {
+			resolvePromise = resolve;
+			const intervalMs = Math.max(
+				1,
+				Math.min(this.pollIntervalMs, processRetirementGraceMs(lifecycle) || 1),
+			);
+			timer = setInterval(poll, intervalMs);
+			(timer as { unref?: () => void }).unref?.();
+			poll();
+		});
+		return { promise, cancel };
+	}
+
+	/** FLY-2903: audit every restart decision; forward a refusal to forensics. */
+	private recordRestartDecision(
+		executionId: string,
+		socketPath: string,
+		decision: RestartDecision,
+	): void {
+		this.log(
+			`[CodexTmuxAdapter] daemon_restart_decision exec=${executionId} restarts=${decision.restarts} allowed=${decision.allowed} reason=${decision.reason}`,
+		);
+		if (decision.allowed || !this.onTransportClose) return;
+		const sink = this.onTransportClose;
+		try {
+			void Promise.resolve(
+				sink({
+					executionId,
+					socketPath,
+					reason: `restart_refused:${decision.reason}`,
+					at: new Date().toISOString(),
+					restartRefused: true,
+				}),
+			).catch((error) =>
+				this.log(
+					`[CodexTmuxAdapter] restart-refusal forensic hook rejected (ignored): ${safeErr(error)}`,
+				),
+			);
+		} catch (error) {
+			this.log(
+				`[CodexTmuxAdapter] restart-refusal forensic hook threw (ignored): ${safeErr(error)}`,
+			);
+		}
+	}
+
+	private founderTuiWindowPresence(
+		windowName: string,
+		windowId?: string,
+	): "present" | "absent" | "unknown" {
+		return tmuxWindowPresence(this.execFileFn, this.sessionName, {
+			...(windowId ? { windowId } : { windowName }),
+		});
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -724,6 +902,26 @@ export class CodexTmuxAdapter implements IAdapter {
 	}
 
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+		if (ctx.processLifecycle?.mode === "resume") {
+			let snapshot: CodexLaunchSnapshot;
+			try {
+				snapshot = readCodexLaunchSnapshot(ctx.executionId);
+			} catch (error) {
+				return this.ownershipFailureResult(ctx, error, "context");
+			}
+			try {
+				return this.runWithOwnership(
+					rehydrateSnapshotCapabilities(ctx, snapshot),
+					"dispatch",
+					{
+						snapshot,
+						founderWindow: "open",
+					},
+				);
+			} catch (error) {
+				return this.ownershipFailureResult(ctx, error, "context");
+			}
+		}
 		return this.runWithOwnership(ctx, "dispatch");
 	}
 
@@ -747,7 +945,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			});
 			if (ctx.codexAgentHome?.createdLease) {
 				try {
-					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+					await this.releaseAdmittedLease(ctx);
 				} catch {
 					diagnostic = withRecoveryCleanup(diagnostic, "unconfirmed");
 					console.warn(
@@ -760,7 +958,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		let ownershipCommitted = false;
 		return this.runWithOwnership(ctx, "rescue", {
 			snapshot,
-			hooks: {
+			recoveryHooks: {
 				isRecoveryCommitted: () =>
 					hooks.isRecoveryCommitted?.() ?? ownershipCommitted,
 				onRecoveryOwnershipEstablished: async (receipt) => {
@@ -778,17 +976,31 @@ export class CodexTmuxAdapter implements IAdapter {
 	private async runWithOwnership(
 		ctx: AdapterExecutionContext,
 		kind: CodexExecutionOwnerKind,
-		recovery?: CodexRecoveryExecution,
+		snapshotExecution?: CodexSnapshotExecution,
 	): Promise<AdapterExecutionResult> {
-		const lease = this.executionOwners?.claim(ctx.executionId, kind);
+		// FLY-2903: armed at claim time so a stop request that lands anywhere in
+		// the preflight window (home provisioning, runtime construction, daemon
+		// start) is observed before the next process-starting step.
+		let resolveTermination!: (reason: CodexStopReason) => void;
+		const terminationPromise = new Promise<CodexStopReason>((resolve) => {
+			resolveTermination = resolve;
+		});
+		const lease = this.executionOwners?.claim(ctx.executionId, kind, {
+			onStopRequested: (reason) => resolveTermination(reason),
+		});
 		if (this.executionOwners && !lease) {
+			if (this.executionOwners.isStopRequested(ctx.executionId)) {
+				this.log(
+					`[CodexTmuxAdapter] owner admission refused exec=${ctx.executionId}: termination_requested`,
+				);
+			}
 			let diagnostic = createCodexRecoveryFailure({
 				code: "owner_admission_failed",
 				stage: "owner_admission",
 			});
 			if (ctx.codexAgentHome?.createdLease) {
 				try {
-					await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+					await this.releaseAdmittedLease(ctx);
 				} catch {
 					diagnostic = withRecoveryCleanup(diagnostic, "unconfirmed");
 					console.warn(
@@ -800,10 +1012,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		}
 		let retired = false;
 		let retirement: Promise<void> | undefined;
-		const retireOnce = async (): Promise<void> => {
+		const retireOnce = async (options?: RetireOptions): Promise<void> => {
 			if (retired) return;
 			if (retirement) return retirement;
-			retirement = this.retireExecutionCredential(ctx)
+			retirement = this.retireExecutionCredential(ctx, options)
 				.then(() => {
 					retired = true;
 				})
@@ -812,15 +1024,41 @@ export class CodexTmuxAdapter implements IAdapter {
 				});
 			return retirement;
 		};
+		const termination: CodexTerminationSignal = {
+			promise: terminationPromise,
+			reason: () => lease?.stopRequested ?? null,
+		};
 		let result: AdapterExecutionResult | undefined;
+		let ownershipHeldUntil: Promise<void> | undefined;
 		try {
-			result = await this.executeOwned(ctx, recovery, retireOnce);
+			result = await this.executeOwned(
+				ctx,
+				snapshotExecution,
+				retireOnce,
+				(settled) => {
+					ownershipHeldUntil = settled;
+				},
+				termination,
+			);
 		} catch (error) {
-			// Dispatch callers retain their existing preflight throw contract.
-			if (!recovery) throw error;
-			result = this.ownershipFailureResult(ctx, error, "preflight");
+			if (error instanceof CodexTerminationRequestedError) {
+				result = this.terminatedBeforeStartResult(ctx, error.reason);
+			} else {
+				// Dispatch callers retain their existing preflight throw contract.
+				if (!snapshotExecution) throw error;
+				result = this.ownershipFailureResult(ctx, error, "preflight");
+			}
 		} finally {
-			lease?.release();
+			// FLY-2877: while a late founder window can still start a codex
+			// process, this execution stays owned — the Bridge's lease sweep (and
+			// every other owner-aware sweep) skips it until the window settled and
+			// its late cleanup ran. `settled` never rejects.
+			if (ownershipHeldUntil && lease) {
+				const held = lease;
+				void ownershipHeldUntil.then(() => held.release());
+			} else {
+				lease?.release();
+			}
 			try {
 				await retireOnce();
 			} catch {
@@ -835,7 +1073,10 @@ export class CodexTmuxAdapter implements IAdapter {
 								resultText: result.resultText,
 							});
 					result.recoveryFailure = withRecoveryCleanup(primary, "unconfirmed");
-					if (recovery && !recovery.hooks.isRecoveryCommitted?.())
+					if (
+						snapshotExecution?.recoveryHooks &&
+						!snapshotExecution.recoveryHooks.isRecoveryCommitted?.()
+					)
 						result.resultText = result.recoveryFailure.summary;
 					result.success = false;
 				}
@@ -861,9 +1102,20 @@ export class CodexTmuxAdapter implements IAdapter {
 
 	private async retireExecutionCredential(
 		ctx: AdapterExecutionContext,
+		options?: RetireOptions,
 	): Promise<void> {
 		if (!ctx.codexAgentHome) {
 			await this.scrubCredential(ctx.executionId);
+			return;
+		}
+		if (options?.keepLease) {
+			// FLY-2877: a codex process of this execution may still start after
+			// this point, so no probe can prove the home empty. Keep the lease
+			// (and with it the credential); the maintenance sweep drops it once
+			// nothing holds it any more.
+			console.warn(
+				`[CodexTmuxAdapter] keyed_home_lease_retained exec=${ctx.executionId} reason=${options.keepLease}`,
+			);
 			return;
 		}
 		const expected = {
@@ -872,14 +1124,98 @@ export class CodexTmuxAdapter implements IAdapter {
 		};
 		const resolution = resolveExecutionCodexHome(ctx.executionId, expected);
 		if (resolution.kind === "prepublished") {
-			await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+			await this.releaseAdmittedLease(ctx);
 			return;
 		}
 		if (resolution.kind === "unknown" && ctx.codexAgentHome.createdLease) {
-			await releaseCodexAgentHomeLease(this.agentHomeHandle(ctx));
+			await this.releaseAdmittedLease(ctx);
 			return;
 		}
-		await retireCodexExecutionHome(ctx.executionId, expected);
+		this.logLeaseOutcome(
+			ctx,
+			await retireCodexExecutionHome(
+				ctx.executionId,
+				expected,
+				undefined,
+				this.leaseGuard(),
+			),
+		);
+	}
+
+	/** FLY-2877: every lease deletion asks the same holder probe. */
+	private leaseGuard(): CodexLeaseGuardOptions {
+		return { probe: this.codexLeaseHolderProbe };
+	}
+
+	private async releaseAdmittedLease(
+		ctx: AdapterExecutionContext,
+	): Promise<void> {
+		this.logLeaseOutcome(
+			ctx,
+			await releaseCodexAgentHomeLease(
+				this.agentHomeHandle(ctx),
+				undefined,
+				this.leaseGuard(),
+			),
+		);
+	}
+
+	/** A retained lease is a normal outcome (codex still running), not a failure. */
+	private logLeaseOutcome(
+		ctx: AdapterExecutionContext,
+		outcome:
+			| CodexLeaseReleaseOutcome
+			| { released: false; reason: "unresolved" | "legacy" },
+	): void {
+		if (
+			!outcome.released &&
+			(outcome.reason === "live_process" || outcome.reason === "probe_unknown")
+		) {
+			console.warn(
+				`[CodexTmuxAdapter] keyed_home_lease_retained exec=${ctx.executionId} reason=${outcome.reason}`,
+			);
+		}
+	}
+
+	/**
+	 * FLY-2877: after the daemon drained and the TUI was killed, give their
+	 * processes a bounded moment to exit so retirement can release the lease.
+	 * `leaseHolderWaitMs` bounds the whole wait, probes included; an unknown
+	 * probe ends it at once. Never fails the run: retirement probes again and
+	 * keeps the lease if anything is still there.
+	 */
+	private async awaitLeaseHoldersGone(
+		ctx: AdapterExecutionContext,
+	): Promise<void> {
+		const agentHome = ctx.codexAgentHome;
+		if (!agentHome) return;
+		const deadline = this.now() + this.leaseHolderWaitMs;
+		let last: CodexLeaseHolderProbeResult | undefined;
+		for (;;) {
+			const remaining = deadline - this.now();
+			if (remaining <= 0) break;
+			try {
+				last = await this.codexLeaseHolderProbe(
+					agentHome.home,
+					ctx.executionId,
+					{ deadlineMs: remaining },
+				);
+			} catch {
+				last = { status: "unknown", reason: "probe_failed" };
+			}
+			if (last.status === "unknown") return;
+			if (last.holders.length === 0) return;
+			const left = deadline - this.now();
+			if (left <= 0) break;
+			await new Promise<void>((resolve) =>
+				setTimeout(resolve, Math.min(this.leaseHolderPollMs, left)),
+			);
+		}
+		if (last?.status === "ok" && last.holders.length > 0) {
+			console.warn(
+				`[CodexTmuxAdapter] keyed_home_lease_holders_linger exec=${ctx.executionId} holders=${last.holders.join(",")}`,
+			);
+		}
 	}
 
 	private ownershipFailureResult(
@@ -902,11 +1238,36 @@ export class CodexTmuxAdapter implements IAdapter {
 		};
 	}
 
+	/** FLY-2903: a stop request won the race before any daemon or window started. */
+	private terminatedBeforeStartResult(
+		ctx: AdapterExecutionContext,
+		reason: CodexStopReason,
+	): AdapterExecutionResult {
+		this.log(
+			`[CodexTmuxAdapter] termination requested (${reason}) for ${ctx.executionId} before any daemon or window started; nothing launched.`,
+		);
+		return {
+			success: false,
+			sessionId: ctx.executionId,
+			durationMs: 0,
+			timedOut: false,
+			resultText: `termination requested (${reason}) before start`,
+		};
+	}
+
 	private async executeOwned(
 		ctx: AdapterExecutionContext,
-		recovery?: CodexRecoveryExecution,
-		retireOnce: () => Promise<void> = () => this.retireExecutionCredential(ctx),
+		snapshotExecution?: CodexSnapshotExecution,
+		retireOnce: (options?: RetireOptions) => Promise<void> = (options) =>
+			this.retireExecutionCredential(ctx, options),
+		holdOwnershipUntil?: (settled: Promise<void>) => void,
+		termination?: CodexTerminationSignal,
 	): Promise<AdapterExecutionResult> {
+		// FLY-2903: checked before every process-starting step of the preflight.
+		const throwIfTerminationRequested = (): void => {
+			const reason = termination?.reason() ?? null;
+			if (reason) throw new CodexTerminationRequestedError(reason);
+		};
 		if (ctx.codexAgentHome) {
 			this.mergeSessionState(ctx.executionId, {
 				codexAgentHome: {
@@ -931,13 +1292,44 @@ export class CodexTmuxAdapter implements IAdapter {
 		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
 		const sandboxCwd = realpathSync(ctx.cwd);
 		const gitWritableDirs = await this.resolveGitWritableDirs(sandboxCwd);
+		if (ctx.processLifecycle) {
+			if (
+				!Number.isSafeInteger(ctx.processLifecycle.generation) ||
+				ctx.processLifecycle.generation < 1
+			) {
+				throw new Error("Codex process generation is invalid");
+			}
+			if (
+				ctx.processLifecycle.expectedCwd !== undefined &&
+				ctx.processLifecycle.expectedCwd !== sandboxCwd
+			) {
+				throw new Error("Codex resume cwd mismatch");
+			}
+			if (
+				ctx.processLifecycle.expectedModel !== undefined &&
+				ctx.processLifecycle.expectedModel !== (ctx.model ?? null)
+			) {
+				throw new Error("Codex resume model mismatch");
+			}
+			if (
+				ctx.processLifecycle.mode === "resume" &&
+				(!ctx.processLifecycle.onIdentityVerified ||
+					!ctx.processLifecycle.resumeVerificationStatus)
+			) {
+				throw new Error("Codex resume identity callback is unavailable");
+			}
+		}
+		const processGitIdentity = ctx.processLifecycle
+			? await this.captureProcessGitIdentity(sandboxCwd)
+			: undefined;
 		// Build and validate in the fail-loud zone. This must stay before GitHub
 		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
 		const gateMarkerDir = defaultGateMarkerDir();
 		const daemonEnv = this.buildDaemonEnv(ctx, gateMarkerDir);
 		this.assertWorkflowCapabilities(ctx, daemonEnv);
-		const founderWindowSuppressed = recovery?.founderWindow === "suppressed";
-		const recoveredWindowName = recovery?.windowName;
+		const founderWindowSuppressed =
+			snapshotExecution?.founderWindow === "suppressed";
+		const recoveredWindowName = snapshotExecution?.windowName;
 		if (!ctx.label && !recoveredWindowName && !founderWindowSuppressed) {
 			throw new Error(
 				`runner-tui-window: missing founder window label for ${ctx.executionId}`,
@@ -961,6 +1353,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			registryPath: this.codexAccountRegistryPath,
 		});
 
+		throwIfTerminationRequested();
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
 		const ghToken = await this.provisionGitHubCredential(ctx);
 
@@ -991,6 +1384,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				codexMattSkillsSourceDir: ctx.codexMattSkillsSourceDir,
 			}),
 		};
+		throwIfTerminationRequested();
 		const codexHome = ctx.codexAgentHome
 			? await provisionCodexAgentHome(this.agentHomeHandle(ctx), {
 					...provisionOptions,
@@ -1011,6 +1405,12 @@ export class CodexTmuxAdapter implements IAdapter {
 		let gateDbOpen = false;
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
+		let stopLeaseReassert: () => void = () => {};
+		let leaseReassertInFlight: Promise<void> | undefined;
+		// FLY-2877: set when a founder-window attempt outlives the teardown join.
+		// It may still create a `codex resume` client after closeout, so the
+		// lease must not be retired on the strength of an empty probe.
+		let lateTuiWindowPossible = false;
 		let tuiOpened = false;
 		let tuiThreadId: string | undefined;
 		let transcriptSink: CodexTranscriptSinkLike | undefined;
@@ -1032,6 +1432,13 @@ export class CodexTmuxAdapter implements IAdapter {
 			() => {};
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
+		let processRetirementControllerApproved = false;
+		let processRetirementApproved = false;
+		let processRetirementFailureConfirmed = false;
+		// FLY-2808: a resume reports its identity verdict exactly once, so a
+		// failure before verification must still reach the controller now.
+		let resumeIdentitySettled = false;
+		let cancelProcessRetirementWatchdog: (() => void) | undefined;
 		let teardownError: unknown;
 		let controlledShutdownRequestId: string | undefined;
 		let workflowUsageImported = false;
@@ -1128,9 +1535,18 @@ export class CodexTmuxAdapter implements IAdapter {
 				: ctx.appendSystemPrompt;
 			let objective: string;
 			let kickText: string;
-			if (recovery) {
-				const snapshot = recovery.snapshot;
+			if (snapshotExecution) {
+				const snapshot = snapshotExecution.snapshot;
 				const expectedContext = snapshot.launchContext;
+				// Bridge process-resume requests intentionally omit resident-loop
+				// plumbing: the durable process lifecycle owns this launch, and the
+				// resident holder is activated only after identity verification. Use
+				// the immutable snapshot as the comparison input without installing a
+				// second resident lifecycle on the resumed adapter.
+				const loopTargetNodeId =
+					ctx.processLifecycle?.mode === "resume"
+						? (expectedContext.loopTargetNodeId ?? null)
+						: (ctx.residentLoopTarget?.nodeId ?? null);
 				const checks = {
 					cwd: snapshot.cwd !== sandboxCwd,
 					model: expectedContext.model !== (ctx.model ?? null),
@@ -1142,8 +1558,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						expectedContext.phaseRole !== (ctx.phaseKeepAlive?.role ?? null),
 					loopTargetNodeId:
 						expectedContext.loopTargetNodeId !== undefined &&
-						expectedContext.loopTargetNodeId !==
-							(ctx.residentLoopTarget?.nodeId ?? null),
+						expectedContext.loopTargetNodeId !== loopTargetNodeId,
 					capabilityDigest:
 						expectedContext.capabilityDigest !==
 						capabilityDigest(ctx, { phaseRole: expectedContext.phaseRole }),
@@ -1206,6 +1621,9 @@ export class CodexTmuxAdapter implements IAdapter {
 					},
 				});
 			}
+			if (ctx.processLifecycle?.headDriftNotice) {
+				kickText = `${ctx.processLifecycle.headDriftNotice}\n\n${kickText}`;
+			}
 			const transcriptPath = join(
 				codexSessionStateDir(ctx.executionId),
 				"transcript.log",
@@ -1230,6 +1648,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				);
 			}
 
+			throwIfTerminationRequested();
 			runtime = this.runtimeFactory({
 				beforeCodexDaemonStart: ctx.beforeCodexDaemonStart,
 				codexQuotaBinding: ctx.codexQuotaBinding,
@@ -1253,7 +1672,10 @@ export class CodexTmuxAdapter implements IAdapter {
 					: {}),
 			});
 
-			if (ctx.phaseKeepAlive || ctx.residentLoopTarget) {
+			if (
+				!ctx.processLifecycle &&
+				(ctx.phaseKeepAlive || ctx.residentLoopTarget)
+			) {
 				if (!ctx.commDbPath) {
 					throw new Error(
 						`resident lifecycle requires commDbPath for ${ctx.executionId}`,
@@ -1566,11 +1988,122 @@ export class CodexTmuxAdapter implements IAdapter {
 			};
 			stopHeartbeat = this.startHeartbeat(heartbeat, this.pollIntervalMs);
 
+			// FLY-2877: something outside this runner (an old janitor, a test run
+			// against the real homes root) can delete the lease while the codex
+			// processes keep reading the home. Only this adapter holds the token,
+			// so it puts the lease back — on its own wall-clock timer, not on
+			// heartbeat(), which also fires on every daemon notification. One
+			// check at a time; closeout stops the timer and joins the in-flight
+			// check before retiring, so a check can never resurrect the lease.
+			if (ctx.codexAgentHome && this.leaseReassertIntervalMs > 0) {
+				const handle = this.agentHomeHandle(ctx);
+				const reassertTick = (): void => {
+					if (runEnded || leaseReassertInFlight) return;
+					leaseReassertInFlight = reassertCodexAgentHomeLease(handle)
+						.then(
+							(state) => {
+								if (state === "restored") {
+									console.warn(
+										`[CodexTmuxAdapter] keyed_home_lease_restored exec=${ctx.executionId}`,
+									);
+								} else if (state === "conflict") {
+									console.warn(
+										`[CodexTmuxAdapter] keyed_home_lease_conflict exec=${ctx.executionId}`,
+									);
+								}
+							},
+							(error: unknown) => {
+								console.warn(
+									`[CodexTmuxAdapter] keyed_home_lease_reassert_failed exec=${ctx.executionId}: ${safeErr(error)}`,
+								);
+							},
+						)
+						.finally(() => {
+							leaseReassertInFlight = undefined;
+						});
+				};
+				stopLeaseReassert = this.startHeartbeat(
+					reassertTick,
+					this.leaseReassertIntervalMs,
+				);
+			}
+
 			// AUTHORITATIVE own-thread hook: persist the resume handle, bind the
 			// transcript filter, and asynchronously attach the native TUI. The 0ms
 			// scheduled attempt keeps goal setup and the machine turn non-blocking.
-			const onThreadReady = (threadId: string, restarts: number): void => {
-				this.persistSessionState(ctx, threadId);
+			const onThreadReady = async (
+				threadId: string,
+				restarts: number,
+				observedIdentity?: CodexResumeObservation,
+			): Promise<void> => {
+				if (
+					ctx.processLifecycle?.expectedSessionId !== undefined &&
+					ctx.processLifecycle.expectedSessionId !== threadId
+				) {
+					throw new Error("Codex resume session identity mismatch");
+				}
+				let verifiedModel = ctx.model ?? null;
+				let verifiedCwd = sandboxCwd;
+				try {
+					if (ctx.processLifecycle?.mode === "resume") {
+						if (
+							!observedIdentity ||
+							observedIdentity.threadId !== threadId ||
+							observedIdentity.threadId.trim().length === 0 ||
+							observedIdentity.model.trim().length === 0 ||
+							observedIdentity.cwd.trim().length === 0
+						) {
+							throw new Error("Codex resume identity evidence is missing");
+						}
+						verifiedModel = observedIdentity.model;
+						verifiedCwd = realpathSync(observedIdentity.cwd);
+						if (
+							ctx.processLifecycle.expectedModel !== undefined &&
+							ctx.processLifecycle.expectedModel !== verifiedModel
+						) {
+							throw new Error("Codex resume observed model mismatch");
+						}
+						if (
+							ctx.processLifecycle.expectedCwd !== undefined &&
+							realpathSync(ctx.processLifecycle.expectedCwd) !== verifiedCwd
+						) {
+							throw new Error("Codex resume observed cwd mismatch");
+						}
+					}
+					this.persistSessionState(ctx, threadId, processGitIdentity);
+					resumeIdentitySettled = true;
+					ctx.processLifecycle?.onIdentityVerified?.({
+						sessionId: threadId,
+						model: verifiedModel,
+						cwd: verifiedCwd,
+						verifiedAt: new Date().toISOString(),
+					});
+					if (ctx.processLifecycle?.mode === "resume") {
+						const deadline = Date.now() + CODEX_RESUME_IDENTITY_TIMEOUT_MS;
+						for (;;) {
+							const status =
+								ctx.processLifecycle.resumeVerificationStatus?.() ?? "rejected";
+							if (status === "accepted") break;
+							if (status === "rejected") {
+								throw new Error("resume_durable_verification_rejected");
+							}
+							if (Date.now() >= deadline) {
+								throw new Error("resume_durable_verification_timeout");
+							}
+							await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+						}
+					}
+				} catch (error) {
+					if (ctx.processLifecycle?.mode === "resume") {
+						resumeIdentitySettled = true;
+						ctx.processLifecycle.onIdentityVerificationFailed?.(
+							error instanceof Error
+								? error.message
+								: "resume_identity_unverified",
+						);
+					}
+					throw error;
+				}
 				tuiThreadId = threadId;
 				usageFreshSession = !resumeThreadId || resumeThreadId !== threadId;
 				if (ctx.workflowActivationId && ctx.onWorkflowUsageEvent) {
@@ -1619,6 +2152,8 @@ export class CodexTmuxAdapter implements IAdapter {
 					emitTuiLost("label-unavailable");
 					return;
 				}
+				// FLY-2903: a stopping execution never opens a founder window.
+				if (termination?.reason()) return;
 				startOpenChain();
 			};
 
@@ -1656,6 +2191,19 @@ export class CodexTmuxAdapter implements IAdapter {
 				(typeof ctx.previousSession?.threadId === "string"
 					? (ctx.previousSession.threadId as string)
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
+			if (
+				ctx.processLifecycle?.mode === "resume" &&
+				(!resumeThreadId || resumeThreadId.trim().length === 0)
+			) {
+				throw new Error("Codex resume session id is missing");
+			}
+			if (
+				ctx.processLifecycle?.mode === "resume" &&
+				ctx.processLifecycle?.expectedSessionId !== undefined &&
+				ctx.processLifecycle.expectedSessionId !== resumeThreadId
+			) {
+				throw new Error("Codex resume session identity mismatch");
+			}
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
 			const turnDbPath = ctx.commDbPath;
 			const turnLifecycle = turnDbPath
@@ -1678,6 +2226,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						},
 					}
 				: undefined;
+			throwIfTerminationRequested();
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
@@ -1735,6 +2284,12 @@ export class CodexTmuxAdapter implements IAdapter {
 					writeGateHoldLatch: (held) =>
 						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
+					...(ctx.processLifecycle?.mode === "resume"
+						? {
+								strictResumeIdentity: true,
+								failOnThreadReadyError: true,
+							}
+						: {}),
 					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 					onThreadReady,
 					// FLY-1940: this hard callback runs synchronously before socket
@@ -1750,14 +2305,24 @@ export class CodexTmuxAdapter implements IAdapter {
 						}
 					},
 					onGoalActive,
-					...(recovery
+					...(snapshotExecution?.recoveryHooks
 						? {
 								onRecoveryOwnershipEstablished:
-									recovery.hooks.onRecoveryOwnershipEstablished,
+									snapshotExecution.recoveryHooks
+										.onRecoveryOwnershipEstablished,
 							}
 						: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 					...(turnLifecycle ? { turnLifecycle } : {}),
+					// FLY-2903: a daemon killed by a Bridge terminal path (stop
+					// requested) or during an approved retirement is not a crash and
+					// is never resumed. A throwing retirement reader throws here, which
+					// the runtime treats as a refusal (fail-closed).
+					mayRestartAfterTransportDeath: () =>
+						(termination?.reason() ?? null) === null &&
+						!(ctx.processLifecycle?.retirementApproved?.() ?? false),
+					onRestartDecision: (decision) =>
+						this.recordRestartDecision(ctx.executionId, socketPath, decision),
 				},
 				{
 					onNotification: (method, params) => {
@@ -1772,39 +2337,74 @@ export class CodexTmuxAdapter implements IAdapter {
 					},
 				},
 			);
+			type RunSettlement =
+				| { kind: "goal"; outcome: RunGoalOutcome }
+				| { kind: "error"; error: unknown }
+				| { kind: "shutdown"; requestId: string }
+				| { kind: "retirement" }
+				| { kind: "termination"; reason: CodexStopReason };
+			const settledGoal: Promise<RunSettlement> = goalPromise.then(
+				(value) => ({ kind: "goal", outcome: value }),
+				(error: unknown) => ({ kind: "error", error }),
+			);
+			const retirementWatchdog = this.startProcessRetirementWatchdog(ctx);
+			cancelProcessRetirementWatchdog = retirementWatchdog?.cancel;
+			const settlements: Array<Promise<RunSettlement>> = [settledGoal];
 			if (phaseLifecycle) {
-				type GoalSettled =
-					| { kind: "goal"; outcome: RunGoalOutcome }
-					| { kind: "error"; error: unknown };
-				const settledGoal: Promise<GoalSettled> = goalPromise.then(
-					(value) => ({ kind: "goal", outcome: value }),
-					(error: unknown) => ({ kind: "error", error }),
+				settlements.push(
+					phaseLifecycle.waitForShutdown().then(({ requestId }) => ({
+						kind: "shutdown",
+						requestId,
+					})),
 				);
-				const first = await Promise.race([
-					settledGoal,
-					phaseLifecycle
-						.waitForShutdown()
-						.then(
-							({ requestId }) => ({ kind: "shutdown", requestId }) as const,
-						),
-				]);
-				if (first.kind === "shutdown") {
-					controlledShutdownRequestId = first.requestId;
-					runtime.stop();
-					const settled = await settledGoal;
-					if (settled.kind === "goal") outcome = settled.outcome;
-					else caughtError = settled.error;
-				} else if (first.kind === "goal") {
-					outcome = first.outcome;
-				} else {
-					throw first.error;
-				}
+			}
+			if (retirementWatchdog) {
+				settlements.push(
+					retirementWatchdog.promise.then(() => ({ kind: "retirement" })),
+				);
+			}
+			if (termination) {
+				settlements.push(
+					termination.promise.then((reason) => ({
+						kind: "termination",
+						reason,
+					})),
+				);
+			}
+			const first = await Promise.race(settlements);
+			cancelProcessRetirementWatchdog?.();
+			cancelProcessRetirementWatchdog = undefined;
+			if (first.kind === "shutdown") {
+				controlledShutdownRequestId = first.requestId;
+				runtime.stop();
+				const settled = await settledGoal;
+				if (settled.kind === "goal") outcome = settled.outcome;
+				else if (settled.kind === "error") caughtError = settled.error;
+			} else if (first.kind === "retirement") {
+				runtime.stop();
+			} else if (first.kind === "termination") {
+				// FLY-2903: finish like a retirement — the Bridge already recorded the
+				// terminal state; we only stop, drain and release.
+				this.log(
+					`[CodexTmuxAdapter] termination requested (${first.reason}) for ${ctx.executionId}; stopping and draining the owned daemon.`,
+				);
+				runtime.stop();
+				await settledGoal;
+			} else if (first.kind === "goal") {
+				outcome = first.outcome;
 			} else {
-				outcome = await goalPromise;
+				throw first.error;
 			}
 		} catch (err) {
-			caughtError = err;
+			if (err instanceof CodexTerminationRequestedError) {
+				this.log(
+					`[CodexTmuxAdapter] termination requested (${err.reason}) for ${ctx.executionId} before the daemon started; nothing launched.`,
+				);
+			} else {
+				caughtError = err;
+			}
 		} finally {
+			cancelProcessRetirementWatchdog?.();
 			// FLY-1239: cancel any pending founder-window reopen BEFORE teardown — so a
 			// scheduled retry cannot fire during `await runtime.drained()` and spawn a
 			// window pointing at a now-dead daemon socket. In its OWN no-throw boundary
@@ -1812,6 +2412,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			// (killWindow / runtime.stop / drained / CommDB closeout / credential scrub)
 			// — a visibility-only failure staying fail-open is the whole contract.
 			runEnded = true;
+			// FLY-2877: no lease self-heal may run past this point.
+			try {
+				stopLeaseReassert();
+			} catch (err) {
+				this.log(
+					`[CodexTmuxAdapter] lease reassert stop threw (non-fatal): ${safeErr(err)}`,
+				);
+			}
+			if (leaseReassertInFlight) await leaseReassertInFlight;
 			try {
 				cancelTuiDeadline?.();
 			} catch (err) {
@@ -1843,6 +2452,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					void attemptAtTeardown.then(settled, settled);
 				});
 				if (!settledBeforeJoin) {
+					lateTuiWindowPossible = true;
 					const cleanupLateWindow = async (): Promise<void> => {
 						if (!windowName) return;
 						try {
@@ -1858,14 +2468,32 @@ export class CodexTmuxAdapter implements IAdapter {
 					};
 					// Consume resolve and reject, then run a pure cleanup after the in-flight
 					// create can no longer commit. cleanupLateWindow catches its own errors.
-					void attemptAtTeardown
+					const lateWindowSettled = attemptAtTeardown
 						.then(cleanupLateWindow, cleanupLateWindow)
 						.then(
 							() => {},
 							() => {},
 						);
+					holdOwnershipUntil?.(lateWindowSettled);
 				}
 			}
+			const killFounderWindow = (): void => {
+				if (!windowName) return;
+				try {
+					this.killWindow(
+						{
+							tmuxSession: this.sessionName,
+							windowName,
+							...(founderWindowId ? { windowId: founderWindowId } : {}),
+						},
+						{ log: (m) => this.log(m) },
+					);
+				} catch (error) {
+					this.log(
+						`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
+					);
+				}
+			};
 			stopGateWatcher();
 			gateDbOpen = false;
 			try {
@@ -1889,8 +2517,11 @@ export class CodexTmuxAdapter implements IAdapter {
 				// FLY-1269 request-bound order: keep the heartbeat advancing while
 				// daemon drain and required cleanup run. The matching ack is written
 				// only after the TUI, registry status, and credential are retired.
+				// FLY-2877: the TUI client is a codex process of this execution too;
+				// kill it before the drain so both have exited before the lease goes.
+				runtime?.stop();
+				killFounderWindow();
 				if (runtime) {
-					runtime.stop();
 					try {
 						await runtime.drained();
 					} catch (err) {
@@ -1900,10 +2531,53 @@ export class CodexTmuxAdapter implements IAdapter {
 						);
 					}
 				}
+				try {
+					processRetirementControllerApproved =
+						ctx.processLifecycle?.retirementApproved?.() === true;
+					processRetirementApproved =
+						controlledShutdownSucceeded() &&
+						processRetirementControllerApproved;
+				} catch {
+					processRetirementControllerApproved = false;
+					processRetirementApproved = false;
+				}
+				importWorkflowUsage();
+				if (!lateTuiWindowPossible) await this.awaitLeaseHoldersGone(ctx);
+				try {
+					await retireOnce(
+						lateTuiWindowPossible
+							? { keepLease: "late_tui_window" }
+							: undefined,
+					);
+				} catch (err) {
+					teardownError ??= err;
+				}
+				// The founder window was killed before the drain; an approved
+				// retirement still has to prove it is gone.
+				if (windowName && processRetirementApproved) {
+					const presence = this.founderTuiWindowPresence(
+						windowName,
+						founderWindowId,
+					);
+					if (presence !== "absent") {
+						processRetirementApproved = false;
+						processRetirementFailureConfirmed = presence === "present";
+						teardownError ??= new Error(`founder TUI retirement ${presence}`);
+					}
+				}
 				await closeTranscript(
-					controlledShutdownSucceeded() ? "completed" : "timeout",
+					processRetirementControllerApproved && !processRetirementApproved
+						? "timeout"
+						: controlledShutdownSucceeded()
+							? "completed"
+							: "timeout",
 				);
-				if (registeredSession && ctx.commDbPath) {
+				if (
+					(!processRetirementControllerApproved ||
+						processRetirementFailureConfirmed) &&
+					registeredSession &&
+					ctx.commDbPath
+				) {
 					let commDb: CommDB | undefined;
 					try {
 						commDb = new CommDB(ctx.commDbPath);
@@ -1915,28 +2589,6 @@ export class CodexTmuxAdapter implements IAdapter {
 						teardownError ??= err;
 					} finally {
 						commDb?.close();
-					}
-				}
-				importWorkflowUsage();
-				try {
-					await retireOnce();
-				} catch (err) {
-					teardownError ??= err;
-				}
-				if (windowName) {
-					try {
-						this.killWindow(
-							{
-								tmuxSession: this.sessionName,
-								windowName,
-								...(founderWindowId ? { windowId: founderWindowId } : {}),
-							},
-							{ log: (m) => this.log(m) },
-						);
-					} catch (error) {
-						this.log(
-							`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
-						);
 					}
 				}
 				try {
@@ -1963,10 +2615,11 @@ export class CodexTmuxAdapter implements IAdapter {
 					teardownError ??= err;
 				}
 			} else {
-				// Ordinary closeout: daemon → transcript → registry → window policy.
+				// Ordinary closeout: daemon + TUI → transcript → registry → lease.
 				stopHeartbeat();
+				runtime?.stop();
+				killFounderWindow();
 				if (runtime) {
-					runtime.stop();
 					try {
 						await runtime.drained();
 					} catch (err) {
@@ -1981,16 +2634,40 @@ export class CodexTmuxAdapter implements IAdapter {
 					caughtError,
 				});
 				const closeBlocked = outcome?.result.status === "blocked";
+				try {
+					processRetirementControllerApproved =
+						ctx.processLifecycle?.retirementApproved?.() === true;
+				} catch {
+					processRetirementControllerApproved = false;
+				}
 				const closeCompleted =
-					(closeClassification.success || controlledShutdownSucceeded()) &&
+					(processRetirementControllerApproved ||
+						closeClassification.success ||
+						controlledShutdownSucceeded()) &&
 					!teardownError;
-				const closeStatus = closeCompleted
+				processRetirementApproved =
+					closeCompleted && processRetirementControllerApproved;
+				// The founder window was killed before the drain; an approved
+				// retirement still has to prove it is gone.
+				if (processRetirementApproved && windowName) {
+					const presence = this.founderTuiWindowPresence(
+						windowName,
+						founderWindowId,
+					);
+					if (presence !== "absent") {
+						processRetirementApproved = false;
+						processRetirementFailureConfirmed = presence === "present";
+						teardownError ??= new Error(`founder TUI retirement ${presence}`);
+					}
+				}
+				const settledCloseCompleted = closeCompleted && !teardownError;
+				const closeStatus = settledCloseCompleted
 					? "completed"
 					: closeBlocked
 						? "blocked"
 						: "timeout";
 				await closeTranscript(
-					closeCompleted
+					settledCloseCompleted
 						? "completed"
 						: closeBlocked
 							? "blocked"
@@ -2005,7 +2682,12 @@ export class CodexTmuxAdapter implements IAdapter {
 						teardownError ??= err;
 					}
 				}
-				if (registeredSession && ctx.commDbPath) {
+				if (
+					(!processRetirementControllerApproved ||
+						processRetirementFailureConfirmed) &&
+					registeredSession &&
+					ctx.commDbPath
+				) {
 					try {
 						const commDb = new CommDB(ctx.commDbPath);
 						commDb.updateSessionStatusIfRunning(ctx.executionId, closeStatus);
@@ -2015,26 +2697,15 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				}
 				importWorkflowUsage();
+				if (!lateTuiWindowPossible) await this.awaitLeaseHoldersGone(ctx);
 				try {
-					await retireOnce();
+					await retireOnce(
+						lateTuiWindowPossible
+							? { keepLease: "late_tui_window" }
+							: undefined,
+					);
 				} catch (error) {
 					teardownError ??= error;
-				}
-				if (windowName) {
-					try {
-						this.killWindow(
-							{
-								tmuxSession: this.sessionName,
-								windowName,
-								...(founderWindowId ? { windowId: founderWindowId } : {}),
-							},
-							{ log: (m) => this.log(m) },
-						);
-					} catch (error) {
-						this.log(
-							`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
-						);
-					}
 				}
 			}
 		}
@@ -2046,13 +2717,49 @@ export class CodexTmuxAdapter implements IAdapter {
 			executionId: ctx.executionId,
 			observedAt: new Date().toISOString(),
 		});
+		if (processRetirementApproved) {
+			try {
+				processRetirementControllerApproved =
+					ctx.processLifecycle?.retirementApproved?.() === true;
+			} catch {
+				processRetirementControllerApproved = false;
+			}
+			processRetirementApproved = processRetirementControllerApproved;
+		}
 		// HIGH-6: an unconfirmed daemon teardown fails the run (a live daemon +
 		// "completed" would be a lie).
 		const success =
-			(cls.success || controlledShutdownSucceeded()) &&
+			(processRetirementApproved ||
+				cls.success ||
+				controlledShutdownSucceeded()) &&
 			!teardownError &&
 			!quotaFailure;
-		const threadId = outcome?.threadId;
+		if (ctx.processLifecycle && processRetirementApproved) {
+			try {
+				ctx.processLifecycle.onRetired?.({
+					generation: ctx.processLifecycle.generation,
+					reasonCode: "process_tree_gone",
+					retiredAt: new Date().toISOString(),
+				});
+			} catch {
+				// A controller race after physical retirement must not rewrite success.
+			}
+		} else if (
+			ctx.processLifecycle &&
+			processRetirementControllerApproved &&
+			processRetirementFailureConfirmed
+		) {
+			try {
+				ctx.processLifecycle.onRetirementFailed?.({
+					generation: ctx.processLifecycle.generation,
+					reasonCode: "retirement_unconfirmed",
+					failedAt: new Date().toISOString(),
+				});
+			} catch {
+				// The run result is already final; controller failure remains visible.
+			}
+		}
+		const threadId = outcome?.threadId ?? tuiThreadId;
 		const result: AdapterExecutionResult = {
 			success,
 			sessionId: threadId ?? ctx.executionId,
@@ -2090,7 +2797,23 @@ export class CodexTmuxAdapter implements IAdapter {
 							});
 			}
 			result.recoveryFailure = diagnostic;
-			if (recovery && !recovery.hooks.isRecoveryCommitted?.())
+			const diagnosticReason = diagnostic.mismatchFields?.length
+				? `${diagnostic.code}:${diagnostic.mismatchFields.join(",")}`
+				: diagnostic.code;
+			if (ctx.processLifecycle?.mode === "resume" && !resumeIdentitySettled) {
+				resumeIdentitySettled = true;
+				try {
+					ctx.processLifecycle.onIdentityVerificationFailed?.(diagnosticReason);
+				} catch (error) {
+					this.log(
+						`[CodexTmuxAdapter] resume failure report failed (ignored): ${safeErr(error)}`,
+					);
+				}
+			}
+			if (
+				snapshotExecution?.recoveryHooks &&
+				!snapshotExecution.recoveryHooks.isRecoveryCommitted?.()
+			)
 				result.resultText = diagnostic.summary;
 			const reason =
 				cls.failureReason ??
@@ -2099,7 +2822,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					: undefined);
 			if (reason)
 				console.error(
-					`[CodexTmuxAdapter] ${ctx.executionId} failed: ${reason}`,
+					`[CodexTmuxAdapter] ${ctx.executionId} failed: ${reason}${diagnostic.mismatchFields?.length ? ` (${diagnosticReason})` : ""}`,
 				);
 		}
 		return result;
@@ -2222,6 +2945,13 @@ export class CodexTmuxAdapter implements IAdapter {
 	private persistSessionState(
 		ctx: AdapterExecutionContext,
 		threadId: string,
+		gitIdentity?: {
+			gitCommonDir: string | null;
+			worktree: string | null;
+			branch: string | null;
+			lastObservedHead: string | null;
+			dirty: boolean | null;
+		},
 	): void {
 		try {
 			this.mergeSessionState(ctx.executionId, {
@@ -2230,12 +2960,60 @@ export class CodexTmuxAdapter implements IAdapter {
 				cwd: ctx.cwd,
 				vendor: "codex",
 				threadId,
+				resolvedModel: ctx.model ?? null,
+				effort: ctx.effort ?? null,
+				...(ctx.processLifecycle
+					? {
+							schemaVersion: 1,
+							processGeneration: ctx.processLifecycle.generation,
+							validatedAt: new Date().toISOString(),
+							...(gitIdentity ?? {}),
+						}
+					: {}),
 			});
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
 			);
 		}
+	}
+
+	private async captureProcessGitIdentity(cwd: string): Promise<{
+		gitCommonDir: string | null;
+		worktree: string | null;
+		branch: string | null;
+		lastObservedHead: string | null;
+		dirty: boolean | null;
+	}> {
+		const git = async (...args: string[]): Promise<string | null> => {
+			try {
+				return (
+					await this.asyncExecFileFn("git", ["-C", cwd, ...args], {
+						timeoutMs: 5_000,
+					})
+				).stdout.trim();
+			} catch {
+				return null;
+			}
+		};
+		const [commonDir, worktree, branch, head, dirty] = await Promise.all([
+			git("rev-parse", "--git-common-dir"),
+			git("rev-parse", "--show-toplevel"),
+			git("symbolic-ref", "--quiet", "--short", "HEAD"),
+			git("rev-parse", "HEAD"),
+			git("status", "--porcelain=v1", "-uno"),
+		]);
+		return {
+			gitCommonDir: commonDir
+				? isAbsolute(commonDir)
+					? commonDir
+					: resolve(cwd, commonDir)
+				: null,
+			worktree,
+			branch,
+			lastObservedHead: head,
+			dirty: dirty === null ? null : dirty.length > 0,
+		};
 	}
 
 	/** Window identity is a separate commit: a name is never durable evidence. */

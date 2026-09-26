@@ -52,6 +52,49 @@ export function isCodexIdentityLabel(name) {
 	return typeof name === "string" && IDENTITY_LABEL_RE.test(name);
 }
 
+/** FLY-2869: a Codex quota reading older than this is unknown, not evidence. */
+export const CODEX_READING_STALE_AFTER_MS = 30 * 60_000;
+/** Same clock-skew allowance the capacity snapshot applies to observations. */
+const CODEX_READING_FUTURE_SKEW_MS = 60_000;
+
+/**
+ * FLY-2869: whether a stored Codex reading may still decide anything.
+ * "stale" and "unobserved" readings are unknown; "reset_elapsed" means an
+ * exhausted window's reset has passed, so the 100% no longer holds and the
+ * account needs a fresh probe. Shared by the Bridge and `codex-profile list`.
+ */
+export function codexReadingFreshness(
+	reading,
+	nowMs,
+	staleAfterMs = CODEX_READING_STALE_AFTER_MS,
+) {
+	if (
+		!Number.isFinite(nowMs) ||
+		!Number.isFinite(staleAfterMs) ||
+		staleAfterMs <= 0
+	)
+		return "unobserved";
+	const observedMs =
+		typeof reading?.observedAt === "string"
+			? Date.parse(reading.observedAt)
+			: Number.NaN;
+	if (
+		!Number.isFinite(observedMs) ||
+		observedMs > nowMs + CODEX_READING_FUTURE_SKEW_MS
+	)
+		return "unobserved";
+	if (nowMs - observedMs > staleAfterMs) return "stale";
+	const elapsed = [reading.fiveH, reading.weekly].some((window) => {
+		if (!isRecord(window) || window.usedPercent !== 100) return false;
+		const resetMs =
+			typeof window.resetAt === "string"
+				? Date.parse(window.resetAt)
+				: Number.NaN;
+		return Number.isFinite(resetMs) && resetMs <= nowMs;
+	});
+	return elapsed ? "reset_elapsed" : "fresh";
+}
+
 function isRecord(value) {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

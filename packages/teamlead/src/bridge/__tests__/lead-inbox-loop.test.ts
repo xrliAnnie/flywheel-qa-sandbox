@@ -711,6 +711,148 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(adapter.deliverBatch).not.toHaveBeenCalled();
 	});
 
+	it("settles an entirely suppressed alert batch without an adapter handoff", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "alert-1");
+		enqueueModel(queue, "alert-2");
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		const markAuditDelivered = vi.fn();
+		const consumer = loop(queue, adapter, {
+			markAuditDelivered,
+			revalidateModel: async () => ({
+				deliver: false,
+				disposition: "audit_only",
+				settle: "acked",
+				auditDecision: {
+					policyVersion: "alert-wake-dedup-v1",
+					reason: "alert_equivalent_delivered",
+					proofRef: "alert-dedup:lead-a:fingerprint:delivered-alert",
+					decidedAt: "2099-07-19T12:00:00.000Z",
+				},
+			}),
+		});
+
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 0 });
+		for (const id of ["alert-1", "alert-2"]) {
+			expect(queue.getById(id)).toMatchObject({
+				state: "ACKED",
+				acked_at: "2099-07-19T12:00:00.000Z",
+				resolved_via: "alert_wake_dedup",
+				delivery_disposition: "audit_only",
+				batch_id: null,
+			});
+		}
+		expect(adapter.deliverBatch).not.toHaveBeenCalled();
+		expect(markAuditDelivered).not.toHaveBeenCalled();
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 0 });
+		expect(adapter.deliverBatch).not.toHaveBeenCalled();
+	});
+
+	it("delivers annotated Discord content with its original routing envelope", async () => {
+		const queue = makeQueue();
+		const id = "chat:lead-a:323456789012345678";
+		enqueueDiscord(queue, id, "423456789012345678", "original alert");
+		const original = queue.getById(id)?.content;
+		const deliveryContent =
+			"[告警摘要] 2 条已合并\noriginal alert\n[告警合并] 第 3 次";
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		const consumer = loop(queue, adapter, {
+			revalidateModel: async () => ({ deliver: true, deliveryContent }),
+		});
+
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 1 });
+		expect(queue.getById(id)).toMatchObject({
+			content: original,
+			delivery_content: deliveryContent,
+		});
+		expect(adapter.deliverBatch.mock.calls[0]?.[0]).toMatchObject({
+			kind: "discord_chat",
+			replyChannelId: "423456789012345678",
+			members: [
+				expect.objectContaining({
+					content: expect.stringContaining(deliveryContent),
+				}),
+			],
+			modelPayload: expect.stringContaining(deliveryContent),
+		});
+	});
+
+	it.each(["settleClaimAsAudit", "annotateLeadDelivery"] as const)(
+		"fails the tick when %s loses its owner fence",
+		async (method) => {
+			const queue = makeQueue();
+			enqueueModel(queue, "alert");
+			vi.spyOn(queue, method).mockReturnValue(false);
+			const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+			const consumer = loop(queue, adapter, {
+				revalidateModel: async () =>
+					method === "annotateLeadDelivery"
+						? { deliver: true, deliveryContent: "annotated alert" }
+						: {
+								deliver: false,
+								disposition: "audit_only",
+								settle: "acked",
+								auditDecision: {
+									policyVersion: "alert-wake-dedup-v1",
+									reason: "alert_info_digest",
+									decidedAt: "2099-07-19T12:00:00.000Z",
+								},
+							},
+			});
+			expect(await consumer.tick()).toMatchObject({
+				ok: false,
+				modelConsumed: 0,
+				error: expect.stringContaining("owner fence lost"),
+			});
+			expect(queue.getById("alert")).toMatchObject({
+				state: "LEASED",
+				delivery_disposition: "model",
+				acked_at: null,
+				delivery_content: null,
+			});
+			expect(adapter.deliverBatch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("delivers the frozen alert batch on the next tick after revalidation throws", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "alert-1");
+		enqueueModel(queue, "alert-2");
+		let batchNumber = 0;
+		const revalidateModel = vi.fn(async () => {
+			throw new Error("dedup store unavailable");
+		});
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		const consumer = loop(queue, adapter, {
+			revalidateModel,
+			batchIdFactory: () => `batch-${++batchNumber}`,
+		});
+
+		expect(await consumer.tick()).toMatchObject({
+			ok: false,
+			modelConsumed: 0,
+			error: "dedup store unavailable",
+		});
+		expect(adapter.deliverBatch).not.toHaveBeenCalled();
+		for (const id of ["alert-1", "alert-2"]) {
+			expect(queue.getById(id)).toMatchObject({
+				state: "LEASED",
+				delivery_disposition: "model",
+				acked_at: null,
+				batch_id: "batch-1",
+			});
+		}
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 2 });
+		expect(revalidateModel).toHaveBeenCalledOnce();
+		expect(adapter.deliverBatch.mock.calls[0]?.[0]).toMatchObject({
+			batchId: "batch-1#r0",
+			members: [
+				expect.objectContaining({ deliveryId: "alert-1#r0" }),
+				expect.objectContaining({ deliveryId: "alert-2#r0" }),
+			],
+		});
+	});
+
 	it("removes a quiet row from a fresh mixed batch while delivering the urgent member", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "review-question");

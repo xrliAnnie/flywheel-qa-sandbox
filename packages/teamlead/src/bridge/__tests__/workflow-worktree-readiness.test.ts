@@ -57,4 +57,30 @@ describe("FLY-1940 workflow worktree baseline", () => {
 			reason: `head_not_fast_forward:${actual}:${base}`,
 		});
 	});
+
+	it("allows a dirty resume worktree while retaining the ancestry guard", async () => {
+		const actual = "b".repeat(40);
+		const base = "a".repeat(40);
+		const execGit = vi
+			.fn()
+			.mockResolvedValueOnce({ stdout: `${actual}\n` })
+			.mockResolvedValueOnce({ stdout: "" });
+
+		await expect(
+			assertWorkflowWorktreeReady("/work", base, {
+				exists: () => true,
+				clean: async () => false,
+				execGit,
+				allowDirty: true,
+			}),
+		).resolves.toEqual({ ok: true });
+		expect(execGit).toHaveBeenLastCalledWith([
+			"-C",
+			"/work",
+			"merge-base",
+			"--is-ancestor",
+			base,
+			actual,
+		]);
+	});
 });

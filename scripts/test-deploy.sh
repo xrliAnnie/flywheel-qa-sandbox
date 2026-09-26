@@ -5,6 +5,8 @@
 #        [--alerts [--codex-home-reconcile]]
 #        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]
 #          [--voice-fixture <public-json>]]
+#        [--test-discipline --expect-head <full-sha> [--generalized]
+#          [--codex-runner]]
 #   If slot-number is provided, claims that specific slot.
 #   If omitted, claims the first available slot from the pool.
 #   --digest <id>  FLY-727: mount the daily-digest route on the slot Bridge
@@ -40,6 +42,10 @@ source "${SCRIPT_DIR}/lib/qa-slot-bridge.sh"
 # shellcheck source=lib/qa-slot-env-contract.sh
 source "${SCRIPT_DIR}/lib/qa-slot-env-contract.sh"
 
+# FLY-2874: one validated source of truth for the configured 529-room pool.
+# shellcheck source=lib/qa-slot-pool.sh
+source "${SCRIPT_DIR}/lib/qa-slot-pool.sh"
+
 # FLY-1663: 529 Room Leads use the same launchd-native v2 topology as the
 # target fleet, with labels and state scoped to the ephemeral QA slot.
 # shellcheck source=lib/qa-launchd-lead.sh
@@ -67,7 +73,6 @@ if [[ ! -f "$SLOTS_FILE" ]]; then
 fi
 
 GUILD_ID=$(jq -r '.guildId' "$SLOTS_FILE")
-TOTAL_SLOTS=$(jq '.slots | length' "$SLOTS_FILE")
 
 log() { echo "[test-deploy] $(date +%H:%M:%S) $*" >&2; }
 campaign_abort() {
@@ -82,30 +87,29 @@ campaign_abort() {
 # same token — Bridge to validate /api/* requests, Lead so its curl
 # templates have $TEAMLEAD_API_TOKEN populated.
 #
-# Without TEST_REPLY_BY_ISSUE=1, behavior is unchanged: token is unset
-# (env -u TEAMLEAD_API_TOKEN), reply.by_issue flag is off, all existing
-# QA suites keep working.
+# Without TEST_REPLY_BY_ISSUE=1, a token remains absent unless a generalized
+# room or an effective bridge-mode Codex Lead requires Bridge auth.
 #
 # Plan AC11 + Codex R3 #1 + R4 LOW #2.
-if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
-  # Allow caller to override via TEST_API_TOKEN; otherwise generate a
-  # random per-slot token. We compute it once here so the same string
-  # flows into both Bridge and Lead env blocks below.
-  if [[ -z "${TEST_API_TOKEN:-}" ]]; then
-    if command -v uuidgen >/dev/null 2>&1; then
-      TEST_TEAMLEAD_API_TOKEN="fly-162-test-$(uuidgen | tr -d '-' | head -c 12)"
-    else
-      TEST_TEAMLEAD_API_TOKEN="fly-162-test-$(date +%s)-$$"
-    fi
-  else
+TEST_TEAMLEAD_API_TOKEN=""
+qa_ensure_test_teamlead_api_token() {
+  local prefix="${1:?token prefix required}"
+  [[ -n "$TEST_TEAMLEAD_API_TOKEN" ]] && return 0
+  if [[ -n "${TEST_API_TOKEN:-}" ]]; then
     TEST_TEAMLEAD_API_TOKEN="$TEST_API_TOKEN"
+  elif command -v uuidgen >/dev/null 2>&1; then
+    TEST_TEAMLEAD_API_TOKEN="${prefix}-$(uuidgen | tr -d '-' | head -c 12)"
+  else
+    TEST_TEAMLEAD_API_TOKEN="${prefix}-$(date +%s)-$$"
   fi
+}
+if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+  # Compute once so the same string flows into Bridge and Lead env blocks.
+  qa_ensure_test_teamlead_api_token fly-162-test
   # FLY-1189 (Codex R1 MED): do NOT log any token characters — even a 24-char
   # prefix is a partial secret and the QA smoke persists this log to a campaign
   # file. Report presence + length only.
   log "TEST_REPLY_BY_ISSUE=1 — reply-by-issue routes will be enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>"
-else
-  TEST_TEAMLEAD_API_TOKEN=""
 fi
 
 # ── Slot allocation ───────────────────────────────────
@@ -194,6 +198,9 @@ CODEX_RUNNER=0            # FLY-2211: opt-in real codex-tmux worker for restart 
 STUB_RUNNER=0             # FLY-1775: deterministic persistent claude stub for the 9-step drill.
 EXPECT_HEAD=""            # FLY-1775: optional script-repository HEAD fence.
 VOICE_FIXTURE=""          # FLY-2655: opt-in isolated 529 voice-room coordinates.
+VOICE_CHANNEL_ID=""       # FLY-2874: optional slot-owned voice map.
+VOICE_CHANNEL_NAME=""
+TEST_DISCIPLINE=0          # FLY-2802: real-runner local-test behavior acceptance room.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -238,6 +245,8 @@ while [[ $# -gt 0 ]]; do
       CODEX_RUNNER=1; shift ;;
     --stub-runner)
       STUB_RUNNER=1; shift ;;
+    --test-discipline)
+      TEST_DISCIPLINE=1; shift ;;
     --expect-head)
       EXPECT_HEAD="${2:?--expect-head requires a full SHA}"; shift 2 ;;
     --expect-head=*)
@@ -267,20 +276,24 @@ FROM_BRANCH="${FROM_BRANCH:-main}"
 # --from-branch clone. Fence the actual script repository before any slot,
 # lock, build, clone, or process mutation.
 SCRIPT_REPO_HEAD=""
-if [[ "$GENERALIZED" == "1" ]]; then
+if [[ "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" ]]; then
+	if [[ "$TEST_DISCIPLINE" == "1" && -z "$EXPECT_HEAD" ]]; then
+		echo "ERROR: --test-discipline requires --expect-head with the current full SHA" >&2
+		exit 1
+	fi
   [[ "$MODE" == "slot" ]] || {
-    echo "ERROR: --generalized is only supported with --mode slot (mirror/roundtable are distinct topologies)." >&2
+    echo "ERROR: --generalized/--test-discipline is only supported with --mode slot (mirror/roundtable are distinct topologies)." >&2
     exit 1
   }
   SCRIPT_REPO_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
   qa_generalized_validate_expected_head "$SCRIPT_REPO_HEAD" "$EXPECT_HEAD" || exit 1
-  log "GENERALIZED ROOM SOURCE HEAD: ${SCRIPT_REPO_HEAD} (Bridge runs this checkout; --from-branch only selects the sandbox clone)"
+  log "FENCED ROOM SOURCE HEAD: ${SCRIPT_REPO_HEAD} (Bridge runs this checkout; --from-branch only selects the sandbox clone)"
 fi
 if [[ "$STUB_RUNNER" == "1" && "$GENERALIZED" != "1" ]]; then
   echo "ERROR: --stub-runner requires --generalized" >&2
   exit 1
 fi
-if [[ "$CODEX_RUNNER" == "1" && "$GENERALIZED" != "1" ]]; then
+if [[ "$CODEX_RUNNER" == "1" && "$GENERALIZED" != "1" && "$TEST_DISCIPLINE" != "1" ]]; then
   echo "ERROR: --codex-runner requires --generalized" >&2
   exit 1
 fi
@@ -297,15 +310,19 @@ if [[ "$GENERALIZED" == "1" ]]; then
       ;;
   esac
 fi
-case "${TEST_CODEX_LEAD_OUTBOUND_MODE:-direct}" in
-  direct|bridge) ;;
+case "${TEST_CODEX_LEAD_OUTBOUND_MODE:-}" in
+  ""|direct|bridge) ;;
   *)
     echo "ERROR: TEST_CODEX_LEAD_OUTBOUND_MODE must be 'direct' or 'bridge' (got '${TEST_CODEX_LEAD_OUTBOUND_MODE}')." >&2
     exit 1
     ;;
 esac
-if [[ -n "$EXPECT_HEAD" && "$GENERALIZED" != "1" ]]; then
+if [[ -n "$EXPECT_HEAD" && "$GENERALIZED" != "1" && "$TEST_DISCIPLINE" != "1" ]]; then
   echo "ERROR: --expect-head requires --generalized" >&2
+  exit 1
+fi
+if [[ "$TEST_DISCIPLINE" == "1" && "$STUB_RUNNER" == "1" ]]; then
+  echo "ERROR: --test-discipline requires real runners; --stub-runner is forbidden" >&2
   exit 1
 fi
 if [[ -n "$VOICE_FIXTURE" ]]; then
@@ -325,22 +342,20 @@ if [[ -n "$VOICE_FIXTURE" ]]; then
     echo "ERROR: --voice-fixture does not borrow extra Lead bots." >&2
     exit 1
   }
+  [[ -n "$REQUESTED_SLOT" ]] || {
+    echo "ERROR: --voice-fixture requires an explicit slot." >&2
+    exit 1
+  }
   node "${SCRIPT_DIR}/lib/fly2655-voice-fixture.mjs" validate \
     --fixture "$VOICE_FIXTURE" >/dev/null || exit 1
 fi
 
-# Generalized master entry always requires a token, independently of the
-# reply-by-issue Discord route. Reuse TEST_API_TOKEN when supplied; otherwise
-# mint the same per-room random form as the existing reply-by-issue path.
-if [[ "$GENERALIZED" == "1" && -z "$TEST_TEAMLEAD_API_TOKEN" ]]; then
-  if [[ -n "${TEST_API_TOKEN:-}" ]]; then
-    TEST_TEAMLEAD_API_TOKEN="$TEST_API_TOKEN"
-  elif command -v uuidgen >/dev/null 2>&1; then
-    TEST_TEAMLEAD_API_TOKEN="fly-1775-test-$(uuidgen | tr -d '-' | head -c 12)"
-  else
-    TEST_TEAMLEAD_API_TOKEN="fly-1775-test-$(date +%s)-$$"
-  fi
-  log "generalized master auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>; reply-by-issue remains ${TEST_REPLY_BY_ISSUE:-0}"
+# Generalized and standalone test-discipline DAG entry require master auth,
+# independently of the reply-by-issue Discord route. Reuse TEST_API_TOKEN when
+# supplied; otherwise mint one per room.
+if [[ ( "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" ) && -z "$TEST_TEAMLEAD_API_TOKEN" ]]; then
+  qa_ensure_test_teamlead_api_token fly-1775-test
+  log "workflow master auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>; reply-by-issue remains ${TEST_REPLY_BY_ISSUE:-0}"
 fi
 TEST_TEAMLEAD_INGEST_TOKEN=""
 if [[ "$GENERALIZED" == "1" ]]; then
@@ -371,8 +386,8 @@ fi
 
 # ── FLY-153: Mirror mode validation (BEFORE expensive preflight) ──
 # Round 1 #3 + R2 #4: validate mode + mirror requirements before paying for
-# gh/pnpm preflight. If the user asks for an impossible mirror config (slot 4,
-# missing mirrorChannel), fail in milliseconds instead of minutes.
+# gh/pnpm preflight. If the user asks for a slot outside the designated
+# three-slot mirror topology, fail in milliseconds instead of minutes.
 case "$MODE" in
   slot|mirror|roundtable) ;;
   *)
@@ -380,6 +395,30 @@ case "$MODE" in
     exit 1
     ;;
 esac
+
+if ! TOTAL_SLOTS="$(qa_slot_pool_size "$SLOTS_FILE")"; then
+  echo "ERROR: invalid slot pool in ${SLOTS_FILE}" >&2
+  exit 1
+fi
+if [[ -n "$REQUESTED_SLOT" ]] \
+    && ! qa_slot_pool_require_member "$SLOTS_FILE" "$REQUESTED_SLOT"; then
+  echo "ERROR: slot must be in configured range 1-${TOTAL_SLOTS} (got '${REQUESTED_SLOT}')" >&2
+  exit 1
+fi
+if [[ -n "$VOICE_FIXTURE" ]]; then
+  VOICE_SLOT_IDX=$((REQUESTED_SLOT - 1))
+  VOICE_CHANNEL_ID=$(jq -r ".slots[${VOICE_SLOT_IDX}].voiceChannelId // empty" "$SLOTS_FILE")
+  VOICE_CHANNEL_NAME=$(jq -r ".slots[${VOICE_SLOT_IDX}].voiceChannelName // empty" "$SLOTS_FILE")
+  if [[ ! "$VOICE_CHANNEL_ID" =~ ^[0-9]{17,20}$ || -z "$VOICE_CHANNEL_NAME" ]]; then
+    echo "ERROR: slot ${REQUESTED_SLOT} requires a valid voiceChannelId/voiceChannelName for --voice-fixture" >&2
+    exit 1
+  fi
+  FIXTURE_VOICE_CHANNEL_ID=$(jq -er '.voiceChannelId' "$VOICE_FIXTURE") || exit 1
+  if [[ "$FIXTURE_VOICE_CHANNEL_ID" != "$VOICE_CHANNEL_ID" ]]; then
+    echo "ERROR: voice fixture channel does not match slot ${REQUESTED_SLOT} mapping" >&2
+    exit 1
+  fi
+fi
 
 MIRROR_CHANNEL_ID=""
 if [[ "$MODE" == "mirror" ]]; then
@@ -397,7 +436,7 @@ if [[ "$MODE" == "mirror" ]]; then
     case "$REQUESTED_SLOT" in
       1|2|3) ;;
       *)
-        echo "ERROR: --mode mirror supports slots 1-3 (cos/product/ops). Slot ${REQUESTED_SLOT} has no prod analog (slot 4 is finance-only)." >&2
+        echo "ERROR: --mode mirror supports only the designated slots 1-3 (cos/product/ops); got slot ${REQUESTED_SLOT}." >&2
         exit 1
         ;;
     esac
@@ -483,7 +522,7 @@ SANDBOX_PUSH_PERM=$(gh api "repos/${SANDBOX_SLUG}" --jq '.permissions.push' 2>/d
 #
 # Order: better-sqlite3 native compile + require() probe, THEN TypeScript
 # build of the dist artifacts Bridge imports at runtime.
-log "Preflight under ${REBUILD_LOCK}: better-sqlite3 native compile + flywheel-edge-worker build + flywheel-teamlead build"
+log "Preflight under ${REBUILD_LOCK}: better-sqlite3 native compile + edge-worker + inbox-mcp + teamlead builds"
 LOCK_TIMEOUT=300
 waited=0
 while ! mkdir "$REBUILD_LOCK" 2>/dev/null; do
@@ -571,6 +610,16 @@ trap release_preflight_lock EXIT
   #    invisible to the running Bridge — it still serves the old dist. QA hit
   #    this exact trap on the first FLY-162 deploy ("404 not found" on /send).
   pnpm --filter flywheel-comm build || exit 18
+  # 5b. FLY-2867: claude-lead.sh loads its MCP servers from this checkout and
+  #     silently skips flywheel-inbox when packages/inbox-mcp/dist is absent,
+  #     so a Claude-carrier Lead could never write its .inbox-ready lease.
+  #     Neither package is in teamlead's dependency closure; build and assert.
+  pnpm --filter flywheel-inbox-mcp build || exit 20
+  pnpm --filter flywheel-terminal-mcp build || exit 20
+  if ! CLAUDE_LEAD_MCP_MISSING=$(qa_room_claude_lead_mcp_missing "$REPO_ROOT"); then
+    echo "ERROR: Claude Lead MCP artifacts missing after build: $(tr '\n' ' ' <<<"$CLAUDE_LEAD_MCP_MISSING")" >&2
+    exit 20
+  fi
   pnpm --filter flywheel-teamlead build || exit 15
   if [[ -n "$VOICE_FIXTURE" ]]; then
     pnpm --filter flywheel-voice-core build || exit 19
@@ -583,7 +632,7 @@ trap release_preflight_lock EXIT
   #    someone forgets to rebuild after editing src.
   grep -q 'FLYWHEEL_RUNNER_START_POINT' \
     "$REPO_ROOT/packages/edge-worker/dist/WorktreeManager.js" || exit 14
-) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, claude-runner, teamlead, and dist freshness."
+) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, claude-runner, inbox-mcp, terminal-mcp, teamlead, and dist freshness."
 
 release_preflight_lock
 trap - EXIT
@@ -619,8 +668,7 @@ if [[ -n "$REQUESTED_SLOT" ]]; then
     exit 1
   fi
 else
-  # FLY-153: in mirror mode auto-allocation only considers slots 1-3
-  # (slot 4 is finance — no prod analog in mirror topology).
+  # FLY-153: mirror mode keeps its designated cos/product/ops topology.
   if [[ "$MODE" == "mirror" ]]; then
     AUTO_RANGE_END=3
   else
@@ -658,7 +706,7 @@ cleanup_on_failure() {
   local lock_pid
 	local generalized_bridge_stopped=1
 	local qa_registry_stopped=1
-	# FLY-1775: generalized readiness remains inside the deploy transaction even
+	# FLY-1775: generalized/test-discipline readiness remains inside the deploy transaction even
 	# after bridge.pid replaces the "claiming" sentinel. A failure between
 	# /health and room-info finalization must leave no process, port, lock, or
 	# half-ready slot for a later QA run to mistake as usable.
@@ -765,6 +813,10 @@ SLOT_ROLE=$(jq -r ".slots[${SLOT_IDX}].role" "$SLOTS_FILE")
 SLOT_BACKEND=$(jq -r ".slots[${SLOT_IDX}].backend // empty" "$SLOTS_FILE")
 SLOT_RETIRED_CODEX_SOURCE_HOME=$(jq -r ".slots[${SLOT_IDX}].codexSourceHome // empty" "$SLOTS_FILE")
 SLOT_CODEX_PROFILE=$(jq -r ".slots[${SLOT_IDX}].codexProfile // empty" "$SLOTS_FILE")
+if [[ -z "$VOICE_CHANNEL_ID" && -z "$VOICE_CHANNEL_NAME" ]]; then
+  VOICE_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].voiceChannelId // empty" "$SLOTS_FILE")
+  VOICE_CHANNEL_NAME=$(jq -r ".slots[${SLOT_IDX}].voiceChannelName // empty" "$SLOTS_FILE")
+fi
 if ! MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape \
     "$SLOT_BACKEND" "$SLOT_RETIRED_CODEX_SOURCE_HOME" "$SLOT_CODEX_PROFILE"); then
   echo "ERROR: slots[${SLOT_IDX}] has an invalid Lead carrier shape" >&2
@@ -930,7 +982,8 @@ mkdir -p "${SLOT_DIR}/discord-state"
 chmod 700 "$SLOT_DIR"
 GENERALIZED_CHILD_TMPDIR=$(qa_slot_child_tmpdir "$SLOT_DIR")
 mkdir -p "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state/reports" \
-  "${SLOT_DIR}/state/report-host" "${SLOT_DIR}/state/codex-home"
+  "${SLOT_DIR}/state/report-host" "${SLOT_DIR}/state/codex-home" \
+  "${SLOT_DIR}/state/carrier-assertions" "${SLOT_DIR}/state/carrier-receipts"
 REPORT_HOST_DIR="${SLOT_DIR}/state/report-host"
 SLOT_DIR_CANONICAL=$(cd "$SLOT_DIR" && pwd -P)
 REPORT_HOST_DIR_CANONICAL=$(cd "$REPORT_HOST_DIR" && pwd -P)
@@ -938,7 +991,8 @@ REPORT_HOST_DIR_CANONICAL=$(cd "$REPORT_HOST_DIR" && pwd -P)
   || campaign_abort "report host directory escaped the slot tree"
 chmod 700 "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state" \
   "${SLOT_DIR}/state/reports" "${SLOT_DIR}/state/report-host" \
-  "${SLOT_DIR}/state/codex-home"
+  "${SLOT_DIR}/state/codex-home" "${SLOT_DIR}/state/carrier-assertions" \
+  "${SLOT_DIR}/state/carrier-receipts"
 while IFS= read -r _qa_slot_assignment; do
   [[ -n "$_qa_slot_assignment" ]] && BRIDGE_EXTRA_ENV+=("$_qa_slot_assignment")
 done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")
@@ -960,11 +1014,12 @@ GENERALIZED_ROOM_INFO=""
 # FLY-1775 pit 9 intentionally extends the ordinary reply-by-issue opt-in:
 # inject-linear-issue needs the same slot-local Bearer credential. Default
 # ordinary rooms still create no token file; the opt-in file is always 0600.
-if [[ "$GENERALIZED" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+# FLYWHEEL_API_TOKEN_MODES_BEGIN
+if [[ "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   GENERALIZED_API_TOKEN_PATH="${SLOT_DIR}/state/api-token"
-  mkdir -p "${SLOT_DIR}/state"
-  printf '%s\n' "$TEST_TEAMLEAD_API_TOKEN" > "$GENERALIZED_API_TOKEN_PATH"
-  chmod 600 "$GENERALIZED_API_TOKEN_PATH"
+  qa_generalized_install_api_token \
+    "$GENERALIZED_API_TOKEN_PATH" "$TEST_TEAMLEAD_API_TOKEN" \
+    || campaign_abort "slot API token installation failed"
   REPORT_HOST_TOKEN_PATH="${REPORT_HOST_DIR}/token"
   if [[ -e "$REPORT_HOST_TOKEN_PATH" && ( ! -f "$REPORT_HOST_TOKEN_PATH" || -L "$REPORT_HOST_TOKEN_PATH" ) ]]; then
     campaign_abort "report host token path must be a regular non-symlink file"
@@ -986,7 +1041,8 @@ if [[ "$GENERALIZED" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     "$REPORT_HOST_DIR" "$QA_SLOT_BRIDGE_NODE" --
   )
 fi
-if [[ "$GENERALIZED" == "1" ]]; then
+# FLYWHEEL_API_TOKEN_MODES_END
+if [[ "$GENERALIZED" == "1" || "$TEST_DISCIPLINE" == "1" ]]; then
   GENERALIZED_READINESS_PENDING=1
   GENERALIZED_ROOM_INFO="${SLOT_DIR}/room-info.json"
 fi
@@ -1241,7 +1297,13 @@ if [[ "$CODEX_RUNNER" == "1" ]]; then
 else
   QA_CONFIG_RUNNER="claude"
 fi
+if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  QA_CONFIG_DISCIPLINE="test-discipline"
+else
+  QA_CONFIG_DISCIPLINE="off"
+fi
 qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" "$QA_CONFIG_RUNNER" \
+  "$QA_CONFIG_DISCIPLINE" \
   > "${HOST_REPO}/.flywheel/config.yaml"
 log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
 
@@ -1262,8 +1324,13 @@ nodes:
   qa: { file: nodes/qa.md, department: engineering }
   general: { file: nodes/general.md }
 EOF
-  printf '%s: [code, generic]\n' "$AGENT_ID" \
-    > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    printf '%s: [code, generic, simple_code]\n' "$AGENT_ID" \
+      > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  else
+    printf '%s: [code, generic]\n' "$AGENT_ID" \
+      > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  fi
   if [[ "$STUB_RUNNER" == "1" ]]; then
     qa_generalized_install_stub "${SLOT_DIR}/stub-bin" \
       "${REPO_ROOT}/scripts/qa-529-generalized-stub.mjs" \
@@ -1271,6 +1338,29 @@ EOF
     BRIDGE_EXTRA_ENV+=("PATH=${SLOT_DIR}/stub-bin:${PATH}")
   fi
   log "Wrote generalized registry/adoption (lead=${AGENT_ID}, menus=code,generic, runner=$([[ "$STUB_RUNNER" == "1" ]] && echo stub || echo real))"
+elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  mkdir -p "${HOST_REPO}/.flywheel/agents/nodes" \
+    "${HOST_REPO}/.flywheel/menus"
+  cp "${REPO_ROOT}/.flywheel/agents/nodes/engineer.md" \
+    "${HOST_REPO}/.flywheel/agents/nodes/engineer.md"
+  cp "${REPO_ROOT}/.flywheel/agents/nodes/engineer.md" \
+    "${HOST_REPO}/.flywheel/agents/nodes/general.md"
+  if (( $(grep -c 'FLYWHEEL_LOCAL_TEST_POLICY:BEGIN' \
+    "${HOST_REPO}/.flywheel/agents/nodes/general.md") < 1 )); then
+    log "ERROR: standalone general node is missing the local-test policy"
+    exit 1
+  fi
+  cat > "${HOST_REPO}/.flywheel/agents/registry.yaml" <<'EOF'
+nodes:
+  engineer: { file: nodes/engineer.md, department: engineering }
+  general: { file: nodes/general.md }
+EOF
+  printf '%s: [generic]\n' "$AGENT_ID" \
+    > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  node "${SCRIPT_DIR}/lib/qa-test-discipline-config.mjs" \
+    --root "$HOST_REPO" --flywheel-root "$REPO_ROOT" --agent engineer >/dev/null \
+    || { log "ERROR: standalone engineer config/dispatch verification failed"; exit 1; }
+  log "Wrote and verified standalone engineer registry/adoption (runner=${QA_CONFIG_RUNNER})"
 fi
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
@@ -1593,6 +1683,14 @@ if [[ -n "$VOICE_FIXTURE" ]]; then
   # The launcher reads the existing managed ~/.flywheel/.env source directly;
   # do not duplicate the realtime key into Bridge's slot secretEnvironment.
   BRIDGE_ENV_UNSET_ARGS+=(-u OPENAI_API_KEY)
+  if [[ "$NO_LEAD" != "1" ]] \
+    && [[ "$(jq -r '.backend // "claude-code"' <<<"$MAIN_LEAD_SHAPE")" == "codex-app-server" ]]; then
+    FLYWHEEL_PROJECTS=$(printf '%s' "$FLYWHEEL_PROJECTS" \
+      | qa_room_bind_codex_voice_context \
+        "$TEST_PROJECT_NAME" "$AGENT_ID" \
+        "${SLOT_DIR}/test-identity.md" "${SLOT_DIR}/cdxh/${AGENT_ID}") \
+      || campaign_abort "Codex voice context binding failed"
+  fi
   log "voice fixture installed: QA room and user allowlists are slot-private"
 fi
 
@@ -1632,6 +1730,31 @@ fi
 FLYWHEEL_PROJECTS=$(jq -c . "$FLYWHEEL_PROJECTS_FILE") \
   || campaign_abort "failed to reload migrated FLYWHEEL_PROJECTS"
 log "Minted ${QA_SUMMARY_MIGRATION_RECEIPT} from final slot registry"
+
+# Resolve every Codex Lead's effective transport before any Lead launch occurs.
+# qa_slot_start_lead runs inside command substitution, so token creation there
+# would not propagate back to the Bridge launch environment.
+QA_CODEX_BRIDGE_AUTH_REQUIRED=0
+while IFS= read -r _qa_codex_profile; do
+  [[ -n "$_qa_codex_profile" ]] || continue
+  _qa_codex_mode=$(qa_codex_effective_outbound_mode \
+    "$_qa_codex_profile" "${TEST_CODEX_LEAD_OUTBOUND_MODE:-}") \
+    || campaign_abort "invalid Codex Lead outbound selection"
+  if [[ "$_qa_codex_mode" == bridge ]]; then
+    QA_CODEX_BRIDGE_AUTH_REQUIRED=1
+  fi
+done < <(jq -er '
+  .[].leads[]?
+  | select((.backend // "claude-code") == "codex-app-server")
+  | if .codexProfile == "full-access" then "full-access"
+    elif .companion == true then "companion"
+    else error("invalid Codex profile") end
+' <<<"$FLYWHEEL_PROJECTS")
+unset _qa_codex_profile _qa_codex_mode
+if [[ "$QA_CODEX_BRIDGE_AUTH_REQUIRED" == 1 ]]; then
+  qa_ensure_test_teamlead_api_token fly-2873-test
+  log "Codex bridge auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>"
+fi
 
 # FLY-1775 pit 5: GET visibility does not prove Send Messages. In a
 # generalized --alerts room, exercise every bot that the scrubbed Bridge send
@@ -1677,7 +1800,8 @@ qa_slot_start_lead() {
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
   local lead_row mcp_exclude backend codex_profile lead_chat_channel
   local codex_home codex_bin codex_state codex_state_dirs codex_wrapper codex_comm_db
-  local profile_assignments profile_assignment coordinate_bot coordinate_started
+  local profile_assignments profile_assignment transport_assignments transport_assignment
+  local codex_outbound coordinate_bot coordinate_started
   local coordinate_args=()
   local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
   local base_assignments=(
@@ -1735,10 +1859,19 @@ qa_slot_start_lead() {
       "FLYWHEEL_CODEX_BIN=${codex_bin}"
       "FLYWHEEL_CODEX_LEAD_MODE=tui"
       "FLYWHEEL_CODEX_TUI_CWD=${workspace}"
-      "FLYWHEEL_CODEX_LEAD_OUTBOUND=${TEST_CODEX_LEAD_OUTBOUND_MODE:-direct}"
       "FLYWHEEL_CODEX_LEAD_STATE_DIRS=${codex_state_dirs}"
+      "FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE=${SLOT_DIR}/state/lead-carrier-evidence.json"
+      "FLYWHEEL_LEAD_CARRIER_ASSERTION_DIR=${SLOT_DIR}/state/carrier-assertions"
+      "FLYWHEEL_LEAD_RECEIPT_DIR=${SLOT_DIR}/state/carrier-receipts"
       "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES=${identity},${REPO_ROOT}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
     )
+    codex_outbound=$(qa_codex_effective_outbound_mode \
+      "$codex_profile" "${TEST_CODEX_LEAD_OUTBOUND_MODE:-}") || return 1
+    transport_assignments=$(qa_codex_transport_assignments "$codex_outbound" \
+      "http://localhost:${SLOT_PORT}" "$TEST_TEAMLEAD_API_TOKEN") || return 1
+    while IFS= read -r transport_assignment; do
+      [[ -n "$transport_assignment" ]] && codex_assignments+=("$transport_assignment")
+    done <<<"$transport_assignments"
     profile_assignments=$(qa_codex_profile_assignments "$codex_profile" \
       "$REPO_ROOT" "$codex_state" "$(command -v node)") || return 1
     if [[ -n "$profile_assignments" ]]; then
@@ -1999,7 +2132,14 @@ else
 fi
 
 if [[ "$LEAD_READY" != "true" ]]; then
-  log "ERROR: Lead did not become ready: phase=${LEAD_NOT_READY_PHASE} leaseBudget=${LEAD_READY_TIMEOUT_SEC}s channelBudget=${LEAD_CHANNEL_TIMEOUT_SEC}s"
+  LEAD_NOT_READY_REASON=""
+  if [[ "$SLOT_BACKEND" != codex-app-server && "$LEAD_NOT_READY_PHASE" == lease ]]; then
+    LEAD_NOT_READY_REASON=" reason=$(qa_room_claude_lease_diagnosis "${SLOT_DIR}/lead-workspace" "$LEASE_FILE" \
+      "${SLOT_DIR}/launchd/${AGENT_ID}/lead.plist")"
+  elif [[ "$LEAD_NOT_READY_PHASE" == channel ]]; then
+    LEAD_NOT_READY_REASON=" reason=channel_not_live"
+  fi
+  log "ERROR: Lead did not become ready: phase=${LEAD_NOT_READY_PHASE}${LEAD_NOT_READY_REASON} leaseBudget=${LEAD_READY_TIMEOUT_SEC}s channelBudget=${LEAD_CHANNEL_TIMEOUT_SEC}s"
   if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
     if qa_slot_evidence_allows_release; then
       QA_LEAD_REGISTRY=""
@@ -2183,10 +2323,12 @@ EOF
       _xlead_manifest="$_xlead_carrier_home"
       confirm_dev_channels_prompt "$XLEAD_SOCKET" "$XAGENT"
       XLEASE_FILE="${LEASE_DIR}/.inbox-ready-${XAGENT}"
+      XLEAD_NOT_READY_PHASE=lease
       for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
         if [[ -f "$XLEASE_FILE" ]]; then
           XLEASE_PID=$(jq -r '.pid' "$XLEASE_FILE" 2>/dev/null || echo "")
           if [[ -n "$XLEASE_PID" ]] && kill -0 "$XLEASE_PID" 2>/dev/null; then
+            XLEAD_NOT_READY_PHASE=channel
             if qa_slot_channel_ready "$XAGENT" "$_xlead_label" "$XLEAD_LOG"; then
               XLEAD_READY=true
             fi
@@ -2195,8 +2337,15 @@ EOF
         fi
         sleep 2
       done
-      [[ "$XLEAD_READY" == "true" ]] \
-        || campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (log: ${XLEAD_LOG})"
+      if [[ "$XLEAD_READY" != "true" ]]; then
+        # FLY-2867: never abort anonymously — name the missing half.
+        XLEAD_NOT_READY_REASON=channel_not_live
+        if [[ "$XLEAD_NOT_READY_PHASE" == lease ]]; then
+          XLEAD_NOT_READY_REASON=$(qa_room_claude_lease_diagnosis "${XDIR}/lead-workspace" "$XLEASE_FILE" \
+            "${SLOT_DIR}/launchd/${XAGENT}/lead.plist")
+        fi
+        campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (phase=${XLEAD_NOT_READY_PHASE} reason=${XLEAD_NOT_READY_REASON}; log: ${XLEAD_LOG})"
+      fi
       log "Extra Lead ${XAGENT} ready (lease and channel live)"
     fi
   done < <(jq -c '.[]' <<<"$EXTRA_LEADS_JSON")
@@ -2332,14 +2481,23 @@ if [[ "$GENERALIZED" == "1" ]]; then
       "$QA_SLOT_BRIDGE_BASH" "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
       ${REPORT_HOST_WRAPPER_ARGS[@]+"${REPORT_HOST_WRAPPER_ARGS[@]}"} \
       "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts" )
-elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+elif [[ -n "$TEST_TEAMLEAD_API_TOKEN" ]]; then
   # FLY-1389 P1-a: FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR pin the slot Bridge's
   # runtime deploy (sync-flywheel-hooks.ts seams, "for test slots" by design)
   # to slot-local dirs — without them every slot Bridge boot rewrote the
   # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
+  BRIDGE_REPLY_ENV=()
+  if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+    BRIDGE_REPLY_ENV+=("TEAMLEAD_CHAT_THREADS_ENABLED=true")
+    BRIDGE_REPLY_ENV+=("TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true")
+    BRIDGE_REPLY_ENV+=("TEAMLEAD_REPLY_GUARD_ENABLED=true")
+  fi
   env \
     ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
     -u TEAMLEAD_INGEST_TOKEN \
+    -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
+    -u TEAMLEAD_REPLY_GUARD_ENABLED \
+    -u TEAMLEAD_CHAT_THREADS_ENABLED \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
@@ -2352,9 +2510,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
-    TEAMLEAD_CHAT_THREADS_ENABLED=true \
-    TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true \
-    TEAMLEAD_REPLY_GUARD_ENABLED=true \
+    ${BRIDGE_REPLY_ENV[@]+"${BRIDGE_REPLY_ENV[@]}"} \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" capture \
       --spec "$BRIDGE_LAUNCH_SPEC" --slot "$SLOT" --port "$SLOT_PORT" \
@@ -2481,9 +2637,16 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
     --flags pipeline_dag,pipeline_work_kind,doc_flow >/dev/null \
     || { log "ERROR: generalized scoped pipeline/doc_flow flag seed failed"; exit 1; }
-  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
-    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
-    || { log "ERROR: generalized binding verification failed"; exit 1; }
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
+      --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
+      --required-binding simple_code=tpl_simple_code >/dev/null \
+      || { log "ERROR: generalized simple_code binding verification failed"; exit 1; }
+  else
+    node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
+      --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+      || { log "ERROR: generalized binding verification failed"; exit 1; }
+  fi
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-config \
     --file "${HOST_REPO}/.flywheel/config.yaml" \
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
@@ -2493,12 +2656,12 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --data-urlencode "leadId=${AGENT_ID}" \
     "http://localhost:${SLOT_PORT}/api/workflow/menus") \
     || { log "ERROR: generalized menu endpoint unavailable"; exit 1; }
-  if ! jq -e '
-    .success == true and
-    ([.menus[].item] | sort) == ["code","generic"] and
-    (any(.menus[]; .item == "code" and
-      ([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]))
-  ' <<<"$GENERALIZED_MENU_JSON" >/dev/null; then
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    GENERALIZED_EXPECTED_MENUS='["code","generic","simple_code"]'
+  else
+    GENERALIZED_EXPECTED_MENUS='["code","generic"]'
+  fi
+  if ! qa_generalized_menu_ready "$GENERALIZED_MENU_JSON" "$GENERALIZED_EXPECTED_MENUS"; then
     log "ERROR: generalized menu readiness failed: $(jq -c '{success,code,reason,legal,menus}' <<<"$GENERALIZED_MENU_JSON" 2>/dev/null || echo invalid-json)"
     exit 1
   fi
@@ -2523,21 +2686,87 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --arg flywheelProjectsFile "$FLYWHEEL_PROJECTS_FILE" \
 	--arg summaryConfigHome "$QA_SUMMARY_CONFIG_HOME" \
     --arg flywheelRepo "$REPO_ROOT" \
-    --arg buildSha "$SCRIPT_REPO_HEAD" --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg buildSha "$SCRIPT_REPO_HEAD" --arg subjectBaseHead "$BRANCH_SHA" \
+    --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
     --arg voiceFixtureReceipt "$VOICE_FIXTURE_RECEIPT" \
+    --arg voiceChannelId "$VOICE_CHANNEL_ID" --arg voiceChannelName "$VOICE_CHANNEL_NAME" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
+    --argjson testDiscipline "$([[ "$TEST_DISCIPLINE" == "1" ]] && echo true || echo false)" \
     '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
-      mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,lead:$lead,
+      mode:$mode,generalized:true,testDiscipline:$testDiscipline,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,lead:$lead,
       dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,buildSha:$buildSha,
+      subjectBaseHead:$subjectBaseHead,
       flywheelProjectsFile:$flywheelProjectsFile,
       summaryConfigHome:$summaryConfigHome,
       apiTokenPath:$apiTokenPath,
       bridgeLog:$bridgeLog} +
-      (if $voiceFixtureReceipt == "" then {} else {voiceFixtureReceipt:$voiceFixtureReceipt} end)' > "$_room_tmp" \
+      (if $voiceFixtureReceipt == "" then {} else {voiceFixtureReceipt:$voiceFixtureReceipt} end) +
+      (if $voiceChannelId == "" then {} else {
+        voiceChannelId:$voiceChannelId,
+        voiceChannelName:$voiceChannelName
+      } end)' > "$_room_tmp" \
     || { rm -f "$_room_tmp"; exit 1; }
   chmod 600 "$_room_tmp"
   mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
-  log "generalized readiness: bindings 5/5 · pipeline+work_kind on · menu on"
+  if [[ "$TEST_DISCIPLINE" == "1" ]]; then
+    log "generalized readiness: bindings 6/6 · pipeline+work_kind on · code+generic+simple_code menus on"
+  else
+    log "generalized readiness: bindings 5/5 · pipeline+work_kind on · code+generic menus on"
+  fi
+elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  TEST_DISCIPLINE_HEALTH_JSON=$(curl -sS "http://localhost:${SLOT_PORT}/health") \
+    || { log "ERROR: test-discipline /health body unavailable"; exit 1; }
+  if ! jq -e --arg sha "$SCRIPT_REPO_HEAD" \
+    '.ok == true and .buildMode == "built" and .buildSha == $sha and .artifactBuildSha == $sha' \
+    <<<"$TEST_DISCIPLINE_HEALTH_JSON" >/dev/null; then
+    log "ERROR: test-discipline health identity mismatch; expected built ${SCRIPT_REPO_HEAD}"
+    exit 1
+  fi
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-bindings \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: standalone test-discipline workflow binding seed failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-project-flags \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
+    --flags pipeline_dag,pipeline_work_kind,doc_flow >/dev/null \
+    || { log "ERROR: standalone test-discipline scoped pipeline/doc_flow flag seed failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
+    --required-binding generic=tpl_generic_menu >/dev/null \
+    || { log "ERROR: standalone test-discipline generic binding verification failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-config \
+    --file "${HOST_REPO}/.flywheel/config.yaml" \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: standalone test-discipline pipeline config verification failed"; exit 1; }
+  TEST_DISCIPLINE_MENU_JSON=$(curl -sS --get \
+    --data-urlencode "projectName=${TEST_PROJECT_NAME}" \
+    --data-urlencode "leadId=${AGENT_ID}" \
+    "http://localhost:${SLOT_PORT}/api/workflow/menus") \
+    || { log "ERROR: standalone test-discipline menu endpoint unavailable"; exit 1; }
+  if ! qa_generalized_menu_ready "$TEST_DISCIPLINE_MENU_JSON" '["generic"]'; then
+    log "ERROR: standalone test-discipline generic menu readiness failed"
+    exit 1
+  fi
+  TEST_DISCIPLINE_CONFIG_SHA=$(shasum -a 256 "${HOST_REPO}/.flywheel/config.yaml" | awk '{print $1}')
+  _room_tmp="${GENERALIZED_ROOM_INFO}.tmp.$$"
+  jq -n \
+    --argjson slot "$SLOT" --argjson port "$SLOT_PORT" \
+    --arg projectName "$TEST_PROJECT_NAME" --arg agentId "$AGENT_ID" \
+    --arg mode "$MODE" --arg bridgeUrl "http://localhost:${SLOT_PORT}" \
+    --arg dbPath "${SLOT_DIR}/teamlead.db" --arg hostRepo "$HOST_REPO" \
+    --arg flywheelRepo "$REPO_ROOT" --arg buildSha "$SCRIPT_REPO_HEAD" \
+    --arg subjectBaseHead "$BRANCH_SHA" \
+    --arg configSha256 "$TEST_DISCIPLINE_CONFIG_SHA" \
+    --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg bridgeLog "${SLOT_DIR}/bridge.log" \
+    '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
+      mode:$mode,generalized:false,testDiscipline:true,runnerMode:"real",
+      bridgeUrl:$bridgeUrl,dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,
+      buildSha:$buildSha,subjectBaseHead:$subjectBaseHead,configSha256:$configSha256,
+      apiTokenPath:$apiTokenPath,bridgeLog:$bridgeLog}' \
+    > "$_room_tmp" || { rm -f "$_room_tmp"; exit 1; }
+  chmod 600 "$_room_tmp"
+  mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
+  log "standalone test-discipline readiness: generic menu + exact built head"
 fi
 
 # ── Bridge confirmed up → NOW finalize campaign locks ────────────────────────
@@ -2627,7 +2856,19 @@ if [[ "$GENERALIZED" == "1" ]]; then
   GENERALIZED_OUTPUT_FIELDS=$(cat <<EOF
 ,
   "generalized": true,
+  "testDiscipline": $([[ "$TEST_DISCIPLINE" == "1" ]] && echo true || echo false),
   "runnerMode": "${GENERALIZED_RUNNER_MODE}",
+  "buildSha": "${SCRIPT_REPO_HEAD}",
+  "apiTokenPath": "${GENERALIZED_API_TOKEN_PATH}",
+  "roomInfo": "${GENERALIZED_ROOM_INFO}"
+EOF
+)
+elif [[ "$TEST_DISCIPLINE" == "1" ]]; then
+  GENERALIZED_OUTPUT_FIELDS=$(cat <<EOF
+,
+  "generalized": false,
+  "testDiscipline": true,
+  "runnerMode": "real",
   "buildSha": "${SCRIPT_REPO_HEAD}",
   "apiTokenPath": "${GENERALIZED_API_TOKEN_PATH}",
   "roomInfo": "${GENERALIZED_ROOM_INFO}"
@@ -2670,7 +2911,15 @@ qa_lead_render_stdout_json \
   "$REPORT_HOST_JSON" "$LEAD_LOG" "$FLYWHEEL_PROJECTS_FILE" \
   "${SLOT_DIR}/launch-manifest.json" "${CAMPAIGN_MANIFEST_FILE:-}" \
   "${CAMPAIGN_ID:-}" "$LEAD_LABEL" "$EXTRA_LEADS_JSON" \
-  "$GENERALIZED_OUTPUT_FIELDS" | jq --argjson leads "$LEAD_COORDINATES_JSON" ' . + {leads:$leads}'
+  "$GENERALIZED_OUTPUT_FIELDS" | jq \
+    --argjson leads "$LEAD_COORDINATES_JSON" \
+    --arg voiceChannelId "$VOICE_CHANNEL_ID" --arg voiceChannelName "$VOICE_CHANNEL_NAME" '
+      . + {leads:$leads}
+      + (if $voiceChannelId == "" then {} else {
+          voiceChannelId:$voiceChannelId,
+          voiceChannelName:$voiceChannelName
+        } end)
+    '
 
 # Every fallible publication step is now complete. Only a successful deploy
 # may disarm the transaction that owns Bridge, Lead, credential-home, and lock

@@ -109,6 +109,7 @@ import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
+import { isWorkflowProcessRetirementApproved } from "./workflow-process-retirement.js";
 import { GitWorkflowResumeCheckpointStore } from "./workflow-resume-checkpoint.js";
 import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
 
@@ -328,6 +329,7 @@ export function createRunsRouter(
 		handleActiveBlocker(blocker: Session): Promise<{ proceed: boolean }>;
 	},
 	auth?: {
+		nodeStandbyResumeEnabled?: () => boolean;
 		codexQuotaRootKey?: (projectName: string) => string | undefined;
 		verifyCodexQuotaRecovery?: (incidentId: string) => Promise<boolean>;
 		masterToken?: string;
@@ -3317,6 +3319,7 @@ export function createRunsRouter(
 				absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
 				idempotencyKey: generalizedSelection.idempotencyKey,
 				dispatchResolution,
+				standbyResumeEnabled: auth?.nodeStandbyResumeEnabled?.() ?? false,
 			});
 			if (!workflowAdmission.ok) {
 				if (workflowAdmission.reason === "codex_quota_paused") {
@@ -3340,6 +3343,9 @@ export function createRunsRouter(
 				});
 				return;
 			}
+			const workflowProcessBody = store.getWorkflowExecutionProcessBody(
+				generalizedSelection.executionId,
+			);
 			const workflowRuntimeDispatch = {
 				vendor: workflowRuntime.vendor as "claude" | "codex",
 				model: workflowRuntime.model,
@@ -3689,6 +3695,62 @@ export function createRunsRouter(
 								idempotencyKey: generalizedSelection.idempotencyKey,
 								launchGateToken,
 								launchGeneration,
+								...(workflowProcessBody && {
+									processLifecycle: {
+										mode: "initial" as const,
+										generation: workflowProcessBody.generation,
+										expectedModel: workflowRuntime.model,
+										retirementApproved: () => {
+											const current = store.getWorkflowExecutionProcessBody(
+												generalizedSelection!.executionId,
+											);
+											return isWorkflowProcessRetirementApproved(
+												current,
+												workflowProcessBody.generation,
+											);
+										},
+										retirementRequestedAt: () => {
+											const current = store.getWorkflowExecutionProcessBody(
+												generalizedSelection!.executionId,
+											);
+											return current?.generation ===
+												workflowProcessBody.generation &&
+												current.state === "retiring"
+												? (current.retirement_requested_at ?? undefined)
+												: undefined;
+										},
+										onRetired: (evidence: {
+											generation: number;
+											reasonCode: "process_tree_gone";
+											retiredAt: string;
+										}) => {
+											const retired = store.confirmWorkflowExecutionStandby({
+												executionId: generalizedSelection!.executionId,
+												generation: evidence.generation,
+												reasonCode: evidence.reasonCode,
+												now: evidence.retiredAt,
+											});
+											if (!retired.ok) {
+												throw new Error(
+													`engine_process_retirement_${retired.reason}`,
+												);
+											}
+										},
+										onRetirementFailed: (evidence) => {
+											const failed = store.failWorkflowExecutionRetirement({
+												executionId: generalizedSelection!.executionId,
+												generation: evidence.generation,
+												reasonCode: evidence.reasonCode,
+												now: evidence.failedAt,
+											});
+											if (!failed.ok) {
+												throw new Error(
+													`engine_process_retirement_failure_${failed.reason}`,
+												);
+											}
+										},
+									},
+								}),
 								commitWorkflowLaunch,
 								...(prepareWorkflowIssueDelivery && {
 									prepareWorkflowIssueDelivery,

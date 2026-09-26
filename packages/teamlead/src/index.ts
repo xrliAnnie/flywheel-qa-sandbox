@@ -12,6 +12,7 @@ import { runBoundedShutdown } from "./bridge/bounded-shutdown.js";
 import { EventFilter } from "./bridge/EventFilter.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
+import { installLinearTransportRejectionGuard } from "./bridge/linear-transport-rejection-guard.js";
 import { startBridge } from "./bridge/plugin.js";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
@@ -144,6 +145,8 @@ async function main() {
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 }
+
+installLinearTransportRejectionGuard();
 
 main().catch((err) => {
 	console.error("[Bridge] Fatal:", err);

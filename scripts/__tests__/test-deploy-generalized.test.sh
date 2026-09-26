@@ -214,7 +214,7 @@ assert_eq "${contract_render_count:-0}" '1' \
 generalized_bridge_launch="$(awk '
 	/^if \[\[ "\$GENERALIZED" == "1" \]\]; then$/ { block=$0 ORS; capture=1; next }
 	capture { block=block $0 ORS }
-	capture && /^elif \[\[ "\$\{TEST_REPLY_BY_ISSUE:-0\}" == "1" \]\]; then$/ {
+	capture && /^elif \[\[ -n "\$TEST_TEAMLEAD_API_TOKEN" \]\]; then$/ {
 		selected=block; capture=0
 	}
 	END { printf "%s", selected }
@@ -237,10 +237,10 @@ assert_contains "$test_deploy_source" \
 assert_contains "$test_deploy_source" \
 	'"FLYWHEEL_STATE_DIR=${state}"' \
 	'QA Lead manifest pins the slot-local state directory'
-assert_contains "$test_deploy_source" \
+assert_contains "$qa_generalized_source" \
 	'([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]' \
 	'generalized code-menu readiness follows stable backend node ids'
-if [[ "$test_deploy_source" == *'["design","implement","qa"]'* ]]; then
+if [[ "$qa_generalized_source" == *'["design","implement","qa"]'* ]]; then
 	echo 'FAIL: generalized code-menu readiness still asserts retired role names' >&2
 	failures=$((failures + 1))
 else
@@ -508,6 +508,15 @@ assert_contains "$test_deploy_source" \
 assert_contains "$test_deploy_source" \
 	'qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" "$QA_CONFIG_RUNNER"' \
 	'529 deploy forwards the selected runner into the generated project config'
+assert_contains "$test_deploy_source" \
+	"printf '%s: [generic]\\n' \"\$AGENT_ID\"" \
+	'standalone test-discipline rooms adopt the generic menu so node overrides are load-bearing'
+assert_contains "$test_deploy_source" \
+	'--required-binding generic=tpl_generic_menu' \
+	'standalone test-discipline readiness verifies the generic menu binding'
+assert_contains "$test_deploy_source" \
+	'standalone test-discipline readiness: generic menu + exact built head' \
+	'standalone test-discipline readiness proves the menu-backed dispatch surface'
 
 retired_workflow_env_names=(
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES
@@ -789,6 +798,31 @@ fi
 assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
 	'actorOutcome:' \
 	'step 7 evidence distinguishes original-body wake from replacement completion'
+step2_contract="$(sed -n '/const design = await waitFor(/,/const implement1 = await waitFor/p' \
+	"$ROOT/scripts/qa-529-generalized-e2e.mjs")"
+assert_contains "$step2_contract" \
+	'classifyDesignCompletion({' \
+	'step 2 uses the lifecycle-aware design completion contract'
+assert_contains "$step2_contract" \
+	"AND node_id IN ('implement', 'qa')" \
+	'step 2 waits for both downstream actors to be dispatched'
+assert_contains "$step2_contract" \
+	'AND attempt = 1' \
+	'step 2 binds downstream dispatch to the first workflow attempt'
+assert_contains "$step2_contract" \
+ 'standbyResumeEnabled: nodeStandbyResumeEnabledAtStart' \
+ 'step 2 binds its contract to the effective run-start standby flag'
+step4_contract="$(sed -n '/const parked1 = await waitFor(/,/implementExecutionId = parked1.node.execution_id/p' \
+	"$ROOT/scripts/qa-529-generalized-e2e.mjs")"
+assert_contains "$step4_contract" \
+	'classifyImplementPark({' \
+	'step 4 uses the lifecycle-aware implement park contract'
+assert_contains "$step4_contract" \
+	'nodeStandbyResumeEnabledAtStart' \
+	'step 4 binds its contract to the effective run-start standby flag'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'resolveScopedBooleanFlag(' \
+	'the driver resolves the effective scoped standby flag from canonical policy'
 if rg -q '"if-match"' "$ROOT/scripts/qa-529-generalized-e2e.mjs"; then
 	echo 'FAIL: driver claims unsupported GitHub If-Match write authority' >&2
 	failures=$((failures + 1))

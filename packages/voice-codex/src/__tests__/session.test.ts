@@ -67,6 +67,7 @@ function fixture(options?: {
 		})),
 		playSpeech: vi.fn(options?.playSpeech ?? (async () => {})),
 		cancelSpeech: vi.fn(),
+		cancelAllSpeech: vi.fn(),
 		status: vi.fn(async () => {}),
 		stop: vi.fn(async () => {}),
 		setWaiting: vi.fn(),
@@ -238,6 +239,28 @@ describe("GenericVoiceSession", () => {
 		});
 		// FLY-2796 founder ruling (2026-09-24 23:44 PDT): no waiting sound.
 		expect(test.room.setWaiting).not.toHaveBeenCalled();
+	});
+
+	it("uses founder audio to cancel active Codex output once before forwarding the frame", async () => {
+		const test = fixture();
+		await test.session.start();
+		await test.session.markLive();
+		const owner = {
+			utteranceId: "founder-turn",
+			ownerUserId: "founder",
+			ownerName: "Annie",
+		};
+		const pcm = Buffer.alloc(960);
+
+		test.getFrontendHandlers().onResponseState(true);
+		test.getRoomHandlers().onAudio(pcm, owner);
+		test.getRoomHandlers().onAudio(pcm, owner);
+
+		expect(test.frontend.cancelSpeech).toHaveBeenCalledOnce();
+		expect(test.frontend.cancelSpeech).toHaveBeenCalledWith("__conversation__");
+		expect(test.room.cancelAllSpeech).toHaveBeenCalledOnce();
+		expect(test.room.cancelSpeech).not.toHaveBeenCalled();
+		expect(test.frontend.appendAudio).toHaveBeenCalledTimes(2);
 	});
 
 	it("confirms a reply only after validated audio finishes paced playback", async () => {

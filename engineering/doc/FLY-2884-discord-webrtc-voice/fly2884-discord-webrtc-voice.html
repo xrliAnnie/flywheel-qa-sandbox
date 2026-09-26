@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discord 语音接订阅实测</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;--greenbg:#eefaf1;--amberbg:#fff7e8;--redbg:#fff1f0;--bluebg:#eef5ff}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px;color:var(--navy)}
+h2{font-size:19px;margin:0 0 6px;color:var(--navy)}
+h3{font-size:15px;margin:14px 0 6px}
+.sub{color:var(--dim);font-size:13px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin:16px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card p{margin:6px 0}
+ul{padding-left:20px;margin:6px 0}
+li{margin:3px 0}
+.num{display:inline-block;min-width:26px;height:26px;border-radius:13px;background:var(--navy);color:#fff;font-size:13px;text-align:center;line-height:26px;margin-right:8px;vertical-align:2px}
+.badge{display:inline-block;font-size:12px;line-height:1;padding:4px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.ok{background:var(--greenbg);color:#1e7d32}.mid{background:var(--amberbg);color:#a35a00}.no{background:var(--redbg);color:#c4271d}.info{background:var(--bluebg);color:#0a57c2}
+code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px}
+.path{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--dim);word-break:break-all}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th,.tbl td{text-align:left;vertical-align:top;padding:7px 6px;border-top:1px solid var(--line)}
+.tbl th{font-size:12px;color:var(--dim);font-weight:600;border-top:none;white-space:nowrap}
+.tbl td.n{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.tbl tr.mean td{font-weight:700;background:#fafafc}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 10px;color:#3a3a3c;margin:8px 0}
+.timeline{list-style:none;padding:0;margin:8px 0}
+.timeline li{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}
+.timeline li:first-child{border-top:none}
+.timeline .t{flex:0 0 64px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);padding-top:2px}
+.who-u{color:var(--blue);font-weight:600}.who-b{color:var(--purple);font-weight:600}.who-s{color:var(--dim);font-weight:600}
+.diagram{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px;margin:12px 0;overflow-x:auto}
+.diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}
+pre{background:#f7f7f9;border-radius:8px;padding:10px 12px;overflow-x:auto;font-size:12px;line-height:1.5;margin:8px 0}
+.comment-box{margin-top:16px;padding-top:12px;border-top:1px dashed var(--line)}
+.comment-box label{font-size:13px;color:var(--dim);display:block;margin-bottom:6px}
+.comment-box textarea{width:100%;min-height:60px;border:1px solid #d2d2d7;border-radius:8px;padding:10px;font-family:inherit;font-size:14px;resize:vertical;background:#fbfbfd;color:var(--text)}
+.comment-box textarea:focus{outline:none;border-color:var(--blue)}
+.sum-item{padding:8px 0;border-top:1px solid var(--line);white-space:pre-wrap}
+.sum-item:first-child{border-top:none}
+.sum-item .sec{color:var(--navy);font-weight:600;margin-right:4px}
+.empty-note{color:var(--dim)}
+button#copy-all{margin-top:10px;background:var(--navy);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer}
+#copy-status{margin-left:10px;font-size:13px;color:var(--dim)}
+.foot{margin-top:28px;font-size:12.5px;color:var(--dim)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.kpi{background:#fafafc;border-radius:10px;padding:10px}
+.kpi .v{font-size:20px;font-weight:700;color:var(--navy)}
+.kpi .l{font-size:12px;color:var(--dim)}
+@media (max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.tbl{font-size:13px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>语音 B 闸门：Discord 真人说话接 WebRTC 订阅会话，实测</h1>
+  <div class="sub">FLY-2884 · 2026-09-25 · 测试语音房 voice-test-3 · 7 场（6 场替身 + 1 场 founder 真人）· 全程 ChatGPT 订阅（school 号），没有 API key</div>
+
+  <div class="card navy" data-section="结论">
+    <h2>结论</h2>
+    <p><b>连接层过闸。</b>把第五版那条 WebRTC 订阅会话接进 Discord 语音房，<b>两个方向都是 Opus 原样转交，一个包都没重新编码</b>；听得懂、答得快、10 分钟不断、后台只读回合在 Discord 里也走通了。</p>
+    <div class="kpis">
+      <div class="kpi"><div class="v">1.58 s</div><div class="l">说完→在房里听到回答（5 次均值）</div></div>
+      <div class="kpi"><div class="v">0.98 s</div><div class="l">同上，只算我们程序这一端（5 次均值）</div></div>
+      <div class="kpi"><div class="v">10 / 10</div><div class="l">插话都能打断；但约 1.2 秒才生效，按 1.5 秒判据只 3/10 达标</div></div>
+      <div class="kpi"><div class="v">597.6 s</div><div class="l">10 分钟场连续在线，零断线</div></div>
+    </div>
+    <p style="margin-top:12px">要带进「核心」单的三个问题（都不是连接层的问题）：</p>
+    <ul>
+      <li><b>插话慢、且 4/10 次会「先把刚才那句说完」</b>：服务端要听清你第一个字才判定插话（平均 1.16 秒），判定后有 4 次它先把旧内容说完才回答新问题。</li>
+      <li><b>远处有人说话会被当成在跟它说</b>：风扇、键盘各 60 秒零误触发；远处人声 60 秒触发 1 次，它还认真回答了。</li>
+      <li><b>它会自己决定把问题交给后台</b>：「今天穿什么颜色」「详细讲讲怎么养绿萝」都被它交给后台去查，于是先说一句「我看看」再答。好处是不瞎编，代价是这些问题慢一拍、还会占后台额度。</li>
+    </ul>
+    <p><b>founder 真人场</b>（约 2 分钟）：你 6 句话它都听懂并接上了，程序端说完→开口均 1.2 秒；但它先夸口「能控制电脑」、查过才改口道歉，还不知道自己在 Discord 里——这是「大脑」层的事，下一张单要管。</p>
+    <p>额度：实时语音按<b>音频时长</b>计量（10 分钟场服务端记 585 秒），每场前后周额度读数都没动（&lt;1%，而且账号是所有 Codex Lead 共用的，这是上界）。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c0" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card blue" data-section="怎么接的">
+    <h2><span class="num">1</span>怎么接的</h2>
+    <p>一个 Node 进程同时做三件事：以测试 bot（flywheel-test-3）身份进 Discord 语音房；和 Codex 内核开同一条 WebRTC 实时会话（参数与 CLI <code>/voice</code> 相同）；在两边之间搬运 Opus 包。另一个测试 bot（flywheel-test-1）扮演「说话的人」：播放 macOS 合成的中文语音，同时录下它在房里听到的回答。</p>
+    <div class="diagram">
+      <svg viewBox="0 0 720 210" width="720" role="img" aria-label="数据流">
+        <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1a365d"/></marker></defs>
+        <rect x="10" y="60" width="150" height="90" rx="10" fill="#eef5ff" stroke="#007aff"/>
+        <text x="85" y="92" text-anchor="middle" font-size="13" font-weight="600" fill="#1d1d1f">Discord 语音房</text>
+        <text x="85" y="112" text-anchor="middle" font-size="11.5" fill="#3a3a3c">说话的人 / founder</text>
+        <text x="85" y="130" text-anchor="middle" font-size="11.5" fill="#3a3a3c">DAVE 端到端加密 v1</text>
+        <rect x="265" y="40" width="190" height="130" rx="10" fill="#f7efff" stroke="#af52de"/>
+        <text x="360" y="70" text-anchor="middle" font-size="13" font-weight="600" fill="#1d1d1f">我们的 Node 进程</text>
+        <text x="360" y="92" text-anchor="middle" font-size="11.5" fill="#3a3a3c">上行：20ms 时钟，有包发包</text>
+        <text x="360" y="109" text-anchor="middle" font-size="11.5" fill="#3a3a3c">没包补一个静音帧</text>
+        <text x="360" y="126" text-anchor="middle" font-size="11.5" fill="#3a3a3c">下行：RTP 负载直接推进房</text>
+        <text x="360" y="148" text-anchor="middle" font-size="11.5" fill="#a35a00">两方向都不重新编码</text>
+        <rect x="560" y="60" width="150" height="90" rx="10" fill="#eefaf1" stroke="#34c759"/>
+        <text x="635" y="92" text-anchor="middle" font-size="13" font-weight="600" fill="#1d1d1f">实时语音模型</text>
+        <text x="635" y="112" text-anchor="middle" font-size="11.5" fill="#3a3a3c">经 Codex 内核开会话</text>
+        <text x="635" y="130" text-anchor="middle" font-size="11.5" fill="#1e7d32">ChatGPT 订阅</text>
+        <line x1="160" y1="88" x2="263" y2="88" stroke="#1a365d" stroke-width="2" marker-end="url(#a)"/>
+        <text x="212" y="80" text-anchor="middle" font-size="11" fill="#1a365d">Opus</text>
+        <line x1="263" y1="122" x2="160" y2="122" stroke="#1a365d" stroke-width="2" marker-end="url(#a)"/>
+        <text x="212" y="140" text-anchor="middle" font-size="11" fill="#1a365d">Opus</text>
+        <line x1="455" y1="88" x2="558" y2="88" stroke="#1a365d" stroke-width="2" marker-end="url(#a)"/>
+        <text x="507" y="80" text-anchor="middle" font-size="11" fill="#1a365d">RTP</text>
+        <line x1="558" y1="122" x2="455" y2="122" stroke="#1a365d" stroke-width="2" marker-end="url(#a)"/>
+        <text x="507" y="140" text-anchor="middle" font-size="11" fill="#1a365d">RTP</text>
+      </svg>
+    </div>
+    <h3>「直接转交、不重新编码」成立了</h3>
+    <ul>
+      <li>六场共 <b>18,789 个上行语音包、62,197 个下行包，全部是 20ms / 960 样本</b>，没有一个格式不兼容的包（任何一个不兼容就会自动停场，从没触发）。</li>
+      <li>Discord 那边收发都是 DAVE 端到端加密 v1，库在加密层之下给出的就是纯 Opus，直接能当 WebRTC 的负载用；反方向同理。</li>
+      <li>唯一用到编码器的地方：启动时编码<b>一个</b> 20ms 静音帧，用来在你不说话时填空，保证上行时间轴连续。人声本身一次都没重编码。</li>
+      <li>先做了一次零额度的回环：不接模型，把收到的包原样放回房里，Discord 往返约 225 毫秒。</li>
+    </ul>
+    <p class="sub">第 2 场后改过一次上行缓冲策略（积压时追赶发送、超过 10 包才丢；起步缓冲 60ms），原因是第 2 场丢了 17 个包。之后各场丢包为 0（第 3 场有一次突发，丢 7 个）。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c1" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="说完到开口">
+    <h2><span class="num">2</span>说完 → 开口：5 次均值 1.58 秒（房里听到）</h2>
+    <p>两个口径，都在各自进程里用同一个时钟算，不跨进程相减：<b>房内</b> = 「说话的人」最后一个有声帧发出 → 它在房里听到模型第一个有声帧；<b>程序端</b> = 我们进程收到你最后一个有声帧 → 模型第一个有声帧到达我们进程。</p>
+    <div class="scroll"><table class="tbl">
+      <tr><th>#</th><th>问题（合成语音）</th><th>服务端听到的</th><th>回答</th><th>程序端</th><th>房内</th></tr>
+      <tr><td>1</td><td>你好，一加一等于几？</td><td>你好,一加一等于 几?</td><td>你好!一加一等于二呀!</td><td class="n">864 ms</td><td class="n">1434 ms</td></tr>
+      <tr><td>2</td><td>今天适合穿什么颜色的衣服？一句话回答。</td><td>今天适合穿什么颜色的衣服?一句话回答</td><td>我看看今天的天气和氛围哈。浅蓝色吧,清爽又好搭配。<span class="badge mid">交给了后台</span></td><td class="n">1337 ms</td><td class="n">2159 ms</td></tr>
+      <tr><td>3</td><td>用一句话告诉我，猫为什么喜欢晒太阳。</td><td>用一句话告诉我,猫为什么喜欢晒 太阳?</td><td>因为晒太阳能让它们暖和放松,还省力气。</td><td class="n">859 ms</td><td class="n">1383 ms</td></tr>
+      <tr><td>4</td><td>北京是哪个国家的首都？</td><td>北京<b>市</b>哪个国家的 首都</td><td>中国的首都。</td><td class="n">751 ms</td><td class="n">1307 ms</td></tr>
+      <tr><td>5</td><td>给我说一个三个字的词语。</td><td>给我说一个三个字的词语</td><td>慢慢来。</td><td class="n">1113 ms</td><td class="n">1593 ms</td></tr>
+      <tr class="mean"><td></td><td>均值（第 2 场）</td><td></td><td></td><td class="n">985 ms</td><td class="n">1575 ms</td></tr>
+    </table></div>
+    <p>补充样本（第 6 场，10 分钟里 8 次，另算）：程序端均值 986 ms，房内均值 1475 ms；冒烟场 1 次：1010 / 1520 ms；风扇底噪下 2 次（房内）：1005 / 1657 ms。</p>
+    <p>房内比程序端多出来的约 0.5–0.6 秒，是两段 Discord 传输（说话人 → 我们、我们 → 听的人，各约 0.1 秒）加上我们两侧的小缓冲（上行起步 60ms、下行常驻 3–4 包 ≈ 70ms），以及服务端判定「你说完了」的等待。</p>
+    <p>「说完 → 听到结果」里模型自己「先应一声」的习惯很明显：需要查的问题它会先说「我看看……」，所以你总是在 1.3–2.2 秒内听到声音，即使答案还没好。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c2" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="插话">
+    <h2><span class="num">3</span>插话：10/10 能打断，但平均要 1.16 秒，且 4/10 会先把旧内容说完</h2>
+    <p>做法：让它长篇回答，确认房里正在连续播放它的回答（≥1 秒、300ms 内仍有声）才开口插话「停一下，换个问题：X 加 X 等于几？」。回答已经自然停了的尝试作废补做。两场共 10 次有效（第 3 场 4 次，第 5 场 6 次）。</p>
+    <div class="scroll"><table class="tbl">
+      <tr><th>#</th><th>它正在说</th><th>插话</th><th>判定用时*</th><th>之后</th></tr>
+      <tr><td>1</td><td>…绿萝喜欢明亮但散射的光线...</td><td>停一下，二加二？</td><td class="n">1163 ms</td><td><span class="badge ok">直接答</span> 等于四!</td></tr>
+      <tr><td>2</td><td>…给你整理成五个方面，每点都展开讲讲。</td><td>等等，三加三？</td><td class="n">1198 ms</td><td><span class="badge ok">直接答</span> 等于六!</td></tr>
+      <tr><td>3</td><td>…气温回升但不稳定。风会变得柔和,</td><td>打断一下，四加四？</td><td class="n">1383 ms</td><td><span class="badge mid">先说完旧的</span> 雨水开始增多……四加四等于八!</td></tr>
+      <tr><td>4</td><td>…空气变得湿润,树木发芽、</td><td>停，五加五？</td><td class="n">599 ms</td><td><span class="badge mid">先说完旧的</span> 花朵陆续开放……五加五等于十!</td></tr>
+      <tr><td>5</td><td>好的,小蓉,我开始慢慢数啦:一,</td><td>停一下，二加二？</td><td class="n">1251 ms</td><td><span class="badge ok">直接答</span> 等于四!</td></tr>
+      <tr><td>6</td><td>…住着一只爱收集星光的小狐狸</td><td>等等，三加三？</td><td class="n">1423 ms</td><td><span class="badge ok">直接答</span> 等于六。</td></tr>
+      <tr><td>7</td><td>一月,新年伊始……很多</td><td>打断一下，四加四？</td><td class="n">1370 ms</td><td><span class="badge mid">先说完旧的</span> 人会在这时候立下愿望……四加四等于八!</td></tr>
+      <tr><td>8</td><td>…住着一只跑得飞快的小兔子,和一只...</td><td>停，五加五？</td><td class="n">651 ms</td><td><span class="badge ok">直接答</span> 等于十!</td></tr>
+      <tr><td>9</td><td>星期一,像把新的一页日历轻轻翻开……</td><td>好了好了，六加六？</td><td class="n">1337 ms</td><td><span class="badge ok">直接答</span> 嗯哼,马上停,六加六等于十二。</td></tr>
+      <tr><td>10</td><td>…清晨的雾还没散,</td><td>停一下，七加七？</td><td class="n">1184 ms</td><td><span class="badge mid">先说完旧的</span> 水面像镜子一样……好,先停这儿。七加七等于十四!</td></tr>
+      <tr class="mean"><td></td><td>合计</td><td></td><td class="n">均 1156 ms</td><td>直接答 6 / 先说完旧的 4（这 4 次最后也都答了新问题）</td></tr>
+    </table></div>
+    <p class="sub">* 判定用时 = 插话的声音到达我们进程 → 服务端发来「用户开口」事件（同时截断旧回答）。房里听的人感受到的还要加上两段 Discord 传输和下行缓冲，约 +0.3 秒，也就是 <b>约 1.2–1.7 秒后旧声音才停</b>。</p>
+    <ul>
+      <li><b>慢在服务端，不在连接层</b>：我们这边的缓冲总共约 140ms。服务端事件里新一轮用户发言总是带着第一个识别出的字（「听」「打」「停」），说明它要等识别出一个字才判定插话——对咳嗽、嗯啊比较稳，但就是慢。</li>
+      <li><b>按预先定的判据（房内 1.5 秒内停下 且 直接答新问题），通过 3/10</b>（#1、#2、#8：直接答，且判定用时 + 约 0.3 秒传输 ≤ 1.5 秒）。这是估算：房内纯音频的「停下时刻」被自然停顿和紧跟着开始的新回答干扰，直接量不干净，所以用服务端事件口径 + 内容结果；原始逐帧数据都在证据里。若只问「能不能打断」：10/10。</li>
+      <li>「先说完旧的」是模型行为：服务端确实截断了（事件里旧回答在你开口约 0.2 秒处被截断），但它下一轮选择把刚才那句接着说完，再回答你。要改只能靠提示词（核心·大脑单）。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c3" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="环境声">
+    <h2><span class="num">4</span>环境声：风扇、键盘 0 次；远处人声 1 次</h2>
+    <div class="scroll"><table class="tbl">
+      <tr><th>刺激（各 60 秒，期间不说话）</th><th>误触发（唯一轮次）</th><th>说明</th></tr>
+      <tr><td>风扇（棕噪声，平均 -26 dB，很吵）</td><td class="n">0</td><td>没有转写、没有回答</td></tr>
+      <tr><td>键盘敲击（短脉冲）</td><td class="n">0</td><td>没有转写、没有回答</td></tr>
+      <tr><td>远处人声（小音量合成对话 + 回声 + 粉噪声）</td><td class="n">1</td><td>整整 60 秒被当成一句话；声音停了 1.7 秒后它回答：「收到啦!下午三点开会,文件我会带上……」</td></tr>
+      <tr><td>风扇底噪上问问题 ×2</td><td>—</td><td>两题都听对、答对（天空为什么蓝 / 推荐一本书），房内延迟 1005 / 1657 ms</td></tr>
+    </table></div>
+    <p>注意：这些声音是 bot 直接播放的，<b>没有经过真人 Discord 客户端的降噪</b>，比真人条件更严。远处人声那一次本质是「分不清是不是在跟它说话」，降噪帮不上忙，要靠「只在被叫到时才回答」这类规则（核心·大脑单）。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c4" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="10 分钟稳定">
+    <h2><span class="num">5</span>连续 10 分钟：零断线、零卡死</h2>
+    <ul>
+      <li>从开会话起算整 600 秒（脚本硬上限），WebRTC 连续在线 <b>597.6 秒</b>，Discord 连接全程 ready，没有任何错误或关闭事件。</li>
+      <li>每 ~62 秒问一题，<b>9 题全部回答</b>（含 1 次读文件的后台回合、2 次它自己交给后台的问题）。</li>
+      <li>下行 29,616 个包，最长包间隔 429ms（判据是不超过 2 秒），丢 11 个、乱序 8 个；我们两侧队列最深 7 / 10 包，没有持续积压。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c5" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="后台只读回合">
+    <h2><span class="num">6</span>后台只读回合在 Discord 里走通了</h2>
+    <p>和第五版同一件小事：读 <code>hello.txt</code> 第一行（内容是 <code>hello from fly2884 discord</code>）。第 6 场实测（程序端时钟）：</p>
+    <ul class="timeline">
+      <li><span class="t">0.0 s</span><span><span class="who-u">说话的人</span> 请读取 hello.txt 这个文件的第一行，告诉我写了什么。（说完）</span></li>
+      <li><span class="t">+1.1 s</span><span><span class="who-b">它</span> 「我来读一下第一行，稍等。」同时把事情交给后台</span></li>
+      <li><span class="t">+6.4 s</span><span><span class="who-s">后台</span> 只读回合完成（5.6 秒）：第一行写的是：hello from fly2884 discord</span></li>
+      <li><span class="t">+7.1 s</span><span><span class="who-b">它</span> 「第一行写的是：hello from fly2884 discord。」（交回后 0.65 秒开口）</span></li>
+    </ul>
+    <p>第 2 场这一步没成：模型先把「今天穿什么颜色」交给了后台（它想查天气），用掉了我设的「每场 1 次后台」保险，之后读文件那次被保险中断。第 6 场起放宽到每场 3 次就走通了。第 6 场 10 分钟里一共 3 次后台回合（读文件 5.6 秒；穿衣颜色 2.1 秒；绿萝长文 27.6 秒）。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c6" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card blue" data-section="额度">
+    <h2><span class="num">7</span>一场用多少额度</h2>
+    <p>每场开始前、结束后各读一次订阅额度（<code>account/rateLimits/read</code>，只读、不登录）。school 号是所有 Codex Lead 共用的，所以差值是<b>上界</b>。</p>
+    <div class="scroll"><table class="tbl">
+      <tr><th>场次</th><th>时长</th><th>前</th><th>后</th><th>服务端记的音频时长</th></tr>
+      <tr><td>设计评审 3 轮（medium · gpt-5.6-sol，<b>不合规</b>，见下）</td><td>约 6 分钟</td><td class="n">31%</td><td class="n">31%</td><td>—（三轮累计约 9.4 万 token）</td></tr>
+      <tr><td>正式设计评审 2 轮（xhigh · gpt-6-astra）</td><td>约 5 分钟</td><td class="n">34%</td><td class="n">34%</td><td>—（两轮累计约 11 万 token）</td></tr>
+      <tr><td>1 冒烟</td><td>13 s</td><td class="n">32%</td><td class="n">32%</td><td>—</td></tr>
+      <tr><td>2 延迟 ×5</td><td>70 s</td><td class="n">32%</td><td class="n">32%</td><td class="n">—</td></tr>
+      <tr><td>3 插话</td><td>160 s</td><td class="n">32%</td><td class="n">32%</td><td>—</td></tr>
+      <tr><td>4 环境声</td><td>246 s</td><td class="n">33%</td><td class="n">33%</td><td>—</td></tr>
+      <tr><td>5 插话补测</td><td>190 s</td><td class="n">33%</td><td class="n">33%</td><td>—</td></tr>
+      <tr><td>6 十分钟</td><td>598 s</td><td class="n">33%</td><td class="n">33%</td><td class="n">585,000 ms</td></tr>
+      <tr><td>7 founder 真人场</td><td>128 s</td><td class="n">33%</td><td class="n">35%</td><td class="n">121,800 ms</td></tr>
+    </table></div>
+    <ul>
+      <li>周窗口（7 天）整数百分比，<b>替身 6 场每一场前后都没动</b> ⇒ 单场 &lt;1% 周额度；这期间两次 +1% 都发生在场与场之间，是其他 Lead 的消耗。founder 场前后 33%→35%，但「前」是她进房前 36 分钟读的，中间还夹着我补做的正式设计评审（34%），所以这 2% 不能算在这一场头上。</li>
+      <li>更细的读数来自会话自己：数据通道每 15 秒推一次 <code>session.usage.updated</code>，只有 <code>audio_duration_ms</code>（第 6 场 585 秒），<code>backend_model_usage</code> 为空、<code>usage_limit</code> 为 null ⇒ <b>实时语音按音频时长计量</b>。后台回合走普通 Codex 额度，另算。</li>
+      <li><b>设计评审的一个过失</b>：本单设计评审先用了 medium 档、companion 默认模型（gpt-5.6-sol），而常设规矩是 xhigh、且要用门指定的模型；Lead 的更正我读晚了，替身 6 场是在那次不合规评审放行后跑的。事后按规矩补做了正式评审（gpt-6-astra · xhigh）：第 1 轮提出 2 条 HIGH、3 条 MEDIUM，其中 4 条是计划文字与实际代码不一致或定义口径问题（已按实际做法改写，结论数字不变），1 条是「bot1 所在的 slot 1 没占锁」——替身场期间确实没占，只有预检和运行中守护，各场未出现冲突；第 2 轮 APPROVED。</li>
+      <li>按天的 token 用量（<code>account/usage/read</code>）当天全程没更新，是延迟汇总，量不了单场。</li>
+      <li>登录文件：每次读数都记了 <code>auth.json</code> 修改时间、账号、上次刷新时间，<b>全程 27 次读数完全一致</b>；没有任何 login / logout；临时目录里只有软链，每场结束只删软链本身。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c7" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="founder 真人场">
+    <h2><span class="num">8</span>founder 真人场：听得懂、答得快；但它会夸口「能控制电脑」</h2>
+    <p>14:56 PDT 你进房，bot 立即开会话（进房前 bot 已在房里等了 36 分钟，没开会话、不耗额度）；你聊了约 2 分钟后离开，10 秒后自动结束。WebRTC 在线 127.6 秒，零断线；你的 Discord 客户端发来的是单声道 Opus（1,871 包），同样原样直转、零格式违规。</p>
+    <ul class="timeline">
+      <li><span class="t">4.7 s</span><span><span class="who-u">你</span> 在吗</span></li>
+      <li><span class="t">7.1 s</span><span><span class="who-b">它</span> 在呢,小蓉!想聊点啥?</span></li>
+      <li><span class="t">10.6 s</span><span><span class="who-u">你</span> 我还算你说话好神奇哦</span></li>
+      <li><span class="t">13.6 s</span><span><span class="who-b">它</span> 嘿嘿,神奇就对啦。想让我干点啥?</span></li>
+      <li><span class="t">17.0 s</span><span><span class="who-u">你</span> 嗯,你能控制这个电脑吗</span></li>
+      <li><span class="t">20.0 s</span><span><span class="who-b">它</span> 能呀,你说怎么弄就行,交给我。 <span class="badge no">夸口</span></span></li>
+      <li><span class="t">23.6 s</span><span><span class="who-u">你</span> 你能打开那个 apple.com 吗</span></li>
+      <li><span class="t">26.2 s</span><span><span class="who-b">它</span> 好嘞,我来打开看看!（交给后台，只读沙盒，14.8 秒）</span></li>
+      <li><span class="t">44.2 s</span><span><span class="who-b">它</span> 哎哟没辙,这边环境起不来浏览器。不过你可以直接点这个链接打开:apple.com</span></li>
+      <li><span class="t">55.7 s</span><span><span class="who-u">你</span> 嗯...我看不到你的链接哦,但是...为什么这个环境开不了浏览器呢?是因为我没有给你足够的权限吗?怎么样给你足够的权限呢</span></li>
+      <li><span class="t">77.9 s</span><span><span class="who-b">它</span> ……所以不是少给权限的问题。我刚才说能直接控你电脑说得太满了,抱歉。你现在是通过哪个应用在跟我说话呀?</span></li>
+      <li><span class="t">80.7 s</span><span><span class="who-u">你</span> Codex CLI</span></li>
+      <li><span class="t">116.2 s</span><span><span class="who-b">它</span> 明白,是 Codex CLI。先纠正一下:这次会话确实是只读、不能提权……你可以在 Mac 上另开一个普通终端试试,输入 open https://www.apple.com</span></li>
+    </ul>
+    <div class="scroll"><table class="tbl">
+      <tr><th>项目</th><th>实测</th></tr>
+      <tr><td>听得懂吗</td><td>你 6 句话它都听懂并作了相应回答（含中英混说「apple.com」「Codex CLI」）；逐字准不准我核对不了——「我还算你说话好神奇哦」这句很可能有错字，以你的记忆为准</td></tr>
+      <tr><td>说完→开口（程序端，7 次）</td><td class="n">1093 / 1143 / 979 / 1448 / 1182 / 1294 / 1262 ms，均 1200 ms</td></tr>
+      <tr><td>你那边听到大约</td><td>程序端 + 约 0.5 秒（替身场实测的房内差值），即约 1.7 秒；这一场没有录音 bot 在房里，所以没有直接的房内数字</td></tr>
+      <tr><td>后台回合</td><td>3 次（打开网页 14.8 s；解释权限 5.0 s；再核实 19.8 s），全部只读完成、口头讲回</td></tr>
+      <tr><td>插话 / 读 hello.txt</td><td>这一场没测到（你没用到），这两项的结论以替身场为准</td></tr>
+      <tr><td>服务端计的音频时长</td><td class="n">121.8 s</td></tr>
+    </table></div>
+    <h3>你测完后的原话（14:59 PDT，FLY-2884 thread，逐字）</h3>
+    <div class="quote">「我去试了一下，感觉挺好的，用起来就跟那个 Codex App 一样的感觉。不过它现在是没有什么权限吗？我刚刚让它开一下浏览器，它也没有办法开。当然，我知道现在是 Prototype，所以无所谓搞那么多，但还是想确定一下我们之后需要开的权限的问题。」</div>
+    <p>权限：原型的后台回合故意开成<b>只读沙盒</b>（和第五版一样），打不开浏览器是预期行为，不算本单缺陷；之后要开哪些权限，Lead 已在 thread 里回答，并记进 FLY-2886。</p>
+    <p>这一场暴露的都是「大脑」层的问题，连接层没有问题：</p>
+    <ul>
+      <li><b>它不知道自己能做什么</b>（能力本身受限是预期，问题在它说错了）：先说「能控制电脑」，查过之后才改口道歉。它甚至问你「是通过哪个应用在跟我说话」——它不知道自己在 Discord 语音房里。接 Lead 时必须把「我在哪、能做什么、不能做什么」写进它的开场说明。</li>
+      <li><b>语音里给不了链接</b>：它说「你可以直接点这个链接」，你回「我看不到你的链接」。语音场景需要一个把链接 / 文字发到对应 thread 的出口。</li>
+      <li>它叫你「小蓉」：名字来自 ChatGPT 账号，不是我们给的。</li>
+    </ul>
+    <p class="sub">你这场的录音按邀请里说的只存本机（<span class="path">~/.flywheel/artifacts/FLY-2884-founder-s7/</span>），不进代码仓库；仓库里只有日志和指标。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c8" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="没做到的与下一步">
+    <h2><span class="num">9</span>没做到的、没证明的、下一步</h2>
+    <ul>
+      <li><b>插话「1.5 秒内停下」只部分达到</b>（在哪一步：服务端判定；为什么：要识别出第一个字才判定，均 1.16 秒 + 传输约 0.3 秒）。下一步：核心·连接层可以在我们这边做「本地先压低音量」——检测到人声就先把正在播的声音淡出，不等服务端；这不改变服务端判定，只改变人听到的。</li>
+      <li><b>4/10 次先说完旧内容</b>（在哪一步：模型下一轮的选择；为什么：它把被打断的回答当成还没说完）。下一步：核心·大脑单的指令里写明「被打断就放弃刚才的话，直接回应新的话」，再测。</li>
+      <li><b>远处人声误触发</b>（1/1）。下一步：核心·大脑单的「只在被叫到 / 明确在跟它说时才回答」规则；连接层可以只转发指定一个人的声音（本原型就是这样），但挡不住同一个麦克风里的背景人声。</li>
+      <li><b>它不清楚自己的能力和所在场合</b>（founder 场：先说能控制电脑，又问「你通过哪个应用跟我说话」）。下一步：核心·大脑单给它写明身份、场合、能做与不能做。</li>
+      <li><b>语音里没法给链接</b>（founder 场：「我看不到你的链接」）。下一步：连接层 / 大脑单加一个「把文字发到对应 thread」的出口。</li>
+      <li><b>多人</b>：原型只转发一个指定的人。多人同时说话要先解码混音再编码，那就不再是「直转」，另议。</li>
+      <li><b>单场额度</b>只能给到「&lt;1% 周额度」这个上界；精确到分钟的计量只有服务端的音频时长。</li>
+      <li><b>Lead 身份、声线、记忆、工具</b>：本单没做（本来就属于后续单）。注意：模型会用 ChatGPT 账号上的名字称呼人（它叫过「小蓉」），接 Lead 时要决定要不要。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c9" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="给核心单的代码片段">
+    <h2><span class="num">10</span>给「核心·连接层」的可复用片段</h2>
+    <p>完整原型在 <span class="path">engineering/doc/FLY-2884-discord-webrtc-voice/evidence/src/</span>（bridge.mjs / speaker.mjs / common.mjs）。三段最有用的：</p>
+    <h3>① 下行：WebRTC 的 Opus 负载直接推进 Discord（不解码）</h3>
+<pre>const downStream = new Readable({ objectMode: true, read() {} });
+player.play(createAudioResource(downStream, { inputType: StreamType.Opus }));
+track.onReceiveRtp.subscribe((rtp) =&gt; {
+  if (opusSamples(rtp.payload) !== 960) return stop("downlink_non960"); // 播放器按 20ms/包 取
+  if (downStream.readableLength &gt; 10) while (downStream.readableLength &gt; 3) downStream.read();
+  downStream.push(Buffer.from(rtp.payload));
+});</pre>
+    <h3>② 上行：20ms 单调时钟，有包发包、没包补预编码静音帧，时间戳按实际样本数走</h3>
+<pre>const SILENCE = Buffer.from(new OpusScript(48000, 2).encode(Buffer.alloc(3840), 960));
+receiver.subscribe(userId, { end: { behavior: EndBehaviorType.Manual } })
+  .on("data", (pkt) =&gt; { queue.push(pkt); while (queue.length &gt; 10) queue.shift(); });
+function tick() {                     // 每 20ms（performance.now 校正漂移）
+  if (idle &amp;&amp; queue.length &gt;= 3) idle = false;          // 起步缓冲 60ms
+  let pkt = !idle &amp;&amp; queue.shift();
+  if (!idle &amp;&amp; queue.length &gt; 3) send(queue.shift());  // 突发积压：本拍多发一包追上
+  send(pkt || SILENCE);
+}
+function send(p) { track.writeRtp(new RtpPacket(new RtpHeader({ payloadType: 111, sequenceNumber: ++seq &amp; 0xffff, timestamp: ts }), p)); ts += opusSamples(p); }</pre>
+    <h3>③ 读 Opus 包时长（不解码，RFC 6716 TOC 字节）</h3>
+<pre>function opusSamples(p) {
+  const c = p[0] &gt;&gt; 3, code = p[0] &amp; 3;
+  const ms = c &lt; 12 ? [10,20,40,60][c &amp; 3] : c &lt; 16 ? [10,20][c &amp; 1] : [2.5,5,10,20][c &amp; 3];
+  const frames = code === 0 ? 1 : code === 3 ? (p[1] &amp; 0x3f) : 2;
+  return Math.round(ms * 48 * frames);
+}</pre>
+    <p>另外两个坑：<code>@discordjs/voice</code> 的 debug 日志里会带语音会话 token 和 DAVE 密钥，只能留 <code>[DAVE]</code> 行并过滤 secret/token/key；播放器默认连续 5 帧没数据就停播，要调大 <code>maxMissedFrames</code>。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c10" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card navy" id="summary-card">
+    <h2>💬 你的评论汇总</h2>
+    <p class="sub">上面每一节的评论会实时汇总到这里（保存在本机浏览器，刷新不丢）。</p>
+    <div id="summary-list"><p class="empty-note">还没有评论。</p></div>
+    <button id="copy-all">复制全部评论</button><span id="copy-status"></span>
+  </div>
+
+  <div class="foot">
+    <p><b>红线核对</b>：共 7 场实时会话（上限 8），每场 ≤10 分钟（脚本从开会话起硬停 600 秒）；没有 login / logout；未改 2799 分支、未改任何产品包；原型在临时目录；测试房 slot 3 锁已登记本单与执行 id。</p>
+    <p><b>证据</b>：<span class="path">engineering/doc/FLY-2884-discord-webrtc-voice/evidence/</span>（每场 bridge.jsonl / speaker.jsonl / metrics-*.json / 逐帧时间线 frames-*.json.gz / 房内录音 room.m4a；额度读数 quota.json；原型源码 src/）。日志已按实际加载的密钥值逐字比对去敏。</p>
+    <p>方法：说话的人是 macOS 合成语音（Tingting）经测试 bot 播放；环境声用 ffmpeg 合成。依赖：discord.js 14.26.4、@discordjs/voice 0.19.2、@snazzah/davey 0.1.12、werift 0.24.4、opusscript 0.0.8；Codex CLI 0.157.0。</p>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var PREFIX = 'fly2884:' + location.pathname + ':comment:';
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(a) { var c = a.closest('.card'); return (c && c.getAttribute('data-section')) || '未命名段落'; }
+  function renderSummary() {
+    var list = document.getElementById('summary-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var any = false;
+    areas.forEach(function (a) {
+      var v = a.value.trim(); if (!v) return; any = true;
+      var item = document.createElement('div'); item.className = 'sum-item';
+      var sec = document.createElement('span'); sec.className = 'sec'; sec.textContent = '【' + sectionTitle(a) + '】';
+      item.appendChild(sec); item.appendChild(document.createTextNode(v)); list.appendChild(item);
+    });
+    if (!any) { var p = document.createElement('p'); p.className = 'empty-note'; p.textContent = '还没有评论。'; list.appendChild(p); }
+  }
+  areas.forEach(function (a) {
+    a.value = lsGet(a.getAttribute('data-key'));
+    a.addEventListener('input', function () { lsSet(a.getAttribute('data-key'), a.value); renderSummary(); });
+  });
+  renderSummary();
+  function fallbackCopy(t) {
+    var ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta); return ok;
+  }
+  function setStatus(m) { var el = document.getElementById('copy-status'); el.textContent = m; setTimeout(function () { el.textContent = ''; }, 3000); }
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var parts = [];
+    areas.forEach(function (a) { var v = a.value.trim(); if (v) parts.push('【' + sectionTitle(a) + '】\n' + v); });
+    if (!parts.length) { setStatus('没有可复制的评论'); return; }
+    var text = 'FLY-2884 语音闸门评论（' + new Date().toLocaleString() + '）\n\n' + parts.join('\n\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setStatus('✅ 已复制'); }, function () { setStatus(fallbackCopy(text) ? '✅ 已复制' : '❌ 复制失败，请手动选择'); });
+    } else { setStatus(fallbackCopy(text) ? '✅ 已复制' : '❌ 复制失败，请手动选择'); }
+  });
+})();
+</script>
+</body>
+</html>

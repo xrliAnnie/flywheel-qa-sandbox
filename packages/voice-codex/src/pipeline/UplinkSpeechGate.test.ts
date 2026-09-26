@@ -620,3 +620,65 @@ describe("UplinkSpeechGate neural gating", () => {
 		);
 	});
 });
+
+describe("UplinkSpeechGate pre-roll (FLY-2798)", () => {
+	// A soft onset: the first 320 ms score 0.3 (below threshold) before the
+	// model is sure. Without pre-roll the gate backfills only its decision
+	// window, so the start of her sentence goes out as silence.
+	async function firstSpeechFrame(prerollMs: number | undefined) {
+		let chunk = 0;
+		const gate = new UplinkSpeechGate({
+			score: vi.fn(async () => ({
+				probability: chunk++ < 10 ? 0.3 : 0.9,
+				next: {},
+			})),
+			initialState: () => ({}),
+			minSpeechMs: 200,
+			threshold: 0.5,
+			now: () => 0,
+			...(prerollMs === undefined ? {} : { prerollMs }),
+		});
+		gate.begin("gated", 0);
+		const speech: number[] = [];
+		for (let index = 0; index < 60; index += 1) {
+			gate.push(sineFrame(index, 220), index * 20, index);
+			await settle();
+			for (const due of gate.takeDue(index * 20))
+				if (due.speech) speech.push(due.metadata as number);
+		}
+		gate.end(1_200);
+		for (const due of gate.takeDue(1_300))
+			if (due.speech) speech.push(due.metadata as number);
+		return {
+			first: speech[0],
+			delayFrames: gate.delayFrames,
+			summary: gate.takeCompleted()[0],
+		};
+	}
+
+	it("backfills the pre-roll ahead of the onset it detects when the gate opens", async () => {
+		const without = await firstSpeechFrame(undefined);
+		const withPreroll = await firstSpeechFrame(200);
+
+		expect(withPreroll.delayFrames).toBe(without.delayFrames + 10);
+		expect(without.first).toBeGreaterThanOrEqual(10);
+		expect(withPreroll.first).toBe((without.first as number) - 10);
+		expect(withPreroll.summary).toMatchObject({ opened: true, prerollMs: 200 });
+		expect(without.summary).toMatchObject({ prerollMs: 0 });
+	});
+
+	it("rejects a negative or oversized pre-roll", () => {
+		const options = {
+			score: vi.fn(),
+			initialState: () => ({}),
+			minSpeechMs: 200,
+			threshold: 0.5,
+		};
+		expect(() => new UplinkSpeechGate({ ...options, prerollMs: -1 })).toThrow(
+			"prerollMs must be an integer between 0 and 1000",
+		);
+		expect(
+			() => new UplinkSpeechGate({ ...options, prerollMs: 1_001 }),
+		).toThrow("prerollMs must be an integer between 0 and 1000");
+	});
+});

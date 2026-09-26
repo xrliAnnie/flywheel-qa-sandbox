@@ -130,6 +130,9 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
 	three_stage_stuck: { owner: "claude", arc: "human_by_design" },
 	three_stage_takeover_failed: { owner: "claude", arc: "human_by_design" },
+	// FLY-2901: success receipt of the shared worktree takeover rescue. Same
+	// owner as the refusal; nothing to remediate, so no ARC by design.
+	worktree_takeover_rescued: { owner: "claude", arc: "human_by_design" },
 	workflow_engine_escalation: {
 		owner: "claude",
 		arc: "human_by_design",
@@ -216,6 +219,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 	},
+	codex_quota_reading_stale: { owner: "claude", arc: "human_by_design" },
 	quota_no_target: { owner: "claude", arc: "human_by_design" },
 	quota_blocked_recovered: { owner: "claude", arc: "human_by_design" },
 	quota_read_blind: { owner: "claude", arc: "human_by_design" },
@@ -331,6 +335,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		arc: "human_by_design",
 	},
 	codex_lead_residency_stalled: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
+	// FLY-2903: the sweep already stopped/reaped what it could prove; whatever
+	// remains is unprovable by design and needs a human look.
+	codex_terminal_body_alive: {
 		owner: "claude",
 		arc: "human_by_design",
 	},

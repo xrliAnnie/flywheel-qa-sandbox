@@ -1,0 +1,10 @@
+{
+	"issue": "FLY-2860",
+	"note": "dist outputs of the retired converse backend, POC talk rotator and resident brain; tsc never removes them, so the build does (scripts/lib/remove-retired-dist.mjs).",
+	"stems": [
+		"TalkSessionRotator",
+		"brain/ResidentBrainManager",
+		"brain/ResidentClaudeBrain"
+	],
+	"dirs": ["backends/gemini"]
+}

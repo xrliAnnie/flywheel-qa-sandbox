@@ -1,0 +1,16 @@
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'-apple-system, system-ui, sans-serif','primaryColor':'#edf5ff','primaryTextColor':'#1d1d1f','primaryBorderColor':'#007aff','lineColor':'#86868b','secondaryColor':'#fff3df','tertiaryColor':'#ffffff'}}}%%
+stateDiagram-v2
+ direction LR
+ state "在干活" as active
+ state "释放进程" as retiring
+ state "退下待命" as standby
+ state "核对并拉起" as resuming
+ state "恢复出问题" as failed
+ state "明确重新开始" as fallback
+ active --> retiring: 阶段完成已确认
+ retiring --> standby: 后台进程也已退出
+ standby --> resuming: 被打回或需继续
+ resuming --> active: 原对话与权限核对通过
+ resuming --> failed: 无法确认或超时
+ failed --> fallback: 满足安全条件
+ fallback --> active: 保留节点，标明丢上下文
