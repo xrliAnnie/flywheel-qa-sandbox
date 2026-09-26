@@ -141,6 +141,8 @@ export interface CodexVoiceBackendOptions {
 	confirmTimeoutMs?: number;
 	allowSpokenParaphrase?: boolean;
 	backgroundEnabled?: boolean;
+	/** The session founder; only her words can answer a repeat confirmation. */
+	founderUserId?: string;
 }
 
 /** One assistant item's playback, fed while its audio is still arriving. */
@@ -651,10 +653,13 @@ class CodexVoiceSession implements ConversationSession {
 					: undefined;
 			if (
 				this.options.backgroundEnabled &&
-				utterance.attribution.kind === "known"
+				this.options.founderUserId &&
+				utterance.attribution.kind === "known" &&
+				utterance.attribution.speakerUserId === this.options.founderUserId
 			) {
 				try {
-					// Only her attributed words can answer a repeat confirmation.
+					// Only her attributed words (not an allowlisted QA speaker) can
+					// answer a repeat confirmation.
 					this.options.conversation.observeFounderUtterance?.(utterance.text);
 				} catch (error) {
 					this.options.onEvidence?.({

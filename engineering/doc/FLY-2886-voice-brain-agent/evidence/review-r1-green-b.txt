@@ -1,0 +1,6 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/voice-codex
+ ✓ src/__tests__/codex-repeat-confirmation.test.ts (5 tests) 6ms
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  03:31:36
+   Duration  1.41s (transform 573ms, setup 0ms, collect 979ms, tests 6ms, environment 0ms, prepare 86ms)

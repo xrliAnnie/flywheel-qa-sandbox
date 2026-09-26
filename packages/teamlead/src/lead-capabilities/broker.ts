@@ -217,6 +217,15 @@ export class LeadCapabilityBroker {
 			return reject("unclassified_write");
 		const handler = this.handlers.get(operation.handlerKey!);
 		if (!handler) return reject("handler_unavailable");
+		let targetLocks: LeadTargetLockClient | undefined;
+		try {
+			targetLocks =
+				this.options.targetLocks?.participates?.() === false
+					? undefined
+					: this.options.targetLocks;
+		} catch {
+			return reject("activation_not_current");
+		}
 		let delivery: { id: string; assertCurrent(): void } | undefined;
 		try {
 			delivery = this.options.deliveryContext?.();
@@ -333,9 +342,9 @@ export class LeadCapabilityBroker {
 				if (!controller.signal.aborted && !this.closed) throw error;
 			}
 			terminalEvidenceRecorded = true;
-			if (!targetFence || !this.options.targetLocks || targetReleased) return;
+			if (!targetFence || !targetLocks || targetReleased) return;
 			try {
-				await this.options.targetLocks.release({
+				await targetLocks.release({
 					...targetInput(),
 					fence: targetFence,
 					outcome: proof.status,
@@ -351,7 +360,7 @@ export class LeadCapabilityBroker {
 		};
 
 		const associateDelivery = () => {
-			if (!delivery || this.options.targetLocks?.actor !== "voice") return;
+			if (!delivery || targetLocks?.actor !== "voice") return;
 			this.options.receipts.associateDelivery({
 				projectName: context.projectName,
 				leadId: context.leadId,
@@ -378,7 +387,7 @@ export class LeadCapabilityBroker {
 			}
 			await context.assertCurrent();
 			if (operation.classification === "write") {
-				if (handler.resolveTargetKey && this.options.targetLocks) {
+				if (handler.resolveTargetKey && targetLocks) {
 					const normalized = await handler.resolveTargetKey(input, context);
 					if (!/^[A-Za-z0-9_.:#/-]{1,400}$/.test(normalized))
 						throw new BrokerFailure("target_not_authorized");
@@ -448,17 +457,17 @@ export class LeadCapabilityBroker {
 				if (receipt.disposition !== "prepared")
 					return this.replay(receipt.receipt, request.requestId);
 				prepared = true;
-				if (targetKey && this.options.targetLocks) {
+				if (targetKey && targetLocks) {
 					for (;;) {
 						await context.assertCurrent();
-						const lock = await this.options.targetLocks.acquire({
+						const lock = await targetLocks.acquire({
 							...targetInput(),
 							deadline,
 							signal: context.signal,
 						});
 						if (
 							lock.status === "unguarded" &&
-							this.options.targetLocks.actor === "resident"
+							targetLocks.actor === "resident"
 						) {
 							waitingForTarget = false;
 							break;
@@ -491,8 +500,8 @@ export class LeadCapabilityBroker {
 					to: "dispatched",
 				});
 				dispatched = true;
-				if (targetFence && this.options.targetLocks) {
-					const marked = await this.options.targetLocks.markDispatched({
+				if (targetFence && targetLocks) {
+					const marked = await targetLocks.markDispatched({
 						...targetInput(),
 						fence: targetFence,
 						signal: context.signal,
@@ -503,6 +512,12 @@ export class LeadCapabilityBroker {
 			}
 			// No await between this guard resolving and invoking the trusted handler.
 			await context.assertCurrent();
+			// A concurrent close/timeout that aborted after the guard resolved must
+			// not reach the provider: the catch may already have settled not_dispatched.
+			if (controller.signal.aborted)
+				throw new BrokerFailure(
+					this.closed ? "broker_closed" : "operation_timeout",
+				);
 			providerInvoked = true;
 			const outcome = await handler.execute(input, context);
 			// Terminal provider evidence remains valid after the caller times out.
@@ -550,8 +565,8 @@ export class LeadCapabilityBroker {
 					// still accept terminal proof, without re-opening operation admission.
 					if (!controller.signal.aborted && !this.closed) throw error;
 				}
-				if (targetFence && this.options.targetLocks && !targetReleased) {
-					await this.options.targetLocks.release({
+				if (targetFence && targetLocks && !targetReleased) {
+					await targetLocks.release({
 						...targetInput(),
 						fence: targetFence,
 						outcome:
@@ -592,34 +607,37 @@ export class LeadCapabilityBroker {
 		} catch (error) {
 			const code =
 				error instanceof BrokerFailure ? error.code : "provider_failure";
+			// Provably never sent: marked/dispatched, but the provider was not invoked.
+			const neverSent = dispatched && !providerInvoked && settlesLateProof();
 			if (prepared && !finished) {
 				try {
 					this.options.receipts.transition({
 						...writeInput,
 						now: Date.now(),
 						from: dispatched ? "dispatched" : "prepared",
-						to: dispatched ? "unknown" : "rejected",
+						to: dispatched && !neverSent ? "unknown" : "rejected",
 						errorCode: code,
 					});
 				} catch {
 					/* A concurrent trusted recovery may already have finalized the receipt. */
 				}
 			}
-			if (targetKey && this.options.targetLocks && !targetReleased) {
+			if (targetKey && targetLocks && !targetReleased) {
 				const cleanupSignal = controller.signal.aborted
 					? AbortSignal.timeout(2000)
 					: controller.signal;
 				try {
 					if (targetFence)
-						await this.options.targetLocks.release({
+						await targetLocks.release({
 							...targetInput(),
 							fence: targetFence,
-							outcome: targetDispatched ? "unknown" : "not_dispatched",
+							outcome:
+								targetDispatched && !neverSent ? "unknown" : "not_dispatched",
 							reason: code,
 							signal: cleanupSignal,
 						});
 					else if (waitingForTarget)
-						await this.options.targetLocks.cancel({
+						await targetLocks.cancel({
 							...targetInput(),
 							signal: cleanupSignal,
 						});
@@ -627,7 +645,10 @@ export class LeadCapabilityBroker {
 					/* Bridge deadline recovery preserves dispatched uncertainty. */
 				}
 			}
-			return reject(code, dispatched || reconciling ? "unknown" : "rejected");
+			return reject(
+				code,
+				(dispatched && !neverSent) || reconciling ? "unknown" : "rejected",
+			);
 		} finally {
 			if (timer) clearTimeout(timer);
 			controller.signal.removeEventListener("abort", onAbort);

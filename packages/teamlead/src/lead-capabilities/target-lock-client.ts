@@ -19,6 +19,11 @@ export interface LeadTargetLockClient {
 		requestId: string;
 	}): Promise<string | undefined>;
 	readonly actor: "resident" | "voice";
+	/**
+	 * False only for a resident Lead that never configured `voiceBackground`:
+	 * that Lead keeps the pre-voice write path (no alias lookup, no lock RPC).
+	 */
+	participates?(): boolean;
 	acquire(input: {
 		operationId: string;
 		requestId: string;
@@ -149,7 +154,18 @@ export function createLeadTargetLockClient(
 		if (!settlement) trusted.assertActivationCurrent();
 		return parsed;
 	}
-	let disabledWithoutLocks = false;
+	const backgroundOf = (row: { lead: unknown }) => {
+		const background = (row.lead as { voiceBackground?: unknown })
+			.voiceBackground;
+		return {
+			configured: background !== undefined && background !== null,
+			enabled:
+				background !== null &&
+				typeof background === "object" &&
+				"enabled" in background &&
+				background.enabled === true,
+		};
+	};
 	return Object.freeze<LeadTargetLockClient>({
 		recordFounderDenial: async (input) => {
 			if (
@@ -171,24 +187,21 @@ export function createLeadTargetLockClient(
 			return result.receiptId;
 		},
 		actor: authority.kind === "voice_session" ? "voice" : "resident",
+		participates: () =>
+			authority.kind === "voice_session" ||
+			backgroundOf(trusted.assertActivationCurrent()).configured,
 		acquire: async (input) => {
 			input.signal.throwIfAborted();
-			const row = trusted.assertActivationCurrent();
-			const background = row.lead.voiceBackground;
-			const enabled =
-				background !== null &&
-				typeof background === "object" &&
-				"enabled" in background &&
-				background.enabled === true;
+			const { configured, enabled } = backgroundOf(
+				trusted.assertActivationCurrent(),
+			);
 			if (authority.kind === "carrier" && !enabled) {
-				if (disabledWithoutLocks) return { status: "unguarded" };
+				if (!configured) return { status: "unguarded" };
+				// Never cached: draining can begin after any enable→disable cycle.
 				const policy = await call("policy", input);
-				if (policy.status === "disabled") {
-					disabledWithoutLocks = true;
-					return { status: "unguarded" };
-				}
+				if (policy.status === "disabled") return { status: "unguarded" };
 				if (policy.status !== "draining") throw denied();
-			} else disabledWithoutLocks = false;
+			}
 			const result = await call("acquire", input);
 			if (result.status === "unguarded" && authority.kind === "carrier")
 				return { status: "unguarded" };

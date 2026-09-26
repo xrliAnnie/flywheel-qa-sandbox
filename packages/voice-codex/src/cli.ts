@@ -514,6 +514,7 @@ export async function main(): Promise<void> {
 							}),
 						allowSpokenParaphrase: voiceBackground.enabled,
 						backgroundEnabled: voiceBackground.enabled,
+						founderUserId: context.projection.founderUserId,
 					}),
 			);
 			codexBackend = (await registry.create(

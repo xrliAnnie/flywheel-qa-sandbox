@@ -1,0 +1,7 @@
+# r2-tl (post Round 1 fixes)
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/default-parent-integration.test.ts > executes the default factory, real provider assembly and parent broker with fixture host inputs
+ Test Files  1 failed | 56 passed (57)
+      Tests  1 failed | 835 passed (836)
+   Duration  105.10s (transform 10.72s, setup 556ms, collect 36.22s, tests 51.58s, environment 7ms, prepare 2.59s)
+# default-parent-integration restored to main assertions: 1 passed

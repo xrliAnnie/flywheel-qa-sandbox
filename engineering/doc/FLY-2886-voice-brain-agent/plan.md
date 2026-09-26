@@ -161,7 +161,7 @@ type LeadCapabilityAuthority =
     - waiter 移除：调用方取消、超时、失权时 broker 在 finally 里删；Bridge 也清理 deadline 已过的 waiter（它们从未派发，清理安全）。
     - 持有者崩溃 / release 丢失：`held` 且超 deadline → 未 `mark_dispatched` 则释放，已 `mark_dispatched` 则转 `unknown`（走上面的对账）。
     - Bridge 重启：`waiters` 全部清空（调用方收到错误后按原期限重试或失败）；`held`/`unknown` 行保留并按上面规则处理。
-  - **影响面控制**：常驻 Codex broker 只对「`voiceBackground.enabled` 或处于 draining」的 Lead 调用锁；从未启用且无存量锁行的 Lead 写路径字节不变。
+  - **影响面控制**：常驻 Codex broker 只对「`voiceBackground.enabled` 或处于 draining」的 Lead 调用锁；从未启用且无存量锁行的 Lead 写路径字节不变。实现口径（Round 1 评审修正）：Lead 配置里**没有** `voiceBackground` 键 = 从未启用，常驻既不做别名解析也不发任何锁/policy 请求；键存在但 `enabled:false` 时每次写都现查 Bridge policy（不缓存，任何「启用→关闭」周期后都能进入 draining）。
   - **关开关 = draining（即回滚）**（R4#2）：新的语音工作立即停止；该 Lead 仍有 `held`/`unknown` 行时，常驻 broker 继续对命中这些目标的写做**只检查**的锁约束（命中即 `target_pending_reconcile`），直到该 Lead 行数清零才回到原路径。表只增不删。
   - **unknown 可见**（Lead 条件 1）：每条 `unknown` 行在该 Lead 的现有状态面（bootstrap「受阻」节与 Lead 信箱提醒）显示目标、卡住时长、原因、原请求 id；超过 30 分钟重复提醒一次；`force-clear` 入口带审计与风险声明。
   - **Lead 条件 3**：实现阶段代码评审专门核「终态证据分类」与「draining 只检查约束」两处。
@@ -362,7 +362,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 
 ## 11. 发布与回滚
 
-合并后默认 `enabled=false`；QA 在测试 Lead 开；founder 验收后按 Lead 开。回滚 = 关开关（该 Lead 进入 §4.3 draining，存量锁清零前保护不撤）；数据库改动 = `voice_outbound`/`voice_sessions`/回执表加列 + 新表 `capability_target_locks` 与 `capability_target_lock_waiters`（只增不删，回滚处置见 §4.3）。部署由独立 updater 执行，本单不部署、不重启。
+合并后默认 `enabled=false`；QA 在测试 Lead 开；founder 验收后按 Lead 开。回滚 = 关开关（该 Lead 进入 §4.3 draining，存量锁清零前保护不撤）——关开关请写 `enabled:false` 并**保留** `voiceBackground` 键；删除该键会被视为从未启用，常驻不再做 draining 检查；数据库改动 = `voice_outbound`/`voice_sessions`/回执表加列 + 新表 `capability_target_locks` 与 `capability_target_lock_waiters`（只增不删，回滚处置见 §4.3）。部署由独立 updater 执行，本单不部署、不重启。
 
 ## 12. 依赖与风险
 

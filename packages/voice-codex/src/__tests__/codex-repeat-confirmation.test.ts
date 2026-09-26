@@ -24,6 +24,7 @@ async function open(options: {
 	backgroundEnabled: boolean;
 	ledger?: ReturnType<typeof row>[];
 	turnLedger?: (turnId: string) => ReturnType<typeof row>[] | undefined;
+	founderUserId?: string | null;
 }) {
 	let callbacks!: OpenInput;
 	const observeFounderUtterance = vi.fn();
@@ -31,6 +32,9 @@ async function open(options: {
 		sessionId: "session-repeat",
 		voice: "marin",
 		backgroundEnabled: options.backgroundEnabled,
+		...(options.founderUserId === null
+			? {}
+			: { founderUserId: options.founderUserId ?? "founder" }),
 		loadContext: vi.fn(),
 		persistUtterance: async () => {},
 		container: {
@@ -82,6 +86,12 @@ it("forwards only speaker-attributed founder finals to the repeat confirmation g
 		"i1",
 	);
 	transcript("再做一次", {}, "i2");
+	// An allowlisted QA speaker is attributed, but is not her.
+	transcript(
+		"对，再做一次",
+		{ inputOwner: { utteranceId: "u5", ownerUserId: "qa-user" } },
+		"i5",
+	);
 	transcript("好", { role: "assistant" }, "i3");
 	transcript(
 		"要",
@@ -89,6 +99,22 @@ it("forwards only speaker-attributed founder finals to the repeat confirmation g
 		"i4",
 	);
 	expect(h.observeFounderUtterance.mock.calls).toEqual([["要，再做一次"]]);
+	await h.session.close();
+});
+
+it("never feeds the gate without the session's founder identity", async () => {
+	const h = await open({ backgroundEnabled: true, founderUserId: null });
+	h.callbacks().realtime.onTranscript?.({
+		generation: 1,
+		itemId: "i1",
+		association: "provider_item",
+		role: "user",
+		text: "要",
+		final: true,
+		inputOwner: { utteranceId: "u1", ownerUserId: "founder" },
+		raw: {},
+	});
+	expect(h.observeFounderUtterance).not.toHaveBeenCalled();
 	await h.session.close();
 });
 

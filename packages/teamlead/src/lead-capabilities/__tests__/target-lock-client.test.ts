@@ -22,10 +22,16 @@ const input = () => ({
 	deadline: Date.now() + 15_000,
 	signal: new AbortController().signal,
 });
-function fixture(enabled: boolean, voice = false) {
+function fixture(enabled: boolean | "absent", voice = false) {
 	const calls: string[] = [];
 	let mode = "disabled";
-	const current = vi.fn(() => ({ lead: { voiceBackground: { enabled } } }));
+	let configured: boolean | "absent" = enabled;
+	const current = vi.fn(() => ({
+		lead:
+			configured === "absent"
+				? {}
+				: { voiceBackground: { enabled: configured } },
+	}));
 	const fetchImpl = vi.fn(async (url: URL | string) => {
 		const action = new URL(url).pathname.split("/").at(-1)!;
 		calls.push(action);
@@ -67,6 +73,9 @@ function fixture(enabled: boolean, voice = false) {
 		setMode: (value: string) => {
 			mode = value;
 		},
+		setEnabled: (value: boolean | "absent") => {
+			configured = value;
+		},
 	};
 }
 describe("resident target-lock rollback policy", () => {
@@ -74,7 +83,31 @@ describe("resident target-lock rollback policy", () => {
 		const f = fixture(false);
 		expect(await f.client.acquire(input())).toEqual({ status: "unguarded" });
 		expect(await f.client.acquire(input())).toEqual({ status: "unguarded" });
-		expect(f.calls).toEqual(["policy"]);
+		// No cached shortcut: draining can begin after any enable→disable cycle.
+		expect(f.calls).toEqual(["policy", "policy"]);
+	});
+	it("keeps a Lead that never configured voiceBackground on the pre-voice path with no Bridge call", async () => {
+		const f = fixture("absent");
+		expect(f.client.participates?.()).toBe(false);
+		expect(await f.client.acquire(input())).toEqual({ status: "unguarded" });
+		expect(f.calls).toEqual([]);
+	});
+	it("enters draining after an enable→disable cycle even when the resident never wrote while enabled", async () => {
+		const f = fixture(false);
+		expect(await f.client.acquire(input())).toEqual({ status: "unguarded" });
+		f.setEnabled(true);
+		// The voice session leaves an unknown row; the resident makes no write meanwhile.
+		f.setEnabled(false);
+		f.setMode("draining");
+		expect(await f.client.acquire(input())).toEqual({
+			status: "target_pending_reconcile",
+		});
+		expect(f.calls).toEqual(["policy", "policy", "acquire"]);
+	});
+	it("participates for voice and for any configured resident Lead", () => {
+		expect(fixture(false).client.participates?.()).toBe(true);
+		expect(fixture(true).client.participates?.()).toBe(true);
+		expect(fixture("absent", true).client.participates?.()).toBe(true);
 	});
 	it("continues checking outstanding targets while draining", async () => {
 		const f = fixture(false);
@@ -102,7 +135,7 @@ describe("resident target-lock rollback policy", () => {
 		);
 		expect(f.calls).toEqual(["policy"]);
 	});
-	it("rechecks authority even when the disabled policy has been cached", async () => {
+	it("rechecks authority on every disabled-policy lookup", async () => {
 		const f = fixture(false);
 		await f.client.acquire(input());
 		f.current.mockImplementation(() => {

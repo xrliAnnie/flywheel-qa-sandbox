@@ -39,6 +39,9 @@ class FakeClock {
 	}
 }
 
+/** Let the coordinator's result-then-prompt chain settle. */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 function harness() {
 	const clock = new FakeClock();
 	const queued: BrainSpeechRequest[] = [];
@@ -120,7 +123,7 @@ describe("BrainCoordinator", () => {
 		expect(h.queued).toEqual([]);
 	});
 
-	it("settles a late handoff as unconfirmed and changes the prompt only when the prior turn has a write receipt", () => {
+	it("settles a late handoff as unconfirmed and changes the prompt only when the prior turn has a write receipt", async () => {
 		const withoutReceipt = harness();
 		withoutReceipt.coordinator.turnStarted("turn-1");
 		withoutReceipt.clock.advance(100);
@@ -156,10 +159,66 @@ describe("BrainCoordinator", () => {
 			inputTranscript: "晚到",
 		});
 		withReceipt.clock.advance(5_000);
+		await flush();
 		expect(withReceipt.queued.at(-1)).toMatchObject({
 			kind: "fallback",
 			text: "刚才那件的结果还没对应上，我先核对一下",
 		});
+	});
+
+	it("plays an unclaimed terminal result before the reconcile prompt when the late handoff finds a prior write", async () => {
+		const h = harness();
+		h.coordinator.turnStarted("turn-3");
+		h.clock.advance(100);
+		// started → completed → handoff: nobody has claimed this result yet.
+		h.coordinator.turnTerminal({
+			turnId: "turn-3",
+			outcome: "completed",
+			spokenSegments: ["FLY-2886 已改成完成。"],
+			sources: [{ itemId: "tool-1", text: "updated FLY-2886 to done" }],
+			hadWriteReceipt: true,
+		});
+		expect(h.queued).toEqual([]);
+		h.clock.advance(1_000);
+		h.coordinator.registerHandoff({
+			handoffId: "late-3",
+			inputTranscript: "把 FLY-2886 改成完成",
+		});
+		h.clock.advance(5_000);
+		await flush();
+		expect(h.queued.map((row) => [row.kind, row.text])).toEqual([
+			["result", "FLY-2886 已改成完成。"],
+			["fallback", "刚才那件的结果还没对应上，我先核对一下"],
+		]);
+		// The material is consumed once; another late handoff does not replay it.
+		h.coordinator.registerHandoff({
+			handoffId: "late-4",
+			inputTranscript: "把 FLY-2886 改成完成",
+		});
+		h.clock.advance(5_000);
+		await flush();
+		expect(h.queued.filter((row) => row.kind === "result")).toHaveLength(1);
+	});
+
+	it("keeps asking her to repeat when the unclaimed prior turn had no write receipt", async () => {
+		const h = harness();
+		h.coordinator.turnStarted("turn-5");
+		h.coordinator.turnTerminal({
+			turnId: "turn-5",
+			outcome: "completed",
+			spokenSegments: ["今天有三张单在跑。"],
+			hadWriteReceipt: false,
+		});
+		h.clock.advance(500);
+		h.coordinator.registerHandoff({
+			handoffId: "late-5",
+			inputTranscript: "晚到",
+		});
+		h.clock.advance(5_000);
+		await flush();
+		expect(h.queued.map((row) => [row.kind, row.text])).toEqual([
+			["fallback", "刚才那件我没接上，你再说一次？"],
+		]);
 	});
 
 	it("emits at most the 20s and 40s waiting cues for the oldest unsettled obligation", () => {
@@ -226,8 +285,8 @@ it("validates background numbers against tool output, never the final answer or 
 		threadSegments: ["FLY-9999 PR #9876 https://example.test"],
 		sources: [{ itemId: "tool-1", text: "FLY-2886 PR #2886" }],
 	});
-	await Promise.resolve();
-	await Promise.resolve();
+	await flush();
+	await flush();
 	expect(queued.map((row) => row.text)).toEqual([
 		"这条我发到 thread 了，编号以文字为准。",
 	]);
@@ -256,8 +315,8 @@ it("keeps unposted fallback material in unfinished minutes and makes no publicat
 		spokenSegments: ["FLY-9999"],
 		sources: [{ itemId: "tool", text: "FLY-2886" }],
 	});
-	await Promise.resolve();
-	await Promise.resolve();
+	await flush();
+	await flush();
 	expect(queued[0]?.text).toBe("编号我没核对上，等下再给你");
 	expect(coordinator.unfinished()).toEqual(
 		expect.arrayContaining([
@@ -301,7 +360,7 @@ it("posts preserved text version before its pointer and retains pending result d
 	);
 	coordinator.close();
 	resolvePost();
-	await Promise.resolve();
-	await Promise.resolve();
+	await flush();
+	await flush();
 	expect(queued).toEqual([]);
 });

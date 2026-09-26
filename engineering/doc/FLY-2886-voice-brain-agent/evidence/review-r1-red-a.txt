@@ -1,0 +1,172 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ❯ |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts (10 tests | 4 failed) 28ms
+   × resident target-lock rollback policy > does not acquire locks for a disabled Lead with no outstanding writes 11ms
+     → expected [ 'policy' ] to deeply equal [ 'policy', 'policy' ]
+   × resident target-lock rollback policy > keeps a Lead that never configured voiceBackground on the pre-voice path with no Bridge call 1ms
+     → expected undefined to be false // Object.is equality
+   × resident target-lock rollback policy > enters draining after an enable→disable cycle even when the resident never wrote while enabled 4ms
+     → expected { status: 'unguarded' } to deeply equal { status: 'target_pending_reconcile' }
+   × resident target-lock rollback policy > participates for voice and for any configured resident Lead 3ms
+     → expected undefined to be true // Object.is equality
+   ✓ resident target-lock rollback policy > continues checking outstanding targets while draining 1ms
+   ✓ resident target-lock rollback policy > never applies the resident disabled shortcut to voice 1ms
+   ✓ resident target-lock rollback policy > fails closed if the read-only policy lookup cannot be verified 2ms
+   ✓ resident target-lock rollback policy > rechecks authority on every disabled-policy lookup 1ms
+   ✓ retains only a matched settlement ticket after activation revocation 1ms
+   ✓ records a voice founder-only notice at the fixed Bridge endpoint and requires its correlated receipt 1ms
+ ❯ |parallel| src/lead-capabilities/__tests__/broker-dispatch-evidence.test.ts (3 tests | 2 failed) 44ms
+   × keeps a non-participating resident on the pre-voice write path: no alias lookup and no lock call 32ms
+     → expected "spy" to not be called at all, but actually been called 1 times[90m
+Received: 
+[1m  1st spy call:
+[22m    Array [
+      Object {
+        "issueId": "FLY-2886",
+        "stateId": "done",
+      },
+      Object {
+        "activationId": "resident:1",
+        "assertCurrent": [Function assertCurrent],
+        "leadId": "eng",
+        "projectName": "flywheel",
+        "recordTerminalEvidence": [Function recordTerminalEvidence],
+        "requestId": "a0000000-0000-4000-8000-000000000001",
+        "signal": AbortSignal {
+          Symbol(kEvents): Map {},
+          Symbol(events.maxEventTargetListeners): 0,
+          Symbol(events.maxEventTargetListenersWarned): false,
+          Symbol(kHandlers): Map {},
+          Symbol(kAborted): true,
+          Symbol(kReason): [AbortError: This operation was aborted],
+          Symbol(kComposite): false,
+        },
+      },
+    ]
+[39m[90m
+Number of calls: [1m1[22m
+[39m
+   × settles a fenced write as not dispatched when authority fails after mark but before the provider call 6ms
+     → expected { …(4) } to match object { status: 'rejected', …(1) }
+(2 matching properties omitted from actual)
+   ✓ keeps the pre-voice unknown outcome for an unfenced resident in the same position 5ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/broker-dispatch-evidence.test.ts > keeps a non-participating resident on the pre-voice write path: no alias lookup and no lock call
+AssertionError: expected "spy" to not be called at all, but actually been called 1 times[90m
+Received: 
+[1m  1st spy call:
+[22m    Array [
+      Object {
+        "issueId": "FLY-2886",
+        "stateId": "done",
+      },
+      Object {
+        "activationId": "resident:1",
+        "assertCurrent": [Function assertCurrent],
+        "leadId": "eng",
+        "projectName": "flywheel",
+        "recordTerminalEvidence": [Function recordTerminalEvidence],
+        "requestId": "a0000000-0000-4000-8000-000000000001",
+        "signal": AbortSignal {
+          Symbol(kEvents): Map {},
+          Symbol(events.maxEventTargetListeners): 0,
+          Symbol(events.maxEventTargetListenersWarned): false,
+          Symbol(kHandlers): Map {},
+          Symbol(kAborted): true,
+          Symbol(kReason): [AbortError: This operation was aborted],
+          Symbol(kComposite): false,
+        },
+      },
+    ]
+[39m[90m
+Number of calls: [1m1[22m
+[39m
+ ❯ src/lead-capabilities/__tests__/broker-dispatch-evidence.test.ts:102:33
+    100|  });
+    101|  expect((await f.broker.execute(request)).status).toBe("succeeded");
+    102|  expect(f.resolveTargetKey).not.toHaveBeenCalled();
+       |                                 ^
+    103|  expect(f.acquire).not.toHaveBeenCalled();
+    104|  expect(f.execute).toHaveBeenCalledOnce();
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/broker-dispatch-evidence.test.ts > settles a fenced write as not dispatched when authority fails after mark but before the provider call
+AssertionError: expected { …(4) } to match object { status: 'rejected', …(1) }
+(2 matching properties omitted from actual)
+[32m- Expected[39m
+[31m+ Received[39m
+[2m  {[22m
+[2m    "errorCode": "activation_not_current",[22m
+[32m-   "status": "rejected",[39m
+[31m+   "status": "unknown",[39m
+[2m  }[22m
+ ❯ src/lead-capabilities/__tests__/broker-dispatch-evidence.test.ts:114:17
+    112|  });
+    113|  const result = await f.broker.execute(request);
+    114|  expect(result).toMatchObject({
+       |                 ^
+    115|   status: "rejected",
+    116|   errorCode: "activation_not_current",
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > resident target-lock rollback policy > does not acquire locks for a disabled Lead with no outstanding writes
+AssertionError: expected [ 'policy' ] to deeply equal [ 'policy', 'policy' ]
+[32m- Expected[39m
+[31m+ Received[39m
+[2m  [[22m
+[2m    "policy",[22m
+[32m-   "policy",[39m
+[2m  ][22m
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:87:19
+     85|   expect(await f.client.acquire(input())).toEqual({ status: "unguarded…
+     86|   // No cached shortcut: draining can begin after any enable→disable c…
+     87|   expect(f.calls).toEqual(["policy", "policy"]);
+       |                   ^
+     88|  });
+     89|  it("keeps a Lead that never configured voiceBackground on the pre-voi…
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > resident target-lock rollback policy > keeps a Lead that never configured voiceBackground on the pre-voice path with no Bridge call
+AssertionError: expected undefined to be false // Object.is equality
+[32m- Expected:[39m 
+false
+[31m+ Received:[39m 
+undefined
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:91:37
+     89|  it("keeps a Lead that never configured voiceBackground on the pre-voi…
+     90|   const f = fixture("absent");
+     91|   expect(f.client.participates?.()).toBe(false);
+       |                                     ^
+     92|   expect(await f.client.acquire(input())).toEqual({ status: "unguarded…
+     93|   expect(f.calls).toEqual([]);
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > resident target-lock rollback policy > enters draining after an enable→disable cycle even when the resident never wrote while enabled
+AssertionError: expected { status: 'unguarded' } to deeply equal { status: 'target_pending_reconcile' }
+[32m- Expected[39m
+[31m+ Received[39m
+[2m  {[22m
+[32m-   "status": "target_pending_reconcile",[39m
+[31m+   "status": "unguarded",[39m
+[2m  }[22m
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:102:43
+    100|   f.setEnabled(false);
+    101|   f.setMode("draining");
+    102|   expect(await f.client.acquire(input())).toEqual({
+       |                                           ^
+    103|    status: "target_pending_reconcile",
+    104|   });
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-client.test.ts > resident target-lock rollback policy > participates for voice and for any configured resident Lead
+AssertionError: expected undefined to be true // Object.is equality
+[32m- Expected:[39m 
+true
+[31m+ Received:[39m 
+undefined
+ ❯ src/lead-capabilities/__tests__/target-lock-client.test.ts:108:50
+    106|  });
+    107|  it("participates for voice and for any configured resident Lead", () …
+    108|   expect(fixture(false).client.participates?.()).toBe(true);
+       |                                                  ^
+    109|   expect(fixture(true).client.participates?.()).toBe(true);
+    110|   expect(fixture("absent", true).client.participates?.()).toBe(true);
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯
+ Test Files  2 failed (2)
+      Tests  6 failed | 7 passed (13)
+   Start at  03:29:31
+   Duration  2.28s (transform 518ms, setup 41ms, collect 1.14s, tests 71ms, environment 0ms, prepare 141ms)

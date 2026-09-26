@@ -54,6 +54,8 @@ interface TerminalTurn {
 	turnId: string;
 	at: number;
 	hadWriteReceipt: boolean;
+	/** A completed result no obligation claimed yet (handoff after terminal). */
+	unclaimed?: BackgroundTurnTerminal;
 }
 
 const PENDING_BIND_MS = 5_000;
@@ -138,18 +140,23 @@ export class BrainCoordinator {
 	turnTerminal(turn: BackgroundTurnTerminal): void {
 		if (this.closed || !turn.turnId) return;
 		const at = this.now();
+		if (this.activeTurnId === turn.turnId) this.activeTurnId = undefined;
+		const attached = [...this.obligations.values()].filter(
+			(obligation) =>
+				obligation.state === "attached" && obligation.turnId === turn.turnId,
+		);
 		this.lastTerminal = {
 			turnId: turn.turnId,
 			at,
 			hadWriteReceipt: Boolean(
 				turn.hadWriteReceipt || turn.writeReceiptUnknown,
 			),
+			// Keep only the latest turn's material, and only until one late
+			// handoff within the grace window claims it (plan §3).
+			...(attached.length === 0 && turn.outcome === "completed"
+				? { unclaimed: turn }
+				: {}),
 		};
-		if (this.activeTurnId === turn.turnId) this.activeTurnId = undefined;
-		const attached = [...this.obligations.values()].filter(
-			(obligation) =>
-				obligation.state === "attached" && obligation.turnId === turn.turnId,
-		);
 		for (const obligation of attached) this.settleObligation(obligation);
 		if (attached.length > 0)
 			void this.enqueueTurnResult({
@@ -204,13 +211,35 @@ export class BrainCoordinator {
 				? prior
 				: undefined;
 		if (recentPrior) obligation.turnId = recentPrior.turnId;
-		void this.options.speech.enqueue({
-			businessId: obligation.handoffId,
-			kind: "fallback",
-			text: recentPrior?.hadWriteReceipt
-				? "刚才那件的结果还没对应上，我先核对一下"
-				: "刚才那件我没接上，你再说一次？",
-		});
+		const fallback = () =>
+			void this.options.speech.enqueue({
+				businessId: obligation.handoffId,
+				kind: "fallback",
+				text: recentPrior?.hadWriteReceipt
+					? "刚才那件的结果还没对应上，我先核对一下"
+					: "刚才那件我没接上，你再说一次？",
+			});
+		const unclaimed = recentPrior?.hadWriteReceipt
+			? recentPrior.unclaimed
+			: undefined;
+		if (unclaimed && recentPrior) {
+			// Play that turn's existing terminal result first, then the prompt.
+			recentPrior.unclaimed = undefined;
+			void this.enqueueTurnResult({
+				...unclaimed,
+				sources: [
+					...(unclaimed.sources ?? []),
+					{
+						itemId: `founder:${obligation.handoffId}`,
+						text: obligation.inputTranscript,
+					},
+				],
+			})
+				.catch(() => undefined)
+				.then(() => {
+					if (!this.closed) fallback();
+				});
+		} else fallback();
 		this.refreshWaitingAnchor();
 	}
 

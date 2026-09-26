@@ -1,0 +1,5 @@
+# teamlead retained 91 files rerun on final code (TMPDIR=/tmp/f2886t, isolated codex homes, 4 workers)
+ Test Files  91 passed (91)
+      Tests  1288 passed (1288)
+   Duration  357.81s (transform 16.95s, setup 860ms, collect 96.25s, tests 228.68s, environment 19ms, prepare 5.01s)
+exit=0

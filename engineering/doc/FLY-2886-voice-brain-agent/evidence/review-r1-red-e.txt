@@ -1,0 +1,39 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/voice-codex
+ ❯ src/__tests__/brain-coordinator.test.ts (9 tests | 1 failed) 42ms
+   ✓ BrainCoordinator > attaches obligations to the active turn and speaks only segments the turn actually returned 3ms
+   ✓ BrainCoordinator > binds a pending handoff to a turn that starts within 5s and ignores duplicates 2ms
+   ✓ BrainCoordinator > settles a late handoff as unconfirmed and changes the prompt only when the prior turn has a write receipt 0ms
+   × BrainCoordinator > plays an unclaimed terminal result before the reconcile prompt when the late handoff finds a prior write 30ms
+     → expected [ [ 'fallback', …(1) ] ] to deeply equal [ …(2) ]
+   ✓ BrainCoordinator > keeps asking her to repeat when the unclaimed prior turn had no write receipt 1ms
+   ✓ BrainCoordinator > emits at most the 20s and 40s waiting cues for the oldest unsettled obligation 1ms
+   ✓ validates background numbers against tool output, never the final answer or its text version 1ms
+   ✓ keeps unposted fallback material in unfinished minutes and makes no publication claim 1ms
+   ✓ posts preserved text version before its pointer and retains pending result during close 1ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/__tests__/brain-coordinator.test.ts > BrainCoordinator > plays an unclaimed terminal result before the reconcile prompt when the late handoff finds a prior write
+AssertionError: expected [ [ 'fallback', …(1) ] ] to deeply equal [ …(2) ]
+[32m- Expected[39m
+[31m+ Received[39m
+[2m  [[22m
+[2m    [[22m
+[32m-     "result",[39m
+[32m-     "FLY-2886 已改成完成。",[39m
+[32m-   ],[39m
+[32m-   [[39m
+[2m      "fallback",[22m
+[2m      "刚才那件的结果还没对应上，我先核对一下",[22m
+[2m    ],[22m
+[2m  ][22m
+ ❯ src/__tests__/brain-coordinator.test.ts:186:55
+    184|   h.clock.advance(5_000);
+    185|   await Promise.resolve();
+    186|   expect(h.queued.map((row) => [row.kind, row.text])).toEqual([
+       |                                                       ^
+    187|    ["result", "FLY-2886 已改成完成。"],
+    188|    ["fallback", "刚才那件的结果还没对应上，我先核对一下"],
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+ Test Files  1 failed (1)
+      Tests  1 failed | 8 passed (9)
+   Start at  03:32:07
+   Duration  762ms (transform 118ms, setup 0ms, collect 112ms, tests 42ms, environment 0ms, prepare 148ms)

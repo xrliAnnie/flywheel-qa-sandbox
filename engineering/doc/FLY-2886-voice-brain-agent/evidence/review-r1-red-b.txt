@@ -1,0 +1,60 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/voice-codex
+ ❯ src/__tests__/codex-repeat-confirmation.test.ts (5 tests | 2 failed) 17ms
+   × forwards only speaker-attributed founder finals to the repeat confirmation gate 10ms
+     → expected [ [ '要，再做一次' ], [ '对，再做一次' ] ] to deeply equal [ [ '要，再做一次' ] ]
+   × never feeds the gate without the session's founder identity 2ms
+     → expected "spy" to not be called at all, but actually been called 1 times[90m
+Received: 
+[1m  1st spy call:
+[22m    Array [
+      "要",
+    ]
+[39m[90m
+Number of calls: [1m1[22m
+[39m
+   ✓ does not feed the gate when the background agent is disabled 1ms
+   ✓ counts a replayed older write receipt as this turn's receipt through the durable per-turn ledger 2ms
+   ✓ falls back to the start-of-turn diff when no per-turn ledger is available 1ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/__tests__/codex-repeat-confirmation.test.ts > forwards only speaker-attributed founder finals to the repeat confirmation gate
+AssertionError: expected [ [ '要，再做一次' ], [ '对，再做一次' ] ] to deeply equal [ [ '要，再做一次' ] ]
+[32m- Expected[39m
+[31m+ Received[39m
+[2m  [[22m
+[2m    [[22m
+[2m      "要，再做一次",[22m
+[2m    ],[22m
+[31m+   [[39m
+[31m+     "对，再做一次",[39m
+[31m+   ],[39m
+[2m  ][22m
+ ❯ src/__tests__/codex-repeat-confirmation.test.ts:101:47
+     99|   "i4",
+    100|  );
+    101|  expect(h.observeFounderUtterance.mock.calls).toEqual([["要，再做一次"]]);
+       |                                               ^
+    102|  await h.session.close();
+    103| });
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+ FAIL  src/__tests__/codex-repeat-confirmation.test.ts > never feeds the gate without the session's founder identity
+AssertionError: expected "spy" to not be called at all, but actually been called 1 times[90m
+Received: 
+[1m  1st spy call:
+[22m    Array [
+      "要",
+    ]
+[39m[90m
+Number of calls: [1m1[22m
+[39m
+ ❯ src/__tests__/codex-repeat-confirmation.test.ts:117:40
+    115|   raw: {},
+    116|  });
+    117|  expect(h.observeFounderUtterance).not.toHaveBeenCalled();
+       |                                        ^
+    118|  await h.session.close();
+    119| });
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+ Test Files  1 failed (1)
+      Tests  2 failed | 3 passed (5)
+   Start at  03:31:16
+   Duration  2.86s (transform 1.10s, setup 0ms, collect 1.90s, tests 17ms, environment 0ms, prepare 340ms)
