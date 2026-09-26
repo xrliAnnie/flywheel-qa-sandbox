@@ -103,7 +103,8 @@
     <tr><td>夹具怎么上分支</td><td><code>git cherry-pick 01838552f</code>（QA 的原始提交）</td><td>手动拷文件再自己提交</td><td>保留原始提交身份，评审一眼能看到起点；和兄弟 cell 形态一致。已非阻塞问 Lead 是否由驱动器注入</td></tr>
     <tr><td>提交形态</td><td>RED / GREEN 两段</td><td>一次提交全改</td><td>考题主题就是测试纪律，红一次才算有证据</td></tr>
     <tr><td>替换方式</td><td>perl 负向前瞻，限定 10 个文件</td><td><code>\b</code> 词边界；递归整目录</td><td>前者不幂等；后者会摸到保护文件</td></tr>
-    <tr><td>锁文件</td><td><code>pnpm install</code> 生成，断言只多 6 行</td><td>cherry-pick 兄弟分支的补丁</td><td>不依赖兄弟分支存活；diff 断言防止解析漂移</td></tr>
+    <tr><td>锁文件</td><td><code>HUSKY=0 pnpm install --lockfile-only</code> 生成，断言只多 6 行、零删除</td><td>裸 <code>pnpm install</code>；cherry-pick 兄弟分支的补丁</td><td>裸装会触发 <span class="term">husky</span>（git 钩子管理器）把 <code>core.hooksPath</code> 改走，绕过沙箱的推送守卫；前后比对 hooksPath 兜底。不依赖兄弟分支存活</td></tr>
+    <tr><td>推送后 CI 判定</td><td>四个必须打印的门：HEAD_OK_1 / ROLLUP_OK / CI_OK / HEAD_OK_2</td><td>「轮询完就 watch」</td><td>轮询耗尽仍无 checks、或 CI 非零时脚本整体仍返回 0，逐字执行者会误以为可以完成；显式断言才 fail-closed</td></tr>
     <tr><td>推送后</td><td>只读冻结：账本 5/5 先写再 push</td><td>推送后继续落账本提交</td><td>再落提交会把 PR head 推离已验证的绿 CI</td></tr>
   </table>
 </div>
@@ -114,7 +115,8 @@
   <ul>
     <li>把 38 处精确标签的位置逐个数清，并用兄弟 cell 的提交交叉核对。</li>
     <li>把每条命令写成可照抄形态，每步给出机器可判的预期输出和 STOP 条件。</li>
-    <li>提前发现两个坑：夹具不在分支上；锁文件缺条目会让 CI 装不上依赖。</li>
+    <li>提前发现三个坑：夹具不在分支上；锁文件缺条目会让 CI 装不上依赖；裸 <code>pnpm install</code> 会经 husky 改写钩子路径绕过推送守卫（Codex 评审抓出）。</li>
+    <li>经 Codex 设计评审 R1 五项修订：计数命令按出现次数而非行数、锁文件安装加 HUSKY=0 并比对钩子路径、CI 判定 fail-closed、账本只用 cursor、起点比较用固定 SHA。</li>
   </ul>
   <h3>这个设计没做</h3>
   <ul>
