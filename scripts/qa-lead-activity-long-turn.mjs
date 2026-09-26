@@ -29,6 +29,8 @@ export const MIN_LONG_TURN_MS = 60_000;
 export const START_TOLERANCE_MS = 30_000;
 /** Delivery → first rendered/observed busy; answers before it are not judged. */
 export const START_GRACE_MS = 15_000;
+/** One turn reports one start; second-precision rounding stays well inside this. */
+const SAME_TURN_MS = 5_000;
 const DISCORD_EPOCH_MS = 1_420_070_400_000n;
 
 export class FixtureError extends Error {}
@@ -215,8 +217,9 @@ export function toSample(atMs, dto) {
  * self-reported duration. `truthStartMs` is when the Bridge handed the message
  * to the Lead's carrier (mailbox `notified_at`); without it nothing is proven.
  *
- * The fixture's turn is the set of busy answers whose reported start is within
- * tolerance of the true start. From `truth + grace` up to the last of them,
+ * The fixture's turn is the busy answers read at or after the true start whose
+ * reported start is within tolerance of it and stable (one turn: ±5 s of the
+ * first such answer) — a busy read before delivery is never this turn. From `truth + grace` up to the last of them,
  * every answer must belong to that turn: an idle / unknown / HTTP error / other
  * turn in that window is FAIL evidence. For a PASS the fixture itself must
  * see the turn busy for at least `minBusyMs` (first to last busy sample — the
@@ -240,10 +243,15 @@ export function evaluateLongTurn({
 	const checks = { idleBefore: before.some((s) => s.state === "idle") };
 	if (!Number.isFinite(truthStartMs))
 		return { verdict: "inconclusive", why: "no_delivery_evidence", checks };
-	const turn = after.filter(
+	const candidates = after.filter(
 		(s) =>
 			s.state === "busy" &&
+			s.atMs >= truthStartMs &&
 			Math.abs(s.startedAtMs - truthStartMs) <= toleranceMs,
+	);
+	const anchor = candidates[0];
+	const turn = candidates.filter(
+		(s) => Math.abs(s.startedAtMs - anchor.startedAtMs) <= SAME_TURN_MS,
 	);
 	if (turn.length === 0) {
 		const wrong = after.filter(

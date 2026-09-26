@@ -145,6 +145,31 @@ describe("evaluateLongTurn", () => {
 		assert.match(result.why, /idleBeforeHoldEnd/);
 	});
 
+	it("does not let a busy read before delivery, from another turn, pad the span (review R3)", () => {
+		// --poll-seconds 30: delivered at 35 s; another turn ran 25–33 s; the
+		// fixture turn ran 40–96 s (56 s). The 30 s sample must not count.
+		const truth = T0 + 35_000;
+		const samples = [
+			idle(T0 - 5_000),
+			busy(T0 + 30_000, T0 + 25_000),
+			busy(T0 + 60_000, T0 + 40_000),
+			busy(T0 + 90_000, T0 + 40_000),
+			idle(T0 + 120_000),
+		];
+		const result = judge(samples, truth);
+		assert.notEqual(result.verdict, "pass");
+		assert.equal(result.checks.longTurnObserved, false);
+		assert.equal(result.turn.firstBusyAt, new Date(T0 + 60_000).toISOString());
+	});
+
+	it("fails when, inside the turn, the endpoint reports a different start", () => {
+		const samples = honoredRun();
+		samples.splice(8, 1, busy(samples[8].atMs, T0 + 20_000));
+		const result = judge(samples);
+		assert.equal(result.verdict, "fail");
+		assert.deepEqual(result.insideAnswers, ["busy"]);
+	});
+
 	it("fails when a chat-triggered turn is attributed to an issue", () => {
 		const start = T0 + 3_000;
 		const samples = [
