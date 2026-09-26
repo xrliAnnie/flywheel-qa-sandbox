@@ -1,14 +1,14 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 5/6
-updated: 2026-09-26T11:52:49.756Z
-nextStep: milestone literal-last, push, stage pr_created → codex code review of
-  the QA@2 delta, await-codex-gate code, complete --route needs_review --pr 1353
+phaseCursor: 1/6
+updated: 2026-09-26T16:36:54.663Z
+nextStep: founder readback rework (A overrun continue / B time-bounded admission
+  / C spoken remainder notice / D replay test red→green)
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (5/6)
-**next**: milestone literal-last, push, stage pr_created → codex code review of the QA@2 delta, await-codex-gate code, complete --route needs_review --pr 1353
+**phase**: implement (1/6)
+**next**: founder readback rework (A overrun continue / B time-bounded admission / C spoken remainder notice / D replay test red→green)
