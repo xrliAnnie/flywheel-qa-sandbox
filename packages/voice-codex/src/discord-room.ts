@@ -73,6 +73,12 @@ export interface DiscordVoiceRoomOptions {
 	 * (no PCM mouth, no waiting bed). The default keeps engine A unchanged.
 	 */
 	downlink?: "pcm-mouth" | "opus-passthrough";
+	/**
+	 * FLY-2885 T6: sentence-level onset peak gate in dBFS (null = off). Only
+	 * the opus-passthrough room applies it, with release-when-open and uplink
+	 * catch-up; the engine A room keeps its gate byte-for-byte.
+	 */
+	uplinkMinOnsetDbfs?: number | null;
 	deps: RoomDeps;
 	token: string;
 	expectedBotUserId: string;
@@ -173,6 +179,7 @@ export class DiscordVoiceRoom {
 		)();
 		await this.checkActive(signal);
 		const vad = this.vad;
+		const webrtc = this.options.downlink === "opus-passthrough";
 		const gate = new UplinkSpeechGate({
 			score: (samples, state) => vad.score(samples, state as SileroState),
 			initialState: createInitialSileroState,
@@ -180,6 +187,17 @@ export class DiscordVoiceRoom {
 			threshold: 0.5,
 			prerollMs: this.options.uplinkPrerollMs ?? DEFAULT_UPLINK_PREROLL_MS,
 			now: this.now,
+			...(webrtc
+				? {
+						releaseWhenOpen: true,
+						minOnsetPeakDbfs: this.options.uplinkMinOnsetDbfs ?? null,
+						onRejectedQuiet: ({ peakDbfs }: { peakDbfs: number }) =>
+							this.options.onDiagnostic?.({
+								kind: "uplink_gate_rejected_quiet",
+								peakDbfs,
+							}),
+					}
+				: {}),
 			onDegraded: ({ reason, consecutive, sessionPermanent }) =>
 				this.options.onDiagnostic?.({
 					kind: "uplink_gate_degraded",
@@ -201,6 +219,7 @@ export class DiscordVoiceRoom {
 			sessionGeneration: 1,
 			prebufferFrames: 3,
 			maxQueueFrames: 100,
+			...(webrtc ? { catchUpAboveFrames: 3 } : {}),
 			speechGate: gate,
 			now: this.now,
 			record: () => {},

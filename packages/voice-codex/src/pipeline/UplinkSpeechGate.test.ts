@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { UplinkSpeechGate } from "./UplinkSpeechGate.js";
 
@@ -681,4 +682,184 @@ describe("UplinkSpeechGate pre-roll (FLY-2798)", () => {
 			() => new UplinkSpeechGate({ ...options, prerollMs: 1_001 }),
 		).toThrow("prerollMs must be an integer between 0 and 1000");
 	});
+});
+
+/** One 48 kHz stereo frame at a constant level (RMS == |value|). */
+function levelFrame(value: number): Buffer {
+	const pcm = Buffer.alloc(3_840);
+	for (let index = 0; index < 960; index += 1) {
+		pcm.writeInt16LE(value, index * 4);
+		pcm.writeInt16LE(value, index * 4 + 2);
+	}
+	return pcm;
+}
+
+const dbfs = (value: number) => 20 * Math.log10(value / 32_768);
+
+describe("UplinkSpeechGate WebRTC options (FLY-2885 T6)", () => {
+	async function run(
+		options: Partial<ConstructorParameters<typeof UplinkSpeechGate>[0]>,
+		frames: Buffer[],
+		probability: (chunk: number) => number,
+	) {
+		let chunk = 0;
+		const gate = new UplinkSpeechGate({
+			score: vi.fn(async () => ({
+				probability: probability(chunk++),
+				next: {},
+			})),
+			initialState: () => ({}),
+			minSpeechMs: 64,
+			threshold: 0.5,
+			prerollMs: 200,
+			...options,
+		});
+		gate.begin("gated", 0);
+		const released: Array<{ afterPush: number; speech: boolean }> = [];
+		for (const [index, pcm] of frames.entries()) {
+			gate.push(pcm, index * 20);
+			await settle();
+			await settle();
+			for (const decision of gate.takeDue(index * 20))
+				released.push({ afterPush: index + 1, speech: decision.speech });
+		}
+		return { gate, released };
+	}
+
+	it("releases decided frames as soon as the chain is open instead of waiting out the delay line", async () => {
+		const frames = Array.from({ length: 40 }, () => levelFrame(4_000));
+		const fixed = await run({}, frames, () => 0.9);
+		const open = await run({ releaseWhenOpen: true }, frames, () => 0.9);
+		const delay = fixed.gate.delayFrames;
+		expect(delay).toBe(16);
+		// Fixed delay: frame n leaves only after frame n + delay arrived.
+		expect(fixed.released).toHaveLength(frames.length - delay);
+		// Released when open: only the frames still awaiting a decision wait.
+		expect(open.released.length).toBeGreaterThanOrEqual(frames.length - 3);
+		expect(open.released.every((frame) => frame.speech)).toBe(true);
+		// The onset itself still carries the whole pre-roll.
+		expect(open.released.slice(0, delay).every((frame) => frame.speech)).toBe(
+			true,
+		);
+	});
+
+	it("goes back to the fixed delay after the chain closes so the next sentence keeps its pre-roll", async () => {
+		// 20 speech frames, 20 silent, then 20 speech again.
+		const frames = [
+			...Array.from({ length: 20 }, () => levelFrame(4_000)),
+			...Array.from({ length: 20 }, () => levelFrame(0)),
+			...Array.from({ length: 20 }, () => levelFrame(4_000)),
+		];
+		const speechChunk = (chunk: number) =>
+			chunk * 512 < 20 * 320 || chunk * 512 >= 40 * 320 ? 0.9 : 0.05;
+		const { released, gate } = await run(
+			{ releaseWhenOpen: true },
+			frames,
+			speechChunk,
+		);
+		gate.end(60 * 20);
+		const tail = gate.takeDue(60 * 20);
+		const all = [
+			...released.map((frame) => frame.speech),
+			...tail.map((frame) => frame.speech),
+		];
+		expect(all).toHaveLength(60);
+		// Frames just before the second onset are backfilled as its pre-roll.
+		const preroll = Math.ceil(200 / 20);
+		expect(all.slice(40 - preroll, 40).every(Boolean)).toBe(true);
+		expect(
+			all.slice(40 - preroll - 5, 40 - preroll).some((speech) => !speech),
+		).toBe(true);
+	});
+
+	it("keeps an onset whose loudest frame is under the peak gate silent, and opens once speech gets loud enough", async () => {
+		const rejected: number[] = [];
+		// Far-away voice at -34 dBFS, then the founder at -24 dBFS.
+		const quiet = Array.from({ length: 30 }, () => levelFrame(650));
+		const loud = Array.from({ length: 30 }, () => levelFrame(2_070));
+		expect(dbfs(650)).toBeLessThan(-30);
+		expect(dbfs(2_070)).toBeGreaterThan(-30);
+		const { released, gate } = await run(
+			{
+				releaseWhenOpen: true,
+				minOnsetPeakDbfs: -30,
+				onRejectedQuiet: (event) => rejected.push(event.peakDbfs),
+			},
+			[...quiet, ...loud],
+			() => 0.9,
+		);
+		gate.end(60 * 20);
+		const all = [
+			...released.map((frame) => frame.speech),
+			...gate.takeDue(60 * 20).map((frame) => frame.speech),
+		];
+		expect(all).toHaveLength(60);
+		// Nothing of the far-away voice leaves the gate as speech…
+		expect(all.slice(0, 30 - 16).some(Boolean)).toBe(false);
+		// …the founder does, with her own onset and pre-roll.
+		expect(all.slice(30).every(Boolean)).toBe(true);
+		// One report per rejected onset attempt, not one per chunk.
+		expect(rejected).toHaveLength(1);
+		expect(rejected[0]).toBeCloseTo(dbfs(650), 0);
+		expect(gate.takeCompleted()).toEqual([
+			expect.objectContaining({ opened: true }),
+		]);
+	});
+
+	it("never rejects an onset when the peak gate is off", async () => {
+		const quiet = Array.from({ length: 30 }, () => levelFrame(650));
+		const { released } = await run({ releaseWhenOpen: true }, quiet, () => 0.9);
+		expect(released.length).toBeGreaterThan(0);
+		expect(released.every((frame) => frame.speech)).toBe(true);
+	});
+});
+
+describe("UplinkSpeechGate peak gate on the FLY-2884 level timelines (FLY-2885 T6)", () => {
+	const levels = JSON.parse(
+		readFileSync(
+			new URL("./fixtures/fly2884-uplink-levels.json", import.meta.url),
+			"utf8",
+		),
+	) as { farVoice: number[]; founderSentences: number[][] };
+	const toFrame = (level: number) =>
+		levelFrame(Math.round(10 ** (level / 20) * 32_768));
+
+	async function replay(series: number[]) {
+		// Worst case for the gate: the VAD calls every chunk speech.
+		const gate = new UplinkSpeechGate({
+			score: vi.fn(async () => ({ probability: 0.9, next: {} })),
+			initialState: () => ({}),
+			minSpeechMs: 200,
+			threshold: 0.5,
+			prerollMs: 200,
+			releaseWhenOpen: true,
+			minOnsetPeakDbfs: -30,
+		});
+		gate.begin("gated", 0);
+		let speech = 0;
+		for (const [index, level] of series.entries()) {
+			gate.push(toFrame(level), index * 20);
+			await settle();
+			await settle();
+			speech += gate.takeDue(index * 20).filter((frame) => frame.speech).length;
+		}
+		gate.end(series.length * 20);
+		speech += gate
+			.takeDue(series.length * 20 + 20)
+			.filter((frame) => frame.speech).length;
+		return { speech, summary: gate.takeCompleted()[0]! };
+	}
+
+	it("never opens on the 60 s far-away voice that falsely triggered once in FLY-2884", async () => {
+		const { speech, summary } = await replay(levels.farVoice);
+		expect(summary.opened).toBe(false);
+		expect(speech).toBe(0);
+	}, 60_000);
+
+	it("opens on every one of the founder's real sentences, the softest included", async () => {
+		for (const sentence of levels.founderSentences) {
+			const { summary } = await replay(sentence);
+			expect(summary.opened).toBe(true);
+		}
+	}, 60_000);
 });

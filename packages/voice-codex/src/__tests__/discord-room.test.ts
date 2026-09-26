@@ -705,3 +705,106 @@ describe("DiscordVoiceRoom downlink modes (FLY-2885)", () => {
 		expect(test.player.stop).toHaveBeenCalled();
 	});
 });
+
+describe("DiscordVoiceRoom WebRTC uplink gate (FLY-2885 T6)", () => {
+	async function speak(
+		level: number,
+		options: {
+			downlink?: "opus-passthrough";
+			uplinkMinOnsetDbfs?: number | null;
+		},
+	) {
+		vi.useFakeTimers();
+		const speaking = new Map<string, (userId: string) => void>();
+		const opus = new PassThrough();
+		const decoder = new PassThrough();
+		const diagnostics: Array<Record<string, unknown>> = [];
+		const founderFrames: Buffer[] = [];
+		const room = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 1, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient: () => ({
+					user: { id: "voice-bot" },
+					login: vi.fn(async () => {}),
+					isReady: () => true,
+					once: vi.fn(),
+					destroy: vi.fn(async () => {}),
+				}),
+				joinVoice: vi.fn(async () => ({})),
+				subscribeManual: () => vi.fn(() => opus),
+				createDecoder: () => decoder,
+				createPlayer: () => ({ play: vi.fn(), stop: vi.fn(), on: vi.fn() }),
+				createResource: vi.fn((source) => source),
+				speakingEvents: () => ({
+					on: (event, callback) => speaking.set(event, callback),
+				}),
+				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice: vi.fn(),
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			...options,
+			onAudio: (frame, metadata) => {
+				if (metadata.ownerUserId === "founder") founderFrames.push(frame);
+			},
+			onFounderPresence: vi.fn(),
+			onDiagnostic: (record) => diagnostics.push(record),
+			onError: vi.fn(),
+		});
+		try {
+			await room.start();
+			speaking.get("start")?.("founder");
+			for (let frame = 0; frame < 60; frame += 1) {
+				opus.write(pcm16(Array(1_920).fill(level)));
+				await vi.advanceTimersByTimeAsync(20);
+			}
+			speaking.get("end")?.("founder");
+			await vi.advanceTimersByTimeAsync(2_000);
+			return { founderFrames, diagnostics };
+		} finally {
+			await room.stop();
+			vi.useRealTimers();
+		}
+	}
+
+	it("keeps a far-away voice below the onset peak out of the WebRTC room", async () => {
+		const result = await speak(650, {
+			downlink: "opus-passthrough",
+			uplinkMinOnsetDbfs: -30,
+		});
+		expect(result.founderFrames).toHaveLength(0);
+		expect(result.diagnostics).toContainEqual(
+			expect.objectContaining({ kind: "uplink_gate_rejected_quiet" }),
+		);
+	});
+
+	it("passes normal speech in the WebRTC room", async () => {
+		const result = await speak(4_000, {
+			downlink: "opus-passthrough",
+			uplinkMinOnsetDbfs: -30,
+		});
+		expect(result.founderFrames.length).toBeGreaterThan(40);
+	});
+
+	it("leaves the engine A room's gate without the peak gate", async () => {
+		const result = await speak(650, { uplinkMinOnsetDbfs: -30 });
+		expect(result.founderFrames.length).toBeGreaterThan(0);
+		expect(
+			result.diagnostics.some(
+				(record) => record.kind === "uplink_gate_rejected_quiet",
+			),
+		).toBe(false);
+	});
+});
