@@ -85,3 +85,13 @@ Lead 回答 `1de718ec-43e5-455a-a259-981a1056f082` / `3c36ba2d-b163-4115-9417-ab
 测试先修正夹具以符合真实 manifest 的独立 QA/角色/handbook 合同；这些构建失败没有计作功能红测。有效夹具下空实现有 10 个功能断言失败，再实现最小解析器，单文件及 owning package `vitest related` 各 14 tests 通过；related 仅命中新测试，没有跑全包。消费者全路径/文件名/父目录及 `.js` import spelling 搜索逐项记录在 `evidence/prefix-context-consumer-sweep.json`。`pnpm --workspace-concurrency=2 --filter "flywheel-teamlead..." build` 与 `pnpm lint` 均 exit 0（lint 25 条既有 warning）。`pnpm --workspace-concurrency=1 --filter "...flywheel-teamlead" typecheck` 的 teamlead 和 voice-codex 均 exit 0；命令、源码及日志摘要见 `evidence/prefix-context-checks.json`。
 
 这只是 T3 的身份解析基础，不能据此标记 T3 接线完成；T1 真角色加载盘点、T2 最终编译器/控制、实际启动消费及五角色验收仍缺。
+
+## 2026-09-26 — 混合插件副本编译基础
+
+新增 `packages/claude-runner/src/runner-prefix-plugin.ts`，把已审计的完整文件清单、精确组件选择、required 组件及显式资产依赖转成现有私有产物复制器的输入。支持当前已核对的标准 skills/commands/agents 布局；保留原插件名、版本及非组件 manifest 字段，保留 hooks、MCP 文件、许可证、选定技能内的脚本及全部非组件资产。生成的 manifest 只列选定组件；未选组件和 cache `.in_use` 不进入副本。缺 required、缺资产/依赖、悬空 manifest 引用、未知布局和路径越界均拒绝，不把不支持的布局伪装为优化成功。
+
+复制器增加仅限 `.claude-plugin/plugin.json` 的生成内容通道，同时校验原文件 SHA、生成文件 SHA，并拒绝改变插件身份、hooks 等非组件 metadata；技能、hook 和脚本正文仍只能原样复制。stamp 不保存生成内容，只保存哈希；生成内容变化不能通过旧 stamp 校验。旧的无转换输入保留原 stamp 格式和复制语义。
+
+本批仍为离线编译能力：调用方必须提供经审计的完整文件/依赖清单，它不自动推断脚本引用，不选择最终五角色清单，不执行插件或修改共享安装。真实 namespace、hook 次数和 CLI 组件加载控制仍须在 Lead 提供的 529 房验证；T2 未完成，T3/T4 尚未接线。
+
+红绿证据：生成 manifest 最初 2 个行为测试失败；插件编译空实现 17 失败/1 通过；新增 metadata 保护 3 失败。最终两份相关测试共 70 通过，`vitest related` 同样只命中这 70 项；受影响包及依赖 build、四个依赖方 typecheck 和 lint 结果见 `evidence/plugin-checks.json`。消费者检索逐匹配处置见 `evidence/plugin-consumer-sweep.json`。这些结果不构成五角色 token 表、真实任务、回退、完整 CI 或交卷证据。

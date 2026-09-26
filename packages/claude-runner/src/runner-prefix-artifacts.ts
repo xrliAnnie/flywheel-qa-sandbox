@@ -17,6 +17,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 export interface RunnerPrefixArtifactIdentity {
 	version: 1;
@@ -33,6 +34,8 @@ export interface RunnerPrefixArtifactSource {
 	sha256: string;
 	destination: string;
 	executable?: boolean;
+	/** Compiler-generated plugin manifest only; original bytes still hash-checked. */
+	pluginManifest?: string;
 }
 
 export interface RunnerPrefixArtifactInput {
@@ -51,6 +54,7 @@ export interface RunnerPrefixArtifactResult {
 interface ArtifactEntry {
 	sourcePath: string;
 	sha256: string;
+	artifactSha256?: string;
 	destination: string;
 	executable: boolean;
 }
@@ -139,6 +143,33 @@ function identityStamp(
 		role: identity.role,
 		profileDigest: identity.profileDigest,
 	};
+}
+
+/** The only text rewrite allowed is a plugin component declaration change. */
+function validateManifestTransformation(
+	original: Buffer,
+	generated: string,
+): void {
+	try {
+		const components = new Set(["skills", "commands", "agents"]);
+		const metadata = (text: string) => {
+			const value = JSON.parse(text);
+			if (!value || typeof value !== "object" || Array.isArray(value))
+				throw new Error();
+			return Object.fromEntries(
+				Object.entries(value).filter(([key]) => !components.has(key)),
+			);
+		};
+		if (
+			!isDeepStrictEqual(
+				metadata(original.toString("utf8")),
+				metadata(generated),
+			)
+		)
+			throw new Error();
+	} catch {
+		fail("invalid manifest transformation");
+	}
 }
 
 function sameFile(left: Stats, right: Stats): boolean {
@@ -235,10 +266,22 @@ function prepare(input: RunnerPrefixArtifactInput) {
 			const content = readRegularFile(sourcePath);
 			if (realpathSync(sourcePath) !== sourcePath) fail("source path changed");
 			if (digest(content) !== source.sha256) fail("source hash mismatch");
-			contents.set(source.destination, content);
+			let output = content;
+			if (source.pluginManifest !== undefined) {
+				if (!source.destination.endsWith("/.claude-plugin/plugin.json"))
+					fail("invalid generated manifest destination");
+				if (typeof source.pluginManifest !== "string")
+					fail("invalid generated manifest");
+				validateManifestTransformation(content, source.pluginManifest);
+				output = Buffer.from(source.pluginManifest);
+			}
+			contents.set(source.destination, output);
 			return {
 				sourcePath,
 				sha256: source.sha256,
+				...(source.pluginManifest === undefined
+					? {}
+					: { artifactSha256: digest(output) }),
 				destination: source.destination,
 				executable: source.executable === true,
 			};
@@ -390,7 +433,10 @@ export function verifyRunnerPrefixArtifacts(
 	const files = new Map(
 		prepared.entries.map((entry) => [
 			entry.destination,
-			{ sha256: entry.sha256, mode: entry.executable ? 0o700 : 0o600 },
+			{
+				sha256: entry.artifactSha256 ?? entry.sha256,
+				mode: entry.executable ? 0o700 : 0o600,
+			},
 		]),
 	);
 	files.set("stamp.json", { sha256: digest(prepared.stamp), mode: 0o600 });

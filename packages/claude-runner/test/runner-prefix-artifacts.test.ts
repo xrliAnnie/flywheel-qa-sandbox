@@ -86,6 +86,66 @@ afterEach(() => {
 });
 
 describe("runner prefix artifacts", () => {
+	it("pins both original and generated plugin manifest bytes without logging content", () => {
+		const input = fixture();
+		const sourcePath = join(input.trustedRoots[0]!, "plugin.json");
+		const original =
+			'{"name":"bundle","agents":["./agents/a.md","./agents/b.md"]}';
+		const pluginManifest = '{"name":"bundle","agents":["./agents/a.md"]}';
+		writeFileSync(sourcePath, original);
+		input.sources = [
+			{
+				sourcePath,
+				sha256: hash(original),
+				destination: "plugin/.claude-plugin/plugin.json",
+				pluginManifest,
+			},
+		];
+		const result = materializeRunnerPrefixArtifacts(input);
+		expect(
+			readFileSync(
+				join(result.directory, "plugin/.claude-plugin/plugin.json"),
+				"utf8",
+			),
+		).toBe(pluginManifest);
+		expect(verifyRunnerPrefixArtifacts(input)).toEqual(result);
+		const stamp = readFileSync(result.stampPath, "utf8");
+		expect(stamp).toContain(hash(original));
+		expect(stamp).toContain(hash(pluginManifest));
+		expect(stamp).not.toContain("agents/a.md");
+		input.sources[0]!.pluginManifest = '{"name":"bundle","agents":[]}';
+		expect(() => verifyRunnerPrefixArtifacts(input)).toThrow(/hash mismatch/);
+	});
+
+	it.each(["not-json", '{"name":"changed"}', '{"name":"bundle","hooks":{}}'])(
+		"rejects a generated manifest changing non-component metadata: %s",
+		(pluginManifest) => {
+			const input = fixture();
+			const sourcePath = join(input.trustedRoots[0]!, "plugin.json");
+			const original = '{"name":"bundle"}';
+			writeFileSync(sourcePath, original);
+			input.sources = [
+				{
+					sourcePath,
+					sha256: hash(original),
+					destination: "plugin/.claude-plugin/plugin.json",
+					pluginManifest,
+				},
+			];
+			expect(() => materializeRunnerPrefixArtifacts(input)).toThrow(
+				/manifest transformation/,
+			);
+		},
+	);
+
+	it("does not permit generated content to replace skill or hook text", () => {
+		const input = fixture();
+		input.sources[0]!.pluginManifest = '{"name":"bundle"}';
+		expect(() => materializeRunnerPrefixArtifacts(input)).toThrow(
+			/manifest destination/,
+		);
+	});
+
 	it.each(["mode", "link"])(
 		"rejects artifact %s changes between pre-open lstat and open",
 		(mutation) => {

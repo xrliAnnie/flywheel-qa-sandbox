@@ -1,0 +1,83 @@
+{
+  "capturedAt": "2026-09-26T07:15:01.665471+00:00",
+  "scope": "offline selected-component plugin compiler; no production consumer or CLI loading claims",
+  "sources": {
+    "packages/claude-runner/src/runner-prefix-artifacts.ts": "833096996828e78f0a8e5ff31972c17de0e3b4fd2222dfab26aabeaff32babfd",
+    "packages/claude-runner/src/runner-prefix-plugin.ts": "f6286eda726232264d0050427907969f6645b6a464ebdfe73ed8e6bb0df69a84",
+    "packages/claude-runner/test/runner-prefix-artifacts.test.ts": "d566d005ae238ae3ef7be82e89614b8d1bf00a13e6ecc56e4ca45fb2c61d6180",
+    "packages/claude-runner/test/runner-prefix-plugin.test.ts": "25adb06e317bbfa64f6c378cd3dcb3954578eb08ccb16e56e3ad1ac5752a9270"
+  },
+  "checks": [
+    {
+      "name": "direct",
+      "command": "pnpm --filter flywheel-claude-runner exec vitest run test/runner-prefix-plugin.test.ts test/runner-prefix-artifacts.test.ts",
+      "exitCode": 0,
+      "log": "/tmp/fly2913-plugin-green.log",
+      "logSha256": "87fa62c2a28b12b0671a949f043a084ce581511b11fa0920e18ba55e5a8d7764"
+    },
+    {
+      "name": "related",
+      "command": "pnpm --filter flywheel-claude-runner exec vitest related src/runner-prefix-artifacts.ts src/runner-prefix-plugin.ts test/runner-prefix-artifacts.test.ts test/runner-prefix-plugin.test.ts --run",
+      "exitCode": 0,
+      "log": "/tmp/fly2913-plugin-related.log",
+      "logSha256": "3dea12776c507a0bc38d03952b6ebf79ea95b0b14ddaedfc4f5e0cb0d3ebadc4"
+    },
+    {
+      "name": "build",
+      "command": "pnpm --workspace-concurrency=1 --filter 'flywheel-claude-runner...' build",
+      "exitCode": 0,
+      "log": "/tmp/fly2913-plugin-build.log",
+      "logSha256": "a0a78d85e545860336d138811630a68ac5e06318e556155ca2e5652bd4b08355"
+    },
+    {
+      "name": "typecheck",
+      "command": "pnpm --workspace-concurrency=1 --filter '...flywheel-claude-runner' typecheck",
+      "exitCode": 0,
+      "log": "/tmp/fly2913-plugin-typecheck.log",
+      "logSha256": "325d805b03abbf0fc6b41e88dc1f167e8c611c7c86916e64ea1fcd8d674de2ca"
+    },
+    {
+      "name": "lint",
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "log": "/tmp/fly2913-plugin-lint.log",
+      "logSha256": "4f8666217ae34beaed98459db8ca56260791fc427981af43cf46d7192391495e"
+    }
+  ],
+  "results": {
+    "directTests": 70,
+    "relatedTests": 70,
+    "relatedFiles": 2,
+    "lintWarnings": 25,
+    "typecheckedPackages": [
+      "flywheel-claude-runner",
+      "flywheel-edge-worker",
+      "flywheel-teamlead",
+      "flywheel-voice-codex"
+    ]
+  },
+  "redChecks": [
+    {
+      "log": "/tmp/fly2913-plugin-artifacts-red.log",
+      "logSha256": "f6c0b671ab982ac1ac9cc1223ffa14da22f86a00293f76d8222c130c82e04d29",
+      "failedTests": 2
+    },
+    {
+      "log": "/tmp/fly2913-plugin-red.log",
+      "logSha256": "bcf61dbedb24b1208f377775f25fd8f77cfc47fa3aee7cd2392ac37a368335f3",
+      "failedTests": 17
+    },
+    {
+      "log": "/tmp/fly2913-plugin-transform-red.log",
+      "logSha256": "b883bac31f8f8ba1e0512eba1748496ee79e2d913cf3be8206e35ee061aeadc7",
+      "failedTests": 3
+    }
+  ],
+  "limits": [
+    "explicit caller-audited file/dependency inventory required",
+    "only standard component layout supported",
+    "CLI namespace, hooks, settings and tools controls not run",
+    "five-role before/after and representative tasks not run",
+    "no full CI requested or claimed"
+  ]
+}
