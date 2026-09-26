@@ -195,3 +195,15 @@ Blueprint/dispatcher/land 三组按具体文件分别执行，避免 `vitest rel
 阻断 `task-declared-capability-undefined`：通过 §1.1 的真实新增声明协议、registry、生产者映射、持久链和 T5 技能任务修复；不再假设 required-skills 已存在。
 
 其余 MEDIUM/LOW 依服务器 policy 为非阻断项，列 `review-followups.md`，向 Lead 报告；未采纳建议不伪装成已修复。当前设计修订只用于验证这一阻断修复，其他 scope 不重开。
+
+## 六、实施前 Lead 指示 — R2 engineering 生产者回应（2026-09-26 UTC）
+
+`flywheel-comm check 93ae0be6-8090-4d8c-b20c-376d94b56f79` 返回的当前指示：
+
+> 不加新的 payload 字段。engineering 声明由服务端从已有信息派生：Lead 派单时按 FLY-1436 合同必传 taskCategory，它落成 run 的 template（tpl_code / tpl_simple_code）。这两类 run 下的设计、实现、QA、评审节点一律视为 engineering；其他 template 和没有 template 的触发（会议纪要、小红书等）保持旧配置，不推断。Lead 配置和提示都不改。
+
+这是对上文 §1.1、T3、T5 中任务声明来源的明确修订，实施遵循本节：不新增 `prefixTaskSet` 请求字段，不要求客户端、scheduler 或 Lead 更新 payload；不创建通用任务集合注册入口。服务端以该 run 已持久化的 `tpl_code` / `tpl_simple_code` 身份选择 engineering 义务，与 pinned role skills 和当前 skill arm 合并。后续节点、retry/replay、关联评审沿相同 run 身份消费；缺失或其他 template 均保持 legacy，不能从标题、角色名称或自由文本推断。任务集合变更协议和会议/小红书声明正控不再实施；改为验证这些既有来源保持 legacy 且保留原能力。
+
+其余目标保留：五角色逐项 loaded 清单、低频必需能力、同条件三组配对测量、真实 529 任务、回退开关、身份/安全边界、Codex/Lead 不变及有效 code review。原 APPROVED 记录绑定的是修改前 plan；本节是后续 Lead 指示的透明记录，不冒称旧评审已经验证了新实现。
+
+`check 0b670309-af84-4999-a3bc-dbdad936e489` 另明确：七天历史统计是背景，硬证据为 529 同模型同任务三组改前/改后；不用等待 snapshot owner 恢复。FLY-2904 的 freeze/summary/census 已在 origin/main，原 CSV 未提交。读取 census 前发现其还包含 live DB roster 路径，因此不得直接照跑违反“只读转写、不碰活 DB”的要求；刷新使用其 transcript 读取/去敏口径，角色按转写内固定 phase 协议/系统提示判定，未知保持未知。

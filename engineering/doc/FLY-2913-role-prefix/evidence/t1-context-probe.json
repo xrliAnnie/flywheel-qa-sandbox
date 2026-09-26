@@ -1,0 +1,1847 @@
+{
+  "purpose": "CLI diagnostic capability probe only; NOT a role baseline or representative-task pass",
+  "cliVersion": "2.1.283",
+  "cliSha256": "d8cb1e5c79684cc12a8bfc813e3a2073406921b6245744b3009be3ab5651d21e",
+  "buildSha": "fa98ceb3b4ac1c972a0fdf14ca06a1f60c5698b6",
+  "artifactBuildSha": "fa98ceb3b4ac1c972a0fdf14ca06a1f60c5698b6",
+  "cwd": "/tmp/flywheel-test-slot-1/project-slot-1",
+  "sessionId": "a4514f9d-d041-4602-b1fb-01a7730a8bcc",
+  "exitCode": 0,
+  "measurement": {
+    "rawSha256": "c5604659aeb11cbceafc15acee075dbf637fbf896b06a91facfe23ab3cf99100",
+    "context": {
+      "measurementMethod": "diagnostic-estimate",
+      "model": "claude-opus-5-5[1m]",
+      "reportedContextTokens": 54233,
+      "knownFixedCategoryTokens": 54223,
+      "deferredSchemaTokens": 17878,
+      "fixedPrefixTokens": null,
+      "unmeasured": [
+        "hook additionalContext attribution",
+        "deferred tool roster placement/cost",
+        "per-builtin tool costs if diagnostic omits systemTools"
+      ],
+      "categories": [
+        {
+          "name": "System prompt",
+          "tokens": 2250,
+          "kind": "used",
+          "isDeferred": false
+        },
+        {
+          "name": "System tools",
+          "tokens": 782,
+          "kind": "used",
+          "isDeferred": false
+        },
+        {
+          "name": "MCP tools (deferred)",
+          "tokens": 3971,
+          "kind": "deferred",
+          "isDeferred": true
+        },
+        {
+          "name": "System tools (deferred)",
+          "tokens": 13907,
+          "kind": "deferred",
+          "isDeferred": true
+        },
+        {
+          "name": "Custom agents",
+          "tokens": 8839,
+          "kind": "used",
+          "isDeferred": false
+        },
+        {
+          "name": "Memory files",
+          "tokens": 33219,
+          "kind": "used",
+          "isDeferred": false
+        },
+        {
+          "name": "Skills",
+          "tokens": 9133,
+          "kind": "used",
+          "isDeferred": false
+        },
+        {
+          "name": "Messages",
+          "tokens": 10,
+          "kind": "used",
+          "isDeferred": false
+        },
+        {
+          "name": "Autocompact buffer",
+          "tokens": 33000,
+          "kind": "buffer",
+          "isDeferred": false
+        },
+        {
+          "name": "Free space",
+          "tokens": 912767,
+          "kind": "free",
+          "isDeferred": false
+        }
+      ],
+      "memoryFiles": [
+        {
+          "path": "/Users/xiaorongli/.claude/rules/context7.md",
+          "type": "User",
+          "tokens": 321
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/git-workflow.md",
+          "type": "User",
+          "tokens": 830
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/codex-multi-account.md",
+          "type": "User",
+          "tokens": 858
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/video-generation.md",
+          "type": "User",
+          "tokens": 265
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/html-report-style.md",
+          "type": "User",
+          "tokens": 871
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/image-generation.md",
+          "type": "User",
+          "tokens": 245
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/summarize-toolchain.md",
+          "type": "User",
+          "tokens": 546
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/deep-research.md",
+          "type": "User",
+          "tokens": 294
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/gemini-cli.md",
+          "type": "User",
+          "tokens": 129
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/codex-review.md",
+          "type": "User",
+          "tokens": 743
+        },
+        {
+          "path": "/Users/xiaorongli/.claude/rules/gog.md",
+          "type": "User",
+          "tokens": 389
+        },
+        {
+          "path": "/private/tmp/flywheel-test-slot-1/project-slot-1/CLAUDE.md",
+          "type": "Project",
+          "tokens": 27728
+        }
+      ],
+      "mcpTools": [
+        {
+          "name": "mcp__xiaohongshu-mcp__check_login_status",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 63,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__delete_cookies",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 72,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__favorite_feed",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 238,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__get_collection_content",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 211,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__get_feed_detail",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 528,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__get_login_qrcode",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 70,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__like_feed",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 236,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__list_collections",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 135,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__list_feeds",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 61,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__list_saved_content",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 133,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__post_comment_to_feed",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 218,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__publish_content",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 582,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__publish_with_video",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 506,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__reply_comment_in_feed",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 290,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__search_feeds",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 432,
+          "isLoaded": false
+        },
+        {
+          "name": "mcp__xiaohongshu-mcp__user_profile",
+          "serverName": "xiaohongshu-mcp",
+          "tokens": 196,
+          "isLoaded": false
+        }
+      ],
+      "agents": [
+        {
+          "agentType": "anna-interviewer-lead",
+          "source": "userSettings",
+          "tokens": 127
+        },
+        {
+          "agentType": "Backend-Developer",
+          "source": "userSettings",
+          "tokens": 554
+        },
+        {
+          "agentType": "Bar-Raiser",
+          "source": "userSettings",
+          "tokens": 494
+        },
+        {
+          "agentType": "belle-lead",
+          "source": "userSettings",
+          "tokens": 41
+        },
+        {
+          "agentType": "claude-infra-bot-lead",
+          "source": "userSettings",
+          "tokens": 95
+        },
+        {
+          "agentType": "codex:codex-rescue",
+          "source": "plugin",
+          "tokens": 85
+        },
+        {
+          "agentType": "Content-Writer",
+          "source": "userSettings",
+          "tokens": 379
+        },
+        {
+          "agentType": "cos-lead",
+          "source": "userSettings",
+          "tokens": 45
+        },
+        {
+          "agentType": "Data-Engineer",
+          "source": "userSettings",
+          "tokens": 502
+        },
+        {
+          "agentType": "Data-Scientist",
+          "source": "userSettings",
+          "tokens": 514
+        },
+        {
+          "agentType": "everything-claude-code:architect",
+          "source": "plugin",
+          "tokens": 75
+        },
+        {
+          "agentType": "everything-claude-code:build-error-resolver",
+          "source": "plugin",
+          "tokens": 99
+        },
+        {
+          "agentType": "everything-claude-code:code-reviewer",
+          "source": "plugin",
+          "tokens": 78
+        },
+        {
+          "agentType": "everything-claude-code:database-reviewer",
+          "source": "plugin",
+          "tokens": 102
+        },
+        {
+          "agentType": "everything-claude-code:doc-updater",
+          "source": "plugin",
+          "tokens": 97
+        },
+        {
+          "agentType": "everything-claude-code:e2e-runner",
+          "source": "plugin",
+          "tokens": 132
+        },
+        {
+          "agentType": "everything-claude-code:go-build-resolver",
+          "source": "plugin",
+          "tokens": 79
+        },
+        {
+          "agentType": "everything-claude-code:go-reviewer",
+          "source": "plugin",
+          "tokens": 83
+        },
+        {
+          "agentType": "everything-claude-code:planner",
+          "source": "plugin",
+          "tokens": 82
+        },
+        {
+          "agentType": "everything-claude-code:refactor-cleaner",
+          "source": "plugin",
+          "tokens": 105
+        },
+        {
+          "agentType": "everything-claude-code:security-reviewer",
+          "source": "plugin",
+          "tokens": 117
+        },
+        {
+          "agentType": "everything-claude-code:tdd-guide",
+          "source": "plugin",
+          "tokens": 91
+        },
+        {
+          "agentType": "flywheel-cos-lead",
+          "source": "userSettings",
+          "tokens": 88
+        },
+        {
+          "agentType": "flywheel-eng-lead",
+          "source": "userSettings",
+          "tokens": 81
+        },
+        {
+          "agentType": "flywheel-product-lead",
+          "source": "userSettings",
+          "tokens": 155
+        },
+        {
+          "agentType": "flywheel-test-1",
+          "source": "userSettings",
+          "tokens": 47
+        },
+        {
+          "agentType": "flywheel-test-2",
+          "source": "userSettings",
+          "tokens": 47
+        },
+        {
+          "agentType": "flywheel-test-3",
+          "source": "userSettings",
+          "tokens": 47
+        },
+        {
+          "agentType": "flywheel-test-4",
+          "source": "userSettings",
+          "tokens": 47
+        },
+        {
+          "agentType": "flywheel-test-6",
+          "source": "userSettings",
+          "tokens": 62
+        },
+        {
+          "agentType": "Frontend-Developer",
+          "source": "userSettings",
+          "tokens": 537
+        },
+        {
+          "agentType": "joycon-lead",
+          "source": "userSettings",
+          "tokens": 71
+        },
+        {
+          "agentType": "Mobile-Developer",
+          "source": "userSettings",
+          "tokens": 528
+        },
+        {
+          "agentType": "mufasa-lead",
+          "source": "userSettings",
+          "tokens": 100
+        },
+        {
+          "agentType": "ops-lead",
+          "source": "userSettings",
+          "tokens": 48
+        },
+        {
+          "agentType": "Orchestrator",
+          "source": "userSettings",
+          "tokens": 470
+        },
+        {
+          "agentType": "product-lead",
+          "source": "userSettings",
+          "tokens": 49
+        },
+        {
+          "agentType": "Product-Manager",
+          "source": "userSettings",
+          "tokens": 500
+        },
+        {
+          "agentType": "QA-Engineer",
+          "source": "userSettings",
+          "tokens": 477
+        },
+        {
+          "agentType": "rafiki-lead",
+          "source": "userSettings",
+          "tokens": 92
+        },
+        {
+          "agentType": "reflection-lead",
+          "source": "userSettings",
+          "tokens": 97
+        },
+        {
+          "agentType": "Security-Engineer",
+          "source": "userSettings",
+          "tokens": 549
+        },
+        {
+          "agentType": "sub-lead",
+          "source": "userSettings",
+          "tokens": 66
+        },
+        {
+          "agentType": "tidal-echo-content-lead",
+          "source": "userSettings",
+          "tokens": 66
+        },
+        {
+          "agentType": "tidal-echo-cos-lead",
+          "source": "userSettings",
+          "tokens": 73
+        },
+        {
+          "agentType": "UX-Designer",
+          "source": "userSettings",
+          "tokens": 566
+        }
+      ],
+      "systemTools": null,
+      "deferredBuiltinTools": null,
+      "skills": {
+        "totalSkills": 111,
+        "includedSkills": 111,
+        "tokens": 9133,
+        "skillFrontmatter": [
+          {
+            "name": "chrome-repair",
+            "source": "userSettings",
+            "tokens": 122
+          },
+          {
+            "name": "codex",
+            "source": "userSettings",
+            "tokens": 52
+          },
+          {
+            "name": "codex-image",
+            "source": "userSettings",
+            "tokens": 157
+          },
+          {
+            "name": "competitive-analysis",
+            "source": "userSettings",
+            "tokens": 82
+          },
+          {
+            "name": "computer-bootstrap",
+            "source": "userSettings",
+            "tokens": 15
+          },
+          {
+            "name": "deep-research",
+            "source": "userSettings",
+            "tokens": 106
+          },
+          {
+            "name": "defining-product-vision",
+            "source": "userSettings",
+            "tokens": 79
+          },
+          {
+            "name": "dogfooding",
+            "source": "userSettings",
+            "tokens": 76
+          },
+          {
+            "name": "flywheel-land",
+            "source": "userSettings",
+            "tokens": 25
+          },
+          {
+            "name": "founder-html-delivery",
+            "source": "userSettings",
+            "tokens": 105
+          },
+          {
+            "name": "gemini-image",
+            "source": "userSettings",
+            "tokens": 144
+          },
+          {
+            "name": "gemini-video",
+            "source": "userSettings",
+            "tokens": 58
+          },
+          {
+            "name": "notion",
+            "source": "userSettings",
+            "tokens": 93
+          },
+          {
+            "name": "prioritizing-roadmap",
+            "source": "userSettings",
+            "tokens": 88
+          },
+          {
+            "name": "problem-definition",
+            "source": "userSettings",
+            "tokens": 88
+          },
+          {
+            "name": "proofshot",
+            "source": "userSettings",
+            "tokens": 93
+          },
+          {
+            "name": "scoping-cutting",
+            "source": "userSettings",
+            "tokens": 69
+          },
+          {
+            "name": "video-watch",
+            "source": "userSettings",
+            "tokens": 90
+          },
+          {
+            "name": "working-backwards",
+            "source": "userSettings",
+            "tokens": 77
+          },
+          {
+            "name": "writing-engine",
+            "source": "userSettings",
+            "tokens": 55
+          },
+          {
+            "name": "xiaohongshu-learning",
+            "source": "userSettings",
+            "tokens": 119
+          },
+          {
+            "name": "brainstorm",
+            "source": "userSettings",
+            "tokens": 39
+          },
+          {
+            "name": "cleanup",
+            "source": "userSettings",
+            "tokens": 36
+          },
+          {
+            "name": "codex-code-review",
+            "source": "userSettings",
+            "tokens": 39
+          },
+          {
+            "name": "codex-design-review",
+            "source": "userSettings",
+            "tokens": 42
+          },
+          {
+            "name": "codex-relogin",
+            "source": "userSettings",
+            "tokens": 66
+          },
+          {
+            "name": "compound",
+            "source": "userSettings",
+            "tokens": 33
+          },
+          {
+            "name": "create-issue",
+            "source": "userSettings",
+            "tokens": 33
+          },
+          {
+            "name": "gemini-code-review",
+            "source": "userSettings",
+            "tokens": 35
+          },
+          {
+            "name": "gemini-design-review",
+            "source": "userSettings",
+            "tokens": 38
+          },
+          {
+            "name": "gws",
+            "source": "userSettings",
+            "tokens": 28
+          },
+          {
+            "name": "implement",
+            "source": "userSettings",
+            "tokens": 32
+          },
+          {
+            "name": "learn-permissions",
+            "source": "userSettings",
+            "tokens": 27
+          },
+          {
+            "name": "loop-codex",
+            "source": "userSettings",
+            "tokens": 57
+          },
+          {
+            "name": "mermaid",
+            "source": "userSettings",
+            "tokens": 50
+          },
+          {
+            "name": "onboarding",
+            "source": "projectSettings",
+            "tokens": 11
+          },
+          {
+            "name": "orchestrator",
+            "source": "projectSettings",
+            "tokens": 21
+          },
+          {
+            "name": "peer-review",
+            "source": "userSettings",
+            "tokens": 34
+          },
+          {
+            "name": "research",
+            "source": "userSettings",
+            "tokens": 28
+          },
+          {
+            "name": "retro",
+            "source": "userSettings",
+            "tokens": 36
+          },
+          {
+            "name": "setup-discord-lead",
+            "source": "projectSettings",
+            "tokens": 13
+          },
+          {
+            "name": "setup-flywheel-hooks",
+            "source": "projectSettings",
+            "tokens": 15
+          },
+          {
+            "name": "ship-pr",
+            "source": "userSettings",
+            "tokens": 32
+          },
+          {
+            "name": "spin",
+            "source": "userSettings",
+            "tokens": 34
+          },
+          {
+            "name": "write-plan",
+            "source": "userSettings",
+            "tokens": 26
+          },
+          {
+            "name": "everything-claude-code:e2e",
+            "source": "plugin",
+            "tokens": 58
+          },
+          {
+            "name": "everything-claude-code:evolve",
+            "source": "plugin",
+            "tokens": 30
+          },
+          {
+            "name": "everything-claude-code:go-build",
+            "source": "plugin",
+            "tokens": 57
+          },
+          {
+            "name": "everything-claude-code:go-review",
+            "source": "plugin",
+            "tokens": 56
+          },
+          {
+            "name": "everything-claude-code:go-test",
+            "source": "plugin",
+            "tokens": 51
+          },
+          {
+            "name": "everything-claude-code:instinct-export",
+            "source": "plugin",
+            "tokens": 34
+          },
+          {
+            "name": "everything-claude-code:instinct-import",
+            "source": "plugin",
+            "tokens": 35
+          },
+          {
+            "name": "everything-claude-code:instinct-status",
+            "source": "plugin",
+            "tokens": 32
+          },
+          {
+            "name": "everything-claude-code:plan",
+            "source": "plugin",
+            "tokens": 53
+          },
+          {
+            "name": "everything-claude-code:skill-create",
+            "source": "plugin",
+            "tokens": 56
+          },
+          {
+            "name": "everything-claude-code:tdd",
+            "source": "plugin",
+            "tokens": 58
+          },
+          {
+            "name": "codex:rescue",
+            "source": "plugin",
+            "tokens": 39
+          },
+          {
+            "name": "codex:setup",
+            "source": "plugin",
+            "tokens": 35
+          },
+          {
+            "name": "everything-claude-code:backend-patterns",
+            "source": "plugin",
+            "tokens": 62
+          },
+          {
+            "name": "everything-claude-code:clickhouse-io",
+            "source": "plugin",
+            "tokens": 60
+          },
+          {
+            "name": "everything-claude-code:coding-standards",
+            "source": "plugin",
+            "tokens": 53
+          },
+          {
+            "name": "everything-claude-code:continuous-learning",
+            "source": "plugin",
+            "tokens": 53
+          },
+          {
+            "name": "everything-claude-code:continuous-learning-v2",
+            "source": "plugin",
+            "tokens": 70
+          },
+          {
+            "name": "everything-claude-code:eval-harness",
+            "source": "plugin",
+            "tokens": 48
+          },
+          {
+            "name": "everything-claude-code:frontend-patterns",
+            "source": "plugin",
+            "tokens": 53
+          },
+          {
+            "name": "everything-claude-code:golang-patterns",
+            "source": "plugin",
+            "tokens": 54
+          },
+          {
+            "name": "everything-claude-code:golang-testing",
+            "source": "plugin",
+            "tokens": 64
+          },
+          {
+            "name": "everything-claude-code:iterative-retrieval",
+            "source": "plugin",
+            "tokens": 45
+          },
+          {
+            "name": "everything-claude-code:postgres-patterns",
+            "source": "plugin",
+            "tokens": 56
+          },
+          {
+            "name": "everything-claude-code:security-review",
+            "source": "plugin",
+            "tokens": 84
+          },
+          {
+            "name": "everything-claude-code:strategic-compact",
+            "source": "plugin",
+            "tokens": 59
+          },
+          {
+            "name": "everything-claude-code:tdd-workflow",
+            "source": "plugin",
+            "tokens": 70
+          },
+          {
+            "name": "codex:codex-cli-runtime",
+            "source": "plugin",
+            "tokens": 36
+          },
+          {
+            "name": "codex:codex-result-handling",
+            "source": "plugin",
+            "tokens": 33
+          },
+          {
+            "name": "codex:gpt-5-4-prompting",
+            "source": "plugin",
+            "tokens": 57
+          },
+          {
+            "name": "superpowers:brainstorming",
+            "source": "plugin",
+            "tokens": 76
+          },
+          {
+            "name": "superpowers:dispatching-parallel-agents",
+            "source": "plugin",
+            "tokens": 50
+          },
+          {
+            "name": "superpowers:executing-plans",
+            "source": "plugin",
+            "tokens": 45
+          },
+          {
+            "name": "superpowers:finishing-a-development-branch",
+            "source": "plugin",
+            "tokens": 82
+          },
+          {
+            "name": "superpowers:receiving-code-review",
+            "source": "plugin",
+            "tokens": 90
+          },
+          {
+            "name": "superpowers:requesting-code-review",
+            "source": "plugin",
+            "tokens": 48
+          },
+          {
+            "name": "superpowers:subagent-driven-development",
+            "source": "plugin",
+            "tokens": 43
+          },
+          {
+            "name": "superpowers:systematic-debugging",
+            "source": "plugin",
+            "tokens": 42
+          },
+          {
+            "name": "superpowers:test-driven-development",
+            "source": "plugin",
+            "tokens": 39
+          },
+          {
+            "name": "superpowers:using-git-worktrees",
+            "source": "plugin",
+            "tokens": 77
+          },
+          {
+            "name": "superpowers:using-superpowers",
+            "source": "plugin",
+            "tokens": 64
+          },
+          {
+            "name": "superpowers:verification-before-completion",
+            "source": "plugin",
+            "tokens": 90
+          },
+          {
+            "name": "superpowers:writing-plans",
+            "source": "plugin",
+            "tokens": 38
+          },
+          {
+            "name": "superpowers:writing-skills",
+            "source": "plugin",
+            "tokens": 42
+          },
+          {
+            "name": "dataviz",
+            "source": "built-in",
+            "tokens": 482
+          },
+          {
+            "name": "update-config",
+            "source": "built-in",
+            "tokens": 236
+          },
+          {
+            "name": "keybindings-help",
+            "source": "built-in",
+            "tokens": 83
+          },
+          {
+            "name": "code-review",
+            "source": "built-in",
+            "tokens": 284
+          },
+          {
+            "name": "simplify",
+            "source": "built-in",
+            "tokens": 63
+          },
+          {
+            "name": "fewer-permission-prompts",
+            "source": "built-in",
+            "tokens": 64
+          },
+          {
+            "name": "loop",
+            "source": "built-in",
+            "tokens": 115
+          },
+          {
+            "name": "schedule",
+            "source": "built-in",
+            "tokens": 127
+          },
+          {
+            "name": "claude-api",
+            "source": "built-in",
+            "tokens": 361
+          },
+          {
+            "name": "workflow-authoring",
+            "source": "built-in",
+            "tokens": 84
+          },
+          {
+            "name": "run",
+            "source": "built-in",
+            "tokens": 123
+          },
+          {
+            "name": "init",
+            "source": "built-in",
+            "tokens": 22
+          },
+          {
+            "name": "security-review",
+            "source": "built-in",
+            "tokens": 30
+          },
+          {
+            "name": "docs",
+            "source": "syncedSkills",
+            "tokens": 334
+          },
+          {
+            "name": "docx",
+            "source": "syncedSkills",
+            "tokens": 320
+          },
+          {
+            "name": "google-workspace",
+            "source": "syncedSkills",
+            "tokens": 326
+          },
+          {
+            "name": "import-memory",
+            "source": "syncedSkills",
+            "tokens": 58
+          },
+          {
+            "name": "morning",
+            "source": "syncedSkills",
+            "tokens": 122
+          },
+          {
+            "name": "pdf",
+            "source": "syncedSkills",
+            "tokens": 154
+          },
+          {
+            "name": "pptx",
+            "source": "syncedSkills",
+            "tokens": 328
+          },
+          {
+            "name": "skill-creator",
+            "source": "syncedSkills",
+            "tokens": 118
+          },
+          {
+            "name": "xlsx",
+            "source": "syncedSkills",
+            "tokens": 324
+          }
+        ]
+      }
+    },
+    "commands": [
+      {
+        "name": "chrome-repair"
+      },
+      {
+        "name": "codex"
+      },
+      {
+        "name": "codex-image"
+      },
+      {
+        "name": "competitive-analysis"
+      },
+      {
+        "name": "computer-bootstrap"
+      },
+      {
+        "name": "deep-research"
+      },
+      {
+        "name": "defining-product-vision"
+      },
+      {
+        "name": "dogfooding"
+      },
+      {
+        "name": "flywheel-land"
+      },
+      {
+        "name": "founder-html-delivery"
+      },
+      {
+        "name": "gemini-image"
+      },
+      {
+        "name": "gemini-video"
+      },
+      {
+        "name": "notion"
+      },
+      {
+        "name": "prioritizing-roadmap"
+      },
+      {
+        "name": "problem-definition"
+      },
+      {
+        "name": "proofshot"
+      },
+      {
+        "name": "scoping-cutting"
+      },
+      {
+        "name": "video-watch"
+      },
+      {
+        "name": "working-backwards"
+      },
+      {
+        "name": "writing-engine"
+      },
+      {
+        "name": "xiaohongshu-learning"
+      },
+      {
+        "name": "brainstorm"
+      },
+      {
+        "name": "cleanup"
+      },
+      {
+        "name": "codex-code-review"
+      },
+      {
+        "name": "codex-design-review"
+      },
+      {
+        "name": "codex-relogin"
+      },
+      {
+        "name": "compound"
+      },
+      {
+        "name": "create-issue"
+      },
+      {
+        "name": "gemini-code-review"
+      },
+      {
+        "name": "gemini-design-review"
+      },
+      {
+        "name": "gws"
+      },
+      {
+        "name": "implement"
+      },
+      {
+        "name": "learn-permissions"
+      },
+      {
+        "name": "loop-codex"
+      },
+      {
+        "name": "mermaid"
+      },
+      {
+        "name": "onboarding"
+      },
+      {
+        "name": "orchestrator"
+      },
+      {
+        "name": "peer-review"
+      },
+      {
+        "name": "research"
+      },
+      {
+        "name": "retro"
+      },
+      {
+        "name": "setup-discord-lead"
+      },
+      {
+        "name": "setup-flywheel-hooks"
+      },
+      {
+        "name": "ship-pr"
+      },
+      {
+        "name": "spin"
+      },
+      {
+        "name": "write-plan"
+      },
+      {
+        "name": "everything-claude-code:build-fix"
+      },
+      {
+        "name": "everything-claude-code:checkpoint"
+      },
+      {
+        "name": "everything-claude-code:code-review"
+      },
+      {
+        "name": "everything-claude-code:e2e"
+      },
+      {
+        "name": "everything-claude-code:eval"
+      },
+      {
+        "name": "everything-claude-code:evolve"
+      },
+      {
+        "name": "everything-claude-code:go-build"
+      },
+      {
+        "name": "everything-claude-code:go-review"
+      },
+      {
+        "name": "everything-claude-code:go-test"
+      },
+      {
+        "name": "everything-claude-code:instinct-export"
+      },
+      {
+        "name": "everything-claude-code:instinct-import"
+      },
+      {
+        "name": "everything-claude-code:instinct-status"
+      },
+      {
+        "name": "everything-claude-code:learn"
+      },
+      {
+        "name": "everything-claude-code:orchestrate"
+      },
+      {
+        "name": "everything-claude-code:plan"
+      },
+      {
+        "name": "everything-claude-code:refactor-clean"
+      },
+      {
+        "name": "everything-claude-code:setup-pm"
+      },
+      {
+        "name": "everything-claude-code:skill-create"
+      },
+      {
+        "name": "everything-claude-code:tdd"
+      },
+      {
+        "name": "everything-claude-code:test-coverage"
+      },
+      {
+        "name": "everything-claude-code:update-codemaps"
+      },
+      {
+        "name": "everything-claude-code:update-docs"
+      },
+      {
+        "name": "everything-claude-code:verify"
+      },
+      {
+        "name": "codex:adversarial-review"
+      },
+      {
+        "name": "codex:cancel"
+      },
+      {
+        "name": "codex:rescue"
+      },
+      {
+        "name": "codex:result"
+      },
+      {
+        "name": "codex:review"
+      },
+      {
+        "name": "codex:setup"
+      },
+      {
+        "name": "codex:status"
+      },
+      {
+        "name": "everything-claude-code:backend-patterns"
+      },
+      {
+        "name": "everything-claude-code:clickhouse-io"
+      },
+      {
+        "name": "everything-claude-code:coding-standards"
+      },
+      {
+        "name": "everything-claude-code:continuous-learning"
+      },
+      {
+        "name": "everything-claude-code:continuous-learning-v2"
+      },
+      {
+        "name": "everything-claude-code:eval-harness"
+      },
+      {
+        "name": "everything-claude-code:frontend-patterns"
+      },
+      {
+        "name": "everything-claude-code:golang-patterns"
+      },
+      {
+        "name": "everything-claude-code:golang-testing"
+      },
+      {
+        "name": "everything-claude-code:iterative-retrieval"
+      },
+      {
+        "name": "everything-claude-code:postgres-patterns"
+      },
+      {
+        "name": "everything-claude-code:project-guidelines-example"
+      },
+      {
+        "name": "everything-claude-code:security-review"
+      },
+      {
+        "name": "everything-claude-code:strategic-compact"
+      },
+      {
+        "name": "everything-claude-code:tdd-workflow"
+      },
+      {
+        "name": "everything-claude-code:verification-loop"
+      },
+      {
+        "name": "superpowers:brainstorming"
+      },
+      {
+        "name": "superpowers:dispatching-parallel-agents"
+      },
+      {
+        "name": "superpowers:executing-plans"
+      },
+      {
+        "name": "superpowers:finishing-a-development-branch"
+      },
+      {
+        "name": "superpowers:receiving-code-review"
+      },
+      {
+        "name": "superpowers:requesting-code-review"
+      },
+      {
+        "name": "superpowers:subagent-driven-development"
+      },
+      {
+        "name": "superpowers:systematic-debugging"
+      },
+      {
+        "name": "superpowers:test-driven-development"
+      },
+      {
+        "name": "superpowers:using-git-worktrees"
+      },
+      {
+        "name": "superpowers:using-superpowers"
+      },
+      {
+        "name": "superpowers:verification-before-completion"
+      },
+      {
+        "name": "superpowers:writing-plans"
+      },
+      {
+        "name": "superpowers:writing-skills"
+      },
+      {
+        "name": "design"
+      },
+      {
+        "name": "design-sync"
+      },
+      {
+        "name": "dataviz"
+      },
+      {
+        "name": "update-config"
+      },
+      {
+        "name": "verify"
+      },
+      {
+        "name": "debug"
+      },
+      {
+        "name": "code-review"
+      },
+      {
+        "name": "simplify"
+      },
+      {
+        "name": "batch"
+      },
+      {
+        "name": "fewer-permission-prompts"
+      },
+      {
+        "name": "doctor"
+      },
+      {
+        "name": "loop"
+      },
+      {
+        "name": "schedule"
+      },
+      {
+        "name": "claude-api"
+      },
+      {
+        "name": "workflow-authoring"
+      },
+      {
+        "name": "run"
+      },
+      {
+        "name": "run-skill-generator"
+      },
+      {
+        "name": "advisor"
+      },
+      {
+        "name": "agents"
+      },
+      {
+        "name": "auto-mode-setup"
+      },
+      {
+        "name": "autocompact"
+      },
+      {
+        "name": "clear"
+      },
+      {
+        "name": "color"
+      },
+      {
+        "name": "compact"
+      },
+      {
+        "name": "config"
+      },
+      {
+        "name": "output-style"
+      },
+      {
+        "name": "context"
+      },
+      {
+        "name": "effort"
+      },
+      {
+        "name": "fast"
+      },
+      {
+        "name": "focus"
+      },
+      {
+        "name": "heapdump"
+      },
+      {
+        "name": "init"
+      },
+      {
+        "name": "mcp"
+      },
+      {
+        "name": "import"
+      },
+      {
+        "name": "model"
+      },
+      {
+        "name": "__remote-workflow"
+      },
+      {
+        "name": "workflow-launch-exec"
+      },
+      {
+        "name": "reload-plugins"
+      },
+      {
+        "name": "reload-skills"
+      },
+      {
+        "name": "rename"
+      },
+      {
+        "name": "ultrareview"
+      },
+      {
+        "name": "security-review"
+      },
+      {
+        "name": "usage-credits"
+      },
+      {
+        "name": "extra-usage"
+      },
+      {
+        "name": "usage"
+      },
+      {
+        "name": "insights"
+      },
+      {
+        "name": "recap"
+      },
+      {
+        "name": "skill-doctor"
+      },
+      {
+        "name": "goal"
+      },
+      {
+        "name": "design-consent"
+      },
+      {
+        "name": "design-revoke"
+      },
+      {
+        "name": "list-agents"
+      },
+      {
+        "name": "team-onboarding"
+      },
+      {
+        "name": "docs"
+      },
+      {
+        "name": "docx"
+      },
+      {
+        "name": "google-workspace"
+      },
+      {
+        "name": "import-memory"
+      },
+      {
+        "name": "morning"
+      },
+      {
+        "name": "pdf"
+      },
+      {
+        "name": "pptx"
+      },
+      {
+        "name": "skill-creator"
+      },
+      {
+        "name": "xlsx"
+      }
+    ],
+    "mcpServers": [
+      {
+        "name": "plugin:context7:context7",
+        "status": "connected",
+        "scope": "dynamic",
+        "tools": [
+          {
+            "name": "resolve-library-id"
+          },
+          {
+            "name": "query-docs"
+          }
+        ]
+      },
+      {
+        "name": "plugin:playwright:playwright",
+        "status": "pending",
+        "scope": "dynamic"
+      },
+      {
+        "name": "linear-api",
+        "status": "connected",
+        "scope": "user",
+        "tools": [
+          {
+            "name": "get_attachment"
+          },
+          {
+            "name": "prepare_attachment_upload"
+          },
+          {
+            "name": "create_attachment_from_upload"
+          },
+          {
+            "name": "create_attachment"
+          },
+          {
+            "name": "delete_attachment"
+          },
+          {
+            "name": "list_agent_skills"
+          },
+          {
+            "name": "get_agent_skill"
+          },
+          {
+            "name": "list_comments"
+          },
+          {
+            "name": "save_comment"
+          },
+          {
+            "name": "delete_comment"
+          },
+          {
+            "name": "list_cycles"
+          },
+          {
+            "name": "list_custom_views"
+          },
+          {
+            "name": "get_document"
+          },
+          {
+            "name": "list_documents"
+          },
+          {
+            "name": "save_document"
+          },
+          {
+            "name": "extract_images"
+          },
+          {
+            "name": "get_issue"
+          },
+          {
+            "name": "list_issues"
+          },
+          {
+            "name": "save_issue"
+          },
+          {
+            "name": "list_issue_statuses"
+          },
+          {
+            "name": "get_issue_status"
+          },
+          {
+            "name": "list_issue_labels"
+          },
+          {
+            "name": "save_issue_label"
+          },
+          {
+            "name": "create_issue_label"
+          },
+          {
+            "name": "retire_issue_label"
+          },
+          {
+            "name": "restore_issue_label"
+          },
+          {
+            "name": "list_projects"
+          },
+          {
+            "name": "get_project"
+          },
+          {
+            "name": "save_project"
+          },
+          {
+            "name": "list_project_labels"
+          },
+          {
+            "name": "retire_project_label"
+          },
+          {
+            "name": "restore_project_label"
+          },
+          {
+            "name": "save_project_label"
+          },
+          {
+            "name": "list_release_pipelines"
+          },
+          {
+            "name": "list_releases"
+          },
+          {
+            "name": "get_release"
+          },
+          {
+            "name": "save_release"
+          },
+          {
+            "name": "list_release_notes"
+          },
+          {
+            "name": "get_release_note"
+          },
+          {
+            "name": "save_release_note"
+          },
+          {
+            "name": "share_issue"
+          },
+          {
+            "name": "unshare_issue"
+          },
+          {
+            "name": "list_milestones"
+          },
+          {
+            "name": "get_milestone"
+          },
+          {
+            "name": "save_milestone"
+          },
+          {
+            "name": "get_notifications"
+          },
+          {
+            "name": "mark_notification"
+          },
+          {
+            "name": "list_teams"
+          },
+          {
+            "name": "get_team"
+          },
+          {
+            "name": "get_triage_responsibility"
+          },
+          {
+            "name": "list_templates"
+          },
+          {
+            "name": "get_template"
+          },
+          {
+            "name": "list_users"
+          },
+          {
+            "name": "get_user"
+          },
+          {
+            "name": "get_workspace"
+          },
+          {
+            "name": "search_documentation"
+          },
+          {
+            "name": "get_status_updates"
+          },
+          {
+            "name": "save_status_update"
+          },
+          {
+            "name": "delete_status_update"
+          }
+        ]
+      },
+      {
+        "name": "xiaohongshu-mcp",
+        "status": "connected",
+        "scope": "user",
+        "tools": [
+          {
+            "name": "check_login_status"
+          },
+          {
+            "name": "delete_cookies"
+          },
+          {
+            "name": "favorite_feed"
+          },
+          {
+            "name": "get_collection_content"
+          },
+          {
+            "name": "get_feed_detail"
+          },
+          {
+            "name": "get_login_qrcode"
+          },
+          {
+            "name": "like_feed"
+          },
+          {
+            "name": "list_collections"
+          },
+          {
+            "name": "list_feeds"
+          },
+          {
+            "name": "list_saved_content"
+          },
+          {
+            "name": "post_comment_to_feed"
+          },
+          {
+            "name": "publish_content"
+          },
+          {
+            "name": "publish_with_video"
+          },
+          {
+            "name": "reply_comment_in_feed"
+          },
+          {
+            "name": "search_feeds"
+          },
+          {
+            "name": "user_profile"
+          }
+        ]
+      },
+      {
+        "name": "claude.ai Claude Docs",
+        "status": "connected",
+        "scope": "claudeai",
+        "tools": [
+          {
+            "name": "create"
+          },
+          {
+            "name": "read"
+          },
+          {
+            "name": "update"
+          },
+          {
+            "name": "delete"
+          },
+          {
+            "name": "query"
+          },
+          {
+            "name": "batch"
+          },
+          {
+            "name": "guide"
+          },
+          {
+            "name": "export"
+          }
+        ]
+      }
+    ]
+  },
+  "limitations": [
+    "Hand-built non-Lead launch used for endpoint discovery; no pinned role prompt or real consumer launch",
+    "MCP playwright was pending at collection; not a complete loaded-server baseline",
+    "No model turn or representative task executed",
+    "Default model used; not a paired sample",
+    "Total fixed prefix remains unknown until hook and deferred-roster attribution is measured"
+  ],
+  "capturedAt": "2026-09-26T05:04:41.503247+00:00",
+  "probeSourceSha256": "e2b5b849070f08c233363f8adfe3c2d5ec88a985bbf1044b1ba7747944ce78f9",
+  "endpoint": "SDK initialize -> get_context_usage -> mcp_status, no user/model turn"
+}

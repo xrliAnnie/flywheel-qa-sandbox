@@ -1165,6 +1165,7 @@ expected_shard_tests = {
         "Test — NPM packaging pipeline + packaged-mode seams",
         "Test — FLY-1572 mailbox migration CLI",
         "Test — FLY-1861 CI cancellation and classification contracts",
+        "Test — FLY-2913 role prefix inventory and weekly metadata census",
         "Test — FLY-2533 packed phase protocols",
         "Test — FLY-519 fleet provisioning + zero-secret gate",
         "Test — FLY-1189 fault injector safety lock",

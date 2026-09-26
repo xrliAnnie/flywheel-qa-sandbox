@@ -1302,6 +1302,10 @@ jobs:
           bash scripts/__tests__/ship-report-failure.test.sh
           bash scripts/__tests__/ci-classify.test.sh
           node --test scripts/__tests__/flywheel-snapshot-control.test.mjs
+      - name: Test — FLY-2913 role prefix inventory and weekly metadata census
+        run: |
+          bash scripts/__tests__/qa-2913-prefix-inventory.test.sh
+          bash scripts/__tests__/qa-2913-weekly-tools.test.sh
 
       - name: Test — FLY-2533 packed phase protocols
         run: bash scripts/__tests__/fly2533-phase-protocol-assets.test.sh
