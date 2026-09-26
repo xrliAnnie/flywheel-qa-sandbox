@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-26T13:34:37.896Z
-nextStep: Finalize and verify founder HTML with local-render failure placeholders
+phaseCursor: 5/6
+updated: 2026-09-26T13:35:44.504Z
+nextStep: Commit and push final design artifacts, then publish and report the hosted HTML
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (4/6)
-**next**: Finalize and verify founder HTML with local-render failure placeholders
+**phase**: design (5/6)
+**next**: Commit and push final design artifacts, then publish and report the hosted HTML
