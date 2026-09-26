@@ -58,6 +58,7 @@ import type {
 	WorkflowCompletionActivationContext,
 } from "../StateStore.js";
 import { ENGINE_INVARIANT_REASON_PREFIX } from "../workflow-engine-invariant.js";
+import { parseCompletionDrainEnvelope } from "./completion-drain.js";
 import { validateDesignHtmlCompletion } from "./design-html-admission.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
@@ -675,6 +676,44 @@ async function tryReconcileCompleteOnce(
 				workflowActivation.activationId,
 			)?.binding
 		: deps.store.getGeneralizedWorkflowNodeForExecution(execId)?.binding;
+	// A missing exact binding never turns an enrolled actor into a legacy one.
+	// In particular, execution-only lookup is intentionally ambiguous after reuse.
+	if (
+		(workflowActivation &&
+			(!generalizedBinding ||
+				generalizedBinding.execution_id !== execId ||
+				generalizedBinding.activation_id !== workflowActivation.activationId ||
+				generalizedBinding.run_id !== workflowActivation.runId ||
+				generalizedBinding.node_id !== workflowActivation.nodeId ||
+				generalizedBinding.attempt !== workflowActivation.attempt)) ||
+		(!generalizedBinding && deps.store.isEnrolledWorkflowCarrier(execId))
+	) {
+		const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
+		log(
+			`[complete-reconciler] enrolled activation authority missing or conflicting for ${execId}; quarantined: ${qp}`,
+		);
+		return { kind: "quarantined", reason: "invalid", quarantinePath: qp };
+	}
+	const isEnrolledFailure =
+		generalizedBinding !== undefined &&
+		body.payload?.decision?.route === "blocked";
+	const hasFailureReceipt = () => {
+		const envelope = parseCompletionDrainEnvelope(body.payload);
+		if (!envelope.ok) return false;
+		const checked = deps.store.checkEnrolledFailure({
+			executionId: execId,
+			sourceEventId: body.event_id,
+			reason:
+				typeof body.payload?.summary === "string" ? body.payload.summary : "",
+			completionSubmission: envelope.completionSubmission,
+			workflowActivation,
+		});
+		return checked.ok && checked.idempotentReplay;
+	};
+	if (isEnrolledFailure && hasFailureReceipt()) {
+		safeUnlink(markerPath, log);
+		return { kind: "duplicate_terminal", status: "node_failed" };
+	}
 	const generalizedReceipt = generalizedBinding
 		? deps.store.getWorkflowNodeCompletion(
 				generalizedBinding.run_id,
@@ -810,6 +849,7 @@ async function tryReconcileCompleteOnce(
 	// `approved_to_ship` fall through to the eligibility check (an approved+merged row is
 	// eligible → not parked → normal completion; a parked/unapproved row → parked here).
 	if (
+		!isEnrolledFailure &&
 		markerLanding === "merged" &&
 		currentSession &&
 		!currentSession.merge_block_reason &&
@@ -1130,6 +1170,16 @@ async function tryReconcileCompleteOnce(
 	}
 
 	if (generalizedBinding) {
+		if (isEnrolledFailure) {
+			if (!hasFailureReceipt()) {
+				return {
+					kind: "transient_failed",
+					error: "generalized failure receipt missing or conflicting",
+				};
+			}
+			safeUnlink(markerPath, log);
+			return { kind: "reconciled", status: "node_failed" };
+		}
 		if (isClosedSettledCompletion(json?.settled)) {
 			safeUnlink(markerPath, log);
 			return { kind: "reconciled", status: json.settled };
@@ -1267,6 +1317,12 @@ export function applyQuarantineFallback(args: {
 	log?: (m: string) => void;
 }): void {
 	const log = args.log ?? ((m: string) => console.log(m));
+	if (args.store.isEnrolledWorkflowCarrier(args.executionId)) {
+		log(
+			`[complete-reconciler] enrolled carrier ${args.executionId}: quarantine cannot project a legacy terminal status`,
+		);
+		return;
+	}
 	if (args.tmuxAlive) {
 		log(
 			args.livenessVerdict === "indeterminate"

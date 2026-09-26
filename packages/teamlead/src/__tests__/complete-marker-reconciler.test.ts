@@ -53,6 +53,7 @@ function makeStore(initial: Record<string, SessionRow> = {}) {
 	return {
 		sessions,
 		getSession: vi.fn((id: string) => sessions.get(id)),
+		isEnrolledWorkflowCarrier: vi.fn(() => false),
 		getGeneralizedWorkflowNodeForExecution: vi.fn(() => undefined),
 		getGeneralizedWorkflowNodeForActivation: vi.fn(() => undefined),
 		getWorkflowNodeCompletion: vi.fn(() => undefined),
@@ -978,6 +979,17 @@ describe("tryReconcileComplete", () => {
 			});
 			const store = makeStore({
 				"exec-alert-retry": { status: "running" },
+			});
+			Object.assign(store, {
+				getGeneralizedWorkflowNodeForActivation: vi.fn(() => ({
+					binding: {
+						activation_id: "activation-1",
+						execution_id: "exec-alert-retry",
+						run_id: "run-1",
+						node_id: "implement",
+						attempt: 2,
+					},
+				})),
 			});
 			const fetchFn = vi.fn(
 				async () =>

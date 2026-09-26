@@ -680,6 +680,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		);
 		const generalizedExecution =
 			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
+		if (
+			!generalizedExecution &&
+			this.store.isEnrolledWorkflowCarrier(env.executionId)
+		) {
+			console.warn(
+				`[DirectEventSink] enrolled completion lacks exact activation for ${env.executionId}; refusing legacy projection`,
+			);
+			return;
+		}
 		if (generalizedExecution) {
 			// FLY-1434: BlueprintResult has no PR-number/target-repository evidence
 			// carrier. Never infer a binding from session display metadata here.
@@ -1402,6 +1411,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		);
 		const generalizedExecution =
 			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
+		if (
+			!generalizedExecution &&
+			this.store.isEnrolledWorkflowCarrier(env.executionId)
+		) {
+			console.warn(
+				`[DirectEventSink] enrolled failure lacks exact activation for ${env.executionId}; refusing legacy projection`,
+			);
+			return;
+		}
 		if (generalizedExecution) {
 			const leadIntent = resolveWorkflowReplacementLeadIntent({
 				projects: this.projects,

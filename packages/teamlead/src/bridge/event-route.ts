@@ -936,7 +936,12 @@ export function createEventRouter(
 			// `session_completed` to have written `decision_route`. The
 			// "session=running, no prior session_completed" case is out of
 			// scope (would need stage payload to carry route).
-			if (stage === "completed") {
+			// Enrolled stages are informational: only the atomic completion/failure
+			// routes may project their terminal state, including on stage replay.
+			if (
+				stage === "completed" &&
+				!store.isEnrolledWorkflowCarrier(event.execution_id)
+			) {
 				const landingStatus = payload.landing_status as
 					| {
 							status?: string;
@@ -1998,6 +2003,16 @@ export function createEventRouter(
 				const generalized = store.getGeneralizedWorkflowNodeForExecution(
 					event.execution_id,
 				);
+				if (
+					!generalized &&
+					store.isEnrolledWorkflowCarrier(event.execution_id)
+				) {
+					res.status(409).json({
+						error: "workflow_teardown_record_rejected",
+						reason: "workflow_activation_required",
+					});
+					return;
+				}
 				if (generalized) {
 					const recorded = store.recordEnrolledTerminalSignal({
 						executionId: event.execution_id,
@@ -2030,6 +2045,13 @@ export function createEventRouter(
 			const generalized = store.getGeneralizedWorkflowNodeForExecution(
 				event.execution_id,
 			);
+			if (!generalized && store.isEnrolledWorkflowCarrier(event.execution_id)) {
+				res.status(409).json({
+					error: "workflow_teardown_record_rejected",
+					reason: "workflow_activation_required",
+				});
+				return;
+			}
 			if (generalized) {
 				const failure = normalizeTerminalFailureInfo(event.payload?.failure);
 				const leadIntent = resolveWorkflowReplacementLeadIntent({

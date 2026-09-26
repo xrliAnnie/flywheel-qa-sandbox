@@ -1,13 +1,27 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApplyTransitionOpts } from "../../applyTransition.js";
+import { DirectEventSink } from "../../DirectEventSink.js";
+import { DirectiveExecutor } from "../../DirectiveExecutor.js";
 import { StateStore } from "../../StateStore.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
+import {
+	applyQuarantineFallback,
+	tryReconcileComplete,
+} from "../complete-marker-reconciler.js";
 import { commDbPathForProject, createEventRouter } from "../event-route.js";
 import { tokenAuthMiddleware } from "../plugin.js";
 import type { BridgeConfig } from "../types.js";
@@ -32,6 +46,8 @@ describe("FLY-2922 enrolled blocked completion", () => {
 	let server: Server | undefined;
 	let url: string;
 	let epoch: number;
+	let sink: DirectEventSink;
+	let transitionOpts: ApplyTransitionOpts;
 
 	beforeEach(async () => {
 		root = mkdtempSync(join(tmpdir(), "workflow-completion-failure-"));
@@ -172,6 +188,12 @@ describe("FLY-2922 enrolled blocked completion", () => {
 			orphanThresholdMinutes: 60,
 		};
 		const app = express();
+		transitionOpts = {
+			store,
+			fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS),
+			executor: new DirectiveExecutor(store),
+		};
+		sink = new DirectEventSink(store, config, []);
 		app.use(express.json());
 		app.use(
 			"/events",
@@ -194,6 +216,8 @@ describe("FLY-2922 enrolled blocked completion", () => {
 					},
 				],
 				config,
+				undefined,
+				transitionOpts,
 			),
 		);
 		await new Promise<void>((resolve, reject) => {
@@ -241,6 +265,272 @@ describe("FLY-2922 enrolled blocked completion", () => {
 				.all(RUN),
 		};
 	}
+
+	function admitReusedActor() {
+		store!.upsertWorkflowRunNode({
+			runId: RUN,
+			nodeId: "produce",
+			attempt: 2,
+			executionId: EXEC,
+			state: "pending",
+		});
+		expect(
+			store!.admitGeneralizedWorkflowExecution({
+				runId: RUN,
+				nodeId: "produce",
+				attempt: 2,
+				executionId: EXEC,
+				activationId: "reused-activation",
+				activationMode: "wake",
+				env: flags,
+				now: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 60_000).toISOString(),
+				absoluteDeadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+			}),
+		).toMatchObject({ ok: true });
+		expect(store!.listWorkflowActivationsForActor(EXEC)).toHaveLength(2);
+		expect(store!.getGeneralizedWorkflowNodeForExecution(EXEC)).toBeUndefined();
+		expect(store!.isEnrolledWorkflowCarrier(EXEC)).toBe(true);
+	}
+
+	function marker(payload: Record<string, unknown>) {
+		const markerDir = join(root, "markers");
+		mkdirSync(markerDir, { recursive: true });
+		writeFileSync(
+			join(markerDir, `${EXEC}.json`),
+			JSON.stringify({
+				event_id: "marker-failure",
+				execution_id: EXEC,
+				issue_id: ISSUE,
+				project_name: PROJECT,
+				event_type: "session_completed",
+				source: "flywheel-comm",
+				payload,
+			}),
+		);
+		return {
+			store: store!,
+			bridgeBaseUrl: url.replace(/\/events$/, ""),
+			ingestToken: "failure-ingest",
+			markerDir,
+			quarantineDir: join(root, "quarantine"),
+			log: () => {},
+		};
+	}
+
+	it.each([false, true])(
+		"keeps enrolled stage completion informational, including replay (reused=%s)",
+		async (reused) => {
+			if (reused) admitReusedActor();
+			const before = state();
+			for (let replay = 0; replay < 2; replay++) {
+				const response = await fetch(url, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: "Bearer failure-ingest",
+					},
+					body: JSON.stringify({
+						event_id: "enrolled-stage",
+						execution_id: EXEC,
+						issue_id: ISSUE,
+						project_name: PROJECT,
+						event_type: "stage_changed",
+						source: "flywheel-comm",
+						payload: { stage: "completed" },
+					}),
+				});
+				expect(response.status).toBe(200);
+				await response.text();
+				expect(store!.getSession(EXEC)).toMatchObject({
+					status: "running",
+					session_stage: "completed",
+				});
+			}
+			expect(state().run).toEqual(before.run);
+			expect(state().nodes).toEqual(before.nodes);
+			expect(state().completion).toBeUndefined();
+		},
+	);
+
+	it.each(["completed", "failed"] as const)(
+		"does not project an ambiguous raw %s signal through either legacy sink",
+		async (signal) => {
+			admitReusedActor();
+			const before = state();
+			const env = { executionId: EXEC, issueId: ISSUE, projectName: PROJECT };
+			if (signal === "completed")
+				await sink.emitCompleted(env, {
+					success: true,
+					decision: { route: "blocked", reasoning: "raw exit" },
+				});
+			else await sink.emitFailed(env, "raw failure");
+			expect(state()).toEqual(before);
+			const response = await fetch(url, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer failure-ingest",
+				},
+				body: JSON.stringify({
+					event_id: `raw-${signal}`,
+					execution_id: EXEC,
+					issue_id: ISSUE,
+					project_name: PROJECT,
+					event_type: `session_${signal}`,
+					source: "orchestrator",
+					payload: { decision: { route: "blocked" }, error: "raw failure" },
+				}),
+			});
+			expect(response.status).toBe(409);
+			await response.text();
+			expect(state()).toEqual(before);
+		},
+	);
+
+	it.each([false, true])(
+		"does not force an enrolled dead carrier terminal after marker quarantine (reused=%s)",
+		(reused) => {
+			if (reused) admitReusedActor();
+			const before = state();
+			applyQuarantineFallback({
+				store: store!,
+				transitionOpts,
+				executionId: EXEC,
+				issueId: ISSUE,
+				projectName: PROJECT,
+				tmuxAlive: false,
+				routeStatus: "completed",
+				quarantinePath: join(root, "quarantined.json"),
+				log: () => {},
+			});
+			expect(state()).toEqual(before);
+		},
+	);
+
+	it("does not treat a reused actor marker without activation authority as legacy", async () => {
+		admitReusedActor();
+		store!.forceStatus(
+			EXEC,
+			"blocked",
+			new Date().toISOString(),
+			"old projection without receipt",
+		);
+		const before = state();
+		const deps = marker({ decision: { route: "blocked" }, summary: REASON });
+		const outcome = await tryReconcileComplete(EXEC, deps);
+		expect(outcome.kind).toBe("quarantined");
+		expect(state()).toEqual(before);
+	});
+
+	it.each([false, true])(
+		"settles a blocked marker only through its durable failure receipt (stale merged evidence=%s)",
+		async (merged) => {
+			const payload = {
+				decision: { route: "blocked" },
+				summary: REASON,
+				...(merged
+					? { evidence: { landingStatus: { status: "merged" } } }
+					: {}),
+				workflowActivation: {
+					activationId: ACTIVATION,
+					runId: RUN,
+					nodeId: "produce",
+					attempt: 1,
+					turnEpoch: epoch,
+				},
+			};
+			const deps = marker(payload);
+			expect(await tryReconcileComplete(EXEC, deps)).toEqual({
+				kind: "reconciled",
+				status: "node_failed",
+			});
+			expect(existsSync(join(deps.markerDir, `${EXEC}.json`))).toBe(false);
+			expect(store!.getSession(EXEC)?.status).toBe("failed");
+			expect(
+				store!.getWorkflowNodeCompletion(RUN, "produce", 1),
+			).toBeUndefined();
+			expect(
+				store!
+					.listWorkflowRunEvents(RUN)
+					.filter((event) => event.kind === "run_recovery_required"),
+			).toHaveLength(1);
+			const before = state();
+			expect(await tryReconcileComplete(EXEC, marker(payload))).toEqual({
+				kind: "duplicate_terminal",
+				status: "node_failed",
+			});
+			expect(state()).toEqual(before);
+			for (const changedPayload of [
+				{ ...payload, summary: "Changed failure reason" },
+				{
+					...payload,
+					evidence: {
+						diagnostic: "Changed business evidence with the same reason",
+					},
+				},
+			]) {
+				const changed = await tryReconcileComplete(
+					EXEC,
+					marker(changedPayload),
+				);
+				expect(changed.kind).toBe("quarantined");
+				if (changed.kind === "quarantined")
+					expect(existsSync(changed.quarantinePath)).toBe(true);
+				expect(state()).toEqual(before);
+			}
+		},
+	);
+
+	it("keeps a blocked marker when HTTP accepts without a durable failure receipt", async () => {
+		const deps = marker({
+			decision: { route: "blocked" },
+			summary: REASON,
+			workflowActivation: {
+				activationId: ACTIVATION,
+				runId: RUN,
+				nodeId: "produce",
+				attempt: 1,
+				turnEpoch: epoch,
+			},
+		});
+		const before = state();
+		expect(
+			await tryReconcileComplete(EXEC, {
+				...deps,
+				fetchFn: async () =>
+					new Response(
+						JSON.stringify({
+							ok: true,
+							generalized: true,
+							failureRecorded: true,
+						}),
+						{ status: 200 },
+					),
+			}),
+		).toMatchObject({ kind: "transient_failed" });
+		expect(existsSync(join(deps.markerDir, `${EXEC}.json`))).toBe(true);
+		expect(state()).toEqual(before);
+	});
+
+	it("quarantines a marker whose supplied tuple conflicts with its exact activation", async () => {
+		const deps = marker({
+			decision: { route: "blocked" },
+			summary: REASON,
+			workflowActivation: {
+				activationId: ACTIVATION,
+				runId: "wrong-run",
+				nodeId: "produce",
+				attempt: 1,
+				turnEpoch: epoch,
+			},
+		});
+		const before = state();
+		expect(await tryReconcileComplete(EXEC, deps)).toMatchObject({
+			kind: "quarantined",
+		});
+		expect(state()).toEqual(before);
+	});
 
 	async function post(
 		options: {
