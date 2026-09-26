@@ -229,6 +229,36 @@ describe("evaluateLongTurn", () => {
 		);
 	});
 
+	it("fails, and the invariant objects, when a busy counted from the grace carries an issue (review R6)", () => {
+		const samples = [idle(T0 - 5_000)];
+		for (let at = T0 + 5_000; at <= T0 + 75_000; at += 5_000)
+			samples.push(
+				busy(
+					at,
+					T0 + 3_000,
+					at === T0 + 15_000 ? { kind: "issue", issueId: "FLY-1" } : undefined,
+				),
+			);
+		samples.push(idle(T0 + 80_000));
+		assert.equal(judge(samples).verdict, "fail");
+		assert.equal(
+			passInvariantViolation(samples, T0, T0 + 2_000, 75_000),
+			"issue attributed",
+		);
+	});
+
+	it("fails, and the invariant objects, when one counted busy breaks the 30 s start bound (review R6)", () => {
+		const samples = [idle(T0 - 5_000)];
+		for (let at = T0 + 5_000; at <= T0 + 75_000; at += 5_000)
+			samples.push(busy(at, at === T0 + 75_000 ? T0 - 32_000 : T0 - 27_000));
+		samples.push(idle(T0 + 80_000));
+		assert.equal(judge(samples).verdict, "fail");
+		assert.equal(
+			passInvariantViolation(samples, T0, T0 + 2_000, 75_000),
+			"start error > 30 s",
+		);
+	});
+
 	it("fails when a chat-triggered turn is attributed to an issue", () => {
 		const start = T0 + 3_000;
 		const samples = [
@@ -302,7 +332,6 @@ function passInvariantViolation(samples, injectedAtMs, truth, holdMs) {
 	const s0 = run[0].startedAtMs;
 	if (!run.every((s) => Math.abs(s.startedAtMs - s0) <= 5_000))
 		return "start not stable";
-	if (Math.abs(s0 - truth) > 30_000) return "start error > 30 s";
 	if (judged[close].atMs < truth + holdMs) return "closed before hold end";
 	if (
 		judged
@@ -321,7 +350,15 @@ function passInvariantViolation(samples, injectedAtMs, truth, holdMs) {
 	)
 		k--;
 	if (run.at(-1).atMs - sorted[k].atMs < 60_000) return "span < 60 s";
-	if (!run.every((s) => s.trigger?.kind === "undetermined"))
+	// Every busy that counts — the run and the stretch it extends back into the
+	// grace — must meet the 30 s start bound and carry no issue (review R6).
+	const counted = new Set([
+		...sorted.slice(k, sorted.indexOf(run.at(-1)) + 1),
+		...run,
+	]);
+	if ([...counted].some((s) => Math.abs(s.startedAtMs - truth) > 30_000))
+		return "start error > 30 s";
+	if (![...counted].every((s) => s.trigger?.kind === "undetermined"))
 		return "issue attributed";
 	return null;
 }
