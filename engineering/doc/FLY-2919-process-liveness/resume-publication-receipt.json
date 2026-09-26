@@ -1,0 +1,22 @@
+{
+  "executionId": "5ba474d8-f399-410e-843a-ac9cc5783b74",
+  "url": "https://fw-reports-6da062.vercel.app/r/c432689cd37c1249f89845b4b02ff69e/",
+  "reportId": "c432689cd37c1249f89845b4b02ff69e",
+  "publishOnly": true,
+  "messageId": null,
+  "delivered": false,
+  "verifiedAt": "2026-09-26T17:11:16.858296+00:00",
+  "httpStatus": 200,
+  "nonceMatchesCsp": true,
+  "placeholderRemaining": 0,
+  "sourceMatchesCommittedHtmlAfterPublisherNormalization": true,
+  "externalAssets": 0,
+  "localHtmlSha256": "86d0153758b923d09cd9be077b268e121634b1ad363155d2292dfa1c121120ae",
+  "limitations": [
+    "Inherited local Mermaid rendering failure placeholders retained.",
+    "Comment script VM rechecked; no browser visual QA or 529 acceptance."
+  ],
+  "effectiveReviewQuestionId": "f4e94872-60c5-49a3-9d47-89a63b8264f6",
+  "effectiveReviewVerdict": "APPROVED",
+  "leadResumeDirectionQuestionId": "1fb8f125-d6a0-423e-9898-d7096d910d23"
+}
