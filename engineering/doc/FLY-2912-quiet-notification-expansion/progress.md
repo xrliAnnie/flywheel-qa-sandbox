@@ -1,17 +1,17 @@
 ---
 issue: FLY-2912
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-26T16:35:13.669Z
-nextStep: Code 1277a4438 committed. 34 explicit targeted files pass;
-  lint/build/dependent typecheck pass, config related passes; teamlead bounded
-  related still running. Await that handle, finalize evidence and literal-last
-  milestone, push PR 1355, request exact-head code review, then needs_review and
-  park.
+phaseCursor: 4/4
+updated: 2026-09-26T16:36:15.036Z
+nextStep: "Flag split code 1277a4438 verified: 34 explicit files/779 passed,
+  related config 6/170 and teamlead 18/482+1 existing skip; lint/build/dependent
+  typecheck pass. Finalize milestone and push, exact-head code review/CI Scope
+  OK then complete --route needs_review --pr 1355 and park. QA owns frozen full
+  CI and 529 real Lead."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
-**phase**: implement (3/4)
-**next**: Code 1277a4438 committed. 34 explicit targeted files pass; lint/build/dependent typecheck pass, config related passes; teamlead bounded related still running. Await that handle, finalize evidence and literal-last milestone, push PR 1355, request exact-head code review, then needs_review and park.
+**phase**: implement (4/4)
+**next**: Flag split code 1277a4438 verified: 34 explicit files/779 passed, related config 6/170 and teamlead 18/482+1 existing skip; lint/build/dependent typecheck pass. Finalize milestone and push, exact-head code review/CI Scope OK then complete --route needs_review --pr 1355 and park. QA owns frozen full CI and 529 real Lead.
