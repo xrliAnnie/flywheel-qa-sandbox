@@ -1,7 +1,8 @@
 # FLY-2405 起房服务 — 实施计划
 Issue: FLY-2405 (https://linear.app/geoforge3d/issue/FLY-2405/载体起房服务-codex-runner-在沙箱里起不了-529-测试房launchctl-bootstrap-eio-看不到沙箱外进程)
 日期: 2026-09-26
-基于: 无(doc tier = plan_only;审计结论直接写在本文 §1)
+基于: exploration.md、research.md(v2 增量 §10c / C8 的依据);§1–§19 首轮为 plan_only,R3 APPROVED
+版本: v2(2026-09-26 重派:追加「服务代跑 529 generalized e2e driver」;v1 已批准正文除明确标注「v2」的段落外不改)
 
 ---
 
@@ -11,6 +12,8 @@ Bridge(在沙箱外、由 launchd 起的常驻进程)新增一个**起房 / 拆�
 `flywheel-comm room deploy|status|wait|teardown|list` 发一个**结构化请求**,Bridge 在沙箱外、用最小环境、
 从「精确到 commit 的独立源码目录」跑 `test-deploy.sh` / `test-teardown.sh`,并负责房位归属、负载排队、
 拆房前证据快照与审计。Codex 体和 Claude 体走同一条路。同时修掉两个已知拆房坑。
+**v2:** 服务再多一个固定动作 `room drill`——在沙箱外代跑 `scripts/qa-529-generalized-e2e.mjs`,
+因为该 driver 在 Codex 沙箱里既写不了 `~/.claude.json.lock`(pretrust),又会把沙箱外活进程误判为死(§10c)。
 
 ## 1. 审计结论(现状事实,均已读码核对)
 
@@ -42,6 +45,7 @@ Bridge(在沙箱外、由 launchd 起的常驻进程)新增一个**起房 / 拆�
 - G3 修拆房坑 A(悬空 / 合法软链 socket)与坑 B(陈旧 launch marker),顺带修 F6 stdout 不纯。
 - G4 QA 规则与 runner 指引改为「要房就调起房服务」,Codex / Claude 一视同仁。
 - G5 对 `codex:rescue` 与诊断类嵌套 codex 给出评估结论(§12),本单不实现。
+- G7(v2 范围追加,Lead 2026-09-26 17:0xZ 重开):`flywheel-comm room drill` —— 服务在沙箱外代跑 529 generalized e2e driver(`--real` 含宿主 pretrust),结果与 strength-two 证据合同一一对应(§10c)。
 - G6(范围追加,Linear 评论 1ae93545,来自 FLY-2910 QA@2):支持**带告警值守的房**——可选注入值守 token + dispatcher 身份 + 值守 Lead 身份映射到 slot Lead,使 `/duty/alert-board` 与 B 类工单帖能在整房里 E2E(§10b)。
 
 **非目标**
@@ -50,6 +54,7 @@ Bridge(在沙箱外、由 launchd 起的常驻进程)新增一个**起房 / 拆�
 - 不给 runner 任何生产 launchd 操作;不提供「在房里执行任意命令」「restart drill 的 `launchctl kickstart`」这类动作(列入 follow-up)。
 - 不做自动回收孤儿房(只在 `list` 标记,留 follow-up)。
 - 不把 `codex:rescue` / 嵌套 codex 搬到服务里。
+- (v2)不开放任意 driver / 任意 argv;不改 driver 与 `runner-workspace-trust.sh` 代码;不放宽 Codex 沙箱可写根。
 
 ## 3. 总体设计
 
@@ -245,7 +250,7 @@ stateDiagram-v2
 1. **必需库清单**(从房 JSON 坐标得出,不靠目录深度):`<slotDir>/teamlead.db`、`<slotDir>/state/comm/<projectName>/comm.db`;extra-lead / campaign 有独立库时按 `campaign-manifest.json` 追加。
 2. **补充发现**:`find <slotDir> -name '*.db' -not -path '*/project-slot-*' -not -path '*/node_modules/*'`(不设深度上限,排除 runner clone 与依赖目录)。
 3. 每个库 `sqlite3 <db> "VACUUM INTO '<staging>/<相对路径>'"`,再对快照 `PRAGMA quick_check` + 表数 > 0;对必需库另断言 `sessions` 表(teamlead)/`sessions` 与 `mailbox` 表(comm)存在(不断言非空——空房是合法的)。
-4. 拷 `bridge.log`、Lead 日志、`launch-manifest.json`、`campaign-manifest.json`、`launchd-leads.json`、房 JSON(去掉 token 值);排除任何 token 文件。
+4. 拷 `bridge.log`、Lead 日志、`launch-manifest.json`、`campaign-manifest.json`、`launchd-leads.json`、房 JSON(去掉 token 值);排除任何 token 文件。**(v2)** 另拷 `<slotDir>/e2e-evidence/`(driver 证据,§10c)。
 5. staging = `~/.flywheel/qa-evidence/rooms/<room_id>/<operation_id>.partial/`;全部成功后写 `manifest.json`(`expected`/`exported`/`missing` 三栏,文件大小、sha256、源路径)并 `mv` 为 `<operation_id>/`;每次 attempt 独立目录,旧快照保留,**不会**因目标已存在而失败。
 6. 必需库任一 `missing` 或导出失败 ⇒ **不执行** teardown,`teardown_failed(snapshot_failed)`;owner 可带 `skip_snapshot=true` + `reason` 重试(审计)。
 7. 保留 14 天:每次 teardown 成功后顺手删 mtime > 14 天的 `rooms/*`。
@@ -294,9 +299,63 @@ teardown 结果与 `status` 返回 `evidence_dir`(最新成功 attempt 的目录
 - **收件**:`--alert-duty` 时在 slot Lead 的 `access.json` 追加告警频道组(`requireMention:false`,`allowBots` 含 dispatcher bot 的用户 id,部署时用该 token 调 Discord `/users/@me` 解析);复用 `--alerts` 已有的频道读写预检,把 dispatcher token 加进被探测列表。
 - **前提(运维,非代码)**:记忆记录 slot 2/3/4 的 bot 对告警频道 GET 403;频道权限需 Lead 在 Discord 侧授予。部署预检失败会明确报 `alert_channel_forbidden`,不静默降级。
 
+## 10c. (v2)服务代跑 529 generalized e2e driver(G7)
+
+**为什么(依据见 research.md R1/R2):** `qa-529-generalized-e2e.mjs --real` 在 POST 前调 `runner-workspace-trust.sh pretrust-dual`,
+要 `mkdir ~/.claude.json.lock` 并写 `~/.codex/config.toml`,Codex 沙箱可写根不含这两处 ⇒ 直接失败;
+更隐蔽的是 driver 的 `processAlive()` 用 `kill(pid,0)`、吞掉异常当「死」,而 Codex Seatbelt 只放行 `signal (target same-sandbox)`,
+沙箱内探房内 Bridge 起的活进程得 `EPERM`(本机已复现)⇒ 存活判断**静默判错**。所以只挪 pretrust 不够,整条 driver 要回到沙箱外。
+
+**请求合同** `POST /api/qa-rooms/:id/drills`(严格 schema,未知字段拒,规则同 §5):
+
+| 字段 | 约束 | 映射 |
+|---|---|---|
+| `execution_id` / `request_id` / `credential` | 同 §5 | — |
+| `driver` | 枚举,v2 只有 `"qa529_generalized_e2e"` | 服务端固定为 `<房源码目录>/scripts/qa-529-generalized-e2e.mjs` |
+| `issue` | `^[A-Z]+-\d+$` | `--issue` |
+| `real` | bool,默认 false;true 要求房 deploy 时 `generalized=true` 且 `stub_runner=false`,false 要求 `generalized=true` 且 `stub_runner=true` | `--real`(⇔ strength-two lane `generalized_e2e_real` / `_stub`) |
+| `timeout_ms` | 整数,10_000..3_600_000(与 `strength-two-contract.ts` 同界),默认 900_000 | `--timeout-ms` |
+
+slot 不在请求里:永远是该房主位(从房记录取)。argv 服务端拼数组、`spawn` 不经 shell。
+
+**前置与授权:**
+- 房 `status == ready` 且 deploy 请求 `generalized == true`,否则 `409 room_not_drillable`;
+- 授权同 teardown(§4:Lead / owner / 同 issue 接管),否则 `403 room_not_owned`;
+- 每房同时最多 1 个 drill(非终态 drill 存在 ⇒ `409 drill_in_progress`);
+- drill **不**过服务负载门(`--real` 起的真 runner 由房内 Bridge 自己的 `RunnerAdmissionController` 按宿主 load 把关,不双重排队);
+- 与拆房互斥:drill 进行中,runner 发 teardown ⇒ `409 drill_in_progress`;Lead teardown 可强制:先对 drill 进程组 SIGTERM→10s→SIGKILL、drill 记 `failed(cancelled_by_teardown)`,再照常拆。
+
+**执行(包装器新子命令)** `qa-room-job.sh drill <operation_dir> <src_dir> <slot_dir> -- <argv...>`:
+1. 同 §7.1:第一件事写 `owner.json`;`phase=drill`;
+2. **沙箱探针**:`mkdir "$HOME/.flywheel-qa-room-probe.<operation_id>" && rmdir …`;失败 ⇒ exit 96,不跑 driver(`failed(sandboxed_executor)`)——把「在沙箱里静默判错」变成响亮失败(research R5);
+3. 记下 `<slot_dir>/e2e-evidence/` 现有子目录清单,`cd <src_dir>` 以 §7.3 最小环境 + 房 deploy 时的 `env` 白名单值运行 driver(与 `renderRerunCommand` 的 `TMPDIR=/tmp/ TEST_REPLY_BY_ISSUE=…` 前缀同语义);不传 `GH_TOKEN`,`gh` 用宿主已登录状态(与 Lead 手工跑同源);
+4. **先拷后拆**:无论 driver 退出码,把本次新出现的 `e2e-evidence/*` 目录 `cp -R` 到 `<operation_dir>/evidence/`,写 `evidence/manifest.json`(相对路径、大小、sha256);拷贝失败记 `evidence_copy=failed`;
+5. 原子写 `receipt.json` = `{operation_id, phase_reached:"drill", exit_code:<driver 退出码>, evidence_copy:"ok|failed|empty", finished_at}`。
+
+**判定(Bridge):**
+- 有匹配收据 ⇒ drill 操作 `succeeded`(= driver 跑完了),`result_json = {driver_exit_code, outcome, evidence_copy_dir, evidence_copy, log_tail}`;
+  `outcome`:0 → `passed`;20(driver 内 `A3_DIAGNOSIS_EXIT`)→ `a3_diagnosis`;21(lib 导出 `STUB_FATAL_DIAGNOSIS_EXIT`)→ `stub_fatal_diagnosis`;其他 → `driver_failed`。Bridge **不** import 房源码目录里的被测代码(不在 Bridge 进程里执行未合入代码),映射表写在服务里,由 C8 的契约测试钉住它与 driver 源码(`A3_DIAGNOSIS_EXIT` 字面量、lib 导出常量)一致;`driver_exit_code` 始终原样返回,`outcome` 只是便利标签。
+- 无收据 + 超时(`timeout_ms + 5 min`)⇒ 杀组,`failed(timeout)`;探针拒跑 ⇒ `failed(sandboxed_executor)`;Bridge 重启且 owner 已死无收据 ⇒ `failed(interrupted)`(§7.5 同协议)。
+- drill 不改变 `qa_room.status`(房仍 `ready`,可再 drill 或 teardown);driver 失败是测试结论,不是房故障。
+- `log_tail` 取 stdout 中 `[qa529]` 开头行 + stderr 末尾,最多 40 行 / 8KB(driver 不打印 token)。
+
+**与 strength-two 证据合同的衔接:** 服务**不**代调 `evidence-run record`(record 绑定 runner 自己的 submission credential 与 QA attempt)。
+runner 用 `room status` 里的 `driver_exit_code` → `--driver-exit-code`、`evidence_copy_dir` → `--local-copy`、
+`issue/timeout_ms/real` → `--rerun-spec` 的 `driver` 与 lane。`evidence_copy != ok` 时 runner 不得拿它当 local copy。
+
+**CLI** `flywheel-comm room drill --room <uuid> --issue <FLY-N> [--real] [--timeout-ms N] [--request-id] [--wait|--no-wait] [--timeout-sec]`:
+默认 `--wait`,等待上限 = min(30 min, timeout_ms/1000 + 300s),超时退 3 供 `room wait` 续等;退出码在 C5 的约定上**新增 4**:
+0 = driver 跑完且退出 0;4 = driver 跑完但非 0(看输出里的 `driver_exit_code` / `outcome`);1 = 拒绝 / 服务侧失败(超时、中断、沙箱探针);2 = 传输失败;3 = 仍在进行。
+`room status` / `wait` 对房输出增加 `drills: [{operation_id, status, driver_exit_code, outcome, evidence_copy_dir}]`(最近 5 次)。
+
+**数据模型改动**(分支未合入、生产库无这些表 ⇒ 直接改 `CREATE TABLE`,无迁移):
+`qa_room_operation.kind` CHECK 加 `'drill'`、新增列 `result_json TEXT`;`qa_room_audit.action` CHECK 加 `'drill'`;
+`UNIQUE(room_id,kind,attempt)` 保留(drill attempt 按房递增)。
+
 ## 11. QA 规则与 runner 指引(G4)
 
 - `.flywheel/agents/nodes/qa.md:54-66`:把「自己跑 `scripts/test-deploy.sh`」改为「用 `flywheel-comm room deploy --head <candidate-sha> [...]` 起房,`room teardown --room <id>` 拆房;不论 Codex 还是 Claude 体」,并写明:`--head` 选择 Bridge / Lead 跑的 flywheel 源码(必须先 push 到 flywheel origin);`--from-branch` 只选 sandbox 仓里 runner 用的 fixture 分支,默认 `main`,非 main 须自己先推到 sandbox remote;`room wait` 在工具超时后续等;证据看 `evidence_dir`;不要在沙箱里直接调 `test-deploy.sh` / `launchctl`。
+- (v2)`.flywheel/agents/nodes/qa.md` 同段追加:要跑 529 generalized e2e 一律 `flywheel-comm room drill --room <id> --issue <FLY-N> [--real]`,再用 `room status` 的 `driver_exit_code` / `evidence_copy_dir` 调 `evidence-run record`(先 record 再 qa-result);沙箱内**不要**直接 `node scripts/qa-529-generalized-e2e.mjs`(pretrust 会失败、存活探测会静默判错)。
 - `edge-worker/src/Blueprint.ts:1989`:文本「before `test-teardown.sh`」→「before `flywheel-comm room teardown`」。
 - 文档同步:`doc/qa/framework/529-room-playbook.md`、`real-runner-e2e-guide.md`、`packages/qa-framework/README.md`、`packages/qa-framework/agents/qa-parallel-executor.md` 加「首选起房服务;脚本直跑仅限 Lead / 沙箱外人工」一节(不删除脚本用法)。
 - 新增子命令,不删改任何现有 CLI 子命令 ⇒ 不触发 FLY-1914 消费者 sweep 要求(PR body 注明)。
@@ -307,6 +366,7 @@ teardown 结果与 `status` 返回 `evidence_dir`(最新成功 attempt 的目录
 - 这两类的本质是「在沙箱外执行一段任意的 Codex 会话」,等于给 runner 一个通用越狱口;起房服务之所以可控,恰恰因为动作集合是固定的两条脚本 + 严格 schema。
 - `codex:rescue` 的用途(第二意见 / 复审)已有沙箱外正路:Bridge 自跑的 `request-review` / `gate review_code`(FLY-2379 当晚就是改走这条);建议 implement/engineer/general 节点文件里把「用 `codex:rescue`」改为「Codex 体用 `request-review`」——列为 follow-up,避免扩大本单。
 - 529 harness 的 subject preflight(Raya 仓)与需要真嵌套 codex 的诊断:短期由 Claude 体承担(选项 C);长期可在本服务上加「房内白名单驱动脚本」动作(只允许房源码目录里固定路径的 driver,参数同样走 schema)——列为 follow-up。
+- **(v2)** 上一条的「白名单 driver」动作已为 flywheel 仓的 `qa-529-generalized-e2e.mjs` 这**一个** driver 落地(§10c);其他 driver(Raya 仓 harness、restart drill)仍是 follow-up,加入时只需在服务端枚举里登记新值 + 对应 schema。
 
 ## 13. 数据模型
 
@@ -385,6 +445,9 @@ erDiagram
 | 拆完仍有残留 | `teardown_failed(residue)`,附残留清单,可再拆或交 Lead |
 | 释放认领时某锁已带外国 token | 该锁不删,房记 `teardown_failed(release_conflict)` 交 Lead;其余本房锁照常释放 |
 | 服务关闭 | `503 room_service_disabled` |
+| (v2)drill 执行者在沙箱内 | 探针失败 ⇒ `failed(sandboxed_executor)`,driver 不跑 |
+| (v2)drill 中 runner 发 teardown | `409 drill_in_progress`;Lead 可强制(先杀 drill 组) |
+| (v2)driver 跑完但证据拷贝失败 | drill `succeeded` + `evidence_copy=failed`,runner 不得拿它当 local copy;拆房快照另有一份 `e2e-evidence/` |
 
 ## 15. 开关与部署
 
@@ -403,9 +466,10 @@ erDiagram
 | C4 | Bridge 服务 + 路由 | 新 `packages/teamlead/src/bridge/qa-room-service.ts`、`qa-room-routes.ts`;`plugin.ts` 挂载 + runner-tier 旁路 + 启动 reconcile | vitest:schema(未知字段 / 生产 label / 越界 slot 拒并审计)、授权四分支、幂等(同 digest 回原操作 / 异 digest 409)、auto slot、认领 mkdir 竞争、负载门(注入 loadavg,覆盖 `==阈值`)、并发上限、超时杀组、spawn 后落库失败杀组、reconcile(含第二次 teardown 中重启;高负载排队时重启 → 负载下降后同一 operation 执行且只认领一次;认领后写库前崩溃 → 收养;`releasing` 中途崩溃 → 幂等重做;释放时锁已被外国 token 占 → `release_conflict` 不删)、buildSha 不符、JSON 容错解析、残留观测非空 |
 | C5 | CLI | `packages/flywheel-comm/src/commands/room.ts` + `index.ts` switch | 参数校验、`deploy/teardown` 默认 `--wait` 至多 30 min、`wait` 续等;退出码 0 = ready/torn_down,1 = 失败/拒绝,2 = 传输失败,3 = 仍在进行(打印 room_id,供工具超时后续等);重试沿用 evidence-run 的 3 次退避与脱敏;Lead 模式自动带 `X-Flywheel-Lead-Id` |
 | C7 | 带告警值守的房(§10b) | `alert-duty-seat.ts`、`infra-event-router.ts`、`infra-alert-mailbox.ts`、`lead-inbox-runtime.ts`、`lead-body.sh`、`claude-lead.sh`、`flywheel-lead-wrapper-v2.sh`、`test-deploy.sh`、`qa-room.sh`、`qa-generalized.sh`、`qa-generalized-bridge-wrapper.sh`、`qa-slot-env-contract.json` | vitest:`resolveAlertDutyLeadId` 无隔离根时忽略覆盖、有隔离根时采信;shell:**不启动 launchd 的完整环境传递测试**(渲染 plist + manifest 后,用其环境逐层跑 wrapper-v2 守卫、`lead-body.sh` 守卫、`claude-lead.sh` 围栏、`lead-duty-provision.sh`(stub seat CLI 与 fetch,断言请求打到 slot URL))⇒ 值守 Lead seat=true 且 token 到达最终 pane 环境;extra / 非值守 Lead、以及无隔离根的「生产 + 普通覆盖」都拿不到 token;dispatcher 三类:指向生产变量名 → 拒,不同变量名同一 bot → 拒,合规且不同的测试 bot → 过;三处调用点走同一函数(grep 守卫测试:仓内不再有第二个 `claude-infra-bot-lead` 字面量常量用于路由)。shell:`--alert-duty` 无 `--alerts` 拒绝;dispatcher 与 slot bot 相同拒绝;access.json 追加组;生产 token 名不进房 env(env dump 断言);generalized 包装器仅豁免显式测试名 |
+| C8(v2) | 服务代跑 driver(§10c) | `qa-room-job.sh` 加 `drill` 子命令;`qa-room-contract.ts`(drill schema)、`qa-room-service.ts`(前置/授权/互斥/判定/重启恢复)、`qa-room-routes.ts`(`POST /api/qa-rooms/:id/drills`)、`qa-room-store.ts`(kind/action CHECK + `result_json`)、`flywheel-comm/src/commands/room.ts`(`drill` + 退出码 4 + status 的 `drills`);§8 快照加 `e2e-evidence/`;`qa.md` 指引 | shell `fly2405-room-job.test.sh` 追加:stub driver 各退出码(0/20/stub-fatal/1)→ 收据原样;`owner.json` 先于副作用;`$HOME` 根不可写(把 HOME 指向只读临时目录)⇒ exit 96 且 driver 未被调用;只拷本次新增的 `e2e-evidence` 子目录 + manifest sha256;拷贝失败 → `evidence_copy=failed`;argv 严格等于 `node <src>/scripts/qa-529-generalized-e2e.mjs <slot> --issue X [--real] --timeout-ms N`;环境 env dump 无 `GH_TOKEN`/`TEAMLEAD_*`。vitest:schema(未知字段、driver 非枚举、issue 格式、timeout 越界拒并审计);`real` 与房 deploy 的 stub_runner 组合不符 ⇒ 409;非 `ready` / 非 generalized 房 ⇒ 409;授权四分支;同房第二个 drill ⇒ 409;drill 中 runner teardown ⇒ 409、Lead teardown ⇒ 先杀 drill 再拆;outcome 映射 + 契约测试(映射表 == driver 的 `A3_DIAGNOSIS_EXIT` 与 lib 的 `STUB_FATAL_DIAGNOSIS_EXIT`);超时杀组;重启恢复三分支;drill 不改 `qa_room.status`;幂等(同 digest 回原操作)。CLI:退出码 0/4/1/2/3;等待上限计算;`drills` 字段渲染 |
 | C6 | 指引与文档 + 房内开关 | `.flywheel/agents/nodes/qa.md`、`Blueprint.ts:1989`、`doc/qa/framework/*`、`packages/qa-framework/*`、`scripts/lib/qa-slot-env-contract.json`、`test-deploy.sh` 知识点 | Blueprint 相关快照测试更新;env contract 测试 |
 
-顺序:C1 → C2 → C3 → C4 → C5 → C6;C7 与 C2–C5 无依赖,可在 C1 之后任意位置做(C4 依赖 C1 的认领合同与 C3 的收据格式)。
+顺序:C1 → C2 → C3 → C4 → C5 → C8 → C6(v2:C8 依赖 C3 的收据格式与 C4 的服务骨架,C6 文档最后统一写);C7 与 C2–C5 无依赖,可在 C1 之后任意位置做(C4 依赖 C1 的认领合同与 C3 的收据格式)。
 
 测试纪律:只跑相关测试(`pnpm --filter flywheel-teamlead exec vitest run <files>`、`pnpm --filter flywheel-comm exec vitest run <files>`、`bash scripts/__tests__/<file>`);**排除** `**/tmux-viewer.macos.test.ts`;任何调 `startBridge` 的 vitest 先 export 隔离 `FLYWHEEL_CODEX_HOMES_ROOT`(记忆 FLY-2877)。
 
@@ -415,6 +479,7 @@ erDiagram
    - 外层房 N:用本分支起 `--generalized --codex-runner` 房,`TEST_QA_ROOM_SERVICE=1`;由 Claude QA 体(不在沙箱里)或 Lead 起,**也由起它的一方负责拆**——这是唯一需要沙箱外手工的一步,因为被测服务还没进生产。
    - 在房 N 内派一个**真 Codex runner**(真实 Seatbelt 沙箱),任务:`flywheel-comm room deploy --slot auto --head <head> --generalized --stub-runner`(generalized 会铸房 M 的 API token,供鉴权往返)起房 M → 在房 M 做一项真验证:`/health.buildSha == head` + 用 `roomInfo`/`apiTokenPath` 里的 token 对房 M Bridge 做一次鉴权 API 往返(如 `/api/runs/start` 起一个 stub run 并读到它的状态)→ `room teardown` → 读 `room status` 返回的**沙箱外残留观测**为空 + `evidence_dir` 快照 `manifest.json` 的 `missing` 为空。全程 Lead 零手工(房 N 除外)。
    - 同样再派一个 Claude runner 走一遍。
+   - **(v2)** 房 M 用 `--generalized --stub-runner` 起时,Codex runner 再跑 `flywheel-comm room drill --room <M> --issue <FLY-N>` → 读到 `driver_exit_code` 与 `evidence_copy_dir`(manifest 非空),证明 driver 在沙箱外跑通;额度允许时另起一间 `--generalized --codex-runner`(非 stub)房跑 `room drill --real`,确认 `~/.claude.json` 预置由服务完成、runner 零手工。负例:把服务包装器的 HOME 指到只读目录的单测已覆盖沙箱探针,不在真机重复。
 2. **越权**:runner A 拆 runner B 的房 → 403 + 审计 `refused/room_not_owned`;请求里带 `com.flywheel.bridge` → 400 + 审计 `production_target_refused`;未知字段 → 400 + 审计。
 3. **拆房坑回归**:房 M 用 `--codex-runner` 跑过真 Codex 后 teardown 一次通过(坑 A);在一个 codex home 放陈旧 marker 后 teardown 通过(坑 B)。
 4. **告警值守房**:服务起一间 `alerts + alert_duty` 房 → 用房 JSON 给的 duty token 调房 Bridge `/duty/alert-board` 得 200;在房内触发一条 B 类(founder 升级类)告警 → 由测试 dispatcher bot 发帖 → slot Lead 的 mailbox 出现对应 `discord_chat` 行并被投递;拆房后生产 `~/.flywheel` 告警目录前后无变化。若告警频道权限未授予,如实记为前提未满足,不算通过。
@@ -432,6 +497,7 @@ erDiagram
 - L8 部署中 Bridge 被 updater 重启:操作不中断(detached);若包装器也被系统杀掉则 `interrupted`,需 teardown 清场。
 - L9 手工路径(不带 `FLYWHEEL_QA_ROOM_CLAIM`)的 teardown 不核 token —— 这是给 Lead 保留的逃生口,不是 runner 路径。
 
+- L11(v2)drill 只开放 `qa529_generalized_e2e` 一个 driver;driver 失败时 runner 不能在沙箱外交互式调试,只能读日志 / 证据副本或请 Lead。driver 自身的 `processAlive` 吞 EPERM 语义不改——它在服务里跑时不会遇到 EPERM;若有人仍在沙箱内直跑,结果不可信(指引已禁止)。
 - L10 告警值守房依赖 Discord 侧把测试 bot 加进告警频道(运维前提);值守 Lead id 覆盖只在房内生效,生产路由不可被环境变量改写(有意为之)。
 
 ## 19. Follow-ups(不在本单)
@@ -440,6 +506,13 @@ erDiagram
 - (R2 advisory #6)已被 §10b 的 `FLYWHEEL_BRIDGE_URL` 显式传递顺带覆盖;若实现时拆分,保留 stub fetch 断言请求目标。
 
 - 节点文件把 `codex:rescue` 改为 Codex 体走 `request-review`。
-- 服务加「房内白名单 driver 脚本」动作(529 harness / restart drill)。
+- 服务加「房内白名单 driver 脚本」动作的**其余** driver(Raya 529 harness / restart drill);v2 已做 `qa529_generalized_e2e`。
 - 孤儿房(owner 终态超过 N 小时)自动告警 Lead。
 - 房内 Bridge 侧 reap 在 codex ≥0.157 软链 socket 下被 `outside_root` 拒(记忆 FLY-2903)的产品化处理——需要 Lead 另行裁定是否改隔离规则。
+
+## 20. (v2)实现交接
+
+- 实现已进行到 `implement 2/7`:C2 已提交(`7ada7ed3c`);C1/C3/C4/C5/C7 的 WIP 由 Lead 原样救出在 `22c94c810`(未改内容)。
+- 该轮实现体最后的进度账本原文(`a8ae0af2a`):「C3 14 shell tests green;C1 claims18/pits5/launchd60/multilead29 green but generalized native socket regression red (lsof observation). C4 state17+runtime8+schema26 green; route/wiring in progress. C5 two audit fixes. C7 alert-duty implementation.」
+- 新实现体:先 `git show 22c94c810 --stat` 与读上一条,再按 §16 顺序补完 C1–C7,最后做 C8;C8 会改 C2 已提交的 `CREATE TABLE`(kind/action CHECK、`result_json`),分支未合入,直接改即可。
+
