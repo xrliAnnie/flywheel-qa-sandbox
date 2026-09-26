@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { getModelConfigSnapshot } from "flywheel-config";
+import {
+	canonicalSubmissionDigest,
+	getModelConfigSnapshot,
+} from "flywheel-config";
 import { afterEach, expect, it } from "vitest";
 import { ConfirmTokenStore } from "../bridge/fleet-admin.js";
 import { StateStore } from "../StateStore.js";
@@ -33,25 +36,48 @@ function publish(store: StateStore, managed: boolean) {
 		manifest.nodes.find((n: { id: string }) => n.id === "implement"),
 		{ vendor: "codex", model: "gpt-6-astra", effort: "medium" },
 	);
-	return store.createAndPublishWorkflowTemplateRevision({
+	const published = store.createAndPublishWorkflowTemplateRevision({
 		templateId: template.template_id,
 		manifest,
 		expectedRevision: before.revision,
 		createdBy: "bridge-local-operator",
-		...(managed
-			? {
-					publication: {
-						operationId: randomUUID(),
-						requestDigest: "a".repeat(64),
-						reason: "restore historical profile",
-						sourceKind: "rollback" as const,
-						sourceDigest: "b".repeat(64),
-						registryRevision: "test",
-						runtimeBuildSha: "test",
-						expectedDigest: before.manifest_digest,
-					},
-				}
-			: {}),
+	});
+	if (!managed || published.status !== "published") return published;
+	const historical = store.getWorkflowTemplateRevision(
+		template.template_id,
+		published.revision,
+	)!;
+	const next = store.createAndPublishWorkflowTemplateRevision({
+		templateId: template.template_id,
+		manifest: JSON.parse(before.manifest),
+		expectedRevision: published.revision,
+		createdBy: "bridge-local-operator",
+	});
+	if (next.status !== "published")
+		throw new Error("fixture publication failed");
+	const current = store.getWorkflowTemplateRevision(
+		template.template_id,
+		next.revision,
+	)!;
+	return store.publishHistoricalWorkflowTemplateRevision({
+		templateId: template.template_id,
+		revision: historical.revision,
+		manifest: JSON.parse(historical.manifest),
+		expectedRevision: next.revision,
+		createdBy: "bridge-local-operator",
+		modelSnapshot: getModelConfigSnapshot(),
+		publication: {
+			operationId: randomUUID(),
+			requestDigest: canonicalSubmissionDigest({
+				revision: historical.revision,
+			}),
+			reason: "restore historical profile",
+			sourceKind: "rollback",
+			sourceDigest: historical.manifest_digest,
+			registryRevision: getModelConfigSnapshot().revision,
+			runtimeBuildSha: "test",
+			expectedDigest: current.manifest_digest,
+		},
 	});
 }
 it("blocks unresolved matching migration sources but allows seeds the migration preserves", async () => {

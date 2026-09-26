@@ -150,6 +150,7 @@ describe("GitLandContentReviewer", () => {
 				expect(invocation.prefixStamp).toEqual({
 					dir: "/state/runner-state/implement-c",
 					requestId: result.requestId,
+					executionId: "implement-c",
 				});
 			} else {
 				expect(invocation).not.toHaveProperty("prefixProfile");

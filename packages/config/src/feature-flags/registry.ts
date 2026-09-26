@@ -1,5 +1,4 @@
 import { RUNNER_MEMORY_MODES } from "../runner-memory-mode.js";
-import { RUNNER_PREFIX_PROFILES } from "../runner-prefix-profile.js";
 
 /**
  * FLY-709 — central feature-flag registry (single source of truth).
@@ -922,40 +921,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		retireWhen:
 			"Remove the split router and this flag when the founder selects role or shared as the permanent memory behavior.",
 		note: "Temporary experiment control, not a long-term product knob. Default off preserves the pre-FLY-2147 spawn path byte-for-byte.",
-	},
-	{
-		// FLY-2913: Claude runner / cross-family reviewer fixed-prefix profile.
-		// Read from the store at every NEW launch; Lead and Codex consumers never
-		// read it. The env name is bootstrap metadata only, not a write path.
-		name: "runner_prefix_profile",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_RUNNER_PREFIX_PROFILE",
-		polarity: "opt_in",
-		valueKind: "enum",
-		enumValues: [...RUNNER_PREFIX_PROFILES],
-		default: "legacy",
-		description:
-			"FLY-2913: Claude runner/评审/QA 固定前缀（legacy=原完整配置 / role-v1=逐角色精简）；只影响新启动的会话，Lead 与 Codex 不读",
-		whenOn:
-			"决定新启动的 Claude 执行、评审与 QA 带哪套固定配置：legacy 保持原完整配置，role-v1 只带该角色需要的工具、插件与规则；Lead 与 Codex 不受影响",
-		readSites: [
-			flagStoreSite(
-				"packages/teamlead/src/bridge/run-infra.ts",
-				"createRunInfraDispatcher",
-				"storeRunnerPrefixProfile",
-			),
-			flagStoreSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
-				"storeRunnerPrefixProfile",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: runner prefix profile observes the next store write and defaults to legacy",
-		note: "Legacy is the default and the only fallback: unset or unsupported values resolve to legacy. Change it only through the managed feature-flags set command; running sessions keep their launch-time profile.",
 	},
 	{
 		// FLY-1356/1609: the four-way skill-framework switch (A=superpowers status

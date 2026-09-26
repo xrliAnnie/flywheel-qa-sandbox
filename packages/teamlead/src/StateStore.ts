@@ -13325,6 +13325,10 @@ export class StateStore {
 			for (const { flag_name, scope } of this.db.raw
 				.prepare("SELECT flag_name, scope FROM flag_values")
 				.all() as Array<{ flag_name: string; scope: string }>) {
+				// FLY-2913: retain pre-template prefix rows as inert audit data.
+				// This exact former global identity has no codec, registry or writer.
+				if (flag_name === "runner_prefix_profile" && scope === "*") continue;
+
 				const valid =
 					PROJECT_STORE_MANAGED_FLAGS.has(flag_name) ||
 					(scope === "*" && STORE_MANAGED_FLAGS.has(flag_name));
@@ -36066,31 +36070,83 @@ export class StateStore {
 		modelSnapshot?: ModelConfigSnapshot;
 		publication?: WorkflowTemplatePublicationMetadata;
 	}): WorkflowTemplatePublishResult {
+		return this.publishManagedWorkflowTemplateRevision(input);
+	}
+
+	/** Publish the exact immutable historical revision with the managed publication guards. */
+	publishHistoricalWorkflowTemplateRevision(
+		input: Omit<
+			Parameters<StateStore["createAndPublishWorkflowTemplateRevision"]>[0],
+			"publication" | "allowUnsupportedModels" | "modelSnapshot"
+		> & {
+			revision: number;
+			modelSnapshot: ModelConfigSnapshot;
+			publication: WorkflowTemplatePublicationMetadata;
+		},
+	): WorkflowTemplatePublishResult {
+		return this.publishManagedWorkflowTemplateRevision(input, input.revision);
+	}
+
+	private publishManagedWorkflowTemplateRevision(
+		input: Parameters<
+			StateStore["createAndPublishWorkflowTemplateRevision"]
+		>[0],
+		historicalRevision?: number,
+	): WorkflowTemplatePublishResult {
 		const publication = input.publication;
-		const replay =
-			publication &&
-			this.getWorkflowTemplatePublishReceipt(publication.operationId);
-		if (replay) {
-			if (
-				replay.request_digest !== publication.requestDigest ||
-				replay.template_id !== input.templateId
-			)
-				throw new Error("operation_id_conflict");
-			return { status: "published", revision: replay.published_revision };
-		}
-		// FLY-2775: one persistence contract (see validateManifestForPersistence).
-		const manifest = validateManifestForPersistence(input.manifest, {
-			allowUnsupportedModels: input.allowUnsupportedModels === true,
-			modelSnapshot: input.modelSnapshot,
-		});
-		const digest = canonicalSubmissionDigest(manifest);
-		if (!this.getWorkflowTemplate(input.templateId)) {
-			return { status: "not_found" };
-		}
 		const conflict = Symbol("workflow_template_edit_publish_conflict");
+		const notFound = Symbol("workflow_template_publish_not_found");
 		let revision = 0;
 		try {
 			this.db.transaction(() => {
+				const replay =
+					publication &&
+					this.getWorkflowTemplatePublishReceipt(publication.operationId);
+				if (replay) {
+					if (
+						replay.request_digest !== publication.requestDigest ||
+						replay.template_id !== input.templateId
+					)
+						throw new Error("operation_id_conflict");
+					revision = replay.published_revision;
+					return;
+				}
+				if (!this.getWorkflowTemplate(input.templateId)) throw notFound;
+				const historical =
+					historicalRevision === undefined
+						? undefined
+						: this.getWorkflowTemplateRevision(
+								input.templateId,
+								historicalRevision,
+							);
+				if (historicalRevision !== undefined) {
+					if (!historical) throw notFound;
+					if (!publication || publication.sourceKind !== "rollback")
+						throw new Error("invalid_rollback_publication");
+					if (
+						!input.modelSnapshot ||
+						input.modelSnapshot.revision !== publication.registryRevision
+					)
+						throw new Error("model_registry_changed");
+					if (
+						historical.manifest_digest !== publication.sourceDigest ||
+						canonicalSubmissionDigest(JSON.parse(historical.manifest)) !==
+							historical.manifest_digest ||
+						canonicalSubmissionDigest(input.manifest) !==
+							historical.manifest_digest
+					)
+						throw new Error("historical_revision_digest_mismatch");
+				}
+				// FLY-2775: validate against the pinned registry without rewriting aliases.
+				const manifest = validateManifestForPersistence(input.manifest, {
+					allowUnsupportedModels:
+						historicalRevision === undefined &&
+						input.allowUnsupportedModels === true,
+					modelSnapshot: input.modelSnapshot,
+				});
+				const digest = canonicalSubmissionDigest(manifest);
+				if (historical && digest !== historical.manifest_digest)
+					throw new Error("historical_revision_digest_mismatch");
 				const template = this.workflowSelectAll(
 					`SELECT current_published_revision AS current, retired_at
 					 FROM workflow_template WHERE template_id = ?`,
@@ -36135,25 +36191,28 @@ export class StateStore {
 						throw new Error(`active_run_not_pinned:${unsafeRuns.join(",")}`);
 				}
 
-				const max = this.workflowSelectAll(
-					`SELECT COALESCE(MAX(revision), 0) AS revision
-					 FROM workflow_template_revision WHERE template_id = ?`,
-					[input.templateId],
-				)[0];
-				revision = Number(max?.revision ?? 0) + 1;
-				this.db.run(
-					`INSERT INTO workflow_template_revision
-					 (template_id, revision, manifest, manifest_digest, schema_version, created_by)
-					 VALUES (?, ?, ?, ?, ?, ?)`,
-					[
-						input.templateId,
-						revision,
-						JSON.stringify(manifest),
-						digest,
-						manifest.schema_version,
-						input.createdBy,
-					],
-				);
+				if (historicalRevision === undefined) {
+					const max = this.workflowSelectAll(
+						`SELECT COALESCE(MAX(revision), 0) AS revision
+						 FROM workflow_template_revision WHERE template_id = ?`,
+						[input.templateId],
+					)[0];
+					revision = Number(max?.revision ?? 0) + 1;
+					this.db.run(
+						`INSERT INTO workflow_template_revision
+						 (template_id, revision, manifest, manifest_digest, schema_version, created_by)
+						 VALUES (?, ?, ?, ?, ?, ?)`,
+						[
+							input.templateId,
+							revision,
+							JSON.stringify(manifest),
+							digest,
+							manifest.schema_version,
+							input.createdBy,
+						],
+					);
+				} else revision = historicalRevision;
+
 				this.db.run(
 					`INSERT INTO workflow_template_publication
 					 (template_id, revision, published_by) VALUES (?, ?, ?)`,
@@ -36169,24 +36228,27 @@ export class StateStore {
 					        OR current_published_revision = ?)`,
 					[
 						revision,
-						input.createdBy,
+						historicalRevision === undefined ? input.createdBy : "founder",
 						input.templateId,
 						input.expectedRevision,
 						input.expectedRevision,
 					],
 				);
 				if (this.db.getRowsModified() !== 1) throw conflict;
-				this.db.run(
-					`INSERT INTO workflow_template_audit
-					 (actor, action, template_id, revision, detail)
-					 VALUES (?, 'create', ?, ?, ?)`,
-					[
-						input.createdBy,
-						input.templateId,
-						revision,
-						JSON.stringify({ manifest_digest: digest }),
-					],
-				);
+				if (historicalRevision === undefined) {
+					this.db.run(
+						`INSERT INTO workflow_template_audit
+						 (actor, action, template_id, revision, detail)
+						 VALUES (?, 'create', ?, ?, ?)`,
+						[
+							input.createdBy,
+							input.templateId,
+							revision,
+							JSON.stringify({ manifest_digest: digest }),
+						],
+					);
+				}
+
 				this.db.run(
 					`INSERT INTO workflow_template_audit
 					 (actor, action, template_id, revision, detail)
@@ -36202,6 +36264,10 @@ export class StateStore {
 										operationId: publication.operationId,
 										reason: publication.reason,
 										source: publication.sourceKind,
+										sourceDigest: publication.sourceDigest,
+										...(historicalRevision === undefined
+											? {}
+											: { sourceRevision: historicalRevision }),
 										beforeDigest: publication.expectedDigest,
 										afterDigest: digest,
 										revision,
@@ -36236,6 +36302,7 @@ export class StateStore {
 				}
 			});
 		} catch (error) {
+			if (error === notFound) return { status: "not_found" };
 			if (error !== conflict) throw error;
 			return {
 				status: "conflict",

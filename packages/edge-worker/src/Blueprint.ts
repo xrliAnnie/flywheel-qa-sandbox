@@ -639,6 +639,8 @@ export interface BlueprintContext {
 	 * `adapter.execute()` — it never reads env itself (keeps this testable).
 	 * Absent/null ⇒ no slimming (byte-compatible spawn).
 	 */
+	/** FLY-2913: pinned selection and fallback provenance, also for legacy. */
+	runnerPrefixAudit?: import("flywheel-config").RunnerPrefixAudit;
 	runnerMcpProfile?: {
 		prefix?: RunnerMcpProfile["prefix"];
 		disabledPlugins: string[];
@@ -1387,6 +1389,7 @@ export class Blueprint {
 		// the FINAL runner cwd (its checked-in project settings are a lower layer).
 		// Claude-only; absent ⇒ legacy launch. Legacy is the only fallback: a
 		// compile or settings-read failure never blocks the launch.
+		let prefixCompileFailed = false;
 		const compilePrefixProfile = (
 			runnerCwd: string,
 		): ReturnType<typeof compileRunnerPrefixProfile> | undefined => {
@@ -1407,6 +1410,7 @@ export class Blueprint {
 					]),
 				});
 			} catch (error) {
+				prefixCompileFailed = true;
 				console.warn(
 					`[Blueprint] FLY-2913 prefix legacy reason=compile-error:${String(
 						(error as Error)?.message ?? error,
@@ -3136,6 +3140,18 @@ export class Blueprint {
 							: undefined,
 				}),
 				...(prefixProfile && { prefixProfile }),
+				...(backend === "claude-tmux" &&
+					ctx.runnerPrefixAudit && {
+						prefixAudit: {
+							...ctx.runnerPrefixAudit,
+							...(prefixCompileFailed
+								? {
+										effectiveProfile: "legacy",
+										fallbackReason: "compile-error",
+									}
+								: {}),
+						},
+					}),
 				...(!ctx.runnerMcpProfile && modeDisabledPlugins.length > 0
 					? {
 							disabledPlugins: modeDisabledPlugins,

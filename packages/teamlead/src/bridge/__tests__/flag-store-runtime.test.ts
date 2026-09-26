@@ -1,11 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	resolveAllFlags,
-	resolveRunnerPrefixSelection,
-	resolveSkillFrameworkMode,
-} from "flywheel-config";
+import { resolveAllFlags, resolveSkillFrameworkMode } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
@@ -34,7 +30,6 @@ import {
 	storeProofshotEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeRunnerMemoryMode,
-	storeRunnerPrefixProfile,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
@@ -702,77 +697,42 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		});
 	});
 
-	it("runner prefix profile observes the next store write and defaults to legacy", () => {
-		const runtime = initializeFlagStore(store, {});
-		expect(storeRunnerPrefixProfile(runtime)).toEqual({
-			hasOverride: false,
-			raw: null,
-		});
-		const select = () =>
-			resolveRunnerPrefixSelection({
-				actor: "runner",
-				backend: "claude-tmux",
-				phase: "implement",
-				workflow: {
-					runId: "run-2913",
-					snapshotDigest: "a".repeat(64),
-					templateId: "tpl_code",
-				},
-				profile: storeRunnerPrefixProfile(runtime),
-			});
-		expect(select()).toEqual({ mode: "legacy", reason: "operator-legacy" });
-
-		const firstRevision = store.getFlagValueRow(
-			"runner_prefix_profile",
-		)!.revision;
+	it("preserves an old prefix row and changelog without making it a live flag", () => {
+		const db = rawFlagStoreDb(store);
+		db.exec(`INSERT INTO flag_values (flag_name,has_override,raw_value,last_effective,value_last_changed,revision,updated_at,updated_by) VALUES ('runner_prefix_profile',1,'role-v1','role-v1',111,2,222,'old-operator');
+		INSERT INTO flag_value_changelog (flag_name,action,from_present,from_raw,to_present,to_raw,from_effective,to_effective,changed_by,changed_at,reason) VALUES ('runner_prefix_profile','set',0,NULL,1,'role-v1','legacy','role-v1','old-operator',222,'historical enable');`);
+		const rows = () =>
+			JSON.stringify([
+				db
+					.prepare(
+						"SELECT * FROM flag_values WHERE flag_name='runner_prefix_profile'",
+					)
+					.all(),
+				db
+					.prepare(
+						"SELECT * FROM flag_value_changelog WHERE flag_name='runner_prefix_profile'",
+					)
+					.all(),
+			]);
+		const before = rows();
+		expect(() =>
+			initializeFlagStore(store, { FLYWHEEL_RUNNER_PREFIX_PROFILE: "legacy" }),
+		).not.toThrow();
+		expect(rows()).toBe(before);
 		expect(
 			store.applyFlagValueChange({
 				name: "runner_prefix_profile",
-				rawTo: "role-v1",
-				expectedRevision: firstRevision,
+				rawTo: "legacy",
+				expectedRevision: 2,
 				actor: "bridge-local-operator",
-				reason: "529 role-v1 acceptance",
+				reason: "removed switch",
 			}),
-		).toMatchObject({ ok: true });
-		expect(storeRunnerPrefixProfile(runtime)).toEqual({
-			hasOverride: true,
-			raw: "role-v1",
-		});
-		expect(select()).toMatchObject({ mode: "role-v1", role: "implement" });
-
-		const secondRevision = store.getFlagValueRow(
-			"runner_prefix_profile",
-		)!.revision;
-		store.applyFlagValueChange({
-			name: "runner_prefix_profile",
-			rawTo: "legacy",
-			expectedRevision: secondRevision,
-			actor: "bridge-local-operator",
-			reason: "roll back to the original launch configuration",
-		});
-		expect(select()).toEqual({ mode: "legacy", reason: "operator-legacy" });
+		).toEqual({ ok: false, reason: "not_store_managed" });
 	});
 
-	it("resolves an unsupported runner prefix bootstrap seed to legacy", () => {
-		const runtime = initializeFlagStore(store, {
-			FLYWHEEL_RUNNER_PREFIX_PROFILE: "ROLE-V1",
-		});
-		expect(store.getFlagValueRow("runner_prefix_profile")).toMatchObject({
-			lastEffective: "legacy",
-		});
-		expect(
-			resolveRunnerPrefixSelection({
-				actor: "runner",
-				backend: "claude-tmux",
-				phase: "implement",
-				workflow: {
-					runId: "run-2913",
-					snapshotDigest: "a".repeat(64),
-					templateId: "tpl_code",
-				},
-				profile: storeRunnerPrefixProfile(runtime),
-			}),
-		).toEqual({ mode: "legacy", reason: "operator-legacy" });
+	it("does not seed the retired prefix flag even when its old env remains", () => {
+		initializeFlagStore(store, { FLYWHEEL_RUNNER_PREFIX_PROFILE: "role-v1" });
+		expect(store.getFlagValueRow("runner_prefix_profile")).toBeUndefined();
 	});
 
 	it("enriches views with the authoritative store value and clock readiness", () => {

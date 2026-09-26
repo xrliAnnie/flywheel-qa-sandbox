@@ -154,7 +154,7 @@ describe("workflow-template CLI", () => {
 		).toBe(1);
 		expect(events.filter((e) => e === "stage")).toHaveLength(0);
 	});
-	it("requests rollback as a new staged publication", async () => {
+	it("requests a staged rollback to the exact historical revision", async () => {
 		const { deps, bodies } = fixture();
 		expect(
 			await runWorkflowTemplate(
@@ -171,5 +171,12 @@ describe("workflow-template CLI", () => {
 			),
 		).toBe(0);
 		expect(bodies[0]).toMatchObject({ from: "rollback", revision: 1 });
+	});
+	it("documents that rollback moves the pointer without creating a revision", async () => {
+		const { deps, events } = fixture();
+		expect(await runWorkflowTemplate([], deps)).toBe(1);
+		expect(events.join("\n")).toContain(
+			"rollback publishes revision N itself; no new revision",
+		);
 	});
 });

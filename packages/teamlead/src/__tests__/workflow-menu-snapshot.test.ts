@@ -26,6 +26,17 @@ function rejectingSnapshot(): ModelConfigSnapshot {
 }
 
 describe("workflow seed publication model generation", () => {
+	it("keeps bundled seeds legacy until explicit managed publication", () => {
+		const seeds = loadWorkflowMenuSeeds();
+		expect(seeds.some((seed) => seed.templateId === "tpl_code")).toBe(true);
+		expect(seeds.some((seed) => seed.templateId === "tpl_simple_code")).toBe(
+			true,
+		);
+		for (const seed of seeds) {
+			expect(JSON.stringify(seed)).not.toContain('"prefix_profile"');
+			expect(JSON.stringify(seed)).not.toContain('"review_prefix_profile"');
+		}
+	});
 	it("uses the captured generation while loading registry policies", () => {
 		expect(() =>
 			loadWorkflowMenuLibrary({ modelSnapshot: rejectingSnapshot() }),

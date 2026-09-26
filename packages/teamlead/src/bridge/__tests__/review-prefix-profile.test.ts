@@ -11,10 +11,16 @@ afterEach(() => {
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
 });
-function harness(templateId = "tpl_code") {
+function harness(
+	templateId = "tpl_code",
+	profiles: {
+		prefix_profile?: "legacy" | "role-v1";
+		review_prefix_profile?: "legacy" | "role-v1";
+	} = { review_prefix_profile: "role-v1" },
+) {
 	const root = mkdtempSync(join(tmpdir(), "fly2913-review-prefix-"));
 	roots.push(root);
-	const pinned = createWorkflowPrefixFixture(root, 3, templateId);
+	const pinned = createWorkflowPrefixFixture(root, 3, templateId, profiles);
 	const store = {
 		getWorkflowExecutionRuntime: vi.fn((executionId: string) => ({
 			execution_id: executionId,
@@ -32,7 +38,6 @@ function harness(templateId = "tpl_code") {
 	};
 	return { store, pinned };
 }
-const roleV1 = { hasOverride: true, raw: "role-v1" };
 const home = "/Users/fixture";
 
 describe("reviewer prefix resolution (FLY-2913)", () => {
@@ -45,13 +50,12 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 			const { store, pinned } = harness();
 			const resolved = resolveReviewPrefixProfile({
 				store,
-				profile: roleV1,
 				executionId: "exec-author",
 				reviewType,
 				home,
 				claudeConfigDir: `${home}/.claude`,
 			});
-			expect(resolved?.profile.stamp).toMatchObject({
+			expect(resolved?.profile?.stamp).toMatchObject({
 				role,
 				workflow: {
 					runId: pinned.run.run_id,
@@ -74,6 +78,7 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 								runId: pinned.run.run_id,
 								snapshotDigest: pinned.snapshot.snapshot_digest,
 								templateId: "tpl_code",
+								templateRevision: 2,
 							},
 						},
 						context: {
@@ -81,6 +86,7 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 								runId: pinned.run.run_id,
 								snapshotDigest: pinned.snapshot.snapshot_digest,
 								templateId: "tpl_code",
+								templateRevision: 2,
 							},
 							nodeId: pinned.nodeId,
 							phase: "implement",
@@ -95,29 +101,45 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 	);
 
 	it.each([
-		["legacy row", { hasOverride: true, raw: "legacy" }],
-		["unset row", { hasOverride: false, raw: null }],
-		["no store", undefined],
-	])("does not read provenance for %s", (_label, profile) => {
-		const { store } = harness();
+		{},
+		{ prefix_profile: "role-v1" as const },
+		{ review_prefix_profile: "legacy" as const },
+	])(
+		"keeps the independent missing/legacy review declaration on legacy",
+		(profiles) => {
+			const { store } = harness("tpl_code", profiles);
+			expect(
+				resolveReviewPrefixProfile({
+					store,
+					executionId: "exec-author",
+					reviewType: "code",
+					home,
+				}),
+			).toMatchObject({
+				audit: { effectiveProfile: "legacy", fallbackReason: "node-legacy" },
+			});
+			expect(store.getWorkflowExecutionRuntime).toHaveBeenCalledOnce();
+		},
+	);
+	it("uses reviewer intent when the author runner is explicitly legacy", () => {
+		const { store } = harness("tpl_code", {
+			prefix_profile: "legacy",
+			review_prefix_profile: "role-v1",
+		});
 		expect(
 			resolveReviewPrefixProfile({
 				store,
-				profile,
 				executionId: "exec-author",
 				reviewType: "code",
 				home,
-			}),
-		).toBeUndefined();
-		expect(store.getWorkflowExecutionRuntime).not.toHaveBeenCalled();
+			})?.profile?.stamp.mode,
+		).toBe("role-v1");
 	});
-
 	it("keeps unknown review types, non-engineering and unbound executions legacy", () => {
 		const { store } = harness();
 		expect(
 			resolveReviewPrefixProfile({
 				store,
-				profile: roleV1,
 				executionId: "exec-author",
 				reviewType: "security",
 				home,
@@ -127,12 +149,13 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 		expect(
 			resolveReviewPrefixProfile({
 				store: research.store,
-				profile: roleV1,
 				executionId: "exec-author",
 				reviewType: "code",
 				home,
 			}),
-		).toBeUndefined();
+		).toMatchObject({
+			audit: { effectiveProfile: "legacy", fallbackReason: "unmapped-trigger" },
+		});
 		const unbound = harness();
 		unbound.store.getWorkflowExecutionRuntime.mockReturnValue(
 			undefined as never,
@@ -140,12 +163,13 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 		expect(
 			resolveReviewPrefixProfile({
 				store: unbound.store,
-				profile: roleV1,
 				executionId: "adhoc",
 				reviewType: "code",
 				home,
 			}),
-		).toBeUndefined();
+		).toMatchObject({
+			audit: { effectiveProfile: "legacy", fallbackReason: "unmapped-trigger" },
+		});
 	});
 
 	it("keeps user and reviewed-project skills that are hidden further", () => {
@@ -164,18 +188,19 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 		);
 		const resolved = resolveReviewPrefixProfile({
 			store,
-			profile: roleV1,
 			executionId: "exec-author",
 			reviewType: "code",
 			home,
 			claudeConfigDir: configDir,
 			cwd: checkout,
 		});
-		expect(resolved?.profile.settings.skillOverrides).not.toHaveProperty("gws");
-		expect(resolved?.profile.settings.skillOverrides).not.toHaveProperty(
+		expect(resolved?.profile?.settings.skillOverrides).not.toHaveProperty(
+			"gws",
+		);
+		expect(resolved?.profile?.settings.skillOverrides).not.toHaveProperty(
 			"notion",
 		);
-		expect(resolved?.profile.stamp.keptLowerRestrictions).toEqual([
+		expect(resolved?.profile?.stamp.keptLowerRestrictions).toEqual([
 			"gws",
 			"notion",
 		]);
@@ -186,7 +211,6 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 		expect(() =>
 			resolveReviewPrefixProfile({
 				store,
-				profile: roleV1,
 				executionId: "../escape",
 				reviewType: "code",
 				home,

@@ -17,7 +17,6 @@ import type {
 	FlagStoreRawValue,
 	RoleBackendMap,
 	RoleEffort,
-	RunnerMcpProfile,
 	RunnerModelDisplay,
 	SkillFrameworkMode,
 	WorkflowDispatchVendor,
@@ -638,8 +637,6 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected workflowPrefixLookup?: (
 			input: WorkflowPrefixLookupInput,
 		) => WorkflowPrefixContext | undefined,
-		/** FLY-2913: store-backed `runner_prefix_profile`, read at each new launch. */
-		protected runnerPrefixProfileControl?: () => FlagStoreRawValue,
 	) {}
 
 	protected resolveMcpProfileForExecution(
@@ -648,26 +645,34 @@ export class RetryDispatcher implements IRetryDispatcher {
 			StartRequest,
 			"sessionRole" | "issueLabels" | "generalizedExecution"
 		>,
-	): RunnerMcpProfile | null {
+	): Pick<BlueprintContext, "runnerMcpProfile" | "runnerPrefixAudit"> {
 		const legacy = resolveRunnerMcpProfile({
 			sessionRole: req.sessionRole,
 			issueLabels: req.issueLabels,
 		});
-		// Legacy is the only fallback: a switch or provenance failure never
+		let context: WorkflowPrefixContext | undefined;
+		const audit = (
+			effectiveProfile: "legacy" | "role-v1",
+			fallbackReason: string | null,
+		): NonNullable<BlueprintContext["runnerPrefixAudit"]> => ({
+			workflow: context?.workflow ?? null,
+			nodeId: context?.nodeId ?? null,
+			selectionSource: "prefix_profile",
+			requestedProfile: context?.prefixProfile ?? "legacy",
+			effectiveProfile,
+			fallbackReason,
+		});
+		// Legacy is the only fallback: a provenance failure never
 		// blocks a launch; it keeps the original profile with a visible reason.
 		const fallback = (reason: string) => {
 			console.info(
 				`[run-dispatcher] FLY-2913 prefix legacy reason=${reason} exec=${executionId}`,
 			);
-			return legacy;
+			return {
+				runnerMcpProfile: legacy,
+				runnerPrefixAudit: audit("legacy", reason),
+			};
 		};
-		// One store read per launch; an absent store keeps the legacy default.
-		let profile: FlagStoreRawValue | undefined;
-		try {
-			profile = this.runnerPrefixProfileControl?.();
-		} catch {
-			return fallback("switch-unreadable");
-		}
 		const select = (context?: WorkflowPrefixContext) =>
 			resolveRunnerPrefixSelection({
 				actor: "runner",
@@ -675,17 +680,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 				issueLabels: req.issueLabels,
 				phase: context?.phase,
 				workflow: context?.workflow,
-				profile,
+				profile: context?.prefixProfile,
 			});
-		// Check mode/escape hatches before consulting persisted data. Legacy launch
-		// behavior must not acquire new reads or failure modes.
-		const eligibility = select();
-		if (
-			eligibility.mode === "legacy" &&
-			eligibility.reason !== "unmapped-trigger"
-		)
-			return legacy;
-		let context: WorkflowPrefixContext | undefined;
 		let selection: ReturnType<typeof select>;
 		try {
 			context = this.workflowPrefixLookup?.({
@@ -698,6 +694,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 						}
 					: undefined,
 			});
+			if (!context) return fallback("unmapped-trigger");
 			selection = select(context);
 		} catch (err) {
 			return fallback(
@@ -706,19 +703,22 @@ export class RetryDispatcher implements IRetryDispatcher {
 					.slice(0, 120)}`,
 			);
 		}
-		// The switch is role-v1 here: make every fallback reason visible.
+		// Every selection is bound to the snapshot, including the legacy default.
 		if (selection.mode === "legacy") return fallback(selection.reason);
 		if (!context) return fallback("unbound-execution");
 		console.info(
 			`[run-dispatcher] FLY-2913 prefix role-v1 role=${selection.role} exec=${executionId}`,
 		);
 		return {
-			...(legacy ?? {
-				disabledPlugins: [],
-				disableChrome: false,
-				enabledPluginsExtra: [],
-			}),
-			prefix: { selection, context },
+			runnerPrefixAudit: audit("role-v1", null),
+			runnerMcpProfile: {
+				...(legacy ?? {
+					disabledPlugins: [],
+					disableChrome: false,
+					enabledPluginsExtra: [],
+				}),
+				prefix: { selection, context },
+			},
 		};
 	}
 
@@ -1181,10 +1181,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 				// session fields (sessionRole + issue labels flow through the retry
 				// request) — a QA retry keeps its browser exemption.
 				...(runnerSpawn.runnerBackend === "claude-tmux" && {
-					runnerMcpProfile: this.resolveMcpProfileForExecution(
-						newExecutionId,
-						req,
-					),
+					...this.resolveMcpProfileForExecution(newExecutionId, req),
 				}),
 				retryContext: {
 					predecessorExecutionId: req.oldExecutionId,
@@ -1485,7 +1482,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		workflowPrefixLookup?: (
 			input: WorkflowPrefixLookupInput,
 		) => WorkflowPrefixContext | undefined,
-		runnerPrefixProfileControl?: () => FlagStoreRawValue,
 	) {
 		super(
 			blueprintsByProject,
@@ -1506,7 +1502,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			prelaunchWorkflowTurnGrant,
 			workflowUsageRecorder,
 			workflowPrefixLookup,
-			runnerPrefixProfileControl,
 		);
 	}
 
@@ -1954,10 +1949,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// keeps the browser (sessionRole="qa"); full-mcp label / env
 				// kill-switch resolve to null inside (→ byte-compatible spawn).
 				...(runnerSpawn.runnerBackend === "claude-tmux" && {
-					runnerMcpProfile: this.resolveMcpProfileForExecution(
-						executionId,
-						req,
-					),
+					...this.resolveMcpProfileForExecution(executionId, req),
 				}),
 				// FLY-116: spawn macOS Terminal viewer once tmux window exists
 				onTmuxWindowCreated: ({ baseSessionName, windowId }) => {

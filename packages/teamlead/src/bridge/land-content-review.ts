@@ -182,7 +182,12 @@ export class GitLandContentReviewer {
 			outcome = await this.reviewRound({
 				...(prefix && {
 					prefixProfile: prefix.profile,
-					prefixStamp: { dir: prefix.stampDir, requestId },
+					prefixAudit: prefix.audit ? { ...prefix.audit } : undefined,
+					prefixStamp: {
+						dir: prefix.stampDir,
+						requestId,
+						executionId: input.executionId,
+					},
 				}),
 				prompt:
 					`You are the independent cross-family reviewer for ${input.issueId}. ` +

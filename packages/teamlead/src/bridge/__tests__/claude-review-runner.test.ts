@@ -682,11 +682,181 @@ describe("FLY-2913 role-v1 reviewer prefix", () => {
 		);
 		expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
 			...prefixProfile.stamp,
+			effectiveProfile: "role-v1",
+			fallbackReason: null,
+			executionId: null,
+			settingsFile: "review-11111111-1111-4111-8111-111111111111.settings.json",
+			settingsSha256: createHash("sha256")
+				.update(argv.at(-1) as string)
+				.digest("hex"),
 			requestId: "req-1",
 			sessionId: "11111111-1111-4111-8111-111111111111",
 			resume: true,
 		});
 		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	it("keeps same-session reviewer settings pinned and rejects hash or identity mismatch", async () => {
+		const stampDir = mkdtempSync(join(tmpdir(), "fly2913-review-resume-"));
+		roots.push(stampDir);
+		const workflow = {
+			templateId: "tpl_code",
+			templateRevision: 2,
+			runId: "run-2913",
+			snapshotDigest: "a".repeat(64),
+		};
+		const prefixAudit = {
+			workflow,
+			nodeId: "implement",
+			selectionSource: "review_prefix_profile",
+			requestedProfile: "role-v1",
+			effectiveProfile: "role-v1",
+			fallbackReason: null,
+		};
+		const invocation = {
+			prompt: "p",
+			sessionId: "44444444-4444-4444-8444-444444444444",
+			resume: false,
+			cwd: "/tmp",
+			prefixProfile,
+			prefixAudit,
+			prefixStamp: {
+				dir: stampDir,
+				requestId: "req-resume",
+				executionId: "exec-author",
+			},
+		};
+		const args: string[][] = [];
+		const deps = {
+			spawner: async (opts: { argv: string[] }) => {
+				args.push(opts.argv);
+				return {
+					code: 0,
+					stdout: verdict,
+					stderr: "",
+					timedOut: false,
+					overflowed: false,
+					spawnError: null,
+				};
+			},
+			logger: () => {},
+		};
+		expect((await runClaudeReviewRound(invocation, deps)).kind).toBe("verdict");
+		expect(
+			(
+				await runClaudeReviewRound(
+					{ ...invocation, resume: true, prefixProfile: undefined },
+					deps,
+				)
+			).kind,
+		).toBe("verdict");
+		expect(args[1]!.at(-1)).toBe(args[0]!.at(-1));
+		expect(
+			await runClaudeReviewRound(
+				{
+					...invocation,
+					resume: true,
+					prefixAudit: {
+						...prefixAudit,
+						workflow: { ...workflow, templateRevision: 3 },
+					},
+				},
+				deps,
+			),
+		).toMatchObject({ kind: "failed", reason: "spawn_error" });
+		expect(
+			await runClaudeReviewRound(
+				{
+					...invocation,
+					resume: true,
+					prefixProfile: undefined,
+					prefixAudit: {
+						...prefixAudit,
+						workflow: null,
+						nodeId: null,
+						fallbackReason: "provenance-error",
+					},
+				},
+				deps,
+			),
+		).toMatchObject({ kind: "failed", reason: "spawn_error" });
+
+		writeFileSync(
+			join(stampDir, `review-${invocation.sessionId}.settings.json`),
+			"{}",
+		);
+		expect(
+			await runClaudeReviewRound({ ...invocation, resume: true }, deps),
+		).toMatchObject({ kind: "failed", reason: "spawn_error" });
+		expect(args).toHaveLength(2);
+	});
+
+	it("records legacy reviewer identity and actual settings hash without changing argv", async () => {
+		const stampDir = mkdtempSync(join(tmpdir(), "fly2913-legacy-review-"));
+		roots.push(stampDir);
+		let argv: string[] = [];
+		const prompt =
+			"<!-- FLYWHEEL_LOCAL_TEST_POLICY:BEGIN -->\npolicy\n<!-- FLYWHEEL_LOCAL_TEST_POLICY:END -->\nreview this";
+		const audit = {
+			workflow: {
+				templateId: "tpl_code",
+				templateRevision: 2,
+				runId: "run-2913",
+				snapshotDigest: "a".repeat(64),
+			},
+			nodeId: "implement",
+			selectionSource: "review_prefix_profile",
+			requestedProfile: "legacy",
+			effectiveProfile: "legacy",
+			fallbackReason: "node-legacy",
+		};
+		await runClaudeReviewRound(
+			{
+				prompt,
+				sessionId: "33333333-3333-4333-8333-333333333333",
+				resume: false,
+				cwd: "/tmp",
+				prefixAudit: audit,
+				prefixStamp: {
+					dir: stampDir,
+					requestId: "req-legacy",
+					executionId: "exec-author",
+				},
+			},
+			{
+				spawner: async (opts) => {
+					argv = opts.argv;
+					return {
+						code: 0,
+						stdout: verdict,
+						stderr: "",
+						timedOut: false,
+						overflowed: false,
+						spawnError: null,
+					};
+				},
+				logger: () => {},
+			},
+		);
+		const settings = argv[argv.indexOf("--settings") + 1]!;
+		expect(settings).toBe(
+			buildClaudeReviewArgv({ prompt, sessionId: "s", resume: false }).at(-1),
+		);
+		expect(
+			JSON.parse(
+				readFileSync(
+					join(
+						stampDir,
+						"review-33333333-3333-4333-8333-333333333333.prefix-profile.json",
+					),
+					"utf-8",
+				),
+			),
+		).toMatchObject({
+			...audit,
+			executionId: "exec-author",
+			settingsSha256: createHash("sha256").update(settings).digest("hex"),
+		});
 	});
 
 	it("reviews with the legacy settings when the stamp cannot be persisted", async () => {

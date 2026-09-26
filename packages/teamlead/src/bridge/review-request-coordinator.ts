@@ -1597,7 +1597,12 @@ export class ReviewRequestCoordinator {
 			return roundRunner({
 				...(prefix && {
 					prefixProfile: prefix.profile,
-					prefixStamp: { dir: prefix.stampDir, requestId: job.request_id },
+					prefixAudit: prefix.audit ? { ...prefix.audit } : undefined,
+					prefixStamp: {
+						dir: prefix.stampDir,
+						requestId: job.request_id,
+						executionId: job.execution_id,
+					},
 				}),
 				prompt: this.buildPrompt(
 					job,

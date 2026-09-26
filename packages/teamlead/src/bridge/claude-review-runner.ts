@@ -21,10 +21,12 @@
  */
 
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
+	readFileSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
@@ -120,7 +122,8 @@ export interface ClaudeReviewInvocation {
 		CompiledRunnerPrefixProfile,
 		"settings" | "profileDigest"
 	> & { stamp: Record<string, unknown> };
-	prefixStamp?: { dir: string; requestId: string };
+	prefixAudit?: Record<string, unknown>;
+	prefixStamp?: { dir: string; requestId: string; executionId?: string };
 }
 
 /**
@@ -141,6 +144,22 @@ export function killAllClaudeReviewChildren(): number {
 	for (const kill of liveChildren.values()) kill();
 	liveChildren.clear();
 	return n;
+}
+
+function buildReviewSettings(
+	prompt: string,
+	prefix?: Record<string, unknown>,
+): string {
+	return JSON.stringify(
+		appendRunnerTestPolicyHookSettings(
+			buildNonLeadClaudeSettings(prefix),
+			prompt,
+			buildRunnerTestPolicyHookCommand(
+				process.execPath,
+				RUNNER_TEST_POLICY_HOOK,
+			),
+		),
+	);
 }
 
 export function buildClaudeReviewArgv(
@@ -181,58 +200,127 @@ export function buildClaudeReviewArgv(
 		canonicalModel,
 		...(effort ? (["--effort", effort] as const) : []),
 		"--settings",
-		JSON.stringify(
-			appendRunnerTestPolicyHookSettings(
-				// FLY-2913: the role-v1 profile merges first; forced denies still win.
-				buildNonLeadClaudeSettings(inv.prefixProfile?.settings),
-				inv.prompt,
-				buildRunnerTestPolicyHookCommand(
-					process.execPath,
-					RUNNER_TEST_POLICY_HOOK,
-				),
-			),
-		),
+		buildReviewSettings(inv.prompt, inv.prefixProfile?.settings),
 	];
 }
 
-/** FLY-2913: atomic 0600 per-session reviewer stamp; false ⇒ launch legacy. */
-function persistReviewPrefixStamp(
+/** Resolve actual settings before spawn, with session-bound audit and resume checks. */
+function prepareReviewPrefixSettings(
 	inv: ClaudeReviewInvocation,
 	logger: (msg: string) => void,
-): boolean {
-	const { prefixProfile, prefixStamp } = inv;
-	if (!prefixProfile || !prefixStamp) return false;
+): string | undefined {
+	const { prefixProfile, prefixStamp, prefixAudit } = inv;
+	if (!prefixProfile && !prefixAudit) return undefined;
+	const legacy = buildReviewSettings(inv.prompt);
+	const roleSettings = prefixProfile
+		? buildReviewSettings(inv.prompt, prefixProfile.settings)
+		: undefined;
+	if (!prefixStamp) {
+		logger(
+			`prefix-launch ${JSON.stringify({ ...prefixAudit, effectiveProfile: "legacy", fallbackReason: "stamp-location-missing", settingsSha256: createHash("sha256").update(legacy).digest("hex") })}`,
+		);
+		return legacy;
+	}
+	if (!/^[A-Za-z0-9-]{1,128}$/.test(inv.sessionId))
+		throw new Error("prefix resume invalid session id");
 	const target = join(
 		prefixStamp.dir,
 		`review-${inv.sessionId}.prefix-profile.json`,
 	);
-	const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	const settingsFile = `review-${inv.sessionId}.settings.json`;
+	if (inv.resume && existsSync(target)) {
+		try {
+			const prior = JSON.parse(readFileSync(target, "utf-8"));
+			if (prior.effectiveProfile === "role-v1" || prior.mode === "role-v1") {
+				if (
+					prior.sessionId !== inv.sessionId ||
+					(prefixStamp.executionId &&
+						prior.executionId !== prefixStamp.executionId) ||
+					prior.settingsFile !== settingsFile
+				)
+					throw new Error("identity");
+				const expected =
+					prefixAudit !== undefined
+						? prefixAudit.workflow
+						: prefixProfile?.stamp.workflow;
+				if (!expected || !prior.workflow) throw new Error("workflow missing");
+				if (expected) {
+					for (const key of [
+						"runId",
+						"templateId",
+						"snapshotDigest",
+						"templateRevision",
+					]) {
+						if (key === "templateRevision" && prior.workflow[key] === undefined)
+							continue;
+						if (
+							prior.workflow[key] !== (expected as Record<string, unknown>)[key]
+						)
+							throw new Error("workflow");
+					}
+				}
+				const expectedNode =
+					prefixAudit !== undefined
+						? prefixAudit.nodeId
+						: prefixProfile?.stamp.nodeId;
+				if (!expectedNode || prior.nodeId !== expectedNode)
+					throw new Error("node");
+				const settings = readFileSync(
+					join(prefixStamp.dir, settingsFile),
+					"utf-8",
+				);
+				if (
+					createHash("sha256").update(settings).digest("hex") !==
+					prior.settingsSha256
+				)
+					throw new Error("settings");
+				logger(
+					`prefix-launch ${JSON.stringify({ ...prior, requestId: prefixStamp.requestId, executionId: prefixStamp.executionId ?? null, resume: inv.resume, sessionId: inv.sessionId, requestedProfile: prefixAudit?.requestedProfile ?? "legacy", workflow: prior.workflow?.templateRevision ? prior.workflow : (expected ?? null), selectionSource: "historical-session", effectiveProfile: "role-v1", fallbackReason: null })}`,
+				);
+				return settings;
+			}
+		} catch {
+			throw new Error("prefix resume identity or settings mismatch");
+		}
+	}
+	const settings = roleSettings ?? legacy;
+	const audit = {
+		...prefixProfile?.stamp,
+		...prefixAudit,
+		executionId: prefixStamp.executionId ?? null,
+		requestId: prefixStamp.requestId,
+		sessionId: inv.sessionId,
+		resume: inv.resume,
+		effectiveProfile: roleSettings ? "role-v1" : "legacy",
+		fallbackReason: roleSettings
+			? null
+			: (prefixAudit?.fallbackReason ?? "node-legacy"),
+		settingsFile: roleSettings ? settingsFile : null,
+		settingsSha256: createHash("sha256").update(settings).digest("hex"),
+	};
+	const temps: string[] = [];
+	const write = (path: string, content: string) => {
+		const temp = `${path}.${randomUUID()}.tmp`;
+		temps.push(temp);
+		writeFileSync(temp, content, { mode: 0o600, flag: "wx" });
+		renameSync(temp, path);
+	};
 	try {
-		if (!/^[A-Za-z0-9-]{1,128}$/.test(inv.sessionId))
-			throw new Error("invalid review session id");
 		mkdirSync(prefixStamp.dir, { recursive: true, mode: 0o700 });
 		chmodSync(prefixStamp.dir, 0o700);
-		writeFileSync(
-			temp,
-			`${JSON.stringify({
-				...prefixProfile.stamp,
-				requestId: prefixStamp.requestId,
-				sessionId: inv.sessionId,
-				resume: inv.resume,
-			})}\n`,
-			{ encoding: "utf-8", mode: 0o600, flag: "wx" },
-		);
-		renameSync(temp, target);
-		return true;
-	} catch (err) {
-		// Best-effort temp cleanup; the primary failure is reported below.
-		try {
-			rmSync(temp, { force: true });
-		} catch {}
+		if (roleSettings) write(join(prefixStamp.dir, settingsFile), roleSettings);
+		write(target, `${JSON.stringify(audit)}\n`);
+		return settings;
+	} catch {
+		for (const temp of temps) {
+			try {
+				rmSync(temp, { force: true });
+			} catch {}
+		}
 		logger(
-			`FLY-2913 prefix-profile stamp write failed for review session ${inv.sessionId} (${(err as Error).message}); reviewing with the legacy settings`,
+			`FLY-2913 prefix-profile stamp write failed; legacy prefix-launch ${JSON.stringify({ ...audit, mode: "legacy", effectiveProfile: "legacy", fallbackReason: "audit-write-failed", settingsFile: null, settingsSha256: createHash("sha256").update(legacy).digest("hex") })}`,
 		);
-		return false;
+		return legacy;
 	}
 }
 
@@ -566,12 +654,21 @@ export async function runClaudeReviewRound(
 	const spawner = deps.spawner ?? defaultClaudeReviewSpawner;
 	const logger =
 		deps.logger ?? ((m: string) => console.log(`[claude-review] ${m}`));
-	const argv = buildClaudeReviewArgv({
-		...inv,
-		prefixProfile: persistReviewPrefixStamp(inv, logger)
-			? inv.prefixProfile
-			: undefined,
-	});
+	let settings: string | undefined;
+	try {
+		settings = prepareReviewPrefixSettings(inv, logger);
+	} catch {
+		return {
+			kind: "failed",
+			reason: "spawn_error",
+			detail: "prefix resume identity or settings mismatch",
+			exitCode: null,
+			timedOut: false,
+		};
+	}
+	const argv = buildClaudeReviewArgv({ ...inv, prefixProfile: undefined });
+	if (settings !== undefined) argv[argv.indexOf("--settings") + 1] = settings;
+
 	const res = await spawner({
 		binary: inv.binary ?? "claude",
 		argv,

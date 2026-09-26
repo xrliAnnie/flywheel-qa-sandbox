@@ -1,5 +1,4 @@
 import { isRunnerMemoryMode } from "../runner-memory-mode.js";
-import { isRunnerPrefixProfile } from "../runner-prefix-profile.js";
 import {
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
@@ -79,13 +78,6 @@ const runnerMemoryModeCodec: FlagStoreCodec = {
 	canonicalEffective: (value) => (isRunnerMemoryMode(value) ? value : "off"),
 };
 
-const runnerPrefixProfileCodec: FlagStoreCodec = {
-	parse: ({ hasOverride, raw }) =>
-		hasOverride && isRunnerPrefixProfile(raw) ? raw : "legacy",
-	canonicalEffective: (value) =>
-		isRunnerPrefixProfile(value) ? value : "legacy",
-};
-
 const AUTO_NARROW_MODES = new Set(["off", "dry_run", "auto"] as const);
 const autoNarrowModeCodec: FlagStoreCodec = {
 	parse: ({ hasOverride, raw }) => {
@@ -158,7 +150,6 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	}
 	if (name === "skill_framework_mode") return skillFrameworkCodec;
 	if (name === "runner_memory_mode") return runnerMemoryModeCodec;
-	if (name === "runner_prefix_profile") return runnerPrefixProfileCodec;
 	if (
 		name === "alert_system" ||
 		name === "review_quota_auto_retry" ||

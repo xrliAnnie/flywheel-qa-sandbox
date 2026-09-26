@@ -181,7 +181,7 @@ async function worker(mode, dir) {
 		const saved = JSON.parse(readFileSync(join(dir, "published.json"), "utf8"));
 		assert.equal(
 			store.getWorkflowTemplate(id).current_published_revision,
-			mode === "rollback" ? 2 : 3,
+			mode === "rollback" ? 2 : 1,
 		);
 		assert.equal(store.getWorkflowTemplate(id).seed_owner, "founder");
 		assert.equal(store.getWorkflowRun("old-run").snapshot, saved.oldSnapshot);
@@ -202,16 +202,20 @@ async function worker(mode, dir) {
 			]);
 			assert.equal(rollback.length, 2);
 			const receipt = rollback[1];
-			assert.equal(receipt.published_revision, 3);
+			assert.equal(receipt.published_revision, 1);
+			assert.equal(receipt.source_kind, "rollback");
+			assert.equal(store.listWorkflowTemplateRevisions(id).length, 2);
 			assert.equal(receipt.after_digest, saved.originalDigest);
 			assert.equal(
 				(await get(`/api/workflow-templates/${id}`)).current_revision.revision,
-				3,
+				1,
 			);
 			assert.equal(
 				JSON.parse(materialize("rollback-run").snapshot).template.revision,
-				3,
+				1,
 			);
+			assert.equal(store.getWorkflowRun("old-run").snapshot, saved.oldSnapshot);
+			assert.equal(store.getWorkflowRun("new-run").snapshot, saved.newSnapshot);
 			writeFileSync(
 				join(dir, "rollback.json"),
 				JSON.stringify(receipt, null, 2),
@@ -219,7 +223,7 @@ async function worker(mode, dir) {
 			return { phase: mode, pid: process.pid, receipt };
 		}
 		assert.equal(
-			store.getWorkflowTemplateRevision(id, 3).manifest_digest,
+			store.getWorkflowTemplateRevision(id, 1).manifest_digest,
 			saved.originalDigest,
 		);
 		const rollback = JSON.parse(
@@ -231,12 +235,12 @@ async function worker(mode, dir) {
 		);
 		assert.equal(
 			(await get(`/api/workflow/templates/${id}`)).current_revision.revision,
-			3,
+			1,
 		);
 		return {
 			phase: mode,
 			pid: process.pid,
-			revision: 3,
+			revision: 1,
 			manualPublicationPreserved: true,
 			auditRows: store.listWorkflowTemplateAudit(id).length,
 		};

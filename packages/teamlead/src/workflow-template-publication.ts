@@ -269,14 +269,23 @@ export class WorkflowTemplatePublicationService {
 		if (snapshot.revision !== canonical.registryRevision)
 			fail("model_registry_changed", 409);
 		this.assertMigrationReady(canonical.templateId);
-		const result = this.deps.store.createAndPublishWorkflowTemplateRevision({
+		const publicationInput = {
 			templateId: canonical.templateId,
 			manifest: canonical.manifest,
 			expectedRevision: canonical.expectedRevision,
 			createdBy: canonical.actor,
 			modelSnapshot: snapshot,
 			publication: { ...canonical, requestDigest },
-		});
+		};
+		const result =
+			canonical.sourceKind === "rollback"
+				? this.deps.store.publishHistoricalWorkflowTemplateRevision({
+						...publicationInput,
+						revision: canonical.sourceRevision!,
+					})
+				: this.deps.store.createAndPublishWorkflowTemplateRevision(
+						publicationInput,
+					);
 		if (result.status === "conflict") fail("publication_conflict", 409);
 		if (result.status === "not_found") fail("template_not_found", 404);
 		const receipt = this.status(op);

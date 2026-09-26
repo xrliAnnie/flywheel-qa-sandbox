@@ -102,7 +102,6 @@ import {
 	storePonytailEnabled,
 	storeProofshotEnabled,
 	storeRunnerMemoryMode,
-	storeRunnerPrefixProfile,
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
 } from "./flag-store-runtime.js";
@@ -1268,7 +1267,6 @@ export function createRunInfraDispatcher(input: {
 			}
 		},
 		(lookup) => resolveExecutionWorkflowPrefixContext(input.store, lookup),
-		flagStore ? () => storeRunnerPrefixProfile(flagStore) : undefined,
 	);
 }
 

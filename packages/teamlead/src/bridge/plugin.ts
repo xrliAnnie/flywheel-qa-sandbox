@@ -535,7 +535,6 @@ import {
 	storeLoopProfilerEnabled,
 	storeNodeStandbyResumeEnabled,
 	storeReviewQuotaAutoRetryEnabled,
-	storeRunnerPrefixProfile,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSummaryAbsorptionCadenceMs,
@@ -8513,7 +8512,7 @@ export async function startBridge(
 		landProjectRootFor,
 	);
 	const landContentProver = new GitLandContentProver(landProjectRootFor);
-	// FLY-2913: Claude reviewers read the store switch at every new launch.
+	// FLY-2913: Claude reviewers use the author node in the sealed run snapshot.
 	const reviewPrefixProfile = (input: {
 		executionId: string;
 		reviewType: "design" | "code";
@@ -8521,7 +8520,6 @@ export async function startBridge(
 	}) =>
 		resolveReviewPrefixProfile({
 			store,
-			profile: storeRunnerPrefixProfile(flagStore),
 			...input,
 		});
 	const landContentReviewer = new GitLandContentReviewer(

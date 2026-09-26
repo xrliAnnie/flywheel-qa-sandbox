@@ -238,6 +238,8 @@ export interface AdapterExecutionContext {
 	 * persists `stamp` beside the execution's runner state. Absent ⇒ legacy
 	 * launch, byte-compatible.
 	 */
+	/** FLY-2913: audit only; never merged into provider settings. */
+	prefixAudit?: Record<string, unknown>;
 	prefixProfile?: {
 		settings: Record<string, unknown>;
 		profileDigest: string;

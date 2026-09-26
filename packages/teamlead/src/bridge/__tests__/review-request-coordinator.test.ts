@@ -3095,6 +3095,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 								runId: "run",
 								snapshotDigest: "a".repeat(64),
 								templateId: "tpl_code",
+								templateRevision: 2,
 							},
 							nodeId: "implement",
 							skillArm: "superpowers",
@@ -3146,6 +3147,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		expect(h.invocations[1]?.prefixStamp).toEqual({
 			dir: "/state/runner-state/e1",
 			requestId: "r2",
+			executionId: "e1",
 		});
 	});
 
@@ -5745,12 +5747,17 @@ describe("FLY-2913 — reviewer role-v1 prefix per launch", () => {
 				version: 1 as const,
 				compilerVersion: 1,
 				mode: "role-v1" as const,
+				requestedProfile: "role-v1" as const,
+				effectiveProfile: "role-v1" as const,
+				selectionSource: "review_prefix_profile" as const,
+				fallbackReason: null,
 				role: "review-code" as const,
 				taskSetId: "engineering" as const,
 				workflow: {
 					runId: "run",
 					snapshotDigest: "a".repeat(64),
 					templateId: "tpl_code",
+					templateRevision: 2,
 				},
 				nodeId: "implement",
 				skillArm: "superpowers",
@@ -5816,8 +5823,8 @@ describe("FLY-2913 — reviewer role-v1 prefix per launch", () => {
 			[true, digests[1]],
 		]);
 		expect(h.invocations.map((i) => i.prefixStamp)).toEqual([
-			{ dir: "/state/runner-state/e1", requestId: "r1" },
-			{ dir: "/state/runner-state/e1", requestId: "r2" },
+			{ dir: "/state/runner-state/e1", requestId: "r1", executionId: "e1" },
+			{ dir: "/state/runner-state/e1", requestId: "r2", executionId: "e1" },
 		]);
 	});
 

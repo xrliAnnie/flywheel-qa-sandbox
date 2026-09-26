@@ -27,7 +27,7 @@ node "$FLYWHEEL_COMM_CLI" workflow-template publish --template tpl_simple_code -
 node "$FLYWHEEL_COMM_CLI" workflow-template rollback --template tpl_simple_code --revision 3 --reason "隔离验收回滚"
 ```
 
-把3换成已核验的目标历史revision。回滚生成新版本，可能因旧模型已失效而拒绝；不能直接回写DB指针。Bridge下一次正常重启应保留人工版。这个能力本身的首次部署仍走独立updater。
+把3换成已核验的目标历史revision。回滚通过受管事务把current pointer指回该revision，不复制新版本、不修改历史manifest或已有run。回执published_revision就是目标revision，source_kind为rollback；保存各模板独立的operationId与前后digest。多个模板分别提交，不是跨模板原子切换。回滚仍检查当前revision/digest、确认令牌、模型registry、迁移状态和active/held run安全性，旧模型已失效时会拒绝；不能手工回写DB指针。Bridge下一次正常重启应保留人工指针和回执。这个能力本身的首次部署仍走独立updater。
 
 ## 改 Lead effort/model 不重启
 

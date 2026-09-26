@@ -1,0 +1,91 @@
+{
+  "scope": "Offline compiler byte parity only; not runtime or token savings proof",
+  "base": "76efd87d3371c27075108454764497770995f39d",
+  "samples": [
+    {
+      "role": "design",
+      "lowerRestrictions": [],
+      "byteEqual": true,
+      "sha256": "32c774635c39eb1681343bda644b042533f479779d2970cc3cf373a901f974ca",
+      "bytes": 1565
+    },
+    {
+      "role": "design",
+      "lowerRestrictions": [
+        "gws",
+        "notion"
+      ],
+      "byteEqual": true,
+      "sha256": "ec5c755e48f2ae86b46c44f5f14257710b329033cb6dea6d2c186446a292a7d2",
+      "bytes": 1526
+    },
+    {
+      "role": "implement",
+      "lowerRestrictions": [],
+      "byteEqual": true,
+      "sha256": "9f51b44ab00068c95ad08422c0dc114edb7dc783de3df6e3e948348548f5c11a",
+      "bytes": 1614
+    },
+    {
+      "role": "implement",
+      "lowerRestrictions": [
+        "gws",
+        "notion"
+      ],
+      "byteEqual": true,
+      "sha256": "d2e92aab55deef9dfb0802bcd7d65a00e62d65c6ca30148ab20b4efafc25f77b",
+      "bytes": 1575
+    },
+    {
+      "role": "qa",
+      "lowerRestrictions": [],
+      "byteEqual": true,
+      "sha256": "94a33eeea5f1b35a5a1c91e3abf53662cc03a8062d50805fed7f754c3b61794f",
+      "bytes": 1784
+    },
+    {
+      "role": "qa",
+      "lowerRestrictions": [
+        "gws",
+        "notion"
+      ],
+      "byteEqual": true,
+      "sha256": "55fcf28e4e66215d8459bcedf4d5ca2f0bc5dec200377ec189efd5ab22763dad",
+      "bytes": 1745
+    },
+    {
+      "role": "review-design",
+      "lowerRestrictions": [],
+      "byteEqual": true,
+      "sha256": "1faa161084b5dabc77899cfe12490f628508d35c5e00e104b97b3162e2a5e970",
+      "bytes": 2172
+    },
+    {
+      "role": "review-design",
+      "lowerRestrictions": [
+        "gws",
+        "notion"
+      ],
+      "byteEqual": true,
+      "sha256": "3f0761da28fabb1fd2185a0a16cc0419b016a295dfc9f0419463948a9f64ae1a",
+      "bytes": 2133
+    },
+    {
+      "role": "review-code",
+      "lowerRestrictions": [],
+      "byteEqual": true,
+      "sha256": "ae1fb168f9b5e581ab94f61eab2fe7f98800290c4cb580f45705642c5c3d2734",
+      "bytes": 2146
+    },
+    {
+      "role": "review-code",
+      "lowerRestrictions": [
+        "gws",
+        "notion"
+      ],
+      "byteEqual": true,
+      "sha256": "9b44c67bbe12087f6483f9a1ccef4aeb7bfd2abd5a3e94249c0195a7730a5ac5",
+      "bytes": 2107
+    }
+  ]
+}

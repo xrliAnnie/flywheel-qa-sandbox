@@ -1,4 +1,6 @@
 # FLY-2606 模板与 Lead 参数热生效 — 实施计划
+
+> FLY-2913 C4 已替代本文历史 rollback clone 语义：当前受管回滚将发布指针指回指定历史 revision，不新建 revision；原设计文字保留供审计。现行操作见 [operator.md](operator.md)。
 Issue: FLY-2606 (https://linear.app/geoforge3d/issue/FLY-2606/热生效-founder-2026-09-16-0038z改模板effort-要等重启才生效本来就有问题-工作流模板从仓库种子发布到)
 日期: 2026-09-15
 基于: research.md

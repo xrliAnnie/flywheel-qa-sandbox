@@ -1323,6 +1323,7 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		runId: "run-2913",
 		snapshotDigest: "a".repeat(64),
 		templateId: "tpl_code",
+		templateRevision: 2,
 	};
 	const prefix = {
 		selection: {
@@ -1342,6 +1343,15 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		},
 	};
 
+	const audit = {
+		workflow,
+		nodeId: "implement",
+		selectionSource: "prefix_profile" as const,
+		requestedProfile: "role-v1" as const,
+		effectiveProfile: "role-v1" as const,
+		fallbackReason: null,
+	};
+
 	it.each([
 		["superpowers", undefined],
 		["matt", "matt"],
@@ -1349,6 +1359,7 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		const { execArgs } = await runBlueprint({
 			envValue,
 			ctxExtra: {
+				runnerPrefixAudit: audit,
 				runnerMcpProfile: {
 					disabledPlugins: ["heavy-a@x"],
 					disableChrome: false,
@@ -1375,6 +1386,7 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		).not.toHaveProperty("problem-definition");
 		expect(execArgs.disabledPlugins?.[0]).toBe("heavy-a@x");
 		expect(execArgs).not.toHaveProperty("prefix");
+		expect(execArgs.prefixAudit).toEqual(audit);
 	});
 
 	it("keeps skills the runner cwd's project settings hide further", async () => {
@@ -1388,6 +1400,7 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 			const { execArgs } = await runBlueprint({
 				projectRoot,
 				ctxExtra: {
+					runnerPrefixAudit: audit,
 					runnerMcpProfile: {
 						disabledPlugins: [],
 						disableChrome: false,
@@ -1416,6 +1429,7 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		};
 		const { execArgs } = await runBlueprint({
 			ctxExtra: {
+				runnerPrefixAudit: audit,
 				runnerMcpProfile: {
 					disabledPlugins: ["heavy-a@x"],
 					disableChrome: false,
@@ -1424,6 +1438,11 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 			},
 		});
 		expect(execArgs).toBeDefined();
+		expect(execArgs.prefixAudit).toEqual({
+			...audit,
+			effectiveProfile: "legacy",
+			fallbackReason: "compile-error",
+		});
 		expect(execArgs).not.toHaveProperty("prefixProfile");
 		expect(execArgs.disabledPlugins?.[0]).toBe("heavy-a@x");
 		expect(warn.mock.calls.flat().join("\n")).toMatch(
@@ -1431,9 +1450,15 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		);
 	});
 
-	it("leaves the launch byte-compatible without a pinned prefix", async () => {
+	it("keeps independent legacy audit without a pinned prefix", async () => {
 		const { execArgs } = await runBlueprint({
 			ctxExtra: {
+				runnerPrefixAudit: {
+					...audit,
+					requestedProfile: "legacy",
+					effectiveProfile: "legacy",
+					fallbackReason: "node-legacy",
+				},
 				runnerMcpProfile: {
 					disabledPlugins: ["heavy-a@x"],
 					disableChrome: false,
@@ -1441,11 +1466,18 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 			},
 		});
 		expect(execArgs).not.toHaveProperty("prefixProfile");
+		expect(execArgs.prefixAudit).toEqual({
+			...audit,
+			requestedProfile: "legacy",
+			effectiveProfile: "legacy",
+			fallbackReason: "node-legacy",
+		});
 	});
 
 	it("never compiles a Claude prefix for a Codex backend", async () => {
 		const { execArgs } = await runBlueprint({
 			ctxExtra: {
+				runnerPrefixAudit: audit,
 				runnerBackend: "codex-tmux",
 				runnerMcpProfile: {
 					disabledPlugins: [],
@@ -1455,6 +1487,7 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 			},
 		});
 		expect(execArgs).not.toHaveProperty("prefixProfile");
+		expect(execArgs).not.toHaveProperty("prefixAudit");
 	});
 });
 

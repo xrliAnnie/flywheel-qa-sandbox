@@ -342,6 +342,8 @@ export async function runPrefixControls({
 			runId: "fly2913-probe",
 			snapshotDigest: "0".repeat(64),
 			templateId: "tpl_code",
+			// Synthetic probe context, never a production run/revision receipt.
+			templateRevision: 1,
 		};
 		const phase = runner ? role : "implement";
 		const agent = runner ? pinnedAgents[role] : null;

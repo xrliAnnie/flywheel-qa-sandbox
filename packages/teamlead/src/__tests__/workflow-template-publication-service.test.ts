@@ -12,24 +12,33 @@ const stores: StateStore[] = [];
 afterEach(() => {
 	for (const store of stores.splice(0)) store.close();
 });
-async function fixture(tokens = new ConfirmTokenStore()) {
+async function fixture(
+	tokens = new ConfirmTokenStore(),
+	templateId = "tpl_simple_code",
+) {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
 	const seed = loadWorkflowMenuSeeds().find(
-		(s) => s.templateId === "tpl_simple_code",
+		(s) => s.templateId === templateId,
 	)!;
 	store.importWorkflowTemplateSeed(seed);
 	let snapshot = getModelConfigSnapshot();
+	let migrationReady = true;
 	const service = new WorkflowTemplatePublicationService({
 		store,
 		tokens,
 		modelSnapshot: () => snapshot,
 		runtimeBuildSha: "test-build",
-		assertMigrationReady: () => {},
+		assertMigrationReady: () => {
+			if (!migrationReady) throw new Error("catalog_migration_pending");
+		},
 	});
 	return {
 		store,
 		service,
+		rejectMigration: () => {
+			migrationReady = false;
+		},
 		changeGeneration: () => {
 			snapshot = { ...snapshot, revision: "changed" };
 		},
@@ -126,7 +135,7 @@ describe("workflow publication stage and apply", () => {
 		const { service } = await fixture();
 		expect(() => service.stage({ ...request, ...override })).toThrow();
 	});
-	it("rolls back by publishing historical contents as a new revision", async () => {
+	it("rolls back the pointer to the exact historical revision without cloning", async () => {
 		const { store, service } = await fixture();
 		const original = store.getWorkflowTemplateRevision(request.templateId, 1)!;
 		const manifest = JSON.parse(original.manifest);
@@ -137,7 +146,7 @@ describe("workflow publication stage and apply", () => {
 			service.stage({ ...request, from: "rollback", revision: 1 }),
 		);
 		expect(receipt).toMatchObject({
-			published_revision: 3,
+			published_revision: 1,
 			after_digest: original.manifest_digest,
 			source_kind: "rollback",
 		});
@@ -149,7 +158,13 @@ describe("workflow publication stage and apply", () => {
 					.manifest,
 			).nodes.find((n: { id: string }) => n.id === "qa").model;
 		expect(qaModel(1)).toBe("opus");
-		expect(qaModel(3)).toBe("opus");
+		expect(qaModel(receipt.published_revision)).toBe("opus");
+		expect(
+			store.listWorkflowTemplateRevisions(request.templateId),
+		).toHaveLength(2);
+		expect(
+			store.getWorkflowTemplate(request.templateId)?.current_published_revision,
+		).toBe(1);
 	});
 
 	it("FLY-2775: a seed publication keeps the Opus family alias", async () => {
@@ -165,4 +180,80 @@ describe("workflow publication stage and apply", () => {
 			published.nodes.find((n: { id: string }) => n.id === "qa").model,
 		).toBe("opus");
 	});
+	it.each([
+		"tpl_code",
+		"tpl_prd",
+		"tpl_design",
+		"tpl_prototype",
+		"tpl_generic_menu",
+	])(
+		"keeps managed pointer rollback compatible with %s",
+		async (templateId) => {
+			const { store, service } = await fixture(
+				new ConfirmTokenStore(),
+				templateId,
+			);
+			const original = store.getWorkflowTemplateRevision(templateId, 1)!;
+			service.apply(service.stage({ ...request, templateId }));
+			const revisions = store.listWorkflowTemplateRevisions(templateId);
+			const stage = service.stage({
+				...request,
+				templateId,
+				from: "rollback",
+				revision: 1,
+			});
+			const receipt = service.apply(stage);
+			expect(receipt).toMatchObject({
+				published_revision: 1,
+				after_digest: original.manifest_digest,
+				source_kind: "rollback",
+			});
+			expect(store.listWorkflowTemplateRevisions(templateId)).toEqual(
+				revisions,
+			);
+			expect(service.apply(stage)).toEqual(receipt);
+		},
+	);
+
+	it.each(["expiry", "registry", "migration", "content"])(
+		"retains rollback stage %s checks without writing",
+		async (failure) => {
+			let now = 0;
+			const { store, service, changeGeneration, rejectMigration } =
+				await fixture(new ConfirmTokenStore(100, () => now));
+			service.apply(service.stage(request));
+			const stage = service.stage({
+				...request,
+				from: "rollback",
+				revision: 1,
+			});
+			const before = {
+				revisions: store.listWorkflowTemplateRevisions(request.templateId),
+				audit: store.listWorkflowTemplateAudit(request.templateId),
+			};
+			if (failure === "expiry") now = 101;
+			if (failure === "registry") changeGeneration();
+			if (failure === "migration") rejectMigration();
+			if (failure === "content") {
+				stage.canonical.sourceRevision = 2;
+				stage.requestDigest = canonicalSubmissionDigest(stage.canonical);
+			}
+			expect(() => service.apply(stage)).toThrow(
+				failure === "registry"
+					? "model_registry_changed"
+					: failure === "migration"
+						? "catalog_migration_pending"
+						: "confirmation_rejected",
+			);
+			expect(
+				store.getWorkflowTemplate(request.templateId)
+					?.current_published_revision,
+			).toBe(2);
+			expect({
+				revisions: store.listWorkflowTemplateRevisions(request.templateId),
+				audit: store.listWorkflowTemplateAudit(request.templateId),
+			}).toEqual(before);
+			expect(service.status(stage.canonical.operationId)).toBeNull();
+		},
+	);
 });

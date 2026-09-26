@@ -15,7 +15,7 @@ export interface WorkflowTemplateCliDeps {
 	error?: (line: string) => void;
 }
 const USAGE =
-	"workflow-template publish --template ID --from seed|file [--file PATH] --reason TEXT | rollback --template ID --revision N --reason TEXT | status --operation-id UUID";
+	"workflow-template publish --template ID --from seed|file [--file PATH] --reason TEXT | rollback --template ID --revision N --reason TEXT | status --operation-id UUID\nrollback publishes revision N itself; no new revision";
 function required(options: Map<string, string>, name: string): string {
 	const value = options.get(name);
 	if (!value?.trim()) throw new Error(`${name} is required`);

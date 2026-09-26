@@ -15,7 +15,7 @@ class NoExternalCommDispatcher extends RunDispatcher {
 }
 const roots: string[] = [];
 beforeEach(() => {
-	// A stale role-v1 env must never enable the profile: only the store row does.
+	// A stale role-v1 env must never enable the profile: only the pinned node declaration does.
 	vi.stubEnv("FLYWHEEL_RUNNER_PREFIX_PROFILE", "role-v1");
 	vi.stubEnv("FLYWHEEL_RUNNER_BACKEND", "claude-tmux");
 	vi.stubEnv(
@@ -30,15 +30,15 @@ afterEach(() => {
 	for (const root of roots.splice(0))
 		rmSync(root, { recursive: true, force: true });
 });
-function harness(
-	profile: { hasOverride: boolean; raw: string | null } | null = {
-		hasOverride: true,
-		raw: "role-v1",
-	},
-) {
+function harness(profile: "legacy" | "role-v1" | undefined = "role-v1") {
 	const root = mkdtempSync(join(tmpdir(), "fly2913-dispatch-prefix-"));
 	roots.push(root);
-	const pinned = createWorkflowPrefixFixture(root);
+	const pinned = createWorkflowPrefixFixture(
+		root,
+		3,
+		"tpl_code",
+		profile ? { prefix_profile: profile } : {},
+	);
 	const captures: BlueprintContext[] = [];
 	const store = {
 		getWorkflowExecutionRuntime: vi.fn((executionId: string) => ({
@@ -62,7 +62,7 @@ function harness(
 		{ hasOverride: boolean; raw: string | null }
 	>([
 		["skill_framework_mode", { hasOverride: false, raw: null }],
-		...(profile ? [["runner_prefix_profile", profile] as const] : []),
+		["runner_prefix_profile", { hasOverride: true, raw: "legacy" }],
 	]);
 	const flagStore = {
 		mode: "ready" as const,
@@ -88,7 +88,7 @@ function harness(
 		projectRuntimes: new Map([["fixture", runtime]]),
 		cleanupHandles: [],
 		dispatcherClass: NoExternalCommDispatcher,
-		...(profile ? { flagStore: flagStore as unknown as FlagStoreRuntime } : {}),
+		flagStore: flagStore as unknown as FlagStoreRuntime,
 	});
 	return { dispatcher, store, captures, pinned, flagStore, flagRows };
 }
@@ -143,17 +143,11 @@ describe("real dispatcher prefix provenance wiring", () => {
 			});
 		},
 	);
-	it.each(["legacy", "unset", "no-store", "full-mcp", "codex"])(
-		"does not query or alter legacy source for %s",
+	it.each(["legacy", "full-mcp", "codex"])(
+		"keeps legacy settings for %s",
 		async (bypass) => {
 			const { dispatcher, store, captures } = harness(
-				bypass === "legacy"
-					? { hasOverride: true, raw: "legacy" }
-					: bypass === "unset"
-						? { hasOverride: false, raw: null }
-						: bypass === "no-store"
-							? null
-							: undefined,
+				bypass === "legacy" ? "legacy" : "role-v1",
 			);
 			if (bypass === "codex")
 				vi.stubEnv("FLYWHEEL_RUNNER_BACKEND", "codex-tmux");
@@ -163,34 +157,32 @@ describe("real dispatcher prefix provenance wiring", () => {
 				issueLabels: bypass === "full-mcp" ? ["full-mcp"] : [],
 			});
 			await dispatcher.drain();
-			expect(store.getWorkflowExecutionRuntime).not.toHaveBeenCalled();
+			if (bypass === "codex")
+				expect(store.getWorkflowExecutionRuntime).not.toHaveBeenCalled();
 			expect(captures[0]!.runnerMcpProfile?.prefix).toBeUndefined();
+			if (bypass !== "codex")
+				expect(captures[0]!.runnerPrefixAudit).toMatchObject({
+					workflow: { templateRevision: 2 },
+					effectiveProfile: "legacy",
+					fallbackReason: bypass === "full-mcp" ? "full-mcp" : "node-legacy",
+				});
+			else expect(captures[0]!).not.toHaveProperty("runnerPrefixAudit");
 		},
 	);
-	it("reads the store switch at each new launch without reconstructing the dispatcher", async () => {
-		const { dispatcher, captures, flagRows, flagStore } = harness({
-			hasOverride: true,
-			raw: "legacy",
-		});
-		const request = { issueId: "FLY-2913-fixture", projectName: "fixture" };
-		await dispatcher.start(request);
-		await dispatcher.drain();
-		flagRows.set("runner_prefix_profile", {
-			hasOverride: true,
-			raw: "role-v1",
-		});
-		await dispatcher.start({ ...request, issueId: "FLY-2913-fixture-2" });
-		await dispatcher.drain();
-		flagRows.set("runner_prefix_profile", {
-			hasOverride: true,
-			raw: "legacy",
-		});
-		await dispatcher.start({ ...request, issueId: "FLY-2913-fixture-3" });
-		await dispatcher.drain();
+	it("ignores stale store rows and keeps the same run profile across launches", async () => {
+		const { dispatcher, captures, flagRows, flagStore } = harness();
+		for (const [index, raw] of ["legacy", "role-v1", "legacy"].entries()) {
+			flagRows.set("runner_prefix_profile", { hasOverride: true, raw });
+			await dispatcher.start({
+				issueId: `FLY-2913-fixture-${index}`,
+				projectName: "fixture",
+			});
+			await dispatcher.drain();
+		}
 		expect(
 			captures.map((c) => c.runnerMcpProfile?.prefix?.selection.mode),
-		).toEqual([undefined, "role-v1", undefined]);
-		expect(flagStore.store.getFlagValueRow).toHaveBeenCalledWith(
+		).toEqual(["role-v1", "role-v1", "role-v1"]);
+		expect(flagStore.store.getFlagValueRow).not.toHaveBeenCalledWith(
 			"runner_prefix_profile",
 		);
 	});
@@ -229,20 +221,16 @@ describe("real dispatcher prefix provenance wiring", () => {
 			/FLY-2913 prefix legacy reason=provenance-error:workflow_prefix_context/,
 		);
 	});
-	it("falls back to legacy when the store switch cannot be read", async () => {
-		const info = vi.spyOn(console, "info").mockImplementation(() => {});
-		const { dispatcher, store, captures, flagRows } = harness();
+	it("does not let a missing store row disable a pinned role-v1 node", async () => {
+		const { dispatcher, captures, flagRows } = harness();
 		flagRows.delete("runner_prefix_profile");
 		await dispatcher.start({
 			issueId: "FLY-2913-fixture",
 			projectName: "fixture",
 		});
 		await dispatcher.drain();
-		expect(captures).toHaveLength(1);
-		expect(captures[0]!.runnerMcpProfile?.prefix).toBeUndefined();
-		expect(store.getWorkflowExecutionRuntime).not.toHaveBeenCalled();
-		expect(info.mock.calls.flat().join("\n")).toMatch(
-			/FLY-2913 prefix legacy reason=switch-unreadable/,
+		expect(captures[0]!.runnerMcpProfile?.prefix?.selection.mode).toBe(
+			"role-v1",
 		);
 	});
 });

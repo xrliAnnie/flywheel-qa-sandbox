@@ -1343,6 +1343,8 @@ describe("TmuxAdapter", () => {
 			const stamp = JSON.parse(readFileSync(stampPath, "utf-8"));
 			expect(stamp).toEqual({
 				...prefixProfile.stamp,
+				effectiveProfile: "role-v1",
+				fallbackReason: null,
 				executionId: "test-exec-1",
 				activationId: "activation:test",
 				sessionId,
@@ -1377,6 +1379,107 @@ describe("TmuxAdapter", () => {
 				/prefix-profile.*legacy/i,
 			);
 			warn.mockRestore();
+		});
+
+		it("records actual legacy settings without altering inline launch bytes", async () => {
+			const audit = {
+				workflow: {
+					runId: "run-2913",
+					templateId: "tpl_code",
+					templateRevision: 2,
+					snapshotDigest: "a".repeat(64),
+				},
+				nodeId: "implement",
+				selectionSource: "prefix_profile",
+				requestedProfile: "legacy",
+				effectiveProfile: "legacy",
+				fallbackReason: "node-legacy",
+			};
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ prefixAudit: audit }),
+			);
+			const args = calls.find((c) => c.args[0] === "new-window")!.args;
+			const stamp = JSON.parse(
+				readFileSync(
+					join(stateDir(), `prefix-profile.${sessionOf(args)}.json`),
+					"utf-8",
+				),
+			);
+			expect(settingsArg(args).startsWith("{")).toBe(true);
+			expect(Object.keys(settingsOf(args))).toEqual(["enabledPlugins"]);
+			expect(stamp).toMatchObject({
+				...audit,
+				executionId: "test-exec-1",
+				settingsSha256: createHash("sha256")
+					.update(settingsArg(args))
+					.digest("hex"),
+			});
+		});
+
+		it("reuses verified historical role-v1 bytes on same-session resume and rejects tampering", async () => {
+			const workflow = {
+				runId: "run-2913",
+				templateId: "tpl_code",
+				templateRevision: 2,
+				snapshotDigest: "a".repeat(64),
+			};
+			const boundProfile = {
+				...prefixProfile,
+				stamp: { ...prefixProfile.stamp, workflow, nodeId: "implement" },
+			};
+			const audit = {
+				workflow,
+				nodeId: "implement",
+				selectionSource: "prefix_profile",
+				requestedProfile: "legacy",
+				effectiveProfile: "legacy",
+				fallbackReason: "node-legacy",
+			};
+			const first = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", first.fn, 10).execute(
+				makeCtx({ prefixProfile: boundProfile }),
+			);
+			const args = first.calls.find((c) => c.args[0] === "new-window")!.args;
+			const sessionId = sessionOf(args),
+				file = settingsArg(args),
+				before = readFileSync(file, "utf-8");
+			const resumed = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", resumed.fn, 10).execute(
+				makeCtx({
+					previousSession: { sessionId },
+					prefixAudit: audit,
+				}),
+			);
+			const resumedArgs = resumed.calls.find(
+				(c) => c.args[0] === "new-window",
+			)!.args;
+			expect(settingsArg(resumedArgs)).toBe(file);
+			expect(readFileSync(file, "utf-8")).toBe(before);
+			const unbound = makeMockExec({ paneDead: true });
+			await expect(
+				new TmuxAdapter("flywheel", unbound.fn, 10).execute(
+					makeCtx({
+						previousSession: { sessionId },
+						prefixAudit: {
+							...audit,
+							workflow: null,
+							nodeId: null,
+							fallbackReason: "provenance-error",
+						},
+					}),
+				),
+			).rejects.toThrow(/prefix.*resume.*mismatch/);
+			expect(unbound.calls.some((c) => c.args[0] === "new-window")).toBe(false);
+
+			writeFileSync(file, "{}");
+			const corrupt = makeMockExec({ paneDead: true });
+			await expect(
+				new TmuxAdapter("flywheel", corrupt.fn, 10).execute(
+					makeCtx({ previousSession: { sessionId }, prefixAudit: audit }),
+				),
+			).rejects.toThrow(/prefix.*resume.*mismatch/);
+			expect(corrupt.calls.some((c) => c.args[0] === "new-window")).toBe(false);
 		});
 
 		it("adds nothing when no profile is supplied (legacy byte-compat)", async () => {

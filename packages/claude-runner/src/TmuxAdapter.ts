@@ -403,6 +403,9 @@ function persistRunnerPrefixLaunch(
 			`prefix-profile.${sessionId}.json`,
 			`${JSON.stringify({
 				...profile.stamp,
+				...ctx.prefixAudit,
+				effectiveProfile: "role-v1",
+				fallbackReason: null,
 				executionId: ctx.executionId,
 				...(ctx.workflowActivationId && {
 					activationId: ctx.workflowActivationId,
@@ -424,6 +427,101 @@ function persistRunnerPrefixLaunch(
 			`[TmuxAdapter] FLY-2913 prefix-profile launch files failed for ${ctx.executionId} (${(err as Error).message}); launching with the legacy settings`,
 		);
 		return undefined;
+	}
+}
+
+/** A resume must retain the already loaded profile, with verifiable identity/bytes. */
+function reuseRunnerPrefixLaunch(
+	ctx: AdapterExecutionContext,
+	sessionId: string,
+): string | undefined {
+	if (!ctx.previousSession) return undefined;
+	const dir = join(homedir(), ".flywheel", "runner-state", ctx.executionId);
+	const stampPath = join(dir, `prefix-profile.${sessionId}.json`);
+	if (!existsSync(stampPath)) return undefined;
+	try {
+		const stamp = JSON.parse(readFileSync(stampPath, "utf-8"));
+		if (stamp.mode !== "role-v1" && stamp.effectiveProfile !== "role-v1")
+			return undefined;
+		if (
+			stamp.executionId !== ctx.executionId ||
+			stamp.sessionId !== sessionId ||
+			stamp.settingsFile !== `claude-settings.${sessionId}.json`
+		)
+			throw new Error("identity");
+		const expected =
+			ctx.prefixAudit?.workflow ?? ctx.prefixProfile?.stamp.workflow;
+		if (!expected || !stamp.workflow) throw new Error("workflow missing");
+		if (expected && stamp.workflow) {
+			for (const key of [
+				"runId",
+				"templateId",
+				"snapshotDigest",
+				"templateRevision",
+			]) {
+				const prior = stamp.workflow[key];
+				if (key === "templateRevision" && prior === undefined) continue;
+				if (prior !== (expected as Record<string, unknown>)[key])
+					throw new Error("workflow");
+			}
+		}
+		const expectedNode =
+			ctx.prefixAudit !== undefined
+				? ctx.prefixAudit.nodeId
+				: ctx.prefixProfile?.stamp.nodeId;
+		if (!expectedNode || stamp.nodeId !== expectedNode) throw new Error("node");
+		const settingsPath = join(dir, stamp.settingsFile);
+		if (
+			createHash("sha256").update(readFileSync(settingsPath)).digest("hex") !==
+			stamp.settingsSha256
+		)
+			throw new Error("settings");
+		console.info(
+			`[TmuxAdapter] prefix-launch ${JSON.stringify({ ...stamp, executionId: ctx.executionId, activationId: ctx.workflowActivationId ?? null, sessionId, resume: true, workflow: stamp.workflow?.templateRevision ? stamp.workflow : (expected ?? null), selectionSource: "historical-session", requestedProfile: ctx.prefixAudit?.requestedProfile ?? "legacy", effectiveProfile: "role-v1", fallbackReason: null })}`,
+		);
+		return settingsPath;
+	} catch {
+		throw new Error("prefix resume identity or settings mismatch");
+	}
+}
+
+/** Audit failure is visible but must never change legacy launch behavior. */
+function recordLegacyPrefixLaunch(
+	ctx: AdapterExecutionContext,
+	sessionId: string,
+	settingsJson: string,
+	fallbackReason?: string,
+): void {
+	if (!ctx.prefixAudit && !ctx.prefixProfile) return;
+	const audit = {
+		...(ctx.prefixProfile?.stamp ?? {}),
+		...ctx.prefixAudit,
+		executionId: ctx.executionId,
+		sessionId,
+		mode: "legacy",
+		effectiveProfile: "legacy",
+		fallbackReason:
+			fallbackReason ?? ctx.prefixAudit?.fallbackReason ?? "node-legacy",
+		settingsSha256: createHash("sha256").update(settingsJson).digest("hex"),
+	};
+	const dir = join(homedir(), ".flywheel", "runner-state", ctx.executionId);
+	const target = join(dir, `prefix-profile.${sessionId}.json`),
+		temp = `${target}.${randomUUID()}.tmp`;
+	try {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		chmodSync(dir, 0o700);
+		writeFileSync(temp, `${JSON.stringify(audit)}\n`, {
+			mode: 0o600,
+			flag: "wx",
+		});
+		renameSync(temp, target);
+	} catch {
+		try {
+			rmSync(temp, { force: true });
+		} catch {}
+		console.warn(
+			`[TmuxAdapter] prefix-launch audit-write-failed ${JSON.stringify(audit)}`,
+		);
 	}
 }
 
@@ -1855,18 +1953,26 @@ export class TmuxAdapter implements IAdapter {
 		// opt-ins, memory, hooks, the test-policy hook and forced denies all merge
 		// over it. It rides a private file whose stamp is durable; otherwise the
 		// launch stays on the inline legacy settings.
-		const prefixSettingsPath = ctx.prefixProfile
-			? persistRunnerPrefixLaunch(
-					ctx,
-					sessionId,
-					ctx.prefixProfile,
-					JSON.stringify(composeSettings(ctx.prefixProfile.settings)),
-				)
-			: undefined;
-		args.push(
-			"--settings",
-			prefixSettingsPath ?? JSON.stringify(composeSettings()),
-		);
+		const resumedPrefixSettings = reuseRunnerPrefixLaunch(ctx, sessionId);
+		const prefixSettingsPath =
+			resumedPrefixSettings ??
+			(ctx.prefixProfile
+				? persistRunnerPrefixLaunch(
+						ctx,
+						sessionId,
+						ctx.prefixProfile,
+						JSON.stringify(composeSettings(ctx.prefixProfile.settings)),
+					)
+				: undefined);
+		const legacySettings = JSON.stringify(composeSettings());
+		if (!prefixSettingsPath)
+			recordLegacyPrefixLaunch(
+				ctx,
+				sessionId,
+				legacySettings,
+				ctx.prefixProfile ? "launch-files-unwritable" : undefined,
+			);
+		args.push("--settings", prefixSettingsPath ?? legacySettings);
 		// FLY-751: Claude-in-Chrome off for slimmed (non-QA) runners.
 		if (ctx.disableChrome) {
 			args.push("--no-chrome");

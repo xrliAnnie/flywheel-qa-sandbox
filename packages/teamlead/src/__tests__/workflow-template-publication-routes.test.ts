@@ -41,7 +41,7 @@ async function fixture() {
 			headers: { "content-type": "application/json", origin },
 			body: JSON.stringify(body),
 		});
-	return { base, post };
+	return { base, post, store };
 }
 it("requires same origin before stage or receipt lookup and exposes immediate publication", async () => {
 	const { base, post } = await fixture();
@@ -84,4 +84,41 @@ it("rejects forged actors and mismatching apply path", async () => {
 		},
 	);
 	expect(wrong.status).toBe(400);
+});
+
+it("authenticates rollback apply and exposes the exact historical pointer and receipt", async () => {
+	const { base, post, store } = await fixture();
+	const publish = await (
+		await post("stage", { from: "seed", reason: "test publish" })
+	).json();
+	expect((await post("apply", publish)).status).toBe(200);
+	const revisions = store.listWorkflowTemplateRevisions("tpl_simple_code");
+	const rollback = await (
+		await post("stage", {
+			from: "rollback",
+			revision: 1,
+			reason: "test rollback",
+		})
+	).json();
+	expect((await post("apply", rollback, "https://evil.example")).status).toBe(
+		403,
+	);
+	expect(
+		store.getWorkflowTemplate("tpl_simple_code")?.current_published_revision,
+	).toBe(2);
+	const response = await post("apply", rollback);
+	expect(response.status).toBe(200);
+	const receipt = await response.json();
+	expect(receipt).toMatchObject({
+		published_revision: 1,
+		source_kind: "rollback",
+	});
+	expect(await (await post("apply", rollback)).json()).toEqual(receipt);
+	const detail = await (
+		await fetch(`${base}/api/workflow/templates/tpl_simple_code`)
+	).json();
+	expect(detail.current_revision.revision).toBe(1);
+	expect(store.listWorkflowTemplateRevisions("tpl_simple_code")).toEqual(
+		revisions,
+	);
 });
