@@ -2,17 +2,17 @@
 issue: FLY-2913
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T05:38:28.436Z
-nextStep: "T1 weekly metadata census refreshed: 1907 Claude transcripts, 94549
-  calls; five-role real prefix baseline still pending. T2 offline selector and
-  private artifact materializer built with focused red/green tests; local audits
-  and final affected checks ongoing. No launch wiring or pruning. Lead cleaned
-  old slot1; future deploy/teardown must be Lead/Claude carrier, temporarily no
-  rooms. T3-T6 remain."
+updated: 2026-09-26T05:49:00.203Z
+nextStep: Pushed code e8341631f and weekly census23aeb0001. Offline T2
+  selection/artifacts:69 related tests, build, lint and all12 dependent
+  typechecks pass after voice prerequisite build; local audits closed. No
+  production wiring/pruning/default enable. T1 five-role actual baseline and T2
+  CLI controls await Lead room request88ade173-e6b4-4cc9-963f-50f943be12a0. Lead
+  owns future room deploy/teardown. T3-T6 remain; no PR or completion.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
 **phase**: implement (0/6)
-**next**: T1 weekly metadata census refreshed: 1907 Claude transcripts, 94549 calls; five-role real prefix baseline still pending. T2 offline selector and private artifact materializer built with focused red/green tests; local audits and final affected checks ongoing. No launch wiring or pruning. Lead cleaned old slot1; future deploy/teardown must be Lead/Claude carrier, temporarily no rooms. T3-T6 remain.
+**next**: Pushed code e8341631f and weekly census23aeb0001. Offline T2 selection/artifacts:69 related tests, build, lint and all12 dependent typechecks pass after voice prerequisite build; local audits closed. No production wiring/pruning/default enable. T1 five-role actual baseline and T2 CLI controls await Lead room request88ade173-e6b4-4cc9-963f-50f943be12a0. Lead owns future room deploy/teardown. T3-T6 remain; no PR or completion.
