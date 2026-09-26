@@ -13,3 +13,7 @@ Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913)
 - No production template mutation, global flag mutation, restart, deploy, room creation/teardown or ship action performed.
 
 Browser connection attempt: chrome_devtools list_pages returned no result during a several-minute wait; the pending tool call was terminated. Browser availability is unresolved; no browser visual/CSP execution PASS is claimed.
+
+Effective/raw APPROVED received at 2026-09-26T15:57:28.230Z. Proof binds plan blob 2a56310ff5b1004c1e7a5d483c54d1b039c5d111 (matches current file); reviewed commit 84e68c66bb9e27d4a4a591e8fe1eb61cd474cdb8. Linked correction is unchanged since submission. Evidence: revision-design-review-approved.json. All 9 MEDIUM/LOW advisories retained in review-followups.md and reported to Lead. No blockers; no implementation test claim.
+
+Closeout learning staged as one small native memory update note under memories/extensions/ad_hoc/notes per memory-write policy. Shared role memory unchanged, measured 102 lines / 19,931 bytes (under limit).
