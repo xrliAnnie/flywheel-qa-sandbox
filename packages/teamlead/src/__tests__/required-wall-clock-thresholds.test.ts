@@ -13,7 +13,6 @@ const OBSERVATION_BUDGET_EXACT_ASSERTION_TESTS = [
 ] as const;
 
 function trackedFiles(): string[] {
-	// The tracked-path list outgrew execFileSync's 1 MiB default buffer.
 	return execFileSync("git", ["ls-files"], {
 		cwd: ROOT,
 		encoding: "utf8",
