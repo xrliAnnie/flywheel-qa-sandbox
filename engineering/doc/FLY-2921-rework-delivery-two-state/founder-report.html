@@ -131,7 +131,7 @@ button{background:#007aff;color:#fff;border:0;border-radius:8px;padding:8px 14px
 <li>不自动解冻现存 held run，不自动关闭 6 张 Linear 单（合入并部署后由 Lead 逐张复核）。</li>
 <li>本页是设计：尚未实现、未跑测试、未部署。盘点的 ×46 是历史次数，不是本次测试结果。</li>
 </ul>
-<p class="dim">评审状态：Codex 评审（manifest 指定 gpt-6-astra）因额度中断；按 Lead 裁定用独立 Claude 子代理跑了一轮参考评审（1 个阻断项 + 6 个主要项，已全部改进），这轮不算有效评审。Codex 额度恢复后已跑有效评审（gpt-6-astra），逐轮收敛，结论见最终报告。本页不代表评审已通过。</p>
+<p class="dim">设计评审：Codex gpt-6-astra（xhigh）四轮，问题数 1+6 → 1+3 → 0+1 → <b>APPROVED</b>（第 4 轮按 Lead 裁定只验上一轮那一条）。另有一轮独立 Claude 子代理的参考评审，不算有效评审，但它的发现也已吸收。原文见同目录 design-review-record.md。批准的是设计；实现、测试、部署都还没有做。</p>
 
 <div class="cmt"><label for="c-s8">对这一节的意见</label><textarea id="c-s8" data-key="s8" placeholder="写下意见，自动保存在本浏览器"></textarea></div>
 </section>
