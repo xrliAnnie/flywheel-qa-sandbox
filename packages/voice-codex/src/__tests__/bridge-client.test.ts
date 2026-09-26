@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
 	BridgeVoiceClient,
@@ -379,4 +381,91 @@ describe("BridgeVoiceClient safe request diagnostics", () => {
 			expect(fetchImpl).not.toHaveBeenCalled();
 		},
 	);
+});
+
+describe("BridgeVoiceClient context errors over real HTTP (FLY-2885 plan §12.5)", () => {
+	it("keeps the context reason with whitelisted details, and only the status otherwise", async () => {
+		const tokenizer = "js-tiktoken@1.0.21/o200k_base";
+		const replies = [
+			JSON.stringify({
+				error: "voice_unavailable",
+				reason: "context_too_large",
+				details: {
+					block: "realtime.prompt",
+					estimatedTokens: 18_000,
+					maxEstimatedTokens: 15_500,
+					itemsTokens: 7_056,
+					itemsCount: 7,
+					maxItemsTokens: 7_600,
+					tokenizer,
+					excerpt: "SECRET MEMORY LINE",
+					relativePath: "memory/MEMORY.md",
+				},
+				extra: "SECRET",
+			}),
+			JSON.stringify({
+				error: "voice_unavailable",
+				reason: "context_token_count_unavailable",
+				details: { tokenizer },
+			}),
+			"<html>SECRET upstream page</html>",
+			JSON.stringify({
+				error: "voice_unavailable",
+				reason: "private transcript SECRET",
+				details: { block: "baseInstructions" },
+			}),
+		];
+		const server = createServer((_request, reply) => {
+			reply.writeHead(503, { "Content-Type": "application/json" });
+			reply.end(replies.shift());
+		});
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
+		try {
+			const bridge = new BridgeVoiceClient({
+				baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+				token: "master-secret-token",
+				httpTimeoutMs: 5_000,
+				idleHttpTimeoutMs: 5_000,
+			});
+			const lease = new VoiceLease(() => 100);
+			lease.install(100, 15_000, 2_000);
+			const failures: unknown[] = [];
+			for (let attempt = 0; attempt < 4; attempt += 1)
+				failures.push(
+					await bridge
+						.context("session-a", "lease-a", lease)
+						.catch((error: unknown) => error),
+				);
+			for (const failure of failures) {
+				expect(failure).toBeInstanceOf(BridgeVoiceHttpError);
+				expect(failure).toMatchObject({ status: 503 });
+				expect(
+					`${(failure as Error).message} ${JSON.stringify(failure)}`,
+				).not.toMatch(/SECRET|MEMORY\.md/u);
+			}
+			expect((failures[0] as BridgeVoiceHttpError).context).toEqual({
+				reason: "context_too_large",
+				details: {
+					block: "realtime.prompt",
+					estimatedTokens: 18_000,
+					maxEstimatedTokens: 15_500,
+					itemsTokens: 7_056,
+					itemsCount: 7,
+					maxItemsTokens: 7_600,
+					tokenizer,
+				},
+			});
+			expect((failures[1] as BridgeVoiceHttpError).context).toEqual({
+				reason: "context_token_count_unavailable",
+				details: { tokenizer },
+			});
+			// A body that is not JSON, or a reason that is not a context code.
+			expect((failures[2] as BridgeVoiceHttpError).context).toBeUndefined();
+			expect((failures[3] as BridgeVoiceHttpError).context).toBeUndefined();
+		} finally {
+			await new Promise((resolve) => server.close(resolve));
+		}
+	});
 });

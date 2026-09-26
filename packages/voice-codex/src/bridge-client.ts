@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import {
+	isVoiceContextErrorReason,
+	type VoiceContextErrorReason,
+	voiceContextErrorDetails,
+} from "flywheel-teamlead/voice-context-contract";
 import type { ReceiveHealth, VoiceUtterance } from "flywheel-voice-core";
 import { validateVoiceBridgeUrl } from "./config.js";
 
@@ -162,11 +167,33 @@ export class VoiceLease {
 	}
 }
 
+/** FLY-2885 plan §12.5: why the Bridge could not build a voice context. */
+export interface BridgeVoiceContextFailure {
+	reason: VoiceContextErrorReason;
+	/** Whitelisted numbers and identifiers only. */
+	details: Record<string, number | string>;
+}
+
+/** A known context reason and its whitelisted details, or nothing. */
+function contextFailure(text: string): BridgeVoiceContextFailure | undefined {
+	let body: unknown;
+	try {
+		body = JSON.parse(text) as unknown;
+	} catch {
+		return undefined;
+	}
+	if (body === null || typeof body !== "object") return undefined;
+	const { reason, details } = body as Record<string, unknown>;
+	if (!isVoiceContextErrorReason(reason)) return undefined;
+	return { reason, details: voiceContextErrorDetails(details) };
+}
+
 export class BridgeVoiceHttpError extends Error {
 	constructor(
 		readonly status: number,
 		readonly reason: string,
 		readonly diagnostic?: VoiceBridgeRequestDiagnostic,
+		readonly context?: BridgeVoiceContextFailure,
 	) {
 		super(
 			diagnostic
@@ -722,6 +749,9 @@ export class BridgeVoiceClient {
 					response.status,
 					failure.causeCode,
 					diagnostic(failure),
+					// Only the context route's body is read, and only through the
+					// shared whitelist; every other error body stays unread.
+					options.operation === "context" ? contextFailure(text) : undefined,
 				);
 			}
 			let body: unknown;
