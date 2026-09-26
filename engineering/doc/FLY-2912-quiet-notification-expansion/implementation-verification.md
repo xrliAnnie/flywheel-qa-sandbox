@@ -7,7 +7,7 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912)
 
 本执行 `d5f75d56-6938-40b2-a56b-e5aa8e92240e` 从 WIP `8b29f69cd` 接续 implement 4/6，取得 implement TURN epoch 4。已批准设计字节不变，不重做设计。前执行红绿证据见 implementation.md；本次重新验证实际代码及保留消费者。
 
-消费者发现对每个改动源文件执行 `git grep -lF` 的完整路径、文件名、父目录，另补 `.js` 导入名和 stem；[完整清单](evidence/consumer-audit.json) 列出 3976 个匹配路径的保留/排除理由。保留 51 个 Teamlead、8 个 CommDB 测试文件，没有新增 shell 测试，不跑本地全包套件。复现配置为 [Teamlead](evidence/teamlead-related.config.mjs) 与 [CommDB](evidence/flywheel-comm-related.config.mjs)，保留原 setup/env/fork 限制；传改动 TypeScript 文件给 `vitest related ... --run --config <绝对配置路径>`。related 未收集到的保留文件另用显式 `vitest run` 补测。
+消费者发现对每个改动源文件执行 `git grep -lF` 的完整路径、文件名、父目录，另补 `.js` 导入名和 stem；[完整清单](evidence/consumer-audit.json) 列出全部匹配路径的保留/排除理由。保留 51 个 Teamlead、8 个 CommDB 测试文件，没有新增 shell 测试，不跑本地全包套件。复现配置为 [Teamlead](evidence/teamlead-related.config.mjs) 与 [CommDB](evidence/flywheel-comm-related.config.mjs)，保留原 setup/env/fork 限制；传改动 TypeScript 文件给 `vitest related ... --run --config <绝对配置路径>`。related 未收集到的保留文件另用显式 `vitest run` 补测。
 
 首轮临时配置的父 include 与 project include 被 Vitest 合并，导致重复执行；该轮停止，不作为整轮通过证据。修正后 `vitest list --filesOnly` 确认 51 个唯一文件。测试使用临时 StateStore、CommDB、Codex home/lease；没有 startBridge、生产载体或真实频道调用。
 
@@ -19,9 +19,11 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912)
 | `pnpm --filter "flywheel-teamlead..." build` | PASS，构建 13 个受影响包及依赖 |
 | `pnpm --filter "...flywheel-teamlead" --filter "...flywheel-comm" typecheck` | PASS，7 个包；首次缺 voice-bridge dist，定向构建 `flywheel-voice-bridge...` 后原命令通过，未改 voice 源码 |
 | CommDB `vitest related` | PASS，8 文件 / 142 用例 |
-| Teamlead `vitest related` | 正在运行，完成后更新 |
+| Teamlead `vitest related` + 显式补集 | PASS：51 个唯一文件，850 passed / 1 既有 skipped；46 related 文件首次出现 1 条 fixture 失败，修复后该文件 13/13 通过；另 5 个保留文件 29/29 通过 |
 
-本机日志：`/tmp/fly2912-lint.log`、`/tmp/fly2912-build.log`、`/tmp/fly2912-dependent-typecheck-r2.log`、`/tmp/fly2912-comm-related.log`、`/tmp/fly2912-teamlead-related-r2.log`。这些是定向本地验证，不是 CI/QA/生产证明。
+唯一修复是 `lead-events.test.ts` 构造旧 schema 时先删除新增的 `idx_lead_events_notification_range`，再删除它引用的列；失败发生于 fixture 构造，修复后真实升级/重启断言通过。没有改动生产行为。既有 skip 为 #705 的 operator quiescence 禁用场景，本单保留原指令。合计 59 个唯一测试文件，992 passed / 1 skipped。
+
+本机日志：`/tmp/fly2912-lint.log`、`/tmp/fly2912-build.log`、`/tmp/fly2912-dependent-typecheck-r2.log`、`/tmp/fly2912-comm-related.log`、`/tmp/fly2912-teamlead-related-r2.log`、`/tmp/fly2912-journal-migration-green.log`、`/tmp/fly2912-retained-extra.log`；最终 lint 重跑 `/tmp/fly2912-lint-final.log` 通过。这些是定向本地验证，不是 CI/QA/生产证明。
 
 ## 257 条历史回放及验收缺口
 
