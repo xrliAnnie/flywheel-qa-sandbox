@@ -31,54 +31,44 @@ afterEach(() => {
 
 function createSession(suffix = "1", leaseTtlMs = 15_000) {
 	const sessionId = `10000000-0000-4000-8000-00000000010${suffix}`;
-	const ownerBootId = `resident-${suffix}`;
 	const sessionGeneration = Number(suffix);
 	const voiceChannelId = `10000000000000000${suffix}`;
-	const outputBotUserId = `20000000000000000${suffix}`;
-	const claimed = store.reserveAndClaimResidentVoiceSession({
+	store.reserveVoiceSession({
+		sessionId,
+		mode: "rg",
 		projectName: "flywheel",
 		leadId: "flywheel-eng-lead",
-		requestId: `request-${suffix}`,
-		inputDigest: `digest-${suffix}`,
-		ownerBootId,
-		sessionGeneration,
-		bindingProof: {
-			version: 1,
-			projectName: "flywheel",
-			guildId: "100000000000000099",
-			voiceChannelId,
-			ownerBootId,
-			sessionGeneration,
-			outputBotUserId,
-			earsBotUserId: "300000000000000001",
-			outputBotDropped: true,
-			earsBotDropped: true,
-			unknownDropped: true,
-			allowedHumanPassed: true,
-			observedAt: T0,
-			expiresAt: "2026-09-23T20:01:00.000Z",
-		},
-		leaseTtlMs,
-		reservation: {
-			sessionId,
-			mode: "rg",
-			projectName: "flywheel",
-			leadId: "flywheel-eng-lead",
-			guildId: "100000000000000099",
-			voiceChannelId,
-			voiceBotUserId: outputBotUserId,
-			requestedBy: "master",
-			credentialTier: "master",
-			createdAt: T0,
-		},
+		guildId: "100000000000000099",
+		voiceChannelId,
+		voiceBotUserId: `20000000000000000${suffix}`,
+		requestedBy: "master",
+		credentialTier: "master",
+		createdAt: T0,
 	});
-	if (!("leaseToken" in claimed)) throw new Error("resident claim failed");
+	store.updateVoiceProvisioning({
+		sessionId,
+		expectedStep: "reserved",
+		nextStep: "done",
+		nextState: "desired",
+		updatedAt: T0,
+	});
+	const claimed = store.claimVoiceSession({
+		sessionId,
+		daemonBootId: `boot-${suffix}`,
+		now: T0,
+		leaseTtlMs,
+	});
+	if (!claimed) throw new Error("voice session claim failed");
+	// Distinct generations per session, as a restarted room would have.
+	const db = new Database(join(root, "teamlead.db"));
+	db.prepare(
+		"UPDATE voice_sessions SET session_generation = ? WHERE session_id = ?",
+	).run(sessionGeneration, sessionId);
+	db.close();
 	expect(
 		store.setVoiceSessionState({
 			sessionId,
 			leaseToken: claimed.leaseToken,
-			ownerBootId,
-			sessionGeneration,
 			state: "warming",
 			now: T1,
 		}),

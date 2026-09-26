@@ -1,15 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import type express from "express";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type {
-	ResidentVoiceBindingProof,
-	StateStore,
-	VoiceSessionMode,
-	VoiceSessionRow,
-} from "../StateStore.js";
+import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
 import { generateBootstrap } from "./bootstrap-generator.js";
 import {
@@ -54,39 +49,6 @@ import {
 	createVoiceStartResolver,
 	resolveLeadVoiceBinding,
 } from "./voice-session-start.js";
-
-/** FLY-2796 resident carrier: the bot and room ids of the huddle block that
- * FLY-2860 retired to an untyped legacy marker. Absent or malformed ⇒ none. */
-interface ResidentHuddleBinding {
-	guildId: string;
-	voiceChannelId: string;
-	orchestratorBotUserId?: string;
-	earsBotUserId?: string;
-}
-
-function residentHuddleBinding(
-	project: ProjectEntry | undefined,
-): ResidentHuddleBinding | undefined {
-	const huddle = project?.huddle;
-	if (!huddle || typeof huddle !== "object" || Array.isArray(huddle))
-		return undefined;
-	const value = huddle as Record<string, unknown>;
-	if (
-		typeof value.guildId !== "string" ||
-		typeof value.voiceChannelId !== "string"
-	)
-		return undefined;
-	return {
-		guildId: value.guildId,
-		voiceChannelId: value.voiceChannelId,
-		...(typeof value.orchestratorBotUserId === "string"
-			? { orchestratorBotUserId: value.orchestratorBotUserId }
-			: {}),
-		...(typeof value.earsBotUserId === "string"
-			? { earsBotUserId: value.earsBotUserId }
-			: {}),
-	};
-}
 
 export function createVoiceSessionServices(input: {
 	store: StateStore;
@@ -152,9 +114,7 @@ export function createVoiceSessionServices(input: {
 		log: (message) => console.warn(`[voice-session] ${message}`),
 	});
 	const discordDeps = createDiscordVoiceProvisionerDeps(fetchImpl);
-	const resolveDaemon = (session: VoiceSessionRow) => {
-		if (session.carrierKind !== "daemon")
-			throw new Error("voice_session_registry_drift");
+	const resolve = (session: VoiceSessionRow) => {
 		if (!session.voiceBotUserId) throw new Error("identity_binding_missing");
 		const projects = input.projects.filter(
 			(candidate) => candidate.projectName === session.projectName,
@@ -192,211 +152,8 @@ export function createVoiceSessionServices(input: {
 			throw new Error("voice_session_registry_drift");
 		}
 	};
-	const resolveResident = (session: VoiceSessionRow) => {
-		if (session.carrierKind !== "resident")
-			throw new Error("voice_session_registry_drift");
-		const projects = input.projects.filter(
-			(candidate) => candidate.projectName === session.projectName,
-		);
-		const project = projects[0];
-		const leads =
-			project?.leads.filter(
-				(candidate) => candidate.agentId === session.leadId,
-			) ?? [];
-		const lead = leads[0];
-		const huddle = residentHuddleBinding(project);
-		const proof = session.residentBindingProof;
-		if (
-			projects.length !== 1 ||
-			leads.length !== 1 ||
-			!project ||
-			!lead ||
-			!huddle ||
-			!huddle.orchestratorBotUserId ||
-			!huddle.earsBotUserId ||
-			!session.ownerBootId ||
-			!proof ||
-			proof.version !== 1 ||
-			proof.projectName !== session.projectName ||
-			proof.guildId !== session.guildId ||
-			proof.voiceChannelId !== session.voiceChannelId ||
-			proof.ownerBootId !== session.ownerBootId ||
-			proof.sessionGeneration !== session.sessionGeneration ||
-			proof.outputBotUserId !== session.voiceBotUserId ||
-			proof.outputBotUserId !== huddle.orchestratorBotUserId ||
-			proof.earsBotUserId !== huddle.earsBotUserId ||
-			huddle.guildId !== session.guildId ||
-			huddle.voiceChannelId !== session.voiceChannelId
-		)
-			throw new Error("voice_session_registry_drift");
-		const observedAt = Date.parse(proof.observedAt);
-		const expiresAt = Date.parse(proof.expiresAt);
-		if (
-			!proof.outputBotDropped ||
-			!proof.earsBotDropped ||
-			!proof.unknownDropped ||
-			!proof.allowedHumanPassed ||
-			!Number.isFinite(observedAt) ||
-			!Number.isFinite(expiresAt) ||
-			expiresAt <= observedAt ||
-			expiresAt <= Date.now()
-		)
-			throw new Error("self_filter_unverified");
-		return { project, lead, huddle, proof };
-	};
-	const text = (value: unknown, _name: string, max = 200): string => {
-		if (
-			typeof value !== "string" ||
-			value.trim().length === 0 ||
-			value.length > max
-		)
-			throw new VoiceSessionHttpError(
-				503,
-				"voice_unavailable",
-				"resident_binding_invalid",
-			);
-		return value;
-	};
-	const resolveResidentStart = (body: unknown) => {
-		try {
-			if (!body || typeof body !== "object" || Array.isArray(body))
-				throw new Error("body");
-			const raw = body as Record<string, unknown>;
-			const requestId = text(raw.requestId, "requestId");
-			const projectName = text(raw.projectName, "projectName");
-			const leadId = text(raw.leadId, "leadId");
-			const ownerBootId = text(raw.ownerBootId, "ownerBootId");
-			const mode = raw.mode as VoiceSessionMode;
-			const sessionGeneration = raw.sessionGeneration;
-			if (
-				(mode !== "meeting" && mode !== "rg") ||
-				!Number.isSafeInteger(sessionGeneration) ||
-				Number(sessionGeneration) < 1 ||
-				!raw.bindingProof ||
-				typeof raw.bindingProof !== "object" ||
-				Array.isArray(raw.bindingProof)
-			)
-				throw new Error("shape");
-			const projects = input.projects.filter(
-				(candidate) => candidate.projectName === projectName,
-			);
-			const project = projects[0];
-			const leads =
-				project?.leads.filter((candidate) => candidate.agentId === leadId) ??
-				[];
-			const huddle = residentHuddleBinding(project);
-			if (
-				projects.length !== 1 ||
-				leads.length !== 1 ||
-				!huddle ||
-				!huddle.orchestratorBotUserId ||
-				!huddle.earsBotUserId
-			)
-				throw new Error("registry");
-			const candidate = raw.bindingProof as Record<string, unknown>;
-			const bindingProof: ResidentVoiceBindingProof = {
-				version: candidate.version as 1,
-				projectName: text(candidate.projectName, "proof.projectName"),
-				guildId: text(candidate.guildId, "proof.guildId"),
-				voiceChannelId: text(candidate.voiceChannelId, "proof.voiceChannelId"),
-				ownerBootId: text(candidate.ownerBootId, "proof.ownerBootId"),
-				sessionGeneration: Number(candidate.sessionGeneration),
-				outputBotUserId: text(
-					candidate.outputBotUserId,
-					"proof.outputBotUserId",
-				),
-				earsBotUserId: text(candidate.earsBotUserId, "proof.earsBotUserId"),
-				outputBotDropped: candidate.outputBotDropped === true,
-				earsBotDropped: candidate.earsBotDropped === true,
-				unknownDropped: candidate.unknownDropped === true,
-				allowedHumanPassed: candidate.allowedHumanPassed === true,
-				observedAt: text(candidate.observedAt, "proof.observedAt"),
-				expiresAt: text(candidate.expiresAt, "proof.expiresAt"),
-			};
-			if (
-				bindingProof.version !== 1 ||
-				bindingProof.projectName !== projectName ||
-				bindingProof.guildId !== huddle.guildId ||
-				bindingProof.voiceChannelId !== huddle.voiceChannelId ||
-				bindingProof.ownerBootId !== ownerBootId ||
-				bindingProof.sessionGeneration !== sessionGeneration ||
-				bindingProof.outputBotUserId !== huddle.orchestratorBotUserId ||
-				bindingProof.earsBotUserId !== huddle.earsBotUserId
-			)
-				throw new Error("binding");
-			const now = Date.now();
-			const observedAt = Date.parse(bindingProof.observedAt);
-			const expiresAt = Date.parse(bindingProof.expiresAt);
-			if (
-				!bindingProof.outputBotDropped ||
-				!bindingProof.earsBotDropped ||
-				!bindingProof.unknownDropped ||
-				!bindingProof.allowedHumanPassed ||
-				!Number.isFinite(observedAt) ||
-				!Number.isFinite(expiresAt) ||
-				observedAt > now + 5_000 ||
-				expiresAt <= now ||
-				expiresAt <= observedAt
-			)
-				throw new VoiceSessionHttpError(
-					503,
-					"voice_unavailable",
-					"self_filter_unverified",
-				);
-			const digestPayload = {
-				requestId,
-				mode,
-				projectName,
-				leadId,
-				ownerBootId,
-				sessionGeneration,
-				bindingProof,
-			};
-			const createdAt = new Date(now).toISOString();
-			return {
-				projectName,
-				leadId,
-				requestId,
-				inputDigest: createHash("sha256")
-					.update(JSON.stringify(digestPayload))
-					.digest("hex"),
-				ownerBootId,
-				sessionGeneration: Number(sessionGeneration),
-				bindingProof,
-				reservation: {
-					sessionId: randomUUID(),
-					mode,
-					projectName,
-					leadId,
-					guildId: huddle.guildId,
-					voiceChannelId: huddle.voiceChannelId,
-					voiceBotUserId: huddle.orchestratorBotUserId,
-					requestedBy: "master",
-					credentialTier: "master" as const,
-					createdAt,
-				},
-			};
-		} catch (error) {
-			if (error instanceof VoiceSessionHttpError) throw error;
-			throw new VoiceSessionHttpError(
-				503,
-				"voice_unavailable",
-				"resident_binding_invalid",
-			);
-		}
-	};
-	const validateSession = async (
-		session: VoiceSessionRow,
-		bindingProof?: ResidentVoiceBindingProof,
-	) => {
-		if (session.carrierKind === "resident") {
-			resolveResident({
-				...session,
-				residentBindingProof: bindingProof ?? session.residentBindingProof,
-			});
-			return;
-		}
-		const { project, lead, token } = resolveDaemon(session);
+	const validateSession = async (session: VoiceSessionRow) => {
+		const { project, lead, token } = resolve(session);
 		try {
 			const proof = await (input.probeSelfFilter ?? probeVoiceSelfFilter)({
 				projectName: project.projectName,
@@ -423,7 +180,7 @@ export function createVoiceSessionServices(input: {
 		if (!session) return;
 		await validateSession(session);
 		signal?.throwIfAborted();
-		const { lead, token } = resolveDaemon(session);
+		const { lead, token } = resolve(session);
 		const founderUserId = input.config.discordOwnerUserId;
 		if (!founderUserId) {
 			throw new Error("voice_session_founder_id_unset");
@@ -477,10 +234,7 @@ export function createVoiceSessionServices(input: {
 		},
 	});
 	const projectSession = (session: VoiceSessionRow) => {
-		const { lead } =
-			session.carrierKind === "resident"
-				? resolveResident(session)
-				: resolveDaemon(session);
+		const { lead } = resolve(session);
 		return {
 			sessionId: session.sessionId,
 			sessionGeneration: session.sessionGeneration,
@@ -515,7 +269,7 @@ export function createVoiceSessionServices(input: {
 		session: VoiceSessionRow,
 		authority: { leaseBindingDigest: string },
 	) => {
-		const { project, lead } = resolveDaemon(session);
+		const { project, lead } = resolve(session);
 		const binding = deriveVoiceContextBinding({ project, lead, homeDir });
 		const sources = await resolveVoiceContextSources({
 			project,
@@ -548,7 +302,7 @@ export function createVoiceSessionServices(input: {
 	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
 		await validateSession(session);
-		const { lead, token } = resolveDaemon(session);
+		const { lead, token } = resolve(session);
 		const result = await postDiscordMessageToChannel(
 			session.threadId ?? lead.chatChannel,
 			text,
@@ -567,7 +321,7 @@ export function createVoiceSessionServices(input: {
 		poll: async (session) => {
 			if (!legacyOutboundPolling) return;
 			await validateSession(session);
-			const { token } = resolveDaemon(session);
+			const { token } = resolve(session);
 			if (!session.leaseToken || !session.rootMessageId) return;
 			await pollVoiceSessionOnce({
 				store: input.store,
@@ -607,7 +361,7 @@ export function createVoiceSessionServices(input: {
 		validateSession,
 		patch: async (session, content, signal) => {
 			if (!session.rootMessageId) throw new Error("voice_card_root_missing");
-			const { lead, token } = resolveDaemon(session);
+			const { lead, token } = resolve(session);
 			const result = await editDiscordMessageInChannel(
 				lead.chatChannel,
 				session.rootMessageId,
@@ -667,7 +421,6 @@ export function createVoiceSessionServices(input: {
 			leaseTtlMs: timing.leaseTtlMs,
 			leaseRenewMs: timing.leaseRenewMs,
 			resolveStart,
-			resolveResidentStart,
 			provisionSession: provision,
 			reportAbandoned: (session, count) =>
 				postStatus(session, `📻 有 ${count} 条语音没有送达`),
