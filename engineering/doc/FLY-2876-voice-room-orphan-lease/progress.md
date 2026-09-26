@@ -2,16 +2,16 @@
 issue: FLY-2876
 phase: design
 phaseCursor: 5/6
-updated: 2026-09-26T17:13:11.208Z
-nextStep: "HTML published
-  http://127.0.0.1:57654/fw-reports-8b518d/r/052035116ac497b0c3bf7db678d27cc1/
-  (reported 21993358). Waiting Lead ruling on Codex-blocked design gate
-  (a45f6fee/ffb445ca/6e81dfc7). After gate: update review card, republish,
-  report, complete --route phase_design_complete"
+updated: 2026-09-26T20:09:08.101Z
+nextStep: "Codex design review: R1 CHANGES REQUESTED (D1-1 HIGH dup-stop, D1-2
+  MEDIUM stale precheck) -> plan revised 21df721fe (per-slot mutex); manifest
+  rev2 bbd25d19 blob d6cc8d66; R2 running (session 01a0df4b). On APPROVED:
+  design-review.json + await-codex-gate design, update HTML review card,
+  republish, report, complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2876 progress
 **phase**: design (5/6)
-**next**: HTML published http://127.0.0.1:57654/fw-reports-8b518d/r/052035116ac497b0c3bf7db678d27cc1/ (reported 21993358). Waiting Lead ruling on Codex-blocked design gate (a45f6fee/ffb445ca/6e81dfc7). After gate: update review card, republish, report, complete --route phase_design_complete
+**next**: Codex design review: R1 CHANGES REQUESTED (D1-1 HIGH dup-stop, D1-2 MEDIUM stale precheck) -> plan revised 21df721fe (per-slot mutex); manifest rev2 bbd25d19 blob d6cc8d66; R2 running (session 01a0df4b). On APPROVED: design-review.json + await-codex-gate design, update HTML review card, republish, report, complete
