@@ -1,0 +1,18 @@
+{
+  "url": "https://fw-reports-6da062.vercel.app/r/826af3a09c8aabbb03baae63b8394f06/",
+  "httpStatus": 200,
+  "noncePlaceholderRemaining": false,
+  "scriptCount": 1,
+  "cspNonceMatches": true,
+  "inlineScriptMatchesCommittedSource": true,
+  "externalAssets": false,
+  "localHtmlSha256": "60243ec6412c7e018bd287298684ed35f96553cae8293ca437d1d4bff6a00f06",
+  "hostedHtmlSha256": "b915a8e0019eceea3aedd24723e4565bd0098678294fe8a9eb1d7885683b8a24",
+  "diagramStatus": "DIAGRAM PENDING LOCAL RENDER",
+  "visualBrowserQa": "not performed; local browser launch denied",
+  "publication": {
+    "publishOnly": true,
+    "messageId": null,
+    "delivered": false
+  }
+}
