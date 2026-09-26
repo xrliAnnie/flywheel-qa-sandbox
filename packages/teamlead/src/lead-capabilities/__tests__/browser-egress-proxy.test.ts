@@ -316,3 +316,66 @@ it("keeps an established CONNECT tunnel open while idle; only connecting is time
 	client.write("ping");
 	await vi.waitFor(() => expect(received).toContain("echo:ping"));
 });
+
+it("revocation refuses new tunnels and close() tears down an established idle tunnel at once (FLY-2886 ruling B)", async () => {
+	const { createServer: tcpServer, connect } = await import("node:net");
+	const peers = new Set<import("node:net").Socket>();
+	const echo = tcpServer((socket) => {
+		peers.add(socket);
+		socket.on("data", (bytes) => socket.write(`echo:${bytes}`));
+	});
+	await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+	cleanup.push(
+		() =>
+			new Promise<void>((resolve) => {
+				for (const peer of peers) peer.destroy();
+				echo.close(() => resolve());
+			}),
+	);
+	const port = (echo.address() as { port: number }).port;
+	let revoked = false;
+	const proxy = await startBrowserEgressProxy({
+		policy: () => ({
+			localQaTargets: [
+				{ origin: `https://localhost:${port}`, address: "127.0.0.1" },
+			],
+			protectedPorts: [9876, 9222],
+		}),
+		assertCurrent: () => {
+			if (revoked) throw new Error("revoked");
+		},
+		connectTimeoutMs: 150,
+	});
+	cleanup.push(proxy.close);
+	const open = async () => {
+		const client = connect(proxy.port, "127.0.0.1");
+		const state = { received: "", closed: false };
+		client.on("data", (chunk) => {
+			state.received += chunk;
+		});
+		client.on("close", () => {
+			state.closed = true;
+		});
+		client.on("error", () => undefined);
+		await new Promise<void>((resolve) => client.once("connect", resolve));
+		client.write(
+			`CONNECT localhost:${port} HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n`,
+		);
+		return { client, state };
+	};
+	const live = await open();
+	await vi.waitFor(() =>
+		expect(live.state.received).toContain("200 Connection Established"),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	expect(live.state.closed).toBe(false);
+	// Revoked: no new tunnel is admitted.
+	revoked = true;
+	const refused = await open();
+	await vi.waitFor(() => expect(refused.state.received).toContain("403"));
+	expect(refused.state.received).not.toContain("200 Connection Established");
+	// The established one goes with the proxy's close (degrade: revoke → reap → close).
+	const closing = proxy.close();
+	await vi.waitFor(() => expect(live.state.closed).toBe(true));
+	await closing;
+});
