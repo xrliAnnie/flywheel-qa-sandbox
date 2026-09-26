@@ -134,3 +134,80 @@ describe("VoiceHealthAlertDispatcher", () => {
 		expect(execFile).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe("VoiceHealthAlertDispatcher shutdown (FLY-2885 QA@1 review)", () => {
+	const sent = `sent channel_id=100000000000000001 binding_digest=${"c".repeat(64)} message_id=300000000000000001\n`;
+
+	it("lets an in-flight alert finish before the daemon exits", async () => {
+		vi.useFakeTimers();
+		try {
+			let deliver: (() => void) | undefined;
+			const execFile = vi.fn((_file, _args, _options, callback) => {
+				deliver = () => callback(null, sent, "");
+				return { kill: vi.fn() } as unknown as ChildProcess;
+			});
+			const dispatcher = new VoiceHealthAlertDispatcher({
+				leadAlertPath: "/trusted/lead-alert.sh",
+				execFile,
+			});
+			dispatcher.notify(INTENT_A);
+			const done = dispatcher.shutdown(8_000);
+			await vi.advanceTimersByTimeAsync(3_000);
+			deliver!();
+			await expect(done).resolves.toBe(true);
+			expect(execFile).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stops a sender still running at the bound so no shell outlives the daemon", async () => {
+		vi.useFakeTimers();
+		try {
+			const kill = vi.fn();
+			const execFile = vi.fn(() => ({ kill }) as unknown as ChildProcess);
+			const dispatcher = new VoiceHealthAlertDispatcher({
+				leadAlertPath: "/trusted/lead-alert.sh",
+				execFile,
+			});
+			dispatcher.notify(INTENT_A);
+			dispatcher.notify(INTENT_B);
+			const done = dispatcher.shutdown(8_000);
+			await vi.advanceTimersByTimeAsync(8_000);
+			await expect(done).resolves.toBe(false);
+			expect(kill).toHaveBeenCalledWith("SIGTERM");
+			// The queued alert is not started after shutdown.
+			expect(execFile).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("starts no retry and takes no new alert once shut down", async () => {
+		vi.useFakeTimers();
+		try {
+			const execFile = vi.fn((_file, _args, _options, callback) => {
+				queueMicrotask(() =>
+					callback(
+						null,
+						`queued_transient channel_id=100000000000000001 binding_digest=${"c".repeat(64)}\n`,
+						"",
+					),
+				);
+				return { kill: vi.fn() } as unknown as ChildProcess;
+			});
+			const dispatcher = new VoiceHealthAlertDispatcher({
+				leadAlertPath: "/trusted/lead-alert.sh",
+				execFile,
+				retryDelayMs: 1_000,
+			});
+			dispatcher.notify(INTENT_A);
+			await expect(dispatcher.shutdown(8_000)).resolves.toBe(true);
+			dispatcher.notify(INTENT_B);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(execFile).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

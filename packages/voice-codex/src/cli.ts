@@ -773,11 +773,20 @@ export async function main(): Promise<void> {
 		health.stop();
 		await health.whenSettled();
 		await lock.handle.close();
+		// An in-flight lead alert gets a bounded chance to finish, then its
+		// sender is stopped: the bounded exit never cuts one off or leaves a
+		// shell behind (FLY-2885 QA@1 review).
+		if (!(await healthAlerts.shutdown(HEALTH_ALERT_DRAIN_MS)))
+			console.error(
+				"[voice] health alert still in flight at shutdown; sender stopped",
+			);
 	}
 }
 
 /** FLY-2885 QA@1: the daemon exits within a bounded grace, leaks or not. */
 const shutdownExit = createShutdownExit();
+/** Well inside the 15 s exit grace, after the lock is released. */
+const HEALTH_ALERT_DRAIN_MS = 8_000;
 
 main()
 	.catch((error) => {

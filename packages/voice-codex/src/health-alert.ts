@@ -49,12 +49,16 @@ export class VoiceHealthAlertDispatcher {
 	private readonly pending = new Set<string>();
 	private running = false;
 	private settlers: Array<() => void> = [];
+	/** The sender now running, stopped if shutdown outlasts its bound. */
+	private current?: ChildProcess;
+	private closed = false;
 
 	constructor(private readonly options: VoiceHealthAlertDispatcherOptions) {
 		this.run = options.execFile ?? defaultExecFile;
 	}
 
 	notify(intentId: string): void {
+		if (this.closed) return;
 		if (!INTENT_ID.test(intentId)) {
 			this.signalUnavailable();
 			return;
@@ -67,6 +71,33 @@ export class VoiceHealthAlertDispatcher {
 		this.pending.add(intentId);
 		this.queue.push(intentId);
 		this.kick();
+	}
+
+	/**
+	 * FLY-2885 QA@1: daemon shutdown. Alerts already queued get up to
+	 * timeoutMs to be delivered; a sender still running then is stopped so no
+	 * shell outlives the daemon's bounded exit. True when everything settled.
+	 */
+	async shutdown(timeoutMs: number): Promise<boolean> {
+		this.closed = true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const drained = await Promise.race([
+			this.whenSettled().then(() => true),
+			new Promise<boolean>((resolve) => {
+				timer = setTimeout(() => resolve(false), timeoutMs);
+				timer.unref?.();
+			}),
+		]);
+		if (timer) clearTimeout(timer);
+		if (!drained) {
+			this.queue.length = 0;
+			try {
+				this.current?.kill("SIGTERM");
+			} catch {
+				// Already gone.
+			}
+		}
+		return drained;
 	}
 
 	whenSettled(): Promise<void> {
@@ -94,7 +125,7 @@ export class VoiceHealthAlertDispatcher {
 			this.running = false;
 			const settlers = this.settlers.splice(0);
 			for (const settle of settlers) settle();
-			if (this.queue.length > 0) this.kick();
+			if (this.queue.length > 0 && !this.closed) this.kick();
 		}
 	}
 
@@ -104,6 +135,7 @@ export class VoiceHealthAlertDispatcher {
 			Math.min(this.options.retryDelayMs ?? 30_000, 30_000),
 		);
 		const timer = setTimeout(() => {
+			if (this.closed) return;
 			if (this.queue.length >= MAX_QUEUE) {
 				this.signalUnavailable();
 				this.scheduleRetry(intentId);
@@ -124,7 +156,7 @@ export class VoiceHealthAlertDispatcher {
 				resolve(outcome);
 			};
 			try {
-				this.run(
+				this.current = this.run(
 					"/bin/bash",
 					[
 						this.options.leadAlertPath,
@@ -148,6 +180,7 @@ export class VoiceHealthAlertDispatcher {
 						windowsHide: true,
 					},
 					(_error, stdout) => {
+						this.current = undefined;
 						const receipt = stdout.trim();
 						if (
 							Buffer.byteLength(receipt, "utf8") > 512 ||
