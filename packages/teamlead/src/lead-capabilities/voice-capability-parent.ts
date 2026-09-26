@@ -29,6 +29,7 @@ import {
 	openVoiceCapabilityJournal,
 	prepareVoiceCapabilityAuth,
 } from "./voice-capability-session.js";
+import { VoiceRepeatWriteGate } from "./voice-repeat-gate.js";
 import { resolveVoiceBackgroundCapabilities } from "./voice-resolve.js";
 
 export interface VoiceCapabilityParentInput {
@@ -151,18 +152,32 @@ export async function startVoiceCapabilityParent(
 		mkdtempSync(join(writableRoot, ".flywheel-voice-model-")),
 	);
 	const journal = openVoiceCapabilityJournal(input.stateDir, input.sessionId);
+	const receiptScope = {
+		projectName: input.projectName,
+		leadId: input.leadId,
+		activationId: resolution.identity.activationId,
+	};
+	const repeatGate = new VoiceRepeatWriteGate({
+		receipts: journal.operationReceipts,
+		...receiptScope,
+	});
 	let finalActionLedger:
 		| ReturnType<typeof voiceCapabilityActionLedger>
 		| undefined;
 	const actionLedger = () =>
 		finalActionLedger ??
 		voiceCapabilityActionLedger(
-			journal.operationReceipts.listByActivation({
-				projectName: input.projectName,
-				leadId: input.leadId,
-				activationId: resolution.identity.activationId,
-			}),
+			journal.operationReceipts.listByActivation(receiptScope),
 		);
+	/** Writes this background turn produced or replayed; undefined when unknown. */
+	const turnActionLedger = (turnId: string) => {
+		if (closed) return undefined;
+		const entryId = turns?.entryFor(turnId);
+		if (!entryId) return undefined;
+		return voiceCapabilityActionLedger(
+			journal.operationReceipts.listByDelivery({ ...receiptScope, entryId }),
+		);
+	};
 	let auth: ReturnType<typeof prepareVoiceCapabilityAuth> | undefined;
 	let turns: ReturnType<typeof createVoiceCapabilityTurns> | undefined;
 	let native: ReturnType<typeof preparePinnedNativeSkillHome> | undefined;
@@ -301,6 +316,7 @@ export async function startVoiceCapabilityParent(
 			},
 			parent: {
 				journal,
+				repeatGate,
 				recoveryScope: "activation",
 				activationRoot,
 				codexHome,
@@ -327,11 +343,17 @@ export async function startVoiceCapabilityParent(
 			journal,
 			enterDeliveryContext: parent.enterDeliveryContext,
 			assertCurrent: current,
+			onTurnEnded: (entryId) => repeatGate.turnEnded(entryId),
 		});
 		return Object.freeze({
 			...parent,
 			capabilityModelEnv: parent.pins,
 			actionLedger,
+			turnActionLedger,
+			/** Trusted container input: speaker-attributed final founder transcripts. */
+			observeFounderUtterance: (text: string) => {
+				if (!closed) repeatGate.observeFounderUtterance(text);
+			},
 			authSourcePath: auth.authSourcePath,
 			beginTurn: turns.beginTurn,
 			endTurn: turns.endTurn,

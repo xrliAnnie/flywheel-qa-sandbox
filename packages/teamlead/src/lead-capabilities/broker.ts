@@ -12,6 +12,7 @@ import {
 	classifyVoiceCapabilityDenial,
 	type VoiceCapabilityDenials,
 } from "./voice-denial.js";
+import type { VoiceRepeatWriteGate } from "./voice-repeat-gate.js";
 
 export const OperationRequestSchema = z
 	.object({
@@ -97,6 +98,8 @@ export interface LeadCapabilityBrokerOptions {
 	deliveryContext?: () => { id: string; assertCurrent(): void } | undefined;
 	/** Present for voice, and for resident activations participating in target fencing. */
 	targetLocks?: LeadTargetLockClient;
+	/** Voice parent only: the write-before repeat check of the FLY-2886 Lead ruling. */
+	repeatGate?: Pick<VoiceRepeatWriteGate, "admit">;
 }
 class BrokerFailure extends Error {
 	constructor(readonly code: string) {
@@ -340,6 +343,18 @@ export class LeadCapabilityBroker {
 			}
 		};
 
+		const associateDelivery = () => {
+			if (!delivery || this.options.targetLocks?.actor !== "voice") return;
+			this.options.receipts.associateDelivery({
+				projectName: context.projectName,
+				leadId: context.leadId,
+				activationId: context.activationId,
+				entryId: delivery.id,
+				operationId: request.operationId,
+				requestId: request.requestId,
+				now: Date.now(),
+			});
+		};
 		const work = async (): Promise<OperationResult> => {
 			await context.assertCurrent();
 			try {
@@ -368,6 +383,7 @@ export class LeadCapabilityBroker {
 				if (prior) {
 					if (prior.inputDigest !== writeInput.inputDigest)
 						throw new BrokerFailure("input_digest_conflict");
+					associateDelivery();
 					if (prior.state === "unknown" && handler.reconcile) {
 						reconciling = true;
 						await context.assertCurrent();
@@ -400,10 +416,28 @@ export class LeadCapabilityBroker {
 					}
 					return this.replay(prior, request.requestId);
 				}
+				let dedupeDigest: string | undefined;
+				if (this.options.repeatGate && targetKey) {
+					// A new requestId only: same-requestId retries replay above.
+					const decision = this.options.repeatGate.admit({
+						operationId: request.operationId,
+						requestId: request.requestId,
+						targetKey,
+						input,
+						...(delivery ? { deliveryId: delivery.id } : {}),
+					});
+					if (decision.kind === "duplicate")
+						return containsSecret(decision.result, this.secrets)
+							? reject("duplicate_recent_write")
+							: decision.result;
+					dedupeDigest = decision.fingerprint;
+				}
 				const receipt = this.options.receipts.prepare({
 					...writeInput,
+					...(dedupeDigest ? { dedupeDigest } : {}),
 					now: Date.now(),
 				});
+				associateDelivery();
 				if (receipt.disposition !== "prepared")
 					return this.replay(receipt.receipt, request.requestId);
 				prepared = true;

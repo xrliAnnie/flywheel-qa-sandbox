@@ -144,3 +144,34 @@ it("keeps thread and turn identity boundaries distinct in durable deduplication"
 		journal.close();
 	}
 });
+
+it("maps each turn to its journal entry and signals the end after the delivery context is released", () => {
+	const root = fixture();
+	const journal = openVoiceCapabilityJournal(root, sessionId);
+	const order: string[] = [];
+	const onTurnEnded = vi.fn((entryId: string) =>
+		order.push(`ended:${entryId}`),
+	);
+	const turns = createVoiceCapabilityTurns({
+		sessionId,
+		journal,
+		enterDeliveryContext: () => () => order.push("released"),
+		assertCurrent() {},
+		onTurnEnded,
+	});
+	try {
+		expect(turns.entryFor("turn-a")).toBeUndefined();
+		turns.beginTurn("thread-a", "turn-a");
+		const entryId = turns.entryFor("turn-a");
+		expect(entryId).toBeTruthy();
+		turns.endTurn("turn-a", "failed");
+		expect(order).toEqual(["released", `ended:${entryId}`]);
+		// The mapping outlives the turn so a late terminal can still be looked up.
+		expect(turns.entryFor("turn-a")).toBe(entryId);
+		turns.endTurn("turn-a", "failed");
+		expect(onTurnEnded).toHaveBeenCalledOnce();
+	} finally {
+		turns.close();
+		journal.close();
+	}
+});

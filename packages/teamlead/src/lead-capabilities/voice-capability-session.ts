@@ -134,12 +134,16 @@ export function createVoiceCapabilityTurns(input: {
 	journal: SqliteJournalStore;
 	enterDeliveryContext(entryId: string): () => void;
 	assertCurrent(): void;
+	/** Called after the turn's delivery context is released. */
+	onTurnEnded?(entryId: string): void;
 }) {
 	const journal = new LeadJournal({ store: input.journal });
 	let active:
 		| { threadId: string; turnId: string; entryId: string; release(): void }
 		| undefined;
 	let closed = false;
+	/** Bounded turnId → journal entry map for per-turn receipt lookups. */
+	const entries = new Map<string, string>();
 	const endTurn = (
 		turnId: string,
 		outcome: "completed" | "failed" | "interrupted",
@@ -152,9 +156,13 @@ export function createVoiceCapabilityTurns(input: {
 			else journal.toAmbiguous(turn.entryId, `voice_turn_${outcome}`);
 		} finally {
 			turn.release();
+			input.onTurnEnded?.(turn.entryId);
 		}
 	};
 	return {
+		entryFor(turnId: string): string | undefined {
+			return entries.get(turnId);
+		},
 		beginTurn(threadId: string, turnId: string) {
 			if (closed) throw new Error("voice_capability_turn_closed");
 			input.assertCurrent();
@@ -182,6 +190,9 @@ export function createVoiceCapabilityTurns(input: {
 			try {
 				journal.toDispatched(accepted.entry.id, turnId);
 				active = { threadId, turnId, entryId: accepted.entry.id, release };
+				entries.set(turnId, accepted.entry.id);
+				if (entries.size > 256)
+					entries.delete(entries.keys().next().value as string);
 			} catch (error) {
 				release();
 				throw error;

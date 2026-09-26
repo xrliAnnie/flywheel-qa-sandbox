@@ -15,7 +15,11 @@ import {
 import type { HttpPost } from "../lead-backends/codex/CodexOutboundSender.js";
 import { validateLeadCapabilityManifest } from "../lead-backends/codex/lead-capability-proxy.js";
 import type { SqliteJournalStore } from "../lead-backends/codex/SqliteJournalStore.js";
-import { LeadCapabilityBroker, type LeadOperationHandler } from "./broker.js";
+import {
+	LeadCapabilityBroker,
+	type LeadCapabilityBrokerOptions,
+	type LeadOperationHandler,
+} from "./broker.js";
 import { LeadCapabilitySocket } from "./broker-socket.js";
 import { ensureLeadCapabilityHome } from "./capability-home.js";
 import { getLeadCapability } from "./catalog.js";
@@ -92,6 +96,8 @@ export interface LeadCapabilityParentOptions {
 	/** Resident parents recover the Lead; voice parents recover only their activation. */
 	recoveryScope?: "lead" | "activation";
 	targetLocks?: LeadTargetLockClient;
+	/** Voice parent only: write-before repeat check (FLY-2886 Lead ruling). */
+	repeatGate?: LeadCapabilityBrokerOptions["repeatGate"];
 }
 /** Parent-owned transport/receipt lifecycle. The outer runtime owns the shared journal. */
 export async function startLeadCapabilityParent(
@@ -337,6 +343,7 @@ export async function startLeadCapabilityParent(
 			secrets: options.secrets,
 			deliveryContext: () => delivery,
 			targetLocks: options.targetLocks,
+			...(options.repeatGate ? { repeatGate: options.repeatGate } : {}),
 		});
 		socket = new LeadCapabilitySocket({
 			socketPath: pins.brokerSocket,

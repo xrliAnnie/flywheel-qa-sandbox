@@ -628,6 +628,14 @@ export class CodexVoiceConversation {
 		return this.capability?.parent.actionLedger() ?? [];
 	}
 
+	turnActionLedger(turnId: string) {
+		return this.capability?.parent.turnActionLedger(turnId);
+	}
+
+	observeFounderUtterance(text: string): void {
+		this.capability?.parent.observeFounderUtterance(text);
+	}
+
 	get generation(): number {
 		return this.currentGeneration;
 	}

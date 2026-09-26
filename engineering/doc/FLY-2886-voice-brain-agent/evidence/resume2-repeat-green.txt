@@ -1,0 +1,7 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts (27 tests) 152ms
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-turn-receipts.test.ts (2 tests) 43ms
+ Test Files  2 passed (2)
+      Tests  29 passed (29)
+   Start at  01:20:27
+   Duration  3.30s (transform 643ms, setup 25ms, collect 1.70s, tests 195ms, environment 0ms, prepare 223ms)

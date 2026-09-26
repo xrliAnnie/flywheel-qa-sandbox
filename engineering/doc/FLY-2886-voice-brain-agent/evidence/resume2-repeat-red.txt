@@ -1,0 +1,138 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ❯ |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts (27 tests | 9 failed) 225ms
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > blocks the repeated original request after a succeeded write with a late handoff and speaks the confirmation 76ms
+     → expected "spy" to be called 1 times, but got 2 times
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > writes exactly once more with a different requestId only after her explicit redo reply 5ms
+     → expected undefined to be 'duplicate_recent_write' // Object.is equality
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > writes normally when the normalized key parameters differ 3ms
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > uses the unknown wording while the earlier dispatched write has no terminal proof 3ms
+     → expected "spy" to be called 1 times, but got 2 times
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 她沉默 4ms
+     → expected undefined to be 'duplicate_recent_write' // Object.is equality
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 其他回答 4ms
+     → expected undefined to be 'duplicate_recent_write' // Object.is equality
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 无关请求 43ms
+     → expected undefined to be 'duplicate_recent_write' // Object.is equality
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 否定 14ms
+     → expected undefined to be 'duplicate_recent_write' // Object.is equality
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > does not treat words spoken before the confirmation could be heard as her answer 19ms
+     → expected undefined to be 'duplicate_recent_write' // Object.is equality
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > only looks back ten minutes 13ms
+   × voice write-before repeat gate (Lead ruling, upstream ordering limit) > excludes the per-attempt business idempotency key from the key parameters 17ms
+     → expected undefined to be 'duplicate_recent_write' // Object.is equality
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > leaves read capabilities and same-requestId replays untouched 17ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > keeps a broker without the voice gate byte-for-byte on its existing write path 2ms
+   ✓ voice repeat gate primitives > normalizes key parameters but keeps capability and target distinct 1ms
+   ✓ voice repeat gate primitives > classifies "要" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "要的。" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "嗯，要" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "对，再做一次" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "再发一次吧" as explicit redo=true 1ms
+   ✓ voice repeat gate primitives > classifies "好，重新做" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "要再做一次" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "不要" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "不用再做了" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "算了" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "先别发" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "好的我知道了，那 FLY-100 呢" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "" as explicit redo=false 0ms
+ ❯ |parallel| src/lead-capabilities/__tests__/voice-turn-receipts.test.ts (2 tests | 2 failed) 95ms
+   × durably associates current-turn replay of older succeeded receipt without executing again 38ms
+     → store.operationReceipts.listByDelivery is not a function
+   × durably associates current-turn replay of older unknown receipt without executing again 56ms
+     → store.operationReceipts.listByDelivery is not a function
+⎯⎯⎯⎯⎯⎯ Failed Tests 11 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > blocks the repeated original request after a succeeded write with a late handoff and speaks the confirmation
+AssertionError: expected "spy" to be called 1 times, but got 2 times
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:112:21
+    110|   h.advance(30_000);
+    111|   const repeated = await h.broker.execute(update(ids[1]!));
+    112|   expect(h.execute).toHaveBeenCalledTimes(1);
+       |                     ^
+    113|   expect(repeated).toMatchObject({
+    114|    requestId: ids[1],
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/11]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > writes exactly once more with a different requestId only after her explicit redo reply
+AssertionError: expected undefined to be 'duplicate_recent_write' // Object.is equality
+[32m- Expected:[39m 
+"duplicate_recent_write"
+[31m+ Received:[39m 
+undefined
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:137:63
+    135|   h.gate!.turnEnded("entry-1");
+    136|   h.setEntry("entry-2");
+    137|   expect((await h.broker.execute(update(ids[1]!))).errorCode).toBe(
+       |                                                               ^
+    138|    "duplicate_recent_write",
+    139|   );
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/11]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > uses the unknown wording while the earlier dispatched write has no terminal proof
+AssertionError: expected "spy" to be called 1 times, but got 2 times
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:167:21
+    165|   h.setEntry("entry-2");
+    166|   const repeated = await h.broker.execute(update(ids[1]!));
+    167|   expect(h.execute).toHaveBeenCalledTimes(1);
+       |                     ^
+    168|   expect(repeated).toMatchObject({
+    169|    status: "rejected",
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/11]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 她沉默
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 其他回答
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 无关请求
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 否定
+AssertionError: expected undefined to be 'duplicate_recent_write' // Object.is equality
+[32m- Expected:[39m 
+"duplicate_recent_write"
+[31m+ Received:[39m 
+undefined
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:192:63
+    190|   if (reply) h.gate!.observeFounderUtterance(reply);
+    191|   h.setEntry("entry-3");
+    192|   expect((await h.broker.execute(update(ids[2]!))).errorCode).toBe(
+       |                                                               ^
+    193|    "duplicate_recent_write",
+    194|   );
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/11]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > does not treat words spoken before the confirmation could be heard as her answer
+AssertionError: expected undefined to be 'duplicate_recent_write' // Object.is equality
+[32m- Expected:[39m 
+"duplicate_recent_write"
+[31m+ Received:[39m 
+undefined
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:207:63
+    205|   h.gate!.turnEnded("entry-2");
+    206|   h.setEntry("entry-3");
+    207|   expect((await h.broker.execute(update(ids[2]!))).errorCode).toBe(
+       |                                                               ^
+    208|    "duplicate_recent_write",
+    209|   );
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/11]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > voice write-before repeat gate (Lead ruling, upstream ordering limit) > excludes the per-attempt business idempotency key from the key parameters
+AssertionError: expected undefined to be 'duplicate_recent_write' // Object.is equality
+[32m- Expected:[39m 
+"duplicate_recent_write"
+[31m+ Received:[39m 
+undefined
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:246:30
+    244|   h.setEntry("entry-2");
+    245|   const repeated = await h.broker.execute(start(ids[1]!, "attempt-2"));
+    246|   expect(repeated.errorCode).toBe("duplicate_recent_write");
+       |                              ^
+    247|   expect(h.execute).toHaveBeenCalledTimes(1);
+    248|  });
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/11]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-turn-receipts.test.ts > durably associates current-turn replay of older succeeded receipt without executing again
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-turn-receipts.test.ts > durably associates current-turn replay of older unknown receipt without executing again
+TypeError: store.operationReceipts.listByDelivery is not a function
+ ❯ src/lead-capabilities/__tests__/voice-turn-receipts.test.ts:16:82
+     14|   expect((await broker.execute(request)).status).toBe(state);entryId="…
+     15|   await broker.close();store.close();store=new SqliteJournalStore(path…
+     16|   for(const id of ["entry-first","entry-repeat"]) expect(store.operati…
+       |                                                                                  ^
+     17|   expect(store.operationReceipts.listByDelivery({...scope,activationId…
+     18|   expect(store.operationReceipts.listByDelivery({...scope,entryId:"mis…
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/11]⎯
+ Test Files  2 failed (2)
+      Tests  11 failed | 18 passed (29)
+   Start at  01:19:26
+   Duration  8.26s (transform 2.47s, setup 84ms, collect 5.35s, tests 320ms, environment 0ms, prepare 450ms)

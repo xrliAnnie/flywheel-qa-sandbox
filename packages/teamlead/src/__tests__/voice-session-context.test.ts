@@ -415,6 +415,14 @@ describe("voice session context assembly", () => {
 		expect(result.realtimePrompt).not.toContain("逐字");
 		expect(result.baseInstructions).toContain("IDENTITY_PRIVATE_DETAIL");
 		expect(result.baseInstructions).toContain("memory/MEMORY.md");
+		// Broker-authored wording (founder-only denial, repeat confirmation) is
+		// spoken as given; a repeat is retried only on her explicit redo.
+		expect(result.baseInstructions).toContain(
+			"its 【口语】 for that request is exactly data.spokenText",
+		);
+		expect(result.baseInstructions).toContain(
+			"After duplicate_recent_write, do not call that write again in this turn",
+		);
 		expect(result.baseInstructions).not.toContain(
 			"DETAIL_BODY_THAT_FRONTEND_MUST_NOT_LOAD",
 		);

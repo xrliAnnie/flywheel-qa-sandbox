@@ -1,0 +1,41 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ✓ |parallel| src/__tests__/voice-session-context.test.ts (6 tests) 935ms
+   ✓ voice session context assembly > loads full identity and memory behind immutable boundaries and binds both prompts to one snapshot  792ms
+stderr | src/bridge/__tests__/voice-session-services.test.ts > rejects duplicate registry drift before provision or projection effects
+[slow-sql] {"databaseKind":"teamlead","sqlId":"0801074aeaef699f","method":"exec","durationMs":260.20074999999997}
+[slow-sql] {"databaseKind":"teamlead","sqlId":"ce922519a3c3ecaf","method":"transaction","durationMs":273.519624999999}
+stderr | src/bridge/__tests__/voice-session-services.test.ts > rejects legacy-huddle registry drift before provision or projection effects
+[voice-session] demand projection failed
+ ✓ |parallel| src/bridge/__tests__/voice-session-services.test.ts (27 tests) 23183ms
+   ✓ isolates the default voice health state root under Vitest  472ms
+   ✓ passes the runtime deadline into the actual provisioner fetch  486ms
+   ✓ rejects bot registry drift before provision or projection effects  514ms
+   ✓ rejects room registry drift before provision or projection effects  594ms
+   ✓ rejects guild registry drift before provision or projection effects  568ms
+   ✓ rejects missing registry drift before provision or projection effects  935ms
+   ✓ rejects duplicate registry drift before provision or projection effects  1958ms
+   ✓ rejects legacy-huddle registry drift before provision or projection effects  1552ms
+   ✓ cleans legacy provisioning identity without any network effects  970ms
+   ✓ cleans legacy desired identity without any network effects  1088ms
+   ✓ cleans legacy claimed identity without any network effects  969ms
+   ✓ cleans legacy warming identity without any network effects  817ms
+   ✓ cleans legacy live identity without any network effects  1872ms
+   ✓ cleans legacy ending identity without any network effects  832ms
+   ✓ projects the persisted tuple and permits token rotation with unchanged bot identity  434ms
+   ✓ passes enabled background identity, room binding, and founder attention into the three-layer context  2195ms
+   ✓ bootstrap failure yields honest unavailable state only when enabled=true  768ms
+   ✓ bootstrap failure yields honest unavailable state only when enabled=false  374ms
+   ✓ polls enabled Engine-B state into durable background tell rows  737ms
+   ✓ projects authoritative demand into the durable voice health store  727ms
+   ✓ stops provisioning when the carrier no longer proves self filtering  560ms
+   ✓ stops desired when the carrier no longer proves self filtering  804ms
+   ✓ stops claimed when the carrier no longer proves self filtering  661ms
+   ✓ stops warming when the carrier no longer proves self filtering  654ms
+   ✓ stops live when the carrier no longer proves self filtering  600ms
+   ✓ stops ending when the carrier no longer proves self filtering  778ms
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-capability-brief.test.ts (5 tests) 3350ms
+   ✓ admitted capability opening brief > binds both prompt headers and measured bytes/tokens without mutating the source snapshot  2995ms
+ Test Files  3 passed (3)
+      Tests  38 passed (38)
+   Start at  01:25:50
+   Duration  38.87s (transform 5.11s, setup 101ms, collect 9.35s, tests 27.47s, environment 0ms, prepare 270ms)

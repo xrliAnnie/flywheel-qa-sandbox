@@ -1,0 +1,81 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/voice-codex
+ ❯ src/__tests__/codex-repeat-confirmation.test.ts (4 tests | 2 failed) 15ms
+   × forwards only speaker-attributed founder finals to the repeat confirmation gate 10ms
+     → expected [] to deeply equal [ [ '要，再做一次' ] ]
+   ✓ does not feed the gate when the background agent is disabled 1ms
+   × counts a replayed older write receipt as this turn's receipt through the durable per-turn ledger 3ms
+     → expected "spy" to be called with arguments: [ ObjectContaining{…} ][90m
+Received: 
+[1m  1st spy call:
+[22m[2m  [[22m
+[32m-   ObjectContaining {[90m
+[31m+   {[90m
+[2m      "hadWriteReceipt": false,[22m
+[31m+     "outcome": "completed",[90m
+[31m+     "rosterNames": [],[90m
+[31m+     "sources": [],[90m
+[31m+     "spokenSegments": [[90m
+[31m+       "这件刚才已经发出去了，结果还在核对，要再发一次吗？",[90m
+[31m+     ],[90m
+[2m      "turnId": "t-replay",[22m
+[32m-     "writeReceiptUnknown": true,[90m
+[31m+     "writeReceiptUnknown": false,[90m
+[2m    },[22m
+[2m  ][22m
+[39m[90m
+Number of calls: [1m1[22m
+[39m
+   ✓ falls back to the start-of-turn diff when no per-turn ledger is available 1ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/__tests__/codex-repeat-confirmation.test.ts > forwards only speaker-attributed founder finals to the repeat confirmation gate
+AssertionError: expected [] to deeply equal [ [ '要，再做一次' ] ]
+[32m- Expected[39m
+[31m+ Received[39m
+[32m- [[39m
+[32m-   [[39m
+[32m-     "要，再做一次",[39m
+[32m-   ],[39m
+[32m- ][39m
+[31m+ [][39m
+ ❯ src/__tests__/codex-repeat-confirmation.test.ts:91:47
+     89|   "i4",
+     90|  );
+     91|  expect(h.observeFounderUtterance.mock.calls).toEqual([["要，再做一次"]]);
+       |                                               ^
+     92|  await h.session.close();
+     93| });
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+ FAIL  src/__tests__/codex-repeat-confirmation.test.ts > counts a replayed older write receipt as this turn's receipt through the durable per-turn ledger
+AssertionError: expected "spy" to be called with arguments: [ ObjectContaining{…} ][90m
+Received: 
+[1m  1st spy call:
+[22m[2m  [[22m
+[32m-   ObjectContaining {[90m
+[31m+   {[90m
+[2m      "hadWriteReceipt": false,[22m
+[31m+     "outcome": "completed",[90m
+[31m+     "rosterNames": [],[90m
+[31m+     "sources": [],[90m
+[31m+     "spokenSegments": [[90m
+[31m+       "这件刚才已经发出去了，结果还在核对，要再发一次吗？",[90m
+[31m+     ],[90m
+[2m      "turnId": "t-replay",[22m
+[32m-     "writeReceiptUnknown": true,[90m
+[31m+     "writeReceiptUnknown": false,[90m
+[2m    },[22m
+[2m  ][22m
+[39m[90m
+Number of calls: [1m1[22m
+[39m
+ ❯ src/__tests__/codex-repeat-confirmation.test.ts:127:19
+    125|   spokenSegments: ["这件刚才已经发出去了，结果还在核对，要再发一次吗？"],
+    126|  });
+    127|  expect(terminal).toHaveBeenCalledWith(
+       |                   ^
+    128|   expect.objectContaining({
+    129|    turnId: "t-replay",
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed (4)
+   Start at  01:22:58
+   Duration  2.37s (transform 955ms, setup 0ms, collect 1.81s, tests 15ms, environment 0ms, prepare 115ms)

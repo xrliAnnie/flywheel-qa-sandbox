@@ -3,9 +3,10 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 日期: 2026-09-25
 基于: exploration.md、research.md
 
-状态：v10 — §5.3 第五轮 scoped design review 已 effective APPROVED（Lead 回执 c757cb0b，外部 Codex `VERDICT: APPROVED`）；v5 其余部分仍按 Lead effective APPROVED（问询 947a7585，R4 后裁定）。真实语音准入全部通过前，live 旁注仍默认关闭，只使用持久背景环回退。
+状态：v11 — 追加 §3.1 Lead 裁定修订（上游时序限制，写入前防重门）；v10 — §5.3 第五轮 scoped design review 已 effective APPROVED（Lead 回执 c757cb0b，外部 Codex `VERDICT: APPROVED`）；v5 其余部分仍按 Lead effective APPROVED（问询 947a7585，R4 后裁定）。真实语音准入全部通过前，live 旁注仍默认关闭，只使用持久背景环回退。
 
 修订记录：
+- v11（Lead 裁定，问询 cd6d1609；2026-09-26 重派说明）：上游时序限制下新增写入前防重门，见 §3.1；§3「已成功的写不重做」由该门结构性保证，不再依赖 handoff 顺序、事后 steer 或规约。
 - v10（§5.3 scoped review 修正）：撤销「现有 `cancelSpeech` 足够」的错误假设；新增逐帧 owner ledger，身份保留到消费或撤回，选择性重建 output resource 时只移除目标 speechId、按原顺序重放其他未消费帧；固定「目标帧已全交 player 未消费」和「授权尾帧与泄漏共用缓冲」两条边界测试，realtime cancel/stop 仍为零。
 - v9（§5.3 scoped review 修正）：补齐 audio-first/transcript-later 泄漏处置：按 generation/item 绑定本地 speechId，检测后既拦后续事件，也调用 `WaitingMouth.cancelSpeech(speechId)` 清掉 speech queue 与已经交给播放器但尚未消费的尾帧；仍不调用 realtime `cancel/stop`，已播帧按不可逆事故记录。
 - v8（§5.3 scoped review 修正）：不确定输出归属时保留已授权 tell/结果并永久关闭 live；无 provider 音频项到本地 utterance 的可信绑定时一律隔离，不再凭 VAD 时间窗放行；V2 泄漏处置改为按 itemId 本地持续拦截，不调用实际会 stop realtime leg 的 `cancel()`；熔断位与启停位分离，关闭再开启同一 session 也不得恢复 live。
@@ -85,6 +86,22 @@ flowchart LR
 - 测试：`started→completed→handoff`（迟到）、回合交界迟到通知、只答第二问、回答乱序；这些都只影响「未确认」提示与播出内容，不产生错误的完成声明。
 - 不中断后台回合，除非：会话结束、开关关闭。**不设回合数上限**。
 - Step 0 增加实测：第一个任务未完成时连续提第二、三个查询，记录 handoff/turn/steer 事件顺序与最终回答覆盖情况；与上述模型不符即停下改 plan。
+
+### 3.1 Lead 裁定修订（上游时序限制）
+
+**事实**：Codex 0.156.1 `realtime_conversation.rs` 先 `await StartOrSteer`（1672 行），1675 行才发 handoff 事件；后台输入不带 handoff_id；`clientManagedHandoffs=true` 只管结果回送。因此上游顺序无法保证「她重复原话不产生第二次写」。按 Lead 对问询 `cd6d1609` 的裁定，本单加一道写入前防重门，规则写死、不扩展：
+
+1. **触发**：执行任何写类能力前（仅新 requestId；同 requestId 的重试仍走原幂等回放），查本语音会话写账本（本会话 journal 的回执表，activation = `voice:<sessionId>`）里最近 10 分钟内已派发的写——账本 outcome 为 succeeded 或 unknown 都算（`dispatched` 在账本里即 unknown）。能力 id + 规范化目标键 + 规范化后的关键参数都相同 → 不写，不建回执。
+   - 规范化关键参数：去掉每次尝试都会新生成的业务重试身份（`idempotencyKey`、`requestId`）；字符串 NFKC、去首尾空白、折叠空白；`*Id`/`*Ids` 字段不区分大小写；键排序后取 sha256。该指纹写入回执新列 `dedupe_digest`（可空，只增不删；常驻回执恒为 null）。
+   - 时间取回执 `started_at`（与实际派发相差不超过该操作 15s 期限）。
+2. **口语**：broker 返回 `rejected` + `duplicate_recent_write`，`data.spokenText` 为固定句——成功：「这件刚才已经做了：<已有回执结果>，要再做一次吗？」（<已有回执结果> 只由已记录的回执生成，如「Linear 上 FLY-2886 已更新」）；unknown：「这件刚才已经发出去了，结果还在核对，要再发一次吗？」。后台规约：带 `data.spokenText` 的拒绝，该请求的【口语】就是这句原文（同时覆盖 §4.5 的 founder-only 文案）。
+3. **新请求与重试的唯一区分**：她对这句确认**明确**说要再做 → 视为新请求，模型用新 requestId 再调用一次，门放行恰好一次（放行即消费）；其他回答或沉默一律不写。结构性要素：
+   - 确认只能在「拦截所在的后台回合结束」之后成立（回答里的确认句此后才可能被她听到）；之前她说的话不算回答。
+   - 只认说话人已归属的 founder 终稿转写（`attribution.kind="known"`），由容器可信转交 parent；拦截后她的**第一句**回答决定：明确「再做/再发/重新做」或整句只是「要/对/好/是/行/可以」且不含任何否定词（不/别/没/算了/等等/取消/停）→ 确认；否则作废，下次同样的写会再次拦截并重问。
+   - 待确认与已确认都在 10 分钟后失效；parent 重启后待确认丢失（安全方向：重问，不写）。
+4. 读类能力不受影响；不改自动后台协议；不把事后 steer 或规约当防重证明——防重只由 broker 在写之前查持久账本给出。
+5. 用例（先红后绿，`voice-repeat-gate.test.ts`）：写已成功 + handoff 迟到 + 她重复原话 → 0 次第二写并返回确认句；她确认再做 → 恰好第二次写且 requestId 不同，之后同样的第三次再被拦；参数不同 → 照常写；另覆盖 unknown 文案、沉默/其他回答/否定、确认句可听到之前的话不算、10 分钟窗口、`idempotencyKey` 不参与比较、读能力与同 requestId 重放不受影响、没装门的 broker 行为不变。
+6. 同批补齐每 turn 回执关联：语音 actor 的写在执行或重放时写入 `lead_operation_receipt_deliveries`（turn journal entry ↔ 回执），`listByDelivery` 让 §3「上一回合有无写回执 / unknown 回执」也能看到重放的旧回执；没有该关联时回退到原「回合开始时账本差集」。
 
 ## 4. 与 Lead 同权（Lead 指令 ad0b344d + R1#2/#3/#8/#9）
 

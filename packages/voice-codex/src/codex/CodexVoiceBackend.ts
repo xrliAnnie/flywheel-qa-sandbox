@@ -87,6 +87,12 @@ interface CodexTransportLike {
 
 interface CodexConversationLike {
 	actionLedger?(): readonly VoiceCapabilityActionLedgerEntry[];
+	/** Durable writes this background turn produced or replayed, when known. */
+	turnActionLedger?(
+		turnId: string,
+	): readonly VoiceCapabilityActionLedgerEntry[] | undefined;
+	/** Trusted repeat-confirmation input (FLY-2886 Lead ruling). */
+	observeFounderUtterance?(text: string): void;
 	readonly generation?: number;
 	rewriteSpeech?(input: {
 		sourceText: string;
@@ -643,6 +649,21 @@ class CodexVoiceSession implements ConversationSession {
 				utterance.attribution.kind === "known"
 					? { utterance, persisted }
 					: undefined;
+			if (
+				this.options.backgroundEnabled &&
+				utterance.attribution.kind === "known"
+			) {
+				try {
+					// Only her attributed words can answer a repeat confirmation.
+					this.options.conversation.observeFounderUtterance?.(utterance.text);
+				} catch (error) {
+					this.options.onEvidence?.({
+						kind: "codex_repeat_confirmation_input_failed",
+						transcriptId: utterance.transcriptId,
+						reason: error instanceof Error ? error.message : "unknown_error",
+					});
+				}
+			}
 		}
 		if (transcript.role === "assistant" && transcript.itemId)
 			this.endOutput(transcript.itemId);
@@ -886,9 +907,18 @@ class CodexVoiceSession implements ConversationSession {
 			for (const [id, request] of this.backgroundRequests)
 				if (request.turnId === turn.turnId) this.backgroundRequests.delete(id);
 		const prior = this.turnPriorReceipts.get(turn.turnId) ?? new Set<string>();
-		const receipts = (this.options.conversation.actionLedger?.() ?? []).filter(
-			(row) => !prior.has(row.requestId),
-		);
+		let turnLedger: readonly VoiceCapabilityActionLedgerEntry[] | undefined;
+		try {
+			turnLedger = this.options.conversation.turnActionLedger?.(turn.turnId);
+		} catch {
+			turnLedger = undefined;
+		}
+		// The durable per-turn ledger also sees replays of older receipts.
+		const receipts =
+			turnLedger ??
+			(this.options.conversation.actionLedger?.() ?? []).filter(
+				(row) => !prior.has(row.requestId),
+			);
 		const completedTurn = {
 			...turn,
 			sources: [

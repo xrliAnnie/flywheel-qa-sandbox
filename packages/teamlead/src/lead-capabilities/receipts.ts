@@ -18,6 +18,11 @@ const prepareSchema = keySchema.extend({
 	inputDigest: z.string().regex(/^[a-f0-9]{64}$/),
 	activationId: coordinate,
 	targetKey: z.string().min(1).max(512).optional(),
+	/** Voice repeat-gate fingerprint only; resident receipts leave it null. */
+	dedupeDigest: z
+		.string()
+		.regex(/^[a-f0-9]{64}$/)
+		.optional(),
 	now: z.number().int().nonnegative(),
 });
 const stateSchema = z.enum([
@@ -56,6 +61,14 @@ const scopeSchema = z
 		now: z.number().int().nonnegative(),
 	})
 	.strict();
+const deliverySchema = z
+	.object({
+		projectName: coordinate,
+		leadId: coordinate,
+		activationId: coordinate,
+		entryId: coordinate,
+	})
+	.strict();
 const KEY_WHERE =
 	"project_name=@projectName AND lead_id=@leadId AND operation_id=@operationId AND request_id=@requestId";
 interface ReceiptRow {
@@ -66,6 +79,7 @@ interface ReceiptRow {
 	input_digest: string;
 	activation_id: string;
 	target_key: string | null;
+	dedupe_digest?: string | null;
 	state: OperationReceiptState;
 	provider_ref: string | null;
 	started_at: number;
@@ -106,9 +120,19 @@ export function migrateOperationReceipts(db: Database.Database): void {
 	);
 	if (!columns.has("target_key"))
 		db.exec("ALTER TABLE lead_operation_receipts ADD COLUMN target_key TEXT");
+	if (!columns.has("dedupe_digest"))
+		db.exec(
+			"ALTER TABLE lead_operation_receipts ADD COLUMN dedupe_digest TEXT",
+		);
 	db.exec(
 		"CREATE INDEX IF NOT EXISTS lead_operation_receipts_target_idx ON lead_operation_receipts(target_key,state)",
 	);
+	// Voice-only association of receipts with the background turn entries that
+	// produced or replayed them. Additive; resident journals never write it.
+	db.exec(`CREATE TABLE IF NOT EXISTS lead_operation_receipt_deliveries (
+ project_name TEXT NOT NULL,lead_id TEXT NOT NULL,activation_id TEXT NOT NULL,entry_id TEXT NOT NULL,
+ operation_id TEXT NOT NULL,request_id TEXT NOT NULL,recorded_at INTEGER NOT NULL,
+ PRIMARY KEY(project_name,lead_id,activation_id,entry_id,operation_id,request_id))`);
 }
 /** Owns no connection. Journal.close() closes this store too. Callers are trusted broker code, never model input. */
 export class OperationReceiptStore {
@@ -126,6 +150,76 @@ export class OperationReceiptStore {
 			)
 			.all(scope) as ReceiptRow[];
 		return rows.map(fromRow);
+	}
+	/** Voice parent only: bind a write receipt to the background turn entry that saw it. */
+	associateDelivery(raw: {
+		projectName: string;
+		leadId: string;
+		activationId: string;
+		entryId: string;
+		operationId: string;
+		requestId: string;
+		now: number;
+	}): void {
+		const input = deliverySchema
+			.extend({
+				operationId: coordinate,
+				requestId: z.string().uuid(),
+				now: z.number().int().nonnegative(),
+			})
+			.strict()
+			.parse(raw);
+		this.db
+			.prepare(
+				"INSERT INTO lead_operation_receipt_deliveries (project_name,lead_id,activation_id,entry_id,operation_id,request_id,recorded_at) VALUES (@projectName,@leadId,@activationId,@entryId,@operationId,@requestId,@now) ON CONFLICT DO NOTHING",
+			)
+			.run(input);
+	}
+	/** Durable per-turn ledger, including replays of receipts created by an earlier turn. */
+	listByDelivery(raw: {
+		projectName: string;
+		leadId: string;
+		activationId: string;
+		entryId: string;
+	}): OperationReceipt[] {
+		const input = deliverySchema.parse(raw);
+		const rows = this.db
+			.prepare(
+				"SELECT r.* FROM lead_operation_receipt_deliveries d JOIN lead_operation_receipts r ON r.project_name=d.project_name AND r.lead_id=d.lead_id AND r.operation_id=d.operation_id AND r.request_id=d.request_id WHERE d.project_name=@projectName AND d.lead_id=@leadId AND d.activation_id=@activationId AND d.entry_id=@entryId ORDER BY r.started_at,r.operation_id,r.request_id",
+			)
+			.all(input) as ReceiptRow[];
+		return rows.map(fromRow);
+	}
+	/** Newest dispatched/succeeded/unknown write with the same repeat fingerprint since `since`. */
+	findRecentRepeat(raw: {
+		projectName: string;
+		leadId: string;
+		activationId: string;
+		operationId: string;
+		targetKey: string;
+		dedupeDigest: string;
+		since: number;
+		excludeRequestId: string;
+	}): OperationReceipt | undefined {
+		const input = z
+			.object({
+				projectName: coordinate,
+				leadId: coordinate,
+				activationId: coordinate,
+				operationId: coordinate,
+				targetKey: z.string().min(1).max(512),
+				dedupeDigest: z.string().regex(/^[a-f0-9]{64}$/),
+				since: z.number().int(),
+				excludeRequestId: z.string().uuid(),
+			})
+			.strict()
+			.parse(raw);
+		const row = this.db
+			.prepare(
+				"SELECT * FROM lead_operation_receipts WHERE project_name=@projectName AND lead_id=@leadId AND activation_id=@activationId AND operation_id=@operationId AND target_key=@targetKey AND dedupe_digest=@dedupeDigest AND state IN ('dispatched','succeeded','unknown') AND started_at>=@since AND request_id<>@excludeRequestId ORDER BY started_at DESC,request_id DESC LIMIT 1",
+			)
+			.get(input) as ReceiptRow | undefined;
+		return row ? fromRow(row) : undefined;
 	}
 	get(key: OperationReceiptKey): OperationReceipt | undefined {
 		const parsed = keySchema.parse(key);
@@ -167,10 +261,13 @@ export class OperationReceiptStore {
 				const inserted =
 					this.db
 						.prepare(
-							`INSERT INTO lead_operation_receipts (project_name,lead_id,operation_id,request_id,input_digest,activation_id,target_key,state,started_at,updated_at) VALUES (@projectName,@leadId,@operationId,@requestId,@inputDigest,@activationId,@targetKey,'prepared',@now,@now) ON CONFLICT(project_name,lead_id,operation_id,request_id) DO NOTHING`,
+							`INSERT INTO lead_operation_receipts (project_name,lead_id,operation_id,request_id,input_digest,activation_id,target_key,dedupe_digest,state,started_at,updated_at) VALUES (@projectName,@leadId,@operationId,@requestId,@inputDigest,@activationId,@targetKey,@dedupeDigest,'prepared',@now,@now) ON CONFLICT(project_name,lead_id,operation_id,request_id) DO NOTHING`,
 						)
-						.run({ ...input, targetKey: input.targetKey ?? null }).changes ===
-					1;
+						.run({
+							...input,
+							targetKey: input.targetKey ?? null,
+							dedupeDigest: input.dedupeDigest ?? null,
+						}).changes === 1;
 				const receipt = this.get({
 					projectName: input.projectName,
 					leadId: input.leadId,
