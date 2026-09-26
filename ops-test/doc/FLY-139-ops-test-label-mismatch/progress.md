@@ -1,13 +1,13 @@
 ---
 issue: FLY-139
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-26T00:31:04.144Z
-nextStep: write exploration.md
+phaseCursor: 2/6
+updated: 2026-09-26T00:33:14.507Z
+nextStep: run existing dept-scope tests for evidence, write research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-139 progress
-**phase**: design (1/6)
-**next**: write exploration.md
+**phase**: design (2/6)
+**next**: run existing dept-scope tests for evidence, write research.md
