@@ -1,0 +1,93 @@
+{
+  "capturedAt": "2026-09-26T05:44:26.755699+00:00",
+  "scope": "Offline T2 foundation only, no launch wiring, pruning, formal review, QA or complete claim",
+  "sources": [
+    {
+      "path": "packages/config/src/runner-prefix-profile.ts",
+      "sha256": "b64d3f43b40a5040d8257f79bff31e1a5cb88f7ba7734f64f7ebc5fdebdff78c"
+    },
+    {
+      "path": "packages/config/src/__tests__/runner-prefix-profile.test.ts",
+      "sha256": "dc0f31ffb72cbc7b7fbddc6cf1188a068675ede744609c3f0361e617171e1be7"
+    },
+    {
+      "path": "packages/claude-runner/src/runner-prefix-artifacts.ts",
+      "sha256": "f5a0a5aab1fbc98c45f64f29a129d11049d51b15acaa8921c1d547c40dd32d38"
+    },
+    {
+      "path": "packages/claude-runner/test/runner-prefix-artifacts.test.ts",
+      "sha256": "c6d87c3c7259e5ffe8c41f9baf760e23dba260649f5b58c561cc95792a5c53e8"
+    }
+  ],
+  "checks": [
+    {
+      "command": "pnpm --filter flywheel-config exec vitest related src/runner-prefix-profile.ts --run",
+      "exitCode": 0,
+      "passed": 22
+    },
+    {
+      "command": "pnpm --filter flywheel-claude-runner exec vitest related src/runner-prefix-artifacts.ts --run",
+      "exitCode": 0,
+      "passed": 47
+    },
+    {
+      "command": "pnpm --filter 'flywheel-claude-runner...' build",
+      "exitCode": 0
+    },
+    {
+      "command": "pnpm lint",
+      "exitCode": 0,
+      "existingWarnings": 25
+    },
+    {
+      "command": "pnpm --filter '...flywheel-config' --filter '...flywheel-claude-runner' typecheck",
+      "exitCode": 2,
+      "result": "11 packages passed; voice-codex failed because voice-bridge dist was absent; no source repair"
+    },
+    {
+      "command": "pnpm --filter 'flywheel-voice-bridge...' build && pnpm --filter flywheel-voice-codex typecheck",
+      "exitCode": 0,
+      "result": "missing prerequisite built; remaining dependent passed"
+    },
+    {
+      "command": "pnpm exec biome check <four changed TS files>",
+      "exitCode": 0
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/fly2913-t2-build-final.log",
+      "sha256": "527af4fba5768a361d9b01f7b5fb1be0149fa741c8a6545ca826e76528ed2222"
+    },
+    {
+      "path": "/tmp/fly2913-t2-lint.log",
+      "sha256": "3d1344fefa35a98e8cb304a7ecdafc193b318f83e9171bcea84bcd9b1b53e584"
+    },
+    {
+      "path": "/tmp/fly2913-t2-dependents-typecheck.log",
+      "sha256": "0ec2e5c490a31ccf54c34b53c2675087011f93fa53600f1b7ceec7c870fbb176"
+    },
+    {
+      "path": "/tmp/fly2913-t2-voice-prereq-build.log",
+      "sha256": "09d6028705e51d168d022e6fe84897d0f9a672564954d3979c395eb361dac2f4"
+    },
+    {
+      "path": "/tmp/fly2913-t2-voice-typecheck.log",
+      "sha256": "6fadc6bd0021713bcb5c0d9933b1a3b7dce86baee25e0c4e74990942531f56a2"
+    }
+  ],
+  "localAudit": {
+    "spec": "two mode invariants reproduced red then fixed; recheck4 artifact+2 identity tests passed",
+    "quality": "no findings in bounded interim scope",
+    "formalReview": false
+  },
+  "pending": [
+    "five-role real consumer baseline",
+    "CLI control tests in529",
+    "actual role/profile/compiler assembly",
+    "runner and reviewer wiring",
+    "three paired measurements per role",
+    "representative tasks and rollback",
+    "default enable, formal code review, PR and completion route"
+  ]
+}

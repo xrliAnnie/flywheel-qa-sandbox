@@ -5,7 +5,7 @@ Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913)
 
 ## 当前边界
 
-T1 工具批次已实现；T1 五角色实际基线尚未完成，T2–T6 尚未实现。本文件不构成 code review、完整 CI、QA、生产或交卷证据。当前已批准设计门为 `5aec411f-dcf1-4ecf-93ba-71fb9d401763`，服务端重读 effective/raw APPROVED；后续 Lead 的任务来源修订见 plan §六。
+T1 工具批次及七天背景刷新已实现；T1 五角色实际基线尚未完成。T2 离线选择器/文件产物基础实现中，未接生产 consumer；T3–T6 尚未实现。本文件不构成 code review、完整 CI、QA、生产或交卷证据。当前已批准设计门为 `5aec411f-dcf1-4ecf-93ba-71fb9d401763`，服务端重读 effective/raw APPROVED；后续 Lead 的任务来源修订见 plan §六。
 
 ## T1 工具与验证
 
@@ -42,6 +42,16 @@ pnpm lint
 1. 完成五角色真 consumer 启动、完整 loaded 清单与三组配对采样；先补 hook/工具名 roster/builtin costs 的可归属证据，再决定移除项。
 2. 遵照 Lead 从 pinned `tpl_code` / `tpl_simple_code` 派生 engineering，其他来源 legacy；后续节点/retry/reviewer 均需覆盖。
 3. 刷新七天背景统计时只读 transcript。origin/main 的 FLY-2904 `census.py` 含 live DB roster，不能直接运行；原 CSV 未入 git，snapshot_owner_unavailable 不阻塞主线。
-4. 标准 slot 1 teardown 在 `test-teardown.sh:459` 调 `cmux_process_incarnation` 时受 sandbox 禁止 `ps`，返回 `unable to publish qa_teardown yield claim; no teardown action taken`。已向 Lead 注册 `2aa703eb-8850-4f6d-a0b6-3a4154790774` 请求由受监督、具备进程观测权限的载体执行标准拆房；不伪造 incarnation、不改 claim/lease、不手杀。原房仍绑定旧 SHA，提交后不能继续把该房作为当前头验收。
+4. 标准 slot 1 teardown 在 `test-teardown.sh:459` 调 `cmux_process_incarnation` 时受 sandbox 禁止 `ps`，返回 `unable to publish qa_teardown yield claim; no teardown action taken`。问题 `2aa703eb-8850-4f6d-a0b6-3a4154790774` 后由 Lead 在沙箱外运行本 worktree 标准脚本，回执 rc=0、`Slot 1 teardown complete`，证据归档 `~/.flywheel/qa-evidence/slot-1/20260926T051921Z`。没有伪造 incarnation、改 claim/lease 或手杀。Lead 要求后续起/拆房先 ask 由 Lead 或 Claude QA 载体执行，磁盘恢复前暂不起房；Codex 不再直接调用 deploy/teardown。
+
+## 七天刷新与 T2 离线批次（进行中）
+
+`weekly-tool-use.md` 与 `evidence/weekly-*.json` 固定 2026-09-19T05:18:04.661Z 至 2026-09-26T05:18:04.661Z 的明确输入清单、角色判定和聚合：1,907 份 Claude 转写、94,549 次去重调用，其中 54,200 次归属五角色、40,349 次未知。读取过程中不连接 live DB，不输出参数/正文。源转写本身不是文件系统快照；后续重跑可能受源文件编辑影响，限制明确记入 provenance。第一次旧 manifest 结果已丢弃，最终输出逐条核对 sessionId/role 与完成后的 manifest 一致，cutoff 一致。
+
+`runner-prefix-profile.ts` 目前只是没有副作用的选择器，未从包 index 导出、未接启动路径。只接收服务端 pinned run/template/phase 或持久 review type：`tpl_code` / `tpl_simple_code` 可选 role-v1；Lead、Codex、其他 backend、未知 role/来源、legacy 开关及 full-mcp 保持旧配置。只复制 runId/templateId/snapshotDigest，不把任意调用方元数据送入产物。开发默认仍 legacy，最终默认启用属于全部角色验收后的 T6，不能把当前选择器当作已下发精简配置。
+
+`runner-prefix-artifacts.ts` 是文件产物基础：调用方明确给 trusted roots、完整文件闭包、目标相对路径和内容 SHA；独占私有目录内原子发布，恢复核对身份/来源/产物哈希。它尚不选择插件组件、生成 role 配置或启动模型。局部 spec 审查发现 umask 影响实际模式、lstat/open 间权限变化漏验两项，已分别观察红测试并修正：创建后精确 chmod/fchmod；四次 stat 都核 mode/nlink。局部 spec 复核和随后 quality 审查已结束、无余项；不替代正式跨家族 code review。
+
+本批新代码定向验证：config 22 tests、claude-runner 47 tests 通过，均用 owning package 的 `vitest related ... --run` 再验证；四个改动 TS 文件 Biome clean；`pnpm --filter 'flywheel-claude-runner...' build` exit 0；`pnpm lint` exit 0（25 条既有 warning）。消费者查询 12 次、831 个匹配，逐项处置见 `evidence/t2-consumer-sweep.json`。依赖方 typecheck 首轮 11 包通过，voice-codex 因缺少本地 voice-bridge dist 失败；补建 `flywheel-voice-bridge...` 后，voice-codex typecheck exit 0，没有改 voice 源码。命令、源码和日志摘要见 `evidence/t2-offline-checks.json`。
 
 继续：T1 基线与 collector 接线 → T2 编译器/CLI 控制负控 → T3 runner → T4 reviewer → T5 真实任务及回退 → T6 默认启用、最终 code-review、PR、needs_review 完成路由。
