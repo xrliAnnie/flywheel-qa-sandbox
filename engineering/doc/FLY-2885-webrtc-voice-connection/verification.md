@@ -245,3 +245,25 @@ R2 在 `af28c0497` 上提出 2 HIGH、2 MEDIUM，均已修复。
 - `pnpm lint`、构建、typecheck 均为 exit 0。
 - voice-codex `vitest related src/codex/WebRtcLeg.ts src/cli.ts src/shutdown-exit.ts src/health-alert.ts` 6 个文件 122/122 过。
 - 负对照跑过之后，残留的测试进程已清理。
+
+### 返工评审 R3 的修复（`40d81b554`，Lead 裁定 `bfcaeb10` 选 (A)，不动部署）
+
+| 问题 | 修复 | 复现用例（负对照） |
+|---|---|---|
+| H1 launchd 对 `com.flywheel.voice` 的 exit timeout 实为 5 s（plist 未设；`launchctl print` 显示 `exit timeout = 5`），到点直接 SIGKILL，60 s 期限和强退 hook 都来不及跑 | 收到信号后期限提前到 **4 s**，只会提前、不会推迟；强退前先对告警进程组 SIGKILL；idle 路径仍为 60 s。受管 stop 时，进行中会话较长的关闭步骤会在 4 s 被截断，这和原来 launchd 5 s 的截断一样；app-server 靠 stdin EOF 自行退出，残留根目录在下次启动时清扫 | 单测：idle 清理进行中来了 SIGTERM，期限提前到 4 s，之后的 `run_returned` 不再推迟；信号期限 < 5 s。进程测试：idle 期限 60 s、信号期限 2.5 s，清理卡死时在 2.5 s 处以 1 退出。实现过程中一个把 idle 期限当成计时值的 bug 正好被这些用例抓出，等于做了一次负对照 |
+| H2 shell 关闭后丢了 pid，孙进程忽略 TERM 时收不到 KILL | 停止开始时就锁定进程组 id，TERM 和 KILL 都发给这个组；`killNow` 也用它 | shell 收到 TERM 就关闭时，仍依次发 SIGTERM、SIGKILL。负对照：KILL 改为按 `current` 发，用例失败 |
+| H3 超时或输出超限时只发一次 TERM 就回调，派发器误以为已排空 | 整组 TERM，2 s 后 KILL，等 `close` 后才回调 | 真实 bash 加孙进程，两者都忽略 TERM：回调在约 2 s 的 KILL 之后才到，两个进程都已不在。负对照：超时即回调，约 300 ms 就回调，用例失败 |
+| Lead 追加：受管 stop 截断后，重启要零残留 | — | daemon 替身在会话中被 SIGKILL，app-server 替身因 stdin EOF 退出；下次启动清扫后零残留根目录、零残留子进程。会话进行中启动时保留该根目录。负对照：清扫不删目录，用例失败 |
+
+验证：
+- `pnpm lint`、构建、typecheck 均为 exit 0。
+- voice-codex `vitest related src/codex/WebRtcLeg.ts src/cli.ts src/shutdown-exit.ts src/health-alert.ts src/codex/stale-roots.ts` 共 7 个文件，131/131 过。
+- 负对照跑完后没有残留进程。进程测试失败时，也会一并清掉 fixture 和它的独立告警进程组。
+
+QA@2 判据（按 Lead）：
+- SIGTERM 路径约 4 s 内退出；
+- idle 路径清理完立即退出；
+- 无残留子进程（含告警 shell 和 curl）；
+- 重启后清扫干净；
+- 连续 ≥3 场，每场后 UDP 回到基线，下一场能正常认领；
+- 插话补足有效样本。
