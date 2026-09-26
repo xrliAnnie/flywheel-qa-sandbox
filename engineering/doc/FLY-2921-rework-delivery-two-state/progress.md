@@ -1,14 +1,14 @@
 ---
 issue: FLY-2921
 phase: design
-phaseCursor: 5/6
-updated: 2026-09-26T17:39:04.421Z
-nextStep: 等 Lead 裁 R4 范围 (q d4c8e2ff)；APPROVED 后
-  re-stage→design-review.json→await-codex-gate→HTML 重建提交→publish→report→complete
+phaseCursor: 6/6
+updated: 2026-09-26T17:45:29.963Z
+nextStep: 设计完成：Codex R4 APPROVED (blob 63bf95a)，gate 通过；HTML 已发布并报 Lead；实现须排在
+  FLY-2919 合入之后（plan §6.2）
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: design (5/6)
-**next**: 等 Lead 裁 R4 范围 (q d4c8e2ff)；APPROVED 后 re-stage→design-review.json→await-codex-gate→HTML 重建提交→publish→report→complete
+**phase**: design (6/6)
+**next**: 设计完成：Codex R4 APPROVED (blob 63bf95a)，gate 通过；HTML 已发布并报 Lead；实现须排在 FLY-2919 合入之后（plan §6.2）
