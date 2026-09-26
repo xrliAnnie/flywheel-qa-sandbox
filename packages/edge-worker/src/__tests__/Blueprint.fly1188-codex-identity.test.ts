@@ -181,7 +181,9 @@ describe("FLY-1188 executor-identity discriminant (gate text by runnerBackend)",
 		// FLY-1188 M4 (Codex R2): a RESIDENT codex runner POLLS `check` across its
 		// turns for the gate reply — it is never auto-resumed (the old exec-cycle
 		// "END YOUR TURN + resumed automatically" is gone from the gate branches).
-		expect(prompt).toContain("POLL for the reply");
+		// FLY-2373: polling is one `check` per turn, never an in-turn loop.
+		expect(prompt).toContain("wait per the CODEX GATE WAIT LAW");
+		expect(prompt).toContain("Never wait inside one turn");
 		expect(prompt).not.toContain("resumed automatically");
 		expect(prompt).toContain("gate/review pending is NEVER blocked");
 		expect(prompt).toContain(

@@ -2479,6 +2479,12 @@ export class Blueprint {
 				"CODEX GATE WAIT LAW (resident goal lifecycle):",
 				"Eligibility to update a goal to blocked is NOT an instruction to do so: gate/review pending is NEVER blocked.",
 				"Poll pending gates unhurriedly across turns; a slow human response has no finite retry or turn limit.",
+				// FLY-2373: Lead traffic that lands mid-turn is deferred to the turn
+				// boundary, so an in-turn wait can never see it and blocks completion.
+				"Never wait inside one turn: no `sleep`/`check` loop. Lead traffic that arrives while your turn is open is held until the turn ends, so an in-turn wait never sees it and blocks your own completion. Poll = one `check <questionId>` per turn at a natural point.",
+				phaseKeepAlive
+					? `With no independent work left: save progress, run \`node ${commCliPath} park --exec-id ${executionId} --reason "waiting for question <questionId>"\`, and END ONLY YOUR CURRENT TURN. The answer arrives as a \`[phase-wake <id>]\`; on it FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\`, then \`check <questionId>\`.`
+					: "With no independent work left: end your current turn; the goal continues and you `check` again next turn.",
 				"A successful `turn` answer of `not-yours` is a wait state, NOT a command failure.",
 				"Only an explicit fail-close timeout, rejection, or persistent command failure may justify blocked; fail-open timeout means continue.",
 			);
@@ -2503,7 +2509,7 @@ export class Blueprint {
 						: isCodexRunner
 							? `For HARD CHECKPOINTS where a Lead decision must precede further work ` +
 								`(e.g. brainstorm understanding, approve_to_ship), use the \`gate\` commands described ` +
-								`later in this prompt exactly as written there (register with \`--no-block\`, then POLL \`check\` across your turns — you are resident, nothing auto-resumes or wakes you).`
+								`later in this prompt exactly as written there (register with \`--no-block\`, then wait per the CODEX GATE WAIT LAW: one \`check\` per turn, never an in-turn sleep/check loop).`
 							: `For HARD CHECKPOINTS where you MUST wait for a Lead decision before continuing ` +
 								`(e.g. brainstorm understanding, approve_to_ship), use the \`gate\` commands described ` +
 								`later in this prompt — those BLOCK until the Lead responds.`),
@@ -2644,7 +2650,7 @@ export class Blueprint {
 								"Before writing any code, you MUST confirm your understanding with your Lead.",
 								"a. Read the issue and codebase. Form your understanding.",
 								`b. Run: \`node ${commCliPath} gate brainstorm --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} --no-block "Your understanding: [what] [how] [expected outcome]"\` — it returns immediately with a questionId JSON; capture that questionId.`,
-								`c. You are RESIDENT — do NOT end the run to "pause". POLL for the reply across your turns: \`node ${commCliPath} check <questionId>\`. Until it is answered, do NOT write implementation code. (Nothing auto-resumes or wakes you; the reply arrives only via \`check\`.)`,
+								`c. You are RESIDENT — do NOT end the run or goal to "pause". Wait per the CODEX GATE WAIT LAW: one \`node ${commCliPath} check <questionId>\` per turn, never an in-turn sleep/check loop. Until it is answered, do NOT write implementation code.`,
 								"d. When `check` returns the Lead's response, adjust your approach per any corrections, THEN proceed to write code. If it reports the gate timed out (the deadline watcher expired it), act per the checkpoint's fail-open/fail-close behavior stated in your reply.",
 							);
 						} else {
@@ -2788,7 +2794,7 @@ export class Blueprint {
 								"QUESTION GATE (use when needed):",
 								"When you have a question that blocks your progress:",
 								`a. Run: \`node ${commCliPath} gate question --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} --no-block "Your question here"\` — it returns immediately with a questionId JSON; capture it.`,
-								`b. You are RESIDENT — nothing auto-resumes or wakes you. POLL for the reply across your turns: \`node ${commCliPath} check <questionId>\`; keep working on independent parts meanwhile. Act on the answer when it arrives (or on a GATE TIMEOUT response, per its fail-open/fail-close text).`,
+								`b. You are RESIDENT — keep working on independent parts meanwhile and wait per the CODEX GATE WAIT LAW: one \`node ${commCliPath} check <questionId>\` per turn, never an in-turn sleep/check loop. Act on the answer when it arrives (or on a GATE TIMEOUT response, per its fail-open/fail-close text).`,
 							);
 						} else {
 							systemPromptLines.push(
@@ -2808,7 +2814,7 @@ export class Blueprint {
 								`${cpName.toUpperCase()} GATE:`,
 								`When you reach the ${cpName} checkpoint:`,
 								`a. Run: \`node ${commCliPath} gate ${cpName} --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} --no-block "Your message"\` — it returns immediately with a questionId JSON; capture it.`,
-								`b. You are RESIDENT — nothing auto-resumes or wakes you. POLL for the reply across your turns: \`node ${commCliPath} check <questionId>\`; keep working on independent parts meanwhile. Act on the answer when it arrives (or on a GATE TIMEOUT response, per its fail-open/fail-close text).`,
+								`b. You are RESIDENT — keep working on independent parts meanwhile and wait per the CODEX GATE WAIT LAW: one \`node ${commCliPath} check <questionId>\` per turn, never an in-turn sleep/check loop. Act on the answer when it arrives (or on a GATE TIMEOUT response, per its fail-open/fail-close text).`,
 							);
 						} else {
 							systemPromptLines.push(

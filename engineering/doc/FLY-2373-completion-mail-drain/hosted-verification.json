@@ -1,0 +1,12 @@
+{
+  "url": "https://fw-reports-6da062.vercel.app/r/05c5e20885ad47617765aeef744e7045/",
+  "httpStatus": 200,
+  "placeholderResidual": false,
+  "nonceMatchesCsp": true,
+  "scriptMatchesCommittedSource": true,
+  "externalScriptOrStyles": false,
+  "diagramPlaceholders": 2,
+  "sourceSha256": "2ba5197a1c410f3700b0dc231bb5bddd1591690a7616ed8e143b63428a51f533",
+  "hostedSha256": "3e56eef125723be27157d3206b4f8333200762f3063f69787e3cabaa48971d55",
+  "browserVisual": "NOT RUN; local Chromium denied"
+}

@@ -255,6 +255,31 @@ function bindGeneralizedExecution(
 	});
 }
 
+/** FLY-2373: the runner's own activation context, with a recorded TURN. */
+function drainReaderActivation(
+	store: StateStore,
+	executionId: string,
+): Record<string, unknown> {
+	const context = store.getGeneralizedWorkflowNodeForExecution(executionId);
+	if (!context) throw new Error(`no generalized binding for ${executionId}`);
+	const recorded = store.recordWorkflowActivationTurn({
+		activationId: context.binding.activation_id,
+		issueId: context.run.issue_id,
+		executionId,
+		epoch: 1,
+		sourceEventId: `turn:${context.binding.activation_id}`,
+		grantedAt: "2026-07-15T00:00:00.000Z",
+	});
+	if (!recorded.ok) throw new Error(recorded.reason);
+	return {
+		activationId: context.binding.activation_id,
+		runId: context.binding.run_id,
+		nodeId: context.binding.node_id,
+		attempt: context.binding.attempt,
+		turnEpoch: 1,
+	};
+}
+
 function bindGeneralizedDesignExecution(
 	store: StateStore,
 	executionId: string,
@@ -720,7 +745,7 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
-	it("defers generalized completion until the exact drain receipt is consumed", async () => {
+	it("FLY-2373 returns unread bodies, accepts the drain ACK and re-verifies every attempt", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const commPath = commDbPathForProject("geoforge3d");
 		mkdirSync(dirname(commPath), { recursive: true });
@@ -730,154 +755,400 @@ describe("Event route", () => {
 			"exec-1",
 			"read before completion",
 		);
-
-		const first = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(
+		const post = (path: string, body: Record<string, unknown>) =>
+			fetch(`${baseUrl}/events${path}`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(body),
+			});
+		const complete = (eventId: string, drainReceipt?: string) =>
+			post(
+				"",
 				makeEvent({
-					event_id: "drain-first",
+					event_id: eventId,
 					event_type: "session_completed",
 					source: "flywheel-comm",
-					payload: { decision: { route: "needs_review" } },
+					payload: {
+						decision: { route: "needs_review" },
+						...(drainReceipt
+							? { drainReceipt: { challengeId: drainReceipt } }
+							: {}),
+					},
 				}),
-			),
-		});
+			);
+
+		const first = await complete("drain-first");
 		expect(first.status).toBe(409);
 		const challenge = (await first.json()) as {
 			challengeId: string;
+			readId: string;
 			mailbox: string[];
+			page: { count: number; text: string };
 		};
 		expect(challenge).toMatchObject({
-			challengeId: expect.stringMatching(/^drain:exec-1:/),
+			reason: "consume_pending_mail",
+			protocolVersion: 2,
+			challengeId: expect.stringMatching(/^drain2:/),
+			readId: expect.stringMatching(/^read_[0-9a-f]{32}$/),
 			mailbox: [mailId],
+			ackCommand: ["inbox", "--ack-consumed", expect.any(String)],
 		});
-		const repeated = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(
-				makeEvent({
-					event_id: "drain-repeated",
-					event_type: "session_completed",
-					source: "flywheel-comm",
-					payload: { decision: { route: "needs_review" } },
-				}),
-			),
-		});
+		expect(challenge.page.count).toBe(1);
+		expect(challenge.page.text).toContain("read before completion");
+		expect(challenge.page.text).toContain(`[lead-instruction ${mailId}]`);
+
+		const repeated = await complete("drain-repeated");
 		expect(repeated.status).toBe(409);
 		expect(await repeated.json()).toMatchObject({
 			challengeId: challenge.challengeId,
-			mailbox: [mailId],
+			readId: challenge.readId,
 		});
-		const wrong = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(
-				makeEvent({
-					event_id: "drain-wrong",
-					event_type: "session_completed",
-					source: "flywheel-comm",
-					payload: {
-						decision: { route: "needs_review" },
-						drainReceipt: { challengeId: "drain:someone-else" },
-					},
-				}),
-			),
-		});
+		// A legacy/foreign receipt is advisory: obligations are still re-verified.
+		const wrong = await complete("drain-wrong", "drain:someone-else");
 		expect(wrong.status).toBe(409);
 		expect(await wrong.json()).toMatchObject({
-			error: "workflow_completion_rejected",
-			reason: "drain_receipt_rejected",
-		});
-		const unacked = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(
-				makeEvent({
-					event_id: "drain-unacked",
-					event_type: "session_completed",
-					source: "flywheel-comm",
-					payload: {
-						decision: { route: "needs_review" },
-						drainReceipt: { challengeId: challenge.challengeId },
-					},
-				}),
-			),
-		});
-		expect(unacked.status).toBe(409);
-		expect(await unacked.json()).toMatchObject({
-			reason: "drain_receipt_rejected",
-			unacked: [mailId],
+			reason: "consume_pending_mail",
+			readId: challenge.readId,
 		});
 
+		const workflowActivation = drainReaderActivation(store, "exec-1");
+		const foreignAck = await post("/completion-drain/ack", {
+			execution_id: "exec-other",
+			read_id: challenge.readId,
+			workflowActivation,
+		});
+		expect(foreignAck.status).toBe(404);
+		// The body's execution id alone is not a caller identity: the runner's
+		// exact activation + TURN epoch must accompany every read/ACK.
+		const anonymous = await post("/completion-drain/ack", {
+			execution_id: "exec-1",
+			read_id: challenge.readId,
+		});
+		expect(anonymous.status).toBe(409);
+		expect(await anonymous.json()).toEqual({
+			error: "reader_identity_changed",
+		});
+		const staleEpoch = await post("/completion-drain/ack", {
+			execution_id: "exec-1",
+			read_id: challenge.readId,
+			workflowActivation: { ...workflowActivation, turnEpoch: 2 },
+		});
+		expect(staleEpoch.status).toBe(409);
+		const ack = await post("/completion-drain/ack", {
+			execution_id: "exec-1",
+			read_id: challenge.readId,
+			workflowActivation,
+		});
+		expect(ack.status).toBe(200);
+		expect(await ack.json()).toMatchObject({ ok: true, accepted: 1 });
+
+		// Mail that lands before the completion lock is part of the proof.
 		const laterMailId = comm.insertInstruction(
 			"product-lead",
 			"exec-1",
-			"arrived after the challenge watermark",
+			"arrived before the second attempt",
 		);
-		comm.markInstructionRead(mailId);
-		const second = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(
-				makeEvent({
-					event_id: "drain-second",
-					event_type: "session_completed",
-					source: "flywheel-comm",
-					payload: {
-						decision: { route: "needs_review" },
-						drainReceipt: { challengeId: challenge.challengeId },
-					},
-				}),
-			),
-		});
-		expect(second.status).toBe(200);
-		expect(await second.json()).toMatchObject({ ok: true, generalized: true });
-		expect(comm.getCompletionDrainPending("exec-1").mailbox).toEqual([
-			laterMailId,
-		]);
+		const second = await complete("drain-second", challenge.challengeId);
+		expect(second.status).toBe(409);
+		const secondChallenge = (await second.json()) as {
+			readId: string;
+			mailbox: string[];
+		};
+		expect(secondChallenge.mailbox).toEqual([laterMailId]);
+		expect(secondChallenge.readId).not.toBe(challenge.readId);
+		expect(
+			(
+				await post("/completion-drain/ack", {
+					execution_id: "exec-1",
+					read_id: secondChallenge.readId,
+					workflowActivation,
+				})
+			).status,
+		).toBe(200);
+
+		const third = await complete("drain-third");
+		expect(third.status).toBe(200);
+		expect(await third.json()).toMatchObject({ ok: true, generalized: true });
+		expect(comm.listContentConsumption("exec-1")).toHaveLength(2);
 		comm.close();
 		rmSync(commPath, { force: true });
 
-		const replay = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(
-				makeEvent({
-					event_id: "drain-replay",
-					event_type: "session_completed",
-					source: "flywheel-comm",
-					payload: {
-						decision: { route: "needs_review" },
-						drainReceipt: { challengeId: challenge.challengeId },
-					},
-				}),
-			),
-		});
+		const replay = await complete("drain-replay", challenge.challengeId);
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toMatchObject({
 			ok: true,
 			generalized: true,
 			duplicate: true,
 		});
+	});
+
+	it("FLY-2373 refuses the ACK until every page of a long body was shown", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const comm = new CommDB(commDbPathForProject("geoforge3d"));
+		const longBody = Array.from(
+			{ length: 300 },
+			(_, index) => `step ${index}: ${"do the thing ".repeat(4)}`,
+		).join("\n");
+		comm.insertInstruction("product-lead", "exec-1", longBody);
+		const post = (path: string, body: Record<string, unknown>) =>
+			fetch(`${baseUrl}/events${path}`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(body),
+			});
+		const complete = (eventId: string) =>
+			post(
+				"",
+				makeEvent({
+					event_id: eventId,
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "needs_review" } },
+				}),
+			);
+		const first = await complete("long-first");
+		expect(first.status).toBe(409);
+		const answer = (await first.json()) as {
+			readId: string;
+			page: { count: number; text: string };
+			pageCommand: string[];
+		};
+		expect(answer.page.count).toBeGreaterThan(2);
+		expect(answer.pageCommand).toEqual([
+			"inbox",
+			"--drain-page",
+			answer.readId,
+			"--page",
+		]);
+
+		const workflowActivation = drainReaderActivation(store, "exec-1");
+		const early = await post("/completion-drain/ack", {
+			execution_id: "exec-1",
+			read_id: answer.readId,
+			workflowActivation,
+		});
+		expect(early.status).toBe(409);
+		expect(await early.json()).toMatchObject({
+			error: "pages_not_read",
+			missingPages: Array.from(
+				{ length: answer.page.count - 1 },
+				(_, index) => index + 2,
+			),
+		});
+
+		const wrongActivation = await post("/completion-drain/page", {
+			execution_id: "exec-1",
+			read_id: answer.readId,
+			page: 2,
+			workflowActivation: {
+				activationId: "activation:someone-else",
+				runId: "run-exec-1",
+				nodeId: "execute",
+				attempt: 1,
+				turnEpoch: 1,
+			},
+		});
+		expect(wrongActivation.status).toBe(409);
+		expect(await wrongActivation.json()).toEqual({
+			error: "reader_identity_changed",
+		});
+
+		let rebuilt = answer.page.text;
+		for (let page = 2; page <= answer.page.count; page += 1) {
+			const served = await post("/completion-drain/page", {
+				execution_id: "exec-1",
+				read_id: answer.readId,
+				page,
+				workflowActivation,
+			});
+			expect(served.status).toBe(200);
+			const body = (await served.json()) as {
+				page: { index: number; text: string };
+			};
+			expect(body.page.index).toBe(page);
+			rebuilt += body.page.text;
+		}
+		for (const line of longBody.split("\n")) expect(rebuilt).toContain(line);
+
+		const ack = await post("/completion-drain/ack", {
+			execution_id: "exec-1",
+			read_id: answer.readId,
+			workflowActivation,
+		});
+		expect(ack.status).toBe(200);
+		expect((await complete("long-second")).status).toBe(200);
+		comm.close();
+	});
+
+	it("FLY-2373 lets a ship-carrier runner page and ACK with its carrier activation", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const raw = (
+			store as unknown as {
+				db: { raw: import("better-sqlite3").Database };
+			}
+		).db.raw;
+		raw
+			.prepare(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, authority_mode, created_at, updated_at)
+				 VALUES ('run-exec-1', 'founder_gate', 1, ?, 'exec-1', 'q-carrier',
+				         'runner_ship', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z')`,
+			)
+			.run("a".repeat(40));
+		raw
+			.prepare(
+				`INSERT INTO workflow_carrier_delivery
+				   (question_id, run_id, gate_node_id, gate_attempt, approved_head,
+				    source_execution_id, carrier_activation_id, state, turn_epoch,
+				    created_at, updated_at)
+				 VALUES ('q-carrier', 'run-exec-1', 'founder_gate', 1, ?, 'exec-1',
+				         'activation:carrier-1', 'wake_delivered', 3,
+				         '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z')`,
+			)
+			.run("a".repeat(40));
+		const comm = new CommDB(commDbPathForProject("geoforge3d"));
+		comm.insertInstruction(
+			"product-lead",
+			"exec-1",
+			Array.from({ length: 200 }, (_, i) => `ship step ${i}`).join("\n"),
+		);
+		const post = (path: string, body: Record<string, unknown>) =>
+			fetch(`${baseUrl}/events${path}`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(body),
+			});
+		// A carrier completion carries no workflowActivation (by design).
+		const complete = (eventId: string) =>
+			post(
+				"",
+				makeEvent({
+					event_id: eventId,
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "needs_review" } },
+				}),
+			);
+		const first = await complete("carrier-first");
+		expect(first.status).toBe(409);
+		const answer = (await first.json()) as {
+			readId: string;
+			page: { count: number };
+		};
+		expect(answer.page.count).toBeGreaterThan(1);
+		const carrierActivation = {
+			activationId: "activation:carrier-1",
+			turnEpoch: 3,
+		};
+		const wrongEpoch = await post("/completion-drain/page", {
+			execution_id: "exec-1",
+			read_id: answer.readId,
+			page: 2,
+			carrierActivation: { ...carrierActivation, turnEpoch: 2 },
+		});
+		expect(wrongEpoch.status).toBe(409);
+		for (let page = 2; page <= answer.page.count; page += 1) {
+			const served = await post("/completion-drain/page", {
+				execution_id: "exec-1",
+				read_id: answer.readId,
+				page,
+				carrierActivation,
+			});
+			expect(served.status).toBe(200);
+		}
+		const ack = await post("/completion-drain/ack", {
+			execution_id: "exec-1",
+			read_id: answer.readId,
+			carrierActivation,
+		});
+		expect(ack.status).toBe(200);
+		expect((await complete("carrier-second")).status).toBe(200);
+		comm.close();
+	});
+
+	it("FLY-2373 completes once when a mid-turn doorbell's body was already consumed", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const commPath = commDbPathForProject("geoforge3d");
+		const comm = new CommDB(commPath);
+		comm.registerSession(
+			"exec-1",
+			"flywheel:@1",
+			"geoforge3d",
+			"issue-1",
+			"product-lead",
+			"codex",
+			true,
+		);
+		const questionId = comm.insertQuestion("exec-1", "product-lead", "review?");
+		comm.insertResponse(questionId, "product-lead", "reviewVerdict APPROVED");
+		const responseId = (
+			comm as unknown as { db: import("better-sqlite3").Database }
+		).db
+			.prepare("SELECT id, delivery_id FROM mailbox WHERE ref_id = ?")
+			.get(questionId) as { id: string; delivery_id: string };
+		(comm as unknown as { db: import("better-sqlite3").Database }).db
+			.prepare(
+				`UPDATE mailbox SET state = 'LEASED', batch_id = 'mailbox-batch:v',
+				        lease_retry_count = 0, claimed_by = 'bridge:1',
+				        claim_expires_at = '2099-01-01T00:00:00.000Z'
+				  WHERE id = ?`,
+			)
+			.run(responseId.id);
+		const doorbell = comm.enqueueRunnerDoorbellWake(
+			"exec-1",
+			{
+				id: "transport-v",
+				to: "runner",
+				content: "t",
+				metadata: {
+					flywheelId: "mailbox-batch:v#r0",
+					durableBatchId: "mailbox-batch:v",
+					memberIds: [responseId.delivery_id],
+					execId: "exec-1",
+				},
+			},
+			1_000,
+			{ admissionState: "deferred_midturn", turnGeneration: 1 },
+		);
+		expect(doorbell.kind).toBe("queued");
+		expect(comm.consumeGateResponse(questionId, "exec-1")?.content).toBe(
+			"reviewVerdict APPROVED",
+		);
+
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "doorbell-consumed-complete",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "needs_review" } },
+				}),
+			),
+		});
+		expect(response.status).toBe(200);
+		expect(comm.listRunnerPhaseWakes("exec-1")[0]).toMatchObject({
+			state: "finished",
+			started_ack_scope: "drain_settled",
+		});
+		expect(comm.listRunnerWakeSettlements("exec-1")).toEqual([
+			expect.objectContaining({ reason: "content_consumed" }),
+		]);
+		comm.close();
 	});
 
 	it("fails closed when completion drain authority is unreadable", async () => {
@@ -1519,7 +1790,7 @@ describe("Event route", () => {
 				phaseWakes: string[];
 			};
 			expect(drain).toMatchObject({
-				challengeId: expect.stringMatching(/^drain:exec-1:/),
+				challengeId: expect.stringMatching(/^drain2:/),
 			});
 			const drainDb = new CommDB(commDbPathForProject("geoforge3d"));
 			try {
