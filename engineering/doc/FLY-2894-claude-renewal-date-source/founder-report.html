@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude 扣费日来源实测</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;--greenbg:#eefaf1;--amberbg:#fff7e8;--redbg:#fff1f0;--bluebg:#eef5ff}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 -apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px;color:var(--navy)}
+h2{font-size:19px;margin:0 0 6px;color:var(--navy)}
+h3{font-size:15px;margin:14px 0 6px}
+.sub{color:var(--dim);font-size:13px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px;margin:16px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card p{margin:6px 0}
+ul{padding-left:20px;margin:6px 0}
+li{margin:3px 0}
+.num{display:inline-block;min-width:26px;height:26px;border-radius:13px;background:var(--navy);color:#fff;font-size:13px;text-align:center;line-height:26px;margin-right:8px;vertical-align:2px}
+.badge{display:inline-block;font-size:12px;line-height:1;padding:4px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.ok{background:var(--greenbg);color:#1e7d32}.mid{background:var(--amberbg);color:#a35a00}.no{background:var(--redbg);color:#c4271d}.info{background:var(--bluebg);color:#0a57c2}
+code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px}
+.path{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--dim);word-break:break-all}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th,.tbl td{text-align:left;vertical-align:top;padding:7px 6px;border-top:1px solid var(--line)}
+.tbl th{font-size:12px;color:var(--dim);font-weight:600;border-top:none;white-space:nowrap}
+.tbl td.n{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.tbl tr.mean td{font-weight:700;background:#fafafc}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 10px;color:#3a3a3c;margin:8px 0}
+.timeline{list-style:none;padding:0;margin:8px 0}
+.timeline li{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line);font-size:14px}
+.timeline li:first-child{border-top:none}
+.timeline .t{flex:0 0 64px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);padding-top:2px}
+.who-u{color:var(--blue);font-weight:600}.who-b{color:var(--purple);font-weight:600}.who-s{color:var(--dim);font-weight:600}
+.diagram{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:12px;margin:12px 0;overflow-x:auto}
+.diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}
+pre{background:#f7f7f9;border-radius:8px;padding:10px 12px;overflow-x:auto;font-size:12px;line-height:1.5;margin:8px 0}
+.comment-box{margin-top:16px;padding-top:12px;border-top:1px dashed var(--line)}
+.comment-box label{font-size:13px;color:var(--dim);display:block;margin-bottom:6px}
+.comment-box textarea{width:100%;min-height:60px;border:1px solid #d2d2d7;border-radius:8px;padding:10px;font-family:inherit;font-size:14px;resize:vertical;background:#fbfbfd;color:var(--text)}
+.comment-box textarea:focus{outline:none;border-color:var(--blue)}
+.sum-item{padding:8px 0;border-top:1px solid var(--line);white-space:pre-wrap}
+.sum-item:first-child{border-top:none}
+.sum-item .sec{color:var(--navy);font-weight:600;margin-right:4px}
+.empty-note{color:var(--dim)}
+button#copy-all{margin-top:10px;background:var(--navy);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer}
+#copy-status{margin-left:10px;font-size:13px;color:var(--dim)}
+.foot{margin-top:28px;font-size:12.5px;color:var(--dim)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.kpi{background:#fafafc;border-radius:10px;padding:10px}
+.kpi .v{font-size:20px;font-weight:700;color:var(--navy)}
+.kpi .l{font-size:12px;color:var(--dim)}
+@media (max-width:640px){.kpis{grid-template-columns:repeat(2,1fr)}.tbl{font-size:13px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Claude「下次扣费日」能从哪里读到：逐号实测</h1>
+  <div class="sub">FLY-2894 · 2026-09-25 · 5 个 Claude 号 × 4 类来源 · 全程只读，没有登录、没有输入凭据</div>
+
+  <div class="card navy" data-section="结论">
+    <h2>结论</h2>
+    <p><b>能读到。推荐从各号 Gmail 里的 Anthropic 收据邮件读。</b>每封收据都写着「本期起止」，比如 <code>Sep 4–Oct 4, 2026</code>。只要订阅没有取消，本期结束日就是下次扣费日。</p>
+    <p>personal 号已经对过：邮件得出 10/04，claude.ai 账单接口 <code>next_charge_date</code> 也是 2026-10-04，<b>两者一致</b>。这条路径不碰任何 Claude 凭据，不违反 Anthropic 条款，可以无人值守定时读。</p>
+    <div class="kpis">
+      <div class="kpi"><div class="v">10/04</div><div class="l">personal（邮件 = 网页接口）</div></div>
+      <div class="kpi"><div class="v">10/16</div><div class="l">business（邮件：Sep 16–Oct 16）</div></div>
+      <div class="kpi"><div class="v">10/20</div><div class="l">shopping（邮件：Sep 20–Oct 20）</div></div>
+      <div class="kpi"><div class="v">未测</div><div class="l">school：gog 授权失效，浏览器里也没有可用会话</div></div>
+    </div>
+    <p style="margin-top:12px"><b>但现在还不能无人值守</b>：Gmail 读权限（gog）4 个号<b>全部失效</b>（<code>invalid_grant</code>）。本次的邮件数据都是从浏览器里已经登录的 Gmail 页面读的。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c0" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="你要亲手做什么">
+    <h2>你要亲手做什么（两件事）</h2>
+    <p><span class="num">1</span><b>拍板：允不允许读收据邮件？</b>FLY-2830 的调研表里记着「收据邮件 9-24 已否决」，但当时的设计页只写了否决 cookie。你今天要求重查，所以本单按「重新开放」处理。你不批的话，这一格就改成下面「不批准时」那段文案。</p>
+    <p><span class="num">2</span><b>重新授权 4 个邮箱的只读权限</b>（business / personal / school / shopping）。只能你本人登录，大约每个号 1 分钟。school 走 Northwestern 的 Google 登录。<br>
+    <span class="sub">注意：4 个授权是同时失效的，原因还没查清（可能是这个 Google OAuth 应用处于测试模式，授权 7 天就过期）。实施单的第一步就是查这件事。如果真是 7 天过期，就要先把它改成长期有效，否则你每周都得重新授权。</span></p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c1" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card blue" data-section="逐号实测">
+    <h2>逐号实测（每个号 × 每个来源）</h2>
+    <div class="scroll"><table class="tbl">
+      <tr><th>号</th><th>收据邮件</th><th>claude.ai 账单接口</th><th>Stripe 门户</th><th>应用内订阅</th></tr>
+      <tr><td><b>business</b></td><td><span class="badge ok">10/16</span><br><span class="sub">最新收据 9/16，本期 Sep 16–Oct 16；之后没有取消邮件</span></td><td><span class="badge mid">未测</span><br><span class="sub">浏览器没登录这个号</span></td><td><span class="badge no">不开放</span></td><td><span class="badge info">不适用</span><br><span class="sub">Stripe 网页订阅</span></td></tr>
+      <tr><td><b>personal</b></td><td><span class="badge ok">10/04</span><br><span class="sub">每月 4 日一封，$200，Max 20x</span></td><td><span class="badge ok">2026-10-04</span><br><span class="sub">与邮件一致</span></td><td><span class="badge no">不开放</span><br><span class="sub">门户接口 404</span></td><td><span class="badge info">不适用</span></td></tr>
+      <tr><td><b>school</b></td><td><span class="badge mid">未测</span><br><span class="sub">gog 失效；浏览器第 2 个 Gmail 会话要求输密码（推测是这个号），已停</span></td><td><span class="badge mid">未测</span></td><td><span class="badge no">不开放</span></td><td><span class="badge info">不适用</span></td></tr>
+      <tr><td><b>shopping</b></td><td><span class="badge ok">10/20</span><br><span class="sub">最新收据 9/20，本期 Sep 20–Oct 20</span></td><td><span class="badge mid">未测</span></td><td><span class="badge no">不开放</span></td><td><span class="badge info">不适用</span></td></tr>
+      <tr><td><b>personal1</b></td><td><span class="badge mid">未测</span><br><span class="sub">免费号，没有扣费日</span></td><td><span class="badge mid">未测</span></td><td>—</td><td><span class="badge info">不适用</span><br><span class="sub">billing_type: none</span></td></tr>
+    </table></div>
+    <p class="sub">「应用内订阅」一栏的依据：本次逐号只读调用 OAuth profile，4 个付费号的 <code>billing_type</code> 都是 <code>stripe_subscription</code>，没有号走 Apple 或 Google 付费。</p>
+    <h3>收据邮件里能看到的历史（为什么不能只看最后一封收据）</h3>
+    <ul class="timeline">
+      <li><span class="t">personal</span><span>7/31 取消 → 8/03 重订 → 8/04 照常扣费。<b>在本期内重订，扣费日不变</b>，仍是每月 4 日。</span></li>
+      <li><span class="t">business</span><span>6/25 开通 → 7/21 取消（7/25 没有收据）→ 8/14 新开 → 9/08 取消（9/14 没有收据）→ 9/16 新开。<b>锚点换了三次。</b></span></li>
+      <li><span class="t">shopping</span><span>7/01 开通 → 7/27 取消 → 8/20 新开 → 9/20 续费。</span></li>
+    </ul>
+    <p>所以还要同时看<b>取消邮件</b>：如果最后一封收据之后又收到了「subscription was canceled」，这一格就应该写「已取消，某日到期」，而不是写扣费日。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c2" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="四个来源评估">
+    <h2>四个来源怎么比</h2>
+    <div class="scroll"><table class="tbl">
+      <tr><th>来源</th><th>有扣费日吗</th><th>要什么凭据</th><th>稳不稳</th><th>能无人值守吗</th></tr>
+      <tr><td><b>收据邮件</b></td><td><span class="badge ok">有</span> 本期结束日，只到日</td><td>每个邮箱一份 Gmail 只读授权</td><td>靠授权能活多久（现在全部失效）；收据模板改版会读不出</td><td><span class="badge ok">能</span></td></tr>
+      <tr><td>claude.ai 账单接口</td><td><span class="badge ok">有</span> 精确到秒</td><td>每个号一份网页登录 cookie</td><td>靠网页会话</td><td><span class="badge no">违反条款</span> 要保存 cookie，你 9-24 已否决</td></tr>
+      <tr><td>Stripe 客户门户</td><td>—</td><td>要走邮箱验证码登录</td><td>—</td><td><span class="badge no">不可用</span> Anthropic 没开放（404），能看到的收据邮件里都有</td></tr>
+      <tr><td>Apple / Google 应用内</td><td>—</td><td>—</td><td>—</td><td><span class="badge info">不适用</span> 没有号走这条</td></tr>
+    </table></div>
+    <p class="sub">另外核实了两件事：Claude Code 今天的新版 2.1.283 里仍然没有扣费日相关接口；「开通日 + 每月」的推算在 3 个可以对照的号上<b>全部对不上</b>（例如 business 开通日是 6/25，实际锚点是 16 日），继续禁用。</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c3" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="推荐方案">
+    <h2>推荐方案：怎么读、多久读一次、失败显示什么</h2>
+    <p><b>读取路径</b>：每个号用 Gmail 搜索发件人 <code>invoice+statements@mail.anthropic.com</code>，取最新一封收据，只解析两行：「Paid 日期」和「本期起止」。再搜这封收据之后有没有「已取消」或「已重订」邮件。<b>只保存日期和状态</b>，不保存正文、金额、卡号。</p>
+    <p><b>刷新频率</b>：每 6 小时一次，另外 Bridge 启动时读一次。扣费日只在扣费、取消、重订时才会变。读失败时沿用上次的值，但超过 48 小时就不再沿用。</p>
+    <div class="scroll"><table class="tbl">
+      <tr><th>情况</th><th>页面这一格显示</th></tr>
+      <tr><td>正常</td><td>「10/04 扣费 · 据 9/04 收据 · 读于 HH:MM」</td></tr>
+      <tr><td>收据之后有取消邮件</td><td>「已取消，10/16 到期不续费」</td></tr>
+      <tr><td>到期已过、没收到新收据</td><td>「10/04 应扣费，未见新收据（可能扣费失败或已停）」</td></tr>
+      <tr><td>邮箱授权失效</td><td>「读不到：邮箱授权失效（邮箱名），需要重新授权」</td></tr>
+      <tr><td>70 天内没有收据</td><td>「读不到：邮箱里近 70 天没有 Anthropic 收据」</td></tr>
+      <tr><td>收据格式认不出</td><td>「读不到：收据格式没认出」（不猜）</td></tr>
+      <tr><td>免费号</td><td>「免费号，无扣费」</td></tr>
+    </table></div>
+    <h3>不批准时（或授权修不好）</h3>
+    <p class="quote">「读不到：Anthropic 只在 claude.ai 账单页和收据邮件里给出扣费日。前者需要保存网页登录（违反条款，已否决），后者没有接入。」</p>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c4" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="要留意的">
+    <h2>要留意的</h2>
+    <ul>
+      <li><b>只有 personal 做了交叉核对</b>（1/1 一致）。business 和 shopping 的日期只与各自的收据链一致，没有网页接口可以对照。接入后第一周，建议你挑一个号在 claude.ai 账单页人工看一眼。</li>
+      <li><b>和旧记录对不上</b>：FLY-2830 设计页写的是「business 开通 8/19、实际 10/23 续费」。今天查到 business 的开通日是 6/25，收据周期是 Sep 16–Oct 16。旧记录的来源没查清，本次没有用它下结论。</li>
+      <li>额度页上的卡到期时间（4 个号都是 10/22）是<b>重置卡</b>的到期时间，不是扣费日，两者不要混用。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的评论（自动保存）</label><textarea data-key="c5" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card navy" data-section="评论汇总">
+    <h2>评论汇总</h2>
+    <div id="summary-list"><p class="empty-note">还没有评论。</p></div>
+    <button id="copy-all">复制全部评论</button><span id="copy-status"></span>
+  </div>
+
+  <div class="foot">
+    <p><b>红线核对</b>：没有改生产配置；没有登录，也没有在任何表单输入凭据（Google 密码页出现后立即停止）；没有刷新任何 Claude token；记录里没有 token、卡号或邮件正文。</p>
+    <p><b>方法</b>：邮件是在浏览器已登录的 Gmail 页面里只读检索的，只截取发件人、主题、日期、「Paid」行、本期起止、套餐和金额行。claude.ai 接口是在已登录页面里做的同源 GET。OAuth profile 用的是各号还有效的 access token，单次 GET。</p>
+    <p><b>详细记录</b>：<span class="path">engineering/doc/FLY-2894-claude-renewal-date-source/research.md</span>（逐封记录），<span class="path">plan.md</span>（接入方案）。</p>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var PREFIX = 'fly2894:' + location.pathname + ':comment:';
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(a) { var c = a.closest('.card'); return (c && c.getAttribute('data-section')) || '未命名段落'; }
+  function renderSummary() {
+    var list = document.getElementById('summary-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var any = false;
+    areas.forEach(function (a) {
+      var v = a.value.trim(); if (!v) return; any = true;
+      var item = document.createElement('div'); item.className = 'sum-item';
+      var sec = document.createElement('span'); sec.className = 'sec'; sec.textContent = '【' + sectionTitle(a) + '】';
+      item.appendChild(sec); item.appendChild(document.createTextNode(v)); list.appendChild(item);
+    });
+    if (!any) { var p = document.createElement('p'); p.className = 'empty-note'; p.textContent = '还没有评论。'; list.appendChild(p); }
+  }
+  areas.forEach(function (a) {
+    a.value = lsGet(a.getAttribute('data-key'));
+    a.addEventListener('input', function () { lsSet(a.getAttribute('data-key'), a.value); renderSummary(); });
+  });
+  renderSummary();
+  function fallbackCopy(t) {
+    var ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta); return ok;
+  }
+  function setStatus(m) { var el = document.getElementById('copy-status'); el.textContent = m; setTimeout(function () { el.textContent = ''; }, 3000); }
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var parts = [];
+    areas.forEach(function (a) { var v = a.value.trim(); if (v) parts.push('【' + sectionTitle(a) + '】\n' + v); });
+    if (!parts.length) { setStatus('没有可复制的评论'); return; }
+    var text = 'FLY-2894 Claude 扣费日评论（' + new Date().toLocaleString() + '）\n\n' + parts.join('\n\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { setStatus('✅ 已复制'); }, function () { setStatus(fallbackCopy(text) ? '✅ 已复制' : '❌ 复制失败，请手动选择'); });
+    } else { setStatus(fallbackCopy(text) ? '✅ 已复制' : '❌ 复制失败，请手动选择'); }
+  });
+})();
+</script>
+</body>
+</html>
