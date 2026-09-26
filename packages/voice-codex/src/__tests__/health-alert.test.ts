@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { runAlertSender, VoiceHealthAlertDispatcher } from "../health-alert.js";
+import { isAlive, signalOwn } from "./process-probes.js";
 
 const INTENT_A = "a".repeat(64);
 const INTENT_B = "b".repeat(64);
@@ -296,7 +297,7 @@ describe("alert sender process groups (FLY-2885 rework review R3)", () => {
 			// TERM is ignored: the callback waits for the KILL escalation.
 			expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
 			for (const pid of readFileSync(pids, "utf8").trim().split(/\s+/u)) {
-				expect(() => process.kill(Number(pid), 0)).toThrow();
+				expect(isAlive(Number(pid))).toBe(false);
 			}
 			passed = true;
 		} finally {
@@ -307,7 +308,7 @@ describe("alert sender process groups (FLY-2885 rework review R3)", () => {
 					for (const pid of readFileSync(join(scratch, "pids"), "utf8")
 						.trim()
 						.split(/\s+/u))
-						process.kill(Number(pid), "SIGKILL");
+						signalOwn(Number(pid), "SIGKILL");
 				} catch {
 					// Already gone, or never started.
 				}
@@ -347,16 +348,15 @@ describe("alert sender process groups (FLY-2885 rework review R3)", () => {
 			const [grandchild] = readFileSync(pids, "utf8").trim().split(/\s+/u);
 			// The dispatcher hears back only once the group has been KILLed; the
 			// kernel may take a moment to reap it.
-			await vi.waitFor(
-				() => expect(() => process.kill(Number(grandchild), 0)).toThrow(),
-				{ timeout: 2_000 },
-			);
+			await vi.waitFor(() => expect(isAlive(Number(grandchild))).toBe(false), {
+				timeout: 2_000,
+			});
 			passed = true;
 		} finally {
 			if (!passed)
 				try {
 					for (const pid of readFileSync(pids, "utf8").trim().split(/\s+/u))
-						process.kill(Number(pid), "SIGKILL");
+						signalOwn(Number(pid), "SIGKILL");
 				} catch {
 					// Already gone, or never started.
 				}

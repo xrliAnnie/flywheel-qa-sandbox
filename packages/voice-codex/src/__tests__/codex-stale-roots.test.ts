@@ -18,6 +18,7 @@ import {
 	parseLsofCwds,
 	sweepStaleCodexContainers,
 } from "../codex/stale-roots.js";
+import { isAlive, signalOwn } from "./process-probes.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -129,15 +130,7 @@ describe("stale Codex container sweep (FLY-2885 T7)", () => {
 				daemon.stdout.once("data", (chunk) => resolve(Number(String(chunk))));
 				daemon.once("exit", () => reject(new Error("stand-in exited")));
 			});
-			const alive = (pid: number) => {
-				try {
-					process.kill(pid, 0);
-					return true;
-				} catch {
-					return false;
-				}
-			};
-			expect(alive(appPid)).toBe(true);
+			expect(isAlive(appPid)).toBe(true);
 			// While the session runs, a start keeps its root: someone works there.
 			const listCwds = listProcessCwds;
 			await sweepStaleCodexContainers(containers, {
@@ -146,9 +139,9 @@ describe("stale Codex container sweep (FLY-2885 T7)", () => {
 			});
 			expect(existsSync(root)).toBe(true);
 			// launchd's SIGKILL at the exit timeout: no cleanup runs in the daemon.
-			daemon.kill("SIGKILL");
+			signalOwn(daemon.pid, "SIGKILL");
 			// The app-server loses its stdin and exits on its own.
-			await vi.waitFor(() => expect(alive(appPid)).toBe(false), {
+			await vi.waitFor(() => expect(isAlive(appPid)).toBe(false), {
 				timeout: 5_000,
 			});
 			// The next start sweeps what the cut shutdown left behind.
@@ -166,7 +159,7 @@ describe("stale Codex container sweep (FLY-2885 T7)", () => {
 			);
 		} finally {
 			if (daemon.exitCode === null && daemon.signalCode === null)
-				daemon.kill("SIGKILL");
+				signalOwn(daemon.pid, "SIGKILL");
 		}
 	}, 30_000);
 });

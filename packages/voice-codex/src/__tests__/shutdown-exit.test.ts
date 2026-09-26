@@ -15,6 +15,7 @@ import {
 	SHUTDOWN_EXIT_GRACE_MS,
 	SHUTDOWN_SIGNAL_GRACE_MS,
 } from "../shutdown-exit.js";
+import { isAlive, signalOwn } from "./process-probes.js";
 
 const children: Array<{ child: ChildProcess; pidFile?: string }> = [];
 afterEach(() => {
@@ -24,12 +25,12 @@ afterEach(() => {
 	// gone and may already be reused.
 	for (const { child, pidFile } of children.splice(0)) {
 		if (child.exitCode !== null || child.signalCode !== null) continue;
-		child.kill("SIGKILL");
+		signalOwn(child.pid, "SIGKILL");
 		try {
 			for (const pid of readFileSync(pidFile ?? "", "utf8")
 				.trim()
 				.split(/\s+/u))
-				process.kill(Number(pid), "SIGKILL");
+				signalOwn(Number(pid), "SIGKILL");
 		} catch {
 			// No alert was started, or it is already gone.
 		}
@@ -81,6 +82,21 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 		expect(lines).toEqual([
 			"[voice] shutdown (run_returned) overran 5000 ms with handles still open (UDPWrap×1); forcing exit",
 		]);
+	});
+
+	it("says nothing about handles when no shutdown began (a startup refusal, QA@2)", () => {
+		// `--check-config` without credentials: main() rejects before the
+		// daemon runs. Its one fatal line is the whole output contract, and
+		// piped stdio always shows up as PipeWrap handles.
+		const exit = vi.fn();
+		const lines: string[] = [];
+		createShutdownExit({
+			resources: () => ["PipeWrap", "PipeWrap", "PipeWrap"],
+			exit,
+			log: (line) => lines.push(line),
+		}).finish(1);
+		expect(exit).toHaveBeenCalledWith(1);
+		expect(lines).toEqual([]);
 	});
 
 	it("keeps a non-integer exit code from turning into a clean exit", () => {
@@ -193,9 +209,8 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 			child.stderr.on("data", (chunk) => {
 				stderr += chunk;
 			});
-			const exited = new Promise<{ code: number | null; at: number }>(
-				(resolve) =>
-					child.once("exit", (code) => resolve({ code, at: Date.now() })),
+			const exited = new Promise<number | null>((resolve) =>
+				child.once("exit", (code) => resolve(code)),
 			);
 			const alertPids = () =>
 				readFileSync(pidFile, "utf8").trim().split(/\s+/u).map(Number);
@@ -208,14 +223,6 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 				alertPids,
 			};
 		}
-		const alive = (pid: number) => {
-			try {
-				process.kill(pid, 0);
-				return true;
-			} catch {
-				return false;
-			}
-		};
 		const leaked = (out: string) => Number(/LEAKED (\d+)/u.exec(out)?.[1] ?? 0);
 
 		it.each([
@@ -237,16 +244,32 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 				// The preconditions that made the QA daemon immortal.
 				expect(leaked(daemon.out())).toBeGreaterThan(0);
 				const [grandchild, shell] = daemon.alertPids();
-				expect(alive(grandchild!) && alive(shell!)).toBe(true);
-				const sentAt = Date.now();
-				daemon.child.kill("SIGTERM");
-				const { code, at } = await daemon.exited;
-				expect(at - sentAt).toBeLessThan(signalGraceMs + 1_500);
+				expect(isAlive(grandchild!) && isAlive(shell!)).toBe(true);
+				signalOwn(daemon.child.pid, "SIGTERM");
+				const code = await daemon.exited;
 				expect(code).toBe(expectedCode);
-				expect(daemon.err()).toMatch(/UDPWrap×\d+/u);
+				// How it ended, not how long it took (host time is no required
+				// check): the idle deadline is 60 s out, so only a finished
+				// cleanup or the signal deadline can have ended it.
+				if (mode === "sigterm") {
+					// Cleanup finished; it exited at once, leaked sockets and all.
+					expect(daemon.err()).toMatch(
+						/exiting after shutdown with handles still open \([^)]*UDPWrap×\d+/u,
+					);
+					expect(daemon.err()).not.toContain("overran");
+				} else {
+					// A cleanup that never ends is cut by the signal deadline.
+					expect(daemon.err()).toContain(
+						`shutdown (signal) overran ${signalGraceMs} ms with handles still open (`,
+					);
+					expect(daemon.err()).toMatch(/UDPWrap×\d+/u);
+				}
 				await vi.waitFor(
 					() =>
-						expect([alive(grandchild!), alive(shell!)]).toEqual([false, false]),
+						expect([isAlive(grandchild!), isAlive(shell!)]).toEqual([
+							false,
+							false,
+						]),
 					{ timeout: 3_000 },
 				);
 			},
@@ -255,13 +278,16 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 
 		it("ends on the idle exit and leaves no alert process", async () => {
 			const daemon = run("idle", 60_000, 2_500);
-			const { code } = await daemon.exited;
+			const code = await daemon.exited;
 			expect(leaked(daemon.out())).toBeGreaterThan(0);
 			expect(code).toBe(0);
 			const [grandchild, shell] = daemon.alertPids();
 			await vi.waitFor(
 				() =>
-					expect([alive(grandchild!), alive(shell!)]).toEqual([false, false]),
+					expect([isAlive(grandchild!), isAlive(shell!)]).toEqual([
+						false,
+						false,
+					]),
 				{ timeout: 3_000 },
 			);
 		}, 30_000);

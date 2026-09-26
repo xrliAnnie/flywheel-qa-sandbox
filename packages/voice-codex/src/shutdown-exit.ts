@@ -99,10 +99,17 @@ export function createShutdownExit(
 			return deadline;
 		},
 		finish(code) {
-			if (deadline) clearTimeout(deadline);
-			const open = lingering();
-			if (open)
-				log(`[voice] exiting after shutdown with handles still open (${open})`);
+			// Only a shutdown that began has handles worth naming: a startup
+			// refusal exits before the daemon ran, and its one fatal line is the
+			// CLI's whole output contract (FLY-2885 QA@2).
+			if (deadline) {
+				clearTimeout(deadline);
+				const open = lingering();
+				if (open)
+					log(
+						`[voice] exiting after shutdown with handles still open (${open})`,
+					);
+			}
 			const value = Number(code ?? 0);
 			exit(Number.isInteger(value) ? value : 1);
 		},

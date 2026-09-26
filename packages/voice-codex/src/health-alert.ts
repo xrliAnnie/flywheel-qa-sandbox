@@ -49,7 +49,12 @@ async function within(promise: Promise<unknown>, ms: number): Promise<void> {
 	if (timer) clearTimeout(timer);
 }
 
-/** Signals a whole process group; a group already gone is not an error. */
+/**
+ * Signals a whole process group; a group already gone is not an error.
+ * The only kill path in this package: `pid` is always a lead-alert sender
+ * this daemon spawned detached as its own group leader, never a runner,
+ * Bridge or tmux process (FLY-2211 kill-path inventory: out-of-scope).
+ */
 function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
 	if (pid === undefined) return;
 	try {
