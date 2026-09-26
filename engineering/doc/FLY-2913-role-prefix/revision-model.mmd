@@ -1,0 +1,27 @@
+classDiagram
+ class TemplateRevision {
+  templateId
+  revision
+  immutableManifest
+ }
+ class NodeDefinition {
+  prefix_profile
+  review_prefix_profile
+ }
+ class RunSnapshot {
+  runId
+  pinnedRevision
+  snapshotDigest
+ }
+ class LaunchReceipt {
+  executionId
+  nodeId
+  sessionId
+  templateRevision
+  requestedProfile
+  effectiveProfile
+  settingsHash
+ }
+ TemplateRevision "1" --> "many" NodeDefinition : contains
+ TemplateRevision "1" --> "many" RunSnapshot : pinned at start
+ RunSnapshot "1" --> "many" LaunchReceipt : consumed at launch
