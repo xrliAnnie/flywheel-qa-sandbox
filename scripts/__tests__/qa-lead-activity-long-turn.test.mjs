@@ -478,7 +478,10 @@ describe("fixture inputs", () => {
 			FixtureError,
 		);
 		const prompt = longTurnPrompt("abc", 75);
-		assert.match(prompt, /sleep 75/);
+		// Claude Code refuses a standalone `sleep`; the Lead then backgrounds a
+		// timer and the turn ends in ~30 s (QA@2 claim 1599). Never ask for one.
+		assert.doesNotMatch(prompt, /(^|[\s`:])sleep \d/m);
+		assert.match(prompt, /python3 -c "import time; time\.sleep\(75\)"/);
 		assert.match(prompt, /135000 ms/);
 		assert.match(prompt, /FLY-2882 long-turn abc done/);
 	});
@@ -742,7 +745,7 @@ describe("runLongTurn on a virtual clock", () => {
 		assert.equal(evidence.result.verdict, "pass");
 		assert.ok(evidence.injection.notifiedAt);
 		assert.equal(EXIT[evidence.result.verdict], 0);
-		assert.equal(JSON.stringify(evidence).includes("sleep 75"), false);
+		assert.equal(JSON.stringify(evidence).includes("time.sleep"), false);
 	});
 
 	it("warms the Lead up first when it cannot yet prove idle", async () => {

@@ -3,8 +3,10 @@
 // 60 seconds, and sample GET /api/lead-activity before, during and after it.
 //
 // The Lead is asked (through the same chat-ingest lane the Discord plugin
-// uses) to run one blocking `sleep`, so busy/idle and the turn start are
-// known from the outside. Works for both carriers. Evidence carries only
+// uses) to run one blocking wait, so busy/idle and the turn start are known
+// from the outside. Works for both carriers. The wait is never a bare
+// `sleep N`: Claude Code refuses a standalone sleep, and the Lead then
+// backgrounds a timer and ends the turn in ~30 s. Evidence carries only
 // state / time / source / reason fields — never message or pane text.
 //
 // Exit: 0 all checks pass · 1 endpoint disagrees with the fixture (FAIL
@@ -116,12 +118,17 @@ export function warmupPrompt(nonce) {
 	].join("\n");
 }
 
+/** A blocking wait that is not a bare `sleep` (see the header). */
+function holdCommand(seconds) {
+	return `python3 -c "import time; time.sleep(${seconds})"`;
+}
+
 export function longTurnPrompt(nonce, holdSeconds) {
 	return [
 		`[FLY-2882 QA long-turn fixture · ${nonce}] Automated 529 QA timing probe of the read-only lead-activity endpoint. It is safe and read-only.`,
 		"Do exactly this, in this one turn, and nothing else:",
-		`1. Run this single shell command in the foreground and wait for it to finish. It takes about ${holdSeconds} seconds; give the tool a timeout of at least ${(holdSeconds + 60) * 1000} ms and do not background it: sleep ${holdSeconds}`,
-		`2. If the tool cuts the command off early, keep running \`sleep 10\` until at least ${holdSeconds} seconds have passed since you started step 1.`,
+		`1. Run this single shell command in the foreground and wait for it to finish. It takes about ${holdSeconds} seconds; give the tool a timeout of at least ${(holdSeconds + 60) * 1000} ms and do not background it: ${holdCommand(holdSeconds)}`,
+		`2. If the tool cuts the command off early, keep running \`${holdCommand(10)}\` in the foreground until at least ${holdSeconds} seconds have passed since you started step 1.`,
 		`3. Then reply in this channel with exactly: FLY-2882 long-turn ${nonce} done`,
 		"Do not read files, start other work, or dispatch anyone.",
 	].join("\n");
