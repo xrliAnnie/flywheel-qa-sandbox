@@ -5,6 +5,7 @@ import {
 	type JSONRPCMessage,
 	JSONRPCMessageSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { reportChildSpawned } from "./child-spawn-observer.js";
 
 export interface PinnedStdioLaunch {
 	command: string;
@@ -58,6 +59,7 @@ export class BoundedStdioTransport implements Transport {
 			detached: true,
 		});
 		this.child = child;
+		reportChildSpawned(child.pid);
 		// Diagnostics remain parent-only; observers retain counters, never raw output.
 		child.stderr.on("data", (chunk: Buffer) =>
 			this.options.observe?.("stderr", chunk),

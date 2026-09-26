@@ -1,4 +1,8 @@
 export { verifyLeadCapabilityReadiness } from "./lead-backends/codex/capability-readiness.js";
+export {
+	observeChildSpawns,
+	reportChildSpawned,
+} from "./lead-capabilities/child-spawn-observer.js";
 export { LEAD_PERMISSION_PROFILE } from "./lead-capabilities/permission-profile.js";
 export type { VoiceCapabilityActionLedgerEntry } from "./lead-capabilities/voice-action-ledger.js";
 export {
