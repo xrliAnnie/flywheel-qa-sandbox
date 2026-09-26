@@ -1,0 +1,42 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ❯ |parallel| src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts (7 tests | 1 failed) 1163ms
+   × target lock provider and durable state integration > releases a marked lock whose provider was provably never invoked, and lets the resident write next 191ms
+     → expected { …(12) } to be falsy
+   ✓ target lock provider and durable state integration > keeps rollback draining until the timed-out original provider settles, then permits the resident's later write 179ms
+   ✓ target lock provider and durable state integration > retains unknown when transport aborts although the remote later commits without a success response 186ms
+   ✓ target lock provider and durable state integration > removes a canceled resident waiter so it cannot block the next voice write 130ms
+   ✓ target lock provider and durable state integration > clears abandoned waiters across Bridge restart while preserving the dispatched holder 152ms
+   ✓ target lock provider and durable state integration > preserves a late browser success as receipt evidence even after the output-delivery guard is revoked 176ms
+   ✓ target lock provider and durable state integration > does not classify a browser tool error response as terminal success 149ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts > target lock provider and durable state integration > releases a marked lock whose provider was provably never invoked, and lets the resident write next
+AssertionError: expected { …(12) } to be falsy
+[32m- Expected:[39m 
+false
+[31m+ Received:[39m 
+{
+  "acquiredAt": 1790380800000,
+  "deadline": 1790380815000,
+  "dispatchedAt": 1790380800000,
+  "fence": "9164b801-2f4e-4328-a068-25be0eda0a8f",
+  "holderActivation": "voice:a0000000-0000-4000-8000-000000000001",
+  "holderActor": "voice",
+  "leadId": "eng",
+  "projectName": "flywheel",
+  "reason": "activation_not_current",
+  "requestId": "c0000000-0000-4000-8000-000000000001",
+  "state": "unknown",
+  "targetKey": "flywheel:discord:123:thread",
+}
+ ❯ src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts:207:54
+    205|   const targetKey = h.voiceReceipt(1)!.targetKey!;
+    206|   expect(h.voiceReceipt(1)!.state).toBe("rejected");
+    207|   expect(h.store.getCapabilityTargetLock(targetKey)).toBeFalsy();
+       |                                                      ^
+    208|   const resident = h.makeBroker("resident", {
+    209|    authorize: async () => {},
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 passed (7)
+   Start at  03:48:19
+   Duration  4.01s (transform 1.72s, setup 12ms, collect 2.48s, tests 1.16s, environment 0ms, prepare 41ms)

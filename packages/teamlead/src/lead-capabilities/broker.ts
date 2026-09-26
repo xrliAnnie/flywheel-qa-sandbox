@@ -631,8 +631,11 @@ export class LeadCapabilityBroker {
 						await targetLocks.release({
 							...targetInput(),
 							fence: targetFence,
-							outcome:
-								targetDispatched && !neverSent ? "unknown" : "not_dispatched",
+							outcome: !targetDispatched
+								? "not_dispatched"
+								: neverSent
+									? "never_invoked"
+									: "unknown",
 							reason: code,
 							signal: cleanupSignal,
 						});

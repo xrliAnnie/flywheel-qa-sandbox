@@ -1,0 +1,7 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ✓ |parallel| src/lead-capabilities/__tests__/broker-dispatch-evidence.test.ts (3 tests) 19ms
+ ✓ |parallel| src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts (7 tests) 1299ms
+ Test Files  2 passed (2)
+      Tests  10 passed (10)
+   Start at  03:49:05
+   Duration  4.66s (transform 1.66s, setup 16ms, collect 2.67s, tests 1.32s, environment 0ms, prepare 93ms)

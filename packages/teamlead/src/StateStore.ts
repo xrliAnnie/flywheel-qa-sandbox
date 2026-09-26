@@ -6274,7 +6274,13 @@ export class StateStore {
 		activationId: string;
 		requestId: string;
 		fence: string;
-		outcome: "succeeded" | "rejected" | "not_dispatched" | "unknown";
+		/** `never_invoked` = fenced holder proof that the provider was never called after the mark. */
+		outcome:
+			| "succeeded"
+			| "rejected"
+			| "not_dispatched"
+			| "never_invoked"
+			| "unknown";
 		reason?: string;
 		operationId?: string;
 		providerRef?: string;
@@ -6289,7 +6295,12 @@ export class StateStore {
 			)
 				return "not_owner" as const;
 			if (current.holderActor === "voice" && input.operationId) {
-				const outcome = input.outcome === "not_dispatched" && current.dispatchedAt != null ? "unknown" : input.outcome;
+				const outcome =
+					input.outcome === "never_invoked"
+						? "not_dispatched"
+						: input.outcome === "not_dispatched" && current.dispatchedAt != null
+							? "unknown"
+							: input.outcome;
 				this.tryClaimLeadEvent(current.leadId, `voice-background-action:${current.requestId}:${input.operationId}:${outcome}`, "voice_background_action", JSON.stringify({
 					event_type: "voice_background_action", execution_id: "", issue_id: "", project_name: current.projectName,
 					summary: `语音后台动作 ${input.operationId}：${outcome}；目标 ${current.targetKey}；requestId ${current.requestId}${input.providerRef ? `；providerRef ${input.providerRef}` : ""}。成功项不要重做；unknown 先对账。`,

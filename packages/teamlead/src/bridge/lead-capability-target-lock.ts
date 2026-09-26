@@ -39,7 +39,13 @@ const acquireSchema = z
 	.strict();
 const fenceSchema = z.object({ ...base, fence: z.string().uuid() }).strict();
 const releaseSchema = fenceSchema.extend({
-	outcome: z.enum(["succeeded", "rejected", "not_dispatched", "unknown"]),
+	outcome: z.enum([
+		"succeeded",
+		"rejected",
+		"not_dispatched",
+		"never_invoked",
+		"unknown",
+	]),
 	providerRef: coordinate.optional(),
 	reason: z
 		.string()

@@ -117,7 +117,7 @@ it("settles a fenced write as not dispatched when authority fails after mark but
 	});
 	expect(f.execute).not.toHaveBeenCalled();
 	expect(f.release).toHaveBeenCalledWith(
-		expect.objectContaining({ fence, outcome: "not_dispatched" }),
+		expect.objectContaining({ fence, outcome: "never_invoked" }),
 	);
 	expect(f.store.operationReceipts.get(key)?.state).toBe("rejected");
 });

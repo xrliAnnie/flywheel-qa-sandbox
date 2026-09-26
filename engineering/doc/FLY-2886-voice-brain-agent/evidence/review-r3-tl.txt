@@ -1,0 +1,7 @@
+# lock-related consumers after round 2 fix
+ Test Files  60 passed (60)
+      Tests  851 passed (851)
+# teamlead retained 91 after round 1 fix
+ Test Files  91 passed (91)
+      Tests  1291 passed (1291)
+# default-parent-integration: passes with TMPDIR=/tmp/f2886t; fails only under the 89-char runner TMPDIR (unix socket path limit), as on the WIP head before these fixes

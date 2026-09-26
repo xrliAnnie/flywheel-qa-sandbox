@@ -43,7 +43,16 @@ export interface LeadTargetLockClient {
 		requestId: string;
 		targetKey: string;
 		fence: string;
-		outcome: "succeeded" | "rejected" | "not_dispatched" | "unknown";
+		/**
+		 * `never_invoked`: the fence holder marked dispatch but provably never
+		 * reached the provider (trusted parent evidence), so the lock may release.
+		 */
+		outcome:
+			| "succeeded"
+			| "rejected"
+			| "not_dispatched"
+			| "never_invoked"
+			| "unknown";
 		reason?: string;
 		providerRef?: string;
 		signal: AbortSignal;

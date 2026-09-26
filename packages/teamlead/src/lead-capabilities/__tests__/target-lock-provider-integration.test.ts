@@ -167,6 +167,51 @@ async function fixture() {
 }
 
 describe("target lock provider and durable state integration", () => {
+	it("releases a marked lock whose provider was provably never invoked, and lets the resident write next", async () => {
+		const h = await fixture();
+		const execute = vi.fn(async () => success());
+		const activationId = `voice:${SESSION}`;
+		const base = h.locks("voice", activationId);
+		let current = true;
+		const broker = new LeadCapabilityBroker({
+			projectName: "flywheel",
+			leadId: "eng",
+			activationId,
+			receipts: h.voiceJournal.operationReceipts,
+			allowedOperationIds: () => new Set(["discord.thread.reply"]),
+			assertCurrent: async () => {
+				if (!current) throw new Error("revoked");
+			},
+			handlers: new Map([
+				["discord.thread.reply", { authorize: async () => {}, execute }],
+			]),
+			secrets: [],
+			targetLocks: {
+				...base,
+				// Authority is revoked after the mark, before the provider call.
+				markDispatched: async (input) => {
+					const marked = await base.markDispatched(input);
+					current = false;
+					return marked;
+				},
+			},
+		});
+		disposals.push(() => broker.close());
+		expect(await broker.execute(request(1))).toMatchObject({
+			status: "rejected",
+			errorCode: "activation_not_current",
+		});
+		expect(execute).not.toHaveBeenCalled();
+		const targetKey = h.voiceReceipt(1)!.targetKey!;
+		expect(h.voiceReceipt(1)!.state).toBe("rejected");
+		expect(h.store.getCapabilityTargetLock(targetKey)).toBeFalsy();
+		const resident = h.makeBroker("resident", {
+			authorize: async () => {},
+			execute: vi.fn(async () => success()),
+		});
+		expect((await resident.execute(request(2))).status).toBe("succeeded");
+	});
+
 	it("keeps rollback draining until the timed-out original provider settles, then permits the resident's later write", async () => {
 		const h = await fixture();
 		const provider = deferred<HandlerOutcome>();
