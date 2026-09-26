@@ -35509,7 +35509,1734 @@
       "packages/teamlead/src/__tests__/work-kind-config-source.test.ts",
       "packages/teamlead/src/bridge/__tests__/customer-release-lifecycle.test.ts"
     ],
-    "additional_run": "vitest related src/bridge/flag-store-runtime.ts --run; exclude exactly the overlap paths above plus the documented macOS viewer exclusion",
-    "status": "selection_only; final results are reported on the PR and implement handoff"
+    "additional_run": "Intended: related src/bridge/flag-store-runtime.ts with per-path overlap exclusions. Discovery graph contains 175 files and 8 additions. Actual completed Vitest summary: 76 files (74 passed, 2 failed), 920 tests (917 passed, 2 timed out, 1 skipped); workspace projects did not honor every requested overlap exclusion. All 8 additional paths have actual output. Actual scope is the final Vitest result, not the discovery count.",
+    "status": "Completed on pre-sync source head5a62a7119; two default-5s timeouts await isolated retry. No eight-file-only or 175-file-execution claim.",
+    "actual_result": {
+      "files": 76,
+      "passed_files": 74,
+      "failed_files": 2,
+      "tests": 920,
+      "passed_tests": 917,
+      "failed_tests": 2,
+      "skipped_tests": 1,
+      "log": "/tmp/fly2405-flag-related-delta.log"
+    }
+  },
+  "main_sync_discovery": {
+    "id": "main-sync-d52df784",
+    "worktree": "/tmp/fly2405-main-sync-612f9782",
+    "candidate_head": "67123bebe8a77c8a121a18b0e9189471676f32d6",
+    "base_main": "d52df7841cb7f7844ee83e37159987840a4c50ac",
+    "origin_main_observed_at_finish": "fdd1b404d40129f9e5345d325f1c687e52a682e9",
+    "base_note": "origin/main advanced during discovery; its merge-base with candidate remained the exact merged main parent d52df784. The triple-dot FLY source selection is therefore unchanged and bound to that parent.",
+    "prior_fly_head": "5a62a7119",
+    "status": "discovery_only_no_tests_executed",
+    "method": "FLY source/QA-doc/test paths from git diff --name-only origin/main...HEAD (engineering/product process artifacts excluded as query sources). Three actual git grep -lF batches with -e for every full path, basename, and parent; new matches compared against original and supplemental artifact unique paths. Changed upstream TS tests additionally inspected for direct relative imports ending .js/.ts.",
+    "sources": [
+      ".flywheel/agents/nodes/qa.md",
+      "doc/qa/framework/529-room-playbook.md",
+      "doc/qa/framework/real-runner-e2e-guide.md",
+      "packages/claude-runner/test/fixtures/kill-path-inventory.json",
+      "packages/claude-runner/test/kill-path-inventory.test.ts",
+      "packages/claude-runner/test/kill-path-inventory.ts",
+      "packages/config/src/__tests__/feature-flags-drift.test.ts",
+      "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "packages/config/src/feature-flags/registry.ts",
+      "packages/config/src/feature-flags/store-policy.ts",
+      "packages/config/src/feature-flags/truth.ts",
+      "packages/edge-worker/src/Blueprint.ts",
+      "packages/edge-worker/src/__tests__/Blueprint.fly2147-runner-memory.test.ts",
+      "packages/edge-worker/src/__tests__/Blueprint.fly859-qa-phase-prompt.test.ts",
+      "packages/edge-worker/src/__tests__/fixtures/fly2533-phase-baseline.json",
+      "packages/flywheel-comm/src/commands/__tests__/room.test.ts",
+      "packages/flywheel-comm/src/commands/room.ts",
+      "packages/flywheel-comm/src/index.ts",
+      "packages/qa-framework/README.md",
+      "packages/qa-framework/agents/qa-parallel-executor.md",
+      "packages/teamlead/scripts/claude-lead.sh",
+      "packages/teamlead/scripts/lead-body.sh",
+      "packages/teamlead/scripts/lead-duty-provision.sh",
+      "packages/teamlead/src/StateStore.ts",
+      "packages/teamlead/src/__tests__/StateStore.qa-room.test.ts",
+      "packages/teamlead/src/__tests__/alert-duty-seat.test.ts",
+      "packages/teamlead/src/alert-duty-seat.ts",
+      "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+      "packages/teamlead/src/bridge/__tests__/qa-room-contract.test.ts",
+      "packages/teamlead/src/bridge/__tests__/qa-room-drill-contract.test.ts",
+      "packages/teamlead/src/bridge/__tests__/qa-room-routes.test.ts",
+      "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts",
+      "packages/teamlead/src/bridge/__tests__/qa-room-service.test.ts",
+      "packages/teamlead/src/bridge/__tests__/qa-room-store.test.ts",
+      "packages/teamlead/src/bridge/__tests__/qa-room-wiring.test.ts",
+      "packages/teamlead/src/bridge/flag-store-runtime.ts",
+      "packages/teamlead/src/bridge/infra-alert-mailbox.ts",
+      "packages/teamlead/src/bridge/infra-event-router.ts",
+      "packages/teamlead/src/bridge/lead-inbox-runtime.ts",
+      "packages/teamlead/src/bridge/plugin.ts",
+      "packages/teamlead/src/bridge/qa-room-contract.ts",
+      "packages/teamlead/src/bridge/qa-room-host.ts",
+      "packages/teamlead/src/bridge/qa-room-routes.ts",
+      "packages/teamlead/src/bridge/qa-room-runtime.ts",
+      "packages/teamlead/src/bridge/qa-room-service.ts",
+      "packages/teamlead/src/bridge/qa-room-store.ts",
+      "scripts/__tests__/fly2405-alert-duty.test.sh",
+      "scripts/__tests__/fly2405-room-job.test.sh",
+      "scripts/__tests__/fly2405-service-claim.test.sh",
+      "scripts/__tests__/fly2405-teardown-pits.test.sh",
+      "scripts/__tests__/restart-cmux-watcher.test.sh",
+      "scripts/__tests__/test-deploy-fly1389.test.sh",
+      "scripts/__tests__/test-deploy-generalized.test.sh",
+      "scripts/__tests__/test-deploy-launch-boundary.test.sh",
+      "scripts/__tests__/test-qa-executor-529-nton-contract.sh",
+      "scripts/flywheel-lead-wrapper-v2.sh",
+      "scripts/lib/fly-2006-retention-tables/teamlead/qa_room.json",
+      "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_audit.json",
+      "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_operation.json",
+      "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_slot.json",
+      "scripts/lib/qa-generalized-bridge-wrapper.sh",
+      "scripts/lib/qa-generalized.sh",
+      "scripts/lib/qa-launchd-lead.sh",
+      "scripts/lib/qa-multilead.sh",
+      "scripts/lib/qa-reap-codex-slot-daemons.mjs",
+      "scripts/lib/qa-room-job.sh",
+      "scripts/lib/qa-room.sh",
+      "scripts/lib/qa-slot-claim.sh",
+      "scripts/lib/qa-slot-env-contract.json",
+      "scripts/test-deploy.sh",
+      "scripts/test-teardown.sh"
+    ],
+    "patterns": {
+      "path": [
+        ".flywheel/agents/nodes/qa.md",
+        "doc/qa/framework/529-room-playbook.md",
+        "doc/qa/framework/real-runner-e2e-guide.md",
+        "packages/claude-runner/test/fixtures/kill-path-inventory.json",
+        "packages/claude-runner/test/kill-path-inventory.test.ts",
+        "packages/claude-runner/test/kill-path-inventory.ts",
+        "packages/config/src/__tests__/feature-flags-drift.test.ts",
+        "packages/config/src/__tests__/feature-flags-registry.test.ts",
+        "packages/config/src/feature-flags/registry.ts",
+        "packages/config/src/feature-flags/store-policy.ts",
+        "packages/config/src/feature-flags/truth.ts",
+        "packages/edge-worker/src/Blueprint.ts",
+        "packages/edge-worker/src/__tests__/Blueprint.fly2147-runner-memory.test.ts",
+        "packages/edge-worker/src/__tests__/Blueprint.fly859-qa-phase-prompt.test.ts",
+        "packages/edge-worker/src/__tests__/fixtures/fly2533-phase-baseline.json",
+        "packages/flywheel-comm/src/commands/__tests__/room.test.ts",
+        "packages/flywheel-comm/src/commands/room.ts",
+        "packages/flywheel-comm/src/index.ts",
+        "packages/qa-framework/README.md",
+        "packages/qa-framework/agents/qa-parallel-executor.md",
+        "packages/teamlead/scripts/claude-lead.sh",
+        "packages/teamlead/scripts/lead-body.sh",
+        "packages/teamlead/scripts/lead-duty-provision.sh",
+        "packages/teamlead/src/StateStore.ts",
+        "packages/teamlead/src/__tests__/StateStore.qa-room.test.ts",
+        "packages/teamlead/src/__tests__/alert-duty-seat.test.ts",
+        "packages/teamlead/src/alert-duty-seat.ts",
+        "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-contract.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-drill-contract.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-routes.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-service.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-store.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-wiring.test.ts",
+        "packages/teamlead/src/bridge/flag-store-runtime.ts",
+        "packages/teamlead/src/bridge/infra-alert-mailbox.ts",
+        "packages/teamlead/src/bridge/infra-event-router.ts",
+        "packages/teamlead/src/bridge/lead-inbox-runtime.ts",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "packages/teamlead/src/bridge/qa-room-contract.ts",
+        "packages/teamlead/src/bridge/qa-room-host.ts",
+        "packages/teamlead/src/bridge/qa-room-routes.ts",
+        "packages/teamlead/src/bridge/qa-room-runtime.ts",
+        "packages/teamlead/src/bridge/qa-room-service.ts",
+        "packages/teamlead/src/bridge/qa-room-store.ts",
+        "scripts/__tests__/fly2405-alert-duty.test.sh",
+        "scripts/__tests__/fly2405-room-job.test.sh",
+        "scripts/__tests__/fly2405-service-claim.test.sh",
+        "scripts/__tests__/fly2405-teardown-pits.test.sh",
+        "scripts/__tests__/restart-cmux-watcher.test.sh",
+        "scripts/__tests__/test-deploy-fly1389.test.sh",
+        "scripts/__tests__/test-deploy-generalized.test.sh",
+        "scripts/__tests__/test-deploy-launch-boundary.test.sh",
+        "scripts/__tests__/test-qa-executor-529-nton-contract.sh",
+        "scripts/flywheel-lead-wrapper-v2.sh",
+        "scripts/lib/fly-2006-retention-tables/teamlead/qa_room.json",
+        "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_audit.json",
+        "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_operation.json",
+        "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_slot.json",
+        "scripts/lib/qa-generalized-bridge-wrapper.sh",
+        "scripts/lib/qa-generalized.sh",
+        "scripts/lib/qa-launchd-lead.sh",
+        "scripts/lib/qa-multilead.sh",
+        "scripts/lib/qa-reap-codex-slot-daemons.mjs",
+        "scripts/lib/qa-room-job.sh",
+        "scripts/lib/qa-room.sh",
+        "scripts/lib/qa-slot-claim.sh",
+        "scripts/lib/qa-slot-env-contract.json",
+        "scripts/test-deploy.sh",
+        "scripts/test-teardown.sh"
+      ],
+      "name": [
+        "529-room-playbook.md",
+        "Blueprint.fly2147-runner-memory.test.ts",
+        "Blueprint.fly859-qa-phase-prompt.test.ts",
+        "Blueprint.ts",
+        "README.md",
+        "StateStore.qa-room.test.ts",
+        "StateStore.ts",
+        "alert-duty-seat.test.ts",
+        "alert-duty-seat.ts",
+        "claude-lead.sh",
+        "feature-flags-drift.test.ts",
+        "feature-flags-registry.test.ts",
+        "flag-store-runtime.ts",
+        "fly2405-alert-duty.test.sh",
+        "fly2405-room-job.test.sh",
+        "fly2405-service-claim.test.sh",
+        "fly2405-teardown-pits.test.sh",
+        "fly2533-phase-baseline.json",
+        "flywheel-lead-wrapper-v2.sh",
+        "index.ts",
+        "infra-alert-mailbox.ts",
+        "infra-event-router.ts",
+        "kill-path-inventory.json",
+        "kill-path-inventory.test.ts",
+        "kill-path-inventory.ts",
+        "lead-body.sh",
+        "lead-duty-provision.sh",
+        "lead-inbox-runtime.test.ts",
+        "lead-inbox-runtime.ts",
+        "plugin.ts",
+        "qa-generalized-bridge-wrapper.sh",
+        "qa-generalized.sh",
+        "qa-launchd-lead.sh",
+        "qa-multilead.sh",
+        "qa-parallel-executor.md",
+        "qa-reap-codex-slot-daemons.mjs",
+        "qa-room-contract.test.ts",
+        "qa-room-contract.ts",
+        "qa-room-drill-contract.test.ts",
+        "qa-room-host.ts",
+        "qa-room-job.sh",
+        "qa-room-routes.test.ts",
+        "qa-room-routes.ts",
+        "qa-room-runtime.test.ts",
+        "qa-room-runtime.ts",
+        "qa-room-service.test.ts",
+        "qa-room-service.ts",
+        "qa-room-store.test.ts",
+        "qa-room-store.ts",
+        "qa-room-wiring.test.ts",
+        "qa-room.sh",
+        "qa-slot-claim.sh",
+        "qa-slot-env-contract.json",
+        "qa.md",
+        "qa_room.json",
+        "qa_room_audit.json",
+        "qa_room_operation.json",
+        "qa_room_slot.json",
+        "real-runner-e2e-guide.md",
+        "registry.ts",
+        "restart-cmux-watcher.test.sh",
+        "room.test.ts",
+        "room.ts",
+        "store-policy.ts",
+        "test-deploy-fly1389.test.sh",
+        "test-deploy-generalized.test.sh",
+        "test-deploy-launch-boundary.test.sh",
+        "test-deploy.sh",
+        "test-qa-executor-529-nton-contract.sh",
+        "test-teardown.sh",
+        "truth.ts"
+      ],
+      "parent": [
+        ".flywheel/agents/nodes",
+        "doc/qa/framework",
+        "packages/claude-runner/test",
+        "packages/claude-runner/test/fixtures",
+        "packages/config/src/__tests__",
+        "packages/config/src/feature-flags",
+        "packages/edge-worker/src",
+        "packages/edge-worker/src/__tests__",
+        "packages/edge-worker/src/__tests__/fixtures",
+        "packages/flywheel-comm/src",
+        "packages/flywheel-comm/src/commands",
+        "packages/flywheel-comm/src/commands/__tests__",
+        "packages/qa-framework",
+        "packages/qa-framework/agents",
+        "packages/teamlead/scripts",
+        "packages/teamlead/src",
+        "packages/teamlead/src/__tests__",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/__tests__",
+        "scripts",
+        "scripts/__tests__",
+        "scripts/lib",
+        "scripts/lib/fly-2006-retention-tables/teamlead"
+      ]
+    },
+    "counts": {
+      "per_match_kind": {
+        "path": 1259,
+        "name": 3021,
+        "parent": 4392
+      },
+      "all_unique_paths": 5225,
+      "prior_unique_paths": 5177,
+      "new_unique_paths": 62,
+      "changed_main_direct_import_tests": 36
+    },
+    "new_path_dispositions": [
+      {
+        "path": "doc/retro/20260513-v1.27-sprint-v28.md",
+        "matches": {
+          "parent": [
+            "doc/qa/framework"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2373-completion-mail-drain/plan.md",
+        "matches": {
+          "name": [
+            "StateStore.ts",
+            "index.ts"
+          ],
+          "parent": [
+            "packages/flywheel-comm/src",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2373-completion-mail-drain/research.md",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts",
+            "plugin.ts"
+          ],
+          "parent": [
+            "packages/flywheel-comm/src",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2373-completion-mail-drain/review-round1.json",
+        "matches": {
+          "parent": [
+            "scripts",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2373-completion-mail-drain/verification.md",
+        "matches": {
+          "name": [
+            "Blueprint.ts",
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/flywheel-comm/src",
+            "scripts",
+            "scripts/__tests__",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2405-room-service/verification-consumers.json",
+        "matches": {
+          "path": {
+            "count": 71,
+            "reason": "artifact lists historical consumer provenance"
+          },
+          "name": {
+            "count": 71,
+            "reason": "artifact lists historical consumer provenance"
+          },
+          "parent": {
+            "count": 23,
+            "reason": "artifact lists historical consumer provenance"
+          }
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2405-room-service/verification.md",
+        "matches": {
+          "name": [
+            "index.ts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2874-test-room-expansion/exploration.md",
+        "matches": {
+          "path": [
+            "scripts/test-deploy.sh",
+            "scripts/test-teardown.sh"
+          ],
+          "name": [
+            "test-deploy.sh",
+            "test-teardown.sh"
+          ],
+          "parent": [
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2874-test-room-expansion/plan.md",
+        "matches": {
+          "path": [
+            "doc/qa/framework/real-runner-e2e-guide.md",
+            "packages/qa-framework/README.md",
+            "packages/qa-framework/agents/qa-parallel-executor.md",
+            "scripts/__tests__/test-deploy-fly1389.test.sh",
+            "scripts/__tests__/test-deploy-generalized.test.sh",
+            "scripts/test-deploy.sh",
+            "scripts/test-teardown.sh"
+          ],
+          "name": [
+            "README.md",
+            "qa-parallel-executor.md",
+            "real-runner-e2e-guide.md",
+            "test-deploy-fly1389.test.sh",
+            "test-deploy-generalized.test.sh",
+            "test-deploy.sh",
+            "test-teardown.sh"
+          ],
+          "parent": [
+            "doc/qa/framework",
+            "packages/qa-framework",
+            "packages/qa-framework/agents",
+            "scripts",
+            "scripts/__tests__",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2874-test-room-expansion/progress.md",
+        "matches": {
+          "name": [
+            "test-deploy.sh"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2874-test-room-expansion/research.md",
+        "matches": {
+          "path": [
+            "doc/qa/framework/529-room-playbook.md",
+            "doc/qa/framework/real-runner-e2e-guide.md",
+            "packages/qa-framework/README.md",
+            "packages/qa-framework/agents/qa-parallel-executor.md",
+            "scripts/lib/qa-multilead.sh",
+            "scripts/test-deploy.sh",
+            "scripts/test-teardown.sh"
+          ],
+          "name": [
+            "529-room-playbook.md",
+            "README.md",
+            "qa-multilead.sh",
+            "qa-parallel-executor.md",
+            "real-runner-e2e-guide.md",
+            "test-deploy.sh",
+            "test-teardown.sh"
+          ],
+          "parent": [
+            "doc/qa/framework",
+            "packages/qa-framework",
+            "packages/qa-framework/agents",
+            "scripts",
+            "scripts/__tests__",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2874-test-room-expansion/verification.md",
+        "matches": {
+          "name": [
+            "test-deploy-fly1389.test.sh"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/__tests__"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/code-review-round1.md",
+        "matches": {
+          "parent": [
+            "packages/edge-worker/src",
+            "packages/edge-worker/src/__tests__",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/code-review-round2.md",
+        "matches": {
+          "parent": [
+            "packages/edge-worker/src",
+            "packages/edge-worker/src/__tests__"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/codex-review-round1.md",
+        "matches": {
+          "path": [
+            "packages/edge-worker/src/Blueprint.ts",
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "Blueprint.ts",
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/edge-worker/src",
+            "packages/edge-worker/src/__tests__",
+            "packages/flywheel-comm/src",
+            "packages/flywheel-comm/src/commands",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/codex-review-round2.md",
+        "matches": {
+          "path": [
+            "packages/edge-worker/src/Blueprint.ts"
+          ],
+          "name": [
+            "Blueprint.ts"
+          ],
+          "parent": [
+            "packages/edge-worker/src",
+            "packages/flywheel-comm/src",
+            "packages/flywheel-comm/src/commands",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/codex-review-round3.md",
+        "matches": {
+          "path": [
+            "packages/edge-worker/src/Blueprint.ts",
+            "packages/teamlead/src/StateStore.ts",
+            "packages/teamlead/src/bridge/plugin.ts"
+          ],
+          "name": [
+            "Blueprint.ts",
+            "StateStore.ts",
+            "plugin.ts"
+          ],
+          "parent": [
+            "packages/edge-worker/src",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/codex-review-round4.md",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/edge-worker/src",
+            "packages/teamlead/src"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/codex-review-round5.md",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/teamlead/src"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/codex-review-round6.md",
+        "matches": {
+          "path": [
+            "packages/edge-worker/src/Blueprint.ts"
+          ],
+          "name": [
+            "Blueprint.ts",
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/edge-worker/src"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/exploration.md",
+        "matches": {
+          "path": [
+            "packages/edge-worker/src/Blueprint.ts"
+          ],
+          "name": [
+            "Blueprint.ts"
+          ],
+          "parent": [
+            "packages/edge-worker/src",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/plan.md",
+        "matches": {
+          "name": [
+            "Blueprint.ts",
+            "StateStore.ts",
+            "infra-event-router.ts",
+            "plugin.ts",
+            "registry.ts"
+          ],
+          "parent": [
+            "packages/flywheel-comm/src",
+            "packages/flywheel-comm/src/commands"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/repro-r6-2/source.json",
+        "matches": {
+          "parent": [
+            "packages/edge-worker/src"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/repro-r6-4/r6-5-prompt.md",
+        "matches": {
+          "parent": [
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/repro-r6/source.json",
+        "matches": {
+          "parent": [
+            "packages/edge-worker/src"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/research.md",
+        "matches": {
+          "name": [
+            "Blueprint.ts",
+            "plugin.ts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/verification-v5.2.md",
+        "matches": {
+          "path": [
+            "packages/claude-runner/test/kill-path-inventory.test.ts"
+          ],
+          "name": [
+            "kill-path-inventory.test.ts"
+          ],
+          "parent": [
+            "packages/claude-runner/test",
+            "packages/config/src/__tests__",
+            "scripts",
+            "scripts/__tests__"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2901-worktree-takeover-rebuild/verification.md",
+        "matches": {
+          "name": [
+            "feature-flags-drift.test.ts",
+            "plugin.ts",
+            "registry.ts",
+            "store-policy.ts"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/__tests__"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2903-codex-terminal-reap/exploration.md",
+        "matches": {
+          "name": [
+            "infra-event-router.ts",
+            "plugin.ts"
+          ],
+          "parent": [
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2903-codex-terminal-reap/plan.md",
+        "matches": {
+          "name": [
+            "StateStore.ts",
+            "flag-store-runtime.ts",
+            "index.ts",
+            "infra-event-router.ts",
+            "plugin.ts"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/lib",
+            "scripts/lib/fly-2006-retention-tables/teamlead"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2903-codex-terminal-reap/research.md",
+        "matches": {
+          "parent": [
+            "scripts",
+            "scripts/lib",
+            "scripts/lib/fly-2006-retention-tables/teamlead"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2906-generalized-e2e-contract/verification.md",
+        "matches": {
+          "path": [
+            "scripts/__tests__/test-deploy-generalized.test.sh"
+          ],
+          "name": [
+            "kill-path-inventory.json",
+            "test-deploy-generalized.test.sh",
+            "test-deploy.sh"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/__tests__"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/replay-real.json",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/replay-real.ts",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/flywheel-comm/src",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_historical_harness",
+        "reason": "Upstream historical alert-wake replay evidence script; not a hermetic test runner or room-service consumer. No execution of recorded live replay harness."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/replay-reconciliation.md",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/replay-review-r1.json",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/review-r1-tdd.txt",
+        "matches": {
+          "name": [
+            "lead-inbox-runtime.test.ts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/storage-evidence.txt",
+        "matches": {
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/test-consumers-review-r1.json",
+        "matches": {
+          "path": [
+            "packages/claude-runner/test/fixtures/kill-path-inventory.json",
+            "packages/claude-runner/test/kill-path-inventory.test.ts",
+            "packages/claude-runner/test/kill-path-inventory.ts",
+            "packages/config/src/__tests__/feature-flags-drift.test.ts",
+            "packages/config/src/__tests__/feature-flags-registry.test.ts",
+            "packages/config/src/feature-flags/registry.ts",
+            "packages/config/src/feature-flags/store-policy.ts",
+            "packages/qa-framework/README.md",
+            "scripts/__tests__/test-deploy-generalized.test.sh"
+          ],
+          "name": [
+            "README.md",
+            "feature-flags-drift.test.ts",
+            "feature-flags-registry.test.ts",
+            "index.ts",
+            "kill-path-inventory.json",
+            "kill-path-inventory.test.ts",
+            "kill-path-inventory.ts",
+            "registry.ts",
+            "store-policy.ts",
+            "test-deploy-generalized.test.sh"
+          ],
+          "parent": [
+            ".flywheel/agents/nodes",
+            "packages/claude-runner/test",
+            "packages/claude-runner/test/fixtures",
+            "packages/config/src/__tests__",
+            "packages/config/src/feature-flags",
+            "packages/flywheel-comm/src",
+            "packages/flywheel-comm/src/commands",
+            "packages/qa-framework",
+            "packages/teamlead/src",
+            "packages/teamlead/src/__tests__",
+            "packages/teamlead/src/bridge",
+            "packages/teamlead/src/bridge/__tests__",
+            "scripts",
+            "scripts/__tests__",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/evidence/test-consumers.json",
+        "matches": {
+          "path": [
+            "packages/claude-runner/test/fixtures/kill-path-inventory.json",
+            "packages/claude-runner/test/kill-path-inventory.test.ts",
+            "packages/claude-runner/test/kill-path-inventory.ts",
+            "packages/config/src/__tests__/feature-flags-drift.test.ts",
+            "packages/config/src/__tests__/feature-flags-registry.test.ts",
+            "packages/config/src/feature-flags/registry.ts",
+            "packages/config/src/feature-flags/store-policy.ts",
+            "packages/edge-worker/src/Blueprint.ts",
+            "packages/qa-framework/README.md",
+            "packages/teamlead/scripts/claude-lead.sh",
+            "packages/teamlead/src/StateStore.ts",
+            "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+            "packages/teamlead/src/bridge/flag-store-runtime.ts",
+            "packages/teamlead/src/bridge/infra-event-router.ts",
+            "packages/teamlead/src/bridge/lead-inbox-runtime.ts",
+            "packages/teamlead/src/bridge/plugin.ts",
+            "scripts/__tests__/test-deploy-generalized.test.sh",
+            "scripts/test-deploy.sh"
+          ],
+          "name": [
+            "Blueprint.ts",
+            "README.md",
+            "StateStore.ts",
+            "claude-lead.sh",
+            "feature-flags-drift.test.ts",
+            "feature-flags-registry.test.ts",
+            "flag-store-runtime.ts",
+            "index.ts",
+            "infra-event-router.ts",
+            "kill-path-inventory.json",
+            "kill-path-inventory.test.ts",
+            "kill-path-inventory.ts",
+            "lead-inbox-runtime.test.ts",
+            "lead-inbox-runtime.ts",
+            "plugin.ts",
+            "qa.md",
+            "registry.ts",
+            "store-policy.ts",
+            "test-deploy-generalized.test.sh",
+            "test-deploy.sh",
+            "truth.ts"
+          ],
+          "parent": [
+            ".flywheel/agents/nodes",
+            "packages/claude-runner/test",
+            "packages/claude-runner/test/fixtures",
+            "packages/config/src/__tests__",
+            "packages/config/src/feature-flags",
+            "packages/edge-worker/src",
+            "packages/edge-worker/src/__tests__",
+            "packages/flywheel-comm/src",
+            "packages/flywheel-comm/src/commands",
+            "packages/flywheel-comm/src/commands/__tests__",
+            "packages/qa-framework",
+            "packages/teamlead/scripts",
+            "packages/teamlead/src",
+            "packages/teamlead/src/__tests__",
+            "packages/teamlead/src/bridge",
+            "packages/teamlead/src/bridge/__tests__",
+            "scripts",
+            "scripts/__tests__",
+            "scripts/lib",
+            "scripts/lib/fly-2006-retention-tables/teamlead"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/exploration.md",
+        "matches": {
+          "path": [
+            "packages/teamlead/src/bridge/lead-inbox-runtime.ts"
+          ],
+          "name": [
+            "infra-event-router.ts",
+            "lead-inbox-runtime.ts",
+            "plugin.ts"
+          ],
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge",
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/plan.md",
+        "matches": {
+          "path": [
+            "packages/config/src/feature-flags/registry.ts"
+          ],
+          "name": [
+            "StateStore.ts",
+            "feature-flags-drift.test.ts",
+            "feature-flags-registry.test.ts",
+            "flag-store-runtime.ts",
+            "lead-inbox-runtime.ts",
+            "plugin.ts",
+            "registry.ts"
+          ],
+          "parent": [
+            "packages/config/src/feature-flags",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge",
+            "packages/teamlead/src/bridge/__tests__",
+            "scripts",
+            "scripts/lib",
+            "scripts/lib/fly-2006-retention-tables/teamlead"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/research.md",
+        "matches": {
+          "path": [
+            "packages/config/src/feature-flags/registry.ts"
+          ],
+          "name": [
+            "StateStore.ts",
+            "feature-flags-drift.test.ts",
+            "feature-flags-registry.test.ts",
+            "flag-store-runtime.ts",
+            "infra-alert-mailbox.ts",
+            "lead-inbox-runtime.ts",
+            "plugin.ts",
+            "registry.ts"
+          ],
+          "parent": [
+            "packages/config/src/feature-flags",
+            "packages/flywheel-comm/src",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge",
+            "scripts",
+            "scripts/lib",
+            "scripts/lib/fly-2006-retention-tables/teamlead"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/review/code-review-round1.json",
+        "matches": {
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round1.md",
+        "matches": {
+          "name": [
+            "StateStore.ts",
+            "plugin.ts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round2.md",
+        "matches": {
+          "name": [
+            "StateStore.ts",
+            "lead-inbox-runtime.ts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round3.md",
+        "matches": {
+          "name": [
+            "infra-alert-mailbox.ts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round4.md",
+        "matches": {
+          "name": [
+            "StateStore.ts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/review/design-review-round5.md",
+        "matches": {
+          "path": [
+            "packages/config/src/feature-flags/registry.ts",
+            "packages/teamlead/src/StateStore.ts"
+          ],
+          "name": [
+            "StateStore.ts",
+            "registry.ts"
+          ],
+          "parent": [
+            "packages/config/src/feature-flags",
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2910-alert-wake-dedup/verification.md",
+        "matches": {
+          "name": [
+            "StateStore.ts"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/__tests__"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2916-qa-thread-archive/test-consumers.txt",
+        "matches": {
+          "path": [
+            "packages/claude-runner/test/fixtures/kill-path-inventory.json",
+            "packages/claude-runner/test/kill-path-inventory.test.ts",
+            "packages/claude-runner/test/kill-path-inventory.ts",
+            "packages/config/src/__tests__/feature-flags-drift.test.ts",
+            "packages/config/src/__tests__/feature-flags-registry.test.ts",
+            "packages/config/src/feature-flags/registry.ts",
+            "packages/config/src/feature-flags/store-policy.ts",
+            "packages/config/src/feature-flags/truth.ts",
+            "packages/qa-framework/README.md",
+            "packages/teamlead/scripts/claude-lead.sh",
+            "packages/teamlead/src/bridge/infra-event-router.ts",
+            "packages/teamlead/src/bridge/plugin.ts",
+            "scripts/__tests__/test-deploy-generalized.test.sh",
+            "scripts/test-deploy.sh"
+          ],
+          "name": [
+            "README.md",
+            "claude-lead.sh",
+            "feature-flags-drift.test.ts",
+            "feature-flags-registry.test.ts",
+            "index.ts",
+            "infra-event-router.ts",
+            "kill-path-inventory.json",
+            "kill-path-inventory.test.ts",
+            "kill-path-inventory.ts",
+            "plugin.ts",
+            "registry.ts",
+            "store-policy.ts",
+            "test-deploy-generalized.test.sh",
+            "test-deploy.sh",
+            "truth.ts"
+          ],
+          "parent": [
+            ".flywheel/agents/nodes",
+            "packages/claude-runner/test",
+            "packages/claude-runner/test/fixtures",
+            "packages/config/src/__tests__",
+            "packages/config/src/feature-flags",
+            "packages/flywheel-comm/src",
+            "packages/flywheel-comm/src/commands",
+            "packages/qa-framework",
+            "packages/teamlead/scripts",
+            "packages/teamlead/src",
+            "packages/teamlead/src/__tests__",
+            "packages/teamlead/src/bridge",
+            "packages/teamlead/src/bridge/__tests__",
+            "scripts",
+            "scripts/__tests__",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2917-linear-rejection/plan.md",
+        "matches": {
+          "name": [
+            "index.ts"
+          ],
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/__tests__",
+            "packages/teamlead/src/bridge",
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2917-linear-rejection/qa-report.md",
+        "matches": {
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2917-linear-rejection/research.md",
+        "matches": {
+          "parent": [
+            "packages/teamlead/src",
+            "packages/teamlead/src/bridge",
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/FLY-2917-linear-rejection/verification.md",
+        "matches": {
+          "name": [
+            "plugin.ts"
+          ],
+          "parent": [
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "engineering/doc/milestones/FLY-2874.md",
+        "matches": {
+          "path": [
+            "scripts/test-deploy.sh"
+          ],
+          "name": [
+            "test-deploy.sh"
+          ],
+          "parent": [
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_reference",
+        "reason": "Documentation, review, evidence, or selection artifact reference; not independently runnable. Includes artifact self-reference and historical source snapshots."
+      },
+      {
+        "path": "packages/config/src/__tests__/progress-schema.test.ts",
+        "matches": {
+          "parent": [
+            "packages/edge-worker/src"
+          ]
+        },
+        "disposition": "excluded_unchanged_predicate",
+        "reason": "Only parent-directory reference is a comment naming worktree-takeover-rescue.ts; tests progress YAML rescue-pointer roundtrip, not changed Blueprint or room service behavior."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/qa-room-drill-contract.test.ts",
+        "matches": {
+          "path": [
+            "scripts/test-deploy.sh"
+          ],
+          "name": [
+            "test-deploy.sh"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "retained_existing_owning_related",
+        "reason": "FLY-added room drill fixture/import consumer already listed as an owning-related input; first literal hit now present. Not a newly introduced upstream test."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/codex-rollout-token-watch.ts",
+        "matches": {
+          "parent": [
+            "scripts"
+          ]
+        },
+        "disposition": "excluded_non_test_source",
+        "reason": "Production source reference, not a runnable test path; main-only codex token watch/workflow dispatcher behavior is outside FLY room change scope. Owning dependency selection remains authoritative."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+        "matches": {
+          "name": [
+            "plugin.ts"
+          ]
+        },
+        "disposition": "excluded_non_test_source",
+        "reason": "Production source reference, not a runnable test path; main-only codex token watch/workflow dispatcher behavior is outside FLY room change scope. Owning dependency selection remains authoritative."
+      },
+      {
+        "path": "scripts/__tests__/fly2874-slot-pool.test.sh",
+        "matches": {
+          "path": [
+            "scripts/test-teardown.sh"
+          ],
+          "name": [
+            "test-teardown.sh"
+          ],
+          "parent": [
+            "scripts",
+            "scripts/lib"
+          ]
+        },
+        "disposition": "retained_new_shell",
+        "reason": "New upstream six-slot authority guard; sources merged test-teardown.sh and verifies unreadable slot configuration cannot teardown any slot. Also validates slot6 acceptance and slot7 rejection."
+      },
+      {
+        "path": "scripts/__tests__/fly2874-test-slot-capacity.test.mjs",
+        "matches": {
+          "parent": [
+            "scripts"
+          ]
+        },
+        "disposition": "retained_new_node_test",
+        "reason": "New upstream repository template predicate: six unique text/voice slots; slot5 product Codex and slot6 ops Claude. Retained for merged configured 1-6 documentation and deploy/dispatcher registered slot semantics despite broad scripts match."
+      }
+    ],
+    "changed_existing_predicates": [
+      {
+        "path": "scripts/__tests__/fly1663-qa-launchd.test.sh",
+        "reason": "Existing retained guard changed upstream: added stale runtime PID plus launch marker retirement. Merged helper distinguishes launch_attempted from live runtime_incarnation; stale metadata is removed only after stop/residue proof. Preserve both upstream stale-PID case and existing live/orphan/replacement daemon fences; rerun full explicit file on merged head."
+      },
+      {
+        "path": "scripts/__tests__/test-deploy-generalized.test.sh",
+        "reason": "Existing retained file updated upstream for configured slot range/generalized lifecycle; merged room entrypoint and six-slot defaults require merged-head evidence."
+      },
+      {
+        "path": "scripts/__tests__/test-deploy-multilead.test.sh",
+        "reason": "Existing retained file updated upstream for dynamic slot capacity; extra Lead and isolated dispatcher registration use same slot pool as merged service."
+      },
+      {
+        "path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+        "reason": "Existing retained lifecycle guard changed upstream with six-slot deployment; verify merged room/deploy overrides without discarding upstream slot semantics."
+      },
+      {
+        "path": "scripts/__tests__/fly2405-alert-duty.test.sh",
+        "reason": "Existing FLY guard consumes merged qa-launchd-lead.sh; preserve Claude duty plist/manifest/wrapper/final-env propagation alongside Codex terminal cleanup."
+      },
+      {
+        "path": "scripts/__tests__/fly2405-service-claim.test.sh",
+        "reason": "Existing FLY slot-claim guard consumes merged deploy/teardown entrypoints; registered six-slot capacity must preserve exact physical ownership checks."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/lead-token-savings-drift.test.ts",
+        "disposition": "excluded_predicate_not_applicable",
+        "reason": "Main changed compatibility fixture, so re-read exact membership: 16 members still have zero intersection with 71 FLY diff sources. qa.md remains absent; no digest refresh or expanded hash guard required."
+      }
+    ],
+    "changed_main_direct_import_consumers": [
+      {
+        "path": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+        "changed_source_imports": [
+          "packages/config/src/feature-flags/registry.ts",
+          "packages/config/src/feature-flags/store-policy.ts",
+          "packages/config/src/feature-flags/truth.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+        "changed_source_imports": [
+          "packages/config/src/feature-flags/registry.ts",
+          "packages/config/src/feature-flags/truth.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+        "changed_source_imports": [
+          "packages/config/src/feature-flags/registry.ts",
+          "packages/config/src/feature-flags/store-policy.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly1188-codex-identity.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly1188-codex-prompt.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly1356-skill-framework.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly1505-ship-poll-window.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly1961-workspace-trust.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly2147-runner-memory.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly2148-runner-memory-closeout.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly859-qa-phase-prompt.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly887-keepalive-prompt.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/edge-worker/src/__tests__/Blueprint.fly887-worktree-takeover.test.ts",
+        "changed_source_imports": [
+          "packages/edge-worker/src/Blueprint.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/DirectEventSink.fly2901-takeover-rescue.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/StateStore.alert-wake-dedup.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/StateStore.generalized-execution.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/actions.terminate.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/close-runner.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/createFetchIssue.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/event-route.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/flag-store-runtime.ts",
+          "packages/teamlead/src/bridge/plugin.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/flag-routes.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/flag-store-runtime.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/run-dispatcher.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/workflow-engine-dispatcher.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/worktree-takeover-rescue.real-sink.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/alert-duty-router.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/alert-threads-tickets.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/alert-wake-dedup.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/close-tmux.fly2498.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/plugin.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/codex-daemon-teardown.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/codex-terminal-close-ledger.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/codex-terminal-sweep.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/completion-drain-v2.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/flag-store-runtime.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/infra-event-router.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/infra-event-router.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/kind-contract.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/bridge/infra-event-router.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      },
+      {
+        "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
+        "changed_source_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/lead-inbox-runtime.ts"
+        ],
+        "disposition": "retained_merged_owning_related",
+        "reason": "Main sync changed this test and it directly imports a FLY changed source; historical results from pre-merge worktree do not verify these merged bytes."
+      }
+    ],
+    "additional_focused_checks": {
+      "shell": [
+        "scripts/__tests__/fly2874-slot-pool.test.sh"
+      ],
+      "node": [
+        "scripts/__tests__/fly2874-test-slot-capacity.test.mjs"
+      ]
+    },
+    "doc_merge_check": {
+      "path": "doc/qa/framework/real-runner-e2e-guide.md",
+      "predicate": "Merged configured slot range is 1–6; candidate --head remains Bridge source and --from-branch remains fixture-only. Service workflow and upstream slot6 capacity instructions both retained.",
+      "verification": "Source diff inspection only; no live deploy or assertion execution."
+    }
   }
 }
