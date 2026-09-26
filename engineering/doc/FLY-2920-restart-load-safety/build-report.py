@@ -1,0 +1,38 @@
+from pathlib import Path
+from html import escape
+p=Path(__file__).parent
+
+def diagram(name, title):
+    svg=p/(name+'.svg')
+    if svg.exists(): return svg.read_text()
+    return '<div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地绘图进程被沙箱拒绝启动；已按规定重试一次。图源保留如下，尚无渲染图。</p></div><details><summary>查看 '+escape(title)+' 的 Mermaid 图源</summary><pre>'+escape((p/(name+'.mmd')).read_text())+'</pre></details>'
+
+def card(key,title,content):
+    return '<section class="card" id="'+escape(key)+'"><h2>'+escape(title)+'</h2>'+content+'<label for="comment-'+key+'">这一节的意见</label><textarea id="comment-'+key+'" data-comment="'+key+'" data-title="'+escape(title)+'" placeholder="写下想改的地方，会保存在当前浏览器"></textarea></section>'
+
+parts=[card('overview','01 · 让慢不再变成更多故障','<p class="big">机器忙时允许慢；重启只处理一次旧身份；保留审查结果与进度，内存恢复就恢复派活并告知。</p><p>本次覆盖 6 张问题单，盘点累计 59 次。这个数字来自历史盘点，并非本次修复实测。</p><p class="status">设计评审已提交，等待有效裁决。当前只交付设计，未实现、未部署。</p>')]
+parts.append(card('flow','02 · 审查中断，门和结论怎样保住',diagram('review-flow','恢复流程')+'<p>评审门是等待审查结论的记录。已经保存的结论直接交回原门；尚未产生结论的旧尝试只退休一次，原门继续待答。作者得到明确提示，确认旧进程已退出后，用原请求重发。</p>'))
+parts.append(card('model','03 · 三份记录，各管一件事',diagram('data-model','数据关系')+'<table><thead><tr><th>记录</th><th>保存什么</th><th>重启后</th></tr></thead><tbody><tr><td>评审门</td><td>谁在等、等哪次审查</td><td>无结论就继续待答</td></tr><tr><td>审查尝试</td><td>请求编号、尝试代号、绑定版本</td><td>旧尝试退休，新尝试需明确重发</td></tr><tr><td>审查结果</td><td>结论、适用版本、送达记录</td><td>只重投已存结论，不重新计算</td></tr></tbody></table><p>尝试代号用于拒绝旧进程迟到的结果，避免它覆盖新尝试。孤儿身份只退休其中失效的进程记录，线程、凭据与进度保留。</p>'))
+rows=[('2133','卡顿后自杀','记录一次卡顿，恢复后继续监测'),('2617','250ms 后输出未关就判失败','等待完整输出；真正失败才收口启动记录'),('2328','重启多起审查体','旧尝试一次退休，结论和原门保留'),('2323','每轮重复审查旧孤儿身份','确认旧身份失效后一次退休'),('2620','内存恢复仍停派且静默','用有效当前读数决定，并报告暂停与恢复'),('2084','旧路径复活并丢进度','停止项不复活；按持久节点继续，保留未推提交')]
+parts.append(card('cases','04 · 六张单，一张也不省','<div class="scroll"><table><thead><tr><th>问题单</th><th>原现象</th><th>修后要求</th></tr></thead><tbody>'+''.join('<tr><td>FLY-'+n+'</td><td>'+escape(a)+'</td><td>'+escape(b)+'</td></tr>' for n,a,b in rows)+'</tbody></table></div><p>每项都要有旧版失败与修后通过的同一夹具证据。只在本机跑相关测试；慢启动用受控延迟复现，不人为打满机器。</p>'))
+parts.append(card('choices','05 · 为什么这样取舍','<ul><li><b>删除卡顿自杀：</b>减少连锁重启；代价是永久卡死仍需独立值守处理。</li><li><b>删除 250ms 判败：</b>保留完整输出和整次命令期限，不用另一个短阈值替代。</li><li><b>删除传感器锁存：</b>准入与状态页共用当前读数。读不到或读数过期会明确暂缓，恢复有效健康读数便放行。</li><li><b>不猜身份：</b>确认缺失才退休；身份不明不杀进程、不另起重复审查。旧版本缺少身份记录时，可能需要一次人工核验。</li></ul>'))
+parts.append(card('boundary','06 · 这份设计承诺什么','<p>承诺六类原现象的完整验收、不丢审查结果、保留停止令和工作进度。具体实现还须通过相关回归。</p><p>本页不证明代码已经修复，也不证明线上高负载已经验证。没有部署、服务重启、生产清洗或扩大自动重试。人工暂停仍由人工解除。</p><p>两张图因本地渲染权限受限尚待渲染；图源和文字合同完整保留。</p>'))
+parts.append(card('feedback','07 · 页面意见汇总','<p>意见会随输入更新。复制后交给 Lead；这份意见不代表审批通过。只保存在当前浏览器，跨设备不会同步。</p><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status" aria-live="polite"></p><pre id="summary">暂无意见</pre><div id="chunks"></div>'))
+# Keep JavaScript escapes literal; no derived data is interpolated into script.
+script = r'''(() => {
+'use strict';
+const marker='【页面意见汇总】FLY-2920';
+const fields=Array.from(document.querySelectorAll('textarea[data-comment]'));
+const prefix='flywheel-comments:'+location.pathname+':';
+const summary=document.getElementById('summary'), root=document.getElementById('chunks'), status=document.getElementById('copy-status');
+let chunks=[];
+function split(text){const limit=1800-marker.length-1,parts=[];let current='';for(const ch of Array.from(text)){if(current.length+ch.length>limit){parts.push(current);current='';}current+=ch;}if(current)parts.push(current);return parts.map(part=>marker+'\n'+part);}
+async function copy(text){try{if(!navigator.clipboard||!navigator.clipboard.writeText)throw new Error('unavailable');await navigator.clipboard.writeText(text);status.textContent='已复制';return;}catch(_){const helper=document.createElement('textarea');helper.value=text;helper.setAttribute('aria-label','复制意见临时文本');document.body.appendChild(helper);helper.select();let ok=false;try{ok=document.execCommand('copy');}catch(_){ok=false;}helper.remove();status.textContent=ok?'已复制':'复制未成功，请手动选择下方意见文本。';}}
+function refresh(){const body=fields.filter(f=>f.value.trim()).map(f=>f.dataset.title+'\n'+f.value.trim()).join('\n\n');chunks=split(body);summary.textContent=chunks.length?chunks.join('\n\n'):'暂无意见';root.replaceChildren();if(chunks.length>1)chunks.forEach((text,index)=>{const wrapper=document.createElement('div');wrapper.className='chunk';const button=document.createElement('button');button.type='button';button.textContent='复制第 '+(index+1)+' / '+chunks.length+' 段';button.addEventListener('click',()=>copy(text));const pre=document.createElement('pre');pre.textContent=text;wrapper.appendChild(button);wrapper.appendChild(pre);root.appendChild(wrapper);});}
+fields.forEach(f=>{try{f.value=localStorage.getItem(prefix+f.dataset.comment)||'';}catch(_){status.textContent='本地保存不可用；仍可输入和复制。';}f.addEventListener('input',()=>{try{localStorage.setItem(prefix+f.dataset.comment,f.value);}catch(_){status.textContent='本地保存不可用；请复制保留意见。';}refresh();});});
+document.getElementById('copy-all').addEventListener('click',()=>{if(!chunks.length){status.textContent='请先填写意见。';return;}copy(chunks.join('\n\n'));});refresh();
+})();'''
+css='''*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:17px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1000px;margin:auto;padding:48px 24px 80px}header{padding:20px 8px 32px}h1{font-size:clamp(30px,5vw,48px);line-height:1.2;letter-spacing:-1px;margin:12px 0}h2{font-size:24px;line-height:1.4;margin:0 0 20px}.eyebrow{color:#0066cc;font-size:14px;font-weight:650}.card{background:white;border:1px solid #e4e4e7;border-radius:22px;padding:30px;margin-bottom:24px}.big{font-size:24px;line-height:1.55}.status,.pending{background:#fff7e5;border-radius:12px;padding:16px;color:#704900}.pending strong{font-size:14px}.pending p{margin-bottom:0}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;font-size:15px}th,td{text-align:left;padding:14px 10px;border-bottom:1px solid #e8e8ed;vertical-align:top}th{color:#6e6e73}label{display:block;font-size:14px;color:#6e6e73;margin-top:24px}textarea{display:block;width:100%;min-height:85px;padding:12px;margin-top:8px;border:1px solid #c6c6cc;border-radius:10px;background:#fafafa;font:inherit;resize:vertical}textarea:focus{outline:2px solid #0071e3;outline-offset:2px}button{border:0;border-radius:20px;background:#0071e3;color:white;padding:10px 18px;font:inherit;font-size:15px;cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.6 ui-monospace,monospace;background:#f5f5f7;padding:16px;border-radius:12px}details{margin-top:16px}summary{cursor:pointer;color:#0066cc}.chunk{padding-top:16px;border-top:1px solid #eee}li{margin:12px 0}svg{width:100%;height:auto}@media(max-width:600px){main{padding:20px 12px 40px}.card{padding:22px 18px}h2{font-size:21px}.big{font-size:21px}table{font-size:14px}}'''
+html='<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2920 · 重启与负载不再制造连锁故障</title><style>'+css+'</style></head><body><main><header><div class="eyebrow">FLY-2920 · ENGINEERING DESIGN · 2026-09-26</div><h1>重启与负载，<br>不再制造连锁故障。</h1><p>6 张问题单 · 五处核心改动 · 结果和进度必须保住</p></header>'+''.join(parts)+'</main><script nonce="__CSP_NONCE__">'+script+'</script></body></html>'
+(p/'founder-report.html').write_text(html)
+print('Wrote',len(html.encode()),'bytes')

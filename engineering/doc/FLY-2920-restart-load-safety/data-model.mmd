@@ -1,0 +1,18 @@
+erDiagram
+    GATE ||--o{ ATTEMPT : "绑定同一请求"
+    ATTEMPT ||--o| RESULT : "生成"
+    RESULT }o--|| GATE : "只投递已存结论"
+    GATE {
+        string questionId "原评审门编号"
+        string state "待答或已答"
+    }
+    ATTEMPT {
+        string requestId "原审查请求编号"
+        int generation "每次尝试的代号"
+        string status "运行或退休"
+    }
+    RESULT {
+        string verdict "审查结论"
+        string binding "代码版本或计划证明"
+        string deliveredAt "送达记录"
+    }

@@ -1,0 +1,9 @@
+flowchart TD
+    A[协调服务重启] --> B{结论已经保存？}
+    B -->|是| C[把结论交回原评审门]
+    B -->|否，旧作业曾运行| D[旧尝试只退休一次]
+    D --> E[原门保持待答 · 提示作者重发]
+    E --> F[确认旧进程已退出 · 核对原门与请求]
+    F --> G[一次新尝试 · 结论写回原门]
+    classDef focus fill:#e8f2ff,stroke:#0071e3,color:#1d1d1f
+    class C,D focus
