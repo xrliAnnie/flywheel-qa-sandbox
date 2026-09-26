@@ -9,19 +9,26 @@
 //
 // Exit: 0 all checks pass · 1 endpoint disagrees with the fixture (FAIL
 // evidence) · 2 setup or usage error · 3 inconclusive (the Lead did not honor
-// the fixture, or never reached idle).
+// the fixture, never reached idle, or the delivery time is unprovable).
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	lstatSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, normalize, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const MIN_LONG_TURN_MS = 60_000;
 export const START_TOLERANCE_MS = 30_000;
-const SAME_TURN_MS = 5_000;
+/** Delivery → first rendered/observed busy; answers before it are not judged. */
+export const START_GRACE_MS = 15_000;
 const DISCORD_EPOCH_MS = 1_420_070_400_000n;
 
 export class FixtureError extends Error {}
@@ -145,7 +152,9 @@ export function loadRoom(options, deps) {
 		(coordinates.carrier !== "claude-code" &&
 			coordinates.carrier !== "codex-app-server") ||
 		typeof coordinates.projectName !== "string" ||
-		!coordinates.commDbPath?.startsWith(`${slotDir}/`) ||
+		typeof coordinates.commDbPath !== "string" ||
+		normalize(coordinates.commDbPath) !== coordinates.commDbPath ||
+		!coordinates.commDbPath.startsWith(`${slotDir}/`) ||
 		!/^\d+$/.test(coordinates.primaryChatChannelId ?? "")
 	)
 		throw new FixtureError("lead coordinates do not describe this Lead");
@@ -202,55 +211,77 @@ export function toSample(atMs, dto) {
 }
 
 /**
- * Judge one fixture run. `truthStartMs` is when the message reached the Lead
- * (mailbox delivered_at) or, failing that, when it was injected.
+ * Judge one fixture run on the fixture's own clock — never on the endpoint's
+ * self-reported duration. `truthStartMs` is when the Bridge handed the message
+ * to the Lead's carrier (mailbox `notified_at`); without it nothing is proven.
+ *
+ * The fixture's turn is the set of busy answers whose reported start is within
+ * tolerance of the true start. From `truth + grace` up to the last of them,
+ * every answer must belong to that turn: an idle / unknown / HTTP error / other
+ * turn in that window is FAIL evidence. The turn must be seen busy for at least
+ * `minBusyMs` after the true start, and idle before and after.
  */
 export function evaluateLongTurn({
 	samples,
 	injectedAtMs,
 	truthStartMs,
+	holdMs = Number.POSITIVE_INFINITY,
 	minBusyMs = MIN_LONG_TURN_MS,
 	toleranceMs = START_TOLERANCE_MS,
+	graceMs = START_GRACE_MS,
 }) {
 	// A sample stamped at the injection instant was read before the ingest call.
 	const before = samples.filter((s) => s.atMs <= injectedAtMs);
 	const after = samples.filter((s) => s.atMs > injectedAtMs);
-	const checks = {};
-	checks.idleBefore = before.some((s) => s.state === "idle");
-	const busy = after.filter((s) => s.state === "busy");
-	if (busy.length === 0) {
-		const unknown = after.filter((s) => s.state !== "idle");
+	const answer = (s) =>
+		s.state === "unknown" ? `unknown:${s.reason}` : s.state;
+	const checks = { idleBefore: before.some((s) => s.state === "idle") };
+	if (!Number.isFinite(truthStartMs))
+		return { verdict: "inconclusive", why: "no_delivery_evidence", checks };
+	const turn = after.filter(
+		(s) =>
+			s.state === "busy" &&
+			Math.abs(s.startedAtMs - truthStartMs) <= toleranceMs,
+	);
+	if (turn.length === 0) {
+		const wrong = after.filter(
+			(s) => s.atMs >= truthStartMs + graceMs && s.state !== "idle",
+		);
 		return {
-			verdict: unknown.length > 0 ? "fail" : "inconclusive",
-			why: unknown.length > 0 ? "no_answer_instead_of_busy" : "never_busy",
+			verdict: wrong.length > 0 ? "fail" : "inconclusive",
+			why: wrong.length > 0 ? "no_busy_for_the_fixture_turn" : "never_busy",
 			checks,
-			unknownReasons: [...new Set(unknown.map((s) => s.reason ?? s.state))],
+			answers: [...new Set(wrong.map(answer))],
 		};
 	}
-	const longest = busy.reduce((a, b) => (b.elapsedMs > a.elapsedMs ? b : a));
-	const turn = busy.filter(
-		(s) => Math.abs(s.startedAtMs - longest.startedAtMs) <= SAME_TURN_MS,
-	);
-	const first = turn[0].atMs;
-	const last = turn[turn.length - 1].atMs;
+	const first = turn[0];
+	const last = turn[turn.length - 1];
 	const inside = after.filter(
-		(s) => s.atMs > first && s.atMs < last && !turn.includes(s),
+		(s) =>
+			s.atMs >= truthStartMs + graceMs &&
+			s.atMs <= last.atMs &&
+			!turn.includes(s),
 	);
-	checks.longTurnObserved = longest.elapsedMs >= minBusyMs;
 	checks.onlyBusyInsideTurn = inside.length === 0;
-	checks.startErrorMs = Math.abs(longest.startedAtMs - truthStartMs);
-	checks.startWithinTolerance = checks.startErrorMs <= toleranceMs;
+	checks.startErrorMs = Math.max(
+		...turn.map((s) => Math.abs(s.startedAtMs - truthStartMs)),
+	);
+	checks.longTurnObserved = last.atMs - truthStartMs >= minBusyMs;
 	checks.triggerUndetermined = turn.every(
 		(s) => s.trigger?.kind === "undetermined",
 	);
-	checks.idleAfter = after.some((s) => s.atMs > last && s.state === "idle");
-	const insideStates = inside.map((s) =>
-		s.state === "unknown" ? `unknown:${s.reason}` : s.state,
+	checks.idleAfter = after.some(
+		(s) => s.atMs > last.atMs && s.state === "idle",
 	);
-	const failed =
-		!checks.onlyBusyInsideTurn ||
-		!checks.startWithinTolerance ||
-		!checks.triggerUndetermined;
+	// Evidence only: an idle before the requested hold ended cannot be told
+	// apart from a Lead that stopped early, so it is never a PASS.
+	checks.idleBeforeHoldEnd = after.some(
+		(s) =>
+			s.atMs > last.atMs &&
+			s.atMs < truthStartMs + holdMs &&
+			s.state === "idle",
+	);
+	const failed = !checks.onlyBusyInsideTurn || !checks.triggerUndetermined;
 	const verdict = failed
 		? "fail"
 		: !checks.longTurnObserved || !checks.idleBefore || !checks.idleAfter
@@ -261,19 +292,24 @@ export function evaluateLongTurn({
 		why:
 			verdict === "pass"
 				? "ok"
-				: Object.entries(checks)
-						.filter(([key, value]) => value === false && key !== "startErrorMs")
-						.map(([key]) => key)
+				: [
+						"onlyBusyInsideTurn",
+						"triggerUndetermined",
+						"longTurnObserved",
+						"idleBefore",
+						"idleAfter",
+					]
+						.filter((key) => checks[key] === false)
 						.join(","),
 		checks,
 		turn: {
-			startedAt: longest.startedAt,
-			longestElapsedMs: longest.elapsedMs,
+			startedAt: first.startedAt,
 			samples: turn.length,
-			firstBusyAt: new Date(first).toISOString(),
-			lastBusyAt: new Date(last).toISOString(),
+			firstBusyAt: first.at,
+			lastBusyAt: last.at,
+			observedBusyAfterTruthMs: last.atMs - truthStartMs,
 		},
-		insideStates,
+		insideAnswers: inside.map(answer),
 	};
 }
 
@@ -373,34 +409,37 @@ async function driveFixture(room, author, nonce, options, deps, evidence) {
 		author,
 		longTurnPrompt(nonce, options.holdSeconds),
 	);
+	// Keep sampling through the whole requested hold, even past an early idle.
+	const holdEndMs = injected.atMs + options.holdSeconds * 1000;
 	let sawBusy = false;
 	await pollUntil(
 		room,
 		deps,
 		options,
 		samples,
-		injected.atMs + (options.holdSeconds + options.settleSeconds) * 1000,
+		holdEndMs + options.settleSeconds * 1000,
 		(s) => {
 			if (s.state === "busy") sawBusy = true;
-			return sawBusy && s.state === "idle";
+			return sawBusy && s.state === "idle" && s.atMs >= holdEndMs;
 		},
 	);
 	const delivery = deps.readDelivery(room, injected.deliveryId);
-	const deliveredAtMs = Date.parse(delivery?.delivered_at ?? "");
+	// Lead recipients: the Bridge delivery loop stamps notified_at when the
+	// carrier accepts the batch; delivered_at is only written at ACK.
+	const notifiedAtMs = Date.parse(delivery?.notified_at ?? "");
 	evidence.injection = {
 		injectedAt: new Date(injected.atMs).toISOString(),
 		deliveryId: injected.deliveryId,
 		deliveryState: delivery?.state ?? null,
+		notifiedAt: delivery?.notified_at ?? null,
 		deliveredAt: delivery?.delivered_at ?? null,
 		ackedAt: delivery?.acked_at ?? null,
-		truthStart: Number.isFinite(deliveredAtMs) ? "delivered_at" : "injected_at",
 	};
 	return evaluateLongTurn({
 		samples,
 		injectedAtMs: injected.atMs,
-		truthStartMs: Number.isFinite(deliveredAtMs)
-			? deliveredAtMs
-			: injected.atMs,
+		truthStartMs: notifiedAtMs,
+		holdMs: options.holdSeconds * 1000,
 	});
 }
 
@@ -415,14 +454,21 @@ function isPrivateFile(path) {
 	}
 }
 
-function realIngest(room, author, text) {
-	const atMs = Date.now();
-	const messageId = syntheticMessageId(atMs);
-	// Scrubbed env: only the room coordinates reach the child — never this
-	// runner's production CommDB, ingest token or state dir.
-	const child = spawnSync(
-		process.execPath,
-		[
+/**
+ * The chat-ingest child invocation. Its environment is exactly the room
+ * coordinates plus a throwaway HOME: the doorbell's 401/403 fallback reads
+ * `$HOME/.flywheel/.env`, so the real HOME would hand a production token to
+ * the room Bridge. Never this runner's CommDB, ingest token or state dir.
+ */
+export function chatIngestInvocation(
+	room,
+	author,
+	text,
+	{ atMs, messageId, home },
+) {
+	return {
+		file: process.execPath,
+		args: [
 			join(REPO, "packages/flywheel-comm/dist/index.js"),
 			"chat-ingest",
 			"--db",
@@ -449,19 +495,35 @@ function realIngest(room, author, text) {
 			"[]",
 			"--content-stdin",
 		],
-		{
+		options: {
 			input: text,
 			encoding: "utf8",
 			timeout: 30_000,
 			env: {
 				PATH: process.env.PATH ?? "/usr/bin:/bin",
-				HOME: homedir(),
+				HOME: home,
 				BRIDGE_URL: room.bridgeUrl,
 				PROJECT_NAME: room.projectName,
 				TEAMLEAD_API_TOKEN: room.token,
 			},
 		},
-	);
+	};
+}
+
+function realIngest(room, author, text) {
+	const atMs = Date.now();
+	const home = mkdtempSync(join(tmpdir(), "f2882-ingest-home-"));
+	let child;
+	try {
+		const call = chatIngestInvocation(room, author, text, {
+			atMs,
+			messageId: syntheticMessageId(atMs),
+			home,
+		});
+		child = spawnSync(call.file, call.args, call.options);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
 	if (child.status !== 0)
 		throw new FixtureError(`chat-ingest exited ${child.status}`);
 	const verdict = JSON.parse(child.stdout.split("\n")[0] ?? "");
@@ -483,7 +545,7 @@ function realReadDelivery(room, deliveryId) {
 		return (
 			db
 				.prepare(
-					"SELECT state, delivered_at, acked_at FROM mailbox WHERE delivery_id = ?",
+					"SELECT state, notified_at, delivered_at, acked_at FROM mailbox WHERE delivery_id = ?",
 				)
 				.get(deliveryId) ?? null
 		);

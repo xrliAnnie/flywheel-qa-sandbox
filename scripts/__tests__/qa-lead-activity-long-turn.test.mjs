@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
 import { describe, it } from "node:test";
 import {
+	chatIngestInvocation,
 	EXIT,
 	evaluateLongTurn,
 	FixtureError,
@@ -52,50 +54,70 @@ function honoredRun(startDelayMs = 3_000, holdMs = 78_000) {
 }
 
 describe("evaluateLongTurn", () => {
-	it("passes a ≥60 s busy turn bracketed by idle whose start is within 30 s", () => {
-		const result = evaluateLongTurn({
-			samples: honoredRun(),
+	const judge = (samples, truthStartMs = T0 + 2_000, extra = {}) =>
+		evaluateLongTurn({
+			samples,
 			injectedAtMs: T0,
-			truthStartMs: T0 + 2_000,
+			truthStartMs,
+			holdMs: 75_000,
+			...extra,
 		});
+
+	it("passes a turn seen busy ≥60 s on the fixture clock, bracketed by idle, start within 30 s", () => {
+		const result = judge(honoredRun());
 		assert.equal(result.verdict, "pass");
 		assert.equal(result.checks.longTurnObserved, true);
 		assert.equal(result.checks.startErrorMs, 1_000);
-		assert.ok(result.turn.longestElapsedMs >= 60_000);
+		assert.ok(result.turn.observedBusyAfterTruthMs >= 60_000);
 	});
 
-	it("fails when the reported start is more than 30 s from the true start", () => {
-		const result = evaluateLongTurn({
-			samples: honoredRun(),
-			injectedAtMs: T0,
-			truthStartMs: T0 + 40_000,
-		});
+	it("fails when every busy answer reports a start more than 30 s from the true start", () => {
+		const result = judge(honoredRun(), T0 + 40_000);
 		assert.equal(result.verdict, "fail");
-		assert.match(result.why, /startWithinTolerance/);
+		assert.equal(result.why, "no_busy_for_the_fixture_turn");
 	});
 
 	it("fails when the endpoint answers idle in the middle of the turn", () => {
 		const samples = honoredRun();
 		samples.splice(6, 1, idle(samples[6].atMs));
-		const result = evaluateLongTurn({
-			samples,
-			injectedAtMs: T0,
-			truthStartMs: T0,
-		});
+		const result = judge(samples);
 		assert.equal(result.verdict, "fail");
-		assert.deepEqual(result.insideStates, ["idle"]);
+		assert.deepEqual(result.insideAnswers, ["idle"]);
 	});
 
 	it("fails when the endpoint answers unknown in the middle of the turn", () => {
 		const samples = honoredRun();
 		samples.splice(6, 1, unknown(samples[6].atMs, "pane_capture_failed"));
-		const result = evaluateLongTurn({
-			samples,
-			injectedAtMs: T0,
-			truthStartMs: T0,
-		});
+		const result = judge(samples);
 		assert.equal(result.verdict, "fail");
-		assert.deepEqual(result.insideStates, ["unknown:pane_capture_failed"]);
+		assert.deepEqual(result.insideAnswers, ["unknown:pane_capture_failed"]);
+	});
+
+	it("fails — never passes — when unknown covers the turn and one late busy reports a long elapsed", () => {
+		// Review finding: the endpoint's own elapsedMs must not stand in for observation.
+		const samples = [idle(T0 - 5_000)];
+		for (let at = T0 + 5_000; at <= T0 + 60_000; at += 5_000)
+			samples.push(unknown(at, "pane_unrecognized"));
+		samples.push(
+			busy(T0 + 65_000, T0 + 2_000),
+			idle(T0 + 70_000),
+			idle(T0 + 80_000),
+		);
+		const result = judge(samples);
+		assert.equal(result.verdict, "fail");
+		assert.ok(result.insideAnswers.includes("unknown:pane_unrecognized"));
+	});
+
+	it("does not count a long self-reported elapsed that the fixture did not observe", () => {
+		// Reported start 27 s before the true start (inside tolerance): elapsed says 72 s,
+		// but the fixture only saw busy for 45 s after delivery.
+		const samples = [idle(T0 - 5_000)];
+		for (let at = T0 + 5_000; at <= T0 + 47_000; at += 5_000)
+			samples.push(busy(at, T0 - 25_000));
+		samples.push(idle(T0 + 90_000));
+		const result = judge(samples);
+		assert.equal(result.verdict, "inconclusive");
+		assert.match(result.why, /longTurnObserved/);
 	});
 
 	it("fails when a chat-triggered turn is attributed to an issue", () => {
@@ -105,62 +127,48 @@ describe("evaluateLongTurn", () => {
 			busy(T0 + 70_000, start, { kind: "issue", issueId: "FLY-1" }),
 			idle(T0 + 90_000),
 		];
-		assert.equal(
-			evaluateLongTurn({ samples, injectedAtMs: T0, truthStartMs: T0 }).verdict,
-			"fail",
-		);
+		assert.equal(judge(samples).verdict, "fail");
 	});
 
-	it("fails when the Lead never reads busy and the endpoint answered unknown", () => {
+	it("fails when the Lead never reads busy and the endpoint answered unknown after the grace", () => {
 		const samples = [
 			idle(T0 - 5_000),
-			unknown(T0 + 5_000, "lead_window_unavailable"),
-			unknown(T0 + 10_000, "lead_window_unavailable"),
+			unknown(T0 + 20_000, "lead_window_unavailable"),
+			unknown(T0 + 25_000, "lead_window_unavailable"),
 		];
-		const result = evaluateLongTurn({
-			samples,
-			injectedAtMs: T0,
-			truthStartMs: T0,
-		});
+		const result = judge(samples, T0);
 		assert.equal(result.verdict, "fail");
-		assert.deepEqual(result.unknownReasons, ["lead_window_unavailable"]);
+		assert.deepEqual(result.answers, ["unknown:lead_window_unavailable"]);
+	});
+
+	it("does not judge answers inside the delivery grace", () => {
+		const samples = honoredRun();
+		samples.splice(1, 0, unknown(T0 + 4_000, "pane_capture_failed"));
+		assert.equal(judge(samples).verdict, "pass");
 	});
 
 	it("is inconclusive — not a pass — when the Lead did not honor the 60 s hold", () => {
-		const result = evaluateLongTurn({
-			samples: honoredRun(3_000, 20_000),
-			injectedAtMs: T0,
-			truthStartMs: T0,
-		});
+		const result = judge(honoredRun(3_000, 20_000));
 		assert.equal(result.verdict, "inconclusive");
 		assert.match(result.why, /longTurnObserved/);
+		assert.equal(result.checks.idleBeforeHoldEnd, true);
 	});
 
 	it("is inconclusive without an idle baseline or an idle after the turn", () => {
-		const noBefore = honoredRun().slice(1);
-		assert.equal(
-			evaluateLongTurn({
-				samples: noBefore,
-				injectedAtMs: T0,
-				truthStartMs: T0,
-			}).verdict,
-			"inconclusive",
-		);
-		const noAfter = honoredRun().slice(0, -1);
-		assert.equal(
-			evaluateLongTurn({ samples: noAfter, injectedAtMs: T0, truthStartMs: T0 })
-				.verdict,
-			"inconclusive",
-		);
+		assert.equal(judge(honoredRun().slice(1)).verdict, "inconclusive");
+		assert.equal(judge(honoredRun().slice(0, -1)).verdict, "inconclusive");
 	});
 
-	it("ignores an earlier, unrelated busy turn when picking the long turn", () => {
+	it("is inconclusive without delivery evidence, even if some long turn is visible", () => {
+		const result = judge(honoredRun(), Number.NaN);
+		assert.equal(result.verdict, "inconclusive");
+		assert.equal(result.why, "no_delivery_evidence");
+	});
+
+	it("ignores an earlier, unrelated busy turn read before the grace", () => {
 		const samples = honoredRun();
-		samples.splice(1, 0, busy(T0 + 1_000, T0 - 20_000));
-		assert.equal(
-			evaluateLongTurn({ samples, injectedAtMs: T0, truthStartMs: T0 }).verdict,
-			"pass",
-		);
+		samples.splice(1, 0, busy(T0 + 1_000, T0 - 60_000));
+		assert.equal(judge(samples).verdict, "pass");
 	});
 });
 
@@ -295,6 +303,62 @@ describe("fixture inputs", () => {
 			/loopback/,
 		);
 	});
+
+	it("refuses a CommDB path that escapes the room with ..", () => {
+		const coordinates = {
+			agentId: "flywheel-test-3",
+			carrier: "claude-code",
+			projectName: "test-slot-2",
+			commDbPath: `${SLOT}/../flywheel-test-slot-9/state/comm/test-slot-9/comm.db`,
+			primaryChatChannelId: "123",
+		};
+		const files = {
+			[`${SLOT}/launchd/flywheel-test-3/lead-coordinates.json`]:
+				JSON.stringify(coordinates),
+		};
+		assert.throws(
+			() =>
+				loadRoom(
+					{ slot: 2, agent: "flywheel-test-3" },
+					{ readFile: (path) => files[path], isPrivateFile: () => true },
+				),
+			/do not describe this Lead/,
+		);
+	});
+
+	it("gives the chat-ingest child only room coordinates and a throwaway HOME", () => {
+		const room = {
+			agent: "flywheel-test-3",
+			commDbPath: `${SLOT}/state/comm/test-slot-2/comm.db`,
+			chatChannelId: "123",
+			bridgeUrl: "http://localhost:19872",
+			projectName: "test-slot-2",
+			token: "room-token",
+		};
+		const call = chatIngestInvocation(
+			room,
+			{ id: "111", name: "flywheel-test-1" },
+			"hi",
+			{
+				atMs: T0,
+				messageId: "42",
+				home: "/tmp/f2882-ingest-home-x",
+			},
+		);
+		assert.deepEqual(Object.keys(call.options.env).sort(), [
+			"BRIDGE_URL",
+			"HOME",
+			"PATH",
+			"PROJECT_NAME",
+			"TEAMLEAD_API_TOKEN",
+		]);
+		// The doorbell's 401/403 fallback reads $HOME/.flywheel/.env — never the real one.
+		assert.equal(call.options.env.HOME, "/tmp/f2882-ingest-home-x");
+		assert.notEqual(call.options.env.HOME, homedir());
+		assert.equal(call.options.env.TEAMLEAD_API_TOKEN, "room-token");
+		const db = call.args.indexOf("--db");
+		assert.deepEqual(call.args.slice(db, db + 2), ["--db", room.commDbPath]);
+	});
 });
 
 describe("runLongTurn on a virtual clock", () => {
@@ -384,14 +448,18 @@ describe("runLongTurn on a virtual clock", () => {
 				else fixture.turnStart = now + 2_000;
 				return { atMs: now, deliveryId: `d${ingested.length}` };
 			},
-			readDelivery: () => ({
-				state: "ACKED",
-				delivered_at: new Date(fixture.turnStart - 500).toISOString(),
-				acked_at: null,
-			}),
+			readDelivery: () =>
+				fixture.noDelivery
+					? null
+					: {
+							state: "ACKED",
+							notified_at: new Date(fixture.turnStart - 500).toISOString(),
+							delivered_at: null,
+							acked_at: null,
+						},
 			defaultAuthor: () => ({ id: "111", name: "flywheel-test-1" }),
 		};
-		return { deps, ingested };
+		return { deps, ingested, fixture };
 	}
 	const options = {
 		slot: 2,
@@ -410,7 +478,7 @@ describe("runLongTurn on a virtual clock", () => {
 			["long"],
 		);
 		assert.equal(evidence.result.verdict, "pass");
-		assert.equal(evidence.injection.truthStart, "delivered_at");
+		assert.ok(evidence.injection.notifiedAt);
 		assert.equal(EXIT[evidence.result.verdict], 0);
 		assert.equal(JSON.stringify(evidence).includes("sleep 75"), false);
 	});
@@ -431,6 +499,21 @@ describe("runLongTurn on a virtual clock", () => {
 		const evidence = await runLongTurn(options, deps);
 		assert.equal(evidence.result.verdict, "inconclusive");
 		assert.equal(EXIT[evidence.result.verdict], 3);
+	});
+
+	it("keeps sampling through the requested hold after an early idle", async () => {
+		const { deps } = harness({ honored: false });
+		const evidence = await runLongTurn(options, deps);
+		const injectedAtMs = Date.parse(evidence.injection.injectedAt);
+		assert.ok(evidence.samples.at(-1).atMs >= injectedAtMs + 75_000);
+	});
+
+	it("is inconclusive when the delivery time cannot be read", async () => {
+		const { deps, fixture } = harness();
+		fixture.noDelivery = true;
+		const evidence = await runLongTurn(options, deps);
+		assert.equal(evidence.result.verdict, "inconclusive");
+		assert.equal(evidence.result.why, "no_delivery_evidence");
 	});
 
 	it("refuses to author the fixture as the Lead's own bot", async () => {

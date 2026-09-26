@@ -101,6 +101,7 @@ describe("locateConfiguredLeadWindow — 529 room launchd authority", () => {
 	): string {
 		return [
 			'<?xml version="1.0" encoding="UTF-8"?>',
+			'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
 			'<plist version="1.0"><dict>',
 			`<key>Label</key><string>${over.label ?? LABEL}</string>`,
 			`<key>ProgramArguments</key><array><string>${over.wrapper ?? WRAPPER}</string><string>${over.manifest ?? ROOM_MANIFEST}</string></array>`,
@@ -109,6 +110,7 @@ describe("locateConfiguredLeadWindow — 529 room launchd authority", () => {
 			`<key>FLYWHEEL_STATE_DIR</key><string>${over.state ?? LEAD_STATE}</string>`,
 			"</dict>",
 			"<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>",
+			"<key>ThrottleInterval</key><integer>3</integer>",
 			"</dict></plist>",
 		].join("\n");
 	}
@@ -347,6 +349,91 @@ describe("locateConfiguredLeadWindow — 529 room launchd authority", () => {
 		const { result } = locate(files, execFn);
 		await expect(result).resolves.toBeNull();
 		expect(execFn).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		[
+			"an entity-encoded second state-dir key",
+			(plist: string) =>
+				plist.replace(
+					"</dict>\n<key>RunAtLoad",
+					`<key>FLYWHEEL_STATE_&amp;#68;IR</key><string>${ROOM}/q/9</string>\n</dict>\n<key>RunAtLoad`,
+				),
+		],
+		[
+			"the state dir declared outside EnvironmentVariables",
+			(plist: string) =>
+				plist
+					.replace(
+						`<key>FLYWHEEL_STATE_DIR</key><string>${LEAD_STATE}</string>\n`,
+						"",
+					)
+					.replace(
+						"<key>RunAtLoad</key>",
+						`<key>FLYWHEEL_STATE_DIR</key><string>${LEAD_STATE}</string><key>RunAtLoad</key>`,
+					),
+		],
+		[
+			"a second Label key",
+			(plist: string) =>
+				plist.replace(
+					"<key>RunAtLoad</key>",
+					`<key>Label</key><string>${LABEL}</string><key>RunAtLoad</key>`,
+				),
+		],
+		[
+			"an XML comment",
+			(plist: string) =>
+				plist.replace("<key>RunAtLoad</key>", "<!-- x --><key>RunAtLoad</key>"),
+		],
+		[
+			"an unsupported element",
+			(plist: string) =>
+				plist.replace(
+					"<key>RunAtLoad</key>",
+					"<key>X</key><data>AA==</data><key>RunAtLoad</key>",
+				),
+		],
+		[
+			"a second top-level value",
+			(plist: string) =>
+				plist.replace("</dict></plist>", "</dict><dict></dict></plist>"),
+		],
+		[
+			"trailing content after the plist",
+			(plist: string) => `${plist}\n<plist version="1.0"><dict></dict></plist>`,
+		],
+		[
+			"plain text after the closing plist tag",
+			(plist: string) => `${plist}\ntrailing`,
+		],
+	] as const)("fails closed on a plist with %s", async (_why, mutate) => {
+		const execFn = livePane();
+		const { result } = locate(
+			roomFiles({ plist: mutate(roomPlist()) }),
+			execFn,
+		);
+		await expect(result).resolves.toBeNull();
+		expect(execFn).not.toHaveBeenCalled();
+	});
+
+	it("decodes the five XML entities the renderer writes in string values", async () => {
+		const state = `${ROOM}/q/a&b`;
+		const execFn = livePane();
+		const { result } = locate(
+			roomFiles({
+				plist: roomPlist({ state: `${ROOM}/q/a&amp;b` }),
+				manifest: {
+					projectName: PROJECT,
+					leadId: AGENT,
+					socketPath: deriveLeadSocketPath(`${PROJECT}/${AGENT}`, state),
+				},
+			}),
+			execFn,
+		);
+		await expect(result).resolves.toMatchObject({
+			socketPath: deriveLeadSocketPath(`${PROJECT}/${AGENT}`, state),
+		});
 	});
 
 	it("fails closed when the plist declares the state dir twice", async () => {

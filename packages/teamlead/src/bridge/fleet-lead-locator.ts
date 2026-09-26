@@ -126,14 +126,18 @@ function readRegistryAuthority(
 		!isInside(root, manifestPath)
 	)
 		return null;
-	const plist = readFile(plistPath);
-	const argv = plistProgramArguments(plist);
-	const stateDir = plistString(plist, "FLYWHEEL_STATE_DIR");
+	const plist = parseLaunchdPlist(readFile(plistPath));
+	if (!plist) return null;
+	const argv = plist.ProgramArguments;
+	const env = plist.EnvironmentVariables;
+	const stateDir = isDict(env) ? env.FLYWHEEL_STATE_DIR : undefined;
 	if (
-		plistString(plist, "Label") !== label ||
-		argv?.length !== 2 ||
-		!isCanonicalAbsolute(argv[0]!) ||
-		basename(argv[0]!) !== V2_WRAPPER ||
+		plist.Label !== label ||
+		!Array.isArray(argv) ||
+		argv.length !== 2 ||
+		typeof argv[0] !== "string" ||
+		!isCanonicalAbsolute(argv[0]) ||
+		basename(argv[0]) !== V2_WRAPPER ||
 		argv[1] !== manifestPath ||
 		!isInside(root, stateDir)
 	)
@@ -173,27 +177,115 @@ function xmlText(raw: string): string | undefined {
 	);
 }
 
-/** The single `<key>K</key><string>…</string>` value; duplicates are refused. */
-function plistString(plist: string, key: string): string | undefined {
-	const matches = [
-		...plist.matchAll(
-			new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`, "g"),
-		),
-	];
-	return matches.length === 1 ? xmlText(matches[0]![1]!) : undefined;
+type PlistValue = string | boolean | number | PlistValue[] | PlistDict;
+interface PlistDict {
+	[key: string]: PlistValue;
 }
 
-function plistProgramArguments(plist: string): string[] | undefined {
-	const arrays = [
-		...plist.matchAll(
-			/<key>ProgramArguments<\/key>\s*<array>((?:\s*<string>[^<]*<\/string>)*)\s*<\/array>/g,
-		),
-	];
-	if (arrays.length !== 1) return undefined;
-	const values = [...arrays[0]![1]!.matchAll(/<string>([^<]*)<\/string>/g)].map(
-		(match) => xmlText(match[1]!),
-	);
-	return values.every((value) => value !== undefined)
-		? (values as string[])
-		: undefined;
+function isDict(value: PlistValue | undefined): value is PlistDict {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const PLIST_PROLOGUE =
+	/^\s*<\?xml version="1\.0" encoding="UTF-8"\?>\s*(?:<!DOCTYPE plist PUBLIC "-\/\/Apple\/\/DTD PLIST 1\.0\/\/EN" "http:\/\/www\.apple\.com\/DTDs\/PropertyList-1\.0\.dtd">\s*)?<plist version="1\.0">/;
+const PLIST_TOKEN =
+	/<(\/?)(dict|key|string|array|integer|true|false)(\/?)>|([^<]+)/y;
+const PLIST_KEY = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+/**
+ * Strict reader for the launchd plist subset qa-launchd-lead.sh renders: one
+ * top-level dict of dict/array/string/integer/true/false, keys spelled
+ * literally (no entities), no duplicate key at any level, nothing else —
+ * comments, CDATA, attributes and trailing content are refused, so the value
+ * we act on is the one launchd reads.
+ */
+function parseLaunchdPlist(xml: string): PlistDict | undefined {
+	const prologue = PLIST_PROLOGUE.exec(xml);
+	if (!prologue) return undefined;
+	const end = xml.lastIndexOf("</plist>");
+	if (end < 0 || xml.slice(end + "</plist>".length).trim() !== "")
+		return undefined;
+	const tokens: Array<{
+		tag?: string;
+		close?: boolean;
+		empty?: boolean;
+		text?: string;
+	}> = [];
+	const body = xml.slice(prologue[0].length, end);
+	PLIST_TOKEN.lastIndex = 0;
+	while (PLIST_TOKEN.lastIndex < body.length) {
+		const match = PLIST_TOKEN.exec(body);
+		if (!match) return undefined;
+		if (match[4] !== undefined) tokens.push({ text: match[4] });
+		else if (match[1] && match[3]) return undefined;
+		else tokens.push({ tag: match[2], close: !!match[1], empty: !!match[3] });
+	}
+	let at = 0;
+	const skipBlank = () => {
+		while (tokens[at]?.text !== undefined && tokens[at]!.text!.trim() === "")
+			at++;
+	};
+	const leaf = (tag: string): string | undefined => {
+		const text = tokens[at]?.text;
+		if (text !== undefined) at++;
+		const close = tokens[at];
+		if (close?.tag !== tag || !close.close) return undefined;
+		at++;
+		return text ?? "";
+	};
+	const value = (): PlistValue | undefined => {
+		skipBlank();
+		const open = tokens[at++];
+		if (!open?.tag || open.close) return undefined;
+		if (open.empty) {
+			if (open.tag === "true") return true;
+			if (open.tag === "false") return false;
+			return open.tag === "string" ? "" : undefined;
+		}
+		switch (open.tag) {
+			case "string": {
+				const raw = leaf("string");
+				return raw === undefined ? undefined : xmlText(raw);
+			}
+			case "integer": {
+				const raw = leaf("integer");
+				return raw !== undefined && /^-?\d{1,15}$/.test(raw)
+					? Number(raw)
+					: undefined;
+			}
+			case "array": {
+				const items: PlistValue[] = [];
+				for (;;) {
+					skipBlank();
+					if (tokens[at]?.tag === "array" && tokens[at]!.close) {
+						at++;
+						return items;
+					}
+					const item = value();
+					if (item === undefined) return undefined;
+					items.push(item);
+				}
+			}
+			case "dict": {
+				const dict: PlistDict = Object.create(null);
+				for (;;) {
+					skipBlank();
+					const next = tokens[at++];
+					if (next?.tag === "dict" && next.close) return dict;
+					if (next?.tag !== "key" || next.close || next.empty) return undefined;
+					const key = leaf("key");
+					if (key === undefined || !PLIST_KEY.test(key) || key in dict)
+						return undefined;
+					const item = value();
+					if (item === undefined) return undefined;
+					dict[key] = item;
+				}
+			}
+			default:
+				return undefined;
+		}
+	};
+	const root = value();
+	skipBlank();
+	return isDict(root) && at === tokens.length ? root : undefined;
 }
