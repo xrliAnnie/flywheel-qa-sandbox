@@ -1,13 +1,15 @@
 ---
 issue: FLY-2921
 phase: implement
-phaseCursor: 9/9
-updated: 2026-09-26T19:58:44.256Z
-nextStep: Codex R5 APPROVED；里程碑最后提交→推送→开 PR→ask --report→complete needs_review
+phaseCursor: 1/8
+updated: 2026-09-26T20:24:54.906Z
+nextStep: QA FAIL 返工：fly1674 allowlist、fly2337 held 夹具、token-savings
+  摘要、patrol-tick、wall-clock、feature-flags-drift、retention 消费者登记；shard4 容量护栏报
+  Lead
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: implement (9/9)
-**next**: Codex R5 APPROVED；里程碑最后提交→推送→开 PR→ask --report→complete needs_review
+**phase**: implement (1/8)
+**next**: QA FAIL 返工：fly1674 allowlist、fly2337 held 夹具、token-savings 摘要、patrol-tick、wall-clock、feature-flags-drift、retention 消费者登记；shard4 容量护栏报 Lead
