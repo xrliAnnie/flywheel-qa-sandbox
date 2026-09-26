@@ -1,0 +1,14 @@
+{
+  "staticChecks": "passed",
+  "cardsAndComments": 9,
+  "htmlSha256": "4560925c9651a4538bc1bf138edf15a3781e12b903c1473acbd71320e6f96c96",
+  "htmlBytes": 21514,
+  "scriptSha256": "e7c76c4ff0b59fb6882e6868374214949a70c91a2eb4ccc19e7434215d70d693",
+  "controllerScriptByteIdenticalToPriorPassedScenarios": true,
+  "approvedPlanBlob": "989780531149c2bd73c37bb3da1fe1a08ba60e62",
+  "externalAssets": 0,
+  "inlineHandlers": 0,
+  "nonceScripts": 1,
+  "diagramStatus": "3 pending local render; prior two attempts each failed; preserved sources",
+  "scope": "Final static check and unchanged prior mocked-DOM controller evidence. No browser visual or production proof."
+}

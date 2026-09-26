@@ -3,12 +3,12 @@
 :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#1d1d1f;background:#f5f5f7;color-scheme:light}
 *{box-sizing:border-box}body{margin:0;padding:32px 18px 72px}main{max-width:1000px;margin:auto}h1{font-size:15px;color:#6e6e73;margin:0 0 22px}h2{font-size:25px;line-height:1.3;margin:0 0 18px}.card{background:#fff;border:1px solid #e7e7eb;border-radius:20px;padding:30px;margin-bottom:22px;box-shadow:0 3px 15px #00000004}.hero{border-top:5px solid #007aff}.hero h2{font-size:35px;max-width:780px}.lead{font-size:21px;line-height:1.55}.badge{display:inline-block;border-radius:20px;background:#eaf2ff;color:#0757b4;padding:5px 12px;font-size:13px}p,li{line-height:1.75}p{margin:12px 0}.meta{font-size:13px;color:#6e6e73}.notice,.pending{background:#fff6e6;border:1px solid #ffe1a4;border-radius:12px;padding:16px}.pending strong{font-size:14px;color:#8b5300}.diagram{overflow:auto}.diagram svg{max-width:100%;height:auto;display:block}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:13px 9px;text-align:left;vertical-align:top;border-bottom:1px solid #eee;line-height:1.6}th{color:#6e6e73;font-weight:600}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0}.metrics b{display:block;font-size:43px;color:#007aff}.metrics span{font-size:13px;color:#6e6e73}.comment{margin-top:24px;padding-top:18px;border-top:1px solid #eee}label{display:block;color:#6e6e73;font-size:13px;margin-bottom:7px}textarea{width:100%;min-height:76px;border:1px solid #d2d2d7;border-radius:10px;padding:12px;font:inherit;font-size:14px;resize:vertical}textarea:focus{outline:2px solid #007aff;outline-offset:2px}button{border:0;border-radius:9px;padding:11px 16px;background:#007aff;color:white;font:inherit;font-size:14px;cursor:pointer;margin:8px 8px 8px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f7;padding:15px;border-radius:10px;font-size:13px;line-height:1.6}a{color:#006ad4}summary{cursor:pointer}#copy-status{font-size:13px;color:#6e6e73}@media(max-width:600px){body{padding:20px 10px 48px}.card{padding:21px 17px;border-radius:16px}.hero h2{font-size:28px}h2{font-size:22px}.lead{font-size:18px}.metrics{gap:10px}.metrics b{font-size:34px}td,th{padding:10px 5px;min-width:90px}}
 </style></head><body><main><h1>FLY-2925 · 引擎统一体生命周期 — 设计说明</h1><section class="card hero" id="decision"><h2>让 Codex 独立运行，调度重启只重新连接</h2>
-<span class="badge">FLY-2925 · 设计草案</span>
+<span class="badge">FLY-2925 · 设计评审已通过</span>
 <p class="lead">选独立 runner 宿主 + 可见终端：把每个工程师的运行控制搬出 Bridge，保留现有程序通信能力。</p>
 <p>Bridge 是接单、调度与汇报的服务。宿主是守着一个 Codex 工程师的独立程序。今天终端已经可见，但运行控制还在 Bridge 里；服务重启时这部分控制需要重建。</p>
 <p><strong>为什么选它：</strong>调度服务重启时，原工程师继续工作；卡住不再等于死亡，明确结束后也不会自动复活。</p>
 <p><strong>代价：</strong>增加独立宿主、固定版本的运行文件和重连通道；需要分两次上线，先让旧系统认识新宿主，再启用它，避免回滚时误杀正在工作的工程师。</p>
-<p class="notice">账号边界：沿用已批准的按账号固定归属方案；工作中的工程师保留原账号，切换默认账号只影响新工程师。独立宿主不需要在飞换号。本页尚未获设计评审批准。</p>
+<p class="notice">账号边界：沿用已批准的按账号固定归属方案；工作中的工程师保留原账号，切换默认账号只影响新工程师。独立宿主不需要在飞换号。本页对应第三轮已批准设计；仍有非阻塞后续项，尚未实施或部署。</p>
 <p class="meta">2026-09-26 · 依据：本单探索、调研与实施计划 · 设计阶段，未实施或部署</p>
 <div class="comment"><label for="note-decision">这部分的意见</label><textarea id="note-decision" data-comment="decision" data-title="让 Codex 独立运行，调度重启只重新连接" aria-label="让 Codex 独立运行，调度重启只重新连接的意见" placeholder="意见自动保存在本机浏览器；不会自动发送。"></textarea></div></section><section class="card " id="flow"><h2>工作继续，生死由引擎决定</h2><p>工作流引擎记录任务、当前执行者和终结决定。goal 是 Codex 自己记录的持续目标；它卡住、暂停或完成，都不直接证明执行体死亡。</p><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本地图形程序启动被系统限制；已重试一次。保留原始图稿，尚未取得渲染图。</p><details><summary>查看 Mermaid 图稿（描述节点与连线的文本）</summary><pre>flowchart TB
     E[工作流引擎&lt;br/&gt;决定任务与终结] --&gt;|持久需求和关闭记录| H[独立 runner 宿主&lt;br/&gt;继续原执行体]
@@ -90,10 +90,12 @@
 <div class="comment"><label for="note-acceptance">这部分的意见</label><textarea id="note-acceptance" data-comment="acceptance" data-title="怎样证明真的修好了" aria-label="怎样证明真的修好了的意见" placeholder="意见自动保存在本机浏览器；不会自动发送。"></textarea></div></section><section class="card " id="boundary"><h2>做什么、尚未证明什么</h2>
 <p><strong>做：</strong>独立运行控制、按原会话恢复、目标状态与体生死分离、复用 FLY-2903 的停止保护，以及最小启动返回值修正。</p>
 <p><strong>不扩展：</strong>凭据存储重做、全部额度故障、全部工作目录接管故障、Claude 架构重写。</p>
-<p><strong>当前限制：</strong>设计仍待评审；账号合同已按 Lead 最新裁定对齐，实际接入仍待验证；本地 Mermaid 图形启动失败，已按要求重试并保留图稿。没有部署或生产修后证明。</p>
+<p><strong>当前限制：</strong>第三轮设计评审已通过（四项非阻塞建议）；账号合同已按 Lead 最新裁定对齐，实际接入仍待验证；本地 Mermaid 图形启动失败，已按要求重试并保留图稿。没有部署或生产修后证明。</p>
 <p><strong>上线代价：</strong>第一次兼容版先通过服务健康检查再接管；健康检查失败仍可回旧版，接管后和后续启用失败则保留已经验证的兼容管理版本。运行文件要保留在独立快照中；每次更新必须兼容仍在工作的旧版本，否则先完成原会话升级。空间不足时停止新发布，不能删除正在使用的版本；容量优化尚是后续项。</p>
 <p>当前回滚保护覆盖受管自动部署，不保证人为把启动脚本退到旧版时仍有效。此限制已列后续项。
-</p><p>本页意见用于修改设计，不代表通过或允许上线。</p>
+</p><p><strong>四项非阻塞建议：</strong>日常更新中新版本开始接单的时点；首次健康检查期间的终态清理与等待上限；命令遇到数据库忙时的重试和适用范围；固定版本文件的容量与保留集。已交 Lead 决定后续归属，本页不声称这些问题已修复。</p>
+<p class="meta">批准凭证：第三轮，2026-09-26；对应实施计划版本 989780531149c2bd73c37bb3da1fe1a08ba60e62。</p>
+<p>本页意见用于修改设计，不代表允许上线。</p>
 <p class="meta">参考：<a href="https://github.com/xrliAnnie/flywheel/pull/1343">FLY-2903 停止保护</a> · <a href="https://github.com/xrliAnnie/flywheel/pull/1352">FLY-2902 当前依赖</a> · <a href="https://learn.chatgpt.com/docs/app-server">Codex 程序接口</a> · <a href="https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex">原生持续目标</a></p>
 <div class="comment"><label for="note-boundary">这部分的意见</label><textarea id="note-boundary" data-comment="boundary" data-title="做什么、尚未证明什么" aria-label="做什么、尚未证明什么的意见" placeholder="意见自动保存在本机浏览器；不会自动发送。"></textarea></div></section><section class="card " id="summary"><h2>页面意见汇总</h2>
 <p>下方汇总每一节的非空意见。长意见自动拆分，每段都带本任务标记；复制后可发给 Lead。</p>

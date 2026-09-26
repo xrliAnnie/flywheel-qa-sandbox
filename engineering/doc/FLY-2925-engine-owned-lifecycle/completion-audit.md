@@ -31,3 +31,7 @@ question 3d0bd288-23a3-46e2-a652-86e1fb8e9b88 已返回有效 CHANGES_REQUESTED�
 有效 CHANGES_REQUESTED：新增 HIGH pinned-snapshot-cross-version-contracts；R1 两项 HIGH 已获 reviewer 确认修复。plan §4.5 增全部固定消费者的跨版本合同、最旧在用部署门、无迁移 writer、原会话升级和 A9。§15 保留两个非阻塞 Follow-ups（人工 reset 绕过 wrapper、快照容量优化），其他三项建议已修订。等待新复审；未发布或交卷。
 
 第三次评审 accepted：question 475e1488-63cf-4948-bb03-87b325b0b7f9，request b797be09-535e-4a2e-9635-f95e99a0035c，提交 79c03027c，plan blob 989780531149c2bd73c37bb3da1fe1a08ba60e62；未获 verdict，未发布。
+
+## R3 获批核验
+
+有效 APPROVED，四项 MEDIUM 已记录 review-followups.md 并报告 Lead；只读核 engine approval proof.state=approved，expected_blob_sha 与当前 HEAD plan 均为 989780531149c2bd73c37bb3da1fe1a08ba60e62。正式凭证在 evidence/review-approved.json。plan 字节冻结；HTML 状态与 Follow-ups 已同步。剩余：最终提交/推送、静默发布、托管页核验、DESIGN-HTML ready、complete、park。
