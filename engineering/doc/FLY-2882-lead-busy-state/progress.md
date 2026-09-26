@@ -1,15 +1,16 @@
 ---
 issue: FLY-2882
 phase: implement
-phaseCursor: 3/5
-updated: 2026-09-26T08:12:02.426Z
-nextStep: "UTF-8 fix 629893409 + fixture 09772858d + smoke done (A old 14/14
-  unknown, B 12 idle/1 busy/1 no_status). Next: targeted tests,
-  lint/build/typecheck, FLY-2006 gate, verification §9, push, codex review"
+phaseCursor: 5/5
+updated: 2026-09-26T08:25:55.859Z
+nextStep: "Rework claim 1599 done: UTF-8 629893409, fixture 09772858d, tests
+  8a041b790/15377ad6c, review R1+R2 APPROVED, verification ada5c1ca5. Next:
+  milestone last, push, ci-full ensure, ask --report, complete needs_review --pr
+  1331"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2882 progress
-**phase**: implement (3/5)
-**next**: UTF-8 fix 629893409 + fixture 09772858d + smoke done (A old 14/14 unknown, B 12 idle/1 busy/1 no_status). Next: targeted tests, lint/build/typecheck, FLY-2006 gate, verification §9, push, codex review
+**phase**: implement (5/5)
+**next**: Rework claim 1599 done: UTF-8 629893409, fixture 09772858d, tests 8a041b790/15377ad6c, review R1+R2 APPROVED, verification ada5c1ca5. Next: milestone last, push, ci-full ensure, ask --report, complete needs_review --pr 1331
