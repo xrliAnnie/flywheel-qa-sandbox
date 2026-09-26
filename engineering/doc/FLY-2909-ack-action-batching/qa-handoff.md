@@ -16,6 +16,9 @@ Claude Lead 与 Codex Lead 都测 OFF、ON、ON→OFF 回退。Codex 房间由 L
 1. 普通需动作批次：ON 的 ACK 与首个处理动作出现在同一次 assistant response 的工具调用中。记录请求、工具 id 与 batch id；比较 OFF 的 ACK 独立轮数。
 2. 纯状态通知：有其他收尾动作时同发；ACK 是唯一必要动作时立即单发，不延后或漏 ACK。紧急 founder 输入不等待凑批。重复送达的已处理消息也必须 ACK，不重复执行业务动作。
 3. 对每批跟踪投递→lease→ACK admission→消费回执，并注入无 ACK 的 lease 过期与重投。比较 ON/OFF：无丢批、无重复业务处理，重投与该唤醒的事件仍按原系统工作。
+   - ACK 与首动作同发但首动作报错：确认该批仍可重投，或未完成项仍留在 Lead 的权威待办中。
+   - ACK 与首动作同发后、批次尚未处理完时杀掉 Lead：重启后确认未处理消息仍会重投，且不会被误判为已完成。
+   任一载体或任一开关状态出现丢信即判 FAIL，不得用本地 mock 或提示文本检查替代。
 4. OFF 规则源 SHA 必须匹配 ack-rule-oracle.json 的 off 值；Bootstrap 与原始生成/格式化字节一致。token-savings 的两套 shell 规则分别比对，Codex v2 保留其原有源选择并核对实际 source manifest。
 5. QA 请求冻结头 full exact-head CI；实现的 focused/related/CI Scope OK 不代表此项或真房通过。最终 founder gate 仍必需。
 

@@ -25,3 +25,11 @@ Issue: FLY-2909
 ## 尚需独立证据
 
 本地通过不证明真实 Lead 会遵守规则，也不证明 529 真批次的 lease/ACK/重投/唤醒无回归。QA 必须按 qa-handoff.md 取得 Claude 与 Codex ON/OFF 真实证据，并请求冻结头 full exact-head CI；实现节点仅走代码评审与 needs_review，不请求 full CI、不 dispatch QA、不合并或部署。生产开关由 Lead 合入上线后打开观察。
+
+## QA FAIL 后 implement 返工（attempt 2）
+
+- QA 在 `bd40e1eb0` 上因 full CI run `36256758303` 的 `qa-fly-1986-load-probe.test.sh` 正控一次得到 `incomplete_expected=3` 而 fail-close；没有进入 529，未产生产品行为 FAIL 证据。
+- 该 FLY-1986 脚本与当时 main 字节一致，同版本在 main 的完整 Script E 曾通过；本地原样复跑又在更早的 SIGTERM 时序断言红，而非复现 R6-3。证据只支持共享 timing harness 抖动，不支持改 ACK 产品或无关 harness。
+- 合入 `origin/main` 的 FLY-2934 后，唯一冲突是 feature-flag registry 的冗余固定总数断言；按上游删除法解决，保留 FLY-2909 `EXPECTED_WHEN_ON` 映射和所有语义断言。未改 Bridge、mailbox、lease、ACK 或 FLY-1986 文件。
+- 新 merge 头的定向证据：config 2 files / 71 tests，config changed-file related 57/57，teamlead 4 files / 94 tests，FLY-2909 shell contract，FLY-1674 88/88，affected build、dependent typecheck、`pnpm lint` 均退出 0。lint 只报告仓库既有 warnings。
+- full exact-head CI 与 Claude/Codex 529 四项矩阵仍由 QA retest 取得；implement 不把此次定向验证冒充 full CI 或真实 Lead 行为证据。
