@@ -529,6 +529,13 @@
 			"disposition": "candidate_guarded"
 		},
 		{
+			"file": "scripts/qa-lead-activity-long-turn.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
 			"file": "scripts/qa/fly2446-two-lead-run.mjs",
 			"relation": "mailbox",
 			"baseTable": "mailbox",
@@ -749,6 +756,13 @@
 			"file": "packages/teamlead/src/bridge/voice-agenda-store.ts",
 			"relation": "session_events",
 			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-activity/turn-trigger-attribution.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
 			"usage": "read",
 			"disposition": "candidate_guarded"
 		},
