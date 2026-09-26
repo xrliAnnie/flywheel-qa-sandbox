@@ -39,6 +39,14 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 - R4 gate=`cdb373cb-c3e9-41cc-b9fb-fd829094d0a5`、request=`f3c26ccf-9397-4a65-8fc3-a604f159f3ac`，accepted=true、skipped=false、duplicate=false；送审plan blob=`da53ca9012d3c9894d14df4f70e15ead060d55c6`。
 - 本轮新增的一条可复用判断“传感器unknown不是恢复；删除锁存须明确证据有效期”已写成允许路径下的memory更新建议 `memories/extensions/ad_hoc/notes/2026-09-26T172700Z-bounded-pressure-evidence.md`。未直接修改共享角色索引；其只读预算检查为102行/19931字节。
 
-## 待完成
+## 最终交付验收（2026-09-26）
 
-有效评审 → 最终页状态刷新 → commit/push → publish-only → 托管 HTTP/CSP/source 校验 → Lead URL report → exact complete/park。
+- 有效裁决：R4 `reviewVerdict=APPROVED`、`reviewerVerdict=APPROVED`，request `f3c26ccf-9397-4a65-8fc3-a604f159f3ac`，gate `cdb373cb-c3e9-41cc-b9fb-fd829094d0a5`；完整结果 `review-approved.json`。原计划blob保持 `da53ca9012d3c9894d14df4f70e15ead060d55c6`，有效状态以服务端/回执为准，未改写送审正文。
+- 非阻塞项完整保留 `follow-ups.md`，报告 `8390e516-1526-4352-9c9e-225034883f3d`。doorbell超时但durable队列已接受；不把队列接受说成Lead已阅读。
+- 最终HTML提交 `158d33b97` 已推送，source SHA256=`1b5ff017f3a095df5fbd4e2231cc15cca7823b5a2364211fa33290e73354d538`。仅设计文档/报告改动，无产品代码、全量测试、部署、重启或后继派发。
+- 静默发布：reportId=`bd76a2a0ba162720f3b54d05a9394840`、publishOnly=true、messageId=null、delivered=false。托管URL：https://fw-reports-6da062.vercel.app/r/bd76a2a0ba162720f3b54d05a9394840/ 。这是静默发布成功，不是频道消息投递。
+- `hosted-verification.json`：HTTP 200；nonce占位已替换且与CSP一致；除发布器预期的CSP/robots noindex注入外，托管内容与提交源一致；7个意见框，单个脚本，无外部资源/内联事件属性。首次严格字节比较发现发布器额外注入robots noindex，核明后仅正规化该精确注入及CSP，再比较通过，未修改源页规避检查。
+- 对托管字节正规化后的同一脚本再次运行原Node VM控制器检查，全通过。浏览器工具两次超时，所以不声称真实浏览器布局或实际CSP执行验收。两处 `DIAGRAM PENDING LOCAL RENDER` 保持，Lead已明确在沙箱外补画。
+- 按精确 `DESIGN-HTML ready: ... | repo: ... | issue: FLY-2920` 格式报告，receipt=`0561e9ba-72b2-4a12-b75f-6cd998a7a847`。同样为durable已接受，doorbell失败由Lead轮询重试。
+- 设计阶段必需产物、有效评审、commit/push、静默发布、托管验证及Lead URL报告已齐；接下来仅执行 `complete --route phase_design_complete` 与 `park`，其服务端回执作为阶段交接权威。实现/QA的六单重现及产品回归尚未执行，不能将设计通过当成修复验证。
+

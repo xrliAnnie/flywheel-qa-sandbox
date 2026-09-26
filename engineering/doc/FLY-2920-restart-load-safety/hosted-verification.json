@@ -1,0 +1,13 @@
+{
+  "httpStatus": 200,
+  "matchingCspNonce": true,
+  "placeholderRemaining": false,
+  "sourceMatchesAfterCspAndRobotsInjection": true,
+  "scripts": 1,
+  "externalAssets": [],
+  "inlineEventHandlers": [],
+  "commentSections": 7,
+  "diagramPendingCount": 2,
+  "sourceSha256": "1b5ff017f3a095df5fbd4e2231cc15cca7823b5a2364211fa33290e73354d538",
+  "scope": "HTTP/CSP/source verification; no browser layout or real browser script execution claim"
+}
