@@ -181,6 +181,16 @@ function expectCurrentRecovery(store: StateStore, result: unknown) {
 		.listWorkflowRunEvents(RUN)
 		.filter((event) => event.kind === "run_recovery_required");
 	expect(episodes).toHaveLength(1);
+	expect(store.listWorkflowHolds(RUN)).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				shape: "workflow_node_recovery",
+				holdEventUid: episodes[0]!.event_uid,
+				runLevel: true,
+				resumable: true,
+			}),
+		]),
+	);
 	expect(episodes[0]).toMatchObject({
 		node_id: "design",
 		execution_id: EXECUTION,

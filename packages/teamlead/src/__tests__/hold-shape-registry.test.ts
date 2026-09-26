@@ -7,6 +7,7 @@ import {
 } from "../bridge/hold-shape-registry.js";
 
 const EXPECTED_SHAPES = [
+	"workflow_node_recovery",
 	"rework_activation_stalled_held",
 	"rework_pane_loss_handoff",
 	"rework_retry_exhausted",
@@ -35,7 +36,7 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 			HOLD_SHAPE_REGISTRY.filter(
 				({ authoritativeStore }) => authoritativeStore === "state",
 			),
-		).toHaveLength(17);
+		).toHaveLength(18);
 		expect(
 			HOLD_SHAPE_REGISTRY.filter(
 				({ authoritativeStore }) => authoritativeStore === "comm",
@@ -92,7 +93,7 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 		}
 	});
 
-	it("classifies delivery and run-derived holds without changing the 19-shape inventory", () => {
+	it("classifies delivery and run-derived holds alongside the unified recovery descriptor and historical aliases", () => {
 		expect(getHoldShape("carrier_needs_lead")?.scope).toBe("delivery");
 		expect(getHoldShape("delivery_undeliverable_no_recipient")?.scope).toBe(
 			"delivery",
@@ -100,7 +101,7 @@ describe("FLY-2248 sanctioned hold-shape registry", () => {
 		expect(getHoldShape("carrier_run_inactive")?.scope).toBe("run-derived");
 		expect(
 			HOLD_SHAPE_REGISTRY.filter(({ scope }) => scope === "run"),
-		).toHaveLength(16);
+		).toHaveLength(17);
 	});
 
 	it("keeps operator recovery discovery aligned with terminal registered holds", () => {

@@ -57429,6 +57429,23 @@ export class StateStore {
 			ok,
 			detail,
 		});
+		if (input.descriptor.id === "workflow_node_recovery") {
+			const run = this.getWorkflowRun(input.runId);
+			const node = input.nodeId
+				? this.listWorkflowRunNodes(input.runId, input.nodeId).at(-1)
+				: undefined;
+			const current = Boolean(
+				input.executionId && run?.engine_owned === 1 &&
+				run.current_node_id === input.nodeId &&
+				node?.attempt === input.payload.attempt &&
+				node.execution_id === input.executionId &&
+				["failed", "running", "admitted", "pending"].includes(node.state) &&
+				!this.getWorkflowNodeCompletion(input.runId, input.nodeId!, node.attempt),
+			);
+			return result(current, current
+				? "current incomplete node requires trusted recovery preflight"
+				: "recovery episode no longer matches the current incomplete node");
+		}
 		const reworkShapes = new Set([
 			"rework_activation_stalled_held",
 			"rework_pane_loss_handoff",

@@ -3,6 +3,19 @@
 		"store": "state",
 		"table": "workflow_run_event",
 		"file": "StateStore.ts",
+		"symbol": "recoverWorkflowNode",
+		"mutationKind": "held",
+		"shapeIds": ["workflow_node_recovery"],
+		"producerSymbols": [
+			"recordWorkflowPreAdmissionFailure",
+			"ensureCarrierCloseRecoveryTx",
+			"commitEnrolledFailure"
+		]
+	},
+	{
+		"store": "state",
+		"table": "workflow_run_event",
+		"file": "StateStore.ts",
 		"symbol": "resumeWorkflowHold",
 		"mutationKind": "held",
 		"shapeIds": [

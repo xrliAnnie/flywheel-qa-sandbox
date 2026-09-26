@@ -84,6 +84,11 @@ function shape(input: {
 
 export const HOLD_SHAPE_REGISTRY = Object.freeze([
 	shape({
+		id: "workflow_node_recovery",
+		eventKind: "run_recovery_required",
+		resumeAction: "redispatch_current",
+	}),
+	shape({
 		id: "rework_activation_stalled_held",
 		eventKind: "rework_activation_stalled_held",
 		resumeAction: "resume_receipt_deadlock",

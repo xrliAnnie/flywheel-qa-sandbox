@@ -1,5 +1,12 @@
 [
 	{
+		"id": "workflow_node_recovery",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "recoverWorkflowNode"
+	},
+	{
 		"id": "rework_activation_stalled_held",
 		"authoritativeStore": "state",
 		"scope": "run",
