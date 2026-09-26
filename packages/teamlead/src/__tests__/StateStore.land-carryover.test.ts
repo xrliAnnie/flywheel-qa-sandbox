@@ -298,15 +298,13 @@ function activateRework(
 			now: "2026-08-17T20:02:03.000Z",
 		}),
 	).toMatchObject({ ok: true });
+	// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 	expect(
-		store.advanceWorkflowReworkDelivery({
+		store.markWorkflowReworkWakeSent({
 			requestId: input.requestId,
 			ownerId: "coordinator",
 			generation: claim.generation,
-			from: "turn_granted",
-			to: "awaiting_receipt",
 			now: "2026-08-17T20:02:04.000Z",
-			releaseOwner: true,
 		}),
 	).toEqual({ ok: true });
 	expect(

@@ -296,15 +296,13 @@ function deliverFounderRework(
 			now: input.now,
 		}),
 	).toMatchObject({ ok: true });
+	// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 	expect(
-		store.advanceWorkflowReworkDelivery({
+		store.markWorkflowReworkWakeSent({
 			requestId: input.requestId,
 			ownerId: "coordinator",
 			generation: claim.generation,
-			from: "turn_granted",
-			to: "awaiting_receipt",
 			now: input.now,
-			releaseOwner: true,
 		}),
 	).toEqual({ ok: true });
 	expect(
@@ -695,15 +693,13 @@ describe("founder kickback new-card loop", () => {
 					now: "2026-08-14T03:00:02.000Z",
 				}),
 			).toMatchObject({ ok: true });
+			// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 			expect(
-				store.advanceWorkflowReworkDelivery({
+				store.markWorkflowReworkWakeSent({
 					requestId: delivery.request_id,
 					ownerId: "coordinator",
 					generation: claim.generation,
-					from: "turn_granted",
-					to: "awaiting_receipt",
 					now: "2026-08-14T03:00:03.000Z",
-					releaseOwner: true,
 				}),
 			).toMatchObject({ ok: true });
 			expect(
@@ -808,15 +804,13 @@ describe("founder kickback new-card loop", () => {
 					now: "2026-08-14T03:10:02.000Z",
 				}),
 			).toEqual({ ok: true });
+			// FLY-2921: the pushed wake is a fact (`wake_sent_at`) on `turn_granted`.
 			expect(
-				store.advanceWorkflowReworkDelivery({
+				store.markWorkflowReworkWakeSent({
 					requestId: qaDelivery.request_id,
 					ownerId: "coordinator",
 					generation: qaClaim.generation,
-					from: "turn_granted",
-					to: "awaiting_receipt",
 					now: "2026-08-14T03:10:03.000Z",
-					releaseOwner: true,
 				}),
 			).toEqual({ ok: true });
 			expect(
