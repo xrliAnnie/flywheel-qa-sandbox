@@ -34519,7 +34519,8 @@ export class StateStore {
 		);
 		// Founder A-strengthening: a successful dead-execution replacement leaves
 		// a durable identity-bound watch. It survives Bridge restarts; the patrol
-		// deletes it when its run stops being active or its bounded TTL expires.
+		// retains active/held run evidence, even after TTL or a trip. Only terminal
+		// runs and orphan watches become eligible for TTL-bounded cleanup.
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_dead_execution_watch (
 				dead_execution_id TEXT PRIMARY KEY,
@@ -60413,10 +60414,8 @@ export class StateStore {
 			   FROM workflow_dead_execution_watch w
 			   LEFT JOIN workflow_run r ON r.run_id = w.run_id
 			  WHERE datetime(w.observed_at) <= datetime(?)
-			     OR r.run_id IS NULL
-			     OR r.status != 'active'
-			  ORDER BY CASE WHEN r.run_id IS NULL OR r.status != 'active' THEN 0 ELSE 1 END,
-			           w.observed_at, w.dead_execution_id
+			    AND (r.run_id IS NULL OR r.status IN ('completed','terminated'))
+			  ORDER BY w.observed_at, w.dead_execution_id
 			  LIMIT ?`,
 			[cutoff, bounded],
 		).map((row) => row.dead_execution_id as string);

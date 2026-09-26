@@ -4592,58 +4592,72 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("prunes a 24-hour dead-execution watch before the tripwire patrol probes it", async () => {
-		const store = await storeWithIntent("implement");
-		const fake = fakeStartDispatcher(store);
-		const base = deadExecEngineClockBaseMs();
-		const first = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-watch-ttl-first-")),
-			env: WORKFLOW_ON,
-			now: () => new Date(base),
-			resolvePredecessorHead: async () => HEAD,
-			probeLaunchLiveness: async () => "dead",
-			captureDeadExecutionActivityBaseline: async () => ({
-				commitMarker: { state: "absent" as const },
-				commDbMessageCount: 0,
-				tmuxTarget: null,
-				tmuxOutputDigest: null,
-				sessionCommitCount: 0,
-			}),
-			probeDeadExecutionActivity: async () => null,
-		});
-		expect(await first.reconcile()).toEqual({ started: 1, held: 0 });
-		store.upsertSession({
-			execution_id: "implement-1",
-			issue_id: "FLY-1307",
-			project_name: "flywheel",
-			status: "failed",
-			workflow_node_id: "implement",
-		});
-		expect(await first.reconcile()).toEqual({ started: 1, held: 0 });
-		expect(store.getWorkflowDeadExecutionWatch("implement-1")).toBeDefined();
+	it.each(["active", "held"])(
+		"FLY-2191 probes a %s run's dead-execution watch after 24 hours",
+		async (runStatus) => {
+			const store = await storeWithIntent("implement");
+			const fake = fakeStartDispatcher(store);
+			const base = deadExecEngineClockBaseMs();
+			const first = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1385-watch-ttl-first-")),
+				env: WORKFLOW_ON,
+				now: () => new Date(base),
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness: async () => "dead",
+				captureDeadExecutionActivityBaseline: async () => ({
+					commitMarker: { state: "absent" as const },
+					commDbMessageCount: 0,
+					tmuxTarget: null,
+					tmuxOutputDigest: null,
+					sessionCommitCount: 0,
+				}),
+				probeDeadExecutionActivity: async () => null,
+			});
+			expect(await first.reconcile()).toEqual({ started: 1, held: 0 });
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status: "failed",
+				workflow_node_id: "implement",
+			});
+			expect(await first.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(store.getWorkflowDeadExecutionWatch("implement-1")).toBeDefined();
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run("UPDATE workflow_run SET status = ? WHERE run_id = ?", [
+				runStatus,
+				"run-1",
+			]);
 
-		const probeDeadExecutionActivity = vi.fn(async () => ({
-			kind: "commdb_write" as const,
-			detail: "must not be probed after expiry",
-		}));
-		const restarted = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-watch-ttl-restart-")),
-			env: WORKFLOW_ON,
-			now: () => new Date(base + 24 * 60 * 60_000),
-			resolvePredecessorHead: async () => HEAD,
-			probeDeadExecutionActivity,
-		});
-		await restarted.reconcile();
+			const probeDeadExecutionActivity = vi.fn(async () => ({
+				kind: "commdb_write" as const,
+				detail: "old execution wrote after TTL",
+			}));
+			const restarted = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1385-watch-ttl-restart-")),
+				env: WORKFLOW_ON,
+				now: () => new Date(base + 24 * 60 * 60_000),
+				resolvePredecessorHead: async () => HEAD,
+				probeDeadExecutionActivity,
+			});
+			await restarted.reconcile();
 
-		expect(probeDeadExecutionActivity).not.toHaveBeenCalled();
-		expect(store.getWorkflowDeadExecutionWatch("implement-1")).toBeUndefined();
-		expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
-		store.close();
-	});
+			expect(probeDeadExecutionActivity).toHaveBeenCalledTimes(1);
+			expect(store.getWorkflowDeadExecutionWatch("implement-1")).toMatchObject({
+				state: "tripped",
+			});
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(2);
+			store.close();
+		},
+	);
 
 	it("records but does not alert when a node needs a second dead-execution replacement", async () => {
 		const store = await storeWithIntent("implement");

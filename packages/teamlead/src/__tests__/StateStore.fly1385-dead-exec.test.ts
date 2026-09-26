@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type Database from "better-sqlite3";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
@@ -613,45 +614,85 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		store.close();
 	});
 
-	it("prunes an active-run dead-execution watch at the 24-hour TTL boundary", async () => {
-		const store = await engineRunWithImplement();
-		expect(
-			store.rollbackDeadWorkflowNodeExecution({
-				runId: "run-1",
-				nodeId: "implement",
-				attempt: 1,
-				deadExecutionId: "implement-dead",
-				newExecutionId: "implement-retry-1",
-				reason: "terminal_session_and_dead_probe",
-				livenessEvidence: {
-					liveness: "dead",
-					observedAt: "2026-07-20T00:10:00.000Z",
-				},
-				now: "2026-07-20T00:10:00.000Z",
-			}),
-		).toMatchObject({ ok: true });
+	it.each([
+		["active", "active"],
+		["active", "tripped"],
+		["held", "active"],
+		["held", "tripped"],
+	])(
+		"FLY-2191 retains a %s run's %s watch across TTL",
+		async (runStatus, watchState) => {
+			const store = await engineRunWithImplement();
+			expect(
+				store.rollbackDeadWorkflowNodeExecution({
+					runId: "run-1",
+					nodeId: "implement",
+					attempt: 1,
+					deadExecutionId: "implement-dead",
+					newExecutionId: "implement-retry-1",
+					reason: "terminal_session_and_dead_probe",
+					livenessEvidence: {
+						liveness: "dead",
+						observedAt: "2026-07-20T00:10:00.000Z",
+					},
+					now: "2026-07-20T00:10:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			const db = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			db.prepare("UPDATE workflow_run SET status = ? WHERE run_id = ?").run(
+				runStatus,
+				"run-1",
+			);
+			const trip = () =>
+				store.tripWorkflowDeadExecutionWatch({
+					deadExecutionId: "implement-dead",
+					evidence: {
+						kind: "commdb_write",
+						detail: "identity-bound late write from old execution",
+					},
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-21T00:11:00.000Z",
+				});
+			if (watchState === "tripped") expect(trip()).toMatchObject({ ok: true });
 
-		expect(
-			store.pruneWorkflowDeadExecutionWatches({
-				now: "2026-07-21T00:09:59.999Z",
-				ttlMs: 24 * 60 * 60 * 1000,
-			}),
-		).toBe(0);
-		expect(store.getWorkflowDeadExecutionWatch("implement-dead")).toBeDefined();
+			expect(
+				store.pruneWorkflowDeadExecutionWatches({
+					now: "2026-07-21T00:09:59.999Z",
+					ttlMs: 24 * 60 * 60 * 1000,
+				}),
+			).toBe(0);
+			expect(
+				store.getWorkflowDeadExecutionWatch("implement-dead"),
+			).toBeDefined();
 
-		expect(
-			store.pruneWorkflowDeadExecutionWatches({
-				now: "2026-07-21T00:10:00.000Z",
-				ttlMs: 24 * 60 * 60 * 1000,
-			}),
-		).toBe(1);
-		expect(
-			store.getWorkflowDeadExecutionWatch("implement-dead"),
-		).toBeUndefined();
-		store.close();
-	});
+			expect(
+				store.pruneWorkflowDeadExecutionWatches({
+					now: "2026-07-21T00:10:00.000Z",
+					ttlMs: 24 * 60 * 60 * 1000,
+				}),
+			).toBe(0);
+			expect(
+				store.getWorkflowDeadExecutionWatch("implement-dead"),
+			).toMatchObject({
+				state: watchState,
+			});
+			expect(trip()).toMatchObject({
+				ok: true,
+				idempotentReplay: watchState === "tripped",
+			});
+			expect(store.getWorkflowDeadExecutionWatch("implement-dead")?.state).toBe(
+				"tripped",
+			);
+			store.close();
+		},
+	);
 
-	it("prunes a fresh dead-execution watch as soon as its run terminates", async () => {
+	it("prunes a terminal run's watch only after the retention TTL", async () => {
 		const store = await engineRunWithImplement();
 		expect(
 			store.rollbackDeadWorkflowNodeExecution({
@@ -706,11 +747,54 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				now: "2026-07-20T00:11:00.000Z",
 				ttlMs: 24 * 60 * 60 * 1000,
 			}),
+		).toBe(0);
+		expect(store.getWorkflowDeadExecutionWatch("implement-dead")).toBeDefined();
+		expect(
+			store.pruneWorkflowDeadExecutionWatches({
+				now: "2026-07-21T00:10:00.000Z",
+				ttlMs: 24 * 60 * 60 * 1000,
+			}),
 		).toBe(1);
 		expect(
 			store.getWorkflowDeadExecutionWatch("implement-dead"),
 		).toBeUndefined();
 		store.close();
+	});
+
+	it("FLY-2191 bounds orphan cleanup and retains unrecognized run states", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			store.createWorkflowRun({
+				runId: "future-run",
+				issueId: "FLY-2191",
+				projectName: "flywheel",
+				claimsReadEnrolled: true,
+			});
+			const db = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			db.prepare("UPDATE workflow_run SET status = ? WHERE run_id = ?").run(
+				"future-state",
+				"future-run",
+			);
+			const insert = db.prepare(`INSERT INTO workflow_dead_execution_watch
+				(dead_execution_id, run_id, node_id, attempt, new_execution_id,
+				 project_name, issue_id, observed_at, baseline_json)
+				VALUES (?, ?, 'implement', 1, 'replacement', 'flywheel', 'FLY-2191', ?, '{}')`);
+			const old = "2026-07-20T00:00:00.000Z";
+			const now = "2026-07-22T00:00:00.000Z";
+			insert.run("future-watch", "future-run", old);
+			insert.run("fresh-orphan", "missing-run", now);
+			for (let i = 0; i < 201; i++)
+				insert.run(`old-orphan-${i}`, "missing-run", old);
+			const request = { now, ttlMs: 24 * 60 * 60 * 1000, limit: 1000 };
+			expect(store.pruneWorkflowDeadExecutionWatches(request)).toBe(200);
+			expect(store.pruneWorkflowDeadExecutionWatches(request)).toBe(1);
+			expect(store.pruneWorkflowDeadExecutionWatches(request)).toBe(0);
+			expect(store.getWorkflowDeadExecutionWatch("future-watch")).toBeDefined();
+			expect(store.getWorkflowDeadExecutionWatch("fresh-orphan")).toBeDefined();
+		} finally {
+			store.close();
+		}
 	});
 
 	it("replays the same rollback without allocating another execution", async () => {
