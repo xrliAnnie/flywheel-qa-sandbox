@@ -2,17 +2,17 @@
 issue: FLY-2920
 phase: implement
 phaseCursor: 4/7
-updated: 2026-09-26T20:38:15.124Z
-nextStep: "F in progress: sampler durability tests green before freeze; real
-  notifier same-millisecond queue collision requires pressure-only stable event
-  key; existing SWAP flag migration follows registry/store guard, no exemption.
-  Cache-read outage must retain durable notification history. Refresh consumer
-  audit and spec/quality review after freeze. G source untouched; read-only
-  recovery consumer audit underway."
+updated: 2026-09-26T20:55:09.551Z
+nextStep: F internal spec R1 found repeated-degradation notification identity
+  and capacity/admission expiry consistency gaps; fixes in RED/GREEN. Pre-review
+  affected build and lint passed, baseline25 warnings. Seven concrete config
+  files passed after exact drift identity inventory correction; config related
+  running. Final43 other files, teamlead related, dependent types and re-review
+  remain. G read-only audit16 files ready; no G implementation yet.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2920 progress
 **phase**: implement (4/7)
-**next**: F in progress: sampler durability tests green before freeze; real notifier same-millisecond queue collision requires pressure-only stable event key; existing SWAP flag migration follows registry/store guard, no exemption. Cache-read outage must retain durable notification history. Refresh consumer audit and spec/quality review after freeze. G source untouched; read-only recovery consumer audit underway.
+**next**: F internal spec R1 found repeated-degradation notification identity and capacity/admission expiry consistency gaps; fixes in RED/GREEN. Pre-review affected build and lint passed, baseline25 warnings. Seven concrete config files passed after exact drift identity inventory correction; config related running. Final43 other files, teamlead related, dependent types and re-review remain. G read-only audit16 files ready; no G implementation yet.
