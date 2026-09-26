@@ -20,6 +20,7 @@ function fixture(
 	withReader = false,
 	withCreator = false,
 	withSender = false,
+	extra: Partial<DiscordHandlerOptions> = {},
 ) {
 	let policy: DiscordCapabilityPolicy = {
 		projectName: "flywheel",
@@ -112,6 +113,7 @@ function fixture(
 		authorizeIssue,
 		botToken: () => "CREDENTIAL_CANARY",
 		lookupParent: defaultLookup ? undefined : lookupParent,
+		...extra,
 	});
 	return {
 		context,
@@ -1071,3 +1073,159 @@ it.each(["edit", "react"])(
 		}
 	},
 );
+
+describe("FLY-2914 patrol root-cause schedule reply", () => {
+	const CHILD = "bff5c1b6-c7f6-4017-9710-52ff55b37c34";
+	const KEY = "c".repeat(64);
+	const scheduleInput = {
+		threadId: "222222222222222222",
+		text: "FLY-2519 已出现 5 次且没有修复在跑，请决定是否排修。",
+		eventId: "patrol-ask",
+		patrolSchedule: { issueUuid: CHILD },
+	};
+	function patrol(
+		over: Partial<NonNullable<DiscordHandlerOptions["patrolSchedule"]>> = {},
+	) {
+		const asks = new Map<
+			string,
+			{ scheduleKey: string; messageId: string | null }
+		>();
+		const schedule = {
+			resolve: vi.fn(async () => ({
+				scheduleKey: KEY,
+				identifier: "FLY-2519",
+			})),
+			reserve: vi.fn((input: { askId: string; scheduleKey: string }) => {
+				const open = [...asks.entries()].find(
+					([, a]) => a.scheduleKey === input.scheduleKey,
+				);
+				if (open)
+					return {
+						reserved: false,
+						askId: open[0],
+						messageId: open[1].messageId,
+					};
+				asks.set(input.askId, {
+					scheduleKey: input.scheduleKey,
+					messageId: null,
+				});
+				return { reserved: true, askId: input.askId, messageId: null };
+			}),
+			delivered: vi.fn((askId: string, messageId: string) => {
+				asks.get(askId)!.messageId = messageId;
+			}),
+			askFor: vi.fn((askId: string) => asks.get(askId)),
+			...over,
+		};
+		return { schedule, asks };
+	}
+	it("binds a server-derived key, sends an attributable marker, and backfills the delivered message", async () => {
+		const { schedule, asks } = patrol();
+		const f = fixture(false, false, false, true, { patrolSchedule: schedule });
+		const result = await f.handlers
+			.get("discord.thread.reply")!
+			.execute(scheduleInput, f.context);
+		expect(result.status).toBe("succeeded");
+		expect(schedule.resolve).toHaveBeenCalledWith(CHILD, {
+			projectName: "flywheel",
+			leadId: "flywheel-product-lead",
+		});
+		const [askId] = [...asks.keys()];
+		expect(schedule.reserve).toHaveBeenCalledWith(
+			expect.objectContaining({
+				askId,
+				scheduleKey: KEY,
+				issueId: "FLY-2519",
+				threadId: "222222222222222222",
+				projectName: "flywheel",
+				leadId: "flywheel-product-lead",
+			}),
+		);
+		expect(f.enqueue.mock.calls[0]![0].text).toContain(
+			`rootcause:${KEY.slice(0, 12)}`,
+		);
+		expect(schedule.delivered).toHaveBeenCalledWith(
+			askId,
+			"444444444444444444",
+			"222222222222222222",
+		);
+	});
+	it("refuses a second open ask for the same category without enqueueing", async () => {
+		const { schedule } = patrol();
+		const f = fixture(false, false, false, true, { patrolSchedule: schedule });
+		await f.handlers
+			.get("discord.thread.reply")!
+			.execute(scheduleInput, f.context);
+		const again = await f.handlers
+			.get("discord.thread.reply")!
+			.execute({ ...scheduleInput, eventId: "patrol-ask-2" }, f.context);
+		expect(again).toMatchObject({
+			status: "rejected",
+			errorCode: "patrol_schedule_ask_open",
+		});
+		expect(f.enqueue).toHaveBeenCalledOnce();
+	});
+	it.each([
+		["no trusted schedule adapter", undefined],
+		[
+			"a category that is not this thread's issue",
+			{
+				resolve: vi.fn(async () => ({ scheduleKey: KEY, identifier: "FLY-9" })),
+			},
+		],
+	])("denies %s before any enqueue", async (_name, over) => {
+		const f = fixture(
+			false,
+			false,
+			false,
+			true,
+			over === undefined ? {} : { patrolSchedule: patrol(over).schedule },
+		);
+		await expect(
+			f.handlers.get("discord.thread.reply")!.execute(scheduleInput, f.context),
+		).rejects.toThrow("discord_scope_denied");
+		expect(f.enqueue).not.toHaveBeenCalled();
+	});
+	it("denies a multi-chunk body or one that never names the category", async () => {
+		const { schedule } = patrol();
+		const f = fixture(false, false, false, true, { patrolSchedule: schedule });
+		for (const text of [
+			`FLY-2519 ${"很".repeat(1800)}`,
+			"请决定这个老问题是否排修。",
+		])
+			await expect(
+				f.handlers
+					.get("discord.thread.reply")!
+					.execute({ ...scheduleInput, text }, f.context),
+			).rejects.toThrow("discord_scope_denied");
+		expect(schedule.reserve).not.toHaveBeenCalled();
+		expect(f.enqueue).not.toHaveBeenCalled();
+	});
+	it("reconciles a lost delivery onto the same ask without resending", async () => {
+		const { schedule, asks } = patrol();
+		const f = fixture(false, false, false, true, { patrolSchedule: schedule });
+		f.deliverWithResult.mockRejectedValue(new Error("lost"));
+		const handler = f.handlers.get("discord.thread.reply")!;
+		expect((await handler.execute(scheduleInput, f.context)).status).toBe(
+			"unknown",
+		);
+		const [askId] = [...asks.keys()];
+		expect(asks.get(askId!)!.messageId).toBeNull();
+		const result = await handler.reconcile!(
+			unknownReceipt,
+			scheduleInput,
+			f.context,
+		);
+		expect(result.status).toBe("succeeded");
+		expect(f.enqueue).toHaveBeenCalledOnce();
+		expect(f.getDeliveryStatus.mock.calls[0]![1].text).toContain(
+			`rootcause:${KEY.slice(0, 12)}`,
+		);
+		expect(schedule.delivered).toHaveBeenCalledWith(
+			askId,
+			"444444444444444444",
+			"222222222222222222",
+		);
+		expect(schedule.resolve).toHaveBeenCalledOnce();
+	});
+});

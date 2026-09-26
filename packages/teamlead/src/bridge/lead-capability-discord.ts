@@ -36,6 +36,10 @@ import type {
 	OperationReceipt,
 	OperationReceiptStore,
 } from "../lead-capabilities/receipts.js";
+import {
+	linearRequestFromClient,
+	resolveRootCauseScheduleIdentity,
+} from "../patrol-root-causes.js";
 import type { StateStore } from "../StateStore.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { DiscordFetcher } from "./founder-consent/discord-fetch.js";
@@ -549,6 +553,47 @@ export function createLeadCapabilityDiscordRouter(
 				}),
 				authorizeIssue: async (b) => {
 					await authorizeDepartment(b.issueId);
+				},
+				// FLY-2914: the parent owns the founder_ask binding; the model names only the child.
+				patrolSchedule: {
+					resolve: (issueUuid, scope) =>
+						resolveRootCauseScheduleIdentity({
+							request: linearRequestFromClient(client),
+							issueUuid,
+							projectName: scope.projectName,
+							leadId: scope.leadId,
+						}),
+					reserve: (ask) => {
+						const reservation = options.store.reservePatrolScheduleAsk({
+							ask_id: ask.askId,
+							project_name: ask.projectName,
+							issue_id: ask.issueId,
+							channel_id: ask.parentId,
+							thread_id: ask.threadId,
+							lead_id: ask.leadId,
+							question_id: null,
+							excerpt: ask.text,
+							asked_at: new Date().toISOString(),
+							patrol_schedule_key: ask.scheduleKey,
+						});
+						return {
+							reserved: reservation.reserved,
+							askId: reservation.ask.ask_id,
+							messageId: reservation.ask.message_id,
+						};
+					},
+					delivered: (askId, messageId, threadId) => {
+						if (!options.store.getFounderAsk(askId)?.message_id)
+							options.store.backfillFounderAskMessage(
+								askId,
+								messageId,
+								threadId,
+							);
+					},
+					askFor: (askId) => {
+						const key = options.store.getFounderAsk(askId)?.patrol_schedule_key;
+						return key ? { scheduleKey: key } : undefined;
+					},
 				},
 			});
 			if (body.operationId === "discord.message.attachments.send") {

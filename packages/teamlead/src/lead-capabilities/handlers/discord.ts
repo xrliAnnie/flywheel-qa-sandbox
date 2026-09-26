@@ -11,6 +11,7 @@ import {
 import type { DiscordFetcher } from "../../bridge/founder-consent/discord-fetch.js";
 import { lookupThreadParent } from "../../bridge/thread-validator.js";
 import type { CodexOutboundSender } from "../../lead-backends/codex/CodexOutboundSender.js";
+import { rootCauseMessageMarker } from "../../patrol-root-causes.js";
 import type { LeadOperationContext, LeadOperationHandler } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
 
@@ -61,6 +62,28 @@ export interface DiscordHandlerOptions {
 	botToken(): string;
 	/** Existing real REST helper by default. Injection is a trusted test seam. */
 	lookupParent?: typeof lookupThreadParent;
+	/**
+	 * FLY-2914: trusted founder_ask binding for patrol root-cause schedule replies.
+	 * The model never supplies or sees the key; the parent owns StateStore access.
+	 */
+	patrolSchedule?: {
+		resolve(
+			issueUuid: string,
+			scope: { projectName: string; leadId: string },
+		): Promise<{ scheduleKey: string; identifier: string }>;
+		reserve(input: {
+			askId: string;
+			projectName: string;
+			issueId: string;
+			parentId: string;
+			threadId: string;
+			leadId: string;
+			text: string;
+			scheduleKey: string;
+		}): { reserved: boolean; askId: string; messageId: string | null };
+		delivered(askId: string, messageId: string, threadId: string): void;
+		askFor(askId: string): { scheduleKey: string } | undefined;
+	};
 }
 const snowflake = /^\d{17,20}$/;
 const deny = () => new Error("discord_scope_denied");
@@ -471,6 +494,9 @@ export function createDiscordHandlers(
 				throw deny();
 			const initial = lookup!(threadId);
 			if (!initial || initial.threadId !== threadId) throw deny();
+			const schedule = input.patrolSchedule as
+				| { issueUuid: string }
+				| undefined;
 			const expectedBinding = bindingDigest(initial);
 			const scoped = await resolve(
 				{ issueId: initial.issueId },
@@ -504,15 +530,6 @@ export function createDiscordHandlers(
 				await current();
 				if (!message || message.id !== replyTo) throw deny();
 			}
-			const expected = {
-				leadId: context.leadId,
-				channelId: threadId,
-				text: input.text as string,
-				...(context.deliveryContext
-					? { deliveryContext: context.deliveryContext }
-					: {}),
-				...(replyTo !== undefined ? { replyTo } : {}),
-			};
 			const key = createHash("sha256")
 				.update(
 					JSON.stringify([
@@ -525,7 +542,56 @@ export function createDiscordHandlers(
 					]),
 				)
 				.digest("hex");
-			return { threadId, current, assertScope, expected, key };
+			let text = input.text as string;
+			let patrol: { askId: string; scheduleKey: string } | undefined;
+			if (schedule) {
+				const adapter = options.patrolSchedule;
+				if (!adapter) throw deny();
+				// Deterministic per operation so reconcile finds the same ask.
+				const h = createHash("sha256")
+					.update(`patrol-ask:${key}`)
+					.digest("hex");
+				const askId = `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+				let scheduleKey = probe
+					? undefined
+					: adapter.askFor(askId)?.scheduleKey;
+				if (!scheduleKey) {
+					const identity = await adapter.resolve(schedule.issueUuid, {
+						projectName: context.projectName,
+						leadId: context.leadId,
+					});
+					if (
+						identity.identifier !== initial.issueId ||
+						!/^[0-9a-f]{64}$/.test(identity.scheduleKey) ||
+						[...text].length > 1800 ||
+						!new RegExp(
+							`(^|[^A-Za-z0-9-])${identity.identifier}(?![0-9])`,
+						).test(text)
+					)
+						throw deny();
+					scheduleKey = identity.scheduleKey;
+				}
+				patrol = { askId, scheduleKey };
+				text = `${text}\n\`${rootCauseMessageMarker(scheduleKey)}\``;
+			}
+			const expected = {
+				leadId: context.leadId,
+				channelId: threadId,
+				text,
+				...(context.deliveryContext
+					? { deliveryContext: context.deliveryContext }
+					: {}),
+				...(replyTo !== undefined ? { replyTo } : {}),
+			};
+			return {
+				threadId,
+				current,
+				assertScope,
+				expected,
+				key,
+				patrol,
+				binding: initial,
+			};
 		}
 		const success = (threadId: string, messageId: string) => ({
 			status: "succeeded" as const,
@@ -545,6 +611,27 @@ export function createDiscordHandlers(
 				const target = await replyTarget(raw, context);
 				await target.current();
 				target.assertScope();
+				if (target.patrol) {
+					const reservation = options.patrolSchedule!.reserve({
+						askId: target.patrol.askId,
+						projectName: context.projectName,
+						issueId: target.binding.issueId,
+						parentId: target.binding.parentId,
+						threadId: target.threadId,
+						leadId: context.leadId,
+						text: raw.text as string,
+						scheduleKey: target.patrol.scheduleKey,
+					});
+					if (
+						!reservation.reserved &&
+						reservation.askId !== target.patrol.askId
+					)
+						return {
+							status: "rejected",
+							errorCode: "patrol_schedule_ask_open",
+							providerRef: `founder-ask:${reservation.askId}`,
+						};
+				}
 				try {
 					const outboxId = await sender.enqueue({
 						...target.expected,
@@ -561,6 +648,12 @@ export function createDiscordHandlers(
 					await target.current();
 					if (!result.messageId || !snowflake.test(result.messageId))
 						return { status: "unknown" };
+					if (target.patrol)
+						options.patrolSchedule!.delivered(
+							target.patrol.askId,
+							result.messageId,
+							target.threadId,
+						);
 					return success(target.threadId, result.messageId);
 				} catch {
 					return { status: "unknown" };
@@ -586,6 +679,12 @@ export function createDiscordHandlers(
 						!snowflake.test(status.messageId)
 					)
 						return { status: "unknown" };
+					if (target.patrol)
+						options.patrolSchedule!.delivered(
+							target.patrol.askId,
+							status.messageId,
+							target.threadId,
+						);
 					return success(target.threadId, status.messageId);
 				} catch {
 					return { status: "unknown" };

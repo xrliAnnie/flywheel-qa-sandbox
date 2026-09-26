@@ -1052,3 +1052,41 @@ export async function resolveRootCauseScheduleIdentity(input: {
 		}),
 	};
 }
+
+/** Adapter for an existing @linear/sdk client: raw read-only GraphQL with a hard timeout. */
+export function linearRequestFromClient(
+	client: {
+		client: {
+			rawRequest(
+				query: string,
+				variables?: Record<string, unknown>,
+			): Promise<unknown>;
+		};
+	},
+	timeoutMs = 15_000,
+): LinearRequest {
+	return (async (query: string, variables: Record<string, unknown>) => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const result = await Promise.race([
+				client.client.rawRequest(query, variables),
+				new Promise<never>((_resolve, reject) => {
+					timer = setTimeout(
+						() => reject(new RootCauseSourceError("linear_deadline")),
+						timeoutMs,
+					);
+				}),
+			]);
+			if (
+				result &&
+				typeof result === "object" &&
+				Array.isArray((result as { errors?: unknown }).errors) &&
+				(result as { errors: unknown[] }).errors.length
+			)
+				throw new RootCauseSourceError("linear_graphql_errors");
+			return result;
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	}) as LinearRequest;
+}

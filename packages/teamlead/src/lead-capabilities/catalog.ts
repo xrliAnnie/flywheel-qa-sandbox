@@ -323,7 +323,14 @@ add(
 	"P02",
 	"write",
 	"discord",
-	{ threadId: id, text, replyTo: id.optional(), eventId: id.optional() },
+	{
+		threadId: id,
+		text,
+		replyTo: id.optional(),
+		eventId: id.optional(),
+		// FLY-2914: names only the category child; the Bridge derives the key.
+		patrolSchedule: object({ issueUuid: z.string().uuid() }).optional(),
+	},
 	{ threadId: id, messageId: id, ...receipt },
 );
 add(

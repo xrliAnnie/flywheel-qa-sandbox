@@ -454,6 +454,11 @@ export class LeadCapabilityBroker {
 			(operation.operationId === "voice.session.start" &&
 			outcome.errorCode === "voice_schedule_binding_conflict"
 				? outcome.errorCode
+				: undefined) ??
+			// FLY-2914: the category already has an open founder ask; the ref names it.
+			(operation.operationId === "discord.thread.reply" &&
+			outcome.errorCode === "patrol_schedule_ask_open"
+				? outcome.errorCode
 				: undefined);
 		if (outcome.status === "unknown")
 			return {
