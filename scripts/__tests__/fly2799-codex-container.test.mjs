@@ -174,8 +174,15 @@ test("test-slot env selects the pinned backend only through an explicit pair", (
 		...base,
 		backendId: "codex-realtime",
 		codexBin: "/opt/flywheel/codex-0.156.1/codex",
+		codexAuthSource: "/Users/qa/.codex/auth.json",
 	});
 	assert.equal(selected.FLYWHEEL_VOICE_BACKEND, "codex-realtime");
+	// FLY-2885: engine B rides the subscription; no key reaches it.
+	assert.equal(selected.OPENAI_API_KEY, undefined);
+	assert.equal(
+		selected.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE,
+		"/Users/qa/.codex/auth.json",
+	);
 	assert.equal(
 		selected.FLYWHEEL_CODEX_BIN,
 		"/opt/flywheel/codex-0.156.1/codex",
