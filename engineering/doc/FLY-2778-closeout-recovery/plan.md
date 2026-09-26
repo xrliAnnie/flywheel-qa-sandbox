@@ -25,7 +25,7 @@ flowchart TD
 交付分为：统一证据接线、可靠失败可见、存量安全回收。原验收五项全部保留，不以静态检查替代真实隔离 ship。
 
 ## 2. 复用与依赖
-- 必须先集成并核验 FLY-2919 的最终 `execution-body-liveness.ts` / `execution-process-liveness.ts` 接口。其 `BodyObservation` 是唯一物理生命判定；本单不造进程扫描器、owner registry、第二份 alive/dead 状态表或独立调度器。2919 当前在 implement，不视为可部署。若接口未就绪，先完成 B/C 独立部分，A 与整体验收等待依赖；不能留下临时旁路并称完成。
+- Lead 在问题回复 `cb2a32e9-73f8-4b6e-9520-21223c712403` 明确：2919尚未合入时，本单可以定义单一 seam 并使用保守回退，不必等待整单合入才能实现。最终集成并核验2919的 `execution-body-liveness.ts` / `execution-process-liveness.ts`，其 `BodyObservation` 为物理生命真源；不造进程扫描器、owner registry、第二份 alive/dead 状态表或独立调度器。Bridge composition root 只注入一个 provider：2919已可用则用其正式导出；未可用时的兼容provider仅委托现有受信完整execution closeout证据/关闭回执并保留所有活体、owner、spawn和未知守卫，不拼新探针或复制窗口式判定。缺控制器/代次绑定的旧证据一律unknown，绝不为适配接口把字段补成dead。用启动时明确能力/协议校验选择provider，禁止同一请求双跑或按错误静默降级。2919合入后在同一composition root切换，兼容provider保留仅明确旧部署需要的范围；消费者/测试矩阵不变。实现记录实际provider、版本和未覆盖形状，正式真实ship验收仍需所选provider完成全链，不以fallback配置成功代替。
 - 复用 FLY-2903 stop-owner-before-reap 和 runtime drained；2919 已覆盖 controller restart/spawn fencing。死亡意味着旧 writer 和能重启它的控制器均不能再写。
 - 复用 FLY-2616 的 immutable closeout_targets、reservation、closeout_execution_evidence、CommDB trusted finalization、land_alert_outbox、operation audit；复用 FLY-2662 的鉴权 `land reclose`，不重复设计合入/租约系统。
 - 保留 FLY-2688/2751 worktree 作为样本；仅在隔离环境重构复现。生产本单只读 dry-run，真正执行由后续既有授权流程处理。
@@ -93,7 +93,7 @@ MERGED 有匹配 land op 的项走现有 authenticated closeout_only reclose（�
 
 | 任务 | 文件范围 | 必需证据 |
 |---|---|---|
-| A0 对齐2919 | 共同接口、plugin wiring、research appendix | 最终导出/部署版本/消费者映射；无双重 evaluator；未就绪显式依赖 |
+| A0 对齐2919 | 共同接口、plugin wiring、research appendix | 最终导出/部署版本/消费者映射；单provider接线；2919未就绪时保守回退及切换测试 |
 | A1 统一收尾 | lifecycle-closeout.ts、execution-closeout-evidence.ts、post-ship-finalization.ts；close-runner/codex-phase-shutdown 仅2919遗漏接线 | failed/no_group、pending、dead body/live viewer、alive body/absent window、controller restarting、超时逐项红绿；准确节点无 evidence 的缺口被覆盖；旧错误标签不压过新事实 |
 | A2 身份与完成 | StateStore.ts、land-operation-audit.ts、worktree-cleanup.ts现有逻辑 | probe后新activation/owner/TURN、目录重建拒绝；absent重放幂等；第二pass失败不谎报completed；完成后旧错误清理且历史仍在 |
 | B 告警 | workflow-engine-dispatcher.ts、StateStore既有outbox、sink去重实际消费者 | 第一次held一条；发送成功ACK丢失→重启仍一条；三次失败可见dead-letter；resume新代次一条；run_id空与DAG均测 |
@@ -127,3 +127,6 @@ MERGED 有匹配 land op 的项走现有 authenticated closeout_only reclose（�
 ## 9. 交付与边界
 设计节点交付 exploration/research/plan、原始筛选证据、Mermaid源与HTML；有效reviewVerdict=APPROVED后发布并核对托管HTTP/CSP/评论交互，再发Lead结构化report、phase_design_complete、park。不得实现、dispatch、ship approval、merge、deploy、restart或生产删除。
 实现和QA后继必须交付：①真实ship最终四项收据；②两类变异红绿；③生产只读candidate集合与阴性；④端到端告警唯一消息；⑤DAG operation audit中done+目录消失。原本33%/80GB叙述仅历史输入，本单以本次实际审计口径和新验收证据为准。
+
+## 10. Lead 边界澄清（2026-09-26）
+问题回复 cb2a32e9-73f8-4b6e-9520-21223c712403 确认本次62 done/24 absent反证，并说明已更正founder与issue描述。2919当时WIP head a84a07854，不是合入/部署证据。本计划据此允许单一seam的保守回退；生产清理仍未授权，2688/2751继续保留。此修订改变依赖策略，需要新plan blob有效review，不沿用旧blob判决。
