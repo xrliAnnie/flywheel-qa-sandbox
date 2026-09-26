@@ -852,6 +852,23 @@ describe("voice session context v2: prompt plus initialItems (FLY-2885 T8)", () 
 			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
 		});
 
+		it("never sends an item whose real title pushes it past 2,000, so the container's per-item check holds", () => {
+			// The real title "第 1/1 段" costs 300 more than the widest-numbered
+			// one the segment was sized with.
+			const titleHeavy = (value: string) =>
+				xTokens(value) + (value.includes("第 1/") ? 300 : 0);
+			const heavy = "X".repeat(1_800);
+			const result = build("ID", [["memory/MEMORY.md", heavy]], {
+				countTokens: titleHeavy,
+			});
+			expect(result.realtime.initialItems).toEqual([]);
+			expect(
+				continuedSegments(result.realtime.prompt).map(
+					(segment) => segment.body,
+				),
+			).toEqual([heavy]);
+		});
+
 		it("sends a line over 2,000 tokens but under 8,000 bytes, and everything after it, to the prompt", () => {
 			const long = "X".repeat(2_500);
 			const memory = ["first", long, "after-1", "after-2"].join("\n");

@@ -141,11 +141,11 @@ function context(
 		measurements: {
 			baseInstructions: {
 				bytes: Buffer.byteLength(baseInstructions),
-				estimatedTokens: 100,
+				estimatedTokens: countTokens(baseInstructions),
 			},
 			realtimePrompt: {
 				bytes: Buffer.byteLength(prompt),
-				estimatedTokens: 110,
+				estimatedTokens: countTokens(prompt),
 			},
 			initialItems: {
 				count: initialItems.length,
@@ -1065,6 +1065,25 @@ describe("Codex voice container", () => {
 				snapshot.measurements.initialItems.tokens -= 8;
 			},
 		],
+		[
+			// Measurements are outside the digest: only a recount can catch this.
+			"an underreported realtime prompt count",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.measurements.realtimePrompt.estimatedTokens -= 1;
+			},
+		],
+		[
+			"an underreported base instructions count",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.measurements.baseInstructions.estimatedTokens -= 1;
+			},
+		],
+		[
+			"a fractional prompt count",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.measurements.realtimePrompt.estimatedTokens += 0.5;
+			},
+		],
 	] as const)(
 		"refuses %s as context_invalid before spawning Codex (plan §12.2)",
 		async (_name, mutate) => {
@@ -1096,6 +1115,40 @@ describe("Codex voice container", () => {
 		).rejects.toMatchObject({ reason: "context_invalid" });
 		expect(h.processes).toHaveLength(0);
 	});
+
+	it.each([
+		[
+			"an item over 2,000 tokens with its wrapper",
+			// 7,990 bytes: 1,998 + 8 tokens under the byte-quarter stub.
+			"x".repeat(7_990),
+			fixtureTokens,
+		],
+		[
+			"an item over 8,000 bytes",
+			"x".repeat(8_100),
+			(value: string) => Math.ceil(Buffer.byteLength(value) / 8),
+		],
+	] as const)(
+		"refuses %s even when the items total fits (plan §12.4)",
+		async (_name, text, countTokens) => {
+			const h = harness({ countTokens });
+			await expect(
+				h.container.open({
+					sessionId: "session-segment",
+					voice: "cove",
+					loadContext: async () =>
+						context(
+							"session-segment",
+							undefined,
+							undefined,
+							[{ role: "developer", text }],
+							countTokens,
+						),
+				}),
+			).rejects.toMatchObject({ reason: "context_invalid" });
+			expect(h.processes).toHaveLength(0);
+		},
+	);
 
 	it("refuses to open when the container cannot count tokens", async () => {
 		const h = harness({

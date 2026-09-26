@@ -21,9 +21,12 @@ import {
 	VOICE_BASE_MAX_ESTIMATED_TOKENS,
 	VOICE_CONTEXT_TOKENIZER,
 	VOICE_CONTEXT_VERSION,
+	VOICE_INITIAL_ITEM_WRAPPER_TOKENS,
 	VOICE_INITIAL_ITEMS_MAX_BYTES,
 	VOICE_INITIAL_ITEMS_MAX_COUNT,
 	VOICE_INITIAL_ITEMS_MAX_TOKENS,
+	VOICE_MEMORY_SEGMENT_MAX_BYTES,
+	VOICE_MEMORY_SEGMENT_MAX_TOKENS,
 	VOICE_REALTIME_PROMPT_MAX_BYTES,
 	VOICE_REALTIME_PROMPT_MAX_TOKENS,
 	type VoiceRealtimeItem,
@@ -528,19 +531,38 @@ function assertContext(
 		measured.realtimePrompt.estimatedTokens > VOICE_REALTIME_PROMPT_MAX_TOKENS
 	)
 		throw invalid();
-	// plan §12.2: recount every item with the same tokenizer (bytes are
-	// already bounded above) and hold them to 7,600 with the wrapper.
+	// plan §12.2: the measurements sit outside the digest, so recount every
+	// text with the same tokenizer (bytes are already bounded above) and
+	// require the Bridge's numbers to match exactly.
+	const count = (text: string): number => {
+		let tokens: number;
+		try {
+			tokens = countTokens(text);
+		} catch {
+			throw invalid();
+		}
+		if (!Number.isSafeInteger(tokens) || tokens < 0) throw invalid();
+		return tokens;
+	};
+	if (
+		count(snapshot.baseInstructions) !==
+			measured.baseInstructions.estimatedTokens ||
+		count(realtime.prompt) !== measured.realtimePrompt.estimatedTokens
+	)
+		throw invalid();
 	const itemTokens = measured.initialItems.itemTokens;
 	if (!Array.isArray(itemTokens) || itemTokens.length !== items.length)
 		throw invalid();
 	for (const [index, item] of items.entries()) {
-		let tokens: number;
-		try {
-			tokens = countTokens(item.text);
-		} catch {
-			throw invalid();
-		}
-		if (!Number.isSafeInteger(tokens) || tokens !== itemTokens[index])
+		const tokens = count(item.text);
+		// plan §12.4: every item is one segment within 2,000 tokens with its
+		// wrapper and 8,000 bytes, whatever the total.
+		if (
+			tokens !== itemTokens[index] ||
+			tokens + VOICE_INITIAL_ITEM_WRAPPER_TOKENS >
+				VOICE_MEMORY_SEGMENT_MAX_TOKENS ||
+			Buffer.byteLength(item.text, "utf8") > VOICE_MEMORY_SEGMENT_MAX_BYTES
+		)
 			throw invalid();
 	}
 	const tokens = voiceInitialItemsTokens(itemTokens);

@@ -607,6 +607,11 @@ function packMemory(
 		const tokens = segment.promptOnly ? 0 : count(item.text);
 		if (
 			segment.promptOnly ||
+			// The container holds every item it receives to the segment limits
+			// with its real title (plan §12.4).
+			tokens + VOICE_INITIAL_ITEM_WRAPPER_TOKENS >
+				VOICE_MEMORY_SEGMENT_MAX_TOKENS ||
+			itemBytes > VOICE_MEMORY_SEGMENT_MAX_BYTES ||
 			bytes + itemBytes > VOICE_INITIAL_ITEMS_MAX_BYTES ||
 			items.length + 1 > VOICE_INITIAL_ITEMS_MAX_COUNT ||
 			voiceInitialItemsTokens([...itemTokens, tokens]) >
