@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "review_recovery_notice_projection",
+	"classification": "protectedCurrentOrAuthority"
+}

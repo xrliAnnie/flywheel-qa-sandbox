@@ -20286,10 +20286,10 @@
         "plugin.ts"
       ],
       "disposition": "exclude",
-      "reason": "Predicate: ClaudeCodeAdapter — identity + capabilities; vendorId returns . Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
+      "reason": "Predicate: ClaudeCodeAdapter \u2014 identity + capabilities; vendorId returns . Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
       "predicate_evidence": {
         "test_titles": [
-          "ClaudeCodeAdapter — identity + capabilities",
+          "ClaudeCodeAdapter \u2014 identity + capabilities",
           "vendorId returns ",
           "capabilities returns expected shape (Codex r5 contract)",
           "getInboxPath uses CLAUDE_CONFIG_DIR + /teams (Codex r1 high #5)"
@@ -20407,7 +20407,7 @@
           "buildDaemonSandboxWritableRoots",
           "unions the flywheel roots + worktree + git metadata, deduped",
           "omits commDbDir when absent and dedupes an overlapping git-dir (main checkout)",
-          "buildGoalKickText (FLY-1236: full body → kick turn)"
+          "buildGoalKickText (FLY-1236: full body \u2192 kick turn)"
         ],
         "direct_recovery_api_hits": []
       }
@@ -20673,7 +20673,7 @@
       "predicate_evidence": {
         "test_titles": [
           "progress-schema (FLY-795)",
-          "round-trips render → parse with all fields preserved",
+          "round-trips render \u2192 parse with all fields preserved",
           "uses WorkflowPhaseRole values (design/implement/qa) for phase",
           "exposes the workflow cursor fields (phase + chunk statuses)"
         ],
@@ -20831,9 +20831,9 @@
       "predicate_evidence": {
         "test_titles": [
           "Blueprint v0.2 integration",
-          "full v0.2 flow: worktree → skills → session → evidence",
-          "full v0.2 flow — adapter timeout",
-          "full v0.2 flow — 0 commits (failure)"
+          "full v0.2 flow: worktree \u2192 skills \u2192 session \u2192 evidence",
+          "full v0.2 flow \u2014 adapter timeout",
+          "full v0.2 flow \u2014 0 commits (failure)"
         ],
         "direct_recovery_api_hits": []
       }
@@ -20991,7 +20991,7 @@
       "predicate_evidence": {
         "test_titles": [
           "complete command",
-          "valid flags → POST body with correct shape (evidence nested, filesChangedCount not filesChanged)",
+          "valid flags \u2192 POST body with correct shape (evidence nested, filesChangedCount not filesChanged)",
           "sends a drain receipt and prints the exact retry guidance",
           "FLY-2373 v2 completion drain"
         ],
@@ -21036,7 +21036,7 @@
           "CommDB.finalizeSession (FLY-1238)",
           "machine-proven terminal finalization disposes checkpoint gates even with protection on",
           "retires only unanswered checkpoint gates and preserves fresh asks",
-          "does NOT retire a ${reviewCheckpoint} gate on finalize — the reviewer, not the author, consumes it"
+          "does NOT retire a ${reviewCheckpoint} gate on finalize \u2014 the reviewer, not the author, consumes it"
         ],
         "direct_recovery_api_hits": []
       }
@@ -21137,10 +21137,10 @@
         "packages/flywheel-comm/src/__tests__"
       ],
       "disposition": "exclude",
-      "reason": "Predicate: claimLifecycleConsent — true cross-PROCESS race (R1 LOW-11 / R2). Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
+      "reason": "Predicate: claimLifecycleConsent \u2014 true cross-PROCESS race (R1 LOW-11 / R2). Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
       "predicate_evidence": {
         "test_titles": [
-          "claimLifecycleConsent — true cross-PROCESS race (R1 LOW-11 / R2)"
+          "claimLifecycleConsent \u2014 true cross-PROCESS race (R1 LOW-11 / R2)"
         ],
         "direct_recovery_api_hits": []
       }
@@ -21647,10 +21647,10 @@
         "grantTurn"
       ],
       "disposition": "exclude",
-      "reason": "TURN fixture dependency only. Predicate: FLY-1204 parked-phase reclaim — safety boundaries; ship-claim path auto-reclaims a workflow-bound generic main actor. D adds a getTurn-based review-wake reader but changes no grantTurn, workflow transition, rework, closeout or delivery algorithm exercised here; direct current-holder and recovery integration tests retained.",
+      "reason": "TURN fixture dependency only. Predicate: FLY-1204 parked-phase reclaim \u2014 safety boundaries; ship-claim path auto-reclaims a workflow-bound generic main actor. D adds a getTurn-based review-wake reader but changes no grantTurn, workflow transition, rework, closeout or delivery algorithm exercised here; direct current-holder and recovery integration tests retained.",
       "predicate_evidence": {
         "test_titles": [
-          "FLY-1204 parked-phase reclaim — safety boundaries",
+          "FLY-1204 parked-phase reclaim \u2014 safety boundaries",
           "ship-claim path auto-reclaims a workflow-bound generic main actor",
           "alerts but does not close a no-claim workflow-bound generic main actor",
           "an active workflow-bound generic main actor blocks reclaim for its issue"
@@ -22071,7 +22071,7 @@
           "FLY-696 reverse-compat sentinel (isEnabled false)",
           "account-switch repair is dormant when isEnabled forced false: canAttempt false, enqueue needs_human",
           "R1 switch executor is unreachable on the auto path when isEnabled is forced false (switchImpl never called)",
-          "FLY-1243: accountPoolConfigured() — the production pool signal"
+          "FLY-1243: accountPoolConfigured() \u2014 the production pool signal"
         ],
         "direct_recovery_api_hits": []
       }
@@ -22133,10 +22133,10 @@
         "plugin.ts"
       ],
       "disposition": "exclude",
-      "reason": "Predicate: parseChromeProc — selector safety (Codex R1 HIGH-2); matches a Chrome-for-Testing MAIN process by comm identity. Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
+      "reason": "Predicate: parseChromeProc \u2014 selector safety (Codex R1 HIGH-2); matches a Chrome-for-Testing MAIN process by comm identity. Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
       "predicate_evidence": {
         "test_titles": [
-          "parseChromeProc — selector safety (Codex R1 HIGH-2)",
+          "parseChromeProc \u2014 selector safety (Codex R1 HIGH-2)",
           "matches a Chrome-for-Testing MAIN process by comm identity",
           "does NOT match a claude/node runner whose ARGV contains the Chrome strings + a fake user-data-dir",
           "does NOT match Annie"
@@ -22155,7 +22155,7 @@
         "test_titles": [
           "commdb-fsm-reconcile (FLY-817)",
           "RECONCILE_DELETABLE_STATES",
-          "= AUTO_CLOSE_STATES ∪ {approved} = OUTCOME − {approved_to_ship, failed, blocked}",
+          "= AUTO_CLOSE_STATES \u222a {approved} = OUTCOME \u2212 {approved_to_ship, failed, blocked}",
           "deletes deletable-terminal rows whose tmux target is DEAD (incl legacy "
         ],
         "direct_recovery_api_hits": []
@@ -22184,10 +22184,10 @@
         "plugin.ts"
       ],
       "disposition": "exclude",
-      "reason": "Predicate: createLeadRuntime — preflight error surfacing; surfaces preflight.message in the thrown error (QA Bug #3). Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
+      "reason": "Predicate: createLeadRuntime \u2014 preflight error surfacing; surfaces preflight.message in the thrown error (QA Bug #3). Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
       "predicate_evidence": {
         "test_titles": [
-          "createLeadRuntime — preflight error surfacing",
+          "createLeadRuntime \u2014 preflight error surfacing",
           "surfaces preflight.message in the thrown error (QA Bug #3)",
           "falls back to error signal name + detail when message is absent (QA Bug #3)",
           "falls back to "
@@ -22617,12 +22617,12 @@
         "plugin.ts"
       ],
       "disposition": "exclude",
-      "reason": "Predicate: Surface A integration; enforce ALLOW: founder approval → middleware passes to handler (200). Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
+      "reason": "Predicate: Surface A integration; enforce ALLOW: founder approval \u2192 middleware passes to handler (200). Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
       "predicate_evidence": {
         "test_titles": [
           "Surface A integration",
-          "enforce ALLOW: founder approval → middleware passes to handler (200)",
-          "enforce DENY: status question → 403, handler not reached",
+          "enforce ALLOW: founder approval \u2192 middleware passes to handler (200)",
+          "enforce DENY: status question \u2192 403, handler not reached",
           "audit_only: writes audit row but always passes (200)"
         ],
         "direct_recovery_api_hits": []
@@ -22667,13 +22667,13 @@
         "packages/teamlead/src"
       ],
       "disposition": "exclude",
-      "reason": "Predicate: FLY-927 echo-immunity parity (kind table ↔ ALERT_ECHO_START); EVERY AlertEventType. Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
+      "reason": "Predicate: FLY-927 echo-immunity parity (kind table \u2194 ALERT_ECHO_START); EVERY AlertEventType. Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
       "predicate_evidence": {
         "test_titles": [
-          "FLY-927 echo-immunity parity (kind table ↔ ALERT_ECHO_START)",
+          "FLY-927 echo-immunity parity (kind table \u2194 ALERT_ECHO_START)",
           "EVERY AlertEventType",
-          "the 🎫 ticket-header line matches the strip regex",
-          "🎫 flywheel · 首见 09:05 · owner <@123456789012345678> · 状态 NEW"
+          "the \ud83c\udfab ticket-header line matches the strip regex",
+          "\ud83c\udfab flywheel \u00b7 \u9996\u89c1 09:05 \u00b7 owner <@123456789012345678> \u00b7 \u72b6\u6001 NEW"
         ],
         "direct_recovery_api_hits": []
       }
@@ -22738,12 +22738,12 @@
         "plugin.ts"
       ],
       "disposition": "exclude",
-      "reason": "Predicate: FLY-1182 red line — a transient 529 never switches accounts; does NOT suppress a 529 beside a real cap, AND the full composition yields a switch. Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
+      "reason": "Predicate: FLY-1182 red line \u2014 a transient 529 never switches accounts; does NOT suppress a 529 beside a real cap, AND the full composition yields a switch. Matches are shared source/module paths or unchanged fixture names; the test does not call a changed review-attempt/notice API or exercise the new review-status/gate-held recovery path. Its specific route/collector/approval/cleanup behavior is unchanged.",
       "predicate_evidence": {
         "test_titles": [
-          "FLY-1182 red line — a transient 529 never switches accounts",
+          "FLY-1182 red line \u2014 a transient 529 never switches accounts",
           "does NOT suppress a 529 beside a real cap, AND the full composition yields a switch",
-          "FLY-1182 — model-level cap detection (the 2026-07-11 incident shape)",
+          "FLY-1182 \u2014 model-level cap detection (the 2026-07-11 incident shape)",
           "recognises the verbatim incident text as capped"
         ],
         "direct_recovery_api_hits": []
@@ -22876,7 +22876,7 @@
       "reason": "Inventories workflow spawn/same-actor admission seams; D does not add runner dispatch or change these entry points.",
       "predicate_evidence": {
         "test_titles": [
-          "FLY-1385 W6 — generalized admission seam inventory",
+          "FLY-1385 W6 \u2014 generalized admission seam inventory",
           "has exactly the reviewed spawn and same-actor re-entry admission seams"
         ],
         "direct_recovery_api_hits": []
@@ -22953,10 +22953,10 @@
       "reason": "check.js match is the suffix of boot-sha-check.js; this tests Git SHA classification, not the modified Comm check command.",
       "predicate_evidence": {
         "test_titles": [
-          "classifyBootSha (pure, 5 states → 4 classes)",
-          "HEAD === origin/main → same",
-          "HEAD is an ancestor of origin/main (behind) → stale",
-          "HEAD ahead / diverged (not an ancestor) → branch"
+          "classifyBootSha (pure, 5 states \u2192 4 classes)",
+          "HEAD === origin/main \u2192 same",
+          "HEAD is an ancestor of origin/main (behind) \u2192 stale",
+          "HEAD ahead / diverged (not an ancestor) \u2192 branch"
         ],
         "direct_recovery_api_hits": []
       }
@@ -23096,11 +23096,11 @@
         "target_repo_path"
       ],
       "disposition": "exclude",
-      "reason": "TURN fixture dependency only. Predicate: FLY-945 Fix D: external-merge reconcile pass; path 1: stale parked + PR MERGED + approved → completed + finalization + audit. D adds a getTurn-based review-wake reader but changes no grantTurn, workflow transition, rework, closeout or delivery algorithm exercised here; direct current-holder and recovery integration tests retained.",
+      "reason": "TURN fixture dependency only. Predicate: FLY-945 Fix D: external-merge reconcile pass; path 1: stale parked + PR MERGED + approved \u2192 completed + finalization + audit. D adds a getTurn-based review-wake reader but changes no grantTurn, workflow transition, rework, closeout or delivery algorithm exercised here; direct current-holder and recovery integration tests retained.",
       "predicate_evidence": {
         "test_titles": [
           "FLY-945 Fix D: external-merge reconcile pass",
-          "path 1: stale parked + PR MERGED + approved → completed + finalization + audit",
+          "path 1: stale parked + PR MERGED + approved \u2192 completed + finalization + audit",
           "offers only a fresh MERGED proof to gate retirement",
           "does not retire a FLY-2394-shaped current gate through a colliding historical PR number"
         ],
@@ -23344,11 +23344,11 @@
         "grantTurn"
       ],
       "disposition": "exclude",
-      "reason": "TURN fixture dependency only. Predicate: makeFinalizeWorkflowPhaseRoles (FLY-887); closes parked design + implement + qa (→ completed), deletes TURN. D adds a getTurn-based review-wake reader but changes no grantTurn, workflow transition, rework, closeout or delivery algorithm exercised here; direct current-holder and recovery integration tests retained.",
+      "reason": "TURN fixture dependency only. Predicate: makeFinalizeWorkflowPhaseRoles (FLY-887); closes parked design + implement + qa (\u2192 completed), deletes TURN. D adds a getTurn-based review-wake reader but changes no grantTurn, workflow transition, rework, closeout or delivery algorithm exercised here; direct current-holder and recovery integration tests retained.",
       "predicate_evidence": {
         "test_titles": [
           "makeFinalizeWorkflowPhaseRoles (FLY-887)",
-          "closes parked design + implement + qa (→ completed), deletes TURN",
+          "closes parked design + implement + qa (\u2192 completed), deletes TURN",
           "reclaims a leaked completed qa (idempotent close on already-gone tmux)",
           "no-op for a single-session issue (no phase sessions)"
         ],
@@ -23374,7 +23374,7 @@
         "test_titles": [
           "createResidueHarvester",
           "runs CommDB + StateStore per project and isolates failures",
-          "commDbFsmEnabled=false gates only face ①/②",
+          "commDbFsmEnabled=false gates only face \u2460/\u2461",
           "commDbFsmEnabled=false does not gate the targeted StateStore entry"
         ],
         "direct_recovery_api_hits": []
@@ -23524,8 +23524,8 @@
       "predicate_evidence": {
         "test_titles": [
           "RunDispatcher backend resolution (FLY-123)",
-          "reverse-compat: no labels/config/env → claude-tmux + claude-code vendor",
-          "[codex] label on the real start() path → codex-tmux + codex vendor",
+          "reverse-compat: no labels/config/env \u2192 claude-tmux + claude-code vendor",
+          "[codex] label on the real start() path \u2192 codex-tmux + codex vendor",
           "project roles config layer applies without labels"
         ],
         "direct_recovery_api_hits": []
@@ -25091,7 +25091,7 @@
         "packages/flywheel-comm/src/commands"
       ],
       "disposition": "exclude",
-      "reason": "Script predicate is # FLY-1389 P1-d: check-global-path-hygiene.sh — read-only scanner over the; # global persistence surfaces. Hermetic: sandbox HOME; the built-in POSITIVE; # CONTROL is scenario 8 (a linked worktree whose path does NOT contain; # /worktrees/ — this che. Matched source/parent paths are fixture or static-scope inputs; D changes no script implementation or its check global path hygiene behavior. No review recovery API/endpoint is exercised.",
+      "reason": "Script predicate is # FLY-1389 P1-d: check-global-path-hygiene.sh \u2014 read-only scanner over the; # global persistence surfaces. Hermetic: sandbox HOME; the built-in POSITIVE; # CONTROL is scenario 8 (a linked worktree whose path does NOT contain; # /worktrees/ \u2014 this che. Matched source/parent paths are fixture or static-scope inputs; D changes no script implementation or its check global path hygiene behavior. No review recovery API/endpoint is exercised.",
       "predicate_evidence": {
         "test_titles": [],
         "direct_recovery_api_hits": []
@@ -25393,7 +25393,7 @@
         "packages/teamlead/src"
       ],
       "disposition": "exclude",
-      "reason": "Script predicate is # FLY-913: lead-alert.sh --strict-delivery machine-readable result channel.; #; # The restart-guard hook's bypass contract needs to distinguish \"transiently; # failed but queued (WILL drain)\" from \"permanently undeliverable\" — exit 2; # alone conflat. Matched source/parent paths are fixture or static-scope inputs; D changes no script implementation or its lead alert strict delivery behavior. No review recovery API/endpoint is exercised.",
+      "reason": "Script predicate is # FLY-913: lead-alert.sh --strict-delivery machine-readable result channel.; #; # The restart-guard hook's bypass contract needs to distinguish \"transiently; # failed but queued (WILL drain)\" from \"permanently undeliverable\" \u2014 exit 2; # alone conflat. Matched source/parent paths are fixture or static-scope inputs; D changes no script implementation or its lead alert strict delivery behavior. No review recovery API/endpoint is exercised.",
       "predicate_evidence": {
         "test_titles": [],
         "direct_recovery_api_hits": []
@@ -26338,7 +26338,9 @@
     "packages/teamlead/src/bridge/__tests__/review-target-containment.fly2901.test.ts",
     "packages/teamlead/src/ship-judgment/__tests__/plan-source.test.ts",
     "packages/teamlead/src/ship-judgment/__tests__/runtime-collect.test.ts",
-    "packages/teamlead/src/ship-judgment/__tests__/ship-judgment-auto-approval.integration.test.ts"
+    "packages/teamlead/src/ship-judgment/__tests__/ship-judgment-auto-approval.integration.test.ts",
+    "packages/teamlead/src/__tests__/fly-2413-retention-registry.test.ts",
+    "scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs"
   ],
   "scope_note": "All D changed/new test files retained. Broad parent references are excluded only with recorded predicate reasons. TURN matches do not retain unrelated workflow suites. Full-package/full-repository verification is not authorized.",
   "source_sha256": {
@@ -26386,8 +26388,68 @@
   },
   "discovery_note": "Whole-tree multi-pattern grep exceeded120s; exact fixed-string grep over tracked .test/.spec pathspecs completed. Existing D-working reference rows merged; untracked changed tests scanned separately. No test selection was broadened because of the timeout.",
   "counts": {
-    "retained": 46,
+    "retained": 49,
     "excluded_test_matches": 189,
     "total_rows": 2307
+  },
+  "retention_supplement": {
+    "reason": "F preflight discovered D unclassified new tables; RED/GREEN closes omitted guard without changing D business logic",
+    "files": [
+      "scripts/lib/fly-2006-retention-tables/teamlead/codex_review_attempt.json",
+      "scripts/lib/fly-2006-retention-tables/teamlead/review_recovery_notice.json",
+      "scripts/lib/fly-2006-retention-tables/comm/review_recovery_notice_projection.json"
+    ],
+    "queries": [
+      "codex_review_attempt",
+      "codex_review_attempt.json",
+      "review_recovery_notice",
+      "review_recovery_notice.json",
+      "review_recovery_notice_projection",
+      "review_recovery_notice_projection.json",
+      "scripts/lib/fly-2006-retention-tables/comm",
+      "scripts/lib/fly-2006-retention-tables/comm/review_recovery_notice_projection.json",
+      "scripts/lib/fly-2006-retention-tables/teamlead",
+      "scripts/lib/fly-2006-retention-tables/teamlead/codex_review_attempt.json",
+      "scripts/lib/fly-2006-retention-tables/teamlead/review_recovery_notice.json"
+    ],
+    "testMatches": [
+      {
+        "path": "packages/teamlead/src/__tests__/StateStore.review-retirement.test.ts",
+        "terms": [
+          "review_recovery_notice"
+        ],
+        "disposition": "retained",
+        "reason": "schema classification or previously retained D behavior"
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/fly2396-authorship-boundary.test.ts",
+        "terms": [
+          "scripts/lib/fly-2006-retention-tables/teamlead"
+        ],
+        "disposition": "excluded",
+        "reason": "reference targets unchanged review behavior or retention deletion policy; this supplement changes only protected table classification, verified by initialized-schema and consumer gate guards"
+      },
+      {
+        "path": "packages/teamlead/src/__tests__/fly2398-narrow-boundary.test.ts",
+        "terms": [
+          "scripts/lib/fly-2006-retention-tables/teamlead"
+        ],
+        "disposition": "excluded",
+        "reason": "reference targets unchanged review behavior or retention deletion policy; this supplement changes only protected table classification, verified by initialized-schema and consumer gate guards"
+      },
+      {
+        "path": "scripts/__tests__/fly1674-residue.test.sh",
+        "terms": [
+          "scripts/lib/fly-2006-retention-tables/comm",
+          "scripts/lib/fly-2006-retention-tables/teamlead"
+        ],
+        "disposition": "excluded",
+        "reason": "reference targets unchanged review behavior or retention deletion policy; this supplement changes only protected table classification, verified by initialized-schema and consumer gate guards"
+      }
+    ],
+    "additionalRetained": [
+      "packages/teamlead/src/__tests__/fly-2413-retention-registry.test.ts",
+      "scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs"
+    ]
   }
 }

@@ -59,3 +59,9 @@ consumer矩阵合并该修正的26个路径/名字/父目录/文字查询，现4
 最终修订上的 owning-package related：runner4文件338、edge2文件44、comm11文件210、teamlead21文件368，合计38文件960项全绿。相关测试选集包含新 nested 回归；没有使用本机全包/全库测试。最终 affected+dependencies build通过 `/tmp/fly2920-D-build-frozen.log`；lint通过 `/tmp/fly2920-D-lint-frozen.log`。依赖方7个package typecheck：6个初次通过，voice-codex因缺voice-bridge dist前置失败，补 `pnpm --filter 'flywheel-voice-bridge...' build` 后仅重跑该依赖方typecheck通过。此为构建前置修复，无业务源改动。相关日志 `/tmp/fly2920-D-dependent-{typecheck,preflight-build,typecheck-retry}.log`。
 
 D本地规格与独立质量复核已关闭全部所报blocker。后续E/F/G、最终有效 code-review gate、PR及handoff尚未完成；本节不构成完整CI/QA/生产身份探测或ship证明。
+
+## 后续 guard 补核（E 后、F 前）
+
+F 留存影响面核查发现本组新增三表未登记。`fly-2413-retention-registry.test.ts` 初始化真实临时两类数据库后复现 2 failed / 34 passed，报 `schema_unclassified:teamlead:codex_review_attempt,review_recovery_notice`。补三个独立 JSON fragment：teamlead 的 attempt 与 notice 归 `protectedAuthority`，CommDB 的 notice projection 归 `protectedCurrentOrAuthority`（与现有 runner wake retirement 分类一致）。这些记录维持 generation fence、原预算、通知幂等与未消费恢复状态；不将它们误当作可清扫历史表。
+
+未修改 D 业务代码、SQL schema 或公共守卫。相同守卫重跑 36 passed；retention consumer gate 具体测试文件 10 passed；三个 JSON 的 Biome check 通过。日志 `/tmp/fly2920-D-retention-{red,green}.log`、`/tmp/fly2920-D-retention-consumer.log`。发现记录与 manifest blob 追加到 consumers-D/verification-D；此前 D 检查清单不包含这个守卫，不能称作当时已经通过。

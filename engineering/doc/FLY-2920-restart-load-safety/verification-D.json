@@ -81,5 +81,18 @@
     "/tmp/fly2920-D-dependent-typecheck-retry.log"
   ],
   "typecheck_status": "7 packages passed after missing voice-bridge dist preflight was built",
-  "review": "local spec and independent quality findings closed; effective code gate still required after E/F/G"
+  "review": "local spec and independent quality findings closed; effective code gate still required after E/F/G",
+  "retention_supplement": {
+    "baseDCommit": "8e4598710",
+    "manifestBlobs": {
+      "scripts/lib/fly-2006-retention-tables/teamlead/codex_review_attempt.json": "76ddb538e47a90fba75ef9c030cdc4973d3b48e8",
+      "scripts/lib/fly-2006-retention-tables/teamlead/review_recovery_notice.json": "2e714cb514310fff3971115b745d2b260ff0ecb4",
+      "scripts/lib/fly-2006-retention-tables/comm/review_recovery_notice_projection.json": "97d03fd4d0761bfed45636783057e0dd04691ec7"
+    },
+    "red": "/tmp/fly2920-D-retention-red.log: 2 failed,34 passed, schema_unclassified:teamlead:codex_review_attempt,review_recovery_notice",
+    "green": "/tmp/fly2920-D-retention-green.log:36 passed",
+    "consumerUnit": "/tmp/fly2920-D-retention-consumer.log:10 passed",
+    "scope": "only protected table classification; no schema or business source changes",
+    "productionConsumerScan": "/tmp/fly2920-D-retention-consumer-scan.log: real configured production source scan passed"
+  }
 }
