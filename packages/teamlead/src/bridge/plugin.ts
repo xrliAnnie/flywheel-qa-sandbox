@@ -244,6 +244,7 @@ import {
 	reconcileMenuCategoryBindings,
 } from "../workflow-menu.js";
 import { buildWorkflowMenuPolicyCatalog } from "../workflow-menu-policy.js";
+import { resolveWorkflowReviewRouteForExecution } from "../workflow-review-routing.js";
 import {
 	isLoopTargetNode,
 	parseWorkflowRunSnapshot,
@@ -354,6 +355,7 @@ import {
 	createHostCmuxWatcherPatrol,
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
+import { validateCodeReviewProjection } from "./code-review-validation.js";
 import {
 	codexTerminalTeardownDeps,
 	reapCodexDaemonForSession,
@@ -885,6 +887,8 @@ import {
 } from "./review-governance-effects.js";
 import { founderApprovalHoldGuard, reviewHoldReason } from "./review-hold.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
+import { ingestReviewRound } from "./review-round-ingest.js";
+import { createReviewRoundSpoolReconciler } from "./review-round-spool-reconciler.js";
 import { createReviewRulingHandler } from "./review-ruling-route.js";
 import { ReviewThreadEffect } from "./review-thread-effect.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
@@ -3205,6 +3209,60 @@ export function createBridgeApp(
 					allowed: false,
 					reason: result.reason,
 				});
+			},
+		);
+	}
+
+	// FLY-2891: the code review gate's reviewer-model check (the design gate's
+	// lives in /design-review-validation). Same fail-closed auth contract.
+	if (!config.ingestToken) {
+		app.post("/code-review-validation", (_req, res) => {
+			res.status(503).json({
+				allowed: false,
+				reason: "bridge ingest token not configured",
+			});
+		});
+	} else {
+		app.post(
+			"/code-review-validation",
+			tokenAuthMiddleware(config.ingestToken),
+			(req, res) => {
+				const result = validateCodeReviewProjection(
+					store,
+					(req.body ?? {}) as Record<string, unknown>,
+				);
+				if (result.allowed) {
+					res.json(result);
+					return;
+				}
+				res.status(result.httpStatus).json({
+					allowed: false,
+					reason: result.reason,
+				});
+			},
+		);
+	}
+
+	// FLY-2891: per-round local Codex review write-back (and the review gate's
+	// acceptance of the final round). Same auth contract as the validation
+	// route above: no configured token is an explicit 503.
+	if (!config.ingestToken) {
+		app.post("/review-rounds", (_req, res) => {
+			res.status(503).json({
+				recorded: false,
+				reason: "bridge ingest token not configured",
+			});
+		});
+	} else {
+		app.post(
+			"/review-rounds",
+			tokenAuthMiddleware(config.ingestToken),
+			(req, res) => {
+				const result = ingestReviewRound(store, req.body, {
+					delivery: "http",
+					logger: console,
+				});
+				res.status(result.httpStatus).json(result.body);
 			},
 		);
 	}
@@ -10186,6 +10244,19 @@ export async function startBridge(
 		reconcileDesignReviewInstructions(store);
 	};
 	reconcileDesignReviewManifestOutbox();
+	// FLY-2891: the Bridge owns review-round records that missed the HTTP path
+	// (spooled by runners that may be gone). Boot pass + 60s interval.
+	const reviewRoundSpool = createReviewRoundSpoolReconciler(store);
+	const reconcileReviewRoundSpool = (): void => {
+		try {
+			reviewRoundSpool.tick();
+		} catch (error) {
+			console.warn(
+				`[review-round-spool] reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
+	reconcileReviewRoundSpool();
 
 	const server = app.listen(config.port, config.host);
 	voiceSessionServices.runtime.start();
@@ -10231,6 +10302,8 @@ export async function startBridge(
 		30_000,
 	);
 	designReviewManifestTimer.unref?.();
+	const reviewRoundSpoolTimer = setInterval(reconcileReviewRoundSpool, 60_000);
+	reviewRoundSpoolTimer.unref?.();
 
 	// GEO-195: Use RegistryHeartbeatNotifier when registry has entries, else no-op
 	const notifier: HeartbeatNotifier =
@@ -14326,6 +14399,15 @@ export async function startBridge(
 
 	const codexReviewEffects = new CodexReviewEffects({
 		projects,
+		// FLY-2891: a hold re-queue names the Codex reviewer model too.
+		resolveReviewRoute: (executionId) => {
+			const route = resolveWorkflowReviewRouteForExecution(
+				store,
+				executionId,
+				"code",
+			);
+			return route?.reviewerVendor === "codex" ? route : undefined;
+		},
 		leadAlertNotifier: {
 			alert: (payload) =>
 				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
@@ -16480,6 +16562,7 @@ export async function startBridge(
 		clearInterval(leadAlertDrainTimer);
 		clearInterval(doaBackoffMaintenanceTimer);
 		clearInterval(designReviewManifestTimer);
+		clearInterval(reviewRoundSpoolTimer);
 		if (reportBlobSweepTimer) clearInterval(reportBlobSweepTimer);
 		clearInterval(reportHostingUsageTimer);
 		if (chromeReaperTimer) clearInterval(chromeReaperTimer); // FLY-766

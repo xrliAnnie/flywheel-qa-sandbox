@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant R as Claude 作者（runner）
+    participant C as 本机 Codex 评审
+    participant F as Codex 会话记录
+    participant B as Bridge
+    R->>B: 先登记评审请求（stage set）
+    B-->>R: 当场回：要求模型 gpt-6-astra / xhigh
+    loop 每一轮（评完立刻、改文件之前）
+        R->>C: 用要求模型评一轮
+        C->>F: 自动记下本回合真实模型
+        R->>F: 按回合编号读真实模型
+        R-)B: 写回一条：第几轮 / 结论 / 真实模型
+        B-->>R: 回执：模型对不对（不对立刻警告）
+        Note over R,B: 送不到就落一个小文件，Bridge 巡检自己来收
+    end
+    R->>B: 过评审门：该回合真实模型 = 要求模型？
+    alt 模型不对
+        B-->>R: 拒收：要求 X，实际 Y
+    else 模型对
+        B-->>R: 放行（回执声明「已核模型」）
+        R-)B: 记一条过门记录：总共几轮
+    end
