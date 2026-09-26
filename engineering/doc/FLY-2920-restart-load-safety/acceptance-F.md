@@ -30,3 +30,12 @@ Lead 2026-09-26 10:4x PDT 的三条实现裁定优先于已批准 plan 的旧取
 | 回归 | bot/zombie/identity 原节拍、load/core=8 与 minFreeBytes=0 默认不变；旧 repair/recovery 仅读快照 |
 
 具体文件选集与逐项排除原因由 `consumers-F.json` 记录。任何实际 30 秒生产时钟、宿主 vm_stat/压力读数、通知外送效果的未执行部分须在交卷中单列，不以短时 I/O 夹具代替。
+
+## 实现中发现的必要边界（尚待冻结后复验）
+
+- 实际 `LeadAlertNotifier` 在同毫秒接收同类 pause/resume/degraded 时，旧队列文件名仅含时间、Lead 和 eventType，会覆盖已返回 `queued:true` 的记录。F 的修复仅为 pressure sampler 消息增加稳定 eventId 后缀；需用真实队列及冻结时钟证明三种通知均可回放，其他告警文件名合同保持原样。
+- 原 `sensorOn("SWAP")` 动态环境读取未进入 flag inventory；迁到新 sampler 的直接读取使 `feature-flags-drift` 给出明确红灯。按 `doc/engineer/implementation/flag-authoring-runbook.md` 将这一现有开关接入 registry/store codec/global wrapper，保留正常初始化 seed 路径，不新增豁免或隐藏读取。动态启停须覆盖关闭期间的在途采样和再次开启，不能在 registry 声明 call_time 后实际只在构造时读取。
+- 缓存首次读取失败后，稍后恢复读取不能用空通知状态覆盖已有 pending/episode 历史；恢复持久化前必须保留历史。主机身份未知只限制旧采样缓存的可信度，新的有效采样仍可解除准入。
+- sampler 接线保留既有 catalog/schema/flag 初始化保护，之后尽早启动并在任何可派发的准入前绑定；不得为提前采样绕过迁移失败的安全边界。
+
+以上是当前工作记录，不是通过收据。`consumers-F.json` 在源文件冻结后须补入实际 notifier、flag registry/store/runtime/route 变更和相应守卫，再产生最终验证记录。
