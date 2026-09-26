@@ -45349,8 +45349,186 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-2921 C2: "not yet" for a claimed `pending` row — the replacement is
-	 * still launching, or a wake re-arm found the push claim busy. Releases the
+	 * FLY-2921 C2 step 3: the replacement launch a `pending` delivery waits on,
+	 * identified by the exact dispatch intent (reason
+	 * `rework_replacement:<req>`, current target tuple, preferred actor). The
+	 * execution binding only exists after the dispatcher admits it.
+	 */
+	getWorkflowReworkReplacementLaunch(requestId: string):
+		| {
+				executionId: string;
+				launchOrdinal: number;
+				ledgerState: WorkflowSideEffectState;
+				createdAt: string;
+				bindingMode: string | null;
+				launchOwnerPresent: boolean;
+		  }
+		| undefined {
+		const request = this.getWorkflowReworkRequest(requestId);
+		const route = this.getLatestWorkflowReworkRoute(requestId);
+		if (!request || !route) return undefined;
+		const node = this.getWorkflowRunNode(
+			request.run_id,
+			route.target_node_id,
+			route.target_attempt,
+		);
+		if (node?.execution_id !== route.preferred_actor_execution_id) {
+			return undefined;
+		}
+		const row = this.workflowSelectAll(
+			`SELECT launch_ordinal, state, created_at
+			   FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			    AND execution_id = ? AND reason = ?
+			  ORDER BY launch_ordinal DESC LIMIT 1`,
+			[
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				route.preferred_actor_execution_id,
+				`rework_replacement:${requestId}`,
+			],
+		)[0];
+		if (!row) return undefined;
+		const binding = this.getWorkflowExecutionBinding(
+			route.preferred_actor_execution_id,
+		);
+		return {
+			executionId: route.preferred_actor_execution_id,
+			launchOrdinal: Number(row.launch_ordinal),
+			ledgerState: row.state as WorkflowSideEffectState,
+			createdAt: String(row.created_at),
+			bindingMode: binding?.mode ?? null,
+			launchOwnerPresent: !!this.getWorkflowLaunchOwner(
+				route.preferred_actor_execution_id,
+			),
+		};
+	}
+
+	/**
+	 * FLY-2921 C2 step 4: the only death proofs accepted before FLY-2919's
+	 * process evidence lands — the preferred actor's launch was rolled back
+	 * unlaunched, or its dispatch intent was abandoned before commit.
+	 */
+	workflowReworkDeathProof(
+		requestId: string,
+	): "unlaunched_rollback" | "launch_abandoned" | undefined {
+		const request = this.getWorkflowReworkRequest(requestId);
+		const route = this.getLatestWorkflowReworkRoute(requestId);
+		if (!request || !route) return undefined;
+		if (
+			this.hasUnlaunchedWorkflowRollbackFact(
+				request.run_id,
+				route.target_node_id,
+				route.preferred_actor_execution_id,
+			)
+		) {
+			return "unlaunched_rollback";
+		}
+		const abandoned = this.workflowSelectAll(
+			`SELECT 1 AS present FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ?
+			    AND kind = 'dispatch' AND execution_id = ? AND state = 'abandoned'`,
+			[
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+				route.preferred_actor_execution_id,
+			],
+		)[0];
+		return abandoned ? "launch_abandoned" : undefined;
+	}
+
+	/**
+	 * FLY-2921 C2 row b: a replacement minted before a Lead resume carries a
+	 * launch envelope bound to the old route revision. While it is still an
+	 * unadmitted intent (no binding, no launch owner, no session) it is
+	 * abandoned here — the coordinator then replaces it with a fresh intent.
+	 */
+	abandonUnadmittedReworkReplacementLaunch(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		reason: string;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_replacement_abandon" };
+		}
+		let result: { ok: true } | { ok: false; reason: string } = {
+			ok: false,
+			reason: "replacement_abandon_not_committed",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const launch = this.getWorkflowReworkReplacementLaunch(input.requestId);
+			if (
+				!delivery ||
+				!request ||
+				!route ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				delivery.state !== "pending" ||
+				delivery.route_revision !== route.revision
+			) {
+				result = { ok: false, reason: "stale_delivery_owner" };
+				return;
+			}
+			if (
+				!launch ||
+				launch.ledgerState !== "intent_recorded" ||
+				launch.bindingMode !== null ||
+				launch.launchOwnerPresent ||
+				this.getSession(launch.executionId)
+			) {
+				result = { ok: false, reason: "replacement_launch_not_abandonable" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET state = 'abandoned', reason = ?, abandoned_at = ?, updated_at = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+				    AND execution_id = ? AND launch_ordinal = ? AND state = 'intent_recorded'`,
+				[
+					input.reason,
+					input.now,
+					input.now,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					launch.executionId,
+					launch.launchOrdinal,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "replacement_launch_not_abandonable" };
+				return;
+			}
+			this.settleWorkflowDeliveryAttemptIfPresentTx({
+				family: "launch",
+				table: "workflow_execution_binding",
+				pk: launch.executionId,
+				reason: "source_terminal",
+				now: input.now,
+			});
+			result = { ok: true };
+		});
+		return result;
+	}
+
+	/**
+	 * FLY-2921 C2: "not yet" for a claimed row that has not pushed its wake
+	 * (`pending`, or `turn_granted` without `wake_sent_at`) — the replacement
+	 * is still launching, or a wake re-arm found the push claim busy. Releases the
 	 * owner and schedules the next look without counting a failure and
 	 * without an event (a release would append one per tick).
 	 */
@@ -45376,7 +45554,8 @@ export class StateStore {
 			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?,
 			        last_error = ?
 			  WHERE request_id = ? AND owner_id = ? AND generation = ?
-			    AND state = 'pending'`,
+			    AND (state = 'pending'
+			         OR (state = 'turn_granted' AND wake_sent_at IS NULL))`,
 			[
 				input.nextRetryAt,
 				input.reason,
