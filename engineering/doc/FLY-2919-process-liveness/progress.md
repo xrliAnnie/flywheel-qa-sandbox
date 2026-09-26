@@ -1,17 +1,18 @@
 ---
 issue: FLY-2919
 phase: design
-phaseCursor: 3/5
-updated: 2026-09-26T17:08:31.280Z
-nextStep: Inherited approved design checked live; design-correction.md records
-  FLY-2921 boundary and implement 0/6 preserved at 241e6b439/implementation.md.
-  Next review current appendix, republish/report HTML, phase_design_complete and
-  park; no code work. Lead question 1fb8f125-d6a0-423e-9898-d7096d910d23
-  pending.
+phaseCursor: 4/5
+updated: 2026-09-26T17:10:20.498Z
+nextStep: "Lead answer 1fb8f125 confirms verify-only handoff: plan/HTML restored
+  byte-identical to 241e6b439, gate f4e94872 live APPROVED; VM comments
+  rechecked. No implementation edits/tests. Prior implement 0/6 remains at
+  241e6b439 and implementation.md. Next silent publish/report then
+  phase_design_complete/park. Redundant review 3ea25547 registered before Lead
+  answer is pending; no new design scope."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: design (3/5)
-**next**: Inherited approved design checked live; design-correction.md records FLY-2921 boundary and implement 0/6 preserved at 241e6b439/implementation.md. Next review current appendix, republish/report HTML, phase_design_complete and park; no code work. Lead question 1fb8f125-d6a0-423e-9898-d7096d910d23 pending.
+**phase**: design (4/5)
+**next**: Lead answer 1fb8f125 confirms verify-only handoff: plan/HTML restored byte-identical to 241e6b439, gate f4e94872 live APPROVED; VM comments rechecked. No implementation edits/tests. Prior implement 0/6 remains at 241e6b439 and implementation.md. Next silent publish/report then phase_design_complete/park. Redundant review 3ea25547 registered before Lead answer is pending; no new design scope.
