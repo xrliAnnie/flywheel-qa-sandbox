@@ -1,16 +1,17 @@
 ---
 issue: FLY-2919
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-26T15:56:57.258Z
-nextStep: Effective APPROVED gate f4e94872-60c5-49a3-9d47-89a63b8264f6; nine
-  non-blocking follow-ups reported. Commit final HTML/review receipt,
-  publish-only, verify hosted source/CSP, report URL, then exact completion and
-  park.
+phaseCursor: 5/5
+updated: 2026-09-26T15:58:21.604Z
+nextStep: Design artifacts approved, committed and published; hosted
+  HTTP/source/CSP verified and DESIGN-HTML URL reported. Review advisories
+  preserved for Lead. Next command complete --route phase_design_complete then
+  park; phase hold keeps goal alive. No implementation or runtime acceptance
+  claimed.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: design (4/5)
-**next**: Effective APPROVED gate f4e94872-60c5-49a3-9d47-89a63b8264f6; nine non-blocking follow-ups reported. Commit final HTML/review receipt, publish-only, verify hosted source/CSP, report URL, then exact completion and park.
+**phase**: design (5/5)
+**next**: Design artifacts approved, committed and published; hosted HTTP/source/CSP verified and DESIGN-HTML URL reported. Review advisories preserved for Lead. Next command complete --route phase_design_complete then park; phase hold keeps goal alive. No implementation or runtime acceptance claimed.
