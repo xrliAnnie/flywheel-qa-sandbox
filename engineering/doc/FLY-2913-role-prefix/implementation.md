@@ -168,3 +168,7 @@ Blueprint 在 skill arm 解析后、worktree 副作用前编译（仅 claude-tmu
 - **HIGH 读取不受信 settings 可阻塞/OOM Bridge → 已修**：默认读取器改为 `O_RDONLY|O_NONBLOCK` 打开，在已打开的描述符上 `fstat` 要求普通文件且 ≤1 MiB，按大小有界读取（读取中增长即拒绝）。FIFO 不阻塞、指向 `/dev/zero` 的 symlink 拒绝、超限拒绝，均进入 legacy 回退；指向普通文件的 symlink（dotfiles 管理）可用。红：旧实现在 `/dev/zero` 上挂死被 timeout 杀掉；绿：25/25。
 - **MEDIUM 读主 checkout 而非最终 worktree → 已修**：编译挪到 adapter 上下文构建处，按最终 runner `cwd` 读项目层 settings；失败仍回落 legacy。新增“runner cwd 的项目本地 settings 被尊重”测试（该 harness 无 worktree 管理器，测试证明读取的是 runner cwd 层，但不单独区分主 checkout 与 worktree；代码路径改为使用最终 `cwd`）。
 - **MEDIUM 保留真实 HOME → 部分采纳并反驳**：HOME 是测量对象（生产 runner 同样加载），无法换成假 HOME 而不改变被测前缀；已在 PR 评论 4111188439 说明。试过首轮 `--permission-mode default`：模型会触发一次被拒工具调用导致第二个请求（usage 91,754、input=4），测量失真，因此保留 bypassPermissions，并新增守卫：结果必须 `num_turns === 1` 且非 error，否则 `not_single_request`。已采证据 30 次首轮 input 全为 2（单请求）。
+
+## 2026-09-26 — Codex 代码评审 Round 3 处置
+
+Round 2 的三项生产修复经 Codex 复核正确。剩余 MEDIUM（测量驱动）已修：驱动编译时与真实启动一样读取用户层与被测 cwd 的项目层 `lowerSkillOverrides`，输出 `keptLowerRestrictions`；`verifyPair` 新增 `unintendedGain`（role-v1 一侧出现 legacy 没有的技能/子代理/规则即失败）。已采证据不受影响：用户下层 off 的 10 个技能与五角色清单无交集，15 组两侧技能数均为 111、无新增。驱动 fixture 12/12。

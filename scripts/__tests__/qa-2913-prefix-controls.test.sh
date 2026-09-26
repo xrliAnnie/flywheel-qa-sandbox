@@ -53,6 +53,12 @@ await test('hiding a required or untargeted description fails the pair', async (
   assert.deepEqual(agentLoss.unintendedLoss.agents, ['Explore']);
 });
 
+await test('a skill, agent or rule that appears only on the role-v1 side fails the pair', async () => {
+  const widened = verifyPair({ legacy, roleV1: inventory(['implement', { name: 'gemini-image', tokens: 2 }, 'gws'], ['Explore', 'belle-lead'], ['context7.md', 'extra.md']), compiled, requiredSkills: ['implement'] });
+  assert.equal(widened.pass, false);
+  assert.deepEqual(widened.unintendedGain, { skills: ['gws'], agents: ['belle-lead'], rules: ['User:extra.md'] });
+});
+
 await test('memory files are compared by type and name, so one CLAUDE.md cannot mask another', async () => {
   const withProject = { ...legacy, memoryFiles: [...legacy.memoryFiles, { file: 'CLAUDE.md', type: 'Project', tokens: 10 }, { file: 'CLAUDE.md', type: 'User', tokens: 10 }] };
   const roleV1 = { ...inventory(['implement', { name: 'gemini-image', tokens: 2 }], ['Explore'], []), memoryFiles: [{ file: 'context7.md', type: 'User', tokens: 10 }, { file: 'CLAUDE.md', type: 'User', tokens: 10 }] };
@@ -141,6 +147,32 @@ await test('pairs differ only in settings and run interleaved for every role', a
   }
   const qaArgs = launches[CONTROL_ROLES.indexOf('qa') * 4].args;
   assert.equal(qaArgs.includes('--no-chrome'), false);
+});
+
+await test('the driver compiles with the lower settings layers of the probed cwd', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const configDir = mkdtempSync(join(tmpdir(), 'fly2913-driver-config-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'fly2913-driver-cwd-'));
+  try {
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ skillOverrides: { gws: 'off' } }));
+    mkdirSync(join(cwd, '.claude'));
+    writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({ skillOverrides: { notion: 'user-invocable-only' } }));
+    const config = await import(pathToFileURL(join(root, 'packages/config/dist/index.js')));
+    const seen = [];
+    const result = await runPrefixControls({ binary: '/fake/claude', cwd, model: 'm', effort: 'high', rounds: 1, roles: ['implement'],
+      probe: async (o) => { seen.push(JSON.parse(o.args[o.args.indexOf('--settings') + 1])); return { status: 'complete', context: { knownFixedCategoryTokens: 1 }, inventory: inventory([], [], []) }; },
+      firstTurn: async () => ({ status: 'complete', promptTokens: 1 }),
+      config, pinnedAgents: readPinnedAgents(root), claudeConfigDir: configDir, env: {} });
+    const slim = seen[1];
+    assert.equal(slim.skillOverrides.gws, undefined);
+    assert.equal(slim.skillOverrides.notion, undefined);
+    assert.equal(slim.skillOverrides.docs, 'name-only');
+    assert.deepEqual(result.roles.implement.keptLowerRestrictions, ['gws', 'notion']);
+  } finally {
+    rmSync(configDir, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 await test('probe children never inherit the caller runner identity or credentials', async () => {

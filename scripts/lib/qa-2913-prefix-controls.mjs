@@ -5,6 +5,7 @@
  * nothing here edits shared configuration or starts a room.
  */
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 
 export const CONTROL_ROLES = [
 	"design",
@@ -209,6 +210,12 @@ export function verifyPair({ legacy, roleV1, compiled, requiredSkills }) {
 				(n) => !afterRules.has(n) && !excluded.has(n),
 			),
 		},
+		// role-v1 must never surface anything legacy did not list.
+		unintendedGain: {
+			skills: [...afterSkills.keys()].filter((n) => !beforeSkills.has(n)),
+			agents: [...afterAgents].filter((n) => !beforeAgents.has(n)),
+			rules: [...afterRules].filter((n) => !beforeRules.has(n)),
+		},
 		requiredMissing: requiredSkills.filter(
 			(n) =>
 				beforeSkills.has(n) &&
@@ -217,7 +224,8 @@ export function verifyPair({ legacy, roleV1, compiled, requiredSkills }) {
 	};
 	result.pass =
 		result.requiredMissing.length === 0 &&
-		Object.values(result.unintendedLoss).every((list) => list.length === 0);
+		Object.values(result.unintendedLoss).every((list) => list.length === 0) &&
+		Object.values(result.unintendedGain).every((list) => list.length === 0);
 	return result;
 }
 
@@ -349,6 +357,12 @@ export async function runPrefixControls({
 			},
 			claudeConfigDir,
 			skillArm: "superpowers",
+			// Same lower layers the real launch reads: user, project, local.
+			lowerSkillOverrides: config.readLowerSkillOverrides([
+				join(claudeConfigDir, "settings.json"),
+				join(cwd, ".claude", "settings.json"),
+				join(cwd, ".claude", "settings.local.json"),
+			]),
 		});
 		const base = legacySettings({
 			role,
@@ -414,6 +428,7 @@ export async function runPrefixControls({
 		out.roles[role] = {
 			profileDigest: compiled.profileDigest,
 			hiddenSkillDescriptions: compiled.stamp.hiddenSkillDescriptions,
+			keptLowerRestrictions: compiled.stamp.keptLowerRestrictions ?? [],
 			excludedRules: compiled.stamp.excludedRules,
 			summary: summarizeRole(pairs),
 			pairs,
