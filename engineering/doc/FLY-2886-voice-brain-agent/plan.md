@@ -437,7 +437,12 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 **后台准入段**（`CodexVoiceContainer.openWithinDeadline` 内）= parent 启动 → capability 进程启动 → `assertCapabilityProcess`（含模型侧 MCP `tools/list`）→ capability thread → scribe 进程与 thread → `writer.rewrite` 试写。这一段里任一失败，除了「open 已被取消 / 失租约」这两种，都**不再**让整场 `voice_unavailable`，而是：
 
 1. **准入段独立所有权（R1#B5）**：准入段用自己的 `AdmissionScope { cancelled; resources[] }`，与整场 open 的 `resources.cancelled` 分开。准入段内每个 `await` 之后都 `assertAdmissionActive()`（整场取消或准入取消任一成立即停）。准入段的全部目录放在 `root/admission/`（`home`、`activation`、`scribe-home`、`scribe-work`）；前台只用 `root/fg/`。准入失败或超时 → 置 `admission.cancelled`，此后到达的任何 continuation 只能**关闭**它手里的资源，不能再装配，也不能清理 `root/fg/` 或整场 root。
-2. 按逆序关闭准入资源：scribe → capability 进程 → parent。每一项独立 try/finally，一项关闭失败不跳过其余；失败写 evidence `codex_voice_admission_teardown_failed {stage}`。迟到才返回的 parent / 进程由 `.then(close)` 关闭，关闭的 promise 被观察（不留未处理拒绝）。`TEARDOWN_RESERVE_MS` 用完仍有进程未确认退出时，前台照常继续，把这些资源登记进整场 conversation 的关闭清单，由会话结束与 `cleanupOpen` 再次关闭并记录。
+2. 按逆序关闭准入资源：scribe → capability 进程 → parent。**回收合同（R2#B5）**：每项关闭都是一次性、穷尽的——现有 `CodexLeadProcess.stopChild` 依次 grace → SIGTERM → SIGKILL 并等待退出（`CodexLeadProcess.ts:369-385`），voice parent 的 `cleanup` 在置 `closed` 后把每一步都放在 finally 链里全部执行（`voice-capability-parent.ts:186-212`），所以「关闭失败」的含义是「每一步都试过了但有一步报错」，**没有**可重试的第二次关闭。因此：
+   - 准入回收必须在进入前台之前**完成并确认**：每项独立 try/finally，一项失败不跳过其余；进程以 pid 已退出为准（`exitInfo` 已置位）。
+   - 回收全部确认 → 进入前台。
+   - 任一项关闭报错、pid 未确认退出，或 `TEARDOWN_RESERVE_MS` 用完 → **不进前台**，整场按现有 `cleanup_pending`（`CodexVoiceContainerError`）拒绝，并写 evidence `codex_voice_admission_teardown_failed {stage}`。这是「后台起不来也不许整场不可用」的唯一例外：残留的可能是带 Lead 权限的进程，安全优先。
+   - 迟到才返回的 parent / 进程由 `.then(close)` 关闭，关闭 promise 被观察（不留未处理拒绝）；它们在准入回收的确认范围内（回收要等迟到的 parent 返回并关完，或预留时间耗尽后按上一条拒绝）。
+   - 残留在 `root/admission/` 的文件随整场 container root 的既有清理删除，不另设重试。
 3. 在 `root/fg/home` 上走现有 voice-only 分支（`VOICE_CODEX_HOME_CONFIG` + `assertVoiceCodexHome`、read-only thread），不复用准入段写过的任何目录。
 4. 先告诉 Bridge，再拉前台上下文：container 调用 open 输入里新增的回调 `markBackgroundDegraded(reason)`（`CodexVoiceBackend` 转给 `cli.ts`，由现有 bridge client 带租约发 `POST /api/voice/sessions/:id/background-degraded {reason}`），成功后再 `loadContext(undefined)`，拿到前台形状的 snapshot。这个 POST 失败 → 整场 `voice_unavailable`，因为此时 Bridge 仍会给后台形状的 snapshot，不能拿它冒充前台。
 
@@ -461,7 +466,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 
 **让 founder 知道**：降级时经现有 mirror 往会话文字 thread 发一句固定文本：「这场语音后台没接上（<原因中文>），我先只陪你聊，要查的事转给 <Lead 显示名>。」
 
-**仍会让整场 `voice_unavailable` 的**只剩与后台无关的几种：二进制不符、实时腿（API key）失败、Bridge 上下文不可用、上面那次 degraded POST 失败、清理挂起、open 被取消或失租约。
+**仍会让整场 `voice_unavailable` 的**只剩这几种：二进制不符、实时腿（API key）失败、Bridge 上下文不可用、上面那次 degraded POST 失败、准入回收未确认（`cleanup_pending`，见上面第 2 条）或其他清理挂起、open 被取消或失租约。
 
 ### 14.3 沙箱放行 node 运行时闭包 (b)，常驻同修
 
@@ -498,10 +503,10 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 |---|---|---|
 | QA-R1 | 真宿主现状（无 gbrain 配置、Context7 漂移），测试 Lead 开 `voiceBackground`；有 Linear key、无 Linear key 各开一场 | ① evidence 有 `codex_voice_container_opened`，`backgroundExecution=enabled`、`accountType=chatgpt`；② manifest `unavailableIntegrations` 恰好等于宿主实际缺的集成，原因正确（gbrain=`host_config_unverified`、context7=`baseline_drift`，无 key 那场 linear=`credential_missing`）；③ `verifyModelIsolation` 用真 Homebrew node 通过；④ capability MCP `tools/list` 非空；⑤ 一次后台读（某单的 PR 状态）成功，口语里单号 / PR 号与 GitHub 一致；⑥ 开场简报「这场没接上」一行与 manifest 一致；⑦ 有 Linear 的那场里，改测试 issue 状态成功（原验收 5） |
 | QA-R2a | 后台准入段在 parent 处失败 → 降级 | 同一真房，用 container 既有构造缝 `createCapabilityParent`，由 harness 替换成抛 `model_isolation_unproven` 的工厂（真宿主上能自然触发的核心失败都和守护进程自身共用配置，没法只坏 parent）。判据：会话**开起来**；Bridge `voice_sessions.background_state=degraded`、reason 正确；thread 里出现那句固定降级提示；她问「FLY-xxxx 的 PR 状态」→ 走 `handoffToLead`，Lead 信箱有这条交办；evidence 记 parent / capability 进程 / scribe「未创建」；全程没有 `voice_unavailable` |
-| QA-R2b | 真 parent 起来之后失败 → 降级且真资源被收回 | 同一构造缝，harness 包一层：先调真 `startVoiceCapabilityParent` 起真 parent，返回后再抛错。判据：同 R2a 的会话判据；另按 pid / socket 核真 parent 的 broker socket 不可连、其 provider 子进程已退出、`root/admission/` 已删除、`root/fg/` 完好。capability 进程与 scribe 的退出证据由本地「后续阶段失败 / 迟到返回」用例提供（R1#A1） |
+| QA-R2b | 真 parent 起来之后失败 → 降级且真资源被收回 | `createCapabilityParent` 照常返回**真** parent（container 已登记所有权）；失败注入在下一阶段：用 container 既有构造缝 `createProcess`，harness 在 `profile === "voice-capability"` 的那次进程创建时抛错（R2#N1）。判据：同 R2a 的会话判据；另按 pid / socket 核：真 parent 的 broker socket 不可连、其 provider 子进程已退出、`root/admission/` 已删除、`root/fg/` 完好。capability 进程与 scribe 的退出证据由本地「后续阶段失败 / 迟到返回」用例提供（R1#A1） |
 | QA-R3 | 常驻回归 | 本机相关测试：`verifyModelIsolation` 用真 codex 0.156.1 + 真 Homebrew node + 常驻形状的权限档真跑通过（旧 readPaths 下同一用例先红：exit 134）。`fail_closed` 档 manifest 快照与改动前逐字节相同 |
 
-本地相关测试（实现阶段先红后绿）：可选集成四种原因各一例、`browser: off` 正常启动（不触发覆盖失败）、语音档浏览器启动失败 → `browser.*` 不装配且简报不提浏览器、常驻档浏览器失败仍是拒绝 handler、`requires` 连带不装配（github 缺 → patrol 快照一起不装配）、覆盖不变式反例（漏装 handler 仍抛错）、`fail_closed` 档行为不变；准入段每个 stage 失败都降级且资源按 pid 全部退出、parent 迟到返回也被关闭且不再装配、迟到 continuation 不清理 `root/fg/`、某项关闭失败其余仍关闭、慢前置读取 → `admission_budget_exhausted`、慢清理仍在 `openDeadlineAt` 前完成前台、degraded POST 失败即整场不可用；Bridge 路由的 schema、租约、单调性、重复 POST；闭包解析的 fixture（`@rpath` / `@loader_path` / 软链接 / 超限 / 解析失败）；`OPENSSL_CONF` 三处同源。
+本地相关测试（实现阶段先红后绿）：准入回收里某项关闭报错 → 其余仍关闭且整场 `cleanup_pending`、某进程超出预留仍未退出 → `cleanup_pending`、迟到 parent 返回后被关闭才进前台；可选集成四种原因各一例、`browser: off` 正常启动（不触发覆盖失败）、语音档浏览器启动失败 → `browser.*` 不装配且简报不提浏览器、常驻档浏览器失败仍是拒绝 handler、`requires` 连带不装配（github 缺 → patrol 快照一起不装配）、覆盖不变式反例（漏装 handler 仍抛错）、`fail_closed` 档行为不变；准入段每个 stage 失败都降级且资源按 pid 全部退出、parent 迟到返回也被关闭且不再装配、迟到 continuation 不清理 `root/fg/`、某项关闭失败其余仍关闭、慢前置读取 → `admission_budget_exhausted`、慢清理仍在 `openDeadlineAt` 前完成前台、degraded POST 失败即整场不可用；Bridge 路由的 schema、租约、单调性、重复 POST；闭包解析的 fixture（`@rpath` / `@loader_path` / 软链接 / 超限 / 解析失败）；`OPENSSL_CONF` 三处同源。
 
 ### 14.6 取舍与诚实边界
 
