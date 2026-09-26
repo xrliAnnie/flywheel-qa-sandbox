@@ -2,13 +2,13 @@
 issue: FLY-2882
 phase: implement
 phaseCursor: 5/5
-updated: 2026-09-26T04:47:03.358Z
-nextStep: Review APPROVED at 8b9fa8de1 (R7, gpt-6-astra). Milestone as literal
-  last commit, push, ask --report, complete --route needs_review --pr 1331
+updated: 2026-09-26T05:42:01.582Z
+nextStep: QA attempt 3 rework done (82f601950, FLY-2006 registration; review
+  APPROVED). Milestone last, push, ask --report, complete needs_review --pr 1331
 chunks: []
 pointers: {}
 ---
 
 # FLY-2882 progress
 **phase**: implement (5/5)
-**next**: Review APPROVED at 8b9fa8de1 (R7, gpt-6-astra). Milestone as literal last commit, push, ask --report, complete --route needs_review --pr 1331
+**next**: QA attempt 3 rework done (82f601950, FLY-2006 registration; review APPROVED). Milestone last, push, ask --report, complete needs_review --pr 1331
