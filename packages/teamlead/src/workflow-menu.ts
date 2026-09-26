@@ -830,6 +830,10 @@ export function resolveMenuOverrides(
 		let requestedModel = callerModel;
 		let modelPolicy = callerModelPolicy;
 		let automaticAssignment = false;
+		// FLY-2891: an auto-assigned weighted arm may pin its own effort. Only
+		// the issue_node_weighted branch sets this; parity/percentage arms never
+		// carry one.
+		let armEffort: { arm: string; effort: WorkflowEffort } | undefined;
 		const weightedNodeId =
 			(menu.shape === "code" &&
 				(node.id === "eng_design" ||
@@ -887,6 +891,9 @@ export function resolveMenuOverrides(
 					);
 				}
 				arm = weighted.arm;
+				if (weighted.arm.effort !== undefined) {
+					armEffort = { arm: weighted.arm.arm, effort: weighted.arm.effort };
+				}
 				assignmentBasis = {
 					issueIdentifier: context.issueIdentifier.trim(),
 					issueKey,
@@ -967,14 +974,20 @@ export function resolveMenuOverrides(
 				basis: assignmentBasis,
 			};
 		}
+		// Precedence: explicit caller effort > auto-assigned arm effort >
+		// template node default for the selected model.
+		const effortFromArm =
+			override?.effort === undefined && automaticAssignment && armEffort
+				? armEffort
+				: undefined;
 		const effort =
-			override?.effort === undefined
-				? modelPolicy.defaultEffort
-				: (callerEffort as WorkflowEffort);
+			override?.effort !== undefined
+				? (callerEffort as WorkflowEffort)
+				: (effortFromArm?.effort ?? modelPolicy.defaultEffort);
 		if (!modelPolicy.allowedEfforts.includes(effort as WorkflowEffort)) {
 			throw new WorkflowMenuValidationError(
 				"EFFORT_NOT_ALLOWED_FOR_MODEL",
-				`effort ${effort} is not allowed for ${requestedModel} on node ${node.id}`,
+				`effort ${effort} is not allowed for ${requestedModel} on node ${node.id}${effortFromArm ? ` (from model split arm ${effortFromArm.arm})` : ""}`,
 				modelPolicy.allowedEfforts,
 			);
 		}

@@ -179,6 +179,20 @@ function resolveAutomaticModelSplit(
 					`prior workflow model assignment unavailable:${nodeId}`,
 				);
 			}
+			// FLY-2891: a reused weighted assignment keeps the effort its arm
+			// pinned (frozen in basis.nodes); otherwise the template default.
+			const armEffort =
+				assignment.basis.rule === "issue_node_weighted"
+					? assignment.basis.nodes[assignment.basis.nodeId]?.find(
+							(candidate) => candidate.arm === assignment.arm,
+						)?.effort
+					: undefined;
+			const effort = armEffort ?? policy.defaultEffort;
+			if (!policy.allowedEfforts.includes(effort)) {
+				throw new Error(
+					`prior workflow model assignment effort unavailable:${nodeId}`,
+				);
+			}
 			resolved.assignments[nodeId] = {
 				arm: assignment.arm,
 				modelAlias: assignment.modelAlias,
@@ -189,7 +203,7 @@ function resolveAutomaticModelSplit(
 			resolved.templateOverride.nodes[nodeId] = {
 				vendor: model.runtimeVendor,
 				model: model.id,
-				effort: policy.defaultEffort,
+				effort,
 			};
 		}
 	}
