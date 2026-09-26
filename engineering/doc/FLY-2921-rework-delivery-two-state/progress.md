@@ -1,13 +1,13 @@
 ---
 issue: FLY-2921
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-26T16:16:58.166Z
-nextStep: Lead 已同意 2922 边界合同(q e2641287)——plan 要独立一节写两边文件/函数边界；等状态写点/消费者两路调研
+phaseCursor: 2/6
+updated: 2026-09-26T16:27:05.174Z
+nextStep: 写 research.md（消费者/测试/迁移机制）
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: design (1/6)
-**next**: Lead 已同意 2922 边界合同(q e2641287)——plan 要独立一节写两边文件/函数边界；等状态写点/消费者两路调研
+**phase**: design (2/6)
+**next**: 写 research.md（消费者/测试/迁移机制）
