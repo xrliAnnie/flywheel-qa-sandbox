@@ -132,3 +132,38 @@ QA@3 确认 B5 已修好：精确头全量 CI 36131267039 17/17 绿；slot 3 真
 不在本轮（写进 PR Follow-ups）：F2 轮转回访周期随源数线性增长（9 个源时 p50 55 秒、最大 80 秒），5 秒定时器可能早于 `nextPageAt` 触发而白等一轮；Lead 裁定不阻塞、不强求。
 
 本机只跑相关测试：`headphone-inbox` 23、`voice-session-config` 5；teamlead `vitest related`（collector、inbox、config.ts）580 个文件 8176 条，其中 6 个文件在全包并发下因环境失败（runner TMPDIR 过长导致 Unix socket `listen EINVAL`、5 秒超时），用短 TMPDIR 单独重跑 240/240 通过；config `vitest related truth.ts` 18 个文件 326 条；配置漂移守卫 150 条，负对照：去掉 `truth.ts` 的登记，`feature-flag drift guard` 两条失败；`flywheel-teamlead...` 构建通过，teamlead 与 config 的全部依赖方（13 个包）typecheck 通过；改动文件 biome 0 error（plugin.ts 两条既有 warning 与本改动无关）。
+
+## 9. 合并 FLY-2796 与 main（Lead 2026-09-26：本 PR 成为耳机模式 + 播报内容的唯一一张卡）
+
+FLY-2796（PR #1309）已关，最终头 `96915fd36`（`origin/archive/FLY-2796-final`）合进本分支，随后合 `origin/main@fdd1b404d`。取舍原则：耳机模式本身的行为以 2796 最终轮为准；播报什么、怎么说以 2863 V7 为准；main 已上线的东西不改。
+
+### 9.1 合 2796 最终头（11 个文件）
+
+| 位置 | 取舍 |
+|---|---|
+| `headphone-collector.ts` | 保留 2863 的 urgent 标记同页提交、`bootstrapPages` 与 F1 上限；加入 2796 的 revision 冲突恢复（该页置 `recovering`、排到轮转末尾）。2796 自己也做了与 B5 相同的「按上次拉取时间轮转」，两边一致 |
+| `voice-handoff-routes.ts` | SSE 唤醒用 2863 抽出的共享 `VoiceReplyNotifier`（议程结果也走它），语义与 2796 的本地订阅表相同 |
+| `voice-headphone` `session.ts` / `bridge-client.ts` | 取 2863：模式层是 `AgendaConductor`，不再朗读收件箱；客户端含重连退避与议程接口 |
+| `voice-codex` `session.ts` | 保留 2796 最终轮：单一说话队列、不放等待音、等回复只数安静时间（15 秒）。引擎 A 没有会说话的前台，所以队列出口在有耳机载体时交给载体念，2796 的提示句在引擎 A 上也念得出、不与 Lead 回话重叠 |
+| 其余测试 | 两边新增的用例都保留；重复的同名用例取一份，文本按 2863 的回话文本绑定夹具 |
+
+### 9.2 合 main（37 个内容冲突 + 36 个 modify/delete）
+
+| 位置 | 取舍 |
+|---|---|
+| voice-bridge | 按 FLY-2860 删除已退役的 /gemini、/eleven、/glaw 守护进程文件；2796 建在它们之上的 resident 会话（`resident-voice-session.ts`、`GlawLeaseHeartbeat.ts` 及测试）无法再编译，一并删除。2798 的 canonical RoomIO（`room/`）保留给引擎 A，补回它依赖的 `audio/resample.ts` |
+| voice-codex 房间 | `discord-room.ts`、`audio.ts` 取 main（引擎 B 与旧引擎跑在上面：流式 SpeechStream、pre-roll、人数）；引擎 A 的 RoomIO 包装移到 `roomio-room.ts`，`cli.ts` 按引擎选房间。`UplinkSpeechGate` 仍是 voice-bridge 的共享实现，main 的 pre-roll 改动移植进去。Silero 模型从 voice-bridge 包解析（2796 已把模型搬过去） |
+| voice-codex 配置 | 同时保留 `FLYWHEEL_VOICE_ENGINE`（引擎 A）与 `FLYWHEEL_VOICE_BACKEND`（引擎 B）；两者同开启动即失败 |
+| voice-core | 按 FLY-2860 删 Gemini 后端与配置，保留 OpenAI Live；main 的会话事件载荷改名 `ConversationUtterance`，V1 模式层的 `VoiceUtterance` 形状不变；`SpeakReceipt` 只留一份；main 的 `AudibleTailEstimate`（只给 `canArmVoiceAction` 用）改名 `ArmAudibleTail`；`TranscriptSink.append/flush` 用 main 的回执，失败状态与 durable 索引共用 |
+| teamlead huddle | ProjectConfig 取 main（huddle 退役成无类型标记）；2796 的 resident 认领逻辑改为从标记里按字段读取，编译通过但已无客户端（见 9.4） |
+| Lead 运行时 | 同时保留 2798 的 runtime timeline 事件与 main FLY-2862 的空回复上报 |
+| flywheel-comm | 用 main 的 `voice_minutes` origin 解析；`voiceHandoff` 只允许 `origin=voice` |
+
+### 9.3 表名撞车（Lead 已批）
+
+main 的 FLY-2799 在同一个 teamlead.db 建了 `voice_handoffs`（schema 完全不同，且 intent-kind 迁移会按自己的 schema 重建该表）。本分支的 Lead handoff 载体改用 `voice_lead_handoffs` / `voice_lead_handoff_results`，main 的表不动；retention 登记与 schema 清单同步。新测试在两种建表顺序下都验证两套表各自保持 schema；负对照：改回旧表名即报 `no such column: lead_id`。两套 handoff（2799 的 `voice-handoff.ts` 与 2796 的 `voice-handoff-routes.ts`）不在本单合并。跑过 2796/2863 旧版本的 QA 房数据库里会留下旧 `voice_handoffs` 孤表，QA 需用新房。
+
+### 9.4 死代码（未删除，交 Lead 决定）
+
+- teamlead 的 resident voice 载体（`resolveResident`、resident 认领路由、`StateStore` 的 resident 列与测试）：它唯一的客户端随 FLY-2860 删除，main 的准入守卫也拒绝带 huddle 的项目。
+- 原有清单（§4）不变。
