@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -387,6 +395,73 @@ describe("stage command", () => {
 			).rejects.toThrow("process.exit(1)");
 			expect(errorSpy).toHaveBeenCalledWith(
 				expect.stringContaining("only valid for stage=design_review"),
+			);
+		});
+
+		it("FLY-2891 prints the echoed request + reviewer model and writes design-request.json", async () => {
+			const echo = {
+				requestId: "req-1",
+				revision: 2,
+				planPath: "doc/plan.md",
+				reviewedPlanBlobSha: "a".repeat(40),
+				reviewerModel: "gpt-6-astra",
+				reviewerEffort: "xhigh",
+			};
+			mockFetch.mockImplementation(
+				async () =>
+					new Response(JSON.stringify({ ok: true, designReview: echo })),
+			);
+			await stage({
+				subcommand: "set",
+				stageName: "design_review",
+				planPath: "doc/plan.md",
+			});
+			expect(logSpy).toHaveBeenCalledWith(
+				`Design review request: requestId=req-1 blob=${"a".repeat(40)} reviewer=gpt-6-astra/xhigh`,
+			);
+			const path = join(
+				tmpRoot,
+				".flywheel",
+				"runs",
+				"exec-test-1",
+				"codex",
+				"design-request.json",
+			);
+			expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(echo);
+			expect(statSync(path).mode & 0o777).toBe(0o600);
+		});
+
+		it("FLY-2891 says the request is pending when the Bridge did not echo one", async () => {
+			await stage({
+				subcommand: "set",
+				stageName: "design_review",
+				planPath: "doc/plan.md",
+			});
+			expect(logSpy).toHaveBeenCalledWith(
+				"Design review request pending — check inbox before starting Codex",
+			);
+		});
+
+		it("FLY-2891 ignores a malformed echo instead of writing it", async () => {
+			mockFetch.mockImplementation(
+				async () =>
+					new Response(
+						JSON.stringify({
+							ok: true,
+							designReview: { requestId: "r", planPath: "../x", revision: 1 },
+						}),
+					),
+			);
+			await stage({
+				subcommand: "set",
+				stageName: "design_review",
+				planPath: "doc/plan.md",
+			});
+			expect(
+				existsSync(join(tmpRoot, ".flywheel", "runs", "exec-test-1", "codex")),
+			).toBe(false);
+			expect(logSpy).toHaveBeenCalledWith(
+				"Design review request pending — check inbox before starting Codex",
 			);
 		});
 

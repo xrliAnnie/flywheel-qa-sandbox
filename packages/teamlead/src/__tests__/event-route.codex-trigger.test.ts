@@ -67,6 +67,14 @@ function makeConfig(): BridgeConfig {
 	};
 }
 
+/** FLY-2891: the verified reviewer-model projection a new gate sends. */
+const REVIEWER_MODEL_PROJECTION = {
+	reviewerModel: "gpt-6-astra",
+	reviewerEffort: "xhigh",
+	codexThreadId: "01a0daf6-1f50-7522-b7dc-f0b3812a5dab",
+	codexTurnId: "01a0daf6-2634-7a23-a8e9-c1669023f458",
+};
+
 describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 	let store: StateStore;
 	let server: http.Server;
@@ -544,6 +552,7 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			reviewedTarget: committedPlanPath,
 			requestId: manifest.request_id,
 			reviewedPlanBlobSha: manifest.expected_blob_sha,
+			...REVIEWER_MODEL_PROJECTION,
 		};
 		writeFileSync(join(tmpWorktree, "progress.md"), "review pending\n");
 		execFileSync("git", ["add", "progress.md"], { cwd: tmpWorktree });
@@ -559,7 +568,10 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			body: JSON.stringify(projection),
 		});
 		expect(approved.status).toBe(200);
-		expect(await approved.json()).toEqual({ allowed: true });
+		expect(await approved.json()).toEqual({
+			allowed: true,
+			reviewerModelChecked: true,
+		});
 		expect(
 			store.getDesignReviewProofForManifest(
 				manifest.request_id,
@@ -645,10 +657,185 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 				reviewedTarget: committedPlanPath,
 				requestId: manifest.request_id,
 				reviewedPlanBlobSha: manifest.expected_blob_sha,
+				...REVIEWER_MODEL_PROJECTION,
 			}),
 		});
 		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({ allowed: true });
+		expect(await response.json()).toEqual({
+			allowed: true,
+			reviewerModelChecked: true,
+		});
+	});
+
+	it("FLY-2891 echoes the design review request and required model on stage set, same on replay", async () => {
+		vi.spyOn(store, "getWorkflowRunNodeForExecution").mockReturnValue({
+			run_id: "run-1",
+			node_id: "eng_design",
+		} as never);
+		vi.spyOn(store, "listWorkflowRunEvents").mockImplementation(() => {
+			const manifest = store.getCurrentDesignReviewManifest(execId);
+			return manifest
+				? [
+						{
+							run_id: "run-1",
+							seq: 1,
+							event_uid: `review_model_routed:run-1:eng_design:design:${manifest.request_id}`,
+							kind: "review_model_routed",
+							node_id: "eng_design",
+							edge_id: null,
+							execution_id: execId,
+							payload: {
+								reviewType: "design",
+								requestId: manifest.request_id,
+								reviewerVendor: "codex",
+								reviewerModel: "gpt-6-astra",
+								reviewerEffort: "xhigh",
+							},
+							at: new Date().toISOString(),
+						},
+					]
+				: [];
+		});
+		const event = {
+			event_id: "evt-design-echo",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		};
+		const first = (await (await postEvent(event)).json()) as Record<
+			string,
+			unknown
+		>;
+		const manifest = store.getCurrentDesignReviewManifest(execId)!;
+		expect(first.designReview).toEqual({
+			requestId: manifest.request_id,
+			revision: manifest.revision,
+			planPath: committedPlanPath,
+			reviewedPlanBlobSha: manifest.expected_blob_sha,
+			reviewerModel: "gpt-6-astra",
+			reviewerEffort: "xhigh",
+		});
+		const replay = (await (await postEvent(event)).json()) as Record<
+			string,
+			unknown
+		>;
+		expect(replay.duplicate).toBe(true);
+		expect(replay.designReview).toEqual(first.designReview);
+		const implement = (await (
+			await postEvent({
+				...event,
+				event_id: "evt-implement-no-echo",
+				payload: { stage: "implement" },
+			})
+		).json()) as Record<string, unknown>;
+		expect(implement.designReview).toBeUndefined();
+	});
+
+	it("FLY-2891 rejects a design result without the reviewer model and asks for an upgrade", async () => {
+		await postEvent({
+			event_id: "evt-design-validation-no-model",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		});
+		const manifest = store.getCurrentDesignReviewManifest(execId)!;
+		const response = await fetch(`${baseUrl}/design-review-validation`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify({
+				executionId: execId,
+				reviewType: "design",
+				status: "APPROVED",
+				reviewedTarget: committedPlanPath,
+				requestId: manifest.request_id,
+				reviewedPlanBlobSha: manifest.expected_blob_sha,
+			}),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			allowed: false,
+			reason:
+				"design review result missing reviewer model (upgrade flywheel-comm and rerun the gate)",
+		});
+	});
+
+	it("FLY-2891 denies a design APPROVED from the wrong reviewer model with a readable reason", async () => {
+		await postEvent({
+			event_id: "evt-design-validation-wrong-model",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		});
+		const manifest = store.getCurrentDesignReviewManifest(execId)!;
+		vi.spyOn(store, "getWorkflowRunNodeForExecution").mockReturnValue({
+			run_id: "run-1",
+			node_id: "eng_design",
+		} as never);
+		vi.spyOn(store, "listWorkflowRunEvents").mockReturnValue([
+			{
+				run_id: "run-1",
+				seq: 1,
+				event_uid: `review_model_routed:run-1:eng_design:design:${manifest.request_id}`,
+				kind: "review_model_routed",
+				node_id: "eng_design",
+				edge_id: null,
+				execution_id: execId,
+				payload: {
+					reviewType: "design",
+					requestId: manifest.request_id,
+					reviewerVendor: "codex",
+					reviewerModel: "gpt-6-astra",
+					reviewerEffort: "xhigh",
+				},
+				at: new Date().toISOString(),
+			},
+		]);
+		const post = (model: string) =>
+			fetch(`${baseUrl}/design-review-validation`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					executionId: execId,
+					reviewType: "design",
+					status: "APPROVED",
+					reviewedTarget: committedPlanPath,
+					requestId: manifest.request_id,
+					reviewedPlanBlobSha: manifest.expected_blob_sha,
+					...REVIEWER_MODEL_PROJECTION,
+					reviewerModel: model,
+				}),
+			});
+		const denied = await post("gpt-5.6-sol");
+		expect(denied.status).toBe(409);
+		expect(await denied.json()).toEqual({
+			allowed: false,
+			reason:
+				"reviewer model mismatch: request requires gpt-6-astra/xhigh, review ran gpt-5.6-sol/xhigh",
+		});
+		expect(
+			store.getDesignReviewProofForManifest(
+				manifest.request_id,
+				manifest.revision,
+			)?.state ?? "none",
+		).not.toBe("validated");
+		const accepted = await post("gpt-6-astra");
+		expect(accepted.status).toBe(200);
+		expect(await accepted.json()).toEqual({
+			allowed: true,
+			reviewerModelChecked: true,
+		});
 	});
 
 	it("rejects dirty plan staging without minting a manifest", async () => {

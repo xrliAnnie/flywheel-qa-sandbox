@@ -35,6 +35,10 @@ export interface CodexReviewResultOpts {
 	rounds?: number;
 	/** Codex persistent thread id (audit). */
 	codexThreadId?: string;
+	/** FLY-2891: the APPROVED round's turn and the model it verifiably ran. */
+	codexTurnId?: string;
+	reviewerModel?: string;
+	reviewerEffort?: string;
 }
 
 export interface CodexReviewResultBody {
@@ -52,6 +56,9 @@ export interface CodexReviewResultBody {
 		reviewedTarget?: string;
 		rounds?: number;
 		codexThreadId?: string;
+		codexTurnId?: string;
+		reviewerModel?: string;
+		reviewerEffort?: string;
 	};
 }
 
@@ -64,6 +71,9 @@ export function buildCodexReviewResultBody(args: {
 	reviewedTarget?: string;
 	rounds?: number;
 	codexThreadId?: string;
+	codexTurnId?: string;
+	reviewerModel?: string;
+	reviewerEffort?: string;
 	eventId?: string;
 }): CodexReviewResultBody {
 	const payload: CodexReviewResultBody["payload"] = {
@@ -75,6 +85,9 @@ export function buildCodexReviewResultBody(args: {
 	if (args.reviewedTarget) payload.reviewedTarget = args.reviewedTarget;
 	if (typeof args.rounds === "number") payload.rounds = args.rounds;
 	if (args.codexThreadId) payload.codexThreadId = args.codexThreadId;
+	if (args.codexTurnId) payload.codexTurnId = args.codexTurnId;
+	if (args.reviewerModel) payload.reviewerModel = args.reviewerModel;
+	if (args.reviewerEffort) payload.reviewerEffort = args.reviewerEffort;
 	return {
 		event_id: args.eventId ?? randomUUID(),
 		execution_id: args.execId,
@@ -128,6 +141,9 @@ export async function emitCodexReviewResult(
 		reviewedTarget: opts.reviewedTarget,
 		rounds: opts.rounds,
 		codexThreadId: opts.codexThreadId,
+		codexTurnId: opts.codexTurnId,
+		reviewerModel: opts.reviewerModel,
+		reviewerEffort: opts.reviewerEffort,
 	});
 
 	const headers: Record<string, string> = {
