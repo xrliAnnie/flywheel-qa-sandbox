@@ -1,39 +1,42 @@
 classDiagram
-  class PR194 {
-    state: OPEN
-    base: main
-    head: project-slot-4-FLY-202
-    merge: never
+  class SourceTruth {
+    tracked directories from Git
+    qa-framework README
+    doc tree listing
+    alert scripts
   }
   class SandboxNotes {
     path: doc/qa/sandbox-notes.md
-    purpose: 2-3 paragraphs
-    dirTable: 17 rows
-    readmeSummary: 10 bullets
-    lsSnapshot: 50 lines
-    driftMarker: kept last line
+    purpose: 3 paragraphs
+    directory table: 17 rows
+    README summary: 10 bullets
+    doc listing: 50 lines
+    inherited marker: preserved
   }
-  class DesignFolder {
-    path: engineering/doc/FLY-202-sandbox-notes-e2e
+  class BranchBinding {
+    repository: flywheel-qa-sandbox
+    branch: project-slot-4-FLY-202
+    pull request: 194
+    base: main
+    state: open, never merge fixture
+  }
+  class DesignArtifacts {
     exploration.md
     research.md
     plan.md
     design-review.md
     progress.md
-    founder HTML + SVGs
+    founder HTML and rendered SVGs
   }
-  class AssertionContract {
-    V1 paragraphs
-    V2 directory set
-    V3 bullet count
-    V4 snapshot equality
-    V5a V5b whitespace
-    V6 PR + SHA binding
-    V7 content vs source
-    V8 marker kept
-    V9 no doc file add/delete
+  class VerificationContract {
+    V1-V6 content and source truth
+    V7 scope
+    V8 whitespace hygiene
+    V9 exact SHA binding
   }
-  PR194 "1" --> "1" SandboxNotes : carries
-  PR194 "1" --> "1" DesignFolder : carries
-  AssertionContract ..> SandboxNotes : verifies
-  AssertionContract ..> PR194 : verifies
+  SourceTruth --> SandboxNotes : derives and validates
+  SandboxNotes --> BranchBinding : committed on
+  DesignArtifacts --> BranchBinding : travels with
+  VerificationContract ..> SourceTruth : reads independently
+  VerificationContract ..> SandboxNotes : checks
+  VerificationContract ..> BranchBinding : binds final SHA

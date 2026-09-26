@@ -7,31 +7,32 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 
 ## 结论
 
-**APPROVED（Codex，2 轮，reviewer 模型 gpt-6-astra @ xhigh，Bridge 指定）。**
-`await-codex-gate design` 已通过（Bridge 校验 requestId / plan 路径 / 已提交 plan blob / clean Git）。
+**APPROVED（effective `reviewVerdict`，Round 1）。** Reviewer 原始票同为 `APPROVED`；全部 findings 为 MEDIUM/LOW advisory，没有阻塞项，`settled` 为空。
 
 | 字段 | 值 |
 |---|---|
-| exec | `814e38bd-26ac-400b-b208-f18015621d92` |
-| Bridge manifest | revision 2，requestId `1f38c57f-b962-4b26-8004-d88321be2ec7` |
-| 评审的 plan blob | `646f36123c3f25b25efa2516869abe4699dfffbd`（commit `e5b8067aa`） |
-| Codex thread | `01a0dd83-5f4c-7c83-a0af-687037530f57`（已归档） |
+| execution | `cd41d8e7-9d88-45e1-9921-4f0e91b42485` |
+| question id | `b4bc52e6-c0ec-4e02-91da-bdcd11258bed` |
+| review request id | `005ed472-95c1-402a-a274-051ba2626de4` |
+| reviewed commit | `cda9b1839149d1bad7e441fa85d58fcc34c82c1a` |
+| reviewed plan blob | `ba34275cb1172f4e83df255b026943dac136553d` |
+| advisory report receipt | `f52085d3-bed7-4e8a-ae83-d9b4fd592391` |
 
-## Round 1 — CHANGES REQUESTED（4 × P2，全部采纳）
+## 非阻塞 advisories
 
-1. **只数数量会放过事实错误**：`doc/qa/sandbox-notes.md` 第 2 段无条件宣称测试不碰
-   生产告警队列，但 README（Alert Mirror 节）与 `scripts/test-deploy.sh`/`scripts/lead-alert.sh`
-   表明只有 `--alerts` 才隔离 → 加入 V7 内容核对，并登记为已知红项（implement 必修）。
-2. **同步/收尾顺序**：C1 改为四态同步；最终 ledger 先于 push；push 后三方 SHA 一致。
-3. **空白检查时点**：拆成 V5a（提交前，比较工作区）与 V5b（提交后）。
-4. **段落判定**：V1 从"数行"改为"按空行分块"，附两个自测样例。
+| findingKey | 严重度 | 摘要 |
+|---|---|---|
+| `committed-scope-guard-gaps` | MEDIUM | 最终 committed-scope 检查应同时捕获 rename 和白名单外修改，而不只筛 A/D。 |
+| `base-sha-not-restart-durable` | MEDIUM | implement baseline 应进入 durable ledger pointer；tmp 文件在恢复执行时可能被覆盖。 |
+| `overbroad-production-discord-claim` | MEDIUM | 当前 notes 的“不碰 production Discord channels”过宽；无 `--alerts` 时 production-default alert path 仍可能到生产告警频道。 |
+| `v4-bsd-ls-portability` | LOW | 建议固定 `/bin/ls` + `LC_ALL=C` 并检查 ignored `doc/` 文件，避免 GNU/BSD 输出差异。 |
+| `pr-body-overwrite-drops-linear-section` | LOW | 更新 PR body 时保留 Linear Issue section，并说明新旧 V 编号映射。 |
+| `v9-github-eventual-consistency` | LOW | push 后读取 PR SHA 可做 3 次、每次 10 秒的有限重试，再判真正不一致。 |
+| `design-review-record-stale` | LOW | 本文件已刷新为本轮 execution、commit、blob 与 review ids。 |
 
-另纳入两项合同补充：断言合同共用、实现独立；V2 排除表头并查描述非空；V8/V9；显式停止条件。
+## 处理
 
-## Round 2 — APPROVED
-
-唯一非阻塞注记（P3），**交给 implement 执行时遵守**（不改 plan，以免作废已批准的 blob）：
-
-- V9 只看已提交结果，因此应在**最终 ledger 提交之后、push 之前**复跑 V5b、V9 和白名单检查；
-- 把 `BASE` 的完整 SHA 与最终 HEAD 一起写进 PR #194 的核验记录，供独立 QA 进程使用
-  （QA 不会继承 implement 的 shell 变量）。
+- 按 Runner 合同，`APPROVED with advisories` 已通过硬门；以上 findings 已通过唯一报告通道发给 Lead。
+- 不改已批准的 `plan.md`，避免在没有新 review 的情况下把当前 plan blob 替换成未审版本。
+- `design-review-record-stale` 已在本文件解决；其余 advisories 作为 implement/QA 的审计上下文，由 Lead 决定是否开后续工作或在执行时收紧。
+- `overbroad-production-discord-claim` 会在 founder HTML 中明确展示为已知非阻塞边界，不再把现有 notes 描述成“所有事实无保留地正确”。
