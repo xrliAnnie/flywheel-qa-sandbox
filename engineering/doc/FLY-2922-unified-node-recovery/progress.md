@@ -2,15 +2,14 @@
 issue: FLY-2922
 phase: design
 phaseCursor: 3/5
-updated: 2026-09-26T15:57:54.862Z
-nextStep: R3 registered at plan head 4e7d0c1d2, gate
-  46a1b3cd-9d44-4c3b-8bf9-2659c598f2af. R2 lineage blocker and advisories
-  addressed in section 10. Poll effective verdict; approved then publish-only,
-  hosted verify/report, phase_design_complete, park.
+updated: 2026-09-26T16:05:33.812Z
+nextStep: "R3 changes addressed: root head authority, pre-admission failure
+  producer, decision-edge consumers. Check schema/consumer consistency then
+  commit/push R4 and register new review."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: design (3/5)
-**next**: R3 registered at plan head 4e7d0c1d2, gate 46a1b3cd-9d44-4c3b-8bf9-2659c598f2af. R2 lineage blocker and advisories addressed in section 10. Poll effective verdict; approved then publish-only, hosted verify/report, phase_design_complete, park.
+**next**: R3 changes addressed: root head authority, pre-admission failure producer, decision-edge consumers. Check schema/consumer consistency then commit/push R4 and register new review.
