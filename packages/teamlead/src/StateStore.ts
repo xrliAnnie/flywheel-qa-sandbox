@@ -2709,6 +2709,28 @@ export type VoiceOutboundPhase =
 export type VoiceOutboundDeliveryClass = "tell" | "context";
 export type VoiceOutboundSource = "discord" | "bridge_event";
 export type VoiceLiveContextMode = "disabled" | "eligible";
+export type CapabilityTargetLockActor = "resident" | "voice";
+export type CapabilityTargetLockState = "held" | "unknown";
+export interface CapabilityTargetLockRow {
+	targetKey: string;
+	projectName: string;
+	leadId: string;
+	holderActor: CapabilityTargetLockActor;
+	holderActivation: string;
+	requestId: string;
+	fence: string;
+	acquiredAt: number;
+	deadline: number;
+	dispatchedAt: number | null;
+	state: CapabilityTargetLockState;
+	reason: string | null;
+}
+export type CapabilityTargetLockAcquireResult =
+	| { status: "acquired"; fence: string; state: "held" }
+	| { status: "waiting" }
+	| { status: "resident_lead_active_on_target" }
+	| { status: "target_busy" }
+	| { status: "target_pending_reconcile" };
 export interface VoiceContextRingEntry {
 	key: string;
 	text: string;
@@ -5992,6 +6014,229 @@ export class StateStore {
 		)
 			return;
 		return session;
+	}
+
+	private capabilityTargetLockFromRow(
+		row: Record<string, unknown> | undefined,
+	): CapabilityTargetLockRow | undefined {
+		if (!row) return;
+		return {
+			targetKey: String(row.target_key),
+			projectName: String(row.project_name),
+			leadId: String(row.lead_id),
+			holderActor: row.holder_actor as CapabilityTargetLockActor,
+			holderActivation: String(row.holder_activation),
+			requestId: String(row.request_id),
+			fence: String(row.fence),
+			acquiredAt: Number(row.acquired_at),
+			deadline: Number(row.deadline),
+			dispatchedAt:
+				row.dispatched_at == null ? null : Number(row.dispatched_at),
+			state: row.state as CapabilityTargetLockState,
+			reason: (row.reason as string | null) ?? null,
+		};
+	}
+
+	getCapabilityTargetLock(targetKey: string): CapabilityTargetLockRow | undefined {
+		return this.capabilityTargetLockFromRow(
+			this.db.raw
+				.prepare("SELECT * FROM capability_target_locks WHERE target_key = ?")
+				.get(targetKey) as Record<string, unknown> | undefined,
+		);
+	}
+
+	acquireCapabilityTargetLock(input: {
+		targetKey: string;
+		projectName: string;
+		leadId: string;
+		actor: CapabilityTargetLockActor;
+		activationId: string;
+		requestId: string;
+		now: number;
+		deadline: number;
+	}): CapabilityTargetLockAcquireResult {
+		if (
+			!input.targetKey ||
+			input.targetKey.length > 512 ||
+			/[\u0000-\u001f\u007f]/.test(input.targetKey) ||
+			![input.projectName, input.leadId, input.activationId].every(
+				(value) =>
+					/^[A-Za-z0-9_.:-]{1,256}$/.test(value) && value.length <= 256,
+			) ||
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+				input.requestId,
+			) ||
+			!Number.isSafeInteger(input.now) ||
+			!Number.isSafeInteger(input.deadline) ||
+			input.deadline <= input.now
+		)
+			throw new Error("capability_target_lock_input_invalid");
+		return this.db.raw
+			.transaction((): CapabilityTargetLockAcquireResult => {
+				this.db.raw
+					.prepare(
+						"DELETE FROM capability_target_lock_waiters WHERE deadline <= ?",
+					)
+					.run(input.now);
+				const stale = this.getCapabilityTargetLock(input.targetKey);
+				if (stale?.state === "held" && stale.deadline <= input.now) {
+					if (stale.dispatchedAt == null)
+						this.db.raw
+							.prepare(
+								"DELETE FROM capability_target_locks WHERE target_key = ? AND state = 'held' AND dispatched_at IS NULL AND deadline <= ?",
+							)
+							.run(input.targetKey, input.now);
+					else
+						this.db.raw
+							.prepare(
+								"UPDATE capability_target_locks SET state = 'unknown', reason = 'holder_deadline_expired' WHERE target_key = ? AND state = 'held' AND dispatched_at IS NOT NULL AND deadline <= ?",
+							)
+							.run(input.targetKey, input.now);
+				}
+				const current = this.getCapabilityTargetLock(input.targetKey);
+				if (current) {
+					if (current.state === "unknown")
+						return { status: "target_pending_reconcile" };
+					if (
+						current.holderActor === input.actor &&
+						current.holderActivation === input.activationId &&
+						current.requestId === input.requestId
+					)
+						return { status: "acquired", fence: current.fence, state: "held" };
+					if (input.actor === "voice")
+						return {
+							status:
+								current.holderActor === "resident"
+									? "resident_lead_active_on_target"
+									: "target_busy",
+						};
+					this.db.raw
+						.prepare(
+							`INSERT INTO capability_target_lock_waiters
+							 (target_key, activation, request_id, enqueued_at, deadline)
+							 VALUES (?, ?, ?, ?, ?)
+							 ON CONFLICT(target_key, activation, request_id) DO NOTHING`,
+						)
+						.run(
+							input.targetKey,
+							input.activationId,
+							input.requestId,
+							input.now,
+							input.deadline,
+						);
+					return { status: "waiting" };
+				}
+				const firstWaiter = this.db.raw
+					.prepare(
+						"SELECT activation, request_id FROM capability_target_lock_waiters WHERE target_key = ? ORDER BY enqueued_at, request_id LIMIT 1",
+					)
+					.get(input.targetKey) as
+					| { activation: string; request_id: string }
+					| undefined;
+				if (input.actor === "voice" && firstWaiter)
+					return { status: "resident_lead_active_on_target" };
+				if (
+					input.actor === "resident" &&
+					firstWaiter &&
+					(firstWaiter.activation !== input.activationId ||
+						firstWaiter.request_id !== input.requestId)
+				)
+					return { status: "waiting" };
+				const fence = randomUUID();
+				this.db.raw
+					.prepare(
+						`INSERT INTO capability_target_locks
+						 (target_key, project_name, lead_id, holder_actor, holder_activation,
+						  request_id, fence, acquired_at, deadline, state)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'held')`,
+					)
+					.run(
+						input.targetKey,
+						input.projectName,
+						input.leadId,
+						input.actor,
+						input.activationId,
+						input.requestId,
+						fence,
+						input.now,
+						input.deadline,
+					);
+				this.db.raw
+					.prepare(
+						"DELETE FROM capability_target_lock_waiters WHERE target_key = ? AND activation = ? AND request_id = ?",
+					)
+					.run(input.targetKey, input.activationId, input.requestId);
+				return { status: "acquired", fence, state: "held" };
+			})
+			.immediate();
+	}
+
+	markCapabilityTargetLockDispatched(input: {
+		targetKey: string;
+		activationId: string;
+		requestId: string;
+		fence: string;
+		now: number;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE capability_target_locks SET dispatched_at = COALESCE(dispatched_at, ?)
+					 WHERE target_key = ? AND holder_activation = ? AND request_id = ?
+					 AND fence = ? AND state = 'held'`,
+				)
+				.run(
+					input.now,
+					input.targetKey,
+					input.activationId,
+					input.requestId,
+					input.fence,
+				).changes === 1
+		);
+	}
+
+	releaseCapabilityTargetLock(input: {
+		targetKey: string;
+		activationId: string;
+		requestId: string;
+		fence: string;
+		outcome: "succeeded" | "rejected" | "not_dispatched" | "unknown";
+		reason?: string;
+	}): CapabilityTargetLockState | "released" | "not_owner" {
+		return this.db.raw.transaction(() => {
+			const current = this.getCapabilityTargetLock(input.targetKey);
+			if (
+				!current ||
+				current.holderActivation !== input.activationId ||
+				current.requestId !== input.requestId ||
+				current.fence !== input.fence
+			)
+				return "not_owner" as const;
+			if (input.outcome === "unknown" && current.dispatchedAt != null) {
+				this.db.raw
+					.prepare(
+						"UPDATE capability_target_locks SET state = 'unknown', reason = ? WHERE target_key = ?",
+					)
+					.run(input.reason ?? "provider_unknown", input.targetKey);
+				return "unknown" as const;
+			}
+			this.db.raw
+				.prepare("DELETE FROM capability_target_locks WHERE target_key = ?")
+				.run(input.targetKey);
+			return "released" as const;
+		})();
+	}
+
+	cancelCapabilityTargetLockWaiter(input: {
+		targetKey: string;
+		activationId: string;
+		requestId: string;
+	}): void {
+		this.db.raw
+			.prepare(
+				"DELETE FROM capability_target_lock_waiters WHERE target_key = ? AND activation = ? AND request_id = ?",
+			)
+			.run(input.targetKey, input.activationId, input.requestId);
 	}
 
 	getVoiceUtterance(
@@ -11706,6 +11951,38 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS voice_outbound_session_phase ON voice_outbound(session_id, phase, seq)",
 		);
+		// FLY-2886: cross-actor write fencing. Waiters are process-ephemeral and
+		// are deliberately cleared on Bridge restart; held/unknown locks survive.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS capability_target_locks (
+				target_key TEXT PRIMARY KEY,
+				project_name TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				holder_actor TEXT NOT NULL CHECK(holder_actor IN ('resident','voice')),
+				holder_activation TEXT NOT NULL,
+				request_id TEXT NOT NULL,
+				fence TEXT NOT NULL,
+				acquired_at INTEGER NOT NULL,
+				deadline INTEGER NOT NULL,
+				dispatched_at INTEGER,
+				state TEXT NOT NULL CHECK(state IN ('held','unknown')),
+				reason TEXT
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS capability_target_lock_waiters (
+				target_key TEXT NOT NULL,
+				activation TEXT NOT NULL,
+				request_id TEXT NOT NULL,
+				enqueued_at INTEGER NOT NULL,
+				deadline INTEGER NOT NULL,
+				PRIMARY KEY(target_key, activation, request_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS capability_target_lock_waiters_order ON capability_target_lock_waiters(target_key, enqueued_at, request_id)",
+		);
+		this.db.run("DELETE FROM capability_target_lock_waiters");
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS voice_utterances (
 				session_id TEXT NOT NULL,

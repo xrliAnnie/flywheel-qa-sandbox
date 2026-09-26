@@ -3,7 +3,10 @@ import { z } from "zod";
 import type { LeadArtifactStore } from "../artifacts.js";
 import type { LeadOperationContext, LeadOperationHandler } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 import { assertUpstreamToolsPinned } from "../upstream-baseline.js";
 import { UPSTREAM_TOOL_ROWS } from "../upstream-inputs.js";
 import { XiaohongshuTokenHandles } from "../xiaohongshu-tokens.js";
@@ -41,14 +44,13 @@ const denied = () => new Error("upstream_read_unavailable");
 /** Read adapters own only token associations; the outer provider owns/ closes the SDK connection. */
 export function createUpstreamReadAdapter(options: {
 	serverId: "gbrain" | "xiaohongshu-mcp";
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	client: Client;
 	artifacts: LeadArtifactStore;
 	secrets: readonly string[];
-}) {
+} & LeadCapabilityRuntimeAuthorityOptions) {
 	const env = Object.freeze({ ...options.env }),
-		trusted = createLeadCapabilityContext(env),
+		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env }),
 		secrets = Object.freeze([...options.secrets]);
 	let closed = false;
 	const tokens = new XiaohongshuTokenHandles(() => {

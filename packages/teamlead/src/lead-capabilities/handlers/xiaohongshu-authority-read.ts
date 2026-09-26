@@ -9,12 +9,14 @@ import {
 } from "../../xiaohongshu-write/provider-read-contract.js";
 import type { LeadOperationHandler } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 
 /** Authority handles already carry private resource provenance. Never re-project
  * them through the legacy MCP token map, or fall back after an authority error. */
 export function createXhsAuthorityReadHandlers(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	client: {
 		call(
@@ -24,13 +26,13 @@ export function createXhsAuthorityReadHandlers(options: {
 		): Promise<unknown>;
 	} | null;
 	secrets: readonly string[];
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const client = options.client;
 	if (!client) return new Map();
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId;
 	const secrets = [...options.secrets];
-	const trusted = createLeadCapabilityContext(env);
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const handlers = new Map<string, LeadOperationHandler>();
 	for (const action of [
 		...publicReadOperation.options,

@@ -3,12 +3,16 @@ import { z } from "zod";
 import { browserFacadeSchemaDigest } from "../lead-backends/codex/browser-capability-proxy.js";
 import { createParentXhsAuthorityClient } from "../xiaohongshu-write/parent-client-policy.js";
 import type { LeadArtifactStore } from "./artifacts.js";
+import type { LeadCapabilityAuthority } from "./authority.js";
 import { createAutomaticOutboundTransport } from "./automatic-outbound.js";
 import type { LeadOperationHandler } from "./broker.js";
 import { BROWSER_MCP_VERSION } from "./browser-config.js";
 import { startBrowserEgressProxy } from "./browser-egress-proxy.js";
 import { startBrowserProvider } from "./browser-provider.js";
-import { LEAD_CAPABILITY_CATALOG } from "./catalog.js";
+import {
+	LEAD_CAPABILITY_CATALOG,
+	type LeadCapabilityDefinition,
+} from "./catalog.js";
 import { startContext7Provider } from "./context7-provider.js";
 import { startGbrainProvider } from "./gbrain-provider.js";
 import {
@@ -46,11 +50,13 @@ import {
 	prepareLeadManifestSources,
 } from "./rule-sources.js";
 import { createLeadCapabilityContext } from "./runtime-context.js";
+import { resolveLeadCapabilityRuntimeAuthority } from "./runtime-authority.js";
 import {
 	type LeadCapabilityParentOptions,
 	startLeadCapabilityParent,
 } from "./runtime-parent.js";
 import type { LeadSkillInventoryEntry } from "./skill-discovery.js";
+import { createLeadTargetLockClient } from "./target-lock-client.js";
 import { startXiaohongshuProvider } from "./xiaohongshu-provider.js";
 
 /** Sources and directories are prepared by the trusted launcher, not model inputs. */
@@ -65,6 +71,7 @@ export interface LeadRuntimeParentOptions extends LeadRuntimeProviderOptions {
 		| "modelEnv"
 		| "assertCurrent"
 		| "permissionProfile"
+		| "targetLocks"
 	> & {
 		permissionProfile: Omit<
 			LeadCapabilityParentOptions["permissionProfile"],
@@ -77,6 +84,8 @@ export interface LeadRuntimeParentOptions extends LeadRuntimeProviderOptions {
 		skillInventory: readonly LeadSkillInventoryEntry[];
 	};
 	adoptedMenuShapes: readonly string[];
+	/** Voice sessions resolve the Lead-union inventory without Codex-carrier eligibility. */
+	operations?: readonly LeadCapabilityDefinition[];
 	/** Re-check source pins, directory ownership and deployment throughout this activation. */
 	assertPreparedCurrent(): Promise<void>;
 }
@@ -86,7 +95,10 @@ export async function startLeadRuntimeParent(
 	options: LeadRuntimeParentOptions,
 ) {
 	const env = Object.freeze({ ...options.env });
-	const trusted = createLeadCapabilityContext(env);
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({
+		...options,
+		env,
+	});
 	await options.assertPreparedCurrent();
 	const sources = prepareLeadManifestSources(
 		options.sources.records,
@@ -108,12 +120,28 @@ export async function startLeadRuntimeParent(
 			providers.assertCurrent();
 		};
 		await current();
-		const resolved = resolveLeadCapabilities({
-			row: currentIdentity(),
-			integrationIds: providers.integrationIds,
-			handlerOperationIds: [...providers.handlers.keys()],
-			adoptedMenuShapes: options.adoptedMenuShapes,
-		});
+		const resolved = options.operations
+			? {
+					operations: options.operations.filter(
+						(operation) =>
+							operation.classification !== "reserved" &&
+							(!!operation.unconditionalDenial ||
+								providers.handlers.has(operation.operationId)),
+					),
+					missingOperationIds: options.operations
+						.filter(
+							(operation) =>
+								!operation.unconditionalDenial &&
+								!providers.handlers.has(operation.operationId),
+						)
+						.map((operation) => operation.operationId),
+				}
+			: resolveLeadCapabilities({
+					row: currentIdentity(),
+					integrationIds: providers.integrationIds,
+					handlerOperationIds: [...providers.handlers.keys()],
+					adoptedMenuShapes: options.adoptedMenuShapes,
+				});
 		if (!resolved || resolved.missingOperationIds.length)
 			throw new Error("runtime_capabilities_incomplete");
 		const nativeSkillBaseline = resolvePinnedNativeSkillBaseline(
@@ -183,8 +211,17 @@ export async function startLeadRuntimeParent(
 		const outboundTransport = createAutomaticOutboundTransport({
 			env,
 			activationId: options.activationId,
+			authority: options.authority,
+			assertActivationCurrent: trusted.assertActivationCurrent,
 			journal: options.parent.journal,
 			assertCurrent: current,
+			fetchImpl: options.fetchImpl,
+		});
+		const targetLocks = createLeadTargetLockClient({
+			env,
+			activationId: options.activationId,
+			authority: options.authority,
+			assertActivationCurrent: trusted.assertActivationCurrent,
 			fetchImpl: options.fetchImpl,
 		});
 		return await startLeadCapabilityParent({
@@ -200,6 +237,7 @@ export async function startLeadRuntimeParent(
 			assertCurrent: current,
 			closeProviders: providers.close,
 			outboundTransport,
+			targetLocks,
 		});
 	} catch (error) {
 		try {
@@ -215,6 +253,10 @@ export async function startLeadRuntimeParent(
 export interface LeadRuntimeProviderOptions {
 	env: NodeJS.ProcessEnv;
 	activationId: string;
+	authority?: LeadCapabilityAuthority;
+	assertActivationCurrent?: ReturnType<
+		typeof createLeadCapabilityContext
+	>["assertActivationCurrent"];
 	linearToken: string;
 	context7ApiKey?: string;
 	artifacts: LeadArtifactStore;
@@ -233,7 +275,10 @@ export async function startLeadRuntimeProviders(
 	options: LeadRuntimeProviderOptions,
 ) {
 	const env = Object.freeze({ ...options.env });
-	const trusted = createLeadCapabilityContext(env);
+	const { authority, trusted } = resolveLeadCapabilityRuntimeAuthority({
+		...options,
+		env,
+	});
 	const lifetime = new AbortController();
 	const cleanup: Array<() => Promise<void>> = [];
 	let closed = false,
@@ -274,6 +319,8 @@ export async function startLeadRuntimeProviders(
 		const common = {
 			env,
 			activationId: options.activationId,
+			authority,
+			assertActivationCurrent: trusted.assertActivationCurrent,
 			fetchImpl: options.fetchImpl,
 			secrets,
 		};

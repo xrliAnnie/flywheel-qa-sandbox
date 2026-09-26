@@ -6,7 +6,8 @@ import {
 	OperationRequestSchema,
 } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
+import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 
 const operations = ["report.deliver"] as const;
 const replySchema = z
@@ -25,16 +26,18 @@ export function createReportDeliverHandlers(
 		env: NodeJS.ProcessEnv;
 		activationId: string;
 		fetchImpl?: typeof fetch;
-	},
+	} & LeadCapabilityRuntimeAuthorityOptions,
 	receiptOnly = false,
 ): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId;
-	let trusted: ReturnType<typeof createLeadCapabilityContext>, url: URL;
-	const token = env.FLYWHEEL_API_TOKEN,
-		claim = env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
+	let url: URL;
+	const token = env.FLYWHEEL_API_TOKEN;
+	let runtimeAuthority: ReturnType<
+		typeof resolveLeadCapabilityRuntimeAuthority
+	>;
 	try {
-		trusted = createLeadCapabilityContext(env);
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!["http:", "https:"].includes(url.protocol) ||
@@ -48,8 +51,6 @@ export function createReportDeliverHandlers(
 			!token ||
 			token.length > 8192 ||
 			/[\r\n]/.test(token) ||
-			!claim ||
-			claim.length > 256 ||
 			!activationId ||
 			activationId.length > 128
 		)
@@ -57,6 +58,7 @@ export function createReportDeliverHandlers(
 	} catch {
 		throw denied();
 	}
+	const { authority, authoritySecret, trusted } = runtimeAuthority!;
 	const endpoint = new URL(
 			receiptOnly
 				? "/api/lead-capabilities/reports/delivery-receipt"
@@ -103,7 +105,7 @@ export function createReportDeliverHandlers(
 					requestId: context.requestId,
 					leadId: env.FLYWHEEL_LEAD_ID,
 					identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
-					carrierClaim: claim,
+					authority,
 					activationId,
 					...input.data,
 				},
@@ -181,7 +183,8 @@ export function createReportDeliverHandlers(
 						const text = new TextDecoder("utf-8", { fatal: true }).decode(
 							Buffer.concat(chunks),
 						);
-						if (text.includes(token!) || text.includes(claim!)) throw denied();
+						if (text.includes(token!) || text.includes(authoritySecret))
+							throw denied();
 						const parsed = replySchema.safeParse(JSON.parse(text));
 						if (!parsed.success || parsed.data.requestId !== context.requestId)
 							throw denied();

@@ -1,7 +1,10 @@
 import { authorityResponseSchemas } from "../../xiaohongshu-write/authority-client.js";
 import { WRITE_OPERATIONS } from "../../xiaohongshu-write/contracts.js";
 import type { HandlerOutcome, LeadOperationHandler } from "../broker.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 import { UPSTREAM_TOOL_ROWS } from "../upstream-inputs.js";
 import { xhsWriteReceiptInput } from "../xiaohongshu-write-input.js";
 
@@ -12,7 +15,6 @@ const unavailable: HandlerOutcome = {
 /** The parent supplies a root-policy-verified client. A missing client never
  * falls back to raw MCP, and reconciliation only reads an existing attempt. */
 export function createXhsWriteHandlers(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	client: {
 		call(
@@ -22,9 +24,9 @@ export function createXhsWriteHandlers(options: {
 		): Promise<unknown>;
 	} | null;
 	now?: () => number;
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env });
-	const trusted = createLeadCapabilityContext(env);
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const activationId = options.activationId,
 		client = options.client,
 		now = options.now ?? Date.now;

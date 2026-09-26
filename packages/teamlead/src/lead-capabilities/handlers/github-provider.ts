@@ -1,17 +1,19 @@
 import type { Octokit } from "@octokit/rest";
 import type { LeadOperationContext, LeadOperationHandler } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 import { createGithubHandlers } from "./github.js";
 
 /** A reads use current canonical repository authority, without a per-PR grant. */
 export function createGithubReadProviderHandlers(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	client: Octokit;
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env });
-	const trusted = createLeadCapabilityContext(env);
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	function current(context?: LeadOperationContext) {
 		if (context) {
 			context.signal.throwIfAborted();

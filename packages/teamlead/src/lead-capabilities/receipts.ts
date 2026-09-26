@@ -17,6 +17,7 @@ const keySchema = z
 const prepareSchema = keySchema.extend({
 	inputDigest: z.string().regex(/^[a-f0-9]{64}$/),
 	activationId: coordinate,
+	targetKey: z.string().min(1).max(512).optional(),
 	now: z.number().int().nonnegative(),
 });
 const stateSchema = z.enum([
@@ -31,6 +32,7 @@ export type OperationReceiptState = z.infer<typeof stateSchema>;
 export interface OperationReceipt extends OperationReceiptKey {
 	inputDigest: string;
 	activationId: string;
+	targetKey: string | null;
 	state: OperationReceiptState;
 	providerRef: string | null;
 	startedAt: number;
@@ -63,6 +65,7 @@ interface ReceiptRow {
 	request_id: string;
 	input_digest: string;
 	activation_id: string;
+	target_key: string | null;
 	state: OperationReceiptState;
 	provider_ref: string | null;
 	started_at: number;
@@ -77,6 +80,7 @@ function fromRow(r: ReceiptRow): OperationReceipt {
 		requestId: r.request_id,
 		inputDigest: r.input_digest,
 		activationId: r.activation_id,
+		targetKey: r.target_key ?? null,
 		state: r.state,
 		providerRef: r.provider_ref,
 		startedAt: r.started_at,
@@ -93,6 +97,16 @@ export function migrateOperationReceipts(db: Database.Database): void {
  provider_ref TEXT,started_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,error_code TEXT,
  PRIMARY KEY(project_name,lead_id,operation_id,request_id));
  CREATE INDEX IF NOT EXISTS lead_operation_receipts_recovery_idx ON lead_operation_receipts(project_name,lead_id,activation_id,state);`);
+	const columns = new Set(
+		(db.prepare("PRAGMA table_info(lead_operation_receipts)").all() as Array<{
+			name: string;
+		}>).map((column) => column.name),
+	);
+	if (!columns.has("target_key"))
+		db.exec("ALTER TABLE lead_operation_receipts ADD COLUMN target_key TEXT");
+	db.exec(
+		"CREATE INDEX IF NOT EXISTS lead_operation_receipts_target_idx ON lead_operation_receipts(target_key,state)",
+	);
 }
 /** Owns no connection. Journal.close() closes this store too. Callers are trusted broker code, never model input. */
 export class OperationReceiptStore {
@@ -137,9 +151,9 @@ export class OperationReceiptStore {
 				const inserted =
 					this.db
 						.prepare(
-							`INSERT INTO lead_operation_receipts (project_name,lead_id,operation_id,request_id,input_digest,activation_id,state,started_at,updated_at) VALUES (@projectName,@leadId,@operationId,@requestId,@inputDigest,@activationId,'prepared',@now,@now) ON CONFLICT(project_name,lead_id,operation_id,request_id) DO NOTHING`,
+							`INSERT INTO lead_operation_receipts (project_name,lead_id,operation_id,request_id,input_digest,activation_id,target_key,state,started_at,updated_at) VALUES (@projectName,@leadId,@operationId,@requestId,@inputDigest,@activationId,@targetKey,'prepared',@now,@now) ON CONFLICT(project_name,lead_id,operation_id,request_id) DO NOTHING`,
 						)
-						.run(input).changes === 1;
+						.run({ ...input, targetKey: input.targetKey ?? null }).changes === 1;
 				const receipt = this.get({
 					projectName: input.projectName,
 					leadId: input.leadId,
@@ -148,6 +162,8 @@ export class OperationReceiptStore {
 				})!;
 				if (receipt.inputDigest !== input.inputDigest)
 					throw new Error("input_digest_conflict");
+				if (receipt.targetKey && receipt.targetKey !== input.targetKey)
+					throw new Error("target_key_conflict");
 				return {
 					disposition: inserted
 						? "prepared"
@@ -215,6 +231,19 @@ export class OperationReceiptStore {
 		return this.db
 			.prepare(
 				`UPDATE lead_operation_receipts SET state='unknown',error_code='dispatch_interrupted',updated_at=@now WHERE project_name=@projectName AND lead_id=@leadId AND activation_id=@activationId AND state='dispatched' AND updated_at<=@now`,
+			)
+			.run(input).changes;
+	}
+	/** Voice/session startup recovery is activation-scoped and must not touch the resident parent. */
+	recoverInterruptedActivation(raw: z.infer<typeof scopeSchema>): number {
+		const input = scopeSchema.parse(raw);
+		return this.db
+			.prepare(
+				`UPDATE lead_operation_receipts
+				 SET state='unknown',error_code='dispatch_interrupted',updated_at=@now
+				 WHERE project_name=@projectName AND lead_id=@leadId
+				 AND activation_id=@activationId AND state IN ('prepared','dispatched')
+				 AND updated_at<=@now`,
 			)
 			.run(input).changes;
 	}

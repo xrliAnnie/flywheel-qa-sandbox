@@ -10,6 +10,10 @@ import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import type { TerminalSessionCoreOptions } from "flywheel-comm/terminal-observation";
 import type { MemoryService } from "flywheel-edge-worker";
 import { z } from "zod";
+import {
+	leadCapabilityAuthorityFields,
+	leadCapabilityAuthorityFromEnvelope,
+} from "../lead-capabilities/authority.js";
 import { DepartmentRegistry } from "../department-registry.js";
 import { getLeadCapability } from "../lead-capabilities/catalog.js";
 import { PATROL_SNAPSHOT_SERVER_TIMEOUT_MS } from "../lead-capabilities/patrol-timeouts.js";
@@ -58,7 +62,7 @@ const envelopeSchema = z
 		projectName: z.string().min(1).max(128),
 		leadId: z.string().min(1).max(128),
 		identityDigest: z.string().regex(/^[a-f0-9]{64}$/),
-		carrierClaim: z.string().min(1).max(256),
+		...leadCapabilityAuthorityFields,
 		activationId: z.string().min(1).max(128),
 		input: z.unknown(),
 		githubFacts: z.unknown().optional(),
@@ -142,6 +146,19 @@ export function createLeadCapabilityReadRouter(
 		}
 		const body = parsed.data,
 			input = definition.inputSchema.safeParse(body.input);
+		let authority;
+		try {
+			authority = leadCapabilityAuthorityFromEnvelope(body);
+		} catch {
+			res
+				.status(400)
+				.json({ status: "rejected", errorCode: "invalid_request" });
+			return;
+		}
+		const authoritySecret =
+			authority.kind === "carrier"
+				? authority.carrierClaim
+				: authority.leaseFence;
 		if (!input.success) {
 			res.status(400).json({ status: "rejected", errorCode: "invalid_input" });
 			return;
@@ -176,15 +193,18 @@ export function createLeadCapabilityReadRouter(
 					options.projectsPath ??
 					env.FLYWHEEL_PROJECTS_FILE ??
 					join(home, ".flywheel/projects.json");
-			const claimEnv = forwardedLeadAuthorizationEnv(
-				{
-					claimedLeadId: body.leadId,
-					projectName: body.projectName,
-					identityDigest: body.identityDigest,
-					carrierClaim: body.carrierClaim,
-				},
-				{ ...env, HOME: home, FLYWHEEL_PROJECTS_FILE: projectsPath },
-			);
+			const claimEnv =
+				authority.kind === "carrier"
+					? forwardedLeadAuthorizationEnv(
+							{
+								claimedLeadId: body.leadId,
+								projectName: body.projectName,
+								identityDigest: body.identityDigest,
+								carrierClaim: authority.carrierClaim,
+							},
+							{ ...env, HOME: home, FLYWHEEL_PROJECTS_FILE: projectsPath },
+						)
+					: undefined;
 			const initial = captureLeadCapabilityScope({
 				projectsPath,
 				homeDir: home,
@@ -192,6 +212,8 @@ export function createLeadCapabilityReadRouter(
 				leadId: body.leadId,
 				identityDigest: body.identityDigest,
 				claimEnv,
+				authority,
+				stateStore: options.store,
 				denied,
 			});
 			function current() {
@@ -275,7 +297,7 @@ export function createLeadCapabilityReadRouter(
 				body.operationId === "memory.search"
 			) {
 				if (input.data.project !== body.projectName) throw denied();
-				const secrets = [options.apiToken, body.carrierClaim].filter(Boolean);
+				const secrets = [options.apiToken, authoritySecret].filter(Boolean);
 				if (
 					secrets.some((secret) => JSON.stringify(input.data).includes(secret))
 				)
@@ -356,7 +378,7 @@ export function createLeadCapabilityReadRouter(
 						secrets: [
 							...(github?.secrets ?? []),
 							options.apiToken,
-							body.carrierClaim,
+							authoritySecret,
 						],
 						signal: controller.signal,
 						receiptOnly,
@@ -385,7 +407,7 @@ export function createLeadCapabilityReadRouter(
 					receipts: options.terminalReceipts,
 					receiptOnly,
 					signal: controller.signal,
-					secrets: [options.apiToken, body.carrierClaim],
+					secrets: [options.apiToken, authoritySecret],
 				};
 				const outcome =
 					body.operationId === "patrol.snapshot"
@@ -414,7 +436,7 @@ export function createLeadCapabilityReadRouter(
 				if (
 					Buffer.byteLength(json) > 1024 * 1024 + 16384 ||
 					json.includes(options.apiToken) ||
-					json.includes(body.carrierClaim)
+					json.includes(authoritySecret)
 				)
 					throw denied();
 				if (!res.destroyed && !res.writableEnded)
@@ -442,7 +464,7 @@ export function createLeadCapabilityReadRouter(
 					input: { eventHandle: input.data.eventHandle as string },
 					receipts: options.terminalReceipts,
 					signal: controller.signal,
-					secrets: [options.apiToken, body.carrierClaim],
+					secrets: [options.apiToken, authoritySecret],
 					assertCurrent: async () => {
 						fresh();
 					},
@@ -471,7 +493,7 @@ export function createLeadCapabilityReadRouter(
 					input: { batchId: input.data.batchId as string },
 					receipts: options.terminalReceipts,
 					signal: controller.signal,
-					secrets: [options.apiToken, body.carrierClaim],
+					secrets: [options.apiToken, authoritySecret],
 					assertCurrent: async () => {
 						fresh();
 					},
@@ -619,7 +641,7 @@ export function createLeadCapabilityReadRouter(
 							},
 							receipts: options.terminalReceipts,
 							signal: controller.signal,
-							secrets: [options.apiToken, body.carrierClaim],
+							secrets: [options.apiToken, authoritySecret],
 							assertCurrent: async () => {
 								fresh();
 							},
@@ -778,7 +800,7 @@ export function createLeadCapabilityReadRouter(
 			if (
 				Buffer.byteLength(json) > 262144 ||
 				json.includes(options.apiToken) ||
-				json.includes(body.carrierClaim)
+				json.includes(authoritySecret)
 			)
 				throw denied();
 			res.type("application/json").send(json);

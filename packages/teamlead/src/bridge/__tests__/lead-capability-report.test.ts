@@ -108,6 +108,64 @@ it("authorizes an exact current department issue and keeps a live commit guard",
 	identity.valid = false;
 	expect(() => guard()).toThrow("report_scope_denied");
 });
+
+it("authorizes a current Claude Lead voice lease and revokes it before commit", async () => {
+	const f = fixture();
+	const lead = f.projects[0]!.leads[0]!;
+	lead.backend = "claude-code";
+	delete lead.codexProfile;
+	delete lead.codexCapabilityBundleVersion;
+	lead.voiceBackground = { enabled: true, browser: "founder_chrome" };
+	f.save();
+	const digest = resolveLeadIdentityRow({
+		projectsPath: f.projectsPath,
+		homeDir: f.root,
+		projectName: "flywheel",
+		leadId: "eng",
+	}).identity.identityDigest;
+	let active = true;
+	const stateStore = {
+		getActiveVoiceLease: vi.fn(
+			(sessionId: string, leaseFence: string) =>
+				active &&
+				sessionId === "10000000-0000-4000-8000-000000000001" &&
+				leaseFence === "lease-fence"
+					? {
+							sessionId,
+							projectName: "flywheel",
+							leadId: "eng",
+							leaseToken: leaseFence,
+							leaseExpiresAt: "2026-09-25T21:00:00.000Z",
+							state: "running",
+						}
+					: undefined,
+		),
+	};
+	const authorize = createLeadReportPublishAuthorizer({
+		projectsPath: f.projectsPath,
+		homeDir: f.root,
+		env: {},
+		linearClient: f.client as unknown as LinearClient,
+		stateStore: stateStore as never,
+		now: () => "2026-09-25T20:00:00.000Z",
+	});
+	const guard = await authorize({
+		...f.body,
+		capability: {
+			...f.body.capability,
+			identityDigest: digest,
+			carrierClaim: undefined,
+			authority: {
+				kind: "voice_session",
+				sessionId: "10000000-0000-4000-8000-000000000001",
+				leaseFence: "lease-fence",
+			},
+		},
+	});
+	expect(() => guard()).not.toThrow();
+	active = false;
+	expect(() => guard()).toThrow("report_scope_denied");
+});
 it("rejects scope drift while issue metadata is pending", async () => {
 	const f = fixture();
 	f.client.issue.mockImplementation(async () => {

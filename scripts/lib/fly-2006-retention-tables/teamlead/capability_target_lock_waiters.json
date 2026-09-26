@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "capability_target_lock_waiters",
+	"classification": "protectedCurrentOrReference"
+}

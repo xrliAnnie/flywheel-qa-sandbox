@@ -6,7 +6,8 @@ import type {
 } from "../broker.js";
 import { OperationRequestSchema } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
+import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 
 const OPERATIONS = [
 	"voice.session.start",
@@ -36,22 +37,21 @@ export function createBridgeVoiceHandlers(options: {
 	activationId: string;
 	fetchImpl?: typeof fetch;
 	secrets?: readonly string[];
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env });
 	const activationId = options.activationId;
 	const token = env.FLYWHEEL_API_TOKEN;
-	const claim = env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
-	let trusted: ReturnType<typeof createLeadCapabilityContext>;
+	let runtimeAuthority: ReturnType<
+		typeof resolveLeadCapabilityRuntimeAuthority
+	>;
 	let baseUrl: URL;
 	try {
-		trusted = createLeadCapabilityContext(env);
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 		baseUrl = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!token ||
-			!claim ||
 			/\r|\n/u.test(token) ||
 			token.length > 8_192 ||
-			claim.length > 256 ||
 			!activationId ||
 			activationId.length > 128 ||
 			!(["http:", "https:"] as const).includes(
@@ -69,8 +69,9 @@ export function createBridgeVoiceHandlers(options: {
 	} catch {
 		throw denied();
 	}
+	const { authority, authoritySecret, trusted } = runtimeAuthority!;
 	const fetchImpl = options.fetchImpl ?? fetch;
-	const secrets = [token, claim, ...(options.secrets ?? [])].filter(
+	const secrets = [token, authoritySecret, ...(options.secrets ?? [])].filter(
 		(value): value is string => Boolean(value),
 	);
 
@@ -84,7 +85,8 @@ export function createBridgeVoiceHandlers(options: {
 			throw denied();
 		await context.assertCurrent();
 		const row = trusted.assertActivationCurrent();
-		if (row.lead.codexVoiceActions !== true) throw denied();
+		if (authority.kind === "carrier" && row.lead.codexVoiceActions !== true)
+			throw denied();
 	}
 
 	const handlers = new Map<string, LeadOperationHandler>();
@@ -113,7 +115,7 @@ export function createBridgeVoiceHandlers(options: {
 				projectName: env.FLYWHEEL_PROJECT_NAME,
 				leadId: env.FLYWHEEL_LEAD_ID,
 				identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
-				carrierClaim: claim,
+				authority,
 				activationId,
 				input,
 			});

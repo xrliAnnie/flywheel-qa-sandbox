@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { HttpPost } from "../lead-backends/codex/CodexOutboundSender.js";
 import type { SqliteJournalStore } from "../lead-backends/codex/SqliteJournalStore.js";
-import { createLeadCapabilityContext } from "./runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "./runtime-authority.js";
 
 const base = z.object({
 	projectName: z.string(),
@@ -49,23 +52,20 @@ const denied = () => new Error("automatic_outbound_unverified");
 
 /** Parent-only transport: the model never supplies its endpoint, credentials or journal binding. */
 export function createAutomaticOutboundTransport(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	journal: SqliteJournalStore;
 	assertCurrent(): Promise<void>;
 	fetchImpl?: typeof fetch;
-}): HttpPost {
+} & LeadCapabilityRuntimeAuthorityOptions): HttpPost {
 	const env = Object.freeze({ ...options.env });
-	const trusted = createLeadCapabilityContext(env);
-	const token = env.FLYWHEEL_API_TOKEN,
-		claim = env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
+	const { authority, authoritySecret, trusted } =
+		resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+	const token = env.FLYWHEEL_API_TOKEN;
 	const origin = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 	if (
 		!token ||
 		token.length > 8192 ||
 		/[\r\n]/.test(token) ||
-		!claim ||
-		claim.length > 256 ||
 		!options.activationId ||
 		options.activationId.length > 128 ||
 		!["http:", "https:"].includes(origin.protocol) ||
@@ -158,7 +158,7 @@ export function createAutomaticOutboundTransport(options: {
 							projectName: body.projectName,
 							leadId: body.leadId,
 							identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
-							carrierClaim: claim,
+							authority,
 							activationId,
 							...(!probe ? { deliveryContext: context } : {}),
 							input,
@@ -194,7 +194,8 @@ export function createAutomaticOutboundTransport(options: {
 					const text = new TextDecoder("utf-8", { fatal: true }).decode(
 						Buffer.concat(chunks),
 					);
-					if (text.includes(token) || text.includes(claim)) throw denied();
+					if (text.includes(token) || text.includes(authoritySecret))
+						throw denied();
 					const result = responseSchema.parse(JSON.parse(text));
 					if (result.requestId !== requestId) throw denied();
 					await check();

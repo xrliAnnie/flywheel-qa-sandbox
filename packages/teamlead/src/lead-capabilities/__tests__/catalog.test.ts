@@ -18,7 +18,27 @@ describe("lead capability catalog", () => {
 		for (const op of LEAD_CAPABILITY_CATALOG) {
 			expect(op.scope).toBe("canonical-project-lead");
 			expect(op.evidenceRequirements.length).toBeGreaterThan(0);
+			if (op.classification === "write") expect(op.targetKey).toBeTypeOf("function");
+			else expect(op.targetKey).toBeUndefined();
 		}
+	});
+	it("normalizes representative cross-actor write targets", () => {
+		expect(
+			getLeadCapability("linear.issue.update")!.targetKey!({
+				issueId: "FLY-2886",
+			}),
+		).toBe("linear:fly-2886");
+		expect(
+			getLeadCapability("discord.message.edit")!.targetKey!({
+				threadId: "123",
+				messageId: "456",
+			}),
+		).toBe("discord:123:456");
+		expect(
+			getLeadCapability("browser.click")!.targetKey!({
+				generation: "AAAA0000-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+			}),
+		).toBe("browser:aaaa0000-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 	});
 	it("denies reserved lifecycle operations and unknown operations", () => {
 		for (const id of [

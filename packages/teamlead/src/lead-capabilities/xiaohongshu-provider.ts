@@ -3,19 +3,21 @@ import {
 	createUpstreamReadAdapter,
 	UPSTREAM_READ_BASELINES,
 } from "./handlers/upstream-read.js";
-import { createLeadCapabilityContext } from "./runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "./runtime-authority.js";
 import { openPinnedHttpMcpSession } from "./upstream-http-session.js";
 
 /** Fixed loopback MCP service owns its cookie state; the parent owns session/token handles. */
 export async function startXiaohongshuProvider(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	artifacts: LeadArtifactStore;
 	secrets: readonly string[];
 	fetchImpl?: typeof fetch;
-}) {
+} & LeadCapabilityRuntimeAuthorityOptions) {
 	const env = Object.freeze({ ...options.env }),
-		trusted = createLeadCapabilityContext(env);
+		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const session = await openPinnedHttpMcpSession({
 		baseline: UPSTREAM_READ_BASELINES["xiaohongshu-mcp"],
 		assertCurrent: () => trusted.assertActivationCurrent(),
@@ -23,12 +25,10 @@ export async function startXiaohongshuProvider(options: {
 	});
 	try {
 		const adapter = createUpstreamReadAdapter({
+			...options,
 			serverId: "xiaohongshu-mcp",
 			env,
-			activationId: options.activationId,
 			client: session.client,
-			artifacts: options.artifacts,
-			secrets: options.secrets,
 		});
 		return {
 			handlers: adapter.handlers,

@@ -243,3 +243,57 @@ it("bundle v2 washes the final spawn boundary even with legacy full-access and c
 	expect(env.FLYWHEEL_LEAD_CAPABILITY_SOCKET).toBe(pins.brokerSocket);
 	expect(env.CODEX_HOME).toBe(pins.codexHome);
 });
+
+it("admits only the explicit voice-capability profile with subscription pins and realtime transport", async () => {
+	const envDump = join(dir, "voice-capability-env.json");
+	const stub = join(dir, "codex-voice-capability-stub");
+	writeFileSync(
+		stub,
+		`#!${process.execPath}\nrequire("fs").writeFileSync(${JSON.stringify(envDump)}, JSON.stringify(process.env));\n`,
+	);
+	chmodSync(stub, 0o755);
+	const pins = {
+		codexHome: join(dir, "voice-capability-home"),
+		brokerSocket: join(dir, "voice-capability.sock"),
+		manifestPath: join(dir, "voice-capability-manifest.json"),
+		artifactRoot: join(dir, "voice-capability-artifacts"),
+		modelTempRoot: join(dir, "voice-capability-temp"),
+		projectName: "flywheel",
+		leadId: "eng",
+		activationId: "voice:10000000-0000-4000-8000-000000000001",
+	};
+	expect(() =>
+		spawnCodexAppServer({
+			codexBin: stub,
+			mcpArgv: [],
+			codexHome: pins.codexHome,
+			baseEnv: { PATH: process.env.PATH },
+			profile: "voice-capability",
+			voiceProfile: { openAiApiKey: "voice-api-key" },
+		}),
+	).toThrow("voice_capability_profile_incomplete");
+	const transport = spawnCodexAppServer({
+		codexBin: stub,
+		mcpArgv: [],
+		codexHome: pins.codexHome,
+		baseEnv: {
+			PATH: process.env.PATH,
+			DISCORD_BOT_TOKEN: "private-business-secret",
+		},
+		profile: "voice-capability",
+		voiceProfile: { openAiApiKey: "voice-api-key" },
+		capabilityModelEnv: pins,
+	});
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error("stub did not exit")), 5000);
+		transport.onExit(() => {
+			clearTimeout(timer);
+			resolve();
+		});
+	});
+	const env = JSON.parse(readFileSync(envDump, "utf8"));
+	expect(env.OPENAI_API_KEY).toBe("voice-api-key");
+	expect(env.FLYWHEEL_LEAD_CAPABILITY_SOCKET).toBe(pins.brokerSocket);
+	expect(env.FLYWHEEL_LEAD_CAPABILITY_ACTIVATION).toBe(pins.activationId);
+	expect(JSON.stringify(env)).not.toContain("private-business-secret");
+});

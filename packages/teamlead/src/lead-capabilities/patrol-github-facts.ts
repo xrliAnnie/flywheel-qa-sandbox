@@ -1,7 +1,10 @@
 import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import type { LeadOperationContext } from "./broker.js";
-import { createLeadCapabilityContext } from "./runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "./runtime-authority.js";
 
 const date = z.string().datetime();
 const pull = z.object({
@@ -20,14 +23,13 @@ const denied = () => new Error("patrol_github_scope_denied");
  * SDK credentials never enter the returned file projection or a child environment. */
 export async function prefetchPatrolGithubFacts(
 	options: {
-		env: NodeJS.ProcessEnv;
 		activationId: string;
 		client: Octokit;
-	},
+	} & LeadCapabilityRuntimeAuthorityOptions,
 	context: LeadOperationContext,
 ) {
 	const env = Object.freeze({ ...options.env });
-	const trusted = createLeadCapabilityContext(env);
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const signal = AbortSignal.any([context.signal, AbortSignal.timeout(15000)]);
 	function current() {
 		signal.throwIfAborted();

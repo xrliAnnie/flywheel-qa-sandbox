@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { createRunnerActionSchemas } from "../lead-backends/codex/runner-action-schemas.js";
 import { authorityResponseSchemas } from "../xiaohongshu-write/authority-client.js";
@@ -39,6 +40,8 @@ export interface LeadCapabilityDefinition {
 	readonly scope: "canonical-project-lead";
 	readonly credentialConsumer: CredentialConsumer;
 	readonly evidenceRequirements: readonly string[];
+	/** Stable business target used by the cross-actor write fence. */
+	readonly targetKey?: (input: Readonly<Record<string, unknown>>) => string;
 }
 const id = z
 	.string()
@@ -70,6 +73,58 @@ const url = z.string().url().max(4096);
 const artifact = z.string().regex(/^[a-zA-Z0-9_-]{1,256}$/);
 const object = <T extends z.ZodRawShape>(shape: T) => z.object(shape).strict();
 const receipt = { receiptId: id, observedAt: z.string().datetime() };
+function canonical(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+	if (value !== null && typeof value === "object")
+		return `{${Object.keys(value)
+			.sort()
+			.map(
+				(key) =>
+					`${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+			)
+			.join(",")}}`;
+	return JSON.stringify(value) ?? "null";
+}
+const targetPart = (value: unknown) =>
+	typeof value === "string" || typeof value === "number"
+		? String(value).trim().toLowerCase()
+		: undefined;
+function writeTargetKey(
+	operationId: string,
+	input: Readonly<Record<string, unknown>>,
+): string {
+	const first = (...names: string[]) => {
+		for (const name of names) {
+			const part = targetPart(input[name]);
+			if (part) return part;
+		}
+	};
+	if (["start_runner", "send_runner", "respond_runner"].includes(operationId))
+		return `issue:${first("issueId", "executionId", "questionId") ?? createHash("sha256").update(canonical(input)).digest("hex").slice(0, 32)}`;
+	if (operationId.startsWith("linear."))
+		return `linear:${first("issueId", "relatedIssueId", "projectId", "teamId") ?? createHash("sha256").update(canonical(input)).digest("hex").slice(0, 32)}`;
+	if (operationId.startsWith("github."))
+		return `github:${first("number", "runId", "head") ?? createHash("sha256").update(canonical(input)).digest("hex").slice(0, 32)}`;
+	if (operationId.startsWith("discord."))
+		return `discord:${first("threadId", "parentId", "issueId") ?? "unknown"}:${first("messageId") ?? "thread"}`;
+	if (operationId.startsWith("voice.session."))
+		return `voice:${first("sessionId", "meetingId", "mode") ?? "session"}`;
+	if (operationId.startsWith("browser."))
+		return `browser:${first("generation") ?? "generation"}`;
+	if (operationId.startsWith("xiaohongshu."))
+		return `xiaohongshu:${first("resourceHandle", "feed_id", "user_id", "proposalId", "accountSelector") ?? createHash("sha256").update(canonical(input)).digest("hex").slice(0, 32)}`;
+	if (operationId === "terminal.input")
+		return `terminal:${first("executionId") ?? "unknown"}`;
+	if (operationId.startsWith("inbox."))
+		return `inbox:${first("batchId", "eventHandle") ?? "unknown"}`;
+	if (operationId === "patrol.judgment.record")
+		return `patrol:${first("executionId", "tickId") ?? "unknown"}`;
+	if (operationId === "memory.add")
+		return `memory:${first("project") ?? "project"}:${first("collection") ?? "collection"}:${first("noteId") ?? "note"}`;
+	if (operationId.startsWith("report."))
+		return `report:${first("reportId", "issueId", "artifactHandle") ?? "unknown"}`;
+	return `${operationId}:${createHash("sha256").update(canonical(input)).digest("hex").slice(0, 32)}`;
+}
 const message = object({
 	messageId: id,
 	authorId: id,
@@ -138,6 +193,9 @@ function add(
 					? ["denial-receipt"]
 					: ["canonical-identity", "provider-receipt", "scope-check"],
 			),
+			...(classification === "write"
+				? { targetKey: (value: Readonly<Record<string, unknown>>) => writeTargetKey(operationId, value) }
+				: {}),
 		}),
 	);
 }

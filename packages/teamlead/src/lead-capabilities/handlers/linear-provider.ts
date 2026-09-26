@@ -5,17 +5,19 @@ import { parseAndValidateProjects } from "../../ProjectConfig.js";
 import type { LeadOperationContext, LeadOperationHandler } from "../broker.js";
 import { LEAD_CAPABILITY_CATALOG } from "../catalog.js";
 import { createLeadLinearClient } from "../linear-client.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 import { createLinearHandlers } from "./linear.js";
 
 const denied = () => new Error("linear_provider_scope_denied");
 /** Factory entry: binds every metadata/read/write request to its broker operation lifetime. */
 export function createLinearProviderSession(options: {
 	token: string;
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	fetchImpl?: typeof fetch;
-}) {
+} & LeadCapabilityRuntimeAuthorityOptions) {
 	const session = createLeadLinearClient(options);
 	try {
 		const handlers = createLinearProviderHandlers({
@@ -48,11 +50,10 @@ export function createLinearProviderSession(options: {
 /** Parent-owned SDK client; no model-supplied metadata, cached grants or StateStore handles. */
 export function createLinearProviderHandlers(options: {
 	client: LinearSdk;
-	env: NodeJS.ProcessEnv;
 	activationId: string;
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
-		trusted = createLeadCapabilityContext(env);
+		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const projectName = env.FLYWHEEL_PROJECT_NAME,
 		leadId = env.FLYWHEEL_LEAD_ID,
 		projectsPath = env.FLYWHEEL_PROJECTS_FILE;

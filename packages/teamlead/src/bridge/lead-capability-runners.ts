@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type Application, Router } from "express";
@@ -8,13 +9,18 @@ import {
 } from "flywheel-comm/lead-identity";
 import {
 	forwardedLeadAuthorizationEnv,
-	validateLeadCarrierAuthorization,
 } from "flywheel-comm/lead-lease";
 import { z } from "zod";
 import { createRunnerActionContext } from "../lead-backends/codex/runner-action-context.js";
 import { RUNNER_ACTION_TOOL_NAMES } from "../lead-backends/codex/runner-action-names.js";
+import {
+	leadCapabilityAuthorityFields,
+	leadCapabilityAuthorityFromEnvelope,
+} from "../lead-capabilities/authority.js";
 import type { OperationReceiptStore } from "../lead-capabilities/receipts.js";
+import type { StateStore } from "../StateStore.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
 import { executeLeadRunnerOperation } from "./lead-runner-operation.js";
 
 const envelope = z
@@ -25,7 +31,7 @@ const envelope = z
 		projectName: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
 		leadId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
 		identityDigest: z.string().regex(/^[a-f0-9]{64}$/),
-		carrierClaim: z.string().min(1).max(256),
+		...leadCapabilityAuthorityFields,
 		activationId: z.string().min(1).max(128),
 		input: z.record(z.string(), z.unknown()),
 		receiptOnly: z.boolean().optional(),
@@ -43,6 +49,7 @@ export interface LeadRunnerProviderOptions {
 	fetchImpl?: typeof fetch;
 	/** Isolated test seam; production uses the existing adopted-menu resolver. */
 	resolveMenus?: () => string[];
+	stateStore?: Pick<StateStore, "getActiveVoiceLease">;
 }
 export function createLeadRunnerRouter(
 	options: LeadRunnerProviderOptions,
@@ -71,6 +78,15 @@ export function createLeadRunnerRouter(
 		}
 		const body = parsed.data,
 			controller = new AbortController();
+		let authority;
+		try {
+			authority = leadCapabilityAuthorityFromEnvelope(body);
+		} catch {
+			res
+				.status(400)
+				.json({ status: "rejected", errorCode: "invalid_request" });
+			return;
+		}
 		const disconnected = () => {
 			if (!res.writableEnded) controller.abort();
 		};
@@ -89,14 +105,7 @@ export function createLeadRunnerRouter(
 				projectName: body.projectName,
 				leadId: body.leadId,
 			});
-			const env = forwardedLeadAuthorizationEnv(
-				{
-					claimedLeadId: body.leadId,
-					projectName: body.projectName,
-					identityDigest: body.identityDigest,
-					carrierClaim: body.carrierClaim,
-				},
-				{
+			const identityEnv = {
 					...base,
 					...Object.fromEntries(
 						identityEnvProjection(initial.identity).map((line) => {
@@ -107,41 +116,72 @@ export function createLeadRunnerRouter(
 					HOME: home,
 					FLYWHEEL_PROJECTS_FILE: projectsPath,
 					FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS: "1",
-					FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
-				},
-			);
+				};
+			const env =
+				authority.kind === "carrier"
+					? forwardedLeadAuthorizationEnv(
+							{
+								claimedLeadId: body.leadId,
+								projectName: body.projectName,
+								identityDigest: body.identityDigest,
+								carrierClaim: authority.carrierClaim,
+							},
+							{
+								...identityEnv,
+								FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+							},
+						)
+					: identityEnv;
+			const captured = captureLeadCapabilityScope({
+				projectsPath,
+				homeDir: home,
+				projectName: body.projectName,
+				leadId: body.leadId,
+				identityDigest: body.identityDigest,
+				...(authority.kind === "carrier" ? { claimEnv: env } : {}),
+				authority,
+				stateStore: options.stateStore,
+				denied: () => new Error("runner_scope_denied"),
+			});
 			const current = () => {
 				controller.signal.throwIfAborted();
+				captured.assertSourceCurrent();
 				const row = resolveLeadIdentityRow({
 					projectsPath,
 					homeDir: home,
 					projectName: body.projectName,
 					leadId: body.leadId,
 				});
-				const carrier = validateLeadCarrierAuthorization({
-					claimedLeadId: body.leadId,
-					env,
-				});
 				if (
 					row.identity.identityDigest !== body.identityDigest ||
-					row.identity.role !== "dept" ||
-					row.identity.backend !== "codex-app-server" ||
-					row.lead.codexProfile !== "full-access" ||
-					row.lead.codexCapabilityBundleVersion !== 2 ||
-					!carrier.valid ||
-					carrier.processIndeterminate
+					row.identity.role !== "dept"
 				)
 					throw new Error("runner_scope_denied");
+				return row;
 			};
 			current();
+			const actionContext =
+				authority.kind === "carrier"
+					? createRunnerActionContext(env)
+					: {
+							env: Object.freeze({ ...env }),
+							projectsPath,
+							projectRoot: realpathSync(initial.project.projectRoot),
+							assertCurrent: current,
+						};
 			const result = await executeLeadRunnerOperation({
 				...body,
 				receipts: options.receipts,
 				signal: controller.signal,
-				secrets: [options.apiToken, body.carrierClaim],
+				secrets: [
+					options.apiToken,
+					authority.kind === "carrier"
+						? authority.carrierClaim
+						: authority.leaseFence,
+				],
 				assertCurrent: current,
 				actions: {
-					context: createRunnerActionContext(env),
+					context: actionContext,
 					stateDbPath: options.stateDbPath,
 					commDbPath: (options.commDbPath ?? commDbPathForProject)(
 						body.projectName,

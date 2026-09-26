@@ -7,6 +7,7 @@ import {
 import { z } from "zod";
 import { getLeadCapability, type LeadCapabilityDefinition } from "./catalog.js";
 import type { OperationReceipt, OperationReceiptStore } from "./receipts.js";
+import type { LeadTargetLockClient } from "./target-lock-client.js";
 
 export const OperationRequestSchema = z
 	.object({
@@ -73,6 +74,8 @@ export interface LeadCapabilityBrokerOptions {
 	secrets: readonly string[];
 	/** Snapshot a parent-owned active journal binding, not a request parameter. */
 	deliveryContext?: () => { id: string; assertCurrent(): void } | undefined;
+	/** Present for voice, and for resident activations participating in target fencing. */
+	targetLocks?: LeadTargetLockClient;
 }
 class BrokerFailure extends Error {
 	constructor(readonly code: string) {
@@ -169,6 +172,16 @@ export class LeadCapabilityBroker {
 		const parsed = operation.inputSchema.safeParse(request.input);
 		if (!parsed.success) return reject("invalid_input");
 		const input = parsed.data;
+		const targetKey =
+			operation.classification === "write" && operation.targetKey
+				? `${this.options.projectName}:${operation.targetKey(input)}`
+				: undefined;
+		if (
+			operation.classification === "write" &&
+			this.options.targetLocks?.actor === "voice" &&
+			!targetKey
+		)
+			return reject("unclassified_write");
 		const handler = this.handlers.get(operation.handlerKey!);
 		if (!handler) return reject("handler_unavailable");
 		let delivery: { id: string; assertCurrent(): void } | undefined;
@@ -231,12 +244,24 @@ export class LeadCapabilityBroker {
 			...key,
 			inputDigest: leadOperationInputDigest(input),
 			activationId: context.activationId,
+			...(targetKey ? { targetKey } : {}),
 		};
 		let prepared = false,
 			dispatched = false,
 			finished = false,
 			reconciling = false;
+		let targetFence: string | undefined,
+			targetDispatched = false,
+			targetReleased = false,
+			waitingForTarget = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeoutMs = leadOperationTimeoutMs(request.operationId);
+		const deadline = Date.now() + timeoutMs;
+		const targetInput = () => ({
+			operationId: request.operationId,
+			requestId: request.requestId,
+			targetKey: targetKey!,
+		});
 		const work = async (): Promise<OperationResult> => {
 			await context.assertCurrent();
 			try {
@@ -296,6 +321,34 @@ export class LeadCapabilityBroker {
 				if (receipt.disposition !== "prepared")
 					return this.replay(receipt.receipt, request.requestId);
 				prepared = true;
+				if (targetKey && this.options.targetLocks) {
+					for (;;) {
+						await context.assertCurrent();
+						const lock = await this.options.targetLocks.acquire({
+							...targetInput(),
+							deadline,
+							signal: context.signal,
+						});
+						if (lock.status === "acquired") {
+							targetFence = lock.fence;
+							waitingForTarget = false;
+							break;
+						}
+						if (lock.status !== "waiting") throw new BrokerFailure(lock.status);
+						waitingForTarget = true;
+						await new Promise<void>((resolve, rejectDelay) => {
+							const abort = () => {
+								clearTimeout(delay);
+								rejectDelay(new BrokerFailure("operation_timeout"));
+							};
+							const delay = setTimeout(() => {
+								context.signal.removeEventListener("abort", abort);
+								resolve();
+							}, 100);
+							context.signal.addEventListener("abort", abort, { once: true });
+						});
+					}
+				}
 				await context.assertCurrent();
 				this.options.receipts.transition({
 					...writeInput,
@@ -304,6 +357,15 @@ export class LeadCapabilityBroker {
 					to: "dispatched",
 				});
 				dispatched = true;
+				if (targetFence && this.options.targetLocks) {
+					const marked = await this.options.targetLocks.markDispatched({
+						...targetInput(),
+						fence: targetFence,
+						signal: context.signal,
+					});
+					if (!marked) throw new BrokerFailure("target_lock_lost");
+					targetDispatched = true;
+				}
 			}
 			// No await between this guard resolving and invoking the trusted handler.
 			await context.assertCurrent();
@@ -332,6 +394,21 @@ export class LeadCapabilityBroker {
 						: {}),
 					...(result.errorCode ? { errorCode: result.errorCode } : {}),
 				});
+				if (targetFence && this.options.targetLocks) {
+					await this.options.targetLocks.release({
+						...targetInput(),
+						fence: targetFence,
+						outcome:
+							result.status === "succeeded"
+								? "succeeded"
+								: result.status === "rejected"
+									? "rejected"
+									: "unknown",
+						...(result.errorCode ? { reason: result.errorCode } : {}),
+						signal: context.signal,
+					});
+					targetReleased = true;
+				}
 			}
 			finished = true;
 			return result;
@@ -349,7 +426,7 @@ export class LeadCapabilityBroker {
 		try {
 			timer = setTimeout(
 				() => controller.abort(new BrokerFailure("operation_timeout")),
-				leadOperationTimeoutMs(request.operationId),
+				timeoutMs,
 			);
 			return await Promise.race([work(), canceled]);
 		} catch (error) {
@@ -366,6 +443,28 @@ export class LeadCapabilityBroker {
 					});
 				} catch {
 					/* A concurrent trusted recovery may already have finalized the receipt. */
+				}
+			}
+			if (targetKey && this.options.targetLocks && !targetReleased) {
+				const cleanupSignal = controller.signal.aborted
+					? AbortSignal.timeout(2000)
+					: controller.signal;
+				try {
+					if (targetFence)
+						await this.options.targetLocks.release({
+							...targetInput(),
+							fence: targetFence,
+							outcome: targetDispatched ? "unknown" : "not_dispatched",
+							reason: code,
+							signal: cleanupSignal,
+						});
+					else if (waitingForTarget)
+						await this.options.targetLocks.cancel({
+							...targetInput(),
+							signal: cleanupSignal,
+						});
+				} catch {
+					/* Bridge deadline recovery preserves dispatched uncertainty. */
 				}
 			}
 			return reject(code, dispatched || reconciling ? "unknown" : "rejected");

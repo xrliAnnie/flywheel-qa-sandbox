@@ -6,18 +6,20 @@ import {
 	createUpstreamReadAdapter,
 	UPSTREAM_READ_BASELINES,
 } from "./handlers/upstream-read.js";
-import { createLeadCapabilityContext } from "./runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "./runtime-authority.js";
 import { assertUpstreamToolsPinned } from "./upstream-baseline.js";
 
 /** Production uses the pinned host stdio/config lifecycle, never a replacement database. */
 export async function startGbrainProvider(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	artifacts: LeadArtifactStore;
 	secrets: readonly string[];
-}) {
+} & LeadCapabilityRuntimeAuthorityOptions) {
 	const env = Object.freeze({ ...options.env }),
-		trusted = createLeadCapabilityContext(env);
+		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	trusted.assertActivationCurrent();
 	const pin = pinGbrainHost(),
 		transport = new GbrainStdioTransport(pin);
@@ -66,11 +68,10 @@ export async function startGbrainProvider(options: {
 			tools: tools.tools,
 		});
 		adapter = createUpstreamReadAdapter({
+			...options,
 			serverId: "gbrain",
 			env,
-			activationId: options.activationId,
 			client,
-			artifacts: options.artifacts,
 			secrets: [...options.secrets, ...pin.secrets],
 		});
 		const handlers = new Map(

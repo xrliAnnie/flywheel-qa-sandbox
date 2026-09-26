@@ -7,7 +7,8 @@ import {
 	OperationRequestSchema,
 } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
+import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 
 const denied = () => new Error("report_publish_denied");
 const reply = z
@@ -26,27 +27,27 @@ export function createReportPublishHandlers(
 		store: LeadArtifactStore;
 		secrets: readonly string[];
 		fetchImpl?: typeof fetch;
-	},
+	} & LeadCapabilityRuntimeAuthorityOptions,
 	receiptOnly = false,
 ): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId;
-	let trusted: ReturnType<typeof createLeadCapabilityContext>;
+	let runtimeAuthority: ReturnType<
+		typeof resolveLeadCapabilityRuntimeAuthority
+	>;
 	let url: URL;
 	try {
-		trusted = createLeadCapabilityContext(env);
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 	} catch {
 		throw denied();
 	}
-	const token = env.FLYWHEEL_API_TOKEN,
-		claim = env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
+	const { authority, authoritySecret, trusted } = runtimeAuthority!;
+	const token = env.FLYWHEEL_API_TOKEN;
 	if (
 		!token ||
 		token.length > 8192 ||
 		/[\r\n]/.test(token) ||
-		!claim ||
-		claim.length > 256 ||
 		!activationId ||
 		activationId.length > 128 ||
 		!["http:", "https:"].includes(url.protocol) ||
@@ -66,7 +67,7 @@ export function createReportPublishHandlers(
 			url,
 		).href,
 		fetchImpl = options.fetchImpl ?? fetch;
-	const secrets = [...options.secrets, token, claim].filter(Boolean);
+	const secrets = [...options.secrets, token, authoritySecret].filter(Boolean);
 	const definition = getLeadCapability("report.publish")!;
 	function input(raw: Record<string, unknown>, context: LeadOperationContext) {
 		OperationRequestSchema.parse({
@@ -143,7 +144,7 @@ export function createReportPublishHandlers(
 							requestId: context.requestId,
 							leadId: context.leadId,
 							identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
-							carrierClaim: claim,
+							authority,
 							activationId,
 							issueId: parsed.issueId,
 						},

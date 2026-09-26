@@ -34,6 +34,7 @@ import {
 	type LeadPermissionProfileSpec,
 	leadModelWritableRoot,
 } from "./permission-profile.js";
+import type { LeadTargetLockClient } from "./target-lock-client.js";
 
 export interface LeadCapabilityParent {
 	readonly codexPath: string;
@@ -85,6 +86,9 @@ export interface LeadCapabilityParentOptions {
 	}): Promise<void>;
 	/** Own only this activation's already-prepared providers/browser. */
 	closeProviders(): Promise<void>;
+	/** Resident parents recover the Lead; voice parents recover only their activation. */
+	recoveryScope?: "lead" | "activation";
+	targetLocks?: LeadTargetLockClient;
 }
 /** Parent-owned transport/receipt lifecycle. The outer runtime owns the shared journal. */
 export async function startLeadCapabilityParent(
@@ -305,11 +309,19 @@ export async function startLeadCapabilityParent(
 		await current();
 		// The lifecycle owner has acquired this Lead's carrier before parent startup.
 		// Recover before admitting requests; prior activations may only reconcile.
-		options.journal.operationReceipts.recoverInterruptedParent({
-			projectName: manifest.projectName,
-			leadId: manifest.leadId,
-			now: Date.now(),
-		});
+		if (options.recoveryScope === "activation")
+			options.journal.operationReceipts.recoverInterruptedActivation({
+				projectName: manifest.projectName,
+				leadId: manifest.leadId,
+				activationId: manifest.activationId,
+				now: Date.now(),
+			});
+		else
+			options.journal.operationReceipts.recoverInterruptedParent({
+				projectName: manifest.projectName,
+				leadId: manifest.leadId,
+				now: Date.now(),
+			});
 		broker = new LeadCapabilityBroker({
 			projectName: manifest.projectName,
 			leadId: manifest.leadId,
@@ -320,6 +332,7 @@ export async function startLeadCapabilityParent(
 			handlers,
 			secrets: options.secrets,
 			deliveryContext: () => delivery,
+			targetLocks: options.targetLocks,
 		});
 		socket = new LeadCapabilitySocket({
 			socketPath: pins.brokerSocket,

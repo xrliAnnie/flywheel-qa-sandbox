@@ -1409,6 +1409,8 @@ export function spawnCodexAppServer(cfg: {
 	baseEnv?: NodeJS.ProcessEnv;
 	/** Explicit isolated voice profile: preserves only this API key after washing. */
 	voiceProfile?: { openAiApiKey: string };
+	/** Only this audited profile may combine subscription capability pins with realtime API transport. */
+	profile?: "voice-capability";
 	/** FLY-350 full-access: when false, the `baseEnv` is used AS-IS — it is already
 	 * a curated positive allowlist (buildFullAccessEnv), and washing it would strip
 	 * the gh/Discord/Bridge auth a Claude-equal Lead needs. Default TRUE: every
@@ -1434,15 +1436,29 @@ export function spawnCodexAppServer(cfg: {
 	if (
 		cfg.voiceProfile &&
 		(cfg.washSecrets === false ||
-			cfg.capabilityModelEnv !== undefined ||
+			(cfg.capabilityModelEnv !== undefined &&
+				cfg.profile !== "voice-capability") ||
 			cfg.carrierInstanceId !== undefined)
 	) {
 		throw new Error("voice_profile_incompatible_with_business_credentials");
 	}
+	if (
+		cfg.profile === "voice-capability" &&
+		(!cfg.voiceProfile || !cfg.capabilityModelEnv)
+	)
+		throw new Error("voice_capability_profile_incomplete");
+	const capabilityEnv = cfg.capabilityModelEnv
+		? buildLeadModelEnv(base, cfg.capabilityModelEnv)
+		: undefined;
 	const child = spawn(cfg.codexBin, args, {
 		...(cfg.cwd ? { cwd: cfg.cwd } : {}),
-		env: cfg.capabilityModelEnv
-			? buildLeadModelEnv(base, cfg.capabilityModelEnv)
+		env: capabilityEnv
+			? {
+					...capabilityEnv,
+					...(cfg.profile === "voice-capability"
+						? { OPENAI_API_KEY: cfg.voiceProfile!.openAiApiKey }
+						: {}),
+				}
 			: {
 					...(cfg.washSecrets === false ? base : washActionSecretEnv(base)),
 					CODEX_HOME: cfg.codexHome,

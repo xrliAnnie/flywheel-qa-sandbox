@@ -112,6 +112,69 @@ describe("trusted operation broker engine", () => {
 			})?.state,
 		).toBe("succeeded");
 	});
+	it("fences voice writes before dispatch and records the normalized target", async () => {
+		const store = new SqliteJournalStore(":memory:");
+		stores.push(store);
+		const order: string[] = [];
+		const broker = new LeadCapabilityBroker({
+			projectName: "flywheel",
+			leadId: "product",
+			activationId: "voice:session",
+			receipts: store.operationReceipts,
+			allowedOperationIds: () => new Set([request.operationId]),
+			assertCurrent: async () => {},
+			handlers: new Map([
+				[
+					request.operationId,
+					{
+						authorize: async () => {},
+						execute: async () => {
+							order.push("execute");
+							return {
+								status: "succeeded" as const,
+								providerRef: "message:456",
+								data: output,
+							};
+						},
+					},
+				],
+			]),
+			secrets: [],
+			targetLocks: {
+				actor: "voice",
+				acquire: async (input) => {
+					order.push(`acquire:${input.targetKey}`);
+					return {
+						status: "acquired" as const,
+						fence: "20000000-0000-4000-8000-000000000001",
+					};
+				},
+				markDispatched: async () => {
+					order.push("mark");
+					return true;
+				},
+				release: async (input) => {
+					order.push(`release:${input.outcome}`);
+				},
+				cancel: async () => {},
+			},
+		});
+		expect(await broker.execute(request)).toMatchObject({ status: "succeeded" });
+		expect(order).toEqual([
+			"acquire:flywheel:discord:123:thread",
+			"mark",
+			"execute",
+			"release:succeeded",
+		]);
+		expect(
+			store.operationReceipts.get({
+				projectName: "flywheel",
+				leadId: "product",
+				operationId: request.operationId,
+				requestId: request.requestId,
+			})?.targetKey,
+		).toBe("flywheel:discord:123:thread");
+	});
 	it("rejects malformed oversized unknown reserved and exact-input violations without side effects", async () => {
 		const { broker, execute } = setup();
 		for (const invalid of [

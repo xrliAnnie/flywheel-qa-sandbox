@@ -660,6 +660,7 @@ import {
 } from "./lead-capability-report-deliver.js";
 import { createLeadReportVerifyRouter } from "./lead-capability-report-verify.js";
 import { mountLeadRunnerProvider } from "./lead-capability-runners.js";
+import { createLeadCapabilityTargetLockRouter } from "./lead-capability-target-lock.js";
 import {
 	createProductionLeadConfigService,
 	startLeadConfigReconciler,
@@ -3602,6 +3603,7 @@ export function createBridgeApp(
 			bridgeUrl: `http://${config.host === "::1" ? "[::1]" : "127.0.0.1"}:${config.port}`,
 			stateDbPath: store.getDbPath(),
 			receipts: leadOutboundDedupStore.operationReceipts,
+			stateStore: store,
 		});
 	}
 	if (config.apiToken) {
@@ -3659,6 +3661,13 @@ export function createBridgeApp(
 				"codex-lead-capability-outbox.db",
 			),
 		});
+	}
+	if (config.apiToken) {
+		app.use(
+			"/api/lead-capabilities/target-lock",
+			tokenAuthMiddleware(config.apiToken, undefined),
+			createLeadCapabilityTargetLockRouter({ store }),
+		);
 	}
 
 	// /api/* — api auth
@@ -5844,6 +5853,7 @@ export function createBridgeApp(
 					? createLeadReportOwnerAuthorizer({
 							linearClient: reportLinearClient,
 							registry: reportOptions.registry,
+							stateStore: store,
 						})
 					: async () => {
 							throw new Error("report scope provider unavailable");
@@ -5864,12 +5874,14 @@ export function createBridgeApp(
 					? createLeadReportPublishReceiptAuthorizer({
 							linearClient: reportLinearClient,
 							registry: reportOptions.registry,
+							stateStore: store,
 						})
 					: undefined,
 				authorize: reportLinearClient
 					? createLeadReportOwnerAuthorizer({
 							linearClient: reportLinearClient,
 							registry: reportOptions.registry,
+							stateStore: store,
 						})
 					: async () => {
 							throw new Error("report scope provider unavailable");
@@ -5880,6 +5892,7 @@ export function createBridgeApp(
 				authorizePublish: reportLinearClient
 					? createLeadReportPublishAuthorizer({
 							linearClient: reportLinearClient,
+							stateStore: store,
 						})
 					: async () => {
 							throw new Error("report scope provider unavailable");

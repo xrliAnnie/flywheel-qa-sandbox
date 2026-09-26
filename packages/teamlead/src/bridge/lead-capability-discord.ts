@@ -19,6 +19,10 @@ import {
 	decodeAttachmentUpload,
 	MAX_ATTACHMENT_UPLOAD_BYTES,
 } from "../lead-capabilities/attachment-upload.js";
+import {
+	leadCapabilityAuthorityFields,
+	leadCapabilityAuthorityFromEnvelope,
+} from "../lead-capabilities/authority.js";
 import type {
 	HandlerOutcome,
 	LeadOperationContext,
@@ -71,7 +75,7 @@ const envelopeSchema = z
 		projectName: z.string().min(1).max(128),
 		leadId: z.string().min(1).max(128),
 		identityDigest: z.string().regex(/^[a-f0-9]{64}$/),
-		carrierClaim: z.string().min(1).max(256),
+		...leadCapabilityAuthorityFields,
 		activationId: z.string().min(1).max(128),
 		// Trusted authenticated parent envelope only; never part of operation input.
 		deliveryContext: z
@@ -202,6 +206,19 @@ export function createLeadCapabilityDiscordRouter(
 		}
 		const body = parsed.data,
 			definition = getLeadCapability(body.operationId)!;
+		let authority;
+		try {
+			authority = leadCapabilityAuthorityFromEnvelope(body);
+		} catch {
+			res
+				.status(400)
+				.json({ status: "rejected", errorCode: "invalid_request" });
+			return;
+		}
+		const authoritySecret =
+			authority.kind === "carrier"
+				? authority.carrierClaim
+				: authority.leaseFence;
 		const input = (
 			body.operationId === "discord.output.deliver"
 				? automaticInput
@@ -257,15 +274,18 @@ export function createLeadCapabilityDiscordRouter(
 				baseEnv.FLYWHEEL_PROJECTS_FILE ??
 				join(home, ".flywheel/projects.json");
 		try {
-			const claimEnv = forwardedLeadAuthorizationEnv(
-				{
-					claimedLeadId: body.leadId,
-					projectName: body.projectName,
-					identityDigest: body.identityDigest,
-					carrierClaim: body.carrierClaim,
-				},
-				{ ...baseEnv, HOME: home, FLYWHEEL_PROJECTS_FILE: projectsPath },
-			);
+			const claimEnv =
+				authority.kind === "carrier"
+					? forwardedLeadAuthorizationEnv(
+							{
+								claimedLeadId: body.leadId,
+								projectName: body.projectName,
+								identityDigest: body.identityDigest,
+								carrierClaim: authority.carrierClaim,
+							},
+							{ ...baseEnv, HOME: home, FLYWHEEL_PROJECTS_FILE: projectsPath },
+						)
+					: undefined;
 			const initial = captureLeadCapabilityScope({
 				projectsPath,
 				homeDir: home,
@@ -273,6 +293,8 @@ export function createLeadCapabilityDiscordRouter(
 				leadId: body.leadId,
 				identityDigest: body.identityDigest,
 				claimEnv,
+				authority,
+				stateStore: options.store,
 				denied,
 				rejectChatChannel: baseEnv.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID,
 			});
@@ -581,7 +603,7 @@ export function createLeadCapabilityDiscordRouter(
 					receipts: options.operationReceipts,
 					receiptOnly: body.receiptOnly,
 					botToken: token(),
-					secrets: [options.apiToken, body.carrierClaim],
+					secrets: [options.apiToken, authoritySecret],
 					signal: controller.signal,
 					assertCurrent: assertAttachmentCurrent,
 					fetchImpl: options.attachmentFetch,
@@ -603,7 +625,7 @@ export function createLeadCapabilityDiscordRouter(
 					messageId: handlerInput.messageId as string,
 					attachmentId: handlerInput.attachmentId as string,
 					botToken: token(),
-					secrets: [options.apiToken, body.carrierClaim],
+					secrets: [options.apiToken, authoritySecret],
 					signal: controller.signal,
 					assertCurrent: assertAttachmentCurrent,
 					fetchImpl: options.attachmentFetch,

@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { resolveLeadIdentityRow } from "flywheel-comm/lead-identity";
 import { validateLeadCarrierAuthorization } from "flywheel-comm/lead-lease";
 import { readSummaryGranularity } from "flywheel-comm/summary-config";
-import { parseAndValidateProjects } from "../ProjectConfig.js";
+import {
+	effectiveVoiceBackground,
+	parseAndValidateProjects,
+} from "../ProjectConfig.js";
+import type { StateStore } from "../StateStore.js";
+import type { LeadCapabilityAuthority } from "../lead-capabilities/authority.js";
 
 const sha256 = (value: string) =>
 	createHash("sha256").update(value).digest("hex");
@@ -20,7 +25,10 @@ export function captureLeadCapabilityScope(options: {
 	projectName: string;
 	leadId: string;
 	identityDigest: string;
-	claimEnv: NodeJS.ProcessEnv;
+	claimEnv?: NodeJS.ProcessEnv;
+	authority?: LeadCapabilityAuthority;
+	stateStore?: Pick<StateStore, "getActiveVoiceLease">;
+	now?: () => string;
 	denied(): Error;
 	rejectChatChannel?: string;
 }) {
@@ -32,25 +40,37 @@ export function captureLeadCapabilityScope(options: {
 			projectName: options.projectName,
 			leadId: options.leadId,
 		}),
-		carrier = validateLeadCarrierAuthorization({
-			claimedLeadId: options.leadId,
-			env: options.claimEnv,
-		});
+		authority =
+			options.authority ??
+			({
+				kind: "carrier",
+				carrierClaim:
+					options.claimEnv?.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID ?? "",
+			} as const),
+		carrier =
+			authority.kind === "carrier" && options.claimEnv
+				? validateLeadCarrierAuthorization({
+						claimedLeadId: options.leadId,
+						env: options.claimEnv,
+					})
+				: undefined;
 	if (
 		row.identity.projectsDigest !== projectsDigest ||
 		row.identity.identityDigest !== options.identityDigest ||
-		row.identity.backend !== "codex-app-server" ||
 		row.identity.role !== "dept" ||
-		row.lead.codexCapabilityBundleVersion !== 2 ||
-		row.lead.codexProfile !== "full-access" ||
-		!carrier.valid ||
-		carrier.processIndeterminate
+		(authority.kind === "carrier" &&
+			(row.identity.backend !== "codex-app-server" ||
+				row.lead.codexCapabilityBundleVersion !== 2 ||
+				row.lead.codexProfile !== "full-access" ||
+				!carrier?.valid ||
+				carrier.processIndeterminate))
 	)
 		throw options.denied();
 	const carrierEvidencePath =
-			options.claimEnv.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE ??
+			options.claimEnv?.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE ??
 			join(options.homeDir, ".flywheel", "lead-carrier-evidence.json"),
 		readCarrierRevision = () => {
+			if (authority.kind !== "carrier" || !carrier) return undefined;
 			try {
 				const text = readFileSync(carrierEvidencePath, "utf8");
 				if (!("carrier" in carrier)) return sha256(text);
@@ -80,19 +100,53 @@ export function captureLeadCapabilityScope(options: {
 	if (
 		!project ||
 		!lead ||
+		(authority.kind === "voice_session" &&
+			!effectiveVoiceBackground(lead).enabled) ||
 		(options.rejectChatChannel !== undefined &&
 			lead.chatChannel === options.rejectChatChannel.trim())
 	)
 		throw options.denied();
+	const readVoiceRevision = () => {
+		if (authority.kind !== "voice_session") return undefined;
+		const session = options.stateStore?.getActiveVoiceLease(
+			authority.sessionId,
+			authority.leaseFence,
+			(options.now ?? (() => new Date().toISOString()))(),
+		);
+		if (
+			!session ||
+			session.projectName !== options.projectName ||
+			session.leadId !== options.leadId
+		)
+			throw options.denied();
+		return JSON.stringify({
+			sessionId: session.sessionId,
+			projectName: session.projectName,
+			leadId: session.leadId,
+			leaseToken: session.leaseToken,
+			leaseExpiresAt: session.leaseExpiresAt,
+			state: session.state,
+		});
+	};
+	const voiceRevision = readVoiceRevision();
 	const summaryRevision = JSON.stringify(
 		readSummaryGranularity({ homeDir: options.homeDir }),
 	);
 	function assertSourceCurrent() {
+		const currentProjects = parseAndValidateProjects(
+			JSON.parse(readFileSync(options.projectsPath, "utf8")),
+		);
+		const currentLead = currentProjects
+			.find((candidate) => candidate.projectName === options.projectName)
+			?.leads.find((candidate) => candidate.agentId === options.leadId);
 		if (
 			sha256(readFileSync(options.projectsPath, "utf8")) !== projectsDigest ||
 			JSON.stringify(readSummaryGranularity({ homeDir: options.homeDir })) !==
 				summaryRevision ||
-			readCarrierRevision() !== carrierRevision
+			readCarrierRevision() !== carrierRevision ||
+			readVoiceRevision() !== voiceRevision ||
+			(authority.kind === "voice_session" &&
+				(!currentLead || !effectiveVoiceBackground(currentLead).enabled))
 		)
 			throw options.denied();
 	}

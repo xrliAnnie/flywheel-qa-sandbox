@@ -3,6 +3,10 @@ import { join } from "node:path";
 import express from "express";
 import { forwardedLeadAuthorizationEnv } from "flywheel-comm/lead-lease";
 import { z } from "zod";
+import {
+	leadCapabilityAuthorityFields,
+	leadCapabilityAuthorityFromEnvelope,
+} from "../lead-capabilities/authority.js";
 import { leadOperationInputDigest } from "../lead-capabilities/broker.js";
 import { getLeadCapability } from "../lead-capabilities/catalog.js";
 import type {
@@ -28,7 +32,7 @@ const requestSchema = z
 		projectName: coordinate,
 		leadId: coordinate,
 		identityDigest: z.string().regex(/^[a-f0-9]{64}$/),
-		carrierClaim: z.string().min(1).max(256),
+		...leadCapabilityAuthorityFields,
 		activationId: coordinate,
 		input: z.unknown(),
 	})
@@ -109,15 +113,19 @@ export function createLeadCapabilityVoiceRouter(
 		return { request, input };
 	};
 	const scope = (request: Request) => {
-		const claimEnv = forwardedLeadAuthorizationEnv(
-			{
-				claimedLeadId: request.leadId,
-				projectName: request.projectName,
-				identityDigest: request.identityDigest,
-				carrierClaim: request.carrierClaim,
-			},
-			{ ...env, HOME: homeDir, FLYWHEEL_PROJECTS_FILE: projectsPath },
-		);
+		const authority = leadCapabilityAuthorityFromEnvelope(request);
+		const claimEnv =
+			authority.kind === "carrier"
+				? forwardedLeadAuthorizationEnv(
+						{
+							claimedLeadId: request.leadId,
+							projectName: request.projectName,
+							identityDigest: request.identityDigest,
+							carrierClaim: authority.carrierClaim,
+						},
+						{ ...env, HOME: homeDir, FLYWHEEL_PROJECTS_FILE: projectsPath },
+					)
+				: undefined;
 		const captured = captureLeadCapabilityScope({
 			projectsPath,
 			homeDir,
@@ -125,9 +133,16 @@ export function createLeadCapabilityVoiceRouter(
 			leadId: request.leadId,
 			identityDigest: request.identityDigest,
 			claimEnv,
+			authority,
+			stateStore: deps.store,
+			now,
 			denied,
 		});
-		if (captured.row.lead.codexVoiceActions !== true) throw denied();
+		if (
+			authority.kind === "carrier" &&
+			captured.row.lead.codexVoiceActions !== true
+		)
+			throw denied();
 		return captured;
 	};
 	const reply = (

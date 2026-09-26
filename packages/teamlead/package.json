@@ -30,6 +30,10 @@
 			"types": "./dist/codex-process.d.ts",
 			"import": "./dist/codex-process.js"
 		},
+		"./voice-capability": {
+			"types": "./dist/voice-capability.d.ts",
+			"import": "./dist/voice-capability.js"
+		},
 		"./process-lock": {
 			"types": "./dist/process-lock.d.ts",
 			"import": "./dist/process-lock.js"

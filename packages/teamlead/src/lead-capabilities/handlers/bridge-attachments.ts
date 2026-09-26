@@ -8,7 +8,8 @@ import type {
 	LeadOperationHandler,
 } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
+import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 
 const denied = () => new Error("discord_attachment_denied");
 /** Parent receives result bytes, never a CDN URL or a reusable authorization grant. */
@@ -18,18 +19,16 @@ export function createBridgeAttachmentHandlers(options: {
 	store: LeadArtifactStore;
 	secrets: readonly string[];
 	fetchImpl?: typeof fetch;
-}): ReadonlyMap<string, LeadOperationHandler> {
-	const env = Object.freeze({ ...options.env }),
-		trusted = createLeadCapabilityContext(env);
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+	const env = Object.freeze({ ...options.env });
+	const { authority, authoritySecret, trusted } =
+		resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const token = env.FLYWHEEL_API_TOKEN,
-		claim = env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID,
 		origin = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 	if (
 		!token ||
 		/[\r\n]/.test(token) ||
 		token.length > 8192 ||
-		!claim ||
-		claim.length > 256 ||
 		!options.activationId ||
 		origin.username ||
 		origin.password ||
@@ -44,7 +43,7 @@ export function createBridgeAttachmentHandlers(options: {
 	const endpoint = new URL("/api/lead-capabilities/discord", origin).href,
 		definition = getLeadCapability("discord.message.attachments.get")!,
 		fetchImpl = options.fetchImpl ?? fetch;
-	const secrets = [...options.secrets, token, claim];
+	const secrets = [...options.secrets, token, authoritySecret];
 	async function current(context: LeadOperationContext) {
 		context.signal.throwIfAborted();
 		if (
@@ -103,7 +102,7 @@ export function createBridgeAttachmentHandlers(options: {
 								projectName: context.projectName,
 								leadId: context.leadId,
 								identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
-								carrierClaim: claim,
+								authority,
 								activationId: context.activationId,
 								input: raw,
 							}),
@@ -242,7 +241,7 @@ export function createBridgeAttachmentHandlers(options: {
 					projectName: context.projectName,
 					leadId: context.leadId,
 					identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
-					carrierClaim: claim,
+					authority,
 					activationId: context.activationId,
 					receiptOnly,
 					input,

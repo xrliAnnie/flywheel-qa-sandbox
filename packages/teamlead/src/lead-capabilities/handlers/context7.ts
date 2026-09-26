@@ -2,7 +2,10 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { z } from "zod";
 import type { LeadOperationContext, LeadOperationHandler } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 import { assertUpstreamToolsPinned } from "../upstream-baseline.js";
 
 /** Explicit baseline update requires a newly observed/approved schema artifact. */
@@ -22,13 +25,12 @@ const reply = z.object({
 });
 /** Trusted parent SDK client must be connected by the fixed endpoint provider. */
 export function createContext7Handlers(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	client: Client;
 	secrets: readonly string[];
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
-		trusted = createLeadCapabilityContext(env),
+		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env }),
 		secrets = Object.freeze([...options.secrets]);
 	const containsSecret = (text: string) =>
 		secrets.some((secret) => secret.length > 0 && text.includes(secret));

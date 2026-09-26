@@ -1,13 +1,15 @@
 import type { LeadOperationHandler } from "../broker.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 import { UPSTREAM_TOOL_ROWS } from "../upstream-inputs.js";
 /** Lead ruling 3a78eb55: no invented approval authority. Keep rows and durable refusal evidence. */
 export function createUpstreamWriteDenials(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
-		trusted = createLeadCapabilityContext(env);
+		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	return new Map(
 		UPSTREAM_TOOL_ROWS.filter((row) => row.classification === "write").map(
 			(row) => {

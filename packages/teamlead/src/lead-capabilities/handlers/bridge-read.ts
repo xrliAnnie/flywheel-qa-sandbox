@@ -2,6 +2,8 @@ import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import { RUNNER_ACTION_TOOL_NAMES } from "../../lead-backends/codex/runner-action-names.js";
 import type { LeadArtifactStore } from "../artifacts.js";
+import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
+import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 import {
 	type HandlerOutcome,
 	type LeadOperationContext,
@@ -12,7 +14,6 @@ import { getLeadCapability } from "../catalog.js";
 import { PatrolArtifactProjection } from "../patrol-artifacts.js";
 import { prefetchPatrolGithubFacts } from "../patrol-github-facts.js";
 import { PATROL_SNAPSHOT_CLIENT_TIMEOUT_MS } from "../patrol-timeouts.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
 
 const operations = [
 	"bridge.read",
@@ -32,7 +33,7 @@ const replySchema = z
 	.strict();
 const denied = () => new Error("bridge_read_scope_denied");
 /** Parent-only fixed read transport. Canonical scope and DTO projection remain inside Bridge. */
-interface BridgeHandlerOptions {
+interface BridgeHandlerOptions extends LeadCapabilityRuntimeAuthorityOptions {
 	env: NodeJS.ProcessEnv;
 	activationId: string;
 	fetchImpl?: typeof fetch;
@@ -110,11 +111,13 @@ function createBridgeHandlers(
 ): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId;
-	let trusted: ReturnType<typeof createLeadCapabilityContext>, url: URL;
-	const token = env.FLYWHEEL_API_TOKEN,
-		claim = env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
+	let url: URL;
+	const token = env.FLYWHEEL_API_TOKEN;
+	let runtimeAuthority: ReturnType<
+		typeof resolveLeadCapabilityRuntimeAuthority
+	>;
 	try {
-		trusted = createLeadCapabilityContext(env);
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!["http:", "https:"].includes(url.protocol) ||
@@ -128,8 +131,6 @@ function createBridgeHandlers(
 			!token ||
 			token.length > 8192 ||
 			/[\r\n]/.test(token) ||
-			!claim ||
-			claim.length > 256 ||
 			!activationId ||
 			activationId.length > 128
 		)
@@ -137,9 +138,12 @@ function createBridgeHandlers(
 	} catch {
 		throw denied();
 	}
+	const { authority, authoritySecret, trusted } = runtimeAuthority!;
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const handlers = new Map<string, LeadOperationHandler>();
-	const secrets = [token!, claim!, ...(options.secrets ?? [])].filter(Boolean);
+	const secrets = [token!, authoritySecret, ...(options.secrets ?? [])].filter(
+		Boolean,
+	);
 	async function current(context: LeadOperationContext) {
 		if (
 			context.projectName !== env.FLYWHEEL_PROJECT_NAME ||
@@ -223,7 +227,7 @@ function createBridgeHandlers(
 				projectName: env.FLYWHEEL_PROJECT_NAME,
 				leadId: env.FLYWHEEL_LEAD_ID,
 				identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
-				carrierClaim: claim,
+				authority,
 				activationId,
 				input: input.data,
 				...(runnerOperation ? { receiptOnly } : {}),

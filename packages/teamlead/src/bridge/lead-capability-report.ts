@@ -1,15 +1,16 @@
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LinearClient } from "@linear/sdk";
-import { resolveLeadIdentityRow } from "flywheel-comm/lead-identity";
-import {
-	forwardedLeadAuthorizationEnv,
-	validateLeadCarrierAuthorization,
-} from "flywheel-comm/lead-lease";
+import { forwardedLeadAuthorizationEnv } from "flywheel-comm/lead-lease";
 import { z } from "zod";
 import { DepartmentRegistry } from "../department-registry.js";
-import { parseAndValidateProjects } from "../ProjectConfig.js";
+import type { StateStore } from "../StateStore.js";
+import {
+	leadCapabilityAuthorityFields,
+	leadCapabilityAuthorityFromEnvelope,
+	type LeadCapabilityAuthority,
+} from "../lead-capabilities/authority.js";
+import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
 import type { ReportRegistry } from "./report-registry.js";
 import { isReportExpired } from "./report-retention.js";
 
@@ -29,7 +30,7 @@ const requestSchema = z
 				requestId: z.string().uuid(),
 				leadId: coordinate,
 				identityDigest: z.string().regex(/^[a-f0-9]{64}$/),
-				carrierClaim: z.string().min(1).max(256),
+				...leadCapabilityAuthorityFields,
 				activationId: coordinate,
 				issueId: coordinate,
 			})
@@ -44,6 +45,8 @@ interface LeadReportScopeOptions {
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
 	linearClient: LinearClient;
+	stateStore?: Pick<StateStore, "getActiveVoiceLease">;
+	now?: () => string;
 }
 export function createLeadReportPublishAuthorizer(
 	options: LeadReportScopeOptions,
@@ -75,7 +78,8 @@ function createLeadReportIssueAuthorizer(options: LeadReportScopeOptions) {
 		proof: {
 			leadId: string;
 			identityDigest: string;
-			carrierClaim: string;
+			authority?: LeadCapabilityAuthority;
+			carrierClaim?: string;
 			issueId: string;
 		},
 	): Promise<() => void> => {
@@ -83,52 +87,37 @@ function createLeadReportIssueAuthorizer(options: LeadReportScopeOptions) {
 		let expired = false;
 		const deadline = Date.now() + 15000;
 		try {
-			const claimEnv = forwardedLeadAuthorizationEnv(
-				{
-					claimedLeadId: proof.leadId,
-					projectName: projectName,
-					identityDigest: proof.identityDigest,
-					carrierClaim: proof.carrierClaim,
-				},
-				{ ...env, HOME: home, FLYWHEEL_PROJECTS_FILE: projectsPath },
-			);
-			let revision: string | undefined;
+			const authority = leadCapabilityAuthorityFromEnvelope(proof);
+			const claimEnv =
+				authority.kind === "carrier"
+					? forwardedLeadAuthorizationEnv(
+							{
+								claimedLeadId: proof.leadId,
+								projectName,
+								identityDigest: proof.identityDigest,
+								carrierClaim: authority.carrierClaim,
+							},
+							{ ...env, HOME: home, FLYWHEEL_PROJECTS_FILE: projectsPath },
+						)
+					: undefined;
+			const scope = captureLeadCapabilityScope({
+				projectsPath,
+				homeDir: home,
+				projectName,
+				leadId: proof.leadId,
+				identityDigest: proof.identityDigest,
+				authority,
+				claimEnv,
+				stateStore: options.stateStore,
+				now: options.now,
+				denied,
+			});
 			const current = () => {
 				if (expired || Date.now() >= deadline) throw denied();
-				const row = resolveLeadIdentityRow({
-					projectsPath,
-					homeDir: home,
-					projectName: projectName,
-					leadId: proof.leadId,
-				});
-				const carrier = validateLeadCarrierAuthorization({
-					claimedLeadId: proof.leadId,
-					env: claimEnv,
-				});
-				if (
-					row.identity.identityDigest !== proof.identityDigest ||
-					row.identity.backend !== "codex-app-server" ||
-					row.identity.role !== "dept" ||
-					row.lead.codexCapabilityBundleVersion !== 2 ||
-					row.lead.codexProfile !== "full-access" ||
-					!carrier.valid ||
-					carrier.processIndeterminate
-				)
+				scope.assertSourceCurrent();
+				if (!scope.project.linear?.team || !scope.project.linear.project)
 					throw denied();
-				const projects = parseAndValidateProjects(
-					JSON.parse(readFileSync(projectsPath, "utf8")),
-				);
-				const project = projects.find((p) => p.projectName === projectName);
-				if (
-					!project?.linear?.team ||
-					!project.linear.project ||
-					!project.leads.some((l) => l.agentId === proof.leadId)
-				)
-					throw denied();
-				const next = JSON.stringify(projects);
-				if (revision !== undefined && revision !== next) throw denied();
-				revision = next;
-				return { projects, project };
+				return scope;
 			};
 			current();
 			const work = async () => {
@@ -198,7 +187,7 @@ export const leadReportOwnerRequestSchema = z
 				requestId: z.string().uuid(),
 				leadId: coordinate,
 				identityDigest: z.string().regex(/^[a-f0-9]{64}$/),
-				carrierClaim: z.string().min(1).max(256),
+				...leadCapabilityAuthorityFields,
 				activationId: coordinate,
 				reportId: z.string().regex(/^[a-f0-9]{32}$/),
 				issueId: coordinate.optional(),

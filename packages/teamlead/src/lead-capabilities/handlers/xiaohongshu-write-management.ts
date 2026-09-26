@@ -2,7 +2,10 @@ import { authorityResponseSchemas } from "../../xiaohongshu-write/authority-clie
 import { artifactSchema } from "../../xiaohongshu-write/contracts.js";
 import type { LeadArtifactStore } from "../artifacts.js";
 import type { HandlerOutcome, LeadOperationHandler } from "../broker.js";
-import { createLeadCapabilityContext } from "../runtime-context.js";
+import {
+	type LeadCapabilityRuntimeAuthorityOptions,
+	resolveLeadCapabilityRuntimeAuthority,
+} from "../runtime-authority.js";
 import {
 	xhsWritePrepareInput,
 	xhsWriteProposalInput,
@@ -10,7 +13,6 @@ import {
 
 /** Management changes proposals, never approval authority. Recovery is status-only. */
 export function createXhsWriteManagementHandlers(options: {
-	env: NodeJS.ProcessEnv;
 	activationId: string;
 	artifacts: Pick<LeadArtifactStore, "read">;
 	client: {
@@ -24,11 +26,11 @@ export function createXhsWriteManagementHandlers(options: {
 			signal?: AbortSignal,
 		): Promise<unknown>;
 	} | null;
-}): ReadonlyMap<string, LeadOperationHandler> {
+} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId,
 		client = options.client;
-	const trusted = createLeadCapabilityContext(env);
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const unknown = (): HandlerOutcome => ({
 		status: "unknown",
 		errorCode: "provider_unknown",
