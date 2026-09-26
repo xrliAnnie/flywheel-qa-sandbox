@@ -11,7 +11,7 @@ Issue: FLY-2832 (https://linear.app/geoforge3d/issue/FLY-2832/qa-fly-2802-qa-san
 
 **技术栈：** TypeScript、Vitest 3、pnpm workspace、Node.js ESM、Git。
 
-**状态：** draft
+**状态：** approved（design review round 3，零 findings / 零 advisories）
 
 ---
 
