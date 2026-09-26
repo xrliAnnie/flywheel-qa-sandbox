@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 2/6
-updated: 2026-09-26T11:52:08.266Z
-nextStep: "Task 2: re-read README, refresh notes, replace doc listing"
+phaseCursor: 3/6
+updated: 2026-09-26T11:53:06.041Z
+nextStep: "Task 3: re-run listing + structure parsers, diff --check, lint, diff scope"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (2/6)
-**next**: Task 2: re-read README, refresh notes, replace doc listing
+**phase**: implement (3/6)
+**next**: Task 3: re-run listing + structure parsers, diff --check, lint, diff scope
