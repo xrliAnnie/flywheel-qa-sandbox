@@ -2,22 +2,21 @@
 issue: FLY-2405
 phase: implement
 phaseCursor: 7/8
-updated: 2026-09-26T19:36:41.138Z
-nextStep: Validation serialized after observed host load205. Original related
-  session89513 still live in shared5a62a7119. Post-sync session3117 deliberately
-  cancelled exit130 while flag-routes was running; event-route had just finished
-  108pass/3timeouts/1assert409. 14 completed results retained; resume
-  /tmp/fly2405-postsync-commands.json skipping completed names ONLY AFTER
-  original finishes. Scheduling and pending exact retries in
-  /tmp/fly2405-postsync-scheduling.json and retry-plan.json; committed
-  verification-results.json mirrors them. Keep original source stable, then
-  ff-only to temp HEAD. Default-threshold retries, final-head package smoke,
-  milestone last commit, push/effective review/needs_review remain. No QA or
-  full CI.
+updated: 2026-09-26T19:56:19.876Z
+nextStep: "Lead ruling298915b0 applied in462e995e2: original related
+  session89513 was Lead-SIGTERMed and is not evidence; DO NOT rerun it or resume
+  recovery queue72705. Shared checkout now merged. Only bounded41-command queue
+  /tmp/fly2405-lead-bounded-commands.json runs sequentially under session12160
+  in temp source-identical e4fe21c5d; exact results
+  /tmp/fly2405-lead-bounded-results.json and cursor.json. 3 failed files get one
+  complete retry only; repeated timing failures become load-timeout per Lead.
+  Finish bounded local evidence, exact-head milestone-last commit and package
+  smoke, effective review, push, needs_review. No current-head full-CI freeze;
+  no QA dispatch. Complete drain stays same-turn using actual printed receipts."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2405 progress
 **phase**: implement (7/8)
-**next**: Validation serialized after observed host load205. Original related session89513 still live in shared5a62a7119. Post-sync session3117 deliberately cancelled exit130 while flag-routes was running; event-route had just finished 108pass/3timeouts/1assert409. 14 completed results retained; resume /tmp/fly2405-postsync-commands.json skipping completed names ONLY AFTER original finishes. Scheduling and pending exact retries in /tmp/fly2405-postsync-scheduling.json and retry-plan.json; committed verification-results.json mirrors them. Keep original source stable, then ff-only to temp HEAD. Default-threshold retries, final-head package smoke, milestone last commit, push/effective review/needs_review remain. No QA or full CI.
+**next**: Lead ruling298915b0 applied in462e995e2: original related session89513 was Lead-SIGTERMed and is not evidence; DO NOT rerun it or resume recovery queue72705. Shared checkout now merged. Only bounded41-command queue /tmp/fly2405-lead-bounded-commands.json runs sequentially under session12160 in temp source-identical e4fe21c5d; exact results /tmp/fly2405-lead-bounded-results.json and cursor.json. 3 failed files get one complete retry only; repeated timing failures become load-timeout per Lead. Finish bounded local evidence, exact-head milestone-last commit and package smoke, effective review, push, needs_review. No current-head full-CI freeze; no QA dispatch. Complete drain stays same-turn using actual printed receipts.
