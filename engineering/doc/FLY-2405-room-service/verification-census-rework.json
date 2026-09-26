@@ -1,0 +1,240 @@
+{
+  "base_head": "71d14d4606e6bbd9f0f63a759db38ce870ead98e",
+  "qa_run": 36275353144,
+  "selection": [
+    {
+      "needle": "packages/teamlead/src/bridge/child-process-census.json",
+      "test_matches": [
+        {
+          "path": "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+          "retained": true,
+          "reason": "Reads the modified census and compares exact production counts; existing failing regression."
+        }
+      ]
+    },
+    {
+      "needle": "child-process-census.json",
+      "test_matches": [
+        {
+          "path": "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+          "retained": true,
+          "reason": "Reads the modified census and compares exact production counts; existing failing regression."
+        }
+      ]
+    },
+    {
+      "needle": "packages/teamlead/src/bridge",
+      "test_matches": [
+        {
+          "path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/config/src/__tests__/drift-scan.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/config/src/__tests__/drift-scan/index.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/config/src/__tests__/fly1808-wave-a.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/teamlead/src/__tests__/StateStore.land-carryover.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+          "retained": true,
+          "reason": "Reads the modified census and compares exact production counts; existing failing regression."
+        },
+        {
+          "path": "packages/teamlead/src/__tests__/fixtures/fly2567/compatibility.json",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/teamlead/src/__tests__/fly2268-mechanism-guards.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/teamlead/src/__tests__/fly2398-narrow-boundary.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/teamlead/src/__tests__/report-hosting-secrets.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/teamlead/src/bridge/__tests__/fixtures/fly2269-r4-reviewer-raw.txt",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "packages/teamlead/src/bridge/__tests__/land-executor.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/ci-structure.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fixtures/customer-release-reserve-worker.mjs",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly-1867-playwright-orphan-census.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly-2026-browser-idle-census.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly1645-receipt-residue-gate.test.mjs",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly1674-residue.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly1680-v1-extinction.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly2102-flag-freeze.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/fly2405-alert-duty.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/flywheel-log-rotate.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/legacy-swap-broadcast-retirement.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/qa-codex-lead-parity.test.mjs",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/runtime-role-auto-qa-retirement.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/ship-judgment-timer.test.mjs",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/test-deploy-generalized.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        },
+        {
+          "path": "scripts/__tests__/v2-retirement-cleanup.test.sh",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        }
+      ]
+    },
+    {
+      "needle": "packages/teamlead/src/bridge/qa-room-runtime.ts",
+      "test_matches": [
+        {
+          "path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+          "retained": false,
+          "reason": "Parent-directory or unchanged runtime reference; JSON inventory registration only, no production code, test behavior, API, or type changes."
+        }
+      ]
+    }
+  ],
+  "retained": {
+    "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts": "Reads the modified census and compares exact production counts; existing failing regression."
+  },
+  "red": {
+    "command": "pnpm --filter flywheel-teamlead exec vitest run src/__tests__/bridge-child-process-census.test.ts",
+    "result": "1/1 failed: 104 actual entries vs 103 expected; only extra entry qa-room-runtime.ts raw_spawn=1",
+    "log": "/tmp/fly2405-census-red.log"
+  },
+  "scope": "One inventory entry; preserve exact equality and all existing dispositions. No TypeScript or exported API changes.",
+  "green": {
+    "command": "pnpm --filter flywheel-teamlead exec vitest run src/__tests__/bridge-child-process-census.test.ts",
+    "exit": 0,
+    "tests": 1,
+    "log": "/tmp/fly2405-census-green.log"
+  },
+  "lifecycle_evidence": {
+    "spawn": "qa-room-runtime.ts:345 fixed wrapper/minimal environment/detached group",
+    "observe": "qa-room-runtime.ts:366 receipt and owner identity; process group observation",
+    "terminate": "qa-room-runtime.ts:437 PID/start-time/group fences and TERM/KILL",
+    "deadlines": "qa-room-service.ts:594 drill persisted deadline; :654 deploy/teardown wall-clock cap"
+  },
+  "checks": [
+    {
+      "command": "pnpm --filter \"flywheel-teamlead...\" build",
+      "exit": 0,
+      "log": "/tmp/fly2405-census-build.log"
+    },
+    {
+      "command": "pnpm lint",
+      "exit": 0,
+      "warnings": 25,
+      "log": "/tmp/fly2405-census-lint.log"
+    }
+  ]
+}

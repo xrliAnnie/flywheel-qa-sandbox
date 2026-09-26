@@ -335,6 +335,11 @@
 			"disposition": "bridge_sync_marker_timeout"
 		},
 		{
+			"file": "packages/teamlead/src/bridge/qa-room-runtime.ts",
+			"raw_spawn": 1,
+			"disposition": "FLY-2405 Bridge-owned QA room job: fixed shell wrapper, minimal environment, detached process group, durable owner/receipt observation, service deadlines and identity-checked TERM/KILL cleanup"
+		},
+		{
 			"file": "packages/teamlead/src/bridge/runner-admission.ts",
 			"sync_child": 1,
 			"sync_marker": 1,

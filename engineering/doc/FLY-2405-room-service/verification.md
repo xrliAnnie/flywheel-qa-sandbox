@@ -55,3 +55,13 @@ d219e447f 已得到有效 APPROVED 并正常推送，但 CI run 36272181643 在 
 修复仅登记 CI：alert-duty、room-job、service-claim 三个可移植 fixture 进入 script-tests-6；teardown-pits 使用真实 macOS /private/tmp/codex-daemon-* socket authority 路径，登记到带理由的 manual-only inventory，单独在 macOS 重跑通过。新增 step 同步进入 ci-structure 的精确名称/顺序清单，未放宽结构断言。
 
 验证：枚举守卫（含删除 mutation）、CI structure、23/23 package matrix、8 workflow startup validation 通过；workflow-startup 7、launchd foundation 20、timeout guard 5、wall-clock guard 1、workflow permissions 10 通过；teardown-pits 5 组通过。完整发现/排除与命令见 verification-ci-registration.json。产品源码与已批准/打包 smoke 26/26 的 d219e447f 完全相同；本次无新增 TS、接口、包依赖或打包变更，不重复构建/打包或广泛 related。新 HEAD 仍需重新有效复审，正常推送后复核 scoped CI。未请求 full CI。
+
+## QA 返工：生产进程清单漏登记
+
+QA attempt 1 在冻结头 `71d14d4606e6bbd9f0f63a759db38ce870ead98e` 请求完整 CI run `36275353144`；Unit (teamlead 4 of 4) 中 `bridge-child-process-census.test.ts` 因 `qa-room-runtime.ts` 新增一个 raw spawn 未登记而失败，QA verdict claim 1674 已接受。Implement attempt 2 在 TURN epoch 9 接返工。
+
+本地单独运行原守卫，先复现 1/1 失败：实际 104 项、清单 103 项，唯一差项为 `qa-room-runtime.ts raw_spawn=1`。核对该调用固定 shell wrapper、最小环境、detached process group、durable owner/receipt、service deadlines 与带身份核验的 TERM/KILL 后，仅补清单一个条目及 disposition。原守卫和产品 TypeScript 保持不变，随后同一测试 1/1 通过。完整消费者发现及逐项排除见 `verification-census-rework.json`。本次没有 TS、导出接口或类型变更，不触发 TS related 或 dependent typecheck。
+
+此前 review advisories 不属于本次 QA 失败修复，不在本轮改动。旧头完整 CI 明确失败，不能沿用旧头评审/CI 到新头；新头须有效 code review 与 QA retest，由 QA 请求冻结头完整 CI。
+
+返工后 `pnpm --filter "flywheel-teamlead..." build` 与 `pnpm lint` 均 exit 0（25 条 warning）；日志见 census-rework JSON。初始 stage 请求超时导致 progress 拒绝旧 started 阶段，随后 code_review stage 成功、progress 已重试成功；未手动改控制器状态。
