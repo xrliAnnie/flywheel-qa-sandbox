@@ -1,14 +1,14 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 4/6
-updated: 2026-09-26T18:38:56.362Z
-nextStep: "design_review gate: stage set design_review --plan, run
-  /codex-design-review to APPROVED"
+phaseCursor: 5/6
+updated: 2026-09-26T18:57:01.439Z
+nextStep: "founder HTML: render 3 mermaid diagrams with mmdc, build page,
+  publish-report, report to Lead"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (4/6)
-**next**: design_review gate: stage set design_review --plan, run /codex-design-review to APPROVED
+**phase**: design (5/6)
+**next**: founder HTML: render 3 mermaid diagrams with mmdc, build page, publish-report, report to Lead
