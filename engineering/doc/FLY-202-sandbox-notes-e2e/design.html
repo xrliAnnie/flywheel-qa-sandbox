@@ -89,7 +89,7 @@
 
   <section class="card purple" data-section="数据与结构模型">
     <h2>3 · 数据与结构模型</h2>
-    <p>设计坚持一个 source of truth，也就是每项事实只从一个权威来源读取：目录来自 tracked tree 与 live checkout，框架说明来自当前 README，命令证据来自现场执行结果。</p>
+    <p>设计坚持一个 source of truth，也就是每项事实只从一个权威来源读取：目录表来自 tracked tree，过滤 Git-ignored 项后的 live checkout 只做异常诊断；框架说明来自当前 README，命令证据来自现场执行结果。</p>
     <div class="pending" role="img" aria-label="数据与结构图等待本地渲染">
       <strong>DIAGRAM PENDING LOCAL RENDER</strong>
       <span>Mermaid 源文件：structure-model.mmd。mmdc 两次均因 sandbox 内 Chromium 权限失败。</span>
@@ -97,7 +97,7 @@
     <table>
       <thead><tr><th>来源</th><th>进入主文档的内容</th><th>验证方式</th></tr></thead>
       <tbody>
-        <tr><td>tracked tree + live checkout</td><td>每个顶层目录与一行说明</td><td>Git tree 与 filesystem 两种枚举结果一致</td></tr>
+        <tr><td>tracked tree</td><td>每个顶层目录与一行说明</td><td>与目录表做集合比较；filtered live checkout 只报告异常</td></tr>
         <tr><td><code>packages/qa-framework/README.md</code></td><td>恰好 10 条简明摘要</td><td>完整读两段源文件并计数</td></tr>
         <tr><td><code>ls -R doc/ | head -50</code></td><td>50 行原始输出</td><td>文内 fenced block 与现场 stdout 字节一致</td></tr>
         <tr><td><code>doc/qa/sandbox-notes.md</code></td><td>稳定的 materialized view，也就是从上述事实汇成的文档视图</td><td>bounded validator 逐项比较</td></tr>

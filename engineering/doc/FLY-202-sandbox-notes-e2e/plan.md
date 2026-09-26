@@ -94,7 +94,7 @@ git ls-tree -d --name-only HEAD | LC_ALL=C sort
 find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \; | LC_ALL=C sort
 ```
 
-Expected: 两份集合相同。设计时是以下 17 项：
+Expected: 排除 `.git` 与 Git-ignored directories 后，两份集合相同。设计时是以下 17 项：
 
 ```text
 .claude
@@ -116,7 +116,9 @@ scripts
 supabase
 ```
 
-若集合变化，当前命令输出优先；先解释 tracked/live 差异，再决定是否更新 table。
+若集合变化，先用 `git check-ignore` 分类差异。ignored harness/dependency directories 只记录、不进入
+table；non-ignored live-only directory 可能属于用户未提交工作，不得擅自写入 target，先在 handoff
+披露。tracked tree 是稳定 repository table 的权威集合。
 
 - [ ] **Step 3: 完整读取 QA README 与 live listing**
 
@@ -130,7 +132,8 @@ LC_ALL=C ls -R doc/ | head -50
 
 Expected: README 仍覆盖 framework purpose、two-layer model、five-step protocol、adoption/config、real
 Runner slots、deploy/inject/teardown、prerequisites、start-point boundary、special modes、guides/contracts；
-listing 恰有 50 行。
+listing 恰有 50 行。该 output 是 macOS/BSD `ls` 形态；必须在同一个 slot environment 复验，不能用
+GNU host 的输出改写它。
 
 - [ ] **Step 4: 更新 progress cursor**
 
@@ -155,8 +158,21 @@ if (!text.startsWith('# Flywheel QA Sandbox Notes\n')) throw new Error('wrong ti
 const intro = text.split('\n## Top-level directories\n')[0].split('\n\n').slice(1).filter(Boolean);
 if (intro.length < 2 || intro.length > 3) throw new Error(`expected 2-3 intro paragraphs, got ${intro.length}`);
 const tracked = cp.execFileSync('git', ['ls-tree', '-d', '--name-only', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').sort();
-const liveDirs = cp.execFileSync('sh', ['-c', "find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \\; | LC_ALL=C sort"], { encoding: 'utf8' }).trim().split('\n');
-if (JSON.stringify(tracked) !== JSON.stringify(liveDirs)) throw new Error('tracked/live directory sets differ');
+const liveCandidates = fs.readdirSync('.', { withFileTypes: true })
+  .filter(entry => entry.isDirectory() && entry.name !== '.git')
+  .map(entry => entry.name)
+  .sort();
+const ignoreProbe = cp.spawnSync('git', ['check-ignore', '--stdin', '-z'], {
+  input: `${liveCandidates.join('\0')}\0`, encoding: 'utf8',
+});
+if (![0, 1].includes(ignoreProbe.status)) throw new Error('git check-ignore failed');
+const ignored = new Set(ignoreProbe.stdout.split('\0').filter(Boolean));
+const liveDirs = liveCandidates.filter(name => !ignored.has(name));
+const liveOnly = liveDirs.filter(name => !tracked.includes(name));
+const trackedOnly = tracked.filter(name => !liveDirs.includes(name));
+if (liveOnly.length || trackedOnly.length) {
+  console.warn(`directory diagnostic: live-only=${liveOnly.join(',') || '-'} tracked-only=${trackedOnly.join(',') || '-'}`);
+}
 const directorySection = text.split('## Top-level directories\n')[1].split('\n## `packages/qa-framework/README.md` summary')[0];
 const tableDirs = [...directorySection.matchAll(/^\| `([^\u0060]+)\/` \|/gm)].map(match => match[1]).sort();
 if (JSON.stringify(tableDirs) !== JSON.stringify(tracked)) throw new Error('directory table mismatch');
@@ -174,14 +190,21 @@ console.log('sandbox-notes structure: PASS');
 NODE
 ```
 
-Expected on design baseline: `sandbox-notes structure: PASS`.
+Expected on design baseline: `sandbox-notes structure: PASS`。如果出现 directory diagnostic，先按 Task 1
+分类；它是 environment/user-state evidence，不自动成为 target repair。
 
-- [ ] **Step 2: 分支选择**
+- [ ] **Step 2: 做内容语义复核**
 
-- PASS：记录 already-GREEN；不得改写 target，直接进入 Task 4。
-- FAIL：错误消息就是 Task 3 的精确 repair scope；先保存 RED output，再进入 Task 3。
+逐条对照 Task 3 Step 1 的三项 intro statements、Task 1 Step 2 的 17 个目录名称与说明、Task 1
+Step 3 的十个 README 概念组。记录每项 PASS / mismatch；不能用 validator 的数量检查代替语义复核。
 
-- [ ] **Step 3: 更新 progress cursor**
+- [ ] **Step 3: 分支选择**
+
+- 结构和语义都 PASS：记录 already-GREEN；不得改写 target，直接进入 Task 4。
+- validator FAIL 或语义 mismatch：保存具体证据并进入 Task 3。
+- 只有 directory diagnostic：保留 target，以 tracked tree 为准，并在 handoff 披露 live 差异。
+
+- [ ] **Step 4: 更新 progress cursor**
 
 写 `implement 3/6`；PASS 时 next=`Task 4 final verification`，FAIL 时 next=`Task 3 minimal repair`。
 
@@ -202,8 +225,8 @@ Expected on design baseline: `sandbox-notes structure: PASS`.
 
 - [ ] **Step 2: 修复目录表（仅当 set mismatch）**
 
-第一列必须与 Task 1 的 current tracked/live intersection 一一对应，带 trailing `/`；第二列各用一句
-plain-language description。`.git` 与临时目录不得加入。
+第一列必须与 Task 1 的 current tracked tree 一一对应，带 trailing `/`；第二列各用一句
+plain-language description。`.git`、Git-ignored 目录与 untracked user-state directories 不得加入。
 
 - [ ] **Step 3: 修复 README 摘要（仅当 count / semantic mismatch）**
 
@@ -211,8 +234,8 @@ plain-language description。`.git` 与临时目录不得加入。
 
 - [ ] **Step 4: 修复 listing（仅当 byte mismatch）**
 
-用 `LC_ALL=C ls -R doc/ | head -50` 的 exact stdout 替换 fenced `text` block 内容，保留 command label 与
-fence 后的 inherited marker。
+在同一个 macOS slot environment 用 `LC_ALL=C ls -R doc/ | head -50` 的 exact stdout 替换 fenced
+`text` block 内容，保留 command label 与 fence 后的 inherited marker。不得从 GNU host 生成替代输出。
 
 - [ ] **Step 5: 重跑 Task 2 validator**
 
@@ -245,11 +268,14 @@ Run:
 
 ```bash
 git diff --name-status ab1d379b1...HEAD
+git diff --name-status origin/main...HEAD
 git status --short
+gh pr view 196 --json files
 ```
 
-Expected: 本轮只包含 authorized FLY-202 process docs/report/progress；若 Task 3 触发，可额外包含
-`doc/qa/sandbox-notes.md`。不得出现 `packages/**`、runtime、migration、secret 或 production config。
+Expected: baseline 增量只包含本轮 authorized FLY-202 process docs/report/progress；完整 PR diff 只包含
+`doc/qa/sandbox-notes.md`、FLY-202 design/process docs 与 milestone。不得出现 `packages/**`、runtime、
+migration、secret 或 production config。
 
 - [ ] **Step 3: lint（非 test-suite evidence）**
 
@@ -266,7 +292,7 @@ Expected: exit 0。报告时只称 repository lint，不称 full tests。没有 
 
 写 `implement 5/6`，next step 指向 Task 5。
 
-### Task 5: Commit（如需要）、push、核对 PR 并 handoff
+### Task 5: Commit（如需要）、final progress、push、核对 PR 并 handoff
 
 **Files:**
 
@@ -283,7 +309,12 @@ git commit -m "docs(FLY-202): refresh sandbox notes from current evidence"
 Expected: commit 只含 target。若 Task 2 already-GREEN，跳过本步且不得创建 empty commit；preserved
 history 已满足 issue 的 commit requirement。
 
-- [ ] **Step 2: push 当前 branch**
+- [ ] **Step 2: 写 final progress commit**
+
+用 injected command 写 `implement 6/6`，next step 指向“push, prove PR head, report, complete”。该 progress
+命令会产生 commit，所以必须先于 final push。
+
+- [ ] **Step 3: push 当前 branch**
 
 ```bash
 git push origin HEAD:project-slot-1-FLY-202
@@ -291,22 +322,26 @@ git push origin HEAD:project-slot-1-FLY-202
 
 Expected: fast-forward success；不得使用 `--no-verify`、force 或 force-with-lease。
 
-- [ ] **Step 3: 核对 remote head 与 PR**
+- [ ] **Step 4: 核对 remote head 与 PR**
 
 ```bash
 local_head=$(git rev-parse HEAD)
 remote_head=$(git ls-remote origin refs/heads/project-slot-1-FLY-202 | awk '{print $1}')
 test "$local_head" = "$remote_head"
-gh pr view 196 --json number,state,isDraft,headRefName,headRefOid,baseRefName,url
+gh pr view 196 --json number,state,isDraft,headRefName,headRefOid,baseRefName,url,files
 ```
 
-Expected: local = remote = PR head OID；PR OPEN、非 draft、head current branch、base main。
+Expected: local = remote = PR head OID；PR OPEN、非 draft、head current branch、base main。若不相等，
+不得 report/complete；先恢复 fast-forward head equality。
 
-- [ ] **Step 4: 最终 progress 与 completion**
+- [ ] **Step 5: 报告与 completion**
 
-用 injected command 写 `implement 6/6`，报告 exact SHA、PR URL、target changed/no-op、validator 与 lint
-结果，然后按 implementation dispatch 的 exact completion route 完成节点。不得 merge、request ship
-approval 或 dispatch successor。
+报告必须同时包含 FLY-202 Linear URL、PR #196 URL、exact pushed SHA、target changed/no-op、validator、
+semantic review 与 lint 结果；no-op 时明确说明本轮没有新的 target-file commit。再按 implementation
+dispatch 的 exact completion route 完成节点。不得 merge、request ship approval 或 dispatch successor。
+
+QA handoff 必须指向本 plan 的 Task 2 Step 1 validator，并要求确认 PR #196 仍 OPEN、未合并。若本轮
+产生 target 或 milestone commit，同步修正 `engineering/doc/milestones/FLY-202.md` 中的 stale pointers。
 
 ## Requirement-to-evidence map
 

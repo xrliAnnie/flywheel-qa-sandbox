@@ -69,8 +69,9 @@ scripts
 supabase
 ```
 
-实现时必须重新运行两条命令。若 tracked 与 live 集合不同，先把差异分类为真正的 project directory
-或 harness 临时产物；不能静默把临时目录写进长期文档，也不能只看其中一份集合。
+实现时必须重新运行两条命令，并用 `git check-ignore` 排除依赖与 harness 临时目录。tracked tree 是
+稳定 repository table 的权威集合；live-only non-ignored directory 可能是用户未提交工作，只作为诊断
+披露，不得静默写进长期文档。
 
 ## 4. QA framework README 事实
 
@@ -119,7 +120,7 @@ suite；目标验证由 bounded Node parser、`git diff --check` 与 PR state in
 单一事实流如下：
 
 ```text
-tracked + live root directories ─┐
+tracked root directories ────────┐
 QA framework README ─────────────┼─> doc/qa/sandbox-notes.md ─> PR #196
 live doc listing ────────────────┘
 ```
@@ -130,7 +131,7 @@ live doc listing ────────────────┘
 ## 8. 验证策略
 
 1. bounded parser：标题、2–3 intro paragraphs、tracked directory set、10 bullets、50-line fence、live
-   stdout byte equality、inherited marker；
+   stdout byte equality、inherited marker；另外把 filtered live directories 作为 diagnostic；
 2. `git diff --check`：Markdown whitespace hygiene；
 3. `git diff --name-status <preserved-baseline>...HEAD`：本 design node 只改授权过程文档、Mermaid 与 HTML；
 4. `gh pr view 196`：OPEN、base=`main`、head branch 正确，push 后 remote OID 等于 local HEAD；

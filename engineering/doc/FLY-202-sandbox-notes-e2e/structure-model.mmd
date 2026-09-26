@@ -1,5 +1,6 @@
 flowchart LR
-    A["Tracked plus live root directories<br/>current directory set"] --> V["Bounded validator<br/>compare sources with target"]
+    A["Tracked root directories<br/>authoritative repository set"] --> V["Bounded validator<br/>compare sources with target"]
+    H["Filtered live directories<br/>diagnostic only"] -. "report mismatch" .-> V
     B["packages/qa-framework/README.md<br/>current framework behavior"] --> V
     C["ls -R doc/ | head -50<br/>live command evidence"] --> V
     D["doc/qa/sandbox-notes.md<br/>stable fixture document"] --> V
