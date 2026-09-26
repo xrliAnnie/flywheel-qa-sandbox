@@ -1,14 +1,14 @@
 ---
 issue: FLY-2913
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-26T15:44:14.984Z
-nextStep: "DAG revision correction: trace publication/rollback, pinned run and
-  reviewer consumers; preserve role-v1 implementation and QA@2 evidence"
+phaseCursor: 3/5
+updated: 2026-09-26T15:48:32.320Z
+nextStep: Request fresh effective design review for DAG revision correction;
+  build founder HTML while review runs
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
-**phase**: design (1/5)
-**next**: DAG revision correction: trace publication/rollback, pinned run and reviewer consumers; preserve role-v1 implementation and QA@2 evidence
+**phase**: design (3/5)
+**next**: Request fresh effective design review for DAG revision correction; build founder HTML while review runs
