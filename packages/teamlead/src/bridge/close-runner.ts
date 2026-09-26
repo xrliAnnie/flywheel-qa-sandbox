@@ -1,3 +1,4 @@
+import type { WorkflowCarrierCloseOutcome } from "../workflow-recovery-contract.js";
 /**
  * FLY-102 Round 3 + FLY-116: Lead-driven Runner lifecycle — close_runner primitive.
  *
@@ -176,7 +177,8 @@ export function registerLifecycleCloseGuard(
 	};
 }
 
-export interface CloseRunnerResult {
+export interface CloseRunnerResult
+	extends Partial<WorkflowCarrierCloseOutcome> {
 	closed: boolean;
 	/**
 	 * Present only on the post-kill `closed:false` result path.
@@ -385,7 +387,14 @@ async function closeRunnerWithRunAuthority(
 	opts: CloseRunnerOpts,
 	store: StateStore,
 ): Promise<CloseRunnerResult> {
-	const authority = opts.runCloseAuthority;
+	const authority =
+		opts.runCloseAuthority ??
+		(store.isEnrolledWorkflowCarrier(opts.executionId)
+			? {
+					mode: opts.finalizeDone ? ("done" as const) : ("abandon" as const),
+					principal: "engine:carrier_close",
+				}
+			: undefined);
 	if (!authority) return closeRunnerInner(opts, store);
 	if (!authority.principal.trim()) {
 		return {
@@ -399,26 +408,7 @@ async function closeRunnerWithRunAuthority(
 		0,
 		500,
 	);
-	const cascadeRun = (): void => {
-		try {
-			const cascade = store.cascadeRunTerminationOnCarrierClose({
-				executionId: opts.executionId,
-				mode: authority.mode,
-				principal: authority.principal,
-				now: new Date().toISOString(),
-			});
-			if (cascade.ok && !cascade.idempotentReplay) {
-				store.ensureTerminalWorkflowRunCollection({
-					runId: cascade.runId,
-					now: new Date().toISOString(),
-				});
-			}
-		} catch (error) {
-			console.warn(
-				`[close-runner] run cascade failed for ${opts.executionId}: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	};
+
 	const prepared = store.prepareWorkflowOperatorCloseIntent({
 		executionId: opts.executionId,
 		mode: authority.mode,
@@ -434,8 +424,13 @@ async function closeRunnerWithRunAuthority(
 		};
 	}
 	if (prepared.stage === "committed") {
-		cascadeRun();
+		store.finalizeWorkflowOperatorCloseIntent({
+			executionId: opts.executionId,
+			stage: "committed",
+			now: new Date().toISOString(),
+		});
 		return {
+			...store.getWorkflowCarrierCloseOutcome(opts.executionId),
 			closed: true,
 			alreadyGone: true,
 			commDbFinalized: true,
@@ -458,10 +453,9 @@ async function closeRunnerWithRunAuthority(
 			error: `close_intent_finalize_failed:${finalized.reason}`,
 		};
 	}
-	if (intentStage === "committed") {
-		cascadeRun();
-	}
-	return result;
+	return intentStage === "committed"
+		? { ...result, ...store.getWorkflowCarrierCloseOutcome(opts.executionId) }
+		: result;
 }
 
 async function closeRunnerInner(
@@ -478,6 +472,15 @@ async function closeRunnerInner(
 			error: "session_not_found",
 		};
 	}
+
+	// A closed body is not evidence that its enrolled task chain finished.
+	const archiveAllowed = (): boolean => {
+		const outcome = store.getWorkflowCarrierCloseOutcome(opts.executionId);
+		return (
+			!outcome ||
+			(outcome.completionAccepted && outcome.runStatus === "completed")
+		);
+	};
 
 	// FLY-102 Round 3 QA finding: audit event_id is Lead-dimensional.
 	const auditKey = `${opts.executionId}-${opts.leadId ?? "unknown"}`;
@@ -530,7 +533,15 @@ async function closeRunnerInner(
 	// flag); never auto-applied. CRASH_PRESERVE_STATES (failed/blocked) are NOT in
 	// FINALIZE_DONE_SOURCE_STATES — a crash is not "done", so done-mode leaves them
 	// to the preserve gate below.
-	if (opts.finalizeDone && FINALIZE_DONE_SOURCE_STATES.has(session.status)) {
+	const enrolledDoneCleanup =
+		!!opts.finalizeDone &&
+		store.isEnrolledWorkflowCarrier(opts.executionId) &&
+		FINALIZE_DONE_SOURCE_STATES.has(session.status);
+	if (
+		opts.finalizeDone &&
+		!enrolledDoneCleanup &&
+		FINALIZE_DONE_SOURCE_STATES.has(session.status)
+	) {
 		if (!opts.transitionOpts) {
 			// Defensive: production wires transitionOpts. Without it we cannot
 			// transition through the FSM, and must not forceStatus past it.
@@ -617,7 +628,8 @@ async function closeRunnerInner(
 		!AUTO_CLOSE_STATES.has(session.status) &&
 		!forceClose &&
 		!opts.issueTerminalOverride &&
-		!workflowProcessCleanup
+		!workflowProcessCleanup &&
+		!enrolledDoneCleanup
 	) {
 		const err = `status_not_eligible:${session.status}`;
 		store.insertEvent({
@@ -821,7 +833,7 @@ async function closeRunnerInner(
 					error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
 				};
 			}
-			if (opts.archive) {
+			if (opts.archive && archiveAllowed()) {
 				await maybeArchiveThreadOnClose(store, session, opts.archive);
 			}
 			return {
@@ -891,7 +903,7 @@ async function closeRunnerInner(
 		// FLY-369: runner is closed (already gone) → central close→archive
 		// cascade. Guarded inside to done-cleanup (completed) + no other active
 		// runner. Runs only on this success path (Codex code review R6 #1).
-		if (opts.archive) {
+		if (opts.archive && archiveAllowed()) {
 			await maybeArchiveThreadOnClose(store, session, opts.archive);
 		}
 		return {
@@ -1120,7 +1132,12 @@ async function closeRunnerInner(
 	// failure must not archive. The cascade is itself guarded to done-cleanup
 	// (completed) + no other active runner; FLY-1238 additionally requires
 	// communication finalization first.
-	if ((res.killed || runnerDeathProven) && commDbFinalized && opts.archive) {
+	if (
+		(res.killed || runnerDeathProven) &&
+		commDbFinalized &&
+		opts.archive &&
+		archiveAllowed()
+	) {
 		await maybeArchiveThreadOnClose(store, session, opts.archive);
 	}
 

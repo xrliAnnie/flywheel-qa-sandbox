@@ -4,6 +4,12 @@ import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-ma
 import { StateStore } from "../../StateStore.js";
 import { handleTerminate } from "../actions.js";
 import { closeRunner } from "../close-runner.js";
+import { maybeArchiveThreadOnClose } from "../done-thread-archiver.js";
+
+vi.mock("../done-thread-archiver.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../done-thread-archiver.js")>()),
+	maybeArchiveThreadOnClose: vi.fn(async () => undefined),
+}));
 
 // Replace physical/CommDB boundaries only. Enrollment, FSM, close intent,
 // completion, run events, and run collection decisions use the real StateStore.
@@ -57,6 +63,7 @@ const ENV = {
 const stores: StateStore[] = [];
 afterEach(() => {
 	for (const store of stores.splice(0)) store.close();
+	vi.clearAllMocks();
 });
 
 async function enrolledCarrier(status: string) {
@@ -146,6 +153,7 @@ function close(store: StateStore, done = false) {
 			leadId: "lead-a",
 			reason: "Close this dead execution body",
 			finalizeDone: done,
+			archive: { projects: [] },
 			transitionOpts: { store, fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS) },
 			runCloseAuthority: {
 				mode: done ? "done" : "abandon",
@@ -206,6 +214,12 @@ describe("FLY-2095/2181/2525 enrolled carrier close is not run termination", () 
 		expect(store.listWorkflowRunEvents(RUN)).toEqual(events);
 	}, 60_000);
 
+	it("does not archive an unfinished workflow merely because the carrier session says completed", async () => {
+		const store = await enrolledCarrier("completed");
+		expect(await close(store)).toMatchObject({ closed: true });
+		expect(maybeArchiveThreadOnClose).not.toHaveBeenCalled();
+	}, 60_000);
+
 	it("execution terminate closes an incomplete current carrier without cancelling its run", async () => {
 		const store = await enrolledCarrier("failed");
 		const result = await handleTerminate(
@@ -227,7 +241,7 @@ describe("FLY-2095/2181/2525 enrolled carrier close is not run termination", () 
 		const store = await enrolledCarrier("running");
 		const result = await close(store, true);
 		expect(result).toMatchObject({ closed: true, commDbFinalized: true });
-		expect(store.getSession(EXECUTION)?.status).not.toBe("completed");
+		expect(store.getSession(EXECUTION)?.status).toBe("failed");
 		expect(
 			store
 				.getEventsByExecution(EXECUTION)

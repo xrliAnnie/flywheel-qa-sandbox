@@ -32,6 +32,7 @@ import {
 	type WorkflowRecoveryTarget,
 	type WorkflowRecoveryPreflight,
 	type WorkflowRecoveryCanonical,
+ type WorkflowCarrierCloseOutcome,
 } from "./workflow-recovery-contract.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
 import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
@@ -50634,31 +50635,175 @@ export class StateStore {
 		return result;
 	}
 
+
+	private workflowCarrierCloseContext(executionId: string) {
+		const contexts = this.listWorkflowActivationsForActor(executionId)
+			.map((binding) => this.generalizedExecutionContextForBinding(binding))
+			.filter((context) => context !== undefined);
+		const current = contexts.filter((context) => {
+			const node = this.listWorkflowRunNodes(
+				context.binding.run_id,
+				context.binding.node_id,
+			).at(-1);
+			return (
+				context.run.current_node_id === context.binding.node_id &&
+				node?.attempt === context.binding.attempt &&
+				node.execution_id === executionId
+			);
+		});
+		if (current.length > 1)
+			throw new WorkflowEngineInvariantError("carrier_close_binding_ambiguous");
+		return current[0] ?? contexts.at(-1);
+	}
+
+	isEnrolledWorkflowCarrier(executionId: string): boolean {
+		return this.workflowCarrierCloseContext(executionId) !== undefined;
+	}
+
+	getWorkflowCarrierCloseOutcome(
+		executionId: string,
+	): WorkflowCarrierCloseOutcome | undefined {
+		const context = this.workflowCarrierCloseContext(executionId);
+		if (!context) return undefined;
+		const { binding, run } = context;
+		const node = this.listWorkflowRunNodes(run.run_id, binding.node_id).at(-1);
+		const completion = this.getWorkflowNodeCompletion(
+			run.run_id,
+			binding.node_id,
+			binding.attempt,
+		);
+		const ledger = this.listWorkflowSideEffects(run.run_id)
+			.filter(
+				(row) =>
+					row.kind === "dispatch" &&
+					row.node_id === binding.node_id &&
+					row.attempt === binding.attempt &&
+					row.execution_id === executionId,
+			)
+			.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
+		const current =
+			run.current_node_id === binding.node_id &&
+			node?.attempt === binding.attempt &&
+			node.execution_id === executionId;
+		return {
+			executionClosed: true,
+			runTerminated: false,
+			runStatus: run.status,
+			completionAccepted: completion?.execution_id === executionId,
+			recoveryTarget:
+				current && !completion && run.status === "held" && ledger
+					? {
+							operationKind: "redispatch_current",
+							runId: run.run_id,
+							nodeId: binding.node_id,
+							attempt: binding.attempt,
+							previousExecutionId: executionId,
+							previousLaunchOrdinal: ledger.launch_ordinal,
+						}
+					: null,
+		};
+	}
+
+	/** Close settlement and recovery publication must commit together: a committed
+	 * close suppresses automatic dead-body recovery, so it must never lose its exit. */
+	private ensureCarrierCloseRecoveryTx(executionId: string, now: string): void {
+		if (!this.db.raw.inTransaction)
+			throw new WorkflowEngineInvariantError(
+				"close_recovery_requires_transaction",
+			);
+		const context = this.workflowCarrierCloseContext(executionId);
+		if (!context) return;
+		const { binding, run } = context;
+		const node = this.listWorkflowRunNodes(run.run_id, binding.node_id).at(-1);
+		if (
+			!node ||
+			node.attempt !== binding.attempt ||
+			node.execution_id !== executionId ||
+			run.current_node_id !== binding.node_id ||
+			!["active", "held"].includes(run.status) ||
+			this.getWorkflowNodeCompletion(
+				run.run_id,
+				binding.node_id,
+				binding.attempt,
+			)
+		)
+			return;
+		const ledger = this.listWorkflowSideEffects(run.run_id)
+			.filter(
+				(row) =>
+					row.kind === "dispatch" &&
+					row.node_id === binding.node_id &&
+					row.attempt === binding.attempt,
+			)
+			.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
+		if (!ledger || ledger.execution_id !== executionId)
+			throw new WorkflowEngineInvariantError("close_recovery_dispatch_changed");
+		const eventUid = `run_recovery_required:carrier_close:${canonicalSubmissionDigest({ runId: run.run_id, nodeId: binding.node_id, attempt: binding.attempt, executionId, launchOrdinal: ledger.launch_ordinal })}`;
+		if (
+			this.workflowSelectAll(
+				"SELECT 1 FROM workflow_run_event WHERE event_uid = ?",
+				[eventUid],
+			).length
+		)
+			return;
+		this.terminalizeProvenDeadSessionTx(
+			executionId,
+			"current_carrier_closed_without_completion",
+		);
+		this.db.run(
+			"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND current_node_id = ? AND status = ?",
+			[run.run_id, binding.node_id, run.status],
+		);
+		if (this.db.getRowsModified() !== 1)
+			throw new WorkflowEngineInvariantError("close_recovery_run_changed");
+		this.appendWorkflowRunEventCheckedTx({
+			runId: run.run_id,
+			nodeId: binding.node_id,
+			executionId,
+			eventUid,
+			kind: "run_recovery_required",
+			payload: {
+				reason: "current_carrier_closed_without_completion",
+				attempt: binding.attempt,
+				launchOrdinal: ledger.launch_ordinal,
+				at: now,
+			},
+		});
+	}
+
 	finalizeWorkflowOperatorCloseIntent(input: {
 		executionId: string;
 		stage: "committed" | "failed";
 		now: string;
 	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
-		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now))
 			return { ok: false, reason: "invalid_close_intent_finalization" };
-		}
-		const prior = this.getWorkflowOperatorCloseIntent(input.executionId);
-		if (prior?.stage === input.stage) {
-			return { ok: true, idempotentReplay: true };
-		}
-		if (!prior || prior.stage !== "prepared") {
-			return { ok: false, reason: "close_intent_not_prepared" };
-		}
-		this.db.run(
-			`UPDATE workflow_operator_close_intent SET stage = ?, updated_at = ?
-			  WHERE execution_id = ? AND stage = 'prepared'`,
-			[input.stage, input.now, input.executionId],
-		);
-		if (this.db.getRowsModified() !== 1) {
-			return { ok: false, reason: "close_intent_not_prepared" };
-		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "close_intent_not_prepared",
+		};
+		this.db.transaction(() => {
+			const prior = this.getWorkflowOperatorCloseIntent(input.executionId);
+			if (!prior || (prior.stage !== input.stage && prior.stage !== "prepared"))
+				return;
+			if (input.stage === "committed")
+				this.ensureCarrierCloseRecoveryTx(input.executionId, input.now);
+			if (prior.stage === input.stage) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			this.db.run(
+				"UPDATE workflow_operator_close_intent SET stage = ?, updated_at = ? WHERE execution_id = ? AND stage = 'prepared'",
+				[input.stage, input.now, input.executionId],
+			);
+			if (this.db.getRowsModified() !== 1)
+				throw new WorkflowEngineInvariantError("close_intent_changed");
+			result = { ok: true, idempotentReplay: false };
+		});
 		this.save();
-		return { ok: true, idempotentReplay: false };
+		return result;
 	}
 
 	shouldSuppressDeadExecutionRecovery(input: {
@@ -50704,146 +50849,6 @@ export class StateStore {
 		return false;
 	}
 
-	cascadeRunTerminationOnCarrierClose(input: {
-		executionId: string;
-		mode: "done" | "abandon";
-		principal: string;
-		now: string;
-	}):
-		| { ok: true; runId: string; idempotentReplay: boolean }
-		| { ok: false; reason: string; runId?: string } {
-		if (
-			!input.executionId ||
-			!input.principal.trim() ||
-			!StateStore.workflowFiniteTimestamp(input.now)
-		) {
-			return { ok: false, reason: "invalid_carrier_close_cascade" };
-		}
-		let result:
-			| { ok: true; runId: string; idempotentReplay: boolean }
-			| { ok: false; reason: string; runId?: string } = {
-			ok: false,
-			reason: "carrier_not_enrolled",
-		};
-		let changed = false;
-		this.db.transaction(() => {
-			const context = this.generalizedExecutionContext(input.executionId);
-			if (!context) return;
-			const runId = context.binding.run_id;
-			const refuse = (reason: string): void => {
-				const refusalKey = canonicalSubmissionDigest({
-					mode: input.mode,
-					principal: input.principal.trim(),
-					reason,
-				});
-				this.appendWorkflowRunEventCheckedTx({
-					runId,
-					eventUid: `cascade_refused:${runId}:${input.executionId}:${refusalKey}`,
-					kind: "cascade_refused",
-					nodeId: context.binding.node_id,
-					executionId: input.executionId,
-					payload: {
-						mode: input.mode,
-						principal: input.principal.trim(),
-						reason,
-					},
-				});
-				changed = true;
-				result = { ok: false, reason, runId };
-			};
-			const successEventUid = `run_terminated:${runId}:carrier_closed:${input.executionId}`;
-			if (
-				this.workflowSelectAll(
-					"SELECT 1 AS present FROM workflow_run_event WHERE event_uid = ?",
-					[successEventUid],
-				).length > 0
-			) {
-				result = { ok: true, runId, idempotentReplay: true };
-				return;
-			}
-			const intent = this.getWorkflowOperatorCloseIntent(input.executionId);
-			const session = this.getSession(input.executionId);
-			const run = this.getWorkflowRun(runId);
-			let refusal: string | undefined;
-			if (
-				!intent ||
-				intent.stage !== "committed" ||
-				intent.mode !== input.mode
-			) {
-				refusal = "close_intent_not_committed";
-			} else if (!session || !isOperationalTerminalStatus(session.status)) {
-				refusal = "carrier_not_terminal";
-			} else if (!run || run.status !== "active") {
-				refusal = "run_not_active";
-			} else if (
-				this.liveRunAttributedExecutionsTx(runId).some(
-					(executionId) => executionId !== input.executionId,
-				)
-			) {
-				refusal = "other_live_carriers";
-			} else if (
-				this.workflowSelectAll(
-					`SELECT 1 AS present FROM workflow_side_effect_ledger
-					  WHERE run_id = ? AND kind = 'dispatch'
-					    AND state IN ('intent_recorded','launch_committed') LIMIT 1`,
-					[runId],
-				).length > 0
-			) {
-				refusal = "pending_dispatch_intent";
-			} else if (
-				this.workflowSelectAll(
-					`SELECT 1 AS present
-					   FROM workflow_rework_delivery d
-					   JOIN workflow_rework_request r ON r.request_id = d.request_id
-					  WHERE r.run_id = ?
-					    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
-					  LIMIT 1`,
-					[runId],
-				).length > 0
-			) {
-				refusal = "rework_delivery_inflight";
-			}
-			if (refusal) {
-				refuse(refusal);
-				return;
-			}
-			this.db.run(
-				"UPDATE workflow_run SET status = 'terminated' WHERE run_id = ? AND status = 'active'",
-				[runId],
-			);
-			if (this.db.getRowsModified() !== 1) {
-				refuse("run_status_changed");
-				return;
-			}
-			this.settleWorkflowEngineParksForRunTx(
-				runId,
-				input.now,
-				TERMINAL_PARK_SETTLEMENT_REASONS,
-			);
-			this.cancelOpenWorkflowCarrierDeliveriesTx({
-				runId,
-				now: input.now,
-				reason: `carrier_closed:${input.mode}`,
-				eventSuffix: "operator_terminate",
-			});
-			this.appendWorkflowRunEventCheckedTx({
-				runId,
-				eventUid: successEventUid,
-				kind: "run_terminated",
-				nodeId: context.binding.node_id,
-				executionId: input.executionId,
-				payload: {
-					reason: `carrier_closed:${input.mode}`,
-					clientRequestId: `carrier_closed:${input.executionId}`,
-					principal: input.principal.trim(),
-				},
-			});
-			changed = true;
-			result = { ok: true, runId, idempotentReplay: false };
-		});
-		if (changed) this.save();
-		return result;
-	}
 
 	private workflowRunCollectReceipt(
 		row: Record<string, unknown> | undefined,

@@ -1536,35 +1536,24 @@ export async function handleTerminate(
 			message: `No session found for execution_id ${executionId}`,
 		};
 	}
-	if (
-		session.status === "terminated" &&
-		runCloseAuthority?.mode === "abandon"
-	) {
+	const closeAuthority =
+		runCloseAuthority ??
+		(store.isEnrolledWorkflowCarrier(executionId)
+			? { mode: "abandon" as const, principal: "engine:carrier_close" }
+			: undefined);
+	if (session.status === "terminated" && closeAuthority?.mode === "abandon") {
 		const intent = store.getWorkflowOperatorCloseIntent(executionId);
 		if (intent?.stage === "committed" && intent.mode === "abandon") {
-			try {
-				const cascade = store.cascadeRunTerminationOnCarrierClose({
-					executionId,
-					mode: "abandon",
-					principal: runCloseAuthority.principal,
-					now: new Date().toISOString(),
-				});
-				if (cascade.ok && !cascade.idempotentReplay) {
-					store.ensureTerminalWorkflowRunCollection({
-						runId: cascade.runId,
-						now: new Date().toISOString(),
-					});
-				}
-				return {
-					success: true,
-					message: `${session.issue_identifier ?? executionId} already terminated`,
-				};
-			} catch (error) {
-				return {
-					success: false,
-					message: `Run close cascade failed: ${error instanceof Error ? error.message : String(error)}`,
-				};
-			}
+			store.finalizeWorkflowOperatorCloseIntent({
+				executionId,
+				stage: "committed",
+				now: new Date().toISOString(),
+			});
+			return {
+				success: true,
+				message: `${session.issue_identifier ?? executionId} execution already closed`,
+				...store.getWorkflowCarrierCloseOutcome(executionId),
+			};
 		}
 	}
 
@@ -1581,10 +1570,10 @@ export async function handleTerminate(
 	// EVERY caller (not just the MCP abandon client) gets the same bound on the
 	// persisted last_error / hook audit content.
 	const auditReason = (reason?.trim() || "Terminated by CEO").slice(0, 500);
-	if (runCloseAuthority) {
+	if (closeAuthority) {
 		const prepared = store.prepareWorkflowOperatorCloseIntent({
 			executionId,
-			mode: runCloseAuthority.mode,
+			mode: closeAuthority.mode,
 			reason: auditReason,
 			now: new Date().toISOString(),
 		});
@@ -1609,7 +1598,7 @@ export async function handleTerminate(
 			{ last_activity_at: sqliteDatetime(), last_error: auditReason },
 		);
 		if (!result.ok) {
-			if (runCloseAuthority) {
+			if (closeAuthority) {
 				store.finalizeWorkflowOperatorCloseIntent({
 					executionId,
 					stage: "failed",
@@ -1695,7 +1684,7 @@ export async function handleTerminate(
 			cleanupError = `commdb finalize failed: ${finalized.error ?? "unknown"}`;
 		}
 	}
-	if (runCloseAuthority) {
+	if (closeAuthority) {
 		const intentStage = cleanupError ? "failed" : "committed";
 		const finalized = store.finalizeWorkflowOperatorCloseIntent({
 			executionId,
@@ -1704,25 +1693,6 @@ export async function handleTerminate(
 		});
 		if (!finalized.ok) {
 			cleanupError = `close intent finalization failed: ${finalized.reason}`;
-		} else if (intentStage === "committed") {
-			try {
-				const cascade = store.cascadeRunTerminationOnCarrierClose({
-					executionId,
-					mode: runCloseAuthority.mode,
-					principal: runCloseAuthority.principal,
-					now: new Date().toISOString(),
-				});
-				if (cascade.ok && !cascade.idempotentReplay) {
-					store.ensureTerminalWorkflowRunCollection({
-						runId: cascade.runId,
-						now: new Date().toISOString(),
-					});
-				}
-			} catch (error) {
-				console.warn(
-					`[terminate] run close cascade deferred for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
 		}
 	}
 	if (cleanupError) {
@@ -1768,7 +1738,8 @@ export async function handleTerminate(
 	}
 	return {
 		success: true,
-		message: `${id} terminated successfully`,
+		message: `${id} execution closed`,
+		...store.getWorkflowCarrierCloseOutcome(executionId),
 	};
 }
 
@@ -1974,8 +1945,7 @@ export function createActionRouter(
 				}
 				if (terminateResult.success) {
 					res.json({
-						success: true,
-						message: terminateResult.message,
+						...terminateResult,
 						action: "terminate",
 					});
 				} else {

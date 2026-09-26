@@ -164,11 +164,8 @@ describe("handleTerminate (FLY-228)", () => {
 		expect(store.getSession("e1")!.status).toBe("terminated");
 	});
 
-	it("commits explicit abandon intent before cascading the closed carrier", async () => {
+	it("commits explicit abandon intent for the closed execution", async () => {
 		seedAwaitingReview();
-		const cascade = vi
-			.spyOn(store, "cascadeRunTerminationOnCarrierClose")
-			.mockReturnValue({ ok: false, reason: "carrier_not_enrolled" });
 
 		const res = await handleTerminate(
 			store,
@@ -187,13 +184,6 @@ describe("handleTerminate (FLY-228)", () => {
 			mode: "abandon",
 			stage: "committed",
 		});
-		expect(cascade).toHaveBeenCalledWith(
-			expect.objectContaining({
-				executionId: "e1",
-				mode: "abandon",
-				principal: "lead-a",
-			}),
-		);
 
 		const replay = await handleTerminate(
 			store,
@@ -207,7 +197,7 @@ describe("handleTerminate (FLY-228)", () => {
 			{ mode: "abandon", principal: "lead-a" },
 		);
 		expect(replay.success).toBe(true);
-		expect(cascade).toHaveBeenCalledTimes(2);
+		expect(store.getWorkflowOperatorCloseIntent("e1")?.stage).toBe("committed");
 	});
 
 	it("FLY-1238: atomic gate finalization failure is cleanup-pending and rolls back", async () => {

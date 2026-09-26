@@ -19,6 +19,18 @@ export interface ActionResult {
 	 * `close_runner` (terminated ∈ AUTO_CLOSE_STATES) is the cleanup retry.
 	 */
 	cleanupPending?: boolean;
+	executionClosed?: true;
+	runTerminated?: false;
+	runStatus?: string;
+	completionAccepted?: boolean;
+	recoveryTarget?: {
+		operationKind: "redispatch_current";
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		previousExecutionId: string;
+		previousLaunchOrdinal: number;
+	} | null;
 }
 
 export class ReactionsEngine {

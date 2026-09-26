@@ -105,131 +105,135 @@ function commitCloseIntent(store: StateStore) {
 	).toEqual({ ok: true, idempotentReplay: false });
 }
 
-describe("FLY-1707 workflow carrier close cascade", () => {
-	it("terminates an active run when its committed close removes the sole carrier", async () => {
+describe("FLY-2922 carrier close settlement", () => {
+	it("holds the current incomplete run and replays one durable episode", async () => {
 		const store = await carrierRun();
-		commitCloseIntent(store);
-
-		expect(
-			store.cascadeRunTerminationOnCarrierClose({
-				executionId: "design-1",
-				mode: "done",
-				principal: "lead-a",
-				now: "2026-08-15T08:04:00.000Z",
-			}),
-		).toEqual({ ok: true, runId: "run-1", idempotentReplay: false });
-		expect(store.getWorkflowRun("run-1")?.status).toBe("terminated");
-		expect(
-			store.cascadeRunTerminationOnCarrierClose({
-				executionId: "design-1",
-				mode: "done",
-				principal: "lead-a",
-				now: "2026-08-15T08:05:00.000Z",
-			}),
-		).toEqual({ ok: true, runId: "run-1", idempotentReplay: true });
-		store.close();
+		try {
+			commitCloseIntent(store);
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(store.getWorkflowCarrierCloseOutcome("design-1")).toMatchObject({
+				executionClosed: true,
+				runTerminated: false,
+				completionAccepted: false,
+				recoveryTarget: {
+					previousExecutionId: "design-1",
+					previousLaunchOrdinal: 1,
+				},
+			});
+			const events = store.listWorkflowRunEvents("run-1");
+			expect(
+				events.filter((event) => event.kind === "run_recovery_required"),
+			).toHaveLength(1);
+			expect(events.some((event) => event.kind === "run_terminated")).toBe(
+				false,
+			);
+			expect(
+				store.finalizeWorkflowOperatorCloseIntent({
+					executionId: "design-1",
+					stage: "committed",
+					now: "2026-08-15T08:04:00.000Z",
+				}),
+			).toEqual({ ok: true, idempotentReplay: true });
+			expect(store.listWorkflowRunEvents("run-1")).toEqual(events);
+		} finally {
+			store.close();
+		}
 	});
-
-	it("refuses the cascade while another live carrier remains", async () => {
+	it("keeps other parked carriers and their state intact", async () => {
 		const store = await carrierRun();
-		store.upsertWorkflowRunNode({
-			runId: "run-1",
-			nodeId: "implement",
-			attempt: 1,
-			state: "running",
-			executionId: "implement-1",
-		});
-		store.upsertSession({
-			execution_id: "implement-1",
-			issue_id: "FLY-1707",
-			project_name: "flywheel",
-			status: "running",
-		});
-		commitCloseIntent(store);
-
-		expect(
-			store.cascadeRunTerminationOnCarrierClose({
-				executionId: "design-1",
-				mode: "done",
-				principal: "lead-a",
-				now: "2026-08-15T08:04:00.000Z",
-			}),
-		).toMatchObject({ ok: false, reason: "other_live_carriers" });
-		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
-		expect(
-			store
-				.listWorkflowRunEvents("run-1")
-				.some((event) => event.kind === "cascade_refused"),
-		).toBe(true);
-		store.close();
+		try {
+			store.upsertSession({
+				execution_id: "parked-qa",
+				issue_id: "FLY-1707",
+				project_name: "flywheel",
+				status: "ship_parked",
+			});
+			const before = store.getSession("parked-qa");
+			commitCloseIntent(store);
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(store.getSession("parked-qa")).toEqual(before);
+		} finally {
+			store.close();
+		}
 	});
-
-	it("never cascades through an explicitly held run", async () => {
+	it("preserves a preexisting held run and its dispatch history", async () => {
+		const store = await carrierRun({ pendingDispatch: true });
+		try {
+			rawDb(store).run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'",
+			);
+			const ledger = store.listWorkflowSideEffects("run-1");
+			commitCloseIntent(store);
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(store.listWorkflowSideEffects("run-1")).toEqual(ledger);
+		} finally {
+			store.close();
+		}
+	});
+	it("failed physical close does not publish recovery or suppress automatic recovery", async () => {
 		const store = await carrierRun();
-		rawDb(store).run(
-			"UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'",
-		);
-		commitCloseIntent(store);
-
-		expect(
-			store.cascadeRunTerminationOnCarrierClose({
+		try {
+			store.prepareWorkflowOperatorCloseIntent({
 				executionId: "design-1",
 				mode: "done",
-				principal: "lead-a",
-				now: "2026-08-15T08:04:00.000Z",
-			}),
-		).toMatchObject({ ok: false, reason: "run_not_active" });
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
-		store.close();
+				reason: "close",
+				now: "2026-08-15T08:02:00.000Z",
+			});
+			expect(
+				store.finalizeWorkflowOperatorCloseIntent({
+					executionId: "design-1",
+					stage: "failed",
+					now: "2026-08-15T08:03:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(
+				store.shouldSuppressDeadExecutionRecovery({
+					executionId: "design-1",
+					now: "2026-08-15T08:04:00.000Z",
+				}),
+			).toBe(false);
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "run_recovery_required"),
+			).toHaveLength(0);
+		} finally {
+			store.close();
+		}
 	});
-
-	it("refuses the cascade for pending dispatch and in-flight rework delivery", async () => {
-		const pending = await carrierRun({ pendingDispatch: true });
-		commitCloseIntent(pending);
-		expect(
-			pending.cascadeRunTerminationOnCarrierClose({
+	it("rolls back the held episode if close-intent commit fails", async () => {
+		const store = await carrierRun();
+		try {
+			store.prepareWorkflowOperatorCloseIntent({
 				executionId: "design-1",
 				mode: "done",
-				principal: "lead-a",
-				now: "2026-08-15T08:04:00.000Z",
-			}),
-		).toMatchObject({ ok: false, reason: "pending_dispatch_intent" });
-		pending.close();
-
-		const rework = await carrierRun();
-		rawDb(rework).run(
-			`INSERT INTO workflow_rework_request
-			 (request_id, run_id, source_event_id, authority, source_node_id,
-			  source_attempt, base_revision, authority_context_json,
-			  authority_context_digest, requested_at)
-			 VALUES ('rework-1', 'run-1', 'source-1', 'founder', 'design', 1,
-			         'base', '{}', 'digest', '2026-08-15T08:01:00.000Z')`,
-		);
-		rawDb(rework).run(
-			`INSERT INTO workflow_rework_route_revision
-			 (request_id, revision, target_node_id, target_attempt,
-			  preferred_actor_execution_id, invalidation_scope_json,
-			  verification_policy_json, interpreted_by, interpretation_reason, created_at)
-			 VALUES ('rework-1', 1, 'design', 1, 'design-1', '[]', '[]',
-			         'lead-a', 'test', '2026-08-15T08:01:00.000Z')`,
-		);
-		rawDb(rework).run(
-			`INSERT INTO workflow_rework_delivery
-			 (request_id, route_revision, state, updated_at)
-			 VALUES ('rework-1', 1, 'pending', '2026-08-15T08:01:00.000Z')`,
-		);
-		commitCloseIntent(rework);
-		expect(
-			rework.cascadeRunTerminationOnCarrierClose({
-				executionId: "design-1",
-				mode: "done",
-				principal: "lead-a",
-				now: "2026-08-15T08:04:00.000Z",
-			}),
-		).toMatchObject({ ok: false, reason: "rework_delivery_inflight" });
-		rework.close();
+				reason: "close",
+				now: "2026-08-15T08:02:00.000Z",
+			});
+			rawDb(store).run(
+				"CREATE TRIGGER reject_close BEFORE UPDATE ON workflow_operator_close_intent WHEN NEW.stage = 'committed' BEGIN SELECT RAISE(ABORT, 'injected_close_failure'); END",
+			);
+			expect(() =>
+				store.finalizeWorkflowOperatorCloseIntent({
+					executionId: "design-1",
+					stage: "committed",
+					now: "2026-08-15T08:03:00.000Z",
+				}),
+			).toThrow("injected_close_failure");
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(store.getWorkflowOperatorCloseIntent("design-1")?.stage).toBe(
+				"prepared",
+			);
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "run_recovery_required"),
+			).toHaveLength(0);
+		} finally {
+			store.close();
+		}
 	});
-
 	it("expires a stale prepared intent and releases dead-execution recovery", async () => {
 		const store = await carrierRun();
 		store.prepareWorkflowOperatorCloseIntent({

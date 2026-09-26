@@ -1401,19 +1401,13 @@ describe("closeRunner", () => {
 		expect(authorityCheck.mock.calls.length).toBeGreaterThanOrEqual(2);
 	});
 
-	it("brackets an explicit operator close with a committed intent and run cascade", async () => {
+	it("brackets an explicit legacy operator close with a committed intent", async () => {
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue({
 			tmuxWindow: "FLY-102:@0",
 			sessionName: "FLY-102",
 		});
 		mockKillTmuxWindow.mockResolvedValue({ killed: true });
-		const cascade = vi
-			.spyOn(store, "cascadeRunTerminationOnCarrierClose")
-			.mockReturnValue({
-				ok: false,
-				reason: "carrier_not_enrolled",
-			});
 
 		const result = await closeRunner(
 			makeOpts({
@@ -1429,13 +1423,6 @@ describe("closeRunner", () => {
 			reason: "operator close",
 			stage: "committed",
 		});
-		expect(cascade).toHaveBeenCalledWith(
-			expect.objectContaining({
-				executionId: "exec-1",
-				mode: "done",
-				principal: "lead-a",
-			}),
-		);
 
 		const replay = await closeRunner(
 			makeOpts({
@@ -1446,7 +1433,9 @@ describe("closeRunner", () => {
 		);
 		expect(replay).toMatchObject({ closed: true, alreadyGone: true });
 		expect(mockKillTmuxWindow).toHaveBeenCalledTimes(1);
-		expect(cascade).toHaveBeenCalledTimes(2);
+		expect(store.getWorkflowOperatorCloseIntent("exec-1")?.stage).toBe(
+			"committed",
+		);
 	});
 
 	it("fences a stale collector after tmux closes before communication finalization", async () => {

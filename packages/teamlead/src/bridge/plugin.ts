@@ -4317,6 +4317,15 @@ export function createBridgeApp(
 			res.json({
 				success: result.closed || !!result.preserved,
 				closed: result.closed,
+				...(result.executionClosed
+					? {
+							executionClosed: result.executionClosed,
+							runTerminated: result.runTerminated,
+							runStatus: result.runStatus,
+							recoveryTarget: result.recoveryTarget,
+							completionAccepted: result.completionAccepted,
+						}
+					: {}),
 				alreadyGone: result.alreadyGone ?? false,
 				preserved: result.preserved ?? false,
 				reason: result.reason,

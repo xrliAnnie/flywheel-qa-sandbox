@@ -183,3 +183,19 @@ export function isWorkflowNodeRecoveryFaultShape(shape: string): boolean {
 		"environment_failure_escalated",
 	].includes(shape);
 }
+
+/** Informational close result; stage/apply still resolves its own trusted target. */
+export interface WorkflowCarrierCloseOutcome {
+	executionClosed: true;
+	runTerminated: false;
+	runStatus: string;
+	completionAccepted: boolean;
+	recoveryTarget: {
+		operationKind: "redispatch_current";
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		previousExecutionId: string;
+		previousLaunchOrdinal: number;
+	} | null;
+}
