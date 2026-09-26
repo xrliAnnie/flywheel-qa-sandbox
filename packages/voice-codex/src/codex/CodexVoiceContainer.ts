@@ -68,6 +68,11 @@ const CONTEXT_MAX_AGE_MS = 60_000;
 const CONTEXT_MAX_BYTES = 128 * 1024;
 const CONTEXT_MAX_ESTIMATED_TOKENS = 32_768;
 const CLOSE_RPC_TIMEOUT_MS = 5_000;
+/** Process-level features the background agent must not carry. */
+export const CAPABILITY_FEATURE_ARGV = Object.freeze([
+	"-c",
+	"features.apps=false",
+]);
 
 const execFileAsync = promisify(execFile);
 
@@ -1399,7 +1404,13 @@ export class CodexVoiceContainer {
 					codexBin: this.options.binaryPath,
 					codexHome: home,
 					cwd: parent.cwd,
-					mcpArgv: [...parent.permissionArgv, ...parent.mcp.argv],
+					// Codex injects a `codex_apps` MCP server (ChatGPT apps) for subscription
+					// accounts; those tools are not Lead capabilities (FLY-2886 real host).
+					mcpArgv: [
+						...parent.permissionArgv,
+						...parent.mcp.argv,
+						...CAPABILITY_FEATURE_ARGV,
+					],
 					profile: "voice-capability",
 					capabilityModelEnv: parent.capabilityModelEnv,
 					baseEnv: positiveChildEnv(

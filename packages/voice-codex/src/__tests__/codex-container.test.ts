@@ -643,6 +643,11 @@ describe("Codex voice container", () => {
 			capabilityModelEnv: h.parent.capabilityModelEnv,
 			cwd: h.parent.cwd,
 		});
+		// Only managed MCP servers: ChatGPT apps are switched off (FLY-2886 real host).
+		expect(h.factoryOptions[0]!.mcpArgv.slice(-2)).toEqual([
+			"-c",
+			"features.apps=false",
+		]);
 		expect(h.processes[0]!.threadParams).toMatchObject({
 			permissions: "flywheel-lead-v2",
 		});

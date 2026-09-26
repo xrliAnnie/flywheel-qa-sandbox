@@ -1,0 +1,54 @@
+{
+ "result": "PARENT_OK",
+ "ms": 1762,
+ "operations": 70,
+ "unavailableIntegrations": [
+  {
+   "id": "context7",
+   "reason": "baseline_drift"
+  },
+  {
+   "id": "gbrain",
+   "reason": "host_config_unverified"
+  },
+  {
+   "id": "github",
+   "reason": "credential_missing"
+  },
+  {
+   "id": "linear",
+   "reason": "credential_missing"
+  }
+ ],
+ "integrations": [
+  "bridge",
+  "discord",
+  "xiaohongshu-mcp"
+ ],
+ "authIsLink": true,
+ "authInodeMatchesProduction": true,
+ "closure": {
+  "files": 22,
+  "directories": 12
+ },
+ "mcp": [
+  "lead_actions"
+ ]
+}
+{
+ "appServer": "STARTED",
+ "ms": 700,
+ "accountType": "chatgpt",
+ "forcedLogin": null,
+ "configOk": "verified",
+ "skillsOk": "verified",
+ "servers": [
+  {
+   "name": "lead_actions",
+   "tools": [
+    "lead_operation"
+   ]
+  }
+ ],
+ "statusError": null
+}

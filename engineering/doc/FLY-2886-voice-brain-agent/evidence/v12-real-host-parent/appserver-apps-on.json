@@ -1,0 +1,111 @@
+{
+ "result": "PARENT_OK",
+ "ms": 1742,
+ "operations": 70,
+ "unavailableIntegrations": [
+  {
+   "id": "context7",
+   "reason": "baseline_drift"
+  },
+  {
+   "id": "gbrain",
+   "reason": "host_config_unverified"
+  },
+  {
+   "id": "github",
+   "reason": "credential_missing"
+  },
+  {
+   "id": "linear",
+   "reason": "credential_missing"
+  }
+ ],
+ "integrations": [
+  "bridge",
+  "discord",
+  "xiaohongshu-mcp"
+ ],
+ "authIsLink": true,
+ "authInodeMatchesProduction": true,
+ "closure": {
+  "files": 22,
+  "directories": 12
+ },
+ "mcp": [
+  "lead_actions"
+ ]
+}
+{
+ "appServer": "STARTED",
+ "ms": 1516,
+ "accountType": "chatgpt",
+ "forcedLogin": null,
+ "configOk": "verified",
+ "skillsOk": "verified",
+ "servers": [
+  {
+   "name": "codex_apps",
+   "tools": [
+    "sites.add_custom_domain",
+    "codex_document_control.get_document_tool_schemas",
+    "plugin_management.get_app_permissions",
+    "safety_settings.get_trusted_contact",
+    "sites.change_site_slug",
+    "sites.list_site_versions",
+    "sites.query_site_analytics_event",
+    "sites.deploy_private_site_version",
+    "plugin_management.update_app_permissions",
+    "sites.get_deployment_status",
+    "sites.get_environment_variables",
+    "sites.get_site_worker_logs",
+    "plugin_management.search_plugins",
+    "codex_document_control.list_document_sessions",
+    "sites.list_projects",
+    "sites.list_sites_creator_control_panel_projects",
+    "sites.update_access",
+    "sites.create_site",
+    "plugin_management.get_plugin_dependencies",
+    "safety_settings.prepare_parental_control_update",
+    "sites.get_database_overview",
+    "sites.list_site_analytics_events",
+    "sites.list_sites",
+    "sites.save_version_and_deploy_private",
+    "sites.update_site_metadata",
+    "sites.get_database_table_rows",
+    "sites.get_site_analytics_overview",
+    "sites.update_environment_variables",
+    "plugin_management.uninstall_app",
+    "safety_settings.get_family_info",
+    "hotline.get_local_hotline",
+    "sites.get_site_version",
+    "plugin_management.suggest_plugins",
+    "sites.generate_siwc_bypass_token",
+    "sites.get_project",
+    "sites.list_custom_domains",
+    "sites.create_source_repository_write_credential",
+    "sites.delete_site",
+    "safety_settings.update_parental_control",
+    "sites.read_database_table_rows",
+    "sites.get_site",
+    "sites.update_environment",
+    "sites.remove_custom_domain",
+    "sites.update_site_access",
+    "sites.save_site_version",
+    "safety_settings.get_parental_controls",
+    "sites.deploy_site_version",
+    "sites.refresh_custom_domain_status",
+    "sites.read_database_overview",
+    "sites.get_environment",
+    "sites.check_slug_availability",
+    "codex_document_control.execute_document_command"
+   ]
+  },
+  {
+   "name": "lead_actions",
+   "tools": [
+    "lead_operation"
+   ]
+  }
+ ],
+ "statusError": null
+}

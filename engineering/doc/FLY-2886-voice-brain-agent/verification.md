@@ -71,3 +71,19 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 | 两种配置下 Flywheel egress 看到的主机 | 旧：无；新：只有 `example.com` |
 | `verifyModelIsolation`（真 codex 0.156.1 + 真 Homebrew node + 常驻形状权限档 + 真 Flywheel egress） | 通过 |
 | 同上但托管代理不链上游（`allow_upstream_proxy=false`） | `model_isolation_unproven`（探针能抓到绕过） |
+
+## 4. 本机真宿主起语音 parent（QA-R1 前置预演）
+
+脚本与输出：`evidence/v12-real-host-parent/`。条件：真 codex 0.156.1、真 Homebrew node、**零 provider 桩**；临时 HOME（`deployed-sha` = 本分支 HEAD）与临时 projects.json（flywheel-eng-lead，`voiceBackground {enabled, browser: off}`），`authSourcePath` 直指生产 `~/.codex/auth.json`（容器 home 里是软链接，inode 与真源一致，零副本）；无 `LINEAR_API_KEY`、无 gh 登录、无 gbrain 配置；Bridge 指向不可达地址（parent 启动不调 Bridge）。
+
+| 判据 | 结果 |
+|---|---|
+| `startVoiceCapabilityParent` | 1.75s 成功，70 个操作 |
+| `unavailableIntegrations` | context7=`baseline_drift`、gbrain=`host_config_unverified`、github=`credential_missing`、linear=`credential_missing`；xiaohongshu-mcp 已接上 |
+| `verifyModelIsolation`（真 Homebrew node + 上游链证明） | 通过（parent 启动内执行） |
+| 用该 parent 起 capability app-server | 1.5s 起来；`account/read` = `chatgpt`；有效配置与权限档核过；技能核过 |
+| 模型侧 MCP | `lead_actions` 在沙箱内起来，`tools/list` = `lead_operation` |
+
+**新发现：`codex_apps`**。ChatGPT 订阅账号下 codex 会自动注入一个 `codex_apps` MCP 服务器（52 个工具：sites 部署、plugin 管理、parental controls 等）。它不在 Flywheel 能力清单里、不经 broker、不留回执，而且会让 container 的服务器集合断言失败（准入在真宿主必降级）。处置：语音 capability 进程启动参数加 `-c features.apps=false`（scribe 早已如此）；实测加上后只剩 `lead_actions`，配置与技能照样核过（`appserver-apps-off.json`）。常驻 capability app-server 是否同样被注入未核实，列入 PR Follow-ups。
+
+未覆盖（归 529 房 QA）：有 Linear key 的一场、完整语音会话（realtime 需 API key）、后台读/写与 founder 门、浏览器模式。
