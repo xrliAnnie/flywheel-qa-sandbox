@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant H as QA slot harness
+    participant B as Slot Bridge
+    participant R as Real Runner
+    participant W as Sandbox worktree
+    participant P as GitHub PR 196
+
+    H->>B: Inject real Linear issue FLY-202
+    B->>R: Start Runner with hydrated issue context
+    R->>W: Read root directories and QA README
+    R->>W: Refresh sandbox-notes.md
+    R->>W: Run bounded document checks
+    R->>P: Commit and fast-forward push
+    P-->>H: Open PR remains available for QA observation
+

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-202 QA 沙箱说明夹具设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.65; }
+  main { max-width: 980px; margin: 0 auto; padding: 34px 20px 64px; }
+  h1 { margin: 0; color: #17375e; font-size: 30px; line-height: 1.25; }
+  h2 { margin: 0 0 12px; color: #17375e; font-size: 20px; }
+  p { margin: 8px 0; }
+  .meta { margin: 8px 0 26px; color: #6e6e73; font-size: 14px; }
+  .card { margin: 0 0 20px; padding: 22px 24px; background: #fff; border-radius: 14px; border-left: 4px solid #007aff; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .lede { font-size: 18px; }
+  .term { color: #6e6e73; font-size: 14px; }
+  code { padding: 1px 5px; border-radius: 5px; background: #f0f0f4; font-family: "SFMono-Regular", Consolas, monospace; font-size: .9em; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { padding: 9px 10px; border: 1px solid #e5e5ea; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #17375e; }
+  ul, ol { margin: 8px 0; padding-left: 22px; }
+  li { margin: 6px 0; }
+  .pending { margin: 14px 0; padding: 26px; border: 2px dashed #ff9500; border-radius: 12px; background: #fff8eb; text-align: center; }
+  .pending strong { display: block; color: #9a5b00; font-size: 16px; }
+  .pending span { display: block; margin-top: 6px; color: #6e6e73; font-size: 13px; }
+  .choice { display: inline-block; margin-right: 6px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 650; }
+  .choice.yes { color: #16723b; background: #e7f7ed; }
+  .choice.no { color: #b3261e; background: #fdecec; }
+  .comment { margin-top: 18px; padding-top: 14px; border-top: 1px dashed #d2d2d7; }
+  .comment label { display: block; margin-bottom: 6px; color: #6e6e73; font-size: 13px; }
+  .comment textarea { width: 100%; min-height: 72px; padding: 10px 12px; border: 1px solid #c7c7cc; border-radius: 9px; background: #fafafa; color: #1d1d1f; font: inherit; resize: vertical; }
+  .comment textarea:focus { outline: 2px solid rgba(0,122,255,.22); border-color: #007aff; background: #fff; }
+  #summary-list { white-space: pre-wrap; font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+  .summary-item { margin: 8px 0; padding: 10px 12px; border-radius: 9px; background: #f5f5f7; }
+  .summary-title { color: #17375e; font-weight: 700; }
+  .summary-text { margin-top: 4px; }
+  .chunk-controls { margin-top: 10px; }
+  button { margin: 8px 8px 0 0; padding: 9px 15px; border: 0; border-radius: 9px; background: #007aff; color: #fff; font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+  button:active { opacity: .75; }
+  #copy-status { color: #16723b; font-size: 13px; }
+  footer { margin-top: 26px; color: #86868b; text-align: center; font-size: 12px; }
+  @media (max-width: 640px) {
+    main { padding: 24px 12px 44px; }
+    h1 { font-size: 25px; }
+    .card { padding: 18px 16px; }
+    table { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>FLY-202 · QA 沙箱说明夹具设计</h1>
+  <div class="meta">eng_design · 2026-09-26 · sandbox slot-1 · 现有 PR #196</div>
+
+  <section class="card green" data-section="一句话总结">
+    <h2>1 · 一句话总结</h2>
+    <p class="lede">用一个真实但低风险的文档任务，让隔离测试环境里的真实 Runner 完整走过“读任务 → 查仓库 → 更新文件 → 验证 → 提交 → PR”链路，供 QA 在中途和结尾观察，而不触碰生产资源。</p>
+    <p class="term">Runner 是实际执行工程任务的 AI 会话；test slot 是与生产隔离的一套临时测试环境。</p>
+    <div class="comment">
+      <label for="comment-summary">对这一节的意见（自动保存在本浏览器）</label>
+      <textarea id="comment-summary" data-comment-id="summary" data-section-title="一句话总结" placeholder="写下你的意见…"></textarea>
+    </div>
+  </section>
+
+  <section class="card" data-section="核心流程">
+    <h2>2 · 核心流程</h2>
+    <p>QA harness 是启动测试环境的编排器。它把真实 Linear issue FLY-202 交给 slot Bridge；Bridge 是负责创建和跟踪 Runner 的本地服务。PreHydrator 是启动前读取 issue 并把任务内容交给 Runner 的步骤。</p>
+    <div class="pending" role="img" aria-label="核心流程图等待本地渲染">
+      <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+      <span>Mermaid 源文件：core-flow.mmd。mmdc 两次均因 sandbox 内 Chromium 权限失败。</span>
+    </div>
+    <ol>
+      <li>Harness 注入真实存在的 FLY-202。</li>
+      <li>Runner 从当前 checkout 读取目录树、QA framework README 和目标文件。</li>
+      <li>Runner 只刷新 <code>doc/qa/sandbox-notes.md</code>，并运行针对该文件的检查。</li>
+      <li>Runner把提交推到现有分支；PR（Pull Request，供审阅的分支变更集合）#196 保持 open，供后续 QA 观察。</li>
+    </ol>
+    <div class="comment">
+      <label for="comment-flow">对这一节的意见（自动保存在本浏览器）</label>
+      <textarea id="comment-flow" data-comment-id="flow" data-section-title="核心流程" placeholder="写下你的意见…"></textarea>
+    </div>
+  </section>
+
+  <section class="card purple" data-section="数据与结构模型">
+    <h2>3 · 数据与结构模型</h2>
+    <p>设计坚持一个 source of truth，也就是每项事实只从一个权威来源读取：目录来自当前仓库根，框架说明来自当前 README，命令证据来自现场执行结果。</p>
+    <div class="pending" role="img" aria-label="数据与结构图等待本地渲染">
+      <strong>DIAGRAM PENDING LOCAL RENDER</strong>
+      <span>Mermaid 源文件：structure-model.mmd。mmdc 两次均因 sandbox 内 Chromium 权限失败。</span>
+    </div>
+    <table>
+      <thead><tr><th>来源</th><th>进入主文档的内容</th><th>验证方式</th></tr></thead>
+      <tbody>
+        <tr><td>仓库根目录</td><td>每个顶层目录与一行说明</td><td>Git tree 与 filesystem 两种枚举结果一致</td></tr>
+        <tr><td><code>packages/qa-framework/README.md</code></td><td>恰好 10 条简明摘要</td><td>完整读两段源文件并计数</td></tr>
+        <tr><td><code>ls -R doc/ | head -50</code></td><td>50 行原始输出</td><td>文内 fenced block 与现场 stdout 字节一致</td></tr>
+        <tr><td>现有 feature branch</td><td>设计和实现提交</td><td>远端 PR head 等于本地 HEAD</td></tr>
+      </tbody>
+    </table>
+    <p class="term">Fenced block 是 Markdown 中由三枚反引号包住的原样文本区；HEAD 是 Git 当前提交的唯一标识。</p>
+    <div class="comment">
+      <label for="comment-model">对这一节的意见（自动保存在本浏览器）</label>
+      <textarea id="comment-model" data-comment-id="model" data-section-title="数据与结构模型" placeholder="写下你的意见…"></textarea>
+    </div>
+  </section>
+
+  <section class="card amber" data-section="关键取舍">
+    <h2>4 · 关键取舍与被否方案</h2>
+    <ul>
+      <li><span class="choice yes">选定</span><strong>稳定文件原位刷新：</strong>同一路径可重复验证，不会堆积按日期命名的垃圾文件。</li>
+      <li><span class="choice yes">选定</span><strong>复用 PR #196：</strong>动态任务明确要求 branch continuity，也就是沿用现有分支历史，不另开平行 PR。</li>
+      <li><span class="choice no">否决</span><strong>每轮新增一个 notes 文件：</strong>破坏固定路径断言，长期增加维护噪声。</li>
+      <li><span class="choice no">否决</span><strong>用 synthetic fixture：</strong>synthetic fixture 是伪造的测试输入；它会绕开本任务真正要验证的 Linear、Runner、Git 与 PR 链路。</li>
+      <li><span class="choice no">否决</span><strong>顺手改产品代码：</strong>扩大风险和验证范围，也违反“sandbox documentation only”的任务边界。</li>
+    </ul>
+    <div class="comment">
+      <label for="comment-tradeoffs">对这一节的意见（自动保存在本浏览器）</label>
+      <textarea id="comment-tradeoffs" data-comment-id="tradeoffs" data-section-title="关键取舍" placeholder="写下你的意见…"></textarea>
+    </div>
+  </section>
+
+  <section class="card gray" data-section="诚实边界">
+    <h2>5 · 诚实边界</h2>
+    <p><strong>这个设计会做：</strong>提供探索、调研和逐步实施计划；刷新一份 Markdown；用当前仓库事实验证；commit 并 push 到 sandbox branch；复用 open PR。</p>
+    <p><strong>这个设计不会做：</strong></p>
+    <ul>
+      <li>不修改任何 runtime code、package、数据库、生产配置或生产 Discord 资源；</li>
+      <li>不删除继承的 FLY-2456 drill marker，也不改写已经发布的 branch 历史；</li>
+      <li>不 merge PR、不请求 ship 权限、不部署；</li>
+      <li>不保证目录表永久不变——每次 fixture run 都必须重新读取当前 checkout；</li>
+      <li>本次 mmdc 本地渲染失败，因此页面诚实保留 pending 占位和 Mermaid 源文件，没有伪造图。</li>
+    </ul>
+    <div class="comment">
+      <label for="comment-boundary">对这一节的意见（自动保存在本浏览器）</label>
+      <textarea id="comment-boundary" data-comment-id="boundary" data-section-title="诚实边界" placeholder="写下你的意见…"></textarea>
+    </div>
+  </section>
+
+  <section class="card" data-section="意见汇总">
+    <h2>意见汇总</h2>
+    <p class="term">这里实时汇总所有非空意见。复制内容的第一行固定为 <code>【页面意见汇总】FLY-202</code>；它表示修订反馈，不代表通过。</p>
+    <div id="summary-empty">还没有意见。</div>
+    <div id="summary-list"></div>
+    <div id="chunk-controls" class="chunk-controls"></div>
+    <button id="copy-all" type="button">复制全部意见</button>
+    <span id="copy-status" aria-live="polite"></span>
+    <div class="comment">
+      <label for="comment-summary-tool">对意见汇总功能的意见（自动保存在本浏览器）</label>
+      <textarea id="comment-summary-tool" data-comment-id="summary-tool" data-section-title="意见汇总功能" placeholder="写下你的意见…"></textarea>
+    </div>
+  </section>
+
+  <footer>FLY-202 eng_design · 零外部依赖 · 所有评论只保存在当前浏览器 localStorage</footer>
+</main>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+
+  var MARKER = "【页面意见汇总】FLY-202";
+  var LIMIT = 1800;
+  var PREFIX = "fly202-comments:" + location.pathname + ":";
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-comment-id]"));
+  var summaryList = document.getElementById("summary-list");
+  var summaryEmpty = document.getElementById("summary-empty");
+  var chunkControls = document.getElementById("chunk-controls");
+  var copyStatus = document.getElementById("copy-status");
+
+  function storageGet(key) {
+    try { return localStorage.getItem(PREFIX + key) || ""; }
+    catch (error) { return ""; }
+  }
+
+  function storageSet(key, value) {
+    try { localStorage.setItem(PREFIX + key, value); }
+    catch (error) { return; }
+  }
+
+  function comments() {
+    var result = [];
+    areas.forEach(function (area) {
+      var value = area.value.trim();
+      if (!value) return;
+      result.push({ title: area.getAttribute("data-section-title"), value: value });
+    });
+    return result;
+  }
+
+  function piecesFor(items) {
+    var budget = LIMIT - MARKER.length - 2;
+    var pieces = [];
+    items.forEach(function (item) {
+      var heading = "【" + item.title + "】";
+      var whole = heading + "\n" + item.value;
+      if (whole.length <= budget) {
+        pieces.push(whole);
+        return;
+      }
+      var sliceSize = Math.max(1, budget - heading.length - 1);
+      for (var offset = 0; offset < item.value.length; offset += sliceSize) {
+        pieces.push(heading + "\n" + item.value.slice(offset, offset + sliceSize));
+      }
+    });
+    return pieces;
+  }
+
+  function buildChunks(items) {
+    if (!items.length) return [];
+    var chunks = [];
+    var current = MARKER;
+    piecesFor(items).forEach(function (piece) {
+      var candidate = current + "\n\n" + piece;
+      if (candidate.length > LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n\n" + piece;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function setStatus(message) {
+    copyStatus.textContent = message;
+    window.setTimeout(function () { copyStatus.textContent = ""; }, 2400);
+  }
+
+  function fallbackCopy(text) {
+    var helper = document.createElement("textarea");
+    helper.value = text;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.left = "-9999px";
+    document.body.appendChild(helper);
+    helper.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); }
+    catch (error) { ok = false; }
+    document.body.removeChild(helper);
+    setStatus(ok ? "已复制 ✓" : "复制失败，请手动选择文本");
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setStatus("已复制 ✓"); },
+        function () { fallbackCopy(text); }
+      );
+    } else {
+      fallbackCopy(text);
+    }
+  }
+
+  function render() {
+    var items = comments();
+    while (summaryList.firstChild) summaryList.removeChild(summaryList.firstChild);
+    while (chunkControls.firstChild) chunkControls.removeChild(chunkControls.firstChild);
+    summaryEmpty.style.display = items.length ? "none" : "block";
+
+    items.forEach(function (item) {
+      var wrapper = document.createElement("div");
+      wrapper.className = "summary-item";
+      var title = document.createElement("div");
+      title.className = "summary-title";
+      title.textContent = "【" + item.title + "】";
+      var body = document.createElement("div");
+      body.className = "summary-text";
+      body.textContent = item.value;
+      wrapper.appendChild(title);
+      wrapper.appendChild(body);
+      summaryList.appendChild(wrapper);
+    });
+
+    var chunks = buildChunks(items);
+    if (chunks.length > 1) {
+      chunks.forEach(function (chunk, index) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "复制第 " + (index + 1) + "/" + chunks.length + " 段";
+        button.addEventListener("click", function () { copyText(chunk); });
+        chunkControls.appendChild(button);
+      });
+    }
+  }
+
+  areas.forEach(function (area) {
+    area.value = storageGet(area.getAttribute("data-comment-id"));
+    area.addEventListener("input", function () {
+      storageSet(area.getAttribute("data-comment-id"), area.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var chunks = buildChunks(comments());
+    if (!chunks.length) {
+      setStatus("没有可复制的意见");
+      return;
+    }
+    copyText(chunks.join("\n\n"));
+  });
+
+  render();
+}());
+</script>
+</body>
+</html>
+
