@@ -87,3 +87,8 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 实核 `machine-watermark.ts:195–209`：一次读失败保留 pressure 和 baseline；`fleet-sensors.ts:224–236`：重启首个 delta=null 不清 durable hold。`runner-admission.ts` 的异常 fail-open 只针对 hold probe，不能推广到 sensor unknown。默认 minFreeMemBytes=0（关闭），load/core=8，不能替代换页压力保护。R2 的 F1/F2 因此改为2P内新鲜证据和有界启动采样等待，有效 non-danger立即放行，超期未知告知降级并不锁存。
 
 R2 同时实核：review coordinator 只有 per-job retry timer，没有通用30s recovery patrol；plan明确新增窄单飞回合。`stop()` 当前只清定时器，shutdown kill回调仍有写普通failure的路径，设计统一退休。退出marker当前以同代stall推“自杀”，删除kill后须改为仅诊断线索。这些均是实现合同，不是已实现行为。
+
+
+## R3 生产接线校正
+
+`FleetSensors.tick()`虽有注释暗示约30秒，但唯一生产调用来自`lead-reconcile-pass.ts`，且先等待lease/identity/audit；`plugin.ts`给GatePoller的3秒tick与`gate-poller.ts`的200 tick共同产生约10分钟周期，忙时单飞跳过更长。因此不能从monitor注释推P。F0改为明确新增独立30秒轻量swap采样，早于admission启动、单飞、5秒读取上限，重型fleet tick只留其他职责。F1/F2证据有效期90秒用于容纳单次失败与读取抖动，warm-up仍≤60秒。生产接线测试必须实际经历30秒timer，不能只给monitor注入样本。以上为待实现方案，当前源码仍是十分钟链路。

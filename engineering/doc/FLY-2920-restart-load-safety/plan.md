@@ -3,7 +3,7 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 日期: 2026-09-26
 基于: research.md
 
-状态：R2 CHANGES_REQUESTED 已修订，待 R3 有效 design-review。设计基线 d52df7841。本文为实现合同；没有生产验证或 ship 授权。
+状态：R3 CHANGES_REQUESTED 已修订，待 R4 有效 design-review。设计基线 d52df7841。本文为实现合同；没有生产验证或 ship 授权。
 
 ## 第一部分：交付给 founder 的结果
 
@@ -15,7 +15,7 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 | 起体 | 管道晚于 250ms 关闭仍正常启动 | 两类 Runner 延迟输出仍成功，无空壳挡重试 |
 | 审查 | 重启不再自动多起审查；门仍等结果 | 退休→原门 open→作者重发→原门取得结论 |
 | 孤儿 | 相同失效身份一次退休，不每轮报告 | 两轮真实文件扫描只退休一次，保留线程等信息 |
-| 内存 | 当前读数恢复就放行；暂停/恢复都有解释 | 重启前旧手刹不阻挡健康读数，状态页和准入一致 |
+| 内存 | 当前读数恢复就放行；首次升级/主机重启通常约30–35秒采样等待，最多60秒；暂停/恢复都有解释 | 重启前旧手刹不阻挡健康读数，状态页和准入一致；真实生产接线下采样不受十分钟巡检阻塞 |
 | 旧复活 | 停止令、未推提交、阶段游标不倒退 | 重启零次 unbound successor，DAG 节点按原绑定恢复 |
 
 ```mermaid
@@ -107,26 +107,35 @@ D6. 不丢结果的决定性测试：真实临时 StateStore + CommDB，登记�
 
 ### F. 内存准入彻底退出传感器锁存
 
-修改 `machine-watermark.ts`、`fleet-sensors.ts`、`runner-admission.ts`、`capacity-snapshot.ts`、`plugin.ts`、StateStore migration/兼容读 API。
+修改 `machine-watermark.ts`、`fleet-sensors.ts`、`runner-admission.ts`、`capacity-snapshot.ts`、`plugin.ts`、StateStore migration/兼容读 API；新增 `packages/teamlead/src/bridge/pressure-sampler.ts`，同步 `lead-reconcile-pass.ts` 的传感器职责与接线测试。
 
-F1. 单一决策快照 `PressureSnapshot={sampledAtMs,source:"vm_stat",freePct,swapoutDeltaPages,baselineAtMs,state:"healthy"|"pressure"|"warming"|"unknown",reason,evidenceValidUntilMs}`；准入和 capacity 都调用同一 `evaluatePressure(now)`，即时校验新鲜度，而非只读上次评估值。保存最多两个完整采样及最近一次已确认 pressure 的证据时间。相邻完整采样间隔≤2×pollIntervalMs 才计算 delta；单次读失败不立即丢 baseline，超过此间隔或累计计数倒退才重置。失败与通知不能刷新 sampledAt 或 evidenceValidUntil。
+F0. **生产采样节拍必须真实独立，P 不取 GatePoller 的配置或陈旧注释。** 当前唯一生产驱动为 `runLeadReconcilePass.tickFleetSensors`，GatePoller 3秒×200 tick约10分钟，重型回合单飞跳过会更慢。明确从该回合移出 swap 采样，不改 bot/zombie/Lead identity 等其他巡检节拍。
 
-F2. 有限的新鲜度保护，不使用永久暂停位。令 P 为当前 pollIntervalMs；证据有效期最多 2P，读时还取存储期限与当前配置计算期限的较早者。
+- 在 `pressure-sampler.ts` 导出唯一常量 `PRESSURE_SAMPLE_INTERVAL_MS=30_000` 与 `PRESSURE_READ_TIMEOUT_MS=5_000`。采样器负责 vm_stat、baseline、F1/F2决策和窄缓存写入；不等待任何Lead巡检、通知HTTP、修复作业或zombie扫描。其snapshot是F1唯一来源，FleetSensors不再有另一份MemoryPressureMonitor。
+- 组合根 `plugin.ts` 在StateStore可用后、开放Runner admission之前创建并 `start()` 采样器，冻结必要的warmupUntil，并立即发起第一个样本；30秒后第二次启动读取，通常≤35秒有可算delta。`FleetSensors` 即使在较晚的alertHub接线处创建，也只消费这个已有采样器；不能让首次采样继续等late holder或Lead reconcile。所有内部/HTTP admission入口共用该早期snapshot provider。
+- 采用实际单调时间的固定30秒起始节拍与一个inFlight守卫；一个vm_stat最多5秒，超时终止/关闭本次探针并记unknown。若到期时仍inFlight则记录missed sample而不并行；回合结束后安排下一个未来节拍，禁止补跑突发。`stop()`取消timer和在途探针，迟到回调不提交、无后续timer；plugin正常关停在store.close之前await stop。传感器关闭时不开timer。
+- sampledAt以真实完成读数时间记录；一次失败造成相邻成功读数最大约65秒（30秒节拍加5秒读取抖动），故证据/baseline新鲜度明确为3P=90秒，warm-up仍最多2P=60秒。不会以名义30秒假装读到了新样本。主循环完全卡死仍可能迟采，不能承诺物理上永远≤30秒；实际间隔超过90秒就按F2退化并告知，admission每次调用按now重新算过期。
+- F4通知状态在采样后独立记录；异步发送失败/缓慢不能占住采样inFlight。已有通知通道的投递单飞、先持久记录后后台发送；alertHub尚未接线时保留pending，接线后重投，不重复采样。`FleetSensors.tick()`留下bot/zombie职责，原swapTick转为消费快照/通知的路径，禁止它再调用vm_stat。修改lead-reconcile-pass接线与测试，明确重型回合零swap采样。
+- 必须新增 `src/bridge/__tests__/pressure-sampler-wiring.test.ts` 组合根验收：通过生产的创建/start/stop接线启动隔离runtime，使用真实30秒timer和受控vm_stat替身（仅I/O替身，不手工tick、不替换scheduler、不fake clock），故意令Lead reconcile promise挂起超过65秒，断言仍观察到约0/30/60秒的三次读取开始、每次启动间隔30秒加小量调度容差（健康测试机≤35秒），swap累计增加被识别而非永远unknown。若环境超过容差，不把该项标绿，记录实际调度延迟。第二样本正常时首次部署准入≤35秒恢复；采样全失败时warming在60秒截止且显示degraded；shutdown后无下一读取。另以确定性时钟测试单飞、读取5秒超时、缓存跨重启、2P/3P边界和禁止补跑。只有纯函数单测不算生产接线证据。
+
+F1. 单一决策快照 `PressureSnapshot={sampledAtMs,source:"vm_stat",freePct,swapoutDeltaPages,baselineAtMs,state:"healthy"|"pressure"|"warming"|"unknown",reason,evidenceValidUntilMs}`；准入和 capacity 都调用同一 `evaluatePressure(now)`，即时校验新鲜度，而非只读上次评估值。保存最多两个完整采样及最近一次已确认 pressure 的证据时间。相邻完整采样间隔≤3×PRESSURE_SAMPLE_INTERVAL_MS 才计算 delta；单次读失败不立即丢 baseline，超过此间隔或累计计数倒退才重置。失败与通知不能刷新 sampledAt 或 evidenceValidUntil。
+
+F2. 有限的新鲜度保护，不使用永久暂停位。令 P=PRESSURE_SAMPLE_INTERVAL_MS=30,000ms；证据有效期最多3P=90秒，读时还取存储期限与当前配置计算期限的较早者。
 
 | 当前证据 | 本项准入 | 期限与转换 |
 |---|---|---|
 | 有效 delta≤MIN 且 freePct≥LOW，含8–15% band | 立即放行 | 清除旧 pressure 依据；不等两次恢复，不要求达到 HIGH |
-| 正常运行时连续两次有效 danger（freePct<LOW 或 delta>MIN） | 暂停 | 最新确认样本产生有效期≤2P的 pressure 证据 |
-| 已有仍新鲜 pressure + 一次失败/未知 | 暂停至原证据到期 | 失败不续期；下个≤2P完整样本跨空档算 delta，有效 non-danger 立即放行；有效 danger 可刷新压力证据 |
+| 正常运行时连续两次有效 danger（freePct<LOW 或 delta>MIN） | 暂停 | 最新确认样本产生有效期≤3P的 pressure 证据 |
+| 已有仍新鲜 pressure + 一次失败/未知 | 暂停至原证据到期 | 失败不续期；下个≤3P完整样本跨空档算 delta，有效 non-danger 立即放行；有效 danger 可刷新压力证据 |
 | 全新采样链、boot 无可验证的新鲜样本 | warming，有界暂缓 | 首次启动该采样链即冻结 warmupUntil=startedAt+2P；第一次可算 delta 的 non-danger 立即放行，danger 则保守进入 pressure（启动专用一次确认），后续 non-danger 即解除。不能在每次读失败或 Bridge 重启时重设期限 |
 | 证据与 warm-up 都已到期，仍无法计算 | unknown/degraded，本项放行并一次告警 | 不伪称健康；不无限保留历史 pressure，也不重新进入启动等待。后续新鲜样本按正常确认规则恢复 |
 | 传感器明确关闭 | disabled，本项不阻断 | 不因缺快照误停派 |
 
 启动专用一次 danger 确认只保护 warm-up 到首个完整 delta 的交接；消息仍采用两次确认，避免一次尖峰制造告警风暴。正常运行时单次 spike 不阻断。HIGH 15 只用于对外说明“充足恢复”，不控制本项放行。
 
-复用 StateStore 增加一条版本化采样缓存（不是 fleet_pressure_hold）：保存真实完整样本、hostBootId、sampledAt、pressureEvidenceAt/validUntil，以及该采样链首次 warmupUntil。只接受同一主机启动代、时间非未来且年龄≤2P、阈值/来源兼容的数据，counter 倒退不得计算 delta。Bridge 重启继承仍新鲜 pressure 与其原期限，不能把写库/重启时间当采样时间；缓存缺失时在接受 admission 前持久冻结一次 warm-up 期限。反复 Bridge 重启或传感器失败不延长同一主机代的该期限。缓存无效时保留可验证的原 warmupUntil，不能因解析失败重新计时；缓存不可读且无法持久冻结期限时明确 unknown/degraded 并一次告警，不能假装有新鲜压力，也不引入每次重启重新计时的替代暂停位。该存储故障降级不提供重启压力保护，必须单独验收并报告；迁移中的旧无时间戳 sensor hold 不可当作证据。持久失败不能造成无限锁存。主机实际重启/计数器新代允许创建新的有界采样链。
+复用 StateStore 增加一条版本化采样缓存（不是 fleet_pressure_hold）：保存真实完整样本、hostBootId、sampledAt、pressureEvidenceAt/validUntil，以及该采样链首次 warmupUntil。只接受同一主机启动代、时间非未来且年龄≤3P、阈值/来源兼容的数据，counter 倒退不得计算 delta。Bridge 重启继承仍新鲜 pressure 与其原期限，不能把写库/重启时间当采样时间；缓存缺失时在接受 admission 前持久冻结一次 warm-up 期限。反复 Bridge 重启或传感器失败不延长同一主机代的该期限。缓存无效时保留可验证的原 warmupUntil，不能因解析失败重新计时；缓存不可读且无法持久冻结期限时明确 unknown/degraded 并一次告警，不能假装有新鲜压力，也不引入每次重启重新计时的替代暂停位。该存储故障降级不提供重启压力保护，必须单独验收并报告；迁移中的旧无时间戳 sensor hold 不可当作证据。持久失败不能造成无限锁存。主机实际重启/计数器新代允许创建新的有界采样链。
 
-更正 R1 的源码判断：现有 hold probe 异常 fail-open 不等于传感器未知会放行；旧 monitor 的 unknown 保持 pressure。独立 load/core 默认8，最低 free bytes 默认0（关闭），它们不能替代换页压力保护，本单不改这些配置。超过2P未知后放行是明确的可用性取舍：一次告知 Lead 采样退化、页面显示未知，恢复有效读数一次 all-clear；不得把这段称为“内存已恢复”。
+更正 R1 的源码判断：现有 hold probe 异常 fail-open 不等于传感器未知会放行；旧 monitor 的 unknown 保持 pressure。独立 load/core 默认8，最低 free bytes 默认0（关闭），它们不能替代换页压力保护，本单不改这些配置。超过90秒仍未知后放行是明确的可用性取舍：一次告知 Lead 采样退化、页面显示未知，恢复有效读数一次 all-clear；不得把这段称为“内存已恢复”。
 
 F3. 删除 `ensureSensorHold/liftSensorHold` 作为传感器权威的路径。admission 不再读取 sensor DB 行；capacity 的压力原因与放行结果读同一 snapshot，标明时间、来源、% free 与 pages/tick 单位。历史 `set_by='swap-sensor'` 行一次迁移删除；无法删除也不能继续阻挡。非 sensor 行保留为 operator pause 兼容输入，明确显示“人工暂停”，不被健康读数自动撤销。只有仍有效 pressure 或 warming 阻断时才返回 typed reason `pressure_hold` 并提供 snapshot.reason；unknown 到期放行时不返回阻断 reason，人工暂停保留 `pressure_hold` + manual sub-reason（不冒充有期限的 `admission_paused`）；同步 `lead-backends/codex/runner-action-http.ts` 和 capacity 映射，旧客户端仍理解暂停。不 drop 表以免破坏脚本读表/人工兼容。
 
@@ -154,7 +163,7 @@ F5. `swapPressureRepair` 与 recovery probe 只读取当前 snapshot；旧排队
 | C lifecycle | teamlead `src/bridge/__tests__/run-dispatcher-pre-registration-cleanup.test.ts`, `src/__tests__/runs-route-generalized-pending.test.ts`, `src/bridge/__tests__/generalized-launch-recovery.test.ts` | absent失败收口；alive/unknown不重开；原 claim 可恢复 |
 | D | teamlead `src/bridge/__tests__/review-request-coordinator.test.ts`, `src/__tests__/StateStore.codex-review.test.ts`; flywheel-comm `src/__tests__/request-review.test.ts`；新 `src/__tests__/review-retry-status.test.ts` | 原门不丢；boot两次零spawn；作者重发一次spawn；旧generation回调被拒；follower不自动重跑 |
 | E | teamlead `src/bridge/__tests__/codex-runner-orphan-reaper.test.ts` | home未知/活execution/换代/新home/复用PGID不退休；session其余字节保留 |
-| F | teamlead `src/bridge/__tests__/machine-watermark.test.ts`, `fleet-sensors.test.ts`, `pressure-hold.test.ts`, `capacity-snapshot.test.ts`; `src/__tests__/capacity-route.test.ts` | 旧sensor行无权；人工pause保留；单spike/band不全队暂停、unknown告警有界、真实持续swap增长阻断；通知失败不锁派发；swap持续增长时重启与一次读失败均不瞬间放行；2P后未知必降级告知且不锁存；反复重启不延长证据期限 |
+| F | teamlead `src/bridge/__tests__/machine-watermark.test.ts`, `fleet-sensors.test.ts`, 新 `pressure-sampler-wiring.test.ts`, `lead-reconcile-pass.test.ts`, `pressure-hold.test.ts`, `capacity-snapshot.test.ts`; `src/__tests__/capacity-route.test.ts` | 旧sensor行无权；人工pause保留；单spike/band不全队暂停、unknown告警有界、真实持续swap增长阻断；通知失败不锁派发；swap持续增长时重启与一次读失败均不瞬间放行；90秒证据过期后未知必降级告知且不锁存；首次升级warm-up≤60秒，正常第二样本≤35秒放行；反复重启不延长证据期限 |
 | G | teamlead `src/__tests__/rescue-runtime.test.ts`, `src/bridge/__tests__/progress-resume.test.ts`, `run-infra-continuity.test.ts` | terminal不复活；未推tip/description/cursor不改；未知node不退main |
 
 命令模板（从仓根执行；每次列出该组具体文件，禁止把下式文件名单变为整包）：
@@ -175,7 +184,7 @@ pnpm --filter flywheel-comm exec vitest run src/__tests__/request-review.test.ts
 - additive 数据字段可被旧版本忽略，但**旧版本会重启重排与读旧 sensor 行**，所以不能把直接回滚代码叫安全恢复。回滚前暂停新 review/admission 工作并由 Lead 选择向前修复或受控版本切换；本设计不授权生产操作。
 - 旧 verdict/gate/repo/head、人工 pause、session.json 元数据和工作分支不重写；新退休记录保持可审计。
 - 旧版本无 reviewer ownership 的遗留项可能需要一次人工核验才能重发；新协议下自动路径必须有完整身份证据。
-- 内存采样未知只在新鲜证据或启动等待的固定2P窗口内暂停；超窗明确 degraded/unknown 并一次告知后放行本项。load/core 默认8、free-bytes默认关闭，不能宣称它们提供等价内存保护；需修复采样。
+- 首次升级/实际主机重启没有缓存时先采样，正常约30–35秒恢复派发，启动等待最多60秒；读数证据最多90秒有效。内存采样未知只在上述固定窗口内暂停；超窗明确 degraded/unknown 并一次告知后放行本项。load/core 默认8、free-bytes默认关闭，不能宣称它们提供等价内存保护；需修复采样。
 - 非目标：通用进程杀器、全库清洗、扩大自动重试、账号/并发/班车重构、生产故障复演、部署。原六单结果不因这些排除被缩减。
 
 ## 设计节点交付门
@@ -198,10 +207,16 @@ pnpm --filter flywheel-comm exec vitest run src/__tests__/request-review.test.ts
 
 ## R2 findings 处置（2026-09-26）
 
-- HIGH `pressure-unknown-fail-open-at-restart`：F1/F2 改为2P新鲜证据、跨单次空档保留 baseline、启动有界等待及首个可算 danger 的保守交接；有效 non-danger 立即放行。更正默认 free-bytes 关闭及旧 sensor unknown 不放行事实，补重启压力、单次失败、到期和重启不续期反例。
+- HIGH `pressure-unknown-fail-open-at-restart`：F1/F2 当轮改为2P新鲜证据（R3后明确90秒，见F0）、跨单次空档保留 baseline、启动有界等待及首个可算 danger 的保守交接；有效 non-danger 立即放行。更正默认 free-bytes 关闭及旧 sensor unknown 不放行事实，补重启压力、单次失败、到期和重启不续期反例。
 - MEDIUM `review-recovery-patrol-nonexistent`：D3a 明确新增窄 recovery pass、30s单飞、分批、逐项deadline与stop语义；不再声称有现成 patrol。
 - MEDIUM `retired-orphan-reviewer-unbounded-without-retry`：D4 所有精确退休身份均守原预算，不依赖作者重发；legacy未知一次 operator_required。
 - MEDIUM `loop-guard-exit-marker-misattribution`：B 纳入退出归因消费者和测试；stall仅作线索，不称自杀原因。
 - MEDIUM `graceful-shutdown-review-path-undefined`：D1 stop先退休再kill，延迟callback不能改分类；D6纳入竞态。
 - LOW `async-exec-consumer-list-incomplete`、`check-status-query-all-gates`：补跨包清单/回归及仅review门查询。
 - LOW `tests_incomplete`：设计期未运行产品套件，不声称回归绿；实现/QA按白名单产证据。
+
+## R3 findings 处置（2026-09-26）
+
+- HIGH `pressure-freshness-window-vs-real-sensor-cadence`：F0实核并解除swap与十分钟Lead巡检的耦合。新增早期组合根启动的轻量采样器，固定30秒/5秒读取上限，唯一常量定义P；F1/F2新鲜度改为90秒，覆盖单次失败与读取抖动，启动等待仍最多60秒。加入真实30秒timer、Lead巡检被阻塞65秒的生产组合根测试，不能用手工tick代替。
+- MEDIUM `pressure-warmup-deploy-pause-unstated`：founder表、F0/F2、迁移边界和验收均明示首次部署/主机重启通常30–35秒、最多60秒的采样等待；超期降级不伪称健康。
+- LOW `tests_incomplete`：本阶段仍仅设计；产品回归和新增65秒组合根测试由实现/QA执行，本机只跑相关文件。
