@@ -49,4 +49,3 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 - 对托管字节正规化后的同一脚本再次运行原Node VM控制器检查，全通过。浏览器工具两次超时，所以不声称真实浏览器布局或实际CSP执行验收。两处 `DIAGRAM PENDING LOCAL RENDER` 保持，Lead已明确在沙箱外补画。
 - 按精确 `DESIGN-HTML ready: ... | repo: ... | issue: FLY-2920` 格式报告，receipt=`0561e9ba-72b2-4a12-b75f-6cd998a7a847`。同样为durable已接受，doorbell失败由Lead轮询重试。
 - 设计阶段必需产物、有效评审、commit/push、静默发布、托管验证及Lead URL报告已齐；接下来仅执行 `complete --route phase_design_complete` 与 `park`，其服务端回执作为阶段交接权威。实现/QA的六单重现及产品回归尚未执行，不能将设计通过当成修复验证。
-
