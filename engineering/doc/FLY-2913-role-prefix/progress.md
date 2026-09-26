@@ -2,14 +2,14 @@
 issue: FLY-2913
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-26T04:21:02.863Z
-nextStep: Poll design gate c2bc9590-4a99-4032-97fd-aad2ddc17fb5 request
-  82f72478-f361-485a-be8c-4d1affa2035f; after effective approval publish
-  report.html, verify hosted content, report, complete and park
+updated: 2026-09-26T04:30:32.196Z
+nextStep: R1 HIGH task-declared-capability-undefined repaired via explicit task
+  sets; commit/push and open new design review; eight advisories in
+  review-followups.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
 **phase**: design (4/6)
-**next**: Poll design gate c2bc9590-4a99-4032-97fd-aad2ddc17fb5 request 82f72478-f361-485a-be8c-4d1affa2035f; after effective approval publish report.html, verify hosted content, report, complete and park
+**next**: R1 HIGH task-declared-capability-undefined repaired via explicit task sets; commit/push and open new design review; eight advisories in review-followups.md
