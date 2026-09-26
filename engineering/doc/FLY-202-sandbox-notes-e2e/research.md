@@ -5,61 +5,65 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 
 ---
 
-所有事实均于 2026-09-26 在分支 tip `2ba0c9e`（+ design 节点自己的 progress commit）上实测。
+以下事实在 2026-09-26 基于继承 implementation head `77ed18bfa86ba83fcf6f077edd76f33a63d95d61` 重新核验。本轮 design ledger commit 叠加在该 head 之后，但尚未 push；内容产物本身仍取自 `77ed18b`。
 
-## 1. Git / PR 状态
+## 1. 仓库与 PR 现状
 
-| 事实 | 值 |
+| 事实 | 结果 |
 |---|---|
 | origin | `https://github.com/xrliAnnie/flywheel-qa-sandbox.git` |
-| 分支 | `project-slot-4-FLY-202`，与 `origin/project-slot-4-FLY-202` 同步，工作区 clean |
-| origin/main tip | `1855f7a1a` Merge #162（FLY-2164 清理 FLY-202 design fixture 残留） |
-| 分支领先 main | 8 个 commit（progress ledger + drill marker + notes 刷新 + handoff） |
-| PR #194 | OPEN、非 draft、base=`main`、head=`project-slot-4-FLY-202`、MERGEABLE |
-| PR CI | `Build & Test` SUCCESS；`FLY-1062 payload distribution` SUCCESS |
+| 分支 | `project-slot-4-FLY-202`；继承远端 head `77ed18b`，本地只额外领先本轮 design ledger |
+| origin/main | `1855f7a1a806f9c2dbceab69050db40198fd3ec6` |
+| PR #194 | OPEN、非 draft、base=`main`、head=`project-slot-4-FLY-202`、MERGEABLE / CLEAN |
+| 继承 head CI | `Build & Test` SUCCESS；`FLY-1062 payload distribution` SUCCESS，二者均绑定 `77ed18b` |
+| 工作树 | 除本轮 `engineering/doc/FLY-202-sandbox-notes-e2e/` 设计文档外无未提交变化 |
 
-## 2. 产物逐项核验（`doc/qa/sandbox-notes.md`）
+最终设计文档 push 会移动 PR head，因此上表的 CI 只能证明继承头，不能冒充最终新 head 的 CI。后续节点如需 exact-head CI，必须重新读取新 SHA 的 check 结果。
 
-| issue 步骤 | 核验方法 | 结果 |
-|---|---|---|
-| 1 用途 2-3 段 | 统计 `## Top-level` 之前的非空非标题行 | 3 段 ✅ |
-| 2 顶层目录表 | 表格行 vs `git ls-tree -d --name-only HEAD` vs `find . -mindepth 1 -maxdepth 1 -type d` | 17 = 17 = 17，集合一致 ✅ |
-| 3 README 摘要 | `## packages…summary` 下 `- ` 行数 | 10 条 ✅ |
-| 4 `ls -R doc/` 快照 | 抽出 ```text 块与现场 `ls -R doc/ \| head -50` 做 `diff` | 零差异 ✅ |
-| 5 commit + PR | PR #194 状态 | OPEN、未 merge ✅ |
+## 2. 五项交付的当前证据
 
-补充观察：
-- 目录表包含 5 个点目录（`.claude/ .flywheel/ .github/ .lead/ .serena/`）。issue 说
-  「every top-level directory」，点目录也是目录，收录是正确的；已 tracked，不是本地噪音。
-- 顶层还有一个名为 `=` 的杂散**文件**以及若干普通文件（`CLAUDE.md`、`memory.db` 等），
-  均不是目录，正确地未进表。
-- 文件末尾有一行 `- FLY-2456 drill marker r1 B1`，来自继承的 commit `06a6d4b7f`
-  （另一个 drill 的标记）。PR #194 描述明确「retain the inherited FLY-2456 drill marker」。
-  它不破坏任何一项验收（不在 README 摘要节内——它在 ```text 块之后），按分支连续性保留。
+| ID | 要求 | 实测证据 | 结果 |
+|---|---|---|---|
+| V1 | 用途说明 2–3 段 | 按空行分块统计标题与 `## Top-level directories` 之间正文 | 3 段，PASS |
+| V2 | 每个顶层目录 + 非空描述 | `git ls-tree -d --name-only HEAD` 与表格首列排序后 `diff`；检查第二列 | 17=17、集合一致、0 个空描述，PASS |
+| V3 | README 约 10 bullets | 统计 summary section 中以 `- ` 开头的行 | 10 条，PASS |
+| V4 | `ls -R doc/ \| head -50` fenced block | 提取唯一 `text` fenced block 与现场命令输出逐字 `diff` | 50=50 行、diff exit 0，PASS |
+| V5 | feature branch + PR | `gh pr view 194` + 本地/远端 SHA | PR OPEN，base/head 正确，远端绑定 `77ed18b`，PASS |
+| V6 | 继承 marker | 读取最后一个非空行 | `- FLY-2456 drill marker r1 B1`，PASS |
 
-## 3. README 源文件
+目录检查使用 Git tree 作为 source of truth（事实来源），不会把本地未跟踪缓存误当成仓库目录。表格正确包含 `.claude/`、`.flywheel/`、`.github/`、`.lead/`、`.serena/` 五个 tracked 点目录；顶层名为 `=` 的对象是文件，不属于“every top-level directory”。
 
-`packages/qa-framework/README.md`：316 行，最近修改 `7049f7199`（#58），此后未变。
-主要 section：Architecture / Quick Start / 5-Step Protocol / Config Schema / Examples /
-Test Slot Framework (FLY-115) / FLY-60 Hard Gate E2E / Mirror Mode (FLY-153) /
-Roundtable Mirror (FLY-529) / Alert Mirror (FLY-529) / Contracts。
-现有 10 条 bullet 覆盖了所有这些 section（FLY-529 两节合并在第 9 条）→ 无漂移。
+## 3. README 摘要覆盖范围
 
-## 4. 快照自我干扰分析
+`packages/qa-framework/README.md` 当前 316 行，包含 11 个二级 section：Architecture、Quick Start、5-Step Protocol、Config Schema、Examples、Test Slot Framework、FLY-60 Hard Gate、Mirror Mode、Roundtable Mirror、Alert Mirror、Contracts。现有 10 条摘要通过合并相关小节覆盖这些主题，没有把“约 10 条”机械扩大成每个标题一条。
 
-`ls -R doc/ | head -50` 的前 50 行覆盖：`doc/` 顶层 9 项、
-`doc/FLY-145-s6-retry-product-test/`（10 文件）、`doc/FLY-202-qa-sandbox-fixture/`（13 文件）、
-`doc/architecture/` 开头。
+关键来源事实：
 
-- **往这些目录新增/删除文件 → 快照过期。** 修改已有文件内容（比如 progress.md）不影响。
-- 旧 ledger `doc/FLY-202-qa-sandbox-fixture/progress.md` 与 `workflow-output.json` 已存在，
-  继续原地改写不会改变列表。
-- 本轮 design 节点把所有新文件（含 HTML、`.mmd`、`.svg`）放在
-  `engineering/doc/FLY-202-sandbox-notes-e2e/`，位于 `doc/` 之外 → 零干扰。
+- README 的 Test Slot Framework 明确说明每个 slot 运行真实 Runner，且不支持 synthetic / fixture mode。
+- 三个入口脚本分别负责部署、注入真实 Linear issue 和 teardown；真实 Runner 前置条件包括 `LINEAR_API_KEY` 与 GitHub push 权限。
+- `FLYWHEEL_RUNNER_START_POINT` 仅由 test slot Bridge 设置，生产 launcher 未设置时仍走 `origin/main`。
+- Mirror / Roundtable / Alert 三类模式有各自边界；共享频道模式默认拒绝 Runner E2E。
 
-## 5. 配置事实
+## 4. 告警隔离措辞核对
 
-- `.flywheel/config.yaml`：`doc_flow.enabled: true`、`default_department: engineering`、
-  `qa.auto: true`。
-- 可用 comm 命令：`turn`（TURN 自检，本节点得到 `yours phase=design`）、`progress`、
-  `stage`、`await-codex-gate`、`workflow-output`、`publish-report`、`complete`。
+现有第 2 段写的是：只有显式以 `test-deploy.sh --alerts` 部署并配置 test alert channel 时，才使用 slot-local alert queue；否则保留 production-default paths。该表述与三处来源一致：
+
+1. `packages/qa-framework/README.md` 的 Alert Mirror section：`--alerts` 同时隔离 Bridge 与 shell writer；无 `--alerts` 时 overrides unset，走 production paths。
+2. `scripts/test-deploy.sh`：`ALERTS=0` 为默认；解析 `--alerts` 后置 1；缺少 `alertChannel.channelId` 时 fail closed。
+3. `scripts/lead-alert.sh`：`FLYWHEEL_ALERT_QUEUE_DIR` 未设置时回落到 `${HOME}/.flywheel/alert-queue` 的 production default。
+
+因此前一轮已修正的边界是准确的，本轮不应再改成“所有 slot 默认隔离 alert queue”。
+
+## 5. `doc/` 快照的结构风险
+
+现场前 50 行覆盖 `doc/` 顶层清单、`doc/FLY-145-s6-retry-product-test/`、`doc/FLY-202-qa-sandbox-fixture/`，以及 `doc/architecture/` 的开头。任何对这些位置的文件新增、删除或重命名都可能让 V4 失效。
+
+本轮过程文档位于 `engineering/doc/FLY-202-sandbox-notes-e2e/`，不在 `doc/` 树内，所以 Markdown、Mermaid、SVG、HTML 的刷新不会改变 snapshot。后续 implement 仍须把“`doc/` 下零新增/删除”作为显式守卫。
+
+## 6. 测试与验证范围
+
+本 issue 的目标是 Markdown 内容和 PR wiring，没有 TypeScript 或 shell 实现变更。根据 local-test-policy/v1，不应运行全仓或全包测试来证明文档正确。相关证据应由上述内容断言、`git diff --check`、Git/PR SHA 绑定与 exact-head CI 构成；如后续 implement 没有代码变更，则没有可保留的 concrete Vitest file，禁止退回 broad Vitest 命令。
+
+## 7. 设计结论
+
+当前内容已经满足 issue 五步，且先前已知的告警事实错误已经消失。实施计划应采用“验证通过即 no-op（不改内容）”路径，同时保留漂移修复分支。设计本身需要刷新、重新评审、重新发布；内容产物不应因 design re-dispatch 被无条件重写。

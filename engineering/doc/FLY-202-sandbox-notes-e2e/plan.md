@@ -5,135 +5,217 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 
 ---
 
-## 0. 一句话
+> **For the implement node:** Execute this plan task by task in the shared branch only while its injected TURN says `yours`. Do not dispatch another node; the DAG orchestrator owns advancement.
 
-五步产物的**结构**已在 PR #194 上成立，但内容核对发现一处事实错误（告警隔离）；
-implement 节点**先验证（结构 + 内容）、只修红项**，保持 PR #194 开放、分支
-fast-forward，不 merge。
+**Goal:** Keep `doc/qa/sandbox-notes.md` and open PR #194 as a truthful, repeatable real-Runner E2E fixture, changing content only when a current-state assertion fails.
 
-> 修订记录：R1（Codex design review）后加入内容核对 V7、段落判定改为按空行分块、
-> 空白检查拆成提交前/提交后两个时点、C1 同步四态、最终 ledger 先于 push、
-> push 后三方 SHA 一致性、显式停止条件。
+**Architecture:** Treat tracked repository state and `packages/qa-framework/README.md` as sources of truth, derive four documentation sections from them, and bind the final committed branch SHA to PR #194. The happy path is intentionally idempotent: verification passes, the content file remains byte-identical, only the required progress ledger advances.
 
-## 1. 总则
+**Tech stack:** Git, GitHub CLI, POSIX shell/awk/diff, Markdown, Flywheel communication CLI.
 
-- **分支**：继续 `project-slot-4-FLY-202`（= issue step 5 的 feature branch），在已有
-  历史之上叠加；不另建分支、不 rebase、不 force-push、不 `--no-verify`。
-- **PR**：复用 #194，不开新 PR（同一 head 分支只能有一个 open PR）。
-- **写入范围**（白名单）：内容只改 `doc/qa/sandbox-notes.md`；ledger 只写
-  `engineering/doc/FLY-202-sandbox-notes-e2e/progress.md`；另外会改 PR #194 的 body。
-  **禁止在 `doc/` 下新增或删除文件**（会让 step 4 快照过期，见 research §4）。
-- **TURN**：每次写 worktree 前 `flywheel-comm turn` 必须答 `yours`；`not-yours` 时每
-  60–90 秒轮询，不算失败。
-- **保留继承内容**：文件末尾 `- FLY-2456 drill marker r1 B1` 保留原位（PR #194 描述承诺）。
-- **语言**：`sandbox-notes.md` 保持英文（仓库现状，读者含 QA 脚本）。
-- **基线 SHA**：C1 结束时记下 `BASE=$(git rev-parse HEAD)`，V9 用它判断本轮是否增删了
-  `doc/` 文件。
+## 1. Stable identities and write boundary
 
-## 2. 断言合同（implement 与 QA 共用**同一份断言**，各自**独立实现**检查）
-
-implement 节点把检查写成 scratchpad 里的临时 shell/python 脚本（**不提交进仓库**）；
-QA 节点按同一表格独立重写，不复用 implement 的脚本。
-
-| ID | 断言 | 判定要点 |
-|---|---|---|
-| V1 | 用途段落数 ∈ [2,3] | 取首个 `# ` 标题之后、`## Top-level directories` 之前的正文；按**空行分隔的连续正文块**计数，排除标题、列表、表格、代码块；段内普通换行不拆段。先用两个内存样例自测脚本：去掉段间空行 → 必须判 1 段；每段折成两行但保留段间空行 → 必须判 3 段 |
-| V2 | 目录表集合 == 实际顶层目录集合，且每行描述非空 | 只取表格数据行（排除表头行和 `---` 分隔行）；首列去反引号和尾 `/` 后排序，vs `git ls-tree -d --name-only HEAD` 排序后 `diff` 为空；第二列 trim 后非空 |
-| V3 | README 摘要 bullet 数 ∈ [8,12] | `## \`packages/qa-framework/README.md\` summary` 到下一个 `## ` 之间以 `- ` 开头的行 |
-| V4 | 快照逐字一致 | 抽取唯一 ```text 块 vs 现场 `ls -R doc/ \| head -50`，`diff` 为空 |
-| V5a | 候选结果空白卫生（**提交前**） | `git diff --check $(git merge-base origin/main HEAD)`（比较工作区，覆盖未提交编辑） |
-| V5b | 已提交范围空白卫生（**提交后**） | `git diff --check origin/main...HEAD` 退出 0 |
-| V6 | PR 状态 + SHA 绑定 | `gh pr view 194 --json state,baseRefName,headRefName,headRefOid`：OPEN / main / project-slot-4-FLY-202，且 `headRefOid` == 本地 `HEAD` == `git ls-remote origin refs/heads/project-slot-4-FLY-202` |
-| V7 | 内容与来源一致（人工核对，逐条写进 PR body） | 用途段每个事实性断言都能在 `packages/qa-framework/README.md` 或脚本源码找到依据；README 摘要每条 bullet 与对应 section 不矛盾；目录描述与 `ls <dir>` 实际内容不矛盾。**已知红项**：第 2 段称测试不触及 "the production alert queue"，但 README 第 288–311 行写明告警隔离仅在 `test-deploy.sh --alerts` 时生效，默认走生产路径（`scripts/test-deploy.sh` 默认 `ALERTS=0`，`scripts/lead-alert.sh` 未设 env 时用生产队列目录） |
-| V8 | 继承 marker 保留 | 文件最后一个非空行 == `- FLY-2456 drill marker r1 B1` |
-| V9 | 本轮未增删 `doc/` 文件 | `git diff --diff-filter=AD --name-only $BASE HEAD -- doc/` 为空 |
-
-## 3. Chunks（implement 执行合同）
-
-### C1 — 同步与基线
-1. `turn` → `yours`；`git status --porcelain` 必须为空（不空 → 停止并 `ask` 上报）。
-2. `git fetch origin`，按 `git rev-list --left-right --count HEAD...origin/project-slot-4-FLY-202` 分四态：
-   - `0 0` 相等 → 继续；
-   - `0 N` 仅落后 → `git pull --ff-only`；
-   - `N 0` 仅领先 → 检查领先 commit 只触及白名单路径（如 design 节点未推送的 progress commit），保留，留到 C4 一起推；越界 → 停止上报；
-   - 双向都 > 0（分叉）→ 停止，`ask` 上报 Lead，不 rebase、不 force。
-3. 若 PR 显示与 `origin/main` 冲突：`git merge origin/main`（技术同步，不需要 ship 批准）；
-   若解决冲突需要越出白名单或违反 V9 → 停止上报。无冲突则**不**主动 merge main。
-4. 记 `BASE=$(git rev-parse HEAD)`。
-- 验收：工作区 clean；本地不落后远端；`BASE` 已记录。
-
-### C2 — 跑 V1–V4、V7、V8
-- V6 此时只检查 state/base/head 名（SHA 绑定留到 C4 后）。**V6 失败不是文档漂移**：
-  PR 非 OPEN、base/head 不符或 `gh` 查询失败 → 停止并 `ask` 上报，不进 C3。
-- V1–V4、V7、V8 任一红 → 记录红项与原因，进 C3。按 V7 已知红项，本轮 C3 **必然执行**。
-
-### C3 — 只修红项
-| 红项 | 修法 |
+| Identity | Required value |
 |---|---|
-| V7 告警隔离（已知） | 局部改写第 2 段那一句：Discord/repos 的隔离保持原说法；告警队列改成「只有显式用 `test-deploy.sh --alerts` 部署并配置 alert channel 时才隔离，否则走生产默认路径」。保持 2–3 段，不重写全文，不跑真实告警测试 |
-| V7 其它内容矛盾 | 只改那一句/那一条，依据写进 PR body |
-| V1 | 调整为 2–3 个正文块 |
-| V2 | 按 `git ls-tree -d` 重建缺失/多余行；新目录先 `ls` 再写一行英文描述 |
-| V3 | 通读 README 后调整到 ~10 条，覆盖全部 `## ` 级 section |
-| V8 | 把 marker 恢复到文件末尾 |
-| V4 | **最后**重跑 `ls -R doc/ \| head -50` 覆盖 ```text 块（其它编辑之后执行） |
-- 编辑完成后跑 V1–V4、V5a、V7、V8、V9 至全绿，再 commit：
-  `docs(FLY-202): refresh QA sandbox fixture notes`（带 Co-Authored-By 尾注）。
-- 提交后跑 V5b；红 → 修正后追加一个 commit（不 amend 已推送历史）。若空白错误落在白名单
-  之外 → 停止上报，不扩大修复范围。
-- 验收：上述断言全绿；本轮 diff（`$BASE..HEAD`）只涉及白名单路径。
+| Repository | `xrliAnnie/flywheel-qa-sandbox` |
+| Branch | `project-slot-4-FLY-202` |
+| Pull request | #194, OPEN, base=`main`, head=`project-slot-4-FLY-202` |
+| Content file | `doc/qa/sandbox-notes.md` |
+| Durable ledger | `engineering/doc/FLY-202-sandbox-notes-e2e/progress.md` |
+| Preserved marker | final non-empty line `- FLY-2456 drill marker r1 B1` |
 
-### C4 — 最终 ledger → push → SHA 绑定 → PR 描述
-1. **先**写最终 ledger：`flywheel-comm progress --phase implement --cursor <m/m> ...`
-   （它会自动 `git commit --only` progress.md，但**不会 push**）。
-2. 若本地领先远端（含 C1 保留的继承 commit、C3 的内容 commit、第 1 步的 ledger commit）→
-   `git push origin project-slot-4-FLY-202`（fast-forward；失败重试一次，仍失败 → `ask`
-   上报 Lead，不静默、不 force）。
-3. 跑完整 V6：本地 `HEAD` == 远端分支 SHA == PR `headRefOid`。不一致 → 停止上报。
-4. `gh pr edit 194` 更新 body：`## Linear Issue`（FLY-202 + URL）、本轮 exec、
-   **绑定到该 SHA 的** V1–V9 结果（V7 列出核对依据）、「Fixture only — do not merge」、
-   尾注 `🤖 Generated with [Claude Code](https://claude.com/claude-code)`。
-   PR body 修改不产生 commit，不影响 SHA 绑定。
-5. CI：记录该 SHA 上的 check 状态；等待 CI 转绿**交由 QA 节点把关**（implement 不为等 CI
-   而改动分支）。
-- 验收：V6 全绿；PR 未 merge；之后不再产生新的本地 commit。
+Allowed content change: `doc/qa/sandbox-notes.md` only. The injected progress command may update the ledger. Do not add, delete, rename, or move any file under `doc/`; do not touch packages, scripts, configuration, production databases, Discord, or Linear state. Do not create another PR, merge, rebase, force-push, request ship authority, or close PR #194.
 
-### C5 — 收尾
-- 按 implement 节点注入的 route 完成；**不** merge、不请求 ship、不 dispatch QA。
-- C4 之后若因任何原因又写了 ledger，必须重复 C4 第 2–4 步，保证 PR head 包含它。
+## 2. Verification contract
 
-## 4. 回滚边界
-
-- 本轮可能变化的：`doc/qa/sandbox-notes.md`（内容）、
-  `engineering/doc/FLY-202-sandbox-notes-e2e/progress.md`（ledger）、PR #194 body。
-- 回滚内容 = 在分支上 `git revert <sha>`（新 commit，不改历史）；PR body 可再次 `gh pr edit`。
-- PR #194 不 merge，main 永远不受影响；teardown 由 harness `test-teardown.sh` 负责。
-
-## 5. 负向守卫（不能发生的事）
-
-- 不在 `doc/` 下新增/删除任何文件（V9）。
-- 不开第二个 PR；不 force-push；不 `--no-verify`；不 rebase。
-- 不删除 FLY-2456 drill marker 行（V8）。旧文件夹 `doc/FLY-202-qa-sandbox-fixture/`
-  原样保留（本轮不再往里写；清理不在本 issue 范围）。
-- 不碰 `packages/` 代码、不碰生产 Bridge/Discord/Linear 状态。
-- 分叉、越界冲突、PR 异常一律停止上报，不自行"修好"。
-
-## 6. QA 节点可验证断言
-
-1. 按 §2 断言合同独立实现，V1–V9 在 PR 最终 head 上全绿（V7 需 QA 独立抽查用途段与
-   README 的一致性，尤其是告警隔离措辞）。
-2. `git diff origin/main...HEAD --name-only` 只含 `doc/qa/sandbox-notes.md`、
-   `doc/FLY-202-qa-sandbox-fixture/{progress.md,workflow-output.json}`（继承）以及
-   `engineering/doc/FLY-202-sandbox-notes-e2e/` 下文件。
-3. PR #194 OPEN、未 merge；CI 在 PR head SHA 上为绿（QA 负责等待并判定）。
-
-## 7. 取舍记录
-
-| 选项 | 结论 | 理由 |
+| ID | Assertion | Pass condition |
 |---|---|---|
-| A. 验证（结构+内容）优先、只修红项（选中） | ✅ | 结构已正确；R1 证明只数数量会放过事实错误，所以加 V7，但修复仍局部 |
-| B. 整文件重新生成 | ❌ | 与分支连续性冲突；制造噪音 diff，可能引入回归 |
-| C. 新开 PR | ❌ | 同 head 只能有一个 open PR；丢失 #194 的 CI/评审历史 |
-| D. 把验证器提交进仓库 | ❌ | fixture 仓库不该长出与任务无关的脚本；也会改变顶层/`doc/` 结构 |
-| E. 顺手删旧 `doc/FLY-202-qa-sandbox-fixture/` | ❌ | 超出 issue 范围，且会让 step 4 快照过期 |
-| F. 引入 Markdown 解析库判段落 | ❌ | 过度工程；空行分块 + 两个自测样例足够 |
+| V1 | Purpose paragraphs | 2–3 blank-line-delimited prose blocks before `## Top-level directories` |
+| V2 | Directory table | names equal `git ls-tree -d --name-only HEAD`; every description non-empty |
+| V3 | README summary | 8–12 bullets (target 10) and no claim contradicts the current README |
+| V4 | `doc/` listing | the unique `text` fence equals `ls -R doc/ \| head -50` byte-for-byte |
+| V5 | Source truth | purpose and summary claims agree with README/scripts; alert isolation remains explicitly opt-in |
+| V6 | Marker | last non-empty line equals the preserved FLY-2456 marker |
+| V7 | Scope | no added/deleted path under `doc/`; content diff, if any, is only the allowed file |
+| V8 | Hygiene | pre-commit and committed `git diff --check` both exit 0 |
+| V9 | PR/SHA binding | PR is OPEN against main and local HEAD = remote branch SHA = PR head SHA |
+
+## 3. Task 1 — Acquire authority and establish the baseline
+
+**Files:** Read-only repository/PR state; no content writes.
+
+- [ ] Run the exact injected `flywheel-comm turn` command. Continue only on `yours`; on `not-yours`, poll every 60–90 seconds without touching the worktree.
+- [ ] Check the mailbox with the phase’s exact injected inbox command and act on any unread Lead instruction before continuing.
+- [ ] Confirm the worktree starts clean except for state explicitly owned by the current node:
+
+```bash
+git status --short --branch
+git branch --show-current
+```
+
+Expected branch: `project-slot-4-FLY-202`. Unexpected dirty files or another branch are a stop condition; report them instead of cleaning or overwriting them.
+
+- [ ] Refresh remote metadata and classify divergence:
+
+```bash
+git fetch origin
+git rev-list --left-right --count HEAD...origin/project-slot-4-FLY-202
+```
+
+Interpretation: `0 0` continues; `0 N` may use `git pull --ff-only`; `N 0` may continue only when every local commit belongs to the inherited DAG workflow; two non-zero numbers stop and report a fork. Never rebase or force-push.
+
+- [ ] Capture the implementation baseline before any content edit:
+
+```bash
+git rev-parse HEAD | tee /private/tmp/flywheel-test-slot-4/tmp/FLY202-implement-base-sha
+git diff --check
+```
+
+Record the full SHA in the eventual PR verification text. The implement node must use its own injected execution id, never the design execution id in this document history.
+
+## 4. Task 2 — Run the content assertions before editing
+
+**Files:** Read `doc/qa/sandbox-notes.md`, `packages/qa-framework/README.md`, `scripts/test-deploy.sh`, and `scripts/lead-alert.sh`.
+
+- [ ] Verify V1 and V6:
+
+```bash
+awk 'BEGIN{in_body=0; paras=0; open=0} /^# Flywheel QA Sandbox Notes$/{in_body=1;next} /^## Top-level directories$/{if(open) paras++; print "purpose_paragraphs=" paras; exit} in_body {if($0 ~ /^[[:space:]]*$/){if(open){paras++; open=0}} else {open=1}}' doc/qa/sandbox-notes.md
+awk 'NF{line=$0} END{print line}' doc/qa/sandbox-notes.md
+```
+
+Expected: `purpose_paragraphs=3` (2 is also valid) and the exact FLY-2456 marker.
+
+- [ ] Verify V2 with Git’s tracked directory set, not local filesystem caches:
+
+```bash
+diff -u \
+  <(git ls-tree -d --name-only HEAD | sort) \
+  <(awk '/^## Top-level directories/{in_table=1;next} in_table && /^## /{exit} in_table && /^\| `/{name=$2; gsub(/`|\//,"",name); print name}' doc/qa/sandbox-notes.md | sort)
+awk '/^## Top-level directories/{in_table=1;next} in_table && /^## /{exit} in_table && /^\| `/{count++; desc=$3; gsub(/^[[:space:]]+|[[:space:]]+$/,"",desc); if(desc=="") empty++} END{printf "rows=%d empty_descriptions=%d\n",count,empty+0}' FS='|' doc/qa/sandbox-notes.md
+```
+
+Expected at design time: diff exit 0, `rows=17 empty_descriptions=0`. A future tracked directory count may differ; equality, not the number 17, is authoritative.
+
+- [ ] Verify V3:
+
+```bash
+awk '/^## `packages\/qa-framework\/README.md` summary/{in_summary=1;next} in_summary && /^## /{exit} in_summary && /^- /{count++} END{printf "summary_bullets=%d\n",count}' doc/qa/sandbox-notes.md
+rg '^## ' packages/qa-framework/README.md
+```
+
+Expected at design time: 10 bullets. Read each bullet against the listed README sections; a count alone is insufficient.
+
+- [ ] Verify V4 using a sandboxed temporary directory:
+
+```bash
+snapshot_dir=$(mktemp -d /private/tmp/flywheel-test-slot-4/tmp/FLY202-implement.XXXXXX)
+awk '/^```text$/{in_block=1;next} in_block && /^```$/{exit} in_block{print}' doc/qa/sandbox-notes.md > "$snapshot_dir/expected"
+ls -R doc/ | head -50 > "$snapshot_dir/actual"
+diff -u "$snapshot_dir/expected" "$snapshot_dir/actual"
+```
+
+Expected: diff exit 0 and both files contain 50 lines. Leave the isolated temp directory for environment cleanup; do not use a broad recursive delete.
+
+- [ ] Verify V5’s alert boundary with the actual sources:
+
+```bash
+sed -n '288,312p' packages/qa-framework/README.md
+sed -n '128,162p' scripts/test-deploy.sh
+sed -n '632,646p' scripts/test-deploy.sh
+sed -n '356,372p' scripts/lead-alert.sh
+```
+
+The notes must say alert queue isolation requires `--alerts` plus a configured test alert channel; without it, production-default paths remain. Do not weaken this into an unconditional isolation claim.
+
+- [ ] Record every V1–V6 result. If all pass, skip Task 3 and proceed to Task 4 without modifying `doc/qa/sandbox-notes.md`.
+
+## 5. Task 3 — Repair only failed assertions
+
+**Files:** Modify `doc/qa/sandbox-notes.md` only when Task 2 identifies a concrete failure.
+
+- [ ] Before a literal replacement, copy the complete removed and added strings from the candidate diff and run `git grep -lF --` once for each literal. Record the exact commands, every match, and each exclusion reason; do not treat an empty result as permission for broad tests.
+
+- [ ] Apply the narrowest repair:
+
+  - V1: change paragraph breaks only until there are 2–3 prose blocks.
+  - V2: add/remove only the table rows needed to equal the tracked directory set; inspect each new directory before writing its one-line description.
+  - V3/V5: amend only contradicted bullets or claims after reading the corresponding source section.
+  - V4: regenerate the fenced listing last, after all other edits.
+  - V6: restore the inherited marker as the last non-empty line.
+
+- [ ] Search for tests or consumers by full path, file name, and parent directory:
+
+```bash
+git grep -lF -- 'doc/qa/sandbox-notes.md'
+git grep -lF -- 'sandbox-notes.md'
+git grep -lF -- 'doc/qa'
+```
+
+Retain only concrete test files whose assertions consume this document. At design time no such test is known; generic parent-directory or fixture mentions must be recorded and excluded with a reason. Do not run bare Vitest, a package suite, a directory, or a glob. No `vitest related` is required unless the actual repair changes TypeScript.
+
+- [ ] Re-run V1–V6 and check the candidate diff:
+
+```bash
+git diff --check
+git diff --name-status
+git diff --diff-filter=AD --name-only -- doc/
+```
+
+Expected: V1–V6 pass; no added/deleted `doc/` file; the only content modification is `doc/qa/sandbox-notes.md`.
+
+- [ ] If the content changed, commit it without amending inherited history:
+
+```bash
+git add doc/qa/sandbox-notes.md
+git commit -m "docs(FLY-202): refresh QA sandbox fixture notes"
+```
+
+If there was no drift, do not create an empty content commit.
+
+## 6. Task 4 — Final ledger, push, and exact-SHA proof
+
+**Files:** The injected progress command updates only `engineering/doc/FLY-202-sandbox-notes-e2e/progress.md`; PR metadata is updated through `gh` only after the final commit.
+
+- [ ] Run the implement phase’s exact injected final `progress` command before pushing. This creates the last ledger commit; do not reuse `cd41d8e7-9d88-45e1-9921-4f0e91b42485`, which belongs to design.
+- [ ] Re-run committed-scope checks after that ledger commit:
+
+```bash
+git diff --check origin/main...HEAD
+git diff --diff-filter=AD --name-only "$(cat /private/tmp/flywheel-test-slot-4/tmp/FLY202-implement-base-sha)"..HEAD -- doc/
+git status --short
+```
+
+Expected: clean worktree and no `doc/` addition/deletion from the final ledger commit.
+
+- [ ] Push the branch fast-forward:
+
+```bash
+git push origin project-slot-4-FLY-202
+```
+
+Never use `--no-verify`; if rejected as non-fast-forward, stop and report rather than force-push.
+
+- [ ] Prove V9 only after the push:
+
+```bash
+git rev-parse HEAD
+git ls-remote origin refs/heads/project-slot-4-FLY-202
+gh pr view 194 --json state,baseRefName,headRefName,headRefOid,url
+```
+
+Expected: state `OPEN`, base `main`, head `project-slot-4-FLY-202`, and all three full SHAs identical.
+
+- [ ] Update PR #194’s body with the final execution id, baseline SHA, final SHA, V1–V9 results, exact-head CI status (or explicitly `pending`), and `Fixture only — do not merge`. Do not claim inherited-head CI as final-head CI.
+- [ ] Check the mailbox once more, then use only the exact completion route injected into the implement phase. Do not dispatch QA, merge, or request ship authority.
+
+## 7. Error handling and rollback
+
+- Unexpected dirty files, branch divergence, a closed/misdirected PR, out-of-scope conflicts, unavailable source facts, or a non-fast-forward push are stop-and-report conditions. Preserve evidence; do not broaden scope to “fix” them.
+- A content repair can be rolled back with `git revert` targeting the exact repair SHA recorded in that phase’s evidence. Do not rewrite history.
+- PR body text may be corrected with another `gh pr edit`; PR #194 remains open and unmerged.
+- If a post-push action creates another commit, repeat the push and V9 SHA proof. A prior SHA proof becomes stale immediately when HEAD moves.
+
+## 8. QA evidence expected from the next phase
+
+An independent QA node should reimplement V1–V9 rather than reuse implement scratch files, verify any retained concrete test one file at a time, and read exact-head PR CI. The passing design target is a truthful document and an open fixture PR—not a merge, deployment, production notification, or teardown.
