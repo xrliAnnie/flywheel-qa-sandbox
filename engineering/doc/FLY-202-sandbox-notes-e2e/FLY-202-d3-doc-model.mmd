@@ -1,0 +1,20 @@
+flowchart LR
+    subgraph SRC["数据来源 (implement 时实时取)"]
+        R1["git ls-tree -d HEAD<br/>17 个 tracked 顶层目录"]
+        R2["packages/qa-framework/README.md<br/>blob cd8e822a…"]
+        R3["ls -R doc/ | head -50<br/>实时输出"]
+    end
+    subgraph NOTES["交付物 doc/qa/sandbox-notes.md"]
+        A["§1 仓库用途 · 3 段"]
+        B["§2 顶层目录表 · 17 行"]
+        C["§3 README 摘要 · 10 条"]
+        D["§4 doc/ 快照 · fenced block"]
+    end
+    R1 --> B
+    R2 --> C
+    R3 --> D
+    subgraph DOCS["过程文档 engineering/doc/FLY-202-sandbox-notes-e2e/"]
+        E["exploration · research · plan<br/>progress · 本 HTML"]
+    end
+    NOTES --> PR["PR #155 → main<br/>白名单: notes + 两套 FLY-202 文件夹<br/>+ 已知探针 FLY-2182-drill.md"]
+    DOCS --> PR

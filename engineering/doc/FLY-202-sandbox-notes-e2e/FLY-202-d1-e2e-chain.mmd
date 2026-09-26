@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant QA as QA 脚本<br/>inject-linear-issue.sh
+    participant BR as 测试 Bridge<br/>(slot-2 调度服务)
+    participant LN as Linear<br/>(任务看板)
+    participant RN as 沙箱 Runner<br/>(AI 工程师)
+    participant GH as GitHub<br/>flywheel-qa-sandbox
+    QA->>BR: POST /api/runs/start (FLY-202)
+    BR->>LN: PreHydrator 拉取 issue 全文
+    LN-->>BR: FLY-202 标题 + 5 步任务
+    BR->>RN: 在 tmux 里启动 Runner<br/>(延续分支 project-slot-2-FLY-202)
+    Note over RN: design → implement → qa 三段<br/>= QA 的 mid-work 观察窗口
+    RN->>GH: push 分支 · 复用 PR #155
+    RN->>BR: 汇报 Lead / 节点 complete

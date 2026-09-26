@@ -46,7 +46,7 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 Command: `ls -R doc/ | head -50`
 
 ```text
-FLY-202-generalized-e2e
+FLY-145-s6-retry-product-test
 FLY-202-qa-sandbox-fixture
 VERSION
 architecture
@@ -56,8 +56,17 @@ qa
 reference
 retro
 
-doc//FLY-202-generalized-e2e:
+doc//FLY-145-s6-retry-product-test:
+design-review.md
 design.html
+exploration.md
+flow.mmd
+flow.svg
+model.mmd
+model.svg
+plan.md
+progress.md
+research.md
 
 doc//FLY-202-qa-sandbox-fixture:
 FLY-202-d1-e2e-chain.mmd
@@ -87,13 +96,4 @@ v2.0-product-vision.md
 
 doc//architecture/archive:
 v0.1.0-flywheel-orchestrator.md
-
-doc//engineer:
-deep-research
-exploration
-implementation
-onboarding
-plan
-qa
-research
 ```
