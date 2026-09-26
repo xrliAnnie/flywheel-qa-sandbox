@@ -4177,6 +4177,27 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		},
 	);
 
+	it("FLY-2920: every spawn publishes a fresh ownership generation at the same PGID", async () => {
+		const generations: string[] = [];
+		runtime = new FakeRuntime(async (input) => {
+			for (let i = 0; i < 2; i++) {
+				input.onSpawnIdentity?.(4321);
+				const state = JSON.parse(
+					readFileSync(
+						join(dir, "codex-sessions", execId, "session.json"),
+						"utf8",
+					),
+				);
+				expect(state.daemonOwnershipGeneration).toMatch(/^[a-f0-9-]{36}$/);
+				generations.push(state.daemonOwnershipGeneration);
+			}
+			return complete();
+		});
+		await makeAdapter().execute(ctx());
+		expect(generations).toHaveLength(2);
+		expect(generations[0]).not.toBe(generations[1]);
+	});
+
 	it("FLY-1257: Bridge re-execute restores the durable gate-hold latch from session.json", async () => {
 		const stateDir = join(dir, "codex-sessions", execId);
 		mkdirSync(stateDir, { recursive: true });

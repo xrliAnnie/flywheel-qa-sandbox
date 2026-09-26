@@ -213,6 +213,20 @@ describe("parseCodexAppServerProcessRow", () => {
 });
 
 describe("sweepCodexRunnerOrphans", () => {
+	it("never promotes system PID/PGID rows into signal candidates", async () => {
+		const env = testEnv("/tmp/fly2920-system-rows");
+		const executionId = "system-row";
+		const process = appServerProcess({ executionId, env, pid: 1, pgid: 1 });
+		const h = harness({
+			env,
+			rows: [process],
+			ledgers: [{ executionId, daemonPgid: 1 }],
+			homeExecutionIds: [executionId],
+		});
+		await sweepCodexRunnerOrphans({ activeExecutionIds: new Set() }, h.deps);
+		expect(h.signals).toEqual([]);
+	});
+
 	it("reaps a stale ledger-owned app-server after exact group, socket, and CODEX_HOME proof", async () => {
 		const env = testEnv("/tmp/fly2169-positive");
 		const executionId = "terminal-exec";

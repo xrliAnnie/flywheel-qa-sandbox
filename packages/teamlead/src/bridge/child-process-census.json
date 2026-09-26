@@ -331,8 +331,8 @@
 		},
 		{
 			"file": "packages/teamlead/src/bridge/plugin.ts",
-			"sync_marker": 10,
-			"disposition": "bridge_sync_marker_timeout"
+			"sync_marker": 11,
+			"disposition": "bridge_sync_marker_timeout FLY-2920 adds one database-only orphan active-execution recheck marker before identity retirement."
 		},
 		{
 			"file": "packages/teamlead/src/bridge/runner-admission.ts",

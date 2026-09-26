@@ -11090,7 +11090,12 @@ export async function startBridge(
 						activeExecutionIds,
 						isExecutionActive: (executionId) =>
 							activeExecutionIds.has(executionId) ||
-							codexExecutionOwners.isExecutionOwned(executionId),
+							codexExecutionOwners.isExecutionOwned(executionId) ||
+							withSyncOpMarker("maintenance:orphan-active-recheck", () =>
+								store
+									.getReadoptCandidateSessions()
+									.some((session) => session.execution_id === executionId),
+							),
 					},
 					{
 						audit: (event, detail) => {

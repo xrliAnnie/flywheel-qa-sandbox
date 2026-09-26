@@ -3069,6 +3069,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			cwd: ctx.cwd,
 			vendor: "codex",
 			daemonPgid,
+			daemonOwnershipGeneration: randomUUID(),
 		});
 	}
 

@@ -1,0 +1,82 @@
+{
+  "scope": "E only; no formal gate/full CI/QA/production proof",
+  "sourceTestBlobs": {
+    "packages/claude-runner/src/CodexTmuxAdapter.ts": "c6bb27524aea194690a65b398edb35abbf953ed7",
+    "packages/claude-runner/test/CodexTmuxAdapter.test.ts": "9f12e5b6ffb1ffd4c7005924600de01e841ec593",
+    "packages/teamlead/src/bridge/__tests__/codex-daemon-ownership-retirement.test.ts": "72bedf7a82f1aa1b2ef6bd87d8b942809a61cfb3",
+    "packages/teamlead/src/bridge/__tests__/codex-orphan-process-snapshot.test.ts": "8025a9df96cffabf498264a69ae6f55c00bdb26a",
+    "packages/teamlead/src/bridge/__tests__/codex-runner-orphan-reaper.test.ts": "99e37d4b018649121524fbc0fdfba9b1bd7bfdea",
+    "packages/teamlead/src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts": "c8201b5ca45f5faf059224d645e3700ae8e260fe",
+    "packages/teamlead/src/bridge/child-process-census.json": "2d3a07ac80a55ef65316a94e9fbb2b06efbedc5a",
+    "packages/teamlead/src/bridge/codex-daemon-ownership-retirement.ts": "5ab1b71bc16897942d8e5e1dc443e9317e15128e",
+    "packages/teamlead/src/bridge/codex-runner-orphan-reaper.ts": "a0b313b908b28dd633e46589fa8383b22844de11",
+    "packages/teamlead/src/bridge/plugin.ts": "0ff95d3727b283f0b0fd454f14fe1af3a6ad0d17"
+  },
+  "planBlob": "da53ca9012d3c9894d14df4f70e15ead060d55c6",
+  "relatedCommands": [
+    "pnpm --filter flywheel-claude-runner exec vitest related src/CodexTmuxAdapter.ts --run --config /tmp/fly2920-E-runner-related.config.mts",
+    "pnpm --filter flywheel-teamlead exec vitest related src/bridge/codex-daemon-ownership-retirement.ts src/bridge/codex-runner-orphan-reaper.ts src/bridge/plugin.ts --run --config /tmp/fly2920-E-teamlead-related.config.mts"
+  ],
+  "logs": {
+    "/tmp/fly2920-E-adapter.log": {
+      "sha256": "056f629e282dba896b40946220a0d9504690df849bc4a2f3d4ded994b61b9947"
+    },
+    "/tmp/fly2920-E-retirement-final-green.log": {
+      "sha256": "4885b8f28e63eae614d1d3450fafc26699705cb929df7164caaa960ff6bc7a68"
+    },
+    "/tmp/fly2920-E-reaper-final-green.log": {
+      "sha256": "0d5b7393939ec10226418d4fb6f12dd45bbd08c368c6e5e236191d4585579668"
+    },
+    "/tmp/fly2920-E-kernel-green.log": {
+      "sha256": "979eb5de8fae5554a4e87ffbee4829146b2dc110a4c06e6e8466e7dabc184744"
+    },
+    "/tmp/fly2920-E-generation-green.log": {
+      "sha256": "d36cc42a52994a88267704c24922b8e84de06a3552704640ef6b19ae5abc995c"
+    },
+    "/tmp/fly2920-E-reown.log": {
+      "sha256": "aaae9014851a16f0476798b95886e21364f0fdd352e551341ee1537a3a037943"
+    },
+    "/tmp/fly2920-E-wiring-final.log": {
+      "sha256": "95f3d5da2454b1df3e8a5463e076f6be87f5dc21ec269157d74a2778368a728d"
+    },
+    "/tmp/fly2920-E-timeout.log": {
+      "sha256": "2a4291ca2cab3066c6dc511d55b8ab9c9672bc961f63ace11c30bce856e5c239"
+    },
+    "/tmp/fly2920-E-kill.log": {
+      "sha256": "08b4a1c444e75ed9db97fc45b0461381237095c7be883755e9bf90a9d2558f83"
+    },
+    "/tmp/fly2920-E-teardown.log": {
+      "sha256": "694ebbf64c0921945b4de7f0880edd29d3ec32cf99d3bbf4f33eefc878384cf7"
+    },
+    "/tmp/fly2920-E-census-green.log": {
+      "sha256": "682bf3a86523e1d270e0a0528a3ab54662b35ce3a9ed0e5850acccd9ccbff433"
+    },
+    "/tmp/fly2920-E-real-boundary.log": {
+      "sha256": "1eb3a4c1bc019e93f8a3300a99eaa9091ee6265acadf85c86f0937fd361ed055"
+    },
+    "/tmp/fly2920-E-runtime-consumer.log": {
+      "sha256": "b86cf0849c7da8b76203e9e6505e1540bd3ede4df40796ec254915d1e0168b3d"
+    },
+    "/tmp/fly2920-E-closeout-consumer.log": {
+      "sha256": "f9610eb321afad25141a141d4b021febba730a59e3766c6f4c0d8b0f1081a41a"
+    },
+    "/tmp/fly2920-E-runner-related.log": {
+      "sha256": "22f8e4947b9104ddb6d5cc4206e521920c12df3e3934a3a0b69941ab5d4eb5de"
+    },
+    "/tmp/fly2920-E-teamlead-related.log": {
+      "sha256": "8f7cd2a3c5c9b66ca9a5c3d242924d553b84269da1e102780ebc8c7be2fb9ae0"
+    },
+    "/tmp/fly2920-E-build.log": {
+      "sha256": "fd1dcc274483f6e4a9e380f77dee4af6f3e481c37c6a4b9ee16af22db9fb5091"
+    },
+    "/tmp/fly2920-E-lint-green.log": {
+      "sha256": "94b43dafdfcc3577c45b2be72a496395e484d72446ec8b24fd44499ff5dfdb80"
+    }
+  },
+  "limits": [
+    "runtime-consumer: 2 fixture setup failures spawnSync ps EPERM; 100 pass; 19 unselected",
+    "real-boundary: 2 pass, 1 conditional environment skip; host Codex process proof UNVERIFIED",
+    "build predates final whitespace-only plugin chain formatting; wiring/lint rerun afterward",
+    "local spec/quality review passed; formal cross-family gate remains pending until full implementation"
+  ]
+}

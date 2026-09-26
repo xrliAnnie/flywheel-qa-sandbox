@@ -69,6 +69,12 @@ describe("FLY-2211 Bridge recovery wiring", () => {
 		expect(lane).not.toContain(
 			"store\n\t\t\t\t\t\t.getReadoptCandidateSessions()",
 		);
+		// Selection shares the initial snapshot; each destructive/retirement
+		// decision must also observe sessions admitted since that snapshot.
+		const recheck = lane.slice(lane.indexOf("isExecutionActive:"));
+		expect(recheck).toContain('"maintenance:orphan-active-recheck"');
+		expect(recheck).toMatch(/getReadoptCandidateSessions\(\)[\s\S]*?\.some\(/);
+		expect(recheck).toContain("session.execution_id === executionId");
 	});
 
 	it("is default-on with no runtime feature flag", () => {

@@ -34,6 +34,14 @@ import {
 import { RUNNER_MEMORY_ID_MAX_LENGTH } from "flywheel-config";
 import { SAFE_IDENTIFIER_RE } from "flywheel-core";
 
+import {
+	auditDaemonOwnershipMismatch,
+	type DaemonOwnershipClaim,
+	isDaemonOwnershipRetired,
+	readDaemonOwnershipClaim,
+	retireDaemonOwnership,
+} from "./codex-daemon-ownership-retirement.js";
+
 export const CODEX_APP_SERVER_ORPHAN_MIN_ELAPSED_SECONDS = 2 * 60 * 60;
 
 export interface CodexAppServerProcess {
@@ -48,6 +56,7 @@ export interface CodexAppServerProcess {
 export interface CodexDaemonLedger {
 	executionId: string;
 	daemonPgid: number;
+	ownership?: DaemonOwnershipClaim;
 }
 
 export type CodexProcessProbeResult =
@@ -159,11 +168,11 @@ export function parseCodexAppServerProcessRow(
 	const command = (match[5] ?? "").trim();
 	if (
 		!Number.isSafeInteger(pid) ||
-		pid <= 1 ||
+		pid < 0 ||
 		!Number.isSafeInteger(ppid) ||
 		ppid < 0 ||
 		!Number.isSafeInteger(pgid) ||
-		pgid <= 1 ||
+		pgid < 0 ||
 		elapsedSeconds === null ||
 		!command
 	) {
@@ -193,18 +202,18 @@ function execPs(timeoutMs = 15_000): Promise<string> {
 export async function defaultListCodexAppServerProcesses(): Promise<CodexProcessProbeResult> {
 	try {
 		const output = await execPs();
-		const rows = output
+		const parsed = output
 			.split("\n")
-			.map(parseCodexAppServerProcessRow)
-			.filter((row): row is CodexAppServerProcess => row !== null);
-		if (output.trim() && rows.length === 0) {
+			.filter((line) => line.trim())
+			.map(parseCodexAppServerProcessRow);
+		if (parsed.some((row) => row === null)) {
 			return {
 				status: "unknown",
 				error:
 					"ps output did not match the BSD pid/ppid/pgid/etime/command shape",
 			};
 		}
-		return { status: "ok", rows };
+		return { status: "ok", rows: parsed as CodexAppServerProcess[] };
 	} catch (error) {
 		return {
 			status: "unknown",
@@ -224,9 +233,11 @@ export async function defaultListCodexDaemonLedgers(
 		for (const entry of readdirSync(root, { withFileTypes: true })) {
 			if (!entry.isDirectory()) continue;
 			try {
-				const parsed = JSON.parse(
-					readFileSync(join(root, entry.name, "session.json"), "utf8"),
-				) as { executionId?: unknown; daemonPgid?: unknown };
+				const sessionPath = join(root, entry.name, "session.json");
+				const stat = lstatSync(sessionPath);
+				if (!stat.isFile() || stat.isSymbolicLink()) continue;
+				const bytes = readFileSync(sessionPath, "utf8");
+				const parsed = JSON.parse(bytes) as Record<string, unknown>;
 				if (
 					parsed.executionId !== entry.name ||
 					typeof parsed.daemonPgid !== "number" ||
@@ -235,9 +246,12 @@ export async function defaultListCodexDaemonLedgers(
 				) {
 					continue;
 				}
+				const ownership = readDaemonOwnershipClaim(sessionPath, bytes, parsed);
+				if (isDaemonOwnershipRetired(ownership)) continue;
 				ledgers.push({
 					executionId: entry.name,
 					daemonPgid: parsed.daemonPgid,
+					ownership,
 				});
 			} catch {
 				// One corrupt or concurrently replaced ledger must not hide peers.
@@ -842,21 +856,45 @@ export async function sweepCodexRunnerOrphans(
 		deps.minElapsedSeconds ?? CODEX_APP_SERVER_ORPHAN_MIN_ELAPSED_SECONDS;
 	if (ledgerProbe.status === "ok") {
 		for (const ledger of ledgerProbe.ledgers) {
+			if (ledger.daemonPgid <= 1) continue;
 			if (input.activeExecutionIds.has(ledger.executionId)) continue;
 			result.ledgerCandidates++;
+			if (
+				await retireDaemonOwnership(ledger, {
+					env,
+					audit,
+					listProcesses,
+					socketHolderPids: deps.socketHolderPids ?? defaultSocketHolderPids,
+					isExecutionActive:
+						input.isExecutionActive ??
+						((executionId) => input.activeExecutionIds.has(executionId)),
+				})
+			)
+				continue;
+			const mismatchEvidence = processProbe.rows
+				.filter((row) => row.pgid === ledger.daemonPgid)
+				.map(({ elapsedSeconds: _elapsed, ...row }) => row);
 			if (!homeExecutionIds.has(ledger.executionId)) {
 				result.identityMismatchSkipped++;
-				audit("codex_app_server_orphan_identity_mismatch", {
-					executionId: ledger.executionId,
-					pgid: ledger.daemonPgid,
-					socketPath: resolveDaemonSocketPath(ledger.executionId, env),
-					evidence: {
-						canonicalHome: false,
-						argvSocket: false,
-						pgidFresh: false,
-						socketHolder: false,
+				auditDaemonOwnershipMismatch(
+					ledger,
+					{
+						executionId: ledger.executionId,
+						pgid: ledger.daemonPgid,
+						socketPath: resolveDaemonSocketPath(ledger.executionId, env),
+						evidence: {
+							canonicalHome: false,
+							argvSocket: false,
+							pgidFresh: false,
+							socketHolder: false,
+						},
 					},
-				});
+					{
+						rows: mismatchEvidence,
+						canonicalHome: homeExecutionIds.has(ledger.executionId),
+					},
+					audit,
+				);
 				continue;
 			}
 			const groupRows = processProbe.rows.filter(
@@ -864,21 +902,30 @@ export async function sweepCodexRunnerOrphans(
 			);
 			const exact = groupRows.find(
 				(row) =>
+					row.pid > 1 &&
 					exactIdentityForExecution(row, ledger.executionId, env) !== null,
 			);
 			if (!exact) {
 				result.identityMismatchSkipped++;
-				audit("codex_app_server_orphan_identity_mismatch", {
-					executionId: ledger.executionId,
-					pgid: ledger.daemonPgid,
-					socketPath: resolveDaemonSocketPath(ledger.executionId, env),
-					evidence: {
-						canonicalHome: true,
-						argvSocket: false,
-						pgidFresh: groupRows.length > 0,
-						socketHolder: false,
+				auditDaemonOwnershipMismatch(
+					ledger,
+					{
+						executionId: ledger.executionId,
+						pgid: ledger.daemonPgid,
+						socketPath: resolveDaemonSocketPath(ledger.executionId, env),
+						evidence: {
+							canonicalHome: true,
+							argvSocket: false,
+							pgidFresh: groupRows.length > 0,
+							socketHolder: false,
+						},
 					},
-				});
+					{
+						rows: mismatchEvidence,
+						canonicalHome: homeExecutionIds.has(ledger.executionId),
+					},
+					audit,
+				);
 				continue;
 			}
 			if (exact.ppid !== 1 || exact.elapsedSeconds < minElapsedSeconds) {
@@ -912,6 +959,7 @@ export async function sweepCodexRunnerOrphans(
 	}
 
 	for (const row of processProbe.rows) {
+		if (row.pid <= 1 || row.pgid <= 1) continue;
 		if (!isCodexAppServerCommand(row.command)) continue;
 		if (candidates.has(row.pgid)) continue;
 		const reverse = reverseExecutionIdentity(row, socketOwners);

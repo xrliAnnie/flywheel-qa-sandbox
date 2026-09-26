@@ -1,0 +1,1639 @@
+{
+  "method": "git grep -lF each full path/file name/parent plus module stem and changed symbols; every test match disposed individually. Non-test references retained in /tmp raw discovery during implementation.",
+  "files": [
+    "packages/teamlead/src/bridge/codex-runner-orphan-reaper.ts",
+    "packages/claude-runner/src/CodexTmuxAdapter.ts",
+    "packages/teamlead/src/bridge/plugin.ts",
+    "packages/teamlead/src/bridge/codex-daemon-ownership-retirement.ts",
+    "packages/teamlead/src/bridge/child-process-census.json"
+  ],
+  "queries": [
+    "CodexDaemonLedger",
+    "CodexTmuxAdapter",
+    "CodexTmuxAdapter.ts",
+    "child-process-census.json",
+    "codex-daemon-ownership-retirement.ts",
+    "codex-runner-orphan-reaper",
+    "codex-runner-orphan-reaper.ts",
+    "codex_daemon_ownership_retired",
+    "daemon-ownership-retired-",
+    "daemonOwnershipGeneration",
+    "daemonPgid",
+    "defaultListCodexDaemonLedgers",
+    "maintenance:orphan-active-recheck",
+    "packages/claude-runner/src",
+    "packages/claude-runner/src/CodexTmuxAdapter.ts",
+    "packages/teamlead/src/bridge",
+    "packages/teamlead/src/bridge/child-process-census.json",
+    "packages/teamlead/src/bridge/codex-daemon-ownership-retirement.ts",
+    "packages/teamlead/src/bridge/codex-runner-orphan-reaper.ts",
+    "packages/teamlead/src/bridge/plugin.ts",
+    "parseCodexAppServerProcessRow",
+    "persistSpawnIdentity",
+    "plugin",
+    "plugin.ts",
+    "runCodexRunnerOrphanSweep"
+  ],
+  "retained": [
+    "packages/claude-runner/test/CodexTmuxAdapter.test.ts",
+    "packages/claude-runner/test/codex-sync-timeout-contract.test.ts",
+    "packages/claude-runner/test/kill-path-inventory.test.ts",
+    "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+    "packages/teamlead/src/bridge/__tests__/codex-runner-orphan-reaper.test.ts",
+    "packages/teamlead/src/bridge/__tests__/codex-daemon-ownership-retirement.test.ts",
+    "packages/teamlead/src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts",
+    "packages/teamlead/src/bridge/__tests__/codex-session-reown.test.ts",
+    "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts",
+    "packages/teamlead/src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+    "packages/teamlead/src/bridge/__tests__/codex-orphan-process-snapshot.test.ts",
+    "packages/claude-runner/test/codex-daemon-runtime.test.ts",
+    "packages/teamlead/src/bridge/__tests__/lifecycle-closeout.test.ts"
+  ],
+  "testMatches": [
+    {
+      "path": "packages/agent-team-transport/src/claude/__tests__/ClaudeCodeAdapter.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ClaudeCodeAdapter.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/claude-runner/test/ClaudeRunner.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ClaudeRunner.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/claude-runner/test/CodexTmuxAdapter.test.ts",
+      "matched": [
+        "CodexTmuxAdapter",
+        "daemonPgid"
+      ],
+      "disposition": "retained: spawn ledger writer and fresh generations"
+    },
+    {
+      "path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; TmuxAdapter.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/claude-runner/test/codex-daemon-runtime.test.ts",
+      "matched": [
+        "daemonPgid"
+      ],
+      "disposition": "retained: -t FLY-1940|FLY-2490|FLY-2830|spawnCodexDaemon: persisted ownership/physical spawn/liveness compatibility; other CLI flag and pure timeout groups unchanged"
+    },
+    {
+      "path": "packages/claude-runner/test/codex-sync-timeout-contract.test.ts",
+      "matched": [
+        "CodexTmuxAdapter",
+        "CodexTmuxAdapter.ts"
+      ],
+      "disposition": "retained: AST child timeout guard covers modified adapter"
+    },
+    {
+      "path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+      "matched": [
+        "codex-runner-orphan-reaper",
+        "codex-runner-orphan-reaper.ts",
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/codex-runner-orphan-reaper.ts"
+      ],
+      "disposition": "retained: process mutation inventory includes orphan sweep and tests"
+    },
+    {
+      "path": "packages/config/src/__tests__/drift-scan.test.ts",
+      "matched": [
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: no flag registry or scanner changes"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+      "matched": [
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: no environment flag added or changed; existing autoclean master switch retained"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; feature-flags-registry.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; feature-flags-store-policy.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/config/src/__tests__/fly1808-wave-a.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1808-wave-a.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/config/src/__tests__/non-lead-forbidden-plugins.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; non-lead-forbidden-plugins.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/config/src/__tests__/runner-mcp-profile.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runner-mcp-profile.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/config/src/__tests__/skill-framework-mode.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; skill-framework-mode.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/Blueprint.fly1356-off-sentinel.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; Blueprint.fly1356-off-sentinel.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/Blueprint.fly1356-qa.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; Blueprint.fly1356-qa.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/Blueprint.fly1356-skill-framework.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; Blueprint.fly1356-skill-framework.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/Blueprint.plugin-readiness.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; Blueprint.plugin-readiness.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/flywheel-comm/src/__tests__/discord-chat-ingest.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; discord-chat-ingest.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; adapter-reap.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/add-roundtable-allowfrom.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; add-roundtable-allowfrom.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/apply-core-room-mention-gate.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; apply-core-room-mention-gate.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/claude-lead-plugin-fork-check.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; claude-lead-plugin-fork-check.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/decommission-legacy-companion-daemon.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; decommission-legacy-companion-daemon.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/fly1867-playwright-optin.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1867-playwright-optin.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/lead-env-propagation.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; lead-env-propagation.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/DirectEventSink.dag-seam.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; DirectEventSink.dag-seam.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/DirectEventSink.fly1427-terminal-immunity.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; DirectEventSink.fly1427-terminal-immunity.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/StateStore.fly2341-terminal-archive.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; StateStore.fly2341-terminal-archive.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/StateStore.getDbPath.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; StateStore.getDbPath.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/StateStore.land-carryover.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; StateStore.land-carryover.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/account-selfheal-bytecompat.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; account-selfheal-bytecompat.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/account-switch-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; account-switch-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/actions-founder-approval.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; actions-founder-approval.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/actions.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; actions.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "child-process-census.json",
+        "packages/teamlead/src/bridge/child-process-census.json"
+      ],
+      "disposition": "retained: new production active-state sync marker"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/bridge-e2e.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; bridge-e2e.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/bridge-sync-op-marker-coverage.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: asserts child-process marker sites in docs/tmux and named boot spans; fresh database-only callback is covered by census and reown wiring"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/bridge.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; bridge.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/capacity-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; capacity-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/chrome-session-reaper.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; chrome-session-reaper.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/cipher-bridge-e2e.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; cipher-bridge-e2e.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/codex-quota-launch-flag-wiring.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; codex-quota-launch-flag-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/complete-marker-reconciler.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; complete-marker-reconciler.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/create-issue.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; create-issue.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/createLeadRuntime-preflight.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; createLeadRuntime-preflight.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/dashboard.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; dashboard.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/digest-route-mount.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; digest-route-mount.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/doa-backoff-reset-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; doa-backoff-reset-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route-dual-session-completed.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route-dual-session-completed.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route-fly1041-retire.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route-fly1041-retire.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route-fly191.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route-fly191.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route-fly921-turn-belt.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route-fly921-turn-belt.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route-fly945-reopen-review.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route-fly945-reopen-review.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route-session-completed-guard.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route-session-completed-guard.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route.account-rotation.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route.account-rotation.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route.codex-trigger.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route.codex-trigger.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route.fly1427-terminal-immunity.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route.fly1427-terminal-immunity.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route.gate-timed-out.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route.gate-timed-out.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/event-route.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; event-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/events-routing.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; events-routing.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/flag-scan-route-mount.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; flag-scan-route-mount.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fleet-routes-mount.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fleet-routes-mount.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly1262-ssot-acceptance.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1262-ssot-acceptance.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly1505-qa-ship-attempt-chain.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1505-qa-ship-attempt-chain.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2248-mechanism-guards.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly2248-mechanism-guards.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2268-mechanism-guards.test.ts",
+      "matched": [
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly2268-mechanism-guards.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2337-dead-mail-terminalization.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly2337-dead-mail-terminalization.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2398-narrow-boundary.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly2398-narrow-boundary.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2478-resident-probe.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly2478-resident-probe.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/founder-consent-integration.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; founder-consent-integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fsm-e2e.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fsm-e2e.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/gate-carrier-rebind-mount.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; gate-carrier-rebind-mount.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/gate-response-auth.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; gate-response-auth.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/isolation-boundary.real-process.test.ts",
+      "matched": [
+        "CodexDaemonLedger",
+        "codex-runner-orphan-reaper",
+        "defaultListCodexDaemonLedgers",
+        "daemonPgid"
+      ],
+      "disposition": "retained: real isolated process consumer of changed ledger reader; report environment skips"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/lead-config-bridge.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; lead-config-bridge.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/lead-lease-diagnostics.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; lead-lease-diagnostics.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/lead-lease-self-check.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; lead-lease-self-check.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/lead-rules-bundle.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; lead-rules-bundle.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/linear-comment-and-lookup.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; linear-comment-and-lookup.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/linear-comments.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; linear-comments.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/linear-issues.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; linear-issues.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/linear-reparent.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; linear-reparent.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/outbound-pressure.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; outbound-pressure.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/proofshot-deliver.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; proofshot-deliver.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/publish-fable-template-alias.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; publish-fable-template-alias.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/publish-html-route.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; publish-html-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/quota-ignition-red-lines.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; quota-ignition-red-lines.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/report-hosting-secrets.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; report-hosting-secrets.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/reports-route-mount.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; reports-route-mount.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/resolve-mailbox-write-timeout.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; resolve-mailbox-write-timeout.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/retry-doc-tier.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; retry-doc-tier.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/retry-e2e.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; retry-e2e.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/run-dispatcher.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; run-dispatcher.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/runner-status-endpoint.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runner-status-endpoint.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/runs-route-codex-quota.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runs-route-codex-quota.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/runs-route-generalized-pending.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runs-route-generalized-pending.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/runs-route-registration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runs-route-registration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/session-lifecycle.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; session-lifecycle.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/snapshot-owner-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; snapshot-owner-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/standup-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; standup-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/start-e2e.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; start-e2e.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/terminal-archive-enqueue-sites.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; terminal-archive-enqueue-sites.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/terminal-commdb-sync-wiring.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; terminal-commdb-sync-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/tools.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; tools.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/triage-data.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; triage-data.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/triage-template.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; triage-template.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/workflow-menu-policy-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-menu-policy-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/workflow-publication-bridge.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-publication-bridge.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/workflow-resume-reopen-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-resume-reopen-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/workkind-cutover-mount.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workkind-cutover-mount.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/xhs-review-mount.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; xhs-review-mount.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/alert-drain-switch.integration.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; alert-drain-switch.integration.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/alert-kind-copy.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; alert-kind-copy.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/automated-message-inventory.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: no Discord sender or text POST/PATCH changes; retirement uses existing local audit hook"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; claude-review-runner.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/close-tmux.fly2498.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; close-tmux.fly2498.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-daemon-ownership-retirement.test.ts",
+      "matched": [
+        "semantic ownership consumer or new test",
+        "codex_daemon_ownership_retired",
+        "daemon-ownership-retired-",
+        "daemonPgid"
+      ],
+      "disposition": "retained: new identity retirement and race contracts"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-orphan-process-snapshot.test.ts",
+      "matched": [
+        "new complete-process-snapshot regression"
+      ],
+      "disposition": "retained: mixed malformed rows are unknown, valid init/kernel rows retained"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-quota-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; codex-quota-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-runner-orphan-reaper.test.ts",
+      "matched": [
+        "codex-runner-orphan-reaper",
+        "plugin",
+        "plugin.ts",
+        "daemonPgid",
+        "parseCodexAppServerProcessRow"
+      ],
+      "disposition": "retained: direct forward/reverse ownership cleanup and keyed home coverage"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-session-reown-wiring.structure.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts",
+        "maintenance:orphan-active-recheck"
+      ],
+      "disposition": "retained: recovery before maintenance and fresh active-state callback"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-session-reown.test.ts",
+      "matched": [
+        "semantic ownership consumer or new test"
+      ],
+      "disposition": "retained: ownership registry readoption and stop lifecycle protect orphan mutation"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-terminal-harvest-wiring.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; codex-terminal-harvest-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/commdb-fsm-reconcile.fly1329-parked-veto.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; commdb-fsm-reconcile.fly1329-parked-veto.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/epic-page-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; epic-page-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/epic-residual-plugin-wiring.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; epic-residual-plugin-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/fly1505-boot-drain-order.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1505-boot-drain-order.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "retained: repository lexical test/process teardown guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/fly1808-autocontinue-retired.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1808-autocontinue-retired.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/founder-text-approval-wiring.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; founder-text-approval-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/gate-poller-lead-reconcile.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; gate-poller-lead-reconcile.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/gemini-scoped-token.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; gemini-scoped-token.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/health-resources.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; health-resources.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/infra-alert-wiring.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; infra-alert-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/kind-contract.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; kind-contract.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/land-content-proof.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; land-content-proof.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/land-executor.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; land-executor.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/land-finalize-wiring.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; land-finalize-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/lead-capability-read.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; lead-capability-read.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/lifecycle-closeout.test.ts",
+      "matched": [
+        "daemonPgid"
+      ],
+      "disposition": "retained: -t FLY-2490 default closeout liveness wiring: persisted daemon ledger liveness; unrelated issue arbitration and shipped/cancelled action matrices unchanged"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/liveness-manifest.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; liveness-manifest.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/playwright-orphan-census.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; playwright-orphan-census.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/release-readiness-routes.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; release-readiness-routes.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/residue-harvest.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; residue-harvest.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/review-recovery-status-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; review-recovery-status-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/reviewer-timeout.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; reviewer-timeout.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-infra-memory-distill.test.ts",
+      "matched": [
+        "CodexTmuxAdapter"
+      ],
+      "disposition": "excluded: mocks adapter constructor to assert memoryDistill argument; constructor options unchanged"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ship-approval-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ship-approval-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ship-judgment-history-disabled.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ship-judgment-history-disabled.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ship-judgment-reference-route.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ship-judgment-reference-route.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ship-judgment-routes.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ship-judgment-routes.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ship-judgment-runtime.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ship-judgment-runtime.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/snapshot-closeout.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; snapshot-closeout.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/subscription-claude-classifier-runner.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; subscription-claude-classifier-runner.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/voice-session-auth.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; voice-session-auth.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/workflow-engine-alert-routing.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-engine-alert-routing.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/workflow-gate-card-lifecycle-wiring.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-gate-card-lifecycle-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/workflow-gate-question-recovery-config.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-gate-question-recovery-config.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/workflow-pr-binding-wiring.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-pr-binding-wiring.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/workflow-scorecard.e2e.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; workflow-scorecard.e2e.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/xhs-write-service.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; xhs-write-service.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/roundtable/__tests__/RoundtableThreadManager.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; RoundtableThreadManager.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/lead-capabilities/__tests__/skill-discovery.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; skill-discovery.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/teamlead/src/ship-judgment/__tests__/legacy-retirement.test.ts",
+      "matched": [
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; legacy-retirement.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "packages/voice-core/src/__tests__/headless-brain.test.ts",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; headless-brain.test.ts covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/agent-cli-provider-contract.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; agent-cli-provider-contract.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/check-global-path-hygiene.test.sh",
+      "matched": [
+        "packages/claude-runner/src",
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; check-global-path-hygiene.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/ci-structure.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ci-structure.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/codex-guard.test.sh",
+      "matched": [
+        "CodexTmuxAdapter",
+        "CodexTmuxAdapter.ts",
+        "packages/claude-runner/src",
+        "packages/claude-runner/src/CodexTmuxAdapter.ts"
+      ],
+      "disposition": "excluded: only asserts daemon wrapper codexBin setup and no one-shot timeout; spawn command wrapper and exec timeout unchanged"
+    },
+    {
+      "path": "scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; codex-home-reconcile-cadence.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/discord-plugin-cutover.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; discord-plugin-cutover.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/discord-plugin-ops.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; discord-plugin-ops.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly-1867-playwright-orphan-census.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly-1867-playwright-orphan-census.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly-2006-retention-consumer-gate.test.mjs covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly-2026-browser-idle-census.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly-2026-browser-idle-census.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly1645-receipt-residue-gate.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1645-receipt-residue-gate.test.mjs covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly1674-residue.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1674-residue.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1679-dev-channels-v2.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly1680-v1-extinction.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1680-v1-extinction.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly1726-default-lead-delivery.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly1726-default-lead-delivery.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly2102-flag-freeze.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly2102-flag-freeze.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/fly2776-dev-channels-geometry.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; fly2776-dev-channels-geometry.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/flywheel-buddy-captain.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; flywheel-buddy-captain.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/flywheel-lead.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; flywheel-lead.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/flywheel-log-rotate.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; flywheel-log-rotate.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/host-tmux-selection-s0-scope.test.sh",
+      "matched": [
+        "packages/claude-runner/src"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; host-tmux-selection-s0-scope.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/legacy-swap-broadcast-retirement.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; legacy-swap-broadcast-retirement.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/package-onboard-smoke.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; package-onboard-smoke.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/packaged-seams.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; packaged-seams.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/path-hygiene.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; path-hygiene.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/qa-529-discord-liveness.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; qa-529-discord-liveness.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/qa-codex-lead-parity.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; qa-codex-lead-parity.test.mjs covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/qa-discord-liveness.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; qa-discord-liveness.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/qa-fly-2456-liveness.test.mjs",
+      "matched": [
+        "daemonPgid"
+      ],
+      "disposition": "excluded: standalone QA liveness command harness exercises unchanged runtime API; current persisted-ledger compatibility covered by concrete runtime and closeout groups"
+    },
+    {
+      "path": "scripts/__tests__/qa-room-env.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; qa-room-env.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/register-local-marketplace.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; register-local-marketplace.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/restart-discord-plugin.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; restart-discord-plugin.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/restart-pull-preflight.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; restart-pull-preflight.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/restart-services-no-voice-bridge.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; restart-services-no-voice-bridge.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/run-bridge-isolation-boot.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; run-bridge-isolation-boot.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/runner-test-discipline.test.mjs",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runner-test-discipline.test.mjs covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/runner-test-policy.test.mjs",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runner-test-policy.test.mjs covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/runtime-role-auto-qa-retirement.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; runtime-role-auto-qa-retirement.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/setup-mcp-on-demand.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; setup-mcp-on-demand.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/ship-judgment-timer.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "plugin",
+        "plugin.ts"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; ship-judgment-timer.test.mjs covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/skill-framework-variants.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; skill-framework-variants.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/test-deploy-discord-pointer.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; test-deploy-discord-pointer.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+      "matched": [
+        "plugin"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; test-deploy-fly1389.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/test-deploy-generalized.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "daemonPgid"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; test-deploy-generalized.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    },
+    {
+      "path": "scripts/__tests__/v2-retirement-cleanup.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: matches common plugin name or shared parent directory; v2-retirement-cleanup.test.sh covers a separate route, provider, script, or policy; no changed orphan ownership or spawn-ledger behavior"
+    }
+  ],
+  "nonTestReferenceCount": 2428
+}
