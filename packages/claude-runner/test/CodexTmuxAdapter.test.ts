@@ -69,6 +69,7 @@ import type {
 	CodexLeaseHolderProbeResult,
 } from "../src/codex-process-snapshot.js";
 import type { RunnerTuiWindowOutcome } from "../src/codex-runner-tui-window.js";
+import { defaultAsyncExecFile, type ExecFileFn } from "../src/TmuxAdapter.js";
 
 // FLY-2877: lease deletion consults the host process table. These tests must
 // not depend on which codex processes the host runs (or on whether the CI
@@ -279,6 +280,60 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		releaseTmux({ stdout: "tmux 3.4" });
 		await expect(healthPromise).resolves.toMatchObject({ healthy: true });
 		expect(calls).toEqual(["tmux", "codex"]);
+	});
+
+	it("FLY-2920 launches after complete preflight output delayed beyond 250ms", async () => {
+		let delayedProbes = 0;
+		const tail =
+			"setTimeout(()=>process.stdout.write('codex-cli 0.144.1'),600)";
+		const program = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',${JSON.stringify(tail)}],{stdio:['ignore',1,2]});c.unref();process.exit(0)`;
+		const exec = ((cmd, args, options) => {
+			if (cmd === "codex" && args[0] === "--version") {
+				delayedProbes++;
+				return defaultAsyncExecFile(process.execPath, ["-e", program], options);
+			}
+			return fake.exec(cmd, args);
+		}) as ExecFileFn;
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			makeDeps(),
+		);
+		await expect(adapter.execute(ctx())).resolves.toMatchObject({
+			success: true,
+		});
+		expect(delayedProbes).toBeGreaterThan(0);
+		expect(runtime.runGoalInputs).toHaveLength(1);
+	});
+
+	it("FLY-2920 rejects a real nonzero preflight without launching the daemon", async () => {
+		const exec = ((cmd, args, options) => {
+			if (cmd === "codex" && args[0] === "--version")
+				return defaultAsyncExecFile(
+					process.execPath,
+					["-e", "process.stderr.write('preflight-failed');process.exit(7)"],
+					options,
+				);
+			return fake.exec(cmd, args);
+		}) as ExecFileFn;
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			makeDeps(),
+		);
+		await expect(adapter.execute(ctx())).rejects.toMatchObject({
+			status: 7,
+			stderr: "preflight-failed",
+		});
+		expect(runtime.runGoalInputs).toHaveLength(0);
 	});
 
 	it("FLY-2789 imports the final Codex rollout before retiring its home", async () => {

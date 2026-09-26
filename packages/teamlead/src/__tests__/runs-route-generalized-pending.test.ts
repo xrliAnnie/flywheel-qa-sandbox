@@ -339,6 +339,96 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 		).toBe(1);
 	});
 
+	it("FLY-2920 permits a legal start on the same node after an absent generation is released", async () => {
+		dispatchMode = "tmux_hold";
+		const first = await postStart("FLY-RETRY-ABSENT", "retry-absent-key");
+		expect(first.status).toBe(409);
+		const old = start.mock.calls[0][0].generalizedExecution!;
+		dispatchMode = "delivered";
+		const second = await postStart("FLY-RETRY-ABSENT", "retry-absent-key");
+		expect(second.status).toBe(200);
+		expect(await second.json()).toMatchObject({
+			success: true,
+			executionId: old.executionId,
+			workflowRunId: old.runId,
+			workflowNodeId: old.nodeId,
+		});
+		expect(start).toHaveBeenCalledTimes(2);
+		expect(start.mock.calls[1][0].generalizedExecution).toMatchObject({
+			executionId: old.executionId,
+			runId: old.runId,
+			nodeId: old.nodeId,
+			launchGeneration: 2,
+		});
+	});
+
+	it("FLY-2920 recovers an unknown launch on the same handle without a second dispatch", async () => {
+		precommitFailure = {
+			code: "LAUNCH_PRECOMMIT_FAILED",
+			reason: "observer_timeout",
+			physicalEvidence: "unknown",
+		};
+		const first = await postStart("FLY-RECOVER-UNKNOWN", "recover-unknown-key");
+		expect(first.status).toBe(202);
+		const old = start.mock.calls[0][0].generalizedExecution!;
+		expect(commitLaunch?.()).toMatchObject({ ok: true });
+		const second = await postStart(
+			"FLY-RECOVER-UNKNOWN",
+			"recover-unknown-key",
+		);
+		expect(second.status).toBe(200);
+		expect(await second.json()).toMatchObject({
+			success: true,
+			executionId: old.executionId,
+			workflowRunId: old.runId,
+			workflowNodeId: old.nodeId,
+		});
+		expect(start).toHaveBeenCalledOnce();
+		expect(store.getWorkflowLaunchOwner(old.executionId)).toMatchObject({
+			owner_generation: 1,
+		});
+	});
+
+	it("FLY-2920 keeps an unclassified start exception pending without claiming physical absence", async () => {
+		start.mockRejectedValueOnce(new Error("transport observation interrupted"));
+		const response = await postStart("FLY-THROW-UNKNOWN", "throw-unknown-key");
+		expect(response.status).toBe(202);
+		expect(await response.json()).toMatchObject({
+			code: "LAUNCH_PENDING",
+			retryable: false,
+		});
+		const run = store.getActiveWorkflowRunForIssue("FLY-THROW-UNKNOWN")!;
+		const reservation = store.getWorkflowStartReservationForRun(run.run_id)!;
+		expect(
+			store.getWorkflowLaunchOwner(reservation.execution_id)
+				?.released_generation,
+		).not.toBe(1);
+	});
+
+	it("FLY-2920 preserves a committed launch when the start observer throws afterwards", async () => {
+		start.mockImplementationOnce(async (req) => {
+			expect(req.generalizedExecution?.commitWorkflowLaunch?.()).toMatchObject({
+				ok: true,
+			});
+			throw new Error("post-commit observer failed");
+		});
+		const response = await postStart(
+			"FLY-THROW-COMMITTED",
+			"throw-committed-key",
+		);
+		expect(response.status).toBe(202);
+		expect(await response.json()).toMatchObject({ code: "LAUNCH_PENDING" });
+		const run = store.getActiveWorkflowRunForIssue("FLY-THROW-COMMITTED")!;
+		const reservation = store.getWorkflowStartReservationForRun(run.run_id)!;
+		expect(
+			store.getWorkflowLaunchOwner(reservation.execution_id),
+		).toMatchObject({ owner_generation: 1 });
+		expect(
+			store.getWorkflowLaunchOwner(reservation.execution_id)
+				?.released_generation,
+		).not.toBe(1);
+	});
+
 	it("maps a cleaned identity failure to retryable 409 after releasing the generation", async () => {
 		precommitFailure = {
 			code: "LAUNCH_WINDOW_IDENTITY_FAILED",
@@ -356,18 +446,18 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 		});
 	});
 
-	it("maps a precommit deadline to non-retryable 503 without exposing evidence", async () => {
+	it("FLY-2920 keeps a precommit observation deadline pending without exposing evidence", async () => {
 		precommitFailure = {
 			code: "LAUNCH_PRECOMMIT_TIMEOUT",
 			reason: "deadline_exhausted",
 			physicalEvidence: "unknown",
 		};
 		const response = await postStart("FLY-TIMEOUT", "timeout-key");
-		expect(response.status).toBe(503);
+		expect(response.status).toBe(202);
 		const body = await response.json();
 		expect(body).toMatchObject({
 			success: false,
-			code: "LAUNCH_PRECOMMIT_TIMEOUT",
+			code: "LAUNCH_PENDING",
 			reason: "deadline_exhausted",
 			executionId: expect.any(String),
 			retryable: false,

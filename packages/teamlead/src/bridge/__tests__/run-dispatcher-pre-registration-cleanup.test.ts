@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import type { LaunchPrecommitFailure } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../commdb-path.js";
 import {
@@ -28,7 +29,14 @@ describe("FLY-1066 A3 pre-registration cleanup audit", () => {
 	});
 
 	function runtimeWith(
-		result: { success: false; error: string; sessionId?: string } | Error,
+		result:
+			| {
+					success: false;
+					error: string;
+					sessionId?: string;
+					launchFailure?: LaunchPrecommitFailure;
+			  }
+			| Error,
 	): ProjectRuntime {
 		return {
 			blueprint: {
@@ -86,6 +94,59 @@ describe("FLY-1066 A3 pre-registration cleanup audit", () => {
 			const db = new CommDB(commDbPathForProject("proj"));
 			expect(db.getSession(newExecutionId)).toBeUndefined();
 			db.close();
+		},
+	);
+
+	it.each(["absent", "cleaned", "unknown", "throw"] as const)(
+		"FLY-2920 only releases a failed observed launch with physical evidence: %s",
+		async (evidence) => {
+			const result =
+				evidence === "throw"
+					? new Error("observation unavailable")
+					: {
+							success: false as const,
+							error: "precommit failed",
+							launchFailure: {
+								code: "LAUNCH_PRECOMMIT_FAILED" as const,
+								reason: "fixture",
+								physicalEvidence: evidence,
+							},
+						};
+			const onSpawnFailed = vi.fn();
+			const dispatcher = new RunDispatcher(
+				new Map([["proj", runtimeWith(result)]]),
+				[],
+				RunnerAdmissionController.alwaysAdmit(),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ commitLaunch: async () => ({ ok: true }), onSpawnFailed },
+			);
+			const started = await dispatcher.start({
+				issueId: "FLY-2920",
+				projectName: "proj",
+				observeLaunchOutcome: true,
+			});
+			await dispatcher.drain();
+			expect(await started.launchOutcome).toMatchObject({
+				status: "precommit_failed",
+				failure: {
+					physicalEvidence: evidence === "throw" ? "unknown" : evidence,
+				},
+			});
+			const db = new CommDB(commDbPathForProject("proj"));
+			try {
+				if (evidence === "absent" || evidence === "cleaned") {
+					expect(db.getSession(started.executionId)).toBeUndefined();
+					expect(onSpawnFailed).toHaveBeenCalledOnce();
+				} else {
+					expect(db.getSession(started.executionId)).toBeDefined();
+					expect(onSpawnFailed).not.toHaveBeenCalled();
+				}
+			} finally {
+				db.close();
+			}
 		},
 	);
 

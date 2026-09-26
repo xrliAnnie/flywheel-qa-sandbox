@@ -54,58 +54,92 @@ describe("defaultAsyncExecFile", () => {
 		expect(result.stdout).toBe("BRIDGE CHILD\n");
 	});
 
-	it("fails within a bounded drain window when a grandchild holds stdio", async () => {
-		const cwd = mkdtempSync(join(tmpdir(), "flywheel-async-exec-group-"));
-		const pidFile = join(cwd, "grandchild.pid");
-		const readyFile = join(cwd, "parent-ready-at");
-		const holdMs = 5_000;
-		scratch.push(cwd);
-		const grandchildProgram =
-			"const fs=require('node:fs');fs.writeFileSync(process.env.PID_FILE,String(process.pid));process.send?.('ready');setTimeout(()=>{},Number(process.env.HOLD_MS))";
-		const parentProgram = `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e',${JSON.stringify(
-			grandchildProgram,
-		)}],{stdio:['ignore',1,2,'ipc'],env:process.env});child.once('message',()=>{fs.writeFileSync(process.env.READY_FILE,String(Date.now()));child.disconnect();child.unref();process.exit(0)});child.once('error',()=>process.exit(2));`;
-		const originalKill = process.kill;
-		const negativeGroupKills: number[] = [];
-		const killSpy = vi
-			.spyOn(process, "kill")
-			.mockImplementation((pid, signal) => {
-				if (pid < 0) negativeGroupKills.push(pid);
-				return originalKill(pid, signal);
-			});
-		let grandchildPid = 0;
-		const run = defaultAsyncExecFile(process.execPath, ["-e", parentProgram], {
-			env: {
-				HOLD_MS: String(holdMs),
-				PID_FILE: pidFile,
-				READY_FILE: readyFile,
-			},
-			timeoutMs: holdMs * 2,
-		});
+	it.each([
+		{ holdMs: 600, timeoutMs: 3_000, succeeds: true },
+		{ holdMs: 5_000, timeoutMs: 1_500, succeeds: false },
+	])(
+		"waits for close within the overall deadline ($holdMs ms tail)",
+		async ({ holdMs, timeoutMs, succeeds }) => {
+			const cwd = mkdtempSync(join(tmpdir(), "flywheel-async-exec-group-"));
+			const pidFile = join(cwd, "grandchild.pid");
+			const readyFile = join(cwd, "parent-ready-at");
+			scratch.push(cwd);
+			const grandchildProgram =
+				"const fs=require('node:fs');fs.writeFileSync(process.env.PID_FILE,String(process.pid));process.send?.('ready');setTimeout(()=>{process.stdout.write('tail');process.stderr.write('tail-error')},Number(process.env.HOLD_MS))";
+			const parentProgram = `const fs=require('node:fs');const {spawn}=require('node:child_process');const child=spawn(process.execPath,['-e',${JSON.stringify(
+				grandchildProgram,
+			)}],{stdio:['ignore',1,2,'ipc'],env:process.env});child.once('message',()=>{fs.writeFileSync(process.env.READY_FILE,String(Date.now()));child.disconnect();child.unref();process.exit(0)});child.once('error',()=>process.exit(2));`;
+			const originalKill = process.kill;
+			const negativeGroupKills: number[] = [];
+			const killSpy = vi
+				.spyOn(process, "kill")
+				.mockImplementation((pid, signal) => {
+					if (pid < 0) negativeGroupKills.push(pid);
+					return originalKill(pid, signal);
+				});
+			let grandchildPid = 0;
+			const run = defaultAsyncExecFile(
+				process.execPath,
+				["-e", parentProgram],
+				{
+					env: {
+						HOLD_MS: String(holdMs),
+						PID_FILE: pidFile,
+						READY_FILE: readyFile,
+					},
+					timeoutMs,
+				},
+			);
 
-		try {
-			await expect(run).rejects.toMatchObject({
-				code: "ERR_CHILD_STDIO_DRAIN_TIMEOUT",
-			});
-			grandchildPid = Number(readFileSync(pidFile, "utf8"));
-			expect(Number(readFileSync(readyFile, "utf8"))).toBeGreaterThan(0);
-			expect(negativeGroupKills).toEqual([]);
-		} finally {
-			killSpy.mockRestore();
-			if (grandchildPid > 0) {
-				try {
-					process.kill(grandchildPid, "SIGKILL");
-				} catch {
-					// The pre-fix implementation may already have killed the group.
+			try {
+				if (succeeds) {
+					await expect(run).resolves.toEqual({
+						stdout: "tail",
+						stderr: "tail-error",
+					});
+				} else {
+					await expect(run).rejects.toMatchObject({
+						code: "ETIMEDOUT",
+						timedOut: true,
+						status: 0,
+						killed: false,
+						signal: null,
+					});
+				}
+				grandchildPid = Number(readFileSync(pidFile, "utf8"));
+				expect(Number(readFileSync(readyFile, "utf8"))).toBeGreaterThan(0);
+				expect(negativeGroupKills).toEqual([]);
+			} finally {
+				killSpy.mockRestore();
+				grandchildPid ||= Number(readFileSync(pidFile, "utf8"));
+				if (grandchildPid > 0) {
+					try {
+						process.kill(grandchildPid, "SIGKILL");
+					} catch {
+						// The pre-fix implementation may already have killed the group.
+					}
 				}
 			}
+			await vi.waitFor(
+				() => {
+					expect(() => process.kill(grandchildPid, 0)).toThrow();
+				},
+				{ timeout: 1_000, interval: 20 },
+			);
+		},
+	);
+
+	it("defaults to a finite 90 second deadline when no timeout is supplied", async () => {
+		const timer = vi.spyOn(globalThis, "setTimeout");
+		try {
+			await defaultAsyncExecFile(process.execPath, [
+				"-e",
+				"process.stdout.write('ok')",
+			]);
+			expect(timer).toHaveBeenCalledWith(expect.any(Function), 90_000);
+		} finally {
+			timer.mockRestore();
 		}
-		await vi.waitFor(
-			() => {
-				expect(() => process.kill(grandchildPid, 0)).toThrow();
-			},
-			{ timeout: 1_000, interval: 20 },
-		);
 	});
 
 	it("hard-times out with captured output without blocking the event loop", async () => {
@@ -153,6 +187,21 @@ describe("defaultAsyncExecFile", () => {
 			stdout: "out",
 			stderr: "err",
 			signal: null,
+		});
+	});
+
+	it("preserves a child signal without claiming the helper killed it", async () => {
+		await expect(
+			defaultAsyncExecFile(
+				process.execPath,
+				["-e", "process.kill(process.pid,'SIGTERM')"],
+				{ timeoutMs: 2_000 },
+			),
+		).rejects.toMatchObject({
+			status: null,
+			signal: "SIGTERM",
+			killed: false,
+			timedOut: false,
 		});
 	});
 

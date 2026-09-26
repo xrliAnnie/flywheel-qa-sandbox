@@ -97,12 +97,14 @@ interface LaunchOutcomeDeferred {
 	commit: (() => { ok: boolean; reason?: string }) | undefined;
 	observeResult(result: BlueprintResult): void;
 	observeError(error: unknown): void;
+	canReleaseFailure(): boolean;
 }
 
 function createLaunchOutcomeDeferred(
 	commit: (() => { ok: boolean; reason?: string }) | undefined,
 ): LaunchOutcomeDeferred {
 	let settled = false;
+	let settledOutcome: LaunchPrecommitOutcome | undefined;
 	let resolve!: (outcome: LaunchPrecommitOutcome) => void;
 	const promise = new Promise<LaunchPrecommitOutcome>((done) => {
 		resolve = done;
@@ -110,6 +112,7 @@ function createLaunchOutcomeDeferred(
 	const settle = (outcome: LaunchPrecommitOutcome) => {
 		if (settled) return;
 		settled = true;
+		settledOutcome = outcome;
 		resolve(outcome);
 	};
 	const genericFailure = (error: unknown): LaunchPrecommitFailure => ({
@@ -119,6 +122,10 @@ function createLaunchOutcomeDeferred(
 	});
 	return {
 		promise,
+		canReleaseFailure: () =>
+			settledOutcome?.status === "precommit_failed" &&
+			(settledOutcome.failure.physicalEvidence === "absent" ||
+				settledOutcome.failure.physicalEvidence === "cleaned"),
 		commit: commit
 			? () => {
 					const result = commit();
@@ -1917,6 +1924,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 							`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
 						);
 					} else {
+						// A committed launch or unknown physical state belongs to the
+						// existing recovery path; preserve its claim and mailbox binding.
+						if (launchOutcome && !launchOutcome.canReleaseFailure()) return;
 						try {
 							this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
 						} catch {
@@ -1938,7 +1948,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 						`[RunDispatcher] ${executionId} failed:`,
 						err instanceof Error ? err.message : err,
 					);
-					// R4#1: symmetric claim cleanup on thrown spawn failure.
+					if (launchOutcome && !launchOutcome.canReleaseFailure()) return;
+					// R4#1: symmetric claim cleanup on proven spawn failure.
 					try {
 						this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
 					} catch {

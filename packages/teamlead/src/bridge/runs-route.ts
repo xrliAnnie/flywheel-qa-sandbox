@@ -3763,7 +3763,16 @@ export function createRunsRouter(
 							`[runs-route] generalized launch start failed issue=${issueId} run=${generalizedSelection.runId} node=${generalizedSelection.nodeId} execution=${generalizedSelection.executionId}`,
 							error,
 						);
-						if (launchReleaseFence) {
+						// Only these pre-launch checks prove no Blueprint was started.
+						// An arbitrary observer/transport exception cannot prove absence.
+						const preSpawnFailure =
+							error instanceof Error &&
+							[
+								"ContinuityIndeterminateError",
+								"FreshStartAuditError",
+								"DoaBackoffError",
+							].includes(error.name);
+						if (launchReleaseFence && preSpawnFailure) {
 							store.releaseFailedWorkflowLaunch({
 								executionId: generalizedSelection.executionId,
 								ownerId: launchReleaseFence.ownerId,
@@ -3805,10 +3814,10 @@ export function createRunsRouter(
 							});
 							return;
 						}
-						res.status(500).json({
+						res.status(202).json({
 							success: false,
-							code: "LAUNCH_PRECOMMIT_FAILED",
-							reason: "dispatcher_start_failed",
+							code: "LAUNCH_PENDING",
+							reason: "dispatcher_start_outcome_unknown",
 							executionId: generalizedSelection.executionId,
 							retryable: false,
 						});
@@ -3841,16 +3850,6 @@ export function createRunsRouter(
 							return;
 						}
 						if (outcome.status === "precommit_failed") {
-							if (outcome.failure.code === "LAUNCH_PRECOMMIT_TIMEOUT") {
-								res.status(503).json({
-									success: false,
-									code: outcome.failure.code,
-									reason: outcome.failure.reason,
-									executionId: generalizedSelection.executionId,
-									retryable: false,
-								});
-								return;
-							}
 							if (outcome.failure.physicalEvidence === "unknown") {
 								res.status(202).json({
 									success: false,

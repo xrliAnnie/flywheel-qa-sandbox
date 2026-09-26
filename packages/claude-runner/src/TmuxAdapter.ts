@@ -2829,7 +2829,13 @@ export function defaultAsyncExecFile(
 	opts?: ExecFileOpts,
 ): Promise<{ stdout: string; stderr: string }> {
 	const maxBuffer = opts?.maxBuffer ?? 1024 * 1024;
-	const drainTimeoutMs = 250;
+	// One deadline covers spawn, execution and inherited stdio closure.
+	const timeoutMs =
+		opts?.timeoutMs !== undefined &&
+		Number.isFinite(opts.timeoutMs) &&
+		opts.timeoutMs > 0
+			? opts.timeoutMs
+			: 90_000;
 	return new Promise((resolve, reject) => {
 		let stdout = Buffer.alloc(0);
 		let stderr = Buffer.alloc(0);
@@ -2840,8 +2846,6 @@ export function defaultAsyncExecFile(
 		let settled = false;
 		let timedOut = false;
 		let killed = false;
-		let drainTimer: ReturnType<typeof setTimeout> | undefined;
-		let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 
 		const child = spawn(cmd, args, {
 			cwd: opts?.cwd,
@@ -2891,13 +2895,11 @@ export function defaultAsyncExecFile(
 			if (settled) return;
 			settled = true;
 			if (deadlineTimer) clearTimeout(deadlineTimer);
-			if (drainTimer) clearTimeout(drainTimer);
 			reject(enrich(error, code));
 		};
 		const settleFromTerminal = () => {
 			if (settled || !exitSeen || !closeSeen) return;
 			if (deadlineTimer) clearTimeout(deadlineTimer);
-			if (drainTimer) clearTimeout(drainTimer);
 			if (exitCode === 0 && exitSignal === null) {
 				settled = true;
 				resolve(output());
@@ -2912,6 +2914,9 @@ export function defaultAsyncExecFile(
 			);
 		};
 		const killGroup = () => {
+			// Exit proves this child has been reaped. Its pid/pgid may be reused;
+			// a descendant holding our pipes does not authorize signaling that id.
+			if (exitSeen) return;
 			killed = true;
 			exitSignal ??= "SIGKILL";
 			if (!exitSeen && child.pid && process.platform !== "win32") {
@@ -2960,15 +2965,6 @@ export function defaultAsyncExecFile(
 			exitSeen = true;
 			exitCode = code;
 			exitSignal = signal;
-			if (!closeSeen && !settled) {
-				drainTimer = setTimeout(() => {
-					terminate(
-						new Error(`Child stdio did not close within ${drainTimeoutMs}ms`),
-						"ERR_CHILD_STDIO_DRAIN_TIMEOUT",
-					);
-				}, drainTimeoutMs);
-				drainTimer.unref?.();
-			}
 			settleFromTerminal();
 		});
 		child.once("close", () => {
@@ -2976,16 +2972,14 @@ export function defaultAsyncExecFile(
 			settleFromTerminal();
 		});
 
-		if (opts?.timeoutMs !== undefined && opts.timeoutMs > 0) {
-			deadlineTimer = setTimeout(() => {
-				timedOut = true;
-				terminate(
-					new Error(`Command timed out after ${opts.timeoutMs}ms: ${cmd}`),
-					"ETIMEDOUT",
-				);
-			}, opts.timeoutMs);
-			deadlineTimer.unref?.();
-		}
+		const deadlineTimer = setTimeout(() => {
+			timedOut = true;
+			terminate(
+				new Error(`Command timed out after ${timeoutMs}ms: ${cmd}`),
+				"ETIMEDOUT",
+			);
+		}, timeoutMs);
+		deadlineTimer.unref?.();
 		child.stdin?.end(opts?.input);
 	});
 }

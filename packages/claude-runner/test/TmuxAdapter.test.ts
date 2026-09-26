@@ -29,6 +29,7 @@ import type { AsyncExecFileFn, ExecFileFn } from "../src/TmuxAdapter.js";
 import {
 	assertLaunchCommandBudgets,
 	buildAmbientSafeWindowCommand,
+	defaultAsyncExecFile,
 	ensureRunnerSession,
 	LaunchCommandOversizeError,
 	LaunchPrecommitError,
@@ -548,6 +549,96 @@ function makeMockExecWithDelayedDead(
 // ─── Tests ───────────────────────────────────────
 
 describe("TmuxAdapter", () => {
+	it.each([0, 9])(
+		"FLY-2920 execute preserves helper exit %i after inherited pipes close beyond 250ms",
+		async (exitCode) => {
+			const fixtureDir = mkdtempSync(join(tmpdir(), "fly2920-claude-execute-"));
+			const helperPath = join(fixtureDir, "ensure-helper");
+			const attemptsPath = join(fixtureDir, "attempts");
+			const outputReadyPath = join(fixtureDir, "output-ready");
+			const payload = JSON.stringify({
+				action: "verified",
+				createStdout: "",
+				reachablePid: 123,
+			});
+			const tail = `setTimeout(() => {
+				require('node:fs').writeFileSync(${JSON.stringify(outputReadyPath)}, 'ready');
+				process.stdout.write(${JSON.stringify(payload)});
+				process.stderr.write('delayed ensure diagnostic');
+			}, 600)`;
+			writeFileSync(
+				helperPath,
+				`#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(attemptsPath)}, 'attempt\\n');
+const child = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(tail)}], { stdio: ['ignore', 1, 2] });
+child.unref();
+process.exit(${exitCode});
+`,
+				{ mode: 0o700 },
+			);
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const onTmuxWindowOpened = vi.fn(() => {
+				expect(existsSync(outputReadyPath)).toBe(true);
+			});
+			// An explicit options object preserves the production async helper even
+			// though synchronous tmux commands use the hermetic fake above.
+			const adapter = new TmuxAdapter(
+				"runner-fly2920",
+				fn,
+				10,
+				5_000,
+				undefined,
+				undefined,
+				undefined,
+				{
+					rescueCliPath: helperPath,
+					socketPath: join(fixtureDir, "unused-socket"),
+					deadlineMs: 5_000,
+					attemptCapMs: 5_000,
+					// A failed attempt consumes this bounded retry budget; no retry
+					// can mask a real nonzero helper exit with a later success.
+					retryDelayMs: 5_000,
+				},
+			);
+			vi.stubEnv("HOME", fixtureDir);
+			try {
+				const execution = adapter.execute(
+					makeCtx({
+						cwd: fixtureDir,
+						onTmuxWindowOpened,
+						launchCommitPath: join(fixtureDir, "launch-commit"),
+					}),
+				);
+				if (exitCode === 0) {
+					await expect(execution).resolves.toMatchObject({
+						success: true,
+						timedOut: false,
+						tmuxWindow: "runner-fly2920:@42",
+					});
+				} else {
+					const error = await execution.catch((caught: unknown) => caught);
+					expect(error).toBeInstanceOf(TmuxSessionHoldError);
+					expect((error as Error).message).toContain("(exit 9)");
+					expect((error as Error).message).toContain(
+						"delayed ensure diagnostic",
+					);
+					expect(existsSync(join(fixtureDir, "launch-commit"))).toBe(false);
+				}
+				expect(readFileSync(attemptsPath, "utf8")).toBe("attempt\n");
+				expect(
+					calls.filter((call) => call.args[0] === "new-window"),
+				).toHaveLength(exitCode === 0 ? 1 : 0);
+				expect(onTmuxWindowOpened).toHaveBeenCalledTimes(
+					exitCode === 0 ? 1 : 0,
+				);
+			} finally {
+				vi.unstubAllEnvs();
+				rmSync(fixtureDir, { recursive: true, force: true });
+			}
+		},
+		15_000,
+	);
+
 	// ─── Construction (lazy preflight) ──────────────
 
 	it("does NOT check tmux in constructor", () => {
@@ -3989,6 +4080,25 @@ describe("pruneScaffoldWindow (FLY-758)", () => {
 // ─── FLY-758: scaffold naming (defeats the async automatic-rename race) ───────
 
 describe("ensureRunnerSession (FLY-758)", () => {
+	it("FLY-2920 accepts a complete ensure protocol delayed beyond 250ms", async () => {
+		const payload = JSON.stringify({
+			action: "verified",
+			createStdout: "",
+			reachablePid: 123,
+		});
+		const tail = `setTimeout(()=>process.stdout.write(${JSON.stringify(payload)}),600)`;
+		const program = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',${JSON.stringify(tail)}],{stdio:['ignore',1,2]});c.unref();process.exit(0)`;
+		const helper: AsyncExecFileFn = (_cmd, _args, options) =>
+			defaultAsyncExecFile(process.execPath, ["-e", program], options);
+		await expect(
+			ensureRunnerSession(() => ({ stdout: "" }), "runner-test", {
+				asyncExecFileFn: helper,
+				deadlineMs: 2_000,
+				attemptCapMs: 2_000,
+			}),
+		).resolves.toBeUndefined();
+	});
+
 	function renameCalls(calls: ExecCall[]): ExecCall[] {
 		return calls.filter(
 			(c) => c.cmd === "tmux" && c.args.includes("rename-window"),

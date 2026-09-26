@@ -121,6 +121,10 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	};
 }
 
+// Collect the large composition root after mocks are registered. The unchanged
+// 15s test budget below measures startup and HTTP behavior, not module transforms.
+const { startBridge } = await import("../bridge/plugin.js");
+
 describe("FLY-22: /api/runs routes always registered", () => {
 	let closeFn: (() => Promise<void>) | undefined;
 
@@ -135,9 +139,6 @@ describe("FLY-22: /api/runs routes always registered", () => {
 		"startBridge without startDispatcher → /api/runs/active returns 200 (not 404)",
 		{ timeout: 15_000 },
 		async () => {
-			// Import after mocks are set up
-			const { startBridge } = await import("../bridge/plugin.js");
-
 			const { app, close, store } = await startBridge(
 				makeConfig(),
 				testProjects,

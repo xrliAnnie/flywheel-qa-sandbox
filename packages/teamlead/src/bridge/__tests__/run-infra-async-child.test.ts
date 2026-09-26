@@ -6,6 +6,13 @@ import {
 } from "../run-infra.js";
 
 describe("FLY-2331 run-infra async child funnels", () => {
+	it("retains evidence emitted 600ms after the direct child exits", async () => {
+		const program =
+			"const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',\"setTimeout(()=>process.stdout.write('late-evidence'),600)\"],{stdio:['ignore',1,2]});c.unref();process.exit(0)";
+		await expect(
+			runInfraEvidenceCommand(process.execPath, ["-e", program], process.cwd()),
+		).resolves.toEqual({ stdout: "late-evidence" });
+	});
 	it("runs evidence commands asynchronously with the 120 second deadline", async () => {
 		let resolveChild!: (value: { stdout: string; stderr: string }) => void;
 		const execFile = vi.fn(

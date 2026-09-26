@@ -1,0 +1,1330 @@
+{
+  "method": "git grep -lF each changed production full path, file name, parent directory and module stem; direct helper imports additionally audited",
+  "files": [
+    "packages/claude-runner/src/TmuxAdapter.ts",
+    "packages/teamlead/src/bridge/run-dispatcher.ts",
+    "packages/teamlead/src/bridge/runs-route.ts"
+  ],
+  "retained": [
+    "ActionExecutor.test.ts",
+    "AntigravityTmuxAdapter.test.ts",
+    "Blueprint.plugin-readiness.test.ts",
+    "CodexTmuxAdapter.test.ts",
+    "KimiTmuxAdapter.registry.test.ts",
+    "KimiTmuxAdapter.test.ts",
+    "TmuxAdapter.test.ts",
+    "WorktreeManager.test.ts",
+    "async-exec-file.test.ts",
+    "bridge-sync-op-marker-coverage.test.ts",
+    "codex-quota-bench.test.ts",
+    "codex-sync-timeout-contract.test.ts",
+    "defaultExecFile.test.ts",
+    "feature-flags-drift.test.ts",
+    "fleet-console.test.ts",
+    "fly1674-residue.test.sh",
+    "fly1808-wave-a.test.ts",
+    "fly2517-rework-wake-retirement.test.ts",
+    "kill-path-inventory.test.ts",
+    "launch-claim-durable.test.ts",
+    "run-dispatcher-backend.test.ts",
+    "run-dispatcher-fly887-turn-seam.test.ts",
+    "run-dispatcher-pre-registration-cleanup.test.ts",
+    "run-dispatcher-prebound.test.ts",
+    "run-dispatcher-resume.test.ts",
+    "run-dispatcher.test.ts",
+    "run-infra-async-child.test.ts",
+    "run-infra-continuity.test.ts",
+    "run-infra-window-authority.test.ts",
+    "runs-route-codex-quota.test.ts",
+    "runs-route-generalized-pending.test.ts",
+    "runs-route-registration.test.ts",
+    "runs-route.dag-entry.test.ts",
+    "runs-route.flag-governance.test.ts",
+    "runs-route.founder-message-ref.test.ts",
+    "runs-route.run-management.test.ts",
+    "runs-route.stale-blocker.test.ts",
+    "runtime-role-auto-qa-retirement.test.sh",
+    "start-e2e.test.ts",
+    "workflow-dispatch-seams.structure.test.ts",
+    "workflow-docs-git-stall.test.ts",
+    "workflow-docs-git.integration.test.ts"
+  ],
+  "matches": [
+    {
+      "path": "packages/agent-team-transport/src/__tests__/derive-identity.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "excluded: comment-only naming convention; identity derivation unchanged"
+    },
+    {
+      "path": "packages/agent-team-transport/src/codex/CodexAdapter.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/agent-team-transport/src/path-helpers.ts",
+      "matched": [
+        "run-dispatcher",
+        "run-dispatcher.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/agent-team-transport/src/types.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/AntigravityTmuxAdapter.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/CodexTmuxAdapter.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/KimiTmuxAdapter.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/TmuxAdapter.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/TmuxRunner.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/codex-daemon-adapter-helpers.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/codex-daemon-client.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/src/index.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/test/AntigravityTmuxAdapter.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/CodexTmuxAdapter.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/KimiTmuxAdapter.registry.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/KimiTmuxAdapter.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/codex-sync-timeout-contract.test.ts",
+      "matched": [
+        "TmuxAdapter",
+        "TmuxAdapter.ts"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/defaultExecFile.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/fixtures/kill-path-inventory.json",
+      "matched": [
+        "TmuxAdapter",
+        "TmuxAdapter.ts",
+        "packages/claude-runner/src",
+        "packages/claude-runner/src/TmuxAdapter.ts",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+      "matched": [
+        "TmuxAdapter",
+        "TmuxAdapter.ts",
+        "packages/claude-runner/src",
+        "packages/claude-runner/src/TmuxAdapter.ts",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/claude-runner/test/kill-path-inventory.ts",
+      "matched": [
+        "TmuxAdapter",
+        "TmuxAdapter.ts",
+        "packages/claude-runner/src",
+        "packages/claude-runner/src/TmuxAdapter.ts",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/claude-runner/test/prompt-overflow.real-tmux.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: host tmux prompt/env/scaffold/slot QA; those paths unchanged, isolated real-child execute coverage retained"
+    },
+    {
+      "path": "packages/claude-runner/test/runner-env-isolation.real-tmux.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: host tmux prompt/env/scaffold/slot QA; those paths unchanged, isolated real-child execute coverage retained"
+    },
+    {
+      "path": "packages/claude-runner/test/scaffold-prune.real-tmux.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: host tmux prompt/env/scaffold/slot QA; those paths unchanged, isolated real-child execute coverage retained"
+    },
+    {
+      "path": "packages/claude-runner/test/tmux-3.7c-exact.gate.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: host tmux prompt/env/scaffold/slot QA; those paths unchanged, isolated real-child execute coverage retained"
+    },
+    {
+      "path": "packages/claude-runner/test/tmux-slot-routing.real-tmux.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: host tmux prompt/env/scaffold/slot QA; those paths unchanged, isolated real-child execute coverage retained"
+    },
+    {
+      "path": "packages/config/src/__tests__/drift-scan.test.ts",
+      "matched": [
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/config/src/__tests__/drift-scan/index.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+      "matched": [
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/runs-route.ts",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/config/src/__tests__/fly1808-wave-a.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/runs-route.ts",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/config/src/__tests__/runner-label.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: comment-only model naming convention; model routing unchanged"
+    },
+    {
+      "path": "packages/config/src/comm-backend.ts",
+      "matched": [
+        "TmuxAdapter",
+        "run-dispatcher",
+        "run-dispatcher.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/config/src/constants.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/config/src/designer-labels.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/config/src/feature-flags/registry.ts",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/runs-route.ts",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/config/src/feature-flags/store-policy.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/config/src/runner-mcp-profile.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/config/src/types.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/core/src/AdapterRegistry.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/core/src/adapter-types.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/core/src/constants.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/core/src/tmux-naming.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/core/src/tmux-viewer.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/edge-worker/src/AgentDispatcher.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/edge-worker/src/Blueprint.ts",
+      "matched": [
+        "TmuxAdapter",
+        "run-dispatcher",
+        "run-dispatcher.ts",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/Blueprint.fly1188-codex-identity.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "excluded: comment-only backend discriminator; backend field generation unchanged"
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/Blueprint.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "excluded: comment on issueIdentifier display naming; issue hydration unchanged"
+    },
+    {
+      "path": "packages/edge-worker/src/__tests__/resolveBridgeUrl.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: comment-only env injection; URL fallback unchanged"
+    },
+    {
+      "path": "packages/flywheel-comm/src/commands/ask.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/flywheel-comm/src/commands/codex-resume.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/flywheel-comm/src/commands/complete.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/flywheel-comm/src/commands/gate.ts",
+      "matched": [
+        "TmuxAdapter",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/flywheel-comm/src/commands/stage.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/flywheel-comm/src/db.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/flywheel-comm/src/gate-marker.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/qa-framework/README.md",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/qa-framework/suites/fly-102-lead-driven-runner-lifecycle.md",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/qa-framework/suites/fly-60-hard-gate.md",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/ci-test-costs.json",
+      "matched": [
+        "run-dispatcher",
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/founder-only-authority.md",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-messaging-rules.md",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/package.json",
+      "matched": [
+        "run-dispatcher",
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/scripts/__tests__/rollback-args-gate.test.sh",
+      "matched": [
+        "run-dispatcher",
+        "run-dispatcher.ts"
+      ],
+      "disposition": "excluded: comment-only rollback transport/identity description; unchanged"
+    },
+    {
+      "path": "packages/teamlead/scripts/claude-lead.sh",
+      "matched": [
+        "TmuxAdapter",
+        "run-dispatcher",
+        "run-dispatcher.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/DirectEventSink.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/StateStore.land-carryover.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/createFetchIssue.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "excluded: comment-only label casing boundary; issue fetching unchanged"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fixtures/fly2278-red/M3.txt",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fixtures/fly2567/compatibility.json",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly1674-opus46-real-tmux.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2268-mechanism-guards.test.ts",
+      "matched": [
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2398-narrow-boundary.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2517-rework-wake-retirement.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/report-hosting-secrets.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/run-dispatcher.test.ts",
+      "matched": [
+        "TmuxAdapter",
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/runs-route-codex-quota.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/runs-route-registration.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/start-e2e.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/workflow-dispatch-seams.structure.test.ts",
+      "matched": [
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/codex-quota-bench.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/fixtures/fly2269-r1-reviewer-raw.txt",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/fixtures/fly2269-r4-reviewer-raw.txt",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/land-executor.test.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/launch-claim-durable.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/repo-fable-runner-argv.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: adapter buildCommand-only subclass; helper/execute not called"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-dispatcher-backend.test.ts",
+      "matched": [
+        "TmuxAdapter",
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-dispatcher-fly887-turn-seam.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-dispatcher-pre-registration-cleanup.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-dispatcher-prebound.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-dispatcher-resume.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-infra-continuity.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-infra-memory-distill.test.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "excluded: mocked Codex constructor memory option wiring only; helper not called"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/run-infra-window-authority.test.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/runs-route.dag-entry.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/runs-route.flag-governance.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/runs-route.founder-message-ref.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/runs-route.run-management.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/runs-route.stale-blocker.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ship-approval-route.test.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "excluded: body-shape description only; independent router unchanged"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/child-process-census.json",
+      "matched": [
+        "TmuxAdapter",
+        "TmuxAdapter.ts",
+        "packages/claude-runner/src",
+        "packages/claude-runner/src/TmuxAdapter.ts",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/runs-route.ts",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/chrome-session-reaper.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/doa-backoff.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/phase-branch-tip.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/plugin.ts",
+      "matched": [
+        "run-dispatcher",
+        "run-dispatcher.ts",
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/retry-dispatcher.ts",
+      "matched": [
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/run-dispatcher.ts",
+      "matched": [
+        "TmuxAdapter",
+        "run-dispatcher",
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/run-infra.ts",
+      "matched": [
+        "TmuxAdapter",
+        "packages/teamlead/src/bridge",
+        "run-dispatcher",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/runs-route.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/ship-approval-route.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/stale-blocker-guard.ts",
+      "matched": [
+        "runs-route"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "packages/teamlead/src/department-registry.ts",
+      "matched": [
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/__tests__/check-global-path-hygiene.test.sh",
+      "matched": [
+        "packages/claude-runner/src"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/ci-structure.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/codex-guard.test.sh",
+      "matched": [
+        "TmuxAdapter",
+        "TmuxAdapter.ts",
+        "packages/claude-runner/src"
+      ],
+      "disposition": "excluded: CodexTmuxAdapter name substring; daemon wrapper stdout guard independent of changed helper"
+    },
+    {
+      "path": "scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/fixtures/customer-release-reserve-worker.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/fly-1867-playwright-orphan-census.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/fly-2026-browser-idle-census.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/fly1645-receipt-residue-gate.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/fly1674-residue.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/runs-route.ts",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "scripts/__tests__/fly1680-v1-extinction.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/fly2102-flag-freeze.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "runs-route"
+      ],
+      "disposition": "excluded: test-name allowlist for env flag freeze; no flags changed"
+    },
+    {
+      "path": "scripts/__tests__/flywheel-log-rotate.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/host-tmux-selection-s0-scope.test.sh",
+      "matched": [
+        "packages/claude-runner/src"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/legacy-swap-broadcast-retirement.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/qa-codex-lead-parity.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/runtime-role-auto-qa-retirement.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/run-dispatcher.ts",
+        "run-dispatcher",
+        "run-dispatcher.ts"
+      ],
+      "disposition": "retained: focused executable consumer/guard"
+    },
+    {
+      "path": "scripts/__tests__/ship-judgment-timer.test.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/test-deploy-generalized.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/__tests__/v2-retirement-cleanup.test.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/e2e-adapter-protocol.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/e2e-demo.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/e2e-heartbeat.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/e2e-scan-notify.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/e2e-tmux-runner.ts",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/fixtures/fly2331-guard-arm.mjs",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/fly-1867-legacy-profiles-quarantine.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/fly-1867-playwright-orphan-census.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/fly-2006-retention-consumer-gate.config.json",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/fly-2026-browser-idle-census.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/fly1645-receipt-residue-gate.config.json",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/fly503-consolidation/build_review.py",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/flywheel-cmux-sync.sh",
+      "matched": [
+        "TmuxAdapter",
+        "TmuxAdapter.ts",
+        "packages/claude-runner/src",
+        "packages/claude-runner/src/TmuxAdapter.ts",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/run-dispatcher.ts",
+        "run-dispatcher",
+        "run-dispatcher.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/hooks/inbox-check.sh",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/inject-linear-issue.sh",
+      "matched": [
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/runs-route.ts",
+        "runs-route",
+        "runs-route.ts"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/lib/agent-cli-providers/CONTRACT.md",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/lib/agent-cli-providers/claude.sh",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/lib/legacy-swap-broadcast-retirement.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/lib/path-hygiene.sh",
+      "matched": [
+        "packages/claude-runner/src",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/lib/qa-fly-2456-report-pair.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/lib/qa-slot-env-contract.json",
+      "matched": [
+        "run-dispatcher"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/lib/setup.ts",
+      "matched": [
+        "TmuxAdapter",
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/migrate-report-hosting.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/qa-codex-lead-parity.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/qa-fly-1188-e2e.mjs",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/qa-fly-1193-debounce-e2e.mjs",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/qa-fly-1239-e2e.mjs",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/qa-fly-1356-mode-visibility.sh",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/qa-fly-1707-incident-dispatcher.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/qa-tmux-3.7c-compat.sh",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/test-deploy.sh",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/test-geo206-integration.ts",
+      "matched": [
+        "TmuxAdapter"
+      ],
+      "disposition": "source/document/fixture reference: inspected implementation usage or static description; no independent executable test; changed helpers covered by retained consumers"
+    },
+    {
+      "path": "scripts/test-restart-services.sh",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    },
+    {
+      "path": "scripts/test-stale-patrol.ts",
+      "matched": [
+        "packages/teamlead/src/bridge"
+      ],
+      "disposition": "excluded: parent-directory reference only; no changed helper/launch-outcome behavior exercised"
+    }
+  ]
+}
