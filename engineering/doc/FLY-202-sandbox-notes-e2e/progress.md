@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-26T13:36:47.135Z
-nextStep: Design phase complete; park for DAG handoff
+phase: implement
+phaseCursor: 1/4
+updated: 2026-09-26T13:41:15.037Z
+nextStep: "Task 2: run V1-V6 content assertions on doc/qa/sandbox-notes.md"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (6/6)
-**next**: Design phase complete; park for DAG handoff
+**phase**: implement (1/4)
+**next**: Task 2: run V1-V6 content assertions on doc/qa/sandbox-notes.md
