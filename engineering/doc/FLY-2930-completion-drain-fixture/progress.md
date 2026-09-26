@@ -1,9 +1,9 @@
 ---
 issue: FLY-2930
 phase: implement
-phaseCursor: 1/5
-updated: 2026-09-26T11:16:54.218Z
-nextStep: Create the exact one-line fixture
+phaseCursor: 2/5
+updated: 2026-09-26T11:17:33.977Z
+nextStep: Commit the verified fixture
 chunks:
   - id: audit
     order: 1
@@ -14,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-2930 progress
-**phase**: implement (1/5)
-**next**: Create the exact one-line fixture
+**phase**: implement (2/5)
+**next**: Commit the verified fixture
 
 ## chunks
 - ✅ audit — 
