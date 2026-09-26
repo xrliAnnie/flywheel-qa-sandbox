@@ -1,13 +1,13 @@
 ---
 issue: FLY-2909
 phase: implement
-phaseCursor: 2/5
-updated: 2026-09-26T04:03:41.115Z
-nextStep: Run the reusable meter on the frozen 14-day Lead transcript window
+phaseCursor: 3/5
+updated: 2026-09-26T04:11:02.413Z
+nextStep: Run consumer sweep and final targeted verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2909 progress
-**phase**: implement (2/5)
-**next**: Run the reusable meter on the frozen 14-day Lead transcript window
+**phase**: implement (3/5)
+**next**: Run consumer sweep and final targeted verification
