@@ -1,14 +1,14 @@
 ---
 issue: FLY-2886
 phase: implement
-phaseCursor: 5/8
-updated: 2026-09-26T03:53:40.389Z
-nextStep: wire persistent live-context guard, source isolation, and
-  generation-bound blocked output handling
+phaseCursor: 6/8
+updated: 2026-09-26T04:50:26.519Z
+nextStep: implement the persistent live-context ring, source isolation, and
+  irreversible fuse while keeping injection disabled
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: implement (5/8)
-**next**: wire persistent live-context guard, source isolation, and generation-bound blocked output handling
+**phase**: implement (6/8)
+**next**: implement the persistent live-context ring, source isolation, and irreversible fuse while keeping injection disabled
