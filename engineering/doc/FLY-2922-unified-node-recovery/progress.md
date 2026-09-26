@@ -2,14 +2,15 @@
 issue: FLY-2922
 phase: design
 phaseCursor: 3/5
-updated: 2026-09-26T15:54:40.170Z
-nextStep: "R2 CHANGES_REQUESTED: fixed missing predecessor lineage and dependent
-  bookkeeping; clarified done close, stale holds, live rework wake and active
-  quota settlement. Check docs/HTML alignment, commit/push, register R3."
+updated: 2026-09-26T15:57:54.862Z
+nextStep: R3 registered at plan head 4e7d0c1d2, gate
+  46a1b3cd-9d44-4c3b-8bf9-2659c598f2af. R2 lineage blocker and advisories
+  addressed in section 10. Poll effective verdict; approved then publish-only,
+  hosted verify/report, phase_design_complete, park.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: design (3/5)
-**next**: R2 CHANGES_REQUESTED: fixed missing predecessor lineage and dependent bookkeeping; clarified done close, stale holds, live rework wake and active quota settlement. Check docs/HTML alignment, commit/push, register R3.
+**next**: R3 registered at plan head 4e7d0c1d2, gate 46a1b3cd-9d44-4c3b-8bf9-2659c598f2af. R2 lineage blocker and advisories addressed in section 10. Poll effective verdict; approved then publish-only, hosted verify/report, phase_design_complete, park.
