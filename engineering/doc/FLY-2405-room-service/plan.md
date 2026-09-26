@@ -104,7 +104,7 @@ stateDiagram-v2
     failed --> tearing_down: teardown 请求(清残留)
     interrupted --> tearing_down: teardown 请求
     teardown_failed --> tearing_down: 新 teardown 请求(新 attempt)
-    tearing_down --> torn_down: 快照 OK + teardown exit 0 + 残留观测为空
+    tearing_down --> torn_down: 快照 OK + teardown exit 0 + 残留观测为空 + 凭 token 释放认领
     tearing_down --> teardown_failed: 快照失败 / teardown exit≠0 / 残留非空 / 超时
     preparing --> interrupted: Bridge 重启后 owner 已死且无收据
     deploying --> interrupted
@@ -225,7 +225,7 @@ stateDiagram-v2
 ### 7.4 结果判定
 
 - deploy 操作:`receipt.exit_code == 0 && phase_reached == deploy` → 解析 stdout(容忍前置噪声:取最后一个以 `{` 开头的行到结尾 `JSON.parse`;必须含 `slot, port, bridgeUrl, slotDir, projectName`)→ `GET http://127.0.0.1:<port>/health` 且 `buildSha === head`(generalized 另要求 `buildMode=built` 且 `artifactBuildSha === head`)→ `ready`。`phase_reached == prepare` 且非 0 → `released(prepare_failed)`(§6.1 释放);`deploy` 阶段非 0 或核验不过 → `failed(<reason>)`。
-- teardown 操作:`exit_code == 0` 后,Bridge 在沙箱外做**残留观测**:主/借位锁目录不存在、`SLOT_DIR` 不存在、`launchctl list` 无 `com.flywheel.qa.lead.slot-<n>.` 前缀的 label、`ps -axo pid,command` 无引用 `SLOT_DIR` 的进程;结果写入操作记录 `residue_check`,非空 ⇒ `teardown_failed(residue)`。runner 用 `room status` 读到的就是这份沙箱外观测(沙箱内 `ps` 本就看不全)。
+- teardown 操作:`exit_code == 0` 后,Bridge 在沙箱外做**残留观测**:主/借位锁目录**仍在**且 `pid=service-cleaned`、`service-claim` 为本房 token(释放在观测之后,见 §6.1)、各房位 `SLOT_DIR` 不存在、`launchctl list` 无 `com.flywheel.qa.lead.slot-<n>.` 前缀的 label、`ps -axo pid,command` 无引用 `SLOT_DIR` 的进程;结果写入操作记录 `residue_check`,非空 ⇒ `teardown_failed(residue)`。runner 用 `room status` 读到的就是这份沙箱外观测(沙箱内 `ps` 本就看不全)。
 - 房 JSON 里的 token 文件路径原样返回路径、不返回内容(房内 token 本就是 0600 文件,与今天一致)。
 - `log_tail`:只取 stderr 里以 `[test-deploy]` / `[test-teardown]` / `[qa-room-job]` 开头的行(这些 `log()` 行遵守不打印 token 的约定,FLY-1189),最多 40 行 / 8KB。
 
@@ -383,6 +383,7 @@ erDiagram
 | owner 已终态、房还在 | `list` 标 `owner_terminal=true`;同 issue 后继或 Lead 可拆 |
 | 快照失败 | `teardown_failed(snapshot_failed)`,不拆;可带 reason 跳过 |
 | 拆完仍有残留 | `teardown_failed(residue)`,附残留清单,可再拆或交 Lead |
+| 释放认领时某锁已带外国 token | 该锁不删,房记 `teardown_failed(release_conflict)` 交 Lead;其余本房锁照常释放 |
 | 服务关闭 | `503 room_service_disabled` |
 
 ## 15. 开关与部署
