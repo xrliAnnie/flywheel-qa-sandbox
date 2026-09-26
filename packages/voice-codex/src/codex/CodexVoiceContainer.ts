@@ -207,6 +207,34 @@ class AdmissionScope {
 	}
 }
 
+/**
+ * Every admission RPC checks the admission is still active before it is sent
+ * and after it returns, so a late continuation can only close (review R1#4).
+ * Once the admission is handed over the guard no longer applies.
+ */
+function guardAdmissionProcess(
+	process: CodexVoiceProcess,
+	scope: AdmissionScope,
+): CodexVoiceProcess {
+	const check = () => {
+		if (!scope.transferred) scope.assertActive();
+	};
+	const guarded = async <T>(call: () => Promise<T>): Promise<T> => {
+		check();
+		const result = await call();
+		check();
+		return result;
+	};
+	return {
+		on: (event, callback) => process.on(event, callback as never),
+		start: () => guarded(() => process.start()),
+		startThreadWithResult: (params) =>
+			guarded(() => process.startThreadWithResult(params)),
+		request: (method, params) => guarded(() => process.request(method, params)),
+		stop: () => process.stop(),
+	};
+}
+
 /** Map an admission failure to its public reason; the raw error stays local. */
 function degradedReason(
 	error: unknown,
@@ -1431,15 +1459,16 @@ export class CodexVoiceContainer {
 					if (!scope.transferred)
 						scope.violation ??= "process_exited_during_open";
 				});
-				await process.start();
+				const admitting = guardAdmissionProcess(process, scope);
+				await admitting.start();
 				scope.assertActive();
-				await assertCapabilityProcess(process, parent);
+				await assertCapabilityProcess(admitting, parent);
 				scope.assertActive();
 				const bound = bindAdmittedVoiceCapabilities(snapshot, parent.manifest);
 				assertContext(bound, input.sessionId, true);
 
 				scope.stage = "capability_thread";
-				const opened = await process.startThreadWithResult({
+				const opened = await admitting.startThreadWithResult({
 					cwd: parent.cwd,
 					approvalPolicy: "never",
 					permissions: "flywheel-lead-v2",
@@ -1476,11 +1505,14 @@ export class CodexVoiceContainer {
 					maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
 				});
 				scope.scribe = scribe;
-				await scribe.start();
+				const scribing = guardAdmissionProcess(scribe, scope);
+				await scribing.start();
 				scope.assertActive();
-				await assertSubscription(scribe);
-				await assertScribeTools(scribe, scribeWork);
-				const scribeThread = await scribe.startThreadWithResult({
+				await assertSubscription(scribing);
+				scope.assertActive();
+				await assertScribeTools(scribing, scribeWork);
+				scope.assertActive();
+				const scribeThread = await scribing.startThreadWithResult({
 					cwd: scribeWork,
 					approvalPolicy: "never",
 					sandbox: "read-only",
@@ -1492,7 +1524,7 @@ export class CodexVoiceContainer {
 
 				scope.stage = "script_writer";
 				const writer = new ScriptWriter({
-					process: scribe,
+					process: scribing,
 					threadId: scribeThread.id,
 				});
 				// This ordinary subscription turn also admits the structured-output protocol.

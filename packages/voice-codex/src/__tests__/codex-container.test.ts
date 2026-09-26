@@ -1422,6 +1422,48 @@ describe("background admission degrades to foreground voice (FLY-2886 plan v12 Â
 		await opened.close();
 	});
 
+	it("a late admission continuation makes no further RPC after the deadline (review R1#4)", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		let releaseAccount!: () => void;
+		const h = harness({
+			configureProcess: (process) => {
+				if (!process.options.profile && !process.options.voiceProfile)
+					process.requestHook = (method) =>
+						method === "account/read"
+							? new Promise((resolve) => {
+									releaseAccount = () =>
+										resolve({ result: { account: { type: "chatgpt" } } });
+								})
+							: undefined;
+			},
+		});
+		const now = Date.parse("2026-09-23T10:00:00.000Z");
+		const pending = h.container.open({
+			sessionId: "session-late-scribe",
+			voice: "marin",
+			loadContext: async () => context("session-late-scribe"),
+			background: background(),
+			openDeadlineAt: now + 25_000 + 20_000 + 11_000,
+		});
+		await vi.waitFor(() => expect(releaseAccount).toBeTypeOf("function"));
+		await vi.advanceTimersByTimeAsync(11_000);
+		const opened = await pending;
+		expect(opened.background).toEqual({
+			state: "degraded",
+			reason: "admission_timeout",
+		});
+		const scribe = h.processes.find(
+			(process) => !process.options.profile && !process.options.voiceProfile,
+		)!;
+		const before = scribe.requests.length;
+		releaseAccount();
+		await new Promise((resolve) => setImmediate(resolve));
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(scribe.requests.slice(before)).toEqual([]);
+		expect(scribe.threadParams).toBeUndefined();
+		await opened.close();
+	});
+
 	it("still closes the rest when one admission resource fails to close", async () => {
 		const h = harness({
 			configureProcess: (process) => {
