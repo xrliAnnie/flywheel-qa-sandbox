@@ -65,7 +65,7 @@ sed -n '1,200p' engineering/doc/FLY-2832-literal-migration-cell-a/progress.md
 ```sh
 test -d packages/runner-test-discipline-fixture
 git grep -nF -- 'packages/runner-test-discipline-fixture:' pnpm-lock.yaml
-test -x node_modules/.bin/vitest
+test -x packages/runner-test-discipline-fixture/node_modules/.bin/vitest
 test -x node_modules/.bin/biome
 git status --short --branch
 git log -1 --oneline -- packages/runner-test-discipline-fixture
