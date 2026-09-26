@@ -361,7 +361,7 @@ describe("voice session context assembly", () => {
 		expect(result.measurements.realtimePrompt.estimatedTokens).toBeGreaterThan(
 			0,
 		);
-	});
+	}, 30_000); // the first real o200k load takes seconds on a cold runner
 
 	it("accepts exactly 60 seconds old, rejects stale snapshots, and never truncates over budget", () => {
 		expect(() =>
@@ -648,5 +648,5 @@ describe("voice session context v2: prompt plus initialItems (FLY-2885 T8)", () 
 		).toBeLessThanOrEqual(15_500);
 		expect(result.measurements.initialItems.bytes).toBeLessThanOrEqual(32_000);
 		expect(result.baseInstructions).toContain(memory);
-	});
+	}, 30_000);
 });
