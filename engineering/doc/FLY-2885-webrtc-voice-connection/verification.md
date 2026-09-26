@@ -167,3 +167,33 @@ R3 只审 `407daf94d`：正常的晚到 final 路径已经正确，但单个「f
 - `pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-voice-codex" typecheck` 全部 exit 0；
 - voice-codex `vitest related src/codex/CodexProofSpeaker.ts` 4 个文件 85/85 过；
 - 五条负对照各自单独失败，还原后全过。
+
+## QA@1 返工（`eb6a27f42`、`a68bdedd1`）
+
+QA 在 `cd30b6ee9` 判定失败，唯一阻塞项是判据 3（不留锁和孤儿进程）。其余项全部通过：无 API key、延迟均值 1690 ms ≤ 1890、断线重连、kill -9、远处人声、朗读 20/20。
+
+**根因**：werift 0.24.4 默认 `max-compat`。作为 offer 方，音频和 data channel 各建一个 ICE/DTLS transport，各自收集 udp4 和 udp6。应答做 BUNDLE 之后，被丢弃的那个 transport 不再被跟踪，`pc.close()` 留下它的两个 host socket，daemon 因此永远不退出。
+- 用 `dgram.createSocket` 插桩定位：留下的正是 `ice.js:803` 收集 host 候选时建的 udp4 和 udp6。
+- 复现：QA 的 `werift-leak2.mjs` 连接时 6 个 UDP 句柄，关闭后剩 2 个；offer 方改用 `max-bundle` 后，连接时 4 个，关闭后 0 个，进程正常退出。
+
+**修复**：
+1. `WebRtcLeg` 使用 `bundlePolicy: "max-bundle"`（`eb6a27f42`）。真实 v3 会话验证：
+   - 应答 SDP 带 `a=group:BUNDLE 0 1`；
+   - 连接建立，data channel 收到 `session.started`，问答正常；
+   - 关闭后 0 个 UDP 句柄。
+   - 探针是设计阶段 `evidence/probe4.mjs` 的一次性变体，只加了 `max-bundle` 和句柄计数，不进仓库。
+2. 退出兜底（`a68bdedd1`）：`main` 结束后，用一个 unref 的 5 s 计时器检查。若仍有句柄让进程活着，就记录句柄类型和数量（不含内容），并以 `process.exitCode` 退出。干净收尾时进程在它触发前就已自然退出。
+
+**测试**：
+- `webrtc-leg.test.ts`：连接会话关闭后，worker 的 UDP 句柄必须归零。负对照：去掉 `max-bundle` 后失败。
+- `shutdown-exit.test.ts` 3 条：不持有事件循环；残留句柄超过宽限期后按 exit code 退出，并只记录类型和数量；默认退出码为 0。
+
+**验证**：
+- `pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-voice-codex" typecheck` 全部 exit 0。
+- voice-codex `vitest related src/codex/WebRtcLeg.ts src/cli.ts src/shutdown-exit.ts` 5 个文件 109/109 过，`git grep` 找到的 `WebRtcLeg` 消费者都在其中。
+- `flywheel-voice-wrapper.test.sh` 37/37，`install-voice-launchd.test.mjs` 9/9。
+
+**给 QA 复测的说明**：
+- 本机没有 529 房，daemon 级别的「空闲退出、SIGTERM 后进程确实退出」要在房内复测。
+- QA 诊断预加载脚本 `handles.cjs` 自己装了 `process.on("SIGTERM")`，会阻止 SIGTERM 的默认终止行为；判断「SIGTERM 能否停掉进程」时，请不要带这个预加载。
+- 插话（barge-in）有效样本不足，QA 已标为下一轮复验。本次返工没有改动插话相关代码。
