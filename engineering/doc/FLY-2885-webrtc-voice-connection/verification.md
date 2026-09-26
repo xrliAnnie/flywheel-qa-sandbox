@@ -56,3 +56,41 @@ Issue: FLY-2885 (https://linear.app/geoforge3d/issue/FLY-2885/语音b核心连�
 
 - `evidence/probe4-initialitems-summary.md`：41 场 v3 WebRTC 实测，覆盖 `initialItems` 的角色、容量上限和每条包装开销。
 - `evidence/probe-run*.jsonl`：设计阶段的 3 场。
+
+## §12 实现之后（`c67c8e629` … `8590e532f`）
+
+plan §12 第 4 轮复核 APPROVED（`7d7299528`，blob `9813d70d`）后，设计门按新 blob 重绑（requestId `7ddb669a…`，`await-codex-gate design` 通过），然后写了 §12 的生产代码。
+
+| 命令或范围 | 结果 |
+|---|---|
+| `pnpm lint` | exit 0（全仓 25 个 warning，不在本分支改动的文件里） |
+| `pnpm --filter "flywheel-voice-codex..." build` | exit 0 |
+| `pnpm --filter "...flywheel-teamlead" --filter "...flywheel-voice-codex" typecheck` | exit 0 |
+| teamlead：`vitest related` 三个改动源文件（`voice-context-contract`、`voice-session-context`、`voice-session-routes`） | 110 个文件，1,325 过、2 失败。两条失败都在 `epic-residual-plugin-wiring.test.ts`，均为 5 s 超时（当时 load1 约 97）；单独重跑 3/3 过 |
+| voice-codex：`vitest related` 四个改动源文件（`bridge-client`、`CodexVoiceContainer`、`context-tokens`、`CodexRoomFrontend`） | 9 个文件，175/175 过 |
+| `git grep` 找到、`related` 没带上的消费者 | voice-codex `session.test.ts` 33/33 过；teamlead `StateStore.voice-session.test.ts` 23/23 过 |
+
+`git grep` 排除的同名匹配：
+- `xiaohongshu-write/*claude-bridge-client*`、`voice-headphone` 的 `bridge-client`：都是各自包里另一个同名模块，与 voice-codex 的 `bridge-client.ts` 无关。
+
+§12.7 要求的测试逐项对应：
+- **teamlead 构建器**（`voice-session-context.test.ts`）：
+  - 恰好 7,600 全进 items，多一段回填 prompt；
+  - 中文夹具字节没超、token 超，只进 ≤7,600；
+  - 分段 ≤2,000 token、≤8,000 字节，只在行边界切；
+  - 12,000-token 多行夹具装配成功，余下按序进 prompt；
+  - 超长单行及其后的段都进 prompt；
+  - Raya 规模每段恰好出现一次、顺序不乱；
+  - 双超时抛 `context_too_large`，details 只有白名单字段；
+  - 计数器抛错、返回 NaN 或负数，都抛 `context_token_count_unavailable`。
+- **负对照**：临时去掉打包里的 token 条件，上面 5 条失败；还原后全过。
+- **路由**（`voice-session-routes.test.ts`）：两类错误返回 503 + `{reason, details}`，details 只有白名单字段；warn 日志里没有记忆正文和路径。
+- **voice-codex 客户端**（`bridge-client.test.ts`，真实本地 HTTP）：
+  - 两类 503 正文都保留 reason 和过滤后的 details；
+  - 多余字段被丢弃；
+  - 非 JSON 正文、未知 reason 只保留状态码。
+- **container**（`codex-container.test.ts`）：
+  - Bridge 的两类错误分别映射为 `context_too_large` / `context_invalid`，不 spawn 进程；
+  - tokenizer 不一致、逐条复算不符、缺逐条计数、合计不符、超过 7,600、计数器抛错，都报 `context_invalid`，不 spawn 进程；
+  - 默认计数器是真实 o200k。
+- **前端提示**（`codex-room.test.ts`）：两类原因走到前端回调，文案准确，不含任何上下文内容。
