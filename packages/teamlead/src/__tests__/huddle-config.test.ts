@@ -1,10 +1,10 @@
 /**
- * FLY-545 P2 — ProjectConfig validation for the optional `huddle` block and
- * the optional per-lead `voice` (edge-tts voice id, FLY-546-approved key).
+ * FLY-545 P2 — ProjectConfig validation for the optional per-lead `voice`
+ * (edge-tts voice id, FLY-546-approved key) and the `huddle` block, which
+ * FLY-2860 retired to a legacy conflict marker (no field validation).
  *
  * Contract: absent block/field = byte-compat (nothing normalized in);
- * present = type-checked fail-loud at the config boundary. Unknown keys
- * INSIDE huddle stay tolerated (loose-validation principle).
+ * a present voice is type-checked fail-loud at the config boundary.
  */
 import { describe, expect, it } from "vitest";
 import { parseAndValidateProjects } from "../ProjectConfig.js";
@@ -204,7 +204,7 @@ describe("ProjectEntry.voiceRoom", () => {
 	});
 });
 
-describe("ProjectEntry.huddle", () => {
+describe("ProjectEntry.huddle (FLY-2860 retired legacy marker)", () => {
 	it("accepts an absent huddle block (byte-compat) without normalizing one in", () => {
 		const projects = parseAndValidateProjects([entry()]);
 		expect("huddle" in projects[0]!).toBe(false);
@@ -216,98 +216,27 @@ describe("ProjectEntry.huddle", () => {
 		).not.toThrow();
 	});
 
-	it("accepts a valid huddle block verbatim (no default normalization)", () => {
-		const projects = parseAndValidateProjects([entry({ huddle: validHuddle })]);
-		expect(projects[0]!.huddle).toEqual(validHuddle);
-	});
-
-	it("accepts a validated orchestrator bot user id without requiring it for old huddles", () => {
-		expect(() =>
-			parseAndValidateProjects([entry({ huddle: validHuddle })]),
-		).not.toThrow();
-		const huddle = {
-			...validHuddle,
-			orchestratorBotUserId: "123456789012345678",
-		};
-		expect(parseAndValidateProjects([entry({ huddle })])[0]!.huddle).toEqual(
-			huddle,
-		);
-	});
-
-	it("rejects a malformed orchestrator bot user id", () => {
-		for (const orchestratorBotUserId of ["", "bot-1", 123]) {
-			expect(() =>
-				parseAndValidateProjects([
-					entry({ huddle: { ...validHuddle, orchestratorBotUserId } }),
-				]),
-			).toThrow(/orchestratorBotUserId/);
-		}
-	});
-
-	it("rejects a non-object huddle", () => {
-		expect(() => parseAndValidateProjects([entry({ huddle: "yes" })])).toThrow(
-			/huddle/,
-		);
-		expect(() => parseAndValidateProjects([entry({ huddle: [1] })])).toThrow(
-			/huddle/,
-		);
-	});
-
-	for (const field of [
-		"guildId",
-		"voiceChannelId",
-		"orchestratorBotTokenEnv",
-		"earsBotTokenEnv",
-	]) {
-		it(`rejects a huddle block missing required ${field}`, () => {
-			const bad: Record<string, unknown> = { ...validHuddle };
-			delete bad[field];
-			expect(() => parseAndValidateProjects([entry({ huddle: bad })])).toThrow(
-				new RegExp(field),
-			);
-		});
-		it(`rejects a huddle block with empty ${field}`, () => {
-			expect(() =>
-				parseAndValidateProjects([
-					entry({ huddle: { ...validHuddle, [field]: "" } }),
-				]),
-			).toThrow(new RegExp(field));
-		});
-	}
-
-	it("rejects a commandName outside the slash-command grammar", () => {
-		for (const bad of ["", "has space", "UPPER", "x".repeat(33), 42]) {
-			expect(() =>
-				parseAndValidateProjects([
-					entry({ huddle: { ...validHuddle, commandName: bad } }),
-				]),
-			).toThrow(/commandName/);
-		}
-		expect(() =>
-			parseAndValidateProjects([
-				entry({ huddle: { ...validHuddle, commandName: "meet" } }),
-			]),
-		).not.toThrow();
-	});
-
-	it("rejects a non-boolean moveMembers", () => {
-		expect(() =>
-			parseAndValidateProjects([
-				entry({ huddle: { ...validHuddle, moveMembers: "yes" } }),
-			]),
-		).toThrow(/moveMembers/);
-		expect(() =>
-			parseAndValidateProjects([
-				entry({ huddle: { ...validHuddle, moveMembers: false } }),
-			]),
-		).not.toThrow();
-	});
-
-	it("tolerates unknown keys inside huddle (loose-validation principle)", () => {
-		expect(() =>
-			parseAndValidateProjects([
-				entry({ huddle: { ...validHuddle, futureKnob: 1 } }),
-			]),
-		).not.toThrow();
+	// The legacy /glaw daemon that consumed these fields is gone. A leftover
+	// block must never break the whole roster load; it is kept verbatim so the
+	// voice admission guards (Bridge preflight/services/start, voice-codex)
+	// keep refusing that project with legacy_voice_conflict.
+	it.each([
+		["a formerly valid block", validHuddle],
+		["missing required fields", { guildId: "g-1" }],
+		["empty fields", { ...validHuddle, earsBotTokenEnv: "" }],
+		[
+			"an out-of-grammar command name",
+			{ ...validHuddle, commandName: "UPPER" },
+		],
+		["a non-boolean moveMembers", { ...validHuddle, moveMembers: "yes" }],
+		[
+			"a malformed bot user id",
+			{ ...validHuddle, orchestratorBotUserId: "bot-1" },
+		],
+		["a non-object value", "yes"],
+		["an array", [1]],
+	])("loads a leftover huddle block with %s verbatim", (_label, huddle) => {
+		const projects = parseAndValidateProjects([entry({ huddle })]);
+		expect(projects[0]!.huddle).toEqual(huddle);
 	});
 });

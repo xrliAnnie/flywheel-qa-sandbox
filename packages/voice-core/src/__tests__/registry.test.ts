@@ -15,6 +15,8 @@ const caps = (
 	announce: false,
 	converse: false,
 	bargeIn: false,
+	verbatim: false,
+	attribution: false,
 	toolCallScheduling: "none",
 	transcriptGranularity: "final-only",
 	supportsResume: false,
@@ -42,10 +44,10 @@ describe("BackendRegistry", () => {
 	it("fails fast on an unknown id", async () => {
 		const r = new BackendRegistry();
 		r.register("edge-tts", () => announceBackend);
-		const err = await r.create("gemini-live").catch((e) => e);
+		const err = await r.create("no-such-backend").catch((e) => e);
 		expect(err).toBeInstanceOf(VoiceError);
 		expect((err as VoiceError).code).toBe("unsupported");
-		expect((err as VoiceError).message).toContain("gemini-live");
+		expect((err as VoiceError).message).toContain("no-such-backend");
 		expect((err as VoiceError).message).toContain("edge-tts");
 	});
 

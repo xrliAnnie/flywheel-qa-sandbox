@@ -2,6 +2,8 @@ const PCM48_STEREO_FRAME_BYTES = 3_840;
 const FRAME_SAMPLES_16K = 320;
 const SILERO_CHUNK_SAMPLES = 512;
 const END_HOLD_MS = 20;
+const FRAME_MS = 20;
+const MAX_PREROLL_MS = 1_000;
 const RESAMPLE_HISTORY_SAMPLES = 30;
 // Fixed 31-tap Hamming-windowed sinc, 7kHz cutoff at 48kHz input.
 const RESAMPLE_FIR = new Float32Array([
@@ -48,6 +50,7 @@ export interface UplinkGateSummary {
 	maxProb: number;
 	minSpeechMs: number;
 	threshold: number;
+	prerollMs: number;
 	degraded?: UplinkGateDegradedReason;
 	framesSilencedBeforeDegrade?: number;
 	endedWithScoreInFlight: boolean;
@@ -65,6 +68,11 @@ interface UplinkSpeechGateOptions {
 	initialState(): unknown;
 	minSpeechMs: number;
 	threshold: number;
+	/** Audio kept ahead of the onset the gate detects and sent with the
+	 * utterance when the gate opens (a VAD pre-roll / prefix padding), so a
+	 * soft sentence start is not silenced. Every frame waits this much longer
+	 * before it leaves the gate. */
+	prerollMs?: number;
 	now?: () => number;
 	measureNow?: () => number;
 	startupFailure?: string;
@@ -118,13 +126,27 @@ function positiveInteger(value: number, name: string): void {
 	}
 }
 
-export function uplinkGateDelayFrames(minSpeechMs: number): number {
+export function uplinkGateDelayFrames(
+	minSpeechMs: number,
+	prerollMs = 0,
+): number {
 	positiveInteger(minSpeechMs, "minSpeechMs");
+	if (
+		!Number.isInteger(prerollMs) ||
+		prerollMs < 0 ||
+		prerollMs > MAX_PREROLL_MS
+	) {
+		throw new Error(
+			`prerollMs must be an integer between 0 and ${MAX_PREROLL_MS}`,
+		);
+	}
 	const positiveChunks = Math.ceil(minSpeechMs / 32);
 	return (
 		Math.ceil(
 			(511 + SILERO_CHUNK_SAMPLES * positiveChunks) / FRAME_SAMPLES_16K,
-		) + 1
+		) +
+		1 +
+		Math.ceil(prerollMs / FRAME_MS)
 	);
 }
 
@@ -178,6 +200,7 @@ export class UplinkSpeechGate {
 	private readonly measureNow: () => number;
 	private readonly positiveChunksRequired: number;
 	private readonly maxPendingChunks: number;
+	private readonly prerollMs: number;
 	private transientFailures = 0;
 	private permanentDegraded: {
 		reason: UplinkGateDegradedReason;
@@ -198,7 +221,11 @@ export class UplinkSpeechGate {
 		this.now = options.now ?? Date.now;
 		this.measureNow = options.measureNow ?? (() => performance.now());
 		this.positiveChunksRequired = Math.ceil(options.minSpeechMs / 32);
-		this.delayFrames = uplinkGateDelayFrames(options.minSpeechMs);
+		this.prerollMs = options.prerollMs ?? 0;
+		this.delayFrames = uplinkGateDelayFrames(
+			options.minSpeechMs,
+			this.prerollMs,
+		);
 		this.maxPendingChunks = this.delayFrames + 8;
 		this.permanentDegraded = options.startupFailure
 			? { reason: "startup", message: options.startupFailure }
@@ -472,6 +499,7 @@ export class UplinkSpeechGate {
 			maxProb: chain.maxProb,
 			minSpeechMs: this.options.minSpeechMs,
 			threshold: this.options.threshold,
+			prerollMs: this.prerollMs,
 			...(chain.degraded === undefined
 				? {}
 				: {

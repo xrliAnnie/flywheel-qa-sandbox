@@ -1,0 +1,122 @@
+{"at": 1790295783.908, "direction": "send", "message": {"type": "session.start", "event_id": "fly2866-start-cedar", "session": {"model": "gpt-live-1", "instructions": "你是语音声线测试朗读器。收到的每段文字都用自然的普通话一字不改地读出来，不要加任何别的话，也不要翻译。", "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": "cedar"}}, "delegation": {"type": "client"}}}}
+{"at": 1790295784.313, "direction": "recv", "message": {"event_id": "event_ERo0OcIwQGgqcdP8ewpav", "type": "session.started", "client_event_id": "fly2866-start-cedar", "session": {"id": "live_u7_ERo0Np3oMjHHBUZcWOYP33tBrLZzxQtY", "expires_at": 1790302983, "model": "gpt-live-1", "instructions": "你是语音声线测试朗读器。收到的每段文字都用自然的普通话一字不改地读出来，不要加任何别的话，也不要翻译。", "audio": {"output": {"voice": "cedar"}, "format": {"type": "audio/pcm", "rate": 24000}}, "delegation": {"type": "client"}, "status": "active", "input": []}}}
+{"at": 1790295784.313, "direction": "send", "message": {"type": "session.commentary.append", "event_id": "fly2866-speak-cedar", "delegation_id": null, "content": "Annie 你好，我是 Tadashi，现在有两件事要你看。"}}
+{"at": 1790295785.152, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "f8a4dc8574fb0557"}}}
+{"at": 1790295785.252, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "3f58c8be7a58eb73"}}}
+{"at": 1790295785.362, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "c4445a3fcb4a7992"}}}
+{"at": 1790295785.397, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 400, "end_ms": 600, "delta": "Annie", "event_id": "event_ERo0Ps9QJbx2On97qh8rV"}}
+{"at": 1790295785.459, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "c2cb0676243babfa"}}}
+{"at": 1790295785.554, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "bd1e3b26aa9e3049"}}}
+{"at": 1790295785.588, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 600, "end_ms": 800, "delta": " 你好", "event_id": "event_ERo0PNCKBCXJo73mRGcO3"}}
+{"at": 1790295785.594, "direction": "recv", "message": {"type": "session.commentary.appended", "start_ms": 600, "end_ms": 800, "event_id": "event_ERo0PDvW3kRE39QQt0u6H", "client_event_id": "fly2866-speak-cedar"}}
+{"at": 1790295785.657, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "e65e02917f6f9182"}}}
+{"at": 1790295785.774, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "9cb480624d2463c7"}}}
+{"at": 1790295785.797, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 800, "end_ms": 1000, "delta": ",", "event_id": "event_ERo0PvLmx9O5291u80ub0"}}
+{"at": 1790295785.909, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "22a50abaee9318ab"}}}
+{"at": 1790295785.953, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "c02b7aaac2020887"}}}
+{"at": 1790295785.978, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 1000, "end_ms": 1200, "delta": "我是", "event_id": "event_ERo0PfGKAhVYVPK2lAfD5"}}
+{"at": 1790295786.06, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6f5873df1a955869"}}}
+{"at": 1790295786.153, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "3d7f66139b524125"}}}
+{"at": 1790295786.255, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "5c9db3f8593fea9d"}}}
+{"at": 1790295786.328, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 1400, "end_ms": 1600, "delta": " Tad", "event_id": "event_ERo0QLUd0sMEaiQVNmVOR"}}
+{"at": 1790295786.414, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "881a7d24e32be1a0"}}}
+{"at": 1790295786.453, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "4ee1ec78912970aa"}}}
+{"at": 1790295786.52, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 1600, "end_ms": 1800, "delta": "ashi", "event_id": "event_ERo0QIM1YZNbW6BIpSsFr"}}
+{"at": 1790295786.553, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "3704a1c94d2edf77"}}}
+{"at": 1790295786.669, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "4a4e43862a7f9816"}}}
+{"at": 1790295786.669, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 1800, "end_ms": 2000, "delta": ",", "event_id": "event_ERo0QmLqI6NiwZlSyeuUC"}}
+{"at": 1790295786.769, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "75cb6920cca53022"}}}
+{"at": 1790295786.864, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "2fde637e87c17298"}}}
+{"at": 1790295786.957, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "b155fe2dbea4c262"}}}
+{"at": 1790295787.058, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "dad8535339c458d2"}}}
+{"at": 1790295787.107, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 2200, "end_ms": 2400, "delta": "现在", "event_id": "event_ERo0Reey2DAMgluJ3rY1V"}}
+{"at": 1790295787.161, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "2b98c377857930bf"}}}
+{"at": 1790295787.263, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "85fa4afe126f9d0e"}}}
+{"at": 1790295787.353, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "a409400a8dcb0cc8"}}}
+{"at": 1790295787.46, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "f69c7cc52ccd2a41"}}}
+{"at": 1790295787.462, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 2600, "end_ms": 2800, "delta": "有", "event_id": "event_ERo0RTFssTj7JpYA0S4gB"}}
+{"at": 1790295787.552, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "9357134d5e42448c"}}}
+{"at": 1790295787.651, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "1d2ca5b6152f8eba"}}}
+{"at": 1790295787.691, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 2800, "end_ms": 3000, "delta": "两", "event_id": "event_ERo0RVdW5accpyFENpLiZ"}}
+{"at": 1790295787.752, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "2b2fe86ee74dfc2e"}}}
+{"at": 1790295787.851, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "25bf1a7c8890fd65"}}}
+{"at": 1790295787.889, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 3000, "end_ms": 3200, "delta": "件", "event_id": "event_ERo0RDkv1TYfQOgLU4uxD"}}
+{"at": 1790295787.989, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "cf00e2d9182d63ed"}}}
+{"at": 1790295788.052, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "f4f5ba14f0fafc04"}}}
+{"at": 1790295788.104, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 3200, "end_ms": 3400, "delta": "事要", "event_id": "event_ERo0SM1Vr2iQ0VaJjdi6a"}}
+{"at": 1790295788.151, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "cb5576f1b3d4fa27"}}}
+{"at": 1790295788.253, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "aa1f5d46351ca0fd"}}}
+{"at": 1790295788.316, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 3400, "end_ms": 3600, "delta": "你", "event_id": "event_ERo0SNoMYG3Qj5QKoQMx3"}}
+{"at": 1790295788.36, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "7b414d19ec4deeb6"}}}
+{"at": 1790295788.434, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 3600, "end_ms": 3800, "delta": "看", "event_id": "event_ERo0Sps40lfhFEspmkCd9"}}
+{"at": 1790295788.511, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "1f434d447d223ffd"}}}
+{"at": 1790295788.553, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "cb1c43693f5509c5"}}}
+{"at": 1790295788.557, "direction": "recv", "message": {"type": "session.output_transcript.delta", "start_ms": 3800, "end_ms": 4000, "delta": "。", "event_id": "event_ERo0ScjmxEGcLHiEzpmKU"}}
+{"at": 1790295788.662, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "8d649bddaef56897"}}}
+{"at": 1790295788.753, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "00e7fc429c26b372"}}}
+{"at": 1790295788.852, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "291ee15e0efbc1cb"}}}
+{"at": 1790295788.952, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "0c7c25c0d25b0907"}}}
+{"at": 1790295789.053, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "48f113e93377a95c"}}}
+{"at": 1790295789.151, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "e51c1a16ca182934"}}}
+{"at": 1790295789.253, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "9e2ec083dbdbbf5c"}}}
+{"at": 1790295789.354, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295789.452, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295789.562, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295789.655, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295789.762, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295789.863, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295789.953, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.083, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.154, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.252, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.353, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.46, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.608, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.653, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.752, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.853, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295790.952, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.051, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.159, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.252, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.353, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.458, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.552, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.656, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.751, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.856, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295791.951, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.053, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.188, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.252, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.358, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.451, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.556, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.707, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.769, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.867, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295792.98, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.079, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.234, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.278, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.381, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.481, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.588, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.752, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.788, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295793.888, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.005, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.105, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.204, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.309, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.413, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.518, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.618, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.706, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.862, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295794.958, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295795.063, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295795.162, "direction": "recv", "message": {"type": "session.output_audio.delta", "delta": {"b64Length": 6400, "sha256": "6cae28823e698b14"}}}
+{"at": 1790295795.219, "direction": "send", "message": {"type": "session.close", "event_id": "fly2866-close-cedar"}}
+{"at": 1790295795.903, "direction": "recv", "message": {"event_id": "event_ERo0Zt6mLNQ2QMeEd9Xvc", "type": "session.closed", "reason": "close_requested", "session": {"id": "live_u7_ERo0Np3oMjHHBUZcWOYP33tBrLZzxQtY", "expires_at": 1790302983, "model": "gpt-live-1", "instructions": "你是语音声线测试朗读器。收到的每段文字都用自然的普通话一字不改地读出来，不要加任何别的话，也不要翻译。", "audio": {"output": {"voice": "cedar"}, "format": {"type": "audio/pcm", "rate": 24000}}, "delegation": {"type": "client"}, "status": "active", "input": []}, "usage": {"seconds": 11.0}, "client_event_id": "fly2866-close-cedar"}}
+{"at": 1790295797.949, "direction": "result", "message": {"engine": "A", "model": "gpt-live-1", "voice": "cedar", "serverVoice": "cedar", "closed": true, "status": "ok", "pcmBytes": 480000, "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"}}

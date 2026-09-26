@@ -172,3 +172,32 @@ export {
 	REAP_TOTAL_DEADLINE_MS,
 	reapWorktreeProcesses,
 } from "./worktree-process-reaper.js";
+export type {
+	PendingTakeoverRescue,
+	TakeoverCleanedEventPayload,
+	TakeoverFingerprints,
+	TakeoverNestedMove,
+	TakeoverPermitDenial,
+	TakeoverRescueClass,
+	TakeoverRescueEventPayload,
+	TakeoverRescueKind,
+	TakeoverRescueManifest,
+	TakeoverRescuePermit,
+	TakeoverRescuePredecessor,
+	TakeoverRescueRecorder,
+	TakeoverRescueRef,
+} from "./worktree-takeover-rescue.js";
+export {
+	buildTakeoverEventPayload,
+	encodeRescuePointer,
+	serializeTakeoverManifest,
+	sha256Hex,
+	TAKEOVER_CLEANED_EVENT_KIND,
+	TAKEOVER_MANIFEST_IDENTITY_FIELDS,
+	TAKEOVER_RESCUE_KILL_SWITCH_FLAG,
+	TAKEOVER_RESCUE_SCHEMA,
+	TAKEOVER_RESCUED_EVENT_KIND,
+	takeoverCleanedEventUid,
+	takeoverRescueEventUid,
+	verifyTakeoverManifestAgainstEvent,
+} from "./worktree-takeover-rescue.js";

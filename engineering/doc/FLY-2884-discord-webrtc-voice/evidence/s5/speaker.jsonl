@@ -1,0 +1,61 @@
+{"t":4.326,"wall":1790370268219,"kind":"precheck","data":{"at":"2026-09-25T21:04:28.219Z","guildId":"1485787271192907816","channelId":"1542709028742893699","inTarget":["1493075160025272452"],"intruders":[],"busy":[],"ok":true}}
+{"t":4.498,"wall":1790370268391,"kind":"discord_conn_state","data":{"from":"signalling","to":"connecting"}}
+{"t":4.723,"wall":1790370268617,"kind":"discord_conn_state","data":{"from":"connecting","to":"connecting"}}
+{"t":4.761,"wall":1790370268654,"kind":"discord_conn_state","data":{"from":"connecting","to":"connecting"}}
+{"t":4.828,"wall":1790370268721,"kind":"discord_conn_state","data":{"from":"connecting","to":"connecting"}}
+{"t":4.854,"wall":1790370268747,"kind":"discord_dave_debug","data":"[NW] [DAVE] Session initialized for protocol version 1"}
+{"t":4.858,"wall":1790370268752,"kind":"discord_conn_state","data":{"from":"connecting","to":"ready"}}
+{"t":4.859,"wall":1790370268753,"kind":"discord_conn_state","data":{"from":"ready","to":"ready"}}
+{"t":4.86,"wall":1790370268753,"kind":"speaker_ready","data":{}}
+{"t":4.863,"wall":1790370268756,"kind":"discord_dave_debug","data":"[NW] [DAVE] Set MLS external sender"}
+{"t":4.871,"wall":1790370268764,"kind":"discord_dave_debug","data":"[NW] [DAVE] MLS proposals processed"}
+{"t":4.906,"wall":1790370268800,"kind":"discord_dave_debug","data":"[NW] [DAVE] MLS commit processed (transition id: 0)"}
+{"t":4.915,"wall":1790370268808,"kind":"discord_dave_debug","data":"[NW] [DAVE] Failed to decrypt a packet (1 consecutive fails)"}
+{"t":4.916,"wall":1790370268810,"kind":"discord_dave_debug","data":"[NW] [DAVE] Failed to decrypt a packet (2 consecutive fails)"}
+{"t":4.967,"wall":1790370268861,"kind":"discord_dave_debug","data":"[NW] [DAVE] Failed to decrypt a packet (3 consecutive fails)"}
+{"t":7.917,"wall":1790370271811,"kind":"play_start","data":{"label":"flong1","file":"flong1.wav","kind":"speech"}}
+{"t":7.919,"wall":1790370271813,"kind":"room_calibrated","data":{"th":300}}
+{"t":12.8,"wall":1790370276693,"kind":"played","data":{"label":"flong1","file":"flong1.wav","kind":"speech","frames":239,"playStart":8404.4,"lastVoicedPull":12824.9,"playEnd":13286.7,"wallStart":1790370271795,"wallEnd":1790370276693}}
+{"t":16.101,"wall":1790370279995,"kind":"play_start","data":{"label":"stop1","file":"stop1.wav","kind":"interrupt"}}
+{"t":19.762,"wall":1790370283655,"kind":"played","data":{"label":"stop1","file":"stop1.wav","kind":"interrupt","frames":178,"playStart":16587.9,"lastVoicedPull":19808.8,"playEnd":20248.3,"wallStart":1790370279994,"wallEnd":1790370283655}}
+{"t":20.83,"wall":1790370284724,"kind":"barge_new_answer_start","data":{"idx":1,"at":21089.7}}
+{"t":24.707,"wall":1790370288601,"kind":"play_start","data":{"label":"flong2","file":"flong2.wav","kind":"speech"}}
+{"t":28.988,"wall":1790370292882,"kind":"played","data":{"label":"flong2","file":"flong2.wav","kind":"speech","frames":209,"playStart":25194.2,"lastVoicedPull":29014.8,"playEnd":29474.7,"wallStart":1790370288601,"wallEnd":1790370292882}}
+{"t":32.683,"wall":1790370296576,"kind":"play_start","data":{"label":"stop2","file":"stop2.wav","kind":"interrupt"}}
+{"t":36.183,"wall":1790370300077,"kind":"played","data":{"label":"stop2","file":"stop2.wav","kind":"interrupt","frames":170,"playStart":33169.5,"lastVoicedPull":36231.1,"playEnd":36669.7,"wallStart":1790370296576,"wallEnd":1790370300077}}
+{"t":37.408,"wall":1790370301302,"kind":"barge_new_answer_start","data":{"idx":2,"at":37666.1}}
+{"t":41.328,"wall":1790370305221,"kind":"play_start","data":{"label":"flong3","file":"flong3.wav","kind":"speech"}}
+{"t":46.347,"wall":1790370310241,"kind":"played","data":{"label":"flong3","file":"flong3.wav","kind":"speech","frames":246,"playStart":41816.6,"lastVoicedPull":46375,"playEnd":46834.2,"wallStart":1790370305221,"wallEnd":1790370310241}}
+{"t":49.399,"wall":1790370313293,"kind":"play_start","data":{"label":"stop3","file":"stop3.wav","kind":"interrupt"}}
+{"t":52.06,"wall":1790370315954,"kind":"played","data":{"label":"stop3","file":"stop3.wav","kind":"interrupt","frames":128,"playStart":49886.5,"lastVoicedPull":52086.8,"playEnd":52546.8,"wallStart":1790370313293,"wallEnd":1790370315954}}
+{"t":52.461,"wall":1790370316354,"kind":"barge_new_answer_start","data":{"idx":3,"at":52489.4}}
+{"t":64.948,"wall":1790370328842,"kind":"play_start","data":{"label":"flong4","file":"flong4.wav","kind":"speech"}}
+{"t":69.151,"wall":1790370333045,"kind":"played","data":{"label":"flong4","file":"flong4.wav","kind":"speech","frames":205,"playStart":65435.5,"lastVoicedPull":69176.5,"playEnd":69637.8,"wallStart":1790370328842,"wallEnd":1790370333045}}
+{"t":72.939,"wall":1790370336833,"kind":"barge_invalid","data":{"attempt":4}}
+{"t":104.061,"wall":1790370367955,"kind":"play_start","data":{"label":"flong5","file":"flong5.wav","kind":"speech"}}
+{"t":107.642,"wall":1790370371537,"kind":"played","data":{"label":"flong5","file":"flong5.wav","kind":"speech","frames":174,"playStart":104548.1,"lastVoicedPull":107669.7,"playEnd":108129.1,"wallStart":1790370367955,"wallEnd":1790370371537}}
+{"t":111.757,"wall":1790370375651,"kind":"play_start","data":{"label":"stop4","file":"stop4.wav","kind":"interrupt"}}
+{"t":115.079,"wall":1790370378973,"kind":"played","data":{"label":"stop4","file":"stop4.wav","kind":"interrupt","frames":161,"playStart":112244.1,"lastVoicedPull":115104.9,"playEnd":115565.8,"wallStart":1790370375651,"wallEnd":1790370378973}}
+{"t":116.095,"wall":1790370379990,"kind":"barge_new_answer_start","data":{"idx":4,"at":116376.6}}
+{"t":120.081,"wall":1790370383975,"kind":"play_start","data":{"label":"flong6","file":"flong6.wav","kind":"speech"}}
+{"t":124.541,"wall":1790370388436,"kind":"played","data":{"label":"flong6","file":"flong6.wav","kind":"speech","frames":218,"playStart":120568.1,"lastVoicedPull":124589.4,"playEnd":125028,"wallStart":1790370383975,"wallEnd":1790370388436}}
+{"t":128.226,"wall":1790370392120,"kind":"play_start","data":{"label":"stop5","file":"stop5.wav","kind":"interrupt"}}
+{"t":130.827,"wall":1790370394722,"kind":"played","data":{"label":"stop5","file":"stop5.wav","kind":"interrupt","frames":125,"playStart":128712.8,"lastVoicedPull":130853.3,"playEnd":131314.1,"wallStart":1790370392120,"wallEnd":1790370394722}}
+{"t":131.231,"wall":1790370395125,"kind":"barge_new_answer_start","data":{"idx":5,"at":131266.3}}
+{"t":136.303,"wall":1790370400198,"kind":"play_start","data":{"label":"flong7","file":"flong7.wav","kind":"speech"}}
+{"t":139.524,"wall":1790370403419,"kind":"played","data":{"label":"flong7","file":"flong7.wav","kind":"speech","frames":156,"playStart":136790,"lastVoicedPull":139549.8,"playEnd":140010.8,"wallStart":1790370400197,"wallEnd":1790370403419}}
+{"t":142.478,"wall":1790370406373,"kind":"barge_invalid","data":{"attempt":7}}
+{"t":166.223,"wall":1790370430118,"kind":"play_start","data":{"label":"flong8","file":"flong8.wav","kind":"speech"}}
+{"t":170.846,"wall":1790370434741,"kind":"played","data":{"label":"flong8","file":"flong8.wav","kind":"speech","frames":226,"playStart":166710.1,"lastVoicedPull":170870.7,"playEnd":171333.1,"wallStart":1790370430118,"wallEnd":1790370434741}}
+{"t":174.136,"wall":1790370438031,"kind":"play_start","data":{"label":"stop6","file":"stop6.wav","kind":"interrupt"}}
+{"t":177.957,"wall":1790370441852,"kind":"played","data":{"label":"stop6","file":"stop6.wav","kind":"interrupt","frames":186,"playStart":174623.6,"lastVoicedPull":177984.1,"playEnd":178444.2,"wallStart":1790370438031,"wallEnd":1790370441852}}
+{"t":178.359,"wall":1790370442254,"kind":"barge_new_answer_start","data":{"idx":6,"at":178412.4}}
+{"t":194.084,"wall":1790370457979,"kind":"scenario_done","data":{}}
+{"t":194.085,"wall":1790370457980,"kind":"finish","data":{"why":"scenario_done"}}
+{"t":194.361,"wall":1790370458256,"kind":"discord_dave_debug","data":"[NW] [DAVE] Preparing for epoch (1)"}
+{"t":194.365,"wall":1790370458260,"kind":"discord_dave_debug","data":"[NW] [DAVE] Session reinitialized for protocol version 1"}
+{"t":194.366,"wall":1790370458261,"kind":"discord_dave_debug","data":"[NW] [DAVE] Preparing for transition (0, v1)"}
+{"t":194.366,"wall":1790370458261,"kind":"discord_dave_debug","data":"[NW] [DAVE] Executing transition (0)"}
+{"t":194.366,"wall":1790370458261,"kind":"discord_dave_debug","data":"[NW] [DAVE] Transition executed (v1 -> v1, id: 0)"}
+{"t":195.588,"wall":1790370459483,"kind":"discord_conn_state","data":{"from":"ready","to":"destroyed"}}
+{"t":195.691,"wall":1790370459586,"kind":"metrics_written","data":{"lat":8,"barge":6}}

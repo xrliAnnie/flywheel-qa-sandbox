@@ -419,6 +419,41 @@ test("binding seed and verification share an explicit audit actor", () => {
 	}
 });
 
+test("binding verification can require the simple_code template explicitly", () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2802-simple-code-binding-"));
+	try {
+		const path = join(dir, "teamlead.db");
+		fixtureDb(path);
+		assert.equal(
+			run("seed-bindings", "--db", path, "--project", "test-slot-1").status,
+			0,
+		);
+		const accepted = run(
+			"verify-bindings",
+			"--db",
+			path,
+			"--project",
+			"test-slot-1",
+			"--required-binding",
+			"simple_code=tpl_simple_code",
+		);
+		assert.equal(accepted.status, 0, accepted.stderr);
+		const refused = run(
+			"verify-bindings",
+			"--db",
+			path,
+			"--project",
+			"test-slot-1",
+			"--required-binding",
+			"simple_code=tpl_code",
+		);
+		assert.notEqual(refused.status, 0);
+		assert.match(refused.stderr, /required binding simple_code=tpl_code/i);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("binding seed rolls back every row when a canonical template is unavailable", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fly1775-binding-fail-"));
 	try {

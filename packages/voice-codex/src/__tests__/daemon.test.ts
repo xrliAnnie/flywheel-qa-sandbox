@@ -1058,19 +1058,14 @@ describe("VoiceDaemon session lifetime", () => {
 							};
 				fixture.ended.resolve(outcome);
 				await vi.advanceTimersByTimeAsync(0);
-				expect(fixture.runtime.stop).toHaveBeenCalledWith(
-					reason === "codex_process_exit"
-						? { kind: "failed", reason: "session_runtime_failed" }
-						: outcome,
-				);
+				expect(fixture.runtime.stop).toHaveBeenCalledWith(outcome);
 				expect(await running).toEqual({
 					kind:
 						reason === "codex_process_exit"
 							? "session_failed"
 							: "session_ended",
 					sessionId: SESSION_ID,
-					reason:
-						reason === "codex_process_exit" ? "session_runtime_failed" : reason,
+					reason: reason,
 				});
 				speech.resolve("confirmed");
 				await vi.advanceTimersByTimeAsync(8_000);
@@ -1080,6 +1075,34 @@ describe("VoiceDaemon session lifetime", () => {
 			}
 		},
 	);
+
+	it("persists and logs a bounded original runtime failure reason", async () => {
+		const fixture = lifetimeFixture();
+		const logged = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		const reason =
+			"backend-protocol:CodexRealtimeServerError:realtime_server_error: voice prompt was rejected";
+		try {
+			const running = fixture.daemon.runOnce();
+			fixture.ended.resolve({ kind: "failed", reason });
+			expect(await running).toEqual({
+				kind: "session_failed",
+				sessionId: SESSION_ID,
+				reason,
+			});
+			expect(fixture.bridge.setState).toHaveBeenLastCalledWith(
+				SESSION_ID,
+				"lease",
+				expect.any(VoiceLease),
+				"failed",
+				reason,
+			);
+			expect(logged).toHaveBeenCalledWith(expect.stringContaining(reason));
+		} finally {
+			logged.mockRestore();
+		}
+	});
 
 	it("renews while warming and waiting for founder presence", async () => {
 		vi.useFakeTimers();

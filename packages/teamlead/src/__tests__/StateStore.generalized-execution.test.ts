@@ -14,6 +14,7 @@ import {
 	getModelConfigSnapshot,
 } from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { completionDrainProofDigest } from "../bridge/completion-drain.js";
 import { StateStore } from "../StateStore.js";
 import {
 	compileWorkflowMenuSeed,
@@ -1409,7 +1410,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
-	it("consumes a verified drain challenge in the completion transaction", async () => {
+	it("FLY-2373 consumes the issued read envelope with the server drain proof", async () => {
 		const store = await StateStore.create(":memory:");
 		const admitted = createAdmittedEngineRun(store);
 		store.upsertSession({
@@ -1421,44 +1422,86 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		const submission = { decision: { route: "needs_review" }, round: 1 };
 		const businessDigest = canonicalSubmissionDigest(submission);
+		const readSet = (sha: string) => ({
+			readSetDigest: sha,
+			subjects: [
+				{
+					subjectKind: "mailbox",
+					subjectId: "delivery-1",
+					contentSha256: "b".repeat(64),
+				},
+			],
+			mailSet: { mailbox: ["mail-1"], phaseWakes: ["wake-1"] },
+			pages: ["=== BEGIN [1/1] body\n=== END [1/1]\n"],
+		});
 		expect(() =>
 			store.issueDrainChallenge({
 				executionId: "other-execution",
 				activationId: admitted.activationId,
 				businessDigest,
-				mailSet: { mailbox: ["mail-other"], phaseWakes: [] },
-				watermark: {},
+				...readSet("a".repeat(64)),
 				now: "2026-07-15T00:04:00.000Z",
 			}),
 		).toThrow("invalid drain challenge identity");
+		const first = store.issueDrainChallenge({
+			executionId: "exec-1",
+			activationId: admitted.activationId,
+			businessDigest,
+			...readSet("a".repeat(64)),
+			now: "2026-07-15T00:05:00.000Z",
+		});
+		expect(first).toMatchObject({
+			challengeId: expect.stringMatching(/^drain2:/),
+			readId: expect.stringMatching(/^read_[0-9a-f]{32}$/),
+			pageCount: 1,
+			reused: false,
+		});
+		expect(
+			store.issueDrainChallenge({
+				executionId: "exec-1",
+				activationId: admitted.activationId,
+				businessDigest,
+				...readSet("a".repeat(64)),
+				now: "2026-07-15T00:05:30.000Z",
+			}),
+		).toMatchObject({ readId: first.readId, reused: true });
 		const challenge = store.issueDrainChallenge({
 			executionId: "exec-1",
 			activationId: admitted.activationId,
 			businessDigest,
-			mailSet: { mailbox: ["mail-1"], phaseWakes: ["wake-1"] },
-			watermark: { mailbox: "mail-1", phaseWake: "wake-1" },
-			now: "2026-07-15T00:05:00.000Z",
+			...readSet("c".repeat(64)),
+			now: "2026-07-15T00:05:45.000Z",
+		});
+		expect(challenge.readId).not.toBe(first.readId);
+		expect(store.getDrainReadEnvelope(first.readId)?.state).toBe("superseded");
+		expect(store.getDrainReadEnvelope(challenge.readId)).toMatchObject({
+			state: "issued",
+			executionId: "exec-1",
+			pagesServed: [1],
 		});
 
+		const settledWakes = [
+			{
+				messageId: "wake-1",
+				obligationDigest: "d".repeat(64),
+				reason: "content_consumed" as const,
+			},
+		];
+		const body = {
+			protocolVersion: 2 as const,
+			settledWakes,
+			receiptIds: ["consume:1"],
+		};
 		const refused = store.commitEnrolledCompletion({
 			nodeReuseEnabled: false,
 			executionId: "exec-1",
 			route: "needs_review",
 			sourceEventId: "drain-refused",
 			completionSubmission: submission,
-			drainChallenge: {
-				challengeId: challenge.challengeId,
-				verification: {
-					mailbox: { "mail-1": "LEASED" },
-					phaseWakes: { "wake-1": "finished" },
-				},
-			},
+			drainProof: { ...body, proofDigest: "e".repeat(64) },
 			now: "2026-07-15T00:06:00.000Z",
 		});
-		expect(refused).toEqual({
-			ok: false,
-			reason: "drain_challenge_not_issued",
-		});
+		expect(refused).toEqual({ ok: false, reason: "drain_proof_invalid" });
 
 		const completed = store.commitEnrolledCompletion({
 			nodeReuseEnabled: false,
@@ -1466,13 +1509,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			route: "needs_review",
 			sourceEventId: "drain-complete",
 			completionSubmission: submission,
-			drainChallenge: {
-				challengeId: challenge.challengeId,
-				verification: {
-					mailbox: { "mail-1": "ACKED" },
-					phaseWakes: { "wake-1": "started" },
-				},
-			},
+			drainProof: { ...body, proofDigest: completionDrainProofDigest(body) },
 			now: "2026-07-15T00:07:00.000Z",
 		});
 		expect(completed).toMatchObject({ ok: true, idempotentReplay: false });
@@ -1499,7 +1536,18 @@ describe("generalized execution admission and terminal contracts", () => {
 				.listWorkflowRunEvents("run-1")
 				.map((event) => event.kind)
 				.filter((kind) => kind.startsWith("completion_drain_")),
-		).toEqual(["completion_drain_issued", "completion_drain_consumed"]);
+		).toEqual([
+			"completion_drain_issued",
+			"completion_drain_issued",
+			"completion_drain_consumed",
+		]);
+		expect(
+			store.listCompletionDrainProofs({
+				runId: "run-1",
+				executionId: "exec-1",
+				activationId: admitted.activationId,
+			}),
+		).toEqual(settledWakes);
 		store.close();
 	});
 
@@ -1519,8 +1567,16 @@ describe("generalized execution admission and terminal contracts", () => {
 			executionId: "exec-1",
 			activationId: admitted.activationId,
 			businessDigest,
+			readSetDigest: "a".repeat(64),
+			subjects: [
+				{
+					subjectKind: "mailbox",
+					subjectId: "delivery-1",
+					contentSha256: "b".repeat(64),
+				},
+			],
 			mailSet: { mailbox: ["mail-1"], phaseWakes: [] },
-			watermark: {},
+			pages: ["page"],
 			now: "2026-07-15T00:05:00.000Z",
 		});
 		const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
@@ -1529,6 +1585,11 @@ describe("generalized execution admission and terminal contracts", () => {
 			BEFORE INSERT ON workflow_node_completion
 			BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END
 		`);
+		const body = {
+			protocolVersion: 2 as const,
+			settledWakes: [],
+			receiptIds: [],
+		};
 
 		expect(() =>
 			store.commitEnrolledCompletion({
@@ -1537,13 +1598,7 @@ describe("generalized execution admission and terminal contracts", () => {
 				route: "needs_review",
 				sourceEventId: "drain-rollback",
 				completionSubmission: submission,
-				drainChallenge: {
-					challengeId: challenge.challengeId,
-					verification: {
-						mailbox: { "mail-1": "ACKED" },
-						phaseWakes: {},
-					},
-				},
+				drainProof: { ...body, proofDigest: completionDrainProofDigest(body) },
 				now: "2026-07-15T00:06:00.000Z",
 			}),
 		).toThrow("injected completion failure");

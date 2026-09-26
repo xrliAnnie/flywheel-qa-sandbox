@@ -1,0 +1,25 @@
+flowchart TD
+  A["替身被派发<br/>(TURN 已交给它)"] --> B{"共享工作目录<br/>能原地复用吗?<br/>干净 + 提交点对"}
+  B -- 能 --> OK["照旧接管<br/>(今天的路径, 不变)"]
+  B -- 不能 --> K{"kill switch<br/>关了自动处置?"}
+  K -- 关了 --> OLD["旧行为: 失败 + 告警<br/>(补上脏路径清单)"]
+  K -- 没关 --> P{"许可证: 前任不会再写?<br/>已停驻 / 已判死且探针证实不在"}
+  P -- 否 --> REF["停手 + 告警<br/>目录一个字节不动"]
+  P -- 是 --> S1["分类 + 两次采样内容指纹<br/>间隔 5 秒必须一致"]
+  S1 -- 在变 --> REF
+  S1 -- 稳定 --> SAVE["保全(不动目录)<br/>未提交改动做成提交<br/>不在目标里的提交推到远端救援分支"]
+  SAVE --> V{"远端 ls-remote 复核<br/>零丢失不变式成立?"}
+  V -- 否 --> REF
+  V -- 是 --> EVT["先落盘: 证据文件 + 持久运行事件<br/>写不进就停手"]
+  EVT --> CLEAN{"目录还在吗?"}
+  CLEAN -- 在 --> INP["原地清理<br/>嵌套仓整目录挪走 + reset --hard 目标 + clean -fd<br/>忽略文件保留, generation 不变"]
+  CLEAN -- 没了 --> REC["按目标重建目录<br/>沿用旧 generation"]
+  INP --> EV["追加清理回执<br/>替身提示词注入救援清单"]
+  REC --> EV
+  EV --> GO["替身启动<br/>同节点替身: 先把死体写到一半的改动恢复回来"]
+  classDef stop fill:#ffe5e5,stroke:#ff3b30,color:#1d1d1f;
+  classDef good fill:#e6f9ed,stroke:#34c759,color:#1d1d1f;
+  classDef keep fill:#e8f0fe,stroke:#007aff,color:#1d1d1f;
+  class REF,OLD stop;
+  class SAVE,EVT,INP,REC,EV,GO good;
+  class OK keep;

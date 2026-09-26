@@ -93,6 +93,7 @@ import {
 	ROTATION_CHECK_INTERVAL_MS,
 	ROTATION_READY_TIMEOUT_MS,
 	type RotationLedger,
+	readLatestTurn,
 	readRotationLedger,
 	readThreadIdStrict,
 	reconcileRotationLedger,
@@ -111,12 +112,20 @@ import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import {
+	LeadTurnStateTracker,
+	seedTurnStateWithRetry,
+} from "./LeadTurnStateTracker.js";
 import { tryResolveLeadAttachmentContext } from "./lead-actions/attachment-context.js";
 import {
 	assertFullAccessLeadActionsConfigGate,
 	assertFullAccessSandboxConfig,
 	buildFullAccessLeadActionsMcpServerConfig,
 } from "./lead-actions/mcp-config.js";
+import {
+	createLeadReplyFailureReporter,
+	resolveReplyFailureBridge,
+} from "./lead-reply-failure-report.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { runOutboundPreflight } from "./outbound-preflight.js";
 import {
@@ -383,6 +392,14 @@ export function wireDemuxedProcess(args: {
 	onTokenUsage?: (params: unknown) => void;
 	onActivity?: () => void;
 	log?: (m: string) => void;
+	/**
+	 * FLY-2882 (design-correction C1): read-only turn-state feed. Lifecycle is
+	 * observed on the RAW notification stream before the demux can hold or
+	 * tombstone it; the demux only names the owner.
+	 */
+	turnState?: Pick<LeadTurnStateTracker, "observeLifecycle" | "setOrigin">;
+	/** Test seam for the demux hold-buffer cap. */
+	demuxOptions?: { heldCap?: number };
 }): DemuxedWiring {
 	const listeners = {
 		notification: [] as Array<(method: string, params: unknown) => void>,
@@ -404,35 +421,52 @@ export function wireDemuxedProcess(args: {
 			if (evicted) recentlyCompleted.delete(evicted);
 		}
 	};
-	const demux = new TurnDemux({
-		toExecutor: (method, params) => {
-			if (method === "turn/completed") {
-				const id = extractTurnId(params);
-				for (const cb of listeners.turnCompleted) cb(params);
-				if (id) {
-					markCompleted(id); // record BEFORE release so a later waiter sees it
-					demux.releaseTurn(id); // release AFTER delivery (bounded registry)
+	const demux = new TurnDemux(
+		{
+			toExecutor: (method, params) => {
+				if (method === "turn/started") {
+					const id = extractTurnId(params);
+					if (id) args.turnState?.setOrigin(id, "message");
 				}
-			} else {
-				for (const cb of listeners.notification) cb(method, params);
-			}
+				if (method === "turn/completed") {
+					const id = extractTurnId(params);
+					for (const cb of listeners.turnCompleted) cb(params);
+					if (id) {
+						markCompleted(id); // record BEFORE release so a later waiter sees it
+						demux.releaseTurn(id); // release AFTER delivery (bounded registry)
+					}
+				} else {
+					for (const cb of listeners.notification) cb(method, params);
+				}
+			},
+			toObserver: (method, params, provenance) => {
+				// One observe row per founder turn — keyed on its completion (bounded,
+				// idempotent; deltas are visible live in the TUI anyway).
+				if (method === "turn/started") {
+					const id = extractTurnId(params);
+					// An abort/overflow flush proves nothing about ownership.
+					if (id)
+						args.turnState?.setOrigin(
+							id,
+							provenance === "foreign" ? "founder_terminal" : "unknown",
+						);
+					if (id) args.onFounderTurnStarted?.(id);
+				} else if (method === "turn/completed") {
+					const id = extractTurnId(params);
+					if (id) args.onFounderTurnCompleted(id);
+				}
+			},
+			onActivity: args.onActivity,
+			log: args.log,
 		},
-		toObserver: (method, params) => {
-			// One observe row per founder turn — keyed on its completion (bounded,
-			// idempotent; deltas are visible live in the TUI anyway).
-			if (method === "turn/started") {
-				const id = extractTurnId(params);
-				if (id) args.onFounderTurnStarted?.(id);
-			} else if (method === "turn/completed") {
-				const id = extractTurnId(params);
-				if (id) args.onFounderTurnCompleted(id);
-			}
-		},
-		onActivity: args.onActivity,
-		log: args.log,
-	});
+		args.demuxOptions,
+	);
 	args.proc.on("notification", (method, params) => {
 		if (method === "thread/tokenUsage/updated") args.onTokenUsage?.(params);
+		// FLY-2882: the raw stream carries every lifecycle event exactly once
+		// (the process ALSO emits `turnCompleted` for the same completion — that
+		// duplicate is deliberately not fed to the tracker).
+		args.turnState?.observeLifecycle(method, params);
 		demux.route(method, params);
 	});
 	args.proc.on("turnCompleted", (params) =>
@@ -464,6 +498,7 @@ export function wireDemuxedProcess(args: {
 				return undefined;
 			}
 			if (!demux.claimTurn(turnId)) {
+				args.turnState?.setOrigin(turnId, "unknown");
 				// R2 MED-3: window was force-settled by overflow — early events are
 				// gone; never wait on this turn. The router treats this throw as
 				// ambiguous (its existing failure path).
@@ -659,6 +694,9 @@ export function buildTuiGeneration(
 		let nativeConfig: NativeLeadRuntimeConfig | undefined;
 		let residencyLifecycle: ResidentCodexLeadLifecycleObserver | null = null;
 		let lostCb: (() => void) | undefined;
+		// FLY-2882: one turn-state tracker per proc generation (dead on exit/stop).
+		let turnState: LeadTurnStateTracker | undefined;
+		let turnSeed: { cancel(): void } | undefined;
 		// Generation-owned TUI lifecycle (review HIGH-1): the window is no longer
 		// fire-and-forget — a liveness cadence re-creates it if the founder closes
 		// it (only when actually dead, so a healthy session is never disrupted),
@@ -1091,6 +1129,8 @@ export function buildTuiGeneration(
 			if (closing) return closing;
 			closing = (async () => {
 				stopped = true;
+				turnSeed?.cancel();
+				turnState?.markDisconnected();
 				nativeConfig?.close();
 				if (rotationTimer) clearInterval(rotationTimer);
 				rotationTimer = null;
@@ -1210,6 +1250,16 @@ export function buildTuiGeneration(
 							log: (message) => logger.warn(message),
 						})
 					: undefined;
+				// FLY-2882: bounded (re)seed for this generation's tracker — at
+				// thread bind, and again whenever a malformed lifecycle event on the
+				// bound thread voids trust (design-correction C3).
+				let seedTurnState: (() => void) | undefined;
+				const generationTurnState = new LeadTurnStateTracker({
+					binding: journal,
+					onTrustLost: () => seedTurnState?.(),
+				});
+				turnState = generationTurnState;
+				proc.on("exit", () => generationTurnState.markDisconnected());
 				if (lostCb) proc.on("exit", () => lostCb?.());
 				const inventory = capabilityV2 ? new McpInventoryWatcher() : undefined;
 				if (inventory)
@@ -1245,6 +1295,7 @@ export function buildTuiGeneration(
 							payload: "founder terminal turn (observed; see TUI/rollout)",
 						});
 					},
+					turnState: generationTurnState,
 					...(config.contextUsagePath && config.contextUsageUnavailablePath
 						? {
 								onTokenUsage: (params: unknown) => {
@@ -1509,6 +1560,15 @@ export function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
+						generationTurnState.bindThread(threadId);
+						seedTurnState = () => {
+							turnSeed?.cancel();
+							turnSeed = seedTurnStateWithRetry({
+								tracker: generationTurnState,
+								read: () => readLatestTurn(p.request.bind(p), threadId),
+							});
+						};
+						seedTurnState();
 						await nativeConfig?.bootstrap(threadId, bootstrapTuning);
 						residencyLifecycle = createResidentCodexLeadLifecycleForGeneration({
 							config,
@@ -1583,6 +1643,14 @@ export function buildTuiGeneration(
 									externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
 								}
 							},
+							// FLY-2862: an owed reply came back empty — tell the Bridge (voice).
+							onReplyFailed: createLeadReplyFailureReporter({
+								...resolveReplyFailureBridge(config, process.env),
+								projectName: config.projectName,
+								leadId: config.leadId,
+								chatChannelId: config.chatChannelId,
+								logger,
+							}),
 							onInputAccepted: (entry) => {
 								lastActivityAt = Date.now();
 								replyInThread?.onInputAccepted(entry);
@@ -1606,6 +1674,9 @@ export function buildTuiGeneration(
 								(): import("../../voice-self-filter-contract.js").VoiceSelfFilterObservation =>
 									gateway.probeVoiceSelfFilter(),
 							ignoredAuthorIds: config.ignoredAuthorIds,
+							turnState: {
+								snapshot: () => generationTurnState.snapshot(),
+							},
 							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
 							leadId: config.leadId,
 							router,

@@ -1,0 +1,45 @@
+{
+ "schema": "fly2866.live-voice-assignment.v1",
+ "issue": "FLY-2866",
+ "field": "leads[].liveVoice",
+ "engine": "engine B — Codex realtime v3, model gpt-live-1-codex (WebRTC, ChatGPT subscription)",
+ "allowedVoices": ["juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove"],
+ "default": "cove",
+ "status": "decided, not yet applied — FLY-2885 (adds liveVoice) is not merged; FLY-2885 applies this mapping",
+ "decision": {
+  "by": "founder",
+  "at": "2026-09-26T00:09Z",
+  "source": "FLY-2866 Discord thread msg 1553196834481119273, relayed by flywheel-eng-lead [lead-instruction 6f32a182-ceed-4e8a-8a8b-e1c172cc41d4]",
+  "audition": "https://fw-reports-6da062.vercel.app/r/8d11a0090348e29641d3225736957db8/ (evidence/v3)"
+ },
+ "leads": [
+  { "projectName": "raya", "agentId": "raya", "persona": "Raya", "liveVoice": "sol", "chosen": true },
+  { "projectName": "flywheel", "agentId": "flywheel-eng-lead", "persona": "Tadashi", "liveVoice": "cove", "chosen": true },
+  { "projectName": "flywheel", "agentId": "flywheel-product-lead", "persona": "Honey Lemon", "liveVoice": "breeze", "chosen": true },
+  { "projectName": "flywheel", "agentId": "flywheel-cos-lead", "persona": "Aunt Cass", "liveVoice": "vale", "chosen": true },
+  { "projectName": "geoforge3d", "agentId": "product-lead", "persona": "Peter", "liveVoice": "ember", "chosen": true },
+  { "projectName": "geoforge3d", "agentId": "ops-lead", "persona": "Oliver", "liveVoice": "spruce", "chosen": true },
+  { "projectName": "joycon-typeless", "agentId": "joycon-lead", "persona": "Hiro", "liveVoice": "arbor", "chosen": true },
+  { "projectName": "tidal-echo", "agentId": "tidal-echo-content-lead", "persona": "Ariel", "liveVoice": "maple", "chosen": true },
+  { "projectName": "tidal-echo", "agentId": "sub-lead", "persona": "Asha", "liveVoice": "juniper", "chosen": true },
+  { "projectName": "flywheel", "agentId": "claude-infra-bot-lead", "persona": "Claw", "liveVoice": "cove", "chosen": false },
+  { "projectName": "flywheel", "agentId": "codex-infra-bot-lead", "persona": "Codex Infra Bot", "liveVoice": "cove", "chosen": false },
+  { "projectName": "geoforge3d", "agentId": "cos-lead", "persona": "Simba", "liveVoice": "cove", "chosen": false },
+  { "projectName": "personal-assistant", "agentId": "belle-lead", "persona": "Belle", "liveVoice": "cove", "chosen": false },
+  { "projectName": "growth", "agentId": "mufasa-lead", "persona": "Mufasa", "liveVoice": "cove", "chosen": false },
+  { "projectName": "growth", "agentId": "rafiki-lead", "persona": "Rafiki", "liveVoice": "cove", "chosen": false },
+  { "projectName": "growth", "agentId": "reflection-lead", "persona": "（未命名）", "liveVoice": "cove", "chosen": false },
+  { "projectName": "tidal-echo", "agentId": "tidal-echo-cos-lead", "persona": "Triton", "liveVoice": "cove", "chosen": false }
+ ],
+ "founderVoiceNotes": {
+  "juniper": "像播音员的中年女生",
+  "maple": "声音比较高、说话比较快的中年女生",
+  "spruce": "很低沉、有点大舌头的中年男声",
+  "ember": "听起来有点狡猾的中年男声",
+  "vale": "很沉稳、靠谱的中老年女生",
+  "breeze": "比较高、听起来有一点奇怪的中年女生",
+  "arbor": "低沉、听起来有气无力的中年男生",
+  "sol": "比较好听的中青年女生",
+  "cove": "比较好听的中青年男声"
+ }
+}

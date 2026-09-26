@@ -1,0 +1,122 @@
+{
+  "issue": "FLY-2799",
+  "executionId": "764b8e3f-2f3c-4e1e-83c3-0e35e9cbbac0",
+  "activationId": "activation:764b8e3f-2f3c-4e1e-83c3-0e35e9cbbac0:61667227-7907-4a83-b5cd-c080ad74011c:eng_design:1",
+  "releaseUrl": "https://github.com/openai/codex/releases/download/rust-v0.156.1/codex-package-aarch64-apple-darwin.tar.gz",
+  "releaseSha256": "fea42f9625091f011e38f059da974d52e57ba31831648bb1c7f0b1a385fde547",
+  "githubAssetDigestMatched": true,
+  "binaryVersion": "codex-cli 0.156.1",
+  "binarySha256": "0196e89fe5a7598f816ee54232c3d7c26d75e502ab5cfe2c9240e81d90f7255a",
+  "featureLine": "realtime_conversation                    stable             true",
+  "verdict": "STEP_1_V2_CAPABILITY_PASS_V3_ACCESS_DENIED",
+  "leadAuthorizationResponseId": "a00af684-46b9-4e72-949c-e9f8ba8cd2cc",
+  "auth": "Existing production voice OPENAI_API_KEY; environment only; no auth.json",
+  "billing": "API-key usage billing, not ChatGPT subscription allowance",
+  "runs": [
+    {
+      "mode": "default",
+      "utcStart": "2026-09-23T05:33:37Z",
+      "utcEnd": "2026-09-23T05:34:37Z",
+      "startedVersions": [
+        "v2"
+      ],
+      "errors": [],
+      "transcripts": [
+        {
+          "role": "assistant",
+          "text": "Flywheel Probog K."
+        },
+        {
+          "role": "user",
+          "text": "Hello, please reply with the words: Flywheel Probocake."
+        }
+      ],
+      "audioArtifacts": [
+        {
+          "phase": "externalAudio",
+          "file": "api-default-externalAudio.wav",
+          "pcmBytes": 79200,
+          "sampleRate": 24000,
+          "channels": 1,
+          "sha256": "80bc9b4e7a0ff28c83f0e976e1ee772c74dc84e578dcda3de1879b78c56800a0"
+        }
+      ],
+      "turnStartedCount": 1,
+      "exit": {
+        "returncode": 0
+      }
+    },
+    {
+      "mode": "v2",
+      "utcStart": "2026-09-23T05:35:27Z",
+      "utcEnd": "2026-09-23T05:36:27Z",
+      "startedVersions": [
+        "v2"
+      ],
+      "errors": [],
+      "transcripts": [
+        {
+          "role": "assistant",
+          "text": "The purple lantern is ready."
+        },
+        {
+          "role": "user",
+          "text": "Hello, please reply with the words flywheel proboké."
+        },
+        {
+          "role": "assistant",
+          "text": "Flywheel probokay"
+        }
+      ],
+      "audioArtifacts": [
+        {
+          "phase": "appendSpeech",
+          "file": "api-v2-appendSpeech.wav",
+          "pcmBytes": 86400,
+          "sampleRate": 24000,
+          "channels": 1,
+          "sha256": "a72b68be0193da60c67ace8308f6b556c959607ac693a765f6b80c0c7474003f"
+        },
+        {
+          "phase": "externalAudio",
+          "file": "api-v2-externalAudio.wav",
+          "pcmBytes": 62400,
+          "sampleRate": 24000,
+          "channels": 1,
+          "sha256": "26b96a1542ce47fd57822472133408b2ab269eddf85abd3bbe211651f9e6db65"
+        }
+      ],
+      "turnStartedCount": 0,
+      "exit": {
+        "returncode": 0
+      }
+    },
+    {
+      "mode": "v3",
+      "utcStart": "2026-09-23T05:34:55Z",
+      "utcEnd": "2026-09-23T05:35:05Z",
+      "startedVersions": [],
+      "errors": [
+        "stream disconnected before completion: Voice session access denied."
+      ],
+      "transcripts": [],
+      "audioArtifacts": [],
+      "turnStartedCount": 0,
+      "exit": {
+        "returncode": 0
+      }
+    }
+  ],
+  "appendTextLimit": "Explicit v2 appendText accepted, input item observed; zero output audio during the 12 second pre-audio observation window. Does not establish universal silence.",
+  "handoffCounterexample": "Default first prompt with clientManagedHandoffs=true triggered background_agent and turn/started. Backend lacked auth and failed 401. Protocol-aware [BACKEND] prompt in explicit v2 yielded zero backend turns in this sample; this is not an enforcement guarantee.",
+  "v3Limit": "Explicit version v3 and default voice/model were access denied using the authorized key. No successful V3 text/audio capability evidence.",
+  "fixture": {
+    "source": "product/doc/FLY-1443-codex-realtime-probe/evidence/external-audio-in.wav",
+    "sha256": "e3944fb44092ffd3f27238475f196a2ae10b0426f5e117cb48a41c08b4f6081a",
+    "reusedContentOnly": true,
+    "pcmBytes": 183744,
+    "sampleRate": 24000,
+    "channels": 1,
+    "silenceTailBytes": 96000
+  }
+}

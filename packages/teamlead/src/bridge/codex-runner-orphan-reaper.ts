@@ -28,6 +28,7 @@ import {
 	codexSessionStateDir,
 	resolveDaemonSocketPath,
 	resolveExecutionCodexHome,
+	resolveSocketProbePath,
 	scrubCodexAgentHomeLeaseEntry,
 } from "flywheel-claude-runner";
 import { RUNNER_MEMORY_ID_MAX_LENGTH } from "flywheel-config";
@@ -342,10 +343,15 @@ export async function defaultListCodexHomeExecutionIds(
 export async function defaultSocketHolderPids(
 	socketPath: string,
 ): Promise<SocketHolderProbeResult> {
+	// FLY-2830: Codex 0.157 makes the --listen path a symlink; lsof only sees
+	// the holder at the verified target. Anything unverifiable is no evidence.
+	const probe = resolveSocketProbePath(socketPath);
+	if (probe.kind === "untrusted")
+		return { status: "unknown", error: probe.reason };
 	return new Promise((resolveProbe) => {
 		execFile(
 			"lsof",
-			["-t", "--", socketPath],
+			["-t", "--", probe.path],
 			{
 				timeout: 2_000,
 				maxBuffer: 1024 * 1024,

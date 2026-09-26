@@ -15,6 +15,7 @@ import {
 	type SummaryPresentationStaleSignal,
 } from "./bridge/summary-presentation-store.js";
 import { SUMMARY_ACTIVITY_NOISE_EVENT_TYPES } from "./bridge/summary-activity-probe.js";
+import { CodexTerminalCloseStore } from "./bridge/codex-terminal-close-ledger.js";
 import { readEpicIntakeRefreshState, recordEpicIntakeRefreshResult, readEpicIntake, migrateEpicIntakes, hasEpicDispatchRecord, recordEpicIntake, beginEpicIntakeScan, completeEpicIntakeScan, type EpicIntakeScan, type EpicIntakeInput, type EpicIntakeRecord } from "./bridge/epic-intake-store.js";
 import {
 	assertPercentageModelAssignment,
@@ -52,6 +53,8 @@ import {
 	RECOVERY_PRECOMMIT_OBSERVATION_MS,
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
+import { newDrainReadId } from "flywheel-comm/completion-obligations";
+import { type CompletionDrainProof, isCompletionDrainProof } from "./bridge/completion-drain.js";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
 import { LeadInterruptStore } from "./bridge/lead-interrupt-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
@@ -2846,6 +2849,83 @@ export interface VoiceIntentRow {
 	createdAt: string;
 }
 
+export type VoiceAttributionRow =
+	| { kind: "known"; speakerUserId: string }
+	| { kind: "unknown"; reason: string };
+
+export interface VoiceUtteranceRow {
+	sessionId: string;
+	transcriptId: string;
+	utteranceId: string;
+	sessionGeneration: number;
+	sequence: number;
+	source: "room_audio" | "engine_audio" | "engine_text";
+	role: "user" | "assistant";
+	text: string;
+	final: boolean;
+	attribution: VoiceAttributionRow;
+	captureDigest: string;
+	contentDigest: string;
+	leaseEpoch: string;
+	receiptId: string;
+	createdAt: string;
+}
+
+export interface VoiceTranscriptDurabilityReceipt {
+	sessionId: string;
+	transcriptId: string;
+	contentDigest: string;
+	receiptId: string;
+}
+
+export type VoiceHandoffState =
+	| "authorized"
+	| "dispatching"
+	| "dispatched"
+	| "committed"
+	| "rejected"
+	| "ambiguous"
+	| "needs_human";
+
+export type VoiceHandoffIntentKind =
+	| "create_issue"
+	| "approve_ship"
+	| "change_priority"
+	| "dispatch_runner"
+	| "delegate_request";
+
+export interface VoiceHandoffRow {
+	handoffId: string;
+	sessionId: string;
+	leadId: string;
+	transcriptId: string;
+	intentKind: VoiceHandoffIntentKind;
+	payload: Record<string, unknown>;
+	originalText: string;
+	idempotencyKey: string;
+	authorityBinding: Record<string, unknown>;
+	requestDigest: string;
+	transcriptReceiptId: string;
+	state: VoiceHandoffState;
+	providerOperationId: string | null;
+	attemptToken: string | null;
+	deliveryId: string | null;
+	leadEventSeq: number | null;
+	lastReconcileAt: string | null;
+	nextReconcileAt: string | null;
+	reconcilerOwner: string | null;
+	claimToken: string | null;
+	leaseExpiresAt: string | null;
+	stateVersion: number;
+	reconcileAttempts: number;
+	lastDispatchError: string | null;
+	lastReconcileResult: string | null;
+	terminalReason: string | null;
+	executionEvidence: Record<string, unknown> | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
 export interface VoiceSessionReservation {
 	sessionId: string;
 	mode: VoiceSessionMode;
@@ -3163,6 +3243,25 @@ export class StateStore {
 			this.customerReleaseStoreCache = { db, store: new CustomerReleaseStore(db) };
 		}
 		return this.customerReleaseStoreCache.store;
+	}
+	private codexTerminalCloseStoreCache?: {
+		db: BetterDb;
+		store: CodexTerminalCloseStore;
+	};
+	/** FLY-2903: terminal Codex close verdicts (single writer: codex-terminal-close-ledger). */
+	get codexTerminalClose(): CodexTerminalCloseStore {
+		const db = this.db.raw;
+		if (this.codexTerminalCloseStoreCache?.db !== db) {
+			this.codexTerminalCloseStoreCache = {
+				db,
+				store: new CodexTerminalCloseStore(db),
+			};
+		}
+		return this.codexTerminalCloseStoreCache.store;
+	}
+	/** FLY-2903: run `fn` in one transaction on this store's connection. */
+	runInTransaction(fn: () => void): void {
+		this.db.transaction(fn);
 	}
 	get summaryPresentations(): SummaryPresentationStore {
 		const db = this.db.raw;
@@ -3772,6 +3871,89 @@ export class StateStore {
 			attemptToken: (row.attempt_token as string | null) ?? null,
 			claimedAt: (row.claimed_at as string | null) ?? null,
 			finishedAt: (row.finished_at as string | null) ?? null,
+		};
+	}
+
+	private voiceUtteranceFromRow(
+		row: Record<string, unknown> | undefined,
+	): VoiceUtteranceRow | undefined {
+		if (!row) return;
+		const known = row.attribution_kind === "known";
+		return {
+			sessionId: String(row.session_id),
+			transcriptId: String(row.transcript_id),
+			utteranceId: String(row.utterance_id),
+			sessionGeneration: Number(row.session_generation),
+			sequence: Number(row.sequence),
+			source: row.source as VoiceUtteranceRow["source"],
+			role: row.role as VoiceUtteranceRow["role"],
+			text: String(row.raw_text),
+			final: Number(row.final) === 1,
+			attribution: known
+				? { kind: "known", speakerUserId: String(row.speaker_user_id) }
+				: { kind: "unknown", reason: String(row.attribution_reason) },
+			captureDigest: String(row.capture_digest),
+			contentDigest: String(row.content_digest),
+			leaseEpoch: String(row.lease_epoch),
+			receiptId: String(row.receipt_id),
+			createdAt: String(row.created_at),
+		};
+	}
+
+	private voiceHandoffFromRow(
+		row: Record<string, unknown> | undefined,
+	): VoiceHandoffRow | undefined {
+		if (!row) return;
+		const jsonObject = (value: unknown): Record<string, unknown> => {
+			try {
+				const parsed = JSON.parse(String(value));
+				return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+					? (parsed as Record<string, unknown>)
+					: {};
+			} catch {
+				return {};
+			}
+		};
+		return {
+			handoffId: String(row.handoff_id),
+			sessionId: String(row.session_id),
+			leadId: String(row.lead_id),
+			transcriptId: String(row.transcript_id),
+			intentKind: row.intent_kind as VoiceHandoffIntentKind,
+			payload: jsonObject(row.payload_json),
+			originalText: String(row.original_text),
+			idempotencyKey: String(row.idempotency_key),
+			authorityBinding: jsonObject(row.authority_binding_json),
+			requestDigest: String(row.request_digest),
+			transcriptReceiptId: String(row.transcript_receipt_id),
+			state: row.state as VoiceHandoffState,
+			providerOperationId:
+				(row.provider_operation_id as string | null) ?? null,
+			attemptToken: (row.attempt_token as string | null) ?? null,
+			deliveryId: (row.delivery_id as string | null) ?? null,
+			leadEventSeq:
+				row.lead_event_seq == null ? null : Number(row.lead_event_seq),
+			lastReconcileAt:
+				(row.last_reconcile_at as string | null) ?? null,
+			nextReconcileAt:
+				(row.next_reconcile_at as string | null) ?? null,
+			reconcilerOwner:
+				(row.reconciler_owner as string | null) ?? null,
+			claimToken: (row.claim_token as string | null) ?? null,
+			leaseExpiresAt: (row.lease_expires_at as string | null) ?? null,
+			stateVersion: Number(row.state_version),
+			reconcileAttempts: Number(row.reconcile_attempts),
+			lastDispatchError:
+				(row.last_dispatch_error as string | null) ?? null,
+			lastReconcileResult:
+				(row.last_reconcile_result as string | null) ?? null,
+			terminalReason: (row.terminal_reason as string | null) ?? null,
+			executionEvidence:
+				row.execution_evidence == null
+					? null
+					: jsonObject(row.execution_evidence),
+			createdAt: String(row.created_at),
+			updatedAt: String(row.updated_at),
 		};
 	}
 
@@ -5763,6 +5945,511 @@ export class StateStore {
 		return session;
 	}
 
+	getVoiceUtterance(
+		sessionId: string,
+		transcriptId: string,
+	): VoiceUtteranceRow | undefined {
+		return this.voiceUtteranceFromRow(
+			this.workflowSelectAll(
+				"SELECT * FROM voice_utterances WHERE session_id = ? AND transcript_id = ?",
+				[sessionId, transcriptId],
+			)[0],
+		);
+	}
+
+	recordVoiceUtterance(input: {
+		sessionId: string;
+		leaseToken: string;
+		transcriptId: string;
+		utteranceId: string;
+		sessionGeneration: number;
+		sequence: number;
+		source: VoiceUtteranceRow["source"];
+		role: VoiceUtteranceRow["role"];
+		text: string;
+		final: boolean;
+		attribution: VoiceAttributionRow;
+		captureDigest: string;
+		now: string;
+	}):
+		| {
+				status: "inserted" | "replayed";
+				receipt: VoiceTranscriptDurabilityReceipt;
+		  }
+		| { status: "lease_conflict" | "conflict" } {
+		let result:
+			| {
+					status: "inserted" | "replayed";
+					receipt: VoiceTranscriptDurabilityReceipt;
+			  }
+			| { status: "lease_conflict" | "conflict" } = {
+			status: "lease_conflict",
+		};
+		let changed = false;
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session || session.state !== "live") return;
+			const contentDigest = canonicalSubmissionDigest({
+				version: 1,
+				sessionId: input.sessionId,
+				transcriptId: input.transcriptId,
+				utteranceId: input.utteranceId,
+				sessionGeneration: input.sessionGeneration,
+				sequence: input.sequence,
+				source: input.source,
+				role: input.role,
+				text: input.text,
+				final: input.final,
+				attribution: input.attribution,
+				captureDigest: input.captureDigest,
+			});
+			const prior = this.getVoiceUtterance(
+				input.sessionId,
+				input.transcriptId,
+			);
+			if (prior) {
+				result =
+					prior.contentDigest === contentDigest
+						? {
+								status: "replayed",
+								receipt: {
+									sessionId: prior.sessionId,
+									transcriptId: prior.transcriptId,
+									contentDigest: prior.contentDigest,
+									receiptId: prior.receiptId,
+								},
+							}
+						: { status: "conflict" };
+				return;
+			}
+			const leaseEpoch = createHash("sha256")
+				.update(
+					`voice-lease-epoch-v1\0${input.sessionId}\0${input.leaseToken}`,
+				)
+				.digest("hex");
+			const receiptId = canonicalSubmissionDigest({
+				version: 1,
+				kind: "voice_transcript_durability",
+				sessionId: input.sessionId,
+				transcriptId: input.transcriptId,
+				contentDigest,
+				leaseEpoch,
+			});
+			this.db.run(
+				`INSERT INTO voice_utterances
+				 (session_id, transcript_id, utterance_id, session_generation,
+				  sequence, source, role, raw_text, final, attribution_kind,
+				  speaker_user_id, attribution_reason, capture_digest,
+				  content_digest, lease_epoch, receipt_id, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.sessionId,
+					input.transcriptId,
+					input.utteranceId,
+					input.sessionGeneration,
+					input.sequence,
+					input.source,
+					input.role,
+					input.text,
+					input.final ? 1 : 0,
+					input.attribution.kind,
+					input.attribution.kind === "known"
+						? input.attribution.speakerUserId
+						: null,
+					input.attribution.kind === "unknown"
+						? input.attribution.reason
+						: null,
+					input.captureDigest,
+					contentDigest,
+					leaseEpoch,
+					receiptId,
+					input.now,
+				],
+			);
+			changed = true;
+			result = {
+				status: "inserted",
+				receipt: {
+					sessionId: input.sessionId,
+					transcriptId: input.transcriptId,
+					contentDigest,
+					receiptId,
+				},
+			};
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	getVoiceHandoff(handoffId: string): VoiceHandoffRow | undefined {
+		return this.voiceHandoffFromRow(
+			this.workflowSelectAll(
+				"SELECT * FROM voice_handoffs WHERE handoff_id = ?",
+				[handoffId],
+			)[0],
+		);
+	}
+
+	authorizeVoiceHandoff(input: {
+		sessionId: string;
+		leaseToken: string;
+		transcriptId: string;
+		intentKind: VoiceHandoffIntentKind;
+		payload: Record<string, unknown>;
+		originalText: string;
+		idempotencyKey: string;
+		authorityBinding: Record<string, unknown>;
+		founderUserIds: readonly string[];
+		deliveryCanReconcile: boolean;
+		now: string;
+	}):
+		| { status: "created" | "replayed"; handoff: VoiceHandoffRow }
+		| {
+				status:
+					| "lease_conflict"
+					| "utterance_missing"
+					| "utterance_not_authorized"
+					| "conflict";
+		  } {
+		let result:
+			| { status: "created" | "replayed"; handoff: VoiceHandoffRow }
+			| {
+					status:
+						| "lease_conflict"
+						| "utterance_missing"
+						| "utterance_not_authorized"
+						| "conflict";
+			  } = { status: "lease_conflict" };
+		let changed = false;
+		this.db.transaction(() => {
+			const session = this.getActiveVoiceLease(
+				input.sessionId,
+				input.leaseToken,
+				input.now,
+			);
+			if (!session || session.state !== "live") return;
+			const utterance = this.getVoiceUtterance(
+				input.sessionId,
+				input.transcriptId,
+			);
+			if (!utterance) {
+				result = { status: "utterance_missing" };
+				return;
+			}
+			if (
+				!utterance.final ||
+				utterance.role !== "user" ||
+				utterance.text !== input.originalText ||
+				utterance.attribution.kind !== "known" ||
+				!input.founderUserIds.includes(utterance.attribution.speakerUserId)
+			) {
+				result = { status: "utterance_not_authorized" };
+				return;
+			}
+			const requestDigest = canonicalSubmissionDigest({
+				version: 1,
+				targetLeadId: session.leadId,
+				sessionId: input.sessionId,
+				transcriptId: input.transcriptId,
+				transcriptContentDigest: utterance.contentDigest,
+				intentKind: input.intentKind,
+				payload: input.payload,
+				originalText: input.originalText,
+				idempotencyKey: input.idempotencyKey,
+				authorityBinding: input.authorityBinding,
+			});
+			const prior = this.voiceHandoffFromRow(
+				this.workflowSelectAll(
+					"SELECT * FROM voice_handoffs WHERE session_id = ? AND idempotency_key = ?",
+					[input.sessionId, input.idempotencyKey],
+				)[0],
+			);
+			if (prior) {
+				result =
+					prior.requestDigest === requestDigest
+						? { status: "replayed", handoff: prior }
+						: { status: "conflict" };
+				return;
+			}
+			const handoffId = randomUUID();
+			const providerOperationId = `voice-handoff:${handoffId}`;
+			const deliveryId = `lead_event:${session.leadId}:${providerOperationId}`;
+			const attemptToken = randomUUID();
+			let leadEventSeq: number | null = null;
+			let state: VoiceHandoffState = "rejected";
+			let terminalReason: string | null = "carrier_not_reconcilable";
+			if (input.deliveryCanReconcile) {
+				const event = {
+					event_type: "voice_handoff",
+					execution_id: `voice:${input.sessionId}`,
+					issue_id: `voice:${input.sessionId}`,
+					project_name: session.projectName,
+					status: "authorized",
+					summary: `Voice action ${input.intentKind} requires the Lead body`,
+					original_message: input.originalText,
+					voice_session_id: input.sessionId,
+					voice_handoff_id: handoffId,
+					voice_transcript_id: input.transcriptId,
+					voice_request_digest: requestDigest,
+					voice_intent_kind: input.intentKind,
+					voice_payload: input.payload,
+					voice_authority_binding: input.authorityBinding,
+				};
+				leadEventSeq = this.appendLeadEvent(
+					session.leadId,
+					providerOperationId,
+					"voice_handoff",
+					canonicalJsonString(event),
+					`voice:${input.sessionId}`,
+				);
+				state = "dispatching";
+				terminalReason = null;
+			}
+			this.db.run(
+				`INSERT INTO voice_handoffs
+				 (handoff_id, session_id, lead_id, transcript_id, intent_kind,
+				  payload_json, original_text, idempotency_key,
+				  authority_binding_json, request_digest, transcript_receipt_id,
+				  state, provider_operation_id, attempt_token, delivery_id,
+				  lead_event_seq, terminal_reason, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					handoffId,
+					input.sessionId,
+					session.leadId,
+					input.transcriptId,
+					input.intentKind,
+					canonicalJsonString(input.payload),
+					input.originalText,
+					input.idempotencyKey,
+					canonicalJsonString(input.authorityBinding),
+					requestDigest,
+					utterance.receiptId,
+					state,
+					input.deliveryCanReconcile ? providerOperationId : null,
+					input.deliveryCanReconcile ? attemptToken : null,
+					input.deliveryCanReconcile ? deliveryId : null,
+					leadEventSeq,
+					terminalReason,
+					input.now,
+					input.now,
+				],
+			);
+			changed = true;
+			result = {
+				status: "created",
+				handoff: this.getVoiceHandoff(handoffId)!,
+			};
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	markVoiceHandoffDispatchResult(input: {
+		handoffId: string;
+		attemptToken: string;
+		now: string;
+		queued: boolean;
+		reason?: string;
+	}): VoiceHandoffRow | undefined {
+		let result: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const current = this.getVoiceHandoff(input.handoffId);
+			if (
+				!current ||
+				current.state !== "dispatching" ||
+				current.attemptToken !== input.attemptToken
+			)
+				return;
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET state = ?, next_reconcile_at = ?, last_dispatch_error = ?,
+				     terminal_reason = ?,
+				     state_version = state_version + 1, updated_at = ?
+				 WHERE handoff_id = ? AND state = 'dispatching'
+				   AND attempt_token = ? AND state_version = ?`,
+				[
+					input.queued ? "dispatched" : "ambiguous",
+					input.queued ? null : input.now,
+					input.queued ? null : (input.reason ?? "dispatch_outcome_unknown"),
+					null,
+					input.now,
+					input.handoffId,
+					input.attemptToken,
+					current.stateVersion,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getVoiceHandoff(input.handoffId);
+			}
+		});
+		if (result) this.save();
+		return result;
+	}
+
+	recoverVoiceHandoffDispatching(now: string): number {
+		this.db.run(
+			`UPDATE voice_handoffs
+			 SET state = 'ambiguous', next_reconcile_at = ?,
+			     last_dispatch_error = 'process_restarted_during_dispatch',
+			     terminal_reason = NULL,
+			     state_version = state_version + 1, updated_at = ?
+			 WHERE state = 'dispatching'`,
+			[now, now],
+		);
+		const count = this.db.getRowsModified();
+		if (count > 0) this.save();
+		return count;
+	}
+
+	claimVoiceHandoffReconciliation(input: {
+		owner: string;
+		now: string;
+		leaseMs: number;
+	}): VoiceHandoffRow | undefined {
+		let claimed: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const candidate = this.voiceHandoffFromRow(
+				this.workflowSelectAll(
+					`SELECT * FROM voice_handoffs
+					 WHERE state = 'ambiguous'
+					   AND next_reconcile_at IS NOT NULL AND next_reconcile_at <= ?
+					   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+					 ORDER BY next_reconcile_at, created_at LIMIT 1`,
+					[input.now, input.now],
+				)[0],
+			);
+			if (!candidate) return;
+			const claimToken = randomUUID();
+			const leaseExpiresAt = new Date(
+				Date.parse(input.now) + input.leaseMs,
+			).toISOString();
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET reconciler_owner = ?, claim_token = ?, lease_expires_at = ?,
+				     state_version = state_version + 1, updated_at = ?
+				 WHERE handoff_id = ? AND state = 'ambiguous'
+				   AND state_version = ?
+				   AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+				[
+					input.owner,
+					claimToken,
+					leaseExpiresAt,
+					input.now,
+					candidate.handoffId,
+					candidate.stateVersion,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				claimed = this.getVoiceHandoff(candidate.handoffId);
+			}
+		});
+		if (claimed) this.save();
+		return claimed;
+	}
+
+	releaseVoiceHandoffReconciliation(input: {
+		handoffId: string;
+		claimToken: string;
+		stateVersion: number;
+		now: string;
+		settlement: { kind: string };
+	}): VoiceHandoffRow | undefined {
+		let result: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const current = this.getVoiceHandoff(input.handoffId);
+			if (
+				!current ||
+				current.state !== "ambiguous" ||
+				current.claimToken !== input.claimToken ||
+				current.stateVersion !== input.stateVersion
+			)
+				return;
+			const horizonReached =
+				Date.parse(input.now) - Date.parse(current.createdAt) >=
+				24 * 60 * 60_000;
+			const attempt = current.reconcileAttempts + 1;
+			const delays = [1_000, 5_000, 15_000, 60_000] as const;
+			const next = new Date(
+				Date.parse(input.now) + (delays[attempt - 1] ?? 5 * 60_000),
+			).toISOString();
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET state = ?, last_reconcile_at = ?, next_reconcile_at = ?,
+				     reconciler_owner = NULL, claim_token = NULL,
+				     lease_expires_at = NULL, reconcile_attempts = ?,
+				     last_reconcile_result = ?,
+				     terminal_reason = ?, state_version = state_version + 1,
+				     updated_at = ?
+				 WHERE handoff_id = ? AND state = 'ambiguous'
+				   AND claim_token = ? AND state_version = ?`,
+				[
+					horizonReached ? "needs_human" : "ambiguous",
+					input.now,
+					horizonReached ? null : next,
+					attempt,
+					input.settlement.kind,
+					horizonReached ? "reconciliation_horizon_exhausted" : null,
+					input.now,
+					input.handoffId,
+					input.claimToken,
+					input.stateVersion,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getVoiceHandoff(input.handoffId);
+			}
+		});
+		if (result) this.save();
+		return result;
+	}
+
+	recordVoiceHandoffExecution(input: {
+		handoffId: string;
+		providerOperationId: string;
+		finalState: "committed" | "rejected";
+		evidence: Record<string, unknown>;
+		at: string;
+	}): VoiceHandoffRow | undefined {
+		let result: VoiceHandoffRow | undefined;
+		this.db.transaction(() => {
+			const current = this.getVoiceHandoff(input.handoffId);
+			if (!current || current.providerOperationId !== input.providerOperationId)
+				return;
+			if (current.state === input.finalState) {
+				result = current;
+				return;
+			}
+			if (!new Set<VoiceHandoffState>(["dispatched", "ambiguous"]).has(current.state))
+				return;
+			this.db.run(
+				`UPDATE voice_handoffs
+				 SET state = ?, execution_evidence = ?, terminal_reason = NULL,
+				     next_reconcile_at = NULL, reconciler_owner = NULL,
+				     claim_token = NULL, lease_expires_at = NULL,
+				     state_version = state_version + 1, updated_at = ?
+				 WHERE handoff_id = ? AND state_version = ?`,
+				[
+					input.finalState,
+					canonicalJsonString(input.evidence),
+					input.at,
+					input.handoffId,
+					current.stateVersion,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = this.getVoiceHandoff(input.handoffId);
+			}
+		});
+		if (result) this.save();
+		return result;
+	}
+
 	recordVoiceOutboundPage(input: {
 		sessionId: string;
 		leaseToken: string;
@@ -5789,7 +6476,11 @@ export class StateStore {
 				this.db.run(
 					`INSERT OR IGNORE INTO voice_outbound
 					 (session_id, message_id, channel_id, author_id, text, observed_at)
-					 VALUES (?, ?, ?, ?, ?, ?)`,
+					 SELECT ?, ?, ?, ?, ?, ?
+					 WHERE NOT EXISTS (
+					   SELECT 1 FROM voice_utterances
+					   WHERE session_id = ? AND mirror_message_id = ?
+					 )`,
 					[
 						input.sessionId,
 						message.messageId,
@@ -5797,6 +6488,8 @@ export class StateStore {
 						message.authorId,
 						message.text,
 						message.observedAt,
+						input.sessionId,
+						message.messageId,
 					],
 				);
 			}
@@ -5822,6 +6515,112 @@ export class StateStore {
 		});
 		if (changed) this.save();
 		return changed;
+	}
+
+	/**
+	 * FLY-2862: a Codex Lead reported that its reply to a turn in `threadId` failed
+	 * (an empty final answer, so nothing was posted). When a voice session with a
+	 * live daemon lease owns that thread, queue one fixed status line: the daemon speaks it,
+	 * which also stops the waiting tone. Idempotent per report key. Returns the
+	 * matched session id, or undefined when no such session exists.
+	 */
+	recordVoiceLeadReplyFailure(input: {
+		projectName: string;
+		leadId: string;
+		threadId: string;
+		key: string;
+		text: string;
+		now: string;
+	}): string | undefined {
+		let sessionId: string | undefined;
+		this.db.transaction(() => {
+			// Only a live daemon lease can read the row back (listVoiceOutbound
+			// checks the same lease), so an expired holder does not count.
+			const session = this.workflowSelectAll(
+				`SELECT session_id, voice_bot_user_id, lease_expires_at FROM voice_sessions
+				 WHERE project_name = ? AND lead_id = ? AND thread_id = ?
+				   AND state IN ('claimed','warming','live')
+				   AND lease_token IS NOT NULL
+				 ORDER BY created_at DESC`,
+				[input.projectName, input.leadId, input.threadId],
+			).find(
+				(row) =>
+					Date.parse(String(row.lease_expires_at)) > Date.parse(input.now),
+			);
+			if (!session) return;
+			sessionId = String(session.session_id);
+			this.db.run(
+				`INSERT OR IGNORE INTO voice_outbound
+				 (session_id, message_id, channel_id, author_id, text, observed_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					sessionId,
+					`lead-reply-failed:${input.key}`,
+					input.threadId,
+					(session.voice_bot_user_id as string | null) ?? "flywheel-runtime",
+					input.text,
+					input.now,
+				],
+			);
+		});
+		if (sessionId) this.save();
+		return sessionId;
+	}
+
+	/**
+	 * FLY-2799 qa6: the voice side registers the Discord message it posted as a
+	 * line's visible transcript. The poller then skips that message by id; if it
+	 * already queued it (the page landed before this call), the queued row is
+	 * withdrawn. Claimed rows are left alone: they are already being spoken.
+	 */
+	recordVoiceUtteranceMirror(input: {
+		sessionId: string;
+		leaseToken: string;
+		transcriptId: string;
+		messageId: string;
+		now: string;
+	}): "recorded" | "replayed" | "conflict" | "not_found" | "lease_conflict" {
+		let result:
+			| "recorded"
+			| "replayed"
+			| "conflict"
+			| "not_found"
+			| "lease_conflict" = "lease_conflict";
+		let changed = false;
+		this.db.transaction(() => {
+			if (
+				!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)
+			)
+				return;
+			const row = this.workflowSelectAll(
+				`SELECT mirror_message_id FROM voice_utterances
+				 WHERE session_id = ? AND transcript_id = ?`,
+				[input.sessionId, input.transcriptId],
+			)[0] as { mirror_message_id: string | null } | undefined;
+			if (!row) {
+				result = "not_found";
+				return;
+			}
+			if (row.mirror_message_id !== null) {
+				result =
+					row.mirror_message_id === input.messageId ? "replayed" : "conflict";
+				return;
+			}
+			this.db.run(
+				`UPDATE voice_utterances SET mirror_message_id = ?
+				 WHERE session_id = ? AND transcript_id = ?`,
+				[input.messageId, input.sessionId, input.transcriptId],
+			);
+			this.db.run(
+				`DELETE FROM voice_outbound
+				 WHERE session_id = ? AND message_id = ? AND phase = 'queued'`,
+				[input.sessionId, input.messageId],
+			);
+			result = "recorded";
+			changed = true;
+		});
+		if (changed) this.save();
+		return result;
 	}
 
 	listVoiceOutbound(
@@ -9503,6 +10302,79 @@ export class StateStore {
 		});
 	}
 
+	private migrateVoiceHandoffIntentKinds(): void {
+		const schema = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'voice_handoffs'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (String(schema?.sql ?? "").includes("'delegate_request'")) return;
+		this.db.transaction(() => {
+			this.db.run("DROP TABLE IF EXISTS voice_handoffs_next");
+			this.db.run(`
+				CREATE TABLE voice_handoffs_next (
+					handoff_id TEXT PRIMARY KEY,
+					session_id TEXT NOT NULL,
+					lead_id TEXT NOT NULL,
+					transcript_id TEXT NOT NULL,
+					intent_kind TEXT NOT NULL CHECK(intent_kind IN ('create_issue','approve_ship','change_priority','dispatch_runner','delegate_request')),
+					payload_json TEXT NOT NULL,
+					original_text TEXT NOT NULL,
+					idempotency_key TEXT NOT NULL,
+					authority_binding_json TEXT NOT NULL,
+					request_digest TEXT NOT NULL,
+					transcript_receipt_id TEXT NOT NULL,
+					state TEXT NOT NULL CHECK(state IN ('authorized','dispatching','dispatched','committed','rejected','ambiguous','needs_human')),
+					provider_operation_id TEXT,
+					attempt_token TEXT,
+					delivery_id TEXT,
+					lead_event_seq INTEGER,
+					last_reconcile_at TEXT,
+					next_reconcile_at TEXT,
+					reconciler_owner TEXT,
+					claim_token TEXT,
+					lease_expires_at TEXT,
+					state_version INTEGER NOT NULL DEFAULT 1,
+					reconcile_attempts INTEGER NOT NULL DEFAULT 0,
+					last_dispatch_error TEXT,
+					last_reconcile_result TEXT,
+					terminal_reason TEXT,
+					execution_evidence TEXT,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL,
+					UNIQUE(session_id, idempotency_key),
+					FOREIGN KEY(session_id, transcript_id) REFERENCES voice_utterances(session_id, transcript_id)
+				)
+			`);
+			this.db.run(`
+				INSERT INTO voice_handoffs_next (
+					handoff_id, session_id, lead_id, transcript_id, intent_kind,
+					payload_json, original_text, idempotency_key,
+					authority_binding_json, request_digest, transcript_receipt_id,
+					state, provider_operation_id, attempt_token, delivery_id,
+					lead_event_seq, last_reconcile_at, next_reconcile_at,
+					reconciler_owner, claim_token, lease_expires_at, state_version,
+					reconcile_attempts, last_dispatch_error, last_reconcile_result,
+					terminal_reason, execution_evidence, created_at, updated_at
+				)
+				SELECT
+					handoff_id, session_id, lead_id, transcript_id, intent_kind,
+					payload_json, original_text, idempotency_key,
+					authority_binding_json, request_digest, transcript_receipt_id,
+					state, provider_operation_id, attempt_token, delivery_id,
+					lead_event_seq, last_reconcile_at, next_reconcile_at,
+					reconciler_owner, claim_token, lease_expires_at, state_version,
+					reconcile_attempts, last_dispatch_error, last_reconcile_result,
+					terminal_reason, execution_evidence, created_at, updated_at
+				FROM voice_handoffs
+			`);
+			this.db.run("DROP TABLE voice_handoffs");
+			this.db.run(
+				"ALTER TABLE voice_handoffs_next RENAME TO voice_handoffs",
+			);
+		});
+	}
+
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
@@ -10078,6 +10950,7 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
 		this.summaryPresentations.migrate();
+		this.codexTerminalClose.migrate();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
 				target TEXT PRIMARY KEY,
@@ -10448,6 +11321,76 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS voice_outbound_session_phase ON voice_outbound(session_id, phase, seq)",
 		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_utterances (
+				session_id TEXT NOT NULL,
+				transcript_id TEXT NOT NULL,
+				utterance_id TEXT NOT NULL,
+				session_generation INTEGER NOT NULL,
+				sequence INTEGER NOT NULL,
+				source TEXT NOT NULL CHECK(source IN ('room_audio','engine_audio','engine_text')),
+				role TEXT NOT NULL CHECK(role IN ('user','assistant')),
+				raw_text TEXT NOT NULL,
+				final INTEGER NOT NULL CHECK(final IN (0,1)),
+				attribution_kind TEXT NOT NULL CHECK(attribution_kind IN ('known','unknown')),
+				speaker_user_id TEXT,
+				attribution_reason TEXT,
+				capture_digest TEXT NOT NULL,
+				content_digest TEXT NOT NULL,
+				lease_epoch TEXT NOT NULL,
+				receipt_id TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY(session_id, transcript_id),
+				FOREIGN KEY(session_id) REFERENCES voice_sessions(session_id)
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS voice_utterances_receipt ON voice_utterances(receipt_id)",
+		);
+		// FLY-2799 qa6: the Discord message the voice side posted as this line's
+		// visible transcript. The outbound poller skips it by id, so the founder's
+		// own words are never read back as a Lead reply.
+		this.addColumnIfMissing("voice_utterances", "mirror_message_id", "TEXT");
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS voice_handoffs (
+				handoff_id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				transcript_id TEXT NOT NULL,
+				intent_kind TEXT NOT NULL CHECK(intent_kind IN ('create_issue','approve_ship','change_priority','dispatch_runner','delegate_request')),
+				payload_json TEXT NOT NULL,
+				original_text TEXT NOT NULL,
+				idempotency_key TEXT NOT NULL,
+				authority_binding_json TEXT NOT NULL,
+				request_digest TEXT NOT NULL,
+				transcript_receipt_id TEXT NOT NULL,
+				state TEXT NOT NULL CHECK(state IN ('authorized','dispatching','dispatched','committed','rejected','ambiguous','needs_human')),
+				provider_operation_id TEXT,
+				attempt_token TEXT,
+				delivery_id TEXT,
+				lead_event_seq INTEGER,
+				last_reconcile_at TEXT,
+				next_reconcile_at TEXT,
+				reconciler_owner TEXT,
+				claim_token TEXT,
+				lease_expires_at TEXT,
+				state_version INTEGER NOT NULL DEFAULT 1,
+				reconcile_attempts INTEGER NOT NULL DEFAULT 0,
+				last_dispatch_error TEXT,
+				last_reconcile_result TEXT,
+				terminal_reason TEXT,
+				execution_evidence TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				UNIQUE(session_id, idempotency_key),
+				FOREIGN KEY(session_id, transcript_id) REFERENCES voice_utterances(session_id, transcript_id)
+			)
+		`);
+		this.migrateVoiceHandoffIntentKinds();
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS voice_handoffs_reconcile
+			ON voice_handoffs(state, next_reconcile_at, lease_expires_at)
+		`);
 
 		// FLY-91: Chat threads for per-issue conversation in chatChannel
 		this.db.run(`
@@ -10642,6 +11585,36 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_alert_mailbox_ledger_event ON alert_mailbox_ledger(event_id)",
 		);
+		// FLY-2910: only adapter-confirmed deliveries authorize wake suppression.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_wake_dedup_state (
+				lead_id TEXT NOT NULL,
+				fingerprint TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				event_type TEXT NOT NULL,
+				category_key TEXT NOT NULL,
+				category_title TEXT NOT NULL,
+				info_only INTEGER NOT NULL DEFAULT 0 CHECK (info_only IN (0,1)),
+				window_started_at TEXT NOT NULL,
+				delivered_delivery_id TEXT,
+				max_severity INTEGER NOT NULL DEFAULT 0,
+				ticket_generation TEXT,
+				occurrences INTEGER NOT NULL DEFAULT 0,
+				suppressed INTEGER NOT NULL DEFAULT 0,
+				digest_pending INTEGER NOT NULL DEFAULT 0,
+				last_seen_at TEXT NOT NULL,
+				PRIMARY KEY (lead_id, fingerprint)
+			);
+			CREATE INDEX IF NOT EXISTS alert_wake_dedup_state_category
+				ON alert_wake_dedup_state(lead_id, category_key, window_started_at);
+			CREATE TABLE IF NOT EXISTS alert_wake_letter (
+				delivery_id TEXT PRIMARY KEY,
+				correlation_key TEXT,
+				canonical_event_id TEXT,
+				recorded_at TEXT NOT NULL,
+				evidence_recorded_at TEXT
+			);
+		`);
 
 		// FLY-1082 (Task 2.2): the fleet pressure-hold — a SINGLE durable row
 		// (id=1 enforced). While present, runner admission defers every new
@@ -23781,6 +24754,251 @@ export class StateStore {
 
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
 
+	/** First enqueue mapping wins, including retries after a ticket reopens. */
+	recordAlertWakeLetter(input: {
+		deliveryId: string;
+		correlationKey: string;
+		canonicalEventId: string;
+		recordedAt: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`INSERT OR IGNORE INTO alert_wake_letter
+			 (delivery_id, correlation_key, canonical_event_id, recorded_at)
+			 VALUES (?, ?, ?, ?)`,
+				)
+				.run(
+					input.deliveryId,
+					input.correlationKey,
+					input.canonicalEventId,
+					input.recordedAt,
+				).changes === 1
+		);
+	}
+
+	getAlertWakeLetter(deliveryId: string): AlertWakeLetter | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM alert_wake_letter WHERE delivery_id = ?")
+			.get(deliveryId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					deliveryId: row.delivery_id as string,
+					correlationKey: row.correlation_key as string | null,
+					canonicalEventId: row.canonical_event_id as string | null,
+					recordedAt: row.recorded_at as string,
+					evidenceRecordedAt: row.evidence_recorded_at as string | null,
+				}
+			: undefined;
+	}
+
+	getAlertWakeDedupRecord(
+		leadId: string,
+		fingerprint: string,
+	): AlertWakeDedupRecord | undefined {
+		const row = this.db.raw
+			.prepare(
+				"SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND fingerprint = ?",
+			)
+			.get(leadId, fingerprint) as Record<string, unknown> | undefined;
+		return row ? rowToAlertWakeDedupRecord(row) : undefined;
+	}
+
+	/** Marker and evidence commit together; a frozen delivery replay is a no-op. */
+	recordAlertWakeDelivered(input: AlertWakeDeliveredInput): boolean {
+		return this.db.raw.transaction(() => {
+			const marked =
+				input.sourceKind === "infra_alert"
+					? this.db.raw
+							.prepare(
+								`UPDATE alert_wake_letter SET evidence_recorded_at = ?
+					 WHERE delivery_id = ? AND evidence_recorded_at IS NULL
+					 AND canonical_event_id = ?`,
+							)
+							.run(input.nowIso, input.deliveryId, input.ticketGeneration)
+							.changes
+					: this.db.raw
+							.prepare(
+								`INSERT OR IGNORE INTO alert_wake_letter
+					 (delivery_id, evidence_recorded_at, recorded_at) VALUES (?, ?, ?)`,
+							)
+							.run(input.deliveryId, input.nowIso, input.nowIso).changes;
+			if (marked !== 1) return false;
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			const maxSeverity =
+				reset || previous.ticketGeneration !== input.ticketGeneration
+					? input.severityRank
+					: Math.max(previous.maxSeverity, input.severityRank);
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, delivered_delivery_id, max_severity,
+				  ticket_generation, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  project_name = excluded.project_name, event_type = excluded.event_type,
+				  category_key = excluded.category_key, category_title = excluded.category_title,
+				  info_only = 0, window_started_at = excluded.window_started_at,
+				  delivered_delivery_id = excluded.delivered_delivery_id,
+				  max_severity = excluded.max_severity, ticket_generation = excluded.ticket_generation,
+				  occurrences = excluded.occurrences, suppressed = excluded.suppressed,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					input.deliveryId,
+					maxSeverity,
+					input.ticketGeneration,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 0 : previous.suppressed,
+					previous?.digestPending ?? 0,
+					input.nowIso,
+				);
+			const cutoff = new Date(
+				Date.parse(input.nowIso) - 48 * 3_600_000,
+			).toISOString();
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_dedup_state WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_dedup_state
+				  WHERE last_seen_at < ? AND digest_pending = 0 LIMIT 200)`,
+				)
+				.run(cutoff);
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_letter WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_letter WHERE recorded_at < ? LIMIT 200)`,
+				)
+				.run(cutoff);
+			return true;
+		})();
+	}
+
+	bumpAlertWakeSuppressed(input: {
+		leadId: string;
+		fingerprint: string;
+		nowIso: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE alert_wake_dedup_state SET occurrences = occurrences + 1,
+			 suppressed = suppressed + 1, digest_pending = digest_pending + 1, last_seen_at = ?
+			 WHERE lead_id = ? AND fingerprint = ? AND info_only = 0
+			 AND delivered_delivery_id IS NOT NULL`,
+				)
+				.run(input.nowIso, input.leadId, input.fingerprint).changes === 1
+		);
+	}
+
+	bumpAlertWakeInfo(input: AlertWakeIdentityInput & { nowIso: string }): void {
+		this.db.raw.transaction(() => {
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  window_started_at = excluded.window_started_at, occurrences = excluded.occurrences,
+				  suppressed = excluded.suppressed, digest_pending = excluded.digest_pending,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 1 : previous.suppressed + 1,
+					(previous?.digestPending ?? 0) + 1,
+					input.nowIso,
+				);
+		})();
+	}
+
+	sumAlertWakeCategory(
+		leadId: string,
+		categoryKey: string,
+		sinceIso: string,
+	): { occurrences: number; suppressed: number } {
+		return this.db.raw
+			.prepare(
+				`SELECT COALESCE(SUM(occurrences), 0) AS occurrences, COALESCE(SUM(suppressed), 0) AS suppressed
+			 FROM alert_wake_dedup_state WHERE lead_id = ? AND category_key = ? AND window_started_at >= ?`,
+			)
+			.get(leadId, categoryKey, sinceIso) as {
+			occurrences: number;
+			suppressed: number;
+		};
+	}
+
+	takeAlertWakeDigest(
+		leadId: string,
+		limit: number,
+	): {
+		entries: AlertWakeDedupRecord[];
+		total: number;
+		remainingCategories: number;
+	} {
+		return this.db.raw.transaction(() => {
+			const rows = (
+				this.db.raw
+					.prepare(
+						`SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND digest_pending > 0
+				 ORDER BY digest_pending DESC, category_key ASC, fingerprint ASC`,
+					)
+					.all(leadId) as Record<string, unknown>[]
+			).map(rowToAlertWakeDedupRecord);
+			this.db.raw
+				.prepare(
+					"UPDATE alert_wake_dedup_state SET digest_pending = 0 WHERE lead_id = ? AND digest_pending > 0",
+				)
+				.run(leadId);
+			const entries = rows.slice(0, Math.max(0, Math.floor(limit)));
+			return {
+				entries,
+				total: rows.reduce((total, row) => total + row.digestPending, 0),
+				remainingCategories: rows.length - entries.length,
+			};
+		})();
+	}
+
+	listAlertWakeDedup(sinceIso: string): AlertWakeDedupRecord[] {
+		return (
+			this.db.raw
+				.prepare(
+					"SELECT * FROM alert_wake_dedup_state WHERE last_seen_at >= ? ORDER BY last_seen_at DESC, lead_id ASC, fingerprint ASC",
+				)
+				.all(sinceIso) as Record<string, unknown>[]
+		).map(rowToAlertWakeDedupRecord);
+	}
+
 	/** Open the first mailbox-lane alert episode for a correlation key. */
 	upsertAlertMailboxLedger(
 		input: AlertMailboxLedgerInput,
@@ -23805,6 +25023,7 @@ export class StateStore {
 		) {
 			return {
 				disposition: "replayed_same",
+				canonicalEventId: null,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 				};
 		}
@@ -23839,12 +25058,14 @@ export class StateStore {
 					this.save();
 					return {
 						disposition: "reseeded",
+						canonicalEventId: input.eventId,
 						deliveryProjection: deliveryProjectionFromInput(input),
 					};
 				}
 			}
 			return {
 				disposition: "locked_canonical",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 			};
 		}
@@ -23861,6 +25082,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "merged",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromInput(input),
 				};
 		}
@@ -23898,6 +25120,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "new_episode",
+				canonicalEventId: input.eventId,
 				deliveryProjection: deliveryProjectionFromInput(input),
 			};
 		}
@@ -23944,6 +25167,7 @@ export class StateStore {
 		this.save();
 		return {
 				disposition: "inserted",
+			canonicalEventId: input.eventId,
 			deliveryProjection: deliveryProjectionFromInput(input),
 		};
 	}
@@ -26016,6 +27240,14 @@ export class StateStore {
 			.prepare("SELECT * FROM lead_events WHERE seq = ?")
 			.get(seq) as Record<string, unknown> | undefined;
 		return row ? mapLeadEventRow(row) : null;
+	}
+
+	/** FLY-2882: metadata-only lookup (never reads `payload`). */
+	getLeadEventSessionKeyBySeq(seq: number): string | null {
+		const row = this.db.raw
+			.prepare("SELECT session_key FROM lead_events WHERE seq = ?")
+			.get(seq) as { session_key: unknown } | undefined;
+		return typeof row?.session_key === "string" ? row.session_key : null;
 	}
 
 	/** FLY-1687: exact per-(project, Lead) patrol chain head; no SQL LIKE. */
@@ -32513,6 +33745,31 @@ export class StateStore {
 			ON workflow_completion_drain_challenge(
 				execution_id, activation_id, business_digest
 			) WHERE state = 'issued'
+		`);
+		// FLY-2373: a v2 challenge is a read envelope — the exact unread subject
+		// set, its carrier-safe pages and which pages the runner was shown.
+		this.addColumnIfMissing(
+			"workflow_completion_drain_challenge",
+			"protocol_version",
+			"INTEGER NOT NULL DEFAULT 1",
+		);
+		for (const column of [
+			"read_id",
+			"read_set_digest",
+			"read_set_json",
+			"pages_json",
+			"pages_served_json",
+		]) {
+			this.addColumnIfMissing(
+				"workflow_completion_drain_challenge",
+				column,
+				"TEXT",
+			);
+		}
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wcdc_read_id
+			ON workflow_completion_drain_challenge(read_id)
+			WHERE read_id IS NOT NULL
 		`);
 		// FLY-1375: approval authority survives the QA process lifecycle. The
 		// source execution is attribution only; materialization and founder
@@ -47842,19 +49099,38 @@ export class StateStore {
 		)[0] as WorkflowResidentHoldRow | undefined;
 	}
 
+	/**
+	 * FLY-2373: issue (or reuse) the v2 read envelope for one completion
+	 * submission. The envelope freezes the exact unread subject set and its
+	 * carrier-safe pages; page 1 is shown by the 409 itself. A changed unread
+	 * set supersedes the previous envelope — reads of its exact versions stay
+	 * acknowledgeable, new content stays unread.
+	 */
 	issueDrainChallenge(input: {
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
+		readSetDigest: string;
+		subjects: ReadonlyArray<{
+			subjectKind: string;
+			subjectId: string;
+			contentSha256: string;
+		}>;
 		mailSet: { mailbox: string[]; phaseWakes: string[] };
-		watermark: Record<string, unknown>;
+		pages: readonly string[];
 		now?: string;
-	}): { challengeId: string; mailbox: string[]; phaseWakes: string[] } {
+	}): {
+		challengeId: string;
+		readId: string;
+		pageCount: number;
+		reused: boolean;
+	} {
 		const now = input.now ?? new Date().toISOString();
 		if (
 			!input.executionId ||
 			!input.activationId ||
 			!/^[0-9a-f]{64}$/.test(input.businessDigest) ||
+			!/^[0-9a-f]{64}$/.test(input.readSetDigest) ||
 			!StateStore.workflowFiniteTimestamp(now)
 		) {
 			throw new Error("invalid drain challenge input");
@@ -47863,48 +49139,84 @@ export class StateStore {
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new Error("invalid drain challenge identity");
 		}
-		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
-		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
+		const subjects = input.subjects
+			.map((subject) => ({
+				subjectKind: subject.subjectKind,
+				subjectId: subject.subjectId,
+				contentSha256: subject.contentSha256,
+			}))
+			.sort((left, right) =>
+				`${left.subjectKind}\u0000${left.subjectId}\u0000${left.contentSha256}` <
+				`${right.subjectKind}\u0000${right.subjectId}\u0000${right.contentSha256}`
+					? -1
+					: 1,
+			);
 		if (
-			mailbox.some((id) => !id) ||
-			phaseWakes.some((id) => !id) ||
-			mailbox.length + phaseWakes.length === 0
+			subjects.length === 0 ||
+			input.pages.length === 0 ||
+			input.pages.some((page) => typeof page !== "string" || !page) ||
+			subjects.some(
+				(subject) =>
+					(subject.subjectKind !== "mailbox" &&
+						subject.subjectKind !== "inline_wake") ||
+					!subject.subjectId ||
+					!/^[0-9a-f]{64}$/.test(subject.contentSha256),
+			)
 		) {
-			throw new Error("invalid drain challenge mail set");
+			throw new Error("invalid drain challenge read set");
 		}
 		const existing = this.workflowSelectAll(
-			`SELECT challenge_id, mail_set_json
+			`SELECT challenge_id, read_id, protocol_version, read_set_digest, pages_json
 			   FROM workflow_completion_drain_challenge
 			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
 			    AND state = 'issued'`,
 			[input.executionId, input.activationId, input.businessDigest],
 		)[0];
-		if (existing) {
-			const prior = JSON.parse(existing.mail_set_json as string) as {
-				mailbox: string[];
-				phaseWakes: string[];
-			};
+		if (
+			existing &&
+			Number(existing.protocol_version) === 2 &&
+			existing.read_set_digest === input.readSetDigest &&
+			typeof existing.read_id === "string"
+		) {
 			return {
 				challengeId: existing.challenge_id as string,
-				mailbox: prior.mailbox,
-				phaseWakes: prior.phaseWakes,
+				readId: existing.read_id,
+				pageCount: (JSON.parse(existing.pages_json as string) as string[])
+					.length,
+				reused: true,
 			};
 		}
-		const challengeId = `drain:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
+		const challengeId = `drain2:${randomUUID()}`;
+		const readId = newDrainReadId();
+		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
+		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
 		this.db.transaction(() => {
+			if (existing) {
+				this.db.run(
+					`UPDATE workflow_completion_drain_challenge
+					    SET state = 'superseded'
+					  WHERE challenge_id = ? AND state = 'issued'`,
+					[existing.challenge_id],
+				);
+			}
 			this.db.run(
 				`INSERT INTO workflow_completion_drain_challenge (
 				   challenge_id, execution_id, activation_id, business_digest,
-				   mail_set_json, watermark_json, state, issued_at
-				 ) VALUES (?, ?, ?, ?, ?, ?, 'issued', ?)`,
+				   mail_set_json, watermark_json, state, issued_at,
+				   protocol_version, read_id, read_set_digest, read_set_json,
+				   pages_json, pages_served_json
+				 ) VALUES (?, ?, ?, ?, ?, '{}', 'issued', ?, 2, ?, ?, ?, ?, '[1]')`,
 				[
 					challengeId,
 					input.executionId,
 					input.activationId,
 					input.businessDigest,
 					canonicalJsonString({ mailbox, phaseWakes }),
-					canonicalJsonString(input.watermark),
 					now,
+					readId,
+					input.readSetDigest,
+					canonicalJsonString(subjects),
+					JSON.stringify(input.pages),
 				],
 			);
 			this.appendWorkflowRunEventCheckedTx({
@@ -47914,18 +49226,121 @@ export class StateStore {
 				nodeId: binding.node_id,
 				executionId: input.executionId,
 				payload: {
+					protocolVersion: 2,
 					challengeId,
 					activationId: input.activationId,
 					businessDigest: input.businessDigest,
-					mailbox,
-					phaseWakes,
-					watermark: input.watermark,
+					readSetDigest: input.readSetDigest,
+					subjects,
+					pageCount: input.pages.length,
+					...(existing
+						? { supersedes: existing.challenge_id as string }
+						: {}),
 					issuedAt: now,
 				},
 			});
 		});
 		this.save();
-		return { challengeId, mailbox, phaseWakes };
+		return {
+			challengeId,
+			readId,
+			pageCount: input.pages.length,
+			reused: false,
+		};
+	}
+
+	/** FLY-2373: the persisted v2 read envelope behind one runner read id. */
+	getDrainReadEnvelope(readId: string):
+		| {
+				challengeId: string;
+				executionId: string;
+				activationId: string;
+				businessDigest: string;
+				state: "issued" | "consumed" | "superseded";
+				subjects: Array<{
+					subjectKind: "mailbox" | "inline_wake";
+					subjectId: string;
+					contentSha256: string;
+				}>;
+				pages: string[];
+				pagesServed: number[];
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_completion_drain_challenge
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[readId],
+		)[0];
+		if (!row) return undefined;
+		try {
+			return {
+				challengeId: row.challenge_id as string,
+				executionId: row.execution_id as string,
+				activationId: row.activation_id as string,
+				businessDigest: row.business_digest as string,
+				state: row.state as "issued" | "consumed" | "superseded",
+				subjects: JSON.parse(row.read_set_json as string),
+				pages: JSON.parse(row.pages_json as string),
+				pagesServed: JSON.parse(row.pages_served_json as string),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * FLY-2373: a ship-carrier runner deliberately sends no workflowActivation
+	 * (its env activation is the carrier, not the node). It proves itself the
+	 * same way its carrier wake receipt does: the carrier activation maps to
+	 * this source execution at exactly this TURN epoch.
+	 */
+	isShipCarrierReader(input: {
+		executionId: string;
+		carrierActivationId: string;
+		turnEpoch: number;
+	}): boolean {
+		if (
+			!input.executionId ||
+			!input.carrierActivationId ||
+			!Number.isInteger(input.turnEpoch) ||
+			input.turnEpoch < 1
+		) {
+			return false;
+		}
+		const row = this.workflowSelectAll(
+			`SELECT source_execution_id, turn_epoch FROM workflow_carrier_delivery
+			  WHERE carrier_activation_id = ?`,
+			[input.carrierActivationId],
+		)[0];
+		return (
+			row !== undefined &&
+			row.source_execution_id === input.executionId &&
+			Number(row.turn_epoch) === input.turnEpoch
+		);
+	}
+
+	/** Record that one page of a read envelope was shown to its runner. */
+	markDrainReadPageServed(readId: string, pageIndex: number): string {
+		const envelope = this.getDrainReadEnvelope(readId);
+		if (
+			!envelope ||
+			!Number.isSafeInteger(pageIndex) ||
+			pageIndex < 1 ||
+			pageIndex > envelope.pages.length
+		) {
+			throw new Error("drain read page not found");
+		}
+		const served = [...new Set([...envelope.pagesServed, pageIndex])].sort(
+			(left, right) => left - right,
+		);
+		this.db.run(
+			`UPDATE workflow_completion_drain_challenge
+			    SET pages_served_json = ?
+			  WHERE read_id = ? AND protocol_version = 2`,
+			[JSON.stringify(served), readId],
+		);
+		this.save();
+		return envelope.pages[pageIndex - 1]!;
 	}
 
 	getIssuedDrainChallenge(input: {
@@ -47993,81 +49408,94 @@ export class StateStore {
 		}
 	}
 
+	/**
+	 * FLY-2373: bind the server-built drain proof to this completion. The
+	 * Bridge re-resolved every obligation under the CommDB lock; this step only
+	 * consumes the submission's issued envelope (if any) and records the proof
+	 * so a crash between the two databases can re-apply wake settlement.
+	 * Wake run-state is deliberately not an input here.
+	 */
 	private consumeDrainChallengeTx(input: {
-		challengeId: string;
 		executionId: string;
 		activationId: string;
 		businessDigest: string;
-		verification: {
-			mailbox: Record<string, string>;
-			phaseWakes: Record<string, string>;
-		};
+		proof: CompletionDrainProof;
 		now: string;
 	}): boolean {
-		const row = this.workflowSelectAll(
-			`SELECT * FROM workflow_completion_drain_challenge
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+		if (!isCompletionDrainProof(input.proof)) return false;
+		const issued = this.workflowSelectAll(
+			`SELECT challenge_id FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ?
 			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		)[0];
-		if (!row) return false;
-		let mailSet: { mailbox: string[]; phaseWakes: string[] };
-		try {
-			mailSet = JSON.parse(row.mail_set_json as string) as typeof mailSet;
-		} catch {
-			return false;
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0] as { challenge_id: string } | undefined;
+		if (!issued && input.proof.settledWakes.length === 0) return true;
+		if (issued) {
+			this.db.run(
+				`UPDATE workflow_completion_drain_challenge
+				    SET state = 'consumed', consumed_at = ?
+				  WHERE challenge_id = ? AND state = 'issued'`,
+				[input.now, issued.challenge_id],
+			);
+			if (this.db.getRowsModified() !== 1) return false;
 		}
-		if (
-			!Array.isArray(mailSet.mailbox) ||
-			!Array.isArray(mailSet.phaseWakes) ||
-			!mailSet.mailbox.every(
-				(id) => input.verification.mailbox[id] === "ACKED",
-			) ||
-			!mailSet.phaseWakes.every((id) =>
-				["started", "finished"].includes(input.verification.phaseWakes[id] ?? ""),
-			)
-		) {
-			return false;
-		}
-		this.db.run(
-			`UPDATE workflow_completion_drain_challenge
-			    SET state = 'consumed', consumed_at = ?
-			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
-			    AND business_digest = ? AND state = 'issued'`,
-			[
-				input.now,
-				input.challengeId,
-				input.executionId,
-				input.activationId,
-				input.businessDigest,
-			],
-		);
-		if (this.db.getRowsModified() !== 1) return false;
 		const binding = this.getWorkflowActivation(input.activationId);
 		if (!binding || binding.execution_id !== input.executionId) {
 			throw new WorkflowEngineInvariantError(
-				`completion_drain_activation_conflict:${input.challengeId}`,
+				`completion_drain_activation_conflict:${input.activationId}`,
 			);
 		}
+		const proofKey =
+			issued?.challenge_id ??
+			`proof:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
 		this.appendWorkflowRunEventCheckedTx({
 			runId: binding.run_id,
-			eventUid: `completion_drain_consumed:${input.challengeId}`,
+			eventUid: `completion_drain_consumed:${proofKey}`,
 			kind: "completion_drain_consumed",
 			nodeId: binding.node_id,
 			executionId: input.executionId,
 			payload: {
-				challengeId: input.challengeId,
+				protocolVersion: 2,
+				...(issued ? { challengeId: issued.challenge_id } : {}),
 				activationId: input.activationId,
 				businessDigest: input.businessDigest,
+				proofDigest: input.proof.proofDigest,
+				settledWakes: input.proof.settledWakes,
+				receiptIds: input.proof.receiptIds,
 				consumedAt: input.now,
 			},
 		});
 		return true;
+	}
+
+	/** FLY-2373: recorded v2 drain proofs for one activation (replay reconcile). */
+	listCompletionDrainProofs(input: {
+		runId: string;
+		executionId: string;
+		activationId: string;
+	}): CompletionDrainProof["settledWakes"] {
+		return this.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "completion_drain_consumed" &&
+					event.execution_id === input.executionId,
+			)
+			.flatMap((event) => {
+				const payload = event.payload as Record<string, unknown> | undefined;
+				if (
+					payload?.protocolVersion !== 2 ||
+					payload.activationId !== input.activationId ||
+					!isCompletionDrainProof({
+						protocolVersion: 2,
+						proofDigest: payload.proofDigest,
+						settledWakes: payload.settledWakes,
+						receiptIds: payload.receiptIds,
+					})
+				) {
+					return [];
+				}
+				return payload.settledWakes as CompletionDrainProof["settledWakes"];
+			});
 	}
 
 	enterResidentHold(input: {
@@ -63760,13 +65188,11 @@ export class StateStore {
 		route: string;
 		sourceEventId: string;
 		completionSubmission: unknown;
-		drainChallenge?: {
-			challengeId: string;
-			verification: {
-				mailbox: Record<string, string>;
-				phaseWakes: Record<string, string>;
-			};
-		};
+		/**
+		 * FLY-2373: Bridge-built proof that every completion obligation was
+		 * consumed, derived under the CommDB lock; never decoded from payload.
+		 */
+		drainProof?: CompletionDrainProof;
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
@@ -64259,13 +65685,12 @@ export class StateStore {
 					});
 				}
 				if (
-					input.drainChallenge &&
+					input.drainProof &&
 					!this.consumeDrainChallengeTx({
-						challengeId: input.drainChallenge.challengeId,
 						executionId: input.executionId,
 						activationId: context.binding.activation_id,
 						businessDigest: digest,
-						verification: input.drainChallenge.verification,
+						proof: input.drainProof,
 						now,
 					})
 				) {
@@ -64498,7 +65923,7 @@ export class StateStore {
 			});
 		} catch (error) {
 			if (drainChallengeRefused) {
-				return { ok: false, reason: "drain_challenge_not_issued" };
+				return { ok: false, reason: "drain_proof_invalid" };
 			}
 			if (terminalImmuneRefusal) {
 				return { ok: false, reason: "terminal_status_immune" };
@@ -87943,7 +89368,7 @@ export type WorkflowCompletionResult =
 				| "no_code_artifact_present"
 				| "no_code_attestation_missing"
 				| "no_code_attestation_stale"
-				| "drain_challenge_not_issued"
+				| "drain_proof_invalid"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"
@@ -89181,6 +90606,68 @@ export interface AlertMailboxLedgerUpsertResult {
 		| "merged"
 		| "new_episode";
 	deliveryProjection: AlertMailboxDeliveryProjection;
+	canonicalEventId: string | null;
+}
+
+const ALERT_WAKE_WINDOW_MS = 6 * 3_600_000;
+
+export interface AlertWakeIdentityInput {
+	leadId: string;
+	fingerprint: string;
+	projectName: string;
+	eventType: string;
+	categoryKey: string;
+	categoryTitle: string;
+}
+
+export interface AlertWakeDeliveredInput extends AlertWakeIdentityInput {
+	deliveryId: string;
+	severityRank: number;
+	ticketGeneration: string;
+	nowIso: string;
+	sourceKind: "infra_alert" | "discord_chat";
+}
+
+export interface AlertWakeDedupRecord extends AlertWakeIdentityInput {
+	infoOnly: boolean;
+	windowStartedAt: string;
+	deliveredDeliveryId: string | null;
+	maxSeverity: number;
+	ticketGeneration: string | null;
+	occurrences: number;
+	suppressed: number;
+	digestPending: number;
+	lastSeenAt: string;
+}
+
+export interface AlertWakeLetter {
+	deliveryId: string;
+	correlationKey: string | null;
+	canonicalEventId: string | null;
+	recordedAt: string;
+	evidenceRecordedAt: string | null;
+}
+
+function rowToAlertWakeDedupRecord(
+	row: Record<string, unknown>,
+): AlertWakeDedupRecord {
+	return {
+		leadId: row.lead_id as string,
+		fingerprint: row.fingerprint as string,
+		projectName: row.project_name as string,
+		eventType: row.event_type as string,
+		categoryKey: row.category_key as string,
+		categoryTitle: row.category_title as string,
+		infoOnly: row.info_only === 1,
+		windowStartedAt: row.window_started_at as string,
+		deliveredDeliveryId: row.delivered_delivery_id as string | null,
+		maxSeverity: row.max_severity as number,
+		ticketGeneration: row.ticket_generation as string | null,
+		occurrences: row.occurrences as number,
+		suppressed: row.suppressed as number,
+		digestPending: row.digest_pending as number,
+		lastSeenAt: row.last_seen_at as string,
+	};
 }
 
 export type AlertDraftBindResult =

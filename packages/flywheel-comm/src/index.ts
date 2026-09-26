@@ -6,6 +6,7 @@ import {
 	DEFAULT_GATE_TIMEOUT_MS,
 	DEFAULT_TIMEOUT_BEHAVIOR,
 } from "flywheel-config";
+import type { ChatDeliveryOrigin } from "./chat-delivery-envelope.js";
 import {
 	type AccountRotationNotifyArgs,
 	accountRotationNotify,
@@ -24,6 +25,10 @@ import { codexResume } from "./commands/codex-resume.js";
 import { emitCodexReviewResult } from "./commands/codex-review-result.js";
 import { complete } from "./commands/complete.js";
 import {
+	acknowledgeCompletionDrain,
+	readCompletionDrainPage,
+} from "./commands/completion-drain.js";
+import {
 	type DeclareStateOpts,
 	declareState,
 	parseDuration,
@@ -38,6 +43,7 @@ import { gate } from "./commands/gate.js";
 import { runHoldCommand } from "./commands/hold.js";
 import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLandCommand } from "./commands/land.js";
+import { runLeadActivity } from "./commands/lead-activity.js";
 import { runLeadConfig } from "./commands/lead-config.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadInterruptCommand } from "./commands/lead-interrupt.js";
@@ -162,7 +168,9 @@ Commands:
             [--expected-head <sha>] [--method <merge|squash|rebase>] [--dry-run] atomically binds an
             allowed summary merge to that verified head
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
-  inbox     Check for instructions from Lead (Runner use)
+  inbox     Check for instructions from Lead (Runner use). FLY-2373 completion
+            drain: --drain-page <read-id> --page <n> prints one unread page;
+            --ack-consumed <read-id> acknowledges a read after acting on it
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
   lead-interrupt  Read and answer controlled interrupts relayed by the voice agent
                   (pending [--json] | reply <li_id> --text-stdin)
@@ -178,8 +186,9 @@ Commands:
             Prints yours|not-yours|no-turn (exit 0). Touch the worktree ONLY on
             a 'yours' answer; the wake message text is never authority.
             --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
-  complete  Emit session_completed terminal event to Bridge (Runner use;
-            retry deferred mail with --drain-receipt <challengeId>)
+  complete  Emit session_completed terminal event to Bridge (Runner use).
+            Unread mail answers exit 3 with the bodies; read, act, run
+            inbox --ack-consumed <read-id>, then rerun the same complete
   runner-stopped  Emit a reasoned Runner turn-end report to its Lead (hook use)
   runner-wake-sweep  Ring a durable Codex phase-hold doorbell when unread
             Runner traffic exists (turn-ended hook use; never ACKs mailbox rows)
@@ -224,6 +233,10 @@ Commands:
 	            render --project flywheel --out <file.html>. Local output may be
 	            up to 32MiB; publish-report rejects HTML over 512KiB.
 	  ship-judgment-ref  Re-fetch a referenced founder explanation (Lead only; no approval).
+	  lead-activity  Read-only: is a Lead in a turn right now (busy/idle/unknown),
+	            since when, and which issue opened it when provable:
+	            --project P --lead ID | --all [--bridge-url <loopback-url>].
+	            One JSON line; exit 0 = answered. Requires TEAMLEAD_API_TOKEN.
 	  lead-config    Set Lead model/effort for subsequent turns without restart:
 	            set --project P --lead ID [--model ID] [--effort VALUE] --reason TEXT
 	            rollback --operation-id OLD --reason TEXT | status --operation-id UUID
@@ -390,7 +403,7 @@ async function main(): Promise<void> {
 			process.exitCode = await runLeadLeaseCommand(commandArgs);
 			break;
 		case "inbox":
-			runInbox(commandArgs);
+			await runInbox(commandArgs);
 			break;
 		case "message-status":
 			process.exitCode = messageStatus(commandArgs);
@@ -501,6 +514,9 @@ async function main(): Promise<void> {
 			break;
 		case "ship-judgment-ref":
 			process.exitCode = await runShipJudgmentRef(commandArgs);
+			break;
+		case "lead-activity":
+			process.exitCode = await runLeadActivity(commandArgs);
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
@@ -951,7 +967,7 @@ async function runChatIngest(args: string[]): Promise<void> {
 					},
 				}
 			: {}),
-		...(values.origin ? { origin: values.origin as "discord" | "voice" } : {}),
+		...(values.origin ? { origin: values.origin as ChatDeliveryOrigin } : {}),
 		...(values["voice-session"]
 			? { voiceSessionId: values["voice-session"] }
 			: {}),
@@ -1056,7 +1072,7 @@ async function runSend(args: string[]): Promise<void> {
 	}
 }
 
-function runInbox(args: string[]): void {
+async function runInbox(args: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args,
 		options: {
@@ -1064,6 +1080,9 @@ function runInbox(args: string[]): void {
 			db: { type: "string" },
 			project: { type: "string" },
 			json: { type: "boolean", default: false },
+			"ack-consumed": { type: "string" },
+			"drain-page": { type: "string" },
+			page: { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -1077,6 +1096,37 @@ function runInbox(args: string[]): void {
 	}
 	const debugExecOverride =
 		Boolean(values["exec-id"]) && values["exec-id"] !== envExecId;
+	// FLY-2373: completion-drain reads act for the calling runner only.
+	const drainReadId = values["ack-consumed"] ?? values["drain-page"];
+	if (drainReadId !== undefined) {
+		if (values["ack-consumed"] && values["drain-page"]) {
+			throw new Error("use either --ack-consumed or --drain-page, not both");
+		}
+		if (debugExecOverride || !envExecId) {
+			throw new Error(
+				"completion-drain reads require the runner's own FLYWHEEL_EXEC_ID (no --exec-id override)",
+			);
+		}
+		const result = values["ack-consumed"]
+			? await acknowledgeCompletionDrain({
+					executionId: envExecId,
+					readId: drainReadId,
+				})
+			: await readCompletionDrainPage({
+					executionId: envExecId,
+					readId: drainReadId,
+					page: Number(values.page ?? "1"),
+				});
+		if (result.ok) console.log(result.output);
+		else {
+			console.error(result.output);
+			process.exitCode = 1;
+		}
+		return;
+	}
+	if (values.page !== undefined) {
+		throw new Error("--page requires --drain-page <read-id>");
+	}
 	if (debugExecOverride) {
 		console.error(
 			`[flywheel-comm inbox] WARNING: --exec-id override (${values["exec-id"]}) — use only for debug/test.`,

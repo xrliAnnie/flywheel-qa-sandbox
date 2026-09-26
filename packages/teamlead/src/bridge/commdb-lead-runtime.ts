@@ -27,6 +27,7 @@ import {
 	formatStuckEscalation,
 	formatSummaryAbsorptionRound,
 	formatSummaryDue,
+	formatVoiceHandoff,
 	formatWorkflowClaimRecorded,
 	formatWorkflowReplacementEligibility,
 } from "./hook-payload.js";
@@ -114,6 +115,7 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		if (e.event_type === "workflow_claim_recorded") {
 			return formatWorkflowClaimRecorded(env);
 		}
+		if (e.event_type === "voice_handoff") return formatVoiceHandoff(env);
 
 		// FLY-161: runner_question — non-blocking Runner ask. Distinct prompt
 		// shape from gate_question: no checkpoint tag, framing emphasises

@@ -16,6 +16,8 @@ const EXPECTED_WHEN_ON = {
 		"满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
 	lead_token_savings:
 		"恢复时先给摘要与分页入口，例行进度保留审计但不唤醒 Lead；常驻规则精简，巡检细节按需读取。",
+	lead_alert_wake_dedup:
+		"同一 Lead 6 小时内与已送达告警完全等价（同类别、同标题、同对象与处理要求、未升级、同代工单）的告警只记账不叫醒；info（带待办的除外）进下一次叫醒的摘要。",
 	codex_lead_thread_rotation:
 		"常驻 Codex Lead 在满足周期与空闲条件时开启新对话页，让旧页可进入原生记忆整理",
 	codex_memory_distill:
@@ -25,6 +27,8 @@ const EXPECTED_WHEN_ON = {
 	cmux_rebind_disabled: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
 	opus_model_sync_disabled:
 		"停止自动把 Opus 线推进到最新版本;models.json 保持原样,版本变化与回滚失败告警仍按 models.json 与状态文件照常发出",
+	worktree_takeover_rescue_disabled:
+		"接棒时发现共享工作树有脏改动、HEAD 分叉或目录丢失，不再自动保全并清理重建，而是像以前一样拒绝接棒并告警；防止丢工作的两道硬拒绝照常生效",
 	summary_absorption_cadence_ms:
 		"Raya 两轮总结复盘之间要等待的毫秒数；默认 21600000 毫秒（6 小时）",
 	summary_due_activity_gate:
@@ -39,6 +43,8 @@ const EXPECTED_WHEN_ON = {
 	loop_profiler: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
 	shipped_husk_force:
 		"合入后的节点正常关闭失败一次后，自动清理已确认无用的残留进程",
+	codex_terminal_reap_enabled:
+		"已经结束的 Codex 任务如果还在后台运行，自动让它停下并收掉；关闭后只记录和告警",
 	flag_retirement_scan:
 		"每周检查长期没变的 flag，整理成「保留或清理」候选；不会自动删除",
 	workflow_rework_reentry:
@@ -88,7 +94,6 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(35);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);
@@ -552,6 +557,44 @@ describe("feature-flag registry invariants", () => {
 		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
 	});
 
+	it("FLY-2901 registers the takeover rescue kill switch as a default-off live bridge-global e-stop", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) =>
+				candidate.envVar === "FLYWHEEL_WORKTREE_TAKEOVER_RESCUE_DISABLED",
+		);
+		expect(flag).toMatchObject({
+			name: "worktree_takeover_rescue_disabled",
+			category: "kill_switch",
+			source: "env",
+			scope: "bridge_global",
+			polarity: "opt_in",
+			valueKind: "bool",
+			onMeans: "disables",
+			default: false,
+			toggleable: "direct",
+		});
+		// Every read is a call-time delegated store read through one wrapper, so
+		// the running Bridge observes a flip without a restart.
+		expect(flag?.readSites.length).toBeGreaterThan(0);
+		for (const site of flag?.readSites ?? []) {
+			expect(site).toMatchObject({
+				pattern: "delegated",
+				timing: "call_time",
+				resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+				resolverSymbol: "storeWorktreeTakeoverRescueDisabled",
+			});
+		}
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/plugin.ts",
+				symbol: "workflowEngineDispatcher",
+			}),
+		]);
+		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
+		// Founder copy: the result of turning it on, no issue ids, no code names.
+		expect(flag?.whenOn).not.toMatch(/FLY-|worktree_takeover|_failed/);
+	});
+
 	it("FLY-1456 removes the temporary quota daemon cutover flag", () => {
 		const cutover = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
@@ -590,15 +633,16 @@ describe("feature-flag registry invariants", () => {
 		for (const envVar of retired) {
 			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-2102" });
 		}
-		expect(FLAG_EXEMPTIONS).toContainEqual({
-			name: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
-			kind: "env",
-			persistentEnvAllowed: false,
-			reason: expect.stringMatching(/staged voice E2E/i),
-			owner: "flywheel-eng-lead",
-			issue: "FLY-2102",
-			seam: "qa_isolation",
-			retireWhen: expect.stringMatching(/test adapter/i),
+		// FLY-2860 retired the staged voice rig that read the presence
+		// override; its FLY-2102 QA exemption became a retirement tombstone.
+		expect(
+			FLAG_EXEMPTIONS.some(
+				(entry) => entry.name === "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+			),
+		).toBe(false);
+		expect(RETIRED_FLAGS).toContainEqual({
+			envVar: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+			retiredBy: "FLY-2860",
 		});
 	});
 

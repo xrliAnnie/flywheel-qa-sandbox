@@ -1,0 +1,72 @@
+FLY-2711 fork red-side evidence
+Date: 2026-09-24 America/Los_Angeles
+Repository: xrliAnnie/claude-plugins-official
+Baseline HEAD: 07fffea10f5ddf723a7e7c45e473dbebe0004af0
+
+F1 command:
+  bun test self-author-filter.test.ts
+
+F1 result before production changes:
+  exit_code=1
+  2 pass
+  8 fail
+  18 expect() calls
+  Ran 10 tests across 1 file.
+
+The required red cases included:
+  - resume replay: expected two founder deliveries, received only the post-resume delivery
+  - disconnected client.user absence: expected one founder delivery, received none
+  - invalidated before fresh IDENTIFY: expected founder delivery, received none
+  - reconnect diagnostic cap: expected 52 founder deliveries, received none
+  - the old observe(boolean) API returned the new parameter object as ready, so the new probe-readiness assertions failed
+
+Representative Bun output:
+  (fail) admits replayed founder messages during reconnect and records their ordering
+    Expected: ["100000000000000006", "100000000000000006"]
+    Received: ["100000000000000006"]
+  (fail) keeps pinned-identity intake alive when disconnected and client.user is absent
+    Expected: ["100000000000000006"]
+    Received: []
+  (fail) rearms probe readiness after invalidation and a fresh shard identify
+    Expected: ["100000000000000006"]
+    Received: []
+  (fail) bounds reconnect admission diagnostics and reports suppression on recovery
+    Expected length: 52
+    Received length: 0
+
+Green verification after the minimal F1 implementation:
+  bun test self-author-filter.test.ts
+  10 pass, 0 fail, 30 expect() calls
+
+Package verification after F1:
+  bun test
+  248 pass, 0 fail, 647 expect() calls
+
+F2 command before socket production changes:
+  bun test voice-self-filter-socket.test.ts
+
+F2 result on the C1 head:
+  exit_code=1
+  1 pass
+  18 fail
+  19 expect() calls
+  Ran 19 tests across 1 file.
+
+The required red cases included:
+  - crashed-owner child printed undefined because listen had no ownership result and the old owner left an unrecoverable public path
+  - live-owner retry expected a kernel-lock busy result but old listen returned undefined
+  - unsafe public paths threw voice_self_filter_path_exists instead of a typed fail-closed result
+  - external deletion self-heal failed because maintain() did not exist
+  - unsupported-platform fail-closed expected unsupported but old listen returned undefined
+
+Representative Bun output:
+  (fail) reclaims a crashed owner only after the kernel releases its lock
+    Expected child output to contain: \"status\":\"bound\"
+    Received: undefined
+  (fail) releases a fake owner lock without touching unsafe public paths
+    Error: voice_self_filter_path_exists
+  (fail) rebinds after an external public-path deletion on the health check
+    TypeError: server.maintain is not a function
+  (fail) fails closed once on unsupported platforms without acquiring or observing
+    Expected: { status: \"unsupported\" }
+    Received: undefined

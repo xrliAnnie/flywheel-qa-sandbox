@@ -1,0 +1,39 @@
+{
+ "cove": {
+  "best": {
+   "voice": "cove",
+   "attempt": "1",
+   "why": "done",
+   "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+   "downlinkSeconds": 15.48,
+   "audibleSpanSeconds": 8.05,
+   "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+   "clipSeconds": 8.36,
+   "voicedSeconds": 6.4,
+   "sylPerSec": 7.19,
+   "f0MedianHz": 120.6,
+   "f0Frames": 318,
+   "asr": "你好，我是你的lead。今天由我来跟你同步进度，我这边有两件事已经做完还有一件在等你拍板，我一件一件跟你说。",
+   "cer": 0.0
+  },
+  "verbatim": true,
+  "takes": [
+   {
+    "voice": "cove",
+    "attempt": "1",
+    "why": "done",
+    "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+    "downlinkSeconds": 15.48,
+    "audibleSpanSeconds": 8.05,
+    "assistantTranscript": "你好,我是你的 Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。",
+    "clipSeconds": 8.36,
+    "voicedSeconds": 6.4,
+    "sylPerSec": 7.19,
+    "f0MedianHz": 120.6,
+    "f0Frames": 318,
+    "asr": "你好，我是你的lead。今天由我来跟你同步进度，我这边有两件事已经做完还有一件在等你拍板，我一件一件跟你说。",
+    "cer": 0.0
+   }
+  ]
+ }
+}

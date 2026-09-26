@@ -109,6 +109,75 @@ export async function probeV2LeadPane(
 	}
 }
 
+/** Kernel process name of a Claude Code binary (`claude` or its version). */
+const CLAUDE_COMM_RE = /^(?:claude|\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?)$/i;
+
+export type V2LeadClaudeProcess =
+	| { state: "running"; pid: string }
+	| { state: "absent" }
+	| { state: "indeterminate" };
+
+/**
+ * FLY-2882 (design-correction C2): read-only liveness of the Claude process
+ * under the private body pane. `capture` strength only proves the parent
+ * `bash lead-body.sh`; after Claude exits, the old screen (done line + input
+ * box) stays up until the wrapper kills tmux. This reads only pid / ppid /
+ * kernel name — never command lines — and answers `running` only for exactly
+ * one direct Claude child of the pane's bash.
+ */
+export async function readV2LeadClaudePid(
+	window: LeadWindowRef,
+	runner: ExecFn = defaultExec as unknown as ExecFn,
+	timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<V2LeadClaudeProcess> {
+	try {
+		const pane = await runner(
+			"tmux",
+			[
+				"-S",
+				window.socketPath,
+				"list-panes",
+				"-t",
+				window.bodyPaneTarget,
+				"-F",
+				"#{pane_id}\t#{pane_dead}\t#{pane_pid}",
+			],
+			{ timeout: timeoutMs },
+		);
+		const lines = pane.stdout.trimEnd().split("\n");
+		const [paneId, dead, panePid, ...extra] = (lines[0] ?? "").split("\t");
+		if (
+			lines.length !== 1 ||
+			extra.length > 0 ||
+			paneId !== window.bodyPaneTarget ||
+			dead !== "0" ||
+			!panePid ||
+			!/^\d+$/.test(panePid)
+		)
+			return { state: "indeterminate" };
+		const table = await runner("ps", ["-A", "-o", "pid=,ppid=,ucomm="], {
+			timeout: timeoutMs,
+		});
+		let shell: string | undefined;
+		const claude: string[] = [];
+		for (const row of table.stdout.split("\n")) {
+			const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(row);
+			if (!match) continue;
+			const [, pid, ppid, comm] = match;
+			if (pid === panePid) shell = comm;
+			else if (ppid === panePid && CLAUDE_COMM_RE.test(comm!))
+				claude.push(pid!);
+		}
+		if (shell !== "bash" || claude.length > 1)
+			return { state: "indeterminate" };
+		return claude.length === 1
+			? { state: "running", pid: claude[0]! }
+			: { state: "absent" };
+	} catch {
+		return { state: "indeterminate" };
+	}
+}
+
 export async function locateLeadWindow(
 	projectName: string,
 	leadId: string,

@@ -11,6 +11,28 @@ const protocolFiles = {
 	review: "review.md",
 } as const;
 
+/** Exact marked policy block shipped beside the workflow phase protocols. */
+export function loadLocalTestPolicy(): string {
+	const path = fileURLToPath(
+		new URL("../phase-protocols/local-test-policy.md", import.meta.url),
+	);
+	const content = new TextDecoder("utf-8", { fatal: true }).decode(
+		readFileSync(path),
+	);
+	const begin = "<!-- FLYWHEEL_LOCAL_TEST_POLICY:BEGIN -->";
+	const end = "<!-- FLYWHEEL_LOCAL_TEST_POLICY:END -->";
+	if (
+		content.split(begin).length !== 2 ||
+		content.split(end).length !== 2 ||
+		!content.includes("local-test-policy/v1")
+	) {
+		throw new Error(
+			"WORKFLOW_LOCAL_TEST_POLICY_UNAVAILABLE cause=invalid_block",
+		);
+	}
+	return `${content.replace(/\n+$/, "")}\n`;
+}
+
 export function workflowPhaseProtocolError(
 	nodeId: string,
 	nodeType: string,

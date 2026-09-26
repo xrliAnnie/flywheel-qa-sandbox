@@ -56,8 +56,10 @@ export const JSONRPC_INVALID_PARAMS = -32602;
  * stdout chunks (so partial/garbled chunks are handled here, not in the spawn).
  */
 export interface ChildTransport {
-	/** Write a raw string to the child's stdin. */
-	writeStdin(data: string): void;
+	/** Write a raw string to the child's stdin. false means wait for drain. */
+	writeStdin(data: string): boolean;
+	/** Optional writable-drain notification for transports with backpressure. */
+	onStdinDrain?(cb: () => void): void;
 	/** End stdin (graceful shutdown step 1). */
 	endStdin(): void;
 	/** Force-terminate the child. */
@@ -106,8 +108,16 @@ export interface CodexLeadProcessOptions {
 	requestTimeoutMs?: number;
 	/** Grace period between stdin end and SIGTERM on stop() (ms). Default 50. */
 	shutdownGraceMs?: number;
+	/** Grace period between SIGTERM and SIGKILL on stop() (ms). Default 5 s. */
+	shutdownTermMs?: number;
+	/** Max wait for confirmed exit after SIGKILL (ms). Default 5 s. */
+	shutdownKillMs?: number;
 	/** Max stderr bytes retained for diagnostics. Default 64 KiB. */
 	maxStderrBytes?: number;
+	/** Max bytes in one JSONL frame, inbound or outbound. Default unbounded. */
+	maxJsonLineBytes?: number;
+	/** Max bytes queued while child stdin is backpressured. Default 1 MiB. */
+	maxStdinQueueBytes?: number;
 	/** clientInfo for initialize. */
 	clientInfo?: { name: string; version: string };
 	/** Advertise experimental API fields for realtime or managed permission profiles. */
@@ -144,7 +154,14 @@ interface PendingRequest {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_SHUTDOWN_GRACE_MS = 50;
+const DEFAULT_SHUTDOWN_TERM_MS = 5_000;
+const DEFAULT_SHUTDOWN_KILL_MS = 5_000;
 const DEFAULT_MAX_STDERR = 64 * 1024;
+// Resident thread/resume and thread/read responses contain the complete turn
+// history in one JSONL frame. A global 1 MiB default crash-loops mature Leads;
+// bounded profiles (notably voice) must opt into their own explicit cap.
+const DEFAULT_MAX_JSON_LINE = Number.POSITIVE_INFINITY;
+const DEFAULT_MAX_STDIN_QUEUE = 1024 * 1024;
 
 /**
  * Error thrown when a request times out or the process dies before responding.
@@ -172,6 +189,9 @@ export class CodexLeadProcess {
 	private nextId = 1;
 	private readonly pending = new Map<number, PendingRequest>();
 	private stdoutBuffer = "";
+	private stdinBackpressured = false;
+	private readonly stdinQueue: string[] = [];
+	private stdinQueuedBytes = 0;
 	// Stored as a Buffer so the cap is byte-true (CR R2 LOW): re-encoding a
 	// string truncated mid-multibyte char would grow via replacement chars and
 	// exceed the cap. The getter does the read-only toString.
@@ -182,6 +202,8 @@ export class CodexLeadProcess {
 		code: number | null;
 		signal: NodeJS.Signals | null;
 	} | null = null;
+	private readonly exitWaiters = new Set<() => void>();
+	private stopPromise: Promise<void> | null = null;
 	// Loosely-typed internal store (public on/off/emit keep the typed surface).
 	private readonly listeners = new Map<
 		keyof CodexLeadProcessEvents,
@@ -206,7 +228,11 @@ export class CodexLeadProcess {
 			spawnChild: options.spawnChild,
 			requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS,
 			shutdownGraceMs: options.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS,
+			shutdownTermMs: options.shutdownTermMs ?? DEFAULT_SHUTDOWN_TERM_MS,
+			shutdownKillMs: options.shutdownKillMs ?? DEFAULT_SHUTDOWN_KILL_MS,
 			maxStderrBytes: options.maxStderrBytes ?? DEFAULT_MAX_STDERR,
+			maxJsonLineBytes: options.maxJsonLineBytes ?? DEFAULT_MAX_JSON_LINE,
+			maxStdinQueueBytes: options.maxStdinQueueBytes ?? DEFAULT_MAX_STDIN_QUEUE,
 			clientInfo: options.clientInfo ?? {
 				name: "flywheel-codex-lead",
 				version: "0.0.1",
@@ -271,6 +297,14 @@ export class CodexLeadProcess {
 		return this.stderrBuffer.length;
 	}
 
+	get stdoutBufferedByteLength(): number {
+		return Buffer.byteLength(this.stdoutBuffer, "utf8");
+	}
+
+	get stdinQueuedByteLength(): number {
+		return this.stdinQueuedBytes;
+	}
+
 	get hasExited(): boolean {
 		return this.exitInfo !== null;
 	}
@@ -286,43 +320,94 @@ export class CodexLeadProcess {
 		child.onStdout((chunk) => this.onStdoutChunk(chunk));
 		child.onStderr((chunk) => this.onStderrChunk(chunk));
 		child.onExit((code, signal) => this.onChildExit(code, signal));
+		child.onStdinDrain?.(() => this.flushStdinQueue());
 
-		const initRes = await this.request("initialize", {
-			clientInfo: this.opts.clientInfo,
-			capabilities: this.opts.experimentalApi ? { experimentalApi: true } : {},
-		});
-		// CR HIGH-1: an initialize ERROR must NOT be treated as a successful
-		// handshake — do not send `initialized`, surface the failure.
-		this.throwOnError(initRes, "initialize");
-		this.notify("initialized", {});
+		try {
+			const initRes = await this.request("initialize", {
+				clientInfo: this.opts.clientInfo,
+				capabilities: this.opts.experimentalApi
+					? { experimentalApi: true }
+					: {},
+			});
+			// CR HIGH-1: an initialize ERROR must NOT be treated as a successful
+			// handshake — do not send `initialized`, surface the failure.
+			this.throwOnError(initRes, "initialize");
+			this.notify("initialized", {});
+		} catch (err) {
+			try {
+				await this.stop();
+			} catch (stopErr) {
+				this.opts.logger.error(
+					"failed to confirm child exit after startup error",
+					{
+						err: (stopErr as Error).message,
+					},
+				);
+			}
+			throw err;
+		}
 	}
 
-	/** Graceful shutdown: end stdin, then SIGTERM after the grace period. */
-	async stop(): Promise<void> {
-		if (this.closed) return;
+	/** Graceful shutdown with confirmed exit: stdin → TERM → KILL. */
+	stop(): Promise<void> {
+		if (this.stopPromise) return this.stopPromise;
 		this.closed = true;
 		const child = this.child;
-		if (!child) return;
+		this.stdinQueue.length = 0;
+		this.stdinQueuedBytes = 0;
+		this.rejectAllPending(
+			new CodexLeadProcessError("process stopping", "closed"),
+		);
+		if (!child || this.exitInfo) {
+			this.stopPromise = Promise.resolve();
+			return this.stopPromise;
+		}
+		this.stopPromise = this.stopChild(child);
+		return this.stopPromise;
+	}
+
+	private async stopChild(child: ChildTransport): Promise<void> {
 		try {
 			child.endStdin();
 		} catch {
 			// already gone
 		}
-		if (!this.exitInfo) {
-			const t = this.opts.setTimeoutFn(() => {
-				try {
-					child.kill("SIGTERM");
-				} catch {
-					// already gone
-				}
-			}, this.opts.shutdownGraceMs);
-			// Do not keep the event loop alive for this timer.
-			(t as unknown as { unref?: () => void }).unref?.();
+		if (await this.waitForExit(this.opts.shutdownGraceMs)) return;
+		try {
+			child.kill("SIGTERM");
+		} catch {
+			// already gone
 		}
-		// Reject anything still pending — caller must not hang on shutdown.
-		this.rejectAllPending(
-			new CodexLeadProcessError("process stopping", "closed"),
+		if (await this.waitForExit(this.opts.shutdownTermMs)) return;
+		try {
+			child.kill("SIGKILL");
+		} catch {
+			// already gone
+		}
+		if (await this.waitForExit(this.opts.shutdownKillMs)) return;
+		throw new CodexLeadProcessError(
+			"codex app-server exit was not confirmed after SIGKILL",
+			"closed",
 		);
+	}
+
+	private waitForExit(timeoutMs: number): Promise<boolean> {
+		if (this.exitInfo) return Promise.resolve(true);
+		return new Promise<boolean>((resolve) => {
+			let settled = false;
+			const finish = (exited: boolean) => {
+				if (settled) return;
+				settled = true;
+				this.exitWaiters.delete(onExit);
+				this.opts.clearTimeoutFn(timer);
+				resolve(exited);
+			};
+			const onExit = () => finish(true);
+			this.exitWaiters.add(onExit);
+			const timer = this.opts.setTimeoutFn(() => finish(false), timeoutMs);
+			(timer as unknown as { unref?: () => void }).unref?.();
+			if (this.exitInfo) finish(true);
+		});
 	}
 
 	// ── request / notify ─────────────────────────────────────────────────────
@@ -356,10 +441,12 @@ export class CodexLeadProcess {
 				this.pending.delete(id);
 				this.opts.clearTimeoutFn(timer);
 				reject(
-					new CodexLeadProcessError(
-						`failed to write request "${method}": ${(err as Error).message}`,
-						this.exitInfo ? "exited" : "closed",
-					),
+					err instanceof CodexLeadProcessError
+						? err
+						: new CodexLeadProcessError(
+								`failed to write request "${method}": ${(err as Error).message}`,
+								this.exitInfo ? "exited" : "closed",
+							),
 				);
 			}
 		});
@@ -548,18 +635,76 @@ export class CodexLeadProcess {
 
 	private writeMessage(msg: JsonRpcRequest | JsonRpcNotification): void {
 		if (!this.child) throw new Error("child not started");
-		this.child.writeStdin(`${JSON.stringify(msg)}\n`);
+		const line = `${JSON.stringify(msg)}\n`;
+		const bytes = Buffer.byteLength(line, "utf8");
+		if (bytes > this.opts.maxJsonLineBytes) {
+			throw new CodexLeadProcessError(
+				`outbound JSON frame exceeds ${this.opts.maxJsonLineBytes} bytes`,
+				"protocol",
+			);
+		}
+		if (this.stdinBackpressured) {
+			if (this.stdinQueuedBytes + bytes > this.opts.maxStdinQueueBytes) {
+				throw new CodexLeadProcessError(
+					`stdin backpressure queue exceeds ${this.opts.maxStdinQueueBytes} bytes`,
+					"protocol",
+				);
+			}
+			this.stdinQueue.push(line);
+			this.stdinQueuedBytes += bytes;
+			return;
+		}
+		if (this.child.writeStdin(line) === false) this.stdinBackpressured = true;
+	}
+
+	private flushStdinQueue(): void {
+		if (this.closed || this.exitInfo || !this.child) return;
+		this.stdinBackpressured = false;
+		while (this.stdinQueue.length > 0) {
+			const line = this.stdinQueue.shift()!;
+			this.stdinQueuedBytes -= Buffer.byteLength(line, "utf8");
+			if (this.child.writeStdin(line) === false) {
+				this.stdinBackpressured = true;
+				return;
+			}
+		}
 	}
 
 	private onStdoutChunk(chunk: string): void {
+		if (this.closed || this.exitInfo) return;
 		this.stdoutBuffer += chunk;
 		let idx = this.stdoutBuffer.indexOf("\n");
 		while (idx !== -1) {
 			const line = this.stdoutBuffer.slice(0, idx);
 			this.stdoutBuffer = this.stdoutBuffer.slice(idx + 1);
+			if (Buffer.byteLength(line, "utf8") > this.opts.maxJsonLineBytes) {
+				this.failProtocol(
+					`inbound JSON frame exceeds ${this.opts.maxJsonLineBytes} bytes`,
+				);
+				return;
+			}
 			if (line.trim().length > 0) this.handleLine(line);
 			idx = this.stdoutBuffer.indexOf("\n");
 		}
+		if (
+			Buffer.byteLength(this.stdoutBuffer, "utf8") > this.opts.maxJsonLineBytes
+		) {
+			this.failProtocol(
+				`unterminated JSON frame exceeds ${this.opts.maxJsonLineBytes} bytes`,
+			);
+		}
+	}
+
+	private failProtocol(message: string): void {
+		this.stdoutBuffer = "";
+		const err = new CodexLeadProcessError(message, "protocol");
+		this.opts.logger.error(message);
+		this.rejectAllPending(err);
+		void this.stop().catch((stopErr) =>
+			this.opts.logger.error("failed to terminate protocol-violating child", {
+				err: (stopErr as Error).message,
+			}),
+		);
 	}
 
 	private onStderrChunk(chunk: string): void {
@@ -707,13 +852,18 @@ export class CodexLeadProcess {
 		code: number | null,
 		signal: NodeJS.Signals | null,
 	): void {
+		if (this.exitInfo) return;
 		this.exitInfo = { code, signal };
+		this.stdinQueue.length = 0;
+		this.stdinQueuedBytes = 0;
 		this.rejectAllPending(
 			new CodexLeadProcessError(
 				`codex app-server exited (code=${code}, signal=${signal})`,
 				"exited",
 			),
 		);
+		for (const waiter of this.exitWaiters) waiter();
+		this.exitWaiters.clear();
 		this.emit("exit", code, signal);
 	}
 

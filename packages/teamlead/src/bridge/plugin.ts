@@ -83,7 +83,7 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
-import { WorktreeManager } from "flywheel-edge-worker";
+import { resolveWorktreeKey, WorktreeManager } from "flywheel-edge-worker";
 import { identityKey as claudeIdentityKey } from "../account-heal/account-identity.js";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
@@ -103,6 +103,7 @@ import {
 } from "../account-heal/detection-classifier.js";
 import { defaultMachinePoolDir } from "../account-heal/machine-account.js";
 import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
+import { writeSweepRequest } from "../account-heal/sweep-request.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -111,10 +112,22 @@ import { confirmStandingAuthorityCandidate } from "../bin/standing-authority-act
 import { resolveStandingAuthorityStateDir } from "../bin/standing-authority-confirmation-ledger.js";
 import { observeClaudeAccountDetails } from "../claude-quota/account-detail-observer.js";
 import {
+	type ClaudeAccountDetailStore,
 	defaultClaudeAccountDetailStorePath,
 	readClaudeAccountDetailStore,
 	writeClaudeAccountDetailStore,
 } from "../claude-quota/account-detail-store.js";
+import {
+	claudeChargeTargets,
+	createGogRunner,
+	observeClaudeCharges,
+} from "../claude-quota/charge-receipt-observer.js";
+import { createClaudeChargeScheduler } from "../claude-quota/charge-receipt-scheduler.js";
+import {
+	defaultClaudeChargeStorePath,
+	readClaudeChargeStore,
+	writeClaudeChargeStore,
+} from "../claude-quota/charge-receipt-store.js";
 import { createCodexQuotaDisabledAdmissionReplay } from "../codex-quota/admission-replay.js";
 import { projectCodexQuotaAudit } from "../codex-quota/audit.js";
 import { CodexQuotaAvailability } from "../codex-quota/availability.js";
@@ -153,6 +166,7 @@ import {
 	reconcileCodexCanonicalRoot,
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
+import type { TakeoverRescuedAlertHook } from "../DirectEventSink.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	readAttentionSources,
@@ -251,7 +265,10 @@ import { AutoRepairBot } from "./AutoRepairBot.js";
 import { reconcileCodexAccountSubscriptionIdentityKeys } from "./account-quota-page.js";
 import {
 	createAccountQuotaRefresh,
+	createAccountReadingsRefresh,
+	createClaudeChargeRefresh,
 	createCodexAccountQuotaRefresh,
+	scheduledReadingsRefresh,
 } from "./account-quota-refresh.js";
 import {
 	buildVercelQuotaSection,
@@ -337,7 +354,11 @@ import {
 	createHostCmuxWatcherPatrol,
 	projectCmuxRebindDisabled,
 } from "./cmux-watcher-patrol.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import {
+	codexTerminalTeardownDeps,
+	reapCodexDaemonForSession,
+	registerCodexTerminalTeardown,
+} from "./codex-daemon-teardown.js";
 import {
 	createCredentialProbe,
 	reportCodexGlobalHealth,
@@ -363,6 +384,11 @@ import {
 	prepareCodexRecoveryAgentHome,
 	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
+import {
+	createCodexTerminalCloseAttemptRecorder,
+	terminalBodiesForQuotaPage,
+} from "./codex-terminal-close-ledger.js";
+import { createBridgeCodexTerminalSweep } from "./codex-terminal-sweep-runtime.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
 import { prepareBridgeCommDbRebuilds } from "./commdb-fly2268-preflight.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -514,6 +540,7 @@ import {
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeCodexQuotaAutoSwitchEnabled,
+	storeCodexTerminalReapEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
@@ -527,6 +554,7 @@ import {
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeWorktreeTakeoverRescueDisabled,
 	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
@@ -587,9 +615,10 @@ import {
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
 import {
+	describeIdleThreadSweepDenial,
 	IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
 	makeIdleThreadArchiveSweep,
-	resolveIdleThreadSweepChannelIds,
+	resolveIdleThreadSweepGroups,
 } from "./idle-thread-archive-sweep.js";
 import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
@@ -638,6 +667,8 @@ import {
 	startLandReclosePeerServer,
 } from "./land-reclose-peer.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
+import { createProductionLeadActivityService } from "./lead-activity/lead-activity-service.js";
+import { createLeadActivityRouter } from "./lead-activity-route.js";
 import {
 	createClaimsClaimer,
 	createClaimsReader,
@@ -685,6 +716,7 @@ import {
 } from "./lead-persona-activation.js";
 import { createLeadPersonaRouter } from "./lead-persona-routes.js";
 import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
+import { createLeadReplyFailedHandler } from "./lead-reply-failed-route.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
@@ -786,7 +818,11 @@ import {
 } from "./project-runner-model-source.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
-import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
+import {
+	createQuotaDaemonWaker,
+	shouldWakeQuotaDaemon,
+	wakeQuotaDaemon,
+} from "./quota-daemon-wake.js";
 import { loadReclosePeerNative } from "./reclose-peer-native.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { appendBugVersionFooter } from "./release-readiness/bug-footer.js";
@@ -943,6 +979,17 @@ import { listSummaryPulls } from "./summary-delivery-ledger.js";
 import { readSummaryLinearActivity } from "./summary-linear-activity.js";
 import { SummaryPresentationController } from "./summary-presentation-controller.js";
 import {
+	defaultSwitchRecordPath,
+	readSwitchRecord,
+	resolvePageLastSwitch,
+	type SwitchRecord,
+	writeSwitchRecord,
+} from "./switch-record.js";
+import {
+	createClaudeSweepRequester,
+	createSwitchRefreshTrigger,
+} from "./switch-refresh-trigger.js";
+import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
 } from "./terminal-commdb-sync.js";
@@ -989,6 +1036,10 @@ import { classifyTurnWakeReceiptProjection } from "./turn-wake-receipt-classifie
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
+import {
+	VoiceHandoffService,
+	validateCodexVoiceDelegateBinding,
+} from "./voice-handoff.js";
 import {
 	createVoiceHealthBridgeGuard,
 	createVoiceHealthExportReader,
@@ -1665,6 +1716,10 @@ export interface BridgeAppOptions {
 		}>;
 		/** FLY-2803: local, non-secret account identity digests for page confirmations. */
 		readAccountIdentityKeys?: () => Readonly<Record<string, string>>;
+		/** FLY-2830: in-process last switch (survives a failed disk write). */
+		latestSwitchRecord?: () => SwitchRecord | null;
+		/** FLY-2830: test seam; production uses defaultSwitchRecordPath(). */
+		switchRecordPath?: string;
 	};
 	/** FLY-2803: fixed page-only manual input seam; production uses stateDir. */
 	accountSubscriptionManual?: {
@@ -1678,6 +1733,13 @@ export interface BridgeAppOptions {
 	accountPageVercel?: {
 		storePath: string;
 		latest?: () => VercelAccountStore | null;
+	};
+	/**
+	 * FLY-2897: the Claude charge-receipt readings behind the next-charge
+	 * cells. Absent ⇒ never read (tests stay off the machine's real file).
+	 */
+	accountPageClaudeCharges?: {
+		storePath: string;
 	};
 	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
 	eventLoopAttribution?: {
@@ -2158,9 +2220,35 @@ export function createBridgeApp(
 							);
 						}
 					}
+					// FLY-2830: best effort — a broken record means no marks, never
+					// a broken page.
+					let lastSwitch: ReturnType<typeof resolvePageLastSwitch> = null;
+					try {
+						lastSwitch = resolvePageLastSwitch(
+							opts?.codexQuota?.latestSwitchRecord?.() ?? null,
+							() =>
+								readSwitchRecord(
+									opts?.codexQuota?.switchRecordPath ??
+										defaultSwitchRecordPath(),
+								),
+						);
+					} catch {
+						lastSwitch = null;
+					}
+					// FLY-2897: a broken receipt file only drops the receipt facts.
+					let claudeCharges: ReturnType<typeof readClaudeChargeStore> = null;
+					const chargesPage = opts?.accountPageClaudeCharges;
+					if (chargesPage) {
+						try {
+							claudeCharges = readClaudeChargeStore(chargesPage.storePath);
+						} catch {
+							claudeCharges = null;
+						}
+					}
 					const html = renderAccountsPageHtml(
 						buildAccountQuotaView(snapshot, {
 							claudeEmails,
+							claudeCharges,
 							subscriptionManual: {
 								confirmations: manual.data?.confirmations ?? [],
 								identityKeys,
@@ -2173,6 +2261,11 @@ export function createBridgeApp(
 							},
 						}),
 						vercelSection,
+						{
+							lastSwitch,
+							// FLY-2903: best effort — a ledger failure is an empty banner.
+							terminalBodies: terminalBodiesForQuotaPage(store, new Date()),
+						},
 					);
 					res.type("html").send(html);
 				} catch {
@@ -3921,6 +4014,13 @@ export function createBridgeApp(
 				void codexLeadOutbound(req, res);
 			},
 		);
+		// FLY-2862: a Codex Lead's owed reply came back empty; tell its live voice
+		// session (if any) so the daemon speaks a status line instead of waiting.
+		app.post(
+			"/api/lead-outbound/reply-failed",
+			tokenAuthMiddleware(config.apiToken),
+			createLeadReplyFailedHandler({ store }),
+		);
 
 		const rayaIdentities = projects.flatMap((project) =>
 			(project.leads ?? [])
@@ -4018,6 +4118,7 @@ export function createBridgeApp(
 				store,
 				session,
 				"bridge.close-tmux",
+				codexTerminalTeardownDeps("close_tmux"),
 			);
 			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
@@ -5556,6 +5657,17 @@ export function createBridgeApp(
 						}),
 				}).read(projectName, leadId);
 			},
+		}),
+	);
+
+	// FLY-2882: read-only "what is this Lead doing right now" (busy/idle/unknown).
+	const leadActivity = createProductionLeadActivityService({ projects, store });
+	app.use(
+		"/api/lead-activity",
+		masterOnlyAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		createLeadActivityRouter({
+			read: (projectName, leadId) => leadActivity.read(projectName, leadId),
+			readFleet: () => leadActivity.readFleet(),
 		}),
 	);
 
@@ -7189,7 +7301,9 @@ export async function startBridge(
 			replayAfterAmbiguousAttempt: boolean;
 		}) => Promise<void>;
 	} = {};
+	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const leadInboxRuntime = new LeadInboxRuntime({
+		dispatcherUserId: () => alertDutyDispatcherBotUserId.current,
 		leadLeaseDbPath:
 			process.env.FLYWHEEL_LEAD_LEASE_DB ??
 			join(homedir(), ".flywheel", "lead-lease.db"),
@@ -7725,8 +7839,12 @@ export async function startBridge(
 		current: ReviewRequestCoordinator | undefined;
 	} = { current: undefined };
 
+	// FLY-2901: the takeover-rescued INFO alert hook rides this holder too — the
+	// DirectEventSink is built inside setupRunInfrastructure, and this is the
+	// reference it already receives (run-infra copies it onto the sink).
 	const turnBeltReconcilerHolder: {
 		current: TurnBeltReconciler | undefined;
+		alertWorktreeTakeoverRescued?: TakeoverRescuedAlertHook;
 	} = { current: undefined };
 	const workflowReworkCoordinatorHolder: {
 		current: WorkflowReworkCoordinator | undefined;
@@ -8241,7 +8359,6 @@ export async function startBridge(
 	const terminalArchiveEnqueue = (issueId: string) =>
 		terminalArchiveBuffer.enqueue(issueId);
 	const infraDiscordIdentity = resolveInfraDiscordIdentity();
-	const idleThreadSweepChannelIds = resolveIdleThreadSweepChannelIds();
 	const listDiscordOpenThreadIds = infraDiscordIdentity
 		? async () => {
 				const listed = await listGuildActiveThreads(infraDiscordIdentity);
@@ -8256,6 +8373,13 @@ export async function startBridge(
 	// FLY-2211: one process-local authority shared by first dispatch, rescue,
 	// boot reconciliation, and the adjacent orphan reaper.
 	const codexExecutionOwners = new CodexExecutionOwnershipRegistry();
+	// FLY-2903: every Bridge terminal path (terminate / closeRunner /
+	// process retirement / close-tmux) stops this process's goal runtime before
+	// reaping its daemon and records the attempt for the terminal sweep.
+	const disposeCodexTerminalTeardown = registerCodexTerminalTeardown({
+		owners: codexExecutionOwners,
+		closeLedger: createCodexTerminalCloseAttemptRecorder(store),
+	});
 	const codexRecoveryRuntimes = new Map<string, CodexRecoveryRuntime>();
 	const codexMaintenanceTicks: string[] = [];
 
@@ -9119,18 +9243,41 @@ export async function startBridge(
 		writeCodexSubscriptionStore: (subscriptions) =>
 			writeCodexSubscriptionStore(codexSubscriptionStorePath, subscriptions),
 	});
+	// FLY-2830: one Claude card/subscription reader for every refresh path.
+	const observeClaudeDetails = (signal: AbortSignal) =>
+		observeClaudeAccountDetails({
+			profilesRoot:
+				config.capacityProbes?.claudeProfilesDir ?? defaultMachinePoolDir(),
+			previous: readClaudeAccountDetailStore(claudeAccountDetailStorePath),
+			signal,
+		});
+	const writeClaudeDetails = (details: ClaudeAccountDetailStore) =>
+		writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details);
+	// FLY-2897: one Claude charge-receipt round (gog, Anthropic receipt mail
+	// only) for the page refresh, the post-switch refresh and the daily tick.
+	const claudeChargeStorePath = defaultClaudeChargeStorePath();
+	const runGog = createGogRunner();
+	const refreshClaudeCharges = createClaudeChargeRefresh({
+		ceilingMs: 90_000,
+		observe: (signal) =>
+			observeClaudeCharges({
+				// Re-read per round: an account or mailbox change needs no restart.
+				targets: claudeChargeTargets(readStoreStrict(defaultStorePath())),
+				previous: readClaudeChargeStore(claudeChargeStorePath),
+				runGog,
+				signal,
+			}),
+		write: (charges) => writeClaudeChargeStore(claudeChargeStorePath, charges),
+	});
+	const claudeChargeScheduler = createClaudeChargeScheduler({
+		refresh: refreshClaudeCharges,
+		readStore: () => readClaudeChargeStore(claudeChargeStorePath),
+	});
 	const refreshCodexAccountQuota = createAccountQuotaRefresh({
 		ceilingMs: 90_000,
 		refreshCodex: refreshCodexReadings,
-		observeClaudeAccountDetails: (signal) =>
-			observeClaudeAccountDetails({
-				profilesRoot:
-					config.capacityProbes?.claudeProfilesDir ?? defaultMachinePoolDir(),
-				previous: readClaudeAccountDetailStore(claudeAccountDetailStorePath),
-				signal,
-			}),
-		writeClaudeAccountDetailStore: (details) =>
-			writeClaudeAccountDetailStore(claudeAccountDetailStorePath, details),
+		observeClaudeAccountDetails: observeClaudeDetails,
+		writeClaudeAccountDetailStore: writeClaudeDetails,
 		vercel: {
 			observe: (signal) =>
 				observeVercelAccount({
@@ -9148,10 +9295,44 @@ export async function startBridge(
 			discardStale: () => discardVercelAccountStore(vercelAccountStorePath),
 			now: () => new Date(),
 		},
+		refreshClaudeCharges,
+	});
+	// FLY-2830: Codex readings + Claude cards/subscriptions (never Vercel),
+	// shared by the reading scheduler and the post-switch refresh.
+	const refreshAccountReadings = createAccountReadingsRefresh({
+		ceilingMs: 90_000,
+		refreshCodex: refreshCodexReadings,
+		observeClaudeAccountDetails: observeClaudeDetails,
+		writeClaudeAccountDetailStore: writeClaudeDetails,
+	});
+	// FLY-2830: every account switch (Codex or Claude, manual or automatic)
+	// re-reads every account. Rides the GatePoller tick like the scheduler.
+	const switchRecordPath = defaultSwitchRecordPath();
+	const switchRefreshTrigger = createSwitchRefreshTrigger({
+		readCodexGeneration: () =>
+			store.codexQuota.getRoot(codexQuotaRootKey)?.generation ?? null,
+		readClaudeGeneration: () => {
+			const accounts = readStoreStrict(defaultStorePath());
+			return accounts === null ? null : (accounts.lastSwitch?.generation ?? 0);
+		},
+		// A dedicated waker: its 60 s throttle is not shared with alert wakes.
+		requestClaudeSweep: createClaudeSweepRequester({
+			write: (input) => writeSweepRequest(input),
+			wake: createQuotaDaemonWaker(),
+		}),
+		refreshBridge: async () => {
+			const outcome = await refreshAccountReadings();
+			if (!outcome.codex.ok) throw outcome.codex.error;
+			if (!outcome.claude.ok) throw new Error("claude_details_failed");
+		},
+		refreshClaudeCharges,
+		persistSwitchRecord: (record) =>
+			writeSwitchRecord(switchRecordPath, record),
+		readPersistedSwitchRecord: () => readSwitchRecord(switchRecordPath),
 	});
 	// FLY-2869: rides the existing GatePoller tick (see onLandOperationTick).
 	const codexReadingScheduler = createCodexReadingScheduler({
-		refresh: refreshCodexReadings,
+		refresh: scheduledReadingsRefresh(refreshAccountReadings),
 		readStore: () => readCodexAccountQuotaStore(codexAccountQuotaStorePath),
 		observePipeline: (report) =>
 			store.codexQuota.observeCodexReadingPipeline(report),
@@ -9357,6 +9538,28 @@ export async function startBridge(
 					storeWorkflowReworkReentryEnabled(flagStore),
 				nodeStandbyResumeEnabled: () =>
 					storeNodeStandbyResumeEnabled(flagStore),
+				// FLY-2901 §7: call-time kill switch snapshot for the successor's
+				// shared-worktree takeover (the dispatcher treats a reader failure
+				// as off; an opt-in kill switch cannot be asserted by an unreadable
+				// flag).
+				takeoverRescueDisabled: () =>
+					storeWorktreeTakeoverRescueDisabled(flagStore),
+				// FLY-2901 §3/§4.6: the shared branch-B worktree exactly as Blueprint
+				// derives it (same manager, projectRoot, projectName and shared key).
+				resolveSharedWorktree: ({ projectName, issueId }) => {
+					const projectRoot = resolveProjectRootByName(projectName);
+					if (!projectRoot) return undefined;
+					const expected = lifecycleWorktreeManager.expectedWorktree(
+						projectRoot,
+						projectName,
+						resolveWorktreeKey(issueId, { shareParentBranch: true }),
+					);
+					return {
+						projectRoot,
+						path: expected.path,
+						branch: expected.branch,
+					};
+				},
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				armResidentReceiver: (executionId, source) =>
 					residentReceiverSupervisor.arm(executionId, source),
@@ -9475,7 +9678,6 @@ export async function startBridge(
 	// below only when the rescue runtime is built (self-heal on + unified Alerts
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
-	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
 	const oncallReceiptStore = new OncallReceiptStore(
 		join(
@@ -9499,6 +9701,30 @@ export async function startBridge(
 	}
 
 	const leadGithubProvider = createLazyLeadGithubClient(process.env);
+	const voiceHandoffService = new VoiceHandoffService({
+		store,
+		founderUserIds: () =>
+			config.discordOwnerUserId ? [config.discordOwnerUserId] : [],
+		// A delegation only queues the founder's durable words to the resident Lead;
+		// it grants the voice container no mutation authority. All action intents stay
+		// fail-closed here until their separate capability gates land.
+		validateAuthorityBinding: validateCodexVoiceDelegateBinding,
+		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		inspectDeliveryState: (deliveryId, handoff) => {
+			const settlement = leadInboxRuntime.readHandoffSettlement(
+				handoff.leadId,
+				deliveryId,
+			);
+			if (settlement.kind === "absent_identity") return { kind: "absent" };
+			if (
+				settlement.kind === "unknown_lead" ||
+				settlement.kind === "torn_identity"
+			)
+				return { kind: "torn_identity" };
+			return { kind: settlement.kind, state: settlement.state };
+		},
+	});
+	const voiceHandoffReconcilerOwner = `bridge-${randomUUID()}`;
 	const voiceSessionServices = createVoiceSessionServices({
 		store,
 		projects,
@@ -9511,6 +9737,7 @@ export async function startBridge(
 				leadInboxRuntime.nudge(leadId, projectName);
 			},
 		},
+		voiceHandoffs: voiceHandoffService,
 	});
 	const xhsWriteService = createXhsBridgeWriteService({
 		apiToken: config.apiToken ?? "",
@@ -9553,6 +9780,7 @@ export async function startBridge(
 				rootKey: codexQuotaRootKey,
 				canRecover: codexQuotaCanRecover,
 				refreshAccountQuota: refreshCodexAccountQuota,
+				latestSwitchRecord: () => switchRefreshTrigger.latestSwitchRecord(),
 				readAccountIdentityKeys: () => {
 					const pool = getCodexQuotaAccountPool();
 					const problems = new Set(
@@ -9592,6 +9820,7 @@ export async function startBridge(
 				storePath: vercelAccountStorePath,
 				latest: () => vercelAccountLatest.get(),
 			},
+			accountPageClaudeCharges: { storePath: claudeChargeStorePath },
 			vercelToken,
 			reportBlobStore,
 			reportHostingCredentials,
@@ -9954,6 +10183,7 @@ export async function startBridge(
 	voiceSessionServices.runtime.start();
 	voiceSessionServices.scheduleRuntime.start();
 	voiceSessionServices.cardProjector.start();
+	voiceHandoffService.startReconciler(voiceHandoffReconcilerOwner);
 
 	await new Promise<void>((resolve, reject) => {
 		server.once("listening", resolve);
@@ -10071,6 +10301,25 @@ export async function startBridge(
 			);
 		}
 	};
+	// FLY-2903: late-bound sink for the terminal-body sweep, bound with the
+	// routed alert sink below. Unbound → the sweep keeps the alert pending and
+	// retries it next tick.
+	const codexTerminalSweepAlertHolder: {
+		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	} = {};
+	// Only this process's own ownership registry can say whether a terminal
+	// body is still owned; an injected dispatcher does not share it. Disabled
+	// under VITEST (same boundary as the codex health probe): general Bridge
+	// suites must never read the host's process table or its real socket root.
+	const codexTerminalSweep =
+		opts?.startDispatcher || process.env.VITEST
+			? undefined
+			: createBridgeCodexTerminalSweep({
+					store,
+					owners: codexExecutionOwners,
+					reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
+					alertSink: codexTerminalSweepAlertHolder,
+				});
 	const codexSessionReowner = new CodexSessionReowner({
 		store,
 		isIntentionalStandby: (executionId) => {
@@ -10616,6 +10865,24 @@ export async function startBridge(
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);
+			}
+			// FLY-2903: after recovery claimed what it may, give every terminal
+			// Codex body a verified close verdict (single-flight, 30s soft budget).
+			if (codexTerminalSweep) {
+				try {
+					const swept = await codexTerminalSweep.tick();
+					if (swept.evaluated > 0 || swept.deferred > 0) {
+						console.log(
+							`[codex-terminal-sweep] evaluated=${swept.evaluated} deferred=${swept.deferred} skippedBodies=${swept.skippedBodies} states=${JSON.stringify(swept.states)}`,
+						);
+					}
+				} catch (error) {
+					console.warn(
+						`[codex-terminal-sweep] pass failed closed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
 			}
 			try {
 				await residentReceiverSupervisor.healthTick();
@@ -11170,33 +11437,39 @@ export async function startBridge(
 		projects: projects ?? [],
 		enqueue: doneThreadReconcile.enqueueThread,
 	});
-	const idleThreadSweep =
-		infraDiscordIdentity && idleThreadSweepChannelIds.length > 0
-			? makeIdleThreadArchiveSweep({
-					identity: infraDiscordIdentity,
-					channelIds: idleThreadSweepChannelIds,
-					log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-					onDenied: ({ status, context }) => {
-						void metaAlertNotifier.notify({
-							reason: "idle_thread_sweep_denied",
-							title: "Discord idle-thread sweep denied",
-							body: `Discord HTTP ${status} during ${context}; check claw-infra-bot VIEW_CHANNEL and MANAGE_THREADS permissions.`,
-						});
-					},
-				})
-			: undefined;
-	const idleThreadSweepScheduler = idleThreadSweep
-		? startDoneThreadReconcileScheduler({
-				runOnce: (shouldAbort) => idleThreadSweep.runOnce(shouldAbort),
+	// FLY-2916: each channel group (production, QA Testing) sweeps with its own
+	// bot identity on its own scheduler, so neither can spend the other's budget.
+	const idleThreadSweepSchedulers = resolveIdleThreadSweepGroups().map(
+		(group) => {
+			const tag =
+				group.name === "production"
+					? "idle-thread-sweep"
+					: "qa-idle-thread-sweep";
+			const log = (message: string) => console.log(`[${tag}] ${message}`);
+			const sweep = makeIdleThreadArchiveSweep({
+				identity: group.identity,
+				...(group.name === "production"
+					? { channelIds: group.channelIds }
+					: { qaTestingCategoryId: group.qaTestingCategoryId }),
+				log,
+				onDenied: (detail) =>
+					metaAlertNotifier
+						.notify(describeIdleThreadSweepDenial(group, detail))
+						.then((result) => !result.debounced),
+			});
+			const scheduler = startDoneThreadReconcileScheduler({
+				runOnce: (shouldAbort) => sweep.runOnce(shouldAbort),
 				resolveConfig: () => IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
-				log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-			})
-		: undefined;
-	if (idleThreadSweepScheduler) {
-		console.log(
-			`[Bridge] idle-thread sweep ready — channels=${idleThreadSweepChannelIds.join(",")}`,
-		);
-	}
+				log,
+			});
+			console.log(
+				group.name === "production"
+					? `[Bridge] idle-thread sweep ready — channels=${group.channelIds.join(",")}`
+					: `[Bridge] QA idle-thread sweep ready — category=${group.qaTestingCategoryId} identity=${group.tokenEnv}`,
+			);
+			return scheduler;
+		},
+	);
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -12881,6 +13154,16 @@ export async function startBridge(
 			} finally {
 				// FLY-2869: never let the maintenance chain short-circuit the readings.
 				codexReadingScheduler.tick();
+				// FLY-2830: after the maintenance reconcile, so a manual
+				// `codex-profile use` is seen in the same tick.
+				switchRefreshTrigger.tick();
+				// FLY-2897: daily receipt round; its own try so it can never
+				// skip the triggers above.
+				try {
+					claudeChargeScheduler.tick();
+				} catch {
+					console.warn("[claude-charge] scheduler tick failed");
+				}
 			}
 		},
 		onAutoNarrowGateTick: async () => {
@@ -14327,6 +14610,66 @@ export async function startBridge(
 			},
 			logger: { warn: (message) => console.warn(`[turn-belt] ${message}`) },
 		});
+
+		// FLY-2901 §4.8 item 4: Lead INFO alert once a head_diverged / nested_repo
+		// shared-worktree takeover rescue has been cleaned. DirectEventSink fires
+		// it right after the checked `worktree_takeover_cleaned` event lands (and
+		// never on a deduped replay). Same Lead resolution as the sibling
+		// alertWorktreeTakeoverFailure above; paths are data inside the body only.
+		turnBeltReconcilerHolder.alertWorktreeTakeoverRescued = async ({
+			session,
+			rescueEventUid,
+			rescue,
+		}) => {
+			const projectName = session.project_name;
+			let leadId: string | undefined;
+			try {
+				leadId = resolveLeadForIssue(
+					projects,
+					projectName,
+					parseJsonStringArray(
+						store.getSession(session.execution_id)?.issue_labels,
+					),
+				).lead.agentId;
+			} catch {
+				console.error(
+					`[workflow] worktree takeover rescue has no Lead: ${rescueEventUid}`,
+				);
+				return;
+			}
+			const lines = [
+				`class: ${rescue.class}`,
+				`branch: ${rescue.branch}`,
+				`target: ${rescue.target}`,
+				`worktree: ${rescue.canonicalPath}`,
+				`manifest: ${rescue.manifestPath} (sha256 ${rescue.manifestSha256})`,
+				`event: ${rescueEventUid}`,
+			];
+			if (rescue.rescues.length > 0) {
+				lines.push("rescue refs:");
+				for (const ref of rescue.rescues) {
+					lines.push(`  ${ref.kind}: ${ref.remoteBranch}@${ref.tip}`);
+				}
+			} else {
+				lines.push("rescue refs: none (nothing unique to preserve)");
+			}
+			if (rescue.nestedMoves.length > 0) {
+				lines.push("nested repos moved:");
+				for (const move of rescue.nestedMoves) {
+					lines.push(`  ${move.source} → ${move.destination}`);
+				}
+			}
+			await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+				leadId,
+				projectName,
+				eventId: `workflow-worktree-takeover-rescued:${rescueEventUid}`,
+				eventType: "worktree_takeover_rescued",
+				title: `Workflow worktree takeover rescued — ${session.issue_identifier ?? session.issue_id}`,
+				body: lines.join("\n"),
+				severity: "info",
+				sessionKey: session.execution_id,
+			});
+		};
 
 		const assertWorkflowActorWorktreeReady = async (
 			session: WorkflowActorSession,
@@ -15800,6 +16143,7 @@ export async function startBridge(
 	// FLY-927: via the Router — runner_lead_pending_unhandled is an issue-progress
 	// kind, so with routing ON it lands in the issue's own thread.
 	leadPendingAlertHolder.current = routedAlertSink;
+	codexTerminalSweepAlertHolder.current = routedAlertSink;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
@@ -16087,6 +16431,7 @@ export async function startBridge(
 		// timeout so the process — and thus the port — is released even if any
 		// await below hangs.
 		shutdownStateHolder.shuttingDown = true;
+		disposeCodexTerminalTeardown();
 		landReclosePeerServer?.close();
 		await xhsWriteService.close();
 		await leadGithubProvider?.close();
@@ -16097,6 +16442,7 @@ export async function startBridge(
 		voiceSessionServices.runtime.stop();
 		voiceSessionServices.scheduleRuntime.stop();
 		voiceSessionServices.cardProjector.stop();
+		voiceHandoffService.stopReconciler();
 		// FLY-1082 (Task 2.4): the clean-shutdown marker rides the SAME close
 		// path as /health shuttingDown (no extra signal handlers) — a boot that
 		// finds this marker still `running` knows the previous Bridge died dirty.
@@ -16151,7 +16497,9 @@ export async function startBridge(
 		// FLY-1165: drain the done-thread reconcile (cooperative abort + await
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
-		await idleThreadSweepScheduler?.stop();
+		await Promise.all(
+			idleThreadSweepSchedulers.map((scheduler) => scheduler.stop()),
+		);
 		stopWatchingBotSends();
 		await doneThreadReconcile.stop();
 		await xhsNotificationService.close();

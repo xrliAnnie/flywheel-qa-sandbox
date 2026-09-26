@@ -44,6 +44,20 @@ qa_generalized_assert_ambient_scrubbed() {
 	done < <(qa_generalized_ambient_scrub_env_names)
 }
 
+qa_generalized_menu_ready() {
+	local menu_json="${1:?menu JSON required}" expected_menus="${2:?expected menus required}"
+	jq -e --argjson expected "$expected_menus" '
+		.success == true and
+		([.menus[].item] | sort) == $expected and
+		((($expected | index("code")) == null) or
+			(any(.menus[]; .item == "code" and
+				([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]))) and
+		((($expected | index("simple_code")) == null) or
+			(any(.menus[]; .item == "simple_code" and
+				([.nodes[].id] | sort) == ["founder_gate","implement","qa"])))
+	' <<<"$menu_json" >/dev/null
+}
+
 qa_generalized_bearer_has_outer_whitespace() {
 	local value="${1-}"
 	[[ -n "$value" ]] || return 1
@@ -119,6 +133,30 @@ qa_generalized_file_mode() {
 		return 0
 	fi
 	stat -f '%Lp' "$path"
+}
+
+qa_generalized_install_api_token() {
+	local path="${1:?token path required}" token="${2:-}" parent temporary
+	[[ -n "$token" ]] || {
+		echo '[qa-generalized] API token must be non-empty' >&2
+		return 1
+	}
+	qa_generalized_bearer_has_outer_whitespace "$token" && {
+		echo '[qa-generalized] API token must contain no outer whitespace' >&2
+		return 1
+	}
+	parent="$(dirname "$path")"
+	mkdir -p "$parent" || return 1
+	if [[ -e "$path" && ( ! -f "$path" || -L "$path" ) ]]; then
+		echo '[qa-generalized] API token path must be a regular non-symlink file' >&2
+		return 1
+	fi
+	temporary="${path}.tmp.$$"
+	(umask 077; set -o noclobber; printf '%s\n' "$token" > "$temporary") \
+		|| return 1
+	mv -f "$temporary" "$path" || return 1
+	[[ ! -L "$path" && "$(<"$path")" == "$token" \
+		&& "$(qa_generalized_file_mode "$path")" == "600" ]]
 }
 
 qa_generalized_validate_expected_head() {

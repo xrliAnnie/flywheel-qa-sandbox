@@ -1536,6 +1536,12 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts:child.kill(\"SIGTERM\");#1",
 		"path": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts",
 		"code": "child.kill(\"SIGTERM\");",
@@ -1788,24 +1794,6 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts:() => process.kill(pid1, \"SIGKILL\"),#1",
-		"path": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts",
-		"code": "() => process.kill(pid1, \"SIGKILL\"),",
-		"classification": "qa-only"
-	},
-	{
-		"key": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts:process.kill(pid, 0);#1",
-		"path": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts",
-		"code": "process.kill(pid, 0);",
-		"classification": "qa-only"
-	},
-	{
-		"key": "packages/voice-core/src/__tests__/resident-manager.smoke.test.ts:process.kill(pid, 0);#1",
-		"path": "packages/voice-core/src/__tests__/resident-manager.smoke.test.ts",
-		"code": "process.kill(pid, 0);",
-		"classification": "qa-only"
-	},
-	{
 		"key": "packages/voice-core/src/audio/FilePlayer.ts:handle.kill(\"SIGTERM\");#1",
 		"path": "packages/voice-core/src/audio/FilePlayer.ts",
 		"code": "handle.kill(\"SIGTERM\");",
@@ -1839,36 +1827,6 @@
 		"key": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts:this.child.kill(\"SIGKILL\");#1",
 		"path": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
 		"code": "this.child.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:child.kill(\"SIGKILL\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "child.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:child.kill(\"SIGTERM\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "child.kill(\"SIGTERM\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:if (!t.finalized) this.child?.kill(\"SIGKILL\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "if (!t.finalized) this.child?.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:if (this.alive) this.child?.kill(\"SIGKILL\");#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "if (this.alive) this.child?.kill(\"SIGKILL\");",
-		"classification": "out-of-scope"
-	},
-	{
-		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:this.child?.kill(\"SIGKILL\"); // wedged — recovery via exit→respawn#1",
-		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
-		"code": "this.child?.kill(\"SIGKILL\"); // wedged — recovery via exit→respawn",
 		"classification": "out-of-scope"
 	},
 	{
@@ -2310,9 +2268,45 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(daemon.pid, \"SIGTERM\");#1",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(daemon.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(daemon.pid, \"SIGTERM\");#2",
+		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+		"code": "process.kill(daemon.pid, \"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly2829-node-registry.test.sh:if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi#1",
 		"path": "scripts/__tests__/fly2829-node-registry.test.sh",
 		"code": "if [[ \"$CREATE_KILL_SELF\" == 1 ]]; then kill -KILL \"$$\"; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:[[ \"$lease_pid\" == \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "[[ \"$lease_pid\" == \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:kill -TERM \"$l2_live\" 2>/dev/null; wait \"$l2_live\" 2>/dev/null#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "kill -TERM \"$l2_live\" 2>/dev/null; wait \"$l2_live\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh:kill -TERM \"$pid\" 2>/dev/null#1",
+		"path": "scripts/__tests__/fly2867-claude-lead-inbox-lease.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null",
 		"classification": "qa-only"
 	},
 	{
@@ -3468,12 +3462,6 @@
 		"classification": "signal-0-probe"
 	},
 	{
-		"key": "scripts/flywheel-voice-bridge-wrapper.sh:if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then#1",
-		"path": "scripts/flywheel-voice-bridge-wrapper.sh",
-		"code": "if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then",
-		"classification": "signal-0-probe"
-	},
-	{
 		"key": "scripts/flywheel-voucher-watch.sh:kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null#1",
 		"path": "scripts/flywheel-voucher-watch.sh",
 		"code": "kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null",
@@ -3840,6 +3828,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/lib/qa-room.sh:if [[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/qa-room.sh",
+		"code": "if [[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/lib/qa-slot-bridge.sh:kill -0 \"$pid\" 2>/dev/null || return 1#1",
 		"path": "scripts/lib/qa-slot-bridge.sh",
 		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
@@ -3880,12 +3874,6 @@
 		"path": "scripts/lib/restart-cmux-watcher.sh",
 		"code": "kill -TERM -- \"-$worker\" 2>/dev/null || true",
 		"classification": "out-of-scope"
-	},
-	{
-		"key": "scripts/lib/restart-voice-bridge.sh:kill -0 \"$1\" 2>/dev/null#1",
-		"path": "scripts/lib/restart-voice-bridge.sh",
-		"code": "kill -0 \"$1\" 2>/dev/null",
-		"classification": "signal-0-probe"
 	},
 	{
 		"key": "scripts/lib/setup.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${sessionName}`]);#1",

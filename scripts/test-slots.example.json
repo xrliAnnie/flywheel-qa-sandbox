@@ -4,6 +4,7 @@
 	"_role": "slot.role selects FLYWHEEL_LEAD_ROLE (cos vs lead — picks the base rule file: cos-lead-rules.md vs department-lead-rules.md). Required.",
 	"_identitySource": "FLY-153: slot.identitySource selects which GeoForge3D .lead/<dir>/identity.md to source. Allowlist: cos-lead | product-lead | ops-lead. Optional — pre-FLY-153 configs without this field fall back to role mapping (cos→cos-lead, lead→product-lead). MUST be set for slot 3 to load Oliver instead of Peter (mirror cascade coverage requires it).",
 	"_fly163": "FLY-163: forumChannelId / forumChannelName fields are removed. test-deploy.sh no longer reads them. ProjectConfig strips any deprecated forumChannel key with a warning at load time.",
+	"_voiceChannel": "FLY-2874: every live slot has one dedicated voice-test-N channel. Replace each numbered voiceChannelId placeholder with the matching Discord channel snowflake.",
 	"_mirrorChannel": "FLY-153: top-level mirrorChannel block is OPTIONAL. Required only for `test-deploy.sh --mode mirror`. Create one shared text channel in the test guild and invite bots flywheel-test-1/2/3 (View Channel + Send Messages + Read Message History). See packages/qa-framework/README.md §Mirror Mode for step-by-step.",
 	"_roundtableChannel": "FLY-529: top-level roundtableChannel block is OPTIONAL. Required only for `test-deploy.sh --mode roundtable`. Create a shared text channel (mirrors #leads-roundtable) in the test guild. hostSlot's bot ALSO needs Create Public Threads + Send Messages in Threads (the auto-thread manager creates threads). memberSlots = NON-host slot ids the manager adds to each topic thread. triggerMode = any_top_level (easiest for QA) | explicit_prefix | any_lead_mention. Run scripts/setup-roundtable-channel.sh <channel-id> to validate + install. FLY-314 Part-b QA (OPTIONAL, default OFF = byte-compatible): replyInThread (bool) routes a Lead's reply INTO the topic thread; autoContinue (bool) lets thread members continue without @-mentioning each other, bounded by threadBudget (int, OPTIONAL — omit to exercise the shipped backend default 12 per FLY-676; only set it to override) per-thread bot-only anti-loop budget. These set the plugin's FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD / _THREAD_AUTOCONTINUE / _THREAD_BUDGET on the test Lead pane; leave unset/false for the Phase-1 auto-thread smoke.",
 	"_alertChannel": "FLY-529: top-level alertChannel block is OPTIONAL. Required only for `test-deploy.sh --alerts`. Create an isolated alert channel (mirrors #flywheel-alerts) and invite the slot bot(s) + repair bot. repairBotTokenEnv defaults to the slot's tokenEnvVar. Run scripts/setup-alert-channel.sh <channel-id> to validate + install.",
@@ -15,11 +16,13 @@
 			"department": "cos",
 			"deptLabel": "PM-Test",
 			"botName": "flywheel-test-1",
-			"botAppId": "<bot-application-id>",
+			"botAppId": "<bot-application-id-1>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_1",
-			"channelId": "<channel-id>",
+			"channelId": "<channel-id-1>",
 			"channelName": "cos-test",
-			"bridgePort": 19871
+			"bridgePort": 19871,
+			"voiceChannelId": "<voice-channel-id-1>",
+			"voiceChannelName": "voice-test-1"
 		},
 		{
 			"id": 2,
@@ -28,11 +31,13 @@
 			"department": "product-test",
 			"deptLabel": "Product-Test",
 			"botName": "flywheel-test-2",
-			"botAppId": "<bot-application-id>",
+			"botAppId": "<bot-application-id-2>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_2",
-			"channelId": "<channel-id>",
+			"channelId": "<channel-id-2>",
 			"channelName": "product-lead-test",
-			"bridgePort": 19872
+			"bridgePort": 19872,
+			"voiceChannelId": "<voice-channel-id-2>",
+			"voiceChannelName": "voice-test-2"
 		},
 		{
 			"id": 3,
@@ -41,11 +46,13 @@
 			"department": "ops-test",
 			"deptLabel": "Ops-Test",
 			"botName": "flywheel-test-3",
-			"botAppId": "<bot-application-id>",
+			"botAppId": "<bot-application-id-3>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_3",
-			"channelId": "<channel-id>",
+			"channelId": "<channel-id-3>",
 			"channelName": "ops-lead-test",
-			"bridgePort": 19873
+			"bridgePort": 19873,
+			"voiceChannelId": "<voice-channel-id-3>",
+			"voiceChannelName": "voice-test-3"
 		},
 		{
 			"id": 4,
@@ -54,11 +61,45 @@
 			"department": "finance-test",
 			"deptLabel": "Finance-Test",
 			"botName": "flywheel-test-4",
-			"botAppId": "<bot-application-id>",
+			"botAppId": "<bot-application-id-4>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_4",
-			"channelId": "<channel-id>",
+			"channelId": "<channel-id-4>",
 			"channelName": "finance-lead-test",
-			"bridgePort": 19874
+			"bridgePort": 19874,
+			"voiceChannelId": "<voice-channel-id-4>",
+			"voiceChannelName": "voice-test-4"
+		},
+		{
+			"id": 5,
+			"role": "lead",
+			"identitySource": "product-lead",
+			"department": "product-test-2",
+			"deptLabel": "Product-Test-2",
+			"botName": "flywheel-test-5",
+			"botAppId": "<bot-application-id-5>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_5",
+			"channelId": "<channel-id-5>",
+			"channelName": "product-lead-test-2",
+			"bridgePort": 19875,
+			"voiceChannelId": "<voice-channel-id-5>",
+			"voiceChannelName": "voice-test-5",
+			"backend": "codex-app-server",
+			"codexProfile": "full-access"
+		},
+		{
+			"id": 6,
+			"role": "lead",
+			"identitySource": "ops-lead",
+			"department": "ops-test-2",
+			"deptLabel": "Ops-Test-2",
+			"botName": "flywheel-test-6",
+			"botAppId": "<bot-application-id-6>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_6",
+			"channelId": "<channel-id-6>",
+			"channelName": "ops-lead-test-2",
+			"bridgePort": 19876,
+			"voiceChannelId": "<voice-channel-id-6>",
+			"voiceChannelName": "voice-test-6"
 		}
 	],
 	"categoryId": "<discord-category-id>",

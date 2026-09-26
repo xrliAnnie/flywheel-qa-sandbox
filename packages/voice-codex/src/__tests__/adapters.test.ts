@@ -96,4 +96,39 @@ describe("FlywheelCommDelivery", () => {
 			"/tmp/flywheel-test-slot-2/state/comm/test-slot-2/comm.db",
 		);
 	});
+
+	it("passes the voice_minutes origin through and keeps voice as the default", async () => {
+		const run = vi.fn().mockResolvedValue({
+			stdout: JSON.stringify({
+				lane: "inserted_inbox",
+				deliveryId: "chat:raya:223456789012345678",
+			}),
+		});
+		const delivery = new FlywheelCommDelivery({
+			cliPath: "/comm.js",
+			dbPath: "/tmp/flywheel-test-slot-2/state/comm/test-slot-2/comm.db",
+			founderUserId: "founder",
+			run,
+		});
+		const input = {
+			leadId: "raya",
+			voiceSessionId: "11111111-1111-4111-8111-111111111111",
+			threadId: "123456789012345678",
+			messageId: "223456789012345678",
+			authorId: "bot",
+			authorName: "Raya voice minutes",
+			text: "minutes",
+			ts: "2026-09-24T00:00:00.000Z",
+		};
+
+		await delivery.ingest({ ...input, origin: "voice_minutes" });
+		const minutesArgs = run.mock.calls[0]?.[0] as string[];
+		expect(minutesArgs[minutesArgs.indexOf("--origin") + 1]).toBe(
+			"voice_minutes",
+		);
+
+		await delivery.ingest(input);
+		const voiceArgs = run.mock.calls[1]?.[0] as string[];
+		expect(voiceArgs[voiceArgs.indexOf("--origin") + 1]).toBe("voice");
+	});
 });

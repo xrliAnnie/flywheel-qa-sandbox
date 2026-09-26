@@ -1,5 +1,8 @@
 import { parseArgs } from "node:util";
-import { parseChatDeliveryEnvelope } from "../chat-delivery-envelope.js";
+import {
+	type ChatDeliveryOrigin,
+	parseChatDeliveryEnvelope,
+} from "../chat-delivery-envelope.js";
 import { CommDB } from "../db.js";
 import type { MailboxSettlement, MailboxState } from "../mailbox-queue.js";
 import { resolveDbPath } from "../resolve-db-path.js";
@@ -16,7 +19,7 @@ export interface MessageStatusView {
 		notified_at: string | null;
 		settled_at: string | null;
 	};
-	origin?: "discord" | "voice";
+	origin?: ChatDeliveryOrigin;
 	voiceSessionId?: string | null;
 	authorId?: string;
 	text?: string;

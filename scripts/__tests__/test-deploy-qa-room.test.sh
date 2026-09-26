@@ -99,6 +99,43 @@ else
   fail "alerts shell path slot2 token env" "got=$TOK2 (expected TEST_BOT_TOKEN_2)"
 fi
 
+# FLY-2799: a Codex QA carrier lives under the slot, not under the production
+# ~/.codex-<lead> convention. Voice context must bind to that exact resident
+# identity + memory or the room dies before thread/realtime/start while a
+# direct app-server probe remains green.
+CODEX_VOICE_PROJECTS='[{"projectName":"test-slot-2","leads":[{"agentId":"flywheel-test-2","backend":"codex-app-server"},{"agentId":"other-lead","backend":"claude-code"}]}]'
+CODEX_VOICE_BOUND=""
+if declare -F qa_room_bind_codex_voice_context >/dev/null; then
+  CODEX_VOICE_BOUND=$(printf '%s' "$CODEX_VOICE_PROJECTS" \
+    | qa_room_bind_codex_voice_context \
+      "test-slot-2" "flywheel-test-2" \
+      "/tmp/flywheel-test-slot-2/test-identity.md" \
+      "/tmp/flywheel-test-slot-2/cdxh/flywheel-test-2")
+fi
+if jq -e '
+  .[0].leads[0].cosContext == {
+    displayName: "flywheel-test-2",
+    aliases: [],
+    workingSubdirectory: ".",
+    identityPath: "/tmp/flywheel-test-slot-2/test-identity.md",
+    memoryPaths: ["/tmp/flywheel-test-slot-2/cdxh/flywheel-test-2/memories/memory_summary.md"],
+    writableRoots: []
+  }
+  and (.[0].leads[1] | has("cosContext") | not)
+' <<<"$CODEX_VOICE_BOUND" >/dev/null 2>&1; then
+  pass "FLY-2799: Codex voice room uses the slot resident identity and memory binding"
+else
+  fail "FLY-2799 Codex voice context binding missing" "$CODEX_VOICE_BOUND"
+fi
+if printf '%s' "$CODEX_VOICE_PROJECTS" \
+  | qa_room_bind_codex_voice_context \
+    "test-slot-2" "other-lead" "/tmp/identity.md" "/tmp/codex-home" \
+    >/dev/null 2>&1; then
+  fail "FLY-2799 voice context accepted non-Codex target" "expected fail closed"
+else
+  pass "FLY-2799: voice context binding rejects a non-Codex target"
+fi
+
 # Bridge repair-token passthrough (Codex R2 #2): when repairBotTokenEnv differs
 # from the slot's own token env, test-deploy adds "${repair}=value" to the
 # Bridge array so the owner-attributed send chain can deref the repair token.
@@ -125,6 +162,13 @@ fi
 # slot Bridge env. Asserted against the script SOURCE (not a mirror) so a
 # refactor that drops or conditionalizes the line fails here.
 TD_SRC="${SCRIPT_DIR}/../test-deploy.sh"
+if grep -qF '| qa_room_bind_codex_voice_context \' "$TD_SRC" \
+  && grep -qF '"${SLOT_DIR}/test-identity.md" "${SLOT_DIR}/cdxh/${AGENT_ID}"' "$TD_SRC" \
+  && grep -qF '[[ -n "$VOICE_FIXTURE" ]]' "$TD_SRC"; then
+  pass "FLY-2799: voice fixture deploy invokes the tested Codex context binding"
+else
+  fail "FLY-2799 Codex context deploy call missing" "test-deploy must bind the slot resident before Bridge launch"
+fi
 SLOT_CONTRACT_PROJECTION="$(qa_slot_env_contract_render "$SLOT_DIR" 'test-slot-1')"
 SLOT_CONTRACT_CLEARS="$(qa_slot_env_contract_names clear)"
 OWNER_FORWARD='DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}"'

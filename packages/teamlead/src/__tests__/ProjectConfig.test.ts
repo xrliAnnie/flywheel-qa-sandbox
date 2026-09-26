@@ -2376,7 +2376,7 @@ describe("leads[].voice per-agent voice config (FLY-546 A3)", () => {
 		});
 	});
 
-	it("accepts a bare string voiceId (FLY-545 huddle form, VoiceRef parity)", () => {
+	it("accepts a bare string voiceId (string form, VoiceRef parity)", () => {
 		process.env.FLYWHEEL_PROJECTS = withVoice("zh-CN-YunxiNeural");
 		const projects = loadProjects();
 		expect(projects[0]!.leads[0]!.voice).toBe("zh-CN-YunxiNeural");

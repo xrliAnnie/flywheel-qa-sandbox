@@ -22,6 +22,8 @@ const EDGE_TTS_CAPABILITIES: VoiceBackendCapabilities = {
 	announce: true,
 	converse: false,
 	bargeIn: false,
+	verbatim: true,
+	attribution: false,
 	toolCallScheduling: "none",
 	transcriptGranularity: "final-only",
 	supportsResume: false,

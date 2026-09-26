@@ -28,6 +28,8 @@ import type {
 } from "./rate-limit-detail.js";
 
 const MAX_STORE_BYTES = 256 * 1024;
+/** Same bound as the occupancy answer's detail (occupancy.ts). */
+const NOTE_DETAIL_RE = /^[a-z0-9_:.-]{1,80}$/;
 const MAX_ACCOUNTS = 64;
 
 export type CodexAccountAuthHealth =
@@ -49,6 +51,11 @@ export interface CodexAccountReading {
 	authHealth: CodexAccountAuthHealth;
 	/** Machine token explaining a missing reading (`deadline`, `read_failed`, …). */
 	note: string | null;
+	/**
+	 * FLY-2830: bounded reason code behind `note` (e.g. why the occupancy
+	 * inventory was unavailable). Never a path, stack or free text.
+	 */
+	noteDetail?: string;
 	planType: string | null;
 	fiveH: CodexRateLimitWindow | null;
 	weekly: CodexRateLimitWindow | null;
@@ -229,6 +236,9 @@ function validReading(value: unknown): value is CodexAccountReading {
 		(value.observedAt === null || instant(value.observedAt)) &&
 		AUTH_HEALTH.includes(value.authHealth as CodexAccountAuthHealth) &&
 		(value.note === null || text(value.note, 128)) &&
+		(value.noteDetail === undefined ||
+			(typeof value.noteDetail === "string" &&
+				NOTE_DETAIL_RE.test(value.noteDetail))) &&
 		(value.planType === null || text(value.planType, 64)) &&
 		validWindow(value.fiveH) &&
 		validWindow(value.weekly) &&
@@ -303,6 +313,10 @@ export function writeCodexAccountQuotaStore(
 	path: string,
 	store: CodexAccountQuotaStore,
 ): void {
+	// FLY-2830: the same structural check the reader applies; an invalid
+	// reading never reaches disk (the caller records refresh_failed).
+	if (!store.accounts.every(validReading))
+		throw new Error("codex_account_store_invalid");
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const temp = `${path}.tmp-${process.pid}`;
 	const handle = openSync(temp, "w", 0o600);

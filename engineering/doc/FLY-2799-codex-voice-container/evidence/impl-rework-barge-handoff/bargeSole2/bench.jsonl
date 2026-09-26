@@ -1,0 +1,195 @@
+{"t":1790316318546,"k":"notif","method":"remoteControl/status/changed"}
+{"t":1790316318597,"k":"notif","method":"thread/started"}
+{"t":1790316318597,"k":"notif","method":"warning","raw":"{\"threadId\":\"01a0d72b-0f77-7842-a02d-3ea213005fec\",\"message\":\"Under-development features enabled: skip_host_skill_discovery. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2799/5ba8423d-4e42-465a-83e9-9e7928958208/scratchpad/bench/bargeSole2/containers/container-EnjTWF/home/config.toml.\"}"}
+{"t":1790316319217,"k":"notif","method":"thread/realtime/started"}
+{"t":1790316319217,"k":"container_ev","kind":"codex_voice_container_opened","sessionId":"37bbba37-d4ca-4c9d-b76f-9e4e1303c82f","threadId":"01a0d72b-0f77-7842-a02d-3ea213005fec","binaryDigest":"0196e89fe5a7598f816ee54232c3d7c26d75e502ab5cfe2c9240e81d90f7255a","configDigest":"3e529300609f45cb0b5406e215c426dee508f03408a91ebe268d70674c301781","contextDigest":"e0c6574a87d2c48d445ecd7c821d8744c67207857406204bc537bbfa16662643"}
+{"t":1790316319218,"k":"opened","sessionId":"37bbba37-d4ca-4c9d-b76f-9e4e1303c82f"}
+{"t":1790316322223,"k":"feed_start","label":"hello","seconds":5.733125}
+{"t":1790316322384,"k":"notif","method":"thread/realtime/itemAdded","itemType":"input_audio_buffer.speech_started"}
+{"t":1790316327047,"k":"notif","method":"thread/realtime/itemAdded","itemType":"message","itemRole":"user","itemStatus":"completed"}
+{"t":1790316327230,"k":"notif","method":"thread/realtime/transcript/delta","text":"你好"}
+{"t":1790316327234,"k":"notif","method":"thread/realtime/transcript/delta","text":","}
+{"t":1790316327239,"k":"notif","method":"thread/realtime/transcript/delta","text":"你"}
+{"t":1790316327244,"k":"notif","method":"thread/realtime/transcript/delta","text":"是谁"}
+{"t":1790316327250,"k":"notif","method":"thread/realtime/transcript/delta","text":"?"}
+{"t":1790316327266,"k":"notif","method":"thread/realtime/transcript/delta","text":"你"}
+{"t":1790316327269,"k":"notif","method":"thread/realtime/transcript/delta","text":"手"}
+{"t":1790316327272,"k":"notif","method":"thread/realtime/transcript/delta","text":"上"}
+{"t":1790316327351,"k":"notif","method":"thread/realtime/transcript/delta","text":"现在"}
+{"t":1790316327353,"k":"notif","method":"thread/realtime/transcript/delta","text":"有什么"}
+{"t":1790316327383,"k":"notif","method":"thread/realtime/transcript/delta","text":"事"}
+{"t":1790316327386,"k":"notif","method":"thread/realtime/transcript/delta","text":"?"}
+{"t":1790316327581,"k":"notif","method":"thread/realtime/transcript/done","text":"你好,你是谁?你手上现在有什么事?"}
+{"t":1790316327581,"k":"backend_ev","kind":"codex_input_attribution_inferred","generation":1,"transcriptId":"37bbba37-d4ca-4c9d-b76f-9e4e1303c82f:1:unattributed-1:1","method":"sole_present_room_user","speakerUserId":"founder"}
+{"t":1790316327581,"k":"utterance","role":"user","final":true,"attribution":{"kind":"known","speakerUserId":"founder"},"text":"你好,你是谁?你手上现在有什么事?"}
+{"t":1790316327582,"k":"persist","role":"user","attribution":{"kind":"known","speakerUserId":"founder"},"text":"你好,你是谁?你手上现在有什么事?"}
+{"t":1790316327582,"k":"publish","role":"user","attribution":"known","text":"你好,你是谁?你手上现在有什么事?"}
+{"t":1790316327622,"k":"notif","method":"thread/realtime/itemAdded","itemType":"message","itemRole":"assistant","itemStatus":"in_progress"}
+{"t":1790316327628,"k":"notif","method":"thread/realtime/transcript/delta","text":"我是"}
+{"t":1790316327633,"k":"notif","method":"thread/realtime/transcript/delta","text":" Tad"}
+{"t":1790316327840,"k":"notif","method":"thread/realtime/transcript/delta","text":"ashi"}
+{"t":1790316327840,"k":"notif","method":"thread/realtime/transcript/delta","text":"，"}
+{"t":1790316327929,"k":"notif","method":"thread/realtime/transcript/delta","text":"Fly"}
+{"t":1790316327930,"k":"notif","method":"thread/realtime/transcript/delta","text":"wheel"}
+{"t":1790316328120,"k":"notif","method":"thread/realtime/transcript/delta","text":" 工"}
+{"t":1790316328126,"k":"notif","method":"thread/realtime/transcript/delta","text":"程"}
+{"t":1790316328126,"k":"notif","method":"thread/realtime/transcript/delta","text":"的"}
+{"t":1790316328126,"k":"notif","method":"thread/realtime/transcript/delta","text":"临"}
+{"t":1790316328126,"k":"notif","method":"thread/realtime/transcript/delta","text":"时"}
+{"t":1790316328126,"k":"notif","method":"thread/realtime/transcript/delta","text":"语"}
+{"t":1790316328138,"k":"notif","method":"thread/realtime/transcript/delta","text":"音"}
+{"t":1790316328144,"k":"notif","method":"thread/realtime/transcript/delta","text":"分"}
+{"t":1790316328154,"k":"notif","method":"thread/realtime/transcript/delta","text":"身"}
+{"t":1790316328158,"k":"notif","method":"thread/realtime/transcript/delta","text":"，"}
+{"t":1790316328439,"k":"notif","method":"thread/realtime/transcript/delta","text":"负责"}
+{"t":1790316328451,"k":"notif","method":"thread/realtime/transcript/delta","text":"管理"}
+{"t":1790316328457,"k":"notif","method":"thread/realtime/transcript/delta","text":"构"}
+{"t":1790316328469,"k":"feed_end","label":"hello"}
+{"t":1790316328469,"k":"notif","method":"thread/realtime/transcript/delta","text":"建"}
+{"t":1790316328480,"k":"notif","method":"thread/realtime/transcript/delta","text":" Fly"}
+{"t":1790316328485,"k":"notif","method":"thread/realtime/transcript/delta","text":"wheel"}
+{"t":1790316328488,"k":"notif","method":"thread/realtime/transcript/delta","text":" 的"}
+{"t":1790316328496,"k":"notif","method":"thread/realtime/transcript/delta","text":" Runner"}
+{"t":1790316328879,"k":"notif","method":"thread/realtime/transcript/delta","text":"。\n\n"}
+{"t":1790316328891,"k":"notif","method":"thread/realtime/transcript/delta","text":"现在"}
+{"t":1790316328894,"k":"notif","method":"thread/realtime/transcript/delta","text":"手"}
+{"t":1790316328901,"k":"notif","method":"thread/realtime/transcript/delta","text":"上的"}
+{"t":1790316328911,"k":"notif","method":"thread/realtime/transcript/delta","text":"事情"}
+{"t":1790316328921,"k":"notif","method":"thread/realtime/transcript/delta","text":"是"}
+{"t":1790316329307,"k":"notif","method":"thread/realtime/transcript/delta","text":" F"}
+{"t":1790316329321,"k":"notif","method":"thread/realtime/transcript/delta","text":"LY"}
+{"t":1790316329331,"k":"notif","method":"thread/realtime/transcript/delta","text":"-"}
+{"t":1790316329341,"k":"notif","method":"thread/realtime/transcript/delta","text":"279"}
+{"t":1790316329348,"k":"notif","method":"thread/realtime/transcript/delta","text":"9"}
+{"t":1790316329362,"k":"notif","method":"thread/realtime/transcript/delta","text":"，"}
+{"t":1790316329363,"k":"notif","method":"thread/realtime/transcript/delta","text":"语"}
+{"t":1790316329763,"k":"notif","method":"thread/realtime/transcript/delta","text":"音"}
+{"t":1790316329763,"k":"notif","method":"thread/realtime/transcript/delta","text":"分"}
+{"t":1790316329779,"k":"notif","method":"thread/realtime/transcript/delta","text":"身"}
+{"t":1790316329790,"k":"notif","method":"thread/realtime/transcript/delta","text":"引"}
+{"t":1790316329804,"k":"notif","method":"thread/realtime/transcript/delta","text":"擎"}
+{"t":1790316329804,"k":"notif","method":"thread/realtime/transcript/delta","text":" B"}
+{"t":1790316329814,"k":"notif","method":"thread/realtime/transcript/delta","text":" 的"}
+{"t":1790316329828,"k":"notif","method":"thread/realtime/transcript/delta","text":"独"}
+{"t":1790316329831,"k":"notif","method":"thread/realtime/transcript/delta","text":"立"}
+{"t":1790316329843,"k":"notif","method":"thread/realtime/transcript/delta","text":" QA"}
+{"t":1790316330216,"k":"notif","method":"thread/realtime/transcript/delta","text":" 正"}
+{"t":1790316330235,"k":"notif","method":"thread/realtime/transcript/delta","text":"在"}
+{"t":1790316330235,"k":"notif","method":"thread/realtime/transcript/delta","text":"进行"}
+{"t":1790316330246,"k":"notif","method":"thread/realtime/transcript/delta","text":"中"}
+{"t":1790316330249,"k":"notif","method":"thread/realtime/transcript/delta","text":"。另外"}
+{"t":1790316330252,"k":"notif","method":"thread/realtime/transcript/delta","text":"有"}
+{"t":1790316330643,"k":"notif","method":"thread/realtime/transcript/delta","text":"一个"}
+{"t":1790316330644,"k":"notif","method":"thread/realtime/transcript/delta","text":"待"}
+{"t":1790316330644,"k":"notif","method":"thread/realtime/transcript/delta","text":"决"}
+{"t":1790316330656,"k":"notif","method":"thread/realtime/transcript/delta","text":"问题"}
+{"t":1790316330658,"k":"notif","method":"thread/realtime/transcript/delta","text":"是"}
+{"t":1790316330675,"k":"notif","method":"thread/realtime/transcript/delta","text":" F"}
+{"t":1790316330683,"k":"notif","method":"thread/realtime/transcript/delta","text":"LY"}
+{"t":1790316330683,"k":"notif","method":"thread/realtime/transcript/delta","text":"-"}
+{"t":1790316330698,"k":"notif","method":"thread/realtime/transcript/delta","text":"280"}
+{"t":1790316330700,"k":"notif","method":"thread/realtime/transcript/delta","text":"8"}
+{"t":1790316330703,"k":"notif","method":"thread/realtime/transcript/delta","text":"，"}
+{"t":1790316331099,"k":"notif","method":"thread/realtime/transcript/delta","text":"是否"}
+{"t":1790316331106,"k":"notif","method":"thread/realtime/transcript/delta","text":"要"}
+{"t":1790316331106,"k":"notif","method":"thread/realtime/transcript/delta","text":" ship"}
+{"t":1790316331108,"k":"notif","method":"thread/realtime/transcript/delta","text":"，"}
+{"t":1790316331494,"k":"notif","method":"thread/realtime/transcript/delta","text":"需要"}
+{"t":1790316331494,"k":"notif","method":"thread/realtime/transcript/delta","text":"常"}
+{"t":1790316331509,"k":"notif","method":"thread/realtime/transcript/delta","text":"驻"}
+{"t":1790316331509,"k":"notif","method":"thread/realtime/transcript/delta","text":" Lead"}
+{"t":1790316331515,"k":"notif","method":"thread/realtime/transcript/delta","text":" 来"}
+{"t":1790316331533,"k":"notif","method":"thread/realtime/transcript/delta","text":"决定"}
+{"t":1790316331535,"k":"notif","method":"thread/realtime/transcript/delta","text":"。"}
+{"t":1790316331993,"k":"notif","method":"thread/realtime/transcript/done","text":"我是 Tadashi，Flywheel 工程的临时语音分身，负责管理构建 Flywheel 的 Runner。\n\n现在手上的事情是 FLY-2799，语音分身引擎 B 的独立 QA 正在进行中。另外有一个待决问题是 FLY-2808，是否要 ship，需要常驻 Lead 来决定。"}
+{"t":1790316331993,"k":"utterance","role":"assistant","final":true,"attribution":{"kind":"unknown","reason":"engine_output"},"text":"我是 Tadashi，Flywheel 工程的临时语音分身，负责管理构建 Flywheel 的 Runner。\n\n现在手上的事情是 FLY-2799，语音分身引擎 B 的独立 QA 正在进行中。另外有一个待决问题是 FLY-2808，是否要 ship，需要常驻 Lead 来决定。"}
+{"t":1790316331994,"k":"play","itemId":"item_ERtLjuReoHFz012UpcOoL","bytes":1056000,"seconds":22}
+{"t":1790316331994,"k":"persist","role":"assistant","attribution":{"kind":"unknown","reason":"engine_output"},"text":"我是 Tadashi，Flywheel 工程的临时语音分身，负责管理构建 Flywheel 的 Runner。\n\n现在手上的事情是 FLY-2799，语音分身引擎 B 的独立 QA 正在进行中。另外有一个待决问题是 FLY-2808，是否要 ship，需要常驻 Lead 来决定。"}
+{"t":1790316331994,"k":"publish","role":"assistant","attribution":"unknown","text":"我是 Tadashi，Flywheel 工程的临时语音分身，负责管理构建 Flywheel 的 Runner。\n\n现在手上的事情是 FLY-2799，语音分身引擎 B 的独立 QA 正在进行中。另外有一个待决问题是 FLY-2808，是否要 ship，需要常驻 Lead 来决定。"}
+{"t":1790316332826,"k":"BARGE_IN","playedSoFar":1}
+{"t":1790316332827,"k":"backend_ev","kind":"codex_barge_in","generation":1,"droppedBytes":0,"providerInputPending":false,"inputGap":false}
+{"t":1790316332828,"k":"feed_start","label":"ask2799","seconds":6.800791666666667}
+{"t":1790316332828,"k":"notif","method":"thread/realtime/closed"}
+{"t":1790316333344,"k":"notif","method":"thread/realtime/started"}
+{"t":1790316333344,"k":"container_ev","kind":"codex_voice_realtime_restarted","sessionId":"37bbba37-d4ca-4c9d-b76f-9e4e1303c82f","threadId":"01a0d72b-0f77-7842-a02d-3ea213005fec","generation":2}
+{"t":1790316333498,"k":"notif","method":"thread/realtime/itemAdded","itemType":"input_audio_buffer.speech_started"}
+{"t":1790316338778,"k":"notif","method":"thread/realtime/itemAdded","itemType":"message","itemRole":"user","itemStatus":"completed"}
+{"t":1790316339007,"k":"notif","method":"thread/realtime/itemAdded","itemType":"message","itemRole":"assistant","itemStatus":"in_progress"}
+{"t":1790316339022,"k":"notif","method":"thread/realtime/transcript/delta","text":"我"}
+{"t":1790316339028,"k":"notif","method":"thread/realtime/transcript/delta","text":"确认"}
+{"t":1790316339031,"k":"notif","method":"thread/realtime/transcript/delta","text":"你"}
+{"t":1790316339035,"k":"notif","method":"thread/realtime/transcript/delta","text":"帮"}
+{"t":1790316339037,"k":"notif","method":"thread/realtime/transcript/delta","text":"一下"}
+{"t":1790316339038,"k":"notif","method":"thread/realtime/transcript/delta","text":"我"}
+{"t":1790316339046,"k":"notif","method":"thread/realtime/transcript/delta","text":"去"}
+{"t":1790316339048,"k":"notif","method":"thread/realtime/transcript/delta","text":"看"}
+{"t":1790316339053,"k":"notif","method":"thread/realtime/transcript/delta","text":"一下"}
+{"t":1790316339054,"k":"notif","method":"thread/realtime/transcript/delta","text":"279"}
+{"t":1790316339060,"k":"notif","method":"thread/realtime/transcript/delta","text":"9"}
+{"t":1790316339107,"k":"notif","method":"thread/realtime/transcript/delta","text":"现在"}
+{"t":1790316339107,"k":"notif","method":"thread/realtime/transcript/delta","text":"是什么"}
+{"t":1790316339151,"k":"notif","method":"thread/realtime/transcript/delta","text":"状态"}
+{"t":1790316339154,"k":"notif","method":"thread/realtime/transcript/delta","text":"。"}
+{"t":1790316339229,"k":"notif","method":"thread/realtime/transcript/delta","text":"。"}
+{"t":1790316339352,"k":"notif","method":"thread/realtime/transcript/done","text":"你帮我去看一下2799现在是什么状态。"}
+{"t":1790316339353,"k":"backend_ev","kind":"codex_input_attribution_inferred","generation":2,"transcriptId":"37bbba37-d4ca-4c9d-b76f-9e4e1303c82f:2:unattributed-3:3","method":"sole_present_room_user","speakerUserId":"founder"}
+{"t":1790316339353,"k":"utterance","role":"user","final":true,"attribution":{"kind":"known","speakerUserId":"founder"},"text":"你帮我去看一下2799现在是什么状态。"}
+{"t":1790316339353,"k":"persist","role":"user","attribution":{"kind":"known","speakerUserId":"founder"},"text":"你帮我去看一下2799现在是什么状态。"}
+{"t":1790316339353,"k":"publish","role":"user","attribution":"known","text":"你帮我去看一下2799现在是什么状态。"}
+{"t":1790316339401,"k":"notif","method":"thread/realtime/itemAdded","itemType":"function_call","itemStatus":"in_progress"}
+{"t":1790316339560,"k":"notif","method":"thread/realtime/transcript/done","text":"我确认一下。"}
+{"t":1790316339560,"k":"utterance","role":"assistant","final":true,"attribution":{"kind":"unknown","reason":"engine_output"},"text":"我确认一下。"}
+{"t":1790316339561,"k":"play","itemId":"item_ERtLuvh2e3f0xi78YY3nN","bytes":62400,"seconds":1.3}
+{"t":1790316339561,"k":"persist","role":"assistant","attribution":{"kind":"unknown","reason":"engine_output"},"text":"我确认一下。"}
+{"t":1790316339561,"k":"publish","role":"assistant","attribution":"unknown","text":"我确认一下。"}
+{"t":1790316339568,"k":"notif","method":"warning","raw":"{\"threadId\":\"01a0d72b-0f77-7842-a02d-3ea213005fec\",\"message\":\"Code Mode is unavailable because code-mode host is disabled. Code mode will fail closed; enable `features.code_mode_host` and install `codex-code-mode-host`.\"}"}
+{"t":1790316339569,"k":"notif","method":"thread/realtime/itemAdded","itemType":"handoff_request","raw":"{\"threadId\":\"01a0d72b-0f77-7842-a02d-3ea213005fec\",\"item\":{\"type\":\"handoff_request\",\"handoff_id\":\"call_uRSzsbUx6c4XMe4K\",\"item_id\":\"item_ERtLvsbVtUQpAwOvrVvAy\",\"input_transcript\":\"你帮我去看一下 2799 现在是什么状态\",\"active_transcript\":[{\"role\":\"assistant\",\"text\":\"我确认\"},{\"role\":\"user\",\"text\":\"你帮\"},{\"role\":\"assistant\",\"text\":\"一下\"},{\"role\":\"user\",\"text\":\"我去看一下2799现在是什么状态。\"},{\"role\":\"assistant\",\"text\":\"。\"},{\"role\":\"user\",\"text\":\"你帮我去看一下2799现在是什么状态。\"},{\"role\":\"assistant\",\"text\":\"我确认一下。\"},{\"role\":\"user\",\"text\":\"你帮我去看一下 2799 现在是什么状态\"}]}}"}
+{"t":1790316339569,"k":"HANDOFF","text":"你帮我去看一下2799现在是什么状态。","attribution":{"kind":"known","speakerUserId":"founder"},"intentKind":"handoffRequest","method":"thread/realtime/itemAdded"}
+{"t":1790316339569,"k":"backend_ev","kind":"codex_execution_handoff","generation":2,"backendIntentKind":"handoffRequest","backendMethod":"thread/realtime/itemAdded","backendItemId":"call_uRSzsbUx6c4XMe4K","transcriptId":"37bbba37-d4ca-4c9d-b76f-9e4e1303c82f:2:unattributed-3:3","handoffId":"bench-1","state":"dispatched"}
+{"t":1790316339569,"k":"notif","method":"thread/status/changed"}
+{"t":1790316339569,"k":"notif","method":"turn/started","raw":"{\"threadId\":\"01a0d72b-0f77-7842-a02d-3ea213005fec\",\"turn\":{\"id\":\"01a0d72b-616f-7243-bc20-56f6132cfabc\",\"items\":[],\"itemsView\":\"notLoaded\",\"status\":\"inProgress\",\"error\":null,\"startedAt\":1790316339,\"completedAt\":null,\"durationMs\":null}}"}
+{"t":1790316339574,"k":"notif","method":"item/started","itemType":"userMessage","raw":"{\"item\":{\"type\":\"userMessage\",\"id\":\"01a0d72b-6175-79e3-b8e5-f8e8855e56fa\",\"clientId\":null,\"content\":[{\"type\":\"text\",\"text\":\"<realtime_delegation>\\n  <input>你帮我去看一下 2799 现在是什么状态</input>\\n  <transcript_delta>assistant: 我确认\\nuser: 你帮\\nassistant: 一下\\nuser: 我去看一下2799现在是什么状态。\\nassistant: 。\\nuser: 你帮我去看一下2799现在是什么状态。\\nassistant: 我确认一下。\\nuser: 你帮我去看一下 2799 现在是什么状态</transcript_delta>\\n</realtime_delegation>\",\"text_elements\":[]}]},\"threadId\":\"01a0d72b-0f77-7842-a02d-3ea213005fec\",\"turnId\":\"01a0d72b-616f-7243-bc20-56f6132cfabc\",\"startedAtMs\":1790316339573}"}
+{"t":1790316339574,"k":"notif","method":"item/completed","itemType":"userMessage","raw":"{\"item\":{\"type\":\"userMessage\",\"id\":\"01a0d72b-6175-79e3-b8e5-f8e8855e56fa\",\"clientId\":null,\"content\":[{\"type\":\"text\",\"text\":\"<realtime_delegation>\\n  <input>你帮我去看一下 2799 现在是什么状态</input>\\n  <transcript_delta>assistant: 我确认\\nuser: 你帮\\nassistant: 一下\\nuser: 我去看一下2799现在是什么状态。\\nassistant: 。\\nuser: 你帮我去看一下2799现在是什么状态。\\nassistant: 我确认一下。\\nuser: 你帮我去看一下 2799 现在是什么状态</transcript_delta>\\n</realtime_delegation>\",\"text_elements\":[]}]},\"threadId\":\"01a0d72b-0f77-7842-a02d-3ea213005fec\",\"turnId\":\"01a0d72b-616f-7243-bc20-56f6132cfabc\",\"completedAtMs\":1790316339573}"}
+{"t":1790316339574,"k":"backend_ev","kind":"codex_background_turn","generation":2,"turnId":"01a0d72b-616f-7243-bc20-56f6132cfabc","outcome":"interrupted"}
+{"t":1790316339574,"k":"notif","method":"thread/status/changed"}
+{"t":1790316339574,"k":"notif","method":"turn/completed","raw":"{\"threadId\":\"01a0d72b-0f77-7842-a02d-3ea213005fec\",\"turn\":{\"id\":\"01a0d72b-616f-7243-bc20-56f6132cfabc\",\"items\":[],\"itemsView\":\"notLoaded\",\"status\":\"interrupted\",\"error\":null,\"startedAt\":1790316339,\"completedAt\":1790316339,\"durationMs\":6}}"}
+{"t":1790316340208,"k":"feed_end","label":"ask2799"}
+{"t":1790316370272,"k":"notif","method":"thread/realtime/itemAdded","itemType":"message","itemRole":"user","itemStatus":"completed"}
+{"t":1790316370663,"k":"notif","method":"thread/realtime/itemAdded","itemType":"message","itemRole":"assistant","itemStatus":"in_progress"}
+{"t":1790316370678,"k":"notif","method":"thread/realtime/transcript/delta","text":"本"}
+{"t":1790316370690,"k":"notif","method":"thread/realtime/transcript/delta","text":"体"}
+{"t":1790316370697,"k":"notif","method":"thread/realtime/transcript/delta","text":"回复"}
+{"t":1790316370704,"k":"notif","method":"thread/realtime/transcript/delta","text":":"}
+{"t":1790316370915,"k":"notif","method":"thread/realtime/transcript/delta","text":"F"}
+{"t":1790316370996,"k":"notif","method":"thread/realtime/transcript/delta","text":" L"}
+{"t":1790316371002,"k":"notif","method":"thread/realtime/transcript/delta","text":" Y"}
+{"t":1790316371147,"k":"notif","method":"thread/realtime/transcript/delta","text":" 二"}
+{"t":1790316371158,"k":"notif","method":"thread/realtime/transcript/delta","text":" 七"}
+{"t":1790316371164,"k":"notif","method":"thread/realtime/transcript/delta","text":" 九"}
+{"t":1790316371171,"k":"notif","method":"thread/realtime/transcript/delta","text":" 九"}
+{"t":1790316371426,"k":"notif","method":"thread/realtime/transcript/delta","text":" "}
+{"t":1790316371444,"k":"notif","method":"thread/realtime/transcript/delta","text":"目前"}
+{"t":1790316371453,"k":"notif","method":"thread/realtime/transcript/delta","text":"在"}
+{"t":1790316371462,"k":"notif","method":"thread/realtime/transcript/delta","text":"独"}
+{"t":1790316371467,"k":"notif","method":"thread/realtime/transcript/delta","text":"立"}
+{"t":1790316371479,"k":"notif","method":"thread/realtime/transcript/delta","text":" QA"}
+{"t":1790316371481,"k":"notif","method":"thread/realtime/transcript/delta","text":","}
+{"t":1790316371865,"k":"notif","method":"thread/realtime/transcript/delta","text":"精"}
+{"t":1790316371871,"k":"notif","method":"thread/realtime/transcript/delta","text":"确"}
+{"t":1790316371881,"k":"notif","method":"thread/realtime/transcript/delta","text":"头"}
+{"t":1790316371888,"k":"notif","method":"thread/realtime/transcript/delta","text":"全"}
+{"t":1790316371895,"k":"notif","method":"thread/realtime/transcript/delta","text":"量"}
+{"t":1790316371902,"k":"notif","method":"thread/realtime/transcript/delta","text":" CI"}
+{"t":1790316371912,"k":"notif","method":"thread/realtime/transcript/delta","text":" 正"}
+{"t":1790316371915,"k":"notif","method":"thread/realtime/transcript/delta","text":"在"}
+{"t":1790316372292,"k":"notif","method":"thread/realtime/transcript/delta","text":"跑"}
+{"t":1790316372295,"k":"notif","method":"thread/realtime/transcript/delta","text":"。"}
+{"t":1790316372557,"k":"notif","method":"thread/realtime/transcript/done","text":"本体回复:F L Y 二 七 九 九 目前在独立 QA,精确头全量 CI 正在跑。"}
+{"t":1790316372558,"k":"utterance","role":"assistant","final":true,"attribution":{"kind":"unknown","reason":"engine_output"},"text":"本体回复:F L Y 二 七 九 九 目前在独立 QA,精确头全量 CI 正在跑。"}
+{"t":1790316372559,"k":"play","itemId":"item_ERtMQk40lO4P357l9GzZP","bytes":460800,"seconds":9.6}
+{"t":1790316372559,"k":"persist","role":"assistant","attribution":{"kind":"unknown","reason":"engine_output"},"text":"本体回复:F L Y 二 七 九 九 目前在独立 QA,精确头全量 CI 正在跑。"}
+{"t":1790316372559,"k":"publish","role":"assistant","attribution":"unknown","text":"本体回复:F L Y 二 七 九 九 目前在独立 QA,精确头全量 CI 正在跑。"}
+{"t":1790316382159,"k":"backend_ev","kind":"codex_speak_receipt","speechKind":"readback","pendingKey":"lead-reply-055f8728-d805-4236-8e1b-03425078beed","requestDigest":"35cf67ebb42eaf63ab2c6cf8751787ce55d2dbcdbf3330610eff6d4733474765","outcome":"completed","transport":"submitted","contentProof":"transcript_equivalent"}
+{"t":1790316382159,"k":"lead_reply_speak_receipt","outcome":"completed","transport":"submitted","contentProof":"transcript_equivalent"}
+{"t":1790316390162,"k":"notif","method":"thread/realtime/closed"}
+{"t":1790316390172,"k":"container_ev","kind":"codex_voice_container_closed","sessionId":"37bbba37-d4ca-4c9d-b76f-9e4e1303c82f","threadId":"01a0d72b-0f77-7842-a02d-3ea213005fec","reason":"conversation_close"}

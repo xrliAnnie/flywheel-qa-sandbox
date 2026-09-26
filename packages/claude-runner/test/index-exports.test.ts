@@ -46,3 +46,14 @@ describe("FLY-2877 root exports", () => {
 		expect([outcome, snapshot, record, probe].every(Boolean)).toBe(true);
 	});
 });
+
+describe("FLY-2903 root exports", () => {
+	it("exports the rollout locator and the stop-channel wait table", () => {
+		expect(typeof root.findCodexRolloutPath).toBe("function");
+		expect(root.CODEX_STOP_WAIT_MS.process_retirement).toBe(8_000);
+		const reason: root.CodexStopReason = "terminal_sweep";
+		const state: root.CodexOwnershipState = "reserved";
+		const result: root.CodexStopResult = "reserved_fenced";
+		expect([reason, state, result].every(Boolean)).toBe(true);
+	});
+});

@@ -1,0 +1,582 @@
+{
+ "run": "s5",
+ "mode": "barge",
+ "why": "scenario_done",
+ "calibration": {
+  "floorMedian": 0,
+  "th": 300
+ },
+ "roomSegments": [
+  {
+   "start": 14288.5,
+   "end": 16608.3,
+   "voicedMs": 2000
+  },
+  {
+   "start": 21089.7,
+   "end": 21566.5,
+   "voicedMs": 500
+  },
+  {
+   "start": 30532.8,
+   "end": 35523.2,
+   "voicedMs": 4460
+  },
+  {
+   "start": 37666.1,
+   "end": 38221.4,
+   "voicedMs": 540
+  },
+  {
+   "start": 47763.3,
+   "end": 51489.2,
+   "voicedMs": 3240
+  },
+  {
+   "start": 52026.3,
+   "end": 56265.3,
+   "voicedMs": 3820
+  },
+  {
+   "start": 56867,
+   "end": 60368.4,
+   "voicedMs": 3080
+  },
+  {
+   "start": 61010.7,
+   "end": 61788.6,
+   "voicedMs": 780
+  },
+  {
+   "start": 70557,
+   "end": 72154.7,
+   "voicedMs": 1400
+  },
+  {
+   "start": 73516.7,
+   "end": 74081,
+   "voicedMs": 580
+  },
+  {
+   "start": 75753.6,
+   "end": 76350,
+   "voicedMs": 580
+  },
+  {
+   "start": 77945.7,
+   "end": 78566.4,
+   "voicedMs": 640
+  },
+  {
+   "start": 80133.5,
+   "end": 80603,
+   "voicedMs": 500
+  },
+  {
+   "start": 82132.3,
+   "end": 82641.2,
+   "voicedMs": 540
+  },
+  {
+   "start": 84047.9,
+   "end": 84565.4,
+   "voicedMs": 540
+  },
+  {
+   "start": 86064.5,
+   "end": 86704.3,
+   "voicedMs": 640
+  },
+  {
+   "start": 88083.6,
+   "end": 88625.3,
+   "voicedMs": 560
+  },
+  {
+   "start": 90002.2,
+   "end": 90586,
+   "voicedMs": 600
+  },
+  {
+   "start": 92124,
+   "end": 92627.3,
+   "voicedMs": 540
+  },
+  {
+   "start": 94105.8,
+   "end": 94633.8,
+   "voicedMs": 540
+  },
+  {
+   "start": 96064.1,
+   "end": 96605.3,
+   "voicedMs": 560
+  },
+  {
+   "start": 98049.6,
+   "end": 98668,
+   "voicedMs": 640
+  },
+  {
+   "start": 100062.3,
+   "end": 100586,
+   "voicedMs": 540
+  },
+  {
+   "start": 102054,
+   "end": 102565.2,
+   "voicedMs": 540
+  },
+  {
+   "start": 103887,
+   "end": 104411.2,
+   "voicedMs": 560
+  },
+  {
+   "start": 109224,
+   "end": 113876,
+   "voicedMs": 3860
+  },
+  {
+   "start": 116376.6,
+   "end": 116985,
+   "voicedMs": 640
+  },
+  {
+   "start": 125788.1,
+   "end": 130165.1,
+   "voicedMs": 4060
+  },
+  {
+   "start": 130765.1,
+   "end": 133164.8,
+   "voicedMs": 2020
+  },
+  {
+   "start": 140805.5,
+   "end": 142605.8,
+   "voicedMs": 1660
+  },
+  {
+   "start": 143344.3,
+   "end": 144187.7,
+   "voicedMs": 620
+  },
+  {
+   "start": 145626,
+   "end": 146167.7,
+   "voicedMs": 560
+  },
+  {
+   "start": 147602.7,
+   "end": 148163.4,
+   "voicedMs": 580
+  },
+  {
+   "start": 149465.3,
+   "end": 150008.9,
+   "voicedMs": 560
+  },
+  {
+   "start": 151264.3,
+   "end": 151748.9,
+   "voicedMs": 500
+  },
+  {
+   "start": 153227.6,
+   "end": 153727.2,
+   "voicedMs": 520
+  },
+  {
+   "start": 154985.2,
+   "end": 155620.5,
+   "voicedMs": 640
+  },
+  {
+   "start": 157004.7,
+   "end": 157537.5,
+   "voicedMs": 520
+  },
+  {
+   "start": 158844.9,
+   "end": 159402.6,
+   "voicedMs": 580
+  },
+  {
+   "start": 160604,
+   "end": 161141,
+   "voicedMs": 560
+  },
+  {
+   "start": 162623.5,
+   "end": 163162.4,
+   "voicedMs": 560
+  },
+  {
+   "start": 172404,
+   "end": 188224.6,
+   "voicedMs": 13820
+  },
+  {
+   "start": 188964.8,
+   "end": 191005.9,
+   "voicedMs": 1840
+  }
+ ],
+ "utterances": [
+  {
+   "label": "flong1",
+   "file": "flong1.wav",
+   "kind": "speech",
+   "frames": 239,
+   "playStart": 8404.4,
+   "lastVoicedPull": 12824.9,
+   "playEnd": 13286.7,
+   "wallStart": 1790370271795,
+   "wallEnd": 1790370276693
+  },
+  {
+   "label": "stop1",
+   "file": "stop1.wav",
+   "kind": "interrupt",
+   "frames": 178,
+   "playStart": 16587.9,
+   "lastVoicedPull": 19808.8,
+   "playEnd": 20248.3,
+   "wallStart": 1790370279994,
+   "wallEnd": 1790370283655
+  },
+  {
+   "label": "flong2",
+   "file": "flong2.wav",
+   "kind": "speech",
+   "frames": 209,
+   "playStart": 25194.2,
+   "lastVoicedPull": 29014.8,
+   "playEnd": 29474.7,
+   "wallStart": 1790370288601,
+   "wallEnd": 1790370292882
+  },
+  {
+   "label": "stop2",
+   "file": "stop2.wav",
+   "kind": "interrupt",
+   "frames": 170,
+   "playStart": 33169.5,
+   "lastVoicedPull": 36231.1,
+   "playEnd": 36669.7,
+   "wallStart": 1790370296576,
+   "wallEnd": 1790370300077
+  },
+  {
+   "label": "flong3",
+   "file": "flong3.wav",
+   "kind": "speech",
+   "frames": 246,
+   "playStart": 41816.6,
+   "lastVoicedPull": 46375,
+   "playEnd": 46834.2,
+   "wallStart": 1790370305221,
+   "wallEnd": 1790370310241
+  },
+  {
+   "label": "stop3",
+   "file": "stop3.wav",
+   "kind": "interrupt",
+   "frames": 128,
+   "playStart": 49886.5,
+   "lastVoicedPull": 52086.8,
+   "playEnd": 52546.8,
+   "wallStart": 1790370313293,
+   "wallEnd": 1790370315954
+  },
+  {
+   "label": "flong4",
+   "file": "flong4.wav",
+   "kind": "speech",
+   "frames": 205,
+   "playStart": 65435.5,
+   "lastVoicedPull": 69176.5,
+   "playEnd": 69637.8,
+   "wallStart": 1790370328842,
+   "wallEnd": 1790370333045
+  },
+  {
+   "label": "flong5",
+   "file": "flong5.wav",
+   "kind": "speech",
+   "frames": 174,
+   "playStart": 104548.1,
+   "lastVoicedPull": 107669.7,
+   "playEnd": 108129.1,
+   "wallStart": 1790370367955,
+   "wallEnd": 1790370371537
+  },
+  {
+   "label": "stop4",
+   "file": "stop4.wav",
+   "kind": "interrupt",
+   "frames": 161,
+   "playStart": 112244.1,
+   "lastVoicedPull": 115104.9,
+   "playEnd": 115565.8,
+   "wallStart": 1790370375651,
+   "wallEnd": 1790370378973
+  },
+  {
+   "label": "flong6",
+   "file": "flong6.wav",
+   "kind": "speech",
+   "frames": 218,
+   "playStart": 120568.1,
+   "lastVoicedPull": 124589.4,
+   "playEnd": 125028,
+   "wallStart": 1790370383975,
+   "wallEnd": 1790370388436
+  },
+  {
+   "label": "stop5",
+   "file": "stop5.wav",
+   "kind": "interrupt",
+   "frames": 125,
+   "playStart": 128712.8,
+   "lastVoicedPull": 130853.3,
+   "playEnd": 131314.1,
+   "wallStart": 1790370392120,
+   "wallEnd": 1790370394722
+  },
+  {
+   "label": "flong7",
+   "file": "flong7.wav",
+   "kind": "speech",
+   "frames": 156,
+   "playStart": 136790,
+   "lastVoicedPull": 139549.8,
+   "playEnd": 140010.8,
+   "wallStart": 1790370400197,
+   "wallEnd": 1790370403419
+  },
+  {
+   "label": "flong8",
+   "file": "flong8.wav",
+   "kind": "speech",
+   "frames": 226,
+   "playStart": 166710.1,
+   "lastVoicedPull": 170870.7,
+   "playEnd": 171333.1,
+   "wallStart": 1790370430118,
+   "wallEnd": 1790370434741
+  },
+  {
+   "label": "stop6",
+   "file": "stop6.wav",
+   "kind": "interrupt",
+   "frames": 186,
+   "playStart": 174623.6,
+   "lastVoicedPull": 177984.1,
+   "playEnd": 178444.2,
+   "wallStart": 1790370438031,
+   "wallEnd": 1790370441852
+  }
+ ],
+ "latency": [
+  {
+   "label": "flong1",
+   "userEnd": 12824.9,
+   "roomStart": 14288.5,
+   "latencyMs": 1464,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "flong2",
+   "userEnd": 29014.8,
+   "roomStart": 30532.8,
+   "latencyMs": 1518,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "flong3",
+   "userEnd": 46375,
+   "roomStart": 47763.3,
+   "latencyMs": 1388,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "flong4",
+   "userEnd": 69176.5,
+   "roomStart": 70557,
+   "latencyMs": 1381,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "flong5",
+   "userEnd": 107669.7,
+   "roomStart": 109224,
+   "latencyMs": 1554,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "flong6",
+   "userEnd": 124589.4,
+   "roomStart": 125788.1,
+   "latencyMs": 1199,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "flong7",
+   "userEnd": 139549.8,
+   "roomStart": 140805.5,
+   "latencyMs": 1256,
+   "overlappedModelSpeech": false
+  },
+  {
+   "label": "flong8",
+   "userEnd": 170870.7,
+   "roomStart": 172404,
+   "latencyMs": 1533,
+   "overlappedModelSpeech": false
+  }
+ ],
+ "barge": [
+  {
+   "attempt": 1,
+   "valid": true,
+   "idx": 1,
+   "answerStart": 14288.5,
+   "interruptStart": 16587.9,
+   "interruptLastVoiced": 19808.8,
+   "interruptWallStart": 1790370279994
+  },
+  {
+   "attempt": 2,
+   "valid": true,
+   "idx": 2,
+   "answerStart": 30532.8,
+   "interruptStart": 33169.5,
+   "interruptLastVoiced": 36231.1,
+   "interruptWallStart": 1790370296576
+  },
+  {
+   "attempt": 3,
+   "valid": true,
+   "idx": 3,
+   "answerStart": 47763.3,
+   "interruptStart": 49886.5,
+   "interruptLastVoiced": 52086.8,
+   "interruptWallStart": 1790370313293
+  },
+  {
+   "attempt": 4,
+   "valid": false,
+   "reason": "answer_not_playing",
+   "answerStart": 70557
+  },
+  {
+   "attempt": 5,
+   "valid": true,
+   "idx": 4,
+   "answerStart": 109224,
+   "interruptStart": 112244.1,
+   "interruptLastVoiced": 115104.9,
+   "interruptWallStart": 1790370375651
+  },
+  {
+   "attempt": 6,
+   "valid": true,
+   "idx": 5,
+   "answerStart": 125788.1,
+   "interruptStart": 128712.8,
+   "interruptLastVoiced": 130853.3,
+   "interruptWallStart": 1790370392120
+  },
+  {
+   "attempt": 7,
+   "valid": false,
+   "reason": "answer_not_playing",
+   "answerStart": 140805.5
+  },
+  {
+   "attempt": 8,
+   "valid": true,
+   "idx": 6,
+   "answerStart": 172404,
+   "interruptStart": 174623.6,
+   "interruptLastVoiced": 177984.1,
+   "interruptWallStart": 1790370438031
+  }
+ ],
+ "bargeEval": [
+  {
+   "attempt": 1,
+   "valid": true,
+   "idx": 1,
+   "answerStart": 14288.5,
+   "interruptStart": 16587.9,
+   "interruptLastVoiced": 19808.8,
+   "interruptWallStart": 1790370279994,
+   "stoppedWithin1500": true,
+   "oldAnswerStopMs": 20,
+   "lateVoicedFrames": 0
+  },
+  {
+   "attempt": 2,
+   "valid": true,
+   "idx": 2,
+   "answerStart": 30532.8,
+   "interruptStart": 33169.5,
+   "interruptLastVoiced": 36231.1,
+   "interruptWallStart": 1790370296576,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1356,
+   "lateVoicedFrames": 40
+  },
+  {
+   "attempt": 3,
+   "valid": true,
+   "idx": 3,
+   "answerStart": 47763.3,
+   "interruptStart": 49886.5,
+   "interruptLastVoiced": 52086.8,
+   "interruptWallStart": 1790370313293,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1480,
+   "lateVoicedFrames": 29
+  },
+  {
+   "attempt": 5,
+   "valid": true,
+   "idx": 4,
+   "answerStart": 109224,
+   "interruptStart": 112244.1,
+   "interruptLastVoiced": 115104.9,
+   "interruptWallStart": 1790370375651,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1209,
+   "lateVoicedFrames": 3
+  },
+  {
+   "attempt": 6,
+   "valid": true,
+   "idx": 5,
+   "answerStart": 125788.1,
+   "interruptStart": 128712.8,
+   "interruptLastVoiced": 130853.3,
+   "interruptWallStart": 1790370392120,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1452,
+   "lateVoicedFrames": 11
+  },
+  {
+   "attempt": 8,
+   "valid": true,
+   "idx": 6,
+   "answerStart": 172404,
+   "interruptStart": 174623.6,
+   "interruptLastVoiced": 177984.1,
+   "interruptWallStart": 1790370438031,
+   "stoppedWithin1500": false,
+   "oldAnswerStopMs": 1484,
+   "lateVoicedFrames": 91
+  }
+ ]
+}

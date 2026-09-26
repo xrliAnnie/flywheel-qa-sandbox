@@ -10,7 +10,6 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_API_TOKEN",
 	"FLYWHEEL_APPLY_REPORT_FILE",
 	"FLYWHEEL_BASE_RULES_DIR",
-	"FLYWHEEL_BRAIN_PORT_TOKEN",
 	"FLYWHEEL_BRIDGE_MARKER",
 	"FLYWHEEL_BRIDGE_SOURCE_SHA",
 	"FLYWHEEL_BRIDGE_SYNCOP_DIR",
@@ -97,28 +96,11 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_GATEWAY_PROJECT_REPO",
 	"FLYWHEEL_GATEWAY_STATE_DB",
 	"FLYWHEEL_GATEWAY_STATE_DIR",
-	"FLYWHEEL_GEMINI_AGENT_AUDIT_DIR",
-	"FLYWHEEL_GEMINI_AGENT_BRIDGE_TOKEN",
-	"FLYWHEEL_GEMINI_AGENT_CONFIG",
-	"FLYWHEEL_GEMINI_AGENT_DISCORD_TOKEN",
-	"FLYWHEEL_GEMINI_AGENT_MAX_STEPS",
-	"FLYWHEEL_GEMINI_AGENT_MODEL_TIER",
-	"FLYWHEEL_GEMINI_AGENT_RESULT_CAP_CHARS",
-	"FLYWHEEL_GEMINI_AGENT_SURFACE",
-	"FLYWHEEL_GEMINI_AGENT_TOKEN_BUDGET_IN",
-	"FLYWHEEL_GEMINI_AGENT_TOKEN_BUDGET_OUT",
-	"FLYWHEEL_GEMINI_AGENT_TOOL_TIMEOUT_MS",
 	"FLYWHEEL_GIT_PATH",
 	"FLYWHEEL_HEADPHONE_CONFIG",
 	"FLYWHEEL_HEADPHONE_STATE_FILE",
 	"FLYWHEEL_HOME",
 	"FLYWHEEL_HOST_CONFIG",
-	"FLYWHEEL_HUDDLE_ALLOW_USER_IDS",
-	"FLYWHEEL_HUDDLE_BACKCHANNEL_MS",
-	"FLYWHEEL_HUDDLE_BARGE_HOLDOFF_MS",
-	"FLYWHEEL_HUDDLE_BARGE_MIN_RMS",
-	"FLYWHEEL_HUDDLE_BRAIN_TIMEOUT_MS",
-	"FLYWHEEL_HUDDLE_GEMINI_MODEL",
 	"FLYWHEEL_IDENTITY_FAILURE_DIR",
 	"FLYWHEEL_INBOX_LOOP_STALL_MIN",
 	"FLYWHEEL_INTERACTION_PORT",
@@ -225,15 +207,12 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_VOICE_AFPLAY",
 	"FLYWHEEL_VOICE_ANNOUNCE_BACKEND",
 	"FLYWHEEL_VOICE_BRAIN_TIMEOUT_MS",
-	"FLYWHEEL_VOICE_BRIDGE_HEALTH_PORT",
 	"FLYWHEEL_VOICE_CLAUDE_BIN",
 	"FLYWHEEL_VOICE_CONVERSE_BACKEND",
 	"FLYWHEEL_VOICE_EDGE_TTS_ARGS",
 	"FLYWHEEL_VOICE_EDGE_TTS_CMD",
 	"FLYWHEEL_VOICE_FFMPEG",
 	"FLYWHEEL_VOICE_FFPLAY",
-	"FLYWHEEL_VOICE_GEMINI_KEY_ENV",
-	"FLYWHEEL_VOICE_GEMINI_MODEL",
 	"FLYWHEEL_VOICE_IDENTITY",
 	"FLYWHEEL_VOICE_MIC_DEVICE",
 	"FLYWHEEL_VOICE_TRANSCRIPT_DIR",
@@ -424,6 +403,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	),
 	FLYWHEEL_VOICE_BUILD_SHA:
 		"FLY-2655 per-invocation build identity binding for voice runtime evidence, not an on/off gate",
+	FLYWHEEL_VOICE_BACKEND:
+		"FLY-2799 per-invocation voice backend selector for an explicitly requested session, not an on/off gate",
+	FLYWHEEL_VOICE_UPLINK_PREROLL_MS:
+		"FLY-2798/FLY-2799 bounded uplink VAD pre-roll duration in milliseconds, not an on/off gate",
 	FLYWHEEL_CODEX_LEAD_STATE_DIRS:
 		"FLY-2301 slot-injected Lead identity-to-state-directory path map, not an on/off gate",
 	FLYWHEEL_CODEX_ACCOUNT_REGISTRY_PATH:
@@ -740,6 +723,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: tmux socket name for isolated quota revive scans (FLY-1256)",
 	FLYWHEEL_QUOTA_STATE_PATH:
 		"plumbing: external quota-monitor durable state path (FLY-1256)",
+	FLYWHEEL_CLAUDE_SWEEP_REQUEST_PATH:
+		"plumbing: path override for the post-switch Claude sweep-request file shared by the Bridge writer and quota-monitor (FLY-2830), not an on/off gate",
 	FLYWHEEL_QUOTA_CONFIRMATION_DIR:
 		"plumbing: durable quota-switch confirmation evidence directory (FLY-1182)",
 	FLYWHEEL_QUOTA_API_BASE:
@@ -764,6 +749,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"secret: one-shot generalized workflow output credential",
 	FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV:
 		"config value: repair-bot token env NAME",
+	FLYWHEEL_QA_IDLE_THREAD_SWEEP_BOT_TOKEN_ENV:
+		"config value: QA Testing idle-thread sweep bot token env NAME (FLY-2916); unset keeps the QA group off",
 	// value config (non-boolean)
 	FLYWHEEL_PROJECTS: "config value: inline projects json (env-pin)",
 	FLYWHEEL_COMM_BACKEND: "config value: comm backend",
@@ -1170,6 +1157,7 @@ export const RETIRED_FLAGS = [
 		retiredBy: "FLY-1981",
 	},
 	{ envVar: "FLYWHEEL_FOUNDER_CONSENT_ENABLED", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE", retiredBy: "FLY-2860" },
 ] as const;
 
 export interface FlagTruthValidation {

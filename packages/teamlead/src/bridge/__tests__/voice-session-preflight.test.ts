@@ -126,6 +126,20 @@ describe("per-Lead voice preflight", () => {
 			});
 		},
 	);
+	it.each([{}, "retired", { guildId: GUILD }])(
+		"refuses a retired legacy huddle marker (%j) before any Discord call",
+		async (huddle) => {
+			const fetchImpl = discord();
+			const probeSelfFilter = vi.fn();
+			const preflightInput = input();
+			preflightInput.project.huddle = huddle;
+			await expect(
+				preflightVoiceSession(preflightInput, { fetchImpl, probeSelfFilter }),
+			).rejects.toMatchObject({ status: 503, reason: "legacy_voice_conflict" });
+			expect(fetchImpl).not.toHaveBeenCalled();
+			expect(probeSelfFilter).not.toHaveBeenCalled();
+		},
+	);
 	it("rejects a different bot before any permission or socket work", async () => {
 		const fetchImpl = discord({ bot: "100000000000000099" });
 		const probeSelfFilter = vi.fn();

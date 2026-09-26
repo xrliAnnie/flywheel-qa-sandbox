@@ -26,6 +26,7 @@ describe("StateStore voice session schema", () => {
 			.all()
 			.map((row) => (row as { name: string }).name);
 		expect(names).toEqual([
+			"voice_handoffs",
 			"voice_health_demand_events",
 			"voice_health_demand_source",
 			"voice_health_projection",
@@ -36,6 +37,7 @@ describe("StateStore voice session schema", () => {
 			"voice_schedule_requests",
 			"voice_schedules",
 			"voice_sessions",
+			"voice_utterances",
 		]);
 		const indexes = db
 			.prepare(
@@ -94,6 +96,46 @@ describe("StateStore voice session schema", () => {
 			reopened.getVoiceSession("10000000-0000-4000-8000-000000000001"),
 		).toMatchObject({ topic: null });
 		reopened.close();
+	});
+
+	it("upgrades the retained voice_handoffs intent guard", async () => {
+		const root = mkdtempSync(
+			join(tmpdir(), "flywheel-voice-handoff-migration-"),
+		);
+		cleanup.push(root);
+		const path = join(root, "teamlead.db");
+		const original = await StateStore.create(path);
+		original.close();
+
+		const legacy = new Database(path);
+		const row = legacy
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type='table' AND name='voice_handoffs'",
+			)
+			.get() as { sql: string };
+		legacy.exec("DROP INDEX voice_handoffs_reconcile");
+		legacy.exec("ALTER TABLE voice_handoffs RENAME TO voice_handoffs_current");
+		legacy.exec(row.sql.replace(",'delegate_request'", ""));
+		legacy.exec("DROP TABLE voice_handoffs_current");
+		legacy.close();
+
+		const reopened = await StateStore.create(path);
+		reopened.close();
+		const migrated = new Database(path, { readonly: true });
+		const schema = migrated
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type='table' AND name='voice_handoffs'",
+			)
+			.get() as { sql: string };
+		expect(schema.sql).toContain("'delegate_request'");
+		expect(
+			migrated
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type='index' AND name='voice_handoffs_reconcile'",
+				)
+				.get(),
+		).toBeTruthy();
+		migrated.close();
 	});
 });
 

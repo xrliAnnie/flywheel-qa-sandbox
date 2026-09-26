@@ -87,6 +87,7 @@ export {
 	CodexDaemonGoalRuntime,
 	type CodexDaemonGoalRuntimeOptions,
 	type CodexTransportCloseEvidence,
+	type RestartDecision,
 	type RunGoalInput,
 	type RunGoalOutcome,
 	type Sandbox,
@@ -115,6 +116,10 @@ export {
 	probeCodexDaemonProcessBinding,
 	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
+	resolveSocketProbePath,
+	type SocketProbePath,
+	type SocketProbePathDeps,
+	type SocketProbePathUntrustedReason,
 	type SpawnCodexDaemonOptions,
 	SUN_PATH_MAX,
 	spawnCodexDaemon,
@@ -128,9 +133,14 @@ export {
 	type WsLike,
 } from "./codex-daemon-transport.js"; // FLY-1188 M4b
 export {
+	CODEX_STOP_WAIT_MS,
+	type CodexExecutionClaimOptions,
 	type CodexExecutionOwnerKind,
 	type CodexExecutionOwnershipLease,
 	CodexExecutionOwnershipRegistry,
+	type CodexOwnershipState,
+	type CodexStopReason,
+	type CodexStopResult,
 } from "./codex-execution-ownership.js";
 // FLY-123 WS-A/WS-B/WS-C/P5: per-runner CODEX_HOME provisioning + credential
 // lifecycle + repo-owned same-account daemon launcher resolver
@@ -220,6 +230,7 @@ export {
 } from "./codex-process-snapshot.js";
 export {
 	type CodexRolloutMtimeProbe,
+	findCodexRolloutPath, // FLY-2903: terminal-body token watch
 	probeCodexRolloutMtime,
 } from "./codex-rollout-probe.js";
 export {

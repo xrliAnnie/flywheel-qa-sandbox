@@ -15,6 +15,31 @@ export interface ChatDeliveryAttachment {
 	unavailableReason?: "invalid_metadata" | "producer_identity_missing";
 }
 
+export const CHAT_DELIVERY_ORIGINS = [
+	"discord",
+	"voice",
+	"voice_minutes",
+] as const;
+export type ChatDeliveryOrigin = (typeof CHAT_DELIVERY_ORIGINS)[number];
+
+function parseOrigin(value: unknown): ChatDeliveryOrigin | undefined {
+	if (value === undefined) return undefined;
+	if (
+		typeof value === "string" &&
+		(CHAT_DELIVERY_ORIGINS as readonly string[]).includes(value)
+	) {
+		return value as ChatDeliveryOrigin;
+	}
+	throw new Error("origin must be discord, voice or voice_minutes");
+}
+
+/** Origins that are bound to one voice session and must carry its id. */
+export function isVoiceSessionOrigin(
+	origin: ChatDeliveryOrigin | undefined,
+): boolean {
+	return origin === "voice" || origin === "voice_minutes";
+}
+
 export interface ChatDeliveryEnvelopeV1 {
 	v: 1;
 	deliveryId: string;
@@ -29,7 +54,12 @@ export interface ChatDeliveryEnvelopeV1 {
 	msgKind: ChatDeliveryMessageKind;
 	attachments: ChatDeliveryAttachment[];
 	text: string;
-	origin?: "discord" | "voice";
+	/**
+	 * `voice` is a live founder utterance the Lead answers in the thread.
+	 * `voice_minutes` is the after-the-fact record of an already-ended voice
+	 * session: it carries no founder authority and asks for no spoken reply.
+	 */
+	origin?: ChatDeliveryOrigin;
 	voiceSessionId?: string;
 	heldSince?: string;
 	heldReason?: "discord_wiring_broken";
@@ -170,14 +200,8 @@ export function normalizeChatDeliveryEnvelope(
 	if ((value.heldSince === undefined) !== (value.heldReason === undefined)) {
 		throw new Error("heldSince and heldReason must be provided together");
 	}
-	if (
-		value.origin !== undefined &&
-		value.origin !== "discord" &&
-		value.origin !== "voice"
-	) {
-		throw new Error("origin must be discord or voice");
-	}
-	if ((value.origin === "voice") !== (value.voiceSessionId !== undefined)) {
+	const origin = parseOrigin(value.origin);
+	if (isVoiceSessionOrigin(origin) !== (value.voiceSessionId !== undefined)) {
 		throw new Error("origin and voiceSessionId must be provided together");
 	}
 	const voiceSessionId =
@@ -257,7 +281,7 @@ export function normalizeChatDeliveryEnvelope(
 		msgKind: value.msgKind,
 		attachments,
 		text: value.text,
-		...(value.origin ? { origin: value.origin } : {}),
+		...(origin ? { origin } : {}),
 		...(voiceSessionId ? { voiceSessionId } : {}),
 		...(heldSince ? { heldSince, heldReason } : {}),
 		...(replyChannelId ? { replyChannelId } : {}),

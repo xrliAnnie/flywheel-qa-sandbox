@@ -1,0 +1,86 @@
+{
+ "run": "s1",
+ "mode": "smoke",
+ "why": "stop_file",
+ "calibration": {
+  "up": {
+   "floorMedian": 0,
+   "th": 300
+  },
+  "down": {
+   "floorMedian": 0,
+   "th": 300
+  }
+ },
+ "upSegments": [
+  {
+   "start": 8698.1,
+   "end": 10720.1,
+   "voicedMs": 1720
+  }
+ ],
+ "downSegments": [
+  {
+   "start": 11729.9,
+   "end": 12983.4,
+   "voicedMs": 1160
+  }
+ ],
+ "latencyPairs": [
+  {
+   "userEnd": 10720.1,
+   "modelStart": 11729.9,
+   "latencyMs": 1010
+  }
+ ],
+ "connectedMs": 13038,
+ "marks": {
+  "discord_ready": 2046.2,
+  "realtime_start_sent": 3343.4,
+  "answer_sdp": 4397.8,
+  "realtime_started": 4401.6,
+  "pc_connected": 5001.2,
+  "first_rtp_in": 5637.9,
+  "first_discord_packet": 8673.9,
+  "realtime_closed": 17921.8
+ },
+ "counters": {
+  "upReal": 105,
+  "upSilenceFill": 539,
+  "upDropped": 0,
+  "upUnderrun": 7,
+  "upNon960": 0,
+  "upStereo": 101,
+  "upMono": 4,
+  "downPkts": 601,
+  "downNon960": 0,
+  "downTsAnomaly": 0,
+  "downReorder": 1,
+  "downLoss": 1,
+  "downStereo": 0,
+  "downMono": 601,
+  "downQueueTrim": 0,
+  "maxDownQueue": 5,
+  "maxUpQueue": 5,
+  "dcEvents": {
+   "session.started": 1,
+   "input_transcript.added": 7,
+   "turn.created": 2,
+   "turn.delta": 8,
+   "output_transcript.added": 6,
+   "turn.done": 2
+  }
+ },
+ "transcripts": [
+  {
+   "t": 12459.8,
+   "role": "user",
+   "text": "你好,一加一等于几?"
+  },
+  {
+   "t": 14705.2,
+   "role": "assistant",
+   "text": "你好呀!一加一等于二。"
+  }
+ ]
+}

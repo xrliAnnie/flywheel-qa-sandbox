@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CodexAccountPool } from "flywheel-claude-runner/bin/codex-account-core.mjs";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexAccountOccupancy } from "../occupancy.js";
+import { CodexAccountOccupancy, occupancyVerdict } from "../occupancy.js";
 import { codexQuotaIdentityReader } from "../probe.js";
 
 const roots: string[] = [];
@@ -134,19 +134,117 @@ describe("FLY-2869 — shared Codex account occupancy", () => {
 		const authPath = await canonical("personal");
 		let fail = false;
 		const occupancy = new CodexAccountOccupancy(async () => {
-			if (fail) throw new Error("down");
+			if (fail) throw new Error("ps failed: /bin/ps exited");
 			return inventory({
 				activeUnsharedAccountKeys: [key("business")],
 			} as never);
 		});
 		const guard = await occupancy.guard(authPath, () => pool);
-		expect(guard(key("business"))).toBe(true);
+		expect(guard(key("business"))).toEqual({ verdict: true });
 		fail = true;
 		const failed = await occupancy.guard(authPath, () => pool);
-		expect(failed(key("business"))).toBe("unknown");
+		expect(failed(key("business"))).toEqual({
+			verdict: "unknown",
+			detail: "collector_failed:error",
+		});
+		fail = false;
+		// No pool = canonical identity unreadable; the unshared fact still stands.
 		const noPool = await occupancy.guard(authPath, () => {
 			throw new Error("pool unreadable");
 		});
-		expect(noPool(key("business"))).toBe("unknown");
+		expect(noPool(key("business"))).toEqual({ verdict: true });
+		expect(noPool(key("personal"))).toEqual({ verdict: false });
+	});
+});
+
+describe("FLY-2830 — guard answers from its own collection", () => {
+	it("answers the in-use canonical account even when a newer collection started meanwhile", async () => {
+		const authPath = await canonical("personal");
+		const a = deferred<Inventory>();
+		const b = deferred<Inventory>();
+		const queue = [a.promise, b.promise];
+		const occupancy = new CodexAccountOccupancy(() => queue.shift()!);
+		const guardA = occupancy.guard(authPath, () => pool);
+		const collectB = occupancy.collect();
+		a.resolve(inventory({ canonicalChainActive: true } as never));
+		const answer = await guardA;
+		expect(answer(key("personal"))).toEqual({ verdict: true });
+		expect(answer(key("business"))).toEqual({ verdict: false });
+		// B finishes later with a different fact: shared snapshot = B, A unchanged.
+		b.resolve(
+			inventory({
+				canonicalChainActive: false,
+				activeUnsharedAccountKeys: [key("business")],
+			} as never),
+		);
+		await collectB;
+		expect(occupancy.isInUse(key("business"), pool, authPath)).toBe(true);
+		expect(occupancy.isInUse(key("personal"), pool, authPath)).toBe(false);
+		expect(answer(key("personal"))).toEqual({ verdict: true });
+	});
+
+	it("answers unknown for every unproven account when an active chain's canonical identity is unreadable", async () => {
+		const occupancy = new CodexAccountOccupancy(async () =>
+			inventory({
+				canonicalChainActive: true,
+				activeUnsharedAccountKeys: [key("business")],
+			} as never),
+		);
+		const answer = await occupancy.guard("/missing/auth.json", () => pool);
+		expect(answer(key("personal"))).toEqual({
+			verdict: "unknown",
+			detail: "canonical_identity_unreadable",
+		});
+		expect(answer(key("business"))).toEqual({ verdict: true });
+	});
+
+	it("answers false for everything when no chain is active, even if canonical is unreadable", async () => {
+		const occupancy = new CodexAccountOccupancy(async () => inventory());
+		const answer = await occupancy.guard("/missing/auth.json", () => pool);
+		expect(answer(key("personal"))).toEqual({ verdict: false });
+		expect(answer(key("business"))).toEqual({ verdict: false });
+	});
+
+	it("carries a bounded collector reason code", async () => {
+		const occupancy = new CodexAccountOccupancy(async () => {
+			throw new Error("process_authority_invalid");
+		});
+		const answer = await occupancy.guard(
+			await canonical("personal"),
+			() => pool,
+		);
+		expect(answer(key("personal"))).toEqual({
+			verdict: "unknown",
+			detail: "collector_failed:process_authority_invalid",
+		});
+	});
+
+	it("occupancyVerdict applies the four rules in order", () => {
+		const active = inventory({
+			canonicalChainActive: true,
+			activeUnsharedAccountKeys: ["u"],
+		} as never);
+		const idle = inventory({ activeUnsharedAccountKeys: ["u"] } as never);
+		const known = { known: true as const, accountKey: "c" };
+		const unreadable = {
+			known: false as const,
+			detail: "canonical_identity_unreadable",
+		};
+		expect(occupancyVerdict(active, "u", unreadable)).toEqual({
+			verdict: true,
+		});
+		expect(occupancyVerdict(idle, "c", unreadable)).toEqual({ verdict: false });
+		expect(occupancyVerdict(active, "c", known)).toEqual({ verdict: true });
+		expect(occupancyVerdict(active, "x", known)).toEqual({ verdict: false });
+		expect(occupancyVerdict(active, "x", unreadable)).toEqual({
+			verdict: "unknown",
+			detail: "canonical_identity_unreadable",
+		});
+		const managedActive = inventory({
+			homes: [{ home: "/h", ownership: "managed", activity: "active" }],
+		});
+		expect(occupancyVerdict(managedActive, "c", known)).toEqual({
+			verdict: true,
+		});
 	});
 });

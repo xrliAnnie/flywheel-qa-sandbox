@@ -1,0 +1,32 @@
+[
+  {
+    "file": "api-default-externalAudio.wav",
+    "sha256": "80bc9b4e7a0ff28c83f0e976e1ee772c74dc84e578dcda3de1879b78c56800a0",
+    "seconds": 1.65,
+    "sampleRate": 24000,
+    "rms": 2507.36,
+    "peak": 13900,
+    "asr": " Flywheel ProBug K.",
+    "asrEngine": "local whisper base, CPU, fp16=False"
+  },
+  {
+    "file": "api-v2-appendSpeech.wav",
+    "sha256": "a72b68be0193da60c67ace8308f6b556c959607ac693a765f6b80c0c7474003f",
+    "seconds": 1.8,
+    "sampleRate": 24000,
+    "rms": 2313.85,
+    "peak": 15791,
+    "asr": " The purple lantern is ready.",
+    "asrEngine": "local whisper base, CPU, fp16=False"
+  },
+  {
+    "file": "api-v2-externalAudio.wav",
+    "sha256": "26b96a1542ce47fd57822472133408b2ab269eddf85abd3bbe211651f9e6db65",
+    "seconds": 1.3,
+    "sampleRate": 24000,
+    "rms": 2591.78,
+    "peak": 10597,
+    "asr": " Flywheel Probe K.",
+    "asrEngine": "local whisper base, CPU, fp16=False"
+  }
+]

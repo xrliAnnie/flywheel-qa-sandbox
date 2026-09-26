@@ -9,7 +9,10 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
-import { computeCodexHomeInventoryDigest } from "flywheel-claude-runner";
+import {
+	computeCodexHomeInventoryDigest,
+	resolveDaemonSocketPath,
+} from "flywheel-claude-runner";
 import { installSqlTiming } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { CodexQuotaManualReason } from "./availability.js";
@@ -57,6 +60,8 @@ export interface CodexQuotaHostCollectorOptions {
 		process: { pid: number; startIdentity: string };
 		commPresent: boolean;
 	}) => Promise<{ verified: boolean; reason: string }>;
+	/** FLY-2830: the daemon control socket a resident execution's TUI client dials. */
+	daemonSocketPath?: (executionId: string) => string;
 }
 
 export function createRegisteredCodexQuotaHostCollectorOptions(
@@ -122,7 +127,26 @@ interface ProcessObservation {
 	pid: number;
 	startIdentity: string | null;
 	executable: string;
+	argv?: readonly string[];
 	executionId?: string;
+}
+
+/**
+ * FLY-2830: the only non-daemon process a resident execution may own is its
+ * TUI client — `codex resume --remote unix://<that execution's socket> …`, with
+ * `--remote` exactly once, never in `--remote=` form. Anything else stays
+ * unattributed (fail closed).
+ */
+function isResidentTuiClient(
+	argv: readonly string[] | undefined,
+	remote: string,
+): boolean {
+	if (!argv || argv[1] !== "resume") return false;
+	if (argv.some((token) => token.startsWith("--remote="))) return false;
+	const at = argv.flatMap((token, index) =>
+		token === "--remote" ? [index] : [],
+	);
+	return at.length === 1 && argv[at[0]! + 1] === remote;
 }
 
 function realpathOrNull(path: string): string | null {
@@ -185,6 +209,9 @@ export function createCodexQuotaHostCollector(
 	const now = options.now ?? Date.now;
 	const monotonicNow = options.monotonicNow ?? (() => performance.now());
 	const slotRoot = options.testSlotRoot ?? "/private/tmp";
+	const daemonSocketPath =
+		options.daemonSocketPath ??
+		((executionId: string) => resolveDaemonSocketPath(executionId));
 	return async () => {
 		const round = staleRunning.begin(monotonicNow());
 		let committed = false;
@@ -527,6 +554,7 @@ export function createCodexQuotaHostCollector(
 					pid: process.pid,
 					startIdentity: process.startIdentity,
 					executable: process.argv0,
+					argv: process.argv,
 					...(process.executionId ? { executionId: process.executionId } : {}),
 				});
 				active.set(home, observations);
@@ -644,6 +672,7 @@ export function createCodexQuotaHostCollector(
 							}
 							let verified = marker !== null;
 							const verifiedExecutions = new Set<string>();
+							const groups = new Map<string, ProcessObservation[]>();
 							if (marker) {
 								for (const process of processes) {
 									if (
@@ -654,28 +683,65 @@ export function createCodexQuotaHostCollector(
 										verified = false;
 										break;
 									}
-									const evidence = await options.residentEvidence({
-										executionId: process.executionId,
-										home,
-										project: marker.project,
-										role: marker.role,
-										process: {
-											pid: process.pid,
-											startIdentity: process.startIdentity,
-										},
-										commPresent: true,
-									});
-									if (!evidence.verified) {
+									groups.set(process.executionId, [
+										...(groups.get(process.executionId) ?? []),
+										process,
+									]);
+								}
+							}
+							// FLY-2830: an execution is its daemon (full evidence chain) plus
+							// at most its own TUI client. Find the daemon first, then admit
+							// the rest only in the exact client shape.
+							if (marker && verified) {
+								for (const [executionId, group] of groups) {
+									let daemon: ProcessObservation | null = null;
+									let firstFailure = "";
+									for (const process of group) {
+										const evidence = await options.residentEvidence({
+											executionId,
+											home,
+											project: marker.project,
+											role: marker.role,
+											process: {
+												pid: process.pid,
+												startIdentity: process.startIdentity!,
+											},
+											commPresent: true,
+										});
+										if (evidence.verified) {
+											daemon = process;
+											break;
+										}
+										firstFailure ||= evidence.reason;
+									}
+									if (!daemon) {
 										verified = false;
 										diagnostics.push({
-											reason: evidence.reason,
+											reason: firstFailure,
 											scope: "registered",
 											home,
-											executionId: process.executionId,
+											executionId,
 										});
 										break;
 									}
-									verifiedExecutions.add(process.executionId);
+									const remote = `unix://${daemonSocketPath(executionId)}`;
+									const unbound = group.find(
+										(process) =>
+											process !== daemon &&
+											!isResidentTuiClient(process.argv, remote),
+									);
+									if (unbound) {
+										verified = false;
+										diagnostics.push({
+											reason: "resident_process_unbound",
+											scope: "registered",
+											home,
+											executionId,
+											pid: unbound.pid,
+										});
+										break;
+									}
+									verifiedExecutions.add(executionId);
 								}
 							}
 							if (verified) {

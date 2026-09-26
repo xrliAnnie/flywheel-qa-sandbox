@@ -6,6 +6,7 @@ import type express from "express";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
+import { generateBootstrap } from "./bootstrap-generator.js";
 import {
 	editDiscordMessageInChannel,
 	postDiscordMessageToChannel,
@@ -18,6 +19,7 @@ import {
 	type LeadInterruptMailbox,
 } from "./lead-interrupt-routes.js";
 import type { BridgeConfig } from "./types.js";
+import type { VoiceHandoffService } from "./voice-handoff.js";
 import { createVoiceHealthDemandRecorder } from "./voice-health-demand-recorder.js";
 import {
 	kickstartVoiceOnDemand,
@@ -31,6 +33,13 @@ import {
 import { VoiceScheduleRuntime } from "./voice-schedule-runtime.js";
 import { probeVoiceSelfFilter } from "./voice-self-filter-probe.js";
 import { VoiceSessionCardProjector } from "./voice-session-card.js";
+import {
+	buildVoiceSessionContext,
+	deriveVoiceContextBinding,
+	digestVoiceContextRoster,
+	resolveVoiceContextSources,
+	VoiceSessionContextError,
+} from "./voice-session-context.js";
 import { pollVoiceSessionOnce } from "./voice-session-poller.js";
 import { preflightVoiceSession } from "./voice-session-preflight.js";
 import {
@@ -64,6 +73,7 @@ export function createVoiceSessionServices(input: {
 		) => LeadInterruptMailbox | undefined;
 		nudgeLead: (projectName: string, leadId: string) => void;
 	};
+	voiceHandoffs?: VoiceHandoffService;
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
 	scheduleRouter: ReturnType<typeof createVoiceScheduleRouter>;
@@ -266,6 +276,41 @@ export function createVoiceSessionServices(input: {
 				: {}),
 		};
 	};
+	const getSessionContext = async (
+		session: VoiceSessionRow,
+		authority: { leaseBindingDigest: string },
+	) => {
+		const { project, lead } = resolve(session);
+		const binding = deriveVoiceContextBinding({ project, lead, homeDir });
+		const sources = await resolveVoiceContextSources({
+			project,
+			lead,
+			binding,
+		});
+		const state = await generateBootstrap(
+			lead.agentId,
+			input.store,
+			input.projects,
+		).catch(() => {
+			throw new VoiceSessionContextError("context_state_unavailable");
+		});
+		const capturedAt = new Date().toISOString();
+		return buildVoiceSessionContext({
+			sources,
+			rosterDigest: digestVoiceContextRoster(input.projects),
+			leaseBindingDigest: authority.leaseBindingDigest,
+			capturedAt,
+			openInitiatedAt: capturedAt,
+			state,
+			session: {
+				sessionId: session.sessionId,
+				mode: session.mode,
+				meetingId: session.meetingId,
+				topic: session.topic,
+				priorMinutes: null,
+			},
+		});
+	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
 		await validateSession(session);
 		const { lead, token } = resolve(session);
@@ -408,6 +453,8 @@ export function createVoiceSessionServices(input: {
 						}),
 					}
 				: {}),
+			getSessionContext,
+			voiceHandoffs: input.voiceHandoffs,
 		}),
 		runtime,
 		cardProjector,

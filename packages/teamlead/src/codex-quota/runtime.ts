@@ -179,11 +179,14 @@ export class CodexQuotaRuntime {
 	 * account page still skips the probe, but the page says the occupancy is
 	 * unknown rather than claiming every account is busy.
 	 */
-	accountInUseGuard(): Promise<(accountKey: string) => boolean | "unknown"> {
-		return this.occupancy.guard(
+	async accountInUseGuard(): Promise<
+		(accountKey: string) => boolean | "unknown"
+	> {
+		const answer = await this.occupancy.guard(
 			join(this.options.canonicalHome, "auth.json"),
 			this.options.pool,
 		);
+		return (accountKey) => answer(accountKey).verdict;
 	}
 	private async requireReadiness() {
 		if (!(await this.readiness())) throw new Error("quota_readiness_failed");

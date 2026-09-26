@@ -76,6 +76,13 @@ node scripts/qa/fly2598-voice-preflight.mjs --project flywheel --lead flywheel-e
 
 全部Lead的矩阵应按prepare冻结的project/lead清单逐个运行相同命令，不以第一个通过外推。每行还必须带 self-filter 运行探测收据（contractVersion、runtimeId、botId、ready/selfDropped/unknownDropped/otherPassed 布尔全部满足 self-filter-contract.md）。fork 源码/check-discord-plugin.sh 成功或静态文件存在均不替代探测。旧载体缺能力：该 Lead 未就绪；由既有受管载入窗口加载配套插件，不通过生产进房来测试过滤，不擅自重启生产 Lead。
 
+### 4.1 Claude 载体前提（FLY-2711）
+
+- Claude Lead 必须加载 Discord plugin **0.0.8 或更高版本**，且该 Lead 已在受管上线后完成重启；安装指针或 fork 源码本身不是运行证明。
+- `<discordStateDir>/voice-self-filter.sock` 必须存在、为当前用户持有的 Unix socket 且 mode 0600；同目录 `voice-self-filter.lock` 由运行中的 adapter 持有。不要手工删除、替换或 chmod 这些名字。
+- 用上面的 `scripts/qa/fly2598-voice-preflight.mjs` 做只读核验；通过判据仍是实际探针的 runtimeId、botId、ready/selfDropped/unknownDropped/otherPassed 全部有效，不以文件存在代替探针。
+- 回滚 Claude plugin 前先结束该 Lead 的全部活动语音会话。回滚到 0.0.8 之前的版本后，该 Lead 的语音 `start` 返回 503 `voice_unavailable/self_filter_unverified` 是预期 fail-closed；普通文字入站回到旧插件行为。
+
 founder 给角色 Connect/Speak；仍需 VIEW_CHANNEL 和文字串权限并集。某 Lead 权限缺失只标该 Lead未就绪，不能谎称“所有 Lead ready”。不邀请 alerts bot，不让生产 Lead 进房当权限探针。既有 CLI没有 preflight-only，因此增加的 QA调用必须直接调用只读 helper，绝不合法 POST start 假装预检。
 
 Bridge阶梯保存每行 `{case,time,status,error,reason,executed}`：

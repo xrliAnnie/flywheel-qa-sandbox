@@ -34,6 +34,7 @@ import type {
 	LeadRuntimeConfigResult,
 	LeadRuntimeConfigTarget,
 } from "./LeadRuntimeConfigCoordinator.js";
+import type { TurnStateSnapshot } from "./LeadTurnStateTracker.js";
 import type { SubscriptionEntry } from "./RoundtableThreadRegistry.js";
 
 interface VoiceSelfFilterRequest {
@@ -89,6 +90,14 @@ interface CapabilitiesRequest {
 interface ListSubscriptionsRequest {
 	version: 2;
 	method: "listSubscriptions";
+	leadId: string;
+	auth: string;
+}
+
+/** FLY-2882: read-only turn-state snapshot; no business fields. */
+interface ReadTurnStateRequest {
+	version: 2;
+	method: "readTurnState";
 	leadId: string;
 	auth: string;
 }
@@ -151,6 +160,7 @@ type InboxRequest =
 	| SubmitBatchRequest
 	| SubmitInterruptRequest
 	| CapabilitiesRequest
+	| ReadTurnStateRequest
 	| ListSubscriptionsRequest
 	| UnsubscribeThreadRequest;
 
@@ -174,6 +184,7 @@ export interface CodexLeadInboxCapabilities {
 		| "registry_tuning_v1"
 		| "voice_self_filter_v1"
 		| typeof LEAD_INTERRUPT_STEER_FEATURE
+		| "turn_state_v1"
 	)[];
 	socketOwnerId: string;
 	runtimeIdentity?: LeadRuntimeConfigIdentity;
@@ -194,6 +205,12 @@ export interface CodexLeadInboxServerOptions {
 	/** Must be the same startup projection passed to this process's gateway. */
 	ignoredAuthorIds?: readonly string[];
 	voiceSelfFilter?: () => VoiceSelfFilterObservation;
+	/**
+	 * FLY-2882: read-only turn-state provider. Only a runtime that tracks turn
+	 * lifecycle passes it; without it `turn_state_v1` is not advertised and
+	 * `readTurnState` is rejected as an unsupported method.
+	 */
+	turnState?: { snapshot(): TurnStateSnapshot };
 	subscriptions?: {
 		list(): SubscriptionEntry[];
 		remove(threadId: string, reason: string, actor: string): Promise<boolean>;
@@ -484,6 +501,7 @@ export class CodexLeadInboxServer {
 						...(this.opts.voiceSelfFilter
 							? ["voice_self_filter_v1" as const]
 							: []),
+						...(this.opts.turnState ? ["turn_state_v1" as const] : []),
 						...(this.proactiveOwnerCurrent()
 							? ["roundtable_proactive_engage_v1" as const]
 							: []),
@@ -498,6 +516,13 @@ export class CodexLeadInboxServer {
 							}),
 				};
 				socket.end(`${JSON.stringify({ ok: true, capabilities })}\n`);
+				return;
+			}
+			if (request.method === "readTurnState") {
+				if (!this.opts.turnState) throw new Error("unsupported inbox method");
+				socket.end(
+					`${JSON.stringify({ ok: true, turnState: this.opts.turnState.snapshot() })}\n`,
+				);
 				return;
 			}
 			if (
@@ -617,6 +642,14 @@ export class CodexLeadInboxRejectedError extends Error {
 	}
 }
 
+/** FLY-2882: the reply itself is malformed (not a refusal, not an answer). */
+export class CodexLeadInboxProtocolError extends Error {
+	constructor(readonly detail: "invalid_json" | "invalid_envelope") {
+		super(`Codex Lead inbox protocol violation: ${detail}`);
+		this.name = "CodexLeadInboxProtocolError";
+	}
+}
+
 export async function submitCodexLeadInboxBatch(args: {
 	socketPath: string;
 	leadId: string;
@@ -730,6 +763,54 @@ interface SubscriptionClientArgs {
 	leadId: string;
 	authSecret: string;
 	timeoutMs?: number;
+}
+
+/**
+ * FLY-2882: fetch the sidecar's turn-state snapshot. Returned UNVALIDATED —
+ * the Bridge caller owns the strict schema check (a malformed reply must map
+ * to "unknown", never default to idle).
+ */
+export async function readCodexLeadTurnState(
+	args: SubscriptionClientArgs,
+): Promise<unknown> {
+	const unsigned = {
+		version: PROTOCOL_VERSION,
+		method: "readTurnState",
+		leadId: args.leadId,
+	} as const;
+	const request: ReadTurnStateRequest = {
+		...unsigned,
+		auth: signRequest(unsigned, args.authSecret),
+	};
+	const raw = await requestResponse(
+		args.socketPath,
+		`${JSON.stringify(request)}\n`,
+		args.timeoutMs ?? 3_000,
+	);
+	let response: unknown;
+	try {
+		response = JSON.parse(raw);
+	} catch {
+		throw new CodexLeadInboxProtocolError("invalid_json");
+	}
+	// Exact envelopes only: a truthy-but-not-true `ok`, an `error` beside an
+	// answer, or any extra field is a protocol violation — never an answer.
+	const keys =
+		typeof response === "object" &&
+		response !== null &&
+		!Array.isArray(response)
+			? Object.keys(response).sort().join(",")
+			: "";
+	const envelope = response as Record<string, unknown>;
+	if (
+		keys === "error,ok" &&
+		envelope.ok === false &&
+		typeof envelope.error === "string"
+	)
+		throw new CodexLeadInboxRejectedError(envelope.error);
+	if (keys !== "ok,turnState" || envelope.ok !== true)
+		throw new CodexLeadInboxProtocolError("invalid_envelope");
+	return envelope.turnState;
 }
 
 export async function listCodexLeadSubscriptions(
@@ -1028,6 +1109,18 @@ function parseRequest(raw: string): InboxRequest {
 			throw new Error("malformed submitInterrupt request");
 		return value as SubmitInterruptRequest;
 	}
+	if (value?.method === "readTurnState") {
+		const keys = ["version", "method", "leadId", "auth"];
+		if (
+			value.version !== 2 ||
+			typeof value.leadId !== "string" ||
+			!value.leadId.trim() ||
+			typeof value.auth !== "string" ||
+			Object.keys(value).some((key) => !keys.includes(key))
+		)
+			throw new Error("malformed turn state request");
+		return value as ReadTurnStateRequest;
+	}
 	if (
 		value.method === "capabilities" &&
 		value.version === 2 &&
@@ -1066,6 +1159,7 @@ type UnsignedInboxRequest =
 	| Omit<SubmitBatchRequest, "auth">
 	| Omit<SubmitInterruptRequest, "auth">
 	| Omit<CapabilitiesRequest, "auth">
+	| Omit<ReadTurnStateRequest, "auth">
 	| Omit<ListSubscriptionsRequest, "auth">
 	| Omit<UnsubscribeThreadRequest, "auth">
 	| Omit<EngageProactiveTopicRequest, "auth">;
@@ -1107,6 +1201,7 @@ function canonicalRequest(request: UnsignedInboxRequest): string {
 		});
 	if (
 		request.method === "capabilities" ||
+		request.method === "readTurnState" ||
 		request.method === "listSubscriptions"
 	)
 		return JSON.stringify({

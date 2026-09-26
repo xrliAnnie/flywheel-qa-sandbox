@@ -25,7 +25,7 @@ metadata:
 
 1. 所有 acceptance criteria 满足
 2. 写了相关测试（unit + integration，按需 E2E）
-3. 测试全部通过（\`{{testCommand}}\`）
+3. The injected local-test policy takes priority: 本机具体相关测试通过；完整套件由 exact-head PR CI 证明。配置入口 \`{{testCommand}}\` 不得裸跑
 4. 代码已 commit 到 feature branch
 5. PR 已创建并关联本 issue（{{issueId}}）
 6. PR description 包含：变更摘要 + 测试计划
