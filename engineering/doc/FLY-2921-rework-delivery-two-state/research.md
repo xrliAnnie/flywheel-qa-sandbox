@@ -91,4 +91,4 @@ Issue: FLY-2921 (https://linear.app/geoforge3d/issue/FLY-2921/病根修复-6-返
 
 ## 8. 结论
 
-方向 B 可行，且大部分零件现成：替身事务、重投逻辑、delivery 作用域 hold、幂等 wake 都在。真正新增的只有：一个终态 `returned_to_lead`、一个 `wake_sent_at` 事实列、「替身启动中」谓词、交卷新提交校验、表重建迁移。其余是删除与改白名单。
+方向 B 可行，且大部分零件现成：替身事务、重投逻辑、delivery 作用域 hold、幂等 wake 都在。真正新增的只有：一个终态 `returned_to_lead`、`wake_sent_at` 事实列（评审后另加 `liveness_unknown_since`，见 plan C2 第 5 步）、「替身启动中」谓词、交卷新提交校验、表重建迁移。其余是删除与改白名单。

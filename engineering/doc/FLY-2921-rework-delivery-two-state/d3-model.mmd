@@ -19,6 +19,7 @@ erDiagram
     text state "5 态 pending turn_granted wake_delivered completed returned_to_lead"
     text wake_sent_at "新增 推送时间 取代 awaiting_receipt"
     int hold_count "失败计数 满 5 交还 Lead"
+    text liveness_unknown_since "新增 活性判不出的起点 用于告警"
   }
   workflow_resident_hold {
     text state "resident woken expired closed"
