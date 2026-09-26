@@ -1344,7 +1344,9 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.probeRegistered).not.toHaveBeenCalled();
 	});
 
-	it.each(["resident_hold_already_woken", "resident_hold_wake_conflict"])(
+	// FLY-2921 C5: the fence no longer emits resident_hold_already_woken; a
+	// woken hold is delivered to directly. Only the CAS conflict remains.
+	it.each(["resident_hold_wake_conflict"])(
 		"retries %s without replacing the actor",
 		async (error) => {
 			const h = makeHarness({ wakeResults: [{ ok: false, error }] });

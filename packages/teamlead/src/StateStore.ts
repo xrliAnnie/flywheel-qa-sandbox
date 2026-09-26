@@ -65156,6 +65156,45 @@ export class StateStore {
 		return { state: "invalid" };
 	}
 
+	/**
+	 * FLY-2921 C5: a binding is the execution's current activation for its
+	 * node when it owns the node's latest attempt in this run. Mirrors the
+	 * currency core of `classifyCurrentWorkflowWriterTx` without its run /
+	 * cancellation gates, so the resident hold decides on identity alone.
+	 */
+	private residentHoldActivationIsCurrentTx(binding: {
+		run_id: string;
+		node_id: string;
+		attempt: number;
+		execution_id: string;
+		activation_id: string;
+	}): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present
+				   FROM workflow_run_node node
+				   JOIN workflow_execution_binding binding
+				     ON binding.run_id = node.run_id AND binding.node_id = node.node_id
+				    AND binding.attempt = node.attempt
+				    AND binding.execution_id = node.execution_id
+				  WHERE node.run_id = ? AND node.node_id = ? AND node.attempt = ?
+				    AND node.execution_id = ? AND binding.activation_id = ?
+				    AND NOT EXISTS (
+				      SELECT 1 FROM workflow_run_node newer
+				       WHERE newer.run_id = node.run_id AND newer.node_id = node.node_id
+				         AND newer.attempt > node.attempt
+				    )`,
+				[
+					binding.run_id,
+					binding.node_id,
+					binding.attempt,
+					binding.execution_id,
+					binding.activation_id,
+				],
+			)[0],
+		);
+	}
+
 	private enterResidentHoldForCompletionTx(
 		context: NonNullable<
 			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
@@ -65175,14 +65214,19 @@ export class StateStore {
 		}
 		const existing = this.getResidentHold(context.binding.execution_id);
 		if (existing) {
-			if (
-				existing.activation_id !== context.binding.activation_id ||
-				existing.node_id !== context.binding.node_id
-			) {
+			if (existing.node_id !== context.binding.node_id) return false;
+			const sameActivation =
+				existing.activation_id === context.binding.activation_id;
+			if (existing.state === "resident") return sameActivation;
+			if (existing.state !== "woken") {
 				return false;
 			}
-			if (existing.state === "resident") return true;
-			if (existing.state !== "woken") {
+			// FLY-2921 C5 (FLY-2821): a woken hold re-parks for the execution's
+			// CURRENT activation. A rework wake mints a new activation (next
+			// attempt) on the same body, so the hold's activation moves with the
+			// completion; a late completion from a superseded activation must
+			// never revive the hold. K04 keeps this invariant.
+			if (!this.residentHoldActivationIsCurrentTx(context.binding)) {
 				return false;
 			}
 			const revision = existing.revision + 1;
@@ -65193,6 +65237,7 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_resident_hold
 				    SET revision = ?, boundary_seq = ?, state = 'resident',
+				        activation_id = ?, attempt = ?,
 				        grace_started_at = ?, grace_expires_at = ?,
 				        release_cause = NULL, release_source = NULL,
 				        closed_reason = NULL, updated_at = ?
@@ -65200,6 +65245,8 @@ export class StateStore {
 				[
 					revision,
 					boundarySeq,
+					context.binding.activation_id,
+					context.binding.attempt,
 					now,
 					graceExpiresAt,
 					now,
