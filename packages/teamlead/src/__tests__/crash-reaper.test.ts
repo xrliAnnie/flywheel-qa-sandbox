@@ -120,6 +120,124 @@ describe("reapCrashedRunners (FLY-720)", () => {
 		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
 	});
 
+	it.each(["probe", "mutex", "capture", "cmux", "window", "terminal"])(
+		"FLY-2919 reconciles completion arriving during %s before further teardown or death",
+		async (boundary) => {
+			seedRunning("z1", 120);
+			let pending = false;
+			const arrive = (at: string) => {
+				if (boundary === at) pending = true;
+			};
+			const reconcile = vi.fn(async () => {
+				if (!pending) return false;
+				store.upsertSession({
+					execution_id: "z1",
+					issue_id: "i-z1",
+					project_name: "geo",
+					status: "awaiting_review",
+					decision_route: "needs_review",
+				});
+				pending = false;
+				return true;
+			});
+			const deps = baseDeps({
+				hasPendingCompleteMarker: () => pending,
+				reconcileCompletionBeforeDeath: reconcile,
+				probeLiveness: vi.fn(async () => {
+					arrive("probe");
+					return "dead_pin" as const;
+				}),
+				lifecycleMutex: {
+					resolveLockKeys: (id) => [id],
+					withIssueMutex: async (_keys, fn) => {
+						arrive("mutex");
+						return fn();
+					},
+				},
+				captureScrollback: vi.fn(async () => {
+					arrive("capture");
+					return { ok: true as const, text: "CRASH" };
+				}),
+				killCmuxLinkedSession: vi.fn(async () => {
+					arrive("cmux");
+					return { killed: true };
+				}),
+				killTmuxWindow: vi.fn(async () => {
+					arrive("window");
+					return { killed: true };
+				}),
+				closeTerminalView: vi.fn(async () => {
+					arrive("terminal");
+				}),
+			});
+			const result = await reapCrashedRunners(deps);
+			expect(store.getSession("z1")?.status).toBe("awaiting_review");
+			expect(store.getSession("z1")?.decision_route).toBe("needs_review");
+			expect(result.reaped).toBe(0);
+			expect(result.deadPinOwned.has("z1")).toBe(true);
+			expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
+			expect(deps.archiveThread).not.toHaveBeenCalled();
+			if (["probe", "mutex", "capture"].includes(boundary))
+				expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+			if (["probe", "mutex", "capture", "cmux"].includes(boundary))
+				expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+		},
+	);
+	it.each(["read_error", "replay_error", "held"])(
+		"FLY-2919 %s completion evidence vetoes crash death",
+		async (mode) => {
+			seedRunning("z1", 120);
+			const deps = baseDeps({
+				hasPendingCompleteMarker: () => {
+					if (mode === "read_error") throw new Error("EACCES");
+					return false;
+				},
+				reconcileCompletionBeforeDeath: async () => {
+					if (mode === "replay_error") throw new Error("sqlite busy");
+					return mode === "held";
+				},
+			});
+			const result = await reapCrashedRunners(deps);
+			expect(store.getSession("z1")?.status).toBe("running");
+			expect(result.deadPinOwned.has("z1")).toBe(true);
+			expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
+			expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
+		},
+	);
+	it("FLY-2919 synchronously vetoes a marker written after the last reconciliation await", async () => {
+		seedRunning("z1", 120);
+		let pending = false;
+		const deps = baseDeps({
+			hasPendingCompleteMarker: () => pending,
+			reconcileCompletionBeforeDeath: async () => {
+				pending = true;
+				return false;
+			},
+		});
+		const result = await reapCrashedRunners(deps);
+		expect(store.getSession("z1")?.status).toBe("running");
+		expect(result.deadPinOwned.has("z1")).toBe(true);
+		expect(deps.probeLiveness).not.toHaveBeenCalled();
+		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
+	});
+	it("FLY-2919 rechecks in the caller after the async completion guard returns", async () => {
+		seedRunning("z1", 120);
+		let pending = false;
+		const deps = baseDeps({
+			hasPendingCompleteMarker: () => {
+				queueMicrotask(() => {
+					pending = true;
+				});
+				return pending;
+			},
+			reconcileCompletionBeforeDeath: async () => false,
+		});
+		const result = await reapCrashedRunners(deps);
+		expect(result.reaped).toBe(0);
+		expect(deps.probeLiveness).not.toHaveBeenCalled();
+		expect(deps.finalizeCommDbSession).not.toHaveBeenCalled();
+	});
+
 	it("FLY-1238: a CommDB finalization failure remains cleanup-pending and never archives", async () => {
 		seedRunning("z1", 120);
 		const deps = baseDeps({
@@ -223,7 +341,9 @@ describe("reapCrashedRunners (FLY-720)", () => {
 		seedRunning("z1", 120);
 		const deps = baseDeps({ hasPendingCompleteMarker: (id) => id === "z1" });
 		const res = await reapCrashedRunners(deps);
-		expect(res.deadPinOwned.size).toBe(0);
+		// Preserve completion ownership through the following orphan pass.
+		expect(res.deadPinOwned.has("z1")).toBe(true);
+		expect(res.confirmedDeadPinOwned).toBe(0);
 		expect(deps.probeLiveness).not.toHaveBeenCalled();
 	});
 

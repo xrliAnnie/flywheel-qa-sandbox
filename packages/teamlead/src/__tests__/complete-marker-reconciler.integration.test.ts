@@ -24,6 +24,7 @@ import {
 	reconcileCompleteFailedMarkers,
 	tryReconcileComplete,
 } from "../bridge/complete-marker-reconciler.js";
+import { completionBlocksDeath } from "../bridge/completion-before-death.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
@@ -188,6 +189,28 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		expect(store.getSession("execA")!.status).toBe("awaiting_review");
 		expect(readdirSync(markerDir)).not.toContain("execA.json");
 	});
+	it.each([
+		["needs_review", "awaiting_review"],
+		["blocked", "blocked"],
+	])(
+		"FLY-2919 death guard replays real %s completion and preserves its result",
+		async (route, status) => {
+			await startRunning("exec-death-guard", "iss-exec-death-guard");
+			writeMarker("exec-death-guard", route, false);
+			expect(await completionBlocksDeath("exec-death-guard", deps())).toBe(
+				true,
+			);
+			expect(store.getSession("exec-death-guard")?.status).toBe(status);
+			expect(readdirSync(markerDir)).not.toContain("exec-death-guard.json");
+			// A crash replay of an already-accounted completion still vetoes this death pass.
+			writeMarker("exec-death-guard", route, false);
+			expect(await completionBlocksDeath("exec-death-guard", deps())).toBe(
+				true,
+			);
+			expect(store.getSession("exec-death-guard")?.status).toBe(status);
+			expect(readdirSync(markerDir)).not.toContain("exec-death-guard.json");
+		},
+	);
 
 	it("a legacy shadow binding remains on the canonical completion path", async () => {
 		await startRunning("execLegacy", "iss-execLegacy");

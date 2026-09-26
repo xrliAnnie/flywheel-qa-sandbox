@@ -37,7 +37,10 @@ vi.mock("../bridge/tmux-lookup.js", () => {
 	};
 });
 
-vi.mock("../bridge/complete-marker-reconciler.js", () => ({
+vi.mock("../bridge/complete-marker-reconciler.js", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../bridge/complete-marker-reconciler.js")
+	>()),
 	tryReconcileComplete: vi.fn(async () => ({ kind: "absent" })),
 	applyQuarantineFallback: vi.fn(),
 }));

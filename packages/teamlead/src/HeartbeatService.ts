@@ -19,10 +19,13 @@ import {
 	tryReconcileComplete,
 } from "./bridge/complete-marker-reconciler.js";
 import {
+	completionBlocksDeath,
+	hasUnresolvedCompleteMarker,
+} from "./bridge/completion-before-death.js";
+import {
 	type CrashReaperInjectedDeps,
 	reapCrashedRunners,
 } from "./bridge/crash-reaper.js";
-import { hasPendingCompleteMarker } from "./bridge/done-running-reconciler.js";
 import {
 	type EventFilter,
 	leadEventDeliveryDisposition,
@@ -875,6 +878,8 @@ export class HeartbeatService implements ReconnectController {
 		const liveness = await this.probeSessionLiveness(session);
 
 		if (outcome.kind === "quarantined") {
+			// A new marker may have arrived while liveness was awaited.
+			if (this.completionPendingAtMutation(execId)) return;
 			applyQuarantineFallback({
 				store: this.store,
 				transitionOpts: this.transitionOpts,
@@ -1185,6 +1190,29 @@ export class HeartbeatService implements ReconnectController {
 		return `; readiness_retry_exhausted: ${deferral.lastFailure?.code ?? "unknown_precommit"}/${deferral.lastFailure?.stage ?? "unknown"}: ${deferral.lastFailure?.summary ?? "Recovery readiness deadline reached"}; lastFailureEventId=${deferral.lastFailureEventId ?? "unavailable"}`;
 	}
 
+	private completionPendingAtMutation(executionId: string): boolean {
+		if (
+			!hasUnresolvedCompleteMarker(
+				executionId,
+				this.monitorReconcile?.markerDir,
+			)
+		)
+			return false;
+		this.markerRetryPending.add(executionId);
+		this.zombieDeadStreak.delete(executionId);
+		return true;
+	}
+
+	private async reconcileCompletionBeforeDeath(
+		executionId: string,
+	): Promise<boolean> {
+		if (!(await completionBlocksDeath(executionId, this.buildMarkerDeps())))
+			return false;
+		this.markerRetryPending.add(executionId);
+		this.zombieDeadStreak.delete(executionId);
+		return true;
+	}
+
 	private async declareZombie(
 		session: Session,
 		streak: number,
@@ -1193,6 +1221,8 @@ export class HeartbeatService implements ReconnectController {
 		if (this.zombieDeclaring.has(execId)) return false;
 		this.zombieDeclaring.add(execId);
 		try {
+			if (await this.reconcileCompletionBeforeDeath(execId)) return false;
+			if (this.completionPendingAtMutation(execId)) return false;
 			await this.finalizeExpiredCodexRecovery(execId);
 			// 1) Slow read-only forensics BEFORE any mutation (INV-4/INV-9).
 			const inspection = await inspectWorktreeForUnpushedWork(
@@ -1223,6 +1253,8 @@ export class HeartbeatService implements ReconnectController {
 				return false;
 			}
 
+			// Final async boundary: completion arriving during probes/forensics wins.
+			if (await this.reconcileCompletionBeforeDeath(execId)) return false;
 			const current = this.store.getSession(execId);
 			if (
 				!current ||
@@ -1250,6 +1282,7 @@ export class HeartbeatService implements ReconnectController {
 			);
 
 			// 4) Synchronous transition — zero awaits since the re-proof.
+			if (this.completionPendingAtMutation(execId)) return false;
 			const now = new Date()
 				.toISOString()
 				.replace("T", " ")
@@ -2101,7 +2134,9 @@ export class HeartbeatService implements ReconnectController {
 					this.isMonitorSuppressed(id) ||
 					this.markerRetryPending.has(id) ||
 					tmuxHeld.has(id),
-				hasPendingCompleteMarker: (id) => hasPendingCompleteMarker(id),
+				hasPendingCompleteMarker: (id) => this.completionPendingAtMutation(id),
+				reconcileCompletionBeforeDeath: (id) =>
+					this.reconcileCompletionBeforeDeath(id),
 			});
 			if (
 				res.reaped > 0 ||
@@ -2151,6 +2186,9 @@ export class HeartbeatService implements ReconnectController {
 			if (zombieHeld.has(session.execution_id)) continue;
 			if (this.markerRetryPending.has(session.execution_id)) continue;
 			if (this.notifiedOrphans.has(session.execution_id)) continue;
+			if (await this.reconcileCompletionBeforeDeath(session.execution_id))
+				continue;
+			if (this.completionPendingAtMutation(session.execution_id)) continue;
 			if (session.adapter_type === "codex-tmux") {
 				await this.finalizeExpiredCodexRecovery(session.execution_id);
 				const fresh = this.store.getSession(session.execution_id);
@@ -2162,6 +2200,22 @@ export class HeartbeatService implements ReconnectController {
 					this.markerRetryPending.has(session.execution_id)
 				)
 					continue;
+			}
+			if (
+				session.adapter_type === "codex-tmux" &&
+				(await this.reconcileCompletionBeforeDeath(session.execution_id))
+			)
+				continue;
+			if (this.monitorReconcile) {
+				const current = this.store.getSession(session.execution_id);
+				if (
+					!current ||
+					current.status !== "running" ||
+					current.retry_successor ||
+					current.lifecycle_revision !== session.lifecycle_revision
+				)
+					continue;
+				session = current;
 			}
 			if (this.isCodexRecoveryProtected(session.execution_id)) continue;
 
@@ -2185,6 +2239,7 @@ export class HeartbeatService implements ReconnectController {
 			);
 			const lastError = `Orphaned: no heartbeat for ${minutesSince} minutes${fallbackReason}`;
 			try {
+				if (this.completionPendingAtMutation(session.execution_id)) continue;
 				// Force-fail the orphaned session
 				const now = new Date()
 					.toISOString()

@@ -137,13 +137,15 @@ export interface CrashReapCycleDeps {
 	isSuppressed: (executionId: string) => boolean;
 	/** FLY-172 pending complete marker → that drain owns the session. */
 	hasPendingCompleteMarker: (executionId: string) => boolean;
+	/** Reconcile completion first; true also covers settled, held and unknown outcomes. */
+	reconcileCompletionBeforeDeath?: (executionId: string) => Promise<boolean>;
 	log?: (m: string) => void;
 }
 
 export type CrashReapDeps = CrashReaperInjectedDeps & CrashReapCycleDeps;
 
 export interface CrashReapResult {
-	/** execIds `reapOrphans` MUST skip this cycle (confirmed dead-pins). */
+	/** execIds `reapOrphans` MUST skip: dead-pins or completion-owned/unknown. */
 	deadPinOwned: Set<string>;
 	confirmedDeadPinOwned: number;
 	confirmedDeadButWaitingForGrace: number;
@@ -177,8 +179,11 @@ export async function reapCrashedRunners(
 		const execId = session.execution_id;
 		// Alive-but-detached (reconnecting / monitor-lost / marker-retry) → never reap.
 		if (deps.isSuppressed(execId)) continue;
-		// FLY-172 drain owns a session with a pending complete marker.
-		if (deps.hasPendingCompleteMarker(execId)) continue;
+		if (
+			(await completionOwnsReap(execId, deps, result)) ||
+			pendingCompletionOwnsReap(execId, deps, result)
+		)
+			continue;
 		if (!session.project_name) continue;
 
 		// CommDB lookup indeterminacy (Codex R1 MED-3, GEO-374): a read `error` must
@@ -254,6 +259,12 @@ async function reapOne(
 ): Promise<void> {
 	const execId = session.execution_id;
 	const projectName = session.project_name;
+	// Probe and mutex acquisition can both yield while a complete-failed marker arrives.
+	if (
+		(await completionOwnsReap(execId, deps, result)) ||
+		pendingCompletionOwnsReap(execId, deps, result)
+	)
+		return;
 
 	// 1. Forensics dump BEFORE teardown (best-effort).
 	const cap = await deps.captureScrollback(tmuxWindow);
@@ -283,6 +294,11 @@ async function reapOne(
 	// reapOrphans force-fails it to `failed` (skipping terminated + archive) AND the
 	// cmux session loses its only re-resolution point. Leaving the window alive keeps
 	// it a `dead_pin` the next cycle re-owns and retries.
+	if (
+		(await completionOwnsReap(execId, deps, result)) ||
+		pendingCompletionOwnsReap(execId, deps, result)
+	)
+		return;
 	const cmux = await deps.killCmuxLinkedSession(tmuxWindow);
 	if (!cmux.killed) {
 		result.cleanupPending++;
@@ -291,6 +307,11 @@ async function reapOne(
 		);
 		return; // window untouched → still a dead_pin → re-owned + retried next cycle
 	}
+	if (
+		(await completionOwnsReap(execId, deps, result)) ||
+		pendingCompletionOwnsReap(execId, deps, result)
+	)
+		return;
 	const win = await deps.killTmuxWindow(tmuxWindow);
 	if (!win.killed) {
 		result.cleanupPending++;
@@ -300,6 +321,11 @@ async function reapOne(
 		return; // window still there (dead_pin) → re-owned + retried next cycle
 	}
 	// Both kills succeeded — best-effort terminal-view close (never gates the reap).
+	if (
+		(await completionOwnsReap(execId, deps, result)) ||
+		pendingCompletionOwnsReap(execId, deps, result)
+	)
+		return;
 	if (deps.closeTerminalView) {
 		try {
 			await deps.closeTerminalView(session, tmuxWindow);
@@ -313,6 +339,11 @@ async function reapOne(
 	// FLY-1238: once the physical runner is gone, retire every unresolved gate
 	// in the same transaction that deletes its CommDB session. Failure blocks
 	// terminalization and archive so the row remains eligible for retry.
+	if (
+		(await completionOwnsReap(execId, deps, result)) ||
+		pendingCompletionOwnsReap(execId, deps, result)
+	)
+		return;
 	const finalized = deps.finalizeCommDbSession(execId, projectName);
 	deps.store.recordCommDbFinalizeOutcome({
 		executionId: execId,
@@ -338,6 +369,8 @@ async function reapOne(
 	// 3. Re-read status and branch on the post-teardown FSM race (Codex R2 MED-3).
 	const current = deps.store.getSession(execId);
 	if (current && current.status === "running") {
+		// No await between the final marker veto and the lifecycle mutation.
+		if (pendingCompletionOwnsReap(execId, deps, result)) return;
 		const ctx: TransitionContext = {
 			executionId: execId,
 			issueId: session.issue_id,
@@ -397,4 +430,35 @@ async function reapOne(
 		},
 	});
 	result.transitionSkipped++;
+}
+
+function pendingCompletionOwnsReap(
+	executionId: string,
+	deps: CrashReapDeps,
+	result: CrashReapResult,
+): boolean {
+	try {
+		if (!deps.hasPendingCompleteMarker(executionId)) return false;
+	} catch {
+		// A failed read is unknown, never permission to replace real completion.
+	}
+	result.deadPinOwned.add(executionId);
+	result.indeterminateSuppressed++;
+	return true;
+}
+
+async function completionOwnsReap(
+	executionId: string,
+	deps: CrashReapDeps,
+	result: CrashReapResult,
+): Promise<boolean> {
+	try {
+		if (!(await deps.reconcileCompletionBeforeDeath?.(executionId)))
+			return pendingCompletionOwnsReap(executionId, deps, result);
+	} catch {
+		// Replay uncertainty belongs to the completion drain, including read errors.
+	}
+	result.deadPinOwned.add(executionId);
+	result.indeterminateSuppressed++;
+	return true;
 }
