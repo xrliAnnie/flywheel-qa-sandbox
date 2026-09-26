@@ -1,11 +1,15 @@
-import { type ChildProcess, execFile } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 
 const INTENT_ID = /^[0-9a-f]{64}$/;
 const SAFE_RECEIPT =
 	/^(?:sent channel_id=[0-9]{17,20} binding_digest=[0-9a-f]{64} message_id=[0-9]{17,20}|(?:duplicate|queued_transient|delivery_unknown|dead_lettered|config_error) channel_id=[0-9]{17,20} binding_digest=[0-9a-f]{64}|config_error)$/;
 const MAX_QUEUE = 16;
+/** How long a stopped sender gets to exit on SIGTERM before SIGKILL. */
+const SENDER_STOP_MS = 2_000;
 
 interface VoiceHealthAlertExecOptions {
+	/** Its own process group, so shutdown can stop bash and its curl alike. */
+	detached: true;
 	encoding: "utf8";
 	maxBuffer: number;
 	shell: false;
@@ -23,6 +27,8 @@ export type VoiceHealthAlertExecFile = (
 export interface VoiceHealthAlertDispatcherOptions {
 	leadAlertPath: string;
 	execFile?: VoiceHealthAlertExecFile;
+	/** Tests only: signal a sender's process group. */
+	killGroup?: (pid: number, signal: NodeJS.Signals) => void;
 	retryDelayMs?: number;
 	onUnavailable?: (signal: {
 		reasonClass: "health_observation_unavailable";
@@ -30,13 +36,74 @@ export interface VoiceHealthAlertDispatcherOptions {
 	}) => void;
 }
 
+/** Waits for `promise` at most `ms`; never rejects. */
+async function within(promise: Promise<unknown>, ms: number): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([
+		promise.catch(() => undefined),
+		new Promise<void>((resolve) => {
+			timer = setTimeout(resolve, ms);
+			timer.unref?.();
+		}),
+	]);
+	if (timer) clearTimeout(timer);
+}
+
+/**
+ * execFile semantics (utf8 output, maxBuffer, timeout) on spawn: execFile
+ * drops `detached`, and the sender must lead its own process group so
+ * shutdown can stop bash together with the curl it waits on.
+ */
 function defaultExecFile(
 	file: string,
 	args: string[],
 	options: VoiceHealthAlertExecOptions,
 	callback: (error: Error | null, stdout: string, stderr: string) => void,
 ): ChildProcess {
-	return execFile(file, args, options, callback);
+	const child = spawn(file, args, {
+		detached: options.detached,
+		shell: options.shell,
+		windowsHide: options.windowsHide,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let stdout = "";
+	let stderr = "";
+	let settled = false;
+	const stopGroup = () => {
+		try {
+			if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
+		} catch {
+			// Already gone.
+		}
+	};
+	const done = (error: Error | null) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		callback(error, stdout, stderr);
+	};
+	const collect = (stream: "stdout" | "stderr") => (chunk: string) => {
+		if (stream === "stdout") stdout += chunk;
+		else stderr += chunk;
+		if (
+			Buffer.byteLength(stdout, "utf8") > options.maxBuffer ||
+			Buffer.byteLength(stderr, "utf8") > options.maxBuffer
+		) {
+			stopGroup();
+			done(new Error("maxBuffer exceeded"));
+		}
+	};
+	child.stdout?.setEncoding(options.encoding);
+	child.stderr?.setEncoding(options.encoding);
+	child.stdout?.on("data", collect("stdout"));
+	child.stderr?.on("data", collect("stderr"));
+	const timer = setTimeout(() => {
+		stopGroup();
+		done(new Error("timed out"));
+	}, options.timeout);
+	child.once("error", (error) => done(error));
+	child.once("close", () => done(null));
+	return child;
 }
 
 /**
@@ -51,6 +118,7 @@ export class VoiceHealthAlertDispatcher {
 	private settlers: Array<() => void> = [];
 	/** The sender now running, stopped if shutdown outlasts its bound. */
 	private current?: ChildProcess;
+	private currentExited?: Promise<void>;
 	private closed = false;
 
 	constructor(private readonly options: VoiceHealthAlertDispatcherOptions) {
@@ -91,13 +159,38 @@ export class VoiceHealthAlertDispatcher {
 		if (timer) clearTimeout(timer);
 		if (!drained) {
 			this.queue.length = 0;
-			try {
-				this.current?.kill("SIGTERM");
-			} catch {
-				// Already gone.
-			}
+			await this.stopSender();
 		}
 		return drained;
+	}
+
+	/** Forced exit: stop the sender's whole process group right now. */
+	killNow(): void {
+		this.signalSender("SIGKILL");
+	}
+
+	/** SIGTERM the sender's group, wait for it, then SIGKILL what is left. */
+	private async stopSender(): Promise<void> {
+		const exited = this.currentExited;
+		if (!exited) return;
+		this.signalSender("SIGTERM");
+		await within(exited, SENDER_STOP_MS);
+		// bash may be gone while its curl lives on: the group goes either way.
+		this.signalSender("SIGKILL");
+		await within(exited, SENDER_STOP_MS);
+	}
+
+	private signalSender(signal: NodeJS.Signals): void {
+		const pid = this.current?.pid;
+		if (pid === undefined) return;
+		try {
+			(this.options.killGroup ?? ((group, sig) => process.kill(-group, sig)))(
+				pid,
+				signal,
+			);
+		} catch {
+			// The group is already gone.
+		}
 	}
 
 	whenSettled(): Promise<void> {
@@ -156,7 +249,7 @@ export class VoiceHealthAlertDispatcher {
 				resolve(outcome);
 			};
 			try {
-				this.current = this.run(
+				const child = this.run(
 					"/bin/bash",
 					[
 						this.options.leadAlertPath,
@@ -173,6 +266,7 @@ export class VoiceHealthAlertDispatcher {
 						"--strict-delivery",
 					],
 					{
+						detached: true,
 						encoding: "utf8",
 						maxBuffer: 4096,
 						shell: false,
@@ -180,7 +274,6 @@ export class VoiceHealthAlertDispatcher {
 						windowsHide: true,
 					},
 					(_error, stdout) => {
-						this.current = undefined;
 						const receipt = stdout.trim();
 						if (
 							Buffer.byteLength(receipt, "utf8") > 512 ||
@@ -197,6 +290,17 @@ export class VoiceHealthAlertDispatcher {
 						);
 					},
 				);
+				this.current = child;
+				this.currentExited = new Promise<void>((resolve) => {
+					if (typeof child?.once !== "function") return resolve();
+					child.once("close", () => resolve());
+					child.once("error", () => resolve());
+				}).then(() => {
+					if (this.current === child) {
+						this.current = undefined;
+						this.currentExited = undefined;
+					}
+				});
 			} catch {
 				finish("invalid");
 			}

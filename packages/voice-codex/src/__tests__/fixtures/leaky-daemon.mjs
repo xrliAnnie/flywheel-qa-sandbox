@@ -1,19 +1,23 @@
-// FLY-2885 QA@1 stand-in for a voice daemon that ran an engine-B session:
-// a real werift session over max-compat leaves the exact two UDP sockets QA
-// saw after pc.close(). The daemon's shutdown wiring must still end the
-// process within the grace, on SIGTERM and on the idle exit alike.
-// Usage: node --experimental-strip-types leaky-daemon.mjs <sigterm|idle|hang> <graceMs>
+// FLY-2885 QA@1 stand-in for a voice daemon that ran an engine-B session,
+// driven through the CLI's own shutdown order (superviseDaemon):
+// - a real werift session over max-compat leaves QA's leaked UDP sockets;
+// - a lead alert is in flight, its shell waiting on a grandchild like curl.
+// The process must still end within the grace and leave no alert process.
+// Usage: node --experimental-transform-types leaky-daemon.mjs
+//        <sigterm|idle|hang> <graceMs> <drainMs> <alertScript>
 import { createRequire } from "node:module";
 
-const { createShutdownExit } = await import(
+const { createShutdownExit, superviseDaemon } = await import(
 	new URL("../../shutdown-exit.ts", import.meta.url).href
+);
+const { VoiceHealthAlertDispatcher } = await import(
+	new URL("../../health-alert.ts", import.meta.url).href
 );
 const require = createRequire(import.meta.url);
 const { RTCPeerConnection, RTCRtpCodecParameters, MediaStreamTrack } =
 	require("werift");
 
-const [mode, graceArg] = process.argv.slice(2);
-const shutdownExit = createShutdownExit({ graceMs: Number(graceArg) });
+const [mode, graceArg, drainArg, alertScript] = process.argv.slice(2);
 const udp = () =>
 	process.getActiveResourcesInfo().filter((kind) => kind === "UDPWrap").length;
 
@@ -53,19 +57,27 @@ await answerer.close();
 await new Promise((resolve) => setTimeout(resolve, 300));
 console.log(`LEAKED ${udp()}`);
 
-const cleanup = () => new Promise((resolve) => setTimeout(resolve, 100));
-if (mode === "idle") {
-	// run() returned on the idle exit: cleanup, then exit.
-	shutdownExit.begin("run_returned");
-	await cleanup();
-	shutdownExit.finish(0);
-} else {
-	process.once("SIGTERM", async () => {
-		shutdownExit.begin("signal");
-		// "hang": a cleanup that never finishes must still end at the grace.
-		if (mode === "hang") return;
-		await cleanup();
-		shutdownExit.finish(0);
-	});
-	console.log("READY");
-}
+const shutdownExit = createShutdownExit({ graceMs: Number(graceArg) });
+const alerts = new VoiceHealthAlertDispatcher({ leadAlertPath: alertScript });
+shutdownExit.onForcedExit(() => alerts.killNow());
+alerts.notify("a".repeat(64));
+
+let requestStop;
+const stopped = new Promise((resolve) => {
+	requestStop = resolve;
+});
+await superviseDaemon({
+	shutdownExit,
+	requestStop: () => requestStop(),
+	run: async () => {
+		console.log("READY");
+		// "idle": run() returns on its own, like the idle exit.
+		if (mode !== "idle") await stopped;
+	},
+	cleanup: async () => {
+		// "hang": a cleanup that never ends must still stop at the deadline.
+		if (mode === "hang") await new Promise(() => undefined);
+		await alerts.shutdown(Number(drainArg));
+	},
+});
+shutdownExit.finish(0);

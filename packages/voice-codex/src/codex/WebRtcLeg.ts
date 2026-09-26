@@ -18,6 +18,8 @@ const OPUS_PAYLOAD_TYPE = 111;
 const ICE_GATHER_TIMEOUT_MS = 8_000;
 /** Each transport gets this long to stop on close before it is abandoned. */
 const TRANSPORT_STOP_TIMEOUT_MS = 2_000;
+/** pc.close() waits on DTLS/ICE/SCTP itself; it may not hang close(). */
+const PC_CLOSE_TIMEOUT_MS = 3_000;
 const CONNECT_TIMEOUT_MS = 10_000;
 const DISCONNECTED_GRACE_MS = 5_000;
 const DOWNLINK_SILENCE_MS = 5_000;
@@ -69,7 +71,10 @@ export interface WebRtcLegOptions {
 }
 
 /** A transport stop that never hangs close(). */
-async function boundedStop(stop: Promise<void>): Promise<void> {
+async function boundedStop(
+	stop: Promise<void>,
+	timeoutMs = TRANSPORT_STOP_TIMEOUT_MS,
+): Promise<void> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		await Promise.race([
@@ -77,7 +82,7 @@ async function boundedStop(stop: Promise<void>): Promise<void> {
 			new Promise<never>((_resolve, reject) => {
 				timer = setTimeout(
 					() => reject(new Error("webrtc_transport_stop_timeout")),
-					TRANSPORT_STOP_TIMEOUT_MS,
+					timeoutMs,
 				);
 				timer.unref?.();
 			}),
@@ -331,9 +336,9 @@ export class WebRtcLeg implements RealtimeMediaLeg {
 		this.closed.abort(new Error("webrtc_leg_closed"));
 		this.trackTransports();
 		try {
-			await this.pc.close();
+			await boundedStop(this.pc.close(), PC_CLOSE_TIMEOUT_MS);
 		} catch {
-			// The peer is being discarded either way.
+			// The peer is discarded either way; its transports are stopped below.
 		}
 		// Stop every transport explicitly, including any pc.close() missed:
 		// their UDP sockets otherwise keep the daemon alive.

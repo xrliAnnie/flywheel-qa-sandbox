@@ -65,7 +65,7 @@ import {
 import { recoverPinnedVoiceSession } from "./recovery.js";
 import { GenericVoiceSession } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
-import { createShutdownExit } from "./shutdown-exit.js";
+import { createShutdownExit, superviseDaemon } from "./shutdown-exit.js";
 import {
 	reportFatalStartupFailure,
 	reportStartupRefusal,
@@ -750,42 +750,39 @@ export async function main(): Promise<void> {
 			speechChunkTokens: config.speechChunkTokens,
 		},
 	});
-	const shutdown = () => {
-		shutdownExit.begin("signal");
-		daemon.shutdown();
-	};
-	process.once("SIGINT", shutdown);
-	process.once("SIGTERM", shutdown);
-	try {
-		await minutesQueue.drainAll().catch((error) => {
-			console.error(
-				`[voice] pending voice minutes deferred: ${
-					error instanceof Error ? error.message : "unknown_error"
-				}`,
-			);
-		});
-		await daemon.run();
-	} finally {
-		// The idle exit returns here; a signal already armed the deadline.
-		shutdownExit.begin("run_returned");
-		process.off("SIGINT", shutdown);
-		process.off("SIGTERM", shutdown);
-		health.stop();
-		await health.whenSettled();
-		await lock.handle.close();
-		// An in-flight lead alert gets a bounded chance to finish, then its
-		// sender is stopped: the bounded exit never cuts one off or leaves a
-		// shell behind (FLY-2885 QA@1 review).
-		if (!(await healthAlerts.shutdown(HEALTH_ALERT_DRAIN_MS)))
-			console.error(
-				"[voice] health alert still in flight at shutdown; sender stopped",
-			);
-	}
+	// A forced exit never leaves a lead alert's shell or curl behind.
+	shutdownExit.onForcedExit(() => healthAlerts.killNow());
+	await superviseDaemon({
+		shutdownExit,
+		requestStop: () => daemon.shutdown(),
+		run: async () => {
+			await minutesQueue.drainAll().catch((error) => {
+				console.error(
+					`[voice] pending voice minutes deferred: ${
+						error instanceof Error ? error.message : "unknown_error"
+					}`,
+				);
+			});
+			await daemon.run();
+		},
+		cleanup: async () => {
+			health.stop();
+			await health.whenSettled();
+			await lock.handle.close();
+			// An in-flight lead alert gets a bounded chance to finish, then its
+			// sender's process group is stopped: the exit never cuts one off
+			// or leaves a shell behind (FLY-2885 QA@1 review).
+			if (!(await healthAlerts.shutdown(HEALTH_ALERT_DRAIN_MS)))
+				console.error(
+					"[voice] health alert still in flight at shutdown; sender stopped",
+				);
+		},
+	});
 }
 
 /** FLY-2885 QA@1: the daemon exits within a bounded grace, leaks or not. */
 const shutdownExit = createShutdownExit();
-/** Well inside the 15 s exit grace, after the lock is released. */
+/** After the lock is released; counted in SHUTDOWN_EXIT_GRACE_MS. */
 const HEALTH_ALERT_DRAIN_MS = 8_000;
 
 main()

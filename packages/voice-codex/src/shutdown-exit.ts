@@ -8,23 +8,44 @@
  * `begin` arms the deadline the moment shutdown starts; `finish` exits as
  * soon as cleanup is done instead of waiting for the event loop to drain.
  */
-export const SHUTDOWN_EXIT_GRACE_MS = 15_000;
+
+/**
+ * Longer than every bounded cleanup step together, so it only ever ends a
+ * hang, never a cleanup still within its own bounds:
+ * - a live session: realtime stop 5 s + pc.close 3 s + transport stops 4 s
+ *   + app-server stop (50 ms + 5 s TERM + 5 s KILL) ≈ 22 s;
+ * - its last Bridge writes ≈ 10 s;
+ * - health settle 0.5 s;
+ * - lead alert drain 8 s + stop 2 s.
+ * That is about 45 s. An idle daemon's cleanup takes well under a second,
+ * and it exits as soon as that cleanup is done.
+ */
+export const SHUTDOWN_EXIT_GRACE_MS = 60_000;
 
 /** Handle kinds that never keep a process alive on their own. */
 const IDLE_KINDS = new Set(["Timeout", "Immediate", "TTYWrap"]);
 
+export interface ShutdownExit {
+	/** Shutdown started (a signal, or run() returning on the idle exit). */
+	begin(reason: string): ReturnType<typeof setTimeout>;
+	/** Cleanup is done: exit now rather than wait for leaked handles. */
+	finish(code: number | string | undefined | null): void;
+	/** Runs synchronously before a forced exit (stop child process trees). */
+	onForcedExit(hook: () => void): void;
+}
+
 export function createShutdownExit(
 	options: {
-		/** Covers the 5 s close barrier and the last Bridge writes; below launchd's 20 s ExitTimeOut. */
 		graceMs?: number;
 		resources?: () => string[];
 		exit?: (code: number) => void;
 		log?: (line: string) => void;
 	} = {},
-) {
+): ShutdownExit {
 	const graceMs = options.graceMs ?? SHUTDOWN_EXIT_GRACE_MS;
 	const exit = options.exit ?? ((code: number) => process.exit(code));
 	const log = options.log ?? ((line: string) => console.error(line));
+	const hooks: Array<() => void> = [];
 	const lingering = () => {
 		const counts = new Map<string, number>();
 		for (const kind of (
@@ -35,20 +56,25 @@ export function createShutdownExit(
 	};
 	let deadline: ReturnType<typeof setTimeout> | undefined;
 	return {
-		/** Shutdown started (a signal, or run() returning on the idle exit). */
-		begin(reason: string): ReturnType<typeof setTimeout> {
+		begin(reason) {
 			deadline ??= setTimeout(() => {
 				log(
 					`[voice] shutdown (${reason}) overran ${graceMs} ms with handles still open (${lingering()}); forcing exit`,
 				);
+				for (const hook of hooks) {
+					try {
+						hook();
+					} catch {
+						// A forced exit goes ahead regardless.
+					}
+				}
 				exit(1);
 			}, graceMs);
 			// The deadline itself never keeps the process alive.
 			deadline.unref();
 			return deadline;
 		},
-		/** Cleanup is done: exit now rather than wait for leaked handles. */
-		finish(code: number | string | undefined | null): void {
+		finish(code) {
 			if (deadline) clearTimeout(deadline);
 			const open = lingering();
 			if (open)
@@ -56,5 +82,36 @@ export function createShutdownExit(
 			const value = Number(code ?? 0);
 			exit(Number.isInteger(value) ? value : 1);
 		},
+		onForcedExit(hook) {
+			hooks.push(hook);
+		},
 	};
+}
+
+/**
+ * The daemon's run → cleanup order, shared by the CLI and its process
+ * test: a signal arms the deadline and asks the daemon to stop; run()
+ * returning (after that stop, or on the idle exit) arms it too; cleanup then
+ * runs, and the caller exits with `finish` once main settles.
+ */
+export async function superviseDaemon(input: {
+	shutdownExit: ShutdownExit;
+	run(): Promise<void>;
+	requestStop(): void;
+	cleanup(): Promise<void>;
+	signals?: readonly NodeJS.Signals[];
+}): Promise<void> {
+	const signals = input.signals ?? (["SIGINT", "SIGTERM"] as const);
+	const onSignal = () => {
+		input.shutdownExit.begin("signal");
+		input.requestStop();
+	};
+	for (const signal of signals) process.once(signal, onSignal);
+	try {
+		await input.run();
+	} finally {
+		input.shutdownExit.begin("run_returned");
+		for (const signal of signals) process.off(signal, onSignal);
+		await input.cleanup();
+	}
 }

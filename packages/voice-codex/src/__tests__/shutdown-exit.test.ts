@@ -1,8 +1,19 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createShutdownExit } from "../shutdown-exit.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	createShutdownExit,
+	SHUTDOWN_EXIT_GRACE_MS,
+} from "../shutdown-exit.js";
 
 const children: ChildProcess[] = [];
 afterEach(() => {
@@ -67,23 +78,66 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 		expect(exit).toHaveBeenLastCalledWith(0);
 	});
 
-	describe("a real process that ran a leaking WebRTC session", () => {
+	it("stops child process trees before a forced exit", () => {
+		vi.useFakeTimers();
+		const order: string[] = [];
+		const shutdownExit = createShutdownExit({
+			graceMs: 1_000,
+			resources: () => [],
+			exit: () => order.push("exit"),
+			log: () => undefined,
+		});
+		shutdownExit.onForcedExit(() => order.push("kill alert group"));
+		shutdownExit.begin("signal");
+		vi.advanceTimersByTime(1_000);
+		expect(order).toEqual(["kill alert group", "exit"]);
+	});
+
+	it("never cuts a cleanup still within its own bounds", () => {
+		// Live session ≈ 22 s, Bridge writes ≈ 10 s, health 0.5 s, alerts 10 s.
+		expect(SHUTDOWN_EXIT_GRACE_MS).toBeGreaterThan(
+			22_050 + 10_000 + 500 + 10_000,
+		);
+	});
+
+	describe("a real process that ran a leaking session, through the CLI's shutdown order", () => {
 		const fixture = join(
 			dirname(fileURLToPath(import.meta.url)),
 			"fixtures",
 			"leaky-daemon.mjs",
 		);
+		let scratch: string;
+		beforeEach(() => {
+			scratch = mkdtempSync(join(tmpdir(), "fly2885-exit-"));
+		});
+		afterEach(() => {
+			rmSync(scratch, { recursive: true, force: true });
+		});
+
 		function run(mode: "sigterm" | "idle" | "hang", graceMs: number) {
+			// The lead alert: bash waits on a grandchild, as it would on curl.
+			const alertScript = join(scratch, "lead-alert.sh");
+			const pidFile = join(scratch, "alert.pids");
+			writeFileSync(
+				alertScript,
+				'#!/bin/bash\nsleep 60 &\necho "$! $$" > "$FIXTURE_PIDS"\nwait\n',
+				{ mode: 0o700 },
+			);
 			const child = spawn(
 				process.execPath,
 				[
-					"--experimental-strip-types",
+					"--experimental-transform-types",
 					"--no-warnings",
 					fixture,
 					mode,
 					String(graceMs),
+					"1000",
+					alertScript,
 				],
-				{ stdio: ["ignore", "pipe", "pipe"] },
+				{
+					stdio: ["ignore", "pipe", "pipe"],
+					env: { ...process.env, FIXTURE_PIDS: pidFile },
+				},
 			);
 			children.push(child);
 			let stdout = "";
@@ -98,39 +152,72 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 				(resolve) =>
 					child.once("exit", (code) => resolve({ code, at: Date.now() })),
 			);
+			const alertPids = () =>
+				readFileSync(pidFile, "utf8").trim().split(/\s+/u).map(Number);
 			return {
 				child,
 				exited,
 				out: () => stdout,
 				err: () => stderr,
+				pidFile,
+				alertPids,
 			};
 		}
+		const alive = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		const leaked = (out: string) => Number(/LEAKED (\d+)/u.exec(out)?.[1] ?? 0);
 
-		it.each([["sigterm"], ["hang"]] as const)(
-			"ends within the grace after SIGTERM (%s)",
-			async (mode) => {
-				const graceMs = 3_000;
+		it.each([
+			["sigterm", 0],
+			["hang", 1],
+		] as const)(
+			"ends within the grace after SIGTERM and leaves no alert process (%s)",
+			async (mode, expectedCode) => {
+				const graceMs = 4_000;
 				const daemon = run(mode, graceMs);
-				await vi.waitFor(() => expect(daemon.out()).toContain("READY"), {
-					timeout: 15_000,
-				});
-				// The precondition that made the QA daemon immortal.
-				expect(daemon.out()).toContain("LEAKED 2");
+				await vi.waitFor(
+					() => {
+						expect(daemon.out()).toContain("READY");
+						expect(existsSync(daemon.pidFile)).toBe(true);
+					},
+					{ timeout: 15_000 },
+				);
+				// The preconditions that made the QA daemon immortal.
+				expect(leaked(daemon.out())).toBeGreaterThan(0);
+				const [grandchild, shell] = daemon.alertPids();
+				expect(alive(grandchild!) && alive(shell!)).toBe(true);
 				const sentAt = Date.now();
 				daemon.child.kill("SIGTERM");
 				const { code, at } = await daemon.exited;
 				expect(at - sentAt).toBeLessThan(graceMs + 1_500);
-				expect(code).toBe(mode === "hang" ? 1 : 0);
-				expect(daemon.err()).toContain("UDPWrap×2");
+				expect(code).toBe(expectedCode);
+				expect(daemon.err()).toMatch(/UDPWrap×\d+/u);
+				await vi.waitFor(
+					() =>
+						expect([alive(grandchild!), alive(shell!)]).toEqual([false, false]),
+					{ timeout: 3_000 },
+				);
 			},
-			25_000,
+			30_000,
 		);
 
-		it("ends on the idle exit even though sockets leaked", async () => {
-			const daemon = run("idle", 3_000);
+		it("ends on the idle exit and leaves no alert process", async () => {
+			const daemon = run("idle", 4_000);
 			const { code } = await daemon.exited;
-			expect(daemon.out()).toContain("LEAKED 2");
+			expect(leaked(daemon.out())).toBeGreaterThan(0);
 			expect(code).toBe(0);
-		}, 25_000);
+			const [grandchild, shell] = daemon.alertPids();
+			await vi.waitFor(
+				() =>
+					expect([alive(grandchild!), alive(shell!)]).toEqual([false, false]),
+				{ timeout: 3_000 },
+			);
+		}, 30_000);
 	});
 });

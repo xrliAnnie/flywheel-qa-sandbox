@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { VoiceHealthAlertDispatcher } from "../health-alert.js";
 
@@ -51,6 +52,7 @@ describe("VoiceHealthAlertDispatcher", () => {
 					"--strict-delivery",
 				],
 				options: {
+					detached: true,
 					encoding: "utf8",
 					maxBuffer: 4096,
 					shell: false,
@@ -161,26 +163,46 @@ describe("VoiceHealthAlertDispatcher shutdown (FLY-2885 QA@1 review)", () => {
 		}
 	});
 
-	it("stops a sender still running at the bound so no shell outlives the daemon", async () => {
+	it("stops a sender still running at the bound, as a whole process group", async () => {
 		vi.useFakeTimers();
 		try {
-			const kill = vi.fn();
-			const execFile = vi.fn(() => ({ kill }) as unknown as ChildProcess);
+			const sender = Object.assign(new EventEmitter(), { pid: 4242 });
+			const execFile = vi.fn(() => sender as unknown as ChildProcess);
+			const killGroup = vi.fn((_pid: number, signal: NodeJS.Signals) => {
+				// bash ignores the TERM (it is waiting on curl); KILL ends it.
+				if (signal === "SIGKILL") queueMicrotask(() => sender.emit("close"));
+			});
 			const dispatcher = new VoiceHealthAlertDispatcher({
 				leadAlertPath: "/trusted/lead-alert.sh",
 				execFile,
+				killGroup,
 			});
 			dispatcher.notify(INTENT_A);
 			dispatcher.notify(INTENT_B);
 			const done = dispatcher.shutdown(8_000);
 			await vi.advanceTimersByTimeAsync(8_000);
+			expect(killGroup).toHaveBeenCalledWith(4242, "SIGTERM");
+			await vi.advanceTimersByTimeAsync(2_000);
+			expect(killGroup).toHaveBeenLastCalledWith(4242, "SIGKILL");
 			await expect(done).resolves.toBe(false);
-			expect(kill).toHaveBeenCalledWith("SIGTERM");
 			// The queued alert is not started after shutdown.
 			expect(execFile).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("kills the sender group at once on a forced exit", () => {
+		const sender = Object.assign(new EventEmitter(), { pid: 5151 });
+		const killGroup = vi.fn();
+		const dispatcher = new VoiceHealthAlertDispatcher({
+			leadAlertPath: "/trusted/lead-alert.sh",
+			execFile: () => sender as unknown as ChildProcess,
+			killGroup,
+		});
+		dispatcher.notify(INTENT_A);
+		dispatcher.killNow();
+		expect(killGroup).toHaveBeenCalledWith(5151, "SIGKILL");
 	});
 
 	it("starts no retry and takes no new alert once shut down", async () => {
