@@ -135,6 +135,58 @@ B 恢复 mkdir 成功、写自己的 `STARTED`；A 的 `stop` 恢复，把 B 的
 **与 Lead R2 裁定的关系。** R2 裁定"减法而非互斥锁"的前提是"减法后竞态在结构上消失"；D1-1 用可执行反例推翻了该前提。
 本修订保留减法（`STARTED` 一律算活）作为第一道防线，把互斥锁限定在关键区。已向 Lead 非阻塞报备，若 Lead 另有裁定则按 design-correction.md 追加修正。
 
+## 设计评审 D2 后修订（2026-09-26，Codex gpt-6-astra xhigh，CHANGES REQUESTED）— 目录互斥锁改为内核 advisory lock
+
+D2 用协议模型证明了两点：(D2-1 HIGH) 第 17 条把房间租约的 rename→墓碑→复核回收算法拿来做互斥锁，两个回收者读到同一个死 owner 后，
+第二个会把第一个**刚建好并正持有**的锁挪走，第三者随即 mkdir 进入 ⇒ 双持有者，第 18–22 条的前提不成立；(D2-2 MEDIUM) mkdir 与 owner.json 发布之间的崩溃留下无身份目录，
+"当活"则该 slot 一直超时到 teardown，"当死"则可能接管一个只是暂停中的活创建者。(D2-3 MEDIUM) T10–T12 的时序让 S1 在 S2 持锁时"继续完成"，与互斥合同矛盾。
+
+三条都接受。根因是"按路径回收目录"这类协议无法在没有第二把锁的情况下做到安全，所以**不再用目录做互斥**，改用仓库既有的保留锁文件 + 内核 advisory lock 模式
+（`scripts/lib/qa-slot-bridge.sh` `qa_slot_bridge_guard_acquire`、`scripts/lib/tmux-server-rescue.sh` `_tmux_rescue_python_lock`）。第 17 条整条作废，第 18–23 条中的"互斥锁"一律指本节的 guard。
+
+24. **保留锁文件** `<slotDir>/voice-run.guard`：`openSync(path, O_CREAT|O_RDWR|O_NOFOLLOW, 0o600)` 创建后**永不 unlink**（与 qa-slot-bridge 一致：并发开启者不会分裂到不同 inode）；
+    路径经 `trusted()` 校验在 slot 目录内、非软链接、模式 600；随 teardown 删除 slot 目录一起消失。文件内容无语义（不再有 owner.json，D2-2 的"发布前崩溃"状态不存在）。
+25. **持锁者 = stdin 系留的 helper 子进程**。`withVoiceRunGuard(slotDir, fn, {timeoutMs=15000})`（async）按仓库既有顺序选后端：
+    `lockf -t <s> <guard> cat`（macOS/BSD）→ `flock -w <s> <guard> cat`（Linux/CI）→ `python3 -c "<fcntl.flock LOCK_EX|LOCK_NB 轮询到期限；成功后 print('held') 并 sys.stdin.read()>"`（兜底，与 `_tmux_rescue_python_lock` 同源）。
+    Node 用 `spawn`（stdio `['pipe','pipe','pipe']`），等待 helper 输出 `held\n` 视为进入关键区；三种后端都不存在 ⇒ `voice_run_guard_unavailable`，`start`/`stop` fail closed。
+    `lockf`/`flock` 的 `cat` 在 stdin EOF 时退出，python 兜底同样以 stdin EOF 退出：**helper 的生命周期严格绑定 Node 父进程的管道**——父进程正常结束、抛异常、被 SIGTERM/SIGKILL，
+    写端都随之关闭，helper 退出，内核释放锁。不存在"持锁进程与其父子分裂后仍持锁"的形态（tmux-rescue 注释所警惕的情形）。
+26. **释放合同**：`fn` 的 `finally` 里 `child.stdin.end()` 并 `await` 子进程退出（上限 2s，超时 `SIGKILL`）；只关闭 fd、不删文件。锁释放**只**由 helper 进程退出触发。
+27. **等待与超时**：`lockf -t` / `flock -w` / python 轮询在 `timeoutMs` 内阻塞等待（不是 `Atomics.wait`）；到期 helper 以 rc 75/1 退出、未打印 `held` ⇒ `voice_run_guard_busy`。
+    等待发生在 helper 内，Node 事件循环不被阻塞。
+28. **daemon 不继承锁**：`start` 里 `spawn` daemon 时 stdio 为 `['ignore', logFd, logFd]`，helper 的管道由 libuv 以 CLOEXEC 创建，不会传给 daemon；
+    实现节点必须用测试证明：daemon 存活时 `stop` 仍能进入 guard（否则锁被 daemon 拖住，`stop` 永远 busy）。
+29. **关键区划分不变（第 18–21 条）**，只是从同步改为 `await withVoiceRunGuard(slotDir, () => ...)`：
+    (A) `start`：`acquireVoiceRoomLease` 整体（回执检查 + mkdir + owner.json + 同/异 slot 回收）；`recordVoiceRoomDaemon` 的 owner.json 读改写；写 `STARTED` 回执（重读 owner.json 仍是本 `leaseId` 才写）。
+    daemon spawn、Bridge 会话创建、`verifyRemote` 都在 guard 外。
+    (B) `stop`：进 guard 读回执，`STOPPED` 直接返回；出 guard 做 Bridge stop / `waitForTerminal` / kill daemon；再进 guard 执行 `settleStoppedVoiceRun`：**先重读回执**，`STOPPED` 或 `sessionId`/`leaseId` 非本 run ⇒ 返回当前回执不动任何东西；否则释放并写 `STOPPED`。
+    导出的同步函数 `acquireVoiceRoomLease` / `releaseVoiceRoomLease` / `settleStoppedVoiceRun` 签名不变（既有 24 条测试继续直接调用），guard 由调用方（`start`/`stop` 与新测试）套在外面。
+30. **`releaseVoiceRoomLease` 的 foreign-owner 分支明确化**（D2-3 末段）：先比 `leaseId`——`owner.leaseId !== options.leaseId` ⇒ 返回 `false`（不论 owner 属于哪个 slot）；
+    只有两边都没有 `leaseId`（合入前的旧锁 + 旧回执）才走 `slotDir` 检查，不同 slot 仍抛 `voice_room_lease_not_owned`（旧行为不变）。
+    于是"S1 释放后崩溃、异 slot B 已接管、S2 重试"⇒ S2 重读回执仍是 A 的 `STARTED`，释放返回 `false`（B 的锁不动），A 的回执被结清为 `STOPPED`，slot 可继续 `start`。
+31. **跨 slot 论证（原第 22 条）在第 24–27 条下成立**：同 slot 的 settle 串行且进锁后重读，S2 只会在 S1 完成后看到 `STOPPED` 退出；S2 在删除前暂停时 S1 根本进不了关键区，异 slot B 也拿不到仍存在的房间锁。不需要跨 slot 串行。
+32. 第 10、13 条按第 23 条措辞：安全性来自"同 slot 关键区由内核锁串行"，不再单独宣称结构性保证。
+
+**测试重写（替换 D1 的 T10–T15；全部用独立子进程 + 父级屏障文件，脚本仅在 `FLYWHEEL_VOICE_ROOM_TEST_BARRIER_DIR` 设置时于三个命名点等待屏障：`before-lease-remove` / `before-receipt-write` / `before-lease-mkdir`；非测试环境该变量不存在，代码路径为 no-op）：**
+
+| # | 场景 | 断言 |
+|---|------|------|
+| T10 | 同 slot 双 stop：S2 进 guard 后在 `before-lease-remove` 暂停；父级再起 S1 | S1 在 ≥500ms 内**未进入**关键区（无 `entered` 标记）；父级放行 S2 → S2 释放并写 STOPPED；S1 随后进锁读到 STOPPED 直接返回；锁目录不存在 |
+| T10r | 反向：S1 先完整完成；S2 后进 | S2 返回当前回执（STOPPED），无删除、无写入 |
+| T11 | 异 slot：S1 释放房间锁后、写 STOPPED 前在 `before-receipt-write` 暂停；父级起异 slot B 的 acquire | B `created:true`（房间锁是 B 的）；放行 S1 → S1 只写 A 的 STOPPED；随后 S2 进锁读 STOPPED 返回；B 的锁与回执原样 |
+| T11c | S1 释放后崩溃（父级 SIGKILL S1）；B 接管；S2 重试 | S2：释放返回 false、A 的回执结清 STOPPED、B 的锁不动 |
+| T12 | S2 在 `before-receipt-write` 暂停时起 S1 | S1 被挡；放行后回执归属正确（只写一次 STOPPED） |
+| T13 | 延迟预检：B 在 `before-lease-mkdir` 暂停；父级起 A 的 start-acquire | A 被挡 ≥500ms；放行 B → B `created:true`；A 随后 `created:false`（holder 活）；最终锁与回执同属一 run；反序（A 先完成并 stop）时 B 正常建锁 |
+| T14 | guard 忙与崩溃释放：持锁子进程被 `SIGKILL` | 下一次 `withVoiceRunGuard` 立即成功（无回收步骤）；活持有者时 `timeoutMs=300` 报 `voice_run_guard_busy` |
+| T15 | 旧格式（无 leaseId）锁 + 回执在 guard 下仍配对释放 | 与 T8 一致 |
+| T16 | 三竞争者 + 一个被 SIGKILL 的前持有者，各自进关键区时写"进入/离开"标记 | 同时处于关键区的数量始终 ≤ 1 |
+| T17 | daemon 存活时 `stop` 能进 guard（第 28 条） | 不 busy |
+| T18 | 三种后端都缺失（PATH 清空 + 无 python3） | `voice_run_guard_unavailable`，不建锁、不写回执 |
+
+修法前 T10/T12/T13/T16 必须为红（无 guard 时 S1 会进入、并发计数 >1）。新增 `process.kill` 登记 kill-path 清册（qa-only）。
+
+**评审环境说明。** Codex 沙箱内 `ps` 为 `EPERM`；T10–T18 依赖真实子进程与 `lockf`/`flock`/`python3`，实现节点需在本机与 CI 各跑一次。
+
 ## 已知限制
 
 - 合入前遗留的租约没有 `holder`/`daemon` 字段；若其回执也已删除，但一个未登记的旧 daemon 仍在跑，本判定无法识别，会按孤儿回收。
@@ -142,6 +194,8 @@ B 恢复 mkdir 成功、写自己的 `STARTED`；A 的 `stop` 恢复，把 B 的
 - 两个并发回收者同时抢一把**真正的孤儿**锁时，沿用 #1323 的墓碑 rename→复核→放回流程；「放回」那一步与第三个创建者之间的理论窗口
   是 #1323 已有行为，本单不另加互斥锁（Lead 裁定）。
 - 回执停在 `STARTED` 而 `stop` 又因 Bridge 不可用 / 会话不存在（404）失败时，该锁要等该 slot 下一次 teardown（Step 6b）才释放。
+- guard 依赖 `lockf` / `flock` / `python3` 三者之一；都缺失时 `start`/`stop` fail closed（`voice_run_guard_unavailable`），这是接受的可用性限制。
+- teardown 与 `stop` 并发操作同一 slot 仍不受保护（两者都是该 slot 的操作者）。
 
 ## 测试（先红后绿，`scripts/__tests__/fly2655-voice-room.test.mjs`，用临时 `root` + 临时 slot 目录，不碰真实 `/tmp` 租约）
 
