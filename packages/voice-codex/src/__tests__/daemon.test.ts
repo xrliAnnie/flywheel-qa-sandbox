@@ -1495,3 +1495,117 @@ describe("VoiceDaemon meeting floor (FLY-2701)", () => {
 		expect(sleeps.slice(0, 2)).toEqual([120_000, 60_000]);
 	});
 });
+
+describe("admission work longer than the lease (QA@3 H1)", () => {
+	// Virtual time: the lease expires 180 ms after each install unless renewed.
+	const TTL = 200;
+	const HTTP = 20;
+	const run = (start: () => Promise<{ founderPresent: boolean }>) => {
+		const liveLease = new VoiceLease(() => Date.now());
+		liveLease.install(Date.now(), TTL, HTTP);
+		const bridge = {
+			desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+			claim: vi.fn(async () => ({
+				lease: liveLease,
+				leaseToken: "lease",
+				leaseExpiresAt: "later",
+				projection,
+			})),
+			// Like bridge-client: a renewal re-installs the lease; a late one fences.
+			renew: vi.fn(async (_id: string, _token: string, lease: VoiceLease) => {
+				lease.install(Date.now(), TTL, HTTP);
+				return { state: "warming", leaseExpiresAt: "later" };
+			}),
+			renewRecovered: vi.fn(),
+			setState: vi.fn(async () => {}),
+			outbound: vi.fn(async () => []),
+			claimOutbound: vi.fn(async () => "attempt"),
+			receipt: vi.fn(async () => {}),
+		};
+		let started!: () => void;
+		const startDone = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const session = active({
+			start: vi.fn(async () => {
+				try {
+					return await start();
+				} finally {
+					started();
+				}
+			}),
+			// The session ends only after the admission-bearing start has returned.
+			waitForEnd: vi.fn(() =>
+				startDone.then(
+					() =>
+						new Promise<{ kind: "ended"; reason: "voice-stop" }>((resolve) =>
+							setTimeout(
+								() => resolve({ kind: "ended", reason: "voice-stop" }),
+								20,
+							),
+						),
+				),
+			),
+		});
+		const daemon = new VoiceDaemon({
+			bridge,
+			stateStore: { save: vi.fn(), list: vi.fn(() => []), remove: vi.fn() },
+			bootId: "22222222-2222-4222-8222-222222222222",
+			createSession: () => session,
+			recoverSession: vi.fn(),
+			sleep: vi.fn(() => new Promise((resolve) => setTimeout(resolve, 0))),
+			timing: {
+				idlePollMs: 5_000,
+				leaseRenewMs: 40,
+				leaseMissMax: 2,
+				presenceGraceMs: 10,
+				speechChunkTokens: 600,
+			},
+		});
+		return { daemon, bridge };
+	};
+	const drive = async (promise: Promise<unknown>) => {
+		let done = false;
+		void promise.finally(() => {
+			done = true;
+		});
+		for (let step = 0; step < 200 && !done; step++)
+			await vi.advanceTimersByTimeAsync(10);
+		return promise;
+	};
+
+	it("an asynchronous check lasting 2.5 lease periods keeps the session", async () => {
+		vi.useFakeTimers();
+		try {
+			const { daemon, bridge } = run(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 2.5 * TTL));
+				return { founderPresent: true };
+			});
+			expect(await drive(daemon.runOnce())).toEqual({
+				kind: "session_ended",
+				sessionId: SESSION_ID,
+				reason: "voice-stop",
+			});
+			expect(bridge.renew.mock.calls.length).toBeGreaterThanOrEqual(10);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("control: the same check blocking the event loop fences the lease", async () => {
+		vi.useFakeTimers();
+		try {
+			const { daemon } = run(async () => {
+				// The former execFileSync(codesign --deep) shape: time passes, no timer runs.
+				vi.setSystemTime(Date.now() + 2.5 * TTL);
+				return { founderPresent: true };
+			});
+			expect(await drive(daemon.runOnce())).toMatchObject({
+				kind: "session_failed",
+				reason: "lease_lost",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

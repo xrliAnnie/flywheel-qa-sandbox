@@ -154,18 +154,26 @@ it("keeps the event loop running while the deep signature check runs (QA@3 H1)",
 		if (command === node) return { stdout: "v25.6.1" };
 		throw new Error("unexpected command");
 	});
-	let ticks = 0;
-	const timer = setInterval(() => ticks++, 20);
+	// Virtual time: a heartbeat every 20 ms while the deep check takes 300 ms.
+	vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearInterval"] });
+	let beats = 0;
+	const timer = setInterval(() => beats++, 20);
 	try {
-		await expect(verifyBrowserHostIdentity(input, pin)).resolves.toMatchObject({
-			codesign: "verified",
+		let settled = false;
+		const check = verifyBrowserHostIdentity(input, pin).finally(() => {
+			settled = true;
 		});
-		// A lease heartbeat would have run many times during the 300 ms check.
-		expect(ticks).toBeGreaterThanOrEqual(5);
+		await vi.advanceTimersByTimeAsync(200);
+		// Still verifying, and every heartbeat in that window ran.
+		expect(settled).toBe(false);
+		expect(beats).toBe(10);
+		await vi.advanceTimersByTimeAsync(200);
+		await expect(check).resolves.toMatchObject({ codesign: "verified" });
 		expect(execFileSync).not.toHaveBeenCalled();
 		expect(spawnSync).not.toHaveBeenCalled();
 	} finally {
 		clearInterval(timer);
+		vi.useRealTimers();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
