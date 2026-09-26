@@ -197,3 +197,26 @@ QA 在 `cd30b6ee9` 判定失败，唯一阻塞项是判据 3（不留锁和孤�
 - 本机没有 529 房，daemon 级别的「空闲退出、SIGTERM 后进程确实退出」要在房内复测。
 - QA 诊断预加载脚本 `handles.cjs` 自己装了 `process.on("SIGTERM")`，会阻止 SIGTERM 的默认终止行为；判断「SIGTERM 能否停掉进程」时，请不要带这个预加载。
 - 插话（barge-in）有效样本不足，QA 已标为下一轮复验。本次返工没有改动插话相关代码。
+
+### 按 Lead 返工裁定 `c8e10764` 补齐（`68e3889c2`、`3a9875cc3`、`4e7ac3301`）
+
+| 裁定项 | 做法 | 测试（负对照） |
+|---|---|---|
+| ① 关腿时显式释放底层传输，不能只靠 `pc.close()` | leg 在 offer 后、answer 后、关闭前三个时点记下 werift 的全部 DTLS transport；`pc.close()` 之后逐个 `stop()`（DTLS 和 ICE），每次最多 2 s；关闭证据带 `transportsReleased` | 强制 `max-compat`（仅供测试的选项）会多建一个 transport，关闭后 UDP 句柄仍归零，`transportsReleased: 2`。去掉显式 stop，正好剩 2 个，用例失败 |
+| ② 空闲退出与 SIGTERM 都限时必退 | 收尾一开始（收到信号，或 idle 下 `run()` 返回）就挂 15 s 硬期限；清理完立即显式退出，不等事件循环排空。15 s 覆盖 5 s 关闭屏障和最后几次写 Bridge，早于 launchd 默认 20 s 的 ExitTimeOut；超时以退出码 1 强退并记下剩余句柄 | 子进程测试：先跑一场真实 werift 会话，留下 QA 看到的 2 个 UDP socket。SIGTERM 后在 grace 内以 0 退出；收尾卡住时在期限处以 1 退出；idle 退出以 0 退出。去掉退出调用，子进程退不出，用例失败 |
+| ③ 不改 Bridge 的 kickstart | 未改动 | — |
+| ④ 评估升级 werift | npm 上最新就是 0.24.4（2026-09-26 查询），无可升级版本；①、② 都已做 | — |
+
+返工评审 R1（gpt-5.6-sol，审 `dbb092f80`）结论：
+- `max-bundle` 修复正确：各代重连都用它；对端若不接受 BUNDLE，会有界失败并走 T7 清理。
+- 提出 1 条 MEDIUM：退出兜底可能切断正在发送的 lead 告警。已修（`4e7ac3301`）：
+  - 释放锁之后，给在途告警最多 8 s 送完；到时仍在跑的发送子进程直接终止。
+  - 收尾后不再接受新告警，也不再重试。
+  - 测试 3 条：在途告警送完再退；到时终止发送子进程且不启动排队项；收尾后不重试、不收新告警。
+
+验证：
+- `pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-voice-codex" typecheck` 全部 exit 0。
+- voice-codex `vitest related src/codex/WebRtcLeg.ts src/cli.ts src/shutdown-exit.ts src/health-alert.ts` 6 个文件 119/119 过。
+- teamlead `voice-health-alert-delivery.test.ts` 3/3 过。它是 `git grep` 按名字匹配到的，实际引用的是另一个模块 `voice-health-alert-route`，仍然跑了一遍；`ci-structure.test.sh` 的匹配是不同的脚本名，排除。
+
+下一轮 QA 的硬性要求（按 Lead）：真实 529 房连续 ≥3 场引擎 B，每场后 UDP 回到基线；最后一场后 daemon 在 idle 或 SIGTERM 的 grace 内真正退出，下一场能正常认领；插话补足有效样本。
