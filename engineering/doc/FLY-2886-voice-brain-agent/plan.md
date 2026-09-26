@@ -545,3 +545,11 @@ founder：「我们不需要gbrain了 可以把这个东西全机删掉」。宿
 - 常驻 manifest **有意变化**：与 §14.1 基线相比只少了 `gbrain` 集成行与 30 个 `knowledge.*` 操作（及随之变化的 digest），其余字段逐字节相同（`evidence/v12-resident-manifest-bytes.txt`）。
 - 留着没删：`host_config_unverified` 这个公开原因现在没有产生方（原先只有 gbrain 产生），它属于 §14.1 已批准的原因集合，删不删请 Lead 定；历史文档（FLY-2519 等）里的 gbrain 记录不改。
 
+### 14.9 QA@3 FAIL 返工（实现缺陷，设计不变）
+
+QA@3（`~/.flywheel/artifacts/FLY-2886/qa3/QA3-REPORT.md`，被测头 `f8e5d048`）判两处实现缺陷，都不改 §14 的设计：
+
+- **B1 broker socket 超长**：语音 parent 的 activation 根原在 `<voiceRoot>/codex-containers/container-*/admission/activation`，生产 voice 根 `~/.flywheel/voice` 下 broker socket 111 字节（上限 100），每场后台都降级。改为容器用 `mkdtemp(realpath(/tmp)/fw-vcap-)` 建短私有根（与常驻 `default-runtime` 的 `fw-cap-` 同法），登记为残留目录，降级 / 取消 / 关闭时一并删；子进程停不下的 `cleanup_pending` 情况与容器根一样保留。socket 长度不再随 HOME 与 voice 根变化（本机 50 字节）。
+- **H1 isolated 档阻塞租约**：`verifyBrowserHostIdentity`（main #1191）同步跑 `codesign --verify --deep`（负载下 27–45 s），本单把 parent 放进语音守护进程后阻塞租约续期（TTL 15 s）→ 整场 `voice_lease_fenced`。改为全部身份检查子进程走异步 `execFile`（超时、输出上限、清洗环境不变），常驻同一实现（只是不再阻塞）。检查本身仍在准入时限内；超时按 §14.2 降级。
+- 实现期真宿主预演改用与生产同长的 voice 根（`evidence/qa3-rework/`）。
+

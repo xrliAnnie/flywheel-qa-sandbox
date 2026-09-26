@@ -1,0 +1,2 @@
+{"case":"sync_execFileSync_control","codesign":"verified","ms":27074,"maxBlockMs":26963,"ticks":2}
+{"case":"async_verifyBrowserHostIdentity","codesign":"verified","warnings":["chrome_version_drift"],"ms":23267,"maxBlockMs":19,"ticks":449}

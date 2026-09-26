@@ -1,0 +1,3 @@
+{"layout":"old","result":"PARENT_ERR","ms":5666,"socketBytes":111,"message":"invalid v2 socket path"}
+{"layout":"new","result":"PARENT_OK","ms":7864,"voiceRootBytes":33,"codexHomeBytes":82,"activationRoot":"/private/tmp/fw-vcap-x9JuuV","socketBytes":50,"operations":50,"unavailableIntegrations":[{"id":"context7","reason":"baseline_drift"},{"id":"github","reason":"credential_missing"},{"id":"linear","reason":"credential_missing"}],"authInodeMatchesProduction":true,"mcp":["lead_actions"]}
+{"layout":"new","appServer":"STARTED","ms":2165,"accountType":"chatgpt","configOk":"verified","skillsOk":"verified","servers":[{"name":"lead_actions","tools":1}]}

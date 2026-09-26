@@ -102,3 +102,15 @@ teamlead 13 项失败分诊：`runtime-parent` 4 项与 `codex-runner-orphan-rea
 - founder 直令删除 gbrain（plan §14.8）：先红（`gbrain-removed.test.ts` 4 条全红，`evidence/v12-gbrain-removal.md`）后绿。
 - 仓库级守卫补登记（本单 v12 引入、此前相关测试范围没覆盖到的扫描型测试）：`kill-path-inventory.json` 补 voice-codex 残留回收的 4 处 kill 调用（`out-of-scope` / `qa-only`，由分类器按路径给出）；`child-process-census.json` 补 `node-runtime-closure.ts`（otool）与 `admission-residuals.ts`（ps）的同步子进程。这两条守卫在上一个 HEAD 上是红的，没被发现是因为按变更文件路径 grep 找不到全仓扫描型测试；本轮把全仓扫描型测试单独列出来跑（`evidence/v12-gbrain-removal.md`）。
 
+## 第四次恢复（QA@3 FAIL 返工，implement attempt 2，2026-09-26）
+
+QA@3 在 `f8e5d048` 判 FAIL：B1（生产布局 broker socket 111 字节 > 100，后台永远起不来）、H1（isolated 档同步 codesign 阻塞守护进程事件循环 34.5 s → 租约 fenced，整场失败）。plan §14.9。
+
+| 提交 | 内容 |
+|---|---|
+| `76f1e1163` | B1：容器把 parent activation 根放到 `mkdtemp(realpath(/tmp)/fw-vcap-)`，登记残留目录，降级/取消/关闭都删；生产布局回归测试（先红 221 字节） |
+| `1887416ad` | H1：浏览器宿主身份检查全部子进程改异步 `execFile`；事件循环心跳测试（先红）；child-process census 去掉原同步条目 |
+| `7943f52a8` | 2519 browser canary 改 `await`（异步后同步调用会变成静默放行） |
+
+验证（定向）：voice-codex `vitest related CodexVoiceContainer.ts` 70/70；teamlead `vitest related browser-host-identity/browser-worker` 23 文件 385/385；census 1/1、kill-path 5/5；lint 0 error；teamlead 与 voice-codex 构建、依赖方 typecheck 通过；测试后 `/private/tmp/fw-vcap-*` 零残留（查出并修掉 `cleanup_pending` 用例未清理）。
+

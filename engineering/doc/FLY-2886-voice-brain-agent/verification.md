@@ -97,3 +97,10 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 ## 6. 整机删除 gbrain 后的常驻 manifest（plan §14.8）
 
 同一 byte harness（`runtime-factory.test.ts` 桩、固定根、default / founder_chrome / isolated 三模式、generation 打码）：与 §14.1 后的基线相比，三份 manifest 都只少了 `gbrain` 集成行和 30 个 `knowledge.*` 操作，`manifestDigest` 随之变化，其余字段逐字节相同。原件在 `evidence/v12-resident-manifest-bytes.txt` 末节。
+
+## 7. QA@3 返工：生产长度根与事件循环（`evidence/qa3-rework/`）
+
+- 生产同长 voice 根（33 字节）真宿主零桩：旧布局 broker socket 111 字节 → `invalid v2 socket path`（复现 QA@3 B1）；新布局 `/private/tmp/fw-vcap-*` 50 字节 → parent 起来，capability app-server 用 82 字节的 codexHome 起来，订阅 `chatgpt`、配置与技能核过、MCP 只有 `lead_actions`。
+- 真 `codesign --verify --deep`：旧同步形态单次阻塞 26,963 ms；异步实现 23 s 内事件循环最大阻塞 19 ms。
+- §4 的预演用短临时根，遮住了 B1；此后真宿主预演一律用生产同长的根。
+
