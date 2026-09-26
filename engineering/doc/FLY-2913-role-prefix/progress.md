@@ -1,14 +1,13 @@
 ---
 issue: FLY-2913
 phase: design
-phaseCursor: 1/6
-updated: 2026-09-26T04:08:39.169Z
-nextStep: Complete launch and baseline evidence audit; write research and
-  implementation plan
+phaseCursor: 3/6
+updated: 2026-09-26T04:15:32.357Z
+nextStep: Validate evidence and plan; commit and request effective design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
-**phase**: design (1/6)
-**next**: Complete launch and baseline evidence audit; write research and implementation plan
+**phase**: design (3/6)
+**next**: Validate evidence and plan; commit and request effective design review
