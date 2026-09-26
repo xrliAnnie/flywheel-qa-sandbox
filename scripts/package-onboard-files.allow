@@ -11,12 +11,6 @@ README.md
 dist/run-bridge.js
 agents/generic-executor.md
 agents/qa-executor.md
-menus/shapes/code.yaml
-menus/shapes/prd.yaml
-menus/shapes/design.yaml
-menus/shapes/prototype.yaml
-menus/shapes/generic.yaml
-menus/shapes/simple_code.yaml
 # ── curated scripts (per-file; keep in sync with PO_SCRIPT_FILES + audit) ──
 scripts/flywheel-onboard.sh
 scripts/flywheel-buddy.sh
@@ -25,35 +19,23 @@ scripts/flywheel-setup.sh
 scripts/provision-fleet-host.sh
 scripts/daily-standup.sh
 scripts/flywheel-bridge-wrapper.sh
-scripts/flywheel-lead-wrapper-v2.sh
-scripts/flywheel-lead-attach.sh
-scripts/flywheel-view-attach.sh
-scripts/flywheel-node-status.sh
-scripts/restart-storm-gate.py
-scripts/lead-alert.sh
-scripts/meta-alert.sh
+scripts/flywheel-lead-wrapper.sh
 scripts/update-flywheel.sh
 scripts/converge-flywheel-bin.sh
-scripts/check-global-path-hygiene.sh
 scripts/linux-preflight.sh
 scripts/materialize-lead-manifests.sh
+scripts/com.flywheel.daily-standup.plist
+scripts/com.flywheel.updater.plist
 scripts/lib/buddy-escalate.sh
 scripts/lib/buddy-captain-preview.sh
 scripts/lib/buddy-connect.sh
 scripts/lib/fleet-sanitize.sh
 scripts/lib/host-config.sh
-scripts/lib/lead-address.sh
 scripts/lib/platform-deps.sh
 scripts/lib/script-sanity.sh
-scripts/lib/path-hygiene.sh
 scripts/lib/supervisor.sh
 scripts/lib/bridge-port.sh
-scripts/lib/lead-restart-lifecycle.sh
-scripts/lib/lead-body-sweep.sh
-scripts/lib/flywheel-log.sh
-scripts/lib/tmux-server-rescue.sh
-scripts/lib/lead-body-evidence.sh
-scripts/lib/bounded-run.sh
+scripts/lib/self-ship-queue.sh
 scripts/packaged/create-compat-mirror.sh
 scripts/packaged/bootstrap-services.sh
 scripts/packaged/restart-packaged-services.sh
@@ -71,21 +53,15 @@ node_modules/flywheel-teamlead/lead-rules-base/*
 node_modules/flywheel-teamlead/static/*
 # teamlead launcher runtime closure (per-file — ops/test scripts must NOT ship)
 node_modules/flywheel-teamlead/scripts/claude-lead.sh
-node_modules/flywheel-teamlead/scripts/lead-body.sh
 node_modules/flywheel-teamlead/scripts/codex-lead.sh
 node_modules/flywheel-teamlead/scripts/codex-lead-tui-home.sh
 node_modules/flywheel-teamlead/scripts/lead-rules-bundle.sh
 node_modules/flywheel-teamlead/scripts/apply-core-room-mention-gate.sh
 node_modules/flywheel-teamlead/scripts/find-window.sh
 node_modules/flywheel-teamlead/scripts/post-compact-bootstrap.sh
-node_modules/flywheel-teamlead/scripts/session-start-adopt-inflight.sh
 node_modules/flywheel-teamlead/scripts/inbox-ack-rule.md
 node_modules/flywheel-teamlead/scripts/screencapture-l3-skill.md
-node_modules/flywheel-teamlead/scripts/lib/lead-identity-preflight.sh
-node_modules/flywheel-teamlead/scripts/lib/lead-body-receipt.sh
-node_modules/flywheel-teamlead/scripts/lib/lead-session-authority.sh
-node_modules/flywheel-teamlead/scripts/lib/lead-session-resume-gate.sh
-node_modules/flywheel-teamlead/scripts/lib/session-ctx-usage.mjs
+node_modules/flywheel-teamlead/scripts/expect-dev-channels.exp
 node_modules/flywheel-teamlead/scripts/lib/mcp-inherit.sh
 node_modules/flywheel-teamlead/scripts/lib/reap-orphan-adapters.sh
 # staged vendored closures for registered disjoint dependency conflicts
@@ -107,7 +83,6 @@ node_modules/flywheel-claude-runner/dist/*
 # dist — the codex runner contract (materialized into $CODEX_HOME/AGENTS.md)
 # and the CODEX_HOME-aware rotation shim (FLYWHEEL_CODEX_BIN default).
 node_modules/flywheel-claude-runner/agents/codex-runner-contract.md
-node_modules/flywheel-claude-runner/agents/codex-account-registry.json
 node_modules/flywheel-claude-runner/bin/*
 node_modules/flywheel-dag-resolver/package.json
 node_modules/flywheel-dag-resolver/dist/*

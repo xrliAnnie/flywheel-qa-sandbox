@@ -78,14 +78,12 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 	async function startAndWait(
 		d: RunDispatcher,
 		labels?: string[],
-		overrides: Partial<Parameters<RunDispatcher["start"]>[0]> = {},
 	): Promise<BlueprintContext> {
 		await d.start({
 			issueId: "FLY-123",
 			projectName: "proj",
 			leadId: "product-lead",
 			...(labels && { issueLabels: labels }),
-			...overrides,
 		} as Parameters<RunDispatcher["start"]>[0]);
 		await d.drain();
 		expect(captured).toBeTruthy();
@@ -120,34 +118,6 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		const ctx = await startAndWait(dispatcher);
 		expect(ctx.runnerBackend).toBe("codex-tmux");
 		expect(ctx.runnerModel).toBe("gpt-5.5-codex");
-	});
-
-	it("Codex project model appears in the real start() window name", async () => {
-		dispatcher = makeDispatcher({
-			runner: { backend: "codex-tmux", model: "gpt-5.6-sol" },
-		});
-		const ctx = await startAndWait(dispatcher);
-		expect(ctx.runnerName).toBe("runner-codex-G");
-	});
-
-	it("Kimi project model appears in the real start() window name", async () => {
-		dispatcher = makeDispatcher({
-			runner: { backend: "kimi-tmux", model: "kimi-for-coding" },
-		});
-		const ctx = await startAndWait(dispatcher);
-		expect(ctx.runnerName).toBe("runner-kimi-K");
-	});
-
-	it("phase dispatch prefixes the resolved Codex model with its phase", async () => {
-		dispatcher = makeDispatcher();
-		const ctx = await startAndWait(dispatcher, undefined, {
-			sessionRole: "implement",
-			shareParentBranch: true,
-			ignoreRunnerLabelSelection: true,
-			dispatchVendor: "codex",
-			dispatchModel: "gpt-5.6-sol",
-		});
-		expect(ctx.runnerName).toBe("implement-codex-G");
 	});
 
 	// FLY-241: per-project Runner model override on the DEFAULT claude backend.
@@ -282,7 +252,46 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		expect(ctx.runnerBackend).toBe("codex-tmux");
 	});
 
-	it("a generalized no-transport role is unchanged", async () => {
+	// ── FLY-752: requireMailboxTransport forces a mailbox-capable QA lane ──
+
+	it("[FLY-752] requireMailboxTransport FORCES claude-tmux when project roles select a no-transport backend", async () => {
+		// A project whose runner role is antigravity (no-transport) would otherwise
+		// spawn a QA that can never receive a retest_wake → wedge the founder gate.
+		dispatcher = makeDispatcher({ runner: { backend: "antigravity-tmux" } });
+		await dispatcher.start({
+			issueId: "qa-issue",
+			projectName: "proj",
+			leadId: "product-lead",
+			issueLabels: [],
+			ignoreRunnerLabelSelection: true,
+			requireMailboxTransport: true,
+		} as Parameters<RunDispatcher["start"]>[0]);
+		await dispatcher.drain();
+		const ctx = captured as BlueprintContext;
+		expect(ctx.runnerBackend).toBe("claude-tmux");
+		expect(ctx.runnerTransportMode).not.toBe("none");
+	});
+
+	it("[FLY-752] requireMailboxTransport FORCES claude-tmux for a kimi role too, dropping the source model", async () => {
+		dispatcher = makeDispatcher({
+			runner: { backend: "kimi-tmux", model: "kimi-latest" },
+		});
+		await dispatcher.start({
+			issueId: "qa-issue",
+			projectName: "proj",
+			leadId: "product-lead",
+			issueLabels: [],
+			ignoreRunnerLabelSelection: true,
+			requireMailboxTransport: true,
+		} as Parameters<RunDispatcher["start"]>[0]);
+		await dispatcher.drain();
+		const ctx = captured as BlueprintContext;
+		expect(ctx.runnerBackend).toBe("claude-tmux");
+		// The no-transport role's model is dropped → Claude account default.
+		expect(ctx.runnerModel).toBeUndefined();
+	});
+
+	it("[FLY-752] WITHOUT requireMailboxTransport, a no-transport role is unchanged (byte-compat)", async () => {
 		dispatcher = makeDispatcher({ runner: { backend: "antigravity-tmux" } });
 		await dispatcher.start({
 			issueId: "qa-issue",

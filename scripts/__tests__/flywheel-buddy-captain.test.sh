@@ -52,7 +52,7 @@ done
 case "$url" in
   *brokenbridge*) exit 22 ;;
   *api/runs/active*) exit 0 ;;
-  *discord.com*/users/@me) printf '{"id":"22222222222222222","username":"stub"}\n200' ;;
+  *discord.com*/users/@me) printf '{"id":"bot1","username":"stub"}\n200' ;;
   *discord.com*/channels/*/messages/*) printf '\n204' ;;
   *discord.com*/channels/*/messages*)
     case "$method" in
@@ -78,28 +78,20 @@ make_fixture() {
   printf -- '---\nname: tad-eng-lead\n---\nTad\n' > "$h/Dev/qa-captain/.lead/tad-eng-lead/identity.md"
   jq -n --arg root "$h/Dev/qa-captain" '[
     { projectName:"qa-captain", projectRoot:$root, generalChannel:"C-gen",
-      summaryAggregatorLeadId:"cos-lead",
       memoryAllowedUsers:["100000000000000009"],
       linear:{team:"QAC", project:"qa-captain", label:"Qa-captain"},
       leads:[
         {agentId:"cos-lead", chatChannel:"C-cos", match:{labels:["Triage"]},
-         botTokenEnv:"CASS_BOT_TOKEN", botUserId:"11111111111111111",
-         summaryRole:"aggregator", canSpawnRunners:false},
+         botTokenEnv:"CASS_BOT_TOKEN", canSpawnRunners:false},
         {agentId:"tad-eng-lead", chatChannel:"C-eng", match:{labels:["Qa-captain"]},
-         department:"engineering", botTokenEnv:"TAD_BOT_TOKEN", botUserId:"22222222222222222",
-         summaryRole:"producer"}
+         department:"engineering", botTokenEnv:"TAD_BOT_TOKEN"}
       ] }]' > "$h/.flywheel/projects.json"
-  printf '{"granularity":"per-lead","setBy":"founder","setAt":"2026-08-27T00:00:00Z"}\n' \
-    > "$h/.flywheel/summary-config.json"
   printf 'CASS_BOT_TOKEN=fixture-cos-value\nTAD_BOT_TOKEN=fixture-eng-value\nDISCORD_GUILD_ID=G1\nDISCORD_OWNER_USER_ID=100000000000000009\n' > "$h/.flywheel/.env"
   chmod 600 "$h/.flywheel/.env"
   cat > "$h/.flywheel/setup-state.json" <<EOF
 {"version":2,
  "steps":{
-   "bots":{"status":"done","evidence":{"path":"c1","guildId":"G1","results":[
-     {"leadId":"cos-lead","botUserId":"11111111111111111","tokenEnvName":"CASS_BOT_TOKEN"},
-     {"leadId":"tad-eng-lead","botUserId":"22222222222222222","tokenEnvName":"TAD_BOT_TOKEN"}
-   ]}},
+   "bots":{"status":"done","evidence":{"path":"c1","guildId":"G1","results":[]}},
    "channels":{"status":"done","evidence":{"channels":{"cos":"C-cos","eng":"C-eng","general":"C-gen"},"founderId":"100000000000000009"}}
  },
  "buddy":{"identity":{"project":"qa-captain","department":"engineering","cosPersona":"Cass","engPersona":"Tad","linearTeam":"QAC","projectSlug":"","skillsRepo":"xrliAnnie/flywheel-skills"}}}

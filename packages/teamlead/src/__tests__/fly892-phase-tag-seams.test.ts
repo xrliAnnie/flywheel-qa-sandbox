@@ -1,13 +1,17 @@
 /**
  * FLY-892 Step 3: the message-level phase tag is injected at the founder-facing
- * Discord-post seams. A DAG workflow session's messages carry `[设计·Fable] `
+ * Discord-post seams. A three-stage phase session's messages carry `[设计·Fable] `
  * etc.; the shared automation marker remains the outermost prefix.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AutoQaEffects } from "../bridge/auto-qa-effects.js";
 import { AUTOMATED_MESSAGE_PREFIX } from "../bridge/automated-message.js";
-import { emitFounderThreadNotification } from "../bridge/founder-thread-notifier.js";
-import { ReviewThreadEffect } from "../bridge/review-thread-effect.js";
+import {
+	emitFounderMilestoneNotification,
+	emitFounderStuckNotification,
+	emitFounderThreadNotification,
+} from "../bridge/founder-thread-notifier.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
 
@@ -84,9 +88,48 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 		);
 		expect(posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}🧠`)).toBe(true);
 	});
+
+	it("milestone notification: phase session tags the header", async () => {
+		await emitFounderMilestoneNotification(
+			{
+				executionId: "e-qa",
+				issueId: "FLY-892",
+				projectName: "flywheel",
+				milestone: "completed",
+				thread,
+				botToken: "bot",
+				ownerUserId: OWNER,
+				phasePrefix: "[QA·Sonnet] ",
+			},
+			{ store, fetchImpl },
+		);
+		expect(
+			posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}[QA·Sonnet] `),
+		).toBe(true);
+	});
+
+	it("stuck notification: phase session tags the header", async () => {
+		await emitFounderStuckNotification(
+			{
+				executionId: "e-impl",
+				issueId: "FLY-892",
+				projectName: "flywheel",
+				leadAgentId: "flywheel-eng-lead",
+				stuckMinutes: 30,
+				thread,
+				botToken: "bot",
+				ownerUserId: OWNER,
+				phasePrefix: "[实现·Opus] ",
+			},
+			{ store, fetchImpl },
+		);
+		expect(
+			posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}[实现·Opus] 🚨`),
+		).toBe(true);
+	});
 });
 
-describe("FLY-892 Step 3: ReviewThreadEffect phase prefix", () => {
+describe("FLY-892 Step 3: AutoQaEffects.postThread phase prefix", () => {
 	let store: StateStore;
 	let posted: string[];
 	let fetchImpl: ReturnType<typeof vi.fn>;
@@ -118,7 +161,7 @@ describe("FLY-892 Step 3: ReviewThreadEffect phase prefix", () => {
 	] as never;
 
 	function makeEffects() {
-		return new ReviewThreadEffect({
+		return new AutoQaEffects({
 			store,
 			projects,
 			config: { discordBotToken: "bot" },
@@ -138,7 +181,7 @@ describe("FLY-892 Step 3: ReviewThreadEffect phase prefix", () => {
 		} as Session;
 	}
 
-	it("a DAG workflow QA phase session prepends the tag", async () => {
+	it("a three-stage QA phase session prepends the tag", async () => {
 		await makeEffects().postThread({
 			session: session({
 				chat_thread_role: "qa",

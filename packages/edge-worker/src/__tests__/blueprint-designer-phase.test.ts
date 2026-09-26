@@ -1,7 +1,7 @@
 /**
- * FLY-1059 — Blueprint DAG workflow Design phase mockup-first upgrade.
+ * FLY-1059 — Blueprint three-stage Design phase mockup-first upgrade.
  *
- * A UI/design-flavored DAG workflow Design phase runs the mockup-first Designer
+ * A UI/design-flavored three-stage Design phase runs the mockup-first Designer
  * workflow (concept images A/B/C → founder design gate → high-fidelity) instead
  * of the generic brainstorm→plan text design. Every other case — non-UI Design,
  * Implement, QA, single-session — stays byte-identical to before (the byte-compat
@@ -116,14 +116,6 @@ describe("Blueprint Design phase — mockup-first (FLY-1059)", () => {
 		expect(system).toContain("codex-image");
 		expect(system).toContain("gemini-image");
 		expect(system).toContain("phase_design_complete");
-		expect(system).toContain("Founder design HTML (MANDATORY)");
-		expect(system).toContain("--publish-only");
-		expect(system).toContain("5) honest boundary");
-		expect(system).toContain("INTERACTIVE COMMENT LAYER (MANDATORY");
-		expect(system).toContain("__CSP_NONCE__");
-		expect(system).toContain("DIAGRAMS AND LANGUAGE (MANDATORY");
-		expect(system).toContain("plain-language explanation");
-		expect(system).toContain("DESIGN-HTML ready:");
 		// it is NOT the generic text-design phase, and never the implement/land steps
 		expect(system).not.toContain(
 			"brainstorm → research → plan → design review",
@@ -144,11 +136,6 @@ describe("Blueprint Design phase — mockup-first (FLY-1059)", () => {
 		expect(system).toContain("DESIGN phase");
 		expect(system).toContain("brainstorm → research → plan → design review");
 		expect(system).toContain("phase_design_complete");
-		expect(system).toContain("Founder design HTML (MANDATORY)");
-		expect(system).toContain("INTERACTIVE COMMENT LAYER (MANDATORY");
-		expect(system).toContain("__CSP_NONCE__");
-		expect(system).toContain("DIAGRAMS AND LANGUAGE (MANDATORY");
-		expect(system).toContain("plain-language explanation");
 		// none of the mockup-first anchors leak in
 		expect(prompt).not.toContain("mockup-first");
 		expect(system).not.toContain("mockup-first Designer workflow");
@@ -174,8 +161,6 @@ describe("Blueprint Design phase — mockup-first (FLY-1059)", () => {
 		expect(system).toContain("Create a feature branch");
 		expect(system).not.toContain("mockup-first Designer workflow");
 		expect(system).not.toContain("DESIGN phase");
-		expect(system).not.toContain("INTERACTIVE COMMENT LAYER");
-		expect(system).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 
 	it("Implement/QA phases are unaffected by a UI label", async () => {
@@ -186,8 +171,6 @@ describe("Blueprint Design phase — mockup-first (FLY-1059)", () => {
 		});
 		expect(impl.system).toContain("IMPLEMENT phase");
 		expect(impl.system).not.toContain("mockup-first Designer workflow");
-		expect(impl.system).not.toContain("INTERACTIVE COMMENT LAYER");
-		expect(impl.system).not.toContain("DIAGRAMS AND LANGUAGE");
 
 		const qa = await buildPrompt({
 			sessionRole: "qa",
@@ -196,7 +179,5 @@ describe("Blueprint Design phase — mockup-first (FLY-1059)", () => {
 		});
 		expect(qa.system).toContain("QA phase");
 		expect(qa.system).not.toContain("mockup-first Designer workflow");
-		expect(qa.system).not.toContain("INTERACTIVE COMMENT LAYER");
-		expect(qa.system).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 });

@@ -6,7 +6,6 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
-import { isRunnerStopReport } from "flywheel-comm/runner-stop-report";
 import { readContentRef } from "flywheel-comm/utils";
 import type { MemoryService } from "flywheel-edge-worker";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
@@ -248,22 +247,10 @@ export async function generateBootstrap(
 				if (q.content_type === "ref" && q.content_ref) {
 					content = readContentRef(q.content_ref) ?? q.content;
 				}
-				if (isRunnerStopReport({ id: q.id, kind: q.kind, content })) {
-					continue;
-				}
 
 				if (q.checkpoint != null) {
 					// gate_question — preserve pre-FLY-161 gating: active session
 					// AND label-scope match (R2 Issue 3 + R3 Issue 1).
-					if (
-						!store.workflowGatePresentationDisposition({
-							executionId: q.from_agent,
-							checkpoint: q.checkpoint,
-							questionId: q.id,
-						}).allow
-					) {
-						continue;
-					}
 					if (
 						matchedSession.status !== "running" &&
 						matchedSession.status !== "awaiting_review" &&

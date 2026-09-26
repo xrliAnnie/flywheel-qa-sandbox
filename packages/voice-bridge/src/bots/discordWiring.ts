@@ -27,25 +27,14 @@ export interface DiscordDeps {
 	};
 	/** true when the guild member behind userId is a human (not a bot). */
 	isHumanFactory: (client: any, guildId: string) => (userId: string) => boolean;
-	// ---- FLY-967 /gemini assistant-mode surface (landed first) + FLY-545
-	// /glaw additions. Merge reconciliation per the first-to-land ruling:
-	// 967's landed seams keep their exact shapes; 545's clashing variants got
-	// distinct names (onChatInteraction / moveMemberDetailed) and its
-	// registerGuildCommand needs folded in as a strict superset (options?
-	// absent = 967's hardcoded topic option, byte-identical registration).
-	/** create/overwrite a guild slash command (instant, no global propagation).
-	 * options absent → the /gemini topic STRING option (FLY-967 behavior). */
+	// ---- FLY-967 /gemini assistant-mode surface ----
+	/** register a guild slash command with one optional STRING "topic" option. */
 	registerGuildCommand: (
 		client: any,
 		guildId: string,
-		spec: {
-			name: string;
-			description: string;
-			options?: readonly unknown[];
-		},
+		spec: { name: string; description: string },
 	) => Promise<void>;
-	/** dispatch chat-input invocations of `name` to the handler (projected
-	 * defer-first payload — the FLY-967 /gemini discipline). */
+	/** dispatch chat-input invocations of `name` to the handler. */
 	onChatCommand: (
 		client: any,
 		name: string,
@@ -54,14 +43,6 @@ export interface DiscordDeps {
 			userId: string;
 			reply: (text: string, opts?: { joinUrl?: string }) => Promise<void>;
 		}) => void,
-	) => void;
-	/** FLY-545 /glaw: dispatch chat-input invocations of `name` to the handler
-	 * with the RAW interaction (GlawCommand does its own defer/options/
-	 * components projection call-site-locally). */
-	onChatInteraction: (
-		client: any,
-		name: string,
-		cb: (interaction: any) => void,
 	) => void;
 	sendMessage: (client: any, channelId: string, text: string) => Promise<void>;
 	/** FLY-1065: a channel message whose id we keep (the TIV status anchor). */
@@ -93,15 +74,6 @@ export interface DiscordDeps {
 		guildId: string,
 		channelId: string,
 	) => Promise<number>;
-	/** the voice channel THIS user is in right now (null = not in voice).
-	 * Read from the gateway voiceStates cache — consistent with the
-	 * voiceStateUpdate stream, so a leave processed before the probe can
-	 * never come back as a stale "present" (Codex R14 HIGH-2). */
-	userVoiceChannelId: (
-		client: any,
-		guildId: string,
-		userId: string,
-	) => Promise<string | null>;
 	/** MOVE_MEMBERS; false on missing permission / member not in voice. */
 	moveMember: (
 		client: any,
@@ -109,28 +81,6 @@ export interface DiscordDeps {
 		userId: string,
 		channelId: string,
 	) => Promise<boolean>;
-	/** FLY-545 zero-tap MOVE_MEMBERS; distinguishes "she isn't in voice"
-	 * (Join button is the path in) from a real failure. */
-	moveMemberDetailed: (
-		client: any,
-		guildId: string,
-		userId: string,
-		channelId: string,
-	) => Promise<"moved" | "not-in-voice" | "failed">;
-	/** guild display name for a (bot) user id — AddressRouter aliases. */
-	memberDisplayName: (
-		client: any,
-		guildId: string,
-		userId: string,
-	) => Promise<string | undefined>;
-	/** TIV message port (post/edit) on a channel. */
-	tivPort: (
-		client: any,
-		channelId: string,
-	) => {
-		post(content: string): Promise<{ id: string }>;
-		edit(messageId: string, content: string): Promise<void>;
-	};
 	/** tear down a voice connection (orchestrator leaves after the meeting). */
 	leaveVoice: (conn: any) => void;
 	/** connection liveness (ears down/up degradation signals). */
@@ -239,14 +189,11 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 		// by the staged E2E, not unit tests — discordWiring discipline) ----
 
 		registerGuildCommand: async (client: any, guildId: string, spec) => {
-			// guild-scoped commands propagate instantly, unlike global ones.
-			// options absent = 967's /gemini topic option, byte-identical to the
-			// pre-merge registration; /glaw passes its own options explicitly.
 			const guild = await client.guilds.fetch(guildId);
 			await guild.commands.create({
 				name: spec.name,
 				description: spec.description,
-				options: spec.options ?? [
+				options: [
 					{
 						type: 3, // STRING
 						name: "topic",
@@ -266,53 +213,6 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 				);
 			});
 		},
-
-		onChatInteraction: (client: any, name: string, cb) => {
-			client.on("interactionCreate", (interaction: any) => {
-				if (!interaction.isChatInputCommand?.()) return;
-				if (interaction.commandName !== name) return;
-				cb(interaction);
-			});
-		},
-
-		moveMemberDetailed: async (
-			client: any,
-			guildId: string,
-			userId: string,
-			channelId: string,
-		) => {
-			try {
-				const guild = await client.guilds.fetch(guildId);
-				await guild.members.edit(userId, { channel: channelId });
-				return "moved";
-			} catch (err: any) {
-				// 40032 = "Target user is not connected to voice." — the expected
-				// she-is-not-in-a-VC case; everything else is a real failure.
-				return err?.code === 40032 ? "not-in-voice" : "failed";
-			}
-		},
-
-		memberDisplayName: async (client: any, guildId: string, userId: string) => {
-			try {
-				const guild = await client.guilds.fetch(guildId);
-				const member = await guild.members.fetch(userId);
-				return member?.displayName ?? member?.user?.username;
-			} catch {
-				return undefined;
-			}
-		},
-
-		tivPort: (client: any, channelId: string) => ({
-			post: async (content: string) => {
-				const channel = await client.channels.fetch(channelId);
-				const msg = await channel.send(content);
-				return { id: msg.id };
-			},
-			edit: async (messageId: string, content: string) => {
-				const channel = await client.channels.fetch(channelId);
-				await channel.messages.edit(messageId, content);
-			},
-		}),
 
 		sendMessage: async (client: any, channelId: string, text: string) => {
 			const channel = await client.channels.fetch(channelId);
@@ -350,18 +250,6 @@ export async function createDiscordDeps(): Promise<DiscordDeps> {
 		) => {
 			const guild = await client.guilds.fetch(guildId);
 			return countHumansInVoiceChannel(guild, channelId);
-		},
-
-		userVoiceChannelId: async (
-			client: any,
-			guildId: string,
-			userId: string,
-		) => {
-			// gateway cache only — there is no per-user voice-state REST endpoint,
-			// and the cache is exactly what voiceStateUpdate mutates, so this can
-			// never race a leave the forwarder already processed.
-			const guild = await client.guilds.fetch(guildId);
-			return guild.voiceStates?.cache?.get(userId)?.channelId ?? null;
 		},
 
 		voiceConnHandle: (conn: any): VoiceConnHandle => ({
@@ -509,14 +397,11 @@ export async function handleChatInteraction(
 }
 
 /**
- * Resource factory. "raw-stream" sources are headerless 48kHz s16le stereo
- * PCM (AssistantSpeaker turn streams, GeminiTurnMouth) and MUST be declared
- * StreamType.Raw — the default (StreamType.Arbitrary) sends headerless PCM
- * through an ffmpeg probe that mis-decodes it (Annie round-2: garbled
- * assistant voice). Plain "stream" sources (LeadSpeaker's TTS synth output)
- * and file sources keep the ffmpeg probe path: they have probeable headers.
- * (545/967 merge reconciliation: 545's explicit "raw-stream" kind is the
- * disambiguation — 967's AssistantSpeaker moved onto it.)
+ * Resource factory. Stream sources are AssistantSpeaker's raw 48kHz s16le
+ * stereo PCM and MUST be declared StreamType.Raw — the default
+ * (StreamType.Arbitrary) sends headerless PCM through an ffmpeg probe that
+ * mis-decodes it (Annie round-2: garbled assistant voice). File sources keep
+ * the ffmpeg path: files have probeable headers.
  */
 export function makeCreateResource(voiceLib: {
 	// method syntax (bivariant) so the real @discordjs/voice module and the
@@ -527,11 +412,9 @@ export function makeCreateResource(voiceLib: {
 	return (src) =>
 		src.kind === "file"
 			? voiceLib.createAudioResource(src.path)
-			: src.kind === "raw-stream"
-				? voiceLib.createAudioResource(src.stream as Readable, {
-						inputType: voiceLib.StreamType.Raw,
-					})
-				: voiceLib.createAudioResource(src.stream as Readable);
+			: voiceLib.createAudioResource(src.stream as Readable, {
+					inputType: voiceLib.StreamType.Raw,
+				});
 }
 
 /**

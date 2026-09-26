@@ -2,102 +2,21 @@
  * FLY-22: RunDispatcher unit tests.
  */
 
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
 import {
-	launchCommitPath,
 	type ProjectRuntime,
 	preRegistrationVendor,
 	RetryDispatcher,
 	RunDispatcher,
 	runnerDisplayName,
 } from "../bridge/run-dispatcher.js";
-import * as runInfraModule from "../bridge/run-infra.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
-import { StateStore } from "../StateStore.js";
 
 // Mock flywheel-core openTmuxViewer (no-op in tests)
 vi.mock("flywheel-core", async (importOriginal) => {
 	const mod = (await importOriginal()) as Record<string, unknown>;
 	return { ...mod, openTmuxViewer: vi.fn() };
-});
-
-type PhaseRetryProbe = (
-	projectRoot: string,
-	branch: string,
-) =>
-	| { kind: "found"; sha: string }
-	| { kind: "missing" }
-	| { kind: "indeterminate"; error: string };
-
-describe("FLY-1257 phase retry branch-tip probe", () => {
-	const dirs: string[] = [];
-	const probe = () =>
-		(
-			runInfraModule as unknown as {
-				probePhaseRetryBranchTip?: PhaseRetryProbe;
-			}
-		).probePhaseRetryBranchTip;
-
-	function git(cwd: string, args: string[]): string {
-		return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
-	}
-
-	function makeRepo(): string {
-		const dir = mkdtempSync(join(tmpdir(), "fly1257-phase-retry-"));
-		dirs.push(dir);
-		git(dir, ["init", "-q"]);
-		git(dir, ["config", "user.email", "test@example.com"]);
-		git(dir, ["config", "user.name", "Flywheel Test"]);
-		writeFileSync(join(dir, "base.txt"), "base\n");
-		git(dir, ["add", "base.txt"]);
-		git(dir, ["commit", "-qm", "base"]);
-		return dir;
-	}
-
-	afterEach(() => {
-		for (const dir of dirs.splice(0))
-			rmSync(dir, { recursive: true, force: true });
-	});
-
-	it("returns found with the fully-qualified local branch tip", () => {
-		const dir = makeRepo();
-		const branch = "flywheel-FLY-1257";
-		git(dir, ["branch", branch]);
-		const expected = git(dir, ["rev-parse", "HEAD"]);
-		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(dir, branch)).toEqual({ kind: "found", sha: expected });
-	});
-
-	it("returns missing for a confirmed absent branch", () => {
-		const dir = makeRepo();
-		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(dir, "flywheel-FLY-1257")).toEqual({ kind: "missing" });
-	});
-
-	it("same-name tag cannot impersonate the missing refs/heads branch", () => {
-		const dir = makeRepo();
-		const name = "flywheel-FLY-1257";
-		git(dir, ["tag", name]);
-		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(dir, name)).toEqual({ kind: "missing" });
-	});
-
-	it("fatal git/repository errors are indeterminate, never missing", () => {
-		const dir = mkdtempSync(join(tmpdir(), "fly1257-not-repo-"));
-		dirs.push(dir);
-		mkdirSync(join(dir, "nested"));
-		expect(probe()).toBeTypeOf("function");
-		expect(probe()?.(join(dir, "nested"), "flywheel-FLY-1257")).toMatchObject({
-			kind: "indeterminate",
-		});
-	});
 });
 
 function mockBlueprint() {
@@ -118,275 +37,86 @@ function makeRuntime(projectName: string): [string, ProjectRuntime] {
 	];
 }
 
-class CleanupObservingRunDispatcher extends RunDispatcher {
-	cleanupCalls = 0;
-
-	protected override preRegisterCommDb(): void {}
-
-	protected override cleanupPreRegistration(): void {
-		this.cleanupCalls += 1;
-	}
-
-	simulateForeignInflightAbort(
-		key: string,
-		failedExecutionId: string,
-		liveExecutionId: string,
-	): string | undefined {
-		this.inflight.set(key, {
-			executionId: liveExecutionId,
-			promise: Promise.resolve(),
-		});
-		this.abortPreLaunch(key, failedExecutionId, "TestProject", false);
-		return this.inflight.get(key)?.executionId;
-	}
-
-	seedInflight(issueId: string, role: string, executionId: string): void {
-		this.inflight.set(this.inflightKey(issueId, role), {
-			executionId,
-			promise: new Promise(() => {}),
-		});
-	}
-}
-
-function cleanupDispatcherWithTerminalProbe(
-	runtimes: Map<string, ProjectRuntime>,
-	probe: (executionId: string) => boolean,
-): CleanupObservingRunDispatcher {
-	return new CleanupObservingRunDispatcher(
-		runtimes,
-		[],
-		RunnerAdmissionController.alwaysAdmit(),
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		probe,
-	);
-}
-
 describe("RunDispatcher", () => {
-	it("keeps both entry lanes visible while pre-claim admission awaits", async () => {
-		const store = await StateStore.create(":memory:");
-		const barrier = new AdmissionCrossingBarrier();
-		const resolvers: Array<
-			(value: { admitted: boolean; reason?: string }) => void
-		> = [];
-		const dispatcher = runInfraModule.createRunInfraDispatcher({
-			store,
-			projectRuntimes: new Map([makeRuntime("TestProject")]),
-			cleanupHandles: [],
-			dispatcherClass: CleanupObservingRunDispatcher,
-			admissionCrossingBarrier: barrier,
-			doaBackoffAdmission: () =>
-				new Promise((resolve) => {
-					resolvers.push(resolve);
-				}),
-		});
-
-		const start = dispatcher.start({
-			issueId: "FLY-1944-start",
-			projectName: "TestProject",
-		});
-		expect(barrier.snapshot()).toEqual({ start: 1, dispatch: 0, total: 1 });
-		resolvers.shift()?.({ admitted: false, reason: "test-hold" });
-		await expect(start).rejects.toThrow("test-hold");
-		expect(barrier.snapshot()).toEqual({ start: 0, dispatch: 0, total: 0 });
-
-		const retry = dispatcher.dispatch({
-			oldExecutionId: "old",
-			issueId: "FLY-1944-retry",
-			projectName: "TestProject",
-			runAttempt: 2,
-		});
-		expect(barrier.snapshot()).toEqual({ start: 0, dispatch: 1, total: 1 });
-		resolvers.shift()?.({ admitted: false, reason: "test-hold" });
-		await expect(retry).rejects.toThrow("test-hold");
-		expect(barrier.snapshot()).toEqual({ start: 0, dispatch: 0, total: 0 });
-		store.close();
-	});
-
-	it("does not delete another launch's inflight entry during a pre-launch abort", () => {
-		const dispatcher = new CleanupObservingRunDispatcher(
-			new Map([makeRuntime("TestProject")]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-		);
-		expect(
-			dispatcher.simulateForeignInflightAbort(
-				"FLY-1718:main",
-				"failed-before-inflight",
-				"live-launch",
-			),
-		).toBe("live-launch");
-	});
-
-	it("returns a non-rejecting typed precommit outcome for a generalized tmux hold", async () => {
+	it("FLY-1244 admits durable QA before spawn and passes its scoped credential", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
-		vi.mocked(runtime.blueprint.run).mockResolvedValue({
-			success: false,
-			error: "tmux session ensure held: saturated",
-			launchFailure: {
-				code: "LAUNCH_TMUX_SESSION_HELD",
-				reason: "saturated",
-				physicalEvidence: "absent",
-			},
-		});
-		const dispatcher = new CleanupObservingRunDispatcher(
+		const shadow = {
+			onSpawnDispatch: vi.fn(),
+			onDispatchFailed: vi.fn(),
+		};
+		const admission = {
+			admit: vi.fn().mockReturnValue({ credential: "qa-credential" }),
+		};
+		const dispatcher = new RunDispatcher(
 			new Map([[name, runtime]]),
 			[],
 			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			shadow,
+			admission,
 		);
 
 		const result = await dispatcher.start({
-			issueId: "FLY-1638",
+			issueId: "FLY-1244",
 			projectName: "TestProject",
-			leadId: "flywheel-eng-lead",
-			generalizedExecution: {
-				engineOwned: true,
-				executionId: "launch-exec",
-				activationId: "activation-launch-exec",
-				runId: "launch-run",
-				nodeId: "execute",
-				attempt: 1,
-				snapshotDigest: "digest",
-				gateCarrierEpoch: 0,
-				dispatch: { vendor: "claude", model: "claude-opus-5" },
-				capabilities: {},
-				agentContent: "Execute.",
-				idempotencyKey: "launch-key",
-				launchGateToken: "launch-token",
-				commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
-				projectTurn: vi.fn(() => ({
-					ok: true,
-					idempotentReplay: false,
-				})),
-			},
+			sessionRole: "qa",
+			shareParentBranch: true,
+			shadowContext: { node: "qa", attempt: 2 },
 		});
 
-		await expect(result.launchOutcome).resolves.toEqual({
-			status: "precommit_failed",
-			failure: {
-				code: "LAUNCH_TMUX_SESSION_HELD",
-				reason: "saturated",
-				physicalEvidence: "absent",
-			},
-		});
-	});
-
-	it("fails closed before launch when a design node has no resolved Lead", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const dispatcher = new RunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-		);
-
-		await expect(
-			dispatcher.start({
-				issueId: "FLY-1404",
-				projectName: "TestProject",
-				sessionRole: "design",
-				shareParentBranch: true,
-			}),
-		).rejects.toThrow(/design-node.*resolved Lead/i);
-		expect(runtime.blueprint.run).not.toHaveBeenCalled();
-		expect(dispatcher.getInflightCount()).toBe(0);
-	});
-
-	it("fails closed before launch for an illegal generalized design capability", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const dispatcher = new RunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-		);
-
-		await expect(
-			dispatcher.start({
-				issueId: "FLY-1404",
-				projectName: "TestProject",
-				leadId: "flywheel-eng-lead",
-				generalizedExecution: {
-					engineOwned: true,
-					executionId: "design-exec",
-					runId: "design-run",
-					nodeId: "design",
-					attempt: 1,
-					snapshotDigest: "digest",
-					dispatch: {
-						vendor: "codex",
-						model: "gpt-5.6-sol",
-						effort: "high",
-					},
-					capabilities: {
-						shared_branch_writer: false,
-						completion_route: "phase_design_complete",
-					},
-					agentContent: "Design the bounded surface.",
-					idempotencyKey: "design-key",
-				},
-			}),
-		).rejects.toThrow(/design-node.*shared branch writer/i);
-		expect(runtime.blueprint.run).not.toHaveBeenCalled();
-	});
-
-	it("marks a fresh credential-backed generalized execution as submission-expected", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const dispatcher = new RunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-		);
-
-		await dispatcher.start({
-			issueId: "FLY-1425",
+		expect(admission.admit).toHaveBeenCalledWith({
 			projectName: "TestProject",
-			leadId: "flywheel-eng-lead",
-			generalizedExecution: {
-				engineOwned: true,
-				executionId: "qa-engine-exec",
-				activationId: "activation-qa-engine-exec",
-				runId: "run-engine",
-				nodeId: "qa",
-				attempt: 1,
-				snapshotDigest: "digest",
-				dispatch: {
-					vendor: "codex",
-					model: "gpt-5.6-sol",
-					effort: "high",
-				},
-				capabilities: {
-					emits_decisions: true,
-					completion_route: "no_code",
-				},
-				agentContent: "Verify and submit the QA decision.",
-				submissionCredential: "decision-ticket",
-				idempotencyKey: "qa-engine-key",
-				projectTurn: vi.fn(() => ({
-					ok: true,
-					idempotentReplay: false,
-				})),
-			},
+			issueId: "FLY-1244",
+			executionId: result.executionId,
+			node: "qa",
+			attempt: 2,
 		});
-		await dispatcher.drain();
-
 		const run = (
 			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
 		).run;
 		expect(run.mock.calls[0]?.[2]).toMatchObject({
-			launchCommitPath: launchCommitPath("qa-engine-exec"),
-			workflowSubmissionCredential: "decision-ticket",
-			workflowSubmissionExpected: true,
+			workflowSubmissionCredential: "qa-credential",
 		});
 	});
+
+	it("FLY-1244 fails closed before Blueprint when durable QA admission fails", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const dispatcher = new RunDispatcher(
+			new Map([[name, runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ onSpawnDispatch: vi.fn(), onDispatchFailed: vi.fn() },
+			{
+				admit: vi.fn(() => {
+					throw new Error("binding conflict");
+				}),
+			},
+		);
+
+		await expect(
+			dispatcher.start({
+				issueId: "FLY-1244",
+				projectName: "TestProject",
+				sessionRole: "qa",
+				shareParentBranch: true,
+				shadowContext: { node: "qa", attempt: 1 },
+			}),
+		).rejects.toThrow("workflow claims admission failed");
+		expect(
+			(runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }).run,
+		).not.toHaveBeenCalled();
+		expect(dispatcher.getInflightCount()).toBe(0);
+	});
+
 	it("start() returns executionId and issueId", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(
@@ -404,77 +134,6 @@ describe("RunDispatcher", () => {
 		expect(result.issueId).toBe("GEO-1");
 	});
 
-	it("clears guarded inflight state when setup throws before Blueprint.run", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const onSpawnFailed = vi.fn();
-		const resumeComputer = vi
-			.fn()
-			.mockImplementationOnce(() => {
-				throw new Error("resume probe exploded");
-			})
-			.mockReturnValue(null);
-		const dispatcher = new CleanupObservingRunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-			undefined,
-			undefined,
-			resumeComputer,
-			undefined,
-			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
-		);
-
-		await expect(
-			dispatcher.start({ issueId: "GEO-SETUP", projectName: "TestProject" }),
-		).rejects.toThrow("resume probe exploded");
-		expect(dispatcher.getInflightCount()).toBe(0);
-		expect(dispatcher.cleanupCalls).toBe(1);
-		expect(onSpawnFailed).toHaveBeenCalledOnce();
-
-		await expect(
-			dispatcher.start({ issueId: "GEO-SETUP", projectName: "TestProject" }),
-		).resolves.toMatchObject({ issueId: "GEO-SETUP" });
-		expect(runtime.blueprint.run).toHaveBeenCalledOnce();
-	});
-
-	it("FLY-1279 uses a caller-prebound successor execution id", async () => {
-		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(
-			runtimes,
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-		);
-
-		const result = await dispatcher.start({
-			issueId: "FLY-1279-QA",
-			projectName: "TestProject",
-			sessionRole: "qa",
-			successorExecutionId: "qa-recovery-exec",
-		});
-
-		expect(result.executionId).toBe("qa-recovery-exec");
-	});
-
-	it("FLY-1259: start() carries designBackend into Blueprint context", async () => {
-		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(
-			runtimes,
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-		);
-
-		await dispatcher.start({
-			issueId: "FLY-1259",
-			projectName: "TestProject",
-			designBackend: "codex",
-		});
-		await new Promise((resolve) => setImmediate(resolve));
-
-		const blueprint = runtimes.get("TestProject")!.blueprint;
-		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
-		expect(ctx?.designBackend).toBe("codex");
-	});
-
 	it("start() rejects when shutting down", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(
@@ -487,25 +146,6 @@ describe("RunDispatcher", () => {
 		await expect(
 			dispatcher.start({ issueId: "GEO-1", projectName: "TestProject" }),
 		).rejects.toThrow("shutting down");
-	});
-
-	it("admission pause returns its typed retry contract before shutdown", async () => {
-		const runtimes = new Map([makeRuntime("TestProject")]);
-		const admission = RunnerAdmissionController.alwaysAdmit();
-		admission.setAdmissionPauseProbe(() => ({
-			detail: "deployment pause",
-			retryAfterSeconds: 90,
-		}));
-		const dispatcher = new RunDispatcher(runtimes, [], admission);
-		dispatcher.stopAccepting();
-
-		await expect(
-			dispatcher.start({ issueId: "FLY-1638", projectName: "TestProject" }),
-		).rejects.toMatchObject({
-			name: "AdmissionDeferredError",
-			reason: "admission_paused",
-			retryAfterSeconds: 90,
-		});
 	});
 
 	it("FLY-123 WS-D (P4): start() defers under resource pressure (not a count cap)", async () => {
@@ -614,271 +254,9 @@ describe("RunDispatcher", () => {
 		await dispatcher.drain();
 		expect(dispatcher.getInflightCount()).toBe(0);
 	});
-
-	it.each(["resolved failure", "rejected launch"] as const)(
-		"clears a generalized %s before publishing its launch outcome",
-		async (failureMode) => {
-			let resolveFirst!: (result: { success: false; error: string }) => void;
-			let rejectFirst!: (error: Error) => void;
-			const firstRun = new Promise<{ success: false; error: string }>(
-				(resolve, reject) => {
-					resolveFirst = resolve;
-					rejectFirst = reject;
-				},
-			);
-			const blueprint = {
-				run: vi
-					.fn()
-					.mockImplementationOnce(() => firstRun)
-					.mockImplementationOnce(() => new Promise(() => {})),
-			};
-			const runtime: ProjectRuntime = {
-				blueprint: blueprint as unknown as ProjectRuntime["blueprint"],
-				projectRoot: "/tmp/test",
-				tmuxSessionName: "runner-test",
-			};
-			const dispatcher = new CleanupObservingRunDispatcher(
-				new Map([["TestProject", runtime]]),
-				[],
-				RunnerAdmissionController.alwaysAdmit(),
-			);
-			const generalizedExecution = (executionId: string) => ({
-				engineOwned: true as const,
-				executionId,
-				activationId: `activation-${executionId}`,
-				runId: "run-1",
-				nodeId: "implement",
-				attempt: 1,
-				snapshotDigest: "digest",
-				gateCarrierEpoch: 0,
-				dispatch: { vendor: "codex" as const, model: "gpt-5.6-sol" },
-				capabilities: {},
-				agentContent: "Implement.",
-				idempotencyKey: `launch-${executionId}`,
-				launchGateToken: `token-${executionId}`,
-				commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
-				projectTurn: vi.fn(() => ({
-					ok: true as const,
-					idempotentReplay: false,
-				})),
-			});
-
-			const first = await dispatcher.start({
-				issueId: "FLY-1775",
-				projectName: "TestProject",
-				sessionRole: "implement",
-				generalizedExecution: generalizedExecution("exec-old"),
-			});
-			const replacement = first.launchOutcome?.then(() =>
-				dispatcher.start({
-					issueId: "FLY-1775",
-					projectName: "TestProject",
-					sessionRole: "implement",
-					generalizedExecution: generalizedExecution("exec-new"),
-				}),
-			);
-
-			if (failureMode === "resolved failure") {
-				resolveFirst({ success: false, error: "hold_lock_unavailable" });
-			} else {
-				rejectFirst(new Error("hold_lock_unavailable"));
-			}
-
-			await expect(replacement).resolves.toMatchObject({
-				executionId: "exec-new",
-			});
-			expect(blueprint.run).toHaveBeenCalledTimes(2);
-		},
-	);
-
-	it("evicts an irreversible-terminal execution and a late old settle cannot erase its replacement", async () => {
-		let resolveOld!: (result: { success: true }) => void;
-		const blueprint = {
-			run: vi
-				.fn()
-				.mockImplementationOnce(
-					() =>
-						new Promise<{ success: true }>((resolve) => {
-							resolveOld = resolve;
-						}),
-				)
-				.mockImplementationOnce(() => new Promise(() => {})),
-		};
-		const runtime: ProjectRuntime = {
-			blueprint: blueprint as unknown as ProjectRuntime["blueprint"],
-			projectRoot: "/tmp/test",
-			tmuxSessionName: "runner-test",
-		};
-		const terminal = new Set<string>();
-		const dispatcher = cleanupDispatcherWithTerminalProbe(
-			new Map([["TestProject", runtime]]),
-			(executionId) => terminal.has(executionId),
-		);
-		const generalizedExecution = (executionId: string) => ({
-			engineOwned: true as const,
-			executionId,
-			activationId: `activation-${executionId}`,
-			runId: "run-1",
-			nodeId: "implement",
-			attempt: 1,
-			snapshotDigest: "digest",
-			gateCarrierEpoch: 0,
-			dispatch: { vendor: "codex" as const, model: "gpt-5.6-sol" },
-			capabilities: {},
-			agentContent: "Implement.",
-			idempotencyKey: `launch-${executionId}`,
-			launchGateToken: `token-${executionId}`,
-			commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
-			projectTurn: vi.fn(() => ({
-				ok: true as const,
-				idempotentReplay: false,
-			})),
-		});
-
-		await dispatcher.start({
-			issueId: "FLY-1775",
-			projectName: "TestProject",
-			sessionRole: "implement",
-			generalizedExecution: generalizedExecution("exec-old"),
-		});
-		terminal.add("exec-old");
-		await expect(
-			dispatcher.start({
-				issueId: "FLY-1775",
-				projectName: "TestProject",
-				sessionRole: "implement",
-				generalizedExecution: generalizedExecution("exec-new"),
-			}),
-		).resolves.toMatchObject({ executionId: "exec-new" });
-
-		resolveOld({ success: true });
-		await new Promise((resolve) => setImmediate(resolve));
-		expect(dispatcher.getInflightCount()).toBe(1);
-		expect(dispatcher.hasInflightForRole("FLY-1775", "implement")).toBe(true);
-		expect(blueprint.run).toHaveBeenCalledTimes(2);
-	});
-
-	it("removes irreversible-terminal entries from every public inflight probe", () => {
-		const makeSeeded = () => {
-			const dispatcher = cleanupDispatcherWithTerminalProbe(
-				new Map([makeRuntime("TestProject")]),
-				() => true,
-			);
-			dispatcher.seedInflight("FLY-1775", "implement", "exec-terminal");
-			return dispatcher;
-		};
-
-		expect(makeSeeded().hasInflightForRole("FLY-1775", "implement")).toBe(
-			false,
-		);
-		expect(makeSeeded().getInflightIssues()).toEqual(new Set());
-		expect(makeSeeded().getInflightCount()).toBe(0);
-	});
-
-	it("keeps the lane occupied when the terminal-session probe is unreadable", () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const dispatcher = cleanupDispatcherWithTerminalProbe(
-			new Map([makeRuntime("TestProject")]),
-			() => {
-				throw new Error("state store unavailable");
-			},
-		);
-		dispatcher.seedInflight("FLY-1775", "implement", "exec-unknown");
-
-		expect(dispatcher.hasInflightForRole("FLY-1775", "implement")).toBe(true);
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringContaining("keeping lane occupied"),
-		);
-		warn.mockRestore();
-	});
 });
 
 describe("RetryDispatcher", () => {
-	it("routes retry/dead-replacement dispatch through the admission pause", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const admission = RunnerAdmissionController.alwaysAdmit();
-		admission.setAdmissionPauseProbe(() => ({
-			detail: "deployment pause",
-			retryAfterSeconds: 120,
-		}));
-		const dispatcher = new RetryDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			admission,
-		);
-
-		await expect(
-			dispatcher.dispatch({
-				oldExecutionId: "old-exec",
-				issueId: "FLY-1638",
-				projectName: "TestProject",
-				runAttempt: 2,
-			}),
-		).rejects.toMatchObject({
-			name: "AdmissionDeferredError",
-			reason: "admission_paused",
-			retryAfterSeconds: 120,
-		});
-		expect(runtime.blueprint.run).not.toHaveBeenCalled();
-	});
-
-	it("fails closed before retry launch when a design node has no resolved Lead", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const dispatcher = new RetryDispatcher(new Map([[name, runtime]]), []);
-
-		await expect(
-			dispatcher.dispatch({
-				oldExecutionId: "old-design",
-				issueId: "FLY-1404",
-				projectName: "TestProject",
-				runAttempt: 2,
-				sessionRole: "design",
-				shareParentBranch: true,
-			}),
-		).rejects.toThrow(/design-node.*resolved Lead/i);
-		expect(runtime.blueprint.run).not.toHaveBeenCalled();
-	});
-	it("keeps the resolved Codex model in a retried implement-phase window", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		// FLY-1257 defect ③: a DAG workflow retry (shareParentBranch +
-		// design/implement/qa role) now resolves branch B's tip through the
-		// startPoint computer, and fails closed when it cannot — an indeterminate
-		// probe must never silently reset branch B to origin/main. This FLY-1255
-		// model-display test predates that dependency, so it supplies the computer
-		// the same way production wiring does; the assertion below is unchanged.
-		const dispatcher = new RetryDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			undefined, // launchClaims
-			undefined, // isCommitted (keep the real default)
-			undefined, // lifecycleAdmission
-			undefined, // lifecycleLaunchGuard
-			() => ({ kind: "found", sha: "b".repeat(40) }),
-		);
-
-		await dispatcher.dispatch({
-			oldExecutionId: "old-exec",
-			issueId: "FLY-1255",
-			projectName: "TestProject",
-			runAttempt: 1,
-			sessionRole: "implement",
-			shareParentBranch: true,
-			ignoreRunnerLabelSelection: true,
-			dispatchVendor: "codex",
-			dispatchModel: "gpt-5.6-sol",
-		});
-
-		const ctx = vi.mocked(runtime.blueprint.run).mock.calls[0]?.[2];
-		expect(ctx?.runnerName).toBe("implement-codex-G");
-	});
-
 	it("dispatch() returns old and new execution IDs", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RetryDispatcher(runtimes, []);
@@ -892,24 +270,6 @@ describe("RetryDispatcher", () => {
 
 		expect(result.oldExecutionId).toBe("old-exec");
 		expect(result.newExecutionId).toBeDefined();
-	});
-
-	it("FLY-1259: dispatch() carries designBackend into Blueprint context", async () => {
-		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RetryDispatcher(runtimes, []);
-
-		await dispatcher.dispatch({
-			oldExecutionId: "old-exec",
-			issueId: "FLY-1259",
-			projectName: "TestProject",
-			runAttempt: 1,
-			designBackend: "claude",
-		});
-		await new Promise((resolve) => setImmediate(resolve));
-
-		const blueprint = runtimes.get("TestProject")!.blueprint;
-		const ctx = vi.mocked(blueprint.run).mock.calls[0]?.[2];
-		expect(ctx?.designBackend).toBe("claude");
 	});
 
 	it("dispatch() rejects duplicate issue", async () => {
@@ -1398,45 +758,8 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 });
 
 describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () => {
-	it("includes the vendor-neutral model label when a model was resolved", () => {
-		expect(
-			runnerDisplayName("implement", true, {
-				threadMarker: "G",
-				windowLabel: "codex-G",
-			}),
-		).toBe("implement-codex-G");
-		expect(
-			runnerDisplayName("main", false, {
-				threadMarker: "K",
-				windowLabel: "kimi-K",
-			}),
-		).toBe("runner-kimi-K");
-		expect(
-			runnerDisplayName("qa", true, {
-				threadMarker: "O",
-				windowLabel: "claude-Opus",
-			}),
-		).toBe("qa-claude-Opus");
-		expect(
-			runnerDisplayName("main", false, {
-				threadMarker: "F",
-				windowLabel: "claude-Fable",
-			}),
-		).toBe("runner-claude-Fable");
-	});
-
-	it("infers Codex defensively when backend metadata is absent", () => {
-		const display = renderRunnerModelDisplay({ model: "gpt-5.6-sol" });
-		expect(runnerDisplayName("main", false, display)).toBe("runner-codex-G");
-	});
-
-	it("keeps legacy names when no model was resolved", () => {
-		expect(runnerDisplayName("implement", true, undefined)).toBe("implement");
-		expect(runnerDisplayName("main", false, undefined)).toBe("claude");
-	});
-
-	// A DAG workflow runner is (shareParentBranch === true) AND a phase role.
-	it("maps a DAG workflow role (shareParentBranch=true) to its phase name", () => {
+	// A three-stage phase runner is (shareParentBranch === true) AND a phase role.
+	it("maps a three-stage phase role (shareParentBranch=true) to its phase name", () => {
 		expect(runnerDisplayName("design", true)).toBe("design");
 		expect(runnerDisplayName("implement", true)).toBe("implement");
 		expect(runnerDisplayName("qa", true)).toBe("qa");
@@ -1448,10 +771,12 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 		expect(runnerDisplayName("something-else", true)).toBe("claude");
 	});
 
-	it("a phase role without the shared-branch marker stays 'claude'", () => {
+	it("byte-compat: FLY-579 Auto-QA (role='qa' but NO shareParentBranch) stays 'claude'", () => {
+		// The Codex R2 regression: Auto-QA shares sessionRole "qa" but is not a
+		// three-stage phase (no shareParentBranch), so it must NOT flip to "-qa-".
 		expect(runnerDisplayName("qa", false)).toBe("claude");
 		expect(runnerDisplayName("qa", undefined)).toBe("claude");
-		// A phase role without the DAG workflow marker is likewise unchanged.
+		// A phase role without the three-stage marker is likewise unchanged.
 		expect(runnerDisplayName("design", false)).toBe("claude");
 		expect(runnerDisplayName("implement", undefined)).toBe("claude");
 	});
@@ -1459,24 +784,24 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 	it("cmux visibility: the window label carries the phase per-phase, not 'claude'", () => {
 		// buildWindowLabel = `{issueId}-{runner}-{cleanTitle}`. Feeding it the
 		// phase-aware runner name is what makes cmux show the live phase.
-		const title = "DAG workflow";
+		const title = "three-stage pipeline";
 		expect(
 			buildWindowLabel("FLY-793", runnerDisplayName("design", true), title),
-		).toBe("FLY-793-design-DAG workflow");
+		).toBe("FLY-793-design-three-stage pipeline");
 		expect(
 			buildWindowLabel("FLY-793", runnerDisplayName("implement", true), title),
-		).toBe("FLY-793-implement-DAG workflow");
+		).toBe("FLY-793-implement-three-stage pipeline");
 		expect(
 			buildWindowLabel("FLY-793", runnerDisplayName("qa", true), title),
-		).toBe("FLY-793-qa-DAG workflow");
+		).toBe("FLY-793-qa-three-stage pipeline");
 		// A non-phase (main) run is unchanged — still shows 'claude'.
 		expect(
 			buildWindowLabel("FLY-800", runnerDisplayName("main", true), title),
-		).toBe("FLY-800-claude-DAG workflow");
-		// A QA role without the shared-branch phase marker stays legacy `claude`.
+		).toBe("FLY-800-claude-three-stage pipeline");
+		// Auto-QA (qa role, no shareParentBranch) is unchanged — still 'claude'.
 		expect(
 			buildWindowLabel("FLY-801", runnerDisplayName("qa", false), title),
-		).toBe("FLY-801-claude-DAG workflow");
+		).toBe("FLY-801-claude-three-stage pipeline");
 	});
 });
 
@@ -1562,83 +887,6 @@ describe("FLY-1188: pre-registration vendor", () => {
 		process.env.FLYWHEEL_COMM_BACKEND = "commdb";
 		const session = await startAndReadVendor(["codex"]);
 		expect(session?.vendor).toBeNull();
-	});
-});
-
-// FLY-1356 fix round 2 (Codex R1 HIGH-2): a THROWING sticky-stamp lookup must
-// surface as readFailed on the Blueprint ctx (resolver fails closed to A) —
-// never be swallowed into "no stamp" (which would hash the issue into an
-// experimental arm on a broken read).
-describe("FLY-1356 — sticky-stamp lookup failure surfaces readFailed", () => {
-	afterEach(() => {
-		delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
-	});
-
-	async function dispatchWithLookup(
-		lookup: (issueId: string) => "superpowers" | "matt" | "bare" | undefined,
-	): Promise<Record<string, unknown>> {
-		const [name, runtime] = makeRuntime("TestProject");
-		const dispatcher = new RunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			lookup,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			() => ({
-				hasOverride: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE !== undefined,
-				raw: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE ?? null,
-			}),
-		);
-		await dispatcher.start({
-			issueId: "FLY-1356",
-			projectName: "TestProject",
-		});
-		return (runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> })
-			.run.mock.calls[0]?.[2] as Record<string, unknown>;
-	}
-
-	it("a THROWING lookup under split → ctx.skillFrameworkModeStampReadFailed, dispatch survives", async () => {
-		process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			const ctx = await dispatchWithLookup(() => {
-				throw new Error("db exploded");
-			});
-			expect(ctx.skillFrameworkModeStampReadFailed).toBe(true);
-			expect("skillFrameworkModePrior" in ctx).toBe(false);
-		} finally {
-			warn.mockRestore();
-		}
-	});
-
-	it("a stamp under split threads through as skillFrameworkModePrior (no readFailed)", async () => {
-		process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
-		const ctx = await dispatchWithLookup(() => "matt");
-		expect(ctx.skillFrameworkModePrior).toBe("matt");
-		expect("skillFrameworkModeStampReadFailed" in ctx).toBe(false);
-	});
-
-	it("outside split the lookup is never consulted (zero-IO default path)", async () => {
-		delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
-		const lookup = vi.fn((): "matt" => {
-			throw new Error("must not be called");
-		});
-		const ctx = await dispatchWithLookup(lookup);
-		expect(lookup).not.toHaveBeenCalled();
-		expect("skillFrameworkModeStampReadFailed" in ctx).toBe(false);
-		expect("skillFrameworkModePrior" in ctx).toBe(false);
 	});
 });
 

@@ -4,8 +4,7 @@
  * One command any agent can run after generating an HTML report locally:
  *
  *   flywheel-comm publish-report --html /tmp/report.html --project flywheel \
- *     [--title "Ship Review"] [--channel <id> | --issue FLY-1463]
- *     [--no-screenshot] [--publish-only]
+ *     [--title "Ship Review"] [--channel <id>] [--no-screenshot]
  *
  * Orchestrates three steps client-side (Bridge stays thin — it only hosts
  * and posts):
@@ -39,7 +38,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import { normalizeOptionalBearer } from "flywheel-config";
 import {
 	DEFAULT_PORT_RANGE_START,
 	findFreePort,
@@ -65,11 +63,7 @@ export interface PublishReportArgs {
 	project: string;
 	title?: string;
 	channelId?: string;
-	/** Resolve delivery to the issue's existing Lead thread. */
-	issueIdentifier?: string;
 	noScreenshot?: boolean;
-	/** Publish and return the hosted URL without screenshot or Discord delivery. */
-	publishOnly?: boolean;
 	/**
 	 * FLY-929 B1: OPTIONAL delivery-receipt fields forwarded verbatim in the
 	 * /deliver body. `kind: "token_report"` + `expectedDate` (YYYY-MM-DD, the
@@ -87,7 +81,6 @@ export interface PublishReportArgs {
 	acquireLock?: () => Promise<AcquiredLock>;
 	makeTempDir?: () => string;
 	warn?: (msg: string) => void;
-	readHtmlFile?: (path: string) => string;
 }
 
 /** The one-line stdout JSON envelope. */
@@ -97,8 +90,8 @@ export interface PublishReportEnvelope {
 	messageId: string | null;
 	screenshot: string | null;
 	delivered: boolean;
-	/** Present when --publish-only intentionally stopped after hosting. */
-	publishOnly?: boolean;
+	/** Present when FLYWHEEL_REMOTE_REPORTS=0 short-circuited the run. */
+	skipped?: boolean;
 	error?: string;
 }
 
@@ -114,6 +107,24 @@ export async function publishReport(
 	const fetchImpl = args.fetchImpl ?? fetch;
 	const warn = args.warn ?? ((msg: string) => console.error(msg));
 
+	// Kill switch — zero network calls (Bridge enforces its own 503 too).
+	if (env.FLYWHEEL_REMOTE_REPORTS === "0") {
+		warn(
+			"publish-report: FLYWHEEL_REMOTE_REPORTS=0 — remote report pipeline disabled, skipping (local report untouched)",
+		);
+		return {
+			envelope: {
+				url: null,
+				reportId: null,
+				messageId: null,
+				screenshot: null,
+				delivered: false,
+				skipped: true,
+			},
+			exitCode: 0,
+		};
+	}
+
 	const fail = (error: string): PublishReportResult => ({
 		envelope: {
 			url: null,
@@ -125,19 +136,6 @@ export async function publishReport(
 		},
 		exitCode: 1,
 	});
-	const masterToken = normalizeOptionalBearer(env.TEAMLEAD_API_TOKEN);
-	const ingestToken = normalizeOptionalBearer(env.FLYWHEEL_INGEST_TOKEN);
-	const credentialTier = masterToken
-		? "master"
-		: ingestToken
-			? "ingest"
-			: "none";
-	const bearerToken = masterToken ?? ingestToken;
-	if (credentialTier === "ingest" && !args.publishOnly) {
-		return fail(
-			"runner has no report delivery authority: use --publish-only to get the URL, then report it to the Lead with flywheel-comm ask",
-		);
-	}
 
 	// ── input validation ──────────────────────────────────────────────
 	const bridgeUrl = (env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL ?? "").replace(
@@ -152,21 +150,10 @@ export async function publishReport(
 	if (!args.project || args.project.trim().length === 0) {
 		return fail("--project is required");
 	}
-	if (args.channelId !== undefined && args.issueIdentifier !== undefined) {
-		return fail("--channel and --issue are mutually exclusive");
-	}
-	if (
-		args.issueIdentifier !== undefined &&
-		!/^[A-Z][A-Z0-9]*-\d+$/.test(args.issueIdentifier.trim())
-	) {
-		return fail("--issue must be a Linear issue identifier such as FLY-1463");
-	}
 
 	let html: string;
 	try {
-		html = (args.readHtmlFile ?? ((path) => readFileSync(path, "utf-8")))(
-			args.htmlPath,
-		);
+		html = readFileSync(args.htmlPath, "utf-8");
 	} catch (err) {
 		return fail(`failed to read --html file: ${(err as Error).message}`);
 	}
@@ -180,8 +167,8 @@ export async function publishReport(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	if (bearerToken) {
-		headers.Authorization = `Bearer ${bearerToken}`;
+	if (env.TEAMLEAD_API_TOKEN) {
+		headers.Authorization = `Bearer ${env.TEAMLEAD_API_TOKEN}`;
 	}
 
 	// ── 1. publish ────────────────────────────────────────────────────
@@ -213,20 +200,6 @@ export async function publishReport(
 		reportId = body.reportId;
 	} catch (err) {
 		return fail(`publish request failed: ${(err as Error).message}`);
-	}
-
-	if (args.publishOnly) {
-		return {
-			envelope: {
-				url,
-				reportId,
-				messageId: null,
-				screenshot: null,
-				delivered: false,
-				publishOnly: true,
-			},
-			exitCode: 0,
-		};
 	}
 
 	// ── 2. screenshot (degradable) ────────────────────────────────────
@@ -262,7 +235,6 @@ export async function publishReport(
 				projectName: args.project.trim(),
 				title: args.title,
 				channelId: args.channelId,
-				issueIdentifier: args.issueIdentifier?.trim(),
 				screenshotPath: screenshot ?? undefined,
 				// FLY-929 B1: receipt fields — undefined keys are dropped by
 				// JSON.stringify, so the no-flag body stays byte-identical.

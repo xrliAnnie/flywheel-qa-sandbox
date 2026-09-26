@@ -36,7 +36,6 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { normalizeOptionalBearer } from "flywheel-config";
 import { CommDB } from "../db.js";
 
 /**
@@ -229,9 +228,7 @@ export async function notify(args: NotifyArgs): Promise<NotifyResult> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	const token = normalizeOptionalBearer(
-		args.ingestToken ?? process.env.FLYWHEEL_INGEST_TOKEN,
-	);
+	const token = args.ingestToken ?? process.env.FLYWHEEL_INGEST_TOKEN;
 	if (token) headers.Authorization = `Bearer ${token}`;
 
 	const url = `${bridgeUrl.replace(/\/+$/, "")}/events`;

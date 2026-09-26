@@ -1,25 +1,25 @@
 /**
  * FLY-247 WI-4: fleet evidence collection, decision table, config provider,
- * poller, and Lead alert membership.
+ * poller, and watchdog membership.
  */
 import { describe, expect, it } from "vitest";
-import { deriveLeadSocketPath } from "../../lead-address.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { buildDashboardPayload } from "../dashboard-data.js";
 import {
 	ConfigSnapshotProvider,
-	classifyLeadPlistCarrier,
 	collectFleetSnapshot,
 	deriveDecision,
 	type FleetManagement,
 	FleetPoller,
 	type FleetProbeDeps,
 	type FleetRuntime,
+	type FleetSnapshot,
+	filterPaneWatchedLeads,
 } from "../fleet-data.js";
 
 // ── deriveDecision: the TOTAL table is pinned (R8#4) ──────────────────────
 
-describe("deriveDecision — total presentation/alert table", () => {
+describe("deriveDecision — total presentation/watchdog table", () => {
 	const M: FleetManagement[] = [
 		"standard-confirmed",
 		"external-confirmed",
@@ -109,17 +109,13 @@ const HOME = "/home/test";
 const KEY = "geo-product-lead";
 const M_PATH = `${HOME}/.flywheel/manifests/${KEY}.json`;
 const P_PATH = `${HOME}/Library/LaunchAgents/com.flywheel.lead.${KEY}.plist`;
-const WRAPPER_V2 = `${HOME}/.flywheel/bin/flywheel-lead-wrapper-v2.sh`;
-const SOCKET_PATH = deriveLeadSocketPath(
-	"geo/product-lead",
-	`${HOME}/.flywheel`,
-);
+const WRAPPER = `${HOME}/.flywheel/bin/flywheel-lead-wrapper.sh`;
 
 function goodPlist(model?: string): string {
 	const env = model
 		? `<key>EnvironmentVariables</key><dict><key>FLYWHEEL_LEAD_MODEL</key><string>${model}</string></dict>`
 		: "";
-	return `<plist><dict><string>com.flywheel.lead.${KEY}</string><string>${WRAPPER_V2}</string><string>${M_PATH}</string>${env}</dict></plist>`;
+	return `<plist><dict><string>com.flywheel.lead.${KEY}</string><string>${WRAPPER}</string><string>${M_PATH}</string>${env}</dict></plist>`;
 }
 
 function project(lead: Partial<ProjectEntry["leads"][0]> = {}): ProjectEntry {
@@ -148,10 +144,7 @@ interface DepsOverride {
 		dead?: boolean;
 	}> | null;
 	tmuxCalls?: { count: number };
-	privatePanes?: DepsOverride["panes"];
-	privateTmuxCalls?: { sockets: string[] };
 	processCommands?: Record<number, string[] | null>;
-	stateDir?: string;
 }
 
 function makeDeps(o: DepsOverride = {}): FleetProbeDeps {
@@ -177,21 +170,9 @@ function makeDeps(o: DepsOverride = {}): FleetProbeDeps {
 				dead: p.dead ?? false,
 			}));
 		},
-		listPanesAtSocket: async (socketPath) => {
-			o.privateTmuxCalls?.sockets.push(socketPath);
-			if (o.privatePanes === undefined) return [];
-			if (o.privatePanes === null) return null;
-			return o.privatePanes.map((p) => ({
-				windowName: p.windowName,
-				command: p.command,
-				panePid: p.panePid ?? 0,
-				dead: p.dead ?? false,
-			}));
-		},
 		processCommandsOf: async (pid) =>
 			o.processCommands?.[pid] === undefined ? [] : o.processCommands[pid],
 		homeDir: () => HOME,
-		stateDir: () => o.stateDir ?? `${HOME}/.flywheel`,
 		now: () => new Date("2026-06-11T00:00:00Z"),
 	};
 }
@@ -206,15 +187,11 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					leadBackend: { backendId: "claude-code" },
 					projectName: "geo",
 					leadId: "product-lead",
-					socketPath: deriveLeadSocketPath(
-						"geo/product-lead",
-						`${HOME}/.flywheel`,
-					),
 				}),
 				[P_PATH]: goodPlist("fab"),
 			},
 			launchd: { loaded: true, pid: 42 },
-			privatePanes: [{ windowName: "main", command: "claude" }],
+			panes: [{ windowName: KEY, command: "claude" }],
 		});
 		const snap = await collectFleetSnapshot(
 			[project({ model: "fab" })],
@@ -225,123 +202,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 		expect(l.observed.management).toBe("standard-confirmed");
 		expect(l.observed.runtime).toBe("claude-confirmed");
 		expect(l.presentation).toBe("ONLINE");
-		expect(l.drift).toEqual({
-			model: false,
-			backend: false,
-			effort: false,
-			carrier: false,
-		});
-	});
-
-	it("v2 plist is standard-managed and carrier-aligned", async () => {
-		const socketPath = deriveLeadSocketPath(
-			"geo/product-lead",
-			`${HOME}/.flywheel`,
-		);
-		const privateTmuxCalls = { sockets: [] as string[] };
-		const deps = makeDeps({
-			files: {
-				[M_PATH]: JSON.stringify({
-					pid: 42,
-					projectName: "geo",
-					leadId: "product-lead",
-					socketPath,
-				}),
-				[P_PATH]: goodPlist(),
-			},
-			panes: [],
-			privatePanes: [{ windowName: "main", command: "claude" }],
-			privateTmuxCalls,
-		});
-		const snap = await collectFleetSnapshot(
-			[project({ carrier: "v2" })],
-			() => undefined,
-			deps,
-		);
-		expect(snap.leads[0]!.observed.management).toBe("standard-confirmed");
-		expect(snap.leads[0]!.carrier.plistCarrier).toBe("v2");
-		expect(snap.leads[0]!.drift?.carrier).toBe(false);
-		expect(snap.leads[0]!.observed.runtime).toBe("claude-confirmed");
-		expect(privateTmuxCalls.sockets).toEqual([socketPath]);
-	});
-
-	it("a plist mentioning both v2 and a bespoke Codex wrapper is unknown", () => {
-		const ambiguous = goodPlist().replace(
-			"</dict>",
-			"<key>LEGACY_NOTE</key><string>/opt/flywheel-codex-lead-wrapper-mufasa.sh</string></dict>",
-		);
-		expect(classifyLeadPlistCarrier(ambiguous, HOME)).toBe("unknown");
-	});
-
-	it("honors an injected state directory for v2 manifest and socket authority", async () => {
-		const stateDir = "/custom/flywheel-state";
-		const manifestPath = `${stateDir}/manifests/${KEY}.json`;
-		const socketPath = deriveLeadSocketPath("geo/product-lead", stateDir);
-		const deps = makeDeps({
-			stateDir,
-			files: {
-				[manifestPath]: JSON.stringify({
-					pid: 42,
-					projectName: "geo",
-					leadId: "product-lead",
-					socketPath,
-				}),
-				[P_PATH]: goodPlist()
-					.replace(M_PATH, manifestPath)
-					.replace(WRAPPER_V2, `${stateDir}/bin/flywheel-lead-wrapper-v2.sh`),
-			},
-			privatePanes: [{ windowName: "main", command: "claude" }],
-		});
-		const snap = await collectFleetSnapshot(
-			[project({ carrier: "v2" })],
-			() => undefined,
-			deps,
-		);
-		expect(snap.leads[0]!.observed.management).toBe("standard-confirmed");
-		expect(snap.leads[0]!.observed.runtime).toBe("claude-confirmed");
-	});
-
-	it("v2 fails closed when the manifest publishes a noncanonical socket", async () => {
-		const privateTmuxCalls = { sockets: [] as string[] };
-		const deps = makeDeps({
-			files: {
-				[M_PATH]: JSON.stringify({
-					pid: 42,
-					projectName: "geo",
-					leadId: "product-lead",
-					socketPath: "/tmp/attacker.sock",
-				}),
-				[P_PATH]: goodPlist(),
-			},
-			privatePanes: [{ windowName: "main", command: "claude" }],
-			privateTmuxCalls,
-		});
-		const snap = await collectFleetSnapshot(
-			[project({ carrier: "v2" })],
-			() => undefined,
-			deps,
-		);
-		expect(snap.leads[0]!.observed.management).toBe("external-confirmed");
-		expect(privateTmuxCalls.sockets).toEqual([]);
-	});
-
-	it("unknown wrapper remains external and carrier drift is loud", async () => {
-		const deps = makeDeps({
-			files: {
-				[M_PATH]: JSON.stringify({
-					pid: 42,
-					projectName: "geo",
-					leadId: "product-lead",
-					socketPath: SOCKET_PATH,
-				}),
-				[P_PATH]: `<plist><string>/bespoke/wrapper</string><string>${M_PATH}</string><string>com.flywheel.lead.${KEY}</string></plist>`,
-			},
-			panes: [],
-		});
-		const snap = await collectFleetSnapshot([project()], () => undefined, deps);
-		expect(snap.leads[0]!.observed.management).toBe("external-confirmed");
-		expect(snap.leads[0]!.carrier.plistCarrier).toBe("unknown");
-		expect(snap.leads[0]!.drift?.carrier).toBe(true);
+		expect(l.drift).toEqual({ model: false, backend: false, effort: false });
 	});
 
 	it("model drift visible (config differs from manifest/plist)", async () => {
@@ -351,7 +212,6 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
-					socketPath: SOCKET_PATH,
 				}),
 				[P_PATH]: goodPlist(),
 			},
@@ -389,7 +249,6 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
-					socketPath: SOCKET_PATH,
 				}),
 				[P_PATH]: goodPlist(),
 			},
@@ -410,11 +269,10 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
-					socketPath: SOCKET_PATH,
 				}),
 				[P_PATH]: goodPlist(),
 			},
-			privatePanes: null,
+			panes: null,
 		});
 		const snap = await collectFleetSnapshot([project()], () => undefined, deps);
 		expect(snap.leads[0]!.observed.runtime).toBe("indeterminate");
@@ -531,7 +389,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
         <key>FLYWHEEL_LEAD_MODEL</key>
         <string>claude-fable-5</string>
     </dict>
-		<string>${WRAPPER_V2}</string>
+    <string>${WRAPPER}</string>
     <string>${M_PATH}</string>
 </dict></plist>`;
 		const deps = makeDeps({
@@ -540,10 +398,6 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
-					socketPath: deriveLeadSocketPath(
-						"geo/product-lead",
-						`${HOME}/.flywheel`,
-					),
 				}),
 				[P_PATH]: multiline,
 			},
@@ -574,17 +428,6 @@ describe("ConfigSnapshotProvider", () => {
 		fresh = [project()];
 		prov.refresh();
 		expect(prov.snapshot().projects[0]!.leads[0]!.model).toBeUndefined();
-		expect(prov.hasExplicitFleetConfig()).toBe(false);
-	});
-
-	it('adding the equivalent carrier:"v2" key is a structural no-op', () => {
-		const prov = new ConfigSnapshotProvider(boot, {
-			loadProjects: () => [project({ carrier: "v2" })],
-			envPinned: false,
-		});
-		prov.refresh();
-		expect(prov.snapshot().state).toBe("live");
-		expect(prov.snapshot().projects[0]!.leads[0]!.carrier).toBeUndefined();
 		expect(prov.hasExplicitFleetConfig()).toBe(false);
 	});
 
@@ -680,6 +523,261 @@ describe("FleetPoller", () => {
 		expect(poller.snapshot()).not.toBeNull();
 		nowMs = 10_000;
 		expect(poller.snapshot()).toBeNull();
+	});
+});
+
+// ── filterPaneWatchedLeads (per-lead membership) ─────────────────────────
+
+describe("filterPaneWatchedLeads", () => {
+	const claudeOnly = [project()];
+
+	it("all-claude → ORIGINAL array reference (byte-compat no-op)", () => {
+		expect(filterPaneWatchedLeads(claudeOnly, () => undefined, null)).toBe(
+			claudeOnly,
+		);
+	});
+
+	it("codex-desired WITHOUT fresh evidence → still watched (indeterminate, code-review H8)", () => {
+		const projects = [
+			project({
+				backend: "codex-app-server",
+				companion: true,
+				canSpawnRunners: false,
+			}),
+		];
+		// Exclusion requires a fresh paneWatch=false verdict; desired config
+		// alone must never silence the watchdog (漏报>误报).
+		const out = filterPaneWatchedLeads(projects, () => undefined, null);
+		expect(out).toHaveLength(1);
+	});
+
+	it("codex-desired WITH fresh EXTERNAL evidence → excluded", () => {
+		const projects = [
+			project({
+				backend: "codex-app-server",
+				companion: true,
+				canSpawnRunners: false,
+			}),
+		];
+		const evidence: FleetSnapshot = {
+			collectedAt: new Date().toISOString(),
+			configState: "live",
+			leads: [
+				{
+					project: "geo",
+					leadId: "product-lead",
+					key: KEY,
+					companion: true,
+					canSpawnRunners: false,
+					configured: {
+						model: null,
+						backend: "codex-app-server",
+						source: "explicit",
+					},
+					carrier: {
+						manifestExists: false,
+						plistExists: false,
+						manifestModel: null,
+						manifestBackend: null,
+						plistModel: null,
+					},
+					observed: {
+						management: "external-confirmed",
+						runtime: "no-claude-confirmed",
+						collectedAt: new Date().toISOString(),
+						degradationReasons: [],
+					},
+					presentation: "EXTERNAL",
+					paneWatch: false,
+					drift: null,
+				},
+			],
+		};
+		const out = filterPaneWatchedLeads(projects, () => undefined, evidence);
+		expect(out).toHaveLength(0);
+	});
+
+	it("mixed project: only the codex lead (with fresh EXTERNAL evidence) is excluded — per-lead granularity", () => {
+		const mixed: ProjectEntry = {
+			projectName: "geo",
+			projectRoot: "/proj/geo",
+			leads: [
+				{ agentId: "product-lead", chatChannel: "1", match: { labels: ["P"] } },
+				{
+					agentId: "mufasa-lead",
+					chatChannel: "2",
+					match: { labels: ["G"] },
+					backend: "codex-app-server",
+					companion: true,
+					canSpawnRunners: false,
+				},
+			],
+		};
+		const evidence: FleetSnapshot = {
+			collectedAt: new Date().toISOString(),
+			configState: "live",
+			leads: [
+				{
+					project: "geo",
+					leadId: "mufasa-lead",
+					key: "geo-mufasa-lead",
+					companion: true,
+					canSpawnRunners: false,
+					configured: {
+						model: null,
+						backend: "codex-app-server",
+						source: "explicit",
+					},
+					carrier: {
+						manifestExists: false,
+						plistExists: false,
+						manifestModel: null,
+						manifestBackend: null,
+						plistModel: null,
+					},
+					observed: {
+						management: "external-confirmed",
+						runtime: "no-claude-confirmed",
+						collectedAt: new Date().toISOString(),
+						degradationReasons: [],
+					},
+					presentation: "EXTERNAL",
+					paneWatch: false,
+					drift: null,
+				},
+			],
+		};
+		const out = filterPaneWatchedLeads([mixed], () => undefined, evidence);
+		expect(out).toHaveLength(1);
+		expect(out[0]!.leads.map((l) => l.agentId)).toEqual(["product-lead"]);
+	});
+
+	it("codex-desired with CONFLICT evidence (live Claude) → KEPT watching", () => {
+		const projects = [
+			project({
+				backend: "codex-app-server",
+				companion: true,
+				canSpawnRunners: false,
+			}),
+		];
+		const evidence: FleetSnapshot = {
+			collectedAt: new Date().toISOString(),
+			configState: "live",
+			leads: [
+				{
+					project: "geo",
+					leadId: "product-lead",
+					key: KEY,
+					companion: true,
+					canSpawnRunners: false,
+					configured: {
+						model: null,
+						backend: "codex-app-server",
+						source: "explicit",
+					},
+					carrier: {
+						manifestExists: false,
+						plistExists: false,
+						manifestModel: null,
+						manifestBackend: null,
+						plistModel: null,
+					},
+					observed: {
+						management: "external-confirmed",
+						runtime: "claude-confirmed",
+						collectedAt: new Date().toISOString(),
+						degradationReasons: [],
+					},
+					presentation: "CONFLICT",
+					paneWatch: true,
+					drift: null,
+				},
+			],
+		};
+		const out = filterPaneWatchedLeads(projects, () => undefined, evidence);
+		expect(out).toHaveLength(1);
+	});
+
+	// FLY-259 PR-A′: the cutover declares growth/mufasa-lead backend="codex-app-server"
+	// in projects.json so the pane-text watchdog excludes Mufasa's ③ TUI pane (the
+	// Claude-shaped recognizers would otherwise misfire on it — FLY-218/220 class).
+	// Pins the realistic multi-Lead outcome: ONLY Mufasa drops; the 5 Claude Leads
+	// stay watched, by reference (the R8 "others unchanged" contract). Declaring the
+	// backend is necessary-but-not-sufficient — exclusion also needs FRESH poller
+	// evidence with paneWatch=false (H8), modeled here as EXTERNAL/no-claude.
+	it("FLY-259 cutover fleet: codex Mufasa excluded (fresh EXTERNAL evidence), 5 Claude Leads unchanged by reference", () => {
+		const claudeLeads = [
+			"peter-lead",
+			"simba-lead",
+			"hiro-lead",
+			"asha-lead",
+			"belle-lead",
+		];
+		const fleet: ProjectEntry[] = [
+			...claudeLeads.map((agentId, i) => ({
+				projectName: agentId,
+				projectRoot: `/proj/${agentId}`,
+				leads: [{ agentId, chatChannel: String(i), match: { labels: [] } }],
+			})),
+			{
+				projectName: "growth",
+				projectRoot: "/proj/growth",
+				leads: [
+					{
+						agentId: "mufasa-lead",
+						chatChannel: "9",
+						match: { labels: ["growth"] },
+						backend: "codex-app-server" as const,
+						companion: true,
+						canSpawnRunners: false,
+					},
+				],
+			},
+		];
+		const evidence: FleetSnapshot = {
+			collectedAt: new Date().toISOString(),
+			configState: "live",
+			leads: [
+				{
+					project: "growth",
+					leadId: "mufasa-lead",
+					key: "growth-mufasa-lead",
+					companion: true,
+					canSpawnRunners: false,
+					configured: {
+						model: null,
+						backend: "codex-app-server",
+						source: "explicit",
+					},
+					carrier: {
+						manifestExists: false,
+						plistExists: false,
+						manifestModel: null,
+						manifestBackend: null,
+						plistModel: null,
+					},
+					observed: {
+						management: "external-confirmed",
+						runtime: "no-claude-confirmed",
+						collectedAt: new Date().toISOString(),
+						degradationReasons: [],
+					},
+					presentation: "EXTERNAL",
+					paneWatch: false,
+					drift: null,
+				},
+			],
+		};
+		const out = filterPaneWatchedLeads(fleet, () => undefined, evidence);
+		// growth/Mufasa dropped entirely; the 5 Claude projects remain, in order.
+		expect(out.map((p) => p.projectName)).toEqual(claudeLeads);
+		// "others unchanged" is by REFERENCE — claude projects are passed through,
+		// never rebuilt (R8 contract; a rebuild would be a silent regression).
+		for (const cl of claudeLeads) {
+			expect(out.find((p) => p.projectName === cl)).toBe(
+				fleet.find((p) => p.projectName === cl),
+			);
+		}
 	});
 });
 

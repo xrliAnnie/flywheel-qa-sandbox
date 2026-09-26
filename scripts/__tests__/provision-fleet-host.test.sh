@@ -119,17 +119,13 @@ RR="$SANDBOX/repo"
 mkdir -p "$RR/scripts/launchd" "$RR/scripts/lib"
 # FLY-954: fixture wrappers must PASS source sanity (the 12-byte stub shape is
 # now exactly what the provisioner refuses to install — see P10 for that case).
-for f in flywheel-lead-wrapper-v2.sh \
-    flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh; do
+for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
   { echo '#!/bin/bash'
     echo "# sane fixture for $f (FLY-954)"
     i=1; while [ "$i" -le 60 ]; do echo "echo fixture-$f-line-$i >/dev/null"; i=$((i+1)); done
   } > "$RR/scripts/$f"
   chmod +x "$RR/scripts/$f"
 done
-cp "$REPO_ROOT/scripts/lib/host-config.sh" "$RR/scripts/lib/host-config.sh"
-cp "$REPO_ROOT/scripts/lib/lead-address.sh" "$RR/scripts/lib/lead-address.sh"
-chmod +x "$RR/scripts/lib/host-config.sh" "$RR/scripts/lib/lead-address.sh"
 echo '#!/bin/bash' > "$RR/scripts/flywheel-fleet.sh"; chmod +x "$RR/scripts/flywheel-fleet.sh"
 echo '# lib' > "$RR/scripts/lib/fleet-sanitize.sh"
 echo '# bridge plist' > "$RR/scripts/launchd/com.flywheel.bridge.plist"
@@ -184,8 +180,9 @@ else
   fail "P3a: token gate did not fire"; tail -10 "$PROV_LOG"
 fi
 # fill the secret-named token → passes
-cat > "$H3/.flywheel/.env" <<'EOF'
-CASS_BOT_TOKEN=MTk4NjIyNDgzNDcxOTI1MjQ4.GqwqZ9.realtokenpartXYZ0123456789abc
+CASS_FIXTURE='MTk4NjIyNDgzNDcxOTI1MjQ4''.''GqwqZ9''.''realtokenpartXYZ0123456789abc'
+cat > "$H3/.flywheel/.env" <<EOF
+CASS_BOT_TOKEN=${CASS_FIXTURE}
 TEAMLEAD_PORT=
 EOF
 run_prov "$H3" --apply --only tokens
@@ -285,7 +282,7 @@ fi
 H9="$SANDBOX/home9"; mkdir -p "$H9"
 SD9="$SANDBOX/customstate"
 run_prov "$H9" --apply --skip-token-check --state-dir "$SD9"
-if [ "$PROV_RC" -eq 0 ] && [ -f "$SD9/projects.json" ] && [ -f "$SD9/bin/flywheel-lead-wrapper-v2.sh" ]; then
+if [ "$PROV_RC" -eq 0 ] && [ -f "$SD9/projects.json" ] && [ -f "$SD9/bin/flywheel-lead-wrapper.sh" ]; then
   pass "P9: explicit --state-dir redirects state (projects.json + bin installs)"
 else
   fail "P9: --state-dir (rc=$PROV_RC)"; tail -20 "$PROV_LOG"
@@ -294,13 +291,13 @@ fi
 # ── P10 (FLY-954): a degenerate bin source must FAIL the provision loudly ───
 RRBAD="$SANDBOX/repobad"; mkdir -p "$RRBAD/scripts"
 cp -R "$RR/scripts/." "$RRBAD/scripts/"
-echo '#!/bin/bash' > "$RRBAD/scripts/flywheel-lead-wrapper-v2.sh"   # degenerate source
+echo '#!/bin/bash' > "$RRBAD/scripts/flywheel-lead-wrapper.sh"   # the incident stub
 H10="$SANDBOX/home10"; mkdir -p "$H10"
 env -i PATH="$STUB_PATH" HOME="$H10" FLYWHEEL_PLATFORM=darwin \
   bash "$PROVISION" --repo-root "$RRBAD" --fleet-dir "$FLEET" --home "$H10" \
   --apply --skip-token-check >"$SANDBOX/prov10.log" 2>&1
 P10RC=$?
-if [ "$P10RC" -ne 0 ] && [ ! -f "$H10/.flywheel/bin/flywheel-lead-wrapper-v2.sh" ] \
+if [ "$P10RC" -ne 0 ] && [ ! -f "$H10/.flywheel/bin/flywheel-lead-wrapper.sh" ] \
    && ! grep -q '\[provision\] done\.' "$SANDBOX/prov10.log"; then
   pass "P10: 12-byte stub source → provision dies, nothing installed, no done."
 else
@@ -308,9 +305,9 @@ else
 fi
 
 # ── P11 (FLY-954): installed copies are write-protected (555) ───────────────
-W11="$H2/.flywheel/bin/flywheel-lead-wrapper-v2.sh"   # installed by P2a earlier
+W11="$H2/.flywheel/bin/flywheel-lead-wrapper.sh"   # installed by P2a earlier
 if [ -f "$W11" ] && [ ! -w "$W11" ] && [ -x "$W11" ] \
-   && ! cp "$RRBAD/scripts/flywheel-lead-wrapper-v2.sh" "$W11" 2>/dev/null; then
+   && ! cp "$RRBAD/scripts/flywheel-lead-wrapper.sh" "$W11" 2>/dev/null; then
   pass "P11: installed copy is 555 — bare cp over it fails (incident shape blocked)"
 else
   fail "P11: write protection"; ls -l "$W11" 2>/dev/null

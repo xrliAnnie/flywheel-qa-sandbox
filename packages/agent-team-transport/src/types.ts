@@ -201,7 +201,7 @@ export interface IMailboxWatcher {
 	start(): Promise<void>;
 	/** Graceful shutdown. */
 	stop(): Promise<void>;
-	/** Liveness probe (used by Bridge callers). */
+	/** Liveness probe (used by Bridge LeadWatchdog). */
 	health(): Promise<MailboxWatcherHealth>;
 	/** Optional telemetry hook fired when a deduped message is delivered. */
 	onDelivered?: (msg: MailboxMessage) => void | Promise<void>;

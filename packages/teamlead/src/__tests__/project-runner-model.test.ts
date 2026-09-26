@@ -114,7 +114,7 @@ describe("buildConsoleSnapshot — projectRunnerDefaults", () => {
 });
 
 // FLY-709 P4.4: cron (recurring xiaohongshu trigger issue) model rows — from
-// the SAME cached config map; scoped-store enablement is injected separately.
+// the SAME cached config map; only projects with enabled collections appear.
 describe("buildCronModelViews", () => {
 	it("lists collections with their configured model (null = default)", () => {
 		const configs = new Map([
@@ -123,6 +123,7 @@ describe("buildCronModelViews", () => {
 				{
 					config: {
 						xiaohongshu_learning: {
+							enabled: true,
 							collections: [
 								{
 									collection_id: "c1",
@@ -145,7 +146,7 @@ describe("buildCronModelViews", () => {
 				},
 			],
 		]);
-		const rows = buildCronModelViews(PROJECTS, configs, () => true);
+		const rows = buildCronModelViews(PROJECTS, configs);
 		expect(rows).toEqual([
 			{
 				projectName: "flywheel",
@@ -164,13 +165,14 @@ describe("buildCronModelViews", () => {
 		]);
 	});
 
-	it("omits store-disabled or absent xiaohongshu configs entirely", () => {
+	it("omits disabled/absent xiaohongshu configs entirely", () => {
 		const configs = new Map([
 			[
 				"flywheel",
 				{
 					config: {
 						xiaohongshu_learning: {
+							enabled: false,
 							collections: [
 								{
 									collection_id: "c1",
@@ -185,42 +187,7 @@ describe("buildCronModelViews", () => {
 				},
 			],
 		]);
-		expect(buildCronModelViews(PROJECTS, configs, () => false)).toEqual([]);
-		expect(buildCronModelViews(PROJECTS, new Map(), () => true)).toEqual([]);
-	});
-
-	it("fails local to an empty list when the scoped store read throws", () => {
-		const configs = new Map([
-			[
-				"flywheel",
-				{
-					config: {
-						xiaohongshu_learning: {
-							collections: [
-								{
-									collection_id: "c1",
-									label: "x",
-									lead_id: "l",
-									department_label: "D",
-									target_linear_project: "P",
-								},
-							],
-						},
-					} as never,
-				},
-			],
-		]);
-		const errors: string[] = [];
-		expect(
-			buildCronModelViews(
-				PROJECTS,
-				configs,
-				() => {
-					throw new Error("scoped store unavailable");
-				},
-				(error) => errors.push(error.message),
-			),
-		).toEqual([]);
-		expect(errors).toEqual(["scoped store unavailable"]);
+		expect(buildCronModelViews(PROJECTS, configs)).toEqual([]);
+		expect(buildCronModelViews(PROJECTS, new Map())).toEqual([]);
 	});
 });

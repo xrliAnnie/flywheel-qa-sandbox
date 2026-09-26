@@ -29,10 +29,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEAMLEAD_ROOT="${FLYWHEEL_TEAMLEAD_ROOT:-/Users/xiaorongli/Dev/flywheel/packages/teamlead}"
 TUI_RUNTIME="${TEAMLEAD_ROOT}/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 TUI_HOME_SH="${TEAMLEAD_ROOT}/scripts/codex-lead-tui-home.sh"
-# This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
-# authority explicitly instead of relying on an ambient shell variable.
-FLYWHEEL_PACKAGES_ROOT="$(cd "${TEAMLEAD_ROOT}/.." && pwd)"
-export FLYWHEEL_COMM_CLI="${FLYWHEEL_COMM_CLI:-${FLYWHEEL_PACKAGES_ROOT}/flywheel-comm/dist/index.js}"
 if [ ! -f "${TUI_RUNTIME}" ]; then
 	echo "codex-lead-tui-runtime.js not built at ${TUI_RUNTIME} — run: pnpm --filter flywheel-teamlead build" >&2
 	exit 1
@@ -53,14 +49,11 @@ export FLYWHEEL_ROOT
 # TUI Lead (future Mufasa/task-114 bootstrap) is byte-compat.
 export FLYWHEEL_TUI_WINDOW_ALERT=1
 
-# ── Infra Bot identity: selectors in launcher, coordinates from registry ──
-. "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
-canonical_lead_identity_resolve "flywheel" "codex-infra-bot-lead"
-# FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
-# (same derivation claude-lead.sh:481 uses). These launchers predate that change —
-# Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
-export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${FLYWHEEL_PROJECT_NAME}/comm.db}"
-# The private channel remains runtime routing config; bot id/token are registry identity.
+# ── Infra Bot identity (matches ~/.flywheel/projects.json: flywheel / codex-infra-bot-lead) ──
+export FLYWHEEL_LEAD_ID="codex-infra-bot-lead"
+export FLYWHEEL_PROJECT_NAME="flywheel"
+# Annie sets these in ~/.flywheel/.env (the bot's Discord user id + its private channel):
+export FLYWHEEL_LEAD_BOT_USER_ID="${FLYWHEEL_INFRA_BOT_USER_ID:?FLYWHEEL_INFRA_BOT_USER_ID must be set (the Codex Infra Bot Discord user id)}"
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="${FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID:?FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID must be set (#codex-infra-bot)}"
 # Alerts channel = the cross-dept mention-gated channel (Codex R1#3: chat channels
 # have NO mention gate, so Alerts is wired as cross-dept → only an explicit <@botId>
@@ -105,7 +98,10 @@ if ! assemble_full_access_governance "${FLYWHEEL_LEAD_ID}" "${TEAMLEAD_ROOT}/lea
 fi
 
 # ── secrets / prerequisites ──
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" != "1" ]; then
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" = "1" ]; then
+	export DISCORD_BOT_TOKEN="${CODEX_INFRA_BOT_TOKEN:-DRYRUN_PLACEHOLDER}"
+else
+	export DISCORD_BOT_TOKEN="${CODEX_INFRA_BOT_TOKEN:?CODEX_INFRA_BOT_TOKEN must be set}"
 	if [ ! -x "${FLYWHEEL_CODEX_BIN}" ]; then
 		echo "standalone codex not executable at ${FLYWHEEL_CODEX_BIN} — the remote-control daemon requires it." >&2
 		exit 1

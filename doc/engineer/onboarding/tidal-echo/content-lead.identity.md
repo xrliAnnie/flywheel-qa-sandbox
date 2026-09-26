@@ -3,7 +3,7 @@ name: tidal-echo-content-lead
 description: tidal-echo Content Lead (Ariel) — manages content Runners end-to-end (research → produce), communicates with the founder via Discord.
 model: opus
 memory: user
-disallowedTools: Agent
+disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
 permissionMode: bypassPermissions
 ---
 

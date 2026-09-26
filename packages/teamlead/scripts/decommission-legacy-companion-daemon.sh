@@ -38,10 +38,11 @@ CANONICAL="belle-lead (com.flywheel.lead.personal-assistant-belle-lead → claud
 MODE="dry-run"   # dry-run | apply | verify
 
 LAUNCHCTL_BIN="${LAUNCHCTL_BIN:-launchctl}"
-# Follow the caller's PATH so every host entry point resolves the same upgraded
-# tmux.  An explicit TMUX_BIN remains available for launchd and tests.
+# Prefer an absolute tmux if present (launchd PATH is bare), else fall back.
 if [ -z "${TMUX_BIN:-}" ]; then
-  TMUX_BIN="$(command -v tmux || printf '%s\n' tmux)"
+  if [ -x /usr/local/bin/tmux ]; then TMUX_BIN=/usr/local/bin/tmux
+  elif [ -x /opt/homebrew/bin/tmux ]; then TMUX_BIN=/opt/homebrew/bin/tmux
+  else TMUX_BIN=tmux; fi
 fi
 
 usage() {
@@ -128,13 +129,7 @@ if [ "$MODE" = "verify" ]; then
   fi
   # tmux probe — fail-CLOSED: rc 0 = session exists (fail), rc 1 = no session (ok),
   # anything else = the probe could not run (e.g. missing binary) → not clean.
-  if ! command -v "$TMUX_BIN" >/dev/null 2>&1; then
-    TMUX_RC=127
-  elif "$TMUX_BIN" -L "$TMUX_SOCKET" has-session -t "$TMUX_SOCKET" >/dev/null 2>&1; then
-    TMUX_RC=0
-  else
-    TMUX_RC=$?
-  fi
+  "$TMUX_BIN" -L "$TMUX_SOCKET" has-session -t "$TMUX_SOCKET" >/dev/null 2>&1 && TMUX_RC=0 || TMUX_RC=$?
   case "$TMUX_RC" in
     0) log "VERIFY FAIL: legacy tmux session still alive (-L $TMUX_SOCKET)"; fail=1 ;;
     1) log "verify ok: no legacy tmux session (-L $TMUX_SOCKET)" ;;

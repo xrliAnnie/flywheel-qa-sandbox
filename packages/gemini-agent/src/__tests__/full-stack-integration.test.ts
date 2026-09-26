@@ -1,5 +1,5 @@
 /**
- * FLY-1018 QA (DAG workflow) — full-stack integration.
+ * FLY-1018 QA (three-stage) — full-stack integration.
  *
  * Every OTHER test in this package mocks one side of the wire: loop.test.ts
  * drives a REAL runLoop over a STUB registry (execute returns canned
@@ -7,7 +7,7 @@
  * FAKE fetch. No single test wires the WHOLE agent stack together over real
  * HTTP. This one does — the mock-tests-need-an-integration-complement gap:
  *
- *   scripted ModelSurface → REAL runLoop → REAL dispatch DAG workflow gate
+ *   scripted ModelSurface → REAL runLoop → REAL dispatch three-stage gate
  *     → REAL createToolRegistry (binding-attach) → REAL BridgeClient
  *     (endpoint whitelist + Bearer + real fetch) → REAL in-process HTTP
  *     Bridge speaking the 6-tool contract.
@@ -197,11 +197,7 @@ describe("full-stack N1 short-chain over real HTTP", () => {
 				{
 					id: "c2",
 					name: "dispatch_runner",
-					args: {
-						issueId: "FLY-2001",
-						projectName: "geoforge3d",
-						taskCategory: "code",
-					},
+					args: { issueId: "FLY-2001", projectName: "geoforge3d" },
 				},
 			]),
 			turnOf([
@@ -243,7 +239,6 @@ describe("full-stack N1 short-chain over real HTTP", () => {
 		const createBody = bridge.requests[0]?.body ?? {};
 		expect(createBody.title).toBe("add widget");
 		expect(createBody.labels).toEqual(["backend"]);
-		expect(bridge.requests[1]?.body.taskCategory).toBe("code");
 
 		// F4: save_memory carried the full identity triple attached from the
 		// binding — the model only supplied content.

@@ -1,14 +1,10 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import type { ClaudeReviewOutcome } from "../claude-review-runner.js";
-import { toReviewFindingRulingSnapshot } from "../review-governance-effects.js";
 import {
 	type ReviewCommDb,
 	ReviewRequestCoordinator,
 } from "../review-request-coordinator.js";
-import { findingFingerprint } from "../review-verdict-policy.js";
 
 // ── FLY-1188 §7.1 — request↔gate binding protocol (Bridge side) ─────────
 
@@ -27,10 +23,7 @@ interface FakeQuestion {
 /** In-memory CommDB fake shared across opens (per project path). */
 class FakeCommDb implements ReviewCommDb {
 	questions = new Map<string, FakeQuestion>();
-	responses = new Map<
-		string,
-		{ id: string; content: string; from_agent: string }
-	>();
+	responses = new Map<string, { content: string; from_agent: string }>();
 	getMessageById(id: string) {
 		return this.questions.get(id);
 	}
@@ -38,11 +31,7 @@ class FakeCommDb implements ReviewCommDb {
 		return this.responses.get(questionId);
 	}
 	insertResponse(parentId: string, fromAgent: string, content: string) {
-		this.responses.set(parentId, {
-			id: `response:${parentId}`,
-			content,
-			from_agent: fromAgent,
-		});
+		this.responses.set(parentId, { content, from_agent: fromAgent });
 	}
 	/** Mirrors CommDB.insertResponseIfGateOpen's atomic conditions. */
 	insertResponseIfGateOpen(input: {
@@ -65,36 +54,10 @@ class FakeCommDb implements ReviewCommDb {
 			return false;
 		}
 		this.responses.set(input.questionId, {
-			id: `response:${input.questionId}`,
 			content: input.content,
 			from_agent: input.fromAgent,
 		});
 		return true;
-	}
-	insertReviewResponseIfGateOpen(input: {
-		questionId: string;
-		fromAgent: string;
-		content: string;
-		expectedOwner: string;
-		expectedCheckpoint: "review_design" | "review_code";
-	}) {
-		const existing = this.responses.get(input.questionId);
-		if (existing) {
-			if (
-				existing.from_agent !== input.fromAgent ||
-				existing.content !== input.content
-			) {
-				return null;
-			}
-			return {
-				responseId: existing.id,
-			};
-		}
-		if (!this.insertResponseIfGateOpen(input)) return null;
-		const response = this.responses.get(input.questionId)!;
-		return {
-			responseId: response.id,
-		};
 	}
 	close() {}
 }
@@ -110,39 +73,22 @@ interface Harness {
 		prompt: string;
 		effort?: string;
 	}>;
-	/** FLY-1257 HIGH-1: capture of markGateAnswered(questionId, executionId). */
-	gateAnswers: Array<{ questionId: string; executionId: string }>;
+	wakes: Array<{ executionId: string; questionId: string; summary: string }>;
 	alerts: string[];
-	reviewAlerts: Array<Record<string, unknown>>;
-	rulingThreadPosts: string[];
-	derivedHeadPaths: string[];
 	currentHead: () => string;
 	setHead: (h: string) => void;
 }
 
 async function makeHarness(
 	// FLY-1224 (T13 ②): optional reviewerEffort override seam under test.
-	harnessOpts: {
-		reviewerEffort?: "low" | "medium" | "high" | "xhigh";
-		reviewSeverityPolicyEnabled?: boolean;
-		postReviewRulingOk?: boolean;
-		reviewRound?: (invocation: {
-			sessionId: string;
-			resume: boolean;
-			prompt: string;
-			effort?: string;
-		}) => Promise<ClaudeReviewOutcome>;
-	} = {},
+	harnessOpts: { reviewerEffort?: "low" | "medium" | "high" | "xhigh" } = {},
 ): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
 	const comm = new FakeCommDb();
 	const outcomes: ClaudeReviewOutcome[] = [];
 	const invocations: Harness["invocations"] = [];
-	const gateAnswers: Harness["gateAnswers"] = [];
+	const wakes: Harness["wakes"] = [];
 	const alerts: string[] = [];
-	const reviewAlerts: Array<Record<string, unknown>> = [];
-	const rulingThreadPosts: string[] = [];
-	const derivedHeadPaths: string[] = [];
 	let head = HEAD;
 	const coordinator = new ReviewRequestCoordinator({
 		store,
@@ -151,43 +97,22 @@ async function makeHarness(
 		...(harnessOpts.reviewerEffort && {
 			reviewerEffort: harnessOpts.reviewerEffort,
 		}),
-		...(harnessOpts.reviewSeverityPolicyEnabled !== undefined && {
-			reviewSeverityPolicyEnabled: harnessOpts.reviewSeverityPolicyEnabled,
-		}),
 		reviewRound: async (inv) => {
-			const invocation = {
+			invocations.push({
 				sessionId: inv.sessionId,
 				resume: inv.resume,
 				prompt: inv.prompt,
 				effort: inv.effort,
-			};
-			invocations.push(invocation);
-			if (harnessOpts.reviewRound) {
-				return harnessOpts.reviewRound(invocation);
-			}
+			});
 			const next = outcomes.shift();
 			if (!next) throw new Error("no stubbed outcome");
 			return next;
 		},
-		deriveHead: async (path) => {
-			derivedHeadPaths.push(path);
-			return head;
-		},
-		listActiveReviewFindingRulings: ({ projectName, issueId }) =>
-			store
-				.listActiveReviewFindingRulings(projectName, issueId)
-				.map(toReviewFindingRulingSnapshot),
-		markGateAnswered: (questionId, executionId) => {
-			gateAnswers.push({ questionId, executionId });
+		deriveHead: async () => head,
+		wakeRunner: async (executionId, _session, questionId, summary) => {
+			wakes.push({ executionId, questionId, summary });
 		},
 		alertLead: (m) => alerts.push(m),
-		emitReviewAlert: async (event) => {
-			reviewAlerts.push(event as unknown as Record<string, unknown>);
-		},
-		postReviewRulingThread: async ({ text }) => {
-			rulingThreadPosts.push(text);
-			return { ok: harnessOpts.postReviewRulingOk !== false };
-		},
 		logger: () => {},
 	});
 	return {
@@ -196,11 +121,8 @@ async function makeHarness(
 		coordinator,
 		outcomes,
 		invocations,
-		gateAnswers,
+		wakes,
 		alerts,
-		reviewAlerts,
-		rulingThreadPosts,
-		derivedHeadPaths,
 		currentHead: () => head,
 		setHead: (h) => {
 			head = h;
@@ -208,294 +130,22 @@ async function makeHarness(
 	};
 }
 
-describe("ReviewRequestCoordinator — FLY-1278 review-ruling authority", () => {
-	it("validates field bounds and follow-up shape before touching StateStore", async () => {
-		const h = await makeHarness();
-		for (const payload of [
-			{},
-			{
-				projectName: "proj",
-				issue: "FLY-1278",
-				findingKey: "x",
-				disposition: "follow_up",
-				rationale: "missing follow-up",
-				ruledBy: "lead",
-			},
-			{
-				projectName: "proj",
-				issue: "bad issue",
-				findingKey: "x",
-				disposition: "overruled",
-				rationale: "reason",
-				ruledBy: "lead",
-			},
-			{
-				projectName: "proj",
-				issue: "FLY-1278",
-				findingKey: "x\nINJECT",
-				disposition: "overruled",
-				rationale: "reason",
-				ruledBy: "lead",
-			},
-		]) {
-			const result = await h.coordinator.reviewRuling(payload);
-			expect(result.accepted).toBe(false);
-			expect(result.httpStatus).toBe(400);
-		}
-	});
-
-	it("records a supervised ruling, posts its ruling_id, and emits deterministic audit alert", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		h.store.insertCodexReviewJob({
-			requestId: "source",
-			executionId: "e1",
-			issueId: "FLY-1188",
-			projectName: "proj",
-			reviewType: "code",
-			questionId: "source-q",
-		});
-		h.store.claimCodexReviewJobRunning("source");
-		h.store.completeCodexReviewJob(
-			"source",
-			"CHANGES_REQUESTED",
-			JSON.stringify([
-				{ id: "lease", severity: "MEDIUM", title: "Add a lease" },
-			]),
-		);
-		h.store.stampCodexReviewJobResponded("source");
-
-		const result = await h.coordinator.reviewRuling({
-			projectName: "proj",
-			issue: "FLY-1188",
-			findingKey: "lease",
-			disposition: "follow_up",
-			followUpIssue: "FLY-1274",
-			rationale: "Correctness wins; optimize in the follow-up.",
-			ruledBy: "flywheel-eng-lead",
-			executionId: "lead-exec",
-		});
-
-		expect(result).toMatchObject({ accepted: true, httpStatus: 201 });
-		const rulingId = result.ruling?.ruling_id;
-		expect(rulingId).toBeTruthy();
-		expect(h.rulingThreadPosts[0]).toContain(rulingId);
-		expect(h.rulingThreadPosts[0]).toContain("FLY-1274");
-		expect(h.reviewAlerts).toContainEqual(
-			expect.objectContaining({
-				kind: "review_ruling_recorded",
-				eventId: `review-ruling:${rulingId}`,
-			}),
-		);
-		expect(
-			h.store.listActiveReviewFindingRulings("proj", "FLY-1188")[0]
-				?.notified_at,
-		).toBeTruthy();
-	});
-
-	it("bounds reviewer-derived exact-locator keys and audit-thread text", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		const finding = {
-			id: "x".repeat(129),
-			severity: "LOW",
-			file: "review.ts",
-			title: `line one\n${"t".repeat(2_000)}`,
-		};
-		h.store.insertCodexReviewJob({
-			requestId: "source-invalid-id",
-			executionId: "e1",
-			issueId: "FLY-1188",
-			projectName: "proj",
-			reviewType: "code",
-			questionId: "source-q",
-		});
-		h.store.claimCodexReviewJobRunning("source-invalid-id");
-		h.store.completeCodexReviewJob(
-			"source-invalid-id",
-			"CHANGES_REQUESTED",
-			JSON.stringify([finding]),
-		);
-		h.store.stampCodexReviewJobResponded("source-invalid-id");
-
-		const result = await h.coordinator.reviewRuling({
-			projectName: "proj",
-			issue: "FLY-1188",
-			requestId: "source-invalid-id",
-			findingIndex: 0,
-			disposition: "overruled",
-			rationale: "Reviewer-derived fields stay bounded.",
-			ruledBy: "lead",
-		});
-
-		expect(result.accepted).toBe(true);
-		expect(result.ruling?.finding_key).toBe(
-			findingFingerprint(finding.file, finding.title),
-		);
-		expect(h.rulingThreadPosts[0]).toContain("line one\\n");
-		expect(h.rulingThreadPosts[0]).not.toContain(`\n${"t".repeat(500)}`);
-		expect(h.rulingThreadPosts[0]?.length).toBeLessThan(1_000);
-	});
-
-	it("keeps authority active when thread delivery fails and boot-redrives it", async () => {
-		const h = await makeHarness({ postReviewRulingOk: false });
-		registerSession(h.store, "e1");
-		h.store.insertCodexReviewJob({
-			requestId: "source",
-			executionId: "e1",
-			issueId: "FLY-1188",
-			projectName: "proj",
-			reviewType: "code",
-			questionId: "source-q",
-		});
-		h.store.claimCodexReviewJobRunning("source");
-		h.store.completeCodexReviewJob(
-			"source",
-			"CHANGES_REQUESTED",
-			JSON.stringify([{ id: "risk", severity: "HIGH", title: "Risk" }]),
-		);
-		h.store.stampCodexReviewJobResponded("source");
-		const result = await h.coordinator.reviewRuling({
-			projectName: "proj",
-			issue: "FLY-1188",
-			findingKey: "risk",
-			disposition: "overruled",
-			rationale: "Lead reviewed external evidence.",
-			ruledBy: "lead",
-		});
-
-		expect(result.accepted).toBe(true);
-		expect(
-			h.store.listActiveReviewFindingRulings("proj", "FLY-1188"),
-		).toHaveLength(1);
-		expect(h.store.listPendingReviewRulingNotifications()).toHaveLength(1);
-		expect(h.reviewAlerts).toContainEqual(
-			expect.objectContaining({
-				kind: "review_ruling_notify_failed",
-				eventId: `review-ruling:${result.ruling?.ruling_id}:notify_failed`,
-			}),
-		);
-
-		h.coordinator = new ReviewRequestCoordinator({
-			store: h.store,
-			commDbPathFor: () => "/fake/proj/comm.db",
-			openCommDb: () => h.comm,
-			postReviewRulingThread: async ({ text }) => {
-				h.rulingThreadPosts.push(text);
-				return { ok: true };
-			},
-			logger: () => {},
-		});
-		h.coordinator.redriveOnBoot();
-		await settle();
-		expect(h.store.listPendingReviewRulingNotifications()).toEqual([]);
-		expect(h.rulingThreadPosts).toHaveLength(2);
-		expect(h.rulingThreadPosts[0]).toContain(result.ruling?.ruling_id);
-		expect(h.rulingThreadPosts[1]).toContain(result.ruling?.ruling_id);
-	});
-
-	it("maps semantic conflicts and revoke to supervised HTTP outcomes", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		h.store.insertCodexReviewJob({
-			requestId: "source",
-			executionId: "e1",
-			issueId: "FLY-1188",
-			projectName: "proj",
-			reviewType: "design",
-			questionId: "source-q",
-		});
-		h.store.claimCodexReviewJobRunning("source");
-		h.store.completeCodexReviewJob(
-			"source",
-			"CHANGES_REQUESTED",
-			JSON.stringify([{ id: "scope", severity: "LOW" }]),
-		);
-		h.store.stampCodexReviewJobResponded("source");
-		const base = {
-			projectName: "proj",
-			issue: "FLY-1188",
-			findingKey: "scope",
-			disposition: "overruled",
-			rationale: "Out of scope.",
-			ruledBy: "lead",
-		};
-		const created = await h.coordinator.reviewRuling(base);
-		expect((await h.coordinator.reviewRuling(base)).httpStatus).toBe(200);
-		expect(
-			(
-				await h.coordinator.reviewRuling({
-					...base,
-					rationale: "Conflicting reason.",
-				})
-			).httpStatus,
-		).toBe(409);
-
-		const revoked = await h.coordinator.reviewRuling({
-			projectName: "proj",
-			revokeRulingId: created.ruling?.ruling_id,
-			rationale: "Reopened after new evidence.",
-			ruledBy: "lead-2",
-		});
-		expect(revoked).toMatchObject({ accepted: true, httpStatus: 200 });
-		expect(h.store.listActiveReviewFindingRulings("proj", "FLY-1188")).toEqual(
-			[],
-		);
-	});
-});
-
 function registerSession(
 	store: StateStore,
 	execId: string,
-	opts: {
-		codexSkip?: boolean;
-		adapterType?: string;
-		displayPath?: string;
-		bindingPath?: string;
-	} = {},
+	opts: { codexSkip?: boolean; adapterType?: string } = {},
 ) {
 	store.upsertSession({
 		execution_id: execId,
 		issue_id: "FLY-1188",
 		project_name: "proj",
 		status: "running",
-		worktree_path: opts.displayPath ?? "/fake/worktree",
+		worktree_path: "/fake/worktree",
 		adapter_type: opts.adapterType ?? "codex-tmux",
-	});
-	store.bindWorktreeOnce(execId, {
-		path: opts.bindingPath ?? "/fake/worktree",
-		branch: `flywheel-${execId}`,
-		generation: `generation-${execId}`,
 	});
 	if (opts.codexSkip) {
 		store.patchSessionMetadata(execId, { codex_skip: 1 });
 	}
-}
-
-function deliverSourceFindings(
-	store: StateStore,
-	input: {
-		requestId: string;
-		executionId: string;
-		findings: Record<string, unknown>[];
-		reviewType?: "design" | "code";
-	},
-): void {
-	store.insertCodexReviewJob({
-		requestId: input.requestId,
-		executionId: input.executionId,
-		issueId: "FLY-1188",
-		projectName: "proj",
-		reviewType: input.reviewType ?? "code",
-		questionId: `source-${input.requestId}`,
-	});
-	store.claimCodexReviewJobRunning(input.requestId);
-	store.completeCodexReviewJob(
-		input.requestId,
-		"CHANGES_REQUESTED",
-		JSON.stringify(input.findings),
-	);
-	store.stampCodexReviewJobResponded(input.requestId);
 }
 
 /** A well-formed OPEN review gate owned by execId (R12 HIGH-2 shape). */
@@ -520,17 +170,6 @@ function openGate(
 /** Wait until the coordinator's in-flight chains drain. */
 async function settle() {
 	for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-}
-
-function deferred<T>(): {
-	promise: Promise<T>;
-	resolve: (value: T) => void;
-} {
-	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((done) => {
-		resolve = done;
-	});
-	return { promise, resolve };
 }
 
 describe("ReviewRequestCoordinator.accept — validation (fail-close)", () => {
@@ -613,50 +252,6 @@ describe("ReviewRequestCoordinator.accept — validation (fail-close)", () => {
 			questionId: "q1",
 		});
 		expect(r).toMatchObject({ accepted: false, httpStatus: 422 });
-	});
-
-	it("requires the immutable worktree binding instead of display metadata", async () => {
-		h.store.upsertSession({
-			execution_id: "e1",
-			issue_id: "FLY-1434",
-			project_name: "proj",
-			status: "running",
-			worktree_path: "/runner-controlled/display",
-			adapter_type: "codex-tmux",
-		});
-		openGate(h.comm, "q1");
-
-		const r = await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "binding-missing",
-			reviewType: "code",
-			questionId: "q1",
-		});
-
-		expect(r).toMatchObject({ accepted: false, httpStatus: 422 });
-		expect(h.derivedHeadPaths).toEqual([]);
-	});
-
-	it("freezes main-repo head from the immutable binding when display path drifts", async () => {
-		registerSession(h.store, "e1", {
-			displayPath: "/runner-controlled/display",
-			bindingPath: "/authority/worktree",
-		});
-		openGate(h.comm, "q1");
-
-		const r = await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "binding-authority",
-			reviewType: "code",
-			questionId: "q1",
-		});
-
-		expect(r).toMatchObject({ accepted: true });
-		expect(h.derivedHeadPaths[0]).toBe("/authority/worktree");
-		expect(h.store.getCodexReviewJob("binding-authority")).toMatchObject({
-			target_repo_path: "/authority/worktree",
-			target_repo_identity: "__main__",
-		});
 	});
 });
 
@@ -768,506 +363,6 @@ describe("ReviewRequestCoordinator — codex-skip lane", () => {
 });
 
 describe("ReviewRequestCoordinator — job execution", () => {
-	it("FLY-1278: policy-off prompt stays byte-identical while policy-on teaches severity and stable ids", async () => {
-		const legacy = await makeHarness({ reviewSeverityPolicyEnabled: false });
-		registerSession(legacy.store, "source");
-		registerSession(legacy.store, "e1");
-		deliverSourceFindings(legacy.store, {
-			requestId: "source-review",
-			executionId: "source",
-			findings: [{ id: "legacy-settled", severity: "HIGH", title: "bug" }],
-		});
-		expect(
-			legacy.store.recordReviewFindingRuling({
-				projectName: "proj",
-				issue: "FLY-1188",
-				findingKey: "legacy-settled",
-				disposition: "overruled",
-				rationale: "Must be invisible while the lane is disabled.",
-				ruledBy: "lead",
-			}).status,
-		).toBe("created");
-		openGate(legacy.comm, "q1");
-		legacy.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [{ id: "legacy-settled", severity: "HIGH", title: "bug" }],
-			reviewedHeadSha: HEAD,
-			raw: "",
-		});
-		await legacy.coordinator.accept({
-			executionId: "e1",
-			requestId: "legacy",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-		const legacyContract =
-			`You are the CROSS-FAMILY REVIEWER for FLY-1188 ` +
-			`(a codex-authored change; you are the independent Claude lane). ` +
-			`Actively explore this repository — do not rely on any diff alone. ` +
-			`When done, output ONLY a JSON object: {"verdict": "APPROVED" | "CHANGES_REQUESTED", ` +
-			`"findings": [{"severity": "HIGH|MEDIUM|LOW", "file": "...", "line": 0, "title": "...", "detail": "..."}], ` +
-			`"reviewedHeadSha": "<the exact commit you reviewed, git rev-parse HEAD>"}. ` +
-			`No prose outside the JSON. Your very last line must be that JSON object itself.`;
-		const target = `Review the CODE at commit ${HEAD} on the current branch. Diff it against the merge base with the default branch (git diff), read the touched files in full, check correctness, security, edge cases and error handling. Skip style nitpicks.`;
-		expect(legacy.invocations[0]?.prompt).toBe(
-			`${legacyContract}\n\n${target}\n\nThis is round 1.`,
-		);
-		expect(legacy.store.getCodexReviewJob("legacy")?.verdict).toBe(
-			"CHANGES_REQUESTED",
-		);
-		expect(legacy.reviewAlerts).toEqual([]);
-
-		const enabled = await makeHarness();
-		registerSession(enabled.store, "e1");
-		openGate(enabled.comm, "q1");
-		enabled.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [{ severity: "HIGH", title: "bug" }],
-			reviewedHeadSha: HEAD,
-			raw: "",
-		});
-		await enabled.coordinator.accept({
-			executionId: "e1",
-			requestId: "enabled",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-		const prompt = enabled.invocations[0]?.prompt ?? "";
-		expect(prompt).toContain("CHANGES_REQUESTED ONLY");
-		expect(prompt).toContain(
-			"correctness, security, data loss, or authorization",
-		);
-		expect(prompt).toContain('stable "id"');
-		expect(prompt).toContain("reuse the same id");
-	});
-
-	it("FLY-1278: settled HIGH findings approve with frozen payload and deterministic dispute alerts", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "source");
-		registerSession(h.store, "e1");
-		deliverSourceFindings(h.store, {
-			requestId: "source-review",
-			executionId: "source",
-			findings: [
-				{ id: "automatic-risk", severity: "HIGH", title: "Old risk" },
-				{ id: "explicit-risk", severity: "HIGH", title: "Other risk" },
-			],
-		});
-		const rulingIds = new Map<string, string>();
-		for (const findingKey of ["automatic-risk", "explicit-risk"]) {
-			const recorded = h.store.recordReviewFindingRuling({
-				projectName: "proj",
-				issue: "FLY-1188",
-				findingKey,
-				disposition: "overruled",
-				rationale: "Lead verified external evidence.",
-				ruledBy: "flywheel-eng-lead",
-			});
-			expect(recorded.status).toBe("created");
-			rulingIds.set(findingKey, recorded.ruling?.ruling_id ?? "");
-		}
-		openGate(h.comm, "q1");
-		h.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [
-				{ id: "automatic-risk", severity: "HIGH", title: "Old risk" },
-				{
-					id: "new-proof",
-					disputesRuling: "explicit-risk",
-					severity: "HIGH",
-					title: "New evidence",
-				},
-			],
-			reviewedHeadSha: HEAD,
-			raw: "",
-		});
-
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-
-		const job = h.store.getCodexReviewJob("r1");
-		expect(job?.verdict).toBe("APPROVED");
-		expect(JSON.parse(job?.settled_json ?? "null")).toHaveLength(2);
-		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
-		expect(h.invocations[0]?.prompt).toContain("GOVERNANCE-SETTLED FINDINGS");
-		expect(h.invocations[0]?.prompt).toContain("automatic-risk");
-		expect(
-			h.reviewAlerts.filter((event) => event.kind === "review_ruling_disputed"),
-		).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					eventId: `review-dispute:r1:${rulingIds.get("automatic-risk")}`,
-				}),
-				expect.objectContaining({
-					eventId: `review-dispute:r1:${rulingIds.get("explicit-risk")}`,
-				}),
-			]),
-		);
-	});
-
-	it("FLY-1278: a ruling created mid-round applies only to the next frozen snapshot", async () => {
-		const firstRound = deferred<ClaudeReviewOutcome>();
-		let calls = 0;
-		const highFinding = { id: "risk", severity: "HIGH", title: "Risk" };
-		const h = await makeHarness({
-			reviewRound: async () => {
-				calls += 1;
-				if (calls === 1) return firstRound.promise;
-				return {
-					kind: "verdict",
-					verdict: "CHANGES_REQUESTED",
-					findings: [highFinding],
-					reviewedHeadSha: null,
-					raw: "",
-				};
-			},
-		});
-		registerSession(h.store, "source");
-		registerSession(h.store, "e1");
-		deliverSourceFindings(h.store, {
-			requestId: "source-review",
-			executionId: "source",
-			findings: [highFinding],
-			reviewType: "design",
-		});
-		openGate(h.comm, "q1", "e1", "review_design");
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "design",
-			questionId: "q1",
-			planPath: "engineering/doc/plan.md",
-		});
-		await settle();
-		expect(h.invocations).toHaveLength(1);
-		expect(h.invocations[0]?.prompt).not.toContain(
-			"GOVERNANCE-SETTLED FINDINGS",
-		);
-
-		expect(
-			h.store.recordReviewFindingRuling({
-				projectName: "proj",
-				issue: "FLY-1188",
-				findingKey: "risk",
-				disposition: "overruled",
-				rationale: "Lead settled this while review was running.",
-				ruledBy: "lead",
-			}).status,
-		).toBe("created");
-		firstRound.resolve({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [highFinding],
-			reviewedHeadSha: null,
-			raw: "",
-		});
-		await settle();
-		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("CHANGES_REQUESTED");
-
-		openGate(h.comm, "q2", "e1", "review_design");
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r2",
-			reviewType: "design",
-			questionId: "q2",
-			planPath: "engineering/doc/plan.md",
-		});
-		await settle();
-		expect(h.store.getCodexReviewJob("r2")?.verdict).toBe("APPROVED");
-		expect(h.invocations[1]?.prompt).toContain("GOVERNANCE-SETTLED FINDINGS");
-	});
-
-	it("FLY-1278: a ruling revoked mid-round remains frozen until the next round", async () => {
-		const firstRound = deferred<ClaudeReviewOutcome>();
-		let calls = 0;
-		const highFinding = { id: "risk", severity: "HIGH", title: "Risk" };
-		const h = await makeHarness({
-			reviewRound: async () => {
-				calls += 1;
-				if (calls === 1) return firstRound.promise;
-				return {
-					kind: "verdict",
-					verdict: "CHANGES_REQUESTED",
-					findings: [highFinding],
-					reviewedHeadSha: null,
-					raw: "",
-				};
-			},
-		});
-		registerSession(h.store, "source");
-		registerSession(h.store, "e1");
-		deliverSourceFindings(h.store, {
-			requestId: "source-review",
-			executionId: "source",
-			findings: [highFinding],
-			reviewType: "design",
-		});
-		const created = h.store.recordReviewFindingRuling({
-			projectName: "proj",
-			issue: "FLY-1188",
-			findingKey: "risk",
-			disposition: "overruled",
-			rationale: "Lead settled this before review.",
-			ruledBy: "lead",
-		});
-		openGate(h.comm, "q1", "e1", "review_design");
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "design",
-			questionId: "q1",
-			planPath: "engineering/doc/plan.md",
-		});
-		await settle();
-		expect(h.invocations[0]?.prompt).toContain("GOVERNANCE-SETTLED FINDINGS");
-
-		h.store.revokeReviewFindingRuling({
-			projectName: "proj",
-			rulingId: created.ruling?.ruling_id ?? "",
-			revokedBy: "lead",
-			reason: "New evidence reopens it.",
-		});
-		firstRound.resolve({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [highFinding],
-			reviewedHeadSha: null,
-			raw: "",
-		});
-		await settle();
-		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("APPROVED");
-
-		openGate(h.comm, "q2", "e1", "review_design");
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r2",
-			reviewType: "design",
-			questionId: "q2",
-			planPath: "engineering/doc/plan.md",
-		});
-		await settle();
-		expect(h.store.getCodexReviewJob("r2")?.verdict).toBe("CHANGES_REQUESTED");
-		expect(h.invocations[1]?.prompt).not.toContain(
-			"GOVERNANCE-SETTLED FINDINGS",
-		);
-	});
-
-	it("FLY-1251 production R6 converges through the coordinator without codex_skip", async () => {
-		const fixturePath = fileURLToPath(
-			new URL(
-				"../../../../../engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json",
-				import.meta.url,
-			),
-		);
-		const [round6] = JSON.parse(readFileSync(fixturePath, "utf8")) as Array<{
-			findings_json: string;
-		}>;
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1");
-		h.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: JSON.parse(round6?.findings_json ?? "[]"),
-			reviewedHeadSha: HEAD,
-			raw: "",
-		});
-
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-
-		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("APPROVED");
-		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
-		const payload = JSON.parse(h.comm.getResponse("q1")?.content ?? "null");
-		expect(payload.advisories).toEqual(payload.findings);
-		expect(payload.advisories[0].detail).toContain(
-			"the genuine correctness fix in this commit",
-		);
-	});
-
-	it("FLY-1278: MEDIUM-only CHANGES becomes an approved advisory with frozen v2 payload", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1");
-		h.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [
-				{
-					severity: "MEDIUM",
-					file: "slow.ts",
-					title: "optimize later",
-					detail: "This is not ship-unsafe",
-				},
-			],
-			reviewedHeadSha: HEAD,
-			raw: "",
-		});
-
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-
-		const job = h.store.getCodexReviewJob("r1");
-		expect(job).toMatchObject({
-			status: "done",
-			verdict: "APPROVED",
-			reviewer_verdict: "CHANGES_REQUESTED",
-			payload_version: 2,
-		});
-		expect(JSON.parse(job?.advisories_json ?? "null")).toHaveLength(1);
-		expect(JSON.parse(job?.settled_json ?? "null")).toEqual([]);
-		const response = h.comm.getResponse("q1");
-		expect(response?.content).toBe(job?.response_json);
-		expect(JSON.parse(response?.content ?? "null")).toMatchObject({
-			reviewVerdict: "APPROVED",
-			reviewerVerdict: "CHANGES_REQUESTED",
-			requestId: "r1",
-			policyNote: "medium_low_findings_are_non_blocking_v1",
-		});
-		expect(JSON.parse(response?.content ?? "null").advisories).toHaveLength(1);
-		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
-	});
-
-	it("FLY-1278: downgraded code approval still fails closed without exact reviewed-head echo", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1");
-		h.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [{ severity: "LOW", title: "nit" }],
-			reviewedHeadSha: null,
-			raw: "",
-		});
-
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-
-		expect(h.store.getCodexReviewJob("r1")?.failure_reason).toBe(
-			"reviewed_wrong_head",
-		);
-		expect(h.comm.getResponse("q1")).toBeUndefined();
-		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
-	});
-
-	it("FLY-1278: policy-off preserves the legacy verdict, payload bytes, and columns", async () => {
-		const h = await makeHarness({ reviewSeverityPolicyEnabled: false });
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1");
-		const finding = { severity: "MEDIUM", title: "advisory" };
-		h.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [finding],
-			reviewedHeadSha: null,
-			raw: "",
-		});
-
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-
-		const job = h.store.getCodexReviewJob("r1");
-		expect(job?.verdict).toBe("CHANGES_REQUESTED");
-		expect(job?.payload_version).toBeUndefined();
-		expect(job?.response_json).toBeUndefined();
-		expect(h.comm.getResponse("q1")?.content).toBe(
-			JSON.stringify({
-				reviewVerdict: "CHANGES_REQUESTED",
-				requestId: "r1",
-				round: 1,
-				findings: [finding],
-				reviewedHeadSha: HEAD,
-				deliveryNonce: job?.delivery_nonce,
-			}),
-		);
-		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
-	});
-
-	it("FLY-1278: design MEDIUM-only CHANGES also converges without writing code authority", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1", "e1", "review_design");
-		h.outcomes.push({
-			kind: "verdict",
-			verdict: "CHANGES_REQUESTED",
-			findings: [{ severity: "MEDIUM", title: "clarify a paragraph" }],
-			reviewedHeadSha: null,
-			raw: "",
-		});
-
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "design",
-			questionId: "q1",
-		});
-		await settle();
-
-		expect(h.store.getCodexReviewJob("r1")?.verdict).toBe("APPROVED");
-		expect(
-			JSON.parse(h.comm.getResponse("q1")?.content ?? "null"),
-		).toMatchObject({
-			reviewVerdict: "APPROVED",
-			reviewerVerdict: "CHANGES_REQUESTED",
-		});
-		expect(h.store.getCodexReviewRecord("e1", HEAD)).toBeUndefined();
-	});
-
-	it("FLY-1278: reviewer APPROVED still carries MEDIUM advisories in payload v2", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1");
-		h.outcomes.push({
-			kind: "verdict",
-			verdict: "APPROVED",
-			findings: [{ severity: "LOW", title: "optional cleanup" }],
-			reviewedHeadSha: HEAD,
-			raw: "",
-		});
-
-		await h.coordinator.accept({
-			executionId: "e1",
-			requestId: "r1",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		await settle();
-
-		const payload = JSON.parse(h.comm.getResponse("q1")?.content ?? "null");
-		expect(payload.reviewVerdict).toBe("APPROVED");
-		expect(payload.advisories).toHaveLength(1);
-	});
-
 	it("code APPROVED: head recheck ok → cross-family record + response + done", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
@@ -1297,13 +392,10 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		expect(rec?.reviewer_family).toBe("claude");
 		expect(rec?.request_id).toBe("r1");
 		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(true);
-		// The bound question is answered; the mailbox delivery loop owns transport.
+		// bound question answered + runner woken
 		const resp = h.comm.getResponse("q1");
 		expect(resp && JSON.parse(resp.content).reviewVerdict).toBe("APPROVED");
-		// FLY-1257 HIGH-1: answering the review gate also flips its MARKER answered
-		// so a resident codex `/goal` resumes at once (isWaiting → false) instead
-		// of waiting ~72h for the deadline watcher.
-		expect(h.gateAnswers).toEqual([{ questionId: "q1", executionId: "e1" }]);
+		expect(h.wakes).toHaveLength(1);
 	});
 
 	it("code APPROVED but head MOVED between freeze and verdict → job failed, NO response, gate stays closed", async () => {
@@ -1868,160 +960,6 @@ describe("ReviewRequestCoordinator — boot redrive", () => {
 		expect(h.store.getCodexReviewJob("r1")?.status).toBe("done");
 		expect(h.comm.getResponse("q1")).toBeDefined();
 	});
-
-	it("redrives distinct executions concurrently while preserving same-execution serialization", async () => {
-		const rounds = new Map<
-			string,
-			ReturnType<typeof deferred<ClaudeReviewOutcome>>
-		>();
-		const approved = {
-			kind: "verdict",
-			verdict: "APPROVED",
-			findings: [],
-			reviewedHeadSha: null,
-			raw: "",
-		} satisfies ClaudeReviewOutcome;
-		let started = 0;
-		const h = await makeHarness({
-			reviewRound: async ({ sessionId }) => {
-				started += 1;
-				const round = deferred<ClaudeReviewOutcome>();
-				rounds.set(sessionId, round);
-				return round.promise;
-			},
-		});
-		for (const executionId of ["e1", "e2", "e3"]) {
-			registerSession(h.store, executionId);
-		}
-		for (const [requestId, executionId, questionId] of [
-			["r1", "e1", "q1"],
-			["r2", "e1", "q2"],
-			["r3", "e2", "q3"],
-			["r4", "e3", "q4"],
-		] as const) {
-			openGate(h.comm, questionId, executionId, "review_design");
-			h.store.insertCodexReviewJob({
-				requestId,
-				executionId,
-				issueId: "FLY-1188",
-				projectName: "proj",
-				reviewType: "design",
-				questionId,
-				authorFamily: "codex",
-			});
-		}
-
-		expect(h.coordinator.redriveOnBoot()).toBe(4);
-		await settle();
-		const initiallyStarted = started;
-		expect(h.store.getCodexReviewJob("r2")?.status).toBe("pending");
-
-		const r1Session = h.store.getCodexReviewJob("r1")?.reviewer_session_uuid;
-		expect(r1Session).toBeDefined();
-		rounds.get(r1Session!)!.resolve(approved);
-		await settle();
-		const afterFirstExecutionAdvanced = started;
-		for (const round of rounds.values()) {
-			round.resolve(approved);
-		}
-		await settle();
-
-		expect(initiallyStarted).toBe(3);
-		expect(afterFirstExecutionAdvanced).toBe(4);
-		for (const requestId of ["r1", "r2", "r3", "r4"]) {
-			expect(h.store.getCodexReviewJob(requestId)?.status).toBe("done");
-		}
-	});
-});
-
-describe("ReviewRequestCoordinator — scheduling", () => {
-	it("starts ten distinct executions without a coordinator-wide concurrency ceiling", async () => {
-		const rounds = Array.from({ length: 10 }, () =>
-			deferred<ClaudeReviewOutcome>(),
-		);
-		let started = 0;
-		const h = await makeHarness({
-			reviewRound: async () => rounds[started++]!.promise,
-		});
-		for (let index = 0; index < rounds.length; index += 1) {
-			const executionId = `e${index}`;
-			const questionId = `q${index}`;
-			registerSession(h.store, executionId);
-			openGate(h.comm, questionId, executionId, "review_design");
-			await h.coordinator.accept({
-				executionId,
-				requestId: `r${index}`,
-				reviewType: "design",
-				questionId,
-			});
-		}
-
-		await settle();
-		const initiallyStarted = started;
-		for (const round of rounds) {
-			round.resolve({
-				kind: "verdict",
-				verdict: "APPROVED",
-				findings: [],
-				reviewedHeadSha: null,
-				raw: "",
-			});
-		}
-		await settle();
-
-		expect(initiallyStarted).toBe(10);
-		for (let index = 0; index < rounds.length; index += 1) {
-			expect(h.store.getCodexReviewJob(`r${index}`)?.status).toBe("done");
-		}
-	});
-
-	it("keeps two requests from the same execution serial", async () => {
-		const firstRound = deferred<ClaudeReviewOutcome>();
-		let started = 0;
-		const h = await makeHarness({
-			reviewRound: async () => {
-				started += 1;
-				if (started === 1) return firstRound.promise;
-				return {
-					kind: "verdict",
-					verdict: "APPROVED",
-					findings: [],
-					reviewedHeadSha: null,
-					raw: "",
-				};
-			},
-		});
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1", "e1", "review_design");
-		openGate(h.comm, "q2", "e1", "review_design");
-		for (const [requestId, questionId] of [
-			["r1", "q1"],
-			["r2", "q2"],
-		] as const) {
-			await h.coordinator.accept({
-				executionId: "e1",
-				requestId,
-				reviewType: "design",
-				questionId,
-			});
-		}
-
-		await settle();
-		expect(started).toBe(1);
-		expect(h.store.getCodexReviewJob("r2")?.status).toBe("pending");
-		firstRound.resolve({
-			kind: "verdict",
-			verdict: "APPROVED",
-			findings: [],
-			reviewedHeadSha: null,
-			raw: "",
-		});
-		await settle();
-
-		expect(started).toBe(2);
-		expect(h.store.getCodexReviewJob("r1")?.status).toBe("done");
-		expect(h.store.getCodexReviewJob("r2")?.status).toBe("done");
-	});
 });
 
 // ── R12 findings — regression coverage ──────────────────────────────────
@@ -2356,8 +1294,8 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			raw: "",
 		});
 		// make the CommDB write blow up AFTER the verdict lands
-		const realInsert = h.comm.insertReviewResponseIfGateOpen.bind(h.comm);
-		h.comm.insertReviewResponseIfGateOpen = () => {
+		const realInsert = h.comm.insertResponseIfGateOpen.bind(h.comm);
+		h.comm.insertResponseIfGateOpen = () => {
 			throw new Error("disk full");
 		};
 		await h.coordinator.accept({
@@ -2371,7 +1309,7 @@ describe("R13 — terminal-state and delivery invariants", () => {
 		expect(job?.status).toBe("done"); // NOT downgraded to failed
 		expect(job?.responded_at).toBeUndefined();
 		// recovery: CommDB healthy again → boot outbox delivers
-		h.comm.insertReviewResponseIfGateOpen = realInsert;
+		h.comm.insertResponseIfGateOpen = realInsert;
 		h.coordinator.redriveOnBoot();
 		await settle();
 		expect(h.comm.getResponse("q1")).toBeDefined();
@@ -2458,11 +1396,12 @@ describe("R13 — terminal-state and delivery invariants", () => {
 		expect(h.comm.getResponse("q1")?.content).toBe("CANCELLED BY LEAD");
 	});
 
-	it("HIGH-3: stop() prevents queued same-execution jobs from starting after shutdown", async () => {
+	it("HIGH-3: stop() drains slot waiters — queued jobs never start a reviewer after shutdown", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
+		registerSession(h.store, "e2");
 		openGate(h.comm, "q1", "e1", "review_design");
-		openGate(h.comm, "q2", "e1", "review_design");
+		openGate(h.comm, "q2", "e2", "review_design");
 		let releaseFirst: (() => void) | undefined;
 		const firstRunning = new Promise<void>((r) => {
 			releaseFirst = r;
@@ -2472,6 +1411,7 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
+			maxConcurrent: 1,
 			reviewRound: async () => {
 				started += 1;
 				await firstRunning;
@@ -2493,17 +1433,17 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			questionId: "q1",
 		});
 		await coordinator.accept({
-			executionId: "e1",
+			executionId: "e2",
 			requestId: "r2",
 			reviewType: "design",
 			questionId: "q2",
 		});
 		await new Promise((r) => setImmediate(r));
-		expect(started).toBe(1); // second waits on the same execution's chain
-		coordinator.stop(); // shutdown while r2 is queued behind r1
+		expect(started).toBe(1); // second waits on the single slot
+		coordinator.stop(); // shutdown while r2 queues
 		releaseFirst?.();
 		await settle();
-		expect(started).toBe(1); // the queued chain link never started a reviewer
+		expect(started).toBe(1); // the drained waiter never started a reviewer
 	});
 
 	it("MEDIUM-3 via outbox: crash-recovered skipped CODE job re-asserts the head-bound record", async () => {
@@ -2978,120 +1918,5 @@ describe("FLY-1224 — audit-anchor chain (T13 ④)", () => {
 		expect(job?.reviewer_session_uuid).toBe(h.invocations[0]?.sessionId);
 		// findings_json exists and parses (an empty array is legal).
 		expect(Array.isArray(JSON.parse(job?.findings_json ?? "null"))).toBe(true);
-	});
-});
-
-describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
-	it("re-delivers the exact frozen response_json bytes", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1", "e1", "review_design");
-		h.store.insertCodexReviewJob({
-			requestId: "r1",
-			executionId: "e1",
-			issueId: "FLY-1188",
-			projectName: "proj",
-			reviewType: "design",
-			questionId: "q1",
-		});
-		const nonce = h.store.getCodexReviewJob("r1")?.delivery_nonce;
-		const responseJson = JSON.stringify({
-			reviewVerdict: "APPROVED",
-			reviewerVerdict: "CHANGES_REQUESTED",
-			requestId: "r1",
-			round: 1,
-			findings: [],
-			advisories: [],
-			settled: [],
-			policyNote: "medium_low_findings_are_non_blocking_v1",
-			deliveryNonce: nonce,
-		});
-		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
-			reviewerVerdict: "CHANGES_REQUESTED",
-			advisoriesJson: "[]",
-			settledJson: "[]",
-			responseJson,
-			payloadVersion: 2,
-		});
-
-		h.coordinator.redriveOnBoot();
-		await settle();
-
-		expect(h.comm.getResponse("q1")?.content).toBe(responseJson);
-		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeDefined();
-	});
-
-	it("fails closed when a v2 outbox row is missing its canonical response", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1");
-		h.store.insertCodexReviewJob({
-			requestId: "r1",
-			executionId: "e1",
-			issueId: "FLY-1188",
-			projectName: "proj",
-			reviewType: "code",
-			questionId: "q1",
-			frozenHeadSha: HEAD,
-		});
-		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
-			reviewerVerdict: "APPROVED",
-			advisoriesJson: "[]",
-			settledJson: "[]",
-			payloadVersion: 2,
-		});
-
-		h.coordinator.redriveOnBoot();
-		await settle();
-
-		expect(h.comm.getResponse("q1")).toBeUndefined();
-		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeUndefined();
-		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
-		expect(
-			h.alerts.some((message) => message.includes("canonical response_json")),
-		).toBe(true);
-	});
-
-	it("treats an old-shape answer as FOREIGN for a payload_version=2 job", async () => {
-		const h = await makeHarness();
-		registerSession(h.store, "e1");
-		openGate(h.comm, "q1", "e1", "review_design");
-		h.store.insertCodexReviewJob({
-			requestId: "r1",
-			executionId: "e1",
-			issueId: "FLY-1188",
-			projectName: "proj",
-			reviewType: "design",
-			questionId: "q1",
-		});
-		const job = h.store.getCodexReviewJob("r1");
-		const legacyJson = JSON.stringify({
-			reviewVerdict: "APPROVED",
-			requestId: "r1",
-			round: 1,
-			findings: [],
-			deliveryNonce: job?.delivery_nonce,
-		});
-		const responseJson = JSON.stringify({
-			...JSON.parse(legacyJson),
-			reviewerVerdict: "APPROVED",
-			advisories: [],
-			settled: [],
-			policyNote: "medium_low_findings_are_non_blocking_v1",
-		});
-		h.store.completeCodexReviewJob("r1", "APPROVED", "[]", {
-			reviewerVerdict: "APPROVED",
-			advisoriesJson: "[]",
-			settledJson: "[]",
-			responseJson,
-			payloadVersion: 2,
-		});
-		h.comm.insertResponse("q1", "bridge", legacyJson);
-
-		h.coordinator.redriveOnBoot();
-		await settle();
-
-		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeUndefined();
-		expect(h.alerts.some((message) => message.includes("FOREIGN"))).toBe(true);
 	});
 });

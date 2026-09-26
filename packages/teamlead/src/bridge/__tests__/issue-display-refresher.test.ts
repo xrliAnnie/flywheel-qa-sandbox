@@ -3,26 +3,23 @@
  *
  * Real in-memory StateStore; the Discord writers and CommDB probes are stubbed
  * at their seams (the writers' own network behavior is covered by the
- * ChatThreadCreator / review-effect suites). Every row of the plan's lifecycle
+ * ChatThreadCreator / AutoQaEffects suites). Every row of the plan's lifecycle
  * matrix asserts what each of the three faces was asked to render:
  *   design running / park+handoff / awaiting_review(park) / qa FAIL wake /
  *   qa PASS / kill QA / operator-reset / finalize / attach cross-wire.
  */
 
-import type { DesignBackend, WorkflowPhaseRole } from "flywheel-config";
+import type { ThreeStagePhase } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyTransition } from "../../applyTransition.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
-import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import type { ChatThreadCreator } from "../ChatThreadCreator.js";
 import type { DisplayWriteResult, ParkProbe } from "../issue-display.js";
 import {
 	attachTargetMatchesIssue,
 	computeSessionsFingerprint,
 	IssueDisplayRefresher,
-	type IssueDisplayRefresherDeps,
-	parseWorkflowRouteSummary,
 } from "../issue-display-refresher.js";
 import type { BridgeConfig } from "../types.js";
 
@@ -31,24 +28,6 @@ const IDENT = "FLY-907";
 const CH = "chan-1";
 const THREAD = "thread-1";
 const PROJECT = "proj";
-
-it("reads only a valid founder-visible route summary from session params", () => {
-	expect(
-		parseWorkflowRouteSummary(
-			JSON.stringify({
-				workflowRoute: {
-					summary: "🧭 **Route**: `generic` · source `default_fallback`",
-				},
-			}),
-		),
-	).toContain("default_fallback");
-	expect(parseWorkflowRouteSummary("{")).toBeUndefined();
-	expect(
-		parseWorkflowRouteSummary(
-			JSON.stringify({ workflowRoute: { summary: 1 } }),
-		),
-	).toBeUndefined();
-});
 
 function makeProjects(): ProjectEntry[] {
 	return [
@@ -76,7 +55,6 @@ interface TitleCall {
 
 interface FaceLog {
 	title: TitleCall[];
-	titleMarkers: Array<string | null | undefined>;
 	header: string[];
 	attachPin: string[];
 	unresolved: number;
@@ -85,14 +63,7 @@ interface FaceLog {
 }
 
 function makeLog(): FaceLog {
-	return {
-		title: [],
-		titleMarkers: [],
-		header: [],
-		attachPin: [],
-		unresolved: 0,
-		deleted: [],
-	};
+	return { title: [], header: [], attachPin: [], unresolved: 0, deleted: [] };
 }
 
 function makeCreatorStub(
@@ -103,15 +74,12 @@ function makeCreatorStub(
 		results[k] ?? results.all ?? "changed";
 	return {
 		stampStageEmojiResult: async (
-			ctx: unknown,
+			_ctx: unknown,
 			_threadId: string,
 			stage: string,
 			_withWord: boolean,
 			phaseBadge?: string | null,
 		) => {
-			log.titleMarkers.push(
-				(ctx as { modelMarker?: string | null }).modelMarker,
-			);
 			log.title.push({
 				via: "stage",
 				stage,
@@ -120,13 +88,10 @@ function makeCreatorStub(
 			return r("title");
 		},
 		stampStatusBadgeResult: async (
-			ctx: unknown,
+			_ctx: unknown,
 			_threadId: string,
 			badge: string | null,
 		) => {
-			log.titleMarkers.push(
-				(ctx as { modelMarker?: string | null }).modelMarker,
-			);
 			log.title.push({ via: "statusBadge", badge });
 			return r("title");
 		},
@@ -159,7 +124,6 @@ interface HarnessOpts {
 	tmux?: Record<string, string>;
 	/** tmux window → resolved live window_name. */
 	windowNames?: Record<string, string>;
-	resolveAttach?: IssueDisplayRefresherDeps["resolveAttach"];
 	results?: Partial<
 		Record<"title" | "header" | "attachPin" | "all", DisplayWriteResult>
 	>;
@@ -194,13 +158,11 @@ function makeRefresher(store: StateStore, opts: HarnessOpts = {}) {
 			const w = opts.tmux?.[execId];
 			return w ? { tmuxWindow: w, sessionName: w.split(":")[0]! } : undefined;
 		},
-		resolveAttach:
-			opts.resolveAttach ??
-			(async (tmuxWindow) => ({
-				kind: "cmux",
-				session: `cmux-${opts.windowNames?.[tmuxWindow] ?? "unknown"}`,
-				windowName: opts.windowNames?.[tmuxWindow],
-			})),
+		resolveAttach: async (tmuxWindow) => ({
+			kind: "cmux",
+			session: `cmux-${opts.windowNames?.[tmuxWindow] ?? "unknown"}`,
+			windowName: opts.windowNames?.[tmuxWindow],
+		}),
 	});
 	return { refresher, log };
 }
@@ -226,12 +188,10 @@ function seedSession(
 	store: StateStore,
 	args: {
 		exec: string;
-		role?: WorkflowPhaseRole | "main";
+		role?: ThreeStagePhase | "main";
 		status: string;
 		stage?: string;
 		model?: string;
-		designBackend?: DesignBackend;
-		backend?: string;
 	},
 ): void {
 	seq += 1;
@@ -247,8 +207,6 @@ function seedSession(
 		chat_thread_role: args.role ?? "main",
 		session_role: args.role ?? "main",
 		runner_model: args.model,
-		design_backend: args.designBackend,
-		adapter_type: args.backend,
 	});
 	if (args.stage) {
 		store.patchSessionMetadata(args.exec, { session_stage: args.stage });
@@ -276,22 +234,6 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("FLY-1709: archived thread writes no display face and persists a terminal fingerprint", async () => {
-		seedSession(store, { exec: "e-main", role: "main", status: "terminated" });
-		store.markChatThreadArchived(THREAD);
-		store.setPhaseStatusLine(ISSUE, CH, "legacy-line", "stale");
-		const { refresher, log } = makeRefresher(store);
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.title).toEqual([]);
-		expect(log.header).toEqual([]);
-		expect(log.attachPin).toEqual([]);
-		expect(log.deleted).toEqual([]);
-		const fingerprint = JSON.parse(storedFingerprint(store)!);
-		expect(JSON.parse(fingerprint.c)).toEqual({ archived: true });
-	});
-
 	it("design running → title 🎨设计, header 设计▶/实现◾/QA◾ (状态收敛在置顶块一处)", async () => {
 		seedSession(store, { exec: "e-design", role: "design", status: "running" });
 		const { refresher, log } = makeRefresher(store, {
@@ -312,127 +254,6 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			implement: "◾ 未开始",
 			qa: "◾ 未开始",
 		});
-	});
-
-	it("renders pending workflow actor models from the immutable run snapshot", async () => {
-		const snapshot = buildWorkflowRunSnapshotV1({
-			template: { id: "tpl-display", revision: 1 },
-			manifest: {
-				schema_version: 1,
-				nodes: [
-					{
-						id: "design",
-						type: "design",
-						vendor: "claude",
-						model: "claude-fable-5",
-						effort: "high",
-					},
-					{
-						id: "implement",
-						type: "implement",
-						vendor: "codex",
-						model: "gpt-5.6-sol",
-						effort: "high",
-					},
-					{
-						id: "qa",
-						type: "qa",
-						vendor: "claude",
-						model: "claude-opus-4-6[1m]",
-						effort: "high",
-					},
-					{ id: "founder_gate", type: "gate" },
-				],
-				edges: [
-					{
-						id: "design_done",
-						from: "design",
-						to: "implement",
-						condition: "design_done",
-					},
-					{
-						id: "implement_done",
-						from: "implement",
-						to: "qa",
-						condition: "implement_done",
-					},
-					{
-						id: "qa_pass",
-						from: "qa",
-						to: "founder_gate",
-						condition: "qa_pass",
-					},
-				],
-				loops: [
-					{
-						id: "qa_retry",
-						from: "qa",
-						to: "implement",
-						loop_when: "qa_fail",
-						exit_when: "qa_pass",
-						max_iterations: 3,
-						on_limit: "escalate",
-					},
-				],
-				terminal_gate: {
-					node: "founder_gate",
-					predicate: "founder_approved",
-				},
-				ship_claims: ["qa_passed", "founder_approved"],
-			},
-		});
-		store.createWorkflowRun({
-			runId: "run-display",
-			issueId: ISSUE,
-			projectName: PROJECT,
-			snapshotJson: JSON.stringify(snapshot),
-			claimsReadEnrolled: false,
-		});
-		seedSession(store, {
-			exec: "e-design",
-			role: "design",
-			status: "running",
-			model: "claude-fable-5",
-		});
-		const { refresher, log } = makeRefresher(store, {
-			tmux: { "e-design": "runner-proj:@1" },
-			windowNames: { "runner-proj:@1": `${IDENT}-runner-design` },
-		});
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.header[0]).toContain(
-			"**[实现·GPT-5.6]** ◾ 未开始（计划模型 GPT-5.6）",
-		);
-		expect(log.header[0]).toContain("**[QA·Opus]** ◾ 未开始（计划模型 Opus）");
-	});
-
-	it("does not guess a model from persisted codex design backend metadata", async () => {
-		seedSession(store, {
-			exec: "e-design",
-			role: "design",
-			status: "running",
-			designBackend: "codex",
-		});
-		const { refresher, log } = makeRefresher(store);
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.header[0]).not.toMatch(/\[设计·/);
-	});
-
-	it("does not guess a model from persisted claude design backend metadata", async () => {
-		seedSession(store, {
-			exec: "e-design",
-			role: "design",
-			status: "running",
-			designBackend: "claude",
-		});
-		const { refresher, log } = makeRefresher(store);
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.header[0]).not.toMatch(/\[设计·/);
 	});
 
 	it("design park+handoff (design_done+parked, implement running) → 设计✅ 实现▶, title 🔨实现", async () => {
@@ -551,7 +372,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		expect(log.title).toEqual([{ via: "stage", stage: "approve" }]);
 	});
 
-	it("post-ship finalization completion → completed during the stale awaiting_review cleanup window", async () => {
+	it("post-ship finalization claim → completed during the stale awaiting_review cleanup window", async () => {
 		seedSession(store, {
 			exec: "e-design",
 			role: "design",
@@ -568,7 +389,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			execution_id: "e-qa",
 			issue_id: ISSUE,
 			project_name: PROJECT,
-			event_type: "post_ship_finalization_completed",
+			event_type: "post_ship_finalization_claim",
 			source: "test",
 		});
 		const { refresher, log } = makeRefresher(store, {
@@ -641,98 +462,6 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		});
 	});
 
-	it("FLY-1709 R1: an earlier completed phase cannot make a terminated phase look concluded", async () => {
-		seedSession(store, {
-			exec: "e-design",
-			role: "design",
-			status: "completed",
-		});
-		seedSession(store, {
-			exec: "e-impl",
-			role: "implement",
-			status: "terminated",
-		});
-		const { refresher, log } = makeRefresher(store);
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.title).toEqual([{ via: "statusBadge", badge: "🔴受阻" }]);
-		expectHeaderStates(log.header[0]!, {
-			design: "✅ 完成",
-			implement: "🔴 受阻",
-			qa: "◾ 未开始",
-		});
-	});
-
-	it("FLY-1709 R1: completed predecessors cannot make a running QA phase look concluded", async () => {
-		seedSession(store, {
-			exec: "e-design",
-			role: "design",
-			status: "completed",
-		});
-		seedSession(store, {
-			exec: "e-impl",
-			role: "implement",
-			status: "completed",
-		});
-		seedSession(store, { exec: "e-qa", role: "qa", status: "running" });
-		const { refresher, log } = makeRefresher(store, {
-			park: { "e-qa": "parked" },
-		});
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.title).toEqual([
-			{ via: "stage", stage: "", phaseBadge: "🧪QA" },
-		]);
-		expectHeaderStates(log.header[0]!, {
-			design: "✅ 完成",
-			implement: "✅ 完成",
-			qa: "✅ 完成",
-		});
-	});
-
-	it("FLY-1709 R3: a historical completed main cannot conclude a later terminated main", async () => {
-		seedSession(store, {
-			exec: "e-main-old",
-			role: "main",
-			status: "completed",
-		});
-		seedSession(store, {
-			exec: "e-main-latest",
-			role: "main",
-			status: "terminated",
-		});
-		const { refresher, log } = makeRefresher(store);
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.title).toEqual([{ via: "statusBadge", badge: "🔴受阻" }]);
-	});
-
-	it("FLY-1709 R3: a merge-confirmed terminated main is concluded cleanup", async () => {
-		seedSession(store, {
-			exec: "e-main-cleanup",
-			role: "main",
-			status: "terminated",
-		});
-		store.insertEvent({
-			event_id: "merge-claim-1709",
-			execution_id: "e-main-cleanup",
-			issue_id: ISSUE,
-			project_name: PROJECT,
-			event_type: "post_ship_finalization_claim",
-			source: "test",
-		});
-		const { refresher, log } = makeRefresher(store);
-
-		await refresher.refresh(ISSUE);
-
-		expect(log.title).toEqual([
-			{ via: "stage", stage: "completed", phaseBadge: undefined },
-		]);
-	});
-
 	it("operator-reset (terminate + re-dispatch new exec) → header shows the NEW exec id + its attach command, state back to ▶", async () => {
 		seedSession(store, { exec: "e-qa-old", role: "qa", status: "terminated" });
 		seedSession(store, { exec: "e-qa-new1", role: "qa", status: "running" });
@@ -803,7 +532,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		).toBe(true);
 	});
 
-	it("single-runner (non-DAG workflow) cross-wire → the pin is actively degraded, never left showing the wrong link", async () => {
+	it("single-runner (non-three-stage) cross-wire → the pin is actively degraded, never left showing the wrong link", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		seedSession(store, {
 			exec: "e-main",
@@ -817,34 +546,6 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		});
 		await refresher.refresh(ISSUE);
 
-		expect(log.unresolved).toBe(1);
-		expect(log.attachPin).toEqual([]);
-	});
-
-	it("passes the execution identity into founder attach resolution and renders unresolved instead of another phase", async () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
-		seedSession(store, {
-			exec: "e-main",
-			role: "main",
-			status: "running",
-			stage: "implement",
-		});
-		const resolved: Array<[string, string]> = [];
-		const { refresher, log } = makeRefresher(store, {
-			tmux: { "e-main": "runner-proj:@999" },
-			resolveAttach: async (tmuxWindow, expectedExecutionId) => {
-				resolved.push([tmuxWindow, expectedExecutionId]);
-				return {
-					kind: "unresolved",
-					tmuxWindow,
-					reason: "window-id-mismatch",
-				};
-			},
-		});
-
-		await refresher.refresh(ISSUE);
-
-		expect(resolved).toEqual([["runner-proj:@999", "e-main"]]);
 		expect(log.unresolved).toBe(1);
 		expect(log.attachPin).toEqual([]);
 	});
@@ -872,33 +573,6 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		]);
 		expect(log.header).toEqual([]); // no pipeline header on a single-session issue
 		expect(log.deleted).toEqual([]); // no legacy status line to clean
-	});
-
-	it("renders the actual Codex model marker from the persisted session", async () => {
-		seedSession(store, {
-			exec: "e-main",
-			role: "main",
-			status: "running",
-			stage: "implement",
-			backend: "codex-tmux",
-			model: "gpt-5.6-sol",
-		});
-		const { refresher, log } = makeRefresher(store);
-		await refresher.refresh(ISSUE);
-
-		expect(log.titleMarkers[0]).toBe("G");
-	});
-
-	it("pending implement without a recorded model gets no guessed marker", async () => {
-		seedSession(store, {
-			exec: "e-impl",
-			role: "implement",
-			status: "running",
-		});
-		const { refresher, log } = makeRefresher(store);
-		await refresher.refresh(ISSUE);
-
-		expect(log.titleMarkers[0]).toBeNull();
 	});
 
 	it("single-session terminal states: completed → ✅完成; failed → 🔴受阻 (kill/reset now refresh — the old code never did)", async () => {
@@ -1038,13 +712,11 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 	});
 	afterEach(() => store.close());
 
-	it("single-session fingerprints include the durable merge conclusion bit", () => {
-		const hasFinalizationCompletedForIssue = vi.fn(() => false);
-		const hasMergeConfirmedForIssue = vi.fn(() => true);
+	it("single-session fingerprints do not query the three-stage ship-claim ledger", () => {
+		const countEventsByIssueAndType = vi.fn(() => 0);
 		const fingerprint = computeSessionsFingerprint(
 			{
-				hasFinalizationCompletedForIssue,
-				hasMergeConfirmedForIssue,
+				countEventsByIssueAndType,
 				getLatestPhaseSessionsForIssue: () => [],
 				getSessionByIssue: () => undefined,
 			},
@@ -1052,9 +724,7 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 		);
 
 		expect(JSON.parse(fingerprint).fc).toBe(false);
-		expect(JSON.parse(fingerprint).cc).toBe(true);
-		expect(hasFinalizationCompletedForIssue).toHaveBeenCalledOnce();
-		expect(hasMergeConfirmedForIssue).toHaveBeenCalledOnce();
+		expect(countEventsByIssueAndType).not.toHaveBeenCalled();
 	});
 
 	it("layer 1: a sessions-status change after the stored fingerprint re-enqueues the issue", async () => {
@@ -1110,7 +780,7 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 			execution_id: "e-qa",
 			issue_id: ISSUE,
 			project_name: PROJECT,
-			event_type: "post_ship_finalization_completed",
+			event_type: "post_ship_finalization_claim",
 			source: "test",
 		});
 		const after = computeSessionsFingerprint(store, ISSUE);
@@ -1242,7 +912,7 @@ describe("applyTransition onTransition hook (FLY-907 Step 4.1)", () => {
 });
 
 describe("attachTargetMatchesIssue (Step 3 anchor)", () => {
-	it("verifies the buildWindowLabel identifier prefix and fails closed without a resolved window", () => {
+	it("verifies the buildWindowLabel identifier prefix; missing anchor → no new false kills", () => {
 		expect(attachTargetMatchesIssue("FLY-907", "FLY-907-runner-x-title")).toBe(
 			true,
 		);
@@ -1252,6 +922,6 @@ describe("attachTargetMatchesIssue (Step 3 anchor)", () => {
 		// FLY-90 must not prefix-match FLY-907's window… and vice versa.
 		expect(attachTargetMatchesIssue("FLY-90", "FLY-907-runner-x")).toBe(false);
 		expect(attachTargetMatchesIssue(undefined, "FLY-907-runner-x")).toBe(true);
-		expect(attachTargetMatchesIssue("FLY-907", undefined)).toBe(false);
+		expect(attachTargetMatchesIssue("FLY-907", undefined)).toBe(true);
 	});
 });

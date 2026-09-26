@@ -10,8 +10,7 @@
 #      packages/<dir> symlinks, vendored nested closures (@linear/sdk under
 #      teamlead, @anthropic-ai/sdk under claude-runner — the mem0ai peer-hoist
 #      case), npm's unreified empty husk dirs pruned;
-#   ③  agents/generic-executor.md and menus/shapes/*.yaml resolvable from
-#      PKG_ROOT (run-infra + workflow-menu boot assets);
+#   ③  agents/generic-executor.md resolvable from PKG_ROOT (run-infra sentinel);
 #   ④  every embedded package bare-imports from PKG_ROOT context with zero
 #      module-resolution errors; better-sqlite3 native module loads; the Bridge
 #      entry (dist/run-bridge.js) starts with a stub env and serves /health;
@@ -74,17 +73,6 @@ fi
 ok=1
 [ "$(readlink "$PKG_ROOT/packages/teamlead")" = "../node_modules/flywheel-teamlead" ] || ok=0
 [ -f "$PKG_ROOT/packages/teamlead/scripts/claude-lead.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lead-body.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-body-receipt.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/session-start-adopt-inflight.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-session-authority.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-session-resume-gate.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/session-ctx-usage.mjs" ] || ok=0
-[ -f "$PKG_ROOT/scripts/lib/lead-restart-lifecycle.sh" ] || ok=0
-[ -f "$PKG_ROOT/scripts/lib/lead-body-sweep.sh" ] || ok=0
-[ -f "$PKG_ROOT/scripts/lib/lead-body-evidence.sh" ] || ok=0
-[ -f "$PKG_ROOT/scripts/lib/flywheel-log.sh" ] || ok=0
-[ -f "$PKG_ROOT/scripts/lib/tmux-server-rescue.sh" ] || ok=0
 [ -f "$PKG_ROOT/packages/flywheel-comm/dist/index.js" ] || ok=0
 [ "$ok" -eq 1 ] && pass "②b monorepo path contracts hold through the mirror" \
               || fail "②b path contracts broken"
@@ -105,13 +93,6 @@ husks="$(find "$PKG_ROOT/node_modules" -mindepth 1 -maxdepth 2 -type d -empty 2>
 [ -f "$PKG_ROOT/agents/generic-executor.md" ] && [ -f "$PKG_ROOT/agents/qa-executor.md" ] \
   && pass "③ agents/ runtime prompts at PKG_ROOT (run-infra sentinel resolvable)" \
   || fail "③ agents/ prompts missing from PKG_ROOT"
-menus_ok=1
-for menu in code prd design prototype generic simple_code; do
-  [ -f "$PKG_ROOT/menus/shapes/$menu.yaml" ] || menus_ok=0
-done
-[ "$menus_ok" -eq 1 ] \
-  && pass "③a workflow menu shapes at PKG_ROOT (Bridge boot assets resolvable)" \
-  || fail "③a workflow menu shapes missing from PKG_ROOT"
 
 # ── ③b claude-runner runtime assets (FLY-1188) ───────────────────────────────
 # codex-home.ts resolves these as ../agents / ../bin siblings of dist — a
@@ -149,10 +130,8 @@ mkdir -p "$SMOKE_HOME/proj"
 env -i HOME="$SMOKE_HOME" PATH="$PATH" \
   FLYWHEEL_STATE_DIR="$SMOKE_HOME/.flywheel" \
   TEAMLEAD_PORT="$PORT" TEAMLEAD_API_TOKEN="stub-token-for-smoke" \
-  TEAMLEAD_DEFAULT_LEAD_AGENT="smoke-lead" SMOKE_BOT_TOKEN="stub-bot-token" \
-  DISCORD_OWNER_USER_ID="98765432109876543" \
   LINEAR_API_KEY="stub" \
-  FLYWHEEL_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$SMOKE_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"summaryRole\":\"exempt\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":false}]}]" \
+  FLYWHEEL_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$SMOKE_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"canSpawnRunners\":false}]}]" \
   node "$PKG_ROOT/dist/run-bridge.js" > "$SANDBOX/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 listen=0
@@ -171,10 +150,8 @@ kill "$BRIDGE_PID" 2>/dev/null; wait "$BRIDGE_PID" 2>/dev/null; BRIDGE_PID=""
 # ── ④d Lead launcher dry-run through the mirror path ────────────────────────
 LEAD_HOME="$SANDBOX/lead-home"
 mkdir -p "$LEAD_HOME/proj/.lead/smoke-lead"
-mkdir -p "$LEAD_HOME/.flywheel"
 printf -- '---\nname: smoke-lead\n---\nSmoke\n' > "$LEAD_HOME/proj/.lead/smoke-lead/identity.md"
-printf '%s\n' '{"granularity":"per-lead","setBy":"packaged-smoke","setAt":"2026-08-28T00:00:00.000Z"}' > "$LEAD_HOME/.flywheel/summary-config.json"
-LEAD_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$LEAD_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"summaryRole\":\"exempt\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":true}]}]"
+LEAD_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$LEAD_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"canSpawnRunners\":true}]}]"
 out="$(env -i HOME="$LEAD_HOME" PATH="$PATH" \
   FLYWHEEL_LEAD_DRY_RUN=1 FLYWHEEL_PROJECTS="$LEAD_PROJECTS" \
   SMOKE_BOT_TOKEN="stub" TEAMLEAD_API_TOKEN="stub" \
@@ -184,36 +161,6 @@ if grep -q "LAUNCH_PLAN_BEGIN" <<<"$out" && grep -q "LAUNCH_PLAN_END" <<<"$out" 
   pass "④d Lead launcher dry-run emits its launch plan from the installed tree"
 else
   fail "④d Lead launcher dry-run broken: $(tail -12 <<<"$out")"
-fi
-
-# ── ④e internal summary transport stays dormant for packaged customers ─────
-# The release allowlist deliberately registers Raya's repository names because
-# flywheel-comm is shipped as one compiled package. Customer setup assigns this
-# fixture an explicit exempt role: even with otherwise plausible selectors, the
-# command must fail before consulting `gh`.
-SUMMARY_BIN="$SANDBOX/summary-bin"; mkdir -p "$SUMMARY_BIN"
-printf '#!/bin/bash\nprintf "called\\n" >> "$SUMMARY_GH_LOG"\nexit 97\n' > "$SUMMARY_BIN/gh"
-chmod +x "$SUMMARY_BIN/gh"
-printf '# packaged smoke\n' > "$SANDBOX/summary.md"
-summary_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
-  SUMMARY_GH_LOG="$SANDBOX/summary-gh.log" \
-  FLYWHEEL_PROJECT_NAME=smoke FLYWHEEL_LEAD_ID=smoke-lead \
-  FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=0 \
-  node "$PKG_ROOT/node_modules/flywheel-comm/dist/index.js" summary \
-    --file "$SANDBOX/summary.md" --project smoke --period 2026-W35 2>&1)"
-summary_merge_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
-  SUMMARY_GH_LOG="$SANDBOX/summary-gh.log" \
-  FLYWHEEL_PROJECT_NAME=smoke FLYWHEEL_LEAD_ID=smoke-lead \
-  FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=0 FLYWHEEL_LEAD_SUMMARY_ROLE=exempt \
-  FLYWHEEL_SUMMARY_GRANULARITY=per-lead \
-  node "$PKG_ROOT/node_modules/flywheel-comm/dist/index.js" summary merge \
-    --repo xrliAnnie/raya --pr 1 --dry-run 2>&1)"
-if grep -q "summary_duty_required" <<<"$summary_out" \
-   && grep -q "summary_merge_authority_required" <<<"$summary_merge_out" \
-   && [ ! -e "$SANDBOX/summary-gh.log" ]; then
-  pass "④e packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
-else
-  fail "④e packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
 fi
 
 echo ""

@@ -10,7 +10,6 @@ const silent = { warn: vi.fn() };
 
 class FakeSource implements DiscordInboundSource {
 	handler?: (m: DiscordInboundMessage) => boolean;
-	async assertAuthenticatedBotUser(_expectedBotUserId: string) {}
 	onMessage(h: (m: DiscordInboundMessage) => boolean) {
 		this.handler = h;
 	}

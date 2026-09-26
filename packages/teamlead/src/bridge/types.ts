@@ -14,8 +14,6 @@ export interface BridgeConfig {
 	dbPath: string;
 	ingestToken?: string;
 	apiToken?: string;
-	/** FLY-2076: credential scoped exclusively to the `/duty` surface. */
-	alertDutyToken?: string;
 	/** @deprecated Pre-FLY-163 default fallback channel. Per-lead chatChannel now drives notifications. */
 	notificationChannel: string;
 	/** Default lead agent ID for project-less notifications (e.g., CIPHER proposals). */
@@ -59,9 +57,10 @@ export interface BridgeConfig {
 	 */
 	issuePrefixes: string[];
 	/**
-	 * FLY-175 Track 2: founder-consent policy. Production config always parses
-	 * this block and runs in `audit_only`; optionality exists only for directly
-	 * injected module-capability test configs.
+	 * FLY-175 Track 2: founder-consent hard gate. Parsed from
+	 * `FLYWHEEL_FOUNDER_CONSENT_*` env. Optional — when absent or
+	 * `decisionMode === "off"` the evaluator is never constructed and Bridge
+	 * behavior is byte-identical to pre-Track-2.
 	 */
 	founderConsent?: FounderConsentConfig;
 	/**

@@ -11,8 +11,6 @@
 #   - MEMORY CONTINUITY: state dir pins to .../codex-lead/codex-infra-bot-lead.
 #   - GOVERNANCE: founder-only-authority appended to SYSTEM_PROMPT_FILES (after persona).
 #   - FLY-1241: the retired FLYWHEEL_CODEX_LEAD_READ_DENY env pin is GONE (never emitted).
-#   - FLY-1319: the founder-local-time rule is loaded AND its authority CLI
-#     (FLYWHEEL_COMM_CLI) is bound — a rule without its CLI silently no-ops.
 #   - fail-loud: runtime artifact missing → non-zero before exec.
 set -uo pipefail
 PASS=0; FAIL=0
@@ -33,38 +31,24 @@ trap 'rm -rf "$T"' EXIT
 # may carry them) so a clean baseline is seen.
 unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_LEAD_SANDBOX \
 	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
-	FLYWHEEL_CODEX_LEAD_PROJECT_DIR FLYWHEEL_CODEX_LEAD_READ_DENY FLYWHEEL_COMM_CLI \
-	FLYWHEEL_LEAD_ID LEAD_ID FLYWHEEL_PROJECT_NAME PROJECT_NAME FLYWHEEL_LEAD_KEY \
-	FLYWHEEL_LEAD_BACKEND FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_IDENTITY_DIGEST \
-	FLYWHEEL_LEAD_PROJECTS_DIGEST FLYWHEEL_LEAD_SUMMARY_ROLE \
-	FLYWHEEL_LEAD_HAS_SUMMARY_DUTY FLYWHEEL_SUMMARY_GRANULARITY \
-	FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID \
-	FLYWHEEL_LEAD_BOT_USER_ID
+	FLYWHEEL_CODEX_LEAD_PROJECT_DIR FLYWHEEL_CODEX_LEAD_READ_DENY
 
 # Fake TEAMLEAD_ROOT: stub dist runtime + lead-actions + tui-home; REAL lead-rules-base
 # (symlinked) so assemble_full_access_governance resolves founder-only-authority for real.
 RT="$T/teamlead"
-mkdir -p "$RT/dist/lead-backends/codex/lead-actions" "$RT/scripts" \
-	"$T/flywheel-comm/dist"
+mkdir -p "$RT/dist/lead-backends/codex/lead-actions" "$RT/scripts"
 printf '// stub\n' > "$RT/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 printf '// stub\n' > "$RT/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
-printf '// stub\n' > "$T/flywheel-comm/dist/index.js"
 printf '#!/bin/bash\nexit 0\n' > "$RT/scripts/codex-lead-tui-home.sh"
 chmod +x "$RT/scripts/codex-lead-tui-home.sh"
 ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
 # lead-rules-bundle.sh is sourced from SCRIPT_DIR (the launcher's own dir) — provide it.
 ln -s "$REAL_ROOT/scripts/lead-rules-bundle.sh" "$RT/scripts/lead-rules-bundle.sh"
-mkdir -p "$RT/scripts/lib"
-ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
 
 # Mock `node`: dump the env it was exec'd with, then exit 0.
 mkdir -p "$T/bin"
 cat > "$T/bin/node" <<'EOF'
 #!/bin/bash
-if [[ " $* " == *" lead-identity resolve "* ]]; then
-  printf '%s\n' "$CANONICAL_JSON"
-  exit 0
-fi
 env > "$ENVDUMP"
 exit 0
 EOF
@@ -75,7 +59,6 @@ run_dry() {
 	ENVDUMP="$T/envdump.$$.$RANDOM"
 	export ENVDUMP
 	PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
-		CANONICAL_JSON='{"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		FLYWHEEL_INFRA_BOT_USER_ID=U123 \
 		FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID=C123 \
@@ -93,9 +76,6 @@ if [ -f "$D" ]; then
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_SANDBOX)" = "workspace-write" ] && pass "SANDBOX=workspace-write" || fail "SANDBOX wrong"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_MODE)" = "tui" ] && pass "MODE=tui (windowed)" || fail "MODE not tui"
 	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_OUTBOUND)" = "direct" ] && pass "outbound=direct (preserves alerts channel)" || fail "outbound not direct"
-	[ "$(envval "$D" FLYWHEEL_COMM_CLI)" = "$T/flywheel-comm/dist/index.js" ] \
-		&& pass "founder-time CLI path reaches production TUI runtime" \
-		|| fail "FLYWHEEL_COMM_CLI missing/wrong ($(envval "$D" FLYWHEEL_COMM_CLI))"
 	pd=$(envval "$D" FLYWHEEL_CODEX_LEAD_PROJECT_DIR)
 	[ "$pd" = "$T/proj" ] && pass "PROJECT_DIR set" || fail "PROJECT_DIR wrong ($pd)"
 	la=$(envval "$D" FLYWHEEL_LEAD_ACTIONS_MAIN_JS)
@@ -108,13 +88,6 @@ if [ -f "$D" ]; then
 	[ -n "$(envval "$D" DISCORD_BOT_TOKEN)" ] && pass "DISCORD_BOT_TOKEN present (token by name, no broker)" || fail "DISCORD_BOT_TOKEN absent"
 	sp=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
 	case "$sp" in *founder-only-authority.md*) pass "governance: founder-only-authority appended" ;; *) fail "founder-only-authority not in SYSTEM_PROMPT_FILES ($sp)" ;; esac
-	case "$sp" in *founder-local-time.md*) pass "governance: founder-local rule appended" ;; *) fail "founder-local rule not in SYSTEM_PROMPT_FILES ($sp)" ;; esac
-	base_instructions=$(printf '%s' "$sp" | tr ',' '\n' | while IFS= read -r file; do
-		[ -r "$file" ] && cat "$file"
-	done)
-	grep -q "UTC machine timestamp" <<<"$base_instructions" \
-		&& pass "full-access baseInstructions contain founder-local rule body" \
-		|| fail "full-access baseInstructions missing founder-local rule body"
 	case "$sp" in *identity.md*) pass "persona: identity.md present (before governance)" ;; *) fail "identity.md missing ($sp)" ;; esac
 	# FLY-1241: the retired read-deny env pin must NEVER be emitted (full-access has no read-deny).
 	if grep -q "^FLYWHEEL_CODEX_LEAD_READ_DENY=" "$D"; then

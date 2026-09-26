@@ -424,27 +424,6 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 		expect(r.failed).toBe(0);
 	});
 
-	it.each(["founder_reopened", "in_active_use"] as const)(
-		"15b. sink returns %s → counted skippedReopenProtected, NOT failed",
-		async (reason) => {
-			const store = await freshStore();
-			store.upsertChatThread("t-1", "ch-eng", "FLY-18b", "tadashi");
-			const deps = makeDeps(store, {
-				archiveSinkFn: vi.fn().mockResolvedValue({
-					archived: false,
-					attempts: 0,
-					reason,
-					...(reason === "in_active_use"
-						? { activeExecutionId: "exec-live" }
-						: {}),
-				}),
-			});
-			const r = await reconcileDoneThreads(deps);
-			expect(r.skippedReopenProtected).toBe(1);
-			expect(r.failed).toBe(0);
-		},
-	);
-
 	it("16. maxArchivesPerRun=1 with two Done candidates → archives 1, capped:true", async () => {
 		const store = await freshStore();
 		store.upsertChatThread("t-1", "ch-eng", "FLY-19", "tadashi");
@@ -591,7 +570,6 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 			"awaiting_review",
 			"design_done",
 			"running",
-			"ship_parked",
 		]);
 	});
 });
@@ -620,13 +598,45 @@ describe("resolveDoneThreadReconcileConfig (FLY-1165)", () => {
 		).toBe(true);
 	});
 
-	it("uses the fixed six-hour interval", () => {
-		expect(resolveDoneThreadReconcileConfig({}).intervalMin).toBe(360);
+	it("interval: 0 → boot-only; junk / negative → default", () => {
+		expect(
+			resolveDoneThreadReconcileConfig({
+				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "0",
+			}).intervalMin,
+		).toBe(0);
+		expect(
+			resolveDoneThreadReconcileConfig({
+				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "90",
+			}).intervalMin,
+		).toBe(90);
+		expect(
+			resolveDoneThreadReconcileConfig({
+				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "junk",
+			}).intervalMin,
+		).toBe(360);
+		expect(
+			resolveDoneThreadReconcileConfig({
+				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "-5",
+			}).intervalMin,
+		).toBe(360);
 	});
 
-	it("keeps production dry-run disabled and caps each run at 25", () => {
-		expect(resolveDoneThreadReconcileConfig({}).dryRun).toBe(false);
-		expect(resolveDoneThreadReconcileConfig({}).maxArchivesPerRun).toBe(25);
+	it("DRYRUN=1 and MAX_PER_RUN", () => {
+		expect(
+			resolveDoneThreadReconcileConfig({
+				FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN: "1",
+			}).dryRun,
+		).toBe(true);
+		expect(
+			resolveDoneThreadReconcileConfig({
+				FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN: "7",
+			}).maxArchivesPerRun,
+		).toBe(7);
+		expect(
+			resolveDoneThreadReconcileConfig({
+				FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN: "junk",
+			}).maxArchivesPerRun,
+		).toBe(25);
 	});
 });
 

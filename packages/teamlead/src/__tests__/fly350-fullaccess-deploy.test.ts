@@ -20,32 +20,6 @@ const SCRIPTS = join(TEAMLEAD_ROOT, "scripts");
 const MERGE_GATE = join(SCRIPTS, "verify-merge-actor-denied.sh");
 const LAUNCHER = join(SCRIPTS, "run-codex-lead-mufasa-fullaccess.sh");
 
-function withoutAmbientLeadIdentity(
-	overrides: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-	const env = { ...process.env };
-	for (const name of [
-		"FLYWHEEL_LEAD_ID",
-		"LEAD_ID",
-		"FLYWHEEL_PROJECT_NAME",
-		"PROJECT_NAME",
-		"FLYWHEEL_LEAD_KEY",
-		"FLYWHEEL_LEAD_BACKEND",
-		"FLYWHEEL_LEAD_ROLE",
-		"FLYWHEEL_LEAD_SUMMARY_ROLE",
-		"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
-		"FLYWHEEL_SUMMARY_GRANULARITY",
-		"FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST",
-		"DISCORD_STATE_DIR",
-		"DISCORD_EXPECTED_BOT_USER_ID",
-		"FLYWHEEL_LEAD_IDENTITY_DIGEST",
-		"FLYWHEEL_CANONICAL_IDENTITY_RESOLVED",
-	]) {
-		delete env[name];
-	}
-	return { ...env, ...overrides };
-}
-
 /** Run a script; return {status, stdout, stderr} without throwing on non-zero. */
 function run(
 	bin: string,
@@ -286,17 +260,12 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 			shim,
 			[
 				"#!/bin/sh",
-				'case " $* " in *" lead-identity resolve "*)',
-				'  printf "%s\\n" "$CANONICAL_JSON"',
-				"  exit 0",
-				"esac",
 				`cat > ${JSON.stringify(dumpFile)} <<EOF`,
 				"{",
 				'  "profile": "$FLYWHEEL_CODEX_LEAD_PROFILE",',
 				'  "sandbox": "$FLYWHEEL_CODEX_LEAD_SANDBOX",',
 				'  "projectDir": "$FLYWHEEL_CODEX_LEAD_PROJECT_DIR",',
 				'  "stateDir": "$FLYWHEEL_CODEX_LEAD_STATE_DIR",',
-				'  "commCli": "$FLYWHEEL_COMM_CLI",',
 				'  "promptFiles": "$FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES"',
 				"}",
 				"EOF",
@@ -312,38 +281,16 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 	});
 
 	it("dry-run sets full-access profile/sandbox/project-root + assembles founder governance", () => {
-		const { status, stderr } = run(
-			"bash",
-			[LAUNCHER],
-			withoutAmbientLeadIdentity({
-				HOME: home,
-				PATH: `${shimDir}:${process.env.PATH}`,
-				FLYWHEEL_TEAMLEAD_ROOT: TEAMLEAD_ROOT, // dist/ is built in-repo
-				FLYWHEEL_LEAD_DRY_RUN: "1",
-				FLYWHEEL_COMM_CLI: "",
-				MUFASA_BOT_TOKEN: "x",
-				CANONICAL_JSON: JSON.stringify({
-					schemaVersion: 1,
-					leadId: "mufasa-lead",
-					projectName: "growth",
-					leadKey: "growth-mufasa-lead",
-					agentTeamName: "mufasa-lead",
-					botUserId: "1499895683287748679",
-					botTokenEnv: "MUFASA_BOT_TOKEN",
-					discordStateDir: join(home, "discord-mufasa"),
-					backend: "codex-app-server",
-					role: "dept",
-					summaryRole: "producer",
-					summaryGranularity: "per-lead",
-					hasSummaryDuty: true,
-					summaryAssignmentDigest: "c".repeat(64),
-					projectsDigest: "b".repeat(64),
-					identityDigest: "a".repeat(64),
-				}),
-				FLYWHEEL_CODEX_LEAD_PROJECT_DIR: home, // a real dir (skips the non-dry checks anyway)
-			}),
-		);
-		expect(status, stderr).toBe(0);
+		const { status } = run("bash", [LAUNCHER], {
+			...process.env,
+			HOME: home,
+			PATH: `${shimDir}:${process.env.PATH}`,
+			FLYWHEEL_TEAMLEAD_ROOT: TEAMLEAD_ROOT, // dist/ is built in-repo
+			FLYWHEEL_LEAD_DRY_RUN: "1",
+			MUFASA_BOT_TOKEN: "x",
+			FLYWHEEL_CODEX_LEAD_PROJECT_DIR: home, // a real dir (skips the non-dry checks anyway)
+		});
+		expect(status).toBe(0);
 		const dumped = JSON.parse(
 			execFileSync("cat", [dumpFile], { encoding: "utf8" }),
 		) as Record<string, string>;
@@ -352,7 +299,6 @@ describe("run-codex-lead-mufasa-fullaccess.sh (full-access cutover launcher)", (
 		expect(dumped.projectDir).toBe(home);
 		// memory continuity: the pinned per-Lead state dir (thread 019eaf5d resumes).
 		expect(dumped.stateDir).toContain("state/codex-lead/mufasa-lead");
-		expect(dumped.commCli).toContain("flywheel-comm/dist/index.js");
 		// persona first, founder-only-authority governance appended after.
 		expect(dumped.promptFiles).toContain("identity.md");
 		expect(dumped.promptFiles).toContain("founder-only-authority.md");

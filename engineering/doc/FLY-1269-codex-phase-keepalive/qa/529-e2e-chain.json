@@ -1,0 +1,316 @@
+{
+	"schemaVersion": 1,
+	"issueId": "FLY-1286",
+	"sandboxProject": "xrliAnnie/flywheel-qa-sandbox",
+	"candidateSha": "cad61a07894a98d808aea5b948830f12cfdcff83",
+	"implementEvidenceBaseSha": "ec78d79239f3cb61916f876f58855dcfccb89679",
+	"capturedAt": "2026-07-15T11:16:03Z",
+	"priorAttempts": [
+		{
+			"kind": "a2_failed_chain",
+			"evidenceCommit": "ec78d79239f3cb61916f876f58855dcfccb89679",
+			"designExecutionId": "c552669e-611b-47fc-98ca-63371c81cbe8",
+			"implementExecutionId": "e854cc74-39dc-4c75-b78b-d2e220a08cbe",
+			"failedOracle": "A2"
+		}
+	],
+	"verdict": {
+		"status": "IN_PROGRESS",
+		"pendingOracles": ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"]
+	},
+	"paths": {
+		"stateDb": "/tmp/flywheel-test-slot-2/teamlead.db",
+		"commDb": "/Users/xiaorongli/.flywheel/comm/test-slot-2/comm.db",
+		"codexSessionRoot": "/Users/xiaorongli/.flywheel/state/codex-sessions",
+		"codexHomesRoot": "/Users/xiaorongli/.flywheel/codex-homes",
+		"codexSocketRoot": "/Users/xiaorongli/.flywheel/cdx-sock"
+	},
+	"runtimeAttestation": {
+		"bridgeListenerPid": 96935,
+		"bridgeListenerCwd": "/Users/xiaorongli/Dev/flywheel-FLY-1269/worktrees/qa-e2e-1269",
+		"estimatedStartEpoch": 1784110600,
+		"sourceMtimeEpoch": 1784110558,
+		"distMtimeEpoch": 1784110560,
+		"parkedHoldSemanticBranch": true,
+		"productionPr604Head": "cad61a07894a98d808aea5b948830f12cfdcff83",
+		"candidateWorktreeHead": "cad61a07894a98d808aea5b948830f12cfdcff83",
+		"parkedBoundaryFixAncestor": "7d20e4a76d718efd6d6fbb440dec2dd8bdf66c6d"
+	},
+	"successfulChain": {
+		"design": {
+			"executionId": "464064c0-a711-4aa7-9426-5633dcef590d",
+			"threadId": "019f654c-e651-71c2-9ab9-c4e68bcdcfd5",
+			"goalId": "d05c8f51-0db3-4029-982d-d293e4347044",
+			"adapterType": "codex-tmux",
+			"model": "gpt-5.6-sol",
+			"turnEpoch": 3,
+			"stateStoreStatus": "design_done",
+			"declaredState": "parked",
+			"tmuxWindow": "runner-test-slot-2:FLY-1286-design-QA-FLY-1269-Codex-529-Room-E2E-Des",
+			"daemonPid": 88885,
+			"daemonPgid": 88885,
+			"initialDaemonPid": 26476,
+			"initialDaemonPgid": 26476,
+			"socketPath": "/Users/xiaorongli/.flywheel/cdx-sock/d159c5c4c11eff43.sock",
+			"socketHolderPids": [88885],
+			"socketHolderPgids": [88885],
+			"socketConnectable": true,
+			"phaseHold": {
+				"schemaVersion": 1,
+				"role": "design",
+				"enteredAt": "2026-07-15T11:27:00.624Z",
+				"deadlineRemainingMs": 86399995,
+				"hardDeadlineRemainingMs": 173241918,
+				"state": "paused"
+			},
+			"tmuxCapture": {
+				"capturedAt": "2026-07-15T11:20:53.854Z",
+				"display": "runner-test-slot-2:FLY-1286-design-QA-FLY-1269-Codex-529-Room-E2E-Des:0",
+				"paneDead": false,
+				"lineCount": 155,
+				"redactedSha256": "9d89c50eaecb18f049597f737d04310641298bd4c51eff571a7707b5bb08e5f9",
+				"statusAnchor": "gpt-5.6-sol xhigh — Goal paused"
+			}
+		},
+		"implement": {
+			"executionId": "1ba0f0f1-928c-4aaa-aa5f-5782a54a37ad",
+			"threadId": "019f6579-9da9-7882-8ef2-29bfc50e692c",
+			"goalId": "4ffe8b18-dcb8-4b6a-9155-46031750276e",
+			"adapterType": "codex-tmux",
+			"model": "gpt-5.6-sol",
+			"turnEpoch": 4,
+			"stateStoreStatus": "running",
+			"tmuxWindow": "runner-test-slot-2:FLY-1286-implement-QA-FLY-1269-Codex-529-Room-E2E-"
+		},
+		"qa": null
+	},
+	"turn": {
+		"holderExecId": "1ba0f0f1-928c-4aaa-aa5f-5782a54a37ad",
+		"phase": "implement",
+		"epoch": 4,
+		"grantedAt": 1784113895192
+	},
+	"designBudgetSamples": [
+		{
+			"kind": "pre_crash_freeze_start",
+			"at": "2026-07-15T11:19:27.165Z",
+			"heartbeatAt": "2026-07-15 11:19:22",
+			"daemonPid": 26476,
+			"socketHolderPids": [26476],
+			"socketHolderPgids": [26476],
+			"phaseHold": {
+				"enteredAt": "2026-07-15T11:14:54.236Z",
+				"deadlineRemainingMs": 86399996,
+				"hardDeadlineRemainingMs": 173271969,
+				"state": "paused"
+			},
+			"goal": {
+				"goalId": "d05c8f51-0db3-4029-982d-d293e4347044",
+				"status": "paused",
+				"tokenBudget": null,
+				"tokensUsed": 562219,
+				"timeUsedSeconds": 3126,
+				"updatedAtMs": 1784114094257
+			},
+			"turnEpoch": 4
+		},
+		{
+			"kind": "pre_crash_freeze_end",
+			"at": "2026-07-15T11:20:30.423Z",
+			"elapsedMs": 63258,
+			"heartbeatAt": "2026-07-15 11:20:27",
+			"daemonPid": 26476,
+			"socketHolderPids": [26476],
+			"socketHolderPgids": [26476],
+			"phaseHold": {
+				"enteredAt": "2026-07-15T11:14:54.236Z",
+				"deadlineRemainingMs": 86399996,
+				"hardDeadlineRemainingMs": 173271969,
+				"state": "paused"
+			},
+			"goal": {
+				"goalId": "d05c8f51-0db3-4029-982d-d293e4347044",
+				"status": "paused",
+				"tokenBudget": null,
+				"tokensUsed": 562219,
+				"timeUsedSeconds": 3126,
+				"updatedAtMs": 1784114094257
+			},
+			"turnEpoch": 4
+		}
+	],
+	"crashRecovery": {
+		"signal": {
+			"at": "2026-07-15T11:22:36Z",
+			"type": "SIGKILL",
+			"target": "detached Design daemon process group",
+			"oldDaemonPid": 26476,
+			"oldDaemonPgid": 26476,
+			"preconditionsPassed": true,
+			"socketHolderPids": [26476],
+			"socketHolderPgids": [26476],
+			"wakeCountBefore": 11,
+			"liveDesignCountBefore": 1
+		},
+		"recovery": {
+			"nativeGoalRecoveredAt": "2026-07-15T11:22:39.736Z",
+			"nativeGoalRecoveredAtMs": 1784114559736,
+			"boundedRecoveryLatencyMs": 3736,
+			"observerFirstConfirmedAt": "2026-07-15T11:23:21Z",
+			"newDaemonPid": 88885,
+			"newDaemonPgid": 88885,
+			"socketHolderPids": [88885],
+			"socketHolderPgids": [88885],
+			"oldGroupGone": true,
+			"sameExecution": true,
+			"sameThread": true,
+			"sameGoal": true,
+			"phaseHoldPaused": true,
+			"turnStable": true,
+			"wakeCountAfter": 11,
+			"liveDesignCountAfter": 1,
+			"goal": {
+				"goalId": "d05c8f51-0db3-4029-982d-d293e4347044",
+				"status": "paused",
+				"tokenBudget": null,
+				"tokensUsed": 562219,
+				"timeUsedSeconds": 3126,
+				"updatedAtMs": 1784114559736
+			}
+		},
+		"postRecoveryFreezeSamples": [
+			{
+				"kind": "post_crash_freeze_start",
+				"at": "2026-07-15T11:24:15.240Z",
+				"heartbeatAt": "2026-07-15 11:24:12",
+				"daemonPid": 88885,
+				"socketHolderPids": [88885],
+				"socketHolderPgids": [88885],
+				"phaseHold": {
+					"enteredAt": "2026-07-15T11:14:54.236Z",
+					"deadlineRemainingMs": 86399996,
+					"hardDeadlineRemainingMs": 173271969,
+					"state": "paused"
+				},
+				"goal": {
+					"goalId": "d05c8f51-0db3-4029-982d-d293e4347044",
+					"status": "paused",
+					"tokenBudget": null,
+					"tokensUsed": 562219,
+					"timeUsedSeconds": 3126,
+					"updatedAtMs": 1784114559736
+				},
+				"turnEpoch": 4
+			},
+			{
+				"kind": "post_crash_freeze_end",
+				"at": "2026-07-15T11:25:18.425Z",
+				"elapsedMs": 63185,
+				"heartbeatAt": "2026-07-15 11:25:17",
+				"daemonPid": 88885,
+				"socketHolderPids": [88885],
+				"socketHolderPgids": [88885],
+				"phaseHold": {
+					"enteredAt": "2026-07-15T11:14:54.236Z",
+					"deadlineRemainingMs": 86399996,
+					"hardDeadlineRemainingMs": 173271969,
+					"state": "paused"
+				},
+				"goal": {
+					"goalId": "d05c8f51-0db3-4029-982d-d293e4347044",
+					"status": "paused",
+					"tokenBudget": null,
+					"tokensUsed": 562219,
+					"timeUsedSeconds": 3126,
+					"updatedAtMs": 1784114559736
+				},
+				"turnEpoch": 4
+			}
+		]
+	},
+	"mailboxWake": {
+		"leadAskQuestionId": "4bc1ae9b-a137-4ca5-8adf-5e1ce97c9e15",
+		"leadAnsweredAt": "2026-07-15 11:26:30",
+		"instructionId": "c18f4e2b-f7c4-4ea7-a51d-a12ed4eb4716",
+		"instruction": {
+			"toAgent": "464064c0-a711-4aa7-9426-5633dcef590d",
+			"type": "instruction",
+			"createdAt": "2026-07-15 11:26:30",
+			"deliveredAt": "2026-07-15 11:26:30",
+			"readAt": "2026-07-15 11:26:30",
+			"matchingInstructionCount": 1
+		},
+		"wakeRow": {
+			"queueSeq": 12,
+			"messageId": "2219c21e-4d3f-4357-b999-b18a0b4397ed",
+			"sourceInstructionId": "c18f4e2b-f7c4-4ea7-a51d-a12ed4eb4716",
+			"state": "finished",
+			"queuedAt": 1784114790554,
+			"startedAt": 1784114790554,
+			"finishedAt": 1784114790573,
+			"matchingWakeRowCount": 1
+		},
+		"turnResult": "not-yours holder=1ba0f0f1-928c-4aaa-aa5f-5782a54a37ad phase=implement epoch=4",
+		"sameThread": true,
+		"sameGoal": true,
+		"daemonPidStable": 88885,
+		"preWake": {
+			"phaseHoldEnteredAt": "2026-07-15T11:14:54.236Z",
+			"tokensUsed": 562219,
+			"timeUsedSeconds": 3126,
+			"updatedAtMs": 1784114559736
+		},
+		"postWake": {
+			"phaseHoldEnteredAt": "2026-07-15T11:27:00.624Z",
+			"tokensUsed": 565978,
+			"timeUsedSeconds": 3156,
+			"updatedAtMs": 1784114820643,
+			"wakeTokenDelta": 3759,
+			"wakeTimeDeltaSeconds": 30
+		},
+		"reHoldFreezeSamples": [
+			{
+				"kind": "post_wake_freeze_start",
+				"at": "2026-07-15T11:27:53.993Z",
+				"heartbeatAt": "2026-07-15 11:27:52",
+				"daemonPid": 88885,
+				"socketHolderPids": [88885],
+				"socketHolderPgids": [88885],
+				"phaseHoldEnteredAt": "2026-07-15T11:27:00.624Z",
+				"tokensUsed": 565978,
+				"timeUsedSeconds": 3156,
+				"updatedAtMs": 1784114820643,
+				"turnEpoch": 4
+			},
+			{
+				"kind": "post_wake_freeze_end",
+				"at": "2026-07-15T11:28:57.277Z",
+				"elapsedMs": 63284,
+				"heartbeatAt": "2026-07-15 11:28:52",
+				"daemonPid": 88885,
+				"socketHolderPids": [88885],
+				"socketHolderPgids": [88885],
+				"phaseHoldEnteredAt": "2026-07-15T11:27:00.624Z",
+				"tokensUsed": 565978,
+				"timeUsedSeconds": 3156,
+				"updatedAtMs": 1784114820643,
+				"turnEpoch": 4
+			}
+		]
+	},
+	"safety": {
+		"daemonCrashInjected": true,
+		"mailboxWakeRequested": true,
+		"processSignalled": true
+	},
+	"acceptance": {
+		"A1": "IN PROGRESS — Design and Implement runtime routing are Codex gpt-5.6-sol; QA is not spawned yet.",
+		"A2": "PASS PRE-CRASH — same Design exec/thread/goal stayed paused for 63.258 seconds; goal counters and phaseHold remainder were identical while heartbeat advanced.",
+		"A3": "PASS — shim/PGID changed 26476→88885, the socket moved to the new group, old group disappeared, execution/thread/goal/phaseHold/TURN stayed fixed, and a 63.185-second post-recovery freeze held all budget fields constant.",
+		"A4": "PASS — one Lead-routed instruction produced one finished wake row; Design reported not-yours at Implement epoch 4, kept the same thread/goal, re-parked, created a later paused phaseHold, and froze for 63.284 seconds.",
+		"A5": "PENDING — QA must verify Implement after park.",
+		"A6": "IN PROGRESS — captured Design epoch 3 and Implement epoch 4.",
+		"A7": "PENDING — external terminal closeout.",
+		"A8": "IN PROGRESS — mutations remain inside the documented allowlist."
+	}
+}

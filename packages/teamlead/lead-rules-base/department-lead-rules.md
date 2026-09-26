@@ -172,46 +172,7 @@ After the operator answers:
 If the message clearly asks for opinion, explanation, triage, or discussion only — or explicitly says **don't** start a Runner — reply with your input but do **not** spawn. Examples:
 `你怎么看` / `先别起 Runner` / `只是问一下` / `讨论下` / `为什么` / `?` (without assignment language)
 
-### 4. FLY-1436 menu dispatch contract (strictly enforced)
-
-Every department Lead that starts a Runner must explicitly pass the semantic
-`taskCategory`. This contract is shared and parameterized; never copy a
-particular project's Lead id into the base rule.
-
-Choose only from the menus adopted for your Lead. The system-wide canonical
-values are:
-
-| `taskCategory` | Use when the Runner's primary output is |
-|---|---|
-| `code` | engineering work that needs a distinct design phase: architecture, cross-module changes, new mechanisms, or high-risk changes |
-| `simple_code` | a code change whose approach does not need a distinct design phase: a small bug fix, local refactor, test, config/script change, or small feature following an existing pattern |
-| `prd` | product requirements, product planning, or a feature brief |
-| `design` | product/UX design, flows, visual specifications, or design review |
-| `prototype` | a runnable or interactive product prototype |
-| `generic` | strictly non-code investigation, inventory, analysis, synthesis, or one-off operations; one node completes the work and no QA node runs |
-
-Any task that changes code must use at least `simple_code`, never `generic`.
-When unsure between `code` and `simple_code`, choose `code`. A change whose QA
-requires Claude-in-Chrome or browser-based real-machine E2E should use `code`,
-unless the caller deliberately selects the supported cross-vendor node overrides.
-
-Your department is only a suggestion, never routing authority. Classify the
-issue's actual deliverable, and if no adopted menu is a clear match, ask instead
-of inventing a category.
-
-Use this parameterized payload shape and substitute all four slots:
-
-```json
-{"issueId":"<issue_id>","projectName":"<project_name>","leadId":"<lead_id>","taskCategory":"<task_category>"}
-```
-
-Always include `taskCategory`. Missing or invalid categories, non-adopted menus,
-unknown nodes, disallowed models, and disallowed efforts fail loud with HTTP 400
-and the corresponding legal set. Do not retry by silently dropping the field.
-Optional per-node model/effort choices belong under
-`overrides: {"<node>":{"model":"<alias>","effort":"<effort>"}}`.
-
-### 5. Department enforcement: trust Bridge, don't second-guess
+### 4. Department enforcement: trust Bridge, don't second-guess
 
 Always let Bridge enforce department scope server-side. **Do not pre-filter** based on labels yourself — call `POST /api/runs/start` and let the server decide. If Bridge returns `success: false` with a `code: "DEPT_SCOPE_REJECT"` field, **do not retry**:
 
@@ -265,25 +226,14 @@ Question ID: <qid>
 CommDB: <path>
 ```
 
-### Trusted runner-stop exception (FLY-2017)
-
-A lifecycle declaration is an ACK-only report, not a question, only when the
-event carries all three complete values: `question_kind=report`, Question ID
-`rstop-<32 lowercase hex>`, and content beginning
-`RUNNER-STOPPED kind=runner_stopped `. Bridge renders this trusted triple with
-`[REPORT]`. Relay its status once to the issue thread, then ACK the enclosing
-mailbox batch/event. There is no operator answer to collect: **never run `flywheel-comm respond`**
-for this report, because responding wakes a parked
-Runner. Near-matches remain ordinary `[ASK] runner_question` events.
-
 Required behavior:
 
 1. **Immediately** post a chat-thread message addressed to the operator:
    > `💬 <ISSUE-ID> Runner 在问：<question text，必要时摘要>（Runner 继续干活中）`
    (Use the chat thread for the issue. If a `Chat-Thread:` line is present, route there.)
 2. Priority is the same as `gate_question` — surface ASAP — but the framing must convey "non-blocking, Runner is still working". Do not phrase it like a hard checkpoint.
-3. For an **`[ASK] runner_question`**, when the operator answers, run `flywheel-comm respond --db <CommDB path from the event> --lead <your_id> <qid> "<reply>"` to send the answer back to the Runner. The Runner picks it up via `flywheel-comm check`. The trusted `[REPORT]` exception above is ACK-only.
-4. **One `[ASK] runner_question` event → one chat notification.** Do NOT batch multiple asks into a single message and do NOT silently drop one because the Runner "might figure it out". The Runner explicitly asked the operator — surface it. Relay a trusted `[REPORT]` once as lifecycle status, without asking for an answer.
+3. When the operator answers, run `flywheel-comm respond --db <CommDB path from the event> --lead <your_id> <qid> "<reply>"` to send the answer back to the Runner. The Runner picks it up via `flywheel-comm check`.
+4. **One `runner_question` event → one chat notification.** Do NOT batch multiple `runner_question` items into a single message and do NOT silently drop one because the Runner "might figure it out". The Runner explicitly asked the operator — surface it.
 
 ### Difference from `gate_question`
 
@@ -294,25 +244,7 @@ Required behavior:
 | Annie framing | "Runner is waiting for you" | "Runner is asking (continues working)" |
 | Survive Runner completion | Skipped after session leaves active | Stays pending until answered or TTL |
 
-Only `gate_question` and `[ASK] runner_question` reply with `flywheel-comm respond`.
-The trusted `[REPORT]` runner-stop exception is ACK-only and never receives a response.
-
----
-
-## Design-Node Visibility — Founder Design HTML (FLY-1404, strictly enforced)
-
-This rule is bound to a **design node completing**, not to any particular workflow shape. It applies to legacy `phase_design_complete` and to every future DAG design-node terminal path, whether the workflow is Design → Implement, Design → QA, DAG workflow, or another shape. A workflow with no design node is unaffected.
-
-When a design node completes:
-
-1. Require the Runner's audited report in this exact family: `DESIGN-HTML ready: <hosted-url> | repo: <repo-path> | issue: <ISSUE-ID>`. The HTML must be the final committed design artifact for this issue, not merely an early concept card.
-2. Use `founder-html-delivery` to deliver the hosted URL and its full-page visual into the corresponding issue thread. This is founder visibility, not a review gate: do **not** turn it into `review_design`, `approve_to_ship`, or another approval checkpoint.
-3. The successor does not wait for founder review. Implement starts normally as soon as the design completion is otherwise accepted; HTML publication and founder reading happen in parallel. A missing delivery report means return the work to Design instead of claiming design complete. If the Runner reported `DESIGN-HTML publish-failed: ...`, surface that failure and have Design retry publish-only + report; never claim the founder received it.
-4. Opportunistic check: when an Implement or later-node event arrives, verify that the issue thread already has the design HTML delivery. If the report arrived but delivery did not, deliver it immediately. Do not stop the already-running successor solely to wait for founder review.
-5. A parked Design runner may only publish/report an **already committed** HTML read-only. If producing or correcting an artifact would write the shared branch, route the work to the current TURN holder; a parked runner never writes without TURN.
-6. Founder feedback arriving after handoff goes to the current TURN holder. That holder appends `design-correction.md` with the **abolished concepts**, **retained organs**, and a **verbatim founder quote**, then applies the correction as an incremental design/implementation lap. Do not roll the branch back and do not silently rewrite the original approved plan.
-
-The invariant is **must produce + must deliver, not must receive approval**. Founder feedback should be acted on quickly, but lack of feedback is never permission to delay Implement.
+Both reply the same way (`flywheel-comm respond`).
 
 ---
 
@@ -400,11 +332,11 @@ The event payload includes:
 
 ### Boundary: don't confuse this with `session_stuck`
 
-`session_stuck` means the Runner process is alive but not making progress. `gate_timed_out` means the Runner deliberately exited because a human gate didn't get a human answer. Different events, different prompts to Annie.
+`session_stuck` means the Runner process is alive but not making progress (idle watchdog). `gate_timed_out` means the Runner deliberately exited because a human gate didn't get a human answer. Different events, different prompts to Annie.
 
 ### Reliability note
 
-The `gate_timed_out` event is on the GUARDRAIL retry path (Bridge → Lead delivery is retried for ~5 min). However, if the Bridge was completely offline when the Runner timed out, the event POST itself may have been lost — in that case you will never receive the event, and the Runner session timeout will eventually surface the dead Runner (FLY-1560 removed the FLY-92 idle detector). If a Runner has been silent for >49h on a gated issue and you have not seen any related event, treat that as the same situation and follow the same retry/cancel prompt.
+The `gate_timed_out` event is on the GUARDRAIL retry path (Bridge → Lead delivery is retried for ~5 min). However, if the Bridge was completely offline when the Runner timed out, the event POST itself may have been lost — in that case you will never receive the event, and the indirect detection paths (FLY-92 idle watchdog, Runner session timeout) will eventually surface the dead Runner. If a Runner has been silent for >49h on a gated issue and you have not seen any related event, treat that as the same situation and follow the same retry/cancel prompt.
 
 ---
 
@@ -425,7 +357,7 @@ If your project file does not instantiate these, the rule still works (the Lead 
 
 Every Lead reply that is **bound to a Linear issue** (status update, Q&A, design decision, cross-issue reference, runner observation) MUST go through `POST /api/chat-threads/send`. Bridge looks up the canonical chat thread for `(issueId, chatChannel)` and posts there. This is the only correct way to keep Annie's view of different issues in different threads — replying directly with `discord.reply(chat_id=$CHAT_THREAD_ID)` works today only when the inbound event payload carries `chat_thread_id`; **`send` works in every case**, including when you're acting on a session you haven't received an event for in this turn.
 
-> **Runner lifecycle events are mandatory relays (FLY-369 RC-1).** This is not only for replies you *choose* to send: **every** Runner lifecycle event (`session_completed`, `session_failed`, `runner_question`, parked-awaiting-lead) MUST be relayed to the `[FLY-XX]` thread — relay is the default, silence is the bug. And **"Runner delivered" ≠ "acceptance met" ≠ "OK to mark Done"**: never report a Runner finishing (or Linear auto-flipping to Done on a PR merge) as acceptance. The full discipline (patrol + done≠accepted + driving parked Runners) lives in `runner-patrol-rules.md`.
+> **Runner lifecycle events are mandatory relays (FLY-369 RC-1).** This is not only for replies you *choose* to send: **every** Runner lifecycle event (`session_completed`, `session_failed`, `runner_stuck_escalation`, `runner_question`, parked-awaiting-lead) MUST be relayed to the `[FLY-XX]` thread — relay is the default, silence is the bug. And **"Runner delivered" ≠ "acceptance met" ≠ "OK to mark Done"**: never report a Runner finishing (or Linear auto-flipping to Done on a PR merge) as acceptance. The full discipline (patrol + done≠accepted + driving parked Runners) lives in `runner-patrol-rules.md`.
 
 ### Decision: which tool to use
 
@@ -507,11 +439,7 @@ Archiving a chat thread is driven by the **close action**, NOT by Linear flippin
 
 **When you close a done issue**, just:
 1. post your wrap-up message to the thread (via `POST /api/chat-threads/send`) and confirm it landed,
-2. **report that it is ready and wait for the founder's direction.** Do **not**
-   ask for a close: `close-runner` terminates the Runner and removes its
-   worktree, it is reserved under R2 of `founder-only-authority.md`, and R2's
-   post-completion rule says explicitly *do not suggest closing*. The issue being
-   Done is neither an authorization to call it nor a reason to request it.
+2. close the Runner the normal way (`close-runner` — terminates the Runner + removes its worktree).
 
 The Bridge then auto-archives the issue's chat thread **iff** (a) this was a done-cleanup close (the session was `completed` — not a terminate/abandon/reject) **and** (b) the issue has no other active Runner. A mid-flight terminate/abandon does **not** archive. The ship path still archives on ship. The Bridge holds the bot token and performs the archive — never PATCH Discord directly.
 

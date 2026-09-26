@@ -14,10 +14,7 @@ import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openAuditStore } from "../bridge/founder-consent/audit.js";
-import {
-	type DecisionMode,
-	parseFounderConsentConfig,
-} from "../bridge/founder-consent/config.js";
+import { parseFounderConsentConfig } from "../bridge/founder-consent/config.js";
 import type { FetchImpl } from "../bridge/founder-consent/discord-fetch.js";
 import type { LLMChat } from "../bridge/founder-consent/evaluator.js";
 import { buildFounderConsentWiring } from "../bridge/founder-consent/wiring.js";
@@ -83,15 +80,15 @@ async function request(method: string, path: string, body?: unknown) {
 }
 
 function mkConfig(mode: string): BridgeConfig {
-	const parsed = parseFounderConsentConfig(
-		{
-			FLYWHEEL_FOUNDER_USER_ID: FOUNDER,
-			FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: join(dir, "audit.db"),
-		} as NodeJS.ProcessEnv,
-		() => {},
-	);
 	return {
-		founderConsent: { ...parsed, decisionMode: mode as DecisionMode },
+		founderConsent: parseFounderConsentConfig(
+			{
+				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: mode,
+				FLYWHEEL_FOUNDER_USER_ID: FOUNDER,
+				FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: join(dir, "audit.db"),
+			} as NodeJS.ProcessEnv,
+			() => {},
+		),
 	} as unknown as BridgeConfig;
 }
 

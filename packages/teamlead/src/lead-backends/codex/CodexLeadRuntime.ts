@@ -16,8 +16,10 @@
  * best-effort tears down whatever already came up, then rethrows (fail loud).
  *
  * Supervision: the runtime does NOT restart itself — launchd is the sole restarter
- * (Phase 0A §6).
+ * (Phase 0A §6). `healthProbe()` exposes the current verdict for the supervisor.
  */
+
+import type { LeadHealthVerdict } from "./LeadHealthProbe.js";
 
 export interface RuntimeWiring {
 	/** Journal crash-recovery — runs BEFORE the gateway opens. */
@@ -35,6 +37,8 @@ export interface CodexLeadRuntimeSteps {
 	wire: (threadId: string) => Promise<RuntimeWiring>;
 	/** Shut the app-server down (idempotent). */
 	shutdownProcess: () => Promise<void>;
+	/** Current health verdict (for the supervisor). */
+	healthProbe?: () => LeadHealthVerdict;
 	logger?: {
 		info?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -101,6 +105,10 @@ export class CodexLeadRuntime {
 
 	isStarted(): boolean {
 		return this.started;
+	}
+
+	healthProbe(): LeadHealthVerdict | undefined {
+		return this.steps.healthProbe?.();
 	}
 
 	private async safe(

@@ -186,26 +186,25 @@ export async function validateAndRegisterChatThread(
 		if (discordError) return discordError;
 	}
 
-	// 5. The Discord validation above awaited external I/O. Re-check ownership in
-	// one DB transaction so a creator that claimed the canonical slot meanwhile
-	// cannot be overwritten by this stale registration.
-	const registration = store.registerChatThreadConditional(
-		threadId,
-		channelId,
-		issueId,
-		leadId,
-	);
-	if (registration.status === "registered") return { ok: true };
-	if (registration.status === "thread_mapped") {
+	// 5. Conflict detection: thread already mapped to different issue
+	const existing = store.getChatThreadByThreadId(threadId);
+	if (existing && existing.issue_id !== issueId) {
 		return {
 			ok: false,
 			status: 409,
-			error: `Thread ${threadId} already mapped to issue ${registration.issueId}`,
+			error: `Thread ${threadId} already mapped to issue ${existing.issue_id}`,
 		};
 	}
-	return {
-		ok: false,
-		status: 409,
-		error: `Issue ${issueId} already has canonical thread ${registration.threadId}`,
-	};
+
+	// 6. Warn if overriding an existing mapping (e.g., Bridge-created → Lead-created)
+	const current = store.getChatThreadByIssue(issueId, channelId);
+	if (current && current.thread_id !== threadId) {
+		console.warn(
+			`[chat-thread-register] Overriding thread for issue ${issueId} in channel ${channelId}: ${current.thread_id} → ${threadId}`,
+		);
+	}
+
+	// 7. Register
+	store.upsertChatThread(threadId, channelId, issueId, leadId);
+	return { ok: true };
 }

@@ -4,10 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import { createWorkflowShadowWriterFromEnv } from "../bridge/workflow-shadow-writer.js";
 import { StateStore } from "../StateStore.js";
+import {
+	isWorkflowClaimsReadEnabled,
+	isWorkflowClaimsWriteEnabled,
+	isWorkflowLegacyForced,
+} from "../workflow-claims.js";
 
 /**
- * FLY-1232 QA acceptance probe — INDEPENDENT verification (DAG workflow QA
+ * FLY-1232 QA acceptance probe — INDEPENDENT verification (three-stage QA
  * phase). These are NOT a copy of the implementer's unit assertions; they
  * exercise the substrate at a higher-assurance / integration angle to give the
  * QA verdict its own evidence:
@@ -18,10 +24,11 @@ import { StateStore } from "../StateStore.js";
  *   A2   append-only enforcement survives a raw reopen of the on-disk file.
  *   A6   gate resolution never regresses to a superseded PASS after a newer
  *        attempt FAILs.
- *   B6   applyWorkflowLedgerBatch is atomic on a REAL file store: a batch whose
+ *   B6   applyWorkflowShadowBatch is atomic on a REAL file store: a batch whose
  *        later op is invalid persists NOTHING, and a subsequent valid batch
  *        replays cleanly (no torn run / node / event residue).
- *   A10/B1 the two remaining rollout switches default OFF.
+ *   A10/B1 the three rollout switches default OFF and the writer factory is
+ *        undefined unless FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1 (byte-compat seam).
  */
 
 const GIT_HEAD = "a".repeat(40);
@@ -244,14 +251,14 @@ describe("FLY-1232 QA · A6 — resolution never regresses to a superseded PASS"
 	});
 });
 
-describe("FLY-1232 QA · B6 — applyWorkflowLedgerBatch is atomic on a real file store", () => {
+describe("FLY-1232 QA · B6 — applyWorkflowShadowBatch is atomic on a real file store", () => {
 	it("a MID-TRANSACTION failure (a valid op that throws inside the tx) rolls back an already-written earlier op — no torn writes", async () => {
 		const { store: storeP, dbPath } = freshFileStore("atomic");
 		const store = await storeP;
 
 		// Seed an active run with one committed dispatch (baseline the failing
 		// batch must not corrupt).
-		store.applyWorkflowLedgerBatch({
+		store.applyWorkflowShadowBatch({
 			projectName: "flywheel",
 			issueId: "FLY-1232",
 			newRunId: "run-atomic",
@@ -268,7 +275,7 @@ describe("FLY-1232 QA · B6 — applyWorkflowLedgerBatch is atomic on a real fil
 		// transaction — after op #1 already wrote. A correct composite tx must
 		// roll op #1 back.
 		expect(() =>
-			store.applyWorkflowLedgerBatch({
+			store.applyWorkflowShadowBatch({
 				projectName: "flywheel",
 				issueId: "FLY-1232",
 				ops: [
@@ -327,7 +334,7 @@ describe("FLY-1232 QA · B6 — applyWorkflowLedgerBatch is atomic on a real fil
 					},
 				],
 			};
-			const replayed = reopened.applyWorkflowLedgerBatch(retry);
+			const replayed = reopened.applyWorkflowShadowBatch(retry);
 			expect(replayed.runId).toBe("run-atomic");
 			expect(replayed.created).toBe(false); // run survived the rollback
 			expect(replayed.events).toHaveLength(1);
@@ -349,7 +356,7 @@ describe("FLY-1232 QA · B6 — applyWorkflowLedgerBatch is atomic on a real fil
 				baseSideEffects + 1,
 			);
 			// And the replay of that same batch dedupes instead of double-writing.
-			const dedup = reopened.applyWorkflowLedgerBatch(retry);
+			const dedup = reopened.applyWorkflowShadowBatch(retry);
 			expect(dedup.events.every((e) => e.deduped)).toBe(true);
 			expect(reopened.listWorkflowSideEffects("run-atomic")).toHaveLength(
 				baseSideEffects + 1,
@@ -364,12 +371,12 @@ describe("FLY-1232 QA · B6 — applyWorkflowLedgerBatch is atomic on a real fil
 		// nothing created (distinct from the mid-tx rollback above).
 		const store = await StateStore.create(":memory:");
 		expect(() =>
-			store.applyWorkflowLedgerBatch({
+			store.applyWorkflowShadowBatch({
 				projectName: "flywheel",
 				issueId: "FLY-1232",
 				ops: [{ op: "dispatch", node: "design", attempt: 1, executionId: "x" }],
 			}),
-		).toThrow(/no active workflow run/i);
+		).toThrow(/no active shadow run/i);
 		expect(store.getActiveWorkflowRun("flywheel", "FLY-1232")).toBeUndefined();
 
 		const good = {
@@ -385,17 +392,44 @@ describe("FLY-1232 QA · B6 — applyWorkflowLedgerBatch is atomic on a real fil
 				},
 			],
 		};
-		const first = store.applyWorkflowLedgerBatch(good);
+		const first = store.applyWorkflowShadowBatch(good);
 		expect(first.created).toBe(true);
 		expect(first.dispatchOrdinals).toEqual([1]);
 		// Replay: same run, same event uid → deduped, no second ledger row.
-		const replay = store.applyWorkflowLedgerBatch({
+		const replay = store.applyWorkflowShadowBatch({
 			...good,
 			newRunId: undefined,
 		});
 		expect(replay.created).toBe(false);
 		expect(replay.events.every((e) => e.deduped)).toBe(true);
 		expect(store.listWorkflowSideEffects("run-good")).toHaveLength(1);
+		store.close();
+	});
+});
+
+describe("FLY-1232 QA · A10/B1 — rollout switches default OFF (byte-compat seam)", () => {
+	it("the three flags are independent and OFF unless explicitly '1'", async () => {
+		expect(isWorkflowClaimsWriteEnabled({})).toBe(false);
+		expect(isWorkflowClaimsReadEnabled({})).toBe(false);
+		expect(isWorkflowLegacyForced({})).toBe(false);
+		// Only the literal "1" enables — "true"/"0"/"yes" do not.
+		expect(
+			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "true" }),
+		).toBe(false);
+		expect(
+			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" }),
+		).toBe(true);
+	});
+
+	it("the shadow-writer factory is undefined unless the WRITE flag is '1'", async () => {
+		const store = await StateStore.create(":memory:");
+		expect(createWorkflowShadowWriterFromEnv({}, store)).toBeUndefined();
+		expect(
+			createWorkflowShadowWriterFromEnv(
+				{ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" },
+				store,
+			),
+		).toBeDefined();
 		store.close();
 	});
 });

@@ -1,5 +1,5 @@
 #!/bin/bash
-# FLY-1062 · ③ CUSTOMER end-to-end acceptance — the whole chain in
+# FLY-1062 broker PR · ③ CUSTOMER end-to-end acceptance — the whole chain in
 # its REAL form, zero stubs on the serving path:
 #
 #   real release scripts ──publish──▶ real endpoint (serve-node + FsBucket)
@@ -10,7 +10,8 @@
 #   E2  beta release via payload-release.mjs (reserve→pack→claim→upload→
 #       readback→commit, B0-9);
 #   E3  promote prepare (equivalence proof) + commit via payload-promote.mjs
-#       → customer-release pointer flips;
+#       → customer-release pointer flips;   [the broker path for this same
+#       commit is pinned by the teamlead vitest suite against this handler]
 #   E4  license key issued through the REAL ops route;
 #   E5  a fresh HOME + the shell installed FROM ITS NPM TARBALL installs the
 #       promoted version end to end (zero repository access anywhere);
@@ -126,20 +127,8 @@ if (cd "$FIX" && env FW_ENDPOINT="$EP" FW_BETA_PUBLISH_TOKEN="$BETA_TOKEN" FW_PA
 else
   fail "E3a promote prepare failed: $(tail -5 "$SANDBOX/prep.out")"
 fi
-# Codex R7#5: the sha used to come from an inline `$(curl | node)` inside the
-# --expected-sha256 arg, so the curl/node status was discarded (the outer command's
-# status is payload-promote's). A curl that printed valid-looking JSON but exited
-# non-zero could still supply a hash and let E3b "pass". Capture the manifest read,
-# check curl exit AND http 200, parse the sha with a separately-checked command,
-# THEN commit.
-E2E_MANIFEST="$(curl -s -w $'\n%{http_code}' -H "Authorization: Bearer $OPS_TOKEN" "$EP/admin/manifest")"; E2E_CRC=$?
-E2E_CODE="$(tail -1 <<<"$E2E_MANIFEST")"; E2E_BODY="$(sed '$d' <<<"$E2E_MANIFEST")"
-E2E_SHA="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).releaseOps["rel-e2e"].sha256))}catch(e){process.exit(3)}})' <<<"$E2E_BODY")"; E2E_NRC=$?
-if [ "$E2E_CRC" -ne 0 ] || [ "$E2E_CODE" != "200" ] || [ "$E2E_NRC" -ne 0 ] || [ -z "$E2E_SHA" ]; then
-  fail "E3b manifest/sha probe failed before commit (curl $E2E_CRC http $E2E_CODE node $E2E_NRC sha '$E2E_SHA')"
-elif env FW_ENDPOINT="$EP" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
+if env FW_ENDPOINT="$EP" FW_CUSTOMER_RELEASE_TOKEN="$RELEASE_TOKEN" \
     node "$ROOT/scripts/release/payload-promote.mjs" commit --release-id rel-e2e \
-      --expected-sha256 "$E2E_SHA" \
     > "$SANDBOX/commit.out" 2>&1; then
   pass "E3b promote commit → customer-release.latest = 9.9.9"
 else
@@ -162,7 +151,7 @@ TARBALL="$SANDBOX/$TARBALL"
 PREFIX="$SANDBOX/cli"
 npm install --prefix "$PREFIX" "$TARBALL" >/dev/null 2>&1 \
   || { fail "E5 npm install from shell tarball failed"; echo "RESULTS: $PASSED passed, $FAILED failed"; exit 1; }
-BIN="$PREFIX/node_modules/@flywheel-ai/onboard/bin/flywheel-onboard.js"
+BIN="$PREFIX/node_modules/@flywheel/onboard/bin/flywheel-onboard.js"
 
 install_as_customer() { # $1 = HOME dir; prints rc
   local H="$1"; mkdir -p "$H"

@@ -7,7 +7,7 @@
  *     → CodexDaemonGoalRuntime.runGoal(objective)         [M4c-2]
  *         spawn daemon → connect → set the `/goal` → drive it across turns
  *         to a terminal ThreadGoalStatus, transparently restarting+resuming
- *         the SAME thread and account across a daemon transport death;
+ *         the SAME thread across a daemon death (429/usage-limit rotation);
  *     → founder cmux window (`codex resume --remote`) opened on the first
  *         threadId in the goal stream so Annie can WATCH it run live [M4c-3];
  *     → terminal reclaim: kill the window, stop the daemon, CONFIRM exit.
@@ -34,7 +34,6 @@ import {
 	mkdirSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -46,7 +45,6 @@ import {
 	defaultGateMarkerDir,
 	type GateMarker,
 	listGateMarkersForExecution,
-	readGateMarker,
 	removeGateMarker,
 } from "flywheel-comm/gate-marker";
 import { PONYTAIL_RULESET } from "flywheel-config";
@@ -78,11 +76,9 @@ import type {
 import { CodexDaemonGoalRuntime } from "./codex-daemon-goal-runtime.js";
 import {
 	assertSocketPathFitsSunLen,
-	codexSessionStateDir,
 	resolveDaemonSocketPath,
 } from "./codex-daemon-runtime.js";
 import {
-	assertCodexSourceIdentity,
 	flywheelCodexBin,
 	provisionCodexHome,
 	rawCodexBin,
@@ -91,6 +87,7 @@ import {
 	stripInheritedSecretEnv,
 } from "./codex-home.js";
 import {
+	atomicMergeCodexSessionState,
 	type CodexPhaseLifecycle,
 	CodexPhaseLifecycleController,
 	type CodexPhaseLifecycleControllerOptions,
@@ -100,10 +97,7 @@ import {
 	ensureRunnerTuiWindow,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
-	type RunnerTuiAbortCause,
-	type RunnerTuiWindowFailureEvidence,
 	errMessage as safeErr,
-	scanAndKillSameNameWindows,
 } from "./codex-runner-tui-window.js";
 
 /**
@@ -116,26 +110,9 @@ import {
  * send `setGoal` (which lands the rollout) concurrently. Bounded + fail-loud:
  * after the cap we log once and the run continues without a visible pane.
  */
-export const TUI_OPEN_MAX_ATTEMPTS = 10;
-export const TUI_OPEN_DEADLINE_MS = 30 * 60_000;
-export const TUI_OPEN_RETRY_DELAYS_MS = [
-	5_000, 15_000, 60_000, 300_000,
-] as const;
-/** @deprecated Use the deadline-aware ladder. Retained for package API parity. */
-export const TUI_OPEN_RETRY_GAP_MS = TUI_OPEN_RETRY_DELAYS_MS[0];
+export const TUI_OPEN_MAX_ATTEMPTS = 8; // per open-chain (includes the first attempt)
+export const TUI_OPEN_RETRY_GAP_MS = 900;
 
-export interface RunnerTuiWindowLostEvidence {
-	executionId: string;
-	issueId: string;
-	projectName: string;
-	leadId: string;
-	trigger: "deadline-exhausted" | "permanent" | "run-ended";
-	episodeStartedAt: number;
-	attempts: number;
-	lastFailure?: RunnerTuiWindowFailureEvidence;
-}
-
-import { withSyncOpMarker } from "./sync-op-marker.js";
 import type { ExecFileFn } from "./TmuxAdapter.js";
 import { defaultExecFile } from "./TmuxAdapter.js";
 
@@ -178,10 +155,6 @@ export interface CodexDaemonGoalRuntimeLike {
 
 /** Injected collaborators for daemon-mode execute() (default to the real ones). */
 export interface CodexDaemonAdapterDeps {
-	/** FLY-2003 test/deployment seam for canonical account identity. */
-	codexAccountRegistryPath?: string;
-	/** FLY-2003 test/slot seam for identity-ledger snapshots. */
-	codexAccountLedgerRoot?: string;
 	/** Build the resident-/goal runtime for one execution. */
 	runtimeFactory?: (
 		opts: CodexDaemonGoalRuntimeOptions,
@@ -190,25 +163,13 @@ export interface CodexDaemonAdapterDeps {
 	ensureWindow?: typeof ensureRunnerTuiWindow;
 	/** Tear the founder window down on terminal (fail-open). */
 	killWindow?: typeof killRunnerTuiWindow;
-	/** Pure terminal cleanup for a window that commits after the first kill. */
-	cleanupWindows?: typeof scanAndKillSameNameWindows;
-	/** Bounded join for an in-flight async ensure before terminal cleanup. */
-	tuiJoinTimeoutMs?: number;
 	/** Is the founder window's pane still alive? (restart-reopen probe.) */
 	windowAlive?: (windowName: string) => boolean;
 	/** FLY-1239: schedule a founder-window reopen attempt (the rollout-race
 	 * retry). Returns a cancel handle. Default: an unref'd `setTimeout`. Injected
 	 * in tests to drive the retry chain deterministically. */
 	scheduleReopen?: (fn: () => void, ms: number) => () => void;
-	/** Independent hard-deadline timer. Kept separate from retry scheduling so
-	 * cancelling one delayed attempt cannot accidentally disarm the 30m fence. */
-	scheduleTuiDeadline?: (fn: () => void, ms: number) => () => void;
-	now?: () => number;
-	onTuiWindowLost?: (
-		evidence: RunnerTuiWindowLostEvidence,
-	) => void | Promise<void>;
-	onTuiWindowRestored?: (executionId: string) => void | Promise<void>;
-	/** Build the adapter-owned DAG workflow lifecycle controller. */
+	/** Build the adapter-owned three-stage phase lifecycle controller. */
 	phaseLifecycleFactory?: (
 		options: CodexPhaseLifecycleControllerOptions,
 	) => CodexPhaseLifecycle;
@@ -220,6 +181,16 @@ export interface CodexDaemonAdapterDeps {
 	scrubCredential?: (executionId: string) => void;
 }
 
+export function codexSessionStateDir(
+	executionId: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const base =
+		env.FLYWHEEL_CODEX_SESSION_DIR?.trim() ||
+		join(homedir(), ".flywheel", "state", "codex-sessions");
+	return join(base, executionId);
+}
+
 export class CodexTmuxAdapter implements IAdapter {
 	readonly type = "codex-tmux";
 	readonly supportsStreaming = false;
@@ -229,21 +200,8 @@ export class CodexTmuxAdapter implements IAdapter {
 	>;
 	private readonly ensureWindow: typeof ensureRunnerTuiWindow;
 	private readonly killWindow: typeof killRunnerTuiWindow;
-	private readonly cleanupWindows: typeof scanAndKillSameNameWindows;
-	private readonly tuiJoinTimeoutMs: number;
 	private readonly windowAliveFn: (windowName: string) => boolean;
 	private readonly scheduleReopen: (fn: () => void, ms: number) => () => void;
-	private readonly scheduleTuiDeadline: (
-		fn: () => void,
-		ms: number,
-	) => () => void;
-	private readonly now: () => number;
-	private readonly onTuiWindowLost?: NonNullable<
-		CodexDaemonAdapterDeps["onTuiWindowLost"]
-	>;
-	private readonly onTuiWindowRestored?: NonNullable<
-		CodexDaemonAdapterDeps["onTuiWindowRestored"]
-	>;
 	private readonly phaseLifecycleFactory: NonNullable<
 		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
 	>;
@@ -253,8 +211,6 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly scrubCredential: NonNullable<
 		CodexDaemonAdapterDeps["scrubCredential"]
 	>;
-	private readonly codexAccountRegistryPath?: string;
-	private readonly codexAccountLedgerRoot?: string;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -274,8 +230,6 @@ export class CodexTmuxAdapter implements IAdapter {
 			deps.runtimeFactory ?? ((opts) => new CodexDaemonGoalRuntime(opts));
 		this.ensureWindow = deps.ensureWindow ?? ensureRunnerTuiWindow;
 		this.killWindow = deps.killWindow ?? killRunnerTuiWindow;
-		this.cleanupWindows = deps.cleanupWindows ?? scanAndKillSameNameWindows;
-		this.tuiJoinTimeoutMs = deps.tuiJoinTimeoutMs ?? 2_000;
 		this.windowAliveFn =
 			deps.windowAlive ??
 			((windowName) =>
@@ -290,16 +244,6 @@ export class CodexTmuxAdapter implements IAdapter {
 				(t as { unref?: () => void }).unref?.();
 				return () => clearTimeout(t);
 			});
-		this.scheduleTuiDeadline =
-			deps.scheduleTuiDeadline ??
-			((fn, ms) => {
-				const t = setTimeout(fn, ms);
-				(t as { unref?: () => void }).unref?.();
-				return () => clearTimeout(t);
-			});
-		this.now = deps.now ?? Date.now;
-		this.onTuiWindowLost = deps.onTuiWindowLost;
-		this.onTuiWindowRestored = deps.onTuiWindowRestored;
 		this.phaseLifecycleFactory =
 			deps.phaseLifecycleFactory ??
 			((options) => new CodexPhaseLifecycleController(options));
@@ -311,8 +255,6 @@ export class CodexTmuxAdapter implements IAdapter {
 				return () => clearInterval(timer);
 			});
 		this.scrubCredential = deps.scrubCredential ?? scrubCodexHomeCredential;
-		this.codexAccountRegistryPath = deps.codexAccountRegistryPath;
-		this.codexAccountLedgerRoot = deps.codexAccountLedgerRoot;
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -322,21 +264,17 @@ export class CodexTmuxAdapter implements IAdapter {
 		// in a git worktree (WorktreeManager) or the project root (git repo),
 		// so this holds; any future non-git execution path must address it.
 		try {
-			const tmux = withSyncOpMarker("codex-adapter:health-tmux", () =>
-				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
-			).stdout.trim();
-			const codex = withSyncOpMarker("codex-adapter:health-codex", () =>
-				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
-			).stdout.trim();
-			// FLY-2003: runners use the repo-owned, CODEX_HOME-aware direct daemon
-			// launcher (via FLYWHEEL_CODEX_BIN), not the global one-shot guard.
-			// Health-check the actual launcher is executable —
+			const tmux = this.execFileFn("tmux", ["-V"]).stdout.trim();
+			const codex = this.execFileFn("codex", ["--version"]).stdout.trim();
+			// FLY-123 WS-B (R1 LOW #6): runners use the repo-owned, CODEX_HOME-
+			// aware rotation shim (via FLYWHEEL_CODEX_BIN), NOT Annie's global
+			// codex-with-fallback. Health-check the actual shim is executable —
 			// a clean host without the global wrapper must still be healthy.
 			const shim = flywheelCodexBin();
 			accessSync(shim, fsConstants.X_OK);
 			return {
 				healthy: true,
-				message: "tmux, codex CLI and repo daemon launcher available",
+				message: "tmux, codex CLI and repo rotation shim available",
 				details: { tmux, codex, shim },
 			};
 		} catch (err) {
@@ -363,9 +301,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	): string | undefined {
 		let token: string;
 		try {
-			token = withSyncOpMarker("codex-adapter:gh-token", () =>
-				this.execFileFn("gh", ["auth", "token"], { timeoutMs: 10_000 }),
-			).stdout.trim();
+			token = this.execFileFn("gh", ["auth", "token"]).stdout.trim();
 		} catch {
 			console.warn(
 				`[CodexTmuxAdapter] gh auth token unavailable for ${ctx.executionId} — Codex runner will not be able to push/open PRs (fail-closed at push).`,
@@ -384,32 +320,20 @@ export class CodexTmuxAdapter implements IAdapter {
 		// is an ssh remote — the ssh agent socket is sandbox-blocked, so ssh
 		// can never work for a Codex runner. Scoped to github.com; best-effort.
 		try {
-			withSyncOpMarker("codex-adapter:git-credential", () =>
-				this.execFileFn(
-					"git",
-					[
-						"-C",
-						ctx.cwd,
-						"config",
-						"credential.https://github.com.helper",
-						"!gh auth git-credential",
-					],
-					{ timeoutMs: 10_000 },
-				),
-			);
-			withSyncOpMarker("codex-adapter:git-url-rewrite", () =>
-				this.execFileFn(
-					"git",
-					[
-						"-C",
-						ctx.cwd,
-						"config",
-						"url.https://github.com/.insteadOf",
-						"git@github.com:",
-					],
-					{ timeoutMs: 10_000 },
-				),
-			);
+			this.execFileFn("git", [
+				"-C",
+				ctx.cwd,
+				"config",
+				"credential.https://github.com.helper",
+				"!gh auth git-credential",
+			]);
+			this.execFileFn("git", [
+				"-C",
+				ctx.cwd,
+				"config",
+				"url.https://github.com/.insteadOf",
+				"git@github.com:",
+			]);
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] failed to set git credential config for ${ctx.executionId}: ${(err as Error).message}`,
@@ -420,12 +344,8 @@ export class CodexTmuxAdapter implements IAdapter {
 
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
 		if (!this.preflightDone) {
-			withSyncOpMarker("codex-adapter:preflight-tmux", () =>
-				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
-			);
-			withSyncOpMarker("codex-adapter:preflight-codex", () =>
-				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
-			);
+			this.execFileFn("tmux", ["-V"]);
+			this.execFileFn("codex", ["--version"]);
 			this.preflightDone = true;
 		}
 
@@ -436,16 +356,6 @@ export class CodexTmuxAdapter implements IAdapter {
 		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
 		const sandboxCwd = realpathSync(ctx.cwd);
 		const gitWritableDirs = this.resolveGitWritableDirs(sandboxCwd);
-		// Build and validate in the fail-loud zone. This must stay before GitHub
-		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
-		const gateMarkerDir = defaultGateMarkerDir();
-		const daemonEnv = this.buildDaemonEnv(ctx, gateMarkerDir);
-		this.assertWorkflowCapabilities(ctx, daemonEnv);
-		// FLY-2003: reject unknown/zombie/malformed source auth before `gh auth`
-		// or worktree git config can create any credential-bearing residue.
-		assertCodexSourceIdentity({
-			registryPath: this.codexAccountRegistryPath,
-		});
 
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
 		const ghToken = this.provisionGitHubCredential(ctx);
@@ -457,40 +367,17 @@ export class CodexTmuxAdapter implements IAdapter {
 		const codexHome = provisionCodexHome({
 			executionId: ctx.executionId,
 			ghToken,
-			registryPath: this.codexAccountRegistryPath,
-			ledgerRoot: this.codexAccountLedgerRoot,
-			...(ctx.pretrustWorkspace === true && {
-				trustedProjectPath: sandboxCwd,
-			}),
-			notifyProgramPath: join(
-				homedir(),
-				".flywheel",
-				"hooks",
-				"runner-stop-notify.sh",
-			),
-			...(ctx.skillFrameworkMode && {
-				skillFrameworkMode: ctx.skillFrameworkMode,
-			}),
-			...(ctx.codexSkillDisableNames && {
-				codexSkillDisableNames: ctx.codexSkillDisableNames,
-			}),
-			...(ctx.codexMattSkillsSourceDir && {
-				codexMattSkillsSourceDir: ctx.codexMattSkillsSourceDir,
-			}),
 		});
 
 		// Founder cmux window name (a Linear identifier, FLY-272).
 		const windowName = sanitizeTmuxName(
 			ctx.label ?? `codex-${ctx.executionId.slice(0, 8)}`,
 		);
-		let tmuxWindow: string | undefined;
-		let founderWindowId: string | undefined;
+		let tmuxWindow = `${this.sessionName}:${windowName}`;
 
 		let runtime: CodexDaemonGoalRuntimeLike | undefined;
 		let phaseLifecycle: CodexPhaseLifecycle | undefined;
 		let registeredSession = false;
-		let gateDb: CommDB | undefined;
-		let gateDbOpen = false;
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
 		let tuiOpened = false;
@@ -499,15 +386,6 @@ export class CodexTmuxAdapter implements IAdapter {
 		let threadReadySeen = false; // did the authoritative onThreadReady hook ever fire?
 		let runEnded = false; // set in `finally` — stops any pending reopen from spawning
 		let cancelReopen: (() => void) | undefined; // cancel the latest scheduled reopen
-		let cancelTuiDeadline: (() => void) | undefined;
-		let activeTuiAttempt: Promise<void> | undefined;
-		let activeTuiAbort: AbortController | undefined;
-		let tuiEpisodeStartedAt: number | undefined;
-		let tuiAttemptCount = 0;
-		let lastTuiFailure: RunnerTuiWindowFailureEvidence | undefined;
-		let tuiTerminalReported = false;
-		let emitTuiLost: (trigger: RunnerTuiWindowLostEvidence["trigger"]) => void =
-			() => {};
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
 		let teardownError: unknown;
@@ -527,19 +405,10 @@ export class CodexTmuxAdapter implements IAdapter {
 			assertSocketPathFitsSunLen(socketPath);
 
 			// CommDB session registration (vendor=codex → send routing).
-			registeredSession = this.registerCommDbSession(ctx);
-			if (ctx.commDbPath) {
-				try {
-					gateDb = new CommDB(ctx.commDbPath);
-					gateDbOpen = true;
-				} catch (error) {
-					this.log(
-						`[CodexTmuxAdapter] gate authority DB unavailable; using marker fallback: ${safeErr(error)}`,
-					);
-				}
-			}
+			registeredSession = this.registerCommDbSession(ctx, windowName);
 			ctx.onHeartbeat?.(ctx.executionId);
 
+			const gateMarkerDir = defaultGateMarkerDir();
 			const writableRoots = buildDaemonSandboxWritableRoots({
 				flywheelRoot: join(homedir(), ".flywheel"),
 				gateMarkerDir,
@@ -583,7 +452,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				// FLY-1224: per-phase reasoning effort → daemon spawn config override
 				// (-c model_reasoning_effort=). Absent → CODEX_HOME config default.
 				...(ctx.effort ? { effort: ctx.effort } : {}),
-				env: daemonEnv,
+				env: this.buildDaemonEnv(ctx, gateMarkerDir),
 				sandboxWritableRoots: writableRoots,
 				networkAccess: true,
 				logger: (m) => this.log(m),
@@ -624,83 +493,26 @@ export class CodexTmuxAdapter implements IAdapter {
 				socketPath,
 				cwd: sandboxCwd,
 				threadId,
-				...(ctx.stateDbPath
-					? {
-							executionId: ctx.executionId,
-							stateDbPath: ctx.stateDbPath,
-						}
-					: {}),
-				// QA · FLY-1188: keep the founder TUI on the explicitly resolved raw
-				// binary. This preserves the proven TTY boundary independently of the
-				// repository-owned daemon launcher (now a same-account passthrough).
+				// QA · FLY-1188: the TUI gets the RAW codex binary, NOT the
+				// rotation shim. The shim pipes stdout through `tee` to sniff
+				// 429s, and `codex resume --remote` refuses to render without a
+				// TTY ("stdout is not a terminal", exit 1) — which is why the
+				// founder's cmux tab came up empty. The daemon above keeps the
+				// shim: `app-server` needs no TTY and does want the rotation.
 				codexBin: rawCodexBin(),
 			});
 
 			// Latch the founder window ON SUCCESS (MEDIUM-1: only on success) +
 			// publish the window id.
-			emitTuiLost = (trigger: RunnerTuiWindowLostEvidence["trigger"]): void => {
-				if (tuiOpened || tuiTerminalReported) return;
-				tuiTerminalReported = true;
-				this.log(
-					`runner-tui-window: terminal visibility loss trigger=${trigger} attempts=${tuiAttemptCount} reason=${lastTuiFailure?.reason ?? "unknown"}`,
-				);
-				if (!this.onTuiWindowLost) return;
-				const evidence: RunnerTuiWindowLostEvidence = {
-					executionId: ctx.executionId,
-					issueId: ctx.issueId,
-					projectName: ctx.projectName ?? "unknown",
-					leadId: ctx.leadId ?? "flywheel-eng-lead",
-					trigger,
-					episodeStartedAt: tuiEpisodeStartedAt ?? this.now(),
-					attempts: tuiAttemptCount,
-					...(lastTuiFailure ? { lastFailure: lastTuiFailure } : {}),
-				};
-				try {
-					void Promise.resolve(this.onTuiWindowLost(evidence)).catch((error) =>
-						this.log(
-							`runner-tui-window: lost callback rejected (ignored): ${safeErr(error)}`,
-						),
-					);
-				} catch (error) {
-					this.log(
-						`runner-tui-window: lost callback threw (ignored): ${safeErr(error)}`,
-					);
-				}
-			};
-
-			const wireCreated = (created: { windowId?: string }): boolean => {
-				const windowId = created.windowId ?? this.resolveWindowId(windowName);
-				if (!windowId || !/^@[0-9]+$/.test(windowId)) return false;
+			const wireCreated = (): void => {
 				tuiOpened = true;
-				tuiOpening = false;
-				founderWindowId = windowId;
-				tmuxWindow = `${this.sessionName}:${windowId}`;
-				cancelTuiDeadline?.();
-				this.publishWindowExecutionIdentity(ctx.executionId, `=${tmuxWindow}`);
-				this.pinCommDbSessionWindow(ctx, tmuxWindow);
-				this.persistSessionWindowState(ctx.executionId, tmuxWindow);
-				this.persistTuiEpisode(ctx.executionId, undefined);
-				tuiEpisodeStartedAt = undefined;
-				if (this.onTuiWindowRestored) {
-					try {
-						void Promise.resolve(
-							this.onTuiWindowRestored(ctx.executionId),
-						).catch((error) =>
-							this.log(
-								`runner-tui-window: restored callback rejected (ignored): ${safeErr(error)}`,
-							),
-						);
-					} catch (error) {
-						this.log(
-							`runner-tui-window: restored callback threw (ignored): ${safeErr(error)}`,
-						);
-					}
-				}
+				const windowId = this.resolveWindowId(windowName);
+				if (windowId) tmuxWindow = `${this.sessionName}:${windowId}`;
 				if (ctx.onTmuxWindowCreated) {
 					try {
 						ctx.onTmuxWindowCreated({
 							baseSessionName: this.sessionName,
-							windowId,
+							windowId: windowId ?? windowName,
 						});
 					} catch (err) {
 						console.warn(
@@ -708,7 +520,6 @@ export class CodexTmuxAdapter implements IAdapter {
 						);
 					}
 				}
-				return true;
 			};
 
 			// FLY-1239: one bounded reopen attempt. ONLY a `died` outcome (a TUI that
@@ -718,106 +529,47 @@ export class CodexTmuxAdapter implements IAdapter {
 			// and lands the rollout between attempts. Wrapped in a no-throw boundary:
 			// an async retry callback that threw would be an uncaught exception and
 			// could crash the process — window failure must never break the run.
-			const retryDelay = (attempt: number): number =>
-				TUI_OPEN_RETRY_DELAYS_MS[
-					Math.min(attempt - 1, TUI_OPEN_RETRY_DELAYS_MS.length - 1)
-				] ?? 300_000;
-
-			const attemptOpen = async (
-				threadId: string,
-				n: number,
-				signal: AbortSignal,
-			): Promise<void> => {
+			const attemptOpen = (threadId: string, n: number): void => {
 				try {
-					if (runEnded || tuiOpened || signal.aborted) {
+					if (runEnded || tuiOpened) {
 						tuiOpening = false;
 						return;
 					}
-					tuiAttemptCount = Math.max(tuiAttemptCount, n);
-					const result = await this.ensureWindow(buildSpec(threadId), {
+					const result = this.ensureWindow(buildSpec(threadId), {
 						log: (m) => this.log(m),
-						signal,
 					});
-					if (runEnded) {
-						tuiOpening = false;
-						return;
-					}
 					if (result.created) {
-						if (wireCreated(result)) return;
-						lastTuiFailure = {
-							category: "retryable-transient-ipc",
-							reason: "window_id_unproven",
-						};
-					} else {
-						lastTuiFailure = result;
-					}
-					if (signal.aborted) {
-						if (signal.reason === "deadline") emitTuiLost("deadline-exhausted");
+						wireCreated();
 						tuiOpening = false;
 						return;
 					}
-					if (lastTuiFailure?.category === "permanent") {
-						emitTuiLost("permanent");
-						tuiOpening = false;
-						return;
-					}
-					const startedAt = tuiEpisodeStartedAt ?? this.now();
-					const remaining = TUI_OPEN_DEADLINE_MS - (this.now() - startedAt);
-					if (n < TUI_OPEN_MAX_ATTEMPTS && remaining > 0 && !runEnded) {
-						const delay = Math.min(retryDelay(n), remaining);
-						cancelReopen = this.scheduleReopen(() => {
-							launchAttempt(threadId, n + 1);
-						}, delay);
+					if (
+						result.reason === "died" &&
+						n < TUI_OPEN_MAX_ATTEMPTS &&
+						!runEnded
+					) {
+						cancelReopen = this.scheduleReopen(
+							() => attemptOpen(threadId, n + 1),
+							TUI_OPEN_RETRY_GAP_MS,
+						);
 						return; // still opening — chain continues on the next tick
 					}
-					emitTuiLost("deadline-exhausted");
+					if (result.reason === "died") {
+						// fail-loud (bounded, not silent, not infinite). `died` proves an
+						// immediate exit, NOT specifically "no rollout found", so keep the
+						// cause soft and point at the detailed per-attempt log above.
+						this.log(
+							`runner-tui-window: founder TUI exited immediately on every attempt (${n}) — most likely the FLY-1239 rollout-landing race, but could be an auth/binary/TTY bootstrap failure; see the preceding runner-tui-window log for the exact command. The run continues (the machine client drives the goal); the founder cannot watch the pane.`,
+						);
+					}
+					// died-exhausted / tmux-absent / create-failed → stop this chain.
 					tuiOpening = false;
 				} catch (err) {
-					lastTuiFailure = {
-						category: "retryable-transient-ipc",
-						reason: "ipc_exception",
-						detail: safeErr(err).slice(0, 500),
-					};
 					this.log(
 						`runner-tui-window: reopen attempt threw (non-fatal, fail-open): ${safeErr(err)}`,
 					);
-					if (signal.aborted) {
-						if (signal.reason === "deadline") {
-							emitTuiLost("deadline-exhausted");
-						}
-						tuiOpening = false;
-						return;
-					}
-					const startedAt = tuiEpisodeStartedAt ?? this.now();
-					const remaining = TUI_OPEN_DEADLINE_MS - (this.now() - startedAt);
-					if (!runEnded && n < TUI_OPEN_MAX_ATTEMPTS && remaining > 0) {
-						cancelReopen = this.scheduleReopen(
-							() => launchAttempt(threadId, n + 1),
-							Math.min(retryDelay(n), remaining),
-						);
-					} else {
-						emitTuiLost(runEnded ? "run-ended" : "deadline-exhausted");
-						tuiOpening = false;
-					}
+					tuiOpening = false; // stop this chain; window failure never breaks the run
 				}
-			};
-
-			const launchAttempt = (threadId: string, n: number): void => {
-				if (runEnded || tuiOpened) {
-					tuiOpening = false;
-					return;
-				}
-				const controller = new AbortController();
-				activeTuiAbort = controller;
-				const promise = attemptOpen(threadId, n, controller.signal);
-				activeTuiAttempt = promise;
-				const clear = (): void => {
-					if (activeTuiAttempt === promise) activeTuiAttempt = undefined;
-					if (activeTuiAbort === controller) activeTuiAbort = undefined;
-				};
-				// Consume both branches explicitly. Do not use a bare `.finally()` here:
-				// its returned rejected promise would be an unhandled rejection.
-				void promise.then(clear, clear);
 			};
 
 			// Start a single-flight reopen chain. The FIRST attempt is scheduled too
@@ -826,30 +578,8 @@ export class CodexTmuxAdapter implements IAdapter {
 			const startOpenChain = (threadId: string): void => {
 				if (tuiOpened || tuiOpening || runEnded) return;
 				tuiOpening = true;
-				tuiEpisodeStartedAt =
-					this.readPersistedTuiEpisode(ctx.executionId) ?? this.now();
-				this.persistTuiEpisode(ctx.executionId, tuiEpisodeStartedAt);
-				tuiTerminalReported = false;
 				try {
-					const remainingDeadline = Math.max(
-						0,
-						TUI_OPEN_DEADLINE_MS - (this.now() - tuiEpisodeStartedAt),
-					);
-					cancelTuiDeadline = this.scheduleTuiDeadline(() => {
-						if (tuiOpened || runEnded) return;
-						activeTuiAbort?.abort("deadline" satisfies RunnerTuiAbortCause);
-						const pending = activeTuiAttempt;
-						const report = (): void => {
-							tuiOpening = false;
-							emitTuiLost("deadline-exhausted");
-						};
-						if (pending) void pending.then(report, report);
-						else report();
-					}, remainingDeadline);
-					cancelReopen = this.scheduleReopen(
-						() => launchAttempt(threadId, 1),
-						0,
-					);
+					cancelReopen = this.scheduleReopen(() => attemptOpen(threadId, 1), 0);
 				} catch (err) {
 					tuiOpening = false;
 					this.log(
@@ -864,11 +594,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			// `gate --no-block` marker would otherwise hang until the overall goal
 			// budget. This expires the CommDB question at the marker's configured
 			// deadline + emits gate_timed_out for fail-close (FLY-159 parity).
-			stopGateWatcher = this.startGateDeadlineWatcher(
-				ctx,
-				gateMarkerDir,
-				gateDb,
-			);
+			stopGateWatcher = this.startGateDeadlineWatcher(ctx, gateMarkerDir);
 
 			// Periodic heartbeat (Codex R2 HIGH): the exec-cycle beat every poll;
 			// the resident daemon has no such loop, so without this a long task or
@@ -889,12 +615,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			// persist the resume handle (HIGH-4) + (re)open the founder window. On a
 			// daemon RESTART (restarts > 0) the old remote TUI may have exited when
 			// its socket closed — re-open if the pane is dead (Codex R2 MEDIUM).
+			// HIGH-3: track the live daemon pid (updated on every spawn/restart via
+			// onDaemonPid) so persistSessionState records the CURRENT daemon — a
+			// resuming redrive reaps it if a Bridge crash orphaned it.
+			let latestDaemonPid: number | undefined;
 			const onThreadReady = (threadId: string, restarts: number): void => {
 				threadReadySeen = true; // authoritative hook fired → the fallback is not needed
-				this.persistSessionState(ctx, threadId);
+				this.persistSessionState(ctx, threadId, windowName, latestDaemonPid);
 				if (restarts > 0 && tuiOpened && !this.isWindowAlive(windowName)) {
 					tuiOpened = false; // pane died with the old socket — reopen below
-					tuiTerminalReported = false;
 				}
 				startOpenChain(threadId);
 			};
@@ -907,15 +636,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			let committed = false;
 			const onGoalActive = (): void => {
 				if (committed || !ctx.launchCommitPath) return;
-				if (ctx.commitWorkflowLaunch) {
-					const result = ctx.commitWorkflowLaunch();
-					if (!result.ok) {
-						throw new Error(result.reason ?? "Bridge launch fence rejected");
-					}
-					committed = true;
-				} else if (this.writeLaunchCommit(ctx.launchCommitPath)) {
-					committed = true;
-				}
+				if (this.writeLaunchCommit(ctx.launchCommitPath)) committed = true;
 			};
 
 			// HIGH-4 (Codex R2): resume the prior thread across a Bridge/adapter
@@ -949,15 +670,10 @@ export class CodexTmuxAdapter implements IAdapter {
 					overallTimeoutMs: ctx.timeoutMs ?? this.defaultTimeoutMs,
 					waitingTimeoutMs: ctx.waitingTimeoutMs ?? 176_400_000,
 					isWaiting: () => {
-						if (gateDb && gateDbOpen) {
-							try {
-								return gateDb.hasPendingBlockingGateFrom(ctx.executionId);
-							} catch {
-								// A long-lived handle can outlive a replaced/recovered DB file.
-								// The marker mirror remains the compatibility fallback.
-							}
-						}
 						try {
+							// An unanswered `gate --no-block` marker for this execution =
+							// a gate the runner is (possibly) blocked on. Best-effort: a
+							// read error must never extend the budget.
 							return listGateMarkersForExecution(
 								gateMarkerDir,
 								ctx.executionId,
@@ -966,15 +682,14 @@ export class CodexTmuxAdapter implements IAdapter {
 							return false;
 						}
 					},
-					readGateHoldLatch: () => this.readPersistedGateHold(ctx.executionId),
-					writeGateHoldLatch: (held) =>
-						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
 					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 					onThreadReady,
-					// FLY-1940: this hard callback runs synchronously before socket
-					// polling. Any persistence failure throws and forces spawn cleanup.
-					onSpawnIdentity: (pgid) => this.persistSpawnIdentity(ctx, pgid),
+					// HIGH-3: capture each spawned daemon's pid so onThreadReady
+					// persists the CURRENT daemon for post-crash orphan reaping.
+					onDaemonPid: (pid) => {
+						latestDaemonPid = pid;
+					},
 					onGoalActive,
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 				},
@@ -1018,19 +733,10 @@ export class CodexTmuxAdapter implements IAdapter {
 			// catch, where classifyGoalOutcome would let it override a successful goal.
 			if (!threadReadySeen && !tuiOpened && outcome?.threadId) {
 				try {
-					const o = await this.ensureWindow(buildSpec(outcome.threadId), {
+					const o = this.ensureWindow(buildSpec(outcome.threadId), {
 						log: (m) => this.log(m),
 					});
-					if (o.created) {
-						if (!wireCreated(o)) {
-							lastTuiFailure = {
-								category: "retryable-transient-ipc",
-								reason: "window_id_unproven",
-							};
-						}
-					} else {
-						lastTuiFailure = o;
-					}
+					if (o.created) wireCreated();
 				} catch (err) {
 					this.log(
 						`runner-tui-window: fallback open threw (non-fatal, fail-open): ${safeErr(err)}`,
@@ -1048,67 +754,13 @@ export class CodexTmuxAdapter implements IAdapter {
 			// — a visibility-only failure staying fail-open is the whole contract.
 			runEnded = true;
 			try {
-				cancelTuiDeadline?.();
-			} catch (err) {
-				this.log(
-					`runner-tui-window: deadline cancel threw (non-fatal): ${safeErr(err)}`,
-				);
-			}
-			try {
 				cancelReopen?.();
 			} catch (err) {
 				this.log(
 					`runner-tui-window: reopen cancel threw (non-fatal, teardown continues): ${safeErr(err)}`,
 				);
 			}
-			activeTuiAbort?.abort("run-ended" satisfies RunnerTuiAbortCause);
-			if (!tuiOpened && (threadReadySeen || outcome?.threadId)) {
-				emitTuiLost("run-ended");
-			}
-			const attemptAtTeardown = activeTuiAttempt;
-			if (attemptAtTeardown) {
-				let settledBeforeJoin = false;
-				await new Promise<void>((resolveJoin) => {
-					const timer = setTimeout(resolveJoin, this.tuiJoinTimeoutMs);
-					const settled = (): void => {
-						settledBeforeJoin = true;
-						clearTimeout(timer);
-						resolveJoin();
-					};
-					void attemptAtTeardown.then(settled, settled);
-				});
-				if (!settledBeforeJoin) {
-					const cleanupLateWindow = async (): Promise<void> => {
-						try {
-							await this.cleanupWindows({
-								tmuxSession: this.sessionName,
-								windowName,
-							});
-						} catch (err) {
-							this.log(
-								`runner-tui-window: late cleanup failed (non-fatal): ${safeErr(err)}`,
-							);
-						}
-					};
-					// Consume resolve and reject, then run a pure cleanup after the in-flight
-					// create can no longer commit. cleanupLateWindow catches its own errors.
-					void attemptAtTeardown
-						.then(cleanupLateWindow, cleanupLateWindow)
-						.then(
-							() => {},
-							() => {},
-						);
-				}
-			}
 			stopGateWatcher();
-			gateDbOpen = false;
-			try {
-				gateDb?.close();
-			} catch (error) {
-				this.log(
-					`[CodexTmuxAdapter] gate authority DB close failed (ignored): ${safeErr(error)}`,
-				);
-			}
 			if (phaseLifecycle) {
 				try {
 					await phaseLifecycle.stopIntake();
@@ -1136,11 +788,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				}
 				try {
 					this.killWindow(
-						{
-							tmuxSession: this.sessionName,
-							windowName,
-							...(founderWindowId ? { windowId: founderWindowId } : {}),
-						},
+						{ tmuxSession: this.sessionName, windowName },
 						{ log: (m) => this.log(m) },
 					);
 				} catch (err) {
@@ -1150,7 +798,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					let commDb: CommDB | undefined;
 					try {
 						commDb = new CommDB(ctx.commDbPath);
-						commDb.updateSessionStatusIfRunning(
+						commDb.updateSessionStatus(
 							ctx.executionId,
 							controlledShutdownSucceeded() ? "completed" : "timeout",
 						);
@@ -1193,11 +841,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				// Ordinary/non-request-bound Codex retains terminal-window-first order.
 				stopHeartbeat();
 				this.killWindow(
-					{
-						tmuxSession: this.sessionName,
-						windowName,
-						...(founderWindowId ? { windowId: founderWindowId } : {}),
-					},
+					{ tmuxSession: this.sessionName, windowName },
 					{ log: (m) => this.log(m) },
 				);
 				if (runtime) {
@@ -1222,14 +866,11 @@ export class CodexTmuxAdapter implements IAdapter {
 					try {
 						const commDb = new CommDB(ctx.commDbPath);
 						const c = classifyGoalOutcome({ outcome, caughtError });
-						// FLY-1279: a blocked goal is a real, typed outcome of its own —
-						// recording it as a timeout loses why the run actually stopped.
-						const goalBlocked = outcome?.result.status === "blocked";
 						const okComplete =
 							(c.success || controlledShutdownSucceeded()) && !teardownError;
-						commDb.updateSessionStatusIfRunning(
+						commDb.updateSessionStatus(
 							ctx.executionId,
-							okComplete ? "completed" : goalBlocked ? "blocked" : "timeout",
+							okComplete ? "completed" : "timeout",
 						);
 						commDb.close();
 					} catch {
@@ -1258,14 +899,6 @@ export class CodexTmuxAdapter implements IAdapter {
 			},
 		};
 		if (cls.resultText !== undefined) result.resultText = cls.resultText;
-		if (outcome?.result.status === "blocked") {
-			result.failure = {
-				failureKind: "goal_blocked",
-				failureReason: cls.failureReason ?? "goal ended non-complete: blocked",
-				...(cls.failureClass && { failureClass: cls.failureClass }),
-				...(cls.failureCode && { failureCode: cls.failureCode }),
-			};
-		}
 		if (!success) {
 			const reason =
 				cls.failureReason ??
@@ -1335,31 +968,16 @@ export class CodexTmuxAdapter implements IAdapter {
 			const p = join(codexSessionStateDir(executionId), "session.json");
 			if (!existsSync(p)) return undefined;
 			const state = JSON.parse(readFileSync(p, "utf-8")) as {
-				daemonPgid?: unknown;
 				daemonPid?: unknown;
 			};
-			const pgid = state.daemonPgid ?? state.daemonPid;
-			return typeof pgid === "number" && Number.isInteger(pgid) && pgid > 0
-				? pgid
+			return typeof state.daemonPid === "number" &&
+				Number.isInteger(state.daemonPid) &&
+				state.daemonPid > 0
+				? state.daemonPid
 				: undefined;
 		} catch {
 			return undefined;
 		}
-	}
-
-	/** FLY-1257: durable latch reader. Malformed/corrupt state fails closed so
-	 * runGoalToTerminal cannot silently reactivate an ambiguous blocked goal. */
-	private readPersistedGateHold(executionId: string): boolean {
-		const p = join(codexSessionStateDir(executionId), "session.json");
-		if (!existsSync(p)) return false;
-		const state = JSON.parse(readFileSync(p, "utf-8")) as {
-			gateHold?: unknown;
-		};
-		if (state.gateHold === undefined) return false;
-		if (typeof state.gateHold !== "boolean") {
-			throw new Error(`invalid gateHold in ${p}`);
-		}
-		return state.gateHold;
 	}
 
 	/** Is the founder TUI window's pane still alive? (used to reopen after a
@@ -1382,124 +1000,29 @@ export class CodexTmuxAdapter implements IAdapter {
 	private persistSessionState(
 		ctx: AdapterExecutionContext,
 		threadId: string,
+		windowName: string,
+		daemonPid: number | undefined,
 	): void {
 		try {
-			this.mergeSessionState(ctx.executionId, {
+			const stateDir = codexSessionStateDir(ctx.executionId);
+			mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+			atomicMergeCodexSessionState(join(stateDir, "session.json"), {
 				executionId: ctx.executionId,
 				issueId: ctx.issueId,
+				tmuxWindow: `${this.sessionName}:${windowName}`,
 				cwd: ctx.cwd,
 				vendor: "codex",
 				threadId,
+				// HIGH-3: the live daemon's pid, so a resuming redrive can reap
+				// this daemon if a Bridge crash orphaned it (detached:false does
+				// NOT kill the child on parent death). Omitted when unknown.
+				...(daemonPid !== undefined ? { daemonPid } : {}),
+				updatedAt: new Date().toISOString(),
 			});
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
 			);
-		}
-	}
-
-	/** Window identity is a separate commit: a name is never durable evidence. */
-	private persistSessionWindowState(
-		executionId: string,
-		tmuxWindow: string,
-	): void {
-		try {
-			this.mergeSessionState(executionId, { tmuxWindow });
-		} catch (err) {
-			console.warn(
-				`[CodexTmuxAdapter] session window persist failed: ${(err as Error).message}`,
-			);
-		}
-	}
-
-	private readPersistedTuiEpisode(executionId: string): number | undefined {
-		try {
-			const path = join(codexSessionStateDir(executionId), "session.json");
-			if (!existsSync(path)) return undefined;
-			const state = JSON.parse(readFileSync(path, "utf8")) as {
-				tuiWindowEpisodeStartedAt?: unknown;
-			};
-			return typeof state.tuiWindowEpisodeStartedAt === "number" &&
-				Number.isFinite(state.tuiWindowEpisodeStartedAt)
-				? state.tuiWindowEpisodeStartedAt
-				: undefined;
-		} catch {
-			return undefined;
-		}
-	}
-
-	private persistTuiEpisode(
-		executionId: string,
-		startedAt: number | undefined,
-	): void {
-		try {
-			this.mergeSessionState(executionId, {
-				tuiWindowEpisodeStartedAt: startedAt ?? null,
-			});
-		} catch (error) {
-			console.warn(
-				`[CodexTmuxAdapter] TUI episode persist failed: ${(error as Error).message}`,
-			);
-		}
-	}
-
-	/** FLY-1940: the spawn ownership write is fail-close and deliberately does
-	 * not catch. spawnCodexDaemon kills the new process group if this throws. */
-	private persistSpawnIdentity(
-		ctx: AdapterExecutionContext,
-		daemonPgid: number,
-	): void {
-		this.mergeSessionState(ctx.executionId, {
-			executionId: ctx.executionId,
-			issueId: ctx.issueId,
-			cwd: ctx.cwd,
-			vendor: "codex",
-			daemonPgid,
-		});
-	}
-
-	/**
-	 * Merge-owned fields into session.json and publish with an atomic rename.
-	 * Every writer (regular resume metadata and the gate-hold latch) uses this
-	 * seam so sequential interleavings preserve both known and future fields.
-	 */
-	private mergeSessionState(
-		executionId: string,
-		patch: Record<string, unknown>,
-	): void {
-		const stateDir = codexSessionStateDir(executionId);
-		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-		const path = join(stateDir, "session.json");
-		let current: Record<string, unknown> = {};
-		if (existsSync(path)) {
-			const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
-			if (
-				typeof parsed !== "object" ||
-				parsed === null ||
-				Array.isArray(parsed)
-			) {
-				throw new Error(`invalid session state object in ${path}`);
-			}
-			current = parsed as Record<string, unknown>;
-		}
-		const tempPath = join(
-			stateDir,
-			`.session.json.${process.pid}.${randomUUID()}.tmp`,
-		);
-		try {
-			writeFileSync(
-				tempPath,
-				JSON.stringify(
-					{ ...current, ...patch, updatedAt: new Date().toISOString() },
-					null,
-					2,
-				),
-				{ encoding: "utf-8", mode: 0o600 },
-			);
-			renameSync(tempPath, path);
-		} catch (error) {
-			rmSync(tempPath, { force: true });
-			throw error;
 		}
 	}
 
@@ -1515,13 +1038,11 @@ export class CodexTmuxAdapter implements IAdapter {
 	private startGateDeadlineWatcher(
 		ctx: AdapterExecutionContext,
 		gateMarkerDir: string,
-		gateDb?: CommDB,
 	): () => void {
 		if (!ctx.commDbPath) return () => {};
 		const fallbackTimeoutMs = ctx.waitingTimeoutMs ?? 176_400_000;
 		const startedAt = Date.now();
 		const seen = new Set<string>(); // never re-emit for the same marker
-		const observed = new Set<string>();
 		const removeMarker = (questionId: string): void => {
 			try {
 				removeGateMarker(gateMarkerDir, questionId);
@@ -1531,29 +1052,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		};
 		const tick = (): void => {
 			try {
-				let markers: GateMarker[];
-				if (gateDb) {
-					try {
-						for (const question of gateDb.getOpenGatesByRunner(
-							ctx.executionId,
-						)) {
-							observed.add(question.id);
-						}
-						markers = [];
-						for (const questionId of observed) {
-							const marker = readGateMarker(gateMarkerDir, questionId);
-							if (marker) markers.push(marker);
-							else observed.delete(questionId);
-						}
-					} catch {
-						markers = listGateMarkersForExecution(
-							gateMarkerDir,
-							ctx.executionId,
-						);
-					}
-				} else {
-					markers = listGateMarkersForExecution(gateMarkerDir, ctx.executionId);
-				}
+				const markers = listGateMarkersForExecution(
+					gateMarkerDir,
+					ctx.executionId,
+				);
 				const now = Date.now();
 				for (const m of markers) {
 					if (seen.has(m.questionId)) continue;
@@ -1563,7 +1065,6 @@ export class CodexTmuxAdapter implements IAdapter {
 					// answered marker to residue + re-scan on every re-execute).
 					if (m.answeredAt) {
 						seen.add(m.questionId);
-						observed.delete(m.questionId);
 						removeMarker(m.questionId);
 						continue;
 					}
@@ -1578,7 +1079,6 @@ export class CodexTmuxAdapter implements IAdapter {
 					// way the gate is resolved — stop watching + remove the marker so it
 					// doesn't residue (Codex R3 LOW).
 					seen.add(m.questionId);
-					observed.delete(m.questionId);
 					removeMarker(m.questionId);
 				}
 			} catch {
@@ -1692,11 +1192,11 @@ export class CodexTmuxAdapter implements IAdapter {
 	}
 
 	/**
-	 * Build the daemon process env: a safe host base + the FLYWHEEL_* protocol vars
+	 * Build the daemon process env: process.env + the FLYWHEEL_* protocol vars
 	 * the runner's shell commands (flywheel-comm gate/stage/complete) need +
-	 * transport identity. No inherited FLYWHEEL_* value enters the base. The spawn
-	 * boundary strips the GitHub-token family and layers CODEX_HOME, but otherwise
-	 * preserves this explicitly constructed environment.
+	 * transport identity. GitHub-token vars are stripped in spawnCodexDaemon
+	 * (stripSecretEnv) so they never reach the codex process env; CODEX_HOME is
+	 * layered on there too.
 	 */
 	private buildDaemonEnv(
 		ctx: AdapterExecutionContext,
@@ -1705,21 +1205,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		// Codex full-PR review HIGH-4: wash the Bridge's third-party creds out of
 		// the INHERITED env before layering this runner's own FLYWHEEL_* values —
 		// the resident daemon runs model-driven shells and must never inherit
-		// Discord/Linear/DB/API secrets. No inherited FLYWHEEL_* value is preserved.
+		// Discord/Linear/DB/API secrets. FLYWHEEL_* (incl. the ingest token set
+		// below) is preserved by the wash.
 		const env: NodeJS.ProcessEnv = stripInheritedSecretEnv(process.env);
-		// Workflow capability provenance is execution context only. Never let a
-		// stale value cross executions, even if the base construction changes later.
-		delete env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL;
-		delete env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL;
-		delete env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED;
-		delete env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED;
 		env.FLYWHEEL_GATE_MARKER_DIR = gateMarkerDir;
-		const completeMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
-		if (completeMarkerDir) {
-			env.FLYWHEEL_COMPLETE_MARKER_DIR = completeMarkerDir;
-		} else {
-			delete env.FLYWHEEL_COMPLETE_MARKER_DIR;
-		}
 		env.FLYWHEEL_RUNNER_BACKEND_ID = "codex-tmux";
 		env.FLYWHEEL_RUNNER_VENDOR_ID = "codex";
 		if (ctx.commDbPath) env.FLYWHEEL_COMM_DB = ctx.commDbPath;
@@ -1731,11 +1220,6 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.workflowSubmissionCredential)
 			env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL =
 				ctx.workflowSubmissionCredential;
-		if (ctx.workflowSubmissionExpected)
-			env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED = "1";
-		if (ctx.workflowOutputCredential)
-			env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL = ctx.workflowOutputCredential;
-		if (ctx.founderReviewRequired) env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED = "1";
 		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
 		if (ctx.progressPath) env.FLYWHEEL_PROGRESS_PATH = ctx.progressPath; // FLY-795
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;
@@ -1765,122 +1249,32 @@ export class CodexTmuxAdapter implements IAdapter {
 		return env;
 	}
 
-	/** Guard the workflow capabilities this execution declared before side effects. */
-	private assertWorkflowCapabilities(
-		ctx: AdapterExecutionContext,
-		env: NodeJS.ProcessEnv,
-	): void {
-		const expected = [
-			[
-				"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
-				ctx.workflowOutputCredential || undefined,
-			],
-			[
-				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
-				ctx.workflowSubmissionCredential || undefined,
-			],
-			[
-				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
-				ctx.workflowSubmissionExpected ? "1" : undefined,
-			],
-			[
-				"FLYWHEEL_FOUNDER_REVIEW_REQUIRED",
-				ctx.founderReviewRequired ? "1" : undefined,
-			],
-		] as const;
-		const mismatched = expected
-			.filter(([key, value]) => env[key] !== value)
-			.map(([key]) => key);
-		if (mismatched.length > 0) {
-			throw new Error(
-				`runner workflow capability missing or changed: ${mismatched.join(", ")}`,
-			);
-		}
-	}
-
 	/**
 	 * Register the CommDB session (vendor=codex) for send-routing + tracking. The
 	 * tmux target is name-based (the founder window is created lazily on the
-	 * first threadId). Ordinary registration remains best-effort. A resident
-	 * phase consumer is fail-loud because its doorbell fence depends on this row.
+	 * first threadId). Best-effort — non-fatal, mirrors TmuxAdapter.
 	 */
-	private registerCommDbSession(ctx: AdapterExecutionContext): boolean {
-		if (!ctx.commDbPath) {
-			if (ctx.phaseKeepAlive) {
-				throw new Error(
-					`phase keep-alive requires CommDB registration for ${ctx.executionId}`,
-				);
-			}
-			return false;
-		}
-		let commDb: CommDB | undefined;
+	private registerCommDbSession(
+		ctx: AdapterExecutionContext,
+		windowName: string,
+	): boolean {
+		if (!ctx.commDbPath) return false;
 		try {
-			commDb = new CommDB(ctx.commDbPath);
+			const commDb = new CommDB(ctx.commDbPath);
 			commDb.registerSession(
 				ctx.executionId,
-				`${this.sessionName}:pending`,
+				`${this.sessionName}:${windowName}`,
 				ctx.projectName ?? "unknown",
 				ctx.issueId,
 				ctx.leadId,
 				// FLY-1188: vendor routes `flywheel-comm send` wakes to the codex
 				// mailbox (the claude-code env default misrouted them).
 				"codex",
-				ctx.phaseKeepAlive !== undefined,
 			);
-			if (ctx.phaseKeepAlive) {
-				commDb.assertPhaseKeepAliveSessionRunning(ctx.executionId);
-			}
+			commDb.close();
 			return true;
-		} catch (error) {
-			if (ctx.phaseKeepAlive) throw error;
-			return false; // non-fatal (same as TmuxAdapter)
-		} finally {
-			commDb?.close();
-		}
-	}
-
-	/** Pin the lazily-created founder pane to its immutable tmux id without
-	 * replacing the session row (which would erase lifecycle/review metadata). */
-	private pinCommDbSessionWindow(
-		ctx: AdapterExecutionContext,
-		tmuxWindow: string,
-	): void {
-		if (!ctx.commDbPath) return;
-		let commDb: CommDB | undefined;
-		try {
-			commDb = new CommDB(ctx.commDbPath);
-			commDb.updateSessionTmuxWindow(ctx.executionId, tmuxWindow);
 		} catch {
-			// Best-effort: the adapter still owns the immutable id for teardown.
-		} finally {
-			commDb?.close();
-		}
-	}
-
-	/** Publish the exact identity needed to rebuild a lost CommDB holder row. */
-	private publishWindowExecutionIdentity(
-		executionId: string,
-		exactTmuxTarget: string,
-	): void {
-		try {
-			withSyncOpMarker("codex-adapter:publish-window-identity", () =>
-				this.execFileFn(
-					"tmux",
-					[
-						"set-option",
-						"-w",
-						"-t",
-						exactTmuxTarget,
-						"@flywheel_exec_id",
-						executionId,
-					],
-					{ timeoutMs: 5_000 },
-				),
-			);
-		} catch (error) {
-			console.warn(
-				`[CodexTmuxAdapter] execution identity publish failed for ${exactTmuxTarget}: ${(error as Error).message}`,
-			);
+			return false; // non-fatal (same as TmuxAdapter)
 		}
 	}
 
@@ -1890,19 +1284,13 @@ export class CodexTmuxAdapter implements IAdapter {
 	 */
 	private resolveWindowId(windowName: string): string | undefined {
 		try {
-			const out = withSyncOpMarker("codex-adapter:resolve-window-id", () =>
-				this.execFileFn(
-					"tmux",
-					[
-						"display-message",
-						"-p",
-						"-t",
-						`=${this.sessionName}:=${windowName}`,
-						"#{window_id}",
-					],
-					{ timeoutMs: 5_000 },
-				),
-			).stdout.trim();
+			const out = this.execFileFn("tmux", [
+				"display-message",
+				"-p",
+				"-t",
+				`=${this.sessionName}:=${windowName}`,
+				"#{window_id}",
+			]).stdout.trim();
 			return out || undefined;
 		} catch {
 			return undefined;
@@ -1929,20 +1317,14 @@ export class CodexTmuxAdapter implements IAdapter {
 	private resolveGitWritableDirs(cwd: string): string[] {
 		let stdout: string;
 		try {
-			stdout = withSyncOpMarker("codex-adapter:resolve-git-dirs", () =>
-				this.execFileFn(
-					"git",
-					[
-						"-C",
-						cwd,
-						"rev-parse",
-						"--path-format=absolute",
-						"--git-dir",
-						"--git-common-dir",
-					],
-					{ timeoutMs: 10_000 },
-				),
-			).stdout;
+			stdout = this.execFileFn("git", [
+				"-C",
+				cwd,
+				"rev-parse",
+				"--path-format=absolute",
+				"--git-dir",
+				"--git-common-dir",
+			]).stdout;
 		} catch (err) {
 			throw new Error(
 				`[CodexTmuxAdapter] cannot resolve git metadata dirs for ${cwd} — a codex runner that cannot commit is crippled; refusing to spawn: ${(err as Error).message}`,

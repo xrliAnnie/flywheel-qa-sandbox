@@ -11,7 +11,6 @@ import {
 	type AlertEventType,
 	type AlertPayload,
 	type AlertResult,
-	INFORMATIONAL_KINDS,
 } from "../../LeadAlertNotifier.js";
 import {
 	type BoundIssueThread,
@@ -42,29 +41,6 @@ function payload(eventType: AlertEventType): AlertPayload {
 }
 
 describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
-	it("routes FLY-1364 actionable incidents to tickets", () => {
-		expect(TICKET_KINDS.has("cmux_cleanup")).toBe(true);
-		expect(TICKET_KINDS.has("cmux_watcher_stalled")).toBe(true);
-		expect(TICKET_KINDS.has("tmux_rescue_hold")).toBe(true);
-		expect(TICKET_KINDS.has("ship_attempt_failed")).toBe(true);
-	});
-
-	it.each([
-		"flag_scan_failed",
-		"flag_scan_handoff",
-		"flag_scan_no_clock",
-	] as const)(
-		"routes ordinary informational kind %s to Claw mailbox",
-		(kind) => {
-			expect(INFORMATIONAL_KINDS.has(kind)).toBe(true);
-			expect(TICKET_KINDS.has(kind)).toBe(false);
-			expect(ISSUE_PROGRESS_KINDS.has(kind)).toBe(false);
-			expect(
-				classifyInfraEvent({ eventType: kind, boundIssueThread: THREAD }),
-			).toBe("ticket");
-		},
-	);
-
 	it("every TICKET_KIND routes to ticket, with or without a bound thread", () => {
 		for (const kind of TICKET_KINDS) {
 			expect(
@@ -103,19 +79,9 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 				eventType: kind,
 				boundIssueThread: null,
 			});
-			expect(["ticket", "issue_thread"]).toContain(route);
+			expect(["ticket", "issue_thread", "notify"]).toContain(route);
 			expect(route).not.toBe("issue_thread"); // unbound never goes to a thread
 		}
-	});
-
-	it("routes restart-storm holds to the actionable ticket lane", () => {
-		expect(TICKET_KINDS).toContain("restart_storm_hold");
-		expect(
-			classifyInfraEvent({
-				eventType: "restart_storm_hold",
-				boundIssueThread: THREAD,
-			}),
-		).toBe("ticket");
 	});
 
 	it("union members outside both sets fail-safe to ticket", () => {
@@ -132,7 +98,6 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 
 describe("createInfraAlertSink (routing wrapper)", () => {
 	function makeDeps(overrides?: {
-		founderUserId?: string | null;
 		routingEnabled?: () => boolean;
 		resolve?: (p: AlertPayload) => BoundIssueThread | null;
 		deliver?: (p: AlertPayload, t: BoundIssueThread) => Promise<AlertResult>;
@@ -144,13 +109,6 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 				}),
 			),
 		};
-		const ticketSink = {
-			alert: vi.fn(
-				async (_p: AlertPayload): Promise<AlertResult> => ({
-					queued: true,
-				}),
-			),
-		};
 		const resolve = vi.fn(overrides?.resolve ?? (() => null));
 		const deliver = vi.fn(
 			overrides?.deliver ??
@@ -158,106 +116,31 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 		);
 		const sink = createInfraAlertSink({
 			rawSink,
-			ticketSink,
-			founderUserId:
-				overrides?.founderUserId === null
-					? undefined
-					: (overrides?.founderUserId ?? "123456789012345678"),
 			routingEnabled: overrides?.routingEnabled ?? (() => true),
 			resolveBoundIssueThread: resolve,
 			deliverToIssueThread: deliver,
 			logger: () => {},
 		});
-		return { sink, rawSink, ticketSink, resolve, deliver };
+		return { sink, rawSink, resolve, deliver };
 	}
 
 	it("routing DISABLED (env unset) → pure passthrough; resolver never consulted", async () => {
-		const { sink, rawSink, ticketSink, resolve, deliver } = makeDeps({
+		const { sink, rawSink, resolve, deliver } = makeDeps({
 			routingEnabled: () => false,
 		});
 		const p = payload("three_stage_stuck");
 		const result = await sink.alert(p);
 		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith(p);
-		expect(ticketSink.alert).not.toHaveBeenCalled();
 		expect(resolve).not.toHaveBeenCalled();
 		expect(deliver).not.toHaveBeenCalled();
 		expect(result).toEqual({ sent: true });
 	});
 
-	it("ordinary ticket kind → Claw mailbox even when a thread is bound", async () => {
-		const { sink, rawSink, ticketSink, deliver } = makeDeps({
-			resolve: () => THREAD,
-		});
-		const p = payload("rate_limit");
-		await sink.alert(p);
-		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(p);
-		expect(rawSink.alert).not.toHaveBeenCalled();
+	it("ticket kind → rawSink even when a thread is bound", async () => {
+		const { sink, rawSink, deliver } = makeDeps({ resolve: () => THREAD });
+		await sink.alert(payload("rate_limit"));
+		expect(rawSink.alert).toHaveBeenCalledTimes(1);
 		expect(deliver).not.toHaveBeenCalled();
-	});
-
-	it("workflow escalation → Hub with the existing founder mention", async () => {
-		const { sink, rawSink, ticketSink } = makeDeps();
-		const p = payload("workflow_engine_escalation");
-		await sink.alert(p);
-		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith({
-			...p,
-			mentionUserId: "123456789012345678",
-		});
-		expect(ticketSink.alert).not.toHaveBeenCalled();
-	});
-
-	it("an explicit mention remains an escalation and reaches the Hub unchanged", async () => {
-		const { sink, rawSink, ticketSink } = makeDeps();
-		const p = {
-			...payload("deploy_failed"),
-			mentionUserId: "222222222222222222",
-		};
-		await sink.alert(p);
-		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith(p);
-		expect(ticketSink.alert).not.toHaveBeenCalled();
-	});
-
-	it("an invalid explicit mention stays in the Claw mailbox", async () => {
-		const { sink, rawSink, ticketSink } = makeDeps();
-		const p = { ...payload("deploy_failed"), mentionUserId: "not-a-snowflake" };
-		await sink.alert(p);
-		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(p);
-		expect(rawSink.alert).not.toHaveBeenCalled();
-	});
-
-	it("workflow escalation replaces an invalid explicit mention with the canonical founder", async () => {
-		const { sink, rawSink, ticketSink } = makeDeps();
-		const p = {
-			...payload("workflow_engine_escalation"),
-			mentionUserId: "not-a-snowflake",
-		};
-		await sink.alert(p);
-		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith({
-			...p,
-			mentionUserId: "123456789012345678",
-		});
-		expect(ticketSink.alert).not.toHaveBeenCalled();
-	});
-
-	it("workflow escalation without a valid founder stays durable in the Claw mailbox", async () => {
-		const { sink, rawSink, ticketSink } = makeDeps({
-			founderUserId: "not-a-snowflake",
-		});
-		const p = payload("workflow_engine_escalation");
-		await sink.alert(p);
-		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(p);
-		expect(rawSink.alert).not.toHaveBeenCalled();
-	});
-
-	it("workflow dead-exec issue alerts use the bound issue thread", async () => {
-		const { sink, rawSink, resolve, deliver } = makeDeps({
-			resolve: () => THREAD,
-		});
-		const p = payload("workflow_engine_issue_alert");
-		await sink.alert(p);
-		expect(resolve).toHaveBeenCalledExactlyOnceWith(p);
-		expect(deliver).toHaveBeenCalledExactlyOnceWith(p, THREAD);
-		expect(rawSink.alert).not.toHaveBeenCalled();
 	});
 
 	it("issue-progress kind + bound thread → issue-thread leg, NOT rawSink", async () => {
@@ -268,40 +151,34 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 		expect(rawSink.alert).not.toHaveBeenCalled();
 	});
 
-	it("issue-progress kind, NO bound thread → fail-safe Claw mailbox", async () => {
-		const { sink, rawSink, ticketSink, deliver } = makeDeps({
-			resolve: () => null,
-		});
-		const p = payload("founder_gate_delivery_failed");
-		await sink.alert(p);
-		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(p);
-		expect(rawSink.alert).not.toHaveBeenCalled();
+	it("issue-progress kind, NO bound thread → fail-safe rawSink (queue)", async () => {
+		const { sink, rawSink, deliver } = makeDeps({ resolve: () => null });
+		await sink.alert(payload("founder_milestone_undelivered"));
+		expect(rawSink.alert).toHaveBeenCalledTimes(1);
 		expect(deliver).not.toHaveBeenCalled();
 	});
 
-	it("resolver THROWS → fail-safe Claw mailbox", async () => {
-		const { sink, rawSink, ticketSink } = makeDeps({
+	it("resolver THROWS → fail-safe rawSink (an alert is never lost on a resolver bug)", async () => {
+		const { sink, rawSink } = makeDeps({
 			resolve: () => {
 				throw new Error("boom");
 			},
 		});
 		const result = await sink.alert(payload("three_stage_stuck"));
-		expect(ticketSink.alert).toHaveBeenCalledTimes(1);
-		expect(rawSink.alert).not.toHaveBeenCalled();
-		expect(result).toEqual({ queued: true });
+		expect(rawSink.alert).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({ sent: true });
 	});
 
-	it("issue-thread deliverer THROWS → fail-safe Claw mailbox", async () => {
-		const { sink, rawSink, ticketSink } = makeDeps({
+	it("issue-thread deliverer THROWS → fail-safe rawSink (never silent)", async () => {
+		const { sink, rawSink } = makeDeps({
 			resolve: () => THREAD,
 			deliver: async () => {
 				throw new Error("discord down");
 			},
 		});
 		const result = await sink.alert(payload("three_stage_stuck"));
-		expect(ticketSink.alert).toHaveBeenCalledTimes(1);
-		expect(rawSink.alert).not.toHaveBeenCalled();
-		expect(result).toEqual({ queued: true });
+		expect(rawSink.alert).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({ sent: true });
 	});
 
 	it("routing enabled for a ticket kind never resolves a thread (no wasted lookups)", async () => {

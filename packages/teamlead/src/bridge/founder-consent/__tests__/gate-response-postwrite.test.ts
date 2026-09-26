@@ -15,7 +15,6 @@ import { join } from "node:path";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLeadIdentityFixture } from "../../../__tests__/helpers/lead-identity-fixture.js";
 import type { EvaluateResult, FounderConsentEvaluator } from "../evaluator.js";
 import {
 	createGateResponseRouter,
@@ -23,12 +22,9 @@ import {
 } from "../gate-response-router.js";
 
 const PROJECT = "TestProj";
-const FEEDBACK = JSON.stringify({ approved: false, feedback: "fix tests" });
 let dir: string;
 let commDbPath: string;
 let server: Server;
-let identityDigest: string;
-let leadLeaseEnv: NodeJS.ProcessEnv;
 
 async function request(path: string, body: unknown) {
 	const addr = server.address();
@@ -36,14 +32,7 @@ async function request(path: string, body: unknown) {
 	const res = await fetch(`http://127.0.0.1:${addr.port}${path}`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(
-			body !== null &&
-				typeof body === "object" &&
-				"leadId" in body &&
-				!("identityDigest" in body)
-				? { ...body, identityDigest }
-				: body,
-		),
+		body: JSON.stringify(body),
 	});
 	let json: unknown;
 	try {
@@ -93,7 +82,6 @@ function mkServer(
 			getCurrentReviewQuestionId: deps.getCurrentReviewQuestionId,
 			configuredProjects: new Set([PROJECT]),
 			commRoot: join(dir, "comm"),
-			leadLeaseEnv,
 			onResponseWritten: deps.onResponseWritten,
 			logger: { info: () => {}, warn: () => {} },
 		}),
@@ -117,11 +105,6 @@ beforeEach(() => {
 	const projDir = join(dir, "comm", PROJECT);
 	mkdirSync(projDir, { recursive: true });
 	commDbPath = join(projDir, "comm.db");
-	({ identityDigest, env: leadLeaseEnv } = createLeadIdentityFixture({
-		root: dir,
-		projectName: PROJECT,
-		leadId: "lead-x",
-	}));
 });
 afterEach(() => {
 	server?.close();
@@ -137,8 +120,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: FEEDBACK,
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -151,7 +133,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		};
 		expect(info.executionId).toBe("exec-1");
 		expect(info.questionId).toBe(qid);
-		expect(info.answer).toBe(FEEDBACK);
+		expect(info.answer).toBe(JSON.stringify({ approved: true }));
 	});
 
 	it("ALLOW (enforce): hook invoked after the consent-allowed write", async () => {
@@ -162,8 +144,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: FEEDBACK,
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -178,8 +159,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: FEEDBACK,
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(403);
@@ -200,8 +180,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: staleQ,
 			leadId: "lead-x",
-			answer: FEEDBACK,
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(409);
@@ -228,8 +207,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: FEEDBACK,
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -246,8 +224,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const body = {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: FEEDBACK,
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		};
 		const r1 = await request("/api/founder-consent/runner-gate-response", body);
@@ -264,7 +241,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		expect(hook).toHaveBeenCalledTimes(2); // recovery hook re-ran
 	});
 
-	it("different feedback text is an idempotent changes-requested retry", async () => {
+	it("retry with a CONFLICTING answer (approval vs feedback) → 409 question_already_answered", async () => {
 		const qid = seedQuestion();
 		const hook = vi.fn(async () => {});
 		mkServer({ evaluator: undefined, onResponseWritten: hook });
@@ -273,21 +250,19 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: "changes requested: fix the tests",
-			kickback: true,
 			executionId: "exec-1",
 		});
 		const r2 = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: "changes requested: use the other implementation",
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
-		expect(r2.status).toBe(200);
-		expect((r2.body as { alreadyResponded?: boolean }).alreadyResponded).toBe(
-			true,
+		expect(r2.status).toBe(409);
+		expect((r2.body as { error?: string }).error).toBe(
+			"question_already_answered",
 		);
-		expect(hook).toHaveBeenCalledTimes(2);
+		expect(hook).toHaveBeenCalledTimes(1); // only the first write ran it
 	});
 
 	it("hook failure does NOT fail the request — response row stays durable", async () => {
@@ -300,14 +275,15 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 		const res = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: FEEDBACK,
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
 
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe(FEEDBACK);
+		expect(db.getResponse(qid)?.content).toBe(
+			JSON.stringify({ approved: true }),
+		);
 		db.close();
 	});
 });

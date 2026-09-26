@@ -1,7 +1,7 @@
 #!/bin/bash
 # FLY-83: Independent Lead alert emitter.
 #
-# Bridge-independent shell alert pipeline. Lives in
+# Called by claude-lead.sh supervisor on crash-loop escalation. Lives in
 # shell so it works even when the Bridge (Node.js) is down.
 #
 # Responsibilities:
@@ -10,7 +10,7 @@
 #      - signature defaults to today's date (YYYYMMDD) so a crash-looping
 #        Lead alerts at most once per day per (project, lead, kind).
 #      - --signature lets callers override (e.g., a pane content hash for
-#        future kinds that mirror the Bridge-side alert-kind-copy formula).
+#        future kinds that mirror the Bridge-side LeadWatchdog formula).
 #   3. Claim dedup via ~/.flywheel/alerts/claims.db (single sqlite3 tx,
 #      BEGIN IMMEDIATE + INSERT OR IGNORE + SELECT changes()) — the SAME
 #      table the Bridge `LeadAlertNotifier.claimsClaimer` writes to.
@@ -19,11 +19,10 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|tui_window_lost|restart_guard_bypass|quota_guard_bypassed|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
-#     [--signature <string>] [--strict-delivery] [--mention-user <snowflake>] \
-#     [--plain-message]
+#     [--signature <string>] [--strict-delivery] [--mention-user <snowflake>]
 #
 # Exit codes:
 #   0 — posted or already claimed (both are success: no double-alert)
@@ -41,66 +40,6 @@ log() {
   echo "[lead-alert] $(date '+%H:%M:%S') $*" >&2
 }
 
-# FLY-1319: resolve Annie's current timezone without trusting `TZ=bad date`.
-# macOS date silently renders UTC and exits 0 for an invalid TZ, so every named
-# candidate must be a traversal-free IANA path present under a zoneinfo root.
-valid_founder_timezone() {
-  local candidate="$1" root
-  [ -n "$candidate" ] || return 1
-  case "$candidate" in
-    /*|*..*) return 1 ;;
-  esac
-  local old_ifs="$IFS"
-  IFS=':'
-  for root in ${FLYWHEEL_ZONEINFO_ROOTS:-/var/db/timezone/zoneinfo:/usr/share/zoneinfo}; do
-    if [ -f "${root%/}/${candidate}" ]; then
-      IFS="$old_ifs"
-      return 0
-    fi
-  done
-  IFS="$old_ifs"
-  return 1
-}
-
-resolve_founder_timezone() {
-  local candidate="${FLYWHEEL_FOUNDER_TZ:-}" localtime target
-  if [ -n "$candidate" ]; then
-    if valid_founder_timezone "$candidate"; then
-      printf '%s\n' "$candidate"
-      return
-    fi
-    log "WARNING: invalid FLYWHEEL_FOUNDER_TZ='${candidate}', falling back to host timezone"
-  fi
-
-  localtime="${FLYWHEEL_LOCALTIME_PATH:-/etc/localtime}"
-  if [ -e "$localtime" ] && [ ! -L "$localtime" ]; then
-    # Copy-style /etc/localtime: no IANA name is recoverable, so let host date
-    # use the operating system's live local timezone.
-    printf '%s\n' '__HOST__'
-    return
-  fi
-  target=$(readlink "$localtime" 2>/dev/null || true)
-  case "$target" in
-    *zoneinfo/*) candidate="${target##*zoneinfo/}" ;;
-    *) candidate="" ;;
-  esac
-  if valid_founder_timezone "$candidate"; then
-    printf '%s\n' "$candidate"
-    return
-  fi
-  printf '%s\n' 'America/Los_Angeles'
-}
-
-founder_ticket_clock() {
-  local timezone
-  timezone=$(resolve_founder_timezone)
-  if [ "$timezone" = "__HOST__" ]; then
-    date '+%H:%M %Z'
-  else
-    TZ="$timezone" date '+%H:%M %Z'
-  fi
-}
-
 usage() {
   sed -n '3,40p' "$0" >&2
   exit 1
@@ -115,24 +54,6 @@ BODY=""
 SIGNATURE=""
 STRICT_DELIVERY=0
 MENTION_USER=""
-PLAIN_MESSAGE=0
-
-# FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
-# post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="account_switched model_cap_switched model_cap_unknown quota_switch_confirmation quota_blocked_recovered workflow_route_input_rejected flag_scan_failed flag_scan_handoff flag_scan_no_clock"
-is_informational_kind() {
-  case " ${INFORMATIONAL_KINDS} " in
-    *" $1 "*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-is_quota_switch_kind() {
-  case "$1" in
-    account_switched|account_switch_degraded|quota_switch_confirmation) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 
 # FLY-913: machine-readable delivery result on stdout, ONLY under
 # --strict-delivery. log() writes to stderr, so this is the sole stdout line.
@@ -153,7 +74,6 @@ while [ $# -gt 0 ]; do
     --signature) SIGNATURE="${2:?--signature requires a value}"; shift 2 ;;
     --strict-delivery) STRICT_DELIVERY=1; shift ;;
     --mention-user) MENTION_USER="${2:?--mention-user requires a value}"; shift 2 ;;
-    --plain-message) PLAIN_MESSAGE=1; shift ;;
     -h|--help)   usage ;;
     *)
       log "ERROR: unknown flag '$1'"
@@ -192,12 +112,7 @@ case "$KIND" in
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  # FLY-1929: host_voucher_incident — the voucher guard's host-level page.
-  # Shell-only kind (the Bridge never emits it), same TS-union parity convention.
-  # Covers BOTH sources; pressure vs panic is encoded in the body + signature,
-  # because a validated occupancy climb and a fresh panic report are the same
-  # incident class with the same (absent) remediation posture.
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_switch_degraded|machine_account_conflict|model_config|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_watcher_stalled|tmux_rescue_hold|flag_scan_failed|flag_scan_handoff|flag_scan_no_clock|host_voucher_incident) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass|bridge_wrapper_fail|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"
@@ -214,14 +129,6 @@ case "$SEVERITY" in
     ;;
 esac
 
-# FLY-2051: ordinary-message rendering is a narrow capability, not a generic
-# way for alert producers to bypass ticket/alert framing.
-if [ "$PLAIN_MESSAGE" = "1" ] && ! is_quota_switch_kind "$KIND"; then
-  log "ERROR: --plain-message is allowed only for the quota switch family"
-  emit_result "config_error"
-  exit 1
-fi
-
 # FLY-1081: opt-in explicit @-mention (deploy_failed → founder). A malformed id
 # degrades to no-ping (alert still delivers) rather than failing the alert or
 # producing a Discord-rejected mentions body. Unset ⇒ byte-compat.
@@ -230,76 +137,8 @@ if [ -n "$MENTION_USER" ] && ! printf '%s' "$MENTION_USER" | grep -Eq '^[0-9]{17
   MENTION_USER=""
 fi
 
-# The restart guard can run outside every Lead pane. Its explicit `system`
-# attribution must use the fleet-wide alert dispatcher, never impersonate a
-# registry Lead. Read only the three values this route needs from the trusted
-# env in an isolated subshell. Caller-projected queue/DB/path seams keep
-# precedence, and unrelated secrets never enter this process environment.
-system_alert_env_value() {
-  local -r _system_alert_requested_name="$1"
-  (
-    set +a
-    source "$SYSTEM_ALERT_ENV_FILE" >/dev/null 2>&1 || exit 1
-    printf '%s' "${!_system_alert_requested_name:-}"
-  )
-}
-if [ "$LEAD_ID" = "system" ]; then
-  SYSTEM_ALERT_ENV_FILE="${FLYWHEEL_SYSTEM_ALERT_ENV_FILE:-${HOME}/.flywheel/.env}"
-  if [ -n "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
-      && [[ ! "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    log "ERROR: system alert sender token selector is not a valid env name"
-    emit_result "config_error"
-    exit 1
-  fi
-  if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
-      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
-      || [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
-    if [ ! -f "$SYSTEM_ALERT_ENV_FILE" ]; then
-      log "ERROR: system alert route has no trusted env file at $SYSTEM_ALERT_ENV_FILE"
-      emit_result "config_error"
-      exit 1
-    fi
-    if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ]; then
-      FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="$(system_alert_env_value FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID)" || {
-        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
-        emit_result "config_error"
-        exit 1
-      }
-    fi
-    if [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
-      FLYWHEEL_ALERT_SENDER_TOKEN_ENV="$(system_alert_env_value FLYWHEEL_ALERT_SENDER_TOKEN_ENV)" || {
-        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
-        emit_result "config_error"
-        exit 1
-      }
-    fi
-    if [[ ! "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      log "ERROR: system alert sender token selector is not a valid env name"
-      emit_result "config_error"
-      exit 1
-    fi
-    if [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
-      _system_alert_token="$(system_alert_env_value "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV")" || {
-        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
-        emit_result "config_error"
-        exit 1
-      }
-      printf -v "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" '%s' "$_system_alert_token"
-      export -n "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" 2>/dev/null || true
-      unset _system_alert_token
-    fi
-  fi
-  if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
-      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
-      || [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
-    log "ERROR: system alert route requires unified channel + sender token"
-    emit_result "config_error"
-    exit 1
-  fi
-fi
-
 # ── Tool preflight ──────────────────────────────────────────
-for tool in jq sqlite3 curl shasum node; do
+for tool in jq sqlite3 curl shasum; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     log "ERROR: required tool '$tool' not found in PATH"
     emit_result "config_error"
@@ -438,7 +277,7 @@ fi
 
 # ── Event ID (Fix 3: signature-based) ──────────────────────
 # Formula: sha1(projectName|leadId|kind|signature).
-# MUST match Bridge-side `computeEventId` in bridge/alert-kind-copy.ts (pipe
+# MUST match Bridge-side `computeEventId` in LeadWatchdog.ts (pipe
 # separators, same field order, lowercase hex output) so cross-process
 # dedup actually works.
 #
@@ -459,24 +298,11 @@ if [ -z "$EVENT_ID" ]; then
   exit 3
 fi
 
-# ── Cross-process claim + delivery lease via claims.db ───────────────────────
-# alert_claims intentionally remains the shared four-column compatibility
-# table. alert_deliveries is a companion receipt table: a bare claim never
-# proves delivery, while sent/queued receipts do. A stale lease may be taken
-# over, preserving at-least-once delivery if a process dies after claiming.
+# ── Cross-process claim via claims.db ──────────────────────
+# Single sqlite3 connection + BEGIN IMMEDIATE + SELECT changes() in the
+# same transaction. Fresh sqlite3 invocations would each see changes()=0.
 CLAIMS_DB="${FLYWHEEL_CLAIMS_DB:-${HOME}/.flywheel/alerts/claims.db}"
 mkdir -p "$(dirname "$CLAIMS_DB")"
-
-LEASE_SECONDS="${FLYWHEEL_ALERT_DELIVERY_LEASE_SECONDS:-60}"
-case "$LEASE_SECONDS" in
-  *[!0-9]*|'') LEASE_SECONDS=60 ;;
-esac
-if [ "$LEASE_SECONDS" -lt 1 ] || [ "$LEASE_SECONDS" -gt 3600 ]; then
-  LEASE_SECONDS=60
-fi
-LEASE_NOW=$(date +%s)
-LEASE_UNTIL=$((LEASE_NOW + LEASE_SECONDS))
-LEASE_TOKEN="${LEASE_NOW}-$$-${RANDOM}"
 
 CLAIM_SQL=$(cat <<SQL
 .timeout 5000
@@ -486,95 +312,30 @@ CREATE TABLE IF NOT EXISTS alert_claims (
   event_type TEXT NOT NULL,
   claimed_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS alert_deliveries (
-  event_id TEXT PRIMARY KEY,
-  state TEXT NOT NULL CHECK (state IN ('leased','sent','queued','dead_lettered')),
-  lease_token TEXT,
-  lease_until INTEGER,
-  attempt_count INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  last_error TEXT
-);
 BEGIN IMMEDIATE;
 INSERT OR IGNORE INTO alert_claims VALUES ('${EVENT_ID}', '$(sql_quote "$LEAD_ID")', '${KIND}', strftime('%s','now'));
-INSERT OR IGNORE INTO alert_deliveries
-  (event_id, state, lease_token, lease_until, attempt_count, updated_at, last_error)
-  VALUES ('${EVENT_ID}', 'leased', '${LEASE_TOKEN}', ${LEASE_UNTIL}, 1, ${LEASE_NOW}, NULL);
-UPDATE alert_deliveries
-   SET state='leased', lease_token='${LEASE_TOKEN}', lease_until=${LEASE_UNTIL},
-       attempt_count=attempt_count+1, updated_at=${LEASE_NOW}, last_error=NULL
- WHERE event_id='${EVENT_ID}' AND state='leased'
-   AND lease_until <= ${LEASE_NOW} AND lease_token <> '${LEASE_TOKEN}';
-SELECT state || '|' || COALESCE(lease_token,'')
-  FROM alert_deliveries WHERE event_id='${EVENT_ID}';
+SELECT changes();
 COMMIT;
 SQL
 )
 
-DELIVERY_DB_OK=1
 CLAIM_RESULT=$(sqlite3 "$CLAIMS_DB" <<<"$CLAIM_SQL" 2>&1) || {
-  log "WARNING: sqlite3 delivery lease failed: $CLAIM_RESULT"
-  # Fall through and try to deliver, but strict callers receive no positive
-  # receipt and must retain/replay their outbox.
-  DELIVERY_DB_OK=0
-  CLAIM_RESULT="leased|${LEASE_TOKEN}"
+  log "WARNING: sqlite3 claim failed: $CLAIM_RESULT"
+  # If claim infrastructure is broken, fall through and try to post anyway —
+  # a duplicate alert is better than a silent failure.
+  CLAIM_RESULT="1"
 }
 
-# Last non-empty stdout line is the companion delivery state and lease owner.
-DELIVERY_ROW=$(printf '%s\n' "$CLAIM_RESULT" | awk 'NF' | tail -n 1)
-DELIVERY_STATE=${DELIVERY_ROW%%|*}
-DELIVERY_TOKEN=${DELIVERY_ROW#*|}
-case "$DELIVERY_STATE" in
-  sent)
-    log "delivery receipt already sent event_id=$EVENT_ID"
-    emit_result "sent"
-    exit 0
-    ;;
-  queued)
-    log "delivery receipt already durably queued event_id=$EVENT_ID"
-    emit_result "queued_transient"
-    exit 2
-    ;;
-  dead_lettered)
-    log "delivery receipt is dead-lettered event_id=$EVENT_ID"
-    emit_result "dead_lettered"
-    exit 2
-    ;;
-  leased)
-    if [ "$DELIVERY_TOKEN" != "$LEASE_TOKEN" ]; then
-      log "active delivery lease event_id=$EVENT_ID, skipping this attempt"
-      emit_result "duplicate"
-      exit 0
-    fi
-    ;;
-  *)
-    log "WARNING: invalid delivery receipt '$DELIVERY_ROW'; delivering without proof"
-    DELIVERY_DB_OK=0
-    ;;
-esac
-
-record_delivery() {
-  # $1 = sent|queued|dead_lettered, $2 = optional reason
-  local state="$1" reason="${2:-}" result changed
-  [ "$DELIVERY_DB_OK" = "1" ] || return 1
-  result=$(sqlite3 "$CLAIMS_DB" <<SQL 2>&1
-.timeout 5000
-BEGIN IMMEDIATE;
-UPDATE alert_deliveries
-   SET state='${state}', lease_token=NULL, lease_until=NULL,
-       updated_at=strftime('%s','now'), last_error='$(sql_quote "$reason")'
- WHERE event_id='${EVENT_ID}' AND state='leased'
-   AND lease_token='${LEASE_TOKEN}';
-SELECT changes();
-COMMIT;
-SQL
-  ) || {
-    log "WARNING: failed to persist delivery receipt state=${state}: $result"
-    return 1
-  }
-  changed=$(printf '%s\n' "$result" | awk 'NF' | tail -n 1)
-  [ "$changed" = "1" ]
-}
+# Last non-empty stdout line is the SELECT changes() result.
+CLAIMED=$(printf '%s\n' "$CLAIM_RESULT" | awk 'NF' | tail -n 1)
+if [ "$CLAIMED" != "1" ]; then
+  log "already claimed event_id=$EVENT_ID lead=$LEAD_ID kind=$KIND signature=$SIGNATURE, skipping"
+  # NOTE (FLY-913 / Codex R2 #1): a claim row is written BEFORE the delivery
+  # attempt, so `duplicate` does NOT prove the earlier alert was ever sent or
+  # queued — strict callers must treat it as NOT-delivered.
+  emit_result "duplicate"
+  exit 0
+fi
 
 # ── Build Discord message payload ──────────────────────────
 case "$SEVERITY" in
@@ -583,17 +344,13 @@ case "$SEVERITY" in
   info|*)  EMOJI="ℹ️" ;;
 esac
 
-if [ "$PLAIN_MESSAGE" = "1" ]; then
-  CONTENT="$BODY"
-else
-  CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$BODY")
-fi
+CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$BODY")
 # FLY-927 (Task 1.7): 🎫 ticket header, SAME shape as the TS formatContent —
-# in unified-channel mode. Shell side always renders
+# only in unified-channel mode with tickets on. Shell side always renders
 # `owner — · 状态 NEW` (owner @ is the Bridge's job; drain does not rewrite).
-if [ "$PLAIN_MESSAGE" != "1" ] && [ -n "$UNIFIED_CHANNEL" ] && ! is_informational_kind "$KIND"; then
+if [ -n "$UNIFIED_CHANNEL" ] && [ "${FLYWHEEL_ALERT_TICKETS:-}" = "1" ]; then
   CONTENT=$(printf '%s **%s** (%s / %s)\n🎫 %s · 首见 %s · owner — · 状态 NEW\n%s' \
-    "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(founder_ticket_clock)" "$BODY")
+    "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(date '+%H:%M')" "$BODY")
 fi
 # FLY-1081: explicit mention prefixes the content — Discord only truly pings an
 # id that appears in BOTH the content and allowed_mentions.users (see BODY_JSON
@@ -618,20 +375,10 @@ write_record() {
   # FLY-1081: mentionUserId is OPTIONAL — the key is omitted entirely when no
   # (valid) --mention-user was passed, so pre-existing record shape is
   # byte-compatible. Drain re-posts carry the real ping (LeadAlertNotifier).
-  # FLY-2051: the switch family carries its resolved primary channel through a
-  # transient queue. Every other kind omits the key to retain its legacy shape.
-  local mention_args=() mention_expr="" route_args=() route_expr="" style_args=() style_expr=""
+  local mention_args=() mention_expr=""
   if [ -n "$MENTION_USER" ]; then
     mention_args=(--arg mentionUserId "$MENTION_USER")
     mention_expr=', mentionUserId: $mentionUserId'
-  fi
-  if is_quota_switch_kind "$KIND"; then
-    route_args=(--arg deliveryChannelId "$CHANNEL_ID")
-    route_expr=', deliveryChannelId: $deliveryChannelId'
-  fi
-  if [ "$PLAIN_MESSAGE" = "1" ]; then
-    style_args=(--arg deliveryStyle "plain")
-    style_expr=', deliveryStyle: $deliveryStyle'
   fi
   jq -n \
     --arg leadId "$LEAD_ID" \
@@ -644,32 +391,14 @@ write_record() {
     --arg queuedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg queueReason "$2" \
     ${mention_args[@]+"${mention_args[@]}"} \
-    ${route_args[@]+"${route_args[@]}"} \
-    ${style_args[@]+"${style_args[@]}"} \
     "{leadId: \$leadId, projectName: \$projectName, eventId: \$eventId,
       eventType: \$eventType, title: \$title, body: \$body,
-      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}${route_expr}${style_expr}}" \
+      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}}" \
     > "$1"
 }
 
-atomic_write_record() {
-  # $1 = target path, $2 = reason. Same-directory 0600 temp + fsync + rename.
-  local target="$1" reason="$2" tmp="${1}.tmp.$$"
-  rm -f "$tmp"
-  if ! (umask 077; write_record "$tmp" "$reason") \
-    || ! chmod 600 "$tmp" \
-    || ! node -e 'const fs=require("fs"); const fd=fs.openSync(process.argv[1],"r"); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }' "$tmp" \
-    || ! mv "$tmp" "$target"; then
-    rm -f "$tmp"
-    return 1
-  fi
-}
-
 enqueue() {
-  if ! atomic_write_record "$QUEUE_PATH" "$1"; then
-    log "ERROR: durable queue write failed for $QUEUE_PATH (reason=$1)"
-    return 1
-  fi
+  write_record "$QUEUE_PATH" "$1"
   log "queued to $QUEUE_PATH (reason=$1)"
 }
 
@@ -683,11 +412,8 @@ dead_letter() {
   mkdir -p "$DEAD_LETTER_DIR"
   # FLY-1081 (Codex R1#6): same EVENT_ID-suffixed shape as QUEUE_PATH.
   local dl_path="${DEAD_LETTER_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}-${EVENT_ID:0:12}.json"
-  if atomic_write_record "$dl_path" "$reason"; then
-    log "dead-lettered to $dl_path (reason=$reason)"
-  else
-    log "ERROR: dead-letter audit write failed for $dl_path (reason=$reason)"
-  fi
+  write_record "$dl_path" "$reason"
+  log "dead-lettered to $dl_path (reason=$reason)"
   fire_meta_alert \
     "alert_dead_lettered" \
     "LeadAlert dropped (shell path)" \
@@ -696,13 +422,11 @@ dead_letter() {
 
 if [ -z "$CHANNEL_ID" ]; then
   dead_letter "no-channel"
-  record_delivery "dead_lettered" "no-channel" || true
   emit_result "config_error"
   exit 2
 fi
 if [ -z "$TOKEN" ]; then
   dead_letter "no-token"
-  record_delivery "dead_lettered" "no-token" || true
   emit_result "config_error"
   exit 2
 fi
@@ -721,17 +445,8 @@ if [ -n "$RATE_LIMIT" ]; then
   RATE_COUNT=$(cat "$RATE_FILE" 2>/dev/null || echo 0)
   case "$RATE_COUNT" in (*[!0-9]*|'') RATE_COUNT=0 ;; esac
   if [ "$RATE_COUNT" -ge "$RATE_LIMIT" ] 2>/dev/null; then
-    if enqueue "rate-limited"; then
-      if record_delivery "queued" "rate-limited"; then
-        emit_result "queued_transient"
-      else
-        emit_result "duplicate"
-      fi
-    else
-      dead_letter "queue-write-failed"
-      record_delivery "dead_lettered" "queue-write-failed" || true
-      emit_result "dead_lettered"
-    fi
+    enqueue "rate-limited"
+    emit_result "queued_transient"
     exit 2
   fi
   echo $((RATE_COUNT + 1)) > "$RATE_FILE"
@@ -761,32 +476,12 @@ post_discord() {
 header = "Authorization: Bot ${TOKEN}"
 CURLCFG
 }
-# FLY-1577: `$(post_discord || echo 000)` CONCATENATED on real network failure.
-# curl -w '%{http_code}' already prints `000` when the connection never lands,
-# and it also exits non-zero (7 on connection-refused), so the `|| echo 000`
-# appended a second one and HTTP_CODE became `000000`. That matches neither the
-# `000` transient case below nor any 5xx, so a plain network blip was classified
-# PERMANENT: dead-lettered instead of queued, and never retried once the network
-# came back. The alert was durably recorded and durably never delivered.
-# Normalize on the command's exit status instead of concatenating onto whatever
-# it printed.
-if ! HTTP_CODE=$(post_discord 2>/dev/null); then
-  HTTP_CODE="000"
-fi
-case "$HTTP_CODE" in
-  ''|*[!0-9]*) HTTP_CODE="000" ;;   # any non-numeric residue is a failed send
-esac
+HTTP_CODE=$(post_discord 2>/dev/null || echo "000")
 
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
   rm -f /tmp/lead-alert-$$.out
   log "sent lead=$LEAD_ID kind=$KIND channel=$CHANNEL_ID (HTTP $HTTP_CODE)"
-  if record_delivery "sent"; then
-    emit_result "sent"
-  else
-    # POST may have landed, but without a durable receipt the daemon must keep
-    # its outbox and replay. A duplicate post is preferable to silent loss.
-    emit_result "duplicate"
-  fi
+  emit_result "sent"
   exit 0
 fi
 
@@ -801,20 +496,10 @@ log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
 #     → dead-letter + meta-alert (retry is pointless).
 if [ "$HTTP_CODE" -ge 500 ] 2>/dev/null \
   || [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "000" ]; then
-  if enqueue "discord-${HTTP_CODE}"; then
-    if record_delivery "queued" "discord-${HTTP_CODE}"; then
-      emit_result "queued_transient"
-    else
-      emit_result "duplicate"
-    fi
-  else
-    dead_letter "queue-write-failed"
-    record_delivery "dead_lettered" "queue-write-failed" || true
-    emit_result "dead_lettered"
-  fi
+  enqueue "discord-${HTTP_CODE}"
+  emit_result "queued_transient"
   exit 2
 fi
 dead_letter "discord-${HTTP_CODE}"
-record_delivery "dead_lettered" "discord-${HTTP_CODE}" || true
 emit_result "dead_lettered"
 exit 2

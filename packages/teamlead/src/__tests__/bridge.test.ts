@@ -1,23 +1,7 @@
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
-import {
-	buildLivenessManifest,
-	LivenessCheckTracker,
-} from "../bridge/liveness-manifest.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
-import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { loadConfig } from "../config.js";
-import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -30,7 +14,6 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
-		runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
 		...overrides,
 	};
 }
@@ -38,21 +21,10 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 describe("Bridge scaffold", () => {
 	let closeFn: (() => Promise<void>) | undefined;
 
-	beforeEach(() => {
-		vi.stubEnv("TEAMLEAD_DEFAULT_LEAD_AGENT", "product-lead");
-		vi.stubEnv("DISCORD_OWNER_USER_ID", "test-founder");
-		vi.stubEnv("FLYWHEEL_FOUNDER_USER_ID", undefined);
-	});
-
 	afterEach(async () => {
-		try {
-			if (closeFn) {
-				await closeFn();
-				closeFn = undefined;
-			}
-		} finally {
-			vi.restoreAllMocks();
-			vi.unstubAllEnvs();
+		if (closeFn) {
+			await closeFn();
+			closeFn = undefined;
 		}
 	});
 
@@ -68,273 +40,8 @@ describe("Bridge scaffold", () => {
 		expect(body.shuttingDown).toBe(false);
 		expect(typeof body.uptime).toBe("number");
 		expect(body.sessions_count).toBe(0);
-		expect(body.buildMode).toBe("unknown");
-		expect(body.buildSha).toBeNull();
 
 		store.close();
-	});
-
-	it("FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth", async () => {
-		const diagnostics = {
-			healthSnapshot: () => ({ p99_ms: null, max_ms: null, episodes: 0 }),
-			snapshot: () => ({
-				state: "disabled",
-				profiles: ["loop-profile-safe.cpuprofile"],
-			}),
-		};
-
-		const tokenlessStore = await StateStore.create(":memory:");
-		const tokenlessApp = createBridgeApp(
-			tokenlessStore,
-			[],
-			makeConfig(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{ eventLoopAttribution: diagnostics },
-		);
-		const tokenlessBase = await startAndGetUrl(
-			tokenlessApp,
-			"/api/diagnostics/event-loop",
-		);
-		expect((await fetch(tokenlessBase)).status).toBe(503);
-		const tokenlessHealth = await (
-			await fetch(new URL("/health", tokenlessBase))
-		).json();
-		expect(tokenlessHealth.event_loop).toEqual({
-			p99_ms: null,
-			max_ms: null,
-			episodes: 0,
-		});
-		tokenlessStore.close();
-
-		const store = await StateStore.create(":memory:");
-		const app = createBridgeApp(
-			store,
-			[],
-			makeConfig({
-				apiToken: "master-token",
-				geminiAgentToken: "scoped-token",
-			}),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{ eventLoopAttribution: diagnostics },
-		);
-		const base = await startAndGetUrl(app, "/api/diagnostics/event-loop");
-		expect((await fetch(base)).status).toBe(401);
-		expect(
-			(
-				await fetch(base, {
-					headers: { Authorization: "Bearer scoped-token" },
-				})
-			).status,
-		).toBe(403);
-		const authorized = await fetch(base, {
-			headers: { Authorization: "Bearer master-token" },
-		});
-		expect(authorized.status).toBe(200);
-		expect(await authorized.json()).toEqual(diagnostics.snapshot());
-		store.close();
-	});
-
-	it("exposes a master-auth admission pause with TTL health and explicit resume", async () => {
-		const store = await StateStore.create(":memory:");
-		const app = createBridgeApp(
-			store,
-			[],
-			makeConfig({ apiToken: "master-secret" }),
-		);
-		const pauseUrl = await startAndGetUrl(app, "/api/admission/pause");
-		const unauthorized = await fetch(pauseUrl, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ durationSeconds: 1_800 }),
-		});
-		expect(unauthorized.status).toBe(401);
-
-		const paused = await fetch(pauseUrl, {
-			method: "POST",
-			headers: {
-				Authorization: "Bearer master-secret",
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({ durationSeconds: 1_800, reason: "deploy" }),
-		});
-		expect(paused.status).toBe(200);
-		expect(await paused.json()).toMatchObject({
-			ok: true,
-			admissionPause: { active: true },
-		});
-
-		const health = await (await fetch(new URL("/health", pauseUrl))).json();
-		expect(health.admissionPause.active).toBe(true);
-		expect(health.admissionPause.remainingSeconds).toBeGreaterThan(1_790);
-		expect(health.admissionPause.reason).toBeUndefined();
-
-		const resumed = await fetch(new URL("/api/admission/resume", pauseUrl), {
-			method: "POST",
-			headers: { Authorization: "Bearer master-secret" },
-		});
-		expect(resumed.status).toBe(200);
-		expect(await resumed.json()).toEqual({
-			ok: true,
-			admissionPause: { active: false, remainingSeconds: 0 },
-		});
-		store.close();
-	});
-
-	it("reports every authoritative host-quiescence component under an active pause", async () => {
-		const store = await StateStore.create(":memory:");
-		store.insertLaunchClaim({
-			executionId: "launch-1",
-			rootUuid: "root-1",
-			project: "flywheel",
-		});
-		const barrier = new AdmissionCrossingBarrier();
-		const release = barrier.enter("start");
-		let inflight = 2;
-		const startDispatcher = {
-			start: async () => ({ executionId: "unused", issueId: "FLY-1944" }),
-			getInflightCount: () => inflight,
-			validateAgentName: () => ({ ok: true as const }),
-		};
-		const app = createBridgeApp(
-			store,
-			[],
-			makeConfig({ apiToken: "master-secret" }),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			startDispatcher,
-			undefined,
-			undefined,
-			{ admissionCrossingBarrier: barrier },
-		);
-		const base = await startAndGetUrl(app, "/api/admission/pause");
-		const auth = { Authorization: "Bearer master-secret" };
-		await fetch(base, {
-			method: "POST",
-			headers: { ...auth, "content-type": "application/json" },
-			body: JSON.stringify({ durationSeconds: 1_800 }),
-		});
-
-		const active = await (
-			await fetch(new URL("/api/admission/quiescence", base), {
-				headers: auth,
-			})
-		).json();
-		expect(active).toMatchObject({
-			ok: true,
-			quiescent: false,
-			total: 4,
-			components: {
-				readoptCandidateSessions: 0,
-				dispatcherInflight: 2,
-				durableLaunchClaims: 1,
-				admissionCrossing: { start: 1, dispatch: 0, total: 1 },
-			},
-		});
-
-		release();
-		inflight = 0;
-		store.setLaunchClaimState("launch-1", "closed");
-		const quiet = await (
-			await fetch(new URL("/api/admission/quiescence", base), {
-				headers: auth,
-			})
-		).json();
-		expect(quiet).toMatchObject({ ok: true, quiescent: true, total: 0 });
-		store.close();
-	});
-
-	it("fails the admission control API closed when the master token is absent", async () => {
-		const store = await StateStore.create(":memory:");
-		const app = createBridgeApp(store, [], makeConfig());
-		const res = await fetch(await startAndGetUrl(app, "/api/admission/pause"), {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ durationSeconds: 1_800 }),
-		});
-		expect(res.status).toBe(503);
-		store.close();
-	});
-
-	it("returns admission_paused with Retry-After before a run start writes state", async () => {
-		const store = await StateStore.create(":memory:");
-		const admission = RunnerAdmissionController.alwaysAdmit();
-		admission.setAdmissionPauseProbe(() => ({
-			detail: "operator deployment pause is active",
-			retryAfterSeconds: 77,
-		}));
-		const startDispatcher = {
-			start: async () => ({ executionId: "must-not-start", issueId: "FLY-1" }),
-			getInflightCount: () => 0,
-			validateAgentName: () => ({ ok: true as const }),
-		};
-		const app = createBridgeApp(
-			store,
-			[],
-			makeConfig({ runnerAdmission: admission }),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			startDispatcher,
-		);
-		const previousLinearKey = process.env.LINEAR_API_KEY;
-		process.env.LINEAR_API_KEY = "test-key";
-		try {
-			const res = await fetch(await startAndGetUrl(app, "/api/runs/start"), {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ issueId: "FLY-1", projectName: "flywheel" }),
-			});
-			expect(res.status).toBe(429);
-			expect(res.headers.get("retry-after")).toBe("77");
-			expect(await res.json()).toMatchObject({
-				success: false,
-				reason: "admission_paused",
-			});
-			expect(store.getActiveSessions()).toHaveLength(0);
-		} finally {
-			if (previousLinearKey === undefined) delete process.env.LINEAR_API_KEY;
-			else process.env.LINEAR_API_KEY = previousLinearKey;
-			store.close();
-		}
 	});
 
 	// FLY-516: when the shared shutdown holder is flipped (close() does this at
@@ -380,87 +87,6 @@ describe("Bridge scaffold", () => {
 		store.close();
 	});
 
-	it("GET /health reads the liveness manifest from a late-bound provider", async () => {
-		const store = await StateStore.create(":memory:");
-		const heartbeatRef: {
-			current?: {
-				probeForensicsSnapshot(): Record<string, number | string | null>;
-			};
-		} = {};
-		const tracker = new LivenessCheckTracker({ cadenceMs: 30_000 });
-		const holder: { current?: () => unknown } = {
-			current: () =>
-				buildLivenessManifest({
-					bridgeStartedAtMs: Date.now(),
-					wiring: { liveness: true, externalDrift: true },
-					trackers: { liveness: tracker },
-					deliveryLoopWired: true,
-					loopStallMs: 60_000,
-					loopTargets: [],
-					...(heartbeatRef.current
-						? {
-								probeForensics:
-									heartbeatRef.current.probeForensicsSnapshot() as never,
-							}
-						: {}),
-				}),
-		};
-		const app = createBridgeApp(
-			store,
-			[],
-			makeConfig(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{ livenessHealthProvider: holder },
-		);
-		const url = await startAndGetUrl(app, "/health");
-		const before = (await (await fetch(url)).json()).liveness;
-		expect(before.schema_version).toBe(2);
-		expect(before.probe_forensics).toBeUndefined();
-
-		heartbeatRef.current = {
-			probeForensicsSnapshot: () => ({
-				lookup_error: 1,
-				probe_throw: 2,
-				probe_unclear: 3,
-				pending_sentinel: 4,
-				last_at: "2026-08-23T13:42:04.000Z",
-			}),
-		};
-		expect((await (await fetch(url)).json()).liveness.probe_forensics).toEqual({
-			lookup_error: 1,
-			probe_throw: 2,
-			probe_unclear: 3,
-			pending_sentinel: 4,
-			last_at: "2026-08-23T13:42:04.000Z",
-		});
-
-		holder.current = () => {
-			throw new Error("queue closed during teardown");
-		};
-		const degradedRes = await fetch(url);
-		expect(degradedRes.status).toBe(200);
-		expect(await degradedRes.json()).toMatchObject({
-			ok: true,
-			liveness: {
-				degraded: true,
-				reason: "manifest_provider_error",
-			},
-		});
-		store.close();
-	});
-
 	it("Unknown routes return 404", async () => {
 		const store = await StateStore.create(":memory:");
 		const app = createBridgeApp(store, [], makeConfig());
@@ -480,7 +106,6 @@ describe("Bridge scaffold", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						summaryRole: "producer",
 						forumChannel: "test-channel",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },
@@ -495,147 +120,6 @@ describe("Bridge scaffold", () => {
 		// but auth middleware isn't applied yet either (will be in Task 3).
 		// For now, just verify startBridge works.
 		expect(store).toBeDefined();
-	});
-
-	it("keeps Discord delivery failures on the independent alert_unreachable_config reason", async () => {
-		vi.stubEnv("FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID", "");
-		const notify = vi
-			.spyOn(MetaAlertNotifier.prototype, "notify")
-			.mockResolvedValue({ debounced: false, desktop: false, file: true });
-		vi.spyOn(
-			MetaAlertNotifier.prototype,
-			"probeDesktopCapability",
-		).mockResolvedValue(false);
-
-		const { close } = await startBridge(makeConfig(), [
-			{
-				projectName: "test",
-				projectRoot: "/tmp",
-				leads: [
-					{
-						agentId: "product-lead",
-						summaryRole: "producer",
-						forumChannel: "test-channel",
-						chatChannel: "test-chat",
-						match: { labels: ["Product"] },
-					},
-				],
-			},
-		]);
-		closeFn = close;
-
-		const reasons = notify.mock.calls.map(([input]) => input.reason);
-		expect(reasons).toContain("alert_unreachable_config");
-		expect(reasons).not.toContain("ticket_route_unreachable");
-	});
-
-	it("surfaces rejected retired project config through the existing founder meta-alert", async () => {
-		const root = mkdtempSync(join(tmpdir(), "fly2103-invalid-config-"));
-		mkdirSync(join(root, ".flywheel"), { recursive: true });
-		writeFileSync(
-			join(root, ".flywheel", "config.yaml"),
-			[
-				"project: test",
-				"linear:",
-				"  team_id: TEST",
-				"runners:",
-				"  default: claude",
-				"  available:",
-				"    claude:",
-				"      type: claude",
-				"teams:",
-				"  - name: default",
-				"    orchestrators:",
-				"      - type: dag",
-				"        runner: claude",
-				"decision_layer:",
-				"  autonomy_level: advisor",
-				"  escalation_channel: discord",
-				"doc_flow:",
-				"  enabled: true",
-				"",
-			].join("\n"),
-			"utf8",
-		);
-		const notify = vi
-			.spyOn(MetaAlertNotifier.prototype, "notify")
-			.mockResolvedValue({ debounced: false, desktop: false, file: true });
-		vi.spyOn(
-			MetaAlertNotifier.prototype,
-			"probeDesktopCapability",
-		).mockResolvedValue(false);
-
-		try {
-			const { close } = await startBridge(makeConfig(), [
-				{
-					projectName: "test",
-					projectRoot: root,
-					leads: [
-						{
-							agentId: "product-lead",
-							summaryRole: "producer",
-							forumChannel: "test-channel",
-							chatChannel: "test-chat",
-							match: { labels: ["Product"] },
-						},
-					],
-				},
-			]);
-			closeFn = close;
-
-			expect(notify).toHaveBeenCalledWith({
-				reason: "project_config_invalid",
-				title: "Project config rejected (test)",
-				body: expect.stringMatching(
-					/doc_flow.*enabled.*runtime.*not initialized/is,
-				),
-			});
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	});
-
-	it("fails loud when the Hub has no valid founder escalation id", async () => {
-		vi.stubEnv("FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID", "test-alert-channel");
-		vi.stubEnv("FLYWHEEL_ALERT_SENDER_TOKEN_ENV", "TEST_ALERT_TOKEN");
-		vi.stubEnv("TEST_ALERT_TOKEN", "test-token");
-		const notify = vi
-			.spyOn(MetaAlertNotifier.prototype, "notify")
-			.mockResolvedValue({ debounced: false, desktop: false, file: true });
-		vi.spyOn(
-			MetaAlertNotifier.prototype,
-			"probeDesktopCapability",
-		).mockResolvedValue(false);
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
-
-		const { close } = await startBridge(
-			makeConfig({ discordOwnerUserId: "not-a-snowflake" }),
-			[
-				{
-					projectName: "test",
-					projectRoot: "/tmp",
-					leads: [
-						{
-							agentId: "product-lead",
-							summaryRole: "producer",
-							forumChannel: "test-channel",
-							chatChannel: "test-chat",
-							match: { labels: ["Product"] },
-						},
-					],
-				},
-			],
-		);
-		closeFn = close;
-
-		expect(error).toHaveBeenCalledWith(
-			expect.stringContaining("founder escalation route unreachable"),
-		);
-		expect(notify).toHaveBeenCalledWith({
-			reason: "alert_unreachable_config",
-			title: "Founder escalation route unreachable",
-			body: expect.stringContaining("Claw mailbox"),
-		});
 	});
 
 	it("loadConfig() rejects host=0.0.0.0", () => {
@@ -669,23 +153,6 @@ describe("Bridge scaffold", () => {
 		} finally {
 			if (prev !== undefined) process.env.TEAMLEAD_HOST = prev;
 		}
-	});
-
-	it("loadConfig() boots from the canonical founder identity provisioned by fresh setup", () => {
-		vi.stubEnv("DISCORD_OWNER_USER_ID", "canonical-founder");
-		vi.stubEnv("FLYWHEEL_FOUNDER_USER_ID", undefined);
-
-		const config = loadConfig();
-		expect(config.discordOwnerUserId).toBe("canonical-founder");
-		expect(config.founderConsent?.founderUserId).toBe("canonical-founder");
-		expect(config.founderConsent?.decisionMode).toBe("audit_only");
-	});
-
-	it("loadConfig() rejects a missing default Lead identity", () => {
-		delete process.env.TEAMLEAD_DEFAULT_LEAD_AGENT;
-		expect(() => loadConfig()).toThrow(
-			/TEAMLEAD_DEFAULT_LEAD_AGENT.*required/i,
-		);
 	});
 
 	it("loadConfig() rejects non-numeric TEAMLEAD_STUCK_THRESHOLD", () => {
@@ -878,18 +345,6 @@ describe("Bridge scaffold", () => {
 		);
 	});
 
-	it("startBridge scrubs retired publish credentials before any boot work", async () => {
-		vi.stubEnv("FW_CUSTOMER_RELEASE_TOKEN", "customer-secret");
-		vi.stubEnv("FW_NPM_GAT_TOKEN", "npm-secret");
-
-		await expect(startBridge(makeConfig(), [])).rejects.toThrow(
-			"No projects configured",
-		);
-
-		expect(process.env.FW_CUSTOMER_RELEASE_TOKEN).toBeUndefined();
-		expect(process.env.FW_NPM_GAT_TOKEN).toBeUndefined();
-	});
-
 	it("startBridge starts and closes cleanly", async () => {
 		const config = makeConfig();
 		const result = await startBridge(config, [
@@ -899,7 +354,6 @@ describe("Bridge scaffold", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						summaryRole: "producer",
 						forumChannel: "test-channel",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },
@@ -911,11 +365,6 @@ describe("Bridge scaffold", () => {
 
 		expect(result.app).toBeDefined();
 		expect(result.store).toBeDefined();
-		expect(
-			existsSync(
-				join(process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR!, "loop-profiles"),
-			),
-		).toBe(true);
 
 		await result.close();
 		closeFn = undefined;

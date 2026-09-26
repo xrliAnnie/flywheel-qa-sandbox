@@ -1,11 +1,14 @@
 /**
  * FLY-175 Track 2 — Founder Consent Hard Gate: configuration.
  *
- * Parses the canonical founder identity and `FLYWHEEL_FOUNDER_CONSENT_*` env
- * knobs into a typed config.
+ * Parses the `FLYWHEEL_FOUNDER_CONSENT_*` env knobs into a typed config.
  *
- * FLY-1981 solidifies production at `audit_only`; founder identity validation
- * is therefore unconditional and fails fast at boot.
+ * Critical invariant (plan §8.1): when `decisionMode === "off"` (the
+ * default), the parser MUST NOT require `FLYWHEEL_FOUNDER_USER_ID` /
+ * `FLYWHEEL_FOUNDER_CONSENT_LLM_MODEL` etc. The evaluator is simply not
+ * constructed in that case and Bridge boots in pre-Track-2 behavior
+ * byte-for-byte. Only when `decisionMode !== "off"` does the parser
+ * validate required fields and fail-fast on missing ones.
  */
 
 import { createHash } from "node:crypto";
@@ -27,7 +30,7 @@ export const EVALUATOR_VERSION = "v1.29.2-prompt-rev-1";
 
 export interface FounderConsentConfig {
 	decisionMode: DecisionMode;
-	/** Discord user id of the founder. Required in production audit mode. */
+	/** Discord user id of the founder. Required when decisionMode !== "off". */
 	founderUserId: string;
 	llmModel: string;
 	/** Global confidence threshold (0..1). */
@@ -103,8 +106,9 @@ function parseJsonMap<T>(
 /**
  * Parse the full founder-consent config from env.
  *
- * Production decision mode is always `audit_only`; other DecisionMode values
- * remain available only for directly injected module capability tests.
+ * Returns a config whose `decisionMode` may be "off". Callers MUST skip
+ * evaluator construction when `decisionMode === "off"`. Required-field
+ * validation only runs when mode !== "off".
  */
 export function parseFounderConsentConfig(
 	env: NodeJS.ProcessEnv = process.env,
@@ -116,20 +120,7 @@ export function parseFounderConsentConfig(
 		env.FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH?.trim() ||
 		join(homedir(), ".flywheel", "audit.db");
 
-	const canonicalFounderUserId = env.DISCORD_OWNER_USER_ID?.trim() ?? "";
-	const founderUserIdOverride = env.FLYWHEEL_FOUNDER_USER_ID?.trim() ?? "";
-	if (
-		canonicalFounderUserId &&
-		founderUserIdOverride &&
-		canonicalFounderUserId !== founderUserIdOverride
-	) {
-		throw new Error(
-			"Founder identity mismatch: DISCORD_OWNER_USER_ID does not match the configured founder identity; remove the founder override or set it to the same Discord user ID",
-		);
-	}
-	// Canonical setup provisions DISCORD_OWNER_USER_ID. The override remains a
-	// compatibility fallback for existing installs, never a competing identity.
-	const founderUserId = canonicalFounderUserId || founderUserIdOverride;
+	const founderUserId = env.FLYWHEEL_FOUNDER_USER_ID?.trim() ?? "";
 	const llmModel =
 		env.FLYWHEEL_FOUNDER_CONSENT_LLM_MODEL?.trim() ||
 		"claude-haiku-4-5-20251001";
@@ -141,40 +132,6 @@ export function parseFounderConsentConfig(
 			`FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE must be closed|open, got "${failModeRaw}"`,
 		);
 	}
-	const workflowReworkFailMode =
-		env.FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_FAIL_MODE?.trim() || "closed";
-	if (workflowReworkFailMode !== "closed") {
-		throw new Error(
-			"FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_FAIL_MODE must be closed",
-		);
-	}
-	const perActionThreshold = parseJsonMap(
-		env.FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION,
-		"FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION",
-		(v): v is number => typeof v === "number" && v >= 0 && v <= 1,
-	);
-	const workflowReworkThreshold = parseFloatEnv(
-		env.FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD,
-		0.85,
-		"FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD",
-	);
-	if (workflowReworkThreshold < 0 || workflowReworkThreshold > 1) {
-		throw new Error(
-			"FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD must be between 0 and 1",
-		);
-	}
-	perActionThreshold.workflow_rework = workflowReworkThreshold;
-	const perActionFailMode = parseJsonMap(
-		env.FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION,
-		"FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION",
-		(v): v is FailMode => v === "closed" || v === "open",
-	);
-	if (perActionFailMode.workflow_rework === "open") {
-		throw new Error(
-			"workflow_rework founder consent fail mode must remain closed",
-		);
-	}
-	perActionFailMode.workflow_rework = "closed";
 
 	const freshnessRaw =
 		env.FLYWHEEL_FOUNDER_CONSENT_BYPASS_LABEL_FRESHNESS?.trim() || "stored";
@@ -193,7 +150,11 @@ export function parseFounderConsentConfig(
 			0.85,
 			"FLYWHEEL_FOUNDER_CONSENT_THRESHOLD",
 		),
-		perActionThreshold,
+		perActionThreshold: parseJsonMap(
+			env.FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION,
+			"FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION",
+			(v): v is number => typeof v === "number" && v >= 0 && v <= 1,
+		),
 		windowHours: parseIntEnv(
 			env.FLYWHEEL_FOUNDER_CONSENT_WINDOW_HOURS,
 			24,
@@ -210,7 +171,11 @@ export function parseFounderConsentConfig(
 			"FLYWHEEL_FOUNDER_CONSENT_CACHE_TTL_SECS",
 		),
 		failMode: failModeRaw as FailMode,
-		perActionFailMode,
+		perActionFailMode: parseJsonMap(
+			env.FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION,
+			"FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION",
+			(v): v is FailMode => v === "closed" || v === "open",
+		),
 		autoApproveLabel:
 			env.FLYWHEEL_FOUNDER_CONSENT_BYPASS_LABEL?.trim() || undefined,
 		bypassLabelFreshness: freshnessRaw as BypassLabelFreshness,
@@ -225,8 +190,13 @@ export function parseFounderConsentConfig(
 		evaluatorVersion: EVALUATOR_VERSION,
 	};
 
-	if (!config.founderUserId) {
-		throw new Error("DISCORD_OWNER_USER_ID is required for founder consent");
+	// Required-field validation ONLY when enforcement is live.
+	if (decisionMode !== "off") {
+		if (!config.founderUserId) {
+			throw new Error(
+				"FLYWHEEL_FOUNDER_USER_ID is required when FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE != off",
+			);
+		}
 	}
 
 	return config;

@@ -60,15 +60,6 @@ describe("runSubscriptionClassifier — success", () => {
 		expect(args).toContain("claude-haiku-4-5-20251001");
 		expect(args).toContain("--output-format");
 		expect(args).toContain("json");
-		const settingsIndex = args.indexOf("--settings");
-		expect(settingsIndex).toBeGreaterThan(-1);
-		expect(args.filter((arg) => arg === "--settings")).toHaveLength(1);
-		expect(
-			JSON.parse(args[settingsIndex + 1] as string).enabledPlugins,
-		).toMatchObject({
-			"discord@flywheel-plugins": false,
-			"discord@claude-plugins-official": false,
-		});
 	});
 });
 
@@ -111,19 +102,6 @@ describe("runSubscriptionClassifier — fail-closed", () => {
 			.mockResolvedValue(okEnvelope("I think you should ship it, yes"));
 		const res = await runSubscriptionClassifier("p", { execFileImpl });
 		expect(res.ok).toBe(false);
-	});
-
-	it("an unresolvable model fails closed without spawning Claude", async () => {
-		const execFileImpl = vi.fn();
-		const res = await runSubscriptionClassifier("p", {
-			execFileImpl,
-			model: "claude-not-a-model",
-		});
-		expect(res).toEqual({
-			ok: false,
-			reason: "model_policy:INVALID_MODEL",
-		});
-		expect(execFileImpl).not.toHaveBeenCalled();
 	});
 
 	it("never throws, even if execFileImpl throws synchronously", async () => {

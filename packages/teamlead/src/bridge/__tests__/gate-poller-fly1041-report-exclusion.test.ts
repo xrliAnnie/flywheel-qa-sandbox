@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const emitSpy = vi.fn(async () => ({ threadId: "test", result: "noop" }));
+const emitSpy = vi.fn(async () => {});
 vi.mock("../founder-reply-deliverer.js", async () => {
 	const actual = await vi.importActual<
 		typeof import("../founder-reply-deliverer.js")
@@ -37,10 +37,13 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "fly1041-report-excl-"));
 		process.env.FLYWHEEL_COMM_DIR = tmp;
+		// Freshly-inserted questions must count as scan-mature this tick.
+		process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = "0";
 		emitSpy.mockClear();
 	});
 
 	afterEach(() => {
+		delete process.env.FLYWHEEL_SHIP_GATE_GRACE_MS;
 		rmSync(tmp, { recursive: true, force: true });
 		vi.restoreAllMocks();
 	});
@@ -64,7 +67,6 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		db.close();
 
 		const store = {
-			listNonTerminalSessions: vi.fn(() => []),
 			getSession: vi.fn(() => ({
 				execution_id: "exec-1",
 				issue_id: "FLY-1041",
@@ -85,8 +87,6 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 			runtimeRegistry: {} as unknown as GatePollerConfig["runtimeRegistry"],
 			chatThreadsEnabled: true,
 			discordOwnerUserId: OWNER,
-			founderReplyDeliverGraceMs: 0,
-			shipGateGraceMs: 0,
 		}) as unknown as Priv;
 
 		await poller.founderReplyDeliverPass();
@@ -99,97 +99,5 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		expect(qids).toContain(shipQid);
 		expect(qids).toContain(plainQid);
 		expect(qids).not.toContain(reportQid);
-	});
-
-	it("review gates never join founder matching while founder-answerable gates remain", async () => {
-		const db = new CommDB(join(tmp, "flywheel", "comm.db"));
-		const reviewDesign = db.insertQuestion(
-			"exec-1",
-			"test-lead",
-			"design review",
-			{ checkpoint: "review_design" },
-		);
-		const reviewCode = db.insertQuestion("exec-1", "test-lead", "code review", {
-			checkpoint: "review_code",
-		});
-		const ship = db.insertQuestion("exec-1", "test-lead", "ship?", {
-			checkpoint: "approve_to_ship",
-		});
-		db.close();
-
-		const store = {
-			listNonTerminalSessions: vi.fn(() => []),
-			getSession: vi.fn(() => ({
-				execution_id: "exec-1",
-				issue_id: "FLY-1314",
-				project_name: "flywheel",
-			})),
-			getChatThreadByIssue: vi.fn(() => ({ thread_id: "T1" })),
-		} as unknown as GatePollerConfig["store"];
-		const poller = new GatePoller({
-			pollIntervalMs: 3_000,
-			projects: [
-				{
-					projectName: "flywheel",
-					leads: [{ agentId: "test-lead", botToken: "bot", chatChannel: "C1" }],
-				},
-			] as unknown as GatePollerConfig["projects"],
-			store,
-			runtimeRegistry: {} as unknown as GatePollerConfig["runtimeRegistry"],
-			chatThreadsEnabled: true,
-			discordOwnerUserId: OWNER,
-			founderReplyDeliverGraceMs: 0,
-		}) as unknown as Priv;
-
-		await poller.founderReplyDeliverPass();
-
-		const qids = (
-			emitSpy.mock.calls[0]?.[1] as Array<{ questionId: string }>
-		).map((q) => q.questionId);
-		expect(qids).toEqual([ship]);
-		expect(qids).not.toContain(reviewDesign);
-		expect(qids).not.toContain(reviewCode);
-	});
-
-	it("receipt foundation scans a non-terminal issue thread with zero pending questions", async () => {
-		new CommDB(join(tmp, "flywheel", "comm.db")).close();
-		const session = {
-			execution_id: "exec-empty",
-			issue_id: "FLY-1392",
-			issue_identifier: "FLY-1392",
-			project_name: "flywheel",
-			issue_labels: "[]",
-		};
-		const store = {
-			listNonTerminalSessions: vi.fn(() => [session]),
-			getChatThreadByIssue: vi.fn(() => ({ thread_id: "T-empty" })),
-		} as unknown as GatePollerConfig["store"];
-		const poller = new GatePoller({
-			pollIntervalMs: 3_000,
-			projects: [
-				{
-					projectName: "flywheel",
-					leads: [
-						{
-							agentId: "test-lead",
-							botToken: "bot",
-							chatChannel: "C1",
-							match: { labels: [] },
-						},
-					],
-				},
-			] as unknown as GatePollerConfig["projects"],
-			store,
-			runtimeRegistry: {} as unknown as GatePollerConfig["runtimeRegistry"],
-			chatThreadsEnabled: true,
-			discordOwnerUserId: OWNER,
-			founderReplyDeliverGraceMs: 0,
-		}) as unknown as Priv;
-
-		await poller.founderReplyDeliverPass();
-		expect(emitSpy).toHaveBeenCalledTimes(1);
-		expect(emitSpy.mock.calls[0]?.[0]).toMatchObject({ threadId: "T-empty" });
-		expect(emitSpy.mock.calls[0]?.[1]).toEqual([]);
-		expect(emitSpy.mock.calls[0]?.[2]).not.toHaveProperty("receiptOwnerEpoch");
 	});
 });

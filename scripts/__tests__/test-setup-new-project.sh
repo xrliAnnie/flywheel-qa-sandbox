@@ -27,10 +27,6 @@ assert_contains_file() {
   if grep -qF "$2" "$1"; then PASS=$((PASS+1)); echo "  PASS: $3"
   else FAIL=$((FAIL+1)); echo "  FAIL: $3 (file $1 missing '$2')"; fi
 }
-assert_not_contains_file() {
-  if ! grep -qF "$2" "$1"; then PASS=$((PASS+1)); echo "  PASS: $3"
-  else FAIL=$((FAIL+1)); echo "  FAIL: $3 (file $1 unexpectedly contains '$2')"; fi
-}
 assert_in() {
   if printf '%s' "$1" | grep -qF "$2"; then PASS=$((PASS+1)); echo "  PASS: $3"
   else FAIL=$((FAIL+1)); echo "  FAIL: $3 (output missing '$2')"; fi
@@ -47,8 +43,8 @@ trap 'rm -rf "$TMP_BASE"' EXIT
 echo "Test 1: fresh --two-layer content project — full scaffold structure"
 T1="${TMP_BASE}/tidal-demo"
 git init -q "$T1"
-T1_OUT="$("$SETUP" tidal-demo content --target "$T1" --team TIDE --two-layer \
-  --cos-persona Triton --dept-persona Ariel)"
+"$SETUP" tidal-demo content --target "$T1" --team TIDE --two-layer \
+  --cos-persona Triton --dept-persona Ariel > /dev/null
 assert_file_exists "${T1}/.gitignore" ".gitignore created"
 assert_file_exists "${T1}/README.md" "README created"
 assert_file_exists "${T1}/AGENTS.md" "AGENTS placeholder created"
@@ -62,8 +58,6 @@ assert_contains_file "${T1}/.flywheel/config.yaml" "project: tidal-demo" "config
 assert_contains_file "${T1}/.flywheel/config.yaml" "team_id: TIDE" "config has parameterized team_id"
 assert_contains_file "${T1}/.flywheel/config.yaml" "default_agent: content" "config has default_agent"
 assert_contains_file "${T1}/.flywheel/config.yaml" "doc_flow:" "config has doc_flow block"
-assert_not_contains_file "${T1}/.flywheel/config.yaml" "enabled: true" "config emits no retired enabled key"
-assert_in "$T1_OUT" "feature-flags set --name doc_flow --to on --project tidal-demo" "cutover prints scoped doc_flow row command"
 assert_contains_file "${T1}/.gitignore" "worktrees/" ".gitignore ignores worktrees/ (Runner isolation)"
 assert_contains_file "${T1}/.lead/tidal-demo-cos-lead/identity.md" "Triton" "CoS identity carries persona"
 assert_contains_file "${T1}/.lead/tidal-demo-content-lead/identity.md" "Ariel" "dept identity carries persona"
@@ -112,10 +106,9 @@ CANARY_AFTER="$(md5 -q "$CANARY")"
 assert_eq "$CANARY_AFTER" "$CANARY_BEFORE" "writes nothing outside --target (canary untouched)"
 assert_in "$T5_OUT" "gh repo create" "checklist prints gh repo create (gated, not executed)"
 assert_in "$T5_OUT" "FLYWHEEL_LEAD_ROLE=cos" "checklist prints CoS launchd env requirement"
-assert_in "$T5_OUT" "flywheel-daemon.sh install" "v2 checklist names the canonical install path"
 assert_in "$T5_OUT" "projects.json" "checklist prints live projects.json edit (gated)"
 assert_in "$T5_OUT" "Digest onboarding" "checklist prints FLY-727 digest-onboarding step (wire report-deployment hook)"
-assert_in "$T5_OUT" "materialize-lead-manifests.sh" "checklist prints canonical manifest materialization step"
+assert_in "$T5_OUT" "claude-lead.sh" "checklist prints claude-lead.sh manifest step"
 # the script itself must not execute live writes — static guard
 if grep -Eq '^[[:space:]]*(launchctl|gh repo create)' "$SETUP"; then
   FAIL=$((FAIL+1)); echo "  FAIL: script body executes a live command (launchctl/gh repo create)"

@@ -19,30 +19,10 @@ export {
 	type CodexRunnerTransport,
 	CodexTmuxAdapter,
 	type CodexWakeWatcher,
-	type RunnerTuiWindowLostEvidence,
-	TUI_OPEN_DEADLINE_MS,
+	codexSessionStateDir,
 	TUI_OPEN_MAX_ATTEMPTS, // FLY-1239
-	TUI_OPEN_RETRY_DELAYS_MS,
 	TUI_OPEN_RETRY_GAP_MS, // FLY-1239
 } from "./CodexTmuxAdapter.js";
-export {
-	type CodexAccountProfile,
-	type CodexAccountRegistry,
-	type CodexAuthIdentity,
-	DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
-	identifyCodexAuth,
-	loadCodexAccountRegistry,
-	readCodexAuthIdentity,
-	redactCodexEmail,
-} from "./codex-account-identity.js";
-export {
-	type CodexAccountObservationSource,
-	type CodexAccountSnapshot,
-	fingerprintCodexHome,
-	readCodexAccountSnapshot,
-	recordCodexAccountObservation,
-	resolveCodexAccountLedgerRoot,
-} from "./codex-account-ledger.js";
 export {
 	buildDaemonSandboxWritableRoots,
 	buildGoalKickText, // FLY-1236
@@ -76,21 +56,12 @@ export {
 export {
 	type AcquireDaemonLockFn,
 	assertSocketPathFitsSunLen,
-	buildDaemonAppsApprovalArgs,
 	buildDaemonSandboxArgs,
-	type CodexDaemonLiveness,
-	type CodexDaemonOwnershipDeps,
-	type CodexDaemonReapResult,
-	codexDaemonExitWaitMs,
-	codexSessionStateDir,
-	createDefaultKillGroup,
 	type DaemonChild,
 	type DaemonHandle,
 	type DaemonLock,
 	type DaemonSpawnFn,
 	daemonSocketDir,
-	probeCodexDaemonLiveness,
-	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
 	type SpawnCodexDaemonOptions,
 	SUN_PATH_MAX,
@@ -105,9 +76,8 @@ export {
 	type WsLike,
 } from "./codex-daemon-transport.js"; // FLY-1188 M4b
 // FLY-123 WS-A/WS-B/WS-C/P5: per-runner CODEX_HOME provisioning + credential
-// lifecycle + repo-owned same-account daemon launcher resolver
+// lifecycle + repo-owned rotation shim resolver
 export {
-	assertCodexSourceIdentity,
 	codexHomeDir,
 	codexHomesRoot,
 	discoverAccountPool,
@@ -125,15 +95,12 @@ export {
 export {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
-	ensureSessionWithRetryAsync,
 	errMessage as runnerTuiErrMessage,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
 	type RunnerTuiWindowDeps,
 	type RunnerTuiWindowOutcome, // FLY-1239
 	type RunnerTuiWindowSpec,
-	scanAndKillSameNameWindows,
-	spawnCommandAsync,
 } from "./codex-runner-tui-window.js"; // FLY-1188 M4c-3
 export {
 	availableTools,
@@ -150,23 +117,10 @@ export {
 	type IMessageFormatter,
 } from "./formatter.js";
 export { KimiTmuxAdapter } from "./KimiTmuxAdapter.js"; // FLY-494
-export {
-	clearSyncOp,
-	markSyncOp,
-	readSyncOpMarker,
-	type SyncOpMarker,
-	sweepStaleSyncOpMarkers,
-	syncOpMarkerPath,
-	withSyncOpMarker,
-} from "./sync-op-marker.js";
-export {
-	RUNNER_PANE_BASE_ALLOWLIST,
-	TmuxAdapter,
-} from "./TmuxAdapter.js";
+export { TmuxAdapter } from "./TmuxAdapter.js";
 export type { ExecFileFn } from "./TmuxRunner.js";
 export { TmuxRunner } from "./TmuxRunner.js";
 export { TrustPromptHandler } from "./TrustPromptHandler.js";
-export { buildTmuxServerBirthEnvironment } from "./tmux-server-environment.js";
 export type {
 	APIAssistantMessage,
 	APIUserMessage,
@@ -185,4 +139,3 @@ export type {
 	SDKSystemMessage,
 	SDKUserMessage,
 } from "./types.js";
-export { pretrustClaudeWorkspace } from "./workspace-trust.js";

@@ -16,8 +16,8 @@
  *      no "latest by timestamp" tie-break games at SQLite's 1s resolution).
  *   2. THAT question has a response row. Writes to it are FLY-175-gated
  *      (`respond.ts` refuses direct writes; only the Bridge founder-consent
- *      wrapper / `approveExecution` can write it) and the Bridge rejects
- *      answers to non-current questions.
+ *      wrapper / `approveExecution` / the loud-audited emergency bypass can
+ *      write it) and the Bridge rejects answers to non-current questions.
  *   3. The response parses as structured JSON with `approved === true`
  *      (the exact shape `approveExecution` writes). Plain-text or malformed
  *      responses are NOT authority (fail-closed).
@@ -42,7 +42,7 @@
  * in off/audit_only the Bridge writes the response without blocking consent.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -50,11 +50,9 @@ import { crossFamilyReviewSatisfied } from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	isTrustedApprovalAttribution,
+	resolveFounderAttributionGateOn,
 	resolveFounderId,
 } from "../founder-attribution.js";
-import { resolveFounderReviewVerdictAtCommit } from "../founder-review.js";
-import { createReadonlySqliteFounderReviewStateReader } from "../founder-review-sqlite.js";
-import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
 
 export interface VerifyApprovalArgs {
 	execId: string;
@@ -65,14 +63,11 @@ export interface VerifyApprovalArgs {
 	/** StateStore (teamlead.db) path override. */
 	stateDbPath?: string;
 	env?: NodeJS.ProcessEnv;
-	/** Shared live-dotenv override used by founder-attribution checks. */
+	/**
+	 * FLY-827: override for the authoritative `~/.flywheel/.env` path the codex
+	 * hard-gate kill-switch is read from at call time (test injection only).
+	 */
 	codexDotenvPath?: string;
-	/** Test seam; production probes the bound PR in its persisted worktree. */
-	ciProbe?: (args: {
-		cwd: string;
-		prNumber: number;
-		expectedHead: string;
-	}) => ShipCiGuardResult;
 }
 
 export type VerifyApprovalReason =
@@ -80,26 +75,20 @@ export type VerifyApprovalReason =
 	| "invalid_pr_head_format"
 	| "head_authority_unavailable"
 	| "head_authority_mismatch"
-	| "nested_ship_unsupported"
 	| "state_db_unreadable"
 	| "session_not_found"
 	| "review_question_unbound"
 	| "commdb_unreadable"
 	| "review_question_missing"
 	| "review_question_invalid"
-	| "gate_superseded"
 	| "gate_not_answered"
 	| "response_not_structured_approval"
 	| "response_not_approved"
 	| "response_not_founder_attributed"
-	| "founder_review_missing"
-	| "founder_review_not_passed"
-	| "founder_review_stale_artifact"
 	| "status_not_approved_to_ship"
 	| "pr_head_sha_missing"
 	| "pr_head_sha_mismatch"
-	| "codex_review_not_approved"
-	| "ci_not_green";
+	| "codex_review_not_approved";
 
 export interface VerifyApprovalResult {
 	approved: boolean;
@@ -112,8 +101,6 @@ export interface VerifyApprovalResult {
 	status?: string;
 	/** pr_head_sha persisted on the session (trusted side of the comparison). */
 	expectedPrHeadSha?: string;
-	/** Fail-closed GitHub observation detail; never authority by itself. */
-	ciDetail?: string;
 	exitCode: number;
 }
 
@@ -124,6 +111,7 @@ export interface VerifyApprovalWithBridgeHeadArgs extends VerifyApprovalArgs {
 	bridgeUrl: string;
 	/** Test seam. */
 	fetchImpl?: typeof fetch;
+	workflowDotenvPath?: string;
 }
 
 /**
@@ -135,6 +123,23 @@ export async function verifyApprovalWithBridgeHead(
 	args: VerifyApprovalWithBridgeHeadArgs,
 ): Promise<VerifyApprovalResult> {
 	const env = args.env ?? process.env;
+	const readPath =
+		args.workflowDotenvPath ?? join(homedir(), ".flywheel", ".env");
+	let claimsReadOn: boolean;
+	if (args.env && "FLYWHEEL_WORKFLOW_CLAIMS_READ" in args.env) {
+		claimsReadOn = args.env.FLYWHEEL_WORKFLOW_CLAIMS_READ === "1";
+	} else {
+		try {
+			claimsReadOn =
+				readEnvValueFromContent(
+					readFileSync(readPath, "utf8"),
+					"FLYWHEEL_WORKFLOW_CLAIMS_READ",
+				) === "1";
+		} catch {
+			claimsReadOn = env.FLYWHEEL_WORKFLOW_CLAIMS_READ === "1";
+		}
+	}
+	if (!claimsReadOn) return verifyApproval(args);
 	const callerHead = args.prHead.trim().toLowerCase();
 	if (!FULL_SHA_RE.test(callerHead)) {
 		return {
@@ -151,84 +156,25 @@ export async function verifyApprovalWithBridgeHead(
 			exitCode: 1,
 		};
 	}
-	const statePath = resolveStateDbPath(args.stateDbPath, env);
-	let approveQuestionId: string;
-	try {
-		const stateDb = new Database(statePath, {
-			readonly: true,
-			fileMustExist: true,
-		});
-		try {
-			const row = stateDb
-				.prepare(
-					"SELECT review_question_id FROM sessions WHERE execution_id = ?",
-				)
-				.get(args.execId) as { review_question_id?: string | null } | undefined;
-			if (!row) {
-				return {
-					approved: false,
-					reason: "session_not_found",
-					exitCode: 1,
-				};
-			}
-			approveQuestionId = row.review_question_id?.trim() ?? "";
-		} finally {
-			stateDb.close();
-		}
-	} catch (error) {
-		console.error(
-			`[verify-approval] StateStore review binding unavailable: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		return {
-			approved: false,
-			reason: "state_db_unreadable",
-			exitCode: 1,
-		};
-	}
-	if (!approveQuestionId || approveQuestionId === "unbound") {
-		return {
-			approved: false,
-			reason: "review_question_unbound",
-			exitCode: 1,
-		};
-	}
 	try {
 		const response = await (args.fetchImpl ?? fetch)(
 			`${bridgeUrl}/api/workflow/head-authority`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					execution_id: args.execId,
-					approve_question_id: approveQuestionId,
-				}),
+				body: JSON.stringify({ execution_id: args.execId }),
 			},
 		);
+		if (!response.ok) throw new Error(`Bridge returned ${response.status}`);
 		const payload = (await response.json()) as {
 			ok?: unknown;
 			prHeadSha?: unknown;
-			reason?: unknown;
 		};
-		if (!response.ok || payload.ok !== true) {
-			if (payload.reason === "nested_ship_unsupported") {
-				return {
-					approved: false,
-					reason: "nested_ship_unsupported",
-					questionId: approveQuestionId,
-					exitCode: 1,
-				};
-			}
-			throw new Error(
-				typeof payload.reason === "string"
-					? payload.reason
-					: `Bridge returned ${response.status}`,
-			);
-		}
 		const authoritativeHead =
 			typeof payload.prHeadSha === "string"
 				? payload.prHeadSha.trim().toLowerCase()
 				: "";
-		if (!FULL_SHA_RE.test(authoritativeHead)) {
+		if (payload.ok !== true || !FULL_SHA_RE.test(authoritativeHead)) {
 			throw new Error("invalid Bridge head response");
 		}
 		if (callerHead !== authoritativeHead) {
@@ -262,6 +208,63 @@ export function resolveStateDbPath(
 		env.TEAMLEAD_DB_PATH?.trim() ||
 		join(homedir(), ".flywheel", "teamlead.db")
 	);
+}
+
+const CODEX_HARD_GATE_KEY = "FLYWHEEL_CODEX_HARD_GATE";
+
+/**
+ * Read the last uncommented `KEY=` value from a `.env` content string (mirrors
+ * teamlead/env-file-writer `readEnvValue` — kept local to avoid a cross-package
+ * dependency). Returns undefined if the key is absent.
+ */
+function readEnvValueFromContent(
+	content: string,
+	key: string,
+): string | undefined {
+	const re = new RegExp(`^\\s*(?:export\\s+)?${key}=(.*)$`);
+	let val: string | undefined;
+	for (const line of content.split("\n")) {
+		if (/^\s*#/.test(line)) continue;
+		const m = line.match(re);
+		if (m) val = m[1];
+	}
+	return val;
+}
+
+/**
+ * FLY-827 (Codex R2 HIGH-1 + R3 HIGH-1): resolve whether the Codex hard gate is
+ * ON, BIDIRECTIONALLY LIVE for an already-running runner shell. verify-approval
+ * runs in the runner CLI process, whose inherited `process.env` is a stale
+ * snapshot from spawn time. The authoritative live source is `~/.flywheel/.env`
+ * (the direct feature-flag toggle writes it):
+ *
+ *   1. explicit test override (`args.env` HAS the key) — wins.
+ *   2. `~/.flywheel/.env` READABLE → authoritative, INCLUDING key-absent. The
+ *      default-on toggle turns the gate back ON by DELETING the `.env` line, so
+ *      key-absent MUST mean ON — never fall back to a stale inherited `0`, or a
+ *      runner that inherited `=0` during an emergency OFF would stay bypassed
+ *      after re-arm. A readable-but-corrupt file with no exact `KEY=0` → ON
+ *      (fail-closed).
+ *   3. `.env` unreadable/missing → inherited `process.env` (legacy fallback).
+ */
+export function resolveCodexHardGateOn(args: {
+	argsEnv?: NodeJS.ProcessEnv;
+	processEnv: NodeJS.ProcessEnv;
+	dotenvPath?: string;
+}): boolean {
+	// 1. explicit test injection.
+	if (args.argsEnv && CODEX_HARD_GATE_KEY in args.argsEnv) {
+		return args.argsEnv[CODEX_HARD_GATE_KEY] !== "0";
+	}
+	// 2. authoritative ~/.flywheel/.env (readable ⇒ key-absent = default-on).
+	const path = args.dotenvPath ?? join(homedir(), ".flywheel", ".env");
+	try {
+		const content = readFileSync(path, "utf-8");
+		return readEnvValueFromContent(content, CODEX_HARD_GATE_KEY) !== "0";
+	} catch {
+		// 3. .env unreadable/missing → legacy inherited env.
+		return args.processEnv[CODEX_HARD_GATE_KEY] !== "0";
+	}
 }
 
 export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
@@ -301,19 +304,11 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 				review_question_id?: string | null;
 				codex_skip?: number | null;
 				adapter_type?: string | null;
-				pr_number?: number | null;
-				worktree_path?: string | null;
-				project_name?: string | null;
-				issue_id?: string | null;
 		  }
 		| undefined;
 	// FLY-827: does an approved/skipped Codex code-review record exist for the
 	// runner's current head? Read in the same StateStore connection.
 	let codexApprovedForHead = false;
-	let founderReviewRun:
-		| { required: false }
-		| { required: true; runId: string }
-		| { required: true; invalid: true } = { required: false };
 	try {
 		const stateDb = new Database(statePath, {
 			readonly: true,
@@ -322,109 +317,38 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 		try {
 			row = stateDb
 				.prepare(
-					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type, pr_number, worktree_path, project_name, issue_id FROM sessions WHERE execution_id = ?",
+					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type FROM sessions WHERE execution_id = ?",
 				)
 				.get(args.execId) as typeof row;
-			try {
-				const bindings = stateDb
-					.prepare(
-						`SELECT run_id, node_id FROM workflow_execution_binding
-						  WHERE execution_id = ? ORDER BY bound_at, activation_id`,
-					)
-					.all(args.execId) as Array<{ run_id: string; node_id: string }>;
-				if (bindings.length === 1) {
-					const binding = bindings[0]!;
-					const workflow = stateDb
-						.prepare("SELECT snapshot FROM workflow_run WHERE run_id = ?")
-						.get(binding.run_id) as { snapshot?: string | null } | undefined;
-					if (!workflow?.snapshot) {
-						founderReviewRun = { required: true, invalid: true };
-					} else {
-						const snapshot = JSON.parse(workflow.snapshot) as {
-							manifest?: {
-								nodes?: Array<{ id?: string; founder_review?: unknown }>;
-							};
-						};
-						const node = snapshot.manifest?.nodes?.find(
-							(candidate) => candidate.id === binding.node_id,
-						);
-						founderReviewRun =
-							node?.founder_review === true
-								? { required: true, runId: binding.run_id }
-								: { required: false };
-					}
-				} else if (bindings.length > 1) {
-					founderReviewRun = { required: true, invalid: true };
-				}
-			} catch (error) {
-				// A pre-workflow schema is legacy. Once the binding table exists, any
-				// malformed/missing run snapshot is ambiguous and fails closed.
-				founderReviewRun = String(error).includes(
-					"no such table: workflow_execution_binding",
-				)
-					? { required: false }
-					: { required: true, invalid: true };
-			}
 			// Separate try: an un-upgraded DB may lack codex_review_record (or,
 			// on a version skew, the FLY-1188 family columns). A missing table/
 			// column → codexApprovedForHead stays false (fail-closed under the
 			// gate), but must NOT corrupt the authoritative row read above.
 			try {
-				const candidates = stateDb
+				const codexRow = stateDb
 					.prepare(
-						`SELECT r.status, r.author_family, r.reviewer_family,
-						        author.adapter_type AS author_adapter_type
-						   FROM codex_review_record r
-						   LEFT JOIN sessions author ON author.execution_id = r.execution_id
-						  WHERE r.project_name = ?
-						    AND r.issue_id = ?
-						    AND r.target_repo_identity = '__main__'
-						    AND lower(r.target_pr_head_sha) = ?
-						    AND r.status IN ('approved','skipped')`,
+						"SELECT status, author_family, reviewer_family FROM codex_review_record WHERE execution_id = ? AND lower(target_pr_head_sha) = ? AND status IN ('approved','skipped')",
 					)
-					.all(row?.project_name, row?.issue_id, prHead) as Array<{
-					status?: string;
-					author_family?: string | null;
-					reviewer_family?: string | null;
-					author_adapter_type?: string | null;
-				}>;
-				// FLY-1434 §10: the ship execution may differ from the author
-				// execution. Query issue-scoped candidates and evaluate each
-				// record with its AUTHOR session adapter, never the shipping one.
-				codexApprovedForHead = candidates.some((candidate) =>
+					.get(args.execId, prHead) as
+					| {
+							status?: string;
+							author_family?: string | null;
+							reviewer_family?: string | null;
+					  }
+					| undefined;
+				// FLY-1188 §7.3: reviewer-inversion invariant — the SAME shared
+				// rule as the Bridge gate (StateStore.isCodexCodeReviewApproved),
+				// so the runner-side merge check can never drift from the server.
+				codexApprovedForHead =
+					codexRow !== undefined &&
 					crossFamilyReviewSatisfied({
-						status: candidate.status,
-						authorFamily: candidate.author_family ?? null,
-						reviewerFamily: candidate.reviewer_family ?? null,
-						sessionAdapterType: candidate.author_adapter_type ?? null,
-					}),
-				);
+						status: codexRow.status,
+						authorFamily: codexRow.author_family ?? null,
+						reviewerFamily: codexRow.reviewer_family ?? null,
+						sessionAdapterType: row?.adapter_type ?? null,
+					});
 			} catch {
-				// Legacy pre-FLY-1434 database: preserve exact-execution lookup
-				// until StateStore performs the roll-forward table cutover.
-				try {
-					const legacy = stateDb
-						.prepare(
-							"SELECT status, author_family, reviewer_family FROM codex_review_record WHERE execution_id = ? AND lower(target_pr_head_sha) = ? AND status IN ('approved','skipped')",
-						)
-						.get(args.execId, prHead) as
-						| {
-								status?: string;
-								author_family?: string | null;
-								reviewer_family?: string | null;
-						  }
-						| undefined;
-					codexApprovedForHead =
-						legacy !== undefined &&
-						crossFamilyReviewSatisfied({
-							status: legacy.status,
-							authorFamily: legacy.author_family ?? null,
-							reviewerFamily: legacy.reviewer_family ?? null,
-							sessionAdapterType: row?.adapter_type ?? null,
-						});
-				} catch {
-					codexApprovedForHead = false;
-				}
+				codexApprovedForHead = false;
 			}
 		} finally {
 			stateDb.close();
@@ -470,9 +394,6 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 				// approve_to_ship gate — corrupt/forged binding → fail-closed.
 				return notApproved("review_question_invalid", { questionId });
 			}
-			if (question.superseded_at) {
-				return notApproved("gate_superseded", { questionId });
-			}
 			const response = db.getResponse(questionId);
 			if (!response) {
 				return notApproved("gate_not_answered", { questionId });
@@ -511,29 +432,35 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 
 	// 3.5 FLY-945 Fix E: FOUNDER ATTRIBUTION. The structured shape alone is not
 	// authority — the WRITER must be founder-side: the canonical founder Discord
-	// id (FLY-799 text/✅), "bridge" (/api/actions/approve), or the historical
-	// "bridge-founder-consent" actor retained for read compatibility. A Lead
+	// id (FLY-799 text/✅), "bridge" (/api/actions/approve), or
+	// "bridge-founder-consent" (the enforce-path gate-response router). A Lead
 	// id here means a `respond` self-approval (the FLY-921 door) → refused.
 	// Honest boundaries (documented in founder-attribution.ts): the founder id
 	// resolves LIVE from ~/.flywheel/.env; unresolvable id → this step is
 	// SKIPPED (a project without a Discord founder cannot be attribution-gated).
-	// `args.codexDotenvPath` is the shared test override for the live
-	// ~/.flywheel/.env source used by merge approval and founder identity/config
-	// resolution. Attribution is permanently enforced whenever that identity
-	// resolves; there is no environment bypass.
-	const founderId = resolveFounderId({
+	// Kill-switch FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0 (live .env read; QA rooms
+	// set it). `args.codexDotenvPath` doubles as the .env override for tests —
+	// all three live flags read the same ~/.flywheel/.env file.
+	const attributionGateOn = resolveFounderAttributionGateOn({
 		argsEnv: args.env,
 		processEnv: env,
 		dotenvPath: args.codexDotenvPath,
 	});
-	if (
-		founderId !== undefined &&
-		!isTrustedApprovalAttribution(responseFrom, founderId)
-	) {
-		return notApproved("response_not_founder_attributed", {
-			questionId,
-			responseFrom,
+	if (attributionGateOn) {
+		const founderId = resolveFounderId({
+			argsEnv: args.env,
+			processEnv: env,
+			dotenvPath: args.codexDotenvPath,
 		});
+		if (
+			founderId !== undefined &&
+			!isTrustedApprovalAttribution(responseFrom, founderId)
+		) {
+			return notApproved("response_not_founder_attributed", {
+				questionId,
+				responseFrom,
+			});
+		}
 	}
 
 	// 4. Status + PR-head binding.
@@ -562,107 +489,21 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 		});
 	}
 
-	// 3.6 FLY-1758: legacy runner-ship defense in depth. Engine-owned land has
-	// its own Bridge authority seam; a workflow producer that sealed the
-	// founder_review capability must also prove a delivered latest-round pass for
-	// the exact HTML blobs at this head. Sessions without a workflow binding are
-	// byte-compatible legacy and skip this check.
-	if (founderReviewRun.required) {
-		if ("invalid" in founderReviewRun || !row.worktree_path) {
-			return notApproved("founder_review_missing", {
-				questionId,
-				responseFrom,
-				status: row.status,
-				expectedPrHeadSha: expected,
-			});
-		}
-		try {
-			const sqlite = createReadonlySqliteFounderReviewStateReader({
-				stateDbPath: statePath,
-				commDbPath: args.dbPath,
-			});
-			try {
-				const verdict = resolveFounderReviewVerdictAtCommit({
-					reader: sqlite.reader,
-					runId: founderReviewRun.runId,
-					repoRoot: row.worktree_path,
-					head: prHead,
-					founderId: resolveFounderId({
-						argsEnv: args.env,
-						processEnv: env,
-						dotenvPath: args.codexDotenvPath,
-					}),
-				});
-				if (verdict.status !== "passed") {
-					return notApproved(
-						verdict.status === "stale_artifact"
-							? "founder_review_stale_artifact"
-							: verdict.status === "missing"
-								? "founder_review_missing"
-								: "founder_review_not_passed",
-						{
-							questionId,
-							responseFrom,
-							status: row.status,
-							expectedPrHeadSha: expected,
-						},
-					);
-				}
-			} finally {
-				sqlite.close();
-			}
-		} catch {
-			return notApproved("founder_review_missing", {
-				questionId,
-				responseFrom,
-				status: row.status,
-				expectedPrHeadSha: expected,
-			});
-		}
-	}
-
-	// 5. FLY-827 Codex code-review predicate (defense-in-depth: even a verified
-	// founder approval must not merge without exact-head Codex approval). A
-	// session-level codex_skip remains the sanctioned bypass.
-	if (!row.codex_skip && !codexApprovedForHead) {
+	// 5. FLY-827 Codex code-review HARD GATE (defense-in-depth: even a verified
+	// founder approval must not merge without Codex APPROVED for THIS head). Live
+	// kill-switch via the authoritative ~/.flywheel/.env (bidirectional). A
+	// codex-skip session bypasses (sanctioned). Gate off → skipped (byte-compat).
+	const codexGateOn = resolveCodexHardGateOn({
+		argsEnv: args.env,
+		processEnv: env,
+		dotenvPath: args.codexDotenvPath,
+	});
+	if (codexGateOn && !row.codex_skip && !codexApprovedForHead) {
 		return notApproved("codex_review_not_approved", {
 			questionId,
 			responseFrom,
 			status: row.status,
 			expectedPrHeadSha: expected,
-		});
-	}
-
-	// 6. FLY-1314 material #8: GitHub CI is an independent ship axis. Re-probe
-	// at the final authority point; a green observation made when the gate opened
-	// is not reusable because checks can be re-run or invalidated afterward.
-	const prNumber = Number(row.pr_number);
-	const worktreePath = row.worktree_path?.trim();
-	if (
-		!Number.isSafeInteger(prNumber) ||
-		prNumber <= 0 ||
-		(!worktreePath && !args.ciProbe)
-	) {
-		return notApproved("ci_not_green", {
-			questionId,
-			responseFrom,
-			status: row.status,
-			expectedPrHeadSha: expected,
-			ciDetail: "bound PR number or worktree path is missing",
-		});
-	}
-	const ci = (args.ciProbe ?? probeShipCiGreen)({
-		cwd: worktreePath ?? "",
-		prNumber,
-		expectedHead: prHead,
-	});
-	if (!ci.green) {
-		return notApproved("ci_not_green", {
-			questionId,
-			responseFrom,
-			status: row.status,
-			expectedPrHeadSha: expected,
-			ciDetail: ci.detail,
 		});
 	}
 

@@ -15,51 +15,36 @@
 
 import {
 	evaluateShipEligibility,
-	type ShipEligibilityArgs,
+	resolveWorkflowClaimsReadEnabled,
 	type ShipEligibilityDecision,
 } from "flywheel-comm/ship-eligibility";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { commDbPathForProject } from "./commdb-path.js";
-import { evaluateWorkflowFounderReviewPrecondition } from "./founder-review-authority.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
-import {
-	type MaterializedHeadAuthority,
-	unavailableMaterializedHeadAuthority,
-} from "./materialized-head-authority.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 /**
- * Post-merge recovery has stronger landing evidence than the open-PR CI probe:
- * GitHub already accepted the exact head and reports the PR as MERGED. Re-running
- * the open-PR probe here is both redundant and incorrect because GitHub reports
- * mergeStateStatus=UNKNOWN after merge and the runner worktree may be gone.
- */
-export const mergedPrCiProbe: NonNullable<
-	ShipEligibilityArgs["ciProbe"]
-> = () => ({
-	green: true,
-	reason: "ci_green",
-	mergeStateStatus: "MERGED",
-	checks: [],
-});
-
-/**
  * Compute the ship decision for a (session, prHead) BEFORE mutating status.
  *
- * Passes the Bridge process env for the remaining eligibility checks and their
- * test seams. Merge approval itself is unconditional and always fails closed.
+ * Passes the BRIDGE process env (like the existing codex-gate sink checks, e.g.
+ * isReviewHeld). This is BOTH production-correct AND testable, and does NOT
+ * contradict design R2 HIGH-2: HIGH-2 forbids the *runner CLI* (whose inherited
+ * env is a stale spawn-time snapshot) from passing env, so verify-approval must
+ * read the authoritative `~/.flywheel/.env`. The BRIDGE process env is current;
+ * and because the gate resolvers only honor `argsEnv` when the KEY IS PRESENT,
+ * a normal production Bridge (kill-switch keys absent) still falls through to the
+ * live `~/.flywheel/.env` read — so an operator re-arm is honored — while a test
+ * that sets `process.env.FLYWHEEL_{MERGE_APPROVAL,QA_DONE}_GATE` can bypass.
  */
 export function computeShipDecision(
 	store: Partial<Pick<StateStore, "getDbPath">>,
 	session: Pick<Session, "execution_id" | "project_name">,
 	prHead: string,
 	env: NodeJS.ProcessEnv = process.env,
-	ciProbe?: ShipEligibilityArgs["ciProbe"],
 ): ShipEligibilityDecision {
 	return evaluateShipEligibility({
 		execId: session.execution_id,
@@ -75,203 +60,11 @@ export function computeShipDecision(
 		stateDbPath:
 			typeof store.getDbPath === "function" ? store.getDbPath() : undefined,
 		env,
-		ciProbe,
 	});
 }
 
 export interface AuthoritativeShipDecision extends ShipEligibilityDecision {
 	authoritativeHead: string;
-	workflowClaimsOk?: boolean;
-	workflowClaimsReason?: string;
-}
-
-type EngineShipContext = {
-	runId: string;
-	projectName: string;
-	snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
-};
-
-function outputBackedReviewNodeId(
-	snapshot: ReturnType<typeof parseWorkflowRunSnapshot>,
-): string | undefined {
-	const candidates = snapshot.resolved.nodes.filter((node) => {
-		if (node.type !== "review") return false;
-		const producerIds = snapshot.manifest.edges
-			.filter((edge) => edge.to === node.id && edge.condition === "node_done")
-			.map((edge) => edge.from);
-		const outputProducers = snapshot.resolved.nodes.filter(
-			(candidate) =>
-				producerIds.includes(candidate.id) &&
-				candidate.capabilities.produces_output,
-		);
-		return outputProducers.length === 1;
-	});
-	if (candidates.length > 1) {
-		throw new Error("materialized_review_node_ambiguous");
-	}
-	return candidates[0]?.id;
-}
-
-function engineShipContext(
-	store: StateStore,
-	executionId: string,
-):
-	| { engineOwned: false }
-	| ({ engineOwned: true } & EngineShipContext)
-	| {
-			engineOwned: true;
-			reason: string;
-	  } {
-	// Several legacy finalization tests (and third-party embedders) intentionally
-	// provide a narrow StateStore-shaped double. Missing engine capabilities mean
-	// the caller predates engine ownership, not that an engine run is malformed.
-	const capabilities = store as Partial<
-		Pick<
-			StateStore,
-			| "getWorkflowExecutionBinding"
-			| "listWorkflowActivationsForActor"
-			| "getWorkflowRun"
-		>
-	>;
-	if (
-		(typeof capabilities.listWorkflowActivationsForActor !== "function" &&
-			typeof capabilities.getWorkflowExecutionBinding !== "function") ||
-		typeof capabilities.getWorkflowRun !== "function"
-	) {
-		return { engineOwned: false };
-	}
-	const binding = capabilities.listWorkflowActivationsForActor
-		? capabilities.listWorkflowActivationsForActor(executionId)[0]
-		: capabilities.getWorkflowExecutionBinding?.(executionId);
-	if (!binding) return { engineOwned: false };
-	const run = capabilities.getWorkflowRun(binding.run_id);
-	if (run?.engine_owned !== 1) return { engineOwned: false };
-	if (!run.snapshot)
-		return { engineOwned: true, reason: "snapshot_unavailable" };
-	try {
-		return {
-			engineOwned: true,
-			runId: run.run_id,
-			projectName: run.project_name,
-			snapshot: parseWorkflowRunSnapshot(run.snapshot),
-		};
-	} catch {
-		return { engineOwned: true, reason: "snapshot_invalid" };
-	}
-}
-
-function evaluateEngineShipClaims(
-	store: StateStore,
-	context: EngineShipContext,
-	authoritativeHead: string,
-	now = new Date().toISOString(),
-): { eligible: true } | { eligible: false; reason: string } {
-	const resolved = store.resolveEngineWorkflowShipClaims({
-		runId: context.runId,
-		subjectDigest: authoritativeHead,
-		now,
-	});
-	return resolved.valid
-		? { eligible: true }
-		: { eligible: false, reason: resolved.reason };
-}
-
-export type EngineWorkflowShipPrecondition =
-	| { engineOwned: false; eligible: true; authoritativeHead: string }
-	| {
-			engineOwned: true;
-			eligible: boolean;
-			authoritativeHead: string;
-			reason?: string;
-	  };
-
-/**
- * Status-independent engine terminal precondition. Completed-row recovery
- * uses this instead of the legacy approval verifier, whose status contract
- * intentionally rejects rows that are already completed.
- */
-export async function computeEngineWorkflowShipPrecondition(
-	store: StateStore,
-	executionId: string,
-	observedAuthorityHead: string,
-	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
-): Promise<EngineWorkflowShipPrecondition> {
-	const context = engineShipContext(store, executionId);
-	const observed = observedAuthorityHead.trim().toLowerCase();
-	if (!context.engineOwned) {
-		return { engineOwned: false, eligible: true, authoritativeHead: observed };
-	}
-	if ("reason" in context) {
-		return {
-			engineOwned: true,
-			eligible: false,
-			authoritativeHead: "",
-			reason: context.reason,
-		};
-	}
-	let authoritativeHead = "";
-	try {
-		const reviewNodeId = outputBackedReviewNodeId(context.snapshot);
-		if (reviewNodeId) {
-			authoritativeHead = (
-				await materializedHeadAuthority.resolve(context.runId, reviewNodeId)
-			).head
-				.trim()
-				.toLowerCase();
-		} else {
-			authoritativeHead = (
-				await resolveWorkflowHeadAuthority(store, executionId)
-			).prHeadSha;
-		}
-	} catch (error) {
-		return {
-			engineOwned: true,
-			eligible: false,
-			authoritativeHead: "",
-			reason:
-				error instanceof Error ? error.message : "head_authority_unavailable",
-		};
-	}
-	if (observed && observed !== authoritativeHead) {
-		return {
-			engineOwned: true,
-			eligible: false,
-			authoritativeHead,
-			reason: "head_authority_mismatch",
-		};
-	}
-	if (!/^[0-9a-f]{40}$/.test(authoritativeHead)) {
-		return {
-			engineOwned: true,
-			eligible: false,
-			authoritativeHead,
-			reason: "head_authority_invalid",
-		};
-	}
-	const founderReview = await evaluateWorkflowFounderReviewPrecondition({
-		store,
-		runId: context.runId,
-		projectName: context.projectName,
-		snapshot: context.snapshot,
-		head: authoritativeHead,
-	});
-	if (!founderReview.eligible) {
-		return {
-			engineOwned: true,
-			eligible: false,
-			authoritativeHead,
-			reason: founderReview.reason,
-		};
-	}
-	const result = evaluateEngineShipClaims(store, context, authoritativeHead);
-	return result.eligible
-		? { engineOwned: true, eligible: true, authoritativeHead }
-		: {
-				engineOwned: true,
-				eligible: false,
-				authoritativeHead,
-				reason: result.reason,
-			};
 }
 
 /**
@@ -283,40 +76,20 @@ export async function computeAuthoritativeShipDecision(
 	session: Pick<Session, "execution_id" | "project_name">,
 	observedHead: string | undefined,
 	env: NodeJS.ProcessEnv = process.env,
-	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
-	ciProbe?: ShipEligibilityArgs["ciProbe"],
 ): Promise<AuthoritativeShipDecision> {
-	const engine = engineShipContext(store, session.execution_id);
-	const typedEngine =
-		engine.engineOwned && !("reason" in engine) ? engine : undefined;
-	if (engine.engineOwned && "reason" in engine) {
+	// Default-off byte compatibility: until the claims read switch is explicitly
+	// enabled, every existing sink keeps its prior cached-head behavior.
+	if (!resolveWorkflowClaimsReadEnabled({ env })) {
 		return {
-			eligible: false,
-			mergeApprovalOk: false,
-			qaOk: false,
-			mergeReason: `workflow_ship_claims_${engine.reason}`,
-			qaReason: "head_authority_unavailable_failclosed",
-			authoritativeHead: "",
-			workflowClaimsOk: false,
-			workflowClaimsReason: engine.reason,
+			...computeShipDecision(store, session, observedHead ?? "", env),
+			authoritativeHead: observedHead?.trim().toLowerCase() ?? "",
 		};
 	}
 	let authoritativeHead = "";
 	try {
-		const reviewNodeId = typedEngine
-			? outputBackedReviewNodeId(typedEngine.snapshot)
-			: undefined;
-		authoritativeHead = reviewNodeId
-			? (
-					await materializedHeadAuthority.resolve(
-						typedEngine!.runId,
-						reviewNodeId,
-					)
-				).head
-					.trim()
-					.toLowerCase()
-			: (await resolveWorkflowHeadAuthority(store, session.execution_id))
-					.prHeadSha;
+		authoritativeHead = (
+			await resolveWorkflowHeadAuthority(store, session.execution_id)
+		).prHeadSha;
 	} catch {
 		return {
 			eligible: false,
@@ -338,58 +111,10 @@ export async function computeAuthoritativeShipDecision(
 			authoritativeHead,
 		};
 	}
-	if (typedEngine) {
-		const founderReview = await evaluateWorkflowFounderReviewPrecondition({
-			store,
-			runId: typedEngine.runId,
-			projectName: typedEngine.projectName,
-			snapshot: typedEngine.snapshot,
-			head: authoritativeHead,
-			processEnv: env,
-		});
-		if (!founderReview.eligible) {
-			return {
-				eligible: false,
-				mergeApprovalOk: false,
-				qaOk: false,
-				mergeReason: founderReview.reason,
-				qaReason: "qa_claim_gate_unenrolled_failclosed",
-				authoritativeHead,
-				workflowClaimsOk: false,
-				workflowClaimsReason: founderReview.reason,
-			};
-		}
-	}
-	const base = computeShipDecision(
-		store,
-		session,
+	return {
+		...computeShipDecision(store, session, authoritativeHead, env),
 		authoritativeHead,
-		env,
-		ciProbe,
-	);
-	if (typedEngine) {
-		const workflow = evaluateEngineShipClaims(
-			store,
-			typedEngine,
-			authoritativeHead,
-		);
-		if (!workflow.eligible) {
-			return {
-				...base,
-				eligible: false,
-				mergeReason: `workflow_ship_claims:${workflow.reason}`,
-				authoritativeHead,
-				workflowClaimsOk: false,
-				workflowClaimsReason: workflow.reason,
-			};
-		}
-		return {
-			...base,
-			authoritativeHead,
-			workflowClaimsOk: true,
-		};
-	}
-	return { ...base, authoritativeHead };
+	};
 }
 
 /**
@@ -486,19 +211,17 @@ export async function finalizeRecoveredMerge(
 	 */
 	refreshIssueDisplay?: (issueId: string) => Promise<void>,
 	/**
-	 * FLY-907 Codex R1 MED-2: a recovered merge on a shared-workflow issue must
+	 * FLY-907 Codex R1 MED-2: a recovered merge on a THREE-STAGE issue must
 	 * also close the still-alive parked design/implement phases + drop the TURN
 	 * row (exactly like the live completion sinks) — and only THEN run the
 	 * terminal display refresh. Built by the callers via
-	 * makeFinalizeWorkflowPhaseRoles (they hold transitionOpts; this module does
+	 * makeFinalizeThreeStagePhases (they hold transitionOpts; this module does
 	 * not). Absent → no phase finalization (byte-compat with pre-FLY-907).
 	 */
-	finalizeWorkflowPhaseRoles?: (
+	finalizeThreeStagePhases?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>,
-	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
-	ciProbe?: ShipEligibilityArgs["ciProbe"],
 ): Promise<boolean> {
 	const s = store.getSession(execId);
 	// Only a still-parked row (marker present) whose founder approval just landed.
@@ -511,14 +234,7 @@ export async function finalizeRecoveredMerge(
 	// Eligibility BEFORE clearing (Codex R2 #2): an unmet QA / Codex gate → NOT eligible → leave
 	// the marker in place (still held). verifyApproval also requires status approved_to_ship, so
 	// a not-yet-approved row is naturally ineligible here.
-	const decision = await computeAuthoritativeShipDecision(
-		store,
-		s,
-		head,
-		env,
-		materializedHeadAuthority,
-		ciProbe ?? mergedPrCiProbe,
-	);
+	const decision = await computeAuthoritativeShipDecision(store, s, head, env);
 	// Head-bound: only THIS authoritative head recovers THIS marker. A stale
 	// cached/session head or stale marker remains parked.
 	if (
@@ -545,15 +261,6 @@ export async function finalizeRecoveredMerge(
 		await runPostShipFinalization(
 			{
 				executionId: execId,
-				runId: store.getWorkflowRunIdForExecution(execId),
-				...(s.pr_number && s.pr_head_sha
-					? {
-							mergedPr: {
-								prNumber: s.pr_number,
-								headSha: s.pr_head_sha,
-							},
-						}
-					: {}),
 				issueId: s.issue_id,
 				issueIdentifier: s.issue_identifier,
 				projectName: s.project_name,
@@ -570,7 +277,7 @@ export async function finalizeRecoveredMerge(
 				markIssueDone: makeLinearDoneFinalizer(config),
 				// FLY-907 Codex R1 MED-2: close parked phases + drop TURN before the
 				// terminal display refresh (runPostShipFinalization orders them).
-				finalizeWorkflowPhaseRoles,
+				finalizeThreeStagePhases,
 				refreshIssueDisplay,
 			},
 		);

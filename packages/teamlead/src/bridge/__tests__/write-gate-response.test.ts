@@ -28,7 +28,6 @@ function fakeDb(
 		getResponse: vi.fn((id: string) => responses.get(id)),
 		insertResponse: vi.fn((id: string, from: string, content: string) => {
 			responses.set(id, { content, from_agent: from });
-			return { written: true } as const;
 		}),
 		_responses: responses,
 	};
@@ -76,193 +75,9 @@ describe("writeGateResponseAndRunPostWrite — happy path", () => {
 		});
 		expect(r).toMatchObject({ written: true, retrySafe: false });
 	});
-
-	it("runner_ship engine authority still flips and wakes the bound session", async () => {
-		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
-		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
-		const r = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			db,
-			store: store("awaiting_review"),
-			gateAuthorityView: {
-				resolve: () => ({
-					kind: "engine",
-					runId: "run-1",
-					questionId: "Q-1",
-					executionId: "E-1",
-					issueId: "FLY-1441",
-					projectName: "flywheel",
-					headSha: "a".repeat(40),
-					authorityMode: "runner_ship",
-					subjectKind: "git_head",
-					state: "awaiting_review",
-					cardMessageId: "M-1",
-				}),
-			},
-			onResponseWritten,
-		});
-
-		expect(r).toMatchObject({ written: true, retrySafe: true });
-		expect(onResponseWritten).toHaveBeenCalledOnce();
-	});
-
-	it("a guarded writer rejection never runs the post-write hook", async () => {
-		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
-		db.insertResponse.mockReturnValue({
-			written: false,
-			reason: "gate_not_open",
-		});
-		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
-
-		const r = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			db,
-			store: store("awaiting_review"),
-			onResponseWritten,
-		});
-
-		expect(r).toMatchObject({
-			written: false,
-			retrySafe: true,
-			disposition: "reject",
-			reason: "response_write_gate_not_open",
-		});
-		expect(onResponseWritten).not.toHaveBeenCalled();
-	});
 });
 
 describe("writeGateResponseAndRunPostWrite — guards (no write)", () => {
-	it("rejects bridge-founder-consent for a fresh write because it is historical-only", async () => {
-		const db = {
-			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
-			insertFounderApprovalResponseWithSource: vi.fn().mockReturnValue(true),
-		};
-		const result = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			actor: "bridge-founder-consent",
-			db,
-			store: store("awaiting_review"),
-			founderId: "founder-discord",
-			founderSource: {
-				project: "flywheel",
-				runId: "run-1",
-				issueId: "FLY-1981",
-				approvedHead: "a".repeat(40),
-				classification: "founder_consent_enforce",
-				authorityId: "Q-1",
-			},
-		});
-
-		expect(result).toMatchObject({
-			written: false,
-			retrySafe: true,
-			disposition: "reject",
-			reason: "historical_actor_retired",
-		});
-		expect(db.insertFounderApprovalResponseWithSource).not.toHaveBeenCalled();
-		expect(db.insertResponse).not.toHaveBeenCalled();
-	});
-
-	it("keeps an existing bridge-founder-consent response idempotently readable", async () => {
-		const db = fakeDb(
-			{ checkpoint: "approve_to_ship", from_agent: "E-1" },
-			{ content: APPROVE, from_agent: "bridge-founder-consent" },
-		);
-		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
-		const result = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			actor: "bridge-founder-consent",
-			db,
-			store: store("approved_to_ship"),
-			onResponseWritten,
-		});
-
-		expect(result).toMatchObject({
-			written: false,
-			retrySafe: true,
-			disposition: "already_applied",
-		});
-		expect(db.insertResponse).not.toHaveBeenCalled();
-		expect(onResponseWritten).toHaveBeenCalledOnce();
-	});
-
-	it.each([
-		"OK, now what is left for me to decide?",
-		"【页面意见汇总】FLY-1847\nPlease change this section.",
-	])("does not write a neutral non-approval answer: %s", async (feedback) => {
-		const db = {
-			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
-			insertFounderApprovalResponseWithSource: vi.fn().mockReturnValue(true),
-		};
-		const onResponseWritten = vi.fn();
-		const r = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			db,
-			store: store("awaiting_review"),
-			founderId: "founder-discord",
-			founderSource: {
-				project: "flywheel",
-				runId: "run-1",
-				issueId: "FLY-1847",
-				approvedHead: "a".repeat(40),
-				classification: "founder_direct_signal",
-				authorityId: "Q-1",
-			},
-			answer: JSON.stringify({ approved: false, feedback }),
-			onResponseWritten,
-		});
-
-		expect(r).toMatchObject({
-			written: false,
-			retrySafe: true,
-			disposition: "neutral_not_written",
-			reason: "explicit_kickback_required",
-		});
-		expect(db.insertFounderApprovalResponseWithSource).not.toHaveBeenCalled();
-		expect(db.insertResponse).not.toHaveBeenCalled();
-		expect(onResponseWritten).not.toHaveBeenCalled();
-	});
-
-	it.each([
-		["exact 打回", { answer: '{"approved":false,"feedback":"打回"}' }],
-		[
-			"打回 with trailing punctuation",
-			{ answer: '{"approved":false,"feedback":"打回。"}' },
-		],
-		[
-			"English prefix",
-			{ answer: '{"approved":false,"feedback":"design: revise the flow"}' },
-		],
-		[
-			"English prefix with full-width colon",
-			{
-				answer: '{"approved":false,"feedback":"implement：revise the flow！"}',
-			},
-		],
-		[
-			"Chinese prefix",
-			{ answer: '{"approved":false,"feedback":"测试: add a regression"}' },
-		],
-		[
-			"upstream kickback intent",
-			{
-				answer: '{"approved":false,"feedback":"This needs another pass."}',
-				intent: "kickback" as const,
-			},
-		],
-	])("writes an explicit non-approval signal: %s", async (_name, input) => {
-		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
-		const r = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			db,
-			store: store("awaiting_review"),
-			...input,
-		});
-
-		expect(r).toMatchObject({ written: true, disposition: "written" });
-		expect(db.insertResponse).toHaveBeenCalledOnce();
-	});
-
 	it("rejects a non approve_to_ship checkpoint", async () => {
 		const db = fakeDb({ checkpoint: "brainstorm", from_agent: "E-1" });
 		const r = await writeGateResponseAndRunPostWrite({
@@ -310,30 +125,6 @@ describe("writeGateResponseAndRunPostWrite — guards (no write)", () => {
 });
 
 describe("writeGateResponseAndRunPostWrite — idempotency (Codex R2 HIGH-2)", () => {
-	it("recovers the hook for a legacy identical neutral response without rewriting", async () => {
-		const feedback = '{"approved":false,"feedback":"What happens next?"}';
-		const db = fakeDb(
-			{ checkpoint: "approve_to_ship", from_agent: "E-1" },
-			{ content: feedback, from_agent: "founder-discord" },
-		);
-		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
-		const r = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			db,
-			store: store("awaiting_review"),
-			answer: feedback,
-			onResponseWritten,
-		});
-
-		expect(r).toMatchObject({
-			written: false,
-			retrySafe: true,
-			disposition: "already_applied",
-		});
-		expect(db.insertResponse).not.toHaveBeenCalled();
-		expect(onResponseWritten).toHaveBeenCalledOnce();
-	});
-
 	it("prior identical approval → re-runs hook, does NOT double-write", async () => {
 		const db = fakeDb(
 			{ checkpoint: "approve_to_ship", from_agent: "E-1" },
@@ -514,188 +305,6 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		expect(db.insertResponse).not.toHaveBeenCalled();
 	});
 
-	it("uses the trusted writer for a founder thread decision", async () => {
-		const trustedFounderGateResponse = vi
-			.fn()
-			.mockReturnValue({ responseId: "R-1" });
-		const db = {
-			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
-			trustedFounderGateResponse,
-		};
-		const r = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			actor: "founder-discord",
-			db,
-			store: store("awaiting_review"),
-			founderId: "founder-discord",
-			founderSource: {
-				project: "flywheel",
-				runId: "run-1",
-				issueId: "FLY-1392",
-				approvedHead: "a".repeat(40),
-				classification: "founder_direct_signal",
-				authorityId: "Q-1",
-			},
-			founderMessage: {
-				msgId: "M-1",
-				now: "2026-07-20T12:00:00.000Z",
-			},
-		});
-		expect(r).toMatchObject({ written: true, disposition: "written" });
-		expect(trustedFounderGateResponse).toHaveBeenCalledWith(
-			expect.objectContaining({
-				msgId: "M-1",
-				approvalSource: expect.objectContaining({
-					sourceEventId: "founder-approval:Q-1:M-1",
-				}),
-			}),
-		);
-		expect(db.insertResponse).not.toHaveBeenCalled();
-	});
-
-	it("keeps engine founder feedback atomic with its source event", async () => {
-		const trustedFounderGateResponse = vi
-			.fn()
-			.mockReturnValue({ responseId: "R-feedback" });
-		const db = {
-			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
-			trustedFounderGateResponse,
-		};
-		const feedback = '{"approved":false,"feedback":"fix release notes"}';
-		const r = await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			answer: feedback,
-			intent: "kickback",
-			actor: "founder-discord",
-			db,
-			store: store(),
-			founderId: "founder-discord",
-			gateAuthorityView: {
-				resolve: () => ({
-					kind: "engine",
-					runId: "run-land",
-					questionId: "Q-1",
-					executionId: "E-1",
-					issueId: "FLY-1375",
-					projectName: "flywheel",
-					headSha: "b".repeat(40),
-					authorityMode: "land",
-					subjectKind: "git_head",
-					state: "awaiting_review",
-					cardMessageId: "M-1",
-				}),
-			},
-			founderMessage: {
-				msgId: "M-1",
-				now: "2026-07-20T12:00:00.000Z",
-			},
-			founderRework: {
-				target: "design",
-				invalidationScope: ["design"],
-				verificationPolicy: ["design_review", "founder_gate"],
-				interpretedBy: "flywheel-eng-lead",
-				interpretationReason: "founder explicitly limited correction to design",
-			},
-		});
-
-		expect(r).toMatchObject({ written: true, disposition: "written" });
-		expect(trustedFounderGateResponse).toHaveBeenCalledWith(
-			expect.objectContaining({
-				approvalSource: expect.objectContaining({
-					sourceEventId: "founder-feedback:Q-1:M-1",
-					payload: expect.objectContaining({
-						response: { approved: false, feedback: "fix release notes" },
-						rework: {
-							target: "design",
-							invalidation_scope: ["design"],
-							verification_policy: ["design_review", "founder_gate"],
-							interpreted_by: "flywheel-eng-lead",
-							interpretation_reason:
-								"founder explicitly limited correction to design",
-						},
-					}),
-				}),
-			}),
-		);
-		expect(db.insertResponse).not.toHaveBeenCalled();
-	});
-
-	it("serializes the QA correction route for a trusted founder reject", async () => {
-		const trustedFounderGateResponse = vi
-			.fn()
-			.mockReturnValue({ responseId: "R-feedback-qa" });
-		const db = {
-			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
-			trustedFounderGateResponse,
-		};
-		await writeGateResponseAndRunPostWrite({
-			...baseArgs,
-			answer: '{"approved":false,"feedback":"qa: rerun the checks"}',
-			actor: "founder-discord",
-			db,
-			store: store(),
-			founderId: "founder-discord",
-			gateAuthorityView: {
-				resolve: () => ({
-					kind: "engine",
-					runId: "run-land",
-					questionId: "Q-1",
-					executionId: "E-1",
-					issueId: "FLY-1772",
-					projectName: "flywheel",
-					headSha: "b".repeat(40),
-					authorityMode: "land",
-					subjectKind: "git_head",
-					state: "awaiting_review",
-					cardMessageId: "M-1",
-				}),
-			},
-			founderMessage: { msgId: "M-QA", now: "2026-08-15T08:00:00.000Z" },
-			founderRework: {
-				target: "qa",
-				invalidationScope: ["qa"],
-				verificationPolicy: ["qa_retest", "founder_gate"],
-				interpretedBy: "founder-reply-prefix",
-				interpretationReason: "matched_prefix:qa",
-			},
-		});
-
-		expect(trustedFounderGateResponse).toHaveBeenCalledWith(
-			expect.objectContaining({
-				approvalSource: expect.objectContaining({
-					payload: expect.objectContaining({
-						rework: expect.objectContaining({ target: "qa" }),
-					}),
-				}),
-			}),
-		);
-	});
-
-	it("fails closed before touching storage when a Lead relay carries a founder route hint", async () => {
-		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
-		await expect(
-			writeGateResponseAndRunPostWrite({
-				...baseArgs,
-				db,
-				store: store("awaiting_review"),
-				leadRequest: {
-					requestingLeadId: "lead-1",
-					projectName: "flywheel",
-					identityDigest: "digest",
-				},
-				founderRework: {
-					target: "qa",
-					invalidationScope: ["qa"],
-					verificationPolicy: ["qa_retest", "founder_gate"],
-					interpretedBy: "untrusted-lead-relay",
-					interpretationReason: "must never reach the projector",
-				},
-			}),
-		).rejects.toThrow("lead requests cannot carry founder rework hints");
-		expect(db.getMessageById).not.toHaveBeenCalled();
-		expect(db.insertResponse).not.toHaveBeenCalled();
-	});
-
 	it("never emits a founder source event for feedback or an untrusted actor", async () => {
 		const db = {
 			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
@@ -703,8 +312,6 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		};
 		await writeGateResponseAndRunPostWrite({
 			...baseArgs,
-			answer: '{"approved":false,"feedback":"please redo design"}',
-			intent: "kickback",
 			actor: "lead",
 			db,
 			store: store("awaiting_review"),
@@ -716,13 +323,6 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 				approvedHead: "a".repeat(40),
 				classification: "audit_only",
 				authorityId: "Q-1",
-			},
-			founderRework: {
-				target: "design",
-				invalidationScope: ["design"],
-				verificationPolicy: ["design_review", "founder_gate"],
-				interpretedBy: "lead",
-				interpretationReason: "untrusted metadata must not mint authority",
 			},
 		});
 		expect(db.insertFounderApprovalResponseWithSource).not.toHaveBeenCalled();

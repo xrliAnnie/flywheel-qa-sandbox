@@ -21,54 +21,11 @@
 
 import { REVIEW_BINDING_UNBOUND } from "../StateStore.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
-import type { RunnerLiveness } from "./tmux-lookup.js";
 
 /** Default: a session idle in approved_to_ship this long is "stranded". */
 export const DEFAULT_REWAKE_GRACE_MS = 5 * 60_000;
 /** Default: re-wake one stranded session at most this often. */
 export const DEFAULT_REWAKE_BACKOFF_MS = 5 * 60_000;
-const REAL_GIT_HEAD = /^[0-9a-f]{40}$/;
-
-function normalizedGitHead(value: string | undefined): string | undefined {
-	const normalized = value?.trim().toLowerCase();
-	return normalized && REAL_GIT_HEAD.test(normalized) ? normalized : undefined;
-}
-
-/**
- * FLY-1505: parse the durable failed-ship-attempt suppressor from the raw
- * production session_params column. Missing/malformed/sentinel data fails open:
- * only a real 40-hex head is allowed to pause the automatic re-wake.
- */
-export function shipAttemptFailedSuppressedHead(
-	sessionParamsRaw: string | null | undefined,
-	currentReviewQuestionId?: string,
-): string | undefined {
-	if (!sessionParamsRaw) return undefined;
-	try {
-		const params = JSON.parse(sessionParamsRaw) as unknown;
-		if (!params || typeof params !== "object" || Array.isArray(params)) {
-			return undefined;
-		}
-		const marker = (params as Record<string, unknown>)
-			.fly1505_ship_attempt_failed;
-		if (!marker || typeof marker !== "object" || Array.isArray(marker)) {
-			return undefined;
-		}
-		const markerRecord = marker as Record<string, unknown>;
-		const markerReviewQuestionId = markerRecord.review_question_id;
-		if (
-			typeof markerReviewQuestionId !== "string" ||
-			!currentReviewQuestionId ||
-			markerReviewQuestionId !== currentReviewQuestionId
-		) {
-			return undefined;
-		}
-		const rawHead = markerRecord.head_sha;
-		return typeof rawHead === "string" ? normalizedGitHead(rawHead) : undefined;
-	} catch {
-		return undefined;
-	}
-}
 
 export interface RewakeSessionProbe {
 	execution_id: string;
@@ -79,10 +36,6 @@ export interface RewakeSessionProbe {
 	pr_head_sha?: string;
 	last_activity_at?: string;
 	tmux_session?: string;
-	adapter_type?: string;
-	session_params?: string;
-	/** Real head parsed from fly1505_ship_attempt_failed, when present. */
-	shipAttemptFailedHead?: string;
 }
 
 /**
@@ -100,13 +53,6 @@ export function isRewakeCandidate(
 	const qid = session.review_question_id;
 	if (!qid || qid === REVIEW_BINDING_UNBOUND) return false;
 	if (!session.pr_head_sha) return false;
-	if (
-		normalizedGitHead(session.shipAttemptFailedHead) &&
-		normalizedGitHead(session.shipAttemptFailedHead) ===
-			normalizedGitHead(session.pr_head_sha)
-	) {
-		return false;
-	}
 	const lastMs = parseSqliteUtcMs(session.last_activity_at);
 	if (lastMs === null) return false;
 	return opts.nowMs - lastMs >= opts.graceMs;
@@ -121,48 +67,12 @@ export interface ReconcileStaleApprovedShipDeps {
 	backoff: Map<string, number>;
 	/** execIds already dead-alerted (survives across passes; caller-owned). */
 	deadAlerted: Set<string>;
-	/** Exact-target, three-state process evidence. */
-	probe: (
-		session: RewakeSessionProbe,
-	) => Promise<"alive" | "dead" | "indeterminate">;
+	/** True iff the runner process/tmux is still alive. */
+	isAlive: (session: RewakeSessionProbe) => Promise<boolean>;
 	/** Re-send the approval wake to a live runner. */
 	reWake: (session: RewakeSessionProbe) => Promise<void>;
 	/** One-time alert for a truly-dead stranded ship (defer to FLY-795). */
-	/** True only when the alert sink durably accepted the event. */
-	alertDead: (session: RewakeSessionProbe) => Promise<boolean>;
-	/** Best-effort visibility for evidence that cannot authorize an action. */
-	diagnose?: (
-		session: RewakeSessionProbe,
-		reason: "indeterminate" | "probe_error",
-	) => void | Promise<void>;
-}
-
-/**
- * Translate exact-target tmux evidence into the reconciler's action vocabulary.
- * Only a persisted window whose panes are all dead is positive death evidence.
- * `absent` may instead mean a stale CommDB target, so it must stay diagnostic
- * and take the same harmless, idempotent re-wake path as an indeterminate probe.
- */
-export function classifyStaleShipRunnerLiveness(
-	verdict: RunnerLiveness,
-): "alive" | "dead" | "indeterminate" {
-	if (verdict === "alive") return "alive";
-	if (verdict === "dead_pin") return "dead";
-	return "indeterminate";
-}
-
-export function deadAlertAccepted(result: {
-	sent?: boolean;
-	queued?: boolean;
-	dmSent?: boolean;
-	skipped?: string;
-}): boolean {
-	return Boolean(
-		result.sent ||
-			result.queued ||
-			result.dmSent ||
-			result.skipped === "duplicate",
-	);
+	alertDead: (session: RewakeSessionProbe) => Promise<void>;
 }
 
 export async function reconcileStaleApprovedShip(
@@ -186,24 +96,16 @@ export async function reconcileStaleApprovedShip(
 		if (deps.nowMs < nextAt) continue;
 		deps.backoff.set(session.execution_id, deps.nowMs + deps.backoffMs);
 
-		let verdict: "alive" | "dead" | "indeterminate";
+		let alive: boolean;
 		try {
-			verdict = await deps.probe(session);
+			alive = await deps.isAlive(session);
 		} catch {
-			await deps.diagnose?.(session, "probe_error");
-			await deps.reWake(session);
-			rewoken.push(session.execution_id);
-			continue;
+			// A probe failure is inconclusive — treat as alive (re-wake is
+			// idempotent + harmless) rather than falsely alerting a dead runner.
+			alive = true;
 		}
 
-		if (verdict === "indeterminate") {
-			await deps.diagnose?.(session, "indeterminate");
-			await deps.reWake(session);
-			rewoken.push(session.execution_id);
-			continue;
-		}
-
-		if (verdict === "alive") {
+		if (alive) {
 			await deps.reWake(session);
 			rewoken.push(session.execution_id);
 			continue;
@@ -211,11 +113,9 @@ export async function reconcileStaleApprovedShip(
 
 		// Dead: alert ONCE (do not spam every backoff window), defer to FLY-795.
 		if (!deps.deadAlerted.has(session.execution_id)) {
-			const accepted = await deps.alertDead(session);
-			if (accepted) {
-				deps.deadAlerted.add(session.execution_id);
-				deadAlerted.push(session.execution_id);
-			}
+			deps.deadAlerted.add(session.execution_id);
+			await deps.alertDead(session);
+			deadAlerted.push(session.execution_id);
 		}
 	}
 

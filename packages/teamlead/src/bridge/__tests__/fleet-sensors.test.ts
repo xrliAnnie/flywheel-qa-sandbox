@@ -11,7 +11,6 @@ import type { AlertThreadRow, StateStore } from "../../StateStore.js";
 import { StateStore as RealStateStore } from "../../StateStore.js";
 import {
 	FleetSensors,
-	type FleetSensorsDeps,
 	fleetCorrelationKey,
 	type InfraBotProbe,
 	pageDebounceSecFromEnv,
@@ -52,8 +51,8 @@ function fleetRow(over: Partial<AlertThreadRow>): AlertThreadRow {
 
 /**
  * FLY-1193: the pressure-hold (machine-facing) is DECOUPLED from the page
- * (human-facing) — the hold is placed silently at trigger, but the owner-routed
- * alert page only fires once the episode PERSISTS ≥ N seconds
+ * (human-facing) — the hold is placed silently at trigger, but the page + Lead
+ * load-shed broadcast only fire once the episode PERSISTS ≥ N seconds
  * (FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC, default 120; explicit "0" = trigger-tick
  * page). These tests use a controllable fake hold-store so the durable `set_at`
  * (the sensor-owned episode identity) is deterministic across episodes — a real
@@ -90,8 +89,10 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 	let store: StateStore;
 	let alerts: AlertPayload[];
 	let resolved: string[];
+	let notified: Array<{ leadId: string; content: string; dedupeId?: string }>;
 	let reading: MemoryPressure | null;
 	let now: number;
+	const LEADS = ["tadashi", "honey-lemon", "peter"];
 
 	beforeEach(() => {
 		now = 1_720_000_000_000;
@@ -99,6 +100,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		store = holdStore as unknown as StateStore;
 		alerts = [];
 		resolved = [];
+		notified = [];
 		reading = null;
 	});
 
@@ -112,6 +114,11 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 			resolveTicket: async (ck) => {
 				resolved.push(ck);
 			},
+			notifyLead: async (leadId, content, dedupeId) => {
+				notified.push({ leadId, content, dedupeId });
+				return true;
+			},
+			listLeadIds: () => LEADS,
 			readPressure: async () => reading,
 			env: env as unknown as NodeJS.ProcessEnv,
 			now: () => now,
@@ -127,6 +134,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		await sensors.tick(); // danger 2 → trigger; hold placed silently
 		expect(store.getFleetPressureHold()?.set_by).toBe("swap-sensor");
 		expect(alerts).toHaveLength(0); // debounce not elapsed
+		expect(notified).toHaveLength(0);
 		reading = pressure(45, 1000); // self-heal
 		await sensors.tick(); // clear
 		expect(store.getFleetPressureHold()).toBeUndefined();
@@ -150,7 +158,6 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		expect(alerts[0]!.eventType).toBe("swap_pressure_high");
 		expect(alerts[0]!.severity).toBe("severe");
 		expect(alerts[0]!.eventId).toBe(`swap-pressure:${holdSetAt}`);
-		expect(alerts[0]!.episodeId).toBe(holdSetAt);
 		now += 60_000;
 		await sensors.tick(); // already paged this episode → no repeat
 		expect(alerts).toHaveLength(1);
@@ -179,8 +186,8 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 	//      persists across several ticks (not an elapsed≈0 blip) yet self-heals
 	//      before N. Mirrors the 2026-07-12 09:04:31→09:05:01 (30s) alert_threads
 	//      episode, generalized to ~95s. The whole issue: this must produce ZERO
-	//      page — only a silent hold place→clear.
-	it("multi-tick spike self-healing before N: persists across ticks yet zero page", async () => {
+	//      page, ZERO Lead load-shed broadcast — only a silent hold place→clear.
+	it("multi-tick spike self-healing before N: persists across ticks yet zero page / zero broadcast", async () => {
 		const sensors = makeSensors(); // N=120
 		reading = pressure(5, 1000);
 		await sensors.tick();
@@ -192,6 +199,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 			reading = pressure(6, 1000); // free 6 < LOW 8 → still danger, monitor stays in-pressure
 			await sensors.tick();
 			expect(alerts).toHaveLength(0); // never paged inside the debounce window
+			expect(notified).toHaveLength(0); // never broadcast
 		}
 		// self-heal at ~95s elapsed, still < N
 		now += 5_000;
@@ -199,6 +207,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		await sensors.tick(); // clear
 		expect(store.getFleetPressureHold()).toBeUndefined(); // hold quietly lifted
 		expect(alerts).toHaveLength(0); // zero page across the whole self-healed episode
+		expect(notified).toHaveLength(0); // zero load-shed broadcast
 		expect(resolved).toContain(
 			fleetCorrelationKey("swap", "swap_pressure_high"),
 		); // un-paged resolve is a safe no-op
@@ -209,35 +218,16 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		const sensors = makeSensors({ FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0" });
 		reading = pressure(5, 1000);
 		await sensors.tick();
-		await sensors.tick(); // trigger + immediate owner-routed page
+		await sensors.tick(); // trigger + immediate page + broadcast
 		expect(alerts).toHaveLength(1);
 		expect(alerts[0]!.title).toContain("page 延迟已关闭");
 		expect(alerts[0]!.body).not.toContain("已持续");
+		// copy honesty: the Lead broadcast must NOT overstate duration at N=0.
+		expect(notified).toHaveLength(3);
+		expect(notified[0]!.content).toContain("page 延迟已关闭");
+		expect(notified[0]!.content).not.toContain("已持续");
 		await sensors.tick(); // same episode → no re-page
 		expect(alerts).toHaveLength(1);
-	});
-
-	it("routes one pressure episode only to the alert sink, never the legacy per-Lead mailbox fan-out", async () => {
-		const notifyLead = vi.fn(async () => true);
-		const sensors = new FleetSensors({
-			store,
-			alert: async (p): Promise<AlertResult> => {
-				alerts.push(p);
-				return { sent: true };
-			},
-			notifyLead,
-			listLeadIds: () => ["tadashi", "honey-lemon", "peter"],
-			readPressure: async () => reading,
-			env: { FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0" },
-			now: () => now,
-			logger: () => {},
-		} as FleetSensorsDeps);
-		reading = pressure(5, 1000);
-		await sensors.tick();
-		await sensors.tick();
-		await sensors.tick();
-		expect(alerts).toHaveLength(1);
-		expect(notifyLead).not.toHaveBeenCalled();
 	});
 
 	// 4 — page then clear: lift + resolve (current-behavior parity once paged).
@@ -255,25 +245,32 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		);
 	});
 
-	// 5 — the alert ticket is the sole human path; repair only reconfirms the hold.
-	it("owner-routed page and repair stay single-path without mailbox side effects", async () => {
+	// 5 — broadcast fires on the PRIMARY path (maybePage), dedupeId anchored; latch; repair idempotent.
+	it("load-shed broadcast: direct on the page due-point with a holdSetAt dedupeId; latch + repair idempotent", async () => {
 		const sensors = makeSensors({ FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0" });
 		reading = pressure(5, 1000);
 		await sensors.tick();
-		await sensors.tick(); // trigger + page
-		expect(alerts).toHaveLength(1);
-		const repair = await sensors.swapPressureRepair(alerts[0]!);
-		expect(repair.outcome).toBe("attempted");
-		expect(repair.action).toBe("pressure_hold");
-		expect(repair.detail).not.toContain("广播");
+		await sensors.tick(); // trigger + page + broadcast (maybePage direct call)
+		const holdSetAt = store.getFleetPressureHold()!.set_at;
+		expect(notified).toHaveLength(3);
+		for (const leadId of LEADS) {
+			expect(notified.find((n) => n.leadId === leadId)?.dedupeId).toBe(
+				`swap-broadcast:${holdSetAt}:${leadId}`,
+			);
+		}
+		await sensors.tick(); // same episode → latch blocks re-broadcast
+		expect(notified).toHaveLength(3);
+		await sensors.swapPressureRepair(alerts[0]!); // repair uses the same helper
+		expect(notified).toHaveLength(3); // dedup — no re-send
 	});
 
-	// 6 — repair remains an idempotent hold confirmation when already placed.
-	it("repair reconfirms an already placed hold without inventing a second action", async () => {
-		const sensors = makeSensors();
+	// 6 — repair still broadcasts even when the hold is already placed (regression: old `!placed` swallow).
+	it("repair broadcasts even when the hold was already placed (placed=false must NOT swallow the broadcast)", async () => {
+		const sensors = makeSensors(); // N=120 → no auto-broadcast at trigger
 		reading = pressure(5, 1000);
 		await sensors.tick();
-		await sensors.tick(); // trigger; hold placed; no page yet
+		await sensors.tick(); // trigger; hold placed; no page/broadcast yet
+		expect(notified).toHaveLength(0);
 		const holdSetAt = store.getFleetPressureHold()!.set_at;
 		const r = await sensors.swapPressureRepair({
 			leadId: "swap",
@@ -285,8 +282,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 			severity: "severe",
 		});
 		expect(r.outcome).toBe("attempted");
-		expect(r.action).toBe("pressure_hold");
-		expect(store.getFleetPressureHold()?.set_at).toBe(holdSetAt);
+		expect(notified).toHaveLength(3); // broadcast happened despite placed=false
 	});
 
 	// 7 — restart mid-debounce: fresh instance, durable sensor hold, no immediate page; eventId cross-restart stable.
@@ -307,8 +303,8 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		expect(alerts[0]!.eventId).toBe(`swap-pressure:${holdSetAt}`); // stable via durable set_at
 	});
 
-	// 8 — crash-boundary identity stability: root page eventId anchors holdSetAt.
-	it("crash boundary: root page eventId stays anchored to the durable holdSetAt", async () => {
+	// 8 — crash-boundary identity stability: root page eventId + broadcast dedupeId anchor holdSetAt.
+	it("crash boundary: root page eventId and broadcast dedupeId stay anchored to the durable holdSetAt", async () => {
 		holdStore.setFleetPressureHold({
 			setBy: "swap-sensor",
 			watermark: "94.0%",
@@ -319,8 +315,13 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		await sensors.tick();
 		await sensors.tick(); // fresh trigger
 		now += 121_000;
-		await sensors.tick(); // due → page
+		await sensors.tick(); // due → page + broadcast
 		expect(alerts[0]!.eventId).toBe(`swap-pressure:${holdSetAt}`);
+		for (const leadId of LEADS) {
+			expect(notified.find((n) => n.leadId === leadId)?.dedupeId).toBe(
+				`swap-broadcast:${holdSetAt}:${leadId}`,
+			);
+		}
 	});
 
 	// 8a — manual hold: a later episode is never permanently silenced (identity = episodeStart).
@@ -350,6 +351,47 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		expect(alerts[1]!.eventId).not.toBe(alerts[0]!.eventId); // B not swallowed
 	});
 
+	// 8b — broadcast partial failure: latch not set, next due tick retries only the missing Leads.
+	it("broadcast partial failure: latch stays unset, next tick retries the missing Lead (CommDB dedup covers the rest)", async () => {
+		const seen = new Set<string>();
+		let failPeter = true;
+		const sensors = new FleetSensors({
+			store,
+			alert: async (p): Promise<AlertResult> => {
+				alerts.push(p);
+				return { sent: true };
+			},
+			resolveTicket: async (ck) => {
+				resolved.push(ck);
+			},
+			notifyLead: async (leadId, content, dedupeId) => {
+				if (leadId === "peter" && failPeter) throw new Error("commdb down");
+				if (dedupeId && seen.has(dedupeId)) return true; // INSERT OR IGNORE
+				if (dedupeId) seen.add(dedupeId);
+				notified.push({ leadId, content, dedupeId });
+				return true;
+			},
+			listLeadIds: () => LEADS,
+			readPressure: async () => reading,
+			env: {
+				FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0",
+			} as unknown as NodeJS.ProcessEnv,
+			now: () => now,
+			logger: () => {},
+		});
+		reading = pressure(5, 1000);
+		await sensors.tick();
+		await sensors.tick(); // trigger + page + broadcast; peter throws → latch NOT set
+		expect(notified.map((n) => n.leadId).sort()).toEqual([
+			"honey-lemon",
+			"tadashi",
+		]);
+		failPeter = false;
+		await sensors.tick(); // latch unset → retry: tadashi/honey-lemon dedup, peter delivered
+		expect(notified.filter((n) => n.leadId === "tadashi")).toHaveLength(1); // not doubled
+		expect(notified.filter((n) => n.leadId === "peter")).toHaveLength(1); // now delivered
+	});
+
 	// 8c — page alert throws before durable: latch stays null, next tick retries → exactly one page.
 	it("page alert throwing before durable handling: latch stays null, next tick retries → exactly one page", async () => {
 		let firstAlert = true;
@@ -364,6 +406,8 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 				return { sent: true };
 			},
 			resolveTicket: async () => {},
+			notifyLead: async () => true,
+			listLeadIds: () => [],
 			readPressure: async () => reading,
 			env: {
 				FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0",
@@ -379,8 +423,8 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		expect(alerts).toHaveLength(1);
 	});
 
-	// 8d — a fresh instance that recovers before re-confirming lifts the hold safely.
-	it("cross-restart recovery lifts the durable hold after health is proven", async () => {
+	// 8d — cross-restart broadcast best-effort: a fresh instance that recovers before re-confirming lifts the hold safely.
+	it("cross-restart broadcast is best-effort: a fresh instance that recovers before re-confirming lifts the hold safely (no durable outbox, no stale broadcast)", async () => {
 		holdStore.setFleetPressureHold({
 			setBy: "swap-sensor",
 			watermark: "94.0%",
@@ -391,24 +435,26 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		expect(store.getFleetPressureHold()).toBeDefined();
 		await sensors.tick(); // proven healthy → restart-safety lift
 		expect(store.getFleetPressureHold()).toBeUndefined();
+		expect(notified).toHaveLength(0); // no stale broadcast re-sent
 	});
 
 	// 8e — delayed queue drain: prefix-aware precise matching (R4-2 + R5-4).
-	it("delayed drain (i): repair on a recovered episode does NOT re-place the hold", async () => {
+	it("delayed drain (i): repair on a recovered episode does NOT re-place the hold or re-broadcast", async () => {
 		const sensors = makeSensors({ FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0" });
 		reading = pressure(5, 1000);
 		await sensors.tick();
 		await sensors.tick(); // trigger + page
 		const stalePayload = { ...alerts[0]! };
+		const beforeNotified = notified.length;
 		reading = pressure(45, 1000);
 		now += 30_000;
 		await sensors.tick(); // clear → hold lifted
 		expect(store.getFleetPressureHold()).toBeUndefined();
 		const r = await sensors.swapPressureRepair(stalePayload); // drained late
 		expect(store.getFleetPressureHold()).toBeUndefined(); // NOT re-placed
-		expect(r.outcome).toBe("no_action");
 		expect(r.action).toBe("none");
 		expect(r.detail).toContain("已恢复");
+		expect(notified).toHaveLength(beforeNotified); // no stale broadcast
 	});
 
 	it("delayed drain (ii): payload A drained during live episode B is a no-op — never re-targets B", async () => {
@@ -427,13 +473,14 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		await sensors.tick(); // trigger B
 		const holdB = store.getFleetPressureHold()!.set_at;
 		expect(holdB).not.toBe(holdA);
+		const notifiedBeforeDrain = notified.length;
 		const r = await sensors.swapPressureRepair(payloadA); // A drained during live B
-		expect(r.outcome).toBe("no_action");
 		expect(r.action).toBe("none");
+		expect(notified).toHaveLength(notifiedBeforeDrain); // A's identity never used on B
 	});
 
-	it("delayed drain (iii): repair on the SAME live episode idempotently ensures the hold", async () => {
-		const sensors = makeSensors();
+	it("delayed drain (iii): repair on the SAME live episode ensures hold + broadcasts (dedup, no double-send)", async () => {
+		const sensors = makeSensors(); // N=120: no auto-broadcast yet
 		reading = pressure(5, 1000);
 		await sensors.tick();
 		await sensors.tick(); // trigger; hold placed
@@ -449,6 +496,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		});
 		expect(r.action).toBe("pressure_hold");
 		expect(store.getFleetPressureHold()?.set_by).toBe("swap-sensor");
+		expect(notified).toHaveLength(3);
 	});
 
 	it("delayed drain (iv): swap-holdfail prefix only retries the SAME still-unconfirmed episode", async () => {
@@ -463,54 +511,8 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 			body: "b",
 			severity: "severe",
 		});
-		expect(r.outcome).toBe("no_action");
 		expect(r.action).toBe("none");
 		expect(r.detail).toContain("hold-failure episode 已过去");
-	});
-
-	it("live episode without any effective hold needs human instead of pretending no action was attempted", async () => {
-		const sensors = makeSensors();
-		reading = pressure(5, 1000);
-		await sensors.tick();
-		await sensors.tick();
-		const episodeId = store.getFleetPressureHold()!.set_at;
-		holdStore.clearFleetPressureHold();
-
-		const r = await sensors.swapPressureRepair({
-			leadId: "swap",
-			projectName: "machine",
-			eventId: `swap-pressure:${episodeId}`,
-			eventType: "swap_pressure_high",
-			title: "t",
-			body: "b",
-			severity: "severe",
-		});
-
-		expect(r.outcome).toBe("needs_human");
-		expect(r.detail).toContain("派发尚未暂停");
-	});
-
-	it("live episode with a manual hold is no_action and stays non-escalating", async () => {
-		holdStore.setFleetPressureHold({ setBy: "annie-manual" });
-		const sensors = makeSensors({ FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0" });
-		reading = pressure(5, 1000);
-		await sensors.tick();
-		await sensors.tick();
-		const episodeId = String(now);
-
-		const r = await sensors.swapPressureRepair({
-			leadId: "swap",
-			projectName: "machine",
-			eventId: `swap-pressure:${episodeId}`,
-			eventType: "swap_pressure_high",
-			title: "t",
-			body: "b",
-			severity: "severe",
-		});
-
-		expect(r.outcome).toBe("no_action");
-		expect(r.action).toBe("none");
-		expect(store.getFleetPressureHold()?.set_by).toBe("annie-manual");
 	});
 
 	it("delayed drain (v): unknown / malformed eventId prefix → needs_human, zero side effect", async () => {
@@ -527,6 +529,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		expect(r.outcome).toBe("needs_human");
 		expect(r.action).toBe("none");
 		expect(store.getFleetPressureHold()).toBeUndefined();
+		expect(notified).toHaveLength(0);
 	});
 
 	// 8e(vi) — an EMPTY suffix on a recognized prefix is a malformed identity →
@@ -551,6 +554,7 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 			expect(r.action, eventId).toBe("none");
 		}
 		expect(store.getFleetPressureHold()).toBeUndefined();
+		expect(notified).toHaveLength(0);
 	});
 
 	// 9 — hold write failure → fail-loud page (independent eventId), then recovery restores normal debounce.
@@ -562,9 +566,6 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		await sensors.tick(); // trigger → ensureSensorHold throws → unconfirmed → fail-loud
 		expect(alerts).toHaveLength(1);
 		expect(alerts[0]!.eventId).toMatch(/^swap-holdfail:/);
-		expect(alerts[0]!.episodeId).toBe(
-			alerts[0]!.eventId.slice("swap-holdfail:".length),
-		);
 		expect(alerts[0]!.title).toContain("保护未能启用");
 		await sensors.tick(); // still unconfirmed same episode → latch, no re-spam
 		expect(alerts).toHaveLength(1);
@@ -688,52 +689,6 @@ describe("FleetSensors — memory pressure debounce (FLY-1193 / FLY-1142)", () =
 		expect(await sensors.recoveryProbe(fleetRow({}))).toBe(true);
 	});
 
-	it("replayFreshness is episode-aware and fail-open when evidence is missing", async () => {
-		const sensors = makeSensors({ FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0" });
-		const input = {
-			eventType: "swap_pressure_high" as const,
-			leadId: "swap",
-			eventId: "swap-pressure:old",
-			episodeId: "old",
-		};
-		expect(sensors.replayFreshness(input)).toBeNull();
-
-		reading = pressure(5, 1000);
-		await sensors.tick();
-		await sensors.tick();
-		const currentEpisode = store.getFleetPressureHold()!.set_at;
-		expect(
-			sensors.replayFreshness({ ...input, episodeId: currentEpisode }),
-		).toBe(false);
-		expect(sensors.replayFreshness(input)).toBe(true);
-		expect(
-			sensors.replayFreshness({ ...input, episodeId: undefined }),
-		).toBeNull();
-
-		reading = pressure(45, 1000);
-		await sensors.tick();
-		expect(sensors.replayFreshness(input)).toBe(true);
-		expect(
-			sensors.replayFreshness({
-				eventType: "tmux_server_lost",
-				leadId: "tmux-server",
-				eventId: "tmux:1",
-			}),
-		).toBeNull();
-	});
-
-	it("replayFreshness preserves bridge-exit evidence after boot reconcile", () => {
-		const sensors = makeSensors();
-		const input = {
-			eventType: "bridge_abnormal_exit" as const,
-			leadId: "bridge",
-			eventId: "bridge-exit:1",
-		};
-		expect(sensors.replayFreshness(input)).toBeNull();
-		sensors.bootReconcileDone = true;
-		expect(sensors.replayFreshness(input)).toBeNull();
-	});
-
 	it("restart safety: a stranded durable hold is NOT lifted on the first post-restart sample (delta unknown)", async () => {
 		holdStore.setFleetPressureHold({
 			setBy: "swap-sensor",
@@ -848,13 +803,6 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 				probeSource: "launchctl print",
 			},
 		];
-		expect(
-			sensors.replayFreshness({
-				eventType: "infra_bot_down",
-				leadId: "infra-bot:claude",
-				eventId: "infra-bot-down:claude",
-			}),
-		).toBeNull();
 		await sensors.tick();
 		await sensors.tick(); // still dead — latched
 		expect(alerts).toHaveLength(1);
@@ -863,7 +811,6 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 			provider: "claude",
 			jobLabel: "com.flywheel.claw-infra",
 		});
-		expect(alerts[0]!.body).not.toContain("升级");
 	});
 
 	it("dead→alive edge clears the latch + quiet-resolves; a NEW death re-fires", async () => {
@@ -904,8 +851,8 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		expect((await okSensors.infraBotKickstartRepair(payload)).outcome).toBe(
 			"attempted",
 		);
-		// A FAILED restart is still an attempt, so the bounded two-attempt
-		// contract gets its second try on reconcile.
+		// A FAILED restart is still an attempt — stays in the T2 loop so the
+		// contract's "2 次失败 → @Annie" gets its second try on reconcile.
 		const failSensors = makeSensors(async () => ({
 			ok: false,
 			error: "nope",
@@ -913,7 +860,6 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		const failed = await failSensors.infraBotKickstartRepair(payload);
 		expect(failed.outcome).toBe("attempted");
 		expect(failed.detail).toContain("失败");
-		expect(failed.detail).not.toContain("升级");
 		const blind = await okSensors.infraBotKickstartRepair({
 			...payload,
 			metadata: {},
@@ -995,23 +941,9 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 			event_type: "infra_bot_down",
 		});
 		expect(await sensors.recoveryProbe(row)).toBe(false);
-		expect(
-			sensors.replayFreshness({
-				eventType: "infra_bot_down",
-				leadId: "infra-bot:claude",
-				eventId: "infra-bot-down:claude",
-			}),
-		).toBe(false);
 		probes = [{ ...probes[0]!, alive: true }];
 		await sensors.tick();
 		expect(await sensors.recoveryProbe(row)).toBe(true);
-		expect(
-			sensors.replayFreshness({
-				eventType: "infra_bot_down",
-				leadId: "infra-bot:claude",
-				eventId: "infra-bot-down:claude",
-			}),
-		).toBe(true);
 	});
 });
 
@@ -1062,8 +994,6 @@ describe("FleetSensors — zombie scan (Task 2.6)", () => {
 		expect(alerts[0]!.eventType).toBe("zombie_session_backlog");
 		expect(alerts[0]!.body).toContain("z-1");
 		expect(alerts[0]!.body).toContain("FLY-1066");
-		expect(alerts[0]!.body).toContain("工单挂在频道等值守初审");
-		expect(alerts[0]!.body).not.toContain("直接升级");
 	});
 
 	it("scan is throttled (~15 min): consecutive ticks do not rescan", async () => {

@@ -17,6 +17,7 @@ import {
 	createInfraAlertSink,
 	ISSUE_PROGRESS_KINDS,
 } from "./infra-event-router.js";
+import { escalatesAtEnqueue } from "./kind-contract.js";
 import {
 	deriveTicketProvider,
 	ownerRegistryFromEnv,
@@ -41,16 +42,11 @@ export interface InfraAlertRoutingDeps {
 	projects: ProjectEntry[];
 	/** config.discordBotToken — fallback when the owning lead has no botToken. */
 	globalBotToken?: string;
-	/** The unified-channel Hub, or the fail-loud raw notifier when no Hub exists. */
+	/** The raw sink (Hub or notifier) — today's behavior + the fail-safe target. */
 	rawSink: AlertSinkLike;
-	/** One durable alert letter to Claw; the default route for ordinary alerts. */
-	ticketSink: AlertSinkLike;
-	/** Canonical founder id for workflow_engine_escalation. */
-	founderUserId?: string;
 	/** Test seams. */
-	alertsEnabled?: () => boolean;
 	routingEnabled?: () => boolean;
-	/** Test seam; production ticket enrichment is welded on by default. */
+	/** FLY-927 (Task 2.3): 🎫 owner enrichment gate; default FLYWHEEL_ALERT_TICKETS. */
 	ticketsEnabled?: () => boolean;
 	fetchImpl?: typeof fetch;
 	sleepFn?: (ms: number) => Promise<void>;
@@ -60,52 +56,36 @@ export interface InfraAlertRoutingDeps {
 
 /**
  * The routed alert sink plugin.ts installs in front of every emission source.
- * Production routing is welded on; injected test seams may still isolate paths.
+ * FLYWHEEL_ALERT_ROUTING unset ⇒ pure passthrough to `rawSink`.
  */
 export function buildInfraAlertRouting(
 	deps: InfraAlertRoutingDeps,
 ): AlertSinkLike {
-	const configuredLead = (payload: AlertPayload) =>
-		deps.projects
-			.find((project) => project.projectName === payload.projectName)
-			?.leads.find((lead) => lead.agentId === payload.leadId);
-
 	const resolveBoundIssueThread = (
 		payload: AlertPayload,
 	): BoundIssueThread | null => {
-		// Ordinary issue-progress emitters carry the execution id in sessionKey.
-		// Workflow alerts keep `wf:<run>` there for outbox/ticket grouping, so their
-		// issue-thread copy resolves through the identity-bound metadata instead.
-		// Their pinned issue + Lead identity keeps routing possible even when the
-		// dead execution never had (or no longer has) a session row.
-		const workflowEngine =
-			payload.eventType === "workflow_engine_issue_alert"
-				? payload.metadata?.workflowEngine
-				: undefined;
-		const executionId = workflowEngine?.executionId ?? payload.sessionKey;
+		// The three issue-progress emitters all carry the execution id in
+		// sessionKey (gate-poller lead-pending/undelivered escalations + the
+		// three-stage stuck alert). No sessionKey / unknown session ⇒ unbound.
+		const executionId = payload.sessionKey;
 		if (!executionId) return null;
-		const session =
-			deps.store.getSession(executionId) ??
-			(workflowEngine?.issueId
-				? deps.store.getSessionByIssue(workflowEngine.issueId)
-				: undefined);
-		const issueId = workflowEngine?.issueId ?? session?.issue_id;
-		if (!issueId) return null;
-		const lead = session
-			? resolveLeadForIssue(
-					deps.projects,
-					session.project_name,
-					parseLabels(session.issue_labels),
-				).lead
-			: configuredLead(payload);
-		if (!lead) return null;
-		const thread = deps.store.getChatThreadByIssue(issueId, lead.chatChannel);
+		const session = deps.store.getSession(executionId);
+		if (!session) return null;
+		const { lead } = resolveLeadForIssue(
+			deps.projects,
+			session.project_name,
+			parseLabels(session.issue_labels),
+		);
+		const thread = deps.store.getChatThreadByIssue(
+			session.issue_id,
+			lead.chatChannel,
+		);
 		if (!thread?.thread_id) return null;
 		return {
 			threadId: thread.thread_id,
 			channelId: thread.channel_id,
-			issueId,
-			issueIdentifier: session?.issue_identifier ?? undefined,
+			issueId: session.issue_id,
+			issueIdentifier: session.issue_identifier ?? undefined,
 			executionId,
 		};
 	};
@@ -114,17 +94,12 @@ export function buildInfraAlertRouting(
 		payload: AlertPayload,
 		thread: BoundIssueThread,
 	): Promise<AlertResult> => {
-		const session =
-			deps.store.getSession(thread.executionId) ??
-			deps.store.getSessionByIssue(thread.issueId);
-		const lead = session
-			? resolveLeadForIssue(
-					deps.projects,
-					payload.projectName,
-					parseLabels(session.issue_labels),
-				).lead
-			: configuredLead(payload);
-		if (!lead) return deps.ticketSink.alert(payload);
+		const session = deps.store.getSession(thread.executionId);
+		const { lead } = resolveLeadForIssue(
+			deps.projects,
+			payload.projectName,
+			parseLabels(session?.issue_labels),
+		);
 		const sev =
 			payload.severity === "severe"
 				? "🚨"
@@ -150,7 +125,7 @@ export function buildInfraAlertRouting(
 				},
 				botToken: lead.botToken ?? deps.globalBotToken,
 				onUndeliverable: async () => {
-					fallback = await deps.ticketSink.alert(payload);
+					fallback = await deps.rawSink.alert(payload);
 				},
 			},
 			{
@@ -165,8 +140,6 @@ export function buildInfraAlertRouting(
 
 	const routedSink = createInfraAlertSink({
 		rawSink: deps.rawSink,
-		ticketSink: deps.ticketSink,
-		founderUserId: deps.founderUserId,
 		routingEnabled: deps.routingEnabled,
 		resolveBoundIssueThread,
 		deliverToIssueThread,
@@ -175,12 +148,12 @@ export function buildInfraAlertRouting(
 
 	// FLY-927 (Task 2.3): owner @-target enrichment. The root POST is the ONLY
 	// moment the mention can ride atomically (the Hub sees the messageId after
-	// the fact), so the ticket context — owner and first-seen — is computed
+	// the fact), so the ticket context — owner, status, first-seen — is computed
 	// HERE, before the sink. Ticket-queue kinds only; issue-progress kinds never
 	// render a 🎫 header. Enrichment failure degrades to the un-enriched payload
 	// (owner —), never blocks the alert.
-	const ticketsEnabled = deps.ticketsEnabled ?? (() => true);
-	const alertsEnabled = deps.alertsEnabled ?? (() => true);
+	const ticketsEnabled =
+		deps.ticketsEnabled ?? (() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
 	const now = deps.now ?? (() => Date.now());
 	const enrich = (payload: AlertPayload): AlertPayload => {
 		if (!ticketsEnabled() || payload.ticket) return payload;
@@ -206,6 +179,14 @@ export function buildInfraAlertRouting(
 						});
 			const owner = resolveTicketOwner(payload.eventType, provider, reg);
 			const face = ownerTicketFace(owner);
+			// FLY-1082 (Task 1.5): (b)-type kinds land directly ESCALATED at
+			// enqueue, contract-driven — the generalization of the old hardcoded
+			// runner_lead_pending_unhandled special case (which, being an
+			// issue-progress kind, never even reached this enrichment; the contract
+			// keeps its semantics on the Hub path instead).
+			const status = escalatesAtEnqueue(payload.eventType)
+				? "ESCALATED"
+				: "NEW";
 			// first-seen: a re-fire of the SAME episode keeps the original stamp.
 			const active = deps.store.getActiveAlertThread(
 				correlationKeyFor(payload),
@@ -225,6 +206,7 @@ export function buildInfraAlertRouting(
 				ticket: {
 					ownerUserId: face.ownerUserId,
 					ownerLabel: face.ownerLabel,
+					status,
 					firstSeenMs,
 					ownerRef,
 				},
@@ -234,19 +216,5 @@ export function buildInfraAlertRouting(
 		}
 	};
 
-	return {
-		alert: (payload) => {
-			if (!alertsEnabled()) {
-				deps.store.recordAlertSystemSuppression({
-					leadId: payload.leadId,
-					eventId: payload.eventId,
-					eventType: payload.eventType,
-					payload: JSON.stringify(payload),
-					sessionKey: payload.sessionKey,
-				});
-				return Promise.resolve({ skipped: "disabled" });
-			}
-			return routedSink.alert(enrich(payload));
-		},
-	};
+	return { alert: (payload) => routedSink.alert(enrich(payload)) };
 }

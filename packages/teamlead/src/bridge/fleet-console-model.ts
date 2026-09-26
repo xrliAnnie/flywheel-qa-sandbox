@@ -13,7 +13,7 @@
  * listed in `ConsoleLeadView` are exposed.
  */
 
-import { type FlagView, MODEL_IDS } from "flywheel-config";
+import type { FlagView } from "flywheel-config";
 import type { LeadBackendId } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import {
@@ -21,7 +21,6 @@ import {
 	computeLeadCapabilities,
 	type TierOption,
 } from "./fleet-capabilities.js";
-import type { ManagementSnapshotV1 } from "./management-console-contract.js";
 
 /** Online presentation for the card dot (derived from the fleet evidence). */
 export type ConsoleLeadOnline = "online" | "offline" | "degraded" | "unknown";
@@ -39,7 +38,7 @@ export interface ConsoleLeadView {
 	backendSource: "explicit" | "legacy" | "default";
 	/** Active model id, or `null` for the account-default tier. */
 	currentModelId: string | null;
-	/** Resolved display label for the active tier (e.g. "Fable 5", "Opus 5"). */
+	/** Resolved display label for the active tier (e.g. "Fable 5", "Opus 4.8"). */
 	currentModelLabel: string;
 	backendOptions: BackendOption[];
 	tierOptions: readonly TierOption[];
@@ -143,9 +142,6 @@ export interface ConsoleSnapshot {
 	commCliPath?: string;
 }
 
-/** Versioned replacement used while the old flat DTO remains route-compatible. */
-export type VersionedConsoleSnapshot = ManagementSnapshotV1;
-
 /** Resolve the display label for a Lead's active model under its backend. */
 function modelLabelFor(
 	tiers: readonly TierOption[],
@@ -161,7 +157,7 @@ function modelLabelFor(
 /**
  * Build one Lead's console view. `legacyBackend` is the FLY-224 legacy backend
  * resolution used only when `lead.backend` is unset (keeps the effective backend
- * aligned with the fleet CLI).
+ * aligned with the watchdog partition and the fleet CLI).
  */
 export function buildConsoleLeadView(
 	projectName: string,
@@ -171,9 +167,6 @@ export function buildConsoleLeadView(
 	const cap = computeLeadCapabilities(lead, legacyBackend);
 	// inc1 keeps `model` absent (not normalized); absent = account default = null.
 	const currentModelId = typeof lead.model === "string" ? lead.model : null;
-	const effectiveModelForDisplay =
-		currentModelId ??
-		(cap.currentBackend === "claude-code" ? MODEL_IDS.FABLE : null);
 	// FLY-671: effort likewise absent = null = 默认 (companion → xhigh at launch).
 	const currentEffort = typeof lead.effort === "string" ? lead.effort : null;
 	return {
@@ -184,7 +177,7 @@ export function buildConsoleLeadView(
 		currentBackend: cap.currentBackend,
 		backendSource: cap.backendSource,
 		currentModelId,
-		currentModelLabel: modelLabelFor(cap.tierOptions, effectiveModelForDisplay),
+		currentModelLabel: modelLabelFor(cap.tierOptions, currentModelId),
 		backendOptions: cap.backendOptions,
 		tierOptions: cap.tierOptions,
 		allowedModelTargets: cap.allowedModelTargets,
@@ -233,9 +226,7 @@ export function buildConsoleSnapshot(
 		}
 	}
 	const snapshot: ConsoleSnapshot = { leads };
-	if (extras?.featureFlags) {
-		snapshot.featureFlags = extras.featureFlags;
-	}
+	if (extras?.featureFlags) snapshot.featureFlags = extras.featureFlags;
 	// FLY-728 seam: only attach when a provider actually supplied rows.
 	if (extras?.perIssueModels && extras.perIssueModels.length > 0) {
 		snapshot.perIssueModels = extras.perIssueModels;

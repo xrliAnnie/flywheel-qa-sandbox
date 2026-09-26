@@ -3,7 +3,7 @@
 #
 # launchd cannot source .bashrc or .env files, so this wrapper handles
 # environment setup before exec-ing the real Bridge process. Mirrors the
-# pattern used by the Lead launch wrapper (FLY-74).
+# pattern established by scripts/flywheel-lead-wrapper.sh (FLY-74).
 #
 # Usage: flywheel-bridge-wrapper.sh
 #   Invoked by launchd plist ProgramArguments — not intended for manual use.
@@ -161,39 +161,6 @@ if [[ -f "$PID_FILE" ]]; then
     exit 0
   fi
 fi
-
-# ── FLY-1501: durable restart-storm ceiling ─────────────────────
-# Placement is load-bearing: both single-instance guards have finished, but
-# this launch has not written its PID/running markers yet. Count only a wrapper
-# invocation that will actually launch the Bridge.
-RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-${FLYWHEEL_DIR}/scripts/restart-storm-gate.py}"
-# `set -e` aborts on a bare non-zero command, so the exit code must be
-# captured in an errexit-exempt `||` list — otherwise a held brake would
-# kill this wrapper with the gate's status and launchd would read the
-# hold as a crash.
-RESTART_STORM_RC=0
-"$RESTART_STORM_GATE_BIN" gate bridge || RESTART_STORM_RC=$?
-if [ "$RESTART_STORM_RC" -ne 0 ]; then
-  if [ "$RESTART_STORM_RC" -eq 126 ] || [ "$RESTART_STORM_RC" -eq 127 ]; then
-    # Bounded and synchronous, via the shared helper. Unbounded would let a
-    # hung osascript inside meta-alert.sh pin this launch path so launchd
-    # never retries once the brake is restored; detached would let launchd
-    # kill the notifier with the job's process group before it writes its
-    # marker, restoring the silence this branch removes.
-    "${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh" \
-      "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
-      "${FLYWHEEL_META_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/meta-alert.sh}" \
-      restart_storm_gate_unavailable_bridge \
-      "Restart brake unavailable" \
-      "restart-storm-gate.py is missing or not executable (exit ${RESTART_STORM_RC}); the Bridge will not launch until it is restored." \
-      >/dev/null 2>&1 || true
-    log "Restart brake missing or not executable (exit ${RESTART_STORM_RC}) — refusing to launch the Bridge."
-  else
-    log "Restart-storm gate held or refused Bridge startup — not writing PID marker."
-  fi
-  exit 0
-fi
-
 mkdir -p "$(dirname "$PID_FILE")"
 echo $$ > "$PID_FILE"
 trap 'rm -f "$PID_FILE"' EXIT
@@ -224,7 +191,7 @@ if type bp_check_dirty_marker >/dev/null 2>&1 \
       DIRTY_BODY="上一个 Bridge (PID ${PREV_PID}, boot ${PREV_BOOT_TS}) 没有走 clean shutdown 就死了。本次启动即复活;复活后的 Bridge 会开生命周期工单对账（episode ${EPISODE_SIG}）。"
     else
       DIRTY_TITLE="Bridge crash-loop（10 分钟内 ≥3 次非正常退出）"
-      DIRTY_BODY="Bridge 反复非正常退出后被 launchd 复活（最近一枚 dirty marker: PID ${PREV_PID}, boot ${PREV_BOOT_TS}, episode ${EPISODE_SIG}）。需要人看 /tmp/flywheel-bridge.log、${FLYWHEEL_STATE_DIR}/state/bridge-startup.log、${FLYWHEEL_STATE_DIR}/state/bridge-log-rotation-error.json + 机器内存水位。"
+      DIRTY_BODY="Bridge 反复非正常退出后被 launchd 复活（最近一枚 dirty marker: PID ${PREV_PID}, boot ${PREV_BOOT_TS}, episode ${EPISODE_SIG}）。需要人看 /tmp/flywheel-bridge.log + 机器内存水位。"
     fi
     # The page id is the WRAPPER leg's own dedup identity — deliberately
     # distinct from the boot ticket id (shared episode signature correlates
@@ -239,39 +206,6 @@ if type bp_check_dirty_marker >/dev/null 2>&1 \
 fi
 
 cd "$FLYWHEEL_DIR"
-
-# FLY-2049: launchd's StandardOutPath is inherited as a long-lived FD. A
-# rename-only rotator cannot reclaim that FD: later writes keep landing in .1.
-# Release it before exec and let run-bridge install strict short-FD appends.
-# The separate raw capture preserves tsx/module-loader/V8 failures that happen
-# before the TypeScript entry can install the adapter; single `>` bounds it to
-# the latest launch attempt.
-BRIDGE_RUNTIME_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state"
-export FLYWHEEL_BRIDGE_LOG_PATH="${FLYWHEEL_BRIDGE_LOG_PATH:-/tmp/flywheel-bridge.log}"
-export FLYWHEEL_BRIDGE_RAW_STARTUP_LOG="${FLYWHEEL_BRIDGE_RAW_STARTUP_LOG:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-startup.log}"
-export FLYWHEEL_BRIDGE_LOG_ERROR_MARKER="${FLYWHEEL_BRIDGE_LOG_ERROR_MARKER:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-log-rotation-error.json}"
-
-BRIDGE_RAW_STARTUP_REDIRECT=/dev/null
-if ! mkdir -p "$BRIDGE_RUNTIME_STATE_DIR"; then
-  log "WARNING: cannot create Bridge runtime state directory $BRIDGE_RUNTIME_STATE_DIR; continuing via /dev/null"
-elif [[ ! -d "$BRIDGE_RUNTIME_STATE_DIR" || -L "$BRIDGE_RUNTIME_STATE_DIR" ]]; then
-  log "WARNING: unsafe Bridge runtime state directory $BRIDGE_RUNTIME_STATE_DIR; continuing via /dev/null"
-elif [[ "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" != /* ]]; then
-  log "WARNING: Bridge raw startup log is not absolute ($FLYWHEEL_BRIDGE_RAW_STARTUP_LOG); continuing via /dev/null"
-else
-  BRIDGE_RAW_STARTUP_PARENT="$(dirname "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG")"
-  if ! mkdir -p "$BRIDGE_RAW_STARTUP_PARENT"; then
-    log "WARNING: cannot create Bridge raw startup parent $BRIDGE_RAW_STARTUP_PARENT; continuing via /dev/null"
-  elif [[ ! -d "$BRIDGE_RAW_STARTUP_PARENT" || -L "$BRIDGE_RAW_STARTUP_PARENT" ]]; then
-    log "WARNING: unsafe Bridge raw startup parent $BRIDGE_RAW_STARTUP_PARENT; continuing via /dev/null"
-  elif [[ -e "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" || -L "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" ]] \
-     && [[ ! -f "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" || -L "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" ]]; then
-    log "WARNING: unsafe Bridge raw startup log $FLYWHEEL_BRIDGE_RAW_STARTUP_LOG; continuing via /dev/null"
-  else
-    BRIDGE_RAW_STARTUP_REDIRECT="$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG"
-  fi
-fi
-exec > "$BRIDGE_RAW_STARTUP_REDIRECT" 2>&1
 log "Starting Bridge (TEAMLEAD_CHAT_THREADS_ENABLED=${TEAMLEAD_CHAT_THREADS_ENABLED:-unset})"
 
 # exec replaces this wrapper process so launchd directly manages the

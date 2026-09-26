@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { buildSafeRegex, CommDB, validateProjectName } from "flywheel-comm/db";
@@ -15,7 +17,6 @@ import {
 	validateAbandonReason,
 } from "./lifecycle.js";
 import { detectTerminalStatus } from "./status.js";
-import { execTmux, requireTmuxTarget } from "./tmux-exec.js";
 
 // FLY-229: cap on terminal rows fetched per `runner_terminal_list` call, to
 // bound concurrent tmux liveness probes. Parked-alive sessions are inherently
@@ -23,6 +24,8 @@ import { execTmux, requireTmuxTarget } from "./tmux-exec.js";
 // visible truncation summary covers the rest.
 const TERMINAL_PROBE_CAP = 150;
 const PROBE_CONCURRENCY = 8;
+
+const execFileAsync = promisify(execFile);
 
 // ── Required env vars (injected by claude-lead.sh) ──
 const projectName = process.env.FLYWHEEL_PROJECT_NAME;
@@ -81,20 +84,19 @@ function getSessionScoped(
 }
 
 async function tmuxCapture(target: string, lines: number): Promise<string> {
-	requireTmuxTarget(target);
-	const { stdout } = await execTmux(
+	const { stdout } = await execFileAsync(
+		"tmux",
 		["capture-pane", "-t", target, "-p", "-S", `-${lines}`],
-		{ timeout: 5000 },
+		{ encoding: "utf-8", timeout: 5000 },
 	);
 	return stdout;
 }
 
 async function tmuxAlive(tmuxTarget: string): Promise<boolean> {
 	try {
-		requireTmuxTarget(tmuxTarget);
 		// Use list-panes with the full target (session:window) to check
 		// if the specific window exists, not just the parent session.
-		await execTmux(["list-panes", "-t", tmuxTarget], {
+		await execFileAsync("tmux", ["list-panes", "-t", tmuxTarget], {
 			timeout: 3000,
 		});
 		return true;
@@ -157,7 +159,7 @@ server.tool(
 	"runner_terminal_list",
 	[
 		"List Runner sessions observable by this Lead, classified by CommDB status + tmux liveness.",
-		"class=running (CommDB running), class=parked-alive (CommDB terminal but tmux+agent still alive — preserved and RE-ENGAGEABLE via `flywheel-comm send`/SendMessage, NO new run needed), class=dead (terminal + tmux gone).",
+		"class=running (CommDB running), class=parked-alive (CommDB completed/timeout but tmux+agent still alive — idle, RE-ENGAGEABLE via `flywheel-comm send`/SendMessage, NO new run needed), class=dead (terminal + tmux gone).",
 		"active_only=true (default) shows running + parked-alive (hides dead); active_only=false shows all classes.",
 		"NOTE: this reflects CommDB status + live tmux probe only — it does NOT see the Bridge FSM state (awaiting_review etc.).",
 	].join(" "),
@@ -185,7 +187,7 @@ server.tool(
 				running = db
 					.getActiveSessions(projectName)
 					.filter((s) => s.lead_id === null || s.lead_id === leadId);
-				// terminal: lead-scoped + ended_at-ordered + capped
+				// terminal (completed/timeout): lead-scoped + ended_at-ordered + capped
 				// IN SQL (FLY-229), so an in-scope parked-alive row can't be pushed out
 				// of the window by another Lead's newer rows.
 				terminal = db.getRecentTerminalSessions(
@@ -410,11 +412,11 @@ server.tool(
 
 			// Use -l (literal) to prevent key-name interpretation.
 			// Send text and Enter separately — -l makes "Enter" literal too.
-			await execTmux(["send-keys", "-t", tmuxTarget, "-l", text], {
+			await execFileAsync("tmux", ["send-keys", "-t", tmuxTarget, "-l", text], {
 				timeout: 5000,
 			});
 			if (enter) {
-				await execTmux(["send-keys", "-t", tmuxTarget, "Enter"], {
+				await execFileAsync("tmux", ["send-keys", "-t", tmuxTarget, "Enter"], {
 					timeout: 5000,
 				});
 			}
@@ -453,7 +455,7 @@ server.tool(
 		"REJECTS: running, awaiting_review, approved, approved_to_ship — those must be approved/rejected first.",
 		"To CANCEL/ABANDON a parked runner (awaiting_review / approved_to_ship — founder decided NOT to ship): set abandon=true. This routes to the terminate action (FSM→terminated + tmux/viewer teardown + audit), so you don't have to raw `tmux kill`. abandon is a terminate-class reserved action (founder-consent gated, same as terminate) and REQUIRES a reason.",
 		"FLY-638 — to FINALIZE a DONE-but-stuck runner (ship SUCCEEDED so it parked at awaiting_review/approved_to_ship, or QA PASSED so it's still running, but it exited before its final `stage set completed`): set done=true. This transitions it to completed via the FSM, THEN closes (kills tmux window + cmux session + viewer tab) and archives the issue thread (the FLY-369 close→archive cascade). Use done=true (NOT abandon) when the work finished successfully — abandon=true marks it terminated (an abort) and does NOT archive. done and abandon are mutually exclusive.",
-		"FLY-1204 — a DAG workflow DESIGN phase-session parks at `design_done` (kept alive as the design-context holder until ship). It too is reclaimed with done=true (design_done → completed via the FSM); a normal close still rejects it on purpose, so this is the explicit way to reclaim a leaked design phase-session by hand.",
+		"FLY-1204 — a three-stage DESIGN phase-session parks at `design_done` (kept alive as the design-context holder until ship). It too is reclaimed with done=true (design_done → completed via the FSM); a normal close still rejects it on purpose, so this is the explicit way to reclaim a leaked design phase-session by hand.",
 		"Use after Annie confirms closure, or per team-lead pre-authorized rules.",
 		"Idempotent: if the tmux window is already gone, returns success.",
 	].join(" "),
@@ -485,7 +487,7 @@ server.tool(
 			.boolean()
 			.default(false)
 			.describe(
-				"FLY-638: FINALIZE a DONE-but-stuck runner (ship succeeded / QA passed but it never emitted its final `stage set completed`). Transitions running/awaiting_review/approved_to_ship/design_done → completed via the FSM, then closes + archives. Also reclaims a leaked DAG workflow design phase-session parked at design_done (FLY-1204). Use this (NOT abandon) for successful work. Mutually exclusive with abandon. Default false.",
+				"FLY-638: FINALIZE a DONE-but-stuck runner (ship succeeded / QA passed but it never emitted its final `stage set completed`). Transitions running/awaiting_review/approved_to_ship/design_done → completed via the FSM, then closes + archives. Also reclaims a leaked three-stage design phase-session parked at design_done (FLY-1204). Use this (NOT abandon) for successful work. Mutually exclusive with abandon. Default false.",
 			),
 	},
 	async ({ issue_identifier, execution_id, reason, abandon, done }) => {

@@ -146,7 +146,7 @@ describe("Action tools", () => {
 			questionId,
 			prHeadSha: head,
 		});
-		store.applyWorkflowLedgerBatch({
+		store.applyWorkflowShadowBatch({
 			projectName: "geoforge3d",
 			issueId: "i-claims",
 			newRunId: "run-claims",
@@ -246,15 +246,26 @@ describe("Action tools", () => {
 		const questionId = seedApproveGate("e-held-codex");
 		store.setReviewBinding("e-held-codex", { questionId, prHeadSha: head });
 
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e-held-codex",
-			"GEO-HELD-CODEX",
-			mockExec,
-			undefined,
-			makeConfig(),
-		);
+		const previousHardGate = process.env.FLYWHEEL_CODEX_HARD_GATE;
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "1";
+		let result: Awaited<ReturnType<typeof approveExecution>>;
+		try {
+			result = await approveExecution(
+				store,
+				testProjects,
+				"e-held-codex",
+				"GEO-HELD-CODEX",
+				mockExec,
+				undefined,
+				makeConfig(),
+			);
+		} finally {
+			if (previousHardGate === undefined) {
+				delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+			} else {
+				process.env.FLYWHEEL_CODEX_HARD_GATE = previousHardGate;
+			}
+		}
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("held_codex_pending");
 
@@ -1084,23 +1095,6 @@ describe("GEO-259: leadId scope check on actions", () => {
 		});
 		const body = await res.json();
 		expect(body.success).toBe(true);
-	});
-
-	it("POST /api/actions/approve rejects Lead-attributed self approval", async () => {
-		const res = await fetch(`${baseUrl}/api/actions/approve`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				execution_id: "prod-exec",
-				leadId: "product-lead",
-			}),
-		});
-		expect(res.status).toBe(403);
-		await expect(res.json()).resolves.toMatchObject({
-			success: false,
-			error: "lead_ack_rejected",
-		});
-		expect(store.getSession("prod-exec")?.status).toBe("awaiting_review");
 	});
 
 	it("POST /api/actions/reject with mismatching leadId returns 403", async () => {

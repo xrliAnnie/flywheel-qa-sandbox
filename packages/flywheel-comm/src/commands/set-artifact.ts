@@ -23,7 +23,6 @@
 
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { normalizeOptionalBearer } from "flywheel-config";
 
 const VALID_MODEL_EXTENSIONS = new Set([
 	".glb",
@@ -109,9 +108,7 @@ export async function setArtifact(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	const token = normalizeOptionalBearer(
-		args.ingestToken ?? process.env.FLYWHEEL_INGEST_TOKEN,
-	);
+	const token = args.ingestToken ?? process.env.FLYWHEEL_INGEST_TOKEN;
 	if (token) headers.Authorization = `Bearer ${token}`;
 
 	const url = `${bridgeUrl.replace(/\/+$/, "")}/events`;

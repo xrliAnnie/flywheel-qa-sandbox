@@ -139,7 +139,6 @@ function makeCommDb() {
 			getResponse: (id: string) => responses.get(id),
 			insertResponse: (id: string, fromAgent: string, content: string) => {
 				responses.set(id, { content, from_agent: fromAgent });
-				return { written: true as const };
 			},
 		},
 	};
@@ -158,10 +157,7 @@ function makeApp(over: Partial<VoiceRouterDeps> = {}) {
 					{
 						agentId: "flywheel-eng-lead",
 						chatChannel: "chan-1",
-						botUserId: "111111111111111111",
-						// Deliberately different: expected identity comes from registry,
-						// never by decoding the credential at runtime.
-						botToken: fakeToken("999999999999999999"),
+						botToken: fakeToken("111111111111111111"),
 					},
 					{ agentId: "flywheel-cos-lead", chatChannel: "chan-2" },
 				],
@@ -372,6 +368,18 @@ describe("POST /api/voice/ship-approval — guard ladder", () => {
 			SHIP_BODY,
 		);
 		expect(res.status).toBe(200); // reaches the source, not 403
+	});
+
+	it("② respects the master FLYWHEEL_FOUNDER_AUTO_APPROVE=0 switch", async () => {
+		const { app } = makeApp({ env: { FLYWHEEL_FOUNDER_AUTO_APPROVE: "0" } });
+		const res = await httpRequest(
+			app,
+			"POST",
+			"/api/voice/ship-approval",
+			SHIP_BODY,
+		);
+		expect(res.status).toBe(403);
+		expect(res.body.error).toBe("founder_auto_approve_disabled");
 	});
 
 	it("⑤ receipt-first: missing receiptMessageId → 400, nothing written", async () => {

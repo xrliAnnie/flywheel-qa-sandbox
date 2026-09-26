@@ -40,7 +40,6 @@ function childEnv(
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: stateDir,
-		FLYWHEEL_COMM_DB: join(stateDir, "comm.db"),
 		...(token === undefined ? {} : { DISCORD_BOT_TOKEN: token }),
 	};
 }
@@ -83,13 +82,13 @@ describe("lead-actions MCP real-spawn integration", () => {
 	}
 
 	run(
-		"reads the env token and registers exactly discord_send plus ack_batch",
+		"reads the env token and registers exactly discord_send",
 		async () => {
 			const tools = await spawnAndListTools(
 				join(dir, "state"),
 				"test-bot-token-xyz",
 			);
-			expect(tools).toEqual(["discord_send", "ack_batch"]);
+			expect(tools).toEqual(["discord_send"]);
 		},
 		20_000,
 	);
@@ -102,10 +101,7 @@ describe("lead-actions MCP real-spawn integration", () => {
 					join(dir, `state-${i}`),
 					"test-bot-token-xyz",
 				);
-				expect(tools, `respawn #${i + 1}`).toEqual([
-					"discord_send",
-					"ack_batch",
-				]);
+				expect(tools, `respawn #${i + 1}`).toEqual(["discord_send"]);
 			}
 		},
 		30_000,

@@ -2,14 +2,18 @@
 # FLY-650: materialize-lead-manifests.sh — deterministic clean-host Lead manifests
 # (WI-4; Codex R1#2 / R2#5).
 #
-# On a clean host, Lead manifests do not exist, and the launchd/systemd wrapper
-# exits if one is missing. This command reads projects.json and writes the
-# canonical pre-launch manifest without starting any Lead, so `supervisor
-# install <lead>` is deterministic on both macOS and Linux.
+# On a clean host, Lead manifests do NOT exist (they are written by claude-lead.sh
+# on its FIRST launch), and the launchd/systemd wrapper EXITS if the manifest is
+# missing. That makes a from-scratch Lead bring-up non-deterministic ("run each
+# Lead once by hand first"). This command reads projects.json and writes the
+# canonical per-Lead manifest WITHOUT starting any Lead, so `supervisor install
+# <lead>` is deterministic on both macOS and Linux.
 #
-# The v2 wrapper adds runtime-only `pid` and `socketPath` fields after launch.
-# Model and leadBackend.backendId are carried from projects.json when present;
-# absent stays absent (never injected).
+# The emitted shape MATCHES claude-lead.sh's self-written manifest
+# (packages/teamlead/scripts/claude-lead.sh) field-for-field, MINUS the runtime-
+# only `pid` (there is no process yet — claude-lead stamps the real pid on first
+# launch). Carrier fields (model, leadBackend.backendId) are carried from
+# projects.json when present; absent stays absent (never injected).
 #
 # Idempotent: create-if-absent (a live manifest from a running Lead is NOT
 # clobbered); pass --force to overwrite.
@@ -67,6 +71,7 @@ while IFS= read -r proj; do
     [ -z "$lead" ] && continue
     lid="$(jq -r '.agentId' <<<"$lead")"
     [ -z "$lid" ] || [ "$lid" = "null" ] && continue
+    bte="$(jq -r '.botTokenEnv // "DISCORD_BOT_TOKEN"' <<<"$lead")"
     model="$(jq -r '.model // ""' <<<"$lead")"
     backend="$(jq -r '.backend // ""' <<<"$lead")"
     out="$MANIFEST_DIR/${pname}-${lid}.json"
@@ -75,19 +80,19 @@ while IFS= read -r proj; do
       skipped=$((skipped+1)); continue
     fi
     tmp="${out}.tmp.$$"
-    # Canonical pre-launch shape; wrapper-v2 adds runtime identity fields.
+    # Shape mirrors claude-lead.sh's self-write, MINUS runtime-only pid.
     jq -n \
       --arg leadId "$lid" \
       --arg projectDir "$pdir" \
       --arg projectName "$pname" \
-	  --arg projectsFile "$PROJECTS" \
       --arg workspace "$pdir" \
+      --arg botTokenEnv "$bte" \
       --arg model "$model" \
       --arg backendId "$backend" \
       '{
          leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
-		 projectsFile: $projectsFile, subdir: "", workspace: $workspace,
-		 mcpExclude: ""
+         subdir: "", workspace: $workspace, botTokenEnv: $botTokenEnv,
+         mcpExclude: "", chromeEnabled: false
        }
        | (if $model != "" then . + {model: $model} else . end)
        | (if $backendId != "" then . + {leadBackend: {backendId: $backendId}} else . end)' \

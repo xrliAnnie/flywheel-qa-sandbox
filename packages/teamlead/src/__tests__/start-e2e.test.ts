@@ -5,7 +5,6 @@
 
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { initializeFlagStore } from "../bridge/flag-store-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { IStartDispatcher } from "../bridge/retry-dispatcher.js";
 import {
@@ -15,7 +14,6 @@ import {
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { LEGACY_ROUTING_OVERRIDE_LABEL } from "../work-kind.js";
 
 // Mock @linear/sdk for pre-flight issue check.
 // FLY-127: default issue carries "Product" label so the default product-lead
@@ -25,18 +23,13 @@ import { LEGACY_ROUTING_OVERRIDE_LABEL } from "../work-kind.js";
 vi.mock("@linear/sdk", () => ({
 	LinearClient: vi.fn().mockImplementation(() => ({
 		issue: vi.fn().mockResolvedValue({
-			id: "11111111-1111-4111-8111-111111111111",
 			title: "Test Issue",
 			identifier: "GEO-TEST",
 			// FLY-205: issue URL captured at preflight for DOC-FLOW header continuity
 			url: "https://linear.app/test/issue/GEO-TEST",
 			// FLY-80 + FLY-127: Auto-resolve leadId AND dept-scope check use labels.
 			labels: vi.fn().mockResolvedValue({
-				// This suite exercises the classic dispatcher boundary. FLY-1981
-				// makes an unconfigured main-role request enter schema-v2 by default;
-				// keep this fixture on the explicit legacy compatibility route while
-				// runs-route.dag-entry.test.ts owns the fleet-default positive control.
-				nodes: [{ name: "Product" }, { name: LEGACY_ROUTING_OVERRIDE_LABEL }],
+				nodes: [{ name: "Product" }],
 			}),
 		}),
 	})),
@@ -100,14 +93,13 @@ function createMockStartDispatcher(store: StateStore): IStartDispatcher & {
 				projectName: req.projectName,
 			});
 			mock._inflightCount++;
-			const executionId = req.successorExecutionId ?? `exec-${req.issueId}`;
+			const executionId = `exec-${req.issueId}`;
 			// FLY-80: Ghost start detection expects session to exist in StateStore
 			store.upsertSession({
 				execution_id: executionId,
 				issue_id: req.issueId,
 				project_name: req.projectName,
 				status: "running",
-				session_role: req.sessionRole ?? "main",
 			});
 			return { executionId, issueId: req.issueId };
 		}),
@@ -122,16 +114,12 @@ describe("Start API E2E", () => {
 	let baseUrl: string;
 	let mockDispatcher: ReturnType<typeof createMockStartDispatcher>;
 	let savedLinearKey: string | undefined;
-	let savedSkillFlag: string | undefined;
 
 	beforeEach(async () => {
 		// Hermetic: ensure LINEAR_API_KEY is set for non-503 tests
 		savedLinearKey = process.env.LINEAR_API_KEY;
 		process.env.LINEAR_API_KEY = savedLinearKey ?? "test-key";
-		savedSkillFlag = process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
-		delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
 		store = await StateStore.create(":memory:");
-		const flagStore = initializeFlagStore(store, process.env);
 		mockDispatcher = createMockStartDispatcher(store);
 		const app = createBridgeApp(
 			store,
@@ -148,9 +136,6 @@ describe("Start API E2E", () => {
 			undefined, // memoryService
 			undefined, // captureSessionFn
 			mockDispatcher, // startDispatcher
-			undefined, // standupService
-			undefined, // standupProjectName
-			{ flagStore },
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -165,11 +150,6 @@ describe("Start API E2E", () => {
 			process.env.LINEAR_API_KEY = savedLinearKey;
 		} else {
 			delete process.env.LINEAR_API_KEY;
-		}
-		if (savedSkillFlag !== undefined) {
-			process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = savedSkillFlag;
-		} else {
-			delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
 		}
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -192,10 +172,7 @@ describe("Start API E2E", () => {
 			executionId: string;
 		};
 		expect(body.success).toBe(true);
-		expect(body.executionId).toMatch(/^[0-9a-f-]{36}$/);
-		expect(body.executionId).toBe(
-			mockDispatcher.start.mock.calls[0]?.[0].successorExecutionId,
-		);
+		expect(body.executionId).toBe("exec-GEO-TEST");
 		expect(mockDispatcher.start).toHaveBeenCalledOnce();
 	}, 15_000);
 
@@ -233,7 +210,6 @@ describe("Start API E2E", () => {
 		expect(mockDispatcher.start).toHaveBeenCalledWith({
 			issueId: "GEO-LEAD",
 			projectName: "TestProject",
-			successorExecutionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
 			leadId: "product-lead",
 			issueTitle: "Test Issue",
 			issueIdentifier: "GEO-TEST",
@@ -243,7 +219,7 @@ describe("Start API E2E", () => {
 			// lowercased Linear labels; owningDept resolved via
 			// DepartmentRegistry from the "Product" mock label.
 			agentName: undefined,
-			issueLabels: ["product", LEGACY_ROUTING_OVERRIDE_LABEL],
+			issueLabels: ["product"],
 			owningDept: "product",
 			// FLY-137 Phase 5: codex-skip label snapshot at run start.
 			// Mock issue has no codex-skip label → false.
@@ -256,47 +232,9 @@ describe("Start API E2E", () => {
 			// runOverride; labels from the mock issue; readable.
 			ponytailInput: {
 				kind: "start_signal",
-				signal: {
-					labels: ["product", LEGACY_ROUTING_OVERRIDE_LABEL],
-					labelStatus: "readable",
-				},
+				signal: { labels: ["product"], labelStatus: "readable" },
 			},
 		});
-	}, 15_000);
-
-	it("releases a terminal same-role legacy entry while preserving per-role concurrency", async () => {
-		const start = (sessionRole?: "main" | "qa") =>
-			fetch(`${baseUrl}/api/runs/start`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					issueId: "GEO-ENTRY",
-					projectName: "TestProject",
-					...(sessionRole ? { sessionRole } : {}),
-				}),
-			});
-
-		const main = await start();
-		expect(main.status).toBe(200);
-		const mainExecutionId = ((await main.json()) as { executionId: string })
-			.executionId;
-		expect(store.getLaunchClaim(mainExecutionId)?.rootUuid).toBe(
-			"11111111-1111-4111-8111-111111111111",
-		);
-		const qa = await start("qa");
-		expect(qa.status).toBe(200);
-		store.upsertSession({
-			execution_id: mainExecutionId,
-			issue_id: "GEO-ENTRY",
-			project_name: "TestProject",
-			status: "failed",
-		});
-		const retriedMain = await start();
-		const retriedMainBody = await retriedMain.clone().text();
-		expect(retriedMain.status, retriedMainBody).toBe(200);
-		expect(
-			((await retriedMain.json()) as { executionId: string }).executionId,
-		).not.toBe(mainExecutionId);
 	}, 15_000);
 
 	it("POST missing issueId → 400", async () => {
@@ -535,9 +473,7 @@ describe("Start API E2E", () => {
 					title: "Test Issue",
 					identifier: "GEO-FLY127",
 					labels: vi.fn().mockResolvedValue({
-						nodes: [...labels, LEGACY_ROUTING_OVERRIDE_LABEL].map((name) => ({
-							name,
-						})),
+						nodes: labels.map((name) => ({ name })),
 					}),
 				}),
 			}));
@@ -718,9 +654,7 @@ describe("Start API E2E", () => {
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			expect(startReq.docTier).toBe("plan_only");
 			expect(startReq.issueUrl).toBe("https://linear.app/test/issue/GEO-TEST");
-			const session = store.getSession(
-				mockDispatcher.start.mock.calls[0]![0].successorExecutionId!,
-			);
+			const session = store.getSession("exec-GEO-TEST");
 			expect(session?.doc_tier).toBe("plan_only");
 			expect(session?.issue_url).toBe("https://linear.app/test/issue/GEO-TEST");
 		}, 15_000);
@@ -759,9 +693,7 @@ describe("Start API E2E", () => {
 			expect(startReq.docTier).toBeUndefined();
 			// EFFECTIVE tier persisted: retry must reuse "full" explicitly,
 			// never re-default (Codex design R2 #1).
-			const session = store.getSession(
-				mockDispatcher.start.mock.calls[0]![0].successorExecutionId!,
-			);
+			const session = store.getSession("exec-GEO-TEST");
 			expect(session?.doc_tier).toBe("full");
 		}, 15_000);
 	});
@@ -782,11 +714,9 @@ describe("Start API E2E", () => {
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			expect(startReq.dispatchModel).toBe("claude-fable-5");
 			// FLY-728: persisted as the source-honest retry input dispatch_model.
-			expect(
-				store.getSession(
-					mockDispatcher.start.mock.calls[0]![0].successorExecutionId!,
-				)?.dispatch_model,
-			).toBe("claude-fable-5");
+			expect(store.getSession("exec-GEO-TEST")?.dispatch_model).toBe(
+				"claude-fable-5",
+			);
 		}, 15_000);
 
 		it("a bare alias is normalized to the canonical id before dispatch", async () => {
@@ -802,8 +732,7 @@ describe("Start API E2E", () => {
 			expect(res.status).toBe(200);
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			// FLY-751: medium tier dropped [1m] — `opus` is small-context now.
-			// FLY-1467: the opus tier now binds to Opus 5.
-			expect(startReq.dispatchModel).toBe("claude-opus-5");
+			expect(startReq.dispatchModel).toBe("claude-opus-4-8");
 		}, 15_000);
 
 		it("FLY-751: opus-1m opt-in normalizes to the [1m] id before dispatch", async () => {
@@ -818,7 +747,7 @@ describe("Start API E2E", () => {
 			});
 			expect(res.status).toBe(200);
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
-			expect(startReq.dispatchModel).toBe("claude-opus-5[1m]");
+			expect(startReq.dispatchModel).toBe("claude-opus-4-8[1m]");
 		}, 15_000);
 
 		it("unknown model → 400 INVALID_MODEL (never reaches dispatcher)", async () => {
@@ -838,24 +767,6 @@ describe("Start API E2E", () => {
 			expect(mockDispatcher.start).not.toHaveBeenCalled();
 		}, 15_000);
 
-		it("a legacy identity an old carrier still pins → accepted verbatim", async () => {
-			// Back-compat, not endorsement: nothing routes new work to a legacy
-			// id, but a carrier pinned before it was retired keeps dispatching.
-			const res = await fetch(`${baseUrl}/api/runs/start`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					issueId: "GEO-TEST",
-					projectName: "TestProject",
-					model: "claude-opus-4-8[1m]",
-				}),
-			});
-			expect(res.status).toBe(200);
-			expect(mockDispatcher.start).toHaveBeenCalledWith(
-				expect.objectContaining({ dispatchModel: "claude-opus-4-8[1m]" }),
-			);
-		}, 15_000);
-
 		it("omitted model → dispatcher gets undefined dispatchModel (byte-compat)", async () => {
 			const res = await fetch(`${baseUrl}/api/runs/start`, {
 				method: "POST",
@@ -871,6 +782,12 @@ describe("Start API E2E", () => {
 		}, 15_000);
 	});
 
+	// FLY-534 — projectName is case-insensitive. The configured project is
+	// "TestProject"; a caller sending it differently-cased ("testproject" /
+	// "TESTPROJECT") must resolve to the SAME runtime, and the dispatcher (plus
+	// every downstream surface — comm.db, tmux, BlueprintContext) must receive
+	// the configured CANONICAL name, not the caller's casing. Before the fix the
+	// case mismatch surfaced as DEPT_SCOPE_REJECT project_unknown / No runtime.
 	describe("FLY-534 — projectName case-insensitive", () => {
 		it("lowercase projectName resolves + dispatcher receives the canonical name", async () => {
 			const res = await fetch(`${baseUrl}/api/runs/start`, {
@@ -915,87 +832,6 @@ describe("Start API E2E", () => {
 			expect(res.status).toBe(200);
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			expect(startReq.projectName).toBe("TestProject");
-		}, 15_000);
-	});
-
-	// FLY-1356 — per-dispatch skill-framework arm (529 eval forced-arm). The
-	// boundary mirrors designBackend: validated synchronously, fail-loud, and
-	// ONLY accepted while the Bridge flag is `split` (kill-switch precedence).
-	describe("FLY-1356 — per-dispatch skillFrameworkMode", () => {
-		function setSkillFrameworkControl(raw: string | null): void {
-			const revision = store.getFlagValueRow("skill_framework_mode")!.revision;
-			expect(
-				store.applyFlagValueChange({
-					name: "skill_framework_mode",
-					rawTo: raw,
-					expectedRevision: revision,
-					actor: "test-local-operator",
-					reason: "exercise runs route",
-				}),
-			).toMatchObject({ ok: true });
-		}
-
-		async function postArm(skillFrameworkMode: unknown): Promise<Response> {
-			return fetch(`${baseUrl}/api/runs/start`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					issueId: "GEO-FLY1356",
-					projectName: "TestProject",
-					...(skillFrameworkMode !== undefined ? { skillFrameworkMode } : {}),
-				}),
-			});
-		}
-
-		it.each([42, true, "split", "SUPERPOWERS", "garbage", ""])(
-			"rejects invalid arm %# before dispatch (split is env-only, not a per-dispatch arm)",
-			async (arm) => {
-				setSkillFrameworkControl("split");
-				const res = await postArm(arm);
-				expect(res.status).toBe(400);
-				expect(await res.json()).toEqual({
-					success: false,
-					code: "INVALID_SKILL_FRAMEWORK_MODE",
-					reason: "unknown_mode",
-					allowed: ["superpowers", "matt", "bare", "bare-ponytail"],
-					silent: false,
-				});
-				expect(mockDispatcher.start).not.toHaveBeenCalled();
-			},
-			15_000,
-		);
-
-		it("valid arm while the flag is NOT split → bounded 400 (kill-switch in effect)", async () => {
-			const res = await postArm("bare");
-			expect(res.status).toBe(400);
-			expect(await res.json()).toEqual({
-				success: false,
-				code: "SKILL_FRAMEWORK_MODE_NOT_APPLICABLE",
-				reason: "flag_not_split",
-				requested: "bare",
-				silent: false,
-			});
-			expect(mockDispatcher.start).not.toHaveBeenCalled();
-		}, 15_000);
-
-		it.each(["bare", "bare-ponytail"])(
-			"valid arm %s under split → dispatched with skillFrameworkMode",
-			async (arm) => {
-				setSkillFrameworkControl("split");
-				const res = await postArm(arm);
-				expect(res.status).toBe(200);
-				expect(mockDispatcher.start).toHaveBeenCalledWith(
-					expect.objectContaining({ skillFrameworkMode: arm }),
-				);
-			},
-			15_000,
-		);
-
-		it("absent arm → request carries NO skillFrameworkMode (byte-compatible)", async () => {
-			const res = await postArm(undefined);
-			expect(res.status).toBe(200);
-			const startReq = mockDispatcher.start.mock.calls[0]![0];
-			expect("skillFrameworkMode" in startReq).toBe(false);
 		}, 15_000);
 	});
 });

@@ -2,8 +2,10 @@
  * FLY-191 Phase 2 — wiring `onResponseWritten` behavior, integration through
  * the REAL gateRouter in pass-through (DECISION_MODE=off) mode:
  *
- *  - structured {"approved": true} from a Lead is rejected before write/FSM/wake;
- *  - changes_requested feedback → status UNCHANGED
+ *  - structured {"approved": true} answer → FSM flips awaiting_review →
+ *    approved_to_ship (Codex R2 MEDIUM-1 parity with /api/actions/approve)
+ *    + an approval wake whose text mandates verify-approval;
+ *  - any other answer (changes_requested feedback) → status UNCHANGED
  *    (NOT terminal, plan §3.2(ii)) + a feedback wake telling the runner to
  *    fix + re-request review.
  */
@@ -26,8 +28,6 @@ import {
 import { CommDB } from "flywheel-comm/db";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { insertHistoricalAutoQaRecord } from "../../../__tests__/helpers/historical-qa.js";
-import { createLeadIdentityFixture } from "../../../__tests__/helpers/lead-identity-fixture.js";
 import type { ApplyTransitionOpts } from "../../../applyTransition.js";
 import type { ProjectEntry } from "../../../ProjectConfig.js";
 import { StateStore } from "../../../StateStore.js";
@@ -42,15 +42,10 @@ let dir: string;
 let commDbPath: string;
 let server: Server;
 let store: StateStore;
-let identityDigest: string;
 
 const origCfg = process.env.CLAUDE_CONFIG_DIR;
 const origBackend = process.env.FLYWHEEL_COMM_BACKEND;
 const origAgent = process.env.FLYWHEEL_AGENT_BACKEND;
-const origProjectsFile = process.env.FLYWHEEL_PROJECTS_FILE;
-const origStateDir = process.env.FLYWHEEL_STATE_DIR;
-const origLeaseMode = process.env.FLYWHEEL_LEAD_LEASE_MODE;
-const origHome = process.env.HOME;
 
 const inboxPath = () => {
 	const { agentName, teamName } = deriveRunnerMailboxIdentity(EXEC, LEAD);
@@ -67,14 +62,7 @@ async function post(body: unknown) {
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(
-				body !== null &&
-					typeof body === "object" &&
-					"leadId" in body &&
-					!("identityDigest" in body)
-					? { ...body, identityDigest }
-					: body,
-			),
+			body: JSON.stringify(body),
 		},
 	);
 	return { status: res.status, body: await res.json().catch(() => undefined) };
@@ -95,16 +83,6 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		dir = mkdtempSync(join(tmpdir(), "fly191-wiring-"));
 		mkdirSync(join(dir, "comm", PROJECT), { recursive: true });
 		commDbPath = join(dir, "comm", PROJECT, "comm.db");
-		const identity = createLeadIdentityFixture({
-			root: dir,
-			projectName: PROJECT,
-			leadId: LEAD,
-		});
-		identityDigest = identity.identityDigest;
-		process.env.HOME = identity.env.HOME;
-		process.env.FLYWHEEL_PROJECTS_FILE = identity.env.FLYWHEEL_PROJECTS_FILE;
-		process.env.FLYWHEEL_STATE_DIR = identity.env.FLYWHEEL_STATE_DIR;
-		process.env.FLYWHEEL_LEAD_LEASE_MODE = "off";
 		process.env.CLAUDE_CONFIG_DIR = join(dir, "claude-config");
 		delete process.env.FLYWHEEL_COMM_BACKEND;
 		delete process.env.FLYWHEEL_AGENT_BACKEND;
@@ -122,23 +100,6 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		store.persistTransition(EXEC, "awaiting_review", {
 			issue_id: "FLY-191",
 			project_name: PROJECT,
-		});
-		// FLY-1251: the shared approval writer must see exact, server-owned
-		// readiness evidence. These tests exercise post-write behavior, so seed
-		// passing exact-head QA instead of bypassing the guard.
-		const head = "a".repeat(40);
-		store.patchSessionMetadata(EXEC, {
-			pr_head_sha: head,
-			pr_number: 191,
-			codex_skip: 1,
-		});
-		insertHistoricalAutoQaRecord(store, {
-			parentExecutionId: EXEC,
-			targetPrHeadSha: head,
-			issueId: "FLY-191",
-			projectName: PROJECT,
-			status: "passed",
-			verdictEventId: "qa-pass-wiring",
 		});
 
 		const transitionOpts: ApplyTransitionOpts = {
@@ -171,20 +132,10 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		else process.env.FLYWHEEL_COMM_BACKEND = origBackend;
 		if (origAgent === undefined) delete process.env.FLYWHEEL_AGENT_BACKEND;
 		else process.env.FLYWHEEL_AGENT_BACKEND = origAgent;
-		if (origProjectsFile === undefined)
-			delete process.env.FLYWHEEL_PROJECTS_FILE;
-		else process.env.FLYWHEEL_PROJECTS_FILE = origProjectsFile;
-		if (origStateDir === undefined) delete process.env.FLYWHEEL_STATE_DIR;
-		else process.env.FLYWHEEL_STATE_DIR = origStateDir;
-		if (origLeaseMode === undefined)
-			delete process.env.FLYWHEEL_LEAD_LEASE_MODE;
-		else process.env.FLYWHEEL_LEAD_LEASE_MODE = origLeaseMode;
-		if (origHome === undefined) delete process.env.HOME;
-		else process.env.HOME = origHome;
 		vi.restoreAllMocks();
 	});
 
-	it("Lead approval is rejected before FSM mutation or wake", async () => {
+	it("approval answer flips awaiting_review → approved_to_ship + approval wake", async () => {
 		const qid = seedQuestion();
 		const res = await post({
 			questionId: qid,
@@ -192,10 +143,19 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			answer: JSON.stringify({ approved: true }),
 			executionId: EXEC,
 		});
-		expect(res.status).toBe(403);
-		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
-		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
-		expect(existsSync(inboxPath())).toBe(false);
+		expect(res.status).toBe(200);
+
+		// R2 MEDIUM-1: status flipped — no "approved but Bridge shows
+		// awaiting_review" split-brain.
+		expect(store.getSession(EXEC)?.status).toBe("approved_to_ship");
+
+		// Approval wake delivered, text mandates verify-approval and denies
+		// its own authority.
+		expect(existsSync(inboxPath())).toBe(true);
+		const entries = readInbox();
+		expect(entries).toHaveLength(1);
+		expect(entries[0]?.text).toContain("verify-approval");
+		expect(entries[0]?.text).toContain("NOT authorization");
 	});
 
 	it("feedback answer keeps awaiting_review (NOT terminal) + feedback wake CARRIES the feedback", async () => {
@@ -204,7 +164,6 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: LEAD,
 			answer: "changes requested: please add tests for the edge case",
-			kickback: true,
 			executionId: EXEC,
 		});
 		expect(res.status).toBe(200);
@@ -223,24 +182,18 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		expect(entries[0]?.text).toContain(qid);
 	});
 
-	it("structured {approved:false} without explicit kickback stays neutral", async () => {
+	it("structured {approved:false} is treated as feedback, not approval", async () => {
 		const qid = seedQuestion();
-		const res = await post({
+		await post({
 			questionId: qid,
 			leadId: LEAD,
 			answer: JSON.stringify({ approved: false, feedback: "fix CI" }),
 			executionId: EXEC,
 		});
-		expect(res.status).toBe(409);
-		expect((res.body as { error?: string }).error).toBe("neutral_not_written");
 		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
-		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)).toBeUndefined();
-		db.close();
-		expect(existsSync(inboxPath())).toBe(false);
 	});
 
-	it("approval retries remain rejected with zero durable response or wake", async () => {
+	it("idempotent approval retry through the FULL wiring: second respond converges (Codex R2 HIGH-2)", async () => {
 		const qid = seedQuestion();
 		const body = {
 			questionId: qid,
@@ -249,15 +202,18 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			executionId: EXEC,
 		};
 		const r1 = await post(body);
-		expect(r1.status).toBe(403);
-		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
+		expect(r1.status).toBe(200);
+		expect(store.getSession(EXEC)?.status).toBe("approved_to_ship");
 
+		// Retry after the transition already completed: 200 alreadyResponded,
+		// status untouched, wake re-delivered (second inbox entry).
 		const r2 = await post(body);
-		expect(r2.status).toBe(403);
-		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)).toBeUndefined();
-		db.close();
-		expect(existsSync(inboxPath())).toBe(false);
+		expect(r2.status).toBe(200);
+		expect((r2.body as { alreadyResponded?: boolean }).alreadyResponded).toBe(
+			true,
+		);
+		expect(store.getSession(EXEC)?.status).toBe("approved_to_ship");
+		expect(readInbox()).toHaveLength(2);
 	});
 
 	it("answers to a SUPERSEDED question are rejected once the binding moved (Codex PR R1 CRITICAL)", async () => {
@@ -270,7 +226,7 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		const res = await post({
 			questionId: staleQ,
 			leadId: LEAD,
-			answer: "changes requested: update the current review",
+			answer: JSON.stringify({ approved: true }),
 			executionId: EXEC,
 		});
 		expect(res.status).toBe(409);

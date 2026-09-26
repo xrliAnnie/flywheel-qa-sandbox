@@ -59,77 +59,6 @@ describe("CommDBLeadRuntime", () => {
 			);
 		});
 
-		it("FLY-1259: renders the locked backend for a design start", async () => {
-			await runtime.deliver(
-				makeEnvelope(
-					{
-						event_type: "session_started",
-						execution_id: "exec-design",
-						issue_id: "issue-1",
-						issue_identifier: undefined,
-						issue_title: undefined,
-						session_role: "design",
-						design_backend: "codex",
-					},
-					7,
-				),
-			);
-
-			const content = mockInsertInstruction.mock.calls[0][2] as string;
-			expect(content).toContain(
-				"[Event #7] [DESIGN] session_started\n" +
-					"ID: exec-design | Issue: issue-1\n" +
-					"Design Backend: codex",
-			);
-		});
-
-		it.each([
-			{
-				event_type: "session_started",
-				session_role: "main",
-				design_backend: "codex",
-			},
-			{
-				event_type: "session_started",
-				session_role: "implement",
-				design_backend: "codex",
-			},
-			{ event_type: "session_started", session_role: "design" },
-			{
-				event_type: "session_completed",
-				session_role: "design",
-				design_backend: "codex",
-			},
-		])(
-			"FLY-1259: omits the backend line outside design start %#",
-			async (event) => {
-				await runtime.deliver(makeEnvelope(event));
-				const content = mockInsertInstruction.mock.calls[0][2] as string;
-				expect(content).not.toContain("Design Backend:");
-			},
-		);
-
-		it("dedupes crash retries by attempt id and includes ACK instructions", async () => {
-			const envelope = {
-				...makeEnvelope({}, 44),
-				deliveryAttemptId: "attempt-44",
-				ack: {
-					eventSeq: 44,
-					token: "receipt-token",
-					policy: "explicit_receipt" as const,
-				},
-			};
-			await runtime.deliver(envelope);
-
-			expect(mockInsertInstruction).toHaveBeenCalledWith(
-				"bridge",
-				"lead-peter",
-				expect.stringContaining("flywheel-comm ack-event 44"),
-				{ dedupeId: "lead-event-attempt-attempt-44" },
-			);
-			expect(mockInsertInstruction.mock.calls[0][2]).toContain("receipt-token");
-		});
-
 		it("formats envelope with all available fields", async () => {
 			const envelope = makeEnvelope({
 				event_type: "session_completed",
@@ -177,24 +106,6 @@ describe("CommDBLeadRuntime", () => {
 			// runner_question must NOT carry a checkpoint tag.
 			expect(content).not.toContain("[BRAINSTORM]");
 			expect(content).not.toContain("[REVIEW]");
-		});
-
-		it("formats a trusted runner-stop declaration as an ACK-only report", async () => {
-			const envelope = makeEnvelope({
-				event_type: "runner_question",
-				question_id: `rstop-${"b".repeat(32)}`,
-				question_kind: "report",
-				summary:
-					"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-r route=- detail=parked",
-				comm_db_path: "/tmp/comm.db",
-			});
-			await runtime.deliver(envelope);
-
-			const content = mockInsertInstruction.mock.calls[0][2] as string;
-			expect(content).toContain("[REPORT] Runner lifecycle declaration");
-			expect(content).toContain("Do not respond");
-			expect(content).toContain("ACK");
-			expect(content).not.toContain("flywheel-comm respond");
 		});
 
 		it("formats gate_question with special format", async () => {

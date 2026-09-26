@@ -20,7 +20,6 @@ import {
 import type { DiscordDeps } from "../bots/discordWiring.js";
 import { runVoiceBridge } from "../cli.js";
 import type { HuddleBridgeConfig } from "../config.js";
-import { SessionSlot } from "../SessionSlot.js";
 import { VoiceRoomRuntime } from "../VoiceRoomRuntime.js";
 
 const CONFIG: HuddleBridgeConfig = {
@@ -37,14 +36,6 @@ const CONFIG: HuddleBridgeConfig = {
 	allowUserIds: [],
 	healthPort: 0,
 	ffmpegBin: "ffmpeg",
-	// FLY-545 PR-2 config surface (the /meet loop shares the daemon chassis)
-	bridgeUrl: "http://127.0.0.1:9876",
-	apiToken: "bridge-token",
-	founderUserId: "annie-1",
-	geminiApiKey: "gemini-token",
-	geminiModel: "gemini-3.1-flash-live-preview",
-	claudeBin: "claude",
-	brainTimeoutMs: 30_000,
 };
 
 const ASSISTANT = {
@@ -87,6 +78,7 @@ class FakeConversation implements ConversationLike {
 }
 
 function makeFakes() {
+	const speakingEventsCalls = { count: 0 };
 	const registered: { name: string; description: string }[] = [];
 	const commandHandlers = new Map<
 		string,
@@ -101,8 +93,6 @@ function makeFakes() {
 	const statusEdits: { id: string; text: string }[] = [];
 	const fetchCalls: { url: string; init: RequestInit }[] = [];
 	const conversations: FakeConversation[] = [];
-	// raw-interaction handlers (545's /glaw dispatch seam)
-	const interactionHandlers = new Map<string, (interaction: unknown) => void>();
 
 	const deps: DiscordDeps = {
 		createClient: () => ({
@@ -119,16 +109,16 @@ function makeFakes() {
 			({ on() {}, pipe() {}, end() {}, destroy() {} }) as never,
 		createPlayer: () => ({ play() {}, stop() {}, on() {} }),
 		createResource: (src) => src,
-		speakingEvents: () => ({ on() {} }),
+		speakingEvents: () => {
+			speakingEventsCalls.count++;
+			return { on() {} };
+		},
 		isHumanFactory: () => () => true,
 		registerGuildCommand: vi.fn(async (_c, _g, spec) => {
 			registered.push(spec);
 		}),
 		onChatCommand: (_c, name, cb) => {
 			commandHandlers.set(name, cb);
-		},
-		onChatInteraction: (_c, name, cb) => {
-			interactionHandlers.set(name, cb);
 		},
 		sendMessage: vi.fn(async (_c, _ch, text: string) => {
 			messages.push(text);
@@ -143,12 +133,6 @@ function makeFakes() {
 		onVoiceStateUpdate: () => () => {},
 		voiceChannelHumanCount: async () => 1, // founder already in the VC
 		moveMember: vi.fn(async () => true),
-		moveMemberDetailed: vi.fn(async () => "moved" as const),
-		memberDisplayName: async () => undefined,
-		tivPort: () => ({
-			post: async () => ({ id: "tiv-1" }),
-			edit: async () => {},
-		}),
 		leaveVoice: vi.fn(),
 		connectionEvents: () => ({ onDown: () => () => {}, onUp: () => () => {} }),
 	};
@@ -176,9 +160,11 @@ function makeFakes() {
 		deps,
 		registry,
 		fetchImpl,
+		get speakingEventsCalls() {
+			return speakingEventsCalls.count;
+		},
 		registered,
 		commandHandlers,
-		interactionHandlers,
 		messages,
 		statusAnchors,
 		statusEdits,
@@ -228,6 +214,42 @@ describe("wireAssistantMode (FLY-967 QA-B1)", () => {
 		await h.runtime.close();
 	});
 
+	it("FLY-1006 S5b: a shared room means NO second ears — the daemon owns the receiver", async () => {
+		const room = new VoiceRoomRuntime();
+		const h = await wire({ room });
+		// wireAssistantMode must not build its own EarsReceiver when the daemon
+		// passed the shared room (double-subscription is the bug S5b prevents).
+		expect(h.speakingEventsCalls).toBe(0);
+		await h.runtime.close();
+	});
+
+	it("FLY-1006 S5b: /gemini and /eleven contend for the SHARED slot", async () => {
+		const room = new VoiceRoomRuntime();
+		const h = await wire({ room });
+		// another mode holds the room → /gemini must be rejected founder-facing
+		expect(room.slot.acquire("eleven", "vc-session-1").ok).toBe(true);
+		const replies: string[] = [];
+		h.commandHandlers.get("gemini")?.({
+			topic: undefined,
+			userId: "annie",
+			reply: async (text) => {
+				replies.push(text);
+			},
+		});
+		await vi.waitFor(() => {
+			if (replies.length === 0) throw new Error("not yet");
+		});
+		expect(replies[0]).toContain("/eleven");
+		// no kickoff issue was created for the rejected invocation
+		expect(h.fetchCalls.find((c) => c.url.includes("create-issue"))).toBe(
+			undefined,
+		);
+		// release → /gemini can acquire the same room
+		room.slot.release("eleven", "vc-session-1");
+		expect(room.slot.acquire("gemini", "s2").ok).toBe(true);
+		await h.runtime.close();
+	});
+
 	it("an interaction drives the FULL chain: issue → VC join → briefing preamble → opening prompt", async () => {
 		const h = await wire();
 		const replies: string[] = [];
@@ -260,35 +282,6 @@ describe("wireAssistantMode (FLY-967 QA-B1)", () => {
 		await h.runtime.close();
 		// close() degrades the live meeting honestly and tears it down
 		expect(h.conversations[0].closed).toBe(true);
-	});
-
-	it("shared room slot (Codex R6): a /glaw hold rejects /gemini — nothing created", async () => {
-		const shared = new SessionSlot();
-		expect(shared.acquire("glaw", "FLY-999").ok).toBe(true); // meeting holds the room
-		// FLY-1006 S5b: the shared mutex now travels inside the room runtime
-		// (wiring ignores the legacy slot option).
-		const h = await wire({ room: new VoiceRoomRuntime(shared) });
-		const replies: string[] = [];
-		h.commandHandlers.get("gemini")?.({
-			userId: "annie",
-			reply: async (text) => {
-				replies.push(text);
-			},
-		});
-		await vi.waitFor(() => {
-			if (replies.length === 0) throw new Error("not yet");
-		});
-		expect(replies[0]).toContain("/glaw"); // busy message names the holder
-		expect(h.conversations).toHaveLength(0); // no second live session
-		// slot-acquire comes FIRST: a rejected /gemini creates no kickoff issue
-		expect(
-			h.fetchCalls.find((c) => c.url.includes("create-issue")),
-		).toBeUndefined();
-		await h.runtime.close();
-		// the foreign hold survives close() — assistant teardown must not steal it
-		expect(shared.current()).toEqual(
-			expect.objectContaining({ mode: "glaw", holder: "FLY-999" }),
-		);
 	});
 
 	it("fail-fast when the Bridge token is missing", async () => {
@@ -592,145 +585,6 @@ describe("staged QA seams (FLY-967 ②)", () => {
 	});
 });
 
-describe("presence QA seam (FLY-1353)", () => {
-	async function startHeadlessRound(override?: string) {
-		vi.useFakeTimers();
-		const f = makeFakes();
-		f.deps.voiceChannelHumanCount = async () => 0;
-		const logs: string[] = [];
-		const stateDir = mkdtempSync(join(tmpdir(), "fly1353-presence-"));
-		const runtime = await wireAssistantMode({
-			config: CONFIG,
-			assistant: ASSISTANT,
-			registry: f.registry,
-			deps: f.deps,
-			earsConnection: {},
-			env: {
-				FLYWHEEL_API_TOKEN: "t",
-				FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9877",
-				FLYWHEEL_GEMINI_AUTOSTART: "presence QA",
-				...(override !== undefined
-					? { FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE: override }
-					: {}),
-			},
-			log: (message) => logs.push(message),
-			createConversation: f.createConversation,
-			fetchImpl: f.fetchImpl,
-			stateDir,
-		});
-		await vi.waitFor(() => {
-			expect(logs).toContain("[presence] humanCount seeded=0 (boot occupancy)");
-		});
-		await vi.advanceTimersByTimeAsync(2_100);
-		await vi.waitFor(() => expect(f.conversations).toHaveLength(1));
-
-		return {
-			f,
-			logs,
-			close: async () => {
-				await runtime.close();
-				rmSync(stateDir, { recursive: true, force: true });
-				vi.useRealTimers();
-			},
-		};
-	}
-
-	it("unset keeps a headless round invoked and does not send the opening prompt", async () => {
-		const round = await startHeadlessRound();
-		try {
-			expect(round.f.conversations[0]?.sentTexts).toHaveLength(0);
-			expect(round.logs.some((line) => line.includes("QA OVERRIDE"))).toBe(
-				false,
-			);
-		} finally {
-			await round.close();
-		}
-	});
-
-	it('override="1" enters live without a human and logs both override disclosures', async () => {
-		const round = await startHeadlessRound("1");
-		try {
-			expect(round.f.conversations[0]?.sentTexts).toHaveLength(1);
-			expect(
-				round.logs.some((line) => line.includes("QA presence override armed")),
-			).toBe(true);
-			expect(
-				round.logs.some((line) =>
-					line.includes("QA OVERRIDE — humanCount ignored"),
-				),
-			).toBe(true);
-		} finally {
-			await round.close();
-		}
-	});
-
-	it.each(["0", "true", ""])(
-		'override="%s" stays fail-closed and does not enter live',
-		async (override) => {
-			const round = await startHeadlessRound(override);
-			try {
-				expect(round.f.conversations[0]?.sentTexts).toHaveLength(0);
-			} finally {
-				await round.close();
-			}
-		},
-	);
-
-	it.each([
-		[
-			"production FLYWHEEL_BRIDGE_URL",
-			{ FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876" },
-		],
-		["production BRIDGE_URL alias", { BRIDGE_URL: "http://127.0.0.1:9876" }],
-		[
-			"non-loopback host",
-			{ FLYWHEEL_BRIDGE_URL: "https://bridge.internal.example" },
-		],
-		[
-			"loopback without an explicit port",
-			{ FLYWHEEL_BRIDGE_URL: "http://127.0.0.1" },
-		],
-		[
-			"unapproved loopback port",
-			{ FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:43210" },
-		],
-		["https localhost", { FLYWHEEL_BRIDGE_URL: "https://localhost:8443" }],
-		["non-http protocol", { FLYWHEEL_BRIDGE_URL: "ftp://127.0.0.1:9877" }],
-	] as const)(
-		"rejects %s when the QA override is armed",
-		async (_label, urlEnv) => {
-			const f = makeFakes();
-			const stateDir = mkdtempSync(join(tmpdir(), "fly1353-guard-"));
-			let runtime: Awaited<ReturnType<typeof wireAssistantMode>> | undefined;
-			let thrown: unknown;
-			try {
-				runtime = await wireAssistantMode({
-					config: CONFIG,
-					assistant: ASSISTANT,
-					registry: f.registry,
-					deps: f.deps,
-					earsConnection: {},
-					env: {
-						FLYWHEEL_API_TOKEN: "t",
-						FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE: "1",
-						...urlEnv,
-					},
-					log: () => {},
-					createConversation: f.createConversation,
-					fetchImpl: f.fetchImpl,
-					stateDir,
-				});
-			} catch (error) {
-				thrown = error;
-			} finally {
-				await runtime?.close();
-				rmSync(stateDir, { recursive: true, force: true });
-			}
-			expect(String(thrown)).toMatch(/QA-only seam/);
-		},
-	);
-});
-
 describe("runVoiceBridge assistant hook (FLY-967 QA-B1)", () => {
 	it("assistant: null keeps the daemon byte-compatible (no assistant surface)", async () => {
 		const f = makeFakes();
@@ -741,11 +595,7 @@ describe("runVoiceBridge assistant hook (FLY-967 QA-B1)", () => {
 			probe: async () => ({ ok: true, detail: "fake" }),
 			assistant: null,
 		});
-		// the /glaw (here: /meet) meeting command is part of the resident daemon
-		// since PR-2 — "byte-compatible" now means NO ASSISTANT surface on top.
-		expect(f.registered).toEqual([
-			expect.objectContaining({ name: CONFIG.commandName }),
-		]);
+		expect(f.registered).toHaveLength(0);
 		const health = await fetch(
 			`http://127.0.0.1:${(runtime as unknown as { config: { healthPort: number } }).config.healthPort}/health`,
 		).catch(() => null);
@@ -770,66 +620,10 @@ describe("runVoiceBridge assistant hook (FLY-967 QA-B1)", () => {
 					env: { FLYWHEEL_API_TOKEN: "t" },
 				},
 			});
-			// the meeting command registers first (resident), then the assistant
 			expect(f.registered).toEqual([
-				expect.objectContaining({ name: CONFIG.commandName }),
 				expect.objectContaining({ name: "gemini" }),
 			]);
 			expect(f.commandHandlers.has("gemini")).toBe(true);
-			await runtime.close();
-		} finally {
-			rmSync(stateDir, { recursive: true, force: true });
-		}
-	});
-
-	it("daemon passes ONE room slot to both modes (Codex R6): a live /gemini makes /glaw answer busy", async () => {
-		const f = makeFakes();
-		const stateDir = mkdtempSync(join(tmpdir(), "fly967-cli-slot-"));
-		try {
-			const runtime = await runVoiceBridge({
-				config: CONFIG,
-				deps: f.deps,
-				log: () => {},
-				probe: async () => ({ ok: true, detail: "fake" }),
-				assistant: ASSISTANT,
-				assistantWiring: {
-					createConversation: f.createConversation,
-					fetchImpl: f.fetchImpl,
-					stateDir,
-					env: { FLYWHEEL_API_TOKEN: "t" },
-				},
-			});
-			// /gemini goes live → it holds the daemon's slot
-			f.commandHandlers.get("gemini")?.({
-				userId: CONFIG.founderUserId,
-				reply: async () => {},
-			});
-			await vi.waitFor(() => {
-				if (f.conversations.length === 0) throw new Error("not yet");
-			});
-			// /glaw (the meeting face) must see the room as busy — instant
-			// ephemeral rejection in the guards, before any kickoff issue
-			const glawReplies: unknown[] = [];
-			f.interactionHandlers.get(CONFIG.commandName)?.({
-				commandName: CONFIG.commandName,
-				user: { id: CONFIG.founderUserId },
-				reply: async (payload: unknown) => {
-					glawReplies.push(payload);
-				},
-				deferReply: async () => {
-					throw new Error("busy guard must reply BEFORE deferring");
-				},
-				options: { getUser: () => null, getString: () => null },
-			});
-			await vi.waitFor(() => {
-				if (glawReplies.length === 0) throw new Error("not yet");
-			});
-			expect(glawReplies[0]).toEqual(
-				expect.objectContaining({
-					content: expect.stringContaining("有会正在进行中"),
-					ephemeral: true,
-				}),
-			);
 			await runtime.close();
 		} finally {
 			rmSync(stateDir, { recursive: true, force: true });

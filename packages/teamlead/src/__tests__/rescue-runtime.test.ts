@@ -174,29 +174,6 @@ describe("makeCloseAndDispatchSuccessor (W4)", () => {
 		};
 	}
 
-	it("FLY-1372: refuses an engine-owned generalized execution BEFORE any destructive step (fail closed on probe error too)", async () => {
-		const d = deps({ isEngineOwnedExecution: vi.fn(() => true) });
-		const fn = makeCloseAndDispatchSuccessor(d);
-		expect(await fn("exec-1")).toBeNull();
-		expect(d.terminateForRescue).not.toHaveBeenCalled();
-		expect(d.closeRunner).not.toHaveBeenCalled();
-		expect(d.startSuccessor).not.toHaveBeenCalled();
-
-		const throwing = deps({
-			isEngineOwnedExecution: vi.fn(() => {
-				throw new Error("ownership read outage");
-			}),
-		});
-		const fn2 = makeCloseAndDispatchSuccessor(throwing);
-		expect(await fn2("exec-1")).toBeNull();
-		expect(throwing.terminateForRescue).not.toHaveBeenCalled();
-
-		// A plain legacy session (probe says false) still rescues normally.
-		const legacy = deps({ isEngineOwnedExecution: vi.fn(() => false) });
-		const fn3 = makeCloseAndDispatchSuccessor(legacy);
-		expect(await fn3("exec-1")).toBe("exec-2");
-	});
-
 	it("terminates → closes → dispatches a resumed successor (in order)", async () => {
 		const order: string[] = [];
 		const d = deps({
@@ -328,39 +305,48 @@ describe("buildRescueRuntime wiring", () => {
 	});
 });
 
-describe("buildRescueSuccessorDispatchFields", () => {
-	it("does not synthesize a model or backend for a design row", () => {
+// ── FLY-1224 (T4b) — phase-aware rescue-successor dispatch fields ──────────
+describe("buildRescueSuccessorDispatchFields (FLY-1224 R1 #1 — the 6th lane)", () => {
+	it("implement PHASE row with dispatch_model=NULL → full codex triple + shared-branch identity", () => {
+		// The exact pre-fix bug shape: orchestrator-spawned phase rows persist NO
+		// dispatch_model, so the old passthrough rescued a codex implement back
+		// onto claude-tmux on an independent branch.
 		const f = buildRescueSuccessorDispatchFields({
-			session_role: "design",
-			dispatch_model: null,
-		} as never);
-		expect(f).toEqual({
-			sessionRole: "design",
-			dispatchModel: undefined,
-		});
-	});
-
-	it("preserves a recorded model without consulting hidden role config", () => {
-		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: "implement",
 			session_role: "implement",
-			dispatch_model: "gpt-5.6-sol",
+			dispatch_model: null,
 		} as never);
 		expect(f).toEqual({
 			sessionRole: "implement",
 			dispatchModel: "gpt-5.6-sol",
+			dispatchVendor: "codex",
+			dispatchEffort: "xhigh",
+			ignoreRunnerLabelSelection: true,
+			shareParentBranch: true,
 		});
 	});
 
-	it("does not infer a role from the chat-thread marker", () => {
+	it("polluted row (chat_thread_role=implement, session_role=main) follows the DURABLE marker (R2 #3)", () => {
 		const f = buildRescueSuccessorDispatchFields({
 			chat_thread_role: "implement",
 			session_role: "main",
 			dispatch_model: null,
 		} as never);
-		expect(f).toEqual({
-			sessionRole: "main",
-			dispatchModel: undefined,
-		});
+		expect(f.sessionRole).toBe("implement");
+		expect(f.dispatchVendor).toBe("codex");
+		expect(f.shareParentBranch).toBe(true);
+	});
+
+	it("qa PHASE row → claude triple (Opus, no effort) + shared-branch identity", () => {
+		const f = buildRescueSuccessorDispatchFields({
+			chat_thread_role: "qa",
+			session_role: "qa",
+			dispatch_model: null,
+		} as never);
+		expect(f.dispatchModel).toBe("claude-opus-4-8");
+		expect(f.dispatchVendor).toBe("claude");
+		expect(f.dispatchEffort).toBeUndefined();
+		expect(f.shareParentBranch).toBe(true);
 	});
 
 	it("BYTE-COMPAT sentinel: a non-phase row passes its persisted fields verbatim", () => {

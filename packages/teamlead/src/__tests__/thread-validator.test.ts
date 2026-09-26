@@ -5,9 +5,7 @@ import {
 } from "../bridge/thread-validator.js";
 
 const mockFetch = vi.fn();
-beforeEach(() => {
-	vi.stubGlobal("fetch", mockFetch);
-});
+vi.stubGlobal("fetch", mockFetch);
 
 describe("validateThreadExists (GEO-200)", () => {
 	let deps: ThreadValidationDeps;

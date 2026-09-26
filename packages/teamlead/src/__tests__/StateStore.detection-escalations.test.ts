@@ -67,37 +67,6 @@ describe("StateStore detection_escalations (FLY-1048 C1)", () => {
 		expect(s.getDetectionEscalationsForReconcile()).toHaveLength(4);
 	});
 
-	it("supports exact kind cohorts without letting a receipt pass consume legacy rows", async () => {
-		const s = await freshStore();
-		for (const [kind, firstDetectedAtMs] of [
-			["wake_failed", 1],
-			["receipt_unprocessed:runner_question", 2],
-			["delivery_unconsumed", 3],
-		] as const) {
-			s.upsertDetectionEscalation({
-				...KEY,
-				kind,
-				episodeFingerprint: `fp:${kind}`,
-				firstDetectedAtMs,
-			});
-		}
-
-		expect(
-			s
-				.getDetectionEscalationsForReconcile({
-					includeKinds: ["wake_failed", "receipt_unprocessed:runner_question"],
-				})
-				.map(({ kind }) => kind),
-		).toEqual(["wake_failed", "receipt_unprocessed:runner_question"]);
-		expect(
-			s
-				.getDetectionEscalationsForReconcile({
-					excludeKinds: ["wake_failed", "receipt_unprocessed:runner_question"],
-				})
-				.map(({ kind }) => kind),
-		).toEqual(["delivery_unconsumed"]);
-	});
-
 	it("markLeadNotified stamps LEAD_NOTIFIED once; the first notification timestamp wins on repeat", async () => {
 		const s = await freshStore();
 		expect(
@@ -683,90 +652,6 @@ describe("StateStore CLEARING target helpers (FLY-1048 C5)", () => {
  * receipt. Boundary = the new detection is NEWER than the resolution moment.
  */
 describe("StateStore detection_escalations RESOLVED-revive boundary (Codex R1 #1)", () => {
-	it("residue harvest resolves every active status including ACKED with its own machine-clear token", async () => {
-		const s = await freshStore();
-		s.upsertDetectionEscalation({ ...KEY, firstDetectedAtMs: 1_000 });
-		s.upsertDetectionEscalation({
-			...KEY,
-			episodeFingerprint: "fp:acked",
-			firstDetectedAtMs: 1_100,
-		});
-		s.ackDetectionEscalation(KEY.targetKey, KEY.kind, "fp:acked", {
-			atMs: 2_000,
-			disposition: "ack",
-		});
-
-		expect(s.resolveDetectionEscalationsForResidueTarget(KEY.targetKey)).toBe(
-			2,
-		);
-		for (const fingerprint of [KEY.episodeFingerprint, "fp:acked"]) {
-			expect(
-				s.getDetectionEscalation(KEY.targetKey, KEY.kind, fingerprint),
-			).toMatchObject({
-				status: "RESOLVED",
-				resolved_via: "residue_harvest",
-			});
-		}
-	});
-
-	it("a residue-harvested fingerprint revives on a later detection and resets every episode field", async () => {
-		const s = await freshStore();
-		s.upsertDetectionEscalation({ ...KEY, firstDetectedAtMs: 1_000 });
-		s.markDetectionEscalationLeadNotified(
-			KEY.targetKey,
-			KEY.kind,
-			KEY.episodeFingerprint,
-			2_000,
-		);
-		s.markDetectionEscalationEscalated(
-			KEY.targetKey,
-			KEY.kind,
-			KEY.episodeFingerprint,
-			3_000,
-		);
-		s.resolveDetectionEscalationsForResidueTarget(KEY.targetKey);
-
-		const revived = s.upsertDetectionEscalation({
-			...KEY,
-			ownerLeadId: "new-owner",
-			firstDetectedAtMs: 10_000,
-		});
-
-		expect(revived.created).toBe(true);
-		expect(revived.row).toMatchObject({
-			status: "NEW",
-			first_detected_at_ms: 10_000,
-			owner_lead_id: "new-owner",
-			lead_notified_at_ms: null,
-			lead_ack_at_ms: null,
-			founder_paged_at_ms: null,
-			clearing_since_ms: null,
-			attempts: 0,
-			resolved_via: null,
-		});
-
-		const clearingFingerprint = "fp:clearing-residue";
-		s.upsertDetectionEscalation({
-			...KEY,
-			episodeFingerprint: clearingFingerprint,
-			firstDetectedAtMs: 20_000,
-		});
-		s.markDetectionEscalationClearing(
-			KEY.targetKey,
-			KEY.kind,
-			clearingFingerprint,
-			21_000,
-		);
-		s.resolveDetectionEscalationsForResidueTarget(KEY.targetKey);
-		const clearingRevived = s.upsertDetectionEscalation({
-			...KEY,
-			episodeFingerprint: clearingFingerprint,
-			firstDetectedAtMs: 30_000,
-		});
-		expect(clearingRevived.row.clearing_since_ms).toBeNull();
-		expect(clearingRevived.row.attempts).toBe(0);
-	});
-
 	it("re-detection NEWER than a RECOVERY resolution revives the episode as NEW", async () => {
 		const s = await freshStore();
 		s.upsertDetectionEscalation({ ...KEY, firstDetectedAtMs: 1_000 });

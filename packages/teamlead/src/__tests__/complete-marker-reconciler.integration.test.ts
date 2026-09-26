@@ -29,7 +29,6 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -74,8 +73,6 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	let markerDir: string;
 	let quarantineDir: string;
 	let tmp: string;
-	let originalHome: string | undefined;
-	let originalCompleteMarkerDir: string | undefined;
 
 	async function startRunning(execId: string, issueId: string) {
 		const res = await fetch(`${baseUrl}/events`, {
@@ -91,14 +88,6 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 			}),
 		});
 		expect(res.status).toBe(200);
-		const session = store.getSession(execId);
-		store.upsertSession({
-			execution_id: execId,
-			issue_id: session?.issue_id ?? issueId,
-			project_name: session?.project_name ?? "geoforge3d",
-			status: session?.status ?? "running",
-			worktree_path: process.cwd(),
-		});
 	}
 
 	function writeMarker(execId: string, route: string, merged: boolean) {
@@ -126,13 +115,11 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	}
 
 	beforeEach(async () => {
-		originalHome = process.env.HOME;
-		originalCompleteMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
-		// FLY-869: bypass the merge-approval gate — these tests exercise marker
-		// replay parity. QA exemptions are modeled durably per test when needed.
-		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
-		tmp = mkdtempSync(join(tmpdir(), "fly172-int-"));
-		store = await StateStore.create(join(tmp, "teamlead.db"));
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the
+		// marker-replay FSM parity, not the approval gate.
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
@@ -149,19 +136,14 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = buildLoopbackBaseUrl("127.0.0.1", port);
 
+		tmp = mkdtempSync(join(tmpdir(), "fly172-int-"));
 		markerDir = join(tmp, "complete-failed");
 		quarantineDir = join(tmp, "quarantine");
 	});
 
 	afterEach(async () => {
-		if (originalHome === undefined) delete process.env.HOME;
-		else process.env.HOME = originalHome;
-		if (originalCompleteMarkerDir === undefined) {
-			delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
-		} else {
-			process.env.FLYWHEEL_COMPLETE_MARKER_DIR = originalCompleteMarkerDir;
-		}
-		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -189,49 +171,13 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		expect(readdirSync(markerDir)).not.toContain("execA.json");
 	});
 
-	it("a legacy shadow binding remains on the canonical completion path", async () => {
-		await startRunning("execLegacy", "iss-execLegacy");
-		store.createWorkflowRun({
-			runId: "legacy-shadow-run",
-			issueId: "iss-execLegacy",
-			projectName: "geoforge3d",
-			claimsReadEnrolled: false,
-		});
-		expect(
-			store.admitWorkflowExecution({
-				runId: "legacy-shadow-run",
-				nodeId: "qa",
-				executionId: "execLegacy",
-				attempt: 1,
-				family: "qa_verdict",
-				now: "2026-07-15T00:00:00.000Z",
-				expiresAt: "2026-07-15T00:05:00.000Z",
-				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
-			}),
-		).toMatchObject({ ok: true });
-		writeMarker("execLegacy", "needs_review", false);
-
-		const result = await tryReconcileComplete("execLegacy", deps());
-		expect(result).toEqual({
-			kind: "reconciled",
-			status: "awaiting_review",
-		});
-		expect(store.getSession("execLegacy")?.status).toBe("awaiting_review");
-		expect(readdirSync(markerDir)).not.toContain("execLegacy.json");
-	});
-
-	it("auto_approve + merged without approval → durable merge block", async () => {
+	it("auto_approve + merged → completed through real FSM", async () => {
 		await startRunning("execB", "iss-execB");
-		setHistoricalQaRequiredSnapshot(store, {
-			executionId: "execB",
-			required: 0,
-			reason: "marker parity fixture",
-		});
 		writeMarker("execB", "auto_approve", true);
 
 		const r = await tryReconcileComplete("execB", deps());
-		expect(r.kind).toBe("settled_merge_block");
-		expect(store.getSession("execB")!.status).toBe("running");
+		expect(r.kind).toBe("reconciled");
+		expect(store.getSession("execB")!.status).toBe("completed");
 	});
 
 	it("blocked → blocked through real FSM", async () => {
@@ -258,53 +204,6 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		expect(store.getSession("execD")!.status).toBe("awaiting_review");
 		expect(readdirSync(markerDir)).not.toContain("execD.json");
 		expect(r2.reconciled).toBe(1);
-	});
-
-	it("boot drain honors the slot directory and leaves production inventory untouched", async () => {
-		const fakeHome = join(tmp, "production-home");
-		const productionMarkerDir = join(
-			fakeHome,
-			".flywheel",
-			"state",
-			"complete-failed",
-		);
-		const productionQuarantineDir = `${productionMarkerDir}-quarantine`;
-		mkdirSync(productionMarkerDir, { recursive: true });
-		mkdirSync(productionQuarantineDir, { recursive: true });
-		writeFileSync(
-			join(productionMarkerDir, "production-decoy.json"),
-			"production-bytes-must-not-move",
-			"utf8",
-		);
-		writeFileSync(
-			join(productionQuarantineDir, "existing.json"),
-			"existing-quarantine-bytes",
-			"utf8",
-		);
-		const beforeMarkers = readdirSync(productionMarkerDir);
-		const beforeQuarantine = readdirSync(productionQuarantineDir);
-
-		process.env.HOME = fakeHome;
-		process.env.FLYWHEEL_COMPLETE_MARKER_DIR = markerDir;
-		await startRunning("execSlot", "iss-execSlot");
-		writeMarker("execSlot", "needs_review", false);
-
-		const result = await reconcileCompleteFailedMarkers({
-			store,
-			bridgeBaseUrl: baseUrl,
-			ingestToken: "ingest-secret",
-			log: () => {},
-		});
-
-		expect(result).toEqual({
-			scanned: 1,
-			reconciled: 1,
-			quarantined: 0,
-			held: 0,
-		});
-		expect(store.getSession("execSlot")?.status).toBe("awaiting_review");
-		expect(readdirSync(productionMarkerDir)).toEqual(beforeMarkers);
-		expect(readdirSync(productionQuarantineDir)).toEqual(beforeQuarantine);
 	});
 
 	it("invalid route → unreplayable (route guard would 200+warning) → quarantined, session stays running", async () => {

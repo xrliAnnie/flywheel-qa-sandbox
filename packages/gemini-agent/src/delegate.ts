@@ -16,8 +16,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
-import { appendRotatedLogSync } from "flywheel-config";
 // type-only import — the ONLY voice-core dependency (plan §2.1)
 import type { LiveToolSpec } from "flywheel-voice-core";
 import { digest } from "./audit.js";
@@ -53,7 +53,8 @@ export interface DelegateToolOptions {
 
 function defaultAppendAudit(auditDir: string): (line: string) => void {
 	return (line) => {
-		appendRotatedLogSync(path.join(auditDir, "delegate.jsonl"), line);
+		fs.mkdirSync(auditDir, { recursive: true });
+		fs.appendFileSync(path.join(auditDir, "delegate.jsonl"), line, "utf8");
 	};
 }
 

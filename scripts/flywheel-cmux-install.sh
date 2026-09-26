@@ -3,14 +3,6 @@
 # Idempotent: safe to run multiple times.
 set -euo pipefail
 
-LINK_ONLY=0
-case "${1:-}" in
-  "") ;;
-  --link-only) LINK_ONLY=1; shift ;;
-  *) echo "Usage: $0 [--link-only]" >&2; exit 2 ;;
-esac
-[[ $# -eq 0 ]] || { echo "Usage: $0 [--link-only]" >&2; exit 2; }
-
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL_DIR="$HOME/.flywheel/bin"
 INTEGRATION_FILE="$HOME/.flywheel/cmux-integration.zsh"
@@ -18,19 +10,6 @@ ZSHRC="$HOME/.zshrc"
 
 MARKER_START="# >>> flywheel cmux integration >>>"
 MARKER_END="# <<< flywheel cmux integration <<<"
-
-# FLY-1389 P1-b: this installer symlinks GLOBAL bin entries at REPO_DIR —
-# run once from a temp/worktree checkout and ~/.flywheel/bin permanently
-# points at a directory that will be cleaned (the 529 Room broken-link
-# incident class). Refuse before ANY global write.
-# shellcheck source=lib/path-hygiene.sh
-source "$REPO_DIR/scripts/lib/path-hygiene.sh"
-if is_temp_or_worktree_root "$REPO_DIR"; then
-  echo "[install] ERROR: refusing to install global cmux integration from temp/worktree checkout: $REPO_DIR" >&2
-  echo "[install]   Global bin links must point at the main checkout only (FLY-1389)." >&2
-  echo "[install]   Run this installer from the main flywheel checkout." >&2
-  exit 1
-fi
 
 echo "[install] Installing flywheel-cmux integration..."
 
@@ -40,18 +19,6 @@ mkdir -p "$INSTALL_DIR"
 # 2. Symlink scripts (FLY-98: repo updates take effect immediately without re-install)
 ln -sf "$REPO_DIR/scripts/flywheel-cmux-sync.sh" "$INSTALL_DIR/flywheel-cmux-sync"
 ln -sf "$REPO_DIR/scripts/flywheel-cmux-autostart.sh" "$INSTALL_DIR/flywheel-cmux-autostart"
-ln -sf "$REPO_DIR/scripts/lib/cmux-mutator-process-census.sh" "$INSTALL_DIR/cmux-mutator-process-census.sh"
-ln -sf "$REPO_DIR/scripts/lib/flywheel-alert-lib.sh" "$INSTALL_DIR/flywheel-alert-lib.sh"
-ln -sf "$REPO_DIR/scripts/lead-alert.sh" "$INSTALL_DIR/lead-alert.sh"
-ln -sf "$REPO_DIR/scripts/meta-alert.sh" "$INSTALL_DIR/meta-alert.sh"
-ln -sf "$REPO_DIR/scripts/flywheel-lead-attach.sh" "$INSTALL_DIR/flywheel-lead-attach.sh"
-ln -sf "$REPO_DIR/scripts/flywheel-view-attach.sh" "$INSTALL_DIR/flywheel-view-attach.sh"
-ln -sf "$REPO_DIR/scripts/flywheel-node-status.sh" "$INSTALL_DIR/flywheel-node-status.sh"
-
-if [[ "$LINK_ONLY" == "1" ]]; then
-  echo "[install] Link-only convergence complete (watcher and shell config untouched)."
-  exit 0
-fi
 
 # 3. Write shell integration file
 cat > "$INTEGRATION_FILE" << 'INTEGRATION'
@@ -151,10 +118,7 @@ else
     # flywheel-cmux-sync.sh:wait_for_watcher_exit for why bootout alone left a
     # production orphan, pid 64108, running for hours) before bootstrapping a
     # fresh instance.
-    if ! "$REPO_DIR/scripts/flywheel-cmux-sync.sh" --wait-for-watcher-exit; then
-      echo "[install] ERROR: watcher shutdown could not be verified; bootstrap skipped" >&2
-      exit 1
-    fi
+    "$REPO_DIR/scripts/flywheel-cmux-sync.sh" --wait-for-watcher-exit
     if launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null; then
       echo "[install] ✓ launchd watcher bootstrapped (KeepAlive)"
     else
@@ -163,8 +127,7 @@ else
   fi
 fi
 
-# 7. FLY-1446: launchd is the only normal watcher starter. The .zshrc
-# flywheel-cmux-autostart hook only verifies/bootstrap this KeepAlive job.
+# 7. Note: start watchers ONLY via flywheel-cmux-autostart or the launchd job.
 # Both paths funnel into `flywheel-cmux-sync --watch`, which holds the
 # single-instance lock (FLY-129 pushed lock acquisition DOWN into the `--watch`
 # dispatcher — so `--watch` does NOT skip the lock). Concurrent autostart +

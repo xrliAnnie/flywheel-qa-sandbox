@@ -5,7 +5,6 @@ import { join } from "node:path";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLeadIdentityFixture } from "../../../__tests__/helpers/lead-identity-fixture.js";
 import type { WriteGateResponseArgs } from "../../approval-signal/write-gate-response.js";
 import type { EvaluateResult, FounderConsentEvaluator } from "../evaluator.js";
 import { createGateResponseRouter } from "../gate-response-router.js";
@@ -14,8 +13,6 @@ const PROJECT = "TestProj";
 let dir: string;
 let commDbPath: string;
 let server: Server;
-let identityDigest: string;
-let leadLeaseEnv: NodeJS.ProcessEnv;
 
 async function request(method: string, path: string, body?: unknown) {
 	const addr = server.address();
@@ -23,16 +20,7 @@ async function request(method: string, path: string, body?: unknown) {
 	const res = await fetch(`http://127.0.0.1:${addr.port}${path}`, {
 		method,
 		headers: body ? { "Content-Type": "application/json" } : {},
-		body: body
-			? JSON.stringify(
-					body !== null &&
-						typeof body === "object" &&
-						"leadId" in body &&
-						!("identityDigest" in body)
-						? { ...body, identityDigest }
-						: body,
-				)
-			: undefined,
+		body: body ? JSON.stringify(body) : undefined,
 	});
 	let json: unknown;
 	try {
@@ -81,7 +69,6 @@ function mkServer(
 				execId === "exec-1" ? { project_name: PROJECT } : undefined,
 			configuredProjects: new Set([PROJECT]),
 			commRoot: join(dir, "comm"),
-			leadLeaseEnv,
 			...overrides,
 		}),
 	);
@@ -102,11 +89,6 @@ beforeEach(() => {
 	const projDir = join(dir, "comm", PROJECT);
 	mkdirSync(projDir, { recursive: true });
 	commDbPath = join(projDir, "comm.db");
-	({ identityDigest, env: leadLeaseEnv } = createLeadIdentityFixture({
-		root: dir,
-		projectName: PROJECT,
-		leadId: "lead-x",
-	}));
 });
 afterEach(() => {
 	server?.close();
@@ -115,11 +97,7 @@ afterEach(() => {
 
 describe("gate-response-router (Surface B)", () => {
 	it.each([
-		[
-			"injected enforce capability",
-			fakeEvaluator("allow", "enforce"),
-			"lead-x",
-		],
+		["enforce", fakeEvaluator("allow", "enforce"), "bridge-founder-consent"],
 		["audit", fakeEvaluator("allow", "audit_only"), "lead-x"],
 	] as const)(
 		"routes %s writes through the shared founder boundary",
@@ -141,7 +119,7 @@ describe("gate-response-router (Surface B)", () => {
 				{
 					questionId: qid,
 					leadId: "lead-x",
-					answer: "changes requested",
+					answer: '{"approved":true}',
 					executionId: "exec-1",
 				},
 			);
@@ -155,7 +133,7 @@ describe("gate-response-router (Surface B)", () => {
 		},
 	);
 
-	it("ALLOW: writes an explicit kickback response", async () => {
+	it("ALLOW: writes the CommDB response", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
 		const res = await request(
@@ -164,60 +142,13 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "design: changes requested",
+				answer: "approved",
 				executionId: "exec-1",
 			},
 		);
 		expect(res.status).toBe(200);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("design: changes requested");
-		db.close();
-	});
-
-	it("keeps a neutral Lead relay open instead of writing a rejection", async () => {
-		const qid = seedQuestion("approve_to_ship");
-		mkServer(fakeEvaluator("allow"));
-		const res = await request(
-			"POST",
-			"/api/founder-consent/runner-gate-response",
-			{
-				questionId: qid,
-				leadId: "lead-x",
-				answer: "OK, what is next?",
-				executionId: "exec-1",
-			},
-		);
-
-		expect(res.status).toBe(409);
-		expect(res.body).toMatchObject({
-			error: "neutral_not_written",
-			detail: expect.stringContaining("--kickback"),
-		});
-		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)).toBeUndefined();
-		db.close();
-	});
-
-	it("writes a Lead-confirmed kickback even when its text is not self-explicit", async () => {
-		const qid = seedQuestion("approve_to_ship");
-		mkServer(fakeEvaluator("allow"));
-		const res = await request(
-			"POST",
-			"/api/founder-consent/runner-gate-response",
-			{
-				questionId: qid,
-				leadId: "lead-x",
-				answer: "Please revisit the proposed flow.",
-				kickback: true,
-				executionId: "exec-1",
-			},
-		);
-
-		expect(res.status).toBe(200);
-		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe(
-			"Please revisit the proposed flow.",
-		);
+		expect(db.getResponse(qid)?.content).toBe("approved");
 		db.close();
 	});
 
@@ -230,8 +161,7 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "changes requested",
-				kickback: true,
+				answer: "approved",
 				executionId: "exec-1",
 			},
 		);
@@ -250,46 +180,43 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "changes requested",
-				kickback: true,
+				answer: "approved",
 				executionId: "exec-1",
 			},
 		);
 		expect(res.status).toBe(200);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("changes requested");
+		expect(db.getResponse(qid)?.content).toBe("approved");
 		db.close();
 	});
 
 	// ── FLY-945 Fix E write-side attribution matrix (Codex R1 #2 / R2 #2) ──
 
-	it("FLY-1981: injected ENFORCE allow cannot mint the historical attribution", async () => {
+	it("FLY-945: ENFORCE allow → response attributed 'bridge-founder-consent' (verify-approval trusted set)", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow", "enforce"));
 		await request("POST", "/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: false }),
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		expect(db.getResponse(qid)?.from_agent).toBe("bridge-founder-consent");
 		db.close();
 	});
 
-	it("FLY-1981: injected ENFORCE bypass also keeps Lead attribution", async () => {
+	it("FLY-945: ENFORCE bypass → also 'bridge-founder-consent'", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("bypass", "enforce"));
 		await request("POST", "/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: false }),
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
+		expect(db.getResponse(qid)?.from_agent).toBe("bridge-founder-consent");
 		db.close();
 	});
 
@@ -305,8 +232,7 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: JSON.stringify({ approved: false }),
-				kickback: true,
+				answer: JSON.stringify({ approved: true }),
 				executionId: "exec-1",
 			},
 		);
@@ -322,8 +248,7 @@ describe("gate-response-router (Surface B)", () => {
 		await request("POST", "/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
-			answer: JSON.stringify({ approved: false }),
-			kickback: true,
+			answer: JSON.stringify({ approved: true }),
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
@@ -443,7 +368,6 @@ describe("gate-response-router (Surface B)", () => {
 				getSessionProject: () => ({ project_name: PROJECT }),
 				configuredProjects: new Set([PROJECT]),
 				commRoot: join(dir, "comm"),
-				leadLeaseEnv,
 				writeGateResponseImpl: write,
 			}),
 		);
@@ -455,7 +379,7 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "changes requested",
+				answer: "approved",
 				executionId: "exec-1",
 			},
 		);
@@ -463,7 +387,7 @@ describe("gate-response-router (Surface B)", () => {
 		expect(write).toHaveBeenCalledOnce();
 		expect((res.body as { passthrough?: boolean }).passthrough).toBe(true);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("changes requested");
+		expect(db.getResponse(qid)?.content).toBe("approved");
 		db.close();
 	});
 });
@@ -473,9 +397,9 @@ describe("gate-response-router (Surface B)", () => {
 // Production incident: the Lead replied `APPROVE — founder 批准在案...` to an
 // approve_to_ship gate; only JSON {"approved": true} approves, so the text
 // was silently recorded as feedback → verify-approval refused → ratify retry
-// loop. FLY-1373 closes that API surface entirely: a Lead approval attempt is
-// rejected before pass-through, evaluator, or idempotent-write logic.
-describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
+// loop. The router now flags the intent in the HTTP response (the respond CLI
+// prints it to stderr); the write behavior is deliberately unchanged.
+describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => {
 	function mkPassthroughServer() {
 		const app = express();
 		app.use(express.json());
@@ -487,14 +411,13 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 				getSessionProject: () => ({ project_name: PROJECT }),
 				configuredProjects: new Set([PROJECT]),
 				commRoot: join(dir, "comm"),
-				leadLeaseEnv,
 			}),
 		);
 		server = createServer(app);
 		server.listen(0);
 	}
 
-	it("pass-through rejects plain-text APPROVE without writing", async () => {
+	it("pass-through + plain-text APPROVE → warning, still written as feedback", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkPassthroughServer();
 		const res = await request(
@@ -507,14 +430,18 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(403);
-		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
+		expect(res.status).toBe(200);
+		const body = res.body as { warning?: string };
+		expect(body.warning).toContain("Recorded as FEEDBACK");
+		expect(body.warning).toContain('{"approved": true}');
+		expect(body.warning).toContain("re-request review");
+		// Write behavior unchanged: the text landed verbatim.
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)).toBeUndefined();
+		expect(db.getResponse(qid)?.content).toContain("APPROVE — founder");
 		db.close();
 	});
 
-	it("pass-through rejects structured approval", async () => {
+	it("pass-through + JSON approval → NO warning", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkPassthroughServer();
 		const res = await request(
@@ -527,11 +454,11 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(403);
-		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
+		expect(res.status).toBe(200);
+		expect((res.body as { warning?: string }).warning).toBeUndefined();
 	});
 
-	it("pass-through + explicit feedback prefix → NO warning", async () => {
+	it("pass-through + ordinary feedback text → NO warning", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkPassthroughServer();
 		const res = await request(
@@ -540,7 +467,7 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "qa: needs more tests before ship",
+				answer: "needs more tests before ship",
 				executionId: "exec-1",
 			},
 		);
@@ -548,7 +475,7 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 		expect((res.body as { warning?: string }).warning).toBeUndefined();
 	});
 
-	it("evaluator-allow cannot override Lead approval rejection", async () => {
+	it("evaluator-allow path + plain-text approval intent → warning", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
 		const res = await request(
@@ -561,16 +488,26 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(res.status).toBe(403);
-		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
+		expect(res.status).toBe(200);
+		expect((res.body as { warning?: string }).warning).toContain(
+			"Recorded as FEEDBACK",
+		);
 	});
 
-	it("an idempotent retry cannot grandfather a legacy Lead approval", async () => {
+	it("alreadyResponded retry surfaces the warning for an approval-intent prior answer", async () => {
 		const qid = seedQuestion("approve_to_ship");
-		const seed = new CommDB(commDbPath, false);
-		seed.insertResponse(qid, "lead-x", "APPROVE — ship it");
-		seed.close();
 		mkPassthroughServer();
+		const first = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "APPROVE — ship it",
+				executionId: "exec-1",
+			},
+		);
+		expect(first.status).toBe(200);
 		const retry = await request(
 			"POST",
 			"/api/founder-consent/runner-gate-response",
@@ -581,7 +518,12 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 				executionId: "exec-1",
 			},
 		);
-		expect(retry.status).toBe(403);
-		expect((retry.body as { error?: string }).error).toBe("lead_ack_rejected");
+		expect(retry.status).toBe(200);
+		expect(
+			(retry.body as { alreadyResponded?: boolean }).alreadyResponded,
+		).toBe(true);
+		expect((retry.body as { warning?: string }).warning).toContain(
+			"Recorded as FEEDBACK",
+		);
 	});
 });

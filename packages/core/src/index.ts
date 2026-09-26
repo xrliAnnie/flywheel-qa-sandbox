@@ -24,10 +24,6 @@ export type {
 	AdapterSession,
 	ClaudeAdapterConfig,
 	IAdapter,
-	LaunchPrecommitFailure,
-	LaunchPrecommitOutcome,
-	TerminalFailureInfo,
-	TerminalFailureKind,
 } from "./adapter-types.js";
 // Agent Runner types
 export type {
@@ -291,7 +287,6 @@ export {
 	ACTION_DEFINITIONS,
 	allowedActionsForState,
 	getActionTarget,
-	isNoOutEdgeTerminalStatus,
 	WORKFLOW_TRANSITIONS,
 	WorkflowFSM,
 } from "./workflow-fsm.js";

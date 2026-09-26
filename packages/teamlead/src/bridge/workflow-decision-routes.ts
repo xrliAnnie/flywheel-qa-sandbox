@@ -3,39 +3,11 @@ import {
 	adapterTypeToFamily,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import type {
-	StateStore,
-	WorkflowEngineAlertIdentity,
-	WorkflowGateCarrierRebindCanonical,
-	WorkflowGateEntryBinding,
-	WorkflowLoopReentryCanonical,
-} from "../StateStore.js";
-import { resolveWorkflowDecisionContract } from "../workflow-run-snapshot.js";
-import { workflowApprovalGate } from "../workflow-template.js";
+import type { StateStore } from "../StateStore.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { isSameOrigin, loopbackSelfOrigin } from "./loopback-origin.js";
-import {
-	type MaterializedHeadAuthority,
-	type MaterializedHeadAuthorityResult,
-	unavailableMaterializedHeadAuthority,
-} from "./materialized-head-authority.js";
-import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
-import {
-	probeWorkflowPr,
-	type WorkflowPrProbeResult,
-} from "./workflow-pr-probe.js";
-
-export type { WorkflowPrProbeResult } from "./workflow-pr-probe.js";
-
-class WorkflowDecisionRejection extends Error {
-	constructor(
-		reason: string,
-		readonly detail?: Record<string, unknown>,
-	) {
-		super(reason);
-	}
-}
+import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 
 interface WorkflowDecisionBody {
 	credential?: unknown;
@@ -47,11 +19,7 @@ interface WorkflowDecisionBody {
 
 export interface WorkflowDecisionRouterDeps {
 	store: StateStore;
-	materializedHeadAuthority?: MaterializedHeadAuthority;
-	prProbe?: (input: {
-		prNumber: number;
-		probeRepoSlug: string;
-	}) => Promise<WorkflowPrProbeResult>;
+	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 	now?: () => string;
 	reQa?: {
 		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
@@ -59,260 +27,6 @@ export interface WorkflowDecisionRouterDeps {
 			canonical: WorkflowReQaCanonical,
 			prHeadSha: string,
 		): Promise<{ executionId: string }>;
-	};
-	loopReentry?: {
-		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
-	};
-	gateCarrierRebind?: {
-		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
-	};
-	resolveAlertIdentity?: (
-		projectName: string,
-		issueId: string,
-		runId: string,
-	) => WorkflowEngineAlertIdentity;
-}
-
-type SubmissionCredential = NonNullable<
-	ReturnType<StateStore["getWorkflowSubmissionCredentialByToken"]>
->;
-
-interface EngineDecisionCanonical {
-	reporting: NonNullable<ReturnType<StateStore["getSession"]>>;
-	serverHead: string;
-	predicate: string;
-	issuerVendor: string;
-	issuerModel: string;
-	producerExecutionId: string;
-	producerVendor: string;
-	family: string;
-	entersApprovalGate: boolean;
-	materializedAuthority?: MaterializedHeadAuthorityResult;
-}
-
-async function resolveEngineDecisionCanonical(
-	deps: WorkflowDecisionRouterDeps,
-	credential: SubmissionCredential,
-	status: "pass" | "fail",
-): Promise<EngineDecisionCanonical | undefined> {
-	const current = deps.store.resolveCurrentWorkflowActivation(
-		credential.execution_id,
-	);
-	if (current.kind === "none") return undefined;
-	if (current.kind === "ambiguous") {
-		if (!deps.store.isWorkflowEngineOwnedExecution(credential.execution_id)) {
-			return undefined;
-		}
-		throw new Error("execution_binding_ambiguous");
-	}
-	if (current.run.engine_owned !== 1) return undefined;
-	if (current.binding.activation_id !== credential.activation_id) {
-		throw new Error("submission_binding_not_current");
-	}
-	const context = current;
-	const decision = resolveWorkflowDecisionContract(
-		context.snapshot,
-		context.node.id,
-	);
-	if (!decision) {
-		throw new Error("node_does_not_emit_decisions");
-	}
-	if (credential.family !== decision.family) {
-		throw new Error("decision_family_mismatch");
-	}
-	const reporting = deps.store.getSession(credential.execution_id);
-	const issuer = deps.store.getWorkflowExecutionRuntime(
-		credential.execution_id,
-	);
-	if (!reporting || !issuer) throw new Error("execution_runtime_unavailable");
-
-	let serverHead: string;
-	let producerExecutionId: string;
-	let materializedAuthority: MaterializedHeadAuthorityResult | undefined;
-	if (decision.family === "qa_verdict") {
-		serverHead = (
-			await resolveWorkflowHeadAuthority(deps.store, credential.execution_id)
-		).prHeadSha;
-		const producerNodeId = context.snapshot.manifest.edges.find(
-			(edge) => edge.to === context.node.id,
-		)?.from;
-		const producer = producerNodeId
-			? deps.store
-					.listWorkflowRunNodes(credential.run_id, producerNodeId)
-					.filter((node) => node.execution_id && node.state === "done")
-					.at(-1)
-			: undefined;
-		if (!producer?.execution_id) throw new Error("producer_not_found");
-		producerExecutionId = producer.execution_id;
-	} else {
-		const authority = await (
-			deps.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority
-		).resolve(credential.run_id, context.node.id);
-		materializedAuthority = authority;
-		serverHead = authority.head.toLowerCase();
-		if (!/^[0-9a-f]{40}$/.test(serverHead)) {
-			throw new Error("materialized_head_invalid");
-		}
-		const output = deps.store.getWorkflowNodeOutput(authority.outputId);
-		const directProducer = output
-			? context.snapshot.manifest.edges.some(
-					(edge) => edge.from === output.node_id && edge.to === context.node.id,
-				)
-			: false;
-		if (
-			!output ||
-			output.run_id !== credential.run_id ||
-			output.attempt !== authority.attempt ||
-			!directProducer
-		) {
-			throw new Error("materialized_output_mismatch");
-		}
-		producerExecutionId = output.execution_id;
-	}
-	const producer = deps.store.getWorkflowExecutionRuntime(producerExecutionId);
-	if (!producer) throw new Error("producer_runtime_unavailable");
-	return {
-		reporting,
-		serverHead,
-		predicate:
-			status === "pass" ? decision.passPredicate : decision.failPredicate,
-		issuerVendor: issuer.vendor,
-		issuerModel: issuer.model,
-		producerExecutionId,
-		producerVendor: producer.vendor,
-		family: decision.family,
-		entersApprovalGate:
-			status === "pass" &&
-			context.snapshot.manifest.edges.some(
-				(edge) =>
-					edge.from === context.node.id &&
-					edge.condition === decision.passOutcome &&
-					edge.to === workflowApprovalGate(context.snapshot.manifest).node,
-			),
-		...(materializedAuthority ? { materializedAuthority } : {}),
-	};
-}
-
-function workflowPrRefValid(ref: string): boolean {
-	return (
-		ref.length > 0 &&
-		ref.length <= 255 &&
-		!ref.startsWith(".") &&
-		!ref.endsWith(".") &&
-		!ref.endsWith(".lock") &&
-		!ref.includes("..") &&
-		![...ref].some((character) => {
-			const code = character.charCodeAt(0);
-			return code <= 0x20 || code === 0x7f || "~^:?*[\\".includes(character);
-		})
-	);
-}
-
-async function resolveGateEntryBinding(
-	deps: WorkflowDecisionRouterDeps,
-	canonical: EngineDecisionCanonical,
-): Promise<WorkflowGateEntryBinding | undefined> {
-	if (!canonical.entersApprovalGate) return undefined;
-	const isWorktree = canonical.family === "qa_verdict";
-	const materialized = canonical.materializedAuthority;
-	if (!isWorktree && !materialized) {
-		throw new Error("materialized_head_unavailable");
-	}
-	const authorityExecutionId = isWorktree
-		? canonical.reporting.execution_id
-		: canonical.producerExecutionId;
-	const worktreeBinding = deps.store.getWorktreeBinding(authorityExecutionId);
-	if (!worktreeBinding) throw new Error("land_head_pr_identity_unavailable");
-	const authority = await resolveBoundRepositoryAuthority({
-		authorityRoot: worktreeBinding.path,
-	});
-	if (
-		authority.identity !== "__main__" ||
-		(isWorktree
-			? authority.headSha !== canonical.serverHead
-			: authority.probeRepoSlug.toLowerCase() !==
-				materialized!.repo.toLowerCase())
-	) {
-		throw new Error("land_head_authority_drift");
-	}
-	const producer = deps.store.getSession(canonical.producerExecutionId);
-	const prNumber = producer?.pr_number;
-	const expectedProducerMirrorHead = producer?.pr_head_sha?.toLowerCase();
-	if (
-		!Number.isSafeInteger(prNumber) ||
-		(prNumber ?? 0) < 1 ||
-		!/^[0-9a-f]{40}$/.test(expectedProducerMirrorHead ?? "")
-	) {
-		throw new Error("land_head_pr_identity_unavailable");
-	}
-	let probe: WorkflowPrProbeResult;
-	try {
-		probe = await (deps.prProbe ?? probeWorkflowPr)({
-			prNumber: prNumber!,
-			probeRepoSlug: authority.probeRepoSlug,
-		});
-	} catch {
-		throw new Error("land_head_pr_probe_failed");
-	}
-	if (
-		typeof probe.state !== "string" ||
-		typeof probe.isDraft !== "boolean" ||
-		typeof probe.isCrossRepository !== "boolean" ||
-		typeof probe.headRefName !== "string" ||
-		typeof probe.headRefOid !== "string"
-	) {
-		throw new Error("land_head_pr_probe_invalid");
-	}
-	const state = probe.state.trim().toUpperCase();
-	if (state === "MERGED") throw new Error("land_head_pr_merged");
-	if (state !== "OPEN") throw new Error("land_head_pr_closed");
-	if (probe.isDraft) throw new Error("land_head_pr_draft");
-	if (probe.isCrossRepository) throw new Error("land_head_pr_cross_repo");
-	if (!workflowPrRefValid(probe.headRefName)) {
-		throw new Error("land_head_pr_ref_invalid");
-	}
-	if (!isWorktree && materialized!.ref !== `refs/heads/${probe.headRefName}`) {
-		throw new Error("land_head_materialized_ref_mismatch");
-	}
-	if (probe.headRefOid.trim().toLowerCase() !== canonical.serverHead) {
-		if (!isWorktree) {
-			throw new Error("land_head_materialized_pr_not_at_tip");
-		}
-		throw new WorkflowDecisionRejection("land_head_pr_not_at_tip", {
-			expectedHeadOid: canonical.serverHead,
-			expectedHeadRefName: probe.headRefName,
-			prNumber: prNumber!,
-			repoSlug: authority.probeRepoSlug,
-			currentHeadOid: probe.headRefOid.trim().toLowerCase(),
-		});
-	}
-	if (!isWorktree) {
-		return {
-			kind: "materialization_receipt",
-			prNumber: prNumber!,
-			headSha: canonical.serverHead,
-			targetRepoIdentity: authority.identity,
-			probeRepoSlug: authority.probeRepoSlug,
-			targetRepoPath: authority.path,
-			worktreeBindingGeneration: `receipt-v1:${materialized!.effectId}`,
-			expectedProducerMirrorHead: expectedProducerMirrorHead!,
-			effectId: materialized!.effectId,
-			producerNodeId: materialized!.producerNodeId,
-			outputId: materialized!.outputId,
-			outputAttempt: materialized!.attempt,
-			repo: materialized!.repo,
-			ref: materialized!.ref,
-		};
-	}
-	return {
-		kind: "worktree",
-		prNumber: prNumber!,
-		headSha: canonical.serverHead,
-		targetRepoIdentity: authority.identity,
-		probeRepoSlug: authority.probeRepoSlug,
-		targetRepoPath: authority.path,
-		worktreeBindingGeneration: worktreeBinding.generation,
-		expectedProducerMirrorHead: expectedProducerMirrorHead!,
 	};
 }
 
@@ -327,56 +41,6 @@ export interface WorkflowReQaCanonical {
 
 function stringField(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function workflowGateCarrierRebindCanonical(
-	value: unknown,
-): WorkflowGateCarrierRebindCanonical | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return undefined;
-	}
-	const raw = value as Record<string, unknown>;
-	const requestId = stringField(raw.requestId);
-	const runId = stringField(raw.runId);
-	const gateNodeId = stringField(raw.gateNodeId);
-	const questionId = stringField(raw.questionId);
-	const candidateExecutionId = stringField(raw.candidateExecutionId);
-	const subjectDigest = stringField(raw.subjectDigest)?.toLowerCase();
-	const holderAttempt = raw.holderAttempt;
-	const exactKeys = [
-		"requestId",
-		"runId",
-		"gateNodeId",
-		"holderAttempt",
-		"questionId",
-		"candidateExecutionId",
-		"subjectDigest",
-	];
-	if (
-		!requestId ||
-		!/^gate-carrier-rebind:[0-9a-f]{64}$/i.test(requestId) ||
-		!runId ||
-		!gateNodeId ||
-		!questionId ||
-		!candidateExecutionId ||
-		!subjectDigest ||
-		!/^[0-9a-f]{40}$/.test(subjectDigest) ||
-		!Number.isInteger(holderAttempt) ||
-		Number(holderAttempt) < 1 ||
-		Object.keys(raw).length !== exactKeys.length ||
-		!exactKeys.every((key) => Object.hasOwn(raw, key))
-	) {
-		return undefined;
-	}
-	return {
-		requestId,
-		runId,
-		gateNodeId,
-		holderAttempt: Number(holderAttempt),
-		questionId,
-		candidateExecutionId,
-		subjectDigest,
-	};
 }
 
 function rejectNonLoopback(
@@ -413,7 +77,7 @@ function resolveReQaCanonical(
 	) {
 		return { ok: false, reason: "not_durable_qa_execution" };
 	}
-	if (store.getWorkflowActor(executionId)) {
+	if (store.getWorkflowExecutionBinding(executionId)) {
 		return { ok: false, reason: "qa_already_enrolled" };
 	}
 	const node = store.getWorkflowRunNodeForExecution(executionId);
@@ -443,164 +107,16 @@ export function createWorkflowDecisionRouter(
 ): express.Router {
 	const router = express.Router();
 
-	router.post("/output", (req, res) => {
-		if (rejectNonLoopback(req, res)) return;
-		const body = (req.body ?? {}) as Record<string, unknown>;
-		const credential = stringField(body.credential);
-		const clientRequestId = stringField(body.client_request_id);
-		const payload = typeof body.payload === "string" ? body.payload : undefined;
-		if (!credential || !clientRequestId || payload === undefined) {
-			res.status(400).json({ ok: false, reason: "invalid_request" });
-			return;
-		}
-		const result = deps.store.submitWorkflowNodeOutput({
-			token: credential,
-			clientRequestId,
-			payload,
-			now: deps.now?.(),
-		});
-		if (!result.ok) {
-			res
-				.status(result.reason === "credential_not_found" ? 401 : 409)
-				.json(result);
-			return;
-		}
-		res.json(result);
-	});
-
 	router.post("/head-authority", async (req, res) => {
 		if (rejectNonLoopback(req, res)) return;
-		const body = (req.body ?? {}) as Record<string, unknown>;
-		const executionId = stringField(body.execution_id);
-		const approveQuestionId = stringField(body.approve_question_id);
+		const executionId = stringField(
+			(req.body as { execution_id?: unknown } | undefined)?.execution_id,
+		);
 		if (!executionId) {
 			res.status(400).json({ ok: false, reason: "execution_id_required" });
 			return;
 		}
 		try {
-			if (approveQuestionId) {
-				const binding =
-					deps.store.getWorkflowShipTargetBinding(approveQuestionId);
-				const holder =
-					deps.store.getCurrentWorkflowGateHolderByQuestionId(
-						approveQuestionId,
-					);
-				if (!binding || binding.superseded_at) {
-					const authorityMode = holder?.authority_mode ?? "legacy_runner_ship";
-					const required =
-						authorityMode === "runner_ship" ||
-						authorityMode === "legacy_runner_ship";
-					res.status(409).json({
-						ok: false,
-						reason: "ship_target_binding_unavailable",
-						binding: {
-							required,
-							reason: binding?.superseded_at
-								? "binding_superseded"
-								: required
-									? `${authorityMode}_binding_missing`
-									: `not_required_for_${authorityMode}_authority`,
-							authorityMode,
-						},
-					});
-					return;
-				}
-				if (holder) {
-					if (
-						binding.run_id !== holder.run_id ||
-						binding.frozen_head_sha !== holder.head_sha
-					) {
-						throw new Error("ship_target_binding_mismatch");
-					}
-				} else {
-					const session = deps.store.getSession(executionId);
-					if (
-						session?.review_question_id !== approveQuestionId ||
-						session.pr_head_sha?.toLowerCase() !== binding.frozen_head_sha
-					) {
-						throw new Error("ship_target_binding_mismatch");
-					}
-					if (
-						binding.run_id &&
-						deps.store.getWorkflowRunIdForExecution(executionId) !==
-							binding.run_id
-					) {
-						throw new Error("ship_target_binding_mismatch");
-					}
-				}
-				if (binding.target_repo_identity !== "__main__") {
-					throw new Error("nested_ship_unsupported");
-				}
-				const authority = await resolveBoundRepositoryAuthority({
-					authorityRoot: binding.target_repo_path,
-				});
-				const receiptEffectId = binding.worktree_binding_generation.startsWith(
-					"receipt-v1:",
-				)
-					? binding.worktree_binding_generation.slice("receipt-v1:".length)
-					: undefined;
-				const materialized = receiptEffectId
-					? deps.store.getWorkflowMaterializedHeadByEffect(receiptEffectId)
-					: undefined;
-				if (
-					authority.path !== binding.target_repo_path ||
-					authority.identity !== "__main__" ||
-					authority.probeRepoSlug !== binding.probe_repo_slug ||
-					(receiptEffectId
-						? !materialized ||
-							materialized.effectId !== receiptEffectId ||
-							materialized.repo.toLowerCase() !==
-								binding.probe_repo_slug.toLowerCase() ||
-							materialized.head.toLowerCase() !== binding.frozen_head_sha
-						: authority.headSha !== binding.frozen_head_sha)
-				) {
-					throw new Error("ship_target_authority_drift");
-				}
-				if (materialized) {
-					const exactHeadAuthority = binding.run_id
-						? deps.store.resolveWorkflowExactHeadAuthority({
-								runId: binding.run_id,
-								headSha: binding.frozen_head_sha,
-							})
-						: undefined;
-					const nodeBinding = exactHeadAuthority?.valid
-						? exactHeadAuthority.binding
-						: undefined;
-					if (!nodeBinding) throw new Error("ship_target_authority_drift");
-					let probe: WorkflowPrProbeResult;
-					try {
-						probe = await (deps.prProbe ?? probeWorkflowPr)({
-							prNumber: nodeBinding.pr_number,
-							probeRepoSlug: binding.probe_repo_slug,
-						});
-					} catch {
-						throw new Error("ship_target_authority_drift");
-					}
-					if (
-						typeof probe.state !== "string" ||
-						typeof probe.isDraft !== "boolean" ||
-						typeof probe.isCrossRepository !== "boolean" ||
-						typeof probe.headRefName !== "string" ||
-						typeof probe.headRefOid !== "string" ||
-						probe.state.trim().toUpperCase() !== "OPEN" ||
-						probe.isDraft ||
-						probe.isCrossRepository ||
-						!workflowPrRefValid(probe.headRefName) ||
-						materialized.ref !== `refs/heads/${probe.headRefName}` ||
-						probe.headRefOid.trim().toLowerCase() !== binding.frozen_head_sha
-					) {
-						throw new Error("ship_target_authority_drift");
-					}
-				}
-				res.json({
-					ok: true,
-					executionId,
-					approveQuestionId,
-					targetRepoIdentity: binding.target_repo_identity,
-					prHeadSha: materialized?.head ?? authority.headSha,
-				});
-				return;
-			}
 			const authority = await resolveWorkflowHeadAuthority(
 				deps.store,
 				executionId,
@@ -643,103 +159,6 @@ export function createWorkflowDecisionRouter(
 			deps.store.getWorkflowSubmissionCredentialByToken(credential);
 		if (!credentialRow) {
 			res.status(401).json({ ok: false, reason: "credential_not_found" });
-			return;
-		}
-		let engineCanonical: EngineDecisionCanonical | undefined;
-		try {
-			engineCanonical = await resolveEngineDecisionCanonical(
-				deps,
-				credentialRow,
-				status as "pass" | "fail",
-			);
-		} catch (error) {
-			res.status(409).json({
-				ok: false,
-				reason:
-					error instanceof Error
-						? error.message
-						: "decision_authority_unavailable",
-			});
-			return;
-		}
-		if (engineCanonical) {
-			if (clientHead && clientHead !== engineCanonical.serverHead) {
-				res.status(409).json({
-					ok: false,
-					reason: "head_authority_mismatch",
-					expectedPrHeadSha: engineCanonical.serverHead,
-				});
-				return;
-			}
-			let gateEntryBinding:
-				| Awaited<ReturnType<typeof resolveGateEntryBinding>>
-				| undefined;
-			try {
-				// An already-consumed credential must reach the store's immutable replay
-				// receipt without depending on a fresh network attestation.
-				gateEntryBinding = credentialRow.consumed_at
-					? undefined
-					: await resolveGateEntryBinding(deps, engineCanonical);
-			} catch (error) {
-				res.status(409).json({
-					ok: false,
-					reason:
-						error instanceof Error
-							? error.message
-							: "land_head_pr_identity_unavailable",
-					...(error instanceof WorkflowDecisionRejection && error.detail
-						? { detail: error.detail }
-						: {}),
-				});
-				return;
-			}
-			const result = deps.store.submitWorkflowDecisionByCredential({
-				credential,
-				clientRequestId,
-				predicate: engineCanonical.predicate,
-				subjectDigest: engineCanonical.serverHead,
-				issuerVendor: engineCanonical.issuerVendor,
-				issuerModel: engineCanonical.issuerModel,
-				subjectProducerExecutionId: engineCanonical.producerExecutionId,
-				subjectProducerVendor: engineCanonical.producerVendor,
-				claimExpiresAt: credentialRow.expires_at,
-				evidence: summary ? { summary } : undefined,
-				...(gateEntryBinding ? { gateEntryBinding } : {}),
-				alertIdentity: deps.resolveAlertIdentity?.(
-					engineCanonical.reporting.project_name,
-					engineCanonical.reporting.issue_id,
-					credentialRow.run_id,
-				),
-				now: deps.now?.(),
-			});
-			if (!result.ok) {
-				res
-					.status(result.reason === "credential_not_found" ? 401 : 409)
-					.json(result);
-				return;
-			}
-			deps.store.insertEvent({
-				event_id: `workflow-decision:${credentialRow.id}:${clientRequestId}`,
-				execution_id: engineCanonical.reporting.execution_id,
-				issue_id: engineCanonical.reporting.issue_id,
-				project_name: engineCanonical.reporting.project_name,
-				event_type: "workflow_decision",
-				source: "bridge.workflow-decision",
-				payload: {
-					status,
-					predicate: engineCanonical.predicate,
-					targetExecutionId: engineCanonical.producerExecutionId,
-					subjectHead: engineCanonical.serverHead,
-					...(summary ? { summary } : {}),
-				},
-			});
-			res.json({
-				ok: true,
-				claimId: result.claimId,
-				serverSeq: result.serverSeq,
-				idempotentReplay: result.idempotentReplay,
-				requestId: clientRequestId,
-			});
 			return;
 		}
 		const reporting = deps.store.getSession(credentialRow.execution_id);
@@ -816,11 +235,6 @@ export function createWorkflowDecisionRouter(
 			// differently even when the client payload is exact.
 			claimExpiresAt: credentialRow.expires_at,
 			evidence: summary ? { summary } : undefined,
-			alertIdentity: deps.resolveAlertIdentity?.(
-				reporting.project_name,
-				reporting.issue_id,
-				credentialRow.run_id,
-			),
 			now,
 		});
 		if (!result.ok) {
@@ -846,6 +260,18 @@ export function createWorkflowDecisionRouter(
 				...(summary ? { summary } : {}),
 			},
 		});
+		// The audit row is idempotent, but it must not gate the orchestration side
+		// effect. If the first drive throws after the claim/event commit, an exact
+		// credential replay must attempt the idempotent drive again.
+		if (deps.phaseOrchestrator?.current) {
+			await deps.phaseOrchestrator.current.onQaResult(reporting, {
+				eventId,
+				status,
+				prHeadSha: serverHead,
+				targetExecutionId: producer.execution_id,
+				...(summary ? { summary } : {}),
+			});
+		}
 		res.json({
 			ok: true,
 			claimId: result.claimId,
@@ -857,10 +283,7 @@ export function createWorkflowDecisionRouter(
 
 	router.post("/re-qa/stage", (req, res) => {
 		if (!deps.reQa) {
-			res.status(503).json({
-				ok: false,
-				reason: "re_qa_unavailable",
-			});
+			res.status(503).json({ ok: false, reason: "re_qa_unavailable" });
 			return;
 		}
 		const selfOrigin = loopbackSelfOrigin(req.headers.host);
@@ -890,236 +313,9 @@ export function createWorkflowDecisionRouter(
 		res.json({ ok: true, canonical: resolved.canonical, confirmToken });
 	});
 
-	router.post("/gate-carrier-rebind/stage", (req, res) => {
-		if (!deps.gateCarrierRebind) {
-			res
-				.status(503)
-				.json({ ok: false, reason: "gate_carrier_rebind_unavailable" });
-			return;
-		}
-		const selfOrigin = loopbackSelfOrigin(req.headers.host);
-		if (!selfOrigin) {
-			res.status(403).json({ ok: false, reason: "non_loopback_host" });
-			return;
-		}
-		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
-			res.status(403).json({ ok: false, reason: "cross_origin" });
-			return;
-		}
-		const body = (req.body ?? {}) as {
-			question_id?: unknown;
-			candidate_execution_id?: unknown;
-		};
-		const questionId = stringField(body.question_id);
-		const candidateExecutionId = stringField(body.candidate_execution_id);
-		if (!questionId || !candidateExecutionId) {
-			res.status(400).json({ ok: false, reason: "invalid_request" });
-			return;
-		}
-		const canonical = deps.store.resolveWorkflowGateCarrierRebindCanonical(
-			questionId,
-			candidateExecutionId,
-		);
-		if (!canonical) {
-			res.status(409).json({ ok: false, reason: "rebind_proof_unavailable" });
-			return;
-		}
-		const confirmToken = deps.gateCarrierRebind.tokens.issue(
-			canonicalSubmissionDigest(canonical),
-		);
-		res.json({ ok: true, canonical, confirmToken });
-	});
-
-	router.post("/gate-carrier-rebind", (req, res) => {
-		if (!deps.gateCarrierRebind) {
-			res
-				.status(503)
-				.json({ ok: false, reason: "gate_carrier_rebind_unavailable" });
-			return;
-		}
-		const selfOrigin = loopbackSelfOrigin(req.headers.host);
-		if (!selfOrigin) {
-			res.status(403).json({ ok: false, reason: "non_loopback_host" });
-			return;
-		}
-		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
-			res.status(403).json({ ok: false, reason: "cross_origin" });
-			return;
-		}
-		const input = (req.body ?? {}) as {
-			canonical?: unknown;
-			confirmToken?: unknown;
-		};
-		const canonical = workflowGateCarrierRebindCanonical(input.canonical);
-		const confirmToken = stringField(input.confirmToken);
-		if (!canonical || !confirmToken) {
-			res.status(400).json({ ok: false, reason: "missing_canonical_or_token" });
-			return;
-		}
-		const canonicalDigest = canonicalSubmissionDigest(canonical);
-		const prior = deps.store.getWorkflowGateCarrierRebindReceipt(
-			canonical.requestId,
-		);
-		if (prior) {
-			if (
-				prior.canonicalDigest !== canonicalDigest ||
-				prior.questionId !== canonical.questionId ||
-				prior.sourceExecutionId !== canonical.candidateExecutionId
-			) {
-				res.status(409).json({ ok: false, reason: "request_conflict" });
-				return;
-			}
-			res.json({
-				ok: true,
-				idempotentReplay: true,
-				questionId: prior.questionId,
-				sourceExecutionId: prior.sourceExecutionId,
-				reviewWindowStartedAt: prior.reviewWindowStartedAt,
-			});
-			return;
-		}
-		const current = deps.store.resolveWorkflowGateCarrierRebindCanonical(
-			canonical.questionId,
-			canonical.candidateExecutionId,
-		);
-		if (!current || canonicalSubmissionDigest(current) !== canonicalDigest) {
-			res.status(409).json({ ok: false, reason: "rebind_state_changed" });
-			return;
-		}
-		const token = deps.gateCarrierRebind.tokens.verifyAndConsume(
-			confirmToken,
-			canonicalDigest,
-		);
-		if (!token.ok) {
-			res.status(403).json({ ok: false, reason: token.reason });
-			return;
-		}
-		const result = deps.store.rebindWorkflowGateCarrier({
-			requestId: canonical.requestId,
-			questionId: canonical.questionId,
-			candidateExecutionId: canonical.candidateExecutionId,
-			canonicalDigest,
-			now: deps.now?.() ?? new Date().toISOString(),
-		});
-		if (!result.ok) {
-			res.status(result.reason === "invalid_input" ? 400 : 409).json(result);
-			return;
-		}
-		res.json(result);
-	});
-
-	router.post("/loop-reentry/stage", (req, res) => {
-		if (!deps.loopReentry) {
-			res.status(503).json({ ok: false, reason: "loop_reentry_unavailable" });
-			return;
-		}
-		const selfOrigin = loopbackSelfOrigin(req.headers.host);
-		if (!selfOrigin) {
-			res.status(403).json({ ok: false, reason: "non_loopback_host" });
-			return;
-		}
-		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
-			res.status(403).json({ ok: false, reason: "cross_origin" });
-			return;
-		}
-		const body = (req.body ?? {}) as {
-			execution_id?: unknown;
-			loop_id?: unknown;
-		};
-		const executionId = stringField(body.execution_id);
-		const loopId = stringField(body.loop_id);
-		if (!executionId || !loopId) {
-			res.status(400).json({ ok: false, reason: "invalid_request" });
-			return;
-		}
-		const canonical = deps.store.resolveWorkflowLoopReentryCanonical(
-			executionId,
-			loopId,
-		);
-		if (!canonical) {
-			res.status(409).json({ ok: false, reason: "loop_reentry_unavailable" });
-			return;
-		}
-		const confirmToken = deps.loopReentry.tokens.issue(
-			canonicalSubmissionDigest(canonical),
-		);
-		res.json({ ok: true, canonical, confirmToken });
-	});
-
-	router.post("/loop-reentry", (req, res) => {
-		if (!deps.loopReentry) {
-			res.status(503).json({ ok: false, reason: "loop_reentry_unavailable" });
-			return;
-		}
-		const selfOrigin = loopbackSelfOrigin(req.headers.host);
-		if (!selfOrigin) {
-			res.status(403).json({ ok: false, reason: "non_loopback_host" });
-			return;
-		}
-		if (!isSameOrigin(requestHeaders(req), selfOrigin)) {
-			res.status(403).json({ ok: false, reason: "cross_origin" });
-			return;
-		}
-		const input = (req.body ?? {}) as {
-			canonical?: WorkflowLoopReentryCanonical;
-			confirmToken?: unknown;
-		};
-		const confirmToken = stringField(input.confirmToken);
-		if (!input.canonical || !confirmToken) {
-			res.status(400).json({ ok: false, reason: "missing_canonical_or_token" });
-			return;
-		}
-		const canonical = input.canonical;
-		const canonicalDigest = canonicalSubmissionDigest(canonical);
-		const prior = deps.store.getWorkflowLoopReentryReceipt(canonical.requestId);
-		if (prior) {
-			if (prior.canonicalDigest !== canonicalDigest) {
-				res.status(409).json({ ok: false, reason: "request_conflict" });
-				return;
-			}
-			res.json({
-				ok: true,
-				idempotentReplay: true,
-				receipt: prior.receipt,
-			});
-			return;
-		}
-		const current = deps.store.resolveWorkflowLoopReentryCanonical(
-			canonical.sourceExecutionId,
-			canonical.loopId,
-		);
-		if (!current || canonicalSubmissionDigest(current) !== canonicalDigest) {
-			res.status(409).json({ ok: false, reason: "loop_state_changed" });
-			return;
-		}
-		const token = deps.loopReentry.tokens.verifyAndConsume(
-			confirmToken,
-			canonicalDigest,
-		);
-		if (!token.ok) {
-			res.status(403).json({ ok: false, reason: token.reason });
-			return;
-		}
-		const result = deps.store.commitWorkflowLoopReentryRequest({
-			canonical,
-			canonicalDigest,
-			tokenIdentity: canonicalSubmissionDigest(confirmToken),
-			initiator: canonical.sourceExecutionId,
-			now: deps.now?.() ?? new Date().toISOString(),
-		});
-		if (!result.ok) {
-			res.status(result.reason === "invalid_input" ? 400 : 409).json(result);
-			return;
-		}
-		res.json(result);
-	});
-
 	router.post("/re-qa", async (req, res) => {
 		if (!deps.reQa) {
-			res.status(503).json({
-				ok: false,
-				reason: "re_qa_unavailable",
-			});
+			res.status(503).json({ ok: false, reason: "re_qa_unavailable" });
 			return;
 		}
 		const selfOrigin = loopbackSelfOrigin(req.headers.host);
@@ -1139,51 +335,43 @@ export function createWorkflowDecisionRouter(
 			res.status(400).json({ ok: false, reason: "missing_canonical_or_token" });
 			return;
 		}
-		const canonical = input.canonical;
 		const resolved = resolveReQaCanonical(
 			deps.store,
-			canonical.sourceExecutionId,
+			input.canonical.sourceExecutionId,
 		);
 		if (
 			!resolved.ok ||
 			canonicalSubmissionDigest(resolved.canonical) !==
-				canonicalSubmissionDigest(canonical)
+				canonicalSubmissionDigest(input.canonical)
 		) {
 			res.status(409).json({ ok: false, reason: "re_qa_state_changed" });
 			return;
 		}
 		const token = deps.reQa.tokens.verifyAndConsume(
 			input.confirmToken,
-			canonicalSubmissionDigest(canonical),
+			canonicalSubmissionDigest(input.canonical),
 		);
 		if (!token.ok) {
 			res.status(403).json({ ok: false, reason: token.reason });
 			return;
 		}
 
-		const existingAttempts = deps.store.listWorkflowRunNodes(
-			canonical.runId,
-			"qa",
-		);
-		const latestQaAttempt = existingAttempts.at(-1)?.attempt ?? 0;
-		if (latestQaAttempt >= canonical.targetAttempt) {
-			const existing = existingAttempts.find(
-				(candidate) => candidate.attempt === canonical.targetAttempt,
+		const run = deps.store.getWorkflowRun(input.canonical.runId);
+		if ((run?.current_qa_attempt ?? 0) >= input.canonical.targetAttempt) {
+			const existing = deps.store.getWorkflowRunNode(
+				input.canonical.runId,
+				"qa",
+				input.canonical.targetAttempt,
 			);
 			if (
 				existing?.execution_id &&
-				deps.store.getWorkflowActivationForAttempt({
-					executionId: existing.execution_id,
-					runId: canonical.runId,
-					nodeId: "qa",
-					attempt: canonical.targetAttempt,
-				})
+				deps.store.getWorkflowExecutionBinding(existing.execution_id)
 			) {
 				res.json({
 					ok: true,
 					idempotentReplay: true,
 					executionId: existing.execution_id,
-					targetAttempt: canonical.targetAttempt,
+					targetAttempt: input.canonical.targetAttempt,
 				});
 				return;
 			}
@@ -1194,7 +382,7 @@ export function createWorkflowDecisionRouter(
 			prHeadSha = (
 				await resolveWorkflowHeadAuthority(
 					deps.store,
-					canonical.sourceExecutionId,
+					input.canonical.sourceExecutionId,
 				)
 			).prHeadSha;
 		} catch (error) {
@@ -1205,18 +393,15 @@ export function createWorkflowDecisionRouter(
 			return;
 		}
 		try {
-			const spawned = await deps.reQa.respawn(canonical, prHeadSha);
-			const binding = deps.store.getWorkflowActivationForAttempt({
-				executionId: spawned.executionId,
-				runId: canonical.runId,
-				nodeId: "qa",
-				attempt: canonical.targetAttempt,
-			});
+			const spawned = await deps.reQa.respawn(input.canonical, prHeadSha);
+			const binding = deps.store.getWorkflowExecutionBinding(
+				spawned.executionId,
+			);
 			if (
 				!binding ||
-				binding.run_id !== canonical.runId ||
+				binding.run_id !== input.canonical.runId ||
 				binding.node_id !== "qa" ||
-				binding.attempt !== canonical.targetAttempt
+				binding.attempt !== input.canonical.targetAttempt
 			) {
 				throw new Error("replacement_not_admitted");
 			}
@@ -1224,7 +409,7 @@ export function createWorkflowDecisionRouter(
 				ok: true,
 				idempotentReplay: false,
 				executionId: spawned.executionId,
-				targetAttempt: canonical.targetAttempt,
+				targetAttempt: input.canonical.targetAttempt,
 			});
 		} catch (error) {
 			res.status(500).json({

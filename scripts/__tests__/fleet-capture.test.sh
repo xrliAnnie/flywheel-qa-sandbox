@@ -71,11 +71,16 @@ inject_leak() {
 write_projects
 
 # ── fixture: .env with REAL-looking secret values ─────────────────────────
-cat > "$FAKE_HOME/.flywheel/.env" <<'EOF'
+# Assemble detector-shaped fixtures at runtime so GitHub push protection does
+# not mistake the inert test data for live credentials in the QA sandbox.
+DISCORD_FIXTURE_A='MTk4NjIyNDgzNDcxOTI1MjQ4''.''GqwqZ9''.''realdiscordtokenpartXYZ0123456789ab'
+DISCORD_FIXTURE_B='MTk4NjIyNDgzNDcxOTI1MjQ5''.''AbCdEf''.''anotherrealtokenpartXYZ0123456789cd'
+OPENAI_FIXTURE='sk-proj-''realrealrealrealrealrealrealreal12'
+cat > "$FAKE_HOME/.flywheel/.env" <<EOF
 # fleet secrets — real values here, must never reach the artifact
-CASS_BOT_TOKEN=MTk4NjIyNDgzNDcxOTI1MjQ4.GqwqZ9.realdiscordtokenpartXYZ0123456789ab
-PETER_BOT_TOKEN=MTk4NjIyNDgzNDcxOTI1MjQ5.AbCdEf.anotherrealtokenpartXYZ0123456789cd
-OPENAI_API_KEY=sk-proj-realrealrealrealrealrealrealreal12
+CASS_BOT_TOKEN=${DISCORD_FIXTURE_A}
+PETER_BOT_TOKEN=${DISCORD_FIXTURE_B}
+OPENAI_API_KEY=${OPENAI_FIXTURE}
 TEAMLEAD_PORT=9876
 EOF
 

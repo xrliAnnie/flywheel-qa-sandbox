@@ -1,37 +1,23 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
-	chmodSync,
 	existsSync,
-	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
-	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import {
-	type AdapterExecutionContext,
-	FLYWHEEL_MARKER_DIR,
-} from "flywheel-core";
+import type { AdapterExecutionContext } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
-import type { AsyncExecFileFn, ExecFileFn } from "../src/TmuxAdapter.js";
+import type { ExecFileFn } from "../src/TmuxAdapter.js";
 import {
-	assertLaunchCommandBudgets,
-	buildAmbientSafeWindowCommand,
 	ensureRunnerSession,
-	LaunchCommandOversizeError,
-	LaunchPrecommitError,
 	pruneScaffoldWindow,
-	RUNNER_PANE_BASE_ALLOWLIST,
-	TMUX_COMMAND_BUDGET_BYTES,
 	TmuxAdapter,
-	TmuxSessionHoldError,
 } from "../src/TmuxAdapter.js";
 
 // ─── Helpers ─────────────────────────────────────
@@ -44,7 +30,6 @@ function makeCtx(
 		issueId: "GEO-TEST",
 		prompt: "Fix the bug in auth module",
 		cwd: "/project/geoforge3d",
-		onTmuxWindowOpened: () => {},
 		...overrides,
 	};
 }
@@ -53,310 +38,6 @@ interface ExecCall {
 	cmd: string;
 	args: string[];
 }
-
-function promptFileFromTmuxArgs(args: string[]): string {
-	const promptFile = args.find(
-		(arg) =>
-			arg.includes("/flywheel-runner-prompts/") &&
-			arg.includes("/prompt-") &&
-			arg.endsWith(".md"),
-	);
-	if (!promptFile) throw new Error("expected a per-launch prompt file");
-	return promptFile;
-}
-
-function paneEnvValues(args: string[]): string[] {
-	return args.filter((_arg, index) => args[index - 1] === "-e");
-}
-
-describe("FLY-1999 runner pane environment boundary", () => {
-	it.each([
-		{ shape: "direct", gated: false, prompt: undefined },
-		{ shape: "gated-no-prompt", gated: true, prompt: undefined },
-		{ shape: "gated-prompt", gated: true, prompt: "task prompt" },
-	] as const)(
-		"executes the $shape command with an exact positive allowlist",
-		({ gated, prompt }) => {
-			const probe =
-				"process.stdout.write(JSON.stringify({ env: process.env, prompt: process.argv[1] ?? null }))";
-			const poisonedEnv = {
-				PATH: process.env.PATH ?? "/usr/bin:/bin",
-				HOME: "/tmp/fly1999-home",
-				SHELL: "/bin/fly1999-shell",
-				LANG: "en_US.UTF-8",
-				TERM: "xterm-256color",
-				FLYWHEEL_EXEC_ID: "runner-exec",
-				EMPTY_PROTOCOL: "",
-				COMPLEX_PROTOCOL: "space ' quote \" and\nnewline",
-				CODEX_HOME: "/tmp/infra-bot",
-				FLYWHEEL_CODEX_BIN: "/tmp/infra-bot/codex",
-				OPENAI_API_KEY: "must-not-cross",
-				SOME_UNLISTED_SECRET: "must-not-cross-either",
-			};
-			const allowedEnvNames = [
-				"FLYWHEEL_EXEC_ID",
-				"EMPTY_PROTOCOL",
-				"COMPLEX_PROTOCOL",
-			];
-			const tmp = mkdtempSync(join(tmpdir(), "fly1999-env-boundary-"));
-			try {
-				const token = "launch-token";
-				const gateFile = join(tmp, "gate");
-				const promptFile = join(tmp, "prompt.md");
-				if (gated) writeFileSync(gateFile, token);
-				if (prompt !== undefined) writeFileSync(promptFile, prompt);
-				const command = buildAmbientSafeWindowCommand({
-					binaryName: process.execPath,
-					binaryArgs: ["-e", probe],
-					allowedEnvNames,
-					...(gated
-						? {
-								gateFile,
-								launchToken: token,
-								cleanup: "keep" as const,
-								...(prompt !== undefined ? { promptFile } : {}),
-							}
-						: {}),
-				});
-				const realTmp = realpathSync(tmp);
-				const result = spawnSync(command[0] as string, command.slice(1), {
-					env: poisonedEnv,
-					cwd: realTmp,
-					encoding: "utf8",
-				});
-				expect(result.status, result.stderr).toBe(0);
-				const observed = JSON.parse(result.stdout) as {
-					env: Record<string, string>;
-					prompt: string | null;
-				};
-				// macOS CoreFoundation adds this inside a Node process after exec; it
-				// is not inherited from the pane and is outside the shell boundary.
-				delete observed.env.__CF_USER_TEXT_ENCODING;
-				expect(observed.env).toEqual({
-					PATH: poisonedEnv.PATH,
-					HOME: poisonedEnv.HOME,
-					SHELL: poisonedEnv.SHELL,
-					LANG: poisonedEnv.LANG,
-					TERM: poisonedEnv.TERM,
-					PWD: realTmp,
-					FLYWHEEL_EXEC_ID: poisonedEnv.FLYWHEEL_EXEC_ID,
-					EMPTY_PROTOCOL: "",
-					COMPLEX_PROTOCOL: poisonedEnv.COMPLEX_PROTOCOL,
-				});
-				expect(observed.prompt).toBe(prompt ?? null);
-			} finally {
-				rmSync(tmp, { recursive: true, force: true });
-			}
-		},
-	);
-
-	it("keeps unset names unset, deduplicates names, and emits a stable sorted shell source", () => {
-		const command = buildAmbientSafeWindowCommand({
-			binaryName: "env",
-			binaryArgs: [],
-			allowedEnvNames: ["Z_PROTOCOL", "A_PROTOCOL", "Z_PROTOCOL"],
-		});
-		const source = command[2] ?? "";
-		expect(source).toContain(
-			`exec /usr/bin/env -i \${A_PROTOCOL+"A_PROTOCOL=$A_PROTOCOL"}`,
-		);
-		expect(source.match(/\$\{Z_PROTOCOL\+/g)).toHaveLength(1);
-		expect(source.indexOf("A_PROTOCOL")).toBeLessThan(
-			source.indexOf("Z_PROTOCOL"),
-		);
-		expect(RUNNER_PANE_BASE_ALLOWLIST).toContain("TMUX_PANE");
-	});
-
-	it.each(["", "BAD-NAME", "BAD=NAME", "ünicode"])(
-		"rejects an unsafe allowlist variable name %j",
-		(name) => {
-			expect(() =>
-				buildAmbientSafeWindowCommand({
-					binaryName: "env",
-					binaryArgs: [],
-					allowedEnvNames: [name],
-				}),
-			).toThrow(/invalid environment variable name/i);
-		},
-	);
-
-	it("delivers a file-backed prompt as the final gated process argument", () => {
-		const tmp = mkdtempSync(join(tmpdir(), "fly1869-prompt-gate-"));
-		try {
-			const gateFile = join(tmp, "launch-gate");
-			const promptFile = join(tmp, "prompt.md");
-			const token = "launch-token";
-			const prompt = `issue description ${"x".repeat(100_000)}`;
-			writeFileSync(gateFile, token);
-			writeFileSync(promptFile, prompt);
-
-			const command = buildAmbientSafeWindowCommand({
-				binaryName: process.execPath,
-				binaryArgs: [
-					"-e",
-					'process.stdout.write(process.argv[1] ?? "<missing>")',
-				],
-				gateFile,
-				launchToken: token,
-				cleanup: "keep",
-				promptFile,
-			});
-			const result = spawnSync(command[0] as string, command.slice(1), {
-				encoding: "utf8",
-			});
-
-			expect(result.status, result.stderr).toBe(0);
-			expect(result.stdout).toBe(prompt);
-		} finally {
-			rmSync(tmp, { recursive: true, force: true });
-		}
-	});
-
-	it("emits the positive environment prefix once in a gated command", () => {
-		const command = buildAmbientSafeWindowCommand({
-			binaryName: "claude",
-			binaryArgs: [],
-			allowedEnvNames: ["FLYWHEEL_EXEC_ID"],
-			gateFile: "/tmp/gate",
-			launchToken: "token",
-		});
-		expect(command[2]?.match(/\/usr\/bin\/env -i/g)).toHaveLength(1);
-	});
-
-	it("fails closed with exit 78 when a configured prompt file is missing or empty", () => {
-		const tmp = mkdtempSync(join(tmpdir(), "fly1869-prompt-failure-"));
-		try {
-			const gateFile = join(tmp, "launch-gate");
-			const token = "launch-token";
-			writeFileSync(gateFile, token);
-
-			for (const [name, create] of [
-				["missing", false],
-				["empty", true],
-			] as const) {
-				const promptFile = join(tmp, `${name}.md`);
-				if (create) writeFileSync(promptFile, "");
-				const command = buildAmbientSafeWindowCommand({
-					binaryName: process.execPath,
-					binaryArgs: ["-e", 'process.stdout.write("EXECUTED")'],
-					gateFile,
-					launchToken: token,
-					cleanup: "keep",
-					promptFile,
-				});
-				const result = spawnSync(command[0] as string, command.slice(1), {
-					encoding: "utf8",
-				});
-
-				expect(result.status, `${name}: ${result.stderr}`).toBe(78);
-				expect(result.stdout).not.toContain("EXECUTED");
-				expect(result.stderr).toContain(
-					`FLYWHEEL_PROMPT_FILE_UNREADABLE ${promptFile}`,
-				);
-			}
-		} finally {
-			rmSync(tmp, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects a prompt file when no launch gate can delay process start", () => {
-		expect(() =>
-			buildAmbientSafeWindowCommand({
-				binaryName: "claude",
-				binaryArgs: [],
-				promptFile: "/tmp/prompt.md",
-			}),
-		).toThrow(/prompt file requires a gated launch/i);
-	});
-});
-
-describe("FLY-1869 launch command budget", () => {
-	it("keeps the complete production allowlist below budget in direct and gated shapes", () => {
-		const names = [
-			"BASH_MAX_TIMEOUT_MS",
-			"DISCORD_BOT_TOKEN",
-			"DISCORD_IDENTITY_MODE",
-			"DISCORD_STATE_DIR",
-			"FLYWHEEL_AGENT_NAME",
-			"FLYWHEEL_AGENT_TEAM_NAME",
-			"FLYWHEEL_BRIDGE_URL",
-			"FLYWHEEL_CALLBACK_PORT",
-			"FLYWHEEL_CALLBACK_TOKEN",
-			"FLYWHEEL_COMM_CLI",
-			"FLYWHEEL_COMM_DB",
-			"FLYWHEEL_COMPLETE_MARKER_DIR",
-			"FLYWHEEL_EXEC_ID",
-			"FLYWHEEL_GATE_MARKER_DIR",
-			"FLYWHEEL_INGEST_TOKEN",
-			"FLYWHEEL_ISSUE_ID",
-			"FLYWHEEL_LAND_STATUS_PATH",
-			"FLYWHEEL_LEAD_ID",
-			"FLYWHEEL_MARKER_DIR",
-			"FLYWHEEL_PROGRESS_PATH",
-			"FLYWHEEL_PROJECT_NAME",
-			"FLYWHEEL_RUNNER_STATE_DIR",
-			"FLYWHEEL_STATE_DB_PATH",
-			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
-			"NODE_OPTIONS",
-			"PROJECT_NAME",
-			"TMPDIR",
-		];
-		const longPath = `/${"x/".repeat(225)}file`;
-		const envArgs = names.flatMap((name) => [
-			"-e",
-			`${name}=${name === "NODE_OPTIONS" ? "x".repeat(512) : "x".repeat(32)}`,
-		]);
-		for (const gated of [false, true]) {
-			const command = buildAmbientSafeWindowCommand({
-				binaryName: "/usr/local/bin/claude",
-				binaryArgs: ["--model", "claude-opus-4-6"],
-				allowedEnvNames: names,
-				...(gated
-					? {
-							gateFile: longPath,
-							launchToken: "12345678-1234-1234-1234-123456789abc",
-							promptFile: longPath,
-						}
-					: {}),
-			});
-			expect(() =>
-				assertLaunchCommandBudgets([
-					"new-window",
-					...envArgs,
-					"-c",
-					longPath,
-					...command,
-				]),
-			).not.toThrow();
-		}
-	});
-
-	it("allows the exact byte budget and rejects one byte over with flag attribution", () => {
-		const exact = "x".repeat(TMUX_COMMAND_BUDGET_BYTES - 6);
-		expect(() => assertLaunchCommandBudgets([exact])).not.toThrow();
-
-		let error: unknown;
-		try {
-			assertLaunchCommandBudgets([`${exact}x`]);
-		} catch (caught) {
-			error = caught;
-		}
-		expect(error).toBeInstanceOf(LaunchCommandOversizeError);
-		expect(error).toMatchObject({
-			code: "LAUNCH_COMMAND_OVERSIZE",
-			reason: "tmux_command_budget",
-			budgetBytes: TMUX_COMMAND_BUDGET_BYTES,
-		});
-		expect((error as Error).message).toContain("argv[0]=12283B");
-
-		expect(() =>
-			assertLaunchCommandBudgets([
-				"--settings",
-				"x".repeat(TMUX_COMMAND_BUDGET_BYTES - 16),
-			]),
-		).toThrow(/--settings value=12272B/);
-	});
-});
 
 function makeMockExec(
 	options: {
@@ -414,7 +95,7 @@ function makeMockExec(
 			}
 
 			if (subcommand === "new-window") {
-				return { stdout: `${windowId}|/tmp/tmux-test/default|1722700000` };
+				return { stdout: windowId };
 			}
 
 			if (subcommand === "list-panes") {
@@ -469,8 +150,7 @@ function makeMockExecWithDelayedDead(
 			if (subcommand === "new-session") return { stdout: "" };
 			if (subcommand === "set-environment") return { stdout: "" };
 			if (subcommand === "set-option") return { stdout: "" };
-			if (subcommand === "new-window")
-				return { stdout: `${windowId}|/tmp/tmux-test/default|1722700000` };
+			if (subcommand === "new-window") return { stdout: windowId };
 			if (subcommand === "list-panes") {
 				pollCount++;
 				return { stdout: pollCount >= pollsBeforeDead ? "1" : "0" };
@@ -498,56 +178,6 @@ describe("TmuxAdapter", () => {
 		const { fn } = makeMockExec();
 		const adapter = new TmuxAdapter("flywheel", fn);
 		expect(adapter.type).toBe("claude-tmux");
-	});
-
-	it("FLY-1961 writes Claude trust before the first tmux launch", async () => {
-		const trustDir = mkdtempSync(join(tmpdir(), "fly1961-tmux-trust-"));
-		const claudeJson = join(trustDir, ".claude.json");
-		const workspace = join(trustDir, "worktree");
-		mkdirSync(workspace);
-		vi.stubEnv("FLYWHEEL_CLAUDE_JSON", claudeJson);
-		vi.stubEnv("FLYWHEEL_CLAUDE_JSON_LOCK", `${claudeJson}.lock`);
-		vi.stubEnv("CLAUDE_LOCK_WAIT_S", "0");
-		const base = makeMockExec({ paneDead: true });
-		let trustedAtLaunch = false;
-		const fn: ExecFileFn = (cmd, args, options) => {
-			if (cmd === "tmux" && args[0] === "new-window") {
-				const state = JSON.parse(readFileSync(claudeJson, "utf8")) as Record<
-					string,
-					Record<string, Record<string, unknown>>
-				>;
-				trustedAtLaunch =
-					state.projects[realpathSync(workspace)]?.hasTrustDialogAccepted ===
-					true;
-			}
-			return base.fn(cmd, args, options);
-		};
-
-		try {
-			await new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ cwd: workspace, pretrustWorkspace: true }),
-			);
-			expect(trustedAtLaunch).toBe(true);
-		} finally {
-			vi.unstubAllEnvs();
-			rmSync(trustDir, { recursive: true, force: true });
-		}
-	});
-
-	it("FLY-1961 leaves Claude state untouched without the explicit signal", async () => {
-		const trustDir = mkdtempSync(join(tmpdir(), "fly1961-tmux-optin-"));
-		const claudeJson = join(trustDir, ".claude.json");
-		vi.stubEnv("FLYWHEEL_CLAUDE_JSON", claudeJson);
-		vi.stubEnv("FLYWHEEL_CLAUDE_JSON_LOCK", `${claudeJson}.lock`);
-		const { fn } = makeMockExec({ paneDead: true });
-
-		try {
-			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
-			expect(existsSync(claudeJson)).toBe(false);
-		} finally {
-			vi.unstubAllEnvs();
-			rmSync(trustDir, { recursive: true, force: true });
-		}
 	});
 
 	// ─── Preflight ──────────────────────────────────
@@ -642,10 +272,7 @@ describe("TmuxAdapter", () => {
 			// gated shell: `sh -c '<grep -qF $tok>; exec claude "$@"' <commitFile> <token> ...`
 			expect(newWindow?.args).toContain("sh");
 			expect(newWindow?.args.some((a) => a.includes("grep -qF"))).toBe(true);
-			expect(
-				newWindow?.args.some((a) => a.includes("exec /usr/bin/env -i")),
-			).toBe(true);
-			expect(newWindow?.args).toContain("claude");
+			expect(newWindow?.args.some((a) => a.includes("exec claude"))).toBe(true);
 			expect(newWindow?.args).toContain(commitFile);
 			// the file holds THIS launch's token (a uuid) — the per-launch gate.
 			const written = readFileSync(commitFile, "utf8");
@@ -738,10 +365,7 @@ describe("TmuxAdapter", () => {
 			const newWindow = calls.find(
 				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
 			);
-			expect(
-				newWindow?.args.some((a) => a.includes("exec /usr/bin/env -i")),
-			).toBe(true);
-			expect(newWindow?.args).toContain("claude");
+			expect(newWindow?.args.some((a) => a.includes("exec claude"))).toBe(true);
 			expect(existsSync(commitFile)).toBe(false); // no commit → replay re-drives
 			expect(
 				calls.find((c) => c.cmd === "tmux" && c.args[0] === "list-panes"),
@@ -751,233 +375,21 @@ describe("TmuxAdapter", () => {
 		}
 	});
 
-	it("gates the normal Claude path until the generation credential is persisted", async () => {
+	it("the NORMAL fleet path (no launchCommitPath) launches Claude DIRECTLY (byte-unchanged)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
-		const opened = vi.fn();
-		await adapter.execute(makeCtx({ onTmuxWindowOpened: opened }));
+		await adapter.execute(makeCtx());
 		const newWindow = calls.find(
 			(c) => c.cmd === "tmux" && c.args[0] === "new-window",
 		);
-		expect(newWindow?.args).toContain("sh");
-		expect(
-			newWindow?.args.some((arg) => arg.includes("exec /usr/bin/env -i")),
-		).toBe(true);
+		// command segment is `claude ...` directly — no gating shell wrapper
 		expect(newWindow?.args).toContain("claude");
-		expect(newWindow?.args.some((arg) => arg.includes("rm -f"))).toBe(true);
-		expect(opened).toHaveBeenCalledWith({
-			baseSessionName: "flywheel",
-			windowId: "@42",
-			socketPath: "/tmp/tmux-test/default",
-			serverStartTime: "1722700000",
-			executionId: "test-exec-1",
-		});
-	});
-
-	it("prunes an authority-approved terminal same-name window by exact id before session capacity admission", async () => {
-		const base = makeMockExec({
-			paneDead: true,
-			hasSessionError: false,
-			listWindows: "@7|GEO-TEST|old-exec|1|old-fingerprint",
-		});
-		let staleKilled = false;
-		const fn: ExecFileFn = (cmd, args) => {
-			if (
-				cmd === "tmux" &&
-				args[0] === "kill-window" &&
-				args[2] === "=flywheel:@7"
-			) {
-				staleKilled = true;
-			}
-			if (
-				cmd === "tmux" &&
-				args[0] === "display-message" &&
-				args.includes("=flywheel:@7") &&
-				staleKilled
-			) {
-				throw new Error("window not found");
-			}
-			return base.fn(cmd, args);
-		};
-		const authority = vi.fn(() => "prune" as const);
-		await new TmuxAdapter("flywheel", fn, 10).execute(
-			makeCtx({
-				label: "GEO-TEST",
-				workflowTmuxWindowAuthority: authority,
-			}),
-		);
-
-		expect(authority).toHaveBeenCalledWith({
-			windowId: "@7",
-			windowName: "GEO-TEST",
-			executionId: "old-exec",
-			launchGeneration: 1,
-			launchFingerprint: "old-fingerprint",
-		});
-		expect(killWindowTargets(base.calls)).toContain("=flywheel:@7");
-		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
-		expect(newWindow.args[newWindow.args.indexOf("-n") + 1]).toBe("GEO-TEST");
-	});
-
-	it("uses an execution suffix when a same-name window lacks prune authority", async () => {
-		const base = makeMockExec({
-			paneDead: true,
-			hasSessionError: false,
-			listWindows: "@7|GEO-TEST|live-exec|2|live-fingerprint",
-		});
-		await new TmuxAdapter("flywheel", base.fn, 10).execute(
-			makeCtx({
-				label: "GEO-TEST",
-				workflowTmuxWindowAuthority: () => "keep",
-			}),
-		);
-		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
-		expect(newWindow.args[newWindow.args.indexOf("-n") + 1]).toBe(
-			"GEO-TEST-test-exe",
-		);
-		expect(killWindowTargets(base.calls)).not.toContain("=flywheel:@7");
-	});
-
-	it("reserves room for execution and owner-generation suffixes on long labels", async () => {
-		const canonical = "A".repeat(50);
-		const base = makeMockExec({
-			paneDead: true,
-			hasSessionError: false,
-			listWindows: `@7|${canonical}|live-exec|2|live-fingerprint`,
-		});
-		await new TmuxAdapter("flywheel", base.fn, 10).execute(
-			makeCtx({
-				label: canonical,
-				executionId: "test-execution-id",
-				launchGeneration: 3,
-				workflowTmuxWindowAuthority: () => "keep",
-			}),
-		);
-		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
-		const selected = newWindow.args[newWindow.args.indexOf("-n") + 1]!;
-		expect(selected).toHaveLength(50);
-		expect(selected).toMatch(/-test-exe-g3$/);
-	});
-
-	it("preflights the suffixed fallback and selects a bounded unique retry name", async () => {
-		const base = makeMockExec({
-			paneDead: true,
-			hasSessionError: false,
-			listWindows:
-				"@7|GEO-TEST|live-exec|2|live-fingerprint\n" +
-				"@8|GEO-TEST-test-exe-g3|other-exec|1|other-fingerprint",
-		});
-		await new TmuxAdapter("flywheel", base.fn, 10).execute(
-			makeCtx({
-				label: "GEO-TEST",
-				executionId: "test-execution-id",
-				launchGeneration: 3,
-				workflowTmuxWindowAuthority: () => "keep",
-			}),
-		);
-		const newWindow = base.calls.find((call) => call.args[0] === "new-window")!;
-		expect(newWindow.args[newWindow.args.indexOf("-n") + 1]).toBe(
-			"GEO-TEST-test-exe-g3-r1",
-		);
-	});
-
-	it("fails a workflow launch closed with a typed result when exact window identity cannot be published", async () => {
-		const base = makeMockExec({ paneDead: true });
-		let killed = false;
-		const fn: ExecFileFn = (cmd, args) => {
-			if (
-				cmd === "tmux" &&
-				args[0] === "set-option" &&
-				args.includes("@flywheel_launch_generation")
-			) {
-				throw new Error("option write failed");
-			}
-			if (cmd === "tmux" && args[0] === "kill-window") killed = true;
-			if (cmd === "tmux" && args[0] === "display-message" && killed) {
-				throw new Error("window not found");
-			}
-			return base.fn(cmd, args);
-		};
-		let error: unknown;
-		try {
-			await new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({
-					launchCommitPath: "/tmp/fly1638-identity-commit",
-					launchGateToken: "launch-token",
-					launchGeneration: 3,
-					launchFingerprint: "launch-fingerprint",
-					commitWorkflowLaunch: () => ({ ok: true }),
-				}),
-			);
-		} catch (caught) {
-			error = caught;
-		}
-		expect(error).toBeInstanceOf(LaunchPrecommitError);
-		expect((error as LaunchPrecommitError).launchFailure).toEqual({
-			code: "LAUNCH_WINDOW_IDENTITY_FAILED",
-			reason: "identity_publish_failed",
-			physicalEvidence: "cleaned",
-		});
-	});
-
-	it("repairs an existing direct launch-gate directory to owner-only permissions", async () => {
-		const gateDir = join(tmpdir(), "flywheel-launch-gates");
-		mkdirSync(gateDir, { recursive: true });
-		chmodSync(gateDir, 0o777);
-		let gateFile: string | undefined;
-		try {
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
-			const newWindow = calls.find(
-				(call) => call.cmd === "tmux" && call.args[0] === "new-window",
-			);
-			gateFile = newWindow?.args.find((arg) => arg.startsWith(`${gateDir}/`));
-			expect(statSync(gateDir).mode & 0o777).toBe(0o700);
-		} finally {
-			chmodSync(gateDir, 0o700);
-			if (gateFile) rmSync(gateFile, { force: true });
-		}
-	});
-
-	it("fails closed and kills the Claude window when generation persistence is unavailable", async () => {
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		await expect(
-			new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ onTmuxWindowOpened: undefined }),
-			),
-		).rejects.toThrow(/generation credential callback is required/i);
-		expect(killWindowTargets(calls)).toContain("=flywheel:@42");
-		expect(calls.some((call) => call.args[0] === "list-panes")).toBe(false);
-	});
-
-	it("fails closed before release when generation persistence rejects the tuple", async () => {
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		await expect(
-			new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({
-					onTmuxWindowOpened: () => {
-						throw new Error("terminal row");
-					},
-				}),
-			),
-		).rejects.toThrow(/terminal row/i);
-		expect(killWindowTargets(calls)).toContain("=flywheel:@42");
-		expect(calls.some((call) => call.args[0] === "list-panes")).toBe(false);
+		expect(newWindow?.args).not.toContain("sh");
 	});
 
 	// ─── FLY-615: ponytail --settings flag ───────────
-	const expectDiscordDisabledSettings = (
-		settingsJson: string,
-		extraEnabledPlugins: Record<string, boolean> = {},
-	): void => {
-		expect(JSON.parse(settingsJson)).toEqual({
-			enabledPlugins: {
-				...extraEnabledPlugins,
-				"discord@flywheel-plugins": false,
-				"discord@claude-plugins-official": false,
-			},
-		});
-	};
+	const PONYTAIL_SETTINGS_JSON =
+		'{"enabledPlugins":{"ponytail@ponytail":true}}';
 
 	it("FLY-615: enablePonytail adds --settings <json> (normal path)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
@@ -986,9 +398,7 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const idx = newWindow!.args.indexOf("--settings");
 		expect(idx).toBeGreaterThan(-1);
-		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
-			"ponytail@ponytail": true,
-		});
+		expect(newWindow!.args[idx + 1]).toBe(PONYTAIL_SETTINGS_JSON);
 	});
 
 	it('FLY-615: --settings survives the gateway launch path (sh -c "$@")', async () => {
@@ -1005,21 +415,18 @@ describe("TmuxAdapter", () => {
 			);
 			const idx = newWindow!.args.indexOf("--settings");
 			expect(idx).toBeGreaterThan(-1);
-			expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
-				"ponytail@ponytail": true,
-			});
+			expect(newWindow!.args[idx + 1]).toBe(PONYTAIL_SETTINGS_JSON);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
-	it("FLY-615/1715: no enablePonytail keeps ponytail absent while disabling Discord", async () => {
+	it("FLY-615: no enablePonytail → no --settings (byte-compatible)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 		await adapter.execute(makeCtx());
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
-		const idx = newWindow!.args.indexOf("--settings");
-		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string);
+		expect(newWindow!.args).not.toContain("--settings");
 	});
 
 	// ─── FLY-751: per-runner MCP slimming (disabledPlugins + disableChrome) ───
@@ -1038,9 +445,9 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const idx = newWindow!.args.indexOf("--settings");
 		expect(idx).toBeGreaterThan(-1);
-		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
-			"serena@claude-plugins-official": false,
-		});
+		expect(newWindow!.args[idx + 1]).toBe(
+			'{"enabledPlugins":{"discord@claude-plugins-official":false,"serena@claude-plugins-official":false}}',
+		);
 		// exactly one --settings flag
 		expect(
 			newWindow!.args.filter((a: string) => a === "--settings"),
@@ -1062,61 +469,20 @@ describe("TmuxAdapter", () => {
 		);
 		expect(settingsArgs).toHaveLength(1);
 		const idx = newWindow!.args.indexOf("--settings");
-		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
-			"ponytail@ponytail": true,
-		});
+		expect(newWindow!.args[idx + 1]).toBe(
+			'{"enabledPlugins":{"ponytail@ponytail":true,"discord@claude-plugins-official":false}}',
+		);
 	});
 
-	it("FLY-1715: every Claude tmux launch disables both Discord plugin identities", async () => {
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
-		const newWindow = calls.find((c) => c.args[0] === "new-window");
-		const settingsIndexes = newWindow!.args.flatMap((arg, index) =>
-			arg === "--settings" ? [index] : [],
-		);
-		expect(settingsIndexes).toHaveLength(1);
-		const settings = JSON.parse(
-			newWindow!.args[(settingsIndexes[0] as number) + 1] as string,
-		);
-		expect(settings.enabledPlugins).toMatchObject({
-			"discord@flywheel-plugins": false,
-			"discord@claude-plugins-official": false,
-		});
-	});
-
-	it("FLY-1715: forbidden Discord entries override caller positive opt-ins", async () => {
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		await new TmuxAdapter("flywheel", fn, 10).execute(
-			makeCtx({
-				enabledPluginsExtra: [
-					"discord@flywheel-plugins",
-					"discord@claude-plugins-official",
-				],
-			}),
-		);
-		const newWindow = calls.find((c) => c.args[0] === "new-window");
-		const index = newWindow!.args.indexOf("--settings");
-		const settings = JSON.parse(newWindow!.args[index + 1] as string);
-		expect(settings.enabledPlugins).toMatchObject({
-			"discord@flywheel-plugins": false,
-			"discord@claude-plugins-official": false,
-		});
-	});
-
-	it("FLY-751: disableChrome stays in CLI args before the runtime prompt", async () => {
+	it("FLY-751: disableChrome → --no-chrome BEFORE the prompt (last positional)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
-		await adapter.execute(
-			makeCtx({ prompt: "Fix the browser bug", disableChrome: true }),
-		);
+		await adapter.execute(makeCtx({ disableChrome: true }));
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const noChromeIdx = newWindow!.args.indexOf("--no-chrome");
 		expect(noChromeIdx).toBeGreaterThan(-1);
-		expect(newWindow!.args).not.toContain("Fix the browser bug");
-		expect(readFileSync(promptFileFromTmuxArgs(newWindow!.args), "utf8")).toBe(
-			"Fix the browser bug",
-		);
-		expect(newWindow!.args.some((arg) => arg.includes('"$@" "$p"'))).toBe(true);
+		// prompt is the final arg of the window command
+		expect(noChromeIdx).toBeLessThan(newWindow!.args.length - 1);
 	});
 
 	it("FLY-751: slim flags survive the gateway launch path", async () => {
@@ -1142,13 +508,12 @@ describe("TmuxAdapter", () => {
 		}
 	});
 
-	it("FLY-751/1715: empty disabledPlugins still applies Discord deny policy", async () => {
+	it("FLY-751: empty disabledPlugins + no chrome flag → byte-compatible argv", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 		await adapter.execute(makeCtx({ disabledPlugins: [] }));
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
-		const idx = newWindow!.args.indexOf("--settings");
-		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string);
+		expect(newWindow!.args).not.toContain("--settings");
 		expect(newWindow!.args).not.toContain("--no-chrome");
 	});
 
@@ -1343,7 +708,7 @@ describe("TmuxAdapter", () => {
 		// Critical: argv must NOT contain the 14KB blob anywhere.
 		const totalArgv = args.join(" ");
 		expect(totalArgv).not.toContain("x".repeat(14_000));
-		expect(totalArgv.length).toBeLessThan(6_000);
+		expect(totalArgv.length).toBeLessThan(2_000);
 
 		// File path is what the Runner consumes.
 		const fileFlagIdx = args.indexOf("--append-system-prompt-file");
@@ -1354,160 +719,7 @@ describe("TmuxAdapter", () => {
 		);
 	});
 
-	it("externalizes a 100KB task prompt to a per-launch owner-only file", async () => {
-		const executionId = "fly1869-100kb-prompt";
-		const launchToken = "fly1869-launch-token";
-		const promptDir = join(tmpdir(), "flywheel-runner-prompts", executionId);
-		rmSync(promptDir, { recursive: true, force: true });
-		try {
-			const prompt = `Task\n${"x".repeat(102_400)}`;
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			const adapter = new TmuxAdapter("flywheel", fn, 10);
-
-			await adapter.execute(
-				makeCtx({ executionId, launchGateToken: launchToken, prompt }),
-			);
-
-			const args = calls.find((call) => call.args[0] === "new-window")!.args;
-			const promptPath = join(promptDir, `prompt-${launchToken}.md`);
-			expect(args).not.toContain(prompt);
-			expect(args).toContain(promptPath);
-			expect(readFileSync(promptPath, "utf8")).toBe(prompt);
-			expect(statSync(promptDir).mode & 0o777).toBe(0o700);
-			expect(statSync(promptPath).mode & 0o777).toBe(0o600);
-		} finally {
-			rmSync(promptDir, { recursive: true, force: true });
-		}
-	});
-
-	it.each(["", "\n"])(
-		"keeps a blank task prompt inline without creating a prompt file (%j)",
-		async (prompt) => {
-			const executionId = `fly1869-blank-${prompt.length}`;
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			await new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ executionId, launchGateToken: "blank-token", prompt }),
-			);
-
-			const args = calls.find((call) => call.args[0] === "new-window")!.args;
-			expect(args.at(-1)).toBe(prompt);
-			expect(
-				args.some((arg) =>
-					arg.includes(`flywheel-runner-prompts/${executionId}/prompt-`),
-				),
-			).toBe(false);
-		},
-	);
-
-	it("rejects a 120,001-byte workflow prompt before tmux with a typed precommit failure", async () => {
-		const executionId = "fly1869-prompt-budget";
-		const promptDir = join(tmpdir(), "flywheel-runner-prompts", executionId);
-		rmSync(promptDir, { recursive: true, force: true });
-		try {
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			let error: unknown;
-			try {
-				await new TmuxAdapter("flywheel", fn, 10).execute(
-					makeCtx({
-						executionId,
-						prompt: "x".repeat(120_001),
-						launchCommitPath: join(promptDir, "commit"),
-						launchGateToken: "prompt-budget-token",
-						launchGeneration: 1,
-						launchFingerprint: "prompt-budget-fingerprint",
-						commitWorkflowLaunch: () => ({ ok: true }),
-					}),
-				);
-			} catch (caught) {
-				error = caught;
-			}
-
-			expect(error).toBeInstanceOf(LaunchPrecommitError);
-			expect((error as LaunchPrecommitError).launchFailure).toEqual({
-				code: "LAUNCH_COMMAND_OVERSIZE",
-				reason: "prompt_size_budget",
-				physicalEvidence: "absent",
-			});
-			expect((error as Error).message).toContain("120001");
-			expect((error as Error).message).toContain("120000");
-			expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
-		} finally {
-			rmSync(promptDir, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects an oversized workflow tmux command before invoking tmux", async () => {
-		const executionId = "fly1869-command-budget";
-		const promptDir = join(tmpdir(), "flywheel-runner-prompts", executionId);
-		rmSync(promptDir, { recursive: true, force: true });
-		try {
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			let error: unknown;
-			try {
-				await new TmuxAdapter("flywheel", fn, 10).execute(
-					makeCtx({
-						executionId,
-						allowedTools: ["x".repeat(13_000)],
-						launchCommitPath: join(promptDir, "commit"),
-						launchGateToken: "command-budget-token",
-						launchGeneration: 1,
-						launchFingerprint: "command-budget-fingerprint",
-						commitWorkflowLaunch: () => ({ ok: true }),
-					}),
-				);
-			} catch (caught) {
-				error = caught;
-			}
-
-			expect(error).toBeInstanceOf(LaunchPrecommitError);
-			expect((error as LaunchPrecommitError).launchFailure).toEqual({
-				code: "LAUNCH_COMMAND_OVERSIZE",
-				reason: "tmux_command_budget",
-				physicalEvidence: "absent",
-			});
-			expect((error as Error).message).toContain(
-				"--allowed-tools value=13000B",
-			);
-			expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
-		} finally {
-			rmSync(promptDir, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects an oversized direct tmux command with the typed launch error", async () => {
-		const executionId = "fly1869-direct-command-budget";
-		const promptDir = join(tmpdir(), "flywheel-runner-prompts", executionId);
-		rmSync(promptDir, { recursive: true, force: true });
-		try {
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			let error: unknown;
-			try {
-				await new TmuxAdapter("flywheel", fn, 10).execute(
-					makeCtx({
-						executionId,
-						allowedTools: ["x".repeat(13_000)],
-					}),
-				);
-			} catch (caught) {
-				error = caught;
-			}
-
-			expect(error).toBeInstanceOf(LaunchCommandOversizeError);
-			expect(error).toMatchObject({
-				code: "LAUNCH_COMMAND_OVERSIZE",
-				reason: "tmux_command_budget",
-				budgetBytes: TMUX_COMMAND_BUDGET_BYTES,
-			});
-			expect((error as Error).message).toContain(
-				"--allowed-tools value=13000B",
-			);
-			expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
-		} finally {
-			rmSync(promptDir, { recursive: true, force: true });
-		}
-	});
-
-	it("canonicalizes and passes --model when specified", async () => {
+	it("passes --model when specified", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
@@ -1516,72 +728,7 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		expect(args).toContain("--model");
-		expect(args[args.indexOf("--model") + 1]).toMatch(/^claude-opus-5/);
-	});
-
-	// FLY-1650 (Codex R1 HIGH): the model and the effort arrive from different
-	// config keys — `roles.runner.model` vs `roles.runner.effort` — so the pair
-	// is only knowable at this seam. Opus 4.6 predates the `xhigh` tier; without
-	// a check here the flag rides straight to the CLI and comes back a 400.
-	it("drops an --effort the resolved model does not support (Opus 4.6 has no xhigh)", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		const adapter = new TmuxAdapter("flywheel", fn, 10);
-
-		await adapter.execute(
-			makeCtx({ model: "claude-opus-4-6[1m]", effort: "xhigh" }),
-		);
-
-		const args = calls.find((c) => c.args[0] === "new-window")!.args;
-		expect(args[args.indexOf("--model") + 1]).toBe("claude-opus-4-6[1m]");
-		expect(args).not.toContain("--effort");
-		expect(warn.mock.calls.flat().join(" ")).toMatch(/xhigh/);
-		warn.mockRestore();
-	});
-
-	it("keeps an --effort the resolved model does support", async () => {
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		const adapter = new TmuxAdapter("flywheel", fn, 10);
-
-		await adapter.execute(
-			makeCtx({ model: "claude-opus-4-6[1m]", effort: "high" }),
-		);
-
-		const args = calls.find((c) => c.args[0] === "new-window")!.args;
-		expect(args[args.indexOf("--effort") + 1]).toBe("high");
-	});
-
-	it("leaves every other model's --effort byte-unchanged, xhigh included", async () => {
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		const adapter = new TmuxAdapter("flywheel", fn, 10);
-
-		await adapter.execute(makeCtx({ model: "opus", effort: "xhigh" }));
-
-		const args = calls.find((c) => c.args[0] === "new-window")!.args;
-		expect(args[args.indexOf("--effort") + 1]).toBe("xhigh");
-	});
-
-	it("omits --model entirely when no model is specified", async () => {
-		// Absent stays absent: the account default is inherited, which is what
-		// FLYWHEEL_RUNNER_DEFAULT_MODEL=off asks for. RoleAdapterResolver is the
-		// layer that injects the fleet default when nobody opted out.
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		const adapter = new TmuxAdapter("flywheel", fn, 10);
-
-		await adapter.execute(makeCtx());
-
-		const newWindow = calls.find((call) => call.args[0] === "new-window");
-		expect(newWindow!.args).not.toContain("--model");
-	});
-
-	it("rejects an unresolvable model before opening a tmux window", async () => {
-		const { fn, calls } = makeMockExec({ paneDead: true });
-		const adapter = new TmuxAdapter("flywheel", fn, 10);
-
-		await expect(
-			adapter.execute(makeCtx({ model: "claude-not-a-model" })),
-		).rejects.toThrow(/unknown model/i);
-		expect(calls.some((call) => call.args[0] === "new-window")).toBe(false);
+		expect(args).toContain("opus");
 	});
 
 	it("passes --allowed-tools when specified", async () => {
@@ -1657,21 +804,19 @@ describe("TmuxAdapter", () => {
 
 	// ─── remain-on-exit ─────────────────────────────
 
-	it("injects FLYWHEEL_MARKER_DIR into the exact legacy runner window", async () => {
+	it("injects FLYWHEEL_MARKER_DIR into tmux session environment", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
 		await adapter.execute(makeCtx());
 
-		const newWindow = calls.find((c) => c.args[0] === "new-window");
-		expect(newWindow?.args).toContain(
-			`FLYWHEEL_MARKER_DIR=${FLYWHEEL_MARKER_DIR}`,
-		);
 		const setEnvCalls = calls.filter((c) => c.args[0] === "set-environment");
 		const markerDirCall = setEnvCalls.find(
 			(c) => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"),
 		);
-		expect(markerDirCall).toBeUndefined();
+		expect(markerDirCall).toBeDefined();
+		expect(markerDirCall!.args).toContain("-t");
+		expect(markerDirCall!.args).toContain("=flywheel");
 	});
 
 	it("unsets CLAUDECODE env var to prevent nested Claude hang", async () => {
@@ -1689,108 +834,16 @@ describe("TmuxAdapter", () => {
 		expect(unsetCall!.args).toContain("=flywheel");
 	});
 
-	it("sets remain-on-exit on the exact new Claude window before commit release and scaffold prune", async () => {
-		const base = makeMockExec({
-			paneDead: true,
-			windowId: "@42",
-			listWindows: "@0|zsh\n@42|GEO-TEST-claude-fix",
-		});
-		const journal: string[] = [];
-		const fn: ExecFileFn = (cmd, args) => {
-			journal.push(`${cmd}:${args[0]}`);
-			return base.fn(cmd, args);
-		};
-		const adapter = new TmuxAdapter("runner-test", fn, 10);
-
-		await adapter.execute(
-			makeCtx({
-				launchCommitPath: "/tmp/fly1272-launch-commit",
-				launchGateToken: "fly1272-token",
-				launchGeneration: 1,
-				launchFingerprint: "fly1272-fingerprint",
-				commitWorkflowLaunch: () => {
-					journal.push("commit-release");
-					return { ok: true };
-				},
-			}),
-		);
-
-		const remainCalls = base.calls.filter(
-			(c) => c.args[0] === "set-option" && c.args.includes("remain-on-exit"),
-		);
-		expect(remainCalls).toHaveLength(1);
-		expect(remainCalls[0]?.args).toEqual([
-			"set-option",
-			"-w",
-			"-t",
-			"=runner-test:@42",
-			"remain-on-exit",
-			"on",
-		]);
-		expect(journal.indexOf("tmux:new-window")).toBeLessThan(
-			journal.indexOf("tmux:set-option"),
-		);
-		expect(journal.indexOf("tmux:set-option")).toBeLessThan(
-			journal.indexOf("commit-release"),
-		);
-		expect(journal.indexOf("commit-release")).toBeLessThan(
-			journal.indexOf("tmux:list-windows"),
-		);
-	});
-
-	it("kills only the exact new window and aborts before commit/prune when remain-on-exit fails", async () => {
-		const base = makeMockExec({
-			paneDead: true,
-			windowId: "@42",
-			listWindows: "@0|zsh\n@42|GEO-TEST-claude-fix",
-		});
-		const fn: ExecFileFn = (cmd, args) => {
-			if (
-				cmd === "tmux" &&
-				args[0] === "set-option" &&
-				args.includes("remain-on-exit")
-			) {
-				throw new Error("set-option failed");
-			}
-			return base.fn(cmd, args);
-		};
-		const commitWorkflowLaunch = vi.fn(() => ({ ok: true }));
-		const adapter = new TmuxAdapter("runner-test", fn, 10);
-
-		await expect(
-			adapter.execute(
-				makeCtx({
-					launchCommitPath: "/tmp/fly1272-launch-commit-failure",
-					launchGateToken: "fly1272-token",
-					launchGeneration: 1,
-					launchFingerprint: "fly1272-fingerprint",
-					commitWorkflowLaunch,
-				}),
-			),
-		).rejects.toThrow(/remain-on-exit.*runner-test:@42/i);
-		expect(commitWorkflowLaunch).not.toHaveBeenCalled();
-		expect(killWindowTargets(base.calls)).toEqual(["=runner-test:@42"]);
-		expect(base.calls.some((c) => c.args[0] === "list-windows")).toBe(false);
-	});
-
-	it("does not set remain-on-exit for non-Claude tmux adapters", async () => {
-		class NonClaudeAdapter extends TmuxAdapter {
-			readonly type = "kimi-tmux";
-
-			protected override buildCliArgs() {
-				return { args: ["-p", "pointer"] };
-			}
-		}
+	it("sets remain-on-exit on", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const adapter = new NonClaudeAdapter("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
 		await adapter.execute(makeCtx());
 
-		expect(
-			calls.some(
-				(c) => c.args[0] === "set-option" && c.args.includes("remain-on-exit"),
-			),
-		).toBe(false);
+		const setOption = calls.find((c) => c.args[0] === "set-option");
+		expect(setOption).toBeDefined();
+		expect(setOption!.args).toContain("remain-on-exit");
+		expect(setOption!.args).toContain("on");
 	});
 
 	// ─── Completion detection ───────────────────────
@@ -1817,8 +870,7 @@ describe("TmuxAdapter", () => {
 				if (args[0] === "new-session") return { stdout: "" };
 				if (args[0] === "set-environment") return { stdout: "" };
 				if (args[0] === "set-option") return { stdout: "" };
-				if (args[0] === "new-window")
-					return { stdout: "@42|/tmp/tmux-test/default|1722700000" };
+				if (args[0] === "new-window") return { stdout: "@42" };
 				if (args[0] === "list-panes") {
 					pollCount++;
 					if (pollCount >= 1) throw new Error("window gone");
@@ -1919,7 +971,7 @@ describe("TmuxAdapter", () => {
 
 	// ─── Prompt positioning ─────────────────────────
 
-	it("keeps options in CLI argv and appends the file-backed prompt at exec", async () => {
+	it("puts prompt as last positional argument (options before prompt)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
@@ -1932,17 +984,14 @@ describe("TmuxAdapter", () => {
 
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
-		// Find "claude" in args, then check the task prompt is no longer part of
-		// tmux's command and the gated shell appends it only at exec time.
+		// Find "claude" in args, then check prompt is last
 		const claudeIdx = args.indexOf("claude");
 		const claudeArgs = args.slice(claudeIdx + 1);
-		expect(args).not.toContain("Fix the bug");
-		expect(readFileSync(promptFileFromTmuxArgs(args), "utf8")).toBe(
-			"Fix the bug",
-		);
-		expect(args.some((arg) => arg.includes('"$@" "$p"'))).toBe(true);
+		// Prompt should be last
+		expect(claudeArgs[claudeArgs.length - 1]).toBe("Fix the bug");
+		// --permission-mode should come before prompt
 		const permIdx = claudeArgs.indexOf("--permission-mode");
-		expect(permIdx).toBeGreaterThan(-1);
+		expect(permIdx).toBeLessThan(claudeArgs.length - 1);
 	});
 
 	// ─── v0.2: hookServer integration ──────────────
@@ -2022,37 +1071,6 @@ describe("TmuxAdapter", () => {
 			);
 		});
 
-		it("injects the engine submission expectation sentinel only when requested", async () => {
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			const adapter = new TmuxAdapter("flywheel", fn, 10);
-
-			await adapter.execute(
-				makeCtx({
-					workflowSubmissionCredential: "decision-ticket",
-					workflowSubmissionExpected: true,
-					founderReviewRequired: true,
-				}),
-			);
-
-			const newWindow = calls.find((c) => c.args[0] === "new-window");
-			const envArgStr = newWindow!.args.join(" ");
-			expect(envArgStr).toContain(
-				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=decision-ticket",
-			);
-			expect(envArgStr).toContain("FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED=1");
-			expect(envArgStr).toContain("FLYWHEEL_FOUNDER_REVIEW_REQUIRED=1");
-
-			const absent = makeMockExec({ paneDead: true });
-			await new TmuxAdapter("flywheel", absent.fn, 10).execute(makeCtx());
-			const absentWindow = absent.calls.find((c) => c.args[0] === "new-window");
-			expect(absentWindow!.args.join(" ")).not.toContain(
-				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
-			);
-			expect(absentWindow!.args.join(" ")).not.toContain(
-				"FLYWHEEL_FOUNDER_REVIEW_REQUIRED",
-			);
-		});
-
 		// FLY-1188: `send` routes wakes by the session row's vendor — the
 		// claude adapter must register itself explicitly as "claude-code".
 		it("execute() with commDbPath — registers the session with vendor=claude-code", async () => {
@@ -2072,29 +1090,6 @@ describe("TmuxAdapter", () => {
 			}
 		});
 
-		it("publishes the execution id on the exact runner window", async () => {
-			const { fn, calls } = makeMockExec({
-				paneDead: true,
-				windowId: "@42",
-			});
-
-			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
-
-			expect(
-				calls.find(
-					(call) =>
-						call.cmd === "tmux" && call.args.includes("@flywheel_exec_id"),
-				)?.args,
-			).toEqual([
-				"set-option",
-				"-w",
-				"-t",
-				"=flywheel:@42",
-				"@flywheel_exec_id",
-				"test-exec-1",
-			]);
-		});
-
 		it("execute() without commDbPath — no FLYWHEEL_COMM_DB env", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			const adapter = new TmuxAdapter("flywheel", fn, 10);
@@ -2104,38 +1099,6 @@ describe("TmuxAdapter", () => {
 			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const args = newWindow!.args;
 			expect(args.join(" ")).not.toContain("FLYWHEEL_COMM_DB");
-		});
-
-		it("passes a configured complete-marker directory into the runner window only when set", async () => {
-			const original = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
-			try {
-				process.env.FLYWHEEL_COMPLETE_MARKER_DIR =
-					"  /tmp/fly1608-slot/complete-failed  ";
-				const present = makeMockExec({ paneDead: true });
-				await new TmuxAdapter("flywheel", present.fn, 10).execute(makeCtx());
-				const presentWindow = present.calls.find(
-					(c) => c.args[0] === "new-window",
-				);
-				expect(presentWindow?.args.join(" ")).toContain(
-					"FLYWHEEL_COMPLETE_MARKER_DIR=/tmp/fly1608-slot/complete-failed",
-				);
-
-				delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
-				const absent = makeMockExec({ paneDead: true });
-				await new TmuxAdapter("flywheel", absent.fn, 10).execute(makeCtx());
-				const absentWindow = absent.calls.find(
-					(c) => c.args[0] === "new-window",
-				);
-				expect(absentWindow?.args.join(" ")).not.toContain(
-					"FLYWHEEL_COMPLETE_MARKER_DIR",
-				);
-			} finally {
-				if (original === undefined) {
-					delete process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
-				} else {
-					process.env.FLYWHEEL_COMPLETE_MARKER_DIR = original;
-				}
-			}
 		});
 
 		// GEO-266: FLYWHEEL_EXEC_ID env injection
@@ -2159,40 +1122,6 @@ describe("TmuxAdapter", () => {
 			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const envArgStr = newWindow!.args.join(" ");
 			expect(envArgStr).toContain("FLYWHEEL_EXEC_ID=test-exec-1");
-		});
-
-		it("scrubs inherited Lead identity coordinates at the Runner tmux boundary", async () => {
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			await new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ projectName: "canonical-project", leadId: "owner-lead" }),
-			);
-
-			const newWindow = calls.find((c) => c.args[0] === "new-window");
-			const envValues = (newWindow?.args ?? [])
-				.map((arg, index, args) => (args[index - 1] === "-e" ? arg : undefined))
-				.filter((value): value is string => value !== undefined);
-			expect(envValues).toEqual(
-				expect.arrayContaining([
-					"FLYWHEEL_PROJECT_NAME=canonical-project",
-					"PROJECT_NAME=canonical-project",
-					"FLYWHEEL_LEAD_ID=owner-lead",
-					"LEAD_ID=",
-					"DISCORD_STATE_DIR=",
-					"DISCORD_IDENTITY_MODE=",
-					"DISCORD_BOT_TOKEN=",
-				]),
-			);
-		});
-
-		it("keeps PROJECT_NAME absent when no project identity was supplied", async () => {
-			const { fn, calls } = makeMockExec({ paneDead: true });
-			await new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ projectName: undefined }),
-			);
-
-			const newWindow = calls.find((call) => call.args[0] === "new-window");
-			expect(newWindow?.args).not.toContain("PROJECT_NAME=");
-			expect(newWindow?.args.join(" ")).not.toContain("${PROJECT_NAME+");
 		});
 
 		// FLY-102 / FLY-159: BASH_MAX_TIMEOUT_MS env injection (49h to accommodate 48h gate timeout + 1h buffer)
@@ -2468,7 +1397,7 @@ describe("TmuxAdapter", () => {
 			expect(joined).toContain("cos-lead");
 		});
 
-		it("prepends transport identity flags before ctx flags and externalizes the prompt", async () => {
+		it("transport identity flags are prepended BEFORE ctx flags so prompt stays last", async () => {
 			const transport = makeMockTransport();
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			const adapter = new TmuxAdapter(
@@ -2492,16 +1421,13 @@ describe("TmuxAdapter", () => {
 
 			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const args = newWindow!.args;
-			// Transport identity still precedes buildClaudeArgs inside the gated
-			// command's positional argv.
-			expect(args.indexOf("--agent-id")).toBeLessThan(
-				args.indexOf("--session-id"),
-			);
-			expect(args).not.toContain("do work");
-			expect(readFileSync(promptFileFromTmuxArgs(args), "utf8")).toBe(
-				"do work",
-			);
-			expect(args.some((arg) => arg.includes('"$@" "$p"'))).toBe(true);
+			const claudeIdx = args.indexOf("claude");
+			expect(claudeIdx).toBeGreaterThan(-1);
+			// First flag after `claude` should be from transport (--agent-id),
+			// not from buildClaudeArgs (--session-id).
+			expect(args[claudeIdx + 1]).toBe("--agent-id");
+			// Last positional MUST be the prompt — never overtaken by transport flags.
+			expect(args[args.length - 1]).toBe("do work");
 		});
 
 		it("transport throw is non-fatal — falls back to no-transport spawn", async () => {
@@ -2694,12 +1620,11 @@ describe("TmuxAdapter", () => {
 
 			await adapter.execute(makeCtx({ executionId: "fly766-mbx" }));
 
-			const envValues = paneEnvValues(
-				calls.find((c) => c.args[0] === "new-window")!.args,
-			);
-			expect(
-				envValues.some((value) => /^TMPDIR=.*\/browser-tmp$/.test(value)),
-			).toBe(true);
+			const joined = calls
+				.find((c) => c.args[0] === "new-window")!
+				.args.join(" ");
+			expect(joined).toContain("TMPDIR=");
+			expect(joined).toContain("/browser-tmp");
 			const marker = JSON.parse(readFileSync(markerFor("fly766-mbx"), "utf-8"));
 			expect(marker.execId).toBe("fly766-mbx");
 			expect(marker.stateDbPath).toBe(OWNER_DB);
@@ -2720,18 +1645,13 @@ describe("TmuxAdapter", () => {
 
 			await adapter.execute(makeCtx({ executionId: "fly766-rb" }));
 
-			const envValues = paneEnvValues(
-				calls.find((c) => c.args[0] === "new-window")!.args,
-			);
-			expect(
-				envValues.some((value) => /^TMPDIR=.*\/browser-tmp$/.test(value)),
-			).toBe(true);
+			const joined = calls
+				.find((c) => c.args[0] === "new-window")!
+				.args.join(" ");
+			expect(joined).toContain("TMPDIR=");
+			expect(joined).toContain("/browser-tmp");
 			// Rollback still skips the mailbox sentinel dir.
-			expect(
-				envValues.some((value) =>
-					value.startsWith("FLYWHEEL_RUNNER_STATE_DIR="),
-				),
-			).toBe(false);
+			expect(joined).not.toContain("FLYWHEEL_RUNNER_STATE_DIR=");
 		});
 
 		it("owner marker stateDbPath is null when no ownerStateDbPath is threaded", async () => {
@@ -2752,10 +1672,6 @@ describe("TmuxAdapter", () => {
 			// their fail-closed auth preflight.
 			class NonClaudeAdapter extends TmuxAdapter {
 				readonly type = "kimi-tmux";
-
-				protected override buildCliArgs() {
-					return { args: ["-p", "pointer"] };
-				}
 			}
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			const adapter = new NonClaudeAdapter(
@@ -2768,12 +1684,10 @@ describe("TmuxAdapter", () => {
 				OWNER_DB,
 			);
 			await adapter.execute(makeCtx({ executionId: "fly766-kimi" }));
-			const envValues = paneEnvValues(
-				calls.find((c) => c.args[0] === "new-window")!.args,
-			);
-			expect(envValues.some((value) => value.startsWith("TMPDIR="))).toBe(
-				false,
-			);
+			const joined = calls
+				.find((c) => c.args[0] === "new-window")!
+				.args.join(" ");
+			expect(joined).not.toContain("TMPDIR=");
 			expect(existsSync(markerFor("fly766-kimi"))).toBe(false);
 		});
 	});
@@ -2918,9 +1832,7 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 				case "kill-window":
 					return { stdout: "" };
 				case "new-window":
-					return {
-						stdout: `${windowId}|/tmp/tmux-test/default|1722700000`,
-					};
+					return { stdout: windowId };
 				case "list-panes":
 					return { stdout: paneDead ? "1|0" : "0|" };
 				default:
@@ -2946,7 +1858,7 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 			"review this head",
 			{ checkpoint: "review_code" },
 		);
-		const pane = controllablePane("@42");
+		const pane = controllablePane("@bound-wait");
 		const heartbeats: string[] = [];
 		let settled = false;
 
@@ -2975,7 +1887,7 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 			const result = await run;
 
 			expect(result.timedOut).toBe(false);
-			expect(result.tmuxWindow).toBe("flywheel:@42");
+			expect(result.tmuxWindow).toBe("flywheel:@bound-wait");
 			expect(
 				pane.calls.filter((call) => call.args[0] === "new-window"),
 			).toHaveLength(1);
@@ -2990,14 +1902,14 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 		const tmpDir = mkdtempSync(join(tmpdir(), "flywheel-tmux-no-wait-"));
 		const commDbPath = join(tmpDir, "comm.db");
 		const db = new CommDB(commDbPath);
-		const pane = controllablePane("@43");
+		const pane = controllablePane("@no-wait");
 		try {
 			const adapter = new TmuxAdapter("flywheel", pane.fn, 5, 25);
 			const result = await adapter.execute(
 				makeCtx({ commDbPath, timeoutMs: 25, waitingTimeoutMs: 500 }),
 			);
 			expect(result.timedOut).toBe(true);
-			expect(killWindowTargets(pane.calls)).toContain("@43");
+			expect(killWindowTargets(pane.calls)).toContain("@no-wait");
 		} finally {
 			db.close();
 			rmSync(tmpDir, { recursive: true, force: true });
@@ -3094,214 +2006,67 @@ describe("pruneScaffoldWindow (FLY-758)", () => {
 describe("ensureRunnerSession (FLY-758)", () => {
 	function renameCalls(calls: ExecCall[]): ExecCall[] {
 		return calls.filter(
-			(c) => c.cmd === "tmux" && c.args.includes("rename-window"),
+			(c) => c.cmd === "tmux" && c.args[0] === "rename-window",
 		);
 	}
 
 	function mockExec(opts: { sessionExists?: boolean; scaffoldId?: string }): {
 		fn: ExecFileFn;
-		asyncFn: AsyncExecFileFn;
 		calls: ExecCall[];
 	} {
 		const calls: ExecCall[] = [];
 		const fn: ExecFileFn = (cmd, args) => {
 			calls.push({ cmd, args });
+			if (cmd === "tmux" && args[0] === "has-session") {
+				if (!opts.sessionExists) throw new Error("session not found");
+				return { stdout: "" };
+			}
+			if (cmd === "tmux" && args[0] === "new-session") {
+				// the -P -F form returns the created scaffold window id
+				return { stdout: args.includes("-P") ? (opts.scaffoldId ?? "@0") : "" };
+			}
 			return { stdout: "" };
 		};
-		const asyncFn: AsyncExecFileFn = async (cmd, args) => {
-			calls.push({ cmd, args });
-			return {
-				stdout: JSON.stringify({
-					action: opts.sessionExists ? "verified" : "created",
-					createStdout: opts.sessionExists ? "" : (opts.scaffoldId ?? "@0"),
-					reachablePid: 100,
-				}),
-				stderr: "",
-			};
-		};
-		return { fn, asyncFn, calls };
+		return { fn, calls };
 	}
 
-	it("creates the session through the guard and renames the scaffold window to zsh (runner-* session)", async () => {
-		const { fn, asyncFn, calls } = mockExec({
-			sessionExists: false,
-			scaffoldId: "@0",
-		});
-		await ensureRunnerSession(fn, "runner-test", { asyncExecFileFn: asyncFn });
-		expect(calls[0].cmd).toContain("tmux-server-rescue");
-		expect(calls[0].args).toContain("--verify");
-		expect(calls[0].args).toContain("--create");
+	it("creates the session and renames the scaffold window to zsh (runner-* session)", () => {
+		const { fn, calls } = mockExec({ sessionExists: false, scaffoldId: "@0" });
+		ensureRunnerSession(fn, "runner-test");
 		const rn = renameCalls(calls);
 		expect(rn).toHaveLength(1);
-		expect(rn[0].args).toEqual(
-			expect.arrayContaining(["rename-window", "-t", "@0", "zsh"]),
-		);
+		expect(rn[0].args).toEqual(["rename-window", "-t", "@0", "zsh"]);
 	});
 
-	it("does not issue any unguarded tmux create when the session already exists", async () => {
-		const { fn, asyncFn, calls } = mockExec({ sessionExists: true });
-		await ensureRunnerSession(fn, "runner-test", { asyncExecFileFn: asyncFn });
-		expect(
-			calls.filter((c) => c.cmd === "tmux" && c.args[0] === "new-session"),
-		).toHaveLength(0);
+	it("does not create or rename when the session already exists", () => {
+		const { fn, calls } = mockExec({ sessionExists: true });
+		ensureRunnerSession(fn, "runner-test");
+		expect(calls.filter((c) => c.args[0] === "new-session")).toHaveLength(0);
 		expect(renameCalls(calls)).toHaveLength(0);
 	});
 
-	it("uses the 90s per-attempt cap by default", async () => {
-		const seenTimeouts: Array<number | undefined> = [];
-		const fn: ExecFileFn = () => ({ stdout: "" });
-		const asyncFn: AsyncExecFileFn = async (_cmd, _args, opts) => {
-			seenTimeouts.push(opts?.timeoutMs);
-			return {
-				stdout: JSON.stringify({
-					action: "verified",
-					createStdout: "",
-					reachablePid: 100,
-				}),
-				stderr: "",
-			};
-		};
-		await ensureRunnerSession(fn, "runner-test", { asyncExecFileFn: asyncFn });
-		expect(seenTimeouts[0]).toBe(90_000);
+	it("never renames a non-runner session's scaffold (but still creates it)", () => {
+		const { fn, calls } = mockExec({ sessionExists: false, scaffoldId: "@0" });
+		ensureRunnerSession(fn, "flywheel");
+		expect(renameCalls(calls)).toHaveLength(0);
+		expect(calls.some((c) => c.args[0] === "new-session")).toBe(true);
 	});
 
-	it("honors an injected per-attempt cap and a self-consistent non-default budget tuple", async () => {
-		const seenTimeouts: Array<number | undefined> = [];
-		const fn: ExecFileFn = () => ({ stdout: "" });
-		const asyncFn: AsyncExecFileFn = async (_cmd, _args, opts) => {
-			seenTimeouts.push(opts?.timeoutMs);
-			return {
-				stdout: JSON.stringify({
-					action: "verified",
-					createStdout: "",
-					reachablePid: 100,
-				}),
-				stderr: "",
-			};
-		};
-		const lockBaseSec = 5;
-		const factorMax = 8;
-		const totalBudgetSec = 100;
-		const startupMarginSec = 5;
-		const attemptCapMs = 150_000;
-		const deadlineMs = 321_000;
-		expect(attemptCapMs).toBeGreaterThanOrEqual(
-			(lockBaseSec * factorMax + totalBudgetSec + startupMarginSec) * 1_000,
-		);
-		expect(deadlineMs).toBeGreaterThan(2 * attemptCapMs + 1_000);
-		await ensureRunnerSession(fn, "runner-test", {
-			asyncExecFileFn: asyncFn,
-			attemptCapMs,
-			deadlineMs,
-		});
-		expect(seenTimeouts[0]).toBe(attemptCapMs);
-	});
-
-	it("defaults the overall ensure deadline to 210s", async () => {
-		vi.useFakeTimers();
-		const previous = process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
-		delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
-		try {
-			const fn: ExecFileFn = () => ({ stdout: "" });
-			const asyncFn: AsyncExecFileFn = () => new Promise(() => {});
-			let state: "pending" | "rejected" = "pending";
-			const observed = ensureRunnerSession(fn, "runner-test", {
-				asyncExecFileFn: asyncFn,
-				attemptCapMs: 300_000,
-				retryDelayMs: 0,
-			}).then(
-				() => undefined,
-				() => {
-					state = "rejected";
-				},
-			);
-			await vi.advanceTimersByTimeAsync(100_000);
-			expect(state).toBe("pending");
-			await vi.advanceTimersByTimeAsync(111_000);
-			await observed;
-			expect(state).toBe("rejected");
-		} finally {
-			if (previous === undefined) {
-				delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
-			} else {
-				process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS = previous;
+	it("falls back to a plain create when -P/-F throws, and never throws", () => {
+		const calls: ExecCall[] = [];
+		const fn: ExecFileFn = (cmd, args) => {
+			calls.push({ cmd, args });
+			if (cmd === "tmux" && args[0] === "has-session")
+				throw new Error("not found");
+			if (cmd === "tmux" && args[0] === "new-session" && args.includes("-P")) {
+				throw new Error("-P unsupported");
 			}
-			vi.useRealTimers();
-		}
-	});
-
-	it("never renames a non-runner session's scaffold (but still guards it)", async () => {
-		const { fn, asyncFn, calls } = mockExec({
-			sessionExists: false,
-			scaffoldId: "@0",
-		});
-		await ensureRunnerSession(fn, "flywheel", { asyncExecFileFn: asyncFn });
-		expect(renameCalls(calls)).toHaveLength(0);
-		expect(calls.some((c) => c.cmd.includes("tmux-server-rescue"))).toBe(true);
-	});
-
-	it("fails closed with a typed hold instead of falling back to plain create", async () => {
-		const fn: ExecFileFn = () => ({ stdout: "" });
-		const asyncFn: AsyncExecFileFn = async () => {
-			const err = new Error("guarded hold") as Error & {
-				code: number;
-				stdout: string;
-			};
-			err.code = 2;
-			err.stdout = JSON.stringify({
-				action: "hold_saturated",
-				evidence: { reason: "socket_present_unreachable" },
-			});
-			throw err;
+			return { stdout: "" };
 		};
-		await expect(
-			ensureRunnerSession(fn, "runner-test", {
-				asyncExecFileFn: asyncFn,
-				deadlineMs: 1,
-				retryDelayMs: 0,
-			}),
-		).rejects.toMatchObject({ kind: "saturated" });
-	});
-
-	it("rejects an exit-0 helper payload whose action is not a success verdict", async () => {
-		const fn: ExecFileFn = () => ({ stdout: "" });
-		const asyncFn: AsyncExecFileFn = async () => ({
-			stdout: JSON.stringify({
-				action: "hold_unknown",
-				reachablePid: 100,
-			}),
-			stderr: "",
-		});
-		await expect(
-			ensureRunnerSession(fn, "runner-test", {
-				asyncExecFileFn: asyncFn,
-				deadlineMs: 1,
-				retryDelayMs: 0,
-			}),
-		).rejects.toMatchObject({
-			kind: "unknown",
-			evidence: { reason: "invalid_helper_output" },
-		});
-	});
-
-	it("a hung first guard probe yields the event loop and expires as a typed hold", async () => {
-		vi.useFakeTimers();
-		const fn: ExecFileFn = () => ({ stdout: "" });
-		const asyncFn: AsyncExecFileFn = () => new Promise(() => {});
-		let timerServed = false;
-		setTimeout(() => {
-			timerServed = true;
-		}, 5);
-		const pending = ensureRunnerSession(fn, "runner-test", {
-			asyncExecFileFn: asyncFn,
-			deadlineMs: 20,
-			retryDelayMs: 1,
-		});
-		const rejection =
-			expect(pending).rejects.toBeInstanceOf(TmuxSessionHoldError);
-		await vi.advanceTimersByTimeAsync(25);
-		expect(timerServed).toBe(true);
-		await rejection;
-		vi.useRealTimers();
+		expect(() => ensureRunnerSession(fn, "runner-test")).not.toThrow();
+		const ns = calls.filter((c) => c.args[0] === "new-session");
+		expect(ns).toHaveLength(2); // -P -F attempt (threw) + plain fallback
+		expect(ns[1].args).toEqual(["new-session", "-d", "-s", "runner-test"]);
+		expect(renameCalls(calls)).toHaveLength(0); // no id → no rename
 	});
 });

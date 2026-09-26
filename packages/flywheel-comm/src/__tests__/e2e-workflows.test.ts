@@ -4,25 +4,14 @@ import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CommDB } from "../db.js";
-import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "../../dist/index.js");
-let leadEnvs: Record<string, NodeJS.ProcessEnv> = {};
 
 function runCli(args: string[], env?: Record<string, string>): string {
-	const identityFlag =
-		args[0] === "respond"
-			? "--lead"
-			: args[0] === "send"
-				? "--from"
-				: undefined;
-	const identityIndex = identityFlag ? args.indexOf(identityFlag) : -1;
-	const leadId = identityIndex >= 0 ? args[identityIndex + 1] : undefined;
 	return execFileSync("node", [CLI_PATH, ...args], {
 		encoding: "utf-8",
-		env: { ...process.env, ...(leadId ? leadEnvs[leadId] : {}), ...env },
+		env: { ...process.env, ...env },
 	}).trim();
 }
 
@@ -33,21 +22,13 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-e2e-"));
 		dbPath = join(tmpDir, "comm.db");
-		leadEnvs = createTestLeadIdentityEnvs(tmpDir, ["product-lead", "ops-lead"]);
 	});
 
 	afterEach(() => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	function bindRunner(execId: string, leadId: string): void {
-		const db = new CommDB(dbPath);
-		db.registerSession(execId, "runner", "test", `issue-${execId}`, leadId);
-		db.close();
-	}
-
 	it("should complete full Q&A workflow via CLI (JSON mode)", () => {
-		bindRunner("exec-w1", "product-lead");
 		// Runner asks a question
 		const askResult = JSON.parse(
 			runCli([
@@ -141,7 +122,6 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 	});
 
 	it("should handle mixed Q&A + instructions on same DB", () => {
-		bindRunner("exec-mixed", "product-lead");
 		// Q&A flow
 		const askResult = JSON.parse(
 			runCli([
@@ -202,8 +182,6 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 	});
 
 	it("should handle multi-lead Q&A with independent chains", () => {
-		bindRunner("exec-product", "product-lead");
-		bindRunner("exec-ops", "ops-lead");
 		// Runner asks product-lead
 		const q1 = JSON.parse(
 			runCli([
@@ -211,7 +189,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 				"--lead",
 				"product-lead",
 				"--exec-id",
-				"exec-product",
+				"exec-ml",
 				"--db",
 				dbPath,
 				"--json",
@@ -226,7 +204,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 				"--lead",
 				"ops-lead",
 				"--exec-id",
-				"exec-ops",
+				"exec-ml",
 				"--db",
 				dbPath,
 				"--json",

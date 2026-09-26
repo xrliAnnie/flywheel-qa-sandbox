@@ -29,8 +29,7 @@
 # a public registry.
 #
 # Sourceable for tests via PACKAGE_ONBOARD_SOURCED=1 (fixture monorepos may
-# override PO_PACKAGES / PO_SCRIPT_FILES / PO_SCRIPT_DIRS / PO_AGENT_FILES /
-# PO_MENU_FILES).
+# override PO_PACKAGES / PO_SCRIPT_FILES / PO_SCRIPT_DIRS / PO_AGENT_FILES).
 set -uo pipefail
 
 PO_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,23 +60,17 @@ PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-bas
 # (mufasa launchers, test-*, verify-*) that must NOT ship (internal slugs,
 # machine-specific paths). This is the launcher runtime closure only.
 PO_PACKAGE_ASSET_FILES=${PO_PACKAGE_ASSET_FILES:-"teamlead:scripts/claude-lead.sh
-teamlead:scripts/lead-body.sh
 teamlead:scripts/codex-lead.sh
 teamlead:scripts/codex-lead-tui-home.sh
 teamlead:scripts/lead-rules-bundle.sh
 teamlead:scripts/apply-core-room-mention-gate.sh
 teamlead:scripts/find-window.sh
 teamlead:scripts/post-compact-bootstrap.sh
-teamlead:scripts/session-start-adopt-inflight.sh
 teamlead:scripts/inbox-ack-rule.md
 teamlead:scripts/screencapture-l3-skill.md
-teamlead:scripts/lib/lead-identity-preflight.sh
-teamlead:scripts/lib/lead-session-authority.sh
-teamlead:scripts/lib/lead-session-resume-gate.sh
-teamlead:scripts/lib/session-ctx-usage.mjs
+teamlead:scripts/expect-dev-channels.exp
 teamlead:scripts/lib/mcp-inherit.sh
-teamlead:scripts/lib/reap-orphan-adapters.sh
-teamlead:scripts/lib/lead-body-receipt.sh"}
+teamlead:scripts/lib/reap-orphan-adapters.sh"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
 # entry here must have a row in the packaged-path audit table
@@ -89,35 +82,23 @@ flywheel-setup.sh
 provision-fleet-host.sh
 daily-standup.sh
 flywheel-bridge-wrapper.sh
-flywheel-lead-wrapper-v2.sh
-flywheel-lead-attach.sh
-flywheel-view-attach.sh
-flywheel-node-status.sh
-restart-storm-gate.py
-lead-alert.sh
-meta-alert.sh
+flywheel-lead-wrapper.sh
 update-flywheel.sh
 converge-flywheel-bin.sh
-check-global-path-hygiene.sh
 linux-preflight.sh
 materialize-lead-manifests.sh
+com.flywheel.daily-standup.plist
+com.flywheel.updater.plist
 lib/buddy-escalate.sh
 lib/buddy-captain-preview.sh
 lib/buddy-connect.sh
 lib/fleet-sanitize.sh
 lib/host-config.sh
-lib/lead-address.sh
 lib/platform-deps.sh
 lib/script-sanity.sh
-lib/path-hygiene.sh
 lib/supervisor.sh
 lib/bridge-port.sh
-lib/lead-restart-lifecycle.sh
-lib/lead-body-sweep.sh
-lib/flywheel-log.sh
-lib/tmux-server-rescue.sh
-lib/lead-body-evidence.sh
-lib/bounded-run.sh
+lib/self-ship-queue.sh
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh
 packaged/restart-packaged-services.sh"}
@@ -133,16 +114,6 @@ launchd"}
 # Bridge but fails on first dispatch (Codex R1#3).
 PO_AGENT_FILES=${PO_AGENT_FILES:-"generic-executor.md
 qa-executor.md"}
-
-# Global workflow menu assets. workflow-menu.ts resolves these from the
-# checkout/package root in both source and compiled layouts, so the packaged
-# Bridge must carry the same reviewed YAML bytes.
-PO_MENU_FILES=${PO_MENU_FILES:-"shapes/code.yaml
-shapes/prd.yaml
-shapes/design.yaml
-shapes/prototype.yaml
-shapes/generic.yaml
-shapes/simple_code.yaml"}
 
 PO_PAYLOAD_NAME=${PO_PAYLOAD_NAME:-flywheel-onboard-payload}
 
@@ -537,13 +508,20 @@ console.log(`vendored ${dep} closure (${seen.size} pkgs) into ${destNM}`);
 EOF
 }
 
-# po_copy_curated_scripts <repo-root> <tree-out-dir>
-# The one assembler for the curated scripts subtree. Tests call this same
-# function when constructing a packaged fixture, so a repository-only hand
-# copy cannot hide a missing customer runtime dependency.
-po_copy_curated_scripts() {
+# ── assembly ────────────────────────────────────────────────────────────────
+# po_assemble <repo-root> <tree-out-dir>
+# Deterministic + idempotent: the tree is rebuilt from scratch each run.
+po_assemble() {
   local root="$1" tree="$2"
-  mkdir -p "$tree/scripts"
+  command -v jq >/dev/null 2>&1 || { po_err "jq required"; return 1; }
+  command -v node >/dev/null 2>&1 || { po_err "node required"; return 1; }
+  local version
+  version="$(po_release_version "$root")" || return 1
+
+  rm -rf "$tree"
+  mkdir -p "$tree/scripts" "$tree/agents" "$tree/node_modules"
+
+  # 1. curated scripts (fail-closed on any missing whitelist entry).
   local f
   while IFS= read -r f; do
     case "$f" in *[![:space:]]*) ;; *) continue ;; esac
@@ -558,23 +536,6 @@ po_copy_curated_scripts() {
     mkdir -p "$tree/scripts/$(dirname "$d")"
     cp -Rp "$root/scripts/$d" "$tree/scripts/$d" || return 1
   done <<<"$PO_SCRIPT_DIRS"
-}
-
-# ── assembly ────────────────────────────────────────────────────────────────
-# po_assemble <repo-root> <tree-out-dir>
-# Deterministic + idempotent: the tree is rebuilt from scratch each run.
-po_assemble() {
-  local root="$1" tree="$2"
-  command -v jq >/dev/null 2>&1 || { po_err "jq required"; return 1; }
-  command -v node >/dev/null 2>&1 || { po_err "node required"; return 1; }
-  local version
-  version="$(po_release_version "$root")" || return 1
-
-  rm -rf "$tree"
-  mkdir -p "$tree/scripts" "$tree/agents" "$tree/menus" "$tree/node_modules"
-
-  # 1. curated scripts (fail-closed on any missing whitelist entry).
-  po_copy_curated_scripts "$root" "$tree" || return 1
 
   # 2. packaged skin patch for the onboard entry.
   if [ -f "$tree/scripts/flywheel-onboard.sh" ]; then
@@ -588,15 +549,7 @@ po_assemble() {
     cp -p "$root/agents/$f" "$tree/agents/$f" || return 1
   done <<<"$PO_AGENT_FILES"
 
-  # 4. global workflow menu assets.
-  while IFS= read -r f; do
-    case "$f" in *[![:space:]]*) ;; *) continue ;; esac
-    [ -f "$root/menus/$f" ] || { po_err "workflow menu missing: menus/$f"; return 1; }
-    mkdir -p "$tree/menus/$(dirname "$f")"
-    cp -p "$root/menus/$f" "$tree/menus/$f" || return 1
-  done <<<"$PO_MENU_FILES"
-
-  # 5. workspace packages → node_modules/<npm-name>/ (dist REQUIRED — an
+  # 4. workspace packages → node_modules/<npm-name>/ (dist REQUIRED — an
   #    unbuilt package must fail the build, never ship hollow).
   local dir name mirror_json="{}"
   for dir in $PO_PACKAGES; do
@@ -633,14 +586,14 @@ po_assemble() {
     cp -p "$root/packages/$dir/$afile" "$tree/node_modules/$name/$afile" || return 1
   done <<<"$PO_PACKAGE_ASSET_FILES"
 
-  # 6. strip non-runtime residue from the embedded packages. Source maps are a
+  # 5. strip non-runtime residue from the embedded packages. Source maps are a
   #    HARD strip: tsc sourcemaps can embed the ORIGINAL TypeScript source via
   #    sourcesContent — shipping them would leak the source the whole payload
   #    exists to withhold. Type declarations are runtime-dead weight.
   find "$tree/node_modules" -type d -name "__tests__" -prune -exec rm -rf {} + 2>/dev/null
   find "$tree/node_modules" -type f \( -name "*.test.js" -o -name "*.map" -o -name "*.d.ts" -o -name "*.d.mts" -o -name "*.d.cts" -o -name "*.tsbuildinfo" \) -delete 2>/dev/null
 
-  # 7. dependency union (+ registered nested vendoring) + payload package.json.
+  # 6. dependency union (+ registered nested vendoring) + payload package.json.
   local union_out union deps_json bundle_json="[]"
   union_out="$(po_dependency_union "$root")" || return 1
   union="$(jq -c '.union' <<<"$union_out")" || return 1
@@ -693,14 +646,14 @@ po_assemble() {
       engines: { node: ">=20" },
       dependencies: ($deps | to_entries | sort_by(.key) | from_entries),
       bundleDependencies: ($bundle | sort),
-      files: ["scripts", "agents", "menus", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
+      files: ["scripts", "agents", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
       flywheelPackagesMirror: $mirror
     }' > "$tree/package.json" || return 1
 
-  # 8. run-bridge entry → dist/run-bridge.js (P1-1).
+  # 7. run-bridge entry → dist/run-bridge.js (P1-1).
   po_compile_run_bridge "$root" "$tree" || return 1
 
-  # 9. sentinel + license + readme.
+  # 8. sentinel + license + readme.
   printf '%s\n' "$version" > "$tree/.flywheel-prebuilt"
   cat > "$tree/LICENSE" <<'EOF'
 UNLICENSED — proprietary.

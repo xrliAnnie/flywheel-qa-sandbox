@@ -10,10 +10,7 @@
  * (existing fail channel — no new error stage needed).
  */
 
-import {
-	PHASE_THREAD_BADGE_PARTS,
-	RUNNER_MODEL_MARKER_PAYLOAD_MAX,
-} from "flywheel-config";
+import { PHASE_THREAD_BADGE_PARTS } from "flywheel-config";
 
 export const VALID_STAGES = new Set([
 	"started",
@@ -159,8 +156,8 @@ const ALL_STATUS_EMOJI: ReadonlySet<string> = new Set([
 	...Object.values(STAGE_EMOJI),
 	BLOCKED_EMOJI,
 	RECONNECTING_EMOJI,
-	// FLY-892 (Step 6): the DAG workflow badges (🎨设计/🔨实现/🧪QA) are
-	// stamped in place of the fine-grained stage badge on a DAG workflow issue, so
+	// FLY-892 (Step 6): the three-stage phase badges (🎨设计/🔨实现/🧪QA) are
+	// stamped in place of the fine-grained stage badge on a three-stage issue, so
 	// strip/restamp must recognize their emoji (🎨 is new; 🔨/🧪 are shared).
 	...Object.values(PHASE_THREAD_BADGE_PARTS).map((p) => p.emoji),
 ]);
@@ -231,8 +228,8 @@ export function stageBadge(
  * FLY-623: build the cross-cutting reconnecting badge:
  *   withWord=false → `⚠️`        (emoji only)
  *   withWord=true  → `⚠️重连中`   (emoji + short word)
- * Mirrors stageBadge()'s emoji-only vs emoji+word modes for callers that render
- * badges directly.
+ * Mirrors stageBadge()'s emoji-only vs emoji+word modes so Display-A respects
+ * the same FLYWHEEL_ISSUE_STATUS_WORD setting as the stage badges.
  */
 export function reconnectingBadge(withWord: boolean): string {
 	return withWord
@@ -279,20 +276,13 @@ export function stripStatusEmojiPrefix(name: string): string {
 }
 
 /**
- * FLY-755/1255: the model marker is stamped as a LEADING bracket marker placed
- * after the FLY-560 stage badge and before the issue key, e.g.
- * `🧠规划 [F] [FLY-755] Title` or `🔨实现 [G] [FLY-1255] Title`.
- *
- * FLY-1255 (Plan B — Annie): every vendor folds to a single letter — Claude
- * keeps F/O/S/H, codex/GPT-5.6 → `G`, kimi → `K`. An UNvetted vendor/model that
- * has no curated letter (gemini, antigravity, or another unlisted family) is
- * still stamped with the human-readable `Model <safe-id>` namespace rather
- * than a fabricated letter, so the grammar keeps recognizing that long form
- * too. The FLY-728 tail
- * suffix (` ·F`) was invisible on mobile, where long titles truncate and the
- * tail never renders. The marker still rides the SAME thread rename as the stage
- * badge (splitStatusEmoji peels only the badge, leaving the marker at the front
- * of the base), so it never adds a Discord rate-limit rename of its own.
+ * FLY-755: the model-tier short code (F/O/S/H) is stamped as a LEADING bracket
+ * marker placed after the FLY-560 stage badge and before the issue key, e.g.
+ * `🧠规划 [F] [FLY-755] Title`. The FLY-728 tail suffix (` ·F`) was invisible
+ * on mobile, where long titles truncate and the tail never renders. The marker
+ * still rides the SAME thread rename as the stage badge (splitStatusEmoji peels
+ * only the badge, leaving the marker at the front of the base), so it never
+ * adds a Discord rate-limit rename of its own.
  *
  * Recognition and insertion are a PAIRED contract anchored on a bracketed
  * Linear issue key: the marker is only recognized when followed by `[KEY-N]`,
@@ -304,19 +294,7 @@ export function stripStatusEmojiPrefix(name: string): string {
  * marker on their next re-stamp; no proactive mass rename.
  */
 const ISSUE_KEY_HEAD_RE = /^\[[A-Z][A-Z0-9]*-\d+\](?:\s|$)/;
-// FLY-1255 (Plan B): the curated single-letter codes across every vendor —
-// Claude F/O/S/H + codex `G` + kimi `K`. Maintained in lockstep with the
-// `flywheel-config` short-code tables (`modelShortCode` + `vendorModelShortCode`).
-const MODEL_MARKER_CODE_CLASS = "[FGHKOS]";
-const MODEL_MARKER_PAYLOAD_RE = `[A-Za-z0-9][A-Za-z0-9._+-]{0,${RUNNER_MODEL_MARKER_PAYLOAD_MAX - 1}}`;
-const MODEL_MARKER_VALUE_RE = new RegExp(
-	`^(?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE})$`,
-);
-const MODEL_MARKER_RE = new RegExp(
-	`^\\[((?:${MODEL_MARKER_CODE_CLASS}|Model ${MODEL_MARKER_PAYLOAD_RE}))\\] (?=\\[[A-Z][A-Z0-9]*-\\d+\\](?:\\s|$))`,
-);
-// Legacy FLY-728 tail (` ·F`) is Claude-only — `G`/`K` never shipped as a tail,
-// so old-thread migration recognizes only the original F/O/S/H suffix.
+const MODEL_MARKER_RE = /^\[([FOSH])\] (?=\[[A-Z][A-Z0-9]*-\d+\](?:\s|$))/;
 const LEGACY_MODEL_SUFFIX_RE = / ·([FOSH])$/;
 
 /** True when `base` starts with a bracketed Linear issue key (`[FLY-755] …`). */
@@ -333,30 +311,29 @@ export function stripModelMarker(base: string): string {
 }
 
 /**
- * Extract the model marker — the leading marker wins; the legacy F/O/S/H tail
- * suffix is the fallback (preserve path on threads not yet migrated).
+ * Extract the model code — the leading marker wins; the legacy tail suffix is
+ * the fallback (preserve path on threads not yet migrated). Undefined if none.
  */
-export function modelMarkerLabel(base: string): string | undefined {
+export function modelMarkerCode(
+	base: string,
+): "F" | "O" | "S" | "H" | undefined {
 	const front = base.match(MODEL_MARKER_RE);
-	if (front) return front[1];
+	if (front) return front[1] as "F" | "O" | "S" | "H";
 	const tail = base.match(LEGACY_MODEL_SUFFIX_RE);
-	return tail?.[1];
+	return tail ? (tail[1] as "F" | "O" | "S" | "H") : undefined;
 }
 
 /**
  * Ensure `base` carries exactly the given model marker at the front. Strips any
  * existing marker/legacy suffix first (idempotent + churn-safe under
- * re-stamping), then prepends `[<marker>] ` — but ONLY in front of an issue-key
- * base (see the paired contract above). Only legacy F/O/S/H or the explicit
- * `Model <safe-token>` namespace are accepted. `undefined` → no marker. Keyless
- * bases are returned marker-free either way.
+ * re-stamping), then prepends `[<code>] ` — but ONLY in front of an issue-key
+ * base (see the paired contract above). `undefined` code → no marker (account
+ * default = no code). Keyless bases are returned marker-free either way.
  */
 export function applyModelMarker(
 	base: string,
-	marker: string | undefined,
+	code: "F" | "O" | "S" | "H" | undefined,
 ): string {
 	const bare = stripModelMarker(base);
-	return marker && MODEL_MARKER_VALUE_RE.test(marker) && hasIssueKeyHead(bare)
-		? `[${marker}] ${bare}`
-		: bare;
+	return code && hasIssueKeyHead(bare) ? `[${code}] ${bare}` : bare;
 }

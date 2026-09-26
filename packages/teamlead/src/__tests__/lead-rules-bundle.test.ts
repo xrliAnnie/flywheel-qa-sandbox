@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -27,7 +27,6 @@ function runBundle(
 	baseDir: string,
 	commBackend: string,
 	governanceRequired: string,
-	summaryDuty = "0",
 ): { lines: string[]; status: number; stderr: string } {
 	try {
 		const out = execFileSync(
@@ -41,13 +40,7 @@ function runBundle(
 				commBackend,
 				governanceRequired,
 			],
-			{
-				encoding: "utf8",
-				env: {
-					...process.env,
-					FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: summaryDuty,
-				},
-			},
+			{ encoding: "utf8" },
 		);
 		return {
 			lines: out.split("\n").filter(Boolean),
@@ -70,94 +63,6 @@ function names(lines: string[]): string[] {
 }
 
 describe("lead-rules-bundle.sh — behavioral", () => {
-	it("advertises Belle as a runner-owning life department Lead", () => {
-		const crossDepartmentRules = readFileSync(
-			join(BASE_RULES_DIR, "cross-dept-channel-rules.md"),
-			"utf8",
-		);
-		expect(crossDepartmentRules).toContain(
-			"**Belle** | Life Assistant (life dept Lead)",
-		);
-		expect(crossDepartmentRules).toContain(
-			"**Mufasa** (FLY-231) is a **companion** Lead",
-		);
-		expect(crossDepartmentRules).not.toContain(
-			"**Mufasa** and **Belle** (FLY-231) are **companion** Leads",
-		);
-	});
-
-	it("does not advertise the retired per-dispatch design backend", () => {
-		const modelRules = readFileSync(
-			join(BASE_RULES_DIR, "model-routing.md"),
-			"utf8",
-		);
-		expect(modelRules).not.toContain("designBackend");
-		expect(modelRules).not.toContain("INVALID_DESIGN_BACKEND");
-		expect(modelRules).not.toContain("DESIGN_BACKEND_NOT_APPLICABLE");
-	});
-
-	it("routes project flags through the scoped store and never through config.yaml", () => {
-		const defaultEnable = readFileSync(
-			join(BASE_RULES_DIR, "default-enable-policy.md"),
-			"utf8",
-		);
-		const modelRouting = readFileSync(
-			join(BASE_RULES_DIR, "model-routing.md"),
-			"utf8",
-		);
-		const executorRouting = readFileSync(
-			join(BASE_RULES_DIR, "executor-routing.md"),
-			"utf8",
-		);
-		const readme = readFileSync(join(BASE_RULES_DIR, "README.md"), "utf8");
-		const rules = [defaultEnable, modelRouting, executorRouting, readme].join(
-			"\n",
-		);
-
-		expect(rules).not.toMatch(/doc_flow\.enabled/);
-		expect(rules).not.toMatch(/pipeline\.dag:\s*true/);
-		expect(rules).toContain("feature-flags set --name doc_flow");
-		expect(rules).toContain("feature-flags set --name pipeline_dag");
-		expect(rules).toContain("--project <project>");
-	});
-
-	it("gives every present and future department Lead the parameterized menu contract, but excludes CoS", () => {
-		const rules = readFileSync(
-			join(BASE_RULES_DIR, "department-lead-rules.md"),
-			"utf8",
-		);
-		expect(rules).toContain("FLY-1436 menu dispatch contract");
-		for (const category of [
-			"code",
-			"simple_code",
-			"prd",
-			"design",
-			"prototype",
-			"generic",
-		]) {
-			expect(rules).toContain(`\`${category}\``);
-		}
-		expect(rules).toContain('"issueId":"<issue_id>"');
-		expect(rules).toContain('"projectName":"<project_name>"');
-		expect(rules).toContain('"leadId":"<lead_id>"');
-		expect(rules).toContain('"taskCategory":"<task_category>"');
-		expect(rules).toContain("strictly non-code");
-		expect(rules).toContain("fail loud with HTTP 400");
-
-		const syntheticFutureLead = runBundle(
-			"dept",
-			BASE_RULES_DIR,
-			"mailbox",
-			"1",
-		);
-		expect(syntheticFutureLead.status).toBe(0);
-		expect(names(syntheticFutureLead.lines)).toContain(
-			"department-lead-rules.md",
-		);
-		const cos = runBundle("cos", BASE_RULES_DIR, "mailbox", "1");
-		expect(names(cos.lines)).not.toContain("department-lead-rules.md");
-	});
-
 	it("dept (mailbox) → full ordered bundle incl. runner-messaging + governance", () => {
 		const { lines, status } = runBundle("dept", BASE_RULES_DIR, "mailbox", "1");
 		expect(status).toBe(0);
@@ -168,45 +73,14 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"model-routing.md",
 			"stuck-runner-remanage.md",
 			"runner-reengage-rules.md",
-			"doc-flow-rules.md",
-			"xiaohongshu-memory-rules.md",
 			"runner-patrol-rules.md",
-			"founder-local-time.md",
+			"doc-flow-rules.md",
+			"auto-qa-pipeline.md",
+			"xiaohongshu-memory-rules.md",
 			"founder-only-authority.md",
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
 		]);
-	});
-
-	it("loads summary inflow only from the canonical projected duty bit", () => {
-		const selected = runBundle("dept", BASE_RULES_DIR, "mailbox", "1", "1");
-		expect(names(selected.lines)).toContain("summary-inflow.md");
-		expect(names(selected.lines).indexOf("summary-inflow.md")).toBeLessThan(
-			names(selected.lines).indexOf("founder-local-time.md"),
-		);
-		for (const role of ["cos", "companion", "external"]) {
-			expect(
-				names(runBundle(role, BASE_RULES_DIR, "mailbox", "1", "0").lines),
-			).not.toContain("summary-inflow.md");
-		}
-	});
-
-	it("pins the Raya read-receipt exemption and validator contract to summaries/", () => {
-		const summaryRule = readFileSync(
-			join(BASE_RULES_DIR, "summary-inflow.md"),
-			"utf8",
-		);
-		expect(summaryRule).toContain("FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1");
-		expect(summaryRule).toContain("flywheel-comm summary --file");
-		expect(summaryRule).toContain("Judgment");
-		const authority = readFileSync(
-			join(BASE_RULES_DIR, "founder-only-authority.md"),
-			"utf8",
-		);
-		expect(authority).toContain(
-			"Narrow exemption — Raya's read-receipt merges",
-		);
-		expect(authority).toContain("single fixed prefix `summaries/`");
 	});
 
 	it("dept (commdb) → SKIPS runner-messaging but STILL loads runner-patrol (FLY-369: patrol is backend-independent)", () => {
@@ -220,12 +94,11 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(names(lines)[1]).toBe("executor-routing.md");
 	});
 
-	it("cos → cos + universal governance only (no runner patrol surface)", () => {
+	it("cos → cos rules + universal governance (no dept/runner rules)", () => {
 		const { lines, status } = runBundle("cos", BASE_RULES_DIR, "mailbox", "1");
 		expect(status).toBe(0);
 		expect(names(lines)).toEqual([
 			"cos-lead-rules.md",
-			"founder-local-time.md",
 			"founder-only-authority.md",
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
@@ -242,49 +115,9 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(status).toBe(0);
 		expect(names(lines)).toEqual([
 			"companion-safety-contract.md",
-			"founder-local-time.md",
 			"cross-dept-channel-rules.md",
 		]);
 		expect(names(lines)).not.toContain("founder-only-authority.md");
-	});
-
-	it("ships one hard founder-local time contract for every Lead role", () => {
-		const rule = readFileSync(
-			join(BASE_RULES_DIR, "founder-local-time.md"),
-			"utf8",
-		);
-		expect(rule).toContain("`ts=` is a UTC machine timestamp");
-		expect(rule).toContain("founder_local=");
-		expect(rule).toContain("[sent ");
-		expect(rule).toContain('node "$FLYWHEEL_COMM_CLI" founder-time');
-		expect(rule).toContain("FLYWHEEL_FOUNDER_TZ");
-		expect(rule).toContain("Bridge and affected Leads");
-	});
-
-	it("manual Mufasa launchers include the founder-local rule", () => {
-		for (const launcher of [
-			"run-codex-lead-mufasa-tui.sh",
-			"run-codex-lead-mufasa.sh",
-			"run-codex-lead-mufasa-writecapable.sh",
-		]) {
-			expect(readFileSync(join(SCRIPTS, launcher), "utf8")).toContain(
-				"founder-local-time.md",
-			);
-		}
-	});
-
-	it("every Mufasa launcher binds the founder-time CLI authority", () => {
-		for (const launcher of [
-			"run-codex-lead-mufasa-tui.sh",
-			"run-codex-lead-mufasa.sh",
-			"run-codex-lead-mufasa-writecapable.sh",
-			"run-codex-lead-mufasa-fullaccess.sh",
-			"run-codex-lead-mufasa-tui-fullaccess.sh",
-		]) {
-			expect(readFileSync(join(SCRIPTS, launcher), "utf8")).toContain(
-				"FLYWHEEL_COMM_CLI",
-			);
-		}
 	});
 
 	it("unknown role → rc 2, no output", () => {
@@ -419,69 +252,10 @@ describe("codex-lead.sh — full-access governance wiring (H-2)", () => {
 			const shim = join(shimDir, "node");
 			writeFileSync(
 				shim,
-				`#!/bin/sh
-case " $* " in *" lead-identity resolve "*)
-  printf '%s\\n' "$CANONICAL_JSON"
-  exit 0
-esac
-printf '%s' "$FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES" > "${dumpFile}"
-exit 0
-`,
+				`#!/bin/sh\nprintf '%s' "$FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES" > "${dumpFile}"\nexit 0\n`,
 			);
 			execFileSync("chmod", ["+x", shim]);
 		});
-
-		function launcherEnv(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-			const env = { ...process.env };
-			for (const name of [
-				"FLYWHEEL_LEAD_ID",
-				"LEAD_ID",
-				"FLYWHEEL_PROJECT_NAME",
-				"PROJECT_NAME",
-				"FLYWHEEL_LEAD_KEY",
-				"FLYWHEEL_LEAD_BACKEND",
-				"FLYWHEEL_LEAD_ROLE",
-				"DISCORD_STATE_DIR",
-				"DISCORD_EXPECTED_BOT_USER_ID",
-				"FLYWHEEL_LEAD_IDENTITY_DIGEST",
-				"FLYWHEEL_CANONICAL_IDENTITY_RESOLVED",
-			]) {
-				delete env[name];
-			}
-			return {
-				...env,
-				HOME: home,
-				PATH: `${shimDir}:${process.env.PATH}`,
-				FLYWHEEL_COMM_CLI: join(
-					SCRIPTS,
-					"..",
-					"..",
-					"flywheel-comm",
-					"dist",
-					"index.js",
-				),
-				GROWTH_BOT_TOKEN: "x",
-				CANONICAL_JSON: JSON.stringify({
-					schemaVersion: 1,
-					leadId: "growth-lead",
-					projectName: "growth",
-					leadKey: "growth-growth-lead",
-					agentTeamName: "growth-lead",
-					botUserId: "1499895683287748679",
-					botTokenEnv: "GROWTH_BOT_TOKEN",
-					discordStateDir: join(home, "discord-growth"),
-					backend: "codex-app-server",
-					role: "dept",
-					summaryRole: "producer",
-					summaryGranularity: "per-lead",
-					hasSummaryDuty: true,
-					summaryAssignmentDigest: "c".repeat(64),
-					projectsDigest: "b".repeat(64),
-					identityDigest: "a".repeat(64),
-				}),
-				...overrides,
-			};
-		}
 		afterEach(() => {
 			rmSync(home, { recursive: true, force: true });
 			rmSync(shimDir, { recursive: true, force: true });
@@ -493,11 +267,14 @@ exit 0
 				[join(SCRIPTS, "codex-lead.sh"), "growth-lead", home, "growth"],
 				{
 					encoding: "utf8",
-					env: launcherEnv({
+					env: {
+						...process.env,
+						HOME: home,
+						PATH: `${shimDir}:${process.env.PATH}`,
 						FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
 						// a pre-existing persona file must be PRESERVED, governance appended after
 						FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES: "/persona/identity.md",
-					}),
+					},
 				},
 			);
 			const dumped = execFileSync("cat", [dumpFile], { encoding: "utf8" });
@@ -514,10 +291,13 @@ exit 0
 				[join(SCRIPTS, "codex-lead.sh"), "growth-lead", home, "growth"],
 				{
 					encoding: "utf8",
-					env: launcherEnv({
+					env: {
+						...process.env,
+						HOME: home,
+						PATH: `${shimDir}:${process.env.PATH}`,
 						FLYWHEEL_CODEX_LEAD_PROFILE: "companion",
 						FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES: "/persona/identity.md",
-					}),
+					},
 				},
 			);
 			const dumped = execFileSync("cat", [dumpFile], { encoding: "utf8" });

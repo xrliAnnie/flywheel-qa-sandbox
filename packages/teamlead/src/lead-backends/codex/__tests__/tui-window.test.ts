@@ -51,18 +51,6 @@ describe("buildTuiCommand", () => {
 		expect(buildTuiCommand(SPEC)).not.toContain("-s workspace-write");
 	});
 
-	it("keeps the carrier capability out of the founder TUI shell command", () => {
-		const cmd = buildTuiCommand({
-			...SPEC,
-			carrierInstanceId: "generation_capability",
-		});
-		expect(cmd).not.toContain("generation_capability");
-		expect(cmd).not.toContain("FLYWHEEL_LEAD_CARRIER_INSTANCE_ID");
-		expect(() =>
-			buildTuiCommand({ ...SPEC, carrierInstanceId: 'bad";rm' }),
-		).toThrow(/carrierInstanceId/);
-	});
-
 	it("boundary validation: shell-unsafe config values throw (fail-loud)", () => {
 		expect(() =>
 			buildTuiCommand({ ...SPEC, threadId: 'x"; rm -rf /; "' }),
@@ -80,10 +68,9 @@ function makeEnsure(overrides: {
 	tmuxAvailable?: boolean;
 	newWindowOk?: boolean;
 	execThrows?: boolean;
-	spec?: TuiWindowSpec;
 }) {
 	const calls: string[][] = [];
-	const result = ensureTuiWindow(overrides.spec ?? SPEC, {
+	const result = ensureTuiWindow(SPEC, {
 		exec: (cmd, args) => {
 			if (overrides.execThrows) throw new Error("spawn failed");
 			calls.push([cmd, ...args]);
@@ -98,41 +85,6 @@ function makeEnsure(overrides: {
 }
 
 describe("ensureTuiWindow", () => {
-	it("creates the tmux server with only canonical coordinates, never inherited identity or secrets", () => {
-		let birthEnv: NodeJS.ProcessEnv | undefined;
-		ensureTuiWindow(SPEC, {
-			exec: (_cmd, args, options) => {
-				if (args[0] === "new-session") birthEnv = options?.env;
-				return { ok: true };
-			},
-			log: () => {},
-		});
-
-		expect(birthEnv).toBeDefined();
-		expect(Object.keys(birthEnv ?? {}).sort()).toEqual(
-			Object.keys(birthEnv ?? {})
-				.filter((name) =>
-					[
-						"HOME",
-						"SHELL",
-						"USER",
-						"LOGNAME",
-						"LANG",
-						"TERM",
-						"TMPDIR",
-						"PATH",
-					].includes(name),
-				)
-				.sort(),
-		);
-		expect(birthEnv?.PATH).toBe(
-			`${birthEnv?.HOME}/.local/bin:${birthEnv?.HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
-		);
-		expect(birthEnv).not.toHaveProperty("CODEX_HOME");
-		expect(birthEnv).not.toHaveProperty("FLYWHEEL_CODEX_BIN");
-		expect(birthEnv).not.toHaveProperty("OPENAI_API_KEY");
-	});
-
 	it("probe → session ensure → UNCONDITIONAL stale-kill → window create with the TUI command", () => {
 		const { result, calls } = makeEnsure({});
 		expect(result).toBe(true);
@@ -149,20 +101,6 @@ describe("ensureTuiWindow", () => {
 		const nameIdx = nw?.indexOf("-n") ?? -1;
 		expect(nw?.[nameIdx + 1]).toBe("growth-mufasa-lead"); // FLY-169 title contract
 		expect(nw?.[nw.length - 1]).toContain("codex resume");
-	});
-
-	it("injects the carrier capability through tmux window env without exposing it in pane argv", () => {
-		const raw = "generation_capability";
-		const { calls } = makeEnsure({
-			spec: { ...SPEC, carrierInstanceId: raw },
-		});
-		const nw = calls[3] ?? [];
-		expect(nw).toContain(
-			"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=generation_capability",
-		);
-		expect(nw).toContain("FLYWHEEL_LEAD_ID=mufasa-lead");
-		expect(nw).toContain("FLYWHEEL_PROJECT_NAME=growth");
-		expect(nw.at(-1)).not.toContain(raw);
 	});
 
 	it("tmux unavailable → only the probe runs (Lead unaffected)", () => {

@@ -1,10 +1,5 @@
 import { execFile } from "node:child_process";
-import {
-	createHash,
-	randomBytes,
-	randomUUID,
-	timingSafeEqual,
-} from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	existsSync as ffExistsSync,
 	readFileSync as ffReadFileSync,
@@ -21,22 +16,8 @@ import {
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
-import {
-	type RunnerTuiWindowLostEvidence,
-	sweepStaleSyncOpMarkers,
-	syncOpMarkerPath,
-} from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
-import {
-	defaultGateMarkerDir,
-	markGateMarkerAnsweredForExecution,
-} from "flywheel-comm/gate-marker";
-import {
-	ensureLeaseEpisodeMaterialized,
-	reconcileLeaseEpisodeQueue,
-	recoverLeaseEpisode,
-} from "flywheel-comm/lead-lease";
-import { deliverDurableTurnWake } from "flywheel-comm/wake";
+import { wakeRunnerMailbox } from "flywheel-comm/wake";
 // FLY-286 PR-2: web-local review route (固化 default-on since FLY-1243).
 import {
 	createLocalAnalysisStore,
@@ -49,11 +30,11 @@ import {
 } from "flywheel-comm/xiaohongshu-state";
 import {
 	type CommBackend,
-	FEATURE_FLAGS,
-	readEnvFileSource,
+	phaseMessageTag,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
-	resolveFounderTimezone,
+	THREE_STAGE_PHASE_SEQUENCE,
+	type ThreeStagePhase,
 } from "flywheel-config";
 import {
 	closeRunnerTerminalView,
@@ -65,7 +46,11 @@ import { WorktreeManager } from "flywheel-edge-worker";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
 import { accountPoolConfigured } from "../account-heal/account-store.js";
-import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
+import {
+	makeAccountSwitchRepair,
+	type RepairDisposition,
+} from "../account-heal/account-switch-repair.js";
+import { accountSwitchWatchdogTick } from "../account-heal/account-switch-watchdog.js";
 import {
 	claudeProfileBinPath,
 	makeClaudeProfileSwitchDeps,
@@ -74,7 +59,6 @@ import {
 	classifyDetection,
 	makeSubscriptionDetectionClassifier,
 } from "../account-heal/detection-classifier.js";
-import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -93,6 +77,12 @@ import {
 	findUnreachableAlertLeads,
 	LeadAlertNotifier,
 } from "../LeadAlertNotifier.js";
+import {
+	isSafeResumeMenuForEnter,
+	isTransientThrottlePane,
+	LeadWatchdog,
+} from "../LeadWatchdog.js";
+import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
 import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import { buildLeadDiscordSend } from "../lead-backends/codex/leadDiscordSend.js";
@@ -101,47 +91,36 @@ import {
 	buildAuthorizeLeadChannel,
 	buildLeadOutboundExpressHandler,
 	buildResolveBotToken,
+	loadProjectLeadRoles,
+	paneWatchdogProjects,
 } from "../lead-backends/codexLeadBridgeWiring.js";
-import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import {
 	type LeadConfig,
 	loadProjects,
 	type ProjectEntry,
-	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import { resolveSelfIdentity } from "../roundtable-allowbots.js";
+import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import {
+	OUTCOME_STATUSES,
+	REVIEW_BINDING_UNBOUND,
 	type Session,
 	StateStore,
-	type WorkflowEngineAlertIdentity,
-	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
-import {
-	importWorkflowMenuSeeds,
-	reconcileMenuCategoryBindings,
-} from "../workflow-menu.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
-import {
-	isWorkflowManifestLand,
-	retireLegacyWorkflowTemplates,
-} from "../workflow-template.js";
-import {
-	AlertChannelHub,
-	correlationKeyFor,
-	createDiscordOps,
-} from "./AlertChannelHub.js";
+import { importBundledWorkflowSeeds } from "../workflow-template.js";
+import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
-import { createAccountSwitchRouter } from "./account-switch-route.js";
+import {
+	type AccountSwitchRuntime,
+	createAccountSwitchRouter,
+} from "./account-switch-route.js";
 import { createActionRouter } from "./actions.js";
-import { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 // FLY-368: unified alert channel + per-error threading + conservative auto-repair.
 import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
-import { createAlertDutyRouter, dutyAuth } from "./alert-duty-router.js";
 // FLY-927 (T1): unified-channel root-message rate cap.
 import {
 	createAlertRateLimiter,
@@ -149,29 +128,33 @@ import {
 } from "./alert-rate-limiter.js";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
 import { makeDeferralSupport } from "./approval-signal/deferred-approval.js";
-import { reactToFounderMessage } from "./approval-signal/founder-ack.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
-import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
-import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
+import { loadQaConfigByProject } from "./auto-qa-config-source.js";
+import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
+import { AutoQaEffects } from "./auto-qa-effects.js";
+import { founderApprovalHoldGuard, reviewHoldReason } from "./auto-qa-held.js";
+import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
+import { AutoContinueArmer } from "./autocontinue-armer.js";
+import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
 import {
+	abnormalExitEpisodeSignature,
 	abnormalExitTicketEventId,
 	bridgeMarkerPath,
-	buildAbnormalExitAlertContent,
-	findLoopStallForExit,
 	latchPreviousMarker,
-	loopGuardLogPaths,
 	writeCleanMarker,
 	writeRunningMarker,
 } from "./bridge-exit-marker.js";
-import { resolveBridgeBuildIdentity } from "./build-identity.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
+// FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
+import { resolveChatThreadId } from "./chat-thread-utils.js";
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
 import {
@@ -179,46 +162,63 @@ import {
 	closeRunner,
 	registerLifecycleCloseGuard,
 } from "./close-runner.js";
-import { createHostCmuxWatcherPatrol } from "./cmux-watcher-patrol.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
-import { CodexReviewEffects } from "./codex-review-effects.js";
-import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
-import { CodexReviewIngest } from "./codex-review-ingest.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
-	hasPendingGateFromCommDb,
-	probeDeclaredStateFromCommDb,
-} from "./commdb-probes.js";
-import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
-	resolveCommDbPath,
 } from "./commdb-session-prune.js";
 import {
 	buildLoopbackBaseUrl,
-	defaultMarkerDir,
 	reconcileCompleteFailedMarkers,
 } from "./complete-marker-reconciler.js";
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
-import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
-import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
-import { validateDesignReviewProjection } from "./design-review-validation.js";
+import { loadDetectionGraceByProject } from "./detection-config-source.js";
+import {
+	buildCaseCEscalationInput,
+	buildGapEscalationInput,
+	CASE_C_ESCALATION_KIND,
+	fallbackCaseCFingerprint,
+	GAP_ESCALATION_KINDS,
+} from "./detection-detector-wiring.js";
+import {
+	type DetectionEscalationInput,
+	type EscalationOwner,
+	formatEscalationLeadNote,
+	notifyLeadFirst,
+} from "./detection-escalation.js";
+import {
+	createFleetSink,
+	createFounderPager,
+	createSessionTargetResolver,
+} from "./detection-escalation-sinks.js";
+import {
+	createSuspicionRegistry,
+	defaultGapThresholds,
+	evaluatedGapConditions,
+	evaluateGapSuspicion,
+	openGapReader,
+	type SuspicionRecord,
+} from "./detection-gap-scan.js";
+import {
+	notifyUnlessClearing,
+	resolveClearedGapEpisodes,
+	runDetectionReconcileTick,
+} from "./detection-reconcile-tick.js";
+import {
+	buildPaneTail,
+	deliverSuspiciousReport,
+	formatSuspiciousThreadNote,
+	type SuspiciousOwner,
+	type SuspiciousReport,
+} from "./detection-suspicious.js";
 import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
-import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
-	createDoaBackoffAdmission,
-	DOA_RELEASE_LEASE_MS,
-	drainDoaBackoffAlerts,
-	repairDoaBackoffReservations,
-} from "./doa-backoff.js";
-import {
-	hasPendingCompleteMarker,
 	parseSweepExcludeEnv,
 	reconcileDoneButRunning,
 } from "./done-running-reconciler.js";
@@ -228,60 +228,18 @@ import {
 	resolveDoneThreadReconcileConfig,
 	startDoneThreadReconcileScheduler,
 } from "./done-thread-reconcile.js";
-import {
-	attachDeliveredAlertLifecycles,
-	shouldReportDeadLetteredDrain,
-} from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
-import {
-	EventLoopAttribution,
-	type EventLoopHealthSnapshot,
-} from "./event-loop-attribution.js";
 import { createEventRouter } from "./event-route.js";
-import {
-	checkPrMergeViaGh,
-	createExternalMergeReconciler,
-} from "./external-merge-reconcile.js";
+import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
-import { buildFlagProvenance } from "./flag-provenance.js";
 import {
-	createProductionFlagScanEffects,
-	deliverFlagScanMailboxAlert,
-	reportFlagScanOwnerResolution,
-	resolveFlagScanOwnerStatus,
-} from "./flag-retirement-production.js";
-import {
-	createFlagRetirementScanner,
-	type FlagRetirementScanner,
-	type FlagScanSourceSnapshot,
-} from "./flag-retirement-scan.js";
-import {
-	type AnyFlagCanonical,
+	type FlagCanonical,
 	type FlagRouteDeps,
 	handleFlagApply,
 	handleFlagStage,
 } from "./flag-routes.js";
-import {
-	enrichFlagViewsWithStore,
-	type FlagStoreRuntime,
-	initializeFlagStore,
-	storeAlertSystemEnabled,
-	storeFlagRetirementScanEnabled,
-	storeLoopProfilerEnabled,
-	storeShippedHuskForceEnabled,
-	storeSkillFrameworkModeControl,
-	storeSummaryAbsorptionCadenceMs,
-	storeWorkflowReworkReentryEnabled,
-	storeWorkflowTurnDivergenceAlertsEnabled,
-	storeXiaohongshuLearningEnabled,
-} from "./flag-store-runtime.js";
-import { ConfirmTokenStore } from "./fleet-admin.js";
-import {
-	defaultFleetConsoleOptions,
-	FleetConsole,
-	onlineFromPresentation,
-} from "./fleet-console.js";
+import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
 import { getFleetConsoleHtml } from "./fleet-console-html.js";
 import {
 	buildDefaultFleetProbeDeps,
@@ -289,88 +247,55 @@ import {
 	defaultLegacyBackendOf,
 	FleetPoller,
 	type FleetSnapshot,
+	filterPaneWatchedLeads,
 } from "./fleet-data.js";
-import { locateConfiguredLeadWindow } from "./fleet-lead-locator.js";
 import {
 	handleApply,
 	handleStage,
 	loopbackSelfOrigin,
 } from "./fleet-routes.js";
 import { FleetSensors } from "./fleet-sensors.js";
+import { createFocusedFrameScheduler } from "./focused-frame-scheduler.js";
 import { startWorkflowSourceProjector } from "./founder-approval-projector.js";
 import {
 	buildFounderConsentWiring,
 	buildGateResponsePostWriteHook,
 } from "./founder-consent/wiring.js";
-import {
-	classifyFounderDecisionQuestionResolution,
-	recordFounderDecisionAck,
-	runFounderDecisionConvergencePass,
-} from "./founder-decision-convergence.js";
-import { isDiscordSnowflake } from "./founder-notify-utils.js";
-import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
-import {
-	emitFounderThreadNotification,
-	emitIssueThreadInfraNotification,
-	scanFounderThreadForGateCard,
-} from "./founder-thread-notifier.js";
-import { materializeWorkflowGateHolder } from "./gate-materializer.js";
+import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
+import { parseSqliteUtcMs } from "./founder-notify-utils.js";
+// FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
+import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
+import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
-import { hasHostProcessByExecutionId } from "./generalized-launch-recovery.js";
-import {
-	activateHolderForWake,
-	type HolderWakeCause,
-} from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
-import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
+	formatAccountCapOwnerAssignment,
 	formatRotationDigest,
+	formatSwitchSuccessDigest,
 	infraSenderTokenOr,
 	postInfraNotifyDigest,
+	resolveAccountCapOwnerId,
 } from "./infra-notify.js";
+import {
+	derivePhaseDisplayState,
+	type PhaseDisplayState,
+	renderPhaseStatusLine,
+} from "./issue-display.js";
 import {
 	IssueDisplayRefresher,
 	type IssueDisplayRefreshHolder,
 } from "./issue-display-refresher.js";
-import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
-import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
-import {
-	landCloseoutReason,
-	landIssueCloseoutResultFromClosureReport,
-	renderLandThreadNotification,
-} from "./land-closeout-cause.js";
-import {
-	executeLandOperation,
-	GhCliLandMergeDriver,
-	landThreadNotificationPreflight,
-	resumeHeldLandOperation,
-} from "./land-executor.js";
-import { GitLandHeadRefreshProver } from "./land-head-refresh-proof.js";
-import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
-import {
-	buildAgedDeferredLinearDoneAlert,
-	sweepDeferredLandLinearDone,
-} from "./land-linear-done-sweep.js";
-import { resolveLandSourceSession } from "./land-source-session.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
+	createBlockedMarkerReader,
 	createClaimsClaimer,
 	createClaimsReader,
 	defaultLeadPaneCapture,
 	resolveAlertDirsFromEnv,
 } from "./lead-alert-helpers.js";
-import {
-	LeadDualActiveMonitor,
-	type LeadIdentityFinding,
-	type LeadScanTarget,
-	LeaseAuditOutbox,
-} from "./lead-dual-active-scan.js";
-import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
-import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
-import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
-import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
+import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
@@ -389,9 +314,7 @@ import {
 	createLifecycleRouter,
 } from "./lifecycle-routes.js";
 import { sweepProjectLifecycle } from "./lifecycle-sweep.js";
-import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import {
-	listLinearIssueComments,
 	lookupLinearIssueByIdentifier,
 	queryLinearIssues,
 } from "./linear-query.js";
@@ -400,71 +323,39 @@ import {
 	resolveLinearScope,
 	resolveProjectNameParam,
 } from "./linear-scope.js";
-import {
-	buildLivenessManifest,
-	inboxLoopStallMs,
-	LivenessCheckTracker,
-	qaStallInboxLoopLead,
-} from "./liveness-manifest.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
-import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
-import {
-	createManagementCronProvider,
-	scanManagementCrons,
-} from "./management-cron-source.js";
-import { ManagementCronWriter } from "./management-cron-writer.js";
-import { createManagementDagProvider } from "./management-dag-source.js";
-import {
-	createExistingManagementWriters,
-	createManagementCronWriterAdapter,
-	createManagementDagWriter,
-	createManagementFlagProvider,
-	createManagementRunnerProvider,
-	managementFlagRevision,
-} from "./management-existing-writers.js";
-import { ManagementProjectSource } from "./management-project-source.js";
-import { ManagementSectionRegistry } from "./management-section-registry.js";
-import { createManagementSsotProviders } from "./management-ssot-providers.js";
-import { ManagementWriterRegistry } from "./management-writer.js";
-import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-authority.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
-import { sweepOrphanFounderReviewGates } from "./orphan-founder-review-monitor.js";
-import { isTransientThrottlePane } from "./pane-blocked-classifier.js";
-import { fingerprintOutput } from "./pane-fingerprint.js";
+import { notifyDigestExpectTick } from "./notify-digest-expect.js";
+import { defaultReceiptsPath } from "./notify-receipts.js";
+import { hashPane, liveRegion } from "./pane-live-region.js";
 import {
-	isAutoMigratableClaudeTmux,
-	type PaneLossNotificationClass,
-	parsePaneLossGenerationParams,
-	reconcilePaneLoss,
-} from "./pane-loss-reconcile.js";
-import {
-	readPipelineEnrollment,
-	reconcileDefaultDagCategoryBindings,
-} from "./pipeline-config-source.js";
+	PhaseOrchestrator,
+	type PhaseSession,
+	type ThreeStageVerdictIntent,
+	type TurnBeltRow,
+} from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
-	makeFinalizeWorkflowPhaseRoles,
-	runResumablePostShipFinalization,
+	makeFinalizeThreeStagePhases,
+	setWorkflowShadowFinalizationHook,
 } from "./post-ship-finalization.js";
 import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
 } from "./project-runner-model-source.js";
+import { patchSessionParams } from "./proofshot-session.js";
+import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
-import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
-import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
-import { resolveProjectIssueThread } from "./report-issue-thread-resolver.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
 	ReportRegistry,
 } from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
-import { isSafeResumeMenuForEnter } from "./rescue.js";
 import { createRescueRouter, type RescueRouteRuntime } from "./rescue-route.js";
 import {
 	buildRescueRuntime,
@@ -474,37 +365,20 @@ import {
 	makeRunnerRevalidate,
 	type RescueRuntime,
 } from "./rescue-runtime.js";
-import {
-	createResidueHarvester,
-	type ResidueHarvester,
-	residueMaintenanceEveryNTicks,
-	runResidueAwareBootSweep,
-} from "./residue-harvest.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
-import { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
-import {
-	createReviewAlertEmitter,
-	toReviewFindingRulingSnapshot,
-} from "./review-governance-effects.js";
-import { founderApprovalHoldGuard, reviewHoldReason } from "./review-hold.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
-import { createReviewRulingHandler } from "./review-ruling-route.js";
-import { ReviewThreadEffect } from "./review-thread-effect.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
-import { makeChannelArchiveDefaultProvider } from "./roundtable/channel-archive-default.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
+import { launchCommitPath } from "./run-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
+import { noteTicketEscalated } from "./runbook-gap.js";
 import {
 	defaultResolveLeadId,
 	makeRunnerAuthScan,
 } from "./runner-auth-scan.js";
-import {
-	DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
-	makeRunnerQuotaScan,
-	makeRunnerQuotaScanPass,
-} from "./runner-quota-scan.js";
+import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
 import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
 	handleRunnerApply,
@@ -516,18 +390,17 @@ import { createStatusQuery } from "./runner-status.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
-import {
-	type ServerLossCheckResult,
-	ServerLossCoordinator,
-} from "./server-loss.js";
+import { ServerLossCoordinator } from "./server-loss.js";
 import {
 	captureSession as defaultCaptureSession,
 	defaultGetCommDbPath,
 	isCaptureError,
 } from "./session-capture.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
-import { ShipRelevantDiffService } from "./ship-relevant-diff.js";
-import { forceShippedHusks } from "./shipped-husk-escalation.js";
+import {
+	defaultHasGateResponse,
+	defaultIsAncestor,
+} from "./ship-gate-rebind.js";
 import {
 	alertStaleBlockerToLead,
 	createStaleBlockerGuard,
@@ -537,35 +410,29 @@ import {
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
-	reapStateStoreGhost,
-	reconcileStateStoreGhosts,
-	type StateStoreGhostDeps,
-} from "./statestore-ghost-reconcile.js";
+	buildStuckRunnerDetector,
+	hasPendingBlockingGateFromCommDb,
+	hasPendingGateFromCommDb,
+	idleWatchdogPollMs,
+	probeQuietSignals,
+	stuckCommActivityMs,
+	stuckLatchTtlMs,
+} from "./stuck-escalation.js";
 import {
-	createLeadDetectionAckRouter,
-	createStuckRemanageRouter,
-} from "./stuck-remanage-routes.js";
-import { createSummaryAbsorptionPass } from "./summary-absorption-rider.js";
-import {
-	createTerminalCommDbSync,
-	type TerminalCommDbSync,
-} from "./terminal-commdb-sync.js";
-import { TerminalGateRetirement } from "./terminal-gate-retirement.js";
-import {
-	createTerminalArchiveEnqueueBuffer,
-	isRetryableOutcome,
-	runTargetedArchiveCheck,
-} from "./terminal-thread-archive.js";
+	parseStuckConfirmKnobs,
+	type StuckConfirmResult,
+} from "./stuck-pane-confirm.js";
+import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
+import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
-import { scrubManagedTmuxEnvironments } from "./tmux-environment-scrub.js";
+import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
 import {
-	canonicalDefaultTmuxSocketPath,
-	createTmuxHoldObservationRouter,
-} from "./tmux-hold-route.js";
+	resolveHandoffDispatchChannelId,
+	resolveThreeStagePolicy,
+	threeStageKeepAliveEnabled,
+} from "./three-stage-policy.js";
 import {
 	captureRunnerScrollback,
-	cleanupExactWorkflowTmuxWindow,
-	discoverTmuxTargetByExecutionId,
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
 	killCmuxLinkedSession,
@@ -573,65 +440,27 @@ import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
-	probeTmuxServerStartTime,
-	probeTmuxWindowLiveness,
 	sendEnterToWindow,
 	sendKeysToWindow,
 } from "./tmux-lookup.js";
-import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
-import {
-	TurnBeltReconciler,
-	type WorktreeTurnRow,
-} from "./turn-belt-reconcile.js";
-import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
-import type { WorkflowActorSession } from "./workflow-actor-session.js";
-import { createWorkflowCarrierRedriveRouter } from "./workflow-carrier-redrive-routes.js";
+import {
+	createWatchdogJudge,
+	routeSuspiciousReport,
+} from "./watchdog-judge.js";
+import {
+	createJudgeRoutingDepsFactory,
+	createStuckConfirmRunner,
+} from "./watchdog-judge-assembly.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
-import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
-import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
-import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
-import { projectWorkflowEngineParkOutbox } from "./workflow-engine-park-projector.js";
-import {
-	voidSupersededWorkflowGateCards,
-	watchVoidedWorkflowGateCards,
-} from "./workflow-gate-card-lifecycle.js";
-import { materializeWorkflowGateWithFailLoud } from "./workflow-gate-materialization-alert.js";
-import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
-import {
-	GitWorkflowResumeCheckpointStore,
-	reconcileWorkflowResumeCheckpoint,
-} from "./workflow-resume-checkpoint.js";
-import { runWorkflowResumeShadowTick } from "./workflow-resume-shadow.js";
-import {
-	grantWorkflowReworkTurn,
-	WorkflowReworkCoordinator,
-} from "./workflow-rework-coordinator.js";
-import {
-	collectWorkflowRunReceipt,
-	reconcileWorkflowRunCollections,
-} from "./workflow-run-collector.js";
-import {
-	grantWorkflowShipCarrierTurn,
-	WorkflowShipCarrierDeliveryHandler,
-} from "./workflow-ship-carrier-coordinator.js";
-import {
-	createWorkflowShipReadyArm,
-	enrichPrHeadViaGh,
-} from "./workflow-ship-ready-arm.js";
+import { createWorkflowShadowWriterFromEnv } from "./workflow-shadow-writer.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
-import { reconcileWorkflowTurnLedgers } from "./workflow-turn-ledger-validator.js";
-import { assertWorkflowWorktreeReady } from "./workflow-worktree-readiness.js";
 import {
-	createWorkKindCutoverRouter,
-	type Fly1436ActivationEvidence,
-	readFly1436ActivationEvidence,
-} from "./workkind-cutover.js";
-import {
+	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
 	worktreeAutocleanEnabled,
 } from "./worktree-cleanup.js";
@@ -663,69 +492,6 @@ import { scanZombies } from "./zombie-scan.js";
 // `./plugin.js` — run-dispatcher.ts, run-infra.ts — keep working unchanged.
 export type { CommBackend };
 export const resolveCommBackend = resolveCommBackendShared;
-
-export function resolveWorkflowRunAlertIdentity(input: {
-	store: Pick<
-		StateStore,
-		"getWorkflowRun" | "getSessionByIssue" | "getSessionLabels"
-	>;
-	projects: ProjectEntry[];
-	defaultLeadAgentId: string;
-	projectName: string;
-	issueId: string;
-	runId: string;
-	log?: (message: string) => void;
-}): WorkflowEngineAlertIdentity {
-	const project = input.projects.find(
-		(candidate) => candidate.projectName === input.projectName,
-	);
-	const configuredLead = (leadId: string | null | undefined): boolean =>
-		!!leadId &&
-		leadId !== "unassigned" &&
-		!!project?.leads.some((lead) => lead.agentId === leadId);
-	const run = input.store.getWorkflowRun(input.runId);
-	if (
-		run?.project_name === input.projectName &&
-		run.issue_id === input.issueId &&
-		configuredLead(run.selected_by)
-	) {
-		return {
-			leadId: run.selected_by!,
-			projectName: input.projectName,
-			leadResolution: "resolved",
-		};
-	}
-
-	const session = input.store.getSessionByIssue(input.issueId);
-	if (session?.project_name === input.projectName) {
-		try {
-			const labels = input.store.getSessionLabels(session.execution_id);
-			const resolution = resolveLeadForIssue(
-				input.projects,
-				input.projectName,
-				labels,
-			);
-			if (resolution.matchMethod === "label") {
-				return {
-					leadId: resolution.lead.agentId,
-					projectName: input.projectName,
-					leadResolution: "resolved",
-				};
-			}
-		} catch {
-			// Fall through to the explicit, loud fallback below.
-		}
-	}
-
-	(input.log ?? console.warn)(
-		`workflow engine alert routing fell back for ${input.runId}/${input.issueId}: no configured run owner or session-label owner`,
-	);
-	return {
-		leadId: input.defaultLeadAgentId,
-		projectName: input.projectName,
-		leadResolution: "fallback",
-	};
-}
 
 /**
  * FLY-182: resolve the per-write mailbox timeout from
@@ -828,11 +594,7 @@ export async function createLeadRuntime(
 	const { homedir } = await import("node:os");
 	const { existsSync, readFileSync } = await import("node:fs");
 
-	// Use the source binding inside this module. Importing the full Bridge under
-	// a transport mock can expose the legacy plugin <-> run-dispatcher cycle;
-	// the re-exported const is then still in its TDZ even though the shared
-	// config binding is already initialized.
-	const backend = resolveCommBackendShared();
+	const backend = resolveCommBackend();
 
 	if (backend === "mailbox") {
 		// Mailbox path — no CommDB / inbox-mcp lease check needed. Lead's
@@ -954,6 +716,15 @@ function safeCompare(a: string, b: string): boolean {
 	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+/** FLY-203: parse FLYWHEEL_REPORTS_TTL_DAYS (days) → ms. Invalid/absent →
+ * default 7 days; "0" disables age-based expiry. */
+function resolveReportsTtlMs(raw: string | undefined): number {
+	if (raw !== undefined && /^\d+$/.test(raw.trim())) {
+		return Number(raw.trim()) * 24 * 60 * 60 * 1000;
+	}
+	return DEFAULT_RETENTION_MAX_AGE_MS;
+}
+
 /**
  * FLY-1018 M4: the scoped gemini-agent token's reachable set — server-side
  * enforcement of the client-side whitelist (method + exact path). Everything
@@ -1015,84 +786,6 @@ export function tokenAuthMiddleware(
 			return;
 		}
 		res.status(401).json({ error: "unauthorized" });
-	};
-}
-
-export type ReportCredentialTier = "master" | "ingest";
-
-/** FLY-1715: report auth owns route-specific master/ingest reachability. */
-export function reportsAuthMiddleware(
-	masterToken?: string,
-	ingestToken?: string,
-): express.RequestHandler {
-	return (req, res, next) => {
-		if (!masterToken) {
-			res.status(503).json({
-				error: "reports API requires TEAMLEAD_API_TOKEN",
-			});
-			return;
-		}
-		const header = req.headers.authorization ?? "";
-		if (safeCompare(header, `Bearer ${masterToken}`)) {
-			res.locals.reportCredentialTier = "master" satisfies ReportCredentialTier;
-			next();
-			return;
-		}
-		if (ingestToken && safeCompare(header, `Bearer ${ingestToken}`)) {
-			if (req.method === "POST" && req.path === "/publish") {
-				res.locals.reportCredentialTier =
-					"ingest" satisfies ReportCredentialTier;
-				next();
-				return;
-			}
-			res.status(403).json({ error: "forbidden for ingest token" });
-			return;
-		}
-		res.status(401).json({ error: "unauthorized" });
-	};
-}
-
-/** FLY-1715: auth for non-authoritative latency hints only. */
-export function masterOrIngestAuthMiddleware(
-	masterToken?: string,
-	ingestToken?: string,
-): express.RequestHandler {
-	return (req, res, next) => {
-		// Preserve the Bridge's pre-existing tokenless posture. Production
-		// preflight requires both credentials, but loadConfig keeps tokenless
-		// startup legal for local tests and disabled sensitive surfaces.
-		if (!masterToken) return next();
-		const header = req.headers.authorization ?? "";
-		if (
-			safeCompare(header, `Bearer ${masterToken}`) ||
-			(ingestToken && safeCompare(header, `Bearer ${ingestToken}`))
-		) {
-			next();
-			return;
-		}
-		res.status(401).json({ error: "unauthorized" });
-	};
-}
-
-/**
- * The broad /api guard delegates the two runner-tier surfaces to their exact
- * mount-level guards. No other /api path bypasses master/scoped auth.
- */
-export function apiAuthWithRunnerTierDelegation(
-	masterToken?: string,
-	geminiScopedToken?: string,
-): express.RequestHandler {
-	const defaultAuth = tokenAuthMiddleware(masterToken, geminiScopedToken);
-	return (req, res, next) => {
-		if (
-			req.path === "/lead-inbox/nudge" ||
-			req.path === "/reports" ||
-			req.path.startsWith("/reports/")
-		) {
-			next();
-			return;
-		}
-		defaultAuth(req, res, next);
 	};
 }
 
@@ -1214,33 +907,11 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
-	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
-	eventLoopAttribution?: {
-		healthSnapshot(): EventLoopHealthSnapshot;
-		snapshot(): unknown;
-	};
 	vercelToken?: string;
-	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
-	flagStore?: FlagStoreRuntime;
-	/** FLY-2100: hot projects.json roster used to authorize scoped flag writes. */
-	flagProjectNames?: () => readonly string[];
-	/**
-	 * FLY-2104: late-bound weekly-scan runtime. The route mounts before the
-	 * catch-all in createBridgeApp; startBridge fills this after scanner wiring.
-	 */
-	flagScanRoute?: {
-		current?: Pick<FlagRetirementScanner, "runNow" | "dryRun">;
-	};
-	/** FLY-1436: isolated confirm tokens for the founder-gated binding cutover. */
-	workKindCutoverTokens?: ConfirmTokenStore;
-	/** FLY-1436: injectable deployment evidence reader for route-level tests. */
-	workKindCutoverEvidence?: () => Fly1436ActivationEvidence;
 	/** FLY-1185: ship-entry lifecycle bundle built in startBridge. */
 	lifecycleInfra?: LifecycleShipInfra;
 	/** FLY-1185 §2.11: the shared per-repo mutation lock (startBridge-owned). */
 	withRepoLock?: <T>(mainRepoPath: string, fn: () => Promise<T>) => Promise<T>;
-	/** FLY-1307 PR-7.5: receipt-backed authority for output-backed review/ship heads. */
-	materializedHeadAuthority?: import("./materialized-head-authority.js").MaterializedHeadAuthority;
 	/** FLY-1185 §2.12: park/unpark + approved-manifest apply routers. */
 	lifecycleRoutes?: {
 		parkRouter: import("express").Router;
@@ -1248,31 +919,34 @@ export interface BridgeAppOptions {
 	};
 	/** FLY-91 Round 3: Bridge-level shared ChatThreadCreator instance. */
 	chatThreadCreator?: ChatThreadCreator;
-	/**
-	 * FLY-1282 Part C: targeted terminal-archive enqueue for the /events
-	 * completion sites. Production always wires it in startBridge.
-	 */
-	terminalArchiveEnqueue?: (issueId: string) => void;
-	/** FLY-1066: shared boot/maintenance/targeted residue single-flight. */
-	residueHarvester?: ResidueHarvester;
-	/** FLY-1066: shared non-blocking failed/blocked CommDB sync queue. */
-	terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
 	/**
+	 * FLY-253 (Codex R2 #4): late-bound holder connecting the stuck-remanage
+	 * router's `re_arm` to the live StuckRunnerDetector. The router mounts
+	 * inside createBridgeApp (pre-listen) but the detector is only created
+	 * post-listen in startBridge — so the router gets a STABLE callback that
+	 * reads this holder at call time. `current` stays null when detection is
+	 * disabled (FLYWHEEL_STUCK_DETECT=0): re_arm still deletes the DB latch.
+	 */
+	stuckDetectorHolder?: { current: StuckRunnerDetector | null };
+	/**
 	 * FLY-623 (Codex R2 MED-5): late-bound holder connecting the event router +
-	 * idle accounting to the live HeartbeatService reconnecting set. Both are wired
+	 * idle watchdog to the live HeartbeatService reconnecting set. Both are wired
 	 * inside createBridgeApp (pre-listen) but HeartbeatService is constructed
 	 * post-listen in startBridge — so they read this holder at call time. `current`
 	 * stays null on the kill-switch / standalone path (no reconnecting suppression
 	 * or clear), which is byte-compatible with pre-FLY-623 behavior.
 	 */
 	reconnectHolder?: { current: ReconnectController | null };
-	codexReviewHold?: { current: CodexReviewHoldCoordinator | undefined };
-	codexReviewIngest?: { current: CodexReviewIngest | undefined };
-	reviewAuthorizationAlerts?: {
-		current: ReviewAuthorizationAlerts | undefined;
-	};
+	/**
+	 * FLY-579: late-bound holder for the auto-QA coordinator. The /events route
+	 * mounts inside createBridgeApp (pre-listen), but the coordinator is built
+	 * later in startBridge (it needs the LeadAlertNotifier) — so the event router
+	 * reads `.current` at request time. Absent / `.current` undefined ⇒ auto-QA
+	 * fully dormant (no held records, byte-compatible).
+	 */
+	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
 	/**
 	 * FLY-1188 §7.1: late-bound holder for the codex-author review-request
 	 * coordinator. The /review-requests route mounts inside createBridgeApp
@@ -1281,17 +955,28 @@ export interface BridgeAppOptions {
 	 * request-review CLI retries and, on exhaustion, exits non-zero).
 	 */
 	reviewCoordinator?: { current: ReviewRequestCoordinator | undefined };
-	turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
+	/**
+	 * FLY-793: late-bound holder for the three-stage PhaseOrchestrator. The
+	 * /events route mounts inside createBridgeApp (pre-listen), but the
+	 * orchestrator is built later in startBridge (it needs startDispatcher +
+	 * LeadAlertNotifier), so the event router reads `.current` at request time.
+	 * Absent / `.current` undefined ⇒ three-stage dormant (byte-compatible).
+	 */
+	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 	/**
 	 * FLY-516: late-bound shutdown flag. The /health route mounts inside
 	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
 	 * reads this holder at request time and close() flips it at teardown start.
 	 * Absent (standalone createBridgeApp / tests) ⇒ /health reports
-	 * shuttingDown:false (byte-compat).
+	 * shuttingDown:false (byte-compat). Mirrors stuckDetectorHolder.
 	 */
 	shutdownStateHolder?: { shuttingDown: boolean };
-	/** FLY-1393: late-bound minimum-set liveness manifest. */
-	livenessHealthProvider?: { current?: () => unknown };
+	/**
+	 * FLY-253 L2: TTL for execution-scoped latches, parsed ONCE from
+	 * `FLYWHEEL_STUCK_LATCH_TTL_MS` at startup (Codex R2 #5) and injected
+	 * into the remanage router. Undefined ⇒ router default (72h).
+	 */
+	stuckLatchTtlMs?: number;
 	/**
 	 * FLY-247 inc2a: the Fleet console (founder-admin surface). When present,
 	 * `GET /` renders the console and the `/api/fleet/*` routes are mounted
@@ -1317,12 +1002,21 @@ export interface BridgeAppOptions {
 	 * FLY-907: late-bound holder for the unified issue-display refresher. The
 	 * /events router, the actions router, the stale-blocker guard, and the
 	 * founder-consent gate-response hook all mount inside createBridgeApp
-	 * (pre-listen), but the refresher is built post-listen in startBridge — so
-	 * every surface reads `.current` at fire time.
+	 * (pre-listen), but the refresher is built post-listen in startBridge (it
+	 * needs AutoQaEffects) — so every surface reads `.current` at fire time.
 	 * Absent / `.current` undefined ⇒ triggers dormant and the stage_changed
-	 * path falls back to legacy stamp+pin when the refresher is unavailable.
+	 * path falls back to the legacy stamp+pin (byte-compat / the
+	 * FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 escape hatch).
 	 */
 	issueDisplayRefresh?: IssueDisplayRefreshHolder;
+	/**
+	 * FLY-871 R2/C5: the /api/account-switch route (mounted in createBridgeApp)
+	 * reads this holder at request time; startBridge sets `.current` only when
+	 * accountSwitchRepair + the unified Alerts channel exist
+	 * (the account pool is provisioned; FLY-1243). Undefined ⇒ the route returns 409 needs_human
+	 * (self-heal off = byte-compat).
+	 */
+	accountSwitchRoute?: { current?: AccountSwitchRuntime };
 	/**
 	 * FLY-871 R3/C9: the /api/rescue route (mounted in createBridgeApp) reads this
 	 * holder at request time; startBridge sets `.current` only when the rescue
@@ -1330,13 +1024,6 @@ export interface BridgeAppOptions {
 	 * Undefined ⇒ the route returns 409 needs_human (self-heal off = byte-compat).
 	 */
 	rescueRoute?: { current?: RescueRouteRuntime };
-	/** FLY-1944: synchronous pre-claim dispatch visibility for host quiescence. */
-	admissionCrossingBarrier?: AdmissionCrossingBarrier;
-	/** FLY-2076: late-bound duty-seat identities owned by startBridge. */
-	alertDuty?: {
-		dispatcherBotUserId: { current: string | null };
-		alertHub: { current?: AlertChannelHub };
-	};
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -1350,80 +1037,6 @@ function parseJsonStringArray(raw: string | undefined): string[] {
 	} catch {
 		return [];
 	}
-}
-
-function createWorkflowRunCollector(
-	store: StateStore,
-	transitionOpts: ApplyTransitionOpts,
-): (receiptKey: string) => Promise<WorkflowRunCollectReceiptRow> {
-	return (receiptKey) =>
-		collectWorkflowRunReceipt({
-			store,
-			receiptKey,
-			ownerId: `bridge:${process.pid}:${randomUUID()}`,
-			closeExecution: async (executionId, authorityCheck) => {
-				const session = store.getSession(executionId);
-				if (!session) {
-					return {
-						closed: true,
-						alreadyGone: true,
-						commDbFinalized: true,
-						retiredGateCount: 0,
-					};
-				}
-				const closed = await closeRunner(
-					{
-						executionId,
-						issueId: session.issue_id,
-						projectName: session.project_name,
-						reason: `workflow_force_cancel:${receiptKey}`,
-						executorType: "workflow-collector",
-						forcePreserved: true,
-						issueTerminalOverride: true,
-						authorityCheck,
-					},
-					store,
-				);
-				if (
-					(!closed.closed && !closed.alreadyGone) ||
-					!closed.commDbFinalized
-				) {
-					return closed;
-				}
-				const authority = await authorityCheck();
-				if (!authority.ok) {
-					return {
-						...closed,
-						closed: false,
-						commDbFinalized: false,
-						error: `authority_lost:post_close:${authority.reason ?? "collector_authority_lost"}`,
-					};
-				}
-				const transitioned = applyTransition(
-					transitionOpts,
-					executionId,
-					"terminated",
-					{
-						executionId,
-						issueId: session.issue_id,
-						projectName: session.project_name,
-						trigger: "workflow_force_cancel",
-					},
-					{
-						last_activity_at: sqliteDatetime(),
-						last_error: `operator_terminate:${receiptKey}`,
-					},
-				);
-				return transitioned.ok
-					? closed
-					: {
-							...closed,
-							closed: false,
-							commDbFinalized: false,
-							error: `session_terminate_failed:${transitioned.error ?? "fsm"}`,
-						};
-			},
-		});
 }
 
 export function createBridgeApp(
@@ -1448,9 +1061,6 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
-	const flagStore = opts?.flagStore;
-	const buildIdentity = resolveBridgeBuildIdentity();
-	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
 
 	// FLY-1018 (Codex code-review R1): the ship-approval-request tokenless
@@ -1471,239 +1081,6 @@ export function createBridgeApp(
 
 	app.use(express.json({ limit: "512kb" }));
 
-	// FLY-2076: capability-scoped duty mutations. This is intentionally outside
-	// `/api`: the shared Bridge bearer must not grant Claw ticket write access.
-	app.use(
-		"/duty",
-		dutyAuth(config.alertDutyToken),
-		createAlertDutyRouter({
-			store,
-			projects,
-			getAlertHub: () => opts?.alertDuty?.alertHub.current,
-		}),
-	);
-
-	// FLY-1638: restart/operator admission brake. This is deliberately outside
-	// /api/runs so scoped Gemini run tokens cannot mutate fleet-wide admission.
-	// No master token means fail closed rather than inheriting tokenAuth's legacy
-	// tokenless pass-through behavior.
-	if (config.apiToken) {
-		app.get(
-			"/api/admission/pause",
-			tokenAuthMiddleware(config.apiToken),
-			(_req, res) => {
-				const pause = store.getAdmissionPause();
-				res.json({
-					ok: true,
-					admissionPause: {
-						active: pause?.active === true,
-						remainingSeconds: pause?.remainingSeconds ?? 0,
-					},
-				});
-			},
-		);
-		app.post(
-			"/api/admission/pause",
-			tokenAuthMiddleware(config.apiToken),
-			(req, res) => {
-				const durationSeconds = Number(req.body?.durationSeconds);
-				if (
-					!Number.isSafeInteger(durationSeconds) ||
-					durationSeconds < 1 ||
-					durationSeconds > 3_600
-				) {
-					res.status(400).json({
-						ok: false,
-						error: "durationSeconds must be an integer between 1 and 3600",
-					});
-					return;
-				}
-				const reason =
-					typeof req.body?.reason === "string" && req.body.reason.trim()
-						? req.body.reason.trim().slice(0, 200)
-						: "operator maintenance";
-				const pause = store.setAdmissionPause({
-					durationSeconds,
-					setBy: "bridge-admission-api",
-					reason,
-				});
-				res.json({
-					ok: true,
-					admissionPause: {
-						active: pause.active,
-						remainingSeconds: pause.remainingSeconds,
-					},
-				});
-			},
-		);
-		app.post(
-			"/api/admission/resume",
-			tokenAuthMiddleware(config.apiToken),
-			(_req, res) => {
-				store.clearAdmissionPause();
-				res.json({
-					ok: true,
-					admissionPause: { active: false, remainingSeconds: 0 },
-				});
-			},
-		);
-		app.get(
-			"/api/admission/quiescence",
-			tokenAuthMiddleware(config.apiToken),
-			(_req, res) => {
-				try {
-					const pause = store.getAdmissionPause();
-					if (!pause?.active) {
-						res.status(409).json({
-							ok: false,
-							error:
-								"admission pause must be active before quiescence can be proven",
-						});
-						return;
-					}
-					if (!startDispatcher || !opts?.admissionCrossingBarrier) {
-						res.status(503).json({
-							ok: false,
-							error: "authoritative quiescence dependencies are unavailable",
-						});
-						return;
-					}
-					const crossing = opts.admissionCrossingBarrier.snapshot();
-					const components = {
-						readoptCandidateSessions:
-							store.getReadoptCandidateSessions().length,
-						dispatcherInflight: startDispatcher.getInflightCount(),
-						durableLaunchClaims: store.countOpenLaunchClaims(),
-						admissionCrossing: crossing,
-					};
-					const total =
-						components.readoptCandidateSessions +
-						components.dispatcherInflight +
-						components.durableLaunchClaims +
-						components.admissionCrossing.total;
-					res.json({
-						ok: true,
-						admissionPause: {
-							active: true,
-							remainingSeconds: pause.remainingSeconds,
-						},
-						components,
-						total,
-						quiescent: total === 0,
-					});
-				} catch (error) {
-					console.warn(
-						`[host-terminal-quiescence] snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
-					);
-					res.status(503).json({
-						ok: false,
-						error: "authoritative quiescence snapshot failed",
-					});
-				}
-			},
-		);
-	} else {
-		app.use("/api/admission", (_req, res) => {
-			res.status(503).json({
-				ok: false,
-				error: "admission API requires TEAMLEAD_API_TOKEN",
-			});
-		});
-	}
-
-	// FLY-1718 P4: privileged recovery for a fifth-strike lane. This endpoint
-	// intentionally has no scoped-token or /actions alias; actor authority is
-	// derived from the authenticated master-token mount, never from request JSON.
-	if (config.apiToken) {
-		app.post(
-			"/api/doa-backoff/reset",
-			tokenAuthMiddleware(config.apiToken),
-			(req, res) => {
-				const projectName =
-					typeof req.body?.projectName === "string"
-						? req.body.projectName.trim()
-						: "";
-				const issueId =
-					typeof req.body?.issueId === "string" ? req.body.issueId.trim() : "";
-				const role =
-					typeof req.body?.role === "string" && req.body.role.trim()
-						? req.body.role.trim()
-						: "main";
-				const reason =
-					typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
-				if (!projectName || !issueId || !reason || reason.length > 500) {
-					res.status(400).json({
-						ok: false,
-						error:
-							"projectName, issueId, and a reason of at most 500 characters are required",
-					});
-					return;
-				}
-				if (!projects.some((project) => project.projectName === projectName)) {
-					res.status(404).json({ ok: false, error: "project not found" });
-					return;
-				}
-				const resolved = resolveLifecycleRootKey(store, issueId, []);
-				if (!resolved.ok) {
-					res.status(409).json({
-						ok: false,
-						error: "lifecycle root is not unambiguous",
-						reason: resolved.reason,
-					});
-					return;
-				}
-				try {
-					const reset = store.resetDoaBackoff({
-						projectName,
-						lifecycleRootUuid: resolved.rootKey,
-						role,
-						actor: "master-api-token",
-						reason,
-					});
-					res.json({
-						ok: true,
-						lifecycleRootUuid: resolved.rootKey,
-						role,
-						...reset,
-					});
-				} catch (error) {
-					if ((error as Error).message === "doa_backoff_reset_bound_owner") {
-						res.status(409).json({
-							ok: false,
-							error: "a bound successor still owns this DOA lane",
-						});
-						return;
-					}
-					console.warn(
-						`[doa-backoff] authenticated reset failed: ${(error as Error).message}`,
-					);
-					res
-						.status(500)
-						.json({ ok: false, error: "DOA backoff reset failed" });
-				}
-			},
-		);
-	} else {
-		app.post("/api/doa-backoff/reset", (_req, res) => {
-			res.status(503).json({
-				ok: false,
-				error: "DOA backoff reset requires TEAMLEAD_API_TOKEN",
-			});
-		});
-	}
-
-	// FLY-1285: supervisor observations are bearer-authenticated inside this
-	// dedicated router (including an explicit 503 when apiToken is absent) and
-	// hydrate the durable hold before any heartbeat reaper can act.
-	app.use(
-		"/api/tmux-hold-observation",
-		createTmuxHoldObservationRouter({
-			store,
-			projects,
-			apiToken: config.apiToken,
-		}),
-	);
-
 	// FLY-1244: scoped workflow decisions authenticate with a per-execution
 	// credential, never the fleet ingest bearer. The head read route is a separate
 	// loopback-only fail-closed seam used by verify-approval; it is not credential
@@ -1712,67 +1089,32 @@ export function createBridgeApp(
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
-			materializedHeadAuthority: opts?.materializedHeadAuthority,
-			gateCarrierRebind: {
-				tokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
-			},
-			resolveAlertIdentity: (projectName, issueId, runId) =>
-				resolveWorkflowRunAlertIdentity({
-					store,
-					projects,
-					defaultLeadAgentId: config.defaultLeadAgentId,
-					projectName,
-					issueId,
-					runId,
-					log: (message) => console.warn(`[workflow-gate-carrier] ${message}`),
-				}),
-			...(opts?.fleetConsole
-				? { loopReentry: { tokens: opts.fleetConsole.tokens } }
+			phaseOrchestrator: opts?.phaseOrchestrator,
+			...(process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE === "1" &&
+			opts?.fleetConsole &&
+			opts.phaseOrchestrator
+				? {
+						reQa: {
+							tokens: opts.fleetConsole.tokens,
+							respawn: async (canonical, prHeadSha) => {
+								const orchestrator = opts.phaseOrchestrator?.current;
+								if (!orchestrator) {
+									throw new Error("phase_orchestrator_not_ready");
+								}
+								const source = store.getSession(canonical.sourceExecutionId);
+								if (!source) throw new Error("source_session_not_found");
+								return orchestrator.respawnUnenrolledQa(
+									source,
+									prHeadSha,
+									canonical.targetAttempt,
+								);
+							},
+						},
+					}
 				: {}),
 		}),
 	);
-	app.use(
-		"/api/workflow",
-		createWorkflowCarrierRedriveRouter({
-			store,
-			tokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
-			apiToken: config.apiToken,
-		}),
-	);
 	app.use("/api/workflow", createWorkflowTemplateRouter(store));
-	app.use("/api/workflow", createWorkflowMenuRouter(projects));
-	const flywheelProjectRoot = projects.find(
-		(project) => project.projectName === "flywheel",
-	)?.projectRoot;
-	app.use(
-		"/api/workflow/cutovers/FLY-1436",
-		createWorkKindCutoverRouter({
-			store,
-			apiToken: config.apiToken,
-			// The operator re-runs the bounded quiescence probe between stage and
-			// apply. Five minutes preserves single-use semantics without making a
-			// healthy 60–90 second probe burn the founder-approved window.
-			tokens: opts?.workKindCutoverTokens ?? new ConfirmTokenStore(5 * 60_000),
-			readActivationEvidence:
-				opts?.workKindCutoverEvidence ??
-				(() =>
-					flywheelProjectRoot
-						? readFly1436ActivationEvidence({
-								projectRoot: flywheelProjectRoot,
-								pipelineEnrollment: flagStore
-									? () => readPipelineEnrollment(flagStore, "flywheel")
-									: undefined,
-							})
-						: {
-								templateDispatch: false,
-								generalizedTemplates: false,
-								workKind: false,
-								prBAssetsReady: false,
-								deployedSha: "",
-								assetsDigest: "",
-							}),
-		}),
-	);
 
 	// FLY-175 Track 2: founder-consent hard gate. Returns null when
 	// decisionMode=off (default) — `fcMw()` then yields a no-op handler so the
@@ -1787,7 +1129,6 @@ export function createBridgeApp(
 		transitionOpts,
 		// FLY-907: recovered-merge finalization display refresh (late-bound).
 		opts?.issueDisplayRefresh,
-		opts?.materializedHeadAuthority,
 	);
 	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
 	const fcMw = (
@@ -1810,42 +1151,14 @@ export function createBridgeApp(
 	// Health — no auth
 	app.get("/health", (_req, res) => {
 		const active = store.getActiveSessions();
-		const admissionPause = store.getAdmissionPause();
 		// FLY-516: startBridge's close() flips shutdownStateHolder.shuttingDown at
 		// the top of teardown, so /health stops claiming "ready" the moment
 		// shutdown begins. flywheel-bridge-wrapper.sh probes this to tell a healthy
 		// serving Bridge apart from a zombie stuck mid-close() that still answers
 		// /health 200 — the latter must yield its port, not be mistaken for a live
-		// double-start. Read at request time via the late-bound holder; absent
-		// (standalone createBridgeApp) ⇒ false.
+		// double-start. Read at request time via the late-bound holder (mirrors
+		// stuckDetectorHolder); absent (standalone createBridgeApp) ⇒ false.
 		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
-		let liveness: unknown;
-		let eventLoop: EventLoopHealthSnapshot | undefined;
-		if (opts?.eventLoopAttribution) {
-			try {
-				eventLoop = opts.eventLoopAttribution.healthSnapshot();
-			} catch (error) {
-				console.warn(
-					"[health] event-loop diagnostics unavailable:",
-					error instanceof Error ? error.message : String(error),
-				);
-				eventLoop = { p99_ms: null, max_ms: null, episodes: 0 };
-			}
-		}
-		if (opts?.livenessHealthProvider?.current) {
-			try {
-				liveness = opts.livenessHealthProvider.current();
-			} catch (error) {
-				console.warn(
-					"[health] liveness manifest unavailable:",
-					error instanceof Error ? error.message : String(error),
-				);
-				liveness = {
-					degraded: true,
-					reason: "manifest_provider_error",
-				};
-			}
-		}
 		res.json({
 			// `ok` is byte-compatible (true in steady state); it flips false during
 			// shutdown so the deploy health check + wrapper preflight treat a
@@ -1854,53 +1167,8 @@ export function createBridgeApp(
 			shuttingDown,
 			uptime: process.uptime(),
 			sessions_count: active.length,
-			buildMode: buildIdentity.mode,
-			buildSha: buildIdentity.buildSha,
-			...(buildIdentity.mode === "built"
-				? { artifactBuildSha: buildIdentity.artifactBuildSha }
-				: {}),
-			admissionPause: {
-				active: admissionPause?.active === true,
-				remainingSeconds: admissionPause?.remainingSeconds ?? 0,
-			},
-			...(liveness === undefined ? {} : { liveness }),
-			...(eventLoop === undefined ? {} : { event_loop: eventLoop }),
 		});
 	});
-
-	app.get(
-		"/api/diagnostics/event-loop",
-		((req, res, next) => {
-			if (!config.apiToken) {
-				res.status(503).json({ error: "TEAMLEAD_API_TOKEN is not configured" });
-				return;
-			}
-			const bearer = req.headers.authorization ?? "";
-			if (safeCompare(bearer, `Bearer ${config.apiToken}`)) {
-				next();
-				return;
-			}
-			if (
-				config.geminiAgentToken &&
-				safeCompare(bearer, `Bearer ${config.geminiAgentToken}`)
-			) {
-				res.status(403).json({ error: "forbidden for scoped token" });
-				return;
-			}
-			res.status(401).json({ error: "unauthorized" });
-		}) as express.RequestHandler,
-		(_req, res) => {
-			if (!opts?.eventLoopAttribution) {
-				res.status(503).json({ error: "event-loop diagnostics unavailable" });
-				return;
-			}
-			try {
-				res.json(opts.eventLoopAttribution.snapshot());
-			} catch {
-				res.status(503).json({ error: "event-loop diagnostics unavailable" });
-			}
-		},
-	);
 
 	// Dashboard / Fleet console — no auth (loopback only). FLY-247 inc2a: when the
 	// console is wired, `GET /` renders the Fleet console (run-status板块 cut per
@@ -1974,10 +1242,7 @@ export function createBridgeApp(
 			registry,
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
-			opts?.turnBeltReconciler,
-			undefined, // cardAuthority
-			opts?.materializedHeadAuthority,
-			actionGateAuthorityView,
+			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
 		),
 	);
 
@@ -1998,11 +1263,17 @@ export function createBridgeApp(
 	// /events — ingest auth
 	//
 	// FLY-560 Feature A: auto-stamp pipeline-stage emoji onto issue thread
-	// titles. Permanently enabled; naturally a no-op when chat threads are off.
-	const issueStatusEmojiEnabled = true;
+	// titles. Default ON; set FLYWHEEL_ISSUE_STATUS_EMOJI=0 to disable. Passing
+	// the creator only when enabled keeps byte-compat (createEventRouter without
+	// it = no stamping). Naturally a no-op when chat threads are off
+	// (opts.chatThreadCreator is only set when chatThreadsEnabled).
+	const issueStatusEmojiEnabled =
+		process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0";
 	// FLY-560 Feature C: pin a `tmux attach` rescue command on each issue thread.
-	// Permanently enabled alongside the status badge.
-	const issueAttachPinEnabled = true;
+	// Default ON; set FLYWHEEL_ISSUE_ATTACH_PIN=0 to disable. Independent from the
+	// emoji flag — the creator is passed when EITHER feature is on, and each
+	// behaviour is gated separately inside createEventRouter (all 4 combos clean).
+	const issueAttachPinEnabled = process.env.FLYWHEEL_ISSUE_ATTACH_PIN !== "0";
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
@@ -2020,49 +1291,13 @@ export function createBridgeApp(
 			removeCleanWorktree,
 			{ issueStatusEmojiEnabled, issueAttachPinEnabled },
 			opts?.reconnectHolder,
-			opts?.codexReviewHold,
-			opts?.codexReviewIngest,
-			opts?.reviewAuthorizationAlerts,
-			opts?.turnBeltReconciler,
+			opts?.autoQaCoordinator,
+			opts?.phaseOrchestrator,
 			opts?.accountRotationPost,
 			opts?.issueDisplayRefresh, // FLY-907
 			lifecycleInfra, // FLY-1185 entry A bundle
-			opts?.terminalArchiveEnqueue, // FLY-1282 Part C
-			opts?.materializedHeadAuthority, // FLY-1307 PR-7.5
 		),
 	);
-
-	// FLY-1718 P3: a design result is not self-authorizing. The runner submits
-	// only its result projection; StateStore + the persisted worktree remain the
-	// authority. Missing server token is an explicit 503 rather than inheriting
-	// tokenAuthMiddleware's legacy tokenless no-op behavior.
-	if (!config.ingestToken) {
-		app.post("/design-review-validation", (_req, res) => {
-			res.status(503).json({
-				allowed: false,
-				reason: "bridge ingest token not configured",
-			});
-		});
-	} else {
-		app.post(
-			"/design-review-validation",
-			tokenAuthMiddleware(config.ingestToken),
-			(req, res) => {
-				const result = validateDesignReviewProjection(
-					store,
-					(req.body ?? {}) as Record<string, unknown>,
-				);
-				if (result.allowed) {
-					res.json(result);
-					return;
-				}
-				res.status(result.httpStatus).json({
-					allowed: false,
-					reason: result.reason,
-				});
-			},
-		);
-	}
 
 	// FLY-1188 §7.1: codex-author review-request registration. Runner-facing
 	// like /events → same ingest-token auth. A 200 is the DURABLE-ACCEPTED ack
@@ -2098,17 +1333,21 @@ export function createBridgeApp(
 		},
 	);
 
-	// FLY-1278: supervised Lead governance for a delivered finding. This is a
-	// distinct authority channel — gate/request prose never becomes a ruling.
-	// It shares the ingest-token boundary and late-bound coordinator with review
-	// requests; the handler preserves 4xx conflict/not-found semantics.
-	app.post(
-		"/review-rulings",
-		tokenAuthMiddleware(config.ingestToken),
-		createReviewRulingHandler(
-			opts?.reviewCoordinator ?? { current: undefined },
-		),
-	);
+	// FLY-598: founder-facing UX gate routes. Mounted BEFORE the broad `/api`
+	// token middleware so the ingest-token status READ is not shadowed by the
+	// api-token middleware (Codex R3-#1). Always mounted (per-request, operates
+	// on session state) — byte-compatible at the prompt/stage layer; the
+	// per-project mode gates the runner injection + the stage guard, not these
+	// routes. Signoff WRITE fail-closes unless apiToken is set AND distinct from
+	// the ingest token (Codex R2-#1 / R3-#2).
+	mountFounderUxRoutes(app, {
+		store,
+		projects,
+		founderUserId: config.founderConsent?.founderUserId ?? "",
+		ingestToken: config.ingestToken,
+		apiToken: config.apiToken,
+		discordBotToken: config.discordBotToken,
+	});
 
 	// FLY-247 inc2a: Fleet console founder-admin surface (§2.2). Mounted BEFORE
 	// the `/api` Bearer middleware so `/api/fleet/*` never hits it — the console
@@ -2144,7 +1383,7 @@ export function createBridgeApp(
 				// runner-config CLI write is visible on the NEXT snapshot without a
 				// Bridge restart (unchanged files are stat-only, not re-parsed).
 				await fleetConsole.refreshProjectConfigs?.();
-				res.json(fleetConsole.buildManagementSnapshot());
+				res.json(fleetConsole.buildSnapshot());
 			} catch (err) {
 				res.status(500).json({ error: (err as Error).message });
 			}
@@ -2212,11 +1451,7 @@ export function createBridgeApp(
 						}
 					}
 				}
-				const managementBatches =
-					fleetConsole.getManagementCoordinator()?.listProgress() ?? [];
-				res.write(
-					`event: progress\ndata: ${JSON.stringify({ batches, managementBatches })}\n\n`,
-				);
+				res.write(`event: progress\ndata: ${JSON.stringify({ batches })}\n\n`);
 			};
 			push();
 			const timer = setInterval(push, 1000);
@@ -2271,44 +1506,6 @@ export function createBridgeApp(
 			res.status(r.status).json(r.body);
 		});
 
-		app.post("/api/fleet/changes/stage", async (req, res) => {
-			const selfOrigin = loopbackSelfOrigin(req.headers.host);
-			if (!selfOrigin) {
-				res.status(403).json({ error: "non-loopback host" });
-				return;
-			}
-			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
-				res.status(403).json({ error: "cross-origin" });
-				return;
-			}
-			const coordinator = fleetConsole.getManagementCoordinator();
-			if (!coordinator) {
-				res.status(503).json({ error: "management writes unavailable" });
-				return;
-			}
-			const result = await coordinator.stage(req.body, selfOrigin);
-			res.status(result.code).json(result.body);
-		});
-
-		app.post("/api/fleet/changes/apply", async (req, res) => {
-			const selfOrigin = loopbackSelfOrigin(req.headers.host);
-			if (!selfOrigin) {
-				res.status(403).json({ error: "non-loopback host" });
-				return;
-			}
-			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
-				res.status(403).json({ error: "cross-origin" });
-				return;
-			}
-			const coordinator = fleetConsole.getManagementCoordinator();
-			if (!coordinator) {
-				res.status(503).json({ error: "management writes unavailable" });
-				return;
-			}
-			const result = await coordinator.apply(req.body, selfOrigin);
-			res.status(result.code).json(result.body);
-		});
-
 		// FLY-709 P2: feature-flag toggle (copy-paste-apply). Same loopback +
 		// same-origin + confirmToken auth as the fleet routes; reuses the console's
 		// token store + audit. Only direct-toggle flags are accepted (server
@@ -2318,10 +1515,6 @@ export function createBridgeApp(
 			readFile: (p) => ffReadFileSync(p, "utf-8"),
 			tokens: fleetConsole.tokens,
 			audit: fleetConsole.audit,
-			flagStore,
-			projectNames:
-				opts?.flagProjectNames ??
-				(() => projects.map((project) => project.projectName)),
 		};
 		app.post("/api/fleet/flag/stage", (req, res) => {
 			const selfOrigin = loopbackSelfOrigin(req.headers.host);
@@ -2347,7 +1540,7 @@ export function createBridgeApp(
 				return;
 			}
 			const { canonical, confirmToken } = (req.body ?? {}) as {
-				canonical?: AnyFlagCanonical;
+				canonical?: FlagCanonical;
 				confirmToken?: string;
 			};
 			if (!canonical || !confirmToken) {
@@ -2496,7 +1689,7 @@ export function createBridgeApp(
 	// /api/* — api auth
 	app.use(
 		"/api",
-		apiAuthWithRunnerTierDelegation(config.apiToken, config.geminiAgentToken),
+		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		createQueryRouter(store, projects, {
 			retryDispatcher,
 			captureSessionFn,
@@ -2519,8 +1712,6 @@ export function createBridgeApp(
 			// tokenAuthMiddleware no-ops when apiToken is unset, and chatThreads
 			// does not fail-start with one, so the route must fail closed itself.
 			apiTokenConfigured: Boolean(config.apiToken),
-			dispatcherBotUserId: () =>
-				opts?.alertDuty?.dispatcherBotUserId.current ?? null,
 		}),
 	);
 	app.use(
@@ -2539,40 +1730,8 @@ export function createBridgeApp(
 			registry,
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
-			opts?.turnBeltReconciler,
-			undefined, // cardAuthority
-			opts?.materializedHeadAuthority,
-			actionGateAuthorityView,
+			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
 		),
-	);
-
-	// FLY-1309: privileged, loopback-only carrier attestation. The route is
-	// always present so missing master-token configuration fails closed instead
-	// of making carrier readiness ambiguous.
-	app.use(
-		"/api/lead-lease/self-check",
-		config.apiToken
-			? tokenAuthMiddleware(config.apiToken, config.geminiAgentToken)
-			: (((_req, res) => {
-					res.status(503).json({
-						ok: false,
-						reason: "api_token_not_configured",
-					});
-				}) as express.RequestHandler),
-		createLeadLeaseSelfCheckRouter(),
-	);
-	app.use(
-		"/api/lead-lease/diagnostics",
-		config.apiToken
-			? tokenAuthMiddleware(config.apiToken, config.geminiAgentToken)
-			: (((_req, res) => {
-					res.status(503).json({
-						schemaVersion: 1,
-						healthy: false,
-						reason: "api_token_not_configured",
-					});
-				}) as express.RequestHandler),
-		createLeadLeaseDiagnosticsRouter(),
 	);
 
 	// FLY-175 Track 2 Surface B + debug endpoint (auth-required). The gate
@@ -2611,50 +1770,7 @@ export function createBridgeApp(
 		}
 	}
 
-	app.use(
-		"/api/founder-routing/runner-response",
-		config.apiToken
-			? tokenAuthMiddleware(config.apiToken)
-			: (((_req, res) => {
-					res.status(503).json({
-						error:
-							"founder routing response endpoint requires TEAMLEAD_API_TOKEN",
-					});
-				}) as express.RequestHandler),
-		createFounderRoutingResponseRouter({
-			getThreadById: (threadId) => store.getChatThreadByThreadId(threadId),
-			getSessionsByIssue: (issueId) => store.getSessionsByIssue(issueId),
-			commDbPathForProject,
-			logger: {
-				warn: (message) => console.warn(message),
-			},
-		}),
-	);
-
 	// GEO-270: Close stale tmux session (resource cleanup, no status change)
-	// FLY-1373 doorbell: a best-effort latency hint only. comm.db remains the
-	// authority, so a lost/duplicate nudge cannot lose or duplicate delivery.
-	app.post(
-		"/api/lead-inbox/nudge",
-		masterOrIngestAuthMiddleware(config.apiToken, config.ingestToken),
-		(req, res) => {
-			const { leadId, project } = (req.body ?? {}) as {
-				leadId?: unknown;
-				project?: unknown;
-			};
-			if (typeof leadId !== "string" || !leadId.trim()) {
-				res.status(400).json({ error: "leadId is required" });
-				return;
-			}
-			const projectName = typeof project === "string" ? project : undefined;
-			if (!registry?.nudgeLeadInbox(leadId, projectName)) {
-				res.status(404).json({ error: "Lead inbox loop not found" });
-				return;
-			}
-			res.status(202).json({ ok: true });
-		},
-	);
-
 	// FLY-224: Codex Lead outbound — apiToken-guarded reserved endpoint the Codex
 	// Lead runtime POSTs its replies to (durable idempotencyKey dedup → exactly-once
 	// Discord delivery via the per-Lead bot token). Additive; registered only when
@@ -2697,12 +1813,7 @@ export function createBridgeApp(
 			}
 
 			// FLY-44: Only block close-tmux when Runner still needs tmux
-			const tmuxProtectedStates = new Set([
-				"running",
-				"ship_parked",
-				"awaiting_review",
-				"approved_to_ship",
-			]);
+			const tmuxProtectedStates = new Set(["running", "approved_to_ship"]);
 			if (tmuxProtectedStates.has(session.status)) {
 				res.status(409).json({
 					error: `Cannot close tmux for session in "${session.status}" state — Runner still needs tmux`,
@@ -2731,7 +1842,6 @@ export function createBridgeApp(
 				}
 			}
 
-			await reapCodexDaemonForSession(store, session, "bridge.close-tmux");
 			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
 				res.json({ closed: false, reason: "No tmux target found" });
@@ -2849,10 +1959,6 @@ export function createBridgeApp(
 					// fires. transitionOpts is initialized later in this setup fn but
 					// is captured by this request-time closure (always defined here).
 					finalizeDone: !!done,
-					runCloseAuthority: {
-						mode: done || session.status === "completed" ? "done" : "abandon",
-						principal: leadIdTrimmed,
-					},
 					transitionOpts,
 					// FLY-369: central close→archive cascade (done-cleanup + no
 					// other active runner). Archives via the Bridge-local sink.
@@ -2910,14 +2016,13 @@ export function createBridgeApp(
 			projects: projects ?? [],
 			captureSessionFn: defaultCaptureSession,
 			auth: tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-		}),
-	);
-	app.use(
-		"/api/leads",
-		createLeadDetectionAckRouter({
-			store,
-			projects: projects ?? [],
-			auth: tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			// FLY-253: stable callback over the late-bound holder (Codex R2 #4);
+			// null holder / null detector ⇒ no-op, DB latch still deleted.
+			onRearm: (executionId) =>
+				opts?.stuckDetectorHolder?.current?.rearmExecution(executionId),
+			...(opts?.stuckLatchTtlMs !== undefined
+				? { latchTtlMs: opts.stuckLatchTtlMs }
+				: {}),
 		}),
 	);
 
@@ -3073,25 +2178,17 @@ export function createBridgeApp(
 					);
 
 					const runtime = registry?.getForLead(leadId);
-					if (registry && runtime) {
+					if (runtime) {
 						const envelope: import("./lead-runtime.js").LeadEventEnvelope = {
-							eventId,
 							seq,
 							event: payload,
 							sessionKey: "stale-patrol",
 							leadId,
 							timestamp: new Date().toISOString(),
 						};
-						const result = await registry.dispatchLeadEvent(envelope);
+						const result = await runtime.deliver(envelope);
 						if (result.delivered) {
 							store.markLeadEventDelivered(seq);
-							notifications.push({
-								leadId,
-								chatChannel: lead.chatChannel,
-								sessionCount: leadSessions.length,
-								sent: true,
-							});
-						} else if (result.queued) {
 							notifications.push({
 								leadId,
 								chatChannel: lead.chatChannel,
@@ -3737,88 +2834,6 @@ export function createBridgeApp(
 		},
 	);
 
-	// FLY-1160 (plan §3.3 读口): read-only PAGED comments of one issue — the
-	// voice landing reconciliation confirms which stage markers already landed
-	// (assistant-summary <sessionId> / transcript chunk markers) after a
-	// shutdown deadline or crash cut a landing mid-flight, instead of blind
-	// re-posting. Scoped like the comment WRITE path: a named project binding
-	// must contain the issue.
-	app.get(
-		"/api/linear/comments",
-		tokenAuthMiddleware(config.apiToken),
-		async (req, res) => {
-			if (!config.linearApiKey) {
-				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
-				return;
-			}
-			const issueIdRaw = Array.isArray(req.query.issueId)
-				? String(req.query.issueId[0])
-				: (req.query.issueId as string | undefined);
-			if (!issueIdRaw || issueIdRaw.trim().length === 0) {
-				res.status(400).json({ error: "issueId is required" });
-				return;
-			}
-			const afterRaw = Array.isArray(req.query.after)
-				? String(req.query.after[0])
-				: (req.query.after as string | undefined);
-			const limitRaw =
-				req.query.limit !== undefined
-					? parseInt(String(req.query.limit), 10)
-					: 50;
-			const limit = Number.isNaN(limitRaw)
-				? 50
-				: Math.min(Math.max(1, limitRaw), 100);
-			const bound = resolveProjectNameParam(projects, req.query.projectName);
-			if (!bound.ok) {
-				res.status(bound.status).json({ error: bound.error });
-				return;
-			}
-			try {
-				const issue = await lookupLinearIssueByIdentifier(
-					config.linearApiKey,
-					issueIdRaw.trim(),
-				);
-				if (!issue) {
-					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
-					return;
-				}
-				if (bound.binding && !issueMatchesBinding(issue, bound.binding)) {
-					res.status(403).json({
-						error: `issue "${issue.identifier}" is outside the "${String(
-							Array.isArray(req.query.projectName)
-								? req.query.projectName[0]
-								: req.query.projectName,
-						)}" project scope`,
-					});
-					return;
-				}
-				const page = await listLinearIssueComments(
-					config.linearApiKey,
-					issue.id,
-					{ after: afterRaw?.trim() || undefined, limit },
-				);
-				if (!page) {
-					res.status(404).json({ error: `issue "${issueIdRaw}" not found` });
-					return;
-				}
-				res.json({
-					issueId: issue.identifier,
-					state: issue.state,
-					stateType: issue.stateType,
-					comments: page.comments,
-					hasNextPage: page.hasNextPage,
-					endCursor: page.endCursor,
-				});
-			} catch (err) {
-				console.error(
-					"[linear-proxy] comments-list failed:",
-					(err as Error).message,
-				);
-				res.status(502).json({ error: "Linear API error" });
-			}
-		},
-	);
-
 	// FLY-21: Combined triage data endpoint — issues + sessions + capacity in one call
 	app.use(
 		"/api/triage/data",
@@ -3930,15 +2945,13 @@ export function createBridgeApp(
 		},
 	);
 
-	const workflowRunCollector = transitionOpts
-		? createWorkflowRunCollector(store, transitionOpts)
-		: undefined;
 	// GEO-267: /api/runs — start new Runner executions
 	if (startDispatcher) {
 		// FLY-742: stale-blocker guard for the run-start 409 path. Own fsm/executor
 		// (stateless config) since the shared transitionOpts is built later in
 		// setup; teardown primitives are the same module-level fns crash-reaper
-		// uses (equivalent to close_runner done=true).
+		// uses (equivalent to close_runner done=true). Default-on;
+		// FLYWHEEL_CRON_STALE_GUARD=0 → unchanged 409 (byte-compat).
 		const staleGuardTransitionOpts: ApplyTransitionOpts = {
 			store,
 			fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS),
@@ -3946,21 +2959,13 @@ export function createBridgeApp(
 			// FLY-907 (Codex R1 #1): this INDEPENDENT opts instance bypasses the
 			// shared transitionOpts object — hook it too, or a stale-blocker
 			// finalization (stale blocker → completed) never refreshes the display.
-			onTransition: (executionId, targetStatus, ctx) => {
+			onTransition: (executionId, _targetStatus, ctx) => {
 				const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
 				if (issueId) opts?.issueDisplayRefresh?.current?.enqueue(issueId);
-				opts?.terminalCommDbSync?.enqueue(
-					executionId,
-					targetStatus,
-					ctx.projectName,
-				);
 			},
 		};
 		const staleBlockerGuard = createStaleBlockerGuard({
-			reconcileGhost: opts?.residueHarvester
-				? (blocker) => opts.residueHarvester!.reapTarget(blocker)
-				: undefined,
-			enabled: true,
+			enabled: process.env.FLYWHEEL_CRON_STALE_GUARD !== "0",
 			staleTtlMs: resolveCronStaleTtlMs(),
 			now: () => Date.now(),
 			projectRootFor: (name) =>
@@ -4041,9 +3046,8 @@ export function createBridgeApp(
 					},
 					deliver: async (leadId, envelope) => {
 						const runtime = registry?.getForLead(leadId);
-						if (!registry || !runtime)
-							return { delivered: false, error: "no lead runtime" };
-						return registry.dispatchLeadEvent(envelope);
+						if (!runtime) return { delivered: false, error: "no lead runtime" };
+						return runtime.deliver(envelope);
 					},
 					isoNow: () => new Date().toISOString(),
 					log: (m) => console.log(m),
@@ -4058,13 +3062,6 @@ export function createBridgeApp(
 			config.discordGuildId,
 			config.chatThreadsEnabled,
 			staleBlockerGuard,
-			{
-				masterToken: config.apiToken,
-				scopedToken: config.geminiAgentToken,
-				authorizeRework: fcWiring?.authorizeWorkflowRework,
-				collectWorkflowRun: workflowRunCollector,
-			},
-			flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
 		);
 		if (config.apiToken) {
 			app.use(
@@ -4113,26 +3110,37 @@ export function createBridgeApp(
 	const reportsBaseDir =
 		process.env.FLYWHEEL_REPORTS_DIR ??
 		resolve(homedir(), ".flywheel", "reports");
+	const reportsEnabled = process.env.FLYWHEEL_REMOTE_REPORTS !== "0";
 	const reportsRouter = createReportsRouter({
+		enabled: reportsEnabled,
 		vercelToken: opts?.vercelToken,
-		// FLY-929 W3b ① + FLY-2104: resolve the sender for every delivery so a
-		// founder-approved Infra identity change takes effect without a Bridge
-		// restart. Incomplete P-identity still falls back to the legacy global bot.
-		discordBotToken: undefined,
-		resolveDiscordBotToken: () => infraSenderTokenOr(opts?.globalBotToken),
+		// FLY-929 W3b ①: sender = Claude Infra Bot when P-identity holds (BOTH
+		// CLAUDE_INFRA_BOT_TOKEN + FLYWHEEL_NOTIFY_CHANNEL), else the legacy
+		// global bot token byte-for-byte. Once live there is NO Simba fallback on
+		// delivery failure — the P-expect receipt check owns fail-loud.
+		discordBotToken: infraSenderTokenOr(opts?.globalBotToken),
 		projects,
-		resolveIssueThread: (issueIdentifier, projectName) =>
-			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
 		registry: new ReportRegistry(reportsBaseDir, {
 			// FLY-203 follow-up (founder): report links expire after 7 days.
-			retentionMaxAgeMs: DEFAULT_RETENTION_MAX_AGE_MS,
+			// FLYWHEEL_REPORTS_TTL_DAYS overrides (positive integer; 0 disables).
+			retentionMaxAgeMs: resolveReportsTtlMs(
+				process.env.FLYWHEEL_REPORTS_TTL_DAYS,
+			),
 		}),
 	});
-	app.use(
-		"/api/reports",
-		reportsAuthMiddleware(config.apiToken, config.ingestToken),
-		reportsRouter,
-	);
+	if (config.apiToken) {
+		app.use(
+			"/api/reports",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			reportsRouter,
+		);
+	} else {
+		app.use("/api/reports", (_req, res) => {
+			res.status(503).json({
+				error: "reports API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
 
 	// FLY-727: /api/digest — daily completion digest render endpoint.
 	// EXPLICIT default-off (R3 #1): mounted ONLY when FLYWHEEL_DIGEST_CHANNEL is
@@ -4145,7 +3153,7 @@ export function createBridgeApp(
 	if (process.env.FLYWHEEL_DIGEST_CHANNEL) {
 		const digestSlug = process.env.LINEAR_WORKSPACE_SLUG;
 		const digestService = new DigestService(store, {
-			tz: process.env.FLYWHEEL_DIGEST_TZ ?? resolveFounderTimezone,
+			tz: process.env.FLYWHEEL_DIGEST_TZ ?? "America/Los_Angeles",
 			linearBaseUrl: digestSlug
 				? `https://linear.app/${digestSlug}/issue`
 				: undefined,
@@ -4185,60 +3193,22 @@ export function createBridgeApp(
 		});
 	}
 
-	// FLY-1456: the retired /api/account-switch surface stays AUTH-REQUIRED.
-	// Without TEAMLEAD_API_TOKEN it returns 503; authenticated callers receive
-	// a stable 410 from the static retirement router.
+	// FLY-871 R2/C5: POST /api/account-switch — the Codex Infra Bot's claim+execute
+	// entry for a Claude account switch. AUTH-REQUIRED (503 without TEAMLEAD_API_TOKEN),
+	// deliberately NOT under /actions. Reads the late-bound runtime holder (bound in
+	// startBridge only when self-heal is on) → off ⇒ 409 needs_human (byte-compat).
 	if (config.apiToken) {
 		app.use(
 			"/api/account-switch",
 			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-			createAccountSwitchRouter(),
+			createAccountSwitchRouter({
+				getRuntime: () => opts?.accountSwitchRoute?.current,
+			}),
 		);
 	} else {
 		app.use("/api/account-switch", (_req, res) => {
 			res.status(503).json({
 				error: "account-switch API requires TEAMLEAD_API_TOKEN",
-			});
-		});
-	}
-
-	const flagScanRunHandler: express.RequestHandler = async (req, res, next) => {
-		try {
-			if (!loopbackSelfOrigin(req.headers.host)) {
-				res.status(403).json({ error: "loopback host required" });
-				return;
-			}
-			const runtime = opts?.flagScanRoute?.current;
-			if (!runtime) {
-				res.status(503).json({ error: "flag scan is not ready" });
-				return;
-			}
-			const body = (req.body ?? {}) as Record<string, unknown>;
-			if (
-				Object.keys(body).some((key) => key !== "dryRun") ||
-				(body.dryRun !== undefined && typeof body.dryRun !== "boolean")
-			) {
-				res.status(400).json({ error: "body must be {dryRun?: boolean}" });
-				return;
-			}
-			const outcome = body.dryRun
-				? await runtime.dryRun()
-				: await runtime.runNow();
-			res.status(outcome.status === "lost_race" ? 409 : 200).json(outcome);
-		} catch (error) {
-			next(error);
-		}
-	};
-	if (config.apiToken) {
-		app.post(
-			"/api/flag-scan/run",
-			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-			flagScanRunHandler,
-		);
-	} else {
-		app.post("/api/flag-scan/run", (_req, res) => {
-			res.status(503).json({
-				error: "flag scan API requires TEAMLEAD_API_TOKEN",
 			});
 		});
 	}
@@ -4304,33 +3274,11 @@ export async function startBridge(
 	close: () => Promise<void>;
 	registry: RuntimeRegistry;
 }> {
-	// FLY-2102: the retired broker credentials must never leak into any child
-	// process. Scrub them before validation or any other boot work so even a
-	// failed Bridge start cannot leave them available to later process spawns.
-	delete process.env.FW_CUSTOMER_RELEASE_TOKEN;
-	delete process.env.FW_NPM_GAT_TOKEN;
-
 	if (projects.length === 0) {
 		throw new Error(
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",
 		);
 	}
-	scrubManagedTmuxEnvironments(projects, {
-		log: (line) => console.warn(line),
-	});
-	const bridgeBootTs = Date.now();
-	let turnPointerAuditSeq = 0;
-	const livenessTrackers = {
-		liveness: new LivenessCheckTracker({
-			cadenceMs: config.stuckCheckIntervalMs,
-		}),
-	};
-	// Live registration truth for /health. These bits flip only after the
-	// corresponding tracker has actually been handed to its runtime component.
-	const livenessWiring = {
-		liveness: false,
-		externalDrift: true,
-	};
 
 	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
 	// kind must have an owner + an explicit ARC posture, or the Bridge REFUSES
@@ -4344,14 +3292,34 @@ export async function startBridge(
 	// the boot self-check ticket for it is emitted after the alert sink exists.
 	const bridgeMarker = bridgeMarkerPath(process.env);
 	const prevExitMarker = latchPreviousMarker(bridgeMarker);
-	sweepStaleSyncOpMarkers({ env: process.env });
 	try {
-		writeRunningMarker(bridgeMarker, process.pid, bridgeBootTs);
+		writeRunningMarker(bridgeMarker, process.pid, Date.now());
 	} catch (err) {
 		console.warn(
 			`[bridge-exit-marker] running-marker write failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
+
+	// FLY-1062 (plan §3): the publish broker. Its two outward-publish tokens are
+	// read AND SCRUBBED from process.env here — before any child spawn path can
+	// inherit them — whether or not the feature is enabled. Default OFF
+	// (FLYWHEEL_PUBLISH_BROKER=1 enables; reverse-compat sentinel): enabled, it
+	// owns the unix-socket request surface + the founder ✅-reaction approval
+	// observation. A wiring failure is fail-closed for PUBLISHING only — the
+	// Bridge still boots.
+	const publishBrokerHandle = await wirePublishBroker({
+		env: process.env,
+		stateDir: join(homedir(), ".flywheel"),
+		discordBotToken: config.discordBotToken,
+		discordOwnerUserId: config.discordOwnerUserId,
+		founderConsentUserId: config.founderConsent?.founderUserId,
+		log: (line) => console.log(line),
+	}).catch((err) => {
+		console.warn(
+			`[publish-broker] wiring failed (publishes unavailable): ${(err as Error).message}`,
+		);
+		return null;
+	});
 
 	// FLY-1082: late-bound fleet holders — the sensors need the routed alert
 	// sink (built late) while HeartbeatService/AutoRepairBot (built earlier)
@@ -4359,182 +3327,20 @@ export async function startBridge(
 	const fleetSensorsHolder: { current: FleetSensors | null } = {
 		current: null,
 	};
-	const leadReconcilePassHolder: {
-		current: (() => Promise<void>) | null;
-	} = { current: null };
-	const runnerQuotaScanPassHolder: {
-		current: (() => Promise<void>) | null;
-	} = { current: null };
 	const serverLossHolder: { current: ServerLossCoordinator | null } = {
 		current: null,
 	};
-	const serverLossCheckState: {
-		active: Promise<ServerLossCheckResult> | null;
-		firstSuccessful: boolean;
-	} = { active: null, firstSuccessful: false };
-	const coordinatedServerLossCheck = (): Promise<ServerLossCheckResult> => {
-		if (serverLossCheckState.active) return serverLossCheckState.active;
-		const coordinator = serverLossHolder.current;
-		if (!coordinator) {
-			const values = new Set<string>();
-			const empty = Object.assign(values, {
-				claimed: values as ReadonlySet<string>,
-				heldExecutionIds: values as ReadonlySet<string>,
-			});
-			return Promise.resolve(empty);
-		}
-		const active = coordinator
-			.check()
-			.then((result) => {
-				serverLossCheckState.firstSuccessful = true;
-				return result;
-			})
-			.finally(() => {
-				if (serverLossCheckState.active === active) {
-					serverLossCheckState.active = null;
-				}
-			});
-		serverLossCheckState.active = active;
-		return active;
-	};
-	const paneLossNotifyHolder: {
-		current:
-			| ((
-					session: Session,
-					classification: PaneLossNotificationClass,
-					terminalStatus?: string,
-			  ) => Promise<boolean>)
-			| null;
-	} = { current: null };
-	const tuiWindowAlertHolder: {
-		lost?: (evidence: RunnerTuiWindowLostEvidence) => void | Promise<void>;
-		restored?: (executionId: string) => void | Promise<void>;
-	} = {};
-	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
-	const flagStore = initializeFlagStore(store, process.env);
-	// FLY-182/2103: construct the existing Discord-independent founder alert
-	// path before project runtime setup, so ConfigLoader rejection cannot remain
-	// a console-only boot failure.
-	const metaAlertNotifier = new MetaAlertNotifier();
-	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
-		console.log(
-			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
-		);
-	});
-	const eventLoopAttribution = new EventLoopAttribution({
-		diagnosticsDir: resolve(
-			process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR?.trim() ||
-				join(
-					process.env.FLYWHEEL_STATE_DIR?.trim() ||
-						process.env.FLYWHEEL_HOME?.trim() ||
-						join(homedir(), ".flywheel"),
-					"diagnostics",
-				),
-		),
-		profilerEnabled: () => storeLoopProfilerEnabled(flagStore),
-	});
-	await eventLoopAttribution.start();
-	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
-	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
-	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
-	const terminalCommDbSync = createTerminalCommDbSync({
-		enabled: true,
-		getAuthoritativeStatus: (executionId) =>
-			store.getSession(executionId)?.status,
-		resolveDbPath: resolveCommDbPath,
-		openDb: (dbPath) => new CommDB(dbPath, false),
-		warmProject: (projectName) => {
-			const dbPath = resolveCommDbPath(projectName);
-			if (!dbPath) return;
-			const db = new CommDB(dbPath, false);
-			db.close();
-		},
-		log: (message) => console.warn(message),
-	});
-	await terminalCommDbSync.warmProjects(
-		projects.map((project) => project.projectName),
-	);
-	importWorkflowMenuSeeds(store);
-	const retirement = retireLegacyWorkflowTemplates(store);
-	console.warn(
-		`[workflow-template] FLY-1693 retirement reconcile: unbound=${retirement.unbound} retired=${retirement.retired} blocked=${JSON.stringify(retirement.blocked)} errors=${JSON.stringify(retirement.errors)}`,
-	);
-	const menuBindings = reconcileMenuCategoryBindings(store, projects);
-	console.warn(
-		`[workflow-menu] binding reconcile: bound=${menuBindings.bound} existing=${menuBindings.existing} errors=${JSON.stringify(menuBindings.errors)}`,
-	);
-	const defaultDagBindings = reconcileDefaultDagCategoryBindings(
-		store,
-		projects,
-	);
-	console.warn(
-		`[workflow-menu] FLY-1981 DAG-default reconcile: bound=${defaultDagBindings.bound} existing=${defaultDagBindings.existing} disabled=${defaultDagBindings.disabled} menuManaged=${defaultDagBindings.menuManaged} errors=${JSON.stringify(defaultDagBindings.errors)}`,
-	);
-	const strandedGeneralized = store.holdStrandedGeneralizedExecutions();
-	if (strandedGeneralized.length > 0) {
-		console.warn(
-			`[workflow-template] generalized stranded executions held (no successor dispatch): ${strandedGeneralized.join(", ")}`,
-		);
-	}
-	const workflowSourceAlertFallback: {
-		current?: (payload: AlertPayload) => Promise<{ accepted: boolean }>;
-	} = {};
+	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
+	// a founder-owned seed mismatch is audited and refused by StateStore.
+	importBundledWorkflowSeeds(store);
 	const workflowSourceProjector = startWorkflowSourceProjector({
 		projects: () => loadProjects().map((project) => project.projectName),
 		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
 		store,
-		resolveAlertIdentity: ({ project, issueId, runId }) =>
-			resolveWorkflowRunAlertIdentity({
-				store,
-				projects,
-				defaultLeadAgentId: config.defaultLeadAgentId,
-				projectName: project,
-				issueId,
-				runId,
-				log: (message) =>
-					console.warn(`[workflow-source-projector] ${message}`),
-			}),
-		alertFallback: async (payload) => {
-			const fallback = workflowSourceAlertFallback.current;
-			return fallback ? fallback(payload) : { accepted: false };
-		},
 		log: (message) => console.warn(message),
 	});
-
-	const shipRelevantDiffService = new ShipRelevantDiffService(store);
-	const ensureShipRelevantDiff = async (session: Session): Promise<void> => {
-		const head = session.pr_head_sha?.toLowerCase();
-		if (!head || !/^[0-9a-f]{40}$/.test(head)) return;
-		const project = projects.find(
-			(candidate) => candidate.projectName === session.project_name,
-		);
-		if (
-			!project ||
-			!project.projectRepo ||
-			!/^[^/]+\/[^/]+$/.test(project.projectRepo) ||
-			!Number.isSafeInteger(session.pr_number) ||
-			(session.pr_number ?? 0) <= 0
-		) {
-			store.deleteShipRelevantDiffSnapshot(session.execution_id, head);
-			return;
-		}
-		await shipRelevantDiffService.ensure({
-			executionId: session.execution_id,
-			repo: project.projectRepo,
-			prNumber: session.pr_number!,
-			prHeadSha: head,
-			api: async (path) => {
-				const { stdout } = await execFileP("gh", ["api", path], {
-					cwd: project.projectRoot,
-					timeout: 15_000,
-					maxBuffer: 5 * 1024 * 1024,
-				});
-				return JSON.parse(stdout) as unknown;
-			},
-		});
-	};
 
 	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
 	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
@@ -4543,15 +3349,6 @@ export async function startBridge(
 		const hold = store.getFleetPressureHold();
 		return hold
 			? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, memory ${hold.watermark ?? "?"}) — lifts automatically once real memory pressure is proven healthy (free% recovered + swapout quiet)`
-			: null;
-	});
-	config.runnerAdmission?.setAdmissionPauseProbe(() => {
-		const pause = store.getAdmissionPause();
-		return pause?.active
-			? {
-					detail: "operator deployment pause is active",
-					retryAfterSeconds: pause.remainingSeconds,
-				}
 			: null;
 	});
 
@@ -4607,19 +3404,13 @@ export async function startBridge(
 	let retryDispatcher = opts?.retryDispatcher;
 	// FLY-907: unified issue-display refresh. The holder is threaded into every
 	// trigger surface NOW (they read `.current` at fire time); the refresher
-	// itself is built post-listen.
+	// itself is built post-listen (it needs AutoQaEffects). Master escape hatch:
+	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 leaves `.current` unset forever → all
+	// NEW trigger surfaces stay dormant and stage_changed uses the legacy
+	// stamp+pin path (pre-FLY-907 behavior).
+	const issueDisplayRefreshEnabled =
+		process.env.FLYWHEEL_ISSUE_DISPLAY_REFRESH !== "0";
 	const issueDisplayRefreshHolder: IssueDisplayRefreshHolder = {};
-	const pendingIssueDisplayRefreshes = new Set<string>();
-	const enqueueIssueDisplayRefresh = (issueId: string): void => {
-		const refresher = issueDisplayRefreshHolder.current;
-		if (refresher) {
-			refresher.enqueue(issueId);
-		} else if (chatThreadCreator) {
-			// Startup status writes can precede the late-bound refresher. Preserve
-			// the exact write trigger and drain it as soon as the renderer exists.
-			pendingIssueDisplayRefreshes.add(issueId);
-		}
-	};
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
@@ -4631,19 +3422,14 @@ export async function startBridge(
 		// terminate / retry / reject / close-runner / crash-reaper / heartbeat
 		// reconcile / marker reconcilers / completion routes / founder consent)
 		// triggers ONE coalesced derive-from-state display refresh.
-		onTransition: (executionId, targetStatus, ctx) => {
+		onTransition: (executionId, _targetStatus, ctx) => {
 			const issueId = ctx.issueId ?? store.getSession(executionId)?.issue_id;
-			if (issueId) enqueueIssueDisplayRefresh(issueId);
-			terminalCommDbSync.enqueue(executionId, targetStatus, ctx.projectName);
+			if (issueId) issueDisplayRefreshHolder.current?.enqueue(issueId);
 		},
 	};
-	const workflowRunCollector = createWorkflowRunCollector(
-		store,
-		transitionOpts,
-	);
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
 	// the boot topology; structural change → restart-required, R3#4) + the
-	// 30s evidence poller (single probe owner for Dashboard + fleet sensors, R6#5).
+	// 30s evidence poller (single probe owner for Dashboard + watchdog, R6#5).
 	const fleetConfigProvider = new ConfigSnapshotProvider(projects, {
 		loadProjects: () => loadProjects(),
 		envPinned: Boolean(process.env.FLYWHEEL_PROJECTS),
@@ -4655,18 +3441,9 @@ export async function startBridge(
 		legacyBackendOf: fleetLegacyBackendOf,
 		deps: buildDefaultFleetProbeDeps(),
 		logger: (msg) => console.log(msg),
-		carrierEnv: process.env,
 	});
 	fleetPoller.start();
 	console.log("[Bridge] FleetPoller started (30s evidence collection)");
-	const leadRuntimeStateDir =
-		process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel");
-	const locateFleetLeadWindow = (projectName: string, leadId: string) =>
-		locateConfiguredLeadWindow(projectName, leadId, {
-			homeDir: homedir(),
-			stateDir: leadRuntimeStateDir,
-			readFile: (path) => ffReadFileSync(path, "utf8"),
-		});
 	// Default-off gate (R1#6): zero-config deployments keep a byte-identical
 	// SSE payload — the fleet key only appears when ≥1 lead opts in. The gate
 	// reads the CURRENT snapshot, so hot-adding config appears without a
@@ -4681,29 +3458,26 @@ export async function startBridge(
 		fleetSupplier,
 	);
 
-	// FLY-247 inc2a: Fleet console (founder-admin surface). The console reads the
-	// live hot-overlay topology + computes everything server-side (secret-free DTO). Env-pinned
+	// FLY-247 inc2a: Fleet console (founder-admin surface). Local-first; default
+	// ON, `FLYWHEEL_FLEET_CONSOLE=0` falls back to the old dashboard + no fleet
+	// routes (byte-compat escape hatch). The console reads the live hot-overlay
+	// topology + computes everything server-side (secret-free DTO). Env-pinned
 	// (FLYWHEEL_PROJECTS) deployments can't run the engine (split-brain guard), so
 	// the console is disabled there too.
 	let fleetConsole: FleetConsole | undefined;
-	let flagProjectNames = () => projects.map((project) => project.projectName);
 	// Hoisted so close() can clear it (Codex R3 MEDIUM-1: a block-local timer +
 	// an un-closed console keep recovering batches / hold the audit handle after
 	// shutdown).
 	let fleetReconcileTimer: ReturnType<typeof setInterval> | undefined;
-	let flagScanSourceLoader: (() => Promise<FlagScanSourceSnapshot>) | undefined;
-	let flagScanRepoRoot: string | undefined;
-	if (!process.env.FLYWHEEL_PROJECTS) {
+	if (
+		process.env.FLYWHEEL_FLEET_CONSOLE !== "0" &&
+		!process.env.FLYWHEEL_PROJECTS
+	) {
 		try {
 			const here = dirname(fileURLToPath(import.meta.url));
 			const repoRoot =
 				process.env.FLYWHEEL_REPO_ROOT?.trim() ||
 				resolve(here, "..", "..", "..", "..");
-			const managementProjectsPath = join(
-				homedir(),
-				".flywheel",
-				"projects.json",
-			);
 			const fleetScriptPath = join(repoRoot, "scripts", "flywheel-fleet.sh");
 			const commCliPath = join(
 				repoRoot,
@@ -4717,96 +3491,9 @@ export async function startBridge(
 			// refresh whenever the file stamp changes (runner-config CLI writes are
 			// visible on the next snapshot, no Bridge restart).
 			const ffConfigCache = new ProjectConfigCache();
-			const managementProjectSource = new ManagementProjectSource({
-				path: managementProjectsPath,
-				readFile: (path) => ffReadFileSync(path, "utf-8"),
-				parse: parseAndValidateProjects,
-				warm: async () => undefined,
-			});
-			await managementProjectSource.initialize();
-			let managementProjects = managementProjectSource.projects();
-			try {
-				await ffConfigCache.get(managementProjects);
-			} catch (error) {
-				console.warn(
-					`[management] project config cache unavailable: ${(error as Error).message}`,
-				);
-			}
-			flagProjectNames = () =>
-				managementProjects.map((project) => project.projectName);
-			let managementProjectsRevision = managementProjectSource.revision();
-			const managementEnvPath = join(homedir(), ".flywheel", ".env");
-			const managementEnvSource = () =>
-				readEnvFileSource(managementEnvPath, (path) =>
-					ffReadFileSync(path, "utf-8"),
-				);
-			const currentFlagViews = () => {
-				const views = resolveAllFlags({
-					env: process.env,
-					envFile: managementEnvSource(),
-				});
-				return flagStore
-					? enrichFlagViewsWithStore(
-							views,
-							flagStore,
-							managementProjects.map((project) => project.projectName),
-						)
-					: views;
-			};
-			const managementLaunchAgentsDir = join(
-				homedir(),
-				"Library",
-				"LaunchAgents",
-			);
-			const managementSections = new ManagementSectionRegistry();
-			const refreshManagementSources = async () => {
-				const projectsReadable = await managementProjectSource.refresh();
-				managementProjects = managementProjectSource.projects();
-				managementProjectsRevision = managementProjectSource.revision();
-				try {
-					await ffConfigCache.get(managementProjects);
-				} catch (error) {
-					console.warn(
-						`[management] project config cache unavailable: ${(error as Error).message}`,
-					);
-				}
-				return projectsReadable;
-			};
-			flagScanRepoRoot = repoRoot;
-			flagScanSourceLoader = async () => {
-				const projectSourcesReadable = await refreshManagementSources();
-				if (!projectSourcesReadable) {
-					console.warn(
-						"[flag-scan] project roster refresh unavailable; project-scoped flags have no clock this round",
-					);
-				}
-				const resolvedViews = currentFlagViews();
-				const views = projectSourcesReadable
-					? resolvedViews
-					: resolvedViews.map((view) =>
-							view.scope === "project"
-								? { ...view, effectiveByProject: undefined }
-								: view,
-						);
-				const viewByName = new Map(views.map((view) => [view.name, view]));
-				if (
-					viewByName.size !== FEATURE_FLAGS.length ||
-					FEATURE_FLAGS.some((spec) => !viewByName.has(spec.name))
-				) {
-					throw new Error(
-						"resolved feature-flag roster did not match registry",
-					);
-				}
-				return {
-					rows: FEATURE_FLAGS.map((spec) => ({
-						spec,
-						view: viewByName.get(spec.name)!,
-					})),
-					expectedProjectNames: managementProjects.map(
-						(project) => project.projectName,
-					),
-				};
-			};
+			void ffConfigCache
+				.get(fleetConfigProvider.snapshot().projects)
+				.catch(() => {});
 			fleetConsole = new FleetConsole(
 				defaultFleetConsoleOptions({
 					fleetScriptPath,
@@ -4816,57 +3503,17 @@ export async function startBridge(
 					// Online dot from the live evidence poller (null/stale → unknown).
 					fleetEvidence: () => fleetPoller.snapshot(),
 					// FLY-709 P4: stat-and-reload-on-change before a snapshot build.
-					refreshProjectConfigs: async () => {
-						await refreshManagementSources();
-					},
-					managementSnapshotProviders: () => [
-						managementProjectSource.healthProvider(),
-						...createManagementSsotProviders({
-							projects: () => managementProjects,
-							projectsRevision: () => managementProjectsRevision,
-							projectConfigs: () => ffConfigCache.current(),
-							onlineByLead: () => {
-								const online = new Map<
-									string,
-									"online" | "offline" | "degraded" | "unknown"
-								>();
-								for (const lead of fleetPoller.snapshot()?.leads ?? []) {
-									online.set(
-										lead.key,
-										onlineFromPresentation(lead.presentation),
-									);
-								}
-								return online;
-							},
-						}),
-						createManagementDagProvider({
-							reader: store,
-							projectNames: () =>
-								managementProjects.map((project) => project.projectName),
-						}),
-						createManagementRunnerProvider({
-							projects: () => managementProjects,
-							projectConfigs: () => ffConfigCache.current(),
-						}),
-						createManagementFlagProvider({
-							views: currentFlagViews,
-							revision: () => {
-								const source = managementEnvSource();
-								return source.status === "readable"
-									? managementFlagRevision(source.content, process.env)
-									: `env-unavailable:${managementFlagRevision("", process.env)}`;
-							},
-							projectNames: () =>
-								managementProjects.map((project) => project.projectName),
-						}),
-						managementSections.snapshotProvider(),
-						createManagementCronProvider({
-							launchAgentsDir: managementLaunchAgentsDir,
-							projects: () => managementProjects,
-						}),
-					],
+					refreshProjectConfigs: () =>
+						ffConfigCache
+							.get(fleetConfigProvider.snapshot().projects)
+							.then(() => undefined)
+							.catch(() => undefined),
 					// FLY-709: resolved feature-flag views (env fresh + cached configs).
-					featureFlags: currentFlagViews,
+					featureFlags: () =>
+						resolveAllFlags({
+							env: process.env,
+							projectConfigs: ffConfigCache.current(),
+						}),
 					// FLY-709 ② (b): per-project runner default model, derived from the
 					// SAME cached configs (no extra config.yaml IO).
 					projectRunnerDefaults: () =>
@@ -4879,112 +3526,10 @@ export async function startBridge(
 						buildCronModelViews(
 							fleetConfigProvider.snapshot().projects,
 							ffConfigCache.current(),
-							(projectName) =>
-								storeXiaohongshuLearningEnabled(flagStore, projectName),
-							(error) =>
-								console.error(
-									`[management] cron model scoped flag read failed: ${error.message}`,
-								),
 						),
 					logger: (msg) => console.log(msg),
 				}),
 			);
-			const managementConsole = fleetConsole;
-			const scanCurrentCrons = () =>
-				scanManagementCrons({
-					launchAgentsDir: managementLaunchAgentsDir,
-					projects: managementProjects,
-				});
-			const cronAuthority = new ManagementCronWriter({
-				launchAgentsDir: managementLaunchAgentsDir,
-				uid: process.getuid?.() ?? 0,
-				targets: () => scanCurrentCrons().targets,
-			});
-			const existingWriters = createExistingManagementWriters({
-				projects: () => managementProjects,
-				projectsRevision: () => managementProjectsRevision,
-				projectConfigs: () => ffConfigCache.current(),
-				readProjectConfig: (path) => ffReadFileSync(path, "utf-8"),
-				applyLeadCanonical: (request) => {
-					if (!managementConsole.createLaunching(request.batchId, request)) {
-						return {
-							status: "rejected",
-							reason: "could not create Fleet engine journal",
-						};
-					}
-					if (!managementConsole.spawnEngine(request.batchId, request)) {
-						return {
-							status: "rejected",
-							reason: "Fleet engine spawn failed",
-						};
-					}
-					return {
-						status: "accepted",
-						details: { batchId: request.batchId },
-					};
-				},
-				envPath: managementEnvPath,
-				readEnvFile: (path) => ffReadFileSync(path, "utf-8"),
-				env: process.env,
-				flagViews: currentFlagViews,
-			});
-			const managementCoordinator = new ManagementChangeCoordinator({
-				registry: new ManagementWriterRegistry([
-					existingWriters.lead,
-					existingWriters.runner,
-					existingWriters.flag,
-					createManagementDagWriter({
-						store,
-						projectNames: () =>
-							managementProjects.map((project) => project.projectName),
-						actor: "founder-management-console",
-					}),
-					createManagementCronWriterAdapter({
-						writer: cronAuthority,
-						targets: () => scanCurrentCrons().targets,
-					}),
-					managementSections.writer(),
-				]),
-				tokens: managementConsole.tokens,
-				audit: managementConsole.audit,
-				journalDir: join(homedir(), ".flywheel", "fleet-txns"),
-				snapshotRevision: () =>
-					managementConsole.buildManagementSnapshot().snapshotRevision,
-				reconcileAccepted: (writerId, details) => {
-					if (writerId !== "existing-fleet-lead-v1") return null;
-					const batchId =
-						typeof details === "object" &&
-						details !== null &&
-						typeof (details as { batchId?: unknown }).batchId === "string"
-							? ((details as { batchId: string }).batchId as string)
-							: null;
-					if (!batchId) {
-						return {
-							status: "partial",
-							reason: "missing Fleet child batch id",
-						};
-					}
-					const progress = managementConsole.progressFor(batchId);
-					if (!progress || !progress.terminal) return null;
-					if (progress.batchStatus === "applied") {
-						return { status: "applied", details: { batchId } };
-					}
-					if (progress.batchStatus === "partially-applied") {
-						return {
-							status: "partial",
-							reason: "Fleet child batch partially applied",
-							details: { batchId },
-						};
-					}
-					return {
-						status: "rejected",
-						reason: `Fleet child batch ended ${progress.batchStatus}`,
-						details: { batchId },
-					};
-				},
-			});
-			managementConsole.setManagementCoordinator(managementCoordinator);
-			void managementCoordinator.reconcileProgress();
 			// R8 #2: on boot, reconcile any interrupted batch by engine liveness
 			// (live → observe; dead → engine's own recover) + apply-result audit.
 			fleetConsole.reconcileOnStartup();
@@ -5002,11 +3547,6 @@ export async function startBridge(
 						`[Bridge] fleet reconcile tick failed: ${(e as Error).message}`,
 					);
 				}
-				void managementCoordinator.reconcileProgress().catch((error) => {
-					console.warn(
-						`[Bridge] management reconcile tick failed: ${error.message}`,
-					);
-				});
 			}, 30_000);
 			fleetReconcileTimer.unref?.();
 			console.log(`[Bridge] Fleet console enabled (engine=${fleetScriptPath})`);
@@ -5044,201 +3584,6 @@ export async function startBridge(
 			`[Bridge] RuntimeRegistry: ${registry.size} lead runtime(s) registered`,
 		);
 	}
-	const testDeliverySecret = process.env.VITEST
-		? { secretId: "vitest-delivery-secret", key: randomBytes(32) }
-		: null;
-	const deliverySecretProvider = testDeliverySecret
-		? { getActive: () => testDeliverySecret }
-		: new FileDeliverySecretProvider({ store });
-
-	// FLY-1373: comm.db is now the one durable Lead-delivery authority. Start
-	// every per-Lead consumer before mounting the app so the nudge route and all
-	// producer seams are live together; mount-time start performs the first pull.
-	// Keep the cutover assembly lazy: createLeadRuntime is also imported by
-	// lightweight preflight callers, which must not load the entire inbox stack
-	// (or its transport adapter) just to select a legacy runtime.
-	const { LeadInboxRuntime } = await import("./lead-inbox-runtime.js");
-	const qaStallLeadId = qaStallInboxLoopLead(process.env);
-	if (process.env.FLYWHEEL_QA_STALL_INBOX_LOOP_LEAD && !qaStallLeadId) {
-		console.warn(
-			"[FLY-1393 QA] refusing inbox-loop stall injection unless the effective FLYWHEEL_COMM_ROOT/FLYWHEEL_COMM_DIR is inside the process temp root and outside ~/.flywheel",
-		);
-	}
-	// FLY-1586 R2 HIGH-5 — the notifier is built much later in startBridge, so the
-	// sink is late-bound the same way the event router already does it. Until it
-	// is set the callback THROWS rather than silently succeeding: a no-op would
-	// mark the alert accepted and lose it, which is the precise failure this alert
-	// exists to prevent.
-	const quarantineAlertSink: {
-		current?: (input: {
-			seq: number;
-			leadId: string;
-			projectName: string;
-			reason: string;
-		}) => Promise<void>;
-	} = {};
-	type ModelTransportStall = {
-		projectName: string;
-		leadId: string;
-		error: string;
-		at: string;
-	};
-	type ModelTransportRecovery = Omit<ModelTransportStall, "error">;
-	type ModelTransportExhausted = ModelTransportStall & {
-		deliveryIds: string[];
-		attempt: number;
-	};
-	const pendingModelTransportStalls = new Map<string, ModelTransportStall>();
-	const modelTransportAlertSink: {
-		current?: {
-			stall: (input: ModelTransportStall) => Promise<void>;
-			recovered: (input: ModelTransportRecovery) => Promise<void>;
-			exhausted: (input: ModelTransportExhausted) => Promise<void>;
-		};
-	} = {};
-	type DiscordMailboxAlert = {
-		projectName: string;
-		leadId: string;
-		deliveryIds: string[];
-		at: string;
-	};
-	type DiscordMailboxUndeliverable = DiscordMailboxAlert & {
-		reason: string;
-		attempt: number;
-	};
-	type DiscordMailboxStall = DiscordMailboxAlert & {
-		batchId: string;
-		error: string;
-	};
-	const pendingDiscordMailboxStalls = new Map<string, DiscordMailboxStall>();
-	const discordMailboxAlertSink: {
-		current?: {
-			undeliverable: (input: DiscordMailboxUndeliverable) => Promise<void>;
-			stall: (input: DiscordMailboxStall) => Promise<void>;
-		};
-	} = {};
-	const deadLetterAlertSink: {
-		current?: (input: {
-			eventId: string;
-			leadId: string;
-			projectName: string;
-			recipient: string;
-			sourceKind: "lead_unacked" | "runner_unroutable";
-			deadCount: number;
-			summary: string;
-			replayAfterAmbiguousAttempt: boolean;
-		}) => Promise<void>;
-	} = {};
-	const leadInboxRuntime = new LeadInboxRuntime({
-		leadLeaseDbPath:
-			process.env.FLYWHEEL_LEAD_LEASE_DB ??
-			join(homedir(), ".flywheel", "lead-lease.db"),
-		currentLeadRecipientsForProject: (projectName) =>
-			loadProjects()
-				.find((project) => project.projectName === projectName)
-				?.leads.map(({ agentId }) => agentId) ?? [],
-		onQuarantineAlert: async (input) => {
-			const send = quarantineAlertSink.current;
-			if (!send) throw new Error("quarantine alert sink not ready");
-			await send(input);
-		},
-		onModelTransportStall: async (input) => {
-			const key = `${input.projectName}\u001f${input.leadId}`;
-			const send = modelTransportAlertSink.current?.stall;
-			if (!send) {
-				pendingModelTransportStalls.set(key, input);
-				return;
-			}
-			await send(input);
-		},
-		onModelTransportRecovered: async (input) => {
-			pendingModelTransportStalls.delete(
-				`${input.projectName}\u001f${input.leadId}`,
-			);
-			await modelTransportAlertSink.current?.recovered(input);
-		},
-		onModelTransportExhausted: async (input) => {
-			const send = modelTransportAlertSink.current?.exhausted;
-			if (!send)
-				throw new Error("terminal model transport alert sink not ready");
-			await send(input);
-		},
-		onDiscordUndeliverable: async (input) => {
-			const send = discordMailboxAlertSink.current?.undeliverable;
-			if (!send) throw new Error("Discord mailbox alert sink not ready");
-			await send(input);
-		},
-		onDiscordDeliveryStall: async (input) => {
-			const key = `${input.projectName}\u001f${input.leadId}`;
-			const send = discordMailboxAlertSink.current?.stall;
-			if (!send) {
-				pendingDiscordMailboxStalls.set(key, input);
-				return;
-			}
-			await send(input);
-		},
-		onDeadLetterAlert: async (input) => {
-			const send = deadLetterAlertSink.current;
-			if (!send) throw new Error("dead-letter alert sink not ready");
-			await send(input);
-		},
-		projects,
-		store,
-		registry,
-		commDbPathForProject,
-		chatThreadsEnabled: config.chatThreadsEnabled,
-		secretProvider: deliverySecretProvider,
-		...(qaStallLeadId
-			? {
-					afterTickStartedForLead: async (
-						_projectName: string,
-						leadId: string,
-					) => {
-						if (leadId !== qaStallLeadId) return;
-						await new Promise<never>(() => undefined);
-					},
-				}
-			: {}),
-	});
-	registry.setLeadEventEnqueuer((envelope, content) =>
-		leadInboxRuntime.enqueueLeadEvent(envelope, content),
-	);
-	registry.setLeadInboxNudge((leadId, projectName) =>
-		leadInboxRuntime.nudge(leadId, projectName),
-	);
-	leadInboxRuntime.start();
-	workflowSourceAlertFallback.current = async (payload) => {
-		const receipt = leadInboxRuntime.enqueueInfraAlert(payload.leadId, payload);
-		return { accepted: receipt.queued };
-	};
-	const deliveryLoopWired = true;
-	const heartbeatServiceRef: { current?: HeartbeatService } = {};
-	const livenessHealthProvider: { current?: () => unknown } = {
-		current: () =>
-			buildLivenessManifest({
-				bridgeStartedAtMs: bridgeBootTs,
-				wiring: livenessWiring,
-				trackers: livenessTrackers,
-				deliveryLoopWired,
-				loopStallMs: inboxLoopStallMs(process.env),
-				loopTargets: leadInboxRuntime.healthTargets(),
-				...(heartbeatServiceRef.current
-					? {
-							probeForensics:
-								heartbeatServiceRef.current.probeForensicsSnapshot(),
-						}
-					: {}),
-			}),
-	};
-
-	const leadEventDelivery = new LeadEventDeliveryCoordinator({
-		store,
-		runtimeForLead: (leadId) => registry.getRawForLead(leadId),
-		secretProvider: deliverySecretProvider,
-	});
-	registry.setDeliveryInterceptor((runtime, envelope) =>
-		leadEventDelivery.deliver(envelope, runtime),
-	);
 
 	// FLY-80: Periodic retry for leads not ready at startup (e.g., Lead starts after Bridge).
 	// Checks every 30s until all leads are registered, then stops.
@@ -5321,19 +3666,15 @@ export async function startBridge(
 		process.env.STANDUP_LEAD_ID ??
 		(() => {
 			const leads = standupProject?.leads ?? projects.flatMap((p) => p.leads);
-			// FLY-71: Standup is CoS responsibility. Ambiguity is not identity.
-			const cos = leads.filter((l) => l.agentId.includes("cos"));
-			if (cos.length === 1) return cos[0]!.agentId;
-			console.error(
-				`[Bridge] identity_standup_lead_ambiguous: expected exactly one CoS Lead, found ${cos.length}; standup disabled`,
-			);
-			return undefined;
+			// FLY-71: Standup is CoS (Simba) responsibility per product spec §2.1
+			const cos = leads.find((l) => l.agentId.includes("cos"));
+			return cos?.agentId ?? leads[0]?.agentId ?? "unknown";
 		})();
 	const standupLead = (standupProject?.leads ?? []).find(
 		(l) => l.agentId === standupLeadId,
 	);
-	if (standupProjectName && standupLeadId && !standupLead) {
-		console.error(
+	if (standupProjectName && !standupLead) {
+		console.warn(
 			`[Bridge] STANDUP_LEAD_ID="${standupLeadId}" not found in project "${standupProjectName}" leads. Standup will fail closed on delivery.`,
 		);
 	}
@@ -5369,7 +3710,7 @@ export async function startBridge(
 		: undefined;
 
 	let standupService: StandupService | undefined;
-	if (standupProjectName && standupLead) {
+	if (standupProjectName) {
 		standupService = new StandupService(
 			store,
 			projects,
@@ -5410,20 +3751,14 @@ export async function startBridge(
 	// so a single instance serves both roles.
 	// Track the internal dispatcher separately for cleanup — if a caller injects
 	// retryDispatcher but not startDispatcher, they are different instances.
-	const codexReviewHoldHolder: {
-		current: CodexReviewHoldCoordinator | undefined;
-	} = { current: undefined };
-	const codexReviewIngestHolder: {
-		current: CodexReviewIngest | undefined;
-	} = {
-		current: new CodexReviewIngest({
-			store,
-			logger: console,
-		}),
+	// FLY-579: late-bound auto-QA coordinator holder — read by the event router
+	// (createBridgeApp) AND the in-process DirectEventSink (via
+	// setupRunInfrastructure below). The coordinator is built post-listen (it
+	// needs the LeadAlertNotifier), so .current stays undefined until then =
+	// auto-QA dormant (byte-compatible).
+	const autoQaCoordinatorHolder: { current: AutoQaCoordinator | undefined } = {
+		current: undefined,
 	};
-	const reviewAuthorizationAlertsHolder: {
-		current: ReviewAuthorizationAlerts | undefined;
-	} = { current: undefined };
 
 	// FLY-1188 §7.1: late-bound review-request coordinator holder — read by the
 	// /review-requests route (createBridgeApp). Built post-listen; until then
@@ -5432,24 +3767,36 @@ export async function startBridge(
 		current: ReviewRequestCoordinator | undefined;
 	} = { current: undefined };
 
-	const turnBeltReconcilerHolder: {
-		current: TurnBeltReconciler | undefined;
-	} = { current: undefined };
-	const workflowReworkCoordinatorHolder: {
-		current: WorkflowReworkCoordinator | undefined;
-	} = { current: undefined };
-	const workflowShipCarrierDeliveryHolder: {
-		current: WorkflowShipCarrierDeliveryHandler | undefined;
+	// FLY-793: late-bound three-stage PhaseOrchestrator holder — read by BOTH the
+	// /events router (createBridgeApp) and the in-process DirectEventSink (via
+	// setupRunInfrastructure). Built post-listen (it needs startDispatcher +
+	// LeadAlertNotifier), so `.current` stays undefined until then = three-stage
+	// dormant (byte-compatible).
+	const phaseOrchestratorHolder: {
+		current: PhaseOrchestrator | undefined;
 	} = { current: undefined };
 
-	// FLY-887 + FLY-1204: single shared ship-time finalizer for parked workflow
-	// actors. Both the in-process run-infra path and external-merge reconciler
-	// drive the same reclaim logic so a shipped workflow cannot leak actors.
-	const finalizeWorkflowPhaseRoles = makeFinalizeWorkflowPhaseRoles(
+	// FLY-887 (founder-visibility status line, Finding B): the refresh function
+	// is only ready once phaseQaEffects is built (post-listen), but
+	// finalizeThreeStagePhases is wired here at construction time — mirrors the
+	// same forward-reference pattern as the two holders above. Populated where
+	// the PhaseOrchestratorDeps.refreshPhaseStatusLine dep is built, so ship-time
+	// finalization refreshes the line to its final done/done/done state instead
+	// of going stale at whatever it last showed pre-merge.
+	const phaseStatusLineRefreshHolder: {
+		current: ((issueId: string) => Promise<void>) | undefined;
+	} = { current: undefined };
+
+	// FLY-887 + FLY-1204: single shared ship-time finalizer for the three-stage
+	// keep-alive parked phases (design/implement/qa). Constructed once so BOTH
+	// the in-process run-infra path AND the external-merge reconciler drive the
+	// same reclaim logic — an external merge is a real ship path and must not
+	// leak the parked phase sessions.
+	const finalizeThreeStagePhases = makeFinalizeThreeStagePhases(
 		store,
 		transitionOpts,
 		(issueId) =>
-			issueDisplayRefreshHolder.current?.refresh(issueId) ?? Promise.resolve(),
+			phaseStatusLineRefreshHolder.current?.(issueId) ?? Promise.resolve(),
 	);
 
 	// ── FLY-1185: unified lifecycle-closeout infrastructure, built ONCE ──
@@ -5458,18 +3805,8 @@ export async function startBridge(
 	// bundle threaded to all three finalization call sites (event-route ×2 via
 	// createBridgeApp opts + the DirectEventSink below). Merge-enable by
 	// contract (Annie 直令): zero new flags — every NEW deleter hangs off the
-	// existing autoclean integration seam inside its module.
+	// existing FLYWHEEL_WORKTREE_AUTOCLEAN escape hatch inside its module.
 	const repoMutationLock = createRepoMutationLock();
-	const materializedHeadAuthority =
-		receiptBackedMaterializedHeadAuthority(store);
-	const workflowDocsMaterializer = new WorkflowDocsMaterializer({
-		store,
-		git: new GitWorkflowDocsGit(),
-		projects,
-		withRepoLock: repoMutationLock.withRepoLock,
-		log: (message) => console.warn(`[workflow-materializer] ${message}`),
-	});
-	workflowDocsMaterializer.start();
 	const issueMutex = createIssueMutex();
 	// Codex R2#3: EVERY closeRunner call (explicit close endpoint, reject/
 	// defer/shelve actions, legacy reconcile finalize) serializes through the
@@ -5546,11 +3883,6 @@ export async function startBridge(
 			closeoutOpts,
 		);
 	const lifecycleInfra: LifecycleShipInfra = {
-		forceShippedHusks: (input, stateStore, deps = {}) =>
-			forceShippedHusks(input, stateStore, {
-				...deps,
-				forceEnabled: () => storeShippedHuskForceEnabled(flagStore),
-			}),
 		// Codex R2#8: ship pre-arbitration — an active park tombstone or a
 		// canceled disposition (fresh Linear when available, persisted
 		// observation as the durable floor) refuses the ENTIRE ship DAG
@@ -5567,7 +3899,7 @@ export async function startBridge(
 			// history → nothing to arbitrate, the closeout's in-mutex
 			// arbitration remains the second line.
 			if (!res.ok && res.reason === "uuid_conflict") {
-				return { ok: false, reason: "root_uuid_conflict" } as const;
+				return { ok: false, reason: "root_uuid_conflict" };
 			}
 			const rootKey = res.ok ? res.rootKey : issueId;
 			const lockKeys = res.lockKeys.length > 0 ? res.lockKeys : [issueId];
@@ -5576,27 +3908,31 @@ export async function startBridge(
 					isUuidKey(rootKey) &&
 					store.getActiveIssueDispositionIntent(rootKey)
 				) {
-					return { ok: false, reason: "founder_parked" } as const;
+					return { ok: false, reason: "founder_parked" };
 				}
 				const obs = store.getLinearStateObservation(projectName, rootKey);
 				if (obs?.lastStateType === "canceled") {
-					return { ok: false, reason: "canceled_observation" } as const;
+					return { ok: false, reason: "canceled_observation" };
 				}
 				if (config.linearApiKey) {
-					return arbitrateFreshLinearState({
-						persistedStateType: obs?.lastStateType,
-						readFreshStateType: async () => {
-							const { LinearClient } = await import("@linear/sdk");
-							const client = new LinearClient({
-								apiKey: config.linearApiKey as string,
-							});
-							const issue = await client.issue(issueId);
-							const state = await issue.state;
-							return state?.type;
-						},
-					});
+					try {
+						const { LinearClient } = await import("@linear/sdk");
+						const client = new LinearClient({
+							apiKey: config.linearApiKey as string,
+						});
+						const issue = await client.issue(issueId);
+						const state = await issue.state;
+						if (state?.type === "canceled") {
+							return { ok: false, reason: "canceled_fresh_linear" };
+						}
+					} catch {
+						// R3#9: a failed FRESH read is fail-closed BUT retryable —
+						// the refusal happens before the dedupe claim, so the next
+						// finalization attempt re-arbitrates from scratch.
+						return { ok: false, reason: "linear_lookup_failed_retryable" };
+					}
 				}
-				return { ok: true } as const;
+				return { ok: true };
 			};
 			// R4#3: the ship DAG may already hold the canonical mutex (the
 			// keyed lock is not re-entrant).
@@ -5639,7 +3975,7 @@ export async function startBridge(
 				// R4#3: the ship DAG already holds the canonical issue mutex.
 				input.alreadyLocked ? { alreadyLocked: true } : undefined,
 			);
-			return landIssueCloseoutResultFromClosureReport(report);
+			return { outcome: report.outcome };
 		},
 		postShipSweep: runProjectSweep,
 		// R4#3 (plan.md:145): ONE canonical issue-mutex hold for the ENTIRE
@@ -5654,218 +3990,52 @@ export async function startBridge(
 			return issueMutex(lockKeys, fn);
 		},
 	};
-
-	// FLY-1066: one shared single-flight instance for boot, maintenance, and the
-	// scope-free scheduled-run fast path. CommDB↔FSM reconciliation is permanently
-	// enabled for face ①/② and never suppresses the other residue faces.
-	const commDbFsmReconcileEnabled = true;
-	const openResidueCommDb = <T>(
-		projectName: string,
-		read: (db: CommDB) => T,
-	): T | undefined => {
-		if (/[/\\]|\.\./.test(projectName)) {
-			throw new Error(`unsafe configured project name: ${projectName}`);
-		}
-		const dbPath = resolveCommDbPath(projectName);
-		if (!dbPath) return undefined;
-		const db = CommDB.openReadonly(dbPath);
-		try {
-			return read(db);
-		} finally {
-			db.close();
-		}
-	};
-	const residueGhostDeps: StateStoreGhostDeps = {
+	// FLY-1232 module ②: THE single default-off switch point for the lifecycle
+	// shadow writer. FLYWHEEL_WORKFLOW_CLAIMS_WRITE≠1 → undefined → every seam
+	// (dispatcher pre-launch, orchestrator hooks, post-ship T9) stays undefined
+	// = byte-compatible. Evidence probes are the DURABLE facts of the ②b truth
+	// table: the adapter's commit-marker file + a non-:pending CommDB row.
+	// NOTE (plan §0 red line): an externally injected opts.startDispatcher
+	// below bypasses setupRunInfrastructure and is deliberately NOT wrapped.
+	const workflowShadowWriter = createWorkflowShadowWriterFromEnv(
+		process.env,
 		store,
-		transitionOpts,
-		ghostMinAgeMs: 30 * 60_000,
-		nowMs: () => Date.now(),
-		lookupCommDbSession: (executionId, projectName) =>
-			openResidueCommDb(projectName, (db) => db.getSession(executionId)),
-		// Full passes override this with the immediately preceding prune's
-		// short-lived evidence. Targeted/historical rows have no safe fallback.
-		getProvenDeadTmuxTarget: () => undefined,
-		probe: (tmuxSession) => probeTmuxWindowLiveness(tmuxSession),
-		finalizeCommDbSession: (executionId, projectName) =>
-			finalizeCommDbSession(executionId, projectName),
-		lifecycleMutex: {
-			withIssueMutex: (keys, fn) => issueMutex(keys, fn),
-			resolveLockKeys: (issueId) => {
-				const resolved = resolveLifecycleRootKey(store, issueId, []);
-				return resolved.lockKeys.length > 0 ? resolved.lockKeys : [issueId];
+		{
+			hasCommitMarker: (executionId) =>
+				ffExistsSync(launchCommitPath(executionId)),
+			hasNonPendingCommDbRow: (projectName, executionId) => {
+				// Tri-state (research §F.3 lookup_error, Codex code R1 #1): a
+				// missing CommDB file PROVES absence (no session was ever
+				// registered for the project) → false; a failed lookup proves
+				// nothing → "unknown" (never authorizes an abandon, never
+				// completes the started dual evidence).
+				try {
+					const dbPath = defaultGetCommDbPath(projectName);
+					if (!ffExistsSync(dbPath)) return false;
+					const db = new CommDB(dbPath);
+					try {
+						const s = db.getSession(executionId) as
+							| { tmux_window?: string }
+							| undefined;
+						return !!s && !String(s.tmux_window ?? "").endsWith(":pending");
+					} finally {
+						db.close();
+					}
+				} catch {
+					return "unknown";
+				}
 			},
 		},
-		archiveThread: (session) =>
-			archiveIssueThreadIfNoOtherActive(
-				store,
-				session,
-				{
-					projects,
-					globalBotToken: config.discordBotToken,
-					discordOwnerUserId: config.discordOwnerUserId,
-				},
-				{ allowStatuses: ["terminated"] },
-			),
-		log: (message) => console.warn(message),
-	};
-	const recordResidueFinalizeOutcome = (
-		executionId: string,
-		projectName: string,
-		result: ReturnType<typeof finalizeCommDbSession>,
-	) => {
-		const session = store.getSession(executionId);
-		store.recordCommDbFinalizeOutcome({
-			executionId,
-			issueId: session?.issue_id ?? executionId,
-			projectName,
-			ok: result.ok,
-			error: result.error,
-			audit: {
-				retiredGateCount: result.retiredGateCount,
-				retiredAskCount: result.retiredAskCount,
-				source: "bridge.commdb-terminal-prune",
-			},
-		});
-	};
-	const pruneResidueCommDb = async (projectName: string) => {
-		try {
-			const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
-				includeCrashPreserve: true,
-				onFinalizeOutcome: recordResidueFinalizeOutcome,
-			});
-			if (pruned.pruned > 0) {
-				console.log(
-					`[Bridge] CommDB terminal prune (${projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept}`,
-				);
-			}
-			return pruned.provenDeadTargets;
-		} catch (err) {
-			console.error(
-				`[Bridge] CommDB terminal prune (${projectName}) failed (non-fatal): ${(err as Error).message}`,
-			);
-			return [];
-		}
-	};
-	const parkedGenerationEvidence = async (
-		executionId: string,
-	): Promise<"superseded" | "same_generation" | "unavailable"> => {
-		const session = store.getSession(executionId);
-		if (!session || !isAutoMigratableClaudeTmux(session.adapter_type)) {
-			return "unavailable";
-		}
-		const generation = parsePaneLossGenerationParams(session.session_params);
-		if (!generation) return "unavailable";
-		const current = await probeTmuxServerStartTime(generation.socket_path);
-		if (current.kind !== "found") return "unavailable";
-		return current.startTime === generation.server_start_time
-			? "same_generation"
-			: "superseded";
-	};
-	const paneLossFence =
-		(): import("./pane-loss-reconcile.js").PaneLossFaceOutcome => {
-			if (!serverLossCheckState.firstSuccessful) return "skipped_first_check";
-			if (serverLossCheckState.active) return "skipped_coordinator_in_flight";
-			if (store.getServerLossEpisode()) return "skipped_episode";
-			if (store.listActiveTmuxHolds().length > 0) return "skipped_hold";
-			return "ran";
-		};
-	const residueHarvester = createResidueHarvester({
-		projectNames: projects.map((project) => project.projectName),
-		commDbFsmEnabled: commDbFsmReconcileEnabled,
-		harvestCommDb: async (projectName) => {
-			const result = await reconcileCommDbRunningAgainstFsm(
-				projectName,
-				(executionId) => store.getSession(executionId)?.status,
-				{
-					harvest: {
-						orphanMinAgeMs: 24 * 3_600_000,
-						nowMs: () => Date.now(),
-					},
-					onFinalizeOutcome: (executionId, project, outcome) => {
-						const session = store.getSession(executionId);
-						store.recordCommDbFinalizeOutcome({
-							executionId,
-							issueId: session?.issue_id ?? executionId,
-							projectName: project,
-							ok: outcome.ok,
-							error: outcome.error,
-							audit: {
-								retiredGateCount: outcome.retiredGateCount,
-								retiredAskCount: outcome.retiredAskCount,
-								source: "bridge.commdb-fsm-reconcile",
-							},
-						});
-					},
-					finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
-						db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
-					parkedGenerationEvidence,
-				},
-			);
-			if (result.reconciled > 0) {
-				console.log(
-					`[Bridge] FLY-1066 CommDB residue (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} orphan=${result.harvest?.orphanHarvested ?? 0} preserve=${result.harvest?.preserveHarvested ?? 0}`,
-				);
-			}
-		},
-		pruneTerminalCommDb: pruneResidueCommDb,
-		harvestStateStoreGhosts: async (projectName, provenDeadTargets) => {
-			const targetsByExecution = new Map(
-				provenDeadTargets.map((item) => [item.executionId, item.tmuxWindow]),
-			);
-			const result = await reconcileStateStoreGhosts(projectName, {
-				...residueGhostDeps,
-				getProvenDeadTmuxTarget: (executionId) =>
-					targetsByExecution.get(executionId),
-			});
-			if (result.reaped > 0) {
-				console.log(
-					`[Bridge] FLY-1066 StateStore ghosts (${projectName}): scanned=${result.scanned} reaped=${result.reaped}`,
-				);
-			}
-		},
-		harvestPaneLoss: async (projectName) => {
-			const result = await reconcilePaneLoss(projectName, {
-				store,
-				transitionOpts,
-				mutate: true,
-				nowMs: () => Date.now(),
-				preflight: async () => {
-					const fenced = paneLossFence();
-					if (fenced !== "ran") return fenced;
-					return (await probeTmuxServer()) === "up" ? "ran" : "skipped_server";
-				},
-				fence: paneLossFence,
-				lookupTarget: lookupTmuxTarget,
-				probeRunner: probeRunnerProcessLiveness,
-				discoverTarget: discoverTmuxTargetByExecutionId,
-				probeServerGeneration: probeTmuxServerStartTime,
-				isCompleteMarkerPending: (executionId) =>
-					hasPendingCompleteMarker(executionId, defaultMarkerDir()),
-				notify: (session, classification, terminalStatus) =>
-					paneLossNotifyHolder.current?.(
-						session,
-						classification,
-						terminalStatus,
-					) ?? Promise.resolve(false),
-				lifecycleMutex: residueGhostDeps.lifecycleMutex,
-			});
-			if (result.failed > 0 || result.advisories > 0) {
-				console.warn(
-					`[Bridge] FLY-1628 pane loss (${projectName}): scanned=${result.scanned} failed=${result.failed} advisories=${result.advisories}`,
-				);
-			}
-			return result.face;
-		},
-		reapStateStoreGhost: async (session) =>
-			(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
-		log: (message) => console.warn(message),
-	});
-	// FLY-1282 Part C: targeted terminal-archive enqueue buffer. It retains
-	// pre-binding enqueues (bounded 64)
-	// until the FLY-1165 scheduler binds as consumer further down.
-	const terminalArchiveBuffer = createTerminalArchiveEnqueueBuffer();
-	const terminalArchiveEnqueue = (issueId: string) =>
-		terminalArchiveBuffer.enqueue(issueId);
+	);
+	if (workflowShadowWriter) {
+		console.log(
+			"[Bridge] FLY-1232: workflow shadow writer ENABLED (FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1) — observation-only dual write",
+		);
+		// Codex code R1 #5: the T9 hook is resolved centrally inside
+		// runPostShipFinalization so EVERY in-process claim contender
+		// (DirectEventSink / event-route / merge-ship-gate) fires it.
+		setWorkflowShadowFinalizationHook(workflowShadowWriter);
+	}
 
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
@@ -5877,20 +4047,7 @@ export async function startBridge(
 				projects,
 				registry,
 				{
-					flagStore,
 					chatThreadCreator,
-					onProjectConfigInvalid: async ({
-						projectName,
-						configPath,
-						error,
-					}) => {
-						await metaAlertNotifier.notify({
-							reason: "project_config_invalid",
-							title: `Project config rejected (${projectName})`,
-							body: `${configPath} was rejected: ${error.message}. The ${projectName} runtime was not initialized.`,
-						});
-					},
-					withRepoLock: repoMutationLock.withRepoLock,
 					// FLY-603: stateless cleanup closure (own instance here — the
 					// /events one at the createEventRouter call site is a different
 					// function scope; both wrap the same factory).
@@ -5901,21 +4058,12 @@ export async function startBridge(
 					),
 					// FLY-1185 entry A bundle for the in-process (DES) ship path.
 					lifecycleInfra,
-					// FLY-1282 Part C: targeted terminal-archive enqueue for the
-					// DirectEventSink completion path (undefined when switch OFF).
-					terminalArchiveEnqueue,
-					materializedHeadAuthority,
 					// FLY-1185 (R11#1): park admission at the dispatcher chokepoint.
 					lifecycleAdmission: (input) =>
 						assertIssueNotLifecycleClosed(
 							{ store, withIssueMutex: issueMutex },
 							input,
 						),
-					// FLY-1718 P4: predecessor accounting runs before branch continuity.
-					doaBackoffAdmission: createDoaBackoffAdmission({
-						store,
-						withIssueMutex: issueMutex,
-					}),
 					// FLY-1185 (Codex R1#5): dispatcher-side park-vs-start arbitration.
 					lifecycleLaunchGuard: {
 						// R4#1 (plan.md:145): commitLaunch is VERIFY-only — the claim
@@ -5935,12 +4083,6 @@ export async function startBridge(
 								res.lockKeys.length > 0 ? res.lockKeys : [claim.rootUuid];
 							return issueMutex(keys, async () => {
 								const fresh = store.getLaunchClaim(executionId);
-								const doaOwner = store.verifyAndRenewDoaReleaseOwner(
-									executionId,
-									Date.now(),
-									DOA_RELEASE_LEASE_MS,
-								);
-								if (!doaOwner.ok) return doaOwner;
 								if (
 									!fresh ||
 									fresh.state === "starting" ||
@@ -5962,30 +4104,36 @@ export async function startBridge(
 							const res = resolveLifecycleRootKey(store, claim.rootUuid, []);
 							const keys =
 								res.lockKeys.length > 0 ? res.lockKeys : [claim.rootUuid];
-							return issueMutex(keys, async () =>
-								store.activateLaunchAndSettleDoa(executionId),
-							);
+							return issueMutex(keys, async () => {
+								if (
+									store.casLaunchClaimState(executionId, "starting", "active")
+								) {
+									return { ok: true };
+								}
+								const fresh = store.getLaunchClaim(executionId);
+								if (!fresh || fresh.state === "active") return { ok: true };
+								return { ok: false, reason: `claim_${fresh.state}` };
+							});
 						},
 						onSpawnFailed: (executionId: string) => {
-							store.closeLaunchAndReleaseDoa(executionId);
+							store.setLaunchClaimState(executionId, "closed");
 						},
 					},
-					codexReviewHold: codexReviewHoldHolder,
-					reviewAuthorizationAlerts: reviewAuthorizationAlertsHolder,
-					// FLY-793: the in-process completion path drives DAG workflow
+					// FLY-579: the in-process completed path drives auto-QA + holds
+					// the founder via this same holder.
+					autoQaCoordinator: autoQaCoordinatorHolder,
+					// FLY-793: the in-process completion path drives three-stage
 					// Design→Implement→QA phase handoffs via this same holder.
-					turnBeltReconciler: turnBeltReconcilerHolder,
+					phaseOrchestrator: phaseOrchestratorHolder,
 					// FLY-887: ship-time finalizer for keep-alive parked phases
 					// (FLY-1204: shared with the external-merge reconciler below).
-					finalizeWorkflowPhaseRoles,
+					finalizeThreeStagePhases,
 					// FLY-907: the in-process sink's display-refresh holder (its
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
-					terminalCommDbSync,
-					admissionCrossingBarrier,
-					onTuiWindowLost: (evidence) => tuiWindowAlertHolder.lost?.(evidence),
-					onTuiWindowRestored: (executionId) =>
-						tuiWindowAlertHolder.restored?.(executionId),
+					// FLY-1232: dispatcher pre-launch seam + DirectEventSink T9 hook
+					// (undefined when the flag is OFF — byte-compatible).
+					workflowShadow: workflowShadowWriter,
 				},
 			);
 			startDispatcher = dispatcher;
@@ -6002,372 +4150,13 @@ export async function startBridge(
 			);
 		}
 	}
-	// FLY-1385: constructed before the routed notifier, populated at the notifier
-	// wiring point below. The workflow outbox stays pending during this short boot
-	// window and is explicitly drained once the holder is live.
-	const workflowEngineAlertHolder: {
-		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
-	} = {};
-	const landProjectRootFor = (projectName: string) =>
-		projects.find((project) => project.projectName === projectName)
-			?.projectRoot;
-	const landMergeDriver = new GhCliLandMergeDriver(landProjectRootFor);
-	const landHeadRefreshProver = new GitLandHeadRefreshProver(
-		landProjectRootFor,
-	);
-	const recordCarryoverDepartureCutoff = (input: {
-		operation: import("../StateStore.js").LandOperationRow;
-		receiptId: string;
-		ordinal: number;
-		at: string;
-	}) => {
-		const operation = input.operation;
-		if (!operation.run_id) {
-			throw new Error("carryover departure requires an engine run");
-		}
-		const db = new CommDB(commDbPathForProject(operation.project_name));
-		try {
-			db.appendLandDepartureCutoff({
-				project: operation.project_name,
-				carryoverReceiptId: input.receiptId,
-				operationId: operation.operation_id,
-				ordinal: input.ordinal,
-				runId: operation.run_id,
-				approvedHead: operation.approved_head,
-				operationGeneration: operation.generation,
-				at: input.at,
-			});
-		} finally {
-			db.close();
-		}
+
+	// FLY-253 (Codex R2 #4): the remanage router mounts inside createBridgeApp,
+	// but the StuckRunnerDetector is only created post-listen — give the router
+	// a stable holder it reads at re_arm time.
+	const stuckDetectorHolder: { current: StuckRunnerDetector | null } = {
+		current: null,
 	};
-	const landLinearDoneFinalizer = makeLinearDoneFinalizer(config);
-	const landWorktreeCleanup = makeBridgeWorktreeCleanup(
-		store,
-		projects,
-		repoMutationLock.withRepoLock,
-	);
-	const landExecutor = async (operationId: string) =>
-		executeLandOperation(operationId, {
-			store,
-			mergeDriver: landMergeDriver,
-			headRefreshProver: landHeadRefreshProver,
-			recordCarryoverDepartureCutoff,
-			requestCleanup: (operation) =>
-				requestLandCleanupOpportunities(operation, {
-					store,
-					commDbPathForProject,
-					graceMs: (() => {
-						const raw = Number.parseInt(
-							process.env.FLYWHEEL_LAND_CLEANUP_GRACE_MS ?? "",
-							10,
-						);
-						return Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
-					})(),
-				}),
-			finalize: async (operation) => {
-				const session = resolveLandSourceSession(store, {
-					runId: operation.run_id,
-					issueId: operation.issue_id,
-					projectName: operation.project_name,
-					prNumber: operation.pr_number,
-					approvedHead: operation.approved_head,
-				});
-				if (!session) {
-					return {
-						complete: false,
-						outcome: "partial" as const,
-						reason: landCloseoutReason("source_session_unavailable"),
-					};
-				}
-				return runResumablePostShipFinalization(
-					{
-						executionId: session.execution_id,
-						runId: operation.run_id ?? undefined,
-						mergedPr: {
-							prNumber: operation.pr_number,
-							headSha: operation.approved_head,
-						},
-						issueId: operation.issue_id,
-						issueIdentifier: session.issue_identifier,
-						projectName: operation.project_name,
-						sessionStatus: session.status,
-						discordOwnerUserId: config.discordOwnerUserId,
-						fallbackBotToken: config.discordBotToken,
-						...(operation.owner_id
-							? {
-									landOperation: {
-										operationId: operation.operation_id,
-										ownerId: operation.owner_id,
-										generation: operation.generation,
-									},
-								}
-							: {}),
-					},
-					{
-						store,
-						projects,
-						removeCleanWorktree: landWorktreeCleanup,
-						markIssueDone: landLinearDoneFinalizer,
-						recordLinearDoneDisposition: (disposition) => {
-							if (!operation.owner_id) {
-								return { ok: false, reason: "stale_land_generation" };
-							}
-							const alertIdentity = operation.run_id
-								? resolveWorkflowRunAlertIdentity({
-										store,
-										projects,
-										defaultLeadAgentId: config.defaultLeadAgentId,
-										projectName: operation.project_name,
-										issueId: operation.issue_id,
-										runId: operation.run_id,
-									})
-								: undefined;
-							return store.recordLandLinearDoneDisposition({
-								operationId: operation.operation_id,
-								ownerId: operation.owner_id,
-								generation: operation.generation,
-								disposition: disposition.disposition,
-								reason: disposition.reason,
-								executionId: session.execution_id,
-								now: new Date().toISOString(),
-								...(alertIdentity ? { alertIdentity } : {}),
-							});
-						},
-						finalizeWorkflowPhaseRoles,
-						refreshIssueDisplay: (issueId) =>
-							issueDisplayRefreshHolder.current?.refresh(issueId) ??
-							Promise.resolve(),
-						...lifecycleInfra,
-					},
-				);
-			},
-			notify: async (operation, stage, detail) => {
-				const terminalDisposition = landThreadNotificationPreflight(
-					stage,
-					null,
-				);
-				if (terminalDisposition) {
-					return { disposition: terminalDisposition };
-				}
-				const session = store.getSessionByIssue(operation.issue_id);
-				let lead: LeadConfig | undefined;
-				try {
-					lead = resolveLeadForIssue(
-						projects,
-						operation.project_name,
-						session ? store.getSessionLabels(session.execution_id) : [],
-					).lead;
-				} catch (error) {
-					throw new Error(
-						`land_lead_resolution_failed:${error instanceof Error ? error.message : String(error)}`,
-					);
-				}
-				if (
-					operation.run_id &&
-					[
-						"conflict_rework_started",
-						"external_outage_fyi",
-						"external_outage_horizon_exceeded",
-						"cool_fence_horizon_exceeded",
-					].includes(stage)
-				) {
-					const identity = resolveWorkflowRunAlertIdentity({
-						store,
-						projects,
-						defaultLeadAgentId: config.defaultLeadAgentId,
-						projectName: operation.project_name,
-						issueId: operation.issue_id,
-						runId: operation.run_id,
-					});
-					const run = store.getWorkflowRun(operation.run_id);
-					const severe = stage.endsWith("horizon_exceeded");
-					const detailIdentity =
-						typeof detail.escalationUid === "string"
-							? detail.escalationUid
-							: typeof detail.requestId === "string"
-								? detail.requestId
-								: operation.operation_id;
-					const escalationUid = `land-transition:${stage}:${detailIdentity}`;
-					store.enqueueWorkflowEngineAlert({
-						escalationUid,
-						runId: operation.run_id,
-						payload: {
-							leadId: identity.leadId,
-							projectName: identity.projectName,
-							eventId: escalationUid,
-							eventType: severe
-								? "workflow_engine_escalation"
-								: "workflow_engine_issue_alert",
-							severity: severe ? "severe" : "warning",
-							sessionKey: `wf:${operation.run_id}`,
-							title: `Land ${stage.replaceAll("_", " ")} for ${operation.issue_id}`,
-							body: `PR #${operation.pr_number} entered ${stage}. ${JSON.stringify(detail)}`,
-							metadata: {
-								workflowEngine: {
-									runId: operation.run_id,
-									issueId: operation.issue_id,
-									nodeId: run?.current_node_id ?? "land",
-									executionId: `workflow-engine:land:${operation.operation_id}`,
-									disposition: severe ? "held" : "partial",
-									operationId: operation.operation_id,
-									reason: stage,
-									leadResolution: identity.leadResolution,
-								},
-							},
-						},
-					});
-				}
-				const thread = store.getChatThreadByIssue(
-					operation.issue_id,
-					lead.chatChannel,
-				);
-				const archivedDisposition = landThreadNotificationPreflight(
-					stage,
-					thread?.archived_at,
-				);
-				if (archivedDisposition) {
-					return { disposition: archivedDisposition };
-				}
-				const result = await emitIssueThreadInfraNotification(
-					{
-						executionId: session?.execution_id ?? `land:${operation.issue_id}`,
-						issueId: operation.issue_id,
-						issueIdentifier: session?.issue_identifier,
-						projectName: operation.project_name,
-						kind: `land_${stage}`,
-						content: renderLandThreadNotification(
-							stage,
-							operation.pr_number,
-							detail,
-						),
-						thread,
-						botToken: lead.botToken ?? config.discordBotToken,
-						onUndeliverable: (reason) =>
-							console.warn(
-								`[land] thread notification ${stage} undeliverable: ${reason}`,
-							),
-					},
-					{ store },
-				);
-				if (result.kind !== "posted") {
-					throw new Error(
-						`land_notification_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
-					);
-				}
-				return { disposition: "posted" as const };
-			},
-		});
-	const workflowShipReadyArm = createWorkflowShipReadyArm({
-		store,
-		resolveLead: (notice) => {
-			const source = store.getSession(notice.sourceExecutionId);
-			const labels = source
-				? store.getSessionLabels(notice.sourceExecutionId)
-				: [];
-			const { lead } = resolveLeadForIssue(
-				projects,
-				notice.projectName,
-				labels,
-			);
-			return {
-				leadId: lead.agentId,
-				chatChannel: lead.chatChannel,
-				botToken: lead.botToken ?? config.discordBotToken,
-			};
-		},
-		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
-		emitFounderThreadNotification: (options) =>
-			emitFounderThreadNotification(options, { store }),
-		ownerUserId: config.discordOwnerUserId,
-		projectRootFor: (projectName) =>
-			projects.find((project) => project.projectName === projectName)
-				?.projectRoot,
-		checkPrMerge: checkPrMergeViaGh,
-		enrichPrHead: enrichPrHeadViaGh,
-		log: (message) => console.warn(`[workflow-ship-ready] ${message}`),
-	});
-	const probeUnlaunchedExternalEvidence = async (
-		executionId: string,
-		projectName: string,
-	): Promise<"absent" | "present" | "unknown"> => {
-		let db: CommDB | undefined;
-		try {
-			const dbPath = defaultGetCommDbPath(projectName);
-			if (!ffExistsSync(dbPath)) return "absent";
-			db = CommDB.openReadonly(dbPath);
-			const session = db.getSession(executionId) as
-				| { tmux_window?: string }
-				| undefined;
-			const target = String(session?.tmux_window ?? "");
-			return session && target && !target.endsWith(":pending")
-				? "present"
-				: "absent";
-		} catch (error) {
-			console.warn(
-				`[workflow-engine] unlaunched evidence lookup failed for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return "unknown";
-		} finally {
-			db?.close();
-		}
-	};
-	const workflowEngineDispatcher = startDispatcher
-		? new WorkflowEngineDispatcher({
-				store,
-				startDispatcher,
-				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
-				workflowReworkReentryEnabled: () =>
-					storeWorkflowReworkReentryEnabled(flagStore),
-				admissionProbe: () => config.runnerAdmission.tryAdmit(),
-				env: process.env,
-				resolveLeadId: (executionId) => {
-					const session = store.getSession(executionId);
-					if (!session?.project_name) return undefined;
-					try {
-						const labels = store.getSessionLabels(executionId);
-						return resolveLeadForIssue(projects, session.project_name, labels)
-							.lead.agentId;
-					} catch (error) {
-						console.warn(
-							`[workflow-engine] resolveLeadId failed for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
-						);
-						return undefined;
-					}
-				},
-				alertSink: workflowEngineAlertHolder,
-				resolveRunAlertIdentity: (projectName, issueId, runId) =>
-					resolveWorkflowRunAlertIdentity({
-						store,
-						projects,
-						defaultLeadAgentId: config.defaultLeadAgentId,
-						projectName,
-						issueId,
-						runId,
-						log: (message) => console.warn(`[workflow-engine] ${message}`),
-					}),
-				log: (message) => console.warn(`[workflow-engine] ${message}`),
-				materializedHeadAuthority,
-				landExecutor,
-				shipReadyArm: workflowShipReadyArm,
-				reconcileWorkflowRework: (requestId) =>
-					workflowReworkCoordinatorHolder.current?.reconcile(requestId) ??
-					Promise.resolve({
-						kind: "retryable" as const,
-						reason: "rework_coordinator_unavailable",
-					}),
-				reconcileWorkflowCarrier: (questionId) =>
-					workflowShipCarrierDeliveryHolder.current?.reconcile(questionId) ??
-					Promise.resolve({
-						kind: "retryable" as const,
-						reason: "carrier_handler_unavailable",
-					}),
-				probeUnlaunchedExternalEvidence,
-				cleanupUnlaunchedWorkflowWindow: (identity) =>
-					cleanupExactWorkflowTmuxWindow(identity),
-			})
-		: undefined;
-	workflowEngineDispatcher?.start();
 
 	// FLY-516: shared shutdown flag — /health (in createBridgeApp) reads it,
 	// close() (below) flips it at teardown start.
@@ -6375,7 +4164,7 @@ export async function startBridge(
 		shuttingDown: false,
 	};
 
-	// FLY-623: shared reconnecting-set holder — the event router
+	// FLY-623: shared reconnecting-set holder — the event router + idle watchdog
 	// (wired in createBridgeApp) read it, HeartbeatService (created post-listen)
 	// fills it. Null until then / on the kill-switch path = no reconnect handling.
 	const reconnectHolder: { current: ReconnectController | null } = {
@@ -6393,26 +4182,15 @@ export async function startBridge(
 		) => Promise<void>;
 	} = {};
 
+	// FLY-871 R2/C5: the /api/account-switch route reads this holder at request
+	// time; set below (with accountRotationPostHolder) only when accountSwitchRepair
+	// + the unified Alerts channel exist. Undefined ⇒ route returns 409 needs_human.
+	const accountSwitchRouteHolder: { current?: AccountSwitchRuntime } = {};
+
 	// FLY-871 R3/C9: the /api/rescue route reads this holder at request time; set
 	// below only when the rescue runtime is built (self-heal on + unified Alerts
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
-	const alertDutyDispatcherBotUserId = { current: null as string | null };
-	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
-	const flagScanRouteHolder: BridgeAppOptions["flagScanRoute"] = {};
-
-	// FLY-1456: the external daemon is permanently authoritative. Keep the mode
-	// object as one explicit truth table for every retired Bridge execution face.
-	const claudeAccountPoolConfigured = accountPoolConfigured();
-	const quotaBridgeMode = resolveQuotaDaemonBridgeMode();
-	if (quotaBridgeMode.quarantinePending) {
-		const quarantined = await quarantinePendingSwitches();
-		if (quarantined) {
-			console.warn(
-				`[Bridge] FLY-1256 quarantined legacy account-switch pending store: ${quarantined}`,
-			);
-		}
-	}
 
 	const app = createBridgeApp(
 		store,
@@ -6433,20 +4211,10 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
-			flagStore,
-			flagProjectNames,
-			eventLoopAttribution,
-			admissionCrossingBarrier,
-			residueHarvester,
-			terminalCommDbSync,
 			// FLY-1185: ship-entry bundle + shared repo lock for createBridgeApp's
 			// /events router + Layer A closure.
 			lifecycleInfra,
-			// FLY-1282 Part C: targeted terminal-archive enqueue for the /events
-			// completion sites (undefined when switch OFF).
-			terminalArchiveEnqueue,
 			withRepoLock: repoMutationLock.withRepoLock,
-			materializedHeadAuthority,
 			// FLY-1185 §2.12: park/unpark + approved-manifest apply endpoints.
 			lifecycleRoutes: (() => {
 				const routeDeps = {
@@ -6513,137 +4281,6 @@ export async function startBridge(
 								approvedLinear: approved.linear,
 							},
 						),
-					land: {
-						enabled: () => true,
-						createIntent: (input: {
-							projectName: string;
-							issueId: string;
-							prNumber?: number;
-							approvedHead?: string;
-						}) => {
-							const canonicalIssueId =
-								store.getSessionByIdentifier(input.issueId)?.issue_id ??
-								input.issueId;
-							const existing = store.getLatestLandOperationForIssue(
-								input.projectName,
-								canonicalIssueId,
-							);
-							if (existing) {
-								if (
-									(input.prNumber !== undefined &&
-										input.prNumber !== existing.pr_number) ||
-									(input.approvedHead !== undefined &&
-										input.approvedHead !== existing.approved_head)
-								) {
-									throw new Error("land_intent_assertion_mismatch");
-								}
-								return existing;
-							}
-							const run = store.getActiveWorkflowRun(
-								input.projectName,
-								canonicalIssueId,
-							);
-							if (run?.snapshot && run.engine_owned === 1) {
-								const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-								if (!isWorkflowManifestLand(snapshot.manifest)) {
-									throw new Error("land_manifest_not_enabled_for_run");
-								}
-								const holder = store.getCurrentWorkflowGateHolder(
-									run.run_id,
-									snapshot.manifest.approval_gate.node,
-								);
-								const exactHeadAuthority = holder
-									? store.resolveWorkflowExactHeadAuthority({
-											runId: run.run_id,
-											headSha: holder.head_sha,
-										})
-									: undefined;
-								const prBinding = exactHeadAuthority?.valid
-									? exactHeadAuthority.binding
-									: undefined;
-								const prNumber = prBinding?.pr_number;
-								if (!holder || holder.state !== "approved" || !prNumber) {
-									throw new Error("land_founder_authority_not_ready");
-								}
-								if (prBinding.target_repo_identity !== "__main__") {
-									throw new Error("nested_land_unsupported");
-								}
-								if (
-									(input.prNumber !== undefined &&
-										input.prNumber !== prNumber) ||
-									(input.approvedHead !== undefined &&
-										input.approvedHead.toLowerCase() !== holder.head_sha)
-								) {
-									throw new Error("land_intent_assertion_mismatch");
-								}
-								return store.ensureLandOperation({
-									runId: run.run_id,
-									issueId: canonicalIssueId,
-									projectName: input.projectName,
-									prNumber,
-									approvedHead: holder.head_sha,
-									now: new Date().toISOString(),
-								});
-							}
-
-							const legacyEvidence = new Map<
-								string,
-								{ prNumber: number; approvedHead: string }
-							>();
-							for (const session of store.getSessionsByIssue(
-								canonicalIssueId,
-							)) {
-								const head = session.pr_head_sha?.toLowerCase();
-								if (
-									session.project_name !== input.projectName ||
-									!session.review_question_id ||
-									!session.pr_number ||
-									!/^[0-9a-f]{40}$/.test(head ?? "") ||
-									(input.prNumber !== undefined &&
-										input.prNumber !== session.pr_number) ||
-									(input.approvedHead !== undefined &&
-										input.approvedHead.toLowerCase() !== head)
-								) {
-									continue;
-								}
-								legacyEvidence.set(`${session.pr_number}:${head}`, {
-									prNumber: session.pr_number,
-									approvedHead: head!,
-								});
-							}
-							if (legacyEvidence.size !== 1) {
-								throw new Error(
-									legacyEvidence.size === 0
-										? "land_legacy_authority_not_ready"
-										: "land_legacy_authority_ambiguous",
-								);
-							}
-							const legacy = [...legacyEvidence.values()][0]!;
-							return store.ensureLandOperation({
-								issueId: canonicalIssueId,
-								projectName: input.projectName,
-								prNumber: legacy.prNumber,
-								approvedHead: legacy.approvedHead,
-								now: new Date().toISOString(),
-							});
-						},
-						resume: (input: {
-							operationId: string;
-							actor: string;
-							reason: string;
-						}) =>
-							resumeHeldLandOperation(input, {
-								store,
-								mergeDriver: landMergeDriver,
-							}),
-						kick: (operationId: string) => {
-							void landExecutor(operationId).catch((error) =>
-								console.warn(
-									`[land] explicit intent ${operationId} failed to start: ${error instanceof Error ? error.message : String(error)}`,
-								),
-							);
-						},
-					},
 					apiTokenConfigured: Boolean(config.apiToken),
 				};
 				return {
@@ -6653,35 +4290,37 @@ export async function startBridge(
 			})(),
 			chatThreadCreator,
 			globalBotToken: config.discordBotToken,
+			// FLY-253: holder filled after the detector is created post-listen.
+			stuckDetectorHolder,
+			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
-			livenessHealthProvider,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
 			reconnectHolder,
-			codexReviewHold: codexReviewHoldHolder,
-			codexReviewIngest: codexReviewIngestHolder,
-			reviewAuthorizationAlerts: reviewAuthorizationAlertsHolder,
+			// FLY-579: event router reads this to drive the auto-QA pipeline.
+			autoQaCoordinator: autoQaCoordinatorHolder,
 			// FLY-1188 §7.1: /review-requests route reads this holder.
 			reviewCoordinator: reviewCoordinatorHolder,
-			// FLY-793: event router reads this to drive DAG workflow handoffs.
-			turnBeltReconciler: turnBeltReconcilerHolder,
+			// FLY-793: event router reads this to drive three-stage phase handoffs.
+			phaseOrchestrator: phaseOrchestratorHolder,
 			// FLY-696 M1/④: event router reads this to post account_rotation notices.
 			accountRotationPost: accountRotationPostHolder,
+			// FLY-871 R2/C5: /api/account-switch route reads this holder.
+			accountSwitchRoute: accountSwitchRouteHolder,
 			rescueRoute: rescueRouteHolder,
-			alertDuty: {
-				dispatcherBotUserId: alertDutyDispatcherBotUserId,
-				alertHub: alertDutyHubHolder,
-			},
-			flagScanRoute: flagScanRouteHolder,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
 	);
-	const reconcileDesignReviewManifestOutbox = (): void => {
-		reconcileDesignReviewInstructions(store);
-	};
-	reconcileDesignReviewManifestOutbox();
+
+	// FLY-725 (Codex R2 #1): capture the milestone-report baseline cutoff BEFORE
+	// the Bridge starts accepting events. On the first patrol after this project
+	// first enables the feature, terminal sessions with `last_activity_at <= cutoff`
+	// are treated as pre-boot history (marker-seeded, not pinged); a Runner that
+	// completes AFTER we start listening (but before the first patrol) is > cutoff
+	// and still pings, so the startup window cannot swallow a real milestone.
+	const founderMilestoneBaselineCutoffMs = Date.now();
 
 	const server = app.listen(config.port, config.host);
 
@@ -6693,31 +4332,6 @@ export async function startBridge(
 	const addr = server.address();
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
-	const alertSenderTokenEnv =
-		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
-	const alertSenderToken = alertSenderTokenEnv
-		? process.env[alertSenderTokenEnv]?.trim()
-		: undefined;
-	if (alertSenderToken) {
-		try {
-			alertDutyDispatcherBotUserId.current = (
-				await resolveSelfIdentity(alertSenderToken)
-			).id;
-		} catch (error) {
-			console.warn(
-				`[alert-duty] dispatcher identity unresolved: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	} else if (config.alertDutyToken) {
-		console.warn(
-			"[alert-duty] dispatcher identity unresolved: alert sender token selector is unset or empty",
-		);
-	}
-	const designReviewManifestTimer = setInterval(
-		reconcileDesignReviewManifestOutbox,
-		30_000,
-	);
-	designReviewManifestTimer.unref?.();
 
 	// GEO-195: Use RegistryHeartbeatNotifier when registry has entries, else no-op
 	const notifier: HeartbeatNotifier =
@@ -6731,17 +4345,19 @@ export async function startBridge(
 					// FLY-623 Display-A: stamp/clear the "⚠️重连中" title only when the
 					// issue-status-emoji feature is ON (same gate as the event-route
 					// stamper); absent → re-adopt still works, just no title marker.
-					chatThreadCreator,
+					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0"
+						? chatThreadCreator
+						: undefined,
 					issueDisplayRefreshHolder,
 				)
 			: {
+					// FLY-637 R1 #2: no-op notifier never persists an event → false, so
+					// checkStuck does not durably dedup a wake that never happened.
+					onSessionStuck: async () => false,
 					onSessionOrphaned: async () => {},
 					onSessionStale: async () => {},
 					onSessionMonitoringLost: async () => {},
 					onSessionMonitoringReestablished: async () => {},
-					// FLY-1282: no registry → no Lead to route a zombie alert to.
-					prepareSessionZombieDetected: () => null,
-					persistPreparedZombieDetected: async () => false,
 				};
 
 	// GEO-270: Stale session patrol config (local variables, not in BridgeConfig)
@@ -6777,7 +4393,31 @@ export async function startBridge(
 	// from config.host + the real listening port (IPv6 bracketed).
 	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
 
-	// FLY-720: crash-reaper injected deps, permanently enabled. Grace defaults
+	// FLY-626: shared cheap quiet-signal probe for the stall watchdogs
+	// (HeartbeatService session_stuck + RunnerIdleWatchdog runner_idle_detected).
+	// Suppresses the (token-expensive) Lead wake for a legitimately-quiet runner
+	// (self-declared park/busy, parked at a gate, recently active).
+	// `FLYWHEEL_QUIET_CLASSIFIER=0` disables it → pre-FLY-626 all-wake behavior.
+	const quietClassifierEnabled = process.env.FLYWHEEL_QUIET_CLASSIFIER !== "0";
+	const quietSignalsProbe = quietClassifierEnabled
+		? (session: {
+				execution_id: string;
+				project_name: string;
+				status: string;
+				// FLY-637 #1: the watchdogs pass the full Session row, so these reach
+				// probeQuietSignals for the explicit FLY-324 done-but-running skip.
+				session_stage?: string | null;
+				decision_route?: string | null;
+				pr_number?: number | null;
+			}) =>
+				probeQuietSignals(session, {
+					activityWindowMs: stuckCommActivityMs(),
+					nowMs: Date.now(),
+				})
+		: undefined;
+
+	// FLY-720: crash-reaper injected deps. Default ON; `FLYWHEEL_CRASH_REAPER=0`
+	// disables the whole reaper (falls back to reapOrphans→failed). Grace defaults
 	// to the orphan threshold (clean handoff with reapOrphans); a larger
 	// `FLYWHEEL_CRASH_REAP_GRACE_MIN` is clamped to ≥ orphan threshold. Teardown +
 	// archive reuse the same primitives as close_runner (killCmux/window, terminal
@@ -6792,7 +4432,7 @@ export async function startBridge(
 		return Math.max(v, config.orphanThresholdMinutes);
 	})();
 	const crashReaperConfig: CrashReaperInjectedDeps = {
-		enabled: true,
+		enabled: process.env.FLYWHEEL_CRASH_REAPER !== "0",
 		crashGraceMinutes: crashReaperGraceMinutes,
 		// Codex R2#3 (entry C): each crash reap serializes with the unified
 		// executor's per-issue mutex — never interleaved with a closeout.
@@ -6842,23 +4482,32 @@ export async function startBridge(
 				},
 				{ allowStatuses: ["terminated"] },
 			),
+		// FLY-1050: a reaped three-stage QA row may have stranded its implement
+		// at awaiting_review — fire the scoped QA-loss re-drive (fire-and-forget;
+		// the holder is late-bound, undefined pre-wiring = no-op; boot reconcile
+		// is the backstop either way).
+		onQaPhaseTerminated: (executionId, issueId) => {
+			void phaseOrchestratorHolder.current
+				?.reconcileQaLoss({ issueId, terminalExecId: executionId })
+				.catch((err) =>
+					console.warn(
+						`[crash-reaper] FLY-1050 qa-loss reconcile failed for ${executionId}: ${(err as Error).message}`,
+					),
+				);
+		},
 	};
 
-	// FLY-1374: complete-marker fail-close can persist via forceStatus when the
-	// FSM rejects an un-replayable terminal marker. That bypasses the shared
-	// applyTransition hook, so run both exact write-after effects here: converge
-	// CommDB and enqueue the existing derive-from-state Discord render.
-	const onMarkerTerminalStatusPersisted = (
-		executionId: string,
-		status: "failed" | "blocked",
-		projectName: string,
-	): void => {
-		terminalCommDbSync.enqueue(executionId, status, projectName);
-		const issueId = store.getSession(executionId)?.issue_id;
-		if (issueId) enqueueIssueDisplayRefresh(issueId);
-	};
+	// FLY-1234: late-bound stuck-confirm holder — declared BEFORE the
+	// HeartbeatService construction, bound after the watchdog judge is wired
+	// (further down this boot sequence). `heartbeatService.start()` is
+	// deliberately deferred until AFTER the binding (R2 #4): several awaits sit
+	// between construction and the judge wiring, so starting earlier would open
+	// a window where a tick observes `current === null` and fail-open-emits
+	// with a spurious confirm_unbound annotation.
+	const stuckConfirmHolder: {
+		current: ((session: Session) => Promise<StuckConfirmResult>) | null;
+	} = { current: null };
 
-	let paneLossInitialDebt = true;
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -6871,30 +4520,9 @@ export async function startBridge(
 		{
 			bridgeBaseUrl: loopbackBaseUrl,
 			ingestToken: config.ingestToken,
-			materializedHeadAuthority,
-			commDbPathForProject,
-			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
-			alertMergeWithoutApproval: (session, reason) => {
-				void reviewAuthorizationAlertsHolder.current?.alertMergeWithoutApproval(
-					session,
-					reason,
-				);
-			},
-			alertShipAttemptFailed: (session, reason) => {
-				const alerts = reviewAuthorizationAlertsHolder.current;
-				return alerts
-					? alerts.alertShipAttemptFailed(session, reason)
-					: Promise.reject(new Error("ship-attempt alert sink unavailable"));
-			},
-			alertCompleteMarkerHeld: (args) => {
-				const alerts = reviewAuthorizationAlertsHolder.current;
-				return alerts
-					? alerts.alertCompleteMarkerHeld(args)
-					: Promise.reject(new Error("complete-marker alert sink unavailable"));
-			},
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
-		undefined,
+		quietSignalsProbe,
 		crashReaperConfig,
 		// FLY-867: stale-terminal close — checkStaleCompleted upgrades from
 		// notify-only to notify+close for terminal-status sessions whose tmux is
@@ -6905,7 +4533,8 @@ export async function startBridge(
 		// predicate and the 24h stale gate — a failed/blocked session whose tmux
 		// lingers past that is a leak, not a crash-forensics scene, so the
 		// CRASH_PRESERVE gate is deliberately bypassed here (Codex design R1 #1).
-		// If this chokepoint is not wired, HeartbeatService stays notify-only.
+		// Kill-switch FLYWHEEL_STALE_TERMINAL_CLOSE=0 → notify-only (in
+		// HeartbeatService.staleCloseEnabled).
 		{
 			closeStale: async (session) => {
 				const result = await closeRunner(
@@ -6930,12 +4559,16 @@ export async function startBridge(
 			},
 		},
 		// FLY-1082 (Task 2.3): the server-loss coordinator pre-reaper phase —
-		// holder-backed (the coordinator is built later, alongside the alert sink).
-		{
-			check: coordinatedServerLossCheck,
-		},
+		// holder-backed (the coordinator is built later, alongside the alert
+		// sink). FLYWHEEL_FLEET_SENSOR_TMUX=0 kills the phase entirely.
+		process.env.FLYWHEEL_FLEET_SENSOR_TMUX !== "0"
+			? {
+					check: async () =>
+						(await serverLossHolder.current?.check()) ?? new Set<string>(),
+				}
+			: undefined,
 		// FLY-1204: parked-phase reclaim chokepoint — the safety net that reclaims
-		// leaked DAG workflow keep-alive phase sessions (design_done holders never
+		// leaked three-stage keep-alive phase sessions (design_done holders never
 		// closed after handoff; completed QA processes never torn down → OOM).
 		// closeParked goes through the SAME closeRunner teardown (finalizeDone, NO
 		// thread archive — the shared parent thread is owned by post-ship
@@ -6983,28 +4616,6 @@ export async function startBridge(
 		// heartbeat interval); single-flight + detached inside HeartbeatService.
 		// Tick 0 = the boot pass (orphan reap + first sweep).
 		async (tick) => {
-			// FLY-1066: ~hourly residue convergence rides this existing tick and is
-			// deliberately independent of the worktree-autoclean kill-switch.
-			if (residueHarvester) {
-				const residueEveryNTicks = residueMaintenanceEveryNTicks(
-					config.stuckCheckIntervalMs,
-				);
-				const scheduled = tick % residueEveryNTicks === 0;
-				if (
-					scheduled ||
-					(paneLossInitialDebt && serverLossCheckState.firstSuccessful)
-				) {
-					const outcome = await (scheduled
-						? residueHarvester.runFullPass()
-						: residueHarvester.runPaneLossPass());
-					if (
-						outcome === "completed" &&
-						residueHarvester.lastPaneLossOutcome() === "ran"
-					) {
-						paneLossInitialDebt = false;
-					}
-				}
-			}
 			// R3#1: TERM/KILL of orphan MCP processes is a NEW deletion — it
 			// hangs off the same master switch as every other new mutator.
 			if (!worktreeAutocleanEnabled()) return;
@@ -7070,17 +4681,33 @@ export async function startBridge(
 				}
 			}
 		},
-		livenessTrackers.liveness,
-		(name, startMs, endMs) =>
-			eventLoopAttribution.recordSpan(name, startMs, endMs),
+		// FLY-1234: heartbeat session_stuck confirm layer (late-bound above).
+		stuckConfirmHolder,
 	);
-	heartbeatServiceRef.current = heartbeatService;
-	livenessWiring.liveness = true;
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
-	// router via the late-bound holder, now that HeartbeatService
+	// router + idle watchdog via the late-bound holder, now that HeartbeatService
 	// exists. Stays null on the kill-switch / no-registry path (byte-compat).
 	reconnectHolder.current = heartbeatService;
+
+	// FLY-172: boot drain — reconcile complete-failed markers left by Runners
+	// that finished during a restart window (their `flywheel-comm complete` POST
+	// hit a down Bridge). Event-driven (boot), no new timer. Best-effort: a
+	// failure here must not block Bridge startup.
+	try {
+		await reconcileCompleteFailedMarkers({
+			store,
+			bridgeBaseUrl: loopbackBaseUrl,
+			ingestToken: config.ingestToken,
+			transitionOpts,
+			getTmuxTarget: getTmuxTargetFromCommDb,
+			isTmuxWindowAlive,
+		});
+	} catch (err) {
+		console.error(
+			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
 
 	// FLY-892 (Step 5): one-shot boot sweep — reconcile the legacy FLY-793 per-phase
 	// side-table threads (design/implement/qa) into the single converged issue
@@ -7103,13 +4730,13 @@ export async function startBridge(
 	// / QA Runner that finished via `flywheel-comm stage set completed` only ever
 	// emitted a stage_changed event, which never transitioned the FSM off
 	// `running` (that flows through `session_completed`). Those sessions are
-	// stuck: close_runner rejects them while tmux + worktree linger. The event-route
-	// handler fixes this going
+	// stuck: close_runner rejects them, tmux + worktree linger, the idle watchdog
+	// false-positives session_stuck. The event-route handler fixes this going
 	// forward; this one-shot sweep unsticks the EXISTING backlog whose
-	// stage_changed already fired before the fix shipped. This sweep runs before
-	// the late-bound FLY-172 durable-alert drain; its pending-marker guard leaves
-	// those sessions untouched so their real `complete --route` remains
-	// authoritative. Status-only; no tmux/worktree
+	// stage_changed already fired before the fix shipped. Runs AFTER the FLY-172
+	// marker drain so any session with a pending complete marker is routed by its
+	// real `complete --route` first, leaving only true stage-set-completed
+	// zombies (no decision_route, no pr_number). Status-only; no tmux/worktree
 	// touch — teardown stays with exec-id-scoped close_runner / boot tab-reaper.
 	// `FLYWHEEL_FLY324_SWEEP_EXCLUDE` (comma/space-separated execIds or issue
 	// identifiers) lets the Lead skip *parked* Runners — ones that reported
@@ -7122,19 +4749,10 @@ export async function startBridge(
 		);
 		const sweep = reconcileDoneButRunning(store, transitionOpts, {
 			exclude: sweepExclude,
-			// FLY-1329 (A5): a runner that DECLARED itself parked is asserting it is
-			// alive and waiting — the sweep must not force-complete it. This is the
-			// signal the hand-maintained exclude list above was standing in for, and
-			// it is why a park-alive runner surviving a restart no longer depends on
-			// a human having remembered to name it. Reuses the existing readonly
-			// declared-state probe (never a second reader of the same table).
-			isParked: (execId, projectName) =>
-				probeDeclaredStateFromCommDb(execId, projectName, Date.now()) ===
-				"parked",
 		});
 		if (sweep.scanned > 0) {
 			console.log(
-				`[Bridge] FLY-324 boot sweep: scanned=${sweep.scanned} reconciled=${sweep.reconciled} rejected=${sweep.rejected} skipped=${sweep.skipped} excluded=${sweep.excluded} parkedVetoed=${sweep.parkedVetoed} done-but-running → completed`,
+				`[Bridge] FLY-324 boot sweep: scanned=${sweep.scanned} reconciled=${sweep.reconciled} rejected=${sweep.rejected} skipped=${sweep.skipped} excluded=${sweep.excluded} done-but-running → completed`,
 			);
 		}
 	} catch (err) {
@@ -7142,13 +4760,6 @@ export async function startBridge(
 			`[Bridge] FLY-324 boot sweep failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
-
-	// FLY-1448: populated once gate-retirement infrastructure is assembled below. The
-	// done-thread scheduler starts with a delay, and a defensive absent holder
-	// simply defers gate retirement to its next fresh-Linear pass.
-	const terminalGateRetirementHolder: {
-		current?: TerminalGateRetirement;
-	} = {};
 
 	// FLY-1165: done-thread reconcile — boot pass + periodic tick. The
 	// structural backstop behind the FLY-369 close cascade: threads whose issue
@@ -7177,7 +4788,7 @@ export async function startBridge(
 				probeLiveness: (w) => probeRunnerProcessLiveness(w),
 				// FLY-1185 entry D: authorized issue closeout (episode-gated inside
 				// the reconcile) + the dual-switch contract — the NEW mutators hang
-				// disable autoclean through the integration seam; the original FLY-1165 behavior
+				// off FLYWHEEL_WORKTREE_AUTOCLEAN, the original FLY-1165 behavior
 				// stays under FLYWHEEL_DONE_THREAD_RECONCILE.
 				lifecycleCloseout: (input) =>
 					lifecycleCloseoutFn({
@@ -7191,68 +4802,35 @@ export async function startBridge(
 						// Codex R2#5: D's fresh-Linear authority (reopen wins).
 						freshAuthority: input.freshAuthority,
 					}),
-				retireIssueGates: (input) =>
-					terminalGateRetirementHolder.current?.retireIssueDone({
-						projectName: input.projectName,
-						canonicalIssueId: input.canonicalIssueId,
-						issueAliases: input.issueAliases,
-						authorityCredential: input.authorityCredential,
-						revalidate: input.revalidate,
-					}) ?? Promise.resolve(),
 				newMutatorsEnabled: worktreeAutocleanEnabled(),
 			});
 		},
-		// FLY-1282 Part C: archive-only targeted consumption — same scheduler,
-		// shared single-flight with the global pass. dryRun is re-read per
-		// invocation so a dry-run flip takes effect without restart.
-		runTargeted: async (issueId) => {
-			const targetedCfg = resolveDoneThreadReconcileConfig();
-			const outcome = await runTargetedArchiveCheck(issueId, {
-				store,
-				projects: projects ?? [],
-				linearApiKey: config.linearApiKey,
-				globalBotToken: config.discordBotToken,
-				discordOwnerUserId: config.discordOwnerUserId,
-				dryRun: targetedCfg.dryRun,
-				// Canonical per-issue lock — the SAME keys the lifecycle
-				// close guard / admission serialize on (never split-lock).
-				withIssueLock: (lockIssueId, fn) => {
-					const res = resolveLifecycleRootKey(store, lockIssueId, []);
-					const keys = res.lockKeys.length > 0 ? res.lockKeys : [lockIssueId];
-					return issueMutex(keys, fn);
-				},
-				lookupTarget: lookupTmuxTarget,
-				probeLiveness: (w) => probeRunnerProcessLiveness(w),
-			});
-			return { done: !isRetryableOutcome(outcome), note: outcome.kind };
-		},
 	});
-	// FLY-1282 Part C: bind the pre-created enqueue buffer to the scheduler's
-	// targeted queue — completion enqueues that arrived before this point
-	// (bounded 64) flush now.
-	terminalArchiveBuffer.bind((issueId) => doneThreadReconcile.enqueue(issueId));
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
 	// The generation source is fixed in openTmuxViewer (cmux no longer opens
 	// viewers); this migrates the existing backlog + backstops the terminal-app
-	// path. Runs after the FLY-324 sweep; the late-bound FLY-172 alert-aware drain
-	// runs later in boot and owns completion settlement. One-shot,
-	// fire-and-forget, best-effort.
-	import("./viewer-session-reaper.js")
-		.then(({ deriveOwnedBaseSessions, reapViewerSessions }) =>
-			reapViewerSessions(
-				store,
-				deriveOwnedBaseSessions((projects ?? []).map((p) => p.projectName)),
-			).then((r) =>
-				console.log(
-					`[viewer-session-reaper] scanned=${r.scanned} killed=${r.killed} skippedAttached=${r.skippedAttached} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} errors=${r.errors.length}`,
+	// path. MUST run after the FLY-172 marker drain and FLY-324 sweep above so
+	// it sees post-reconciliation statuses (Codex design review R1). One-shot,
+	// fire-and-forget, best-effort. `FLYWHEEL_VIEWER_SESSION_REAPER=0` disables
+	// (same escape-hatch shape as FLYWHEEL_CRASH_REAPER).
+	if (process.env.FLYWHEEL_VIEWER_SESSION_REAPER !== "0") {
+		import("./viewer-session-reaper.js")
+			.then(({ deriveOwnedBaseSessions, reapViewerSessions }) =>
+				reapViewerSessions(
+					store,
+					deriveOwnedBaseSessions((projects ?? []).map((p) => p.projectName)),
+				).then((r) =>
+					console.log(
+						`[viewer-session-reaper] scanned=${r.scanned} killed=${r.killed} skippedAttached=${r.skippedAttached} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} errors=${r.errors.length}`,
+					),
 				),
-			),
-		)
-		.catch((e: Error) =>
-			console.warn(`[viewer-session-reaper] failed: ${e.message}`),
-		);
+			)
+			.catch((e: Error) =>
+				console.warn(`[viewer-session-reaper] failed: ${e.message}`),
+			);
+	}
 
 	// FLY-766: Chrome-session reaper — kill leaked `agent-browser` Chrome-for-Testing
 	// instances (the real root of the fleet memory spikes: any session using
@@ -7262,8 +4840,12 @@ export async function startBridge(
 	// FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED=1). Skips entirely for a
 	// `:memory:` store (unit-test Bridges) so tests never enumerate real processes
 	// or start a timer. Boot + periodic share one single-flight guard.
+	// `FLYWHEEL_CHROME_REAPER=0` disables both.
 	let chromeReaperTimer: ReturnType<typeof setInterval> | undefined;
-	if (store.getDbPath() !== ":memory:") {
+	if (
+		process.env.FLYWHEEL_CHROME_REAPER !== "0" &&
+		store.getDbPath() !== ":memory:"
+	) {
 		const chromeGraceMin = (() => {
 			const n = Number(process.env.FLYWHEEL_CHROME_REAPER_ORPHAN_GRACE_MIN);
 			return Number.isFinite(n) && n > 0 ? n : 30;
@@ -7275,40 +4857,13 @@ export async function startBridge(
 		const chromeMigrateUnattributed =
 			process.env.FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED === "1";
 		let chromeReaperRunning = false;
-		let playwrightCensusRecorder:
-			| {
-					run(input: {
-						sample: import("./chrome-session-reaper.js").ChromeSweepSample;
-						mode: "boot" | "periodic";
-						orphanGraceMinutes: number;
-					}): Promise<string>;
-			  }
-			| undefined;
 		const runChromeReap = async (mode: "boot" | "periodic"): Promise<void> => {
 			if (chromeReaperRunning) return; // single-flight (shared boot + periodic)
 			chromeReaperRunning = true;
 			try {
-				const [
-					{ collectChromeSweepSample, reapChromeSessions },
-					{ createPlaywrightOrphanCensusRecorder },
-				] = await Promise.all([
-					import("./chrome-session-reaper.js"),
-					import("./playwright-orphan-census.js"),
-				]);
-				const chromeSweepSample = await collectChromeSweepSample();
-				playwrightCensusRecorder ??= createPlaywrightOrphanCensusRecorder();
-				try {
-					const summary = await playwrightCensusRecorder.run({
-						sample: chromeSweepSample,
-						mode,
-						orphanGraceMinutes: chromeGraceMin,
-					});
-					if (!summary.endsWith("recorded=no")) console.log(summary);
-				} catch (error) {
-					console.warn(
-						`[playwright-orphan-census] ledger failed: ${(error as Error).message}`,
-					);
-				}
+				const { reapChromeSessions } = await import(
+					"./chrome-session-reaper.js"
+				);
 				const r = await reapChromeSessions({
 					store,
 					ownStateDbPath: store.getDbPath(),
@@ -7316,20 +4871,17 @@ export async function startBridge(
 					migrateUnattributed: chromeMigrateUnattributed,
 					unattributedIdleGraceMinutes: chromeGraceMin,
 					nowMs: Date.now(),
-					sweepSample: chromeSweepSample,
 				});
 				if (
 					r.scanned > 0 ||
 					r.killedAttributedTerminal > 0 ||
 					r.killedAttributedOrphan > 0 ||
 					r.killedUnattributedIdle > 0 ||
-					r.killedHeadlessShot > 0 ||
-					r.killedRodBrowser > 0 ||
 					r.wouldKillUnattributed > 0 ||
 					r.errors.length > 0
 				) {
 					console.log(
-						`[chrome-reaper:${mode}] scanned=${r.scanned} killTerminal=${r.killedAttributedTerminal} killOrphan=${r.killedAttributedOrphan} killUnattr=${r.killedUnattributedIdle} killHeadlessShot=${r.killedHeadlessShot} killRodBrowser=${r.killedRodBrowser} wouldKillUnattr=${r.wouldKillUnattributed} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} skippedHeadlessShotFresh=${r.skippedHeadlessShotFresh} skippedRodFresh=${r.skippedRodFresh} raced=${r.racedSkipped} errors=${r.errors.length}`,
+						`[chrome-reaper:${mode}] scanned=${r.scanned} killTerminal=${r.killedAttributedTerminal} killOrphan=${r.killedAttributedOrphan} killUnattr=${r.killedUnattributedIdle} wouldKillUnattr=${r.wouldKillUnattributed} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} raced=${r.racedSkipped} errors=${r.errors.length}`,
 					);
 				}
 			} catch (e) {
@@ -7365,43 +4917,63 @@ export async function startBridge(
 	// `running` rows whose Bridge FSM is a non-preserve terminal outcome AND whose
 	// tmux target is provably dead (the FLY-638 blind spot). Both sweeps probe tmux
 	// per row and share the fire-and-forget + dedup shape; their candidate sets are
-	// disjoint (running vs completed/timeout). The generic seam stays injectable
-	// for tests, while production always enables reconciliation.
+	// disjoint (running vs completed/timeout). `FLYWHEEL_COMMDB_FSM_RECONCILE=0`
+	// disables the reconcile (kill-switch, mirrors FLYWHEEL_CRASH_REAPER).
 	{
-		const runLegacyCommDbFsm = async (projectName: string) => {
-			try {
-				const result = await reconcileCommDbRunningAgainstFsm(
-					projectName,
-					(executionId) => store.getSession(executionId)?.status,
-					{
-						onFinalizeOutcome: recordResidueFinalizeOutcome,
-						finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
-							db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
-						parkedGenerationEvidence,
-					},
-				);
-				if (result.reconciled > 0) {
-					console.log(
-						`[Bridge] FLY-817 CommDB↔FSM reconcile (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} keptNonTerminal=${result.keptNonTerminal} keptPreserve=${result.keptPreserve} keptAliveTarget=${result.keptAliveTarget}`,
+		const prunedProjects = new Set<string>();
+		const reconcileOn = process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
+		const recordFinalizeOutcome = (
+			executionId: string,
+			projectName: string,
+			result: ReturnType<typeof finalizeCommDbSession>,
+		) => {
+			const session = store.getSession(executionId);
+			store.recordCommDbFinalizeOutcome({
+				executionId,
+				issueId: session?.issue_id ?? executionId,
+				projectName,
+				ok: result.ok,
+				error: result.error,
+			});
+		};
+		void (async () => {
+			for (const p of projects ?? []) {
+				if (prunedProjects.has(p.projectName)) continue;
+				prunedProjects.add(p.projectName);
+				if (reconcileOn) {
+					try {
+						const r = await reconcileCommDbRunningAgainstFsm(
+							p.projectName,
+							(id) => store.getSession(id)?.status,
+							{ onFinalizeOutcome: recordFinalizeOutcome },
+						);
+						if (r.reconciled > 0) {
+							console.log(
+								`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}): scanned=${r.scanned} reconciled=${r.reconciled} keptNonTerminal=${r.keptNonTerminal} keptPreserve=${r.keptPreserve} keptAliveTarget=${r.keptAliveTarget}`,
+							);
+						}
+					} catch (err) {
+						console.error(
+							`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
+						);
+					}
+				}
+				try {
+					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName, {
+						onFinalizeOutcome: recordFinalizeOutcome,
+					});
+					if (pruned.pruned > 0) {
+						console.log(
+							`[Bridge] FLY-638 CommDB prune (${p.projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
+						);
+					}
+				} catch (err) {
+					console.error(
+						`[Bridge] FLY-638 CommDB prune (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
 					);
 				}
-			} catch (err) {
-				console.error(
-					`[Bridge] FLY-817 CommDB↔FSM reconcile (${projectName}) failed (non-fatal): ${(err as Error).message}`,
-				);
 			}
-		};
-		void runResidueAwareBootSweep({
-			projectNames: projects.map((project) => project.projectName),
-			residueHarvester,
-			commDbFsmEnabled: commDbFsmReconcileEnabled,
-			runLegacyCommDbFsm,
-			pruneCommDb: pruneResidueCommDb,
-		}).catch((err) =>
-			console.error(
-				`[Bridge] CommDB boot sweep failed (non-fatal): ${(err as Error).message}`,
-			),
-		);
+		})();
 	}
 
 	// FLY-369: archive-on-close. Archiving is driven by the Lead's close action
@@ -7412,11 +4984,10 @@ export async function startBridge(
 
 	// FLY-623 (Codex R2 HIGH-2 / R3 LOW-1): boot-seed reconnecting state for
 	// pre-existing `running` sessions whose in-process poll loop died with the
-	// previous Bridge process. Runs after the FLY-324 done-but-running sweep (so a
-	// stage=completed zombie is terminalized first and never briefly enters
-	// reconnecting / gets a ⚠️重连中 title), before the late-bound FLY-172
-	// alert-aware boot drain, and BEFORE
-	// heartbeatService.start() — closing the on-boot
+	// previous Bridge process. Runs AFTER the FLY-172 marker drain AND the FLY-324
+	// done-but-running sweep (so a stage=completed zombie is terminalized first and
+	// never briefly enters reconnecting / gets a ⚠️重连中 title), and BEFORE
+	// heartbeatService.start() / RunnerIdleWatchdog.start() — closing the on-boot
 	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
 	// every boot → survives repeated restarts). No-op on the kill-switch path.
 	// Best-effort: must not block Bridge startup.
@@ -7429,27 +5000,64 @@ export async function startBridge(
 		);
 	}
 
-	heartbeatService.start();
+	// FLY-1234 (R2 #4): `heartbeatService.start()` used to live HERE — it moved
+	// below the watchdog-judge wiring + stuckConfirmHolder binding. Multiple
+	// awaits sit between this point and that wiring (transport dynamic import,
+	// milestone-config load), so starting here would open a real window where a
+	// tick observes an unbound confirm holder. seedReconnecting (above) keeps
+	// its existing before-start ordering.
 
 	// FLY-163: CleanupService removed (forum thread cleanup gone).
 
 	// FLY-62: Gate question poller
+	// FLY-208 A2: wire the black-hole inbox patrol transport. Mailbox mode
+	// only — commdb/rollback mode leaves transport undefined and the patrol is
+	// a complete no-op. There is no reusable transport instance in scope here
+	// (createLeadRuntime builds its own per-runtime instance), so build one;
+	// wiring failure is non-fatal (patrol off, question relay unaffected).
+	let misroutePatrolTransport:
+		| import("./gate-poller.js").MisroutePatrolTransport
+		| undefined;
+	let misrouteArchiveDir: string | undefined;
 	// FLY-605: persistent founder-reply thread cursor path (state dir is only
 	// reachable through the dynamically-imported getStateDir below). Unset →
 	// GatePoller falls back to an in-memory cursor.
 	let founderReplyCursorPath: string | undefined;
 	if (resolveCommBackend() === "mailbox") {
 		try {
-			const { getStateDir } = await import("flywheel-agent-team-transport");
+			const { AgentTeamTransportFactory, getStateDir } = await import(
+				"flywheel-agent-team-transport"
+			);
+			misroutePatrolTransport = AgentTeamTransportFactory.fromEnv();
+			misrouteArchiveDir = join(getStateDir(), "misroute-archive");
 			founderReplyCursorPath = join(getStateDir(), "founder-reply-cursor.json");
-		} catch {}
+		} catch (err) {
+			console.warn(
+				`[Bridge] FLY-208 misroute patrol wiring failed (patrol off, non-fatal): ${(err as Error).message}`,
+			);
+		}
 	}
+	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink. Constructed
+	// HERE (before GatePoller) so the FLY-513 global-codex drift probe can reuse
+	// this ONE notifier instance (shared per-reason debounce) on the poll tick —
+	// rather than a second notifier with split debounce/file state (Codex R2 LOW-1).
+	const metaAlertNotifier = new MetaAlertNotifier();
+	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
+		console.log(
+			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
+		);
+	});
+
 	// FLY-513: the global-codex drift probe does real PATH/realpath I/O against the
 	// host's actual `codex`. Disabled under VITEST (same boundary as
-	// BridgeEventLoopGuard below) so general Bridge integration suites never fire
+	// BridgeEventLoopWatchdog below) so general Bridge integration suites never fire
 	// a meta-alert off the test machine's real (possibly contaminated) global codex.
 	const codexHealthEnabled = !process.env.VITEST;
-	// Late-bound shared alert sink for convergence lanes.
+	// FLY-637-ext: late-bound page-Annie sink for the lead-pending escalation. The
+	// GatePoller starts before the shared `alertSink` exists below; boot is
+	// synchronous so the holder is populated before the first ~3s poll tick. The
+	// page step is rare (only after the Lead ignores a runner's question for several
+	// backoff rounds), so an unset holder during boot can never reach it.
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
@@ -7457,174 +5065,11 @@ export async function startBridge(
 	// emission source calls, so the D1 Router sees every infra event. Populated
 	// right after the raw alertSink below; emitters constructed earlier read
 	// `.current` at fire time and fall back to the raw notifier during the
-	// synchronous boot window; production routing is welded on after assembly.
+	// synchronous boot window (identical behavior — routing only matters at
+	// runtime, and FLYWHEEL_ALERT_ROUTING unset keeps it a pure passthrough).
 	const routedAlertSinkHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
-
-	const flagScanOwnerStatus = resolveFlagScanOwnerStatus(projects);
-	const flagScanOwner =
-		flagScanOwnerStatus.kind === "ready"
-			? flagScanOwnerStatus.owner
-			: undefined;
-	if (flagScanOwnerStatus.kind === "invalid") {
-		console.warn(
-			`[flag-scan] owner resolution unavailable: ${flagScanOwnerStatus.message}`,
-		);
-	}
-	const flagScanFailureMessages = new Map<string, string>();
-	const recoverFlagScanFailureAlerts = (): void => {
-		if (!flagScanOwner) return;
-		const now = Date.now();
-		const leaseOwner = `bridge:${process.pid}`;
-		for (const intent of store.listFlagScanFailureAlertIntents()) {
-			if (intent.state === "done") continue;
-			if (
-				!store.claimFlagScanFailureAlertIntent({
-					intentId: intent.intentId,
-					leaseOwner,
-					now,
-					leaseMs: 2 * 60_000,
-				})
-			) {
-				continue;
-			}
-			try {
-				const message =
-					flagScanFailureMessages.get(intent.eventId) ??
-					`Weekly flag scan ${intent.failureClass} failure at baseline run ${intent.baselineRunId}; inspect the scanner before retrying.`;
-				const delivered = deliverFlagScanMailboxAlert({
-					primaryLeadId: flagScanOwner.leadId,
-					fallbackLeadId: flagScanOwner.senderLeadId,
-					projectName: flagScanOwner.project.projectName,
-					payloadFor: (recipient) => ({
-						leadId: recipient,
-						projectName: flagScanOwner.project.projectName,
-						eventId: intent.eventId,
-						eventType: "flag_scan_failed",
-						title: `Weekly flag scan failed closed (${intent.milestone})`,
-						body: `${message}\nThe scan remains fail-closed; inspect the referenced run before retrying.`,
-						severity: "warning",
-					}),
-					enqueueLeadInbox: (leadId, payload) =>
-						leadInboxRuntime.enqueueInfraAlert(leadId, payload),
-					inspectLeadInbox: (projectName, deliveryId) =>
-						leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
-					leadRecipientState: (leadId) =>
-						leadInboxRuntime.getLeadRecipientState(leadId),
-				});
-				if (
-					delivered.done &&
-					store.settleFlagScanFailureMailboxIntent({
-						intentId: intent.intentId,
-						leaseOwner,
-					})
-				) {
-					continue;
-				}
-				store.markFlagScanFailureAlertIntentAmbiguous({
-					intentId: intent.intentId,
-					leaseOwner,
-					error: "Lead mailbox ACK pending",
-				});
-			} catch (error) {
-				store.markFlagScanFailureAlertIntentAmbiguous({
-					intentId: intent.intentId,
-					leaseOwner,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		}
-	};
-	const flagRetirementScanner =
-		flagScanSourceLoader && flagScanRepoRoot && flagScanOwner
-			? createFlagRetirementScanner({
-					store,
-					loadSources: flagScanSourceLoader,
-					loadProvenance: (currentFlagNames) =>
-						buildFlagProvenance({
-							currentFlagNames,
-							execGit: async (args) => {
-								try {
-									const result = await execFileP("git", args, {
-										cwd: flagScanRepoRoot,
-										timeout: 20_000,
-										maxBuffer: 16 * 1024 * 1024,
-									});
-									return {
-										exitCode: 0,
-										stdout: result.stdout,
-										stderr: result.stderr,
-									};
-								} catch (error) {
-									const failed = error as {
-										code?: number | string;
-										stdout?: string;
-										stderr?: string;
-										message?: string;
-									};
-									return {
-										exitCode:
-											typeof failed.code === "number" ? failed.code : 124,
-										stdout: failed.stdout ?? "",
-										stderr: failed.stderr ?? failed.message ?? "git failed",
-									};
-								}
-							},
-						}),
-					effects: createProductionFlagScanEffects({
-						projects,
-						reportBaseUrl: loopbackBaseUrl,
-						reportToken: config.apiToken,
-						commCliPath: join(
-							flagScanRepoRoot,
-							"packages/flywheel-comm/dist/index.js",
-						),
-						store,
-						enqueueLeadInbox: (leadId, payload) =>
-							leadInboxRuntime.enqueueInfraAlert(leadId, payload),
-						inspectLeadInbox: (projectName, deliveryId) =>
-							leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
-						leadRecipientState: (leadId) =>
-							leadInboxRuntime.getLeadRecipientState(leadId),
-					}),
-					alertFailure: async (message) => {
-						const baselineRunId = store.getLatestFlagScanRun()?.runId ?? 0;
-						const failureClass = /provenance|git|registry/i.test(message)
-							? "provenance"
-							: /source|config|resolve/i.test(message)
-								? "source"
-								: "orchestration";
-						const now = Date.now();
-						const initial = store.ensureFlagScanFailureAlertIntent({
-							baselineRunId,
-							failureClass,
-							milestone: "initial",
-							eventId: `flag-scan-failed:${baselineRunId}:${failureClass}:initial`,
-							now,
-						});
-						flagScanFailureMessages.set(initial.eventId, message);
-						if (now - initial.createdAt >= 24 * 60 * 60_000) {
-							const reminder = store.ensureFlagScanFailureAlertIntent({
-								baselineRunId,
-								failureClass,
-								milestone: "24h",
-								eventId: `flag-scan-failed:${baselineRunId}:${failureClass}:24h`,
-								now,
-							});
-							flagScanFailureMessages.set(reminder.eventId, message);
-						}
-						recoverFlagScanFailureAlerts();
-					},
-					recoverFailureAlerts: recoverFlagScanFailureAlerts,
-					now: () => Date.now(),
-					newRunToken: () =>
-						`${new Date().toISOString().slice(0, 10)}-${randomBytes(8).toString("hex")}`,
-					leaseOwner: `bridge:${process.pid}:${randomUUID()}`,
-					enabled: () => storeFlagRetirementScanEnabled(flagStore),
-				})
-			: undefined;
-	flagScanRouteHolder.current = flagRetirementScanner;
 	// FLY-799: founder-in-thread ship approval. When the founder replies "ship
 	// it" / ✅ in a `[FLY-XX]` thread, this callback attributes the approval to
 	// HER (canonical founder id), writes {"approved":true} to the approve_to_ship
@@ -7648,12 +5093,20 @@ export async function startBridge(
 			.filter(Boolean),
 	);
 	// FLY-1041 Chunk 5: ONE hold guard closure injected into every founder
-	// approval source (text / ✅ reaction / voice) so they cannot drift.
+	// approval source (text / ✅ reaction / voice) so they cannot drift —
+	// kill-switch FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 (read per call) restores
+	// the pre-FLY-1041 held-writes-anyway behavior for all three at once.
 	const founderApprovalIsHeld = (executionId: string): boolean =>
 		founderApprovalHoldGuard(store, store.getSession(executionId));
-	const founderHoldReasonFor = (executionId: string) =>
-		reviewHoldReason(store, store.getSession(executionId));
 
+	// FLY-1099 §4.1: the reason-classified hold face (same predicate order as
+	// isReviewHeld — shared implementation, cannot drift). The kill-switch
+	// FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 keeps its FLY-1041 semantics: holds are
+	// ignored entirely (the deferral face then reports "not held" too).
+	const founderHoldReasonFor = (executionId: string) =>
+		process.env.FLYWHEEL_ATTRIBUTION_HOLD_ALIGN === "0"
+			? null
+			: reviewHoldReason(store, store.getSession(executionId));
 	// FLY-1099: current canonical founder id (same derivation the factory uses).
 	const founderCanonicalId = (): string | undefined =>
 		deriveCanonicalFounderId(
@@ -7663,7 +5116,6 @@ export async function startBridge(
 	const projectRootFor = (projectName: string): string | undefined =>
 		projects.find((project) => project.projectName === projectName)
 			?.projectRoot;
-	const gateAuthorityView = makeGateAuthorityView(store);
 	// FLY-1238: ONE composition-root instance owns cache, single-flight,
 	// backoff, and per-project network budget for all six recovery surfaces.
 	const mergedGateGuard = createMergedGateGuard({
@@ -7684,18 +5136,23 @@ export async function startBridge(
 		discordOwnerUserId: config.discordOwnerUserId,
 		founderConsentUserId: config.founderConsent?.founderUserId,
 		store,
-		gateAuthorityView,
 		denylistProjects: founderAutoApproveDenylist,
+		// FLY-1041 Chunk 4: attribution forensics; Chunk 5: hold alignment.
 		auditStore: store,
 		isHeld: founderApprovalIsHeld,
 		mergedGateGuard,
 		projectRootFor,
+		// FLY-1099 §4.2: held approvals are durably deferred (codex_pending /
+		// qa_not_green) instead of silently declined; merge_block gets the
+		// recovery pointer. Kill-switches read per call inside.
 		deferralSupport: (ctx) =>
 			makeDeferralSupport({
 				store,
 				holdReasonFor: founderHoldReasonFor,
 				ctx,
 			}),
+		// The db flowing through the deliverer IS a real CommDB (GateResponseDb is
+		// its structural subset), so widening it for the wake is sound at runtime.
 		onResponseWritten: (info) =>
 			founderShipPostWriteHook({
 				executionId: info.executionId,
@@ -7716,7 +5173,6 @@ export async function startBridge(
 		discordOwnerUserId: config.discordOwnerUserId,
 		founderConsentUserId: config.founderConsent?.founderUserId,
 		store,
-		gateAuthorityView,
 		denylistProjects: founderAutoApproveDenylist,
 		// FLY-1041 Chunk 4/5: same audit target + hold guard as the text source.
 		auditStore: store,
@@ -7747,7 +5203,6 @@ export async function startBridge(
 		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
 		createVoiceRouter({
 			store,
-			gateAuthorityView,
 			projects,
 			apiTokenConfigured: Boolean(config.apiToken),
 			discordOwnerUserId: config.discordOwnerUserId,
@@ -7794,31 +5249,21 @@ export async function startBridge(
 		}),
 	);
 
+	// FLY-725: per-project founder milestone-report config, read from each
+	// project's CANONICAL root (never a runner's PR worktree).
+	const founderMilestoneReportByProject =
+		await loadFounderMilestoneReportConfigByProject(projects);
 	// FLY-945 Fix D: external-merge convergence sweeper (backstop — Fix F
 	// simultaneously retires executor-merge; this is NOT permission for it).
+	// Kill-switch FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 lives inside pass().
 	const externalMergeReconciler = createExternalMergeReconciler({
 		store,
-		withIssueLifecycleMutex: lifecycleInfra.withIssueLifecycleMutex,
-		materializedHeadAuthority,
 		config,
 		projects,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
-		probeTurnHolderLiveness: async (session) => {
-			if (!session.tmux_session) return "indeterminate";
-			return probeRunnerProcessLiveness(session.tmux_session);
-		},
 		// FLY-1204: external merge is a real ship path — reclaim the parked
-		// DAG workflow sessions here too (shared finalizer, same as run-infra).
-		finalizeWorkflowPhaseRoles,
-		retireMergedGates: (input) =>
-			terminalGateRetirementHolder.current?.retirePrMerged({
-				projectName: input.projectName,
-				canonicalIssueId: input.canonicalIssueId,
-				issueAliases: input.issueAliases,
-				prNumber: input.prNumber,
-				authorityCredential: input.authorityCredential,
-				revalidate: input.revalidate,
-			}) ?? Promise.resolve(),
+		// three-stage phase sessions here too (shared finalizer, same as run-infra).
+		finalizeThreeStagePhases,
 		alertLead: async (session, title, body) => {
 			try {
 				const { lead } = resolveLeadForIssue(
@@ -7848,1010 +5293,639 @@ export async function startBridge(
 		},
 	});
 
-	const issueGateSupersedeTick = (): void => {
-		for (const project of projects) {
-			let db: CommDB | undefined;
-			try {
-				db = new CommDB(commDbPathForProject(project.projectName));
-				sweepIssueGatesForProject({
-					projectName: project.projectName,
-					db,
-					store,
-					env: process.env,
-					log: (message) => console.warn(message),
-				});
-			} catch (error) {
-				console.warn(
-					`[gate-supersede] project sweep failed for ${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			} finally {
-				db?.close();
-			}
-		}
-	};
-	const orphanFounderReviewMonitorTick = (): void => {
-		for (const project of projects) {
-			let db: CommDB | undefined;
-			try {
-				db = new CommDB(commDbPathForProject(project.projectName));
-				sweepOrphanFounderReviewGates({
-					projectName: project.projectName,
-					db,
-					store,
-					resolveAlertIdentity: (run) =>
-						resolveWorkflowRunAlertIdentity({
-							store,
-							projects,
-							defaultLeadAgentId: config.defaultLeadAgentId,
-							projectName: run.project_name,
-							issueId: run.issue_id,
-							runId: run.run_id,
-							log: (message) =>
-								console.warn(`[founder-review-orphan] ${message}`),
-						}),
-					env: process.env,
-					log: (message) => console.warn(message),
-				});
-			} catch (error) {
-				console.warn(
-					`[founder-review-orphan] project sweep failed for ${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			} finally {
-				db?.close();
-			}
-		}
-	};
-	const { createWorkflowGateOriginPreflight } = await import(
-		"./gate-origin-preflight.js"
-	);
-	const workflowGateOriginPreflight = createWorkflowGateOriginPreflight({
-		store,
-		alertIdentity: ({ runId, projectName, issueId }) =>
-			resolveWorkflowRunAlertIdentity({
-				store,
-				projects,
-				defaultLeadAgentId: config.defaultLeadAgentId,
-				projectName,
-				issueId,
-				runId,
-				log: (message) => console.warn(`[workflow-gate] ${message}`),
-			}),
-	});
-	let workflowGateMaterializationRunning = false;
-	const workflowGateMaterializeTick = async (): Promise<void> => {
-		if (workflowGateMaterializationRunning) return;
-		workflowGateMaterializationRunning = true;
-		try {
-			await voidSupersededWorkflowGateCards({
-				store,
-				resolveAlertIdentity: ({ run }) =>
-					resolveWorkflowRunAlertIdentity({
-						store,
-						projects,
-						defaultLeadAgentId: config.defaultLeadAgentId,
-						projectName: run.project_name,
-						issueId: run.issue_id,
-						runId: run.run_id,
-						log: (message) => console.warn(`[workflow-gate-card] ${message}`),
-					}),
-				resolveDelivery: ({ holder, run }) => {
-					const source = store.getSession(holder.source_execution_id);
-					const { lead } = resolveLeadForIssue(
-						projects,
-						run.project_name,
-						source ? store.getSessionLabels(holder.source_execution_id) : [],
-					);
-					const botToken = lead.botToken ?? config.discordBotToken;
-					if (!botToken) return undefined;
-					return {
-						botToken,
-						alertIdentity: resolveWorkflowRunAlertIdentity({
-							store,
-							projects,
-							defaultLeadAgentId: config.defaultLeadAgentId,
-							projectName: run.project_name,
-							issueId: run.issue_id,
-							runId: run.run_id,
-							log: (message) => console.warn(`[workflow-gate-card] ${message}`),
-						}),
-					};
-				},
-				log: (message: string) => console.warn(message),
-			});
-			const materializeQuestion = async (
-				questionId: string,
-			): Promise<boolean> => {
-				const holder =
-					store.getCurrentWorkflowGateHolderByQuestionId(questionId);
-				if (!holder) return false;
-				const run = store.getWorkflowRun(holder.run_id);
-				if (!run) {
-					console.warn(
-						`[workflow-gate] materialization failed for ${holder.question_id}: workflow_gate_run_not_found`,
-					);
-					return false;
-				}
-				let materialized = false;
-				try {
-					await materializeWorkflowGateWithFailLoud({
-						store,
-						holder,
-						alertIdentity: resolveWorkflowRunAlertIdentity({
-							store,
-							projects,
-							defaultLeadAgentId: config.defaultLeadAgentId,
-							projectName: run.project_name,
-							issueId: run.issue_id,
-							runId: run.run_id,
-							log: (message) => console.warn(`[workflow-gate] ${message}`),
-						}),
-						materialize: async () => {
-							const source = store.getSession(holder.source_execution_id);
-							const { lead } = resolveLeadForIssue(
-								projects,
-								run.project_name,
-								source
-									? store.getSessionLabels(holder.source_execution_id)
-									: [],
-							);
-							const thread = store.getChatThreadByIssue(
-								run.issue_id,
-								lead.chatChannel,
-							);
-							if (!thread?.thread_id) {
-								throw new Error("workflow_gate_thread_not_found");
-							}
-							const gateBotToken = lead.botToken ?? config.discordBotToken;
-							const result = await materializeWorkflowGateHolder(
-								{
-									store,
-									commDbPath: commDbPathForProject(run.project_name),
-									leadId: lead.agentId,
-									threadId: thread.thread_id,
-									preflight: workflowGateOriginPreflight,
-									postCard: async (input) => {
-										const result = await emitFounderThreadNotification(
-											{
-												questionId: input.questionId,
-												checkpoint: "approve_to_ship",
-												executionId: input.sourceExecutionId,
-												issueId: input.issueId,
-												issueIdentifier: source?.issue_identifier,
-												projectName: input.projectName,
-												summary: input.content,
-												ageMinutes: 0,
-												thread,
-												botToken: gateBotToken,
-												ownerUserId: config.discordOwnerUserId,
-												correlationMarker: input.correlationMarker,
-												deferSuccessAudit: true,
-											},
-											{ store },
-										);
-										if (result.kind === "posted" && result.gateMessageId) {
-											return {
-												kind: "posted" as const,
-												messageId: result.gateMessageId,
-											};
-										}
-										if (
-											result.kind === "posted_ambiguous" ||
-											(result.kind === "transient_failed" &&
-												!result.deliveryRejected)
-										) {
-											return { kind: "posted_ambiguous" as const };
-										}
-										return {
-											kind: "no_effect" as const,
-											reason: result.skipReason ?? result.kind,
-										};
-									},
-									scanCard: async (input) => {
-										if (!gateBotToken) {
-											return {
-												kind: "ambiguous" as const,
-												frontier: null,
-												reason: "no_bot_token",
-											};
-										}
-										return scanFounderThreadForGateCard({
-											threadId: thread.thread_id,
-											botToken: gateBotToken,
-											postedAt: input.postedAt,
-											correlationMarker: input.correlationMarker,
-											legacyTerms: input.legacyTerms,
-										});
-									},
-								},
-								holder.question_id,
-							);
-							materialized = result.ok;
-							return result;
-						},
-						log: (message) => console.warn(message),
-					});
-				} catch (error) {
-					console.warn(
-						`[workflow-gate] materialization failed for ${holder.question_id}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-					return false;
-				}
-				return materialized;
+	// FLY-1048 (A5): shared owner-Lead resolution for suspicious reports —
+	// used by BOTH the LeadWatchdog multi-frame veto and the focused-frame
+	// unclear path (one resolver, no drift).
+	const resolveSuspiciousOwner = (
+		r: SuspiciousReport,
+	): SuspiciousOwner | null => {
+		if (r.targetKind === "lead") {
+			// State key is `<project>:<leadId>` (LeadWatchdog stateKey).
+			const idx = r.targetKey.indexOf(":");
+			if (idx <= 0 || idx === r.targetKey.length - 1) return null;
+			return {
+				projectName: r.targetKey.slice(0, idx),
+				leadId: r.targetKey.slice(idx + 1),
 			};
-			await Promise.all(
-				store
-					.listWorkflowGateHoldersForMaterialization(20)
-					.map((holder) => materializeQuestion(holder.question_id)),
-			);
-			for (const admission of store.listWorkflowResumeRedriveWork(20)) {
-				const holder = store.getCurrentWorkflowGateHolder(
-					admission.run_id,
-					admission.target_node_id,
-				);
-				if (!holder || !(await materializeQuestion(holder.question_id))) {
-					continue;
-				}
-				store.ackWorkflowResumeRedrive({
-					admissionKey: admission.admission_key,
-					questionId: holder.question_id,
-					now: new Date().toISOString(),
-				});
-			}
-			await watchVoidedWorkflowGateCards({
-				store,
-				founderId: config.discordOwnerUserId ?? "",
-				resolveDelivery: ({ holder, run }) => {
-					const source = store.getSession(holder.source_execution_id);
-					const { lead } = resolveLeadForIssue(
-						projects,
-						run.project_name,
-						source ? store.getSessionLabels(holder.source_execution_id) : [],
-					);
-					const botToken = lead.botToken ?? config.discordBotToken;
-					if (!botToken) return undefined;
-					return {
-						botToken,
-						alertIdentity: resolveWorkflowRunAlertIdentity({
-							store,
-							projects,
-							defaultLeadAgentId: config.defaultLeadAgentId,
-							projectName: run.project_name,
-							issueId: run.issue_id,
-							runId: run.run_id,
-							log: (message) => console.warn(`[workflow-gate-card] ${message}`),
-						}),
-					};
-				},
-				log: (message) => console.warn(message),
-			});
-		} finally {
-			workflowGateMaterializationRunning = false;
 		}
-	};
-	let landOperationSweepRunning = false;
-	let landOperationLastSweepAt = 0;
-	const landOperationSweepIntervalMs = 30_000;
-	let linearDoneSweepRunning = false;
-	let linearDoneLastSweepAt = 0;
-	const linearDoneSweepIntervalMs = 15 * 60_000;
-	const landOperationTick = async (): Promise<void> => {
-		const now = Date.now();
-		const work: Promise<void>[] = [];
-		if (
-			!landOperationSweepRunning &&
-			now - landOperationLastSweepAt >= landOperationSweepIntervalMs
-		) {
-			landOperationLastSweepAt = now;
-			landOperationSweepRunning = true;
-			work.push(
-				(async () => {
-					try {
-						for (const pending of store.listPendingWorkflowCarryoverDepartures(
-							20,
-						)) {
-							try {
-								const sweepNow = new Date().toISOString();
-								if (
-									Date.parse(sweepNow) - Date.parse(pending.firstObservedAt) >=
-									60 * 60_000
-								) {
-									if (!pending.operation.run_id) continue;
-									const identity = resolveWorkflowRunAlertIdentity({
-										store,
-										projects,
-										defaultLeadAgentId: config.defaultLeadAgentId,
-										projectName: pending.operation.project_name,
-										issueId: pending.operation.issue_id,
-										runId: pending.operation.run_id,
-									});
-									const expired = store.expireWorkflowCarryoverDeparture({
-										carryoverReceiptId: pending.carryoverReceiptId,
-										operationId: pending.operation.operation_id,
-										now: sweepNow,
-										alertIdentity: identity,
-									});
-									if (!expired.ok) {
-										console.warn(
-											`[land] carryover cutoff horizon failed for ${pending.operation.operation_id}: ${expired.reason}`,
-										);
-									}
-									continue;
-								}
-								recordCarryoverDepartureCutoff({
-									operation: pending.operation,
-									receiptId: pending.carryoverReceiptId,
-									ordinal: pending.ordinal,
-									at: pending.firstObservedAt,
-								});
-							} catch (error) {
-								console.warn(
-									`[land] carryover cutoff recovery failed for ${pending.operation.operation_id}: ${error instanceof Error ? error.message : String(error)}`,
-								);
-							}
-						}
-						const operations = store.listRunnableLandOperations(
-							new Date().toISOString(),
-							20,
-						);
-						await Promise.all(
-							operations.map((operation) =>
-								landExecutor(operation.operation_id).catch((error) =>
-									console.warn(
-										`[land] sweep failed for ${operation.operation_id}: ${error instanceof Error ? error.message : String(error)}`,
-									),
-								),
-							),
-						);
-					} finally {
-						landOperationSweepRunning = false;
-					}
-				})(),
-			);
-		}
-		if (
-			!linearDoneSweepRunning &&
-			now - linearDoneLastSweepAt >= linearDoneSweepIntervalMs
-		) {
-			linearDoneLastSweepAt = now;
-			linearDoneSweepRunning = true;
-			work.push(
-				(async () => {
-					try {
-						await sweepDeferredLandLinearDone({
-							store,
-							preArbitrate: lifecycleInfra.preArbitrate!,
-							withIssueMutex: lifecycleInfra.withIssueLifecycleMutex!,
-							markIssueDone: landLinearDoneFinalizer,
-							onAgedDeferred: (operation, detail) => {
-								if (!operation.run_id) {
-									console.warn(
-										`[land] deferred Linear Done remains stale for ${operation.operation_id} (${detail.ageHours}h)`,
-									);
-									return;
-								}
-								const identity = resolveWorkflowRunAlertIdentity({
-									store,
-									projects,
-									defaultLeadAgentId: config.defaultLeadAgentId,
-									projectName: operation.project_name,
-									issueId: operation.issue_id,
-									runId: operation.run_id,
-								});
-								const alert = buildAgedDeferredLinearDoneAlert({
-									operation,
-									leadId: identity.leadId,
-									leadResolution: identity.leadResolution,
-									dayBucket: detail.dayBucket,
-								});
-								store.enqueueWorkflowEngineAlert({
-									escalationUid: alert.escalationUid,
-									runId: operation.run_id,
-									payload: {
-										leadId: identity.leadId,
-										projectName: identity.projectName,
-										eventId: alert.escalationUid,
-										eventType: "workflow_engine_issue_alert",
-										severity: "warning",
-										sessionKey: `wf:${operation.run_id}`,
-										title: alert.title,
-										body: alert.body,
-										metadata: {
-											workflowEngine: {
-												runId: operation.run_id,
-												issueId: operation.issue_id,
-												...alert.workflowMetadata,
-											},
-										},
-									},
-								});
-							},
-						});
-					} catch (error) {
-						console.warn(
-							`[land] deferred Linear Done sweep failed: ${error instanceof Error ? error.message : String(error)}`,
-						);
-					} finally {
-						linearDoneSweepRunning = false;
-					}
-				})(),
-			);
-		}
-		await Promise.all(work);
-	};
-	const terminalGateRetirement = new TerminalGateRetirement({
-		store,
-		projectNames: projects.map((project) => project.projectName),
-		commDbPathForProject,
-	});
-	terminalGateRetirementHolder.current = terminalGateRetirement;
-	const founderDecisionConvergenceTick = () =>
-		runFounderDecisionConvergencePass({
-			store,
-			resolve: (row) => {
-				const db = new CommDB(commDbPathForProject(row.project_name), false);
-				try {
-					if (db.getResponse(row.question_id)) {
-						return classifyFounderDecisionQuestionResolution({
-							hasResponse: true,
-						});
-					}
-					const question = db.getMessageById(row.question_id);
-					const questionResolution = classifyFounderDecisionQuestionResolution({
-						hasResponse: false,
-						question,
-					});
-					if (questionResolution) return questionResolution;
-				} finally {
-					db.close();
-				}
-				const holder = store.getCurrentWorkflowGateHolderByQuestionId(
-					row.question_id,
-				);
-				if (holder?.state === "approved") return "holder_approved";
-				if (store.getDeferredApproval(row.question_id, row.msg_id)) {
-					return "deferred";
-				}
-				return null;
-			},
-			notifyDropped: async (row) => {
-				const session = store.getSession(row.execution_id);
-				const sink = leadPendingAlertHolder.current;
-				if (!session || !sink) return false;
-				const alert = await sink.alert({
-					leadId: row.lead_id,
-					projectName: row.project_name,
-					eventId: `founder-decision-dropped:${row.msg_id}:${row.question_id}`,
-					eventType: "founder_notify_dead_letter",
-					title: "Founder decision did not converge",
-					body: `founder 明确 ${row.classification} 决定已被读取,但未绑定到 gate ${row.question_id};请立即检查 gate writer / wake 投递链并人工收敛。`,
-					severity: "warning",
-					sessionKey: row.execution_id,
-				});
-				if (alert.skipped || alert.deadLettered) return false;
-				const lead = projects
-					.find((project) => project.projectName === row.project_name)
-					?.leads.find((candidate) => candidate.agentId === row.lead_id);
-				const botToken = lead?.botToken ?? config.discordBotToken;
-				if (botToken) {
-					await recordFounderDecisionAck({
-						react: () =>
-							reactToFounderMessage({
-								botToken,
-								channelId: row.thread_id,
-								messageId: row.msg_id,
-								emoji: "❓",
-							}),
-						recordAudit: (eventType, payload) => {
-							store.insertEvent({
-								event_id: `founder-decision-ack:${row.thread_id}:${row.msg_id}:${row.question_id}`,
-								execution_id: row.execution_id,
-								issue_id: session.issue_id,
-								project_name: row.project_name,
-								event_type: eventType,
-								source: "bridge.founder-decision-convergence",
-								payload,
-							});
-						},
-					});
-				}
-				return true;
-			},
-			logger: (message) =>
-				console.warn(`[founder-decision-convergence] ${message}`),
-		});
-
-	// Keep this rider out of lightweight plugin consumers such as
-	// createLeadRuntime(); only a full Bridge boot needs its config/queue graph.
-	const { createLeadPatrolTickPass, patrolSessionKey } = await import(
-		"./patrol-tick.js"
-	);
-	const { probePatrolProcessLiveness } = await import(
-		"./patrol-process-liveness.js"
-	);
-	const leadPatrolTickPass = createLeadPatrolTickPass({
-		projects,
-		store,
-		openCommReadonly: (projectName) => {
+		// Runner target: execId → session → label-derived owner Lead.
+		const session = store.getSession(r.targetKey);
+		if (!session?.project_name) return null;
+		const project = projects.find(
+			(p) => p.projectName === session.project_name,
+		);
+		if (!project) return null;
+		for (const lead of project.leads) {
 			try {
-				return CommDB.openReadonly(commDbPathForProject(projectName));
+				if (matchesLead(session, lead.agentId, projects)) {
+					return {
+						leadId: lead.agentId,
+						projectName: project.projectName,
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+					};
+				}
 			} catch {
-				return null;
+				/* try the next lead */
 			}
+		}
+		return null;
+	};
+	// FLY-1048 (A5, Codex code R1 #1): the quiet issue-thread leg. Late-bound
+	// holder — alertDiscordOps is constructed further down the boot sequence;
+	// until it is wired the leg silently skips (the guardrail lead_event leg is
+	// the reliable channel; the thread note is best-effort by contract).
+	const suspiciousThreadPoster: {
+		current: ((threadId: string, content: string) => Promise<void>) | null;
+	} = { current: null };
+	const deliverSuspiciousDirect = (report: SuspiciousReport): void => {
+		void deliverSuspiciousReport(
+			{
+				store,
+				runtimeRegistry: registry,
+				resolveOwner: resolveSuspiciousOwner,
+				// Pre-call guard (plan A5 / Codex design R1 #3): only post when an
+				// issue thread is actually bound AND the poster is wired — never
+				// call the thread leg with an undefined thread. Reason only, no
+				// mention, never the pane (formatSuspiciousThreadNote).
+				emitThreadNote: async (r, owner) => {
+					const poster = suspiciousThreadPoster.current;
+					if (!poster || !owner.issueId) return;
+					const lead = projects
+						.find((p) => p.projectName === owner.projectName)
+						?.leads.find((l) => l.agentId === owner.leadId);
+					const threadId = resolveChatThreadId(
+						store,
+						owner.issueId,
+						lead?.chatChannel,
+					);
+					if (!threadId) return;
+					await poster(threadId, formatSuspiciousThreadNote(r));
+				},
+			},
+			report,
+		).catch((err) =>
+			console.warn(
+				`[detection-suspicious] delivery failed: ${(err as Error).message}`,
+			),
+		);
+	};
+
+	// FLY-1048 PR-B (B3): the LLM judge sits in FRONT of the fail-suspicious
+	// deliverer. Env checked per call (live flip); OFF or <2 frames = PR-A
+	// behavior byte-for-byte. Accepted a/b verdicts suppress the report with a
+	// durable session_events audit; c_stuck/suspicious/null still deliver
+	// (never silent). Judge runs codex (subscription — zero Claude quota).
+	// FLY-1048 PR-C (C4): the unified-flow notify leg — every detection source
+	// (gap records / focused-frame case-c / judge-confirmed c / FN4) funnels
+	// through here. CLEARING targets are muted (C5), and notifyLeadFirst dedups
+	// once-per-episode on the durable detection_escalations row. FLY-1243: the
+	// FLYWHEEL_DETECTION_ESCALATION gate is retired (固化 default-on) — the unified
+	// flow always runs.
+	const resolveDetectionOwner = (
+		input: DetectionEscalationInput,
+	): EscalationOwner | null => {
+		const session = store.getSession(input.targetKey);
+		if (!session?.project_name) return null;
+		const project = projects.find(
+			(p) => p.projectName === session.project_name,
+		);
+		if (!project) return null;
+		for (const lead of project.leads) {
+			try {
+				if (matchesLead(session, lead.agentId, projects)) {
+					return {
+						leadId: lead.agentId,
+						projectName: project.projectName,
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+					};
+				}
+			} catch {
+				/* try the next lead */
+			}
+		}
+		return null;
+	};
+	const notifyDetectionEpisode = (
+		input: DetectionEscalationInput,
+	): Promise<void> =>
+		notifyUnlessClearing(
+			{
+				store,
+				notify: async (guarded) => {
+					await notifyLeadFirst(
+						{
+							store,
+							runtimeRegistry: registry,
+							resolveOwner: resolveDetectionOwner,
+							// Quiet issue-thread leg with the A5 pre-call guard (Codex
+							// design R1 #3): no bound thread → skip this leg silently,
+							// never call the poster with an unbound thread. The
+							// guardrail lead_event leg is the reliable channel.
+							emitThreadNote: async (r, owner) => {
+								const poster = suspiciousThreadPoster.current;
+								if (!poster) return;
+								const lead = projects
+									.find((pr) => pr.projectName === owner.projectName)
+									?.leads.find((l) => l.agentId === owner.leadId);
+								const threadId = resolveChatThreadId(
+									store,
+									r.issueId,
+									lead?.chatChannel,
+								);
+								if (!threadId) return;
+								await poster(threadId, formatEscalationLeadNote(r));
+							},
+						},
+						guarded,
+					);
+				},
+			},
+			input,
+		);
+
+	const watchdogJudge = createWatchdogJudge({
+		repoRoot: projects[0]?.projectRoot ?? process.cwd(),
+	});
+	// FLY-1234 (R1 #6 / R2 #2): shared judge-routing assembly — extracted to
+	// watchdog-judge-assembly.ts so the production composition is testable
+	// (Codex code R1 #3). deliver / onConfirmedStuck / onDecision /
+	// judgeCacheKey / errorSignatureKinds are the per-caller seams; the
+	// unified-escalation side effect (notifyDetectionEpisode) is ONLY ever the
+	// suspicious pipeline's injected onConfirmedStuck — the heartbeat confirm
+	// layer never notifies (single emission right, INV-4).
+	const buildJudgeRoutingDeps = createJudgeRoutingDepsFactory({
+		store,
+		judge: watchdogJudge,
+		judgeEnabled: () => process.env.FLYWHEEL_WATCHDOG_JUDGE === "1",
+		resolveOwner: resolveSuspiciousOwner,
+	});
+
+	const deliverSuspicious = (report: SuspiciousReport): void => {
+		void routeSuspiciousReport(
+			buildJudgeRoutingDeps({
+				deliver: deliverSuspiciousDirect,
+				// FLY-1048 PR-C (C4): a judge-confirmed case-c enters the UNIFIED
+				// escalation flow (Lead-first + ~30min founder page). Runner targets
+				// only — lead-keyed targets have no session/issue to escalate into
+				// (the A5 delivery still reaches the owner Lead either way).
+				// Keyed by the OLD detector's live episode fingerprint when it is
+				// tracking this target, so the C4a mutual exclusion matches; an
+				// already-escalated old episode owns the flow and is not double-fed.
+				// FLY-1234 (INV-4): this side effect belongs ONLY to the suspicious
+				// pipeline — the heartbeat confirm layer's routing never notifies.
+				onConfirmedStuck: (r, verdict) => {
+					if (r.targetKind === "runner") {
+						const oldEpisode = stuckDetectorHolder.current?.episodeFor(
+							r.targetKey,
+						);
+						const session = store.getSession(r.targetKey);
+						if (session && !oldEpisode?.escalated) {
+							void notifyDetectionEpisode(
+								buildCaseCEscalationInput(
+									session,
+									oldEpisode?.fingerprint ?? r.episodeFingerprint,
+									{
+										// Codex code R1 #7: the unified reason travels to the
+										// (founder-visible) issue thread — free-text rationale is
+										// derived from RAW pane frames and may quote them. Closed
+										// enum only; the rationale stays on the Lead-face A5
+										// delivery + the durable judge audit event.
+										reason: `LLM judge 确认 case-c(attribution=${verdict.attribution})`,
+										firstDetectedAtMs:
+											oldEpisode?.firstStagnantAt ?? Date.now(),
+									},
+								),
+							).catch((err) =>
+								console.warn(
+									`[detection-escalation] judge-confirmed notify failed: ${(err as Error).message}`,
+								),
+							);
+						}
+					}
+				},
+			}),
+			report,
+		).catch((err) =>
+			console.warn(
+				`[watchdog-judge] routing failed: ${(err as Error).message}`,
+			),
+		);
+	};
+
+	// FLY-1234 (T3): bind the heartbeat stuck-confirm layer, now that the judge
+	// exists. One boot-time knob parse WITH the warn sink (a cross-field
+	// contradiction logs once here); the per-call parses inside stay quiet.
+	parseStuckConfirmKnobs(process.env, {
+		warn: (m) => console.warn(`[stuck-confirm] ${m}`),
+	});
+	stuckConfirmHolder.current = createStuckConfirmRunner({
+		buildRoutingDeps: buildJudgeRoutingDeps,
+		// R1 #7 mapping: lookup gone → "gone" (target unresolvable — the
+		// annotation never claims process death), lookup error →
+		// "indeterminate"; found → the #576 four-state process probe.
+		probeLiveness: async (s) => {
+			if (!s.project_name) return "gone";
+			const lookup = lookupTmuxTarget(s.execution_id, s.project_name);
+			if (lookup.kind === "gone") return "gone";
+			if (lookup.kind === "error") return "indeterminate";
+			return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
 		},
-		probeProcessLiveness: probePatrolProcessLiveness,
-		inspectDeliveryState: (projectName, deliveryId) =>
-			leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
-		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
-		alertFailure: async (failure) => {
-			const sink = leadPendingAlertHolder.current;
-			if (!sink) {
-				console.warn(
-					`[patrol_tick] alert sink unavailable: ${failure.episodeId} ${failure.detail}`,
-				);
+		captureFrame: async (s) => {
+			if (!s.project_name) return null;
+			const res = await defaultCaptureSession(
+				s.execution_id,
+				s.project_name,
+				200,
+			);
+			return "output" in res
+				? { text: res.output, capturedAtMs: Date.now() }
+				: null;
+		},
+		commCorroborationMs: () => stuckCommActivityMs(process.env),
+		logger: (m) => console.log(`[stuck-confirm] ${m}`),
+	});
+
+	// FLY-1234 (R2 #4): start the heartbeat AFTER the confirm holder is bound —
+	// no tick can ever observe the unbound-holder transient. Moved from right
+	// after seedReconnecting() (see the marker comment there).
+	heartbeatService.start();
+
+	// FLY-1048 (A6): cheap gap/state scan — OBSERVE ONLY in PR-A (in-process
+	// registry + debug log; the notification leg arrives with PR-C). Zero pane
+	// capture, zero tokens: StateStore sessions + readonly per-project CommDB.
+	// FLY-1243: the gap scan is固化 default-on (the FLYWHEEL_DETECTION_GAP_SCAN flip
+	// applies without a restart; unset = the tick returns immediately.
+	const gapSuspicionRegistry = createSuspicionRegistry();
+
+	// FLY-1048 (A7): focused frames for gap-scan suspects. Every successful
+	// capture ALSO feeds the existing stuck-runner detector (checkSession with
+	// a precaptured outcome) — its hard gates + dispositions stay the single
+	// escalation authority, it just accumulates episode time at the focused
+	// cadence (~4min) instead of the 1h fleet sweep. Unclear windows go
+	// fail-suspicious (A5); the ~1h sweep default is deliberately untouched.
+	const focusedFrames = createFocusedFrameScheduler({
+		capture: async (t) => {
+			const res = await defaultCaptureSession(t.targetKey, t.projectName, 200);
+			return "output" in res ? res.output : null;
+		},
+		onFrame: async (t, frameText) => {
+			const session = store.getSession(t.targetKey);
+			if (!session) return;
+			await stuckDetectorHolder.current?.checkSession(session, {
+				ok: true,
+				output: frameText,
+			});
+		},
+		onVerdict: (v) => {
+			if (v.verdict === "unclear") {
+				deliverSuspicious({
+					targetKind: "runner",
+					targetKey: v.target.targetKey,
+					reason:
+						"focused_frames_unclear: multi-frame window is neither flowing nor a clean silence/error loop — mechanical layer cannot conclude",
+					paneTail: buildPaneTail(v.latestFrame),
+					episodeFingerprint: hashPane(liveRegion(v.latestFrame)),
+					frames: v.window,
+				});
 				return;
 			}
-			const fleetScoped = failure.leadId === null;
-			const alertLeadId =
-				failure.leadId ?? `patrol-roster:${failure.projectName}`;
-			await sink.alert({
-				leadId: alertLeadId,
-				projectName: fleetScoped ? FLEET_ALERT_PROJECT : failure.projectName,
-				eventId: `patrol_tick_stalled:${failure.episodeId}`,
-				eventType: "inbox_loop_stalled",
-				title:
-					failure.kind === "unowned_roster"
-						? "Lead patrol roster has no patrol-capable owner"
-						: "Lead patrol tick delivery is stalled",
-				body: `project=${failure.projectName}: ${failure.detail}`,
-				severity: "severe",
-				...(failure.leadId
-					? {
-							sessionKey: patrolSessionKey(failure.projectName, failure.leadId),
-						}
-					: {}),
-			});
-		},
-		log: (message) => console.warn(message),
-	});
-	const summaryAbsorptionPass = createSummaryAbsorptionPass({
-		projects,
-		store,
-		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
-		cadenceMs: () => storeSummaryAbsorptionCadenceMs(flagStore),
-	});
-	const { activePatrolTargets, createPatrolOrphanSweeperPass } = await import(
-		"./patrol-orphan-sweeper.js"
-	);
-	const patrolOrphanSweepPass = createPatrolOrphanSweeperPass({
-		projects,
-		store,
-		readActiveTargets: async (projectName) => {
-			const db = CommDB.openReadonly(commDbPathForProject(projectName));
-			try {
-				return activePatrolTargets(
-					db.listSessions(projectName, ["running", "blocked"]),
+			// FLY-1048 PR-C (C4): a mechanical c_candidate enters the unified flow
+			// when the escalation env is ON (unset = observe-only log, PR-A
+			// behavior). Keyed by the OLD detector's live episode fingerprint when
+			// available (A7's onFrame feeds it the SAME frame just before this
+			// verdict) so the C4a mutual exclusion matches; if the old flow
+			// already escalated this episode it owns the notification.
+			if (v.verdict === "c_candidate") {
+				const oldEpisode = stuckDetectorHolder.current?.episodeFor(
+					v.target.targetKey,
 				);
-			} finally {
-				db.close();
+				const session = store.getSession(v.target.targetKey);
+				if (session && !oldEpisode?.escalated) {
+					const reason = v.deltas.repeatedErrorSig
+						? `多帧观察窗确认 case-c:同一错误签名(${v.deltas.repeatedErrorSig.kind})跨帧重现`
+						: "多帧观察窗确认 case-c:pane 静默且无 token 流";
+					void notifyDetectionEpisode(
+						buildCaseCEscalationInput(
+							session,
+							oldEpisode?.fingerprint ??
+								fallbackCaseCFingerprint(v.deltas, v.latestFrame),
+							{
+								reason,
+								firstDetectedAtMs: oldEpisode?.firstStagnantAt ?? Date.now(),
+							},
+						),
+					).catch((err) =>
+						console.warn(
+							`[detection-escalation] case-c notify failed: ${(err as Error).message}`,
+						),
+					);
+				}
 			}
+			console.log(
+				`[focused-frames] ${v.target.targetKey.slice(0, 8)} verdict=${v.verdict} (span=${Math.round(v.deltas.spanMs / 1000)}s)`,
+			);
 		},
-		alertFailure: async (failure) => {
-			const sink = leadPendingAlertHolder.current;
-			if (!sink) {
-				throw new Error("patrol orphan alert sink unavailable");
+		intervalMs: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_FRAME_INTERVAL_MS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined; // default 4min
+		})(),
+		capturesPerTick: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_FRAME_CAPTURES_PER_TICK ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined; // default 2
+		})(),
+	});
+	const gapScanTick = async (): Promise<void> => {
+		// FLY-1243: FLYWHEEL_DETECTION_GAP_SCAN retired (固化 default-on) — the
+		// zero-token gap/state scan always runs.
+		const nowMs = Date.now();
+		const thresholds = defaultGapThresholds(process.env);
+		const records: SuspicionRecord[] = [];
+		const byProject = new Map<string, Session[]>();
+		for (const s of store.getActiveSessions()) {
+			const list = byProject.get(s.project_name) ?? [];
+			list.push(s);
+			byProject.set(s.project_name, list);
+		}
+		// Codex R4 #1/#2 (supersedes the R3 project-level set): the keys whose
+		// judgement COMPLETELY ran this sweep — the only keys whose absence from
+		// activeConditionKeys is durable "condition cleared" evidence. Skipped
+		// projects, degraded signals, and non-active keep-alive sessions
+		// contribute nothing here, so their episodes are conservatively held.
+		const evaluatedConditionKeys = new Set<string>();
+		for (const [projectName, projectSessions] of byProject) {
+			const reader = openGapReader(defaultGetCommDbPath(projectName));
+			// Fail-closed: unreadable/missing comm.db → skip this project's
+			// comm-derived judgements this round.
+			if (!reader) continue;
+			try {
+				for (const session of projectSessions) {
+					const comm = reader.evidenceFor(session.execution_id, null, nowMs);
+					let founderNotified: boolean | null = null;
+					try {
+						founderNotified = store
+							.getEventsByExecution(session.execution_id)
+							.some(
+								(e) =>
+									e.event_type === "founder_thread_notified" ||
+									e.event_id?.startsWith("founder-thread-notify-"),
+							);
+					} catch {
+						founderNotified = null; // unreadable → gap1 degrades (fail-closed)
+					}
+					const rawActivity = session.last_activity_at;
+					const parsedActivity = rawActivity ? Date.parse(rawActivity) : NaN;
+					const lastActivityAtMs = Number.isFinite(parsedActivity)
+						? parsedActivity
+						: rawActivity
+							? parseSqliteUtcMs(rawActivity)
+							: null;
+					const gapInput = {
+						session: {
+							executionId: session.execution_id,
+							projectName,
+							status: session.status,
+							lastActivityAtMs,
+						},
+						comm,
+						founderNotified,
+						nowMs,
+						thresholds,
+					};
+					records.push(...evaluateGapSuspicion(gapInput));
+					for (const kind of evaluatedGapConditions(gapInput)) {
+						evaluatedConditionKeys.add(
+							`${GAP_ESCALATION_KINDS[kind]}|${session.execution_id}`,
+						);
+					}
+				}
+			} finally {
+				reader.close();
 			}
+		}
+		gapSuspicionRegistry.sweep(records, nowMs);
+		if (records.length > 0) {
+			console.log(
+				`[gap-scan] ${records.length} suspicion(s): ${records
+					.map((r) => `${r.kind}:${r.targetKey.slice(0, 8)}`)
+					.join(", ")}`,
+			);
+		}
+		// FLY-1048 PR-C (C4): the gap notify leg — 漏①/漏②/consumed-ack enter the
+		// unified flow when the escalation env is ON (unset = observe-only, the
+		// PR-A contract). The registry preserves firstSeenMs while a condition
+		// persists, so the derived episode fingerprint is stable and
+		// notifyLeadFirst dedups to once per episode. FLY-1243: unconditional now
+		// (FLYWHEEL_DETECTION_ESCALATION retired, 固化 default-on).
+		{
+			const activeConditionKeys = new Set<string>();
+			for (const record of gapSuspicionRegistry.snapshot()) {
+				if (record.kind !== "pane_progress_suspect") {
+					activeConditionKeys.add(
+						`${GAP_ESCALATION_KINDS[record.kind]}|${record.targetKey}`,
+					);
+				}
+				const session = store.getSession(record.targetKey);
+				if (!session) continue;
+				const input = buildGapEscalationInput(record, session);
+				if (!input) continue; // pane_progress_suspect only feeds A7
+				try {
+					await notifyDetectionEpisode(input);
+				} catch (err) {
+					console.warn(
+						`[detection-escalation] gap notify failed for ${record.kind}:${record.targetKey.slice(0, 8)}: ${(err as Error).message}`,
+					);
+				}
+			}
+			// A gap condition ABSENT from this sweep has provably cleared — close
+			// its episode so the ~30min grace can never page the founder about an
+			// already-resolved matter (and a genuine recurrence can revive).
+			try {
+				resolveClearedGapEpisodes(
+					{ store },
+					activeConditionKeys,
+					evaluatedConditionKeys,
+					nowMs,
+				);
+			} catch (err) {
+				console.warn(
+					`[detection-escalation] gap clear pass failed: ${(err as Error).message}`,
+				);
+			}
+		}
+		// FLY-1048 (A7): focused frames for the progress suspects surfaced above.
+		await focusedFrames.tick(
+			gapSuspicionRegistry
+				.snapshot()
+				.filter((r) => r.kind === "pane_progress_suspect")
+				.map((r) => ({ targetKey: r.targetKey, projectName: r.projectName })),
+		);
+	};
+
+	// FLY-1048 (PR-C, C3-w): unified detection-escalation reconcile — the
+	// ~30min Lead-grace sweep + fleet guard (PRD §4.3). Env checked INSIDE the
+	// FLY-1243: the reconcile is固化 default-on (no FLYWHEEL_DETECTION_ESCALATION flip; runs every
+	// restart; unset = the tick returns immediately (byte-compat). All timing
+	// and dedup state lives in the durable detection_escalations rows, so a
+	// missed tick can only delay an escalation, never reset it.
+	//
+	// Done/gone outcomes for the recovery auto-RESOLVE. approved_to_ship is
+	// excluded (the Runner is still alive to ship) and awaiting_review is
+	// deliberately NOT terminal — a parked runner still needs its pane, so
+	// M1-style episodes on it stay live.
+	const detectionTerminalStatuses = new Set<string>(
+		OUTCOME_STATUSES.filter((s) => s !== "approved_to_ship"),
+	);
+	const detectionGraceByProject = await loadDetectionGraceByProject(projects);
+	const detectionPageFounder = createFounderPager({
+		store,
+		resolveTarget: createSessionTargetResolver({ store, projects }),
+		discordOwnerUserId: config.discordOwnerUserId,
+		discordBotToken: config.discordBotToken,
+		// NEVER silent (plan C3): an unaddressable/undeliverable founder page
+		// rides the FLY-915 ticket lane. The per-episode deterministic eventId
+		// claims-dedups across reconcile retries (no per-tick ticket spam); the
+		// row itself stays LEAD_NOTIFIED so the page keeps retrying.
+		onUndeliverable: async (row, reason) => {
+			const sink = leadPendingAlertHolder.current;
+			if (!sink) return;
+			const session = store.getSession(row.target_key);
 			await sink.alert({
-				leadId: "patrol-orphan-sweeper",
-				projectName: FLEET_ALERT_PROJECT,
-				eventId: `orphan_pane:${failure.episodeId}`,
-				eventType: "orphan_pane",
-				title:
-					failure.condition === "unclaimed"
-						? "Runner pane has no owner"
-						: "Runner owner index is incomplete",
-				body: failure.target
-					? `project=${failure.projectName} target=${failure.target}: ${failure.detail}`
-					: failure.detail,
-				severity: "severe",
+				leadId: row.owner_lead_id ?? "unassigned",
+				projectName: session?.project_name ?? "unknown",
+				eventId: `detection-page-undeliverable:${row.target_key}:${row.kind}:${row.episode_fingerprint}`,
+				eventType: "detection_page_undeliverable",
+				title: "Detection founder-page undeliverable",
+				body:
+					`无法把 detection 升级页投递进 issue thread(kind=${row.kind}, ` +
+					`target=${row.target_key}, reason=${reason})。行保持 LEAD_NOTIFIED,` +
+					`reconcile 会继续重试;请排查 thread 绑定 / bot token / 路由。`,
+				severity: "warning",
 			});
 		},
-		log: (message) => console.warn(message),
 	});
-	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
-		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
+	const detectionFleetSink = createFleetSink({
+		// Codex code R1 #3: issue_id is a Linear UUID — the project must come
+		// from the target's session row or the aggregate routes to unknown-lead.
+		resolveProject: (row) =>
+			store.getSession(row.target_key)?.project_name ?? null,
+		alertSink: {
+			// Throwing (not swallowing) keeps the C3 contract: an unsurfaced
+			// fleet aggregate leaves every row LEAD_NOTIFIED for the next pass.
+			// `skipped: "duplicate"` counts as SUCCESS — the claims table says the
+			// aggregate already surfaced, and treating it as failure would hold
+			// the group LEAD_NOTIFIED forever.
+			alert: async (p) => {
+				const sink = leadPendingAlertHolder.current;
+				if (!sink) throw new Error("alert sink not wired yet (holder empty)");
+				const result = await sink.alert(p);
+				if (result.skipped && result.skipped !== "duplicate") {
+					throw new Error(`fleet aggregate skipped: ${result.skipped}`);
+				}
+				if (result.deadLettered) {
+					throw new Error("fleet aggregate dead-lettered");
+				}
+				return result;
+			},
+		},
 	});
-	const cmuxWatcherAlertRoute = (() => {
-		const project = projects.find(
-			(candidate) => candidate.projectName === "flywheel",
+	const detectionReconcileTick = async (): Promise<void> => {
+		// FLY-1243: FLYWHEEL_DETECTION_ESCALATION retired (固化 default-on) — the
+		// ~30min Lead-grace reconcile + fleet guard always runs.
+		const graceEnv = Number.parseInt(
+			process.env.FLYWHEEL_DETECTION_LEAD_GRACE_MS ?? "",
+			10,
 		);
-		const lead = project?.leads[0];
-		return project && lead
-			? { projectName: project.projectName, leadId: lead.agentId }
-			: null;
-	})();
-	const cmuxWatcherProjectRoot = projects.find(
-		(candidate) => candidate.projectName === "flywheel",
-	)?.projectRoot;
-	const cmuxWatcherPatrol =
-		cmuxWatcherProjectRoot && cmuxWatcherAlertRoute
-			? createHostCmuxWatcherPatrol({
-					homeDir: homedir(),
-					projectRoot: cmuxWatcherProjectRoot,
-					execFile: async (file, args, options) => {
-						const result = await execFileP(file, [...args], {
-							...options,
-							encoding: "utf8",
-						});
-						return {
-							stdout: String(result.stdout),
-						};
-					},
-					alert: async (verdict, recovery) => {
-						const sink = leadPendingAlertHolder.current;
-						if (!sink) {
-							throw new Error("cmux watcher alert sink is not ready");
-						}
-						const episode = createHash("sha256")
-							.update(verdict.episodeKey ?? verdict.branch)
-							.digest("hex")
-							.slice(0, 24);
-						await sink.alert({
-							...cmuxWatcherAlertRoute,
-							eventId: `cmux_watcher_stalled:${verdict.branch}:${episode}`,
-							eventType: "cmux_watcher_stalled",
-							title: `cmux watcher unhealthy (${verdict.branch})`,
-							body: `${verdict.detail}; recovery=${
-								recovery
-									? `${recovery.ok ? "healthy" : "failed"}: ${recovery.detail}`
-									: "not attempted (safety matrix)"
-							}`,
-							severity: "severe",
-						});
-					},
-				})
-			: null;
+		const thresholdEnv = Number.parseInt(
+			process.env.FLYWHEEL_DETECTION_FLEET_THRESHOLD ?? "",
+			10,
+		);
+		const clearingTtlEnv = Number.parseInt(
+			process.env.FLYWHEEL_CLEARING_TTL_MS ?? "",
+			10,
+		);
+		// One assembled pass (detection-reconcile-tick.ts, C4+C5): clearing-TTL
+		// rebound → recovery auto-RESOLVE → FN4 fire+clear → the ~30min grace
+		// escalation (founder page / fleet lane).
+		await runDetectionReconcileTick({
+			store,
+			pageFounder: detectionPageFounder,
+			fleetSink: detectionFleetSink,
+			notify: notifyDetectionEpisode,
+			recoveryProbe: (targetKey) => {
+				const session = store.getSession(targetKey);
+				if (!session) return null; // lead-keyed / unknown — never auto-resolve
+				const rawActivity = session.last_activity_at;
+				const parsed = rawActivity ? Date.parse(rawActivity) : NaN;
+				return {
+					terminal: detectionTerminalStatuses.has(session.status),
+					lastActivityAtMs: Number.isFinite(parsed)
+						? parsed
+						: rawActivity
+							? parseSqliteUtcMs(rawActivity)
+							: null,
+				};
+			},
+			// Progress refutes "stuck" only — an unanswered ask / unconsumed
+			// delivery / unreported park stays live on a working runner (漏②'s
+			// typical shape). Terminal still resolves every kind.
+			progressResolvableKinds: new Set([CASE_C_ESCALATION_KIND]),
+			graceMs: Number.isFinite(graceEnv) && graceEnv > 0 ? graceEnv : undefined,
+			// Per-project override (detection.lead_grace_ms in the project's
+			// CANONICAL .flywheel/config.yaml — loaded once at boot).
+			graceMsFor: (row) => {
+				const session = store.getSession(row.target_key);
+				return session
+					? detectionGraceByProject.get(session.project_name)
+					: undefined;
+			},
+			fleetThreshold:
+				Number.isFinite(thresholdEnv) && thresholdEnv > 0
+					? thresholdEnv
+					: undefined,
+			clearingTtlMs:
+				Number.isFinite(clearingTtlEnv) && clearingTtlEnv > 0
+					? clearingTtlEnv
+					: undefined,
+			// FN4 undelivered-age rides the same knob family as consumed-ack
+			// (FLYWHEEL_GAP_UNCONSUMED_MS, default 30min) — one semantic, one knob.
+			fn4OverdueMs: defaultGapThresholds(process.env).unconsumedMs,
+		});
+	};
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
-		recordSpan: (name, startMs, endMs) =>
-			eventLoopAttribution.recordSpan(name, startMs, endMs),
 		projects,
 		store,
 		runtimeRegistry: registry,
-		ensureShipRelevantDiff,
-		onIssueGateSupersedeTick: issueGateSupersedeTick,
-		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
-		onLandOperationTick: landOperationTick,
-		onLeadPatrolTick: leadPatrolTickPass,
-		onSummaryAbsorptionTick: summaryAbsorptionPass,
-		onPatrolOrphanSweepTick: patrolOrphanSweepPass,
-		...(cmuxWatcherPatrol
-			? { onCmuxWatcherPatrolTick: () => cmuxWatcherPatrol.tick() }
-			: {}),
-		onReconcilePatrolTick: async () => {
-			// First rollout window: inventory historical terminal-run residue but do
-			// not create a collection receipt or tear anything down. Explicit
-			// force-cancel receipts above are safe to resume immediately.
-			await reconcileWorkflowRunCollections({
-				store,
-				collect: workflowRunCollector,
-				log: (message) => console.warn(message),
-			});
-			for (const candidate of store.listWorkflowResumeCheckpointPruneWork({
-				now: new Date().toISOString(),
-				limit: 3,
-			})) {
-				const project = projects.find(
-					(entry) => entry.projectName === candidate.projectName,
-				);
-				if (!project) continue;
-				const now = new Date().toISOString();
-				if (
-					!store.isWorkflowResumeCheckpointRefPrunable({
-						...candidate,
-						now,
-					})
-				) {
-					continue;
-				}
-				try {
-					workflowResumeCheckpointStore.pruneRef({
-						project: candidate.projectName,
-						projectRoot: project.projectRoot,
-						ref: candidate.ref,
-						anchor: candidate.anchor,
-					});
-				} catch (error) {
-					console.warn(
-						`[workflow-resume] checkpoint prune failed for ${candidate.ref}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-				}
-			}
-			for (const attachment of store.listWorkflowResumeEnvelopeStampWork(3)) {
-				try {
-					store.stampWorkflowResumeAttachmentEnvelope({
-						attachmentId: attachment.attachment_id,
-						now: new Date().toISOString(),
-					});
-				} catch (error) {
-					console.warn(
-						`[workflow-resume] envelope stamp failed for ${attachment.attachment_id}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-				}
-			}
-			for (const work of store.listWorkflowResumeCheckpointWork({
-				now: new Date().toISOString(),
-				limit: 3,
-			})) {
-				const project = projects.find(
-					(candidate) => candidate.projectName === work.project_name,
-				);
-				if (!project) continue;
-				try {
-					reconcileWorkflowResumeCheckpoint({
-						stateStore: store,
-						checkpointStore: workflowResumeCheckpointStore,
-						attachment: work.attachment,
-						project: work.project_name,
-						projectRoot: project.projectRoot,
-						now: new Date().toISOString(),
-					});
-				} catch (error) {
-					console.warn(
-						`[workflow-resume] checkpoint reconcile failed for ${work.attachment.attachment_id}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-				}
-			}
-			await runWorkflowResumeShadowTick({
-				store,
-				observeEnvelope: async (opportunity) => {
-					if (!config.linearApiKey) {
-						return { source: "issue_body", unavailable: true };
-					}
-					try {
-						const { LinearClient } = await import("@linear/sdk");
-						const issue = await new LinearClient({
-							apiKey: config.linearApiKey,
-						}).issue(opportunity.issueId);
-						return {
-							source: "issue_body",
-							digest: createHash("sha256")
-								.update(issue.description ?? "")
-								.digest("hex"),
-						};
-					} catch {
-						return { source: "issue_body", unavailable: true };
-					}
-				},
-				verifyAnchor: ({ attachment, effectiveAnchor }) => {
-					const run = store.getWorkflowRun(attachment.run_id);
-					const project = projects.find(
-						(candidate) => candidate.projectName === run?.project_name,
-					);
-					const repoIdentity = attachment.repo_identity;
-					if (
-						!project ||
-						!repoIdentity ||
-						(repoIdentity !== project.projectName &&
-							(!pathIsAbsolute(repoIdentity) ||
-								resolve(repoIdentity) !== resolve(project.projectRoot)))
-					) {
-						return false;
-					}
-					workflowResumeCheckpointStore.recover({
-						project: project.projectName,
-						projectRoot: project.projectRoot,
-						ref: attachment.anchor_ref!,
-						anchor: effectiveAnchor,
-					});
-					return true;
-				},
-				env: process.env,
-				now: new Date().toISOString(),
-				log: (message) => console.warn(message),
-			});
-			await drainTurnWakeOutbox({
-				projectNames: projects.map((project) => project.projectName),
-				commDbPathForProject,
-				onSecondPushUnacked: async (wake, projectName) => {
-					// Codex mailbox delivery alone cannot revive a goal-achieved TUI.
-					// After the one verified retry, type a bounded pointer whose only
-					// authority is the exact durable TURN tuple re-checked at send time.
-					if (wake.backend !== "codex") return { ok: true };
-					const session = store.getSession(wake.execution_id);
-					if (!session || session.project_name !== projectName) {
-						return { ok: false, error: "turn_pointer_session_missing" };
-					}
-					let leadId: string;
-					try {
-						leadId = resolveLeadForIssue(
-							projects,
-							session.project_name,
-							parseJsonStringArray(session.issue_labels),
-						).lead.agentId;
-					} catch (error) {
-						return {
-							ok: false,
-							error: `turn_pointer_lead_unresolved:${(error as Error).message}`,
-						};
-					}
-					const capture = await defaultCaptureSession(
-						wake.execution_id,
-						session.project_name,
-						100,
-					);
-					if (isCaptureError(capture)) {
-						return {
-							ok: false,
-							error: `turn_pointer_capture_failed:${capture.error}`,
-						};
-					}
-					const outcome = await attemptRunnerRecoveryNudge(
-						{
-							mode: "turn_pointer",
-							actor: "turn-wake-patrol",
-							executionId: wake.execution_id,
-							leadId,
-							fingerprint: fingerprintOutput(capture.output),
-							turnWakeId: wake.wake_id,
-						},
-						{
-							store,
-							projects,
-							captureSessionFn: defaultCaptureSession,
-							hasPendingGate: hasPendingGateFromCommDb,
-							isTurnWakeBindingLive: (executionId, projectName, wakeId) => {
-								if (
-									executionId !== wake.execution_id ||
-									projectName !== session.project_name ||
-									wakeId !== wake.wake_id
-								) {
-									return false;
-								}
-								const db = new CommDB(commDbPathForProject(projectName));
-								try {
-									if (db.getTurnWake(wakeId)?.state === "acked") return false;
-								} finally {
-									db.close();
-								}
-								return (
-									store.inspectWorkflowTurnWakeRetry({
-										wakeId,
-										executionId,
-										...(wake.activation_id
-											? { activationId: wake.activation_id }
-											: {}),
-										epoch: wake.epoch,
-									}).disposition === "deliver"
-								);
-							},
-							sendKeys: sendKeysToWindow,
-							getTmuxTarget: getTmuxTargetFromCommDb,
-							now: () => Date.now(),
-							nextAuditSeq: () => ++turnPointerAuditSeq,
-						},
-					);
-					return outcome.body.nudged
-						? { ok: true }
-						: {
-								ok: false,
-								error: outcome.body.error ?? "turn_pointer_refused",
-							};
-				},
-				canDeliver: async (wake) =>
-					store.inspectWorkflowTurnWakeRetry({
-						wakeId: wake.wake_id,
-						executionId: wake.execution_id,
-						...(wake.activation_id ? { activationId: wake.activation_id } : {}),
-						epoch: wake.epoch,
-					}),
-				onReceipt: async (receipt) => {
-					if (!receipt.activation_id || receipt.acked_at === null) {
-						return "not_applicable";
-					}
-					if (receipt.purpose === "workflow_rework") {
-						const activation = store.getWorkflowActivation(
-							receipt.activation_id,
-						);
-						const run = activation
-							? store.getWorkflowRun(activation.run_id)
-							: undefined;
-						if (!activation || !run) return "retry";
-						const projected = store.recordWorkflowReworkWakeReceipt({
-							activationId: receipt.activation_id,
-							executionId: receipt.execution_id,
-							epoch: receipt.epoch,
-							ackedAt: new Date(receipt.acked_at).toISOString(),
-							alertIdentity: resolveWorkflowRunAlertIdentity({
-								store,
-								projects,
-								defaultLeadAgentId: config.defaultLeadAgentId,
-								projectName: run.project_name,
-								issueId: run.issue_id,
-								runId: run.run_id,
-								log: (message) => console.warn(`[turn-wake] ${message}`),
-							}),
-						});
-						if (projected.ok) return "projected";
-						console.warn(
-							`[turn-wake] rework receipt projection held for ${receipt.wake_id}: ${projected.reason}`,
-						);
-						return "retry";
-					}
-					if (receipt.purpose !== "workflow_ship_carrier") {
-						return "not_applicable";
-					}
-					const projected = store.recordWorkflowCarrierWakeReceipt({
-						activationId: receipt.activation_id,
-						executionId: receipt.execution_id,
-						epoch: receipt.epoch,
-						ackedAt: new Date(receipt.acked_at).toISOString(),
-					});
-					if (projected.ok) return "projected";
-					console.warn(
-						`[turn-wake] carrier receipt projection held for ${receipt.wake_id}: ${projected.reason}`,
-					);
-					return "retry";
-				},
-			});
-			await reconcileWorkflowTurnLedgers({
-				store,
-				commDbPathForProject,
-				alertEnabled: storeWorkflowTurnDivergenceAlertsEnabled(flagStore),
-				resolveAlertIdentity: (expectation) =>
-					resolveWorkflowRunAlertIdentity({
-						store,
-						projects,
-						defaultLeadAgentId: config.defaultLeadAgentId,
-						projectName: expectation.projectName,
-						issueId: expectation.issueId,
-						runId: expectation.runId,
-						log: (message) => console.warn(`[workflow-turn-ledger] ${message}`),
-					}),
-				onError: (message) => console.warn(`[workflow-turn-ledger] ${message}`),
-			});
-			await projectWorkflowEngineParkOutbox({
-				store,
-				projectNames: projects.map((project) => project.projectName),
-				commDbPathForProject,
-			});
-			await terminalGateRetirement.pass();
-			orphanFounderReviewMonitorTick();
-			// Destructive mailbox hygiene is last and isolated: a config/SQLite
-			// failure must not skip the ship-critical reconcile work above.
-			try {
-				leadInboxRuntime.reconcileRetiredLeadMailboxes();
-			} catch (error) {
-				console.warn(
-					`[lead-inbox] retired-recipient reconcile failed closed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-		},
-		// FLY-1560: both holders are populated ~1.5k lines below, well after
-		// gatePoller.start(). The readiness probes stop an unarmed boot tick from
-		// burning the cadence anchor (which would defer the boot reconcile by a
-		// full ~10min cadence while looking like it had already run).
-		onLeadReconcileTick: () => leadReconcilePassHolder.current?.(),
-		onLeadReconcileReady: () => leadReconcilePassHolder.current !== null,
-		onRunnerQuotaScanTick: () => runnerQuotaScanPassHolder.current?.(),
-		onRunnerQuotaScanReady: () => runnerQuotaScanPassHolder.current !== null,
-		onFlagScanTick: async () => {
-			await flagRetirementScanner?.scanIfDue();
-		},
-		onFlagScanReady: () => flagRetirementScanner !== undefined,
-		onFounderDecisionConvergenceTick: async () => {
-			await founderDecisionConvergenceTick();
-		},
-		// FLY-1282 Part D: disposition-receipt delivery has its own stage and
-		// single-flight. Receipt delivery is permanently enabled.
-		onDispositionReceiptTick: createDispositionReceiptPass({
-			store,
-			projects: projects ?? [],
-			globalBotToken: config.discordBotToken,
-		}),
+		// FLY-1048 (A6): gap-scan piggyback (zero new timer; env-gated inside).
+		onGapScanTick: gapScanTick,
+		gapScanEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_GAP_SCAN_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n > 0 ? n : undefined; // default 100
+		})(),
+		// FLY-1048 (PR-C): detection-escalation reconcile piggyback (zero new
+		// timer; env-gated inside the tick — unset flag = complete no-op).
+		onDetectionReconcileTick: detectionReconcileTick,
+		detectionReconcileEveryNTicks: (() => {
+			const n = Number.parseInt(
+				process.env.FLYWHEEL_DETECTION_RECONCILE_EVERY_N_TICKS ?? "",
+				10,
+			);
+			return Number.isFinite(n) && n >= 0 ? n : undefined; // default 20
+		})(),
 		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
 		externalMergeReconcile: () => externalMergeReconciler.pass(),
-		alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 		leadAlertSink: {
 			alert: (p) =>
 				leadPendingAlertHolder.current
@@ -8859,24 +5933,32 @@ export async function startBridge(
 					: Promise.resolve({ skipped: "unknown-lead" } as AlertResult),
 		},
 		chatThreadsEnabled: config.chatThreadsEnabled,
+		transport: misroutePatrolTransport,
+		misrouteArchiveDir,
 		// FLY-907 (Step 4.5): issue-display reconcile sweep — piggybacked on this
-		// existing 60-tick poll cadence (zero new timer). The holder is populated
-		// post-listen; an empty holder makes the tick a no-op.
+		// existing poll tick (zero new timer). The holder is populated post-listen;
+		// an empty holder / flag=0 makes the tick a no-op.
+		// FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS: cadence override (0 = disabled).
 		onDisplayReconcileTick: () =>
 			issueDisplayRefreshHolder.current?.runSweep?.(),
+		displayReconcileEveryNTicks: (() => {
+			const raw = process.env.FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS;
+			if (raw === undefined) return undefined; // GatePoller default (60)
+			const n = Number.parseInt(raw, 10);
+			return Number.isFinite(n) && n >= 0 ? n : undefined;
+		})(),
 		// FLY-605: bidirectional in-thread founder relay fallback. owner/token
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
 		discordOwnerUserId: config.discordOwnerUserId,
+		// FLY-799: founder-in-thread ship approval (default-ON kill-switch inside
+		// the factory). Absent (fcWiring null) → deliverer stays WAKE-only.
 		tryFounderShipApproval: founderShipApprovalCallback,
-		readCurrentBinding: (executionId, questionId, prHeadSha) =>
-			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		// FLY-1099 §4.3: the deferred-approval rebind pass — the SAME production
 		// post-write hook + canonical founder id the live text path uses (no
 		// second authorization chain).
 		deferredRebind: {
 			canonicalFounderId: founderCanonicalId,
-			gateAuthorityView,
 			onResponseWritten: (info) =>
 				founderShipPostWriteHook({
 					executionId: info.executionId,
@@ -8891,9 +5973,16 @@ export async function startBridge(
 		mergedGateGuard,
 		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
 		tryFounderReactionApproval: founderReactionApprovalCallback,
+		// FLY-1041 Chunk 7: the SAME durable binding reader the reaction path
+		// uses — reply-to-card narrows a founder REPLY to its bound ship gate.
+		readCurrentBinding: (executionId, questionId, prHeadSha) =>
+			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
 		cursorStore: founderReplyCursorPath
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,
+		// FLY-725: founder milestone-report patrol (Bridge-primary @founder push).
+		founderMilestoneReportByProject,
+		founderMilestoneBaselineCutoffMs,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
 		// Default-on; `FLYWHEEL_CODEX_HEALTH_GUARD=0` short-circuits inside the probe.
 		onHealthTick: codexHealthEnabled
@@ -8902,6 +5991,8 @@ export async function startBridge(
 				}
 			: undefined,
 	});
+	gatePoller.start();
+
 	// FLY-513: one-shot boot check — surfaces an already-contaminated global codex
 	// immediately at startup (the periodic probe then covers the running window).
 	// Non-fatal: reportCodexGlobalHealth never throws.
@@ -8929,35 +6020,6 @@ export async function startBridge(
 			triggerMode: roundtableConfig.triggerMode,
 			threadOwnBotMessages: roundtableConfig.threadOwnBotMessages,
 			cursorStore: new FileInboundCursorStore(roundtableConfig.cursorPath),
-			archiveDefaultProvider: makeChannelArchiveDefaultProvider({
-				channelId: roundtableConfig.channelId,
-				botToken: roundtableConfig.botToken,
-				logger: { warn: (message) => console.warn(message) },
-			}),
-			logger: {
-				warn: (message, context) => console.warn(message, context ?? ""),
-				log: (message) => console.log(message),
-			},
-			onArchiveDefaultUnresolved: async ({ channelId, reason, detail }) => {
-				await metaAlertNotifier.notify({
-					reason: "roundtable_archive_default_unresolved",
-					title: "Roundtable thread creation is waiting for channel policy",
-					body:
-						`Bridge held roundtable thread creation in channel ${channelId}; ` +
-						`parent archive policy is unresolved (${reason}${detail ? `: ${detail}` : ""}). ` +
-						"Set/read default_auto_archive_duration before retrying; no 4320-minute fallback thread was created.",
-				});
-			},
-			onPermanentPatchFailure: async ({ threadId, status, fields }) => {
-				await metaAlertNotifier.notify({
-					reason: "roundtable_patch_permanent_failure",
-					title: "Roundtable thread repair permanently failed",
-					body:
-						`Bridge could not converge thread ${threadId} in channel ${roundtableConfig.channelId}: ` +
-						`Discord HTTP ${status}; fields=${Object.keys(fields).join(",") || "none"}. ` +
-						"Check the poller bot's MANAGE_THREADS permission.",
-				});
-			},
 			pollIntervalMs: roundtableConfig.pollIntervalMs,
 		});
 		await roundtableThreadManager.start();
@@ -8971,26 +6033,23 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-307 C: Bridge event-loop self-guard — converts a main-loop hang
+	// FLY-307 C: Bridge event-loop self-watchdog — converts a main-loop hang
 	// (e.g. a spinning sql.js/WASM trap) into a launchd-restartable crash, the
-	// gap launchd KeepAlive can't cover. Permanently enabled in production and
-	// auto-disabled under VITEST at this wiring boundary
+	// gap launchd KeepAlive can't cover. Default ON; `FLYWHEEL_BRIDGE_WATCHDOG=0`
+	// is the ops kill-switch. Auto-disabled under VITEST at this wiring boundary
 	// so general Bridge integration suites are never SIGKILLed by the worker
-	// (the dedicated loop-guard tests exercise the real worker directly).
-	const bridgeLoopGuard = new BridgeEventLoopGuard({
+	// (the dedicated watchdog tests exercise the real worker directly).
+	const bridgeWatchdog = new BridgeEventLoopWatchdog({
 		enabled: !process.env.VITEST,
-		bootTs: bridgeBootTs,
-		pid: process.pid,
-		syncOpMarkerPath: syncOpMarkerPath(process.pid, process.env),
 	});
-	bridgeLoopGuard.start();
-	if (bridgeLoopGuard.isEnabled()) {
+	bridgeWatchdog.start();
+	if (bridgeWatchdog.isEnabled()) {
 		console.log(
-			"[Bridge] EventLoopGuard started (worker-thread heartbeat; SIGKILL self on a confirmed main-loop stall → KeepAlive restart)",
+			"[Bridge] EventLoopWatchdog started (worker-thread heartbeat; SIGKILL self on a confirmed main-loop stall → KeepAlive restart)",
 		);
 	}
 
-	// FLY-83 (retired in FLY-1560): external pane-hash observation for
+	// FLY-83: Lead liveness watchdog — external pane-hash observation for
 	// Claude Code TUI. Pairs with scripts/lead-alert.sh (shell-owned alert
 	// path) via cross-process claims.db dedup.
 	//
@@ -8999,6 +6058,7 @@ export async function startBridge(
 	// the same row instead of writing to two unrelated dedup stores.
 	const claimsReader = createClaimsReader();
 	const claimsClaimer = createClaimsClaimer();
+	const blockedMarkerReader = createBlockedMarkerReader();
 	const leadPaneCaptureFn = defaultLeadPaneCapture();
 	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink
 	// (`metaAlertNotifier`). Now constructed earlier (just before GatePoller) so
@@ -9032,7 +6092,6 @@ export async function startBridge(
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
 		projects,
-		deliveryEnabled: () => storeAlertSystemEnabled(flagStore),
 		claimsReader,
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
@@ -9040,8 +6099,6 @@ export async function startBridge(
 		...(alertRatePerMin
 			? { rateLimiter: createAlertRateLimiter(alertRatePerMin) }
 			: {}),
-		replayFreshnessProbe: (input) =>
-			fleetSensorsHolder.current?.replayFreshness(input) ?? null,
 		// FLY-529: QA Testing Room alert isolation. Unset env → both fields
 		// undefined → notifier keeps its shared production defaults (byte-compat).
 		// The test Bridge sets FLYWHEEL_ALERT_QUEUE_DIR / _DEADLETTER_DIR to slot-
@@ -9049,242 +6106,32 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
-	tuiWindowAlertHolder.lost = async (evidence) => {
-		const reason = evidence.lastFailure
-			? `${evidence.lastFailure.category}/${evidence.lastFailure.reason}`
-			: "unknown";
-		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-			leadId: evidence.leadId,
-			projectName: evidence.projectName,
-			eventId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
-			eventType: "tui_window_lost",
-			title: `Codex runner TUI not visible (${evidence.issueId})`,
-			body: `The founder-facing Codex pane never acquired an immutable tmux window id. trigger=${evidence.trigger}; attempts=${evidence.attempts}; last=${reason}. The resident run continued; inspect execution ${evidence.executionId}.`,
-			severity: "warning",
-			sessionKey: evidence.executionId,
-			episodeId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
-		});
-	};
-	tuiWindowAlertHolder.restored = (executionId) => {
-		console.log(`[runner-tui-window] restored execution=${executionId}`);
-	};
-	// FLY-1718 P4: startup + periodic crash convergence. A durable binding can
-	// re-drive activation/settlement; pending fifth-strike alerts retain their
-	// StateStore row until the notifier has durably sent/queued/dead-lettered it.
-	let doaBackoffMaintenanceBusy = false;
-	const runDoaBackoffMaintenance = async (): Promise<void> => {
-		if (doaBackoffMaintenanceBusy) {
-			return;
-		}
-		doaBackoffMaintenanceBusy = true;
-		try {
-			await repairDoaBackoffReservations({
-				store,
-				withIssueMutex: issueMutex,
-			});
-			await drainDoaBackoffAlerts({
-				store,
-				alert: (payload) => leadAlertNotifier.alert(payload),
-			});
-		} catch (error) {
-			console.warn(
-				`[doa-backoff] maintenance pass failed: ${(error as Error).message}`,
-			);
-		} finally {
-			doaBackoffMaintenanceBusy = false;
-		}
-	};
-	void runDoaBackoffMaintenance();
-	const doaBackoffMaintenanceTimer = setInterval(
-		() => void runDoaBackoffMaintenance(),
-		30_000,
-	);
-	modelTransportAlertSink.current = {
-		stall: async (input) => {
-			await leadAlertNotifier.alert({
-				leadId: input.leadId,
-				projectName: input.projectName,
-				eventId:
-					`codex_model_transport_unavailable:${input.leadId}:` +
-					Math.floor(Date.parse(input.at) / (30 * 60_000)),
-				eventType: "inbox_loop_stalled",
-				title: "Codex Lead mailbox transport unavailable",
-				body:
-					`Mailbox delivery to ${input.leadId} cannot reach the Codex inbox ` +
-					`transport and is retrying until the configured terminal cap. Error: ${input.error}`,
-				severity: "severe",
-			});
-		},
-		recovered: async (input) => {
-			console.info("codex_model_transport_recovered", input);
-		},
-		exhausted: async (input) => {
-			const result = await leadAlertNotifier.alert({
-				leadId: input.leadId,
-				projectName: input.projectName,
-				eventId:
-					`codex_model_transport_exhausted:${input.leadId}:` +
-					createHash("sha256")
-						.update(input.deliveryIds.join("\n"))
-						.digest("hex")
-						.slice(0, 16),
-				eventType: "delivery_dead_letter",
-				title: "Codex Lead mailbox transport retries exhausted",
-				body:
-					`Mailbox delivery to ${input.leadId} exhausted its transport retry ` +
-					`budget on attempt ${input.attempt} and will move to DEAD. Delivery IDs: ` +
-					`${input.deliveryIds.join(", ")}. Error: ${input.error}`,
-				severity: "severe",
-			});
-			if (result.skipped === "duplicate") return;
-			if (result.deadLettered || result.skipped) {
-				throw new Error(
-					`Terminal model transport alert not delivered: ${result.skipped ?? "dead_lettered"}`,
-				);
-			}
-		},
-	};
-	for (const input of pendingModelTransportStalls.values()) {
-		void modelTransportAlertSink.current.stall(input).catch((error) => {
-			console.warn("codex_model_transport_alert_flush_failed", {
-				leadId: input.leadId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		});
-	}
-	pendingModelTransportStalls.clear();
-	discordMailboxAlertSink.current = {
-		undeliverable: async (input) => {
-			const result = await leadAlertNotifier.alert({
-				leadId: input.leadId,
-				projectName: input.projectName,
-				eventId:
-					`discord_mailbox_undeliverable:${input.leadId}:` +
-					createHash("sha256")
-						.update(input.deliveryIds.join("\n"))
-						.digest("hex")
-						.slice(0, 16) +
-					`:${input.attempt}`,
-				eventType: "delivery_dead_letter",
-				title: "Discord mailbox message quarantined",
-				body:
-					`Discord mailbox delivery to ${input.leadId} was quarantined before ` +
-					`reaching the Lead. Delivery IDs: ${input.deliveryIds.join(", ")}. ` +
-					`Reason: ${input.reason}`,
-				severity: "severe",
-			});
-			if (result.skipped === "duplicate") return;
-			if (result.deadLettered || result.skipped) {
-				throw new Error(
-					`Discord mailbox quarantine alert not delivered: ${result.skipped ?? "dead_lettered"}`,
-				);
-			}
-		},
-		stall: async (input) => {
-			await leadAlertNotifier.alert({
-				leadId: input.leadId,
-				projectName: input.projectName,
-				eventId:
-					`discord_mailbox_delivery_stalled:${input.leadId}:` +
-					Math.floor(Date.parse(input.at) / (30 * 60_000)),
-				eventType: "inbox_loop_stalled",
-				title: "Discord mailbox delivery stalled",
-				body:
-					`Mailbox delivery to ${input.leadId} cannot reach the Discord route ` +
-					`and is retrying until the configured terminal cap. Error: ${input.error}`,
-				severity: "severe",
-			});
-		},
-	};
-	for (const input of pendingDiscordMailboxStalls.values()) {
-		void discordMailboxAlertSink.current.stall(input).catch((error) => {
-			console.warn("discord_mailbox_stall_alert_flush_failed", {
-				leadId: input.leadId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		});
-	}
-	pendingDiscordMailboxStalls.clear();
-	// FLY-1586 R2 HIGH-5 — bind the quarantine alert sink now that the notifier
-	// exists. Direct Discord path on purpose: an alert about the inbox being
-	// wedged must not travel through the inbox.
-	quarantineAlertSink.current = async (input) => {
-		const result = await leadAlertNotifier.alert({
-			leadId: input.leadId,
-			projectName: input.projectName,
-			eventId: `legacy_row_quarantined:${input.leadId}:${input.seq}`,
-			eventType: "legacy_row_quarantined",
-			title: "Legacy inbox row quarantined during cutover",
-			body:
-				`lead_events seq=${input.seq} was refused by the boot cutover ` +
-				`(${input.reason}) and skipped so the rest of the fleet could ` +
-				"recover. It was NOT delivered. Inspect legacy_cutover_quarantine " +
-				"and decide replay or discard.",
-			severity: "warning",
-		});
-		// R3 HIGH — `alert()` RESOLVES for permanent failures (`deadLettered`,
-		// `skipped`). Ignoring the result and marking the quarantine row
-		// `alert_accepted` would record "an operator was told" about an alert the
-		// notifier had just given up on — the same lie this alert exists to
-		// prevent. Throw so the drain records an honest failure instead.
-		if (result.deadLettered || result.skipped) {
-			throw new Error(
-				`quarantine alert not delivered: ${result.skipped ?? "dead_lettered"}`,
-			);
-		}
-	};
-	deadLetterAlertSink.current = async (input) => {
-		await leadAlertNotifier.alert(
-			{
-				leadId: input.leadId,
-				projectName: input.projectName,
-				eventId: input.eventId,
-				eventType: "mailbox_dead_letter",
-				title:
-					input.sourceKind === "lead_unacked"
-						? `${input.recipient} mailbox messages were not acknowledged`
-						: `Mailbox dead letters have no owning Lead: ${input.recipient}`,
-				body: input.summary,
-				severity: "warning",
-			},
-			{
-				replayAfterAmbiguousAttempt: input.replayAfterAmbiguousAttempt,
-			},
-		);
-	};
-	// R3 HIGH — the loop starts long before this binding exists, so cutover may
-	// already have burned a retry attempt against an unbound sink. Drain once now
-	// that a real notifier is available, otherwise a same-boot quarantine waits
-	// for the NEXT restart to even be attempted.
-	void leadInboxRuntime.drainQuarantineAlertsNow();
-	void leadInboxRuntime.drainDeadLetterAlertsNow();
+
 	// FLY-907: build the unified issue-display refresher. The holder is read
 	// late-bound by EVERY trigger surface (applyTransition hook,
 	// DirectEventSink, event router, actions router, park/wake effects, sweep,
 	// founder-consent gate hook), so filling it here (post-listen) is correct;
 	// the GatePoller sweep reconciles anything that changed before this point.
-	// Chat threads off → holder stays empty and every trigger remains dormant.
-	if (chatThreadCreator) {
+	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 / chat-threads off → holder stays empty →
+	// every new trigger dormant + stage_changed keeps the legacy stamp+pin path.
+	if (issueDisplayRefreshEnabled && chatThreadCreator) {
 		const issueDisplayRefresher = new IssueDisplayRefresher({
 			store,
 			projects,
 			config,
 			chatThreadCreator,
 			flags: {
-				issueStatusEmojiEnabled: true,
-				issueAttachPinEnabled: true,
+				issueStatusEmojiEnabled:
+					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0",
+				issueAttachPinEnabled: process.env.FLYWHEEL_ISSUE_ATTACH_PIN !== "0",
 			},
-			keepAliveEnabled: () => true,
+			keepAliveEnabled: () => threeStageKeepAliveEnabled(),
 			// FLY-623 interaction: while HeartbeatService owns the ⚠️重连中 title,
 			// face A defers instead of overwriting it with a derived badge.
 			isReconnectTitleActive: (execId) =>
 				reconnectHolder.current?.isReconnectTitleActive(execId) ?? false,
 		});
 		issueDisplayRefreshHolder.current = issueDisplayRefresher;
-		for (const issueId of pendingIssueDisplayRefreshes) {
-			issueDisplayRefresher.enqueue(issueId);
-		}
-		pendingIssueDisplayRefreshes.clear();
 		const restoreReconnectTitles = (executionIds?: readonly string[]) => {
 			const restoredIssues = settleReconnectTitlesAndRefresh(
 				heartbeatService,
@@ -9311,27 +6158,16 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-1188 §7.1 / FLY-1278 / FLY-2037: build the codex-author review
-	// coordinator and redrive jobs plus unsent governance audit posts. Jobs stay
-	// serial per execution, without a coordinator-wide concurrency ceiling. Both
-	// runner routes read the holder at request time (503 until filled). Review
-	// governance events use the late-bound routed sink, so the eventual
-	// AlertChannelHub owns dedup/tickets.
+	// FLY-1188 §7.1: build the codex-author review-request coordinator and
+	// redrive any jobs a dead Bridge left pending/running. The /review-requests
+	// route reads the holder at request time (503 until filled). Lead-facing
+	// failure alerts currently log via console + the durable failed job row;
+	// routing them through the FLY-927 alert funnel needs its own alert kind
+	// (follow-up — MetaAlertReason is a closed infra union).
 	{
 		const commRoot =
 			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
 			join(homedir(), ".flywheel", "comm");
-		const reviewThreadEffects = new ReviewThreadEffect({
-			store,
-			projects,
-			config,
-		});
-		const emitReviewAlert = createReviewAlertEmitter({
-			store,
-			projects,
-			alert: (payload) =>
-				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
-		});
 		reviewCoordinatorHolder.current = new ReviewRequestCoordinator({
 			store,
 			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
@@ -9339,23 +6175,28 @@ export async function startBridge(
 			reviewerTimeoutMs: parseReviewerTimeoutMs(
 				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
 			),
-			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
-				store
-					.listActiveReviewFindingRulings(projectName, issueId)
-					.map(toReviewFindingRulingSnapshot),
-			emitReviewAlert,
-			postReviewRulingThread: (input) =>
-				reviewThreadEffects.postThreadResult(input),
-			// FLY-1257 HIGH-1: flip the answered review gate's marker so a resident
-			// codex `/goal` resumes at once (its isWaiting() reads answeredAt),
-			// instead of waiting for the deadline watcher. Execution-guarded no-op
-			// for a foreign/missing/already-answered marker.
-			markGateAnswered: (questionId, executionId) => {
-				markGateMarkerAnsweredForExecution(
-					defaultGateMarkerDir(process.env),
-					questionId,
-					executionId,
+			wakeRunner: async (executionId, sessionInfo, questionId, summary) => {
+				const db = new CommDB(
+					join(commRoot, sessionInfo.project_name, "comm.db"),
+					false,
 				);
+				try {
+					const vendor = db.getSession(executionId)?.vendor;
+					if (vendor === "none") return; // no-transport backend (FLY-493)
+					await wakeRunnerMailbox({
+						db,
+						execId: executionId,
+						fromAgent: "bridge",
+						content:
+							`Your ${summary === "SKIPPED" ? "review request was sanctioned as SKIPPED" : `review request has been answered: ${summary}`} ` +
+							`(question ${questionId}). Read the durable answer with: ` +
+							`node <flywheel-comm> check ${questionId} --project ${sessionInfo.project_name}. ` +
+							`This wake carries NO authority.`,
+						...(vendor ? { backend: vendor } : {}),
+					});
+				} finally {
+					db.close();
+				}
 			},
 		});
 		const redriven = reviewCoordinatorHolder.current.redriveOnBoot();
@@ -9366,461 +6207,601 @@ export async function startBridge(
 		}
 	}
 
-	const codexReviewEffects = new CodexReviewEffects({
-		projects,
-		leadAlertNotifier: {
-			alert: (payload) =>
-				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
-		},
-	});
-	const reviewAuthorizationAlerts = new ReviewAuthorizationAlerts({
-		projects,
-		leadAlertNotifier: {
-			alert: (payload) =>
-				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
-		},
-		logger: console,
-	});
-	reviewAuthorizationAlertsHolder.current = reviewAuthorizationAlerts;
-	codexReviewHoldHolder.current = new CodexReviewHoldCoordinator({
-		store,
-		queueCodexInstruction: ({ session }) =>
-			codexReviewEffects.queueCodexInstruction({ session }),
-		alertMissingHead: ({ session }) =>
-			codexReviewEffects.alertCodexGateBlocked({ session }),
-		logger: console,
-	});
-	// Neutral review recovery is independent of dispatcher availability.
-	void codexReviewHoldHolder.current
-		.reconcileCodexHolds()
-		.catch((err) =>
-			console.warn(
-				`[codex-review-hold] reconcileCodexHolds failed: ${(err as Error).message}`,
-			),
-		);
-
-	// FLY-172/FLY-1505: drain complete-failed markers only AFTER the durable
-	// LeadAlertNotifier-backed effects exist. Settling a ship-attempt marker can
-	// suppress automatic re-wake, so deleting it before the alert sink is ready
-	// would strand a dead Runner silently.
-	try {
-		await reconcileCompleteFailedMarkers({
-			store,
-			bridgeBaseUrl: loopbackBaseUrl,
-			ingestToken: config.ingestToken,
-			materializedHeadAuthority,
-			transitionOpts,
-			getTmuxTarget: getTmuxTargetFromCommDb,
-			isTmuxWindowAlive,
-			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
-			alertMergeWithoutApproval: (session, reason) => {
-				void reviewAuthorizationAlerts.alertMergeWithoutApproval(
-					session,
-					reason,
+	// FLY-579: build the auto-QA coordinator now that the LeadAlertNotifier exists
+	// (the effects need it for Lead-only pipeline-error alerts). Per-project qa
+	// config is loaded from the CANONICAL project roots (never a PR worktree). The
+	// holder is read lazily by the event router, so filling it here (post-listen)
+	// is correct; the durable `auto_qa_record` table — NOT the reconcile timing —
+	// guarantees GatePoller/Heartbeat suppression survives a restart, so the
+	// startup reconcile (re-spawn / re-notify / mark-stuck) safely runs after the
+	// timers. No startDispatcher (can't spawn QA) ⇒ coordinator stays dormant.
+	if (startDispatcher) {
+		try {
+			const qaConfigByProject = await loadQaConfigByProject(projects);
+			// FLY-752: auto-QA is opt-OUT now — count projects NOT opted out
+			// (absent config / no explicit `auto: false` / not malformed).
+			const optedOutCount = projects.filter((p) => {
+				const cfg = qaConfigByProject.get(p.projectName);
+				return (
+					cfg?.kind === "malformed" ||
+					(cfg?.kind === "config" && cfg.auto === false)
 				);
-			},
-			alertShipAttemptFailed: (session, reason) => {
-				return reviewAuthorizationAlerts.alertShipAttemptFailed(
-					session,
-					reason,
-				);
-			},
-			alertCompleteMarkerHeld: (args) => {
-				return reviewAuthorizationAlerts.alertCompleteMarkerHeld(args);
-			},
-		});
-	} catch (err) {
-		console.error(
-			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
-		);
-	}
-	// FLY-1505 M1: the first GatePoller tick may re-wake an approved ship
-	// runner. Start it only after durable failed-attempt markers have restored
-	// their suppression state (or the drain has failed loudly and retained them).
-	gatePoller.start();
-
-	try {
-		const activateWakeHolder = (
-			session: WorkflowActorSession,
-			cause: HolderWakeCause,
-		) =>
-			activateHolderForWake(
-				{
-					transitionOpts,
-					openCommDb: (projectName) =>
-						new CommDB(commDbPathForProject(projectName)),
-					resolveLeadId: (target) => {
-						const fresh = store.getSession(target.execution_id);
-						if (!fresh) return undefined;
-						try {
-							return resolveLeadForIssue(
-								projects,
-								fresh.project_name,
-								parseJsonStringArray(fresh.issue_labels),
-							).lead.agentId;
-						} catch {
-							return undefined;
-						}
-					},
-					resolveVendor: (target) => {
-						const adapter = store.getSession(target.execution_id)?.adapter_type;
-						const transport =
-							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-								? EXECUTOR_TO_TRANSPORT[
-										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-									]
-								: "claude-code";
-						return transport === "none" ? undefined : transport;
-					},
-					discoverTmuxTarget: discoverTmuxTargetByExecutionId,
-					probeDiscoveredTarget: probeRunnerProcessLiveness,
+			}).length;
+			const enabledCount = projects.length - optedOutCount;
+			const autoQaEffects = new AutoQaEffects({
+				store,
+				projects,
+				config,
+				// FLY-927 (W1): route auto-QA alerts through the routed sink (both its
+				// kinds are ticket-class, so behavior is unchanged — this closes the
+				// bypass so EVERY emission source shares the one funnel).
+				leadAlertNotifier: {
+					alert: (p) =>
+						(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(p),
 				},
-				{ session, cause },
+				// FLY-630 ②: drive the PARENT issue thread's stage badge across the QA
+				// phase (🧪QA while running → ⏳待批 on pass → 🔨实现中 on fail). Only
+				// set when the chat-thread feature is on; otherwise stampIssueStage
+				// no-ops.
+				chatThreadCreator,
+				// FLY-752: closeQaRunner needs the FSM transition opts (to finalize a
+				// still-running QA before close) + the global bot token (archive
+				// cascade). Same values the archive cascade uses in this boot scope.
+				transitionOpts,
+				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
+			});
+			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
+				store,
+				startDispatcher,
+				resolveQaPolicy: (session) =>
+					resolveAutoQaPolicy({
+						qaConfig: qaConfigByProject.get(session.project_name),
+						issueLabels: parseJsonStringArray(session.issue_labels),
+					}),
+				effects: autoQaEffects,
+				// FLY-827: the codex hard-gate kill-switch is read live from
+				// process.env (the direct feature-flag toggle mutates it in place).
+				env: process.env,
+				// FLY-945 Fix B: environment probes for the ship-gate head rebind
+				// (gate-unanswered check via CommDB + real-git ancestry proof).
+				shipGateRebind: {
+					hasGateResponse: defaultHasGateResponse,
+					isAncestor: defaultIsAncestor,
+				},
+				logger: {
+					log: (m) => console.log(m),
+					warn: (m) => console.warn(m),
+				},
+			});
+			void autoQaCoordinatorHolder.current
+				.reconcileOnStartup()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileOnStartup failed: ${(err as Error).message}`,
+					),
+				);
+			// FLY-827 (R1 HIGH-4): re-fire codex-hold side effects (re-queue
+			// instruction) for awaiting_review sessions still lacking a Codex approval
+			// after this restart / default-ON flip. The founder HOLD is already
+			// guaranteed by the durable table + isReviewHeld, so running this after the
+			// timers start is safe (side-effects only).
+			void autoQaCoordinatorHolder.current
+				.reconcileCodexHolds()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileCodexHolds failed: ${(err as Error).message}`,
+					),
+				);
+			// FLY-863: catch up on any head that crossed the stuck-duration
+			// threshold WHILE the Bridge was down — don't wait for the first 30s
+			// poll tick to notice a genuinely stuck hold on restart.
+			void autoQaCoordinatorHolder.current
+				.reconcileStuckCodexHolds()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileStuckCodexHolds failed: ${(err as Error).message}`,
+					),
+				);
+			// FLY-1099 §6: the 30min ledger-backed nudge layer (queue+wake
+			// intents; execution + bounded retry live in the founder-action drain).
+			void autoQaCoordinatorHolder.current
+				.reconcileCodexHoldNudges()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileCodexHoldNudges failed: ${(err as Error).message}`,
+					),
+				);
+			console.log(
+				`[auto-qa] coordinator wired (opt-out default: ${enabledCount}/${projects.length} projects auto-QA ON)`,
 			);
+		} catch (err) {
+			console.warn(
+				`[auto-qa] coordinator wiring failed: ${(err as Error).message} — auto-QA disabled this boot`,
+			);
+		}
+	}
 
-		turnBeltReconcilerHolder.current = new TurnBeltReconciler({
-			turnBelt: {
-				listTurns: () => {
-					const rows: { projectName: string; turn: WorktreeTurnRow }[] = [];
-					for (const project of projects) {
-						const dbPath = commDbPathForProject(project.projectName);
-						if (!ffExistsSync(dbPath)) continue;
+	// FLY-793: build the three-stage PhaseOrchestrator now that startDispatcher +
+	// LeadAlertNotifier exist. Per-project `pipeline` config is loaded from the
+	// CANONICAL roots (never a PR worktree), so a runner cannot flip its own
+	// three-stage enablement. The holder is read lazily by both sinks, so filling
+	// it here (post-listen) is correct. Its OWN try/catch — a three-stage config
+	// problem must never disable auto-QA and vice versa. No startDispatcher ⇒
+	// never built (three-stage dormant; can't dispatch phase-sessions anyway).
+	if (startDispatcher) {
+		const phaseStartDispatcher = startDispatcher;
+		try {
+			const pipelineConfigByProject =
+				await loadPipelineConfigByProject(projects);
+			const enabledProjects = projects.filter(
+				(p) => pipelineConfigByProject.get(p.projectName)?.three_stage === true,
+			).length;
+			// FLY-793 (Codex full-PR R1 #1): dirty-safe worktree cleanup the handoff
+			// OWNS — so the branch-B worktree is torn down in the AWAITED
+			// closePhaseRunner (fail-closed on dirty), not left to the next phase's
+			// async, non-dirty-checked Blueprint.removeIfExists.
+			const phaseWorktreeCleanup = makeBridgeWorktreeCleanup(store, projects);
+			// FLY-859: issue-thread notes for the QA fix-loop reuse the auto-QA
+			// effects' postThread machinery (stateless; a second instance is safe).
+			const phaseQaEffects = new AutoQaEffects({
+				store,
+				projects,
+				config,
+				leadAlertNotifier,
+				chatThreadCreator,
+				transitionOpts,
+				globalBotToken: config.discordBotToken,
+				mergedGateGuard,
+			});
+			// FLY-859: fix-round cap knob. Invalid/absent → orchestrator default (3).
+			const maxFixRoundsEnv = process.env.FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS;
+			const maxFixRounds =
+				maxFixRoundsEnv !== undefined
+					? Number.parseInt(maxFixRoundsEnv, 10)
+					: undefined;
+			// FLY-887 (founder-visibility status line): shared by the orchestrator's
+			// per-transition refresh AND ship-time finalization's final refresh (via
+			// phaseStatusLineRefreshHolder, declared near the other forward-reference
+			// holders — finalizeThreeStagePhases is wired before phaseQaEffects exists).
+			const refreshPhaseStatusLineEffect = async (
+				issueId: string,
+			): Promise<void> => {
+				try {
+					// FLY-907: when the unified refresher is wired, every orchestrator
+					// refresh drives ALL THREE display faces (title + header + line)
+					// from real state — a qa_result / finalize is no longer a
+					// face-C-only update.
+					const unified = issueDisplayRefreshHolder.current;
+					if (unified) {
+						await unified.refresh(issueId);
+						return;
+					}
+					// Escape-hatch path (FLYWHEEL_ISSUE_DISPLAY_REFRESH=0): face C
+					// only, derived through the unified state machine with an
+					// "unknown" park probe (status-table-only — the pre-907 shape,
+					// rendered in the new FLY-907 vocabulary).
+					const sessions = store.getPhaseSessionsForIssue(issueId);
+					if (sessions.length === 0) return;
+					const anySession = store.getSession(sessions[0]!.execution_id);
+					if (!anySession) return;
+					const statusByRole = new Map<string, string>();
+					for (const s of sessions) {
+						const role = s.chat_thread_role;
+						if (role && !statusByRole.has(role)) {
+							statusByRole.set(role, s.status);
+						}
+					}
+					const states = {} as Record<ThreeStagePhase, PhaseDisplayState>;
+					for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+						states[role] = derivePhaseDisplayState({
+							role,
+							status: statusByRole.get(role),
+							park: "unknown",
+						});
+					}
+					const text = renderPhaseStatusLine(states);
+					await phaseQaEffects.refreshPhaseStatusLine({
+						session: anySession,
+						text,
+					});
+				} catch (err) {
+					console.warn(
+						`[phase-status-line] refresh failed for ${issueId}: ${(err as Error).message}`,
+					);
+				}
+			};
+			phaseStatusLineRefreshHolder.current = refreshPhaseStatusLineEffect;
+			phaseOrchestratorHolder.current = new PhaseOrchestrator({
+				startDispatcher: phaseStartDispatcher,
+				// FLY-1232: lifecycle shadow hooks (T3/T3b/T4/T5/T6) — undefined
+				// when FLYWHEEL_WORKFLOW_CLAIMS_WRITE is off (byte-compatible).
+				workflowShadow: workflowShadowWriter,
+				// FLY-859: the three-stage QA verdict machinery — thin store closures;
+				// the durable intent lives in session_params.three_stage_verdict via
+				// merge-style patchSessionParams (unrelated params survive).
+				qaVerdicts: {
+					getSession: (executionId) => store.getSession(executionId),
+					readIntent: (executionId) =>
+						store.getSessionParams(executionId)?.three_stage_verdict as
+							| ThreeStageVerdictIntent
+							| undefined,
+					patchIntent: (executionId, patch) => {
+						patchSessionParams(store, executionId, (cur) => ({
+							...cur,
+							three_stage_verdict: {
+								...((cur.three_stage_verdict as
+									| Record<string, unknown>
+									| undefined) ?? {}),
+								...patch,
+							},
+						}));
+					},
+					countImplementPhases: (issueId) =>
+						store.countSessionsByIssueAndChatThreadRole(issueId, "implement"),
+					// FLY-887: durable, crash-safe fix-round ledger (insert-or-read on the
+					// QA verdict's event id). A fix round no longer spawns a new session,
+					// so the count model can't grow — this idempotent event does.
+					recordFixRound: (session, verdictEventId) => {
+						const eventId = `three-stage-fix-round-${verdictEventId}`;
+						const prior = store.getEventPayloadById(eventId);
+						if (prior && typeof prior.round === "number") {
+							return prior.round;
+						}
+						const round =
+							store.countEventsByIssueAndType(
+								session.issue_id,
+								"three_stage_fix_round",
+							) + 1;
+						const inserted = store.insertEvent({
+							event_id: eventId,
+							execution_id: session.execution_id,
+							issue_id: session.issue_id,
+							project_name: session.project_name ?? "",
+							event_type: "three_stage_fix_round",
+							source: "bridge.phase-orchestrator",
+							payload: { round, verdictEventId },
+						});
+						if (!inserted) {
+							// Lost the UNIQUE(event_id) race → read back the winner's round.
+							const won = store.getEventPayloadById(eventId);
+							if (won && typeof won.round === "number") return won.round;
+						}
+						return round;
+					},
+					getActiveImplementSession: (issueId) => {
+						const s = store.getActivePhaseSessionForIssue(issueId);
+						return s && s.session_role === "implement" ? s : undefined;
+					},
+					listVerdictEventCandidates: () =>
+						store.getThreeStageQaSessionsWithVerdictEvents(),
+					getLatestQaResultEvent: (executionId) =>
+						store.getLatestQaResultEventForExecution(executionId),
+					listStrandedPassCandidates: () =>
+						store.getStrandedThreeStageQaPassSessions(),
+					postIssueThread: async (session, text) => {
+						await phaseQaEffects.postThread({
+							session: session as Session,
+							text,
+						});
+					},
+					// FLY-939 (G-B): does the QA session's bound review question already
+					// have a response in the project CommDB? A "changes requested" answer
+					// on the approve_to_ship gate IS that response — the signal that a QA
+					// FAIL now is a founder-feedback kickback, not a stray FAIL. Fail-
+					// closed: unbound sentinel / missing binding / any lookup error →
+					// false (refuse the kickback rather than yank a genuinely-pending gate).
+					hasGateResponse: (session) => {
+						const qid = session.review_question_id;
+						if (!qid || qid === REVIEW_BINDING_UNBOUND) return false;
+						const dbPath = commDbPathForProject(session.project_name ?? "");
+						if (!ffExistsSync(dbPath)) return false;
 						const db = new CommDB(dbPath);
 						try {
-							for (const turn of db.listTurns()) {
-								rows.push({ projectName: project.projectName, turn });
-							}
-						} finally {
-							db.close();
-						}
-					}
-					return rows;
-				},
-				getTurn: (issueId, projectName) => {
-					const dbPath = commDbPathForProject(projectName);
-					if (!ffExistsSync(dbPath)) return null;
-					const db = new CommDB(dbPath);
-					try {
-						return db.getTurn(issueId);
-					} finally {
-						db.close();
-					}
-				},
-				deleteTurn: (issueId, projectName) => {
-					const dbPath = commDbPathForProject(projectName);
-					if (!ffExistsSync(dbPath)) return;
-					const db = new CommDB(dbPath);
-					try {
-						db.deleteTurn(issueId);
-					} finally {
-						db.close();
-					}
-				},
-				getSessionForTurnHolder: (executionId) =>
-					store.getSession(executionId) as WorkflowActorSession | undefined,
-				getActorSessionsForIssue: (issueId) =>
-					store.getPhaseSessionsForIssue(issueId) as WorkflowActorSession[],
-			},
-			isEngineOwnedExecution: (executionId) =>
-				store.isWorkflowEngineOwnedExecution(executionId),
-			alertWorktreeTakeoverFailure: async ({ session, reason }) => {
-				const projectName = session.project_name ?? "";
-				let leadId: string | undefined;
-				try {
-					leadId = resolveLeadForIssue(
-						projects,
-						projectName,
-						parseJsonStringArray(
-							store.getSession(session.execution_id)?.issue_labels,
-						),
-					).lead.agentId;
-				} catch {
-					console.error(
-						`[workflow] worktree takeover failure has no Lead: ${reason}`,
-					);
-					return;
-				}
-				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-					leadId,
-					projectName,
-					eventId: `workflow-worktree-takeover:${session.execution_id}`,
-					eventType: "three_stage_takeover_failed",
-					title: `Workflow worktree takeover failed — ${session.issue_identifier ?? session.issue_id}`,
-					body: reason,
-					severity: "warning",
-					sessionKey: session.execution_id,
-				});
-			},
-			probeActorAlive: async (session) => {
-				const target = getTmuxTargetFromCommDb(
-					session.execution_id,
-					session.project_name ?? "",
-				);
-				if (target) return probeRunnerProcessLiveness(target.tmuxWindow);
-				if (session.tmux_session) {
-					return probeRunnerProcessLiveness(session.tmux_session);
-				}
-				return "absent";
-			},
-			grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
-				const db = new CommDB(commDbPathForProject(projectName));
-				try {
-					db.grantTurn(issueId, execId, phase, Date.now(), {
-						project: projectName,
-						sourceEventId,
-					});
-				} finally {
-					db.close();
-				}
-			},
-			wakeRecoveredTurn: async ({
-				session,
-				epoch,
-				previousHolderExecId,
-				reason,
-			}) => {
-				const adapter = store.getSession(session.execution_id)?.adapter_type;
-				const transport =
-					adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-						? EXECUTOR_TO_TRANSPORT[
-								adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-							]
-						: "claude-code";
-				if (transport === "none") {
-					return { ok: false, error: `wake_transport_missing:${adapter}` };
-				}
-				const wakeId = `turn-recovery:${session.issue_id}:${previousHolderExecId}:${epoch - 1}:${session.execution_id}`;
-				const db = new CommDB(commDbPathForProject(session.project_name ?? ""));
-				try {
-					db.clearDeclaredState(session.execution_id);
-					return await deliverDurableTurnWake({
-						db,
-						wakeId,
-						execId: session.execution_id,
-						issueId: session.issue_id,
-						epoch,
-						purpose: "turn_recovery",
-						fromAgent: "bridge",
-						content: `[phase-wake ${wakeId}] TURN recovery granted epoch ${epoch} after ${previousHolderExecId} became stale. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Recovery reason: ${reason}`,
-						metadata: {
-							kind: "turn_recovery",
-							wakeId,
-							epoch,
-							previousHolderExecId,
-						},
-						backend: transport,
-					});
-				} catch (error) {
-					return { ok: false, error: (error as Error).message };
-				} finally {
-					db.close();
-					issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
-				}
-			},
-			alertLead: async ({ session, reason }) => {
-				const projectName = session.project_name ?? "";
-				let leadId: string | undefined;
-				try {
-					leadId = resolveLeadForIssue(
-						projects,
-						projectName,
-						parseJsonStringArray(
-							store.getSession(session.execution_id)?.issue_labels,
-						),
-					).lead.agentId;
-				} catch {
-					console.error(`[turn-belt] recovery alert has no Lead: ${reason}`);
-					return;
-				}
-				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-					leadId,
-					projectName,
-					eventId: `turn-belt-stuck:${session.execution_id}:${Date.now()}`,
-					eventType: "three_stage_stuck",
-					title: `Workflow TURN recovery — ${session.issue_identifier ?? session.issue_id}`,
-					body: reason,
-					severity: "warning",
-					sessionKey: session.execution_id,
-				});
-			},
-			logger: { warn: (message) => console.warn(`[turn-belt] ${message}`) },
-		});
-
-		const assertWorkflowActorWorktreeReady = async (
-			session: WorkflowActorSession,
-			expectedHeadSha: string,
-		) => {
-			const worktree = store.getSession(session.execution_id)?.worktree_path;
-			if (!worktree)
-				return { ok: false as const, reason: "worktree_path_missing" };
-			return assertWorkflowWorktreeReady(worktree, expectedHeadSha);
-		};
-
-		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
-			store,
-			ownerId: `bridge:${process.pid}`,
-			env: process.env,
-			reentryEnabled: () => storeWorkflowReworkReentryEnabled(flagStore),
-			resolveAlertIdentity: (run) =>
-				resolveWorkflowRunAlertIdentity({
-					store,
-					projects,
-					defaultLeadAgentId: config.defaultLeadAgentId,
-					projectName: run.project_name,
-					issueId: run.issue_id,
-					runId: run.run_id,
-					log: (message) => console.warn(`[workflow-rework] ${message}`),
-				}),
-			effects: {
-				getActorSession: (executionId) =>
-					store.getSession(executionId) as WorkflowActorSession | undefined,
-				probeRegistered: async (session) => {
-					const target = getTmuxTargetFromCommDb(
-						session.execution_id,
-						session.project_name ?? "",
-					);
-					if (!target) return "absent";
-					return probeRunnerProcessLiveness(target.tmuxWindow);
-				},
-				probePersisted: async (session) => {
-					if (!session.tmux_session) return "absent";
-					return probeRunnerProcessLiveness(session.tmux_session);
-				},
-				hasHostProcess: hasHostProcessByExecutionId,
-				assertWorktreeReady: assertWorkflowActorWorktreeReady,
-				activateActorForWake: (session) =>
-					activateWakeHolder(session, "workflow_rework"),
-				closeActorForReworkSupersession: async ({
-					session,
-					requestId,
-					ownerId,
-					generation,
-					routeRevision,
-					executionId,
-				}) => {
-					const authorityCheck = async () =>
-						store.checkWorkflowReworkSupersessionAuthority({
-							requestId,
-							ownerId,
-							generation,
-							routeRevision,
-							executionId,
-						});
-					const result = await closeRunner(
-						{
-							executionId,
-							issueId: session.issue_id,
-							projectName: session.project_name ?? "",
-							executorType: "phase",
-							reason: `rework_supersession:${requestId}`,
-							authorityCheck,
-						},
-						store,
-					);
-					return {
-						ok: result.closed || result.alreadyGone === true,
-						...(result.error ? { error: result.error } : {}),
-					};
-				},
-				grantTurn: async (input) => {
-					const grantedAtMs = Date.now();
-					const db = new CommDB(commDbPathForProject(input.projectName));
-					try {
-						return grantWorkflowReworkTurn(db, input, grantedAtMs);
-					} finally {
-						db.close();
-					}
-				},
-				wakeActor: async ({
-					session,
-					wakeId,
-					activationId,
-					epoch,
-					context,
-				}) => {
-					const adapter = store.getSession(session.execution_id)?.adapter_type;
-					const transport =
-						adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-							? EXECUTOR_TO_TRANSPORT[
-									adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-								]
-							: "claude-code";
-					if (transport === "none") {
-						return { ok: false, error: `wake_transport_missing:${adapter}` };
-					}
-					const db = new CommDB(
-						commDbPathForProject(session.project_name ?? ""),
-					);
-					try {
-						db.clearDeclaredState(session.execution_id);
-						const res = await deliverDurableTurnWake({
-							db,
-							wakeId,
-							execId: session.execution_id,
-							issueId: session.issue_id,
-							epoch,
-							activationId,
-							purpose: "workflow_rework",
-							fromAgent: "bridge",
-							content: `[phase-wake ${wakeId}] Workflow rework activation ${activationId} is ready at TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Rework context: ${JSON.stringify(context)}`,
-							metadata: {
-								kind: "workflow_rework",
-								wakeId,
-								activationId,
-								epoch,
-							},
-							backend: transport,
-						});
-						return res.ok
-							? { ok: true }
-							: {
-									ok: false,
-									error: res.error ?? res.skippedReason ?? "wake_failed",
-								};
-					} catch (error) {
-						return { ok: false, error: (error as Error).message };
-					} finally {
-						db.close();
-						issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
-					}
-				},
-			},
-		});
-		workflowShipCarrierDeliveryHolder.current =
-			new WorkflowShipCarrierDeliveryHandler({
-				store,
-				ownerId: `bridge:${process.pid}:ship-carrier`,
-				resolveAlertIdentity: (run) =>
-					resolveWorkflowRunAlertIdentity({
-						store,
-						projects,
-						defaultLeadAgentId: config.defaultLeadAgentId,
-						projectName: run.project_name,
-						issueId: run.issue_id,
-						runId: run.run_id,
-						log: (message) =>
-							console.warn(`[workflow-ship-carrier] ${message}`),
-					}),
-				effects: {
-					getActorSession: (executionId) =>
-						store.getSession(executionId) as WorkflowActorSession | undefined,
-					assertWorktreeReady: assertWorkflowActorWorktreeReady,
-					activateActorForWake: (session) =>
-						activateWakeHolder(session, "workflow_rework"),
-					grantTurn: async (input) => {
-						const db = new CommDB(commDbPathForProject(input.projectName));
-						try {
-							return grantWorkflowShipCarrierTurn(db, input, Date.now());
+							return db.getResponse(qid) !== undefined;
+						} catch (err) {
+							console.warn(
+								`[three-stage] hasGateResponse lookup failed for ${session.execution_id}: ${(err as Error).message}`,
+							);
+							return false;
 						} finally {
 							db.close();
 						}
 					},
-					wakeActor: async ({
+					maxFixRounds,
+				},
+				resolveThreeStage: (session) => {
+					const issueLabels = parseJsonStringArray(
+						store.getSession(session.execution_id)?.issue_labels,
+					);
+					return resolveThreeStagePolicy({
+						pipelineConfig: pipelineConfigByProject.get(
+							session.project_name ?? "",
+						),
+						issueLabels,
+						// FLY-902: the handoff-side check must see the dispatching
+						// Lead's chatChannel too — omitting it made a configured
+						// three_stage_channels allowlist fail closed on EVERY handoff
+						// (same trust chain as the entry gate in runs-route: server-side
+						// project config, never the request body).
+						dispatchChannelId: resolveHandoffDispatchChannelId(
+							projects,
+							session.project_name,
+							issueLabels,
+						),
+						env: process.env,
+					});
+				},
+				// FLY-793 (combined-QA FLY-855): resolve the REAL leadId at handoff.
+				// The sessions table has NO lead_id column, so the orchestrator's old
+				// `prev.lead_id` read was always undefined → Blueprint's commDbPath
+				// had no leadId → TmuxAdapter's CommDB registration silently skipped
+				// → postMergeTmuxCleanup found no tmux target → the Implement/QA
+				// phase windows never auto-closed after ship (and the leaked QA
+				// runner un-archived the issue thread). Mirror the finalization
+				// paths: project config + the issue's labels.
+				resolveLeadId: (session) => {
+					if (!session.project_name) return undefined;
+					try {
+						const labels = store.getSessionLabels(session.execution_id);
+						const { lead } = resolveLeadForIssue(
+							projects,
+							session.project_name,
+							labels,
+						);
+						return lead.agentId;
+					} catch (err) {
+						console.warn(
+							`[three-stage] resolveLeadId failed for ${session.execution_id}: ${(err as Error).message}`,
+						);
+						return undefined;
+					}
+				},
+				effects: {
+					// Capture the phase's exact head SHA (git rev-parse HEAD in its
+					// worktree) BEFORE any cleanup — the durable handoff point on the
+					// shared branch B. Null on any failure → orchestrator fail-closes.
+					capturePhaseHeadSha: async (session) => {
+						const worktree = store.getSession(
+							session.execution_id,
+						)?.worktree_path;
+						if (!worktree) return null;
+						try {
+							const { stdout } = await execFileP("git", [
+								"-C",
+								worktree,
+								"rev-parse",
+								"HEAD",
+							]);
+							const sha = stdout.trim();
+							return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+						} catch {
+							return null;
+						}
+					},
+					// Dirty-safe close of the completed phase runner. `finalizeDone`
+					// FSM-transitions the design_done / awaiting_review phase-session to
+					// completed first (edges are legal), then frees its tmux + worktree
+					// for the next phase. NO `archive` — the phases share the parent
+					// issue's thread, which must NOT be archived mid-pipeline.
+					closePhaseRunner: async (session) => {
+						// FLY-793 (Codex full-PR R1 #1): capture the worktree path BEFORE
+						// close (closeRunner may clear tmux/CommDB but leaves the worktree).
+						const worktree = store.getSession(
+							session.execution_id,
+						)?.worktree_path;
+						const result = await closeRunner(
+							{
+								executionId: session.execution_id,
+								issueId: session.issue_id,
+								projectName: session.project_name ?? "",
+								reason: `three-stage ${session.session_role ?? "phase"} handoff`,
+								executorType: "phase",
+								finalizeDone: true,
+								transitionOpts,
+							},
+							store,
+						);
+						if (!result.closed) {
+							throw new Error(result.error ?? "closeRunner did not close");
+						}
+						// FLY-793 (Codex full-PR R1 #1): the handoff OWNS the branch-B
+						// worktree teardown here (awaited, before the next phase). If the
+						// phase left uncommitted work (dirty) — or the clean-probe can't
+						// confirm — FAIL-CLOSED: throw so the PhaseOrchestrator aborts the
+						// handoff + alerts the Lead, and never lets the next phase's async
+						// Blueprint.removeIfExists silently discard those files. The head
+						// SHA was already captured from the COMMITTED tree upstream, so the
+						// next phase always starts from committed state.
+						// FLY-859 (Codex code R1 HIGH-2): the QA FAIL fix-loop closes
+						// TERMINAL sessions through this path too. An absent worktree path
+						// means branch B is already free (removal already proven) — skip
+						// the probes instead of failing "unverifiable" forever.
+						if (worktree && ffExistsSync(worktree)) {
+							const clean = await gitWorktreeClean(worktree);
+							if (clean !== true) {
+								throw new Error(
+									`${session.session_role ?? "phase"} worktree ${worktree} is ${
+										clean === false
+											? "DIRTY (uncommitted changes)"
+											: "unverifiable"
+									} — refusing handoff to avoid discarding work`,
+								);
+							}
+							// Clean → dirty-safe removal (git worktree remove, no --force) so
+							// branch B is free for the next phase's create.
+							await phaseWorktreeCleanup({
+								executionId: session.execution_id,
+								issueId: session.issue_id,
+								issueIdentifier: session.issue_identifier,
+								projectName: session.project_name ?? "",
+								tmuxClosed: result.closed,
+							});
+							// FLY-793 (Codex full-PR R2 #2): PROVE removal in the awaited
+							// path. makeBridgeWorktreeCleanup is never-throw (silently skips
+							// on FLYWHEEL_WORKTREE_AUTOCLEAN=0 / not-registered / path- or
+							// branch-mismatch, and only audits a removal failure), so a
+							// return does NOT guarantee the worktree is gone. If the path
+							// still exists, FAIL-CLOSED — for a phase handoff the autoclean
+							// escape hatch is FATAL, not skip-and-continue: the next phase
+							// must never run its async, non-dirty-safe removeIfExists on a
+							// worktree the orchestrator could not free. (remove() renames the
+							// path away synchronously, so a successful removal leaves it gone.)
+							if (ffExistsSync(worktree)) {
+								throw new Error(
+									`${session.session_role ?? "phase"} worktree ${worktree} still present after cleanup (autoclean off or removal failed) — refusing handoff`,
+								);
+							}
+						}
+					},
+					// Fail-closed Lead-only alert (never the founder). Resolve the
+					// owning Lead + page it via the SAME notifier auto-QA uses.
+					alertLeadPipelineError: async ({ session, reason }) => {
+						const projectName = session.project_name ?? "";
+						let leadId: string | undefined;
+						try {
+							const { lead } = resolveLeadForIssue(
+								projects,
+								projectName,
+								parseJsonStringArray(
+									store.getSession(session.execution_id)?.issue_labels,
+								),
+							);
+							leadId = lead.agentId;
+						} catch {
+							/* leadId stays undefined */
+						}
+						if (!leadId) {
+							console.error(
+								`[three-stage] pipeline error (no lead): ${reason}`,
+							);
+							return;
+						}
+						// FLY-927 (Task 3.3, FLY-912 wording collapse): the body leads with
+						// the TRUTHFUL park line derived from the session's REPORTED stage
+						// (never guessed); underivable → an explicit stage未上报 prefix.
+						const fullSession = store.getSession(session.execution_id);
+						const parkTuple = fullSession
+							? deriveParkTuple({
+									session: fullSession,
+									pendingGates: [],
+									autoQaActive: false,
+									notifiedEvidence: false,
+									ownerLeadId: leadId,
+									nowMs: Date.now(),
+								})
+							: null;
+						const truthfulBody = parkTuple
+							? `${formatParkAlert(parkTuple, Date.now())}\n${reason}`
+							: `[stage未上报] ${reason}`;
+						// FLY-927 (W1): through the ROUTED sink — an issue-progress kind
+						// with a bound [FLY-XX] thread lands there (D1); unset routing env
+						// / boot window = the raw notifier exactly as before. sessionKey
+						// carries the execution id the Router's thread resolution keys on.
+						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+							leadId,
+							projectName,
+							eventId: `three-stage-stuck:${session.execution_id}:${Date.now()}`,
+							eventType: "three_stage_stuck",
+							title: `Three-stage pipeline stuck — ${
+								session.issue_identifier ?? session.issue_id
+							}`,
+							body: truthfulBody,
+							severity: "warning",
+							sessionKey: session.execution_id,
+						});
+					},
+					// FLY-887: 4-state PROCESS liveness (not window existence). No tmux
+					// target = the process is gone → absent.
+					probePhaseAlive: async (session) => {
+						const target = getTmuxTargetFromCommDb(
+							session.execution_id,
+							session.project_name ?? "",
+						);
+						if (!target) return "absent";
+						return probeRunnerProcessLiveness(target.tmuxWindow);
+					},
+					// FLY-939 (G-C): probe a phase row's PERSISTED tmux target DIRECTLY,
+					// bypassing the CommDB registration lookup (which returns absent for a
+					// terminal-status row and would mask a still-live window — the exact
+					// pollution the ghost guard must catch, Codex design R1 #2). No
+					// persisted tmux_session → nothing to probe → absent.
+					probeGhostTmux: async (row) => {
+						if (!row.tmux_session) return "absent";
+						return probeRunnerProcessLiveness(row.tmux_session);
+					},
+					// FLY-887: park a completed-but-alive phase (CommDB declared-state;
+					// NOT closeRunner, NOT worktree removal). The shared worktree stays.
+					parkPhaseRunner: async (session) => {
+						const db = new CommDB(
+							commDbPathForProject(session.project_name ?? ""),
+						);
+						try {
+							db.upsertDeclaredState(
+								session.execution_id,
+								"parked",
+								`three-stage ${session.session_role ?? "phase"} parked awaiting pipeline`,
+								Date.now(),
+								null,
+							);
+						} finally {
+							db.close();
+						}
+						// FLY-907 (Step 4.2): a park changes the derived display state
+						// (boundary status + parked → ✅) with NO stage_changed — the
+						// FLY-902 Finding #4 stale-display root cause. Refresh.
+						issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+					},
+					// FLY-887: fail-closed pre-wake worktree check (mirrors the close
+					// path's dirty guard, on the wake path).
+					assertPhaseWorktreeReady: async (session, expectedHeadSha) => {
+						const worktree = store.getSession(
+							session.execution_id,
+						)?.worktree_path;
+						if (!worktree) {
+							return { ok: false, reason: "no persisted worktree_path" };
+						}
+						if (!ffExistsSync(worktree)) {
+							return { ok: false, reason: `worktree path ${worktree} missing` };
+						}
+						const clean = await gitWorktreeClean(worktree);
+						if (clean !== true) {
+							return {
+								ok: false,
+								reason: clean === false ? "dirty" : "clean-unverifiable",
+							};
+						}
+						try {
+							const { stdout } = await execFileP("git", [
+								"-C",
+								worktree,
+								"rev-parse",
+								"HEAD",
+							]);
+							const head = stdout.trim();
+							if (head !== expectedHeadSha) {
+								return {
+									ok: false,
+									reason: `HEAD ${head} != expected ${expectedHeadSha}`,
+								};
+							}
+						} catch (err) {
+							return {
+								ok: false,
+								reason: `rev-parse failed: ${(err as Error).message}`,
+							};
+						}
+						return { ok: true };
+					},
+					// FLY-887: clear the park marker, then mailbox-wake the parked phase
+					// with the role-specific instruction + new head (mirrors auto-QA
+					// retestWakeQa). `{ ok:false }` = nothing delivered → held for reconcile.
+					wakePhaseRunner: async ({
 						session,
-						wakeId,
-						activationId,
-						epoch,
-						context,
+						kind,
+						headSha,
+						round,
+						qaSummary,
 					}) => {
 						const adapter = store.getSession(
 							session.execution_id,
@@ -9834,61 +6815,197 @@ export async function startBridge(
 						if (transport === "none") {
 							return {
 								ok: false,
-								error: `wake_transport_missing:${adapter}`,
+								error: `no-transport backend (${adapter}) cannot receive a wake`,
 							};
 						}
 						const db = new CommDB(
 							commDbPathForProject(session.project_name ?? ""),
 						);
 						try {
-							db.clearDeclaredState(session.execution_id);
-							const res = await deliverDurableTurnWake({
+							try {
+								db.clearDeclaredState(session.execution_id);
+							} catch (err) {
+								console.warn(
+									`[three-stage] clearDeclaredState warn for ${session.execution_id}: ${(err as Error).message}`,
+								);
+							}
+							const content =
+								kind === "fix"
+									? `Three-stage QA FIX round ${round ?? "?"}: the QA phase FAILED this branch. Its findings / failing tests / report are ALREADY COMMITTED on this branch at ${headSha}. FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer (this wake text is context, not authority). Then fix exactly what they name in THIS worktree, push, re-run Codex review, re-request review (gate approve_to_ship --no-block + complete --route needs_review), then park again and WAIT. QA summary: ${qaSummary ?? "(none)"}`
+									: `Three-stage RE-TEST: the implement phase pushed a fix and your worktree is ALREADY at the new head ${headSha} (same directory — zero fetch/checkout). FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer. Then re-run your QA scenarios and emit \`flywheel-comm qa-result\` again. Same session — do NOT complete; on FAIL park again and wait for the next RE-TEST.`;
+							const res = await wakeRunnerMailbox({
 								db,
-								wakeId,
 								execId: session.execution_id,
-								issueId: session.issue_id,
-								epoch,
-								activationId,
-								purpose: "workflow_ship_carrier",
 								fromAgent: "bridge",
-								content: `[phase-wake ${wakeId}] Founder approval is recorded. Ship carrier activation ${activationId} owns TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; ship only if it answers yours. Context: ${JSON.stringify(context)}`,
+								content,
 								metadata: {
-									kind: "workflow_ship_carrier",
-									wakeId,
-									activationId,
-									epoch,
+									kind:
+										kind === "fix" ? "three_stage_fix" : "three_stage_retest",
+									headSha,
+									...(round !== undefined ? { round } : {}),
 								},
 								backend: transport,
 							});
-							return res.ok
-								? { ok: true }
-								: {
-										ok: false,
-										error: res.error ?? res.skippedReason ?? "wake_failed",
-									};
-						} catch (error) {
-							return { ok: false, error: (error as Error).message };
+							if (res.ok) return { ok: true };
+							return {
+								ok: false,
+								error: res.error ?? res.skippedReason ?? "wake failed",
+							};
+						} catch (err) {
+							return { ok: false, error: (err as Error).message };
 						} finally {
 							db.close();
+							// FLY-907 (Step 4.2): the park marker was just cleared — the
+							// woken phase must flip back to ▶ (FLY-543 rework display).
+							// This is also the normal TURN re-grant path. Fire-and-forget.
 							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
 						}
 					},
 				},
+				// FLY-887: keep-alive kill-switch + wake-target lookup + TURN grant.
+				keepAliveEnabled: () => threeStageKeepAliveEnabled(),
+				getAlivePhaseSession: (issueId, phase) => {
+					const ALIVE = new Set([
+						"running",
+						"awaiting_review",
+						"approved_to_ship",
+						"design_done",
+					]);
+					return store
+						.getPhaseSessionsForIssue(issueId)
+						.find((s) => s.chat_thread_role === phase && ALIVE.has(s.status)) as
+						| PhaseSession
+						| undefined;
+				},
+				// FLY-887 QA round 2: durable "this issue already shipped" signal —
+				// runPostShipFinalization's atomic per-issue claim event, keyed to
+				// issue_id regardless of which execution triggered it.
+				hasShipFinalizationClaim: (issueId) =>
+					store.countEventsByIssueAndType(
+						issueId,
+						"post_ship_finalization_claim",
+					) > 0,
+				// FLY-887 (founder-visibility status line): re-render + post-or-edit
+				// the single "🎨design(...)·🔨implement(...)·🧪qa(...)" line. Best-effort
+				// — never lets a Discord hiccup break a real handoff/verdict. Also
+				// populates phaseStatusLineRefreshHolder (declared near the other
+				// forward-reference holders) so ship-time finalization can reach the
+				// SAME function to refresh the line to its final done/done/done state
+				// (Finding B from the founder-visibility real-machine QA round — the
+				// line otherwise goes stale at whatever it showed pre-merge).
+				refreshPhaseStatusLine: refreshPhaseStatusLineEffect,
+				grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
+					const db = new CommDB(commDbPathForProject(projectName));
+					try {
+						db.grantTurn(issueId, execId, phase, Date.now(), {
+							project: projectName,
+							sourceEventId,
+						});
+					} finally {
+						db.close();
+					}
+				},
+				// FLY-921 Fix C: turn-belt reconcile reads/writes. Rows live in
+				// per-project CommDBs (no project column) — this seam owns the
+				// attribution so the orchestrator never sees an unattributed row.
+				turnBelt: {
+					listTurns: () => {
+						const rows: { projectName: string; turn: TurnBeltRow }[] = [];
+						for (const p of projects) {
+							const dbPath = commDbPathForProject(p.projectName);
+							if (!ffExistsSync(dbPath)) continue;
+							const db = new CommDB(dbPath);
+							try {
+								for (const turn of db.listTurns()) {
+									rows.push({ projectName: p.projectName, turn });
+								}
+							} catch (err) {
+								console.warn(
+									`[three-stage] turnBelt.listTurns failed for ${p.projectName}: ${(err as Error).message}`,
+								);
+							} finally {
+								db.close();
+							}
+						}
+						return rows;
+					},
+					getTurn: (issueId, projectName) => {
+						const dbPath = commDbPathForProject(projectName);
+						if (!ffExistsSync(dbPath)) return null;
+						const db = new CommDB(dbPath);
+						try {
+							return db.getTurn(issueId);
+						} finally {
+							db.close();
+						}
+					},
+					deleteTurn: (issueId, projectName) => {
+						const dbPath = commDbPathForProject(projectName);
+						if (!ffExistsSync(dbPath)) return;
+						const db = new CommDB(dbPath);
+						try {
+							db.deleteTurn(issueId);
+						} finally {
+							db.close();
+						}
+					},
+					getSessionForTurnHolder: (execId) => store.getSession(execId),
+					getPhaseSessionsForIssue: (issueId) =>
+						store.getPhaseSessionsForIssue(issueId) as PhaseSession[],
+				},
+				// FLY-793 (Codex full-PR R2 #1): source stranded design_done sessions
+				// for the startup reconcile (boot marker drain lands them before this
+				// orchestrator is wired).
+				listStrandedDesignPhases: () => store.getStrandedDesignPhaseSessions(),
+				// FLY-939 (G-A2): implement rows stranded at awaiting_review — the
+				// startup reconcile re-drives their lost implement→QA handoff.
+				listStrandedImplementPhases: () =>
+					store.getStrandedImplementPhaseSessions() as PhaseSession[],
+				// FLY-939 (G-C): all rows for an issue+phase (any status, newest first
+				// with rowid tiebreak) — the ghost guard's probe pool.
+				listPhaseSessionRows: (issueId, phase) =>
+					store
+						.getPhaseSessionsForIssue(issueId)
+						.filter((s) => s.chat_thread_role === phase) as PhaseSession[],
+				logger: {
+					log: (m) => console.log(m),
+					warn: (m) => console.warn(m),
+				},
 			});
-		void turnBeltReconcilerHolder.current
-			.reconcileTurnBelt()
-			.catch((error) =>
-				console.warn(
-					`[turn-belt] startup reconcile failed: ${(error as Error).message}`,
-				),
+			// FLY-793 (Codex full-PR R2 #1): re-drive any Design phase stranded at
+			// design_done by the boot marker drain (which ran before this orchestrator
+			// existed). Mirrors autoQaCoordinator.reconcileOnStartup — best-effort,
+			// never blocks boot.
+			void phaseOrchestratorHolder.current
+				.reconcileOnStartup()
+				.then(() =>
+					// FLY-921 Fix C startup position: full-table turn-belt scan AFTER
+					// the stranded-handoff replay (so it sees the replayed final state).
+					// Guard 2 (grant grace) protects any TURN a replayed handoff just
+					// granted to a still-in-flight spawn.
+					phaseOrchestratorHolder.current?.reconcileTurnBelt(),
+				)
+				.then(() => {
+					// FLY-1232 T8: the DEDICATED shadow replay — runs AFTER the
+					// orchestrator reconcile so the durable sources it reads (fix
+					// rounds, verdict intents, finalization claims) reflect the
+					// replayed state. Never piggybacks the orchestrator's skip-heavy
+					// logic, never triggers production actions. no-op when flag OFF.
+					workflowShadowWriter?.reconcileOnStartup();
+				})
+				.catch((err) =>
+					console.warn(
+						`[three-stage] reconcileOnStartup failed: ${(err as Error).message}`,
+					),
+				);
+			console.log(
+				`[three-stage] PhaseOrchestrator wired (opt-in default OFF: ${enabledProjects}/${projects.length} projects three_stage ON)`,
 			);
-		console.log(
-			"[workflow-coordinators] rework, ship carrier, and TURN recovery wired",
-		);
-	} catch (error) {
-		console.warn(
-			`[workflow-coordinators] wiring failed: ${(error as Error).message}`,
-		);
+		} catch (err) {
+			console.warn(
+				`[three-stage] PhaseOrchestrator wiring failed: ${(err as Error).message} — three-stage disabled this boot`,
+			);
+		}
 	}
 
 	// FLY-939 (G-D): boot-time checkout-SHA visibility. Fire-and-forget (never on
@@ -9902,6 +7019,7 @@ export async function startBridge(
 			resolve(here, "..", "..", "..", "..");
 		void runBootShaCheck({
 			projectRoot: bridgeRepoRoot,
+			env: process.env,
 			git: async (args) => {
 				const { stdout } = await execFileP(
 					"git",
@@ -9993,10 +7111,29 @@ export async function startBridge(
 		});
 	}
 
-	// FLY-696: shared Discord operations remain for Alerts, rotation notices,
-	// and login rescue. The account-switch construction seam remains below for
-	// compatibility, but FLY-1456's fixed mode never attaches it to Bridge.
-	const getAlertDiscordTokens = (): string[] => {
+	// FLY-368 rework (Codex R1 HIGH-1): threading needs a RESOLVABLE repair CHAIN
+	// (any fleet bot), NOT one fixed token. Fail LOUD + disable threading ONLY when
+	// the entire repair chain is empty.
+	// FLY-1243: threading is固化 default-on, so a unified channel WITHOUT a
+	// resolvable repair chain is a genuine misconfig (fail loud). A Bridge with no
+	// unified channel at all simply doesn't use unified alerts — not an error.
+	if (unifiedAlertChannelId && !repairChainResolves) {
+		console.error(
+			"[Bridge] FLY-368: unified alert channel set but no resolvable repair chain " +
+				"(need at least one resolvable fleet bot token) — threading DISABLED.",
+		);
+		void metaAlertNotifier.notify({
+			reason: "alert_unreachable_config",
+			title: "FLY-368 alert threading misconfigured",
+			body: "Unified alert channel set but no resolvable repair-chain bot — per-error threads will NOT be created.",
+		});
+	}
+
+	// FLY-696: hoisted so both the Hub's repair path AND the account-switch
+	// watchdog (piggybacked on onPollComplete below, no new timer) share one
+	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
+	// the account-pool presence (FLY-1243; absent = byte-compat → undefined).
+	const alertDiscordOps = createDiscordOps(() => {
 		// FLY-927 (D2): single sender identity — when set, Hub thread operations
 		// use the SAME one identity as the root alert (no repair-chain fan-out).
 		// Unresolvable token ⇒ empty chain ⇒ the op fails loudly via the Hub's
@@ -10009,18 +7146,17 @@ export async function startBridge(
 		return buildRepairChain(projects, repairBotTokenEnvName)
 			.map((env) => process.env[env])
 			.filter((t): t is string => !!t);
+	});
+	// FLY-1048 (A5): wire the suspicious-report quiet thread leg now that the
+	// Discord ops exist (the deliverer skipped the leg while this was null).
+	suspiciousThreadPoster.current = async (threadId, content) => {
+		await alertDiscordOps.postToThread(threadId, content);
 	};
-	const alertDiscordOps = createDiscordOps(getAlertDiscordTokens);
-	const alertArchiveDefaultProvider = unifiedAlertChannelId
-		? makeChannelArchiveDefaultProvider({
-				channelId: unifiedAlertChannelId,
-				botToken: getAlertDiscordTokens,
-				logger: { warn: (message) => console.warn(message) },
-			})
-		: undefined;
-	// FLY-1456: preserve the existing construction boundary while the fixed mode
-	// keeps it dormant. The external daemon is the only account-switch executor.
-	const accountSwitchRepair = quotaBridgeMode.attachAccountSwitch
+	// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL retired (固化 default-on). The Claude
+	// account pool file is now the de-facto switch — present ⇒ self-heal wires
+	// (production); absent ⇒ undefined = byte-compat for deployments that never
+	// provisioned a pool (QA slots / sub / joycon), no quota scan, no switch.
+	const accountSwitchRepair = accountPoolConfigured()
 		? makeAccountSwitchRepair({
 				switchDeps: makeClaudeProfileSwitchDeps({
 					binPath: claudeProfileBinPath(),
@@ -10029,13 +7165,57 @@ export async function startBridge(
 		: undefined;
 
 	// FLY-696 M1/④: now that the unified-channel DiscordOps exists, late-bind the
-	// account_rotation Alerts-post the event router reads. Manual/profile rotation
-	// notices and login rescue remain wired after permanent cutover;
-	// only the three automatic account-switch execution faces are retired.
+	// account_rotation Alerts-post the event router reads. Reuses the SAME
+	// post-to-thread path the account-switch watchdog uses. Gated on the SAME
+	// self-heal switch as the rest of FLY-696 (Codex R1 MED-2: flag off = the
+	// default MUST be byte-compatible, no new Alerts behavior); no unified
+	// channel likewise leaves the holder undefined → the event is acked, not
+	// posted.
 	// FLY-871 R3/C9: the infra self-heal rescue runtime (built inside the same
-	// self-heal gate below).
+	// self-heal gate below). Declared here so the account-switch watchdog tick
+	// (onPollComplete, later in this closure) can trigger the post-switch sweep.
 	let rescueRuntime: RescueRuntime | undefined;
-	if (claudeAccountPoolConfigured && unifiedAlertChannelId) {
+	// FLY-929 A4+A5: the SHARED switch-result post used by both executor paths
+	// (watchdog tick + /api/account-switch route) — hoisted so the onPollComplete
+	// watchdog tick (a later closure) reuses the exact same routing. Set inside
+	// the self-heal gate below; undefined ⇒ self-heal off (neither path runs).
+	let postSwitchResult:
+		| ((detail: string, disposition?: RepairDisposition) => Promise<void>)
+		| undefined;
+	if (accountSwitchRepair && unifiedAlertChannelId) {
+		// The Alerts post is authoritative and unchanged in the dormant states;
+		// on top of it:
+		//  - needs_human (no_account / failed / not-attemptable) +
+		//    resolveAccountCapOwnerId ⇒ the post becomes the owner-bot ASSIGNMENT
+		//    (mention) instead of a plain line — the FLY-871 bot playbook carries
+		//    the eventual founder escalation until FLY-927's ticket state machine
+		//    lands. Any env missing ⇒ plain detail post byte-for-byte.
+		//  - notifySuccess (a REAL switched outcome only) + P-identity ⇒ ONE
+		//    best-effort digest to #flywheel-notify (never blocks the Alerts
+		//    record; postInfraNotifyDigest logs and swallows failures).
+		postSwitchResult = async (
+			detail: string,
+			disposition?: RepairDisposition,
+		): Promise<void> => {
+			const capOwnerId =
+				disposition?.outcome === "needs_human"
+					? resolveAccountCapOwnerId()
+					: undefined;
+			if (capOwnerId) {
+				await alertDiscordOps.postToThread(
+					unifiedAlertChannelId,
+					formatAccountCapOwnerAssignment(capOwnerId, detail),
+					{ mentionUserId: capOwnerId },
+				);
+			} else {
+				await alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
+			}
+			if (disposition?.notifySuccess) {
+				await postInfraNotifyDigest(
+					formatSwitchSuccessDigest(disposition.notifySuccess),
+				);
+			}
+		};
 		accountRotationPostHolder.current = async (detail, rotation) => {
 			await alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
 			// FLY-929 A4: rotation digest from the STRUCTURED payload (never
@@ -10044,11 +7224,34 @@ export async function startBridge(
 				await postInfraNotifyDigest(formatRotationDigest(rotation));
 			}
 		};
+		// FLY-871 R2/C5: bind the /api/account-switch runtime (same self-heal gate).
+		// The route claims a pending record + reuses accountSwitchRepair.executeSwitch,
+		// posts the result to the Alerts channel, and audits before/after to lead_events.
+		accountSwitchRouteHolder.current = {
+			repair: accountSwitchRepair,
+			postResult: postSwitchResult,
+			audit: (e) =>
+				store.appendLeadEvent(
+					e.actorBotId,
+					`account-switch:${e.phase}:${e.key}`,
+					`account_switch_${e.phase}`,
+					JSON.stringify(e),
+				),
+			// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
+			// ACTIVE ticket — exact event-id correlation, so a stale episode can
+			// never be acked; legacy rows (NULL ticket_status) untouched.
+			ackTicket: (sourceAlertId) => {
+				const row = store.getActiveAlertThreadByEventId(sourceAlertId);
+				if (row?.ticket_status) {
+					store.setTicketStatus(row.correlation_key, "ACK");
+				}
+			},
+		};
+
 		// FLY-871 R3/C9: build the infra self-heal rescue runtime — binds the pure
 		// rescue orchestration (rescue.ts) to the real Bridge primitives. Consumed
 		// by the /api/rescue route (W3) and the post-switch sweep (W5). Same
-		// Pool + unified-channel gate remains independent of permanent quota
-		// cutover: login rescue is not an account-switch execution face.
+		// self-heal gate ⇒ dormant + byte-compat when the flag is off.
 		const resolveRescueLeadId = defaultResolveLeadId(projects);
 		// The founder's Discord id for a REAL @-ping on a rescue escalation (snowflake
 		// only; unset/malformed ⇒ undefined = degrade to no-mention, like the Hub).
@@ -10056,18 +7259,21 @@ export async function startBridge(
 			const id = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID?.trim();
 			return id && /^\d{17,20}$/.test(id) ? id : undefined;
 		};
-		const rescueDetectionAiClassify = makeSubscriptionDetectionClassifier({});
+		const rescueDetectionAiClassify =
+			process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
+				? undefined
+				: makeSubscriptionDetectionClassifier({});
 		rescueRuntime = buildRescueRuntime({
 			listPendingAlerts: () => store.listActiveAlertThreads(),
 			kickstart: makeKickstart({ log: (m) => console.warn(m) }),
 			captureLeadPane: async (projectName, leadId) => {
-				const w = await locateFleetLeadWindow(projectName, leadId);
+				const w = await locateLeadWindow(projectName, leadId);
 				if (!w) return null;
-				return leadPaneCaptureFn(w, 200);
+				return leadPaneCaptureFn(w.windowId, 200);
 			},
 			sendEnterToLead: async (projectName, leadId) => {
-				const w = await locateFleetLeadWindow(projectName, leadId);
-				if (w) await sendEnterToWindow(w);
+				const w = await locateLeadWindow(projectName, leadId);
+				if (w) await sendEnterToWindow(w.windowId);
 			},
 			isResumeMenu: isSafeResumeMenuForEnter,
 			// FLY-871 Lead ②: revalidate the runner's LIVE pane before closing it.
@@ -10093,10 +7299,6 @@ export async function startBridge(
 			// dispatch a resumed successor (start() runs the FLY-795 resume-computer).
 			closeAndDispatchSuccessor: makeCloseAndDispatchSuccessor({
 				getSession: (id) => store.getSession(id),
-				// FLY-1372 (Codex code R1 #4): engine-owned workflow executions are
-				// never legacy rescue targets.
-				isEngineOwnedExecution: (id) =>
-					store.isWorkflowEngineOwnedExecution(id),
 				terminateForRescue: (s) => {
 					const tr = applyTransition(
 						transitionOpts,
@@ -10206,11 +7408,94 @@ export async function startBridge(
 		rescueRouteHolder.current = {
 			rescueLead: rescueRuntime.rescueLead,
 			rescueRunner: rescueRuntime.rescueRunner,
+			// FLY-927 (Task 2.3): a rescue call is the owner bot's claim — ACK the
+			// matching ACTIVE ticket. Lead rescues correlate by (leadId,
+			// login_expired); runner rescues by (session_key=executionId,
+			// runner_login_expired). Unresolved / legacy row = no-op (never ack the
+			// wrong episode).
+			ackTicket: ({ route, leadId, executionId }) => {
+				const row =
+					route === "lead"
+						? leadId
+							? store.getActiveAlertThreadByLeadAndType(leadId, "login_expired")
+							: undefined
+						: store
+								.listActiveAlertThreads()
+								.find(
+									(r) =>
+										r.session_key === executionId &&
+										r.event_type === "runner_login_expired",
+								);
+				if (row?.ticket_status) {
+					store.setTicketStatus(row.correlation_key, "ACK");
+				}
+			},
+		};
+		// FLY-871 R3/W5: on a successful bot-claimed switch (the /api/account-switch
+		// route), sweep the incident-window login-stuck sessions. The watchdog-fired
+		// switch wires the same sweep below (onPollComplete).
+		accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
+			await rescueRuntime?.postSwitchRescueSweep();
 		};
 	}
 
+	// FLY-1082 (Task 3.2): runbook-gap Linear wiring — FLY team / Flywheel
+	// project / Flywheel label, resolved lazily per call (the auto-filed issue
+	// is rare; no caching complexity). No LINEAR_API_KEY ⇒ creation degrades to
+	// null and the escalation itself is untouched.
+	const runbookCreateIssue = async (input: {
+		title: string;
+		description: string;
+	}): Promise<{ id: string; identifier?: string } | null> => {
+		const apiKey = config.linearApiKey;
+		if (!apiKey) return null;
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const client = new LinearClient({ apiKey });
+			const teams = await client.teams({ filter: { key: { eq: "FLY" } } });
+			const team = teams.nodes[0];
+			if (!team) return null;
+			const projects = await client.projects({
+				filter: { name: { eq: "Flywheel" } },
+			});
+			const labels = await team.labels({
+				filter: { name: { eq: "Flywheel" } },
+			});
+			const payload = await client.createIssue({
+				teamId: team.id,
+				title: input.title,
+				description: input.description,
+				...(projects.nodes[0]?.id && { projectId: projects.nodes[0].id }),
+				...(labels.nodes[0]?.id && { labelIds: [labels.nodes[0].id] }),
+			});
+			const created = await payload.issue;
+			return created?.id
+				? { id: created.id, identifier: created.identifier }
+				: null;
+		} catch (err) {
+			console.warn(
+				`[runbook-gap] Linear issue creation failed: ${(err as Error).message}`,
+			);
+			return null;
+		}
+	};
+	const runbookIsIssueOpen = async (
+		issueId: string,
+	): Promise<boolean | null> => {
+		const apiKey = config.linearApiKey;
+		if (!apiKey) return null;
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const issue = await new LinearClient({ apiKey }).issue(issueId);
+			const state = await issue.state;
+			return state ? !["completed", "canceled"].includes(state.type) : null;
+		} catch {
+			return null; // cannot tell — keep the dedup (never double-file)
+		}
+	};
+
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
-	// chain; else producers route straight to the notifier (legacy / root-only).
+	// chain; else watchdogs route straight to the notifier (legacy / root-only).
 	const alertHub =
 		unifiedAlert && repairChainResolves
 			? new AlertChannelHub({
@@ -10218,13 +7503,34 @@ export async function startBridge(
 					notifier: leadAlertNotifier,
 					// Repair-chain DiscordOps: Cass → alphabetical, resolved per call.
 					discord: alertDiscordOps,
-					archiveDefaultProvider: alertArchiveDefaultProvider,
 					// FLY-1243: conservative auto-repair, 固化 default-on (always wired
 					// inside the hub, which itself needs a channel + repair chain). Only
-					// retained safe auto-repair actions.
+					// the two safe actions; reuses the audited runner-nudge +
+					// lead-resume-enter ops.
 					autoRepairBot: new AutoRepairBot({
+						runnerNudge: (input) =>
+							attemptRunnerRecoveryNudge(input, {
+								store,
+								projects,
+								captureSessionFn: defaultCaptureSession,
+								hasPendingGate: hasPendingGateFromCommDb,
+								sendKeys: sendKeysToWindow,
+								getTmuxTarget: getTmuxTargetFromCommDb,
+								now: () => Date.now(),
+								nextAuditSeq: (() => {
+									let n = 0;
+									return () => ++n;
+								})(),
+							}),
+						leadResumeEnter: (input) =>
+							attemptLeadResumeEnter(input, {
+								store,
+								locateWindowFn: locateLeadWindow,
+								captureFn: leadPaneCaptureFn,
+								sendEnter: sendEnterToWindow,
+							}),
 						// FLY-696: usage_limit → Claude account switch (enqueues a
-						// pending record; the deadline sweep below fires it). Hoisted +
+						// pending record; the watchdog below fires it). Hoisted +
 						// gated on the account-pool presence (FLY-1243; absent →
 						// undefined = byte-compat, usage_limit stays needs_human).
 						accountSwitch: accountSwitchRepair,
@@ -10253,9 +7559,9 @@ export async function startBridge(
 					// Reconcile capture: locate the Lead window + grab its pane (null when
 					// no window) — the restart-safe recovery truth source.
 					capturePane: async (projectName, leadId) => {
-						const w = await locateFleetLeadWindow(projectName, leadId);
+						const w = await locateLeadWindow(projectName, leadId);
 						if (!w) return null;
-						return leadPaneCaptureFn(w, 200);
+						return leadPaneCaptureFn(w.windowId, 200);
 					},
 					// FLY-368 (Codex code R1 HIGH-1): runner reconcile capture — resolve a
 					// runner alert thread once the runner's terminal advanced past the
@@ -10269,145 +7575,92 @@ export async function startBridge(
 						);
 						return isCaptureError(c) ? null : c.output;
 					},
+					// FLY-927 (Task 2.4): T2 escalation for an ISSUE-BOUND ticket pages
+					// the founder in the issue's own [FLY-XX] thread — the FLY-818 page
+					// + founder_page_ledger dedup (never re-pages the same event id).
+					escalateToIssueThread: async (row) => {
+						if (!row.session_key || !config.discordOwnerUserId) return false;
+						if (store.getFounderPaged(row.event_id) === true) return true;
+						const session = store.getSession(row.session_key);
+						if (!session) return false;
+						const { lead } = resolveLeadForIssue(
+							projects,
+							session.project_name,
+							parseJsonStringArray(session.issue_labels),
+						);
+						const thread = store.getChatThreadByIssue(
+							session.issue_id,
+							lead.chatChannel,
+						);
+						const firstSeenMs = row.first_seen_at
+							? Date.parse(`${row.first_seen_at.replace(" ", "T")}Z`)
+							: Number.NaN;
+						const outcome = await emitFounderStuckNotification(
+							{
+								executionId: row.session_key,
+								issueId: session.issue_id,
+								issueIdentifier: session.issue_identifier ?? undefined,
+								projectName: session.project_name,
+								leadAgentId: lead.agentId,
+								stuckMinutes: Number.isNaN(firstSeenMs)
+									? 0
+									: Math.max(
+											0,
+											Math.round((Date.now() - firstSeenMs) / 60_000),
+										),
+								thread,
+								botToken: lead.botToken ?? config.discordBotToken,
+								ownerUserId: config.discordOwnerUserId,
+								phasePrefix: phaseMessageTag(
+									session.chat_thread_role,
+									session.runner_model,
+								),
+							},
+							{ store },
+						);
+						const paged = outcome.kind === "posted";
+						store.recordFounderPaged(row.event_id, paged);
+						return paged;
+					},
 					// FLY-1082: fleet-kind recovery probe (watermark cleared / bot back
 					// alive / boot reconcile done) — holder-backed; null = cannot tell.
 					fleetRecovery: async (row) =>
 						(await fleetSensorsHolder.current?.recoveryProbe(row)) ?? null,
+					// FLY-1082 (Task 3.2): repeated-escalation runbook-gap counter —
+					// same kind ESCALATED ≥3 times in 7 days auto-files the eng issue.
+					onTicketEscalated: async (row) => {
+						await noteTicketEscalated(row.event_type, {
+							store,
+							createIssue: runbookCreateIssue,
+							isIssueOpen: runbookIsIssueOpen,
+						});
+					},
 				})
 			: undefined;
-	const founderEscalationConfigured = isDiscordSnowflake(
-		config.discordOwnerUserId,
-	);
-	if (alertHub && !founderEscalationConfigured) {
-		console.error(
-			"[Bridge] founder escalation route unreachable: DISCORD_OWNER_USER_ID is missing or invalid; workflow escalations will remain in Claw mailbox",
-		);
-		void metaAlertNotifier.notify({
-			reason: "alert_unreachable_config",
-			title: "Founder escalation route unreachable",
-			body: "DISCORD_OWNER_USER_ID is missing or invalid; workflow escalations will remain in Claw mailbox instead of entering Discord.",
-		});
-	}
 	if (alertHub) {
-		alertDutyHubHolder.current = alertHub;
 		console.log(
-			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, ordinary-route=claw-mailbox, escalation-route=channel, founder-auto-mention=workflow_engine_escalation-only, founder-id=${founderEscalationConfigured ? "resolved" : "UNRESOLVED"})`,
+			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, auto-repair=ON)`,
 		);
 	}
-	console.log(
-		`[Bridge] FLY-2076 alert duty token=${config.alertDutyToken ? "set" : "unset"} dispatcher=${alertDutyDispatcherBotUserId.current ?? "unresolved"} hub=${alertHub ? "set" : "unset"}`,
-	);
 
-	// FLY-368: a single alert sink shared by every Lead alert producer. When the Hub is on it
+	// FLY-368: a single alert sink used by BOTH watchdogs. When the Hub is on it
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
 	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
 		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
 
-	// FLY-927 (W1): wrap the raw sink with the welded-on D1 Router. An
+	// FLY-927 (W1): wrap the raw sink with the D1 Router. FLYWHEEL_ALERT_ROUTING
+	// unset ⇒ pure passthrough (the resolver is never even consulted). An
 	// issue-progress alert with a bound [FLY-XX] thread is delivered THERE via
 	// the issue-thread infra leg; any resolution/delivery failure fail-safes back
-	// to the raw channel sink — never silent, never recursive.
-	const routedAlertSinkCore = buildInfraAlertRouting({
+	// to the raw sink (ticket queue) — never silent, never recursive.
+	const routedAlertSink = buildInfraAlertRouting({
 		store,
 		projects,
-		alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 		globalBotToken: config.discordBotToken,
 		rawSink: alertSink,
-		ticketSink: {
-			alert: async (payload) => {
-				const receipt = leadInboxRuntime.enqueueInfraAlert(
-					INFRA_ALERT_OWNER_LEAD_ID,
-					payload,
-				);
-				return { queued: receipt.queued };
-			},
-		},
-		founderUserId: config.discordOwnerUserId,
 	});
-	const routedAlertSink: {
-		alert: (p: AlertPayload) => Promise<AlertResult>;
-	} = {
-		alert: async (payload) => {
-			const delivered = await routedAlertSinkCore.alert(payload);
-			if (shouldWakeQuotaDaemon(payload)) wakeQuotaDaemon();
-			return delivered;
-		},
-	};
 	routedAlertSinkHolder.current = routedAlertSink;
-	await reportFlagScanOwnerResolution(flagScanOwnerStatus, routedAlertSink);
-	workflowEngineAlertHolder.current = routedAlertSink;
-	paneLossNotifyHolder.current = async (
-		session,
-		classification,
-		terminalLifecycleId,
-	) => {
-		let lead: LeadConfig | undefined;
-		try {
-			lead = resolveLeadForIssue(
-				projects,
-				session.project_name,
-				store.getSessionLabels(session.execution_id),
-			).lead;
-		} catch {
-			// The raw alert fallback below still makes an unresolvable route visible.
-		}
-		const detail =
-			classification === "settlement"
-				? "tmux server 已换代且 runner body 已确认不存在；账面已转为 failed。"
-				: classification === "advisory_generation_superseded"
-					? "tmux server 已换代且 runner body 已确认不存在；parked 状态保持不变。"
-					: classification === "advisory_codex"
-						? "CommDB 的 tmux target 不存在，但 Codex daemon/body 仍可能存活；状态保持不变。"
-						: "tmux target 不存在不足以证明 runner body 已灭；状态保持不变。";
-		const content = [
-			`⚠️ **${session.issue_identifier ?? session.issue_id} — runner pane 失联**`,
-			detail,
-			`execution_id=${session.execution_id} adapter=${session.adapter_type ?? "legacy-claude-tmux"}`,
-			"未自动重派。",
-			`恢复提案（未执行）：close_runner {"execution_id":"${session.execution_id}","abandon":true,"reason":"pane_loss_recovery"}`,
-		].join("\n");
-		const thread = lead
-			? store.getChatThreadByIssue(session.issue_id, lead.chatChannel)
-			: undefined;
-		const direct = await emitIssueThreadInfraNotification(
-			{
-				executionId: session.execution_id,
-				issueId: session.issue_id,
-				issueIdentifier: session.issue_identifier,
-				projectName: session.project_name,
-				kind: "runner_pane_loss",
-				content,
-				thread,
-				botToken: lead?.botToken ?? config.discordBotToken,
-				onUndeliverable: (reason) =>
-					console.warn(
-						`[pane-loss] issue-thread notification failed for ${session.execution_id}: ${reason}`,
-					),
-			},
-			{ store },
-		);
-		if (direct.kind === "posted") return true;
-		const fallback = await (
-			routedAlertSinkHolder.current ?? leadAlertNotifier
-		).alert({
-			leadId: lead?.agentId ?? config.defaultLeadAgentId,
-			projectName: session.project_name,
-			eventId: `pane-loss:${session.execution_id}:${classification}:${terminalLifecycleId ?? "active"}:${randomUUID()}`,
-			eventType: "runner_pane_loss",
-			title: `Runner pane 失联 — ${session.issue_identifier ?? session.issue_id}`,
-			body: content,
-			severity: classification === "settlement" ? "severe" : "warning",
-			sessionKey: session.execution_id,
-		});
-		return !!(fallback.sent || fallback.queued);
-	};
-	void workflowEngineDispatcher
-		?.reconcileWorkflowEngineAlerts()
-		.catch((error) =>
-			console.warn(
-				`[workflow-engine] boot alert reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
-			),
-		);
+
 	// FLY-1204: now that the routed alert sink exists, back the late-bound
 	// orphan-parked alert closure the HeartbeatService reclaim patrol calls. It
 	// reuses the `three_stage_stuck` infra kind (owner-enriched, bound to the
@@ -10450,8 +7703,8 @@ export async function startBridge(
 
 	// ── FLY-1082: fleet sensors + server-loss coordinator wiring ─────────────
 	// Bridge → Lead instruction over the per-project CommDB inbox (the same
-	// transport CommDBLeadRuntime uses) — targeted server-loss casualty lists
-	// ride it. Fleet pressure alerts use the unified alert owner path instead.
+	// transport CommDBLeadRuntime uses) — the fleet notifications (load-shed /
+	// casualty lists) ride it. Leads are unique per agentId across projects.
 	const leadProjectByAgentId = new Map<string, string>();
 	for (const p of projects) {
 		for (const l of p.leads) leadProjectByAgentId.set(l.agentId, p.projectName);
@@ -10538,6 +7791,8 @@ export async function startBridge(
 		store,
 		alert: (p) => routedAlertSink.alert(p),
 		resolveTicket: alertHub ? (ck) => alertHub.resolve(ck) : undefined,
+		notifyLead: notifyLeadInstruction,
+		listLeadIds: () => [...leadProjectByAgentId.keys()],
 		probeBots: probeInfraBots,
 		scanZombies: scanZombiesWired,
 		// Codex R2 HIGH: a server-loss episode with unmigrated casualties must
@@ -10545,17 +7800,9 @@ export async function startBridge(
 		serverLossPending: () =>
 			serverLossHolder.current?.hasPendingMigrations() ?? false,
 	});
-	const canonicalTmuxSocketPath = canonicalDefaultTmuxSocketPath();
-	const tmuxRescueClient = createTmuxRescueClient({
-		cliPath: join(homedir(), ".flywheel", "bin", "tmux-server-rescue"),
-		socketPath: canonicalTmuxSocketPath,
-	});
 	serverLossHolder.current = new ServerLossCoordinator({
 		store,
 		probeServer: () => probeTmuxServer(),
-		inspectSocket: () => tmuxRescueClient.inspect(),
-		recoverSocket: () => tmuxRescueClient.recover(),
-		normalizedSocketPath: canonicalTmuxSocketPath,
 		targetGone: async (session) => {
 			const lookup = lookupTmuxTarget(
 				session.execution_id,
@@ -10612,24 +7859,10 @@ export async function startBridge(
 		},
 		notifyLead: notifyLeadInstruction,
 		alert: (p) => routedAlertSink.alert(p),
-		resolveHoldAlert: alertHub
-			? async (incidentId) => {
-					for (const eventType of ["tmux_hold", "tmux_split_brain"] as const) {
-						await alertHub.resolve(
-							correlationKeyFor({
-								projectName: FLEET_ALERT_PROJECT,
-								leadId: "tmux-server",
-								eventType,
-								sessionKey: incidentId,
-							}),
-						);
-					}
-				}
-			: undefined,
 		currentWatermark: () => fleetSensorsHolder.current?.lastWatermark ?? null,
 	});
 	console.log(
-		"[Bridge] FLY-1082 fleet sensors wired (swap/bot/zombie on lead-reconcile tick; tmux server-loss as heartbeat pre-reaper phase)",
+		"[Bridge] FLY-1082 fleet sensors wired (swap/bot/zombie on watchdog tick; tmux server-loss as heartbeat pre-reaper phase)",
 	);
 
 	// FLY-1082 (Task 2.4): boot self-check leg — a latched `running` marker
@@ -10637,22 +7870,15 @@ export async function startBridge(
 	// wrapper page already fired Bridge-independently with its OWN dedup id;
 	// both legs share the episode signature for correlation).
 	if (prevExitMarker?.state === "running") {
-		const loopStall =
-			loopGuardLogPaths(process.env)
-				.map((path) => findLoopStallForExit(path, prevExitMarker, bridgeBootTs))
-				.find((record) => record !== null) ?? null;
-		const alertContent = buildAbnormalExitAlertContent(
-			prevExitMarker,
-			loopStall,
-		);
+		const episode = abnormalExitEpisodeSignature(prevExitMarker);
 		void routedAlertSink
 			.alert({
 				leadId: "bridge",
 				projectName: FLEET_ALERT_PROJECT,
 				eventId: abnormalExitTicketEventId(prevExitMarker),
 				eventType: "bridge_abnormal_exit",
-				title: alertContent.title,
-				body: alertContent.body,
+				title: "Bridge 非正常退出 — 复活对账中",
+				body: `上一代 Bridge (PID ${prevExitMarker.pid}, boot ${prevExitMarker.bootTs}) 没有 clean shutdown 就退出了（episode ${episode}；wrapper 直发 page 同一 episode）。launchd 已复活本进程；boot 对账完成后本工单安静 resolve。`,
 				severity: "severe",
 			})
 			.catch((err: Error) =>
@@ -10697,154 +7923,298 @@ export async function startBridge(
 		});
 	}
 
-	if (quotaBridgeMode.runRunnerQuotaScan) {
-		const quotaScan = makeRunnerQuotaScan({
+	// FLY-92: Runner idle watchdog — detects stuck Runners via tmux capture-pane.
+	// FLY-195: also drives the stuck-runner detector from the SAME 30s poll
+	// (no new periodic timer, FLY-169) using the SAME per-session capture.
+	// Created after leadAlertNotifier because the detector's Q7 fallback
+	// (runner_stuck_unhandled) pages Annie through it.
+	const stuckDetector = buildStuckRunnerDetector({
+		store,
+		projects,
+		runtimeRegistry: registry,
+		chatThreadsEnabled: config.chatThreadsEnabled,
+		// FLY-368: route the Q7 runner_stuck_unhandled alert through the same sink
+		// as Lead alerts so it lands in the unified channel + gets a thread + the
+		// conservative auto-repair attempt (when enabled). Falls back to the raw
+		// notifier when the Hub is off (byte-compat).
+		notifier: routedAlertSink,
+		// FLY-818 M3 (default-ON, kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0): the
+		// founder page for a genuinely-stuck runner posts an @founder message into
+		// that runner's OWN [FLY-XX] issue thread (Annie's design), using the owning
+		// Lead's bot
+		// (lead.botToken) with this as the fallback. No owner id ⇒ page disabled.
+		discordBotToken: config.discordBotToken,
+		discordOwnerUserId: config.discordOwnerUserId,
+	});
+	// FLY-253 (Codex R2 #4): late-bind the detector into the holder the
+	// remanage router already captured — re_arm can now reach the in-memory
+	// episode map. Stays null when detection is disabled.
+	stuckDetectorHolder.current = stuckDetector;
+	// FLY-628 band-aid: stretch the poll cadence (was a 30s hardcode) to ~1h so
+	// parked / long-running Runners stop tripping false idle alerts that wake the
+	// Lead and burn tokens. Env-tunable; the same poll still drives the FLY-195
+	// stuck detector, so genuine-stuck detection survives (FLY-369), just at ~1h.
+	// waitingThresholdCycles stays 2 (Annie's call): a "waiting" Runner is only
+	// alerted after two consecutive ~1h polls (~2h), which is the accepted trade
+	// — quieter alerts beat faster waiting-state detection. A smarter recognizer
+	// (parked-aware / cheap probe / backoff) is the FLY-626 follow-up.
+	const idlePollMs = idleWatchdogPollMs();
+	const idleWatchdog = new RunnerIdleWatchdog({
+		pollIntervalMs: idlePollMs,
+		waitingThresholdCycles: 2,
+		projects,
+		store,
+		runtimeRegistry: registry,
+		captureSessionFn: defaultCaptureSession,
+		chatThreadsEnabled: config.chatThreadsEnabled,
+		stuckDetector,
+		// FLY-626: shared quiet-signal probe (defined above with HeartbeatService).
+		quietSignalsProbe,
+		// FLY-623 (Codex R2 HIGH-3): suppress idle/stuck signals for a Runner that
+		// was re-adopted after a Bridge restart (alive-but-detached) — its idle/stuck
+		// appearance is an artifact of monitoring loss, not a real stall. Reads the
+		// live HeartbeatService set via the holder; null/kill-switch → no suppression.
+		isReconnecting: (execId) =>
+			reconnectHolder.current?.isReconnecting(execId) ?? false,
+		// FLY-696 M1/③: runner-side quota scan, piggybacked on this poll's capture
+		// (no new timer). Gated on the SAME switch (accountSwitchRepair exists iff
+		// account pool provisioned; FLY-1243) — absent ⇒ undefined ⇒ byte-compat.
+		// Routes a real runner cap through the shared alert sink (Hub threading +
+		// AutoRepairBot enqueue), with the §3.3 transient-529 short-circuit inside.
+		runnerQuotaScan: accountSwitchRepair
+			? (() => {
+					const quotaScan = makeRunnerQuotaScan({
+						projects,
+						alert: (p) => routedAlertSink.alert(p),
+						isTransient: isTransientThrottlePane,
+						now: () => Date.now(),
+					});
+					// FLY-871 R2/C8: compose the runner AUTH scan into the SAME seam
+					// (same per-session capture, no new timer). Layer-2 AI fallback is
+					// default-ON with kill-switch FLYWHEEL_DETECTION_AI_CLASSIFY=0; it
+					// only fires for unrecognized-anomalous panes (healthy/pattern panes
+					// never spend a model call).
+					const authScan = makeRunnerAuthScan({
+						alert: (p) => routedAlertSink.alert(p),
+						resolveLeadId: defaultResolveLeadId(projects),
+						// FLY-871 R2/C7: populate the account-state ledger — a confirmed
+						// runner logout marks the active account's live auth as stale.
+						recordAuthHealth: (name) =>
+							ledgerRecordAuthHealth(name, {
+								lastFreshness: "stale",
+								lastVerifiedAt: new Date().toISOString(),
+								reason: "runner login_expired",
+							}),
+						aiClassify:
+							process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
+								? undefined
+								: makeSubscriptionDetectionClassifier({}),
+					});
+					return async (session: Session, pane: string) => {
+						await quotaScan(session, pane);
+						await authScan(session, pane);
+					};
+				})()
+			: undefined,
+	});
+	idleWatchdog.start();
+	console.log(
+		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
+	);
+
+	// FLY-818: opt-in auto-continue arming worker (default OFF —
+	// FLYWHEEL_RUNNER_AUTOCONTINUE=1). A SEPARATE poller from RunnerIdleWatchdog: it
+	// only observes a spawned claude-tmux runner until its idle input box appears,
+	// then sends `/loop <goal>` ONCE so the runner self-continues toward its phase
+	// goal instead of idling after a turn (the FLY-818 root cause). It never touches
+	// the stuck-detector / idle-notification path. Reuses the audited nudge helpers
+	// (capture / tmux target / pending-gate probe / literal send-keys).
+	if (process.env.FLYWHEEL_RUNNER_AUTOCONTINUE === "1") {
+		const armWindowEnv = Number(
+			process.env.FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS,
+		);
+		const autoContinueArmer = new AutoContinueArmer({
+			pollIntervalMs: 20_000,
 			projects,
-			alert: (payload) => routedAlertSink.alert(payload),
-			isTransient: isTransientThrottlePane,
-			now: () => Date.now(),
-		});
-		const authScan = makeRunnerAuthScan({
-			alert: (payload) => routedAlertSink.alert(payload),
-			resolveLeadId: defaultResolveLeadId(projects),
-			recordAuthHealth: (name) =>
-				ledgerRecordAuthHealth(name, {
-					lastFreshness: "stale",
-					lastVerifiedAt: new Date().toISOString(),
-					reason: "runner login_expired",
-				}),
-			aiClassify: makeSubscriptionDetectionClassifier({}),
-		});
-		runnerQuotaScanPassHolder.current = makeRunnerQuotaScanPass({
 			store,
-			captureSession: defaultCaptureSession,
-			intervalMs: DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
-			scan: async (session, pane) => {
-				await quotaScan(session, pane);
-				await authScan(session, pane);
-			},
-			log: (message) => console.warn(message),
+			captureSessionFn: defaultCaptureSession,
+			getTmuxTarget: getTmuxTargetFromCommDb,
+			sendKeys: sendKeysToWindow,
+			// FLY-818 (Codex code review R1 #2): BLOCKING-only gate probe — a
+			// non-blocking `flywheel-comm ask` must NOT stop the runner from being
+			// armed to self-continue (only a checkpointed gate parks it).
+			hasPendingGate: hasPendingBlockingGateFromCommDb,
+			...(Number.isFinite(armWindowEnv) && armWindowEnv > 0
+				? { armWindowMs: armWindowEnv }
+				: {}),
 		});
+		autoContinueArmer.start();
+		console.log(
+			"[Bridge] AutoContinueArmer started (FLY-818 /loop self-continue arming, opt-in)",
+		);
 	}
 
-	const leadIdentityFindingPayload = (
-		finding: LeadIdentityFinding,
-	): AlertPayload => {
-		const processEvidence = finding.processes.map((row) => ({
-			pid: row.pid,
-			lstart: row.lstart,
-		}));
-		const episode = createHash("sha256")
-			.update(
-				JSON.stringify({
-					kind: finding.kind,
-					projectName: finding.projectName,
-					leadId: finding.leadId,
-					processEvidence,
-				}),
-			)
-			.digest("hex")
-			.slice(0, 20);
-		const order = finding.ambiguousOrder
-			? "process order is ambiguous"
-			: finding.laterPid
-				? `later process PID ${finding.laterPid}`
-				: "no later process identified";
-		return {
-			leadId: finding.leadId,
-			projectName: finding.projectName,
-			eventId: `lead-identity:${episode}`,
-			eventType: finding.kind,
-			title:
-				finding.kind === "lead_dual_active_sensor_degraded"
-					? "Lead identity process sensor degraded"
-					: finding.kind === "lead_backend_drift"
-						? "Claude intruder under Codex Lead identity"
-						: "Two live processes share one Lead identity",
-			body: `${finding.projectName}/${finding.leadId}: ${order}; observed PIDs [${finding.processes.map((row) => row.pid).join(", ") || "none"}]${finding.carrierDisposition ? `; carrier=${finding.carrierDisposition}` : ""}.`,
-			severity: "severe",
-		};
-	};
-	const leadIdentityMonitor = new LeadDualActiveMonitor({
-		enabled: true,
-		notify: async (finding) => {
-			const payload = leadIdentityFindingPayload(finding);
-			const leadKey = `${finding.projectName}-${finding.leadId}`;
-			const sourceFingerprint =
-				finding.kind === "lead_backend_drift"
-					? `lead_backend_drift:claude_intruder:${leadKey}`
-					: finding.kind === "lead_dual_active_sensor_degraded"
-						? "lead_dual_active_sensor_degraded:bridge:ps"
-						: `lead_dual_active:${leadKey}`;
+	const leadWatchdog = new LeadWatchdog({
+		pollIntervalMs: 30_000,
+		paneHashStuckCycles: 2,
+		paneHashAlertCycles: 3,
+		cooldownMs: 30 * 60_000,
+		// FLY-224 Phase 6b legacy baseline: exclude Codex-backed projects (no
+		// tmux pane) from the pane-text watchdog. BYTE-COMPAT: a project with
+		// no roles.lead config → claude-code → identical list (no-op).
+		projects: paneWatchdogProjects(
+			projects,
+			(p) => loadProjectLeadRoles(p.projectRoot),
+			process.env,
+		),
+		// FLY-247: per-lead dynamic membership, re-resolved EVERY tick from the
+		// current config snapshot + the poller's evidence map (one decision
+		// function shared with the Dashboard, R8#4). No/stale evidence for a
+		// codex-desired lead → desired-config exclusion (FLY-224 semantics);
+		// claude leads always watched; CONFLICT (live Claude under codex
+		// desire) keeps watching (漏报>误报). Legacy config.yaml stays as the
+		// fallback desired source for the dual-source window.
+		// NOTE (code-review H9): no project-level pre-filter here — the legacy
+		// config.yaml/env desired source feeds the PER-LEAD effectiveBackend
+		// inside filterPaneWatchedLeads. A project-level filter would remove an
+		// explicit-Claude lead living in a legacy-codex project before the
+		// shared decision function ever saw it.
+		projectsProvider: () =>
+			filterPaneWatchedLeads(
+				fleetConfigProvider.snapshot().projects,
+				fleetLegacyBackendOf,
+				fleetPoller.snapshot(),
+			),
+		store,
+		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
+		// when enabled; otherwise this is the raw notifier — byte-compat).
+		notifier: (payload) => routedAlertSink.alert(payload),
+		locateWindowFn: (projectName, leadId) =>
+			locateLeadWindow(projectName, leadId),
+		captureFn: leadPaneCaptureFn,
+		claimsReader,
+		blockedMarkerReader,
+		// FLY-368: real-time recovery → resolve the matching alert thread (an
+		// optimization; the reconcile pass below is the restart-safe truth source).
+		onRecovery: alertHub
+			? (projectName, leadId, recoveredKind) => {
+					void alertHub.onLeadRecovery(projectName, leadId, recoveredKind);
+				}
+			: undefined,
+		// FLY-368: piggyback the 30s poll to run the alert-thread reconcile pass
+		// (no new timer). FLY-863: the SAME tick also re-scans for codex-holds that
+		// crossed the stuck-duration threshold since the last pass. FLY-696: the
+		// SAME tick also drives the account-switch watchdog (due pending switches
+		// M1-only / bot fallback M2), posting results to the unified Alerts
+		// channel. Every sub-task is independently try/caught so one failing piece
+		// never wedges the others or the poll loop — no new timer for any of them.
+		onPollComplete: async () => {
+			// FLY-1082: fleet sensors ride the SAME piggybacked tick (zero new
+			// timers) — memory pressure, infra-bot probes, throttled zombie scan.
+			// Runs BEFORE the Hub reconcile so a fresh sensor verdict (e.g. the
+			// watermark clearing) is visible to the same tick's recovery pass.
 			try {
-				ensureLeaseEpisodeMaterialized({
-					sourceFingerprint,
-					kind: finding.kind,
-					payload: { ...payload },
+				await fleetSensorsHolder.current?.tick();
+			} catch (err) {
+				console.warn(
+					`[Bridge] fleet-sensors tick failed: ${(err as Error).message}`,
+				);
+			}
+			if (alertHub) {
+				try {
+					await alertHub.reconcile();
+				} catch (err) {
+					console.warn(
+						`[Bridge] alertHub.reconcile failed: ${(err as Error).message}`,
+					);
+				}
+			}
+			try {
+				await autoQaCoordinatorHolder.current?.reconcileStuckCodexHolds();
+			} catch (err) {
+				console.warn(
+					`[auto-qa] reconcileStuckCodexHolds (poll) failed: ${(err as Error).message}`,
+				);
+			}
+			// FLY-1099 §6: the 30min ledger-backed nudge layer, same cadence.
+			try {
+				await autoQaCoordinatorHolder.current?.reconcileCodexHoldNudges();
+			} catch (err) {
+				console.warn(
+					`[auto-qa] reconcileCodexHoldNudges (poll) failed: ${(err as Error).message}`,
+				);
+			}
+			if (accountSwitchRepair && unifiedAlertChannelId) {
+				try {
+					await accountSwitchWatchdogTick({
+						now: () => Date.now(),
+						executeSwitch: (pending) =>
+							accountSwitchRepair.executeSwitch(pending),
+						// FLY-929 A4+A5: shared switch-result routing (owner-bot
+						// assignment on needs_human + notify digest on real success);
+						// falls back to the legacy plain post if the shared helper was
+						// somehow not built (defensive — same gate builds both).
+						post:
+							postSwitchResult ??
+							((detail) =>
+								alertDiscordOps.postToThread(unifiedAlertChannelId, detail)),
+						// FLY-871 R3/W5: a deadline-fired switch → sweep incident-window
+						// login-stuck sessions (same sweep the /api/account-switch route
+						// triggers). Undefined rescueRuntime ⇒ no sweep (byte-compat).
+						onSwitchSuccess: rescueRuntime
+							? async () => {
+									await rescueRuntime?.postSwitchRescueSweep();
+								}
+							: undefined,
+					});
+				} catch (err) {
+					console.error(
+						`[Bridge] FLY-696 account-switch watchdog tick failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+			}
+			// FLY-929 B2: notify-digest expectation check — the daily token
+			// report must leave a delivery receipt by 01:00 (report tz) or ONE
+			// deduped notify_digest_failed alert fires per expected day. The tick
+			// itself is固化 default-on (FLY-1243; the check runs every tick;
+			// "inactive", zero side effects). Same piggybacked poll — no timer.
+			try {
+				await notifyDigestExpectTick({
+					now: new Date(),
+					tz: process.env.TOKEN_USAGE_TIMEZONE ?? "America/Los_Angeles",
+					receiptsPath: defaultReceiptsPath(),
+					alert: (p) => leadAlertNotifier.alert(p),
 				});
-			} catch (error) {
+			} catch (err) {
 				console.warn(
-					`[Bridge] lead identity episode store degraded: ${(error as Error).message}`,
-				);
-				await routedAlertSink.alert(payload);
-			}
-		},
-		onRecovery: async (finding) => {
-			const leadKey = `${finding.projectName}-${finding.leadId}`;
-			const sourceFingerprint =
-				finding.kind === "lead_backend_drift"
-					? `lead_backend_drift:claude_intruder:${leadKey}`
-					: finding.kind === "lead_dual_active_sensor_degraded"
-						? "lead_dual_active_sensor_degraded:bridge:ps"
-						: `lead_dual_active:${leadKey}`;
-			try {
-				recoverLeaseEpisode({ sourceFingerprint });
-			} catch (error) {
-				console.warn(
-					`[Bridge] lead identity episode recovery degraded: ${(error as Error).message}`,
+					`[Bridge] FLY-929 notify-digest expect tick failed: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
 				);
 			}
 		},
+		// FLY-193: default ON now that the idle-pane recognizer is validated
+		// against committed real Lead pane fixtures (see
+		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is
+		// fail-open (only suppresses a high-confidence alive-idle pane; every
+		// real freeze — resume/compact menu, frozen-mid-work — still alerts).
+		// Escape hatch: set FLYWHEEL_PANE_IDLE_SUPPRESS=0 to force suppression OFF
+		// and restore the legacy always-alert-on-stuck-pane behavior.
+		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS !== "0",
+		// FLY-1048 (A4): multi-frame overlay. FLY-1243: FLYWHEEL_PANE_MULTIFRAME
+		// retired (固化 default-on) — the overlay is always on in production.
+		multiFrame: true,
+		// FLY-1048 (A5): fail-suspicious → quiet owner-Lead report (guardrail
+		// lead_event; never an alert, never founder-facing). Shared deliverer +
+		// owner resolver with the focused-frame unclear path.
+		onSuspicious: deliverSuspicious,
 	});
-	const leaseAuditOutbox = new LeaseAuditOutbox({
-		dbPath:
-			process.env.FLYWHEEL_LEAD_LEASE_DB ??
-			join(homedir(), ".flywheel", "lead-lease.db"),
-		queueDir:
-			process.env.FLYWHEEL_ALERT_QUEUE_DIR ??
-			join(homedir(), ".flywheel", "alert-queue"),
-		episodeDbPath:
-			process.env.FLYWHEEL_LEAD_EPISODE_DB ??
-			join(homedir(), ".flywheel", "state", "lease-episodes.db"),
-	});
-	const leadIdentityTargets = (): LeadScanTarget[] => {
-		const fleet = new Map(
-			(fleetPoller.snapshot()?.leads ?? []).map((lead) => [lead.key, lead]),
-		);
-		return fleetConfigProvider.snapshot().projects.flatMap((project) =>
-			project.leads.map((lead) => {
-				const desiredBackend = effectiveLeadBackend(
-					lead.backend,
-					fleetLegacyBackendOf(project),
-				).backend;
-				const evidence = fleet.get(`${project.projectName}-${lead.agentId}`);
-				return {
-					projectName: project.projectName,
-					leadId: lead.agentId,
-					desiredBackend,
-					...(evidence ? { carrierDisposition: evidence.presentation } : {}),
-				};
-			}),
-		);
-	};
-	leadReconcilePassHolder.current = () =>
-		runLeadReconcilePass({
-			reconcileLeaseEpisodes: () => reconcileLeaseEpisodeQueue(),
-			scanLeadIdentities: () => leadIdentityMonitor.tick(leadIdentityTargets()),
-			materializeLeaseAudit: () => leaseAuditOutbox.materialize(),
-			tickFleetSensors: () => fleetSensorsHolder.current?.tick(),
-			reconcileAlerts: () => alertHub?.reconcile(),
-		});
+	leadWatchdog.start();
+	console.log(
+		"[Bridge] LeadWatchdog started (30s poll, pattern-first alert + 3-cycle pane-hash)",
+	);
 
 	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)
 	// or prior Bridge runs do not rot. Queue files only appear when Discord POST
@@ -10855,7 +8225,46 @@ export async function startBridge(
 	// a drain stalls past the 60s interval (slow Discord), an overlapping drain
 	// would re-POST the same still-present queue file → duplicate alert, which
 	// breaks the "one alert per 10-min bucket" invariant. Skip when busy.
-	// FLY-182 §4.5: self-monitoring thresholds (env-tunable). The loop guard must
+	// FLY-182 §4.5 / §3.1.4: connect Track A's mailbox-overflow markers to
+	// alerting. A marker means a Lead's unread inbox crossed the threshold
+	// (not consuming) — surface it via the Discord-independent channel.
+	const checkMailboxOverflowMarkers = async (
+		meta: MetaAlertNotifier,
+	): Promise<void> => {
+		try {
+			const { getStateDir } = await import("flywheel-agent-team-transport");
+			const { readdir, readFile } = await import("node:fs/promises");
+			const { join: pjoin } = await import("node:path");
+			const dir = pjoin(getStateDir(), "mailbox-overflow");
+			let files: string[];
+			try {
+				files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
+			} catch {
+				return; // dir absent → nothing to report
+			}
+			if (files.length === 0) return;
+			const leads: string[] = [];
+			for (const f of files) {
+				try {
+					const m = JSON.parse(await readFile(pjoin(dir, f), "utf-8"));
+					leads.push(`${m.team}/${m.recipient}(unread=${m.unread})`);
+				} catch {
+					/* skip unreadable marker */
+				}
+			}
+			await meta.notify({
+				reason: "mailbox_overflow",
+				title: "Lead not consuming mailbox",
+				body: `Unread mailbox overflow: ${leads.join(", ") || files.join(", ")}. A Lead may be stuck or not consuming its inbox.`,
+			});
+		} catch (err) {
+			console.warn(
+				`[Bridge] mailbox-overflow check failed: ${(err as Error).message}`,
+			);
+		}
+	};
+
+	// FLY-182 §4.5: self-monitoring thresholds (env-tunable). The watchdog must
 	// not go silent — meta-alerts ride the EXISTING 60s drain timer (no new
 	// periodic load, FLY-129). MetaAlertNotifier debounces per reason (10min),
 	// so repeated cycles collapse to one alert.
@@ -10876,66 +8285,61 @@ export async function startBridge(
 		leadAlertDraining = true;
 		leadAlertNotifier
 			.drainQueue()
-			.then(async (drainResult) => {
-				const { sent, remaining, deadLettered, staleSuppressed, delivered } =
-					drainResult;
-				if (
-					sent > 0 ||
-					remaining > 0 ||
-					deadLettered > 0 ||
-					staleSuppressed > 0
-				) {
+			.then(async ({ sent, remaining, deadLettered, delivered }) => {
+				if (sent > 0 || remaining > 0 || deadLettered > 0) {
 					console.log(
-						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered} staleSuppressed=${staleSuppressed}`,
+						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,
 					);
 				}
 				// FLY-927 (Codex R1 HIGH): a drained root must still get its per-error
 				// thread + ticket lifecycle — otherwise every over-cap (rate-limited /
 				// transient-retry) alert silently bypasses the Hub. Best-effort each.
 				if (alertHub) {
-					await attachDeliveredAlertLifecycles(delivered, alertHub, (message) =>
-						console.warn(`[Bridge] ${message}`),
-					);
+					for (const d of delivered) {
+						try {
+							await alertHub.attachThreadForDelivered(
+								d.payload,
+								d.channelId,
+								d.messageId,
+							);
+						} catch (err) {
+							console.warn(
+								`[Bridge] drained-thread attach failed: ${(err as Error).message}`,
+							);
+						}
+					}
 				}
 				// Dead-letters happened → surface (Discord-independent).
-				if (
-					shouldReportDeadLetteredDrain({
-						deadLettered,
-						staleSuppressed,
-					})
-				) {
+				if (deadLettered > 0) {
 					await metaAlertNotifier.notify({
 						reason: "alert_dead_lettered",
 						title: "LeadAlert dead-lettered alerts",
 						body: `${deadLettered} alert(s) were dead-lettered during drain (remaining=${remaining}). Check ~/.flywheel/alert-deadletter and the Discord alert config.`,
 					});
 				}
-				// OFF is an intentional pause, not evidence that the Discord path is
-				// stuck or overflowing. The queue remains durable while delivery is paused.
-				if (!storeAlertSystemEnabled(flagStore)) {
-					drainStuckCycles = 0;
-				} else {
-					if (sent === 0 && remaining > 0) {
-						drainStuckCycles++;
-						if (drainStuckCycles >= metaAlertStuckCycles) {
-							await metaAlertNotifier.notify({
-								reason: "drain_stuck",
-								title: "LeadAlert drainQueue stuck",
-								body: `drainQueue has made no progress for ${drainStuckCycles} cycles (remaining=${remaining}). The Discord alert path is likely down or misconfigured.`,
-							});
-						}
-					} else {
-						drainStuckCycles = 0;
-					}
-					// Queue over cap.
-					if (remaining > alertQueueOverflow) {
+				// No progress while items remain → drain is stuck.
+				if (sent === 0 && remaining > 0) {
+					drainStuckCycles++;
+					if (drainStuckCycles >= metaAlertStuckCycles) {
 						await metaAlertNotifier.notify({
-							reason: "queue_overflow",
-							title: "LeadAlert queue overflow",
-							body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
+							reason: "drain_stuck",
+							title: "LeadAlert drainQueue stuck",
+							body: `drainQueue has made no progress for ${drainStuckCycles} cycles (remaining=${remaining}). The Discord alert path is likely down or misconfigured.`,
 						});
 					}
+				} else {
+					drainStuckCycles = 0;
 				}
+				// Queue over cap.
+				if (remaining > alertQueueOverflow) {
+					await metaAlertNotifier.notify({
+						reason: "queue_overflow",
+						title: "LeadAlert queue overflow",
+						body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
+					});
+				}
+				// Track A mailbox-overflow markers → a Lead is not consuming its inbox.
+				await checkMailboxOverflowMarkers(metaAlertNotifier);
 			})
 			.catch((err: Error) => {
 				console.warn(`[Bridge] LeadAlert drain failed: ${err.message}`);
@@ -10958,11 +8362,9 @@ export async function startBridge(
 		// finds this marker still `running` knows the previous Bridge died dirty.
 		writeCleanMarker(bridgeMarker);
 		workflowSourceProjector.stop();
-		workflowEngineDispatcher?.stop();
-		workflowDocsMaterializer.stop();
 		heartbeatService?.stop();
+		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();
-		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap
 		// every detached Claude reviewer child — a clean restart must not leave
 		// orphaned reviewers racing the new Bridge's boot redrive.
@@ -10974,10 +8376,10 @@ export async function startBridge(
 			);
 		}
 		await roundtableThreadManager?.stop();
-		bridgeLoopGuard.stop();
+		bridgeWatchdog.stop();
+		idleWatchdog.stop();
+		leadWatchdog.stop();
 		clearInterval(leadAlertDrainTimer);
-		clearInterval(doaBackoffMaintenanceTimer);
-		clearInterval(designReviewManifestTimer);
 		if (chromeReaperTimer) clearInterval(chromeReaperTimer); // FLY-766
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
@@ -11001,13 +8403,11 @@ export async function startBridge(
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
 		await doneThreadReconcile.stop();
-		leadInboxRuntime.close();
 		await registry.shutdownAll();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
-		await terminalCommDbSync.close(1_000);
 		store.close();
 	};
 

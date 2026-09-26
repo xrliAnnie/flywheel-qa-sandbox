@@ -1,8 +1,3 @@
-import {
-	getModelConfigSnapshot,
-	type ModelConfigSnapshot,
-} from "./model-config.js";
-
 /**
  * FLY-123: shared pure label → runner-vendor parser.
  *
@@ -72,10 +67,7 @@ function resolveAgentFromLabels(
 	return undefined;
 }
 
-function resolveModelFromLabels(
-	labels: string[],
-	snapshot: ModelConfigSnapshot,
-): string | undefined {
+function resolveModelFromLabels(labels: string[]): string | undefined {
 	const codexModelLabel = labels.find((label) => isCodexModelLabel(label));
 	if (codexModelLabel) return codexModelLabel;
 
@@ -92,22 +84,22 @@ function resolveModelFromLabels(
 		return "gemini-3-pro-preview";
 	}
 
-	// FLY-1496: aliases are data, not code. Prefer explicit 1M labels when an
-	// issue also carries the bare family alias, then resolve every configured
-	// Claude spelling to the canonical id in this decision's immutable snapshot.
-	const configuredLabels = [
-		...labels.filter((label) => label.includes("1m")),
-		...labels.filter((label) => !label.includes("1m")),
-	];
-	for (const label of configuredLabels) {
-		const entry = snapshot.getModelRegistryEntry(label);
-		if (
-			entry?.runtimeVendor === "claude" &&
-			entry.surfaces.includes("runner")
-		) {
-			return entry.id;
-		}
-	}
+	// FLY-751: explicit 1M-context opt-in labels — checked BEFORE the bare
+	// aliases so an issue carrying both `opus` and `opus-1m` resolves to 1M
+	// (the more specific ask wins). `includes` is exact-match, so there is no
+	// substring swallowing either way; the ordering is for precedence only.
+	if (labels.includes("opus-1m")) return "claude-opus-4-8[1m]";
+	if (labels.includes("fable-1m")) return "claude-fable-5[1m]";
+
+	// FLY-728: per-issue model routing. `fable` resolves to the canonical
+	// explicit id `claude-fable-5` (the exact string fleet-console, token
+	// pricing/report, and the claude-tmux `--model` flag all use). It infers the
+	// `claude` runner via inferRunnerFromModel because the id starts with
+	// "claude". opus/sonnet/haiku stay bare aliases (already CLI-accepted).
+	if (labels.includes("fable")) return "claude-fable-5";
+	if (labels.includes("opus")) return "opus";
+	if (labels.includes("sonnet")) return "sonnet";
+	if (labels.includes("haiku")) return "haiku";
 
 	return undefined;
 }
@@ -141,11 +133,10 @@ function inferRunnerFromModel(
  */
 export function parseRunnerLabels(
 	labels: readonly string[] | undefined,
-	snapshot: ModelConfigSnapshot = getModelConfigSnapshot(),
 ): RunnerLabelSelection {
 	const normalized = (labels ?? []).map((label) => label.toLowerCase());
 	const agentFromLabels = resolveAgentFromLabels(normalized);
-	const modelFromLabels = resolveModelFromLabels(normalized, snapshot);
+	const modelFromLabels = resolveModelFromLabels(normalized);
 
 	const runnerType =
 		agentFromLabels ?? inferRunnerFromModel(modelFromLabels) ?? undefined;

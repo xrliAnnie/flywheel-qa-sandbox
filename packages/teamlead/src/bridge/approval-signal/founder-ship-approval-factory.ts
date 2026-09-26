@@ -4,6 +4,8 @@
  * Produces the `tryFounderShipApproval` callback the deliverer's ship branch
  * calls, binding the composition-root deps (canonical founder id, StateStore,
  * onResponseWritten) and gating on:
+ *   - the default-ON kill-switch `FLYWHEEL_FOUNDER_AUTO_APPROVE` (`=0` disables;
+ *     read per-call so ops can flip without a Bridge restart);
  *   - a per-project denylist (turn one project off without stopping the fleet);
  *   - a resolvable canonical founder id (fail-closed when missing / split).
  * Any gate failing → the callback returns null → the deliverer falls back to the
@@ -42,7 +44,6 @@ export interface FounderShipApprovalFactoryConfig {
 	discordOwnerUserId?: string;
 	founderConsentUserId?: string;
 	store: ShipApprovalHandlerDeps["store"];
-	gateAuthorityView?: ShipApprovalHandlerDeps["gateAuthorityView"];
 	onResponseWritten?: ShipApprovalHandlerDeps["onResponseWritten"];
 	/** Projects for which auto-approve is disabled (per-project kill). */
 	denylistProjects?: ReadonlySet<string>;
@@ -82,8 +83,11 @@ export interface FounderShipApprovalCallbackArgs {
 	db: GateResponseDb;
 	/** FLY-1041 Chunk 7: deliverer-verified reply to THIS gate's ship card. */
 	replyToCard?: boolean;
-	founderMessage?: ShipApprovalHandlerArgs["founderMessage"];
-	recordDecisionClassification?: ShipApprovalHandlerArgs["recordDecisionClassification"];
+}
+
+/** Default ON — only an explicit `=0` disables (kill-switch). */
+function autoApproveEnabled(): boolean {
+	return process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE !== "0";
 }
 
 export function makeFounderShipApprovalCallback(
@@ -93,6 +97,7 @@ export function makeFounderShipApprovalCallback(
 ) => Promise<ShipApprovalOutcome | null> {
 	const handler = config.handlerImpl ?? defaultHandler;
 	return async (args) => {
+		if (!autoApproveEnabled()) return null; // kill-switch
 		if (config.denylistProjects?.has(args.ctx.projectName)) return null;
 		const canonicalFounderId = deriveCanonicalFounderId(
 			config.discordOwnerUserId,
@@ -136,13 +141,10 @@ export function makeFounderShipApprovalCallback(
 					projectRoot: config.projectRootFor?.(args.ctx.projectName),
 				},
 				replyToCard: args.replyToCard,
-				founderMessage: args.founderMessage,
-				recordDecisionClassification: args.recordDecisionClassification,
 			},
 			{
 				canonicalFounderId,
 				store: config.store,
-				gateAuthorityView: config.gateAuthorityView,
 				db: args.db,
 				onResponseWritten: config.onResponseWritten,
 				evaluateTextImpl: config.evaluateTextImpl,

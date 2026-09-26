@@ -12,8 +12,7 @@
 import type { EventEnvelope } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CodexReviewHoldCoordinator } from "../bridge/codex-review-hold.js";
-import type { ReviewAuthorizationAlerts } from "../bridge/review-authorization-alerts.js";
+import { AutoQaCoordinator } from "../bridge/auto-qa-coordinator.js";
 import type { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectEventSink } from "../DirectEventSink.js";
@@ -63,100 +62,6 @@ function makeEnvelope(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
 	};
 }
 
-describe("DirectEventSink — FLY-1609 D-arm attribution", () => {
-	it("persists bare-ponytail and effective on:arm together", async () => {
-		const store = await StateStore.create(":memory:");
-		try {
-			const sink = new DirectEventSink(store, makeConfig(), testProjects);
-			await sink.emitStarted(
-				makeEnvelope({
-					skillFrameworkMode: "bare-ponytail",
-					skillFrameworkModeVia: "hash",
-					ponytailCondition: "on:arm",
-				}),
-			);
-			await sink.flush();
-			const row = store.getSession("exec-1")!;
-			expect(row.skill_framework_mode).toBe("bare-ponytail");
-			expect(row.skill_framework_mode_via).toBe("hash");
-			expect(row.ponytail_condition).toBe("on:arm");
-		} finally {
-			store.close();
-		}
-	});
-});
-
-describe("DirectEventSink — FLY-1709 archived-thread reactivation", () => {
-	let store: StateStore;
-	const creator = {
-		ensureChatThread: vi.fn(async () => ({
-			created: false,
-			threadId: "thread-reactivate",
-		})),
-	};
-
-	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
-		creator.ensureChatThread.mockClear();
-		store.upsertChatThread(
-			"thread-reactivate",
-			"chat-ch-1",
-			"issue-1",
-			"product-lead",
-		);
-	});
-
-	afterEach(() => store.close());
-
-	it("clears the archive epoch for a newly admitted session_started", async () => {
-		store.markChatThreadArchived("thread-reactivate");
-		await new Promise((resolve) => setTimeout(resolve, 2));
-		const sink = new DirectEventSink(
-			store,
-			makeConfig({ chatThreadsEnabled: true }),
-			testProjects,
-			undefined,
-			undefined,
-			creator as never,
-		);
-
-		await sink.emitStarted(makeEnvelope({ labels: ["Product"] }));
-
-		expect(store.getChatThreadArchivedAt("thread-reactivate")).toBeNull();
-		expect(creator.ensureChatThread).toHaveBeenCalledOnce();
-	});
-
-	it("keeps started_at set-once and does not reactivate on an old running replay", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const originalStartedAt = "2026-08-01 12:00:00.123";
-		store.upsertSession({
-			execution_id: "exec-1",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "running",
-			started_at: originalStartedAt,
-		});
-		store.markChatThreadArchived("thread-reactivate");
-		const archivedAt = store.getChatThreadArchivedAt("thread-reactivate");
-		const sink = new DirectEventSink(
-			store,
-			makeConfig({ chatThreadsEnabled: true }),
-			testProjects,
-			undefined,
-			undefined,
-			creator as never,
-		);
-
-		await sink.emitStarted(makeEnvelope({ labels: ["Product"] }));
-
-		expect(store.getSession("exec-1")?.started_at).toBe(originalStartedAt);
-		expect(store.getChatThreadArchivedAt("thread-reactivate")).toBe(archivedAt);
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringContaining("cannot prove reactivation epoch"),
-		);
-	});
-});
-
 describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 	let store: StateStore;
 
@@ -185,7 +90,6 @@ describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 					vision_token_budget: 5000,
 				},
 			},
-			() => true,
 		);
 
 		await sink.emitStarted(makeEnvelope());
@@ -263,7 +167,6 @@ describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 			{
 				proofshot: { enabled: true, dev_command: "pnpm dev" },
 			},
-			() => true,
 		);
 
 		await sink.emitStarted(makeEnvelope());
@@ -287,51 +190,6 @@ describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 			"/Users/x/.flywheel/screens/exec-1/model.glb",
 		);
 		expect(params.unrelated_key).toBe("stays");
-	});
-
-	it("uses the store value instead of the YAML authoring value", async () => {
-		const sink = new DirectEventSink(
-			store,
-			makeConfig(),
-			testProjects,
-			undefined,
-			undefined,
-			undefined,
-			{ proofshot: { enabled: true, dev_command: "pnpm dev" } },
-			() => false,
-		);
-
-		await sink.emitStarted(makeEnvelope());
-		const params = store.getSessionParams("exec-1")!;
-		const proofshot = params.proofshot as Record<string, unknown>;
-		const cfg = proofshot.config as Record<string, unknown>;
-		expect(cfg).toMatchObject({ enabled: false, dev_command: "pnpm dev" });
-	});
-
-	it("disables ProofShot locally when the store read throws", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-		const sink = new DirectEventSink(
-			store,
-			makeConfig(),
-			testProjects,
-			undefined,
-			undefined,
-			undefined,
-			{ proofshot: { enabled: true } },
-			() => {
-				throw new Error("store unavailable");
-			},
-		);
-
-		await sink.emitStarted(makeEnvelope());
-		const params = store.getSessionParams("exec-1")!;
-		const proofshot = params.proofshot as Record<string, unknown>;
-		const cfg = proofshot.config as Record<string, unknown>;
-		expect(cfg.enabled).toBe(false);
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringContaining("store unavailable"),
-		);
-		warn.mockRestore();
 	});
 });
 
@@ -364,6 +222,7 @@ describe("DirectEventSink — FLY-191 R4: Phase-2 binding atomicity", () => {
 				partial: false,
 				durationMs: 10,
 			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
 		} as any;
 	}
 
@@ -475,6 +334,7 @@ describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress a
 				partial: false,
 				durationMs: 10,
 			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
 		} as any);
 
 		const s = store.getSession("exec-1");
@@ -487,179 +347,69 @@ describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress a
 		expect(s?.decision_route).toBe("needs_review");
 		expect(s?.commit_count).toBe(1);
 	});
-});
 
-describe("DirectEventSink — FLY-1505 blocked-after-approval deflection", () => {
-	let store: StateStore;
-	const HEAD_A = "a".repeat(40);
-	const HEAD_B = "b".repeat(40);
-
-	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
-	});
-
-	afterEach(() => {
-		store.close();
-	});
-
-	function seedApproved(opts?: { bound?: boolean; head?: string }): void {
-		const bound = opts?.bound ?? true;
-		const head = opts?.head ?? HEAD_A;
+	it("FLY-846 gate ⓪: the straggler must not spawn auto-QA either — the ROW is approved_to_ship even though the sink's local status says awaiting_review", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
 			issue_id: "issue-1",
 			project_name: "geoforge3d",
-			status: bound ? "awaiting_review" : "approved_to_ship",
-			pr_number: 715,
+			status: "awaiting_review",
 		});
-		if (bound) {
-			store.setReviewBinding("exec-1", {
-				questionId: "11111111-1111-1111-1111-111111111111",
-				prHeadSha: head,
-			});
-			store.persistTransition("exec-1", "approved_to_ship", {
-				issue_id: "issue-1",
-				project_name: "geoforge3d",
-			});
-		} else {
-			// upsertSession intentionally does not write approval bindings; use the
-			// metadata path to model a true pre-Phase-2 row (head present, qid NULL).
-			store.patchSessionMetadata("exec-1", { pr_head_sha: head });
-		}
-	}
-
-	function blockedResult(
-		headSha: string | null,
-		route: "blocked" | "ship_attempt_failed" = "blocked",
-		reviewQuestionId?: string,
-	): BlueprintResult {
-		return {
-			success: false,
-			decision: { route, reasoning: "ship poll window elapsed" },
-			reviewQuestionId,
-			evidence: {
-				headSha,
-				landingStatus: { status: "ready_to_merge", prNumber: 715 },
-			},
-		} as unknown as BlueprintResult;
-	}
-
-	function makeSink(alertShipAttemptFailed = vi.fn()) {
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		sink.reviewAuthorizationAlerts = {
-			current: {
-				alertShipAttemptFailedBestEffort: alertShipAttemptFailed,
-			} as unknown as ReviewAuthorizationAlerts,
-		};
-		return { sink, alertShipAttemptFailed };
-	}
-
-	it("settles the explicit attempt route for a real bound approval and alerts once per approval/head", async () => {
-		seedApproved();
-		const { sink, alertShipAttemptFailed } = makeSink();
-
-		await sink.emitCompleted(
-			makeEnvelope(),
-			blockedResult(
-				HEAD_A,
-				"ship_attempt_failed",
-				"11111111-1111-1111-1111-111111111111",
-			),
-		);
-		await sink.emitCompleted(
-			makeEnvelope(),
-			blockedResult(
-				HEAD_A,
-				"ship_attempt_failed",
-				"11111111-1111-1111-1111-111111111111",
-			),
-		);
-
-		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
-		expect(store.getSessionParams("exec-1")).toMatchObject({
-			fly1505_ship_attempt_failed: {
-				head_sha: HEAD_A,
-				pr_number: 715,
-				attempt_count: 2,
-				review_question_id: "11111111-1111-1111-1111-111111111111",
-			},
-		});
-		expect(alertShipAttemptFailed).toHaveBeenCalledOnce();
-		expect(alertShipAttemptFailed).toHaveBeenCalledWith(
-			expect.objectContaining({ execution_id: "exec-1" }),
-			expect.stringContaining("founder"),
-		);
-	});
-
-	it("keeps the legacy unbound approved_to_ship shape compatible", async () => {
-		seedApproved({ bound: false });
-		const { sink } = makeSink();
-		await sink.emitCompleted(makeEnvelope(), blockedResult(HEAD_A));
-		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
-		expect(store.getSessionParams("exec-1")).toMatchObject({
-			fly1505_ship_attempt_failed: { head_sha: HEAD_A },
-		});
-	});
-
-	it("uses the current row binding for a live blocked event that omits its binding", async () => {
-		seedApproved();
-		const { sink, alertShipAttemptFailed } = makeSink();
-		await sink.emitCompleted(makeEnvelope(), blockedResult(HEAD_A));
-		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
-		expect(store.getSessionParams("exec-1")).toMatchObject({
-			fly1505_ship_attempt_failed: {
-				head_sha: HEAD_A,
-				review_question_id: "11111111-1111-1111-1111-111111111111",
-				attempt_count: 1,
-			},
-		});
-		expect(alertShipAttemptFailed).toHaveBeenCalledOnce();
-	});
-
-	it("consumes a delayed head-A attempt after head-B approval without marking or alerting B", async () => {
-		seedApproved({ head: HEAD_B });
-		const { sink, alertShipAttemptFailed } = makeSink();
-		await sink.emitCompleted(makeEnvelope(), blockedResult(HEAD_A));
-		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
-		expect(
-			store.getSessionParams("exec-1")?.fly1505_ship_attempt_failed,
-		).toBeUndefined();
-		expect(alertShipAttemptFailed).not.toHaveBeenCalled();
-	});
-
-	it("consumes a delayed same-head Q1 attempt without marking or alerting Q2", async () => {
-		seedApproved();
 		store.setReviewBinding("exec-1", {
-			questionId: "22222222-2222-2222-2222-222222222222",
+			questionId: "11111111-1111-1111-1111-111111111111",
 			prHeadSha: HEAD_A,
 		});
-		const { sink, alertShipAttemptFailed } = makeSink();
-		await sink.emitCompleted(
-			makeEnvelope(),
-			blockedResult(
-				HEAD_A,
-				"ship_attempt_failed",
-				"11111111-1111-1111-1111-111111111111",
-			),
-		);
-		expect(store.getSession("exec-1")?.status).toBe("approved_to_ship");
-		expect(
-			store.getSessionParams("exec-1")?.fly1505_ship_attempt_failed,
-		).toBeUndefined();
-		expect(alertShipAttemptFailed).not.toHaveBeenCalled();
-	});
+		store.persistTransition("exec-1", "approved_to_ship", {
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+		});
 
-	it("uses result.evidence.headSha as authority: a missing event head stays unknown instead of borrowing the row head", async () => {
-		seedApproved({ head: HEAD_B });
-		const { sink, alertShipAttemptFailed } = makeSink();
-		await sink.emitCompleted(makeEnvelope(), blockedResult(null));
-		expect(store.getSessionParams("exec-1")).toMatchObject({
-			fly1505_ship_attempt_failed: {
-				head_sha: "(unknown)",
-				attempt_count: 1,
+		// Wire a REAL coordinator — the sink's LOCAL `status` for this emission is
+		// awaiting_review, so it DOES reach the coordinator; the row's old real
+		// qid defeats the evidence gate, so gate ⓪ (row status re-check) is the
+		// line that must stop the spawn.
+		const start = vi.fn(async () => ({
+			executionId: "qa-x",
+			issueId: "qa-issue",
+		}));
+		const coord = new AutoQaCoordinator({
+			store,
+			startDispatcher: { start },
+			resolveQaPolicy: () => ({ enabled: true }),
+			effects: {
+				postThread: () => {},
+				createQaIssue: () => ({ issueId: "qa-issue" }),
+				notifyShipReady: () => {},
+				feedbackWakeMain: () => {},
+				alertLeadPipelineError: () => {},
+				stampIssueStage: () => {},
+				retestWakeQa: () => ({ ok: true }),
+				closeQaRunner: () => {},
 			},
 		});
-		expect(alertShipAttemptFailed).toHaveBeenCalledOnce();
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		sink.autoQaCoordinator = { current: coord };
+
+		await sink.emitCompleted(makeEnvelope(), {
+			success: true,
+			decision: { route: "needs_review", reasoning: "straggler" },
+			evidence: {
+				commitCount: 1,
+				filesChangedCount: 1,
+				commitMessages: ["feat: x"],
+				changedFilePaths: ["a.ts"],
+				linesAdded: 1,
+				linesRemoved: 0,
+				diffSummary: "1 file changed",
+				headSha: HEAD_B,
+				partial: false,
+				durationMs: 10,
+			},
+		} as unknown as BlueprintResult);
+
+		expect(start).not.toHaveBeenCalled();
+		expect(store.getAutoQaRecord("exec-1", HEAD_A)).toBeUndefined();
+		expect(store.getAutoQaRecord("exec-1", HEAD_B)).toBeUndefined();
 	});
 });
 
@@ -689,6 +439,7 @@ describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () =>
 				partial: false,
 				durationMs: 10,
 			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
 		} as any;
 	}
 
@@ -748,6 +499,7 @@ describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () =>
 				partial: false,
 				durationMs: 10,
 			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
 		} as any;
 	}
 
@@ -805,6 +557,7 @@ describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () =>
 				partial: false,
 				durationMs: 10,
 			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
 		} as any;
 		await sink.emitCompleted(makeEnvelope(), dupCompleted);
 
@@ -864,6 +617,7 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 				partial: false,
 				durationMs: 10,
 			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
 		} as any;
 	}
 
@@ -913,81 +667,6 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		expect(store.getSession("exec-1")?.runner_model ?? null).toBeNull();
 	});
 
-	it("FLY-1259: emitStarted persists and locks designBackend", async () => {
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		await sink.emitStarted(
-			makeEnvelope({
-				sessionRole: "design",
-				chatThreadRole: "design",
-				designBackend: "codex",
-			}),
-		);
-		await sink.emitStarted(
-			makeEnvelope({
-				sessionRole: "design",
-				chatThreadRole: "design",
-				designBackend: "claude",
-			}),
-		);
-
-		expect(store.getSession("exec-1")?.design_backend).toBe("codex");
-	});
-
-	it.each(["codex-tmux", undefined])(
-		"emitStarted renders GPT-5.6 in a fresh thread when backend metadata is %s",
-		async (runnerBackend) => {
-			const contexts: Array<Record<string, unknown>> = [];
-			const creator = {
-				ensureChatThread: vi.fn(async (ctx: Record<string, unknown>) => {
-					contexts.push(ctx);
-					return { created: true, threadId: "thread-1255" };
-				}),
-			};
-			const sink = new DirectEventSink(
-				store,
-				makeConfig({ chatThreadsEnabled: true }),
-				testProjects,
-				undefined,
-				undefined,
-				creator as never,
-			);
-
-			await sink.emitStarted(
-				makeEnvelope({
-					labels: ["Product"],
-					runnerBackend,
-					runnerModel: "gpt-5.6-sol",
-				}),
-			);
-
-			expect(contexts[0]?.modelMarker).toBe("G");
-		},
-	);
-
-	it("persists and forwards the founder-visible route summary on session start", async () => {
-		const contexts: Array<Record<string, unknown>> = [];
-		const creator = {
-			ensureChatThread: vi.fn(async (ctx: Record<string, unknown>) => {
-				contexts.push(ctx);
-				return { created: true, threadId: "thread-route" };
-			}),
-		};
-		const sink = new DirectEventSink(
-			store,
-			makeConfig({ chatThreadsEnabled: true }),
-			testProjects,
-			undefined,
-			undefined,
-			creator as never,
-		);
-		const routeSummary = "🧭 **Route**: `generic` · source `default_fallback`";
-		await sink.emitStarted(makeEnvelope({ labels: ["Product"], routeSummary }));
-		expect(contexts[0]?.routeSummary).toBe(routeSummary);
-		expect(store.getSessionParams("exec-1")?.workflowRoute).toEqual({
-			summary: routeSummary,
-		});
-	});
-
 	it("awaiting_review + route=pr_handoff → status unchanged (skipped, no strand-clear)", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -1017,62 +696,6 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		// Duplicate pr_handoff after terminal → still completed.
 		await sink.emitCompleted(makeEnvelope(), prHandoffResult());
 		expect(store.getSession("exec-1")?.status).toBe("completed");
-	});
-});
-
-describe("DirectEventSink — FLY-1404 design HTML admission", () => {
-	let store: StateStore;
-
-	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
-		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
-	});
-
-	afterEach(() => {
-		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
-		store.close();
-	});
-
-	it("refuses design-node completion because this sink has no legal attestation carrier", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		await sink.emitStarted(
-			makeEnvelope({ sessionRole: "design", chatThreadRole: "design" }),
-		);
-		await sink.emitCompleted(makeEnvelope(), {
-			decision: { route: "phase_design_complete" },
-			evidence: { headSha: "a".repeat(40) },
-		} as unknown as BlueprintResult);
-
-		expect(store.getSession("exec-1")?.status).toBe("running");
-		expect(
-			store
-				.getEventsByExecution("exec-1")
-				.some((event) => event.event_type === "session_completed"),
-		).toBe(false);
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringMatching(/founder design HTML.*refus/i),
-		);
-		warn.mockRestore();
-	});
-
-	it("FLY-1981 refuses missing attestation when the retired env is 0", async () => {
-		process.env.FLYWHEEL_DESIGN_HTML_GATE = "0";
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		await sink.emitStarted(
-			makeEnvelope({ sessionRole: "design", chatThreadRole: "design" }),
-		);
-		await sink.emitCompleted(makeEnvelope(), {
-			decision: { route: "phase_design_complete" },
-			evidence: { headSha: "a".repeat(40) },
-		} as unknown as BlueprintResult);
-
-		expect(store.getSession("exec-1")?.status).toBe("running");
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringMatching(/founder design HTML.*refus/i),
-		);
-		warn.mockRestore();
 	});
 });
 
@@ -1111,39 +734,6 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 		} as unknown as BlueprintResult;
 	}
 
-	it("FLY-1259: sends the persisted effective design backend to the Lead", async () => {
-		const delivered: Array<{ event: { design_backend?: string } }> = [];
-		const registry = {
-			resolveWithLead: () => ({
-				runtime: {
-					deliver: async (env: { event: { design_backend?: string } }) => {
-						delivered.push(env);
-						return { delivered: true };
-					},
-				},
-				lead: { agentId: "product-lead", chatChannel: "chat-ch-1" },
-			}),
-		} as unknown as RuntimeRegistry;
-		const sink = new DirectEventSink(
-			store,
-			makeConfig(),
-			testProjects,
-			undefined,
-			registry,
-		);
-
-		await sink.emitStarted(
-			makeEnvelope({
-				sessionRole: "design",
-				chatThreadRole: "design",
-				designBackend: "codex",
-			}),
-		);
-		await sink.flush();
-
-		expect(delivered[0]?.event.design_backend).toBe("codex");
-	});
-
 	it("suppresses the review-required delivery when the awaiting_review main is QA-held", async () => {
 		const { registry, delivered } = captureRegistry();
 		const sink = new DirectEventSink(
@@ -1155,77 +745,37 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 		);
 		await sink.emitStarted(makeEnvelope());
 		// A held record exists for (exec-1, reviewed head) → founder must stay out.
-		(
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db.run(
-			`INSERT INTO auto_qa_record
-			 (parent_execution_id, target_pr_head_sha, issue_id, project_name, status, started_at)
-			 VALUES (?, ?, ?, ?, 'running', datetime('now'))`,
-			["exec-1", SHA, "issue-1", "geoforge3d"],
-		);
+		store.claimAutoQaRecord({
+			parentExecutionId: "exec-1",
+			targetPrHeadSha: SHA,
+			issueId: "issue-1",
+			projectName: "geoforge3d",
+		});
 		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
 		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
 		expect(delivered).not.toContain("session_completed");
 	});
 
-	it("runs the neutral Codex hold on awaiting-review completion", async () => {
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		const order: string[] = [];
-		sink.codexReviewHold = {
-			current: {
-				onSessionAwaitingReview: async () => {
-					order.push("codex");
-					return "ready" as const;
-				},
-			} as CodexReviewHoldCoordinator,
-		};
-		await sink.emitStarted(makeEnvelope());
-		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
-
-		expect(order).toEqual(["codex"]);
-	});
-
-	it("a server-classified docs-only PR releases the review-required delivery", async () => {
-		// FLY-1251: the only no-QA release is a server-owned docs-only
-		// classification for the exact reviewed PR head.
-		const { registry, delivered } = captureRegistry();
-		const sink = new DirectEventSink(
-			store,
-			makeConfig(),
-			testProjects,
-			undefined,
-			registry,
-		);
-		await sink.emitStarted(makeEnvelope());
-		store.patchSessionMetadata("exec-1", { pr_number: 42 });
-		store.recordCodexReviewApproved({
-			executionId: "exec-1",
-			targetPrHeadSha: SHA,
-			issueId: "issue-1",
-			projectName: "geoforge3d",
-			authorFamily: "claude",
-			reviewerFamily: "codex",
-		});
-		expect(store.getCodexReviewRecord("exec-1", SHA)).toMatchObject({
-			author_family: "claude",
-			reviewer_family: "codex",
-		});
-		store.putShipRelevantDiffSnapshot({
-			execution_id: "exec-1",
-			pr_head_sha: SHA,
-			repo: "xrliAnnie/GeoForge3D",
-			pr_number: 42,
-			base_ref: "main",
-			base_oid: "b".repeat(40),
-			classifier_version: 1,
-			ship_relevant: 0,
-			file_count: 1,
-			sample_paths: ["engineering/doc/GEO-100/plan.md"],
-		});
-		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
-		expect(delivered).toContain("session_completed");
+	it("byte-compat: with NO held record the review-required delivery fires", async () => {
+		// FLY-827: this pre-codex byte-compat test asserts delivery with no held
+		// record. Run gate-OFF so isReviewHeld falls back to isQaHeld (false here);
+		// under the hard gate an un-reviewed awaiting_review is intentionally held.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		try {
+			const { registry, delivered } = captureRegistry();
+			const sink = new DirectEventSink(
+				store,
+				makeConfig(),
+				testProjects,
+				undefined,
+				registry,
+			);
+			await sink.emitStarted(makeEnvelope());
+			await sink.emitCompleted(makeEnvelope(), needsReviewResult());
+			expect(delivered).toContain("session_completed");
+		} finally {
+			delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		}
 	});
 });
 
@@ -1303,62 +853,6 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		expect(s?.session_role).toBe("design"); // NOT clobbered to "main"
 	});
 
-	it("FLY-1279: emitFailed persists goal_blocked as blocked with its real reason", async () => {
-		await new DirectEventSink(store, makeConfig(), testProjects).emitFailed(
-			makeEnvelope(),
-			"legacy error",
-			undefined,
-			{
-				failureKind: "goal_blocked",
-				failureReason: "goal ended non-complete: blocked",
-			},
-		);
-
-		const s = store.getSession("exec-1");
-		expect(s?.status).toBe("blocked");
-		expect(s?.last_error).toBe("goal ended non-complete: blocked");
-	});
-
-	it("FLY-1066: blocked completion enqueues the DirectEventSink bypass", async () => {
-		const enqueue = vi.fn();
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		sink.terminalCommDbSync = { enqueue };
-
-		await sink.emitCompleted(makeEnvelope(), {
-			...needsReviewResult(),
-			decision: { route: "blocked", reasoning: "blocked fixture" },
-		});
-
-		expect(enqueue).toHaveBeenCalledWith("exec-1", "blocked", "geoforge3d");
-	});
-
-	it("FLY-1066: emitFailed enqueues both failed and goal-blocked outcomes", async () => {
-		const enqueue = vi.fn();
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		sink.terminalCommDbSync = { enqueue };
-
-		await sink.emitFailed(makeEnvelope({ executionId: "exec-failed" }), "boom");
-		await sink.emitFailed(
-			makeEnvelope({ executionId: "exec-blocked" }),
-			"legacy",
-			undefined,
-			{ failureKind: "goal_blocked", failureReason: "blocked" },
-		);
-
-		expect(enqueue).toHaveBeenNthCalledWith(
-			1,
-			"exec-failed",
-			"failed",
-			"geoforge3d",
-		);
-		expect(enqueue).toHaveBeenNthCalledWith(
-			2,
-			"exec-blocked",
-			"blocked",
-			"geoforge3d",
-		);
-	});
-
 	it("byte-compat: a non-phase (main) session keeps role main on completion", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -1380,19 +874,25 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 	// ─── FLY-921 Fix C: turn-belt reconcile wiring pins ──────────
 	// Sister pins for the HTTP surface: event-route-fly921-turn-belt.test.ts.
 
-	function makeFakeReconciler() {
+	function makeFakeOrchestrator() {
 		const reconcileTurnBelt = vi.fn(async () => {});
+		const onPhaseComplete = vi.fn(async () => {});
+		const reconcileQaLoss = vi.fn(async () => {});
 		return {
 			holder: {
 				current: {
 					reconcileTurnBelt,
-				} as unknown as import("../bridge/turn-belt-reconcile.js").TurnBeltReconciler,
+					onPhaseComplete,
+					reconcileQaLoss,
+				} as unknown as import("../bridge/phase-orchestrator.js").PhaseOrchestrator,
 			},
 			reconcileTurnBelt,
+			onPhaseComplete,
+			reconcileQaLoss,
 		};
 	}
 
-	it("emitFailed of a workflow actor triggers a scoped TURN reconcile", async () => {
+	it("FLY-921: emitFailed of a three-stage phase session triggers a scoped turn-belt reconcile", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
 			issue_id: "issue-1",
@@ -1402,8 +902,8 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 			chat_thread_role: "qa",
 		});
 		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		const fake = makeFakeReconciler();
-		sink.turnBeltReconciler = fake.holder;
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
 
 		await sink.emitFailed(makeEnvelope(), "killed by lead");
 
@@ -1415,7 +915,7 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 		});
 	});
 
-	it("emitCompleted of a workflow actor triggers a scoped TURN reconcile", async () => {
+	it("FLY-921: emitCompleted of a three-stage phase session reconciles AFTER onPhaseComplete", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
 			issue_id: "issue-1",
@@ -1425,12 +925,16 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 			chat_thread_role: "implement",
 		});
 		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		const fake = makeFakeReconciler();
-		sink.turnBeltReconciler = fake.holder;
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
 
 		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
 
+		expect(fake.onPhaseComplete).toHaveBeenCalledOnce();
 		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
+		expect(fake.onPhaseComplete.mock.invocationCallOrder[0]!).toBeLessThan(
+			fake.reconcileTurnBelt.mock.invocationCallOrder[0]!,
+		);
 	});
 
 	it("FLY-921 byte-compat: a main-role failure does NOT touch the turn belt", async () => {
@@ -1442,11 +946,59 @@ describe("DirectEventSink — FLY-793: completion must not clobber a phase role 
 			session_role: "main",
 		});
 		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		const fake = makeFakeReconciler();
-		sink.turnBeltReconciler = fake.holder;
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
 
 		await sink.emitFailed(makeEnvelope(), "boom");
 
 		expect(fake.reconcileTurnBelt).not.toHaveBeenCalled();
+	});
+
+	// ─── FLY-1050: QA-loss re-drive wiring pins ──────────
+	// Sister pins for the HTTP surface: event-route-fly921-turn-belt.test.ts.
+
+	it("FLY-1050: emitFailed of a three-stage QA row fires reconcileQaLoss BEFORE the belt reconcile", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "qa",
+			chat_thread_role: "qa",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitFailed(makeEnvelope(), "killed");
+
+		expect(fake.reconcileQaLoss).toHaveBeenCalledOnce();
+		expect(fake.reconcileQaLoss).toHaveBeenCalledWith({
+			issueId: "issue-1",
+			terminalExecId: "exec-1",
+		});
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce();
+		expect(fake.reconcileQaLoss.mock.invocationCallOrder[0]!).toBeLessThan(
+			fake.reconcileTurnBelt.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it("FLY-1050: emitFailed of a non-qa phase row does NOT fire reconcileQaLoss", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "implement",
+			chat_thread_role: "implement",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const fake = makeFakeOrchestrator();
+		sink.phaseOrchestrator = fake.holder;
+
+		await sink.emitFailed(makeEnvelope(), "boom");
+
+		expect(fake.reconcileQaLoss).not.toHaveBeenCalled();
+		expect(fake.reconcileTurnBelt).toHaveBeenCalledOnce(); // belt still runs
 	});
 });

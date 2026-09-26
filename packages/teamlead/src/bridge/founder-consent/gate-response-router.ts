@@ -16,19 +16,13 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path, { join, resolve } from "node:path";
 import { type Request, type Response, Router } from "express";
-import { hasApprovalIntent } from "flywheel-comm/approval-intent";
 import { CommDB } from "flywheel-comm/db";
 import { isReservedApprovalAttribution } from "flywheel-comm/founder-attribution";
-import type {
-	LeadWriteAuthorizationDeps,
-	MessageProvenance,
-} from "flywheel-comm/lead-lease";
-import type { GateAuthorityView } from "../approval-signal/gate-authority-view.js";
 import {
 	type GateResponseStore,
 	writeGateResponseAndRunPostWrite,
 } from "../approval-signal/write-gate-response.js";
-import type { ReviewHoldReason } from "../review-hold.js";
+import type { ReviewHoldReason } from "../auto-qa-held.js";
 import type { FounderConsentEvaluator } from "./evaluator.js";
 import type { ConsentContextResolver } from "./middleware.js";
 
@@ -67,16 +61,11 @@ export interface GateResponseRouterDeps {
 	cardAuthority?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["cardAuthority"];
-	gateAuthorityView?: GateAuthorityView;
 	/** Configured project names (validates a caller-supplied projectName). */
 	configuredProjects: ReadonlySet<string>;
 	/** Override the comm root (tests). Defaults to ~/.flywheel/comm. */
 	commRoot?: string;
 	logger?: { info: (m: string) => void; warn: (m: string) => void };
-	/** Bridge-side lease/mode/projects control plane (tests override paths). */
-	leadLeaseEnv?: NodeJS.ProcessEnv;
-	/** Injectable OS liveness seams for carrier validation tests. */
-	leadWriteAuthorizationDeps?: LeadWriteAuthorizationDeps;
 	/**
 	 * FLY-191 Phase 2: invoked AFTER a successful CommDB response write (both
 	 * the pass-through and the consent-allow paths — this endpoint is the
@@ -171,11 +160,6 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			projectName?: string;
 			reason?: string;
 			dbPath?: string;
-			leaseClaim?: { leaseKey?: unknown; generation?: unknown };
-			carrierClaim?: unknown;
-			identityDigest?: unknown;
-			provenance?: MessageProvenance;
-			kickback?: unknown;
 		};
 		const { questionId, leadId, answer, executionId, projectName } = body;
 
@@ -184,10 +168,12 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			return;
 		}
 		// FLY-945 Fix E (Codex code R1 HIGH): `leadId` is caller-controlled and
-		// this endpoint writes it VERBATIM as
+		// this endpoint's pass-through / audit_only paths write it VERBATIM as
 		// the response attribution. Refuse the reserved founder-side writer
 		// names (and anything Discord-snowflake-shaped — the founder id) so a
-		// caller cannot forge a verify-approval-trusted attribution.
+		// caller cannot forge a verify-approval-trusted attribution; the
+		// enforce path assigns "bridge-founder-consent" itself after a PASSING
+		// consent evaluation.
 		if (isReservedApprovalAttribution(leadId)) {
 			res.status(400).json({
 				error: "reserved_attribution",
@@ -256,14 +242,6 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				});
 				return;
 			}
-			if (hasApprovalIntent(answer)) {
-				res.status(403).json({
-					error: "lead_ack_rejected",
-					detail:
-						"Lead approval cannot resolve a founder-bound gate; only the trusted founder writer may approve.",
-				});
-				return;
-			}
 
 			// FLY-191 Phase 2 (Codex PR R1 CRITICAL): only the CURRENT review
 			// question is answerable once a binding exists. The "unbound"
@@ -305,37 +283,11 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					executionId: question.from_agent,
 					source: "founder-consent",
 					cardAuthority: deps.cardAuthority,
-					gateAuthorityView: deps.gateAuthorityView,
 					actor,
 					answer,
-					...(body.kickback === true ? { intent: "kickback" as const } : {}),
 					expectedCurrentReviewQuestionId: currentReviewId,
 					holdReasonFor: deps.holdReasonFor,
 					founderId: deps.founderId,
-					leadRequest: {
-						requestingLeadId: leadId,
-						projectName: resolvedProjectName,
-						identityDigest:
-							typeof body.identityDigest === "string"
-								? body.identityDigest
-								: "",
-						...(typeof body.leaseClaim?.leaseKey === "string" &&
-						Number.isSafeInteger(body.leaseClaim.generation) &&
-						(body.leaseClaim.generation as number) > 0
-							? {
-									leaseClaim: {
-										leaseKey: body.leaseClaim.leaseKey,
-										generation: body.leaseClaim.generation as number,
-									},
-								}
-							: {}),
-						...(typeof body.carrierClaim === "string"
-							? { carrierClaim: body.carrierClaim }
-							: {}),
-						provenance: body.provenance,
-					},
-					leadLeaseEnv: deps.leadLeaseEnv,
-					leadWriteAuthorizationDeps: deps.leadWriteAuthorizationDeps,
 					onResponseWritten: () =>
 						runPostWriteHook(deps, {
 							executionId: question.from_agent,
@@ -352,18 +304,9 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				if (result.written || result.disposition === "already_applied") {
 					return false;
 				}
-				if (result.disposition === "neutral_not_written") {
-					res.status(409).json({
-						error: "neutral_not_written",
-						detail:
-							"No verdict was written because this text is not an explicit kickback. Keep discussion in the thread; to confirm a rejection, rerun flywheel-comm respond with --kickback or use an explicit 打回 / design: / implement: / qa: prefix.",
-					});
-					return true;
-				}
 				res.status(409).json({
-					error: result.reason?.startsWith("lead_lease_")
-						? "lead_lease_denied"
-						: result.reason === "conflicting_prior_response"
+					error:
+						result.reason === "conflicting_prior_response"
 							? "question_already_answered"
 							: "founder_approval_write_refused",
 					detail: result.reason ?? result.disposition ?? "unknown",
@@ -445,10 +388,25 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 
 			// 5. Allow: write the response (same path approveExecution uses).
 			//
-			// Production is permanently audit_only, so this Lead relay never mints
-			// trusted founder attribution. Directly injected evaluator modes retain
-			// their decision capability for unit tests but share this writer policy.
-			const result = await writeThroughBoundary(leadId);
+			// FLY-945 Fix E (write side, Codex R1 #2 / R2 #2): attribution now
+			// carries authority — verify-approval refuses non-founder writers.
+			//   - ENFORCE allow/bypass: the consent evaluator VERIFIED founder
+			//     consent → write the trusted "bridge-founder-consent" attribution
+			//     (the leadId stays in the founder_consent_audit row — no audit
+			//     loss). Without this, Fix E's read-side gate would also reject
+			//     legitimately-consented approvals.
+			//   - AUDIT_ONLY: deliberately KEEP leadId — audit_only allows EVERY
+			//     write (even evaluator-DENIED ones), so a trusted attribution
+			//     here would re-open the Lead self-approval door. The read side
+			//     then refuses it (that IS Fix E's point; QA rooms / emergencies
+			//     use the kill-switch).
+			//   (Pass-through/off keeps leadId too — see the !evaluator branch.)
+			const enforceVerified =
+				deps.evaluator.decisionMode !== "audit_only" &&
+				(decision.decision === "allow" || decision.decision === "bypass");
+			const result = await writeThroughBoundary(
+				enforceVerified ? "bridge-founder-consent" : leadId,
+			);
 			if (rejectBoundaryResult(result)) return;
 			res.json({
 				success: true,

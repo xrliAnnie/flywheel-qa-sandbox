@@ -43,13 +43,11 @@ pass() { PASSED=$((PASSED + 1)); log_test "✓ $1"; }
 fail() { FAILED=$((FAILED + 1)); log_test "✗ $1"; }
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
-command -v node >/dev/null 2>&1 || { echo "ERROR: node required"; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FLEET="${REPO_ROOT}/scripts/flywheel-fleet.sh"
 
-# Keep HOME short enough to exercise the real macOS tmux socket budget.
-SANDBOX="$(mktemp -d /tmp/fly247-fleet.XXXXXX)"
+SANDBOX="$(mktemp -d -t fly247-fleet-XXXXXX)"
 LIVE_PIDS=()
 cleanup() {
   for p in "${LIVE_PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
@@ -58,15 +56,11 @@ cleanup() {
 trap cleanup EXIT
 
 export HOME="$SANDBOX"
-export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
-export FLYWHEEL_DIR="$HOME/Dev/flywheel"
-# shellcheck source=../lib/lead-address.sh
-source "$REPO_ROOT/scripts/lib/lead-address.sh"
 CTL="$SANDBOX/ctl"
 mkdir -p "$CTL" "$SANDBOX/.flywheel/manifests" "$SANDBOX/Library/LaunchAgents" \
   "$SANDBOX/.flywheel/bin" "$SANDBOX/Dev/flywheel/scripts" "$SANDBOX/proj/geo" "$SANDBOX/proj/joy"
 
-# Fake v2 wrapper source for generated plist fixtures.
+# Fake wrapper source for Phase W installs (FLY-224 dispatch marker included).
 # FLY-954: fixture must PASS install_script_atomic's source sanity (≥1KB +
 # substantive lines) — the 12-byte stub shape is exactly what installs refuse.
 {
@@ -74,18 +68,8 @@ mkdir -p "$CTL" "$SANDBOX/.flywheel/manifests" "$SANDBOX/Library/LaunchAgents" \
   echo '# fake wrapper for tests — leadBackend dispatch marker (FLY-224)'
   i=1; while [ "$i" -le 60 ]; do echo "echo sane-fixture-wrapper-line-$i >/dev/null"; i=$((i+1)); done
   echo 'exit 0'
-} > "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper-v2.sh"
-chmod +x "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper-v2.sh"
-cp "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper-v2.sh" \
-  "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-attach.sh"
-mkdir -p "$SANDBOX/Dev/flywheel/scripts/lib"
-{
-  echo '#!/bin/bash'
-  i=1; while [ "$i" -le 60 ]; do echo "echo sane-address-helper-line-$i >/dev/null"; i=$((i+1)); done
-} > "$SANDBOX/Dev/flywheel/scripts/lib/lead-address.sh"
-chmod +x "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper-v2.sh" \
-  "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-attach.sh" \
-  "$SANDBOX/Dev/flywheel/scripts/lib/lead-address.sh"
+} > "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper.sh"
+chmod +x "$SANDBOX/Dev/flywheel/scripts/flywheel-lead-wrapper.sh"
 
 # launchctl / tmux stubs (same state machine as the daemon test).
 cat > "$SANDBOX/launchctl-stub" <<'EOF'
@@ -114,57 +98,9 @@ chmod +x "$SANDBOX/launchctl-stub"
 cat > "$SANDBOX/tmux-stub" <<'EOF'
 #!/bin/bash
 CTL="${LAUNCHCTL_STUB_CTL:?}"
-if [ "${1:-}" = "-S" ]; then
-  cat "$CTL/tmux_out" 2>/dev/null || true
-  exit 0
-fi
 cat "$CTL/tmux_out" 2>/dev/null || true
 EOF
 chmod +x "$SANDBOX/tmux-stub"
-
-# Linux CI's `plutil` cannot convert Apple's XML plist to JSON. Fleet delegates
-# that conversion to flywheel-daemon.sh, so keep this suite hermetic just like
-# launchctl/tmux: lint succeeds and conversion parses the generated fixture
-# without depending on the host implementation.
-cat > "$SANDBOX/plutil-stub" <<'EOF'
-#!/bin/bash
-case "${1:-}" in
-  -lint)
-    exit 0
-    ;;
-  -convert)
-    [ "${2:-}" = json ] && [ "${3:-}" = -o ] && [ "${4:-}" = - ] \
-      && [ -f "${5:-}" ] || exit 64
-    "${FLY247_NODE_BIN:?}" - "$5" <<'NODE'
-const fs = require("node:fs");
-
-const xml = fs.readFileSync(process.argv[2], "utf8");
-const decode = (value) =>
-  value
-    .replaceAll("&apos;", "'")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&gt;", ">")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&amp;", "&");
-const block = xml.match(
-  /<key>\s*EnvironmentVariables\s*<\/key>\s*<dict>([\s\S]*?)<\/dict>/,
-);
-const environment = {};
-if (block) {
-  const pair = /<key>([\s\S]*?)<\/key>\s*<string>([\s\S]*?)<\/string>/g;
-  for (const match of block[1].matchAll(pair)) {
-    environment[decode(match[1])] = decode(match[2]);
-  }
-}
-process.stdout.write(`${JSON.stringify({ EnvironmentVariables: environment })}\n`);
-NODE
-    ;;
-  *)
-    exit 64
-    ;;
-esac
-EOF
-chmod +x "$SANDBOX/plutil-stub"
 
 # Enhanced stub for SUCCESS-path scenarios: bootout kills the recorded old
 # process (like real launchd) and bootstrap brings up next_pid (the "new
@@ -196,15 +132,12 @@ case "$1" in
       head -1 "$CTL/next_pid" > "$CTL/pid.last"
       tail -n +2 "$CTL/next_pid" > "$CTL/next_pid.rest" && mv "$CTL/next_pid.rest" "$CTL/next_pid"
     fi
-    # wrapper-v2 booted-pid manifest stamp (runtime binding evidence)
+    # booted-Lead manifest self-write (pid binding evidence)
     if [ -f "$CTL/manifest_path" ]; then
       mp="$(cat "$CTL/manifest_path")"
       np="$(cat "$CTL/pid.last" 2>/dev/null || echo 0)"
       if [ -f "$mp" ] && [ "$np" != "0" ]; then
-        socket="$(cat "$CTL/socket_path" 2>/dev/null || true)"
-        jq --argjson pid "$np" --arg socket "$socket" \
-          '.pid = $pid | if $socket == "" then . else .socketPath = $socket end' \
-          "$mp" > "$mp.stubtmp" && mv "$mp.stubtmp" "$mp"
+        jq --argjson pid "$np" '.pid = $pid' "$mp" > "$mp.stubtmp" && mv "$mp.stubtmp" "$mp"
       fi
     fi
     echo "bootstrap $3" >> "$CTL/calls.log"
@@ -217,22 +150,19 @@ chmod +x "$SANDBOX/launchctl-stub2"
 export LAUNCHCTL_STUB_CTL="$CTL"
 export FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub"
 export FLYWHEEL_DAEMON_TMUX="$SANDBOX/tmux-stub"
-FLY247_NODE_BIN="$(command -v node)"
-export FLY247_NODE_BIN
-export FLYWHEEL_DAEMON_PLUTIL="$SANDBOX/plutil-stub"
 export FLYWHEEL_DAEMON_STOP_TIMEOUT=1
 export FLYWHEEL_DAEMON_VERIFY_TIMEOUT=2
 export FLYWHEEL_DAEMON_POLL_INTERVAL=1
-export FLYWHEEL_DAEMON_SKIP_PS_SELF_PROBE=1
 
 PROJECTS="$SANDBOX/.flywheel/projects.json"
 KEY="geo-product-lead"
 MANIFEST="$SANDBOX/.flywheel/manifests/${KEY}.json"
 PLIST="$SANDBOX/Library/LaunchAgents/com.flywheel.lead.${KEY}.plist"
+WRAPPER_DST="$SANDBOX/.flywheel/bin/flywheel-lead-wrapper.sh"
 BACKUPS="$SANDBOX/.flywheel/fleet-backups"
 
 write_projects() {
-  # write_projects <model-json> [<backend-json>]
+  # write_projects <model-json> [<backend-json>] — single geo project/lead
   local model="$1" backend="${2:-null}"
   jq -n --argjson model "$model" --argjson backend "$backend" \
     '[{projectName: "geo", projectRoot: "'"$SANDBOX"'/proj/geo",
@@ -255,13 +185,12 @@ spawn_live() {
 # Build a healthy "standard-confirmed × claude-confirmed" running lead.
 setup_running_lead() {
   local model_in_manifest="$1"   # json string or null
-  local live_pid socket_path
+  local live_pid
   live_pid=$(spawn_live)
-  socket_path=$(derive_lead_socket "geo/product-lead" "$FLYWHEEL_STATE_DIR")
-  jq -n --argjson model "$model_in_manifest" --argjson pid "$live_pid" --arg socket "$socket_path" \
+  jq -n --argjson model "$model_in_manifest" --argjson pid "$live_pid" \
     '{leadId:"product-lead",projectDir:"'"$SANDBOX"'/proj/geo",projectName:"geo",
       subdir:"",workspace:"'"$SANDBOX"'/proj/geo",botTokenEnv:"DISCORD_BOT_TOKEN",
-      mcpExclude:"",chromeEnabled:false,pid:$pid,socketPath:$socket}
+      mcpExclude:"",chromeEnabled:false,pid:$pid}
      | (if $model != null then . + {model: $model} else . end)' > "$MANIFEST"
   # canonical plist via the daemon generator (correct wrapper/manifest/label)
   FLYWHEEL_DAEMON_SOURCED=1 bash -c "
@@ -269,12 +198,12 @@ setup_running_lead() {
     generate_plist '$KEY' '$MANIFEST'" >/dev/null
   echo "$live_pid" > "$CTL/pid.last"
   touch "$CTL/loaded"
-  printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
+  printf '0\t%s\t0\tclaude\n' "$KEY" > "$CTL/tmux_out"
   echo "$live_pid"
 }
 
 reset_world() {
-  rm -rf "$BACKUPS" "$CTL"/* "$MANIFEST" "$PLIST" "$SANDBOX/proj/geo/.flywheel"
+  rm -rf "$BACKUPS" "$CTL"/* "$MANIFEST" "$PLIST" "$WRAPPER_DST" "$SANDBOX/proj/geo/.flywheel"
   echo 0 > "$CTL/pid.last"
 }
 
@@ -310,8 +239,8 @@ PLIST_SHA=$(shasum -a 256 "$PLIST" | awk '{print $1}')
 OUT=$(bash "$FLEET" apply --dry-run 2>&1)
 if echo "$OUT" | grep -q "WOULD-APPLY" \
   && [ "$(shasum -a 256 "$PLIST" | awk '{print $1}')" = "$PLIST_SHA" ] \
-  && [ ! -d "$BACKUPS" ]; then
-  pass "T3: --dry-run prints WOULD-APPLY and changes nothing"
+  && [ ! -f "$WRAPPER_DST" ] && [ ! -d "$BACKUPS" ]; then
+  pass "T3: --dry-run prints WOULD-APPLY and changes nothing (wrapper untouched)"
 else
   fail "T3: $OUT"
 fi
@@ -322,14 +251,14 @@ reset_world
 write_projects '"claude-fable-5"'
 LIVE=$(setup_running_lead null)
 OUT=$(bash "$FLEET" apply < /dev/null 2>&1)
-if echo "$OUT" | grep -qE "DECLINED|abort" && [ ! -d "$BACKUPS" ]; then
-  pass "T4: non-interactive without --yes → no destructive action"
+if echo "$OUT" | grep -qE "DECLINED|abort" && [ ! -f "$WRAPPER_DST" ] && [ ! -d "$BACKUPS" ]; then
+  pass "T4: non-interactive without --yes → no destructive action, wrapper untouched"
 else
   fail "T4: $OUT"
 fi
 kill "$LIVE" 2>/dev/null || true
 
-# ── T5: codex three-direction matrix → all UNAPPLIED ───────────────────
+# ── T5: codex three-direction matrix → all UNAPPLIED, wrapper untouched ───
 reset_world
 # (a) desired codex (Claude → Codex)
 write_projects null '"codex-app-server"'
@@ -344,8 +273,9 @@ write_projects '"o3-pro"' '"codex-app-server"'
 OUT_C=$(bash "$FLEET" apply --yes 2>&1); RC_C=$?
 if echo "$OUT_A" | grep -q "UNAPPLIED codex-desired" && [ "$RC_A" -ne 0 ] \
   && echo "$OUT_B" | grep -q "UNAPPLIED codex-carrier" && [ "$RC_B" -ne 0 ] \
-  && echo "$OUT_C" | grep -q "UNAPPLIED codex-desired" && [ "$RC_C" -ne 0 ]; then
-  pass "T5: codex matrix (→codex / codex→ / codex model-only) all UNAPPLIED + non-zero"
+  && echo "$OUT_C" | grep -q "UNAPPLIED codex-desired" && [ "$RC_C" -ne 0 ] \
+  && [ ! -f "$WRAPPER_DST" ]; then
+  pass "T5: codex matrix (→codex / codex→ / codex model-only) all UNAPPLIED + non-zero + wrapper untouched"
 else
   fail "T5: A($RC_A)=$(echo "$OUT_A" | grep product-lead | head -1) B($RC_B)=$(echo "$OUT_B" | grep product-lead | head -1) C($RC_C)"
 fi
@@ -356,7 +286,7 @@ reset_world
 write_projects '"claude-fable-5"'
 OUT=$(bash "$FLEET" apply --yes 2>&1); RC=$?
 if echo "$OUT" | grep -q "UNAPPLIED not-installed" && [ "$RC" -ne 0 ] \
-  && [ ! -f "$MANIFEST" ] && [ ! -f "$PLIST" ]; then
+  && [ ! -f "$MANIFEST" ] && [ ! -f "$PLIST" ] && [ ! -f "$WRAPPER_DST" ]; then
   pass "T6: lead without carrier is never installed/created by apply"
 else
   fail "T6: rc=$RC $OUT"
@@ -408,11 +338,10 @@ TXN_DIR=$(ls -1d "$BACKUPS"/*/ 2>/dev/null | head -1)
 if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "APPLIED" \
   && grep -q "<key>FLYWHEEL_LEAD_MODEL</key><string>claude-fable-5</string>" "$PLIST" \
   && [ "$(jq -r '.model' "$MANIFEST")" = "claude-fable-5" ] \
-  && [ "$(jq -r '.leads["'"$KEY"'"].original.projectModel' "${TXN_DIR}transaction.json")" = "null" ] \
-  && [ "$(jq -r '.leads["'"$KEY"'"].original.projectPreimageSource' "${TXN_DIR}transaction.json")" = "manifest" ] \
+  && [ -x "$WRAPPER_DST" ] \
   && [ "$(jq -r '.leads["'"$KEY"'"].phase' "${TXN_DIR}transaction.json")" = "applied" ] \
   && [ "$(jq -r '.leads["'"$KEY"'"].postImage.plistSha' "${TXN_DIR}transaction.json")" != "null" ]; then
-  pass "T10: apply --yes → staged commit + model env in plist + postImage"
+  pass "T10: apply --yes → Phase W + staged commit + model env in plist + postImage"
 else
   fail "T10: rc=$RC $OUT"
 fi
@@ -441,7 +370,6 @@ OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply -
 if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ROLLED-BACK" \
   && ! grep -q "FLYWHEEL_LEAD_MODEL" "$PLIST" \
   && ! jq -e 'has("model")' "$MANIFEST" >/dev/null \
-  && ! jq -e '.[0].leads[0] | has("model")' "$PROJECTS" >/dev/null \
   && grep -q "bootstrap" "$CTL/calls.log"; then
   pass "T16a: PID-only rewrite tolerated; rollback restores pre-image plist (no model env) via backup bootstrap"
 else
@@ -451,7 +379,7 @@ kill "$NEWPID" 2>/dev/null || true
 
 # T16b: two transactions → --txn T1 blocked while T2 applied is newer.
 reset_world
-write_projects '"claude-fable-5"'
+write_projects '"model-A"'
 LIVE=$(setup_running_lead null)
 NEXT=$(spawn_live)
 echo "$LIVE" > "$CTL/kill_on_bootout"
@@ -460,12 +388,12 @@ echo "$MANIFEST" > "$CTL/manifest_path"
 FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply --yes >/dev/null 2>&1
 TXN1=$(basename "$(ls -1d "$BACKUPS"/*/ | head -1)")
 sleep 1
-write_projects '"claude-opus-5"'
+write_projects '"model-B"'
 # manifest pid was self-written to $NEXT by the stub bootstrap (binding holds)
 NEXT2=$(spawn_live)
 echo "$NEXT" > "$CTL/kill_on_bootout"
 echo "$NEXT2" > "$CTL/next_pid"
-printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
+printf '0\t%s\t0\tclaude\n' "$KEY" > "$CTL/tmux_out"
 FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply --yes >/dev/null 2>&1
 OUT=$(bash "$FLEET" apply --rollback --txn "$TXN1" --yes 2>&1); RC=$?
 if [ "$RC" -ne 0 ] && echo "$OUT" | grep -qE "newer applied transaction|does not match transaction post-image"; then
@@ -482,8 +410,7 @@ echo "$NEXT3" > "$CTL/kill_on_bootout"
 NEXT4=$(spawn_live)
 echo "$NEXT4" > "$CTL/next_pid"
 OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply --rollback --txn "$TXN1" --yes 2>&1); RC=$?
-if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ROLLED-BACK" \
-  && ! jq -e '.[0].leads[0] | has("model")' "$PROJECTS" >/dev/null; then
+if [ "$RC" -eq 0 ] && echo "$OUT" | grep -q "ROLLED-BACK"; then
   pass "T16c: after rolling back T2, --txn T1 succeeds (newest-first lineage)"
 else
   fail "T16c: rc=$RC $OUT"
@@ -492,7 +419,7 @@ kill "$LIVE" 2>/dev/null || true
 
 # ── T12: verify-fail rollback e2e (old plist HAS model, manifest doesn't) ──
 reset_world
-write_projects '"claude-opus-5"'
+write_projects '"new-model"'
 LIVE=$(setup_running_lead null)
 # Hand-edit the canonical plist to carry a model env the manifest lacks —
 # the exact FLY-241 production form this issue root-cures (R1#2).
@@ -519,7 +446,7 @@ FLYWHEEL_DAEMON_SOURCED=1 bash -c "
 PRE_PLIST_SHA=$(shasum -a 256 "$PLIST" | awk '{print $1}')
 echo "$LIVE2" > "$CTL/pid.last"
 touch "$CTL/loaded"
-printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
+printf '0\t%s\t0\tclaude\n' "$KEY" > "$CTL/tmux_out"
 # next_pid pop-queue: the STAGED bootstrap pops 0 (new PID never appears →
 # verify_failed_not_started, which is the point); the RECOVERY bootstrap
 # pops a live pid so the restored Lead truly boots (R2-H3 verify_booted).
@@ -542,7 +469,7 @@ fi
 
 # ── T13: stop-timeout → manual-intervention + NO bootstrap ────────────────
 reset_world
-write_projects '"claude-opus-5"'
+write_projects '"new-model"'
 LIVE=$(setup_running_lead null)
 # default stub: bootout does NOT kill the process → stop-timeout in daemon
 OUT=$(bash "$FLEET" apply --yes 2>&1); RC=$?
@@ -556,19 +483,44 @@ else
 fi
 kill "$LIVE" 2>/dev/null || true
 
+# ── T14: TOCTOU — config edited after confirmation → zero bootout ─────────
+reset_world
+write_projects '"new-model"'
+LIVE=$(setup_running_lead null)
+# Daemon shim: pass-through, but the install-wrapper call (Phase W, which
+# runs after confirmation and before per-lead bootout) ALSO mutates
+# projects.json — simulating a concurrent operator edit.
+cat > "$SANDBOX/daemon-shim" <<EOF
+#!/bin/bash
+if [ "\$1" = "install-wrapper" ]; then
+  jq '.[0].leads[0].model = "changed-after-confirm"' "$PROJECTS" > "$PROJECTS.n" && mv "$PROJECTS.n" "$PROJECTS"
+fi
+exec bash "$REPO_ROOT/scripts/flywheel-daemon.sh" "\$@"
+EOF
+chmod +x "$SANDBOX/daemon-shim"
+OUT=$(FLYWHEEL_FLEET_DAEMON_BIN="$SANDBOX/daemon-shim" bash "$FLEET" apply --yes 2>&1); RC=$?
+if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q "changed since confirmation" \
+  && ! grep -q "bootout" "$CTL/calls.log"; then
+  pass "T14: config change after confirmation → stopped BEFORE any bootout"
+else
+  fail "T14: rc=$RC $OUT calls=$(tr '\n' ',' < "$CTL/calls.log" 2>/dev/null)"
+fi
+kill "$LIVE" 2>/dev/null || true
+
 # ── T20: probe failure → indeterminate (not external) → UNAPPLIED ─────────
 reset_world
-write_projects '"claude-opus-5"'
+write_projects '"new-model"'
 LIVE=$(setup_running_lead null)
 OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="/nonexistent/launchctl" bash "$FLEET" apply --yes 2>&1); RC=$?
-if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q "UNAPPLIED management-indeterminate"; then
+if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q "UNAPPLIED management-indeterminate" \
+  && [ ! -f "$WRAPPER_DST" ]; then
   pass "T20: launchctl probe failure → indeterminate (fail-close, not external)"
 else
   fail "T20: rc=$RC $OUT"
 fi
 kill "$LIVE" 2>/dev/null || true
 
-# ── T18: recover — mid-commit txn, legacy txn rejection, plan refusal ────
+# ── T18: recover — mid-commit txn, wrapper mid-phase, plan refusal ────────
 reset_world
 write_projects '"m1"'
 LIVE=$(setup_running_lead null)
@@ -592,6 +544,7 @@ rm -f "$CTL/loaded"
 echo 0 > "$CTL/pid.last"
 jq -n --arg m "$ORIG_M_SHA" --arg p "$ORIG_P_SHA" \
   '{transactionId: "'"$TXN_ID"'", configSha: "x",
+    wrapper: {phase: "w-committed", existed: true, sha: "", mode: "755"},
     leads: {"'"$KEY"'": {attempt: 1, phase: "committing",
       original: {manifestExisted: true, plistExisted: true, manifestSha: $m, plistSha: $p, manifestProjSha: "y"},
       desired: {model: "m1"}}}}' > "$TXN_DIR/transaction.json"
@@ -615,7 +568,7 @@ fi
 LIVE3=$(spawn_live)
 echo "$LIVE3" > "$CTL/next_pid"
 echo "$MANIFEST" > "$CTL/manifest_path"
-printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
+printf '0\t%s\t0\tclaude\n' "$KEY" > "$CTL/tmux_out"
 OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" recover --txn "$TXN_ID" --yes 2>&1); RC=$?
 REST_M_PROJ=$(jq -S 'del(.pid)' "$MANIFEST" | shasum -a 256 | awk '{print $1}')
 ORIG_M_PROJ=$(jq -S 'del(.pid)' "$TXN_DIR/backup/${KEY}.manifest.json" | shasum -a 256 | awk '{print $1}')
@@ -628,26 +581,28 @@ else
 fi
 kill "$LIVE" 2>/dev/null || true
 
-# Historical wrapper transaction → reject without restoring an executable path.
+# wrapper mid-phase: w-installing → restore wrapper + terminate txn
 reset_world
 write_projects '"m1"'
-LEGACY_ENTRY="$SANDBOX/.flywheel/bin/retired-entry.sh"
-echo "RETIRED-BYTES" > "$LEGACY_ENTRY"
+echo "OLD-WRAPPER" > "$WRAPPER_DST"
+chmod 755 "$WRAPPER_DST"
 TXN_ID="20990101-000001-1"
 TXN_DIR="$BACKUPS/$TXN_ID"
 mkdir -p "$TXN_DIR/backup"
+cp "$WRAPPER_DST" "$TXN_DIR/backup/wrapper.sh"
+echo "NEW-HALF-INSTALLED" > "$WRAPPER_DST"
 jq -n '{transactionId: "'"$TXN_ID"'", configSha: "x",
   wrapper: {phase: "w-installing", existed: true, sha: "s", mode: "755"},
   leads: {"'"$KEY"'": {attempt: 1, phase: "pending",
     original: {manifestExisted: true, plistExisted: true, manifestSha: "m", plistSha: "p", manifestProjSha: "y"},
     desired: {model: "m1"}}}}' > "$TXN_DIR/transaction.json"
 OUT=$(bash "$FLEET" recover --txn "$TXN_ID" --yes 2>&1); RC=$?
-if [ "$RC" -ne 0 ] && [ "$(cat "$LEGACY_ENTRY")" = "RETIRED-BYTES" ] \
-  && [ "$(jq -r '.wrapper.phase' "$TXN_DIR/transaction.json")" = "w-installing" ] \
-  && echo "$OUT" | grep -q "legacy carrier transaction"; then
-  pass "T18d: legacy wrapper transaction rejected without mutation"
+if [ "$RC" -eq 0 ] && [ "$(cat "$WRAPPER_DST")" = "OLD-WRAPPER" ] \
+  && [ "$(jq -r '.wrapper.phase' "$TXN_DIR/transaction.json")" = "w-rolled-back" ] \
+  && [ "$(jq -r '.leads["'"$KEY"'"].phase' "$TXN_DIR/transaction.json")" = "unapplied" ]; then
+  pass "T18d: recover wrapper mid-install → prior wrapper restored, txn terminated"
 else
-  fail "T18d: rc=$RC legacy=$(cat "$LEGACY_ENTRY") $OUT"
+  fail "T18d: rc=$RC wrapper=$(cat "$WRAPPER_DST") $OUT"
 fi
 
 # ── T19: recover with absent originals → absence restored ─────────────────
@@ -663,6 +618,7 @@ echo 'plist' > "$TXN_DIR/staged/${KEY}.plist"
 cp "$TXN_DIR/staged/${KEY}.manifest.json" "$MANIFEST"
 cp "$TXN_DIR/staged/${KEY}.plist" "$PLIST"
 jq -n '{transactionId: "'"$TXN_ID"'", configSha: "x",
+  wrapper: {phase: "w-committed", existed: true, sha: "s", mode: "755"},
   leads: {"'"$KEY"'": {attempt: 1, phase: "committed",
     original: {manifestExisted: false, plistExisted: false, manifestSha: "", plistSha: "", manifestProjSha: ""},
     desired: {model: "m1"}}}}' > "$TXN_DIR/transaction.json"
@@ -675,14 +631,14 @@ else
   fail "T19: rc=$RC $OUT"
 fi
 
-# ── T11/T15: two leads — second fails → A untouched ─────────────────────
+# ── T11/T15: two leads — wrapper once; second fails → A untouched ─────────
 reset_world
 KEY2="geo-ops-lead"
 MANIFEST2="$SANDBOX/.flywheel/manifests/${KEY2}.json"
 PLIST2="$SANDBOX/Library/LaunchAgents/com.flywheel.lead.${KEY2}.plist"
 jq -n '[{projectName: "geo", projectRoot: "'"$SANDBOX"'/proj/geo",
-   leads: [{agentId: "product-lead", chatChannel: "1", match: {labels: ["P"]}, model: "claude-fable-5"},
-           {agentId: "ops-lead", chatChannel: "2", match: {labels: ["O"]}, model: "claude-opus-5"}]}]' > "$PROJECTS"
+   leads: [{agentId: "product-lead", chatChannel: "1", match: {labels: ["P"]}, model: "fab-A"},
+           {agentId: "ops-lead", chatChannel: "2", match: {labels: ["O"]}, model: "fab-B"}]}]' > "$PROJECTS"
 # Keyed-state launchctl stub: per-label loaded/pid files — two leads can be
 # simultaneously loaded with DIFFERENT pids (single-state stubs cannot model
 # this; lead B's evidence re-run would misread lead A's state).
@@ -730,8 +686,8 @@ chmod +x "$SANDBOX/launchctl-stub3"
 LIVE_A=$(spawn_live)
 LIVE_B=$(spawn_live)
 NEXT_A=$(spawn_live)
-jq -n --argjson pid "$LIVE_A" --arg socket "$(derive_lead_socket "geo/product-lead" "$FLYWHEEL_STATE_DIR")" '{leadId:"product-lead",projectDir:"'"$SANDBOX"'/proj/geo",projectName:"geo",subdir:"",workspace:"'"$SANDBOX"'/proj/geo",botTokenEnv:"D",mcpExclude:"",chromeEnabled:false,pid:$pid,socketPath:$socket}' > "$MANIFEST"
-jq -n --argjson pid "$LIVE_B" --arg socket "$(derive_lead_socket "geo/ops-lead" "$FLYWHEEL_STATE_DIR")" '{leadId:"ops-lead",projectDir:"'"$SANDBOX"'/proj/geo",projectName:"geo",subdir:"",workspace:"'"$SANDBOX"'/proj/geo",botTokenEnv:"D",mcpExclude:"",chromeEnabled:false,pid:$pid,socketPath:$socket}' > "$MANIFEST2"
+jq -n --argjson pid "$LIVE_A" '{leadId:"product-lead",projectDir:"'"$SANDBOX"'/proj/geo",projectName:"geo",subdir:"",workspace:"'"$SANDBOX"'/proj/geo",botTokenEnv:"D",mcpExclude:"",chromeEnabled:false,pid:$pid}' > "$MANIFEST"
+jq -n --argjson pid "$LIVE_B" '{leadId:"ops-lead",projectDir:"'"$SANDBOX"'/proj/geo",projectName:"geo",subdir:"",workspace:"'"$SANDBOX"'/proj/geo",botTokenEnv:"D",mcpExclude:"",chromeEnabled:false,pid:$pid}' > "$MANIFEST2"
 FLYWHEEL_DAEMON_SOURCED=1 bash -c "
   source '$REPO_ROOT/scripts/flywheel-daemon.sh'
   generate_plist '$KEY' '$MANIFEST'
@@ -745,12 +701,16 @@ echo "$MANIFEST" > "$CTL/manifest_path.$KEY"
 NEXT_B=$(spawn_live)
 echo "$NEXT_B" > "$CTL/next_pid.$KEY2"
 echo "$MANIFEST2" > "$CTL/manifest_path.$KEY2"
-printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
-# Daemon shim: product-lead passes through to the real daemon (keyed stub);
-# ops-lead is forced to fail with a result record.
+printf '0\t%s\t0\tclaude\n0\t%s\t0\tclaude\n' "$KEY" "$KEY2" > "$CTL/tmux_out"
+# daemon shim: count install-wrapper calls; product-lead passes through to the
+# real daemon (keyed stub); ops-lead is forced to fail with a result record.
 cat > "$SANDBOX/daemon-shim2" <<EOF
 #!/bin/bash
 CTL="$CTL"
+if [ "\$1" = "install-wrapper" ]; then
+  echo w >> "\$CTL/wrapper_installs"
+  exec bash "$REPO_ROOT/scripts/flywheel-daemon.sh" install-wrapper
+fi
 if [ "\$1" = "install" ] && [ "\$2" = "$KEY2" ]; then
   # honest failure simulation: the real daemon bootouts the old process and
   # waits for its exit BEFORE verify can fail — mirror that state (the fleet
@@ -770,14 +730,16 @@ EOF
 chmod +x "$SANDBOX/daemon-shim2"
 OUT=$(FLYWHEEL_FLEET_DAEMON_BIN="$SANDBOX/daemon-shim2" FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub3" bash "$FLEET" apply --yes 2>&1); RC=$?
 TXN_DIR=$(ls -1dr "$BACKUPS"/*/ | head -1)
-if [ "$RC" -ne 0 ] \
+W_COUNT=$(wc -l < "$CTL/wrapper_installs" | tr -d ' ')
+if [ "$RC" -ne 0 ] && [ "$W_COUNT" = "1" ] \
   && [ "$(jq -r '.leads["'"$KEY"'"].phase' "${TXN_DIR}transaction.json")" = "applied" ] \
   && [ "$(jq -r '.leads["'"$KEY2"'"].phase' "${TXN_DIR}transaction.json")" = "rolled-back" ] \
-  && [ "$(jq -r '.model' "$MANIFEST")" = "claude-fable-5" ] \
-  && ! jq -e 'has("model")' "$MANIFEST2" >/dev/null; then
-  pass "T11+T15: A applied stays applied; B failure rolled back"
+  && [ "$(jq -r '.model' "$MANIFEST")" = "fab-A" ] \
+  && ! jq -e 'has("model")' "$MANIFEST2" >/dev/null \
+  && [ "$(jq -r '.wrapper.phase' "${TXN_DIR}transaction.json")" = "w-committed" ]; then
+  pass "T11+T15: wrapper exactly once; A applied stays applied; B failure rolled back; wrapper NOT reverted"
 else
-  fail "T11+T15: rc=$RC A=$(jq -r '.leads["'"$KEY"'"].phase' "${TXN_DIR}transaction.json" 2>/dev/null) B=$(jq -r '.leads["'"$KEY2"'"].phase' "${TXN_DIR}transaction.json" 2>/dev/null) $OUT"
+  fail "T11+T15: rc=$RC w=$W_COUNT A=$(jq -r '.leads["'"$KEY"'"].phase' "${TXN_DIR}transaction.json" 2>/dev/null) B=$(jq -r '.leads["'"$KEY2"'"].phase' "${TXN_DIR}transaction.json" 2>/dev/null) $OUT"
 fi
 kill "$LIVE_A" "$LIVE_B" "$NEXT_A" 2>/dev/null || true
 
@@ -787,28 +749,11 @@ write_projects '"claude-fable-5"'
 # Source the fleet functions directly to pin the shared evidence helpers.
 # shellcheck disable=SC1090
 FLYWHEEL_FLEET_SOURCED=1 source "$REPO_ROOT/scripts/flywheel-fleet.sh"
-
-# FLY-1806: retiring the runtime Chrome flag must not silently change the
-# legacy manifest projection schema used by rollback CAS. In jq, false and a
-# missing key both canonicalize through `// null`, so both fixtures share the
-# historical golden hash.
-CHROME_PROJECTION_WITH="$SANDBOX/chrome-projection-with.json"
-CHROME_PROJECTION_WITHOUT="$SANDBOX/chrome-projection-without.json"
-printf '%s\n' '{"leadId":"lead","projectName":"proj","projectDir":"/repo","subdir":"","workspace":"/repo","projectsFile":"/projects.json","mcpExclude":"","chromeEnabled":false,"model":"m","effort":"medium","leadBackend":{"backendId":"claude-code"},"launchEnvironment":{"A":"B"}}' > "$CHROME_PROJECTION_WITH"
-printf '%s\n' '{"leadId":"lead","projectName":"proj","projectDir":"/repo","subdir":"","workspace":"/repo","projectsFile":"/projects.json","mcpExclude":"","model":"m","effort":"medium","leadBackend":{"backendId":"claude-code"},"launchEnvironment":{"A":"B"}}' > "$CHROME_PROJECTION_WITHOUT"
-CHROME_PROJECTION_GOLDEN="66d747b54b2ead7f2d70d29358166df3783a2bb1ebcb8dee800c52bf78ebceb8"
-if [ "$(manifest_projection_sha "$CHROME_PROJECTION_WITH")" = "$CHROME_PROJECTION_GOLDEN" ] \
-  && [ "$(manifest_projection_sha "$CHROME_PROJECTION_WITHOUT")" = "$CHROME_PROJECTION_GOLDEN" ]; then
-  pass "FLY-1806: legacy chromeEnabled projection keeps its golden CAS hash"
-else
-  fail "FLY-1806: legacy chromeEnabled projection hash drifted"
-fi
 set +e
 
 # T21 (QA F-2): a DEAD claude pane is NOT runtime evidence (production had a
 # SIGTERM'd Claude-Mufasa pane still reporting "claude" as its command).
-LIVE=$(setup_running_lead null)
-printf '1\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
+printf '1\t%s\t0\tclaude\n' "$KEY" > "$CTL/tmux_out"
 claude_pane_evidence "$KEY"
 rc=$?
 if [ "$rc" -eq 1 ]; then
@@ -821,20 +766,15 @@ fi
 # as pane_current_command — the pane PID's process tree is the real signal.
 CLAUDE_NAMED=$(bash -c 'exec -a claude-lead-test sleep 300' </dev/null >/dev/null 2>&1 & echo $!)
 LIVE_PIDS+=("$CLAUDE_NAMED")
-printf '0\tmain\tmain\t%s\t2.1.170\n' "$CLAUDE_NAMED" > "$CTL/tmux_out"
-if ! ps -o command= -p "$CLAUDE_NAMED" >/dev/null 2>&1; then
-  pass "T22: process-table assertion skipped (sandbox denies ps)"
+printf '0\t%s\t%s\t2.1.170\n' "$KEY" "$CLAUDE_NAMED" > "$CTL/tmux_out"
+claude_pane_evidence "$KEY"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "T22: version-number pane command + claude process tree → evidence (F-3)"
 else
-  claude_pane_evidence "$KEY"
-  rc=$?
-  if [ "$rc" -eq 0 ]; then
-    pass "T22: version-number pane command + claude process tree → evidence (F-3)"
-  else
-    fail "T22: rc=$rc (expected 0)"
-  fi
+  fail "T22: rc=$rc (expected 0)"
 fi
 kill "$CLAUDE_NAMED" 2>/dev/null || true
-kill "$LIVE" 2>/dev/null || true
 
 # T23 (QA F-1): hand-edited MULTI-LINE plist (production FLY-241 format) —
 # the model must be readable so the migration runbook's seed drift appears.
@@ -853,7 +793,7 @@ cat > "$PLIST" <<HANDEOF
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>${SANDBOX}/.flywheel/bin/flywheel-lead-wrapper-v2.sh</string>
+        <string>${SANDBOX}/.flywheel/bin/flywheel-lead-wrapper.sh</string>
         <string>${MANIFEST}</string>
     </array>
 </dict>

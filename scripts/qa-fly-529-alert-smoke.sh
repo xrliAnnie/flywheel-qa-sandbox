@@ -11,7 +11,7 @@
 # The Bridge writer path is triggered deterministically by a small Node harness
 # (scripts/lib/qa-fly-529-fire-bridge-alert.mjs) that runs the exact plugin.ts
 # composition (resolveAlertDirsFromEnv + createClaims* + LeadAlertNotifier.alert)
-# against the real Discord API — no frozen-pane needed (the full Lead-pane alert
+# against the real Discord API — no frozen-pane needed (the full LeadWatchdog
 # trigger + Cass auto-repair is FLY-368 downstream). The shell path is invoked
 # directly as the second writer-path proof.
 #
@@ -20,8 +20,6 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=lib/qa-teardown-finalize.sh
-source "${SCRIPT_DIR}/lib/qa-teardown-finalize.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${HOME}/.flywheel/.env"
 SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
@@ -53,24 +51,8 @@ AGENT_ID=$(jq -r --argjson i "$((SLOT - 1))" '.slots[$i].botName' "$SLOTS_FILE")
 TOKEN_VAR=$(jq -r --argjson i "$((SLOT - 1))" '.slots[$i].tokenEnvVar' "$SLOTS_FILE")
 REPAIR_ENV=$(jq -r --arg d "$TOKEN_VAR" '.alertChannel.repairBotTokenEnv // $d' "$SLOTS_FILE")
 
-cleanup() {
-  log "teardown"
-  qa_finalize_teardown_slots "/tmp/qa-fly-529-alert-smoke-$$" "$SLOT"
-}
-cleanup_on_exit() {
-  local primary_rc=$? cleanup_rc=0
-  trap - EXIT
-  set +e
-  cleanup
-  cleanup_rc=$?
-  if (( primary_rc != 0 )); then exit "$primary_rc"; fi
-  if (( cleanup_rc != 0 )); then
-    log "PASS_WITH_TEARDOWN_FAILURE: smoke assertions passed but slot cleanup failed"
-    exit 2
-  fi
-  exit 0
-}
-trap cleanup_on_exit EXIT
+cleanup() { log "teardown"; bash "${SCRIPT_DIR}/test-teardown.sh" "$SLOT" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
 
 # Portable production-dir isolation check: snapshot the file SETS before/after
 # and assert no NEW files appeared (no GNU find -newermt — that fails on macOS

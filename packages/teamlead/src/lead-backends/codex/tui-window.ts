@@ -23,10 +23,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-import {
-	buildTmuxServerBirthEnvironment,
-	withSyncOpMarker,
-} from "flywheel-claude-runner";
 
 export const TUI_TMUX_SESSION = "flywheel";
 
@@ -47,8 +43,6 @@ export interface TuiWindowSpec {
 	 * `-s workspace-write` instead of the `-s read-only` pin (pin ③ of the five-pin
 	 * flip). Default/undefined keeps the `-s read-only` companion pin. */
 	fullAccess?: boolean;
-	/** FLY-1309 generation capability, inherited by the founder TUI shell. */
-	carrierInstanceId?: string;
 }
 
 /** The command string is executed by tmux via a shell — every interpolated
@@ -66,7 +60,6 @@ function assertShellSafe(name: string, value: string, re: RegExp): string {
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
 const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
 const SAFE_BIN = /^[A-Za-z0-9_./-]+$/;
-const SAFE_CARRIER_ID = /^[A-Za-z0-9_-]+$/;
 
 /** Build the exact TUI command line (pure — unit-testable; quoted for the
  * shell tmux spawns). The remote socket path is derived from codexHome. */
@@ -75,13 +68,6 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 	assertShellSafe("cwd", spec.cwd, SAFE_PATH);
 	assertShellSafe("threadId", spec.threadId, SAFE_ID);
 	if (spec.codexBin) assertShellSafe("codexBin", spec.codexBin, SAFE_BIN);
-	if (spec.carrierInstanceId) {
-		assertShellSafe(
-			"carrierInstanceId",
-			spec.carrierInstanceId,
-			SAFE_CARRIER_ID,
-		);
-	}
 	const bin = spec.codexBin ?? "codex";
 	const sock = `${spec.codexHome}/app-server-control/app-server-control.sock`;
 	return [
@@ -102,28 +88,13 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 }
 
 export interface EnsureTuiWindowDeps {
-	exec?: (
-		cmd: string,
-		args: string[],
-		options?: { env?: NodeJS.ProcessEnv },
-	) => { ok: boolean };
+	exec?: (cmd: string, args: string[]) => { ok: boolean };
 	log?: (m: string) => void;
 }
 
-function defaultExec(
-	cmd: string,
-	args: string[],
-	options: { env?: NodeJS.ProcessEnv } = {},
-): { ok: boolean } {
+function defaultExec(cmd: string, args: string[]): { ok: boolean } {
 	try {
-		const subcommand = args.find((arg) => !arg.startsWith("-")) ?? cmd;
-		const r = withSyncOpMarker(`codex-tui:${subcommand}`, () =>
-			spawnSync(cmd, args, {
-				stdio: "ignore",
-				timeout: 10_000,
-				...(options.env ? { env: options.env } : {}),
-			}),
-		);
+		const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 10_000 });
 		return { ok: r.status === 0 };
 	} catch {
 		return { ok: false };
@@ -152,9 +123,7 @@ export function ensureTuiWindow(
 			log(`tui-window: tmux unavailable — skipping (${windowName})`);
 			return false;
 		}
-		exec("tmux", ["new-session", "-Ad", "-s", TUI_TMUX_SESSION], {
-			env: buildTmuxServerBirthEnvironment(),
-		});
+		exec("tmux", ["new-session", "-Ad", "-s", TUI_TMUX_SESSION]);
 		exec("tmux", ["kill-window", "-t", `=${TUI_TMUX_SESSION}:=${windowName}`]);
 		const created = exec("tmux", [
 			"new-window",
@@ -163,16 +132,6 @@ export function ensureTuiWindow(
 			`=${TUI_TMUX_SESSION}`,
 			"-n",
 			windowName,
-			...(spec.carrierInstanceId
-				? [
-						"-e",
-						`FLYWHEEL_LEAD_CARRIER_INSTANCE_ID=${spec.carrierInstanceId}`,
-						"-e",
-						`FLYWHEEL_LEAD_ID=${spec.leadId}`,
-						"-e",
-						`FLYWHEEL_PROJECT_NAME=${spec.projectName}`,
-					]
-				: []),
 			buildTuiCommand(spec),
 		]);
 		if (!created.ok) {
@@ -203,10 +162,7 @@ export function isTuiWindowAlive(
 		deps.execOut ??
 		((cmd: string, args: string[]) => {
 			try {
-				const subcommand = args.find((arg) => !arg.startsWith("-")) ?? cmd;
-				const r = withSyncOpMarker(`codex-tui:${subcommand}`, () =>
-					spawnSync(cmd, args, { encoding: "utf8", timeout: 5_000 }),
-				);
+				const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 5_000 });
 				return r.status === 0 ? r.stdout.trim() : undefined;
 			} catch {
 				return undefined;

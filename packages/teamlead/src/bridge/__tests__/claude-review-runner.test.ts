@@ -19,7 +19,7 @@ describe("buildClaudeReviewArgv", () => {
 			sessionId: "uuid-1",
 			resume: false,
 		});
-		expect(fresh.slice(0, -2)).toEqual([
+		expect(fresh).toEqual([
 			"-p",
 			"review this",
 			"--session-id",
@@ -27,23 +27,17 @@ describe("buildClaudeReviewArgv", () => {
 			"--output-format",
 			"json",
 			"--model",
-			"claude-opus-5",
+			"claude-opus-4-8",
 			// FLY-1224 (T13 ②, Annie's directive): the cross-family Claude
 			// reviewer defaults to Opus + effort xhigh.
-			// FLY-1467: the default Opus reviewer binds to Opus 5.
 			"--effort",
 			"xhigh",
 		]);
-		expect(fresh.at(-2)).toBe("--settings");
-		expect(JSON.parse(fresh.at(-1) as string).enabledPlugins).toMatchObject({
-			"discord@flywheel-plugins": false,
-			"discord@claude-plugins-official": false,
-		});
 		const reround = buildClaudeReviewArgv({
 			prompt: "round 2 delta",
 			sessionId: "uuid-1",
 			resume: true,
-			model: "fable",
+			model: "custom-model",
 		});
 		expect(reround.slice(0, 4)).toEqual([
 			"-p",
@@ -51,45 +45,7 @@ describe("buildClaudeReviewArgv", () => {
 			"--resume",
 			"uuid-1",
 		]);
-		expect(reround).toContain("claude-fable-5");
-		expect(reround.filter((arg) => arg === "--settings")).toHaveLength(1);
-	});
-
-	it("rejects an unresolvable reviewer model before spawn", () => {
-		expect(() =>
-			buildClaudeReviewArgv({
-				prompt: "p",
-				sessionId: "u",
-				resume: false,
-				model: "claude-not-a-model",
-			}),
-		).toThrow(/unknown model/i);
-	});
-
-	// FLY-1650 (Codex R2 HIGH): this is a third launch path that appends
-	// --effort independently of the model, and its default is the very tier
-	// Opus 4.6 lacks. Naming 4.6 here is reachable today — it carries the
-	// runner surface — so the default alone would emit an upstream 400.
-	it("FLY-1650: drops the xhigh default for a model that does not support it", () => {
-		const argv = buildClaudeReviewArgv({
-			prompt: "p",
-			sessionId: "u",
-			resume: false,
-			model: "opus-4-6",
-		});
-		expect(argv).toContain("claude-opus-4-6");
-		expect(argv).not.toContain("--effort");
-	});
-
-	it("FLY-1650: keeps a supported effort for the same model", () => {
-		const argv = buildClaudeReviewArgv({
-			prompt: "p",
-			sessionId: "u",
-			resume: false,
-			model: "opus-4-6",
-			effort: "high",
-		});
-		expect(argv[argv.indexOf("--effort") + 1]).toBe("high");
+		expect(reround).toContain("custom-model");
 	});
 
 	it("FLY-1224: an explicit effort overrides the xhigh default", () => {
@@ -213,27 +169,15 @@ describe("parseClaudeReviewOutput", () => {
 		).toBe("APPROVED");
 	});
 
-	it("CHANGES_REQUESTED with stable-id and ruling-dispute findings round-trips", () => {
+	it("CHANGES_REQUESTED with findings round-trips", () => {
 		const out = JSON.stringify({
 			verdict: "changes_requested",
-			findings: [
-				{
-					id: "auth-bug",
-					disputesRuling: "settled-auth",
-					severity: "HIGH",
-					file: "a.ts",
-					title: "bug",
-				},
-			],
+			findings: [{ severity: "HIGH", file: "a.ts", title: "bug" }],
 			reviewedHeadSha: null,
 		});
 		const parsed = parseClaudeReviewOutput(out);
 		expect(parsed?.verdict).toBe("CHANGES_REQUESTED");
 		expect(parsed?.findings).toHaveLength(1);
-		expect(parsed?.findings[0]).toMatchObject({
-			id: "auth-bug",
-			disputesRuling: "settled-auth",
-		});
 		expect(parsed?.reviewedHeadSha).toBeNull();
 	});
 

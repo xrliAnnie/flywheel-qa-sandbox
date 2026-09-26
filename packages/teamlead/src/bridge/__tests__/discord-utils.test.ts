@@ -234,13 +234,12 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 		const fetchMock = vi
 			.fn()
 			.mockResolvedValueOnce(new Response(null, { status: 204 }));
-		const controller = new AbortController();
 		await editDiscordMessageInChannel(
 			"thread-auto",
 			"message-auto",
 			"🤖[自动] phase update",
 			"bot-token",
-			{ origin: "automation", signal: controller.signal },
+			{ origin: "automation" },
 			fetchMock as unknown as typeof fetch,
 		);
 		const body = JSON.parse(
@@ -248,9 +247,6 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 		);
 		expect(body.content).toBe("🤖[自动] phase update");
 		expect(body.allowed_mentions).toEqual({ parse: [] });
-		expect((fetchMock.mock.calls[0][1] as RequestInit).signal).toBe(
-			controller.signal,
-		);
 	});
 });
 

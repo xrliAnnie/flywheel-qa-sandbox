@@ -13,7 +13,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
 	buildAttachCommand,
 	captureRunnerScrollback,
-	discoverTmuxTargetByExecutionId,
 	isTmuxWindowAlive,
 	probeRunnerProcessLiveness,
 	resolveCmuxAttachTarget,
@@ -26,53 +25,6 @@ function tmuxAvailable(): boolean {
 
 const hasTmux = tmuxAvailable();
 const describeReal = hasTmux ? describe : describe.skip;
-
-describeReal("discoverTmuxTargetByExecutionId (real tmux)", () => {
-	const id = randomUUID().slice(0, 8);
-	const session = `runner-fly1374-${id}`;
-	const linked = `cmux-FLY-1374-${id}`;
-	const executionId = `exec-${randomUUID()}`;
-
-	afterAll(() => {
-		spawnSync("tmux", ["kill-session", "-t", linked], { stdio: "ignore" });
-		spawnSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
-	});
-
-	it("finds one marked window through base + linked-session aliases", async () => {
-		execFileSync(
-			"tmux",
-			["new-session", "-d", "-s", session, "-n", "holder", "sleep 600"],
-			{ timeout: 5000 },
-		);
-		const windowId = execFileSync(
-			"tmux",
-			["list-windows", "-t", session, "-F", "#{window_id}"],
-			{ encoding: "utf8", timeout: 5000 },
-		).trim();
-		execFileSync(
-			"tmux",
-			[
-				"set-option",
-				"-w",
-				"-t",
-				`=${session}:${windowId}`,
-				"@flywheel_exec_id",
-				executionId,
-			],
-			{ timeout: 5000 },
-		);
-		execFileSync("tmux", ["new-session", "-d", "-s", linked, "-t", session], {
-			timeout: 5000,
-		});
-
-		await expect(discoverTmuxTargetByExecutionId(executionId)).resolves.toEqual(
-			{
-				kind: "found",
-				tmuxWindow: `${session}:${windowId}`,
-			},
-		);
-	});
-});
 
 describeReal("isTmuxWindowAlive (real tmux)", () => {
 	const session = `fly172-test-${randomUUID().slice(0, 8)}`;
@@ -201,7 +153,6 @@ describeReal("resolveCmuxAttachTarget + buildAttachCommand (real tmux)", () => {
 	const base = `fly560base-${uid}`;
 	const winName = `FLY-560-claude-realtest-${uid}`;
 	const cmuxName = `cmux-${winName}`;
-	const executionId = `exec-${randomUUID()}`;
 	let tmuxWindow = "";
 
 	afterAll(() => {
@@ -223,23 +174,9 @@ describeReal("resolveCmuxAttachTarget + buildAttachCommand (real tmux)", () => {
 			.trim()
 			.split("\n")[0];
 		tmuxWindow = `${base}:${windowId}`;
-		execFileSync(
-			"tmux",
-			[
-				"set-option",
-				"-w",
-				"-t",
-				`=${tmuxWindow}`,
-				"@flywheel_exec_id",
-				executionId,
-			],
-			{ timeout: 5000 },
-		);
 
 		// No cmux linked session yet → base fallback.
-		const before = await resolveCmuxAttachTarget(tmuxWindow, {
-			expectedExecutionId: executionId,
-		});
+		const before = await resolveCmuxAttachTarget(tmuxWindow);
 		// FLY-907 (Step 3): the resolved window_name rides along for the
 		// cross-wire guard, even on the base fallback.
 		expect(before).toEqual({
@@ -253,55 +190,11 @@ describeReal("resolveCmuxAttachTarget + buildAttachCommand (real tmux)", () => {
 		execFileSync("tmux", ["new-session", "-d", "-s", cmuxName, "-t", base], {
 			timeout: 5000,
 		});
-		const after = await resolveCmuxAttachTarget(tmuxWindow, {
-			expectedExecutionId: executionId,
-		});
+		const after = await resolveCmuxAttachTarget(tmuxWindow);
 		expect(after).toEqual({
 			kind: "cmux",
 			session: cmuxName,
 			windowName: winName,
-		});
-	});
-
-	it("fails closed for pending, stale, and execution-drifted identities", async () => {
-		await expect(
-			resolveCmuxAttachTarget(`${base}:pending`, {
-				expectedExecutionId: executionId,
-			}),
-		).resolves.toEqual({
-			kind: "unresolved",
-			tmuxWindow: `${base}:pending`,
-			reason: "pending-target",
-		});
-
-		await expect(
-			resolveCmuxAttachTarget(`${base}:stale-${uid}`, {
-				expectedExecutionId: executionId,
-			}),
-		).resolves.toEqual({
-			kind: "unresolved",
-			tmuxWindow: `${base}:stale-${uid}`,
-			reason: "window-name-mismatch",
-		});
-
-		await expect(
-			resolveCmuxAttachTarget(`${base}:@999999`, {
-				expectedExecutionId: executionId,
-			}),
-		).resolves.toEqual({
-			kind: "unresolved",
-			tmuxWindow: `${base}:@999999`,
-			reason: "window-id-mismatch",
-		});
-
-		await expect(
-			resolveCmuxAttachTarget(tmuxWindow, {
-				expectedExecutionId: "exec-different",
-			}),
-		).resolves.toEqual({
-			kind: "unresolved",
-			tmuxWindow,
-			reason: "execution-mismatch",
 		});
 	});
 

@@ -3,7 +3,7 @@
  *
  * canAttempt decides attemptability; enqueue writes the durable pending record
  * (AutoRepairBot's action on a cap); executeSwitch does the actual switch (fired
- * by a bot claim or the deadline sweep) and resolves the record. Switch deps are
+ * by a bot claim or the watchdog) and resolves the record. Switch deps are
  * mocked so no real Keychain is touched.
  */
 import { mkdtempSync, rmSync } from "node:fs";
@@ -205,20 +205,6 @@ describe("account-switch-repair · executeSwitch", () => {
 		const r = await repair(switchImpl).executeSwitch(pending());
 		expect(r.outcome).toBe("attempted");
 		expect(r.detail).toContain("school");
-	});
-
-	it("reconciled an interrupted switch → attempted no-op with generation", async () => {
-		const switchImpl = vi.fn(
-			async (): Promise<SwitchResult> => ({
-				outcome: "noop_reconciled",
-				activeAccount: "shopping",
-				generation: 8,
-			}),
-		);
-		const r = await repair(switchImpl).executeSwitch(pending());
-		expect(r.outcome).toBe("attempted");
-		expect(r.detail).toContain("shopping");
-		expect(r.detail).toContain("generation 8");
 	});
 
 	it("no account → needs_human with the earliest reset", async () => {

@@ -19,7 +19,6 @@ interface MockedLinearIssue {
 	title: string;
 	description: string | null;
 	identifier: string;
-	updatedAt: Date;
 	labels: () => Promise<{ nodes: Array<{ name: string }> }>;
 	project: Promise<{ id: string } | null>;
 }
@@ -68,7 +67,6 @@ describe("createFetchIssue (FLY-137 wire-up fix)", () => {
 			title: `Issue ${id}`,
 			description: "Body",
 			identifier: id,
-			updatedAt: new Date("2026-08-15T01:02:03.000Z"),
 			labels: async () => ({ nodes: [{ name: "designer" }] }),
 			project: Promise.resolve({ id: "proj-1" }),
 		});
@@ -85,8 +83,6 @@ describe("createFetchIssue (FLY-137 wire-up fix)", () => {
 		// Labels MUST flow through — pre-fix this was always [].
 		expect(result.labels).toEqual(["designer"]);
 		expect(result.identifier).toBe("GEO-372");
-		expect(result.descriptionSource).toBe("authoritative");
-		expect(result.updatedAt).toBe("2026-08-15T01:02:03.000Z");
 	});
 
 	it("returns multiple labels in original case (no lowercase mutation here — done at runs-route boundary)", async () => {
@@ -95,7 +91,6 @@ describe("createFetchIssue (FLY-137 wire-up fix)", () => {
 			title: `Issue ${id}`,
 			description: "",
 			identifier: id,
-			updatedAt: new Date("2026-08-15T01:02:03.000Z"),
 			labels: async () => ({
 				nodes: [
 					{ name: "designer" },
@@ -125,7 +120,6 @@ describe("createFetchIssue (FLY-137 wire-up fix)", () => {
 
 		expect(result.title).toBe("Stub Title");
 		expect(result.identifier).toBe("GEO-001");
-		expect(result.descriptionSource).toBe("fallback");
 		// The previous silent code path returned no labels field; the fallback
 		// must keep that contract (labels remain absent, NOT empty array, so
 		// PreHydrator's `?? []` semantics still kick in).

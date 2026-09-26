@@ -9,9 +9,9 @@
  *     → resolve channel (explicit param → ProjectEntry.generalChannel → 400)
  *     → ONE Discord message: screenshot attachment + link (or link-only)
  *
- * Ownership (Codex design review R2#4): this router owns business logic. Auth —
- * including the "no apiToken → 503" sensitive-surface refusal — is owned by
- * the plugin mount layer.
+ * Ownership (Codex design review R2#4): this router owns business logic and
+ * the `enabled` kill switch only. Auth — including the "no apiToken → 503"
+ * sensitive-surface refusal — is owned by the plugin mount layer.
  *
  * Transaction semantics are documented in report-registry.ts. Publishes are
  * serialized through an in-process promise-chain mutex: the registry
@@ -52,8 +52,6 @@ const MAX_HTML_SIZE = 512 * 1024; // 512 KB — same cap as /api/publish-html
 const MAX_TITLE_LENGTH = 200;
 const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024; // Discord verified cap
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
-export const MAX_OUTSTANDING_REPORT_PUBLISHES = 8;
-type ReportCredentialTier = "master" | "ingest";
 
 export type ReportPostTextFn = (
 	channelId: string,
@@ -62,17 +60,12 @@ export type ReportPostTextFn = (
 ) => Promise<PostDiscordResult>;
 
 export interface ReportsRouterOptions {
+	/** FLYWHEEL_REMOTE_REPORTS kill switch — plugin reads env and injects. */
+	enabled: boolean;
 	vercelToken: string | undefined;
 	discordBotToken: string | undefined;
-	/** Call-time sender resolution for identities that can change after boot. */
-	resolveDiscordBotToken?: () => string | undefined;
 	projects: ProjectEntry[];
 	registry: ReportRegistry;
-	/** Resolve an issue identifier to its existing Lead-owned Discord thread. */
-	resolveIssueThread: (
-		issueIdentifier: string,
-		projectName: string,
-	) => string | undefined | Promise<string | undefined>;
 	/** Test seams. */
 	deployFiles?: typeof deployFilesToVercel;
 	postWithFile?: typeof postDiscordMessageWithFile;
@@ -197,36 +190,20 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 				origin: "automation",
 			}));
 
+	// Kill switch — before any handler (plugin injects env state).
+	router.use((_req, res, next) => {
+		if (!opts.enabled) {
+			res.status(503).json({ error: "remote reports disabled" });
+			return;
+		}
+		next();
+	});
+
 	// In-process publish mutex (promise chain).
 	let publishChain: Promise<void> = Promise.resolve();
-	let outstandingPublishes = 0;
 
 	router.post("/publish", (req, res) => {
 		const run = async (): Promise<void> => {
-			const credentialTier = res.locals.reportCredentialTier as
-				| ReportCredentialTier
-				| undefined;
-			if (credentialTier !== "master" && credentialTier !== "ingest") {
-				res.status(401).json({ error: "report credential tier missing" });
-				return;
-			}
-			const body = (req.body ?? {}) as Record<string, unknown>;
-			const { projectName, html, title } = body;
-			if (credentialTier === "ingest") {
-				const normalizedProject =
-					typeof projectName === "string" ? projectName.trim() : "";
-				if (
-					!normalizedProject ||
-					!opts.projects.some(
-						(project) => project.projectName === normalizedProject,
-					)
-				) {
-					res.status(403).json({
-						error: "ingest report publish requires a configured projectName",
-					});
-					return;
-				}
-			}
 			if (!opts.vercelToken) {
 				res.status(501).json({
 					error:
@@ -235,6 +212,8 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 				return;
 			}
 
+			const body = (req.body ?? {}) as Record<string, unknown>;
+			const { projectName, html, title } = body;
 			if (typeof projectName !== "string" || projectName.trim().length === 0) {
 				res.status(400).json({
 					error: "projectName is required and must be a non-empty string",
@@ -307,9 +286,6 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 				res.status(502).json({ error: "report publish commit failed" });
 				return;
 			}
-			console.info(
-				`[reports] publish succeeded credentialTier=${credentialTier} project=${JSON.stringify(projectName.trim())}`,
-			);
 
 			res.json({
 				url: `https://${staged.vercelProjectName}.vercel.app/r/${staged.entry.token}/`,
@@ -317,30 +293,18 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			});
 		};
 
-		if (outstandingPublishes >= MAX_OUTSTANDING_REPORT_PUBLISHES) {
-			res.status(429).json({ error: "too many outstanding report publishes" });
-			return;
-		}
-		outstandingPublishes += 1;
 		// Serialize publishes; errors are already turned into responses inside
 		// run(), but guard the chain against unexpected rejections anyway.
-		publishChain = publishChain
-			.then(run)
-			.catch((err) => {
-				console.error("[reports] publish handler error:", err);
-				if (!res.headersSent) {
-					res.status(500).json({ error: "internal error" });
-				}
-			})
-			.finally(() => {
-				outstandingPublishes -= 1;
-			});
+		publishChain = publishChain.then(run).catch((err) => {
+			console.error("[reports] publish handler error:", err);
+			if (!res.headersSent) {
+				res.status(500).json({ error: "internal error" });
+			}
+		});
 	});
 
 	router.post("/deliver", async (req, res) => {
-		const discordBotToken =
-			opts.resolveDiscordBotToken?.() ?? opts.discordBotToken;
-		if (!discordBotToken) {
+		if (!opts.discordBotToken) {
 			res.status(501).json({
 				error:
 					"report delivery not available — Discord bot token not configured",
@@ -349,14 +313,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		}
 
 		const body = (req.body ?? {}) as Record<string, unknown>;
-		const {
-			url,
-			projectName,
-			title,
-			channelId,
-			issueIdentifier,
-			screenshotPath,
-		} = body;
+		const { url, projectName, title, channelId, screenshotPath } = body;
 		if (typeof url !== "string" || url.trim().length === 0) {
 			res.status(400).json({
 				error: "url is required and must be a non-empty string",
@@ -375,23 +332,6 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		) {
 			res.status(400).json({
 				error: `title must be a string of at most ${MAX_TITLE_LENGTH} characters`,
-			});
-			return;
-		}
-		if (channelId !== undefined && issueIdentifier !== undefined) {
-			res.status(400).json({
-				error: "channelId and issueIdentifier are mutually exclusive",
-			});
-			return;
-		}
-		if (
-			issueIdentifier !== undefined &&
-			(typeof issueIdentifier !== "string" ||
-				!/^[A-Z][A-Z0-9]*-\d+$/.test(issueIdentifier.trim()))
-		) {
-			res.status(400).json({
-				error:
-					"issueIdentifier must be a Linear issue identifier such as FLY-1463",
 			});
 			return;
 		}
@@ -425,20 +365,10 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			});
 		};
 
-		// Channel resolution: explicit param OR issue thread, otherwise the
-		// pre-FLY-1463 project generalChannel fallback.
+		// Channel resolution: explicit param → project generalChannel → 400.
 		let channel: string | undefined;
 		if (typeof channelId === "string" && channelId.trim().length > 0) {
 			channel = channelId.trim();
-		} else if (typeof issueIdentifier === "string") {
-			channel = await opts.resolveIssueThread(
-				issueIdentifier.trim(),
-				projectName.trim(),
-			);
-			if (!channel) {
-				res.status(404).json({ error: "issue_thread_not_found" });
-				return;
-			}
 		} else {
 			const project = opts.projects.find(
 				(p) => p.projectName === projectName.trim(),
@@ -485,7 +415,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 				channel,
 				message,
 				{ data: preview.data, filename: preview.filename },
-				discordBotToken,
+				opts.discordBotToken,
 			);
 			if (!result.ok) {
 				res.status(502).json({ error: result.error });
@@ -505,7 +435,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		const result: PostDiscordResult = await postText(
 			channel,
 			message,
-			discordBotToken,
+			opts.discordBotToken,
 		);
 		if (!result.ok) {
 			res.status(502).json({ error: result.error });

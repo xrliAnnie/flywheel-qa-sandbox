@@ -21,13 +21,18 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
 import { readContentRef } from "flywheel-comm/utils";
-// FLY-927: gate patrol wake primitive.
+// FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import { phaseMessageTag } from "flywheel-config";
-import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
+import {
+	type FounderMilestoneReportConfig,
+	type MilestoneKind,
+	phaseMessageTag,
+	SUPPORTED_MILESTONE_KINDS_V1,
+} from "flywheel-config";
 import {
 	encodeReactionEmoji,
 	type ReactionFetcher,
@@ -46,14 +51,17 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
-import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import {
 	type DeferredRebindDeps,
 	type RebindCommDb,
 	runDeferredApprovalRebindPass,
 } from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
+import { isReviewHeld, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+// FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
+import { queueCodexCodeReviewInstructionResult } from "./codex-instruction.js";
 import { DISCORD_API, postDiscordMessageToChannel } from "./discord-utils.js";
 import { drainFounderActionLedger } from "./founder-action-drain.js";
 import {
@@ -67,59 +75,93 @@ import {
 	type FounderReplyThreadCtx,
 	type PendingQuestionForThread,
 } from "./founder-reply-deliverer.js";
-import { FounderReplyUnreachableReconcile } from "./founder-reply-unreachable.js";
-import { founderReviewCheckpointEnabled } from "./founder-review-authority.js";
-import { tryFounderReviewReactionResponse } from "./founder-review-response.js";
-import { emitFounderThreadNotification } from "./founder-thread-notifier.js";
+import { FounderReplyWatchdog } from "./founder-reply-watchdog.js";
+import {
+	emitFounderMilestoneNotification,
+	emitFounderThreadNotification,
+	emitIssueThreadInfraNotification,
+} from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
+import {
+	computeStuckKey,
+	decideLeadNudge,
+	leadPendingEscalationEnabled,
+	readLeadNudgePolicy,
+} from "./lead-pending-escalation.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { MergedGateGuard } from "./merged-gate-guard.js";
-import {
-	isAutoMigratableClaudeTmux,
-	parsePaneLossGenerationParams,
-} from "./pane-loss-reconcile.js";
-import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
-import { type ReviewHoldReason, reviewHoldReason } from "./review-hold.js";
+import { decideMilestoneReport } from "./milestone-report-policy.js";
 import { sendRunnerWake } from "./runner-wake.js";
-import {
-	dispatchLeadEventCompat as dispatchLeadEvent,
-	type RuntimeRegistry,
-} from "./runtime-registry.js";
+import type { RuntimeRegistry } from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
 import {
-	classifyStaleShipRunnerLiveness,
 	DEFAULT_REWAKE_BACKOFF_MS,
 	DEFAULT_REWAKE_GRACE_MS,
-	deadAlertAccepted,
 	type RewakeSessionProbe,
 	reconcileStaleApprovedShip,
-	shipAttemptFailedSuppressedHead,
 } from "./stale-approved-ship-reconciler.js";
-import {
-	discoverTmuxTargetByExecutionId,
-	lookupTmuxTarget,
-	probeRunnerProcessLiveness,
-	probeTmuxServerStartTime,
-} from "./tmux-lookup.js";
+import type { UnhandledAlertSink } from "./stuck-escalation.js";
+import { isTmuxSessionAlive } from "./tmux-lookup.js";
 import {
 	runZombieGateHygiene,
 	type ZombieCommDb,
+	zombieGateResolveEnabled,
 } from "./zombie-gate-hygiene.js";
 
+/**
+ * FLY-208 A2: minimal structural view of the agent-team transport used by the
+ * misroute patrol. `ClaudeCodeAdapter` satisfies it; tests can stub it.
+ * Production code must reach mailbox files through this interface only (the
+ * CI grep gate forbids direct claude path-helper calls outside the transport
+ * package).
+ */
+export interface MisrouteMailboxMessage {
+	/** Vendor-stable dedupe id (`${from}:${timestamp}` for claude-code). */
+	id: string;
+	from: string;
+	content: string;
+	/** Epoch ms of the original mailbox entry. */
+	ts: number;
+	read: boolean;
+}
+
+export interface MisroutePatrolTransport {
+	readUnread(args: {
+		leadName: string;
+		agentName: string;
+	}): Promise<MisrouteMailboxMessage[]>;
+	ack(args: {
+		leadName: string;
+		agentName: string;
+		messageIds: string[];
+	}): Promise<void>;
+}
+
 export interface GatePollerConfig {
-	/** FLY-1995: wall-clock correlation only; never treated as CPU attribution. */
-	recordSpan?: (name: string, startMs: number, endMs: number) => void;
 	pollIntervalMs: number;
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
-	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
-	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
 	chatThreadsEnabled?: boolean;
+	/**
+	 * FLY-208 A2: transport for the black-hole inbox patrol. Absent (commdb /
+	 * rollback mode, or wiring failure) → patrol is a complete no-op.
+	 */
+	transport?: MisroutePatrolTransport;
+	/**
+	 * FLY-208 A2: root dir for backlog JSONL archives
+	 * (`<dir>/<leadId>/<aggregateId>.jsonl`). Required for the patrol — the
+	 * aggregate path MUST archive before bulk-ack (mailbox read-retention
+	 * pruning can delete acked originals). transport set but archiveDir
+	 * missing → patrol no-op + one warning.
+	 */
+	misrouteArchiveDir?: string;
 	/** FLY-208 A2: patrol cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	patrolEveryNTicks?: number;
+	/** FLY-208 A2: unread count above which the aggregate path kicks in (default 10). */
+	backlogThreshold?: number;
 	/** FLY-307 B: consecutive per-lead poll failures before the circuit opens (default 3). */
 	circuitThreshold?: number;
 	/** FLY-307 B: poll ticks a lead's circuit stays open before a probe (default 20 ≈ 60s at 3s). */
@@ -135,36 +177,17 @@ export interface GatePollerConfig {
 	 * window the boot check alone cannot cover. Absent → complete no-op.
 	 */
 	onHealthTick?: () => void | Promise<void>;
-	/** FLY-1687: pure alarm producer on the existing 60s rider cadence. */
-	onLeadPatrolTick?: () => void | Promise<void>;
-	/** FLY-2131: durable Raya summary-absorption producer on the same cadence. */
-	onSummaryAbsorptionTick?: () => void | Promise<void>;
-	/** FLY-2118: machine-wide orphan-pane fallback on the same 60s rider cadence. */
-	onPatrolOrphanSweepTick?: () => void | Promise<void>;
-	/** FLY-1944: cmux watcher liveness/recovery rider on the same 60s cadence. */
-	onCmuxWatcherPatrolTick?: () => void | Promise<void>;
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
 	healthCheckEveryNTicks?: number;
 	/**
-	 * FLY-1314: issue-scoped gate supersede patrol. It shares the existing
-	 * GatePoller timer and runs every tick so a newly-opened replacement gate
-	 * cannot leave a long founder-reply ambiguity window. The callback owns its
-	 * own bounded mutation budget; failures are fully contained here.
+	 * FLY-1048 (PR-C): the detection-escalation reconcile sweep — the ~30min
+	 * Lead-grace timer that pages the founder (or aggregates a fleet incident).
+	 * Piggybacks this same poll tick (zero new periodic timer). Error-isolated +
+	 * fire-and-forget. Absent → complete no-op; cadence 0 → disabled.
 	 */
-	onIssueGateSupersedeTick?: () => void | Promise<void>;
-	/**
-	 * FLY-1375: converge engine-owned approval holders into CommDB + Discord.
-	 * Runs every poll tick on the existing timer; the callback owns single-flight.
-	 */
-	onWorkflowGateMaterializeTick?: () => void | Promise<void>;
-	/** FLY-1375: resume durable engine and runless land operations. */
-	onLandOperationTick?: () => void | Promise<void>;
-	/**
-	 * FLY-1282 Part D: the disposition-receipt delivery pass — its OWN stage,
-	 * fixed cadence 20 ticks (≈60s at 3s); the pass has
-	 * its own in-process single-flight. Absent → complete no-op.
-	 */
-	onDispositionReceiptTick?: () => void | Promise<void>;
+	onDetectionReconcileTick?: () => void | Promise<void>;
+	/** FLY-1048 (PR-C): cadence in poll ticks (default 20 ≈ 60s at 3s). */
+	detectionReconcileEveryNTicks?: number;
 	/**
 	 * FLY-907 (Step 4.5): the issue-display reconcile sweep, piggybacked on this
 	 * same poll tick (zero new periodic timers — FLY-169/172/208 discipline).
@@ -174,10 +197,22 @@ export interface GatePollerConfig {
 	 */
 	onDisplayReconcileTick?: () => void | Promise<void>;
 	/**
-	 * FLY-907: injectable test cadence for `onDisplayReconcileTick`. Production
-	 * uses 60 ticks (≈3min at the 3s interval); invalid values fall back to 60.
+	 * FLY-907: cadence for `onDisplayReconcileTick` in poll ticks (default 60 ≈
+	 * 3min at the production 3s interval; plugin reads
+	 * FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS). 0 → sweep disabled.
 	 */
 	displayReconcileEveryNTicks?: number;
+	/**
+	 * FLY-1048 (A6): the cheap gap/state scan, piggybacked on this same tick
+	 * (zero new periodic timer — FLY-513 pattern). MUST stay zero-pane /
+	 * zero-token (StateStore + readonly CommDB reads only); fully
+	 * error-isolated. Absent → complete no-op (byte-compat).
+	 */
+	onGapScanTick?: () => void | Promise<void>;
+	/** FLY-1048 (A6): cadence in poll ticks (default 100 ≈ 5min at 3s; plugin
+	 * reads FLYWHEEL_GAP_SCAN_EVERY_N_TICKS). */
+	gapScanEveryNTicks?: number;
+
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
 	/** Global Discord bot token fallback (lead.botToken takes precedence). */
 	discordBotToken?: string;
@@ -195,67 +230,38 @@ export interface GatePollerConfig {
 	 * FLY-945 Fix A: grace for approve_to_ship gates ONLY (text + ✅-reaction
 	 * founder approvals). The 10min FLY-605 grace exists so the Lead can relay
 	 * first — but a ship gate's answer is founder-only (the Lead is FORBIDDEN
-	 * from relaying it), so the wait is pure dead time. Default 15s.
-	 * Non-ship checkpoints are untouched.
+	 * from relaying it), so the wait is pure dead time. Default 15s. Env
+	 * `FLYWHEEL_SHIP_GATE_GRACE_MS` overrides (set 600000 to restore the old
+	 * behavior — that IS the kill-switch). Non-ship checkpoints are untouched.
 	 */
 	shipGateGraceMs?: number;
 	/**
 	 * FLY-1041 Chunk 6: grace before the approve_to_ship founder CARD is
 	 * posted (the deterministic approval carrier — reply-to-card / ✅). The
 	 * 10min FLY-605 grace made the card a rarely-seen fallback; for ship gates
-	 * the card IS the primary surface, so it fires after ~15s (default).
-	 * Brainstorm is untouched.
+	 * the card IS the primary surface, so it fires after ~15s (default). Env
+	 * `FLYWHEEL_SHIP_GATE_CARD_GRACE_MS` overrides; `FLYWHEEL_SHIP_GATE_CARD=0`
+	 * restores the 10min fallback behavior. Brainstorm is untouched.
 	 */
 	shipGateCardGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	founderReplyDeliverEveryNTicks?: number;
-	/** FLY-2008: rotating budget for pure ingress-scan threads (question lane excluded). */
-	founderReplyScanBudget?: number;
-	/** FLY-1448: durable decision convergence on this existing cadence. */
-	onFounderDecisionConvergenceTick?: () => void | Promise<void>;
 	/** Part B thread-read cursor store (default in-memory). */
 	cursorStore?: InboundCursorStore;
 	/**
-	 * FLY-1448: the founder ship-approval callback built by plugin.ts. The
-	 * deliverer invokes it only after founder identity and gate targeting have
-	 * been verified. Absent preserves the legacy Lead-handoff behavior.
+	 * FLY-799: the flag-gated founder ship-approval callback (built in plugin.ts
+	 * via makeFounderShipApprovalCallback). Threaded into the founder-reply
+	 * deliverer so a founder's identity-verified text approval writes the
+	 * approve_to_ship gate response. Absent → deliverer stays WAKE-only.
 	 */
 	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+
 	/**
-	 * FLY-1448: durable ship-card binding reader used for exact reply-to-card
-	 * targeting when more than one ship gate is pending in the issue thread.
+	 * FLY-1041 Chunk 7: the durable gate-message binding reader (same closure
+	 * the ✅-reaction callback uses), threaded into the founder-reply deliverer
+	 * for reply-to-card narrowing. Absent → replies are never card-matched.
 	 */
 	readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
-	/** Retained convergence riders; piggyback this poller's timer. */
-	onReconcilePatrolTick?: () => void | Promise<void>;
-	/** Reconcile patrol cadence (default 20, about 60s in production). */
-	reconcilePatrolEveryNTicks?: number;
-	/** Retained Lead/fleet reconciliation riders on the existing poll timer. */
-	onLeadReconcileTick?: () => void | Promise<void>;
-	/** Lead reconcile cadence (default 200, about 10min in production). */
-	leadReconcileEveryNTicks?: number;
-	/**
-	 * FLY-1560: both riders below are assembled far AFTER `start()` in the Bridge
-	 * composition root, so on a slow boot the first 3s tick can land while the
-	 * pass holder is still null. The cadence anchor would otherwise be burned by
-	 * that unarmed tick — pushing the boot pass out by a full cadence (~10min for
-	 * lead reconcile) while looking like it ran. When supplied and false, the tick
-	 * is skipped WITHOUT anchoring; the anchor is set by the first tick that
-	 * actually runs. Omitted ⇒ anchored on tick 1, byte-compatible with before.
-	 */
-	onLeadReconcileReady?: () => boolean;
-	/** Runner quota/auth scan on the existing poll timer. */
-	onRunnerQuotaScanTick?: () => void | Promise<void>;
-	/** Runner scan cadence (default 20, about 1min in production). */
-	runnerQuotaScanEveryNTicks?: number;
-	/** See `onLeadReconcileReady` — same late-arming contract. */
-	onRunnerQuotaScanReady?: () => boolean;
-	/** FLY-1781: weekly flag scan rider on the existing GatePoller timer. */
-	onFlagScanTick?: () => void | Promise<void>;
-	/** Cadence in poll ticks (default 200, about 10min in production). */
-	flagScanEveryNTicks?: number;
-	/** Late-arm guard: an unready boot tick must not burn the cadence anchor. */
-	onFlagScanReady?: () => boolean;
 
 	/**
 	 * FLY-945 Fix D: the external-merge convergence sweeper closure (built in
@@ -273,7 +279,6 @@ export interface GatePollerConfig {
 	deferredRebind?: {
 		canonicalFounderId(): string | undefined;
 		onResponseWritten?: DeferredRebindDeps["onResponseWritten"];
-		gateAuthorityView?: DeferredRebindDeps["gateAuthorityView"];
 	};
 	/** FLY-1238: one shared last-mile guard for all recovery surfaces. */
 	mergedGateGuard?: MergedGateGuard;
@@ -296,29 +301,73 @@ export interface GatePollerConfig {
 		reactionFetcherImpl: ReactionFetcher;
 	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
 
-	// Shared alert sink for retained GatePoller convergence failures.
-	/** FLY-2076: call-time store-managed master alert switch. */
-	alertsEnabled?: () => boolean;
+	// ── FLY-637-ext: lead-pending escalation ──
 	/**
-	 * The LeadAlertNotifier queues transient failures and never throws.
+	 * Sink for the final "page Annie" fallback when the Lead has ignored a
+	 * runner's blocking `question` gate for `pageAnnieRounds` backoff nudges.
+	 * Absent → the page step is a no-op (the lead-nudges still fire). The
+	 * LeadAlertNotifier satisfies this (FLY-182-hardened: queues on failure,
+	 * never throws).
 	 */
-	leadAlertSink?: { alert(payload: AlertPayload): Promise<AlertResult> };
+	leadAlertSink?: UnhandledAlertSink;
+	/** FLY-637-ext: prune cadence for lead_pending_escalation in poll ticks (default 20 ≈ 60s). */
+	leadPendingPruneEveryNTicks?: number;
+
+	// ── FLY-725: founder milestone report ──
+	/**
+	 * Per-project founder milestone-report config, loaded from each project's
+	 * CANONICAL root (see founder-milestone-config-source.ts). Absent map / entry
+	 * / enabled:false → the patrol no-ops for that project (byte-compatible).
+	 */
+	founderMilestoneReportByProject?: Map<
+		string,
+		FounderMilestoneReportConfig | undefined
+	>;
+	/**
+	 * Boot timestamp captured BEFORE `app.listen()` — the first-enablement baseline
+	 * cutoff (Codex R2 #1). Terminal sessions with `last_activity_at <= cutoff`
+	 * (pre-boot history) are marker-seeded (not pinged) on the first patrol; those
+	 * arriving after the cutoff still ping. Consumed only during first-enable
+	 * seeding; later boots (baseline marker present) ignore it. Absent → Date.now().
+	 */
+	founderMilestoneBaselineCutoffMs?: number;
+	/** FLY-725: patrol cadence in poll ticks (default 20 ≈ 60s at 3s). */
+	milestonePatrolEveryNTicks?: number;
+	/** FLY-725: lookback window (hours) bounding the terminal-session scan (default 24). */
+	founderMilestoneLookbackHours?: number;
+	/** FLY-725: grace (ms) since the terminal transition before pinging (default 90s). */
+	founderMilestoneGraceMs?: number;
 }
 
+/** The black-hole recipient name (stock claude-code lead convention). */
+const MISROUTE_AGENT_NAME = "team-lead";
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
-export const DEFAULT_LEAD_RECONCILE_EVERY_N_TICKS = 200;
-export const DEFAULT_RUNNER_QUOTA_SCAN_EVERY_N_TICKS = 20;
-export const FOUNDER_REPLY_SCAN_BUDGET_PER_PASS = 25;
+const DEFAULT_BACKLOG_THRESHOLD = 10;
 // FLY-307 B: per-lead circuit breaker defaults.
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_TICKS = 20;
-const FOUNDER_REPLY_RETRY_MAX = 10;
 // FLY-307 A: backoff before retrying a failed stale-gate eviction write.
 const DEFAULT_EVICTION_RETRY_TICKS = 20;
-const yieldToEventLoop = (): Promise<void> =>
-	new Promise((resolve) => setImmediate(resolve));
-const compareThreadIds = (left: string, right: string): number =>
-	left < right ? -1 : left > right ? 1 : 0;
+
+const MISROUTE_HINT =
+	"Reply to the Runner via `flywheel-comm send` (NOT SendMessage). " +
+	"The Runner may be on a pre-FLY-208 prompt that doesn't know the report-back protocol.";
+
+function sha16(input: string): string {
+	return createHash("sha256").update(input).digest("hex").slice(0, 16);
+}
+
+/** FLY-725: parse a strictly-positive int env, else fall back. */
+function positiveIntEnv(raw: string | undefined, fallback: number): number {
+	const n = Number.parseInt(raw ?? "", 10);
+	return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** FLY-725: parse a non-negative int env (0 allowed, e.g. grace=0 = immediate). */
+function nonNegativeIntEnv(raw: string | undefined, fallback: number): number {
+	const n = Number.parseInt(raw ?? "", 10);
+	return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
 
 interface PendingQuestion {
 	id: string;
@@ -351,32 +400,14 @@ const ACTIVE_SESSION_STATUSES = new Set([
 ]);
 
 /**
- * FLY-1257 defect ④ path-2: the review gates (`review_design` / `review_code`,
- * the FLY-1224 non-claude-author lane). These are the ONE gate family the
- * authoring runner never answers — `request-review` BINDS them and the reviewer
- * answers them, so the FLY-307 A eviction premise ("the Runner is gone, so this
- * gate can never be answered") is false for them. Evicting one expired it
- * (`resolveGate(qid, 0)`) before `request-review` could bind it, so a
- * blocked/completed session could never re-request review: checkGate saw
- * answered/expired → fail-close forever, and the row was then purged by TTL.
- * Sibling in intent to the FLY-579 approve_to_ship QA-held carve-out.
- *
- * The set + predicate live in `./review-gate-checkpoints.js` (single source of
- * truth — the zombie-gate-hygiene Z1 sweep consults the same one; a drifting
- * copy is the defect ④ bug). Imported above; re-exported here so the previously
- * public `isReviewGateCheckpoint` API is preserved.
- */
-export { isReviewGateCheckpoint };
-
-/**
  * FLY-1041 Fix A (sweeper judgement, pure). A pending approve_to_ship gate is
  * SUPERSEDED when its session has re-bound to a DIFFERENT question whose row
  * was created STRICTLY later — the founder must only ever see ONE bindable
  * ship gate.
  *
  * ACCEPTED CONSERVATIVE TRADEOFF (Codex R1 #5): this sweeper is a backstop,
- * not a completeness guarantee. Under an equal-timestamp re-fire where the
- * main event-route retire ALSO
+ * not a completeness guarantee. Under a same-second re-fire (SQLite
+ * `created_at` has 1s resolution) where the main event-route retire ALSO
  * failed, the old gate stays pending until its TTL — safe side: noise over a
  * false kill of the founder's only bindable gate. The main path (event-route)
  * retires by EXACT qid and is unaffected by same-second timing. Do NOT widen
@@ -399,70 +430,41 @@ export function isSupersededShipGate(
 	return boundMs > qMs;
 }
 
+/**
+ * Codex code R4 HIGH: founder-reply pass health (pure, testable). Unhealthy
+ * when EVERY scanned thread failed (read/process/exception — the broken-
+ * StateStore shape fails every scan as process_failed, never read_failed),
+ * OR while ANY dead-letter write is still latched (its recovery anchor is
+ * in-memory only, so the pass-dead episode must stay alive until it lands).
+ */
+export function computeFounderPassHealthy(
+	scanned: number,
+	failedScans: number,
+	pendingDeadLetters: number,
+): boolean {
+	if (pendingDeadLetters > 0) return false;
+	return scanned === 0 || failedScans < scanned;
+}
+
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
-	private reconcilePatrolPass: Promise<void> | null = null;
-	private leadReconcilePass: Promise<void> | null = null;
-	private runnerQuotaScanPass: Promise<void> | null = null;
-	private flagScanPass: Promise<void> | null = null;
-	// FLY-1560: cadence anchors for the two late-armed riders. `null` means the
-	// rider has never run, so the next ready tick anchors it (see the
-	// `onLeadReconcileReady` contract in GatePollerConfig).
-	private leadReconcileAnchorTick: number | null = null;
-	private runnerQuotaScanAnchorTick: number | null = null;
-	private flagScanAnchorTick: number | null = null;
-	// FLY-1099 §7.2: retained unreachable-runner consistency reconcile.
-	private readonly founderReplyUnreachable: FounderReplyUnreachableReconcile;
+	// FLY-1099 §7.2: founder-reply health watchdog + its per-thread routing map
+	// (refreshed by every deliver pass; unknown threads fall back to the infra
+	// owner route).
+	private readonly founderReplyWatchdog: FounderReplyWatchdog;
+	private readonly founderThreadRoutes = new Map<
+		string,
+		{ leadId: string; projectName: string; issueId?: string }
+	>();
 
 	constructor(private config: GatePollerConfig) {
-		this.founderReplyUnreachable = new FounderReplyUnreachableReconcile({
+		this.founderReplyWatchdog = new FounderReplyWatchdog({
+			store: config.store,
 			alertSink: config.leadAlertSink,
+			resolveThreadRoute: (threadId) => this.founderThreadRoutes.get(threadId),
 			infraRoute: () => this.infraAlertRoute(),
 		});
-	}
-
-	/**
-	 * FLY-1251 R2: a code-bearing or unclassifiable PR stays founder-hidden.
-	 * The caller has already refreshed the server-owned classifier; emit a
-	 * Lead-only deterministic alert. LeadAlertNotifier's durable claim makes the
-	 * stable event id the once-per-(execution, head, reason) marker across restarts.
-	 */
-	private async handleHeldReviewGate(
-		lead: LeadConfig,
-		session: Session,
-		reason: ReviewHoldReason,
-	): Promise<void> {
-		if (reason !== "qa_evidence_missing" && reason !== "qa_evidence_unknown") {
-			return;
-		}
-		const head = session.pr_head_sha?.toLowerCase() ?? "unknown";
-		const issue = session.issue_identifier ?? session.issue_id;
-		const work: Promise<unknown>[] = [];
-		if (this.config.leadAlertSink) {
-			work.push(
-				this.config.leadAlertSink.alert({
-					leadId: lead.agentId,
-					projectName: session.project_name,
-					eventId: `ship-readiness-hold:${session.execution_id}:${head}:${reason}`,
-					eventType: "auto_qa_stuck",
-					title: `Ship readiness held — ${issue}`,
-					body:
-						`Founder approval remains hidden for ${issue} because ${reason}. ` +
-						"Bridge will retry the server-owned PR classification. If the evidence remains missing, cancel the held run and redispatch it through the DAG QA pipeline.",
-					severity: "warning",
-					sessionKey: session.execution_id,
-				}),
-			);
-		}
-		const results = await Promise.allSettled(work);
-		for (const result of results) {
-			if (result.status === "rejected") {
-				console.warn(
-					`[GatePoller] ship-readiness hold handling failed for ${session.execution_id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
-				);
-			}
-		}
 	}
 
 	/**
@@ -489,6 +491,15 @@ export class GatePoller {
 		// internals are already wrapped (per-lead + founder-reply try/catch), this
 		// is belt-and-suspenders for any scaffolding throw above those.
 		this.timerHandle = setInterval(() => {
+			// FLY-1099 §7.2 (Codex R1 #5): the pass-dead HANG check lives in the
+			// interval callback's OUTERMOST layer — a pass hung inside poll()
+			// leaves `polling` true forever, so poll() itself would never observe
+			// it; this cheap clock check still runs every tick.
+			try {
+				this.founderReplyWatchdog.checkHang(Date.now());
+			} catch {
+				/* the watchdog must never break the poll loop */
+			}
 			void this.poll().catch((err) => {
 				console.error(
 					"[GatePoller] unexpected poll rejection (contained, Bridge stays up):",
@@ -525,123 +536,12 @@ export class GatePoller {
 	private async poll(): Promise<void> {
 		if (this.polling) return;
 		this.polling = true;
-		const spanStart = Date.now();
 		try {
 			// FLY-208 A2: patrol cadence — piggybacks on this existing tick
 			// (zero new periodic timers, FLY-169/172 discipline). Misrouted
 			// reports are a minutes-scale human-loop event; every Nth tick
 			// (default 20 ≈ 60s at the production 3s interval) is plenty.
 			this.tickCount++;
-
-			if (
-				this.config.onReconcilePatrolTick &&
-				(this.tickCount - 1) % this.reconcilePatrolEveryNTicks() === 0
-			) {
-				void this.runReconcilePatrolPass().catch((err) =>
-					console.warn(
-						`[GatePoller] reconcile patrol error (non-fatal): ${(err as Error).message}`,
-					),
-				);
-			}
-
-			if (
-				this.config.onLeadReconcileTick &&
-				this.riderDueThisTick(
-					this.leadReconcileAnchorTick,
-					this.leadReconcileEveryNTicks(),
-					this.config.onLeadReconcileReady,
-					(anchor) => {
-						this.leadReconcileAnchorTick = anchor;
-					},
-				)
-			) {
-				void this.runLeadReconcilePass().catch((err) =>
-					console.warn(
-						`[GatePoller] lead reconcile error (non-fatal): ${(err as Error).message}`,
-					),
-				);
-			}
-
-			if (
-				this.config.onRunnerQuotaScanTick &&
-				this.riderDueThisTick(
-					this.runnerQuotaScanAnchorTick,
-					this.runnerQuotaScanEveryNTicks(),
-					this.config.onRunnerQuotaScanReady,
-					(anchor) => {
-						this.runnerQuotaScanAnchorTick = anchor;
-					},
-				)
-			) {
-				void this.runRunnerQuotaScanPass().catch((err) =>
-					console.warn(
-						`[GatePoller] runner quota scan error (non-fatal): ${(err as Error).message}`,
-					),
-				);
-			}
-
-			if (
-				this.config.onFlagScanTick &&
-				this.riderDueThisTick(
-					this.flagScanAnchorTick,
-					this.flagScanEveryNTicks(),
-					this.config.onFlagScanReady,
-					(anchor) => {
-						this.flagScanAnchorTick = anchor;
-					},
-				)
-			) {
-				void this.runFlagScanPass().catch((err) =>
-					console.warn(
-						`[GatePoller] flag retirement scan error (non-fatal): ${(err as Error).message}`,
-					),
-				);
-			}
-
-			// FLY-1314: gate hygiene is a same-tick invariant repair, not a new
-			// background timer. Keep it outside the project/lead loops and isolate it
-			// exactly like the other patrol callbacks.
-			if (this.config.onIssueGateSupersedeTick) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.issue-gate-supersede", () =>
-							this.config.onIssueGateSupersedeTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] FLY-1314 issue-gate supersede error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
-			if (this.config.onWorkflowGateMaterializeTick) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.workflow-gate-materialize", () =>
-							this.config.onWorkflowGateMaterializeTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] FLY-1375 workflow-gate materialization error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
-			if (this.config.onLandOperationTick) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.land-operation", () =>
-							this.config.onLandOperationTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] FLY-1375 land-operation sweep error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
 
 			// FLY-513: global-codex drift probe — piggybacks this same tick (zero
 			// new periodic timer). Runs OUTSIDE the (project,lead) loops, fully
@@ -656,11 +556,7 @@ export class GatePoller {
 				(this.tickCount - 1) % this.healthCheckEveryNTicks() === 0
 			) {
 				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.health", () =>
-							this.config.onHealthTick?.(),
-						),
-					)
+					.then(() => this.config.onHealthTick?.())
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-513 codex-health probe error (non-fatal): ${(err as Error).message}`,
@@ -668,109 +564,40 @@ export class GatePoller {
 					);
 			}
 
-			if (
-				this.config.onLeadPatrolTick &&
-				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
-			) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.lead-patrol", () =>
-							this.config.onLeadPatrolTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] lead patrol tick error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
-			if (
-				this.config.onSummaryAbsorptionTick &&
-				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
-			) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.summary-absorption", () =>
-							this.config.onSummaryAbsorptionTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] summary absorption tick error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
-			if (
-				this.config.onPatrolOrphanSweepTick &&
-				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
-			) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.patrol-orphan", () =>
-							this.config.onPatrolOrphanSweepTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] patrol orphan sweep error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
-			if (
-				this.config.onCmuxWatcherPatrolTick &&
-				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
-			) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.cmux-watcher-patrol", () =>
-							this.config.onCmuxWatcherPatrolTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] cmux watcher patrol error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
-			// FLY-1282 Part D: disposition-receipt delivery — independent stage
-			// (see config docs: NOT under the detection cadence). Same piggyback
-			// posture: zero new timer, own catch, never blocks the poll.
-			if (
-				this.config.onDispositionReceiptTick &&
-				(this.tickCount - 1) % 20 === 0
-			) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.disposition-receipt", () =>
-							this.config.onDispositionReceiptTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] FLY-1282 disposition receipt error (non-fatal): ${(err as Error).message}`,
-						),
-					);
+			// FLY-1048 (PR-C): detection-escalation reconcile — same piggyback
+			// pattern (zero new timer, own catch, never blocks the poll). The
+			// grace timer it advances is read from the durable
+			// detection_escalations rows, so a missed tick can only delay a page,
+			// never restart the clock. Cadence 0 → disabled.
+			{
+				const detectionCadence = this.detectionReconcileEveryNTicks();
+				if (
+					this.config.onDetectionReconcileTick &&
+					detectionCadence > 0 &&
+					(this.tickCount - 1) % detectionCadence === 0
+				) {
+					void Promise.resolve()
+						.then(() => this.config.onDetectionReconcileTick?.())
+						.catch((err) =>
+							console.warn(
+								`[GatePoller] FLY-1048 detection reconcile error (non-fatal): ${(err as Error).message}`,
+							),
+						);
+				}
 			}
 
 			// FLY-907: issue-display reconcile sweep — same piggyback pattern as
 			// the FLY-513 health probe above (zero new timer, own catch, never
-			// blocks the poll). The production cadence is always enabled.
+			// blocks the poll). Cadence 0 → disabled.
 			{
 				const displayCadence = this.displayReconcileEveryNTicks();
 				if (
 					this.config.onDisplayReconcileTick &&
+					displayCadence > 0 &&
 					(this.tickCount - 1) % displayCadence === 0
 				) {
 					void Promise.resolve()
-						.then(() =>
-							this.withSpan("gate-poller.display-reconcile", () =>
-								this.config.onDisplayReconcileTick?.(),
-							),
-						)
+						.then(() => this.config.onDisplayReconcileTick?.())
 						.catch((err) =>
 							console.warn(
 								`[GatePoller] FLY-907 display-reconcile sweep error (non-fatal): ${(err as Error).message}`,
@@ -779,6 +606,36 @@ export class GatePoller {
 				}
 			}
 
+			// FLY-1048 (A6): cheap gap/state scan — same piggyback pattern as the
+			// FLY-513 health probe above (zero new timer, own catch, never blocks
+			// the poll). Cadence default 100 ticks ≈ 5min at the production 3s
+			// interval; `(tickCount - 1) % n === 0` fires on tick 1 and works for
+			// n=1 (FLY-513 Codex R1 LOW precedent).
+			if (
+				this.config.onGapScanTick &&
+				(this.tickCount - 1) % this.gapScanEveryNTicks() === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onGapScanTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-1048 gap-scan tick error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			const patrolDue =
+				this.misroutePatrolEnabled() &&
+				this.tickCount % this.patrolEveryNTicks() === 1;
+
+			// FLY-637-ext: accumulate the active blocking-question gate ids seen this
+			// poll so the lead_pending_escalation table can be pruned of answered/gone
+			// questions. `leadPendingPollComplete` goes false if ANY lead's poll was
+			// skipped (open circuit) or threw — the prune only runs on a complete
+			// picture, so a transiently-unread lead never loses its backoff state.
+			const seenLeadPendingQids = new Set<string>();
+			let leadPendingPollComplete = true;
+
 			// FLY-161: iterate (project, lead) pairs directly instead of starting
 			// from getActiveSessions(). This lets runner_question survive Runner
 			// completion — a question whose source session has transitioned to
@@ -786,22 +643,28 @@ export class GatePoller {
 			// loop. The session is still resolved per-question below for metadata,
 			// but presence in the active set is no longer a prerequisite.
 			for (const project of this.config.projects) {
-				const projectDbPath = defaultGetCommDbPath(project.projectName);
-				if (!this.ensureCommDbMigrated(projectDbPath, project)) {
-					continue;
-				}
 				for (const lead of project.leads) {
 					const leadKey = `${project.projectName}::${lead.agentId}`;
-					// FLY-307 B: while a lead's circuit is open, skip question relay for
-					// that lead. `tickCount` still advances once per poll (above).
-					if (this.circuitOpen(leadKey)) {
-						await yieldToEventLoop();
+					// FLY-307 B: while a lead's circuit is open, skip BOTH the
+					// question-relay duty AND the misroute patrol for that lead — the
+					// patrol also touches sql.js StateStore (deliverMisrouteEvent), so
+					// skipping only the relay would not fully isolate a poisoned WASM
+					// heap. `tickCount` still advances once per poll (above).
+					if (this.circuitEnabled() && this.circuitOpen(leadKey)) {
+						leadPendingPollComplete = false; // FLY-637-ext: incomplete view → skip prune
 						continue;
 					}
-					const dbPath = projectDbPath;
+					const dbPath = defaultGetCommDbPath(project.projectName);
 					let relayFailed = false;
 					try {
-						const pending = this.getPendingQuestions(dbPath, lead.agentId);
+						const pending = this.getPendingQuestions(
+							dbPath,
+							lead.agentId,
+							() => {
+								// FLY-637-ext: genuine comm.db read failure ⇒ incomplete view ⇒ skip prune.
+								leadPendingPollComplete = false;
+							},
+						);
 						for (const question of pending) {
 							// FLY-307 A: short-circuit stale gates BEFORE the sql.js
 							// getSession() touch — that WASM op is the exact churn this
@@ -819,43 +682,13 @@ export class GatePoller {
 									continue;
 								}
 							}
-							const orphan = this.orphanQuestions.get(question.id);
-							if (
-								question.checkpoint == null &&
-								orphan &&
-								(this.tickCount - orphan.firstSeenTick) % 20 !== 0
-							) {
-								continue;
-							}
 							const session = this.config.store.getSession(question.from_agent);
 							if (!session) {
 								// Orphan question — from_agent references no known session.
 								// Skip rather than throw; Lead can still pick it up manually
 								// via `flywheel-comm pending`. (Codex R1 Issue 1.)
-								if (!orphan) {
-									this.rememberOrphanQuestion(question.id);
-									console.warn(
-										`[GatePoller] orphan question — no session for from_agent=${question.from_agent} (qid=${question.id}, lead=${lead.agentId})`,
-									);
-								} else {
-									this.orphanQuestions.delete(question.id);
-									this.orphanQuestions.set(question.id, orphan);
-								}
-								continue;
-							}
-							this.orphanQuestions.delete(question.id);
-							const gateOwnership =
-								typeof this.config.store.workflowGatePresentationDisposition ===
-								"function"
-									? this.config.store.workflowGatePresentationDisposition({
-											executionId: question.from_agent,
-											checkpoint: question.checkpoint,
-											questionId: question.id,
-										})
-									: { allow: true as const, reason: "legacy" as const };
-							if (!gateOwnership.allow) {
 								console.warn(
-									`[GatePoller] suppressed non-authoritative workflow ship gate ${question.id}: ${gateOwnership.reason}`,
+									`[GatePoller] orphan question — no session for from_agent=${question.from_agent} (qid=${question.id}, lead=${lead.agentId})`,
 								);
 								continue;
 							}
@@ -873,38 +706,17 @@ export class GatePoller {
 							// must survive so it can be surfaced once QA passes; verify-approval
 							// remains bound to it). Same isQaHeld predicate as event-route +
 							// HeartbeatService so the three surfaces cannot drift.
-							if (question.checkpoint === "approve_to_ship") {
-								try {
-									await this.config.ensureShipRelevantDiff?.(session);
-								} catch (err) {
-									console.warn(
-										`[GatePoller] ship-diff refresh failed for ${session.execution_id}: ${err instanceof Error ? err.message : String(err)}`,
-									);
-								}
-								const holdReason = reviewHoldReason(this.config.store, session);
-								if (holdReason !== null) {
-									await this.handleHeldReviewGate(lead, session, holdReason);
-									continue;
-								}
+							if (
+								question.checkpoint === "approve_to_ship" &&
+								isReviewHeld(this.config.store, session)
+							) {
+								continue;
 							}
 							// FLY-605 Part A (Codex R2 #3): relayToLead and the founder-thread
 							// fallback get SEPARATE try/catch so a Lead-runtime throw from the
 							// relay never prevents the post-grace fallback for this question.
 							try {
-								// FLY-1373: the 1s LeadInboxLoop owns admission + delivery. This
-								// legacy direct relay remains only as a test/rollback fallback when
-								// no loop was registered; production nudge returns true and never
-								// touches runtime.deliver here.
-								if (
-									!this.config.runtimeRegistry.nudgeLeadInbox(
-										lead.agentId,
-										project.projectName,
-									)
-								) {
-									await this.withSpan("gate-poller.question-relay", () =>
-										this.relayToLead(lead, session, question, dbPath),
-									);
-								}
+								await this.relayToLead(lead, session, question, dbPath);
 							} catch (relayErr) {
 								relayFailed = true;
 								console.warn(
@@ -935,21 +747,52 @@ export class GatePoller {
 							// fallback. A BLOCKING `question` gate the Lead hasn't answered →
 							// exponential-backoff nudge → page Annie. Count the question as
 							// seen (for the prune) BEFORE the call so a throw can't drop it.
+							if (question.checkpoint === "question") {
+								seenLeadPendingQids.add(question.id);
+								try {
+									await this.maybeEmitLeadPendingNudge(lead, session, question);
+								} catch (lpErr) {
+									console.warn(
+										`[GatePoller] lead-pending nudge error for ${lead.agentId} (qid=${question.id}):`,
+										lpErr instanceof Error ? lpErr.message : String(lpErr),
+									);
+									this.maybeRecoverStore(lpErr);
+								}
+							}
+							// FLY-927 (Task 3.2, Watchdog v2): the checkpoint-park 1h patrol —
+							// third sibling, own try/catch, kill-switch default OFF.
+							try {
+								await this.maybeEmitCheckpointParkAlert(
+									lead,
+									session,
+									question,
+									dbPath,
+								);
+							} catch (cpErr) {
+								console.warn(
+									`[GatePoller] checkpoint-park patrol error for ${lead.agentId} (qid=${question.id}):`,
+									cpErr instanceof Error ? cpErr.message : String(cpErr),
+								);
+								this.maybeRecoverStore(cpErr);
+							}
 						}
 						// FLY-307 B: a clean pass closes the circuit; a relay throw counts as
 						// a failure (preserves the pre-FLY-605 break-on-throw circuit semantics
 						// while letting the founder-thread fallback still run — Codex R2 #3).
-						if (relayFailed) this.recordCircuitFailure(leadKey);
-						else this.recordCircuitSuccess(leadKey);
+						if (this.circuitEnabled()) {
+							if (relayFailed) this.recordCircuitFailure(leadKey);
+							else this.recordCircuitSuccess(leadKey);
+						}
 					} catch (err) {
 						relayFailed = true;
+						leadPendingPollComplete = false; // FLY-637-ext: incomplete view → skip prune
 						console.warn(
 							`[GatePoller] Error polling ${lead.agentId}:`,
 							err instanceof Error ? err.message : String(err),
 						);
 						// FLY-307 B: count the failed poll even if earlier questions in
 						// this iteration were delivered (no reset-on-partial-delivery).
-						this.recordCircuitFailure(leadKey);
+						if (this.circuitEnabled()) this.recordCircuitFailure(leadKey);
 						// FLY-639: a sql.js corruption thrown by getSession/getPendingQuestions
 						// here is contained by this catch (no Bridge crash). Attempt a
 						// best-effort StateStore self-heal so the next lead/cycle is healthy.
@@ -957,19 +800,87 @@ export class GatePoller {
 						// path, recover repairs the underlying store.
 						this.maybeRecoverStore(err);
 					}
-					await yieldToEventLoop();
+
+					// FLY-208 A2: black-hole inbox patrol — fully isolated from
+					// the question-relay main duty (own try/catch; any error is
+					// a warn + skip, never a poll abort). FLY-307 B: a relay failure
+					// (which may have just opened the circuit) skips the patrol for
+					// this lead too — the patrol also touches sql.js StateStore, so
+					// running it after the failure would not isolate a poisoned heap.
+					if (patrolDue && !relayFailed) {
+						try {
+							await this.misroutePatrol(project, lead);
+						} catch (err) {
+							console.warn(
+								`[GatePoller] misroute patrol error for ${lead.agentId}:`,
+								err instanceof Error ? err.message : String(err),
+							);
+							// FLY-639 (Codex code R1 HIGH): misroutePatrol → deliverMisrouteEvent touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / recordDeliveryFailure) — self-heal on corruption.
+							this.maybeRecoverStore(err);
+						}
+					}
+				}
+
+				// FLY-725: founder milestone-report patrol — per-project (NOT
+				// per-lead), cadence-gated, fully isolated (own catch → warn + skip,
+				// never a poll abort). Zero new timer (piggybacks this tick). Pushes
+				// one @founder ping to the issue thread when a Runner reached a
+				// terminal milestone the founder was never told about.
+				if (
+					this.founderMilestoneNotifyEnabled() &&
+					this.tickCount % this.milestonePatrolEveryNTicks() === 1
+				) {
+					try {
+						await this.maybeEmitMilestoneReports(project);
+					} catch (err) {
+						console.warn(
+							`[GatePoller] milestone patrol error for ${project.projectName}:`,
+							err instanceof Error ? err.message : String(err),
+						);
+						// FLY-639: touches StateStore (getRecentTerminalSessionsForNotify /
+						// getEventsByExecution / getChatThreadByIssue / insertEvent).
+						this.maybeRecoverStore(err);
+					}
+				}
+			}
+
+			// FLY-637-ext: prune lead_pending_escalation of answered/gone question
+			// gates on a slow sub-cadence — ONLY when the active-set view is complete
+			// (no open circuit / failed poll this tick), so a transiently-unread lead
+			// never loses its backoff state. Empty seen-set ⇒ clear all.
+			if (
+				leadPendingEscalationEnabled() &&
+				leadPendingPollComplete &&
+				this.tickCount % this.leadPendingPruneEveryNTicks() === 1
+			) {
+				try {
+					this.config.store.pruneLeadPendingEscalationNotIn([
+						...seenLeadPendingQids,
+					]);
+				} catch (err) {
+					console.warn(
+						"[GatePoller] lead-pending prune error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
 				}
 			}
 
 			// FLY-605 Part B: founder-reply inbound auto-delivery on a slow
 			// sub-cadence (~60s). Piggybacks this tick (zero new timer); fully
 			// isolated — its errors never abort the poll loop.
-			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
+			if (
+				this.founderReplyDeliverEnabled() &&
+				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
+			) {
 				try {
-					await this.withSpan("gate-poller.founder-reply-deliver", () =>
-						this.founderReplyDeliverPass(),
-					);
+					const healthy = await this.founderReplyDeliverPass();
+					// FLY-1099 §7.2: pass health — an all-read-failed pass is NOT a
+					// success (Discord ingest is effectively down for every thread).
+					if (healthy) this.founderReplyWatchdog.notePassSuccess(Date.now());
+					else this.founderReplyWatchdog.notePassFailure(Date.now());
 				} catch (err) {
+					this.founderReplyWatchdog.notePassFailure(Date.now());
 					console.warn(
 						"[GatePoller] founder-reply deliver pass error:",
 						err instanceof Error ? err.message : String(err),
@@ -978,7 +889,6 @@ export class GatePoller {
 					// getChatThreadByIssue / appendLeadEvent) — self-heal on corruption.
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
 			}
 
 			// FLY-1099 §4.3: deferred-approval rebind pass — same sub-cadence,
@@ -987,12 +897,11 @@ export class GatePoller {
 			// checks inside runDeferredApprovalRebindPass).
 			if (
 				this.config.deferredRebind &&
+				this.founderReplyDeliverEnabled() &&
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
-					await this.withSpan("gate-poller.deferred-rebind", () =>
-						this.deferredRebindPass(),
-					);
+					await this.deferredRebindPass();
 				} catch (err) {
 					console.warn(
 						"[GatePoller] deferred-approval rebind pass error:",
@@ -1000,17 +909,15 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
 			}
 
-			// FLY-1099 §3.3 + §8: founder action-ledger drain. Already-committed
-			// held notices / nudges / feedback wakes / MUST-DELIVER alerts converge
-			// independently from founder-reply ingestion.
+			// FLY-1099 §3.3 + §8: founder action-ledger drain — DELIBERATELY
+			// outside the FLYWHEEL_FOUNDER_REPLY_DELIVER ingest switch: intents
+			// already committed (held notices / nudges / feedback wakes / MUST-
+			// DELIVER alerts) still converge when ops turn ingest off.
 			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
 				try {
-					await this.withSpan("gate-poller.founder-action-drain", () =>
-						this.founderActionDrainPass(),
-					);
+					await this.founderActionDrainPass();
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder action-ledger drain error:",
@@ -1018,32 +925,17 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
+				// FLY-1099 §7.2: watchdog detector tick (pin / unreachable / pass-dead
+				// latch maintenance) — durable-table driven, cheap.
 				try {
-					await this.withSpan("gate-poller.founder-decision-convergence", () =>
-						this.config.onFounderDecisionConvergenceTick?.(),
-					);
+					await this.founderReplyWatchdog.tick(Date.now());
 				} catch (err) {
 					console.warn(
-						"[GatePoller] founder-decision convergence pass error:",
+						"[GatePoller] founder-reply watchdog tick error:",
 						err instanceof Error ? err.message : String(err),
 					);
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
-				// FLY-1099 §7.2: retained unreachable-runner detector tick.
-				try {
-					await this.withSpan("gate-poller.founder-reply-unreachable", () =>
-						this.founderReplyUnreachable.tick(),
-					);
-				} catch (err) {
-					console.warn(
-						"[GatePoller] founder-reply reconcile tick error:",
-						err instanceof Error ? err.message : String(err),
-					);
-					this.maybeRecoverStore(err);
-				}
-				await yieldToEventLoop();
 			}
 
 			// FLY-1099 §5: zombie gate hygiene on the patrol cadence — Z1 retires
@@ -1051,9 +943,7 @@ export class GatePoller {
 			// (live session, missing CommDB row) feeds the unreachable detector.
 			if (this.tickCount % this.patrolEveryNTicks() === 1) {
 				try {
-					await this.withSpan("gate-poller.zombie-hygiene", () =>
-						this.zombieGateHygienePass(),
-					);
+					await this.zombieGateHygienePass();
 				} catch (err) {
 					console.warn(
 						"[GatePoller] zombie gate hygiene error:",
@@ -1061,19 +951,17 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
 			}
 			// FLY-799: founder ✅-reaction ship approval on the same sub-cadence
 			// (piggyback; zero new timer). Only runs when the reaction callback is
 			// wired; fully isolated so its errors never abort the poll loop.
 			if (
 				this.config.tryFounderReactionApproval &&
+				this.founderReplyDeliverEnabled() &&
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
-					await this.withSpan("gate-poller.founder-reaction-approval", () =>
-						this.founderReactionApprovalPass(),
-					);
+					await this.founderReactionApprovalPass();
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder-reaction approval pass error:",
@@ -1081,16 +969,16 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
 			}
 
 			// FLY-799 Part B: re-wake sessions stranded in approved_to_ship (a
 			// missed self-ship wake). Default-ON kill-switch; same sub-cadence.
-			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
+			if (
+				this.staleShipRewakeEnabled() &&
+				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
+			) {
 				try {
-					await this.withSpan("gate-poller.stale-approved-ship", () =>
-						this.staleApprovedShipReconcilePass(),
-					);
+					await this.staleApprovedShipReconcilePass();
 				} catch (err) {
 					console.warn(
 						"[GatePoller] stale approved_to_ship reconcile error:",
@@ -1098,20 +986,18 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
 			}
 
 			// FLY-945 Fix D: external-merge convergence sweeper on the patrol
 			// cadence (zero new timer). The closure (built in plugin.ts) owns its
-			// gh budget; its errors never abort the poll loop.
+			// own kill-switch (FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0) and gh budget;
+			// fully isolated — its errors never abort the poll loop.
 			if (
 				this.config.externalMergeReconcile &&
 				this.tickCount % this.patrolEveryNTicks() === 1
 			) {
 				try {
-					await this.withSpan("gate-poller.external-merge-reconcile", () =>
-						this.config.externalMergeReconcile?.(),
-					);
+					await this.config.externalMergeReconcile();
 				} catch (err) {
 					console.warn(
 						"[GatePoller] external-merge reconcile error:",
@@ -1119,19 +1005,16 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
-				await yieldToEventLoop();
 			}
 		} finally {
 			this.polling = false;
-			try {
-				this.config.recordSpan?.("gate-poller.tick", spanStart, Date.now());
-			} catch {
-				// Diagnostics must never disable the poller it observes.
-			}
 		}
 	}
 
+	// ── FLY-208 A2: black-hole inbox patrol ─────────────────────────────────
+
 	private tickCount = 0;
+	private warnedMissingArchiveDir = false;
 
 	// FLY-307 A: stale gate_question eviction bookkeeping (process-local).
 	// `evictedGateIds` = cleanup write succeeded → skip permanently and silently.
@@ -1139,41 +1022,10 @@ export class GatePoller {
 	// until tickCount reaches the stored tick, then retry the write.
 	private readonly evictedGateIds = new Set<string>();
 	private readonly evictionRetryAt = new Map<string, number>();
-	private readonly migratedCommDbPaths = new Set<string>();
-	private readonly commDbMigrationRetryAt = new Map<string, number>();
-	private readonly commDbMigrationAlerted = new Set<string>();
-	private readonly orphanQuestions = new Map<
-		string,
-		{ firstSeenTick: number }
-	>();
 
 	// FLY-307 B: per-lead circuit breaker keyed `projectName::agentId`.
 	private readonly circuitFailures = new Map<string, number>();
 	private readonly circuitCooldownUntil = new Map<string, number>();
-
-	private rememberOrphanQuestion(questionId: string): void {
-		if (this.orphanQuestions.size >= 500) {
-			const oldest = this.orphanQuestions.keys().next().value;
-			if (oldest) this.orphanQuestions.delete(oldest);
-		}
-		this.orphanQuestions.set(questionId, { firstSeenTick: this.tickCount });
-	}
-
-	private async withSpan<T>(
-		name: string,
-		run: () => T | Promise<T>,
-	): Promise<T> {
-		const startedAt = Date.now();
-		try {
-			return await run();
-		} finally {
-			try {
-				this.config.recordSpan?.(name, startedAt, Date.now());
-			} catch {
-				// Diagnostics must never alter rider control flow.
-			}
-		}
-	}
 
 	private patrolEveryNTicks(): number {
 		return this.config.patrolEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
@@ -1184,202 +1036,25 @@ export class GatePoller {
 		return this.config.healthCheckEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
 	}
 
-	private reconcilePatrolEveryNTicks(): number {
-		return Math.max(
-			1,
-			this.config.reconcilePatrolEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
+	/** FLY-1048 (PR-C): detection-escalation reconcile cadence (default 20 ≈ 60s). */
+	private detectionReconcileEveryNTicks(): number {
+		return (
+			this.config.detectionReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS
 		);
-	}
-
-	private runReconcilePatrolPass(): Promise<void> {
-		if (this.reconcilePatrolPass) return this.reconcilePatrolPass;
-		const pass = Promise.resolve()
-			.then(() =>
-				this.withSpan("gate-poller.reconcile-patrol", () =>
-					this.config.onReconcilePatrolTick?.(),
-				),
-			)
-			.then(() => undefined);
-		const guarded = pass.finally(() => {
-			if (this.reconcilePatrolPass === guarded) {
-				this.reconcilePatrolPass = null;
-			}
-		});
-		this.reconcilePatrolPass = guarded;
-		return guarded;
-	}
-
-	/**
-	 * FLY-1560: is a late-armed rider due on this tick? An unarmed tick is skipped
-	 * without anchoring, so the boot pass runs on the first tick where the holder
-	 * exists rather than being deferred a whole cadence. With no readiness probe
-	 * the anchor lands on tick 1, which reproduces the previous
-	 * `(tickCount - 1) % N === 0` schedule exactly.
-	 */
-	private riderDueThisTick(
-		anchor: number | null,
-		everyNTicks: number,
-		ready: (() => boolean) | undefined,
-		setAnchor: (tick: number) => void,
-	): boolean {
-		if (ready && !ready()) return false;
-		if (anchor === null) {
-			setAnchor(this.tickCount);
-			return true;
-		}
-		return (this.tickCount - anchor) % everyNTicks === 0;
-	}
-
-	private leadReconcileEveryNTicks(): number {
-		return Math.max(
-			1,
-			this.config.leadReconcileEveryNTicks ??
-				DEFAULT_LEAD_RECONCILE_EVERY_N_TICKS,
-		);
-	}
-
-	private runLeadReconcilePass(): Promise<void> {
-		if (this.leadReconcilePass) return this.leadReconcilePass;
-		const pass = Promise.resolve()
-			.then(() =>
-				this.withSpan("gate-poller.lead-reconcile", () =>
-					this.config.onLeadReconcileTick?.(),
-				),
-			)
-			.then(() => undefined);
-		const guarded = pass.finally(() => {
-			if (this.leadReconcilePass === guarded) {
-				this.leadReconcilePass = null;
-			}
-		});
-		this.leadReconcilePass = guarded;
-		return guarded;
-	}
-
-	private runnerQuotaScanEveryNTicks(): number {
-		return Math.max(
-			1,
-			this.config.runnerQuotaScanEveryNTicks ??
-				DEFAULT_RUNNER_QUOTA_SCAN_EVERY_N_TICKS,
-		);
-	}
-
-	private runRunnerQuotaScanPass(): Promise<void> {
-		if (this.runnerQuotaScanPass) return this.runnerQuotaScanPass;
-		const pass = Promise.resolve()
-			.then(() =>
-				this.withSpan("gate-poller.runner-quota-scan", () =>
-					this.config.onRunnerQuotaScanTick?.(),
-				),
-			)
-			.then(() => undefined);
-		const guarded = pass.finally(() => {
-			if (this.runnerQuotaScanPass === guarded) {
-				this.runnerQuotaScanPass = null;
-			}
-		});
-		this.runnerQuotaScanPass = guarded;
-		return guarded;
-	}
-
-	private flagScanEveryNTicks(): number {
-		return Math.max(1, this.config.flagScanEveryNTicks ?? 200);
-	}
-
-	private runFlagScanPass(): Promise<void> {
-		if (this.flagScanPass) return this.flagScanPass;
-		const pass = Promise.resolve()
-			.then(() =>
-				this.withSpan("gate-poller.flag-scan", () =>
-					this.config.onFlagScanTick?.(),
-				),
-			)
-			.then(() => undefined);
-		const guarded = pass.finally(() => {
-			if (this.flagScanPass === guarded) this.flagScanPass = null;
-		});
-		this.flagScanPass = guarded;
-		return guarded;
 	}
 
 	/** FLY-907: display-reconcile sweep cadence (default 60 ≈ 3min at 3s). */
 	private displayReconcileEveryNTicks(): number {
-		const cadence = this.config.displayReconcileEveryNTicks;
-		return cadence !== undefined && Number.isFinite(cadence) && cadence > 0
-			? cadence
-			: 60;
+		return this.config.displayReconcileEveryNTicks ?? 60;
 	}
 
-	private ensureCommDbMigrated(dbPath: string, project: ProjectEntry): boolean {
-		if (this.migratedCommDbPaths.has(dbPath)) return true;
-		const retryAt = this.commDbMigrationRetryAt.get(dbPath);
-		if (retryAt !== undefined && this.tickCount < retryAt) return false;
-		try {
-			const db = new CommDB(dbPath);
-			db.close();
-			this.migratedCommDbPaths.add(dbPath);
-			this.commDbMigrationRetryAt.delete(dbPath);
-			this.commDbMigrationAlerted.delete(dbPath);
-			return true;
-		} catch (error) {
-			this.commDbMigrationRetryAt.set(
-				dbPath,
-				this.tickCount + DEFAULT_PATROL_EVERY_N_TICKS,
-			);
-			console.warn(
-				`[GatePoller] CommDB migration failed; project relay paused for ${dbPath}: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			if (!this.commDbMigrationAlerted.has(dbPath)) {
-				this.commDbMigrationAlerted.add(dbPath);
-				void this.alertCommDbMigrationFailure(project, dbPath, error).catch(
-					(alertError) => {
-						this.commDbMigrationAlerted.delete(dbPath);
-						console.warn(
-							`[GatePoller] CommDB migration Lead alert failed for ${dbPath}: ${alertError instanceof Error ? alertError.message : String(alertError)}`,
-						);
-					},
-				);
-			}
-			return false;
-		}
+	/** FLY-1048 (A6): gap-scan cadence (default 100 ≈ 5min at 3s). */
+	private gapScanEveryNTicks(): number {
+		return this.config.gapScanEveryNTicks ?? 100;
 	}
 
-	private async alertCommDbMigrationFailure(
-		project: ProjectEntry,
-		dbPath: string,
-		error: unknown,
-	): Promise<void> {
-		const sink = this.config.leadAlertSink;
-		const route = project.leads[0]
-			? { leadId: project.leads[0].agentId, projectName: project.projectName }
-			: this.infraAlertRoute();
-		if (!sink || !route) {
-			this.commDbMigrationAlerted.delete(dbPath);
-			return;
-		}
-		const pathHash = createHash("sha256")
-			.update(dbPath)
-			.digest("hex")
-			.slice(0, 12);
-		const result = await sink.alert({
-			leadId: route.leadId,
-			projectName: route.projectName,
-			eventId: `commdb-migration-failed:${project.projectName}:${pathHash}`,
-			eventType: "crash_loop",
-			title: `CommDB relay paused — ${project.projectName}`,
-			body:
-				`Bridge could not migrate/open ${dbPath}; all gate and question relay for ` +
-				`${project.projectName} is paused until recovery. Error: ${error instanceof Error ? error.message : String(error)}`,
-			severity: "warning",
-		});
-		if (
-			!result.sent &&
-			!result.queued &&
-			!result.dmSent &&
-			result.skipped !== "duplicate"
-		) {
-			this.commDbMigrationAlerted.delete(dbPath);
-		}
+	private backlogThreshold(): number {
+		return this.config.backlogThreshold ?? DEFAULT_BACKLOG_THRESHOLD;
 	}
 
 	// ── FLY-307 A: stale gate eviction ──────────────────────────────────────
@@ -1405,10 +1080,6 @@ export class GatePoller {
 		dbPath: string,
 	): void {
 		if (question.checkpoint == null) return; // FLY-161 boundary
-		// FLY-1257 path-2 (defense in depth): the invariant lives at the single
-		// mutation chokepoint, so neither caller — the relay path nor the
-		// eviction-retry short-circuit above — can expire a review gate.
-		if (isReviewGateCheckpoint(question.checkpoint)) return;
 		if (this.evictedGateIds.has(question.id)) return;
 		try {
 			const db = new CommDB(dbPath);
@@ -1435,6 +1106,11 @@ export class GatePoller {
 	}
 
 	// ── FLY-307 B: per-lead circuit breaker ─────────────────────────────────
+
+	/** ON by default; `FLYWHEEL_GATEPOLLER_CIRCUIT=0` is the explicit bypass. */
+	private circuitEnabled(): boolean {
+		return process.env.FLYWHEEL_GATEPOLLER_CIRCUIT !== "0";
+	}
 
 	private circuitThreshold(): number {
 		return this.config.circuitThreshold ?? DEFAULT_CIRCUIT_THRESHOLD;
@@ -1468,15 +1144,207 @@ export class GatePoller {
 		}
 	}
 
+	/**
+	 * Patrol is ON by default when a transport is wired; `=0` is the explicit
+	 * bypass (FLY-193 default-ON precedent). Env read per-poll so tests and
+	 * live ops can flip it without a restart.
+	 */
+	private misroutePatrolEnabled(): boolean {
+		if (!this.config.transport) return false;
+		if (process.env.FLYWHEEL_MISROUTE_PATROL === "0") return false;
+		if (!this.config.misrouteArchiveDir) {
+			if (!this.warnedMissingArchiveDir) {
+				this.warnedMissingArchiveDir = true;
+				console.warn(
+					"[GatePoller] misroute patrol disabled: transport wired but misrouteArchiveDir missing (archive-before-ack is mandatory)",
+				);
+			}
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Scan `teams/<leadId>/inboxes/team-lead.json` for unread entries — every
+	 * one of them is a misrouted message (the recipient "team-lead" does not
+	 * exist in Flywheel's lead-named teams; stock SendMessage auto-created the
+	 * file and reported success to the sender).
+	 *
+	 * Semantics (Codex R1 #1/#2/#6):
+	 *  - delivery dedupe (isLeadEventDelivered) is DECOUPLED from ack retry: an
+	 *    already-delivered event skips re-delivery but its message id still
+	 *    joins ackCandidates — otherwise an ack failure would strand the entry
+	 *    unread forever behind the dedupe early-return.
+	 *  - backlog (> threshold): archive the FULL batch as JSONL BEFORE ack
+	 *    (mailbox read-retention pruning may delete acked originals), then one
+	 *    aggregate advisory. Aggregate eventId is content-addressed from the
+	 *    sorted message dedupe ids — stable across restarts and ack retries;
+	 *    the archive filename reuses it so a retry overwrites idempotently.
+	 *  - ack only after the advisory was delivered (now or previously);
+	 *    delivery failure → recordDeliveryFailure, no ack, retried next patrol.
+	 */
+	private async misroutePatrol(
+		project: ProjectEntry,
+		lead: LeadConfig,
+	): Promise<void> {
+		const transport = this.config.transport;
+		const archiveRoot = this.config.misrouteArchiveDir;
+		if (!transport || !archiveRoot) return;
+		// A lead actually NAMED "team-lead" would make this file its real
+		// inbox, not a black hole.
+		if (lead.agentId === MISROUTE_AGENT_NAME) return;
+
+		const unread = (
+			await transport.readUnread({
+				leadName: lead.agentId,
+				agentName: MISROUTE_AGENT_NAME,
+			})
+		).filter((m) => !m.read);
+		if (unread.length === 0) return;
+
+		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
+		const ackCandidates: string[] = [];
+
+		if (unread.length > this.backlogThreshold()) {
+			// Aggregate path.
+			const sortedIds = unread.map((m) => m.id).sort();
+			const aggId = `misroute_agg_${sha16(`${lead.agentId}|${sortedIds.join("|")}`)}`;
+
+			// Archive BEFORE any ack — deterministic filename (= aggId) so an
+			// ack-retry pass overwrites instead of duplicating.
+			const leadDir = join(archiveRoot, lead.agentId);
+			mkdirSync(leadDir, { recursive: true });
+			const archivePath = join(leadDir, `${aggId}.jsonl`);
+			writeFileSync(
+				archivePath,
+				`${unread.map((m) => JSON.stringify(m)).join("\n")}\n`,
+			);
+
+			const tsRange = unread.map((m) => m.ts).sort((a, b) => a - b);
+			const senders = [...new Set(unread.map((m) => m.from))].sort();
+			const payload: HookPayload = {
+				event_type: "runner_misrouted_report",
+				execution_id: "misroute-backlog",
+				issue_id: "unknown",
+				project_name: project.projectName,
+				status: "misrouted_backlog",
+				summary:
+					`${unread.length} misrouted runner report(s) from [${senders.join(", ")}] ` +
+					`between ${new Date(tsRange[0] ?? 0).toISOString()} and ${new Date(tsRange[tsRange.length - 1] ?? 0).toISOString()} — archived, not replayed.`,
+				misroute_count: unread.length,
+				misroute_archive_path: archivePath,
+				misroute_hint: MISROUTE_HINT,
+			};
+			const delivered = await this.deliverMisrouteEvent(
+				lead,
+				aggId,
+				payload,
+				runtime,
+			);
+			if (delivered) ackCandidates.push(...unread.map((m) => m.id));
+		} else {
+			// Per-message path.
+			for (const m of unread) {
+				const eventId = `misroute_${sha16(`${m.id}:${lead.agentId}`)}`;
+				const payload: HookPayload = {
+					event_type: "runner_misrouted_report",
+					execution_id: m.from,
+					issue_id: "unknown",
+					project_name: project.projectName,
+					status: "misrouted_report",
+					from_agent: m.from,
+					misroute_from: m.from,
+					misrouted_at: new Date(m.ts).toISOString(),
+					summary: m.content.slice(0, 2000),
+					misroute_hint: MISROUTE_HINT,
+				};
+				const delivered = await this.deliverMisrouteEvent(
+					lead,
+					eventId,
+					payload,
+					runtime,
+				);
+				if (delivered) ackCandidates.push(m.id);
+			}
+		}
+
+		if (ackCandidates.length > 0) {
+			try {
+				await transport.ack({
+					leadName: lead.agentId,
+					agentName: MISROUTE_AGENT_NAME,
+					messageIds: ackCandidates,
+				});
+			} catch (err) {
+				// Retried next patrol: the events are already delivered, so the
+				// dedupe skips re-delivery but the ids re-enter ackCandidates
+				// (delivered-event-still-acks rule above).
+				console.warn(
+					`[GatePoller] misroute ack failed for ${lead.agentId} (will retry next patrol):`,
+					err instanceof Error ? err.message : String(err),
+				);
+			}
+		}
+	}
+
+	/**
+	 * Deliver one misroute advisory with the relayToLead persistence pattern.
+	 * Returns true when the Lead has the event (delivered now OR on a previous
+	 * patrol) — the caller acks on either (ack-retry decoupled from delivery
+	 * dedupe).
+	 */
+	private async deliverMisrouteEvent(
+		lead: LeadConfig,
+		eventId: string,
+		payload: HookPayload,
+		runtime: ReturnType<RuntimeRegistry["getForLead"]>,
+	): Promise<boolean> {
+		if (this.config.store.isLeadEventDelivered(lead.agentId, eventId)) {
+			return true; // previously delivered — still an ack candidate
+		}
+		const seq = this.config.store.appendLeadEvent(
+			lead.agentId,
+			eventId,
+			payload.event_type,
+			JSON.stringify(payload),
+			payload.execution_id,
+		);
+		if (!runtime) return false;
+		const envelope: LeadEventEnvelope = {
+			seq,
+			event: payload,
+			sessionKey: payload.execution_id,
+			leadId: lead.agentId,
+			timestamp: new Date().toISOString(),
+		};
+		const result = await runtime.deliver(envelope);
+		if (result.delivered) {
+			this.config.store.markLeadEventDelivered(seq);
+			return true;
+		}
+		this.config.store.recordDeliveryFailure(
+			seq,
+			result.error ?? "deliver returned false",
+		);
+		return false;
+	}
+
 	private getPendingQuestions(
 		dbPath: string,
 		leadId: string,
+		onReadFailure?: () => void,
 	): PendingQuestion[] {
 		let db: CommDB;
 		try {
 			db = CommDB.openReadonly(dbPath);
 		} catch {
-			// Missing or unreadable CommDB means there is nothing safe to relay this tick.
+			// FLY-637-ext (Codex code R1 #3): distinguish "no comm.db yet" (benign —
+			// the project simply has no questions) from a genuine open failure on an
+			// EXISTING file (transient lock / corruption). The latter must NOT look
+			// like "no active questions" to the lead-pending prune, or it could delete
+			// live backoff rows — signal it so the poll skips the prune this tick.
+			// Relay behavior is unchanged (still returns [] = skip this lead's relay).
+			if (existsSync(dbPath)) onReadFailure?.();
 			return [];
 		}
 		try {
@@ -1508,12 +1376,6 @@ export class GatePoller {
 			//     reaching product-lead. Preserves the label-routing precedence
 			//     that the brainstorm session decided to keep for gate.
 			if (!ACTIVE_SESSION_STATUSES.has(session.status)) {
-				// FLY-1257 path-2: a review gate outlives its author by design — the
-				// review coordinator binds it and the reviewer answers it, so the
-				// FLY-307 A premise below does not hold. Withhold delivery (as ever
-				// for a terminal session) but leave the gate bindable; the schema's
-				// own `expires_at` default (+72h, flywheel-comm db.ts) still bounds it.
-				if (isReviewGateCheckpoint(question.checkpoint)) return;
 				// FLY-307 A: a gate from a terminal session can never be answered
 				// (the Runner is gone, and the active-session check already withholds
 				// delivery), so it would otherwise be re-polled every tick until its
@@ -1559,7 +1421,6 @@ export class GatePoller {
 			status: isGate ? "gate_pending" : "runner_question",
 			summary: fullContent,
 			question_id: question.id,
-			question_kind: question.kind ?? undefined,
 			from_agent: question.from_agent,
 			comm_db_path: dbPath,
 			session_role: session.session_role ?? "main",
@@ -1590,22 +1451,11 @@ export class GatePoller {
 			JSON.stringify(payload),
 			session.execution_id,
 		);
-		const commDb = new CommDB(dbPath, false);
-		try {
-			if (!commDb.markQuestionProtected(question.id, String(seq))) {
-				console.warn(
-					`[GatePoller] question ${question.id} could not bind to lead event seq ${seq}; relay continues without protection`,
-				);
-			}
-		} finally {
-			commDb.close();
-		}
 
 		// Deliver to Lead via the runtime (CommDB instruction or mailbox).
 		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
 		if (runtime) {
 			const envelope: LeadEventEnvelope = {
-				eventId,
 				seq,
 				event: payload,
 				sessionKey: session.execution_id,
@@ -1613,16 +1463,10 @@ export class GatePoller {
 				timestamp: new Date().toISOString(),
 			};
 
-			const result = await dispatchLeadEvent(
-				this.config.runtimeRegistry,
-				runtime,
-				envelope,
-			);
+			const result = await runtime.deliver(envelope);
 
 			if (result.delivered) {
 				this.config.store.markLeadEventDelivered(seq);
-			} else if (result.queued) {
-				// Durable inbox loop owns the delivery receipt.
 			} else {
 				this.config.store.recordDeliveryFailure(
 					seq,
@@ -1649,7 +1493,6 @@ export class GatePoller {
 	 * Without it, every sub-cadence would re-scan from the oldest pending question.
 	 */
 	private readonly defaultReplyCursor = new InMemoryInboundCursorStore();
-	private founderReplyScanCursor: string | null = null;
 	private readonly founderNotifyDone = new Set<string>();
 	/** qid → transient-failure retry state (TIME budget, not a fast tick count). */
 	private readonly founderNotifyRetry = new Map<
@@ -1668,6 +1511,445 @@ export class GatePoller {
 	/** FLY-799 Part B: execIds already dead-alerted (one alert per stranded ship). */
 	private readonly staleShipDeadAlerted = new Set<string>();
 
+	// ── FLY-637-ext: lead-pending escalation (sibling of the founder fallback) ──
+
+	private leadPendingPruneEveryNTicks(): number {
+		const v = this.config.leadPendingPruneEveryNTicks;
+		return v !== undefined && Number.isFinite(v) && v > 0 ? v : 20;
+	}
+
+	/**
+	 * FLY-637-ext: a runner blocked on a BLOCKING `question` gate the owning Lead
+	 * has not answered → exponential-backoff nudge the Lead → after the configured
+	 * rounds page Annie ONCE. Only `cp === "question"` reaches here (the caller
+	 * gates non-blocking asks + founder-facing checkpoints out). Mirrors the FLY-605
+	 * founder fallback: same liveness/scope gate, per-question durable state.
+	 *
+	 * Persistence ordering (Codex design R1 #5): emit the user-visible event FIRST,
+	 * commit the backoff/page row only AFTER it is accepted — so a crash between
+	 * the two re-nudges (safe) rather than silently dropping a nudge.
+	 */
+	private async maybeEmitLeadPendingNudge(
+		lead: LeadConfig,
+		session: Session,
+		question: PendingQuestion,
+	): Promise<void> {
+		if (!leadPendingEscalationEnabled()) return;
+		if (question.checkpoint !== "question") return; // blocking lead-facing only
+		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
+		try {
+			if (!matchesLead(session, lead.agentId, this.config.projects)) return;
+		} catch {
+			return;
+		}
+
+		const createdMs = parseSqliteUtcMs(question.created_at);
+		if (createdMs === null) return;
+		const now = Date.now();
+		const stuckKey = computeStuckKey(
+			question.id,
+			session.session_stage ?? null,
+		);
+		const prev = this.config.store.getLeadPendingEscalation(
+			session.execution_id,
+			question.id,
+		);
+		const action = decideLeadNudge(
+			prev,
+			stuckKey,
+			createdMs,
+			now,
+			readLeadNudgePolicy(),
+		);
+
+		if (action.kind === "wait") return;
+
+		if (action.kind === "reset") {
+			// stuck_key changed (external progress) → persist a fresh grace-delayed
+			// row so the next nudge waits a full fresh grace (Codex code R1 #2).
+			this.config.store.upsertLeadPendingEscalation(
+				session.execution_id,
+				question.id,
+				action.nextRow,
+			);
+			return;
+		}
+
+		if (action.kind === "nudge") {
+			const persisted = await this.emitLeadPendingNudge(
+				lead,
+				session,
+				question,
+				action.nudgeCount,
+				now,
+				createdMs,
+			);
+			if (persisted) {
+				this.config.store.upsertLeadPendingEscalation(
+					session.execution_id,
+					question.id,
+					action.nextRow,
+				);
+			}
+			return;
+		}
+
+		// page_annie (final fallback). ALWAYS advance the backoff row (so a failed
+		// page is re-attempted on a paced cadence, not every tick), but only set
+		// paged_annie when the alert was genuinely accepted — otherwise `>=` in the
+		// policy retries the page next eligible tick (Codex code R1 #1).
+		const accepted = await this.emitLeadPendingUnhandledAlert(
+			lead,
+			session,
+			question,
+			action.nextRow.nudge_count,
+		);
+		this.config.store.upsertLeadPendingEscalation(
+			session.execution_id,
+			question.id,
+			{ ...action.nextRow, paged_annie: accepted },
+		);
+	}
+
+	/**
+	 * Emit the `runner_lead_pending_escalation` nudge to the owning Lead (guardrail
+	 * event → reliably retried). Returns true once the event row is persisted to
+	 * lead_events (the caller then commits the backoff row). Per-nudge eventId so
+	 * each reminder is a distinct, idempotent event.
+	 */
+	private async emitLeadPendingNudge(
+		lead: LeadConfig,
+		session: Session,
+		question: PendingQuestion,
+		nudgeCount: number,
+		now: number,
+		createdMs: number,
+	): Promise<boolean> {
+		const eventId = `lead_pending_${question.id}_${nudgeCount}`;
+		if (this.config.store.isLeadEventDelivered(lead.agentId, eventId))
+			return true;
+		const issue = session.issue_identifier ?? session.issue_id;
+		const ageMin = Math.round((now - createdMs) / 60_000);
+		// FLY-927 (Task 3.3, FLY-912 wording collapse): the nudge leads with the
+		// TRUTHFUL park line (authoritative session_stage, ball with the LEAD, the
+		// gate's real age) instead of hand-built prose; underivable → an explicit
+		// stage未上报 prefix, never a guessed stage name.
+		const parkTuple = deriveParkTuple({
+			session,
+			pendingGates: [{ checkpoint: "question", createdAtMs: createdMs }],
+			autoQaActive: false,
+			notifiedEvidence: false,
+			ownerLeadId: lead.agentId,
+			nowMs: now,
+		});
+		const truthfulLine = parkTuple
+			? formatParkAlert(parkTuple, now)
+			: `[stage未上报] Runner ${issue} is blocked at a question gate`;
+		const payload: HookPayload = {
+			event_type: "runner_lead_pending_escalation",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			project_name: session.project_name,
+			status: session.status,
+			summary:
+				`${truthfulLine} — waiting for YOU to answer, ${ageMin} min, no progress (reminder #${nudgeCount}). ` +
+				"Answer it via flywheel-comm respond so the runner can continue.",
+			question_id: question.id,
+			session_role: session.session_role ?? "main",
+		};
+		if (this.config.chatThreadsEnabled) {
+			payload.chat_thread_id = resolveChatThreadId(
+				this.config.store,
+				session.issue_id,
+				lead.chatChannel,
+			);
+		}
+		const seq = this.config.store.appendLeadEvent(
+			lead.agentId,
+			eventId,
+			"runner_lead_pending_escalation",
+			JSON.stringify(payload),
+			session.execution_id,
+		);
+		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
+		if (runtime) {
+			const result = await runtime.deliver({
+				seq,
+				event: payload,
+				sessionKey: session.execution_id,
+				leadId: lead.agentId,
+				timestamp: new Date().toISOString(),
+			});
+			if (result.delivered) this.config.store.markLeadEventDelivered(seq);
+			else
+				this.config.store.recordDeliveryFailure(
+					seq,
+					result.error ?? "deliver returned false",
+				);
+		}
+		// Persisted to lead_events — the guardrail retry owns redelivery.
+		return true;
+	}
+
+	/**
+	 * Final fallback: page Annie ONCE that the Lead has ignored a runner's blocking
+	 * question. DISTINCT alert kind (`runner_lead_pending_unhandled`) with NO
+	 * runnerStuck metadata, so the AutoRepairBot never sends the runner a `continue`
+	 * (Codex design R1 #3 — the runner is fine, the Lead is unresponsive).
+	 *
+	 * Returns true ONLY when THIS attempt genuinely sent / queued / DM'd the alert
+	 * (Codex code R1 #1 + R2 #1): fail-closed for a missing sink, a skip
+	 * (unknown-lead/no-channel/no-token — incl. the late-bound page-Annie holder
+	 * before plugin.ts populates it), or a dead-letter — so the caller does NOT mark
+	 * `paged_annie` and the `>=` policy re-attempts the page on the next eligible tick.
+	 *
+	 * `duplicate` is deliberately NOT accepted: `LeadAlertNotifier` writes its dedup
+	 * claim BEFORE resolving the channel/token, so a first attempt that then fails
+	 * (no-channel / dead-letter) would make a retry with a STABLE eventId report
+	 * `duplicate` and falsely look delivered (R2 #1). We instead make the eventId
+	 * per-attempt (`…:<nudgeCount>`, which increments every retry), so each retry is
+	 * a genuine fresh send and a stale claim can never masquerade as a real page.
+	 */
+	private async emitLeadPendingUnhandledAlert(
+		lead: LeadConfig,
+		session: Session,
+		question: PendingQuestion,
+		nudgeCount: number,
+	): Promise<boolean> {
+		const sink = this.config.leadAlertSink;
+		if (!sink) return false; // not wired → fail-closed, retry next eligible tick
+		const issue = session.issue_identifier ?? session.issue_id;
+		const result = await sink.alert({
+			leadId: lead.agentId,
+			projectName: session.project_name,
+			eventId: `runner-lead-pending-unhandled:${session.execution_id}:${question.id}:${nudgeCount}`,
+			eventType: "runner_lead_pending_unhandled",
+			title: `Runner waiting — Lead unresponsive: ${issue}`,
+			body:
+				`Runner ${issue} (execution ${session.execution_id}) has been blocked waiting on ${lead.agentId} to answer its question, ` +
+				`and the Lead has not responded after several reminders. Poke the Lead — the runner itself is fine.`,
+			severity: "warning",
+			sessionKey: session.execution_id,
+		});
+		// Only a genuine send/queue/DM on THIS attempt counts as "Annie has it".
+		return (
+			result.sent === true || result.queued === true || result.dmSent === true
+		);
+	}
+
+	// ── FLY-927 (Task 3.2, Watchdog v2): checkpoint-park 1h patrol ────────────
+	// FLY-912: a session parked at a founder checkpoint for hours with NO
+	// delivery evidence means the founder was never told. First response goes to
+	// the OWNER (runner mailbox wake + Lead event — the self-heal path: the
+	// runner re-verifies/retries its founder notification); only a SECOND full
+	// window without evidence pages the founder in the issue's own thread with
+	// the truthful park template. Kill-switch FLYWHEEL_CHECKPOINT_WATCHDOG
+	// unset ⇒ the whole patrol is off (byte-compat). Piggybacks this poll tick —
+	// no new timer (FLY-169).
+
+	private checkpointWatchdogEnabled(): boolean {
+		return process.env.FLYWHEEL_CHECKPOINT_WATCHDOG === "1";
+	}
+
+	/** FLYWHEEL_CHECKPOINT_STUCK_MS — default 1h (FLY-912: 3h was too slow). */
+	private checkpointStuckMs(): number {
+		const n = Number(process.env.FLYWHEEL_CHECKPOINT_STUCK_MS);
+		return Number.isFinite(n) && n > 0 ? n : 3_600_000;
+	}
+
+	private async maybeEmitCheckpointParkAlert(
+		lead: LeadConfig,
+		session: Session,
+		question: PendingQuestion,
+		dbPath: string,
+	): Promise<void> {
+		if (!this.checkpointWatchdogEnabled()) return;
+		const cp = question.checkpoint;
+		if (cp !== "brainstorm" && cp !== "approve_to_ship") return; // founder parks (v1)
+		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
+		try {
+			if (!matchesLead(session, lead.agentId, this.config.projects)) return;
+		} catch {
+			return;
+		}
+		const createdMs = parseSqliteUtcMs(question.created_at);
+		if (createdMs === null) return;
+		const now = Date.now();
+		const windowMs = this.checkpointStuckMs();
+		if (now - createdMs < windowMs) return;
+
+		const events = this.config.store.getEventsByExecution(session.execution_id);
+		// Evidence = a SUCCESSFUL founder-facing delivery audit for THIS gate
+		// (the FLY-605 fallback's `founder_thread_notified`). Evidence present ⇒
+		// the founder already knows — waiting on her is not "stuck", stay silent.
+		const notifiedEvidence = events.some(
+			(e) =>
+				e.event_type === "founder_thread_notified" &&
+				(e.payload as { questionId?: string } | undefined)?.questionId ===
+					question.id,
+		);
+		const tuple = deriveParkTuple({
+			session,
+			pendingGates: [{ checkpoint: cp, createdAtMs: createdMs }],
+			autoQaActive: false,
+			notifiedEvidence,
+			ownerLeadId: lead.agentId,
+			nowMs: now,
+		});
+		if (!tuple || tuple.party !== "founder" || tuple.notifiedEvidence) return;
+		const line = formatParkAlert(tuple, now);
+
+		// ── FIRST window: wake the OWNER (durable marker = once per gate) ──
+		const nudgeMarker = `checkpoint-park-nudged-${question.id}`;
+		const nudgeRow = events.find((e) => e.event_id === nudgeMarker);
+		if (!nudgeRow) {
+			const ownerAsk =
+				`${line}。第一响给你(owner):校验这个 founder 通知是否真的送达` +
+				"(publish-report / gate 通知),失败就重试并上报;修不掉才升级 founder。";
+			// Runner mailbox wake — the FLY-912 self-heal (best-effort).
+			try {
+				const db = new CommDB(dbPath);
+				await wakeRunnerMailbox({
+					db,
+					execId: session.execution_id,
+					fromAgent: "bridge",
+					content: ownerAsk,
+					metadata: {
+						kind: "checkpoint_park_nudge",
+						questionId: question.id,
+					},
+				});
+			} catch (err) {
+				console.warn(
+					`[GatePoller] checkpoint-park runner wake failed (${session.execution_id}): ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+			// Lead gets the SAME line via the guardrail lead_events lane.
+			try {
+				const seq = this.config.store.appendLeadEvent(
+					lead.agentId,
+					`checkpoint-park-lead-${question.id}`,
+					"checkpoint_park_nudge",
+					JSON.stringify({
+						event_type: "checkpoint_park_nudge",
+						execution_id: session.execution_id,
+						issue_id: session.issue_id,
+						issue_identifier: session.issue_identifier,
+						project_name: session.project_name,
+						status: session.status,
+						summary: ownerAsk,
+						question_id: question.id,
+						session_role: session.session_role ?? "main",
+					}),
+					session.execution_id,
+				);
+				const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
+				if (runtime) {
+					const result = await runtime.deliver({
+						seq,
+						event: {
+							event_type: "checkpoint_park_nudge",
+							execution_id: session.execution_id,
+							issue_id: session.issue_id,
+							project_name: session.project_name,
+							status: session.status,
+							summary: ownerAsk,
+						} as HookPayload,
+						sessionKey: session.execution_id,
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					});
+					if (result.delivered) this.config.store.markLeadEventDelivered(seq);
+					else
+						this.config.store.recordDeliveryFailure(
+							seq,
+							result.error ?? "deliver returned false",
+						);
+				}
+			} catch (err) {
+				console.warn(
+					`[GatePoller] checkpoint-park lead nudge failed (${lead.agentId}): ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+			// Durable marker (restart-safe once-per-gate) — carries the nudge time
+			// the second-window check reads.
+			this.config.store.insertEvent({
+				event_id: nudgeMarker,
+				execution_id: session.execution_id,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "checkpoint_park_nudged",
+				source: "bridge.gate-poller",
+				payload: { questionId: question.id, nudgedAtMs: now, line },
+			});
+			return;
+		}
+
+		// ── SECOND window past the nudge, still no evidence → founder page ──
+		const pageMarker = `checkpoint-park-paged-${question.id}`;
+		if (events.some((e) => e.event_id === pageMarker)) return;
+		const nudgedAtMs =
+			(nudgeRow.payload as { nudgedAtMs?: number } | undefined)?.nudgedAtMs ??
+			createdMs;
+		if (now - nudgedAtMs < windowMs) return;
+
+		const thread = this.config.store.getChatThreadByIssue(
+			session.issue_id,
+			lead.chatChannel,
+		);
+		const result = await emitIssueThreadInfraNotification(
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				issueIdentifier: session.issue_identifier,
+				projectName: session.project_name,
+				kind: "checkpoint_park",
+				content: `🕰️ ${line}\n(owner 第一响已发、一窗内仍无送达证据 → 升级给你。)`,
+				mentionUserId: this.config.discordOwnerUserId,
+				thread,
+				botToken: lead.botToken ?? this.config.discordBotToken,
+				// NEVER silent: undeliverable pages ride the existing undelivered
+				// escalation (deterministic eventId → claims-deduped across retries).
+				onUndeliverable: (reason) =>
+					this.escalateFounderThreadUndelivered(
+						lead,
+						session,
+						question,
+						`checkpoint-park page undeliverable: ${reason}`,
+					),
+			},
+			{ store: this.config.store, fetchImpl: this.config.fetchImpl },
+		);
+		// Terminal outcomes write the once-marker; a no_chat_thread skip stays
+		// unmarked so the page retries when the thread appears (escalation above
+		// already told the Lead lane, deduped).
+		if (
+			result.kind === "posted" ||
+			result.kind === "permanent_failed" ||
+			result.kind === "transient_failed"
+		) {
+			this.config.store.insertEvent({
+				event_id: pageMarker,
+				execution_id: session.execution_id,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "checkpoint_park_paged",
+				source: "bridge.gate-poller",
+				payload: { questionId: question.id, outcome: result.kind, line },
+			});
+		}
+	}
+
+	/** FLY-1041: default-ON kill-switch shared with the event-route retire path. */
+	private shipGateRetireEnabled(): boolean {
+		return process.env.FLYWHEEL_SHIP_GATE_RETIRE !== "0";
+	}
+
 	/**
 	 * FLY-1041 Fix A (sweeper): converge a superseded approve_to_ship gate the
 	 * event-route retire missed (crash between rebind and retire, manual gate).
@@ -1681,6 +1963,7 @@ export class GatePoller {
 		session: Session,
 		dbPath: string,
 	): boolean {
+		if (!this.shipGateRetireEnabled()) return false;
 		if (question.checkpoint !== "approve_to_ship") return false;
 		const boundQid = session.review_question_id;
 		if (
@@ -1707,9 +1990,7 @@ export class GatePoller {
 			const wdb = new CommDB(dbPath, false);
 			let retired = false;
 			try {
-				retired = wdb.retireShipGate(question.id, {
-					supersededBy: boundQid,
-				});
+				retired = wdb.retireShipGate(question.id);
 			} finally {
 				wdb.close();
 			}
@@ -1739,12 +2020,26 @@ export class GatePoller {
 		return true;
 	}
 
+	private founderThreadNotifyEnabled(): boolean {
+		return process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY !== "0";
+	}
+
 	private founderThreadGraceMs(): number {
 		return this.config.founderThreadNotifyGraceMs ?? 10 * 60_000;
 	}
 
-	/** FLY-2101: founder fixed ship-card grace at 15s; config remains a test seam. */
+	/** FLY-1041 Chunk 6: default-ON kill-switch for the fast ship card. */
+	private shipGateCardEnabled(): boolean {
+		return process.env.FLYWHEEL_SHIP_GATE_CARD !== "0";
+	}
+
+	/** FLY-1041 Chunk 6: ship-card grace (env > config > 15s default). */
 	private shipGateCardGraceMs(): number {
+		const env = Number.parseInt(
+			process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS ?? "",
+			10,
+		);
+		if (Number.isFinite(env) && env >= 0) return env;
 		return this.config.shipGateCardGraceMs ?? 15_000;
 	}
 
@@ -1777,37 +2072,10 @@ export class GatePoller {
 		question: PendingQuestion,
 		_dbPath: string,
 	): Promise<void> {
+		if (!this.founderThreadNotifyEnabled()) return;
 		if (!this.config.chatThreadsEnabled) return;
 		const cp = question.checkpoint;
-		if (
-			cp !== "brainstorm" &&
-			cp !== "approve_to_ship" &&
-			cp !== "founder_review"
-		)
-			return;
-		const gateOwnership =
-			typeof this.config.store.workflowGatePresentationDisposition ===
-			"function"
-				? this.config.store.workflowGatePresentationDisposition({
-						executionId: question.from_agent,
-						checkpoint: cp,
-						questionId: question.id,
-					})
-				: { allow: true as const };
-		if (!gateOwnership.allow) {
-			return;
-		}
-		// FLY-1832: an engine workflow holder owns approve_to_ship presentation.
-		// `holder_authoritative` means the materializer is responsible for the one
-		// durable card; it is not permission for this legacy fallback to post a
-		// second, phase-prefixed copy. Holder-less legacy gates still use this path.
-		if (
-			cp === "approve_to_ship" &&
-			"reason" in gateOwnership &&
-			gateOwnership.reason === "holder_authoritative"
-		) {
-			return;
-		}
+		if (cp !== "brainstorm" && cp !== "approve_to_ship") return; // v1 scope
 
 		// Same liveness + scope gate as the gate-question relay path.
 		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
@@ -1828,7 +2096,7 @@ export class GatePoller {
 		if (createdMs === null) return;
 		const now = Date.now();
 		const graceMs =
-			cp === "founder_review" || cp === "approve_to_ship"
+			cp === "approve_to_ship" && this.shipGateCardEnabled()
 				? this.shipGateCardGraceMs()
 				: this.founderThreadGraceMs();
 		if (now - createdMs < graceMs) return;
@@ -1861,53 +2129,6 @@ export class GatePoller {
 		let summary = question.content;
 		if (question.content_type === "ref" && question.content_ref) {
 			summary = readContentRef(question.content_ref) ?? question.content;
-		}
-
-		// FLY-1758: this card is review authority, not a best-effort ping. The
-		// payload must belong to the exact sealed capable run. An existing binding
-		// means a prior tick crashed after the POST; converge the marker without
-		// creating a second authority card.
-		const founderReviewContent =
-			cp === "founder_review"
-				? parseFounderReviewQuestionContent(summary)
-				: undefined;
-		if (cp === "founder_review") {
-			const project = this.config.projects.find(
-				(candidate) => candidate.projectName === session.project_name,
-			);
-			if (!project?.projectRoot) return;
-			try {
-				if (!(await founderReviewCheckpointEnabled(project.projectRoot)))
-					return;
-			} catch (error) {
-				console.warn(
-					`[gate-poller] founder_review config unavailable for ${session.project_name}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-				return;
-			}
-			const context = this.config.store.getGeneralizedWorkflowNodeForExecution(
-				session.execution_id,
-			);
-			if (
-				!founderReviewContent ||
-				!context ||
-				founderReviewContent.runId !== context.run.run_id ||
-				!nodeRequiresFounderReview(context.snapshot, context.node.id)
-			) {
-				return;
-			}
-			const existing = this.config.store.getFounderReviewCardBindingByQuestion(
-				question.id,
-			);
-			if (existing) {
-				if (
-					existing.run_id === founderReviewContent.runId &&
-					existing.artifact_digest === founderReviewContent.artifactDigest
-				) {
-					this.writeFounderThreadMarker(question, session, "binding_recovered");
-				}
-				return;
-			}
 		}
 
 		// FLY-1238: the ship card is a recovery/reapproval side effect. Re-check
@@ -1947,7 +2168,6 @@ export class GatePoller {
 				phasePrefix: phaseMessageTag(
 					session.chat_thread_role,
 					session.runner_model,
-					session.design_backend,
 				),
 			},
 			{ store: this.config.store, fetchImpl: this.config.fetchImpl },
@@ -2050,35 +2270,6 @@ export class GatePoller {
 			}
 		}
 
-		// A 2xx without a Discord message id is not a delivered founder-review
-		// round. Bind the exact card before writing the durable notify marker; any
-		// failure stays retryable and therefore cannot authorize a later response.
-		if (cp === "founder_review" && result.kind === "posted") {
-			if (!result.gateMessageId || !founderReviewContent) {
-				this.founderNotifyRetry.set(question.id, {
-					firstFailedAtMs: retry?.firstFailedAtMs ?? now,
-					nextAttemptAtMs: now + 30_000,
-					attempts: (retry?.attempts ?? 0) + 1,
-				});
-				return;
-			}
-			try {
-				const binding = this.config.store.bindFounderReviewCard({
-					questionId: question.id,
-					messageId: result.gateMessageId,
-					runId: founderReviewContent.runId,
-					artifactDigest: founderReviewContent.artifactDigest,
-					createdAt: new Date(now).toISOString(),
-				});
-				if (binding.status === "conflict") return;
-			} catch (error) {
-				console.warn(
-					`[gate-poller] founder-review card binding failed for ${question.id}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-				return;
-			}
-		}
-
 		this.writeFounderThreadMarker(question, session, result.kind);
 	}
 
@@ -2088,8 +2279,8 @@ export class GatePoller {
 	 * could NOT be delivered — a config skip (no bot token / owner / bad owner) or
 	 * the transient retry budget elapsed — surface it on the FLY-368 alert channel
 	 * so the founder is not left in hours of silence. Reuses the already-wired
-	 * `leadAlertSink`; `founder_gate_delivery_failed` event type. One alert per
-	 * undelivered ping — the
+	 * `leadAlertSink`; `founder_milestone_undelivered` event type (title
+	 * distinguishes gate vs milestone). One alert per undelivered ping — the
 	 * terminal marker written alongside stops re-processing.
 	 */
 	private async escalateFounderThreadUndelivered(
@@ -2107,7 +2298,7 @@ export class GatePoller {
 				leadId: lead.agentId,
 				projectName: session.project_name,
 				eventId: `founder-thread-undelivered:${session.execution_id}:${question.id}`,
-				eventType: "founder_gate_delivery_failed",
+				eventType: "founder_milestone_undelivered",
 				title: `Founder ping undelivered — ${issue} (${cp})`,
 				body:
 					`Bridge could not deliver the ${cp} @founder ping for ${issue} ` +
@@ -2123,14 +2314,353 @@ export class GatePoller {
 		}
 	}
 
-	// ── Founder-reply inbound delivery (FLY-1392: founder→Lead) ──
+	// ── FLY-725: founder milestone-report patrol (Bridge-primary @founder push) ──
+
+	/** In-process dedup key = `${execution_id}:${status}` (durable marker mirrors it). */
+	private readonly milestoneNotifyDone = new Set<string>();
+	private readonly milestoneNotifyRetry = new Map<
+		string,
+		{ firstFailedAtMs: number; nextAttemptAtMs: number; attempts: number }
+	>();
+	/** Per-process cache: projects whose first-enable baseline was already seeded. */
+	private readonly milestoneBaselineSeeded = new Set<string>();
+
+	private founderMilestoneNotifyEnabled(): boolean {
+		return process.env.FLYWHEEL_FOUNDER_MILESTONE_NOTIFY !== "0";
+	}
+
+	// FLY-725 tuning: config override → env knob → default. The env reads make the
+	// cadence / lookback / grace ops-tunable without a config edit (Codex code R1).
+	private milestonePatrolEveryNTicks(): number {
+		return (
+			this.config.milestonePatrolEveryNTicks ??
+			positiveIntEnv(
+				process.env.FLYWHEEL_FOUNDER_MILESTONE_PATROL_TICKS,
+				DEFAULT_PATROL_EVERY_N_TICKS,
+			)
+		);
+	}
+
+	private founderMilestoneLookbackHours(): number {
+		return (
+			this.config.founderMilestoneLookbackHours ??
+			positiveIntEnv(process.env.FLYWHEEL_FOUNDER_MILESTONE_LOOKBACK_HOURS, 24)
+		);
+	}
+
+	private founderMilestoneGraceMs(): number {
+		return (
+			this.config.founderMilestoneGraceMs ??
+			nonNegativeIntEnv(process.env.FLYWHEEL_FOUNDER_MILESTONE_GRACE_MS, 90_000)
+		);
+	}
+
+	/**
+	 * FLY-725 v1 (B) zero-signal terminal status → milestone kind. `completed` is
+	 * NOT mapped — routine completions go to the FLY-727 digest, and ship-ready is
+	 * covered by the FLY-605 approve gate ping; only failed/blocked are pushed here.
+	 */
+	private statusToMilestone(status: string): MilestoneKind | null {
+		if (status === "failed") return "failed";
+		if (status === "blocked") return "blocked";
+		return null;
+	}
+
+	/**
+	 * FLY-725 ground-truth guard (Annie 2026-07-01): only ping when the session
+	 * carries REAL evidence, so a bare/erroneous FSM flip cannot produce a false
+	 * @founder ping. failed → needs a real `last_error`; blocked → needs a real
+	 * blocked route or an error reason. Until the FSM edge-case bugs FLY-232
+	 * (awaiting_review→blocked silent-reject) and FLY-172 (restart mislabels failed)
+	 * are fixed (fast-follow), this keeps the ping trustworthy rather than noise.
+	 */
+	private hasMilestoneGroundTruth(
+		session: Session,
+		milestone: MilestoneKind,
+	): boolean {
+		// failed → a real error is the canonical failure signal (a restart-mislabel,
+		// FLY-172, carries none → skipped).
+		if (milestone === "failed") return !!session.last_error?.trim();
+		// blocked → the reason lives in last_error / summary / decision_reasoning
+		// (`complete --route blocked --summary "…"`; Codex code R1). Require a REAL
+		// reason so every blocked ping carries one — a bare status flip with no
+		// route+reason (FLY-232 silent-reject) is skipped, not falsely pinged.
+		if (milestone === "blocked")
+			return !!(
+				session.last_error?.trim() ||
+				session.summary?.trim() ||
+				session.decision_reasoning?.trim()
+			);
+		return false;
+	}
+
+	private milestoneMarkerId(executionId: string, status: string): string {
+		return `founder-milestone-notify-${executionId}-${status}`;
+	}
+
+	/** Terminal per-(session, status) marker: posted / permanent / budget-exhausted / baseline. */
+	private writeMilestoneMarker(
+		session: Session,
+		milestone: MilestoneKind,
+		reason: string,
+	): void {
+		const key = `${session.execution_id}:${session.status}`;
+		this.config.store.insertEvent({
+			event_id: this.milestoneMarkerId(session.execution_id, session.status),
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			project_name: session.project_name,
+			event_type: "founder_milestone_notify_done",
+			severity: reason === "transient_budget_exhausted" ? "warning" : "info",
+			source: "bridge.gate-poller",
+			payload: { milestone, reason },
+		});
+		this.milestoneNotifyDone.add(key);
+		this.milestoneNotifyRetry.delete(key);
+	}
+
+	private hasMilestoneMarker(executionId: string, status: string): boolean {
+		const marker = this.milestoneMarkerId(executionId, status);
+		return this.config.store
+			.getEventsByExecution(executionId)
+			.some((e) => e.event_id === marker);
+	}
+
+	/**
+	 * Per-project milestone patrol. Pushes ONE @founder-pinged report to the issue
+	 * thread for each Runner that reached a terminal milestone (completed/failed/
+	 * blocked) the founder wasn't told about. Reuses emitFounderMilestoneNotification
+	 * (retry budget) + durable event markers (restart-safe dedup). The first patrol
+	 * after this project first enables the feature marker-seeds pre-cutoff history
+	 * (no post) then falls through so cutoff-after sessions still ping this pass.
+	 */
+	private async maybeEmitMilestoneReports(
+		project: ProjectEntry,
+	): Promise<void> {
+		if (!this.config.chatThreadsEnabled) return;
+		const cfg = this.config.founderMilestoneReportByProject?.get(
+			project.projectName,
+		);
+		if (!cfg?.enabled) return;
+		const milestones =
+			cfg.milestones && cfg.milestones.length > 0
+				? cfg.milestones
+				: [...SUPPORTED_MILESTONE_KINDS_V1];
+
+		const sessions = this.config.store.getRecentTerminalSessionsForNotify(
+			project.projectName,
+			this.founderMilestoneLookbackHours(),
+		);
+
+		// ── First-enable baseline seed (Codex R1 #1 + R2 #1): mark pre-cutoff
+		// history as already-notified WITHOUT posting; cutoff-after sessions are
+		// NOT seeded so they still ping (this same pass — no early return, R3). ──
+		const baselineExecId = `milestone-baseline-${project.projectName}`;
+		const baselineMarker = `founder-milestone-baseline-${project.projectName}`;
+		const baselineDone =
+			this.milestoneBaselineSeeded.has(project.projectName) ||
+			this.config.store
+				.getEventsByExecution(baselineExecId)
+				.some((e) => e.event_id === baselineMarker);
+		if (!baselineDone) {
+			const cutoff = this.config.founderMilestoneBaselineCutoffMs ?? Date.now();
+			for (const s of sessions) {
+				const ms = parseSqliteUtcMs(s.last_activity_at ?? null);
+				const milestone = this.statusToMilestone(s.status);
+				if (milestone && ms !== null && ms <= cutoff) {
+					this.writeMilestoneMarker(s, milestone, "baseline_preexisting");
+				}
+			}
+			this.config.store.insertEvent({
+				event_id: baselineMarker,
+				execution_id: baselineExecId,
+				issue_id: "milestone-baseline",
+				project_name: project.projectName,
+				event_type: "founder_milestone_baseline_seeded",
+				source: "bridge.gate-poller",
+				payload: { cutoffMs: cutoff },
+			});
+			this.milestoneBaselineSeeded.add(project.projectName);
+		}
+
+		const now = Date.now();
+		for (const s of sessions) {
+			const milestone = this.statusToMilestone(s.status);
+			if (!milestone) continue;
+			const dedupKey = `${s.execution_id}:${s.status}`;
+			if (this.milestoneNotifyDone.has(dedupKey)) continue;
+			if (this.hasMilestoneMarker(s.execution_id, s.status)) {
+				this.milestoneNotifyDone.add(dedupKey);
+				continue;
+			}
+
+			// Locate the owning Lead WITHIN this project (Codex R1 #2: matchesLead is
+			// the label/lead guard, NOT the project boundary — the SQL already scoped
+			// project_name).
+			const lead = project.leads.find((l) => {
+				try {
+					return matchesLead(s, l.agentId, this.config.projects);
+				} catch {
+					return false;
+				}
+			});
+			if (!lead) continue;
+
+			const decision = decideMilestoneReport(
+				{
+					status: s.status,
+					session_role: s.session_role,
+					lastActivityMs: parseSqliteUtcMs(s.last_activity_at ?? null),
+				},
+				milestones,
+				false,
+				now,
+				this.founderMilestoneGraceMs(),
+			);
+			if (decision.kind !== "notify") continue;
+
+			// FLY-725 ground-truth guard: skip (no marker) a bare/erroneous FSM flip
+			// with no real evidence — if evidence lands later it can still ping; if it
+			// never does, it ages out of the lookback window. Keeps the ping accurate
+			// while FLY-232 / FLY-172 (FSM edge-case bugs) are fixed as fast-follow.
+			if (!this.hasMilestoneGroundTruth(s, decision.milestone)) continue;
+
+			const retry = this.milestoneNotifyRetry.get(dedupKey);
+			if (retry && now < retry.nextAttemptAtMs) continue;
+
+			// FLY-892 (converge): milestone ping goes to the single issue thread.
+			const thread = this.config.store.getChatThreadByIssue(
+				s.issue_id,
+				lead.chatChannel,
+			);
+			const result = await emitFounderMilestoneNotification(
+				{
+					executionId: s.execution_id,
+					issueId: s.issue_id,
+					issueIdentifier: s.issue_identifier,
+					issueTitle: s.issue_title,
+					projectName: s.project_name,
+					milestone: decision.milestone,
+					route: s.decision_route,
+					prNumber: s.pr_number,
+					summary: s.summary,
+					lastError: s.last_error,
+					decisionReasoning: s.decision_reasoning,
+					thread,
+					botToken: lead.botToken ?? this.config.discordBotToken,
+					ownerUserId: this.config.discordOwnerUserId,
+					// FLY-892 (Step 3): tag which phase reached the milestone; "" for main.
+					phasePrefix: phaseMessageTag(s.chat_thread_role, s.runner_model),
+				},
+				{ store: this.config.store, fetchImpl: this.config.fetchImpl },
+			);
+
+			if (result.kind === "transient_failed") {
+				// Same TIME-budget retry structure as the FLY-605 fallback.
+				const prev = retry ?? {
+					firstFailedAtMs: now,
+					nextAttemptAtMs: now,
+					attempts: 0,
+				};
+				const attempts = prev.attempts + 1;
+				if (now - prev.firstFailedAtMs >= this.founderThreadRetryBudgetMs()) {
+					// Never silently drop (Annie 2026-07-01): the founder was not pinged
+					// after the whole retry budget → surface it on the alert channel.
+					await this.escalateMilestoneUndelivered(
+						lead,
+						s,
+						decision.milestone,
+						"transient_budget_exhausted",
+					);
+					this.writeMilestoneMarker(
+						s,
+						decision.milestone,
+						"transient_budget_exhausted",
+					);
+					continue;
+				}
+				const backoff = Math.min(
+					result.retryAfterMs ?? 30_000 * 2 ** (attempts - 1),
+					5 * 60_000,
+				);
+				this.milestoneNotifyRetry.set(dedupKey, {
+					firstFailedAtMs: prev.firstFailedAtMs,
+					nextAttemptAtMs: now + backoff,
+					attempts,
+				});
+				continue;
+			}
+
+			// posted → success. permanent_failed / skipped → the thread delivery gave
+			// up (4xx / missing thread|token|owner), so surface it on the alert channel
+			// before marking terminal — a failed/blocked ping is never silently dropped.
+			if (result.kind !== "posted") {
+				await this.escalateMilestoneUndelivered(
+					lead,
+					s,
+					decision.milestone,
+					result.kind,
+				);
+			}
+			this.writeMilestoneMarker(s, decision.milestone, result.kind);
+		}
+	}
+
+	/**
+	 * FLY-725 (Annie 2026-07-01: "never silently drop"): when the thread ping for a
+	 * failed/blocked milestone could NOT be delivered (permanent 4xx, missing
+	 * thread/token/owner, or the transient retry budget elapsed), surface it on the
+	 * FLY-368 unified alert channel so the founder is not left in the dark. Fires
+	 * once per undelivered milestone — the terminal marker written alongside stops
+	 * re-processing, and the eventId is deterministic for the alert sink's dedup.
+	 */
+	private async escalateMilestoneUndelivered(
+		lead: LeadConfig,
+		session: Session,
+		milestone: MilestoneKind,
+		reason: string,
+	): Promise<void> {
+		const sink = this.config.leadAlertSink;
+		if (!sink) return;
+		const issue = session.issue_identifier ?? session.issue_id;
+		try {
+			await sink.alert({
+				leadId: lead.agentId,
+				projectName: session.project_name,
+				eventId: `founder-milestone-undelivered:${session.execution_id}:${session.status}`,
+				eventType: "founder_milestone_undelivered",
+				title: `Milestone ping undelivered — ${issue} (${milestone})`,
+				body:
+					`Bridge could not push the ${milestone} @founder report for ${issue} ` +
+					`(execution ${session.execution_id}) to its thread — reason: ${reason}. ` +
+					"The founder was NOT pinged; check the issue thread / bot token / owner config.",
+				severity: "warning",
+				sessionKey: session.execution_id,
+			});
+		} catch (err) {
+			console.warn(
+				`[GatePoller] milestone undelivered-escalation failed for ${issue}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	// ── FLY-605 Part B: founder-reply inbound delivery (founder→runner) ──
+
+	private founderReplyDeliverEnabled(): boolean {
+		return process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER !== "0";
+	}
 
 	private founderReplyDeliverGraceMs(): number {
 		return this.config.founderReplyDeliverGraceMs ?? 10 * 60_000;
 	}
 
-	/** FLY-2101: founder fixed ship-gate grace at 15s; config remains a test seam. */
+	/** FLY-945 Fix A: ship-gate grace (env > config > 15s default). */
 	private shipGateGraceMs(): number {
+		const env = Number.parseInt(
+			process.env.FLYWHEEL_SHIP_GATE_GRACE_MS ?? "",
+			10,
+		);
+		if (Number.isFinite(env) && env >= 0) return env;
 		return this.config.shipGateGraceMs ?? 15_000;
 	}
 
@@ -2147,100 +2677,78 @@ export class GatePoller {
 		);
 	}
 
-	private founderReplyScanBudget(): number {
-		const configured = this.config.founderReplyScanBudget;
-		return Number.isSafeInteger(configured) && (configured as number) >= 0
-			? (configured as number)
-			: FOUNDER_REPLY_SCAN_BUDGET_PER_PASS;
-	}
-
 	/**
 	 * Per (project, lead): take the past-grace pending questions, group them by
 	 * issue thread, and let `emitFounderReplyDeliveryForThread` read each thread
-	 * once. FLY-1392's path is always a raw Lead handoff; the kill switch pauses
-	 * chasing only.
+	 * once and auto-deliver / WAKE / hand off as appropriate.
 	 *
+	 * FLY-1099 §7.2: returns pass HEALTH — false when every scanned thread
+	 * failed its Discord read (ingest effectively down), so the watchdog's
+	 * pass-dead clock is not fed by hollow "successes".
 	 */
-	private async founderReplyDeliverPass(): Promise<void> {
-		if (!this.config.chatThreadsEnabled) return;
+	private async founderReplyDeliverPass(): Promise<boolean> {
+		if (!this.config.chatThreadsEnabled) return true;
 		const ownerUserId = this.config.discordOwnerUserId;
-		if (!isDiscordSnowflake(ownerUserId)) return;
+		if (!isDiscordSnowflake(ownerUserId)) return true;
 		const graceMs = this.founderReplyDeliverGraceMs();
+		const now = Date.now();
+		let scanned = 0;
+		let failedScans = 0;
 		// Codex code R4 HIGH: re-drive any dead-letters whose StateStore write
 		// failed on a prior pass BEFORE scanning (the store may have self-healed).
 		this.retryPendingDeadLetters();
 
-		const sessions = this.config.store.listNonTerminalSessions();
-		const resources = new Map<
-			string,
-			{ readonlyDb: CommDB; writerDb: CommDB }
-		>();
-		const tasks: Array<{
-			ctx: FounderReplyThreadCtx;
-			questions: PendingQuestionForThread[];
-			writerDb: CommDB;
-			deliverAmbiguousToLead: NonNullable<
-				FounderReplyDeliverDeps["deliverAmbiguousToLead"]
-			>;
-		}> = [];
-		try {
-			for (const project of this.config.projects) {
+		for (const project of this.config.projects) {
+			for (const lead of project.leads) {
+				const botToken = lead.botToken ?? this.config.discordBotToken;
+				if (!botToken) continue;
 				const dbPath = defaultGetCommDbPath(project.projectName);
-				let readonlyDb: CommDB;
-				let writerDb: CommDB;
+
+				let pending: PendingQuestion[];
 				try {
-					readonlyDb = CommDB.openReadonly(dbPath);
+					const db = CommDB.openReadonly(dbPath);
 					try {
-						writerDb = new CommDB(dbPath, false);
-					} catch {
-						readonlyDb.close();
-						continue;
+						pending = db.getPendingQuestions(lead.agentId) as PendingQuestion[];
+					} finally {
+						db.close();
 					}
 				} catch {
 					continue; // CommDB not present yet
 				}
-				resources.set(project.projectName, { readonlyDb, writerDb });
 
-				for (const lead of project.leads) {
-					const botToken = lead.botToken ?? this.config.discordBotToken;
-					if (!botToken) {
-						await yieldToEventLoop();
-						continue;
-					}
-
-					let pending: PendingQuestion[];
-					try {
-						pending = readonlyDb.getPendingQuestions(
-							lead.agentId,
-						) as PendingQuestion[];
-					} catch {
-						await yieldToEventLoop();
-						continue; // CommDB not present yet
-					}
-
-					// Build every live issue thread first, then attach pending questions as
-					// Lead context. Question age never gates founder ingress in v2.
-					const byThread = new Map<
-						string,
-						{
-							ctx: FounderReplyThreadCtx;
-							questions: PendingQuestionForThread[];
-						}
-					>();
-					for (const session of sessions) {
-						if (session.project_name !== project.projectName) continue;
-						try {
-							if (!matchesLead(session, lead.agentId, this.config.projects))
-								continue;
-						} catch {
-							continue;
-						}
-						const thread = this.config.store.getChatThreadByIssue(
-							session.issue_id,
-							lead.chatChannel,
-						);
-						if (!thread?.thread_id || byThread.has(thread.thread_id)) continue;
-						byThread.set(thread.thread_id, {
+				// Group pending questions by issue thread. FLY-945 Fix A: the old
+				// per-question "past 10min grace" pre-filter is REPLACED — every
+				// pending question joins its thread group (each carrying its own
+				// per-checkpoint grace), and a thread is scanned as soon as ANY of
+				// its questions has passed its own threshold. The deliverer matches
+				// founder messages against the FULL set (so a reply to a young
+				// question is never classified irrelevant and lost), while maturity
+				// only decides "process now vs pin the cursor and wait".
+				const byThread = new Map<
+					string,
+					{ ctx: FounderReplyThreadCtx; questions: PendingQuestionForThread[] }
+				>();
+				for (const q of pending) {
+					// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
+					// is NEVER a founder-reply binding candidate — it neither absorbs
+					// a founder "ship" nor inflates the ambiguity denominator. This is
+					// the ONLY place reports are special-cased: relayToLead, the
+					// pending CLI, and liveness all keep treating them as questions.
+					if (q.kind === "report") continue;
+					const createdMs = parseSqliteUtcMs(q.created_at);
+					if (createdMs === null) continue;
+					const session = this.config.store.getSession(q.from_agent);
+					if (!session) continue;
+					// FLY-892 (converge): group founder replies by the single issue
+					// thread the from_agent session shares.
+					const thread = this.config.store.getChatThreadByIssue(
+						session.issue_id,
+						lead.chatChannel,
+					);
+					if (!thread?.thread_id) continue;
+					let group = byThread.get(thread.thread_id);
+					if (!group) {
+						group = {
 							ctx: {
 								issueId: session.issue_id,
 								projectName: project.projectName,
@@ -2252,157 +2760,98 @@ export class GatePoller {
 								leadId: lead.agentId,
 							},
 							questions: [],
+						};
+						byThread.set(thread.thread_id, group);
+						// FLY-1099 §7.2: refresh the watchdog's per-thread alert route.
+						this.founderThreadRoutes.set(thread.thread_id, {
+							leadId: lead.agentId,
+							projectName: project.projectName,
+							issueId: session.issue_identifier ?? session.issue_id,
 						});
 					}
-					for (const q of pending) {
-						// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
-						// is NEVER a founder-reply binding candidate — it neither absorbs
-						// a founder "ship" nor inflates the ambiguity denominator. This is
-						// the ONLY place reports are special-cased: relayToLead, the
-						// pending CLI, and liveness all keep treating them as questions.
-						if (q.kind === "report") continue;
-						// FLY-1314: cross-family design/code review gates are reviewer
-						// transport, never founder-answerable. Leaving them in this set
-						// makes a one-letter founder reply ambiguous with the actual ship
-						// gate. This exclusion deliberately does not alter relay/pending/
-						// liveness semantics for review gates.
-						if (isReviewGateCheckpoint(q.checkpoint)) {
-							continue;
-						}
-						const createdMs = parseSqliteUtcMs(q.created_at);
-						if (createdMs === null) continue;
-						const session = this.config.store.getSession(q.from_agent);
-						if (!session) continue;
-						// FLY-892 (converge): group founder replies by the single issue
-						// thread the from_agent session shares.
-						const thread = this.config.store.getChatThreadByIssue(
-							session.issue_id,
-							lead.chatChannel,
-						);
-						if (!thread?.thread_id) continue;
-						let group = byThread.get(thread.thread_id);
-						if (!group) {
-							group = {
-								ctx: {
-									issueId: session.issue_id,
-									projectName: project.projectName,
-									threadId: thread.thread_id,
-									botToken,
-									ownerUserId: ownerUserId as string,
-									graceMs,
-									commDbPath: dbPath,
-									leadId: lead.agentId,
-								},
-								questions: [],
-							};
-							byThread.set(thread.thread_id, group);
-						}
-						group.questions.push({
-							questionId: q.id,
-							checkpoint: q.checkpoint,
-							executionId: q.from_agent,
-							createdAtMs: createdMs,
-							checkpointGraceMs: this.checkpointGraceMsFor(q.checkpoint),
-						});
-					}
+					group.questions.push({
+						questionId: q.id,
+						checkpoint: q.checkpoint,
+						executionId: q.from_agent,
+						createdAtMs: createdMs,
+						checkpointGraceMs: this.checkpointGraceMsFor(q.checkpoint),
+					});
+				}
 
-					const deliverAmbiguousToLead = this.makeAmbiguousHandoff(
-						lead,
-						project.projectName,
-					);
-					for (const { ctx, questions } of byThread.values()) {
-						tasks.push({
+				const deliverAmbiguousToLead = this.makeAmbiguousHandoff(
+					lead,
+					project.projectName,
+				);
+				for (const { ctx, questions } of byThread.values()) {
+					// Scan only threads where at least one question passed its own
+					// scan threshold (all-young thread → byte-compatible no-scan).
+					if (
+						!questions.some(
+							(q) => now - q.createdAtMs >= (q.checkpointGraceMs ?? graceMs),
+						)
+					) {
+						continue;
+					}
+					try {
+						scanned++;
+						const outcome = await emitFounderReplyDeliveryForThread(
 							ctx,
 							questions,
-							writerDb,
-							deliverAmbiguousToLead,
-						});
-					}
-					await yieldToEventLoop();
-				}
-			}
-
-			tasks.sort((left, right) =>
-				compareThreadIds(left.ctx.threadId, right.ctx.threadId),
-			);
-			const questioned = tasks.filter((task) => task.questions.length > 0);
-			const scan = tasks.filter((task) => task.questions.length === 0);
-			const scanBudget = Math.min(this.founderReplyScanBudget(), scan.length);
-			const firstAfterCursor =
-				this.founderReplyScanCursor === null
-					? 0
-					: scan.findIndex(
-							(task) =>
-								compareThreadIds(
-									task.ctx.threadId,
-									this.founderReplyScanCursor!,
-								) > 0,
+							{
+								store: this.config.store,
+								fetchImpl: this.config.fetchImpl,
+								cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
+								deliverAmbiguousToLead,
+								// FLY-799: founder text approval → gate write (flag-gated; absent → WAKE-only).
+								tryFounderShipApproval: this.config.tryFounderShipApproval,
+								// FLY-1041 Chunk 7: reply-to-card binding reader.
+								readCurrentBinding: this.config.readCurrentBinding,
+								// FLY-1099 §7.1: bounded retry + dead-letter.
+								retryLedger: this.founderReplyRetryLedger(),
+							},
 						);
-			const start = firstAfterCursor < 0 ? 0 : firstAfterCursor;
-			const selectedScan = Array.from(
-				{ length: scanBudget },
-				(_, index) => scan[(start + index) % scan.length]!,
-			);
-
-			for (const task of [
-				...questioned.map((value) => ({ value, advancesScanCursor: false })),
-				...selectedScan.map((value) => ({ value, advancesScanCursor: true })),
-			]) {
-				const { ctx, questions, writerDb, deliverAmbiguousToLead } = task.value;
-				try {
-					await emitFounderReplyDeliveryForThread(ctx, questions, {
-						store: this.config.store,
-						fetchImpl: this.config.fetchImpl,
-						cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
-						commDbLeaseFactory: () => ({ db: writerDb, release: () => {} }),
-						deliverAmbiguousToLead,
-						tryFounderShipApproval: this.config.tryFounderShipApproval,
-						readCurrentBinding: this.config.readCurrentBinding,
-						ensureDecisionConvergence: (input) => {
-							this.config.store.ensureFounderDecisionConvergence(input);
-						},
-						classifyDecisionConvergence: (input) => {
-							this.config.store.classifyFounderDecisionConvergence(input);
-						},
-						retryLedger: this.founderReplyRetryLedger(),
-					});
-				} catch (err) {
-					console.warn(
-						`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
-						err instanceof Error ? err.message : String(err),
-					);
-					this.maybeRecoverStore(err);
-				} finally {
-					if (task.advancesScanCursor) {
-						this.founderReplyScanCursor = ctx.threadId;
+						// Codex code R4 HIGH: process failures count against pass health
+						// too — a fully broken StateStore fails every scan as
+						// process_failed/exception (never read_failed), and that shape
+						// must reach the pass-dead detector.
+						if (
+							outcome.result === "read_failed" ||
+							outcome.result === "process_failed"
+						) {
+							failedScans++;
+						}
+					} catch (err) {
+						failedScans++;
+						console.warn(
+							`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
+							err instanceof Error ? err.message : String(err),
+						);
+						// FLY-639 (Codex code R1 HIGH): per-thread founder-reply delivery touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / flush / recordDeliveryFailure) — self-heal on corruption.
+						this.maybeRecoverStore(err);
 					}
-					await yieldToEventLoop();
-				}
-			}
-		} finally {
-			for (const { readonlyDb, writerDb } of resources.values()) {
-				try {
-					writerDb.close();
-				} catch (err) {
-					console.warn("[GatePoller] founder-reply writer close failed:", err);
-				}
-				try {
-					readonlyDb.close();
-				} catch (err) {
-					console.warn(
-						"[GatePoller] founder-reply readonly close failed:",
-						err,
-					);
 				}
 			}
 		}
+		return computeFounderPassHealthy(
+			scanned,
+			failedScans,
+			this.pendingDeadLetters.size,
+		);
 	}
 
 	// ── FLY-1099: founder-reply reliability wiring ──────────────────────────
 
-	/** FLY-2101: founder fixed the former runtime flag at 30 minutes. */
+	/** §7.1: FLYWHEEL_FOUNDER_REPLY_RETRY_MAX (default 10). */
+	private founderReplyRetryMax(): number {
+		return positiveIntEnv(process.env.FLYWHEEL_FOUNDER_REPLY_RETRY_MAX, 10);
+	}
+
+	/** §7.1: FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS (default 30min). */
 	private founderReplyDeadletterAgeMs(): number {
-		return 30 * 60_000;
+		return positiveIntEnv(
+			process.env.FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS,
+			30 * 60_000,
+		);
 	}
 
 	/** Parse a session's issue_labels JSON (defensive — never throws). */
@@ -2466,9 +2915,11 @@ export class GatePoller {
 	 * dead-letter WRITE failed (fully broken StateStore: no retry row, no gate
 	 * rematch, nothing durable to scan). Entries are re-driven at the start of
 	 * every deliver pass (the FLY-639 self-heal may have repaired the store),
-	 * and a NON-EMPTY latch keeps the pass marked UNHEALTHY.
-	 * Honest floor: a Bridge crash drops the latch when storage is fully broken
-	 * and nothing durable could be recorded anywhere.
+	 * and a NON-EMPTY latch keeps the pass marked UNHEALTHY so the pass-dead
+	 * watchdog escalates instead of notePassSuccess silencing the episode.
+	 * Honest floor: a Bridge crash drops the latch — with storage fully broken
+	 * nothing durable was recordable anywhere; the sustained pass-dead alert
+	 * is the human hand-off.
 	 */
 	private readonly pendingDeadLetters = new Map<
 		string,
@@ -2589,7 +3040,7 @@ export class GatePoller {
 					nowMs,
 				});
 				if (
-					row.attempts < FOUNDER_REPLY_RETRY_MAX &&
+					row.attempts < this.founderReplyRetryMax() &&
 					nowMs - row.first_seen_ms < this.founderReplyDeadletterAgeMs()
 				) {
 					return { deadLettered: false };
@@ -2609,7 +3060,7 @@ export class GatePoller {
 			},
 			// Codex code R3 HIGH: no bounded lap — an answered gate can never
 			// re-match, so the terminal must land NOW (or the cursor pins and the
-			// reconcile is the last resort).
+			// watchdog is the last resort).
 			deadLetterNow: ({
 				ctx,
 				msgId,
@@ -2691,7 +3142,6 @@ export class GatePoller {
 				}
 			},
 			onResponseWritten: rebind.onResponseWritten,
-			gateAuthorityView: rebind.gateAuthorityView,
 			resolveBotToken: (row) =>
 				this.resolveBotTokenFor(row.project_name, row.execution_id),
 			fetchImpl: this.config.fetchImpl,
@@ -2722,6 +3172,10 @@ export class GatePoller {
 				);
 				return res.ok ? { ok: true } : { ok: false, error: res.error };
 			},
+			queueCodexInstruction: ({ projectName, executionId, instructionId }) =>
+				queueCodexCodeReviewInstructionResult(projectName, executionId, {
+					instructionId,
+				}),
 			wake: async ({ projectName, executionId, content, metadata }) => {
 				let db: CommDB;
 				try {
@@ -2748,7 +3202,6 @@ export class GatePoller {
 				}
 			},
 			alertSink: this.config.leadAlertSink,
-			alertsEnabled: this.config.alertsEnabled,
 			resolveAlertRoute: (projectName, executionId) =>
 				this.resolveAlertRoute(projectName, executionId),
 		});
@@ -2756,7 +3209,9 @@ export class GatePoller {
 
 	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
 	private async zombieGateHygienePass(): Promise<void> {
-		this.founderReplyUnreachable.beginUnreachableSweep();
+		const watchdogOn = process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
+		if (!zombieGateResolveEnabled() && !watchdogOn) return;
+		this.founderReplyWatchdog.beginUnreachableSweep();
 		for (const project of this.config.projects) {
 			for (const lead of project.leads) {
 				let db: CommDB;
@@ -2770,17 +3225,13 @@ export class GatePoller {
 					// stale-gate eviction bookkeeping are being handled by that path —
 					// the zombie pass must NOT re-touch them (each getSession() on a
 					// known-stale gate is exactly the sql.js churn FLY-307 removed).
-					// FLY-1328: checkpoint-less asks are now candidates too (the ask
-					// branch dispatches internally), so the checkpoint filter is gone.
-					// The eviction exclusions are gate-only bookkeeping, so they still
-					// only exclude gates — an ask never enters that path.
 					const pending = (
 						db.getPendingQuestions(lead.agentId) as PendingQuestion[]
 					).filter(
 						(q) =>
-							q.checkpoint == null ||
-							(!this.evictedGateIds.has(q.id) &&
-								!this.evictionRetryAt.has(q.id)),
+							q.checkpoint != null &&
+							!this.evictedGateIds.has(q.id) &&
+							!this.evictionRetryAt.has(q.id),
 					);
 					// Codex code R8 MED-1: run the hygiene pass even with ZERO
 					// candidates — its tail reconciles dangling zombie intents
@@ -2791,19 +3242,15 @@ export class GatePoller {
 					await runZombieGateHygiene({
 						store: this.config.store,
 						projectName: project.projectName,
-						leadId: lead.agentId,
 						pendingGateQuestions: pending.map((q) => ({
 							id: q.id,
 							from_agent: q.from_agent,
 							checkpoint: q.checkpoint,
-							created_at: q.created_at,
-							kind: q.kind,
 						})),
 						db: db as unknown as ZombieCommDb,
-						env: process.env,
-						resolveDeadGates: false,
-						noteUnreachableRunner: (a) =>
-							this.founderReplyUnreachable.noteUnreachableRunner(a),
+						noteUnreachableRunner: watchdogOn
+							? (a) => this.founderReplyWatchdog.noteUnreachableRunner(a)
+							: undefined,
 					});
 				} catch (err) {
 					console.warn(
@@ -2816,7 +3263,7 @@ export class GatePoller {
 				}
 			}
 		}
-		this.founderReplyUnreachable.endUnreachableSweep();
+		this.founderReplyWatchdog.endUnreachableSweep();
 	}
 
 	/** FLY-799: minimum spacing between reaction-checks for one ship gate. */
@@ -2835,6 +3282,7 @@ export class GatePoller {
 	 */
 	private async founderReactionApprovalPass(): Promise<void> {
 		const tryReaction = this.config.tryFounderReactionApproval;
+		if (!tryReaction) return;
 		if (!this.config.chatThreadsEnabled) return;
 		const ownerUserId = this.config.discordOwnerUserId;
 		if (!isDiscordSnowflake(ownerUserId)) return;
@@ -2852,25 +3300,21 @@ export class GatePoller {
 				if (!botToken) continue;
 				const dbPath = defaultGetCommDbPath(project.projectName);
 
-				// Collect founder-authority gates for this lead (read-only).
-				let reactionGates: PendingQuestion[];
+				// Collect pending approve_to_ship questions for this lead (read-only).
+				let shipGates: PendingQuestion[];
 				try {
 					const rdb = CommDB.openReadonly(dbPath);
 					try {
-						reactionGates = (
+						shipGates = (
 							rdb.getPendingQuestions(lead.agentId) as PendingQuestion[]
-						).filter(
-							(q) =>
-								q.checkpoint === "approve_to_ship" ||
-								q.checkpoint === "founder_review",
-						);
+						).filter((q) => q.checkpoint === "approve_to_ship");
 					} finally {
 						rdb.close();
 					}
 				} catch {
 					continue; // CommDB not present yet
 				}
-				if (reactionGates.length === 0) continue;
+				if (shipGates.length === 0) continue;
 
 				// Per-lead Discord reactions fetcher (paginating GET; the shared
 				// checkReactionConfirmation is fail-closed on any non-200/429/malformed).
@@ -2899,14 +3343,9 @@ export class GatePoller {
 					continue;
 				}
 				try {
-					for (const q of reactionGates) {
+					for (const q of shipGates) {
 						const createdMs = parseSqliteUtcMs(q.created_at);
-						const checkpointGraceMs =
-							q.checkpoint === "founder_review"
-								? this.shipGateCardGraceMs()
-								: graceMs;
-						if (createdMs === null || now - createdMs < checkpointGraceMs)
-							continue;
+						if (createdMs === null || now - createdMs < graceMs) continue;
 						// Throttle: at most one reactions GET per qid per interval.
 						const nextAt = this.founderReactionNextCheck.get(q.id) ?? 0;
 						if (now < nextAt) continue;
@@ -2917,18 +3356,6 @@ export class GatePoller {
 
 						const session = this.config.store.getSession(q.from_agent);
 						if (!session) continue;
-						const gateOwnership =
-							typeof this.config.store.workflowGatePresentationDisposition ===
-							"function"
-								? this.config.store.workflowGatePresentationDisposition({
-										executionId: q.from_agent,
-										checkpoint: q.checkpoint,
-										questionId: q.id,
-									})
-								: { allow: true as const };
-						if (!gateOwnership.allow) {
-							continue;
-						}
 						const thread = this.config.store.getChatThreadByIssue(
 							session.issue_id,
 							lead.chatChannel,
@@ -2936,33 +3363,21 @@ export class GatePoller {
 						if (!thread?.thread_id) continue;
 
 						try {
-							if (q.checkpoint === "founder_review") {
-								await tryFounderReviewReactionResponse({
-									store: this.config.store,
-									db,
+							await tryReaction({
+								gate: {
 									questionId: q.id,
 									executionId: q.from_agent,
+									checkpoint: q.checkpoint,
+									createdAtMs: createdMs,
+								},
+								ctx: {
+									issueId: session.issue_id,
 									threadId: thread.thread_id,
-									founderId: ownerUserId,
-									reactionFetcher: reactionFetcherImpl,
-								});
-							} else if (tryReaction) {
-								await tryReaction({
-									gate: {
-										questionId: q.id,
-										executionId: q.from_agent,
-										checkpoint: q.checkpoint,
-										createdAtMs: createdMs,
-									},
-									ctx: {
-										issueId: session.issue_id,
-										threadId: thread.thread_id,
-										projectName: project.projectName,
-									},
-									db,
-									reactionFetcherImpl,
-								});
-							}
+									projectName: project.projectName,
+								},
+								db,
+								reactionFetcherImpl,
+							});
 						} catch (err) {
 							console.warn(
 								`[GatePoller] founder-reaction approval error (qid=${q.id}):`,
@@ -2978,6 +3393,11 @@ export class GatePoller {
 		}
 	}
 
+	/** FLY-799 Part B: default-ON re-wake reconciler kill-switch (`=0` disables). */
+	private staleShipRewakeEnabled(): boolean {
+		return process.env.FLYWHEEL_STALE_SHIP_REWAKE !== "0";
+	}
+
 	/**
 	 * FLY-799 Part B: re-wake sessions stranded in approved_to_ship. A LIVE runner
 	 * gets the approval wake re-sent (idempotent; verify-approval still gates the
@@ -2987,14 +3407,7 @@ export class GatePoller {
 	private async staleApprovedShipReconcilePass(): Promise<void> {
 		const sessions = this.config.store
 			.getActiveSessions()
-			.filter((s) => s.status === "approved_to_ship")
-			.map((s) => ({
-				...s,
-				shipAttemptFailedHead: shipAttemptFailedSuppressedHead(
-					s.session_params,
-					s.review_question_id,
-				),
-			}));
+			.filter((s) => s.status === "approved_to_ship");
 		if (sessions.length === 0) return;
 
 		await reconcileStaleApprovedShip({
@@ -3004,38 +3417,13 @@ export class GatePoller {
 			backoffMs: DEFAULT_REWAKE_BACKOFF_MS,
 			backoff: this.staleShipRewakeBackoff,
 			deadAlerted: this.staleShipDeadAlerted,
-			probe: async (s) => {
-				if (!isAutoMigratableClaudeTmux(s.adapter_type)) {
-					return "indeterminate";
+			isAlive: async (s) => {
+				if (!s.tmux_session) return true; // can't probe → treat as live (re-wake harmless)
+				try {
+					return await isTmuxSessionAlive(s.tmux_session);
+				} catch {
+					return true;
 				}
-				const target = lookupTmuxTarget(s.execution_id, s.project_name);
-				if (target.kind === "error") return "indeterminate";
-				if (target.kind === "found") {
-					const verdict = await probeRunnerProcessLiveness(
-						target.target.tmuxWindow,
-					);
-					const classified = classifyStaleShipRunnerLiveness(verdict);
-					if (classified !== "indeterminate") return classified;
-					if (verdict === "indeterminate") return "indeterminate";
-				}
-				const discovery = await discoverTmuxTargetByExecutionId(s.execution_id);
-				if (discovery.kind === "found") {
-					const verdict = await probeRunnerProcessLiveness(
-						discovery.tmuxWindow,
-					);
-					const classified = classifyStaleShipRunnerLiveness(verdict);
-					if (classified !== "indeterminate") return classified;
-					if (verdict === "indeterminate") return "indeterminate";
-				} else if (discovery.kind !== "missing") {
-					return "indeterminate";
-				}
-				const generation = parsePaneLossGenerationParams(s.session_params);
-				if (!generation) return "indeterminate";
-				const current = await probeTmuxServerStartTime(generation.socket_path);
-				return current.kind === "found" &&
-					current.startTime !== generation.server_start_time
-					? "dead"
-					: "indeterminate";
 			},
 			reWake: async (s) => {
 				const dbPath = defaultGetCommDbPath(s.project_name);
@@ -3050,11 +3438,7 @@ export class GatePoller {
 						this.config.store,
 						db,
 						s.execution_id,
-						{
-							issue_id: s.issue_id,
-							project_name: s.project_name,
-							review_question_id: s.review_question_id,
-						},
+						{ issue_id: s.issue_id, project_name: s.project_name },
 						"approval_wake",
 						{ questionId: s.review_question_id },
 					);
@@ -3063,14 +3447,6 @@ export class GatePoller {
 				}
 			},
 			alertDead: async (s) => {
-				const current = this.config.store.getSession(s.execution_id);
-				if (
-					current?.status !== "approved_to_ship" ||
-					current.review_question_id !== s.review_question_id ||
-					current.pr_head_sha !== s.pr_head_sha
-				) {
-					return false;
-				}
 				console.warn(
 					`[GatePoller] FLY-799: approved_to_ship runner ${s.execution_id} (issue ${s.issue_id}) appears DEAD while stranded post-approval — founder approved but the runner cannot self-ship. Deferring to FLY-795 (durable resume).`,
 				);
@@ -3089,40 +3465,17 @@ export class GatePoller {
 						},
 					});
 				} catch {
-					// The external alert remains retryable if the audit store is unavailable.
+					// durable dead-alert event is best-effort
 				}
-				const resolved = this.resolveAlertRoute(s.project_name, s.execution_id);
-				const route = resolved
-					? { leadId: resolved.leadId, projectName: s.project_name }
-					: this.infraAlertRoute();
-				if (!route || !this.config.leadAlertSink) return false;
-				const result = await this.config.leadAlertSink.alert({
-					leadId: route.leadId,
-					projectName: route.projectName,
-					eventId: `stale-approved-ship-dead:${s.execution_id}`,
-					eventType: "stale_approved_ship_dead",
-					title: `Approved ship runner dead — ${s.issue_id}`,
-					body:
-						`Execution ${s.execution_id} was stranded in approved_to_ship and its exact tmux target is proven dead. ` +
-						"The reconcile did not self-ship; use the durable recovery path.",
-					severity: "severe",
-					sessionKey: s.execution_id,
-				});
-				return deadAlertAccepted(result);
-			},
-			diagnose: (s, reason) => {
-				console.warn(
-					`[GatePoller] FLY-1393 W-1 indeterminate for ${s.execution_id}: ${reason}; harmless re-wake only, no death alert`,
-				);
 			},
 		});
 	}
 
 	/**
-	 * Durable founder-message handoff audit. The deliverer has already inserted
-	 * the canonical founder row into comm.db; this method must never dispatch a
-	 * second lead_event row. It persists the audit mirror and rings the queue
-	 * doorbell only.
+	 * Durable ambiguous-message handoff to the Lead via the SAME LeadRuntime path
+	 * GatePoller uses for gate questions (Codex R3 #2). Returns true only when the
+	 * event is durably accepted + delivered; on failure the deliverer stops the
+	 * cursor before that message so the manual-relay handoff is never lost.
 	 */
 	private makeAmbiguousHandoff(
 		lead: LeadConfig,
@@ -3138,47 +3491,53 @@ export class GatePoller {
 				// A flush() failure propagates → emitFounderReplyDeliveryForThread
 				// throws → the per-thread catch leaves the cursor un-advanced → retry.
 				this.config.store.flush();
-				this.config.runtimeRegistry.nudgeLeadInbox?.(lead.agentId, projectName);
 				return true;
 			}
 			const issueId = String(payload.issueId ?? "");
 			const answer = String(payload.answer ?? "");
-			const msgId = String(payload.msgId ?? "");
-			const commDbPath = String(payload.commDbPath ?? "");
-			const sourceThread = String(payload.threadId ?? "").trim();
-			if (!sourceThread) {
-				throw new Error("founder_reply_source_thread_missing");
-			}
 			const hookPayload: HookPayload = {
-				event_type: "founder_reply",
+				event_type: "founder_reply_ambiguous",
 				execution_id: "",
 				issue_id: issueId,
 				project_name: projectName,
-				status: "founder_reply",
-				summary: answer,
-				chat_thread_id: sourceThread,
-				founder_message_id: msgId,
-				comm_db_path: commDbPath,
-				action:
-					`Handle this founder message as Lead. If it answers a Runner question, route it with ` +
-					`flywheel-comm respond <qid> "<founder-answer>" --lead ${lead.agentId} ` +
-					`--db ${commDbPath} --source-thread ${sourceThread} ` +
-					`--bridge-url "$BRIDGE_URL". If no Runner action is needed, close the ` +
-					`corresponding FLY-1575 task as no_action with a reason.`,
+				status: "founder_reply_ambiguous",
+				summary:
+					"🧵 Annie 在该 issue thread 回复了，但有多个 open question、Bridge 无法确定她答的是哪个 —— " +
+					`请人工 relay 给对应 runner。回复内容：${answer}`,
+				chat_thread_id: String(payload.threadId ?? ""),
 			};
 			const seq = this.config.store.appendLeadEvent(
 				lead.agentId,
 				eventId,
-				"founder_reply",
+				"founder_reply_ambiguous",
 				JSON.stringify(hookPayload),
 				issueId,
 			);
-			this.config.store.markLeadEventDelivered(seq);
-			// The StateStore event is audit-only. Marking it delivered prevents the
-			// legacy reconciler from materializing a sibling lead_event:* queue row.
-			this.config.store.flush();
-			this.config.runtimeRegistry.nudgeLeadInbox?.(lead.agentId, projectName);
-			return true;
+			const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
+			if (!runtime) return false;
+			const result = await runtime.deliver({
+				seq,
+				event: hookPayload,
+				sessionKey: issueId,
+				leadId: lead.agentId,
+				timestamp: new Date().toISOString(),
+			});
+			if (result.delivered) {
+				this.config.store.markLeadEventDelivered(seq);
+				// FLY-605 (Codex code-review #2): force the lead_events append +
+				// delivered mark to disk BEFORE we return true — the deliverer
+				// advances (and immediately persists) the thread cursor on success,
+				// and appendLeadEvent/markLeadEventDelivered do NOT auto-save. Without
+				// this flush a crash after the cursor write could drop the manual-relay
+				// handoff while the cursor permanently skips the founder message.
+				this.config.store.flush();
+				return true;
+			}
+			this.config.store.recordDeliveryFailure(
+				seq,
+				result.error ?? "deliver returned false",
+			);
+			return false;
 		};
 	}
 }

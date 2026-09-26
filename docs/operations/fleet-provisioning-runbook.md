@@ -80,17 +80,10 @@ engine and reports `not-installed/no-carrier` on a clean host). Instead:
 3. Bring up each Lead — manifests do NOT exist yet on a clean host, and the
    launchd wrapper **exits if its manifest is missing** (it does NOT
    self-generate). So, per Lead:
-   1. Run `scripts/materialize-lead-manifests.sh` once to create the canonical
-      static manifests from `projects.json`. The Lead body never creates or
-      rewrites them.
+   1. Run `claude-lead.sh` once (foreground/manual) to **generate that Lead's
+      manifest**, then stop that manual process.
    2. `flywheel-daemon.sh install <lead>` — generate the plist + bootstrap from
-      the now-existing manifest. Backend authority comes from the exact
-      project+Lead row in `projects.json`; bespoke Codex Leads are skipped
-      before plist or supervisor mutation.
-   A clean-host CoS should use the literal `cos-lead` agent id. A custom CoS id
-   must not be installed until its reviewed manifest control plane supplies
-   `launchEnvironment.FLYWHEEL_LEAD_ROLE=cos`; `flywheel-fleet.sh apply` cannot
-   seed that value before the first carrier exists.
+      the now-existing manifest.
    (This mirrors the setup-new-project.sh cutover checklist.)
 4. Verify: `flywheel-daemon.sh status` — expect all leads loaded.
 
@@ -284,7 +277,7 @@ cannot be API-automated; account sign-ups are yours; the machine should stay on
 | CoS + Eng Lead chat, Runner dispatch, PR flow | ON | — |
 | Founder gates (brainstorm/approve, FLY-175 — founder = the instance owner) | ON | — |
 | Cross-dept roundtable | OFF | create the channel + set `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS` |
-| Operator alerts (lead-alert.sh) | **skipped** (no `alertChannel`/`alertFallbackToCore`) | set `"alertFallbackToCore": true` on a lead, or a dedicated `alertChannel` |
+| Operator alerts (LeadWatchdog) | **skipped** (no `alertChannel`/`alertFallbackToCore`) | set `"alertFallbackToCore": true` on a lead, or a dedicated `alertChannel` |
 | Skills sync (flywheel-skills) | OFF until repo access (provision skills phase degrades safely) | grant access + wire skills-sync |
 | Notion / Xiaohongshu / extra model keys | OFF | add the env keys later |
 | cmux viewer | N/A on Linux/WSL2 — tmux-only (§E.1) | — |

@@ -246,10 +246,10 @@ not stall.
   ```bash
   curl -s -X POST "$BRIDGE_URL/api/runs/start" -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
-    -d '{"issueId":"FLY-XX","projectName":"flywheel","leadId":"flywheel-product-lead","taskCategory":"prd"}'
+    -d '{"issueId":"FLY-XX","projectName":"flywheel","leadId":"flywheel-product-lead"}'
   ```
   Trust the routed label; do not pre-check or guess labels (base
-  `department-lead-rules.md` §5). If `/api/runs/start` returns a dept-scope reject,
+  `department-lead-rules.md` §4). If `/api/runs/start` returns a dept-scope reject,
   surface it (label fix at source) — never bypass the gate.
 - **Engineering build issues → Tadashi**, not your own Runner: hand them to his
   queue (create the issue with the `Flywheel` label / ask Aunt Cass to route), so
@@ -273,7 +273,7 @@ replies back to the Runner (`flywheel-comm respond`/`send`).
 # Boundaries (what you do NOT do)
 
 - **No pipeline / phase engineering.** Do not bolt a new phase onto the FLY-793
-  DAG workflow engine. Product-issue pipeline shape + the **PM acceptance gate** are
+  three-stage engine. Product-issue pipeline shape + the **PM acceptance gate** are
   **FLY-830**, not you.
 - **No production code.** You converge a PRD and file build issues; the shippable
   build goes to Runners (a mockup/prototype to communicate intent is fine).

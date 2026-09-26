@@ -123,13 +123,12 @@ describe("ClaudeRunner", () => {
 			expect(mockQuery).toHaveBeenCalledWith({
 				prompt: "Hello Claude",
 				options: {
-					model: "claude-fable-5",
-					fallbackModel: "claude-opus-5",
+					model: "opus",
+					fallbackModel: "sonnet",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: { type: "preset", preset: "claude_code" },
 					settingSources: ["user", "project", "local"],
-					extraArgs: { settings: expect.any(String) },
 					env: expect.objectContaining({
 						CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1",
 						CLAUDE_CODE_ENABLE_TASKS: "true",
@@ -159,13 +158,12 @@ describe("ClaudeRunner", () => {
 			expect(mockQuery).toHaveBeenCalledWith({
 				prompt: "test",
 				options: {
-					model: "claude-fable-5",
-					fallbackModel: "claude-opus-5",
+					model: "opus",
+					fallbackModel: "sonnet",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: { type: "preset", preset: "claude_code" },
 					settingSources: ["user", "project", "local"],
-					extraArgs: { settings: expect.any(String) },
 					env: expect.objectContaining({
 						CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1",
 						CLAUDE_CODE_ENABLE_TASKS: "true",
@@ -195,13 +193,12 @@ describe("ClaudeRunner", () => {
 			expect(mockQuery).toHaveBeenCalledWith({
 				prompt: "test",
 				options: {
-					model: "claude-fable-5",
-					fallbackModel: "claude-opus-5",
+					model: "opus",
+					fallbackModel: "sonnet",
 					abortController: expect.any(AbortController),
 					cwd: "/tmp/test",
 					systemPrompt: "You are a helpful assistant",
 					settingSources: ["user", "project", "local"],
-					extraArgs: { settings: expect.any(String) },
 					env: expect.objectContaining({
 						CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1",
 						CLAUDE_CODE_ENABLE_TASKS: "true",
@@ -209,67 +206,6 @@ describe("ClaudeRunner", () => {
 					}),
 				},
 			});
-		});
-
-		it("FLY-1715: passes one SDK settings argument with both Discord plugins disabled", async () => {
-			const runnerWithArgs = new ClaudeRunner({
-				...defaultConfig,
-				extraArgs: {
-					chrome: null,
-					settings: JSON.stringify({
-						enabledPlugins: {
-							"discord@flywheel-plugins": true,
-							"discord@claude-plugins-official": true,
-						},
-					}),
-				},
-			});
-			mockQuery.mockImplementation(async function* () {});
-
-			await runnerWithArgs.start("test");
-
-			const options = mockQuery.mock.calls[0][0].options;
-			expect(options.extraArgs.chrome).toBeNull();
-			const settings = JSON.parse(options.extraArgs.settings);
-			expect(settings.enabledPlugins).toMatchObject({
-				"discord@flywheel-plugins": false,
-				"discord@claude-plugins-official": false,
-			});
-		});
-
-		it("FLY-1715: malformed SDK settings fail closed before query", async () => {
-			const onError = vi.fn();
-			const runnerWithBadSettings = new ClaudeRunner({
-				...defaultConfig,
-				extraArgs: { settings: "{" },
-				onError,
-			});
-
-			await runnerWithBadSettings.start("test");
-
-			expect(mockQuery).not.toHaveBeenCalled();
-			expect(onError).toHaveBeenCalledWith(
-				expect.objectContaining({
-					message: expect.stringMatching(/settings/i),
-				}),
-			);
-		});
-
-		it("fails closed before SDK spawn when a fallback link cannot resolve", async () => {
-			const onError = vi.fn();
-			const runnerWithBadFallback = new ClaudeRunner({
-				...defaultConfig,
-				model: "fable",
-				fallbackModel: "sonnet,claude-not-a-model",
-				onError,
-			});
-
-			await expect(runnerWithBadFallback.start("test")).rejects.toMatchObject({
-				code: "INVALID_MODEL",
-			});
-
-			expect(mockQuery).not.toHaveBeenCalled();
-			expect(onError).not.toHaveBeenCalled();
 		});
 
 		it("should throw error if session already running", async () => {

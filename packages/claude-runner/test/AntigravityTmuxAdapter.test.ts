@@ -66,13 +66,6 @@ function launchCommand(calls: ExecCall[]): string[] {
 	return nw.args.slice(cIdx + 2);
 }
 
-/** Resolve the positional binary after the FLY-1999 shell env boundary. */
-function launchedBinary(calls: ExecCall[]): string | undefined {
-	const command = launchCommand(calls);
-	if (command[0] !== "sh" || command[1] !== "-c") return command[0];
-	return command[command[2]?.includes('cf="$0"') ? 7 : 4];
-}
-
 describe("AntigravityTmuxAdapter", () => {
 	it("has type 'antigravity-tmux'", () => {
 		const { fn } = makeMockExec();
@@ -85,7 +78,7 @@ describe("AntigravityTmuxAdapter", () => {
 		const { fn, calls } = makeMockExec();
 		const adapter = new AntigravityTmuxAdapter("flywheel", fn, 10);
 		await adapter.execute(makeCtx());
-		expect(launchedBinary(calls)).toBe("agy");
+		expect(launchCommand(calls)[0]).toBe("agy");
 		// never launches claude
 		expect(calls.some((c) => c.cmd === "claude")).toBe(false);
 	});

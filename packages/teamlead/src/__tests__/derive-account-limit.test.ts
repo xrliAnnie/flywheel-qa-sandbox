@@ -1,9 +1,9 @@
 /**
- * FLY-696 M1/C3 — deriveAccountLimitForAlert: the thin composition the runner quota scan /
+ * FLY-696 M1/C3 — deriveAccountLimitForAlert: the thin composition LeadWatchdog /
  * RunnerQuotaDetector call to turn a capped pane into AlertMetadata.accountLimit.
  * Reads the pool's active account + generation (the CAS snapshot) and the pane's
  * own timezone, then defers to buildAccountLimitMetadata. Kept pure/isolated so
- * the producer wiring is a tiny flag-gated call into that sensitive file.
+ * the LeadWatchdog wiring is a tiny flag-gated call into that sensitive file.
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

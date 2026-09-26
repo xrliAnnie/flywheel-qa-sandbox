@@ -25,44 +25,16 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type {
-	ArchiveChatThreadResult,
 	archiveChatThread,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
 import { closeRunner, FINALIZE_DONE_SOURCE_STATES } from "./close-runner.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { archiveThreadAndRecord } from "./done-thread-archiver.js";
-import { emitIssueThreadInfraNotification } from "./founder-thread-notifier.js";
-import {
-	inferLandCloseoutCause,
-	type LandCloseoutCause,
-	landCloseoutReason,
-} from "./land-closeout-cause.js";
-import { normalizeLandLinearDoneReason } from "./land-retry-policy.js";
-import {
-	type LinearDoneFinalizer,
-	raceMarkIssueDoneWithAbort,
-} from "./linear-issue-finalizer.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
-import {
-	type ForceShippedHusksResult,
-	forceShippedHusks,
-} from "./shipped-husk-escalation.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
-
-/** No-op policy outcomes that deliberately discharge finalization's archive duty. */
-export function isArchiveObligationSettled(
-	result: ArchiveChatThreadResult,
-): boolean {
-	return (
-		result.archived ||
-		result.reason === "already_archived" ||
-		result.reason === "founder_reopened" ||
-		result.reason === "in_active_use"
-	);
-}
 
 /**
  * Shared predicate — aligns with event-route.ts + DirectEventSink
@@ -153,138 +125,32 @@ export function markEvidenceGapCompletion(
 	}));
 }
 
-export type ShipAttemptSettle =
-	| {
-			outcome: "marked";
-			firstAttemptForHead: boolean;
-			attemptCount: number;
-	  }
-	| { outcome: "stale_attempt" }
-	| {
-			outcome: "unknown_head_marked";
-			firstAttemptForHead: boolean;
-			attemptCount: number;
-	  }
-	| { outcome: "unknown_head_skipped" };
-
-const REAL_GIT_HEAD = /^[0-9a-f]{40}$/;
-const UNKNOWN_SHIP_ATTEMPT_HEAD = "(unknown)";
-
-function normalizedGitHead(
-	value: string | null | undefined,
-): string | undefined {
-	const normalized = value?.trim().toLowerCase();
-	return normalized && REAL_GIT_HEAD.test(normalized) ? normalized : undefined;
-}
-
 /**
- * FLY-1505: settle a failed/stalled ship ATTEMPT without changing the session
- * status. The completion event's head is authoritative for the attempt; the
- * session row's head is only the comparison target for the currently-live
- * approval.
- *
- * A delayed attempt for an older real head is consumed without writing. An
- * event with no usable head records an explicit fail-open sentinel, but that
- * sentinel never overwrites a real-head marker.
+ * FLY-1232 T9 (Codex code R1 #5): the CENTRAL late-bound shadow finalization
+ * hook. runPostShipFinalization has several in-process claim contenders
+ * (DirectEventSink, event-route, merge-ship-gate) that race the atomic claim
+ * with independently-built deps — if a contender that did not thread
+ * `deps.workflowShadow` wins, T9 must still run. plugin.ts sets this once at
+ * the single switch point (flag ON only); `deps.workflowShadow` takes
+ * precedence when present (test seam). Claim-based startup repair remains the
+ * durable backstop either way.
  */
-export function settleShipAttemptFailed(
-	store: StateStore,
-	executionId: string,
-	info: {
-		attemptHeadSha?: string | null;
-		currentHeadSha?: string | null;
-		prNumber?: number;
-		/** Approval binding carried by the attempt event itself. */
-		reviewQuestionId?: string | null;
-		/** Approval binding on the currently-live session row. */
-		currentReviewQuestionId?: string | null;
-		summary?: string;
-	},
-): ShipAttemptSettle {
-	const attemptHead = normalizedGitHead(info.attemptHeadSha);
-	const currentHead = normalizedGitHead(info.currentHeadSha);
-	if (attemptHead && currentHead && attemptHead !== currentHead) {
-		return { outcome: "stale_attempt" };
-	}
-	const reviewQuestionId = info.reviewQuestionId?.trim() || null;
-	const currentReviewQuestionId = info.currentReviewQuestionId?.trim() || null;
-	if (
-		reviewQuestionId &&
-		currentReviewQuestionId &&
-		reviewQuestionId !== currentReviewQuestionId
-	) {
-		return { outcome: "stale_attempt" };
-	}
+const workflowShadowFinalizationHolder: {
+	current?: {
+		onShipFinalized(args: { projectName: string; issueId: string }): void;
+	};
+} = {};
 
-	let result: ShipAttemptSettle | undefined;
-	patchSessionParams(store, executionId, (cur) => {
-		const priorRaw = cur.fly1505_ship_attempt_failed;
-		const prior =
-			priorRaw && typeof priorRaw === "object" && !Array.isArray(priorRaw)
-				? (priorRaw as Record<string, unknown>)
-				: undefined;
-		const priorHead =
-			typeof prior?.head_sha === "string" ? prior.head_sha.toLowerCase() : "";
-		const priorReviewQuestionId =
-			typeof prior?.review_question_id === "string"
-				? prior.review_question_id
-				: null;
-
-		if (!attemptHead && REAL_GIT_HEAD.test(priorHead)) {
-			result = { outcome: "unknown_head_skipped" };
-			return cur;
-		}
-
-		const markerHead = attemptHead ?? UNKNOWN_SHIP_ATTEMPT_HEAD;
-		const sameApproval = priorReviewQuestionId === reviewQuestionId;
-		const sameSeries =
-			sameApproval &&
-			(priorHead === markerHead ||
-				(priorHead === UNKNOWN_SHIP_ATTEMPT_HEAD && Boolean(attemptHead)));
-		const priorCount =
-			sameSeries &&
-			typeof prior?.attempt_count === "number" &&
-			Number.isInteger(prior.attempt_count) &&
-			prior.attempt_count > 0
-				? prior.attempt_count
-				: 0;
-		const attemptCount = priorCount + 1;
-		const firstAttemptForHead = !sameSeries;
-		result = attemptHead
-			? { outcome: "marked", firstAttemptForHead, attemptCount }
-			: {
-					outcome: "unknown_head_marked",
-					firstAttemptForHead,
-					attemptCount,
-				};
-
-		return {
-			...cur,
-			fly1505_ship_attempt_failed: {
-				at: new Date().toISOString(),
-				pr_number: info.prNumber ?? null,
-				head_sha: markerHead,
-				review_question_id: reviewQuestionId,
-				summary: info.summary ?? null,
-				attempt_count: attemptCount,
-			},
-		};
-	});
-
-	// patchSessionParams invokes the callback synchronously.
-	return result ?? { outcome: "unknown_head_skipped" };
+export function setWorkflowShadowFinalizationHook(
+	hook:
+		| { onShipFinalized(args: { projectName: string; issueId: string }): void }
+		| undefined,
+): void {
+	workflowShadowFinalizationHolder.current = hook;
 }
 
 export interface PostShipOpts {
 	executionId: string;
-	/** Workflow authority when the session belongs to an engine-owned run. */
-	runId?: string;
-	/** Exact merge receipt attributed to this finalization trigger. */
-	mergedPr?: {
-		prNumber: number;
-		headSha: string;
-		repoIdentity?: string;
-	};
 	issueId: string;
 	issueIdentifier?: string;
 	projectName: string;
@@ -294,12 +160,6 @@ export interface PostShipOpts {
 	discordOwnerUserId?: string;
 	/** Fallback if lead has no per-lead bot token. */
 	fallbackBotToken?: string;
-	/** Generation-fenced owner of terminal notification + archive receipts. */
-	landOperation?: {
-		operationId: string;
-		ownerId: string;
-		generation: number;
-	};
 }
 
 /**
@@ -315,7 +175,6 @@ export type LifecycleShipInfra = Pick<
 	| "postShipSweep"
 	| "preArbitrate"
 	| "withIssueLifecycleMutex"
-	| "forceShippedHusks"
 >;
 
 export interface PostShipDeps {
@@ -334,21 +193,7 @@ export interface PostShipDeps {
 	 * it here is the structural ship-success gate — a shipped issue flips to Done.
 	 * Best-effort (never throws). Absent → no Linear transition (byte-compat).
 	 */
-	markIssueDone?: LinearDoneFinalizer;
-	/**
-	 * FLY-1770: the resumable land path must durably classify the Linear Done
-	 * outcome before it can record local finalization completion. A deferred
-	 * SaaS write is settled by the independent slow sweep.
-	 */
-	recordLinearDoneDisposition?: (input: {
-		disposition: "done" | "canceled_refused" | "deferred";
-		reason: string;
-	}) =>
-		| { ok: true; idempotentReplay: boolean }
-		| { ok: false; reason: string }
-		| Promise<
-				{ ok: true; idempotentReplay: boolean } | { ok: false; reason: string }
-		  >;
+	markIssueDone?: (issueId: string, issueIdentifier?: string) => Promise<void>;
 	/**
 	 * FLY-1185 §2.4: ship-time immediate remote-branch delete — consumes the
 	 * Layer A pre-delete attestation returned by `removeCleanWorktree` (never
@@ -380,19 +225,7 @@ export interface PostShipDeps {
 		projectName: string;
 		/** R4#3: the post-ship DAG already holds the canonical issue mutex. */
 		alreadyLocked?: boolean;
-	}) => Promise<
-		| {
-				outcome:
-					| "complete"
-					| "completed"
-					| "partial"
-					| "needs_operator"
-					| "blocked"
-					| "conflict";
-				cause?: LandCloseoutCause;
-		  }
-		| undefined
-	>;
+	}) => Promise<{ outcome: string } | undefined | undefined>;
 	/**
 	 * Codex R2#8: disposition PRE-arbitration — runs BEFORE the first
 	 * destructive step (tmux close). An active founder-park tombstone or a
@@ -407,10 +240,7 @@ export interface PostShipDeps {
 		projectName: string,
 		/** R4#3: the caller already holds the canonical issue mutex. */
 		alreadyLocked?: boolean,
-	) => Promise<
-		| { ok: true; degraded?: "linear_unreachable" }
-		| { ok: false; reason: string; retryable?: boolean }
-	>;
+	) => Promise<{ ok: boolean; reason?: string }>;
 	/**
 	 * FLY-1185 (Codex R4#3): canonical issue mutex for the ENTIRE ship DAG —
 	 * arbitration, dedupe claim, tmux/worktree/branch teardown, closeout,
@@ -426,24 +256,22 @@ export interface PostShipDeps {
 	) => Promise<T>;
 	/**
 	 * FLY-887: close the issue's still-alive parked design + implement phase
-	 * sessions (DAG workflow keep-alive) BEFORE the shared worktree is removed — the
+	 * sessions (three-stage keep-alive) BEFORE the shared worktree is removed — the
 	 * parked phases' cwd is inside it, so they must be torn down first. No-op for a
 	 * single-session issue and for keep-alive OFF (both leave no parked phases).
 	 * Never throws. Absent → no phase finalization (byte-compat).
 	 */
-	finalizeWorkflowPhaseRoles?: (
+	finalizeThreeStagePhases?: (
 		issueId: string,
 		projectName: string,
 		/** R5#3: the post-ship DAG already holds the canonical issue mutex — the
 		 * finalizer's inner closeRunner must skip the (non-re-entrant) lifecycle
 		 * close guard or it self-deadlocks against the outer hold. */
 		alreadyLocked?: boolean,
-		/** FLY-2027: exact land-run authority for workflow-bound main actors. */
-		runId?: string,
 	) => Promise<void>;
 	/**
 	 * FLY-907 (Step 4.1c / plan §2.5 form (a)): the unified issue-display
-	 * refresh (AWAITED variant). Called AFTER `finalizeWorkflowPhaseRoles` (so it
+	 * refresh (AWAITED variant). Called AFTER `finalizeThreeStagePhases` (so it
 	 * reads the phases already at their terminal `completed` status) and BEFORE
 	 * the notifier/archive steps (a rename/edit must land while the thread is
 	 * still un-archived) — the ship-terminal contract: title ✅完成, header all
@@ -459,12 +287,22 @@ export interface PostShipDeps {
 	archiveFn?: typeof archiveChatThread;
 	removeUserFn?: typeof removeUserFromChatThread;
 	fetchImpl?: typeof fetch;
-	/** FLY-1992: evidence-gated cleanup for shipped workflow-node husks. */
-	forceShippedHusks?: typeof forceShippedHusks;
+	/**
+	 * FLY-1232 module ② (T9): best-effort shadow-run finalization hook on THE
+	 * single serialized finalization path. Wired by the in-process sink when
+	 * FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1; call sites that don't wire it (external
+	 * merge reconcile, event-route) are covered by the claim-based startup
+	 * repair (reconcileOnStartup derives T9 from post_ship_finalization_claim).
+	 * The hook never throws (writer contract) — a shadow failure never blocks
+	 * teardown. Absent → byte-compatible.
+	 */
+	workflowShadow?: {
+		onShipFinalized(args: { projectName: string; issueId: string }): void;
+	};
 }
 
 /**
- * FLY-887: build the ship-time finalizer for a DAG workflow issue's still-alive
+ * FLY-887: build the ship-time finalizer for a three-stage issue's still-alive
  * parked phases. Closes the parked design + implement sessions DIRECTLY via
  * `closeRunner({ finalizeDone })` (NOT `closePhaseRunner`, which owns the
  * handoff-era worktree removal — the shared worktree is removed once by
@@ -494,7 +332,7 @@ const RECLAIMABLE_PHASE_STATUSES = new Set<string>([
 	"completed",
 ]);
 
-export function makeFinalizeWorkflowPhaseRoles(
+export function makeFinalizeThreeStagePhases(
 	store: StateStore,
 	transitionOpts: ApplyTransitionOpts,
 	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
@@ -502,9 +340,8 @@ export function makeFinalizeWorkflowPhaseRoles(
 	issueId: string,
 	projectName: string,
 	alreadyLocked?: boolean,
-	runId?: string,
 ) => Promise<void> {
-	return async (issueId, projectName, alreadyLocked, runId) => {
+	return async (issueId, projectName, alreadyLocked) => {
 		const phases = store.getPhaseSessionsForIssue(issueId).filter(
 			(s) =>
 				(s.chat_thread_role === "design" ||
@@ -514,32 +351,15 @@ export function makeFinalizeWorkflowPhaseRoles(
 					s.chat_thread_role === "qa") &&
 				RECLAIMABLE_PHASE_STATUSES.has(s.status),
 		);
-		const workflowManagedMain = runId
-			? store
-					.getWorkflowManagedSessionsForIssue(issueId)
-					.filter(
-						(session) =>
-							session.chat_thread_role === "main" &&
-							Boolean(session.workflow_node_id) &&
-							RECLAIMABLE_PHASE_STATUSES.has(session.status) &&
-							store
-								.listWorkflowActivationsForActor(session.execution_id)
-								.some(
-									(activation) =>
-										activation.run_id === runId &&
-										activation.node_id === session.workflow_node_id,
-								),
-					)
-			: [];
-		for (const p of [...phases, ...workflowManagedMain]) {
+		for (const p of phases) {
 			try {
 				const res = await closeRunner(
 					{
 						executionId: p.execution_id,
 						issueId: p.issue_id,
 						projectName: p.project_name ?? projectName,
-						reason: "DAG workflow ship finalization",
-						executorType: p.chat_thread_role === "main" ? "workflow" : "phase",
+						reason: "three-stage ship finalization",
+						executorType: "phase",
 						finalizeDone: true,
 						transitionOpts,
 						// R5#3: when the post-ship DAG already holds the issue mutex,
@@ -608,129 +428,19 @@ export async function runPostShipFinalization(
 	// archive, Linear Done — runs inside ONE hold. A founder park serializes
 	// strictly before or after the whole DAG, never between its steps.
 	if (deps.withIssueLifecycleMutex) {
-		await deps.withIssueLifecycleMutex(opts.issueId, () =>
-			runPostShipFinalizationInner(opts, deps, true, false),
-		);
-		return;
-	}
-	await runPostShipFinalizationInner(opts, deps, false, false);
-}
-
-export interface ResumablePostShipFinalizationReport {
-	complete: boolean;
-	outcome: "completed" | "partial" | "held";
-	reason?: string;
-	cause?: { token: LandCloseoutCause; executionIds?: string[] };
-	details: {
-		tmuxClosed?: boolean;
-		commDbFinalized?: boolean;
-		closeoutBlocked?: boolean;
-		worktreeRemoved?: boolean;
-		threadArchived?: boolean;
-		issueDone?: boolean;
-		linearDoneDisposition?: "done" | "canceled_refused" | "deferred";
-	};
-}
-
-type ResumableLinearDoneReport = {
-	issueDone: boolean;
-	disposition: "done" | "canceled_refused" | "deferred";
-	reason: string;
-	recorded: boolean;
-};
-
-async function reconcileResumableLinearDone(
-	opts: PostShipOpts,
-	deps: PostShipDeps,
-): Promise<ResumableLinearDoneReport> {
-	let issueDone = false;
-	let disposition: ResumableLinearDoneReport["disposition"] =
-		"canceled_refused";
-	let reason = "linear_finalizer_unavailable";
-	if (deps.markIssueDone) {
-		const result = (await raceMarkIssueDoneWithAbort(
-			deps.markIssueDone,
-			opts.issueId,
-			opts.issueIdentifier,
-			15_000,
-			{ timeoutReason: "mark_issue_done_timeout" },
-		)) ?? { done: false, reason: "linear_done_result_missing" };
-		issueDone = result.done === true;
-		reason = result.reason ?? (result.done ? "done" : "linear_done_failed");
-		disposition = result.done
-			? "done"
-			: result.reason === "issue_canceled_never_overwritten"
-				? "canceled_refused"
-				: "deferred";
-	}
-	reason = normalizeLandLinearDoneReason(reason);
-
-	const recorded = deps.recordLinearDoneDisposition
-		? await Promise.resolve(
-				deps.recordLinearDoneDisposition({ disposition, reason }),
-			).catch((err) => ({
-				ok: false as const,
-				reason: (err as Error).message,
-			}))
-		: {
-				ok: false as const,
-				reason: "linear_done_disposition_recorder_missing",
-			};
-	if (!recorded.ok) {
-		console.error(
-			`[post-ship] Linear Done disposition was not recorded for ${opts.issueIdentifier ?? opts.issueId}: ${recorded.reason}`,
-		);
-	}
-	return { issueDone, disposition, reason, recorded: recorded.ok };
-}
-
-/** Land replay treats the old once-claim as started evidence, not completion. */
-export async function runResumablePostShipFinalization(
-	opts: PostShipOpts,
-	deps: PostShipDeps,
-): Promise<ResumablePostShipFinalizationReport> {
-	if (deps.withIssueLifecycleMutex) {
 		return deps.withIssueLifecycleMutex(opts.issueId, () =>
-			runPostShipFinalizationInner(opts, deps, true, true),
+			runPostShipFinalizationInner(opts, deps, true),
 		);
 	}
-	return runPostShipFinalizationInner(opts, deps, false, true);
+	return runPostShipFinalizationInner(opts, deps, false);
 }
 
 async function runPostShipFinalizationInner(
 	opts: PostShipOpts,
 	deps: PostShipDeps,
 	dagLocked: boolean,
-	resumable: boolean,
-): Promise<ResumablePostShipFinalizationReport> {
+): Promise<void> {
 	const { store, projects } = deps;
-	const landManaged = resumable && !!opts.landOperation;
-	const replayCompletedFinalization =
-		async (): Promise<ResumablePostShipFinalizationReport> => {
-			if (!resumable) {
-				return { complete: true, outcome: "completed", details: {} };
-			}
-			const linear = await reconcileResumableLinearDone(opts, deps);
-			if (!linear.recorded) {
-				return {
-					complete: false,
-					outcome: "partial",
-					reason: "land_linear_done_disposition_incomplete",
-					details: {
-						issueDone: linear.issueDone,
-						linearDoneDisposition: linear.disposition,
-					},
-				};
-			}
-			return {
-				complete: true,
-				outcome: "completed",
-				details: {
-					issueDone: linear.issueDone,
-					linearDoneDisposition: linear.disposition,
-				},
-			};
-		};
 
 	// ── (0.9) Codex R2#8 + R3#9: disposition pre-arbitration — BEFORE any
 	// mutation AND before the dedupe claim, so a refusal never consumes the
@@ -740,19 +450,10 @@ async function runPostShipFinalizationInner(
 	if (deps.preArbitrate) {
 		const arb = await deps
 			.preArbitrate(opts.issueId, opts.projectName, dagLocked)
-			.catch(
-				(
-					err,
-				): {
-					ok: false;
-					reason: string;
-					retryable: true;
-				} => ({
-					ok: false,
-					reason: `arbitration_failed:${(err as Error).message}`,
-					retryable: true,
-				}),
-			);
+			.catch((err) => ({
+				ok: false,
+				reason: `arbitration_failed:${(err as Error).message}`,
+			}));
 		if (!arb.ok) {
 			console.warn(
 				`[post-ship] disposition pre-arbitration refused ship finalization for ${opts.issueIdentifier ?? opts.issueId}: ${arb.reason ?? "conflict"} — ZERO mutation`,
@@ -766,82 +467,7 @@ async function runPostShipFinalizationInner(
 				source: "bridge.post-ship-finalization",
 				payload: { reason: arb.reason ?? "conflict" },
 			});
-			return {
-				complete: false,
-				outcome: resumable && arb.retryable ? "partial" : "held",
-				reason: arb.reason ?? "disposition_conflict",
-				details: {},
-			};
-		}
-		if (arb.degraded) {
-			if (!resumable) {
-				store.insertEvent({
-					event_id: `post-ship-arbitration-refused-${opts.executionId}`,
-					execution_id: opts.executionId,
-					issue_id: opts.issueId,
-					project_name: opts.projectName,
-					event_type: "post_ship_arbitration_refused",
-					source: "bridge.post-ship-finalization",
-					payload: { reason: "linear_lookup_failed_retryable" },
-				});
-				return {
-					complete: false,
-					outcome: "held",
-					reason: "linear_lookup_failed_retryable",
-					details: {},
-				};
-			}
-			store.insertEvent({
-				event_id: `post-ship-arbitration-degraded-${opts.executionId}`,
-				execution_id: opts.executionId,
-				issue_id: opts.issueId,
-				project_name: opts.projectName,
-				event_type: "post_ship_arbitration_degraded",
-				source: "bridge.post-ship-finalization",
-				payload: { reason: arb.degraded },
-			});
-		}
-	}
-
-	// FLY-1434: a workflow run may declare an exact multi-PR delivery set.
-	// Claiming that run/revision is the durable closeout authority; no teardown,
-	// archive, or Linear Done happens while any declared PR is still open.
-	let declaredFinalization = false;
-	if (opts.runId) {
-		if (opts.mergedPr && store.getWorkflowPrManifest(opts.runId)) {
-			const attributed = store.markWorkflowDeclaredPrMerged({
-				runId: opts.runId,
-				...opts.mergedPr,
-			});
-			if (!attributed.ok) {
-				return {
-					complete: false,
-					outcome: "held",
-					reason: `workflow_pr_manifest_merge_receipt_refused:${attributed.reason}`,
-					details: {},
-				};
-			}
-		}
-		const manifestClaim = store.claimWorkflowPrFinalization({
-			runId: opts.runId,
-			sourceExecutionId: opts.executionId,
-		});
-		if (!manifestClaim.ok) {
-			const held = manifestClaim.reason === "run_not_active";
-			const reason =
-				manifestClaim.reason === "manifest_incomplete"
-					? `workflow_pr_manifest_partial:${manifestClaim.pendingCount ?? 0}; partial delivery must stay flag-off until all declared PRs merge`
-					: manifestClaim.reason;
-			return {
-				complete: false,
-				outcome: held ? "held" : "partial",
-				reason,
-				details: {},
-			};
-		}
-		declaredFinalization = manifestClaim.mode === "declared";
-		if (manifestClaim.mode === "declared" && manifestClaim.completed) {
-			return replayCompletedFinalization();
+			return;
 		}
 	}
 
@@ -857,56 +483,30 @@ async function runPostShipFinalizationInner(
 		source: "bridge.post-ship-finalization",
 		payload: { claimedAt: new Date().toISOString() },
 	});
-	if (!claimed) {
-		const alreadyCompleted = store
-			.getEventsByExecution(opts.executionId)
-			.some(
-				(event) =>
-					event.event_id ===
-					`post-ship-finalization-completed-${opts.executionId}`,
-			);
-		if (alreadyCompleted) {
-			return replayCompletedFinalization();
-		}
-		// A production caller holding the canonical issue mutex, or an explicit
-		// land replay, may repair a crash after the old once-claim. Unlocked legacy
-		// callers retain the original duplicate-suppression behavior.
-		if (!resumable && !dagLocked) {
-			return {
-				complete: false,
-				outcome: "partial",
-				reason: "finalization_claimed_without_completion",
-				details: {},
-			};
-		}
-	}
+	if (!claimed) return;
 
 	// (FLY-1185 Codex R1#7: the FLY-799 auto-Linear-Done step used to run HERE,
 	// FIRST — before any teardown. It now runs LAST (step 3.5 below), after the
 	// closeout confirmed every node gone, matching the plan's "Linear item runs
 	// last" DAG edge, and it is skipped entirely when the closeout is blocked.)
-	let huskForce: ForceShippedHusksResult | undefined;
-	if (landManaged) {
-		const context = opts.landOperation!;
-		huskForce = await (deps.forceShippedHusks ?? forceShippedHusks)(
-			{
-				issueId: opts.issueId,
-				projectName: opts.projectName,
-				operationId: context.operationId,
-				claim: {
-					operationId: context.operationId,
-					ownerId: context.ownerId,
-					generation: context.generation,
-				},
-			},
-			store,
-		).catch((error) => {
-			console.error(
-				"[post-ship] shipped husk escalation failed:",
-				(error as Error).message,
-			);
-			return { cleared: [] };
+	// ── (0.25) FLY-1232 T9 — shadow-run finalization rides the claim winner
+	// (exactly-once with the pipeline), resolved CENTRALLY so every in-process
+	// contender fires it regardless of which one built its own deps (Codex
+	// code R1 #5). Best-effort: the writer never throws, and the claim event
+	// itself is the durable repair source if the hook is absent or the
+	// process dies here. ──
+	try {
+		const shadowHook =
+			deps.workflowShadow ?? workflowShadowFinalizationHolder.current;
+		shadowHook?.onShipFinalized({
+			projectName: opts.projectName,
+			issueId: opts.issueId,
 		});
+	} catch (err) {
+		console.warn(
+			`[post-ship] workflow shadow finalization failed (non-blocking):`,
+			(err as Error).message,
+		);
 	}
 
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
@@ -930,32 +530,20 @@ async function runPostShipFinalizationInner(
 		};
 	});
 
-	// ── (1.25) FLY-887 DAG workflow keep-alive: close the still-alive parked
+	// ── (1.25) FLY-887 three-stage keep-alive: close the still-alive parked
 	// design + implement phases for this issue BEFORE the shared worktree is
 	// removed below (their cwd is inside it). No-op for single-session / keep-alive
 	// OFF (no parked phases exist). Never throws. ──
-	if (deps.finalizeWorkflowPhaseRoles) {
+	if (deps.finalizeThreeStagePhases) {
 		// R6#7: only pass the 3rd (alreadyLocked) arg when the DAG actually holds
 		// the mutex — non-locked callers keep the original 2-arg call (byte-compat
 		// with the existing fly887 test seam contract).
 		const finalizeCall = dagLocked
-			? deps.finalizeWorkflowPhaseRoles(
-					opts.issueId,
-					opts.projectName,
-					true,
-					opts.runId,
-				)
-			: opts.runId
-				? deps.finalizeWorkflowPhaseRoles(
-						opts.issueId,
-						opts.projectName,
-						undefined,
-						opts.runId,
-					)
-				: deps.finalizeWorkflowPhaseRoles(opts.issueId, opts.projectName);
+			? deps.finalizeThreeStagePhases(opts.issueId, opts.projectName, true)
+			: deps.finalizeThreeStagePhases(opts.issueId, opts.projectName);
 		await finalizeCall.catch((err) => {
 			console.error(
-				`[post-ship] finalizeWorkflowPhaseRoles failed:`,
+				`[post-ship] finalizeThreeStagePhases failed:`,
 				(err as Error).message,
 			);
 		});
@@ -974,19 +562,17 @@ async function runPostShipFinalizationInner(
 		});
 	}
 
-	// FLY-1375: land replay calls this only after issue-level closeout confirms
-	// every related session is gone. Legacy callers retain their prior order.
-	const cleanWorktree = async (closeoutConfirmed = false) => {
-		if (!deps.removeCleanWorktree) return undefined;
+	// ── (1.5) FLY-603 Layer A worktree cleanup — AFTER tmux close (runner cwd is
+	// the worktree), BEFORE notifier. The closure self-guards on positive tmux
+	// close + clean tree + path-authority and never throws. ──
+	if (deps.removeCleanWorktree) {
 		const attestation = await deps
 			.removeCleanWorktree({
 				executionId: opts.executionId,
 				issueId: opts.issueId,
 				issueIdentifier: opts.issueIdentifier,
 				projectName: opts.projectName,
-				tmuxClosed:
-					cleanup.tmuxClosed ||
-					(resumable && closeoutConfirmed && cleanup.commDbFinalized),
+				tmuxClosed: cleanup.tmuxClosed,
 				tmuxErrors: cleanup.errors,
 			})
 			.catch((err) => {
@@ -1017,9 +603,7 @@ async function runPostShipFinalizationInner(
 					);
 				});
 		}
-		return attestation;
-	};
-	if (!resumable) await cleanWorktree();
+	}
 
 	// ── (1.7) FLY-1185 §2.12 entry A: issue-level lifecycle closeout —
 	// collect ALL related nodes (parked phases already finalized above,
@@ -1029,14 +613,8 @@ async function runPostShipFinalizationInner(
 	// (some node not confirmed gone, or a canceled-vs-shipped conflict) must
 	// NOT be followed by thread archive or the Linear Done write. The sweep /
 	// next finalization pass is the eventual repair.
-	let closeoutCause: LandCloseoutCause | undefined = huskForce?.cause
-		? huskForce.cause === "authority_lost"
-			? "lifecycle_conflict"
-			: huskForce.cause
-		: undefined;
-	let closeoutBlocked = Boolean(huskForce?.cause) || !cleanup.commDbFinalized;
+	let closeoutBlocked = !cleanup.commDbFinalized;
 	if (closeoutBlocked) {
-		closeoutCause ??= inferLandCloseoutCause(cleanup.errors);
 		console.warn(
 			`[post-ship] CommDB finalization incomplete for ${opts.executionId} — thread archive + Linear Done deferred`,
 		);
@@ -1056,39 +634,17 @@ async function runPostShipFinalizationInner(
 					`[post-ship] issue closeout failed:`,
 					(err as Error).message,
 				);
-				return { outcome: "blocked" as const, cause: undefined };
+				return { outcome: "blocked" as const };
 			});
-		if (
-			closeoutRes?.outcome !== "complete" &&
-			closeoutRes?.outcome !== "completed"
-		) {
-			closeoutCause ??= closeoutRes?.cause;
-		}
 		if (
 			closeoutRes &&
 			(closeoutRes.outcome === "blocked" || closeoutRes.outcome === "conflict")
 		) {
 			closeoutBlocked = true;
-			closeoutCause ??= "lifecycle_conflict";
 			console.warn(
 				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId} — thread archive + Linear Done deferred to the next pass`,
 			);
-		} else if (
-			closeoutRes &&
-			(closeoutRes.outcome === "partial" ||
-				closeoutRes.outcome === "needs_operator")
-		) {
-			console.warn(
-				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId}${closeoutRes.cause ? ` (${closeoutRes.cause})` : ""} — diagnostic retained; terminal closeout remains eligible`,
-			);
 		}
-	}
-	let worktreeRemoved = !resumable;
-	if (resumable && !closeoutBlocked) {
-		const attestation = await cleanWorktree(true);
-		worktreeRemoved =
-			attestation?.removed === true ||
-			attestation?.skippedReason === "not_registered";
 	}
 
 	// ── Resolve lead + thread ONCE, reused by notifier AND archiver ──
@@ -1127,103 +683,22 @@ async function runPostShipFinalizationInner(
 			phasePrefix: phaseMessageTag(
 				finalizedSession?.chat_thread_role,
 				finalizedSession?.runner_model,
-				finalizedSession?.design_backend,
 			),
 		},
 		{ store, fetchImpl: deps.fetchImpl },
 	);
 
-	// FLY-1832: the resumable land operation owns one terminal founder message.
-	// It is generation-fenced and must settle only after closeout + worktree
-	// cleanup; archive is the final Discord mutation after this receipt.
-	const landReady = !closeoutBlocked && worktreeRemoved;
-	let terminalNotified = !landManaged || !thread;
-	if (landManaged && thread && landReady) {
-		const context = opts.landOperation!;
-		const operation = store.getLandOperation(context.operationId);
-		const prNumber = opts.mergedPr?.prNumber ?? operation?.pr_number;
-		const terminalReceipt = {
-			threadId: thread.thread_id,
-			prNumber: prNumber ?? null,
-		};
-		const prior = store
-			.listLandOperationSteps(context.operationId)
-			.find((step) => step.step === "terminal_notified");
-		if (prior) {
-			terminalNotified = store.recordLandOperationStep({
-				operationId: context.operationId,
-				ownerId: context.ownerId,
-				generation: context.generation,
-				step: "terminal_notified",
-				receipt: terminalReceipt,
-				now: new Date().toISOString(),
-			}).ok;
-		} else if (botToken) {
-			const terminal = await emitIssueThreadInfraNotification(
-				{
-					executionId: opts.executionId,
-					issueId: opts.issueId,
-					issueIdentifier: opts.issueIdentifier,
-					projectName: opts.projectName,
-					kind: "land_terminal",
-					content: [
-						`✅ **已合入 PR #${prNumber ?? "?"} — ${opts.issueIdentifier ?? opts.issueId}**`,
-						"清理完成(worktree / runner 已收),本 thread 将自动归档;Linear 状态随后落 Done。",
-					].join("\n"),
-					thread,
-					botToken,
-					onUndeliverable: (reason) =>
-						console.warn(
-							`[post-ship] terminal founder notification undeliverable for ${opts.issueId}: ${reason}`,
-						),
-				},
-				{ store, fetchImpl: deps.fetchImpl },
-			);
-			if (terminal.kind === "posted") {
-				const recorded = store.recordLandOperationStep({
-					operationId: context.operationId,
-					ownerId: context.ownerId,
-					generation: context.generation,
-					step: "terminal_notified",
-					receipt: terminalReceipt,
-					now: new Date().toISOString(),
-				});
-				terminalNotified = recorded.ok;
-			}
-		}
-		if (!terminalNotified) {
-			return {
-				complete: false,
-				outcome: "partial",
-				reason: "land_terminal_notification_incomplete",
-				details: {
-					tmuxClosed: cleanup.tmuxClosed,
-					commDbFinalized: cleanup.commDbFinalized,
-					closeoutBlocked: false,
-					worktreeRemoved,
-					threadArchived: false,
-				},
-			};
-		}
-	}
-
 	// ── (3) thread teardown — only after notifier has landed AND the issue
 	// closeout confirmed every related node gone (Codex R1#3: an archive over
 	// a blocked closeout would hide a still-live runner). ──
-	let threadArchived = !resumable || !thread;
-	if (
-		thread &&
-		botToken &&
-		!closeoutBlocked &&
-		(!landManaged || (landReady && terminalNotified))
-	) {
+	if (thread && botToken && !closeoutBlocked) {
 		// FLY-1165: route through the shared archive sink — per-thread
 		// serialization + the sink-level archive-once guard (a founder re-open
 		// is never fought; matches the cascade + endpoint paths). The owner
 		// removal is folded into the sink (no double removal), the audit event
 		// keeps this path's source, and `reason: "already_archived"` is an
 		// idempotent no-op success — NEVER a chat_thread_archive_failed.
-		const archive = await archiveThreadAndRecord(
+		await archiveThreadAndRecord(
 			store,
 			{
 				threadId: thread.thread_id,
@@ -1240,83 +715,6 @@ async function runPostShipFinalizationInner(
 				fetchImpl: deps.fetchImpl,
 			},
 		);
-		threadArchived = isArchiveObligationSettled(archive);
-		if (
-			archive.reason === "founder_reopened" ||
-			archive.reason === "in_active_use"
-		) {
-			console.log(
-				`[post-ship] thread archive waived for ${opts.issueId}: ${archive.reason}`,
-			);
-			if (landManaged) {
-				const context = opts.landOperation!;
-				const waiverReceipt = {
-					reason: archive.reason,
-					archiveEpoch: thread.archived_at ?? "open",
-				};
-				const prior = store
-					.listLandOperationSteps(context.operationId)
-					.find((step) => step.step === "archive_waiver_notified");
-				if (!prior) {
-					const explained = await emitIssueThreadInfraNotification(
-						{
-							executionId: opts.executionId,
-							issueId: opts.issueId,
-							issueIdentifier: opts.issueIdentifier,
-							projectName: opts.projectName,
-							kind: "land_archive_waiver",
-							content:
-								archive.reason === "founder_reopened"
-									? "ℹ️ 本 thread 未自动归档:founder 已重新打开；系统会保持 thread 开放且不会自动重试归档，请 Lead 确认后手动归档。"
-									: "ℹ️ 本 thread 未自动归档:仍有活跃使用者；原因解除后会由清理流程重试。",
-							thread,
-							botToken,
-							onUndeliverable: (reason) =>
-								console.warn(
-									`[post-ship] archive waiver explanation undeliverable for ${opts.issueId}: ${reason}`,
-								),
-						},
-						{ store, fetchImpl: deps.fetchImpl },
-					);
-					if (explained.kind !== "posted") {
-						return {
-							complete: false,
-							outcome: "partial",
-							reason: "land_archive_waiver_notification_incomplete",
-							details: {
-								tmuxClosed: cleanup.tmuxClosed,
-								commDbFinalized: cleanup.commDbFinalized,
-								closeoutBlocked: false,
-								worktreeRemoved,
-								threadArchived: false,
-							},
-						};
-					}
-				}
-				const recorded = store.recordLandOperationStep({
-					operationId: context.operationId,
-					ownerId: context.ownerId,
-					generation: context.generation,
-					step: "archive_waiver_notified",
-					receipt: waiverReceipt,
-					now: new Date().toISOString(),
-				});
-				if (!recorded.ok) {
-					return {
-						complete: false,
-						outcome: "partial",
-						reason: `land_archive_waiver_receipt_incomplete:${recorded.reason}`,
-						details: {
-							tmuxClosed: cleanup.tmuxClosed,
-							commDbFinalized: cleanup.commDbFinalized,
-							closeoutBlocked: false,
-							worktreeRemoved,
-							threadArchived: false,
-						},
-					};
-				}
-			}
-		}
 	}
 
 	// ── (3.5) FLY-799 auto-Linear-Done — moved LAST (Codex R1#7): the Linear
@@ -1324,38 +722,28 @@ async function runPostShipFinalizationInner(
 	// closeout confirmed all nodes gone (never over a blocked closeout, and
 	// the finalizer itself re-reads fresh Linear state so a founder-canceled
 	// issue is never overwritten to Done). Best-effort AND time-bounded. ──
-	let issueDone = !resumable;
-	let linearDoneDisposition:
-		| "done"
-		| "canceled_refused"
-		| "deferred"
-		| undefined;
-	let linearDispositionRecorded = !resumable;
-	if (
-		!closeoutBlocked &&
-		resumable &&
-		(!landManaged || (landReady && terminalNotified && threadArchived))
-	) {
-		const linear = await reconcileResumableLinearDone(opts, deps);
-		issueDone = linear.issueDone;
-		linearDoneDisposition = linear.disposition;
-		linearDispositionRecorded = linear.recorded;
-	} else if (!closeoutBlocked && !resumable && deps.markIssueDone) {
-		await raceMarkIssueDoneWithAbort(
-			deps.markIssueDone,
-			opts.issueId,
-			opts.issueIdentifier,
-			15_000,
-			{
-				timeoutReason: "mark_issue_done_timeout",
-				onTimeout: (timeoutMs) =>
-					console.warn(
-						`[post-ship] markIssueDone timed out after ${timeoutMs}ms for ${opts.issueIdentifier ?? opts.issueId} — issue left not-Done (Done-sweep / manual close can resolve)`,
-					),
-				onRejected: (error) =>
-					console.error(`[post-ship] markIssueDone failed:`, error.message),
-			},
-		);
+	if (deps.markIssueDone && !closeoutBlocked) {
+		const MARK_DONE_TIMEOUT_MS = 15_000;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<void>((resolve) => {
+			timer = setTimeout(() => {
+				console.warn(
+					`[post-ship] markIssueDone timed out after ${MARK_DONE_TIMEOUT_MS}ms for ${opts.issueIdentifier ?? opts.issueId} — issue left not-Done (Done-sweep / manual close can resolve)`,
+				);
+				resolve();
+			}, MARK_DONE_TIMEOUT_MS);
+		});
+		await Promise.race([
+			deps.markIssueDone(opts.issueId, opts.issueIdentifier).catch((err) => {
+				console.error(
+					`[post-ship] markIssueDone failed:`,
+					(err as Error).message,
+				);
+			}),
+			timeout,
+		]).finally(() => {
+			if (timer) clearTimeout(timer);
+		});
 	}
 
 	// ── (4) FLY-1185 §2.6: fire-and-forget trailing project sweep — the
@@ -1371,112 +759,4 @@ async function runPostShipFinalizationInner(
 			);
 		}
 	}
-	if (closeoutBlocked) {
-		const cause = closeoutCause ?? "unknown";
-		const reason = landCloseoutReason(cause);
-		if (declaredFinalization && opts.runId) {
-			store.setWorkflowPrFinalizationOutcome({
-				runId: opts.runId,
-				completed: false,
-				error: reason,
-			});
-		}
-		return {
-			complete: false,
-			outcome: "partial",
-			reason,
-			cause: {
-				token: cause,
-				...(huskForce?.affectedExecutionIds?.length
-					? { executionIds: huskForce.affectedExecutionIds }
-					: {}),
-			},
-			details: {
-				tmuxClosed: cleanup.tmuxClosed,
-				commDbFinalized: cleanup.commDbFinalized,
-				closeoutBlocked: true,
-			},
-		};
-	}
-	if (
-		resumable &&
-		!linearDispositionRecorded &&
-		(!landManaged || (landReady && terminalNotified && threadArchived))
-	) {
-		return {
-			complete: false,
-			outcome: "partial",
-			reason: "land_linear_done_disposition_incomplete",
-			details: {
-				tmuxClosed: cleanup.tmuxClosed,
-				commDbFinalized: cleanup.commDbFinalized,
-				closeoutBlocked: false,
-				worktreeRemoved,
-				threadArchived,
-				issueDone,
-				...(linearDoneDisposition ? { linearDoneDisposition } : {}),
-			},
-		};
-	}
-	if (resumable && (!worktreeRemoved || !threadArchived)) {
-		const postconditionCause: LandCloseoutCause = !worktreeRemoved
-			? "worktree_branch_mismatch"
-			: "archive_failed";
-		const reason = landCloseoutReason(postconditionCause);
-		if (declaredFinalization && opts.runId) {
-			store.setWorkflowPrFinalizationOutcome({
-				runId: opts.runId,
-				completed: false,
-				error: reason,
-			});
-		}
-		return {
-			complete: false,
-			outcome: "partial",
-			reason,
-			cause: { token: postconditionCause },
-			details: {
-				tmuxClosed: cleanup.tmuxClosed,
-				commDbFinalized: cleanup.commDbFinalized,
-				closeoutBlocked: false,
-				worktreeRemoved,
-				threadArchived,
-				issueDone,
-				...(linearDoneDisposition ? { linearDoneDisposition } : {}),
-			},
-		};
-	}
-
-	store.insertEvent({
-		event_id: `post-ship-finalization-completed-${opts.executionId}`,
-		execution_id: opts.executionId,
-		issue_id: opts.issueId,
-		project_name: opts.projectName,
-		event_type: "post_ship_finalization_completed",
-		source: "bridge.post-ship-finalization",
-		payload: { completedAt: new Date().toISOString() },
-	});
-	if (declaredFinalization && opts.runId) {
-		store.setWorkflowPrFinalizationOutcome({
-			runId: opts.runId,
-			completed: true,
-		});
-	}
-	return {
-		complete: true,
-		outcome: "completed",
-		details: {
-			tmuxClosed: cleanup.tmuxClosed,
-			commDbFinalized: cleanup.commDbFinalized,
-			closeoutBlocked: false,
-			...(resumable
-				? {
-						worktreeRemoved,
-						threadArchived,
-						issueDone,
-						...(linearDoneDisposition ? { linearDoneDisposition } : {}),
-					}
-				: {}),
-		},
-	};
 }

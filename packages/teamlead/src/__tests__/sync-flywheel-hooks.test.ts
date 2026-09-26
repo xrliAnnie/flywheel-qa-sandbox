@@ -25,8 +25,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -90,29 +89,6 @@ describe("syncFlywheelHooks", () => {
 		const st = await stat(join(ctx.targetDir, "inbox-check.sh"));
 		// Executable bit on owner+group+other (0o755).
 		expect(st.mode & 0o755).toBe(0o755);
-	});
-
-	it("FLY-1774: deploys the Codex turn-end wake hook by default", async () => {
-		await writeFile(
-			join(ctx.sourceDir, "inbox-check.sh"),
-			"#!/bin/bash\ninbox\n",
-		);
-		await writeFile(
-			join(ctx.sourceDir, "runner-stop-notify.sh"),
-			"#!/bin/bash\nwake\n",
-		);
-
-		const result = await syncFlywheelHooks({
-			sourceDir: ctx.sourceDir,
-			targetDir: ctx.targetDir,
-			log: () => {},
-		});
-
-		expect(result.synced).toEqual(["inbox-check.sh", "runner-stop-notify.sh"]);
-		for (const name of result.synced) {
-			const deployed = await stat(join(ctx.targetDir, name));
-			expect(deployed.mode & 0o755).toBe(0o755);
-		}
 	});
 
 	it("source / runtime checksum diverge: copies new content", async () => {
@@ -196,10 +172,7 @@ describe("syncFlywheelHooks", () => {
 			log: () => {},
 		});
 
-		expect(result.missingSource).toEqual([
-			"inbox-check.sh",
-			"runner-stop-notify.sh",
-		]);
+		expect(result.missingSource).toEqual(["inbox-check.sh"]);
 		expect(result.synced).toEqual([]);
 		expect(result.errors).toEqual([]);
 	});
@@ -428,35 +401,6 @@ describe("syncFlywheelCliBin", () => {
 		expect(await readlink(linkPath)).toBe(sourcePath);
 	});
 
-	it("FLY-1285: default allowlist deploys the tmux rescue CLI executable", async () => {
-		await writeCliSource();
-		const rescueSource = join(
-			ctx.repoRoot,
-			"scripts",
-			"lib",
-			"tmux-server-rescue.sh",
-		);
-		await mkdir(dirOf(rescueSource), { recursive: true });
-		await writeFile(rescueSource, "#!/bin/bash\necho rescue\n");
-		await chmod(rescueSource, 0o644);
-
-		const result = await syncFlywheelCliBin({
-			repoRoot: ctx.repoRoot,
-			binDir: ctx.binDir,
-			log: () => {},
-		});
-
-		expect(result.synced).toEqual([
-			"agent-team-transport",
-			"tmux-server-rescue",
-		]);
-		expect(await readlink(join(ctx.binDir, "tmux-server-rescue"))).toBe(
-			rescueSource,
-		);
-		const sourceMode = await stat(rescueSource);
-		expect(sourceMode.mode & 0o755).toBe(0o755);
-	});
-
 	it("idempotent: matching symlink target → matched, not re-synced", async () => {
 		const sourcePath = await writeCliSource();
 		await mkdir(ctx.binDir, { recursive: true });
@@ -527,10 +471,7 @@ describe("syncFlywheelCliBin", () => {
 			log: () => {},
 		});
 
-		expect(result.missingSource).toEqual([
-			"agent-team-transport",
-			"tmux-server-rescue",
-		]);
+		expect(result.missingSource).toEqual(["agent-team-transport"]);
 		expect(result.synced).toEqual([]);
 		expect(result.errors).toEqual([]);
 	});
@@ -684,108 +625,3 @@ function dirOf(path: string): string {
 	const lastSlash = path.lastIndexOf("/");
 	return lastSlash === -1 ? "." : path.slice(0, lastSlash);
 }
-
-// ============================================================================
-// FLY-1389 P1-b: write-time path-hygiene guard on syncFlywheelCliBin
-// ============================================================================
-//
-// Fixtures live under the REPO checkout (not tmpdir): the guard's temp-prefix
-// judgment would otherwise depend on where the runner points TMPDIR, and a
-// trusted-root (.git directory) fixture is impossible under /tmp by
-// definition. The predicate inspects only the fixture's OWN .git entry.
-describe("syncFlywheelCliBin path-hygiene guard (FLY-1389)", () => {
-	const HERE = dirname(fileURLToPath(import.meta.url));
-	let root: string;
-	let globalBin: string;
-
-	const makeRepo = async (kind: "worktree" | "main") => {
-		const repoRoot = join(root, `${kind}-repo`);
-		const distBin = join(
-			repoRoot,
-			"packages",
-			"agent-team-transport",
-			"dist",
-			"bin",
-		);
-		await mkdir(distBin, { recursive: true });
-		await writeFile(
-			join(distBin, "agent-team-transport-cli.js"),
-			"#!/usr/bin/env node\nconsole.log('cli');\n",
-		);
-		if (kind === "worktree") {
-			await writeFile(
-				join(repoRoot, ".git"),
-				"gitdir: /main/.git/worktrees/x\n",
-			);
-		} else {
-			await mkdir(join(repoRoot, ".git"), { recursive: true });
-		}
-		return repoRoot;
-	};
-
-	beforeEach(async () => {
-		root = await mkdtemp(join(HERE, ".tmp-sync-bin-guard-"));
-		globalBin = join(root, "fakehome", ".flywheel", "bin");
-	});
-
-	afterEach(async () => {
-		delete process.env.FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT;
-		await rm(root, { recursive: true, force: true });
-	});
-
-	it("refuses to write the GLOBAL bin from a worktree root (errors per bin, zero writes)", async () => {
-		const repoRoot = await makeRepo("worktree");
-		const result = await syncFlywheelCliBin({
-			repoRoot,
-			binDir: globalBin,
-			globalBinDir: globalBin,
-			log: () => {},
-		});
-		expect(result.synced).toEqual([]);
-		expect(result.errors.length).toBeGreaterThan(0);
-		for (const e of result.errors) {
-			expect(e.error).toContain("FLY-1389");
-			expect(e.error).toContain("temp/worktree");
-		}
-		// Zero writes: the global bin dir was never even created.
-		await expect(lstat(globalBin)).rejects.toMatchObject({ code: "ENOENT" });
-	});
-
-	it("a main checkout root (.git directory) writes the global bin normally", async () => {
-		const repoRoot = await makeRepo("main");
-		const result = await syncFlywheelCliBin({
-			repoRoot,
-			binDir: globalBin,
-			globalBinDir: globalBin,
-			log: () => {},
-		});
-		expect(result.errors).toEqual([]);
-		expect(result.synced).toContain("agent-team-transport");
-	});
-
-	it("a NON-global binDir (slot isolation) is not blocked even from a worktree root", async () => {
-		const repoRoot = await makeRepo("worktree");
-		const slotBin = join(root, "slot-bin");
-		const result = await syncFlywheelCliBin({
-			repoRoot,
-			binDir: slotBin,
-			globalBinDir: globalBin,
-			log: () => {},
-		});
-		expect(result.errors).toEqual([]);
-		expect(result.synced).toContain("agent-team-transport");
-	});
-
-	it("FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT=1 deliberately bypasses the guard", async () => {
-		const repoRoot = await makeRepo("worktree");
-		process.env.FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT = "1";
-		const result = await syncFlywheelCliBin({
-			repoRoot,
-			binDir: globalBin,
-			globalBinDir: globalBin,
-			log: () => {},
-		});
-		expect(result.errors).toEqual([]);
-		expect(result.synced).toContain("agent-team-transport");
-	});
-});

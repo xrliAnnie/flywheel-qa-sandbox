@@ -22,7 +22,6 @@ import { ReportRegistry } from "../bridge/report-registry.js";
 import {
 	buildReportMessage,
 	createReportsRouter,
-	MAX_OUTSTANDING_REPORT_PUBLISHES,
 	type ReportsRouterOptions,
 	readPreviewFile,
 } from "../bridge/reports-route.js";
@@ -77,24 +76,17 @@ describe("reports-route", () => {
 
 	async function startApp(
 		overrides: Partial<ReportsRouterOptions> = {},
-		credentialTier: "master" | "ingest" | null = "master",
 	): Promise<void> {
 		const app = express();
 		app.use(express.json({ limit: "1mb" }));
-		if (credentialTier) {
-			app.use("/api/reports", (_req, res, next) => {
-				res.locals.reportCredentialTier = credentialTier;
-				next();
-			});
-		}
 		app.use(
 			"/api/reports",
 			createReportsRouter({
+				enabled: true,
 				vercelToken: "vt",
 				discordBotToken: "bt",
 				projects,
 				registry,
-				resolveIssueThread: () => undefined,
 				deployFiles: deployMock as never,
 				postWithFile: postWithFileMock as never,
 				postText: postTextMock as never,
@@ -124,6 +116,23 @@ describe("reports-route", () => {
 		};
 	}
 
+	// ── kill switch ─────────────────────────────────────────────────────
+
+	it("enabled=false → 503 for both endpoints", async () => {
+		await startApp({ enabled: false });
+		const p = await post("/api/reports/publish", {
+			projectName: "x",
+			html: HTML,
+		});
+		expect(p.status).toBe(503);
+		expect(p.json.error).toContain("disabled");
+		const d = await post("/api/reports/deliver", {
+			url: "https://x",
+			projectName: "x",
+		});
+		expect(d.status).toBe(503);
+	});
+
 	// ── publish ─────────────────────────────────────────────────────────
 
 	it("publish: 501 without VERCEL_TOKEN", async () => {
@@ -133,63 +142,6 @@ describe("reports-route", () => {
 			html: HTML,
 		});
 		expect(r.status).toBe(501);
-	});
-
-	it("FLY-1715: publish fails closed without a server-owned credential tier", async () => {
-		await startApp({}, null);
-		const r = await post("/api/reports/publish", {
-			projectName: "withGeneral",
-			html: HTML,
-			reportCredentialTier: "master",
-		});
-		expect(r.status).toBe(401);
-		expect(deployMock).not.toHaveBeenCalled();
-	});
-
-	it("FLY-1715: ingest publish accepts configured projects and rejects unknown projects", async () => {
-		await startApp({}, "ingest");
-		const denied = await post("/api/reports/publish", {
-			projectName: "unknown",
-			html: HTML,
-		});
-		expect(denied.status).toBe(403);
-		expect(deployMock).not.toHaveBeenCalled();
-		const allowed = await post("/api/reports/publish", {
-			projectName: "withGeneral",
-			html: HTML,
-		});
-		expect(allowed.status).toBe(200);
-	});
-
-	it("FLY-1715: outstanding publish cap returns 429 and releases capacity after drain", async () => {
-		let releaseFirst: (() => void) | undefined;
-		const firstDeploy = new Promise<void>((resolve) => {
-			releaseFirst = resolve;
-		});
-		deployMock.mockImplementation(async () => {
-			await firstDeploy;
-			return { deploymentId: "dpl_x" };
-		});
-		await startApp();
-		const queued = Array.from(
-			{ length: MAX_OUTSTANDING_REPORT_PUBLISHES + 1 },
-			(_, index) =>
-				post("/api/reports/publish", {
-					projectName: "withGeneral",
-					html: HTML,
-					title: `queued-${index}`,
-				}),
-		);
-		const overflow = await queued.at(-1);
-		expect(overflow?.status).toBe(429);
-		releaseFirst?.();
-		const accepted = await Promise.all(queued.slice(0, -1));
-		expect(accepted.every((result) => result.status === 200)).toBe(true);
-		const recovered = await post("/api/reports/publish", {
-			projectName: "withGeneral",
-			html: HTML,
-		});
-		expect(recovered.status).toBe(200);
 	});
 
 	it("publish: validation matrix → 400", async () => {
@@ -315,39 +267,6 @@ describe("reports-route", () => {
 		expect(r.status).toBe(501);
 	});
 
-	it("deliver: resolves the sender token at request time", async () => {
-		let token = "infra-token-1";
-		const resolveDiscordBotToken = vi.fn(() => token);
-		await startApp({
-			discordBotToken: undefined,
-			resolveDiscordBotToken,
-		});
-
-		expect(
-			(
-				await post("/api/reports/deliver", {
-					url: "https://x/one",
-					projectName: "withGeneral",
-				})
-			).status,
-		).toBe(200);
-		token = "infra-token-2";
-		expect(
-			(
-				await post("/api/reports/deliver", {
-					url: "https://x/two",
-					projectName: "withGeneral",
-				})
-			).status,
-		).toBe(200);
-
-		expect(resolveDiscordBotToken).toHaveBeenCalledTimes(2);
-		expect(postTextMock.mock.calls.map((call) => call[2])).toEqual([
-			"infra-token-1",
-			"infra-token-2",
-		]);
-	});
-
 	it("deliver: missing url/projectName → 400", async () => {
 		await startApp();
 		expect(
@@ -379,61 +298,6 @@ describe("reports-route", () => {
 		});
 		expect(r.status).toBe(400);
 		expect(String(r.json.error)).toContain("channel");
-	});
-
-	it("deliver: issueIdentifier resolves the issue thread without generalChannel fallback", async () => {
-		const resolveIssueThread = vi.fn().mockResolvedValue("thread-fly-1463");
-		await startApp({ resolveIssueThread } as never);
-		const r = await post("/api/reports/deliver", {
-			url: "https://x",
-			projectName: "withGeneral",
-			issueIdentifier: "FLY-1463",
-		});
-		expect(r.status).toBe(200);
-		expect(resolveIssueThread).toHaveBeenCalledWith("FLY-1463", "withGeneral");
-		expect(postTextMock.mock.calls[0]?.[0]).toBe("thread-fly-1463");
-	});
-
-	it("deliver: unresolved issueIdentifier → 404 and never posts to generalChannel", async () => {
-		const resolveIssueThread = vi.fn().mockResolvedValue(undefined);
-		await startApp({ resolveIssueThread } as never);
-		const r = await post("/api/reports/deliver", {
-			url: "https://x",
-			projectName: "withGeneral",
-			issueIdentifier: "FLY-404",
-		});
-		expect(r.status).toBe(404);
-		expect(r.json.error).toBe("issue_thread_not_found");
-		expect(postTextMock).not.toHaveBeenCalled();
-	});
-
-	it("deliver: channelId plus issueIdentifier → 400 before resolving or posting", async () => {
-		const resolveIssueThread = vi.fn().mockResolvedValue("thread-fly-1463");
-		await startApp({ resolveIssueThread } as never);
-		const r = await post("/api/reports/deliver", {
-			url: "https://x",
-			projectName: "withGeneral",
-			channelId: "chan-explicit",
-			issueIdentifier: "FLY-1463",
-		});
-		expect(r.status).toBe(400);
-		expect(String(r.json.error)).toContain("mutually exclusive");
-		expect(resolveIssueThread).not.toHaveBeenCalled();
-		expect(postTextMock).not.toHaveBeenCalled();
-	});
-
-	it("deliver: malformed issueIdentifier → 400 before resolving or posting", async () => {
-		const resolveIssueThread = vi.fn().mockReturnValue("thread");
-		await startApp({ resolveIssueThread });
-		const r = await post("/api/reports/deliver", {
-			url: "https://x",
-			projectName: "withGeneral",
-			issueIdentifier: "not-an-issue",
-		});
-		expect(r.status).toBe(400);
-		expect(String(r.json.error)).toContain("issueIdentifier");
-		expect(resolveIssueThread).not.toHaveBeenCalled();
-		expect(postTextMock).not.toHaveBeenCalled();
 	});
 
 	it("deliver: link-only message uses bare URL (Discord preview allowed)", async () => {

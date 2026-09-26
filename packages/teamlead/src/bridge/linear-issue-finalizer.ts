@@ -43,16 +43,6 @@ export interface MarkDoneResult {
 	reason?: string;
 }
 
-export type LinearDoneFinalizer = (
-	issueId: string,
-	issueIdentifier?: string,
-	signal?: AbortSignal,
-) => Promise<MarkDoneResult>;
-
-function assertLinearDoneNotAborted(signal?: AbortSignal): void {
-	if (signal?.aborted) throw new Error("linear_done_aborted");
-}
-
 /**
  * Flip a Linear issue to its team's Done state. Prefers a `type === "completed"`
  * workflow state (the canonical "Done" bucket, robust to renamed states); falls
@@ -65,17 +55,13 @@ function assertLinearDoneNotAborted(signal?: AbortSignal): void {
 export async function markLinearIssueDone(
 	client: LinearIssueFinalizerClient,
 	issueId: string,
-	signal?: AbortSignal,
 ): Promise<MarkDoneResult> {
 	// Codex R2#9: the state read is FAIL-CLOSED (unreadable/missing → no
 	// write) and the write is guarded by a SECOND fresh read right before the
 	// mutation — a cancel landing during the team/states awaits still wins.
 	const readStateType = async (): Promise<string | undefined> => {
-		assertLinearDoneNotAborted(signal);
 		const issue = await client.issue(issueId);
-		assertLinearDoneNotAborted(signal);
 		const current = issue.state ? await issue.state : undefined;
-		assertLinearDoneNotAborted(signal);
 		if (!current?.type) throw new Error("state_unreadable");
 		return current.type;
 	};
@@ -91,16 +77,11 @@ export async function markLinearIssueDone(
 			return { done: true, reason: "already_completed" };
 		}
 
-		assertLinearDoneNotAborted(signal);
 		const issue = await client.issue(issueId);
-		assertLinearDoneNotAborted(signal);
 		const team = await issue.team;
-		assertLinearDoneNotAborted(signal);
 		if (!team) return { done: false, reason: "no_team" };
 
-		assertLinearDoneNotAborted(signal);
 		const { nodes } = await team.states();
-		assertLinearDoneNotAborted(signal);
 		const doneState =
 			nodes.find((s) => s.type === "completed") ??
 			nodes.find((s) => s.name.toLowerCase() === "done");
@@ -124,7 +105,6 @@ export async function markLinearIssueDone(
 			};
 		}
 
-		assertLinearDoneNotAborted(signal);
 		await client.updateIssue(issueId, { stateId: doneState.id });
 		return { done: true };
 	} catch (err) {
@@ -133,75 +113,26 @@ export async function markLinearIssueDone(
 }
 
 /**
- * Bound a best-effort Linear Done attempt. The timeout aborts first, so a
- * delayed SDK read cannot later reach the mutation guarded by the same signal.
- */
-export async function raceMarkIssueDoneWithAbort(
-	finalizer: LinearDoneFinalizer,
-	issueId: string,
-	issueIdentifier?: string,
-	timeoutMs = 15_000,
-	observer?: {
-		onRejected?: (error: Error) => void;
-		onTimeout?: (timeoutMs: number) => void;
-		timeoutReason?: string;
-	},
-): Promise<MarkDoneResult> {
-	const controller = new AbortController();
-	let timeout: ReturnType<typeof setTimeout> | undefined;
-	const attempt = Promise.resolve()
-		.then(() => finalizer(issueId, issueIdentifier, controller.signal))
-		.catch((err): MarkDoneResult => {
-			const error = err instanceof Error ? err : new Error(String(err));
-			try {
-				observer?.onRejected?.(error);
-			} catch {
-				// Observability must never perturb best-effort finalization.
-			}
-			return { done: false, reason: error.message };
-		});
-	const deadline = new Promise<MarkDoneResult>((resolve) => {
-		timeout = setTimeout(() => {
-			controller.abort();
-			try {
-				observer?.onTimeout?.(timeoutMs);
-			} catch {
-				// Observability must never perturb best-effort finalization.
-			}
-			resolve({
-				done: false,
-				reason: observer?.timeoutReason ?? "linear_done_timeout",
-			});
-		}, timeoutMs);
-	});
-
-	try {
-		return await Promise.race([attempt, deadline]);
-	} finally {
-		if (timeout) clearTimeout(timeout);
-	}
-}
-
-/**
  * Compose the `markIssueDone` closure runPostShipFinalization calls. Returns
- * undefined (→ finalization skips the Linear transition) when no Linear api key
- * is configured. Built at each finalization call site from the config it
+ * undefined (→ finalization skips the Linear transition, byte-compatibly) when
+ * the default-ON kill-switch `FLYWHEEL_AUTO_LINEAR_DONE=0` is set OR no Linear
+ * api key is configured. Built at each finalization call site from the config it
  * already holds — avoids threading a new positional dep through createEventRouter
  * / DirectEventSink. Best-effort: the closure never throws.
  */
 export function makeLinearDoneFinalizer(config: {
 	linearApiKey?: string;
-}): LinearDoneFinalizer | undefined {
+}): ((issueId: string, issueIdentifier?: string) => Promise<void>) | undefined {
+	if (process.env.FLYWHEEL_AUTO_LINEAR_DONE === "0") return undefined;
 	const apiKey = config.linearApiKey;
 	if (!apiKey) return undefined;
-	return async (issueId, issueIdentifier, signal) => {
+	return async (issueId, issueIdentifier) => {
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({ apiKey });
 			const r = await markLinearIssueDone(
 				client as unknown as LinearIssueFinalizerClient,
 				issueId,
-				signal,
 			);
 			if (r.done) {
 				console.log(
@@ -212,12 +143,10 @@ export function makeLinearDoneFinalizer(config: {
 					`[linear-finalizer] ${issueIdentifier ?? issueId} NOT flipped to Done: ${r.reason ?? "unknown"}`,
 				);
 			}
-			return r;
 		} catch (err) {
 			console.warn(
 				`[linear-finalizer] markIssueDone threw for ${issueId} (non-fatal): ${(err as Error).message}`,
 			);
-			return { done: false, reason: (err as Error).message };
 		}
 	};
 }

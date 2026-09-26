@@ -3,13 +3,11 @@ import { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "../bridge/chat-thread-utils.js";
 import { StateStore } from "../StateStore.js";
 
-// FLY-892: phaseThreadBadge moved to packages/config (phase-roles.ts) and
+// FLY-892: phaseThreadBadge moved to packages/config (three-stage-phases.ts) and
 // is unit-tested there (fly892-phase-tag.test.ts).
 
 const mockFetch = vi.fn();
-beforeEach(() => {
-	vi.stubGlobal("fetch", mockFetch);
-});
+vi.stubGlobal("fetch", mockFetch);
 
 describe("FLY-91: ChatThreadCreator", () => {
 	let store: StateStore;
@@ -35,7 +33,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-123" }),
+				json: () => Promise.resolve({ id: "thread-abc" }),
 			});
 
 		const result = await creator.ensureChatThread({
@@ -44,12 +42,10 @@ describe("FLY-91: ChatThreadCreator", () => {
 			issueIdentifier: "FLY-91",
 			issueTitle: "Discord thread reply",
 			botToken: "bot-token",
-			routeSummary:
-				"🧭 **Route**: `code` → `pipeline_dag_v1` · tier `heavy` · source `task_category`",
 		});
 
 		expect(result.created).toBe(true);
-		expect(result.threadId).toBe("msg-123");
+		expect(result.threadId).toBe("thread-abc");
 
 		// Verify Step 1: POST message to channel
 		const [msgUrl, msgOpts] = mockFetch.mock.calls[0]!;
@@ -57,12 +53,6 @@ describe("FLY-91: ChatThreadCreator", () => {
 		expect(msgOpts.method).toBe("POST");
 		const msgBody = JSON.parse(msgOpts.body);
 		expect(msgBody.content).toMatch(/^🤖\[自动\] /);
-		expect(msgBody.content).toContain(
-			"🧭 **Route**: `code` → `pipeline_dag_v1`",
-		);
-		expect(msgBody.content.indexOf("🧭 **Route**")).toBeLessThan(
-			msgBody.content.indexOf("🧵"),
-		);
 		expect(msgBody.content).toContain("FLY-91");
 
 		// Verify Step 2: POST thread from message
@@ -78,7 +68,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 		// Verify stored mapping (FLY-369: getChatThreadByIssue also returns lead_id + archived_at)
 		const stored = store.getChatThreadByIssue("issue-1", "ch-123");
 		expect(stored).toEqual({
-			thread_id: "msg-123",
+			thread_id: "thread-abc",
 			channel_id: "ch-123",
 			lead_id: null,
 			archived_at: null,
@@ -93,7 +83,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-title" }),
+				json: () => Promise.resolve({ id: "thread-title" }),
 			});
 
 		const longTitle = "Fix Bridge thread names ".repeat(8);
@@ -124,7 +114,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-fallback" }),
+				json: () => Promise.resolve({ id: "thread-fallback" }),
 			});
 
 		await creator.ensureChatThread({
@@ -168,7 +158,6 @@ describe("FLY-91: ChatThreadCreator", () => {
 			issueIdentifier: "GEO-312",
 			issueTitle: "Test issue",
 			botToken: "bot-token",
-			routeSummary: "🧭 **Route**: `generic` · source `default_fallback`",
 		});
 
 		expect(result.created).toBe(false);
@@ -183,12 +172,6 @@ describe("FLY-91: ChatThreadCreator", () => {
 			"https://discord.com/api/v10/channels/ch-123/messages",
 		);
 		const notifBody = JSON.parse(notifOpts.body);
-		expect(notifBody.content).toContain(
-			"🧭 **Route**: `generic` · source `default_fallback`",
-		);
-		expect(notifBody.content.indexOf("🧭 **Route**")).toBeLessThan(
-			notifBody.content.indexOf("🧵"),
-		);
 		expect(notifBody.content).toContain("GEO-312");
 		expect(notifBody.content).toContain("<#thread-existing>");
 	});
@@ -280,13 +263,22 @@ describe("FLY-91: ChatThreadCreator", () => {
 		).toBe(false);
 	});
 
-	it("fails loudly instead of recreating when the canonical thread and root are gone", async () => {
+	it("recreates thread when existing one returns 404", async () => {
 		store.upsertChatThread("thread-dead", "ch-123", "issue-1");
 
-		// Exact thread probe and exact root-message probe both return 404.
+		// Call 1: validate → 404
+		// Call 2: POST message → success
+		// Call 3: POST thread from message → success
 		mockFetch
 			.mockResolvedValueOnce({ ok: false, status: 404 })
-			.mockResolvedValueOnce({ ok: false, status: 404 });
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "msg-456" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "thread-new" }),
+			});
 
 		const result = await creator.ensureChatThread({
 			chatChannelId: "ch-123",
@@ -295,16 +287,13 @@ describe("FLY-91: ChatThreadCreator", () => {
 			botToken: "bot-token",
 		});
 
-		expect(result).toMatchObject({
-			created: false,
-			threadId: "thread-dead",
-			rootMessageId: "thread-dead",
-			errorCode: "canonical_root_gone",
-		});
-		expect(store.getChatThreadByIssue("issue-1", "ch-123")?.thread_id).toBe(
-			"thread-dead",
-		);
-		expect(mockFetch).toHaveBeenCalledTimes(2);
+		expect(result.created).toBe(true);
+		expect(result.threadId).toBe("thread-new");
+
+		// Old thread should be marked missing
+		const old = store.getChatThreadByIssue("issue-1", "ch-123");
+		// Should now return the new thread
+		expect(old?.thread_id).toBe("thread-new");
 	});
 
 	it("returns error when message post fails", async () => {
@@ -377,7 +366,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-long" }),
+				json: () => Promise.resolve({ id: "thread-long" }),
 			});
 
 		const longTitle = "A".repeat(200);
@@ -401,7 +390,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-lead" }),
+				json: () => Promise.resolve({ id: "thread-lead" }),
 			});
 
 		await creator.ensureChatThread({
@@ -412,7 +401,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 		});
 
 		const stored = store.getChatThreadByIssue("issue-1", "ch-123");
-		expect(stored?.thread_id).toBe("msg-lead");
+		expect(stored?.thread_id).toBe("thread-lead");
 	});
 
 	// FLY-162 Codex R3 issue #2: Every Discord message POST out of
@@ -429,7 +418,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-am-1" }),
+				json: () => Promise.resolve({ id: "thread-am-1" }),
 			});
 
 		await creator.ensureChatThread({
@@ -539,7 +528,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: "F" }),
+			ctx({ modelCode: "F" }),
 			"thread-1",
 			"implement",
 		);
@@ -550,83 +539,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 	});
 
-	it("FLY-1255: stamps and replaces a namespaced vendor-neutral marker", async () => {
-		mockFetch
-			.mockResolvedValueOnce({
-				ok: true,
-				status: 200,
-				json: () =>
-					Promise.resolve({
-						name: "🔨 [G] [FLY-560] Discord issue status",
-					}),
-			})
-			.mockResolvedValueOnce({ ok: true, status: 200 });
-
-		await creator.stampStageEmoji(
-			ctx({ modelMarker: "K" }),
-			"thread-1",
-			"design_review",
-		);
-
-		const patchCall = mockFetch.mock.calls.find(
-			(c) => c[1]?.method === "PATCH",
-		);
-		expect(JSON.parse(patchCall![1].body).name).toBe(
-			"👀 [K] [FLY-560] Discord issue status",
-		);
-	});
-
-	it("FLY-1255: modelMarker=null clears a namespaced marker", async () => {
-		mockFetch
-			.mockResolvedValueOnce({
-				ok: true,
-				status: 200,
-				json: () =>
-					Promise.resolve({
-						name: "🔨 [G] [FLY-560] Discord issue status",
-					}),
-			})
-			.mockResolvedValueOnce({ ok: true, status: 200 });
-
-		await creator.stampStageEmoji(
-			ctx({ modelMarker: null }),
-			"thread-1",
-			"design_review",
-		);
-
-		const patchCall = mockFetch.mock.calls.find(
-			(c) => c[1]?.method === "PATCH",
-		);
-		expect(JSON.parse(patchCall![1].body).name).toBe(
-			"👀 [FLY-560] Discord issue status",
-		);
-	});
-
-	it("FLY-1255: namespaced marker survives the 100-character title budget", async () => {
-		const longTitle = `[FLY-560] ${"x".repeat(200)}`;
-		mockFetch
-			.mockResolvedValueOnce({
-				ok: true,
-				status: 200,
-				json: () => Promise.resolve({ name: longTitle }),
-			})
-			.mockResolvedValueOnce({ ok: true, status: 200 });
-
-		await creator.stampStageEmoji(
-			ctx({ issueTitle: undefined, modelMarker: "G" }),
-			"thread-1",
-			"implement",
-		);
-
-		const patchCall = mockFetch.mock.calls.find(
-			(c) => c[1]?.method === "PATCH",
-		);
-		const name = JSON.parse(patchCall![1].body).name as string;
-		expect(name).toHaveLength(100);
-		expect(name.startsWith("🔨 [G] [FLY-560]")).toBe(true);
-	});
-
-	it("FLY-755: an authoritative modelMarker=null CLEARS a stale front marker", async () => {
+	it("FLY-755: an authoritative modelCode=null CLEARS a stale front marker", async () => {
 		// A reused thread from a prior Fable run carries `[F] `; the new run is
 		// account-default. The stage stamp passes null (authoritative) → the stale
 		// code is removed, so the thread never wrongly claims Fable.
@@ -640,7 +553,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: null }),
+			ctx({ modelCode: null }),
 			"thread-1",
 			"design_review",
 		);
@@ -653,7 +566,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		expect(name).toBe("👀 [FLY-560] Discord issue status");
 	});
 
-	it("FLY-755: modelMarker=null also CLEARS a legacy tail suffix (·F)", async () => {
+	it("FLY-755: modelCode=null also CLEARS a legacy tail suffix (·F)", async () => {
 		mockFetch
 			.mockResolvedValueOnce({
 				ok: true,
@@ -664,7 +577,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: null }),
+			ctx({ modelCode: null }),
 			"thread-1",
 			"design_review",
 		);
@@ -678,7 +591,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		expect(name).toBe("👀 [FLY-560] Discord issue status");
 	});
 
-	it("FLY-755: a re-stamp with NO modelMarker preserves an existing front marker", async () => {
+	it("FLY-755: a re-stamp with NO modelCode preserves an existing front marker", async () => {
 		// A QA / reconnecting re-stamp has no model context — it must not strip the
 		// code the stage stamp set. GET returns a title already carrying `[F] `.
 		mockFetch
@@ -690,7 +603,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			})
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
-		// switch the stage (design_review) but pass no modelMarker
+		// switch the stage (design_review) but pass no modelCode
 		await creator.stampStageEmoji(ctx(), "thread-1", "design_review");
 
 		const patchCall = mockFetch.mock.calls.find(
@@ -734,7 +647,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		});
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: "F" }),
+			ctx({ modelCode: "F" }),
 			"thread-1",
 			"implement",
 		);
@@ -755,7 +668,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ issueTitle: undefined, modelMarker: "F" }),
+			ctx({ issueTitle: undefined, modelCode: "F" }),
 			"thread-1",
 			"implement",
 		);
@@ -786,7 +699,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 				issueTitle: undefined,
 				issueIdentifier: undefined,
 				issueId: "uuid-1",
-				modelMarker: "F",
+				modelCode: "F",
 			}),
 			"thread-1",
 			"implement",
@@ -800,7 +713,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 	});
 
-	it("FLY-755: modelMarker=null never deletes a literal keyless `[F] ` title prefix", async () => {
+	it("FLY-755: modelCode=null never deletes a literal keyless `[F] ` title prefix", async () => {
 		// `[F] [infra] copy` here is REAL title text (no issue key behind the
 		// single letter) — the authoritative clear must not eat it.
 		mockFetch
@@ -816,7 +729,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 				issueTitle: undefined,
 				issueIdentifier: undefined,
 				issueId: "uuid-1",
-				modelMarker: null,
+				modelCode: null,
 			}),
 			"thread-1",
 			"implement",
@@ -1295,7 +1208,7 @@ describe("FLY-560 UX iteration: ChatThreadCreator.stampStageEmoji emoji+word mod
 	});
 });
 
-describe("FLY-892 Step 6: DAG workflow badge as stage-level title prefix", () => {
+describe("FLY-892 Step 6: three-stage phase badge as stage-level title prefix", () => {
 	let store: StateStore;
 	let creator: ChatThreadCreator;
 
@@ -1398,7 +1311,7 @@ describe("FLY-892 Step 6: DAG workflow badge as stage-level title prefix", () =>
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
 		await creator.stampStageEmoji(
-			ctx({ modelMarker: "O" }),
+			ctx({ modelCode: "O" }),
 			"thread-1",
 			"implement",
 			true,
@@ -1527,7 +1440,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-755" }),
+				json: () => Promise.resolve({ id: "thread-755" }),
 			});
 
 		await creator.ensureChatThread({
@@ -1536,35 +1449,11 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			issueIdentifier: "FLY-755",
 			issueTitle: "Model code up front",
 			botToken: "bot-token",
-			modelMarker: "F",
+			modelCode: "F",
 		});
 
 		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
 		expect(threadBody.name).toBe("[F] [FLY-755] Model code up front");
-	});
-
-	it("FLY-1255: creates a new thread with a vendor-neutral front marker", async () => {
-		mockFetch
-			.mockResolvedValueOnce({
-				ok: true,
-				json: () => Promise.resolve({ id: "msg-1255" }),
-			})
-			.mockResolvedValueOnce({
-				ok: true,
-				json: () => Promise.resolve({ id: "msg-1255" }),
-			});
-
-		await creator.ensureChatThread({
-			chatChannelId: "ch-1",
-			issueId: "FLY-1255",
-			issueIdentifier: "FLY-1255",
-			issueTitle: "Vendor-neutral display",
-			botToken: "bot-token",
-			modelMarker: "G",
-		});
-
-		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
-		expect(threadBody.name).toBe("[G] [FLY-1255] Vendor-neutral display");
 	});
 
 	it("does not stamp a keyless title at creation (no issue key head)", async () => {
@@ -1575,7 +1464,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "msg-kl" }),
+				json: () => Promise.resolve({ id: "thread-kl" }),
 			});
 
 		await creator.ensureChatThread({
@@ -1583,7 +1472,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			issueId: "uuid-no-key",
 			issueTitle: "[Fable] curated copy",
 			botToken: "bot-token",
-			modelMarker: "F",
+			modelCode: "F",
 		});
 
 		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
@@ -1609,7 +1498,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 				issueIdentifier: "FLY-509",
 				issueTitle: "Real title",
 				botToken: "bot-token",
-				modelMarker: "F",
+				modelCode: "F",
 			},
 			"thread-bf",
 		);
@@ -1623,7 +1512,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 	});
 
 	it("backfills a legacy-suffix placeholder and migrates the code to the front", async () => {
-		// absent modelMarker — the /send route (tools.ts) passes none; the marker
+		// absent modelCode — the /send route (tools.ts) passes none; the code
 		// stored on the placeholder must be preserved, front-migrated.
 		mockFetch
 			.mockResolvedValueOnce({
@@ -1652,7 +1541,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 		expect(name).not.toContain(" ·F");
 	});
 
-	it("backfill with modelMarker=null clears the placeholder's marker", async () => {
+	it("backfill with modelCode=null clears the placeholder's marker", async () => {
 		mockFetch
 			.mockResolvedValueOnce({
 				ok: true,
@@ -1668,7 +1557,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 				issueIdentifier: "FLY-509",
 				issueTitle: "Real title",
 				botToken: "bot-token",
-				modelMarker: null,
+				modelCode: null,
 			},
 			"thread-bf",
 		);
@@ -1693,7 +1582,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 				issueIdentifier: "FLY-509",
 				issueTitle: "Real title",
 				botToken: "bot-token",
-				modelMarker: "F",
+				modelCode: "F",
 			},
 			"thread-bf",
 		);

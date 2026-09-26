@@ -12,7 +12,6 @@
  * reviewable act.
  */
 
-import { WORKFLOW_MENU_SHAPES } from "flywheel-config";
 import type { JsonSchema } from "../types.js";
 
 export interface ToolDeclaration {
@@ -67,7 +66,7 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 	dispatch_runner: {
 		name: "dispatch_runner",
 		description:
-			"Dispatch an autonomous Runner to work on an existing Linear issue. Requires the issue identifier, project name, and canonical taskCategory so work-kind routing can select the correct workflow. Returns an executionId to poll with query_status. ADMISSION: the issue must carry the target Lead's department label (issues you created via create_issue get it automatically when configured). A 403 with code DEPT_SCOPE_REJECT means the issue's labels do not satisfy that gate (reason issue_no_department_label = the label is missing; label_mismatch = it belongs to a different Lead) — recreate the issue with the correct department label or ask the user; do not retry the same dispatch unchanged.",
+			"Dispatch an autonomous engineering Runner to work on an existing Linear issue. The Runner will design, implement and open a PR. Requires the issue identifier and the project name. Returns an executionId to poll with query_status. ADMISSION: the issue must carry the target Lead's department label (issues you created via create_issue get it automatically when configured). A 403 with code DEPT_SCOPE_REJECT means the issue's labels do not satisfy that gate (reason issue_no_department_label = the label is missing; label_mismatch = it belongs to a different Lead) — recreate the issue with the correct department label or ask the user; do not retry the same dispatch unchanged.",
 		readonly: false,
 		parameters: {
 			type: "object",
@@ -81,12 +80,6 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 					type: "string",
 					description: 'Project the issue belongs to, e.g. "geoforge3d".',
 				},
-				taskCategory: {
-					type: "string",
-					enum: [...WORKFLOW_MENU_SHAPES],
-					description:
-						"Required canonical menu: code for engineering work needing a distinct design phase, simple_code for a bounded code change followed by QA, prd for product definition, design for visual/UX design, prototype for feasibility prototypes, or generic for a non-code one-session task. It changes routing only for projects with menu/work-kind dispatch enabled.",
-				},
 				agentName: {
 					type: "string",
 					description:
@@ -98,14 +91,14 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 					description: "Optional: process-doc tier for the run.",
 				},
 			},
-			required: ["issueId", "projectName", "taskCategory"],
+			required: ["issueId", "projectName"],
 		},
 	},
 
 	query_status: {
 		name: "query_status",
 		description:
-			'Query a dispatched Runner session by its executionId (returned from dispatch_runner). Returns two independent signals: `status` — a latest-capture terminal heuristic, one of executing (active-looking output) / waiting (a visible input prompt) / idle (a shell prompt or empty pane) / unknown; and `session_status` — the run lifecycle from the store (e.g. "running", "awaiting_review" = PR opened and waiting for founder review, "completed", "failed"), plus `pr_number` once a PR is recorded (null before that; no PR URL is returned — report the pr_number). Runs take minutes to hours: after 2-3 polls, stop polling and report the current state to the user instead of waiting for a terminal state.',
+			'Query a dispatched Runner session by its executionId (returned from dispatch_runner). Returns two independent signals: `status` — a live terminal-activity heuristic, one of executing (actively working) / waiting (blocked on a prompt) / idle (process went quiet — the run likely finished its turn) / unknown; and `session_status` — the run lifecycle from the store (e.g. "running", "awaiting_review" = PR opened and waiting for founder review, "completed", "failed"), plus `pr_number` once a PR is recorded (null before that; no PR URL is returned — report the pr_number). Runs take minutes to hours: after 2-3 polls, stop polling and report the current state to the user instead of waiting for a terminal state.',
 		readonly: true,
 		parameters: {
 			type: "object",

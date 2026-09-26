@@ -119,6 +119,15 @@ export interface CrashReaperInjectedDeps {
 	) => FinalizeCommDbResult;
 	/** Archive the issue thread (allowStatuses ["terminated"]), post-transition. */
 	archiveThread?: (session: Session) => Promise<void>;
+	/**
+	 * FLY-1050: a reaped three-stage QA row may have stranded its implement at
+	 * awaiting_review — notify the orchestrator (plugin.ts closes this over a
+	 * fire-and-forget `reconcileQaLoss`). Called after the terminated transition
+	 * commits, before archive, for `chat_thread_role === 'qa'` rows only.
+	 * Optional + best-effort: absent/throwing never affects the reap (the boot
+	 * reconcile is the backstop).
+	 */
+	onQaPhaseTerminated?: (executionId: string, issueId: string) => void;
 	/** Override crash-log writer (tests). */
 	writeCrashLog?: (
 		executionId: string,
@@ -192,12 +201,6 @@ export async function reapCrashedRunners(
 		if (lookup.kind === "gone") continue;
 
 		const tmuxWindow = lookup.target.tmuxWindow;
-		// A Codex self-registration stays `:pending` until an immutable @id is
-		// committed. It is routing metadata, never liveness or reap authority.
-		if (tmuxWindow.endsWith(":pending")) {
-			result.indeterminateSuppressed++;
-			continue;
-		}
 		let liveness: RunnerLiveness;
 		try {
 			liveness = await deps.probeLiveness(tmuxWindow);
@@ -320,11 +323,6 @@ async function reapOne(
 		projectName,
 		ok: finalized.ok,
 		error: finalized.error,
-		audit: {
-			retiredGateCount: finalized.retiredGateCount,
-			retiredAskCount: finalized.retiredAskCount,
-			source: "bridge.crash-reaper",
-		},
 	});
 	if (!finalized.ok) {
 		result.cleanupPending++;
@@ -353,6 +351,20 @@ async function reapOne(
 				`[crash-reaper] ${execId}: FSM rejected running→terminated after teardown: ${tr.error}`,
 			);
 			return;
+		}
+		// FLY-1050: a reaped three-stage QA row may have stranded its implement —
+		// hand the loss to the orchestrator (before archive; best-effort).
+		if (
+			(session.chat_thread_role ?? "main") === "qa" &&
+			deps.onQaPhaseTerminated
+		) {
+			try {
+				deps.onQaPhaseTerminated(execId, session.issue_id);
+			} catch (err) {
+				log(
+					`[crash-reaper] ${execId}: onQaPhaseTerminated threw: ${(err as Error).message}`,
+				);
+			}
 		}
 		if (deps.archiveThread) {
 			const reaped = deps.store.getSession(execId) ?? {

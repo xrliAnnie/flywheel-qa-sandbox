@@ -45,11 +45,11 @@ flywheel-comm publish-report \
 |------|------|
 | `FLYWHEEL_BRIDGE_URL` / `BRIDGE_URL` | Bridge 地址（必需） |
 | `TEAMLEAD_API_TOKEN` | Bridge bearer token（`/api/reports/*` 必须有 token 才会服务） |
+| `FLYWHEEL_REMOTE_REPORTS=0` | 双侧关闭：CLI no-op exit 0 + Bridge 一律 503 |
 | `FLYWHEEL_REPORTS_DIR` | registry/previews 根目录（默认 `~/.flywheel/reports`） |
+| `FLYWHEEL_REPORTS_TTL_DAYS` | 链接有效期天数(默认 7;`0` 关闭按时长过期) |
 | `FLYWHEEL_REPORT_SHOT_WIDTH` | 截图 viewport 宽度 px（默认 860 ≈ 报告内容宽；320-3840）。截图 = **全页 @ 2x**（Annie 拍板形态:图扫结构+链接细读）;2x 失败或 >25MB 自动降 1x 重试,再失败降纯链接 |
 | `VERCEL_TOKEN` | Bridge 侧托管凭证（未配 → publish 501） |
-
-报告链接固定保留 7 天；到期后在下一次发布时清理。保留期没有环境变量旁路。
 
 ## 工作原理（一图）
 
@@ -75,7 +75,7 @@ sequenceDiagram
 - "Anyone with link"：URL 路径含 128-bit 随机 token，不可猜（等价 signed URL 强度）；域名带随机后缀
 - 根路径/错误 token 404，无目录列表；`robots.txt` Disallow all + `noindex` meta 注入
 - CSP meta 注入（`default-src 'none'; style-src 'unsafe-inline'; img-src data:`）—— 防报告内意外 `<script>`/外链跑起来
-- Retention：**链接 7 天后自动失效**(Annie 拍的隐私要求;在下一次发布的重部署中摘除 —— 无新增定时器,挂在 publish 动作上)+ 最多 100 份 / 8.5 MiB 滚动上限,谁先到谁生效
+- Retention：**链接 7 天后自动失效**(Annie 拍的隐私要求;在下一次发布的重部署中摘除 —— 无新增定时器,挂在 publish 动作上)+ 最多 100 份 / 10MB 滚动上限,谁先到谁生效
 
 ## 注意
 

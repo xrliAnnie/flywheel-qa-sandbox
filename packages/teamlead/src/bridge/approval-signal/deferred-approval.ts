@@ -14,23 +14,20 @@
  * rebound) so wording is testable and consistent.
  */
 
-import { resolveFounderTimezone } from "flywheel-config";
 import type {
 	FounderActionIntent,
 	FounderDeferredApproval,
 	SessionEvent,
 } from "../../StateStore.js";
-import type { FounderReworkHint } from "../../workflow-rework-hint.js";
+import type { ReviewHoldReason } from "../auto-qa-held.js";
 import {
 	parseSqliteUtcMs,
 	snowflakeToMs,
 	truncate,
 } from "../founder-notify-utils.js";
 import type { MergedGateGuard } from "../merged-gate-guard.js";
-import type { ReviewHoldReason } from "../review-hold.js";
 import { reactToFounderMessage } from "./founder-ack.js";
 import type { DeferralSupport } from "./founder-ship-approval-handler.js";
-import type { GateAuthorityView } from "./gate-authority-view.js";
 import {
 	isApprovalContent,
 	makeGuardedOnResponseWritten,
@@ -41,11 +38,27 @@ import {
 	writeGateResponseAndRunPostWrite,
 } from "./write-gate-response.js";
 
-// FLY-2101: founder 2026-08-27 v4 fixed the former runtime flag at 45 minutes.
-const DEFERRED_APPROVAL_TTL_MS = 45 * 60_000;
+// ── env knobs (read per call — flip without a Bridge restart) ───────────────
 
-export function deferredApprovalTtlMs(): number {
-	return DEFERRED_APPROVAL_TTL_MS;
+export function deferredApprovalEnabled(
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	return env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL !== "0";
+}
+
+export function heldReplyEnabled(
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	return env.FLYWHEEL_HELD_DECLINED_REPLY !== "0";
+}
+
+const DEFAULT_TTL_MS = 45 * 60_000; // §8: FLYWHEEL_DEFERRED_APPROVAL_TTL_MS
+
+export function deferredApprovalTtlMs(
+	env: Record<string, string | undefined> = process.env,
+): number {
+	const n = Number.parseInt(env.FLYWHEEL_DEFERRED_APPROVAL_TTL_MS ?? "", 10);
+	return Number.isFinite(n) && n > 0 ? n : DEFAULT_TTL_MS;
 }
 
 // ── founder-facing texts (人话; exported for tests) ─────────────────────────
@@ -88,16 +101,6 @@ export function mergeBlockPointerText(): string {
 	);
 }
 
-export function readinessHoldPointerText(
-	holdReason: "qa_evidence_missing" | "qa_evidence_unknown",
-): string {
-	const label = NON_DEFERRABLE_HOLD_LABELS[holdReason];
-	return (
-		`这个 PR 现在还不能批准(${label})——这条批准没有被暂存。` +
-		"等当前 head 的独立 QA 证据确认通过后,请在新的批准卡上重新确认。"
-	);
-}
-
 export function deferredOffExplainerText(holdReason: ReviewHoldReason): string {
 	const label =
 		NON_DEFERRABLE_HOLD_LABELS[holdReason] ??
@@ -106,10 +109,7 @@ export function deferredOffExplainerText(holdReason: ReviewHoldReason): string {
 }
 
 /** HH:MM (founder's timezone) of the founder message, from its snowflake. */
-export function founderMsgClock(
-	msgId: string,
-	timezone = resolveFounderTimezone(),
-): string {
+export function founderMsgClock(msgId: string): string {
 	const ms = snowflakeToMs(msgId);
 	if (ms === null) return "";
 	try {
@@ -117,7 +117,7 @@ export function founderMsgClock(
 			hour12: false,
 			hour: "2-digit",
 			minute: "2-digit",
-			timeZone: timezone,
+			timeZone: "America/Los_Angeles",
 		});
 	} catch {
 		return "";
@@ -185,7 +185,6 @@ export interface DeferralCaptureStore {
 		content: string;
 		authorUserId: string;
 		founderIdAtCapture: string;
-		founderRework?: FounderReworkHint;
 		ttlSeconds: number;
 		heldReplyAction?: FounderActionIntent;
 		audit?: SessionEvent;
@@ -197,12 +196,16 @@ export function makeDeferralSupport(args: {
 	store: DeferralCaptureStore;
 	holdReasonFor(executionId: string): ReviewHoldReason | null;
 	ctx: { issueId: string; threadId: string; projectName: string };
+	env?: Record<string, string | undefined>;
 }): DeferralSupport {
+	const env = args.env ?? process.env;
 	const { store, ctx } = args;
 	return {
 		holdReason: (executionId) => args.holdReasonFor(executionId),
+		deferredEnabled: () => deferredApprovalEnabled(env),
+		heldReplyEnabled: () => heldReplyEnabled(env),
 		defer: (a) => {
-			const ttlMs = deferredApprovalTtlMs();
+			const ttlMs = deferredApprovalTtlMs(env);
 			const ttlMinutes = Math.max(1, Math.round(ttlMs / 60_000));
 			return store.deferFounderApproval({
 				questionId: a.questionId,
@@ -216,24 +219,26 @@ export function makeDeferralSupport(args: {
 				content: a.content,
 				authorUserId: a.authorUserId,
 				founderIdAtCapture: a.founderIdAtCapture,
-				founderRework: a.founderRework,
 				ttlSeconds: Math.floor(ttlMs / 1000),
-				// The "已存着" notice intent lands in the same durable transaction as
-				// the deferral row (truth-in-time).
-				heldReplyAction: {
-					actionKey: heldReplyActionKey(a.questionId, a.msgId),
-					kind: "held_reply",
-					executionId: a.executionId,
-					issueId: ctx.issueId,
-					projectName: ctx.projectName,
-					threadId: ctx.threadId,
-					payload: {
-						text: heldReplyText(a.decision, a.holdReason, ttlMinutes),
-						questionId: a.questionId,
-						msgId: a.msgId,
-						decision: a.decision,
-					},
-				},
+				// §4.4: the "已存着" notice intent lands ONLY in the same durable
+				// transaction as the deferral row (truth-in-time), and only when the
+				// reply flag is ON (ON/OFF row of the 2×2 table).
+				heldReplyAction: heldReplyEnabled(env)
+					? {
+							actionKey: heldReplyActionKey(a.questionId, a.msgId),
+							kind: "held_reply",
+							executionId: a.executionId,
+							issueId: ctx.issueId,
+							projectName: ctx.projectName,
+							threadId: ctx.threadId,
+							payload: {
+								text: heldReplyText(a.decision, a.holdReason, ttlMinutes),
+								questionId: a.questionId,
+								msgId: a.msgId,
+								decision: a.decision,
+							},
+						}
+					: undefined,
 				audit: {
 					event_id: `founder-approval-deferred-${a.questionId}-${a.msgId}`,
 					execution_id: a.executionId,
@@ -258,11 +263,7 @@ export function makeDeferralSupport(args: {
 				const text =
 					a.kind === "merge_block"
 						? mergeBlockPointerText()
-						: a.kind === "readiness_hold" &&
-								(a.holdReason === "qa_evidence_missing" ||
-									a.holdReason === "qa_evidence_unknown")
-							? readinessHoldPointerText(a.holdReason)
-							: deferredOffExplainerText(a.holdReason);
+						: deferredOffExplainerText(a.holdReason);
 				store.insertFounderAction({
 					actionKey: heldReplyActionKey(a.questionId, a.msgId),
 					kind: "held_reply",
@@ -300,8 +301,7 @@ export function makeDeferralSupport(args: {
 				content: a.content,
 				authorUserId: a.authorUserId,
 				founderIdAtCapture: a.founderIdAtCapture,
-				founderRework: a.founderRework,
-				ttlSeconds: Math.floor(deferredApprovalTtlMs() / 1000),
+				ttlSeconds: Math.floor(deferredApprovalTtlMs(env) / 1000),
 				audit: {
 					event_id: `founder-approval-parked-${a.questionId}-${a.msgId}`,
 					execution_id: a.executionId,
@@ -392,7 +392,6 @@ export interface DeferredRebindDeps {
 	cardAuthority?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["cardAuthority"];
-	gateAuthorityView?: GateAuthorityView;
 	/** Bot token for the ✅ receipt upgrade on the founder's original message. */
 	resolveBotToken(row: FounderDeferredApproval): string | undefined;
 	reactImpl?: typeof reactToFounderMessage;
@@ -456,6 +455,8 @@ const APPROVE_FLIPPED_STATUSES = new Set(["approved_to_ship", "completed"]);
 export async function runDeferredApprovalRebindPass(
 	deps: DeferredRebindDeps,
 ): Promise<void> {
+	const env = deps.env ?? process.env;
+	if (!deferredApprovalEnabled(env)) return; // kill-switch: no rebind writes
 	const now = deps.nowMs?.() ?? Date.now();
 	const rows = deps.store.listActiveDeferredApprovals();
 	if (rows.length === 0) return;
@@ -480,22 +481,10 @@ async function rebindOne(
 	now: number,
 ): Promise<void> {
 	const session = deps.store.getSession(row.execution_id);
-	const initialEngineAuthority = deps.gateAuthorityView?.resolve(
-		row.question_id,
-		row.execution_id,
-	);
-	const authoritySession = initialEngineAuthority
-		? {
-				status: initialEngineAuthority.state,
-				review_question_id: initialEngineAuthority.questionId,
-				pr_head_sha: initialEngineAuthority.headSha,
-				pr_number: initialEngineAuthority.prNumber,
-			}
-		: session;
 	// 1. TTL (§4.3 step 1).
 	const expiresMs = parseSqliteUtcMs(row.expires_at);
 	if (expiresMs !== null && expiresMs <= now) {
-		if (!(await guardRebindSideEffect(row, authoritySession, deps))) return;
+		if (!(await guardRebindSideEffect(row, session, deps))) return;
 		deps.store.invalidateDeferredApproval({
 			questionId: row.question_id,
 			msgId: row.msg_id,
@@ -538,12 +527,9 @@ async function rebindOne(
 	const db = deps.openCommDb(row.project_name);
 	if (!db) return; // CommDB unavailable → transient, retry next pass
 	try {
-		const bindingIntact = initialEngineAuthority
-			? (initialEngineAuthority.state === "awaiting_review" ||
-					initialEngineAuthority.state === "approved") &&
-				initialEngineAuthority.questionId === row.question_id
-			: session?.status === "awaiting_review" &&
-				session.review_question_id === row.question_id;
+		const bindingIntact =
+			session?.status === "awaiting_review" &&
+			session.review_question_id === row.question_id;
 		const priorResponse = db.getResponse(row.question_id);
 		const gateAlive =
 			bindingIntact &&
@@ -577,9 +563,9 @@ async function rebindOne(
 		}
 
 		// 4. Head guardrail (§4.3 step 4 — founder must re-confirm a new head).
-		const liveHead = authoritySession?.pr_head_sha?.toLowerCase();
+		const liveHead = session.pr_head_sha?.toLowerCase();
 		if (liveHead !== row.pr_head_sha.toLowerCase()) {
-			if (!(await guardRebindSideEffect(row, authoritySession, deps))) return;
+			if (!(await guardRebindSideEffect(row, session, deps))) return;
 			deps.store.invalidateDeferredApproval({
 				questionId: row.question_id,
 				msgId: row.msg_id,
@@ -600,7 +586,7 @@ async function rebindOne(
 
 		// 5. Hold recheck (§4.3 step 5 — still held → wait; TTL bounds it).
 		if (deps.holdReasonFor(row.execution_id) !== null) return;
-		if (!(await guardRebindSideEffect(row, authoritySession, deps))) return;
+		if (!(await guardRebindSideEffect(row, session, deps))) return;
 
 		// 6. Write — the SAME writer + guarded wrapper as the live path.
 		const answer =
@@ -635,11 +621,8 @@ async function rebindOne(
 			executionId: row.execution_id,
 			source: "deferred",
 			cardAuthority: deps.cardAuthority,
-			gateAuthorityView: deps.gateAuthorityView,
 			actor: founderId,
 			founderId,
-			founderRework: row.founder_rework,
-			...(row.decision === "reject" ? { intent: "kickback" as const } : {}),
 			answer,
 			expectedCurrentReviewQuestionId: row.question_id,
 			holdReasonFor: deps.holdReasonFor,
@@ -703,14 +686,6 @@ async function rebindOne(
 			return;
 		}
 		if (row.decision === "approve") {
-			const projectedAuthority = deps.gateAuthorityView?.resolve(
-				row.question_id,
-				row.execution_id,
-			);
-			if (projectedAuthority?.state === "approved") {
-				await finalizeConsume(row, deps);
-				return;
-			}
 			const after = deps.store.getSession(row.execution_id);
 			if (!after || !APPROVE_FLIPPED_STATUSES.has(after.status ?? "")) {
 				// (a) holds but (b) not yet — hook silently failed to flip. Keep
@@ -736,22 +711,10 @@ async function finalizeConsume(
 	row: FounderDeferredApproval,
 	deps: DeferredRebindDeps,
 ): Promise<void> {
-	const liveSession = deps.store.getSession(row.execution_id);
-	const engineAuthority = deps.gateAuthorityView?.resolve(
-		row.question_id,
-		row.execution_id,
-	);
 	if (
 		!(await guardRebindSideEffect(
 			row,
-			engineAuthority
-				? {
-						status: engineAuthority.state,
-						review_question_id: engineAuthority.questionId,
-						pr_head_sha: engineAuthority.headSha,
-						pr_number: engineAuthority.prNumber,
-					}
-				: liveSession,
+			deps.store.getSession(row.execution_id),
 			deps,
 		))
 	) {

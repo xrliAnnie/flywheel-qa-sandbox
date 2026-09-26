@@ -5,6 +5,8 @@
  * binding the composition-root deps (canonical founder id, StateStore, reaction
  * fetcher, binding reader, onResponseWritten) and gating on the SAME rules as the
  * text factory:
+ *   - default-ON kill-switch `FLYWHEEL_FOUNDER_AUTO_APPROVE` (`=0` disables;
+ *     read per-call so ops can flip without a restart);
  *   - a per-project denylist;
  *   - a resolvable canonical founder id (fail-closed when missing / split).
  * Any gate failing → null → the pass skips this gate and re-checks next tick.
@@ -21,7 +23,6 @@ export interface FounderReactionApprovalFactoryConfig {
 	discordOwnerUserId?: string;
 	founderConsentUserId?: string;
 	store: ReactionApprovalHandlerDeps["store"];
-	gateAuthorityView?: ReactionApprovalHandlerDeps["gateAuthorityView"];
 	readBindingImpl: ReactionApprovalHandlerDeps["readBindingImpl"];
 	onResponseWritten?: ReactionApprovalHandlerDeps["onResponseWritten"];
 	/** Projects for which auto-approve is disabled (per-project kill). */
@@ -66,6 +67,11 @@ export interface FounderReactionApprovalCallbackArgs {
 	reactionFetcherImpl: ReactionApprovalHandlerDeps["reactionFetcherImpl"];
 }
 
+/** Default ON — only an explicit `=0` disables (kill-switch). */
+function autoApproveEnabled(): boolean {
+	return process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE !== "0";
+}
+
 export function makeFounderReactionApprovalCallback(
 	config: FounderReactionApprovalFactoryConfig,
 ): (
@@ -73,6 +79,7 @@ export function makeFounderReactionApprovalCallback(
 ) => Promise<{ handled: string[]; retrySafe: boolean } | null> {
 	const handler = config.handlerImpl ?? defaultHandler;
 	return async (args) => {
+		if (!autoApproveEnabled()) return null; // kill-switch
 		if (config.denylistProjects?.has(args.ctx.projectName)) return null;
 		const canonicalFounderId = deriveCanonicalFounderId(
 			config.discordOwnerUserId,
@@ -118,7 +125,6 @@ export function makeFounderReactionApprovalCallback(
 			{
 				canonicalFounderId,
 				store: config.store,
-				gateAuthorityView: config.gateAuthorityView,
 				db: args.db,
 				reactionFetcherImpl: args.reactionFetcherImpl,
 				readBindingImpl: config.readBindingImpl,

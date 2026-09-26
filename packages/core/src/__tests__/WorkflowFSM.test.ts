@@ -125,14 +125,12 @@ describe("WorkflowFSM", () => {
 
 	it("returns all allowed target states for a given state", () => {
 		expect(fsm.allowedTransitions("running")).toEqual([
-			// FLY-1441: ship-capable DAG nodes park before terminal Gate arrival.
-			"ship_parked",
 			"awaiting_review",
 			"completed",
 			"blocked",
 			"failed",
 			"terminated",
-			// FLY-793: DAG workflow Design phase handoff.
+			// FLY-793: three-stage Design phase handoff.
 			"design_done",
 		]);
 		// FLY-1185 (R10#5): a canceled issue must be able to close a

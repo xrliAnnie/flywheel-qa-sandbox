@@ -50,6 +50,7 @@ qa_room_roundtable_lead_env() {
 	# no-@ in-thread continuation + its bounded anti-loop budget (FLY-314 Part b).
 	# budgetN is only consulted on the autoContinue path, so omit it when off.
 	if [[ "$auto_continue" == "1" ]]; then
+		printf '%s\n' "FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1"
 		[[ -n "$thread_budget" ]] &&
 			printf '%s\n' "FLYWHEEL_ROUNDTABLE_THREAD_BUDGET=${thread_budget}"
 	fi
@@ -137,33 +138,4 @@ qa_room_member_user_ids() {
 		| map(select(. != null and . != ""))
 		| join(",")
 	' "$slots_file"
-}
-
-# FLY-1389 P2-a: resolve the Lead inbox-ready wait budget for test-deploy.sh.
-# Precedence: --lead-ready-timeout flag > FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC
-# env > default 120 (the historical hardcode). Strict positive integer,
-# capped at 3600; anything else (non-numeric, 0, negative, decimal, empty
-# flag value) is rejected with rc=1 + stderr so test-deploy fails BEFORE the
-# expensive preflight.
-# Args: flagValue envValue → echoes resolved seconds
-qa_room_resolve_lead_ready_timeout() {
-	local v src
-	if [[ -n "${1:-}" ]]; then
-		v="$1"; src="--lead-ready-timeout"
-	elif [[ -n "${2:-}" ]]; then
-		v="$2"; src="FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC"
-	else
-		echo 120
-		return 0
-	fi
-	if ! printf '%s' "$v" | grep -qE '^[0-9]+$'; then
-		echo "ERROR: ${src} must be a positive integer number of seconds (got '${v}')" >&2
-		return 1
-	fi
-	v=$((10#$v))
-	if (( v < 1 || v > 3600 )); then
-		echo "ERROR: ${src} must be between 1 and 3600 seconds (got '${v}')" >&2
-		return 1
-	fi
-	echo "$v"
 }

@@ -42,37 +42,13 @@ TypeScript types: `import { QaConfig } from 'flywheel-qa-framework'`
 
 The slot-based E2E framework (FLY-96 + FLY-115) spawns parallel isolated test environments, each running a **real Runner** against `xrliAnnie/flywheel-qa-sandbox`. No synthetic / fixture mode is supported — every slot is a real Runner end-to-end.
 
-QA tmux session names MUST use the `qa-` prefix (for example,
-`qa-fly1659-storm`). Never use the production-reserved `flywheel` session name
-on an isolated QA socket. Teardown remains lifecycle-owned by the creating QA
-driver; `restart-services.sh` only audits and alerts on detached residue.
-
 ### Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/test-deploy.sh [--from-branch <br>] <N>` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>`, start the slot Bridge, then start each real test Lead as its own isolated launchd v2 job and private tmux server. Default branch is sandbox `main`. |
+| `scripts/test-deploy.sh [--from-branch <br>] <N>` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>` (slot-suffixed basename so WorktreeManager-derived Runner branches don't collide on the sandbox remote when two slots run the same issue), start test Bridge with `FLYWHEEL_RUNNER_START_POINT=refs/remotes/origin/<br>`, start test Lead. Default branch is sandbox `main`. |
 | `scripts/inject-linear-issue.sh <N> <FLY-XXX>` | POST `/api/runs/start` directly to the slot's Bridge to spawn a real Runner. |
-| `scripts/test-teardown.sh <N>` | `bootout` slot Lead labels first, then stop Runner/Bridge, clean FLY-95 worktrees + slot-local branches, and remove `SLOT_DIR` + CommDB. |
-
-### Lead carrier evidence (FLY-1663)
-
-529 Room is the real-machine proof path for the launchd-native Lead topology.
-`test-deploy.sh` no longer starts `claude-lead.sh` directly. For every main or
-extra Lead it creates a unique `com.flywheel.qa.lead.slot-N.*` label, a
-slot-local plist/manifest/projects/env set, and a private socket. Deploy passes
-only after all three positive facts agree:
-
-1. launchd reports a live job PID;
-2. the v2 manifest reports the same PID and its private socket;
-3. that socket exposes the canonical `main` tmux session, followed by the
-   existing inbox-ready lease. The FLY-529 smoke scripts then exercise the real
-   Discord send/receive capability.
-
-The deploy JSON exposes `leadCarrier`, `leadLaunchdLabel`, `leadSocket`, and
-`launchdRegistry` for independent QA evidence. The slot Bridge also pins
-`FLYWHEEL_DELIVERY_SECRET_PATH` under `${SLOT_DIR}/state`; a test Bridge cannot
-read, create, or rotate the resident fleet delivery secret.
+| `scripts/test-teardown.sh <N>` | Kill Runner tmux, Lead, Bridge; clean FLY-95 worktrees + slot-local branches; remove `SLOT_DIR` + CommDB. |
 
 ### Pre-requisites
 
@@ -106,9 +82,9 @@ A specialized 1 happy path + 6 variants suite that validates the spec-defined Ha
 
 ### Key wire facts (matters for evidence interpretation)
 
-- **HP follows the production approve wire**: the Runner opens `gate approve_to_ship --no-block`, completes with `--route needs_review --question-id <id>`, and the driver calls `POST /api/actions/approve` with only `execution_id`. Bridge writes the authoritative response, advances the legacy session, wakes the Runner, and the Runner's `verify-approval` check authorizes shipping.
+- **HP follows the production approve wire**: `flywheel-comm respond` (CommDB write) + Runner self-posts `:cool:`. Bridge `approveExecution` is *not* on the production path — calling it while Runner is gate-blocked deadlocks (`scripts/test-auto-approve.sh:18-40` documents this).
 - **DB paths are distinct**: StateStore = `${SLOT_DIR}/teamlead.db` (= `/tmp/flywheel-test-slot-N/teamlead.db`, taken from deploy JSON `dbPath`). CommDB = `~/.flywheel/comm/test-slot-N/comm.db`. They are not the same database.
-- **CommDB authority is `mailbox` plus `mailbox_message_projection`**. Base `notified_at` records MCP transport success; projection `delivered_at`/`read_at` appear only after Lead ACK. Don't conflate transport with receipt.
+- **CommDB schema is one `messages` table**. `delivered_at` set after MCP notification succeeds (inbox-mcp); `read_at` set after Lead's `flywheel_inbox_ack`. Don't conflate them. See `packages/flywheel-comm/src/db.ts:8-37,84-104,176-241,329-363`.
 - **V3 alert evidence** comes from `~/.flywheel/alerts/claims.db` + `~/.flywheel/alert-queue/*.json` (filesystem queue). Discord channel push is **not** validated in this suite because test-slot config does not wire `alertChannel`.
 - **Slot host repo path** is `/tmp/flywheel-test-slot-N/project-slot-N` (deploy JSON `hostRepo`). Runner worktrees are derived as `${HOST_REPO}-<ISSUE_ID>` and branches as `$(basename "$HOST_REPO")-<ISSUE_ID>`. V2 (residual worktree) plants stale resources at exactly these paths.
 
@@ -136,7 +112,7 @@ The driver fails fast on preflight if `LINEAR_API_KEY` is missing or `FLY-SBX-1`
 The driver emits `MANUAL_PENDING` gates whenever Chrome MCP-driven Discord interaction is required:
 
 - **HP-3**: Annie posts task to chat-test-{N}
-- **HP-7**: Annie posts ship approval; the driver invokes the supported approval endpoint
+- **HP-7**: Annie posts ship approval
 - **V4-b**: confirm Runner is in Claude REPL before injecting bypass instruction
 - **V6**: per-trial shutdown phrase posting + Lead-reply classification
 
@@ -333,57 +309,6 @@ scripts/qa-fly-529-alert-smoke.sh 1          # AC4 channel + AC5 two-path isolat
   (`packages/teamlead/src/bridge/__tests__/alert-dirs.test.ts`,
   `scripts/__tests__/lead-alert-dirs.test.sh`).
 - Suite: `suites/fly-529-alert-mirror.md`.
-
-## Cold-Lead Knobs + Bridge-Only Deploys (FLY-1389)
-
-Two independent escape paths for the historical "Lead not ready within 120
-seconds" hard-fail (a cold Lead on a loaded shared machine can legitimately
-exceed 120s; a poisoned session-id used to make it *never* ready — that root
-cause is fixed separately by the resume-recovery window + session-id
-pre-delete, same issue):
-
-```bash
-# Knob: widen the Lead inbox-ready wait budget (flag > env > default 120s;
-# strict integer 1..3600, validated BEFORE the expensive preflight).
-scripts/test-deploy.sh 1 --lead-ready-timeout 300
-FLYWHEEL_TEST_LEAD_READY_TIMEOUT_SEC=300 scripts/test-deploy.sh 1
-
-# Bridge-only deploy: skip identity staging + Lead startup + lease wait
-# entirely. For pure Bridge/API/DB suites — a Discord-Lead-behavior suite
-# must NOT use it. Also runs on hosts without ~/Dev/GeoForge3D.
-scripts/test-deploy.sh 1 --no-lead
-```
-
-- `--no-lead` output JSON carries `"noLead": true` with empty `leadPidFile` /
-  `leadLog`; `--extra-lead` is mutually exclusive (campaigns are Lead-centric).
-- Slot Bridges now always run with slot-local `FLYWHEEL_BIN_DIR` /
-  `FLYWHEEL_HOOKS_DIR` — a slot deploy never rewrites the global
-  `~/.flywheel/bin` symlinks (FLY-1389 write-time guard is the second net:
-  see `doc/engineer/implementation/global-bin-symlink-discipline.md`).
-- The Lead env is sanitized against caller-shell leaks (`LEAD_WORKSPACE`,
-  `CLAUDE_CONFIG_DIR`, `FLYWHEEL_LEAD_MODEL/_EFFORT` are cleared;
-  `LEAD_WORKSPACE` is pinned to `<slot>/lead-workspace`).
-
-## 529-Room Token Accounting (FLY-1389 §P3 — by design, not a bug)
-
-`packages/token-usage/src/classifier.ts` deliberately buckets any session
-whose cwd contains `flywheel-test-slot` (also `/scratchpad`, `claude-501`)
-as `kind:"sandbox"`; the aggregator surfaces the `(sandbox)` bucket instead
-of hiding it. QA burn is visible but never pollutes per-project production
-numbers. There is no per-slot token API.
-
-When a QA needs exact test-room token evidence, use the transcript
-direct-read recipe (practiced in FLY-1356): find the slot session's
-transcript under `~/.claude/projects/<slug>/*.jsonl` (slug = the workspace
-absolute path with `/` and `.` replaced by `-`), then sum
-`message.usage.{input_tokens,output_tokens,cache_*}` across entries —
-ground truth, no classifier in the loop.
-
-## QA in Test Rooms
-
-Room QA is suite-driven by definition. The retired Bridge auto-QA spawn
-mechanism has no project-config opt-in; DAG QA nodes and explicit test-room
-suites remain the supported paths.
 
 ## Contracts
 

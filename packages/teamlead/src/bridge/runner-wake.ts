@@ -19,7 +19,6 @@ import {
 	readGateMarker,
 } from "flywheel-comm/gate-marker";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import { isWakeTerminalStatus } from "../operational-terminal-status.js";
 import type { StateStore } from "../StateStore.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 
@@ -42,7 +41,6 @@ export type WakeKind = "approval_wake" | "feedback_wake";
 export interface WakeSessionInfo {
 	issue_id: string;
 	project_name: string;
-	review_question_id?: string;
 }
 
 export interface WakeDetail {
@@ -87,12 +85,12 @@ export function wakeText(
 		`Your Lead answered your approve_to_ship review request${qidNote} with feedback (changes requested — NOT an approval).` +
 		(excerpt ? `\n\nFEEDBACK:\n${excerpt}\n\n` : " ") +
 		`Full durable copy: \`node <flywheel-comm> check ${detail?.questionId ?? "<questionId>"} --project ${projectName}\`. ` +
-		// FLY-939 (G-B): role-neutral deferral. A DAG workflow QA phase must NOT edit
+		// FLY-939 (G-B): role-neutral deferral. A three-stage QA phase must NOT edit
 		// code on feedback — its role prompt defines a kickback protocol (re-emit
 		// qa-result FAIL so the parked IMPLEMENT phase fixes). A single-session
 		// runner has no such protocol, so the generic re-request steps still apply to
 		// it byte-compatibly.
-		`If your role's prompt defines a different feedback protocol (e.g. a DAG workflow QA kickback), follow YOUR ROLE PROMPT instead of the generic steps that follow. ` +
+		`If your role's prompt defines a different feedback protocol (e.g. a three-stage QA kickback), follow YOUR ROLE PROMPT instead of the generic steps that follow. ` +
 		`Otherwise: address the feedback, push your fixes, then re-request review with a new ` +
 		`\`gate approve_to_ship --no-block\` + \`complete --route needs_review --question-id <new id>\`. ` +
 		`Do NOT ship: \`verify-approval\` will refuse without a real approval.`
@@ -120,26 +118,6 @@ export async function sendRunnerWake(
 	// runners at `pr_handoff` so this path is normally unreachable; this guard
 	// guarantees no false wake-success from ANY surface.)
 	const persisted = store.getSession(executionId);
-	if (isWakeTerminalStatus(persisted?.status)) {
-		try {
-			store.insertEvent({
-				event_id: `wake-skipped-terminal-${executionId}-${kind}-${persisted?.status}`,
-				execution_id: executionId,
-				issue_id: session.issue_id,
-				project_name: session.project_name,
-				event_type: "runner_wake_skipped",
-				source: "bridge.runner-wake",
-				payload: {
-					kind,
-					skippedReason: "terminal_status",
-					status: persisted?.status,
-				},
-			});
-		} catch {
-			// best-effort telemetry; terminal admission still rejects the wake.
-		}
-		return;
-	}
 	if (isNoTransportBackend(persisted?.adapter_type)) {
 		console.warn(
 			`[runner-wake] ${kind} SKIPPED for ${executionId}: no-transport backend ` +
@@ -163,48 +141,6 @@ export async function sendRunnerWake(
 
 	let detail: string;
 	try {
-		const receiptWake = wakeDetail?.questionId
-			? db.findPendingRunnerReceiptWakeForQuestion(
-					executionId,
-					wakeDetail.questionId,
-				)
-			: undefined;
-		if (receiptWake) {
-			if (receiptWake.admission_state !== "queued") return;
-			const claim = db.claimRunnerReceiptWakePush(
-				executionId,
-				receiptWake.message_id,
-				Date.now(),
-				{ t1Ms: 90_000, claimTtlMs: 30_000 },
-			);
-			// Another owner holds the claim, the intent is already exhausted, or
-			// started won the race. Never bypass the ledger with a raw wake.
-			if (!claim) return;
-			const targetSession = db.getSession(executionId);
-			const outcome = await wakeRunnerMailbox({
-				db,
-				execId: executionId,
-				fromAgent: "bridge",
-				content: claim.envelope.content,
-				metadata: claim.envelope.metadata,
-				...(targetSession?.vendor ? { backend: targetSession.vendor } : {}),
-			});
-			db.completeRunnerReceiptWakePush({
-				executionId,
-				messageId: receiptWake.message_id,
-				claimToken: claim.claimToken,
-				attempt: claim.attempt,
-				result: outcome.ok
-					? "delivered"
-					: outcome.skippedReason
-						? `skipped:${outcome.skippedReason}`
-						: `failed:${outcome.error ?? "unknown"}`,
-				nowMs: Date.now(),
-			});
-			if (outcome.ok || outcome.skippedReason === "backend_commdb") return;
-			detail = outcome.error ?? outcome.skippedReason ?? "unknown";
-			throw new Error(detail);
-		}
 		// FLY-123 (code review R1 MEDIUM-4): route the wake by the TARGET
 		// runner's transport backend when a question-bound gate marker exists
 		// — never the process-wide env (Phase 1 locks the Bridge env to
@@ -249,12 +185,7 @@ export async function sendRunnerWake(
 	);
 	try {
 		store.insertEvent({
-			event_id: `wake-failed-${executionId}-${
-				wakeDetail?.questionId ??
-				persisted?.review_question_id ??
-				session.review_question_id ??
-				kind
-			}`,
+			event_id: `wake-failed-${executionId}-${Date.now()}`,
 			execution_id: executionId,
 			issue_id: session.issue_id,
 			project_name: session.project_name,

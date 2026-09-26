@@ -9,14 +9,8 @@ const silent = { warn: vi.fn() };
 
 class FakeSource implements DiscordInboundSource {
 	handler?: (m: DiscordInboundMessage) => boolean;
-	authenticatedBotUserIds: string[] = [];
-	authError?: Error;
 	started = false;
 	stopped = false;
-	async assertAuthenticatedBotUser(expectedBotUserId: string) {
-		this.authenticatedBotUserIds.push(expectedBotUserId);
-		if (this.authError) throw this.authError;
-	}
 	onMessage(h: (m: DiscordInboundMessage) => boolean) {
 		this.handler = h;
 	}
@@ -81,11 +75,6 @@ function msg(over: Partial<DiscordInboundMessage> = {}): DiscordInboundMessage {
 	};
 }
 
-function snowflakeAt(iso: string): string {
-	const discordEpoch = 1_420_070_400_000n;
-	return ((BigInt(new Date(iso).getTime()) - discordEpoch) << 22n).toString();
-}
-
 describe("CodexDiscordGateway — construction", () => {
 	it("requires botUserId (echo immunity)", () => {
 		const source = new FakeSource();
@@ -102,108 +91,14 @@ describe("CodexDiscordGateway — construction", () => {
 });
 
 describe("CodexDiscordGateway — reply routing (FLY-267 回)", () => {
-	it("records a cross-department receipt before journal accept and completes it after", () => {
-		const order: string[] = [];
-		const source = new FakeSource();
-		const gw = new CodexDiscordGateway({
-			source,
-			router: {
-				submit: () => {
-					order.push("journal.accept");
-					return { accepted: true, entryId: "entry-1" };
-				},
-			},
-			botUserId: "self-bot",
-			channelIds: ["round-1"],
-			resolveReplyChannelId: () => "round-1",
-			externalReceiptSaga: {
-				begin(message) {
-					order.push(`receipt.begin:${message.messageId}`);
-				},
-				complete(messageId) {
-					order.push(`receipt.complete:${messageId}`);
-				},
-			},
-		});
-
-		expect(gw.handle(msg({ id: "cross-1", channelId: "round-1" }))).toBe(true);
-		expect(order).toEqual([
-			"receipt.begin:cross-1",
-			"journal.accept",
-			"receipt.complete:cross-1",
-		]);
-	});
-
-	it("pins the cursor at either cross-store crash seam and converges on retry", () => {
-		const source = new FakeSource();
-		const accepted = new Set<string>();
-		let beginFails = true;
-		let completeFails = true;
-		const begin = vi.fn(() => {
-			if (beginFails) throw new Error("comm begin unavailable");
-		});
-		const complete = vi.fn(() => {
-			if (completeFails) throw new Error("comm complete unavailable");
-		});
-		const submit = vi.fn((input: { idempotencyKey: string }) => {
-			const fresh = !accepted.has(input.idempotencyKey);
-			accepted.add(input.idempotencyKey);
-			return { accepted: fresh, entryId: "entry-1" };
-		});
-		const gw = new CodexDiscordGateway({
-			source,
-			router: { submit },
-			botUserId: "self-bot",
-			channelIds: ["round-1"],
-			resolveReplyChannelId: () => "round-1",
-			externalReceiptSaga: { begin, complete },
-			logger: silent,
-		});
-		const cross = msg({ id: "cross-crash", channelId: "round-1" });
-
-		// receipt before submit failed: no durable Lead accept and no cursor advance.
-		expect(gw.handle(cross)).toBe(false);
-		expect(submit).not.toHaveBeenCalled();
-		beginFails = false;
-		// submit succeeded, but delivered transition failed: cursor remains pinned.
-		expect(gw.handle(cross)).toBe(false);
-		expect(accepted.size).toBe(1);
-		completeFails = false;
-		// Discord replay is a journal duplicate; the receipt completion is idempotent.
-		expect(gw.handle(cross)).toBe(true);
-		expect(accepted.size).toBe(1);
-		expect(submit).toHaveBeenCalledTimes(2);
-		expect(complete).toHaveBeenCalledTimes(2);
-	});
-
-	it("does not create or settle a receipt for ordinary same-channel chat", () => {
-		const begin = vi.fn();
-		const complete = vi.fn();
-		const submit = vi.fn(() => ({ accepted: true, entryId: "entry-chat" }));
-		const gw = new CodexDiscordGateway({
-			source: new FakeSource(),
-			router: { submit },
-			botUserId: "self-bot",
-			channelIds: ["chat-1"],
-			externalReceiptSaga: { begin, complete },
-		});
-
-		expect(gw.handle(msg({ id: "chat-plain", channelId: "chat-1" }))).toBe(
-			true,
-		);
-		expect(submit).toHaveBeenCalledTimes(1);
-		expect(begin).not.toHaveBeenCalled();
-		expect(complete).not.toHaveBeenCalled();
-	});
-
-	it("attaches replyChannelId from resolveReplyChannelId to the submitted input", async () => {
+	it("attaches replyChannelId from resolveReplyChannelId to the submitted input", () => {
 		const { source, gw, router } = make({
 			// route replies for the cross-dept channel back to it; chat → undefined
 			resolveReplyChannelId: (m: DiscordInboundMessage) =>
 				m.channelId === "round-1" ? m.channelId : undefined,
 			channelIds: ["chat-1", "round-1"],
 		});
-		await gw.start();
+		void gw.start();
 		source.emit(msg({ id: "x1", channelId: "round-1", content: "yo" }));
 		source.emit(msg({ id: "x2", channelId: "chat-1", content: "hi" }));
 		expect(router.submits[0]).toMatchObject({
@@ -213,9 +108,9 @@ describe("CodexDiscordGateway — reply routing (FLY-267 回)", () => {
 		expect(router.submits[1].replyChannelId).toBeUndefined(); // chat → default
 	});
 
-	it("no resolveReplyChannelId → replyChannelId always undefined (byte-compat)", async () => {
+	it("no resolveReplyChannelId → replyChannelId always undefined (byte-compat)", () => {
 		const { source, gw, router } = make();
-		await gw.start();
+		void gw.start();
 		source.emit(msg({ id: "y1", content: "hi" }));
 		expect(router.submits[0].replyChannelId).toBeUndefined();
 	});
@@ -230,82 +125,6 @@ describe("CodexDiscordGateway — forwarding + filters", () => {
 		expect(router.submits).toEqual([
 			{ idempotencyKey: "m9", source: "discord", payload: "do the thing" },
 		]);
-	});
-
-	it("lets the mailbox strategy handle, retry, or fall through to legacy", () => {
-		const handled = make({ durableAccept: () => "handled" });
-		expect(handled.gw.handle(msg())).toBe(true);
-		expect(handled.router.submits).toHaveLength(0);
-		const retry = make({ durableAccept: () => "retry" });
-		expect(retry.gw.handle(msg())).toBe(false);
-		expect(retry.router.submits).toHaveLength(0);
-		const legacy = make({ durableAccept: () => "legacy" });
-		expect(legacy.gw.handle(msg())).toBe(true);
-		expect(legacy.router.submits).toHaveLength(1);
-	});
-
-	it("prefixes the original payload with the message instant in founder local time", () => {
-		const { gw, router } = make({
-			founderTimezone: () => "America/Los_Angeles",
-		});
-
-		gw.handle(
-			msg({
-				id: "timestamped",
-				timestampMs: new Date("2026-07-17T02:23:05.000Z").getTime(),
-				content: "do the thing",
-			}),
-		);
-
-		expect(router.submits[0].payload).toBe(
-			"[sent 2026-07-16 19:23 PDT — founder 当前时区渲染]\ndo the thing",
-		);
-	});
-
-	it("uses the old sent instant for a downtime replay, not processing time", () => {
-		const { gw, router } = make({ founderTimezone: () => "Asia/Tokyo" });
-
-		gw.handle(
-			msg({
-				id: "backlog",
-				timestampMs: new Date("2026-07-16T02:23:05.000Z").getTime(),
-				content: "sent while down",
-			}),
-		);
-
-		expect(
-			router.submits[0].payload.startsWith(
-				"[sent 2026-07-16 11:23 GMT+9 — founder 当前时区渲染]",
-			),
-		).toBe(true);
-	});
-
-	it("re-renders an old instant when the current founder timezone changes", () => {
-		let timezone = "America/Los_Angeles";
-		const { gw, router } = make({ founderTimezone: () => timezone });
-		const old = msg({
-			id: "old-1",
-			timestampMs: new Date("2026-07-17T02:23:05.000Z").getTime(),
-		});
-
-		gw.handle(old);
-		timezone = "Asia/Tokyo";
-		gw.handle({ ...old, id: "old-2" });
-
-		expect(router.submits[0].payload).toContain("2026-07-16 19:23 PDT");
-		expect(router.submits[1].payload).toContain("2026-07-17 11:23 GMT+9");
-	});
-
-	it("falls back to the snowflake instant when timestampMs is absent", () => {
-		const { gw, router } = make({
-			founderTimezone: () => "America/Los_Angeles",
-		});
-
-		gw.handle(
-			msg({ id: snowflakeAt("2026-07-17T02:23:05.000Z"), content: "hi" }),
-		);
-
-		expect(router.submits[0].payload).toContain("2026-07-16 19:23 PDT");
 	});
 
 	it("ECHO IMMUNITY: drops the Lead's own bot messages (FLY-220) — safe to advance", () => {
@@ -399,25 +218,14 @@ describe("CodexDiscordGateway — robustness", () => {
 });
 
 describe("CodexDiscordGateway — lifecycle", () => {
-	it("asserts the authenticated bot before wiring the handler or starting the source", async () => {
+	it("start wires the handler + starts the source; emitted messages route", async () => {
 		const { gw, source, router } = make();
 		await gw.start();
-		expect(source.authenticatedBotUserIds).toEqual(["self-bot"]);
 		expect(source.started).toBe(true);
 		source.emit(msg({ id: "live", content: "via emit" }));
 		expect(router.submits).toEqual([
 			{ idempotencyKey: "live", source: "discord", payload: "via emit" },
 		]);
-	});
-
-	it("fails closed before handler registration and polling on bot identity mismatch", async () => {
-		const { gw, source } = make();
-		source.authError = new Error("identity_bot_login_mismatch");
-
-		await expect(gw.start()).rejects.toThrow("identity_bot_login_mismatch");
-		expect(source.authenticatedBotUserIds).toEqual(["self-bot"]);
-		expect(source.handler).toBeUndefined();
-		expect(source.started).toBe(false);
 	});
 
 	it("start is idempotent; stop stops the source", async () => {

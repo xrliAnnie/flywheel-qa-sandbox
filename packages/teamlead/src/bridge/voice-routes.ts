@@ -29,7 +29,6 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import { deriveCanonicalFounderId } from "./approval-signal/canonical-founder-id.js";
-import type { GateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import {
 	type GateMessageBinding,
 	selectCurrentBinding,
@@ -86,12 +85,7 @@ export interface VoiceStoreLike {
 export interface VoiceProjectLike {
 	projectName: string;
 	generalChannel?: string;
-	leads: Array<{
-		agentId: string;
-		chatChannel: string;
-		botUserId?: string;
-		botToken?: string;
-	}>;
+	leads: Array<{ agentId: string; chatChannel: string; botToken?: string }>;
 }
 
 export interface VoiceRouterDeps {
@@ -110,7 +104,6 @@ export interface VoiceRouterDeps {
 	onResponseWritten?: WriteGateResponseArgs["onResponseWritten"];
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
 	cardAuthority?: WriteGateResponseArgs["cardAuthority"];
-	gateAuthorityView?: GateAuthorityView;
 	/**
 	 * FLY-1041 Chunk 5: shared founder-approval hold guard (plugin injects
 	 * `founderApprovalHoldGuard` over the real StateStore). While held, a
@@ -151,7 +144,6 @@ type ResolvedBinding = GateMessageBinding & { session: VoiceSessionLike };
 function resolveBindingByMessageId(
 	store: VoiceStoreLike,
 	gateMessageId: string,
-	gateAuthorityView?: GateAuthorityView,
 ): ResolvedBinding | null {
 	const events = store.getEventsByType(BINDING_EVENT_TYPE);
 	const all = events
@@ -161,33 +153,6 @@ function resolveBindingByMessageId(
 	const current: ResolvedBinding[] = [];
 	for (const b of candidates) {
 		const session = store.getSession(b.executionId);
-		const engineAuthority = gateAuthorityView?.resolve(
-			b.questionId,
-			b.executionId,
-		);
-		if (engineAuthority) {
-			if (
-				engineAuthority.state !== "awaiting_review" ||
-				engineAuthority.cardMessageId !== gateMessageId ||
-				engineAuthority.headSha !== b.prHeadSha
-			) {
-				continue;
-			}
-			current.push({
-				...b,
-				session: {
-					...session,
-					status: "awaiting_review",
-					review_question_id: engineAuthority.questionId,
-					pr_head_sha: engineAuthority.headSha,
-					pr_number: engineAuthority.prNumber,
-					project_name: engineAuthority.projectName,
-					issue_id: engineAuthority.issueId,
-					issue_identifier: engineAuthority.issueIdentifier,
-				},
-			});
-			continue;
-		}
 		if (session?.status !== "awaiting_review") continue;
 		if (session.review_question_id !== b.questionId) continue;
 		if (session.pr_head_sha !== b.prHeadSha) continue;
@@ -246,7 +211,8 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 			if (project.generalChannel) scopeChannelIds.add(project.generalChannel);
 			for (const lead of project.leads) {
 				scopeChannelIds.add(lead.chatChannel);
-				if (lead.botUserId) leadBotIds.add(lead.botUserId);
+				const id = botUserIdFromToken(lead.botToken);
+				if (id) leadBotIds.add(id);
 			}
 		}
 		for (const threadId of deps.store.getAllChatThreadIds()) {
@@ -301,11 +267,7 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 			res.status(400).json({ error: "messageId query param required" });
 			return;
 		}
-		const binding = resolveBindingByMessageId(
-			deps.store,
-			messageId,
-			deps.gateAuthorityView,
-		);
+		const binding = resolveBindingByMessageId(deps.store, messageId);
 		if (!binding) {
 			res.json({ bound: false });
 			return;
@@ -335,6 +297,12 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 				res.status(403).json({ error: "disabled_by_kill_switch" });
 				return;
 			}
+			// ② the master founder-auto-approve switch outranks the voice source.
+			if (env().FLYWHEEL_FOUNDER_AUTO_APPROVE === "0") {
+				res.status(403).json({ error: "founder_auto_approve_disabled" });
+				return;
+			}
+
 			const body = (req.body ?? {}) as {
 				gateMessageId?: string;
 				questionId?: string;
@@ -371,11 +339,7 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 
 			// ③ binding cross-check: gateMessageId ↔ questionId ↔ prHeadSha must
 			// mutually verify against the ONE current persisted binding.
-			const binding = resolveBindingByMessageId(
-				deps.store,
-				body.gateMessageId,
-				deps.gateAuthorityView,
-			);
+			const binding = resolveBindingByMessageId(deps.store, body.gateMessageId);
 			if (
 				!binding ||
 				binding.questionId !== body.questionId ||
@@ -491,7 +455,6 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 				executionId: binding.executionId,
 				source: "voice",
 				cardAuthority: deps.cardAuthority,
-				gateAuthorityView: deps.gateAuthorityView,
 				actor: canonicalFounderId,
 				founderId: canonicalFounderId,
 				answer: '{"approved":true}',

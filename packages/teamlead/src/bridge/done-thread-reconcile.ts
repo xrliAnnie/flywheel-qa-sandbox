@@ -61,7 +61,6 @@ import {
  */
 export const RECONCILE_FINALIZABLE_STATUSES = [
 	"running",
-	"ship_parked",
 	"awaiting_review",
 	"approved_to_ship",
 	"design_done",
@@ -81,15 +80,34 @@ export interface DoneThreadReconcileConfig {
 	runDeadlineMs: number;
 }
 
+function parsePositiveInt(
+	raw: string | undefined,
+	fallback: number,
+	opts: { allowZero?: boolean } = {},
+): number {
+	if (raw === undefined || raw.trim() === "") return fallback;
+	const n = Number(raw);
+	if (!Number.isFinite(n) || !Number.isInteger(n)) return fallback;
+	if (n < 0) return fallback;
+	if (n === 0 && !opts.allowZero) return fallback;
+	return n;
+}
+
 export function resolveDoneThreadReconcileConfig(
 	env: NodeJS.ProcessEnv = process.env,
 ): DoneThreadReconcileConfig {
 	return {
 		enabled: env.FLYWHEEL_DONE_THREAD_RECONCILE !== "0",
-		// FLY-2101: founder 2026-08-27 v4 fixed the former runtime values.
-		intervalMin: 360,
-		dryRun: false,
-		maxArchivesPerRun: 25,
+		intervalMin: parsePositiveInt(
+			env.FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN,
+			360,
+			{ allowZero: true },
+		),
+		dryRun: env.FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN === "1",
+		maxArchivesPerRun: parsePositiveInt(
+			env.FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN,
+			25,
+		),
 		maxCandidatesPerRun: 200,
 		runDeadlineMs: 120_000,
 	};
@@ -168,21 +186,8 @@ export interface DoneThreadReconcileDeps {
 		freshAuthority?: () => Promise<"authorized" | "reopened" | "unknown">;
 	}) => Promise<{ nodes: unknown[]; outcome: string } | undefined>;
 	/**
-	 * FLY-1448 E1: fresh Linear Done/Canceled is independent authority for
-	 * gate retirement, including running sessions and issues without a ship gate.
-	 * The implementation must call `revalidate` before every irreversible mutation;
-	 * reopen/unknown wins.
-	 */
-	retireIssueGates?: (input: {
-		projectName: string;
-		canonicalIssueId: string;
-		issueAliases: string[];
-		authorityCredential: string;
-		revalidate: () => Promise<"authorized" | "reopened" | "unknown">;
-	}) => Promise<void>;
-	/**
 	 * FLY-1185 dual-switch contract (R9#4): the NEW mutators (closeout) hang
-	 * off the autoclean integration seam; the ORIGINAL FLY-1165 husk/archive
+	 * off FLYWHEEL_WORKTREE_AUTOCLEAN; the ORIGINAL FLY-1165 husk/archive
 	 * behavior stays under FLYWHEEL_DONE_THREAD_RECONCILE — neither switch
 	 * crosses into the other's territory. Injectable for the byte-compat
 	 * integration tests.
@@ -201,7 +206,6 @@ export interface DoneThreadReconcileResult {
 	skippedNoToken: number;
 	skippedNoProject: number;
 	skippedAlreadyArchived: number;
-	skippedReopenProtected: number;
 	failed: number;
 	capped: boolean;
 	deadlineHit: boolean;
@@ -261,7 +265,6 @@ export async function reconcileDoneThreads(
 		skippedNoToken: 0,
 		skippedNoProject: 0,
 		skippedAlreadyArchived: 0,
-		skippedReopenProtected: 0,
 		failed: 0,
 		capped: false,
 		deadlineHit: false,
@@ -447,25 +450,6 @@ export async function reconcileDoneThreads(
 					// reconcile — this is the durable-migration recording pass.
 					result.skippedNotDone++;
 					continue;
-				}
-				if (obsProject && deps.retireIssueGates && !dryRun) {
-					try {
-						await deps.retireIssueGates({
-							projectName: obsProject,
-							canonicalIssueId: linear.id,
-							issueAliases: aliasKeys,
-							authorityCredential: `${linear.id}:${linear.updatedAt ?? ""}`,
-							revalidate: makeFreshAuthority(
-								() => lookupIssue(linearApiKey, thread.issue_id),
-								now,
-							),
-						});
-					} catch (err) {
-						result.failed++;
-						log(
-							`${thread.issue_id}: issue gate retirement failed: ${err instanceof Error ? err.message : String(err)}`,
-						);
-					}
 				}
 				const newMutatorsOn = deps.newMutatorsEnabled ?? true;
 				const runCloseout =
@@ -692,11 +676,6 @@ export async function reconcileDoneThreads(
 					);
 					if (sinkResult.reason === "already_archived") {
 						result.skippedAlreadyArchived++;
-					} else if (
-						sinkResult.reason === "founder_reopened" ||
-						sinkResult.reason === "in_active_use"
-					) {
-						result.skippedReopenProtected++;
 					} else if (sinkResult.archived) {
 						result.archived++;
 					} else {
@@ -840,23 +819,6 @@ export async function reconcileDoneThreads(
 						linearUpdatedAt: linear.updatedAt ?? "",
 					});
 					if (!DONE_STATE_TYPES.has(linear.stateType)) continue;
-					const residueAliases = [
-						...new Set(
-							[issueKey, linear.id, linear.identifier].filter(Boolean),
-						),
-					];
-					if (deps.retireIssueGates && !dryRun) {
-						await deps.retireIssueGates({
-							projectName: residueProject,
-							canonicalIssueId: linear.id,
-							issueAliases: residueAliases,
-							authorityCredential: `${linear.id}:${linear.updatedAt ?? ""}`,
-							revalidate: makeFreshAuthority(
-								() => lookupIssue(linearApiKey, issueKey),
-								now,
-							),
-						});
-					}
 					const authorized =
 						obs.outcome !== "conflict" && obs.terminalAuthorized;
 					const canRun =
@@ -871,7 +833,11 @@ export async function reconcileDoneThreads(
 						projectName: residueProject,
 						disposition:
 							linear.stateType === "canceled" ? "canceled" : "shipped",
-						extraAliases: residueAliases,
+						extraAliases: [
+							...new Set(
+								[issueKey, linear.id, linear.identifier].filter(Boolean),
+							),
+						],
 						budget: closeoutBudget,
 						freshAuthority: makeFreshAuthority(
 							() => lookupIssue(linearApiKey, issueKey),
@@ -889,7 +855,7 @@ export async function reconcileDoneThreads(
 		}
 
 		log(
-			`pass done: scanned=${result.scanned} archived=${result.archived} huskFinalized=${result.huskFinalized} huskFinalizeFailed=${result.huskFinalizeFailed} skippedActive=${result.skippedActive} skippedNotDone=${result.skippedNotDone} skippedUnresolved=${result.skippedUnresolved} skippedNoToken=${result.skippedNoToken} skippedNoProject=${result.skippedNoProject} skippedAlreadyArchived=${result.skippedAlreadyArchived} skippedReopenProtected=${result.skippedReopenProtected} failed=${result.failed} dryRunWouldArchive=${result.dryRunWouldArchive} capped=${result.capped} deadlineHit=${result.deadlineHit} aborted=${result.aborted}`,
+			`pass done: scanned=${result.scanned} archived=${result.archived} huskFinalized=${result.huskFinalized} huskFinalizeFailed=${result.huskFinalizeFailed} skippedActive=${result.skippedActive} skippedNotDone=${result.skippedNotDone} skippedUnresolved=${result.skippedUnresolved} skippedNoToken=${result.skippedNoToken} skippedNoProject=${result.skippedNoProject} skippedAlreadyArchived=${result.skippedAlreadyArchived} failed=${result.failed} dryRunWouldArchive=${result.dryRunWouldArchive} capped=${result.capped} deadlineHit=${result.deadlineHit} aborted=${result.aborted}`,
 		);
 	} catch (err) {
 		// Never let the sweep break its caller (boot chain / scheduler tick).
@@ -911,110 +877,33 @@ export interface DoneThreadReconcileSchedulerOpts {
 	/** Heartbeat tick; each tick re-reads config and checks the interval. */
 	tickMs?: number;
 	log?: (msg: string) => void;
-	/**
-	 * FLY-1282 Part C: per-issue archive-only targeted check (composition wraps
-	 * `runTargetedArchiveCheck` + outcome mapping). `done:true` dequeues;
-	 * `done:false` is retried with capped backoff + fair tail rotation. Absent
-	 * → the scheduler is byte-identical to pre-FLY-1282 ({enqueue} is a loud
-	 * no-op).
-	 */
-	runTargeted?: (issueId: string) => Promise<{ done: boolean; note?: string }>;
-	now?: () => number;
 }
-
-/** FLY-1282 Part C queue tuning (per Codex R11 #4 / R12 #4 / R13 #2). */
-const TARGETED_QUEUE_CAP = 64;
-const TARGETED_BACKOFF_BASE_MS = 60_000;
-const TARGETED_BACKOFF_CAP_MS = 30 * 60_000;
-const TARGETED_SLOW_AFTER_MS = 24 * 3_600_000;
-const TARGETED_SLOW_INTERVAL_MS = 3_600_000;
 
 export function startDoneThreadReconcileScheduler(
 	opts: DoneThreadReconcileSchedulerOpts,
-): { enqueue: (issueId: string) => void; stop: () => Promise<void> } {
+): { stop: () => Promise<void> } {
 	const resolveConfig =
 		opts.resolveConfig ?? (() => resolveDoneThreadReconcileConfig());
 	const bootDelayMs = opts.bootDelayMs ?? 15_000;
 	const tickMs = opts.tickMs ?? 60_000;
-	const now = opts.now ?? (() => Date.now());
 	const log =
 		opts.log ??
 		((msg: string) => console.log(`[done-thread-reconcile] ${msg}`));
 
 	let stopped = false;
 	let inFlight: Promise<unknown> | null = null;
-	let lastRunAt = now();
-
-	// ── FLY-1282 Part C: in-memory targeted queue (scheduler-owned; shares
-	// the SAME inFlight single-flight as global passes — never concurrent). ──
-	interface TargetedItem {
-		issueId: string;
-		attempts: number;
-		enqueuedAt: number;
-		nextEligibleAt: number;
-	}
-	const targetedQueue: TargetedItem[] = [];
-	// Code R1 #8: dedupe must cover the item CURRENTLY in flight too — a
-	// completion re-fired while the targeted check is suspended must not mint
-	// a second logical item (double backoff entries, wasted capacity).
-	const targetedMembers = new Set<string>();
+	let lastRunAt = Date.now();
 
 	const shouldAbort = () => stopped;
 
 	const startRun = () => {
 		if (stopped || inFlight) return;
-		lastRunAt = now();
+		lastRunAt = Date.now();
 		inFlight = opts
 			.runOnce(shouldAbort)
 			.catch((err) =>
 				log(`pass failed: ${err instanceof Error ? err.message : String(err)}`),
 			)
-			.finally(() => {
-				inFlight = null;
-			});
-	};
-
-	const startTargeted = (item: TargetedItem) => {
-		const runTargeted = opts.runTargeted;
-		if (!runTargeted || stopped || inFlight) return;
-		inFlight = runTargeted(item.issueId)
-			.then((outcome) => {
-				if (outcome.done) {
-					targetedMembers.delete(item.issueId);
-					return;
-				}
-				// Retryable: capped backoff, fair tail rotation; after 24h drop
-				// to low-frequency-forever (never silently dropped — R13 #2).
-				item.attempts += 1;
-				const age = now() - item.enqueuedAt;
-				const backoff =
-					age > TARGETED_SLOW_AFTER_MS
-						? TARGETED_SLOW_INTERVAL_MS
-						: Math.min(
-								TARGETED_BACKOFF_BASE_MS * 2 ** (item.attempts - 1),
-								TARGETED_BACKOFF_CAP_MS,
-							);
-				item.nextEligibleAt = now() + backoff;
-				if (age > TARGETED_SLOW_AFTER_MS) {
-					log(
-						`targeted archive for ${item.issueId} still pending after ${Math.round(age / 3_600_000)}h (${outcome.note ?? "retryable"}) — low-frequency retry continues`,
-					);
-				}
-				targetedQueue.push(item); // tail — later items are not starved
-			})
-			.catch((err) => {
-				item.attempts += 1;
-				item.nextEligibleAt =
-					now() +
-					Math.min(
-						TARGETED_BACKOFF_BASE_MS * 2 ** (item.attempts - 1),
-						TARGETED_BACKOFF_CAP_MS,
-					);
-				targetedQueue.push(item);
-				log(
-					`targeted archive for ${item.issueId} threw: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			})
 			.finally(() => {
 				inFlight = null;
 			});
@@ -1030,64 +919,21 @@ export function startDoneThreadReconcileScheduler(
 	const tickTimer = setInterval(() => {
 		if (stopped) return;
 		const cfg = resolveConfig();
-		// Disabled PAUSES consumption (items retained; resumes on re-enable
-		// without restart — R12 #4; construction stays unconditional).
 		if (!cfg.enabled) return;
-		if (inFlight) return; // single-flight (shared with targeted)
-		// Targeted items first (the minutes-not-hours path); one per tick.
-		if (opts.runTargeted) {
-			const idx = targetedQueue.findIndex((i) => i.nextEligibleAt <= now());
-			if (idx >= 0) {
-				const item = targetedQueue.splice(idx, 1)[0];
-				if (item) {
-					startTargeted(item);
-					return;
-				}
-			}
-		}
-		if (cfg.intervalMin === 0) return; // boot-only mode (global pass)
-		if (now() - lastRunAt >= cfg.intervalMin * 60_000) startRun();
+		if (cfg.intervalMin === 0) return; // boot-only mode
+		if (inFlight) return; // single-flight
+		if (Date.now() - lastRunAt >= cfg.intervalMin * 60_000) startRun();
 	}, tickMs);
 	tickTimer.unref?.();
 
 	return {
-		/**
-		 * FLY-1282 Part C: enqueue an issue for the archive-only targeted
-		 * check. Deduped; bounded (overflow REFUSES + loud log — the periodic
-		 * sweep is the backstop when enabled; boot-only + >cap burst is a
-		 * documented accepted gap, never a fake backstop).
-		 */
-		enqueue: (issueId: string) => {
-			if (!opts.runTargeted) {
-				log(`enqueue(${issueId}) ignored — no targeted runner wired`);
-				return;
-			}
-			if (stopped) return;
-			if (targetedMembers.has(issueId)) return; // queued OR in flight
-			if (targetedQueue.length >= TARGETED_QUEUE_CAP) {
-				log(
-					`targeted queue full (${TARGETED_QUEUE_CAP}) — REFUSING enqueue for ${issueId}; periodic sweep is the backstop when enabled`,
-				);
-				return;
-			}
-			targetedMembers.add(issueId);
-			targetedQueue.push({
-				issueId,
-				attempts: 0,
-				enqueuedAt: now(),
-				nextEligibleAt: now(),
-			});
-		},
 		// Cooperative drain: new runs stop immediately; an in-flight pass exits
 		// between candidates via shouldAbort and is awaited before returning —
-		// callers MUST stop() before store.close(). Queued targeted items are
-		// dropped on stop (shutdown drain).
+		// callers MUST stop() before store.close().
 		stop: async () => {
 			stopped = true;
 			clearTimeout(bootTimer);
 			clearInterval(tickTimer);
-			targetedQueue.length = 0;
-			targetedMembers.clear();
 			if (inFlight) {
 				try {
 					await inFlight;

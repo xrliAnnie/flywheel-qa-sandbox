@@ -18,14 +18,14 @@ import {
 
 const SAMPLE = [
 	"# flywheel env",
-	"FLYWHEEL_LOOP_PROFILER=0",
+	"FLYWHEEL_AUTO_QA=0",
 	"CASS_BOT_TOKEN=abc123",
 	"",
 ].join("\n");
 
 describe("readEnvValue", () => {
 	it("reads a simple KEY=value", () => {
-		expect(readEnvValue(SAMPLE, "FLYWHEEL_LOOP_PROFILER")).toBe("0");
+		expect(readEnvValue(SAMPLE, "FLYWHEEL_AUTO_QA")).toBe("0");
 		expect(readEnvValue(SAMPLE, "CASS_BOT_TOKEN")).toBe("abc123");
 	});
 	it("undefined when absent", () => {
@@ -49,12 +49,12 @@ describe("computeEnvSha", () => {
 
 describe("applyEnvChange", () => {
 	it("replaces an existing simple line in place, preserving other bytes", () => {
-		const r = applyEnvChange(SAMPLE, "FLYWHEEL_LOOP_PROFILER", "1");
+		const r = applyEnvChange(SAMPLE, "FLYWHEEL_AUTO_QA", "1");
 		expect(r.ok).toBe(true);
-		expect(r.next).toContain("FLYWHEEL_LOOP_PROFILER=1");
+		expect(r.next).toContain("FLYWHEEL_AUTO_QA=1");
 		expect(r.next).toContain("# flywheel env");
 		expect(r.next).toContain("CASS_BOT_TOKEN=abc123");
-		expect(readEnvValue(r.next as string, "FLYWHEEL_LOOP_PROFILER")).toBe("1");
+		expect(readEnvValue(r.next as string, "FLYWHEEL_AUTO_QA")).toBe("1");
 	});
 
 	it("appends an absent key (keeping the trailing blank line)", () => {
@@ -65,11 +65,9 @@ describe("applyEnvChange", () => {
 	});
 
 	it("deletes an existing key (null)", () => {
-		const r = applyEnvChange(SAMPLE, "FLYWHEEL_LOOP_PROFILER", null);
+		const r = applyEnvChange(SAMPLE, "FLYWHEEL_AUTO_QA", null);
 		expect(r.ok).toBe(true);
-		expect(
-			readEnvValue(r.next as string, "FLYWHEEL_LOOP_PROFILER"),
-		).toBeUndefined();
+		expect(readEnvValue(r.next as string, "FLYWHEEL_AUTO_QA")).toBeUndefined();
 		expect(r.next).toContain("CASS_BOT_TOKEN=abc123");
 	});
 

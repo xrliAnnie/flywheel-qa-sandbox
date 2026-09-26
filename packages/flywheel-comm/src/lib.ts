@@ -28,30 +28,11 @@ export { search } from "./commands/search.js";
 export type { SessionsArgs } from "./commands/sessions.js";
 export { sessions } from "./commands/sessions.js";
 export type {
-	GateSupersedeRow,
-	PatrolJudgmentFingerprintRead,
-	PatrolTurnJudgmentSnapshot,
-	PatrolTurnRow,
-	PatrolTurnSnapshot,
-	PatrolTurnWaitRow,
-	PatrolTurnWakeRow,
 	PhaseWakeInput,
-	RunnerDoorbellWakeResult,
 	RunnerPhaseWake,
 	RunnerShutdownControl,
-	TurnWakeOutboxRow,
 } from "./db.js";
-export {
-	CommDB,
-	patrolJudgmentFingerprint,
-} from "./db.js";
-export type { IngestDiscordChatArgs } from "./discord-chat-ingest.js";
-export {
-	discordBatchPartitionKey,
-	ingestDiscordChat,
-	parseDiscordChatRoute,
-	renderDiscordChatContent,
-} from "./discord-chat-ingest.js";
+export { CommDB } from "./db.js";
 export type {
 	AuditDecision,
 	AuditDecisionSource,
@@ -61,24 +42,6 @@ export {
 	FOUNDER_CONSENT_AUDIT_SCHEMA,
 	FounderConsentAuditStore,
 } from "./founder-consent-audit.js";
-export type { LeadInboxNudgeArgs } from "./lead-inbox-nudge.js";
-export { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
-export type {
-	DiscordLaneVerdict,
-	EnqueueMailboxInput,
-	EnqueueMailboxResult,
-	MailboxLoopHeartbeat,
-	MailboxMessageClass,
-	MailboxPriority,
-	MailboxRecipientKind,
-	MailboxRow,
-	MailboxState,
-} from "./mailbox-queue.js";
-export {
-	assertUtcIsoTimestamp,
-	CHAT_DELIVERY_UNCONFIRMED_REASON,
-	MailboxQueue,
-} from "./mailbox-queue.js";
 export type {
 	ArtifactFile,
 	SelectionResult,
@@ -94,7 +57,6 @@ export type {
 	CheckResult,
 	Message,
 	PendingQuestion,
-	ResponseWriteResult,
 	Session,
 } from "./types.js";
 export { buildSafeRegex, validateProjectName } from "./validate.js";

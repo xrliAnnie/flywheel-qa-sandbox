@@ -128,31 +128,6 @@ export async function wireAssistantMode(
 	}
 	const bridgeUrl =
 		env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL ?? "http://127.0.0.1:9876";
-	// FLY-1353 QA presence seam (AUTOSTART philosophy): headless rigs have no
-	// human in the VC, so founderPresent() can never turn true. This narrow
-	// opt-in makes presence read as satisfied. Unset (or any value !== "1")
-	// keeps today's behavior. NEVER set in production.
-	const qaPresenceOverride = env.FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE === "1";
-	if (qaPresenceOverride) {
-		let stagedBridge = false;
-		try {
-			const url = new URL(bridgeUrl);
-			stagedBridge =
-				url.protocol === "http:" &&
-				["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname) &&
-				url.port === "9877";
-		} catch {
-			stagedBridge = false;
-		}
-		if (!stagedBridge) {
-			throw new Error(
-				"voice-bridge: FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE=1 only allowed against the loopback staged Bridge (http://127.0.0.1:9877) — QA-only seam",
-			);
-		}
-		log(
-			"QA presence override armed — founderPresent() forced true (FLY-1353; QA-only, never production)",
-		);
-	}
 	if (!opts.createConversation && !env.GEMINI_API_KEY) {
 		throw new Error(
 			"voice-bridge: GEMINI_API_KEY unset — /gemini opens a Gemini Live session per meeting",
@@ -384,12 +359,6 @@ export async function wireAssistantMode(
 						deferredPlayer.clear();
 					},
 					founderPresent: () => {
-						if (qaPresenceOverride) {
-							log(
-								"[presence] founderPresent()=true (QA OVERRIDE — humanCount ignored)",
-							);
-							return true;
-						}
 						const present = humanCount > 0;
 						log(
 							`[presence] founderPresent()=${present} (humanCount=${humanCount})`,
@@ -629,17 +598,14 @@ export function assistantTranscriptPath(
 
 // ---- Bridge Linear proxy client ----
 
-export interface LinearClientOpts {
+interface LinearClientOpts {
 	bridgeUrl: string;
 	apiToken: string;
 	projectName: string;
 	fetchImpl: typeof fetch;
 }
 
-/** the Bridge Linear proxy client — shared by /gemini and /eleven (FLY-1160).
- * projectName-scoped on EVERY call; landing mutations carry the shutdown
- * deadline signal; `comments` is the §3.3 read-back for reconciliation. */
-export function makeLinearClient(o: LinearClientOpts) {
+function makeLinearClient(o: LinearClientOpts) {
 	const call = async (
 		method: "GET" | "POST" | "PATCH",
 		path: string,
@@ -709,21 +675,6 @@ export function makeLinearClient(o: LinearClientOpts) {
 				undefined,
 				opts?.signal,
 			);
-		},
-		/** FLY-1160 §3.3 读口: paged comments of one issue for landing
-		 * reconciliation (which stage markers already landed + issue state). */
-		comments: async (issueId: string, opts?: { after?: string }) => {
-			const data = (await call("GET", "/api/linear/comments", undefined, {
-				issueId,
-				...(opts?.after ? { after: opts.after } : {}),
-			})) as {
-				comments: { id: string; body: string }[];
-				hasNextPage: boolean;
-				endCursor: string | null;
-				state?: string;
-				stateType?: string;
-			};
-			return data;
 		},
 	};
 }

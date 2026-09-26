@@ -11,20 +11,16 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
-	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { parse as parseToml } from "smol-toml";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	assertCodexSourceIdentity,
 	codexHomeDir,
 	codexHomesRoot,
-	discoverAccountPool as discoverAccountPoolProduction,
-	provisionCodexHome as provisionCodexHomeProduction,
+	discoverAccountPool,
+	provisionCodexHome,
 	rawCodexBin,
 	removeCodexHome,
 	renderCodexHomeConfig,
@@ -46,84 +42,16 @@ const TOKEN = "gho_AbC123_def-456";
 
 let tmp: string;
 let env: NodeJS.ProcessEnv;
-let registryPath: string;
-let ledgerRoot: string;
-
-function jwt(email: string, accountId: string, plan = "pro"): string {
-	return [
-		Buffer.from('{"alg":"none"}').toString("base64url"),
-		Buffer.from(
-			JSON.stringify({
-				email,
-				"https://api.openai.com/auth": {
-					chatgpt_account_id: accountId,
-					chatgpt_plan_type: plan,
-				},
-			}),
-		).toString("base64url"),
-		"signature",
-	].join(".");
-}
-
-function testAuth(
-	email = "personal@example.test",
-	accountId = "acct-personal",
-) {
-	return JSON.stringify({
-		tokens: {
-			id_token: jwt(email, accountId),
-			access_token: "test-access-canary",
-			refresh_token: "test-refresh-canary",
-		},
-	});
-}
-
-function provisionCodexHome(
-	opts: Parameters<typeof provisionCodexHomeProduction>[0],
-): string {
-	return provisionCodexHomeProduction({
-		...opts,
-		registryPath,
-		ledgerRoot,
-	});
-}
-
-function discoverAccountPool(envArg: NodeJS.ProcessEnv = env): string[] {
-	return discoverAccountPoolProduction(envArg, registryPath);
-}
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "fly123-home-"));
 	const src = join(tmp, "dotcodex");
 	mkdirSync(join(src, "profiles", "personal"), { recursive: true });
 	mkdirSync(join(src, "profiles", "business"), { recursive: true });
-	registryPath = join(tmp, "codex-account-registry.json");
-	ledgerRoot = join(tmp, "codex-account-ledger");
 	writeFileSync(
-		registryPath,
-		JSON.stringify({
-			version: 1,
-			primary: "personal",
-			profiles: [
-				{
-					name: "school",
-					email: "school@example.test",
-					role: "manual_backup",
-				},
-				{
-					name: "personal",
-					email: "personal@example.test",
-					role: "primary",
-				},
-				{
-					name: "business",
-					email: "business@example.test",
-					role: "manual_backup",
-				},
-			],
-		}),
+		join(src, "auth.json"),
+		'{"OPENAI_API_KEY":null,"tokens":{"x":1}}',
 	);
-	writeFileSync(join(src, "auth.json"), testAuth());
 	writeFileSync(join(src, "config.toml"), GLOBAL_CONFIG);
 	env = {
 		FLYWHEEL_CODEX_HOMES_ROOT: join(tmp, "homes"),
@@ -154,7 +82,7 @@ describe("path resolution (WS-E seam)", () => {
 });
 
 describe("discoverAccountPool (dynamic, AC6)", () => {
-	it("lists only existing canonical profile dirs sorted", () => {
+	it("lists profile dirs sorted, no hardcoded count", () => {
 		expect(discoverAccountPool(env)).toEqual(["business", "personal"]);
 	});
 
@@ -171,12 +99,6 @@ describe("discoverAccountPool (dynamic, AC6)", () => {
 		expect(
 			discoverAccountPool({ FLYWHEEL_CODEX_PROFILES_DIR: join(tmp, "nope") }),
 		).toEqual([]);
-	});
-
-	it("excludes zombie and unknown profile directories", () => {
-		mkdirSync(join(tmp, "dotcodex", "profiles", "personal1"));
-		mkdirSync(join(tmp, "dotcodex", "profiles", "mystery"));
-		expect(discoverAccountPool(env)).toEqual(["business", "personal"]);
 	});
 });
 
@@ -209,17 +131,17 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 		expect(scrubbed).toContain('model = "gpt-5-codex"');
 	});
 
-	it("FLY-1604 fails loudly ONLY on unmergeable shell_environment_policy shapes — root dotted key or inline table (rewrite of R1 #5)", () => {
-		// Root-level dotted/inline definitions must sit BEFORE any [table]
-		// header — appended after one they would be relative keys inside that
-		// table (exactly the false-positive class the root-aware merge fixed).
+	it("fails loudly if base declares the shell_environment_policy namespace — table, dotted-key, inline, or spaced (R1 #5)", () => {
 		const variants = [
-			`shell_environment_policy.set.FOO = "bar"\n${GLOBAL_CONFIG}`,
-			`shell_environment_policy = { set = { FOO = "bar" } }\n${GLOBAL_CONFIG}`,
+			`${GLOBAL_CONFIG}\n[shell_environment_policy]\ninherit = "core"\n`,
+			`${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nFOO = "bar"\n`,
+			`${GLOBAL_CONFIG}\nshell_environment_policy.set.FOO = "bar"\n`,
+			`${GLOBAL_CONFIG}\nshell_environment_policy = { set = { FOO = "bar" } }\n`,
+			`${GLOBAL_CONFIG}\n[ shell_environment_policy ]\ninherit = "core"\n`,
 		];
 		for (const base of variants) {
 			expect(() => renderCodexHomeConfig(base, TOKEN)).toThrow(
-				/shell_environment_policy/,
+				/shell_environment_policy namespace/,
 			);
 		}
 		// A comment mentioning it must NOT trip the guard.
@@ -230,646 +152,9 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 			),
 		).not.toThrow();
 	});
-
-	it("FLY-1395 renders deterministic Codex skill-disable blocks", () => {
-		const out = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
-			skillDisableNames: [
-				"superpowers:test-driven-development",
-				"superpowers:brainstorming",
-				"superpowers:brainstorming",
-			],
-		});
-		expect(out).toContain(
-			'# >>> flywheel-managed skills (FLY-1395) — do not edit >>>\n[[skills.config]]\nname = "superpowers:brainstorming"\nenabled = false\n\n[[skills.config]]\nname = "superpowers:test-driven-development"\nenabled = false\n# <<< flywheel-managed skills (FLY-1395) <<<',
-		);
-		expect(out).toContain(`GH_TOKEN = "${TOKEN}"`);
-	});
-
-	it("FLY-1395 skill rendering is idempotent and does not stack blocks", () => {
-		const opts = {
-			skillDisableNames: ["superpowers:brainstorming"],
-		};
-		const once = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, opts);
-		const twice = renderCodexHomeConfig(once, TOKEN, opts);
-		expect(twice).toBe(once);
-		expect(twice.match(/flywheel-managed skills \(FLY-1395\)/g)).toHaveLength(
-			2,
-		);
-	});
-
-	it("FLY-1395 A arm opts absent remains byte-identical", () => {
-		expect(renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN)).toBe(
-			`${GLOBAL_CONFIG.trimEnd()}\n\n# >>> flywheel-managed credential (FLY-123) — do not edit >>>\n[shell_environment_policy.set]\nGH_TOKEN = "${TOKEN}"\n# <<< flywheel-managed credential (FLY-123) <<<\n`,
-		);
-	});
-
-	it("FLY-1604 fails loudly ONLY on unmergeable skills shapes — single table, dotted-inline array, inline table (rewrite of FLY-1395 guard)", () => {
-		// Header form may sit anywhere; root dotted/inline forms must sit
-		// BEFORE any [table] header to actually be root-level definitions.
-		for (const base of [
-			`${GLOBAL_CONFIG}\n[skills.config]\nname = "x"\n`,
-			`skills.config = [{ name = "x", enabled = true }]\n${GLOBAL_CONFIG}`,
-			`skills = { config = [] }\n${GLOBAL_CONFIG}`,
-		]) {
-			expect(() =>
-				renderCodexHomeConfig(base, TOKEN, {
-					skillDisableNames: ["superpowers:brainstorming"],
-				}),
-			).toThrow(/skills|valid TOML/);
-		}
-		expect(() =>
-			renderCodexHomeConfig(
-				`${GLOBAL_CONFIG}\n# [skills] is managed per runner\n`,
-				TOKEN,
-				{ skillDisableNames: ["superpowers:brainstorming"] },
-			),
-		).not.toThrow();
-	});
-
-	it("FLY-1395 rejects unsafe skill names before emitting TOML", () => {
-		expect(() =>
-			renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
-				skillDisableNames: ['superpowers:bad"\nenabled = true'],
-			}),
-		).toThrow(/invalid Codex skill name/);
-	});
-});
-
-describe("renderCodexHomeConfig — FLY-1961 workspace trust", () => {
-	const trustedProjectPath = '/Users/x/Dev/flywheel-"quoted"\\repo';
-
-	it("adds an escaped trusted project without changing existing projects", () => {
-		const out = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
-			trustedProjectPath,
-		});
-		const parsed = parseToml(out) as Record<
-			string,
-			Record<string, Record<string, unknown>>
-		>;
-
-		expect(parsed.projects[trustedProjectPath].trust_level).toBe("trusted");
-		expect(parsed.projects["/Users/x/Dev/flywheel"].trust_level).toBe(
-			"trusted",
-		);
-		expect(parsed.shell_environment_policy.set.GH_TOKEN).toBe(TOKEN);
-		expect(out).toContain("flywheel-managed workspace trust (FLY-1961)");
-	});
-
-	it("does not drop trust on the pure-passthrough path and is idempotent", () => {
-		const once = renderCodexHomeConfig(GLOBAL_CONFIG, undefined, {
-			trustedProjectPath: "/tmp/new-worktree",
-		});
-		const twice = renderCodexHomeConfig(once, undefined, {
-			trustedProjectPath: "/tmp/new-worktree",
-		});
-
-		expect(
-			(
-				parseToml(once) as Record<
-					string,
-					Record<string, Record<string, unknown>>
-				>
-			).projects["/tmp/new-worktree"].trust_level,
-		).toBe("trusted");
-		expect(twice).toBe(once);
-		expect(twice.match(/flywheel-managed workspace trust/g)).toHaveLength(2);
-	});
-
-	it("does not add a managed block when the exact target is already trusted", () => {
-		const out = renderCodexHomeConfig(GLOBAL_CONFIG, undefined, {
-			trustedProjectPath: "/Users/x/Dev/flywheel",
-		});
-
-		expect(out).toBe(`${GLOBAL_CONFIG.trimEnd()}\n`);
-		expect(out).not.toContain("flywheel-managed workspace trust");
-	});
-
-	it.each([
-		[
-			"untrusted target",
-			`[projects."/tmp/new-worktree"]\ntrust_level = "untrusted"\n`,
-			/trust_level.*trusted/,
-		],
-		[
-			"empty target",
-			`[projects."/tmp/new-worktree"]\n`,
-			/trust_level.*trusted/,
-		],
-		["non-table projects", "projects = []\n", /projects.*table/],
-		[
-			"non-table target",
-			`projects."/tmp/new-worktree" = "bad"\n`,
-			/project entry.*table/,
-		],
-	])("fails loudly for %s", (_name, base, message) => {
-		expect(() =>
-			renderCodexHomeConfig(base, undefined, {
-				trustedProjectPath: "/tmp/new-worktree",
-			}),
-		).toThrow(message);
-	});
-
-	it.each(["relative/worktree", "/tmp/bad\0worktree"])(
-		"rejects unsafe trustedProjectPath %j",
-		(path) => {
-			expect(() =>
-				renderCodexHomeConfig(GLOBAL_CONFIG, undefined, {
-					trustedProjectPath: path,
-				}),
-			).toThrow(/trustedProjectPath must be.*absolute.*NUL-free/);
-		},
-	);
-
-	it("coexists with notify, skill disables, and credential injection", () => {
-		const notifyProgramPath = join(tmp, "hooks", "runner-stop-notify.sh");
-		const out = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
-			trustedProjectPath: "/tmp/coexist",
-			notifyProgramPath,
-			skillDisableNames: ["superpowers:brainstorming"],
-		});
-		const parsed = parseToml(out) as Record<string, any>;
-
-		expect(parsed.projects["/tmp/coexist"].trust_level).toBe("trusted");
-		expect(parsed.notify).toEqual([notifyProgramPath, "--codex"]);
-		expect(parsed.shell_environment_policy.set.GH_TOKEN).toBe(TOKEN);
-		expect(parsed.skills.config).toContainEqual({
-			name: "superpowers:brainstorming",
-			enabled: false,
-		});
-	});
-});
-
-describe("renderCodexHomeConfig — FLY-1571 managed notify", () => {
-	const notifyProgramPath = '/Users/x/Flywheel Hooks/runner-"stop"\\notify.sh';
-	const opts = { notifyProgramPath };
-
-	it("replaces the real single-line root notify and preserves other semantics", () => {
-		const base = `notify = ["/Applications/Sky.app/notify", "turn-ended"]\n${GLOBAL_CONFIG}`;
-		const out = renderCodexHomeConfig(base, TOKEN, opts);
-		const parsed = parseToml(out) as Record<string, unknown>;
-		expect(parsed.notify).toEqual([notifyProgramPath, "--codex"]);
-		expect(parsed.model).toBe("gpt-5-codex");
-		expect(out).not.toContain("Sky.app");
-		expect(out).toContain("flywheel-managed notify (FLY-1571)");
-	});
-
-	it("inserts notify before the first table when the base has none", () => {
-		const out = renderCodexHomeConfig(GLOBAL_CONFIG, undefined, opts);
-		expect((parseToml(out) as Record<string, unknown>).notify).toEqual([
-			notifyProgramPath,
-			"--codex",
-		]);
-		expect(out.indexOf("notify =")).toBeLessThan(out.indexOf("[projects."));
-	});
-
-	it("is idempotent and coexists with the managed GH_TOKEN block", () => {
-		const once = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, opts);
-		const twice = renderCodexHomeConfig(once, TOKEN, opts);
-		expect(twice).toBe(once);
-		expect(twice.match(/flywheel-managed notify/g)).toHaveLength(2);
-		expect(twice).toContain(`GH_TOKEN = "${TOKEN}"`);
-	});
-
-	it.each([
-		[
-			"multiline",
-			`notify = [\n  "/Applications/Sky.app/notify",\n  "turn-ended",\n]\n${GLOBAL_CONFIG}`,
-		],
-		["two anchors", `notify = ["one"]\nnotify = ["two"]\n${GLOBAL_CONFIG}`],
-		[
-			"relative after table",
-			`${GLOBAL_CONFIG}\n[other]\nnotify = ["relative"]\n`,
-		],
-		["quoted key", `"notify" = ["quoted"]\n${GLOBAL_CONFIG}`],
-		["dotted key", `notify.program = "dotted"\n${GLOBAL_CONFIG}`],
-	])("fails loud for an ambiguous %s shape", (_name, base) => {
-		expect(() => renderCodexHomeConfig(base, TOKEN, opts)).toThrow(/notify/i);
-	});
-
-	it("sanitizes notify merge errors without quoting path or base canaries", () => {
-		const canary = "FLY1571_PRIVATE_SOURCE_CANARY";
-		const pathCanary = `/private/${canary}/notify`;
-		let message = "";
-		try {
-			renderCodexHomeConfig(
-				`notify = [\n"${canary}"\n]\n${GLOBAL_CONFIG}`,
-				TOKEN,
-				{ notifyProgramPath: pathCanary },
-			);
-		} catch (error) {
-			message = error instanceof Error ? error.message : String(error);
-		}
-		expect(message).toMatch(/notify/i);
-		expect(message).not.toContain(canary);
-	});
-});
-
-describe("renderCodexHomeConfig — FLY-1604 TOML-aware merge", () => {
-	const MANAGED_BEGIN =
-		"# >>> flywheel-managed credential (FLY-123) — do not edit >>>";
-	const MANAGED_END = "# <<< flywheel-managed credential (FLY-123) <<<";
-	const PLACEHOLDER = "__FLYWHEEL_GH_TOKEN_PLACEHOLDER__";
-	const CODEX_KEYS = `BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
-NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "41e1151f1e50f096c7561da32bb01123e74b6ecdd38f081e34da30091fc4f193,6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f"
-NODE_REPL_TRUSTED_CODE_PATHS = "/Users/x/.codex"`;
-	// Mirrors the real 2026-08-01 incident: codex itself wrote a
-	// [shell_environment_policy.set] table into the global config.
-	const SEP_CONFLICT_CONFIG = `${GLOBAL_CONFIG}
-[shell_environment_policy.set]
-${CODEX_KEYS}
-`;
-
-	function sepSet(out: string): Record<string, unknown> {
-		const parsed = parseToml(out) as Record<
-			string,
-			Record<string, Record<string, unknown>>
-		>;
-		return parsed.shell_environment_policy.set;
-	}
-
-	it("T1 merges GH_TOKEN into the existing [shell_environment_policy.set] table (real incident shape)", () => {
-		const out = renderCodexHomeConfig(SEP_CONFLICT_CONFIG, TOKEN);
-		const set = sepSet(out);
-		expect(Object.keys(set).sort()).toEqual([
-			"BROWSER_USE_AVAILABLE_BACKENDS",
-			"GH_TOKEN",
-			"NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S",
-			"NODE_REPL_TRUSTED_CODE_PATHS",
-		]);
-		expect(set.GH_TOKEN).toBe(TOKEN);
-		expect(set.BROWSER_USE_AVAILABLE_BACKENDS).toBe("chrome,iab");
-		// codex's own lines survive byte-for-byte
-		for (const line of CODEX_KEYS.split("\n")) {
-			expect(out).toContain(line);
-		}
-		// the sentinel-wrapped keyline sits directly after the existing header
-		expect(out).toContain(
-			`[shell_environment_policy.set]\n${MANAGED_BEGIN}\nGH_TOKEN = "${TOKEN}"\n${MANAGED_END}\nBROWSER_USE_AVAILABLE_BACKENDS`,
-		);
-		// placeholder must not leak into the final artifact (base has none)
-		expect(out).not.toContain(PLACEHOLDER);
-	});
-
-	it("T2 merge path is idempotent — re-render does not stack", () => {
-		const once = renderCodexHomeConfig(SEP_CONFLICT_CONFIG, TOKEN);
-		const twice = renderCodexHomeConfig(once, TOKEN);
-		expect(twice).toBe(once);
-		expect(once.match(/GH_TOKEN/g)).toHaveLength(1);
-		expect(once.match(/flywheel-managed credential/g)).toHaveLength(2);
-	});
-
-	it("T3 merge path scrub — re-render without token restores base verbatim", () => {
-		const merged = renderCodexHomeConfig(SEP_CONFLICT_CONFIG, TOKEN);
-		const scrubbed = renderCodexHomeConfig(merged);
-		expect(scrubbed).toBe(`${SEP_CONFLICT_CONFIG.trimEnd()}\n`);
-		expect(scrubbed).not.toContain("GH_TOKEN");
-		expect(scrubbed).not.toContain("flywheel-managed credential");
-	});
-
-	it("T4 refuses to overwrite a pre-existing non-managed GH_TOKEN", () => {
-		const base = `${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nGH_TOKEN = "someone_elses_token"\n`;
-		expect(() => renderCodexHomeConfig(base, TOKEN)).toThrow(
-			/refusing to overwrite/,
-		);
-	});
-
-	it("T6 quoted header defining the set table is unmergeable — fail loud (old code silently corrupted)", () => {
-		const base = `${GLOBAL_CONFIG}\n["shell_environment_policy".set]\nFOO = "bar"\n`;
-		expect(() => renderCodexHomeConfig(base, TOKEN)).toThrow(
-			/shell_environment_policy/,
-		);
-	});
-
-	it("T7 parent-table-only base gets the appended block (legal sub-table)", () => {
-		for (const header of [
-			"[shell_environment_policy]",
-			"[ shell_environment_policy ]",
-		]) {
-			const base = `${GLOBAL_CONFIG}\n${header}\ninherit = "core"\n`;
-			const out = renderCodexHomeConfig(base, TOKEN);
-			const parsed = parseToml(out) as Record<string, Record<string, unknown>>;
-			expect(parsed.shell_environment_policy.inherit).toBe("core");
-			expect(sepSet(out).GH_TOKEN).toBe(TOKEN);
-		}
-	});
-
-	it("T8 sibling sub-table shapes are mergeable — bracket and root-dotted (root-aware, R1-HIGH-2)", () => {
-		// Bracket header may sit anywhere; the root-dotted sibling must sit
-		// BEFORE any [table] header to actually be root-level.
-		for (const base of [
-			`${GLOBAL_CONFIG}\n[shell_environment_policy.exclude]\nFOO = "x"\n`,
-			`shell_environment_policy.exclude.FOO = "x"\n${GLOBAL_CONFIG}`,
-		]) {
-			const out = renderCodexHomeConfig(base, TOKEN);
-			const parsed = parseToml(out) as Record<
-				string,
-				Record<string, Record<string, unknown>>
-			>;
-			expect(parsed.shell_environment_policy.exclude.FOO).toBe("x");
-			expect(sepSet(out).GH_TOKEN).toBe(TOKEN);
-		}
-	});
-
-	it("T9 relative same-name key under another table is NOT the root namespace — mergeable", () => {
-		const base = `${GLOBAL_CONFIG}\n[other]\nshell_environment_policy.foo = "x"\n`;
-		const out = renderCodexHomeConfig(base, TOKEN);
-		const parsed = parseToml(out) as Record<
-			string,
-			Record<string, Record<string, unknown>>
-		>;
-		expect(parsed.other.shell_environment_policy.foo).toBe("x");
-		expect(sepSet(out).GH_TOKEN).toBe(TOKEN);
-	});
-
-	it("T10 invalid TOML base fails loud before write when injecting", () => {
-		expect(() =>
-			renderCodexHomeConfig("this = is [not valid\ntoml ===", TOKEN),
-		).toThrow(/not valid TOML/);
-	});
-
-	it("T11 thrown errors never carry the token or base source fragments", () => {
-		const canary = "ZQ9_SOURCE_CANARY_77";
-		const throwers = [
-			`${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nGH_TOKEN = "${canary}"\n`,
-			`${GLOBAL_CONFIG}\n["shell_environment_policy".set]\nFOO = "${canary}"\n`,
-			`shell_environment_policy = { set = { FOO = "${canary}" } }\n${GLOBAL_CONFIG}`,
-			`broken toml ${canary} ===`,
-		];
-		for (const base of throwers) {
-			let message = "";
-			try {
-				renderCodexHomeConfig(base, TOKEN);
-			} catch (err) {
-				message = err instanceof Error ? err.message : String(err);
-			}
-			expect(message).not.toBe("");
-			expect(message).not.toContain(TOKEN);
-			expect(message).not.toContain(canary);
-		}
-	});
-
-	it("T12 preservation check survives non-primitive base values (deep compare, not ===)", () => {
-		const base = `${GLOBAL_CONFIG}\n[shell_environment_policy.set]\nFOO = "bar"\nEXTRA_ARR = ["a", "b"]\n`;
-		const out = renderCodexHomeConfig(base, TOKEN);
-		const set = sepSet(out);
-		expect(set.EXTRA_ARR).toEqual(["a", "b"]);
-		expect(set.GH_TOKEN).toBe(TOKEN);
-		expect(out).toContain('EXTRA_ARR = ["a", "b"]');
-	});
-
-	it("T12b base bytes containing the placeholder literal survive verbatim (no global substitution, R2-HIGH-1)", () => {
-		const base = `${GLOBAL_CONFIG}
-# comment mentions ${PLACEHOLDER} here
-[shell_environment_policy.set]
-LOOKALIKE = "${PLACEHOLDER}"
-${CODEX_KEYS}
-
-[unrelated]
-note = "${PLACEHOLDER}"
-`;
-		const out = renderCodexHomeConfig(base, TOKEN);
-		// exactly the base's 3 placeholder occurrences — the managed line took
-		// the real token, and no base byte was substituted
-		expect(out.match(new RegExp(PLACEHOLDER, "g"))).toHaveLength(3);
-		expect(out).toContain(`LOOKALIKE = "${PLACEHOLDER}"`);
-		expect(out).toContain(`note = "${PLACEHOLDER}"`);
-		expect(out).toContain(`# comment mentions ${PLACEHOLDER} here`);
-		expect(out).toContain(`GH_TOKEN = "${TOKEN}"`);
-		expect(sepSet(out).LOOKALIKE).toBe(PLACEHOLDER);
-	});
-
-	it("T13 skills: base [[skills.config]] entries extend as array-of-tables (no overlap)", () => {
-		const base = `${GLOBAL_CONFIG}\n[[skills.config]]\nname = "existing:skill"\nenabled = true\n`;
-		const out = renderCodexHomeConfig(base, TOKEN, {
-			skillDisableNames: ["superpowers:brainstorming"],
-		});
-		const parsed = parseToml(out) as Record<
-			string,
-			Record<string, Array<Record<string, unknown>>>
-		>;
-		const cfg = parsed.skills.config;
-		expect(cfg).toHaveLength(2);
-		expect(cfg[0]).toEqual({ name: "existing:skill", enabled: true });
-		expect(cfg[1]).toEqual({
-			name: "superpowers:brainstorming",
-			enabled: false,
-		});
-	});
-
-	it("T14 skills: [skills] table, [skills.other] sub-table, and relative keys stay mergeable (root-aware)", () => {
-		for (const decl of [
-			"[skills]\nfoo = 1",
-			'[skills.other]\nfoo = "x"',
-			'[other]\nskills.foo = "x"',
-		]) {
-			const out = renderCodexHomeConfig(`${GLOBAL_CONFIG}\n${decl}\n`, TOKEN, {
-				skillDisableNames: ["superpowers:brainstorming"],
-			});
-			const parsed = parseToml(out) as Record<
-				string,
-				Record<string, Array<Record<string, unknown>>>
-			>;
-			expect(parsed.skills.config).toHaveLength(1);
-		}
-	});
-
-	it("T16 an empty-string token fails the boundary check — with and without skills (Codex code R1 MED-1)", () => {
-		// "" is present-but-invalid: truthiness must not silently drop it (no
-		// skills) or half-render an empty credential block (with skills).
-		expect(() => renderCodexHomeConfig(GLOBAL_CONFIG, "")).toThrow(
-			/ghToken must match/,
-		);
-		let message = "";
-		try {
-			renderCodexHomeConfig(GLOBAL_CONFIG, "", {
-				skillDisableNames: ["superpowers:brainstorming"],
-			});
-		} catch (err) {
-			message = err instanceof Error ? err.message : String(err);
-		}
-		expect(message).toMatch(/ghToken must match/);
-		expect(message).not.toContain('GH_TOKEN = ""');
-	});
-
-	it("T17 rendered-candidate parse failure uses the sanitized classification message (Codex code R1 LOW-2)", () => {
-		// Inline parent WITHOUT a set sub-table passes every precheck (sep is a
-		// plain table, set undefined → append path) but the appended
-		// [shell_environment_policy.set] header cannot extend an immutable
-		// inline table — the failure surfaces ONLY at the rendered-stage parse.
-		const canary = "ZQ9_RENDERED_CANARY_31";
-		const base = `shell_environment_policy = { exclude = { SECRET = "${canary}" } }\n${GLOBAL_CONFIG}`;
-		let message = "";
-		try {
-			renderCodexHomeConfig(base, TOKEN);
-		} catch (err) {
-			message = err instanceof Error ? err.message : String(err);
-		}
-		// EXACT equality (Codex code R2 LOW-1): a prefix `toContain` stays green
-		// when raw parser text is appended after the fixed message — the
-		// sanitization contract is "this fixed string and nothing else".
-		expect(message).toBe(
-			"renderCodexHomeConfig: rendered config.toml would not be valid TOML — the base declares a shape this writer cannot legally extend (e.g. an inline table); refusing to write a corrupt config (parser detail withheld: it may quote config or credential content).",
-		);
-		expect(message).not.toContain(TOKEN);
-		expect(message).not.toContain(canary);
-	});
-
-	it("T15 skills: name overlap with base entries fails loud regardless of enabled value", () => {
-		for (const enabled of ["true", "false"]) {
-			const base = `${GLOBAL_CONFIG}\n[[skills.config]]\nname = "superpowers:brainstorming"\nenabled = ${enabled}\n`;
-			expect(() =>
-				renderCodexHomeConfig(base, TOKEN, {
-					skillDisableNames: ["superpowers:brainstorming"],
-				}),
-			).toThrow(/duplicate-name|ambiguous/);
-		}
-	});
 });
 
 describe("provisionCodexHome (WS-A)", () => {
-	function makeMattSkillsSource(): string {
-		const source = join(tmp, "matt-skills-source");
-		for (const name of [
-			"code-review",
-			"diagnosing-bugs",
-			"grilling",
-			"tdd",
-			"to-spec",
-			"to-tickets",
-		]) {
-			const dir = join(source, name);
-			mkdirSync(dir, { recursive: true });
-			writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\n---\n`);
-		}
-		return source;
-	}
-
-	it("identifies the live source credential before provisioning", () => {
-		expect(assertCodexSourceIdentity({ env, registryPath })).toEqual({
-			profile: "personal",
-			email: "personal@example.test",
-			accountId: "acct-personal",
-			plan: "pro",
-			mode: "primary",
-		});
-	});
-
-	it.each([
-		["personal", "personal@example.test", "acct-personal", "primary"],
-		["school", "school@example.test", "acct-school", "manual_backup"],
-		["business", "business@example.test", "acct-business", "manual_backup"],
-	] as const)(
-		"provisions canonical %s, writes the truthful sidecar and ledger",
-		(profile, email, accountId, mode) => {
-			writeFileSync(
-				join(sourceCodexDir(env), "auth.json"),
-				testAuth(email, accountId),
-			);
-
-			const home = provisionCodexHome({ executionId: `exec-${profile}`, env });
-
-			expect(readFileSync(join(home, "auth.json"), "utf8")).toBe(
-				testAuth(email, accountId),
-			);
-			expect(readFileSync(join(home, ".active"), "utf8")).toBe(`${profile}\n`);
-			expect(
-				JSON.parse(readFileSync(join(ledgerRoot, `${profile}.json`), "utf8")),
-			).toMatchObject({ profile, mode, lastSource: "provision" });
-		},
-	);
-
-	it("keeps a fully provisioned runner home when only the ledger is unavailable", () => {
-		writeFileSync(ledgerRoot, "ledger-root-is-not-a-directory");
-		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-		try {
-			const home = provisionCodexHome({
-				executionId: "exec-ledger-unavailable",
-				ghToken: TOKEN,
-				env,
-			});
-
-			expect(readFileSync(join(home, "auth.json"), "utf8")).toBe(testAuth());
-			expect(readFileSync(join(home, ".active"), "utf8")).toBe("personal\n");
-			expect(readFileSync(join(home, "config.toml"), "utf8")).toContain(TOKEN);
-			expect(warning).toHaveBeenCalledWith(
-				expect.stringContaining(
-					"account ledger observation failed for personal; runner provisioning will continue",
-				),
-			);
-		} finally {
-			warning.mockRestore();
-		}
-	});
-
-	it.each([
-		["unknown", testAuth("zombie@example.test", "acct-zombie")],
-		["malformed", '{"tokens":{"id_token":"not-a-jwt"}}'],
-	] as const)(
-		"rejects a %s source identity before changing a pre-existing execution home",
-		(_label, sourceAuth) => {
-			const home = codexHomeDir("exec-reject", env);
-			mkdirSync(home, { recursive: true });
-			writeFileSync(join(home, "auth.json"), "auth-canary");
-			writeFileSync(join(home, "config.toml"), "config-canary");
-			writeFileSync(join(sourceCodexDir(env), "auth.json"), sourceAuth);
-
-			expect(() =>
-				provisionCodexHome({
-					executionId: "exec-reject",
-					ghToken: TOKEN,
-					env,
-				}),
-			).toThrow(/Codex|identity|JWT/);
-			expect(readFileSync(join(home, "auth.json"), "utf8")).toBe("auth-canary");
-			expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(
-				"config-canary",
-			);
-			expect(existsSync(ledgerRoot)).toBe(false);
-		},
-	);
-
-	it("rejects a symlinked source auth before creating an execution home", () => {
-		const srcAuth = join(sourceCodexDir(env), "auth.json");
-		const realAuth = join(tmp, "real-auth.json");
-		writeFileSync(realAuth, testAuth());
-		rmSync(srcAuth);
-		symlinkSync(realAuth, srcAuth);
-
-		expect(() =>
-			provisionCodexHome({ executionId: "exec-symlink", env }),
-		).toThrow(/symlink/);
-		expect(existsSync(codexHomeDir("exec-symlink", env))).toBe(false);
-	});
-
-	it("FLY-1571 provisions the managed Runner stop notify program", () => {
-		const notifyProgramPath = join(tmp, "hooks", "runner-stop-notify.sh");
-		const home = provisionCodexHome({
-			executionId: "exec-notify",
-			env,
-			notifyProgramPath,
-		});
-		const parsed = parseToml(
-			readFileSync(join(home, "config.toml"), "utf8"),
-		) as Record<string, unknown>;
-		expect(parsed.notify).toEqual([notifyProgramPath, "--codex"]);
-	});
-
-	it("FLY-1961 provisions trust into the execution-scoped CODEX_HOME", () => {
-		const trustedProjectPath = join(tmp, "new-worktree");
-		const home = provisionCodexHome({
-			executionId: "exec-trust",
-			env,
-			trustedProjectPath,
-		});
-		const parsed = parseToml(
-			readFileSync(join(home, "config.toml"), "utf8"),
-		) as Record<string, Record<string, Record<string, unknown>>>;
-
-		expect(parsed.projects[trustedProjectPath].trust_level).toBe("trusted");
-		expect(home).toBe(join(tmp, "homes", "exec-trust"));
-	});
-
 	it("creates the home, seeds auth.json (0600) and config.toml (0600) with the token", () => {
 		const home = provisionCodexHome({
 			executionId: "exec-1",
@@ -908,165 +193,6 @@ describe("provisionCodexHome (WS-A)", () => {
 		expect(cfg).not.toContain("GH_TOKEN");
 	});
 
-	it("FLY-1395 bare provisions the disable config without a skills directory", () => {
-		const home = provisionCodexHome({
-			executionId: "exec-bare",
-			env,
-			skillFrameworkMode: "bare",
-			codexSkillDisableNames: ["superpowers:brainstorming"],
-		});
-		const config = readFileSync(join(home, "config.toml"), "utf-8");
-		expect(config).toContain('name = "superpowers:brainstorming"');
-		expect(existsSync(join(home, "skills", "matt-skills"))).toBe(false);
-	});
-
-	it("FLY-1395 matt installs all six vendored skills with stable namespace names and is idempotent", () => {
-		const source = makeMattSkillsSource();
-		const opts = {
-			executionId: "exec-matt",
-			env,
-			skillFrameworkMode: "matt" as const,
-			codexSkillDisableNames: ["superpowers:brainstorming"],
-			codexMattSkillsSourceDir: source,
-		};
-		const home = provisionCodexHome(opts);
-		provisionCodexHome(opts);
-		for (const name of [
-			"code-review",
-			"diagnosing-bugs",
-			"grilling",
-			"tdd",
-			"to-spec",
-			"to-tickets",
-		]) {
-			const skillFile = join(home, "skills", `matt-skills:${name}`, "SKILL.md");
-			expect(existsSync(skillFile)).toBe(true);
-			expect(readFileSync(skillFile, "utf-8")).toContain(
-				`name: matt-skills:${name}`,
-			);
-		}
-		expect(existsSync(join(home, "skills", "matt-skills"))).toBe(false);
-		expect(readFileSync(join(home, "config.toml"), "utf-8")).toContain(
-			'name = "superpowers:brainstorming"',
-		);
-	});
-
-	it("FLY-1395 removes stale managed Matt skills when reprovisioned as bare", () => {
-		const source = makeMattSkillsSource();
-		const mattHome = provisionCodexHome({
-			executionId: "exec-rearm",
-			env,
-			skillFrameworkMode: "matt",
-			codexSkillDisableNames: ["superpowers:brainstorming"],
-			codexMattSkillsSourceDir: source,
-		});
-		expect(
-			existsSync(join(mattHome, "skills", "matt-skills:tdd", "SKILL.md")),
-		).toBe(true);
-		const home = provisionCodexHome({
-			executionId: "exec-rearm",
-			env,
-			skillFrameworkMode: "bare",
-			codexSkillDisableNames: ["superpowers:brainstorming"],
-		});
-		expect(existsSync(join(home, "skills", "matt-skills:tdd"))).toBe(false);
-	});
-
-	it("FLY-1395 matt source failure is loud and leaves no runner home", () => {
-		expect(() =>
-			provisionCodexHome({
-				executionId: "exec-matt-bad",
-				env,
-				skillFrameworkMode: "matt",
-				codexSkillDisableNames: ["superpowers:brainstorming"],
-				codexMattSkillsSourceDir: join(tmp, "missing-matt"),
-			}),
-		).toThrow(/matt skills source/);
-		expect(existsSync(join(tmp, "homes", "exec-matt-bad"))).toBe(false);
-	});
-
-	it("FLY-1395 scrubs the live token when Matt skill copying fails", () => {
-		const source = makeMattSkillsSource();
-		const home = codexHomeDir("exec-matt-copy-fails", env);
-		const skillsRoot = join(home, "skills");
-		mkdirSync(skillsRoot, { recursive: true });
-		chmodSync(skillsRoot, 0o500);
-		try {
-			expect(() =>
-				provisionCodexHome({
-					executionId: "exec-matt-copy-fails",
-					ghToken: TOKEN,
-					env,
-					skillFrameworkMode: "matt",
-					codexSkillDisableNames: ["superpowers:brainstorming"],
-					codexMattSkillsSourceDir: source,
-				}),
-			).toThrow();
-			const configPath = join(home, "config.toml");
-			const config = existsSync(configPath)
-				? readFileSync(configPath, "utf-8")
-				: "";
-			expect(config).not.toContain(TOKEN);
-			expect(config).not.toContain("GH_TOKEN");
-		} finally {
-			chmodSync(skillsRoot, 0o700);
-		}
-	});
-
-	// FLY-1395 QA: every existing matt test uses a SYNTHETIC fixture whose
-	// frontmatter name is written to equal its directory (so namespaceMattSkill's
-	// `sourceName === skillDir` invariant is trivially satisfied). None exercises
-	// the REAL vendored artifact. If an upstream matt-skills sync renames a
-	// SKILL.md `name:` field, or drops/renames a skill directory, the matt arm
-	// would throw at provision time in production while every fixture test stays
-	// green. This guard drives production provisionCodexHome against the actual
-	// git-tracked vendor/matt-skills/skills so that drift fails in CI, not on a
-	// real Codex implement runner.
-	it("FLY-1395 provisions the matt arm from the REAL vendored skills (drift guard)", () => {
-		const repoRoot = resolve(
-			dirname(fileURLToPath(import.meta.url)),
-			"..",
-			"..",
-			"..",
-		);
-		const vendorSkills = join(repoRoot, "vendor", "matt-skills", "skills");
-		// Fail loud, not vacuously skip, if the vendored artifact is missing —
-		// its absence is itself a shippable defect for the matt arm.
-		expect(
-			existsSync(vendorSkills),
-			`vendored matt skills missing at ${vendorSkills}`,
-		).toBe(true);
-
-		const home = provisionCodexHome({
-			executionId: "exec-matt-vendor",
-			env,
-			skillFrameworkMode: "matt",
-			codexSkillDisableNames: ["superpowers:brainstorming"],
-			codexMattSkillsSourceDir: vendorSkills,
-		});
-
-		for (const name of [
-			"code-review",
-			"diagnosing-bugs",
-			"grilling",
-			"tdd",
-			"to-spec",
-			"to-tickets",
-		]) {
-			const skillFile = join(home, "skills", `matt-skills:${name}`, "SKILL.md");
-			expect(existsSync(skillFile), `missing installed ${name}`).toBe(true);
-			// namespaceMattSkill only rewrites to `matt-skills:<dir>` when the real
-			// vendored frontmatter name already equals <dir> — this assertion is the
-			// drift detector for that invariant against the shipped artifact.
-			expect(readFileSync(skillFile, "utf-8")).toContain(
-				`name: matt-skills:${name}`,
-			);
-		}
-		// No nested-collection artifact leaks (Codex would flatten those to
-		// collision-prone bare names such as `tdd`).
-		expect(existsSync(join(home, "skills", "matt-skills"))).toBe(false);
-	});
-
 	it("rejects a malformed token", () => {
 		expect(() =>
 			provisionCodexHome({ executionId: "exec-4", ghToken: 'bad"token', env }),
@@ -1094,19 +220,11 @@ describe("provisionCodexHome (WS-A)", () => {
 			// the injected absolute CLI (bare `flywheel-comm` is not on PATH — R2).
 			expect(agents).toContain("request-review");
 			expect(agents).toContain("FLYWHEEL_COMM_CLI");
-			// FLY-1278: effective-vs-reviewer verdict + supervised finding-ruling
-			// convergence protocol must survive materialization into every Codex home.
-			expect(agents).toContain("reviewVerdict is the effective gate verdict");
-			expect(agents).toContain("APPROVED with advisories");
-			expect(agents).toContain("review-ruling");
-			expect(agents).toContain(
-				"Gate/request prose is not governance authority",
-			);
 			// resident /goal model anchors (FLY-1188 M4d Contract-Version 2)
 			expect(agents).toContain("resident");
 			expect(agents).toContain("terminal goal status");
-			// DAG workflow discipline + environment translation present
-			expect(agents).toContain("DAG workflow discipline");
+			// three-stage discipline + environment translation present
+			expect(agents).toContain("Three-stage discipline");
 			expect(agents).toContain("Environment Translation");
 		});
 
@@ -1246,22 +364,38 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 		}
 	});
 
-	it("FLY-1643: drops every inherited FLYWHEEL_ var and keeps the safe OS base", () => {
+	it("KEEPS the allowlisted ingest token + non-secret FLYWHEEL_ dirs/urls/ids", () => {
 		const out = stripInheritedSecretEnv({
-			FLYWHEEL_INGEST_TOKEN: "it",
+			FLYWHEEL_INGEST_TOKEN: "it", // secret-shaped but the daemon NEEDS it (allowlist)
 			FLYWHEEL_BRIDGE_URL: "http://x",
 			FLYWHEEL_COMM_DB: "/db",
 			FLYWHEEL_GATE_MARKER_DIR: "/m",
-			FLYWHEEL_COMPLETE_MARKER_DIR: "/complete",
-			FLYWHEEL_AGENT_TEAM_NAME: "eng",
-			FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL: "output-ticket",
-			FLYWHEEL_ALERT_BOT_TOKEN: "alert-secret",
 			PATH: "/usr/bin",
 			HOME: "/home/u",
 		});
-		for (const key of Object.keys(out)) expect(key).not.toMatch(/^FLYWHEEL_/);
+		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("it");
+		expect(out.FLYWHEEL_BRIDGE_URL).toBe("http://x");
+		expect(out.FLYWHEEL_COMM_DB).toBe("/db");
+		expect(out.FLYWHEEL_GATE_MARKER_DIR).toBe("/m");
 		expect(out.PATH).toBe("/usr/bin");
 		expect(out.HOME).toBe("/home/u");
+	});
+
+	// R2 HIGH: a blanket FLYWHEEL_ prefix exemption would leak OTHER FLYWHEEL_
+	// Bridge secrets into the model-driven daemon. Only the explicit allowlist is
+	// kept; every other secret-shaped FLYWHEEL_ var is stripped like any 3rd-party
+	// cred.
+	it("STRIPS non-allowlisted FLYWHEEL_ secrets (e.g. an alert bot token)", () => {
+		const out = stripInheritedSecretEnv({
+			FLYWHEEL_INGEST_TOKEN: "keep",
+			FLYWHEEL_ALERT_BOT_TOKEN: "leak",
+			FLYWHEEL_WEBHOOK_SECRET: "leak2",
+			FLYWHEEL_SIGNING_KEY: "leak3",
+		});
+		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("keep");
+		expect(out.FLYWHEEL_ALERT_BOT_TOKEN).toBeUndefined();
+		expect(out.FLYWHEEL_WEBHOOK_SECRET).toBeUndefined();
+		expect(out.FLYWHEEL_SIGNING_KEY).toBeUndefined();
 	});
 
 	// R3 HIGH: a NAME denylist misses auth-CAPABLE handles whose names don't look
@@ -1303,8 +437,28 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 		expect(out.LANG).toBe("en_US.UTF-8");
 		expect(out.LC_ALL).toBe("en_US.UTF-8");
 		expect(out.HTTPS_PROXY).toBe("http://proxy:8080");
-		expect(out.FLYWHEEL_GATE_MARKER_DIR).toBeUndefined();
-		expect(out.FLYWHEEL_INGEST_TOKEN).toBeUndefined();
+		expect(out.FLYWHEEL_GATE_MARKER_DIR).toBe("/m");
+		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("it");
+	});
+
+	// R4 HIGH: an exact FLYWHEEL_ allowlist — a FLYWHEEL_ name/shape PATTERN pass
+	// leaked auth-CAPABLE FLYWHEEL_ handles (Keychain coords / secret .env path /
+	// broker socket) whose names aren't secret-shaped.
+	it("R4: DROPS auth-capable FLYWHEEL_ vars not on the exact allowlist", () => {
+		const out = stripInheritedSecretEnv({
+			FLYWHEEL_INGEST_TOKEN: "keep", // exact-allowlisted → kept
+			FLYWHEEL_COMM_CLI: "/cli.js", // exact-allowlisted → kept
+			FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE: "svc", // Keychain coords → dropped
+			FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT: "acct",
+			FLYWHEEL_WRAPPER_ENV_FILE: "/secret.env", // secret .env path → dropped
+			FLYWHEEL_GATEWAY_BROKER_SOCKET: "/broker.sock", // broker socket → dropped
+		});
+		expect(out.FLYWHEEL_INGEST_TOKEN).toBe("keep");
+		expect(out.FLYWHEEL_COMM_CLI).toBe("/cli.js");
+		expect(out.FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE).toBeUndefined();
+		expect(out.FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT).toBeUndefined();
+		expect(out.FLYWHEEL_WRAPPER_ENV_FILE).toBeUndefined();
+		expect(out.FLYWHEEL_GATEWAY_BROKER_SOCKET).toBeUndefined();
 	});
 
 	// R4/R5 HIGH: a proxy URL can embed `user:pass@` (incl. `@` inside the pass, no
@@ -1340,6 +494,17 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 		expect(out.HTTP_PROXY).toBeUndefined();
 		expect(out.ALL_PROXY).toBe("http://proxy:8080");
 	});
+
+	it("R5: keeps the transport-injected Agent Team identity (exact-allowlisted)", () => {
+		const out = stripInheritedSecretEnv({
+			FLYWHEEL_AGENT_TEAM_NAME: "eng",
+			FLYWHEEL_AGENT_NAME: "codex-runner",
+			FLYWHEEL_RUNNER_VENDOR_ID: "codex",
+		});
+		expect(out.FLYWHEEL_AGENT_TEAM_NAME).toBe("eng");
+		expect(out.FLYWHEEL_AGENT_NAME).toBe("codex-runner");
+		expect(out.FLYWHEEL_RUNNER_VENDOR_ID).toBe("codex");
+	});
 });
 
 // ── QA · FLY-1188 — the founder TUI must NOT be launched through the rotation
@@ -1348,7 +513,7 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 // prints "Error: stdout is not a terminal" and exits 1. That is why the founder's
 // cmux tab was empty. The daemon keeps the shim (app-server needs no TTY). ──
 describe("rawCodexBin (the TTY-capable binary for the founder TUI)", () => {
-	it("resolves the raw TUI binary independently of the daemon launcher", () => {
+	it("is NEVER the stdout-piping rotation shim", () => {
 		expect(rawCodexBin({ PATH: "/usr/bin" })).not.toContain(
 			"flywheel-codex-with-fallback",
 		);

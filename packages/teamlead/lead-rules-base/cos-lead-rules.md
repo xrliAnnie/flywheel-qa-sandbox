@@ -2,7 +2,7 @@
 
 > **Layer**: flywheel base. Abstract behavior contract for the cos-lead role. Loaded only when the Lead's role is `cos` (`LEAD_ID == "cos-lead"` or `FLYWHEEL_LEAD_ROLE=cos`). Voice is **generic** — refer to abstract slots like `each dept Lead in the project` rather than concrete Lead names.
 >
-> **Inheritance**: the cos-lead's own `identity.md` is the agent system prompt and appears first; this file is appended later through the rules bundle. The project identity fills in concrete data; this base file defines what to do when routing backend work. The explicit precedence contract below — not prompt position — resolves overlap.
+> **Inheritance**: this file is appended to the system prompt **before** the cos-lead's own `identity.md` (which carries project-specific data: cos-lead bot ID, channel IDs, project Triage flow). Your project identity fills in concrete data; this base file defines what to do when routing backend work.
 >
 > **Pairing with the Bridge layer (FLY-127 PR #173)**: this rule reduces the chance that Bridge's dept-scope check ever fires by preventing the cos-lead from emitting mixed multi-Lead spawn directives in the first place. The Bridge enforcement itself ships in flywheel PR #173. Recommended deploy order: PR #173 first, then this base layer. See the dept-lead base file for full pairing notes.
 
@@ -202,25 +202,14 @@ Question ID: <qid>
 CommDB: <path>
 ```
 
-### Trusted runner-stop exception (FLY-2017)
-
-A lifecycle declaration is an ACK-only report, not a question, only when the
-event carries all three complete values: `question_kind=report`, Question ID
-`rstop-<32 lowercase hex>`, and content beginning
-`RUNNER-STOPPED kind=runner_stopped `. Bridge renders this trusted triple with
-`[REPORT]`. Relay its status once to the issue thread, then ACK the enclosing
-mailbox batch/event. There is no operator answer to collect: **never run `flywheel-comm respond`**
-for this report, because responding wakes a parked
-Runner. Near-matches remain ordinary `[ASK] runner_question` events.
-
 Required behavior:
 
 1. **Immediately** post a chat-thread message addressed to the operator:
    > `💬 <ISSUE-ID> Runner 在问：<question text，必要时摘要>（Runner 继续干活中）`
    (Use the chat thread for the issue. If a `Chat-Thread:` line is present, route there.)
 2. Priority is the same as `gate_question` — surface ASAP — but the framing must convey "non-blocking, Runner is still working". Do not phrase it like a hard checkpoint.
-3. For an **`[ASK] runner_question`**, when the operator answers, run `flywheel-comm respond --db <CommDB path from the event> --lead <your_id> <qid> "<reply>"` to send the answer back to the Runner. The Runner picks it up via `flywheel-comm check`. The trusted `[REPORT]` exception above is ACK-only.
-4. **One `[ASK] runner_question` event → one chat notification.** Do NOT batch multiple asks into a single message and do NOT silently drop one because the Runner "might figure it out". The Runner explicitly asked the operator — surface it. Relay a trusted `[REPORT]` once as lifecycle status, without asking for an answer.
+3. When the operator answers, run `flywheel-comm respond --db <CommDB path from the event> --lead <your_id> <qid> "<reply>"` to send the answer back to the Runner. The Runner picks it up via `flywheel-comm check`.
+4. **One `runner_question` event → one chat notification.** Do NOT batch multiple `runner_question` items into a single message and do NOT silently drop one because the Runner "might figure it out". The Runner explicitly asked the operator — surface it.
 
 ### Difference from `gate_question`
 
@@ -231,8 +220,7 @@ Required behavior:
 | Annie framing | "Runner is waiting for you" | "Runner is asking (continues working)" |
 | Survive Runner completion | Skipped after session leaves active | Stays pending until answered or TTL |
 
-Only `gate_question` and `[ASK] runner_question` reply with `flywheel-comm respond`.
-The trusted `[REPORT]` runner-stop exception is ACK-only and never receives a response.
+Both reply the same way (`flywheel-comm respond`).
 
 This rule is intentionally parallel to the dept-lead `Runner Question Handling` rule — both ship as a unit so any Lead that owns a Runner can handle `runner_question`.
 
@@ -255,12 +243,9 @@ In every such case the cos-lead **does not reply**. The named dept Lead's own ru
 
 ### When the cos-lead DOES reply (default replier)
 
-Only when **all** conditions hold:
+Only when **both** conditions hold:
 - No `<@LEAD>` mention to any dept Lead, AND
-- No dept Lead's literal name appears in the message text, AND
-- No stricter project-identity abstain rule matches.
-
-A project identity MAY extend the abstain set — e.g. Flywheel's "any non-self `<@…>` mention → do not reply" rule — and that extension wins over this default-replier rule even though this file appears later in the prompt stack.
+- No dept Lead's literal name appears in the message text.
 
 This is the "generic question / global status / routing decision" path. Examples (illustrative): `"今天 standup 有什么进展?"`, `"我想做 X"`, `"backlog 怎样了"`.
 
@@ -301,7 +286,7 @@ The base rule does NOT enumerate Lead names because every project's department r
 
 ## Order of precedence
 
-This file is the **abstract contract**. Your cos-lead's `identity.md` is the concrete instantiation: bot IDs, channel IDs, project-specific Triage flow, and project-specific assignment rules. The identity appears first as the agent system prompt; this file appears later through the appended rules bundle. Prompt position does not decide precedence here: wherever both touch the same topic, the project identity wins — including when it declares a stricter abstain set than this file's default-replier rule. This clause makes that precedence explicit; project authors should still prefer extension over override.
+This file is the **abstract contract**. Your cos-lead's `identity.md` is appended **after** this file and provides concrete data: bot IDs, channel IDs, project-specific Triage flow, project-specific assignment rules. Where both touch the same topic, the later (project) wins per Claude prompt-stacking semantics — but project authors should treat that as a yellow flag and prefer extension over override.
 
 ---
 

@@ -22,7 +22,7 @@ import type {
 import type { DagNode } from "flywheel-dag-resolver";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
-import { Blueprint } from "../Blueprint.js";
+import { Blueprint, buildQaModeSystemPromptLines } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
@@ -115,7 +115,6 @@ const CHECKPOINTS = {
 
 const cleanups: string[] = [];
 afterEach(() => {
-	vi.unstubAllEnvs();
 	while (cleanups.length) {
 		rmSync(cleanups.pop() as string, { recursive: true, force: true });
 	}
@@ -124,7 +123,6 @@ afterEach(() => {
 async function buildPrompt(opts: {
 	ctxOverrides?: Partial<BlueprintContext>;
 	worktreePath?: string;
-	checkpointConfig?: Record<string, { enabled?: boolean }>;
 }): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
@@ -139,7 +137,7 @@ async function buildPrompt(opts: {
 		undefined,
 		undefined,
 		undefined,
-		opts.checkpointConfig ?? CHECKPOINTS,
+		CHECKPOINTS,
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",
@@ -166,33 +164,6 @@ async function buildCodexPrompt(
 }
 
 describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references", () => {
-	it("FLY-1718: makes push-guard bypasses forbidden and ACK Lead-supervised", async () => {
-		const prompt = await buildCodexPrompt();
-		expect(prompt).toContain("git push --no-verify");
-		expect(prompt).toContain("core.hooksPath");
-		expect(prompt).toContain("Lead confirmation");
-		expect(prompt).toContain("FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>");
-		expect(prompt).toContain("one command");
-	});
-
-	it("FLY-1718: renders inherited branch/PR inventory without claiming a resume or gate skip", async () => {
-		const prompt = await buildCodexPrompt({
-			startPoint: "a".repeat(40),
-			continuityInherit: {
-				branch: "flywheel-FLY-1704",
-				sha: "a".repeat(40),
-				prNumber: 813,
-				prUrl: "https://github.test/pull/813",
-			},
-		});
-		expect(prompt).toContain("BRANCH CONTINUITY");
-		expect(prompt).toContain("origin/flywheel-FLY-1704@aaaaaaa");
-		expect(prompt).toContain("open PR #813: https://github.test/pull/813");
-		expect(prompt).toContain("git log --oneline -10");
-		expect(prompt).toContain("No pipeline gate is skipped");
-		expect(prompt).not.toContain("RESUME MODE");
-	});
-
 	it("baseline codex prompt: banned tokens absent, codex equivalents present", async () => {
 		const prompt = await buildCodexPrompt();
 		expect(prompt.length).toBeGreaterThan(0);
@@ -204,18 +175,15 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).not.toContain("Attempt the `onboard` skill");
 		// report channel honesty
 		expect(prompt).toContain("NO teammate-messaging tool");
-		expect(prompt).not.toContain("fresh QA PASS verdict");
-		expect(prompt).not.toContain("Bridge then auto-rebinds the ship gate");
-		expect(prompt).toContain("recovery is a fresh review lap");
 	});
 
-	it("codex DAG workflow implement phase (keep-alive): park wording carries no banned tokens", async () => {
+	it("codex three-stage implement phase (keep-alive): park wording carries no banned tokens", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "implement",
 			shareParentBranch: true,
 			startPoint: "abc123", // matches the mock gitChecker baseline (takeover guard)
 		});
-		expect(prompt).toContain("DAG workflow keep-alive (implement phase)");
+		expect(prompt).toContain("Three-stage keep-alive (implement phase)");
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}
@@ -229,7 +197,7 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		);
 	});
 
-	it("codex DAG workflow design phase parks after its exact completion route", async () => {
+	it("codex three-stage design phase parks after its exact completion route", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "design",
 			shareParentBranch: true,
@@ -246,13 +214,13 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		);
 	});
 
-	it("codex DAG workflow QA phase parks after verdict and supports same-session re-test", async () => {
+	it("codex three-stage QA phase parks after verdict and supports same-session re-test", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "qa",
 			shareParentBranch: true,
 			startPoint: "abc123",
 		});
-		expect(prompt).toContain("QA phase of a DAG workflow");
+		expect(prompt).toContain("QA phase of a three-stage pipeline");
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}
@@ -266,6 +234,53 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).toContain("message is context; TURN is authority");
 		expect(prompt).toContain("5-fb.");
 		expect(prompt).toContain("FEEDBACK = KICKBACK");
+	});
+});
+
+describe("FLY-1188 M2 — auto-QA prompt lines (buildQaModeSystemPromptLines)", () => {
+	const qaContext = {
+		parentExecutionId: "parent-exec",
+		prHeadSha: "deadbeef",
+		prNumber: 42,
+		branch: "feat/x",
+	};
+
+	it("codex variant: capability-honest, no banned tokens, coverage-gap reporting", () => {
+		const lines = buildQaModeSystemPromptLines(
+			qaContext,
+			"FLY-1188",
+			"/cli",
+			"exec-1",
+			true,
+		).join("\n");
+		for (const banned of BANNED_IN_CODEX_PROMPT) {
+			expect(lines).not.toContain(banned);
+		}
+		expect(lines).toContain("NO browser automation");
+		expect(lines).toContain("coverage gap");
+		expect(lines).toContain("END YOUR TURN");
+		// Codex M2 review R4 HIGH-1: no park/wake/same-session promises until
+		// the adapter loop milestone lands.
+		expect(lines).not.toContain("park");
+		expect(lines).not.toContain("re-woken");
+		expect(lines).not.toContain("SAME QA session");
+	});
+
+	it("claude variant (default param): byte-identical to pre-FLY-1188 wording", () => {
+		const lines = buildQaModeSystemPromptLines(
+			qaContext,
+			"FLY-1188",
+			"/cli",
+			"exec-1",
+		).join("\n");
+		expect(lines).toContain(
+			"Claude-in-Chrome for browser surfaces, NOT Playwright",
+		);
+		expect(lines).toContain("close all Claude-in-Chrome tabs");
+		expect(lines).toContain("if your context is large, `/compact`");
+		expect(lines).toContain(
+			'Never use the stock SendMessage to:"team-lead" channel.',
+		);
 	});
 });
 
@@ -328,12 +343,6 @@ describe("FLY-1188 M2 — role-file ENVIRONMENT TRANSLATION header (codex only)"
 		expect(roleIdx).toBeGreaterThan(headerIdx);
 		// role text stays VERBATIM (translation is a header, not a rewrite)
 		expect(prompt).toContain("Use the Skill tool and SendMessage as usual.");
-		expect(prompt).toContain(
-			"appears in your Available skills catalog, use it natively",
-		);
-		expect(prompt).not.toContain(
-			"you have no Skill tool — perform the same steps manually",
-		);
 	});
 
 	it("claude: no translation header (byte-compat)", async () => {
@@ -356,60 +365,6 @@ describe("FLY-1188 M2 — claude prompt byte-snapshot (drift guard)", () => {
 				"<EXEC_ID>",
 			);
 		expect(normalized).toMatchSnapshot();
-	});
-});
-
-// ── FLY-1257 M1-a — resident Codex gate-wait law ──────────────────────────────
-// The same invariant is requested at every Codex gate surface but rendered
-// exactly once per prompt. This prevents a long-pending human gate from being
-// mistaken for permission to terminalize the durable goal as blocked.
-describe("FLY-1257 M1-a — resident Codex gate-wait law", () => {
-	const WAIT_LAW = "gate/review pending is NEVER blocked";
-
-	it("renders the shared law exactly once when all Codex checkpoints are enabled", async () => {
-		const prompt = await buildCodexPrompt();
-		expect(prompt).toContain("BRAINSTORM GATE");
-		expect(prompt).toContain("CODE REVIEW GATE (codex author");
-		expect(prompt).toContain("APPROVE GATE (MANDATORY");
-		expect(prompt).toContain("QUESTION GATE");
-		expect(prompt.match(new RegExp(WAIT_LAW, "g")) ?? []).toHaveLength(1);
-		expect(prompt).toContain("fail-open timeout means continue");
-	});
-
-	it.each([
-		["brainstorm", { brainstorm: { enabled: true } }],
-		["question", { question: { enabled: true } }],
-		["generic", { security_review: { enabled: true } }],
-		["review-and-approve", { approve_to_ship: { enabled: true } }],
-	] as const)(
-		"%s-only Codex prompt still carries the shared law once",
-		async (_name, checkpointConfig) => {
-			const wt = makeRealWorktree();
-			cleanups.push(wt);
-			const prompt = await buildPrompt({
-				worktreePath: wt,
-				ctxOverrides: { runnerBackend: "codex-tmux" },
-				checkpointConfig,
-			});
-			expect(prompt.match(new RegExp(WAIT_LAW, "g")) ?? []).toHaveLength(1);
-		},
-	);
-
-	it("Claude prompt remains free of the Codex-only wait law", async () => {
-		const prompt = await buildPrompt({ ctxOverrides: {} });
-		expect(prompt).not.toContain(WAIT_LAW);
-		expect(prompt).not.toContain("fail-open timeout means continue");
-	});
-
-	it("FLY-2103 treats a declared checkpoint as enabled regardless of a legacy false value", async () => {
-		const wt = makeRealWorktree();
-		cleanups.push(wt);
-		const prompt = await buildPrompt({
-			worktreePath: wt,
-			ctxOverrides: { runnerBackend: "codex-tmux" },
-			checkpointConfig: { security_review: { enabled: false } },
-		});
-		expect(prompt).toContain("SECURITY_REVIEW GATE");
 	});
 });
 

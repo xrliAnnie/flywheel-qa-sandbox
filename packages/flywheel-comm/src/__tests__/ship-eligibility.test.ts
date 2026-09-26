@@ -8,7 +8,7 @@
  *    turning the merge-approval gate off must NOT bypass the QA gate, and vice-versa.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -144,15 +144,6 @@ describe("FLY-869 ship-eligibility", () => {
 		db.prepare(
 			"INSERT INTO workflow_run_node (run_id, node_id, attempt, execution_id) VALUES ('run-1', ?, ?, ?)",
 		).run(nodeId, attempt, executionId);
-		if ((input.currentAttempt ?? attempt) > attempt) {
-			db.prepare(
-				"INSERT INTO workflow_run_node (run_id, node_id, attempt, execution_id) VALUES ('run-1', ?, ?, ?)",
-			).run(
-				nodeId,
-				input.currentAttempt,
-				`${executionId}-attempt-${input.currentAttempt}`,
-			);
-		}
 		db.prepare(
 			"INSERT INTO workflow_execution_binding (execution_id, run_id, node_id, attempt) VALUES (?, 'run-1', ?, ?)",
 		).run(executionId, nodeId, attempt);
@@ -184,29 +175,10 @@ describe("FLY-869 ship-eligibility", () => {
 		db.close();
 	}
 
-	function markSessionEngineOwned(): void {
-		const db = new Database(stateDbPath);
-		db.exec(`
-			CREATE TABLE workflow_run (
-				run_id TEXT PRIMARY KEY,
-				engine_owned INTEGER NOT NULL DEFAULT 0
-			);
-			CREATE TABLE workflow_execution_binding (
-				execution_id TEXT PRIMARY KEY,
-				run_id TEXT NOT NULL,
-				node_id TEXT NOT NULL,
-				attempt INTEGER NOT NULL
-			);
-			INSERT INTO workflow_run (run_id, engine_owned)
-			VALUES ('run-engine-owned', 1);
-			INSERT INTO workflow_execution_binding (execution_id, run_id, node_id, attempt)
-			VALUES ('${EXEC}', 'run-engine-owned', 'implement', 1);
-		`);
-		db.close();
-	}
+	const on = { FLYWHEEL_QA_DONE_GATE: "1" } as NodeJS.ProcessEnv;
 
 	describe("evaluateQaShipGate", () => {
-		it("FLY-1981 retired env cannot bypass a missing QA pass", () => {
+		it("kill-switch off → passes regardless of snapshot", () => {
 			writeSession({ qa_required: 1, pr_number: 5 }); // required, no passed record
 			const r = evaluateQaShipGate({
 				execId: EXEC,
@@ -214,11 +186,7 @@ describe("FLY-869 ship-eligibility", () => {
 				stateDbPath,
 				env: { FLYWHEEL_QA_DONE_GATE: "0" } as NodeJS.ProcessEnv,
 			});
-			expect(r).toEqual({
-				passed: false,
-				reason: "qa_not_passed",
-				qaRequired: 1,
-			});
+			expect(r).toEqual({ passed: true, reason: "qa_gate_off" });
 		});
 
 		it("qa_required=1 + passing record for head → qa_ok", () => {
@@ -227,6 +195,7 @@ describe("FLY-869 ship-eligibility", () => {
 				execId: EXEC,
 				prHead: HEAD,
 				stateDbPath,
+				env: on,
 			});
 			expect(r.passed).toBe(true);
 			expect(r.reason).toBe("qa_ok");
@@ -238,6 +207,7 @@ describe("FLY-869 ship-eligibility", () => {
 				execId: EXEC,
 				prHead: HEAD,
 				stateDbPath,
+				env: on,
 			});
 			expect(r.passed).toBe(false);
 			expect(r.reason).toBe("qa_not_passed");
@@ -253,6 +223,7 @@ describe("FLY-869 ship-eligibility", () => {
 				execId: EXEC,
 				prHead: HEAD,
 				stateDbPath,
+				env: on,
 			});
 			expect(r.passed).toBe(false);
 			expect(r.reason).toBe("qa_not_passed");
@@ -264,23 +235,26 @@ describe("FLY-869 ship-eligibility", () => {
 				execId: EXEC,
 				prHead: HEAD,
 				stateDbPath,
+				env: on,
 			});
 			expect(r).toMatchObject({ passed: true, reason: "qa_not_required" });
 		});
 
-		it("durable QA ignores the retired claims READ zero and uses the enrolled claim", () => {
+		it("durable QA + claims READ off → fail-closed and never trusts qa_required=0", () => {
 			writeSession({ qa_required: 0, pr_number: 5, durableQa: true });
-			enrollQaClaim();
 			const r = evaluateQaShipGate({
 				execId: EXEC,
 				prHead: HEAD,
 				stateDbPath,
 				env: {
+					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
-					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
-			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
+			expect(r).toMatchObject({
+				passed: false,
+				reason: "qa_claim_gate_unenrolled_failclosed",
+			});
 		});
 
 		it("durable QA + READ on + explicit enrollment + current bound PASS → qa_claim_ok", () => {
@@ -291,9 +265,24 @@ describe("FLY-869 ship-eligibility", () => {
 				prHead: HEAD,
 				stateDbPath,
 				env: {
+					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
+			});
+			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
+		});
+
+		it("durable QA resolves claims READ from the live dotenv", () => {
+			writeSession({ qa_required: 0, pr_number: 5, durableQa: true });
+			enrollQaClaim();
+			const dotenvPath = join(tmpDir, ".env");
+			writeFileSync(dotenvPath, "FLYWHEEL_WORKFLOW_CLAIMS_READ=1\n");
+			const r = evaluateQaShipGate({
+				execId: EXEC,
+				prHead: HEAD,
+				stateDbPath,
+				env: { FLYWHEEL_QA_DONE_GATE: "1" } as NodeJS.ProcessEnv,
+				qaDotenvPath: dotenvPath,
 			});
 			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
 		});
@@ -329,8 +318,8 @@ describe("FLY-869 ship-eligibility", () => {
 				prHead: HEAD,
 				stateDbPath,
 				env: {
+					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r.passed).toBe(false);
@@ -350,8 +339,8 @@ describe("FLY-869 ship-eligibility", () => {
 				prHead: HEAD,
 				stateDbPath,
 				env: {
+					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r.passed).toBe(false);
@@ -368,11 +357,25 @@ describe("FLY-869 ship-eligibility", () => {
 				prHead: HEAD,
 				stateDbPath,
 				env: {
+					FLYWHEEL_QA_DONE_GATE: "1",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
 			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
+		});
+
+		it("FORCE_LEGACY is live-.env and resolves before claims tables", () => {
+			writeSession({ qa_required: 0, pr_number: 5, durableQa: true });
+			const dotenvPath = join(tmpDir, ".env");
+			writeFileSync(dotenvPath, "FLYWHEEL_WORKFLOW_FORCE_LEGACY=1\n");
+			const r = evaluateQaShipGate({
+				execId: EXEC,
+				prHead: HEAD,
+				stateDbPath,
+				env: { FLYWHEEL_QA_DONE_GATE: "1" } as NodeJS.ProcessEnv,
+				qaDotenvPath: dotenvPath,
+			});
+			expect(r).toMatchObject({ passed: true, reason: "qa_not_required" });
 		});
 
 		it("NULL snapshot + no PR / no-code route → exempt", () => {
@@ -385,6 +388,7 @@ describe("FLY-869 ship-eligibility", () => {
 				execId: EXEC,
 				prHead: HEAD,
 				stateDbPath,
+				env: on,
 			});
 			expect(r).toMatchObject({
 				passed: true,
@@ -402,27 +406,10 @@ describe("FLY-869 ship-eligibility", () => {
 				execId: EXEC,
 				prHead: HEAD,
 				stateDbPath,
+				env: on,
 			});
 			expect(r.passed).toBe(false);
 			expect(r.reason).toBe("qa_snapshot_missing_failclosed");
-		});
-
-		it("engine-owned recovery cannot infer a QA exemption from DAG ownership", () => {
-			writeSession({
-				qa_required: null,
-				decision_route: "needs_review",
-				pr_number: 7,
-			});
-			markSessionEngineOwned();
-			const r = evaluateQaShipGate({
-				execId: EXEC,
-				prHead: HEAD,
-				stateDbPath,
-			});
-			expect(r).toEqual({
-				passed: false,
-				reason: "qa_snapshot_missing_failclosed",
-			});
 		});
 
 		it("invalid head → fail-closed", () => {
@@ -431,6 +418,7 @@ describe("FLY-869 ship-eligibility", () => {
 				execId: EXEC,
 				prHead: "xyz",
 				stateDbPath,
+				env: on,
 			});
 			expect(r).toMatchObject({
 				passed: false,
@@ -439,21 +427,40 @@ describe("FLY-869 ship-eligibility", () => {
 		});
 	});
 
-	describe("evaluateShipEligibility — merge approval gate is always armed", () => {
-		it("ignores the retired zero value and still requires founder approval", () => {
+	describe("evaluateShipEligibility — independent kill-switches (R2 HIGH-3)", () => {
+		it("merge gate OFF must NOT bypass the QA gate", () => {
 			writeSession({ qa_required: 1, pr_number: 5 }); // QA required, not passed
-			const legacyKey = ["FLYWHEEL", "MERGE", "APPROVAL", "GATE"].join("_");
 			const d = evaluateShipEligibility({
 				execId: EXEC,
 				prHead: HEAD,
 				commDbPath,
 				stateDbPath,
-				env: { [legacyKey]: "0" },
+				env: {
+					FLYWHEEL_MERGE_APPROVAL_GATE: "0", // B off
+					FLYWHEEL_QA_DONE_GATE: "1", // A on
+				} as NodeJS.ProcessEnv,
 			});
-			expect(d.mergeApprovalOk).toBe(false);
-			expect(d.qaOk).toBe(false);
-			expect(d.eligible).toBe(false);
+			expect(d.mergeApprovalOk).toBe(true); // B bypassed
+			expect(d.qaOk).toBe(false); // A still enforced
+			expect(d.eligible).toBe(false); // → still blocked
 			expect(d.qaReason).toBe("qa_not_passed");
+		});
+
+		it("both gates OFF → eligible", () => {
+			writeSession({ qa_required: 1, pr_number: 5 });
+			const d = evaluateShipEligibility({
+				execId: EXEC,
+				prHead: HEAD,
+				commDbPath,
+				stateDbPath,
+				env: {
+					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
+					FLYWHEEL_QA_DONE_GATE: "0",
+				} as NodeJS.ProcessEnv,
+			});
+			expect(d.eligible).toBe(true);
+			expect(d.mergeApprovalOk).toBe(true);
+			expect(d.qaOk).toBe(true);
 		});
 	});
 });

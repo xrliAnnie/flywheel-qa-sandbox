@@ -1,64 +1,36 @@
 import { execFileSync } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
-import { resolveLeadIdentity } from "../lead-identity.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "../../dist/index.js");
-let defaultCliEnv: Record<string, string | undefined> = {};
 
-function cliEnv(
-	overrides?: Record<string, string | undefined>,
-): NodeJS.ProcessEnv {
-	const env = { ...process.env, ...defaultCliEnv };
-	for (const [key, value] of Object.entries(overrides ?? {})) {
-		if (value === undefined) {
-			delete env[key];
-		} else {
-			env[key] = value;
-		}
-	}
-	return env;
-}
-
-function runCli(
-	args: string[],
-	env?: Record<string, string | undefined>,
-): string {
+function runCli(args: string[], env?: Record<string, string>): string {
 	return execFileSync("node", [CLI_PATH, ...args], {
 		encoding: "utf-8",
-		env: cliEnv(env),
+		env: { ...process.env, ...env },
 	}).trim();
 }
 
 function runCliSafe(
 	args: string[],
-	env?: Record<string, string | undefined>,
-): { stdout: string; stderr: string; exitCode: number } {
+	env?: Record<string, string>,
+): { stdout: string; exitCode: number } {
 	try {
 		const stdout = execFileSync("node", [CLI_PATH, ...args], {
 			encoding: "utf-8",
-			env: cliEnv(env),
+			env: { ...process.env, ...env },
 			stdio: ["pipe", "pipe", "pipe"],
 		}).trim();
-		return { stdout, stderr: "", exitCode: 0 };
+		return { stdout, exitCode: 0 };
 	} catch (err: unknown) {
-		const e = err as { stdout?: string; stderr?: string; status?: number };
+		const e = err as { stdout?: string; status?: number };
 		return {
 			stdout: (e.stdout ?? "").toString().trim(),
-			stderr: (e.stderr ?? "").toString().trim(),
 			exitCode: e.status ?? 1,
 		};
 	}
@@ -71,84 +43,11 @@ describe("CLI", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-cli-"));
 		dbPath = join(tmpDir, "comm.db");
-		mkdirSync(join(tmpDir, ".flywheel"), { recursive: true });
-		writeFileSync(
-			join(tmpDir, ".flywheel", "summary-config.json"),
-			JSON.stringify({
-				granularity: "per-lead",
-				setBy: "test",
-				setAt: "2026-08-28T00:00:00.000Z",
-			}),
-		);
-		const projectsPath = join(tmpDir, "projects.json");
-		const discordStateDir = join(tmpDir, "discord-product-lead");
-		writeFileSync(
-			projectsPath,
-			JSON.stringify([
-				{
-					projectName: "test",
-					projectRoot: tmpDir,
-					leads: [
-						{
-							agentId: "product-lead",
-							summaryRole: "producer",
-							chatChannel: "11111111111111111",
-							match: { labels: ["Product"] },
-							botTokenEnv: "TEST_PRODUCT_BOT_TOKEN",
-							botUserId: "12345678901234567",
-							discordStateDir,
-						},
-					],
-				},
-			]),
-		);
-		const identity = resolveLeadIdentity({
-			projectsPath,
-			projectName: "test",
-			leadId: "product-lead",
-			homeDir: tmpDir,
-		});
-		defaultCliEnv = {
-			HOME: tmpDir,
-			FLYWHEEL_PROJECTS_FILE: projectsPath,
-			FLYWHEEL_PROJECT_NAME: identity.projectName,
-			PROJECT_NAME: identity.projectName,
-			FLYWHEEL_LEAD_ID: identity.leadId,
-			LEAD_ID: identity.leadId,
-			FLYWHEEL_LEAD_KEY: identity.leadKey,
-			FLYWHEEL_LEAD_BACKEND: identity.backend,
-			FLYWHEEL_LEAD_SUMMARY_ROLE: identity.summaryRole,
-			FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: identity.hasSummaryDuty ? "1" : "0",
-			FLYWHEEL_SUMMARY_GRANULARITY: identity.summaryGranularity ?? "",
-			FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST:
-				identity.summaryAssignmentDigest ?? "",
-			FLYWHEEL_STATE_DIR: join(tmpDir, ".flywheel"),
-			DISCORD_STATE_DIR: identity.discordStateDir,
-			DISCORD_EXPECTED_BOT_USER_ID: identity.botUserId ?? "",
-			FLYWHEEL_LEAD_IDENTITY_DIGEST: identity.identityDigest,
-			FLYWHEEL_LEAD_LEASE_MODE_FILE: join(tmpDir, "lease-mode.json"),
-			FLYWHEEL_LEAD_LEASE_DB: join(tmpDir, "lead-lease.db"),
-			FLYWHEEL_ALERT_QUEUE_DIR: join(tmpDir, "alerts"),
-			FLYWHEEL_LEAD_LEASE_AUDIT_LOG: join(tmpDir, "lead-lease-audit.log"),
-		};
 	});
 
 	afterEach(() => {
-		defaultCliEnv = {};
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
-
-	function bindDefaultRunner(): void {
-		const db = new CommDB(dbPath);
-		db.registerSession(
-			"runner",
-			"runner",
-			"test",
-			"issue-runner",
-			"product-lead",
-		);
-		db.close();
-	}
 
 	describe("ask", () => {
 		it("should output question ID", () => {
@@ -184,212 +83,6 @@ describe("CLI", () => {
 			const { exitCode } = runCliSafe(["ask", "--db", dbPath, "question"]);
 			expect(exitCode).toBe(1);
 		});
-
-		it("FLY-1715: runner ask/check/gate/ack use ingest nudges without reading the disk master token", () => {
-			const runnerHome = join(tmpDir, "runner-home");
-			const envDir = join(runnerHome, ".flywheel");
-			mkdirSync(envDir, { recursive: true });
-			writeFileSync(
-				join(envDir, ".env"),
-				"TEAMLEAD_API_TOKEN=must-never-be-read\n",
-			);
-			const readLog = join(tmpDir, "master-read.log");
-			const fetchLog = join(tmpDir, "nudge-fetch.log");
-			const preload = join(tmpDir, "runner-ingest-preload.mjs");
-			writeFileSync(
-				preload,
-				`import fs from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
-const originalReadFileSync = fs.readFileSync;
-const originalAppendFileSync = fs.appendFileSync;
-fs.readFileSync = function(path, ...args) {
-  if (typeof path === "string" && path.endsWith("/.flywheel/.env")) {
-    originalAppendFileSync(process.env.FLY1715_READ_LOG, path + "\\n");
-  }
-  return originalReadFileSync.call(this, path, ...args);
-};
-syncBuiltinESMExports();
-globalThis.fetch = async function(url, init = {}) {
-  const headers = init.headers ?? {};
-  const authorization = typeof headers.get === "function"
-    ? headers.get("Authorization")
-    : headers.Authorization;
-  originalAppendFileSync(
-    process.env.FLY1715_FETCH_LOG,
-    JSON.stringify({ url: String(url), authorization }) + "\\n",
-  );
-  return new Response(null, { status: 401 });
-};
-`,
-			);
-
-			const runnerEnv: Record<string, string | undefined> = {
-				HOME: runnerHome,
-				TEAMLEAD_API_TOKEN: undefined,
-				FLYWHEEL_INGEST_TOKEN: "  runner-ingest  ",
-				FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876",
-				FLY1715_READ_LOG: readLog,
-				FLY1715_FETCH_LOG: fetchLog,
-				NODE_OPTIONS:
-					`${process.env.NODE_OPTIONS ?? ""} --import=${preload}`.trim(),
-			};
-
-			const questionId = runCli(
-				["ask", "--lead", "product-lead", "--db", dbPath, "runner question"],
-				runnerEnv,
-			);
-			expect(runCli(["check", "--db", dbPath, questionId], runnerEnv)).toBe(
-				"not yet",
-			);
-			const gateResult = JSON.parse(
-				runCli(
-					[
-						"gate",
-						"question",
-						"--lead",
-						"product-lead",
-						"--exec-id",
-						"runner-exec",
-						"--db",
-						dbPath,
-						"--no-block",
-						"runner gate",
-					],
-					runnerEnv,
-				),
-			);
-			expect(gateResult.status).toBe("pending");
-			execFileSync(
-				"node",
-				[
-					CLI_PATH,
-					"ack-event",
-					"1",
-					"--lead",
-					"product-lead",
-					"--db",
-					dbPath,
-					"--token-stdin",
-				],
-				{
-					encoding: "utf-8",
-					env: cliEnv(runnerEnv),
-					input: "runner-receipt-token\n",
-				},
-			);
-
-			expect(existsSync(readLog)).toBe(false);
-			const nudges = readFileSync(fetchLog, "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line));
-			expect(nudges).toHaveLength(3);
-			expect(nudges).toEqual(
-				expect.arrayContaining([
-					expect.objectContaining({
-						url: "http://127.0.0.1:9876/api/lead-inbox/nudge",
-						authorization: "Bearer runner-ingest",
-					}),
-				]),
-			);
-		});
-	});
-
-	describe("lead-identity", () => {
-		it("resolves an exact registry selector through the public CLI", () => {
-			const projectsPath = join(tmpDir, "projects.json");
-			writeFileSync(
-				projectsPath,
-				JSON.stringify([
-					{
-						projectName: "flywheel",
-						projectRoot: tmpDir,
-						leads: [
-							{
-								agentId: "eng-lead",
-								summaryRole: "producer",
-								chatChannel: "11111111111111111",
-								match: { labels: ["Engineering"] },
-								botTokenEnv: "ENG_BOT_TOKEN",
-								botUserId: "12345678901234567",
-							},
-						],
-					},
-				]),
-			);
-
-			const result = JSON.parse(
-				runCli([
-					"lead-identity",
-					"resolve",
-					"--projects-file",
-					projectsPath,
-					"--project",
-					"flywheel",
-					"--lead",
-					"eng-lead",
-				]),
-			);
-			expect(result).toMatchObject({
-				leadId: "eng-lead",
-				projectName: "flywheel",
-				botUserId: "12345678901234567",
-			});
-		});
-	});
-
-	describe("ack-event identity", () => {
-		it("fails loud when neither --lead nor FLYWHEEL_LEAD_ID identifies the acknowledger", () => {
-			const result = runCliSafe(
-				["ack-event", "1", "--db", dbPath, "--token-stdin"],
-				{ FLYWHEEL_LEAD_ID: undefined },
-			);
-			expect(result.exitCode).toBe(1);
-			expect(result.stderr).toMatch(/--lead.*FLYWHEEL_LEAD_ID/i);
-		});
-	});
-
-	describe("codex-review-result", () => {
-		it("requires explicit exec and head flags before any Bridge write", () => {
-			const fetchLog = join(tmpDir, "fetch.log");
-			const preload = join(tmpDir, "fetch-preload.mjs");
-			writeFileSync(
-				preload,
-				`import { appendFileSync } from "node:fs";
-globalThis.fetch = async () => {
-  appendFileSync(${JSON.stringify(fetchLog)}, "called\\n");
-  return { ok: true, status: 200 };
-};
-`,
-			);
-			const fullEnv = {
-				HOME: tmpDir,
-				FLYWHEEL_EXEC_ID: "env-exec-must-not-count",
-				FLYWHEEL_ISSUE_ID: "FLY-1501",
-				FLYWHEEL_PROJECT_NAME: "flywheel",
-				FLYWHEEL_BRIDGE_URL: "http://bridge.invalid",
-				NODE_OPTIONS: `--import=${preload}`,
-			};
-			for (const args of [
-				["codex-review-result"],
-				["codex-review-result", "--exec-id", "explicit-exec"],
-				["codex-review-result", "--pr-head", "a".repeat(40)],
-				[
-					"codex-review-result",
-					"--exec-id",
-					"explicit-exec",
-					"--pr-head",
-					"not-a-sha",
-				],
-			]) {
-				const result = runCliSafe(args, fullEnv);
-				expect(result.exitCode, args.join(" ")).toBe(1);
-				expect(result.stderr, args.join(" ")).toMatch(
-					/Usage:.*codex-review-result.*--exec-id.*--pr-head/i,
-				);
-			}
-			expect(existsSync(fetchLog)).toBe(false);
-		}, 15_000);
 	});
 
 	describe("check", () => {
@@ -407,7 +100,6 @@ globalThis.fetch = async () => {
 		});
 
 		it("should output answer when responded", () => {
-			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
 				"--lead",
@@ -444,7 +136,6 @@ globalThis.fetch = async () => {
 		});
 
 		it("should output JSON with --json", () => {
-			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
 				"--lead",
@@ -515,37 +206,10 @@ globalThis.fetch = async () => {
 			expect(result).toHaveLength(1);
 			expect(result[0].content).toBe("Q?");
 		});
-
-		it("excludes trusted runner-stop reports but keeps ordinary and near-match questions", () => {
-			const db = new CommDB(dbPath);
-			db.insertQuestion("runner", "product-lead", "ordinary question");
-			db.insertQuestion(
-				"runner",
-				"product-lead",
-				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=runner route=- detail=parked",
-				{ id: `rstop-${"a".repeat(32)}`, kind: "report" },
-			);
-			db.insertQuestion(
-				"runner",
-				"product-lead",
-				"RUNNER-STOPPED kind=runner_stopped near match",
-				{ id: "ordinary-report", kind: "report" },
-			);
-			db.close();
-
-			const result = JSON.parse(
-				runCli(["pending", "--lead", "product-lead", "--db", dbPath, "--json"]),
-			) as Array<{ id: string; content: string }>;
-			expect(result.map(({ content }) => content)).toEqual([
-				"ordinary question",
-				"RUNNER-STOPPED kind=runner_stopped near match",
-			]);
-		});
 	});
 
 	describe("respond", () => {
 		it("should confirm response", () => {
-			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
 				"--lead",
@@ -564,34 +228,6 @@ globalThis.fetch = async () => {
 				"Answer here",
 			]);
 			expect(result).toContain("Responded to");
-		});
-
-		it("answers a deterministic turn-wait question with exit 0 and a readable response", () => {
-			bindDefaultRunner();
-			const questionId = "turn-wait:runner:holder:3";
-			const db = new CommDB(dbPath);
-			db.insertQuestion("runner", "product-lead", "TURN handoff overdue", {
-				id: questionId,
-			});
-			db.close();
-
-			const result = runCliSafe(
-				[
-					"respond",
-					"--lead",
-					"product-lead",
-					"--db",
-					dbPath,
-					questionId,
-					"Belt inspected; keep waiting.",
-				],
-				{ FLYWHEEL_GATE_MARKER_DIR: join(tmpDir, "markers") },
-			);
-			const answer = runCli(["check", "--db", dbPath, questionId]);
-
-			expect(result.exitCode).toBe(0);
-			expect(result.stdout).toContain(`Responded to ${questionId}`);
-			expect(answer).toBe("Belt inspected; keep waiting.");
 		});
 	});
 
@@ -631,20 +267,6 @@ globalThis.fetch = async () => {
 			expect(result).toContain("Usage:");
 			expect(result).toContain("ask");
 			expect(result).toContain("check");
-			expect(result).toContain("founder-time");
-		});
-	});
-
-	describe("founder-time", () => {
-		it("honors the founder timezone env override in JSON mode", () => {
-			const result = JSON.parse(
-				runCli(["founder-time", "--json"], {
-					FLYWHEEL_FOUNDER_TZ: "Asia/Tokyo",
-				}),
-			);
-			expect(result.tz).toBe("Asia/Tokyo");
-			expect(result.offsetMinutes).toBe(540);
-			expect(result.iso).toMatch(/[+]09:00$/);
 		});
 	});
 
@@ -821,74 +443,9 @@ globalThis.fetch = async () => {
 			expect(result).toBe("No instructions.");
 		});
 
-		it("should use FLYWHEEL_EXEC_ID when --exec-id is omitted", () => {
-			runCli([
-				"send",
-				"--from",
-				"product-lead",
-				"--to",
-				"env-exec",
-				"--db",
-				dbPath,
-				"Environment-bound instruction",
-			]);
-
-			const result = runCli(["inbox", "--db", dbPath], {
-				FLYWHEEL_EXEC_ID: "env-exec",
-			});
-			expect(result).toContain("Environment-bound instruction");
-		});
-
-		it("should fail without an execution identity", () => {
-			const { exitCode } = runCliSafe(["inbox", "--db", dbPath], {
-				FLYWHEEL_EXEC_ID: undefined,
-			});
+		it("should fail without --exec-id", () => {
+			const { exitCode } = runCliSafe(["inbox", "--db", dbPath]);
 			expect(exitCode).toBe(1);
-		});
-	});
-
-	describe("message-status", () => {
-		it("queries live evidence by exact id and exits 1 for an absent id", () => {
-			const id = runCli([
-				"send",
-				"--from",
-				"product-lead",
-				"--to",
-				"exec-status",
-				"--db",
-				dbPath,
-				"Inspect me",
-			]);
-			const live = JSON.parse(
-				runCli(["message-status", id, "--db", dbPath, "--json"]),
-			);
-			expect(live).toMatchObject({
-				location: "live",
-				message_id: id,
-				state: "QUEUED",
-				dead_reason: null,
-				last_error: null,
-				stamps: {
-					created_at: expect.any(String),
-					delivered_at: null,
-					notified_at: null,
-					settled_at: null,
-				},
-			});
-
-			const absent = runCliSafe([
-				"message-status",
-				"missing",
-				"--db",
-				dbPath,
-				"--json",
-			]);
-			expect(absent.exitCode).toBe(1);
-			expect(JSON.parse(absent.stdout)).toMatchObject({
-				location: "absent",
-				message_id: "missing",
-				state: null,
-			});
 		});
 	});
 
@@ -984,7 +541,7 @@ globalThis.fetch = async () => {
 			db.markInstructionRead(instId);
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
+					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
 				)
 				.run(instId);
 			db.close();
@@ -1001,43 +558,31 @@ globalThis.fetch = async () => {
 			expect(result.cleaned).toBe(0);
 		});
 
-		it("should respect --ttl above the 72-hour retention floor", () => {
+		it("should respect --ttl flag", () => {
 			const db = new CommDB(dbPath);
-			const instId = db.insertInstruction("lead", "exec-1", "96h old");
+			const instId = db.insertInstruction("lead", "exec-1", "3h old");
 			db.markInstructionRead(instId);
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-96 hours') WHERE id = ?",
+					"UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE id = ?",
 				)
 				.run(instId);
 			db.close();
 
-			const retained = runCli([
-				"cleanup",
-				"--db",
-				dbPath,
-				"--ttl",
-				"120",
-				"--json",
-			]);
-			expect(JSON.parse(retained).cleaned).toBe(0);
+			// Default 24h: should not clean
+			const result24 = runCli(["cleanup", "--db", dbPath, "--json"]);
+			expect(JSON.parse(result24).cleaned).toBe(0);
 
-			const raw = new Database(dbPath);
-			raw
-				.prepare(
-					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-121 hours') WHERE id = ?",
-				)
-				.run(instId);
-			raw.close();
-			const cleaned = runCli([
+			// 2h TTL: should clean
+			const result2 = runCli([
 				"cleanup",
 				"--db",
 				dbPath,
 				"--ttl",
-				"120",
+				"2",
 				"--json",
 			]);
-			expect(JSON.parse(cleaned).cleaned).toBe(1);
+			expect(JSON.parse(result2).cleaned).toBe(1);
 		});
 	});
 

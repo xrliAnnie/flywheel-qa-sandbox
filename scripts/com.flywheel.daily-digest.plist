@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FLY-727 — daily fleet-wide completion digest (launchd template).
+  Install:
+    cp scripts/com.flywheel.daily-digest.plist ~/Library/LaunchAgents/
+    # set FLYWHEEL_DIGEST_CHANNEL below (or in ~/.flywheel/.env) to the SAME channel
+    # id as FLYWHEEL_TOKEN_USAGE_CHANNEL (the cost→dashboard channel), then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.daily-digest.plist
+  FLYWHEEL_DIGEST_CHANNEL is REQUIRED — unset means the digest is disabled (the
+  Bridge also refuses to mount /api/digest when it is unset). There is NO silent
+  fallback to FLYWHEEL_TOKEN_USAGE_CHANNEL.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.flywheel.daily-digest</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/xiaorongli/Dev/flywheel/scripts/daily-digest.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>FLYWHEEL_REPO</key>
+		<string>/Users/xiaorongli/Dev/flywheel</string>
+		<!-- <key>FLYWHEEL_DIGEST_CHANNEL</key><string>REPLACE_WITH_DASHBOARD_CHANNEL_ID</string> -->
+	</dict>
+	<!--
+	  Fire at 00:35 — 5 min after the 00:30 token report (which shares the
+	  dashboard channel), reporting the day that just ended with complete data.
+	-->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>0</integer>
+		<key>Minute</key>
+		<integer>35</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>/tmp/flywheel-daily-digest.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/flywheel-daily-digest.err</string>
+</dict>
+</plist>

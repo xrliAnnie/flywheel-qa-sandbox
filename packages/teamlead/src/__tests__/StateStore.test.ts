@@ -38,17 +38,6 @@ describe("StateStore", () => {
 		store2.close();
 	});
 
-	it("does not create retired alert ledger tables in a fresh DB", () => {
-		const stmt = store.db.prepare(
-			"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('founder_page_ledger', 'ticket_escalations', 'runbook_issues') ORDER BY name",
-		);
-		const names: string[] = [];
-		while (stmt.step()) names.push(stmt.getAsObject().name as string);
-		stmt.free();
-
-		expect(names).toEqual([]);
-	});
-
 	it("insertEvent stores and retrieves event", () => {
 		const event = makeEvent();
 		const ok = store.insertEvent(event);
@@ -87,13 +76,10 @@ describe("StateStore", () => {
 		expect(s!.decision_route).toBe("needs_review");
 	});
 
-	it("getActiveSessions keeps the pre-Gate ship_parked carrier live", () => {
+	it("getActiveSessions returns only running/awaiting_review", () => {
 		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
 		store.upsertSession(
 			makeSession({ execution_id: "e2", status: "awaiting_review" }),
-		);
-		store.upsertSession(
-			makeSession({ execution_id: "e5", status: "ship_parked" }),
 		);
 		store.upsertSession(makeSession({ execution_id: "e3", status: "failed" }));
 		store.upsertSession(
@@ -101,37 +87,9 @@ describe("StateStore", () => {
 		);
 
 		const active = store.getActiveSessions();
-		expect(active).toHaveLength(3);
+		expect(active).toHaveLength(2);
 		const ids = active.map((s) => s.execution_id).sort();
-		expect(ids).toEqual(["e1", "e2", "e5"]);
-	});
-
-	it("classifies ship_parked as re-adoptable, dedup-blocking, and worktree-protected", () => {
-		store.upsertSession(
-			makeSession({
-				execution_id: "ship-carrier",
-				issue_id: "FLY-1441",
-				project_name: "flywheel",
-				status: "ship_parked",
-				session_role: "implement",
-				chat_thread_role: "implement",
-				worktree_path: "/tmp/fly-1441",
-			}),
-		);
-
-		expect(
-			store
-				.getReadoptCandidateSessions()
-				.map((session) => session.execution_id),
-		).toContain("ship-carrier");
-		expect(store.getActivePhaseSessionForIssue("FLY-1441")?.execution_id).toBe(
-			"ship-carrier",
-		);
-		expect(
-			store
-				.listWorktreeProtectionSessions("flywheel")
-				.map((session) => session.execution_id),
-		).toContain("ship-carrier");
+		expect(ids).toEqual(["e1", "e2"]);
 	});
 
 	it("getStuckSessions returns sessions with old last_activity_at", () => {
@@ -163,6 +121,83 @@ describe("StateStore", () => {
 		const stuckIds = stuck.map((s) => s.execution_id);
 		expect(stuckIds).toContain("stuck-1");
 		expect(stuckIds).not.toContain("recent-1");
+	});
+
+	it("getRecentTerminalSessionsForNotify: project + failed/blocked + main + lookback (FLY-725 v1 = B)", () => {
+		const toSqlite = (d: Date) =>
+			d
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
+		const recent = () => toSqlite(new Date(Date.now() - 60_000)); // 1 min ago
+		const old = () => toSqlite(new Date(Date.now() - 48 * 60 * 60_000)); // 48h ago
+
+		store.upsertSession(
+			makeSession({
+				execution_id: "failed-main",
+				status: "failed",
+				session_role: "main",
+				last_error: "boom",
+				last_activity_at: recent(),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "blocked-main",
+				status: "blocked",
+				session_role: "main",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: completed is NOT a 725 milestone (→ FLY-727 digest)
+		store.upsertSession(
+			makeSession({
+				execution_id: "done-main",
+				status: "completed",
+				session_role: "main",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: still active (not terminal)
+		store.upsertSession(
+			makeSession({
+				execution_id: "active",
+				status: "awaiting_review",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: QA runner (not main)
+		store.upsertSession(
+			makeSession({
+				execution_id: "qa",
+				status: "failed",
+				session_role: "qa",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: other project
+		store.upsertSession(
+			makeSession({
+				execution_id: "other-proj",
+				project_name: "flywheel",
+				status: "failed",
+				session_role: "main",
+				last_activity_at: recent(),
+			}),
+		);
+		// excluded: outside the lookback window
+		store.upsertSession(
+			makeSession({
+				execution_id: "too-old",
+				status: "blocked",
+				session_role: "main",
+				last_activity_at: old(),
+			}),
+		);
+
+		const rows = store.getRecentTerminalSessionsForNotify("geoforge3d", 24);
+		const ids = rows.map((r) => r.execution_id).sort();
+		expect(ids).toEqual(["blocked-main", "failed-main"]);
 	});
 
 	it("upsertSession ignores running after terminal (failed→running no-op)", () => {
@@ -315,87 +350,6 @@ describe("StateStore", () => {
 		expect(store.getSession("exec-2")!.dispatch_model).toBeUndefined();
 		store.patchSessionMetadata("exec-2", { dispatch_model: "claude-sonnet-5" });
 		expect(store.getSession("exec-2")!.dispatch_model).toBe("claude-sonnet-5");
-	});
-
-	// FLY-1259: design_backend is the effective backend locked at dispatch.
-	// It is set-once: a legacy/partial insert may leave it null, the first real
-	// dispatch fills it, and later retry/respawn writes cannot change it.
-	it("FLY-1259: upsertSession locks the first non-null design_backend", () => {
-		store.upsertSession(makeSession());
-		expect(store.getSession("exec-1")!.design_backend).toBeUndefined();
-
-		store.upsertSession(makeSession({ design_backend: "codex" }));
-		store.upsertSession(makeSession({ design_backend: "claude" }));
-
-		expect(store.getSession("exec-1")!.design_backend).toBe("codex");
-	});
-
-	it("FLY-1259: claude design_backend round-trips and invalid rows fail closed", () => {
-		store.upsertSession(
-			makeSession({ execution_id: "exec-claude", design_backend: "claude" }),
-		);
-		expect(store.getSession("exec-claude")!.design_backend).toBe("claude");
-
-		store.db.run(
-			"UPDATE sessions SET design_backend = 'unknown' WHERE execution_id = 'exec-claude'",
-		);
-		expect(store.getSession("exec-claude")!.design_backend).toBeUndefined();
-	});
-
-	it("FLY-1259: persistTransition cannot overwrite a locked design_backend", () => {
-		store.persistTransition("exec-transition", "running", {
-			issue_id: "FLY-1259",
-			project_name: "flywheel",
-			design_backend: "codex",
-		});
-		store.persistTransition("exec-transition", "awaiting_review", {
-			issue_id: "FLY-1259",
-			project_name: "flywheel",
-			design_backend: "claude",
-		});
-
-		expect(store.getSession("exec-transition")!.design_backend).toBe("codex");
-	});
-
-	it("FLY-1259: pre-column sessions DB migrates and remains writable", async () => {
-		const legacy = await StateStore.create(":memory:");
-		const internalDb = legacy.db;
-		internalDb.run("DROP TABLE sessions");
-		internalDb.run(`CREATE TABLE sessions (
-			execution_id TEXT PRIMARY KEY,
-			issue_id TEXT NOT NULL,
-			issue_identifier TEXT,
-			issue_title TEXT,
-			project_name TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'pending',
-			started_at TEXT,
-			last_activity_at TEXT,
-			tmux_session TEXT,
-			worktree_path TEXT,
-			branch TEXT,
-			last_error TEXT,
-			decision_route TEXT,
-			decision_reasoning TEXT,
-			cost_usd REAL DEFAULT 0,
-			commit_count INTEGER DEFAULT 0,
-			files_changed INTEGER DEFAULT 0,
-			lines_added INTEGER DEFAULT 0,
-			lines_removed INTEGER DEFAULT 0,
-			summary TEXT,
-			diff_summary TEXT,
-			commit_messages TEXT,
-			changed_file_paths TEXT,
-			thread_id TEXT,
-			chat_thread_role TEXT NOT NULL DEFAULT 'main'
-		)`);
-
-		legacy.migrate();
-		legacy.upsertSession(
-			makeSession({ execution_id: "exec-legacy", design_backend: "claude" }),
-		);
-
-		expect(legacy.getSession("exec-legacy")!.design_backend).toBe("claude");
-		legacy.close();
 	});
 
 	it("FLY-615: upsertSession stores and retrieves ponytail_condition", () => {
@@ -801,13 +755,9 @@ describe("StateStore", () => {
 		// archived columns. Re-open through StateStore.create() and confirm the
 		// migration drops the table, leaves sessions intact (with thread_id
 		// physical column preserved as deprecated).
-		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
-		const { tmpdir } = await import("node:os");
-		const { join } = await import("node:path");
-		const dir = mkdtempSync(join(tmpdir(), "fly163-legacy-"));
-		const path = join(dir, "state.sqlite");
-		let migrated: StateStore | undefined;
+		const path = "/tmp/fly163-legacy.sqlite";
 		try {
+			const fs = await import("node:fs");
 			const initSqlJs = (await import("sql.js")).default;
 			const SQL = await initSqlJs();
 			const seed = new SQL.Database();
@@ -825,10 +775,10 @@ describe("StateStore", () => {
 				"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES (?, ?, ?)",
 				["legacy-1", "CH1", "GEO-LEG-1"],
 			);
-			writeFileSync(path, Buffer.from(seed.export()));
+			fs.writeFileSync(path, Buffer.from(seed.export()));
 			seed.close();
 
-			migrated = await StateStore.create(path);
+			const migrated = await StateStore.create(path);
 			const stmt = migrated.db.prepare(
 				"SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_threads'",
 			);
@@ -846,8 +796,10 @@ describe("StateStore", () => {
 				migrated.getChatThreadByIssue("issue-1", "channel-xyz"),
 			).toBeDefined();
 		} finally {
-			migrated?.close();
-			rmSync(dir, { recursive: true, force: true });
+			try {
+				const fs = await import("node:fs");
+				fs.unlinkSync(path);
+			} catch {}
 		}
 	});
 
@@ -1435,69 +1387,6 @@ describe("StateStore — FLY-245 D-a lifecycle_revision (monotonic freshness)", 
 	it("getLifecycleRevision is 0 for an absent session", () => {
 		expect(store.getLifecycleRevision("nope")).toBe(0);
 	});
-});
-
-describe("StateStore — FLY-1257 terminal_at chronology", () => {
-	let store: StateStore;
-	const sentinel = "2001-02-03 04:05:06";
-	const fields = { issue_id: "GEO-95", project_name: "geoforge3d" };
-
-	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
-	});
-
-	function setTerminalAt(value: string): void {
-		(
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db.run("UPDATE sessions SET terminal_at = ? WHERE execution_id = ?", [
-			value,
-			"exec-1",
-		]);
-	}
-
-	const paths = [
-		{
-			name: "upsertSession",
-			write(status: string) {
-				store.upsertSession(makeSession({ status }));
-			},
-		},
-		{
-			name: "persistTransition",
-			write(status: string) {
-				store.persistTransition("exec-1", status, fields);
-			},
-		},
-		{
-			name: "forceStatus",
-			write(status: string) {
-				store.forceStatus("exec-1", status, "2026-07-14T00:00:00.000Z");
-			},
-		},
-	] as const;
-
-	it.each(paths)(
-		"$name stamps first terminal entry, preserves terminal-to-terminal, and clears on revive",
-		({ write }) => {
-			store.upsertSession(makeSession({ status: "running" }));
-
-			write("blocked");
-			expect(store.getSession("exec-1")?.terminal_at).toMatch(
-				/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
-			);
-
-			// SQLite datetime('now') has one-second resolution. A fixed, distinct
-			// sentinel makes a forbidden re-stamp observable without sleeping.
-			setTerminalAt(sentinel);
-			write("failed");
-			expect(store.getSession("exec-1")?.terminal_at).toBe(sentinel);
-
-			write("awaiting_review");
-			expect(store.getSession("exec-1")?.terminal_at).toBeUndefined();
-		},
-	);
 });
 
 // ── FLY-560 Feature C: runner-attach pin state ──

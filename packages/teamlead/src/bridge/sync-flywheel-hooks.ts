@@ -21,10 +21,10 @@
  * the fresh hook (parallelizing the sync against Runner spawn would leave
  * a short window where the old hook still runs).
  *
- * Allowlist is explicit: `inbox-check.sh` and `runner-stop-notify.sh` are in
- * scope. `flywheel-session-end.sh` is registered as a Claude Code SessionEnd
- * hook (separate registration mechanism, separate deploy path) and is
- * intentionally NOT covered here.
+ * Allowlist is explicit: only `inbox-check.sh` is in scope. The other file
+ * in `scripts/hooks/` is `flywheel-session-end.sh`, which is registered as
+ * a Claude Code SessionEnd hook (separate registration mechanism, separate
+ * deploy path) and is intentionally NOT covered here.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -45,10 +45,9 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isGlobalBinDir, isTempOrWorktreeRoot } from "./path-hygiene.js";
 
 /** Hooks that this module is allowed to write into the runtime directory. */
-const HOOKS_TO_DEPLOY = ["inbox-check.sh", "runner-stop-notify.sh"] as const;
+const HOOKS_TO_DEPLOY = ["inbox-check.sh"] as const;
 
 /**
  * Hook files MUST be readable + executable by the running user — without
@@ -240,10 +239,6 @@ const CLI_BINS_TO_DEPLOY: readonly CliBinSpec[] = [
 		relativeSource:
 			"packages/agent-team-transport/dist/bin/agent-team-transport-cli.js",
 	},
-	{
-		name: "tmux-server-rescue",
-		relativeSource: "scripts/lib/tmux-server-rescue.sh",
-	},
 ];
 
 export interface SyncFlywheelCliBinResult {
@@ -292,8 +287,6 @@ export async function syncFlywheelCliBin(opts?: {
 	binDir?: string;
 	bins?: readonly CliBinSpec[];
 	log?: (msg: string) => void;
-	/** Test seam: what counts as the global bin (default ~/.flywheel/bin). */
-	globalBinDir?: string;
 }): Promise<SyncFlywheelCliBinResult> {
 	const repoRoot = opts?.repoRoot ?? defaultRepoRoot();
 	const binDir = opts?.binDir ?? defaultBinDir();
@@ -306,29 +299,6 @@ export async function syncFlywheelCliBin(opts?: {
 		missingSource: [],
 		errors: [],
 	};
-
-	// FLY-1389 P1-b: write-time guard — the GLOBAL bin must never point into
-	// a temp/worktree checkout. 529 Room incident: a worktree Bridge rewrote
-	// ~/.flywheel/bin/agent-team-transport to its own dist, the worktree was
-	// later cleaned, and every new Lead start died FATAL at the transport
-	// preflight. Slot Bridges pass FLYWHEEL_BIN_DIR (non-global) and are not
-	// affected; the refusal keeps the soft-fail shape (errors + loud log, no
-	// throw). Deliberate override: FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT=1.
-	if (
-		process.env.FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT !== "1" &&
-		isGlobalBinDir(
-			binDir,
-			opts?.globalBinDir ? { globalBinDir: opts.globalBinDir } : undefined,
-		) &&
-		isTempOrWorktreeRoot(repoRoot)
-	) {
-		const reason = `refused: repoRoot '${repoRoot}' is a temp/worktree checkout and binDir '${binDir}' is the global bin — global bin links must point at the main checkout only (FLY-1389; set FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT=1 to override deliberately)`;
-		for (const spec of bins) {
-			result.errors.push({ name: spec.name, error: reason });
-		}
-		log(`ERROR: ${reason}`);
-		return result;
-	}
 
 	if (!existsSync(binDir)) {
 		await mkdir(binDir, { recursive: true });

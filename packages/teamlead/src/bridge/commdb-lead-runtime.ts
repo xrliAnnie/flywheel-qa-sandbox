@@ -10,21 +10,16 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
-import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import {
 	formatDetectionEscalation,
 	formatDetectionSuspicious,
 	formatDurationMs,
 	formatGateQuestion,
 	formatMisroutedReport,
-	formatPatrolTick,
-	formatRunnerQuestion,
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
-	formatWorkflowReplacementEligibility,
 } from "./hook-payload.js";
-import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -48,17 +43,8 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		try {
-			const content = appendLeadEventAckInstructions(
-				this.renderEnvelope(envelope),
-				envelope,
-			);
-			if (envelope.deliveryAttemptId) {
-				this.commDb.insertInstruction("bridge", this.leadId, content, {
-					dedupeId: `lead-event-attempt-${envelope.deliveryAttemptId}`,
-				});
-			} else {
-				this.commDb.insertInstruction("bridge", this.leadId, content);
-			}
+			const content = this.formatEnvelope(envelope);
+			this.commDb.insertInstruction("bridge", this.leadId, content);
 			this.lastDeliveryAt = new Date().toISOString();
 			this.lastDeliveredSeq = envelope.seq;
 			return { delivered: true };
@@ -89,23 +75,32 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		this.commDb.close();
 	}
 
-	renderEnvelope(env: LeadEventEnvelope): string {
-		return this.formatEnvelope(env);
-	}
-
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
-		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
-		if (e.event_type === "workflow_replacement_eligibility") {
-			return formatWorkflowReplacementEligibility(env);
-		}
 
 		// FLY-161: runner_question — non-blocking Runner ask. Distinct prompt
 		// shape from gate_question: no checkpoint tag, framing emphasises
 		// "Runner continues working", points the Lead at `flywheel-comm respond`
 		// explicitly so the prompt is self-contained.
 		if (e.event_type === "runner_question") {
-			return formatRunnerQuestion(env);
+			const issueRef = e.issue_identifier || e.issue_id;
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
+			const lines = [
+				`[Event #${env.seq}] ${roleLabel}runner_question`,
+				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
+				"---",
+				e.summary ?? "(no content)",
+				"---",
+				`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
+				`Question ID: ${e.question_id}`,
+				`CommDB: ${e.comm_db_path}`,
+			];
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+			return lines.join("\n");
 		}
 
 		// FLY-62: gate_question gets a special format
@@ -197,22 +192,11 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			`[Event #${env.seq}] ${roleLabel}${e.event_type}`,
 			`ID: ${e.execution_id || "—"} | Issue: ${e.issue_identifier || e.issue_id || "—"}`,
 		];
-		if (
-			e.event_type === "session_started" &&
-			e.session_role === "design" &&
-			e.design_backend
-		) {
-			lines.push(`Design Backend: ${e.design_backend}`);
-		}
 		if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
 		if (e.status) lines.push(`Status: ${e.status}`);
 		if (e.decision_route) lines.push(`Route: ${e.decision_route}`);
-		// FLY-1586 C: render-time truncation mints poison just as readily as
-		// write-time truncation — this text goes straight into mailbox.content.
-		if (e.summary)
-			lines.push(`Summary: ${truncateCodePoints(e.summary, 300).text}`);
-		if (e.last_error)
-			lines.push(`Error: ${truncateCodePoints(e.last_error, 200).text}`);
+		if (e.summary) lines.push(`Summary: ${e.summary.slice(0, 300)}`);
+		if (e.last_error) lines.push(`Error: ${e.last_error.slice(0, 200)}`);
 		if (e.action)
 			lines.push(
 				`Action: ${e.action} (${e.action_source_status} → ${e.action_target_status})`,

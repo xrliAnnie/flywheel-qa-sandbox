@@ -4,10 +4,7 @@ import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkflowTemplateRouter } from "../bridge/workflow-template-routes.js";
 import { StateStore } from "../StateStore.js";
-import {
-	importLegacyWorkflowSeeds,
-	legacyWorkflowSeeds,
-} from "./fixtures/legacy-workflow-manifests.js";
+import { importBundledWorkflowSeeds } from "../workflow-template.js";
 
 const close: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -30,7 +27,7 @@ describe("workflow template read model", () => {
 	it("serves templates, revisions, and category bindings but no mutation endpoints", async () => {
 		const store = await StateStore.create(":memory:");
 		close.push(() => store.close());
-		importLegacyWorkflowSeeds(store);
+		importBundledWorkflowSeeds(store);
 		store.bindWorkflowCategory({
 			project: "flywheel",
 			taskCategory: "*",
@@ -42,15 +39,7 @@ describe("workflow template read model", () => {
 		const list = await fetch(`${base}/api/workflow/templates`).then((res) =>
 			res.json(),
 		);
-		expect(
-			list.templates.map(
-				(template: { template_id: string }) => template.template_id,
-			),
-		).toEqual(
-			legacyWorkflowSeeds()
-				.map((seed) => seed.templateId)
-				.sort(),
-		);
+		expect(list.templates).toHaveLength(3);
 		const detail = await fetch(
 			`${base}/api/workflow/templates/tpl_eng_heavy`,
 		).then((res) => res.json());

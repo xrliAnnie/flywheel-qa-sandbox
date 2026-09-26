@@ -5,8 +5,6 @@ export interface HydratedContext {
 	issueId: string;
 	issueTitle: string;
 	issueDescription: string;
-	issueDescriptionSource: "authoritative" | "fallback";
-	issueUpdatedAt?: string;
 	labels: string[];
 	projectId: string;
 	issueIdentifier: string;
@@ -16,8 +14,6 @@ export interface HydratedContext {
 export type FetchIssueFn = (issueId: string) => Promise<{
 	title: string;
 	description: string | null;
-	descriptionSource?: "authoritative" | "fallback";
-	updatedAt?: string;
 	labels?: string[];
 	projectId?: string;
 	identifier?: string;
@@ -39,8 +35,6 @@ export class PreHydrator {
 			issueId: node.id,
 			issueTitle: issue.title,
 			issueDescription: issue.description ?? "",
-			issueDescriptionSource: issue.descriptionSource ?? "fallback",
-			...(issue.updatedAt && { issueUpdatedAt: issue.updatedAt }),
 			labels: issue.labels ?? [],
 			projectId: issue.projectId ?? "",
 			issueIdentifier: issue.identifier ?? node.id,

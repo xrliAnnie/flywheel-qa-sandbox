@@ -10,7 +10,12 @@
  * QA gate.
  */
 
-import type { SkillFrameworkMode } from "flywheel-config";
+import {
+	isThreeStagePhaseRole,
+	type PhaseDispatchVendor,
+	type RoleEffort,
+	resolvePhaseDispatch,
+} from "flywheel-config";
 import type { AlertThreadRow, Session } from "../StateStore.js";
 import {
 	type PendingAlert,
@@ -196,42 +201,48 @@ export interface CloseAndDispatchDeps {
 	 * Returns the new execution id; THROWS on failure / duplicate inflight.
 	 */
 	startSuccessor: (session: Session) => Promise<string>;
-	/**
-	 * FLY-1372 (Codex code R1 #4): engine-ownership probe. A generalized
-	 * (pipeline.dag) execution is bound to a workflow run/node — the legacy
-	 * rescue lane must NEVER terminate it and respawn an UNBOUND legacy
-	 * successor (the run would stay bound to the dead execution while the
-	 * replacement can neither submit for nor advance the node). Absent →
-	 * treated as unknown → fail closed for safety only when the probe throws.
-	 */
-	isEngineOwnedExecution?: (executionId: string) => boolean;
 	log?: (msg: string) => void;
 }
 
-/** Preserve only fields recorded by the predecessor when rescuing a successor. */
+/**
+ * FLY-1224 (R1 #1 — the 6th dispatch lane): the phase-aware dispatch fields
+ * for a rescue SUCCESSOR. A PHASE row (durable `chat_thread_role` marker, same
+ * discriminator as actions.ts) re-derives {model, vendor, effort} from the
+ * phase table and keeps its shared-branch identity + phase sessionRole —
+ * orchestrator-spawned phase rows usually persist NO dispatch_model, so
+ * forwarding only `s.dispatch_model` would rescue a codex implement back onto
+ * claude-tmux on an independent branch. sessionRole follows the durable marker
+ * too (R2 #3): a polluted row can carry chat_thread_role=implement while
+ * session_role drifted to main. Non-phase rows: byte-compatible passthrough.
+ * Pure + exported so the REAL production derivation is unit-testable (T4b).
+ */
 export function buildRescueSuccessorDispatchFields(
-	s: Pick<
-		Session,
-		| "session_role"
-		| "dispatch_model"
-		| "skill_framework_mode"
-		| "skill_framework_mode_via"
-	>,
+	s: Pick<Session, "chat_thread_role" | "session_role" | "dispatch_model">,
 ): {
 	sessionRole?: string;
-	skillFrameworkMode?: SkillFrameworkMode;
 	dispatchModel?: string;
+	dispatchVendor?: PhaseDispatchVendor;
+	dispatchEffort?: RoleEffort;
+	ignoreRunnerLabelSelection?: true;
+	shareParentBranch?: true;
 } {
-	// FLY-1356: a 529 forced arm (via==="override") stays forced across the
-	// rescue successor; sticky/hash paths ride the dispatcher's stamp lookup.
-	const skillOverride =
-		s.skill_framework_mode_via === "override" && s.skill_framework_mode
-			? { skillFrameworkMode: s.skill_framework_mode }
-			: {};
+	const phaseRole = isThreeStagePhaseRole(s.chat_thread_role)
+		? s.chat_thread_role
+		: undefined;
+	if (!phaseRole) {
+		return {
+			sessionRole: s.session_role ?? undefined,
+			dispatchModel: s.dispatch_model ?? undefined,
+		};
+	}
+	const dispatch = resolvePhaseDispatch(phaseRole);
 	return {
-		sessionRole: s.session_role ?? undefined,
-		...skillOverride,
-		dispatchModel: s.dispatch_model ?? undefined,
+		sessionRole: phaseRole,
+		dispatchModel: dispatch.model,
+		dispatchVendor: dispatch.vendor,
+		dispatchEffort: dispatch.effort,
+		ignoreRunnerLabelSelection: true,
+		shareParentBranch: true,
 	};
 }
 
@@ -243,28 +254,6 @@ export function makeCloseAndDispatchSuccessor(
 		if (!session) {
 			deps.log?.(`[rescue] session ${executionId} not found — refusing`);
 			return null;
-		}
-		// FLY-1372 (Codex code R1 #4): an engine-owned generalized execution is
-		// NOT a legacy rescue target — refuse BEFORE any destructive step and
-		// leave recovery to the workflow launch/delivery machinery (the entry's
-		// recovery domain / WorkflowEngineDispatcher). Probe failure fails
-		// closed: an ownership-read outage must never license a legacy respawn.
-		if (deps.isEngineOwnedExecution) {
-			let engineOwned: boolean;
-			try {
-				engineOwned = deps.isEngineOwnedExecution(executionId);
-			} catch (err) {
-				deps.log?.(
-					`[rescue] engine ownership lookup failed for ${executionId}: ${(err as Error).message} — refusing (fail closed)`,
-				);
-				return null;
-			}
-			if (engineOwned) {
-				deps.log?.(
-					`[rescue] session ${executionId} is an engine-owned workflow execution — refusing legacy rescue (escalate: recover via the DAG entry / engine, or terminate the run explicitly)`,
-				);
-				return null;
-			}
 		}
 		// Only a still-`running` (kicked-out) session is a rescue target. Any
 		// terminal / awaiting state is NOT a logged-out running runner → refuse

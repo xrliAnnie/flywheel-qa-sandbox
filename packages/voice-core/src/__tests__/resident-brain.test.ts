@@ -147,12 +147,9 @@ describe("ResidentClaudeBrain — spawn shape", () => {
 		expect(argv).toContain("--include-partial-messages");
 		expect(argv).toContain("--strict-mcp-config");
 		expect(argv[argv.indexOf("--tools") + 1]).toBe("Read,Grep,Glob");
-		const settings = JSON.parse(argv[argv.indexOf("--settings") + 1] as string);
-		expect(settings.alwaysThinkingEnabled).toBe(false);
-		expect(settings.enabledPlugins).toMatchObject({
-			"discord@flywheel-plugins": false,
-			"discord@claude-plugins-official": false,
-		});
+		expect(argv[argv.indexOf("--settings") + 1]).toContain(
+			'"alwaysThinkingEnabled":false',
+		);
 		expect(argv).toContain("--model");
 		expect(argv).toContain("sonnet");
 		expect(argv).toContain("--append-system-prompt-file");
@@ -286,14 +283,6 @@ describe("ResidentClaudeBrain — interrupt", () => {
 		await waitFor(() => runner.spawnCalls.length === 2);
 		expect(runner.spawnCalls[1].args).toContain("--resume");
 		expect(runner.spawnCalls[1].args).toContain(SID);
-		const respawnArgs = runner.spawnCalls[1].args;
-		const respawnSettings = JSON.parse(
-			respawnArgs[respawnArgs.indexOf("--settings") + 1] as string,
-		);
-		expect(respawnSettings.enabledPlugins).toMatchObject({
-			"discord@flywheel-plugins": false,
-			"discord@claude-plugins-official": false,
-		});
 	});
 
 	it("AbortSignal → in-band interrupt (NOT SIGKILL — per-turn semantics stay in HeadlessClaudeBrain); respond throws cancelled", async () => {

@@ -16,17 +16,17 @@ export interface DeliveryResult {
  * must act on. Failed delivery triggers retry on next heartbeat cycle.
  */
 export const GUARDRAIL_EVENT_TYPES = new Set([
-	"session_stuck", // Legacy persisted event; no longer emitted.
+	"session_stuck",
 	"session_orphaned",
 	"session_stale_completed",
+	"runner_idle_detected", // FLY-92: idle watchdog events must be reliably delivered
 	"gate_timed_out", // FLY-159: Lead must reliably notify Annie when Runner gate times out (fail-close path only)
 	"session_monitoring_lost", // FLY-172: Lead must reliably learn it lost monitoring of a live Runner (fall back to tmux)
-	"runner_stuck_escalation", // Legacy persisted event; no longer emitted.
-	"runner_lead_pending_escalation", // Legacy persisted event; no longer emitted.
+	"runner_stuck_escalation", // FLY-195: stuck-candidate handoff to owning Lead — Lead judges + re-manages (plan §3.2)
+	"runner_lead_pending_escalation", // FLY-637-ext: Lead has not answered a runner's blocking question gate — reliable nudge (R1 #6)
 	"scheduled_run_blocked", // FLY-742: a scheduled/cron run-start was DECLINED by a stale session — Lead/founder must reliably learn the job is silently skipping
-	"detection_suspicious", // Legacy persisted event; no longer emitted.
-	"detection_escalation", // Legacy persisted event; no longer emitted.
-	"session_zombie_detected", // FLY-1282: a running session's tmux window is PROVABLY dead (2x server-up absent + re-proof) — the Lead must reliably get the rescue alert (unpushed-work list)
+	"detection_suspicious", // FLY-1048 (A5): fail-suspicious is "never silent" — a dropped delivery would BE the silence it exists to prevent
+	"detection_escalation", // FLY-1048 (C2): Lead-first leg of the unified escalation flow — the ~30min founder-grace clock starts here, so the Lead must reliably receive it
 ]);
 
 /**
@@ -51,26 +51,10 @@ export const RETRYABLE_LEAD_EVENT_TYPES = new Set<string>([
 /** Monotonically sequenced event envelope for lead delivery. */
 export interface LeadEventEnvelope {
 	seq: number;
-	/** Canonical StateStore event id. New queue producers should always set it;
-	 * legacy callers fall back to the durable seq during cutover. */
-	eventId?: string;
 	event: HookPayload;
 	sessionKey: string;
 	leadId: string;
 	timestamp: string;
-	/** FLY-1279: a crash retry reuses this id; a deliberate reminder gets a new
-	 * id so mailbox dedupe produces a fresh interruption. */
-	deliveryAttemptId?: string;
-	/** Producer-owned receipt urgency; generic ingress defaults to P2. */
-	priority?: 0 | 1 | 2 | 3;
-	ack?: {
-		eventSeq: number;
-		token: string;
-		policy:
-			| "question_response"
-			| "explicit_receipt"
-			| "founder_surface_confirmed";
-	};
 }
 
 /** Bootstrap snapshot for crash recovery. */
@@ -188,8 +172,6 @@ export interface LeadRuntimeHealth {
 export interface LeadRuntime {
 	readonly type: string;
 	deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult>;
-	/** Pure prompt renderer reused by the durable queue producer seam. */
-	renderEnvelope?(envelope: LeadEventEnvelope): string;
 	sendBootstrap(snapshot: LeadBootstrap): Promise<void>;
 	health(): Promise<LeadRuntimeHealth>;
 	shutdown(): Promise<void>;

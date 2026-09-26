@@ -1,3 +1,0 @@
-spool_dir_mode=700
-intent_mode=600
-db_rows=0

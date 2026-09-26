@@ -63,31 +63,14 @@ export async function reapRunnerMcp(
 	deps: ReapRunnerMcpDeps = {},
 ): Promise<ReapRunnerMcpResult> {
 	try {
-		if (tmuxWindow.endsWith(":pending")) {
-			return {
-				matched: 0,
-				terminated: 0,
-				killSent: 0,
-				confirmedGone: 0,
-				survivors: 0,
-				identityMismatchSkipped: 0,
-				classifierBlocked: 0,
-				probeUnknown: 0,
-				skippedReason: "no_pane_pid",
-			};
-		}
 		const resolvePanePid = deps.resolvePanePid ?? defaultResolvePanePid;
 		const panePid = await resolvePanePid(tmuxWindow);
 		if (!panePid) {
 			return {
 				matched: 0,
 				terminated: 0,
-				killSent: 0,
-				confirmedGone: 0,
-				survivors: 0,
+				killed: 0,
 				identityMismatchSkipped: 0,
-				classifierBlocked: 0,
-				probeUnknown: 0,
 				skippedReason: "no_pane_pid",
 			};
 		}
@@ -101,13 +84,8 @@ export async function reapRunnerMcp(
 		return {
 			matched: 0,
 			terminated: 0,
-			killSent: 0,
-			confirmedGone: 0,
-			survivors: 0,
+			killed: 0,
 			identityMismatchSkipped: 0,
-			classifierBlocked: 0,
-			probeUnknown: 1,
-			incompleteReason: "process_probe_unknown",
 		};
 	}
 }

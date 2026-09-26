@@ -10,47 +10,50 @@
  *     correlation key, so the thread can be RESOLVED later and so a Bridge
  *     restart can reconcile (the durable row outlives the in-memory state).
  *  3. Recovery → resolve: a real-time hook (`onLeadRecovery`, fed by the
- *     the Lead alert producers) AND a restart-safe reconcile pass (`reconcile`, run from the
- *     GatePoller lead-reconcile rider) post "recovered" + archive the thread.
- *
- * Tickets enter as NEW. The Hub never automatically @mentions the founder or
- * writes ESCALATED; only an explicit cap-owner handoff may carry a mention.
+ *     LeadWatchdog) AND a restart-safe reconcile pass (`reconcile`, run from the
+ *     watchdog's onPollComplete) post "recovered" + archive the thread.
  *
  * Degradation (Codex R1 MEDIUM-5): a `queued` (Discord transient failure) or a
  * `duplicate` with no active thread degrades to ROOT-ONLY — no thread/ack/bot.
  */
 
-import {
-	type AlertEventType,
-	type AlertPayload,
-	type AlertResult,
-	isInformationalKind,
+import type {
+	AlertEventType,
+	AlertPayload,
+	AlertResult,
 } from "../LeadAlertNotifier.js";
+import {
+	classifyLeadAlertPane,
+	isIdleHealthyPane,
+	leadPaneHasErrorSignature,
+	leadPaneLiveHash,
+} from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
-import type { AutoRepairBot } from "./AutoRepairBot.js";
+import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	formatAccountCapOwnerAssignment,
 	resolveAccountCapOwnerId,
 } from "./infra-notify.js";
-import { classifyLeadAlertPane } from "./pane-blocked-classifier.js";
-import { fingerprintOutput } from "./pane-fingerprint.js";
-import { resolveAutoArchiveMinutes } from "./roundtable/channel-archive-default.js";
+import {
+	escalatesAtEnqueue,
+	FLEET_ESCALATION_COPY,
+	KIND_CONTRACTS,
+} from "./kind-contract.js";
+import { fingerprintOutput } from "./stuck-candidate.js";
 import {
 	decideTicketEscalation,
 	policyForKind,
 	type TicketEscalationPolicy,
+	ticketOwnerConfigured,
 } from "./ticket-escalation.js";
+import { ownerRegistryFromEnv } from "./ticket-owner-map.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
 /** A bot whose token can't post here (no channel perms) → try the next bot. */
 function isPermFallthrough(status: number): boolean {
 	return status === 401 || status === 403 || status === 404;
-}
-
-function assertNever(value: never): never {
-	throw new Error(`unhandled repair outcome: ${String(value)}`);
 }
 
 /**
@@ -71,7 +74,7 @@ export function createDiscordOps(
 		"Content-Type": "application/json",
 	});
 	return {
-		async createThreadFromMessage(channelId, messageId, name, archiveMinutes) {
+		async createThreadFromMessage(channelId, messageId, name) {
 			const tokens = getTokens();
 			for (const token of tokens) {
 				try {
@@ -80,10 +83,7 @@ export function createDiscordOps(
 						{
 							method: "POST",
 							headers: authHeaders(token),
-							body: JSON.stringify({
-								name,
-								auto_archive_duration: archiveMinutes ?? 1440,
-							}),
+							body: JSON.stringify({ name, auto_archive_duration: 1440 }),
 						},
 					);
 					if (res.ok) {
@@ -102,7 +102,8 @@ export function createDiscordOps(
 			const tokens = getTokens();
 			let lastStatus: number | undefined;
 			// FLY-368 v1.58.0: by default suppress ALL mentions (parse:[]); only a
-			// explicit owner handoffs opt in to one REAL @-ping via `mentionUserId`.
+			// needs_human escalation opts in to a single REAL founder @-ping via
+			// `mentionUserId` (the id is runtime-validated as a snowflake by the Hub).
 			const allowed_mentions = opts?.mentionUserId
 				? { users: [opts.mentionUserId] }
 				: { parse: [] as string[] };
@@ -201,7 +202,6 @@ export interface DiscordOps {
 		channelId: string,
 		messageId: string,
 		name: string,
-		archiveMinutes?: number,
 	): Promise<string | null>;
 	/**
 	 * Post a message into a thread (best-effort). FLY-368 v1.58.0: `opts.mentionUserId`
@@ -233,8 +233,6 @@ export interface AlertChannelHubDeps {
 	store: StateStore;
 	notifier: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	discord: DiscordOps;
-	/** Parent-channel archive default reader. Missing/null/failure preserves 1440. */
-	archiveDefaultProvider?: () => Promise<number | null>;
 	/** Optional — when absent, no auto-repair runs (FLYWHEEL_AUTO_REPAIR off). */
 	autoRepairBot?: AutoRepairBot;
 	/**
@@ -243,24 +241,39 @@ export interface AlertChannelHubDeps {
 	 */
 	capturePane?: (projectName: string, leadId: string) => Promise<string | null>;
 	/**
-	 * Reconcile-pass capture of a RUNNER terminal by executionId. Retained for
-	 * login-expiry recovery, where a changed terminal fingerprint is an external
-	 * fact rather than an inactivity inference.
+	 * Reconcile-pass capture of a RUNNER terminal by executionId (null = cannot
+	 * capture → leave active, fail-closed). Lets a runner alert thread resolve when
+	 * the runner unsticks while its session is STILL running (Codex code R1 HIGH-1
+	 * — the common successful-nudge case).
 	 */
 	captureRunner?: (
 		executionId: string,
 		projectName: string,
 	) => Promise<string | null>;
-	/** Retry policy override (tests); default = per-kind via `policyForKind`. */
+	/**
+	 * FLY-927 (Task 2.4): T2 escalation delivery for an ISSUE-BOUND ticket —
+	 * the founder page lands in the issue's own [FLY-XX] thread (FLY-818 reuse +
+	 * founder_page_ledger dedup live in the plugin wiring). Returns true when
+	 * the page actually posted. Absent / false ⇒ the Hub falls back to the
+	 * needs_human @founder line in the alert thread.
+	 */
+	escalateToIssueThread?: (row: AlertThreadRow) => Promise<boolean>;
+	/** T2 policy override (tests); default = per-kind via `policyForKind`. */
 	ticketPolicy?: TicketEscalationPolicy;
 	/**
 	 * FLY-1082: fleet-kind recovery probe for the reconcile pass — the fleet
-	 * analog of the retained pane/runner probes. Returns true = the underlying fleet
+	 * analog of capturePane/captureRunner. Returns true = the underlying fleet
 	 * condition cleared (resolve quietly), false = still broken, null/absent =
-	 * cannot tell (leave active; bounded repair reconciliation may still run). Wired in
+	 * cannot tell (leave active; the T2 decision still runs). Wired in
 	 * plugin.ts to the fleet-sensors module.
 	 */
 	fleetRecovery?: (row: AlertThreadRow) => Promise<boolean | null>;
+	/**
+	 * FLY-1082 (Task 3.2): fired after a ticket lands ESCALATED via the T2
+	 * path — the repeated-escalation runbook-gap counter hangs here. Best-
+	 * effort (failures logged, never block the escalation).
+	 */
+	onTicketEscalated?: (row: AlertThreadRow) => Promise<void>;
 	now?: () => number;
 	logger?: (msg: string) => void;
 }
@@ -269,8 +282,6 @@ export interface AlertChannelHubDeps {
 const FLEET_RECOVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"swap_pressure_high",
 	"tmux_server_lost",
-	"tmux_hold",
-	"tmux_split_brain",
 	"bridge_abnormal_exit",
 	"infra_bot_down",
 ]);
@@ -281,29 +292,11 @@ const LEAD_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"login_expired",
 	"permission_blocked",
 	"crash_loop",
+	"pane_hash_stuck",
+	// FLY-1048 (A4): pane-driven like the rest — reconcile resolves it when
+	// the error signature leaves the live region (see shouldResolveLead).
+	"pane_error_stalled",
 ]);
-
-/**
- * Quota-monitor tickets are machine-daemon state, not a Lead-pane or fleet
- * sensor condition. They therefore stay open for explicit human disposition;
- * successful/transient/confirmation notices are informational and never enter
- * this lifecycle. Keeping this set explicit prevents a future quota kind from
- * silently inheriting an invalid Lead-pane recovery probe.
- */
-export const QUOTA_MONITOR_MANUAL_TICKET_KINDS: ReadonlySet<AlertEventType> =
-	new Set([
-		"account_identity_mismatch",
-		"account_switch_degraded",
-		"machine_account_conflict",
-		"model_cap_persistent_unknown",
-		"model_bench_malformed",
-		"quota_choice",
-		"quota_no_target",
-		"quota_read_blind",
-		"account_switch_failed",
-		"quota_revive_stuck",
-		"quota_monitor_down",
-	]);
 
 export function correlationKeyFor(p: {
 	projectName: string;
@@ -317,16 +310,17 @@ export function correlationKeyFor(p: {
 export class AlertChannelHub {
 	private readonly now: () => number;
 	private readonly logger: (msg: string) => void;
+	/** In-memory last-seen live hash per correlation key for the two-capture rule. */
+	private readonly reconcileHashes = new Map<string, string>();
 
 	constructor(private readonly deps: AlertChannelHubDeps) {
 		this.now = deps.now ?? (() => Date.now());
 		this.logger = deps.logger ?? ((m) => console.log(`[AlertChannelHub] ${m}`));
 	}
 
-	/** The alert notifier points here in unified+threading mode. */
+	/** The watchdog notifier points here in unified+threading mode. */
 	async handle(payload: AlertPayload): Promise<AlertResult> {
 		const result = await this.deps.notifier.alert(payload);
-		if (isInformationalKind(payload.eventType)) return result;
 		// Degrade to root-only on duplicate/queued (Codex R1 MEDIUM-5).
 		if (result.skipped === "duplicate" || result.queued) return result;
 		if (!result.sent || !result.channelId || !result.messageId) return result;
@@ -345,6 +339,12 @@ export class AlertChannelHub {
 				`thread handling failed for ${ck}: ${(err as Error).message}`,
 			);
 		}
+		// FLY-818 M3 note: the genuinely-stuck-runner founder page is NOT here —
+		// it posts an @founder message into the STUCK RUNNER'S OWN [FLY-XX] issue
+		// thread from `createStuckUnhandledAlerter` (stuck-escalation.ts), which has
+		// the owning Lead (bot token + chat channel). This Hub only owns the alert
+		// thread + auto-repair (Annie's design; the alert-channel page was the
+		// rejected FLY-523 path).
 		return result;
 	}
 
@@ -357,7 +357,9 @@ export class AlertChannelHub {
 		const active = this.deps.store.getActiveAlertThread(ck);
 		if (active) {
 			if (active.event_id === payload.eventId) {
-				// Same episode already has a thread + ack — nothing to do.
+				// Same episode already has a thread + ack — nothing to do. (The M3
+				// founder-page lives in the stuck alerter — an issue-thread post — not
+				// the Hub, so the caller no longer needs this thread id.)
 				return;
 			}
 			// Stale row (a distinct, later episode never got resolved): resolve the
@@ -371,25 +373,10 @@ export class AlertChannelHub {
 		}
 
 		const name = this.threadName(payload);
-		let archiveMinutes = 1440;
-		if (this.deps.archiveDefaultProvider) {
-			try {
-				archiveMinutes =
-					resolveAutoArchiveMinutes(
-						await this.deps.archiveDefaultProvider(),
-						1440,
-					) ?? 1440;
-			} catch (err) {
-				this.logger(
-					`archive default lookup failed for ${channelId}; using 1440: ${(err as Error).message}`,
-				);
-			}
-		}
 		const threadId = await this.deps.discord.createThreadFromMessage(
 			channelId,
 			messageId,
 			name,
-			archiveMinutes,
 		);
 		if (!threadId) {
 			this.logger(`thread create failed for ${ck} — root-only`);
@@ -407,10 +394,10 @@ export class AlertChannelHub {
 			projectName: payload.projectName,
 			eventType: payload.eventType,
 			sessionKey: payload.sessionKey ?? null,
-			repairStatus: null,
-			// A ticket always enters the channel ledger as NEW. Serialized payload
-			// status is intentionally not part of the input contract.
-			ticketStatus: payload.ticket ? "NEW" : null,
+			repairStatus: this.deps.autoRepairBot ? "pending" : null,
+			// FLY-927 (Task 2.3): ticket lifecycle seed from the enriched payload
+			// (absent = legacy row, NULL status — the state machine never drives it).
+			ticketStatus: payload.ticket?.status ?? null,
 			ownerRef: payload.ticket?.ownerRef ?? null,
 			firstSeenAt: payload.ticket
 				? new Date(payload.ticket.firstSeenMs)
@@ -420,77 +407,143 @@ export class AlertChannelHub {
 				: null,
 		});
 		// FLY-368 v1.58.0: ack is HONEST per kind (no premature "waiting for human"):
-		//  - the existing repair path will try this kind → "正在尝试自动修复…"
-		//  - a non-repairable kind gets a bare "收到"; needs_human leaves the
-		//    visible ticket NEW for duty triage.
-		//  - an unavailable repair path is stated plainly and leaves duty in charge.
+		//  - Cass will try this kind → "正在尝试自动修复…"
+		//  - Cass can't (bot present, non-repairable kind) → bare "收到"; the
+		//    needs_human result line right below carries the real @Annie ping.
+		//  - auto-repair disabled (no bot) → say so + that it needs Annie.
 		const bot = this.deps.autoRepairBot;
 		const ackTail = !bot
-			? "自动修复未启用，工单留在频道等值守处理。"
+			? "自动修复未启用，需要 Annie。"
 			: bot.canAttempt(payload)
 				? "正在尝试自动修复…"
 				: "";
 		await this.safePostToThread(
 			threadId,
-			`🔧 已登记（${payload.title}）。收到，${ackTail}`.trimEnd(),
+			`🔧 Cass 收到（${payload.title}）。${ackTail}`.trimEnd(),
 		);
+
+		// FLY-1082 (Task 1.5): (b)-type kinds (kind-contract none_escalate)
+		// NEVER enter the ARC loop — the founder-facing line is the BY-DESIGN
+		// copy, not a "repair failed" framing. Generalizes the legacy
+		// runner_lead_pending_unhandled special case (its bot-present line stays
+		// byte-identical: same 🙋 framing, same HUMAN_ONLY_REASON string).
+		// Codex R1 HIGH-4: deliberately OUTSIDE the auto-repair gate — a
+		// by-design escalation (founder line + ESCALATED status + runbook-gap
+		// count) must fire even with FLYWHEEL_AUTO_REPAIR off; the contract, not
+		// the bot, owns this path.
+		if (escalatesAtEnqueue(payload.eventType)) {
+			await this.postByDesignEscalation(payload, threadId);
+			if (bot) this.deps.store.setAlertRepairStatus(ck, "needs_human");
+			if (payload.ticket) {
+				this.deps.store.setTicketStatus(ck, "ESCALATED");
+				await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+				// FLY-1082 (Task 3.2): a by-design escalation counts toward the
+				// runbook-gap window too (repeated zombie backlogs = FLY-1066 is
+				// overdue — exactly what the auto-filed issue should say).
+				const row = this.deps.store.getActiveAlertThread(ck);
+				if (row) {
+					try {
+						await this.deps.onTicketEscalated?.(row);
+					} catch (err) {
+						this.logger(
+							`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+						);
+					}
+				}
+			}
+			return;
+		}
 
 		if (bot) {
 			const repair = await bot.attempt(payload, ck);
-			switch (repair.outcome) {
-				case "attempted": {
-					// An account_switch enqueue is the Codex Infra Bot's assignment;
-					// mention only that bot. Every other attempted action is mention-free.
-					const infraBotId =
-						repair.action === "account_switch" ? this.infraBotId() : undefined;
+			if (repair.outcome === "needs_human") {
+				// FLY-929 A5: a CLAUDE account-cap needs_human (usage_limit with
+				// claude accountLimit metadata — the not-attemptable pool/bin shape)
+				// is ASSIGNED to the owner bot instead of immediately paging the
+				// founder, but ONLY when self-heal + P-identity + the infra bot id
+				// are all present (`resolveAccountCapOwnerId`). The bot's playbook
+				// (FLY-871: retries exhausted → @Annie and stop) carries the final
+				// founder escalation until the FLY-927 ticket state machine lands.
+				// Any env missing / any other needs_human kind → the founder
+				// escalation below, byte-for-byte.
+				const capOwnerId =
+					payload.eventType === "usage_limit" &&
+					payload.metadata?.accountLimit?.provider === "claude"
+						? resolveAccountCapOwnerId()
+						: undefined;
+				if (capOwnerId) {
 					await this.safePostToThread(
 						threadId,
-						repair.detail,
-						infraBotId ? { mentionUserId: infraBotId } : undefined,
+						formatAccountCapOwnerAssignment(capOwnerId, repair.detail),
+						{ mentionUserId: capOwnerId },
 					);
-					this.deps.store.setAlertRepairStatus(ck, "attempted");
-					if (payload.ticket) {
-						this.deps.store.setTicketStatus(ck, "REPAIRING");
-						this.deps.store.bumpTicketAttempt(ck);
-						await this.updateRootTicketStatus(
-							channelId,
-							messageId,
-							"REPAIRING",
-						);
-					}
-					break;
+				} else {
+					// Cass genuinely can't fix this → the ONE place we REALLY @Annie.
+					// FLY-1082 (Task 3.1, Codex R4 MED): fleet kinds render the
+					// four-element template with the bot's specific reason as the
+					// "为什么失败" element; legacy kinds keep the line byte-for-byte.
+					const fid = this.founderId();
+					const mention = fid ? `<@${fid}>` : "Annie";
+					const line =
+						this.fleetEscalationLine(
+							payload.eventType,
+							mention,
+							repair.detail,
+						) ?? `🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`;
+					await this.safePostToThread(
+						threadId,
+						line,
+						fid ? { mentionUserId: fid } : undefined,
+					);
 				}
-				case "needs_human": {
-					// Account-cap ownership can route to its owner bot. Other rejected
-					// repairs stay NEW and silent for the channel duty reader.
-					const capOwnerId =
-						payload.eventType === "usage_limit" &&
-						payload.metadata?.accountLimit?.provider === "claude"
-							? resolveAccountCapOwnerId()
-							: undefined;
-					if (capOwnerId) {
-						await this.safePostToThread(
-							threadId,
-							formatAccountCapOwnerAssignment(capOwnerId, repair.detail),
-							{ mentionUserId: capOwnerId },
-						);
+			} else {
+				// "attempted": a safe action was sent — posted verbatim. FLY-871 R2/W6:
+				// an `account_switch` enqueue IS the Codex Infra Bot's ASSIGNMENT —
+				// @-mention the bot so the FLY-267 mention-gate wakes it to claim the
+				// pending switch (default `parse:[]` would suppress it). Env unset ⇒ no
+				// mention = byte-compat (the account-switch watchdog deadline still fires
+				// the switch even if the bot is never woken).
+				const infraBotId =
+					repair.action === "account_switch" ? this.infraBotId() : undefined;
+				await this.safePostToThread(
+					threadId,
+					repair.detail,
+					infraBotId ? { mentionUserId: infraBotId } : undefined,
+				);
+			}
+			// "attempted" (a safe action was sent, recovery not yet confirmed) vs
+			// "needs_human". The thread flips to resolved (✅ 已恢复) only when the
+			// reconcile/onRecovery path confirms recovery — never on send alone.
+			this.deps.store.setAlertRepairStatus(
+				ck,
+				repair.outcome === "attempted" ? "attempted" : "needs_human",
+			);
+			// FLY-927 (Task 2.3): ticket lifecycle — Cass's immediate ARC counts an
+			// attempt toward the T2 budget; needs_human is a direct escalation. The
+			// root 🎫 line is re-rendered in place (best-effort).
+			if (payload.ticket) {
+				if (repair.outcome === "attempted") {
+					this.deps.store.setTicketStatus(ck, "REPAIRING");
+					this.deps.store.bumpTicketAttempt(ck);
+					await this.updateRootTicketStatus(channelId, messageId, "REPAIRING");
+				} else {
+					this.deps.store.setTicketStatus(ck, "ESCALATED");
+					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+					// FLY-1082 (Task 3.2, Codex R3 MED): a needs_human escalation IS
+					// an ESCALATED landing — it must feed the runbook-gap window like
+					// the T2 and by-design paths (repeated "can't auto-fix" is
+					// exactly the signal the auto-filed eng issue exists for).
+					const row = this.deps.store.getActiveAlertThread(ck);
+					if (row) {
+						try {
+							await this.deps.onTicketEscalated?.(row);
+						} catch (err) {
+							this.logger(
+								`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+							);
+						}
 					}
-					break;
 				}
-				case "no_action":
-					await this.safePostToThread(threadId, repair.detail);
-					this.deps.store.setAlertRepairStatus(ck, "no_action");
-					if (payload.ticket) {
-						this.deps.store.setTicketStatus(ck, "MONITORING");
-						await this.updateRootTicketStatus(
-							channelId,
-							messageId,
-							"MONITORING",
-						);
-					}
-					break;
-				default:
-					assertNever(repair.outcome);
 			}
 		}
 	}
@@ -500,37 +553,17 @@ export class AlertChannelHub {
 	 * place. Best-effort at every step — missing ops methods / message gone /
 	 * no 🎫 line all degrade silently (the thread narrative is the truth stream).
 	 */
-	async renderTicketLine(
-		row: AlertThreadRow,
-		ownerText?: string,
-	): Promise<void> {
-		if (!row.ticket_status) return;
-		await this.updateRootTicketStatus(
-			row.channel_id,
-			row.root_message_id,
-			row.ticket_status,
-			ownerText,
-		);
-	}
-
 	private async updateRootTicketStatus(
 		channelId: string,
 		messageId: string | null | undefined,
 		status: string,
-		ownerText?: string,
 	): Promise<void> {
 		const ops = this.deps.discord;
 		if (!messageId || !ops.getMessage || !ops.editMessage) return;
 		try {
 			const content = await ops.getMessage(channelId, messageId);
 			if (!content) return;
-			let updated = content.replace(/^(🎫 .*· 状态 )\S+$/mu, `$1${status}`);
-			if (ownerText) {
-				updated = updated.replace(
-					/^(🎫 .*· owner )[^·\n]+(?= · 状态 )/mu,
-					`$1${ownerText}`,
-				);
-			}
+			const updated = content.replace(/^(🎫 .*· 状态 )\S+$/mu, `$1${status}`);
 			if (updated === content) return; // no 🎫 line (legacy root) — skip
 			await ops.editMessage(channelId, messageId, updated);
 		} catch (err) {
@@ -538,6 +571,66 @@ export class AlertChannelHub {
 				`root ticket-status edit failed (${messageId}): ${(err as Error).message}`,
 			);
 		}
+	}
+
+	/**
+	 * FLY-1082 (Task 3.1): the four-element founder escalation for a FLEET
+	 * kind — kind 人话 label · ARC 试了什么 · 为什么失败 · 你只需拍的一个决定
+	 * (plan contract: the failure reason slots in as-is; the Hub assembles the
+	 * rest). Returns null for non-fleet kinds (their legacy copy is kept
+	 * byte-for-byte by the callers).
+	 */
+	private fleetEscalationLine(
+		kind: AlertEventType,
+		mention: string,
+		failureReason: string,
+	): string | null {
+		const fleet = FLEET_ESCALATION_COPY[kind];
+		if (!fleet) return null;
+		return `🙋 ${mention} 修不掉 — ${fleet.label}。\n· ARC 试了：${
+			KIND_CONTRACTS[kind]?.remediationRef ?? "（无自动修复）"
+		}\n· 为什么失败：${failureReason}\n· 你只需拍一个决定：${fleet.decision}`;
+	}
+
+	/**
+	 * FLY-1082 (Task 1.5): the by-design escalation line for a (b)-type kind
+	 * (kind-contract none_escalate). The copy states the ARC posture honestly —
+	 * "设计上不自动修" — never the generic "试修失败" framing. Legacy
+	 * runner_lead_pending_unhandled keeps its exact pre-FLY-1082 line: same 🙋
+	 * framing + the SAME HUMAN_ONLY_REASON string (sourced, not duplicated).
+	 */
+	private async postByDesignEscalation(
+		payload: AlertPayload,
+		threadId: string,
+	): Promise<void> {
+		const fid = this.founderId();
+		const mention = fid ? `<@${fid}>` : "Annie";
+		const line =
+			payload.eventType === "zombie_session_backlog"
+				? `🙋 ${mention} 跨 Lead 僵尸 session 积压 — 设计上不自动收割（收割机制落地 = ${
+						KIND_CONTRACTS.zombie_session_backlog.remediationRef
+					}），样本清单见根消息。需要你拍一个决定：是否人工清理。`
+				: `🙋 ${mention} 这个 Cass 修不了，需要你：${
+						HUMAN_ONLY_REASON[payload.eventType] ??
+						"设计上不做自动修复（by design）— 需要人看。"
+					}`;
+		await this.safePostToThread(
+			threadId,
+			line,
+			fid ? { mentionUserId: fid } : undefined,
+		);
+	}
+
+	/**
+	 * FLY-368 v1.58.0: the founder Discord id used for the needs_human @-ping,
+	 * resolved at CALL time (env may change). Accepts ONLY a Discord snowflake;
+	 * a present-but-malformed env returns undefined so the Hub degrades to plain
+	 * text rather than letting Discord reject the whole allowed_mentions body and
+	 * drop the escalation line (Codex design LOW-2).
+	 */
+	private founderId(): string | undefined {
+		const id = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID?.trim();
+		return id && /^\d{17,20}$/.test(id) ? id : undefined;
 	}
 
 	/**
@@ -573,34 +666,25 @@ export class AlertChannelHub {
 		}
 	}
 
-	/** Post "recovered" + archive + mark resolved for an active incident. */
-	async resolve(
-		correlationKey: string,
-		expectedEventId?: string,
+	/** Real-time recovery hook fed by LeadWatchdog.onRecovery (an optimization). */
+	async onLeadRecovery(
+		projectName: string,
+		leadId: string,
+		recoveredKind: AlertEventType,
 	): Promise<void> {
+		await this.resolve(
+			correlationKeyFor({ projectName, leadId, eventType: recoveredKind }),
+		);
+	}
+
+	/** Post "recovered" + archive + mark resolved for an active incident. */
+	async resolve(correlationKey: string): Promise<void> {
 		const active = this.deps.store.getActiveAlertThread(correlationKey);
-		if (!active) {
-			if (
-				expectedEventId &&
-				this.deps.store.getAlertThreadByEventId(expectedEventId)?.resolved_at
-			) {
-				return;
-			}
-			if (expectedEventId) throw new Error("stale_episode");
-			return;
-		}
-		if (expectedEventId && active.event_id !== expectedEventId) {
-			throw new Error("stale_episode");
-		}
-		const eventId = active.event_id;
-		// FLY-927 (Task 2.3): a ticket row flips to RESOLVED without a mention
+		if (!active) return;
+		// FLY-927 (Task 2.3): a ticket row flips to RESOLVED (quiet — never @Annie)
 		// with the root 🎫 line re-rendered; legacy rows (NULL status) untouched.
 		if (active.ticket_status) {
-			// No event id is the established ARC/reconcile API. Preserve its original
-			// write order and unfenced/no-throw semantics for existing callers.
-			if (expectedEventId === undefined) {
-				this.deps.store.setTicketStatus(correlationKey, "RESOLVED");
-			}
+			this.deps.store.setTicketStatus(correlationKey, "RESOLVED");
 			await this.updateRootTicketStatus(
 				active.channel_id,
 				active.root_message_id,
@@ -609,21 +693,8 @@ export class AlertChannelHub {
 		}
 		await this.safePostToThread(active.thread_id, this.formatResolved(active));
 		await this.safeArchive(active.thread_id);
-		if (expectedEventId === undefined) {
-			this.deps.store.resolveAlertThread(correlationKey);
-			return;
-		}
-		if (
-			active.ticket_status &&
-			this.deps.store.setTicketStatus(correlationKey, "RESOLVED", eventId) === 0
-		) {
-			if (this.deps.store.getAlertThreadByEventId(eventId)?.resolved_at) return;
-			throw new Error("stale_episode");
-		}
-		if (this.deps.store.resolveAlertThread(correlationKey, eventId) === 0) {
-			if (this.deps.store.getAlertThreadByEventId(eventId)?.resolved_at) return;
-			throw new Error("stale_episode");
-		}
+		this.deps.store.resolveAlertThread(correlationKey);
+		this.reconcileHashes.delete(correlationKey);
 	}
 
 	/**
@@ -652,7 +723,7 @@ export class AlertChannelHub {
 	}
 
 	/**
-	 * Restart-safe reconcile (run from the GatePoller lead-reconcile rider). For each
+	 * Restart-safe reconcile (run from LeadWatchdog.onPollComplete). For each
 	 * active alert thread, decide whether the underlying condition has cleared and
 	 * resolve if so. This — not the in-memory onRecovery hook — is the source of
 	 * truth after a Bridge restart (Codex R1 HIGH-1).
@@ -662,17 +733,14 @@ export class AlertChannelHub {
 		for (const row of active) {
 			try {
 				if (
-					QUOTA_MONITOR_MANUAL_TICKET_KINDS.has(
-						row.event_type as AlertEventType,
-					)
+					row.session_key &&
+					(row.event_type === "runner_stuck_unhandled" ||
+						row.event_type === "runner_throttle_stalled" ||
+						row.event_type === "runner_login_expired")
 				) {
-					await this.reconcileTicket(row);
-					continue;
-				}
-				if (row.session_key && row.event_type === "runner_login_expired") {
 					// FLY-871 R2/C8: a runner_login_expired resolves by the RUNNER's
 					// pane/status (rescue closes the old session, or its fingerprint
-					// changes), NOT a Lead pane.
+					// changes), NOT a Lead pane — same path as runner_stuck_unhandled.
 					if (await this.shouldResolveRunner(row.session_key, row)) {
 						await this.resolve(row.correlation_key);
 						continue;
@@ -699,14 +767,23 @@ export class AlertChannelHub {
 							row.project_name,
 							row.lead_id,
 						);
-						if (pane != null && this.shouldResolveLead(row.event_type, pane)) {
+						if (
+							pane != null &&
+							(await this.shouldResolveLead(
+								row.correlation_key,
+								row.event_type,
+								pane,
+							))
+						) {
 							await this.resolve(row.correlation_key);
 							continue;
 						}
 					}
 				}
-				// Still-active ticket rows may run one bounded ARC retry on the same
-				// piggybacked tick. They never auto-escalate.
+				// FLY-927 (Task 2.4): still-active ticket rows run the T2 decision on
+				// the SAME piggybacked tick (recovery was checked above — a recovered
+				// ticket resolved quietly and never reaches here). Legacy rows (NULL
+				// ticket_status) are a no-op inside.
 				await this.reconcileTicket(row);
 			} catch (err) {
 				this.logger(
@@ -717,16 +794,18 @@ export class AlertChannelHub {
 	}
 
 	/**
-	 * Per-row bounded retry pass. Exhausted and timed-out tickets stay visible
-	 * in their current state for explicit duty handling.
+	 * FLY-927 (Task 2.4): the per-row T2 pass — retry (second ARC attempt, all
+	 * safety gates intact) or escalate ("couldn't fix": 2 attempts / 5 min, or
+	 * unclaimed > 5 min with a configured owner).
 	 */
 	private async reconcileTicket(row: AlertThreadRow): Promise<void> {
 		if (!row.ticket_status) return; // legacy row — the state machine never drives it
 		const decision = decideTicketEscalation(
 			row,
 			this.now(),
-			// FLY-1082 (Task 2.2): per-kind bounded-retry policy; a test-injected
-			// policy still wins.
+			ticketOwnerConfigured(row.owner_ref, ownerRegistryFromEnv(process.env)),
+			// FLY-1082 (Task 2.2): per-kind policy — legacy kinds resolve to the
+			// locked T2 defaults byte-for-byte; a test-injected policy still wins.
 			this.deps.ticketPolicy ?? policyForKind(row.event_type, process.env),
 		);
 		if (decision === "none") return;
@@ -755,50 +834,89 @@ export class AlertChannelHub {
 						}
 					: {}),
 			};
+			this.deps.store.bumpTicketAttempt(row.correlation_key);
 			const repair = await bot.attempt(payload, row.correlation_key);
-			switch (repair.outcome) {
-				case "attempted":
-					this.deps.store.bumpTicketAttempt(row.correlation_key);
-					this.deps.store.setAlertRepairStatus(
-						row.correlation_key,
-						"attempted",
-					);
-					await this.safePostToThread(
-						row.thread_id,
-						`🔁 第 ${row.attempt_count + 1} 次自动修复:${repair.detail}`,
-					);
-					break;
-				case "needs_human":
-					this.deps.store.bumpTicketAttempt(row.correlation_key);
-					this.deps.store.setAlertRepairStatus(row.correlation_key, "n/a");
-					await this.safePostToThread(
-						row.thread_id,
-						`🔁 自动修复安全闸拒绝:${repair.detail}`,
-					);
-					break;
-				case "no_action":
-					await this.safePostToThread(row.thread_id, repair.detail);
-					this.deps.store.setAlertRepairStatus(
-						row.correlation_key,
-						"no_action",
-					);
-					this.deps.store.setTicketStatus(row.correlation_key, "MONITORING");
-					await this.updateRootTicketStatus(
-						row.channel_id,
-						row.root_message_id,
-						"MONITORING",
-					);
-					break;
-				default:
-					assertNever(repair.outcome);
-			}
+			await this.safePostToThread(
+				row.thread_id,
+				repair.outcome === "attempted"
+					? `🔁 第 ${row.attempt_count + 1} 次自动修复:${repair.detail}`
+					: `🔁 第 ${row.attempt_count + 1} 次尝试被安全闸拒绝:${repair.detail}`,
+			);
 			return;
+		}
+		await this.escalateTicket(row);
+	}
+
+	/**
+	 * T2 escalation: issue-bound tickets page the founder in the issue's OWN
+	 * thread (FLY-818 reuse + ledger dedup, via the injected wiring); unbound
+	 * tickets keep the existing needs_human @founder line in the alert thread.
+	 * Either way the ticket lands ESCALATED (terminal for the state machine —
+	 * the reconcile recovery pass can still resolve the row later).
+	 */
+	private async escalateTicket(row: AlertThreadRow): Promise<void> {
+		let pagedInIssueThread = false;
+		if (row.session_key && this.deps.escalateToIssueThread) {
+			try {
+				pagedInIssueThread = await this.deps.escalateToIssueThread(row);
+			} catch (err) {
+				this.logger(
+					`issue-thread escalation failed for ${row.correlation_key}: ${(err as Error).message}`,
+				);
+			}
+		}
+		if (pagedInIssueThread) {
+			await this.safePostToThread(
+				row.thread_id,
+				"⛔ 修不掉(T2)— 已升级 founder(落在该 issue 的 thread)。",
+			);
+		} else {
+			const fid = this.founderId();
+			const mention = fid ? `<@${fid}>` : "Annie";
+			// FLY-1082 (Task 3.1): fleet kinds render the FOUR-ELEMENT template
+			// (kind · ARC 试了什么 · 为什么失败 · 你只需拍的一个决定); legacy kinds
+			// keep the pre-FLY-1082 line byte-for-byte (no copy regression).
+			const line =
+				this.fleetEscalationLine(
+					row.event_type as AlertEventType,
+					mention,
+					row.attempt_count >= 2
+						? `重试预算用尽仍未恢复（尝试 ${row.attempt_count} 次）`
+						: "超时窗内没有恢复信号",
+				) ??
+				`🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`;
+			await this.safePostToThread(
+				row.thread_id,
+				line,
+				fid ? { mentionUserId: fid } : undefined,
+			);
+		}
+		this.deps.store.setTicketStatus(row.correlation_key, "ESCALATED");
+		await this.updateRootTicketStatus(
+			row.channel_id,
+			row.root_message_id,
+			"ESCALATED",
+		);
+		// FLY-1082 (Task 3.2): repeated escalations of one kind = a runbook gap —
+		// the hook (wired in plugin.ts) counts the 7-day window and auto-files
+		// the eng issue. Best-effort: never blocks the escalation itself.
+		try {
+			await this.deps.onTicketEscalated?.(row);
+		} catch (err) {
+			this.logger(
+				`onTicketEscalated hook failed for ${row.correlation_key}: ${(err as Error).message}`,
+			);
 		}
 	}
 
 	/**
-	 * Runner login-expiry recovery. Resolve when the session closes or its live
-	 * terminal fingerprint changes. Missing capture stays fail-closed.
+	 * Runner alert recovery (Codex code R1 HIGH-1). Resolve when:
+	 *  - the session is no longer running (completed/failed/...), OR
+	 *  - the session is STILL running but the live terminal fingerprint has
+	 *    changed from the stuck episode signature (the common successful-nudge
+	 *    case where the runner moved on while status stays "running").
+	 * Fail-closed: an unknown session, missing capture, or a capture error leaves
+	 * the thread active (never resolve on uncertainty).
 	 */
 	private async shouldResolveRunner(
 		executionId: string,
@@ -813,8 +931,32 @@ export class AlertChannelHub {
 		return fingerprintOutput(out) !== row.episode_signature;
 	}
 
-	private shouldResolveLead(eventType: string, pane: string): boolean {
-		return classifyLeadAlertPane(pane) !== eventType;
+	private async shouldResolveLead(
+		correlationKey: string,
+		eventType: string,
+		pane: string,
+	): Promise<boolean> {
+		// FLY-1048 (A4): pane_error_stalled — classify() never returns this kind,
+		// so the blocked-kind rule below would resolve it instantly. Recovered
+		// iff the error signature left the live region (fail-toward-active while
+		// the error is still visible).
+		if (eventType === "pane_error_stalled") {
+			return !leadPaneHasErrorSignature(pane);
+		}
+		if (eventType !== "pane_hash_stuck") {
+			// A blocked kind (rate/usage/login/permission): recovered iff the kind
+			// is no longer present in the live pane.
+			return classifyLeadAlertPane(pane) !== eventType;
+		}
+		// pane_hash_stuck: conservative. Resolve when the pane looks idle-healthy,
+		// OR when the live hash has CHANGED across two reconcile passes (a still-
+		// identical frozen pane is still frozen).
+		if (isIdleHealthyPane(pane)) return true;
+		const hash = leadPaneLiveHash(pane);
+		const prev = this.reconcileHashes.get(correlationKey);
+		if (prev !== undefined && prev !== hash) return true;
+		this.reconcileHashes.set(correlationKey, hash);
+		return false;
 	}
 
 	private threadName(payload: AlertPayload): string {

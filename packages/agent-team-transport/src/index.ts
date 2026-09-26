@@ -19,19 +19,6 @@ export {
 	ClaudeCodeAdapter,
 	type ClaudeCodeAdapterOptions,
 } from "./claude/ClaudeCodeAdapter.js";
-export {
-	type LegacyMailboxDeliveryProbe,
-	MailboxBatchConflictError,
-	type MailboxBatchMember,
-	probeLegacyMailboxDelivery,
-	type TeammateMessage,
-	type WriteBatchOutcome,
-	type WriteBatchSpec,
-	type WriteOutcome,
-	type WriteSpec,
-	writeMailboxBatch,
-	writeMailboxEntry,
-} from "./claude/ClaudeMailboxCodec.js";
 // claude/team-bootstrap helpers (used by edge-worker / teamlead via adapter,
 // but exported here for code that needs direct TeamFile schema access).
 export {

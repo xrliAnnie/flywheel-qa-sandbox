@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # FLY-529: composition test — mirrors how scripts/test-deploy.sh assembles the
 # qa-room.sh lib outputs into the Lead/Bridge env arrays + the slot-local
-# projects file, plus the default shape (neither --alerts nor --mode roundtable
-# still carries the always-on FLY-1608 complete-marker isolation pair).
+# projects file, plus the byte-compat default (neither --alerts nor --mode
+# roundtable => no qa-room env injected at all).
 #
 # This complements qa-room-env.test.sh (which unit-tests each pure function) by
 # checking the same end-to-end shape test-deploy produces: the shell-side alert
@@ -25,27 +25,21 @@ cat > "${ROOT}/slots.json" <<'EOF'
  "alertChannel":{"channelId":"AL","repairBotTokenEnv":"TEST_BOT_TOKEN_1"}}
 EOF
 
-# ── default: MODE=slot, ALERTS=0 → always-on state isolation ────────────────
-SLOT_DIR="/tmp/flywheel-test-slot-1"
-LEAD_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
-BRIDGE_EXTRA_ENV=(
-  "FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed"
-  "FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db"
-)
-if [[ ${#LEAD_EXTRA_ENV[@]} -eq 1 && ${#BRIDGE_EXTRA_ENV[@]} -eq 2 ]] \
-  && [[ "${LEAD_EXTRA_ENV[0]}" == "${BRIDGE_EXTRA_ENV[0]}" ]] \
-  && [[ "${BRIDGE_EXTRA_ENV[1]}" == "FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db" ]]; then
-  pass "default: slot mode isolates shared complete markers and Bridge consent audits"
+# ── byte-compat default: MODE=slot, ALERTS=0 → arrays stay empty ─────────────
+# (test-deploy only calls the lib inside `if MODE==roundtable` / `if ALERTS==1`.)
+LEAD_EXTRA_ENV=(); BRIDGE_EXTRA_ENV=()
+if [[ ${#LEAD_EXTRA_ENV[@]} -eq 0 && ${#BRIDGE_EXTRA_ENV[@]} -eq 0 ]]; then
+  pass "byte-compat: slot mode + no --alerts injects no qa-room env"
 else
   fail "byte-compat default" "lead=${#LEAD_EXTRA_ENV[@]} bridge=${#BRIDGE_EXTRA_ENV[@]}"
 fi
 
 # ── alerts wiring (as test-deploy assembles it for slot 1) ──────────────────
+SLOT_DIR="/tmp/flywheel-test-slot-1"
 BOT_TOKEN_ENV="TEST_BOT_TOKEN_1"; TEST_BOT_TOKEN="tok-1"; AGENT_ID="flywheel-test-1"
 ALERT_CHANNEL_ID=$(jq -r '.alertChannel.channelId' "${ROOT}/slots.json")
 ALERT_REPAIR_BOT_TOKEN_ENV=$(jq -r --arg d "$BOT_TOKEN_ENV" '.alertChannel.repairBotTokenEnv // $d' "${ROOT}/slots.json")
-LEAD_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
-BRIDGE_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
+LEAD_EXTRA_ENV=(); BRIDGE_EXTRA_ENV=()
 while IFS= read -r l; do [[ -n "$l" ]] && { BRIDGE_EXTRA_ENV+=("$l"); LEAD_EXTRA_ENV+=("$l"); }; done < <(qa_room_alert_iso_env "$SLOT_DIR")
 while IFS= read -r l; do [[ -n "$l" ]] && BRIDGE_EXTRA_ENV+=("$l"); done < <(qa_room_alert_bridge_env "$ALERT_CHANNEL_ID" "$ALERT_REPAIR_BOT_TOKEN_ENV")
 LEAD_EXTRA_ENV+=("FLYWHEEL_PROJECTS_FILE=${SLOT_DIR}/flywheel-projects.json")
@@ -116,19 +110,6 @@ fi
 # slot Bridge env. Asserted against the script SOURCE (not a mirror) so a
 # refactor that drops or conditionalizes the line fails here.
 TD_SRC="${SCRIPT_DIR}/../test-deploy.sh"
-OWNER_FORWARD='DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}"'
-OWNER_FORWARD_COUNT=$(grep -cF "$OWNER_FORWARD" "$TD_SRC" || true)
-if [[ "$OWNER_FORWARD_COUNT" -eq 3 ]]; then
-  pass "founder consent: all three Bridge launch branches forward the canonical owner id"
-else
-  fail "founder owner forwarding incomplete" "found ${OWNER_FORWARD_COUNT}/3 launch branches"
-fi
-CONSENT_AUDIT_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db")'
-if grep -qF "$CONSENT_AUDIT_LINE" "$TD_SRC"; then
-  pass "founder consent: every slot Bridge writes calibration evidence to its slot-local audit DB"
-else
-  fail "founder consent audit isolation missing" "$CONSENT_AUDIT_LINE"
-fi
 RECON_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_DONE_THREAD_RECONCILE=${FLYWHEEL_DONE_THREAD_RECONCILE:-0}")'
 if grep -qF "$RECON_LINE" "$TD_SRC"; then
   pass "reconcile isolation: test-deploy injects FLYWHEEL_DONE_THREAD_RECONCILE (default 0) into every slot Bridge env"
@@ -149,63 +130,6 @@ if [[ "$RECON_OVERRIDE" == "FLYWHEEL_DONE_THREAD_RECONCILE=1" ]]; then
   pass "reconcile isolation: explicit export opts the slot Bridge back in"
 else
   fail "reconcile opt-in override" "$RECON_OVERRIDE"
-fi
-
-# FLY-1663: 529 Room is the real-machine proof path for the new carrier. Both
-# the Lead and Bridge must be isolated from resident lifecycle/secret state.
-if grep -qF 'qa_launchd_lead_start' "$TD_SRC" \
-  && grep -qF 'qa_launchd_lead_verify' "$TD_SRC" \
-  && grep -qF 'flywheel-lead-wrapper-v2.sh' "$TD_SRC" \
-  && ! grep -qF 'bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh"' "$TD_SRC"; then
-  pass "launchd carrier: every 529 Room Lead enters through isolated launchd v2"
-else
-  fail "launchd carrier missing" "test-deploy still exposes the direct claude-lead path"
-fi
-DELIVERY_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")'
-if grep -qF "$DELIVERY_LINE" "$TD_SRC"; then
-  pass "delivery secret: slot Bridge cannot read or rotate the resident fleet secret"
-else
-  fail "delivery secret isolation missing" "$DELIVERY_LINE"
-fi
-TMUX_ROOT_LINE='BRIDGE_EXTRA_ENV+=("TMUX_TMPDIR=${SLOT_DIR}")'
-if grep -qF "$TMUX_ROOT_LINE" "$TD_SRC" \
-  && grep -qF -- '-u TMUX' "$TD_SRC" \
-  && grep -qF -- '-u FLYWHEEL_TMUX_SOCKET_OVERRIDE' "$TD_SRC"; then
-  pass "tmux socket: every slot Bridge tmux call resolves through its private native socket root"
-else
-  fail "tmux socket isolation missing" "$TMUX_ROOT_LINE plus inherited TMUX/override scrubs"
-fi
-TEARDOWN_SRC="${SCRIPT_DIR}/../test-teardown.sh"
-if grep -qF 'qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"' "$TEARDOWN_SRC" \
-  && grep -qF 'local SLOT_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"' "$TEARDOWN_SRC" \
-  && grep -qF 'tmux -S "$SLOT_TMUX_SOCKET" kill-server' "$TEARDOWN_SRC"; then
-  pass "launchd teardown: registry bootout precedes PID/socket cleanup"
-else
-  fail "launchd teardown authority missing" "test-teardown must bootout the slot registry and retire only the slot tmux socket"
-fi
-
-# FLY-1961: real 529 and legacy inject must both pretrust both vendors before
-# POST, while stub mode stays host-state-free. Teardown removes only managed
-# Codex marker blocks in addition to its existing Claude prefix prune.
-QA529_SRC="${SCRIPT_DIR}/../qa-529-generalized-e2e.mjs"
-INJECT_SRC="${SCRIPT_DIR}/../inject-linear-issue.sh"
-if grep -qF 'context.runnerMode === "real"' "$QA529_SRC" \
-  && grep -qF 'scripts/lib/runner-workspace-trust.sh' "$QA529_SRC" \
-  && grep -qF 'pretrusted worktree binding verified' "$QA529_SRC"; then
-  pass "FLY-1961: generalized real driver dual-pretrusts and verifies the actual worktree binding"
-else
-  fail "FLY-1961 generalized pretrust wiring" "real gate/helper/binding evidence missing"
-fi
-if grep -qF 'source "${SCRIPT_DIR}/lib/runner-workspace-trust.sh"' "$INJECT_SRC" \
-  && grep -qF 'pretrust_workspace_dual "$RUNNER_WORKTREE"' "$INJECT_SRC"; then
-  pass "FLY-1961: legacy injector uses the shared dual-vendor helper"
-else
-  fail "FLY-1961 legacy injector wiring" "shared helper call missing"
-fi
-if grep -qF 'prune_codex_workspace_trust_prefix "/tmp/flywheel-test-slot-${SLOT}"' "$TEARDOWN_SRC"; then
-  pass "FLY-1961: teardown prunes helper-owned Codex slot markers"
-else
-  fail "FLY-1961 Codex teardown wiring" "managed prune call missing"
 fi
 
 # ── roundtable wiring: host slot gets manager env; non-host gets none ────────

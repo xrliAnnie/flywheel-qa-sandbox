@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
 	DEFAULT_GATE_TIMEOUT_MS,
@@ -10,9 +9,6 @@ import {
 	type AccountRotationNotifyArgs,
 	accountRotationNotify,
 } from "./commands/account-rotation-notify.js";
-import { ackEvent } from "./commands/ack-event.js";
-import { adoptInflight } from "./commands/adopt-inflight.js";
-import { runAlertTicketCommand } from "./commands/alert-ticket.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -27,12 +23,13 @@ import {
 	parseDuration,
 } from "./commands/declare-state.js";
 import { runFeatureFlags } from "./commands/feature-flags.js";
-import { founderTime } from "./commands/founder-time.js";
+import {
+	awaitFounderUxGate,
+	declareFounderUx,
+	recordFounderUxSignoff,
+} from "./commands/founder-ux.js";
 import { gate } from "./commands/gate.js";
-import { inbox, renderInboxInstruction } from "./commands/inbox.js";
-import { runLeadIdentityCommand } from "./commands/lead-identity.js";
-import { runLeadLeaseCommand } from "./commands/lead-lease.js";
-import { messageStatus } from "./commands/message-status.js";
+import { inbox } from "./commands/inbox.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { pending } from "./commands/pending.js";
 import { progress } from "./commands/progress.js";
@@ -44,46 +41,24 @@ import { qaResult } from "./commands/qa-result.js";
 import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
-import { reviewRuling } from "./commands/review-ruling.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
-import {
-	type RunnerStopSource,
-	runnerStopped,
-	type StopFailureInput,
-} from "./commands/runner-stopped.js";
-import { runnerWakeSweep } from "./commands/runner-wake-sweep.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
-import { runSummaryCommand } from "./commands/summary.js";
-import { runSummaryRegistryCommand } from "./commands/summary-registry.js";
 import { runTokenReport } from "./commands/token-report.js";
-import {
-	formatTurnStatus,
-	isTurnDebugOverride,
-	recordTurnCommandSideEffects,
-	turnStatus,
-	turnWaitAskAfterMs,
-} from "./commands/turn.js";
+import { formatTurnStatus, turnStatus } from "./commands/turn.js";
 import { verifyApprovalWithBridgeHead } from "./commands/verify-approval.js";
-import { verifyReport } from "./commands/verify-report.js";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
 	visualCaptureStdout,
 } from "./commands/visual-capture.js";
-import { currentWorkflowCompletionActivationFromEnv } from "./commands/workflow-activation.js";
-import { workflowOutput } from "./commands/workflow-output.js";
 import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import { CommDB } from "./db.js";
-import { ingestDiscordChat } from "./discord-chat-ingest.js";
-import { resolveFounderId } from "./founder-attribution.js";
-import { inspectCommittedFounderReviewArtifacts } from "./founder-review.js";
-import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
 function printUsage(): void {
@@ -95,10 +70,6 @@ Commands:
             ("DONE: …") — the Lead still gets it, but founder thread replies
             can never bind to it.
   check     Check if a question has been answered
-  ack-event Write a backend-neutral Lead-event ACK receipt. The bearer token
-            MUST arrive on stdin: ack-event <seq> --project <name> --token-stdin
-  alert-ticket  Claw duty actions: ack|handoff|resolve|outstanding. Uses only
-            FLYWHEEL_ALERT_DUTY_TOKEN against the Bridge /duty capability.
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
             With --no-block (FLY-191): park the question + return questionId
             JSON immediately; runner goes idle and is woken by mailbox.
@@ -108,68 +79,40 @@ Commands:
             exit 0 only when approved. The wake message itself is NEVER authority.
   pending   List unanswered questions for a lead
   respond   Respond to a runner's question
-  chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
-  lead-identity  Resolve one immutable Lead identity from an explicit registry selector
-  summary-registry  Migrate or verify the FLY-2030 summary assignment registry fence
-  summary   Validate and deliver one Lead-authored summary PR; summary verify-pr
-            validates a Raya PR's complete current-head diff and prints its verified SHA;
-            summary merge --repo <owner/repo> --pr <n> [--round <id>]
-            [--method <merge|squash|rebase>] [--dry-run] atomically binds an
-            allowed summary merge to that verified head
-  lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
-  message-status  Read one mailbox message's live/archive delivery evidence by exact id
-  adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
   sessions           List runner sessions
   sessions register  Register a runner session in CommDB
   capture   Capture tmux output of a runner session
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
-  turn      FLY-887: DAG workflow runner's shared-worktree TURN self-check.
+  turn      FLY-887: three-stage phase runner's shared-worktree TURN self-check.
             Prints yours|not-yours|no-turn (exit 0). Touch the worktree ONLY on
             a 'yours' answer; the wake message text is never authority.
             --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
   complete  Emit session_completed terminal event to Bridge (Runner use)
-  runner-stopped  Emit a reasoned Runner turn-end report to its Lead (hook use)
-  runner-wake-sweep  Ring a durable Codex phase-hold doorbell when unread
-            Runner traffic exists (turn-ended hook use; never ACKs mailbox rows)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
-  workflow-output  Submit a generalized node's JSON output before completion
-  request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>] [--target-repo <rel>])
-  review-ruling  Record or revoke a supervised Lead ruling for a delivered review finding (FLY-1278)
-  codex-review-result  Emit a Codex code-review APPROVED verdict for an explicit execution/head (FLY-827; requires --exec-id and --pr-head)
-  cleanup   Archive terminal mailbox families (72h minimum)
+  request-review  Register a codex-author review request bound to an open review gate (FLY-1188; --type design|code --question-id <id> [--plan <path>])
+  codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
+  cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
   publish-report   Publish HTML report to hosting + deliver to Discord as
             screenshot preview + unguessable link (FLY-203). Flags:
-            --html <file> --project <name> [--title <t>]
-            [--channel <id> | --issue <FLY-123>]
+            --html <file> --project <name> [--title <t>] [--channel <id>]
             [--no-screenshot] [--kind token_report --expected-date YYYY-MM-DD].
-            Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN. Always prints a one-line
+            Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN,
+            FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
             JSON envelope to stdout.
-  verify-report   Verify a hosted HTML report. Default is browser-free HTTP/CSP
-            validation; screenshot is opt-in and process-group bounded. Flags:
-            --url <http(s)://url> [--expect <substring>]
-            [--screenshot <absolute.png>] [--shot-window <WxH>]
-            [--timeout-ms <n>] [--shot-timeout-ms <n>]
-            [--chrome-bin <absolute executable>]. Always prints a one-line JSON
-            envelope to stdout.
-	  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
-	            report [--project <name>] [--channel <id>] [--out <file>]
+  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
+            report [--project <name>] [--channel <id>] [--out <file>]
             [--bridge-url <url>]  — fetch the read-only flag report from the
             Bridge loopback endpoint and deliver via publish-report (hosted URL
-            + Discord).
-	            set --name <flag> --to on|off|<enum> [--project <scope; default *>]
-	            [--reason <reason>] [--bridge-url <url>]
-	            clear --name <flag> --project <scope> --reason <reason>
-	            [--bridge-url <url>]  — copy/paste stage→apply commands. set/clear
-	            --project selects flag scope; report --project selects publishing.
-	            apply remains a set alias. clear is limited to SQLite-managed flags.
-  founder-time   Print Annie's current local time and timezone. Uses the host
-            device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
+            + Discord). Honors FLYWHEEL_REMOTE_REPORTS=0.
+            apply --name <flag> --to on|off [--bridge-url <url>]  — the command
+            the founder pastes to the Lead (copy-paste-apply); stage→apply a
+            direct-toggle flag on the loopback Bridge routes.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
             apply --project <name> [--cron <collection_id>] [--model <id|default>]
             [--effort <level|default>] [--backend <executor|default>] --yes
@@ -198,23 +141,17 @@ Global options:
   --json            Output as JSON
 
 respond options:
-	<question-id> <answer> --lead <lead> [--db <path> | --project <name>]
-	[--expect-owner <execution-id>]
-	[--expect-checkpoint <checkpoint> | --expect-no-checkpoint]
-	[--source-thread <discord-thread-id>] [--bridge-url <url>] [--kickback]
   --bridge-url <url>  Route an approve_to_ship gate response through the Bridge
                       founder-consent wrapper (FLY-175). Required for the
                       approve_to_ship checkpoint unless BRIDGE_URL env is set;
                       omitting it for that gate is fail-closed (refuses to write).
-  --kickback          Explicitly confirm a non-approval answer as a kickback.
-                      Without this flag or a recognized kickback prefix, neutral
-                      discussion is relayed but no verdict is written.
 
 Environment:
   FLYWHEEL_COMM_DB           DB path (overridden by --db)
   BRIDGE_URL                 Default Bridge URL for the approve_to_ship gate route
   TEAMLEAD_API_TOKEN         Bearer token for the Bridge gate-response endpoint
-`);
+  FLYWHEEL_COMM_BYPASS_BRIDGE Set =1 for emergency direct write of an
+                             approve_to_ship gate (loud audit row + stderr warning)`);
 }
 
 async function main(): Promise<void> {
@@ -225,21 +162,16 @@ async function main(): Promise<void> {
 		printUsage();
 		process.exit(0);
 	}
+
 	// Parse global options from remaining args
 	const commandArgs = args.slice(1);
 
 	switch (command) {
 		case "ask":
-			await runAsk(commandArgs);
+			runAsk(commandArgs);
 			break;
 		case "check":
 			runCheck(commandArgs);
-			break;
-		case "ack-event":
-			await runAckEvent(commandArgs);
-			break;
-		case "alert-ticket":
-			process.exitCode = await runAlertTicketCommand(commandArgs);
 			break;
 		case "gate":
 			await runGate(commandArgs);
@@ -250,32 +182,11 @@ async function main(): Promise<void> {
 		case "respond":
 			await runRespond(commandArgs);
 			break;
-		case "chat-ingest":
-			await runChatIngest(commandArgs);
-			break;
 		case "send":
 			await runSend(commandArgs);
 			break;
-		case "lead-identity":
-			process.exitCode = await runLeadIdentityCommand(commandArgs);
-			break;
-		case "summary-registry":
-			process.exitCode = runSummaryRegistryCommand(commandArgs);
-			break;
-		case "summary":
-			process.exitCode = await runSummaryCommand(commandArgs);
-			break;
-		case "lead-lease":
-			process.exitCode = await runLeadLeaseCommand(commandArgs);
-			break;
 		case "inbox":
 			runInbox(commandArgs);
-			break;
-		case "message-status":
-			process.exitCode = messageStatus(commandArgs);
-			break;
-		case "adopt-inflight":
-			process.exitCode = adoptInflight(commandArgs);
 			break;
 		case "sessions":
 			if (commandArgs[0] === "register") {
@@ -312,29 +223,26 @@ async function main(): Promise<void> {
 		case "complete":
 			await runComplete(commandArgs);
 			break;
-		case "runner-stopped":
-			await runRunnerStopped(commandArgs);
-			break;
-		case "runner-wake-sweep":
-			runRunnerWakeSweep(commandArgs);
-			break;
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
 			break;
 		case "qa-result":
 			await runQaResult(commandArgs);
 			break;
-		case "workflow-output":
-			await runWorkflowOutput(commandArgs);
-			break;
 		case "request-review":
 			await runRequestReview(commandArgs);
 			break;
-		case "review-ruling":
-			await runReviewRuling(commandArgs);
-			break;
 		case "codex-review-result":
 			await runCodexReviewResult(commandArgs);
+			break;
+		case "declare-founder-ux":
+			await runDeclareFounderUx(commandArgs);
+			break;
+		case "record-founder-ux-signoff":
+			await runRecordFounderUxSignoff(commandArgs);
+			break;
+		case "await-founder-ux-gate":
+			await runAwaitFounderUxGate(commandArgs);
 			break;
 		case "codex-resume":
 			await runCodexResume(commandArgs);
@@ -351,14 +259,8 @@ async function main(): Promise<void> {
 		case "publish-report":
 			await runPublishReport(commandArgs);
 			break;
-		case "verify-report":
-			await runVerifyReport(commandArgs);
-			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
-			break;
-		case "founder-time":
-			founderTime(commandArgs);
 			break;
 		case "runner-config":
 			await runRunnerConfig(commandArgs);
@@ -394,80 +296,6 @@ async function main(): Promise<void> {
 	}
 }
 
-function runRunnerWakeSweep(args: string[]): void {
-	const { values } = parseArgs({
-		args,
-		options: {
-			"exec-id": { type: "string" },
-			db: { type: "string" },
-			project: { type: "string" },
-			json: { type: "boolean", default: false },
-		},
-		allowPositionals: false,
-	});
-	const envExecId = process.env.FLYWHEEL_EXEC_ID;
-	const execId = values["exec-id"] ?? envExecId;
-	if (!execId) {
-		throw new Error("FLYWHEEL_EXEC_ID is required");
-	}
-	if (values["exec-id"] && values["exec-id"] !== envExecId) {
-		console.warn(
-			`runner-wake-sweep: debug --exec-id override targets ${values["exec-id"]}`,
-		);
-	}
-	const result = runnerWakeSweep({
-		dbPath: resolveDbPath({ db: values.db, project: values.project }),
-		execId,
-	});
-	console.log(values.json ? JSON.stringify(result) : result.kind);
-}
-
-async function runAckEvent(args: string[]): Promise<void> {
-	const { values, positionals } = parseArgs({
-		args,
-		options: {
-			db: { type: "string" },
-			project: { type: "string" },
-			lead: { type: "string" },
-			"token-stdin": { type: "boolean", default: false },
-			json: { type: "boolean", default: false },
-		},
-		allowPositionals: true,
-	});
-	const eventSeq = Number(positionals[0]);
-	if (!Number.isSafeInteger(eventSeq) || eventSeq <= 0) {
-		throw new Error("A positive event sequence is required");
-	}
-	if (!values["token-stdin"]) {
-		throw new Error(
-			"--token-stdin is required; tokens are never accepted in argv",
-		);
-	}
-	const leadId = values.lead ?? process.env.FLYWHEEL_LEAD_ID?.trim();
-	if (!leadId) {
-		throw new Error(
-			"ACK identity is required: pass --lead or set FLYWHEEL_LEAD_ID",
-		);
-	}
-	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const receiptId = ackEvent({
-		dbPath,
-		eventSeq,
-		ackToken: readFileSync(0, "utf8").trim(),
-		leadId,
-	});
-	await nudgeLeadInboxBestEffort({
-		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
-		leadId,
-		project: values.project,
-		apiToken: process.env.TEAMLEAD_API_TOKEN,
-		ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
-	});
-	if (values.json)
-		console.log(JSON.stringify({ receipt_id: receiptId, event_seq: eventSeq }));
-	else console.log(`ACK receipt queued for event ${eventSeq}`);
-}
-
 /**
  * FLY-123: zero-interpolation Codex cycle launcher (R2 #2). The ONLY
  * command shape the Codex mailbox watcher may inject into a runner shell.
@@ -492,7 +320,7 @@ async function runCodexResume(args: string[]): Promise<void> {
 	process.exit(exitCode);
 }
 
-async function runAsk(args: string[]): Promise<void> {
+function runAsk(args: string[]): void {
 	const { values, positionals } = parseArgs({
 		args,
 		options: {
@@ -504,7 +332,6 @@ async function runAsk(args: string[]): Promise<void> {
 			// FLY-1041: fire-and-forget status report — excluded from the
 			// founder-reply binding candidate set (Lead relay unchanged).
 			report: { type: "boolean", default: false },
-			deadline: { type: "string" },
 		},
 		allowPositionals: true,
 	});
@@ -525,14 +352,6 @@ async function runAsk(args: string[]): Promise<void> {
 		question,
 		dbPath,
 		report: values.report,
-		deadlineAt: values.deadline,
-	});
-	await nudgeLeadInboxBestEffort({
-		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
-		leadId: values.lead,
-		project: values.project,
-		apiToken: process.env.TEAMLEAD_API_TOKEN,
-		ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
 	});
 
 	if (values.json) {
@@ -559,11 +378,7 @@ function runCheck(args: string[]): void {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = check({
-		questionId,
-		dbPath,
-		executionId: process.env.FLYWHEEL_EXEC_ID,
-	});
+	const result = check({ questionId, dbPath });
 
 	if (values.json) {
 		console.log(JSON.stringify(result));
@@ -616,11 +431,6 @@ async function runRespond(args: string[]): Promise<void> {
 			// FLY-175: route approve_to_ship gate responses through the Bridge
 			// founder-consent wrapper. Falls back to BRIDGE_URL env when unset.
 			"bridge-url": { type: "string" },
-			"source-thread": { type: "string" },
-			"expect-owner": { type: "string" },
-			"expect-checkpoint": { type: "string" },
-			"expect-no-checkpoint": { type: "boolean", default: false },
-			kickback: { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
 		},
 		allowPositionals: true,
@@ -628,11 +438,6 @@ async function runRespond(args: string[]): Promise<void> {
 
 	if (!values.lead) {
 		throw new Error("--lead is required (identifies who is responding)");
-	}
-	if (values["expect-checkpoint"] && values["expect-no-checkpoint"]) {
-		throw new Error(
-			"--expect-checkpoint and --expect-no-checkpoint are mutually exclusive",
-		);
 	}
 
 	const questionId = positionals[0];
@@ -653,117 +458,12 @@ async function runRespond(args: string[]): Promise<void> {
 		dbPath,
 		bridgeUrl: values["bridge-url"],
 		projectName: values.project,
-		sourceThread: values["source-thread"],
-		expectedOwner: values["expect-owner"],
-		expectedCheckpoint: values["expect-no-checkpoint"]
-			? null
-			: values["expect-checkpoint"],
-		kickback: values.kickback,
 	});
 
 	if (values.json) {
 		console.log(JSON.stringify({ status: "ok", question_id: questionId }));
 	} else {
 		console.log(`Responded to ${questionId}`);
-	}
-}
-
-async function runChatIngest(args: string[]): Promise<void> {
-	const { values, positionals } = parseArgs({
-		args,
-		options: {
-			"version-probe": { type: "boolean", default: false },
-			json: { type: "boolean", default: false },
-			lead: { type: "string" },
-			"chat-id": { type: "string" },
-			"origin-channel-id": { type: "string" },
-			"message-id": { type: "string" },
-			"author-id": { type: "string" },
-			"author-name": { type: "string" },
-			"founder-id": { type: "string" },
-			ts: { type: "string" },
-			"msg-kind": { type: "string" },
-			"attachments-json": { type: "string" },
-			"reply-channel-id": { type: "string" },
-			"reply-route-json": { type: "string" },
-			"content-stdin": { type: "boolean", default: false },
-			db: { type: "string" },
-			project: { type: "string" },
-		},
-		allowPositionals: true,
-	});
-	if (positionals.length > 0)
-		throw new Error("chat-ingest accepts no positionals");
-	if (values["version-probe"]) {
-		console.log(
-			JSON.stringify({ command: "chat-ingest", protocolVersion: 1, ok: true }),
-		);
-		return;
-	}
-	if (!values["content-stdin"]) {
-		throw new Error("chat-ingest requires --content-stdin");
-	}
-	const required = (name: keyof typeof values): string => {
-		const value = values[name];
-		if (typeof value !== "string" || !value) {
-			throw new Error(`--${String(name)} is required`);
-		}
-		return value;
-	};
-	let attachments: unknown;
-	let replyRoute: unknown;
-	try {
-		attachments = JSON.parse(values["attachments-json"] ?? "[]");
-		replyRoute = values["reply-route-json"]
-			? JSON.parse(values["reply-route-json"])
-			: undefined;
-	} catch (error) {
-		throw new Error(
-			`chat-ingest JSON option is invalid: ${(error as Error).message}`,
-		);
-	}
-	const result = ingestDiscordChat({
-		dbPath: resolveDbPath({ db: values.db, project: values.project }),
-		leadId: required("lead"),
-		chatId: required("chat-id"),
-		originChannelId: required("origin-channel-id"),
-		messageId: required("message-id"),
-		authorId: required("author-id"),
-		authorName: required("author-name"),
-		...(values["founder-id"] ? { founderId: values["founder-id"] } : {}),
-		ts: required("ts"),
-		msgKind: required("msg-kind") as "dm" | "guild" | "roundtable",
-		attachments: attachments as Array<{
-			name: string;
-			type: string;
-			sizeKb: number;
-		}>,
-		text: readFileSync(0, "utf8"),
-		...(values["reply-channel-id"]
-			? { replyChannelId: values["reply-channel-id"] }
-			: {}),
-		...(replyRoute
-			? {
-					replyRoute: replyRoute as {
-						kind: "roundtable_thread_from_message";
-						parentChannelId: string;
-						sourceMessageId: string;
-						threadId: string;
-						threadName?: string;
-					},
-				}
-			: {}),
-	});
-	// Commit evidence must precede the best-effort doorbell.
-	console.log(JSON.stringify(result));
-	if (result.lane === "inserted_inbox") {
-		await nudgeLeadInboxBestEffort({
-			bridgeUrl: process.env.BRIDGE_URL,
-			leadId: required("lead"),
-			project: values.project ?? process.env.PROJECT_NAME,
-			apiToken: process.env.TEAMLEAD_API_TOKEN,
-			ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
-		});
 	}
 }
 
@@ -819,39 +519,27 @@ function runInbox(args: string[]): void {
 		allowPositionals: false,
 	});
 
-	const envExecId = process.env.FLYWHEEL_EXEC_ID;
-	const execId = values["exec-id"] ?? envExecId;
-	if (!execId) {
-		throw new Error(
-			"FLYWHEEL_EXEC_ID is required (or pass --exec-id for debug)",
-		);
-	}
-	const debugExecOverride =
-		Boolean(values["exec-id"]) && values["exec-id"] !== envExecId;
-	if (debugExecOverride) {
-		console.error(
-			`[flywheel-comm inbox] WARNING: --exec-id override (${values["exec-id"]}) — use only for debug/test.`,
-		);
+	if (!values["exec-id"]) {
+		throw new Error("--exec-id is required");
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = inbox({ execId, dbPath, debugExecOverride });
+	const result = inbox({ execId: values["exec-id"], dbPath });
 
 	if (values.json) {
 		console.log(JSON.stringify(result.instructions));
 	} else if (result.instructions.length === 0) {
 		console.log("No instructions.");
 	} else {
-		const renderedAtMs = Date.now();
 		for (const inst of result.instructions) {
-			console.log(renderInboxInstruction(inst, renderedAtMs));
+			console.log(`[${inst.id}] from ${inst.from_agent}: ${inst.content}`);
 		}
 	}
 }
 
 /**
  * FLY-626: `park` / `busy` / `unpark` — a runner self-declares its liveness
- * intent so the stall detectors do not waste a Lead wake on it. Writes the
+ * intent so the stall watchdogs do not waste a Lead wake on it. Writes the
  * marker to CommDB. exec-id defaults to FLYWHEEL_EXEC_ID; an explicit
  * `--exec-id` is a LOUD debug override (Codex R1 #5 — a runner declares only
  * for itself).
@@ -940,14 +628,13 @@ function runDeclareState(
 }
 
 /**
- * FLY-887: `turn --exec-id <id>` — a DAG workflow runner's shared-worktree
+ * FLY-887: `turn --exec-id <id>` — a three-stage phase runner's shared-worktree
  * TURN self-check. Prints exactly one of `yours` / `not-yours` / `no-turn` and
  * exits 0; a query/DB failure exits 1. The runner proceeds to touch the worktree
  * ONLY on `yours`. exec-id defaults to FLYWHEEL_EXEC_ID (a runner checks only for
  * itself); an explicit `--exec-id` is a loud debug override.
  */
 function runTurn(args: string[]): void {
-	const observedAtMs = Date.now();
 	const { values } = parseArgs({
 		args,
 		options: {
@@ -983,12 +670,6 @@ function runTurn(args: string[]): void {
 	const db = new CommDB(dbPath);
 	try {
 		const status = turnStatus(db, execId);
-		const debugOverride = isTurnDebugOverride(values["exec-id"], envExecId);
-		recordTurnCommandSideEffects(db, execId, status, {
-			observedAtMs,
-			askAfterMs: turnWaitAskAfterMs(process.env),
-			debugOverride,
-		});
 		if (values.json) {
 			console.log(JSON.stringify(status));
 		} else {
@@ -1186,7 +867,6 @@ async function runVerifyApproval(args: string[]): Promise<void> {
 			responseFrom: result.responseFrom,
 			status: result.status,
 			expectedPrHeadSha: result.expectedPrHeadSha,
-			ciDetail: result.ciDetail,
 		}),
 	);
 	process.exit(result.exitCode);
@@ -1203,7 +883,6 @@ async function runComplete(args: string[]): Promise<void> {
 			summary: { type: "string" },
 			"exit-reason": { type: "string" },
 			"base-ref": { type: "string" },
-			"target-repo": { type: "string" },
 			// FLY-191 Phase 2: bind the review request to the exact gate
 			// question from `gate --no-block` (route=needs_review).
 			"question-id": { type: "string" },
@@ -1219,85 +898,8 @@ async function runComplete(args: string[]): Promise<void> {
 		summary: values.summary,
 		exitReason: values["exit-reason"],
 		baseRef: values["base-ref"],
-		targetRepo: values["target-repo"],
 		questionId: values["question-id"],
 	});
-}
-
-async function runRunnerStopped(args: string[]): Promise<void> {
-	try {
-		const { values } = parseArgs({
-			args,
-			options: {
-				source: { type: "string" },
-				transcript: { type: "string" },
-				"error-json": { type: "string" },
-				"last-message": { type: "string" },
-				"turn-id": { type: "string" },
-				"session-id": { type: "string" },
-				"ingress-ts": { type: "string" },
-				"prev-ingress": { type: "string" },
-				"exec-id": { type: "string" },
-				"issue-id": { type: "string" },
-				db: { type: "string" },
-				project: { type: "string" },
-			},
-			allowPositionals: false,
-		});
-		const source = values.source;
-		if (
-			source !== "claude-stop" &&
-			source !== "claude-stop-failure" &&
-			source !== "codex-notify"
-		) {
-			throw new Error(
-				"--source must be claude-stop, claude-stop-failure, or codex-notify",
-			);
-		}
-		const execId = values["exec-id"] ?? process.env.FLYWHEEL_EXEC_ID;
-		if (!execId) throw new Error("--exec-id or FLYWHEEL_EXEC_ID is required");
-		if (!values["ingress-ts"]) throw new Error("--ingress-ts is required");
-		let stopFailure: StopFailureInput | undefined;
-		if (values["error-json"]) {
-			const parsed = JSON.parse(values["error-json"]) as Record<
-				string,
-				unknown
-			>;
-			if (typeof parsed.error !== "string") {
-				throw new Error("--error-json must contain a string error field");
-			}
-			stopFailure = {
-				error: parsed.error,
-				...(typeof parsed.errorDetails === "string" ||
-				parsed.errorDetails === null
-					? { errorDetails: parsed.errorDetails }
-					: {}),
-				...(typeof parsed.lastAssistantMessage === "string" ||
-				parsed.lastAssistantMessage === null
-					? { lastAssistantMessage: parsed.lastAssistantMessage }
-					: {}),
-			};
-		}
-		const result = await runnerStopped({
-			dbPath: resolveDbPath({ db: values.db, project: values.project }),
-			execId,
-			envIssueId: values["issue-id"] ?? process.env.FLYWHEEL_ISSUE_ID,
-			source: source as RunnerStopSource,
-			ingressTs: values["ingress-ts"],
-			prevIngress: values["prev-ingress"],
-			transcriptPath: values.transcript,
-			sessionId: values["session-id"],
-			stopFailure,
-			lastMessage: values["last-message"],
-			turnId: values["turn-id"],
-		});
-		console.log(result.questionId);
-	} catch (error) {
-		console.error(
-			`runner-stopped: ${error instanceof Error ? error.message : String(error)}`,
-		);
-		process.exit(2);
-	}
 }
 
 // FLY-1188 §7.1: register a codex-author review request bound to a gate.
@@ -1309,7 +911,6 @@ async function runRequestReview(args: string[]): Promise<void> {
 			type: { type: "string" },
 			"question-id": { type: "string" },
 			plan: { type: "string" },
-			"target-repo": { type: "string" },
 			"request-id": { type: "string" },
 		},
 		allowPositionals: false,
@@ -1320,50 +921,7 @@ async function runRequestReview(args: string[]): Promise<void> {
 		type: values.type,
 		questionId: values["question-id"],
 		planPath: values.plan,
-		targetRepoPath: values["target-repo"],
 		requestId: values["request-id"],
-	});
-}
-
-// FLY-1278: supervised governance for an already-delivered review finding.
-async function runReviewRuling(args: string[]): Promise<void> {
-	const { values } = parseArgs({
-		args,
-		options: {
-			project: { type: "string" },
-			issue: { type: "string" },
-			finding: { type: "string" },
-			"request-id": { type: "string" },
-			"finding-index": { type: "string" },
-			disposition: { type: "string" },
-			"follow-up": { type: "string" },
-			reason: { type: "string" },
-			lead: { type: "string" },
-			revoke: { type: "string" },
-			"exec-id": { type: "string" },
-		},
-		allowPositionals: false,
-	});
-	const rawIndex = values["finding-index"];
-	const findingIndex =
-		rawIndex !== undefined && /^\d+$/.test(rawIndex)
-			? Number.parseInt(rawIndex, 10)
-			: rawIndex === undefined
-				? undefined
-				: Number.NaN;
-
-	await reviewRuling({
-		project: values.project,
-		issue: values.issue,
-		finding: values.finding,
-		requestId: values["request-id"],
-		findingIndex,
-		disposition: values.disposition,
-		followUp: values["follow-up"],
-		reason: values.reason,
-		lead: values.lead,
-		revoke: values.revoke,
-		execId: values["exec-id"],
 	});
 }
 
@@ -1389,21 +947,6 @@ async function runQaResult(args: string[]): Promise<void> {
 	});
 }
 
-async function runWorkflowOutput(args: string[]): Promise<void> {
-	const { values } = parseArgs({
-		args,
-		options: {
-			"payload-file": { type: "string" },
-			"request-id": { type: "string" },
-		},
-		allowPositionals: false,
-	});
-	await workflowOutput({
-		payloadFile: values["payload-file"] ?? "",
-		requestId: values["request-id"],
-	});
-}
-
 async function runCodexReviewResult(args: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args,
@@ -1416,19 +959,10 @@ async function runCodexReviewResult(args: string[]): Promise<void> {
 		},
 		allowPositionals: false,
 	});
-	const execId = values["exec-id"]?.trim();
-	const prHeadSha = values["pr-head"]?.trim().toLowerCase();
-	if (!execId || !prHeadSha || !/^[0-9a-f]{40}$/.test(prHeadSha)) {
-		console.error(
-			"Usage: flywheel-comm codex-review-result --exec-id <id> --pr-head <40-hex-sha> [--reviewed-target <target>] [--rounds <n>] [--codex-thread-id <id>]",
-		);
-		process.exit(1);
-		return;
-	}
 	const rounds = values.rounds ? Number.parseInt(values.rounds, 10) : undefined;
 	const ok = await emitCodexReviewResult({
-		execId,
-		prHeadSha,
+		execId: values["exec-id"],
+		prHeadSha: values["pr-head"],
 		reviewedTarget: values["reviewed-target"],
 		rounds: Number.isFinite(rounds) ? rounds : undefined,
 		codexThreadId: values["codex-thread-id"],
@@ -1473,6 +1007,61 @@ async function runAwaitCodexGate(args: string[]): Promise<void> {
 	});
 }
 
+// FLY-598: founder-facing UX gate CLI runners.
+async function runDeclareFounderUx(args: string[]): Promise<void> {
+	const { values, positionals } = parseArgs({
+		args,
+		options: { "exec-id": { type: "string" }, reason: { type: "string" } },
+		allowPositionals: true,
+	});
+	await declareFounderUx({
+		execId: values["exec-id"],
+		reason: values.reason ?? positionals[0] ?? "",
+	});
+}
+
+async function runRecordFounderUxSignoff(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			"ux-file": { type: "string" },
+			"annie-msg-id": { type: "string" },
+			"bridge-url": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	await recordFounderUxSignoff({
+		execId: values["exec-id"],
+		uxFile: values["ux-file"] ?? "",
+		annieMsgId: values["annie-msg-id"] ?? "",
+		bridgeUrl: values["bridge-url"],
+	});
+}
+
+async function runAwaitFounderUxGate(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			"ux-file": { type: "string" },
+			"bridge-url": { type: "string" },
+			timeout: { type: "string" },
+			"poll-interval": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	await awaitFounderUxGate({
+		execId: values["exec-id"],
+		uxFile: values["ux-file"] ?? "",
+		bridgeUrl: values["bridge-url"],
+		timeoutMs: values.timeout ? Number.parseInt(values.timeout, 10) : undefined,
+		pollIntervalMs: values["poll-interval"]
+			? Number.parseInt(values["poll-interval"], 10)
+			: undefined,
+	});
+}
+
 async function runStage(args: string[]): Promise<void> {
 	const subcommand = args[0];
 	const stageName = args[1];
@@ -1482,13 +1071,15 @@ async function runStage(args: string[]): Promise<void> {
 		args: flagArgs,
 		options: {
 			plan: { type: "string" },
+			"ux-file": { type: "string" },
+			"ux-hash": { type: "string" },
 		},
 		allowPositionals: false,
 	});
 
 	if (!subcommand) {
 		console.error(
-			"Usage: flywheel-comm stage set <stage> [--plan <relative-path>]",
+			"Usage: flywheel-comm stage set <stage> [--plan <relative-path>] [--ux-file <path> | --ux-hash <hash>]",
 		);
 		process.exit(1);
 	}
@@ -1497,6 +1088,8 @@ async function runStage(args: string[]): Promise<void> {
 		subcommand,
 		stageName: stageName ?? "",
 		planPath: values.plan,
+		uxFile: values["ux-file"],
+		uxHash: values["ux-hash"],
 	});
 }
 
@@ -1665,9 +1258,7 @@ async function runPublishReport(args: string[]): Promise<void> {
 		project?: string;
 		title?: string;
 		channel?: string;
-		issue?: string;
 		"no-screenshot"?: boolean;
-		"publish-only"?: boolean;
 		kind?: string;
 		"expected-date"?: string;
 	};
@@ -1679,9 +1270,7 @@ async function runPublishReport(args: string[]): Promise<void> {
 				project: { type: "string" },
 				title: { type: "string" },
 				channel: { type: "string" },
-				issue: { type: "string" },
 				"no-screenshot": { type: "boolean", default: false },
-				"publish-only": { type: "boolean", default: false },
 				// FLY-929 B1: delivery-receipt seam (see PublishReportArgs).
 				kind: { type: "string" },
 				"expected-date": { type: "string" },
@@ -1698,18 +1287,13 @@ async function runPublishReport(args: string[]): Promise<void> {
 	if (!values.project) {
 		return failEnvelope("--project <name> is required");
 	}
-	if (values.channel !== undefined && values.issue !== undefined) {
-		return failEnvelope("--channel and --issue are mutually exclusive");
-	}
 
 	const reportArgs: PublishReportArgs = {
 		htmlPath: values.html,
 		project: values.project,
 		title: values.title,
 		channelId: values.channel,
-		issueIdentifier: values.issue,
 		noScreenshot: values["no-screenshot"],
-		publishOnly: values["publish-only"],
 		kind: values.kind,
 		expectedDate: values["expected-date"],
 	};
@@ -1717,96 +1301,6 @@ async function runPublishReport(args: string[]): Promise<void> {
 	const { envelope, exitCode } = await publishReport(reportArgs);
 	console.log(JSON.stringify(envelope));
 	process.exit(exitCode);
-}
-
-async function runVerifyReport(args: string[]): Promise<void> {
-	let rawUrl = "";
-	const failEnvelope = (error: string): never => {
-		console.error(`verify-report: ${error}`);
-		console.log(
-			JSON.stringify({
-				ok: false,
-				url: rawUrl,
-				status: null,
-				checks: {
-					http: "skipped",
-					noncePlaceholder: "skipped",
-					scriptNonce: "skipped",
-					expect: "skipped",
-				},
-				warnings: [],
-				info: { hasInlineSvg: false, imgCount: 0 },
-				screenshot: null,
-				error,
-			}),
-		);
-		process.exit(1);
-	};
-
-	let values: {
-		url?: string;
-		expect?: string;
-		screenshot?: string;
-		"shot-window"?: string;
-		"timeout-ms"?: string;
-		"shot-timeout-ms"?: string;
-		"chrome-bin"?: string;
-	};
-	try {
-		values = parseArgs({
-			args,
-			options: {
-				url: { type: "string" },
-				expect: { type: "string" },
-				screenshot: { type: "string" },
-				"shot-window": { type: "string" },
-				"timeout-ms": { type: "string" },
-				"shot-timeout-ms": { type: "string" },
-				"chrome-bin": { type: "string" },
-			},
-			allowPositionals: false,
-		}).values;
-	} catch (error) {
-		return failEnvelope(`invalid arguments: ${(error as Error).message}`);
-	}
-
-	rawUrl = values.url ?? "";
-	if (!values.url) return failEnvelope("--url <http(s)://url> is required");
-	const timeoutMs = parseOptionalNumber(values["timeout-ms"]);
-	if (timeoutMs === null) {
-		return failEnvelope("--timeout-ms must be a number");
-	}
-	const shotTimeoutMs = parseOptionalNumber(values["shot-timeout-ms"]);
-	if (shotTimeoutMs === null) {
-		return failEnvelope("--shot-timeout-ms must be a number");
-	}
-
-	let envelope: Awaited<ReturnType<typeof verifyReport>>["envelope"];
-	let exitCode: number;
-	try {
-		({ envelope, exitCode } = await verifyReport({
-			url: values.url,
-			expect: values.expect,
-			screenshotPath: values.screenshot,
-			shotWindow: values["shot-window"],
-			timeoutMs,
-			shotTimeoutMs,
-			chromeBin: values["chrome-bin"],
-		}));
-	} catch (error) {
-		return failEnvelope(`verification failed: ${(error as Error).message}`);
-	}
-	if (!envelope.ok) console.error(`verify-report: ${envelope.error}`);
-	console.log(JSON.stringify(envelope));
-	process.exit(exitCode);
-}
-
-function parseOptionalNumber(
-	raw: string | undefined,
-): number | undefined | null {
-	if (raw === undefined) return undefined;
-	if (!/^-?\d+(?:\.\d+)?$/.test(raw)) return null;
-	return Number(raw);
 }
 
 async function runVisualCapture(args: string[]): Promise<void> {
@@ -1963,9 +1457,6 @@ async function runGate(args: string[]): Promise<void> {
 			// goes idle instead of freezing in the poll loop). Output is always
 			// structured JSON in this mode so the runner can log the questionId.
 			"no-block": { type: "boolean", default: false },
-			deadline: { type: "string" },
-			"hosted-url": { type: "string" },
-			artifact: { type: "string", multiple: true },
 		},
 		allowPositionals: true,
 	});
@@ -2023,28 +1514,6 @@ async function runGate(args: string[]): Promise<void> {
 	const cleanupTtlHours = values["cleanup-ttl"]
 		? Number.parseInt(values["cleanup-ttl"], 10)
 		: 24;
-	const founderReviewEvidence =
-		checkpoint === "founder_review"
-			? (() => {
-					const activation = currentWorkflowCompletionActivationFromEnv(
-						values["exec-id"] as string,
-					);
-					if (!activation) {
-						throw new Error(
-							"founder_review requires a current workflow activation",
-						);
-					}
-					return {
-						runId: activation.run_id,
-						founderId: resolveFounderId({ processEnv: process.env }),
-						hostedUrl: values["hosted-url"] ?? "",
-						artifacts: inspectCommittedFounderReviewArtifacts({
-							cwd: process.cwd(),
-							paths: values.artifact ?? [],
-						}),
-					};
-				})()
-			: undefined;
 
 	const result = await gate({
 		checkpoint,
@@ -2056,16 +1525,6 @@ async function runGate(args: string[]): Promise<void> {
 		timeoutBehavior,
 		timeoutBehaviorSource,
 		cleanupTtlHours,
-		deadlineAt: values.deadline,
-		founderReviewEvidence,
-		nudge: () =>
-			nudgeLeadInboxBestEffort({
-				bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
-				leadId: values.lead as string,
-				project: values.project,
-				apiToken: process.env.TEAMLEAD_API_TOKEN,
-				ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
-			}),
 		stage: values.stage,
 		noBlock: values["no-block"],
 	});

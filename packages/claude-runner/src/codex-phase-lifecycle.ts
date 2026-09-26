@@ -14,7 +14,6 @@ import { dirname } from "node:path";
 import {
 	CommDB,
 	type PhaseWakeInput,
-	type RunnerDoorbellWakeResult,
 	type RunnerPhaseWake,
 } from "flywheel-comm/db";
 
@@ -153,11 +152,6 @@ interface PhaseLifecycleDb {
 		message: PhaseWakeInput,
 		nowMs: number,
 	): unknown;
-	enqueueRunnerDoorbellWake(
-		executionId: string,
-		message: PhaseWakeInput,
-		nowMs: number,
-	): RunnerDoorbellWakeResult;
 	markRunnerPhaseWakeStarted(
 		executionId: string,
 		messageId: string,
@@ -196,10 +190,6 @@ export interface CodexPhaseLifecycle {
 	stopIntake(): Promise<void>;
 	waitForShutdown(): Promise<{ requestId: string }>;
 	observe(): PhaseLifecycleObservation;
-	observeBoundary(): Extract<
-		PhaseLifecycleObservation,
-		{ kind: "active" | "parked" | "unknown" }
-	>;
 	getPhaseHold(): PhaseHoldState | null;
 	enterHold(budget: {
 		deadlineRemainingMs: number;
@@ -306,20 +296,6 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 					},
 				};
 			}
-			return this.observeBoundary();
-		} catch (error) {
-			return {
-				kind: "unknown",
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
-	}
-
-	observeBoundary(): Extract<
-		PhaseLifecycleObservation,
-		{ kind: "active" | "parked" | "unknown" }
-	> {
-		try {
 			const declared = this.db.getEffectiveDeclaredState(
 				this.options.executionId,
 				this.now(),
@@ -385,32 +361,12 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 						`phase wake recipient mismatch: expected ${this.options.mailboxAgentName}, got ${message.to}`,
 					);
 				}
-				const flywheelId = message.metadata?.flywheelId;
-				const queueBatch =
-					typeof flywheelId === "string" &&
-					flywheelId.startsWith("mailbox-batch:");
-				if (!queueBatch) {
-					this.db.enqueueRunnerPhaseWake(
-						this.options.executionId,
-						message,
-						this.now(),
-					);
-					this.signalActivity();
-					return;
-				}
-				const result = this.db.enqueueRunnerDoorbellWake(
+				this.db.enqueueRunnerPhaseWake(
 					this.options.executionId,
 					message,
 					this.now(),
 				);
-				if (
-					result.kind === "queued" ||
-					result.kind === "reused" ||
-					(result.kind === "already_covered" &&
-						result.wake.state !== "finished")
-				) {
-					this.signalActivity();
-				}
+				this.signalActivity();
 			};
 			this.watcherStarted = true;
 			try {

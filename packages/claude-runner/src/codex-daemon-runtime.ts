@@ -27,7 +27,6 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
-	readFileSync,
 	readSync,
 	rmSync,
 	statSync,
@@ -37,8 +36,7 @@ import {
 import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { stripInheritedSecretEnv, stripSecretEnv } from "./codex-home.js";
-import { withSyncOpMarker } from "./sync-op-marker.js";
+import { stripInheritedSecretEnv } from "./codex-home.js";
 
 /** macOS sockaddr_un.sun_path is 104 bytes; keep a byte of headroom. */
 export const SUN_PATH_MAX = 103;
@@ -72,224 +70,6 @@ export function resolveDaemonSocketPath(
 		.digest("hex")
 		.slice(0, 16);
 	return join(daemonSocketDir(env), `${short}.sock`);
-}
-
-/** Durable per-execution ownership state shared by the adapter, liveness
- * probe, and teardown reaper. Keeping the path primitive here prevents Bridge
- * callers from reimplementing weaker ownership lookup. */
-export function codexSessionStateDir(
-	executionId: string,
-	env: NodeJS.ProcessEnv = process.env,
-): string {
-	const base =
-		env.FLYWHEEL_CODEX_SESSION_DIR?.trim() ||
-		join(homedir(), ".flywheel", "state", "codex-sessions");
-	return join(base, executionId);
-}
-
-export type CodexDaemonLiveness = "alive" | "absent" | "unknown";
-export type ProcessGroupState = "alive" | "absent" | "unknown";
-
-export interface CodexDaemonOwnershipDeps {
-	env?: NodeJS.ProcessEnv;
-	isSocketLive?: (socketPath: string) => Promise<boolean>;
-	socketHolderPids?: (socketPath: string) => number[];
-	processGroupOf?: (pid: number) => number | undefined;
-	processGroupState?: (pgid: number) => ProcessGroupState;
-	killGroup?: (pgid: number, signal: NodeJS.Signals) => void;
-	now?: () => number;
-	sleep?: (ms: number) => Promise<void>;
-	exitWaitMs?: number;
-	logger?: (message: string) => void;
-}
-
-export interface CodexDaemonReapResult {
-	outcome: "reaped" | "absent" | "residual" | "unverifiable";
-	pgid?: number;
-	socketPath: string;
-}
-
-function readPersistedDaemonPgid(
-	executionId: string,
-	env: NodeJS.ProcessEnv,
-): number | undefined {
-	try {
-		const raw = JSON.parse(
-			readFileSync(
-				join(codexSessionStateDir(executionId, env), "session.json"),
-				"utf8",
-			),
-		) as { daemonPgid?: unknown; daemonPid?: unknown };
-		// daemonPid is a read-only migration fallback for pre-FLY-1940 state. New
-		// writes use daemonPgid exclusively.
-		const candidate = raw.daemonPgid ?? raw.daemonPid;
-		return typeof candidate === "number" &&
-			Number.isSafeInteger(candidate) &&
-			candidate > 1
-			? candidate
-			: undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function defaultProcessGroupState(pgid: number): ProcessGroupState {
-	try {
-		process.kill(-pgid, 0);
-		return "alive";
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ESRCH") return "absent";
-		if (code === "EPERM") return "alive";
-		return "unknown";
-	}
-}
-
-async function inspectCodexDaemonOwnership(
-	executionId: string,
-	deps: CodexDaemonOwnershipDeps,
-): Promise<{
-	liveness: CodexDaemonLiveness;
-	pgid?: number;
-	socketPath: string;
-	socketLive: boolean;
-	groupState: ProcessGroupState;
-}> {
-	const env = deps.env ?? process.env;
-	const socketPath = resolveDaemonSocketPath(executionId, env);
-	const pgid = readPersistedDaemonPgid(executionId, env);
-	if (pgid === undefined) {
-		return {
-			liveness: "unknown",
-			socketPath,
-			socketLive: await (deps.isSocketLive ?? defaultIsSocketLive)(socketPath),
-			groupState: "unknown",
-		};
-	}
-	const isSocketLive = deps.isSocketLive ?? defaultIsSocketLive;
-	const socketLive = await isSocketLive(socketPath);
-	const processGroupState = deps.processGroupState ?? defaultProcessGroupState;
-	const groupState = processGroupState(pgid);
-	if (!socketLive) {
-		return {
-			liveness: groupState === "absent" ? "absent" : "unknown",
-			pgid,
-			socketPath,
-			socketLive,
-			groupState,
-		};
-	}
-	if (groupState !== "alive") {
-		return {
-			liveness: "unknown",
-			pgid,
-			socketPath,
-			socketLive,
-			groupState,
-		};
-	}
-	const holders = (deps.socketHolderPids ?? defaultSocketHolderPids)(
-		socketPath,
-	);
-	const processGroupOf = deps.processGroupOf ?? defaultProcessGroupOf;
-	const proven = holders
-		.slice(0, 10)
-		.some((holder) => processGroupOf(holder) === pgid);
-	return {
-		liveness: proven ? "alive" : "unknown",
-		pgid,
-		socketPath,
-		socketLive,
-		groupState,
-	};
-}
-
-/** Non-destructive daemon evidence used by workflow quiescence. `absent`
- * requires BOTH a dead socket and an absent persisted group. */
-export async function probeCodexDaemonLiveness(
-	executionId: string,
-	deps: CodexDaemonOwnershipDeps = {},
-): Promise<CodexDaemonLiveness> {
-	return (await inspectCodexDaemonOwnership(executionId, deps)).liveness;
-}
-
-/** Reap the detached daemon owned by one execution. Destructive signalling is
- * authorized only when a live socket holder belongs to the persisted group.
- * The persisted PGID alone is never authority: session state can outlive the
- * daemon long enough for the OS to recycle that group id. */
-export async function reapCodexDaemonForExecution(
-	executionId: string,
-	deps: CodexDaemonOwnershipDeps = {},
-): Promise<CodexDaemonReapResult> {
-	const initial = await inspectCodexDaemonOwnership(executionId, deps);
-	if (initial.liveness === "absent") {
-		return {
-			outcome: "absent",
-			...(initial.pgid !== undefined ? { pgid: initial.pgid } : {}),
-			socketPath: initial.socketPath,
-		};
-	}
-	if (
-		initial.pgid === undefined ||
-		initial.groupState !== "alive" ||
-		initial.liveness !== "alive"
-	) {
-		return {
-			outcome: "unverifiable",
-			...(initial.pgid !== undefined ? { pgid: initial.pgid } : {}),
-			socketPath: initial.socketPath,
-		};
-	}
-	const processGroupOf = deps.processGroupOf ?? defaultProcessGroupOf;
-	const killGroup =
-		deps.killGroup ??
-		createDefaultKillGroup({
-			processGroupOf,
-			logger: deps.logger,
-		});
-	const now = deps.now ?? Date.now;
-	const sleep =
-		deps.sleep ??
-		((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-	const waitMs = deps.exitWaitMs ?? codexDaemonExitWaitMs(deps.env);
-	const waitForAbsent = async (): Promise<boolean> => {
-		const deadline = now() + waitMs;
-		for (;;) {
-			if (
-				(await inspectCodexDaemonOwnership(executionId, deps)).liveness ===
-				"absent"
-			) {
-				return true;
-			}
-			if (now() >= deadline) return false;
-			await sleep(Math.min(100, Math.max(1, deadline - now())));
-		}
-	};
-	try {
-		killGroup(initial.pgid, "SIGTERM");
-	} catch {
-		// Continue to the proof. A raced-away group is success only if the shared
-		// probe proves both group and socket absent.
-	}
-	if (await waitForAbsent()) {
-		return {
-			outcome: "reaped",
-			pgid: initial.pgid,
-			socketPath: initial.socketPath,
-		};
-	}
-	try {
-		killGroup(initial.pgid, "SIGKILL");
-	} catch {
-		// proof below decides the result
-	}
-	return (await waitForAbsent())
-		? { outcome: "reaped", pgid: initial.pgid, socketPath: initial.socketPath }
-		: {
-				outcome: "residual",
-				pgid: initial.pgid,
-				socketPath: initial.socketPath,
-			};
 }
 
 /** Fail closed if a socket path cannot bind (SUN_LEN) — a clear error beats a
@@ -326,35 +106,6 @@ export function buildDaemonSandboxArgs(opts: {
 		args.push("-c", "sandbox_workspace_write.network_access=true");
 	}
 	return args;
-}
-
-/**
- * FLY-1565: apps/connector tool approval modes codex accepts (real-machine
- * enum from codex 0.146.0 config load: `auto`, `prompt`, `writes`, `approve`).
- * `approve` is the auto-grant state — it is exactly what codex persists
- * per-tool after a human answers "approve, don't ask again".
- */
-const APPS_APPROVAL_MODES = new Set(["auto", "prompt", "writes", "approve"]);
-
-/**
- * FLY-1565: build the `-c apps._default.default_tools_approval_mode="<mode>"`
- * daemon spawn override. Apps/connector tool calls (e.g. the GitHub connector's
- * create_blob / create_branch / create_pull_request) elicit a PER-TOOL approval
- * regardless of `approval_policy = "never"` — an unattended runner daemon has
- * nobody to answer, so the elicitation wedges the turn until a human presses a
- * key (the FLY-1564 stalls). Presetting the apps-wide default to `approve`
- * removes the elicitation. Same defensive whitelist shape as
- * `buildDaemonEffortArgs`: an unknown value is warned + ignored, never spliced.
- */
-export function buildDaemonAppsApprovalArgs(mode?: string): string[] {
-	if (!mode) return [];
-	if (!APPS_APPROVAL_MODES.has(mode)) {
-		console.warn(
-			`[codex-daemon] unsupported apps approval mode "${mode}" — ignoring (daemon uses CODEX_HOME config default)`,
-		);
-		return [];
-	}
-	return ["-c", `apps._default.default_tools_approval_mode="${mode}"`];
 }
 
 /** FLY-1224: effort values the daemon spawn accepts (mirrors RoleEffort). */
@@ -428,14 +179,6 @@ export interface SpawnCodexDaemonOptions {
 	 */
 	sandboxNetworkAccess?: boolean;
 	/**
-	 * FLY-1565: apps/connector-wide default tool approval mode delivered as a
-	 * daemon config override (`-c apps._default.default_tools_approval_mode`).
-	 * An unattended daemon cannot answer a per-tool elicitation — `approve`
-	 * presets auto-grant so connector tool calls never wedge the turn waiting
-	 * for a human. Absent → CODEX_HOME config default (byte-compatible).
-	 */
-	appsDefaultToolsApprovalMode?: string;
-	/**
 	 * FLY-1224: per-phase reasoning effort delivered as a daemon config
 	 * override (`-c model_reasoning_effort="<effort>"`) — the app-server's
 	 * thread/start has no effort field, so the daemon `-c` override is the
@@ -472,11 +215,13 @@ export interface SpawnCodexDaemonOptions {
 	 * QA · FLY-1188 HIGH-2 — signal an entire PROCESS GROUP (default
 	 * `process.kill(-pgid, sig)`).
 	 *
-	 * A configured launcher may be a shell that forks before exec. Killing only
-	 * its pid can leave a ~178MB app-server holding this socket, reparented to
-	 * PID 1. We therefore spawn DETACHED and signal the created process GROUP,
-	 * which reaches the launcher and daemon alike. The group contains only our
-	 * descendants, so it cannot touch an unrelated production process.
+	 * `opts.codexBin` is the rotation shim, a shell script: the real
+	 * `codex app-server` is its CHILD, so killing the pid we spawned killed only
+	 * the shim and left a ~178MB app-server holding this socket, reparented to
+	 * PID 1. We therefore spawn the daemon DETACHED — it leads its own process
+	 * group — and signal the GROUP, which reaches the shim and the app-server
+	 * alike. The group is one we created, so nothing but our own descendants can
+	 * be in it: killing it cannot touch a production process.
 	 *
 	 * Only used when the daemon was spawned through the REAL spawn seam (or when
 	 * a test injects this) — with a fake `spawnFn`, a fake pid must never reach a
@@ -489,13 +234,6 @@ export interface SpawnCodexDaemonOptions {
 	 * (ps missing, process gone, unparseable) = no proof → do not kill.
 	 */
 	processGroupOf?: (pid: number) => number | undefined;
-	/**
-	 * FLY-1940: synchronously persist the detached daemon's process-group
-	 * identity immediately after spawn and before any socket wait. A throw is
-	 * fail-close: the just-spawned group is killed and proven gone before spawn
-	 * rejects, so Bridge crash recovery never inherits an unowned daemon.
-	 */
-	onSpawnIdentity?: (pgid: number) => void;
 	spawnFn?: DaemonSpawnFn;
 	/** Socket-appeared probe (default: fs statSync). */
 	socketExists?: (p: string) => boolean;
@@ -530,7 +268,7 @@ export interface SpawnCodexDaemonOptions {
 	socketWaitTimeoutMs?: number;
 	/** Socket poll interval (default 200ms). */
 	socketPollMs?: number;
-	/** Bounded wait for child exit/socket shutdown (default 10s; env-overridable). */
+	/** Bounded wait for the child to exit during failure cleanup (default 2s). */
 	childExitWaitMs?: number;
 	logger?: (m: string) => void;
 }
@@ -597,14 +335,10 @@ export async function spawnCodexDaemon(
 	// killGroup there is NO group to signal — a made-up pid must never be able to
 	// reach `process.kill(-pid)` and take out an unrelated group on this machine.
 	const killGroup =
-		opts.killGroup ??
-		(opts.spawnFn
-			? undefined
-			: createDefaultKillGroup({ processGroupOf, logger: log }));
+		opts.killGroup ?? (opts.spawnFn ? undefined : defaultKillGroup);
 	const timeoutMs = opts.socketWaitTimeoutMs ?? 30_000;
 	const pollMs = opts.socketPollMs ?? 200;
-	const childExitWaitMs =
-		opts.childExitWaitMs ?? codexDaemonExitWaitMs(process.env);
+	const childExitWaitMs = opts.childExitWaitMs ?? 2_000;
 
 	ensureDir(dirnameOf(opts.socketPath));
 
@@ -663,17 +397,9 @@ export async function spawnCodexDaemon(
 				// LEADER (the shim), and the socket is held by the app-server. A group
 				// leader is in its own group, so the two-fact rule subsumes the
 				// identity case anyway; `ps` failing simply means NO proof → refuse.
-				const proofDeadline = now() + 20_000;
-				let provenHolder = false;
-				if (opts.reapOrphanPid !== undefined) {
-					for (const holder of holders.slice(0, 10)) {
-						if (now() >= proofDeadline) break;
-						if (processGroupOf(holder) === opts.reapOrphanPid) {
-							provenHolder = true;
-							break;
-						}
-					}
-				}
+				const provenHolder =
+					opts.reapOrphanPid !== undefined &&
+					holders.some((h) => processGroupOf(h) === opts.reapOrphanPid);
 				if (opts.reapOrphanPid !== undefined && provenHolder) {
 					log(
 						`reaping proven orphan (group=${opts.reapOrphanPid} holds ${opts.socketPath}, holders=[${holders.join(",")}]) to reclaim the socket`,
@@ -727,18 +453,19 @@ export async function spawnCodexDaemon(
 				// `-c/--config`). Passed as SEPARATE argv elements (no shell) so a
 				// path with a metachar can never break out — codex parses the value.
 				...buildDaemonSandboxArgs(opts),
-				// FLY-1565: apps-wide tool approval preset (whitelisted).
-				...buildDaemonAppsApprovalArgs(opts.appsDefaultToolsApprovalMode),
 				// FLY-1224: per-phase reasoning effort override (whitelisted).
 				...buildDaemonEffortArgs(opts.effort),
 			],
 			{
 				// R-M4c HIGH: NEVER let a GitHub token reach the codex process env
-				// — it lives only in the 0600 config.toml (FLY-123). The adapter's
-				// explicitly constructed env is authoritative; the defensive fallback
-				// constructs a safe base with no inherited FLYWHEEL_* values.
+				// — it lives only in the 0600 config.toml (FLY-123). Wash the base
+				// env, then layer CODEX_HOME on.
 				env: {
-					...stripSecretEnv(opts.env ?? stripInheritedSecretEnv(process.env)),
+					// Codex full-PR review HIGH-4: broaden the wash to strip ALL of
+					// the Bridge's third-party creds (Discord/Linear/DB/API), not just
+					// the GH family — the daemon's model-driven shell must not inherit
+					// them. FLYWHEEL_* (the daemon's own scoped tokens) is preserved.
+					...stripInheritedSecretEnv(opts.env ?? process.env),
 					CODEX_HOME: opts.codexHome,
 				},
 			},
@@ -765,8 +492,12 @@ export async function spawnCodexDaemon(
 		/**
 		 * QA · FLY-1188 HIGH-2 — signal the daemon's whole process TREE.
 		 *
-		 * A launcher override may fork `codex app-server`; `child.kill()` would then
-		 * reap only the launcher and leave the socket-owning daemon behind.
+		 * `opts.codexBin` is the rotation shim (a shell script that must fork
+		 * `codex` rather than exec it, so it can read the exit code and rotate the
+		 * account on a 429). So the process we spawned is the shim, and the real
+		 * `codex app-server` — the thing holding the socket and ~178MB — is its
+		 * CHILD. `child.kill()` reaped the shim and left the app-server behind,
+		 * reparented to PID 1, on every single run.
 		 *
 		 * We spawn detached, so the child leads its own process group and the
 		 * group holds exactly our own descendants. Signalling the group reaches
@@ -844,7 +575,7 @@ export async function spawnCodexDaemon(
 		// the bound (a daemon somehow surviving SIGKILL), we KEEP the lock held
 		// and LEAVE the socket, failing loud rather than clobbering a
 		// possibly-live daemon.
-		const cleanupAndThrow = async (error: string | Error): Promise<never> => {
+		const cleanupAndThrow = async (msg: string): Promise<never> => {
 			// The whole TREE (QA · FLY-1188 HIGH-2) — a failed spawn that reaped only
 			// the shim would leak the app-server exactly like a successful one did.
 			killTree("SIGKILL");
@@ -871,24 +602,8 @@ export async function spawnCodexDaemon(
 					`WARNING: codex daemon could not be CONFIRMED dead after SIGKILL within ${childExitWaitMs}ms (socket still listening=${stillListening}) — holding lock + leaving socket ${opts.socketPath} to avoid clobbering a possibly-live daemon`,
 				);
 			}
-			throw typeof error === "string" ? new Error(error) : error;
+			throw new Error(msg);
 		};
-
-		if (opts.onSpawnIdentity) {
-			const pgid = child.pid;
-			if (!Number.isInteger(pgid) || (pgid ?? 0) <= 1) {
-				return await cleanupAndThrow(
-					"codex daemon spawn did not expose a safe process-group identity",
-				);
-			}
-			try {
-				opts.onSpawnIdentity(pgid as number);
-			} catch (error) {
-				return await cleanupAndThrow(
-					error instanceof Error ? error : new Error(String(error)),
-				);
-			}
-		}
 
 		const deadline = now() + timeoutMs;
 		while (true) {
@@ -931,8 +646,8 @@ function defaultSpawnFn(
 		env: opts.env,
 		stdio: ["ignore", "ignore", "ignore"],
 		// QA · FLY-1188 HIGH-2: `detached: true` puts the daemon in its OWN process
-		// group, led by the pid we get back. That group contains the configured
-		// launcher and every daemon descendant — and NOTHING else on this machine —
+		// group, led by the pid we get back. That group contains the rotation shim
+		// AND the `codex app-server` it forks — and NOTHING else on this machine —
 		// so teardown can signal the group and take the whole tree down at once.
 		// (`detached: false` never protected anything here: on Unix it does not kill
 		// the child when the parent dies either. It only cost us the group.)
@@ -953,50 +668,10 @@ function defaultSpawnFn(
  * says pid H holds it; ps says H is in that group). Neither can be a production
  * process's group. "Destructive op not provable = don't act."
  */
-export function createDefaultKillGroup(options: {
-	processGroupOf: (pid: number) => number | undefined;
-	kill?: (pid: number, signal: NodeJS.Signals) => void;
-	pid?: number;
-	ppid?: number;
-	logger?: (message: string) => void;
-}): (pgid: number, signal: NodeJS.Signals) => void {
-	const pid = options.pid ?? process.pid;
-	const ppid = options.ppid ?? process.ppid;
-	const kill =
-		options.kill ?? ((target, signal) => process.kill(target, signal));
-	const logger = options.logger ?? (() => {});
-	let ownPgidResolved = false;
-	let ownPgid: number | undefined;
-	return (pgid, signal) => {
-		if (!Number.isInteger(pgid) || pgid <= 1) return;
-		if (pgid === pid || pgid === ppid) {
-			logger(
-				`[CodexDaemon] REFUSING group signal to protected pid-derived PGID ${pgid} (signal=${signal})`,
-			);
-			return;
-		}
-		if (!ownPgidResolved) {
-			ownPgid = options.processGroupOf(pid);
-			ownPgidResolved = true;
-		}
-		if (ownPgid !== undefined && pgid === ownPgid) {
-			logger(
-				`[CodexDaemon] REFUSING group signal to Bridge process group ${pgid} (signal=${signal})`,
-			);
-			return;
-		}
-		logger(`[CodexDaemon] group signal pgid=${pgid} signal=${signal}`);
-		kill(-pgid, signal);
-	};
-}
-
-export function codexDaemonExitWaitMs(
-	env: NodeJS.ProcessEnv = process.env,
-): number {
-	const configured = env.FLYWHEEL_CODEX_DAEMON_EXIT_WAIT_MS?.trim();
-	if (!configured) return 10_000;
-	const parsed = Number(configured);
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 10_000;
+function defaultKillGroup(pgid: number, signal: NodeJS.Signals): void {
+	if (!Number.isInteger(pgid) || pgid <= 1) return;
+	if (pgid === process.pid || pgid === process.ppid) return;
+	process.kill(-pgid, signal);
 }
 
 /**
@@ -1007,13 +682,11 @@ export function codexDaemonExitWaitMs(
  */
 function defaultProcessGroupOf(pid: number): number | undefined {
 	try {
-		const out = withSyncOpMarker("codex-daemon:ps-pgid", () =>
-			execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], {
-				encoding: "utf8",
-				timeout: 2000,
-				stdio: ["ignore", "pipe", "ignore"],
-			}),
-		);
+		const out = execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], {
+			encoding: "utf8",
+			timeout: 2000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
 		const pgid = Number.parseInt(out.trim(), 10);
 		return Number.isInteger(pgid) && pgid > 0 ? pgid : undefined;
 	} catch {
@@ -1030,13 +703,11 @@ function defaultProcessGroupOf(pid: number): number | undefined {
  */
 function defaultSocketHolderPids(p: string): number[] {
 	try {
-		const out = withSyncOpMarker("codex-daemon:lsof-socket", () =>
-			execFileSync("lsof", ["-t", "--", p], {
-				encoding: "utf8",
-				timeout: 2000,
-				stdio: ["ignore", "pipe", "ignore"],
-			}),
-		);
+		const out = execFileSync("lsof", ["-t", "--", p], {
+			encoding: "utf8",
+			timeout: 2000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
 		return out
 			.split("\n")
 			.map((line) => Number.parseInt(line.trim(), 10))

@@ -1,8 +1,8 @@
 #!/bin/bash
-# GEO-195: Claude Lead body for the launchd-native private tmux carrier.
+# GEO-195: Manual supervisor script for Claude Lead session.
 # GEO-234: Agent file + flywheel-comm integration.
 # GEO-246: Parameterized for multi-lead — supports any agent name.
-# GEO-285: Session resume identity + graceful shutdown.
+# GEO-285: Crash recovery loop + auto session ID + graceful shutdown
 # FLY-20 E2E verification timestamp: 2026-04-01
 #          + PostCompact hook for bootstrap re-send after auto-compact.
 # GEO-286: Per-Lead workspace subdirectory. Claude Code walks up to load
@@ -24,8 +24,9 @@
 #   Examples: --subdir product (Peter), --subdir operations (Oliver).
 #
 # --bot-token-env <ENV_NAME>: name of the environment variable holding this
-#   Lead's Discord bot token (e.g. PETER_BOT_TOKEN). This must match the
-#   v2-owned manifest. Defaults to DISCORD_BOT_TOKEN if omitted.
+#   Lead's Discord bot token (e.g. PETER_BOT_TOKEN). Recorded in the manifest
+#   so auto-restart can reconstruct the startup command. Defaults to
+#   DISCORD_BOT_TOKEN if omitted.
 #
 # Environment variables:
 #   DISCORD_BOT_TOKEN  — Bot token for this Lead's Discord identity (required for Discord)
@@ -52,7 +53,8 @@
 #   DISCORD_BOT_TOKEN=$YOUR_COS_BOT_TOKEN \
 #     ./scripts/claude-lead.sh cos-lead /path/to/geoforge3d geoforge3d
 #
-# launchd owns restart policy. Use Ctrl+C or SIGTERM for graceful shutdown.
+# The supervisor automatically restarts Claude on crash with exponential
+# backoff. Use Ctrl+C or SIGTERM for graceful shutdown.
 #
 # flywheel-comm CLI commands (available via $FLYWHEEL_COMM_CLI):
 #   Check pending Runner questions:
@@ -76,98 +78,6 @@ log() {
   echo "[lead] $(date '+%H:%M:%S') $*"
 }
 
-# FLY-1726 A1: the v2 wrapper resolves identity exactly once. This body may
-# compare selectors and inherited aliases with that immutable projection, but
-# it must never derive replacement values or silently repair a mismatch.
-assert_v2_canonical_identity() {
-  [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = 1 ] || return 0
-
-  local selector_lead="${1:-}" selector_project="${3:-}"
-  case "$selector_project" in --*|'') selector_project="" ;; esac
-  local required_name required_value
-  for required_name in FLYWHEEL_LEAD_ID FLYWHEEL_PROJECT_NAME; do
-    required_value="${!required_name:-}"
-    if [ -z "$required_value" ]; then
-      log "ERROR: identity_env_missing: $required_name is required for a v2 Lead"
-      return 1
-    fi
-  done
-  if [ "$selector_lead" != "$FLYWHEEL_LEAD_ID" ]; then
-    log "ERROR: identity_env_conflict: selector lead '$selector_lead' != '$FLYWHEEL_LEAD_ID'"
-    return 1
-  fi
-  if [ -z "$selector_project" ] || [ "$selector_project" != "$FLYWHEEL_PROJECT_NAME" ]; then
-    log "ERROR: identity_env_conflict: selector project '$selector_project' != '$FLYWHEEL_PROJECT_NAME'"
-    return 1
-  fi
-  for required_name in \
-    FLYWHEEL_LEAD_KEY \
-    FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_BACKEND FLYWHEEL_PROJECTS_FILE \
-    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
-    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST FLYWHEEL_SUMMARY_CONFIG_HOME \
-    DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE DISCORD_BOT_TOKEN \
-    FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST; do
-    required_value="${!required_name:-}"
-    if [ -z "$required_value" ]; then
-      log "ERROR: identity_env_missing: $required_name is required for a v2 Lead"
-      return 1
-    fi
-  done
-  if [ -n "${LEAD_ID+x}" ] && [ "$LEAD_ID" != "$FLYWHEEL_LEAD_ID" ]; then
-    log "ERROR: identity_env_conflict: LEAD_ID '$LEAD_ID' != '$FLYWHEEL_LEAD_ID'"
-    return 1
-  fi
-  if [ -n "${PROJECT_NAME+x}" ] && [ "$PROJECT_NAME" != "$FLYWHEEL_PROJECT_NAME" ]; then
-    log "ERROR: identity_env_conflict: PROJECT_NAME '$PROJECT_NAME' != '$FLYWHEEL_PROJECT_NAME'"
-    return 1
-  fi
-  if [ "$FLYWHEEL_LEAD_KEY" != "${FLYWHEEL_PROJECT_NAME}-${FLYWHEEL_LEAD_ID}" ]; then
-    log "ERROR: identity_env_conflict: FLYWHEEL_LEAD_KEY does not match canonical selectors"
-    return 1
-  fi
-  if [ "$FLYWHEEL_LEAD_BACKEND" != claude-code ]; then
-    log "ERROR: identity_env_conflict: Claude body received backend '$FLYWHEEL_LEAD_BACKEND'"
-    return 1
-  fi
-  case "$FLYWHEEL_LEAD_SUMMARY_ROLE" in
-    producer|aggregator|recipient|exempt) ;;
-    *)
-      log "ERROR: identity_env_conflict: invalid FLYWHEEL_LEAD_SUMMARY_ROLE"
-      return 1
-      ;;
-  esac
-  case "$FLYWHEEL_LEAD_HAS_SUMMARY_DUTY" in
-    0|1) ;;
-    *)
-      log "ERROR: identity_env_conflict: invalid FLYWHEEL_LEAD_HAS_SUMMARY_DUTY"
-      return 1
-      ;;
-  esac
-  case "$FLYWHEEL_SUMMARY_GRANULARITY" in
-    per-lead|per-project) ;;
-    *)
-      log "ERROR: identity_env_conflict: invalid FLYWHEEL_SUMMARY_GRANULARITY"
-      return 1
-      ;;
-  esac
-  if [[ ! "$FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST" =~ ^[a-f0-9]{64}$ ]]; then
-    log "ERROR: identity_env_conflict: malformed summary assignment digest"
-    return 1
-  fi
-  if [[ ! "$DISCORD_EXPECTED_BOT_USER_ID" =~ ^[0-9]{17,20}$ ]] \
-      || [[ ! "$FLYWHEEL_LEAD_IDENTITY_DIGEST" =~ ^[a-f0-9]{64}$ ]] \
-      || [[ ! "$FLYWHEEL_LEAD_PROJECTS_DIGEST" =~ ^[a-f0-9]{64}$ ]]; then
-    log "ERROR: identity_env_conflict: malformed bot user id or identity digest"
-    return 1
-  fi
-  if [ "$DISCORD_IDENTITY_MODE" != "managed" ]; then
-    log "ERROR: identity_env_conflict: DISCORD_IDENTITY_MODE must be managed for a v2 Lead"
-    return 1
-  fi
-}
-
-assert_v2_canonical_identity "$@"
-
 # Normalize `FLYWHEEL_COMM_BACKEND` for comparisons. Mirrors the lenient
 # parse used by Bridge `plugin.ts:resolveCommBackend`:
 #   - Default to `mailbox` when unset / empty.
@@ -188,11 +98,14 @@ normalize_comm_backend() {
 }
 
 # ── TTY guard ──────────────────────────────────────────────────
-# FLY-88/1663: wrapper-v2's private tmux server supplies the body PTY.
-# The old `script -q /dev/null` PTY hack is not needed.
+# FLY-88: TTY is now provided by tmux (Claude runs inside a tmux window).
+# The old `script -q /dev/null` PTY hack is no longer needed.
+# Keep this as documentation: tmux new-window automatically allocates a PTY.
 
-# Interruptible sleep: runs sleep in the background so SIGINT/SIGTERM can run
-# the cleanup trap while the shell waits. Tracks the child to avoid an orphan.
+# Interruptible sleep: runs sleep in the background so SIGINT/SIGTERM
+# can set SHOULD_EXIT during the wait. Falls through immediately if
+# the shell receives a signal while waiting. Tracks sleep PID to avoid
+# orphaned sleep processes on signal delivery.
 interruptible_sleep() {
   local _sleep_pid
   sleep "$1" &
@@ -284,12 +197,6 @@ mkdir -p "$SESSION_DIR"
 # GEO-286: $3 is project-name IF it doesn't start with "--".
 # Flags (--subdir) can appear at $3+ position.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -r "$SCRIPT_DIR/../../../scripts/lib/flywheel-log.sh" ]; then
-  # shellcheck source=scripts/lib/flywheel-log.sh
-  source "$SCRIPT_DIR/../../../scripts/lib/flywheel-log.sh"
-else
-  flywheel_log_rotate_if_needed() { return 0; }
-fi
 # FLY-83: FLYWHEEL_ROOT for locating scripts/lead-alert.sh (independent alert path).
 # SCRIPT_DIR is packages/teamlead/scripts; FLYWHEEL_ROOT is three levels up.
 FLYWHEEL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -299,58 +206,12 @@ export FLYWHEEL_ROOT
 # path. The lib defines functions only; it does not change shell options.
 # shellcheck source=lib/reap-orphan-adapters.sh
 source "${SCRIPT_DIR}/lib/reap-orphan-adapters.sh"
-# FLY-1716: launcher and SessionStart(clear) share one authority lock. The
-# resume-gate library defines functions only; its reader runs immediately
-# before the v2 session decision near the physical launch.
-# shellcheck source=lib/lead-session-resume-gate.sh
-source "${SCRIPT_DIR}/lib/lead-session-resume-gate.sh"
-# FLY-1671: restart reporting observes a carrier-bound body breadcrumb. Missing
-# or malformed evidence is diagnostic only and must never block Lead startup.
-_LEAD_BODY_EVIDENCE_LIB="${FLYWHEEL_ROOT}/scripts/lib/lead-body-evidence.sh"
-if [ -f "$_LEAD_BODY_EVIDENCE_LIB" ]; then
-  # shellcheck source=../../../scripts/lib/lead-body-evidence.sh
-  if ! source "$_LEAD_BODY_EVIDENCE_LIB"; then
-    log "DEBUG: body evidence library could not be sourced; provenance will be unknown"
-  fi
-fi
-
-record_lead_body_evidence_best_effort() {
-  local provenance="${1:-}" body_pid="${2:-}" body_start="${3:-}"
-  local carrier_pid="${4:-}" carrier_start="${5:-}"
-  declare -F lbe_record >/dev/null 2>&1 || return 0
-  if ! lbe_record "$PROJECT_NAME" "$LEAD_ID" "$provenance" \
-      "$body_pid" "$body_start" "$carrier_pid" "$carrier_start"; then
-    log "DEBUG: body provenance evidence write failed; restart reporting will use unknown"
-  fi
-  return 0
-}
-# FLY-1697: v2 body acquires and binds its generation before launch.
-# shellcheck source=lib/lead-identity-preflight.sh
-source "${SCRIPT_DIR}/lib/lead-identity-preflight.sh"
-# FLY-1402: Claude CLI treats repeated --append-system-prompt-file flags as
-# last-one-wins. Collect every selected rule and materialize one prompt bundle.
-# shellcheck source=lead-rules-bundle.sh
-source "${SCRIPT_DIR}/lead-rules-bundle.sh"
-
-_rules_bundle_mode_raw="${FLYWHEEL_LEAD_RULES_BUNDLE:-bundle}"
-_rules_bundle_mode_raw="${_rules_bundle_mode_raw#"${_rules_bundle_mode_raw%%[![:space:]]*}"}"
-_rules_bundle_mode_raw="${_rules_bundle_mode_raw%"${_rules_bundle_mode_raw##*[![:space:]]}"}"
-_rules_bundle_mode_raw="$(printf '%s' "$_rules_bundle_mode_raw" | tr '[:upper:]' '[:lower:]')"
-case "$_rules_bundle_mode_raw" in
-  ''|bundle) RULES_BUNDLE_MODE="bundle" ;;
-  legacy) RULES_BUNDLE_MODE="legacy" ;;
-  *)
-    printf '[lead] WARNING: invalid FLYWHEEL_LEAD_RULES_BUNDLE=%s; defaulting to bundle\n' \
-      "$_rules_bundle_mode_raw" >&2
-    RULES_BUNDLE_MODE="bundle"
-    ;;
-esac
-unset _rules_bundle_mode_raw
-rules_bundle_reset
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
+# - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
 # - alerts/   : claims.db (cross-process dedup) lives here
-mkdir -p "${HOME}/.flywheel/alert-queue" "${HOME}/.flywheel/alerts"
+BLOCKED_DIR="${HOME}/.flywheel/blocked"
+mkdir -p "$BLOCKED_DIR" "${HOME}/.flywheel/alert-queue" "${HOME}/.flywheel/alerts"
 LEAD_SUBDIR=""
 PROJECT_NAME=""
 BOT_TOKEN_ENV_NAME=""
@@ -427,8 +288,8 @@ LEAD_CORE_CHANNEL=$(node -e "
 # A companion Lead (Mufasa / Belle) is a non-engineering persona agent wrapped in
 # Flywheel infra. The ONLY source of truth is `companion: true` on the lead in
 # projects.json (Codex R3 BLOCKER-1). This MUST run here — after PROJECT_NAME is
-# resolved but BEFORE any role-dependent side-effect (agent/rule sync, Discord
-# plugin check-update, global PostCompact hook install, .mcp.json
+# resolved but BEFORE any role-dependent side-effect (manifest write, agent/rule
+# sync, Discord plugin check-update, global PostCompact hook install, .mcp.json
 # construction, Agent Team transport, bootstrap) — so an inconclusive result
 # fail-STOPs with zero side effects (Codex R4 HIGH-4).
 #
@@ -436,8 +297,9 @@ LEAD_CORE_CHANNEL=$(node -e "
 # projectName+leadId match yields companion/noncompanion. `error`/`notfound`
 # fail-STOP (non-zero exit) — never fall open to a wider role, because a
 # fail-open companion would silently get eng rules + Bridge token + bootstrap, and
-# a successfully-started noncompanion process is "healthy" and launchd would not
-# retry it after config recovers. launchd KeepAlive retries a transient read failure.
+# a successfully-started noncompanion process is "healthy" so the supervisor would
+# not self-heal it after config recovers. launchd KeepAlive retries on a transient
+# read (Codex R3 corrected the earlier "supervisor self-heals" assumption).
 _companion_query() {
   node -e "
     import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
@@ -564,110 +426,6 @@ if [ "$IS_COMPANION_ROLE" != true ]; then
   esac
 fi
 
-# FLY-2030: v2 wrappers arrive with an immutable canonical identity projection,
-# but the still-supported direct Claude launcher does not. Resolve the summary
-# coordinates once from the same strict registry/config authorities instead of
-# requiring every legacy caller to synthesize FLYWHEEL_LEAD_HAS_SUMMARY_DUTY.
-# Existing non-empty values are assertions only: a mismatch fails closed.
-_resolve_legacy_summary_projection() {
-  [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ] && return 0
-
-  local comm_cli="${FLYWHEEL_COMM_CLI:-${SCRIPT_DIR}/../../flywheel-comm/dist/index.js}"
-  local projects_file="" projects_tmp="" identity_json=""
-  local summary_role summary_granularity has_summary_duty summary_digest
-  local name expected actual
-
-  if [ ! -f "$comm_cli" ]; then
-    log "ERROR: summary identity resolver is missing: $comm_cli"
-    return 1
-  fi
-  if [ -n "${FLYWHEEL_PROJECTS:-}" ]; then
-    projects_tmp="$(mktemp "${TMPDIR:-/tmp}/fly2030-lead-projects.XXXXXX")" || {
-      log "ERROR: cannot create a private summary identity snapshot"
-      return 1
-    }
-    chmod 600 "$projects_tmp"
-    printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects_tmp"
-    projects_file="$projects_tmp"
-  else
-    projects_file="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
-  fi
-
-  if ! identity_json="$(node "$comm_cli" lead-identity resolve \
-    --projects-file "$projects_file" \
-    --project "$PROJECT_NAME" \
-    --lead "$LEAD_ID" \
-    --format json)"; then
-    [ -n "$projects_tmp" ] && rm -f "$projects_tmp"
-    log "ERROR: canonical summary assignment is not ready for ${PROJECT_NAME}/${LEAD_ID}"
-    return 1
-  fi
-  [ -n "$projects_tmp" ] && rm -f "$projects_tmp"
-
-  summary_role="$(jq -er '.summaryRole | select(. == "producer" or . == "aggregator" or . == "recipient" or . == "exempt")' <<<"$identity_json")" || return 1
-  summary_granularity="$(jq -er '.summaryGranularity | select(. == "per-lead" or . == "per-project")' <<<"$identity_json")" || return 1
-  has_summary_duty="$(jq -er '.hasSummaryDuty | if . == true then "1" elif . == false then "0" else error("invalid") end' <<<"$identity_json")" || return 1
-  summary_digest="$(jq -er '.summaryAssignmentDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
-
-  for name in \
-    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
-    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST; do
-    case "$name" in
-      FLYWHEEL_LEAD_SUMMARY_ROLE) expected="$summary_role" ;;
-      FLYWHEEL_LEAD_HAS_SUMMARY_DUTY) expected="$has_summary_duty" ;;
-      FLYWHEEL_SUMMARY_GRANULARITY) expected="$summary_granularity" ;;
-      FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST) expected="$summary_digest" ;;
-    esac
-    actual="${!name-}"
-    if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
-      log "ERROR: identity_env_conflict: $name conflicts with canonical summary assignment"
-      return 1
-    fi
-  done
-
-  export FLYWHEEL_LEAD_SUMMARY_ROLE="$summary_role"
-  export FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$has_summary_duty"
-  export FLYWHEEL_SUMMARY_GRANULARITY="$summary_granularity"
-  export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_digest"
-}
-
-_resolve_legacy_summary_projection || exit 1
-
-# ── FLY-1867: identity-bound Playwright MCP positive opt-in ────────────────
-# The machine setting is deliberately false. Only the exact project+Lead entry
-# may turn the official plugin back on for this launch. Keep this registry query
-# beside the existing companion/external identity queries and before any
-# launch-argv assembly; no environment variable may widen the allowlist.
-_playwright_mcp_query() {
-  node -e "
-    import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
-      let projects;
-      try { projects = loadProjects(); } catch { process.stdout.write('disabled'); return; }
-      const p = projects.find(e => e.projectName === process.argv[1]);
-      if (!p) { process.stdout.write('disabled'); return; }
-      const lead = (p.leads || []).find(l => l.agentId === process.argv[2]);
-      if (!lead) { process.stdout.write('disabled'); return; }
-      process.stdout.write(lead.playwrightMcp === true ? 'enabled' : 'disabled');
-    }).catch(() => { process.stdout.write('disabled'); });
-  " "$PROJECT_NAME" "$LEAD_ID" 2>/dev/null
-}
-
-PLAYWRIGHT_MCP_STATE="$(_playwright_mcp_query)"
-case "$PLAYWRIGHT_MCP_STATE" in
-  enabled)
-    log "Playwright MCP: enabled for exact projects.json identity ${PROJECT_NAME}/${LEAD_ID}"
-    ;;
-  disabled)
-    log "Playwright MCP: machine default-off (identity has no positive opt-in)"
-    ;;
-  *)
-    # This optional capability is machine-default-off. A malformed query result
-    # must not turn an empty allowlist into a fleet-wide Lead launch fail-stop.
-    PLAYWRIGHT_MCP_STATE="disabled"
-    log "WARNING: Playwright MCP capability query inconclusive; defaulting disabled for ${PROJECT_NAME}/${LEAD_ID}"
-    ;;
-esac
-
 # GEO-246: Include PROJECT_NAME in session file to avoid cross-project collisions.
 # e.g., ~/.flywheel/claude-sessions/geoforge3d-product-lead.session-id
 SESSION_ID_FILE="${SESSION_DIR}/${PROJECT_NAME}-${LEAD_ID}.session-id"
@@ -737,218 +495,77 @@ else
 fi
 echo "[lead] Working directory: ${LEAD_WORKSPACE}"
 
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] \
-  && [ "${FLYWHEEL_LEAD_BODY_V2:-0}" != "1" ]; then
-  log "FATAL: claude-lead.sh requires the launchd-native v2 body carrier"
-  exit 1
-fi
-
-
-# ── FLY-1439: validate an isolated-CLAUDE_CONFIG_DIR skip request ──
-# Runs BEFORE the launcher's first CLAUDE_CONFIG_DIR-derived write. The
-# agent-file copy below already resolves its target through CLAUDE_CONFIG_DIR,
-# so validating only at the plugin fork-check block (further down) let a
-# malformed request overwrite the PRODUCTION agents/<lead>.md and only then
-# abort — the guard has to run before anything is written, not before the
-# check/update scripts run.
-#
-# Comparing only the canonical config ROOT is not sufficient either: an
-# isolated root whose `plugins` subtree symlinks back to ~/.claude/plugins
-# passes a root-only comparison while Claude still reads and writes the
-# PRODUCTION plugin cache — precisely the zero-write guarantee this seam
-# exists to provide. So the real plugin surfaces are resolved too and must
-# stay outside the production plugin tree.
-#
-# Pure + idempotent: the fork-check block calls it again rather than trusting
-# a "already validated" shell variable, which an inherited env could preset.
-validate_isolated_claude_config() {
-  local qa_real="" prod_real="" detail=""
-
-  if [ -z "${CLAUDE_CONFIG_DIR:-}" ] \
-    || [ -z "${TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR:-}" ] \
-    || [ "${CLAUDE_CONFIG_DIR}" != "${TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR}" ]; then
-    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 requires a CLAUDE_CONFIG_DIR matching TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR. Aborting."
-    exit 1
+# ── FLY-20: Write manifest for auto-restart ──────────────────
+# Records startup parameters so restart-services.sh can faithfully
+# reconstruct the launch command after a deploy.
+MANIFEST_DIR="${HOME}/.flywheel/manifests"
+MANIFEST_FILE="${MANIFEST_DIR}/${PROJECT_NAME}-${LEAD_ID}.json"
+mkdir -p "$MANIFEST_DIR"
+if command -v jq >/dev/null 2>&1; then
+  # FLY-143: preserve per-Lead MCP scope fields across manifest rewrites.
+  # Source of truth: env (set by wrapper from prior manifest read). Falling
+  # back to existing manifest values stops a launchd restart from silently
+  # dropping `mcpExclude` / `chromeEnabled` and re-broadening MCP scope.
+  _existing_mcp_exclude=""
+  _existing_chrome_enabled="false"
+  # FLY-247: preserve the fleet carrier fields (`model`, `leadBackend.backendId`)
+  # across the boot-time rewrite. fleet apply is the authoritative writer; this
+  # preserve only stops a launchd self-restart BETWEEN two applies from
+  # silently dropping the fields (and with them the FLYWHEEL_LEAD_MODEL env on
+  # the next `daemon install`). Absent fields stay absent — never injected.
+  _existing_model=""
+  _existing_lead_backend=""
+  _existing_effort=""   # FLY-671: preserve the effort carrier across boot rewrites
+  if [ -f "$MANIFEST_FILE" ]; then
+    _existing_mcp_exclude=$(jq -r '.mcpExclude // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    _existing_chrome_enabled=$(jq -r '.chromeEnabled // false' "$MANIFEST_FILE" 2>/dev/null || echo "false")
+    _existing_model=$(jq -r '.model // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    _existing_lead_backend=$(jq -r '.leadBackend.backendId // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    _existing_effort=$(jq -r '.effort // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+  fi
+  _final_mcp_exclude="${FLYWHEEL_LEAD_MCP_EXCLUDE-$_existing_mcp_exclude}"
+  if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" = "true" ]; then
+    _final_chrome_enabled=true
+  elif [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" = "false" ]; then
+    _final_chrome_enabled=false
+  else
+    _final_chrome_enabled="$_existing_chrome_enabled"
   fi
 
-  # A relative CLAUDE_CONFIG_DIR is validated against THIS process's cwd but
-  # consumed by a Lead that tmux starts with `-c "$LEAD_WORKSPACE"`, so the
-  # same string can resolve to the isolated root here and to the production
-  # root there. That is a time-of-check/time-of-use hole, not a style nit —
-  # only an absolute path means the same directory in both places.
-  case "${CLAUDE_CONFIG_DIR}" in
-    /*) ;;
-    *)
-      log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 requires an ABSOLUTE CLAUDE_CONFIG_DIR (got '${CLAUDE_CONFIG_DIR}'); a relative path resolves against the consumer's cwd. Aborting."
-      exit 1
-      ;;
-  esac
-
-  if [ ! -d "${CLAUDE_CONFIG_DIR}" ]; then
-    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 requires an existing CLAUDE_CONFIG_DIR. Aborting."
-    exit 1
-  fi
-
-  # Everything below is a CONTAINMENT INVARIANT rather than a list of known
-  # escape routes: the isolated plugin tree must be entirely self-contained,
-  # and identity is compared by (device, inode) rather than by path string.
-  #
-  # Path strings are the wrong instrument here. On a case-insensitive APFS
-  # volume `~/.CLAUDE` and `~/.claude` are the SAME directory, but `pwd -P`
-  # and realpath both preserve the caller's casing, so a string compare says
-  # they differ. Likewise a blacklist of escape shapes (this symlink, that
-  # subdirectory) keeps losing to the next shape — a dangling link, a link
-  # via an innocent third directory, a hardlink that is not a link at all.
-  # So instead: nothing under the isolated plugin tree may resolve outside
-  # the isolated root, and no regular file in it may share an inode with the
-  # production plugin tree.
-  #
-  # python3 is already a hard dependency of this launcher (the hook
-  # installers shell out to it); if it is missing we fail closed rather than
-  # grant an unverified skip.
-  if ! command -v python3 >/dev/null 2>&1; then
-    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 needs python3 to verify isolation. Aborting."
-    exit 1
-  fi
-
-  if ! detail="$(python3 - "${CLAUDE_CONFIG_DIR}" "${HOME}/.claude" <<'PYEOF'
-import json, os, sys
-
-cfg, prod_root = sys.argv[1], sys.argv[2]
-prod_plugins = os.path.join(prod_root, "plugins")
-
-
-def ident(path):
-    """(device, inode) — the only reliable identity on a case-insensitive fs."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return (st.st_dev, st.st_ino)
-
-
-problems = []
-cfg_real = os.path.realpath(cfg)
-cfg_id, prod_id = ident(cfg_real), ident(prod_root)
-
-if cfg_id is not None and cfg_id == prod_id:
-    problems.append("config root IS the production Claude config root (%s)" % prod_root)
-
-# Nesting is also an identity question: walk ancestors comparing inodes.
-if prod_id is not None and not problems:
-    node = cfg_real
-    while True:
-        parent = os.path.dirname(node)
-        if parent == node:
-            break
-        if ident(parent) == prod_id:
-            problems.append("config root is nested inside the production Claude config root (%s)" % prod_root)
-            break
-        node = parent
-
-
-def inside(real):
-    return real == cfg_real or real.startswith(cfg_real + os.sep)
-
-
-plugins = os.path.join(cfg, "plugins")
-if not problems and os.path.lexists(plugins):
-    if not os.path.exists(plugins):
-        problems.append("plugins root is a dangling link (%s -> %s)" % (plugins, os.path.realpath(plugins)))
-    elif not inside(os.path.realpath(plugins)):
-        problems.append("plugins root escapes the isolated root (%s -> %s)" % (plugins, os.path.realpath(plugins)))
-    else:
-        linked = []
-        for dirpath, dirnames, filenames in os.walk(plugins, followlinks=False):
-            for name in dirnames + filenames:
-                entry = os.path.join(dirpath, name)
-                if os.path.islink(entry):
-                    target = os.path.realpath(entry)
-                    if not os.path.exists(entry):
-                        problems.append("dangling link in plugin tree (%s -> %s)" % (entry, target))
-                    elif not inside(target):
-                        problems.append("link escapes the isolated root (%s -> %s)" % (entry, target))
-                else:
-                    try:
-                        st = os.stat(entry)
-                    except OSError:
-                        continue
-                    # Only a file with extra links can be a shared hardlink;
-                    # this keeps the production-side walk off the hot path.
-                    if os.path.isfile(entry) and st.st_nlink > 1:
-                        linked.append(((st.st_dev, st.st_ino), entry))
-                if len(problems) >= 5:
-                    break
-            if len(problems) >= 5:
-                break
-
-        if linked and not problems:
-            shared = {}
-            for dirpath, _dirnames, filenames in os.walk(prod_plugins, followlinks=False):
-                for name in filenames:
-                    pid = ident(os.path.join(dirpath, name))
-                    if pid is not None:
-                        shared[pid] = os.path.join(dirpath, name)
-            for key, entry in linked:
-                if key in shared:
-                    problems.append("file is a hardlink to the production plugin tree (%s == %s)" % (entry, shared[key]))
-
-# Filesystem containment says nothing about the LOGICAL paths recorded
-# inside the plugin registry files.
-# installed_plugins.json / known_marketplaces.json are ordinary files with
-# st_nlink == 1, yet a single missed rewrite during QA setup can leave
-# installPath / installLocation / source.path pointing straight at the
-# production plugin tree — the skip is then granted while Claude loads
-# production bytes. This is the ordinary operator-misconfiguration case the
-# seam exists to catch, so it is checked here rather than after launch.
-def registry_paths(path):
-    """Yield (field, value) path-like entries from a plugin registry file."""
-    with open(path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    if not isinstance(data, dict):
-        raise ValueError("top level is not an object")
-    for key, entry in (data.get("plugins") or {}).items() if "plugins" in data else []:
-        for item in entry if isinstance(entry, list) else [entry]:
-            if isinstance(item, dict) and isinstance(item.get("installPath"), str):
-                yield ("plugins[%s].installPath" % key, item["installPath"])
-    for name, entry in data.items():
-        if name == "plugins" or not isinstance(entry, dict):
-            continue
-        if isinstance(entry.get("installLocation"), str):
-            yield ("%s.installLocation" % name, entry["installLocation"])
-        source = entry.get("source")
-        if isinstance(source, dict) and isinstance(source.get("path"), str):
-            yield ("%s.source.path" % name, source["path"])
-
-
-if not problems:
-    for registry in ("installed_plugins.json", "known_marketplaces.json"):
-        target = os.path.join(plugins, registry)
-        if not os.path.exists(target):
-            continue
-        try:
-            entries = list(registry_paths(target))
-        except Exception as exc:  # fail closed: unreadable registry is unverifiable
-            problems.append("could not verify %s (%s)" % (registry, exc))
-            continue
-        for field, value in entries:
-            if not inside(os.path.realpath(value)):
-                problems.append(
-                    "%s %s points outside the isolated root (%s)" % (registry, field, value)
-                )
-
-print("; ".join(problems[:5]))
-sys.exit(1 if problems else 0)
-PYEOF
-  )"; then
-    log "ERROR: TEST_SKIP_PLUGIN_FORK_CHECK=1 isolation check failed: ${detail}. Aborting."
-    exit 1
-  fi
-}
-
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] \
-  && [ "${TEST_SKIP_PLUGIN_FORK_CHECK:-0}" = "1" ]; then
-  validate_isolated_claude_config
+  # FLY-247 R7#3: atomic self-write (temp + jq validate + rename). The old
+  # direct `> "$MANIFEST_FILE"` redirect could leave a truncated canonical
+  # manifest if boot was interrupted mid-write — breaking the hash premises
+  # of the fleet transaction journal and rollback CAS.
+  _manifest_tmp="${MANIFEST_FILE}.tmp.$$"
+  jq -n \
+    --arg leadId "$LEAD_ID" \
+    --arg projectDir "$PROJECT_DIR" \
+    --arg projectName "$PROJECT_NAME" \
+    --arg subdir "${LEAD_SUBDIR:-}" \
+    --arg workspace "$LEAD_WORKSPACE" \
+    --arg botTokenEnv "${BOT_TOKEN_ENV_NAME:-DISCORD_BOT_TOKEN}" \
+    --arg pid "$$" \
+    --arg mcpExclude "$_final_mcp_exclude" \
+    --argjson chromeEnabled "$_final_chrome_enabled" \
+    --arg model "$_existing_model" \
+    --arg leadBackendId "$_existing_lead_backend" \
+    --arg effort "$_existing_effort" \
+    '{
+       leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
+       subdir: $subdir, workspace: $workspace, botTokenEnv: $botTokenEnv,
+       mcpExclude: $mcpExclude, chromeEnabled: $chromeEnabled,
+       pid: ($pid | tonumber)
+     }
+     | (if $model != "" then . + {model: $model} else . end)
+     | (if $effort != "" then . + {effort: $effort} else . end)
+     | (if $leadBackendId != "" then . + {leadBackend: {backendId: $leadBackendId}} else . end)' \
+    > "$_manifest_tmp" \
+    && jq empty "$_manifest_tmp" 2>/dev/null \
+    && mv "$_manifest_tmp" "$MANIFEST_FILE" \
+    || { rm -f "$_manifest_tmp"; log "WARNING: manifest write failed — keeping previous manifest"; }
+  log "Manifest written: ${MANIFEST_FILE} (mcpExclude=\"${_final_mcp_exclude}\", chromeEnabled=${_final_chrome_enabled})"
+else
+  log "WARNING: jq not found. Manifest not written — auto-restart will skip this Lead."
 fi
 
 # ── Agent file auto-sync (project source → global target) ──
@@ -963,9 +580,8 @@ elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/identity.md" ]; then
 elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md" ]; then
   AGENT_SOURCE="${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
 fi
-CLAUDE_AGENT_ROOT="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
-AGENT_TARGET="${CLAUDE_AGENT_ROOT}/agents/${LEAD_ID}.md"
-mkdir -p "${CLAUDE_AGENT_ROOT}/agents"
+AGENT_TARGET="${HOME}/.claude/agents/${LEAD_ID}.md"
+mkdir -p "${HOME}/.claude/agents"
 
 if [ -f "${AGENT_SOURCE:-}" ]; then
   # Copy (not symlink) to prevent Lead from writing back to repo via symlink.
@@ -1048,7 +664,8 @@ else
   log "No shared rules directory at ${SHARED_RULES_DIR} (skipping)"
 fi
 
-# GEO-285: Bootstrap is sent once after launch preflight, only on a fresh start.
+# GEO-285: Bootstrap moved to recovery loop (send_bootstrap function).
+# Only sent on fresh start, not on resume.
 # ── Discord plugin fork integrity check ─────────────────────
 # GEO-296: Ensure Discord plugin is our fork version (with allowBots support).
 # Claude Code may overwrite the cache during plugin updates; this preflight
@@ -1057,77 +674,30 @@ fi
 FLYWHEEL_BIN="${HOME}/.flywheel/bin"
 CHECK_SCRIPT="${FLYWHEEL_BIN}/check-discord-plugin.sh"
 UPDATE_SCRIPT="${FLYWHEEL_BIN}/update-discord-plugin.sh"
-DISCORD_PLUGIN_CONTRACT="discord@flywheel-plugins/v1"
-
-alert_discord_plugin_integrity() {
-  local reason="$1" body="$2"
-  local alert_script="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
-  if [ ! -x "$alert_script" ]; then
-    log "WARNING: cannot emit Discord plugin integrity alert; missing ${alert_script}"
-    return 0
-  fi
-  "$alert_script" \
-    --lead "$LEAD_ID" \
-    --project "$PROJECT_NAME" \
-    --kind discord_plugin_integrity_failed \
-    --severity severe \
-    --title "Discord plugin integrity failed" \
-    --body "$body" \
-    --signature "${reason}-$(date -u +%Y%m%d)" \
-    || log "WARNING: Discord plugin integrity alert delivery returned non-zero"
-}
 
 # FLY-231 dry-run: the launch-plan test runs in an isolated HOME with no
 # ~/.flywheel/bin scripts — skip the plugin fork check/update (it mutates the
 # shared plugin cache and is irrelevant to argv/env assembly).
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
   log "DRY-RUN: skipping Discord plugin fork check"
-elif [ "${TEST_SKIP_PLUGIN_FORK_CHECK:-0}" = "1" ]; then
-  # FLY-1439: a pinned-plugin QA Lead may use an isolated CLAUDE_CONFIG_DIR.
-  # Never let a malformed skip request fall through to the production
-  # ~/.claude plugin check/update scripts. The validation itself lives in
-  # validate_isolated_claude_config (defined above and already run before the
-  # first CLAUDE_CONFIG_DIR-derived write); re-run it here so this branch is
-  # independently fail-closed rather than trusting an earlier side effect.
-  validate_isolated_claude_config
-  log "QA: skipping Discord plugin fork check for isolated CLAUDE_CONFIG_DIR: ${CLAUDE_CONFIG_DIR}"
-else
-  if [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
-    log "ERROR: Discord plugin fork scripts not found or not executable:"
-    log "  check:  $CHECK_SCRIPT"
-    log "  update: $UPDATE_SCRIPT"
-    log "Run scripts/install-discord-plugin-ops.sh from the deployed Flywheel checkout. Aborting."
-    alert_discord_plugin_integrity "tools-missing" \
-      "Lead ${LEAD_ID} refused to start because the managed Discord checker/updater is missing. Re-run the deployed Discord operations installer."
-    exit 1
-  fi
-
-  _discord_contract="$($CHECK_SCRIPT --print-contract 2>/dev/null || true)"
-  if [ "$_discord_contract" != "$DISCORD_PLUGIN_CONTRACT" ]; then
-    log "ERROR: Discord plugin selector/checker contract mismatch. Aborting."
-    alert_discord_plugin_integrity "contract-mismatch" \
-      "Lead ${LEAD_ID} refused to start because the deployed launcher selects discord@flywheel-plugins but the live checker/updater is still the legacy overlay. Complete or roll back the guarded FLY-1676 cutover."
-    exit 1
-  fi
-
-  if ! "$CHECK_SCRIPT"; then
-    log "Discord plugin does not match fork main, updating through Claude CLI..."
-    if ! "$UPDATE_SCRIPT"; then
-      log "ERROR: Discord plugin update failed. Aborting."
-      alert_discord_plugin_integrity "update-failed" \
-        "Lead ${LEAD_ID} refused to start because discord@flywheel-plugins could not update to fork main. Inspect the CLI registry and fork availability."
-      exit 1
-    fi
-    # Re-check after update — hard fail if still not matching
-    if ! "$CHECK_SCRIPT"; then
-      log "ERROR: Discord plugin still not fork version after update. Aborting."
-      alert_discord_plugin_integrity "recheck-failed" \
-        "Lead ${LEAD_ID} refused to start because discord@flywheel-plugins still failed SHA/marker verification after update. Vanilla bytes may be present."
-      exit 1
-    fi
-  fi
-  log "Discord plugin fork check: OK"
+elif [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
+  log "ERROR: Discord plugin fork scripts not found or not executable:"
+  log "  check:  $CHECK_SCRIPT"
+  log "  update: $UPDATE_SCRIPT"
+  log "Run GEO-296 setup first. Aborting."
+  exit 1
 fi
+
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] && ! "$CHECK_SCRIPT"; then
+  log "Discord plugin cache is not fork version, updating..."
+  "$UPDATE_SCRIPT"
+  # Re-check after update — hard fail if still not matching
+  if ! "$CHECK_SCRIPT"; then
+    log "ERROR: Discord plugin still not fork version after update. Aborting."
+    exit 1
+  fi
+fi
+[ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ] || log "Discord plugin fork check: OK"
 
 # ── GEO-285: Install PostCompact hook ─────────────────────
 # Requires jq for idempotent JSON merge. Skip gracefully if not installed.
@@ -1152,9 +722,7 @@ install_post_compact_hook() {
 
   # Clean up any old entries pointing to different paths (repo-local copies)
   # before adding the stable path entry.
-  # Keep this function self-contained: the integration harness extracts and
-  # evaluates it without the launcher's outer-scope variables.
-  local settings_file="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/settings.json"
+  local settings_file="${HOME}/.claude/settings.json"
   mkdir -p "$(dirname "$settings_file")"
 
   local existing
@@ -1224,9 +792,7 @@ install_discord_reply_enforcer_hook() {
   chmod +x "$hook_script"
   local cmd="python3 ${hook_script}"
 
-  # Keep this function self-contained: the integration harness extracts and
-  # evaluates it without the launcher's outer-scope variables.
-  local settings_file="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/settings.json"
+  local settings_file="${HOME}/.claude/settings.json"
   mkdir -p "$(dirname "$settings_file")"
 
   # NOTE: macOS ships jq 1.6, whose `jq empty` / filters return exit 0 even on a
@@ -1300,145 +866,6 @@ install_restart_guard_hook() {
   fi
 }
 
-# ── FLY-1751: Install clear-only SessionStart in-flight adoption hook ──────
-# This hook is deliberately workspace-local. Different Lead workspaces do not
-# load it, and the hook itself still requires matching agent_type + env identity
-# before it can touch CommDB. All installer failures are non-fatal to Lead birth.
-install_session_start_adopt_inflight_hook() {
-  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
-    log "DRY-RUN: skipping SessionStart in-flight adoption hook install"
-    return 0
-  fi
-
-  local src_script="${SCRIPT_DIR}/session-start-adopt-inflight.sh"
-  if [ ! -f "$src_script" ]; then
-    log "WARNING: SessionStart adoption hook source not found: $src_script"
-    return 0
-  fi
-  if ! command -v jq >/dev/null 2>&1; then
-    log "WARNING: jq not found. Skipping SessionStart adoption hook install."
-    return 0
-  fi
-
-  local settings_file="${LEAD_WORKSPACE}/.claude/settings.local.json"
-  local hook_script="${LEAD_WORKSPACE}/.claude/hooks/session-start-adopt-inflight.sh"
-  local lock_dir="${settings_file}.flywheel-lock"
-  mkdir -p "$(dirname "$settings_file")" "$(dirname "$hook_script")" 2>/dev/null || {
-    log "WARNING: Could not create workspace hook directories; skipping SessionStart adoption hook install"
-    return 0
-  }
-
-  local lock_acquired=false
-  local lock_attempt=0
-  while [ "$lock_attempt" -lt 50 ]; do
-    lock_attempt=$((lock_attempt + 1))
-    if mkdir "$lock_dir" 2>/dev/null; then
-      lock_acquired=true
-      break
-    fi
-    if find "$lock_dir" -maxdepth 0 -mmin +1 -print 2>/dev/null | grep -q .; then
-      rmdir "$lock_dir" 2>/dev/null || true
-      log "SessionStart adoption hook: removed stale settings lock dir"
-    fi
-    sleep 0.2
-  done
-  if [ "$lock_acquired" != true ]; then
-    log "WARNING: Could not acquire lock on ${settings_file} after 10s, skipping SessionStart adoption hook install"
-    return 0
-  fi
-
-  local existing="{}"
-  local parsed_existing=""
-  if [ -f "$settings_file" ]; then
-    existing="$(cat "$settings_file")"
-    parsed_existing="$(printf '%s' "$existing" | jq -ce 'select(type == "object")' 2>/dev/null || true)"
-    if [ -z "$parsed_existing" ]; then
-      log "WARNING: ${settings_file} is not a non-empty JSON object. Skipping SessionStart adoption hook install (file untouched)."
-      rmdir "$lock_dir" 2>/dev/null || true
-      return 0
-    fi
-    existing="$parsed_existing"
-  fi
-
-  local hook_tmp=""
-  hook_tmp="$(mktemp "${hook_script}.tmp.XXXXXX" 2>/dev/null || true)"
-  if [ -z "$hook_tmp" ] \
-    || ! cp "$src_script" "$hook_tmp" 2>/dev/null \
-    || ! chmod 555 "$hook_tmp" 2>/dev/null \
-    || [ ! -s "$hook_tmp" ] \
-    || ! bash -n "$hook_tmp" 2>/dev/null; then
-    [ -z "$hook_tmp" ] || rm -f "$hook_tmp" 2>/dev/null || true
-    log "WARNING: Failed to stage a valid SessionStart adoption hook; existing files untouched"
-    rmdir "$lock_dir" 2>/dev/null || true
-    return 0
-  fi
-
-  local quoted_hook=""
-  printf -v quoted_hook '%q' "$hook_script"
-  local command_value="bash ${quoted_hook}"
-  local merged=""
-  merged="$(printf '%s' "$existing" | jq \
-    --arg cmd "$command_value" \
-    --arg basename "session-start-adopt-inflight.sh" '
-      .hooks = (if ((.hooks // {}) | type) == "object" then (.hooks // {}) else {} end) |
-      .hooks.SessionStart = (if ((.hooks.SessionStart // []) | type) == "array" then (.hooks.SessionStart // []) else [] end) |
-      .hooks.SessionStart = ([ .hooks.SessionStart[]
-        | .hooks = (if ((.hooks // []) | type) == "array"
-            then [ (.hooks // [])[]
-              | select((((.command // "") | contains($basename))) | not) ]
-            else []
-          end)
-      ] | map(select((.hooks | length) > 0))) |
-      .hooks.SessionStart += [{
-        "matcher": "clear",
-        "hooks": [{"type": "command", "command": $cmd, "timeout": 10}]
-      }]
-    ' 2>/dev/null || true)"
-  local validated_merged=""
-  if [ -n "$merged" ]; then
-    validated_merged="$(printf '%s' "$merged" | jq -ce 'select(type == "object")' 2>/dev/null || true)"
-  fi
-  if [ -z "$validated_merged" ]; then
-    rm -f "$hook_tmp" 2>/dev/null || true
-    log "WARNING: SessionStart adoption settings merge produced empty/invalid JSON. Existing files untouched."
-    rmdir "$lock_dir" 2>/dev/null || true
-    return 0
-  fi
-
-  local settings_tmp=""
-  settings_tmp="$(mktemp "${settings_file}.tmp.XXXXXX" 2>/dev/null || true)"
-  if [ -z "$settings_tmp" ] \
-    || ! printf '%s\n' "$validated_merged" > "$settings_tmp" \
-    || [ ! -s "$settings_tmp" ] \
-    || [ -z "$(jq -ce 'select(type == "object")' "$settings_tmp" 2>/dev/null || true)" ]; then
-    rm -f "$hook_tmp" 2>/dev/null || true
-    [ -z "$settings_tmp" ] || rm -f "$settings_tmp" 2>/dev/null || true
-    log "WARNING: Failed to stage valid SessionStart adoption settings. Existing files untouched."
-    rmdir "$lock_dir" 2>/dev/null || true
-    return 0
-  fi
-
-  # Publish the executable first. Therefore settings can never point at a
-  # missing or partially-written hook. A settings rename failure deliberately
-  # leaves new-script/old-settings; the next idempotent launch converges it.
-  if ! mv -f "$hook_tmp" "$hook_script"; then
-    rm -f "$hook_tmp" "$settings_tmp" 2>/dev/null || true
-    log "WARNING: Failed to publish SessionStart adoption hook script; settings remain unchanged"
-    rmdir "$lock_dir" 2>/dev/null || true
-    return 0
-  fi
-  if ! mv -f "$settings_tmp" "$settings_file"; then
-    rm -f "$settings_tmp" 2>/dev/null || true
-    log "WARNING: SessionStart adoption hook script published but settings publish failed; next Lead birth will converge"
-    rmdir "$lock_dir" 2>/dev/null || true
-    return 0
-  fi
-
-  rmdir "$lock_dir" 2>/dev/null || true
-  log "SessionStart clear adoption hook installed: $hook_script"
-  return 0
-}
-
 # ── FLY-954: converge <state>/bin runtime scripts (anti-drift) ──────────────
 # Incident 2026-07-06: 12-byte stubs sat in ~/.flywheel/bin for 8h, then a
 # deploy kickstart took all 13 Leads down. Every Lead start now verifies
@@ -1463,32 +890,6 @@ converge_flywheel_bin() {
   else
     log "WARNING: flywheel-bin convergence left unhealthy state (non-fatal; alert sent via lead-alert)"
   fi
-}
-
-# FLY-1814: a Lead birth is the launchd census anchor that does not depend on
-# the updater. It is a child process because the convergence library is
-# source-only; the entrypoint is read-only and alerts non-fatally.
-run_launchd_census_on_lead_start() {
-  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
-    log "DRY-RUN: skipping launchd census"
-    return 0
-  fi
-  case "${LEAD_ID:-}" in
-    flywheel-test-*)
-      log "QA Lead identity: skipping production launchd census"
-      return 0
-      ;;
-  esac
-
-  local census="${FLYWHEEL_ROOT}/scripts/launchd-census.sh"
-  if [ ! -x "$census" ]; then
-    log "WARNING: launchd census entrypoint not found: $census"
-    return 0
-  fi
-  if ! "$census"; then
-    log "WARNING: launchd census failed (non-fatal)"
-  fi
-  return 0
 }
 # FLY-231: companion skips installing the PostCompact bootstrap hook (it doesn't
 # want to (re)install the engineering bootstrap re-send). Note the hook is GLOBAL
@@ -1528,10 +929,11 @@ fi
 # machine invariant (installed copy == repo source), same rationale as the
 # restart guard above.
 converge_flywheel_bin
-run_launchd_census_on_lead_start
 
-# ── Lead env exports ────────────────────────────────────────
+# ── GEO-285: Early auto-compact + env exports ─────────────
+export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
 export FLYWHEEL_LEAD_ID="$LEAD_ID"
+log "Auto-compact threshold: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE}%"
 
 # ── Bootstrap function ──────────────────────────────────────
 # GEO-285: Extracted from inline code. Called only on fresh start,
@@ -1560,9 +962,16 @@ send_bootstrap() {
 }
 
 # ── Graceful shutdown ───────────────────────────────────────
-# The launchd-managed body forwards termination to its direct Claude child.
-# FLY-1679: PID of the v2 carrier's dev-channels auto-confirm poller, if any.
-_V2_DIALOG_POLLER_PID=""
+# GEO-285: PID tracking + signal forwarding.
+# FLY-88: Signal handling adapted for tmux-based Claude.
+# SIGTERM from launchd → cleanup() sends C-c to tmux window → kill-window.
+SHOULD_EXIT=0
+
+# FLY-88: tmux-based launch.
+# Claude runs inside a tmux window in the shared "flywheel" session.
+# FLY-80 restored: expect auto-confirms --dangerously-load-development-channels prompt.
+# tmux provides the window; expect provides PTY + prompt detection inside the window.
+LEAD_WINDOW_ID=""
 
 # FLY-109: Dev-channels dialog auto-confirm via tmux capture-pane.
 #
@@ -1576,8 +985,8 @@ _V2_DIALOG_POLLER_PID=""
 # returns the rendered screen content without ANSI codes, making grep reliable.
 #
 # FLY-83 note: blocked-prompt classification (rate_limit / usage_limit /
-# login_expired / permission_blocked) is owned by scripts/lead-alert.sh and the
-# Bridge-side runner quota/auth scan, which use the SAME capture-pane
+# login_expired / permission_blocked) is owned by the Bridge-side LeadWatchdog
+# (packages/teamlead/src/LeadWatchdog.ts), which uses the SAME capture-pane
 # approach against the rendered screen and avoids the ANSI byte-stream
 # mismatches that doomed the earlier expect-script sentinel-exit-code path.
 #
@@ -1586,129 +995,37 @@ _V2_DIALOG_POLLER_PID=""
 mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
 FLYWHEEL_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-90}"
 FLYWHEEL_STARTUP_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
+
 _log_startup() {
-  flywheel_log_rotate_if_needed "$FLYWHEEL_STARTUP_LOG"
   echo "$(date -u '+%Y-%m-%dT%H:%M:%S') $*" >> "$FLYWHEEL_STARTUP_LOG"
 }
-# FLY-1679: v2 dev-channels dialog detection runs inside the private tmux server.
 
-_dev_channels_flag_active() {
-  local arg
-  for arg in ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}; do
-    [ "$arg" = "--dangerously-load-development-channels" ] && return 0
-  done
-  return 1
-}
+# Poll tmux pane for dev-channels dialog and auto-confirm.
+# Args: $1 = tmux window_id, $2 = timeout_sec
+# Runs as a background job; exits on confirm, timeout, or window death.
+_poll_dev_channels_dialog() {
+  local window_id="$1"
+  local timeout_sec="${2:-90}"
+  local elapsed=0
 
-# FLY-1679: the dev-channels dialog's own text, taken verbatim from the Claude
-# source under test (DevChannelsDialog.tsx: the Dialog title, the standalone
-# approved-channels line, and option 1's label). All three must be on screen at
-# once. Any single fragment also appears in ordinary conversation about this
-# flag, and interactiveHelpers.tsx legitimately skips the dialog when channels
-# are gated off or there is no OAuth token — which would otherwise leave the
-# poller scanning a restored transcript for its whole budget.
-#
-# Here-strings, not pipes: `set -o pipefail` is active in this launcher and a
-# short-circuiting `grep -q` can SIGPIPE its producer.
-_dev_channels_dialog_present() {
-  local text="$1"
-  grep -qF 'WARNING: Loading development channels' <<<"$text" || return 1
-  grep -qF 'I am using this for local development' <<<"$text" || return 1
-  grep -qF 'Please use --channels to run a list of approved channels.' <<<"$text" || return 1
-  return 0
-}
-
-# FLY-1679: launchd-native carrier port of the FLY-109 auto-confirm. The body
-# runs inside the private server's pane and Claude is its direct child.
-# Without this port every cold start parks on the dev-channels dialog until a
-# human presses a key, while launchd still reports the job as running.
-# Args: $1 = timeout_sec. Runs as a background job of the body shell.
-#
-# Every _log_startup call here is `|| true`. This function inherits errexit, and
-# it is the thing standing between a cold start and a parked Lead: if an
-# unwritable startup log (bad mode/owner, a misconfigured FLYWHEEL_EXPECT_LOG,
-# a full disk) could abort it, observability failure would silently disable the
-# safety mechanism and hand back exactly the incident this fixes — invisibly,
-# because launchd would still report the job as running.
-_poll_dev_channels_dialog_v2() {
-  local timeout_sec="${1:-90}"
-  local elapsed=0 socket pane pane_text send_rc verify capture_rc probe_rc probe_out send_out
-
-  # Address the private server explicitly. The shared Runner tmux socket override
-  # must never retarget these Lead keystrokes.
-  if [ -z "${TMUX:-}" ]; then
-    _log_startup "dialog-poller-v2: no tmux identity — auto-confirm skipped" || true
-    return 0
-  fi
-  socket="${TMUX%%,*}"
-  # %0 is guaranteed by the carrier: wrapper-v2 creates `-s main -n main` and
-  # the generated tmux.conf's pane-exited hook keys on `#{hook_pane} = %0`.
-  pane="${TMUX_PANE:-%0}"
-
-  _log_startup "dialog-poller-v2: start pane=${pane} timeout=${timeout_sec}s" || true
+  _log_startup "dialog-poller: start window=${window_id} timeout=${timeout_sec}s"
 
   while [ "$elapsed" -lt "$timeout_sec" ]; do
-    # Every tmux call here MUST run inside a command substitution.
-    #
-    # This function is a background job of the body shell, and the body shell
-    # IS the pane process. A BARE external command in that position gets
-    # exec-replaced by bash's subshell optimization: the tmux client takes over
-    # the poller's process, runs, exits — and the rest of this loop never runs.
-    # Measured on the real carrier: the poller logged `start`, probed once, and
-    # vanished, leaving the Lead parked on the dialog it was there to dismiss.
-    # `$( )` forks a child for the client, so this job survives to keep polling.
-    probe_rc=0
-    probe_out="$(command tmux -S "$socket" display-message -p -t "$pane" '#{pane_id}' 2>/dev/null)" \
-      || probe_rc=$?
-    if [ "$probe_rc" -ne 0 ] || [ -z "$probe_out" ]; then
-      _log_startup "dialog-poller-v2: pane gone, exiting" || true
+    # Check window still exists
+    if ! tmux list-panes -t "$window_id" &>/dev/null; then
+      _log_startup "dialog-poller: window gone, exiting"
       return 0
     fi
 
-    # A transient capture failure is not evidence of anything. Treat it as
-    # "nothing matched this tick"; the pane probe at the top of the next
-    # iteration remains the only authority on pane death.
-    capture_rc=0
-    pane_text="$(command tmux -S "$socket" capture-pane -t "$pane" -p 2>/dev/null)" || capture_rc=$?
-    [ "$capture_rc" -eq 0 ] || pane_text=""
+    local pane_text
+    pane_text=$(tmux capture-pane -t "$window_id" -p 2>/dev/null || echo "")
 
-    if _dev_channels_dialog_present "$pane_text"; then
-      _log_startup "dialog-poller-v2: matched dev-channels dialog, sending '1'" || true
-      # '1' alone accepts: the dialog's Select leaves numeric selection enabled
-      # (select.tsx resolves disableSelection to false), so the digit fires
-      # onChange immediately. No Enter is ever sent — an unconditional Enter
-      # would land on whatever renders next, and interactiveHelpers.tsx can
-      # show Chrome onboarding the moment this dialog is accepted.
-      # Command substitution here too — same exec-replacement hazard. send-keys
-      # prints nothing; the substitution exists purely to fork.
-      send_rc=0
-      send_out="$(command tmux -S "$socket" send-keys -t "$pane" "1" 2>/dev/null)" || send_rc=$?
-      : "${send_out:-}"
-      if [ "$send_rc" -ne 0 ]; then
-        _log_startup "dialog-poller-v2: DEV_CHANNELS_SEND_FAILED rc=${send_rc}" || true
-        return 0
-      fi
-
-      # Confirmation is only claimed on evidence: a SUCCESSFUL capture that no
-      # longer shows the dialog. A failed capture is transport loss, not proof
-      # the dialog closed — swallowing it would let an offline Lead be logged
-      # as confirmed and poison the production acceptance evidence.
-      verify=0
-      while [ "$verify" -lt 10 ]; do
-        sleep 0.3
-        capture_rc=0
-        pane_text="$(command tmux -S "$socket" capture-pane -t "$pane" -p 2>/dev/null)" || capture_rc=$?
-        if [ "$capture_rc" -ne 0 ]; then
-          _log_startup "dialog-poller-v2: DEV_CHANNELS_VERIFY_FAILED rc=${capture_rc} (no confirmation evidence)" || true
-          return 0
-        fi
-        if ! _dev_channels_dialog_present "$pane_text"; then
-          _log_startup "dialog-poller-v2: confirmed=1" || true
-          return 0
-        fi
-        verify=$((verify + 1))
-      done
-      _log_startup "dialog-poller-v2: DEV_CHANNELS_CONFIRM_UNVERIFIED (sent '1', dialog still present)" || true
+    if echo "$pane_text" | grep -qE "Loading development channels|am using this for local development|development channels"; then
+      _log_startup "dialog-poller: matched dev-channels dialog, sending '1' Enter"
+      tmux send-keys -t "$window_id" "1" 2>/dev/null || true
+      sleep 0.3
+      tmux send-keys -t "$window_id" Enter 2>/dev/null || true
+      _log_startup "dialog-poller: confirmed=1"
       return 0
     fi
 
@@ -1716,45 +1033,19 @@ _poll_dev_channels_dialog_v2() {
     elapsed=$((elapsed + 1))
   done
 
-  _log_startup "dialog-poller-v2: DEV_CHANNELS_DIALOG_NOT_SEEN after ${timeout_sec}s" || true
+  _log_startup "dialog-poller: DEV_CHANNELS_DIALOG_NOT_SEEN after ${timeout_sec}s"
   return 0
 }
 
-# FLY-1679: is this PID still a RUNNING async job of THIS shell?
-#
-# The poller self-terminates within FLYWHEEL_DIALOG_TIMEOUT_SEC while
-# _launch_claude stays blocked for the entire Claude lifetime — hours or days.
-# At reap time the poller is therefore almost always long gone and its PID
-# number is free for reuse; signalling the stored number unconditionally would
-# eventually terminate an unrelated process.
-#
-# `jobs -pr` with NO argument, matched line-exact, is the only form that works
-# here. Measured on the production platform (GNU bash 3.2.57, macOS):
-# `jobs -pr <pid>` fails with "no such job" for a live job AND a finished one,
-# so a PID-argument guard would silently degrade into "never signal anything".
-_v2_dialog_poller_is_running() {
-  local pid="$1" running
-  running="$(jobs -pr 2>/dev/null || true)"
-  grep -qxF -- "$pid" <<<"$running"
-}
-
-# FLY-1679: single reaping point, used by both the normal post-launch path and
-# the signal path. Must run BEFORE the child is terminated so no keystroke can
-# be delivered into a pane that is being torn down. Idempotent.
-_v2_reap_dialog_poller() {
-  local pid="${_V2_DIALOG_POLLER_PID:-}"
-  [ -n "$pid" ] || return 0
-  if _v2_dialog_poller_is_running "$pid"; then
-    kill "$pid" 2>/dev/null || true
-  fi
-  # Consume the saved exit status either way; harmless if already reaped.
-  wait "$pid" 2>/dev/null || true
-  _V2_DIALOG_POLLER_PID=""
-  return 0
+# Ensure the shared flywheel tmux session exists (race-safe, idempotent).
+# Called before every launch — handles session being killed externally.
+ensure_tmux_session() {
+  # -A: attach-or-create (atomic). -d: stay detached. -x/-y: default size.
+  tmux new-session -Ad -s flywheel -x 200 -y 50 2>/dev/null || true
 }
 
 # FLY-231: structured dry-run launch plan (FLYWHEEL_LEAD_DRY_RUN=1). Emits the
-# final argv + child-env KEY+status (NEVER the value — Codex R3 BLOCKER-4 secret
+# final argv + pane-env KEY+status (NEVER the value — Codex R3 BLOCKER-4 secret
 # safety: bot/teamlead/openai tokens etc. must never be echoed) + the MCP server
 # names actually written to .mcp.json + role/gates. Consumed by the reverse-compat
 # sentinel + companion capability tests. Reads the caller's `env_args` array via
@@ -1792,164 +1083,38 @@ _emit_launch_plan() {
   printf 'LAUNCH_PLAN_END\n'
 }
 
-# FLY-1716: freeze the canonical model decision before the resume gate. The
-# physical launcher consumes this exact JSON later instead of re-reading a hot
-# projects.json snapshot, so context-window selection and --model cannot split.
-_FLY1496_PRE_RESOLVED=false
-_FLY1496_PRE_RESOLVED_RESULT=""
-_pre_resolve_lead_model_decision() {
-  [ "$_FLY1496_PRE_RESOLVED" = true ] && return 0
-  local entry="${FLYWHEEL_ROOT}/packages/teamlead/dist/lead-model-launch.js"
-  local result=""
-  if command -v jq >/dev/null 2>&1 && [ -f "$entry" ]; then
-    result="$(
-      FLY1496_ENTRY="$entry" \
-      FLY1496_PROJECT="$PROJECT_NAME" \
-      FLY1496_LEAD="$LEAD_ID" \
-      node --input-type=module -e '
-        try {
-          const mod = await import(process.env.FLY1496_ENTRY);
-          const decision = mod.resolveLeadModelLaunch(
-            process.env.FLY1496_PROJECT ?? "",
-            process.env.FLY1496_LEAD ?? "",
-          );
-          process.stdout.write(JSON.stringify({ ok: true, decision }));
-        } catch (error) {
-          process.stdout.write(JSON.stringify({
-            ok: false,
-            sourceFailure: error?.code === "MODEL_SOURCE_FAILURE",
-            error: error instanceof Error ? error.message : String(error),
-          }));
-        }
-      '
-    )" || result=""
-  fi
-  _FLY1496_PRE_RESOLVED_RESULT="$result"
-  _FLY1496_PRE_RESOLVED=true
-}
-
-# Launch Claude as the private tmux server's only child.
+# Launch Claude in a tmux window within the flywheel session.
+# Uses -P -F to capture window_id (like TmuxAdapter).
+# Uses -e to inject per-window environment (no shell inheritance in shared session).
 _launch_claude() {
-  local -a launch_args=("$@")
-  local _fly1496_result=""
-  local _fly1496_model="claude-fable-5"
-  local _fly1496_raw_model=""
-  local _fly1496_effort=""
-  local _fly1496_raw_effort=""
-  # FLY-1650: FLY-583's companion fallback, narrowed by the resolver to what the
-  # RESOLVED model accepts. Seeded with the historical literal for the
-  # resolver-unavailable path below, which launches literal Fable — a model
-  # that accepts xhigh, so that path is provably byte-identical.
-  local _fly1496_companion_effort=xhigh
-  local _fly1496_reason="resolver_unavailable"
-  local _fly1496_substituted=true
-  local _fly1496_arg _fly1496_skip
-  local -a _fly1496_filtered=()
+  local window_name="${PROJECT_NAME}-${LEAD_ID}"
 
-  # FLY-1496/FLY-1716: every physical launch still resolves the hot registry,
-  # but the result is frozen once and shared with the pre-resume context gate.
-  _pre_resolve_lead_model_decision
-  _fly1496_result="$_FLY1496_PRE_RESOLVED_RESULT"
-
-  if [ -n "$_fly1496_result" ] && jq -e '.ok == true' >/dev/null 2>&1 <<<"$_fly1496_result"; then
-    _fly1496_model=$(jq -r '.decision.model' <<<"$_fly1496_result")
-    _fly1496_raw_model=$(jq -r '.decision.rawModel // ""' <<<"$_fly1496_result")
-    _fly1496_effort=$(jq -r '.decision.effort // ""' <<<"$_fly1496_result")
-    _fly1496_raw_effort=$(jq -r '.decision.rawEffort // ""' <<<"$_fly1496_result")
-    _fly1496_reason=$(jq -r '.decision.reason' <<<"$_fly1496_result")
-    # FLY-1650 (Codex R4/R5): ABSENT and explicit null are opposite signals and
-    # jq's `//` collapses them, so branch on has() first.
-    #
-    # present ⇒ this resolver vetted the pair; use its answer verbatim (a null
-    # means the resolved model accepts no fallback tier).
-    #
-    # absent ⇒ the dist predates this field while the launcher does not: a
-    # build/deploy SKEW. The shell has no registry, so any literal it picks here
-    # is a guess — and the guess is unsafe in both directions (keeping xhigh can
-    # emit a pair the API rejects; dropping it silently downgrades a companion).
-    # Refuse to guess: say so loudly and take the branch that cannot produce an
-    # invalid launch. A companion then runs at its model's own default effort
-    # until the dist is rebuilt, instead of failing to start.
-    if jq -e '.decision | has("companionDefaultEffort")' >/dev/null 2>&1 <<<"$_fly1496_result"; then
-      _fly1496_companion_effort=$(jq -r '.decision.companionDefaultEffort // ""' <<<"$_fly1496_result")
-    else
-      # Codex R6: the fallback is not the only unvalidated value here. A dist
-      # this old also predates the effort narrowing itself, so `decision.effort`
-      # — the projects.json override — reached us WITHOUT ever being checked
-      # against the model. Keeping it emits exactly the pair this seam exists to
-      # prevent (reproduced under bash 3.2 as `--model claude-opus-4-6 --effort
-      # xhigh`). The refusal has to cover every effort this resolver produced,
-      # not just the fallback, or it is not a refusal at all.
-      _fly1496_companion_effort=""
-      _fly1496_effort=""
-      log "model_config WARNING: dist predates the FLY-1650 effort narrowing (build/deploy skew); dropping BOTH the configured effort (${_fly1496_raw_effort:-<absent>}) and the companion fallback rather than launching ${_fly1496_model} with an unvalidated tier"
-    fi
-    _fly1496_substituted=$(jq -r '.decision.substituted' <<<"$_fly1496_result")
-  elif [ -n "$_fly1496_result" ] && jq -e '.sourceFailure == true' >/dev/null 2>&1 <<<"$_fly1496_result"; then
-    log "FATAL: $(jq -r '.error // "projects.json model source failure"' <<<"$_fly1496_result")"
-    return 1
-  else
-    # Resolver/runtime failure must not brick the fleet, but the frozen env is
-    # not a safe fallback: it is a stale carrier that cannot be canonicalized
-    # here, and the incident showed it holding a value the operator had already
-    # moved away from. Literal Fable needs neither dist nor config to be read.
-    log "model_config WARNING: resolver unavailable; using built-in ${_fly1496_model}; frozen env ignored"
-  fi
-
-  # Replace every earlier model/effort token only after all routing has settled.
-  _fly1496_skip=false
-  for _fly1496_arg in "${launch_args[@]}"; do
-    if [ "$_fly1496_skip" = true ]; then _fly1496_skip=false; continue; fi
-    case "$_fly1496_arg" in
-      --model|--effort) _fly1496_skip=true; continue ;;
-    esac
-    _fly1496_filtered+=("$_fly1496_arg")
-  done
-  launch_args=("${_fly1496_filtered[@]}" --model "$_fly1496_model")
-  if [ -n "$_fly1496_effort" ]; then
-    launch_args+=(--effort "$_fly1496_effort")
-  elif [ "${IS_COMPANION_ROLE:-false}" = true ] && [ -n "$_fly1496_companion_effort" ]; then
-    # FLY-1650: use the resolver's narrowed value, never a hardcoded tier — the
-    # shell has no registry and would otherwise re-add the very effort the
-    # resolver just rejected for this model. Empty ⇒ the model accepts none of
-    # it; omit the flag and let the model run at its own default.
-    _fly1496_effort="$_fly1496_companion_effort"
-    launch_args+=(--effort "$_fly1496_companion_effort")
-    log "Companion: --effort ${_fly1496_companion_effort} (FLY-583; no projects.json effort override)"
-  elif [ "${IS_COMPANION_ROLE:-false}" = true ]; then
-    log "Companion: no --effort (FLY-1650; ${_fly1496_model} accepts no companion fallback tier)"
-  fi
-
-  if [ "$_fly1496_reason" = "resolver_unavailable" ]; then
-    log "model source: resolver unavailable → using built-in ${_fly1496_model}; env=${FLYWHEEL_LEAD_MODEL:-<unset>} ignored"
-  else
-    log "model source: projects.json=${_fly1496_raw_model:-<absent>}→${_fly1496_model} env=${FLYWHEEL_LEAD_MODEL:-<unset>} → using projects.json"
-  fi
-  if [ -n "$_fly1496_effort" ]; then
-    log "effort source: projects.json=${_fly1496_raw_effort:-<absent>}→${_fly1496_effort} env=${FLYWHEEL_LEAD_EFFORT:-<unset>} → using projects.json"
-  fi
-  if [ "$_fly1496_reason" = "model_invalid" ]; then
-    log "model_config WARNING: projects.json model '${_fly1496_raw_model}' is not resolvable; substituted with '${_fly1496_model}'"
-  fi
-
-
-  if [ "$_fly1496_substituted" = true ] || [ "$_fly1496_reason" = "resolver_unavailable" ]; then
-    if [ -x "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" ]; then
-      "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" \
-        --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-        --kind model_config --severity severe \
-        --title "Lead model policy fallback" \
-        --body "${PROJECT_NAME}/${LEAD_ID}: ${_fly1496_reason}; launched ${_fly1496_model}" \
-        --signature "${_fly1496_reason}-${_fly1496_raw_model:-absent}" \
-        >/dev/null 2>&1 || log "model_config WARNING: alert delivery failed"
-    fi
-  fi
-
-  # FLY-183: clear historical orphaned Discord adapters before launch.
+  # FLY-231 dry-run: a structured launch-plan test (byte-compat sentinel + companion
+  # capability assertions) must NOT touch the shared `flywheel` tmux session, which
+  # is NOT HOME-isolated. Skip all tmux side effects here; env_args still builds
+  # below so the plan captures the real pane env. The emit+return is just before
+  # the actual `tmux new-window`.
   if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+    ensure_tmux_session
+
+    # FLY-183: Reap orphaned Discord adapters before launching a new Claude.
+    # Sequence matters (Codex design review #3): on a supervisor restart the stale
+    # window below may still hold a LIVE old Claude (ppid!=1, skipped by reap);
+    # killing it then creates exactly the orphan we must clean. So:
+    #   pre-sweep (historical orphans) -> kill stale window -> bounded settle
+    #   (let old Claude die + its adapter reparent to launchd) -> re-sweep.
+    # `|| true` belt: reap is internally fail-open, but never let it abort launch.
+    reap_orphan_adapters || true
+
+    # Kill stale window with same name (from previous crash)
+    tmux kill-window -t "=flywheel:=${window_name}" 2>/dev/null || true
+
+    # FLY-183: bounded settle for the just-killed Claude to exit and its adapter
+    # to reparent to launchd (ppid==1), then re-sweep to reap that fresh orphan
+    # before the new Claude (and its new adapter) starts. One-shot, not periodic.
+    sleep 0.5
     reap_orphan_adapters || true
   fi
-
 
   # Build env injection args (explicit per-window, match TmuxAdapter pattern).
   # FLY-60 W6 v2: ALSO override the un-prefixed LEAD_ID and PROJECT_NAME
@@ -1957,8 +1122,8 @@ _launch_claude() {
   # shell's values (e.g. Annie's PROJECT_NAME=geoforge3d, LEAD_ID=ops-lead),
   # so any tool that reads the un-prefixed names sees the wrong slot
   # context — Bridge then 404s "No runtime for project: geoforge3d" while
-  # the test slot's runtime is registered as "test-slot-N". Prompt-only identity
-  # text cannot override an environment-variable leak.
+  # the test slot's runtime is registered as "test-slot-N". The W6 v1 fix
+  # was identity.md prompt-only, which could not override env-var leak.
   # In production this is a no-op (Annie's shell already has the right
   # values); in test slots it ensures the per-invocation slot values win.
   #
@@ -1983,56 +1148,26 @@ _launch_claude() {
     _cz_comm_db=""
     _cz_openai_key=""
   fi
-  # Claude resolves its persisted login against the OS account named by USER.
-# The direct child env -i crosses an explicit environment boundary here, so
-# derive the identity from the kernel account
-  # instead of trusting caller-provided USER/LOGNAME values.
-  local _lead_os_user
-  _lead_os_user="$(/usr/bin/id -un 2>/dev/null)" || {
-    log "ERROR: unable to resolve the Lead OS user"
-    return 1
-  }
-  [ -n "$_lead_os_user" ] || {
-    log "ERROR: resolved Lead OS user is empty"
-    return 1
-  }
   local env_args=(
     -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
     -e "DISCORD_STATE_DIR=${DISCORD_STATE_DIR:-}"
-    -e "DISCORD_EXPECTED_BOT_USER_ID=${DISCORD_EXPECTED_BOT_USER_ID:-}"
-    -e "DISCORD_IDENTITY_MODE=${DISCORD_IDENTITY_MODE:-}"
     -e "LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
-    -e "FLYWHEEL_LEAD_KEY=${FLYWHEEL_LEAD_KEY:-}"
-    -e "FLYWHEEL_LEAD_ROLE=${FLYWHEEL_LEAD_ROLE:-}"
-    -e "FLYWHEEL_LEAD_SUMMARY_ROLE=${FLYWHEEL_LEAD_SUMMARY_ROLE:-}"
-    -e "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-}"
-    -e "FLYWHEEL_SUMMARY_GRANULARITY=${FLYWHEEL_SUMMARY_GRANULARITY:-}"
-    -e "FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=${FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST:-}"
-    -e "FLYWHEEL_LEAD_BACKEND=${FLYWHEEL_LEAD_BACKEND:-}"
-    -e "FLYWHEEL_LEAD_IDENTITY_DIGEST=${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}"
-    -e "FLYWHEEL_LEAD_PROJECTS_DIGEST=${FLYWHEEL_LEAD_PROJECTS_DIGEST:-}"
-    -e "FLYWHEEL_PROJECTS_FILE=${FLYWHEEL_PROJECTS_FILE:-}"
     -e "FLYWHEEL_COMM_DB=${_cz_comm_db}"
     -e "FLYWHEEL_COMM_CLI=${_cz_comm_cli}"
-    # Discord inbound delivery priority windows cross the explicit env -i barrier.
-    -e "FLYWHEEL_RECEIPT_WINDOW_P0_MIN=${FLYWHEEL_RECEIPT_WINDOW_P0_MIN:-}"
-    -e "FLYWHEEL_RECEIPT_WINDOW_P1_MIN=${FLYWHEEL_RECEIPT_WINDOW_P1_MIN:-}"
-    -e "FLYWHEEL_RECEIPT_WINDOW_P2_MIN=${FLYWHEEL_RECEIPT_WINDOW_P2_MIN:-}"
-    -e "FLYWHEEL_RECEIPT_WINDOW_P3_MIN=${FLYWHEEL_RECEIPT_WINDOW_P3_MIN:-}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
     # FLY-205: project root path for the doc-flow Lead rule's config self-check
     # (doc-flow-rules.md reads $FLYWHEEL_PROJECT_DIR/.flywheel/config.yaml).
-    # env -i does not inherit launcher env, and LEAD_WORKSPACE isolation makes
-    # pwd useless — explicit pass is the ONLY reliable source
+    # tmux `new-window -e` does not inherit launcher env, and LEAD_WORKSPACE
+    # isolation makes pwd useless — explicit pass is the ONLY reliable source
     # (Codex design R3 #1). Missing env in the pane → rule fails safe to
     # "doc-flow not enabled" (zero behavior change).
     -e "FLYWHEEL_PROJECT_DIR=${PROJECT_DIR}"
     -e "BRIDGE_URL=${_cz_bridge_url}"
     -e "TEAMLEAD_API_TOKEN=${_cz_teamlead_token}"
-    # FLY-162 Layer 2: the child does not inherit launcher env, so the Discord
-    # plugin's reply-guard fallback prefix scan needs this
+    # FLY-162 Layer 2: tmux panes do NOT inherit launcher env (see note below),
+    # so the Discord plugin's reply-guard fallback prefix scan needs this
     # explicitly — otherwise a custom TEAMLEAD_ISSUE_PREFIXES silently degrades
     # to FLY,GEO during Bridge-unavailable fail-closed checks (Codex code-review MED).
     -e "TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}"
@@ -2040,45 +1175,21 @@ _launch_claude() {
     # core fail-open. Set UNCONDITIONALLY (resolved value or empty) so it OVERRIDES
     # any inherited global DISCORD_CORE_CHANNEL in the pane — strict per-pane
     # derivation (Codex R1 #3). Empty when the project has no generalChannel →
-    # plugin applies no core exemption. This explicit pass is required at the
-    # same env -i barrier as TEAMLEAD_ISSUE_PREFIXES.
+    # plugin applies no core exemption. tmux `new-window -e` does not inherit env,
+    # so this explicit pass is required (same barrier as TEAMLEAD_ISSUE_PREFIXES).
     -e "DISCORD_CORE_CHANNEL=${LEAD_CORE_CHANNEL:-}"
+    -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
     -e "OPENAI_API_KEY=${_cz_openai_key}"
     -e "HOME=${HOME}"
-    -e "USER=${_lead_os_user}"
-    -e "LOGNAME=${_lead_os_user}"
     -e "PATH=${PATH}"
     # GEO-151 QA cycle 1 fix: L3 screencapture skill prompt references
     # `$FLYWHEEL_TEAMLEAD_SCRIPT_DIR/find-window.sh`. Export at line ~1215
-    # only sets it in the launcher shell; env -i strips anything outside this
-    # allowlist, so the Lead saw empty and the skill fell back to a slow
-    # `find /` recursive scan.
-	-e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
-	-e "FLYWHEEL_FOUNDER_TZ=${FLYWHEEL_FOUNDER_TZ:-}"
-	)
-	if [ -n "${FLYWHEEL_SUMMARY_CONFIG_HOME:-}" ]; then
-		env_args+=(-e "FLYWHEEL_SUMMARY_CONFIG_HOME=${FLYWHEEL_SUMMARY_CONFIG_HOME}")
-	fi
-
-	# FLY-2076: final env -i capability fence. Only the sole Alerts duty seat
-	# receives the repository path / bearer; every other pane has neither.
-	if [ "$LEAD_ID" = "claude-infra-bot-lead" ]; then
-		env_args+=(-e "FLYWHEEL_DIR=${FLYWHEEL_DIR:-${FLYWHEEL_ROOT}}")
-		if [ -n "${FLYWHEEL_ALERT_DUTY_TOKEN:-}" ]; then
-			env_args+=(-e "FLYWHEEL_ALERT_DUTY_TOKEN=${FLYWHEEL_ALERT_DUTY_TOKEN}")
-		fi
-	fi
-
-  # FLY-1697: pass the v2 body's bound generation through the explicit env -i
-  # boundary. Degraded launches carry only the fail-closed marker.
-  if [ -n "${LEAD_LEASE_KEY:-}" ] && [ -n "${LEAD_LEASE_GENERATION:-}" ]; then
-    env_args+=(
-      -e "FLYWHEEL_LEAD_LEASE_KEY=${LEAD_LEASE_KEY}"
-      -e "FLYWHEEL_LEAD_GENERATION=${LEAD_LEASE_GENERATION}"
-    )
-  elif [ -n "${LEAD_LEASE_DEGRADED:-}" ]; then
-    env_args+=(-e "FLYWHEEL_LEAD_LEASE_DEGRADED=${LEAD_LEASE_DEGRADED}")
-  fi
+    # only sets it in the launcher shell — `tmux new-window -e` strips
+    # anything not in this allowlist, so the Lead pane saw empty and the
+    # skill fell back to a slow `find /` recursive scan. Same tmux env
+    # barrier pattern FLY-142 fixed for CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS.
+    -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
+  )
 
   # FLY-231: companion marker — only added for companion panes (non-companion env
   # is byte-identical, no such entry). Read by the GLOBAL stable
@@ -2097,13 +1208,14 @@ _launch_claude() {
   # FLY-142 PR 1.2: Agent Team transport env vars. Set by
   # `eval "$(agent-team-transport lead-env ...)"` earlier in the script
   # (no-op if transport CLI not on PATH, vars stay unset). Propagate into
-  # child so claude-code's useInboxPoller activates with the same paths
+  # tmux pane so claude-code's useInboxPoller activates with the same paths
   # the launcher knows about (Codex r1 high #5: stock binary uses
   # CLAUDE_CONFIG_DIR; the legacy FLYWHEEL_TEAMS_* env namespace is banned).
   #
-  # QA-found bug (2026-05-12, FLY-142 verify): empty propagation is not a
-  # no-op. CLAUDE_CONFIG_DIR="" is distinct from unset and sends Claude Code
-  # looking for trust state at the wrong path, retriggering
+  # QA-found bug (2026-05-12, FLY-142 verify): empty propagation is NOT a
+  # no-op. `tmux new-window -e CLAUDE_CONFIG_DIR=` sets the var to empty
+  # string in the pane, which claude-code distinguishes from "unset" — empty
+  # string sends it looking for trust state at the wrong path, retriggering
   # the Trust dialog even when ~/.claude.json:hasTrustDialogAccepted=true is
   # set. Only propagate when the launcher actually has a value.
   if [ -n "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" ]; then
@@ -2118,23 +1230,12 @@ _launch_claude() {
   if [ -n "${FLYWHEEL_STATE_DIR:-}" ]; then
     env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
   fi
-  # FLY-1855: QA slots pin a slot-local StateStore DB. The Lead body runs
-  # behind env -i, so without this explicit pass the patrol snapshot would
-  # silently fall back to the production $HOME/.flywheel/teamlead.db.
-  if [ -n "${TEAMLEAD_DB_PATH:-}" ]; then
-    env_args+=(-e "TEAMLEAD_DB_PATH=${TEAMLEAD_DB_PATH}")
-  fi
-  env_args+=(
-    -e "FLYWHEEL_LEAD_LAUNCH_GEN=${FLYWHEEL_LEAD_LAUNCH_GEN:-}"
-    -e "FLYWHEEL_SESSION_ID_FILE=${FLYWHEEL_SESSION_ID_FILE:-}"
-    -e "FLYWHEEL_LEAD_AUTHORITY_LIB=${SCRIPT_DIR}/lib/lead-session-authority.sh"
-  )
-  env_args+=(-e "FLYWHEEL_LEAD_CARRIER=v2")
 
   # FLY-314 Phase 2 (Part b) / FLY-535 / FLY-569: roundtable reply-in-thread
-  # plugin flags. The Discord plugin reads these from process.env. The env -i
-  # child does not inherit launcher env, so forward each explicitly. Unset in
-  # the launcher means not forwarded => env-overlay empty.
+  # plugin flags. The Discord plugin (MCP server) reads these from process.env.
+  # tmux `new-window -e` does NOT inherit the launcher env, so forward each
+  # explicitly (same barrier as the vars above). Unset in the launcher means not
+  # forwarded => env-overlay empty.
   #
   # FLY-569: reply-in-thread is now DEFAULT-ON in the plugin, resolved from the
   # SHARED NON-TOKEN file ~/.flywheel/roundtable.json (channelId only) when the
@@ -2144,19 +1245,19 @@ _launch_claude() {
   # test isolation); unset => plugin uses the default path (byte-compatible).
   local _rt_var
   for _rt_var in FLYWHEEL_ROUNDTABLE_CHANNEL_ID FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD \
-    FLYWHEEL_ROUNDTABLE_THREAD_BUDGET \
+    FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE FLYWHEEL_ROUNDTABLE_THREAD_BUDGET \
     FLYWHEEL_ROUNDTABLE_CONFIG_FILE; do
     if [ -n "${!_rt_var:-}" ]; then
       env_args+=(-e "${_rt_var}=${!_rt_var}")
     fi
   done
 
-  # FLY-143 (QA-found): env -i does not inherit the launcher's env, so any
-  # `${VAR}` referenced in the merged .mcp.json must be passed
+  # FLY-143 (QA-found): tmux `new-window -e` does NOT inherit the launcher's
+  # env, so any `${VAR}` referenced in the merged .mcp.json must be passed
   # explicitly or Claude marks the server "needs authentication".
   # Scan the final .mcp.json and append each required env var with its
   # current value (or empty if unset — empty preserves the variable name in
-  # the child so `${VAR:-default}` semantics still work).
+  # the Lead pane so `${VAR:-default}` semantics still work).
   if [ -n "${MCP_CONFIG_FILE:-}" ] && [ -f "${MCP_CONFIG_FILE}" ]; then
     local _req_var _added_count=0
     while IFS= read -r _req_var; do
@@ -2165,58 +1266,113 @@ _launch_claude() {
       _added_count=$((_added_count + 1))
     done < <(list_required_envs "$MCP_CONFIG_FILE")
     if [ "$_added_count" -gt 0 ]; then
-      log "MCP env propagation: forwarded ${_added_count} required env var(s) to child"
+      log "MCP env propagation: forwarded ${_added_count} required env var(s) to tmux pane"
     fi
   fi
 
   # FLY-231 dry-run: env_args is now fully assembled (incl. MCP-required-env
-  # propagation). Emit the structured launch-plan without starting the child.
+  # propagation). Emit the structured launch-plan and return WITHOUT launching.
   if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
-    _emit_launch_plan "${launch_args[@]}"
+    _emit_launch_plan "$@"
     return 0
   fi
 
-  # This shell is the private server body pane; preserve that tmux identity.
-  local -a child_env=()
-  local _v2_env
-  for _v2_env in "${env_args[@]}"; do
-    [ "$_v2_env" = "-e" ] && continue
-    child_env+=("$_v2_env")
-  done
-  [ -z "${TERM:-}" ] || child_env+=("TERM=${TERM}")
-  [ -z "${TMPDIR:-}" ] || child_env+=("TMPDIR=${TMPDIR}")
-  [ -z "${LANG:-}" ] || child_env+=("LANG=${LANG}")
-  [ -z "${LC_ALL:-}" ] || child_env+=("LC_ALL=${LC_ALL}")
-  [ -z "${LC_CTYPE:-}" ] || child_env+=("LC_CTYPE=${LC_CTYPE}")
-  [ -z "${TMUX:-}" ] || child_env+=("TMUX=${TMUX}")
-  [ -z "${TMUX_PANE:-}" ] || child_env+=("TMUX_PANE=${TMUX_PANE}")
+  # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
+  # is handled by background capture-pane poller started below.
+  LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \
+    -t =flywheel \
+    "${env_args[@]}" \
+    -n "$window_name" \
+    -c "$LEAD_WORKSPACE" \
+    claude "$@")
 
-  env -i "${child_env[@]}" claude "${launch_args[@]}" &
-  CLAUDE_CHILD_PID=$!
-  local _v2_child_start=""
-  _v2_child_start="$(LC_ALL=C /bin/ps -p "$CLAUDE_CHILD_PID" -o lstart= 2>/dev/null \
-    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)"
-  record_lead_body_evidence_best_effort launched \
-    "$CLAUDE_CHILD_PID" "$_v2_child_start" \
-    "${_FLYWHEEL_LEAD_CARRIER_PID_CAPTURED:-}" \
-    "${_FLYWHEEL_LEAD_CARRIER_START_CAPTURED:-}"
-  if wait "$CLAUDE_CHILD_PID"; then
-    CLAUDE_EXIT=0
-  else
-    CLAUDE_EXIT=$?
-  fi
-  CLAUDE_CHILD_PID=""
+  # Enable remain-on-exit on this specific window so we can read exit code
+  # (must be set-window-option on the window, not session-level, for tmux 3.5+)
+  tmux set-window-option -t "$LEAD_WINDOW_ID" remain-on-exit on 2>/dev/null || true
+
+  log "Claude launched in tmux window: flywheel:${LEAD_WINDOW_ID} (name: ${window_name})"
 }
 
-# The launchd-native body owns one Claude child.
+# Wait for tmux window to exit (pane_dead detection).
+# Uses window_id for reliable targeting. Uses interruptible_sleep.
+_wait_tmux_window() {
+  CLAUDE_EXIT=0
+  local target="${LEAD_WINDOW_ID}"
+
+  while true; do
+    if [ "$SHOULD_EXIT" -ne 0 ]; then return 0; fi
+
+    # Check if window still exists (session or window killed externally)
+    if ! tmux list-panes -t "$target" &>/dev/null; then
+      # Window gone — treat as crash (unknown exit code)
+      CLAUDE_EXIT=1
+      return 0
+    fi
+
+    # Check pane_dead flag (requires remain-on-exit)
+    local dead
+    dead=$(tmux list-panes -t "$target" -F '#{pane_dead}' 2>/dev/null | head -1)
+    if [ "$dead" = "1" ]; then
+      # Get exit code from dead pane
+      CLAUDE_EXIT=$(tmux list-panes -t "$target" -F '#{pane_dead_status}' 2>/dev/null | head -1)
+      CLAUDE_EXIT="${CLAUDE_EXIT:-1}"
+      # Kill the dead window to prevent accumulation
+      tmux kill-window -t "$target" 2>/dev/null || true
+      return 0
+    fi
+
+    interruptible_sleep 3
+  done
+}
+
 cleanup() {
+  SHOULD_EXIT=1
   log "Shutdown signal received..."
-  _v2_reap_dialog_poller
-  if [ -n "${CLAUDE_CHILD_PID:-}" ] && kill -0 "$CLAUDE_CHILD_PID" 2>/dev/null; then
-    kill -TERM "$CLAUDE_CHILD_PID" 2>/dev/null || true
-    wait "$CLAUDE_CHILD_PID" 2>/dev/null || true
+
+  # FLY-109: expect-dev-channels.exp lives under scripts/ now — nothing to clean up.
+
+  # Graceful shutdown: send C-c to Claude in tmux
+  if [ -n "${LEAD_WINDOW_ID:-}" ]; then
+    tmux send-keys -t "$LEAD_WINDOW_ID" C-c 2>/dev/null || true
+    # Wait briefly for graceful exit (check pane_dead to avoid over-waiting)
+    local i=0
+    while [ $i -lt 5 ]; do
+      if ! tmux list-panes -t "$LEAD_WINDOW_ID" &>/dev/null; then break; fi
+      local dead
+      dead=$(tmux list-panes -t "$LEAD_WINDOW_ID" -F '#{pane_dead}' 2>/dev/null | head -1)
+      if [ "$dead" = "1" ]; then break; fi
+      sleep 1
+      i=$((i + 1))
+    done
+    # Force kill if still alive
+    tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
   fi
-  exit 143
+
+  # FLY-183: best-effort reap of this Lead's adapter on graceful shutdown.
+  # Timing caveat (Codex design review #3): the just-killed Claude's adapter may
+  # not have reparented to launchd (ppid==1) yet, so this is best-effort only --
+  # a short settle improves the odds, but the durable guarantee is Layer 2
+  # (in-adapter ppid self-clean) plus the next launch's pre/re-sweep. Never block
+  # shutdown on it.
+  sleep 0.5
+  reap_orphan_adapters || true
+
+  # Kill any background jobs (race window)
+  local bg_pids
+  bg_pids=$(jobs -pr 2>/dev/null) || true
+  if [ -n "$bg_pids" ]; then
+    kill -TERM $bg_pids 2>/dev/null || true
+    wait $bg_pids 2>/dev/null || true
+  fi
+
+  # FLY-20: Remove PID file on graceful exit
+  rm -f "${PID_FILE:-}" 2>/dev/null || true
+  # FLY-109: Release MCP pre-seed lock only if THIS process holds it
+  if [ "${_MCP_LOCK_HELD:-false}" = "true" ] && [ -n "${_SETTINGS_LOCAL_JSON:-}" ]; then
+    rmdir "${_SETTINGS_LOCAL_JSON}.flywheel-lock" 2>/dev/null || true
+  fi
+  # Exit from trap to prevent main flow from continuing after signal
+  exit 0
 }
 trap cleanup SIGINT SIGTERM
 
@@ -2452,56 +1608,105 @@ if command -v jq >/dev/null 2>&1; then
   fi
 fi
 
-# FLY-1751: /clear creates a new conversation without rerunning the launcher.
-# Install the clear-only adoption hook after the settings.local.json pre-seed so
-# both writers serialize through the same per-workspace lock. Locked roles have
-# no CommDB/CLI credentials by design and are explicitly outside this hook leg.
-if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ]; then
-  install_session_start_adopt_inflight_hook
-elif [ "$IS_COMPANION_ROLE" = true ]; then
-  log "Companion: skipping SessionStart in-flight adoption hook install (CommDB credentials intentionally absent)"
-else
-  log "External: skipping SessionStart in-flight adoption hook install (CommDB credentials intentionally absent)"
-fi
-
 # Build claude args using bash array (avoids quoting/word-splitting issues)
 CLAUDE_ARGS=(
   --agent "$LEAD_ID"
   --permission-mode bypassPermissions
 )
 
-if [ "$PLAYWRIGHT_MCP_STATE" = "enabled" ]; then
-  # One narrow, per-launch override. Machine default-off and HEADLESS=true stay
-  # intact; this only opens the official plugin for the declared Lead identity.
-  CLAUDE_ARGS+=(
-    --settings
-    '{"enabledPlugins":{"playwright@claude-plugins-official":true}}'
-  )
+# FLY-241: per-Lead model override. When `FLYWHEEL_LEAD_MODEL` is set (per-Lead
+# via the launchd plist EnvironmentVariables), pass it through as `--model` so a
+# coding-heavy Lead can run a different model (e.g. claude-fable-5) while every
+# other Lead keeps the account default. UNSET (the default) appends NOTHING —
+# argv stays byte-identical to pre-FLY-241, asserted by the FLY-231 reverse-compat
+# sentinel (T8 golden has no `--model`).
+#
+# Trim surrounding whitespace before the empty check so a stray-space plist value
+# (e.g. " ") is treated as UNSET rather than injecting `--model "  "` — which the
+# claude CLI rejects and would crash the Lead at startup (failure-path hygiene).
+# Do NOT lowercase: model ids can be case-sensitive.
+_fly241_lead_model="${FLYWHEEL_LEAD_MODEL:-}"
+_fly241_lead_model="${_fly241_lead_model#"${_fly241_lead_model%%[![:space:]]*}"}"
+_fly241_lead_model="${_fly241_lead_model%"${_fly241_lead_model##*[![:space:]]}"}"
+if [ -n "$_fly241_lead_model" ]; then
+  CLAUDE_ARGS+=(--model "$_fly241_lead_model")
+  log "Lead model override: --model ${_fly241_lead_model} (FLY-241)"
 fi
 
-# FLY-1496/FLY-1716: model and effort are deliberately absent from this static
-# launch array. The physical-launch path resolves both from projects.json after
-# all static args are built, then freezes that decision for the context gate and
-# child argv. Frozen launchd env remains carrier evidence for fleet tooling but
-# has no runtime authority.
+# FLY-671: per-Lead effort override. When `FLYWHEEL_LEAD_EFFORT` is set (per-Lead
+# via the launchd plist, carried from projects.json → manifest → generate_plist),
+# pass it through as `--effort` so a cost-sensitive Lead can run lower effort
+# (xhigh→high/medium) to save tokens. This GENERALIZES the FLY-231/FLY-583
+# companion pin below: an explicit valid effort wins for ANY Lead (incl. companion).
+#
+# enum guard (Codex design review R2 MEDIUM-4): a bad value is treated as UNSET,
+# never injected. Critically, a bad explicit env must NOT both crash the CLI AND
+# strip a companion's FLY-583 xhigh fallback — so an invalid value falls through
+# to the companion default below, identical to "unset".
+#
+# Trim surrounding whitespace (same as FLY-241 model) before the enum check.
+_fly671_lead_effort="${FLYWHEEL_LEAD_EFFORT:-}"
+_fly671_lead_effort="${_fly671_lead_effort#"${_fly671_lead_effort%%[![:space:]]*}"}"
+_fly671_lead_effort="${_fly671_lead_effort%"${_fly671_lead_effort##*[![:space:]]}"}"
+case "$_fly671_lead_effort" in
+  low|medium|high|xhigh|max) _fly671_effort_valid=true ;;
+  "") _fly671_effort_valid=false ;;
+  *) _fly671_effort_valid=false; log "WARN: ignoring invalid FLYWHEEL_LEAD_EFFORT='${_fly671_lead_effort}' (treated as unset)" ;;
+esac
+
+# FLY-231 / FLY-583: companion effort. FLY-231 originally pinned `--effort medium`
+# on the theory that default/high effort triggered the "drafts a reply but never
+# calls the discord reply tool → goes silent" leak (FLY-306). FLY-583 disproved
+# that hypothesis with evidence: Belle leaked the reply tool-call as plain text at
+# `--effort xhigh` too, so medium did NOT prevent the leak — it only capped her
+# capability against Annie's explicit "keep Belle on xhigh" requirement. The real,
+# effort-independent leak defense is the discord-reply-enforcer Stop hook (FLY-387),
+# which catches an unexecuted reply and nudges a resend (verified recovering Belle
+# live). So pin companions to xhigh (capability), never medium.
+#
+# Precedence (FLY-671): a valid explicit FLYWHEEL_LEAD_EFFORT overrides everything;
+# otherwise a companion still gets xhigh; otherwise (non-companion, no/bad env) NO
+# `--effort` flag is appended — argv stays byte-identical to pre-FLY-671 (sentinel-asserted).
+if [ "$_fly671_effort_valid" = true ]; then
+  CLAUDE_ARGS+=(--effort "$_fly671_lead_effort")
+  log "Lead effort override: --effort ${_fly671_lead_effort} (FLY-671)"
+elif [ "$IS_COMPANION_ROLE" = true ]; then
+  CLAUDE_ARGS+=(--effort xhigh)
+  log "Companion: --effort xhigh (FLY-583; leak defense is the discord-reply-enforcer hook, not effort)"
+fi
+
+# FLY-143: claude-in-chrome — env-gated, default OFF.
+# `--chrome` + `--permission-mode bypassPermissions` together set
+# CLAUDE_CHROME_PERMISSION_MODE=skip_all_permission_checks (verified upstream
+# in setup.ts:101-104). That gives an autonomous Lead access to Annie's
+# logged-in Chrome session without per-site friction. Keep this opt-in.
+#
+# Wrapper reads `chromeEnabled: true` from manifest and exports the env var.
+# To enable for one Lead: set "chromeEnabled": true in its manifest, restart.
+if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-false}" = "true" ]; then
+  CLAUDE_ARGS+=(--chrome)
+  log "Claude in Chrome: ENABLED (--chrome flag set)"
+  log "WARNING: Lead operates in Annie's logged-in Chrome session with skip_all_permission_checks"
+else
+  log "Claude in Chrome: disabled (set FLYWHEEL_LEAD_CHROME_ENABLED=true to enable)"
+fi
 
 # FLY-47: Channel configuration
-# The private pointer marketplace is not on Claude's approved-channel allowlist.
-# Load it through the same development-channel path as the local inbox server;
-# FLY-1679 must be deployed before cutover so v2 cold starts confirm this path
-# without a human keypress.
-CLAUDE_ARGS+=(--dangerously-load-development-channels "plugin:discord@flywheel-plugins")
+# Discord plugin: approved via GrowthBook allowlist → --channels
+# Inbox MCP server: not on allowlist → --dangerously-load-development-channels (sets dev:true, bypasses gate)
+# These are SEPARATE flags — --channels for allowlisted plugins, dev flag for local MCP servers.
+CLAUDE_ARGS+=(--channels "plugin:discord@claude-plugins-official")
 if [ "$INBOX_MCP_ENABLED" = "true" ]; then
-  CLAUDE_ARGS+=("server:flywheel-inbox")
+  CLAUDE_ARGS+=(--dangerously-load-development-channels "server:flywheel-inbox")
   log "Channels: Discord plugin + inbox server (dev channel)"
 
-	# Tell the Lead model how + when to acknowledge inbox batches. The file
+  # FLY-109: Tell the Lead model how + when to call flywheel_inbox_ack. The file
   # ships in scripts/ so it's always present when this launcher runs; no external
-	# sync required. Only loaded when inbox-mcp is enabled — the tools don't exist
+  # sync required. Only loaded when inbox-mcp is enabled — the tool doesn't exist
   # otherwise.
   INBOX_ACK_RULE="${SCRIPT_DIR}/inbox-ack-rule.md"
   if [ -f "$INBOX_ACK_RULE" ] && [ -r "$INBOX_ACK_RULE" ]; then
-    rules_bundle_add "$INBOX_ACK_RULE" launcher
+    CLAUDE_ARGS+=(--append-system-prompt-file "$INBOX_ACK_RULE")
     log "Appending inbox ack rule: ${INBOX_ACK_RULE}"
   else
     log "WARNING: inbox ack rule missing at ${INBOX_ACK_RULE} — Lead may not ack channel messages"
@@ -2509,6 +1714,7 @@ if [ "$INBOX_MCP_ENABLED" = "true" ]; then
 else
   log "Channels: Discord plugin only"
 fi
+
 # FLY-80: MCP servers are now in $LEAD_WORKSPACE/.mcp.json (auto-discovered by Claude from CWD).
 # No --mcp-config flag needed — this also ensures server:flywheel-inbox resolves for channels.
 
@@ -2573,7 +1779,7 @@ if [ "$IS_EXTERNAL_ROLE" = true ]; then
   # session without its boundary).
   BASE_EXTERNAL_CONTRACT="${BASE_RULES_DIR}/external-agent-contract.md"
   if [ -f "$BASE_EXTERNAL_CONTRACT" ] && [ -r "$BASE_EXTERNAL_CONTRACT" ]; then
-    rules_bundle_add "$BASE_EXTERNAL_CONTRACT" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXTERNAL_CONTRACT")
     log "Appending external agent contract: ${BASE_EXTERNAL_CONTRACT}"
   else
     log "ERROR: external agent contract missing/unreadable at ${BASE_EXTERNAL_CONTRACT}"
@@ -2591,7 +1797,7 @@ elif [ "$IS_COMPANION_ROLE" = true ]; then
   # (companion is in #leads-roundtable) — see the universal block further down.
   BASE_COMPANION_SAFETY="${BASE_RULES_DIR}/companion-safety-contract.md"
   if [ -f "$BASE_COMPANION_SAFETY" ] && [ -r "$BASE_COMPANION_SAFETY" ]; then
-    rules_bundle_add "$BASE_COMPANION_SAFETY" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COMPANION_SAFETY")
     log "Appending companion safety contract: ${BASE_COMPANION_SAFETY}"
   else
     # FLY-231 (Codex code-review HIGH-2): fail-STOP, do NOT start. The companion
@@ -2608,7 +1814,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # Department Lead base: Action Gate + Multi-Lead Mentions + Bridge rejection diagnostics
   BASE_DEPT_RULES="${BASE_RULES_DIR}/department-lead-rules.md"
   if [ -f "$BASE_DEPT_RULES" ] && [ -r "$BASE_DEPT_RULES" ]; then
-    rules_bundle_add "$BASE_DEPT_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
     log "Appending base dept-lead rules: ${BASE_DEPT_RULES}"
   fi
   # FLY-142 PR #186 Codex Round 1 HIGH: dept leads spawn + DM Runners, so
@@ -2631,7 +1837,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   if [ "$_runnermsg_backend" != "commdb" ]; then
     BASE_RUNNER_MSG_RULES="${BASE_RULES_DIR}/runner-messaging-rules.md"
     if [ -f "$BASE_RUNNER_MSG_RULES" ] && [ -r "$BASE_RUNNER_MSG_RULES" ]; then
-      rules_bundle_add "$BASE_RUNNER_MSG_RULES" base
+      CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_RUNNER_MSG_RULES")
       log "Appending base runner-messaging rules: ${BASE_RUNNER_MSG_RULES}"
     fi
   else
@@ -2649,7 +1855,7 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # base file is a no-op (backward compat with older flywheel checkouts).
   BASE_EXECUTOR_ROUTING_RULES="${BASE_RULES_DIR}/executor-routing.md"
   if [ -f "$BASE_EXECUTOR_ROUTING_RULES" ] && [ -r "$BASE_EXECUTOR_ROUTING_RULES" ]; then
-    rules_bundle_add "$BASE_EXECUTOR_ROUTING_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXECUTOR_ROUTING_RULES")
     log "Appending base executor-routing rules: ${BASE_EXECUTOR_ROUTING_RULES}"
   fi
 
@@ -2661,17 +1867,20 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # Runners load it. Optional — missing base file is a no-op (backward compat).
   BASE_MODEL_ROUTING_RULES="${BASE_RULES_DIR}/model-routing.md"
   if [ -f "$BASE_MODEL_ROUTING_RULES" ] && [ -r "$BASE_MODEL_ROUTING_RULES" ]; then
-    rules_bundle_add "$BASE_MODEL_ROUTING_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_MODEL_ROUTING_RULES")
     log "Appending base model-routing rules: ${BASE_MODEL_ROUTING_RULES}"
   fi
 
-	# ── Runner recovery safety (non-cos dept leads only) ──
-	# Defines the evidence and authority boundaries for manual Runner recovery.
-	# Only roles that manage Runners load it. Loaded on both messaging backends.
+  # ── FLY-195: Stuck-Runner Re-Manage (non-cos dept leads only) ──
+  # Defines how a Lead judges + re-manages a runner_stuck_escalation event
+  # (ladder: mailbox wake → restricted recovery nudge; disposition receipts;
+  # Annie ping cadence). Only roles that manage Runners load it. Loaded on
+  # BOTH messaging backends (the ladder references "your normal Runner
+  # messaging path", which the runner-messaging rules define per backend).
   # Optional — missing base file is a no-op (backward compat).
   BASE_STUCK_REMANAGE_RULES="${BASE_RULES_DIR}/stuck-runner-remanage.md"
   if [ -f "$BASE_STUCK_REMANAGE_RULES" ] && [ -r "$BASE_STUCK_REMANAGE_RULES" ]; then
-    rules_bundle_add "$BASE_STUCK_REMANAGE_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_STUCK_REMANAGE_RULES")
     log "Appending base stuck-runner-remanage rules: ${BASE_STUCK_REMANAGE_RULES}"
   fi
 
@@ -2682,8 +1891,23 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # — missing base file is a no-op (backward compat).
   BASE_REENGAGE_RULES="${BASE_RULES_DIR}/runner-reengage-rules.md"
   if [ -f "$BASE_REENGAGE_RULES" ] && [ -r "$BASE_REENGAGE_RULES" ]; then
-    rules_bundle_add "$BASE_REENGAGE_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_REENGAGE_RULES")
     log "Appending base runner-reengage rules: ${BASE_REENGAGE_RULES}"
+  fi
+
+  # ── FLY-369: Runner status relay + proactive patrol (dept leads that manage
+  # Runners). RC-1 (relay every lifecycle event to the [FLY-XX] thread +
+  # runner-done≠accepted), RC-2 (drive a parked Runner via a waking channel,
+  # never `respond` for non-gate), RC-3 (proactively sweep your Runners via
+  # runner_terminal_list), RC-6 (continuation Runner reads the committed plan
+  # first). These are backend-INDEPENDENT, so — unlike runner-messaging-rules —
+  # this loads on BOTH the mailbox and the commdb rollback path (its RC-2 section
+  # is self-contained for commdb). Discipline only; the automation engine belongs
+  # to FLY-271 / FLY-368. Optional — missing base file is a no-op (backward compat).
+  BASE_PATROL_RULES="${BASE_RULES_DIR}/runner-patrol-rules.md"
+  if [ -f "$BASE_PATROL_RULES" ] && [ -r "$BASE_PATROL_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_PATROL_RULES")
+    log "Appending base runner-patrol rules: ${BASE_PATROL_RULES}"
   fi
 
   # ── FLY-205: Doc-Flow tier judgment + founder notification (non-cos dept
@@ -2695,20 +1919,32 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # Optional — missing base file is a no-op (backward compat).
   BASE_DOC_FLOW_RULES="${BASE_RULES_DIR}/doc-flow-rules.md"
   if [ -f "$BASE_DOC_FLOW_RULES" ] && [ -r "$BASE_DOC_FLOW_RULES" ]; then
-    rules_bundle_add "$BASE_DOC_FLOW_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DOC_FLOW_RULES")
     log "Appending base doc-flow rules: ${BASE_DOC_FLOW_RULES}"
   fi
 
+  # ── FLY-579: auto-QA pipeline contract (non-cos dept leads only) ──
+  # Describes the automatic code-review → independent-QA → founder-gate flow so a
+  # Lead never has to remember to spawn QA and never surfaces the founder before
+  # QA is green. INERT unless the project opts in (qa.auto in its config.yaml);
+  # the prose is harmless on non-opted-in projects. Optional — missing base file
+  # is a no-op (backward compat with older flywheel checkouts).
+  BASE_AUTO_QA_RULES="${BASE_RULES_DIR}/auto-qa-pipeline.md"
+  if [ -f "$BASE_AUTO_QA_RULES" ] && [ -r "$BASE_AUTO_QA_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_AUTO_QA_RULES")
+    log "Appending base auto-QA pipeline rules: ${BASE_AUTO_QA_RULES}"
+  fi
+
   # ── FLY-707 (FLY-698 epic): Default-Enable Policy (non-cos dept leads only) ──
-  # Built features ship ENABLED for the project (config opt-ins like doc_flow
-  # and default-off env flags), not left dormant behind an un-flipped
-  # opt-in — with security/governance gates (founder_consent and branch
-  # protection) EXPLICITLY EXEMPT (flipping those blindly can wedge
+  # Built features ship ENABLED for the project (config opt-ins like qa.auto /
+  # doc_flow, default-off env flags), not left dormant behind an un-flipped
+  # opt-in — with security/governance gates (founder_consent, founder_ux_gate,
+  # branch protection) EXPLICITLY EXEMPT (flipping those blindly can wedge
   # merge/ship). Pure guidance prose; harmless everywhere. Optional — missing
   # base file is a no-op (backward compat with older flywheel checkouts).
   BASE_DEFAULT_ENABLE_RULES="${BASE_RULES_DIR}/default-enable-policy.md"
   if [ -f "$BASE_DEFAULT_ENABLE_RULES" ] && [ -r "$BASE_DEFAULT_ENABLE_RULES" ]; then
-    rules_bundle_add "$BASE_DEFAULT_ENABLE_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEFAULT_ENABLE_RULES")
     log "Appending base default-enable policy: ${BASE_DEFAULT_ENABLE_RULES}"
   fi
 
@@ -2724,54 +1960,16 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # no-op (backward compat with older flywheel checkouts).
   BASE_XHS_MEMORY_RULES="${BASE_RULES_DIR}/xiaohongshu-memory-rules.md"
   if [ -f "$BASE_XHS_MEMORY_RULES" ] && [ -r "$BASE_XHS_MEMORY_RULES" ]; then
-    rules_bundle_add "$BASE_XHS_MEMORY_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_XHS_MEMORY_RULES")
     log "Appending base xiaohongshu-memory rules: ${BASE_XHS_MEMORY_RULES}"
   fi
 else
   # Cos-lead base: Department Routing Discipline (one Lead per spawn message)
   BASE_COS_RULES="${BASE_RULES_DIR}/cos-lead-rules.md"
   if [ -f "$BASE_COS_RULES" ] && [ -r "$BASE_COS_RULES" ]; then
-    rules_bundle_add "$BASE_COS_RULES" base
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COS_RULES")
     log "Appending base cos-lead rules: ${BASE_COS_RULES}"
   fi
-fi
-
-# ── FLY-2030: registry-projected summary duty (all roles, no role formula) ──
-# The launcher identity resolver already validated the closed assignment enum,
-# founder-selected mode, and assignment digest. This path only consumes the bit.
-case "${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-}" in
-  1)
-    BASE_SUMMARY_INFLOW_RULES="${BASE_RULES_DIR}/summary-inflow.md"
-    if [ ! -f "$BASE_SUMMARY_INFLOW_RULES" ] || [ ! -r "$BASE_SUMMARY_INFLOW_RULES" ]; then
-      echo "[lead] ERROR: summary duty is active but required rule is missing: ${BASE_SUMMARY_INFLOW_RULES}"
-      exit 1
-    fi
-    rules_bundle_add "$BASE_SUMMARY_INFLOW_RULES" base
-    log "Appending base summary-inflow rules: ${BASE_SUMMARY_INFLOW_RULES}"
-    ;;
-  0) ;;
-  *)
-    echo "[lead] ERROR: invalid or missing FLYWHEEL_LEAD_HAS_SUMMARY_DUTY projection"
-    exit 1
-    ;;
-esac
-
-# ── FLY-369/FLY-2080: status relay + patrol action ledger (dept Leads) ──
-# Keep the existing dispatch-capable department-Lead boundary. CoS Leads have
-# canSpawnRunners=false and patrol-tick does not target them; loading this whole
-# file would expose unrelated Runner-management and raw-ledger actions.
-BASE_PATROL_RULES="${BASE_RULES_DIR}/runner-patrol-rules.md"
-if [ "$IS_COS_ROLE" != true ] && [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_PATROL_RULES" ] && [ -r "$BASE_PATROL_RULES" ]; then
-  rules_bundle_add "$BASE_PATROL_RULES" base
-  log "Appending base runner-patrol rules: ${BASE_PATROL_RULES}"
-fi
-
-# ── FLY-1319: founder-local time (universal companion + cos + dept) ──
-# External customer-facing agents intentionally keep their narrower contract.
-BASE_FOUNDER_LOCAL_TIME_RULES="${BASE_RULES_DIR}/founder-local-time.md"
-if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_FOUNDER_LOCAL_TIME_RULES" ] && [ -r "$BASE_FOUNDER_LOCAL_TIME_RULES" ]; then
-  rules_bundle_add "$BASE_FOUNDER_LOCAL_TIME_RULES" base
-  log "Appending founder-local time rules: ${BASE_FOUNDER_LOCAL_TIME_RULES}"
 fi
 
 # ── FLY-175: Founder-Only Authority (universal — both cos and dept roles) ──
@@ -2784,8 +1982,55 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "
   # FLY-231/FLY-879: companion AND external skip this 20KB reserved-action contract
   # — the short companion-safety-contract.md / external-agent-contract.md (above)
   # covers each one's boundary in a non-engineering tone.
-  rules_bundle_add "$BASE_FOUNDER_AUTH_RULES" base
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
+fi
+
+# ── FLY-598 / FLY-869: Founder brainstorm-alignment gate (universal — cos + dept, NOT companion) ──
+# Loads UNLESS this project EXPLICITLY disables the founder-UX gate
+# (founder_ux_gate.mode: off in .flywheel/config.yaml). FLY-869 flips the
+# default from opt-in to default-ON — an ABSENT founder_ux_gate block (or an
+# absent config file entirely) now resolves to "enforce" (mirrors
+# resolveEffectiveFounderUxConfig in flywheel-config), so this block is
+# appended for the common case. Only an EXPLICIT `mode: off` keeps the
+# pre-FLY-598 byte-compatible zero-prompt-change behavior (Codex R3-#3 / R2-#6
+# byte-compat, preserved for that one escape hatch). Guides whoever
+# writes/triages issues (cos + dept) that every substantial issue is gated by
+# default and only the `brainstorm-exempt` label opts an issue OUT; judgment
+# is model-driven loose guidance, the enforcement is the Bridge gate.
+BASE_FOUNDER_UX_RULES="${BASE_RULES_DIR}/founder-ux-rules.md"
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "$BASE_FOUNDER_UX_RULES" ]; then
+  # Read founder_ux_gate.mode from the project config WITHOUT aborting under
+  # `set -euo pipefail`: only awk when the config file exists, and `|| true` so a
+  # missing/malformed config (awk exit != 0) never kills the launch. This is why
+  # doc-flow-rules above self-checks inside the rule file instead — this block is
+  # the one shell-side read.
+  FOUNDER_UX_MODE=""
+  _founder_ux_cfg="${PROJECT_DIR}/.flywheel/config.yaml"
+  if [ -f "$_founder_ux_cfg" ]; then
+    FOUNDER_UX_MODE="$(awk '
+      /^founder_ux_gate:/ { inblk=1; next }
+      inblk && /^[^[:space:]]/ { inblk=0 }
+      inblk && $1 == "mode:" { v=$2; gsub(/["'"'"',]/, "", v); print v; exit }
+    ' "$_founder_ux_cfg" 2>/dev/null || true)"
+  fi
+  # FLY-869: absent config (no file / no founder_ux_gate block / no mode key —
+  # FOUNDER_UX_MODE still empty here) now DEFAULTS TO "enforce", mirroring
+  # resolveEffectiveFounderUxConfig's absent → enforce resolution. Only an
+  # EXPLICIT `mode: off` in the project config stays the byte-compatible
+  # no-append kill-switch.
+  if [ -z "$FOUNDER_UX_MODE" ]; then
+    FOUNDER_UX_MODE="enforce"
+  fi
+  # FLY-900: fleet-wide kill-switch — the founder-UX signoff gate is retired by
+  # default. Only append the founder-ux rules when the switch is explicitly
+  # re-enabled (FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1), matching the TS helper
+  # isFounderUxGateEnabled (=== "1"). Disabled → the Lead is not handed the
+  # founder-ux rules at all.
+  if [ "${FLYWHEEL_FOUNDER_UX_GATE_ENABLED:-}" = "1" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_UX_RULES")
+    log "Appending base founder-ux rules (founder_ux_gate.mode=${FOUNDER_UX_MODE}): ${BASE_FOUNDER_UX_RULES}"
+  fi
 fi
 
 # ── FLY-203: Founder HTML delivery (universal — both roles) ──
@@ -2796,7 +2041,7 @@ fi
 BASE_HTML_DELIVERY_RULES="${BASE_RULES_DIR}/founder-html-delivery.md"
 if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
   # FLY-231/FLY-879: companion + external produce no founder HTML reports — skip.
-  rules_bundle_add "$BASE_HTML_DELIVERY_RULES" base
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_HTML_DELIVERY_RULES")
   log "Appending base founder-html-delivery rules: ${BASE_HTML_DELIVERY_RULES}"
 fi
 
@@ -2812,7 +2057,7 @@ BASE_CROSS_DEPT_RULES="${BASE_RULES_DIR}/cross-dept-channel-rules.md"
 # internal Lead roster / cross-dept coordination surface — skip (companion keeps it,
 # it IS a roundtable member). This is why external ≠ "companion with a different name".
 if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_CROSS_DEPT_RULES" ] && [ -r "$BASE_CROSS_DEPT_RULES" ]; then
-  rules_bundle_add "$BASE_CROSS_DEPT_RULES" base
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_CROSS_DEPT_RULES")
   log "Appending base cross-dept-channel rules: ${BASE_CROSS_DEPT_RULES}"
 fi
 
@@ -2828,7 +2073,7 @@ BASE_DISCORD_REPLY_CONTRACT="${BASE_RULES_DIR}/discord-reply-contract.md"
 # (the discord-reply-enforcer Stop hook — installed for EVERY role incl. external —
 # is the real, effort-independent reply-leak defense; the prose is redundant here).
 if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_DISCORD_REPLY_CONTRACT" ] && [ -r "$BASE_DISCORD_REPLY_CONTRACT" ]; then
-  rules_bundle_add "$BASE_DISCORD_REPLY_CONTRACT" base
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DISCORD_REPLY_CONTRACT")
   log "Appending base discord-reply-contract rules: ${BASE_DISCORD_REPLY_CONTRACT}"
 fi
 
@@ -2844,7 +2089,7 @@ if [ "$IS_EXTERNAL_ROLE" != true ] && [ -d "$LEAD_RULES_DIR" ]; then
     echo "[lead] Source should be: ${SHARED_RULES_DIR}/common-rules.md"
     exit 1
   fi
-  rules_bundle_add "$COMMON_RULES" project
+  CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
   log "Appending common rules: ${COMMON_RULES}"
 
   # Department lead rules — only for non-cos roles (manage Runners). Cos-lead
@@ -2858,7 +2103,7 @@ if [ "$IS_EXTERNAL_ROLE" != true ] && [ -d "$LEAD_RULES_DIR" ]; then
       echo "[lead] Source should be: ${SHARED_RULES_DIR}/department-lead-rules.md"
       exit 1
     fi
-    rules_bundle_add "$DEPT_RULES" project
+    CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
     log "Appending department lead rules: ${DEPT_RULES}"
   fi
 fi
@@ -2885,7 +2130,7 @@ if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
 elif [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
   SCREENCAP_SKILL="${SCRIPT_DIR}/screencapture-l3-skill.md"
   if [ -f "$SCREENCAP_SKILL" ] && [ -r "$SCREENCAP_SKILL" ]; then
-    rules_bundle_add "$SCREENCAP_SKILL" launcher
+    CLAUDE_ARGS+=(--append-system-prompt-file "$SCREENCAP_SKILL")
     log "Appending L3 screencapture skill: ${SCREENCAP_SKILL}"
   else
     log "WARNING: L3 screencapture skill missing at ${SCREENCAP_SKILL} — screencapture skill not loaded"
@@ -2893,68 +2138,6 @@ elif [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
 else
   log "L3 screencapture skill disabled via LEAD_DISABLE_SCREENCAPTURE_SKILL=1"
 fi
-
-# ── FLY-1402: one immutable per-process rules bundle ─────────────────────────
-# The CLI currently keeps only the final repeated --append-system-prompt-file.
-# Materialize after every role/project/launcher selection has run, then append
-# exactly one target. Legacy mode remains a loud, explicit compatibility valve.
-if [ "$IS_EXTERNAL_ROLE" = true ]; then
-  RULES_BUNDLE_ROLE="external"
-elif [ "$IS_COMPANION_ROLE" = true ]; then
-  RULES_BUNDLE_ROLE="companion"
-elif [ "$IS_COS_ROLE" = true ]; then
-  RULES_BUNDLE_ROLE="cos"
-else
-  RULES_BUNDLE_ROLE="dept"
-fi
-
-_RULES_BUNDLE_COMMITTED=0
-RULES_BUNDLE_PATH=""
-RULES_BUNDLE_SHA=""
-RULES_BUNDLE_GENERATION_NONCE=""
-RULES_BUNDLE_STATE_DIR="${HOME}/.flywheel/lead-rules-bundles"
-# Consumed by _rules_bundle_write_receipt in the sourced bundle library.
-# shellcheck disable=SC2034
-RULES_BUNDLE_RECEIPT_PATH="${RULES_BUNDLE_STATE_DIR}/${PROJECT_NAME}-${LEAD_ID}.active.json"
-
-# Compute the launchd body identity once for filename, receipt, and cleanup.
-RULES_BUNDLE_PROCESS_START="$(LC_ALL=C ps -p "$$" -o lstart= 2>/dev/null || true)"
-LEAD_LEASE_SUPERVISOR_START="$RULES_BUNDLE_PROCESS_START"
-if [ -n "$RULES_BUNDLE_PROCESS_START" ]; then
-  _rules_bundle_generation="$$-lstart-$(_rules_bundle_start_hash "$RULES_BUNDLE_PROCESS_START")"
-else
-  RULES_BUNDLE_GENERATION_NONCE="$(_rules_bundle_random_nonce)"
-  if [ -z "$RULES_BUNDLE_GENERATION_NONCE" ]; then
-    log "FATAL: could not generate rules-bundle generation nonce"
-    exit 1
-  fi
-  _rules_bundle_generation="$$-nonce-${RULES_BUNDLE_GENERATION_NONCE}"
-fi
-
-if [ "$RULES_BUNDLE_MODE" = "bundle" ]; then
-  RULES_BUNDLE_PATH="${RULES_BUNDLE_STATE_DIR}/${PROJECT_NAME}-${LEAD_ID}.${_rules_bundle_generation}.md"
-  if ! _rules_bundle_result="$(rules_bundle_materialize \
-    "$RULES_BUNDLE_PATH" "$RULES_BUNDLE_ROLE" "$LEAD_ID" "$PROJECT_NAME")" \
-    || [ "$_rules_bundle_result" != "$RULES_BUNDLE_PATH" ]; then
-    log "FATAL: failed to materialize Lead rules bundle at ${RULES_BUNDLE_PATH}"
-    _rules_bundle_uncommitted_cleanup
-    exit 1
-  fi
-  RULES_BUNDLE_SHA="$(sed -n 's/^RULES_BUNDLE_SHA=\([^ ]*\) FILES=.*/\1/p' "$RULES_BUNDLE_PATH" | head -1)"
-  if [ -z "$RULES_BUNDLE_SHA" ]; then
-    log "FATAL: materialized rules bundle is missing its sentinel"
-    _rules_bundle_uncommitted_cleanup
-    exit 1
-  fi
-  CLAUDE_ARGS+=(--append-system-prompt-file "$RULES_BUNDLE_PATH")
-  log "Appending consolidated rules bundle: ${RULES_BUNDLE_PATH} (${#RULES_BUNDLE_FILES[@]} files)"
-  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
-    trap _rules_bundle_uncommitted_cleanup EXIT
-  fi
-else
-  log "WARNING: running LEGACY last-one-wins mode, rules NOT bundled (FLYWHEEL_LEAD_RULES_BUNDLE=legacy)"
-fi
-unset _rules_bundle_generation _rules_bundle_result
 
 # ════════════════════════════════════════════════════════════════
 # FLY-142 PR 1.2: Vendor-neutral Agent Team transport wiring
@@ -2993,7 +2176,7 @@ elif command -v agent-team-transport >/dev/null 2>&1; then
 
   # Source vendor-supplied env vars (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS etc.).
   # These are exported into the launcher shell; `_launch_claude` propagates
-  # them into its explicit child environment.
+  # them into the tmux pane via env_args (see below).
   #
   # Codex r1 PR 1.2 MEDIUM: capture output FIRST and check exit status before
   # eval. `eval "$(false)"` does not propagate failure under `set -e`, so a
@@ -3071,13 +2254,13 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════
-# Layer 2: Launch
+# Layer 2: Recovery Loop
 # ════════════════════════════════════════════════════════════════
 
 # FLY-231 dry-run: CLAUDE_ARGS + env + MCP are now fully assembled. Emit the
-# structured launch plan and exit before bootstrap and child launch — zero
-# production side effects (tests isolate HOME so the
-# identity/.mcp.json writes above land in a throwaway dir).
+# structured launch plan and exit BEFORE the supervisor loop, PID file, bootstrap,
+# and any tmux launch — zero production side effects (tests isolate HOME so the
+# manifest/identity/.mcp.json writes above land in a throwaway dir).
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
   log "DRY-RUN: emitting launch plan (no tmux / no bootstrap / no launch)"
   _launch_claude "${CLAUDE_ARGS[@]}" --session-id "DRY-RUN-SESSION"
@@ -3091,7 +2274,7 @@ fi
 # (Cass→Simba, 2026-06-16). Here each Lead resolves its OWN authoritative bot id
 # (token → Discord /users/@me), publishes it to a shared registry, and unions
 # every registered peer id into its own allowBots — idempotent, atomic, and
-# self-healing on every restart. Runs once before the child launch; the
+# self-healing on every restart. Runs ONCE before the supervisor loop; the
 # dry-run path above already exited, so the launch-plan sentinel stays byte-compat.
 # Best-effort (`|| true`): a provisioning failure must never abort a Lead launch.
 # No-op unless this Lead is a roundtable member AND the cross-dept channel env is
@@ -3120,7 +2303,7 @@ fi
 # the fork plugin supports per-group patterns). CoS / core-less / core-no-CoS
 # (joycon) → gateNonCoS false → no-op (byte-compat). Best-effort (`|| true`): a
 # provisioning failure must never abort a Lead launch. Runs after the FLY-282
-# access.json seeding (access.json exists by now) and before the child launch.
+# access.json seeding (access.json exists by now) and before the supervisor loop.
 if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
   _cg_cli="${SCRIPT_DIR}/../dist/core-room-gate-cli.js"
   _cg_apply="${SCRIPT_DIR}/apply-core-room-mention-gate.sh"
@@ -3162,160 +2345,186 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
   fi
 fi
 
-# FLY-2076: provision the one no-mention Alerts seat after the shared access
-# reconciliation steps. Best-effort and loud: helper emits one fixed-shape line
-# for every success/skip path and never suppresses stderr.
-_alert_duty_helper="${SCRIPT_DIR}/lead-duty-provision.sh"
-if [ -f "$_alert_duty_helper" ]; then
-  # shellcheck source=lead-duty-provision.sh
-  source "$_alert_duty_helper" || true
-else
-  unset FLYWHEEL_ALERT_DUTY_TOKEN
-  log "FLY-2076: alert duty provisioning helper missing ($_alert_duty_helper) — skip"
-fi
+# GEO-285: Crash recovery with exponential backoff.
+# - Fresh start: generate UUID → bootstrap → save → claude --session-id
+# - Resume: read session ID → claude --resume (no bootstrap)
+# - Crash recovery: backoff → restart
+# - Resume failure: retry-before-delete (3 consecutive quick exits → delete session file)
+# - Graceful shutdown: SIGINT/SIGTERM → forward to Claude child → wait → exit loop
 
-# FLY-1663: launchd-native carrier. This is the complete lifecycle of one body
-# invocation: choose resume/fresh once, run one Claude child, persist one exit
-# receipt, then close this private server. launchd owns every later restart.
-LEAD_LEASE_KEY=""
-LEAD_LEASE_GENERATION=""
-LEAD_LEASE_DEGRADED=""
-LEAD_LEASE_HOLD_REASON=""
-LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+CRASH_COUNT=0
+BACKOFF_SECONDS=(5 15 30 60 60 60)
+RESTART_COUNT=0
+RESUME_FAIL_COUNT=0
+RESUME_FAIL_THRESHOLD=3
 
-_lead_identity_alert() {
-  local kind="$1" title="$2" body="$3"
-  [ -x "$LEAD_ALERT_SH" ] || return 0
-  "$LEAD_ALERT_SH" \
-    --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-    --kind "$kind" --severity severe --title "$title" --body "$body" \
-    || true
-}
+# FLY-20: Write PID file for auto-restart process management
+PID_DIR="${HOME}/.flywheel/pids"
+PID_FILE="${PID_DIR}/${PROJECT_NAME}-${LEAD_ID}.pid"
+mkdir -p "$PID_DIR"
+echo $$ > "$PID_FILE"
+log "PID file written: ${PID_FILE} (PID $$)"
 
-# FLY-1708: a Lead identity owns its in-flight batches across body generations.
-# Run only immediately before the v2 child fork; dry-run and HOLD paths never
-# consume a retry generation.
-_adopt_inflight_before_launch() {
-  local output="" rc=0
-  if [ -z "${FLYWHEEL_COMM_CLI:-}" ] || [ ! -f "$FLYWHEEL_COMM_CLI" ]; then
-    log "WARNING: flywheel-comm unavailable; in-flight adoption skipped"
-    return 0
-  fi
-  output="$(node "$FLYWHEEL_COMM_CLI" adopt-inflight \
-    --recipient "$LEAD_ID" --kind lead 2>&1)" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    log "WARNING: in-flight adoption failed (exit ${rc}): ${output}"
-  elif [ -n "$output" ]; then
-    log "In-flight adoption: ${output}"
-  fi
-  return 0
-}
+log "Supervisor starting (recovery loop enabled)"
+log "Session ID file: ${SESSION_ID_FILE}"
 
-# shellcheck source=lib/lead-body-receipt.sh
-source "${SCRIPT_DIR}/lib/lead-body-receipt.sh"
-
-# FLY-1697: establish the body generation before consuming a session decision
-# or launching Claude. A HOLD retries in place so launchd does not churn cmux.
-_v2_identity_backoff=3
-_v2_identity_rc=0
-_v2_hold_streak=0
-_v2_prev_hold_reason=""
-while :; do
-  _v2_identity_rc=0
-  lead_identity_v2_acquire_bind \
-    "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START" \
-    || _v2_identity_rc=$?
-  [ "$_v2_identity_rc" -eq 2 ] || break
-  if [ "$LEAD_LEASE_HOLD_REASON" = "$_v2_prev_hold_reason" ]; then
-    _v2_hold_streak=$((_v2_hold_streak + 1))
-  else
-    _v2_hold_streak=1
-    _v2_prev_hold_reason="$LEAD_LEASE_HOLD_REASON"
-  fi
-  _v2_alert_kind="$(lead_identity_v2_hold_alert_kind \
-    "$LEAD_LEASE_HOLD_REASON" "$_v2_hold_streak")"
-  if [ -n "$_v2_alert_kind" ]; then
-    _lead_identity_alert "$_v2_alert_kind" \
-      "Lead identity held before launch" \
-      "${PROJECT_NAME}/${LEAD_ID} is held before launch: ${LEAD_LEASE_HOLD_REASON}."
-  fi
-  log "Lead identity HOLD (${LEAD_LEASE_HOLD_REASON}); retrying in ${_v2_identity_backoff}s"
-  interruptible_sleep "$_v2_identity_backoff"
+while true; do
+  # ── Check shutdown flag ───────────────────────────────────
   if [ "$SHOULD_EXIT" -ne 0 ]; then
-    log "Shutdown requested during identity hold — exiting body."
-    exit 0
-  fi
-  [ "$_v2_identity_backoff" -ge 30 ] \
-    || _v2_identity_backoff=$((_v2_identity_backoff * 2))
-  [ "$_v2_identity_backoff" -le 30 ] || _v2_identity_backoff=30
-done
-if [ "$_v2_identity_rc" -eq 1 ]; then
-  log "WARNING: Lead lease store unavailable; launching degraded without a generation claim"
-  _lead_identity_alert lead_lease_store_broken \
-    "Lead lease store unavailable" \
-    "${PROJECT_NAME}/${LEAD_ID} could not acquire its identity lease; launch is degraded and receipt settlement remains fail-closed."
-fi
-
-  _pre_resolve_lead_model_decision
-  if ! lead_session_prepare; then
-    log "FATAL: Lead context resume gate could not establish launch authority"
-    exit 1
+    log "Shutdown flag set — exiting supervisor."
+    break
   fi
 
-  if [ "$_v2_is_resume" = true ]; then
-    log "Resuming session ${_v2_session_id} (one-shot v2 body)"
-    _v2_launch_args=("${CLAUDE_ARGS[@]}" --resume "$_v2_session_id")
+  CLAUDE_EXIT=0
+  PROCESS_START_TS=$(date +%s)  # Per-process time (for crash classification)
+  RESTART_COUNT=$((RESTART_COUNT + 1))
+  IS_RESUME=0
+
+  if [ -f "$SESSION_ID_FILE" ]; then
+    # ── Resume existing session ───────────────────────────
+    IS_RESUME=1
+    SESSION_ID=$(cat "$SESSION_ID_FILE")
+    log "[restart #${RESTART_COUNT}] Resuming session ${SESSION_ID}..."
+    log "(To force fresh start: rm ${SESSION_ID_FILE})"
+
+    # Final SIGTERM gate — must be right before fork to close the race window
+    if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
+    _launch_claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID"
   else
-    _v2_session_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-    log "Fresh session ${_v2_session_id} (one-shot v2 body)"
+    # ── Fresh start ───────────────────────────────────────
+    SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    log "[restart #${RESTART_COUNT}] Fresh start with session ${SESSION_ID}"
+
+    # Bootstrap only on fresh start — resumed sessions already have context.
+    # FLY-231: companion skips the engineering bootstrap (it carries
+    # "## Bootstrap — Lead" / sessions / Runner questions — engineering-toned
+    # content that pollutes a companion persona; the persona itself is injected via
+    # --agent identity.md and survives compaction). The global PostCompact hook is
+    # separately gated by the FLYWHEEL_LEAD_COMPANION pane marker.
     if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ]; then
       send_bootstrap
     elif [ "$IS_EXTERNAL_ROLE" = true ]; then
-      log "External: skipping engineering bootstrap"
+      log "External: skipping engineering bootstrap (persona via --agent agent.md; no Bridge access)"
     else
-      log "Companion: skipping engineering bootstrap"
+      log "Companion: skipping engineering bootstrap (persona via --agent identity.md)"
     fi
-    _v2_session_tmp="${SESSION_ID_FILE}.tmp.$$"
-    (umask 077 && printf '%s\n' "$_v2_session_id" > "$_v2_session_tmp") \
-      && mv "$_v2_session_tmp" "$SESSION_ID_FILE" \
-      || { rm -f "$_v2_session_tmp"; log "FATAL: failed to persist session identity"; exit 1; }
-    _v2_launch_args=("${CLAUDE_ARGS[@]}" --session-id "$_v2_session_id")
+
+    # Check shutdown flag after bootstrap (sleep may have been interrupted)
+    if [ "$SHOULD_EXIT" -ne 0 ]; then
+      log "Shutdown during bootstrap — exiting supervisor."
+      break
+    fi
+
+    # Final SIGTERM gate — right before fork. cleanup() now exits the trap,
+    # so signals after this point terminate the script immediately.
+    if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
+    # Launch in tmux window, write session file after — avoids orphan session ID if
+    # SIGTERM arrives between gate and launch.
+    _launch_claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID"
+    # Write session file only after successful launch — no orphan on SIGTERM
+    echo "$SESSION_ID" > "$SESSION_ID_FILE"
   fi
 
-  if ! _rules_bundle_commit_once; then
-    log "FATAL: failed to commit active Lead rules receipt"
-    exit 1
+  # FLY-109: Start background dev-channels dialog poller. capture-pane is
+  # ANSI-proof (unlike expect which fails on Ink TUI escape codes).
+  # Only poll when dev-channels flag is active.
+  if [ "$INBOX_MCP_ENABLED" = "true" ] && [ -n "${LEAD_WINDOW_ID:-}" ]; then
+    _poll_dev_channels_dialog "$LEAD_WINDOW_ID" "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
+    _DIALOG_POLLER_PID=$!
   fi
 
-  CLAUDE_EXIT=1
-  _v2_started_at="$(date +%s)"
-  _v2_launch_rc=0
-  # FLY-1679: the v2 _launch_claude blocks in `wait` for the whole Claude
-  # lifetime, so the dev-channels auto-confirm poller must already be running
-  # when the child paints the dialog. It uses the same INBOX_MCP_ENABLED gate
-  # as the launch arguments and addresses the private pane directly.
-  _V2_DIALOG_POLLER_PID=""
-  if _dev_channels_flag_active; then
-    _poll_dev_channels_dialog_v2 "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
-    _V2_DIALOG_POLLER_PID=$!
-  fi
-  _adopt_inflight_before_launch
-  _launch_claude "${_v2_launch_args[@]}" || _v2_launch_rc=$?
-  _v2_reap_dialog_poller
-  if [ "$_v2_launch_rc" -ne 0 ]; then
-    CLAUDE_EXIT="$_v2_launch_rc"
-  fi
-  _v2_duration=$(( $(date +%s) - _v2_started_at ))
-  _v2_receipt_dir="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/lead-resume"
-  _v2_receipt_file="${_v2_receipt_dir}/${PROJECT_NAME}-${LEAD_ID}.json"
-  if ! lead_body_write_receipt \
-    "$_v2_receipt_file" "${PROJECT_NAME}/${LEAD_ID}" "$_v2_session_id" \
-    "$CLAUDE_EXIT" "$_v2_duration" "$_v2_is_resume" "$SESSION_ID_FILE"; then
-    log "WARNING: failed to persist Lead exit receipt: $_v2_receipt_file"
+  # FLY-88: Wait for tmux window to complete.
+  _wait_tmux_window
+
+  # Clean up dialog poller if still running
+  if [ -n "${_DIALOG_POLLER_PID:-}" ]; then
+    kill "$_DIALOG_POLLER_PID" 2>/dev/null || true
+    wait "$_DIALOG_POLLER_PID" 2>/dev/null || true
+    _DIALOG_POLLER_PID=""
   fi
 
-  # Primary shutdown path. TMUX was injected by this private server into %0.
-  # The pane-exited hook is an independent fallback if this body is SIGKILLed.
-  _v2_exit="$CLAUDE_EXIT"
-  tmux kill-server 2>/dev/null || true
-  exit "$_v2_exit"
+  # DURATION = this process's runtime (for crash classification / backoff)
+  DURATION=$(( $(date +%s) - PROCESS_START_TS ))
+
+  # ── Check shutdown flag (may have been set during Claude's run) ──
+  if [ "$SHOULD_EXIT" -ne 0 ]; then
+    log "Shutdown signal received — exiting supervisor. (Claude exit code: ${CLAUDE_EXIT})"
+    break
+  fi
+
+  # ── Classify exit reason ──────────────────────────────────
+  if [ "$CLAUDE_EXIT" -eq 0 ]; then
+    # Normal exit (Claude exited cleanly, but without shutdown signal).
+    # This can happen if Claude's session ends normally.
+    log "Claude exited normally (code 0) after ${DURATION}s. Restarting..."
+    CRASH_COUNT=0
+    # Brief cooldown to prevent hot-loop if Claude keeps exiting immediately
+    sleep 2
+    continue
+  fi
+
+  # FLY-83: blocked-prompt classification (rate_limit / login_expired /
+  # permission_blocked) used to live here as case statements driven by
+  # expect-wrapper sentinel exit codes. After FLY-109 replaced expect with the
+  # capture-pane dialog poller, Claude no longer exits with sentinel codes —
+  # the Bridge-side LeadWatchdog (packages/teamlead/src/LeadWatchdog.ts)
+  # now classifies blocked patterns directly from capture-pane output and
+  # fires the same alerts via LeadAlertNotifier (which shares claims.db
+  # with scripts/lead-alert.sh below for the crash-loop path).
+  LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+
+  # Non-zero exit = crash or resume failure
+  CRASH_COUNT=$((CRASH_COUNT + 1))
+  log "Claude crashed (exit code ${CLAUDE_EXIT}) after ${DURATION}s. Crash count: ${CRASH_COUNT}"
+
+  # Resume failure heuristic: retry-before-delete.
+  # Only applies to resume path (IS_RESUME=1). Quick exit (<10s) on resume
+  # MAY indicate session corruption, but could also be a transient fault.
+  # Delete session file only after RESUME_FAIL_THRESHOLD consecutive failures.
+  if [ "$IS_RESUME" -eq 1 ] && [ "$DURATION" -lt 10 ]; then
+    RESUME_FAIL_COUNT=$((RESUME_FAIL_COUNT + 1))
+    log "Quick exit on resume (${DURATION}s) — possible failure (${RESUME_FAIL_COUNT}/${RESUME_FAIL_THRESHOLD})."
+    if [ "$RESUME_FAIL_COUNT" -ge "$RESUME_FAIL_THRESHOLD" ]; then
+      log "Consecutive resume failures reached threshold. Deleting session file for fresh start."
+      rm -f "$SESSION_ID_FILE"
+      RESUME_FAIL_COUNT=0
+    fi
+  else
+    # Successful run (>10s) or fresh start — reset resume failure count
+    RESUME_FAIL_COUNT=0
+  fi
+
+  # Reset crash count if Claude ran for a meaningful duration (>60s).
+  # This prevents crash count from accumulating across unrelated failures.
+  if [ "$DURATION" -gt 60 ]; then
+    CRASH_COUNT=1
+  fi
+
+  # Exponential backoff
+  BACKOFF_IDX=$((CRASH_COUNT - 1))
+  if [ "$BACKOFF_IDX" -ge ${#BACKOFF_SECONDS[@]} ]; then
+    BACKOFF_IDX=$(( ${#BACKOFF_SECONDS[@]} - 1 ))
+  fi
+  BACKOFF=${BACKOFF_SECONDS[$BACKOFF_IDX]}
+
+  if [ "$CRASH_COUNT" -ge 5 ]; then
+    log "WARNING: ${CRASH_COUNT} consecutive crashes. Check Claude CLI health."
+    # FLY-83: Fire crash_loop alert once per day per (project, lead) via the
+    # default daily signature in lead-alert.sh. Repeated escalations within
+    # the same day collapse to one Discord notification (the body still
+    # carries the up-to-date crash count for context).
+    if [ -x "$LEAD_ALERT_SH" ]; then
+      "$LEAD_ALERT_SH" \
+        --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+        --kind crash_loop --severity severe \
+        --title "Lead crash-looping" \
+        --body "Claude CLI has crashed ${CRASH_COUNT} times today. Last exit code: ${CLAUDE_EXIT}. Check ~/.flywheel/logs/lead-${LEAD_ID}-startup.log + the Lead's tmux pane for the failure mode (rate-limit / login-expired / config error)." \
+        || log "WARNING: lead-alert.sh returned non-zero"
+    fi
+  fi
+
+  log "Waiting ${BACKOFF}s before restart..."
+  interruptible_sleep "$BACKOFF"
+done
+
+log "Supervisor stopped. Total restarts: ${RESTART_COUNT}"

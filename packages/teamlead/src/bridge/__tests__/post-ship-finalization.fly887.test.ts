@@ -9,7 +9,7 @@ import { DirectiveExecutor } from "../../DirectiveExecutor.js";
 import { StateStore } from "../../StateStore.js";
 import { commDbPathForProject } from "../commdb-path.js";
 import {
-	makeFinalizeWorkflowPhaseRoles,
+	makeFinalizeThreeStagePhases,
 	runPostShipFinalization,
 } from "../post-ship-finalization.js";
 
@@ -52,7 +52,6 @@ function seed(
 		status: string;
 		chat_thread_role: string;
 		session_role: string;
-		workflow_node_id?: string;
 	},
 ) {
 	store.upsertSession({
@@ -62,39 +61,10 @@ function seed(
 		status: o.status,
 		session_role: o.session_role,
 		chat_thread_role: o.chat_thread_role,
-		workflow_node_id: o.workflow_node_id,
 	});
 }
 
-function bindActorToRun(
-	store: StateStore,
-	input: { executionId: string; runId: string; nodeId: string },
-): void {
-	const db = (
-		store as unknown as {
-			db: { run(sql: string, params?: unknown[]): void };
-		}
-	).db;
-	db.run(
-		`INSERT INTO workflow_actor
-		   (execution_id, project_name, issue_id, role, created_at)
-		 VALUES (?, 'flywheel', 'FLY-1', ?, '2026-08-24T00:00:00.000Z')`,
-		[input.executionId, input.nodeId],
-	);
-	db.run(
-		`INSERT INTO workflow_execution_binding
-		   (activation_id, execution_id, run_id, node_id, attempt, mode, bound_at)
-		 VALUES (?, ?, ?, ?, 1, 'spawn', '2026-08-24T00:00:00.000Z')`,
-		[
-			`activation:${input.runId}:${input.executionId}`,
-			input.executionId,
-			input.runId,
-			input.nodeId,
-		],
-	);
-}
-
-describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
+describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 	it("closes parked design + implement + qa (→ completed), deletes TURN", async () => {
 		const { store, transitionOpts } = await makeStore();
 		seed(store, {
@@ -123,7 +93,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 		db.grantTurn("FLY-1", "q", "qa", 1_700_000_000_000);
 		db.close();
 
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
 		await finalize("FLY-1", "flywheel");
 
 		expect(store.getSession("d")?.status).toBe("completed");
@@ -147,7 +117,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			chat_thread_role: "qa",
 			session_role: "qa",
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
 		await finalize("FLY-1", "flywheel");
 
 		// completed is terminal (no FSM transition) — the observable proof that
@@ -171,77 +141,10 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			status: "awaiting_review",
 			chat_thread_role: "main",
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
 		await expect(finalize("FLY-2", "flywheel")).resolves.toBeUndefined();
 		// the main session is untouched
 		expect(store.getSession("main-1")?.status).toBe("awaiting_review");
-	});
-
-	it("closes only workflow-bound main actors attributed to the current land run", async () => {
-		const { store, transitionOpts } = await makeStore();
-		for (const [executionId, workflowNodeId] of [
-			["generic-current", "execute"],
-			["review-current", "review"],
-			["generic-old-run", "execute"],
-		] as const) {
-			seed(store, {
-				execution_id: executionId,
-				status: "ship_parked",
-				chat_thread_role: "main",
-				session_role: "main",
-				workflow_node_id: workflowNodeId,
-			});
-		}
-		seed(store, {
-			execution_id: "ordinary-main",
-			status: "ship_parked",
-			chat_thread_role: "main",
-			session_role: "main",
-		});
-		bindActorToRun(store, {
-			executionId: "generic-current",
-			runId: "run-current",
-			nodeId: "execute",
-		});
-		bindActorToRun(store, {
-			executionId: "review-current",
-			runId: "run-current",
-			nodeId: "review",
-		});
-		bindActorToRun(store, {
-			executionId: "generic-old-run",
-			runId: "run-old",
-			nodeId: "execute",
-		});
-
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
-		await finalize("FLY-1", "flywheel", undefined, "run-current");
-
-		expect(store.getSession("generic-current")?.status).toBe("completed");
-		expect(store.getSession("review-current")?.status).toBe("completed");
-		expect(store.getSession("generic-old-run")?.status).toBe("ship_parked");
-		expect(store.getSession("ordinary-main")?.status).toBe("ship_parked");
-	});
-
-	it("fails closed for workflow-bound main actors when run authority is absent", async () => {
-		const { store, transitionOpts } = await makeStore();
-		seed(store, {
-			execution_id: "generic",
-			status: "ship_parked",
-			chat_thread_role: "main",
-			session_role: "main",
-			workflow_node_id: "execute",
-		});
-		bindActorToRun(store, {
-			executionId: "generic",
-			runId: "run-current",
-			nodeId: "execute",
-		});
-
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
-		await finalize("FLY-1", "flywheel");
-
-		expect(store.getSession("generic")?.status).toBe("ship_parked");
 	});
 
 	// FLY-887 founder-visibility real-machine QA (Finding B): the status line
@@ -269,7 +172,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			statusesAtRefreshTime.push(store.getSession("i")?.status);
 			expect(issueId).toBe("FLY-1");
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(
+		const finalize = makeFinalizeThreeStagePhases(
 			store,
 			transitionOpts,
 			refreshPhaseStatusLine,
@@ -291,7 +194,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 		const refreshPhaseStatusLine = vi.fn(async () => {
 			throw new Error("discord boom");
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(
+		const finalize = makeFinalizeThreeStagePhases(
 			store,
 			transitionOpts,
 			refreshPhaseStatusLine,
@@ -308,7 +211,7 @@ describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 			chat_thread_role: "design",
 			session_role: "design",
 		});
-		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
+		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
 		await expect(finalize("FLY-1", "flywheel")).resolves.toBeUndefined();
 		expect(store.getSession("d")?.status).toBe("completed");
 	});
@@ -390,11 +293,11 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 		expect(archivedEvent?.source).toBe("bridge.post-ship-finalization");
 	});
 
-	it("Discord-verified archived thread: ZERO PATCH + truthful already_archived audit", async () => {
+	it("already-archived thread: ZERO Discord PATCH + non-failure audit (idempotent no-op success)", async () => {
 		const { store } = await makeStore();
 		seedShipped(store, "exec-s2", "FLY-11");
 		store.upsertChatThread("t-s2", "ch-eng", "FLY-11", "tadashi");
-		// Local history alone is not proof; Discord still reports the thread archived.
+		// Archived earlier (e.g. by the close cascade); Annie may have re-opened it.
 		store.markChatThreadArchived("t-s2");
 		const archiveFn = vi.fn();
 		const removeUserFn = vi.fn();
@@ -412,16 +315,7 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 				projects: [PROJECT],
 				archiveFn,
 				removeUserFn,
-				fetchImpl: vi.fn().mockResolvedValue(
-					new Response(
-						JSON.stringify({
-							id: "t-s2",
-							name: "fly-11",
-							thread_metadata: { archived: true },
-						}),
-						{ status: 200 },
-					),
-				) as unknown as typeof fetch,
+				fetchImpl: okFetch(),
 			},
 		);
 
@@ -442,7 +336,7 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 });
 
 describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {
-	it("calls finalizeWorkflowPhaseRoles BEFORE removeCleanWorktree", async () => {
+	it("calls finalizeThreeStagePhases BEFORE removeCleanWorktree", async () => {
 		const { store } = await makeStore();
 		// A shipped QA session so the atomic claim + resolveLead path have a row.
 		seed(store, {
@@ -452,7 +346,7 @@ describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {
 			session_role: "qa",
 		});
 		const order: string[] = [];
-		const finalizeWorkflowPhaseRoles = vi.fn(async () => {
+		const finalizeThreeStagePhases = vi.fn(async () => {
 			order.push("finalizePhases");
 		});
 		const removeCleanWorktree = vi.fn(async () => {
@@ -468,53 +362,11 @@ describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {
 			{
 				store,
 				projects: [],
-				finalizeWorkflowPhaseRoles,
+				finalizeThreeStagePhases,
 				removeCleanWorktree,
 			},
 		);
-		expect(finalizeWorkflowPhaseRoles).toHaveBeenCalledWith(
-			"FLY-1",
-			"flywheel",
-		);
+		expect(finalizeThreeStagePhases).toHaveBeenCalledWith("FLY-1", "flywheel");
 		expect(order).toEqual(["finalizePhases", "removeWorktree"]);
-	});
-
-	it("forwards exact run authority to workflow-bound main finalization", async () => {
-		const { store } = await makeStore();
-		store.createWorkflowRun({
-			runId: "run-current",
-			issueId: "FLY-1",
-			projectName: "flywheel",
-			claimsReadEnrolled: true,
-		});
-		seed(store, {
-			execution_id: "q",
-			status: "completed",
-			chat_thread_role: "qa",
-			session_role: "qa",
-		});
-		const finalizeWorkflowPhaseRoles = vi.fn(async () => {});
-
-		await runPostShipFinalization(
-			{
-				executionId: "q",
-				runId: "run-current",
-				issueId: "FLY-1",
-				projectName: "flywheel",
-				sessionStatus: "completed",
-			},
-			{
-				store,
-				projects: [],
-				finalizeWorkflowPhaseRoles,
-			},
-		);
-
-		expect(finalizeWorkflowPhaseRoles).toHaveBeenCalledWith(
-			"FLY-1",
-			"flywheel",
-			undefined,
-			"run-current",
-		);
 	});
 });

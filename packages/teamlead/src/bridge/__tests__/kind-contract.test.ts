@@ -12,13 +12,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { ALERT_EVENT_TYPES } from "../../LeadAlertNotifier.js";
 import {
-	ALERT_EVENT_TYPES,
-	INFORMATIONAL_KINDS,
-} from "../../LeadAlertNotifier.js";
-import { QUOTA_MONITOR_MANUAL_TICKET_KINDS } from "../AlertChannelHub.js";
-import { bodyFor, titleFor } from "../alert-kind-copy.js";
-import {
+	escalatesAtEnqueue,
 	KIND_CONTRACTS,
 	type KindContract,
 	validateKindContracts,
@@ -31,70 +27,10 @@ import {
 const FLEET_KINDS = [
 	"swap_pressure_high",
 	"tmux_server_lost",
-	"tmux_hold",
-	"tmux_split_brain",
 	"bridge_abnormal_exit",
 	"infra_bot_down",
 	"zombie_session_backlog",
 ] as const;
-
-const QUOTA_MONITOR_KINDS = [
-	"account_switched",
-	"machine_account_conflict",
-	"model_cap_switched",
-	"model_cap_unknown",
-	"model_cap_persistent_unknown",
-	"model_bench_malformed",
-	"quota_choice",
-	"quota_switch_confirmation",
-	"account_switch_degraded",
-	"quota_no_target",
-	"quota_blocked_recovered",
-	"quota_read_blind",
-	"account_switch_failed",
-	"account_identity_mismatch",
-	"quota_revive_stuck",
-	"quota_monitor_down",
-] as const;
-
-const QUOTA_INFORMATIONAL_KINDS = new Set([
-	"account_switched",
-	"model_cap_switched",
-	"model_cap_unknown",
-	"quota_switch_confirmation",
-	"quota_blocked_recovered",
-	"workflow_route_input_rejected",
-	"flag_scan_failed",
-	"flag_scan_handoff",
-	"flag_scan_no_clock",
-]);
-const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
-
-const REVIEW_GOVERNANCE_KINDS = [
-	"review_advisory_pass",
-	"review_ruling_recorded",
-	"review_ruling_disputed",
-	"review_ruling_notify_failed",
-] as const;
-
-const LEAD_IDENTITY_KINDS = [
-	"lead_dual_active",
-	"lead_dual_active_sensor_degraded",
-	"lead_lease_store_broken",
-	"lead_lease_bypass_used",
-	"lead_lease_would_block",
-	"lead_lease_control_broken",
-	"lead_identity_source_broken",
-	"lead_backend_drift",
-] as const;
-
-const CMUX_SYNC_KINDS = [
-	"cmux_cleanup",
-	"cmux_watcher_stalled",
-	"tmux_rescue_hold",
-] as const;
-
-const DISCORD_PLUGIN_KINDS = ["discord_plugin_integrity_failed"] as const;
 
 describe("FLY-1082 kind contract (Task 1.1)", () => {
 	it("every kind in the union has a contract entry (runtime exhaustiveness)", () => {
@@ -106,20 +42,12 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
-	it("the fleet kinds are in the union with the planned contracts", () => {
+	it("the 5 fleet kinds are in the union with the planned contracts", () => {
 		for (const kind of FLEET_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
 		}
 		expect(KIND_CONTRACTS.swap_pressure_high.arc).toBe("auto");
 		expect(KIND_CONTRACTS.tmux_server_lost.arc).toBe("auto");
-		expect(KIND_CONTRACTS.tmux_hold).toMatchObject({
-			owner: "claude",
-			arc: "human_by_design",
-		});
-		expect(KIND_CONTRACTS.tmux_split_brain).toMatchObject({
-			owner: "founder_direct",
-			arc: "human_by_design",
-		});
 		expect(KIND_CONTRACTS.bridge_abnormal_exit.arc).toBe("auto");
 		expect(KIND_CONTRACTS.infra_bot_down).toMatchObject({
 			owner: "cross_by_provider",
@@ -131,144 +59,6 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 			owner: "claude",
 			arc: "none_escalate",
 			remediationRef: "FLY-1066",
-		});
-	});
-
-	it("FLY-1182 quota-monitor kinds have explicit no-ARC contracts and quota choice stays human-owned", () => {
-		for (const kind of QUOTA_MONITOR_KINDS) {
-			expect(ALERT_EVENT_TYPES).toContain(kind);
-			if (kind === "quota_choice") {
-				expect(KIND_CONTRACTS[kind]).toEqual({
-					owner: "founder_direct",
-					arc: "human_by_design",
-				});
-			} else {
-				expect(KIND_CONTRACTS[kind]).toEqual({
-					owner: "claude",
-					arc: "human_by_design",
-				});
-			}
-		}
-	});
-
-	it("FLY-1252 quota bypass is actionable, Claude-owned, and human-by-design", () => {
-		for (const kind of QUOTA_GUARD_KINDS) {
-			expect(ALERT_EVENT_TYPES).toContain(kind);
-			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
-				arc: "human_by_design",
-			});
-			expect(INFORMATIONAL_KINDS.has(kind)).toBe(false);
-		}
-	});
-
-	it("FLY-1402 legacy rules loading is a Claude-owned human audit event", () => {
-		expect(ALERT_EVENT_TYPES).toContain("rules_bundle_legacy");
-		expect(
-			(KIND_CONTRACTS as Record<string, KindContract>).rules_bundle_legacy,
-		).toEqual({
-			owner: "claude",
-			arc: "human_by_design",
-		});
-	});
-
-	it("FLY-1570 keeps legacy chase kinds human-only", () => {
-		for (const kind of [
-			"pane_hash_stuck",
-			"runner_stuck_unhandled",
-			"runner_throttle_stalled",
-		] as const) {
-			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
-				arc: "human_by_design",
-			});
-		}
-	});
-
-	it("FLY-2118 gives orphan panes one deterministic Claw-owned alert contract", () => {
-		expect(ALERT_EVENT_TYPES).toContain("orphan_pane");
-		expect(
-			(KIND_CONTRACTS as Record<string, KindContract>).orphan_pane,
-		).toEqual({
-			owner: "claude",
-			arc: "human_by_design",
-		});
-		const registry = ownerRegistryFromEnv({
-			FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID: "111111111111111111",
-			FLYWHEEL_INFRA_BOT_USER_ID: "222222222222222222",
-		} as NodeJS.ProcessEnv);
-		expect(
-			resolveTicketOwner(
-				"orphan_pane" as Parameters<typeof resolveTicketOwner>[0],
-				"unknown",
-				registry,
-			),
-		).toEqual({
-			kind: "infra_bot",
-			side: "claude",
-			userId: "111111111111111111",
-		});
-		expect(titleFor("orphan_pane" as Parameters<typeof titleFor>[0])).toBe(
-			"Runner pane has no owner",
-		);
-		expect(
-			bodyFor("orphan_pane" as Parameters<typeof bodyFor>[0], "ignored"),
-		).toContain("owner index");
-	});
-
-	it("FLY-1364 cmux/rescue kinds have the exact approved contracts", () => {
-		for (const kind of CMUX_SYNC_KINDS) {
-			expect(ALERT_EVENT_TYPES).toContain(kind);
-			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
-				arc: "human_by_design",
-			});
-		}
-		expect(INFORMATIONAL_KINDS.has("cmux_cleanup")).toBe(false);
-		expect(INFORMATIONAL_KINDS.has("tmux_rescue_hold")).toBe(false);
-	});
-
-	it("FLY-1676 routes Discord fork integrity failures to a human-owned ticket", () => {
-		for (const kind of DISCORD_PLUGIN_KINDS) {
-			expect(ALERT_EVENT_TYPES).toContain(kind);
-			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
-				arc: "human_by_design",
-			});
-			expect(INFORMATIONAL_KINDS.has(kind)).toBe(false);
-		}
-	});
-
-	it("routes review governance audit events to a human-owned contract", () => {
-		for (const kind of REVIEW_GOVERNANCE_KINDS) {
-			expect(ALERT_EVENT_TYPES).toContain(kind);
-			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
-				arc: "human_by_design",
-			});
-		}
-	});
-
-	it("keeps the frozen root-only notice kinds informational", () => {
-		expect(INFORMATIONAL_KINDS).toEqual(QUOTA_INFORMATIONAL_KINDS);
-	});
-
-	it("FLY-1182 explicitly classifies every actionable quota kind as a manual daemon-state ticket", () => {
-		expect(QUOTA_MONITOR_MANUAL_TICKET_KINDS).toEqual(
-			new Set(
-				QUOTA_MONITOR_KINDS.filter(
-					(kind) => !QUOTA_INFORMATIONAL_KINDS.has(kind),
-				),
-			),
-		);
-	});
-
-	it("M5 migration phase one keeps legacy usage_limit ARC intact", () => {
-		expect(KIND_CONTRACTS.usage_limit).toEqual({
-			owner: "cross_by_provider",
-			arc: "auto",
-			remediationRef:
-				"account-switch repair (FLY-696, gated FLYWHEEL_ACCOUNT_SELF_HEAL)",
 		});
 	});
 
@@ -300,6 +90,19 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 			},
 		};
 		expect(() => validateKindContracts(doctored)).toThrow(/pane_hash_stuck/);
+	});
+
+	it("escalatesAtEnqueue: exactly the none_escalate kinds (legacy special case + zombie)", () => {
+		// Legacy: runner_lead_pending_unhandled landed directly ESCALATED before
+		// this contract existed (infra-alert-wiring special case) — the contract
+		// must reproduce that, and add ONLY zombie_session_backlog.
+		const expected = new Set([
+			"runner_lead_pending_unhandled",
+			"zombie_session_backlog",
+		]);
+		for (const kind of ALERT_EVENT_TYPES) {
+			expect(escalatesAtEnqueue(kind), kind).toBe(expected.has(kind));
+		}
 	});
 
 	it("contract owner agrees with resolveTicketOwner for EVERY kind (no table↔route drift)", () => {
@@ -366,20 +169,6 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		return new Set((m as RegExpMatchArray)[1].replace(/\)$/, "").split("|"));
 	}
 
-	function shellInformationalKinds(): Set<string> {
-		const here = dirname(fileURLToPath(import.meta.url));
-		const script = readFileSync(
-			join(here, "../../../../../scripts/lead-alert.sh"),
-			"utf-8",
-		);
-		const m = script.match(/^INFORMATIONAL_KINDS="([a-z_ ]*)"$/m);
-		expect(
-			m,
-			"could not locate INFORMATIONAL_KINDS mirror in lead-alert.sh",
-		).not.toBeNull();
-		return new Set((m as RegExpMatchArray)[1].split(/\s+/).filter(Boolean));
-	}
-
 	it("every shell-allowlisted kind (minus grandfathered) is in the TS union", () => {
 		const union = new Set<string>(ALERT_EVENT_TYPES);
 		for (const kind of shellAllowlist()) {
@@ -391,93 +180,10 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		}
 	});
 
-	it("all FLY-1309 kinds exist on both the TS and shell faces", () => {
-		const allow = shellAllowlist();
-		for (const kind of LEAD_IDENTITY_KINDS) {
-			expect(ALERT_EVENT_TYPES).toContain(kind);
-			expect(
-				allow.has(kind),
-				`FLY-1309 kind "${kind}" missing from shell allowlist`,
-			).toBe(true);
-		}
-	});
-
-	it("all FLY-1364 kinds exist on both the TS and shell faces", () => {
-		const allow = shellAllowlist();
-		for (const kind of CMUX_SYNC_KINDS) {
-			expect(ALERT_EVENT_TYPES).toContain(kind);
-			expect(
-				allow.has(kind),
-				`FLY-1364 kind "${kind}" missing from shell allowlist`,
-			).toBe(true);
-		}
-	});
-
-	// FLY-1929: the generic guard above only asserts shell -> TS union, so a kind
-	// added to the union but FORGOTTEN in lead-alert.sh compiles, ships, and then
-	// dies at runtime with `unknown --kind`. Verified by mutation: deleting the
-	// shell arm leaves every other assertion in this file green. Hence an explicit
-	// both-faces assertion, in the same style as the FLY-1309/FLY-1364 families.
-	it("FLY-1929 host_voucher_incident exists on both faces with an honest no-ARC contract", () => {
-		const allow = shellAllowlist();
-		expect(ALERT_EVENT_TYPES).toContain("host_voucher_incident");
-		expect(
-			allow.has("host_voucher_incident"),
-			'FLY-1929 kind "host_voucher_incident" missing from lead-alert.sh allowlist',
-		).toBe(true);
-		const contract = KIND_CONTRACTS.host_voucher_incident;
-		expect(contract.owner).toBe("claude");
-		// There is no executable remediation: the containment action restarts an
-		// Apple LaunchDaemon and is root- plus founder-gated. Marking it "auto"
-		// would make this table lie.
-		expect(contract.arc).toBe("human_by_design");
-		// One kind carries BOTH sources (pressure + panic); they are distinguished
-		// in the body and the dedup signature, not by a second kind.
-		expect(titleFor("host_voucher_incident")).toMatch(/voucher/i);
-		expect(bodyFor("host_voucher_incident", "")).toMatch(/ecosystemanalyticsd/);
-	});
-
-	it("FLY-1501 restart-storm hold is present on both faces with a human investigation contract", () => {
-		expect(ALERT_EVENT_TYPES).toContain("restart_storm_hold");
-		expect(shellAllowlist()).toContain("restart_storm_hold");
-		expect(KIND_CONTRACTS).toMatchObject({
-			restart_storm_hold: {
-				owner: "claude",
-				arc: "human_by_design",
-			},
-		});
-	});
-
 	it("the shell leg can emit the fleet kinds (bridge_abnormal_exit is load-bearing)", () => {
 		const allow = shellAllowlist();
 		for (const kind of FLEET_KINDS) {
 			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
 		}
-	});
-
-	it("the shell leg can emit every quota-monitor kind", () => {
-		const allow = shellAllowlist();
-		for (const kind of QUOTA_MONITOR_KINDS) {
-			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
-		}
-	});
-
-	it("the shell leg can emit the quota-guard bypass audit kind", () => {
-		const allow = shellAllowlist();
-		for (const kind of QUOTA_GUARD_KINDS) {
-			expect(allow.has(kind), `shell allowlist missing "${kind}"`).toBe(true);
-		}
-	});
-
-	it("TS and shell informational-kind mirrors stay exactly in sync", () => {
-		expect(shellInformationalKinds()).toEqual(INFORMATIONAL_KINDS);
-	});
-
-	it("registers work-kind input reminders as Claude-owned informational notices", () => {
-		expect(KIND_CONTRACTS.workflow_route_input_rejected).toEqual({
-			owner: "claude",
-			arc: "human_by_design",
-		});
-		expect(INFORMATIONAL_KINDS.has("workflow_route_input_rejected")).toBe(true);
 	});
 });

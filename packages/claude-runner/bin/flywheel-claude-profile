@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 # Single-quoted blocks below are JavaScript source for node -e.
 # FLY-696 M1/⑤ (C1): machine-level Claude account rotation over the macOS
 # Keychain — the switch executor's `applyProfile`/`readActiveProfile` backend.
 #
@@ -28,7 +27,7 @@
 #     strands us (unlike a partition-list/trusted-app provision, which is lost
 #     on recreation — verified).
 #   - Same interprocess lock as the Node switch executor (withMkdirLock —
-#     mkdir + unique holder token, dead-PID stale-break, unlink+rmdir release) on
+#     mkdir + holder marker {pid,at}, 120s stale-break, rm -rf release) on
 #     $FLYWHEEL_CLAUDE_ACCOUNTS_LOCK so bash and Node never interleave.
 #
 # Env overrides (tests inject a fake security bin; real-machine QA points at a
@@ -40,36 +39,7 @@
 #   FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT  item account   ($USER)
 #   FLYWHEEL_CLAUDE_KEYCHAIN          keychain path  (empty = default search list)
 #   FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS   lock timeout   (30000)
-#   FLYWHEEL_CLAUDE_PS_BIN            process probe  (/bin/ps; tests may override)
 set -euo pipefail
-
-COMMAND="${1:-}"
-TRAMPOLINE_NODE="${FLYWHEEL_NODE_BIN:-node}"
-# A manual mutation must own a dedicated process group. macOS exposes setsid(2)
-# but no setsid executable, so a tiny Node trampoline creates the group and
-# forwards terminal cancellation to the whole mutation tree. The automatic
-# adapter already starts this script detached and sets delegated-lock metadata.
-case "$COMMAND" in
-  use|next|capture|reconcile)
-    if [[ -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" && "${FLYWHEEL_PROFILE_GROUP_LEADER:-}" != "1" ]]; then
-      export FLYWHEEL_PROFILE_GROUP_LEADER=1
-      exec "$TRAMPOLINE_NODE" --input-type=module -e '
-        import { spawn } from "node:child_process";
-        const [file, ...args] = process.argv.slice(1);
-        const child = spawn(file, args, { detached: true, stdio: "inherit", env: { ...process.env, FLYWHEEL_NODE_BIN: process.execPath } });
-        const forward = (signal) => { if (child.pid) { try { process.kill(-child.pid, signal); } catch {} } };
-        process.on("SIGINT", () => forward("SIGINT"));
-        process.on("SIGTERM", () => forward("SIGTERM"));
-        child.once("error", (error) => { process.stderr.write(`${error.message}\n`); process.exit(1); });
-        child.once("exit", (code, signal) => {
-          if (typeof code === "number") process.exit(code);
-          process.stderr.write(`flywheel-claude-profile terminated by ${signal ?? "unknown signal"}\n`);
-          process.exit(1);
-        });
-      ' "${BASH_SOURCE[0]}" "$@"
-    fi
-    ;;
-esac
 
 POOL_DIR="${FLYWHEEL_CLAUDE_PROFILES_DIR:-$HOME/.flywheel/claude-profiles}"
 LOCK_DIR="${FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:-$HOME/.flywheel/claude-accounts.lock}"
@@ -78,15 +48,7 @@ SERVICE="${FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
 ACCT="${FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT:-$USER}"
 KEYCHAIN="${FLYWHEEL_CLAUDE_KEYCHAIN:-}"
 LOCK_TIMEOUT_MS="${FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS:-30000}"
-PS_BIN="${FLYWHEEL_CLAUDE_PS_BIN:-/bin/ps}"
 ACTIVE_FILE="$POOL_DIR/.active"
-IDENTITY_ENDPOINT="${FLYWHEEL_PROFILE_IDENTITY_ENDPOINT:-https://api.anthropic.com/api/oauth/profile}"
-CURL_BIN="${FLYWHEEL_PROFILE_CURL_BIN:-curl}"
-IDENTITY_MAP_FILE="${FLYWHEEL_PROFILE_IDENTITY_MAP:-$POOL_DIR/identity-map.json}"
-AUDIT_LOG="${FLYWHEEL_PROFILE_AUDIT_LOG:-$HOME/.flywheel/claude-profile-audit.log}"
-ACCOUNTS_STORE="${FLYWHEEL_CLAUDE_ACCOUNTS_PATH:-$HOME/.flywheel/claude-accounts.json}"
-TRANSITION_JOURNAL="${FLYWHEEL_CLAUDE_TRANSITION_JOURNAL:-$HOME/.flywheel/claude-account-transition.json}"
-NODE_BIN="${FLYWHEEL_NODE_BIN:-node}"
 
 # FLY-865: display-identity sync. `use` writes the target account's oauthAccount
 # block into ~/.claude.json (the source `/status` reads email/org from) so a new
@@ -115,11 +77,6 @@ Commands:
   use <name>      Swap the machine Keychain to pool profile <name>
   next            Rotate to the next pool profile (sorted round-robin)
   capture <name>  Save the CURRENT Keychain credential into pool/<name>/
-  reconcile       Verify the live Keychain identity and repair its pool slot
-  anchor <name> --migrate|--replace [--evidence /absolute/identity-map.json]
-                  Create or explicitly replace a slot identity anchor
-  verify <name> --source keychain|pool
-                  Probe a credential and compare it with its identity anchor
 EOF
   exit 1
 }
@@ -129,75 +86,6 @@ fail() { echo "Error: $*" >&2; exit 1; }
 # unavailable) so the Node switch executor can distinguish freshness failures
 # from other failures and drive the candidate loop / fail-closed accordingly.
 fail_code() { local code="$1"; shift; echo "Error: $*" >&2; exit "$code"; }
-
-# ------------------------------------------------------- append-only audit (FLY-1182)
-AUDIT_ENABLED=0
-AUDIT_CMD=""
-AUDIT_PROFILE=""
-AUDIT_SUMMARY="pending"
-AUDIT_DETAILS_JSON="null"
-
-audit_append() { # $1=phase $2=exit-code|null $3=summary
-  local phase="$1" exit_code="$2" summary="$3" actor="${FLYWHEEL_AUDIT_ACTOR:-ppid:$PPID}"
-  node -e '
-const { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, writeSync } = require("node:fs");
-const { dirname } = require("node:path");
-const [path, phase, exitRaw, cmd, profileRaw, summary, actor, detailsRaw] = process.argv.slice(1);
-const uid = process.getuid?.();
-if (uid === undefined) throw new Error("audit owner identity unavailable");
-mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-const validateStat = (stat) => {
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o777) !== 0o600)
-    throw new Error("unsafe audit file (must be same-owner regular 0600 file)");
-};
-if (existsSync(path)) validateStat(lstatSync(path));
-const flags = constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
-const fd = openSync(path, flags, 0o600);
-try {
-  const opened = fstatSync(fd);
-  validateStat(opened);
-  if (existsSync(path)) {
-    const named = lstatSync(path);
-    validateStat(named);
-    if (named.dev !== opened.dev || named.ino !== opened.ino) throw new Error("audit file changed during open");
-  }
-  const record = {
-    ts: new Date().toISOString(),
-    cmd,
-    profile: profileRaw || null,
-    phase,
-    probeSummary: summary,
-    actor,
-    actorTrust: "untrusted_hint",
-    exitCode: exitRaw === "null" ? null : Number(exitRaw),
-    details: JSON.parse(detailsRaw),
-  };
-  const line = `${JSON.stringify(record)}\n`;
-  const bytes = Buffer.byteLength(line);
-  if (writeSync(fd, line) !== bytes) throw new Error("short audit append");
-  fsyncSync(fd);
-} finally {
-  closeSync(fd);
-}
-' "$AUDIT_LOG" "$phase" "$exit_code" "$AUDIT_CMD" "$AUDIT_PROFILE" "$summary" "$actor" "$AUDIT_DETAILS_JSON"
-}
-
-begin_audit() { # $1=cmd $2=profile(optional) $3=summary
-  AUDIT_CMD="$1"
-  AUDIT_PROFILE="$2"
-  AUDIT_SUMMARY="$3"
-  audit_append entry null "$AUDIT_SUMMARY" || fail "cannot safely append entry audit to $AUDIT_LOG — refusing mutation"
-  AUDIT_ENABLED=1
-}
-
-set_anchor_audit_details() { # $1=old|null $2=new $3=artifact $4=mapSha $5=confirmation
-  AUDIT_DETAILS_JSON=$(node -e '
-const [oldRaw, newRaw, artifactId, identityMapSha256, confirmationReference] = process.argv.slice(1);
-const oldAnchor = oldRaw === "null" ? null : JSON.parse(oldRaw);
-const newAnchor = JSON.parse(newRaw);
-process.stdout.write(JSON.stringify({ oldAnchor, newAnchor, artifactId, identityMapSha256, confirmationReference }));
-' "$1" "$2" "$3" "$4" "$5") || AUDIT_DETAILS_JSON="null"
-}
 
 # Cross-platform stat (BSD/macOS `-f`, GNU/Linux `-c`) — CI runs Linux.
 # GNU treats `-f` as FILESYSTEM stat and exits 0 with junk for unknown
@@ -214,179 +102,40 @@ stat_num() { # $1 = bsd format, $2 = gnu format, $3 = path
 }
 stat_perms() { stat_num %Lp %a "$1"; }
 stat_mtime() { stat_num %m %Y "$1"; }
-process_start_time() {
-  "$PS_BIN" -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//' || true
-}
 
 # ---------------------------------------------------------------- lock (C5)
 # Byte-compatible with packages/teamlead/src/account-heal/mkdir-lock.ts:
-# atomic mkdir + UNIQUE holder.<pid>.<token> marker. Cooperative waiters never
-# steal from a live pid; dead/malformed holders are removed by unlinking only
-# the marker observed and then rmdir (never recursive deletion of a replacement).
+# atomic mkdir + holder JSON {pid,at(ms)}; stale = at older than 120s OR dead
+# pid (no-marker fallback: dir mtime older than 120s); release = rm -rf.
 now_ms() { echo $(( $(date +%s) * 1000 )); }
 
-find_holder_marker() {
-  local found="" candidate
-  if [[ -f "$LOCK_DIR/holder" ]]; then found="$LOCK_DIR/holder"; fi # legacy
-  for candidate in "$LOCK_DIR"/holder.*; do
-    [[ -f "$candidate" ]] || continue
-    [[ -z "$found" ]] || return 2 # ambiguous ownership → fail closed
-    found="$candidate"
-  done
-  [[ -n "$found" ]] || return 1
-  printf '%s' "$found"
-}
-
 lock_is_stale() {
-  local holder="" pid="" expected_start="" live_start="" mtime="" rc=0
-  holder=$(find_holder_marker 2>/dev/null) || rc=$?
-  [[ "$rc" -eq 2 ]] && return 1
-  if [[ -z "$holder" ]]; then
+  local holder="$LOCK_DIR/holder" pid="" at=""
+  if [[ ! -f "$holder" ]]; then
     local mtime
     mtime=$(stat_mtime "$LOCK_DIR") || return 0 # dir vanished → free
     [[ $(( $(date +%s) - mtime )) -gt 120 ]]
     return
   fi
   pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
-  if [[ -n "$pid" ]]; then
-    if kill -0 "$pid" 2>/dev/null; then
-      expected_start=$(sed -n 's/.*"processStartTime":"\([^"]*\)".*/\1/p' "$holder" 2>/dev/null || true)
-      if [[ -n "$expected_start" ]]; then
-        live_start=$(process_start_time "$pid")
-        [[ -n "$live_start" && "$live_start" != "$expected_start" ]] && return 0
-      fi
-      return 1
-    fi
+  at=$(sed -n 's/.*"at":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
+  if [[ -n "$at" && $(( $(now_ms) - at )) -gt 120000 ]]; then return 0; fi
+  if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
     # Byte-compat with mkdir-lock.ts isProcessAlive: EPERM = the process
     # EXISTS (just not ours) → alive, NOT stale. Only ESRCH (no such
     # process) breaks the lock.
     local err
     err=$(kill -0 "$pid" 2>&1 || true)
     case "$err" in
-      *[Nn]ot\ permitted*) return 1 ;; # alive (EPERM)
+      *[Nn]ot\ permitted*) : ;; # alive (EPERM)
       *) return 0 ;;             # dead (ESRCH) → stale
     esac
   fi
-  mtime=$(stat_mtime "$holder" 2>/dev/null || echo "")
-  [[ -n "$mtime" && $(( $(date +%s) - mtime )) -gt 120 ]]
-}
-
-break_stale_lock() {
-  local holder="" current="" claim="" rc=0
-  holder=$(find_holder_marker 2>/dev/null) || rc=$?
-  [[ "$rc" -eq 2 ]] && return 1
-  lock_is_stale || return 1
-  if [[ -n "$holder" ]]; then
-    current=$(find_holder_marker 2>/dev/null || true)
-    [[ "$current" == "$holder" ]] || return 1
-    # Atomically claim the exact marker while it is still inside LOCK_DIR. Until
-    # the claim is removed, rmdir cannot succeed and a successor directory cannot
-    # be installed. This avoids relying on inode uniqueness (Linux may immediately
-    # reuse a removed directory's inode).
-    claim="$LOCK_DIR/.stale-break.$$.$RANDOM"
-    mv "$holder" "$claim" 2>/dev/null || return 1
-    rm -f "$claim" 2>/dev/null || return 1
-  else
-    # A breaker killed after the atomic marker rename can leave its unique claim
-    # behind. Only reap regular files/symlinks in an already-proven-stale lock;
-    # unknown entry types remain fail-closed and are bounded by the deadline.
-    local orphan
-    for orphan in "$LOCK_DIR"/.stale-break.*; do
-      [[ -e "$orphan" || -L "$orphan" ]] || continue
-      [[ -f "$orphan" || -L "$orphan" ]] || return 1
-      rm -f -- "$orphan" 2>/dev/null || return 1
-    done
-  fi
-  rmdir "$LOCK_DIR" 2>/dev/null
+  return 1
 }
 
 LOCK_HELD=0
-DELEGATED_LOCK_ACCEPTED=0
-LOCK_MARKER=""
-LOCK_TOKEN=""
-
-make_lease_proof() { # <marker> <token>
-  "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({lockPath:process.argv[1],markerPath:process.argv[2],ownershipToken:process.argv[3]}))' \
-    "$LOCK_DIR" "$1" "$2"
-}
-
-validate_lease_proof() {
-  [[ -n "${FLYWHEEL_LEASE_PROOF:-}" ]] || return 1
-  FLYWHEEL_LEASE_PROOF_VALUE="$FLYWHEEL_LEASE_PROOF" "$NODE_BIN" --input-type=module - <<'NODE'
-import { readFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
-let proof;
-try { proof = JSON.parse(process.env.FLYWHEEL_LEASE_PROOF_VALUE ?? ""); }
-catch { process.exit(1); }
-if (!proof || typeof proof.lockPath !== "string" || typeof proof.markerPath !== "string" ||
-    typeof proof.ownershipToken !== "string" || proof.ownershipToken.length === 0 ||
-    dirname(proof.markerPath) !== proof.lockPath ||
-    !(basename(proof.markerPath).startsWith("holder.") || basename(proof.markerPath) === "holder")) process.exit(1);
-let marker;
-try { marker = JSON.parse(readFileSync(proof.markerPath, "utf8")); }
-catch { process.exit(1); }
-if (proof.ownershipToken.startsWith("legacy-pid:")) {
-  process.exit(String(marker?.pid) === proof.ownershipToken.slice("legacy-pid:".length) ? 0 : 1);
-}
-process.exit(marker?.token === proof.ownershipToken ? 0 : 1);
-NODE
-}
-
-lease_fence_or_fail() {
-  if ! validate_lease_proof; then
-    echo "FLYWHEEL_LOCK_LEASE_LOST accounts lock ownership changed" >&2
-    fail_code 39 "accounts lock lease/ownership lost — refusing shared mutation"
-  fi
-}
-
-lock_holder_pid() {
-  local holder
-  holder=$(find_holder_marker) || return 1
-  sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null
-}
-
-# Never delete a lock that another process replaced after we acquired it.
-release_lock() {
-  if [[ "$LOCK_HELD" -eq 1 ]]; then
-    local hpid="" token=""
-    if [[ -n "$LOCK_MARKER" && -f "$LOCK_MARKER" ]]; then
-      hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
-      token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
-    fi
-    if [[ "$hpid" == "$$" && "$token" == "$LOCK_TOKEN" ]]; then
-      # The unique path cannot name a replacement holder. rmdir succeeds only
-      # while the directory is empty, so an established successor is fenced.
-      rm -f "$LOCK_MARKER" 2>/dev/null || true
-      rmdir "$LOCK_DIR" 2>/dev/null || true
-    else
-      echo "Warning: refusing to release $LOCK_DIR after lock ownership changed" >&2
-    fi
-    LOCK_HELD=0
-    LOCK_MARKER=""
-    LOCK_TOKEN=""
-  fi
-}
-
-# Refresh an OWNED lease only. Delegated children deliberately leave the
-# parent's marker untouched; the Node holder renews its own lease.
-renew_lock() {
-  [[ "$LOCK_HELD" -eq 1 ]] || return 0
-  local hpid="" token=""
-  [[ -n "$LOCK_MARKER" && -f "$LOCK_MARKER" ]] || return 1
-  hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
-  token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$LOCK_MARKER" 2>/dev/null || true)
-  [[ "$hpid" == "$$" && "$token" == "$LOCK_TOKEN" ]] || return 1
-  # touch -c never creates our unique marker inside a replacement directory.
-  touch -c "$LOCK_MARKER" 2>/dev/null || return 1
-  [[ -f "$LOCK_MARKER" ]] || return 1
-}
-
-renew_lock_or_fail() {
-  if ! renew_lock || ! validate_lease_proof; then
-    echo "FLYWHEEL_LOCK_LEASE_LOST accounts lock ownership changed" >&2
-    fail_code 39 "accounts lock lease/ownership lost before commit — refusing switch"
-  fi
-}
+release_lock() { [[ "$LOCK_HELD" -eq 1 ]] && rm -rf "$LOCK_DIR" 2>/dev/null || true; }
 
 # FLY-865: the ~/.claude.json lock (mkdir mutex + mtime stale-steal + timeout),
 # byte-compatible with scripts/inject-linear-issue.sh:acquire_claude_lock so all
@@ -395,53 +144,17 @@ renew_lock_or_fail() {
 # read). Nesting order is always accounts-lock → claude-json-lock; inject/
 # teardown take ONLY the claude-json lock, so there is no deadlock cycle.
 CLAUDE_JSON_LOCK_HELD=0
-ACTIVE_CHILD_PID=""
-ACTIVE_TEMP_FILE=""
-ACTIVE_SECRET_TEMP=""
 release_claude_json_lock() {
   if [[ "$CLAUDE_JSON_LOCK_HELD" -eq 1 ]]; then
     rmdir "$CLAUDE_JSON_LOCK" 2>/dev/null || true
     CLAUDE_JSON_LOCK_HELD=0
   fi
 }
-stop_active_child() {
-  if [[ -n "$ACTIVE_CHILD_PID" ]]; then
-    # The display patch runs as the actual child process (not behind a shell
-    # subshell), so an abnormal shell exit can stop it before releasing the
-    # lock. KILL is intentional here: after SIGINT/SIGTERM no writer may keep
-    # mutating ~/.claude.json after the mutex has been released.
-    kill -KILL "$ACTIVE_CHILD_PID" 2>/dev/null || true
-    wait "$ACTIVE_CHILD_PID" 2>/dev/null || true
-    ACTIVE_CHILD_PID=""
-  fi
-  if [[ -n "$ACTIVE_TEMP_FILE" ]]; then
-    rm -f "$ACTIVE_TEMP_FILE" 2>/dev/null || true
-    ACTIVE_TEMP_FILE=""
-  fi
-  if [[ -n "$ACTIVE_SECRET_TEMP" ]]; then
-    rm -f "$ACTIVE_SECRET_TEMP" 2>/dev/null || true
-    ACTIVE_SECRET_TEMP=""
-  fi
-}
 # Release BOTH locks. Armed as a GLOBAL `trap cleanup_locks EXIT` below (before
 # any dispatch), so it fires on normal exit, set -e abort, and SIGINT/SIGTERM —
 # in delegated mode too (where acquire_lock returns before it could set a trap).
 # Each release no-ops when its *_HELD flag is 0.
-cleanup_locks() {
-  release_lock
-  release_claude_json_lock
-}
-
-finalize() {
-  local rc=$?
-  trap - EXIT
-  stop_active_child
-  if [[ "$AUDIT_ENABLED" -eq 1 ]]; then
-    audit_append exit "$rc" "$AUDIT_SUMMARY" >/dev/null 2>&1 || true
-  fi
-  cleanup_locks
-  exit "$rc"
-}
+cleanup_locks() { release_lock; release_claude_json_lock; }
 
 acquire_claude_json_lock() { # returns non-zero on timeout (caller warns, best-effort)
   local waited_ms=0 step_ms=100 max_ms=$(( CLAUDE_LOCK_WAIT_S * 1000 ))
@@ -481,53 +194,23 @@ acquire_lock() {
   # Anything else falls through to a normal acquire (fail-safe). Delegated mode
   # neither takes nor releases the lock (the parent owns it): LOCK_HELD stays 0
   # so release_lock never touches it.
-  if [[ -n "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" ]]; then
-    local hpid holder=""
-    holder=$(find_holder_marker 2>/dev/null || true)
-    hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
+  if [[ -n "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" && -f "$LOCK_DIR/holder" ]]; then
+    local hpid
+    hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$LOCK_DIR/holder" 2>/dev/null || true)
     if [[ -n "$hpid" && "$hpid" == "$FLYWHEEL_CLAUDE_LOCK_DELEGATED" && "$hpid" == "$PPID" ]] \
         && kill -0 "$hpid" 2>/dev/null; then
-      DELEGATED_LOCK_ACCEPTED=1
-      local delegated_token
-      delegated_token=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' "$holder" 2>/dev/null || true)
-      [[ -n "$delegated_token" ]] || delegated_token="legacy-pid:$hpid"
-      if [[ -z "${FLYWHEEL_LEASE_PROOF:-}" ]]; then
-        FLYWHEEL_LEASE_PROOF=$(make_lease_proof "$holder" "$delegated_token")
-        export FLYWHEEL_LEASE_PROOF
-      fi
-      lease_fence_or_fail
       return 0
     fi
   fi
   local deadline=$(( $(now_ms) + LOCK_TIMEOUT_MS ))
   mkdir -p "$(dirname "$LOCK_DIR")"
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    if lock_is_stale; then break_stale_lock || true; fi
+    if lock_is_stale; then rm -rf "$LOCK_DIR" 2>/dev/null || true; continue; fi
     [[ $(now_ms) -ge $deadline ]] && fail "timeout acquiring lock $LOCK_DIR"
     sleep 0.05
   done
-  LOCK_TOKEN="$$.$(now_ms).$RANDOM"
-  LOCK_MARKER="$LOCK_DIR/holder.$$.$LOCK_TOKEN"
-  local owner_start marker_written=0
-  owner_start=$(process_start_time "$$")
-  if [[ -n "$owner_start" ]]; then
-    if printf '{"pid":%d,"at":%d,"token":"%s","processStartTime":"%s"}' \
-      "$$" "$(now_ms)" "$LOCK_TOKEN" "$owner_start" > "$LOCK_MARKER"; then
-      marker_written=1
-    fi
-  else
-    if printf '{"pid":%d,"at":%d,"token":"%s"}' "$$" "$(now_ms)" "$LOCK_TOKEN" > "$LOCK_MARKER"; then
-      marker_written=1
-    fi
-  fi
-  if [[ "$marker_written" -ne 1 ]]; then
-    rm -f "$LOCK_MARKER" 2>/dev/null || true
-    rmdir "$LOCK_DIR" 2>/dev/null || true
-    fail "failed to create owned marker for lock $LOCK_DIR"
-  fi
   LOCK_HELD=1
-  FLYWHEEL_LEASE_PROOF=$(make_lease_proof "$LOCK_MARKER" "$LOCK_TOKEN")
-  export FLYWHEEL_LEASE_PROOF
+  printf '{"pid":%d,"at":%d}' "$$" "$(now_ms)" > "$LOCK_DIR/holder"
 }
 
 # ------------------------------------------------------------- pool hygiene
@@ -542,61 +225,6 @@ require_valid_name() {
     *[!A-Za-z0-9._-]* ) fail "profile name '$name' has characters outside [A-Za-z0-9._-] — refusing" ;;
     *..* ) fail "profile name '$name' contains '..' — refusing" ;;
   esac
-}
-
-# Non-exiting form for validation inside recovery predicates. Callers that are
-# still deciding whether state is safe must be able to return a typed failure
-# instead of letting `require_valid_name` terminate with the generic exit 1.
-valid_profile_label() {
-  local name="$1"
-  case "$name" in
-    ""|.*|*[!A-Za-z0-9._-]*|*..*) return 1 ;;
-  esac
-  return 0
-}
-
-# Pool slot directories participate in account identity, so recovery never
-# follows a symlink or trusts a directory owned by another uid.
-profile_slot_dir_safe() { # $1 = label
-  local name="$1" dir="$POOL_DIR/$1"
-  valid_profile_label "$name" || return 1
-  "$NODE_BIN" -e '
-const { lstatSync } = require("node:fs");
-const uid = process.getuid?.();
-if (uid === undefined) process.exit(1);
-for (const path of process.argv.slice(1)) {
-  let stat; try { stat = lstatSync(path); } catch { process.exit(1); }
-  if (stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o022) !== 0) process.exit(1);
-}
-' "$POOL_DIR" "$dir"
-}
-
-# Strict mutation-path reader. Unlike get_active(), this distinguishes a truly
-# absent marker (10) from an unsafe/unreadable/malformed one (11). Validation is
-# performed on raw bytes before stdout, so command substitution cannot erase a
-# trailing newline/NUL and accidentally turn malformed state into a valid name.
-read_active_marker_strict() {
-  "$NODE_BIN" -e '
-const { lstatSync, readFileSync } = require("node:fs");
-const path = process.argv[1];
-let stat;
-try { stat = lstatSync(path); }
-catch (error) { process.exit(error?.code === "ENOENT" ? 10 : 11); }
-const uid = process.getuid?.();
-if (uid === undefined || stat.isSymbolicLink() || !stat.isFile() || stat.uid !== uid || (stat.mode & 0o022) !== 0) process.exit(11);
-const bytes = readFileSync(path);
-const text = bytes.toString("utf8");
-if (!/^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/.test(text) || !bytes.equals(Buffer.from(text, "utf8"))) process.exit(11);
-process.stdout.write(text);
-' "$ACTIVE_FILE"
-}
-
-credential_value_ok() { # $1 = compact credential JSON
-  local secret="$1"
-  [[ -n "$secret" ]] || return 1
-  case "$secret" in "{"*) : ;; *) return 1 ;; esac
-  case "$secret" in *[[:space:]]*) return 1 ;; esac
-  return 0
 }
 
 require_pool_entry() { # $1 = name; refuses symlinks, requires an owner-only file
@@ -618,211 +246,7 @@ require_pool_entry() { # $1 = name; refuses symlinks, requires an owner-only fil
   esac
 }
 
-# ------------------------------------------------ identity proof (FLY-1182)
-# The OAuth access token is extracted from the compact credential on stdin and
-# passed to curl only through `--config -`; it never appears in process argv.
-identity_probe() { # $1 = compact credential JSON; stdout = "uuid<TAB>email"
-  local credential="$1" token response parsed
-  token=$(printf '%s' "$credential" | node -e '
-let raw=""; process.stdin.setEncoding("utf8");
-process.stdin.on("data", c => raw += c);
-process.stdin.on("end", () => {
-  try {
-    const value = JSON.parse(raw);
-    const token = value?.claudeAiOauth?.accessToken;
-    if (typeof token !== "string" || !/^[A-Za-z0-9._~+\/=\-]+$/.test(token)) process.exit(1);
-    process.stdout.write(token);
-  } catch { process.exit(1); }
-});
-') || return 88
-  [[ -n "$token" ]] || return 88
-  [[ -x "$CURL_BIN" ]] || command -v "$CURL_BIN" >/dev/null 2>&1 || return 88
-  response=$(
-    printf 'header = "Authorization: Bearer %s"\nheader = "anthropic-beta: oauth-2025-04-20"\n' "$token" |
-      "$CURL_BIN" --silent --show-error --fail --max-time 10 --config - "$IDENTITY_ENDPOINT" 2>/dev/null
-  ) || return 88
-  parsed=$(printf '%s' "$response" | node -e '
-let raw=""; process.stdin.setEncoding("utf8");
-process.stdin.on("data", c => raw += c);
-process.stdin.on("end", () => {
-  try {
-    const value = JSON.parse(raw);
-    const uuid = value?.account?.uuid;
-    const email = value?.account?.email;
-    if (typeof uuid !== "string" || uuid.length === 0 || typeof email !== "string" || email.length === 0) process.exit(1);
-    if (/[\u0000-\u001f\u007f]/.test(uuid) || /[\u0000-\u001f\u007f]/.test(email)) process.exit(1);
-    process.stdout.write(`${uuid}\t${email}`);
-  } catch { process.exit(1); }
-});
-') || return 88
-  [[ -n "$parsed" ]] || return 88
-  printf '%s' "$parsed"
-}
-
-read_identity_anchor() { # $1 = name; stdout = "uuid<TAB>email"
-  local name="$1" file="$POOL_DIR/$1/identity-anchor.json" perms owner current_uid
-  [[ -L "$file" ]] && return 87
-  [[ -f "$file" ]] || return 87
-  perms=$(stat_perms "$file") || return 87
-  case "$perms" in 600|400) : ;; *) return 87 ;; esac
-  owner=$(stat_num %u %u "$file") || return 87
-  current_uid=$(id -u)
-  [[ "$owner" == "$current_uid" ]] || return 87
-  node -e '
-const { readFileSync } = require("node:fs");
-try {
-  const value = JSON.parse(readFileSync(process.argv[1], "utf8"));
-  const keys = Object.keys(value).sort();
-  const expected = ["accountUuid", "anchoredAt", "anchoredBy", "confirmedBy", "email"].sort();
-  if (keys.length !== expected.length || keys.some((key, i) => key !== expected[i])) process.exit(1);
-  for (const key of expected) {
-    if (typeof value[key] !== "string" || value[key].length === 0 || /[\u0000-\u001f\u007f]/.test(value[key])) process.exit(1);
-  }
-  process.stdout.write(`${value.accountUuid}\t${value.email}`);
-} catch { process.exit(1); }
-' "$file" || return 87
-}
-
-redact_email() {
-  node -e '
-const email = process.argv[1] ?? "";
-const at = email.indexOf("@");
-if (at <= 0) process.stdout.write("***");
-else process.stdout.write(`${email[0]}***${email.slice(at)}`);
-' "$1"
-}
-
-identity_assert_value() { # $1=name $2=credential; stdout is a stable tab record
-  local name="$1" credential="$2" anchor observed expected_uuid expected_email observed_uuid observed_email
-  anchor=$(read_identity_anchor "$name") || {
-    printf 'untracked\tnull\tnull\tnull'
-    return 87
-  }
-  observed=$(identity_probe "$credential") || {
-    IFS=$'\t' read -r expected_uuid expected_email <<<"$anchor"
-    printf 'unavailable\t%s\tnull\tnull' "$expected_uuid"
-    return 88
-  }
-  IFS=$'\t' read -r expected_uuid expected_email <<<"$anchor"
-  IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
-  if [[ "$observed_uuid" == "$expected_uuid" && "$observed_email" == "$expected_email" ]]; then
-    printf 'match\t%s\t%s\t%s' "$expected_uuid" "$observed_uuid" "$observed_email"
-    return 0
-  fi
-  printf 'mismatch\t%s\t%s\t%s' "$expected_uuid" "$observed_uuid" "$observed_email"
-  return 86
-}
-
-emit_identity_drift() { # $1=reason $2=label $3=expectedUuid|null $4=observedEmail|null
-  local reason="$1" label="$2" expected="$3" observed_email="$4" redacted="null"
-  if [[ "$observed_email" != "null" ]]; then redacted=$(redact_email "$observed_email"); fi
-  node -e '
-const reason = process.argv[1];
-const label = process.argv[2];
-const expectedUuid = process.argv[3] === "null" ? null : process.argv[3];
-const observedEmailRedacted = process.argv[4] === "null" ? null : process.argv[4];
-process.stderr.write(`FLYWHEEL_ACTIVE_IDENTITY_DRIFT ${JSON.stringify({ version: 1, reason, label, expectedUuid, observedEmailRedacted })}\n`);
-' "$reason" "$label" "$expected" "$redacted"
-}
-
-read_identity_map_label() { # $1=label $2=map path; stdout = artifactId<TAB>email<TAB>sha256
-  local label="$1" file="$2" perms owner current_uid
-  [[ "$file" == /* ]] || return 1
-  [[ -L "$file" ]] && return 1
-  [[ -f "$file" ]] || return 1
-  perms=$(stat_perms "$file") || return 1
-  case "$perms" in 600|400) : ;; *) return 1 ;; esac
-  owner=$(stat_num %u %u "$file") || return 1
-  current_uid=$(id -u)
-  [[ "$owner" == "$current_uid" ]] || return 1
-  node -e '
-const { readFileSync } = require("node:fs");
-const { createHash } = require("node:crypto");
-const label = process.argv[2];
-try {
-  const bytes = readFileSync(process.argv[1]);
-  const value = JSON.parse(bytes.toString("utf8"));
-const rootKeys = Object.keys(value).sort();
-const expectedRoot = ["artifactId", "confirmedAt", "labels", "version"].sort();
-const labels = ["business", "personal", "personal1", "school", "shopping"];
-const canonicalEmails = {
-  business: "xrliannie.b@gmail.com",
-  personal: "xrliannie@gmail.com",
-  personal1: "xrliannie.1@gmail.com",
-  school: "xiaorongli2011@u.northwestern.edu",
-  shopping: "xrliannie.shopping@gmail.com",
-};
-  if (rootKeys.length !== expectedRoot.length || rootKeys.some((key, i) => key !== expectedRoot[i])) process.exit(1);
-  if (value.version !== 1 || typeof value.artifactId !== "string" || !value.artifactId || typeof value.confirmedAt !== "string" || !value.confirmedAt) process.exit(1);
-  if (!value.labels || typeof value.labels !== "object" || Array.isArray(value.labels)) process.exit(1);
-  const actualLabels = Object.keys(value.labels).sort();
-  if (actualLabels.length !== labels.length || actualLabels.some((key, i) => key !== labels.sort()[i])) process.exit(1);
-  for (const key of labels) {
-    if (value.labels[key] !== canonicalEmails[key] || /[\u0000-\u001f\u007f]/.test(value.labels[key])) process.exit(1);
-  }
-  if (!labels.includes(label)) process.exit(1);
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
-  process.stdout.write(`${value.artifactId}\t${value.labels[label]}\t${sha256}`);
-} catch { process.exit(1); }
-' "$file" "$label"
-}
-
-read_display_identity() { # stdout = uuid<TAB>email
-  [[ -L "$CLAUDE_JSON" ]] && return 1
-  [[ -f "$CLAUDE_JSON" ]] || return 1
-  node -e '
-const { readFileSync } = require("node:fs");
-try {
-  const value = JSON.parse(readFileSync(process.argv[1], "utf8"));
-  const identity = value.oauthAccount;
-  for (const key of ["accountUuid", "emailAddress", "organizationUuid", "organizationName"])
-    if (typeof identity?.[key] !== "string" || !identity[key]) process.exit(1);
-  if (/[\u0000-\u001f\u007f]/.test(identity.accountUuid) || /[\u0000-\u001f\u007f]/.test(identity.emailAddress)) process.exit(1);
-  process.stdout.write(`${identity.accountUuid}\t${identity.emailAddress}`);
-} catch { process.exit(1); }
-' "$CLAUDE_JSON"
-}
-
-write_identity_anchor() { # $1=name $2=uuid $3=email $4=confirmedBy
-  local name="$1" uuid="$2" email="$3" confirmed_by="$4" dir="$POOL_DIR/$1" file="$POOL_DIR/$1/identity-anchor.json"
-  [[ -L "$dir" || -L "$file" ]] && return 1
-  mkdir -p "$dir"
-  chmod 700 "$dir"
-  node -e '
-const { closeSync, constants, fsyncSync, openSync, renameSync, unlinkSync, writeSync } = require("node:fs");
-const { dirname } = require("node:path");
-const [file, accountUuid, email, confirmedBy, anchoredBy] = process.argv.slice(1);
-const tmp = `${file}.tmp.${process.pid}`;
-const value = { accountUuid, email, anchoredAt: new Date().toISOString(), anchoredBy, confirmedBy };
-let fd;
-try {
-  fd = openSync(tmp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-  writeSync(fd, `${JSON.stringify(value)}\n`);
-  fsyncSync(fd);
-  closeSync(fd); fd = undefined;
-  renameSync(tmp, file);
-  const dirFd = openSync(dirname(file), constants.O_RDONLY);
-  try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
-} finally {
-  if (fd !== undefined) closeSync(fd);
-  try { unlinkSync(tmp); } catch (error) { if (error?.code !== "ENOENT") throw error; }
-}
-' "$file" "$uuid" "$email" "$confirmed_by" "${FLYWHEEL_AUDIT_ACTOR:-manual:$PPID}"
-}
-
 # ------------------------------------------------------- keychain primitives
-require_credential_value() { # $1 = compact credential JSON
-  local secret="$1"
-  [[ -z "$secret" ]] && fail "empty credential — refusing to write"
-  case "$secret" in
-    "{"*) : ;;
-    *) fail "credential is not a JSON object — refusing to write" ;;
-  esac
-  case "$secret" in
-    *[[:space:]]*) fail "credential contains whitespace — refusing (security -i single-token rule)" ;;
-  esac
-}
-
 kc_read() { # → stdout: current item value (non-zero when item missing)
   if [[ -n "$KEYCHAIN" ]]; then
     "$SEC_BIN" find-generic-password -a "$ACCT" -s "$SERVICE" -w "$KEYCHAIN"
@@ -833,8 +257,14 @@ kc_read() { # → stdout: current item value (non-zero when item missing)
 
 kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i).
   local secret="$1"
-  require_credential_value "$secret"
-  lease_fence_or_fail
+  [[ -z "$secret" ]] && fail "empty credential — refusing to write"
+  case "$secret" in
+    "{"*) : ;;
+    *) fail "credential is not a JSON object — refusing to write" ;;
+  esac
+  case "$secret" in
+    *[[:space:]]*) fail "credential contains whitespace — refusing (security -i single-token rule)" ;;
+  esac
   # printf is a bash BUILTIN: the secret never appears in any process argv.
   if [[ -n "$KEYCHAIN" ]]; then
     printf 'add-generic-password -U -a "%s" -s "%s" -w %s "%s"\n' \
@@ -843,34 +273,6 @@ kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i
     printf 'add-generic-password -U -a "%s" -s "%s" -w %s\n' \
       "$ACCT" "$SERVICE" "$secret" | "$SEC_BIN" -i >/dev/null
   fi
-}
-
-kc_delete() { # Restore a previously missing item; no credential crosses argv.
-  if [[ -n "$KEYCHAIN" ]]; then
-    "$SEC_BIN" delete-generic-password -a "$ACCT" -s "$SERVICE" "$KEYCHAIN" >/dev/null
-  else
-    "$SEC_BIN" delete-generic-password -a "$ACCT" -s "$SERVICE" >/dev/null
-  fi
-}
-
-restore_keychain_preimage() { # $1 = previous value; $2 = 1 when item existed, 0 when proven absent
-  local previous="$1" existed="$2" restored="" delete_rc=0 read_rc=0
-  if [[ "$existed" -eq 1 ]]; then
-    kc_write "$previous" 2>/dev/null || return 1
-    restored=$(kc_read 2>/dev/null) || return 1
-    [[ "$restored" == "$previous" ]]
-    return
-  fi
-  # The destructive branch is legal only when the preimage read proved the
-  # item absent with security(1)'s not-found exit 44. A lock/read error must
-  # never be collapsed into "missing" and turned into a credential deletion.
-  kc_delete 2>/dev/null || delete_rc=$?
-  case "$delete_rc" in
-    0|44) : ;;
-    *) return 1 ;;
-  esac
-  kc_read >/dev/null 2>&1 || read_rc=$?
-  [[ "$read_rc" -eq 44 ]]
 }
 
 # ------------------------------------------------- freshness guard (FLY-871 R1)
@@ -892,18 +294,18 @@ default_freshness_bin() {
   [[ -x "$cand" ]] && printf '%s' "$cand"
 }
 
-# freshness_check <name> <active>: return 30 (target stale) / 31 (helper missing) /
+# freshness_guard <name> <active>: exit 30 (target stale) / 31 (helper missing) /
 # return 0 (fresh — the helper may have written a rotated credential back to the
 # pool). Keychain/.active are UNTOUCHED on 30/31 (the incident root-cure). The
 # guard runs unconditionally on `use`/`next` (manual + automatic) — plan §5: the
 # manual stale-interception is part of the fix and is on at all times.
-freshness_check() {
+freshness_guard() {
   local name="$1" active="$2"
   # Emergency HUMAN override. Honored ONLY on the manual path (NOT delegated-lock,
   # i.e. not the Bridge auto-switch): Codex R2#1 layer 2 — even if the env leaks
   # into the automatic path, delegated mode refuses it (the CLI also scrubs it,
   # layer 1). The name is deliberately alarming; use only with a human at the keys.
-  if [[ -n "${FLYWHEEL_CLAUDE_FRESHNESS_BYPASS:-}" && "$DELEGATED_LOCK_ACCEPTED" -eq 0 ]]; then
+  if [[ -n "${FLYWHEEL_CLAUDE_FRESHNESS_BYPASS:-}" && -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" ]]; then
     echo "Warning: FLYWHEEL_CLAUDE_FRESHNESS_BYPASS set — SKIPPING token freshness verification for '$name'. Emergency manual override; the switched-to token is NOT verified fresh and may strand live sessions if stale." >&2
     return 0
   fi
@@ -911,240 +313,21 @@ freshness_check() {
   [[ -z "$bin" ]] && bin="$(default_freshness_bin)"
   if [[ -z "$bin" || ! -x "$bin" ]]; then
     echo "FLYWHEEL_FRESHNESS_UNAVAILABLE $name" >&2
-    echo "Error: token freshness helper unavailable (looked for '${bin:-<none>}') — refusing to switch to a possibly-stale credential (fail-closed). Set FLYWHEEL_CLAUDE_FRESHNESS_BIN, or FLYWHEEL_CLAUDE_FRESHNESS_BYPASS=1 for an emergency manual override." >&2
-    return 31
+    fail_code 31 "token freshness helper unavailable (looked for '${bin:-<none>}') — refusing to switch to a possibly-stale credential (fail-closed). Set FLYWHEEL_CLAUDE_FRESHNESS_BIN, or FLYWHEEL_CLAUDE_FRESHNESS_BYPASS=1 for an emergency manual override."
   fi
   local rc=0
   "$bin" verify --name "$name" --active "$active" --pool "$POOL_DIR" || rc=$?
   case "$rc" in
     0) return 0 ;;
-    39)
-      echo "FLYWHEEL_LOCK_LEASE_LOST freshness write-back fenced" >&2
-      return 39
-      ;;
     30)
       echo "FLYWHEEL_TARGET_STALE $name" >&2
-      echo "Error: target account '$name' has a stale pooled credential (freshness refresh refused) — Keychain/.active unchanged" >&2
-      return 30
+      fail_code 30 "target account '$name' has a stale pooled credential (freshness refresh refused) — Keychain/.active unchanged"
       ;;
     *)
       echo "FLYWHEEL_FRESHNESS_UNAVAILABLE $name" >&2
-      echo "Error: freshness helper exited $rc for '$name' — refusing to switch (fail-closed)" >&2
-      return 31
+      fail_code 31 "freshness helper exited $rc for '$name' — refusing to switch (fail-closed)"
       ;;
   esac
-}
-
-# --------------------------------------------------------- live quota guard (FLY-1252)
-default_quota_guard_bin() {
-  local d cand
-  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 0
-  cand="$d/../../teamlead/bin/flywheel-claude-quota-guard"
-  [[ -x "$cand" ]] && printf '%s' "$cand"
-}
-
-default_lead_alert_bin() {
-  local d cand
-  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 0
-  cand="$d/../../../scripts/lead-alert.sh"
-  [[ -x "$cand" ]] && printf '%s' "$cand"
-}
-
-# Manual emergency bypasses are never silent. Alert delivery is best-effort so
-# an emergency recovery cannot be blocked by a broken Discord path.
-emit_quota_bypass_alert() {
-  local name="$1" bin="${FLYWHEEL_LEAD_ALERT_BIN:-}" epoch observed_at result="" rc=0
-  [[ -z "$bin" ]] && bin="$(default_lead_alert_bin)"
-  if [[ -z "$bin" || ! -x "$bin" ]]; then
-    echo "Warning: quota bypass alert helper unavailable; bypass remains visible only in this terminal" >&2
-    return 0
-  fi
-  epoch=$(date +%s)
-  observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  # launchd and other sparse callers may not have alert credentials in their
-  # environment. Load the shared .env inside a child shell, preserving the
-  # small alert-related process-env allowlist in memory. Never serialize the
-  # caller's exported environment (and its secrets) to a temporary file.
-  result=$(
-    env_file="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/.env"
-    preserve_names=(
-      HOME FLYWHEEL_STATE_DIR FLYWHEEL_ALERT_DEADLETTER_DIR
-      FLYWHEEL_ALERT_QUEUE_DIR FLYWHEEL_ALERT_RATE_PER_MIN
-      FLYWHEEL_ALERT_SENDER_TOKEN_ENV
-      FLYWHEEL_CLAIMS_DB FLYWHEEL_PROJECTS_FILE
-      FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID
-    )
-    sender_name="${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}"
-    if [[ "$sender_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      preserve_names+=("$sender_name")
-    fi
-    preserve_set=()
-    preserve_values=()
-    for preserve_name in "${preserve_names[@]}"; do
-      if [[ "${!preserve_name+x}" == "x" ]]; then
-        preserve_set+=(1)
-        preserve_values+=("${!preserve_name}")
-      else
-        preserve_set+=(0)
-        preserve_values+=("")
-      fi
-    done
-    if [[ -f "$env_file" ]]; then
-      set -a
-      # shellcheck source=/dev/null
-      source "$env_file" || true
-      set +a
-      for preserve_idx in "${!preserve_names[@]}"; do
-        if [[ "${preserve_set[$preserve_idx]}" -eq 1 ]]; then
-          export "${preserve_names[$preserve_idx]}=${preserve_values[$preserve_idx]}"
-        fi
-      done
-    fi
-    "$bin" \
-      --lead quota-monitor --project flywheel \
-      --kind quota_guard_bypassed --severity warning \
-      --title "Claude quota guard BYPASSED manually" \
-      --body "target=$name; at=$observed_at; pid=$$; manual emergency bypass of quota verification (FLYWHEEL_CLAUDE_QUOTA_BYPASS=1) — target quota NOT verified" \
-      --signature "quota-guard-bypass-$name-$epoch-$$" \
-      --strict-delivery 2>/dev/null
-  ) || rc=$?
-  case "$result" in
-    sent|queued_transient)
-      echo "Warning: quota bypass audit alert accepted ($result)" >&2
-      ;;
-    *) echo "Warning: quota bypass alert delivery was not confirmed (result=${result:-none}, rc=$rc)" >&2 ;;
-  esac
-  return 0
-}
-
-# quota_check <name>: 0 healthy, 32 definitely exhausted, 33 evidence
-# unavailable. Only an AUTHENTICATED delegated child may honor PREVERIFIED;
-# raw ambient env values do not establish trust. Legacy delegated callers that
-# lack PREVERIFIED retain their historical fail-open behavior for 33 only.
-quota_check() {
-  local name="$1" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0
-  if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 && "${FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED:-}" == "1" ]]; then
-    return 0
-  fi
-  if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 0 && "${FLYWHEEL_CLAUDE_QUOTA_BYPASS:-}" == "1" ]]; then
-    echo "Warning: FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 — BYPASSING live 5h/7d quota guard for '$name'. Emergency manual override; target quota is NOT verified." >&2
-    emit_quota_bypass_alert "$name"
-    return 0
-  fi
-  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
-  if [[ -z "$bin" || ! -x "$bin" ]]; then
-    rc=33
-  else
-    "$bin" check --name "$name" --pool "$POOL_DIR" --store "$ACCOUNTS_STORE" || rc=$?
-    case "$rc" in
-      0|32|33|39) : ;;
-      *) rc=33 ;;
-    esac
-  fi
-  case "$rc" in
-    0) return 0 ;;
-    39)
-      echo "FLYWHEEL_LOCK_LEASE_LOST quota projection fenced" >&2
-      return 39
-      ;;
-    32)
-      echo "FLYWHEEL_TARGET_QUOTA_EXHAUSTED $name" >&2
-      echo "Error: target account '$name' is exhausted in its live 5h or 7d quota window — Keychain/.active unchanged" >&2
-      return 32
-      ;;
-    33)
-      if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
-        echo "Warning: live quota evidence unavailable for '$name' in legacy delegated mode; proceeding for backward compatibility (set FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED=1 after an upstream live check)" >&2
-        return 0
-      fi
-      echo "FLYWHEEL_QUOTA_UNAVAILABLE $name" >&2
-      echo "Error: live quota evidence unavailable for '$name' — refusing manual switch (fail-closed). Set FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 only for an emergency manual override." >&2
-      return 33
-      ;;
-  esac
-}
-
-# Best-effort projection of the already-committed machine profile marker into
-# claude-accounts.json. Manual use/next own the shared lock here. Delegated Node
-# switching is already the store writer, so it must not double-bump generation.
-active_sync_store() {
-  local name="$1" force="${2:-}" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0
-  [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 && "$force" != "force" ]] && return 0
-  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
-  if [[ -z "$bin" || ! -x "$bin" ]]; then
-    echo "Warning: active account store sync helper unavailable after switching to '$name'; Keychain/.active remain committed" >&2
-    return 0
-  fi
-  lease_fence_or_fail
-  "$bin" active-sync --name "$name" --store "$ACCOUNTS_STORE" || rc=$?
-  [[ "$rc" -eq 39 ]] && return 39
-  if [[ "$rc" -ne 0 ]]; then
-    echo "Warning: active account store sync failed after switching to '$name' (rc=$rc); Keychain/.active remain committed" >&2
-  fi
-  return 0
-}
-
-active_sync_store_strict() {
-  local name="$1" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0 proof=""
-  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
-  [[ -n "$bin" && -x "$bin" ]] || return 47
-  proof=$("$NODE_BIN" -e 'process.stdout.write(JSON.stringify({email:process.argv[1],uuid:process.argv[2]}))' "$LIVE_IDENTITY_EMAIL" "$LIVE_IDENTITY_UUID") || return 47
-  lease_fence_or_fail
-  printf '%s' "$proof" | "$bin" active-sync-strict --name "$name" --store "$ACCOUNTS_STORE" --freshened || rc=$?
-  [[ "$rc" -eq 39 ]] && return 39
-  [[ "$rc" -eq 0 ]] || return 47
-  read_store_generation_for_active "$name" >/dev/null || return 47
-}
-
-emit_apply_freshened_report() { # <slot>
-  local name="$1" path="${FLYWHEEL_APPLY_REPORT_FILE:-}"
-  [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 && -n "$path" ]] || return 0
-  "$NODE_BIN" --input-type=module - "$path" "$name" "$LIVE_IDENTITY_EMAIL" "$LIVE_IDENTITY_UUID" <<'NODE'
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fstatSync,
-  fsyncSync,
-  lstatSync,
-  openSync,
-  renameSync,
-  unlinkSync,
-  writeSync,
-} from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
-import { randomUUID } from "node:crypto";
-
-const [path, name, email, uuid] = process.argv.slice(2);
-const uid = process.getuid?.();
-if (uid === undefined || !isAbsolute(path)) throw new Error("unsafe apply report path");
-const dir = dirname(path);
-const dirStat = lstatSync(dir);
-if (!dirStat.isDirectory() || dirStat.isSymbolicLink() || dirStat.uid !== uid || (dirStat.mode & 0o077) !== 0)
-  throw new Error("unsafe apply report directory");
-if (existsSync(path)) {
-  const stat = lstatSync(path);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o777) !== 0o600)
-    throw new Error("unsafe existing apply report");
-}
-const tmp = join(dir, `.apply-report-${randomUUID()}.tmp`);
-let fd;
-try {
-  fd = openSync(tmp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
-  const opened = fstatSync(fd);
-  if (!opened.isFile() || opened.uid !== uid || (opened.mode & 0o777) !== 0o600)
-    throw new Error("unsafe apply report temp file");
-  const body = JSON.stringify({ identityChecks: [], freshened: { name, identityProof: { email, uuid } } });
-  if (writeSync(fd, body) !== Buffer.byteLength(body)) throw new Error("short apply report write");
-  fsyncSync(fd);
-  closeSync(fd);
-  fd = undefined;
-  renameSync(tmp, path);
-} finally {
-  if (fd !== undefined) closeSync(fd);
-  try { unlinkSync(tmp); } catch {}
-}
-NODE
 }
 
 # capture_back <active> <value>: FLY-871 R1/C1 — before we overwrite the Keychain,
@@ -1166,331 +349,15 @@ capture_back() {
   case "$value" in
     *[[:space:]]*) echo "Warning: skipping capture-back for '$active' (value has whitespace)" >&2; return 0 ;;
   esac
-  local dir="$POOL_DIR/$active" file="$POOL_DIR/$active/.credentials.json" tmp=""
+  local dir="$POOL_DIR/$active" file="$POOL_DIR/$active/.credentials.json"
   [[ -L "$POOL_DIR" ]] && { echo "Warning: pool dir is a symlink — skipping capture-back" >&2; return 0; }
   [[ -L "$dir" ]] && { echo "Warning: profile dir $dir is a symlink — skipping capture-back" >&2; return 0; }
   [[ -d "$dir" ]] || { echo "Warning: active profile dir $dir missing — skipping capture-back for '$active'" >&2; return 0; }
   [[ -L "$file" ]] && { echo "Warning: credential file $file is a symlink — skipping capture-back" >&2; return 0; }
-  lease_fence_or_fail
-  tmp=$(umask 077; mktemp "$file.tmp.XXXXXX") || { echo "Warning: capture-back temp creation failed for '$active'" >&2; return 0; }
-  ACTIVE_SECRET_TEMP="$tmp"
-  printf '%s' "$value" > "$tmp" || { echo "Warning: capture-back write failed for '$active'" >&2; rm -f "$tmp" 2>/dev/null || true; ACTIVE_SECRET_TEMP=""; return 0; }
-  lease_fence_or_fail
-  mv "$tmp" "$file" 2>/dev/null || { echo "Warning: capture-back rename failed for '$active'" >&2; rm -f "$tmp" 2>/dev/null || true; ACTIVE_SECRET_TEMP=""; return 0; }
-  ACTIVE_SECRET_TEMP=""
+  ( umask 077; printf '%s' "$value" > "$file.tmp" ) || { echo "Warning: capture-back write failed for '$active'" >&2; return 0; }
+  mv "$file.tmp" "$file" 2>/dev/null || { echo "Warning: capture-back rename failed for '$active'" >&2; rm -f "$file.tmp" 2>/dev/null || true; return 0; }
   chmod 600 "$file" 2>/dev/null || true
   echo "Captured-back current credential for active profile '$active' before switch" >&2
-}
-
-# Strict recovery-only capture. Unlike capture_back(), every failed write is a
-# hard failure: stale-marker repair cannot claim success unless the live token
-# was durably placed in the uniquely verified slot. Exact rename avoids mv(1)'s
-# "move into directory" behavior if the destination changes type mid-flight.
-capture_live_credential_strict() { # <slot> <credential>
-  local name="$1" value="$2" dir="$POOL_DIR/$1" file="$POOL_DIR/$1/.credentials.json"
-  local tmp="" perms owner current_uid got=""
-  valid_profile_label "$name" || return 1
-  profile_slot_dir_safe "$name" || return 1
-  credential_value_ok "$value" || return 1
-  if [[ -e "$file" || -L "$file" ]]; then
-    [[ ! -L "$file" && -f "$file" ]] || return 1
-    owner=$(stat_num %u %u "$file") || return 1
-    current_uid=$(id -u)
-    [[ "$owner" == "$current_uid" ]] || return 1
-    perms=$(stat_perms "$file") || return 1
-    case "$perms" in 600|400) : ;; *) return 1 ;; esac
-  fi
-  lease_fence_or_fail
-  tmp=$(umask 077; mktemp "$file.tmp.XXXXXX") || return 1
-  ACTIVE_SECRET_TEMP="$tmp"
-  if ! printf '%s' "$value" > "$tmp"; then
-    rm -f "$tmp" 2>/dev/null || true
-    ACTIVE_SECRET_TEMP=""
-    return 1
-  fi
-  chmod 600 "$tmp" 2>/dev/null || {
-    rm -f "$tmp" 2>/dev/null || true
-    ACTIVE_SECRET_TEMP=""
-    return 1
-  }
-  lease_fence_or_fail
-  if ! "$NODE_BIN" -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$tmp" "$file"; then
-    rm -f "$tmp" 2>/dev/null || true
-    ACTIVE_SECRET_TEMP=""
-    return 1
-  fi
-  ACTIVE_SECRET_TEMP=""
-  [[ ! -L "$file" && -f "$file" ]] || return 1
-  owner=$(stat_num %u %u "$file") || return 1
-  perms=$(stat_perms "$file") || return 1
-  current_uid=$(id -u)
-  [[ "$owner" == "$current_uid" && "$perms" == "600" ]] || return 1
-  got=$(cat "$file") || return 1
-  [[ "$got" == "$value" ]]
-}
-
-# ------------------------------------------------ transition journal (FLY-1252)
-digest_value() {
-  if command -v shasum >/dev/null 2>&1; then
-    printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
-  else
-    printf '%s' "$1" | sha256sum | awk '{print $1}'
-  fi
-}
-
-lease_token_from_proof() {
-  FLYWHEEL_LEASE_PROOF_VALUE="$FLYWHEEL_LEASE_PROOF" "$NODE_BIN" -e '
-    try { const p=JSON.parse(process.env.FLYWHEEL_LEASE_PROOF_VALUE); if(typeof p.ownershipToken!=="string") process.exit(1); process.stdout.write(p.ownershipToken); }
-    catch { process.exit(1); }
-  '
-}
-
-write_transition_journal() { # <old-label> <target-label> <old-value> <target-value> -> opId
-  local old_label="$1" target_label="$2" old_digest target_digest old_state writer_pgid leader_start lease_token op_id
-  old_digest=$(digest_value "$3")
-  target_digest=$(digest_value "$4")
-  case "$LIVE_PREIMAGE_STATE" in
-    absent) old_state="absent" ;;
-    *) old_state="present" ;;
-  esac
-
-  # Detached mutation leaders have pgid==pid. Sandboxed test runners may forbid
-  # ps(1), so fall back to that construction; production also verifies group
-  # liveness with kill(-pgid,0), not a ps text scrape.
-  writer_pgid=$("$PS_BIN" -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)
-  [[ "$writer_pgid" =~ ^[0-9]+$ ]] || writer_pgid="$$"
-  [[ "$writer_pgid" =~ ^[0-9]+$ ]] || fail "cannot determine mutation process group"
-  leader_start=$(process_start_time "$$")
-  [[ -n "$leader_start" ]] || leader_start="started-before-$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  lease_token=$(lease_token_from_proof) || fail_code 39 "cannot read lease token before transition"
-  op_id="$(date +%s).$$.$RANDOM"
-  lease_fence_or_fail
-  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" "$op_id" "$(id -u)" "$writer_pgid" "$$" "$leader_start" "$lease_token" "$old_label" "$target_label" "$old_state" "$old_digest" "$target_digest" <<'NODE'
-import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, writeSync } from "node:fs";
-import { dirname } from "node:path";
-const [path,opId,writerUid,writerPgid,leaderPid,leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldState,oldDigest,targetDigest]=process.argv.slice(2);
-try { if (lstatSync(path).isSymbolicLink()) throw new Error("journal is symlink"); } catch (e) { if (e?.code !== "ENOENT") throw e; }
-const body=JSON.stringify({opId,writerUid:Number(writerUid),writerPgid:Number(writerPgid),leaderPid:Number(leaderPid),leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldState,oldDigest,targetDigest,startedAt:new Date().toISOString()})+"\n";
-mkdirSync(dirname(path),{recursive:true,mode:0o700});
-const tmp=`${path}.tmp.${process.pid}`;
-const fd=openSync(tmp,"wx",0o600);
-try { writeSync(fd,body); fsyncSync(fd); } finally { closeSync(fd); }
-renameSync(tmp,path);
-NODE
-  printf '%s' "$op_id"
-}
-
-clear_transition_journal() { # optional expected op id
-  local expected="${1:-}"
-  lease_fence_or_fail
-  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" "$expected" <<'NODE'
-import { lstatSync, readFileSync, unlinkSync } from "node:fs";
-const [path,expected]=process.argv.slice(2);
-let stat;
-try { stat=lstatSync(path); } catch (e) { if (e?.code === "ENOENT") process.exit(0); throw e; }
-if (stat.isSymbolicLink() || !stat.isFile()) process.exit(1);
-if (expected) {
-  let parsed; try { parsed=JSON.parse(readFileSync(path,"utf8")); } catch { process.exit(1); }
-  if (parsed?.opId !== expected) process.exit(1);
-}
-unlinkSync(path);
-NODE
-}
-
-process_group_alive() { # 0 alive; 1 empty; 2 unknown
-  "$NODE_BIN" -e '
-    const pgid=Number(process.argv[1]);
-    if(!Number.isInteger(pgid)||pgid<=0) process.exit(2);
-    try { process.kill(-pgid,0); process.exit(0); }
-    catch(e) { if(e?.code==="ESRCH") process.exit(1); if(e?.code==="EPERM") process.exit(0); process.exit(2); }
-  ' "$1"
-}
-
-read_store_generation_for_active() { # <label>
-  "$NODE_BIN" --input-type=module - "$ACCOUNTS_STORE" "$1" <<'NODE'
-import { readFileSync } from "node:fs";
-const [path,label]=process.argv.slice(2);
-let store; try { store=JSON.parse(readFileSync(path,"utf8")); } catch { process.exit(1); }
-if (!Number.isInteger(store?.generation) || store.generation < 0 || store.activeAccount !== label || !Array.isArray(store.accounts) || !store.accounts.some((a)=>a?.name===label)) process.exit(1);
-process.stdout.write(String(store.generation));
-NODE
-}
-
-write_active_from_reconcile() { # <target> [expected-preimage]; rc 0=committed 1=not committed 2=uncertain
-  local target="$1" expected="" has_expected=0 tmp="" helper_rc=0 marker_rc=0 observed=""
-  [[ "$#" -ge 2 ]] && { has_expected=1; expected="$2"; }
-  profile_slot_dir_safe "$target" || return 2
-  lease_fence_or_fail
-  tmp=$(umask 077; mktemp "$ACTIVE_FILE.tmp.XXXXXX") || return 1
-  ACTIVE_TEMP_FILE="$tmp"
-  if ! printf '%s' "$target" > "$tmp"; then
-    rm -f "$tmp" 2>/dev/null || true
-    ACTIVE_TEMP_FILE=""
-    return 1
-  fi
-  chmod 600 "$tmp" 2>/dev/null || {
-    rm -f "$tmp" 2>/dev/null || true
-    ACTIVE_TEMP_FILE=""
-    return 1
-  }
-  # Validate the complete temp bytes and metadata before the commit point.
-  "$NODE_BIN" -e '
-const { lstatSync, readFileSync } = require("node:fs");
-const [path, expected] = process.argv.slice(1);
-const st = lstatSync(path); const uid = process.getuid?.();
-if (uid === undefined || st.isSymbolicLink() || !st.isFile() || st.uid !== uid || (st.mode & 0o777) !== 0o600) process.exit(1);
-const bytes = readFileSync(path); if (!bytes.equals(Buffer.from(expected, "utf8"))) process.exit(1);
-' "$tmp" "$target" || {
-    rm -f "$tmp" 2>/dev/null || true
-    ACTIVE_TEMP_FILE=""
-    return 1
-  }
-  if [[ -e "$ACTIVE_FILE" || -L "$ACTIVE_FILE" ]]; then
-    read_active_marker_strict >/dev/null 2>&1 || {
-      rm -f "$tmp" 2>/dev/null || true
-      ACTIVE_TEMP_FILE=""
-      return 2
-    }
-  fi
-  lease_fence_or_fail
-  if [[ "${FLYWHEEL_TEST_FAIL_ACTIVE_MARKER_WRITE:-0}" == "1" ]]; then
-    helper_rc=70
-  else
-    "$NODE_BIN" -e '
-const { mkdirSync, renameSync, rmSync, writeFileSync } = require("node:fs");
-const [src, dest] = process.argv.slice(1);
-renameSync(src, dest);
-switch (process.env.FLYWHEEL_TEST_ACTIVE_MARKER_RENAME_MODE) {
-  case "third_party":
-    writeFileSync(dest, "school", { mode: 0o600 });
-    process.exit(70);
-  case "ghost":
-    writeFileSync(dest, "ghost", { mode: 0o600 });
-    process.exit(70);
-  case "unsafe_directory":
-    rmSync(dest, { force: true });
-    mkdirSync(dest, { mode: 0o700 });
-    process.exit(70);
-}
-if (process.env.FLYWHEEL_TEST_ACTIVE_MARKER_POST_COMMIT_ERROR === "1") process.exit(70);
-' "$tmp" "$ACTIVE_FILE" || helper_rc=$?
-  fi
-  rm -f "$tmp" 2>/dev/null || true
-  ACTIVE_TEMP_FILE=""
-
-  marker_rc=0
-  observed=$(read_active_marker_strict 2>/dev/null) || marker_rc=$?
-  if [[ "$marker_rc" -eq 0 && "$observed" == "$target" ]]; then
-    return 0
-  fi
-  if [[ "$has_expected" -eq 1 ]]; then
-    if [[ -z "$expected" && "$marker_rc" -eq 10 ]]; then return 1; fi
-    if [[ "$marker_rc" -eq 0 && "$observed" == "$expected" ]]; then return 1; fi
-  fi
-  # helper_rc is diagnostic only: destination postcondition is authoritative.
-  : "$helper_rc"
-  return 2
-}
-
-reconcile_transition_journal() {
-  [[ -e "$TRANSITION_JOURNAL" || -L "$TRANSITION_JOURNAL" ]] || { echo '{"outcome":"none"}'; return 0; }
-  local fields rc=0
-  fields=$("$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" <<'NODE'
-import { lstatSync, readFileSync } from "node:fs";
-const path=process.argv[2];
-try {
-  const st=lstatSync(path); if(st.isSymbolicLink()||!st.isFile()) process.exit(1);
-  const j=JSON.parse(readFileSync(path,"utf8"));
-  const label=/^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/; const digest=/^[a-f0-9]{64}$/;
-  const emptyDigest="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-  const oldState=j.oldState === undefined ? (j.oldDigest === emptyDigest ? "absent" : "present") : j.oldState;
-  if(typeof j.opId!=="string"||!Number.isInteger(j.writerUid)||!Number.isInteger(j.writerPgid)||j.writerPgid<=0||!Number.isInteger(j.leaderPid)||j.leaderPid<=0||typeof j.leaderStartTime!=="string"||typeof j.writerLeaseToken!=="string"||typeof j.oldLabel!=="string"||!label.test(j.targetLabel)||(oldState!=="present"&&oldState!=="absent")||!digest.test(j.oldDigest)||!digest.test(j.targetDigest)||typeof j.startedAt!=="string") process.exit(1);
-  process.stdout.write([j.opId,j.writerUid,j.writerPgid,j.leaderPid,j.leaderStartTime,j.oldLabel,j.targetLabel,oldState,j.oldDigest,j.targetDigest].join("\t"));
-} catch { process.exit(1); }
-NODE
-  ) || rc=$?
-  if [[ "$rc" -ne 0 || -z "$fields" ]]; then echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; fi
-  local op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_state old_digest target_digest
-  IFS=$'\t' read -r op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_state old_digest target_digest <<<"$fields"
-  if [[ "$writer_uid" != "$(id -u)" ]]; then echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; fi
-  if process_group_alive "$writer_pgid"; then echo '{"outcome":"writer_alive"}'; return 0; else rc=$?; fi
-  [[ "$rc" -eq 1 ]] || { echo '{"outcome":"writer_alive"}'; return 0; }
-  local current="" current_rc=0 current_digest generation marker_write_rc=0
-  current=$(kc_read 2>/dev/null) || current_rc=$?
-  if [[ "$current_rc" -eq 44 && "$old_state" == "absent" ]]; then
-    clear_transition_journal "$op_id" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
-    echo '{"outcome":"cleared"}'
-    return 0
-  fi
-  [[ "$current_rc" -eq 0 ]] || { echo '{"outcome":"conflict","reason":"keychain_unreadable"}'; return 0; }
-  current_digest=$(digest_value "$current")
-  if [[ "$old_state" == "present" && "$current_digest" == "$old_digest" ]]; then
-    clear_transition_journal "$op_id" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
-    echo '{"outcome":"cleared"}'
-    return 0
-  fi
-  if [[ "$current_digest" == "$target_digest" ]]; then
-    write_active_from_reconcile "$target_label" "$old_label" || marker_write_rc=$?
-    case "$marker_write_rc" in
-      0) : ;;
-      2) echo '{"outcome":"conflict","reason":"active_marker_commit_uncertain"}'; return 0 ;;
-      *) echo '{"outcome":"conflict","reason":"active_marker_not_committed"}'; return 0 ;;
-    esac
-    active_sync_store "$target_label" force || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
-    generation=$(read_store_generation_for_active "$target_label") || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
-    clear_transition_journal "$op_id" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
-    printf '{"outcome":"completed","activeAccount":"%s","generation":%s}\n' "$target_label" "$generation"
-    return 0
-  fi
-  echo '{"outcome":"conflict","reason":"digest_mismatch_both"}'
-}
-
-reconcile_after_acquire() {
-  local result
-  result=$(reconcile_transition_journal)
-  case "$result" in
-    *'"outcome":"none"'*|*'"outcome":"cleared"'*|*'"outcome":"completed"'*) return 0 ;;
-    *'"outcome":"writer_alive"'*) fail "switch in progress, retry shortly (transition writer group still alive)" ;;
-    *) fail "transition journal conflict — refusing account mutation: $result" ;;
-  esac
-}
-
-CAPTURE_RECOVERY_OP=""
-
-read_capture_recovery_fields() {
-  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" <<'NODE'
-import { lstatSync, readFileSync } from "node:fs";
-const path=process.argv[2];
-try {
-  const st=lstatSync(path);
-  if(st.isSymbolicLink()||!st.isFile()) process.exit(1);
-  const j=JSON.parse(readFileSync(path,"utf8"));
-  const label=/^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
-  if(typeof j.opId!=="string"||j.opId.length===0||typeof j.targetLabel!=="string"||!label.test(j.targetLabel)) process.exit(1);
-  process.stdout.write(`${j.opId}\t${j.targetLabel}`);
-} catch { process.exit(1); }
-NODE
-}
-
-# A crash followed by an operator re-login legitimately makes the Keychain
-# digest match neither journal endpoint. Allow only `capture <targetLabel>` to
-# recover that explicit target; every other mutation remains fail-closed.
-reconcile_before_capture() { # <capture name>
-  local name="$1" result fields op_id target_label
-  CAPTURE_RECOVERY_OP=""
-  result=$(reconcile_transition_journal)
-  case "$result" in
-    *'"outcome":"none"'*|*'"outcome":"cleared"'*|*'"outcome":"completed"'*) return 0 ;;
-    *'"outcome":"writer_alive"'*) fail "switch in progress, retry shortly (transition writer group still alive)" ;;
-    *'"outcome":"conflict"'*'"reason":"digest_mismatch_both"'*)
-      fields=$(read_capture_recovery_fields) || fail "transition journal conflict is not recoverable by capture: $result"
-      IFS=$'\t' read -r op_id target_label <<<"$fields"
-      [[ "$name" == "$target_label" ]] || fail "transition journal recovery requires: log into '$target_label' first, then run: flywheel-claude-profile capture $target_label"
-      CAPTURE_RECOVERY_OP="$op_id"
-      return 0
-      ;;
-    *) fail "transition journal conflict — refusing account mutation: $result" ;;
-  esac
 }
 
 # ------------------------------------------------------- display identity (FLY-865)
@@ -1503,10 +370,9 @@ reconcile_before_capture() { # <capture name>
 # is authoritative, so a failed identity read/write only warns and returns 0 —
 # it must NEVER turn a committed token switch into a non-zero exit (the Node
 # switch executor treats non-zero `use` as "switch failed, state untouched").
-# OAuth profile probing now proves the token's account UUID/email, but it does
-# not return the complete four-field display block (including organization).
-# Therefore capture/restore remains the display mechanism; we NEVER clear
-# oauthAccount (undocumented refetch + risks the "never break login" red line).
+# The opaque token cannot be decoded to an identity, so capture/restore is the
+# only mechanism; we NEVER clear oauthAccount (undocumented refetch + risks the
+# "never break the claude login" red line).
 
 # require_identity_entry: 0 ok, 1 present-but-unusable (symlink / non-file /
 # not 0600-0400; warns), 2 missing (caller emits the re-capture hint).
@@ -1558,7 +424,7 @@ NODE
 # applied email on stdout. Non-zero (target byte-untouched) on any failure.
 # MUST be called with CLAUDE_JSON_LOCK held.
 patch_claude_json_identity() {
-  node --input-type=module - "$1" "$2" <<'NODE' &
+  node --input-type=module - "$1" "$2" <<'NODE'
 import { readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, unlinkSync } from "node:fs";
 const [src, target] = process.argv.slice(2);
 const REQ = ["accountUuid", "emailAddress", "organizationUuid", "organizationName"];
@@ -1600,17 +466,6 @@ try {
 } catch { process.stderr.write(`post-write verify read failed\n`); process.exit(1); }
 process.stdout.write(`${identity.emailAddress}\n`);
 NODE
-  ACTIVE_CHILD_PID=$!
-  local patch_rc=0
-  # Bash can defer a trapped signal while blocked in a foreground child (and
-  # some versions also defer it in a long `wait`). Polling through a short
-  # sleep bounds TERM/INT cleanup latency while preserving the child's status.
-  while kill -0 "$ACTIVE_CHILD_PID" 2>/dev/null; do
-    sleep 0.05
-  done
-  wait "$ACTIVE_CHILD_PID" || patch_rc=$?
-  ACTIVE_CHILD_PID=""
-  return "$patch_rc"
 }
 
 # capture_identity <name>: snapshot the CURRENT ~/.claude.json oauthAccount beside
@@ -1646,295 +501,34 @@ capture_identity() {
 sync_identity() {
   # Separate declarations (ShellCheck SC2318): a combined local with `$name` in
   # the RHS would read the caller's dynamically-scoped `name`, not this one.
-  local name="$1" rc=0 email="" email_file=""
+  local name="$1" rc=0 email=""
   local src="$POOL_DIR/$name/oauthAccount.json"
-  DISPLAY_SYNCED=true
   # `; rc=$?` would let set -e abort on a non-zero return before capturing it.
   require_identity_entry "$src" || rc=$?
   if [[ $rc -eq 2 ]]; then
-    DISPLAY_SYNCED=false
     echo "Warning: profile '$name' has no captured display identity (oauthAccount.json). The machine Keychain token was switched, but ~/.claude.json display identity was NOT updated — a new claude '/status' may show a stale account. To fix: log into '$name' once, then run: flywheel-claude-profile capture $name" >&2
     return 0
   fi
   if [[ $rc -ne 0 ]]; then
-    DISPLAY_SYNCED=false
     echo "Warning: display identity for '$name' NOT applied (token switched OK)." >&2
     return 0
   fi
   if [[ ! -f "$CLAUDE_JSON" ]]; then
-    DISPLAY_SYNCED=false
     echo "Warning: $CLAUDE_JSON not found — display identity NOT updated for '$name' (token switched OK)." >&2
     return 0
   fi
   if ! acquire_claude_json_lock; then
-    DISPLAY_SYNCED=false
     echo "Warning: could not acquire $CLAUDE_JSON_LOCK within ${CLAUDE_LOCK_WAIT_S}s — display identity NOT updated for '$name' (token switched OK)." >&2
     return 0
   fi
-  lease_fence_or_fail
-  email_file=$(mktemp "${CLAUDE_JSON}.fly865.email.XXXXXX") || {
-    DISPLAY_SYNCED=false
-    release_claude_json_lock
-    echo "Warning: could not create display identity result file for '$name' (token switched OK)." >&2
-    return 0
-  }
-  chmod 600 "$email_file"
-  ACTIVE_TEMP_FILE="$email_file"
-  if patch_claude_json_identity "$src" "$CLAUDE_JSON" >"$email_file"; then
-    email=$(cat "$email_file")
-    rm -f "$email_file"
-    ACTIVE_TEMP_FILE=""
+  if email=$(patch_claude_json_identity "$src" "$CLAUDE_JSON"); then
     release_claude_json_lock
     echo "Updated ~/.claude.json display identity to '$name' (email: ${email:-unknown})" >&2
   else
-    DISPLAY_SYNCED=false
-    rm -f "$email_file"
-    ACTIVE_TEMP_FILE=""
     release_claude_json_lock
     echo "Warning: failed to update ~/.claude.json display identity for '$name' (token switched OK; a new claude '/status' may show a stale account)." >&2
   fi
   return 0
-}
-
-# ------------------------------------------------ stale .active reconciliation (FLY-1201)
-RECONCILED_ACTIVE=""
-LIVE_PREIMAGE_STATE="unknown"
-LIVE_PREIMAGE_VALUE=""
-LIVE_IDENTITY_UUID=""
-LIVE_IDENTITY_EMAIL=""
-DISPLAY_SYNCED=true
-RECONCILE_MODE=0
-
-fail_live_identity() {
-  local detail="$1" reason="${2:-probe_unavailable}"
-  AUDIT_SUMMARY="live_identity_unavailable"
-  if [[ "$RECONCILE_MODE" -eq 1 ]]; then
-    printf '{"outcome":"unresolvable","reason":"%s"}\n' "$reason"
-    exit 20
-  fi
-  echo "FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE" >&2
-  fail_code 88 "$detail"
-}
-
-keychain_matches_live_preimage() {
-  local current="" rc=0
-  current=$(kc_read 2>/dev/null) || rc=$?
-  case "$LIVE_PREIMAGE_STATE" in
-    present) [[ "$rc" -eq 0 && "$current" == "$LIVE_PREIMAGE_VALUE" ]] ;;
-    absent) [[ "$rc" -eq 44 ]] ;;
-    *) return 1 ;;
-  esac
-}
-
-keychain_preimage_conflict() {
-  AUDIT_SUMMARY="keychain_preimage_conflict"
-  echo "FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT" >&2
-  echo "Error: live Keychain credential changed during account switching; refusing to overwrite or roll it back" >&2
-  return 88
-}
-
-keychain_endpoint_state() { # <target>; stdout = target|preimage|conflict
-  local target="$1" current="" rc=0
-  current=$(kc_read 2>/dev/null) || rc=$?
-  if [[ "$rc" -eq 0 && "$current" == "$target" ]]; then
-    printf 'target'
-    return 0
-  fi
-  case "$LIVE_PREIMAGE_STATE" in
-    present)
-      [[ "$rc" -eq 0 && "$current" == "$LIVE_PREIMAGE_VALUE" ]] && { printf 'preimage'; return 0; }
-      ;;
-    absent)
-      [[ "$rc" -eq 44 ]] && { printf 'preimage'; return 0; }
-      ;;
-  esac
-  printf 'conflict'
-}
-
-fail_stale_active() { # <46|47> <active|absent> <detail> [uncertain]
-  local code="$1" active="${2:-absent}" detail="$3" state="${4:-}"
-  [[ -n "$active" ]] || active="absent"
-  case "$code:$state" in
-    46:*)
-      AUDIT_SUMMARY="stale_active_unresolvable"
-      echo "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE $active" >&2
-      ;;
-    47:uncertain)
-      AUDIT_SUMMARY="stale_active_marker_commit_uncertain"
-      echo "FLYWHEEL_STALE_ACTIVE_REPAIR_FAILED $active" >&2
-      echo "Warning: active marker commit state is uncertain; Keychain was not changed." >&2
-      local observed="" observed_rc=0
-      observed=$(read_active_marker_strict 2>/dev/null) || observed_rc=$?
-      if [[ "$observed_rc" -eq 10 ]]; then
-        echo "Recovery: rerun the same flywheel-claude-profile use command to reconcile the absent marker." >&2
-      elif [[ "$observed_rc" -eq 0 ]] && profile_slot_dir_safe "$observed" && read_identity_anchor "$observed" >/dev/null 2>&1; then
-        echo "Recovery: marker points to a verified pool slot; rerun the same flywheel-claude-profile use command." >&2
-      else
-        echo "Recovery: inspect and repair $ACTIVE_FILE manually, then verify the live account with claude /status before capture." >&2
-      fi
-      ;;
-    47:*)
-      AUDIT_SUMMARY="stale_active_repair_failed"
-      echo "FLYWHEEL_STALE_ACTIVE_REPAIR_FAILED $active" >&2
-      ;;
-  esac
-  echo "Error: $detail" >&2
-  echo "Recovery: verify the current Claude account, migrate a missing anchor with 'flywheel-claude-profile anchor <name> --migrate', or log in and run 'flywheel-claude-profile capture <name>'." >&2
-  exit "$code"
-}
-
-find_anchor_slot_by_identity() { # <uuid> <email>; stdout = unique label
-  local uuid="$1" email="$2" candidate name anchor a_uuid a_email match="" count=0
-  for candidate in "$POOL_DIR"/*; do
-    [[ -d "$candidate" && ! -L "$candidate" ]] || continue
-    name=$(basename "$candidate")
-    valid_profile_label "$name" || continue
-    profile_slot_dir_safe "$name" || continue
-    anchor=$(read_identity_anchor "$name" 2>/dev/null) || continue
-    IFS=$'\t' read -r a_uuid a_email <<<"$anchor"
-    if [[ "$a_uuid" == "$uuid" && "$a_email" == "$email" ]]; then
-      match="$name"
-      count=$(( count + 1 ))
-    fi
-  done
-  [[ "$count" -eq 1 ]] || return 1
-  valid_profile_label "$match" || return 1
-  printf '%s' "$match"
-}
-
-active_marker_structural_gate() {
-  local active="" rc=0
-  active=$(read_active_marker_strict 2>/dev/null) || rc=$?
-  case "$rc" in
-    10) return 0 ;;
-    0)
-      profile_slot_dir_safe "$active" || fail_stale_active 46 "$active" "active marker points to an unsafe or missing pool slot"
-      return 0
-      ;;
-    *) fail_stale_active 46 "absent" "active marker exists but is unsafe, unreadable, or malformed" ;;
-  esac
-}
-
-reconcile_absent_marker_locked() {
-  local current="" current_rc=0 observed="" o_uuid="" o_email="" true_active=""
-  local capture_rc=0 sync_rc=0 marker_write_rc=0
-  RECONCILED_ACTIVE=""
-  [[ "$IDENTITY_BYPASS" -eq 1 ]] && return 0
-  current=$(kc_read 2>/dev/null) || current_rc=$?
-  case "$current_rc" in
-    44) LIVE_PREIMAGE_STATE="absent"; LIVE_PREIMAGE_VALUE=""; return 0 ;; # the sole proven blank-machine bootstrap
-    0) : ;;
-    *) fail_live_identity "active marker is absent and the current Keychain credential is unreadable (exit $current_rc)" keychain_unreadable ;;
-  esac
-  credential_value_ok "$current" ||
-    fail_live_identity "active marker is absent and the current Keychain credential is empty or unsafe" keychain_unreadable
-  LIVE_PREIMAGE_STATE="present"
-  LIVE_PREIMAGE_VALUE="$current"
-  observed=$(identity_probe "$current" 2>/dev/null) ||
-    fail_live_identity "active marker is absent and the live account identity cannot be verified" probe_unavailable
-  IFS=$'\t' read -r o_uuid o_email <<<"$observed"
-  LIVE_IDENTITY_UUID="$o_uuid"
-  LIVE_IDENTITY_EMAIL="$o_email"
-  true_active=$(find_anchor_slot_by_identity "$o_uuid" "$o_email") ||
-    fail_live_identity "active marker is absent and the machine identity matches no unique verified pool slot" anchor_ambiguous
-  if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
-    fail_stale_active 46 "absent" "active marker is absent; delegated switching performs no repair"
-  fi
-  keychain_matches_live_preimage || keychain_preimage_conflict || exit $?
-  capture_live_credential_strict "$true_active" "$current" || capture_rc=$?
-  [[ "$capture_rc" -eq 39 ]] && exit 39
-  [[ "$capture_rc" -eq 0 ]] || fail_stale_active 47 "absent" "live credential capture into '$true_active' did not commit"
-  active_sync_store_strict "$true_active" || sync_rc=$?
-  [[ "$sync_rc" -eq 39 ]] && exit 39
-  [[ "$sync_rc" -eq 0 ]] || fail_stale_active 47 "absent" "account store sync failed"
-  read_store_generation_for_active "$true_active" >/dev/null ||
-    fail_stale_active 47 "absent" "account store sync was not committed"
-  write_active_from_reconcile "$true_active" "" || marker_write_rc=$?
-  case "$marker_write_rc" in
-    0) : ;;
-    2) fail_stale_active 47 "absent" "active marker state is uncertain after reconstruction" uncertain ;;
-    *) fail_stale_active 47 "absent" "active marker reconstruction failed; marker remains absent" ;;
-  esac
-  RECONCILED_ACTIVE="$true_active"
-  echo "FLYWHEEL_STALE_ACTIVE_RECONCILED absent $true_active" >&2
-  audit_append stale_active_reconcile null "reconciled_absent_to_${true_active}" >/dev/null 2>&1 ||
-    echo "Warning: stale-active audit append failed" >&2
-}
-
-reconcile_stale_active_locked() { # <strict-reader-rc> <active>; sets RECONCILED_ACTIVE
-  local marker_rc="$1" active="$2" anchor="" a_uuid="" a_email=""
-  local current="" current_rc=0 observed="" o_uuid="" o_email=""
-  local true_active="" sync_rc=0 marker_write_rc=0 capture_rc=0
-  RECONCILED_ACTIVE="$active"
-  case "$marker_rc" in
-    10) reconcile_absent_marker_locked; return $? ;;
-    0) : ;;
-    *) fail_stale_active 46 "$active" "active marker exists but is unsafe, unreadable, or malformed" ;;
-  esac
-  profile_slot_dir_safe "$active" || fail_stale_active 46 "$active" "active marker points to an unsafe or missing pool slot"
-  [[ "$IDENTITY_BYPASS" -eq 1 ]] && return 0
-  current=$(kc_read 2>/dev/null) || current_rc=$?
-  case "$current_rc" in
-    44)
-      LIVE_PREIMAGE_STATE="absent"
-      LIVE_PREIMAGE_VALUE=""
-      RECONCILED_ACTIVE=""
-      return 0
-      ;;
-    0) : ;;
-    *) fail_live_identity "no readable Keychain credential is available for live identity verification" keychain_unreadable ;;
-  esac
-  credential_value_ok "$current" || fail_live_identity "Keychain credential is not safely representable" keychain_unreadable
-  LIVE_PREIMAGE_STATE="present"
-  LIVE_PREIMAGE_VALUE="$current"
-  anchor=$(read_identity_anchor "$active" 2>/dev/null) || fail_stale_active 46 "$active" "active slot has no valid identity anchor"
-  IFS=$'\t' read -r a_uuid a_email <<<"$anchor"
-  observed=$(identity_probe "$current" 2>/dev/null) || fail_live_identity "identity probe unavailable; current account cannot be verified" probe_unavailable
-  IFS=$'\t' read -r o_uuid o_email <<<"$observed"
-  LIVE_IDENTITY_UUID="$o_uuid"
-  LIVE_IDENTITY_EMAIL="$o_email"
-
-  if [[ "$o_uuid" == "$a_uuid" && "$o_email" == "$a_email" ]]; then
-    keychain_matches_live_preimage || keychain_preimage_conflict || exit $?
-    capture_live_credential_strict "$active" "$current" || capture_rc=$?
-    [[ "$capture_rc" -eq 39 ]] && exit 39
-    [[ "$capture_rc" -eq 0 ]] || fail_stale_active 47 "$active" "live credential capture into '$active' did not commit"
-    if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 0 ]]; then
-      active_sync_store_strict "$active" || sync_rc=$?
-      [[ "$sync_rc" -eq 39 ]] && exit 39
-      [[ "$sync_rc" -eq 0 ]] || fail_stale_active 47 "$active" "strict account store freshening failed"
-    else
-      emit_apply_freshened_report "$active" || fail_stale_active 47 "$active" "delegated freshening report did not commit"
-    fi
-    sync_identity "$active" || true
-    return 0
-  fi
-
-  echo "FLYWHEEL_STALE_ACTIVE_MARKER $active" >&2
-  if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
-    fail_stale_active 46 "$active" "active marker is stale; delegated switching performs no repair"
-  fi
-  true_active=$(find_anchor_slot_by_identity "$o_uuid" "$o_email") ||
-    fail_live_identity "machine identity matches no unique verified pool slot" anchor_ambiguous
-  keychain_matches_live_preimage || keychain_preimage_conflict || exit $?
-  capture_live_credential_strict "$true_active" "$current" || capture_rc=$?
-  [[ "$capture_rc" -eq 39 ]] && exit 39
-  [[ "$capture_rc" -eq 0 ]] || fail_stale_active 47 "$active" "live credential capture into '$true_active' did not commit"
-  active_sync_store_strict "$true_active" || sync_rc=$?
-  [[ "$sync_rc" -eq 39 ]] && exit 39
-  [[ "$sync_rc" -eq 0 ]] || fail_stale_active 47 "$active" "account store sync failed"
-  read_store_generation_for_active "$true_active" >/dev/null ||
-    fail_stale_active 47 "$active" "account store sync was not committed"
-  write_active_from_reconcile "$true_active" "$active" || marker_write_rc=$?
-  case "$marker_write_rc" in
-    0) : ;;
-    2) fail_stale_active 47 "$active" "active marker state is uncertain after rewrite" uncertain ;;
-    *) fail_stale_active 47 "$active" "active marker rewrite failed; old marker preserved" ;;
-  esac
-  RECONCILED_ACTIVE="$true_active"
-  echo "FLYWHEEL_STALE_ACTIVE_RECONCILED $active $true_active" >&2
-  audit_append stale_active_reconcile null "reconciled_${active}_to_${true_active}" >/dev/null 2>&1 ||
-    echo "Warning: stale-active audit append failed" >&2
 }
 
 # ------------------------------------------------------------------ commands
@@ -1959,97 +553,14 @@ show_status() {
   [[ -z "$active" ]] && echo "No active profile set." || echo "Active profile: $active"
 }
 
-verify_profile() {
-  local name="$1" source="$2" credential anchor observed expected_uuid expected_email observed_uuid observed_email redacted
-  require_valid_name "$name"
-  case "$source" in
-    pool)
-      require_pool_entry "$name"
-      credential=$(cat "$POOL_DIR/$name/.credentials.json")
-      ;;
-    keychain)
-      credential=$(kc_read 2>/dev/null) || fail_code 88 "identity probe unavailable for keychain credential"
-      ;;
-    *) fail "verify source must be keychain or pool" ;;
-  esac
-  anchor=$(read_identity_anchor "$name") || {
-    echo "profile=$name source=$source verdict=untracked email=***"
-    exit 87
-  }
-  observed=$(identity_probe "$credential") || {
-    echo "profile=$name source=$source verdict=unavailable email=***"
-    exit 88
-  }
-  IFS=$'\t' read -r expected_uuid expected_email <<<"$anchor"
-  IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
-  redacted=$(redact_email "$observed_email")
-  if [[ "$observed_uuid" == "$expected_uuid" && "$observed_email" == "$expected_email" ]]; then
-    echo "profile=$name source=$source verdict=match email=$redacted"
-    return 0
-  fi
-  echo "profile=$name source=$source verdict=mismatch email=$redacted"
-  exit 86
-}
-
-anchor_profile() {
-  local name="$1" mode="$2" evidence="$3" dir="$POOL_DIR/$1" anchor_file="$POOL_DIR/$1/identity-anchor.json"
-  require_valid_name "$name"
-  [[ "$evidence" == /* ]] || fail "identity evidence path must be absolute"
+use_profile() {
+  local name="$1"
+  require_pool_entry "$name"
   acquire_lock
 
-  local old_anchor="null" confirmation_reference=""
-  case "$mode" in
-    --migrate)
-      [[ ! -e "$anchor_file" && ! -L "$anchor_file" ]] || fail "profile '$name' already has an identity anchor"
-      require_pool_entry "$name"
-      require_identity_entry "$dir/oauthAccount.json" || fail_code 87 "legacy profile '$name' must have valid oauthAccount.json before migration"
-      ;;
-    --replace)
-      read_identity_anchor "$name" >/dev/null || fail_code 87 "profile '$name' has no valid identity anchor to replace"
-      [[ "${FLYWHEEL_PROFILE_REANCHOR_CONFIRM:-}" == "$name" ]] || fail "re-anchor confirmation missing: set FLYWHEEL_PROFILE_REANCHOR_CONFIRM=$name"
-      old_anchor=$(cat "$anchor_file")
-      confirmation_reference="env:FLYWHEEL_PROFILE_REANCHOR_CONFIRM=$name"
-      ;;
-    *) fail "anchor mode must be --migrate or --replace" ;;
-  esac
+  local active
+  active=$(get_active)
 
-  local mapping cur observed display artifact_id mapped_email map_sha observed_uuid observed_email display_uuid display_email new_anchor
-  mapping=$(read_identity_map_label "$name" "$evidence") || { AUDIT_SUMMARY="untracked"; fail_code 87 "identity evidence is missing or invalid — refusing anchor change"; }
-  cur=$(kc_read 2>/dev/null) || { AUDIT_SUMMARY="unavailable"; fail_code 88 "no Keychain credential available for identity proof"; }
-  observed=$(identity_probe "$cur") || { AUDIT_SUMMARY="unavailable"; fail_code 88 "identity probe unavailable — refusing anchor change"; }
-  display=$(read_display_identity) || { AUDIT_SUMMARY="untracked"; fail_code 87 "display identity is missing or invalid — refusing anchor change"; }
-  IFS=$'\t' read -r artifact_id mapped_email map_sha <<<"$mapping"
-  IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
-  IFS=$'\t' read -r display_uuid display_email <<<"$display"
-  if [[ "$observed_uuid" != "$display_uuid" || "$observed_email" != "$display_email" || "$observed_email" != "$mapped_email" ]]; then
-    AUDIT_SUMMARY="mismatch"
-    fail_code 86 "token, display identity, and canonical mapping do not agree for '$name' — refusing anchor change"
-  fi
-  write_identity_anchor "$name" "$observed_uuid" "$observed_email" "$artifact_id" || fail "failed to write identity anchor for '$name'"
-  new_anchor=$(cat "$anchor_file")
-  AUDIT_SUMMARY="match"
-  [[ -n "$confirmation_reference" ]] || confirmation_reference="canonical:$artifact_id"
-  set_anchor_audit_details "$old_anchor" "$new_anchor" "$artifact_id" "$map_sha" "$confirmation_reference"
-  echo "Anchored profile '$name' to verified identity $(redact_email "$observed_email") ($mode)"
-}
-
-IDENTITY_BYPASS=0
-configure_identity_bypass() {
-  IDENTITY_BYPASS=0
-  if [[ "${FLYWHEEL_PROFILE_IDENTITY_BYPASS:-}" == "1" ]]; then
-    if [[ -n "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" || "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
-      AUDIT_SUMMARY="bypass_denied"
-      fail_code 88 "FLYWHEEL_PROFILE_IDENTITY_BYPASS is forbidden on delegated automatic switches"
-    fi
-    IDENTITY_BYPASS=1
-    AUDIT_SUMMARY="bypass_requested"
-    echo "Warning: FLYWHEEL_PROFILE_IDENTITY_BYPASS=1 — SKIPPING OAuth identity assertions for this manual switch; emergency founder-only escape hatch." >&2
-  fi
-}
-
-prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33/39
-  local name="$1" active="$2" rc=0 new identity_rc=0
-  require_pool_entry "$name"
   # FLY-871 R1/C2+C3 — freshness guard: before writing a NON-ACTIVE target to the
   # Keychain, verify its pooled token is fresh (probe-refresh). The ACTIVE account
   # is never pool-refreshed (its live session owns the token family). On a stale
@@ -2057,242 +568,47 @@ prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33/39
   # .active UNTOUCHED — the 2026-07-04 incident root-cure. Re-selecting the current
   # active (name == active) skips the probe (it re-writes the same account).
   if [[ "$name" != "$active" ]]; then
-    freshness_check "$name" "$active" || rc=$?
-    [[ "$rc" -eq 0 ]] || return "$rc"
+    freshness_guard "$name" "$active"
   fi
-  quota_check "$name" || rc=$?
-  [[ "$rc" -eq 0 ]] || return "$rc"
+
+  local new backup="" got
   # RE-READ after the guard — freshness_guard's helper may have written a ROTATED
   # credential back to the pool, and we must switch to the fresh one.
   new=$(cat "$POOL_DIR/$name/.credentials.json")
-  require_credential_value "$new"
-
-  # FLY-1182 assertion C: a target is eligible only when its actual OAuth
-  # identity matches the immutable slot anchor. This is before every Keychain,
-  # .active, display, or capture-back mutation.
-  if [[ "$IDENTITY_BYPASS" -eq 0 ]]; then
-    identity_assert_value "$name" "$new" >/dev/null || identity_rc=$?
-    case "$identity_rc" in
-      0) AUDIT_SUMMARY="match" ;;
-      86) AUDIT_SUMMARY="mismatch"; fail_code 86 "target profile '$name' identity does not match its anchor — refusing switch" ;;
-      87) AUDIT_SUMMARY="untracked"; fail_code 87 "target profile '$name' has no valid identity anchor — refusing switch" ;;
-      *) AUDIT_SUMMARY="unavailable"; fail_code 88 "target profile '$name' identity probe unavailable — refusing switch" ;;
-    esac
-  fi
-  return 0
-}
-
-# Commit boundary: no probes here. The caller has prepared exactly once and
-# renewed its lease. Revalidate/re-read because freshness may have atomically
-# rotated the pooled credential.
-commit_profile_locked() { # <name> <active>
-  local name="$1" active="$2"
-  local new backup="" backup_present=0 backup_rc=0 got journal_op sync_rc=0 active_tmp="" endpoint=""
-  require_pool_entry "$name"
-  new=$(cat "$POOL_DIR/$name/.credentials.json")
-  require_credential_value "$new"
-  renew_lock_or_fail
   # Snapshot the current value so a failed verify can roll back — the red line
   # is "switching must never leave the claude login broken".
-  if backup=$(kc_read 2>/dev/null); then
-    backup_present=1
-  else
-    backup_rc=$?
-    if [[ "$backup_rc" -ne 44 ]]; then
-      fail "cannot read the current Keychain credential (exit $backup_rc) — refusing any mutation"
-    fi
-  fi
-  # Rollback uses the same stdin-only security(1) grammar as a normal write.
-  # Prove the preimage is representable before the first mutation so a later
-  # failure can never strand an un-restorable replacement in Keychain.
-  if [[ "$backup_present" -eq 1 ]]; then
-    require_credential_value "$backup"
-  fi
-  if [[ "$LIVE_PREIMAGE_STATE" == "unknown" ]]; then
-    if [[ "$backup_present" -eq 1 ]]; then
-      LIVE_PREIMAGE_STATE="present"
-      LIVE_PREIMAGE_VALUE="$backup"
-    else
-      LIVE_PREIMAGE_STATE="absent"
-      LIVE_PREIMAGE_VALUE=""
-    fi
-  elif ! keychain_matches_live_preimage; then
-    keychain_preimage_conflict
-    return 88
-  fi
+  backup=$(kc_read 2>/dev/null || true)
 
-  # FLY-1182 assertion B: capture-back is allowed ONLY when the current
-  # Keychain token matches the active slot's anchor. Drift/untracked/outage is
-  # repaired by continuing with the already-verified target, but the unverified
-  # current token is never copied into a slot and a stable marker is emitted.
+  # FLY-871 R1/C1 — capture-back the OLD active account's current Keychain value
+  # into its pool slot before we overwrite it (best-effort; see capture_back).
   if [[ -n "$active" && "$active" != "$name" ]]; then
-    local active_result="" active_rc=0 reason expected_uuid observed_uuid observed_email
-    if [[ "$IDENTITY_BYPASS" -eq 1 ]]; then
-      capture_back "$active" "$backup"
-    else
-      active_result=$(identity_assert_value "$active" "$backup") || active_rc=$?
-      if [[ "$active_rc" -eq 0 ]]; then
-        capture_back "$active" "$backup"
-      else
-        IFS=$'\t' read -r reason expected_uuid observed_uuid observed_email <<<"$active_result"
-        [[ -n "$expected_uuid" ]] || expected_uuid="null"
-        [[ -n "$observed_email" ]] || observed_email="null"
-        AUDIT_SUMMARY="$reason"
-        emit_identity_drift "$reason" "$active" "$expected_uuid" "$observed_email"
-      fi
-    fi
+    capture_back "$active" "$backup"
   fi
 
-  # The identity/freshness probes above are network work. Re-check the tagged
-  # preimage before journaling so a concurrent claude login is never overwritten.
-  if ! keychain_matches_live_preimage; then
-    keychain_preimage_conflict
-    return 88
-  fi
+  kc_write "$new" # fail-closed: any non-zero aborts (set -e), .active untouched
 
-  # Pre-create the non-secret marker temp before touching Keychain. This turns
-  # unwritable/path failures into a zero-Keychain-mutation failure. The rename
-  # itself is still checked below and rolls Keychain back if it fails.
-  active_tmp=$(umask 077; mktemp "$ACTIVE_FILE.tmp.XXXXXX") || fail "cannot create active marker temp"
-  ACTIVE_TEMP_FILE="$active_tmp"
-  printf '%s' "$name" > "$active_tmp" || fail "cannot write active marker temp"
-
-  journal_op=$(write_transition_journal "$active" "$name" "$backup" "$new")
-  if [[ -n "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL:-}" ]]; then
-    : > "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL}.ready"
-    while [[ ! -e "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL}.continue" ]]; do sleep 0.01; done
-  fi
-  if ! keychain_matches_live_preimage; then
-    clear_transition_journal "$journal_op" || true
-    keychain_preimage_conflict
-    return 88
-  fi
-  lease_fence_or_fail
-  local write_rc=0
-  kc_write "$new" || write_rc=$?
-  if [[ "$write_rc" -ne 0 ]]; then
-    endpoint=$(keychain_endpoint_state "$new")
-    case "$endpoint" in
-      target)
-        if restore_keychain_preimage "$backup" "$backup_present"; then
-          fail "Keychain write failed (exit $write_rc) — rolled back and verified the previous Keychain state; .active unchanged"
-        fi
-        fail "Keychain write failed (exit $write_rc) AND rollback could not be verified — Keychain may be inconsistent for service '$SERVICE'; manual check required"
-        ;;
-      preimage)
-        clear_transition_journal "$journal_op" || true
-        fail "Keychain write failed (exit $write_rc); previous Keychain state is still present and .active is unchanged"
-        ;;
-      *)
-        keychain_preimage_conflict
-        return 88
-        ;;
-    esac
-  fi
-
-  lease_fence_or_fail
   got=$(kc_read 2>/dev/null || true)
   if [[ "$got" != "$new" ]]; then
-    endpoint=$(keychain_endpoint_state "$new")
-    case "$endpoint" in
-      target)
-        if restore_keychain_preimage "$backup" "$backup_present"; then
-          clear_transition_journal "$journal_op"
-          echo "FLYWHEEL_IDENTITY_ROLLED_BACK $name" >&2
-          echo "Error: verify-before-commit failed (read-back mismatch) — rolled back and verified the previous credential; .active unchanged" >&2
-          return 36
-        fi
-        echo "FLYWHEEL_IDENTITY_ROLLBACK_FAILED $name" >&2
-        echo "Error: verify-before-commit failed AND verified rollback failed — Keychain may be inconsistent for service '$SERVICE'; manual check required" >&2
-        return 37
-        ;;
-      preimage)
-        clear_transition_journal "$journal_op" || true
-        echo "FLYWHEEL_IDENTITY_ROLLED_BACK $name" >&2
-        echo "Error: verify-before-commit failed; previous credential is already present and .active is unchanged" >&2
-        return 36
-        ;;
-      *)
-        keychain_preimage_conflict
-        return 88
-        ;;
-    esac
+    if [[ -n "$backup" ]]; then
+      if kc_write "$backup" 2>/dev/null; then
+        fail "verify-before-commit failed (read-back mismatch) — rolled back to the previous credential; .active unchanged"
+      else
+        fail "verify-before-commit failed AND rollback failed — Keychain may be inconsistent for service '$SERVICE'; manual check required"
+      fi
+    fi
+    fail "verify-before-commit failed (read-back mismatch, no previous value to roll back) — .active unchanged"
   fi
 
-  lease_fence_or_fail
-  if ! mv "$active_tmp" "$ACTIVE_FILE"; then
-    rm -f "$active_tmp" 2>/dev/null || true
-    ACTIVE_TEMP_FILE=""
-    endpoint=$(keychain_endpoint_state "$new")
-    case "$endpoint" in
-      target)
-        if restore_keychain_preimage "$backup" "$backup_present"; then
-          fail "active marker commit failed — rolled back and verified the previous Keychain state"
-        fi
-        fail "active marker commit failed AND Keychain rollback could not be verified; manual check required"
-        ;;
-      preimage)
-        clear_transition_journal "$journal_op" || true
-        fail "active marker commit failed; previous Keychain state is already present"
-        ;;
-      *)
-        keychain_preimage_conflict
-        return 88
-        ;;
-    esac
-  fi
-  ACTIVE_TEMP_FILE=""
-  active_sync_store "$name" || sync_rc=$?
-  [[ "$sync_rc" -eq 39 ]] && exit 39
+  printf '%s' "$name" > "$ACTIVE_FILE.tmp"
+  mv "$ACTIVE_FILE.tmp" "$ACTIVE_FILE"
   # FLY-865: swap the DISPLAY identity too (best-effort; never fails the switch).
   sync_identity "$name"
-  clear_transition_journal "$journal_op"
   echo "Switched machine Claude account to profile '$name' (new spawns use it; live sessions wait for reset)"
 }
 
-switch_profile_locked() { # <name> <active>; prepare exactly once, then commit
-  local name="$1" active="$2" rc=0
-  prepare_profile_locked "$name" "$active" || rc=$?
-  [[ "$rc" -eq 0 ]] || return "$rc"
-  commit_profile_locked "$name" "$active"
-}
-
-use_profile() {
-  local name="$1" active="" rc=0 marker_rc=0
-  acquire_lock
-  active_marker_structural_gate
-  reconcile_after_acquire
-  configure_identity_bypass
-  lease_fence_or_fail
-  mkdir -p "$POOL_DIR"
-  chmod 700 "$POOL_DIR" 2>/dev/null || true
-  require_pool_entry "$name"
-  active=$(read_active_marker_strict 2>/dev/null) || marker_rc=$?
-  reconcile_stale_active_locked "$marker_rc" "$active"
-  active="$RECONCILED_ACTIVE"
-  if [[ "$IDENTITY_BYPASS" -eq 0 && "$name" == "$active" ]]; then
-    AUDIT_SUMMARY="match"
-    sync_identity "$name"
-    echo "FLYWHEEL_USE_NOOP $name" >&2
-    echo "Machine Claude account is already profile '$name'; refreshed its pool snapshot without rewriting Keychain"
-    return 0
-  fi
-  switch_profile_locked "$name" "$active" || rc=$?
-  [[ "$rc" -eq 0 ]] || exit "$rc"
-}
-
 next_profile() {
-  local active="" profiles=() name rc=0 marker_rc=0
-  acquire_lock
-  active_marker_structural_gate
-  reconcile_after_acquire
-  configure_identity_bypass
-  lease_fence_or_fail
-  mkdir -p "$POOL_DIR"
-  chmod 700 "$POOL_DIR" 2>/dev/null || true
-  active=$(read_active_marker_strict 2>/dev/null) || marker_rc=$?
-  reconcile_stale_active_locked "$marker_rc" "$active"
-  active="$RECONCILED_ACTIVE"
+  local active profiles=() name
+  active=$(get_active)
   for dir in "$POOL_DIR"/*/; do
     [[ -d "$dir" ]] || continue
     profiles+=("$(basename "$dir")")
@@ -2300,158 +616,37 @@ next_profile() {
   [[ ${#profiles[@]} -eq 0 ]] && fail "no profiles in pool $POOL_DIR"
   [[ ${#profiles[@]} -eq 1 ]] && fail "only one profile in pool: ${profiles[0]}"
   IFS=$'\n' profiles=($(sort <<<"${profiles[*]}")); unset IFS
-  local idx=-1 i candidate_count offset candidate_idx candidate
+  local idx=0 i
   for i in "${!profiles[@]}"; do
     [[ "${profiles[$i]}" == "$active" ]] && { idx=$i; break; }
   done
-  if [[ "$idx" -ge 0 ]]; then
-    candidate_count=$(( ${#profiles[@]} - 1 ))
-  else
-    candidate_count=${#profiles[@]}
-  fi
-
-  offset=1
-  while [[ "$offset" -le "$candidate_count" ]]; do
-    candidate_idx=$(( (idx + offset) % ${#profiles[@]} ))
-    candidate="${profiles[$candidate_idx]}"
-    renew_lock_or_fail
-    rc=0
-    prepare_profile_locked "$candidate" "$active" || rc=$?
-    case "$rc" in
-      0)
-        AUDIT_PROFILE="$candidate"
-        renew_lock_or_fail
-        rc=0
-        commit_profile_locked "$candidate" "$active" || rc=$?
-        case "$rc" in
-          0) return 0 ;;
-          34) echo "Skipping identity-mismatched candidate '$candidate'" >&2 ;;
-          36) echo "Skipping candidate '$candidate' after verified Keychain rollback" >&2 ;;
-          38) echo "Skipping identity-unauthorized candidate '$candidate'" >&2 ;;
-          37) exit 37 ;;
-          39) exit 39 ;;
-          *) exit "$rc" ;;
-        esac
-        ;;
-      32)
-        echo "Skipping exhausted quota candidate '$candidate'" >&2
-        ;;
-      30|31|33|39)
-        exit "$rc"
-        ;;
-      *)
-        fail "unexpected candidate preparation result $rc for '$candidate'"
-        ;;
-    esac
-    offset=$(( offset + 1 ))
-  done
-  echo "FLYWHEEL_TARGET_QUOTA_EXHAUSTED all" >&2
-  echo "Error: every alternate Claude profile is exhausted; Keychain/.active unchanged" >&2
-  exit 32
+  local next_idx=$(( (idx + 1) % ${#profiles[@]} ))
+  use_profile "${profiles[$next_idx]}"
 }
 
 capture_profile() {
   local name="$1"
   require_valid_name "$name"
-  local dir="$POOL_DIR/$name" cur credential_tmp=""
+  local dir="$POOL_DIR/$name" cur
   [[ -L "$POOL_DIR" ]] && fail "pool dir $POOL_DIR is a symlink — refusing"
   [[ -L "$dir" ]] && fail "profile dir $dir is a symlink — refusing"
   acquire_lock
-  reconcile_before_capture "$name"
-  lease_fence_or_fail
   cur=$(kc_read) || fail "no Keychain item for service '$SERVICE' — nothing to capture"
   [[ -z "$cur" ]] && fail "Keychain item for service '$SERVICE' is empty — refusing to capture"
-  require_credential_value "$cur"
-
-  local anchor_file="$dir/identity-anchor.json" credential_file="$dir/.credentials.json" identity_file="$dir/oauthAccount.json"
-  local identity_rc=0
-  if [[ ! -e "$anchor_file" && ! -L "$anchor_file" ]]; then
-    # Bootstrap is reserved for a truly empty slot. Any legacy credential or
-    # display metadata requires the explicit `anchor --migrate` path.
-    if [[ -e "$credential_file" || -L "$credential_file" || -e "$identity_file" || -L "$identity_file" ]]; then
-      AUDIT_SUMMARY="untracked"
-      fail_code 87 "profile '$name' is a legacy slot without an identity anchor; run anchor '$name' --migrate first"
-    fi
-    local mapping observed display artifact_id mapped_email map_sha observed_uuid observed_email display_uuid display_email
-    mapping=$(read_identity_map_label "$name" "$IDENTITY_MAP_FILE") || { AUDIT_SUMMARY="untracked"; fail_code 87 "canonical identity map is missing or invalid — refusing bootstrap"; }
-    observed=$(identity_probe "$cur") || { AUDIT_SUMMARY="unavailable"; fail_code 88 "identity probe unavailable — refusing bootstrap"; }
-    display=$(read_display_identity) || { AUDIT_SUMMARY="untracked"; fail_code 87 "display identity is missing or invalid — refusing bootstrap"; }
-    IFS=$'\t' read -r artifact_id mapped_email map_sha <<<"$mapping"
-    IFS=$'\t' read -r observed_uuid observed_email <<<"$observed"
-    IFS=$'\t' read -r display_uuid display_email <<<"$display"
-    if [[ "$observed_uuid" != "$display_uuid" || "$observed_email" != "$display_email" || "$observed_email" != "$mapped_email" ]]; then
-      AUDIT_SUMMARY="mismatch"
-      fail_code 86 "token, display identity, and canonical mapping do not agree for '$name' — refusing bootstrap"
-    fi
-    write_identity_anchor "$name" "$observed_uuid" "$observed_email" "$artifact_id" || fail "failed to write identity anchor for '$name'"
-    set_anchor_audit_details "null" "$(cat "$anchor_file")" "$artifact_id" "$map_sha" "canonical:$artifact_id"
-    AUDIT_SUMMARY="match"
-  else
-    identity_assert_value "$name" "$cur" >/dev/null || identity_rc=$?
-    case "$identity_rc" in
-      0) AUDIT_SUMMARY="match" ;;
-      86) AUDIT_SUMMARY="mismatch"; fail_code 86 "current Keychain identity does not match '$name' anchor — refusing capture" ;;
-      87) AUDIT_SUMMARY="untracked"; fail_code 87 "profile '$name' has no valid identity anchor — refusing capture" ;;
-      *) AUDIT_SUMMARY="unavailable"; fail_code 88 "current Keychain identity probe unavailable — refusing capture" ;;
-    esac
-  fi
   mkdir -p "$dir"
   chmod 700 "$POOL_DIR" "$dir"
   [[ -L "$dir/.credentials.json" ]] && fail "credential file is a symlink — refusing"
-  lease_fence_or_fail
-  credential_tmp=$(umask 077; mktemp "$dir/.credentials.json.tmp.XXXXXX") || fail "cannot create credential temp for '$name'"
-  ACTIVE_SECRET_TEMP="$credential_tmp"
-  printf '%s' "$cur" > "$credential_tmp"
-  lease_fence_or_fail
-  mv "$credential_tmp" "$dir/.credentials.json"
-  ACTIVE_SECRET_TEMP=""
+  ( umask 077; printf '%s' "$cur" > "$dir/.credentials.json.tmp" )
+  mv "$dir/.credentials.json.tmp" "$dir/.credentials.json"
   chmod 600 "$dir/.credentials.json"
   echo "Captured current Keychain credential into pool profile '$name'"
   # FLY-865: snapshot the account's DISPLAY identity beside the token (or clear a
   # stale one so a fresh token is never paired with an old identity).
   capture_identity "$name"
-  if [[ -n "$CAPTURE_RECOVERY_OP" ]]; then
-    write_active_from_reconcile "$name" || fail "captured '$name' but could not recover .active; transition journal preserved"
-    active_sync_store "$name" force || fail "captured '$name' but account-store recovery lost the lease; transition journal preserved"
-    read_store_generation_for_active "$name" >/dev/null || fail "captured '$name' but account-store recovery was not committed; transition journal preserved"
-    clear_transition_journal "$CAPTURE_RECOVERY_OP" || fail "captured '$name' but transition journal cleanup failed; rerun capture"
-    echo "Recovered transition journal by capturing and activating profile '$name'"
-    CAPTURE_RECOVERY_OP=""
-  fi
 }
 
-reconcile_journal_command() {
-  acquire_lock
-  reconcile_transition_journal
-}
-
-reconcile_profile() {
-  local active="" marker_rc=0 original="" outcome="already_consistent"
-  [[ -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" ]] || fail_code 46 "reconcile cannot run with delegated lock authority"
-  [[ "${FLYWHEEL_PROFILE_IDENTITY_BYPASS:-}" != "1" ]] || fail_code 46 "reconcile cannot bypass live identity verification"
-  acquire_lock
-  active_marker_structural_gate
-  reconcile_after_acquire
-  configure_identity_bypass
-  mkdir -p "$POOL_DIR"
-  chmod 700 "$POOL_DIR" 2>/dev/null || true
-  active=$(read_active_marker_strict 2>/dev/null) || marker_rc=$?
-  original="$active"
-  RECONCILE_MODE=1
-  reconcile_stale_active_locked "$marker_rc" "$active"
-  if [[ "$LIVE_PREIMAGE_STATE" == "absent" ]]; then
-    printf '{"outcome":"no_credential"}\n'
-    return 10
-  fi
-  active="$RECONCILED_ACTIVE"
-  [[ "$active" == "$original" && "$marker_rc" -eq 0 ]] || outcome="repaired"
-  sync_identity "$active"
-  if [[ "$outcome" == "repaired" ]]; then
-    printf '{"outcome":"repaired","from":"%s","to":"%s","displaySynced":%s}\n' "${original:-absent}" "$active" "$DISPLAY_SYNCED"
-  else
-    printf '{"outcome":"already_consistent","freshened":true,"displaySynced":%s}\n' "$DISPLAY_SYNCED"
-  fi
-}
+mkdir -p "$POOL_DIR"
+chmod 700 "$POOL_DIR" 2>/dev/null || true
 
 # Arm the lock cleanup GLOBALLY, before any command can acquire a lock. This
 # covers the FLY-852 delegated path (acquire_lock returns early without setting
@@ -2460,46 +655,13 @@ reconcile_profile() {
 # accounts lock or the shared ~/.claude.json.lock. Both releases no-op when
 # their *_HELD flag is 0, so this is safe in delegated mode (parent owns the
 # accounts lock; child never touches it).
-trap finalize EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap cleanup_locks EXIT
 
 case "${1:-}" in
   list)    list_profiles ;;
   status)  show_status ;;
-  use)
-    [[ -n "${2:-}" ]] || usage
-    begin_audit use "$2" identity_check_pending
-    use_profile "$2"
-    ;;
-  next)
-    begin_audit next "" identity_check_pending
-    next_profile
-    ;;
-  capture)
-    [[ -n "${2:-}" ]] || usage
-    begin_audit capture "$2" identity_check_pending
-    capture_profile "$2"
-    ;;
-  reconcile)
-    [[ -z "${2:-}" ]] || usage
-    begin_audit reconcile "" identity_check_pending
-    reconcile_profile
-    ;;
-  anchor)
-    [[ -n "${2:-}" && -n "${3:-}" ]] || usage
-    evidence="$IDENTITY_MAP_FILE"
-    if [[ -n "${4:-}" ]]; then
-      [[ "${4:-}" == "--evidence" && -n "${5:-}" && -z "${6:-}" ]] || usage
-      evidence="$5"
-    fi
-    begin_audit anchor "$2" "${3#--}_pending"
-    anchor_profile "$2" "$3" "$evidence"
-    ;;
-  verify)
-    [[ -n "${2:-}" && "${3:-}" == "--source" && -n "${4:-}" && -z "${5:-}" ]] || usage
-    verify_profile "$2" "$4"
-    ;;
-  reconcile-journal) reconcile_journal_command ;;
+  use)     [[ -n "${2:-}" ]] || usage; use_profile "$2" ;;
+  next)    next_profile ;;
+  capture) [[ -n "${2:-}" ]] || usage; capture_profile "$2" ;;
   *)       usage ;;
 esac

@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 /**
- * Flywheel Inbox MCP Server — durable Lead mailbox acknowledgements.
+ * Flywheel Inbox MCP Server — CommDB → Lead channel push delivery.
  *
- * PID-based lease file signals readiness to Bridge's runtime selector.
+ * Polls CommDB for unread instructions addressed to this Lead and delivers
+ * them via `notifications/claude/channel`. PID-based lease file signals
+ * readiness to Bridge's runtime selector.
  *
  * FLY-47: replaces Discord control channel for Bridge→Lead communication.
- * Lease is written AFTER server.connect() so Bridge never sees a "ready"
- * signal while the MCP transport is still half-wired.
+ * FLY-109: at-least-once semantics via delivered_at + explicit model-triggered
+ * flywheel_inbox_ack tool. Lease is written AFTER server.connect() so Bridge
+ * never sees a "ready" signal while the MCP transport is still half-wired.
  */
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -15,10 +19,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CommDB } from "flywheel-comm/db";
 import { z } from "zod";
 import {
-	deleteLease as deleteChannelLease,
-	writeLease as writeChannelLease,
-} from "./channel-lease.js";
-import { handleBatchAck, handleEventAck } from "./delivery.js";
+	type DeliveryMessage,
+	handleAck,
+	processPendingDeliveries,
+} from "./delivery.js";
 
 // ── Required env vars (injected by claude-lead.sh) ──
 
@@ -32,6 +36,19 @@ if (!commDbPath) {
 }
 if (!leadId) {
 	process.stderr.write("FLYWHEEL_LEAD_ID is required\n");
+	process.exit(1);
+}
+
+// Retry window: how long after a delivery before we re-push an unacked message.
+// Default 30s balances "don't spam on ack latency" vs "don't wait too long on drop".
+const RETRY_WINDOW_SEC = Number.parseInt(
+	process.env.FLYWHEEL_INBOX_RETRY_WINDOW_SEC ?? "30",
+	10,
+);
+if (!Number.isFinite(RETRY_WINDOW_SEC) || RETRY_WINDOW_SEC <= 0) {
+	process.stderr.write(
+		`FLYWHEEL_INBOX_RETRY_WINDOW_SEC must be a positive integer (got: ${process.env.FLYWHEEL_INBOX_RETRY_WINDOW_SEC})\n`,
+	);
 	process.exit(1);
 }
 
@@ -52,14 +69,21 @@ function openDb(): void {
 }
 
 // ── Lease management ──
-// The v1 wire shape is {pid, startedAt}.
 
 function writeLease(): void {
-	writeChannelLease(leasePath, { pid: process.pid });
+	mkdirSync(leaseDir, { recursive: true });
+	writeFileSync(
+		leasePath,
+		JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+	);
 }
 
 function deleteLease(): void {
-	deleteChannelLease(leasePath);
+	try {
+		unlinkSync(leasePath);
+	} catch {
+		// Already deleted or never written — fine
+	}
 }
 
 // ── MCP Server ──
@@ -78,61 +102,22 @@ const server = new McpServer(
 	},
 );
 
+// Tool: flywheel_inbox_ack — called by the Lead model after it has processed
+// an inbox message. This is the at-least-once ack; without it the message will
+// be redelivered after RETRY_WINDOW_SEC.
 server.tool(
-	"flywheel_inbox_ack_batch",
-	"Acknowledge a durable mailbox batch after processing every message in it. Use the batch_id from the mailbox-batch header. Idempotent; a late acknowledgement is safely ignored by Bridge.",
+	"flywheel_inbox_ack",
+	"Acknowledge a processed inbox message by its message_id. Call this exactly once per channel message you receive (the message_id is in the notification's meta field). Idempotent — repeat calls are safe.",
 	{
-		batch_id: z.string().min(1).describe("The durable mailbox batch id"),
+		message_id: z
+			.string()
+			.describe("The message_id from the channel notification's meta field"),
 	},
-	async ({ batch_id }) => {
-		const result = handleBatchAck(commDb, {
-			leadId: leadId!,
-			batchId: batch_id,
-		});
-		return result.ok
-			? {
-					content: [
-						{
-							type: "text" as const,
-							text: `batch ACK queued: ${result.batchId}`,
-						},
-					],
-				}
-			: {
-					content: [{ type: "text" as const, text: `Error: ${result.error}` }],
-					isError: true,
-				};
-	},
-);
-
-server.tool(
-	"flywheel_inbox_ack_event",
-	"Acknowledge a durable Flywheel Lead event. Use the event_seq, project, and token included in that event's ACK instructions.",
-	{
-		event_seq: z
-			.number()
-			.int()
-			.positive()
-			.describe("The global event sequence from the ACK instructions"),
-		project: z.string().min(1).describe("The Flywheel project name"),
-		token: z.string().min(1).describe("The per-event bearer ACK token"),
-	},
-	async ({ event_seq, project, token }) => {
-		const result = handleEventAck(commDb, {
-			leadId: leadId!,
-			eventSeq: event_seq,
-			ackToken: token,
-			project,
-			expectedProject: projectName,
-		});
+	async ({ message_id }) => {
+		const result = handleAck(commDb, message_id, leadId!);
 		if (result.ok) {
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `ACK receipt queued: event ${result.eventSeq}`,
-					},
-				],
+				content: [{ type: "text" as const, text: `acked: ${message_id}` }],
 			};
 		}
 		return {
@@ -141,6 +126,35 @@ server.tool(
 		};
 	},
 );
+
+// ── Poll loop ──
+
+const POLL_INTERVAL_MS = 1000;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function pollOnce(): Promise<void> {
+	try {
+		await processPendingDeliveries(
+			commDb,
+			leadId!,
+			RETRY_WINDOW_SEC,
+			async (msg: DeliveryMessage) => {
+				await server.server.notification({
+					method: "notifications/claude/channel",
+					params: {
+						content: msg.content,
+						meta: {
+							from: msg.from_agent,
+							message_id: msg.id,
+						},
+					},
+				});
+			},
+		);
+	} catch (err) {
+		process.stderr.write(`[inbox-mcp] Poll error: ${(err as Error).message}\n`);
+	}
+}
 
 // ── Startup ──
 
@@ -163,12 +177,27 @@ async function main(): Promise<void> {
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
 
-	// Write PID lease LAST — by this point transport is connected and tools are
-	// registered, so Bridge seeing the lease means acknowledgements can be handled.
+	// Start polling after MCP connection is established
+	pollTimer = setInterval(() => {
+		pollOnce().catch((err) => {
+			process.stderr.write(
+				`[inbox-mcp] Poll error: ${(err as Error).message}\n`,
+			);
+		});
+	}, POLL_INTERVAL_MS);
+
+	// Write PID lease LAST — by this point transport is connected and poll loop
+	// is running, so Bridge seeing the lease means we can actually deliver.
+	// The remaining race (client-side handler not yet registered) is absorbed
+	// by the ack/retry machinery in RETRY_WINDOW_SEC.
 	writeLease();
 
 	// Shutdown handler
 	const shutdown = () => {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
 		deleteLease();
 		try {
 			commDb?.close();
@@ -182,7 +211,7 @@ async function main(): Promise<void> {
 	process.on("SIGINT", shutdown);
 
 	process.stderr.write(
-		`[inbox-mcp] Ready — acknowledgement tools for ${leadId} on ${commDbPath}\n`,
+		`[inbox-mcp] Ready — polling for ${leadId} from ${commDbPath} (retry window ${RETRY_WINDOW_SEC}s)\n`,
 	);
 }
 

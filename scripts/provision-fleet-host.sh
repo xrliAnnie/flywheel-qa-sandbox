@@ -82,38 +82,18 @@ HOST_JSON="$FW/host.json"
 # install actions. Sourcing only defines functions (guarded, no side effects).
 # shellcheck source=lib/host-config.sh
 source "$SCRIPT_DIR/lib/host-config.sh"
-# shellcheck source=lib/lead-restart-lifecycle.sh
-source "$SCRIPT_DIR/lib/lead-restart-lifecycle.sh"
 # shellcheck source=lib/supervisor.sh
 source "$SCRIPT_DIR/lib/supervisor.sh"
 # shellcheck source=lib/platform-deps.sh
 source "$SCRIPT_DIR/lib/platform-deps.sh"
 # shellcheck source=lib/script-sanity.sh
 source "$SCRIPT_DIR/lib/script-sanity.sh"
-# shellcheck source=lib/path-hygiene.sh
-source "$SCRIPT_DIR/lib/path-hygiene.sh"
 
 # ── helpers ───────────────────────────────────────────────────────────────
 log()  { echo "[provision] $*"; }
 plan() { echo "[dry-run] would: $*"; }
 warn() { echo "[provision][warn] $*" >&2; }
 die()  { echo "[provision][error] $*" >&2; exit 1; }
-
-# ── FLY-1389 P1-b: temp/worktree source guard on the EFFECTIVE-GLOBAL
-# destination. The provisioner writes global content (bin scripts, hooks,
-# LaunchAgents) sourced from REPO_ROOT — provisioning the real ~/.flywheel
-# from a temp/worktree checkout persists soon-to-vanish paths. Judged on the
-# RESOLVED destination, not the call shape: an explicit fake --home stays
-# allowed, and so does a fully-sandboxed run (hermetic suites fake HOME too
-# — a destination that is itself a temp path is a test sandbox, not this
-# machine's global config). Dry-run writes nothing → not guarded.
-_fw_canon="$(path_hygiene_canonicalize "$FW" 2>/dev/null || echo "")"
-if [ "$DRY_RUN" -eq 0 ] \
-   && path_hygiene_same_path "$FW" "$HOME/.flywheel" \
-   && { [ -z "$_fw_canon" ] || ! path_hygiene_is_temp_path "$_fw_canon"; } \
-   && is_temp_or_worktree_root "$REPO_ROOT"; then
-  die "refusing to provision the effective-global $FW from temp/worktree checkout $REPO_ROOT — global config must come from the main checkout (FLY-1389)"
-fi
 
 # FLY-954: the provisioner is a WRITER — it must not trust env vars designed
 # for runtime READERS (the wrappers). Incident 2026-07-06: a runner-born
@@ -353,9 +333,7 @@ phase_flywheel_home() {
   # write-protected 555 — a degenerate source must fail the provision loudly,
   # never install silently; bare cp is banned for <state>/bin).
   local f
-  for f in flywheel-lead-wrapper-v2.sh \
-      flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
-      flywheel-bridge-wrapper.sh restart-services.sh; do
+  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
     if [ -f "$REPO_ROOT/scripts/$f" ]; then
       if [ "$DRY_RUN" -eq 1 ]; then
         plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"
@@ -366,11 +344,14 @@ phase_flywheel_home() {
       fi
     fi
   done
-  # The installed wrapper sources support libs beside itself. Publish that
-  # closure in both monorepo and prebuilt installs.
-  run mkdir -p "$FW/bin/lib"
-  for f in lib/host-config.sh lib/lead-address.sh; do
-      [ -f "$REPO_ROOT/scripts/$f" ] || die "tree missing support lib: scripts/$f"
+  # FLY-1062 (Codex R2#2): PREBUILT mode installs the wrappers' support-lib
+  # closure alongside them — a copied wrapper sources $SELF_DIR/lib/host-config.sh
+  # and would otherwise silently fall back to ~/Dev/flywheel. Monorepo mode is
+  # untouched (production wrappers keep today's resolution behavior).
+  if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
+    run mkdir -p "$FW/bin/lib"
+    for f in lib/host-config.sh; do
+      [ -f "$REPO_ROOT/scripts/$f" ] || die "prebuilt tree missing support lib: scripts/$f"
       if [ "$DRY_RUN" -eq 1 ]; then
         plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"
       else
@@ -378,19 +359,20 @@ phase_flywheel_home() {
         install_script_atomic "$REPO_ROOT/scripts/$f" "$FW/bin/$f" \
           || die "support lib failed sanity/atomic install: $f"
       fi
-  done
+    done
+  fi
   # FLY-1185 §2.7 (prevention leg): machine-level playwright default-off. A host
   # without a Claude settings file yet is narrated, not failed — the runbook's
   # first Claude login creates it and the operator re-runs this script then.
   if [ -f "$HOME_DIR/.claude/settings.json" ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
-      plan "setup-mcp-on-demand.sh apply $HOME_DIR/.claude/settings.json (playwright default-off + opt-in headless)"
+      plan "setup-mcp-on-demand.sh $HOME_DIR/.claude/settings.json (playwright default-off)"
     else
-      run bash "$REPO_ROOT/scripts/setup-mcp-on-demand.sh" apply "$HOME_DIR/.claude/settings.json" \
+      run bash "$REPO_ROOT/scripts/setup-mcp-on-demand.sh" "$HOME_DIR/.claude/settings.json" \
         || die "setup-mcp-on-demand failed (settings untouched — fix and re-run)"
     fi
   else
-    log "no $HOME_DIR/.claude/settings.json yet — run scripts/setup-mcp-on-demand.sh apply after first Claude login"
+    log "no $HOME_DIR/.claude/settings.json yet — run scripts/setup-mcp-on-demand.sh after first Claude login"
   fi
 }
 
@@ -447,20 +429,12 @@ phase_skills() {
 _fleet_linux_specs() {
   local fw="$FLYWHEEL_DIR" st="$FLYWHEEL_STATE_DIR"
   jq -nc --arg fw "$fw" '{name:"flywheel-bridge",kind:"service",exec:("/bin/bash "+$fw+"/scripts/flywheel-bridge-wrapper.sh"),keepAlive:true,stdout:"/tmp/flywheel-bridge.log"}'
-  jq -nc --arg fw "$fw" --arg st "$st" '{name:"flywheel-updater",kind:"path",exec:("/bin/bash "+$fw+"/scripts/update-flywheel.sh"),watch:[($st+"/self-ship-urgent.d")],schedule:[{hour:0,minute:0},{hour:12,minute:0}]}'
+  jq -nc --arg fw "$fw" --arg st "$st" '{name:"flywheel-updater",kind:"path",exec:("/bin/bash "+$fw+"/scripts/update-flywheel.sh"),watch:[($st+"/self-ship-pending.d")],schedule:[{hour:0,minute:0},{hour:12,minute:0}]}'
   jq -nc --arg fw "$fw" '{name:"flywheel-daily-standup",kind:"timer",exec:("/bin/bash "+$fw+"/scripts/daily-standup.sh"),schedule:[{hour:3,minute:0}]}'
-  local m project_name lead_id backend
+  local m
   for m in "$FW/manifests"/*.json; do
     [ -e "$m" ] || continue
-    project_name=$(jq -er '.projectName' "$m") || return 1
-    lead_id=$(jq -er '.leadId' "$m") || return 1
-    backend=$(lead_restart_project_backend "$FW/projects.json" "$project_name" "$lead_id") || return 1
-    if [ "$backend" != "claude-code" ]; then
-      warn "lead ${project_name}/${lead_id}: skipping bespoke backend ${backend}; generic provision only installs Claude v2"
-      continue
-    fi
-    jq -c --arg st "$st" --arg m "$m" \
-      '{name:("flywheel-lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$st+"/bin/flywheel-lead-wrapper-v2.sh "+$m),keepAlive:true}' "$m"
+    jq -c --arg fw "$fw" --arg m "$m" '{name:("flywheel-lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$fw+"/scripts/flywheel-lead-wrapper.sh "+$m),keepAlive:true}' "$m"
   done
 }
 
@@ -525,11 +499,18 @@ phase_launchd() {
       [ "$kind" = "aux" ] || continue
       step "  aux job: $label"
     done < <(jq -r '.launchdJobs[] | [.label, .kind] | @tsv' "$MANIFEST")
-    # Leads: delegated to the real host, NOT auto-run here (Codex R1 MEDIUM).
-    # The correct clean-host sequence is materialize → install → verify; we
-    # narrate it rather than mutate the operator's real launchd domain here.
+    # leads: delegated to the real host, NOT auto-run here (Codex R1 MEDIUM).
+    # `flywheel-fleet.sh apply` is a carrier-DIFF engine (model/backend cutover)
+    # and reports not-installed/no-carrier on a clean host — it does NOT do a
+    # from-scratch bring-up. `flywheel-daemon.sh install --all` installs from
+    # EXISTING manifests, which on a clean host don't exist yet: each Lead's
+    # manifest is generated by claude-lead.sh on its FIRST launch (daemon.sh:21).
+    # So the correct clean-host sequence is operator-run + verified on the real
+    # machine per the runbook; we narrate it rather than fire a command that
+    # would silently no-op (or that this PR is forbidden to run here anyway).
     step "deploy lead launchd jobs from projects.json — per Lead:"
-    step "  1) materialize-lead-manifests.sh --home $HOME_DIR"
+    step "  1) run claude-lead.sh ONCE to generate the Lead's manifest, then stop it"
+    step "     (the launchd wrapper EXITS if no manifest exists — it does not self-generate)"
     step "  2) flywheel-daemon.sh install <lead> — generate plist + bootstrap from the manifest"
     step "  NOTE: run + verify on the REAL host per the runbook (flywheel-daemon.sh status)"
   fi

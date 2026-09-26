@@ -45,16 +45,6 @@ _sup_systemd_dir() { printf '%s' "${FLYWHEEL_SYSTEMD_USER_DIR:-$HOME/.config/sys
 # _sup_spec_get <spec-json> <jq-filter> — read a field, empty if null/absent.
 _sup_spec_get() { jq -r "$2 // empty" <<<"$1" 2>/dev/null; }
 
-# supervisor_bridge_spec <wrapper-path> — the single Bridge service policy
-# consumed by both packaged bootstrap and the monorepo installer.
-supervisor_bridge_spec() {
-  local wrapper="$1"
-  case "$wrapper" in /*) ;; *) _sup_err "Bridge wrapper path must be absolute"; return 1 ;; esac
-  case "$wrapper" in *$'\n'*|*$'\r'*) _sup_err "invalid Bridge wrapper path"; return 1 ;; esac
-  jq -nc --arg wrapper "$wrapper" \
-    '{name:"bridge",kind:"service",exec:("/bin/bash "+$wrapper),keepAlive:true,throttleInterval:30,stdout:"/tmp/flywheel-bridge.log"}'
-}
-
 # _sup_oncalendar <spec-json> — emit one "OnCalendar=*-*-* HH:MM:00" line per
 # schedule entry (launchd StartCalendarInterval analog).
 _sup_oncalendar() {
@@ -81,9 +71,6 @@ _sup_linux_install() {
   local keepalive stdout
   keepalive="$(_sup_spec_get "$spec" '.keepAlive')"
   stdout="$(_sup_spec_get "$spec" '.stdout')"
-  local timeout_seconds interval_seconds
-  timeout_seconds="$(_sup_spec_get "$spec" '.timeoutSeconds')"
-  interval_seconds="$(_sup_spec_get "$spec" '.intervalSeconds')"
 
   # Always render a .service. service-kind = long-running; timer/path = oneshot.
   local svc="$dir/$name.service"
@@ -98,7 +85,6 @@ _sup_linux_install() {
     else
       echo "Type=oneshot"
       echo "ExecStart=$exec_cmd"
-      [ -n "$timeout_seconds" ] && echo "TimeoutStartSec=$timeout_seconds"
     fi
     [ -n "$stdout" ] && { echo "StandardOutput=append:$stdout"; echo "StandardError=append:$stdout"; }
     echo ""
@@ -115,12 +101,7 @@ _sup_linux_install() {
         echo "Description=Flywheel $name timer"
         echo ""
         echo "[Timer]"
-        if [ -n "$interval_seconds" ]; then
-          echo "OnBootSec=${interval_seconds}s"
-          echo "OnUnitActiveSec=${interval_seconds}s"
-        else
-          _sup_oncalendar "$spec"
-        fi
+        _sup_oncalendar "$spec"
         echo "Persistent=true"
         echo ""
         echo "[Install]"
@@ -185,12 +166,6 @@ _sup_darwin_install() {
   [ -n "$exec_cmd" ] || { _sup_err "spec '$name' missing exec"; return 1; }
   keepalive="$(_sup_spec_get "$spec" '.keepAlive')"
   stdout="$(_sup_spec_get "$spec" '.stdout')"
-  local interval_seconds throttle_interval
-  interval_seconds="$(_sup_spec_get "$spec" '.intervalSeconds')"
-  throttle_interval="$(_sup_spec_get "$spec" '.throttleInterval')"
-  [ -n "$throttle_interval" ] || throttle_interval=15
-  [[ "$throttle_interval" =~ ^[1-9][0-9]*$ ]] \
-    || { _sup_err "invalid throttleInterval for $name"; return 1; }
 
   local dir label plist
   dir="$(_sup_launchd_dir)"; mkdir -p "$dir" || return 1
@@ -212,16 +187,13 @@ _sup_darwin_install() {
     if [ "$kind" = "service" ]; then
       echo '  <key>RunAtLoad</key><true/>'
       [ "$keepalive" = "true" ] && echo '  <key>KeepAlive</key><true/>'
-      echo "  <key>ThrottleInterval</key><integer>$throttle_interval</integer>"
+      echo '  <key>ThrottleInterval</key><integer>15</integer>'
     fi
     if [ "$(jq -r '(.schedule | length) // 0' <<<"$spec" 2>/dev/null)" -gt 0 ] 2>/dev/null; then
       echo '  <key>StartCalendarInterval</key>'
       echo '  <array>'
       jq -r '.schedule[]? | "    <dict><key>Hour</key><integer>\(.hour // 0)</integer><key>Minute</key><integer>\(.minute // 0)</integer></dict>"' <<<"$spec"
       echo '  </array>'
-    fi
-    if [ -n "$interval_seconds" ]; then
-      echo "  <key>StartInterval</key><integer>$interval_seconds</integer>"
     fi
     if [ "$(jq -r '(.watch | length) // 0' <<<"$spec" 2>/dev/null)" -gt 0 ] 2>/dev/null; then
       echo '  <key>QueueDirectories</key>'
@@ -273,21 +245,6 @@ supervisor_stop()    { _sup_verb stop "$@"; }
 supervisor_restart() { _sup_verb restart "$@"; }
 supervisor_status()  { _sup_verb status "$@"; }
 supervisor_is_loaded(){ _sup_verb is_loaded "$@"; }
-supervisor_trigger()  { _sup_verb trigger "$@"; }
-
-# supervisor_assert_keepalive <name> — prove both service registration and the
-# durable restart policy before/after a launchd restart. Linux Restart=always
-# is enforced by the renderer; is-active is the runtime assertion there.
-supervisor_assert_keepalive() {
-  local name="$1"
-  supervisor_is_loaded "$name" service >/dev/null 2>&1 || return 1
-  if [ "$(supervisor_backend)" = "launchd" ]; then
-    local plist
-    plist="$(_sup_launchd_dir)/$(_sup_darwin_label "$name").plist"
-    [ -f "$plist" ] || return 1
-    [ "$(plutil -extract KeepAlive raw -o - "$plist" 2>/dev/null)" = "true" ] || return 1
-  fi
-}
 
 _sup_verb() {
   local verb="$1" name="$2" kind="${3:-service}"
@@ -300,7 +257,6 @@ _sup_verb() {
         restart)   systemctl --user restart "$unit" ;;
         status)    systemctl --user status "$unit" ;;
         is_loaded) systemctl --user is-active "$unit" ;;
-        trigger)   systemctl --user start "$name.service" ;;
       esac
       ;;
     launchd)
@@ -312,7 +268,6 @@ _sup_verb() {
         restart)   launchctl kickstart -k "$target" ;;
         status)    launchctl print "$target" ;;
         is_loaded) launchctl print "$target" ;;
-        trigger)   launchctl kickstart "$target" ;;
       esac
       ;;
     container) _sup_err "container backend not implemented (see FLY-652)"; return 3 ;;

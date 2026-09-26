@@ -7,10 +7,8 @@ Issue: FLY-913
 ## 是什么
 
 全局 PreToolUse hook(matcher: Bash)`flywheel-restart-guard.py`:任何 Claude session 里
-匹配「手动重启/杀 Flywheel 服务」的 Bash 命令被**硬 deny**,报错给出 founder 紧急入口
-(`scripts/request-restart.sh`)。该入口只负责向 `self-ship-urgent.d` 原子写 token 并 nudge
-独立的 `com.flywheel.updater`;正常变更则只等本地 00:00/12:00 班车。真正的全量重启由 updater 发起,发起 Lead 因而也在
-被重启集合里。根因:手动 `launchctl kickstart` / kill+重拉会漏
+匹配「手动重启/杀 Flywheel 服务」的 Bash 命令被**硬 deny**,报错直接给出正确命令
+(`scripts/restart-services.sh`)。根因:手动 `launchctl kickstart` / kill+重拉会漏
 pnpm build(跑旧代码)、漏 core 频道部署播报、无健康检查回滚(2026-07-06 事故,
 一天 4 次)。口头承诺和 agent memory 都不强制行为,只有结构护栏强制。
 
@@ -22,14 +20,13 @@ pnpm build(跑旧代码)、漏 core 频道部署播报、无健康检查回滚(2
 | P2 | kill 族 + flywheel 进程标识 | `pgrep -f run-bridge \| xargs kill -9`、`pkill -f claude-lead.sh` |
 | P3 | 段首执行器直启 run-bridge(含 `bash -c "…"` 递归一层) | `nohup npx tsx scripts/run-bridge.ts &` |
 
-**唯一即时入口**:`request-restart.sh`,且每次都要 founder 单独授权;merge 永不即时重启。
-`restart-services.sh`(仓库/部署副本两个路径)仍不会命中 hook,但只作为 updater 内部实现,
-不是 Lead 兜底入口。`update-flywheel.sh`、`launchctl print/list`、裸 `pgrep`、grep/rg/sed/cat
-读源码、QA slot 的 worktree 直跑进程操作(不带 com.flywheel 标签)、无关 kill 也放行。
+**放行**(根本不命中):`restart-services.sh`(仓库/部署副本两个路径)、
+`update-flywheel.sh`、`launchctl print/list`、裸 `pgrep`、grep/rg/sed/cat 读源码、
+QA slot 的 worktree 直跑进程操作(不带 com.flywheel 标签)、无关 kill。
 
 ## Bypass(唯一成文处 — 别处不宣传)
 
-真急救(如 updater/紧急票入口都不可用、Bridge 已死需要非常规操作)时,经 founder 单独拍板后在命令前
+真急救(如 restart-services.sh 本身坏了、Bridge 已死需要非常规操作)时,在命令前
 加**行首 env 赋值**:
 
 ```
@@ -47,12 +44,6 @@ FLYWHEEL_RESTART_GUARD_BYPASS="<非空理由>" <你的命令>
 
 这是「响-bypass」形态;若 founder 在 ship gate 拍「完全封死」,实现侧删 bypass
 分支即可(单测矩阵已隔离该路径)。
-
-### Lead 救援(FLY-1602)
-
-Lead 禁止用 `launchctl kickstart -k`、`flywheel-daemon.sh restart` 或直接强杀做救援；这些路径绕过 replacement intent、body sweep、identity lease 与 storm gate，可能留下「body 活着但 supervisor 已死」的孤儿态。正常部署等 updater 班车;即时重启只有 founder 单独授权的 `scripts/request-restart.sh` → `com.flywheel.updater` 紧急票。`scripts/restart-services.sh` 只供 updater 调用,不得作为 Lead 兜底第三路。
-
-v2 scheduler 只会对精确 Lead launchd target 发 bounded `SIGTERM`，让 supervisor 自己 cleanup 后由 KeepAlive 重生；它和 `restart-services.sh` 通过 global/subordinate restart mutex 排他。SIGTERM 无响应时 scheduler 只 backoff，不升级 `SIGKILL`。此时等待当前 deploy wave 收敛,或请 founder 拍板后运行 `scripts/request-restart.sh`,由 updater 走 bootout → body sweep → controlled arm → bootstrap。若上轮留下 replacement marker，下一轮会先 reconcile；不需要也不应手工 `resume` lease。
 
 审计日志:每次 deny 与 bypass 各落一行(ts / session_id / cwd / pattern /
 decision / 命令截断 2KB / bypass 理由)。普通放行不记。
@@ -85,7 +76,7 @@ per-invocation 现读,后续更新 = 重新 cp,真·零重启。
 
 | 项 | 结果 |
 |----|------|
-| 手动重启命令(无害 target)| 被 deny,报错给出 request-restart.sh;审计落行(session `3a123b98`,pattern P1)|
+| 手动重启命令(无害 target)| 被 deny,报错给出 restart-services.sh;审计落行(session `3a123b98`,pattern P1)|
 | `restart-services.sh --dry-run` | 放行,正常输出计划 |
 | `launchctl print` / 裸 `pgrep -f run-bridge` | 放行 |
 | bypass 连发两次 | 两次都放行且**两条真实 severe alert 落 #flywheel-alerts**(msg `1523798719731077294` / `1523798724923363490`,间隔 1.2s —— per-invocation 签名击穿日去重)+ 两条 bypass 审计行 |

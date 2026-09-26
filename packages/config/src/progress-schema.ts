@@ -2,8 +2,9 @@
  * FLY-795: the shared `progress.md` ledger schema — a LIGHT, agent-agnostic
  * execution-state cursor committed to the issue branch B.
  *
- * OWNERSHIP: FLY-795 owns the schema + location; workflow nodes update the
- * same cursor across design / implement / QA. ONE schema, no divergence.
+ * OWNERSHIP: FLY-795 owns the schema + location; FLY-793's three-stage
+ * PhaseOrchestrator CONSUMES it at each phase handoff; FLY-799 aligns on the
+ * same 甲 model. ONE schema, no divergence (do not build two).
  *
  * LIGHT by design (Annie's Q4 decision): the ledger records only the cursor
  * (phase + chunk statuses + next-step + doc pointers). The design rationale
@@ -20,7 +21,7 @@
  */
 
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import type { WorkflowPhaseRole } from "./phase-roles.js";
+import type { ThreeStagePhase } from "./three-stage-phases.js";
 
 /** Per-chunk lifecycle. `qa-pass`/`qa-fail` are set by the QA phase. */
 export type ChunkStatus = "todo" | "doing" | "done" | "qa-pass" | "qa-fail";
@@ -33,7 +34,7 @@ const CHUNK_STATUSES: ReadonlySet<string> = new Set<ChunkStatus>([
 	"qa-fail",
 ]);
 
-const PHASES: ReadonlySet<string> = new Set<WorkflowPhaseRole>([
+const PHASES: ReadonlySet<string> = new Set<ThreeStagePhase>([
 	"design",
 	"implement",
 	"qa",
@@ -42,7 +43,7 @@ const PHASES: ReadonlySet<string> = new Set<WorkflowPhaseRole>([
 /**
  * FLY-795: map a fine-grained pipeline stage (the `flywheel-comm stage set`
  * vocabulary: started / onboard / brainstorm / … / ship / completed) to its
- * DAG workflow grouping, or undefined for an unknown stage. Shared so the
+ * three-stage phase grouping, or undefined for an unknown stage. Shared so the
  * resume-detect side (teamlead cross-checks the StateStore stage vs the ledger
  * phase) and the write side (the `progress` command rejects a `--phase` that
  * contradicts the session's authoritative stage) use ONE mapping — no drift.
@@ -70,7 +71,7 @@ const QA_STAGES: ReadonlySet<string> = new Set([
 	"code_review_qa",
 ]);
 
-export function stageToPhase(stage: string): WorkflowPhaseRole | undefined {
+export function stageToPhase(stage: string): ThreeStagePhase | undefined {
 	if (DESIGN_STAGES.has(stage)) return "design";
 	if (IMPLEMENT_STAGES.has(stage)) return "implement";
 	if (QA_STAGES.has(stage)) return "qa";
@@ -103,7 +104,7 @@ export interface ProgressLedger {
 	issue: string;
 	title?: string;
 	/** references the Bridge stage grouping (design/implement/qa); not authoritative. */
-	phase: WorkflowPhaseRole;
+	phase: ThreeStagePhase;
 	/** cursor within the phase, e.g. "3/5". */
 	phaseCursor?: string;
 	/** ISO timestamp; injected by the writer at commit time. */
@@ -154,7 +155,7 @@ export function parseProgress(md: string): ProgressLedger {
 	}
 	return {
 		issue,
-		phase: phase as WorkflowPhaseRole,
+		phase: phase as ThreeStagePhase,
 		...(str(raw.title) && { title: str(raw.title) }),
 		...(str(raw.phaseCursor) && { phaseCursor: str(raw.phaseCursor) }),
 		...(str(raw.updated) && { updated: str(raw.updated) }),

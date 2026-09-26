@@ -1,19 +1,13 @@
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
-import { resolveFounderId } from "flywheel-comm/founder-attribution";
+import type { FounderUxGateMode } from "flywheel-config";
 import {
-	adapterTypeToFamily,
-	isDesignBackend,
-	isSkillFrameworkMode,
-	isSkillFrameworkVia,
-	isWorkflowPhaseRole,
+	isFounderUxGateEnabled,
+	isThreeStagePhaseRole,
 	resolveCompletionSessionRole,
-	type SkillFrameworkMode,
-	type SkillFrameworkVia,
-	verifyRepositoryBaselineSet,
 } from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
@@ -26,43 +20,27 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { ReconnectController } from "../HeartbeatService.js";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
 	type StateStore,
-	type WorkflowCompletionActivationContext,
 } from "../StateStore.js";
-import { normalizeTerminalFailureInfo } from "../terminal-failure-info.js";
-import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import { handleArtifactEvent } from "./artifact-event.js";
+import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
+import { isReviewHeld } from "./auto-qa-held.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import {
 	buildCodexInstruction,
-	buildMissingDesignPlanInstruction,
 	codexReviewTypeFor,
 } from "./codex-instruction.js";
-import type { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
-import type { CodexReviewIngest } from "./codex-review-ingest.js";
 import { commDbPathForProject } from "./commdb-path.js";
-import {
-	DESIGN_HTML_EVIDENCE_ERROR,
-	validateDesignHtmlCompletion,
-} from "./design-html-admission.js";
-import {
-	deliverDesignReviewManifest,
-	snapshotDesignReviewPlan,
-} from "./design-review-manifest.js";
 import {
 	hasPendingCompleteMarker,
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
 import type { EventFilter } from "./EventFilter.js";
-import {
-	evaluateFounderReviewAuthority,
-	type FounderReviewAuthorityResult,
-	founderReviewCheckpointEnabled,
-} from "./founder-review-authority.js";
+import { evaluateFounderUxStageGuard } from "./founder-ux/stage-guard.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import {
 	type IssueDisplayRefreshHolder,
@@ -74,70 +52,27 @@ import {
 	type LeadEventEnvelope,
 } from "./lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
-import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
 	isMergeBlocked,
-	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
+import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
 	type LifecycleShipInfra,
-	makeFinalizeWorkflowPhaseRoles,
+	makeFinalizeThreeStagePhases,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
-	settleShipAttemptFailed,
 } from "./post-ship-finalization.js";
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
-import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
-import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
-import { isReviewHeld } from "./review-hold.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
-import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
-import {
-	enqueueWorkflowReplacementLeadEvent,
-	resolveWorkflowReplacementLeadIntent,
-} from "./workflow-replacement-lead-event.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 // Re-export so existing callers (if any) keep working.
 export { commDbPathForProject } from "./commdb-path.js";
-
-/**
- * FLY-1329 (A5, Codex R1 HIGH-3): does this runner hold an UNEXPIRED park
- * declaration? The boot sweep (done-running-reconciler) got the parked-veto in
- * PR-A; plan v5 A5 requires the LIVE FLY-324 running→completed path to honour it
- * too (both sites). A runner that declared itself parked is asserting it is alive
- * and waiting — which contradicts a stage=completed force-complete. Readonly and
- * A MISSING comm.db means the runner never opened a channel, so there is no
- * parked signal and the completion is allowed (a genuine completed assertion
- * carries no parked marker). But an UNREADABLE comm.db — one that exists yet
- * throws on open/read (corrupt / locked) — is NOT evidence of "not parked"; it is
- * the absence of evidence, and this force-complete is destructive, so it must
- * FAIL CLOSED (veto) exactly like the boot sweep (Codex R2 HIGH).
- */
-function isRunnerDeclaredParked(execId: string, projectName: string): boolean {
-	if (/[/\\]|\.\./.test(projectName)) return false;
-	const dbPath = commDbPathForProject(projectName);
-	if (!existsSync(dbPath)) return false; // no channel opened = no parked signal
-	let declaredDb: CommDB | undefined;
-	try {
-		declaredDb = CommDB.openReadonly(dbPath);
-		return (
-			declaredDb.getEffectiveDeclaredState(execId, Date.now())?.kind ===
-			"parked"
-		);
-	} catch {
-		// A comm.db that exists but cannot be read is unresolved, not "not parked".
-		// Fail closed: treat as parked so the destructive completion is vetoed.
-		return true;
-	} finally {
-		declaredDb?.close();
-	}
-}
 
 interface IngestEvent {
 	event_id: string;
@@ -175,38 +110,6 @@ function resolveIdentifier(
 /** Coerce a value to number or undefined. */
 function asNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
-}
-
-function asWorkflowCompletionActivation(
-	value: unknown,
-): WorkflowCompletionActivationContext | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return undefined;
-	}
-	const record = value as Record<string, unknown>;
-	const activationId = asString(record.activationId);
-	const runId = asString(record.runId);
-	const nodeId = asString(record.nodeId);
-	const attempt = asNumber(record.attempt);
-	const turnEpoch = asNumber(record.turnEpoch);
-	if (
-		!activationId ||
-		!runId ||
-		!nodeId ||
-		!Number.isInteger(attempt) ||
-		(attempt ?? 0) < 1 ||
-		!Number.isInteger(turnEpoch) ||
-		(turnEpoch ?? 0) < 1
-	) {
-		return undefined;
-	}
-	return {
-		activationId,
-		runId,
-		nodeId,
-		attempt: attempt!,
-		turnEpoch: turnEpoch!,
-	};
 }
 
 function formatNotification(session: Session, eventType: string): string {
@@ -340,29 +243,6 @@ function handleCodexAutoTrigger(
 	const refreshedSession = store.getSession(event.execution_id);
 	const codexSkip = !!refreshedSession?.codex_skip;
 	const persistedPlanPath = refreshedSession?.plan_path;
-	const queueDesignPlanCorrection = (detail?: string): void => {
-		try {
-			const dbPath = commDbPathForProject(event.project_name);
-			mkdirSync(dirname(dbPath), { recursive: true });
-			const commDb = new CommDB(dbPath);
-			try {
-				commDb.insertInstruction(
-					"bridge",
-					event.execution_id,
-					buildMissingDesignPlanInstruction(event.execution_id, detail),
-				);
-				console.log(
-					`[codex-trigger] unbindable plan — correction instruction sent for ${event.execution_id}`,
-				);
-			} finally {
-				commDb.close();
-			}
-		} catch (err) {
-			console.warn(
-				`[codex-trigger] failed to write plan correction instruction for ${event.execution_id}: ${(err as Error).message}`,
-			);
-		}
-	};
 
 	// FLY-827: for CODE review, register the durable gate record (audit-friendly;
 	// the gate truth is an approved/skipped record for the CURRENT head or
@@ -433,38 +313,31 @@ function handleCodexAutoTrigger(
 	// Runner re-issues stage with --plan; await-codex-gate will time
 	// out (no skip.json, no result) → Runner reports to Lead.
 	if (reviewType === "design" && !persistedPlanPath) {
-		queueDesignPlanCorrection("stage_changed requires --plan <relative-path>");
-		return;
-	}
-
-	// FLY-1718 P3: default-on exact plan binding. The manifest write precedes
-	// CommDB delivery; a stable instruction id plus boot/periodic reconciliation
-	// closes the crash window between those two durable stores.
-	if (reviewType === "design") {
-		if (!refreshedSession || !persistedPlanPath) return;
-		const snapshot = snapshotDesignReviewPlan(
-			refreshedSession,
-			persistedPlanPath,
-		);
-		if (!snapshot.ok) {
-			queueDesignPlanCorrection(snapshot.message);
-			return;
-		}
 		try {
-			const manifest = store.advanceDesignReviewManifest({
-				executionId: event.execution_id,
-				projectName: event.project_name,
-				sourceEventId: event.event_id,
-				expectedPlanPath: persistedPlanPath,
-				expectedBlobSha: snapshot.blobSha,
-			});
-			const delivered = deliverDesignReviewManifest(store, manifest);
-			console.log(
-				`[codex-trigger] ${delivered.deduped ? "reconciled" : "queued"} design review manifest ${event.execution_id}/${manifest.revision}`,
-			);
+			const dbPath = commDbPathForProject(event.project_name);
+			mkdirSync(dirname(dbPath), { recursive: true });
+			const commDb = new CommDB(dbPath);
+			try {
+				commDb.insertInstruction(
+					"bridge",
+					event.execution_id,
+					[
+						`[FLY-137] ERROR: stage_changed to design_review requires --plan <relative-path>.`,
+						`Re-run: \`flywheel-comm stage set design_review --plan <path>\`.`,
+						`Codex design review was NOT triggered. Do not proceed to implement`,
+						`until --plan is provided. The await-codex-gate will time out`,
+						`without a skip marker or result file (fail-closed).`,
+					].join(" "),
+				);
+				console.log(
+					`[codex-trigger] missing plan_path — instruction sent to re-trigger for ${event.execution_id}`,
+				);
+			} finally {
+				commDb.close();
+			}
 		} catch (err) {
 			console.warn(
-				`[codex-trigger] failed to bind/deliver design instruction for ${event.execution_id}: ${(err as Error).message}`,
+				`[codex-trigger] failed to write missing-plan instruction for ${event.execution_id}: ${(err as Error).message}`,
 			);
 		}
 		return;
@@ -501,7 +374,7 @@ function handleCodexAutoTrigger(
 // moved verbatim to `issue-display-refresher.ts` — event-route keeps thin
 // forwards. When the unified refresher holder is wired (default), the
 // stage_changed branch enqueues a full derive-from-state refresh instead; the
-// legacy functions remain the fallback while the unified holder is unavailable.
+// legacy functions remain the `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` escape hatch.
 
 export function createEventRouter(
 	store: StateStore,
@@ -517,7 +390,7 @@ export function createEventRouter(
 	// FLY-560 Feature C: independent gating for the two chat-thread behaviours
 	// (emoji stamp vs attach pin). Defaults keep byte-compat: when a creator is
 	// passed without flags, emoji stamping stays ON (Feature A) and attach pin
-	// stays OFF (opt-in). Production passes both as enabled.
+	// stays OFF (opt-in). plugin.ts passes the resolved env flags.
 	featureFlags?: {
 		issueStatusEmojiEnabled?: boolean;
 		issueAttachPinEnabled?: boolean;
@@ -527,12 +400,16 @@ export function createEventRouter(
 	// again, so it leaves the reconnecting state (resumes normal monitoring +
 	// clears the "⚠️重连中" title). Absent / kill-switch → no-op.
 	reconnectHolder?: { current: ReconnectController | null },
-	codexReviewHold?: { current: CodexReviewHoldCoordinator | undefined },
-	codexReviewIngest?: { current: CodexReviewIngest | undefined },
-	reviewAuthorizationAlerts?: {
-		current: ReviewAuthorizationAlerts | undefined;
-	},
-	turnBeltReconciler?: { current: TurnBeltReconciler | undefined },
+	// FLY-579: auto-QA pipeline coordinator, passed as a late-bound holder (same
+	// pattern as reconnectHolder) because it is built AFTER createBridgeApp returns
+	// (it needs the LeadAlertNotifier, constructed later in startBridge). A main
+	// session entering awaiting_review spawns independent QA + holds the founder;
+	// qa_result events drive the verdict. Holder absent / .current undefined →
+	// existing behaviour byte-for-byte (no held records exist, isQaHeld is false).
+	autoQaCoordinator?: { current: AutoQaCoordinator | undefined },
+	// FLY-793: three-stage PhaseOrchestrator. Absent / .current undefined → no-op
+	// (byte-compat); onPhaseComplete gates on three-stage phase role + status.
+	phaseOrchestrator?: { current: PhaseOrchestrator | undefined },
 	// FLY-696 M1/④: late-bound Alerts-post for `account_rotation` events. Built in
 	// startBridge (needs the unified-channel DiscordOps, constructed after this
 	// router). `.current` undefined ⇒ the event is acked but not posted (byte-compat:
@@ -546,29 +423,23 @@ export function createEventRouter(
 	},
 	// FLY-907: late-bound unified issue-display refresher. `.current` set (the
 	// default once startBridge wires it) → stage_changed enqueues ONE unified
-	// derive-from-state refresh of all three faces; unset → the legacy per-face
-	// stamp+pin fallback.
+	// derive-from-state refresh of all three faces; unset (byte-compat /
+	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0) → the legacy per-face stamp+pin path.
 	issueDisplayRefresh?: IssueDisplayRefreshHolder,
 	// FLY-1185: the ship-entry lifecycle bundle (remote branch CAS + issue
 	// closeout + trailing sweep) built once at the composition root. Absent →
 	// classic finalization only (byte-compat).
 	lifecycleInfra?: LifecycleShipInfra,
-	// FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
-	// FLY-1165 scheduler consumer). Production always injects it; absent remains a
-	// compatibility no-op for embedding/tests.
-	terminalArchiveEnqueue?: (issueId: string) => void,
-	// FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews.
-	materializedHeadAuthority?: MaterializedHeadAuthority,
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
 		featureFlags?.issueStatusEmojiEnabled !== false;
 	const issueAttachPinEnabled = featureFlags?.issueAttachPinEnabled === true;
-	// FLY-887: ship-time DAG workflow finalizer (built once; needs
+	// FLY-887: ship-time three-stage phase finalizer (built once; needs
 	// transitionOpts to close parked phases through the FSM). Undefined without
 	// transitionOpts → runPostShipFinalization skips it (byte-compat).
-	const finalizeWorkflowPhaseRoles = transitionOpts
-		? makeFinalizeWorkflowPhaseRoles(
+	const finalizeThreeStagePhases = transitionOpts
+		? makeFinalizeThreeStagePhases(
 				store,
 				transitionOpts,
 				(issueId) =>
@@ -659,507 +530,6 @@ export function createEventRouter(
 			}
 		}
 
-		let workflowNodeId: string | undefined;
-		if (
-			event.event_type === "session_started" ||
-			event.event_type === "session_completed" ||
-			event.event_type === "session_failed"
-		) {
-			try {
-				workflowNodeId = store.resolveWorkflowNodeIdForExecution(
-					event.execution_id,
-				);
-			} catch (err) {
-				res.status(409).json({
-					error: "workflow_node_identity_conflict",
-					detail: (err as Error).message,
-				});
-				return;
-			}
-		}
-
-		if (event.event_type === "session_completed") {
-			const decision =
-				event.payload?.decision &&
-				typeof event.payload.decision === "object" &&
-				!Array.isArray(event.payload.decision)
-					? (event.payload.decision as Record<string, unknown>)
-					: undefined;
-			const route = asString(decision?.route);
-			const existingIdentifier = store.getSession(
-				event.execution_id,
-			)?.issue_identifier;
-			const authoritativeIssueIdentifier =
-				typeof existingIdentifier === "string" &&
-				/^[A-Z]+-\d+$/.test(existingIdentifier)
-					? existingIdentifier
-					: /^[A-Z]+-\d+$/.test(event.issue_id)
-						? event.issue_id
-						: undefined;
-			const designHtmlAdmission = validateDesignHtmlCompletion({
-				route,
-				payload: event.payload,
-				authoritativeIssueIdentifier,
-			});
-			if (!designHtmlAdmission.ok) {
-				res.status(409).json({
-					error: DESIGN_HTML_EVIDENCE_ERROR,
-					reason: designHtmlAdmission.reason,
-					remediation: designHtmlAdmission.remediation,
-				});
-				return;
-			}
-		}
-
-		if (event.event_type === "session_completed") {
-			if (event.source === "flywheel-comm") {
-				const decision =
-					event.payload?.decision &&
-					typeof event.payload.decision === "object" &&
-					!Array.isArray(event.payload.decision)
-						? (event.payload.decision as Record<string, unknown>)
-						: undefined;
-				const rawWorkflowActivation = event.payload?.workflowActivation;
-				const rawCompletionEvidence =
-					event.payload?.evidence &&
-					typeof event.payload.evidence === "object" &&
-					!Array.isArray(event.payload.evidence)
-						? (event.payload.evidence as Record<string, unknown>)
-						: undefined;
-				const completionHeadRaw = asString(
-					rawCompletionEvidence?.headSha,
-				)?.toLowerCase();
-				const callerCompletionHead =
-					completionHeadRaw && /^[0-9a-f]{40}$/.test(completionHeadRaw)
-						? completionHeadRaw
-						: undefined;
-				const workflowActivation = asWorkflowCompletionActivation(
-					rawWorkflowActivation,
-				);
-				if (rawWorkflowActivation !== undefined && !workflowActivation) {
-					res.status(409).json({
-						error: "workflow_completion_rejected",
-						reason: "invalid_activation_context",
-					});
-					return;
-				}
-				const generalizedContext = workflowActivation
-					? store.getGeneralizedWorkflowNodeForActivation(
-							workflowActivation.activationId,
-						)
-					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
-				const completionRoute = asString(decision?.route) ?? "";
-				let completionHead = callerCompletionHead;
-				let completionRepoPath: string | undefined;
-				let noCodeAttestation:
-					| {
-							worktreeBindingGeneration: string;
-							baselineDigest: string;
-							currentDigest: string;
-					  }
-					| undefined;
-				let prBinding:
-					| {
-							prNumber: number;
-							headSha: string;
-							targetRepoIdentity: string;
-							probeRepoSlug: string;
-							targetRepoPath: string;
-							worktreeBindingGeneration: string;
-					  }
-					| undefined;
-				if (generalizedContext) {
-					const landing =
-						rawCompletionEvidence?.landingStatus &&
-						typeof rawCompletionEvidence.landingStatus === "object" &&
-						!Array.isArray(rawCompletionEvidence.landingStatus)
-							? (rawCompletionEvidence.landingStatus as Record<string, unknown>)
-							: undefined;
-					const prNumber = Number(landing?.prNumber);
-					const targetRepoPath = asString(landing?.targetRepoPath);
-					const hasPrEvidence =
-						landing !== undefined &&
-						Number.isSafeInteger(prNumber) &&
-						prNumber > 0;
-					if (
-						landing &&
-						!hasPrEvidence &&
-						(asString(landing.status) === "ready_to_merge" ||
-							targetRepoPath !== undefined)
-					) {
-						res.status(422).json({
-							error: "workflow_pr_binding_rejected",
-							reason: "invalid_pr_number",
-						});
-						return;
-					}
-					const worktreeBinding = store.getWorktreeBinding(event.execution_id);
-					if (
-						completionRoute === "no_code" &&
-						worktreeBinding?.repoBaselineSetJson &&
-						worktreeBinding.repoBaselineSetDigest
-					) {
-						const verified = verifyRepositoryBaselineSet({
-							authorityRoot: worktreeBinding.path,
-							baselineJson: worktreeBinding.repoBaselineSetJson,
-							baselineDigest: worktreeBinding.repoBaselineSetDigest,
-						});
-						if (verified.ok) {
-							noCodeAttestation = {
-								worktreeBindingGeneration: worktreeBinding.generation,
-								baselineDigest: worktreeBinding.repoBaselineSetDigest,
-								currentDigest: verified.currentDigest,
-							};
-						} else {
-							console.warn(
-								`[event-route] no_code repository proof refused for ${event.execution_id}: ${verified.reason}`,
-							);
-						}
-					}
-					if (worktreeBinding) {
-						completionRepoPath = worktreeBinding.path;
-						try {
-							const authority = await resolveBoundRepositoryAuthority({
-								authorityRoot: worktreeBinding.path,
-								...(targetRepoPath
-									? { requestedRepoPath: targetRepoPath }
-									: {}),
-							});
-							completionHead = authority.headSha;
-							completionRepoPath = authority.path;
-							if (
-								callerCompletionHead &&
-								callerCompletionHead !== authority.headSha
-							) {
-								console.warn(
-									`[event-route] rejected caller PR head ${callerCompletionHead} for ${event.execution_id}; server authority is ${authority.headSha}`,
-								);
-							} else if (
-								hasPrEvidence &&
-								callerCompletionHead === authority.headSha
-							) {
-								prBinding = {
-									prNumber,
-									headSha: authority.headSha,
-									targetRepoIdentity: authority.identity,
-									probeRepoSlug: authority.probeRepoSlug,
-									targetRepoPath: authority.path,
-									worktreeBindingGeneration: worktreeBinding.generation,
-								};
-							} else if (hasPrEvidence) {
-								console.warn(
-									`[event-route] generalized PR #${prNumber} for ${event.execution_id} was not bound because evidence.headSha is missing`,
-								);
-							}
-						} catch (error) {
-							completionHead = undefined;
-							if (hasPrEvidence) {
-								res.status(422).json({
-									error: "workflow_pr_binding_rejected",
-									reason: "repository_authority_unavailable",
-									detail:
-										error instanceof Error ? error.message : String(error),
-								});
-								return;
-							}
-							console.warn(
-								`[event-route] generalized PR authority unavailable for ${event.execution_id}; completion continues without PR evidence: ${error instanceof Error ? error.message : String(error)}`,
-							);
-						}
-					} else if (hasPrEvidence) {
-						res.status(422).json({
-							error: "workflow_pr_binding_rejected",
-							reason: "worktree_binding_missing",
-						});
-						return;
-					} else if (landing || callerCompletionHead) {
-						completionHead = undefined;
-						console.warn(
-							`[event-route] generalized PR evidence ignored for ${event.execution_id}: immutable worktree binding missing`,
-						);
-					}
-				}
-				let alertIdentity:
-					| {
-							leadId: string;
-							projectName: string;
-							leadResolution: "resolved" | "fallback";
-					  }
-					| undefined;
-				if (generalizedContext) {
-					const projectName = generalizedContext.run.project_name;
-					const session = store.getSessionByIssue(
-						generalizedContext.run.issue_id,
-					);
-					try {
-						const labels = session
-							? store.getSessionLabels(session.execution_id)
-							: [];
-						alertIdentity = {
-							leadId: resolveLeadForIssue(projects, projectName, labels).lead
-								.agentId,
-							projectName,
-							leadResolution: "resolved",
-						};
-					} catch {
-						alertIdentity = {
-							leadId: config.defaultLeadAgentId,
-							projectName,
-							leadResolution: "fallback",
-						};
-					}
-				}
-				if (
-					generalizedContext &&
-					nodeRequiresFounderReview(
-						generalizedContext.snapshot,
-						generalizedContext.node.id,
-					)
-				) {
-					const project = projects.find(
-						(candidate) =>
-							candidate.projectName === generalizedContext.run.project_name,
-					);
-					if (!project) {
-						res.status(409).json({
-							error: "founder_review_required",
-							reason: "project_authority_missing",
-						});
-						return;
-					}
-					let enabled: boolean;
-					try {
-						enabled = await founderReviewCheckpointEnabled(project.projectRoot);
-					} catch (error) {
-						res.status(409).json({
-							error: "founder_review_required",
-							reason: "checkpoint_config_invalid",
-							detail: error instanceof Error ? error.message : String(error),
-						});
-						return;
-					}
-					if (enabled && (!completionHead || !completionRepoPath)) {
-						res.status(409).json({
-							error: "founder_review_required",
-							reason: "repository_authority_missing",
-						});
-						return;
-					}
-					if (completionHead && completionRepoPath) {
-						let authority: FounderReviewAuthorityResult;
-						try {
-							authority = evaluateFounderReviewAuthority({
-								enabled,
-								store,
-								commDbPath: commDbPathForProject(
-									generalizedContext.run.project_name,
-								),
-								runId: generalizedContext.run.run_id,
-								nodeId: generalizedContext.node.id,
-								snapshot: generalizedContext.snapshot,
-								repoRoot: completionRepoPath,
-								head: completionHead,
-								founderId: resolveFounderId({ processEnv: process.env }),
-							});
-						} catch (error) {
-							res.status(409).json({
-								error: "founder_review_required",
-								reason: "authority_unavailable",
-								detail: error instanceof Error ? error.message : String(error),
-							});
-							return;
-						}
-						if (authority.required && authority.verdict.status !== "passed") {
-							res.status(409).json({
-								error: "founder_review_required",
-								reason: authority.verdict.status,
-								...("reason" in authority.verdict
-									? { detail: authority.verdict.reason }
-									: {}),
-							});
-							return;
-						}
-					}
-				}
-				const completion = store.commitEnrolledCompletion({
-					executionId: event.execution_id,
-					route: completionRoute,
-					sourceEventId: event.event_id,
-					completionSubmission: event.payload ?? {},
-					...(completionHead ? { subjectDigest: completionHead } : {}),
-					...(workflowActivation ? { workflowActivation } : {}),
-					...(prBinding ? { prBinding } : {}),
-					...(noCodeAttestation ? { noCodeAttestation } : {}),
-					alertIdentity,
-				});
-				if (
-					!(completion.ok === false && completion.reason === "not_enrolled")
-				) {
-					if (!completion.ok) {
-						if (completion.reason === "stale_execution_superseded") {
-							res.json({
-								ok: true,
-								generalized: true,
-								settled: "stale_execution_superseded",
-							});
-							return;
-						}
-						if (completion.reason === "stale_resubmission") {
-							res.json({
-								ok: true,
-								generalized: true,
-								settled: "stale_resubmission_escalated",
-							});
-							return;
-						}
-						if (completion.reason === "terminal_status_immune") {
-							res.json({
-								ok: true,
-								generalized: true,
-								settled: "terminal_status_immune",
-							});
-							return;
-						}
-						res.status(409).json({
-							error:
-								completion.reason === "missing_output"
-									? "workflow_output_required"
-									: "workflow_completion_rejected",
-							reason: completion.reason,
-							...("detail" in completion ? { detail: completion.detail } : {}),
-							...("retryable" in completion
-								? { retryable: completion.retryable }
-								: {}),
-						});
-						return;
-					}
-					store.insertEvent({
-						event_id: `wfca:${completion.eventUid.slice("wfc:".length)}`,
-						execution_id: event.execution_id,
-						issue_id: event.issue_id,
-						project_name: event.project_name,
-						event_type: "session_completed",
-						payload: event.payload,
-						source: "workflow-generalized-completion",
-					});
-					res.json({
-						ok: true,
-						generalized: true,
-						duplicate: completion.idempotentReplay,
-						...(completion.completionDisposition
-							? {
-									completionDisposition: completion.completionDisposition,
-								}
-							: {}),
-					});
-					return;
-				}
-			} else {
-				const generalized = store.getGeneralizedWorkflowNodeForExecution(
-					event.execution_id,
-				);
-				if (generalized) {
-					const recorded = store.recordEnrolledTerminalSignal({
-						executionId: event.execution_id,
-						sourceEventId: event.event_id,
-						signal: "completed",
-						source:
-							typeof event.source === "string" ? event.source : "orchestrator",
-					});
-					if (!recorded.ok) {
-						res.status(409).json({
-							error: "workflow_teardown_record_rejected",
-							reason: recorded.reason,
-						});
-						return;
-					}
-					res.json({
-						ok: true,
-						generalized: true,
-						teardown: "held_recorded",
-						duplicate: recorded.idempotentReplay,
-						statusPreserved: recorded.statusPreserved,
-					});
-					return;
-				}
-			}
-		} else if (event.event_type === "session_failed") {
-			const generalized = store.getGeneralizedWorkflowNodeForExecution(
-				event.execution_id,
-			);
-			if (generalized) {
-				const failure = normalizeTerminalFailureInfo(event.payload?.failure);
-				const leadIntent = resolveWorkflowReplacementLeadIntent({
-					projects,
-					run: generalized.run,
-					labels: store.getSessionLabels(event.execution_id),
-				});
-				const recorded = store.recordEnrolledTerminalSignal({
-					executionId: event.execution_id,
-					sourceEventId: event.event_id,
-					signal: "failed",
-					failureKind: failure?.failureKind,
-					failureClass: failure?.failureClass,
-					failureCode: failure?.failureCode,
-					lastError:
-						failure?.failureKind === "goal_blocked"
-							? failure.failureReason
-							: asString(event.payload?.error),
-					source:
-						typeof event.source === "string" ? event.source : "orchestrator",
-					...(leadIntent ? { leadIntent } : {}),
-				});
-				if (!recorded.ok) {
-					res.status(409).json({
-						error: "workflow_teardown_record_rejected",
-						reason: recorded.reason,
-					});
-					return;
-				}
-				if (failure?.failureKind === "worktree_takeover_failed") {
-					const failedSession = store.getSession(event.execution_id);
-					if (failedSession) {
-						await turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
-							failedSession,
-							failure.failureReason,
-						);
-					}
-				}
-				if (registry && recorded.leadEventSeq !== undefined) {
-					try {
-						enqueueWorkflowReplacementLeadEvent({
-							store,
-							registry,
-							seq: recorded.leadEventSeq,
-						});
-					} catch (error) {
-						console.warn(
-							`[event-route] replacement-eligibility enqueue failed for ${event.execution_id}: ${(error as Error).message}`,
-						);
-					}
-				}
-				res.json({
-					ok: true,
-					generalized: true,
-					teardown: "held_recorded",
-					duplicate: recorded.idempotentReplay,
-					statusPreserved: recorded.statusPreserved,
-				});
-				return;
-			}
-		}
-
-		// DAG verdicts are capability-backed engine decisions. The retired legacy
-		// event route must never acknowledge or persist a fresh qa_result.
-		if (event.event_type === "qa_result") {
-			res.status(409).json({
-				ok: false,
-				reason: "workflow_submission_required",
-				hint: "Submit this verdict to /api/workflow/decision with the original FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL; do not strip the runner environment.",
-			});
-			return;
-		}
-
 		// Store event (idempotent)
 		const isNew = store.insertEvent({
 			event_id: event.event_id,
@@ -1176,13 +546,74 @@ export function createEventRouter(
 			return;
 		}
 
-		// FLY-827: a Codex CODE review verdict (from `await-codex-gate code`). Record
-		// durable exact-head evidence through the neutral ingest. This is not a
-		// session-lifecycle transition, so return early.
-		if (event.event_type === "codex_review_result") {
-			if (codexReviewIngest?.current) {
+		// FLY-579: a QA verdict is not a session-lifecycle transition (the QA
+		// session's own completion is separate). Drive the coordinator's PASS/FAIL
+		// branch and return. Idempotency is enforced by insertEvent dedup (above)
+		// AND the coordinator's record-status check (defence in depth).
+		//
+		// FLY-859: a THREE-STAGE QA phase's verdict is routed to the
+		// PhaseOrchestrator instead — the auto-QA guards (awaiting_review parent
+		// + AutoQaRecord) are structurally unsatisfiable for it (the implement
+		// phase was finalized at handoff; no record was ever spawned), which is
+		// exactly the FLY-849 §3.8 silent break. Discriminator: the REPORTING
+		// session's durable `chat_thread_role === 'qa'` (Blueprint writes a
+		// phase role only for shareParentBranch phase sessions; an auto-QA
+		// runner is always 'main'). Everything else falls through to the
+		// auto-QA path byte-for-byte. Each holder is isolated in its own
+		// try/catch — a failure on one path never disables the other.
+		if (event.event_type === "qa_result") {
+			const reporting = store.getSession(event.execution_id);
+			const isThreeStageQaPhase =
+				!!reporting &&
+				(reporting.session_role ?? "main") === "qa" &&
+				(reporting.chat_thread_role ?? "main") === "qa";
+			if (isThreeStageQaPhase) {
+				if (phaseOrchestrator?.current) {
+					try {
+						const p = (event.payload ?? {}) as Record<string, unknown>;
+						await phaseOrchestrator.current.onQaResult(reporting, {
+							eventId: event.event_id,
+							status: typeof p.status === "string" ? p.status : "",
+							summary: typeof p.summary === "string" ? p.summary : undefined,
+							prHeadSha:
+								typeof p.prHeadSha === "string" ? p.prHeadSha : undefined,
+							targetExecutionId:
+								typeof p.targetExecutionId === "string"
+									? p.targetExecutionId
+									: undefined,
+						});
+					} catch (err) {
+						console.error(
+							`[event-route] three-stage onQaResult threw for ${event.execution_id}: ${(err as Error).message}`,
+						);
+					}
+				} else {
+					// Event is stored — the orchestrator's startup verdict sweep
+					// replays it once the holder is wired (never silently lost).
+					console.warn(
+						`[event-route] three-stage qa_result for ${event.execution_id} arrived with no PhaseOrchestrator — deferred to the startup verdict sweep`,
+					);
+				}
+			} else if (autoQaCoordinator?.current) {
 				try {
-					await codexReviewIngest.current.onCodexReviewResult(event);
+					await autoQaCoordinator.current.onQaResult(event);
+				} catch (err) {
+					console.error(
+						`[event-route] onQaResult threw for ${event.execution_id}: ${(err as Error).message}`,
+					);
+				}
+			}
+			res.json({ ok: true });
+			return;
+		}
+
+		// FLY-827: a Codex CODE review verdict (from `await-codex-gate code`). Record
+		// the durable approval + (race closure) re-drive QA if the parent already
+		// reached awaiting_review. Not a session-lifecycle transition — return early.
+		if (event.event_type === "codex_review_result") {
+			if (autoQaCoordinator?.current) {
+				try {
+					await autoQaCoordinator.current.onCodexReviewResult(event);
 				} catch (err) {
 					console.error(
 						`[event-route] onCodexReviewResult threw for ${event.execution_id}: ${(err as Error).message}`,
@@ -1208,15 +639,12 @@ export function createEventRouter(
 		const now = sqliteDatetime();
 		const payload = event.payload ?? {};
 		let transitionRejected = false;
-		// FLY-1282 Part C: source-side exclusions for the targeted
-		// terminal-archive enqueue at the end of this handler. Post-ship
-		// completions (runPostShipFinalization owns the cleanup→archive order
-		// exclusively) and FLY-208 evidence-gap completions (FLY-210 / manual
-		// close owns them) never enqueue. stage_changed only enqueues via the
-		// accepted FLY-324 running→completed transition — the W2 merged branch
-		// is structurally excluded (post-ship owner).
-		let terminalArchiveExcluded = false;
-		let fly324Completed = false;
+		// FLY-752: capture the PRE-transition status so the auto-QA coordinator can
+		// tell a genuine FRESH review-pass (running/other → awaiting_review) from a
+		// re-emitted / parked-waiting-for-founder awaiting_review (never auto-QA the
+		// latter). Read BEFORE any status write below.
+		const autoQaPriorStatus = store.getSession(event.execution_id)?.status;
+
 		try {
 			const ctx = {
 				executionId: event.execution_id,
@@ -1226,11 +654,6 @@ export function createEventRouter(
 			};
 
 			if (event.event_type === "session_started") {
-				// FLY-1709 R1: activation time is set-once on both ingest surfaces.
-				// Replayed HTTP events must not move an old run past a later archive
-				// epoch and falsely clear the founder's archive protection.
-				const startedAt =
-					store.getSession(event.execution_id)?.started_at ?? now;
 				// GEO-152: store issue labels for multi-lead routing
 				const eventLabels = Array.isArray(payload.labels)
 					? (payload.labels as string[])
@@ -1245,39 +668,13 @@ export function createEventRouter(
 				// FLY-728: persist the resolved runner model (per-issue model routing
 				// visibility). Mirrors the DirectEventSink production path.
 				const eventRunnerModel = asString(payload.runnerModel);
-				// FLY-1259: accept only the public enum on the untrusted event wire.
-				const eventDesignBackend = isDesignBackend(payload.designBackend)
-					? payload.designBackend
-					: undefined;
 				// FLY-615: persist the resolved ponytail condition (A/B join key).
 				const eventPonytailCondition = asString(payload.ponytailCondition);
-				// FLY-1356 (R1#7): accept ONLY the closed enums on the untrusted
-				// event wire — the /events ingest token is runner-visible, and the
-				// attribution columns must never hold arbitrary strings. BOTH must
-				// be valid to record EITHER (Bar-Raiser LOW-4: a valid mode with a
-				// garbage via would land a NULL-via row that silently drops out of
-				// the runbook's via-filtered GROUP BY).
-				const bothSkillEnumsValid =
-					isSkillFrameworkMode(payload.skillFrameworkMode) &&
-					isSkillFrameworkVia(payload.skillFrameworkModeVia);
-				const eventSkillFrameworkMode = bothSkillEnumsValid
-					? (payload.skillFrameworkMode as SkillFrameworkMode)
-					: undefined;
-				const eventSkillFrameworkVia = bothSkillEnumsValid
-					? (payload.skillFrameworkModeVia as SkillFrameworkVia)
-					: undefined;
 				// FLY-793 (Step 11): persist the chat-thread role (computed at dispatch
 				// as shareParentBranch ? role : 'main'). This HTTP started path must
 				// persist it too, or a runner started via /events loses the signal that
 				// routes its thread to the phase side-table.
 				const eventChatThreadRole = asString(payload.chatThreadRole) ?? "main";
-				// FLY-1372 §2.5 AUTHORITY BOUNDARY (Codex design R3-3): the Bridge-
-				// trusted behavior fields (docTier / issueUrl / codexSkip) are
-				// deliberately NOT read from this payload — the
-				// /events ingest token is runner-visible, so a runner could spoof
-				// them. They are
-				// persisted ONLY by the in-process DirectEventSink. Do not add them
-				// to this mapping.
 
 				if (transitionOpts) {
 					const result = applyTransition(
@@ -1286,7 +683,7 @@ export function createEventRouter(
 						"running",
 						ctx,
 						{
-							started_at: startedAt,
+							started_at: now,
 							last_activity_at: now,
 							heartbeat_at: now,
 							issue_identifier: resolveIdentifier(payload, event.issue_id),
@@ -1298,17 +695,9 @@ export function createEventRouter(
 							chat_thread_role: eventChatThreadRole,
 							...(eventAdapterType && { adapter_type: eventAdapterType }),
 							...(eventRunnerModel && { runner_model: eventRunnerModel }),
-							...(eventDesignBackend && {
-								design_backend: eventDesignBackend,
-							}),
 							...(eventPonytailCondition && {
 								ponytail_condition: eventPonytailCondition,
 							}),
-							...(eventSkillFrameworkMode && {
-								skill_framework_mode: eventSkillFrameworkMode,
-								skill_framework_mode_via: eventSkillFrameworkVia,
-							}),
-							workflow_node_id: workflowNodeId,
 						},
 					);
 					if (!result.ok) {
@@ -1323,7 +712,7 @@ export function createEventRouter(
 						issue_id: event.issue_id,
 						project_name: event.project_name,
 						status: "running",
-						started_at: startedAt,
+						started_at: now,
 						last_activity_at: now,
 						heartbeat_at: now,
 						issue_identifier: resolveIdentifier(payload, event.issue_id),
@@ -1335,17 +724,9 @@ export function createEventRouter(
 						chat_thread_role: eventChatThreadRole,
 						...(eventAdapterType && { adapter_type: eventAdapterType }),
 						...(eventRunnerModel && { runner_model: eventRunnerModel }),
-						...(eventDesignBackend && {
-							design_backend: eventDesignBackend,
-						}),
 						...(eventPonytailCondition && {
 							ponytail_condition: eventPonytailCondition,
 						}),
-						...(eventSkillFrameworkMode && {
-							skill_framework_mode: eventSkillFrameworkMode,
-							skill_framework_mode_via: eventSkillFrameworkVia,
-						}),
-						workflow_node_id: workflowNodeId,
 					});
 				}
 
@@ -1437,7 +818,7 @@ export function createEventRouter(
 					| undefined;
 				const route = asString(decision?.route);
 				const landingStatus = evidence?.landingStatus as
-					| { status?: string; prNumber?: number }
+					| { status?: string }
 					| undefined;
 
 				// FLY-123 (Codex design review R1 #4): persist adapter session-
@@ -1494,13 +875,12 @@ export function createEventRouter(
 					"auto_approve",
 					"needs_review",
 					"blocked",
-					"ship_attempt_failed",
 					// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 					"no_code",
 					// FLY-493: pr_handoff — no-transport antigravity build+PR terminal
 					// (running→completed; never awaiting_review/approved_to_ship).
 					"pr_handoff",
-					// FLY-793: DAG workflow Design phase completion → design_done.
+					// FLY-793: three-stage Design phase completion → design_done.
 					"phase_design_complete",
 				]);
 				if (!isPostApproveShip && (!route || !VALID_ROUTES.has(route))) {
@@ -1595,10 +975,11 @@ export function createEventRouter(
 				const erPrHead =
 					existingSession?.pr_head_sha?.trim() ||
 					asString(evidence?.headSha)?.toLowerCase();
-				// Always route through the shared predicate: QA remains armed while the
-				// independent merge-approval gate keeps its existing switch. A missing
-				// prior row therefore fails closed whenever merge approval is armed. Use
-				// the event identity even for a first-seen session_completed.
+				// Always route through the shared predicate (uniform kill-switch handling).
+				// A missing prior session row → verifyApproval reads no approval and
+				// fail-closes when the gate is ON (correct for a no-context merge), and
+				// the kill-switch still bypasses when OFF. Use the event identity so the
+				// gate is consulted even for a first-seen session_completed.
 				const erDecision = erMergedLanding
 					? await computeAuthoritativeShipDecision(
 							store,
@@ -1607,9 +988,6 @@ export function createEventRouter(
 								project_name: event.project_name,
 							},
 							erPrHead,
-							process.env,
-							materializedHeadAuthority,
-							mergedPrCiProbe,
 						)
 					: undefined;
 				const erShipEligible = erMergedLanding
@@ -1639,7 +1017,7 @@ export function createEventRouter(
 							// FLY-869 决定③: fire the ONE loud Discord alert (once per head —
 							// gated by the parkMergeBlock claim above). Not auto-reverted, not
 							// marked Done, issue stays open → a human must resolve it.
-							void reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
+							void autoQaCoordinator?.current?.alertMergeWithoutApproval(
 								existingSession,
 								`⛔ Runner ${event.execution_id}（${existingSession.issue_id}）自行 merge 但未获批准 —— merged head ${erPrHead ?? "(none)"} 未通过 ship 闸（merge=${erDecision?.mergeReason ?? "no_head"} qa=${erDecision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
 							);
@@ -1691,62 +1069,16 @@ export function createEventRouter(
 					} else {
 						status = "awaiting_review";
 					}
-				} else if (route === "blocked" || route === "ship_attempt_failed") {
-					if (isPostApproveShip) {
-						const settle = settleShipAttemptFailed(store, event.execution_id, {
-							attemptHeadSha: asString(evidence?.headSha),
-							currentHeadSha: existingSession?.pr_head_sha,
-							prNumber:
-								asNumber(evidence?.prNumber) ??
-								existingSession?.pr_number ??
-								undefined,
-							// Live HTTP delivery and this row snapshot share one
-							// time context, so legacy qid-less completions may use
-							// the row binding. Delayed marker replay stays event-only.
-							reviewQuestionId:
-								reviewQuestionId ?? existingSession?.review_question_id,
-							currentReviewQuestionId: existingSession?.review_question_id,
-							summary: asString(payload.summary),
-						});
-						if (
-							(settle.outcome === "marked" ||
-								settle.outcome === "unknown_head_marked") &&
-							settle.firstAttemptForHead &&
-							existingSession
-						) {
-							const retryPosture =
-								settle.outcome === "marked"
-									? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
-									: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
-							void reviewAuthorizationAlerts?.current?.alertShipAttemptFailedBestEffort(
-								existingSession,
-								`⚠️ Runner ${event.execution_id}（${existingSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${existingSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
-							);
-						}
-						console.warn(
-							`[event-route] FLY-1505 ship_attempt_failed deflected for ${event.execution_id} — approved_to_ship preserved (${settle.outcome})`,
-						);
-						res.json({
-							ok: true,
-							warning:
-								"ship_attempt_failed deflected (approved_to_ship preserved)",
-						});
-						return;
-					}
-					if (route === "ship_attempt_failed") {
-						res.status(409).json({
-							ok: false,
-							reason:
-								"ship_attempt_failed requires an approved_to_ship session",
-							retryable: false,
-						});
-						return;
-					}
+				} else if (route === "blocked") {
+					// Ship failed (or otherwise blocked). Even for sessions that
+					// were previously `approved_to_ship`, an explicit blocked route
+					// means the ship did not complete — must NOT finalize.
+					// Sister branch: DirectEventSink.ts:273.
 					status = "blocked";
 				} else if (route === "phase_design_complete") {
-					// FLY-793: DAG workflow Design phase done (docs on the shared
+					// FLY-793: three-stage Design phase done (docs on the shared
 					// branch, no PR) → non-terminal design_done (running → design_done).
-					// The workflow engine hands off to Implement. Sister branch:
+					// The PhaseOrchestrator hands off to Implement. Sister branch:
 					// DirectEventSink.ts.
 					status = "design_done";
 				} else if (route === "no_code" || route === "pr_handoff") {
@@ -1791,7 +1123,7 @@ export function createEventRouter(
 				// dispatched phase role. The `flywheel-comm complete` CLI defaults its
 				// payload role to "main" (phase runners don't pass --session-role), so
 				// writing it back would overwrite the design/implement/qa role and the
-				// DAG workflow handoff would silently never fire. Preserve the existing
+				// three-stage handoff would silently never fire. Preserve the existing
 				// phase role server-side (existingSession = pre-transition snapshot,
 				// line 850). Byte-compat: a non-phase existing role ("main"/none) falls
 				// through to the payload role, identical to the prior behavior.
@@ -1813,73 +1145,12 @@ export function createEventRouter(
 					prHeadShaRaw && /^[0-9a-f]{40}$/.test(prHeadShaRaw)
 						? prHeadShaRaw
 						: undefined;
-				let reviewShipTarget:
-					| {
-							runId?: string;
-							sourceRequestId?: string;
-							targetRepoPath: string;
-							targetRepoIdentity: string;
-							probeRepoSlug: string;
-							worktreeBindingGeneration: string;
-					  }
-					| undefined;
-				if (status === "awaiting_review" && reviewQuestionId && prHeadSha) {
-					const worktreeBinding = store.getWorktreeBinding(event.execution_id);
-					if (worktreeBinding) {
-						try {
-							const requestedRepoPath = asString(
-								(evidence?.landingStatus as Record<string, unknown> | undefined)
-									?.targetRepoPath,
-							);
-							const authority = await resolveBoundRepositoryAuthority({
-								authorityRoot: worktreeBinding.path,
-								...(requestedRepoPath ? { requestedRepoPath } : {}),
-							});
-							if (authority.headSha !== prHeadSha) {
-								throw new Error("review_ship_target_head_mismatch");
-							}
-							const source = store.findApprovedReviewShipTargetSource({
-								projectName: event.project_name,
-								issueId: event.issue_id,
-								targetRepoIdentity: authority.identity,
-								targetPrHeadSha: authority.headSha,
-							});
-							const isClaudeLegacyMain =
-								authority.identity === "__main__" &&
-								adapterTypeToFamily(existingSession?.adapter_type) === "claude";
-							if (source.status === "resolved" || isClaudeLegacyMain) {
-								const workflowRunId = store.getWorkflowRunIdForExecution(
-									event.execution_id,
-								);
-								reviewShipTarget = {
-									...(workflowRunId ? { runId: workflowRunId } : {}),
-									...(source.status === "resolved" && source.sourceRequestId
-										? { sourceRequestId: source.sourceRequestId }
-										: {}),
-									targetRepoPath: authority.path,
-									targetRepoIdentity: authority.identity,
-									probeRepoSlug: authority.probeRepoSlug,
-									worktreeBindingGeneration: worktreeBinding.generation,
-								};
-							} else {
-								console.warn(
-									`[event-route] review ship target unavailable for ${event.execution_id}: approved review source ${source.status}`,
-								);
-							}
-						} catch (error) {
-							console.warn(
-								`[event-route] review ship target unavailable for ${event.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
-							);
-						}
-					}
-				}
 				// (reviewQuestionId validated above the status mapping — FLY-945.)
 				const writeReviewBinding = (): void => {
 					if (status !== "awaiting_review") return;
 					store.setReviewBinding(event.execution_id, {
 						questionId: reviewQuestionId ?? null,
 						prHeadSha: prHeadSha ?? null,
-						...(reviewShipTarget ? { shipTarget: reviewShipTarget } : {}),
 					});
 				};
 
@@ -1891,8 +1162,10 @@ export function createEventRouter(
 				// between leaves the old gate alive a little longer and the
 				// gate-poller sweeper converges it (R2). retireShipGate's WHERE is
 				// double-guarded (approve_to_ship + unanswered), so an answered
-				// gate can never be rewritten.
+				// gate can never be rewritten. Kill-switch
+				// `FLYWHEEL_SHIP_GATE_RETIRE=0` restores byte-compat (no retire).
 				const retireSupersededShipGate = (): void => {
+					if (process.env.FLYWHEEL_SHIP_GATE_RETIRE === "0") return;
 					if (status !== "awaiting_review") return;
 					const supersededQid = existingSession?.review_question_id;
 					if (
@@ -1910,9 +1183,7 @@ export function createEventRouter(
 						);
 						let retired = false;
 						try {
-							retired = commDb.retireShipGate(supersededQid, {
-								supersededBy: reviewQuestionId,
-							});
+							retired = commDb.retireShipGate(supersededQid);
 						} finally {
 							commDb.close();
 						}
@@ -2032,7 +1303,6 @@ export function createEventRouter(
 							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
 							session_role: completedSessionRole,
-							workflow_node_id: workflowNodeId,
 						},
 					);
 					if (!result.ok) {
@@ -2059,9 +1329,6 @@ export function createEventRouter(
 						// FLY-208 5a: evidence-gap completion — persist the marker
 						// (FLY-210 consumes it) and warn loudly.
 						if (evidenceGap) {
-							// FLY-1282 Part C: evidence-gap completions belong to
-							// FLY-210 / manual close — never the targeted archive queue.
-							terminalArchiveExcluded = true;
 							markEvidenceGapCompletion(store, event.execution_id, {
 								route,
 								landingStatus: landingStatus?.status,
@@ -2123,7 +1390,6 @@ export function createEventRouter(
 						issue_title: asString(payload.issueTitle),
 						pr_number: legacyPrNumber,
 						session_role: completedSessionRole,
-						workflow_node_id: workflowNodeId,
 					});
 
 					// FLY-191 Phase 2: upsertSession's column list doesn't carry the
@@ -2177,23 +1443,9 @@ export function createEventRouter(
 						shipEligible: erShipEligible,
 					})
 				) {
-					// FLY-1282 Part C: post-ship owner's cleanup→archive sequence is
-					// exclusive — this completion never enters the targeted queue.
-					terminalArchiveExcluded = true;
 					runPostShipFinalization(
 						{
 							executionId: event.execution_id,
-							runId: store.getWorkflowRunIdForExecution(event.execution_id),
-							...(Number.isInteger(landingStatus?.prNumber) &&
-							landingStatus!.prNumber! > 0 &&
-							!!erPrHead
-								? {
-										mergedPr: {
-											prNumber: landingStatus!.prNumber!,
-											headSha: erPrHead,
-										},
-									}
-								: {}),
 							issueId: event.issue_id,
 							issueIdentifier: asString(payload.issueIdentifier) || undefined,
 							projectName: event.project_name,
@@ -2208,7 +1460,7 @@ export function createEventRouter(
 							projects,
 							removeCleanWorktree,
 							// FLY-887: close parked design + implement phases before worktree removal.
-							finalizeWorkflowPhaseRoles,
+							finalizeThreeStagePhases,
 							// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 							// by runPostShipFinalization's merge-evidence predicate).
 							markIssueDone: makeLinearDoneFinalizer(config),
@@ -2313,12 +1565,6 @@ export function createEventRouter(
 					}
 				}
 			} else if (event.event_type === "session_failed") {
-				const failure = normalizeTerminalFailureInfo(payload.failure);
-				const goalBlocked = failure?.failureKind === "goal_blocked";
-				const terminalStatus = goalBlocked ? "blocked" : "failed";
-				const terminalError = goalBlocked
-					? failure.failureReason
-					: asString(payload.error);
 				// FLY-59: Read session role from failed event payload.
 				// FLY-793 (824 R2 E2E fix): same invariant as the completed path — a
 				// signal must not downgrade a dispatched phase role to the payload
@@ -2335,16 +1581,15 @@ export function createEventRouter(
 					const result = applyTransition(
 						transitionOpts,
 						event.execution_id,
-						terminalStatus,
+						"failed",
 						ctx,
 						{
 							last_activity_at: now,
-							last_error: terminalError,
+							last_error: asString(payload.error),
 							// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
 							session_role: failedSessionRole,
-							workflow_node_id: workflowNodeId,
 						},
 					);
 					if (!result.ok) {
@@ -2358,14 +1603,13 @@ export function createEventRouter(
 						execution_id: event.execution_id,
 						issue_id: event.issue_id,
 						project_name: event.project_name,
-						status: terminalStatus,
+						status: "failed",
 						last_activity_at: now,
-						last_error: terminalError,
+						last_error: asString(payload.error),
 						// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 						issue_identifier: asString(payload.issueIdentifier) || undefined,
 						issue_title: asString(payload.issueTitle),
 						session_role: failedSessionRole,
-						workflow_node_id: workflowNodeId,
 					});
 				}
 
@@ -2380,10 +1624,63 @@ export function createEventRouter(
 						});
 					}
 				}
+			} else if (event.event_type === "founder_ux_declared") {
+				// FLY-598 trigger C (backup): a Runner self-declared this run as
+				// founder-facing UX (the Lead's label may have been missed). Set the
+				// flag so the gate applies; the Runner CLI already printed the
+				// fail-closed next-step sequence. (Founder notification is best-effort
+				// follow-up; the gate enforces regardless of notification.)
+				store.patchSessionMetadata(event.execution_id, {
+					founder_facing_ux: 1,
+					last_activity_at: now,
+				});
+				console.log(
+					`[FLY-598] founder_ux_declared for ${event.execution_id}: ${asString(payload.reason) ?? "(no reason)"}`,
+				);
+				res.json({ ok: true, declared: true });
+				return;
 			} else if (event.event_type === "stage_changed") {
 				// GEO-292: Runner-reported pipeline stage change
 				const stage = asString(payload.stage);
 				if (stage && VALID_STAGES.has(stage)) {
+					// FLY-598 Layer B: founder-UX gate. On entry into `implement`, a
+					// founder-facing run must carry a verified Annie sign-off bound to
+					// the current ux_hash. enforce → reject (FOUNDER_UX_SIGNOFF_REQUIRED,
+					// which `stage set implement` fail-closes on) BEFORE recording the
+					// stage; audit_only → log + proceed; off / non-founder-facing → pass.
+					// FLY-900: the gate is retired fleet-wide by default — only run the
+					// guard when the kill-switch is explicitly re-enabled. Disabled →
+					// skip entirely (never read the snapshot, never block), so a
+					// founder-facing implement passes even without a sign-off.
+					if (stage === "implement" && isFounderUxGateEnabled()) {
+						const guardSession = store.getSession(event.execution_id);
+						const mode =
+							(guardSession?.founder_ux_gate_mode as
+								| FounderUxGateMode
+								| undefined) ?? "off";
+						const guard = evaluateFounderUxStageGuard(store, mode, {
+							executionId: event.execution_id,
+							incomingStage: "implement",
+							uxHash: asString(payload.ux_hash),
+						});
+						if (guard.decision === "block") {
+							console.warn(
+								`[FLY-598] founder-ux gate BLOCK implement for ${event.execution_id}: ${guard.reason}`,
+							);
+							res.status(409).json({
+								ok: false,
+								error: guard.code,
+								reason: guard.reason,
+							});
+							return;
+						}
+						if (guard.decision === "audit") {
+							console.warn(
+								`[FLY-598] founder-ux gate AUDIT (audit_only, not blocked) implement for ${event.execution_id}: ${guard.reason}`,
+							);
+						}
+					}
+
 					store.patchSessionMetadata(event.execution_id, {
 						session_stage: stage,
 						stage_updated_at: now,
@@ -2416,7 +1713,8 @@ export function createEventRouter(
 								// the derivation reads, so the reported stage is honored).
 								issueDisplayRefresh.current.enqueue(event.issue_id);
 							} else {
-								// Legacy per-face fallback while the refresher is not yet wired.
+								// Legacy per-face path (FLYWHEEL_ISSUE_DISPLAY_REFRESH=0
+								// escape hatch, or refresher not yet wired).
 								if (issueStatusEmojiEnabled) {
 									stampStageEmojiForSession(
 										{ store, projects, config, chatThreadCreator },
@@ -2500,9 +1798,6 @@ export function createEventRouter(
 											project_name: event.project_name,
 										},
 										w2PrHead,
-										process.env,
-										materializedHeadAuthority,
-										mergedPrCiProbe,
 									)
 								: undefined;
 						const w2ShipEligible =
@@ -2532,7 +1827,7 @@ export function createEventRouter(
 										`merged head=${w2PrHead ?? "(none)"} NOT ship-eligible; parked (no finalize).`,
 								);
 								// FLY-869 决定③: one loud Discord alert (once per head).
-								void reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
+								void autoQaCoordinator?.current?.alertMergeWithoutApproval(
 									sessionAtStage,
 									`⛔ Runner ${event.execution_id}（${sessionAtStage.issue_id}）自行 merge 但未获批准（stage=completed，merged head ${w2PrHead ?? "(none)"} 未通过 ship 闸：merge=${w2Decision?.mergeReason ?? "no_head"} qa=${w2Decision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
 								);
@@ -2596,19 +1891,6 @@ export function createEventRouter(
 								runPostShipFinalization(
 									{
 										executionId: event.execution_id,
-										runId: store.getWorkflowRunIdForExecution(
-											event.execution_id,
-										),
-										...(Number.isInteger(landingStatus.prNumber) &&
-										landingStatus.prNumber! > 0 &&
-										!!w2PrHead
-											? {
-													mergedPr: {
-														prNumber: landingStatus.prNumber!,
-														headSha: w2PrHead,
-													},
-												}
-											: {}),
 										issueId: event.issue_id,
 										issueIdentifier:
 											sessionAtStage?.issue_identifier ??
@@ -2625,7 +1907,7 @@ export function createEventRouter(
 										projects,
 										removeCleanWorktree,
 										// FLY-887: close parked design + implement phases before worktree removal.
-										finalizeWorkflowPhaseRoles,
+										finalizeThreeStagePhases,
 										// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 										// by runPostShipFinalization's merge-evidence predicate).
 										markIssueDone: makeLinearDoneFinalizer(config),
@@ -2655,7 +1937,7 @@ export function createEventRouter(
 							// `session_completed` FSM transition) is never called. The
 							// session is then stuck at `running`: close_runner rejects it,
 							// its tmux + worktree linger until the next Bridge restart, and
-							// idle detection false-positived session_stuck. `running →
+							// the idle watchdog false-positives session_stuck. `running →
 							// completed` is a legal FSM edge; apply it so the auto-close /
 							// reaper / notifier chain unblocks. isDoneButRunning guards on
 							// status===running + stage===completed + no decision_route + no
@@ -2674,23 +1956,7 @@ export function createEventRouter(
 							// that intends to stay parked must NOT report stage=completed. The
 							// Lead exclude list is a CUTOVER boot-sweep-only safety net for
 							// the pre-fix backlog where that contract wasn't yet in force.
-							if (
-								transitionOpts &&
-								isRunnerDeclaredParked(
-									event.execution_id,
-									// Authoritative project from the resolved session row, not the
-									// event envelope: a mismatched event.project_name would look up
-									// the wrong comm.db and silently miss the veto (Codex R2 HIGH).
-									sessionAtStage?.project_name ?? event.project_name,
-								)
-							) {
-								// FLY-1329 (A5): the runner declared itself parked — a
-								// stage=completed report that contradicts that must not
-								// force-complete it. Mirrors the boot sweep's veto.
-								console.log(
-									`[event-route FLY-324] prune_skipped_parked_conflict: ${event.execution_id} declares itself parked — NOT force-completing (FLY-1329 A5)`,
-								);
-							} else if (transitionOpts) {
+							if (transitionOpts) {
 								const r324 = applyTransition(
 									transitionOpts,
 									event.execution_id,
@@ -2703,10 +1969,6 @@ export function createEventRouter(
 										`[event-route FLY-324] FSM rejected running→completed for ${event.execution_id}: ${r324.error}`,
 									);
 									transitionRejected = true;
-								} else {
-									// FLY-1282 Part C: an ACCEPTED FLY-324 completion is a
-									// targeted terminal-archive enqueue site.
-									fly324Completed = true;
 								}
 							}
 						}
@@ -2724,17 +1986,6 @@ export function createEventRouter(
 				`[event-route] Session update failed for ${event.execution_id}:`,
 				err,
 			);
-			if (
-				err instanceof Error &&
-				err.message.startsWith("workflow_ship_target_binding_")
-			) {
-				res.status(409).json({
-					ok: false,
-					error: "review_ship_target_binding_rejected",
-					reason: err.message,
-				});
-				return;
-			}
 			// Event is already stored — return success with a warning rather than 500
 			// so retries don't get stuck on duplicate detection
 			res.json({ ok: true, warning: "event stored but session update failed" });
@@ -2753,15 +2004,15 @@ export function createEventRouter(
 			if (
 				(event.event_type === "session_completed" ||
 					event.event_type === "session_failed") &&
-				turnBeltReconciler?.current
+				phaseOrchestrator?.current
 			) {
 				const rejectedSession = store.getSession(event.execution_id);
 				if (
 					rejectedSession?.project_name &&
-					isWorkflowPhaseRole(rejectedSession.session_role)
+					isThreeStagePhaseRole(rejectedSession.session_role)
 				) {
 					try {
-						await turnBeltReconciler.current.reconcileTurnBelt({
+						await phaseOrchestrator.current.reconcileTurnBelt({
 							issueId: rejectedSession.issue_id,
 							projectName: rejectedSession.project_name,
 							terminalExecId: event.execution_id,
@@ -2859,23 +2110,15 @@ export function createEventRouter(
 
 		// Best-effort notification push via RuntimeRegistry (GEO-195)
 		const session = store.getSession(event.execution_id);
-		const terminalFailure =
-			event.event_type === "session_failed"
-				? normalizeTerminalFailureInfo(payload.failure)
-				: undefined;
-		if (
-			terminalFailure?.failureKind === "worktree_takeover_failed" &&
-			session
-		) {
-			await turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
-				session,
-				terminalFailure.failureReason,
-			);
-		}
-		// Neutral exact-head Codex evidence gate. Run before founder-facing review
-		// delivery on the HTTP ingest path, matching DirectEventSink.
+
+		// FLY-579: a main session that just entered awaiting_review (code review
+		// passed, approve gate opened) → drive the auto-QA pipeline. This runs
+		// BEFORE the always-deliver block below so the held record exists by the
+		// time the QA-held suppression check is evaluated (held-first ordering,
+		// plan §7.1). Coordinator absent / not-main / not-awaiting_review → no-op.
 		if (
 			event.event_type === "session_completed" &&
+			autoQaCoordinator?.current &&
 			session &&
 			(session.session_role ?? "main") === "main" &&
 			session.status === "awaiting_review" &&
@@ -2885,15 +2128,62 @@ export function createEventRouter(
 			!isMergeBlocked(session)
 		) {
 			try {
-				await codexReviewHold?.current?.onSessionAwaitingReview(session);
+				await autoQaCoordinator.current.onMainAwaitingReview(session, {
+					// FLY-752: a genuine fresh review-pass transitioned INTO
+					// awaiting_review; a re-emitted / parked-for-founder one did not.
+					freshTransition: autoQaPriorStatus !== "awaiting_review",
+				});
 			} catch (err) {
 				console.error(
-					`[event-route] Codex review hold threw for ${event.execution_id}: ${(err as Error).message}`,
+					`[event-route] onMainAwaitingReview threw for ${event.execution_id}: ${(err as Error).message}`,
 				);
 			}
 		}
 
-		// FLY-921 Fix C: a DAG workflow session reaching a terminal signal
+		// FLY-793: three-stage phase handoff (design_done → Implement; implement
+		// awaiting_review → QA). onPhaseComplete no-ops unless a three-stage phase
+		// session at its handoff status. Sister call: DirectEventSink.ts.
+		if (
+			event.event_type === "session_completed" &&
+			phaseOrchestrator?.current &&
+			session
+		) {
+			try {
+				await phaseOrchestrator.current.onPhaseComplete(session);
+			} catch (err) {
+				console.error(
+					`[event-route] onPhaseComplete threw for ${event.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+
+		// FLY-1050: a three-stage QA row that just FAILED may have stranded its
+		// implement at awaiting_review — re-drive the implement→QA handoff
+		// (respawn a fresh QA) BEFORE the belt reconcile below: a successful
+		// respawn's pre-launch grant overwrites the TURN (guard 1 then no-ops);
+		// a refused respawn leaves the belt reconcile to recover it. The
+		// FSM-rejected path deliberately has NO such call — its row never
+		// reached a terminal status, and reconcileQaLoss re-checks that anyway.
+		// Sister call: DirectEventSink.emitFailed.
+		if (
+			event.event_type === "session_failed" &&
+			phaseOrchestrator?.current &&
+			session?.project_name &&
+			(session.chat_thread_role ?? "main") === "qa"
+		) {
+			try {
+				await phaseOrchestrator.current.reconcileQaLoss({
+					issueId: session.issue_id,
+					terminalExecId: event.execution_id,
+				});
+			} catch (err) {
+				console.error(
+					`[event-route] reconcileQaLoss threw for ${event.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+
+		// FLY-921 Fix C: a three-stage phase session reaching a terminal signal
 		// (completed OR failed — the failed path never goes through
 		// onPhaseComplete) may be the current TURN holder. Scoped reconcile with
 		// guard 1: only acts when this exec IS the holder, so a handoff that just
@@ -2902,12 +2192,12 @@ export function createEventRouter(
 		if (
 			(event.event_type === "session_completed" ||
 				event.event_type === "session_failed") &&
-			turnBeltReconciler?.current &&
+			phaseOrchestrator?.current &&
 			session?.project_name &&
-			isWorkflowPhaseRole(session.session_role)
+			isThreeStagePhaseRole(session.session_role)
 		) {
 			try {
-				await turnBeltReconciler.current.reconcileTurnBelt({
+				await phaseOrchestrator.current.reconcileTurnBelt({
 					issueId: session.issue_id,
 					projectName: session.project_name,
 					terminalExecId: event.execution_id,
@@ -2916,33 +2206,6 @@ export function createEventRouter(
 				console.error(
 					`[event-route] reconcileTurnBelt threw for ${event.execution_id}: ${(err as Error).message}`,
 				);
-			}
-		}
-
-		// FLY-1282 Part C: targeted terminal-archive enqueue. Runs AFTER the
-		// phase orchestration/handoff above so a DAG workflow successor row is
-		// durable before the targeted check reads alias state. Fresh getSession
-		// confirms the row actually landed completed (FSM-rejected / duplicate
-		// terminal → zero enqueue). Post-ship completions and FLY-208
-		// evidence-gap completions are excluded at their source sites;
-		// stage_changed only enqueues via the accepted FLY-324 transition (the
-		// W2 merged branch is post-ship-owned and structurally never enqueues).
-		// Sister call: DirectEventSink.ts.
-		if (
-			terminalArchiveEnqueue &&
-			!terminalArchiveExcluded &&
-			!transitionRejected &&
-			(event.event_type === "session_completed" || fly324Completed)
-		) {
-			const freshTerminalRow = store.getSession(event.execution_id);
-			if (freshTerminalRow?.status === "completed") {
-				try {
-					terminalArchiveEnqueue(event.issue_id);
-				} catch (err) {
-					console.error(
-						`[event-route] terminal-archive enqueue threw for ${event.issue_id}: ${(err as Error).message}`,
-					);
-				}
 			}
 		}
 
@@ -2956,7 +2219,7 @@ export function createEventRouter(
 						: Array.isArray(payload.labels)
 							? (payload.labels as string[])
 							: [];
-				const { lead } = registry.resolveWithLead(
+				const { runtime, lead } = registry.resolveWithLead(
 					projects,
 					event.project_name,
 					labels,
@@ -2980,7 +2243,6 @@ export function createEventRouter(
 					issue_labels: labels,
 					pr_number: session.pr_number,
 					session_role: session.session_role ?? "main",
-					design_backend: session.design_backend,
 				};
 
 				// FLY-47: Add stage_context for stage_changed events to prevent Lead misinterpretation
@@ -3043,14 +2305,10 @@ export function createEventRouter(
 				// coordinator's ThreadPoster, NOT this block.
 				if (
 					event.event_type === "session_completed" &&
-					(isReviewHeld(store, session) ||
-						!store.workflowGatePresentationDisposition({
-							executionId: event.execution_id,
-							checkpoint: "approve_to_ship",
-						}).allow)
+					isReviewHeld(store, session)
 				) {
 					console.log(
-						`[event-route] suppressing non-authoritative review-required Lead delivery for ${event.execution_id}`,
+						`[event-route] FLY-579 QA-held: suppressing review-required Lead delivery for ${event.execution_id}`,
 					);
 				} else {
 					// FLY-47: Always deliver ALL events to Lead — Lead decides routing
@@ -3063,7 +2321,6 @@ export function createEventRouter(
 						sessionKey,
 					);
 					const envelope: LeadEventEnvelope = {
-						eventId: event.event_id,
 						seq,
 						event: hookPayload,
 						sessionKey,
@@ -3075,16 +2332,14 @@ export function createEventRouter(
 					// FLY-159 (Codex R2 Issue 1): runtime.deliver() returns {delivered:
 					// false, error} instead of throwing on Lead-side failures. Without
 					// recordDeliveryFailure on that branch, GUARDRAIL_EVENT_TYPES retry
-					// the durable delivery-failure ledger would never see
+					// (HeartbeatService.retryUndeliveredGuardrailEvents) would never see
 					// these rows. Pattern mirrors HeartbeatService.ts:416.
 					const isGuardrail = GUARDRAIL_EVENT_TYPES.has(event.event_type);
-					registry
-						.dispatchLeadEvent(envelope)
+					runtime
+						.deliver(envelope)
 						.then((result) => {
 							if (result.delivered) {
 								store.markLeadEventDelivered(seq);
-							} else if (result.queued) {
-								// The durable inbox loop owns receipt, audit, and consume.
 							} else if (isGuardrail) {
 								store.recordDeliveryFailure(
 									seq,

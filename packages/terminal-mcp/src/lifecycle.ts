@@ -3,7 +3,7 @@
  * tools (`runner_terminal_list` classification + `close_runner --abandon`).
  *
  * Terminal MCP can only read the per-machine CommDB (status ∈
- * {running, completed, timeout, failed, blocked}) + a live tmux probe. It CANNOT see the Bridge
+ * {running, completed, timeout}) + a live tmux probe. It CANNOT see the Bridge
  * WorkflowFSM state (awaiting_review, etc.), so classification is strictly
  * (CommDB status, tmux liveness) — it never claims FSM state.
  */
@@ -14,7 +14,7 @@ export type RunnerClass = "running" | "parked-alive" | "dead";
 /**
  * Classify a runner row. `running` rows are always surfaced (liveness is only
  * annotated, never used to hide a running row — preserves prior behavior).
- * Terminal rows split on liveness: alive = `parked-alive`
+ * Terminal rows (completed/timeout) split on liveness: alive = `parked-alive`
  * (idle, re-engageable), not alive = `dead`.
  */
 export function classifyRunnerRow(status: string, alive: boolean): RunnerClass {
@@ -100,7 +100,7 @@ export const ABANDON_STATUSES_PARAM = ABANDON_STATUS_SET.join(",");
  *
  * FLY-1204: `design_done` was missing here while the Bridge-side
  * FINALIZE_DONE_SOURCE_STATES (close-runner.ts) already listed it (FLY-793), so a
- * DAG workflow Design phase-session parked at `design_done` (kept alive as the
+ * three-stage Design phase-session parked at `design_done` (kept alive as the
  * design-context holder until ship) could not be reclaimed with `close_runner
  * --done` — the only recourse was a manual `kill -9`. Added to close the drift so
  * ops can reclaim a leaked design phase-session normally.

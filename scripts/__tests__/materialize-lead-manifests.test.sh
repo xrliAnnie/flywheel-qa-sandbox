@@ -1,8 +1,9 @@
 #!/bin/bash
 # FLY-650: materialize-lead-manifests.sh (WI-4; Codex R1#2 / R2#5).
 #
-# Asserts the materializer produces the canonical pre-launch manifest shape,
-# carries model/leadBackend, is idempotent, and starts no Lead process.
+# Asserts the materializer produces the SAME manifest shape claude-lead.sh writes
+# (minus runtime-only pid), carries model/leadBackend, is idempotent, and starts
+# no Lead process.
 set -uo pipefail
 PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED+1)); echo "[TEST] ✓ $1"; }
@@ -20,11 +21,11 @@ cat > "$H/.flywheel/projects.json" <<'EOF'
 [
   { "projectName": "flywheel", "projectRoot": "Dev/flywheel", "projectRepo": "xrliAnnie/flywheel",
     "leads": [
-      { "agentId": "flywheel-cos-lead", "chatChannel": "1", "match": { "labels": ["cos"] }, "botTokenEnv": "CASS_BOT_TOKEN", "botUserId": "12345678901234567", "canSpawnRunners": false },
-      { "agentId": "flywheel-eng-lead", "chatChannel": "2", "match": { "labels": ["eng"] }, "botTokenEnv": "TADASHI_BOT_TOKEN", "botUserId": "22345678901234567", "model": "fable", "backend": "claude-code" }
+      { "agentId": "flywheel-cos-lead", "chatChannel": "1", "match": { "labels": ["cos"] }, "botTokenEnv": "CASS_BOT_TOKEN", "canSpawnRunners": false },
+      { "agentId": "flywheel-eng-lead", "chatChannel": "2", "match": { "labels": ["eng"] }, "botTokenEnv": "TADASHI_BOT_TOKEN", "model": "fable", "backend": "claude-code" }
     ] },
   { "projectName": "geoforge3d", "projectRoot": "/abs/geoforge3d", "projectRepo": "xrliAnnie/GeoForge3D",
-    "leads": [ { "agentId": "geoforge3d-product-lead", "chatChannel": "3", "match": { "labels": ["product"] }, "botTokenEnv": "PETER_BOT_TOKEN", "botUserId": "32345678901234567" } ] }
+    "leads": [ { "agentId": "geoforge3d-product-lead", "chatChannel": "3", "match": { "labels": ["product"] }, "botTokenEnv": "PETER_BOT_TOKEN" } ] }
 ]
 EOF
 
@@ -40,19 +41,22 @@ else
   fail "M1 manifests: $(ls "$MDIR" 2>/dev/null)"
 fi
 
-# ── M2: canonical pre-launch shape excludes wrapper-v2 runtime identity ──
+# ── M2: base shape matches claude-lead.sh minus pid ──
+# claude-lead writes: leadId,projectDir,projectName,subdir,workspace,botTokenEnv,
+# mcpExclude,chromeEnabled,pid (+optional model,leadBackend). Materializer = same
+# minus pid.
 KEYS="$(jq -r 'keys_unsorted | sort | join(",")' "$MDIR/flywheel-flywheel-cos-lead.json")"
-EXPECT="leadId,mcpExclude,projectDir,projectName,projectsFile,subdir,workspace"
+EXPECT="botTokenEnv,chromeEnabled,leadId,mcpExclude,projectDir,projectName,subdir,workspace"
 if [ "$KEYS" = "$EXPECT" ]; then
-  pass "M2 canonical pre-launch key set"
+  pass "M2 base key set == claude-lead manifest minus pid"
 else
   fail "M2 keys: got [$KEYS] want [$EXPECT]"
 fi
-# Explicitly: no runtime-only identity fields.
-if jq -e 'has("pid") or has("socketPath")' "$MDIR/flywheel-flywheel-cos-lead.json" >/dev/null 2>&1; then
-  fail "M2b materialized manifest must not carry runtime-only identity"
+# explicitly: no runtime-only pid
+if jq -e 'has("pid")' "$MDIR/flywheel-flywheel-cos-lead.json" >/dev/null 2>&1; then
+  fail "M2b materialized manifest must NOT carry runtime-only pid"
 else
-  pass "M2b no runtime-only identity"
+  pass "M2b no runtime-only pid"
 fi
 
 # ── M3: field values + carrier fields ──
@@ -60,12 +64,11 @@ F="$MDIR/flywheel-flywheel-eng-lead.json"
 if [ "$(jq -r '.leadId' "$F")" = "flywheel-eng-lead" ] \
    && [ "$(jq -r '.projectDir' "$F")" = "$H/Dev/flywheel" ] \
    && [ "$(jq -r '.workspace' "$F")" = "$H/Dev/flywheel" ] \
-   && [ "$(jq -r '.projectsFile' "$F")" = "$H/.flywheel/projects.json" ] \
-   && ! jq -e 'has("botTokenEnv") or has("botUserId") or has("discordStateDir")' "$F" >/dev/null 2>&1 \
-	&& [ "$(jq -r '.model' "$F")" = "fable" ] \
-	&& [ "$(jq -r '.leadBackend.backendId' "$F")" = "claude-code" ] \
-	&& [ "$(jq -r '.subdir' "$F")" = "" ] \
-	&& ! jq -e 'has("chromeEnabled")' "$F" >/dev/null 2>&1; then
+   && [ "$(jq -r '.botTokenEnv' "$F")" = "TADASHI_BOT_TOKEN" ] \
+   && [ "$(jq -r '.model' "$F")" = "fable" ] \
+   && [ "$(jq -r '.leadBackend.backendId' "$F")" = "claude-code" ] \
+   && [ "$(jq -r '.subdir' "$F")" = "" ] \
+   && [ "$(jq -r '.chromeEnabled' "$F")" = "false" ]; then
   pass "M3 values + carrier fields (model/leadBackend) preserved"
 else
   fail "M3 values: $(cat "$F")"

@@ -100,7 +100,7 @@ function makeHarness(
 	const opts: CodexDaemonGoalRuntimeOptions = {
 		executionId: "exec-1",
 		codexBin: "/bin/codex",
-		codexHomes: ["/home/a"],
+		codexHomes: ["/home/a", "/home/b", "/home/c"],
 		cwd: "/work",
 		socketPath: "/tmp/d.sock",
 		spawnDaemon: async (o) => {
@@ -214,7 +214,7 @@ describe("CodexDaemonGoalRuntime", () => {
 		expect(h.clients[0].started).toEqual([]);
 	});
 
-	it("a daemon death mid-run restarts on the same account and RESUMES the same thread", async () => {
+	it("a daemon death mid-run restarts on the NEXT account and RESUMES the same thread", async () => {
 		const h = makeHarness({
 			runGoalScript: [
 				new GoalRunError("socket died", "transport_closed"),
@@ -225,55 +225,12 @@ describe("CodexDaemonGoalRuntime", () => {
 		const out = await rt.runGoal({ objective: "x" });
 		expect(out.result.succeeded).toBe(true);
 		expect(out.restarts).toBe(1);
-		// spawned twice without changing the manually selected account
-		expect(h.spawns).toEqual(["/home/a", "/home/a"]);
+		// spawned twice, rotating account a → b
+		expect(h.spawns).toEqual(["/home/a", "/home/b"]);
 		// first client started t-1; after death, second client RESUMED t-1
 		expect(h.clients[0].started).toEqual(["t-1"]);
 		expect(h.clients[1].resumed).toEqual(["t-1"]);
 		expect(h.stops).toBe(1); // the dead session was torn down
-	});
-
-	it("FLY-1257: daemon restart forwards the same durable gate-hold callbacks to the resumed goal loop", async () => {
-		const h = makeHarness({
-			runGoalScript: [
-				new GoalRunError("socket died while held", "transport_closed"),
-				COMPLETE,
-			],
-		});
-		const seen: Array<{
-			read: unknown;
-			write: unknown;
-			isWaiting: unknown;
-		}> = [];
-		const original = h.opts.runGoalFn as NonNullable<
-			CodexDaemonGoalRuntimeOptions["runGoalFn"]
-		>;
-		const rt = new CodexDaemonGoalRuntime({
-			...h.opts,
-			runGoalFn: (async (client, input, events) => {
-				seen.push({
-					read: input.readGateHoldLatch,
-					write: input.writeGateHoldLatch,
-					isWaiting: input.isWaiting,
-				});
-				return original(client, input, events);
-			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
-		});
-		const read = () => true;
-		const write = (_held: boolean) => {};
-		const isWaiting = () => true;
-		const out = await rt.runGoal({
-			objective: "x",
-			readGateHoldLatch: read,
-			writeGateHoldLatch: write,
-			isWaiting,
-		});
-		expect(out.result.status).toBe("complete");
-		expect(seen).toEqual([
-			{ read, write, isWaiting },
-			{ read, write, isWaiting },
-		]);
-		rt.stop();
 	});
 
 	it("FLY-1236: same-thread in-run restart re-sends the exact same kick (rebuilt thread never goes goal-only)", async () => {
@@ -307,11 +264,10 @@ describe("CodexDaemonGoalRuntime", () => {
 		rt.stop();
 	});
 
-	it("FLY-1940: threads reapOrphanPid to the first spawn and hard ownership persistence to every spawn", async () => {
+	it("HIGH-3: threads reapOrphanPid to the FIRST spawn only + reports each daemon pid via onDaemonPid", async () => {
 		const seenReap: Array<number | undefined> = [];
-		const persistedGroups: number[] = [];
 		const h = makeHarness({
-			// death then complete → forces one same-account restart (2nd spawn)
+			// death then complete → forces one account-rotation restart (2nd spawn)
 			runGoalScript: [
 				new GoalRunError("socket died", "transport_closed"),
 				COMPLETE,
@@ -321,26 +277,26 @@ describe("CodexDaemonGoalRuntime", () => {
 			...h.opts,
 			spawnDaemon: async (o) => {
 				seenReap.push(o.reapOrphanPid);
-				o.onSpawnIdentity?.(1);
 				return fakeHandle(() => {});
 			},
 		});
+		const pids: Array<number | undefined> = [];
 		await rt.runGoal({
 			objective: "x",
 			reapOrphanPid: 4321,
-			onSpawnIdentity: (pgid) => persistedGroups.push(pgid),
+			onDaemonPid: (p) => pids.push(p),
 		});
 		// first spawn reaps a prior orphan; the within-run restart tears down its
 		// own daemon first, so there is NO orphan → reapOrphanPid omitted.
 		expect(seenReap).toEqual([4321, undefined]);
-		// each spawn persists its live detached group before it can proceed
-		expect(persistedGroups).toEqual([1, 1]);
+		// each spawn reports its live pid (fakeHandle pid = 1)
+		expect(pids).toEqual([1, 1]);
 		rt.stop();
 	});
 
 	it("MED-7 R2: every restart's goal call shares the SAME run start (the budget never re-arms)", async () => {
 		const h = makeHarness({
-			// death then complete → one same-account restart (2 goal calls)
+			// death then complete → one account-rotation restart (2 goal calls)
 			runGoalScript: [
 				new GoalRunError("socket died", "transport_closed"),
 				COMPLETE,
@@ -431,8 +387,8 @@ describe("CodexDaemonGoalRuntime", () => {
 		await expect(rt.runGoal({ objective: "x" })).rejects.toBeInstanceOf(
 			GoalRunError,
 		);
-		// initial + 2 restarts = 3 spawns on the same selected account
-		expect(h.spawns).toEqual(["/home/a", "/home/a", "/home/a"]);
+		// initial + 2 restarts = 3 spawns (accounts a, b, c)
+		expect(h.spawns).toEqual(["/home/a", "/home/b", "/home/c"]);
 	});
 
 	it("resolves (does NOT reject) on a non-complete terminal — the caller decides", async () => {
@@ -482,7 +438,7 @@ describe("CodexDaemonGoalRuntime", () => {
 		const rt = new CodexDaemonGoalRuntime({
 			executionId: "e",
 			codexBin: "/b",
-			codexHomes: ["/home/a"],
+			codexHomes: ["/home/a", "/home/b"],
 			cwd: "/w",
 			socketPath: "/tmp/d.sock",
 			spawnDaemon: async (o) => {
@@ -500,7 +456,7 @@ describe("CodexDaemonGoalRuntime", () => {
 		const out = await rt.runGoal({ objective: "x" });
 		expect(out.result.succeeded).toBe(true);
 		expect(out.restarts).toBe(1);
-		expect(spawns).toEqual(["/home/a", "/home/a"]); // same account
+		expect(spawns).toEqual(["/home/a", "/home/b"]); // rotated
 		expect(stops).toBe(1); // the dead session was torn down
 	});
 
@@ -619,7 +575,7 @@ describe("CodexDaemonGoalRuntime", () => {
 		const rt = new CodexDaemonGoalRuntime({
 			executionId: "e",
 			codexBin: "/b",
-			codexHomes: ["/home/a"],
+			codexHomes: ["/home/a", "/home/b"],
 			cwd: "/w",
 			socketPath: "/tmp/z.sock",
 			spawnDaemon: async () => zombieHandle(),
@@ -768,17 +724,5 @@ describe("CodexDaemonGoalRuntime", () => {
 					cwd: "/w",
 				}),
 		).toThrow(/at least one codexHome/);
-	});
-
-	it("rejects multiple codexHomes because automatic account switching is retired", () => {
-		expect(
-			() =>
-				new CodexDaemonGoalRuntime({
-					executionId: "e",
-					codexBin: "/b",
-					codexHomes: ["/home/personal", "/home/school"],
-					cwd: "/w",
-				}),
-		).toThrow(/exactly one codexHome|automatic account switching is retired/i);
 	});
 });

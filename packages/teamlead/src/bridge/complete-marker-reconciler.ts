@@ -34,7 +34,6 @@
  * so we never split-brain liveness decisions across the heartbeat loop.
  */
 
-import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -42,42 +41,21 @@ import {
 	readFileSync,
 	renameSync,
 	unlinkSync,
-	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { canonicalSubmissionDigest } from "flywheel-config";
-import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type {
-	Session,
-	StateStore,
-	WorkflowCompletionActivationContext,
-} from "../StateStore.js";
-import { ENGINE_INVARIANT_REASON_PREFIX } from "../workflow-engine-invariant.js";
-import { validateDesignHtmlCompletion } from "./design-html-admission.js";
-import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
+import type { Session, StateStore } from "../StateStore.js";
 import {
 	computeAuthoritativeShipDecision,
-	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
-import {
-	type ShipAttemptSettle,
-	settleShipAttemptFailed,
-} from "./post-ship-finalization.js";
-import { isClosedSettledCompletion } from "./workflow-completion-settled.js";
 
-/**
- * Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker().
- * FLY-1608: QA slots override this path so their Bridge never drains production.
- */
+/** Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker(). */
 export function defaultMarkerDir(): string {
-	const fromEnv = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
-	if (fromEnv) return fromEnv;
 	return join(
 		process.env.HOME ?? homedir(),
 		".flywheel",
@@ -86,9 +64,14 @@ export function defaultMarkerDir(): string {
 	);
 }
 
-/** One marker-dir knob must isolate quarantine too; never fall back separately. */
+/** Default quarantine directory for un-replayable markers. */
 export function defaultQuarantineDir(): string {
-	return `${defaultMarkerDir()}-quarantine`;
+	return join(
+		process.env.HOME ?? homedir(),
+		".flywheel",
+		"state",
+		"complete-failed-quarantine",
+	);
 }
 
 // FLY-222 #1 (Codex code-review MED-1): `no_code` must be a recognized route
@@ -99,7 +82,6 @@ const VALID_ROUTES = new Set([
 	"auto_approve",
 	"needs_review",
 	"blocked",
-	"ship_attempt_failed",
 	"no_code",
 	// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) must be
 	// recognized here too, else a fail-close marker from
@@ -144,15 +126,6 @@ export type ReconcileOutcome =
 	// ship-eligible was parked with a merge_block marker + the complete-marker
 	// SETTLED (deleted, NOT quarantined, NOT forced completed/failed).
 	| { kind: "settled_merge_block"; head: string }
-	| {
-			kind: "settled_ship_attempt_failed";
-			settle: ShipAttemptSettle["outcome"];
-	  }
-	| {
-			kind: "held_for_lead";
-			invariant: string;
-			alertState: "accepted" | "pending";
-	  }
 	| { kind: "transient_failed"; error: string }
 	| {
 			kind: "quarantined";
@@ -178,37 +151,9 @@ export interface MarkerReconcilerDeps {
 	 * restart-replay is the first to park a merged-but-unapproved marker (the live
 	 * sinks fire it in-band; this covers a Bridge that died in the exact window
 	 * before the live sink processed the completion). Best-effort; wired to the
-	 * ReviewAuthorizationAlerts in plugin.ts. Absent → marker + log only.
+	 * AutoQaCoordinator's alert channel in plugin.ts. Absent → marker + log only.
 	 */
 	alertMergeWithoutApproval?: (session: Session, reason: string) => void;
-	/**
-	 * FLY-1505: durable ship-attempt alert. A rejected Promise keeps the
-	 * complete-failed marker retryable instead of deleting the only alert receipt.
-	 */
-	alertShipAttemptFailed?: (session: Session, reason: string) => Promise<void>;
-	/** FLY-1066: direct forceStatus fallback bypasses applyTransition. */
-	onTerminalStatusPersisted?: (
-		executionId: string,
-		status: "failed" | "blocked",
-		projectName: string,
-	) => void;
-	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
-	materializedHeadAuthority?: MaterializedHeadAuthority;
-	/** FLY-1912: durable, event-id-deduplicated alert sink. */
-	alertCompleteMarkerHeld?: (args: CompleteMarkerHeldAlert) => Promise<void>;
-}
-
-export interface CompleteMarkerHeldAlert {
-	eventId: string;
-	kind: "engine_invariant" | "unknown_5xx_episode";
-	execId: string;
-	issueId: string;
-	projectName: string;
-	session?: Session;
-	markerPath: string;
-	reason: string;
-	httpStatus?: number;
-	binding?: { runId: string; nodeId: string; attempt: number };
 }
 
 /**
@@ -221,19 +166,6 @@ export function buildLoopbackBaseUrl(host: string, port: number): string {
 	return `http://${h}:${port}`;
 }
 
-type ReplayLedger = {
-	v: 1;
-	mode: "backoff" | "held";
-	streak: number;
-	episode_started_at: string;
-	last_status: number;
-	last_at: string;
-	next_probe_at: string;
-	invariant?: string;
-	alert_event_id?: string;
-	alert_state?: "pending" | "accepted";
-};
-
 type MarkerBody = {
 	event_id: string;
 	execution_id: string;
@@ -243,49 +175,11 @@ type MarkerBody = {
 	source?: string;
 	payload?: {
 		decision?: { route?: string };
-		evidence?: {
-			landingStatus?: { status?: string };
-			headSha?: string;
-			prNumber?: number;
-		};
-		reviewQuestionId?: string;
-		summary?: string;
+		evidence?: { landingStatus?: { status?: string }; headSha?: string };
 		sessionRole?: string;
-		workflowActivation?: WorkflowCompletionActivationContext;
 		[k: string]: unknown;
 	};
-	replay_ledger?: unknown;
 };
-
-function markerWorkflowActivation(
-	value: unknown,
-): WorkflowCompletionActivationContext | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return undefined;
-	}
-	const row = value as Record<string, unknown>;
-	if (
-		typeof row.activationId !== "string" ||
-		!row.activationId ||
-		typeof row.runId !== "string" ||
-		!row.runId ||
-		typeof row.nodeId !== "string" ||
-		!row.nodeId ||
-		!Number.isInteger(row.attempt) ||
-		Number(row.attempt) < 1 ||
-		!Number.isInteger(row.turnEpoch) ||
-		Number(row.turnEpoch) < 1
-	) {
-		return undefined;
-	}
-	return {
-		activationId: row.activationId,
-		runId: row.runId,
-		nodeId: row.nodeId,
-		attempt: Number(row.attempt),
-		turnEpoch: Number(row.turnEpoch),
-	};
-}
 
 /**
  * Compute the terminal status the marker's payload PROVES, using the EXACT same
@@ -350,10 +244,7 @@ export function expectedStatusFromMarker(
 		return isPostApproveShip ? "completed" : "awaiting_review";
 	}
 	if (route === "blocked") {
-		return isPostApproveShip ? "approved_to_ship" : "blocked";
-	}
-	if (route === "ship_attempt_failed") {
-		return isPostApproveShip ? "approved_to_ship" : null;
+		return "blocked";
 	}
 	if (route === "no_code" || route === "pr_handoff") {
 		// FLY-222 #1 (Codex code-review MED-2 parity): no_code only terminalizes a
@@ -398,146 +289,6 @@ function parseMarker(raw: string): MarkerBody | null {
 	return m as MarkerBody;
 }
 
-function parseReplayLedger(
-	value: unknown,
-	log: (message: string) => void,
-): ReplayLedger | undefined {
-	if (value === undefined) return undefined;
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		log("[complete-reconciler] malformed replay ledger ignored");
-		return undefined;
-	}
-	const row = value as Record<string, unknown>;
-	const validTimestamp = (candidate: unknown) =>
-		typeof candidate === "string" && Number.isFinite(Date.parse(candidate));
-	const validAlertState =
-		row.alert_state === undefined ||
-		(row.alert_event_id !== undefined &&
-			typeof row.alert_event_id === "string" &&
-			(row.alert_state === "pending" || row.alert_state === "accepted"));
-	if (
-		row.v !== 1 ||
-		(row.mode !== "backoff" && row.mode !== "held") ||
-		!Number.isInteger(row.streak) ||
-		Number(row.streak) < (row.mode === "backoff" ? 1 : 0) ||
-		!Number.isInteger(row.last_status) ||
-		!validTimestamp(row.episode_started_at) ||
-		!validTimestamp(row.last_at) ||
-		!validTimestamp(row.next_probe_at) ||
-		(row.mode === "held" &&
-			(typeof row.invariant !== "string" || !row.invariant)) ||
-		!validAlertState
-	) {
-		log("[complete-reconciler] malformed replay ledger ignored");
-		return undefined;
-	}
-	return row as ReplayLedger;
-}
-
-function persistReplayLedger(
-	body: MarkerBody,
-	markerPath: string,
-	ledger: ReplayLedger,
-	log: (message: string) => void,
-): boolean {
-	const tempPath = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
-	try {
-		writeFileSync(
-			tempPath,
-			JSON.stringify({ ...body, replay_ledger: ledger }),
-			"utf8",
-		);
-		renameSync(tempPath, markerPath);
-		body.replay_ledger = ledger;
-		return true;
-	} catch (error) {
-		try {
-			if (existsSync(tempPath)) unlinkSync(tempPath);
-		} catch {
-			// Best effort: the unique temp file is never a scan candidate.
-		}
-		log(
-			`[complete-reconciler] replay ledger write failed ${markerPath}: ${(error as Error).message}`,
-		);
-		return false;
-	}
-}
-
-function replayDelayMs(ledger: ReplayLedger): number {
-	return ledger.mode === "held"
-		? 60 * 60_000
-		: Math.min(60_000 * 2 ** (ledger.streak - 1), 60 * 60_000);
-}
-
-function markerBinding(
-	body: MarkerBody,
-): { runId: string; nodeId: string; attempt: number } | undefined {
-	const activation = markerWorkflowActivation(body.payload?.workflowActivation);
-	return activation
-		? {
-				runId: activation.runId,
-				nodeId: activation.nodeId,
-				attempt: activation.attempt,
-			}
-		: undefined;
-}
-
-async function retryPendingReplayAlert(input: {
-	body: MarkerBody;
-	ledger: ReplayLedger;
-	markerPath: string;
-	session?: Session;
-	deps: MarkerReconcilerDeps;
-	log: (message: string) => void;
-}): Promise<ReconcileOutcome> {
-	const { body, ledger, markerPath, session, deps, log } = input;
-	if (!ledger.alert_event_id || ledger.alert_state !== "pending") {
-		return { kind: "transient_failed", error: "invalid pending alert ledger" };
-	}
-	if (!deps.alertCompleteMarkerHeld) {
-		return {
-			kind: "transient_failed",
-			error: "complete-marker durable alert sink unavailable",
-		};
-	}
-	try {
-		await deps.alertCompleteMarkerHeld({
-			eventId: ledger.alert_event_id,
-			kind: ledger.mode === "held" ? "engine_invariant" : "unknown_5xx_episode",
-			execId: body.execution_id,
-			issueId: body.issue_id,
-			projectName: body.project_name,
-			session,
-			markerPath,
-			reason:
-				ledger.mode === "held"
-					? `Workflow completion is held by engine invariant ${ledger.invariant}; repair the workflow state and keep the marker for the hourly probe.`
-					: `Workflow completion replay returned Bridge ${ledger.last_status} ${ledger.streak} consecutive times; the marker is retained with bounded retry.`,
-			httpStatus: ledger.last_status,
-			binding: markerBinding(body),
-		});
-	} catch (error) {
-		return {
-			kind: "transient_failed",
-			error: error instanceof Error ? error.message : String(error),
-		};
-	}
-	const accepted: ReplayLedger = { ...ledger, alert_state: "accepted" };
-	if (!persistReplayLedger(body, markerPath, accepted, log)) {
-		return {
-			kind: "transient_failed",
-			error: "replay ledger alert acceptance write failed",
-		};
-	}
-	return ledger.mode === "held"
-		? {
-				kind: "held_for_lead",
-				invariant: ledger.invariant ?? "unknown",
-				alertState: "accepted",
-			}
-		: { kind: "transient_failed", error: `Bridge ${ledger.last_status}` };
-}
-
 /** Path-traversal guard for execId-derived filenames. */
 function safeExecId(execId: string): boolean {
 	return !/[/\\]|\.\./.test(execId) && execId.length > 0;
@@ -568,33 +319,13 @@ function moveToQuarantine(
  * quarantine paths — returns the outcome so the caller applies a fallback with
  * its own tmux-liveness knowledge.
  */
-const completeReconcileInFlight = new Map<string, Promise<ReconcileOutcome>>();
-
 export async function tryReconcileComplete(
-	execId: string,
-	deps: MarkerReconcilerDeps,
-): Promise<ReconcileOutcome> {
-	if (!safeExecId(execId)) return { kind: "absent" };
-	const markerDir = deps.markerDir ?? defaultMarkerDir();
-	const markerPath = join(markerDir, `${execId}.json`);
-	const existing = completeReconcileInFlight.get(markerPath);
-	if (existing) return existing;
-	const reconcile = tryReconcileCompleteOnce(execId, deps).finally(() => {
-		if (completeReconcileInFlight.get(markerPath) === reconcile) {
-			completeReconcileInFlight.delete(markerPath);
-		}
-	});
-	completeReconcileInFlight.set(markerPath, reconcile);
-	return reconcile;
-}
-
-async function tryReconcileCompleteOnce(
 	execId: string,
 	deps: MarkerReconcilerDeps,
 ): Promise<ReconcileOutcome> {
 	const log = deps.log ?? ((m: string) => console.log(m));
 	const markerDir = deps.markerDir ?? defaultMarkerDir();
-	const quarantineDir = deps.quarantineDir ?? `${markerDir}-quarantine`;
+	const quarantineDir = deps.quarantineDir ?? defaultQuarantineDir();
 
 	if (!safeExecId(execId)) return { kind: "absent" };
 
@@ -630,171 +361,6 @@ async function tryReconcileCompleteOnce(
 
 	const currentSession = deps.store.getSession(execId);
 	const currentStatus = currentSession?.status;
-	const replayLedger = parseReplayLedger(body.replay_ledger, log);
-	if (replayLedger?.alert_state === "pending") {
-		return retryPendingReplayAlert({
-			body,
-			ledger: replayLedger,
-			markerPath,
-			session: currentSession,
-			deps,
-			log,
-		});
-	}
-	const currentIdentifier = currentSession?.issue_identifier;
-	const authoritativeIssueIdentifier =
-		typeof currentIdentifier === "string" &&
-		/^[A-Z]+-\d+$/.test(currentIdentifier)
-			? currentIdentifier
-			: /^[A-Z]+-\d+$/.test(body.issue_id)
-				? body.issue_id
-				: undefined;
-	const designHtmlAdmission = validateDesignHtmlCompletion({
-		route: body.payload?.decision?.route,
-		payload: body.payload,
-		authoritativeIssueIdentifier,
-	});
-	if (!designHtmlAdmission.ok) {
-		const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
-		log(
-			`[complete-reconciler] founder design HTML evidence rejected for ${execId}: ${designHtmlAdmission.reason}; quarantined: ${qp}`,
-		);
-		return { kind: "quarantined", reason: "invalid", quarantinePath: qp };
-	}
-	const rawWorkflowActivation = body.payload?.workflowActivation;
-	const workflowActivation = markerWorkflowActivation(rawWorkflowActivation);
-	if (rawWorkflowActivation !== undefined && !workflowActivation) {
-		const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
-		log(
-			`[complete-reconciler] malformed workflow activation quarantined ${execId}: ${qp}`,
-		);
-		return { kind: "quarantined", reason: "invalid", quarantinePath: qp };
-	}
-	const generalizedBinding = workflowActivation
-		? deps.store.getGeneralizedWorkflowNodeForActivation(
-				workflowActivation.activationId,
-			)?.binding
-		: deps.store.getGeneralizedWorkflowNodeForExecution(execId)?.binding;
-	const generalizedReceipt = generalizedBinding
-		? deps.store.getWorkflowNodeCompletion(
-				generalizedBinding.run_id,
-				generalizedBinding.node_id,
-				generalizedBinding.attempt,
-			)
-		: undefined;
-	const generalizedSubmissionDigest = canonicalSubmissionDigest(
-		body.payload ?? {},
-	);
-	if (generalizedReceipt) {
-		if (
-			generalizedReceipt.execution_id !== execId ||
-			generalizedReceipt.route !== body.payload?.decision?.route
-		) {
-			const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
-			log(
-				`[complete-reconciler] generalized completion conflict quarantined ${execId}: ${qp}`,
-			);
-			return {
-				kind: "quarantined",
-				reason: "rejected",
-				quarantinePath: qp,
-			};
-		}
-		if (
-			generalizedReceipt.completion_submission_digest ===
-			generalizedSubmissionDigest
-		) {
-			const canonicalAuditId = `wfca:${generalizedReceipt.event_uid.slice("wfc:".length)}`;
-			const canonicalAuditPayload =
-				deps.store.getEventPayloadById(canonicalAuditId);
-			if (canonicalAuditPayload) {
-				if (
-					canonicalSubmissionDigest(canonicalAuditPayload) !==
-					generalizedReceipt.completion_submission_digest
-				) {
-					const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
-					log(
-						`[complete-reconciler] generalized canonical audit conflict quarantined ${execId}: ${qp}`,
-					);
-					return {
-						kind: "quarantined",
-						reason: "rejected",
-						quarantinePath: qp,
-					};
-				}
-				safeUnlink(markerPath, log);
-				return { kind: "duplicate_terminal", status: "node_completed" };
-			}
-		}
-	}
-
-	const markerLanding = body.payload?.evidence?.landingStatus?.status;
-
-	// FLY-1505: an explicit failed-attempt settlement (or a legacy blocked
-	// completion) after founder approval describes a ship ATTEMPT, not a blocked
-	// session. Generalized completions and markers claiming a merge retain their
-	// older authoritative replay/merge-block paths below.
-	if (
-		(body.payload?.decision?.route === "blocked" ||
-			body.payload?.decision?.route === "ship_attempt_failed") &&
-		currentStatus === "approved_to_ship" &&
-		!generalizedBinding &&
-		markerLanding !== "merged"
-	) {
-		let settle: ShipAttemptSettle;
-		try {
-			const markerPrNumber = body.payload?.evidence?.prNumber;
-			const markerReviewQuestionId = body.payload?.reviewQuestionId;
-			const usableMarkerPrNumber =
-				typeof markerPrNumber === "number" &&
-				Number.isInteger(markerPrNumber) &&
-				markerPrNumber > 0
-					? markerPrNumber
-					: undefined;
-			settle = settleShipAttemptFailed(deps.store, execId, {
-				attemptHeadSha: body.payload?.evidence?.headSha,
-				currentHeadSha: currentSession?.pr_head_sha,
-				prNumber:
-					usableMarkerPrNumber ?? currentSession?.pr_number ?? undefined,
-				reviewQuestionId:
-					typeof markerReviewQuestionId === "string"
-						? markerReviewQuestionId
-						: undefined,
-				currentReviewQuestionId: currentSession?.review_question_id,
-				summary: body.payload?.summary,
-			});
-			if (
-				(settle.outcome === "marked" ||
-					settle.outcome === "unknown_head_marked") &&
-				currentSession
-			) {
-				const retryPosture =
-					settle.outcome === "marked"
-						? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
-						: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
-				// The notifier event id is approval-binding + head deduped. Await
-				// it before consuming the durable marker so a transient notifier
-				// failure is replayed after restart instead of becoming silent.
-				if (!deps.alertShipAttemptFailed) {
-					throw new Error("ship_attempt_failed durable alert sink unavailable");
-				}
-				await deps.alertShipAttemptFailed(
-					currentSession,
-					`⚠️ Runner ${execId}（${currentSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${usableMarkerPrNumber ?? currentSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
-				);
-			}
-		} catch (err) {
-			return { kind: "transient_failed", error: String(err) };
-		}
-		safeUnlink(markerPath, log);
-		log(
-			`[complete-reconciler] FLY-1505 ship_attempt_failed deflected for ${execId} — approved_to_ship preserved (${settle.outcome})`,
-		);
-		return {
-			kind: "settled_ship_attempt_failed",
-			settle: settle.outcome,
-		};
-	}
 
 	// FLY-869 B (design R2 HIGH-4): a merged marker whose session is NOT
 	// ship-eligible must NOT reconcile to `completed` (that would finalize/Done a
@@ -809,6 +375,7 @@ async function tryReconcileCompleteOnce(
 	// the true no-out terminals ({completed, blocked, failed}); `awaiting_review` /
 	// `approved_to_ship` fall through to the eligibility check (an approved+merged row is
 	// eligible → not parked → normal completion; a parked/unapproved row → parked here).
+	const markerLanding = body.payload?.evidence?.landingStatus?.status;
 	if (
 		markerLanding === "merged" &&
 		currentSession &&
@@ -821,16 +388,12 @@ async function tryReconcileCompleteOnce(
 		const prHead =
 			currentSession.pr_head_sha?.trim() ||
 			body.payload?.evidence?.headSha?.trim();
-		// Always route through the shared predicate so the always-armed QA/review
-		// checks and the remaining merge-approval switch stay uniform. A missing
-		// head fail-closes whenever merge approval is armed.
+		// Always route through the shared predicate so the kill-switches are honored
+		// uniformly (a missing head fail-closes only when the gate is ON).
 		const decision = await computeAuthoritativeShipDecision(
 			deps.store,
 			currentSession,
 			prHead,
-			process.env,
-			deps.materializedHeadAuthority,
-			mergedPrCiProbe,
 		);
 		const eligible = decision.eligible;
 		if (!eligible) {
@@ -866,7 +429,7 @@ async function tryReconcileCompleteOnce(
 		currentStatus,
 		currentSession?.review_question_id,
 	);
-	if (expectedStatus === null && !generalizedBinding) {
+	if (expectedStatus === null) {
 		// FLY-222 #1 (Codex code-review R2 MED): if the session already reached a
 		// terminal state, an unreplayable/stale marker (e.g. a no_code marker that
 		// lost its response AFTER the Bridge already completed the run, or any
@@ -891,22 +454,9 @@ async function tryReconcileCompleteOnce(
 	}
 
 	// If already at expected terminal state, nothing to replay — just delete.
-	if (!generalizedBinding && currentStatus === expectedStatus) {
+	if (currentStatus === expectedStatus) {
 		safeUnlink(markerPath, log);
 		return { kind: "duplicate_terminal", status: expectedStatus };
-	}
-	const replayNowMs = Date.now();
-	if (replayLedger && replayNowMs < Date.parse(replayLedger.next_probe_at)) {
-		return replayLedger.mode === "held"
-			? {
-					kind: "held_for_lead",
-					invariant: replayLedger.invariant ?? "unknown",
-					alertState: replayLedger.alert_state ?? "accepted",
-				}
-			: {
-					kind: "transient_failed",
-					error: `Bridge ${replayLedger.last_status}; next probe ${replayLedger.next_probe_at}`,
-				};
 	}
 
 	// Replay via loopback self-POST.
@@ -925,257 +475,44 @@ async function tryReconcileCompleteOnce(
 		payload: body.payload ?? {},
 	};
 
-	let json:
-		| {
-				ok?: boolean;
-				duplicate?: boolean;
-				warning?: string;
-				reason?: string;
-				retryable?: boolean;
-				settled?: string;
-				detail?: {
-					transitionReason?: string;
-					alertPending?: boolean;
-				};
-		  }
-		| undefined;
-	let response: Response;
+	let json: { ok?: boolean; duplicate?: boolean; warning?: string } | undefined;
 	try {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), 5000);
-		try {
-			response = await fetchFn(`${deps.bridgeBaseUrl}/events`, {
-				method: "POST",
-				headers,
-				body: JSON.stringify(replayBody),
-				signal: controller.signal,
-			});
-		} finally {
-			clearTimeout(timer);
+		const res = await fetchFn(`${deps.bridgeBaseUrl}/events`, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(replayBody),
+			signal: controller.signal,
+		});
+		clearTimeout(timer);
+		if (res.status >= 500 || res.status === 429) {
+			return {
+				kind: "transient_failed",
+				error: `Bridge ${res.status}`,
+			};
 		}
 		try {
-			json = (await response.json()) as typeof json;
+			json = (await res.json()) as typeof json;
 		} catch {
 			json = undefined;
 		}
-		if (response.status === 429) {
-			if (replayLedger) {
-				const pushed: ReplayLedger = {
-					...replayLedger,
-					last_status: response.status,
-					last_at: new Date(replayNowMs).toISOString(),
-					next_probe_at: new Date(
-						replayNowMs + replayDelayMs(replayLedger),
-					).toISOString(),
-				};
-				if (!persistReplayLedger(body, markerPath, pushed, log)) {
-					return {
-						kind: "transient_failed",
-						error: "replay ledger probe deferral write failed",
-					};
-				}
-			}
-			return { kind: "transient_failed", error: "Bridge 429" };
-		}
-		if (response.status >= 500) {
-			const streak =
-				replayLedger?.mode === "backoff" ? replayLedger.streak + 1 : 1;
-			const episodeStartedAt =
-				replayLedger?.mode === "backoff"
-					? replayLedger.episode_started_at
-					: new Date(replayNowMs).toISOString();
-			const backoff: ReplayLedger = {
-				v: 1,
-				mode: "backoff",
-				streak,
-				episode_started_at: episodeStartedAt,
-				last_status: response.status,
-				last_at: new Date(replayNowMs).toISOString(),
-				next_probe_at: new Date(
-					replayNowMs + Math.min(60_000 * 2 ** (streak - 1), 60 * 60_000),
-				).toISOString(),
-				...(replayLedger?.mode === "backoff" && replayLedger.alert_event_id
-					? {
-							alert_event_id: replayLedger.alert_event_id,
-							alert_state: replayLedger.alert_state,
-						}
-					: {}),
-				...(streak === 3
-					? {
-							alert_event_id: `complete-marker-5xx:${execId}:${episodeStartedAt}`,
-							alert_state: "pending" as const,
-						}
-					: {}),
-			};
-			if (!persistReplayLedger(body, markerPath, backoff, log)) {
-				return {
-					kind: "transient_failed",
-					error: "replay ledger backoff write failed",
-				};
-			}
-			if (backoff.alert_state === "pending") {
-				return retryPendingReplayAlert({
-					body,
-					ledger: backoff,
-					markerPath,
-					session: currentSession,
-					deps,
-					log,
-				});
-			}
-			return {
-				kind: "transient_failed",
-				error: `Bridge ${response.status}`,
-			};
-		}
-		if (!response.ok) {
-			if (
-				generalizedBinding &&
-				response.status === 409 &&
-				json?.reason === "missing_output" &&
-				json.retryable === true
-			) {
-				return { kind: "transient_failed", error: "missing_output" };
-			}
-			const transitionReason = json?.detail?.transitionReason;
-			if (
-				response.status === 409 &&
-				transitionReason?.startsWith(ENGINE_INVARIANT_REASON_PREFIX)
-			) {
-				const invariant = transitionReason.slice(
-					ENGINE_INVARIANT_REASON_PREFIX.length,
-				);
-				const binding = generalizedBinding
-					? {
-							runId: generalizedBinding.run_id,
-							nodeId: generalizedBinding.node_id,
-							attempt: generalizedBinding.attempt,
-						}
-					: markerBinding(body);
-				const alertEventId = binding
-					? `engine_invariant:${binding.runId}:${binding.nodeId}:${binding.attempt}:${invariant}`
-					: `engine_invariant:${execId}:${invariant}`;
-				const priorHeld =
-					replayLedger?.mode === "held" && replayLedger.invariant === invariant
-						? replayLedger
-						: undefined;
-				const held: ReplayLedger = {
-					v: 1,
-					mode: "held",
-					streak: 0,
-					episode_started_at:
-						priorHeld?.episode_started_at ??
-						new Date(replayNowMs).toISOString(),
-					last_status: response.status,
-					last_at: new Date(replayNowMs).toISOString(),
-					next_probe_at: new Date(replayNowMs + 60 * 60_000).toISOString(),
-					invariant,
-					alert_event_id: priorHeld?.alert_event_id ?? alertEventId,
-					alert_state:
-						priorHeld?.alert_state ??
-						(json?.detail?.alertPending ? "pending" : "accepted"),
-				};
-				if (!persistReplayLedger(body, markerPath, held, log)) {
-					return {
-						kind: "transient_failed",
-						error: "replay ledger held write failed",
-					};
-				}
-				if (held.alert_state === "pending") {
-					return retryPendingReplayAlert({
-						body,
-						ledger: held,
-						markerPath,
-						session: currentSession,
-						deps,
-						log,
-					});
-				}
-				return {
-					kind: "held_for_lead",
-					invariant,
-					alertState: "accepted",
-				};
-			}
+		if (!res.ok) {
 			// 4xx (non-429) — malformed request, won't succeed on retry.
 			const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
 			log(
-				`[complete-reconciler] replay 4xx (${response.status}) quarantined ${execId}: ${qp}`,
+				`[complete-reconciler] replay 4xx (${res.status}) quarantined ${execId}: ${qp}`,
 			);
 			return {
 				kind: "quarantined",
 				reason: "rejected",
-				routeStatus: expectedStatus ?? undefined,
+				routeStatus: expectedStatus,
 				quarantinePath: qp,
 			};
 		}
 	} catch (err) {
 		// Network error / abort — Bridge unreachable. Keep marker, retry later.
-		if (replayLedger) {
-			const pushed: ReplayLedger = {
-				...replayLedger,
-				last_at: new Date(replayNowMs).toISOString(),
-				next_probe_at: new Date(
-					replayNowMs + replayDelayMs(replayLedger),
-				).toISOString(),
-			};
-			if (!persistReplayLedger(body, markerPath, pushed, log)) {
-				return {
-					kind: "transient_failed",
-					error: "replay ledger probe deferral write failed",
-				};
-			}
-		}
 		return { kind: "transient_failed", error: (err as Error).message };
-	}
-
-	if (generalizedBinding) {
-		if (isClosedSettledCompletion(json?.settled)) {
-			safeUnlink(markerPath, log);
-			return { kind: "reconciled", status: json.settled };
-		}
-		if (json?.settled === "terminal_status_immune") {
-			const verifiedStatus = deps.store.getSession(execId)?.status;
-			if (
-				isNoOutEdgeTerminalStatus(verifiedStatus) &&
-				verifiedStatus !== "completed"
-			) {
-				safeUnlink(markerPath, log);
-				return { kind: "reconciled", status: "terminal_status_immune" };
-			}
-			return {
-				kind: "transient_failed",
-				error: "terminal_status_immune status verification failed",
-			};
-		}
-		const receipt = deps.store.getWorkflowNodeCompletion(
-			generalizedBinding.run_id,
-			generalizedBinding.node_id,
-			generalizedBinding.attempt,
-		);
-		if (
-			receipt?.execution_id === execId &&
-			receipt.route === body.payload?.decision?.route &&
-			receipt.completion_submission_digest === generalizedSubmissionDigest
-		) {
-			const canonicalAuditId = `wfca:${receipt.event_uid.slice("wfc:".length)}`;
-			const canonicalAuditPayload =
-				deps.store.getEventPayloadById(canonicalAuditId);
-			if (
-				canonicalAuditPayload &&
-				canonicalSubmissionDigest(canonicalAuditPayload) ===
-					receipt.completion_submission_digest
-			) {
-				safeUnlink(markerPath, log);
-				return { kind: "reconciled", status: "node_completed" };
-			}
-		}
-		return {
-			kind: "transient_failed",
-			error:
-				json?.warning ??
-				"generalized completion receipt or canonical audit missing",
-		};
 	}
 
 	// Re-read session and verify it reached the proven terminal status. Do NOT
@@ -1206,7 +543,7 @@ async function tryReconcileCompleteOnce(
 		return {
 			kind: "quarantined",
 			reason: "duplicate_nonterminal",
-			routeStatus: expectedStatus ?? undefined,
+			routeStatus: expectedStatus,
 			quarantinePath: qp,
 		};
 	}
@@ -1219,7 +556,7 @@ async function tryReconcileCompleteOnce(
 	return {
 		kind: "quarantined",
 		reason: "rejected",
-		routeStatus: expectedStatus ?? undefined,
+		routeStatus: expectedStatus,
 		quarantinePath: qp,
 	};
 }
@@ -1250,28 +587,14 @@ export function applyQuarantineFallback(args: {
 	issueId?: string;
 	projectName?: string;
 	tmuxAlive: boolean;
-	/**
-	 * FLY-1282 (code R1 #5): optional tri-state verdict for HONEST logging.
-	 * `tmuxAlive` keeps its legacy meaning ("not provably dead") byte-for-byte
-	 * for existing boolean callers; when the caller also passes the verdict,
-	 * an indeterminate probe is logged as indeterminate — never as "alive".
-	 */
-	livenessVerdict?: "alive" | "dead" | "indeterminate";
 	routeStatus?: string;
 	quarantinePath: string;
-	onTerminalStatusPersisted?: (
-		executionId: string,
-		status: "failed" | "blocked",
-		projectName: string,
-	) => void;
 	log?: (m: string) => void;
 }): void {
 	const log = args.log ?? ((m: string) => console.log(m));
 	if (args.tmuxAlive) {
 		log(
-			args.livenessVerdict === "indeterminate"
-				? `[complete-reconciler] ${args.executionId}: marker quarantined, liveness indeterminate — leaving running (never reaped on uncertainty)`
-				: `[complete-reconciler] ${args.executionId}: marker quarantined but tmux alive — leaving running, advisory will fire`,
+			`[complete-reconciler] ${args.executionId}: marker quarantined but tmux alive — leaving running, advisory will fire`,
 		);
 		return;
 	}
@@ -1325,23 +648,6 @@ export function applyQuarantineFallback(args: {
 		);
 	}
 	args.store.forceStatus(args.executionId, target, now, lastError);
-	if (
-		(target === "failed" || target === "blocked") &&
-		args.projectName &&
-		args.onTerminalStatusPersisted
-	) {
-		try {
-			args.onTerminalStatusPersisted(
-				args.executionId,
-				target,
-				args.projectName,
-			);
-		} catch (err) {
-			log(
-				`[complete-reconciler] terminal CommDB enqueue threw for ${args.executionId}: ${(err as Error).message}`,
-			);
-		}
-	}
 	log(
 		`[complete-reconciler] ${args.executionId}: dead + un-replayable marker → forced status=${target}`,
 	);
@@ -1365,15 +671,10 @@ export async function reconcileCompleteFailedMarkers(
 			projectName: string,
 		) => { tmuxWindow: string } | undefined;
 	},
-): Promise<{
-	scanned: number;
-	reconciled: number;
-	quarantined: number;
-	held: number;
-}> {
+): Promise<{ scanned: number; reconciled: number; quarantined: number }> {
 	const log = deps.log ?? ((m: string) => console.log(m));
 	const markerDir = deps.markerDir ?? defaultMarkerDir();
-	const result = { scanned: 0, reconciled: 0, quarantined: 0, held: 0 };
+	const result = { scanned: 0, reconciled: 0, quarantined: 0 };
 
 	if (!existsSync(markerDir)) return result;
 
@@ -1396,14 +697,9 @@ export async function reconcileCompleteFailedMarkers(
 			outcome.kind === "duplicate_terminal" ||
 			// FLY-869 B: a settled merge_block is a successfully-PROCESSED marker
 			// (parked, not finalized) — count it as reconciled, never fall back.
-			outcome.kind === "settled_merge_block" ||
-			// FLY-1505: the attempt marker was durably settled while the live
-			// approval/session status was preserved.
-			outcome.kind === "settled_ship_attempt_failed"
+			outcome.kind === "settled_merge_block"
 		) {
 			result.reconciled += 1;
-		} else if (outcome.kind === "held_for_lead") {
-			result.held += 1;
 		} else if (outcome.kind === "quarantined") {
 			result.quarantined += 1;
 			// Boot fallback: probe tmux to choose a definite terminal status.
@@ -1432,7 +728,6 @@ export async function reconcileCompleteFailedMarkers(
 				tmuxAlive,
 				routeStatus: outcome.routeStatus,
 				quarantinePath: outcome.quarantinePath,
-				onTerminalStatusPersisted: deps.onTerminalStatusPersisted,
 				log,
 			});
 		}
@@ -1441,7 +736,7 @@ export async function reconcileCompleteFailedMarkers(
 
 	if (result.scanned > 0) {
 		log(
-			`[complete-reconciler] boot drain: scanned=${result.scanned} reconciled=${result.reconciled} quarantined=${result.quarantined} held=${result.held}`,
+			`[complete-reconciler] boot drain: scanned=${result.scanned} reconciled=${result.reconciled} quarantined=${result.quarantined}`,
 		);
 	}
 	return result;

@@ -15,11 +15,6 @@
  */
 
 import { execFile } from "node:child_process";
-import {
-	buildNonLeadClaudeSettings,
-	ModelPolicyError,
-	resolveAllowedCanonicalModel,
-} from "flywheel-config";
 
 /**
  * FLY-1099 §7.3: manual Promise wrapper (NOT promisify) so we hold the child
@@ -97,30 +92,11 @@ export async function runSubscriptionClassifier(
 ): Promise<RunnerResult> {
 	const run = opts.execFileImpl ?? (execFileAsync as unknown as ExecFileAsync);
 	const bin = opts.claudeBin ?? "claude";
-	let model: string;
-	try {
-		model = resolveAllowedCanonicalModel(
-			opts.model ?? DEFAULT_CLASSIFIER_MODEL,
-			{ surface: "runner", runtimeVendor: "claude" },
-		);
-	} catch (error) {
-		const reason =
-			error instanceof ModelPolicyError ? error.code : "INVALID_MODEL";
-		return { ok: false, reason: `model_policy:${reason}` };
-	}
+	const model = opts.model ?? DEFAULT_CLASSIFIER_MODEL;
 
 	const execArgs: [string, string[], Record<string, unknown>] = [
 		bin,
-		[
-			"-p",
-			prompt,
-			"--model",
-			model,
-			"--output-format",
-			"json",
-			"--settings",
-			JSON.stringify(buildNonLeadClaudeSettings()),
-		],
+		["-p", prompt, "--model", model, "--output-format", "json"],
 		{
 			timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 			maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,

@@ -9,8 +9,8 @@
 #   `pane-died` (not `pane-exited`) when the pane has `remain-on-exit on`
 #   set, so the cleanup event path silently never ran in production.
 #
-# This script runs an *isolated* tmux server via an exact socket path under
-# its private temp root, so it does not touch the developer's or
+# This script runs an *isolated* tmux server via a custom socket name
+# (`tmux -L flywheel-cmux-test`) so it does not touch the developer's or
 # CI runner's main tmux server. The shim function `tmux()` redirects all
 # `tmux` calls to that isolated socket, including calls made from
 # functions sourced from `flywheel-cmux-sync.sh`.
@@ -87,21 +87,13 @@ case "$TMUX_MAJOR_MINOR" in
 esac
 echo "tmux 3.5+: $TMUX_IS_35_PLUS"
 
+TMUX_SOCKET="flywheel-cmux-test-$$"
 TMPDIR_ROOT=$(mktemp -d -t fly110.XXXXXX)
-TMUX_SOCKET="$TMPDIR_ROOT/tmux-hooks-integration.sock"
-export TMUX_SOCKET
 EVENT_FILE_BASE="$TMPDIR_ROOT/events"
-# Process-table reads are intentionally denied by the managed test sandbox.
-# Production leaves this unset and leases use the kernel-reported start time.
-export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="hooks-integration-$$"
-export FLYWHEEL_CMUX_TMUX_GENERATION="hooks-integration-generation"
-VIEW_WAL_DIR="$TMPDIR_ROOT/view-wal"
-VIEW_LEDGER="$TMPDIR_ROOT/view-ledger"
-export FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$TMPDIR_ROOT/watcher.lock"
 
 cleanup() {
   # Best-effort cleanup. Never fail the script in cleanup.
-  command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
+  command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
   rm -rf "$TMPDIR_ROOT" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -125,7 +117,7 @@ maybe_skip() {
   exit 0
 }
 
-command tmux -S "$TMUX_SOCKET" new-session -d -s _preflight -n init "sleep 5" 2>"$TMPDIR_ROOT/preflight.err"
+command tmux -L "$TMUX_SOCKET" new-session -d -s _preflight -n init "sleep 5" 2>"$TMPDIR_ROOT/preflight.err"
 preflight_exit=$?
 
 if [[ $preflight_exit -ne 0 ]]; then
@@ -144,18 +136,18 @@ fi
 
 # Server may have started but be unreachable on this socket — verify by
 # asking it about its own session.
-if ! command tmux -S "$TMUX_SOCKET" has-session -t _preflight 2>/dev/null; then
+if ! command tmux -L "$TMUX_SOCKET" has-session -t _preflight 2>/dev/null; then
   maybe_skip "isolated tmux server is not reachable on socket $TMUX_SOCKET"
 fi
 
 # Pre-flight passed — clean up the probe session and proceed.
-command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
+command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
 
 # ── tmux shim — redirects all `tmux` calls in this shell + sourced
 # ── functions to the isolated socket. Defined BEFORE sourcing
 # ── flywheel-cmux-sync.sh so register_session_hooks calls our shim,
 # ── not the real tmux binary against the default socket.
-tmux() { command tmux -S "$TMUX_SOCKET" "$@"; }
+tmux() { command tmux -L "$TMUX_SOCKET" "$@"; }
 export -f tmux
 
 # Source script (guarded by BASH_SOURCE check, so the main case dispatcher
@@ -200,9 +192,7 @@ reset_scenario() {
   EVENT_FILE="${EVENT_FILE_BASE}.${name}"
   rm -f "$EVENT_FILE"
   # Kill any leftover isolated server windows from a previous scenario.
-  command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
-  rm -f "$VIEW_LEDGER"
-  rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
+  command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
 }
 
 setup_session() {
@@ -419,7 +409,6 @@ rm -f "$LOG_A" "$LOG_B"
 /bin/bash -c "
   export FLYWHEEL_CMUX_WATCHER_LOCK_DIR='$INT_LOCK_DIR'
   source '$SYNC_SCRIPT_PATH'
-  _snapshot_live_mutator_processes() { return 0; }
   acquire_watcher_lock
   echo \"acquired by \$\$\" > '$LOG_A'
   sleep 60
@@ -429,7 +418,6 @@ PID_A=$!
 /bin/bash -c "
   export FLYWHEEL_CMUX_WATCHER_LOCK_DIR='$INT_LOCK_DIR'
   source '$SYNC_SCRIPT_PATH'
-  _snapshot_live_mutator_processes() { return 0; }
   acquire_watcher_lock
   echo \"acquired by \$\$\" > '$LOG_B'
   sleep 60
@@ -483,33 +471,6 @@ kill -TERM "$PID_A" "$PID_B" 2>/dev/null || true
 sleep 1
 rm -rf "$INT_LOCK_DIR" "${INT_LOCK_DIR}.reap" "$LOG_A" "$LOG_B"
 
-# ── Scenario F (FLY-1272): real isolated single-window linked view ─────
-echo
-echo "── Scenario F (FLY-1272): linked view cannot fall through to sibling husk ──"
-reset_scenario "F1272"
-FLYWHEEL_CMUX_LINKED_VIEW=1
-source_session="runner-test-fly1272"
-view_title="FLY-1272-implement"
-tmux new-session -d -s "$source_session" -n "$view_title" "sleep 60" 2>/dev/null
-tmux new-window -d -t "${source_session}:" -n "FLY-1225-qa" "sleep 60" 2>/dev/null
-source_wid=$(tmux list-windows -t "=$source_session" -F '#{window_id}|#{window_name}' \
-  | awk -F'|' -v n="$view_title" '$2 == n { print $1; exit }')
-f1272_rc=0
-create_or_replace_view_session "$source_session" "$source_wid" "$view_title" || f1272_rc=$?
-view_session="cmux-${view_title}"
-f1272_grouped=$(tmux display-message -p -t "=$view_session:" '#{session_grouped}' 2>/dev/null || true)
-f1272_members=$(tmux list-windows -t "=$view_session" -F '#{window_id}' 2>/dev/null | tr '\n' ' ')
-f1272_owner=$(tmux show-options -v -t "=$view_session:" @flywheel_cmux_owner 2>/dev/null || true)
-tmux kill-session -t "=$source_session" 2>/dev/null || true
-f1272_after=$(tmux list-windows -t "=$view_session" -F '#{window_id}|#{window_name}' 2>/dev/null || true)
-if [[ "$f1272_rc" -eq 0 && "$f1272_grouped" == "0" \
-    && "$f1272_members" == "$source_wid " && "$f1272_owner" == "$source_session" \
-    && "$f1272_after" == "$source_wid|$view_title" ]]; then
-  pass "Scenario F: real tmux view holds only the intended @id after its multi-window source dies"
-else
-  fail "Scenario F: topology rc=$f1272_rc grouped=$f1272_grouped members=[$f1272_members] owner=[$f1272_owner] after=[$f1272_after]"
-fi
-
 # ── Scenario E (FLY-293): orphan-pin reaper against REAL tmux inventory ──
 #
 # Proves the safety-critical detection predicate on a real tmux server (the
@@ -522,9 +483,6 @@ fi
 echo
 echo "── Scenario E (FLY-293): orphan-pin reaper (real tmux inventory) ──"
 reset_scenario "E293"
-# Linked-view creation remains independently switchable, while cleanup now
-# always requires an exact receipt.
-FLYWHEEL_CMUX_LINKED_VIEW=0
 # LIVE runner: real window + real grouped linked cmux- session → must be KEPT.
 tmux new-session -d -s "runner-test-fly293" -n "FLY-100-claude-alive" "sleep 60" 2>/dev/null
 tmux new-session -d -t "runner-test-fly293" -s "cmux-FLY-100-claude-alive" 2>/dev/null
@@ -532,14 +490,10 @@ tmux new-session -d -t "runner-test-fly293" -s "cmux-FLY-100-claude-alive" 2>/de
 
 # Mock cmux (no real cmux binary in CI): controlled workspace JSON referencing
 # the real tmux state, and capture close-workspace / refresh-surfaces.
-FLY293_OPS_FILE="$TMPDIR_ROOT/fly293-ops"
-: > "$FLY293_OPS_FILE"
-export FLY293_OPS_FILE
-export FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS=1
+FLY293_OPS=""
 cmux() {
   [[ "${1:-}" == "--socket" ]] && shift 2
   [[ "${1:-}" == "--json" ]] && shift
-  [[ "${1:-}" == "--id-format" && "${2:-}" == "both" ]] && shift 2
   case "${1:-}" in
     list-workspaces)
       cat <<'FLY293JSON'
@@ -551,18 +505,11 @@ cmux() {
 ]}
 FLY293JSON
       ;;
-    close-workspace|refresh-surfaces) printf '%s\n' "$*" >> "$FLY293_OPS_FILE" ;;
+    close-workspace|refresh-surfaces) FLY293_OPS+="$*"$'\n' ;;
   esac
   return 0
 }
 export -f cmux
-
-cmux_socket_identity() { printf '%s' 'hooks-integration-cmux-generation'; }
-acquire_mutator_lease reaper
-printf '%s\n' \
-  'committed|hooks-integration-cmux-generation|workspace:1|FLY-100-claude-alive' \
-  'committed|hooks-integration-cmux-generation|workspace:2|FLY-777-claude-orphan' \
-  > "$VIEW_LEDGER"
 
 d293_out=$(orphan_pin_refs)
 if echo "$d293_out" | grep -q "^workspace:2	FLY-777-claude-orphan$" \
@@ -572,11 +519,10 @@ else
   fail "Scenario E: orphan_pin_refs wrong. out=[$d293_out]"
 fi
 
-: > "$FLY293_OPS_FILE"
+FLY293_OPS=""
 reap_orphan_pins_oneshot >/dev/null 2>&1
-FLY293_OPS=$(cat "$FLY293_OPS_FILE")
-if grep -q "close-workspace --workspace workspace:2" "$FLY293_OPS_FILE" \
-   && ! grep -q "workspace:1" "$FLY293_OPS_FILE"; then
+if echo "$FLY293_OPS" | grep -q "close-workspace --workspace workspace:2" \
+   && ! echo "$FLY293_OPS" | grep -q "workspace:1"; then
   pass "Scenario E: one-shot reaped orphan (workspace:2), never touched live runner (workspace:1)"
 else
   fail "Scenario E: reap wrong. ops=[$FLY293_OPS]"
@@ -584,15 +530,14 @@ fi
 
 # Fail-closed against a REAL tmux failure: kill the isolated server → the real
 # `tmux list-sessions` inside orphan_pin_refs fails → rc=2, no false orphans.
-command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
+command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
 d293_fc_out=$(orphan_pin_refs 2>/dev/null); d293_fc_rc=$?
 if [[ $d293_fc_rc -eq 2 && -z "$d293_fc_out" ]]; then
   pass "Scenario E: real tmux server down → orphan_pin_refs rc=2 (fail-closed, zero false orphans)"
 else
   fail "Scenario E: expected rc=2 on tmux-down, got rc=$d293_fc_rc out=[$d293_fc_out]"
 fi
-unset FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS
-unset -f cmux cmux_socket_identity 2>/dev/null || true
+unset -f cmux 2>/dev/null || true
 
 # ── Summary ───────────────────────────────────────────────────────────
 

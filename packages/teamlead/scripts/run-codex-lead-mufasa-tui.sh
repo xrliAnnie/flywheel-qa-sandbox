@@ -41,9 +41,6 @@ set -euo pipefail
 WORKTREE="${FLY224_WORKTREE:-/Users/xiaorongli/Dev/flywheel}"
 TUI_RUNTIME="${WORKTREE}/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 TUI_HOME_SH="${WORKTREE}/packages/teamlead/scripts/codex-lead-tui-home.sh"
-# This launcher bypasses claude-lead.sh, so bind the founder-time rule's CLI
-# authority explicitly instead of relying on an ambient shell variable.
-export FLYWHEEL_COMM_CLI="${FLYWHEEL_COMM_CLI:-${WORKTREE}/packages/flywheel-comm/dist/index.js}"
 if [ ! -f "${TUI_RUNTIME}" ]; then
 	echo "codex-lead-tui-runtime.js not built — run: pnpm --filter flywheel-teamlead build" >&2
 	exit 1
@@ -53,14 +50,10 @@ if [ ! -f "${TUI_HOME_SH}" ]; then
 	exit 1
 fi
 
-# Mufasa selectors only. All identity coordinates + token selector come from the
-# canonical registry compiler exactly once.
-. "${WORKTREE}/packages/teamlead/scripts/lib/canonical-lead-identity.sh"
-canonical_lead_identity_resolve "growth" "mufasa-lead"
-# FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
-# (same derivation claude-lead.sh:481 uses). These launchers predate that change —
-# Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
-export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${FLYWHEEL_PROJECT_NAME}/comm.db}"
+# Mufasa's real config (from ~/.flywheel/projects.json: growth / mufasa-lead).
+export FLYWHEEL_LEAD_ID="mufasa-lead"
+export FLYWHEEL_PROJECT_NAME="growth"
+export FLYWHEEL_LEAD_BOT_USER_ID="1499895683287748679"   # reuse Mufasa's Discord bot
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307"  # #mufasa
 # MEMORY-PRESERVING state dir pin — SAME path as the headless launcher so the TUI
 # runtime resumes Mufasa's existing thread (thread-id file). HARD-pinned (NOT
@@ -133,12 +126,14 @@ export FLYWHEEL_CODEX_LEAD_SANDBOX="read-only"
 # (byte-compat), but fails closed if NONE is readable.
 PERSONA_IDENTITY="${HOME}/Dev/growth/.lead/mufasa-lead/identity.md"
 PERSONA_COMPANION="${WORKTREE}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
-FOUNDER_LOCAL_TIME_RULE="${WORKTREE}/packages/teamlead/lead-rules-base/founder-local-time.md"
-export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION},${FOUNDER_LOCAL_TIME_RULE}}"
+export FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES="${FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES:-${PERSONA_IDENTITY},${PERSONA_COMPANION}}"
 
-# The canonical helper already projected the registry-selected token as the
-# generic DISCORD_BOT_TOKEN. Real-run checks below must never re-resolve it.
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" != "1" ]; then
+# Bot token: the SAME env var Claude/headless Mufasa uses (MUFASA_BOT_TOKEN). In
+# dry-run we tolerate it being unset (the report redacts it and contacts nothing).
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" = "1" ]; then
+	export DISCORD_BOT_TOKEN="${MUFASA_BOT_TOKEN:-DRYRUN_PLACEHOLDER}"
+else
+	export DISCORD_BOT_TOKEN="${MUFASA_BOT_TOKEN:?MUFASA_BOT_TOKEN must be set for the real run}"
 	if [ ! -x "${FLYWHEEL_CODEX_BIN}" ]; then
 		echo "standalone codex not executable at ${FLYWHEEL_CODEX_BIN} — the remote-control daemon requires it (npm codex has no daemon backend). See the runbook §Prerequisites." >&2
 		exit 1

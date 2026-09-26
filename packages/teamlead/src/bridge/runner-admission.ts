@@ -39,7 +39,6 @@ import { cpus, freemem, loadavg } from "node:os";
 export type AdmissionReason =
 	| "load_pressure"
 	| "memory_pressure"
-	| "admission_paused"
 	// FLY-1082 (Task 2.2): the fleet pressure-hold — an explicit, reversible
 	// hand brake the swap-watermark ARC places while the machine is in an
 	// OOM-warning episode. Checked before the resource math (an explicit hold
@@ -48,12 +47,7 @@ export type AdmissionReason =
 
 export type AdmissionDecision =
 	| { admit: true }
-	| {
-			admit: false;
-			reason: AdmissionReason;
-			detail: string;
-			retryAfterSeconds?: number;
-	  };
+	| { admit: false; reason: AdmissionReason; detail: string };
 
 /**
  * Thrown by the dispatcher when resource admission defers a runner. Typed so
@@ -64,17 +58,11 @@ export type AdmissionDecision =
 export class AdmissionDeferredError extends Error {
 	readonly reason: AdmissionReason;
 	readonly detail: string;
-	readonly retryAfterSeconds?: number;
-	constructor(
-		reason: AdmissionReason,
-		detail: string,
-		retryAfterSeconds?: number,
-	) {
+	constructor(reason: AdmissionReason, detail: string) {
 		super(`Runner admission deferred (${reason}): ${detail}`);
 		this.name = "AdmissionDeferredError";
 		this.reason = reason;
 		this.detail = detail;
-		this.retryAfterSeconds = retryAfterSeconds;
 	}
 }
 
@@ -181,10 +169,6 @@ export class RunnerAdmissionController {
 	private readonly cpuCount: number;
 	/** FLY-1082: fleet pressure-hold probe (null = no hold). Late-bound. */
 	private pressureHoldProbe: (() => string | null) | null = null;
-	/** FLY-1638: bounded operator pause (null = inactive/expired). */
-	private admissionPauseProbe:
-		| (() => { detail: string; retryAfterSeconds: number } | null)
-		| null = null;
 
 	constructor(opts: RunnerAdmissionOptions = {}) {
 		this.loadPerCore = opts.loadPerCore ?? 8.0;
@@ -237,38 +221,11 @@ export class RunnerAdmissionController {
 		this.pressureHoldProbe = probe;
 	}
 
-	setAdmissionPauseProbe(
-		probe: (() => { detail: string; retryAfterSeconds: number } | null) | null,
-	): void {
-		this.admissionPauseProbe = probe;
-	}
-
 	/** Decide whether to admit one more runner right now. Count-independent —
 	 * pure resource pressure (P4). The explicit fleet pressure-hold is checked
 	 * FIRST (an ARC-placed hand brake beats the live probes), then memory
 	 * (when enabled), then load. */
 	tryAdmit(): AdmissionDecision {
-		// FLY-1638: an explicit deploy brake wins over every implicit resource
-		// signal and carries the remaining TTL to HTTP Retry-After.
-		if (this.admissionPauseProbe) {
-			let pause: { detail: string; retryAfterSeconds: number } | null = null;
-			try {
-				pause = this.admissionPauseProbe();
-			} catch (error) {
-				console.warn(
-					`[runner-admission] admission pause probe failed; failing open: ${error instanceof Error ? error.message : String(error)}`,
-				);
-				pause = null;
-			}
-			if (pause) {
-				return {
-					admit: false,
-					reason: "admission_paused",
-					detail: pause.detail,
-					retryAfterSeconds: Math.max(1, Math.ceil(pause.retryAfterSeconds)),
-				};
-			}
-		}
 		// FLY-1082: explicit hold — probe failures fail OPEN (a broken probe
 		// must never halt dispatch; the resource guards below still apply).
 		if (this.pressureHoldProbe) {

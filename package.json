@@ -14,8 +14,6 @@
 		"test:packages": "pnpm --filter './packages/*' test",
 		"test:packages:run": "pnpm --filter './packages/*' test:run",
 		"test:apps": "pnpm --filter './apps/*' test",
-		"test:cycle-time": "node --test scripts/cycle-time/__tests__/*.test.mjs",
-		"verify:workflow-seeds": "node scripts/verify-workflow-seeds.mjs",
 		"typecheck": "pnpm -r typecheck",
 		"prepare": "husky"
 	},
@@ -40,8 +38,7 @@
 		"husky": "^9.1.7",
 		"lint-staged": "^16.1.6",
 		"tsx": "^4.20.6",
-		"typescript": "^5.3.3",
-		"wrangler": "4.111.0"
+		"typescript": "^5.3.3"
 	},
 	"dependencies": {
 		"@linear/sdk": "60.0.0"

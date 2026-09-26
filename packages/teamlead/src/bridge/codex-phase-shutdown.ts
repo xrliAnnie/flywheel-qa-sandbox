@@ -10,16 +10,9 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { CommDB } from "flywheel-comm/db";
+import { CommDB, type RunnerShutdownControl } from "flywheel-comm/db";
 import type { Session } from "../StateStore.js";
 import { resolveCommDbPath } from "./commdb-session-prune.js";
-import {
-	DEFAULT_ACK_TIMEOUT_MS,
-	DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS,
-	isFreshControllerHeartbeat,
-	isWorkflowManagedSession,
-	type RunnerShutdownDb,
-} from "./runner-shutdown-evidence.js";
 import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
@@ -27,15 +20,20 @@ import {
 	type TmuxTargetLookup,
 } from "./tmux-lookup.js";
 
-export {
-	DEFAULT_ACK_TIMEOUT_MS,
-	DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS,
-	isFreshControllerHeartbeat,
-	parseControllerHeartbeatMs,
-	type RunnerShutdownDb,
-} from "./runner-shutdown-evidence.js";
-
+const PHASE_ROLES = new Set(["design", "implement", "qa"]);
+const DEFAULT_ACK_TIMEOUT_MS = 30_000;
+const DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS = 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
+
+export interface RunnerShutdownDb {
+	getRunnerShutdown(executionId: string): RunnerShutdownControl | null;
+	requestRunnerShutdown(
+		executionId: string,
+		requestId: string,
+		nowMs: number,
+	): RunnerShutdownControl;
+	close(): void;
+}
 
 export interface CodexPhaseShutdownInput {
 	executionId: string;
@@ -60,17 +58,8 @@ export type CodexPhaseShutdownDecision =
 	| { kind: "not_applicable" }
 	| {
 			kind: "direct";
-			// FLY-1269 Authority Matrix: only a tmux-identity verdict that the target
-			// is provably absent licenses direct cleanup — `target_gone` / `dead_pin`
-			// / `absent`. A heartbeat signal never does: it cannot distinguish a dead
-			// controller from a live-but-wedged one, and culling the latter orphans
-			// its daemon.
 			reason:
 				| "target_gone"
-				// now unreachable by design (FLY-1269): both heartbeat-derived reasons
-				// are only ever evaluated once the pane probed ALIVE, which is exactly
-				// when direct cleanup is forbidden. Kept (not deleted) so existing
-				// referents and persisted values keep resolving.
 				| "controller_lease_stale"
 				| "controller_heartbeat_stopped"
 				| "dead_pin"
@@ -81,7 +70,30 @@ export type CodexPhaseShutdownDecision =
 
 export function isResidentCodexPhase(session: Session | undefined): boolean {
 	return (
-		session?.adapter_type === "codex-tmux" && isWorkflowManagedSession(session)
+		session?.adapter_type === "codex-tmux" &&
+		PHASE_ROLES.has(session.chat_thread_role ?? "")
+	);
+}
+
+function heartbeatMs(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const normalized = value.includes("T")
+		? value.endsWith("Z")
+			? value
+			: `${value}Z`
+		: `${value.replace(" ", "T")}Z`;
+	const parsed = Date.parse(normalized);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isFreshHeartbeat(
+	value: string | undefined,
+	nowMs: number,
+	maxAgeMs: number,
+): boolean {
+	const parsed = heartbeatMs(value);
+	return (
+		parsed !== undefined && nowMs - parsed >= 0 && nowMs - parsed <= maxAgeMs
 	);
 }
 
@@ -179,16 +191,8 @@ export async function prepareCodexPhaseShutdown(
 
 	const startedAt = now();
 	const initialHeartbeat = initialSession?.heartbeat_at;
-	if (!isFreshControllerHeartbeat(initialHeartbeat, startedAt, leaseMaxAgeMs)) {
-		// FLY-1269: every not-alive liveness returned above, so the pane is
-		// provably LIVE here. A stale lease then means "the controller stopped
-		// beating" OR "we cannot read its beat" — never "provably absent", which
-		// is the only licence the header contract grants direct cleanup. Fail
-		// closed: killing a live controller's window orphans its daemon.
-		return {
-			kind: "blocked",
-			error: "phase_shutdown_controller_lease_stale_live_pane",
-		};
+	if (!isFreshHeartbeat(initialHeartbeat, startedAt, leaseMaxAgeMs)) {
+		return { kind: "direct", reason: "controller_lease_stale" };
 	}
 
 	const resolvePath = deps.resolveCommDbPath ?? resolveCommDbPath;
@@ -293,15 +297,5 @@ export async function prepareCodexPhaseShutdown(
 			error: "phase_shutdown_ack_timeout_live_controller",
 		};
 	}
-	// FLY-1269: the pane is provably LIVE (every other liveness returned above),
-	// so a heartbeat that stopped advancing during the ack wait is ambiguous — a
-	// wedged-but-live controller and a dead one look identical from here, and only
-	// the latter would be safe to cull. The header contract allows direct cleanup
-	// solely when the controller is provably absent, which a live pane refutes.
-	// Fail closed and let the tmux-identity probe (gone/dead_pin/absent) be the
-	// sole authority for culling.
-	return {
-		kind: "blocked",
-		error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_pane",
-	};
+	return { kind: "direct", reason: "controller_heartbeat_stopped" };
 }

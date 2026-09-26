@@ -10,191 +10,14 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	assertSocketPathFitsSunLen,
-	buildDaemonAppsApprovalArgs,
 	buildDaemonEffortArgs,
 	buildDaemonSandboxArgs,
-	codexDaemonExitWaitMs,
-	codexSessionStateDir,
-	createDefaultKillGroup,
 	type DaemonChild,
 	daemonSocketDir,
-	probeCodexDaemonLiveness,
-	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
 	SUN_PATH_MAX,
 	spawnCodexDaemon,
 } from "../src/codex-daemon-runtime.js";
-
-describe("FLY-1940 codex daemon execution ownership", () => {
-	function ownershipFixture() {
-		const root = mkdtempSync(join(tmpdir(), "flywheel-codex-owner-"));
-		const env = {
-			FLYWHEEL_CODEX_SESSION_DIR: join(root, "sessions"),
-			FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: join(root, "sockets"),
-		};
-		const executionId = "exec-owned";
-		mkdirSync(codexSessionStateDir(executionId, env), { recursive: true });
-		writeFileSync(
-			join(codexSessionStateDir(executionId, env), "session.json"),
-			JSON.stringify({ executionId, daemonPgid: 4321 }),
-		);
-		return { root, env, executionId };
-	}
-
-	it("classifies alive only when the socket holder belongs to the persisted group", async () => {
-		const f = ownershipFixture();
-		try {
-			await expect(
-				probeCodexDaemonLiveness(f.executionId, {
-					env: f.env,
-					isSocketLive: async () => true,
-					socketHolderPids: () => [7654],
-					processGroupOf: () => 4321,
-					processGroupState: () => "alive",
-				}),
-			).resolves.toBe("alive");
-		} finally {
-			rmSync(f.root, { recursive: true, force: true });
-		}
-	});
-
-	it("requires both socket and process-group absence before classifying absent", async () => {
-		const f = ownershipFixture();
-		try {
-			await expect(
-				probeCodexDaemonLiveness(f.executionId, {
-					env: f.env,
-					isSocketLive: async () => false,
-					processGroupState: () => "absent",
-				}),
-			).resolves.toBe("absent");
-			await expect(
-				probeCodexDaemonLiveness(f.executionId, {
-					env: f.env,
-					isSocketLive: async () => false,
-					processGroupState: () => "alive",
-				}),
-			).resolves.toBe("unknown");
-		} finally {
-			rmSync(f.root, { recursive: true, force: true });
-		}
-	});
-
-	it("refuses to reap a persisted group when no live socket proves ownership", async () => {
-		const f = ownershipFixture();
-		const signals: NodeJS.Signals[] = [];
-		try {
-			await expect(
-				reapCodexDaemonForExecution(f.executionId, {
-					env: f.env,
-					isSocketLive: async () => false,
-					processGroupState: () => "alive",
-					killGroup: (_pgid, signal) => {
-						signals.push(signal);
-					},
-					sleep: async () => {},
-				}),
-			).resolves.toMatchObject({ outcome: "unverifiable", pgid: 4321 });
-			expect(signals).toEqual([]);
-		} finally {
-			rmSync(f.root, { recursive: true, force: true });
-		}
-	});
-
-	it("refuses to reap when a live socket holder is not in the persisted group", async () => {
-		const f = ownershipFixture();
-		const killGroup = vi.fn();
-		try {
-			await expect(
-				reapCodexDaemonForExecution(f.executionId, {
-					env: f.env,
-					isSocketLive: async () => true,
-					socketHolderPids: () => [7654],
-					processGroupOf: () => 9999,
-					processGroupState: () => "alive",
-					killGroup,
-				}),
-			).resolves.toMatchObject({ outcome: "unverifiable", pgid: 4321 });
-			expect(killGroup).not.toHaveBeenCalled();
-		} finally {
-			rmSync(f.root, { recursive: true, force: true });
-		}
-	});
-});
-
-describe("daemon group-kill safety", () => {
-	it("refuses the Bridge's actual process group and caches the lookup", () => {
-		const kill = vi.fn();
-		const processGroupOf = vi.fn(() => 777);
-		const logger = vi.fn();
-		const killGroup = createDefaultKillGroup({
-			pid: 123,
-			ppid: 12,
-			processGroupOf,
-			kill,
-			logger,
-		});
-
-		killGroup(777, "SIGKILL");
-		killGroup(777, "SIGTERM");
-
-		expect(kill).not.toHaveBeenCalled();
-		expect(processGroupOf).toHaveBeenCalledTimes(1);
-		expect(logger).toHaveBeenCalledWith(expect.stringContaining("REFUSING"));
-	});
-
-	it("preserves the proven-group kill when own PGID lookup is unavailable", () => {
-		const kill = vi.fn();
-		const logger = vi.fn();
-		const killGroup = createDefaultKillGroup({
-			pid: 123,
-			ppid: 12,
-			processGroupOf: () => undefined,
-			kill,
-			logger,
-		});
-
-		killGroup(777, "SIGKILL");
-
-		expect(kill).toHaveBeenCalledWith(-777, "SIGKILL");
-		expect(logger).toHaveBeenCalledWith(
-			expect.stringContaining("signal=SIGKILL"),
-		);
-	});
-
-	it("uses the daemon's negative PGID for a normal isolated group", () => {
-		const kill = vi.fn();
-		const killGroup = createDefaultKillGroup({
-			pid: 123,
-			ppid: 12,
-			processGroupOf: () => 321,
-			kill,
-		});
-
-		killGroup(777, "SIGTERM");
-
-		expect(kill).toHaveBeenCalledWith(-777, "SIGTERM");
-	});
-});
-
-describe("codexDaemonExitWaitMs", () => {
-	it("defaults daemon exit confirmation to 10 seconds", () => {
-		expect(codexDaemonExitWaitMs({})).toBe(10_000);
-	});
-
-	it("accepts a positive integer env override and rejects unsafe values", () => {
-		expect(
-			codexDaemonExitWaitMs({ FLYWHEEL_CODEX_DAEMON_EXIT_WAIT_MS: "12345" }),
-		).toBe(12_345);
-		for (const value of ["", "0", "-1", "1.5", "Infinity", "wat"]) {
-			expect(
-				codexDaemonExitWaitMs({
-					FLYWHEEL_CODEX_DAEMON_EXIT_WAIT_MS: value,
-				}),
-			).toBe(10_000);
-		}
-	});
-});
 
 // ── FLY-1188 M4c — daemon spawn + socket lifecycle (OS effects injected) ──
 
@@ -285,35 +108,6 @@ describe("buildDaemonSandboxArgs", () => {
 	});
 });
 
-// FLY-1565 — apps/connector tool approval preset → daemon `-c` override.
-// Real-machine (codex 0.146.0): a bogus value fails config load with
-// "unknown variant `bogus-mode`, expected one of `auto`, `prompt`, `writes`,
-// `approve`", and `approve` is exactly what codex persists per-tool after a
-// human picks "don't ask again" — i.e. the auto-grant state.
-describe("buildDaemonAppsApprovalArgs", () => {
-	it("approve → the exact TOML-quoted apps._default override argv", () => {
-		expect(buildDaemonAppsApprovalArgs("approve")).toEqual([
-			"-c",
-			'apps._default.default_tools_approval_mode="approve"',
-		]);
-	});
-
-	it("absent → no argv (byte-compatible: CODEX_HOME config default applies)", () => {
-		expect(buildDaemonAppsApprovalArgs(undefined)).toEqual([]);
-		expect(buildDaemonAppsApprovalArgs("")).toEqual([]);
-	});
-
-	it("unknown value → warn + ignore, NEVER spliced into the override", () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			expect(buildDaemonAppsApprovalArgs('bogus"; rm -rf /')).toEqual([]);
-			expect(warn).toHaveBeenCalledOnce();
-		} finally {
-			warn.mockRestore();
-		}
-	});
-});
-
 // FLY-1224 (T5): per-phase reasoning effort → daemon `-c` override.
 describe("buildDaemonEffortArgs", () => {
 	it("xhigh → the exact TOML-quoted override argv", () => {
@@ -389,101 +183,6 @@ describe("spawnCodexDaemon", () => {
 		expect(spawnedEnv.CODEX_HOME).toBe("/home/x/.flywheel/codex-homes/exec-1");
 	});
 
-	it("FLY-1940: persists the daemon process-group identity before the first socket probe", async () => {
-		const child = new FakeChild();
-		const order: string[] = [];
-		let spawned = false;
-		await spawnCodexDaemon({
-			...baseOpts(child),
-			spawnFn: () => {
-				spawned = true;
-				return child;
-			},
-			onSpawnIdentity: (pgid) => {
-				order.push(`identity:${pgid}`);
-			},
-			socketExists: () => {
-				if (spawned) order.push("socket-probe");
-				return spawned;
-			},
-		});
-
-		expect(order).toEqual([`identity:${child.pid}`, "socket-probe"]);
-	});
-
-	it("FLY-1940: a spawn-identity persistence failure kills the whole group and rejects", async () => {
-		const child = new FakeChild();
-		child.exitCode = 1;
-		const groupSignals: NodeJS.Signals[] = [];
-		let spawned = false;
-		await expect(
-			spawnCodexDaemon({
-				...baseOpts(child),
-				spawnFn: () => {
-					spawned = true;
-					return child;
-				},
-				onSpawnIdentity: () => {
-					throw new Error("session identity persist failed");
-				},
-				killGroup: (_pgid, signal) => groupSignals.push(signal),
-				socketExists: () => {
-					if (!spawned) return false;
-					throw new Error("socket probe must not run");
-				},
-			}),
-		).rejects.toThrow("session identity persist failed");
-		expect(groupSignals).toEqual(["SIGKILL"]);
-	});
-
-	it("FLY-1643: delivers workflow capabilities to the spawned codex process", async () => {
-		const child = new FakeChild();
-		let spawnedEnv: NodeJS.ProcessEnv = {};
-		await spawnCodexDaemon({
-			...baseOpts(child),
-			env: {
-				FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL: "output-ticket",
-				FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL: "submission-ticket",
-				FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED: "1",
-				GH_TOKEN: "must-not-leak",
-			},
-			spawnFn: (_bin, _args, options) => {
-				spawnedEnv = options.env;
-				return child;
-			},
-			socketExists: () => true,
-		});
-		expect(spawnedEnv.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBe(
-			"output-ticket",
-		);
-		expect(spawnedEnv.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBe(
-			"submission-ticket",
-		);
-		expect(spawnedEnv.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
-		expect(spawnedEnv.GH_TOKEN).toBeUndefined();
-	});
-
-	it("FLY-1643: the defensive fallback inherits no FLYWHEEL_ variables", async () => {
-		const previous = process.env.FLYWHEEL_COMM_DB;
-		process.env.FLYWHEEL_COMM_DB = "/stale/comm.db";
-		try {
-			const child = new FakeChild();
-			let spawnedEnv: NodeJS.ProcessEnv = {};
-			await spawnCodexDaemon({
-				...baseOpts(child),
-				spawnFn: (_bin, _args, options) => {
-					spawnedEnv = options.env;
-					return child;
-				},
-				socketExists: () => true,
-			});
-			expect(spawnedEnv.FLYWHEEL_COMM_DB).toBeUndefined();
-		} finally {
-			if (previous === undefined) delete process.env.FLYWHEEL_COMM_DB;
-			else process.env.FLYWHEEL_COMM_DB = previous;
-		}
-	});
-
 	it("appends the sandbox `-c` overrides to the app-server argv (M4d)", async () => {
 		const child = new FakeChild();
 		let spawnedArgs: string[] = [];
@@ -510,35 +209,6 @@ describe("spawnCodexDaemon", () => {
 			'sandbox_workspace_write.writable_roots=["/w/tree","/main/.git"]',
 			"-c",
 			"sandbox_workspace_write.network_access=true",
-		]);
-	});
-
-	it("appends the apps approval `-c` override to the app-server argv (FLY-1565)", async () => {
-		const child = new FakeChild();
-		let spawnedArgs: string[] = [];
-		let probes = 0;
-		await spawnCodexDaemon({
-			...baseOpts(child),
-			sandboxNetworkAccess: true,
-			appsDefaultToolsApprovalMode: "approve",
-			spawnFn: (_bin, args) => {
-				spawnedArgs = args;
-				return child;
-			},
-			socketExists: () => {
-				probes += 1;
-				return probes >= 2;
-			},
-		});
-		expect(spawnedArgs).toEqual([
-			"app-server",
-			"--remote-control",
-			"--listen",
-			"unix:///tmp/fw-codex-sock/abc.sock",
-			"-c",
-			"sandbox_workspace_write.network_access=true",
-			"-c",
-			'apps._default.default_tools_approval_mode="approve"',
 		]);
 	});
 
@@ -679,26 +349,6 @@ describe("spawnCodexDaemon", () => {
 		}
 		expect(killedAnything).toBe(false); // never SIGKILLed an unproven pid
 		expect(spawned).toBe(false); // never clobbered a live daemon
-	});
-
-	it("bounds the socket-holder process-group proof loop to ten probes", async () => {
-		const child = new FakeChild();
-		let groupProbes = 0;
-		await expect(
-			spawnCodexDaemon({
-				...baseOpts(child),
-				reapOrphanPid: 99999,
-				socketHolderPids: () =>
-					Array.from({ length: 100 }, (_, index) => 10_000 + index),
-				processGroupOf: () => {
-					groupProbes += 1;
-					return 12345;
-				},
-				socketExists: () => true,
-				isSocketLive: () => Promise.resolve(true),
-			}),
-		).rejects.toThrow(/live codex daemon is already listening/);
-		expect(groupProbes).toBe(10);
 	});
 
 	it("HIGH-3: still REFUSES to clobber when the PROVEN orphan survives the reap (socket stays live)", async () => {
@@ -889,9 +539,10 @@ describe("spawnCodexDaemon", () => {
 
 // ── QA · FLY-1188 HIGH-2 (found by the real-machine E2E, invisible to mocks) ──
 //
-// Every codex runner once leaked a ~178MB `codex app-server`, still holding its
-// socket after teardown. A historical launcher forked codex, so the app-server
-// was the launcher's CHILD. `child.kill()` reaped the launcher and left the
+// Every codex runner leaked a ~178MB `codex app-server`, still holding its socket
+// 5 minutes after teardown. `opts.codexBin` is the rotation shim — a shell script
+// that must FORK codex (it reads the exit code to rotate the account on a 429), so
+// the app-server is the shim's CHILD. `child.kill()` reaped the shim and left the
 // app-server behind, reparented to PID 1. Worse, the pid we persisted was the
 // SHIM's, so `process.kill(pid, 0)` cheerfully reported the daemon "dead" while it
 // was very much alive — the pid probe LIES here, which is why nothing caught this.

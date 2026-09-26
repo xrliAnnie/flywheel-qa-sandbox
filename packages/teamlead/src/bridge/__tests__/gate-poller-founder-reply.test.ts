@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
 
 const OWNER = "123456789012345678";
@@ -26,7 +26,14 @@ async function tick(poller: GatePoller, n: number) {
 }
 
 describe("FLY-605 GatePoller founder-reply deliver pass wiring (Part B)", () => {
+	let envBak: string | undefined;
+	beforeEach(() => {
+		envBak = process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
+		delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
+	});
 	afterEach(() => {
+		if (envBak === undefined) delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
+		else process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER = envBak;
 		vi.restoreAllMocks();
 	});
 
@@ -37,6 +44,16 @@ describe("FLY-605 GatePoller founder-reply deliver pass wiring (Part B)", () => 
 			.mockResolvedValue(undefined);
 		await tick(poller, 7); // fires at ticks 1, 4, 7
 		expect(spy).toHaveBeenCalledTimes(3);
+	});
+
+	it("env FLYWHEEL_FOUNDER_REPLY_DELIVER=0 → pass never runs", async () => {
+		process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER = "0";
+		const poller = makePoller();
+		const spy = vi
+			.spyOn(poller as unknown as Priv, "founderReplyDeliverPass")
+			.mockResolvedValue(undefined);
+		await tick(poller, 7);
+		expect(spy).not.toHaveBeenCalled();
 	});
 
 	it("missing owner / chatThreadsEnabled=false → pass early-returns (no project iteration)", async () => {
@@ -82,85 +99,6 @@ type PrivHandoff = {
 };
 
 describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-review #2/#3)", () => {
-	it("rejects a new founder handoff without a source thread", async () => {
-		const appendLeadEvent = vi.fn(() => 42);
-		const store = {
-			isLeadEventDelivered: vi.fn(() => false),
-			appendLeadEvent,
-		} as unknown as GatePollerConfig["store"];
-		const poller = makePoller({ store });
-		const handoff = (poller as unknown as PrivHandoff).makeAmbiguousHandoff(
-			{ agentId: "test-lead" },
-			"flywheel",
-		);
-
-		await expect(
-			handoff("founder-reply-missing-thread", {
-				issueId: "FLY-1645",
-				msgId: "m1",
-				answer: "answer",
-				commDbPath: "/tmp/flywheel-comm.db",
-			}),
-		).rejects.toThrow("founder_reply_source_thread_missing");
-		expect(appendLeadEvent).not.toHaveBeenCalled();
-	});
-
-	it("passes the founder text to Lead unchanged without an attribution hint", async () => {
-		const appendLeadEvent = vi.fn(() => 42);
-		const store = {
-			isLeadEventDelivered: vi.fn(() => false),
-			appendLeadEvent,
-			markLeadEventDelivered: vi.fn(),
-			recordDeliveryFailure: vi.fn(),
-			flush: vi.fn(),
-		} as unknown as GatePollerConfig["store"];
-		const deliver = vi.fn(async () => ({ delivered: true }));
-		const runtimeRegistry = {
-			getForLead: vi.fn(() => ({
-				deliver,
-			})),
-		} as unknown as GatePollerConfig["runtimeRegistry"];
-		const poller = makePoller({ store, runtimeRegistry });
-		const handoff = (poller as unknown as PrivHandoff).makeAmbiguousHandoff(
-			{ agentId: "test-lead" },
-			"flywheel",
-		);
-		const founderText = `原样-${"x".repeat(1_200)}-结束`;
-
-		await handoff("founder-reply-T1-m1", {
-			issueId: "FLY-1392",
-			threadId: "T1",
-			msgId: "m1",
-			answer: founderText,
-			commDbPath: "/tmp/flywheel-comm.db",
-		});
-
-		expect(appendLeadEvent).toHaveBeenCalledWith(
-			"test-lead",
-			"founder-reply-T1-m1",
-			"founder_reply",
-			expect.any(String),
-			"FLY-1392",
-		);
-		const encoded = appendLeadEvent.mock.calls[0]?.[3];
-		const hookPayload = JSON.parse(encoded ?? "{}") as { action: string };
-		expect(hookPayload).toMatchObject({
-			event_type: "founder_reply",
-			status: "founder_reply",
-			summary: founderText,
-			chat_thread_id: "T1",
-			founder_message_id: "m1",
-			comm_db_path: "/tmp/flywheel-comm.db",
-			action: expect.stringContaining(
-				'flywheel-comm respond <qid> "<founder-answer>"',
-			),
-		});
-		expect(hookPayload.action).toContain("--source-thread T1");
-		expect(hookPayload.action).not.toContain("receipt");
-		expect(hookPayload.action).not.toContain("route-founder-reply");
-		expect(deliver).not.toHaveBeenCalled();
-	});
-
 	it("🔴 makeAmbiguousHandoff flushes lead_events to disk before returning true (Codex #2)", async () => {
 		const flush = vi.fn();
 		const store = {

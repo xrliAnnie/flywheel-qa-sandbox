@@ -21,14 +21,12 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { normalizeOptionalBearer } from "flywheel-config";
 
 export interface RequestReviewOptions {
 	execId?: string;
 	type?: string;
 	questionId?: string;
 	planPath?: string;
-	targetRepoPath?: string;
 	requestId?: string;
 	/** Test seams. */
 	fetchImpl?: typeof fetch;
@@ -89,9 +87,6 @@ export async function requestReview(
 		reviewType,
 		questionId,
 		...(opts.planPath?.trim() ? { planPath: opts.planPath.trim() } : {}),
-		...(opts.targetRepoPath?.trim()
-			? { targetRepoPath: opts.targetRepoPath.trim() }
-			: {}),
 	};
 
 	const stateDir =
@@ -116,7 +111,7 @@ export async function requestReview(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	const ingestToken = normalizeOptionalBearer(env.FLYWHEEL_INGEST_TOKEN);
+	const ingestToken = env.FLYWHEEL_INGEST_TOKEN;
 	if (ingestToken) headers.Authorization = `Bearer ${ingestToken}`;
 	const fetchImpl = opts.fetchImpl ?? fetch;
 	const attempts = opts.attemptCount ?? DEFAULT_ATTEMPTS;

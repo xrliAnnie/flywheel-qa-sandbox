@@ -16,13 +16,6 @@ import {
 	type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import dotenv from "dotenv";
-import {
-	buildNonLeadClaudeSettings,
-	getModelConfigSnapshot,
-	MODEL_IDS,
-	ModelPolicyError,
-	resolveAllowedCanonicalModel,
-} from "flywheel-config";
 import type { AskUserQuestionInput } from "flywheel-core";
 import {
 	createLogger,
@@ -412,51 +405,11 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 				);
 			}
 
-			// FLY-1496: the primary and CLI/SDK quota fallback form one launch
-			// decision. Resolve both through one immutable hot-config generation
-			// so every link in the chain is a canonical id — a bare alias would
-			// let the CLI's own table pick the version mid-session.
-			const modelSnapshot = getModelConfigSnapshot();
-			const model = resolveAllowedCanonicalModel(
-				this.config.model || MODEL_IDS.FABLE,
-				{
-					surface: "runner",
-					runtimeVendor: "claude",
-					snapshot: modelSnapshot,
-				},
-			);
-			const rawFallback =
-				this.config.fallbackModel || modelSnapshot.tiers.light.id;
-			const fallbackChain = rawFallback
-				.split(",")
-				.map((candidate) => candidate.trim())
-				.filter(Boolean);
-			if (fallbackChain.length === 0) {
-				throw new Error("fallback model chain must not be empty");
-			}
-			const fallbackModel = fallbackChain
-				.map((candidate) =>
-					resolveAllowedCanonicalModel(candidate, {
-						surface: "runner",
-						runtimeVendor: "claude",
-						snapshot: modelSnapshot,
-					}),
-				)
-				.join(",");
-			const extraArgs = {
-				...this.config.extraArgs,
-				settings: JSON.stringify(
-					buildNonLeadClaudeSettings(
-						this.config.extraArgs?.settings ?? undefined,
-					),
-				),
-			};
-
 			const queryOptions: Parameters<typeof query>[0] = {
 				prompt: promptForQuery,
 				options: {
-					model,
-					fallbackModel,
+					model: this.config.model || "opus",
+					fallbackModel: this.config.fallbackModel || "sonnet",
 					abortController: this.abortController,
 					// Use Claude Code preset by default to maintain backward compatibility
 					// This can be overridden if systemPrompt is explicitly provided
@@ -500,7 +453,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 					...(this.config.outputFormat && {
 						outputFormat: this.config.outputFormat,
 					}),
-					extraArgs,
+					...(this.config.extraArgs && { extraArgs: this.config.extraArgs }),
 				},
 			};
 
@@ -580,12 +533,6 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 		} catch (error) {
 			if (this.sessionInfo) {
 				this.sessionInfo.isRunning = false;
-			}
-			// Policy rejection is an admission failure, not an in-session model
-			// error. Preserve it across the legacy event-based Runner boundary so
-			// adapters report a failed spawn instead of an empty "success".
-			if (error instanceof ModelPolicyError) {
-				throw error;
 			}
 
 			// Check for user-initiated abort - this is a normal operation, not an error

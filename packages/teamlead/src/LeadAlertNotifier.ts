@@ -13,7 +13,7 @@
  * - Never throw from alert(): Discord is unreliable; failures get queued to
  *   $HOME/.flywheel/alert-queue/ for a later drainQueue() pass.
  *
- * Not responsible for deciding *when* to alert — each producer drives that.
+ * Not responsible for deciding *when* to alert — LeadWatchdog drives that.
  */
 
 import {
@@ -28,12 +28,6 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-	LEAD_LEASE_EPISODE_KINDS,
-	type LeadLeaseEpisodeDeliveryState,
-	type LeadLeaseEpisodeKind,
-	LeadLeaseEpisodeStore,
-} from "flywheel-comm/lead-lease";
-import {
 	buildRepairChain,
 	buildSendChain,
 	resolveFirstAvailableBotToken,
@@ -43,7 +37,6 @@ import {
 	formatOverflowSummary,
 } from "./bridge/alert-rate-limiter.js";
 import { markAutomatedDiscordText } from "./bridge/automated-message.js";
-import type { ReplayFreshnessInput } from "./bridge/fleet-sensors.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -63,7 +56,7 @@ export interface MetaAlertSink {
 
 /**
  * FLY-927: the SINGLE source of truth for the alert-kind face. `AlertEventType`
- * is derived from this array, and the pane echo-immunity regex
+ * is derived from this array, and the LeadWatchdog echo-immunity regex
  * (`ALERT_ECHO_START`) derives its kind alternation from it too — so a new kind
  * can never silently miss echo stripping (the FLY-220 storm family).
  */
@@ -74,7 +67,10 @@ export const ALERT_EVENT_TYPES = [
 	"permission_blocked",
 	"crash_loop",
 	"pane_hash_stuck",
-	// Legacy display compatibility for historical Lead pane-error alert rows.
+	// FLY-1048 (A4): a known error signature (error-signatures.ts) frozen in a
+	// Lead's live render region above an idle input box across ≥2 polls — the
+	// FN0/FN2 lead-side shape isIdleHealthyPane used to suppress forever. Only
+	// emitted by the LeadWatchdog multi-frame veto (FLYWHEEL_PANE_MULTIFRAME=1).
 	"pane_error_stalled",
 	// FLY-195 (plan §3.6 Q7): a stuck-runner episode the owning Lead did not
 	// dispose of within the grace window — Bridge pages Annie directly.
@@ -82,43 +78,22 @@ export const ALERT_EVENT_TYPES = [
 	// / post-TTL second fallback is not swallowed by the persistent dedup):
 	// `runner-stuck-unhandled:${execution_id}:${fingerprint}:${escalatedAt}`.
 	"runner_stuck_unhandled",
-	// Retained historical kind for review/ship authorization holds. Current
-	// callers provide neutral merge-authorization or DAG recovery copy; old rows
-	// remain readable. Lead-only, never a founder-facing notification.
+	// FLY-579: the auto-QA pipeline could not proceed (spawn failed, QA ended
+	// without a verdict, or a fail-closed pr_head_sha). A Lead-only alert — the
+	// founder is intentionally never surfaced for a non-green QA. NOT a
+	// founder-facing notification (those go to the issue thread).
 	"auto_qa_stuck",
-	// FLY-1573: mailbox messages exhausted their agent-ack lease. This alert is
-	// deliberately delivered outside the mailbox to break recursive dead-lettering.
-	"mailbox_dead_letter",
 	// FLY-827: a session reached awaiting_review but Codex code review is NOT
-	// APPROVED for the current PR head → the hard gate blocked review/ship
-	// readiness. A Lead-only alert (founder never surfaced pre-Codex).
+	// APPROVED for the current PR head → the hard gate blocked auto-QA + merge and
+	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
 	// eventId `codex-gate:${execution_id}:${sha}` (no timestamp → fires ONCE per head).
 	"codex_gate_blocked",
-	// FLY-1278: review convergence/audit channel. Advisories pass the hard gate;
-	// rulings are supervised Lead authority; disputes and notification failures
-	// require human visibility but have no safe automatic remediation.
-	"review_advisory_pass",
-	"review_ruling_recorded",
-	"review_ruling_disputed",
-	"review_ruling_notify_failed",
-	// FLY-793: a DAG workflow handoff (Design→Implement→QA) could
+	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
 	// not proceed — head-SHA capture failed, the previous phase runner would not
 	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT
 	// started and this Lead-only alert fires so a completed phase is never
 	// silently stranded. Not a founder-facing notification.
 	"three_stage_stuck",
-	// FLY-1279: shared branch-B takeover was refused (dirty/head drift). Separate
-	// from generic handoff failures so the Lead sees the exact recovery class.
-	"three_stage_takeover_failed",
-	// FLY-1385: the workflow engine exhausted dead-execution recovery, found a
-	// non-retryable quota/auth failure, or used the one approved design fallback.
-	// The run/node has already been durably held or reassigned; this alert gives
-	// the Lead/founder the explicit operational receipt and recovery lever.
-	"workflow_engine_escalation",
-	// FLY-1385 founder A-strengthening: the issue-thread half of the dual
-	// misclassification/repeated-death alert. The escalation half keeps using
-	// workflow_engine_escalation so the Lead chain also receives it.
-	"workflow_engine_issue_alert",
 	// FLY-637-ext: the owning Lead did not answer a runner's BLOCKING question
 	// gate after the configured number of backoff nudges → page Annie ONCE
 	// (final fallback). DISTINCT from runner_stuck_unhandled: the runner is fine,
@@ -127,33 +102,28 @@ export const ALERT_EVENT_TYPES = [
 	// AutoRepairBot never sends the runner a `continue` nudge (Codex design R1 #3).
 	"runner_lead_pending_unhandled",
 	// FLY-725 (Annie 2026-07-01: "never silently drop"): the Bridge could not
-	// deliver a founder-gate fallback ping to its issue thread
+	// deliver a failed/blocked milestone @founder ping to its issue thread
 	// (permanent 4xx / missing thread|token|owner / transient retry budget
 	// elapsed). Surfaced so the founder is not left in the dark. Not a runner-
 	// stuck event — the runner is fine; the notification channel failed.
-	"founder_gate_delivery_failed",
+	"founder_milestone_undelivered",
 	// FLY-871 R2/C8: a runner sitting at a login prompt (auth/session expired) —
 	// DISTINCT from the lead `login_expired` so AlertChannelHub.reconcile resolves
 	// it by the RUNNER pane, and the R3 rescue keys on this event's still-pending row.
 	"runner_login_expired",
 	// FLY-871 §12 W2: a windowed (cmux TUI) Codex Lead's founder-facing pane could
 	// not be (re)created after K consecutive liveness checks — "silent no-pane". NOT
-	// emitted by the TS notifier: it is fired ONLY by the runtime's
+	// emitted by the TS LeadWatchdog / notifier: it is fired ONLY by the runtime's
 	// guard via scripts/lead-alert.sh (Discord-independent). Present in the union so
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"tui_window_lost",
 	// FLY-913: the flywheel-restart-guard PreToolUse hook's mandatory bypass
 	// alert — fired ONLY via scripts/lead-alert.sh --strict-delivery (Discord-
 	// independent path; the hook fail-closes unless the strict result is
-	// sent/queued_transient). NOT emitted by the TS notifier;
+	// sent/queued_transient). NOT emitted by the TS LeadWatchdog / notifier;
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
 	"restart_guard_bypass",
-	// FLY-1501: an OS-supervised service hit the durable 10-minute restart
-	// ceiling and its wrapper stopped exec'ing it. Emitted by the
-	// kernel-independent Python gate through lead-alert.sh; kept in the shared
-	// face so queued delivery and ticket routing remain type-safe.
-	"restart_storm_hold",
 	// FLY-939 (G-D): the Bridge booted on a STALE checkout — its running HEAD is
 	// strictly behind origin/main, so merged work is NOT live (the FLY-887
 	// silent-non-deploy incident shape). A Lead-only alert; the durable
@@ -177,19 +147,18 @@ export const ALERT_EVENT_TYPES = [
 	// scripts/converge-flywheel-bin.sh (shell path via lead-alert.sh; the
 	// Bridge never emits this kind itself — union parity only).
 	"bin_integrity_drift",
-	// FLY-1676: a launcher or fleet restart could not prove that the active
-	// Discord adapter is the fork-backed pointer at fork/main with all critical
-	// collaboration markers. Shell-emitted; union parity keeps queued delivery
-	// and ticket routing fail-loud.
-	"discord_plugin_integrity_failed",
 	// FLY-945 Fix D: the external-merge reconcile pass found a merged PR it
 	// cannot verify (no founder-attributed approval, or the merged head differs
 	// from the head the approval was bound to) OR an externally-merged parked
 	// session that is not ship-eligible. Lead-only — the session is NOT
 	// finalized/archived; a human must look at the merge.
 	"external_merge_suspect",
-	// FLY-929 C2: the daily token report pipeline failed in place
-	// (token-usage-daily.sh fail-loud via lead-alert.sh).
+	// FLY-929 B2/C2: the daily token report was NOT delivered (no receipt by the
+	// 01:00 deadline — Bridge expect-tick) or its pipeline step failed in place
+	// (token-usage-daily.sh fail-loud via lead-alert.sh). Only exists under
+	// P-expect (FLYWHEEL_NOTIFY_DIGEST_EXPECT=1); eventId embeds the expected
+	// report date → at most one alert per expected day (claims-table dedup,
+	// shared kind face with the lead-alert.sh allowlist).
 	"notify_digest_failed",
 	// ── FLY-1099: founder-reply ingest reliability (账本诚实性 — a founder
 	// approval must never disappear silently again). All five carry a durable
@@ -224,29 +193,6 @@ export const ALERT_EVENT_TYPES = [
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"deploy_failed",
 	"deploy_degraded",
-	// FLY-1256/FLY-1182: emitted by the external quota monitor. Successful,
-	// transient-unknown, and confirmation notices are root-only informational;
-	// conflict/persistent-unknown/malformed/choice and legacy failures ticket.
-	"account_switched",
-	"account_switch_degraded",
-	"machine_account_conflict",
-	"model_config",
-	"model_cap_switched",
-	"model_cap_unknown",
-	"model_cap_persistent_unknown",
-	"model_bench_malformed",
-	"quota_choice",
-	"quota_switch_confirmation",
-	"quota_no_target",
-	"quota_blocked_recovered",
-	"quota_read_blind",
-	"account_switch_failed",
-	"account_identity_mismatch",
-	"quota_revive_stuck",
-	"quota_monitor_down",
-	// FLY-1252: a human explicitly bypassed the manual live 5h/7d quota guard.
-	// Fired via lead-alert.sh; actionable audit event, never informational.
-	"quota_guard_bypassed",
 	// ── FLY-1082: fleet-level failure kinds (the 2026-07-09 OOM incident gap —
 	// machine-wide failures had NO kind, so nobody owned them and the founder
 	// found out first). Every fleet kind has an owner + an explicit ARC posture
@@ -255,7 +201,7 @@ export const ALERT_EVENT_TYPES = [
 	// Swap watermark crossed the high threshold (OOM EARLY WARNING — a true OOM
 	// already manifests as bridge_abnormal_exit / tmux_server_lost, so there is
 	// deliberately no "OOM happened" kind). Emitted by the machine-watermark
-	// sensor (reconcile tick piggyback) with hysteresis + 2-tick confirmation.
+	// sensor (watchdog tick piggyback) with hysteresis + 2-tick confirmation.
 	// ARC: reversible dispatch pressure-hold + per-Lead load-shed notify; the
 	// ticket resolves quietly when the watermark falls below the low threshold.
 	"swap_pressure_high",
@@ -266,13 +212,6 @@ export const ALERT_EVENT_TYPES = [
 	// every affected runner to its terminal state and notifies each Lead with
 	// its own casualty list + resume pointers. Respawn stays Lead-driven.
 	"tmux_server_lost",
-	// A guard helper could not positively prove a safe tmux action. The Bridge
-	// durably holds affected sessions, escalates after 10 minutes, and resolves
-	// only after coordinator target reconciliation.
-	"tmux_hold",
-	// Multiple server generations/candidates referenced the same canonical
-	// socket. No automated signal/create/reap is safe; founder-directed action.
-	"tmux_split_brain",
 	// The Bridge process died WITHOUT a clean shutdown (fatal exit under memory
 	// pressure, kill -9, crash). Two in-machine legs share one episodeSignature:
 	// the wrapper preflight dirty-marker page (Bridge-independent fast path via
@@ -289,102 +228,26 @@ export const ALERT_EVENT_TYPES = [
 	// Cross-Lead zombie session backlog (CommDB↔StateStore reconcile drift,
 	// the FLY-1066 three shapes) reached the threshold. NO ARC by design —
 	// reaping is FLY-1066's job (kind-contract remediationRef) — so the ticket
-	// enters NEW with the sample list and never enters the ARC retry loop.
+	// lands directly ESCALATED with the sample list; never enters the ARC
+	// retry loop.
 	"zombie_session_backlog",
-	// Legacy display-only kinds retained so persisted alerts can still drain.
+	// FLY-1048 (PR-C): ≥K same-kind detection episodes overdue at once — a
+	// fleet-scale incident, not K individual ones. The unified escalation flow
+	// routes the whole group here (PRD §4.3 boundary) INSTEAD of paging the
+	// founder K times or spamming each owner Lead. Emitted only by the
+	// detection reconcile (FLYWHEEL_DETECTION_ESCALATION=1); the aggregate body
+	// carries kind + count + a target summary and never any pane text.
 	"detection_fleet_aggregate",
+	// FLY-1048 (PR-C): a detection founder page that could not be ADDRESSED or
+	// POSTED (no session / no thread binding / POST failed). The episode row
+	// stays LEAD_NOTIFIED and the reconcile keeps retrying — this ticket is
+	// plan C3's "never silent" seam telling an infra responder WHY the page is
+	// not landing. eventId is per-episode deterministic → claims-deduped
+	// across reconcile retries (no per-tick spam).
 	"detection_page_undeliverable",
-	// FLY-1279: an ACK-required Lead event exhausted its bounded delivery budget.
-	"delivery_dead_letter",
-	// FLY-1373: a per-Lead consume-loop stall or queue-native deadline breach.
-	"inbox_loop_stalled",
-	// FLY-2118: a canonical Runner pane remained outside every active owner
-	// index for two consecutive project patrol slots.
-	"orphan_pane",
-	// FLY-1402: a Claude Lead was explicitly launched through the emergency
-	// last-one-wins compatibility path instead of the single-file rules bundle.
-	// Shell-emitted only, but kept in the shared face so queued alerts drain.
-	"rules_bundle_legacy",
-	// FLY-1407: a work-kind dispatch carried an invalid explicit input. The
-	// request itself failed loud; this is the durable, deduplicated Lead notice.
-	"workflow_route_input_rejected",
-	// FLY-1393 W-1: exact-target process evidence proved an approved ship runner
-	// dead; stable event id, one durable alert per execution.
-	"stale_approved_ship_dead",
-	// FLY-1628: StateStore says active but the recorded tmux generation/body is
-	// gone. Recovery is proposed, never auto-redispatched.
-	"runner_pane_loss",
-	// FLY-1505: a founder-approved ship attempt reached a terminal failure or
-	// could no longer be tracked. The approval stays live; a Lead diagnoses the
-	// workflow before explicitly waking the runner for another attempt.
-	"ship_attempt_failed",
-	// FLY-1912: complete-failed marker held by an engine invariant or bounded
-	// unknown-5xx replay episode.
-	"complete_marker_held",
-	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
-	"lead_dual_active",
-	"lead_dual_active_sensor_degraded",
-	"lead_lease_store_broken",
-	"lead_lease_bypass_used",
-	"lead_lease_would_block",
-	"lead_lease_control_broken",
-	"lead_identity_source_broken",
-	"lead_backend_drift",
-	// FLY-1364: shell-side cmux display convergence and tmux rescue telemetry.
-	"cmux_cleanup",
-	// FLY-1944: GatePoller proved the resident watcher unhealthy; only the
-	// fully-verified stale branch attempts tuple-bound recovery.
-	"cmux_watcher_stalled",
-	"tmux_rescue_hold",
-	// FLY-1781: engineering-only weekly flag-governance health notices. These
-	// are informational (no ticket/ARC/founder DM lifecycle).
-	"flag_scan_failed",
-	"flag_scan_no_clock",
-	"flag_scan_handoff",
-	"host_voucher_incident",
-	/**
-	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
-	 * skipped it. A REAL notification is being held back, so someone has to be
-	 * told — the previous incident showed that a guard firing into a void is
-	 * indistinguishable from no problem at all.
-	 */
-	"legacy_row_quarantined",
 ] as const;
 
 export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
-
-/** Root-only notices that must never open a ticket/thread/ARC lifecycle. */
-export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
-	"account_switched",
-	"model_cap_switched",
-	"model_cap_unknown",
-	"quota_switch_confirmation",
-	"quota_blocked_recovered",
-	"workflow_route_input_rejected",
-	"flag_scan_failed",
-	"flag_scan_no_clock",
-	"flag_scan_handoff",
-]);
-
-export function isInformationalKind(kind: AlertEventType): boolean {
-	return INFORMATIONAL_KINDS.has(kind);
-}
-
-const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
-	"account_switched",
-	"account_switch_degraded",
-	"quota_switch_confirmation",
-]);
-
-function hasValidDeliveryStyle(
-	payload: Pick<AlertPayload, "eventType"> & { deliveryStyle?: unknown },
-): boolean {
-	return (
-		payload.deliveryStyle === undefined ||
-		(payload.deliveryStyle === "plain" &&
-			PLAIN_DELIVERY_KINDS.has(payload.eventType))
-	);
-}
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
@@ -396,61 +259,6 @@ export type AlertSeverity = "info" | "warning" | "severe";
  * out of the eventId string (Codex design R1 HIGH-2).
  */
 export interface AlertMetadata {
-	workflowEngine?: {
-		runId: string;
-		issueId: string;
-		nodeId: string;
-		executionId: string;
-		disposition:
-			| "held"
-			| "partial"
-			| "completion_receipt_missing"
-			| "rework_suppressed_idle_spin"
-			| "rework_retry_exhausted"
-			| "rework_pane_loss_handoff"
-			| "rework_stall_recovered"
-			| "rework_reentry_paused"
-			| "rework_reentry_resumed"
-			| "rework_held_recovery_exhausted"
-			| "carrier_delivery_exhausted"
-			| "carrier_delivery_held"
-			| "carrier_delivery_cancelled"
-			| "turn_ledger_divergence"
-			| "probe_unknown"
-			| "stale_resubmission"
-			| "dead_execution_activity_after_replacement"
-			| "ship_ready_stalled"
-			| "ship_ready_delivery_failed"
-			| "gate_carrier_unbound"
-			| "gate_materialization_stuck"
-			| "workflow_gate_origin_preflight_terminal"
-			| "card_void_stuck"
-			| "founder_input_deadletter"
-			| "founder_rework_round_high"
-			| "founder_review_delivery_missing"
-			| "founder_review_unanswered"
-			| "voided_card_input"
-			| "land_head_unavailable"
-			| "engine_invariant_refusal"
-			| "runner_ship_merged_before_approval"
-			| "runner_ship_merged_head_mismatch"
-			| "runner_ship_completion_failure"
-			| "runner_ship_legacy_merge_anomaly"
-			| "runner_ship_head_enrichment_failed"
-			| "runner_ship_hydration_reval_failed"
-			| "runner_ship_authority_conflict"
-			| "resume_first_available"
-			| "linear_done_deferred"
-			| "observation_corrupt";
-		launchCount?: number;
-		maxBlindReplacements?: number;
-		outputExistsForAttempt?: boolean;
-		management?: { terminate: string };
-		loopIteration?: number;
-		attempt?: number;
-		head8?: string;
-		leadResolution: "resolved" | "fallback";
-	};
 	runnerStuck?: {
 		executionId: string;
 		episodeFingerprint: string;
@@ -458,7 +266,7 @@ export interface AlertMetadata {
 	};
 	/**
 	 * FLY-696: a real quota cap (5h / weekly), NOT a transient 529. Produced at
-	 * detection (the runner quota scan / RunnerQuotaDetector) after parsing the CLI usage
+	 * detection (LeadWatchdog / RunnerQuotaDetector) after parsing the CLI usage
 	 * gauge. `provider` drives server-side cross-provider gating on the dedicated
 	 * account-switch route; `observedAccount`/`observedGeneration` are the CAS
 	 * snapshot so a duplicate trigger from another Lead cannot double-switch.
@@ -523,14 +331,6 @@ export interface AlertMetadata {
 		/** Leads whose notification FAILED (>0 ⇒ needs_human escalation). */
 		leadsFailed: number;
 	};
-	tmuxHold?: {
-		socketPath: string;
-		incidentId: string;
-		reason: string;
-		casualtiesHeld: number;
-		reachablePid?: number;
-		orphanPids?: number[];
-	};
 }
 
 /**
@@ -547,6 +347,8 @@ export interface AlertTicketContext {
 	ownerUserId: string | null;
 	/** Human-readable owner label when no mention is possible (e.g. "claude bot"). */
 	ownerLabel: string;
+	/** Ticket lifecycle status (NEW/ACK/REPAIRING/RESOLVED/ESCALATED). */
+	status: string;
 	/** First-seen instant (ms epoch) — claims/episode first time. */
 	firstSeenMs: number;
 	/** Persisted owner ref (`infra_bot:claude|codex` / `lead:<id>`); not rendered. */
@@ -574,29 +376,6 @@ export interface AlertPayload {
 	 * a malformed id degrades to plain text).
 	 */
 	mentionUserId?: string;
-	/** FLY-2051: ordinary notification copy, restricted to quota-switch kinds. */
-	deliveryStyle?: "plain";
-	/**
-	 * Durable recurring-fault identity (FLY-1309) and, for swap alerts, the
-	 * episode key used by delayed replay freshness checks.
-	 */
-	episodeId?: string;
-	sourceFingerprint?: string;
-}
-
-export interface AlertAttemptOptions {
-	/**
-	 * FLY-1573: the durable dead-letter outbox already waited its shared
-	 * ambiguous-attempt reclaim fence and is now replaying an attempt that has no
-	 * delivery receipt. `alert_claims` and `lead_events` prove only that an
-	 * attempt was claimed; neither proves Discord/durable delivery. A fenced
-	 * replay therefore bypasses those attempt-only dedup checks, but still must
-	 * write an `alert_delivery_receipts` row before the outbox settles.
-	 *
-	 * This is intentionally a call option rather than serialized payload state:
-	 * only the outbox that owns the reclaim fence may grant it.
-	 */
-	replayAfterAmbiguousAttempt?: boolean;
 }
 
 /**
@@ -618,12 +397,7 @@ export function isFleetAlertPayload(p: { projectName: string }): boolean {
 
 export interface AlertResult {
 	sent?: boolean;
-	skipped?:
-		| "duplicate"
-		| "disabled"
-		| "no-channel"
-		| "no-token"
-		| "unknown-lead";
+	skipped?: "duplicate" | "no-channel" | "no-token" | "unknown-lead";
 	queued?: boolean;
 	dmSent?: boolean;
 	/** FLY-182: payload routed to dead-letter (permanent failure, no retry). */
@@ -673,8 +447,6 @@ export type ClaimsClaimer = (
 export interface LeadAlertNotifierConfig {
 	store: StateStore;
 	projects: ProjectEntry[];
-	/** FLY-2076: call-time master delivery gate; OFF still journals intake. */
-	deliveryEnabled?: () => boolean;
 	fetchFn?: FetchLike;
 	queueDir?: string;
 	claimsReader?: ClaimsReader;
@@ -691,8 +463,9 @@ export interface LeadAlertNotifierConfig {
 	/** FLY-368: when set, ALL alerts route to one unified channel. */
 	unifiedAlert?: UnifiedAlertConfig;
 	/**
-	 * Test seam for ticket schema enrichment. Production is welded on; only
-	 * unified mode renders it, while the legacy per-lead path never does.
+	 * FLY-927: ticket schema header (🎫 line) enable — read at CALL time so a
+	 * live env flip applies. Default: FLYWHEEL_ALERT_TICKETS === "1". Only
+	 * effective in unified mode; the legacy per-lead path never renders it.
 	 */
 	ticketsEnabled?: () => boolean;
 	/**
@@ -702,13 +475,6 @@ export interface LeadAlertNotifierConfig {
 	 * limited (the T1 cap is a #flywheel-alerts channel semantic).
 	 */
 	rateLimiter?: AlertRateLimiter;
-	/** FLY-1309 durable episode DB (test seam; defaults to shared state). */
-	episodeDbPath?: string;
-	/**
-	 * Synchronous delayed-replay evidence. true = this exact episode is proven
-	 * over; false = proven live; null = unknown, so delivery must fail open.
-	 */
-	replayFreshnessProbe?: (input: ReplayFreshnessInput) => boolean | null;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -765,39 +531,10 @@ export class LeadAlertNotifier {
 	private unifiedAlert?: UnifiedAlertConfig;
 	private ticketsEnabled: () => boolean;
 	private rateLimiter?: AlertRateLimiter;
-	private episodeDbPath: string;
-	private replayFreshnessMode: "accept_delayed" | "drop_stale";
-	private replayFreshnessProbe?: (
-		input: ReplayFreshnessInput,
-	) => boolean | null;
-	private deliveryEnabled: () => boolean;
-
-	private withDeliveryReceipt(
-		payload: AlertPayload,
-		result: AlertResult,
-		outcome: "sent" | "queued_durable" | "deadlettered_durable",
-	): AlertResult {
-		try {
-			this.store.recordAlertDeliveryReceipt(
-				payload.eventId,
-				outcome,
-				new Date().toISOString(),
-			);
-		} catch (error) {
-			// The visible/durable delivery already happened. Keep alert()'s historical
-			// never-throw contract; the FLY-1573 outbox will leave its intent pending
-			// and apply the shared 30-minute ambiguous-attempt fence before replay.
-			this.logger(
-				`delivery receipt write failed event=${payload.eventId}: ${(error as Error).message}`,
-			);
-		}
-		return result;
-	}
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
 		this.projects = config.projects;
-		this.deliveryEnabled = config.deliveryEnabled ?? (() => true);
 		this.fetchFn = config.fetchFn ?? (globalThis.fetch as FetchLike);
 		this.queueDir =
 			config.queueDir ?? join(homedir(), ".flywheel", "alert-queue");
@@ -814,25 +551,10 @@ export class LeadAlertNotifier {
 		this.queueMax = config.queueMax ?? DEFAULT_QUEUE_MAX;
 		this.queueMaxAgeMs = config.queueMaxAgeMs ?? DEFAULT_QUEUE_MAX_AGE_MS;
 		this.unifiedAlert = config.unifiedAlert;
-		this.ticketsEnabled = config.ticketsEnabled ?? (() => true);
+		this.ticketsEnabled =
+			config.ticketsEnabled ??
+			(() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
 		this.rateLimiter = config.rateLimiter;
-		this.replayFreshnessProbe = config.replayFreshnessProbe;
-		const replayFreshnessRaw =
-			process.env.FLYWHEEL_ALERT_REPLAY_FRESHNESS?.trim();
-		if (replayFreshnessRaw === "drop_stale") {
-			this.replayFreshnessMode = "drop_stale";
-		} else {
-			this.replayFreshnessMode = "accept_delayed";
-			if (replayFreshnessRaw && replayFreshnessRaw !== "accept_delayed") {
-				this.logger(
-					`invalid FLYWHEEL_ALERT_REPLAY_FRESHNESS=${replayFreshnessRaw}; using accept_delayed`,
-				);
-			}
-		}
-		this.episodeDbPath =
-			config.episodeDbPath ??
-			process.env.FLYWHEEL_LEAD_EPISODE_DB ??
-			join(homedir(), ".flywheel", "state", "lease-episodes.db");
 		mkdirSync(this.queueDir, { recursive: true });
 	}
 
@@ -899,28 +621,7 @@ export class LeadAlertNotifier {
 		);
 	}
 
-	async alert(
-		payload: AlertPayload,
-		attempt: AlertAttemptOptions = {},
-	): Promise<AlertResult> {
-		if (!this.deliveryEnabled()) {
-			this.store.recordAlertSystemSuppression({
-				leadId: payload.leadId,
-				eventId: payload.eventId,
-				eventType: payload.eventType,
-				payload: JSON.stringify(payload),
-				sessionKey: payload.sessionKey,
-			});
-			return { skipped: "disabled" };
-		}
-		if (!hasValidDeliveryStyle(payload)) {
-			await this.deadLetter(payload, "invalid-delivery-style");
-			return this.withDeliveryReceipt(
-				payload,
-				{ deadLettered: true },
-				"deadlettered_durable",
-			);
-		}
+	async alert(payload: AlertPayload): Promise<AlertResult> {
 		const resolved = this.resolveLead(payload.leadId, payload.projectName);
 		// FLY-1082 (Task 1.4): a deliverable fleet payload proceeds WITHOUT a
 		// projects.json lead (unified channel + send chain need none); `lead` and
@@ -936,11 +637,7 @@ export class LeadAlertNotifier {
 			// (deadLetter() also fires the Discord-independent meta-alert) so the
 			// dropped payload is recorded, not just announced.
 			await this.deadLetter(payload, "unknown-lead");
-			return this.withDeliveryReceipt(
-				payload,
-				{ skipped: "unknown-lead", deadLettered: true },
-				"deadlettered_durable",
-			);
+			return { skipped: "unknown-lead", deadLettered: true };
 		}
 		const lead = resolved?.lead ?? null;
 		const project = resolved?.project ?? null;
@@ -948,7 +645,7 @@ export class LeadAlertNotifier {
 		// Step 1: shell-side fast-path read. Avoids building a payload when
 		// shell has already posted an alert for this eventId. Not the
 		// load-bearing dedup — that's Step 2.
-		if (!attempt.replayAfterAmbiguousAttempt && this.claimsReader) {
+		if (this.claimsReader) {
 			try {
 				const claimed = await this.claimsReader();
 				if (claimed.has(payload.eventId)) {
@@ -967,7 +664,7 @@ export class LeadAlertNotifier {
 		// `false` and skips. On infrastructure failure (`null`) we proceed
 		// to the Bridge-only dedup so a partial outage doesn't silence
 		// alerts entirely.
-		if (!attempt.replayAfterAmbiguousAttempt && this.claimsClaimer) {
+		if (this.claimsClaimer) {
 			try {
 				const won = await this.claimsClaimer(
 					payload.eventId,
@@ -987,7 +684,7 @@ export class LeadAlertNotifier {
 		}
 
 		// Step 3: Bridge-only dedup via lead_events UNIQUE. Catches duplicate
-		// in-process re-fires plus same-Bridge-process retries that
+		// in-process Watchdog re-fires plus same-Bridge-process retries that
 		// might bypass the cross-process claim (e.g., when claimsClaimer
 		// returned null).
 		const firstClaim = this.store.tryClaimLeadEvent(
@@ -997,13 +694,8 @@ export class LeadAlertNotifier {
 			JSON.stringify(payload),
 			payload.sessionKey,
 		);
-		if (!firstClaim && !attempt.replayAfterAmbiguousAttempt) {
+		if (!firstClaim) {
 			return { skipped: "duplicate" };
-		}
-		if (attempt.replayAfterAmbiguousAttempt) {
-			this.logger(
-				`replaying after ambiguous-attempt fence event=${payload.eventId}`,
-			);
 		}
 
 		// Step 4: Resolve channel (PERMANENT failure → dead-letter; config doesn't
@@ -1011,11 +703,7 @@ export class LeadAlertNotifier {
 		const channel = this.resolveChannel(lead, project);
 		if (!channel) {
 			await this.deadLetter(payload, "no-channel");
-			return this.withDeliveryReceipt(
-				payload,
-				{ skipped: "no-channel", deadLettered: true },
-				"deadlettered_durable",
-			);
+			return { skipped: "no-channel", deadLettered: true };
 		}
 
 		// FLY-927 (T1): unified-channel root-message rate cap. Over the per-minute
@@ -1030,11 +718,7 @@ export class LeadAlertNotifier {
 		) {
 			this.rateLimiter.noteOverflow(payload.eventType);
 			this.enqueue(payload, "rate-limited");
-			return this.withDeliveryReceipt(
-				payload,
-				{ queued: true },
-				"queued_durable",
-			);
+			return { queued: true };
 		}
 
 		// Step 5: Fire the Discord POST.
@@ -1049,18 +733,10 @@ export class LeadAlertNotifier {
 			if (!sent.ok) {
 				if (sent.transient) {
 					this.enqueue(payload, `discord-${sent.status ?? "net"}`);
-					return this.withDeliveryReceipt(
-						payload,
-						{ queued: true },
-						"queued_durable",
-					);
+					return { queued: true };
 				}
 				await this.deadLetter(payload, `discord-${sent.status ?? "4xx"}`);
-				return this.withDeliveryReceipt(
-					payload,
-					{ deadLettered: true },
-					"deadlettered_durable",
-				);
+				return { deadLettered: true };
 			}
 			messageId = sent.messageId;
 			usedToken = sent.usedToken ?? null;
@@ -1070,28 +746,16 @@ export class LeadAlertNotifier {
 			const token = lead ? this.resolveToken(lead) : null;
 			if (!token) {
 				await this.deadLetter(payload, "no-token");
-				return this.withDeliveryReceipt(
-					payload,
-					{ skipped: "no-token", deadLettered: true },
-					"deadlettered_durable",
-				);
+				return { skipped: "no-token", deadLettered: true };
 			}
 			const outcome = await this.postMessage(channel, token, payload);
 			if (!outcome.ok) {
 				if (outcome.transient) {
 					this.enqueue(payload, `discord-${outcome.status ?? "net"}`);
-					return this.withDeliveryReceipt(
-						payload,
-						{ queued: true },
-						"queued_durable",
-					);
+					return { queued: true };
 				}
 				await this.deadLetter(payload, `discord-${outcome.status ?? "4xx"}`);
-				return this.withDeliveryReceipt(
-					payload,
-					{ deadLettered: true },
-					"deadlettered_durable",
-				);
+				return { deadLettered: true };
 			}
 			messageId = outcome.messageId;
 			usedToken = token;
@@ -1115,7 +779,7 @@ export class LeadAlertNotifier {
 			base.channelId = channel;
 			if (messageId) base.messageId = messageId;
 		}
-		return this.withDeliveryReceipt(payload, base, "sent");
+		return base;
 	}
 
 	/**
@@ -1192,16 +856,12 @@ export class LeadAlertNotifier {
 	 *
 	 * Does NOT fire meta-alerts per file (would be 1667× on a backlog drain);
 	 * returns `deadLettered` so the caller (Bridge drain loop) can fire ONE
-	 * debounced meta-alert when delivery failures dead-letter. Proven-stale
-	 * episodes are audited in the same directory but counted separately as
-	 * `staleSuppressed`, never as a delivery failure.
+	 * debounced meta-alert when dead-lettering occurs.
 	 */
 	async drainQueue(): Promise<{
 		sent: number;
 		remaining: number;
 		deadLettered: number;
-		/** Expected product suppression, intentionally not a delivery failure. */
-		staleSuppressed: number;
 		/**
 		 * FLY-927 (Codex R1 HIGH): unified-mode drains that actually POSTed, with
 		 * the root channel+message id — the Bridge drain loop feeds these through
@@ -1218,26 +878,9 @@ export class LeadAlertNotifier {
 	}> {
 		let entries = readdirSync(this.queueDir)
 			.filter((f) => f.endsWith(".json"))
-			.sort((left, right) => {
-				// FLY-1309: shell (`YYYYMMDD...`) and TS/lease-audit (`YYYY-MM-DD...`)
-				// filenames do not share one lexical chronology. Queue content owns
-				// time; mtime is the legacy/malformed fallback, filename only a tie-break.
-				const delta =
-					this.queueEntryTimeMs(left) - this.queueEntryTimeMs(right);
-				return delta || left.localeCompare(right);
-			});
-		if (!this.deliveryEnabled()) {
-			return {
-				sent: 0,
-				remaining: entries.length,
-				deadLettered: 0,
-				staleSuppressed: 0,
-				delivered: [],
-			};
-		}
+			.sort(); // names start with an ISO-ish stamp → lexical ≈ chronological
 		let sent = 0;
 		let deadLettered = 0;
-		let staleSuppressed = 0;
 		const delivered: Array<{
 			payload: AlertPayload;
 			channelId: string;
@@ -1270,11 +913,7 @@ export class LeadAlertNotifier {
 
 		for (const file of entries) {
 			const path = join(this.queueDir, file);
-			let parsed: AlertPayload & {
-				queueReason?: string;
-				queuedAt?: string;
-				deliveryChannelId?: unknown;
-			};
+			let parsed: AlertPayload & { queueReason?: string; queuedAt?: string };
 			try {
 				parsed = JSON.parse(readFileSync(path, "utf-8"));
 			} catch (err) {
@@ -1285,44 +924,11 @@ export class LeadAlertNotifier {
 				continue;
 			}
 
-			// FLY-1309 ack-before-unlink recovery: a prior drain may have committed
-			// delivery then crashed before removing this file. Never POST it again.
-			if (this.episodeDeliveryState(parsed) === "delivered") {
-				unlinkSync(path);
-				continue;
-			}
-
 			// Aging.
 			if (this.queueFileAgeMs(parsed.queuedAt, path) > this.queueMaxAgeMs) {
 				this.moveQueueFileToDeadLetter(file, "aged-out");
 				deadLettered++;
 				continue;
-			}
-
-			// β mode: suppress only when the synchronous truth source proves this
-			// exact episode ended. Unknown/false/throw all fail open to delivery.
-			if (
-				this.replayFreshnessMode === "drop_stale" &&
-				this.replayFreshnessProbe
-			) {
-				let stale: boolean | null = null;
-				try {
-					stale = this.replayFreshnessProbe({
-						eventType: parsed.eventType,
-						leadId: parsed.leadId,
-						eventId: parsed.eventId,
-						episodeId: parsed.episodeId,
-					});
-				} catch (err) {
-					this.logger(
-						`replay freshness probe failed for ${parsed.eventId}: ${(err as Error).message}; delivering`,
-					);
-				}
-				if (stale === true) {
-					this.moveQueueFileToDeadLetter(file, "stale-episode");
-					staleSuppressed++;
-					continue;
-				}
 			}
 
 			// Recorded permanent reason → dead-letter REGARDLESS of whether
@@ -1349,24 +955,7 @@ export class LeadAlertNotifier {
 			// re-posted — exactly the deploy-failure alerts that most need recovery
 			// delivery. Only the legacy branch keeps the resolveLead gates.
 			if (this.unifiedAlert) {
-				if (!hasValidDeliveryStyle(parsed)) {
-					this.moveQueueFileToDeadLetter(file, "invalid-delivery-style");
-					deadLettered++;
-					continue;
-				}
-				let deliveryChannel: string | undefined;
-				if (parsed.deliveryChannelId !== undefined) {
-					if (
-						typeof parsed.deliveryChannelId !== "string" ||
-						!/^\d{17,20}$/.test(parsed.deliveryChannelId)
-					) {
-						this.moveQueueFileToDeadLetter(file, "invalid-delivery-channel");
-						deadLettered++;
-						continue;
-					}
-					deliveryChannel = parsed.deliveryChannelId;
-				}
-				const channel = deliveryChannel ?? this.unifiedAlert.channelId;
+				const channel = this.unifiedAlert.channelId;
 				// FLY-927 (T1): each drained root message consumes a token. Refused →
 				// STOP this drain round immediately; queue files stay untouched (no
 				// rewrite, no re-enqueue) and the next round resumes oldest-first.
@@ -1375,18 +964,12 @@ export class LeadAlertNotifier {
 				}
 				const sentResult = await this.postAlertWithSendChain(parsed, channel);
 				if (sentResult.ok) {
-					this.markEpisodeTerminal(parsed, "delivered");
 					unlinkSync(path);
 					sent++;
 					// FLY-927 (Codex R1 HIGH): hand the delivered root to the Hub so a
 					// drained alert still gets its thread + ticket lifecycle.
-					if (sentResult.messageId && parsed.deliveryStyle !== "plain") {
-						const {
-							queueReason: _qr,
-							queuedAt: _qa,
-							deliveryChannelId: _dc,
-							...payload
-						} = parsed;
+					if (sentResult.messageId) {
+						const { queueReason: _qr, queuedAt: _qa, ...payload } = parsed;
 						delivered.push({
 							payload: payload as AlertPayload,
 							channelId: channel,
@@ -1428,7 +1011,6 @@ export class LeadAlertNotifier {
 			}
 			const outcome = await this.postMessage(channel, token, parsed);
 			if (outcome.ok) {
-				this.markEpisodeTerminal(parsed, "delivered");
 				unlinkSync(path);
 				sent++;
 			} else if (!outcome.transient) {
@@ -1445,7 +1027,7 @@ export class LeadAlertNotifier {
 		const remaining = readdirSync(this.queueDir).filter((f) =>
 			f.endsWith(".json"),
 		).length;
-		return { sent, remaining, deadLettered, staleSuppressed, delivered };
+		return { sent, remaining, deadLettered, delivered };
 	}
 
 	/**
@@ -1497,14 +1079,6 @@ export class LeadAlertNotifier {
 	private moveQueueFileToDeadLetter(file: string, reason: string): void {
 		const src = join(this.queueDir, file);
 		try {
-			const parsed = JSON.parse(readFileSync(src, "utf8")) as AlertPayload & {
-				queuedAt?: string;
-			};
-			this.markEpisodeTerminal(parsed, "dead_lettered", reason);
-		} catch {
-			// Malformed queue entries have no trustworthy episode identity.
-		}
-		try {
 			mkdirSync(this.deadLetterDir, { recursive: true });
 			renameSync(src, join(this.deadLetterDir, `${reason}-${file}`));
 		} catch (err) {
@@ -1520,70 +1094,6 @@ export class LeadAlertNotifier {
 		}
 	}
 
-	private episodeDeliveryState(
-		payload: AlertPayload & { queuedAt?: string },
-	): LeadLeaseEpisodeDeliveryState | undefined {
-		if (!payload.episodeId || !payload.sourceFingerprint) return undefined;
-		if (
-			!LEAD_LEASE_EPISODE_KINDS.includes(
-				payload.eventType as LeadLeaseEpisodeKind,
-			)
-		) {
-			this.logger(
-				`episode ${payload.episodeId} carries invalid kind ${payload.eventType}`,
-			);
-			return undefined;
-		}
-		let store: LeadLeaseEpisodeStore | undefined;
-		try {
-			store = new LeadLeaseEpisodeStore(this.episodeDbPath);
-			let episode = store.getEpisode(payload.episodeId);
-			if (!episode) {
-				store.restoreQueued({
-					episodeId: payload.episodeId,
-					sourceFingerprint: payload.sourceFingerprint,
-					kind: payload.eventType as LeadLeaseEpisodeKind,
-					payload: { ...payload },
-					createdAt: payload.queuedAt ?? new Date().toISOString(),
-				});
-				episode = store.getEpisode(payload.episodeId);
-				this.logger(
-					`restored missing lease episode ${payload.episodeId} from queue`,
-				);
-			}
-			return episode?.deliveryState;
-		} catch (error) {
-			// Successful delivery remains authoritative even if the audit DB is
-			// unavailable; log and continue so a corrupt store cannot cause an
-			// infinite repost loop.
-			this.logger(
-				`lease episode state unavailable for ${payload.episodeId}: ${(error as Error).message}`,
-			);
-			return undefined;
-		} finally {
-			store?.close();
-		}
-	}
-
-	private markEpisodeTerminal(
-		payload: AlertPayload,
-		state: "delivered" | "dead_lettered",
-		reason?: string,
-	): void {
-		if (!payload.episodeId) return;
-		let store: LeadLeaseEpisodeStore | undefined;
-		try {
-			store = new LeadLeaseEpisodeStore(this.episodeDbPath);
-			store.markDelivery(payload.episodeId, state, reason);
-		} catch (error) {
-			this.logger(
-				`lease episode ${state} ack degraded for ${payload.episodeId}: ${(error as Error).message}`,
-			);
-		} finally {
-			store?.close();
-		}
-	}
-
 	/** Age of a queue file in ms — from `queuedAt` if present, else file mtime. */
 	private queueFileAgeMs(queuedAt: string | undefined, path: string): number {
 		const now = Date.now();
@@ -1595,27 +1105,6 @@ export class LeadAlertNotifier {
 			return now - statSync(path).mtimeMs;
 		} catch {
 			return 0;
-		}
-	}
-
-	private queueEntryTimeMs(file: string): number {
-		const path = join(this.queueDir, file);
-		try {
-			const parsed = JSON.parse(readFileSync(path, "utf8")) as {
-				queuedAt?: unknown;
-			};
-			if (typeof parsed.queuedAt === "string") {
-				const timestamp = Date.parse(parsed.queuedAt);
-				if (Number.isFinite(timestamp)) return timestamp;
-			}
-		} catch {
-			// Malformed entries are still ordered deterministically by mtime below;
-			// the drain loop then moves them to dead-letter.
-		}
-		try {
-			return statSync(path).mtimeMs;
-		} catch {
-			return Number.POSITIVE_INFINITY;
 		}
 	}
 
@@ -1676,10 +1165,7 @@ export class LeadAlertNotifier {
 				body: JSON.stringify({
 					content: markAutomatedDiscordText(
 						formatContent(payload, {
-							ticketHeader:
-								!!this.unifiedAlert &&
-								this.ticketsEnabled() &&
-								!isInformationalKind(payload.eventType),
+							ticketHeader: !!this.unifiedAlert && this.ticketsEnabled(),
 						}),
 					),
 					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
@@ -1738,13 +1224,7 @@ export class LeadAlertNotifier {
 	 * id degrades to plain text rather than a Discord-rejected mentions body.
 	 */
 	private ticketOwnerMention(payload: AlertPayload): string | null {
-		if (
-			!this.unifiedAlert ||
-			!this.ticketsEnabled() ||
-			isInformationalKind(payload.eventType)
-		) {
-			return null;
-		}
+		if (!this.unifiedAlert || !this.ticketsEnabled()) return null;
 		const id = payload.ticket?.ownerUserId?.trim();
 		return id && /^\d{17,20}$/.test(id) ? id : null;
 	}
@@ -1932,10 +1412,10 @@ function ticketHHMM(ms: number): string {
 
 /**
  * FLY-927 (Task 1.2): the 🎫 ticket header — appended AFTER the existing first
- * line so the `ALERT_ECHO_START` anchor on `(<leadId> / <kind>)`
+ * line so the LeadWatchdog `ALERT_ECHO_START` anchor on `(<leadId> / <kind>)`
  * keeps matching (append-only = minimum echo-regression radius, FLY-220).
- * Rendered when the caller enables it in unified mode; legacy output stays
- * byte-identical.
+ * Rendered ONLY when the caller enables it (unified mode + FLYWHEEL_ALERT_TICKETS=1);
+ * legacy output stays byte-identical.
  */
 function formatContent(
 	payload: AlertPayload,
@@ -1955,7 +1435,6 @@ function formatContent(
 	// echo immunity.
 	const mention = validMentionUserId(payload);
 	const prefix = mention ? `<@${mention}> ` : "";
-	if (payload.deliveryStyle === "plain") return `${prefix}${payload.body}`;
 	const firstLine = `${prefix}${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})`;
 	if (!opts?.ticketHeader) {
 		return `${firstLine}\n${payload.body}`;
@@ -1966,8 +1445,9 @@ function formatContent(
 		ownerId && /^\d{17,20}$/.test(ownerId)
 			? `<@${ownerId}>`
 			: t?.ownerLabel?.trim() || "—";
+	const status = t?.status?.trim() || "NEW";
 	const firstSeen = ticketHHMM(t?.firstSeenMs ?? Date.now());
-	return `${firstLine}\n🎫 ${payload.projectName} · 首见 ${firstSeen} · owner ${owner} · 状态 NEW\n${payload.body}`;
+	return `${firstLine}\n🎫 ${payload.projectName} · 首见 ${firstSeen} · owner ${owner} · 状态 ${status}\n${payload.body}`;
 }
 
 async function safeText(

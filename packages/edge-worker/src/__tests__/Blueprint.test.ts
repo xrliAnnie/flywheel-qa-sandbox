@@ -245,27 +245,6 @@ describe("Blueprint", () => {
 		expect(execCall.cwd).toBe("/project");
 	});
 
-	it("FLY-1715: normalizes the ingest credential at the runner injection boundary", async () => {
-		const previous = process.env.TEAMLEAD_INGEST_TOKEN;
-		process.env.TEAMLEAD_INGEST_TOKEN = "  fleet-ingest  ";
-		try {
-			const adapter = makeMockAdapter();
-			const blueprint = new Blueprint(
-				makeHydrator(),
-				makeMockGitChecker(),
-				() => adapter,
-				makeMockShell(),
-			);
-			await blueprint.run(makeNode(), "/project", makeContext());
-			const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
-				.calls[0]![0] as AdapterExecutionContext;
-			expect(execCall.bridgeIngestToken).toBe("fleet-ingest");
-		} finally {
-			if (previous === undefined) delete process.env.TEAMLEAD_INGEST_TOKEN;
-			else process.env.TEAMLEAD_INGEST_TOKEN = previous;
-		}
-	});
-
 	// FLY-272: the tmux window name / cmux sidebar must show the readable Linear
 	// identifier even when the Lead passed the opaque Linear issue UUID as the
 	// `issueId` body field (sub's Lead does this; joycon's passes the identifier).
@@ -648,35 +627,6 @@ describe("Blueprint", () => {
 		);
 	});
 
-	it("copies the Bridge route summary into the direct session_started envelope", async () => {
-		const emitStarted = vi.fn(async () => {});
-		const emitter: ExecutionEventEmitter = {
-			emitStarted,
-			emitWorktreeReady: vi.fn(async () => {}),
-			emitCompleted: vi.fn(async () => {}),
-			emitFailed: vi.fn(async () => {}),
-			emitHeartbeat: vi.fn(async () => {}),
-			flush: vi.fn(async () => {}),
-		};
-		const blueprint = new Blueprint(
-			makeHydrator(),
-			makeMockGitChecker(),
-			() => makeMockAdapter(),
-			makeMockShell(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			emitter,
-		);
-		const routeSummary = "🧭 **Route**: `generic` · source `default_fallback`";
-		await blueprint.run(makeNode(), "/project", makeContext({ routeSummary }));
-		expect(emitStarted).toHaveBeenCalledWith(
-			expect.objectContaining({ routeSummary }),
-		);
-	});
-
 	it("does not set runnerModel in the envelope when ctx has none (byte-compat)", async () => {
 		const emitStarted = vi.fn(async () => {});
 		const emitter: ExecutionEventEmitter = {
@@ -849,21 +799,6 @@ describe("Blueprint", () => {
 			);
 			mkdirSync(realWorktreePath, { recursive: true });
 			execFileSync("git", ["init", "-q"], { cwd: realWorktreePath });
-			execFileSync(
-				"git",
-				[
-					"-c",
-					"user.name=Flywheel Test",
-					"-c",
-					"user.email=flywheel@example.test",
-					"commit",
-					"--allow-empty",
-					"-m",
-					"baseline",
-					"-q",
-				],
-				{ cwd: realWorktreePath },
-			);
 
 			const stubWorktreeManager = {
 				removeIfExists: vi.fn(async () => {
@@ -874,7 +809,6 @@ describe("Blueprint", () => {
 					return {
 						worktreePath: realWorktreePath,
 						branch: "feat/bp-wt-test",
-						generation: "generation-1",
 					};
 				}),
 			} as unknown as WorktreeManager;
@@ -915,13 +849,7 @@ describe("Blueprint", () => {
 			);
 
 			try {
-				await blueprint.run(
-					makeNode(),
-					"/project",
-					makeContext({
-						workflowCapabilities: { allow_no_code_completion: true },
-					}),
-				);
+				await blueprint.run(makeNode(), "/project", makeContext());
 				// Order: removeIfExists → create → emitWorktreeReady → execute
 				const createIdx = order.indexOf("worktree.create");
 				const emitIdx = order.findIndex((s) =>
@@ -936,12 +864,6 @@ describe("Blueprint", () => {
 				expect(emitter.emitWorktreeReady).toHaveBeenCalledWith(
 					expect.objectContaining({ executionId: "test-exec-id" }),
 					realWorktreePath,
-					expect.objectContaining({
-						branch: "feat/bp-wt-test",
-						generation: "generation-1",
-						repoBaselineSetJson: expect.any(String),
-						repoBaselineSetDigest: expect.any(String),
-					}),
 				);
 			} finally {
 				rmSync(realWorktreePath, { recursive: true, force: true });
@@ -1085,35 +1007,6 @@ describe("Blueprint", () => {
 
 			expect(order).toEqual(["emitFailed-done", "run-done"]);
 			expect(emitter.emitFailed).toHaveBeenCalledTimes(1);
-		});
-
-		it("preserves an adapter launch rejection in the emitted failure", async () => {
-			const error = new Error(
-				"runner workflow capability missing or changed: FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
-			);
-			const emitter = makeStubEmitter();
-			const blueprint = new Blueprint(
-				makeHydrator(),
-				makeMockGitChecker(),
-				() => makeThrowingAdapter(error),
-				makeMockShell(),
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				emitter,
-			);
-
-			const result = await blueprint.run(makeNode(), "/project", makeContext());
-
-			expect(result).toMatchObject({ success: false, error: error.message });
-			expect(emitter.emitFailed).toHaveBeenCalledWith(
-				expect.any(Object),
-				error.message,
-				undefined,
-				undefined,
-			);
 		});
 
 		it("handles emitter exception defensively", async () => {

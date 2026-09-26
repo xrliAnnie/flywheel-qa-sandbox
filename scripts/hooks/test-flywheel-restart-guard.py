@@ -28,7 +28,6 @@ import os  # noqa: E402
 import stat  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
-import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "flywheel-restart-guard.py"
@@ -57,7 +56,7 @@ def load_hook_module():
 
 
 # ── End-to-end runner: feed stdin JSON, capture stdout/exit ──────────────────
-def run_hook(stdin_data, env_extra=None, env_remove=()) -> tuple[int, str]:
+def run_hook(stdin_data, env_extra=None) -> tuple[int, str]:
     env = dict(os.environ)
     # Default isolation: audit log to a throwaway temp file unless the test
     # overrides it; alert cmd to /usr/bin/false so an unexpected bypass path
@@ -67,8 +66,6 @@ def run_hook(stdin_data, env_extra=None, env_remove=()) -> tuple[int, str]:
     env.setdefault("FLYWHEEL_RESTART_GUARD_ALERT_CMD", "/usr/bin/false")
     if env_extra:
         env.update(env_extra)
-    for key in env_remove:
-        env.pop(key, None)
     if isinstance(stdin_data, (dict, list)):
         stdin_data = json.dumps(stdin_data)
     p = subprocess.run(
@@ -113,28 +110,6 @@ def deny_reason(stdout: str) -> str:
 # ── T1: must-block matrix (incident forms, research §4) ─────────────────────
 MUST_BLOCK = [
     # P1 — launchctl mutating subcommand + com.flywheel.
-    (
-        "launchctl submit -l com.flywheel.restart-bus-manual "
-        "-o /tmp/restart.out -e /tmp/restart.err -- /bin/bash "
-        "/Users/x/Dev/flywheel/scripts/restart-services.sh --force",
-        "P1 incident submit restart bus",
-    ),
-    (
-        "launchctl submit -l com.example.restart -- bash "
-        "/Users/x/Dev/flywheel/scripts/restart-services.sh --force",
-        "P1 submit label evasion still names restart-services",
-    ),
-    (
-        'bash -c "launchctl submit -l com.flywheel.restart-bus -- '
-        '/bin/bash /Users/x/Dev/flywheel/scripts/restart-services.sh"',
-        "P1 nested submit restart bus",
-    ),
-    (
-        "launchctl submit -l com.example.restart -- /bin/bash -c "
-        "'FLYWHEEL_RESTART_FOREGROUND=1 bash "
-        "/Users/x/Dev/flywheel/scripts/restart-services.sh'",
-        "P1 submit foreground env payload",
-    ),
     ("launchctl kickstart -k gui/501/com.flywheel.bridge", "P1 kickstart -k"),
     ("launchctl kickstart gui/$(id -u)/com.flywheel.lead.flywheel-flywheel-eng-lead",
      "P1 kickstart uid-var lead"),
@@ -152,51 +127,9 @@ MUST_BLOCK = [
     ("pgrep -f run-bridge | xargs kill -9", "P2 pgrep|xargs kill (FLY-176 form)"),
     ("pkill -f run-bridge", "P2 pkill run-bridge"),
     ("pkill -f claude-lead.sh", "P2 pkill claude-lead.sh (FLY-239 form)"),
-    ("pkill -f restart-services.sh", "P2 pkill restart-services in-flight wave"),
-    ("grep \"$(pkill -f restart-services.sh)\" /tmp/input",
-     "P2 command substitution inside grep is executable"),
-    ("rg --pre 'pkill -f restart-services.sh' pattern /tmp/input",
-     "P2 rg preprocessor is executable"),
-    (
-        "rg --hostname-bin 'pkill -f run-bridge' pattern /tmp/input",
-        "P2 rg hostname program is executable",
-    ),
-    (
-        "rg --hostname-bin='pkill -f run-bridge' "
-        "--hyperlink-format 'x://{host}' pattern /tmp/input",
-        "P2 rg hostname program equals form is executable",
-    ),
-    ("grep harmless /tmp/input; pkill -f restart-services.sh",
-     "P2 adjacent mutation is not hidden by read segment"),
-    (
-        "ps aux | grep run-bridge | awk '{print $2}' | xargs kill -9",
-        "P2 grep pipeline preserves run-bridge identifier",
-    ),
-    (
-        "ps aux | grep -v grep | grep run-bridge | awk '{print $2}' | xargs kill",
-        "P2 chained grep pipeline preserves run-bridge identifier",
-    ),
-    (
-        "ps aux | grep claude-lead.sh | grep -v grep | awk '{print $2}' "
-        "| xargs kill -9",
-        "P2 grep pipeline preserves claude-lead identifier",
-    ),
-    (
-        "ps -ef | grep com.flywheel | awk '{print $2}' | xargs kill",
-        "P2 grep pipeline preserves launchd label identifier",
-    ),
-    (
-        "rg run-bridge /tmp/pslist | awk '{print $2}' | xargs kill -9",
-        "P2 rg pipeline preserves run-bridge identifier",
-    ),
     ("pkill -f flywheel-bridge-wrapper", "P2 pkill bridge wrapper"),
     ("killall node && npx tsx scripts/run-bridge.ts", "P2 killall + relaunch"),
     ("kill 1234 && nohup npx tsx scripts/run-bridge.ts &", "P2 kill+relaunch"),
-    (
-        "grep -l com.flywheel.bridge ~/Library/LaunchAgents/*.plist "
-        "| xargs launchctl unload",
-        "P1 grep pipeline preserves launchd label identifier",
-    ),
     # P3 — bare-handed bridge launch via executor first token
     ("nohup npx tsx scripts/run-bridge.ts &", "P3 nohup npx tsx"),
     ("node scripts/run-bridge.ts", "P3 node direct"),
@@ -262,16 +195,6 @@ MUST_BLOCK = [
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
     ('zsh -lc "node scripts/run-bridge.ts"', "P3 zsh -lc merged flag cluster"),
     ('bash -lec "npx tsx scripts/run-bridge.ts"', "P3 bash -lec cluster"),
-    # P4 — persistent scheduler payload that can repeatedly start a restart.
-    (
-        "echo '* * * * * bash /Users/x/Dev/flywheel/scripts/restart-services.sh --force' "
-        "| crontab -",
-        "P4 crontab restart-services payload",
-    ),
-    (
-        "crontab -l; echo '* * * * * bash scripts/restart-services.sh' | crontab -",
-        "P4 list followed by crontab write",
-    ),
     # pseudo-bypass forms must stay on the deny path (Codex R1 #4)
     ("echo FLYWHEEL_RESTART_GUARD_BYPASS=x; launchctl kickstart -k gui/501/com.flywheel.bridge",
      "pseudo-bypass echo prefix"),
@@ -283,36 +206,22 @@ MUST_BLOCK = [
 
 # ── T2: must-pass matrix (legit flow + reads + unrelated ops) ────────────────
 MUST_PASS = [
-    ("bash scripts/request-restart.sh", "default updater-backed restart request"),
     ("bash scripts/restart-services.sh", "legit restart-services relative"),
     ("bash ~/Dev/flywheel/scripts/restart-services.sh --force", "legit --force"),
     ("bash /Users/x/.flywheel/bin/restart-services.sh --dry-run", "legit deployed copy --dry-run"),
     ("RESTART_MAX_WAIT=60 bash scripts/restart-services.sh", "legit env-prefixed"),
     # FLY-1142: the sanctioned env-reload path must never be guard-blocked —
     # it IS the alternative the deny message points operators to.
-    ("bash scripts/restart-services.sh --reason env-change",
-     "legit unified env-change restart (FLY-1434)"),
-    ("bash ~/Dev/flywheel/scripts/restart-services.sh --reason manual --dry-run",
-     "legit unified dry-run (FLY-1434)"),
-    ("bash ~/Dev/flywheel/scripts/restart-services.sh --reason deploy --force",
-     "legit unified forced restart (FLY-1434)"),
+    ("bash scripts/restart-services.sh --bridge-only", "legit --bridge-only (FLY-1142)"),
+    ("bash ~/Dev/flywheel/scripts/restart-services.sh --bridge-only --dry-run",
+     "legit --bridge-only --dry-run (FLY-1142)"),
+    ("bash ~/Dev/flywheel/scripts/restart-services.sh --bridge-only --force",
+     "legit --bridge-only --force (FLY-1142)"),
     ("bash scripts/update-flywheel.sh", "legit updater"),
     ("launchctl print gui/501/com.flywheel.bridge", "read-only launchctl print"),
     ("launchctl list | grep flywheel", "read-only launchctl list"),
-    ("launchctl submit -l com.test.envprobe -- /usr/bin/env", "unrelated submit probe"),
-    ("launchctl remove com.test.envprobe", "unrelated launchctl remove"),
-    ("crontab -l", "read-only crontab list"),
-    ("crontab -l | grep restart-services", "read-only crontab output inspection"),
     ("pgrep -f run-bridge", "bare pgrep no kill"),
     ("grep -n launchctl scripts/restart-services.sh", "grep launchctl no label"),
-    ("grep -n kill scripts/restart-services.sh", "grep kill in restart source"),
-    ("rg -n 'kill' scripts/restart-services.sh", "rg kill in restart source"),
-    ("grep -En 'kill|restart-services' scripts/restart-services.sh",
-     "grep alternation in restart source"),
-    ("rg 'kill|restart-services' scripts/restart-services.sh",
-     "rg alternation in restart source"),
-    ("grep -n 'launchctl bootout' scripts/restart-services.sh",
-     "grep launchctl mutator in restart source"),
     ("sed -n '1,50p' scripts/run-bridge.ts", "sed read of run-bridge source"),
     ('rg "nohup npx tsx scripts/run-bridge.ts" scripts/restart-services.sh',
      "rg needle containing executor+run-bridge (read tool first token)"),
@@ -323,8 +232,6 @@ MUST_PASS = [
     ("tmux kill-session -t qa-slot-2", "QA slot tmux kill-session"),
     ("node scripts/qa-fly-529-alert-smoke.mjs", "executor without run-bridge"),
     ("git log --oneline -- scripts/run-bridge.ts", "git read of run-bridge path"),
-    ("git log --oneline -- scripts/restart-services.sh", "git read of restart-services path"),
-    ("bash scripts/test-restart-services.sh", "restart harness invocation"),
     ("sudo cat scripts/run-bridge.ts", "sudo-wrapped read tool"),
     ("env | grep run-bridge", "bare env piped to grep"),
     ("env node scripts/qa-tool.mjs", "env-wrapped executor without run-bridge"),
@@ -386,12 +293,8 @@ def t3_deny_schema():
         else:
             bad("T3 schema", json.dumps(hso)[:200])
         reason = hso.get("permissionDecisionReason", "")
-        if (
-            "request-restart.sh" in reason
-            and "founder 紧急票" in reason
-            and "self-ship" not in reason
-        ):
-            ok("T3 reason names the sole founder emergency ticket path")
+        if "restart-services.sh" in reason:
+            ok("T3 reason points at restart-services.sh")
         else:
             bad("T3 reason", f"missing correct-command pointer: {reason[:200]}")
         if "FLYWHEEL_RESTART_GUARD_BYPASS" not in reason:
@@ -597,32 +500,6 @@ def t7_unit():
     else:
         bad("T7", f"identical signatures: {s1}")
 
-    captured = []
-
-    class Result:
-        stdout = "sent\n"
-
-    original_run = mod.subprocess.run
-    original_environ = dict(mod.os.environ)
-    try:
-        mod.os.environ.pop("FLYWHEEL_LEAD_ID", None)
-        mod.os.environ["FLYWHEEL_RESTART_GUARD_ALERT_CMD"] = "/tmp/fake-alert"
-        mod.subprocess.run = lambda argv, **_kwargs: (captured.append(argv) or Result())
-        if mod.fire_bypass_alert("test", "restart-services"):
-            argv = captured[0]
-            body = argv[argv.index("--body") + 1]
-            lead = argv[argv.index("--lead") + 1]
-            if lead == "system" and "lead_unknown=true" in body:
-                ok("T7 missing Lead identity stays system-attributed")
-            else:
-                bad("T7 missing Lead identity", f"lead={lead} body={body}")
-        else:
-            bad("T7 missing Lead identity", "alert unexpectedly failed")
-    finally:
-        mod.subprocess.run = original_run
-        mod.os.environ.clear()
-        mod.os.environ.update(original_environ)
-
 
 # ── T8: integration — hook default path drives the REAL lead-alert.sh ────────
 def t8_real_lead_alert_integration():
@@ -645,293 +522,46 @@ def t8_real_lead_alert_integration():
             bindir = os.path.join(tmp, "bin")
             os.makedirs(bindir)
             Path(bindir, "curl").write_text(
-                "#!/bin/bash\n"
-                "[[ -z \"${SYSTEM_ALERT_MUST_NOT_LEAK:-}\" ]] || exit 7\n"
-                "[[ -z \"${SYSTEM_ALERT_TOKEN:-}\" ]] || exit 8\n"
-                "printf '%s' \"${CURL_HTTP_CODE:-200}\"\n"
-                "exit 0\n"
+                "#!/bin/bash\nprintf '%s' \"${CURL_HTTP_CODE:-200}\"\nexit 0\n"
             )
             os.chmod(os.path.join(bindir, "curl"), 0o755)
             Path(bindir, "osascript").write_text("#!/bin/bash\nexit 0\n")
             os.chmod(os.path.join(bindir, "osascript"), 0o755)
-            home = Path(tmp, "home")
-            state = home / ".flywheel"
-            state.mkdir(parents=True)
-            production_claims = Path(tmp, "production-claims.db")
-            (state / ".env").write_text(
-                "FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=444444444444444444\n"
-                "FLYWHEEL_ALERT_SENDER_TOKEN_ENV=SYSTEM_ALERT_TOKEN\n"
-                "SYSTEM_ALERT_TOKEN=CANARY-TOKEN\n"
-                "SYSTEM_ALERT_MUST_NOT_LEAK=latent-secret\n"
-                f"FLYWHEEL_CLAIMS_DB={production_claims}\n"
-            )
+            projects = os.path.join(tmp, "projects.json")
+            Path(projects).write_text(json.dumps([{
+                "projectName": "flywheel",
+                "leads": [{
+                    "agentId": "flywheel-eng-lead",
+                    "alertChannel": "444444444444444444",
+                    "alertBotTokenEnv": "FLY913_ALERT_TOKEN",
+                }],
+            }]))
             env = {
-                "HOME": str(home),
                 "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                 "CURL_HTTP_CODE": http_code,
                 "FLYWHEEL_ROOT": str(repo_root),
                 "FLYWHEEL_RESTART_GUARD_ALERT_CMD": "",  # force default path
                 "FLYWHEEL_RESTART_GUARD_LOG": os.path.join(tmp, "guard.log"),
-                "FLYWHEEL_PROJECTS_FILE": os.path.join(tmp, "missing-projects.json"),
+                "FLYWHEEL_PROJECTS_FILE": projects,
                 "FLYWHEEL_CLAIMS_DB": os.path.join(tmp, "claims.db"),
                 "FLYWHEEL_ALERT_QUEUE_DIR": os.path.join(tmp, "queue"),
                 "FLYWHEEL_ALERT_DEADLETTER_DIR": os.path.join(tmp, "deadletter"),
                 "FLYWHEEL_STATE_DIR": os.path.join(tmp, "state"),
+                "FLY913_ALERT_TOKEN": "CANARY-TOKEN",
             }
             # empty ALERT_CMD env must mean "unset" for the hook
             full_env = {k: v for k, v in {**os.environ, **env}.items() if v != ""}
             full_env.pop("FLYWHEEL_RESTART_GUARD_ALERT_CMD", None)
-            for name in (
-                "FLYWHEEL_LEAD_ID",
-                "PROJECT_NAME",
-                "FLYWHEEL_PROJECT_NAME",
-                "FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID",
-                "FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
-                "SYSTEM_ALERT_TOKEN",
-            ):
-                full_env.pop(name, None)
             p = subprocess.run(
                 [sys.executable, str(HOOK)],
                 input=json.dumps(bash_event(BYPASS_CMD)),
                 capture_output=True, text=True, env=full_env, timeout=60,
             )
             d = decision_of(p.stdout)
-            caller_claims = Path(env["FLYWHEEL_CLAIMS_DB"])
-            isolated = caller_claims.is_file() and not production_claims.exists()
-            if p.returncode == 0 and d == expected and isolated:
+            if p.returncode == 0 and d == expected:
                 ok(f"T8 real lead-alert HTTP {http_code} → {expected}")
             else:
-                bad(
-                    f"T8 HTTP {http_code}",
-                    f"exit={p.returncode} decision={d} isolated={isolated} stderr={p.stderr[-200:]}",
-                )
-
-
-def t9_log_rotation():
-    print("T9: restart-guard audit rotation")
-    mod = load_hook_module()
-    with tempfile.TemporaryDirectory() as tmp:
-        log = Path(tmp) / "restart-guard.log"
-        log.write_text("old-evidence\n")
-        prior = os.environ.get("FLYWHEEL_RESTART_GUARD_LOG")
-        os.environ["FLYWHEEL_RESTART_GUARD_LOG"] = str(log)
-        old_max = mod.LOG_MAX_BYTES
-        try:
-            mod.LOG_MAX_BYTES = 8
-            wrote = mod.audit_write({"event": "new-evidence"})
-        finally:
-            mod.LOG_MAX_BYTES = old_max
-            if prior is None:
-                os.environ.pop("FLYWHEEL_RESTART_GUARD_LOG", None)
-            else:
-                os.environ["FLYWHEEL_RESTART_GUARD_LOG"] = prior
-        archive = log.with_name("restart-guard.log.1")
-        if wrote and archive.read_text() == "old-evidence\n" \
-                and "new-evidence" in log.read_text():
-            ok("T9 audit rotates by rename before append")
-        else:
-            active = log.read_text() if log.exists() else "missing"
-            bad("T9 audit rotation", f"wrote={wrote} active={active}")
-
-        log.write_text("stale-lock-evidence\n")
-        lock = log.with_name("restart-guard.log.rotate.lock")
-        lock.mkdir()
-        old_lock_time = time.time() - 10 * 60
-        os.utime(lock, (old_lock_time, old_lock_time))
-        prior = os.environ.get("FLYWHEEL_RESTART_GUARD_LOG")
-        os.environ["FLYWHEEL_RESTART_GUARD_LOG"] = str(log)
-        old_max = mod.LOG_MAX_BYTES
-        try:
-            mod.LOG_MAX_BYTES = 8
-            recovered = mod.audit_write({"event": "after-stale-lock"})
-        finally:
-            mod.LOG_MAX_BYTES = old_max
-            if prior is None:
-                os.environ.pop("FLYWHEEL_RESTART_GUARD_LOG", None)
-            else:
-                os.environ["FLYWHEEL_RESTART_GUARD_LOG"] = prior
-        if recovered and archive.read_text() == "stale-lock-evidence\n" \
-                and "after-stale-lock" in log.read_text() and not lock.exists():
-            ok("T9 stale crash-residue lock is recovered before append")
-        else:
-            active = log.read_text() if log.exists() else "missing"
-            bad("T9 stale lock recovery", f"recovered={recovered} active={active}")
-
-
-# ── T10: FLY-1944 host-toolchain brew guard ──────────────────────────────────
-BREW_MUTATIONS = [
-    ("brew install tmux", "install"),
-    ("brew --debug install tmux", "global flag before mutation"),
-    ("/opt/homebrew/bin/brew reinstall tmux", "absolute-path reinstall"),
-    ("sudo -E /usr/local/bin/brew upgrade tmux", "wrapped absolute-path upgrade"),
-    ("env FOO=1 brew install tmux", "env wrapper"),
-    ("nohup brew install tmux", "nohup wrapper"),
-    ("command brew install tmux", "command wrapper"),
-    ("exec brew install tmux", "exec wrapper"),
-    ("time -p brew install tmux", "time wrapper"),
-    ("nice -n 5 brew install tmux", "nice wrapper with value flag"),
-    ("arch -x86_64 /usr/local/bin/brew install tmux", "arch wrapper"),
-    ("caffeinate brew install tmux", "caffeinate wrapper"),
-    ("timeout 60 brew install tmux", "timeout wrapper with duration"),
-    ("stdbuf -o0 brew install tmux", "stdbuf wrapper"),
-    ("setsid brew install tmux", "setsid wrapper"),
-    ("ionice -c 3 brew install tmux", "ionice wrapper with value flag"),
-    ("chrt -o 0 brew install tmux", "chrt wrapper with priority"),
-    ("corepack brew install tmux", "corepack wrapper"),
-    ("bash -lc 'brew unlink tmux'", "shell payload unlink"),
-    ("brew list && brew link tmux", "read then mutation"),
-    ("brew bundle", "bundle is fail-closed"),
-    ("brew services restart postgresql", "services is fail-closed"),
-    ("brew analytics on", "analytics on"),
-    ("brew analytics off", "analytics off"),
-    ("brew analytics regenerate-uuid", "analytics regenerate-uuid"),
-    ("brew gist-logs tmux", "gist-logs creates an external Gist"),
-    ("brew future-read-command tmux", "unknown future subcommand"),
-    (
-        "env --split-string='brew install tmux'",
-        "env split-string payload is scanned fail-closed",
-    ),
-    (
-        "env -S FOO=1 brew install tmux",
-        "env split-string assignment preserves and scans remaining command",
-    ),
-    (
-        "nice -n 5 env -S 'brew install tmux'",
-        "stacked value wrapper preserves env split-string payload",
-    ),
-    (
-        "timeout 60 env -S FOO=1 brew upgrade tmux",
-        "stacked positional wrapper preserves env split-string command tail",
-    ),
-    (
-        "env FLYWHEEL_EXEC_ID= brew install tmux",
-        "command-local empty EXEC_ID cannot impersonate a Lead",
-    ),
-]
-
-BREW_READS = [
-    ("brew list", "list"),
-    ("brew ls --versions tmux", "ls"),
-    ("brew info tmux", "info"),
-    ("brew deps tmux", "deps"),
-    ("brew outdated", "outdated"),
-    ("brew doctor", "doctor"),
-    ("brew config", "config"),
-    ("brew search tmux", "search"),
-    ("brew analytics state", "analytics state"),
-    ("brew --version", "option-only version"),
-    ("brew -v", "option-only short version"),
-    ("brew --prefix", "option-only prefix"),
-    ("brew --prefix tmux", "option-only prefix formula"),
-    ("/opt/homebrew/bin/brew --cellar tmux", "absolute-path cellar formula"),
-    ("brew --caskroom", "option-only caskroom"),
-    ("brew --repository", "option-only repository"),
-]
-
-
-def t10_brew_guard():
-    print("T10: FLY-1944 runner brew allowlist + Lead audit")
-    runner_env = {"FLYWHEEL_EXEC_ID": "fly-1944-test-exec"}
-    for cmd, name in BREW_MUTATIONS:
-        code, out = run_hook(bash_event(cmd), env_extra=runner_env)
-        if code == 0 and decision_of(out) == "deny" and "brew" in deny_reason(out):
-            ok(f"T10 runner mutation denied: {name}")
-        else:
-            bad(
-                f"T10 runner mutation: {name}",
-                f"exit={code} decision={decision_of(out)} reason={deny_reason(out)[:100]}",
-            )
-
-    for cmd, name in BREW_READS:
-        code, out = run_hook(bash_event(cmd), env_extra=runner_env)
-        if code == 0 and decision_of(out) == "allow":
-            ok(f"T10 runner read allowed: {name}")
-        else:
-            bad(f"T10 runner read: {name}", f"exit={code} decision={decision_of(out)}")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        log = Path(tmp) / "guard.log"
-        code, out = run_hook(
-            bash_event("brew install tmux"),
-            env_extra={"FLYWHEEL_RESTART_GUARD_LOG": str(log)},
-            env_remove=("FLYWHEEL_EXEC_ID",),
-        )
-        records = (
-            [json.loads(line) for line in log.read_text().splitlines()]
-            if log.exists()
-            else []
-        )
-        lead_allows = [
-            rec for rec in records
-            if rec.get("pattern") == "P5" and rec.get("decision") == "allow"
-        ]
-        if code == 0 and decision_of(out) == "allow" and len(lead_allows) == 1:
-            ok("T10 Lead/founder context allows mutation and writes one audit record")
-        else:
-            bad(
-                "T10 Lead/founder allow audit",
-                f"exit={code} decision={decision_of(out)} records={records}",
-            )
-
-    for cmd, expected_pattern, name in (
-        (
-            "brew install tmux && pnpm tsx scripts/run-bridge.ts",
-            "P3",
-            "Lead brew prefix cannot mask direct Bridge relaunch",
-        ),
-        (
-            'brew upgrade tmux; echo "* * * * * ~/Dev/flywheel/scripts/restart-services.sh" | crontab -',
-            "P4",
-            "Lead brew prefix cannot mask restart crontab write",
-        ),
-    ):
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "guard.log"
-            code, out = run_hook(
-                bash_event(cmd),
-                env_extra={"FLYWHEEL_RESTART_GUARD_LOG": str(log)},
-                env_remove=("FLYWHEEL_EXEC_ID",),
-            )
-            records = (
-                [json.loads(line) for line in log.read_text().splitlines()]
-                if log.exists()
-                else []
-            )
-            denied = [rec for rec in records if rec.get("decision") == "deny"]
-            if (
-                code == 0
-                and decision_of(out) == "deny"
-                and len(denied) == 1
-                and denied[0].get("pattern") == expected_pattern
-            ):
-                ok(f"T10 {name}")
-            else:
-                bad(
-                    f"T10 {name}",
-                    f"exit={code} decision={decision_of(out)} records={records}",
-                )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        args_file = os.path.join(tmp, "args.txt")
-        fake = make_fake_alert(tmp, "sent", args_file)
-        log = os.path.join(tmp, "guard.log")
-        cmd = (
-            'FLYWHEEL_RESTART_GUARD_BYPASS="founder-approved tmux cutover" '
-            "brew install tmux"
-        )
-        code, out = run_hook(
-            bash_event(cmd),
-            env_extra={
-                **runner_env,
-                "FLYWHEEL_RESTART_GUARD_LOG": log,
-                "FLYWHEEL_RESTART_GUARD_ALERT_CMD": fake,
-            },
-        )
-        alert_args = Path(args_file).read_text() if Path(args_file).exists() else ""
-        if code == 0 and decision_of(out) == "allow" and "--strict-delivery" in alert_args:
-            ok("T10 runner bypass reuses audit + strict-alert preconditions")
-        else:
-            bad("T10 runner bypass", f"exit={code} decision={decision_of(out)}")
+                bad(f"T8 HTTP {http_code}", f"exit={p.returncode} decision={d} stderr={p.stderr[-200:]}")
 
 
 def main() -> int:
@@ -948,8 +578,6 @@ def main() -> int:
     t6_robustness()
     t7_unit()
     t8_real_lead_alert_integration()
-    t9_log_rotation()
-    t10_brew_guard()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

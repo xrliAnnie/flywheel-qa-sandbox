@@ -13,7 +13,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { appendRotatedLogSync } from "flywheel-config";
 import type { AuditLog, SessionStats, TerminalReason } from "./types.js";
 
 const DIGEST_CHARS = 200;
@@ -49,8 +48,6 @@ export interface JsonlAuditLogOptions {
 	sessionId: string;
 	fsLike?: AuditFsLike;
 	now?: () => string;
-	/** Test/custom-fs seam for the cross-session rotated index only. */
-	appendIndex?: (path: string, data: string) => void;
 }
 
 export class JsonlAuditLog implements AuditLog {
@@ -59,7 +56,6 @@ export class JsonlAuditLog implements AuditLog {
 	private readonly fsLike: AuditFsLike;
 	private readonly now: () => string;
 	private readonly sessionFile: string;
-	private readonly appendIndex: (path: string, data: string) => void;
 
 	constructor(opts: JsonlAuditLogOptions) {
 		this.dir = opts.dir;
@@ -67,11 +63,6 @@ export class JsonlAuditLog implements AuditLog {
 		this.fsLike = opts.fsLike ?? realFs;
 		this.now = opts.now ?? (() => new Date().toISOString());
 		this.sessionFile = path.join(this.dir, `session-${this.sessionId}.jsonl`);
-		this.appendIndex =
-			opts.appendIndex ??
-			(opts.fsLike
-				? (file, data) => this.fsLike.appendFileSync(file, data)
-				: (file, data) => appendRotatedLogSync(file, data));
 		this.fsLike.mkdirSync(this.dir, { recursive: true });
 	}
 
@@ -160,7 +151,7 @@ export class JsonlAuditLog implements AuditLog {
 
 	terminal(reason: TerminalReason, stats: SessionStats): void {
 		this.line({ type: "terminal", reason, stats });
-		this.appendIndex(
+		this.fsLike.appendFileSync(
 			path.join(this.dir, "sessions.jsonl"),
 			`${JSON.stringify({ ts: this.now(), sessionId: this.sessionId, type: "terminal", reason, stats })}\n`,
 		);

@@ -123,25 +123,19 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	// session through the FSM instead of a forceStatus bypass.
 	pending: ["running", "terminated"],
 	running: [
-		"ship_parked",
 		"awaiting_review",
 		"completed",
 		"blocked",
 		"failed",
 		"terminated",
-		// FLY-793: a DAG workflow Design phase-session completes into design_done
-		// (non-terminal); the workflow engine hands off to the Implement phase.
+		// FLY-793: a three-stage Design phase-session completes into design_done
+		// (non-terminal); the PhaseOrchestrator hands off to the Implement phase.
 		"design_done",
 	],
-	// FLY-1441: a ship-capable DAG actor has completed its node but the graph
-	// has not reached the terminal Gate yet. This is live/parked, not review.
-	ship_parked: ["running", "awaiting_review", "completed", "terminated"],
 	// FLY-793: Design phase done (docs on the shared branch). Non-terminal — the
-	// workflow engine captures the head + starts Implement, then this session is
+	// PhaseOrchestrator captures the head + starts Implement, then this session is
 	// finalized (completed) or fails out (blocked/failed/terminated).
-	// FLY-1374: a durable rework wake reuses the parked Design holder. The
-	// activation write path is the only caller of this return edge.
-	design_done: ["running", "completed", "blocked", "failed", "terminated"],
+	design_done: ["completed", "blocked", "failed", "terminated"],
 	// FLY-44: terminate allowed from all started non-terminal states.
 	// FLY-60 W2 (b): `completed` added to support post-merge re-finalization
 	// from the `stage_changed=completed + landing_status.status="merged"`
@@ -150,7 +144,6 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	// this FSM map only declares the transition is legal. Defense-in-depth FSM
 	// guard via ctx.payload is a follow-up if needed (per plan §12.3).
 	awaiting_review: [
-		"ship_parked",
 		"approved_to_ship",
 		"completed",
 		"rejected",
@@ -189,17 +182,6 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	shelved: [],
 	terminated: [],
 };
-
-/**
- * FLY-1427: a persisted status is overwrite-immune exactly when the canonical
- * workflow transition map gives it no outgoing edges. Unknown or absent
- * statuses fail open because their terminal semantics cannot be proven.
- */
-export function isNoOutEdgeTerminalStatus(status: string | undefined): boolean {
-	return (
-		status !== undefined && (WORKFLOW_TRANSITIONS[status]?.length ?? -1) === 0
-	);
-}
 
 // ── Action definitions (single source of truth) ─────────────────────
 
@@ -253,7 +235,6 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 			// never-started session without a forceStatus bypass.
 			"pending",
 			"running",
-			"ship_parked",
 			"awaiting_review",
 			"approved_to_ship",
 			"design_done",

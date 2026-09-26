@@ -49,7 +49,7 @@ export function writeContentRef(
  * Validate that a content_ref path is within a refs/ directory.
  * Defense-in-depth: prevent reading/deleting arbitrary files if DB is tampered.
  */
-export function isValidRefPath(filePath: string): boolean {
+function isValidRefPath(filePath: string): boolean {
 	const resolved = resolve(filePath);
 	return basename(dirname(resolved)) === "refs" && resolved.endsWith(".txt");
 }

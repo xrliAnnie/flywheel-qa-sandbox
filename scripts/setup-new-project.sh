@@ -196,9 +196,11 @@ decision_layer:
 
 checkpoints:
   brainstorm:
+    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-close
   question:
+    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-open
 
@@ -213,6 +215,7 @@ default_agent: ${DEPT}
 
 # FLY-205: department-first doc-flow baseline.
 doc_flow:
+  enabled: true
   default_department: ${DEPT}
 CONFIG_EOF
 
@@ -331,7 +334,7 @@ name: ${DEPT_LEAD_ID}
 description: ${PROJECT} ${DEPT} Lead (${DEPT_PERSONA}) — manages ${DEPT} Runners end-to-end, communicates with the founder via Discord.
 model: opus
 memory: user
-disallowedTools: Agent
+disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
 permissionMode: bypassPermissions
 ---
 
@@ -372,7 +375,7 @@ name: ${COS_LEAD_ID}
 description: ${PROJECT} Chief of Staff (${COS_PERSONA}) — triage, routing, founder roll-up. Does NOT spawn Runners or touch deliverables.
 model: opus
 memory: user
-disallowedTools: Agent
+disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
 permissionMode: bypassPermissions
 ---
 
@@ -388,11 +391,9 @@ manage Runners and do NOT produce deliverables — you route work to the dept Le
 - #leads-roundtable: cross-dept, mention-gated only
 
 ## Role
-- \`canSpawnRunners: false\`. The launch environment MUST set
-  \`FLYWHEEL_LEAD_ROLE=cos\` or the CoS base rules (cos-lead-rules.md) will NOT
-  load and you'd be treated as a dept Lead. On carrier v2, persist this through
-  the fleet transaction's manifest \`launchEnvironment\`; never hand-edit only
-  the plist.
+- \`canSpawnRunners: false\`. The launchd plist MUST set \`FLYWHEEL_LEAD_ROLE=cos\`
+  or the CoS base rules (cos-lead-rules.md) will NOT load and you'd be treated as
+  a dept Lead.
 - **Triage → present to the founder → wait for explicit confirmation → apply the
   dept routing label → route to the dept Lead** via \`/api/chat-threads/send\`
   (issue thread, not a top-level Discord post). Label-before-route is your job
@@ -438,18 +439,13 @@ Order matters (FLY-270: projects.json-first → manifest → install plist):
     fill the bot id / channel ids into the .lead/*/identity.md TODOs.
  5. Edit live ~/.flywheel/projects.json — add the ${PROJECT} entry, including
     memoryAllowedUsers (memory validation is fail-closed).
- 6. Run materialize-lead-manifests.sh to generate the canonical Lead manifests.
- 7. Install/reload each Lead with flywheel-daemon.sh install <lead>; this is
-    the v2-only path. Never hand-edit the plist. For a clean first install use
-    the literal CoS agent id cos-lead (--cos-id cos-lead). A custom CoS id MUST
-    already have FLYWHEEL_LEAD_ROLE=cos in the reviewed manifest control plane;
-    flywheel-fleet.sh apply cannot seed it before the first carrier exists.
-    Verify the manifest launchEnvironment when used, plus launchctl print output.
+ 6. Run claude-lead.sh once per Lead to generate + validate the manifest,
+    then stop that manual process.
+ 7. Install/reload the launchd plist per Lead. The CoS plist MUST set
+    FLYWHEEL_LEAD_ROLE=cos (verify: launchctl print … | grep FLYWHEEL_LEAD_ROLE).
  8. Restart the Bridge (batch with any in-flight Bridge PRs).
- 9. Enable doc-flow through the scoped SQLite flag store (hot-effective):
-    flywheel-comm feature-flags set --name doc_flow --to on --project ${PROJECT} --reason "enable doc-flow during project onboarding"
-10. Verify: bots online + reply in their channels + a real founder chat.
-11. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into
+ 9. Verify: bots online + reply in their channels + a real founder chat.
+10. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into
     ${PROJECT}'s deploy point (or CI post-deploy) — call it with
     --issue FLY-N | --pr N --merge-sha <sha> at each production deploy. That records
     a deployment_events row so the daily fleet-wide digest covers ${PROJECT}.

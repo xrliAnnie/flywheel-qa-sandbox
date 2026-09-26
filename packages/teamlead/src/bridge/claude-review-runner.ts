@@ -14,31 +14,17 @@
  * or the sanctioned codex-skip governance path. A missing reviewer must never
  * silently become a same-family pass.
  *
- * Process hygiene: detached process group so
+ * Process hygiene (watchdog-judge precedent): detached process group so
  * timeout/shutdown kills the WHOLE tree; stdin closed immediately (a `-p`
  * child left with an open stdin pipe can hang forever); stdout bounded.
  * Live children are registered so Bridge shutdown can kill them all.
  */
 
 import { spawn } from "node:child_process";
-import {
-	buildNonLeadClaudeSettings,
-	getModelConfigSnapshot,
-	type RoleEffort,
-	resolveAllowedCanonicalModel,
-	resolveAllowedEffort,
-} from "flywheel-config";
-
-const washReviewEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-	Object.fromEntries(
-		Object.entries(env).filter(
-			([key]) => !/TOKEN|SECRET|PASSWORD|(?:^|_)KEY(?:_|$)|API_KEY/i.test(key),
-		),
-	);
+import type { RoleEffort } from "flywheel-config";
+import { washJudgeEnv } from "./watchdog-judge.js";
 
 export interface ClaudeReviewFinding {
-	id?: string;
-	disputesRuling?: string;
 	severity?: string;
 	file?: string;
 	line?: number;
@@ -92,6 +78,7 @@ export interface ClaudeReviewInvocation {
 	binary?: string;
 }
 
+const DEFAULT_MODEL = "claude-opus-4-8";
 /**
  * FLY-1224 (Annie's directive): the cross-family Claude reviewer runs at
  * xhigh effort — matching the codex author's own effort so the review is not
@@ -118,26 +105,6 @@ export function buildClaudeReviewArgv(
 		effort?: RoleEffort;
 	},
 ): string[] {
-	const snapshot = getModelConfigSnapshot();
-	const canonicalModel = resolveAllowedCanonicalModel(
-		inv.model ?? snapshot.bindings.opus,
-		{
-			surface: "runner",
-			runtimeVendor: "claude",
-			snapshot,
-		},
-	);
-	// FLY-1224: reviewer effort (FLY-671 claude CLI flag), default xhigh.
-	// FLY-1650 (Codex R2): this is a third launch path that appends --effort
-	// independently of the model, and the model can be Opus 4.6 — either named
-	// directly (it carries the runner surface) or inherited from a rebound
-	// `bindings.opus`. Opus 4.6 has no `xhigh`, so the default alone would send
-	// a flag the API rejects. Same narrowing seam as the tmux and Lead paths.
-	const effort = resolveAllowedEffort(
-		canonicalModel,
-		inv.effort ?? DEFAULT_REVIEW_EFFORT,
-		{ surface: "runner", snapshot },
-	);
 	return [
 		"-p",
 		inv.prompt,
@@ -146,10 +113,10 @@ export function buildClaudeReviewArgv(
 		"--output-format",
 		"json",
 		"--model",
-		canonicalModel,
-		...(effort ? (["--effort", effort] as const) : []),
-		"--settings",
-		JSON.stringify(buildNonLeadClaudeSettings()),
+		inv.model ?? DEFAULT_MODEL,
+		// FLY-1224: reviewer effort (FLY-671 claude CLI flag), default xhigh.
+		"--effort",
+		inv.effort ?? DEFAULT_REVIEW_EFFORT,
 	];
 }
 
@@ -449,11 +416,11 @@ export async function runClaudeReviewRound(
 		// Codex full-PR review HIGH-5: the reviewer is a model-driven claude
 		// subprocess that actively explores the author's worktree — it must NOT
 		// inherit the Bridge's third-party creds (Discord/Linear/DB/API keys).
-		// Wash them out. Claude auth is CLAUDE_CONFIG_DIR
+		// Wash them out (washJudgeEnv precedent). Claude auth is CLAUDE_CONFIG_DIR
 		// (kept — not secret-shaped); the worktree's git credential helper covers
 		// git; the diff is local (git diff in-worktree). The coordinator collects
 		// the reviewer's stdout, so it needs no FLYWHEEL_ posting token.
-		env: washReviewEnv(inv.env ?? process.env),
+		env: washJudgeEnv(inv.env ?? process.env),
 		timeoutMs: inv.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 		maxStdoutBytes: inv.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES,
 	});

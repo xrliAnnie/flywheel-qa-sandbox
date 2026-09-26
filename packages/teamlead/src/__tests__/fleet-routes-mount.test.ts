@@ -1,31 +1,10 @@
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveAllFlags } from "flywheel-config";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runFeatureFlags } from "../../../flywheel-comm/src/commands/feature-flags.js";
-import {
-	type FlagStoreRuntime,
-	initializeFlagStore,
-	storeWorkflowTurnDivergenceAlertsEnabled,
-} from "../bridge/flag-store-runtime.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
-import { ManagementChangeCoordinator } from "../bridge/management-change-coordinator.js";
-import { buildTargetId } from "../bridge/management-console-contract.js";
-import { buildTopologyView } from "../bridge/management-topology-source.js";
-import {
-	type ManagementWriter,
-	ManagementWriterRegistry,
-	preparedChange,
-} from "../bridge/management-writer.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -69,12 +48,6 @@ const PROJECTS_JSON = JSON.stringify([
 	},
 ]);
 
-const MANAGEMENT_TARGET = buildTargetId("runner", [
-	"geo",
-	"default",
-	"dispatch",
-]);
-
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	return {
 		host: "127.0.0.1",
@@ -97,7 +70,6 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 	let baseUrl: string;
 	let dir: string;
 	let console_: FleetConsole;
-	let flagStore: FlagStoreRuntime;
 
 	beforeEach(async () => {
 		dir = mkdtempSync(join(tmpdir(), "fleet-mount-"));
@@ -105,10 +77,6 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		writeFileSync(projectsJsonPath, PROJECTS_JSON);
 		const stub = join(dir, "stub-fleet.sh");
 		writeFileSync(stub, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
-		const dagFlags = resolveAllFlags({
-			env: {},
-			envFile: { status: "readable", content: "" },
-		});
 		console_ = new FleetConsole({
 			projectsJsonPath,
 			txnDir: join(dir, "fleet-txns"),
@@ -117,81 +85,8 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			logDir: join(dir, "fleet-logs"),
 			liveProjects: () => testProjects,
 			legacyBackendOf: () => undefined,
-			featureFlags: () => dagFlags,
-			managementSnapshotProviders: () => [
-				{
-					id: "topology",
-					sourceKind: "projects_json",
-					read: () => ({
-						revision: "file:test-projects",
-						fragment: buildTopologyView({
-							projects: testProjects,
-							configs: new Map(
-								testProjects.map((project) => [
-									project.projectName,
-									{ revision: `file:${project.projectName}` },
-								]),
-							),
-							projectsRevision: "file:test-projects",
-						}),
-					}),
-				},
-				{
-					id: "flags",
-					sourceKind: "flag_registry",
-					read: () => ({
-						revision: "registry:test-flags",
-						fragment: {
-							flags: [],
-						},
-					}),
-				},
-			],
 		});
-		let managementValue = "old";
-		const managementWriter: ManagementWriter = {
-			id: "mount-test-runner",
-			kind: "runner",
-			resolve: (targetId) =>
-				targetId === MANAGEMENT_TARGET
-					? {
-							targetId,
-							kind: "runner",
-							currentValue: managementValue,
-							sourceRevision: "file:runner-v1",
-							writeCapability: {
-								writable: true,
-								consequence: "new-run",
-								requiresAcknowledgement: false,
-							},
-						}
-					: null,
-			preflight(target, desired, observed) {
-				if (observed !== target.sourceRevision || typeof desired !== "string") {
-					return { ok: false, code: "stale_source", reason: "invalid" };
-				}
-				return preparedChange({
-					writer: managementWriter,
-					target,
-					newValue: desired,
-				});
-			},
-			apply(change) {
-				managementValue = change.newValue as string;
-				return { status: "applied" };
-			},
-		};
-		console_.setManagementCoordinator(
-			new ManagementChangeCoordinator({
-				registry: new ManagementWriterRegistry([managementWriter]),
-				tokens: console_.tokens,
-				audit: console_.audit,
-				journalDir: join(dir, "fleet-txns"),
-				snapshotRevision: () => "snapshot:mount-test",
-			}),
-		);
 		store = await StateStore.create(":memory:");
-		flagStore = initializeFlagStore(store, {}, 100);
 		const app = createBridgeApp(
 			store,
 			testProjects,
@@ -209,10 +104,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			undefined,
 			undefined,
 			undefined,
-			{
-				flagStore,
-				fleetConsole: console_,
-			},
+			{ fleetConsole: console_ },
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -230,35 +122,17 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("GET /api/fleet/snapshot returns the versioned secret-free aggregate with NO Bearer", async () => {
+	it("GET /api/fleet/snapshot returns the secret-free DTO with NO Bearer", async () => {
 		const res = await fetch(`${baseUrl}/api/fleet/snapshot`);
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
-			schemaVersion: number;
-			projects: Array<{ leads: Array<Record<string, unknown>> }>;
+			leads: Array<Record<string, unknown>>;
 		};
-		expect(body.schemaVersion).toBe(1);
-		expect(
-			body.projects
-				.flatMap((project) => project.leads)
-				.map((lead) => lead.leadId)
-				.sort(),
-		).toEqual(["oliver", "peter"]);
+		expect(body.leads.map((l) => l.leadId).sort()).toEqual(["oliver", "peter"]);
 		// Secret canary: the bot token must NEVER appear anywhere in the payload.
 		const raw = JSON.stringify(body);
 		expect(raw).not.toContain("super-secret-bot-token");
 		expect(raw).not.toContain("botToken");
-	});
-
-	it("GET /api/fleet/flag-report.html?interactive=1 omits retired workflow rollout controls", async () => {
-		const res = await fetch(
-			`${baseUrl}/api/fleet/flag-report.html?interactive=1`,
-		);
-		expect(res.status).toBe(200);
-		const html = await res.text();
-		expect(html).not.toContain("DAG 控制");
-		expect(html).not.toContain("data-dag-copy");
-		expect(html).not.toContain("workflow_claims_write");
 	});
 
 	it("POST /api/fleet/stage rejects cross-origin (anti-CSRF)", async () => {
@@ -273,60 +147,6 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		expect(res.status).toBe(403);
 	});
 
-	it("unified stage/apply routes are loopback + same-origin and persist a canonical item result", async () => {
-		const cross = await fetch(`${baseUrl}/api/fleet/changes/stage`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Origin: "http://evil" },
-			body: JSON.stringify({ changes: [] }),
-		});
-		expect(cross.status).toBe(403);
-
-		const forged = await fetch(`${baseUrl}/api/fleet/changes/stage`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Origin: baseUrl },
-			body: JSON.stringify({
-				changes: [
-					{
-						targetId: MANAGEMENT_TARGET,
-						desiredValue: "new",
-						observedRevision: "file:runner-v1",
-						projectRoot: "/forged",
-					},
-				],
-			}),
-		});
-		expect(forged.status).toBe(400);
-
-		const stagedResponse = await fetch(`${baseUrl}/api/fleet/changes/stage`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Origin: baseUrl },
-			body: JSON.stringify({
-				changes: [
-					{
-						targetId: MANAGEMENT_TARGET,
-						desiredValue: "new",
-						observedRevision: "file:runner-v1",
-					},
-				],
-			}),
-		});
-		expect(stagedResponse.status).toBe(200);
-		const staged = (await stagedResponse.json()) as {
-			batch: unknown;
-			confirmToken: string;
-		};
-		const applied = await fetch(`${baseUrl}/api/fleet/changes/apply`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", Origin: baseUrl },
-			body: JSON.stringify(staged),
-		});
-		expect(applied.status).toBe(200);
-		expect(await applied.json()).toMatchObject({
-			status: "applied",
-			items: [{ targetId: MANAGEMENT_TARGET, status: "applied" }],
-		});
-	});
-
 	it("FLY-709: flag stage/apply routes are mounted (cross-origin 403; unknown flag 400)", async () => {
 		// cross-origin rejected (anti-CSRF), same guard as the fleet routes
 		const cross = await fetch(`${baseUrl}/api/fleet/flag/stage`, {
@@ -335,10 +155,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 				"Content-Type": "application/json",
 				Origin: "http://evil.test",
 			},
-			body: JSON.stringify({
-				name: "loop_profiler",
-				to: false,
-			}),
+			body: JSON.stringify({ name: "auto_qa_killswitch", to: false }),
 		});
 		expect(cross.status).toBe(403);
 		// same-origin + unknown flag → 400 (reaches the handler; rejected before any
@@ -358,83 +175,12 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		expect(badApply.status).toBe(400);
 	});
 
-	it("FLY-1778: CLI flips a managed flag through the live Bridge without restart or git", async () => {
-		expect(storeWorkflowTurnDivergenceAlertsEnabled(flagStore)).toBe(false);
-		const sentinel = join(dir, "git-invoked");
-		const bin = join(dir, "bin");
-		mkdirSync(bin);
-		writeFileSync(
-			join(bin, "git"),
-			`#!/bin/sh\nprintf invoked > ${JSON.stringify(sentinel)}\nexit 99\n`,
-			{ mode: 0o755 },
-		);
-		const originalPath = process.env.PATH;
-		process.env.PATH = `${bin}:${originalPath ?? ""}`;
-		let batchId = "";
-		try {
-			await runFeatureFlags(
-				[
-					"apply",
-					"--name",
-					"workflow_turn_divergence_alerts",
-					"--to",
-					"on",
-					"--reason",
-					"Bridge E2E proof",
-					"--bridge-url",
-					baseUrl,
-				],
-				{
-					log: vi.fn(),
-					errorLog: vi.fn(),
-					exit: (code) => {
-						throw new Error(`unexpected exit ${code}`);
-					},
-					httpJson: async (url, init) => {
-						const response = await fetch(url, init);
-						const body = await response.json();
-						if (url.endsWith("/stage")) {
-							batchId = String(
-								(body as { canonical?: { batchId?: string } }).canonical
-									?.batchId ?? "",
-							);
-						}
-						return {
-							ok: response.ok,
-							status: response.status,
-							json: async () => body,
-						};
-					},
-				},
-			);
-		} finally {
-			process.env.PATH = originalPath;
-		}
-
-		expect(storeWorkflowTurnDivergenceAlertsEnabled(flagStore)).toBe(true);
-		expect(
-			store.getFlagValueRow("workflow_turn_divergence_alerts"),
-		).toMatchObject({
-			lastEffective: "true",
-			updatedBy: "bridge-local-operator",
-			valueLastChanged: expect.any(Number),
-		});
-		expect(console_.audit.forBatch(batchId).map((row) => row.event)).toEqual([
-			"staged",
-			"apply-requested",
-			"apply-result",
-		]);
-		expect(existsSync(sentinel)).toBe(false);
-	});
-
 	it("stage→apply happy path: same-origin, confirmToken, launching+spawn (202)", async () => {
 		const sameOrigin = baseUrl; // browser Origin === the host it was served from
 		const stageRes = await fetch(`${baseUrl}/api/fleet/stage`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Origin: sameOrigin },
-			body: JSON.stringify({
-				changes: [{ key: "geo-peter", toModel: "claude-opus-5" }],
-			}),
+			body: JSON.stringify({ changes: [{ key: "geo-peter", toModel: null }] }),
 		});
 		expect(stageRes.status).toBe(200);
 		const staged = (await stageRes.json()) as {
@@ -469,9 +215,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		const stageRes = await fetch(`${baseUrl}/api/fleet/stage`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Origin: sameOrigin },
-			body: JSON.stringify({
-				changes: [{ key: "geo-peter", toModel: "claude-opus-5" }],
-			}),
+			body: JSON.stringify({ changes: [{ key: "geo-peter", toModel: null }] }),
 		});
 		const staged = (await stageRes.json()) as {
 			batchId: string;
@@ -497,9 +241,8 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		const res = await fetch(`${baseUrl}/`);
 		expect(res.status).toBe(200);
 		const html = await res.text();
-		expect(html).toContain("<title>Flywheel 管理台</title>");
+		expect(html).toContain("Flywheel Fleet");
 		expect(html).toContain("/api/fleet/snapshot");
-		expect(html).toContain("/api/fleet/changes/stage");
 	});
 
 	it("legacy /sse still serves a snapshot (byte-compat, unaffected)", async () => {

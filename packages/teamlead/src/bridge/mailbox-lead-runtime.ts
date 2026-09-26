@@ -22,7 +22,6 @@ import type {
 	IAgentTeamTransport,
 	MailboxPayload,
 } from "flywheel-agent-team-transport";
-import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import { MailboxTransport } from "../mailbox/MailboxTransport.js";
 import {
 	formatDetectionEscalation,
@@ -30,14 +29,10 @@ import {
 	formatDurationMs,
 	formatGateQuestion,
 	formatMisroutedReport,
-	formatPatrolTick,
-	formatRunnerQuestion,
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
-	formatWorkflowReplacementEligibility,
 } from "./hook-payload.js";
-import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -89,10 +84,7 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	}
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
-		const content = appendLeadEventAckInstructions(
-			this.renderEnvelope(envelope),
-			envelope,
-		);
+		const content = this.formatEnvelope(envelope);
 		const payload: MailboxPayload = {
 			from: "bridge",
 			to: this.leadId,
@@ -183,9 +175,6 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	// ----------------------------------------------------------------------
 
 	private buildFlywheelId(env: LeadEventEnvelope): string {
-		if (env.deliveryAttemptId) {
-			return `${this.leadId}-${env.deliveryAttemptId}`;
-		}
 		const exec = env.event.execution_id ?? "no-exec";
 		return `${this.leadId}-${env.seq}-${exec}`;
 	}
@@ -214,23 +203,32 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	 * CommDBLeadRuntime.formatEnvelope so Lead-side prompts that key off
 	 * `[Event #N]` etc. continue to work without modification.
 	 */
-	renderEnvelope(env: LeadEventEnvelope): string {
-		return this.formatEnvelope(env);
-	}
-
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
-		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
-		if (e.event_type === "workflow_replacement_eligibility") {
-			return formatWorkflowReplacementEligibility(env);
-		}
 
 		// FLY-161: runner_question — non-blocking ask from Runner. The Runner
 		// continues working regardless of when the Lead responds, so the prompt
 		// must NOT prefix with a checkpoint tag (no `[BRAINSTORM]`/`[REVIEW]`)
 		// and must lead with "non-blocking" framing.
 		if (e.event_type === "runner_question") {
-			return formatRunnerQuestion(env);
+			const issueRef = e.issue_identifier || e.issue_id;
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
+			const lines = [
+				`[Event #${env.seq}] ${roleLabel}runner_question`,
+				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
+				"---",
+				e.summary ?? "(no content)",
+				"---",
+				`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
+				`Question ID: ${e.question_id}`,
+				`CommDB: ${e.comm_db_path}`,
+			];
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+			return lines.join("\n");
 		}
 
 		if (e.event_type === "gate_question") {
@@ -326,22 +324,11 @@ export class MailboxLeadRuntime implements LeadRuntime {
 			`[Event #${env.seq}] ${roleLabel}${e.event_type}`,
 			`ID: ${e.execution_id || "—"} | Issue: ${e.issue_identifier || e.issue_id || "—"}`,
 		];
-		if (
-			e.event_type === "session_started" &&
-			e.session_role === "design" &&
-			e.design_backend
-		) {
-			lines.push(`Design Backend: ${e.design_backend}`);
-		}
 		if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
 		if (e.status) lines.push(`Status: ${e.status}`);
 		if (e.decision_route) lines.push(`Route: ${e.decision_route}`);
-		// FLY-1586 C: render-time truncation mints poison just as readily as
-		// write-time truncation — this text goes straight into mailbox.content.
-		if (e.summary)
-			lines.push(`Summary: ${truncateCodePoints(e.summary, 300).text}`);
-		if (e.last_error)
-			lines.push(`Error: ${truncateCodePoints(e.last_error, 200).text}`);
+		if (e.summary) lines.push(`Summary: ${e.summary.slice(0, 300)}`);
+		if (e.last_error) lines.push(`Error: ${e.last_error.slice(0, 200)}`);
 		if (e.action) {
 			lines.push(
 				`Action: ${e.action} (${e.action_source_status} → ${e.action_target_status})`,

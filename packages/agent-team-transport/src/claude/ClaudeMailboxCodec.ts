@@ -31,6 +31,7 @@ import {
 	pruneMainEntries,
 	pruneSidecarRecords,
 	resolvePrunePolicy,
+	updateOverflowMarker,
 } from "./mailbox-prune.js";
 
 // Stock claude-code lock options. MUST match exactly (see plan §2.0.6).
@@ -39,23 +40,6 @@ const LOCK_OPTIONS = {
 		retries: 10,
 		minTimeout: 5,
 		maxTimeout: 100,
-	},
-	// FLY-1599 second kill path (founder-terminal capture, 2026-08-02): a Lead
-	// restart deletes its inbox .lock while this process holds it. proper-lockfile
-	// detects the compromise on its OWN watcher timer, and its DEFAULT handler
-	// THROWS from that timer — outside every try/catch in this codebase — killing
-	// the whole Bridge (observed twice: 16:03 eng-lead lock, 02:32 cos-lead lock).
-	// Deviation from stock claude-code LOCK_OPTIONS is deliberate: stock runs in a
-	// per-agent CLI where dying is cheap; this runs inside the fleet's delivery
-	// daemon. A compromised lock means our exclusivity is gone — the in-flight
-	// write may tear or duplicate, which flywheelId dedupe upstream tolerates —
-	// so we log loudly and let the write path's own error handling settle it.
-	onCompromised: (error: Error) => {
-		console.error(
-			`[agent-team-transport] mailbox lock compromised (continuing, not fatal): ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
 	},
 } as const;
 
@@ -82,9 +66,6 @@ export interface SidecarRecord {
 	finalizedAt?: number;
 	/** Reference to main entry — `from` + ISO `timestamp` — for repair. */
 	mainEntryRef?: { from: string; timestamp: string };
-	/** FLY-1373: immutable atomic-batch identity and member order. */
-	batchId?: string;
-	batchIndex?: number;
 }
 
 export interface WriteSpec {
@@ -116,38 +97,6 @@ export interface WriteOutcome {
 	 * runs synchronously before this returns).
 	 */
 	finalized: boolean;
-}
-
-export interface MailboxBatchMember {
-	flywheelId: string;
-	payload: MailboxPayload;
-	color?: string;
-	summary?: string;
-}
-
-export interface WriteBatchSpec {
-	inboxPath: string;
-	sidecarPath: string;
-	batchId: string;
-	members: MailboxBatchMember[];
-	/** Crash-injection seams used by durability tests. */
-	hooks?: {
-		afterPhaseA?: () => Promise<void> | void;
-		afterPhaseB?: () => Promise<void> | void;
-	};
-}
-
-export interface WriteBatchOutcome {
-	batchId: string;
-	status: "accepted_new" | "accepted_duplicate_same_membership";
-	memberIds: string[];
-}
-
-export class MailboxBatchConflictError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "MailboxBatchConflictError";
-	}
 }
 
 /**
@@ -261,44 +210,6 @@ export async function writeMailboxEntry(
 }
 
 /**
- * FLY-1373: append one frozen batch under a single stock-compatible inbox lock.
- * Phase A persists deterministic member refs, Phase B writes all-or-none, and
- * Phase C finalizes every sidecar member. Retries reuse the Phase-A refs.
- */
-export async function writeMailboxBatch(
-	spec: WriteBatchSpec,
-): Promise<WriteBatchOutcome> {
-	validateBatchSpec(spec);
-	await mkdir(dirname(spec.inboxPath), { recursive: true });
-	const phaseA = await prepareBatchSidecar(spec);
-	await spec.hooks?.afterPhaseA?.();
-	if (phaseA.allFinalized) {
-		return {
-			batchId: spec.batchId,
-			status: "accepted_duplicate_same_membership",
-			memberIds: phaseA.records.map(({ flywheelId }) => flywheelId),
-		};
-	}
-
-	const mainStatus = await writeBatchMainUnderLock({
-		inboxPath: spec.inboxPath,
-		recipient: extractRecipientFromInboxPath(spec.inboxPath),
-		members: spec.members,
-		records: phaseA.records,
-	});
-	await spec.hooks?.afterPhaseB?.();
-	await finalizeBatchSidecar(spec.sidecarPath, spec.batchId);
-	return {
-		batchId: spec.batchId,
-		status:
-			mainStatus === "written"
-				? "accepted_new"
-				: "accepted_duplicate_same_membership",
-		memberIds: phaseA.records.map(({ flywheelId }) => flywheelId),
-	};
-}
-
-/**
  * Mark all matching entries as `read=true`. Lock-cooperative with stock
  * `markMessagesAsRead`. Caller passes a predicate to scope which entries to
  * flip — typically `(m) => messageIds.has(`${m.from}:${m.timestamp}`)`.
@@ -317,7 +228,7 @@ export async function markEntriesAsReadUnderLock(args: {
 	// Return overflow info from the locked critical section so control-flow
 	// analysis sees the assignment (assigning a captured `let` inside the
 	// async callback would not narrow the type for the post-lock read).
-	await withFileLock(args.inboxPath, lockPath, async () => {
+	const overflow = await withFileLock(args.inboxPath, lockPath, async () => {
 		const messages = await readMailboxEntries(args.inboxPath);
 		const next = messages.map((m) => {
 			if (args.predicate(m) && !m.read) {
@@ -336,6 +247,18 @@ export async function markEntriesAsReadUnderLock(args: {
 			await writeFile(tempPath, JSON.stringify(pruned.kept, null, 2), "utf-8");
 			await rename(tempPath, args.inboxPath);
 		}
+		return {
+			unreadCount: pruned.unreadCount,
+			oldestUnreadTs: pruned.oldestUnreadTs,
+		};
+	});
+	// FLY-182: update unread-overflow marker outside the lock (best-effort).
+	await updateOverflowMarker({
+		inboxPath: args.inboxPath,
+		unreadCount: overflow.unreadCount,
+		oldestUnreadTs: overflow.oldestUnreadTs,
+		policy,
+		now: Date.now(),
 	});
 	return flipped;
 }
@@ -415,71 +338,6 @@ export async function sidecarFindByFlywheelId(
 	return match;
 }
 
-export type LegacyMailboxDeliveryProbe =
-	| { status: "delivered"; alias: string }
-	| { status: "none" }
-	| { status: "conflict"; alias: string; error: string };
-
-/**
- * FLY-1373 cutover probe. Finalized aliases are receipts; a legacy pending
- * alias is accepted only when its exact main entry ref and fingerprint exist.
- */
-export async function probeLegacyMailboxDelivery(args: {
-	inboxPath: string;
-	sidecarPath: string;
-	aliases: readonly string[];
-	to: string;
-	content: string;
-	from?: string;
-}): Promise<LegacyMailboxDeliveryProbe> {
-	const candidates: Array<{ alias: string; record: SidecarRecord }> = [];
-	for (const alias of args.aliases) {
-		const record = await sidecarFindByFlywheelId(args.sidecarPath, alias);
-		if (!record) continue;
-		if (record.status === "finalized") {
-			return { status: "delivered", alias };
-		}
-		candidates.push({ alias, record });
-	}
-	if (candidates.length === 0) return { status: "none" };
-	const entries = await readMailboxEntries(args.inboxPath);
-	let firstConflict:
-		| { status: "conflict"; alias: string; error: string }
-		| undefined;
-	for (const { alias, record } of candidates) {
-		const from = record.mainEntryRef?.from ?? args.from ?? "bridge";
-		const timestamp =
-			record.mainEntryRef?.timestamp ??
-			new Date(record.pendingAt).toISOString();
-		const exact = entries.find(
-			(entry) => entry.from === from && entry.timestamp === timestamp,
-		);
-		if (!exact) continue;
-		const actualFingerprint = computeFingerprint({
-			from: exact.from,
-			to: args.to,
-			text: exact.text,
-			timestamp: exact.timestamp,
-		});
-		if (actualFingerprint !== record.payloadFingerprint) {
-			firstConflict ??= {
-				status: "conflict",
-				alias,
-				error: "legacy main entry conflicts with its sidecar reference",
-			};
-			continue;
-		}
-		await sidecarFinalize({
-			sidecarPath: args.sidecarPath,
-			flywheelId: alias,
-			finalizedAt: Date.now(),
-			mainEntryRef: { from, timestamp },
-		});
-		return { status: "delivered", alias };
-	}
-	return firstConflict ?? { status: "none" };
-}
-
 async function sidecarReadRecords(
 	sidecarPath: string,
 ): Promise<SidecarRecord[]> {
@@ -501,171 +359,6 @@ async function sidecarReadRecords(
 		}
 		throw error;
 	}
-}
-
-function validateBatchSpec(spec: WriteBatchSpec): void {
-	if (!spec.batchId.trim()) {
-		throw new MailboxBatchConflictError("batchId is required");
-	}
-	if (spec.members.length === 0) {
-		throw new MailboxBatchConflictError("batch members are required");
-	}
-	const ids = new Set<string>();
-	for (const member of spec.members) {
-		if (!member.flywheelId.trim()) {
-			throw new MailboxBatchConflictError("member flywheelId is required");
-		}
-		if (ids.has(member.flywheelId)) {
-			throw new MailboxBatchConflictError(
-				`duplicate batch member ${member.flywheelId}`,
-			);
-		}
-		ids.add(member.flywheelId);
-	}
-}
-
-async function prepareBatchSidecar(spec: WriteBatchSpec): Promise<{
-	records: SidecarRecord[];
-	allFinalized: boolean;
-}> {
-	await mkdir(dirname(spec.sidecarPath), { recursive: true });
-	await ensureFileExists(spec.sidecarPath, "");
-	const lockPath = `${spec.sidecarPath}.lock`;
-	return withFileLock(spec.sidecarPath, lockPath, async () => {
-		const all = await sidecarReadRecords(spec.sidecarPath);
-		const existing = all
-			.filter(({ batchId }) => batchId === spec.batchId)
-			.sort((a, b) => (a.batchIndex ?? -1) - (b.batchIndex ?? -1));
-		const expectedIds = spec.members.map(({ flywheelId }) => flywheelId);
-
-		if (existing.length > 0) {
-			const existingIds = existing.map(({ flywheelId }) => flywheelId);
-			if (
-				existing.length !== spec.members.length ||
-				existingIds.some((id, index) => id !== expectedIds[index])
-			) {
-				throw new MailboxBatchConflictError(
-					`batch ${spec.batchId} membership conflict`,
-				);
-			}
-			for (let index = 0; index < existing.length; index++) {
-				const record = existing[index]!;
-				const member = spec.members[index]!;
-				if (!record.mainEntryRef) {
-					throw new MailboxBatchConflictError(
-						`batch ${spec.batchId} member ${record.flywheelId} has no main ref`,
-					);
-				}
-				const fingerprint = computeFingerprint({
-					from: member.payload.from,
-					to: member.payload.to,
-					text: member.payload.content,
-					timestamp: record.mainEntryRef.timestamp,
-				});
-				if (
-					record.mainEntryRef.from !== member.payload.from ||
-					record.payloadFingerprint !== fingerprint
-				) {
-					throw new MailboxBatchConflictError(
-						`batch ${spec.batchId} payload conflict for ${record.flywheelId}`,
-					);
-				}
-			}
-			return {
-				records: existing,
-				allFinalized: existing.every(({ status }) => status === "finalized"),
-			};
-		}
-
-		for (const id of expectedIds) {
-			const collision = all.find(({ flywheelId }) => flywheelId === id);
-			if (collision) {
-				throw new MailboxBatchConflictError(
-					`member ${id} already belongs to ${collision.batchId ?? "a legacy write"}`,
-				);
-			}
-		}
-
-		const pendingAt = Date.now();
-		const records = spec.members.map((member, batchIndex): SidecarRecord => {
-			const timestamp = batchMemberTimestamp(
-				pendingAt,
-				spec.batchId,
-				member.flywheelId,
-				batchIndex,
-			);
-			return {
-				flywheelId: member.flywheelId,
-				status: "pending",
-				idempotency: "stable",
-				payloadFingerprint: computeFingerprint({
-					from: member.payload.from,
-					to: member.payload.to,
-					text: member.payload.content,
-					timestamp,
-				}),
-				pendingAt,
-				mainEntryRef: { from: member.payload.from, timestamp },
-				batchId: spec.batchId,
-				batchIndex,
-			};
-		});
-		await rewriteJsonLines(spec.sidecarPath, [...all, ...records]);
-		return { records, allFinalized: false };
-	});
-}
-
-/**
- * Stock accepts RFC-3339 timestamps with arbitrary fractional precision. Keep
- * the wall-clock millisecond prefix for ordering, then append deterministic
- * decimal entropy so two Bridge processes cannot alias distinct batch refs in
- * the same millisecond. The ref is frozen in Phase A and reused on every retry.
- */
-function batchMemberTimestamp(
-	pendingAt: number,
-	batchId: string,
-	flywheelId: string,
-	batchIndex: number,
-): string {
-	const base = new Date(pendingAt).toISOString();
-	const entropyHex = createHash("sha256")
-		.update(batchId)
-		.update("\0")
-		.update(flywheelId)
-		.update("\0")
-		.update(String(batchIndex))
-		.digest("hex")
-		.slice(0, 16);
-	const entropyDigits = BigInt(`0x${entropyHex}`)
-		.toString(10)
-		.padStart(20, "0");
-	return `${base.slice(0, -1)}${entropyDigits}Z`;
-}
-
-async function finalizeBatchSidecar(
-	sidecarPath: string,
-	batchId: string,
-): Promise<void> {
-	const lockPath = `${sidecarPath}.lock`;
-	await withFileLock(sidecarPath, lockPath, async () => {
-		const records = await sidecarReadRecords(sidecarPath);
-		const matches = records.filter((record) => record.batchId === batchId);
-		if (matches.length === 0) {
-			throw new MailboxBatchConflictError(
-				`batch ${batchId} disappeared before finalize`,
-			);
-		}
-		const finalizedAt = Date.now();
-		const finalized = records.map((record) =>
-			record.batchId === batchId
-				? { ...record, status: "finalized" as const, finalizedAt }
-				: record,
-		);
-		await rewriteJsonLines(
-			sidecarPath,
-			pruneSidecarRecords(finalized, resolvePrunePolicy(), finalizedAt),
-		);
-	});
 }
 
 interface SidecarCheckArgs {
@@ -841,93 +534,18 @@ interface WriteMainArgs {
 	newEntry: TeammateMessage;
 }
 
-async function writeBatchMainUnderLock(args: {
-	inboxPath: string;
-	recipient: string;
-	members: MailboxBatchMember[];
-	records: SidecarRecord[];
-}): Promise<"written" | "already_present"> {
-	await ensureFileExists(args.inboxPath, "[]");
-	const policy = resolvePrunePolicy();
-	const lockPath = `${args.inboxPath}.lock`;
-	let outcome: "written" | "already_present" = "already_present";
-	try {
-		await withFileLock(args.inboxPath, lockPath, async () => {
-			const messages = await readMailboxEntries(args.inboxPath);
-			const hits = args.records.map((record, index) => {
-				const ref = record.mainEntryRef;
-				const member = args.members[index];
-				if (!ref || !member) return false;
-				return messages.some(
-					(message) =>
-						message.from === ref.from &&
-						message.timestamp === ref.timestamp &&
-						message.text === member.payload.content,
-				);
-			});
-			const hitCount = hits.filter(Boolean).length;
-			if (hitCount > 0 && hitCount < args.records.length) {
-				throw new MailboxBatchConflictError(
-					`partial mailbox batch: found ${hitCount}/${args.records.length} exact refs`,
-				);
-			}
-			if (hitCount === 0) {
-				const entries = args.records.map((record, index): TeammateMessage => {
-					const member = args.members[index]!;
-					const ref = record.mainEntryRef!;
-					return {
-						from: ref.from,
-						text: member.payload.content,
-						timestamp: ref.timestamp,
-						read: false,
-						...(member.color !== undefined ? { color: member.color } : {}),
-						...(member.summary !== undefined
-							? { summary: member.summary }
-							: {}),
-					};
-				});
-				messages.push(...entries);
-				outcome = "written";
-			}
-			const pruned = pruneMainEntries(messages, policy, Date.now());
-			if (outcome === "written" || pruned.droppedCount > 0) {
-				const tempPath = `${args.inboxPath}.tmp.${process.pid}.${Date.now()}.${Math.random()
-					.toString(36)
-					.slice(2, 8)}`;
-				await writeFile(
-					tempPath,
-					JSON.stringify(pruned.kept, null, 2),
-					"utf-8",
-				);
-				await rename(tempPath, args.inboxPath);
-			}
-		});
-	} catch (error) {
-		if (
-			error instanceof MailboxWriteError ||
-			error instanceof MailboxBatchConflictError
-		) {
-			throw error;
-		}
-		throw new MailboxWriteError(
-			`Failed to write batch to inbox for ${args.recipient}: ${(error as Error).message}`,
-			"unknown",
-			args.recipient,
-			!isErrno(error, "EACCES"),
-			{ cause: error as Error },
-		);
-	}
-	return outcome;
-}
-
 async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 	// Pre-lock invariant (Codex r3 medium #4): file must exist.
 	await ensureFileExists(args.inboxPath, "[]");
 
 	const policy = resolvePrunePolicy();
 	const lockPath = `${args.inboxPath}.lock`;
+	let overflow: { unreadCount: number; oldestUnreadTs: number | null };
 	try {
-		await withFileLock(args.inboxPath, lockPath, async () => {
+		// Return overflow info from the locked section (see note in
+		// markEntriesAsReadUnderLock — direct assignment from `await` narrows
+		// correctly; a callback-captured `let` would not).
+		overflow = await withFileLock(args.inboxPath, lockPath, async () => {
 			// Re-read after lock acquired (matches stock pattern at
 			// teammateMailbox.ts:171).
 			const messages = await readMailboxEntries(args.inboxPath);
@@ -947,6 +565,10 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 				.slice(2, 8)}`;
 			await writeFile(tempPath, JSON.stringify(pruned.kept, null, 2), "utf-8");
 			await rename(tempPath, args.inboxPath);
+			return {
+				unreadCount: pruned.unreadCount,
+				oldestUnreadTs: pruned.oldestUnreadTs,
+			};
 		});
 	} catch (error) {
 		if (error instanceof MailboxWriteError) throw error;
@@ -958,6 +580,16 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 			{ cause: error as Error },
 		);
 	}
+
+	// FLY-182: update unread-overflow marker outside the lock (best-effort,
+	// never throws — exposes "Lead not consuming" without dropping unread).
+	await updateOverflowMarker({
+		inboxPath: args.inboxPath,
+		unreadCount: overflow.unreadCount,
+		oldestUnreadTs: overflow.oldestUnreadTs,
+		policy,
+		now: Date.now(),
+	});
 }
 
 // ============================================================================

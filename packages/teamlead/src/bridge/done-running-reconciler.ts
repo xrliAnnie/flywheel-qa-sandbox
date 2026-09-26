@@ -10,7 +10,7 @@
  * status=running forever:
  *   - `close_runner` rejects it (`status_not_eligible:running`),
  *   - its tmux session + git worktree linger until the next Bridge restart,
- *   - idle detection false-positived `session_stuck` (it only polled
+ *   - the idle watchdog false-positives `session_stuck` (it only polls
  *     status=running sessions), spamming the Lead about a Runner that is done.
  *
  * Two surfaces share the predicate below:
@@ -121,11 +121,6 @@ export interface DoneRunningReconcileResult {
 	skipped: number;
 	/** Done-but-running rows skipped because they are on the exclude list. */
 	excluded: number;
-	/**
-	 * FLY-1329 (A5): rows skipped because the runner declared itself parked (or
-	 * because the park lookup failed and we fail closed).
-	 */
-	parkedVetoed: number;
 }
 
 export interface ReconcileDoneButRunningOpts {
@@ -142,28 +137,8 @@ export interface ReconcileDoneButRunningOpts {
 	 * has, not a signal any DB column carries reliably (these rows all share a
 	 * stale heartbeat). So the Lead names the parked execIds/identifiers to skip
 	 * before the cutover Bridge restart, and the sweep clears only the rest.
-	 *
-	 * FLY-1329 (A5): this is no longer the ONLY protection — see `isParked`. The
-	 * exclude list remains as the Lead's override for shapes no declaration covers.
 	 */
 	exclude?: ReadonlySet<string>;
-	/**
-	 * FLY-1329 (A5): does this execId hold an UNEXPIRED park declaration?
-	 *
-	 * The `exclude` doc above says "'Parked vs truly-done' is human knowledge the
-	 * Lead has, not a signal any DB column carries reliably". That was written
-	 * before `runner_declared_states`: `flywheel-comm park` now writes an
-	 * explicit, unexpired declaration — the runner itself asserting "I am alive
-	 * and waiting". That IS the signal, and it must veto this sweep, so that a
-	 * park-alive runner surviving a Bridge restart no longer depends on a human
-	 * having typed its execId into an env var first.
-	 *
-	 * MUST fail closed: if the lookup throws, the sweep skips the row. "We could
-	 * not tell" is never a licence to destroy — that is the FLY-1319 mistake.
-	 *
-	 * Unwired (undefined) → legacy behavior, byte-for-byte.
-	 */
-	isParked?: (executionId: string, projectName: string) => boolean;
 }
 
 /**
@@ -187,9 +162,7 @@ export function reconcileDoneButRunning(
 		rejected: 0,
 		skipped: 0,
 		excluded: 0,
-		parkedVetoed: 0,
 	};
-	const parkGuardOn = opts.isParked !== undefined;
 
 	// getActiveSessions() returns running / awaiting_review / approved_to_ship.
 	// isDoneButRunning narrows to the running-only zombie shape.
@@ -217,32 +190,6 @@ export function reconcileDoneButRunning(
 		if (hasPendingCompleteMarker(session.execution_id, markerDir)) {
 			result.skipped++;
 			continue;
-		}
-		// FLY-1329 (A5): an unexpired park declaration is the runner asserting it
-		// is alive and waiting — that contradicts "zombie" outright, so it vetoes.
-		// This is the signal the `exclude` list was a human stand-in for. Fail
-		// closed: a lookup that throws taught us nothing, and "we could not tell"
-		// must never authorize a force-complete (the FLY-1319 mistake).
-		if (parkGuardOn) {
-			let parked: boolean;
-			try {
-				parked = (opts.isParked as (id: string, project: string) => boolean)(
-					session.execution_id,
-					session.project_name,
-				);
-			} catch (err) {
-				parked = true;
-				console.warn(
-					`[fly324-reconcile] park lookup failed for ${session.execution_id}: ${(err as Error).message} — VETOING the force-complete (fail-closed)`,
-				);
-			}
-			if (parked) {
-				result.parkedVetoed++;
-				console.log(
-					`[fly324-reconcile] prune_skipped_parked_conflict: ${session.issue_identifier ?? session.execution_id} declares itself parked — left running`,
-				);
-				continue;
-			}
 		}
 		const ctx: TransitionContext = {
 			executionId: session.execution_id,

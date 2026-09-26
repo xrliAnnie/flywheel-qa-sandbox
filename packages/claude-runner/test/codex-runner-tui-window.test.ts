@@ -1,17 +1,10 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
-	ensureSessionWithRetry,
-	ensureSessionWithRetryAsync,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
 	type RunnerTuiWindowSpec,
-	scanAndKillSameNameWindows,
-	spawnCommandAsync,
 } from "../src/codex-runner-tui-window.js";
 
 // ── FLY-1188 M4c-3 — founder-facing cmux TUI window (exec injected) ───────
@@ -26,356 +19,7 @@ const spec: RunnerTuiWindowSpec = {
 	codexBin: "/bin/codex",
 };
 
-describe("ensureSessionWithRetry", () => {
-	it("retries transient rescue holds until the third attempt succeeds", () => {
-		let now = 0;
-		let attempts = 0;
-		const timeouts: number[] = [];
-		const logs: string[] = [];
-		const result = ensureSessionWithRetry({
-			spawn: (_cmd, _args, options) => {
-				attempts += 1;
-				timeouts.push(options.timeout);
-				return {
-					status: attempts === 3 ? 0 : 4,
-					stdout: attempts === 3 ? "" : `hold ${attempts}`,
-					signal: null,
-					terminated: null,
-				};
-			},
-			sleep: (ms) => {
-				now += ms;
-			},
-			now: () => now,
-			log: (message) => logs.push(message),
-			deadlineMs: 5_000,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-		});
-		expect(result).toBe(true);
-		expect(attempts).toBe(3);
-		expect(timeouts).toEqual([2_000, 2_000, 2_000]);
-		expect(logs).toHaveLength(2);
-		expect(logs[0]).toContain("hold 1");
-	});
-
-	it("clips each attempt to the remaining deadline and returns false when exhausted", () => {
-		let now = 0;
-		const timeouts: number[] = [];
-		const result = ensureSessionWithRetry({
-			spawn: (_cmd, _args, options) => {
-				timeouts.push(options.timeout);
-				return {
-					status: 4,
-					stdout: "held",
-					signal: null,
-					terminated: null,
-				};
-			},
-			sleep: (ms) => {
-				now += ms;
-			},
-			now: () => now,
-			log: () => {},
-			deadlineMs: 2_500,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-		});
-		expect(result).toBe(false);
-		expect(timeouts).toEqual([2_000, 1_500, 500]);
-	});
-
-	it("FLY-2018: sync helper success with anomalous exit requires bounded re-verification", () => {
-		const reverifyTimeouts: number[] = [];
-		const result = ensureSessionWithRetry({
-			spawn: () => ({
-				status: null,
-				stdout: '{"action":"verified","reachablePid":6234}',
-				signal: "SIGTERM",
-				terminated: null,
-			}),
-			reverifySession: ({ timeoutMs }) => {
-				reverifyTimeouts.push(timeoutMs);
-				return true;
-			},
-			sleep: () => {},
-			now: () => 0,
-			deadlineMs: 8_000,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-		});
-
-		expect(result).toBe(true);
-		expect(reverifyTimeouts).toEqual([5_000]);
-	});
-});
-
-describe("ensureSessionWithRetryAsync", () => {
-	it("preserves retry semantics without blocking the event loop", async () => {
-		let now = 0;
-		let attempts = 0;
-		const timeouts: number[] = [];
-		const logs: string[] = [];
-		let timerFired = false;
-		setTimeout(() => {
-			timerFired = true;
-		}, 0);
-
-		const result = await ensureSessionWithRetryAsync({
-			spawn: async (_cmd, _args, options) => {
-				attempts += 1;
-				timeouts.push(options.timeout);
-				await new Promise<void>((resolve) => setTimeout(resolve, 0));
-				return {
-					status: attempts === 3 ? 0 : 5,
-					stdout: attempts === 3 ? "" : `hold ${attempts}`,
-					signal: null,
-					terminated: null,
-				};
-			},
-			sleep: async (ms) => {
-				now += ms;
-				await Promise.resolve();
-			},
-			now: () => now,
-			log: (message) => logs.push(message),
-			deadlineMs: 5_000,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-		});
-
-		expect(result).toBe(true);
-		expect(timerFired).toBe(true);
-		expect(attempts).toBe(3);
-		expect(timeouts).toEqual([2_000, 2_000, 2_000]);
-		expect(logs).toHaveLength(2);
-		expect(logs[0]).toContain("status=5");
-	});
-
-	it("clips attempts to the shared deadline", async () => {
-		let now = 0;
-		const timeouts: number[] = [];
-		const result = await ensureSessionWithRetryAsync({
-			spawn: async (_cmd, _args, options) => {
-				timeouts.push(options.timeout);
-				return {
-					status: 4,
-					stdout: "held",
-					signal: null,
-					terminated: null,
-				};
-			},
-			sleep: async (ms) => {
-				now += ms;
-			},
-			now: () => now,
-			deadlineMs: 2_500,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-		});
-
-		expect(result).toBe(false);
-		expect(timeouts).toEqual([2_000, 1_500, 500]);
-	});
-
-	it("accepts a signalled helper success only after the session is re-verified", async () => {
-		let now = 0;
-		const reverifyTimeouts: number[] = [];
-		const result = await ensureSessionWithRetryAsync({
-			spawn: async () => ({
-				status: null,
-				stdout: '{"action":"verified","reachablePid":6234}',
-				signal: "SIGTERM",
-				terminated: null,
-			}),
-			reverifySession: async ({ timeoutMs }) => {
-				reverifyTimeouts.push(timeoutMs);
-				return true;
-			},
-			sleep: async (ms) => {
-				now += ms;
-			},
-			now: () => now,
-			deadlineMs: 5_000,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-		});
-
-		expect(result).toBe(true);
-		expect(reverifyTimeouts).toEqual([5_000]);
-	});
-
-	it("logs a run-ended helper abort as cancellation instead of a rescue hold", async () => {
-		const controller = new AbortController();
-		const logs: string[] = [];
-		const result = await ensureSessionWithRetryAsync({
-			spawn: async () => {
-				controller.abort("run-ended");
-				return {
-					status: null,
-					stdout: '{"action":"verified","reachablePid":6234}',
-					signal: "SIGTERM",
-					terminated: "abort",
-				};
-			},
-			sleep: async () => {},
-			now: () => 0,
-			log: (message) => logs.push(message),
-			deadlineMs: 5_000,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-			signal: controller.signal,
-		});
-
-		expect(result).toBe(false);
-		expect(logs.join(" ")).toContain(
-			"cancelled (run-ended) after helper output verified",
-		);
-		expect(logs.join(" ")).not.toContain(" held ");
-	});
-
-	it("FLY-2018: abort during re-verification wins over a successful probe", async () => {
-		const controller = new AbortController();
-		const result = await ensureSessionWithRetryAsync({
-			spawn: async () => ({
-				status: null,
-				stdout: '{"action":"verified","reachablePid":6234}',
-				signal: "SIGTERM",
-				terminated: null,
-			}),
-			reverifySession: async () => {
-				controller.abort("run-ended");
-				return true;
-			},
-			sleep: async () => {},
-			now: () => 0,
-			deadlineMs: 5_000,
-			attemptCapMs: 2_000,
-			cliPath: "/tmp/tmux-server-rescue",
-			socket: "/tmp/tmux/default",
-			session: "flywheel",
-			signal: controller.signal,
-		});
-
-		expect(result).toBe(false);
-	});
-});
-
-describe("spawnCommandAsync", () => {
-	it("reports an externally signalled child without calling it an internal termination", async () => {
-		const result = await spawnCommandAsync(
-			process.execPath,
-			[
-				"-e",
-				'setTimeout(() => process.kill(process.pid, "SIGTERM"), 20); setInterval(() => {}, 1000)',
-			],
-			{
-				stdio: ["ignore", "pipe", "ignore"],
-				encoding: "utf8",
-				timeout: 5_000,
-			},
-		);
-
-		expect(result).toMatchObject({
-			status: null,
-			signal: "SIGTERM",
-			terminated: null,
-		});
-	});
-
-	it("preserves complete stdout for callers that parse multi-line command output", async () => {
-		const result = await spawnCommandAsync(
-			process.execPath,
-			["-e", 'process.stdout.write("x".repeat(1200))'],
-			{
-				stdio: ["ignore", "pipe", "ignore"],
-				encoding: "utf8",
-				timeout: 5_000,
-			},
-		);
-		expect(result.status).toBe(0);
-		expect(result.stdout?.toString()).toHaveLength(1200);
-	});
-
-	it("sends SIGTERM on timeout and reports signal-style status null", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "fly1365-child-"));
-		const proof = join(dir, "signal.txt");
-		try {
-			const result = await spawnCommandAsync(
-				process.execPath,
-				[
-					"-e",
-					`process.on("SIGTERM",()=>{setTimeout(()=>{require("node:fs").writeFileSync(${JSON.stringify(proof)},"SIGTERM");process.exit(0)},100)});setInterval(()=>{},1000)`,
-				],
-				{
-					stdio: ["ignore", "pipe", "ignore"],
-					encoding: "utf8",
-					timeout: 1_000,
-				},
-			);
-			expect(result.status).toBeNull();
-			expect(result.terminated).toBe("timeout");
-			// Promise settlement must happen after the child actually closes, not merely
-			// after SIGTERM is sent, or adapter late-cleanup can race a late tmux commit.
-			expect(existsSync(proof)).toBe(true);
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("aborts a live child with status null and settles an error/close race once", async () => {
-		const controller = new AbortController();
-		const pending = spawnCommandAsync(
-			process.execPath,
-			["-e", "setInterval(()=>{},1000)"],
-			{
-				stdio: ["ignore", "pipe", "ignore"],
-				encoding: "utf8",
-				timeout: 5_000,
-				signal: controller.signal,
-			},
-		);
-		controller.abort();
-		await expect(pending).resolves.toMatchObject({
-			status: null,
-			terminated: "abort",
-		});
-
-		await expect(
-			spawnCommandAsync("flywheel-command-that-does-not-exist", [], {
-				stdio: ["ignore", "pipe", "ignore"],
-				encoding: "utf8",
-				timeout: 1_000,
-			}),
-		).rejects.toMatchObject({ code: "ENOENT" });
-		// The child may emit `close` after `error`; the settled latch must consume it.
-		await new Promise<void>((resolve) => setTimeout(resolve, 0));
-	});
-});
-
 describe("buildRunnerTuiCommand", () => {
-	it("rebuilds the pane environment before applying the runner's explicit CODEX_HOME", () => {
-		const cmd = buildRunnerTuiCommand(spec);
-		expect(cmd).toMatch(/^exec \/usr\/bin\/env -i /);
-		expect(cmd).toContain(`\${PATH+"PATH=$PATH"}`);
-		expect(cmd).not.toContain(`\${CODEX_HOME+"CODEX_HOME=$CODEX_HOME"}`);
-		expect(cmd.indexOf("env -i")).toBeLessThan(cmd.indexOf("CODEX_HOME="));
-	});
-
 	it("resumes the daemon's SHORT socket with workspace-write + no-approval, on the given thread", () => {
 		const cmd = buildRunnerTuiCommand(spec);
 		expect(cmd).toContain('CODEX_HOME="/home/x/.flywheel/codex-homes/exec-1"');
@@ -393,18 +37,6 @@ describe("buildRunnerTuiCommand", () => {
 	it("defaults the codex binary to `codex`", () => {
 		const cmd = buildRunnerTuiCommand({ ...spec, codexBin: undefined });
 		expect(cmd).toContain("codex resume");
-	});
-
-	it("injects execution-bound state coordinates for durable stub exit fences", () => {
-		const cmd = buildRunnerTuiCommand({
-			...spec,
-			executionId: "exec-1",
-			stateDbPath: "/tmp/flywheel-test-slot-2/teamlead.db",
-		} as RunnerTuiWindowSpec);
-		expect(cmd).toContain('FLYWHEEL_EXEC_ID="exec-1"');
-		expect(cmd).toContain(
-			'FLYWHEEL_STATE_DB_PATH="/tmp/flywheel-test-slot-2/teamlead.db"',
-		);
 	});
 
 	it("throws (fail-loud) on a shell-unsafe threadId or path", () => {
@@ -497,10 +129,9 @@ function fakeTmux(
 				createdOverResidual = true;
 			}
 			if (!sessionExists) sessionExists = true;
-			const id = newId();
-			windows.set(id, name);
+			windows.set(newId(), name);
 			if (sameNameCount() > maxSameName) maxSameName = sameNameCount();
-			return { ok: true, stdout: id };
+			return { ok: true };
 		}
 		return { ok: true };
 	};
@@ -515,12 +146,8 @@ function fakeTmux(
 			return [...windows].map(([id, name]) => `${id} ${name}`).join("\n");
 		}
 		if (args.includes("display-message")) {
-			const target = args[args.indexOf("-t") + 1];
-			const id = target?.split(":").at(-1);
-			const name = id ? windows.get(id) : undefined;
-			return name === WINDOW && (opts.paneAlive ?? true)
-				? `${id} ${WINDOW} 0`
-				: undefined;
+			const present = [...windows.values()].includes(WINDOW);
+			return present && (opts.paneAlive ?? true) ? `${WINDOW} 0` : undefined;
 		}
 		return undefined;
 	};
@@ -549,99 +176,14 @@ function fakeTmux(
 }
 
 describe("ensureRunnerTuiWindow", () => {
-	it.each(["run-ended", "caller-cancel", "deadline"] as const)(
-		"preserves typed abort cause %s",
-		async (cause) => {
-			const controller = new AbortController();
-			controller.abort(cause);
-			await expect(
-				ensureRunnerTuiWindow(spec, { signal: controller.signal }),
-			).resolves.toEqual({
-				created: false,
-				category: "cancellation",
-				reason: "aborted",
-				abortCause: cause,
-			});
-		},
-	);
-
-	it("classifies an unavailable guarded session as retryable hold", async () => {
-		const t = fakeTmux();
-		await expect(
-			ensureRunnerTuiWindow(spec, {
-				exec: t.exec,
-				execOut: t.execOut,
-				ensureSession: () => false,
-			}),
-		).resolves.toEqual({
-			created: false,
-			category: "retryable-hold",
-			reason: "hold_lock_unavailable",
-		});
-	});
-
-	it("uses async collaborators so a slow tmux attempt does not block timers", async () => {
-		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
-		let timerFired = false;
-		setTimeout(() => {
-			timerFired = true;
-		}, 0);
-		const outcomePromise = ensureRunnerTuiWindow(spec, {
-			exec: t.exec,
-			execOut: t.execOut,
-			sleep: t.sleep,
-			execAsync: async (cmd, args) => {
-				await new Promise<void>((resolve) => setTimeout(resolve, 0));
-				return t.exec(cmd, args);
-			},
-			execOutAsync: async (cmd, args) => t.execOut(cmd, args),
-			ensureSessionAsync: async () => true,
-			sleepAsync: async () => {},
-		});
-
-		const outcome = await outcomePromise;
-		expect(outcome).toMatchObject({
-			created: true,
-			windowId: expect.any(String),
-		});
-		expect(timerFired).toBe(true);
-	});
-
-	it("routes both session ensures through the guarded rescue seam", async () => {
-		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
-		let ensures = 0;
-		const outcome = await ensureRunnerTuiWindow(spec, {
-			exec: t.exec,
-			execOut: t.execOut,
-			sleep: t.sleep,
-			ensureSession: () => {
-				ensures += 1;
-				return true;
-			},
-		});
-		expect(outcome).toMatchObject({
-			created: true,
-			windowId: expect.any(String),
-		});
-		expect(ensures).toBe(2);
-		expect(t.verbs()).not.toContain("new-session");
-	});
-
-	it("probes tmux, ensures the session, purges + re-ensures + verifies, then creates the window", async () => {
+	it("probes tmux, ensures the session, purges + re-ensures + verifies, then creates the window", () => {
 		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] }); // clean session, no stale FLY-1188
-		const birthEnvironments: Array<NodeJS.ProcessEnv | undefined> = [];
-		const outcome = await ensureRunnerTuiWindow(spec, {
-			exec: (cmd, args, options) => {
-				if (args[0] === "new-session") birthEnvironments.push(options?.env);
-				return t.exec(cmd, args);
-			},
+		const outcome = ensureRunnerTuiWindow(spec, {
+			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toMatchObject({
-			created: true,
-			windowId: expect.any(String),
-		});
+		expect(outcome).toEqual({ created: true });
 		// No stale same-named window → no kill; the verb sequence is
 		// probe → ensure → re-ensure → create (list-windows go through execOut).
 		expect(t.verbs()).toEqual([
@@ -654,65 +196,44 @@ describe("ensureRunnerTuiWindow", () => {
 		const createCall = t.execCalls.find((c) => c[1] === "new-window");
 		expect(createCall).toContain("FLY-1188");
 		expect(createCall?.some((a) => a.includes("codex resume"))).toBe(true);
-		expect(birthEnvironments).toHaveLength(2);
-		for (const env of birthEnvironments) {
-			expect(env?.PATH).toBe(
-				`${env?.HOME}/.local/bin:${env?.HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
-			);
-			expect(env).not.toHaveProperty("CODEX_HOME");
-			expect(env).not.toHaveProperty("FLYWHEEL_CODEX_BIN");
-			expect(env).not.toHaveProperty("OPENAI_API_KEY");
-		}
 		expect(t.pileUp).toBe(false);
 	});
 
-	it("returns tmux-absent when tmux is unavailable — the run is unaffected", async () => {
+	it("returns tmux-absent when tmux is unavailable — the run is unaffected", () => {
 		const t = fakeTmux({ tmuxAvailable: false });
-		await expect(
+		expect(
 			ensureRunnerTuiWindow(spec, { exec: t.exec, execOut: t.execOut }),
-		).resolves.toEqual({
-			created: false,
-			category: "permanent",
-			reason: "tmux_absent",
-		});
+		).toEqual({ created: false, reason: "tmux-absent" });
 		expect(t.execCalls).toHaveLength(1); // only the -V probe
 		expect(t.newWindowCalled()).toBe(false);
 	});
 
-	it("returns create-failed (non-fatal) when window creation fails", async () => {
+	it("returns create-failed (non-fatal) when window creation fails", () => {
 		const t = fakeTmux({
 			initial: [{ id: "@0", name: "zsh" }],
 			createOk: false,
 		});
-		await expect(
+		expect(
 			ensureRunnerTuiWindow(spec, {
 				exec: t.exec,
 				execOut: t.execOut,
 				sleep: t.sleep,
 			}),
-		).resolves.toEqual({
-			created: false,
-			category: "retryable-transient-ipc",
-			reason: "new_window_failed",
-		});
+		).toEqual({ created: false, reason: "create-failed" });
 	});
 
-	it("returns died when the pane dies during settle (the rollout-landing race)", async () => {
+	it("returns died when the pane dies during settle (the rollout-landing race)", () => {
 		const t = fakeTmux({
 			initial: [{ id: "@0", name: "zsh" }],
 			paneAlive: false, // window created but the TUI exited immediately
 		});
-		await expect(
+		expect(
 			ensureRunnerTuiWindow(spec, {
 				exec: t.exec,
 				execOut: t.execOut,
 				sleep: t.sleep,
 			}),
-		).resolves.toEqual({
-			created: false,
-			category: "retryable-transient-ipc",
-			reason: "window_died",
-		});
+		).toEqual({ created: false, reason: "died" });
 	});
 
 	it("rejects a shell-unsafe session/window name up front", () => {
@@ -726,61 +247,24 @@ describe("ensureRunnerTuiWindow", () => {
 	});
 });
 
-describe("scanAndKillSameNameWindows", () => {
-	it("is a pure terminal cleanup primitive that never recreates the session", async () => {
-		const t = fakeTmux({
-			initial: [
-				{ id: "@0", name: "zsh" },
-				{ id: "@1", name: spec.windowName },
-			],
-		});
-
-		await scanAndKillSameNameWindows(spec, {
-			exec: async (cmd, args) => t.exec(cmd, args),
-			execOut: async (cmd, args) => t.execOut(cmd, args),
-		});
-
-		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
-		expect(t.verbs()).not.toContain("new-session");
-		expect(t.verbs()).not.toContain("new-window");
-		expect(t.sameNameNow).toBe(0);
-	});
-
-	it("refuses malformed window ids instead of letting tmux reinterpret them", async () => {
-		const kills: string[][] = [];
-		await scanAndKillSameNameWindows(spec, {
-			exec: async (_cmd, args) => {
-				kills.push(args);
-				return { ok: true };
-			},
-			execOut: async () => `2 ${spec.windowName}\n@9 other`,
-		});
-
-		expect(kills).toEqual([]);
-	});
-});
-
 // ── FLY-1239 — the founder must NEVER see a pile-up of same-named dead panes ──
 // (Lead hard requirement; Codex R1 HIGH-1 + R2 MED-1). These use the STATEFUL
 // fake so duplicates are representable and the "kill last window destroys the
 // session" rule is modeled — the properties a Set-by-name fake could not test.
 describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
-	it("kills a single stale same-named window by immutable id, verifies clean, then creates", async () => {
+	it("kills a single stale same-named window by immutable id, verifies clean, then creates", () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
 				{ id: "@1", name: spec.windowName }, // a stale dead-pane leftover
 			],
 		});
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toMatchObject({
-			created: true,
-			windowId: expect.any(String),
-		});
+		expect(outcome).toEqual({ created: true });
 		// killed by IMMUTABLE id (@1), not by ambiguous name
 		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
 		expect(t.pileUp).toBe(false);
@@ -788,7 +272,7 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		expect(t.sameNameNow).toBe(1);
 	});
 
-	it("purges PRE-EXISTING DUPLICATES (both same-named) by id before creating", async () => {
+	it("purges PRE-EXISTING DUPLICATES (both same-named) by id before creating", () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
@@ -796,41 +280,35 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 				{ id: "@2", name: spec.windowName }, // tmux permits duplicate names
 			],
 		});
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toMatchObject({
-			created: true,
-			windowId: expect.any(String),
-		});
+		expect(outcome).toEqual({ created: true });
 		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
 		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@2"]);
 		expect(t.pileUp).toBe(false);
 		expect(t.maxSameName).toBeLessThanOrEqual(1);
 	});
 
-	it("re-ensures the session when the stale window was the session's ONLY window (kill destroys session)", async () => {
+	it("re-ensures the session when the stale window was the session's ONLY window (kill destroys session)", () => {
 		const t = fakeTmux({
 			initial: [{ id: "@1", name: spec.windowName }], // the ONLY window
 		});
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
 		// killing @1 destroys the session; the re-ensure recreates it → verify finds
 		// zero FLY-1188 → create succeeds (would be a false create-failed without it).
-		expect(outcome).toMatchObject({
-			created: true,
-			windowId: expect.any(String),
-		});
+		expect(outcome).toEqual({ created: true });
 		expect(t.pileUp).toBe(false);
 		expect(t.maxSameName).toBeLessThanOrEqual(1);
 	});
 
-	it("refuses to create (create-failed) when a same-named window CANNOT be proven gone", async () => {
+	it("refuses to create (create-failed) when a same-named window CANNOT be proven gone", () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
@@ -838,61 +316,29 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			],
 			killEffective: false, // simulate a kill that does not remove the window
 		});
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toMatchObject({
-			created: false,
-			category: "retryable-transient-ipc",
-			reason: "stale_window_unproven",
-		});
+		expect(outcome).toEqual({ created: false, reason: "create-failed" });
 		// the crucial no-pile-up guarantee: NEVER new-window while a same-name remains
 		expect(t.newWindowCalled()).toBe(false);
 		expect(t.createdOverResidual).toBe(false);
 	});
 
-	it("refuses malformed matching window ids and therefore cannot claim purge success", async () => {
-		const calls: string[][] = [];
-		const outcome = await ensureRunnerTuiWindow(spec, {
-			exec: (cmd, args) => {
-				calls.push([cmd, ...args]);
-				return { ok: true };
-			},
-			execOut: (_cmd, args) =>
-				args.includes("list-windows")
-					? `2 ${spec.windowName}\n@9 other`
-					: undefined,
-			ensureSession: () => true,
-			sleep: () => {},
-		});
-
-		expect(outcome).toMatchObject({
-			created: false,
-			category: "retryable-transient-ipc",
-			reason: "stale_window_unproven",
-		});
-		expect(calls.some((call) => call.includes("kill-window"))).toBe(false);
-		expect(calls.some((call) => call.includes("new-window"))).toBe(false);
-	});
-
-	it("refuses to create (create-failed) when the session cannot be listed", async () => {
+	it("refuses to create (create-failed) when the session cannot be listed", () => {
 		const t = fakeTmux({ listFails: true });
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toMatchObject({
-			created: false,
-			category: "retryable-transient-ipc",
-			reason: "stale_window_unproven",
-		});
+		expect(outcome).toEqual({ created: false, reason: "create-failed" });
 		expect(t.newWindowCalled()).toBe(false);
 	});
 
-	it("refuses to create when the VERIFY listing fails (first list ok, second fails) — Codex code R1 LOW-3", async () => {
+	it("refuses to create when the VERIFY listing fails (first list ok, second fails) — Codex code R1 LOW-3", () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh" },
@@ -900,21 +346,17 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			],
 			verifyListFails: true, // purge succeeds, but the re-list to PROVE it fails
 		});
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toMatchObject({
-			created: false,
-			category: "retryable-transient-ipc",
-			reason: "stale_window_unproven",
-		});
+		expect(outcome).toEqual({ created: false, reason: "create-failed" });
 		// cannot PROVE clean → never create
 		expect(t.newWindowCalled()).toBe(false);
 	});
 
-	it("parses window names WITH SPACES and kills only the EXACT-name target id — Codex code R1 LOW-3", async () => {
+	it("parses window names WITH SPACES and kills only the EXACT-name target id — Codex code R1 LOW-3", () => {
 		const t = fakeTmux({
 			initial: [
 				{ id: "@0", name: "zsh -l" }, // a name with a space
@@ -923,15 +365,12 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 				{ id: "@3", name: `${spec.windowName}-other` }, // a prefix, NOT an exact match
 			],
 		});
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toMatchObject({
-			created: true,
-			windowId: expect.any(String),
-		});
+		expect(outcome).toEqual({ created: true });
 		const killed = t.execCalls
 			.filter((c) => c[1] === "kill-window")
 			.map((c) => c[c.indexOf("-t") + 1]);
@@ -1045,11 +484,7 @@ describe("fail-open logging + kill result", () => {
 		const msgs: string[] = [];
 		killRunnerTuiWindow(
 			{ tmuxSession: "flywheel", windowName: "FLY-1188" },
-			{
-				exec: () => ({ ok: false }),
-				execOut: () => undefined,
-				log: (m) => msgs.push(m),
-			},
+			{ exec: () => ({ ok: false }), log: (m) => msgs.push(m) },
 		);
 		expect(msgs.join(" ")).toContain("non-ok");
 		expect(msgs.join(" ")).not.toContain("killed (");
@@ -1057,26 +492,6 @@ describe("fail-open logging + kill result", () => {
 });
 
 describe("killRunnerTuiWindow", () => {
-	it("downgrades a non-ok kill to already-gone only when a re-list proves absence", () => {
-		const logs: string[] = [];
-		killRunnerTuiWindow(
-			{
-				tmuxSession: "flywheel",
-				windowName: "FLY-1188",
-				windowId: "@7",
-			},
-			{
-				exec: () => ({ ok: false }),
-				execOut: () => "@3 zsh",
-				log: (message) => logs.push(message),
-			},
-		);
-
-		expect(logs).toEqual([
-			"runner-tui-window: kill skipped — window already gone (FLY-1188)",
-		]);
-	});
-
 	it("kills the identity-scoped window", () => {
 		const r = recorder();
 		killRunnerTuiWindow(
@@ -1086,19 +501,6 @@ describe("killRunnerTuiWindow", () => {
 		expect(r.calls).toEqual([
 			["tmux", "kill-window", "-t", "=flywheel:=FLY-1188"],
 		]);
-	});
-
-	it("prefers the immutable window id after the pane auto-renames", () => {
-		const r = recorder();
-		killRunnerTuiWindow(
-			{
-				tmuxSession: "flywheel",
-				windowName: "FLY-1188",
-				windowId: "@7",
-			},
-			{ exec: r.exec },
-		);
-		expect(r.calls).toEqual([["tmux", "kill-window", "-t", "=flywheel:@7"]]);
 	});
 });
 
@@ -1115,11 +517,11 @@ describe("killRunnerTuiWindow", () => {
 //     TUI EXITED WITH CODE=1
 //
 // Root cause: the TUI was launched through `flywheel-codex-with-fallback`, which
-// historically redirected codex stdout. That removes the
-// TTY, and a TUI refuses to render without one. The daemon may keep using the
-// shim (`app-server` needs no TTY); the TUI may not.
+// pipes codex's stdout through `tee` (to sniff 429s for account rotation). That
+// makes stdout a PIPE, and a TUI refuses to render without a real TTY. The
+// daemon may keep using the shim (`app-server` needs no TTY); the TUI may not.
 describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawned", () => {
-	it("reports died when the window dies immediately (tmux new-window 'succeeds' regardless)", async () => {
+	it("reports died when the window dies immediately (tmux new-window 'succeeds' regardless)", () => {
 		// tmux accepts every command and the purge/verify pass, but the window never
 		// comes up — exactly what a TUI that exits 1 on 'stdout is not a terminal' (or
 		// the FLY-1239 'no rollout found' race) looks like from outside.
@@ -1127,16 +529,12 @@ describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawne
 			initial: [{ id: "@0", name: "zsh" }],
 			paneAlive: false,
 		});
-		const outcome = await ensureRunnerTuiWindow(spec, {
+		const outcome = ensureRunnerTuiWindow(spec, {
 			exec: t.exec,
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
 		// must NOT claim "founder TUI up" for a dead pane; must classify as retryable died
-		expect(outcome).toEqual({
-			created: false,
-			category: "retryable-transient-ipc",
-			reason: "window_died",
-		});
+		expect(outcome).toEqual({ created: false, reason: "died" });
 	});
 });

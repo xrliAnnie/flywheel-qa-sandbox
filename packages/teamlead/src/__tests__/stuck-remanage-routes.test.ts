@@ -1,15 +1,17 @@
 /**
- * Tests for scoped detection acknowledgements and the restricted recovery nudge.
- * Every nudge refusal remains audited.
+ * FLY-195: tests for the Lead remanage endpoints (plan §3.4 + §3.5).
+ *
+ * The recovery-nudge gates are the FLY-175 safety boundary of this feature —
+ * every refusal path is asserted, and every attempt (sent or refused) must
+ * leave an audit row (Codex R1 HIGH-2).
  */
 
 import type http from "node:http";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fingerprintOutput } from "../bridge/pane-fingerprint.js";
 import type { CaptureError, CaptureResult } from "../bridge/session-capture.js";
+import { fingerprintOutput } from "../bridge/stuck-candidate.js";
 import {
-	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
 	NUDGE_ALLOWLIST,
 	type StuckRemanageRouterOptions,
@@ -88,14 +90,6 @@ async function boot(
 			...over,
 		}),
 	);
-	app.use(
-		"/api/leads",
-		createLeadDetectionAckRouter({
-			store,
-			projects,
-			auth: over.auth,
-		}),
-	);
 	const server = app.listen(0, "127.0.0.1");
 	await new Promise<void>((resolve) => server.once("listening", resolve));
 	const addr = server.address();
@@ -150,6 +144,90 @@ afterEach(async () => {
 	);
 	h.store.close();
 	vi.restoreAllMocks();
+});
+
+describe("POST /:executionId/stuck-disposition (plan §3.4)", () => {
+	const valid = {
+		leadId: "product-lead",
+		episode_fingerprint: STUCK_FP,
+		disposition: "false_positive",
+		note: "long compile",
+	};
+
+	it("writes the disposition + audit event", async () => {
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", valid);
+		expect(r.status).toBe(200);
+		const row = h.store.getStuckDisposition("exec-1", STUCK_FP);
+		expect(row?.disposition).toBe("false_positive");
+		expect(row?.noted_by).toBe("product-lead");
+		const audits = h.store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "stuck_disposition_set");
+		expect(audits).toHaveLength(1);
+	});
+
+	it("400 without leadId", async () => {
+		const { leadId: _l, ...rest } = valid;
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", rest);
+		expect(r.status).toBe(400);
+	});
+
+	it("400 on malformed fingerprint", async () => {
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			...valid,
+			episode_fingerprint: "not-a-fingerprint",
+		});
+		expect(r.status).toBe(400);
+	});
+
+	it("400 on handled_remanaged (implicit-only) and unknown values", async () => {
+		for (const disposition of ["handled_remanaged", "lgtm", ""]) {
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				...valid,
+				disposition,
+			});
+			expect(r.status).toBe(400);
+		}
+		expect(h.store.getStuckDisposition("exec-1", STUCK_FP)).toBeUndefined();
+	});
+
+	it("snooze requires a future snooze_until_ms", async () => {
+		const bad = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			...valid,
+			disposition: "snooze",
+		});
+		expect(bad.status).toBe(400);
+		const past = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			...valid,
+			disposition: "snooze",
+			snooze_until_ms: 1,
+		});
+		expect(past.status).toBe(400);
+		const ok = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			...valid,
+			disposition: "snooze",
+			snooze_until_ms: Date.now() + 60_000,
+		});
+		expect(ok.status).toBe(200);
+		// FLY-253: snooze is execution-scoped now — it lands on the '*' sentinel.
+		expect(
+			h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel?.disposition,
+		).toBe("snooze");
+	});
+
+	it("404 for an unknown session", async () => {
+		const r = await post(h, "/api/sessions/nope/stuck-disposition", valid);
+		expect(r.status).toBe(404);
+	});
+
+	it("403 for an out-of-scope lead", async () => {
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			...valid,
+			leadId: "ops-lead",
+		});
+		expect(r.status).toBe(403);
+		expect(h.store.getStuckDisposition("exec-1", STUCK_FP)).toBeUndefined();
+	});
 });
 
 describe("POST /:executionId/recovery-nudge (plan §3.5 — restricted primitive)", () => {
@@ -347,24 +425,30 @@ describe("POST /:executionId/recovery-nudge (plan §3.5 — restricted primitive
 });
 
 describe("auth wiring", () => {
-	it("applies the injected auth middleware to retained session routes", async () => {
+	it("applies the injected auth middleware to both routes", async () => {
 		const denied: express.RequestHandler = (_req, res) => {
 			res.status(401).json({ error: "nope" });
 		};
 		const h2 = await boot({ auth: denied });
 		try {
-			const nudge = await post(h2, "/api/sessions/exec-1/recovery-nudge", {
+			const r1 = await post(h2, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "false_positive",
+			});
+			const r2 = await post(h2, "/api/sessions/exec-1/recovery-nudge", {
 				leadId: "product-lead",
 				episode_fingerprint: STUCK_FP,
 			});
-			const ack = await post(h2, "/api/sessions/exec-1/detection-ack", {
+			// FLY-253 (Codex code R1 LOW-5): re_arm rides the SAME middleware —
+			// pin it explicitly so the special-case can never drift ahead of auth.
+			const r3 = await post(h2, "/api/sessions/exec-1/stuck-disposition", {
 				leadId: "product-lead",
-				kind: "detection_stuck_confirmed",
-				episode_fingerprint: "fp",
-				disposition: "ack",
+				disposition: "re_arm",
 			});
-			expect(nudge.status).toBe(401);
-			expect(ack.status).toBe(401);
+			expect(r1.status).toBe(401);
+			expect(r2.status).toBe(401);
+			expect(r3.status).toBe(401);
 			expect(h2.sendKeys).not.toHaveBeenCalled();
 		} finally {
 			await new Promise<void>((resolve, reject) =>
@@ -375,11 +459,290 @@ describe("auth wiring", () => {
 	});
 });
 
+// ── FLY-253 L2: execution-scoped latch writes + re_arm ──
+
+describe("FLY-253 — disposition scope mapping (server-side)", () => {
+	const T0 = 1_000_000_000_000;
+	const TTL = 259_200_000; // 72h
+
+	async function bootLatch(over: Partial<StuckRemanageRouterOptions> = {}) {
+		return boot({ latchTtlMs: TTL, now: () => T0, ...over });
+	}
+
+	async function closeH(h: Awaited<ReturnType<typeof boot>>) {
+		await new Promise<void>((resolve, reject) =>
+			h.server.close((err) => (err ? reject(err) : resolve())),
+		);
+		h.store.close();
+	}
+
+	it("legitimate_wait writes the '*' sentinel with server-computed TTL and provenance note", async () => {
+		const h = await bootLatch();
+		try {
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+				note: "runner parked waiting for the founder",
+			});
+			expect(r.status).toBe(200);
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+			expect(rows.sentinel?.snooze_until_ms).toBe(T0 + TTL);
+			expect(rows.sentinel?.note).toContain(`(episode ${STUCK_FP})`);
+			expect(rows.sentinel?.note).toContain("founder");
+			expect(rows.exact).toBeUndefined();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("needs_founder also latches the execution (sentinel + TTL)", async () => {
+		const h = await bootLatch();
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "needs_founder",
+			});
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.disposition).toBe("needs_founder");
+			expect(rows.sentinel?.snooze_until_ms).toBe(T0 + TTL);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("latchTtlMs=0 ⇒ permanent latch (NULL snooze_until_ms)", async () => {
+		const h = await bootLatch({ latchTtlMs: 0 });
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+			});
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.snooze_until_ms).toBeNull();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("snooze is execution-scoped too, with the Lead-provided expiry", async () => {
+		const h = await bootLatch();
+		try {
+			const until = T0 + 3_600_000;
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "snooze",
+				snooze_until_ms: until,
+			});
+			expect(r.status).toBe(200);
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.disposition).toBe("snooze");
+			expect(rows.sentinel?.snooze_until_ms).toBe(until);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("snooze horizon is CLAMPED to latchTtlMs (Codex code R1 MEDIUM-3: a multi-year snooze must not become a near-permanent execution mute)", async () => {
+		const h = await bootLatch();
+		try {
+			const tenYears = T0 + 10 * 365 * 24 * 3_600_000;
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "snooze",
+				snooze_until_ms: tenYears,
+			});
+			expect(r.status).toBe(200);
+			// Codex code R2 LOW: the response echoes the EFFECTIVE (clamped)
+			// expiry so the Lead never plans around a value that wasn't stored.
+			expect(r.json.snooze_until_ms).toBe(T0 + TTL);
+			expect(r.json.scope).toBe("execution");
+			expect(
+				h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel
+					?.snooze_until_ms,
+			).toBe(T0 + TTL);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("latchTtlMs=0 (operator allows permanent latches) ⇒ snooze horizon not clamped", async () => {
+		const h = await bootLatch({ latchTtlMs: 0 });
+		try {
+			const farFuture = T0 + 10 * 365 * 24 * 3_600_000;
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "snooze",
+				snooze_until_ms: farFuture,
+			});
+			expect(
+				h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel
+					?.snooze_until_ms,
+			).toBe(farFuture);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("false_positive stays EPISODE-scoped (exact row, no sentinel)", async () => {
+		const h = await bootLatch();
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "false_positive",
+			});
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.exact?.disposition).toBe("false_positive");
+			expect(rows.exact?.snooze_until_ms).toBeNull();
+			expect(rows.sentinel).toBeUndefined();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("provenance suffix survives a 500-char note (Codex R1 #8: truncate the user note, keep the fingerprint)", async () => {
+		const h = await bootLatch();
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+				note: "x".repeat(600),
+			});
+			const note = h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel
+				?.note;
+			expect(note).toContain(`(episode ${STUCK_FP})`);
+			expect((note ?? "").length).toBeLessThanOrEqual(500);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("'*' as episode_fingerprint input is rejected (sentinel is server semantics, not client input)", async () => {
+		const h = await bootLatch();
+		try {
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: "*",
+				disposition: "legitimate_wait",
+			});
+			expect(r.status).toBe(400);
+		} finally {
+			await closeH(h);
+		}
+	});
+});
+
+describe("FLY-253 — re_arm", () => {
+	async function closeH(h: Awaited<ReturnType<typeof boot>>) {
+		await new Promise<void>((resolve, reject) =>
+			h.server.close((err) => (err ? reject(err) : resolve())),
+		);
+		h.store.close();
+	}
+
+	it("deletes the sentinel AND episode rows (Codex code R1 HIGH-1: a residual effective exact row would keep suppressing the still-frozen fingerprint), calls onRearm, writes a trace event (no fingerprint required)", async () => {
+		const onRearm = vi.fn();
+		const h = await boot({ latchTtlMs: 0, onRearm });
+		try {
+			// Seed: a sentinel latch + an exact episode receipt on the SAME
+			// fingerprint (the combination that survived in the pre-fix design).
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+			});
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "false_positive",
+			});
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				disposition: "re_arm",
+			});
+			expect(r.status).toBe(200);
+			expect(r.json.ok).toBe(true);
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel).toBeUndefined();
+			expect(rows.exact).toBeUndefined();
+			expect(onRearm).toHaveBeenCalledWith("exec-1");
+			const traces = h.store
+				.getEventsByExecution("exec-1")
+				.filter((e) => e.event_type === "stuck_disposition_set")
+				.filter(
+					(e) =>
+						(e.payload as Record<string, unknown>)?.disposition === "re_arm",
+				);
+			expect(traces).toHaveLength(1);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("re_arm still enforces leadId + session existence + lead scope (Codex R2 #4 boundary)", async () => {
+		const onRearm = vi.fn();
+		const h = await boot({ onRearm });
+		try {
+			const noLead = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				disposition: "re_arm",
+			});
+			expect(noLead.status).toBe(400);
+			const noSession = await post(
+				h,
+				"/api/sessions/exec-ghost/stuck-disposition",
+				{ leadId: "product-lead", disposition: "re_arm" },
+			);
+			expect(noSession.status).toBe(404);
+			const wrongLead = await post(
+				h,
+				"/api/sessions/exec-1/stuck-disposition",
+				{
+					leadId: "other-lead",
+					disposition: "re_arm",
+				},
+			);
+			expect(wrongLead.status).toBe(403);
+			expect(onRearm).not.toHaveBeenCalled();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("re_arm without onRearm wiring still deletes the DB row (detector disabled)", async () => {
+		const h = await boot({ latchTtlMs: 0 });
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+			});
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				disposition: "re_arm",
+			});
+			expect(r.status).toBe(200);
+			expect(
+				h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel,
+			).toBeUndefined();
+		} finally {
+			await closeH(h);
+		}
+	});
+});
+
 /**
  * FLY-1048 PR-C (C3-w): the detection-escalation ACK endpoint — the Lead's
  * disposition receipt for a UNIFIED-flow episode. The authorization invariant
  * (Codex R1 #3 of the 1073 continuation plan) is that this route reuses the
- * session-route checks — route auth middleware, leadId required,
+ * EXACT stuck-remanage checks — route auth middleware, leadId required,
  * session existence, matchesLead owner/scope — before any detection row is
  * written; it must never become a parallel weakly-authenticated endpoint.
  */
@@ -394,25 +757,16 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 		h2.store.close();
 	}
 
-	function seedEpisode(
-		store: StateStore,
-		targetKey = "exec-1",
-		fingerprint = FP,
-	): void {
+	function seedEpisode(store: StateStore, targetKey = "exec-1"): void {
 		store.upsertDetectionEscalation({
 			targetKey,
 			kind: KIND,
-			episodeFingerprint: fingerprint,
+			episodeFingerprint: FP,
 			issueId: "FLY-1",
 			ownerLeadId: "product-lead",
 			firstDetectedAtMs: 0,
 		});
-		store.markDetectionEscalationLeadNotified(
-			targetKey,
-			KIND,
-			fingerprint,
-			1_000,
-		);
+		store.markDetectionEscalationLeadNotified(targetKey, KIND, FP, 1_000);
 	}
 
 	const valid = {
@@ -465,40 +819,6 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 			episode_fingerprint: "",
 		});
 		expect(r.status).toBe(400);
-		expect(r.json.error).toBe(
-			"episode_fingerprint is required (from the detection_escalation event)",
-		);
-	});
-
-	it("closes an oversized fingerprint instead of stranding the episode", async () => {
-		const oversized = `detection-chain:${"x".repeat(240)}`;
-		seedEpisode(h.store, "exec-1", oversized);
-		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
-			...valid,
-			episode_fingerprint: oversized,
-		});
-
-		expect(r.status).toBe(200);
-		expect(
-			h.store.getDetectionEscalation("exec-1", KIND, oversized)?.status,
-		).toBe("ACKED");
-		const audit = h.store
-			.getEventsByExecution("exec-1")
-			.find((event) => event.event_type === "detection_escalation_disposition");
-		expect((audit?.payload as { fingerprint?: string }).fingerprint).toMatch(
-			/^sha256:[a-f0-9]{64}$/,
-		);
-	});
-
-	it("reports an unmatched oversized fingerprint as too long, not missing", async () => {
-		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
-			...valid,
-			episode_fingerprint: "x".repeat(240),
-		});
-
-		expect(r.status).toBe(404);
-		expect(r.json.error).toMatch(/too long/i);
-		expect(r.json.error).not.toMatch(/required/i);
 	});
 
 	it("400 on an unknown disposition", async () => {
@@ -570,91 +890,6 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 	});
 });
 
-describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
-	const KIND = "wake_failed";
-	const FP = "wake-root-1";
-	const valid = {
-		projectName: "geo",
-		kind: KIND,
-		episode_fingerprint: FP,
-		disposition: "ack",
-	};
-
-	function seedLeadEpisode(
-		targetKey = "geo:product-lead",
-		ownerLeadId: string | null = "product-lead",
-		fingerprint = FP,
-	): void {
-		h.store.upsertDetectionEscalation({
-			targetKey,
-			kind: KIND,
-			episodeFingerprint: fingerprint,
-			issueId: "FLY-1",
-			ownerLeadId,
-			firstDetectedAtMs: 1_000,
-		});
-		h.store.markDetectionEscalationLeadNotified(
-			targetKey,
-			KIND,
-			fingerprint,
-			2_000,
-		);
-	}
-
-	it("derives the target server-side and atomically prepares the disposition receipt", async () => {
-		seedLeadEpisode();
-		const r = await post(h, "/api/leads/product-lead/detection-ack", valid);
-
-		expect(r.status).toBe(200);
-		expect(r.json).toMatchObject({
-			ok: true,
-			status: "ACKED",
-			receiptPrepared: true,
-		});
-		expect(
-			h.store.getDetectionEscalation("geo:product-lead", KIND, FP)?.status,
-		).toBe("ACKED");
-	});
-
-	it("rejects raw target injection and cross-project/cross-lead attempts", async () => {
-		seedLeadEpisode();
-		const raw = await post(h, "/api/leads/product-lead/detection-ack", {
-			...valid,
-			target_key: "other:product-lead",
-		});
-		const project = await post(h, "/api/leads/product-lead/detection-ack", {
-			...valid,
-			projectName: "other",
-		});
-		const lead = await post(h, "/api/leads/other-lead/detection-ack", valid);
-
-		expect(raw.status).toBe(400);
-		expect(project.status).not.toBe(200);
-		expect(lead.status).not.toBe(200);
-		expect(
-			h.store.getDetectionEscalation("geo:product-lead", KIND, FP)?.status,
-		).toBe("LEAD_NOTIFIED");
-	});
-
-	it("fails closed on a missing or conflicting owner", async () => {
-		seedLeadEpisode("geo:product-lead", null);
-		const missing = await post(
-			h,
-			"/api/leads/product-lead/detection-ack",
-			valid,
-		);
-		expect(missing.status).toBe(403);
-
-		const conflictingFingerprint = "wake-root-2";
-		seedLeadEpisode("geo:product-lead", "other-lead", conflictingFingerprint);
-		const conflict = await post(h, "/api/leads/product-lead/detection-ack", {
-			...valid,
-			episode_fingerprint: conflictingFingerprint,
-		});
-		expect(conflict.status).toBe(403);
-	});
-});
-
 /**
  * FLY-1048 PR-C (C4a): bidirectional ACK/resolution mirror between the OLD
  * stuck_dispositions receipts and the NEW detection_escalations episodes.
@@ -665,3 +900,183 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
  * own detection-ack lifecycle and are NOT what a stuck receipt describes.
  * Mirror failures must never fail the request (trace-row posture).
  */
+describe("C4a ACK mirror between stuck_dispositions and detection_escalations", () => {
+	const CKIND = "detection_stuck_confirmed";
+	const FP_A = STUCK_FP;
+	const FP_B = fingerprintOutput("a different frozen frame entirely");
+
+	function seedDetection(fp: string, kind = CKIND): void {
+		h.store.upsertDetectionEscalation({
+			targetKey: "exec-1",
+			kind,
+			episodeFingerprint: fp,
+			issueId: "FLY-1",
+			ownerLeadId: "product-lead",
+			firstDetectedAtMs: 0,
+		});
+		h.store.markDetectionEscalationLeadNotified("exec-1", kind, fp, 1_000);
+	}
+
+	// ── forward: stuck-disposition route → detection_escalations ──
+
+	it("false_positive (episode receipt) → the matching case-c episode is RESOLVED", async () => {
+		seedDetection(FP_A);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"RESOLVED",
+		);
+	});
+
+	it("legitimate_wait (execution latch) → EVERY active case-c episode of the target is ACKED", async () => {
+		seedDetection(FP_A);
+		seedDetection(FP_B);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "legitimate_wait",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"ACKED",
+		);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_B)?.status).toBe(
+			"ACKED",
+		);
+	});
+
+	it("needs_founder → ACKED (the Lead owns the episode, incl. the founder relay)", async () => {
+		seedDetection(FP_A);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "needs_founder",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"ACKED",
+		);
+	});
+
+	it("non-case-c kinds are untouched by the mirror", async () => {
+		seedDetection(FP_A, "delivery_unconsumed");
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(
+			h.store.getDetectionEscalation("exec-1", "delivery_unconsumed", FP_A)
+				?.status,
+		).toBe("LEAD_NOTIFIED");
+	});
+
+	it("no detection row → the disposition still succeeds (mirror is a silent no-op)", async () => {
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: FP_A,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(r.json).toMatchObject({ ok: true });
+	});
+
+	it("re_arm does NOT mirror — the unified episode lifecycle is unaffected", async () => {
+		seedDetection(FP_A);
+		h.store.ackDetectionEscalation("exec-1", CKIND, FP_A, {
+			atMs: 2_000,
+			disposition: "ack",
+		});
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			disposition: "re_arm",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, FP_A)?.status).toBe(
+			"ACKED",
+		);
+	});
+
+	// ── reverse: detection-ack route → stuck_dispositions ──
+
+	function seedAndAck(
+		disposition: "ack" | "resolve" | "dismiss",
+		kind = CKIND,
+		fp = FP_A,
+	) {
+		seedDetection(fp, kind);
+		return post(h, "/api/sessions/exec-1/detection-ack", {
+			leadId: "product-lead",
+			kind,
+			episode_fingerprint: fp,
+			disposition,
+		});
+	}
+
+	it("ack (case-c, 16-hex fp) → TTL'd legitimate_wait receipt for the episode", async () => {
+		const r = await seedAndAck("ack");
+		expect(r.status).toBe(200);
+		const receipt = h.store.getStuckDisposition("exec-1", FP_A);
+		expect(receipt?.disposition).toBe("legitimate_wait");
+		expect(receipt?.noted_by).toBe("product-lead");
+		// TTL'd, never a permanent mask: the old flow re-observes after expiry.
+		expect(receipt?.snooze_until_ms).toBeGreaterThan(Date.now());
+	});
+
+	it("resolve → handled_remanaged terminal receipt", async () => {
+		const r = await seedAndAck("resolve");
+		expect(r.status).toBe(200);
+		const receipt = h.store.getStuckDisposition("exec-1", FP_A);
+		expect(receipt?.disposition).toBe("handled_remanaged");
+		expect(receipt?.snooze_until_ms ?? null).toBeNull();
+	});
+
+	it("dismiss → false_positive episode receipt", async () => {
+		const r = await seedAndAck("dismiss");
+		expect(r.status).toBe(200);
+		const receipt = h.store.getStuckDisposition("exec-1", FP_A);
+		expect(receipt?.disposition).toBe("false_positive");
+		expect(receipt?.snooze_until_ms ?? null).toBeNull();
+	});
+
+	it("non-case-c kind → NO stuck receipt is written", async () => {
+		const r = await seedAndAck("ack", "delivery_unconsumed");
+		expect(r.status).toBe(200);
+		expect(h.store.getStuckDisposition("exec-1", FP_A)).toBeUndefined();
+	});
+
+	it("stuck-disposition ENTRY accepts sig: fingerprints and forward-mirrors them (Codex R2 #4)", async () => {
+		const fp = "sig:fedcba9876543210";
+		seedDetection(fp);
+		const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+			leadId: "product-lead",
+			episode_fingerprint: fp,
+			disposition: "false_positive",
+		});
+		expect(r.status).toBe(200);
+		expect(h.store.getDetectionEscalation("exec-1", CKIND, fp)?.status).toBe(
+			"RESOLVED",
+		);
+	});
+
+	it("sig: fingerprints mirror too (A3 error-loop episodes) — Codex R1 #8", async () => {
+		const fp = "sig:0123456789abcdef";
+		const r = await seedAndAck("resolve", CKIND, fp);
+		expect(r.status).toBe(200);
+		expect(h.store.getStuckDisposition("exec-1", fp)?.disposition).toBe(
+			"handled_remanaged",
+		);
+	});
+
+	it("non-16hex detection fingerprint → NO stuck receipt is written", async () => {
+		const fp = "gap:exec-1:12345";
+		const r = await seedAndAck("ack", CKIND, fp);
+		expect(r.status).toBe(200);
+		expect(h.store.getStuckDisposition("exec-1", fp)).toBeUndefined();
+	});
+});

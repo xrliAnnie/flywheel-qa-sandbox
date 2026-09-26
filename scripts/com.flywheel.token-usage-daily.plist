@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FLY-614 — daily token-usage report (launchd template).
+  Install:
+    cp scripts/com.flywheel.token-usage-daily.plist ~/Library/LaunchAgents/
+    # edit the path / Hour / Minute / channel below to match this machine, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.token-usage-daily.plist
+  Channel is supplied via FLYWHEEL_TOKEN_USAGE_CHANNEL (set below or in ~/.flywheel/.env).
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.flywheel.token-usage-daily</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/xiaorongli/Dev/flywheel/scripts/token-usage-daily.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>FLYWHEEL_REPO</key>
+		<string>/Users/xiaorongli/Dev/flywheel</string>
+		<!-- <key>FLYWHEEL_TOKEN_USAGE_CHANNEL</key><string>REPLACE_WITH_CHANNEL_ID</string> -->
+	</dict>
+	<!--
+	  FLY-713: fire at 00:30 (just past midnight) so the report — which renders
+	  YESTERDAY's full day — is sent with the freshest complete data. 00:30 is a
+	  clean gap clear of the 00:00 updater and the 01:00 / 03:00 / 03:07 cron jobs.
+	  (FLY-744 note: the issue says "00:35"; that's an approximation — the actual,
+	  deliberately-chosen slot is 00:30. Kept as-is to preserve the clean cron gap.)
+	-->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>0</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>/tmp/flywheel-token-usage-daily.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/flywheel-token-usage-daily.err</string>
+</dict>
+</plist>

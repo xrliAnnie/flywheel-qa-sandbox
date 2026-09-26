@@ -2,28 +2,17 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	type RespondArgs,
-	respond as rawRespond,
-} from "../commands/respond.js";
+import { respond } from "../commands/respond.js";
 import { CommDB } from "../db.js";
-import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
+import { FounderConsentAuditStore } from "../founder-consent-audit.js";
 
 let dir: string;
 let dbPath: string;
-let leadEnv: NodeJS.ProcessEnv;
+let auditPath: string;
 
-function respond(args: RespondArgs): Promise<void> {
-	return rawRespond({ ...args, env: { ...leadEnv, ...args.env } });
-}
-
-function seed(checkpoint?: string, id?: string): string {
+function seed(checkpoint?: string): string {
 	const db = new CommDB(dbPath, true);
-	db.registerSession("exec-1", "runner", "Proj", "issue-1", "lead-x");
-	const qid = db.insertQuestion("exec-1", "lead-x", "ship?", {
-		checkpoint,
-		id,
-	});
+	const qid = db.insertQuestion("exec-1", "lead-x", "ship?", { checkpoint });
 	db.close();
 	return qid;
 }
@@ -38,7 +27,7 @@ function hasResponse(qid: string): boolean {
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "respond-"));
 	dbPath = join(dir, "comm.db");
-	leadEnv = createTestLeadIdentityEnvs(dir, ["lead-x"], "Proj")["lead-x"]!;
+	auditPath = join(dir, "audit.db");
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -55,45 +44,19 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(true);
 	});
 
-	it("approve_to_ship + no bridge fails closed even when the retired bypass env is set", async () => {
+	it("approve_to_ship + no bridge + no bypass → FAIL-CLOSED (throws, no write)", async () => {
 		const qid = seed("approve_to_ship");
 		await expect(
 			respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: "changes requested",
+				answer: "approved",
 				dbPath,
-				env: { FLYWHEEL_COMM_BYPASS_BRIDGE: "1" },
+				env: {},
 			}),
 		).rejects.toThrow(/refusing to resolve approve_to_ship/);
 		expect(hasResponse(qid)).toBe(false);
 	});
-
-	it.each([
-		["approval text", "approved"],
-		["revision feedback", "Please revise the second section."],
-		["structured verdict", '{"passed":true}'],
-	])(
-		"founder_review + %s → Lead respond is always rejected",
-		async (_shape, answer) => {
-			const qid = seed("founder_review");
-			const fetchImpl = vi.fn();
-			await expect(
-				respond({
-					questionId: qid,
-					fromAgent: "lead-x",
-					answer,
-					dbPath,
-					bridgeUrl: "http://localhost:9999",
-					sourceThread: "thread-1",
-					env: { TEAMLEAD_API_TOKEN: "tok" },
-					fetchImpl: fetchImpl as typeof fetch,
-				}),
-			).rejects.toThrow(/founder_review.*only the trusted founder writer/i);
-			expect(fetchImpl).not.toHaveBeenCalled();
-			expect(hasResponse(qid)).toBe(false);
-		},
-	);
 
 	it("approve_to_ship + bridgeUrl but missing TEAMLEAD_API_TOKEN → throws", async () => {
 		const qid = seed("approve_to_ship");
@@ -101,7 +64,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: "changes requested",
+				answer: "approved",
 				dbPath,
 				bridgeUrl: "http://localhost:9999",
 				env: {},
@@ -120,7 +83,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		await respond({
 			questionId: qid,
 			fromAgent: "lead-x",
-			answer: "changes requested",
+			answer: "approved",
 			dbPath,
 			projectName: "Proj",
 			bridgeUrl: "http://localhost:9999",
@@ -136,94 +99,20 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
-	it("workflow-gate id completes markerless retirement after a successful bridge route", async () => {
-		const qid = seed("approve_to_ship", "workflow-gate:submission-digest");
-		const fetchImpl = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ success: true }),
-		})) as unknown as typeof fetch;
-
-		await expect(
-			respond({
-				questionId: qid,
-				fromAgent: "lead-x",
-				answer: "changes requested",
-				dbPath,
-				projectName: "Proj",
-				bridgeUrl: "http://localhost:9999",
-				env: {
-					FLYWHEEL_GATE_MARKER_DIR: join(dir, "markers"),
-					TEAMLEAD_API_TOKEN: "tok",
-				},
-				fetchImpl,
-			}),
-		).resolves.toBeUndefined();
-
-		const init = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
-		expect(JSON.parse(String(init?.body))).toMatchObject({ questionId: qid });
-		expect(hasResponse(qid)).toBe(false);
-	});
-
-	it("approve_to_ship + --kickback sends the explicit Lead confirmation", async () => {
+	it("FLY-208 6b: bridge response warning is printed to stderr", async () => {
 		const qid = seed("approve_to_ship");
+		const warning =
+			"Recorded as FEEDBACK, not approval — only the exact JSON ...";
 		const fetchImpl = vi.fn(async () => ({
 			ok: true,
 			status: 200,
-			json: async () => ({ success: true }),
+			json: async () => ({ success: true, passthrough: true, warning }),
 		})) as unknown as typeof fetch;
-		await respond({
-			questionId: qid,
-			fromAgent: "lead-x",
-			answer: "Please revisit the proposed flow.",
-			kickback: true,
-			dbPath,
-			projectName: "Proj",
-			bridgeUrl: "http://localhost:9999",
-			env: { TEAMLEAD_API_TOKEN: "tok" },
-			fetchImpl,
-		});
-
-		const init = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
-		expect(JSON.parse(String(init?.body))).toMatchObject({ kickback: true });
-		expect(hasResponse(qid)).toBe(false);
-	});
-
-	it("source-thread routes an ordinary response through Bridge with typed scope guards", async () => {
-		const qid = seed();
-		const fetchImpl = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ ok: true, responseId: "response-1" }),
-		})) as unknown as typeof fetch;
-		await respond({
-			questionId: qid,
-			fromAgent: "lead-x",
-			answer: "routed answer",
-			dbPath,
-			sourceThread: "thread-1",
-			bridgeUrl: "http://localhost:9999",
-			env: { TEAMLEAD_API_TOKEN: "tok" },
-			fetchImpl,
-		});
-
-		const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
-		expect(String(url)).toContain("/api/founder-routing/runner-response");
-		expect(JSON.parse(String(init?.body))).toMatchObject({
-			questionId: qid,
-			leadId: "lead-x",
-			sourceThread: "thread-1",
-			expectedOwner: "exec-1",
-			expectedCheckpoint: null,
-		});
-		expect(hasResponse(qid)).toBe(false);
-	});
-
-	it("rejects Lead approval intent before contacting the Bridge", async () => {
-		const qid = seed("approve_to_ship");
-		const fetchImpl = vi.fn();
-		await expect(
-			respond({
+		const stderrSpy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation(() => true);
+		try {
+			await respond({
 				questionId: qid,
 				fromAgent: "lead-x",
 				answer: "APPROVE — looks good",
@@ -231,11 +120,14 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				projectName: "Proj",
 				bridgeUrl: "http://localhost:9999",
 				env: { TEAMLEAD_API_TOKEN: "tok" },
-				fetchImpl: fetchImpl as typeof fetch,
-			}),
-		).rejects.toThrow(/lead_ack_rejected/);
-		expect(fetchImpl).not.toHaveBeenCalled();
-		expect(hasResponse(qid)).toBe(false);
+				fetchImpl,
+			});
+			const writes = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
+			expect(writes).toContain("WARNING");
+			expect(writes).toContain("Recorded as FEEDBACK");
+		} finally {
+			stderrSpy.mockRestore();
+		}
 	});
 
 	it("FLY-208 6b: no warning in bridge response → nothing extra on stderr", async () => {
@@ -252,7 +144,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			await respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: "changes requested",
+				answer: '{"approved": true}',
 				dbPath,
 				projectName: "Proj",
 				bridgeUrl: "http://localhost:9999",
@@ -277,7 +169,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			respond({
 				questionId: qid,
 				fromAgent: "lead-x",
-				answer: "changes requested",
+				answer: "approved",
 				dbPath,
 				bridgeUrl: "http://localhost:9999",
 				env: { TEAMLEAD_API_TOKEN: "tok" },
@@ -287,50 +179,28 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
-	it("rejects Lead approval intent even when the retired bypass env is set", async () => {
+	it("approve_to_ship + FLYWHEEL_COMM_BYPASS_BRIDGE=1 → writes + loud audit row", async () => {
 		const qid = seed("approve_to_ship");
-		await expect(
-			respond({
-				questionId: qid,
-				fromAgent: "lead-x",
-				answer: "approved",
-				dbPath,
-				projectName: "Proj",
-				env: {
-					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-				},
-			}),
-		).rejects.toThrow(/lead_ack_rejected/);
-		expect(hasResponse(qid)).toBe(false);
-	});
-
-	it("the retired bypass cannot write a superseded gate", async () => {
-		const oldGate = seed("approve_to_ship");
-		const db = new CommDB(dbPath, false);
-		try {
-			const replacement = db.insertQuestion("exec-2", "lead-x", "replacement", {
-				checkpoint: "approve_to_ship",
-			});
-			expect(db.retireShipGate(oldGate, { supersededBy: replacement })).toBe(
-				true,
-			);
-		} finally {
-			db.close();
-		}
-
-		await expect(
-			respond({
-				questionId: oldGate,
-				fromAgent: "lead-x",
-				answer: "changes requested",
-				dbPath,
-				projectName: "Proj",
-				env: {
-					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-				},
-			}),
-		).rejects.toThrow(/refusing to resolve approve_to_ship/);
-		expect(hasResponse(oldGate)).toBe(false);
+		await respond({
+			questionId: qid,
+			fromAgent: "lead-x",
+			answer: "approved",
+			dbPath,
+			projectName: "Proj",
+			env: {
+				FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
+				FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
+			},
+		});
+		expect(hasResponse(qid)).toBe(true);
+		const store = new FounderConsentAuditStore(auditPath);
+		const rows = store.queryRecent(10);
+		store.close();
+		expect(rows).toHaveLength(1);
+		expect((rows[0] as Record<string, unknown>).decision).toBe("bypass");
+		expect((rows[0] as Record<string, unknown>).decision_source).toBe(
+			"bypass_env_cli",
+		);
 	});
 
 	it("throws when question not found", async () => {

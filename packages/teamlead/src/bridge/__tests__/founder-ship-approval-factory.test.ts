@@ -2,11 +2,13 @@
  * FLY-799 — founder ship-approval factory (RED first).
  *
  * Produces the `tryFounderShipApproval` callback the deliverer calls, gating it
- * on the per-project denylist + a resolvable canonical founder id. Any gate
- * failing → the callback returns null (deliverer falls back to WAKE-only).
+ * on the default-ON flag (FLYWHEEL_FOUNDER_AUTO_APPROVE !== "0") + per-project
+ * denylist + a resolvable canonical founder id. Any gate failing → the callback
+ * returns null (deliverer falls back to WAKE-only). Env is read per-call so ops
+ * can flip the kill-switch without a restart.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeFounderShipApprovalCallback } from "../approval-signal/founder-ship-approval-factory.js";
 
 const ctx = { issueId: "I", threadId: "T", projectName: "proj" } as never;
@@ -24,6 +26,10 @@ const callArgs = {
 	ctx,
 	db: {} as never,
 };
+
+afterEach(() => {
+	delete process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE;
+});
 
 function make(over = {}) {
 	const handlerImpl = vi
@@ -44,6 +50,14 @@ describe("makeFounderShipApprovalCallback — gating", () => {
 		const r = await cb(callArgs);
 		expect(r).toEqual({ handled: ["Q-1"], retrySafe: true });
 		expect(handlerImpl).toHaveBeenCalledOnce();
+	});
+
+	it("kill-switch FLYWHEEL_FOUNDER_AUTO_APPROVE=0 → null, never delegates", async () => {
+		process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE = "0";
+		const { cb, handlerImpl } = make();
+		const r = await cb(callArgs);
+		expect(r).toBeNull();
+		expect(handlerImpl).not.toHaveBeenCalled();
 	});
 
 	it("per-project denylist → null, never delegates", async () => {

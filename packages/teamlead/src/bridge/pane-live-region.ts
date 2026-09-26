@@ -1,11 +1,11 @@
 /**
  * FLY-1048 (Task A2): shared pane live-region pure helpers.
  *
- * Extracted VERBATIM from the retired Lead-pane alert loop (FLY-193/FLY-220 logic — behavior must
+ * Extracted VERBATIM from LeadWatchdog (FLY-193/FLY-220 logic — behavior must
  * stay byte-identical; the committed lead-pane fixtures are the guard) so the
  * multi-frame observation window (`pane-frames.ts`) and the runner-side
  * detectors can reuse the exact same region/echo semantics instead of
- * duplicating security-sensitive parsing. The pane classifier imports from here and
+ * duplicating security-sensitive parsing. LeadWatchdog imports from here and
  * re-exports `ALERT_ECHO_START` for its existing consumers.
  */
 
@@ -38,7 +38,7 @@ const INPUT_BOX_TOP = /─{6,}[^\n]*@[\w-]+\s+─/u;
  * bar at the bottom, plus a few lines above to catch a spinner that is actively
  * rendering (or frozen) immediately above the box.
  *
- * Why: pane observers capture 200 lines of scrollback (`capture-pane -S -200`).
+ * Why: `LeadWatchdog` captures 200 lines of scrollback (`capture-pane -S -200`).
  * Scanning the whole capture for working/idle markers gets poisoned by STALE
  * lines — a Lead that printed "…thinking…" or "…working…" 50 lines ago and is
  * now idle would never be recognized as idle (false positive persists). The live
@@ -72,11 +72,6 @@ export function liveRegion(pane: string): string {
  */
 const INBOUND_ECHO_LINE = /^\s*←/;
 
-// Retired kinds can remain in pane scrollback and durable alert rows after
-// their producer disappears. Recognize them only for echo suppression; keeping
-// them outside ALERT_EVENT_TYPES prevents any new alert from being emitted.
-const RETIRED_ALERT_ECHO_TYPES = ["founder_milestone_undelivered"] as const;
-
 /**
  * FLY-927 (Task 1.2): the kind alternation is DERIVED from the shared
  * `ALERT_EVENT_TYPES` table (LeadAlertNotifier) — the old hand-enumerated list
@@ -88,10 +83,7 @@ const RETIRED_ALERT_ECHO_TYPES = ["founder_milestone_undelivered"] as const;
  * TUI never renders it about itself).
  */
 export const ALERT_ECHO_START = new RegExp(
-	`\\(\\s*[a-z0-9-]+\\s*\\/\\s*(?:${[
-		...ALERT_EVENT_TYPES,
-		...RETIRED_ALERT_ECHO_TYPES,
-	].join("|")})\\s*\\)` +
+	`\\(\\s*[a-z0-9-]+\\s*\\/\\s*(?:${ALERT_EVENT_TYPES.join("|")})\\s*\\)` +
 		"|^\\s*🎫\\s" +
 		"|\\blead hit (?:rate|usage) limit\\b|\\blead login expired\\b|\\blead waiting on permission prompt\\b|\\blead pane has been frozen\\b|\\blead crash-looping\\b|\\brunner stuck unhandled\\b",
 	"i",
@@ -100,7 +92,8 @@ export const ALERT_ECHO_START = new RegExp(
 /**
  * FLY-220 — the Lead's OWN live state text: the live render region (FLY-193) with
  * inbound-Discord echoes and the Bridge's own alert template removed (line by
- * line). Every retained blocked-state read goes through this, so an alert echoed back into a
+ * line). EVERY blocked-keyword read (`classify`, `isIdleHealthyPane`,
+ * `isTransientThrottlePane`) goes through this, so an alert echoed back into a
  * pane (or a stale one in the live region) can never re-trigger the same alert —
  * root cure for the cross-Lead alert-amplification loop on a shared channel.
  *

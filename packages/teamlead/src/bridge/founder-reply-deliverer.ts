@@ -1,55 +1,49 @@
 /**
- * Founder issue-thread ingress. Bridge records one canonical Lead receipt and
- * forwards the original message to Lead without classifying, answering, or
- * routing it. Only a later Lead action may reach a runner and close the handled
- * receipt. This topology is unconditional: the receipt flag pauses chasing
- * only and never restores Bridge auto-processing.
+ * FLY-605 Part B (inbound founder→runner): when the founder answers in the
+ * per-issue Discord thread but the Lead never relays it back, the Bridge
+ * auto-delivers the reply to the parked runner — so it never waits for days.
  *
- * Reliability is processed-through (at least once): the cursor advances past a
- * founder message only after its canonical receipt and durable Lead handoff
- * succeed, or after the message is proven irrelevant. A transient failure pins
- * the cursor so the next cadence retries the same message.
+ * Checkpoint split (🔴 FLY-175 hard boundary, Tadashi-confirmed):
+ *  - brainstorm / runner_question (non-gated) → reuse `respond()`'s non-gated
+ *    path (writes the response + the marker-aware wake helpers). Unblocks the
+ *    runner with the founder's answer.
+ *  - approve_to_ship → WAKE-only: wake the parked runner with the reply as
+ *    NON-authoritative context. NEVER `insertResponse`, NEVER `respond()` — a
+ *    ship approval is authorized exclusively through verify-approval/consent.
+ *
+ * Reliability: a PROCESSED-THROUGH (at-least-once) thread cursor. The cursor
+ * advances past a founder message ONLY after the response is written / the ship
+ * wake marker is durable / the ambiguous Lead-handoff is delivered / the message
+ * is proven irrelevant. An immature (pre-grace) or transiently-failed message
+ * stops the scan so the next sub-cadence re-reads it (Codex R2 #1).
  */
 
 import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
+import { respond as defaultRespond } from "flywheel-comm/respond";
+import { wakeRunnerMailbox as defaultWake } from "flywheel-comm/wake";
 import type { InboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../StateStore.js";
-import { reactToFounderMessage as addFounderReaction } from "./approval-signal/founder-ack.js";
+import { reactToFounderMessage as defaultReactToFounderMessage } from "./approval-signal/founder-ack.js";
 import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
-import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	msToSnowflakeLowerBound,
 	snowflakeToMs,
 	truncate,
 } from "./founder-notify-utils.js";
-import {
-	classifyFounderReviewReply,
-	writeTrustedFounderReviewResponse,
-} from "./founder-review-response.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const GET_TIMEOUT_MS = 5_000;
 const GET_LIMIT = 50;
-const DEFAULT_FOUNDER_DECISION_DEADLINE_MS = 3 * 60_000;
-
+const SUMMARY_MAX = 1_000;
+const FOUNDER_AGENT = "founder-bridge-auto";
 /** Discord message type 19 = REPLY (the only shape reply-to-card accepts). */
 const DISCORD_MESSAGE_TYPE_REPLY = 19;
+
 interface RawDiscordMessage {
 	id: string;
 	content?: string;
-	timestamp?: string;
-	author?: {
-		id?: string;
-		bot?: boolean;
-		username?: string;
-		global_name?: string | null;
-	};
-	attachments?: Array<{
-		filename?: string;
-		content_type?: string;
-		size?: number;
-	}>;
+	author?: { id?: string; bot?: boolean };
 	/**
 	 * FLY-1041 Chunk 7: already present in the batch GET response — a REPLY
 	 * message (type 19) carries `message_reference.message_id`. No extra API
@@ -85,7 +79,7 @@ export interface PendingQuestionForThread {
 	createdAtMs: number;
 	/**
 	 * FLY-945 Fix A: per-checkpoint grace for founder messages matching THIS
-	 * question (approve_to_ship → 15s;
+	 * question (approve_to_ship → FLYWHEEL_SHIP_GATE_GRACE_MS, default 15s;
 	 * everything else → the 10min FLY-605 grace). A message's applicable grace
 	 * is the MINIMUM across its matching questions. Absent → ctx.graceMs
 	 * (byte-compatible with pre-FLY-945 callers).
@@ -123,7 +117,7 @@ export interface ShipApprovalOutcome {
 
 /**
  * FLY-1099 §3.4 (Codex R1 #5): structured per-thread scan outcome — the
- * reconcile's health input. A Discord GET failure is an OUTCOME, not just an
+ * watchdog's health input. A Discord GET failure is an OUTCOME, not just an
  * audit row (consecutive read_failed must be able to alert).
  */
 export interface ThreadScanOutcome {
@@ -181,92 +175,58 @@ export interface FounderReplyDeliverDeps {
 	store: StateStore;
 	fetchImpl?: typeof fetch;
 	cursorStore?: InboundCursorStore;
-	commDbLeaseFactory?: (path: string) => {
-		db: CommDB;
-		release(): void;
-	};
+	wakeImpl?: typeof defaultWake;
+	respondImpl?: typeof defaultRespond;
+	commDbFactory?: (path: string) => CommDB;
 	/** FLY-1099 §7.1: bounded retry + dead-letter (absent → legacy behavior). */
 	retryLedger?: FounderReplyRetryLedger;
 	/**
-	 * Durable founder-message handoff to Lead. GatePoller mirrors the ingress in
-	 * its StateStore audit ledger, flushes it, and nudges the canonical inbox row
-	 * already recorded by this deliverer. The historical property name remains
-	 * for compatibility. Returns true only after durable acceptance and nudge.
+	 * Durable ambiguous-message handoff to the Lead (appendLeadEvent +
+	 * runtime.deliver via the same path GatePoller uses). Returns true only when
+	 * the handoff was durably accepted + delivered (Codex R3 #2). Absent → an
+	 * ambiguous message cannot be handed off → treat as a transient failure
+	 * (stop the cursor before it) rather than silently drop the manual relay.
 	 */
 	deliverAmbiguousToLead?: (
 		eventId: string,
 		payload: Record<string, unknown>,
 	) => Promise<boolean>;
 	/**
-	 * Restore the FLY-945 founder text/card decision path. The canonical
-	 * founder receipt is enqueued before this callback runs, so the shared gate
-	 * writer can atomically bind the response, source event, receipt, and wake.
-	 * Absent keeps the category-agnostic Lead handoff byte-compatible.
+	 * FLY-799: attempt to attribute a founder approval for the thread's ship
+	 * gate(s) from THIS founder message (text source → shared gate-write
+	 * helper). Runs BEFORE the WAKE-only fallback.
+	 *
+	 * FLY-1099 §3.2: returns the explicit `ShipApprovalOutcome` disposition —
+	 * `bound` ∪ `deferred` skip WAKE; `deferred` non-empty → 🕒 receipt;
+	 * `retry` → pin the cursor (bounded by the retry ledger). null =
+	 * unattributable (non-founder / narrow miss / unclear) → byte-compatible
+	 * WAKE-only. Absent (feature off / default) → WAKE-only.
 	 */
 	tryFounderShipApproval?: (args: {
 		msg: { id: string; content?: string; authorId?: string };
 		shipGates: PendingQuestionForThread[];
 		ctx: FounderReplyThreadCtx;
 		db: CommDB;
+		/** FLY-1041 Chunk 7: verified reply to shipGates[0]'s ship card. */
 		replyToCard?: boolean;
-		founderMessage: {
-			msgId: string;
-			now: string;
-		};
-		recordDecisionClassification?: (decision: "approve" | "reject") => void;
 	}) => Promise<ShipApprovalOutcome | null>;
-	/** Current exact card binding, shared with the reaction approval path. */
+	/**
+	 * FLY-1041 Chunk 7: read the ONE current durable
+	 * `(questionId, prHeadSha) → gateMessageId` binding (same reader the
+	 * ✅-reaction path uses, fail-closed via selectCurrentBinding). When a
+	 * founder message is a true Discord REPLY whose reference resolves to a
+	 * gate's bound card message, attribution is narrowed to THAT gate —
+	 * a short "okk" on the card binds deterministically regardless of how many
+	 * other questions the thread has accumulated. Absent → replies are treated
+	 * exactly like any other founder message (byte-compat).
+	 */
 	readCurrentBinding?: (
 		executionId: string,
 		questionId: string,
 		prHeadSha: string,
 	) => GateMessageBinding | null;
-	/**
-	 * FLY-1448 C: production StateStore seams. Optional so legacy/test
-	 * assemblies retain their exact transport-only behavior.
-	 */
-	ensureDecisionConvergence?: (
-		input: Parameters<StateStore["ensureFounderDecisionConvergence"]>[0],
-	) => void;
-	classifyDecisionConvergence?: (
-		input: Parameters<StateStore["classifyFounderDecisionConvergence"]>[0],
-	) => void;
-	/** Best-effort founder-visible receipt in the current issue thread. */
-	postThreadReply?: (content: string) => Promise<boolean>;
-	/** Best-effort ✅ acknowledgement on the founder's exact message. */
-	reactToFounderMessage?: (messageId: string) => Promise<boolean>;
-}
-
-export async function postFounderReviewThreadReply(
-	threadId: string,
-	botToken: string,
-	content: string,
-	fetchImpl: typeof fetch,
-): Promise<boolean> {
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), GET_TIMEOUT_MS);
-	try {
-		const response = await fetchImpl(
-			`${DISCORD_API}/channels/${threadId}/messages`,
-			{
-				method: "POST",
-				headers: {
-					Authorization: `Bot ${botToken}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					content: markAutomatedDiscordText(content),
-					allowed_mentions: { parse: [] },
-				}),
-				signal: controller.signal,
-			},
-		);
-		return response.ok;
-	} catch {
-		return false;
-	} finally {
-		clearTimeout(timer);
-	}
+	/** FLY-1041 Chunk 8: test seam for the receipt-reaction PUT. */
+	reactToFounderMessageImpl?: typeof defaultReactToFounderMessage;
 }
 
 function audit(
@@ -287,6 +247,10 @@ function audit(
 	});
 }
 
+const SHIP_WAKE_TEXT = (summary: string): string =>
+	`Annie 在 thread 回复了你的 ship gate：${summary}\n` +
+	"这条不是授权——ship 前必须跑 verify-approval。";
+
 export async function emitFounderReplyDeliveryForThread(
 	ctx: FounderReplyThreadCtx,
 	questions: PendingQuestionForThread[],
@@ -296,49 +260,16 @@ export async function emitFounderReplyDeliveryForThread(
 		store,
 		fetchImpl = fetch,
 		cursorStore,
-		commDbLeaseFactory = (path) => {
-			const db = new CommDB(path, false);
-			return { db, release: () => db.close() };
-		},
+		wakeImpl = defaultWake,
+		respondImpl = defaultRespond,
+		commDbFactory = (p) => new CommDB(p, false),
 	} = deps;
+	if (questions.length === 0) {
+		return { threadId: ctx.threadId, result: "noop" };
+	}
+
 	// ── (A) READ THE THREAD ONCE ──
 	const cursor = cursorStore?.load(ctx.threadId);
-	if (cursor === undefined) {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), GET_TIMEOUT_MS);
-		try {
-			const res = await fetchImpl(
-				`${DISCORD_API}/channels/${ctx.threadId}/messages?limit=1`,
-				{
-					headers: { Authorization: `Bot ${ctx.botToken}` },
-					signal: controller.signal,
-				},
-			);
-			if (!res.ok) {
-				return {
-					threadId: ctx.threadId,
-					result: "read_failed",
-					stage: "bootstrap_read_failed",
-					reason: `status_${res.status}`,
-				};
-			}
-			const head = ((await res.json()) as RawDiscordMessage[])[0]?.id;
-			cursorStore?.save(
-				ctx.threadId,
-				head ?? msToSnowflakeLowerBound(Date.now()),
-			);
-			return { threadId: ctx.threadId, result: "noop" };
-		} catch (err) {
-			return {
-				threadId: ctx.threadId,
-				result: "read_failed",
-				stage: "bootstrap_read_failed",
-				reason: (err as Error).message,
-			};
-		} finally {
-			clearTimeout(timer);
-		}
-	}
 	const after =
 		cursor ??
 		msToSnowflakeLowerBound(Math.min(...questions.map((q) => q.createdAtMs)));
@@ -395,8 +326,7 @@ export async function emitFounderReplyDeliveryForThread(
 	// Discord returns newest-first; process oldest-first.
 	messages.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
 
-	const lease = commDbLeaseFactory(ctx.commDbPath);
-	const { db } = lease;
+	const db = commDbFactory(ctx.commDbPath);
 	try {
 		// Snapshot of still-pending qids (catch a Lead that just relayed).
 		const pendingNow = new Set(
@@ -423,42 +353,10 @@ export async function emitFounderReplyDeliveryForThread(
 						)
 					: [];
 
-			if (!isFounder) {
+			if (matching.length === 0) {
 				// irrelevant / already answered → safe to pass (unless pinned earlier)
 				if (!cursorPinned) advanceableUpTo = msg.id;
 				continue;
-			}
-			try {
-				db.ingestDiscordChat({
-					leadId: ctx.leadId,
-					chatId: ctx.threadId,
-					originChannelId: ctx.threadId,
-					messageId: msg.id,
-					authorId: msg.author?.id ?? ctx.ownerUserId,
-					authorName:
-						msg.author?.global_name ??
-						msg.author?.username ??
-						msg.author?.id ??
-						"founder",
-					ts: new Date(
-						msg.timestamp ?? snowflakeToMs(msg.id) ?? Date.now(),
-					).toISOString(),
-					msgKind: "guild",
-					attachments: (msg.attachments ?? []).map((attachment) => ({
-						name: attachment.filename ?? "attachment",
-						type: attachment.content_type ?? "application/octet-stream",
-						sizeKb: Math.max(0, (attachment.size ?? 0) / 1024),
-					})),
-					text: msg.content ?? "",
-					founderId: ctx.ownerUserId,
-				});
-			} catch (error) {
-				brokeOn = {
-					msgId: msg.id,
-					stage: "chat_ingest_failed",
-					reason: error instanceof Error ? error.message : String(error),
-				};
-				break;
 			}
 			// FLY-1099 §7.1: an already dead-lettered message is DISPOSED — skip it
 			// exactly like a non-matching one (its loss is on the durable record;
@@ -469,7 +367,9 @@ export async function emitFounderReplyDeliveryForThread(
 			}
 			// FLY-945 Fix A: applicable grace = min across matching questions'
 			// per-checkpoint graces (fallback ctx.graceMs = pre-FLY-945 behavior).
-			const applicableGraceMs = 0;
+			const applicableGraceMs = Math.min(
+				...matching.map((q) => q.checkpointGraceMs ?? ctx.graceMs),
+			);
 			if (now - (msgMs as number) < applicableGraceMs) {
 				cursorPinned = true; // not mature → re-read next sub-cadence
 				firstPinnedMsgId ??= msg.id;
@@ -482,37 +382,24 @@ export async function emitFounderReplyDeliveryForThread(
 			// message can spin forever with zero durable trail (账本诚实性).
 			let outcome: ProcessOutcome;
 			try {
-				outcome = await processFounderMessage(msg, matching, ctx, {
-					store,
-					db,
-					deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
-					tryFounderShipApproval: deps.tryFounderShipApproval,
-					retryLedger: deps.retryLedger,
-					readCurrentBinding: deps.readCurrentBinding,
-					ensureDecisionConvergence: deps.ensureDecisionConvergence,
-					classifyDecisionConvergence: deps.classifyDecisionConvergence,
-					postThreadReply:
-						deps.postThreadReply ??
-						((content) =>
-							postFounderReviewThreadReply(
-								ctx.threadId,
-								ctx.botToken,
-								content,
-								fetchImpl,
-							)),
-					reactToFounderMessage:
-						deps.reactToFounderMessage ??
-						(async (messageId) =>
-							(
-								await addFounderReaction({
-									botToken: ctx.botToken,
-									channelId: ctx.threadId,
-									messageId,
-									emoji: "✅",
-									fetchImpl,
-								})
-							).ok),
-				});
+				outcome = await processFounderMessage(
+					msg,
+					matching,
+					ctx,
+					{
+						store,
+						db,
+						wakeImpl,
+						respondImpl,
+						deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
+						tryFounderShipApproval: deps.tryFounderShipApproval,
+						readCurrentBinding: deps.readCurrentBinding,
+						fetchImpl,
+						reactToFounderMessageImpl: deps.reactToFounderMessageImpl,
+						retryLedger: deps.retryLedger,
+					},
+					pendingNow,
+				);
 			} catch (err) {
 				outcome = {
 					ok: false,
@@ -554,7 +441,7 @@ export async function emitFounderReplyDeliveryForThread(
 			cursorStore?.save(ctx.threadId, advanceableUpTo);
 			// FLY-1099 §7.2 (Codex R2 #6): the waterline safely crossed everything
 			// up to the cursor — clear their retry rows (answered by another path /
-			// proven irrelevant) so the pin reconcile never false-alarms.
+			// proven irrelevant) so the pin watchdog never false-alarms.
 			deps.retryLedger?.clearUpTo(ctx.threadId, advanceableUpTo);
 		}
 
@@ -583,7 +470,7 @@ export async function emitFounderReplyDeliveryForThread(
 					: "noop",
 		};
 	} finally {
-		lease.release();
+		db.close();
 	}
 }
 
@@ -599,265 +486,302 @@ async function processFounderMessage(
 	deps: {
 		store: StateStore;
 		db: CommDB;
+		wakeImpl: typeof defaultWake;
+		respondImpl: typeof defaultRespond;
 		deliverAmbiguousToLead?: FounderReplyDeliverDeps["deliverAmbiguousToLead"];
 		tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
-		retryLedger?: FounderReplyRetryLedger;
 		readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
-		ensureDecisionConvergence?: FounderReplyDeliverDeps["ensureDecisionConvergence"];
-		classifyDecisionConvergence?: FounderReplyDeliverDeps["classifyDecisionConvergence"];
-		postThreadReply?: FounderReplyDeliverDeps["postThreadReply"];
-		reactToFounderMessage?: FounderReplyDeliverDeps["reactToFounderMessage"];
+		fetchImpl?: typeof fetch;
+		reactToFounderMessageImpl?: FounderReplyDeliverDeps["reactToFounderMessageImpl"];
+		retryLedger?: FounderReplyRetryLedger;
 	},
+	pendingNow: Set<string>,
 ): Promise<ProcessOutcome> {
-	const { db } = deps;
-	const rawAnswer = msg.content ?? "";
-	const nowDate = new Date();
-	const now = nowDate.toISOString();
-	const shipGates = matching.filter(
-		(question) => question.checkpoint === "approve_to_ship",
-	);
-	const founderReviewGates = matching.filter(
-		(question) => question.checkpoint === "founder_review",
-	);
-	const isCardReply =
+	const { store, db, wakeImpl, respondImpl } = deps;
+	const answer = truncate(msg.content ?? "", SUMMARY_MAX);
+	const ship = matching.filter((q) => q.checkpoint === "approve_to_ship");
+	const nonShip = matching.filter((q) => q.checkpoint !== "approve_to_ship");
+	let failure: { stage: string; reason: string } | undefined;
+	const fail = (stage: string, reason: string): void => {
+		failure ??= { stage, reason };
+	};
+
+	// ── FLY-1041 Chunk 7: reply-to-card deterministic binding. A founder
+	// message qualifies ONLY as a true Discord REPLY (type 19) whose reference
+	// is a DEFAULT reference (type 0/absent — pin/forward/crosspost carry other
+	// reference types, Codex R1 #3) inside THIS thread; the referenced message
+	// id must then equal a gate's durably-bound card message id (the same
+	// fail-closed reader the ✅-reaction path uses). A hit narrows attribution
+	// to THAT gate — a short "okk" on the card binds regardless of how many
+	// other questions the thread accumulated. Any miss → the byte-compatible
+	// full-set path below. Kill-switch FLYWHEEL_REPLY_TO_CARD=0.
+	let cardGate: PendingQuestionForThread | undefined;
+	if (
+		process.env.FLYWHEEL_REPLY_TO_CARD !== "0" &&
+		deps.readCurrentBinding &&
+		ship.length > 0 &&
 		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
 		(msg.message_reference?.type === undefined ||
 			msg.message_reference.type === 0) &&
 		msg.message_reference?.channel_id === ctx.threadId &&
-		Boolean(msg.message_reference.message_id);
-	if (isCardReply && msg.message_reference?.message_id) {
-		const superseded =
-			deps.store.getSupersededWorkflowGateHolderByCardMessageId?.(
-				msg.message_reference.message_id,
-			);
-		if (superseded) {
-			const recorded = deps.store.recordVoidedWorkflowGateInput({
-				questionId: superseded.question_id,
-				alertIdentity: {
-					leadId: ctx.leadId,
-					projectName: ctx.projectName,
-					leadResolution: "resolved",
-				},
-				now,
-			});
-			if (!recorded.ok) {
-				return {
-					ok: false,
-					stage: "voided_card_input_alert_failed",
-					reason: recorded.reason,
-				};
-			}
-			return { ok: true };
-		}
-	}
-	let shipCardGate: PendingQuestionForThread | undefined;
-	if (
-		deps.readCurrentBinding &&
-		shipGates.length > 0 &&
-		isCardReply &&
-		msg.message_reference?.message_id
+		msg.message_reference.message_id
 	) {
-		for (const gate of shipGates) {
-			const head = deps.store.getSession(gate.executionId)?.pr_head_sha;
+		const refMsgId = msg.message_reference.message_id;
+		for (const g of ship) {
+			const gateSession = store.getSession(g.executionId);
+			const head = gateSession?.pr_head_sha;
 			if (!head) continue;
 			const binding = deps.readCurrentBinding(
-				gate.executionId,
-				gate.questionId,
+				g.executionId,
+				g.questionId,
 				head,
 			);
-			if (binding?.gateMessageId === msg.message_reference.message_id) {
-				shipCardGate = gate;
+			if (binding?.gateMessageId === refMsgId) {
+				cardGate = g;
 				break;
 			}
 		}
 	}
-	let founderReviewGate: PendingQuestionForThread | undefined;
-	if (isCardReply) {
-		const binding = deps.store.getFounderReviewCardBindingByMessage(
-			msg.message_reference!.message_id!,
-		);
-		founderReviewGate = founderReviewGates.find(
-			(gate) => gate.questionId === binding?.question_id,
-		);
-	}
-	const founderReviewContextGate = founderReviewGate;
-	if (founderReviewGate) {
-		const decision = classifyFounderReviewReply(rawAnswer);
-		if (decision.kind !== "neither") {
-			const written = writeTrustedFounderReviewResponse({
-				store: deps.store,
-				db,
-				questionId: founderReviewGate.questionId,
-				executionId: founderReviewGate.executionId,
-				fromAgent: "bridge",
-				founderId: ctx.ownerUserId,
-				passed: decision.kind === "pass",
-				...(decision.kind === "kickback" && decision.feedback !== undefined
-					? { feedback: decision.feedback }
-					: {}),
-			});
-			if (written.written) {
-				if (decision.kind === "pass" && deps.reactToFounderMessage) {
-					const acknowledged = await deps.reactToFounderMessage(msg.id);
-					if (!acknowledged) {
-						audit(
-							deps.store,
-							ctx,
-							founderReviewGate.executionId,
-							"founder_ack_failed",
-							{
-								questionId: founderReviewGate.questionId,
-								kind: "pass",
-							},
-						);
-					}
-				}
-				if (decision.kind === "kickback" && deps.postThreadReply) {
-					const receipt = decision.feedback
-						? `已收到 ${[...decision.feedback].length} 字，记为打回交给 runner；如果你分了多条发，其余会经 Lead 转达。`
-						: "已记为打回（未附意见）。如果你在互动页面写过留言，它们还没送出来——打开页面点「一键汇总复制」贴回本 thread，我会转给 Lead 并入返工。";
-					const posted = await deps.postThreadReply(receipt);
-					if (!posted) {
-						audit(
-							deps.store,
-							ctx,
-							founderReviewGate.executionId,
-							"founder_review_receipt_failed",
-							{
-								questionId: founderReviewGate.questionId,
-								kind: "kickback",
-							},
-						);
-					}
-				}
-				return { ok: true };
-			}
-		}
-	}
-	if (shipCardGate) {
-		deps.ensureDecisionConvergence?.({
-			threadId: ctx.threadId,
-			msgId: msg.id,
-			questionId: shipCardGate.questionId,
-			projectName: ctx.projectName,
-			leadId: ctx.leadId,
-			executionId: shipCardGate.executionId,
-			disposedAtMs: nowDate.getTime(),
-			deadlineAtMs: nowDate.getTime() + DEFAULT_FOUNDER_DECISION_DEADLINE_MS,
+
+	// ── FLY-799: attribute a founder approval BEFORE WAKE-only. When enabled, a
+	// clear founder approval/rejection writes the gate response (the post-write
+	// hook flips status + wakes the runner). FLY-1099 §3.2: the outcome is an
+	// explicit disposition — bound ∪ deferred skip the WAKE-only below (both are
+	// proper disposals); retry pins the cursor. Absent / null → byte-compatible
+	// WAKE-only.
+	const handled = new Set<string>();
+	let boundCount = 0;
+	let deferredCount = 0;
+	let suppressedCount = 0;
+	if (deps.tryFounderShipApproval && ship.length > 0) {
+		const res = await deps.tryFounderShipApproval({
+			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
+			// FLY-1041 Chunk 7: a verified card reply narrows the candidate set to
+			// exactly that gate (the handler's A-2 exactly-one narrowing then
+			// passes naturally even in a multi-gate thread).
+			shipGates: cardGate ? [cardGate] : ship,
+			ctx,
+			db,
+			replyToCard: !!cardGate,
 		});
-		if (deps.tryFounderShipApproval) {
-			const handled = await deps.tryFounderShipApproval({
-				msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
-				shipGates: [shipCardGate],
-				ctx,
-				db,
-				replyToCard: true,
-				founderMessage: {
-					msgId: msg.id,
-					now,
-				},
-				recordDecisionClassification: deps.classifyDecisionConvergence
-					? (decision) =>
-							deps.classifyDecisionConvergence?.({
-								threadId: ctx.threadId,
-								msgId: msg.id,
-								questionId: shipCardGate.questionId,
-								classification: decision,
-								cardReferenceValid: true,
-							})
-					: undefined,
-			});
-			if (handled?.deadLetter) {
-				const deadLettered = deps.retryLedger?.deadLetterNow({
-					ctx,
-					msgId: msg.id,
-					executionId: shipCardGate.executionId,
-					stage: handled.deadLetter.stage,
-					reason: handled.deadLetter.reason,
-					contentExcerpt: truncate(msg.content ?? "", 200),
-				});
-				if (!deadLettered?.deadLettered) {
-					return {
-						ok: false,
-						stage: handled.deadLetter.stage,
-						reason: handled.deadLetter.reason,
-					};
-				}
-			}
-			if (
-				handled &&
-				(handled.bound.length > 0 ||
-					handled.deferred.length > 0 ||
-					(handled.suppressed?.length ?? 0) > 0 ||
-					handled.deadLetter !== undefined)
-			) {
-				return { ok: true };
-			}
-			if (handled?.retry) {
-				return {
-					ok: false,
-					stage: handled.stage ?? "ship_attribution_retry",
-					reason: handled.reason ?? "transient ship-attribution failure",
-				};
-			}
-		}
-	}
-	// Founder control-plane messages follow the Claude agent-team topology:
-	// Bridge is a transport only. It records delivery, forwards the original
-	// message to Lead, and stops. Lead's later guarded response is the sole
-	// action allowed to write a runner response.
-	if (!deps.deliverAmbiguousToLead) {
-		return {
-			ok: false,
-			stage: "lead_handoff_missing",
-			reason: "no founder-to-lead handoff path is wired",
-		};
-	}
-	const delivered = await deps.deliverAmbiguousToLead(
-		`founder-reply-${ctx.threadId}-${msg.id}`,
-		{
-			issueId: ctx.issueId,
-			threadId: ctx.threadId,
-			msgId: msg.id,
-			answer: rawAnswer,
-			commDbPath: ctx.commDbPath,
-		},
-	);
-	if (!delivered) {
-		return {
-			ok: false,
-			stage: "lead_handoff_failed",
-			reason: "founder reply was not delivered to Lead",
-		};
-	}
-	if (founderReviewContextGate && deps.postThreadReply) {
-		const explainerEventId = `fr_neither_explainer:${founderReviewContextGate.questionId}`;
-		const claimed = deps.store.insertEvent({
-			event_id: explainerEventId,
-			execution_id: founderReviewContextGate.executionId,
-			issue_id: ctx.issueId,
-			project_name: ctx.projectName,
-			event_type: "founder_review_neither_explainer_claimed",
-			source: "bridge.founder-reply-deliverer",
-			payload: { questionId: founderReviewContextGate.questionId },
-		});
-		if (claimed) {
-			const posted = await deps.postThreadReply(
-				"这条没有写入 verdict，已转给 Lead，本轮仍开放。要批准请在这张卡点 ✅，或 reply-to 这张卡只回「approve」/「look good to me」；要打回请 reply-to 这张卡回复「打回」或用 design: / implement: / qa: 前缀说明。",
-			);
-			if (!posted) {
-				audit(
-					deps.store,
-					ctx,
-					founderReviewContextGate.executionId,
-					"founder_review_receipt_failed",
-					{
-						questionId: founderReviewContextGate.questionId,
-						kind: "neither",
-					},
+		if (res) {
+			for (const b of res.bound) handled.add(b.questionId);
+			for (const d of res.deferred) handled.add(d.questionId);
+			for (const s of res.suppressed ?? []) handled.add(s.questionId);
+			boundCount = res.bound.length;
+			deferredCount = res.deferred.length;
+			suppressedCount = res.suppressed?.length ?? 0;
+			if (res.retry) {
+				fail(
+					res.stage ?? "ship_attribution_retry",
+					res.reason ?? "transient ship-attribution failure",
 				);
 			}
+			// Codex code R3 HIGH: durable response + every convergence anchor
+			// failed → the ONLY honest terminal is an immediate dead-letter
+			// (durable audit + must-deliver alert); a pending-gate-rematch retry
+			// can never run again. Dead-lettered → disposed (skip WAKE, cursor may
+			// pass). If even the dead-letter write fails (store broken), pin the
+			// cursor — the pass-level watchdog is the last resort.
+			if (res.deadLetter) {
+				const dlExec =
+					ship.find((q) => q.questionId === res.deadLetter?.questionId)
+						?.executionId ??
+					matching[0]?.executionId ??
+					"";
+				const dl = deps.retryLedger?.deadLetterNow({
+					ctx,
+					msgId: msg.id,
+					executionId: dlExec,
+					stage: res.deadLetter.stage,
+					reason: res.deadLetter.reason,
+					contentExcerpt: truncate(msg.content ?? "", 200),
+				});
+				if (dl?.deadLettered) {
+					handled.add(res.deadLetter.questionId);
+				} else {
+					fail(res.deadLetter.stage, res.deadLetter.reason);
+				}
+			}
 		}
 	}
-	return { ok: true };
+
+	// ── ship gates: WAKE-only fallback, deduped by founder message id (Codex R1 #3) ──
+	for (const q of ship) {
+		if (handled.has(q.questionId)) continue; // FLY-799/1099: bound or deferred above
+		const marker = `founder-ship-wake-${q.questionId}-${msg.id}`;
+		if (
+			store
+				.getEventsByExecution(q.executionId)
+				.some((e) => e.event_id === marker)
+		) {
+			continue; // already waked for THIS founder message
+		}
+		try {
+			const wake = await wakeImpl({
+				db,
+				execId: q.executionId,
+				fromAgent: FOUNDER_AGENT,
+				content: SHIP_WAKE_TEXT(answer),
+				metadata: {
+					kind: "ship_thread_reply",
+					questionId: q.questionId,
+					msgId: msg.id,
+				},
+			});
+			if (!wake.ok) {
+				// FLY-605 (Codex ship-gate #2): NO wake was delivered. This covers
+				// both a transient transport error (wake.error) AND the skip cases
+				// wakeRunnerMailbox returns with NO error — backend_commdb (rollback
+				// mode) / no_session_lead. Ship inbound is WAKE-only, so this wake is
+				// the ONLY delivery action: we must NOT write the durable marker and
+				// must NOT let the processed-through cursor advance past this founder
+				// reply, or the reply is permanently dropped. Audit the reason, stop
+				// → re-tried next sub-cadence (bounded by the FLY-1099 retry ledger);
+				// the still-pending recheck drops it once the gate resolves another way.
+				const reason = wake.error ?? wake.skippedReason ?? "unknown";
+				audit(store, ctx, q.executionId, "founder_ship_reply_wake_skipped", {
+					reason,
+					msgId: msg.id,
+				});
+				fail(`wake_${wake.skippedReason ?? "failed"}`, reason);
+				continue;
+			}
+			store.insertEvent({
+				event_id: marker,
+				execution_id: q.executionId,
+				issue_id: ctx.issueId,
+				project_name: ctx.projectName,
+				event_type: "founder_ship_reply_waked",
+				source: "bridge.founder-reply-deliverer",
+				payload: { questionId: q.questionId, msgId: msg.id },
+			});
+		} catch (err) {
+			audit(store, ctx, q.executionId, "founder_ship_reply_wake_failed", {
+				error: (err as Error).message,
+				msgId: msg.id,
+			});
+			fail("wake_failed", (err as Error).message);
+		}
+	}
+
+	// ── FLY-1041 Chunk 8: founder receipt reaction — the ship branch's SINGLE
+	// decision spot (at most one receipt per founder message PER OUTCOME).
+	// ✅ = her decision bound (a response was written, approve OR reject);
+	// ❓ = ship gates matched but nothing bound (unclear / classifier failure /
+	// held / narrow-multi / auto-approve off). No ship gates matched → no
+	// receipt (chatter stays untouched). The durable marker is keyed on
+	// (msgId, outcome) — Codex R1 MEDIUM: a transiently-failed message is
+	// re-scanned (cursor pinned), and if the retry BINDS after an initial ❓,
+	// the ✅ must still fire (one-way ❓→✅ upgrade; a bound gate leaves
+	// pending, so the reverse can never happen). Same-outcome re-scans stay
+	// deduped. Marker is inserted BEFORE the PUT so a re-scan can never
+	// double-react; a PUT failure is audited and NOT retried (best-effort,
+	// never blocks delivery). Kill-switch FLYWHEEL_FOUNDER_APPROVAL_ACK=0.
+	if (
+		ship.length > suppressedCount &&
+		process.env.FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0"
+	) {
+		// FLY-1099 §3.2: three receipt outcomes — ✅ = her decision is BOUND
+		// (approve OR reject, FLY-1041 Chunk 8 semantics preserved); 🕒 = durably
+		// deferred (will auto-bind when the hold clears; the rebind pass upgrades
+		// to ✅); ❓ = nothing bound. One-way upgrades only: a later re-scan /
+		// rebind with a stronger outcome writes a NEW (msgId, outcome) marker.
+		const emoji: "✅" | "🕒" | "❓" =
+			boundCount > 0 ? "✅" : deferredCount > 0 ? "🕒" : "❓";
+		const outcome =
+			boundCount > 0 ? "bound" : deferredCount > 0 ? "deferred" : "unbound";
+		const markerFresh = store.insertEvent({
+			event_id: `founder-ack-${msg.id}-${outcome}`,
+			execution_id: ship[0]?.executionId ?? "",
+			issue_id: ctx.issueId,
+			project_name: ctx.projectName,
+			event_type: "founder_ack_marker",
+			source: "bridge.founder-reply-deliverer",
+			payload: { msgId: msg.id, emoji, outcome },
+		});
+		if (markerFresh) {
+			const react =
+				deps.reactToFounderMessageImpl ?? defaultReactToFounderMessage;
+			const r = await react({
+				botToken: ctx.botToken,
+				channelId: ctx.threadId,
+				messageId: msg.id,
+				emoji,
+				fetchImpl: deps.fetchImpl,
+			});
+			if (r.ok) {
+				audit(store, ctx, ship[0]?.executionId ?? "", "founder_ack_reacted", {
+					msgId: msg.id,
+					emoji,
+					outcome,
+				});
+			} else {
+				audit(store, ctx, ship[0]?.executionId ?? "", "founder_ack_failed", {
+					msgId: msg.id,
+					emoji,
+					outcome,
+					...(r.status !== undefined ? { status: r.status } : {}),
+				});
+			}
+		}
+	}
+
+	// ── non-ship: deliver, unless ambiguous ──
+	if (nonShip.length > 0) {
+		// Ambiguous when this founder message could answer more than one pending
+		// question in the thread (non-ship + any other, incl. ship) — Codex R2 #2 / R3 #3.
+		const ambiguous = matching.length >= 2;
+		if (ambiguous) {
+			const eventId = `founder-reply-ambiguous-${ctx.threadId}-${msg.id}`;
+			if (!deps.deliverAmbiguousToLead) {
+				// no durable handoff path → stop before this message
+				fail("handoff_failed", "no ambiguous-handoff path wired");
+			} else {
+				const delivered = await deps.deliverAmbiguousToLead(eventId, {
+					issueId: ctx.issueId,
+					threadId: ctx.threadId,
+					msgId: msg.id,
+					answer,
+					questionIds: nonShip.map((q) => q.questionId),
+				});
+				if (!delivered) {
+					fail("handoff_failed", "ambiguous handoff not delivered");
+				}
+			}
+		} else {
+			const q = nonShip[0];
+			if (!q) return failure ? { ok: false, ...failure } : { ok: true };
+			try {
+				await respondImpl({
+					questionId: q.questionId,
+					fromAgent: FOUNDER_AGENT,
+					answer,
+					dbPath: ctx.commDbPath,
+					// NO bridgeUrl: the non-gated path only writes the response +
+					// marker-aware wake helpers; ship never reaches here.
+				});
+				pendingNow.delete(q.questionId);
+				audit(store, ctx, q.executionId, "founder_reply_delivered", {
+					questionId: q.questionId,
+					msgId: msg.id,
+				});
+			} catch (err) {
+				const m = (err as Error).message;
+				if (m.includes("UNIQUE")) {
+					// Lead already responded between the snapshot and now — treat as
+					// answered (advance, don't retry).
+					pendingNow.delete(q.questionId);
+				} else {
+					audit(store, ctx, q.executionId, "founder_reply_deliver_failed", {
+						error: m,
+						msgId: msg.id,
+					});
+					fail("respond_failed", m);
+				}
+			}
+		}
+	}
+
+	return failure ? { ok: false, ...failure } : { ok: true };
 }

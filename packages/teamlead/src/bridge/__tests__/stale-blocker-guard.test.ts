@@ -321,7 +321,6 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 function makeAlertDeps(over: {
 	claimed?: boolean;
 	delivered?: boolean;
-	queued?: boolean;
 	deliverThrows?: boolean;
 	leadId?: string | undefined;
 }) {
@@ -343,10 +342,7 @@ function makeAlertDeps(over: {
 		),
 		deliver: vi.fn(async () => {
 			if (over.deliverThrows) throw new Error("transport down");
-			return {
-				delivered: over.delivered ?? !over.queued,
-				...(over.queued ? { queued: true as const } : {}),
-			};
+			return { delivered: over.delivered ?? true };
 		}),
 		isoNow: () => "2026-07-01T00:00:00.000Z",
 	};
@@ -379,18 +375,6 @@ describe("alertStaleBlockerToLead (durable + deduped)", () => {
 		expect(failures[0]?.seq).toBe(42);
 	});
 
-	it("durably queued delivery is accepted without recording a false failure", async () => {
-		const { deps, failures } = makeAlertDeps({ claimed: true, queued: true });
-		await alertStaleBlockerToLead(session({ pr_number: 83 }), "open", 24, deps);
-		expect(failures).toEqual([]);
-		expect(deps.deliver).toHaveBeenCalledWith(
-			"lead-a",
-			expect.objectContaining({
-				eventId: expect.stringContaining("scheduled-run-blocked:exec-1:"),
-			}),
-		);
-	});
-
 	it("deliver throws → recordDeliveryFailure", async () => {
 		const { deps, failures } = makeAlertDeps({
 			claimed: true,
@@ -415,7 +399,6 @@ function makeGuardDeps(over: {
 	enabled?: boolean;
 	prState?: PrState;
 	finalizeProceed?: boolean;
-	reconcileGhost?: (blocker: Session) => Promise<boolean>;
 }) {
 	const checkPrState = vi.fn(async () => over.prState ?? "unknown");
 	const finalizeBlocker = vi.fn(async () => ({
@@ -430,86 +413,11 @@ function makeGuardDeps(over: {
 		finalizeBlocker,
 		alertLead,
 		projectRootFor: () => "/repo/sub",
-		reconcileGhost: over.reconcileGhost,
 	};
 	return { deps, checkPrState, finalizeBlocker, alertLead };
 }
 
 describe("createStaleBlockerGuard (orchestration)", () => {
-	it("residue target hook runs before the FLY-742 kill-switch and releases a reaped ghost", async () => {
-		const reconcileGhost = vi.fn(async () => true);
-		const { deps, checkPrState } = makeGuardDeps({
-			enabled: false,
-			reconcileGhost,
-		});
-		const g = createStaleBlockerGuard(deps);
-		const r = await g.handleActiveBlocker(
-			session({
-				status: "awaiting_review",
-				started_at: sqliteAgo(31 * 60_000),
-				awaiting_review_entered_at: sqliteAgo(31 * 60_000),
-			}),
-		);
-
-		expect(r.proceed).toBe(true);
-		expect(reconcileGhost).toHaveBeenCalledOnce();
-		expect(checkPrState).not.toHaveBeenCalled();
-	});
-
-	it("running StateStore ghost can be released before local blocker classification", async () => {
-		const reconcileGhost = vi.fn(async () => true);
-		const { deps, checkPrState } = makeGuardDeps({ reconcileGhost });
-		const g = createStaleBlockerGuard(deps);
-		const r = await g.handleActiveBlocker(
-			session({ status: "running", started_at: sqliteAgo(10 * HOUR) }),
-		);
-
-		expect(r.proceed).toBe(true);
-		expect(checkPrState).not.toHaveBeenCalled();
-	});
-
-	it("fresh/non-ghost target falls through to the exact old 409 path", async () => {
-		const reconcileGhost = vi.fn(async () => false);
-		const { deps, checkPrState, finalizeBlocker, alertLead } = makeGuardDeps({
-			reconcileGhost,
-		});
-		const g = createStaleBlockerGuard(deps);
-		const r = await g.handleActiveBlocker(
-			session({
-				status: "awaiting_review",
-				started_at: sqliteAgo(5 * 60_000),
-				awaiting_review_entered_at: sqliteAgo(5 * 60_000),
-			}),
-		);
-
-		expect(r.proceed).toBe(false);
-		expect(reconcileGhost).toHaveBeenCalledOnce();
-		expect(checkPrState).not.toHaveBeenCalled();
-		expect(finalizeBlocker).not.toHaveBeenCalled();
-		expect(alertLead).not.toHaveBeenCalled();
-	});
-
-	it("non-ghost stale blocker preserves FLY-742 ordering after the new hook", async () => {
-		const reconcileGhost = vi.fn(async () => false);
-		const { deps, checkPrState, finalizeBlocker } = makeGuardDeps({
-			reconcileGhost,
-			prState: "merged",
-		});
-		const g = createStaleBlockerGuard(deps);
-		const r = await g.handleActiveBlocker(
-			session({
-				pr_number: 83,
-				awaiting_review_entered_at: sqliteAgo(10 * HOUR),
-			}),
-		);
-
-		expect(r.proceed).toBe(true);
-		expect(reconcileGhost.mock.invocationCallOrder[0]).toBeLessThan(
-			checkPrState.mock.invocationCallOrder[0]!,
-		);
-		expect(finalizeBlocker).toHaveBeenCalledOnce();
-	});
-
 	it("disabled → proceed:false, no gh call", async () => {
 		const { deps, checkPrState } = makeGuardDeps({ enabled: false });
 		const g = createStaleBlockerGuard(deps);

@@ -1,6 +1,6 @@
 /**
  * FLY-709 — load each project's config into the feature-flag resolver's
- * per-project map from each project's CANONICAL root.
+ * per-project map, from the CANONICAL root (mirrors auto-qa-config-source.ts).
  *
  * ENOENT (no config file) → "no project config", so the flag reads as its
  * absent/default value (entry with an undefined config, no error). A MALFORMED
@@ -17,16 +17,8 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigLoader, type FlywheelConfig } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import {
-	fileSourceRevision,
-	registrySourceRevision,
-} from "./management-console-contract.js";
 
-export type ProjectConfigEntry = {
-	config?: FlywheelConfig;
-	revision: string;
-	error?: string;
-};
+export type ProjectConfigEntry = { config?: FlywheelConfig; error?: string };
 
 export async function loadFeatureFlagProjectConfigs(
 	projects: ProjectEntry[],
@@ -35,31 +27,19 @@ export async function loadFeatureFlagProjectConfigs(
 	const map = new Map<string, ProjectConfigEntry>();
 	for (const project of projects) {
 		const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
-		let raw: string | undefined;
 		try {
-			const loader = new ConfigLoader(async (p) => {
-				raw = readFile(p);
-				return raw;
-			});
+			const loader = new ConfigLoader(async (p) => readFile(p));
 			const cfg = await loader.load(configPath);
 			// ENOENT surfaces as ConfigLoader returning undefined / throwing below;
 			// a loaded config (even empty) is stored as the config.
-			map.set(project.projectName, {
-				config: cfg ?? undefined,
-				revision: fileSourceRevision(Buffer.from(raw ?? "")),
-			});
+			map.set(project.projectName, { config: cfg ?? undefined });
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") {
 				// No project config → absent/default semantics (not an error).
-				map.set(project.projectName, {
-					revision: registrySourceRevision("absent"),
-				});
+				map.set(project.projectName, {});
 			} else {
 				map.set(project.projectName, {
-					revision: raw
-						? fileSourceRevision(Buffer.from(raw))
-						: registrySourceRevision("read-error"),
 					error: `${(err as Error).message}`,
 				});
 			}
@@ -120,9 +100,7 @@ export class ProjectConfigCache {
 			);
 			this.entries.set(
 				project.projectName,
-				loaded.get(project.projectName) ?? {
-					revision: registrySourceRevision("read-error"),
-				},
+				loaded.get(project.projectName) ?? {},
 			);
 			this.stamps.set(project.projectName, stamp);
 		}

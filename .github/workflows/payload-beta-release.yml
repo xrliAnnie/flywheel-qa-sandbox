@@ -6,8 +6,9 @@
 # CREDENTIAL DISCIPLINE (plan §3): this workflow holds ONLY the app-level
 # beta-publish capability token (internal-beta blast radius). It must NEVER
 # reference a Cloudflare/vendor credential, the customer-release token, or any
-# npm credential. Customer-facing publishes remain outside this workflow;
-# release-workflows-structure.test.sh greps for exactly that boundary.
+# npm credential — the two customer-facing publishes (promote-commit, shell)
+# are Bridge/broker actions, never CI. release-workflows-structure.test.sh
+# greps for exactly that.
 name: Payload Beta Release
 
 on:

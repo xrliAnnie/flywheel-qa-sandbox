@@ -129,7 +129,7 @@ export interface ClosureReport {
 
 /**
  * The authoritative issue-level node collector: sessions across the full
- * alias set (includes DAG workflow sessions — they share the issue) ∪
+ * alias set (includes three-stage phase sessions — they share the issue) ∪
  * auto-QA children by parent issue keys ∪ open launch claims on the root.
  * Deduped by executionId.
  */
@@ -220,9 +220,10 @@ export interface LifecycleCloseoutDeps {
 	 * (A re-entrant keyed mutex; keys are canonical root UUIDs.) */
 	withIssueMutex: <T>(keys: string[], fn: () => Promise<T>) => Promise<T>;
 	/**
-	 * FLY-1185 hard constraint (Codex R1#4): optional integration seam. When a
-	 * caller supplies false, closeout reports blocked(autoclean_disabled) with
-	 * ZERO mutators run. Production uses the always-on default.
+	 * FLY-1185 hard constraint (Codex R1#4): the ONE master switch. Every NEW
+	 * mutation in this executor is disabled when it returns false
+	 * (FLYWHEEL_WORKTREE_AUTOCLEAN=0) — the closeout then reports
+	 * blocked(autoclean_disabled) with ZERO mutators run. Default reads env.
 	 */
 	mutationEnabled?: () => boolean;
 	/** Codex R1#14 — per-run mutator budget/deadline (D entry supplies). */
@@ -298,9 +299,10 @@ function makeAudit(
 	);
 }
 
-/** Production closeout mutations are permanently enabled. */
+/** The ONE master switch (hard constraint: zero new flags — everything hangs
+ * off the existing FLYWHEEL_WORKTREE_AUTOCLEAN; =0 disables all new mutation). */
 function defaultMutationEnabled(): boolean {
-	return true;
+	return process.env.FLYWHEEL_WORKTREE_AUTOCLEAN !== "0";
 }
 
 /**
@@ -426,7 +428,7 @@ function snapshotDriftsApproved(
 		// R10#1: role + qaStatus are set-once provenance this closeout never
 		// mutates — any drift changes WHICH executor branch applies (terminate vs
 		// finalizeDone), so a byte-exact mismatch is a whole-issue reject. This
-		// catches e.g. historical QA evidence changing during closeout
+		// catches e.g. AutoQaCoordinator flipping a non-PASS QA to `passed`
 		// between the approval and a partial-resume while the session status is
 		// unchanged (which the status check alone would wave through).
 		if ((n.role ?? "") !== (a.role ?? "")) {
@@ -508,12 +510,12 @@ export async function closeoutIssue(
 	opts?: { alreadyLocked?: boolean },
 ): Promise<ClosureReport> {
 	const { store } = deps;
-	// R4#7: integration seam BEFORE any resolution/audit — false means ZERO
+	// R4#7: master switch BEFORE any resolution/audit — =0 means ZERO
 	// StateStore writes from this entry (console only), same contract as park.
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) {
 		console.warn(
-			`[lifecycle-closeout] mutations disabled — closeout skipped for ${input.issueKey} (zero writes)`,
+			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — closeout skipped for ${input.issueKey} (zero writes)`,
 		);
 		return {
 			rootKey: input.issueKey,
@@ -532,12 +534,7 @@ export async function closeoutIssue(
 		input.issueKey,
 		deps.extraAliases ?? [],
 	);
-	const identifierShip =
-		!resolution.ok &&
-		resolution.reason === "no_uuid_mapping" &&
-		input.disposition === "shipped" &&
-		input.authority === "ship_complete";
-	if (!resolution.ok && !identifierShip) {
+	if (!resolution.ok) {
 		audit("closeout_root_unresolved", {
 			issueKey: input.issueKey,
 			reason: resolution.reason,
@@ -552,19 +549,12 @@ export async function closeoutIssue(
 			outcome: "blocked",
 		};
 	}
-	const resolved = resolution.ok
-		? resolution
-		: {
-				rootKey: input.issueKey,
-				aliasKeys: resolution.aliasKeys,
-				lockKeys: resolution.lockKeys,
-			};
 
 	if (opts?.alreadyLocked) {
-		return closeoutIssueLocked(deps, input, resolved, audit);
+		return closeoutIssueLocked(deps, input, resolution, audit);
 	}
-	return deps.withIssueMutex(resolved.lockKeys, () =>
-		closeoutIssueLocked(deps, input, resolved, audit),
+	return deps.withIssueMutex(resolution.lockKeys, () =>
+		closeoutIssueLocked(deps, input, resolution, audit),
 	);
 }
 
@@ -590,12 +580,12 @@ export async function parkIssue(
 		authority: "founder_park",
 	};
 	// R5#7: master switch BEFORE any audit/resolution write — an unresolved /
-	// A caller-disabled uuid-conflict direct park must be ZERO-write (console
-	// only), same contract as closeoutIssue.
+	// uuid-conflict direct park with FLYWHEEL_WORKTREE_AUTOCLEAN=0 must be
+	// ZERO-write (console only), same contract as closeoutIssue.
 	const mutationEnabledTop = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabledTop()) {
 		console.warn(
-			`[lifecycle-closeout] mutations disabled — park skipped for ${input.issueUuid} (zero writes)`,
+			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — park skipped for ${input.issueUuid} (zero writes)`,
 		);
 		return {
 			rootKey: input.issueUuid,
@@ -626,12 +616,12 @@ export async function parkIssue(
 	}
 	return deps.withIssueMutex(resolution.lockKeys, async () => {
 		// Codex R2#1: the master switch gates the TOMBSTONE + AUTHORITY writes
-		// too — with the integration seam disabled a park performs ZERO
+		// too — with FLYWHEEL_WORKTREE_AUTOCLEAN=0 a park performs ZERO
 		// StateStore mutation (a tombstone would silently block every future
 		// spawn and flip cutover authority while "everything is off").
 		const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 		if (!mutationEnabled()) {
-			// R3#1: with the integration seam disabled even the AUDIT stays out of the
+			// R3#1: with the master switch OFF even the AUDIT stays out of the
 			// StateStore — zero writes of any kind. Non-durable log only.
 			(deps.log ?? console.warn)(
 				`[lifecycle-closeout] park refused for ${resolution.rootKey}: autoclean disabled (zero-write)`,
@@ -690,12 +680,12 @@ export async function closeoutIssueWithSnapshotGuard(
 	},
 ): Promise<ClosureReport | { rejected: true; reason: string }> {
 	const { store } = deps;
-	// R4#7: integration seam BEFORE any audit/claim write — a disabled apply is
+	// R4#7: master switch BEFORE any audit/claim write — a disabled apply is
 	// rejected with ZERO StateStore writes (no epoch claim, no audit row).
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) {
 		console.warn(
-			`[lifecycle-closeout] mutations disabled — apply closeout rejected for ${input.issueKey} (zero writes)`,
+			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — apply closeout rejected for ${input.issueKey} (zero writes)`,
 		);
 		return { rejected: true, reason: "autoclean_disabled" };
 	}
@@ -884,7 +874,7 @@ export async function unparkIssue(
 	>,
 	input: { issueUuid: string; supersededBy: string },
 ): Promise<boolean> {
-	// R3#1: the supersede is a StateStore mutation too — seam-gated.
+	// R3#1: the supersede is a StateStore mutation too — master-gated.
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) return false;
 	const resolution = resolveLifecycleRootKey(deps.store, input.issueUuid, []);
@@ -918,13 +908,13 @@ async function closeoutIssueLocked(
 		outcome,
 	});
 
-	// ── Integration seam (Codex R1#4 + R4#7): false → ZERO mutation AND zero
+	// ── Master switch (Codex R1#4 + R4#7): =0 → ZERO new mutation AND zero
 	// StateStore writes (console only — the entry-level gates normally catch
 	// this earlier; this is the defensive backstop for direct locked calls).
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) {
 		console.warn(
-			`[lifecycle-closeout] mutations disabled — locked closeout skipped for ${rootKey} (zero writes)`,
+			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — locked closeout skipped for ${rootKey} (zero writes)`,
 		);
 		const report = baseReport("blocked");
 		report.operatorItems.push("autoclean_disabled");
@@ -1116,21 +1106,6 @@ async function closeoutIssueLocked(
 		audit("closeout_issue_items_blocked", {
 			rootKey,
 			reason: "nodes_not_confirmed_gone",
-			nodes: report.nodes.flatMap((nodeReport) => {
-				const blockedBy: string[] = [];
-				if (nodeReport.transition.state === "blocked") {
-					blockedBy.push("transition_blocked");
-				}
-				if (!nodeReport.confirmedGone) {
-					blockedBy.push("confirmed_gone_false");
-				}
-				if (!nodeReport.communicationsFinalized) {
-					blockedBy.push("communications_finalized_false");
-				}
-				return blockedBy.length > 0
-					? [{ executionId: nodeReport.node.executionId, blockedBy }]
-					: [];
-			}),
 		});
 	}
 
@@ -1244,11 +1219,6 @@ async function closeoutOneNode(
 			projectName: node.projectName,
 			ok: finalized.ok,
 			error: finalized.error,
-			audit: {
-				retiredGateCount: finalized.retiredGateCount,
-				retiredAskCount: finalized.retiredAskCount,
-				source: "bridge.lifecycle-closeout",
-			},
 		});
 		result.communicationsFinalized = finalized.ok;
 		result.teardown = finalized.ok
@@ -1365,7 +1335,6 @@ async function closeoutOneNode(
 		}
 	}
 	if (!consume("teardown")) return result;
-	let preserved = false;
 	try {
 		const closeRes = await closeRunnerFn(
 			{
@@ -1422,7 +1391,6 @@ async function closeoutOneNode(
 						error: closeRes.error ?? "commdb_finalize_failed:unknown",
 					};
 		} else if (closeRes.preserved) {
-			preserved = true;
 			result.teardown = { state: "skipped", reason: "crash_preserve" };
 		} else {
 			result.teardown = {
@@ -1455,8 +1423,8 @@ async function closeoutOneNode(
 			result.confirmedGone = true;
 		} else if (look.kind === "found") {
 			const live = await probeLiveness(look.target.tmuxWindow);
-			// A dead pin preserves the forensic window, but its process is provably dead.
-			result.confirmedGone = live === "absent" || live === "dead_pin";
+			result.confirmedGone =
+				live === "absent" || live === "dead_pin" ? live === "absent" : false;
 			if (!result.confirmedGone) {
 				log(
 					`node ${node.executionId} teardown ran but window still ${live} — blocked`,
@@ -1465,39 +1433,8 @@ async function closeoutOneNode(
 		} else {
 			result.confirmedGone = false; // lookup error → fail-closed
 		}
-	} catch (err) {
-		audit("closeout_node_liveness_error", {
-			executionId: node.executionId,
-			projectName: node.projectName,
-			error: err instanceof Error ? err.message : String(err),
-		});
+	} catch {
 		result.confirmedGone = false;
-	}
-	// Physical crash evidence stays intact; only its communication ledger closes.
-	if (preserved && result.confirmedGone) {
-		const finalized = finalizeCommDbSessionFn(
-			node.executionId,
-			node.projectName,
-		);
-		store.recordCommDbFinalizeOutcome({
-			executionId: node.executionId,
-			issueId: node.issueKey,
-			projectName: node.projectName,
-			ok: finalized.ok,
-			error: finalized.error,
-			audit: {
-				retiredGateCount: finalized.retiredGateCount,
-				retiredAskCount: finalized.retiredAskCount,
-				source: "bridge.lifecycle-closeout",
-			},
-		});
-		result.communicationsFinalized = finalized.ok;
-		if (!finalized.ok) {
-			result.teardown = {
-				state: "failed",
-				error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
-			};
-		}
 	}
 	return result;
 }

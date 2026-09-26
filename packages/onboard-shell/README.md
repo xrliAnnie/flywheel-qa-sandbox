@@ -1,11 +1,11 @@
-# @flywheel-ai/onboard
+# @flywheel/onboard
 
 One command to install and start Flywheel. You'll need a license key.
 
 ## Install
 
 ```
-npx @flywheel-ai/onboard
+npx @flywheel/onboard
 ```
 
 You'll be asked to paste your license key (it won't show on screen — that's
@@ -15,13 +15,13 @@ the guided setup. No source code or repository access is required.
 ## Update
 
 ```
-npx @flywheel-ai/onboard update
+npx @flywheel/onboard update
 ```
 
 ## Change your license key
 
 ```
-npx @flywheel-ai/onboard license set
+npx @flywheel/onboard license set
 ```
 
 ---

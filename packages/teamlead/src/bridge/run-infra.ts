@@ -15,7 +15,6 @@ import {
 	AntigravityTmuxAdapter,
 	CodexTmuxAdapter,
 	KimiTmuxAdapter,
-	type RunnerTuiWindowLostEvidence,
 	scrubOrphanedCodexHomes,
 	TmuxAdapter,
 } from "flywheel-claude-runner";
@@ -24,8 +23,10 @@ import {
 	type CheckpointsConfig,
 	ConfigLoader,
 	type DocFlowConfig,
+	type FounderUxGateConfig,
 	type PonytailConfig,
 	type RoleBackendMap,
+	resolveEffectiveFounderUxConfig,
 	type SkillsConfig,
 } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
@@ -44,7 +45,6 @@ import {
 	HaikuVerifier,
 	HardRuleEngine,
 	HookCallbackServer,
-	resolveWorktreeKey,
 	SkillInjector,
 	WorktreeManager,
 } from "flywheel-edge-worker";
@@ -52,176 +52,30 @@ import { Blueprint } from "flywheel-edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import {
-	isStateStoreIrreversibleTerminalForZombie,
-	type StateStore,
-} from "../StateStore.js";
-import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
+import type { StateStore } from "../StateStore.js";
+import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
-import type { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
-import { ContinuityAudit } from "./continuity-audit.js";
-import {
-	lookupOpenPullRequests,
-	materializeRemoteBranch,
-	type OpenPullRequest,
-} from "./continuity-preflight.js";
 import { EventFilter } from "./EventFilter.js";
-import {
-	type FlagStoreRuntime,
-	storeDocFlowEnabled,
-	storePonytailEnabled,
-	storeProofshotEnabled,
-	storeSkillFrameworkModeControl,
-	storeSkillFrameworkSplitParticipation,
-} from "./flag-store-runtime.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
-import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
-import {
-	parsePaneLossGenerationParams,
-	persistPaneLossGenerationCredential,
-} from "./pane-loss-reconcile.js";
+import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
 	computeProgressResume,
 	type ProgressResumeDeps,
-	type ProgressResumeInfo,
 } from "./progress-resume.js";
-import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
 import {
-	type ContinuityComputer,
-	type DoaBackoffAdmissionFn,
-	type FreshStartAuditRecorder,
 	type LifecycleAdmissionFn,
 	type LifecycleLaunchGuard,
-	type PhaseRetryStartPoint,
-	type PhaseRetryStartPointComputer,
 	type ProjectRuntime,
 	type ResumeComputer,
 	RunDispatcher,
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
-import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
-import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import type { BridgeConfig } from "./types.js";
+import type { WorkflowShadowWriter } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
-
-/** FLY-1718: compute one resume snapshot from one Git ref at a time. */
-export function computeProgressResumeAcrossRefs(input: {
-	issueId: string;
-	role: string;
-	docBaseDir: string;
-	issueIdentifier: string;
-	branch: string;
-	refs: string[];
-	prior: {
-		execution_id: string;
-		plan_path?: string;
-		session_stage?: string;
-	};
-	git: (args: string[]) => string | null;
-}): ProgressResumeInfo | null {
-	for (const ref of input.refs) {
-		const tip = input.git(["rev-parse", `${ref}^{commit}`])?.trim();
-		if (!tip) continue;
-		const deps: ProgressResumeDeps = {
-			docBaseDir: input.docBaseDir,
-			issueIdentifier: input.issueIdentifier,
-			branchName: () => input.branch,
-			priorSession: () => input.prior,
-			readBranchFile: (_branch, path) => input.git(["show", `${ref}:${path}`]),
-			branchTip: () => tip,
-			discoverDocDir: () => {
-				const out = input.git(["ls-tree", "-r", "--name-only", ref]);
-				if (!out) return null;
-				const prefix = `${input.docBaseDir}/${input.issueIdentifier}-`;
-				const hit = out
-					.split("\n")
-					.find(
-						(path) => path.startsWith(prefix) && path.endsWith("/progress.md"),
-					);
-				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
-			},
-		};
-		const resume = computeProgressResume(
-			input.issueId,
-			input.role,
-			"restart",
-			deps,
-		);
-		if (resume) return resume;
-	}
-	return null;
-}
-
-export function liveCodexHomeExecutionIds(
-	store: Pick<StateStore, "getActiveSessions">,
-): Set<string> {
-	return new Set(
-		store
-			.getActiveSessions()
-			.filter(
-				(session) =>
-					session.status === "running" ||
-					session.status === "ship_parked" ||
-					session.status === "awaiting_review",
-			)
-			.map((session) => session.execution_id),
-	);
-}
-
-/**
- * FLY-1257 M3: inspect one fully-qualified local branch ref with a
- * machine-readable three-state exit contract. Exit 1 from `--verify --quiet`
- * is the only confirmed-missing result; every other failure is indeterminate.
- */
-export function probePhaseRetryBranchTip(
-	projectRoot: string,
-	branch: string,
-): PhaseRetryStartPoint {
-	try {
-		const stdout = execFileSync(
-			"git",
-			[
-				"-C",
-				projectRoot,
-				"rev-parse",
-				"--verify",
-				"--quiet",
-				`refs/heads/${branch}^{commit}`,
-			],
-			{
-				encoding: "utf-8",
-				stdio: ["ignore", "pipe", "pipe"],
-				timeout: 20_000,
-			},
-		).trim();
-		if (!stdout) {
-			return {
-				kind: "indeterminate",
-				error: `git rev-parse returned an empty sha for refs/heads/${branch}`,
-			};
-		}
-		return { kind: "found", sha: stdout };
-	} catch (error) {
-		const failure = error as {
-			status?: unknown;
-			signal?: unknown;
-			message?: unknown;
-			stderr?: unknown;
-		};
-		if (failure.status === 1) return { kind: "missing" };
-		const detail = [
-			`exit=${String(failure.status ?? "spawn-error")}`,
-			failure.signal ? `signal=${String(failure.signal)}` : "",
-			failure.message ? String(failure.message) : "",
-		]
-			.filter(Boolean)
-			.join(" ");
-		return { kind: "indeterminate", error: detail };
-	}
-}
 
 /**
  * Build a fetchIssue function that tries Linear API, falls back to StateStore.
@@ -250,8 +104,6 @@ export function createFetchIssue(store: StateStore) {
 					return {
 						title: issue.title,
 						description: issue.description ?? "",
-						descriptionSource: "authoritative" as const,
-						updatedAt: issue.updatedAt.toISOString(),
 						labels: labelNames,
 						projectId: issue.project ? (await issue.project)?.id : undefined,
 						identifier: issue.identifier,
@@ -276,7 +128,6 @@ export function createFetchIssue(store: StateStore) {
 		return {
 			title: session?.issue_title ?? `Issue ${id}`,
 			description: session?.summary ?? `Execution for issue ${id}`,
-			descriptionSource: "fallback" as const,
 			identifier: session?.issue_identifier ?? id,
 		};
 	};
@@ -320,25 +171,16 @@ async function createRunBlueprint(
 	tmuxSessionName: string,
 	fetchIssue: ReturnType<typeof createFetchIssue>,
 	eventEmitter: DirectEventSink,
-	sessionTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; FLY-92 idle detection retired in FLY-1560)
+	sessionTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
 	checkpointConfig?: CheckpointsConfig, // FLY-47
 	worktreeManager?: WorktreeManager, // FLY-95
 	agentDispatcher?: AgentDispatcher, // FLY-137 v1.27.2
 	flywheelRepoRoot?: string, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint needs this to resolve shipped-generic agent_file
 	skillsConfig?: SkillsConfig, // GEO-151: ProofShot + skill commands surfaced to Blueprint
-	docFlowDept?: Pick<DocFlowConfig, "default_department">, // FLY-205/2103: non-flag doc-flow path metadata
-	ponytailProjectLayer?: () => PonytailConfig | undefined, // FLY-615/2103: call-time per-project rollout layer
+	docFlowConfig?: DocFlowConfig, // FLY-205: doc-flow baseline (DOC-FLOW prompt block when enabled)
+	founderUxGateConfig?: FounderUxGateConfig, // FLY-598: founder-UX gate prompt injection when mode != off
+	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
 	ownerStateDbPath?: string, // FLY-766: this Bridge's actual StateStore db path → claude-tmux owner marker
-	skillFrameworkParticipation?: (projectName: string | undefined) => boolean, // FLY-1356: fresh per-dispatch split-participation read (project opt-out lever)
-	skillFrameworkModeControl?: () => {
-		hasOverride: boolean;
-		raw: string | null;
-	}, // FLY-1778: call-time SQLite raw control; Blueprint keeps issue-aware resolution
-	onTuiWindowLost?: (
-		evidence: RunnerTuiWindowLostEvidence,
-	) => void | Promise<void>,
-	onTuiWindowRestored?: (executionId: string) => void | Promise<void>,
-	docFlowEnabled?: () => boolean,
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -516,10 +358,6 @@ async function createRunBlueprint(
 					// package; IAgentTeamTransport satisfies it at runtime but the
 					// mailbox-message param variance needs the assert.
 					codexTransport as unknown as import("flywheel-claude-runner").CodexRunnerTransport,
-					{
-						...(onTuiWindowLost ? { onTuiWindowLost } : {}),
-						...(onTuiWindowRestored ? { onTuiWindowRestored } : {}),
-					},
 				),
 		);
 		// FLY-493: Antigravity (`agy`) executor backend — v1 transport=none, so
@@ -585,14 +423,9 @@ async function createRunBlueprint(
 			agentDispatcher, // FLY-137 v1.27.2: wired (was undefined pre-v1.27.2)
 			checkpointConfig, // FLY-47
 			flywheelRepoRoot, // FLY-137 v1.27.2: Blueprint resolves shipped-generic agent_file from this root
-			docFlowDept, // FLY-205/2103
-			ponytailProjectLayer, // FLY-615/2103: per-project rollout reader
-			undefined, // ponytailReadiness — use Blueprint's default probe
-			skillFrameworkParticipation, // FLY-1356: split-participation reader
-			undefined, // skillFrameworkReadiness — use Blueprint default
-			undefined, // codexSkillAssemblyProbe — use Blueprint default
-			skillFrameworkModeControl,
-			docFlowEnabled,
+			docFlowConfig, // FLY-205
+			founderUxGateConfig, // FLY-598
+			ponytailConfig, // FLY-615: per-project ponytail rollout layer
 		);
 
 		const cleanup = async () => {
@@ -628,18 +461,8 @@ async function createRunBlueprint(
  */
 /** FLY-91 Round 3 + FLY-137 v1.27.2: Optional external dependencies for run infrastructure. */
 export interface RunInfraOptions {
-	/** FLY-1778: boot-snapshotted authority; values remain read-on-use. */
-	flagStore?: FlagStoreRuntime;
 	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
 	chatThreadCreator?: ChatThreadCreator;
-	/** Founder-visible existing alert path for a ConfigLoader-rejected project. */
-	onProjectConfigInvalid?: (input: {
-		projectName: string;
-		configPath: string;
-		error: Error;
-	}) => void | Promise<void>;
-	/** FLY-1718: shared structural repo lock used by fetch + worktree mutation. */
-	withRepoLock?: <T>(repoPath: string, fn: () => Promise<T>) => Promise<T>;
 	/**
 	 * FLY-137 v1.27.2: optional explicit Flywheel repo root. If unset, falls back to
 	 * `FLYWHEEL_REPO_ROOT` env var, then to a module-location-derived path. Used by
@@ -651,17 +474,24 @@ export interface RunInfraOptions {
 	 * root, set on the DirectEventSink so its post-ship finalization can clean.
 	 */
 	removeCleanWorktree?: WorktreeCleanupFn;
-	codexReviewHold?: { current: CodexReviewHoldCoordinator | undefined };
-	reviewAuthorizationAlerts?: {
-		current: ReviewAuthorizationAlerts | undefined;
-	};
-	turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
 	/**
-	 * FLY-887: ship-time DAG workflow finalizer (closes parked design +
+	 * FLY-579: late-bound auto-QA coordinator holder, set on the DirectEventSink
+	 * so the in-process completed path drives auto-QA + suppresses the founder
+	 * gate (Codex R1 HIGH-1). Absent → byte-compatible.
+	 */
+	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	/**
+	 * FLY-793: late-bound three-stage PhaseOrchestrator holder, set on the
+	 * DirectEventSink so the in-process completion path drives Design→Implement→QA
+	 * phase handoffs. Absent / `.current` undefined → byte-compatible (no-op).
+	 */
+	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
+	/**
+	 * FLY-887: ship-time three-stage phase finalizer (closes parked design +
 	 * implement sessions before the shared worktree is removed). Built at the
 	 * composition root with store + transitionOpts; wired onto the DirectEventSink.
 	 */
-	finalizeWorkflowPhaseRoles?: (
+	finalizeThreeStagePhases?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
@@ -671,8 +501,6 @@ export interface RunInfraOptions {
 	 * hook, so the sink triggers refreshes itself). Absent → byte-compatible.
 	 */
 	issueDisplayRefresh?: IssueDisplayRefreshHolder;
-	/** FLY-1066: shared non-blocking failed/blocked CommDB sync queue. */
-	terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
 	/**
 	 * FLY-1185: the ship-entry lifecycle bundle (remote branch CAS + issue
 	 * closeout + trailing sweep), set on the DirectEventSink so the in-process
@@ -680,14 +508,6 @@ export interface RunInfraOptions {
 	 * classic finalization only (byte-compat).
 	 */
 	lifecycleInfra?: LifecycleShipInfra;
-	/**
-	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
-	 * FLY-1165 scheduler consumer), set on the DirectEventSink completion path.
-	 * Production always passes it; optionality is retained for embedding/tests.
-	 */
-	terminalArchiveEnqueue?: (issueId: string) => void;
-	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
-	materializedHeadAuthority?: MaterializedHeadAuthority;
 	/**
 	 * FLY-1185 (R11#1): lifecycle spawn admission (founder-park tombstone +
 	 * durable starting claim), threaded to the RunDispatcher chokepoint.
@@ -699,197 +519,16 @@ export interface RunInfraOptions {
 	 * last pre-launch recheck + launch-claim CAS hooks. Absent → byte-compat.
 	 */
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
-	/** FLY-1718 P4: canonical predecessor admission before branch continuity. */
-	doaBackoffAdmission?: DoaBackoffAdmissionFn;
-	/** FLY-1944: typed terminal runner-window visibility evidence. */
-	onTuiWindowLost?: (
-		evidence: RunnerTuiWindowLostEvidence,
-	) => void | Promise<void>;
-	onTuiWindowRestored?: (executionId: string) => void | Promise<void>;
-	/** FLY-1944: process-local pre-claim quiescence evidence. */
-	admissionCrossingBarrier?: AdmissionCrossingBarrier;
-}
-
-export function resolveWorkflowTmuxWindowAuthority(
-	store: Pick<
-		StateStore,
-		| "getSession"
-		| "getWorkflowExecutionBinding"
-		| "getWorkflowLaunchOwner"
-		| "getWorkflowNodeCompletion"
-	>,
-	launchExecutionId: string,
-	candidate: {
-		windowId: string;
-		windowName: string;
-		executionId?: string;
-		launchGeneration?: number;
-		launchFingerprint?: string;
-	},
-): "prune" | "keep" {
-	if (!candidate.executionId) return "keep";
-	if (candidate.executionId === launchExecutionId) {
-		if (
-			candidate.launchGeneration === undefined ||
-			!candidate.launchFingerprint
-		) {
-			return "keep";
-		}
-		const persisted = parsePaneLossGenerationParams(
-			store.getSession(launchExecutionId)?.session_params,
-		);
-		if (
-			persisted?.window_id !== candidate.windowId ||
-			persisted.execution_id !== launchExecutionId ||
-			persisted.launch_generation !== candidate.launchGeneration ||
-			persisted.launch_fingerprint !== candidate.launchFingerprint
-		) {
-			return "keep";
-		}
-		const owner = store.getWorkflowLaunchOwner(launchExecutionId);
-		return (owner?.released_generation ?? 0) >= candidate.launchGeneration
-			? "prune"
-			: "keep";
-	}
-	const session = store.getSession(candidate.executionId);
-	if (!isStateStoreIrreversibleTerminalForZombie(session?.status)) {
-		return "keep";
-	}
-	if (session?.status !== "completed") return "prune";
-	const binding = store.getWorkflowExecutionBinding(candidate.executionId);
-	if (!binding) return "prune";
-	const completion = store.getWorkflowNodeCompletion(
-		binding.run_id,
-		binding.node_id,
-		binding.attempt,
-	);
-	return completion?.execution_id === candidate.executionId ? "prune" : "keep";
-}
-
-/**
- * Single production constructor call for RunDispatcher. Keeping the positional
- * wiring here makes the hot runtime + always-available admission capability
- * directly testable without booting external adapters.
- */
-export function createRunInfraDispatcher(input: {
-	store: StateStore;
-	projectRuntimes: Map<string, ProjectRuntime>;
-	cleanupHandles: Array<() => Promise<void>>;
-	runnerAdmission?: BridgeConfig["runnerAdmission"];
-	launchClaims?: LaunchClaimStore;
-	resumeComputer?: ResumeComputer;
-	lifecycleAdmission?: LifecycleAdmissionFn;
-	lifecycleLaunchGuard?: LifecycleLaunchGuard;
-	doaBackoffAdmission?: DoaBackoffAdmissionFn;
-	phaseRetryStartPointComputer?: PhaseRetryStartPointComputer;
-	continuityComputer?: ContinuityComputer;
-	freshStartAudit?: FreshStartAuditRecorder;
-	admissionCrossingBarrier?: AdmissionCrossingBarrier;
-	flagStore?: FlagStoreRuntime;
-	/** Test-only subclass seam for suppressing external CommDB registration. */
-	dispatcherClass?: typeof RunDispatcher;
-}): RunDispatcher {
-	const Dispatcher = input.dispatcherClass ?? RunDispatcher;
-	const flagStore = input.flagStore;
-	return new Dispatcher(
-		input.projectRuntimes,
-		input.cleanupHandles,
-		input.runnerAdmission,
-		input.launchClaims,
-		undefined,
-		input.resumeComputer,
-		input.lifecycleAdmission,
-		input.lifecycleLaunchGuard,
-		input.phaseRetryStartPointComputer,
-		// FLY-1356 (R1#4): sticky-stamp lookup — same issue keeps its arm.
-		(issueId) => input.store.getSkillFrameworkStamp(issueId),
-		(executionId, info) =>
-			persistPaneLossGenerationCredential(input.store, executionId, info),
-		(launchExecutionId, candidate) =>
-			resolveWorkflowTmuxWindowAuthority(
-				input.store,
-				launchExecutionId,
-				candidate,
-			),
-		input.continuityComputer,
-		input.freshStartAudit,
-		input.doaBackoffAdmission,
-		(executionId) =>
-			isStateStoreIrreversibleTerminalForZombie(
-				input.store.getSession(executionId)?.status,
-			),
-		input.admissionCrossingBarrier,
-		flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
-	);
-}
-
-/** FLY-1718 P1: production branch-key authority + remote materializer wiring. */
-export function createBranchContinuityComputer(input: {
-	projectRuntimes: Map<string, ProjectRuntime>;
-	worktreeManager: WorktreeManager;
-	materialize: (args: {
-		repoPath: string;
-		branch: string;
-	}) => Promise<
-		| { kind: "exists"; sha: string }
-		| { kind: "missing" }
-		| { kind: "indeterminate"; error: string }
-	>;
-	lookupOpenPrs: (args: {
-		repoPath: string;
-		branch: string;
-	}) => Promise<OpenPullRequest[]>;
-	log?: (message: string) => void;
-}): ContinuityComputer {
-	return async ({ issueId, role, projectName, shareParentBranch }) => {
-		const runtime = input.projectRuntimes.get(projectName);
-		if (!runtime) {
-			return {
-				kind: "indeterminate",
-				error: `project runtime ${projectName} is unavailable`,
-			};
-		}
-		try {
-			// Blueprint receives node.id=req.issueId and runs this exact key chain.
-			// issueIdentifier is display metadata and deliberately cannot enter it.
-			const worktreeKey = resolveWorktreeKey(issueId, {
-				sessionRole: role,
-				shareParentBranch,
-			});
-			const { branch } = input.worktreeManager.expectedWorktree(
-				runtime.projectRoot,
-				projectName,
-				worktreeKey,
-			);
-			const decision = await input.materialize({
-				repoPath: runtime.projectRoot,
-				branch,
-			});
-			if (decision.kind === "missing") return { ...decision, branch };
-			if (decision.kind === "indeterminate") return decision;
-			const prs = await input.lookupOpenPrs({
-				repoPath: runtime.projectRoot,
-				branch,
-			});
-			if (prs.length > 0) {
-				(input.log ?? console.log)(
-					`[continuity] ${branch} open PR inventory: ${prs.map((pr) => `#${pr.number}`).join(", ")}`,
-				);
-			}
-			const current = prs[0];
-			return {
-				kind: "found",
-				branch,
-				sha: decision.sha,
-				...(current && { prNumber: current.number, prUrl: current.url }),
-			};
-		} catch (error) {
-			return {
-				kind: "indeterminate",
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
-	};
+	/**
+	 * FLY-1232 module ②: the lifecycle shadow writer — constructed by plugin.ts
+	 * ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1. Threaded into (a) the
+	 * RunDispatcher (T1/T2/T7 pre-launch seam + flag-ON fresh launchCommitPath)
+	 * and (b) the DirectEventSink (T9 post-ship finalization hook). Absent →
+	 * both seams undefined = byte-compatible. NOTE (plan §0 red line): an
+	 * EXTERNALLY injected startDispatcher (startBridge option) bypasses this
+	 * assembly entirely and is deliberately NOT shadow-wrapped.
+	 */
+	workflowShadow?: WorkflowShadowWriter;
 }
 
 export async function setupRunInfrastructure(
@@ -911,15 +550,7 @@ export async function setupRunInfrastructure(
 	const fetchIssue = createFetchIssue(store);
 
 	// FLY-95: Shared WorktreeManager for per-Runner worktree isolation
-	const worktreeManager = new WorktreeManager(
-		runInfraOpts?.withRepoLock
-			? { withRepoLock: runInfraOpts.withRepoLock }
-			: undefined,
-	);
-	const continuityAudit = new ContinuityAudit(
-		join(homedir(), ".flywheel", "state", "continuity-audit.db"),
-	);
-	cleanupHandles.push(async () => continuityAudit.close());
+	const worktreeManager = new WorktreeManager();
 
 	// FLY-137 v1.27.2: resolve Flywheel repo root once at startup (canonical source of truth).
 	const flywheelRepoRoot = resolveFlywheelRepoRoot(
@@ -930,10 +561,14 @@ export async function setupRunInfrastructure(
 	// killed mid-run the per-runner CODEX_HOME's `finally` token-scrub never
 	// fired, leaving a live GH_TOKEN in the retained home's config.toml. Strip
 	// it from every retained home that is NOT a currently-live runner
-	// (running/ship_parked/awaiting_review keep their token — they may resume).
-	// Runs once.
+	// (running/awaiting_review keep their token — they may resume). Runs once.
 	try {
-		const liveExecIds = liveCodexHomeExecutionIds(store);
+		const liveExecIds = new Set(
+			store
+				.getActiveSessions()
+				.filter((s) => s.status === "running" || s.status === "awaiting_review")
+				.map((s) => s.execution_id),
+		);
 		const scrubbed = scrubOrphanedCodexHomes(liveExecIds);
 		if (scrubbed > 0) {
 			console.log(
@@ -1003,7 +638,9 @@ export async function setupRunInfrastructure(
 			let defaultAgentName: string | undefined;
 			let skillsConfig: SkillsConfig | undefined;
 			let rolesConfig: RoleBackendMap | undefined;
-			let docFlowDept: Pick<DocFlowConfig, "default_department"> | undefined;
+			let docFlowConfig: DocFlowConfig | undefined;
+			let founderUxGateConfig: FounderUxGateConfig | undefined;
+			let ponytailConfig: PonytailConfig | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
 				const configLoader = new ConfigLoader(async (p) =>
@@ -1017,31 +654,40 @@ export async function setupRunInfrastructure(
 				// FLY-123: per-role executor backend bindings (validated by
 				// ConfigLoader — unknown roles/backends rejected at load)
 				rolesConfig = flywheelConfig?.roles;
-				docFlowDept = flywheelConfig?.doc_flow; // FLY-205/2103: path metadata only
+				docFlowConfig = flywheelConfig?.doc_flow; // FLY-205
+				founderUxGateConfig = flywheelConfig?.founder_ux_gate; // FLY-598
+				// FLY-615 v1 = per-issue only (Tadashi): the per-project config
+				// layer is DORMANT — we intentionally do NOT load
+				// `flywheelConfig?.ponytail`, so the project layer of the resolver
+				// never fires (a project's `ponytail.enabled` has no effect yet).
+				// The 3-layer resolver + Blueprint `ponytailConfig` param stay in
+				// place; v2 activates per-project rollout by loading it here.
+				// `ConfigLoader` still validates `ponytail` when present (harmless).
+				ponytailConfig = undefined;
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 					// No config file — no checkpoints, no agents block, no skills.
 					// AgentDispatcher will still be constructed (empty agents map) so the
 					// shipped-generic fallback kicks in for zero-config projects.
 				} else {
-					const error = err instanceof Error ? err : new Error(String(err));
-					try {
-						await runInfraOpts?.onProjectConfigInvalid?.({
-							projectName: project.projectName,
-							configPath,
-							error,
-						});
-					} catch (alertError) {
-						console.error(
-							`[RunInfra] ${project.projectName}: project-config alert failed (non-fatal):`,
-							alertError instanceof Error ? alertError.message : alertError,
-						);
-					}
 					throw err;
 				}
 			}
 
-			const flagStore = runInfraOpts?.flagStore;
+			// FLY-869: resolve the RAW `founder_ux_gate` block (absent whenever the
+			// config file is missing, the key is omitted, or load failed with
+			// ENOENT above) into its EFFECTIVE form through the one resolution
+			// choke point. Absent → `enforce` + the default exempt-label list —
+			// NEVER a bare `undefined` that a downstream consumer would read as
+			// "gate off" (the FLY-598 opt-in behavior this issue reverses).
+			// Explicit project config (including an explicit `mode: "off"`
+			// kill-switch) passes through untouched. Both DirectEventSink's
+			// per-run mode snapshot (below) and Blueprint's prompt-injection
+			// config (createRunBlueprint call below) MUST receive this EFFECTIVE
+			// object, never the raw (possibly absent) `founderUxGateConfig`.
+			const effectiveFounderUxGateConfig =
+				resolveEffectiveFounderUxConfig(founderUxGateConfig);
+
 			const directSink = new DirectEventSink(
 				store,
 				config,
@@ -1050,35 +696,31 @@ export async function setupRunInfrastructure(
 				registry,
 				chatThreadCreator,
 				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
-				flagStore
-					? (projectName) => storeProofshotEnabled(flagStore, projectName)
-					: undefined,
+				effectiveFounderUxGateConfig.mode, // FLY-598/869: EFFECTIVE mode snapshot (absent → enforce)
 			);
 			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.
 			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
 			// FLY-1185: entry-A bundle for the in-process ship path.
 			directSink.lifecycleInfra = runInfraOpts?.lifecycleInfra;
-			directSink.codexReviewHold = runInfraOpts?.codexReviewHold;
-			directSink.reviewAuthorizationAlerts =
-				runInfraOpts?.reviewAuthorizationAlerts;
-			directSink.turnBeltReconciler = runInfraOpts?.turnBeltReconciler;
+			// FLY-579 (Codex R1 HIGH-1): give the in-process completed path the
+			// auto-QA coordinator holder so it spawns QA + holds the founder.
+			directSink.autoQaCoordinator = runInfraOpts?.autoQaCoordinator;
+			// FLY-793: give the in-process completion path the three-stage
+			// PhaseOrchestrator holder so it drives Design→Implement→QA handoffs.
+			directSink.phaseOrchestrator = runInfraOpts?.phaseOrchestrator;
 			// FLY-887: ship-time finalizer for keep-alive parked design/implement phases.
-			directSink.finalizeWorkflowPhaseRoles =
-				runInfraOpts?.finalizeWorkflowPhaseRoles;
+			directSink.finalizeThreeStagePhases =
+				runInfraOpts?.finalizeThreeStagePhases;
 			// FLY-907: display-refresh holder for the in-process status writes.
 			directSink.issueDisplayRefresh = runInfraOpts?.issueDisplayRefresh;
-			// FLY-1066: DirectEventSink writes terminal StateStore rows directly.
-			directSink.terminalCommDbSync = runInfraOpts?.terminalCommDbSync;
 			// FLY-1185 (Codex R4#1): launch-claim activation at the emitStarted
 			// point — the claim advances starting→active only once the session
 			// row is durable (plan.md:145).
 			directSink.lifecycleActivate =
 				runInfraOpts?.lifecycleLaunchGuard?.activateLaunch;
-			directSink.materializedHeadAuthority =
-				runInfraOpts?.materializedHeadAuthority;
-			// FLY-1282 Part C: targeted terminal-archive enqueue for the
-			// in-process completion path.
-			directSink.terminalArchiveEnqueue = runInfraOpts?.terminalArchiveEnqueue;
+			// FLY-1232 T9: the in-process post-ship finalization hook (external
+			// merge paths are covered by the claim-based startup repair instead).
+			directSink.workflowShadow = runInfraOpts?.workflowShadow;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).
@@ -1087,29 +729,6 @@ export async function setupRunInfrastructure(
 				defaultAgentName,
 				flywheelRepoRoot,
 			);
-
-			// FLY-1356/2103: read split participation from scoped SQLite at every
-			// dispatch. A missing store pins the project to A instead of silently
-			// admitting it to an experimental arm.
-			const skillFrameworkParticipation = flagStore
-				? (projectName: string | undefined) =>
-						storeSkillFrameworkSplitParticipation(
-							flagStore,
-							projectName ?? project.projectName,
-						)
-				: () => false;
-			const docFlowEnabled = flagStore
-				? () => storeDocFlowEnabled(flagStore, project.projectName)
-				: undefined;
-			const ponytailProjectLayer = flagStore
-				? () =>
-						storePonytailEnabled(flagStore, project.projectName)
-							? { enabled: true }
-							: undefined
-				: undefined;
-			const skillFrameworkModeControl = flagStore
-				? () => storeSkillFrameworkModeControl(flagStore)
-				: undefined;
 
 			const { blueprint, cleanup } = await createRunBlueprint(
 				tmuxSessionName,
@@ -1121,14 +740,10 @@ export async function setupRunInfrastructure(
 				agentDispatcher, // FLY-137 v1.27.2
 				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
 				skillsConfig, // GEO-151: wired into Blueprint slot 7
-				docFlowDept, // FLY-205/2103
-				ponytailProjectLayer, // FLY-615/2103: store-backed project layer
+				docFlowConfig, // FLY-205
+				effectiveFounderUxGateConfig, // FLY-598/869: EFFECTIVE config (absent → enforce)
+				ponytailConfig, // FLY-615: per-project ponytail rollout layer
 				store.getDbPath(), // FLY-766: owner marker db-path truth
-				skillFrameworkParticipation, // FLY-1356
-				skillFrameworkModeControl, // FLY-1778
-				runInfraOpts?.onTuiWindowLost,
-				runInfraOpts?.onTuiWindowRestored,
-				docFlowEnabled,
 			);
 
 			projectRuntimes.set(project.projectName, {
@@ -1141,7 +756,7 @@ export async function setupRunInfrastructure(
 			// FLY-795: remember the doc-flow default department for the resume computer.
 			docDeptByProject.set(
 				project.projectName,
-				docFlowDept?.default_department,
+				docFlowConfig?.default_department,
 			);
 			cleanupHandles.push(cleanup);
 
@@ -1176,12 +791,14 @@ export async function setupRunInfrastructure(
 	// shareParentBranch/startPoint worktree mechanism) instead of starting over.
 	// This is the live wiring of the c3 core (`computeProgressResume`) — the pure
 	// git/StateStore lookups are provided here so the dispatcher stays generic.
+	//   - kill-switch: FLYWHEEL_PROGRESS_RESUME=0 → always fresh (byte-compatible).
 	//   - branch B is read from the ground-truth session row (branch, else the
 	//     worktree_path basename, which equals the branch name by construction);
 	//     never recomputed from a trusted-key string.
 	//   - reads the BRANCH BLOB via `git show` (never the worktree fs — it may be
 	//     gone on reboot); non-zero git exit ⇒ null ⇒ start fresh (fail-safe).
-	const resumeComputer: ResumeComputer = async (issueId, role, projectName) => {
+	const resumeComputer: ResumeComputer = (issueId, role, projectName) => {
+		if (process.env.FLYWHEEL_PROGRESS_RESUME === "0") return null;
 		// A QA runner (auto-QA, FLY-579) pins its own worktree to the reviewed commit
 		// and writes NO progress ledger — it must never be resumed from a prior
 		// ledger (code-review MED-3). Only writer roles resume.
@@ -1219,16 +836,6 @@ export async function setupRunInfrastructure(
 		const mainKeyBranch = `${repoSlug}-${deriveWorktreeKey(identifier, "main")}`;
 		if (branchB !== mainKeyBranch) return null;
 
-		// FLY-1718 P1: refresh the remote-tracking ref before reading the branch
-		// blob. An indeterminate origin must fall through to continuity's hard
-		// preflight (which will reject the launch); a confirmed missing origin can
-		// still resume a surviving local branch with unpushed progress.
-		const remoteDecision = await materializeRemoteBranch(
-			{ repoPath: projectRoot, branch: branchB },
-			{ withRepoLock: runInfraOpts?.withRepoLock },
-		);
-		if (remoteDecision.kind === "indeterminate") return null;
-
 		const git = (args: string[]): string | null => {
 			try {
 				return execFileSync("git", args, {
@@ -1241,91 +848,83 @@ export async function setupRunInfrastructure(
 			}
 		};
 
-		const branchRefs = (branch: string) => [
-			`refs/heads/${branch}`,
-			`refs/remotes/origin/${branch}`,
-		];
-		// Resolve one ref for the entire snapshot: tip, doc discovery, and ledger
-		// bytes may never independently fall through to different histories.
-		return computeProgressResumeAcrossRefs({
-			issueId,
-			role,
+		const deps: ProgressResumeDeps = {
 			docBaseDir,
 			issueIdentifier: identifier,
-			branch: branchB,
-			refs: branchRefs(branchB),
-			prior: {
+			branchName: () => branchB,
+			priorSession: () => ({
 				execution_id: prior.execution_id,
 				...(prior.plan_path && { plan_path: prior.plan_path }),
-				...(prior.session_stage && {
-					session_stage: prior.session_stage,
-				}),
-			},
-			git,
-		});
-	};
-
-	// FLY-1257 M3: phase retries recover branch B's own tip, using the same
-	// WorktreeManager path/branch authority as Blueprint. This runs for every
-	// phase retry even when DAG workflow keep-alive is disabled: the recreate path
-	// still needs to rebuild from branch B rather than silently reset to main.
-	const phaseRetryStartPointComputer: PhaseRetryStartPointComputer = (
-		issueId,
-		role,
-		projectName,
-	) => {
-		const runtime = projectRuntimes.get(projectName);
-		if (!runtime) {
-			return {
-				kind: "indeterminate",
-				error: `project runtime ${projectName} is unavailable`,
-			};
-		}
-		try {
-			const key = resolveWorktreeKey(issueId, {
-				sessionRole: role,
-				shareParentBranch: true,
-			});
-			const { branch } = worktreeManager.expectedWorktree(
-				runtime.projectRoot,
-				projectName,
-				key,
-			);
-			return probePhaseRetryBranchTip(runtime.projectRoot, branch);
-		} catch (error) {
-			return {
-				kind: "indeterminate",
-				error: error instanceof Error ? error.message : String(error),
-			};
-		}
-	};
-
-	const continuityComputer = createBranchContinuityComputer({
-		projectRuntimes,
-		worktreeManager,
-		materialize: (args) =>
-			materializeRemoteBranch(args, {
-				withRepoLock: runInfraOpts?.withRepoLock,
+				...(prior.session_stage && { session_stage: prior.session_stage }),
 			}),
-		lookupOpenPrs: (args) => lookupOpenPullRequests(args),
-	});
+			readBranchFile: (branch, path) => git(["show", `${branch}:${path}`]),
+			branchTip: (branch) => git(["rev-parse", branch])?.trim() ?? null,
+			// MED-4: when no plan_path is persisted, find the doc dir on the branch
+			// that actually holds a committed progress.md, so a co-located slug-named
+			// ledger (runner died before design_review) is still found. `git ls-tree`
+			// lists committed blobs; we take the dir of the first `${issue}-*/
+			// progress.md` under the doc base.
+			discoverDocDir: (branch) => {
+				const out = git(["ls-tree", "-r", "--name-only", branch]);
+				if (!out) return null;
+				const prefix = `${docBaseDir}/${identifier}-`;
+				const hit = out
+					.split("\n")
+					.find((p) => p.startsWith(prefix) && p.endsWith("/progress.md"));
+				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
+			},
+		};
 
-	return createRunInfraDispatcher({
-		store,
+		// resumeKind = "restart": the generic re-dispatch umbrella. The specific
+		// terminate/reboot/handoff distinction is informational only (surfaced to
+		// the runner) and not knowable from the dispatch signature here.
+		return computeProgressResume(issueId, role, "restart", deps);
+	};
+
+	return new RunDispatcher(
 		projectRuntimes,
 		cleanupHandles,
-		runnerAdmission: config.runnerAdmission,
+		config.runnerAdmission,
 		launchClaims,
+		undefined, // isCommitted — production uses the default file-existence check
 		resumeComputer, // FLY-795: live restart-resilient resume
-		lifecycleAdmission: runInfraOpts?.lifecycleAdmission,
-		lifecycleLaunchGuard: runInfraOpts?.lifecycleLaunchGuard,
-		doaBackoffAdmission: runInfraOpts?.doaBackoffAdmission,
-		phaseRetryStartPointComputer, // FLY-1257: branch B tip before retry TURN/launch
-		continuityComputer,
-		freshStartAudit: (record) => continuityAudit.recordFreshStart(record),
-		admissionCrossingBarrier: runInfraOpts?.admissionCrossingBarrier,
-		flagStore: runInfraOpts?.flagStore,
-	});
+		runInfraOpts?.lifecycleAdmission, // FLY-1185: park admission chokepoint
+		runInfraOpts?.lifecycleLaunchGuard, // FLY-1185 R1#5: pre-launch recheck
+		runInfraOpts?.workflowShadow, // FLY-1232: T1/T2/T7 pre-launch seam (flag ON only)
+		// FLY-1244: admission exists only with the WRITE seam. The preceding
+		// shadow dispatch creates/locates the active run; failure here aborts the
+		// QA launch before the runner can start without a usable credential.
+		runInfraOpts?.workflowShadow
+			? {
+					admit: (input: {
+						projectName: string;
+						issueId: string;
+						executionId: string;
+						node: string;
+						attempt: number;
+					}) => {
+						const run = store.getActiveWorkflowRun(
+							input.projectName,
+							input.issueId,
+						);
+						if (!run) throw new Error("active workflow run not found");
+						const now = Date.now();
+						const admitted = store.admitWorkflowExecution({
+							runId: run.run_id,
+							nodeId: input.node,
+							executionId: input.executionId,
+							attempt: input.attempt,
+							family: "qa_verdict",
+							now: new Date(now).toISOString(),
+							expiresAt: new Date(now + 30 * 60_000).toISOString(),
+							absoluteDeadlineAt: new Date(now + 2 * 60 * 60_000).toISOString(),
+						});
+						if (!admitted.ok) throw new Error(admitted.reason);
+						return { credential: admitted.credential };
+					},
+				}
+			: undefined,
+	);
 }
 
 // ── CIPHER helpers ──────────────────────────────────────────────────

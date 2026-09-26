@@ -1,14 +1,7 @@
 {
 	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
 	"files": {
-		"includes": [
-			"**",
-			"!**/dist-electron",
-			"!**/.cursor",
-			"!engineering/doc/**",
-			"!engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json",
-			"!product/doc/**/evidence/**"
-		]
+		"includes": ["**", "!**/dist-electron", "!**/.cursor"]
 	},
 	"linter": {
 		"rules": {

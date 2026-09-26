@@ -1,4 +1,3 @@
-import { buildModelCatalog, ROLE_EFFORT_LEVELS } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
 	CLAUDE_TIER_OPTIONS,
@@ -27,33 +26,20 @@ function lead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 }
 
 describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () => {
-	it("projects Claude tier choices from the canonical Lead model catalog", () => {
-		const catalogModels = buildModelCatalog("lead").providers.find(
-			(provider) => provider.id === "anthropic",
-		)!.models;
-		expect(CLAUDE_TIER_OPTIONS.filter((option) => option.id !== null)).toEqual(
-			catalogModels.map((model) => ({
-				id: model.id,
-				label: model.label,
-				...(model.selectable ? {} : { readonly: true }),
-			})),
-		);
-	});
-
-	it("lists every model plus account-default, legacy ids readonly", () => {
+	it("Claude tiers = Fable 5 + Opus 4.8 (1M) + Opus 4.8 (null) + Sonnet 4.6 + Haiku 4.5 + Sonnet 5 (FLY-728 appended)", () => {
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
 			{ id: "claude-fable-5", label: "Fable 5" },
-			{ id: "claude-fable-5[1m]", label: "Fable 5 (1M)" },
-			{ id: "claude-opus-5", label: "Opus 5" },
-			{ id: "claude-opus-5[1m]", label: "Opus 5 (1M)" },
+			// FLY-360: explicit 1M-context selector (Claude Code CLI `[1m]` suffix).
+			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
+			{ id: null, label: "Opus 4.8" },
+			// FLY-671: cheaper tiers appended (high→low) so cost-sensitive Leads can
+			// be downgraded from the console. Appended (not reordered) so the existing
+			// three entries keep their positions (reverse-compat for any ordinal use).
 			{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-			{ id: "claude-sonnet-5", label: "Sonnet 5" },
 			{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-			// FLY-1467: legacy Opus identities stay listed (label + legal target)
-			// but are readonly — visible, never offered as a new choice.
-			{ id: "claude-opus-4-8", label: "Opus 4.8", readonly: true },
-			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)", readonly: true },
-			{ id: null, label: "账号默认" },
+			// FLY-728: Sonnet 5 = current fleet Sonnet (the simple-tier model);
+			// appended so all existing ordinals stay byte-compatible.
+			{ id: "claude-sonnet-5", label: "Sonnet 5" },
 		]);
 	});
 
@@ -64,26 +50,25 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 	});
 
 	it("computeTierOptions picks by effective backend", () => {
-		expect(computeTierOptions("claude-code")).toEqual(CLAUDE_TIER_OPTIONS);
+		expect(computeTierOptions("claude-code")).toBe(CLAUDE_TIER_OPTIONS);
 		expect(computeTierOptions("codex-app-server")).toBe(CODEX_TIER_OPTIONS);
 	});
 });
 
 describe("fleet-capabilities — allowedModelTargets (R6 #5)", () => {
-	it("Claude targets contain the selectable ids plus account-default", () => {
+	it("Claude targets = tier ids ∪ {null} (account-default is a legal target)", () => {
 		const targets = computeAllowedModelTargets("claude-code");
 		expect(targets).toContain("claude-fable-5");
-		expect(targets).not.toContain("claude-opus-4-8[1m]");
+		expect(targets).toContain("claude-opus-4-8[1m]"); // FLY-360: 1M selector authorized
 		expect(targets).toContain("claude-sonnet-4-6"); // FLY-671: cheaper tier authorized
 		expect(targets).toContain("claude-haiku-4-5-20251001"); // FLY-671: cheaper tier authorized
 		expect(targets).toContain("claude-sonnet-5"); // FLY-728: current fleet Sonnet
+		expect(targets).toContain(null); // explicit → account default is legal
 	});
 
-	it("offers account inheritance as a legal target", () => {
-		// Readonly legacy ids stay out; null (back-to-account-default) is legal.
+	it("does not duplicate null when a tier already exposes it", () => {
 		const targets = computeAllowedModelTargets("claude-code");
-		expect(targets).toContain(null);
-		expect(targets).not.toContain("claude-opus-4-8[1m]");
+		expect(targets.filter((t) => t === null)).toHaveLength(1);
 	});
 
 	it("Codex Lead targets = only null (no managed model switch)", () => {
@@ -95,7 +80,11 @@ describe("fleet-capabilities — effort options/targets (FLY-671, backend-aware)
 	it("EFFORT_OPTIONS = 默认(null) + the five CLI levels", () => {
 		expect(EFFORT_OPTIONS.map((o) => o.id)).toEqual([
 			null,
-			...ROLE_EFFORT_LEVELS,
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
 		]);
 	});
 
@@ -111,17 +100,11 @@ describe("fleet-capabilities — effort options/targets (FLY-671, backend-aware)
 		expect(computeEffortOptions("claude-code")).toBe(EFFORT_OPTIONS);
 	});
 
-	it("Codex Lead effort uses the same active five-level runtime path", () => {
-		expect(computeAllowedEffortTargets("codex-app-server")).toEqual([
-			null,
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-			"max",
-		]);
+	it("Codex Lead effort is display-only: only null target, readonly chip", () => {
+		expect(computeAllowedEffortTargets("codex-app-server")).toEqual([null]);
 		const opts = computeEffortOptions("codex-app-server");
-		expect(opts).toBe(EFFORT_OPTIONS);
+		expect(opts).toHaveLength(1);
+		expect(opts[0]?.readonly).toBe(true);
 	});
 
 	it("computeLeadCapabilities carries effortOptions + allowedEffortTargets", () => {
@@ -219,7 +202,7 @@ describe("fleet-capabilities — computeLeadCapabilities bundle", () => {
 		);
 		expect(cap.currentBackend).toBe("claude-code");
 		expect(cap.backendSource).toBe("explicit");
-		expect(cap.tierOptions).toEqual(CLAUDE_TIER_OPTIONS);
+		expect(cap.tierOptions).toBe(CLAUDE_TIER_OPTIONS);
 		expect(cap.allowedModelTargets).toContain("claude-fable-5");
 	});
 

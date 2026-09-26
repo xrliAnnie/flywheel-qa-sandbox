@@ -31,7 +31,6 @@ class FakeConnection implements LiveConnection {
 	constructor(readonly params: LiveConnectParams) {}
 	sendAudio(): void {}
 	sendText(): void {}
-	injectContext(): void {}
 	sendToolResponse(callId: string, output: string, scheduling?: string): void {
 		this.toolResponses.push({ callId, output, scheduling });
 	}

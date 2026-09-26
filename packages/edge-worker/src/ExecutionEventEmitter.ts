@@ -1,10 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type {
-	DesignBackend,
-	SkillFrameworkMode,
-	SkillFrameworkVia,
-} from "flywheel-config";
-import type { TerminalFailureInfo } from "flywheel-core";
 import type { BlueprintResult } from "./Blueprint.js";
 
 export interface EventEnvelope {
@@ -13,16 +7,12 @@ export interface EventEnvelope {
 	projectName: string;
 	issueIdentifier?: string;
 	issueTitle?: string;
-	/** Bridge-derived founder-visible route line. Direct sink only; never HTTP. */
-	routeSummary?: string;
 	retryPredecessor?: string;
 	runAttempt?: number;
 	/** GEO-152: Linear issue labels for multi-lead routing */
 	labels?: string[];
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
-	/** FLY-1259: effective design vendor locked at DAG workflow admission. */
-	designBackend?: DesignBackend;
 	/**
 	 * FLY-793 (Step 11): the chat-thread role, computed ONCE at dispatch as
 	 * `shareParentBranch ? sessionRole : 'main'`. Carried on session_started so both
@@ -55,31 +45,6 @@ export interface EventEnvelope {
 	 * (byte-compatible).
 	 */
 	ponytailCondition?: string;
-	/**
-	 * FLY-1356: the EFFECTIVE skill-framework arm for this run (post matt
-	 * readiness fallback) + how it was decided. Persisted as
-	 * `sessions.skill_framework_mode` / `skill_framework_mode_via` — the
-	 * attribution join key for the A/B/C split eval. Absent → the flag sat at
-	 * its default when this run resolved (byte-compatible; no columns written).
-	 */
-	skillFrameworkMode?: SkillFrameworkMode;
-	skillFrameworkModeVia?: SkillFrameworkVia;
-	/**
-	 * FLY-1372 §2.5: Bridge-TRUSTED behavior fields, set only for engine-owned
-	 * generalized (pipeline.dag) starts so they land in the session row at
-	 * creation time (crash-convergent, no post-start patch window).
-	 *
-	 * AUTHORITY BOUNDARY (Codex design R3-3): these are SERVER-computed gate
-	 * inputs. Only the Bridge-local DirectEventSink persists them.
-	 * `TeamLeadClient.emitStarted` must NEVER transmit them — the shared HTTP
-	 * `/events` ingest token is runner-visible and cannot carry Bridge
-	 * authority (same red line as the worktree binding note below) — and the
-	 * `/events` session_started handler must ignore any same-named runner
-	 * payload fields.
-	 */
-	docTier?: string;
-	issueUrl?: string;
-	codexSkip?: boolean;
 }
 
 /**
@@ -93,9 +58,6 @@ export interface EventEnvelope {
 export interface WorktreeBindingInfo {
 	branch: string;
 	generation: string;
-	/** Bridge-local immutable no-artifact baseline; HTTP emitters discard it. */
-	repoBaselineSetJson?: string;
-	repoBaselineSetDigest?: string;
 }
 
 export interface ExecutionEventEmitter {
@@ -125,7 +87,6 @@ export interface ExecutionEventEmitter {
 		env: EventEnvelope,
 		error: string,
 		lastActivity?: string,
-		failure?: TerminalFailureInfo,
 	): Promise<void>;
 	/** GEO-157: Heartbeat — dedicated route, no session_events, no lead notification */
 	emitHeartbeat(env: EventEnvelope): Promise<void>;
@@ -153,7 +114,6 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
-				designBackend: env.designBackend,
 				// FLY-793 (Codex full-PR R1 #4): carry the chat-thread role on the HTTP
 				// started payload too — real runners emit via this client, so without it
 				// the /events sink defaults to "main" and (INSERT-once, never updated)
@@ -165,13 +125,6 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				runnerModel: env.runnerModel,
 				// FLY-615: ponytail condition → persisted as session.ponytail_condition.
 				ponytailCondition: env.ponytailCondition,
-				// FLY-1356 (Codex R1 HIGH-3 — the FLY-793 lesson, one field down):
-				// the arm attribution must ride the HTTP payload too. The /events
-				// sink records only what is actually on the wire (event-route
-				// requires BOTH enums valid before persisting), so omitting these
-				// here silently drops the A/B/C eval join key for any HTTP emitter.
-				skillFrameworkMode: env.skillFrameworkMode,
-				skillFrameworkModeVia: env.skillFrameworkModeVia,
 			},
 		});
 		this.track(p);
@@ -194,7 +147,6 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				evidence: result.evidence,
 				decision: result.decision,
-				reviewQuestionId: result.reviewQuestionId,
 				summary,
 				labels: result.labels,
 				projectId: result.projectId,
@@ -212,7 +164,6 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		env: EventEnvelope,
 		error: string,
 		lastActivity?: string,
-		failure?: TerminalFailureInfo,
 	): Promise<void> {
 		await this.postEventReliable({
 			event_id: randomUUID(),
@@ -227,7 +178,6 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				lastActivity,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
-				failure,
 			},
 		});
 	}
@@ -403,12 +353,7 @@ export class NoOpEventEmitter implements ExecutionEventEmitter {
 		_env: EventEnvelope,
 		_result: BlueprintResult,
 	): Promise<void> {}
-	async emitFailed(
-		_env: EventEnvelope,
-		_error: string,
-		_lastActivity?: string,
-		_failure?: TerminalFailureInfo,
-	): Promise<void> {}
+	async emitFailed(_env: EventEnvelope, _error: string): Promise<void> {}
 	async emitHeartbeat(_env: EventEnvelope): Promise<void> {}
 	async flush(): Promise<void> {}
 }

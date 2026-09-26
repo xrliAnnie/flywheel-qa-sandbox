@@ -7,96 +7,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	captureRunnerScrollback,
 	probeRunnerProcessLiveness,
-	probeRunnerProcessLivenessDetailed,
-	probeTmuxServerStartTime,
 	type TmuxRunner,
 } from "../bridge/tmux-lookup.js";
 
-describe("probeTmuxServerStartTime (FLY-1628)", () => {
-	it("reads the selected socket's native tmux start_time", async () => {
-		const runner = vi.fn<TmuxRunner>(async () => ({ stdout: "1722700000\n" }));
-		expect(
-			await probeTmuxServerStartTime("/tmp/tmux-501/default", runner),
-		).toEqual({ kind: "found", startTime: "1722700000" });
-		expect(runner).toHaveBeenCalledWith([
-			"-S",
-			"/tmp/tmux-501/default",
-			"display-message",
-			"-p",
-			"#{start_time}",
-		]);
-	});
-
-	it("fails closed on command errors or malformed native output", async () => {
-		expect(
-			await probeTmuxServerStartTime("/tmp/tmux-501/default", async () => {
-				throw new Error("timeout");
-			}),
-		).toEqual({ kind: "indeterminate" });
-		expect(
-			await probeTmuxServerStartTime("/tmp/tmux-501/default", async () => ({
-				stdout: "not-a-time",
-			})),
-		).toEqual({ kind: "indeterminate" });
-	});
-});
-
 describe("probeRunnerProcessLiveness (FLY-720)", () => {
-	it("preserves liveness while exposing timeout evidence at the tmux boundary", async () => {
-		const timeout = Object.assign(new Error("Command timed out after 5000ms"), {
-			code: "ETIMEDOUT",
-			killed: true,
-			signal: "SIGTERM",
-		});
-		const runner: TmuxRunner = async () => {
-			throw timeout;
-		};
-		const result = await probeRunnerProcessLivenessDetailed("R:@1", runner);
-		expect(result).toMatchObject({
-			liveness: "indeterminate",
-			failure: {
-				stage: "tmux-throw",
-				errorType: "Error",
-				message: "Command timed out after 5000ms",
-				timedOut: true,
-			},
-		});
-		expect(result.failure?.durationMs).toBeGreaterThanOrEqual(0);
-		expect(await probeRunnerProcessLiveness("R:@1", runner)).toBe(
-			"indeterminate",
-		);
-	});
-
-	it("keeps proved absence distinct from probe failure", async () => {
-		const runner: TmuxRunner = async () => {
-			throw new Error("can't find window: R:@1");
-		};
-		expect(await probeRunnerProcessLivenessDetailed("R:@1", runner)).toEqual({
-			liveness: "absent",
-		});
-	});
-
-	it("reports empty output as probe_unclear evidence without changing the verdict", async () => {
-		const runner: TmuxRunner = async () => ({ stdout: " \n" });
-		const result = await probeRunnerProcessLivenessDetailed("R:@1", runner);
-		expect(result).toMatchObject({
-			liveness: "indeterminate",
-			failure: {
-				stage: "empty-output",
-				errorType: "EmptyOutput",
-				timedOut: false,
-			},
-		});
-		expect(result.failure?.durationMs).toBeGreaterThanOrEqual(0);
-	});
-
-	it("returns ordinary live-pane evidence without a failure payload", async () => {
-		const runner: TmuxRunner = async () => ({ stdout: "0\n" });
-		expect(await probeRunnerProcessLivenessDetailed("R:@1", runner)).toEqual({
-			liveness: "alive",
-		});
-	});
-
 	it("returns dead_pin when the window exists and every pane is a corpse", async () => {
 		const runner: TmuxRunner = async () => ({ stdout: "1\n" });
 		expect(await probeRunnerProcessLiveness("R:@1", runner)).toBe("dead_pin");

@@ -203,7 +203,6 @@ rt_marker_case() {
     FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
     FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
     FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
-    FLYWHEEL_COMM_DB="/state/comm.db" \
     FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
     /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "$desc: ensure-home failed"; return; }
   if [ "$expect" = "1" ]; then
@@ -229,9 +228,10 @@ rt_marker_case 2 "FLY-1243: REPLY_IN_THREAD unset + cross-dept → marker presen
 # FLY-1243: no resolvable parent (no roundtable channel id, no cross-dept) → no marker.
 rt_marker_case 3 "FLY-1243: no resolvable parent → no marker" 0
 
-# FLY-1806: auto-continue is fixed on whenever the parent is resolvable.
-rt_marker_case 4 "FLY-1806: resolvable parent → marker present" 1 \
-  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
+# FLY-1243: THREAD_AUTOCONTINUE=0 kill-switch → no marker even with a resolvable parent.
+rt_marker_case 4 "FLY-1243: THREAD_AUTOCONTINUE=0 → no marker" 0 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333 \
+  FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=0
 
 # FLY-1243 (Codex R2): empty-leading cross list (" ,<id>") → after split/trim/filter the
 # first survivor is the real id → resolvable parent → marker present.
@@ -259,7 +259,6 @@ if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL
    FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
    FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
    FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
-   FLYWHEEL_COMM_DB="/state/comm.db" \
    /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
   pass "full-access ensure-home succeeds"
 else
@@ -293,7 +292,6 @@ if [ -f "$GATE_JS" ]; then
       FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
       FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$2" \
       FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/Users/x/.flywheel/state/codex-lead/mufasa" \
-      FLYWHEEL_COMM_DB="/Users/x/.flywheel/comm/growth/comm.db" \
       FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
       /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "shell→gate FA ($1): ensure-home failed"; return; }
     GATE_JS="$GATE_JS" RUNTIME_JS="$RUNTIME_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
@@ -305,11 +303,9 @@ if [ -f "$GATE_JS" ]; then
       // EXACTLY; the shell now writes the same normalized/base-filtered value.
       const parsed = parseCodexLeadRuntimeConfig({
         FLYWHEEL_LEAD_ID: "mufasa-lead", FLYWHEEL_PROJECT_NAME: "growth",
-        FLYWHEEL_LEAD_KEY: "growth-mufasa-lead", FLYWHEEL_LEAD_BACKEND: "codex-app-server",
-        FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64), DISCORD_EXPECTED_BOT_USER_ID: "999", DISCORD_BOT_TOKEN: "x",
+        FLYWHEEL_LEAD_BOT_USER_ID: "999", DISCORD_BOT_TOKEN: "x",
         FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
         FLYWHEEL_CODEX_LEAD_STATE_DIR: "/Users/x/.flywheel/state/codex-lead/mufasa",
-        FLYWHEEL_COMM_DB: "/Users/x/.flywheel/comm/growth/comm.db",
         FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex", CODEX_HOME: "/tmp/codexhome",
         FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: process.env.CROSS || "",
       });
@@ -320,7 +316,6 @@ if [ -f "$GATE_JS" ]; then
         chatChannelId: "1500600400238084307",
         crossDeptChannelIds: parsed.crossDeptChannelIds,
         stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
-        commDbPath: "/Users/x/.flywheel/comm/growth/comm.db",
         explicitAliases: process.env.ALI || undefined,
         roundtableAutoContinue: parsed.replyInThread?.autoContinue === true,
       });
@@ -364,7 +359,6 @@ FA694_OUT=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H"
   FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
   FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
   FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
-  FLYWHEEL_COMM_DB="/state/comm.db" \
   /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
 echo "$FA694_OUT" | command grep -q "command not found" \
   && fail "FLY-694: full-access ensure-home under /bin/bash emitted 'command not found' (bash 3.2 heredoc desync); out: $FA694_OUT" \

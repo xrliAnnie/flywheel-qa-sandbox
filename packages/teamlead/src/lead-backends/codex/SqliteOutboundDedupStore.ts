@@ -12,8 +12,6 @@
  * backend-agnostic.
  */
 
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type {
 	DedupRecord,
@@ -34,7 +32,6 @@ export class SqliteOutboundDedupStore implements OutboundDedupStore {
 
 	constructor(dbPath: string, now: () => number = () => Date.now()) {
 		this.now = now;
-		mkdirSync(dirname(dbPath), { recursive: true });
 		this.db = new Database(dbPath);
 		this.db.pragma("journal_mode = WAL");
 		this.db.exec(`

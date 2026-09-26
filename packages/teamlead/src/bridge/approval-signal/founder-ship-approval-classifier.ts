@@ -14,10 +14,6 @@
  */
 
 import {
-	type FounderReworkTarget,
-	isFounderReworkTarget,
-} from "../../workflow-rework-hint.js";
-import {
 	type RunnerResult,
 	runSubscriptionClassifier,
 	type SubscriptionClassifierOpts,
@@ -42,7 +38,7 @@ export interface FounderShipApprovalInput {
 
 export type ClassifierVerdict =
 	| { kind: "approve"; evidenceMessageId: string }
-	| { kind: "reject"; reason: string; reworkTarget?: FounderReworkTarget }
+	| { kind: "reject"; reason: string }
 	/**
 	 * FLY-1041 Chunk 4: "unclear" now distinguishes WHY. `runnerFailed` marks
 	 * an infrastructure failure (spawn/timeout/login/rate-limit — the runner
@@ -86,8 +82,7 @@ function buildPrompt(input: FounderShipApprovalInput): string {
 		'- "reject" for an explicit "do not ship" / "changes needed".',
 		'- "unclear" for anything hedged, conditional, negated, about a different issue, a status question, an acknowledgement, or ambiguous.',
 		"",
-		"For a reject, separately identify the requested correction owner when clear; otherwise use null.",
-		'Output ONLY a JSON object, no other text: {"decision":"approve"|"reject"|"unclear","evidence_message_id":"<id>","rework_target":"design"|"implement"|"qa"|null}.',
+		'Output ONLY a JSON object, no other text: {"decision":"approve"|"reject"|"unclear","evidence_message_id":"<id>"}.',
 		`The evidence_message_id MUST be exactly "${input.expectedMessageId}".`,
 	].join("\n");
 }
@@ -131,11 +126,9 @@ export async function classifyFounderShipApproval(
 	}
 	if (decision === "reject") {
 		const reason = (v as { reason?: unknown }).reason;
-		const reworkTarget = (v as { rework_target?: unknown }).rework_target;
 		return {
 			kind: "reject",
 			reason: typeof reason === "string" ? reason : "founder rejected",
-			...(isFounderReworkTarget(reworkTarget) ? { reworkTarget } : {}),
 		};
 	}
 	// "unclear" or any unknown decision value → fail-closed.

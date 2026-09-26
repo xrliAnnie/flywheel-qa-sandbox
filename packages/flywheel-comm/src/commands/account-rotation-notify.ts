@@ -9,7 +9,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { normalizeOptionalBearer } from "flywheel-config";
 
 export interface AccountRotationNotifyArgs {
 	provider: string;
@@ -59,9 +58,7 @@ export async function accountRotationNotify(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	const token = normalizeOptionalBearer(
-		args.ingestToken ?? process.env.FLYWHEEL_INGEST_TOKEN,
-	);
+	const token = args.ingestToken ?? process.env.FLYWHEEL_INGEST_TOKEN;
 	if (token) headers.Authorization = `Bearer ${token}`;
 
 	const url = `${bridgeUrl.replace(/\/+$/, "")}/events`;

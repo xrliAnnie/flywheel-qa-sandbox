@@ -43,8 +43,14 @@ describe("parseGatewayConfig (F-a boundary)", () => {
 		);
 	});
 
-	it("FLY-676: roundtableAutoContinue only follows the runtime EFFECTIVE flag", () => {
+	it("FLY-676: roundtableAutoContinue only on for the runtime EFFECTIVE flag (not raw THREAD_AUTOCONTINUE)", () => {
 		expect(parseGatewayConfig(FULL_ENV).roundtableAutoContinue).toBe(false);
+		expect(
+			parseGatewayConfig({
+				...FULL_ENV,
+				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "1",
+			}).roundtableAutoContinue,
+		).toBe(false);
 		expect(
 			parseGatewayConfig({
 				...FULL_ENV,
@@ -106,21 +112,6 @@ describe("mapHttpDispatchOutcome (F-a)", () => {
 				kind: "response",
 				status: 200,
 				successFlag: true,
-			}),
-		).toEqual({ kind: "success" });
-	});
-
-	it("202 + success:true accepted-pending is dispatched and must not be re-driven", () => {
-		expect(
-			mapHttpDispatchOutcome({
-				kind: "response",
-				status: 202,
-				successFlag: true,
-				body: JSON.stringify({
-					success: true,
-					pending: true,
-					code: "GENERALIZED_LAUNCH_PENDING",
-				}),
 			}),
 		).toEqual({ kind: "success" });
 	});

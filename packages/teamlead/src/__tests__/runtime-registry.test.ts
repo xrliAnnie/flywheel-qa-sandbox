@@ -17,7 +17,6 @@ function makeRuntime(type: "commdb" = "commdb"): LeadRuntime {
 	return {
 		type,
 		deliver: vi.fn().mockResolvedValue({ delivered: true }),
-		renderEnvelope: vi.fn(() => "rendered event"),
 		sendBootstrap: vi.fn().mockResolvedValue(undefined),
 		health: vi.fn().mockResolvedValue({
 			status: "healthy",
@@ -99,51 +98,5 @@ describe("RuntimeRegistry", () => {
 		await reg.shutdownAll();
 		expect(rt1.shutdown).toHaveBeenCalledOnce();
 		expect(rt2.shutdown).toHaveBeenCalledOnce();
-	});
-
-	it("routes every deliver call through one interceptor while retaining raw runtime access", async () => {
-		const reg = new RuntimeRegistry();
-		const rt = makeRuntime();
-		const intercept = vi.fn(async (raw, envelope) => raw.deliver(envelope));
-		reg.setDeliveryInterceptor(intercept);
-		reg.register(makeLead(), rt);
-		const envelope = {
-			seq: 7,
-			event: { event_type: "gate_question" },
-			sessionKey: "exec-1",
-			leadId: "product-lead",
-			timestamp: new Date().toISOString(),
-		};
-
-		await reg.getForLead("product-lead")!.deliver(envelope);
-		expect(intercept).toHaveBeenCalledWith(rt, envelope);
-		expect(rt.deliver).toHaveBeenCalledWith(envelope);
-		expect(reg.getRawForLead("product-lead")).toBe(rt);
-	});
-
-	it("queues through the explicit durable seam without calling transport", () => {
-		const reg = new RuntimeRegistry();
-		const rt = makeRuntime();
-		reg.register(makeLead(), rt);
-		const enqueue = vi.fn(() => ({
-			queued: true as const,
-			deliveryId: "lead_event:product-lead:event-1",
-			seq: 7,
-		}));
-		reg.setLeadEventEnqueuer(enqueue);
-		const envelope = {
-			seq: 7,
-			eventId: "event-1",
-			event: { event_type: "session_completed" },
-			sessionKey: "exec-1",
-			leadId: "product-lead",
-			timestamp: new Date().toISOString(),
-		};
-		expect(reg.enqueueLeadEvent(envelope)).toMatchObject({
-			queued: true,
-			seq: 7,
-		});
-		expect(enqueue).toHaveBeenCalledWith(envelope, "rendered event");
-		expect(rt.deliver).not.toHaveBeenCalled();
 	});
 });

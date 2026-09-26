@@ -5,11 +5,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AlertChannelHub,
-	correlationKeyFor,
 	createDiscordOps,
 	type DiscordOps,
 } from "../bridge/AlertChannelHub.js";
-import { makeChannelArchiveDefaultProvider } from "../bridge/roundtable/channel-archive-default.js";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import { StateStore } from "../StateStore.js";
 
@@ -33,24 +31,20 @@ type PostTuple = [string, string, { mentionUserId?: string } | undefined];
 
 function makeDiscord(_opts: { postOk?: boolean } = {}): DiscordOps & {
 	created: string[];
-	createdArchiveMinutes: Array<number | undefined>;
 	posts: PostTuple[];
 	archived: string[];
 } {
 	const created: string[] = [];
-	const createdArchiveMinutes: Array<number | undefined> = [];
 	const posts: PostTuple[] = [];
 	const archived: string[] = [];
 	let n = 0;
 	return {
 		created,
-		createdArchiveMinutes,
 		posts,
 		archived,
-		async createThreadFromMessage(_c, _m, name, archiveMinutes) {
+		async createThreadFromMessage(_c, _m, name) {
 			const id = `thread-${++n}`;
 			created.push(name);
-			createdArchiveMinutes.push(archiveMinutes);
 			return id;
 		},
 		async postToThread(threadId, content, opts) {
@@ -85,88 +79,6 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(discord.posts[0]![1]).toContain("收到");
 		const row = store.getActiveAlertThread("flywheel|tadashi|pane_hash_stuck|");
 		expect(row?.thread_id).toBe("thread-1");
-	});
-
-	it("FLY-802: passes the parent channel's archive default into thread creation", async () => {
-		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-		const hub = new AlertChannelHub({
-			store,
-			notifier,
-			discord,
-			archiveDefaultProvider: async () => 60,
-		});
-
-		await hub.handle(payload());
-
-		expect(discord.createdArchiveMinutes).toEqual([60]);
-	});
-
-	it.each([
-		["null", async () => null],
-		[
-			"rejection",
-			async () => {
-				throw new Error("lookup failed");
-			},
-		],
-	] as const)(
-		"FLY-802: %s provider falls back to 1440 without degrading to root-only",
-		async (_case, archiveDefaultProvider) => {
-			const discord = makeDiscord();
-			const logs: string[] = [];
-			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-			const hub = new AlertChannelHub({
-				store,
-				notifier,
-				discord,
-				archiveDefaultProvider,
-				logger: (message) => logs.push(message),
-			});
-
-			await hub.handle(payload());
-
-			expect(discord.createdArchiveMinutes).toEqual([1440]);
-			expect(
-				store.getActiveAlertThread("flywheel|tadashi|pane_hash_stuck|")
-					?.thread_id,
-			).toBe("thread-1");
-			if (_case === "rejection") {
-				expect(
-					logs.some((message) => message.includes("archive default")),
-				).toBe(true);
-			}
-		},
-	);
-
-	it("FLY-802: one Hub reuses a cached parent lookup across consecutive alert threads", async () => {
-		const discord = makeDiscord();
-		const channelReads: string[] = [];
-		const archiveDefaultProvider = makeChannelArchiveDefaultProvider({
-			channelId: "UNI",
-			botToken: "token",
-			fetchImpl: vi.fn(async (url: string) => {
-				channelReads.push(url);
-				return {
-					ok: true,
-					status: 200,
-					json: async () => ({ default_auto_archive_duration: 60 }),
-				} as Response;
-			}) as typeof fetch,
-		});
-		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-		const hub = new AlertChannelHub({
-			store,
-			notifier,
-			discord,
-			archiveDefaultProvider,
-		});
-
-		await hub.handle(payload({ eventId: "evt-1" }));
-		await hub.handle(payload({ eventId: "evt-2" }));
-
-		expect(channelReads).toHaveLength(1);
-		expect(discord.createdArchiveMinutes).toEqual([60, 60]);
 	});
 
 	it("same event_id duplicate does NOT open a second thread", async () => {
@@ -217,22 +129,6 @@ describe("AlertChannelHub (FLY-368)", () => {
 		await hub.handle(payload());
 		expect(discord.created).toHaveLength(0);
 	});
-
-	it.each([
-		"account_switched",
-		"model_cap_switched",
-		"model_cap_unknown",
-		"quota_switch_confirmation",
-	] as const)(
-		"informational %s direct delivery stays root-only",
-		async (eventType) => {
-			const discord = makeDiscord();
-			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-			const hub = new AlertChannelHub({ store, notifier, discord });
-			await hub.handle(payload({ eventType }));
-			expect(discord.created).toHaveLength(0);
-		},
-	);
 
 	it("runs the auto-repair bot and records its outcome when present", async () => {
 		const discord = makeDiscord();
@@ -308,7 +204,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(ack).not.toContain("正在尝试");
 	});
 
-	it("needs_human never @-pings the founder even when the env id is set", async () => {
+	it("needs_human REALLY @-pings the founder when the env id is set", async () => {
 		const prev = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
 		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "1138241636057481306";
 		try {
@@ -321,13 +217,10 @@ describe("AlertChannelHub (FLY-368)", () => {
 				autoRepairBot: repairBot("needs_human", false),
 			});
 			await hub.handle(payload({ eventType: "rate_limit", eventId: "rl" }));
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
-			expect(
-				discord.posts.every(([, c]) => !c.includes("<@1138241636057481306>")),
-			).toBe(true);
-			expect(
-				discord.posts.every(([, , opts]) => opts?.mentionUserId === undefined),
-			).toBe(true);
+			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
+			expect(nh).toBeDefined();
+			expect(nh![1]).toContain("<@1138241636057481306>");
+			expect(nh![2]).toEqual({ mentionUserId: "1138241636057481306" });
 		} finally {
 			if (prev === undefined)
 				delete process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
@@ -335,7 +228,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		}
 	});
 
-	it("needs_human stays silent when founder id is unset or invalid", async () => {
+	it("needs_human degrades to plain text (no ping) when founder id is unset/invalid", async () => {
 		const prev = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
 		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "not-a-snowflake";
 		try {
@@ -348,8 +241,11 @@ describe("AlertChannelHub (FLY-368)", () => {
 				autoRepairBot: repairBot("needs_human", false),
 			});
 			await hub.handle(payload({ eventType: "rate_limit", eventId: "rl" }));
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
-			expect(discord.posts.every(([, c]) => !c.includes("<@"))).toBe(true);
+			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
+			expect(nh).toBeDefined();
+			expect(nh![1]).toContain("Annie");
+			expect(nh![1]).not.toContain("<@");
+			expect(nh![2]).toBeUndefined();
 		} finally {
 			if (prev === undefined)
 				delete process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
@@ -457,7 +353,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 			autoRepairBot: repairBot("attempted", true),
 		});
 		await hub.handle(payload({ eventType: "pane_hash_stuck" }));
-		await hub.resolve("flywheel|tadashi|pane_hash_stuck|");
+		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
 		const resolved = discord.posts.find(([, c]) => c.includes("已恢复"));
 		expect(resolved).toBeDefined();
 		expect(resolved![1]).toContain("报警");
@@ -470,18 +366,18 @@ describe("AlertChannelHub (FLY-368)", () => {
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
-		await hub.resolve("flywheel|tadashi|pane_hash_stuck|");
+		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
 		const resolved = discord.posts.find(([, c]) => c.includes("已恢复"));
 		expect(resolved).toBeDefined();
 		expect(resolved![1]).not.toContain("Cass 自动修复");
 	});
 
-	it("resolve posts recovered + archives + marks resolved", async () => {
+	it("onLeadRecovery posts recovered + archives + marks resolved", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
-		await hub.resolve("flywheel|tadashi|pane_hash_stuck|");
+		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
 		expect(discord.posts.some(([, c]) => c.includes("已恢复"))).toBe(true);
 		expect(discord.archived).toContain("thread-1");
 		expect(
@@ -510,83 +406,146 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(store.getActiveAlertThread(ck)).toBeUndefined();
 	});
 
-	it("legacy runner-stuck rows stay inert during reconcile", async () => {
+	it("FLY-1048: reconcile keeps a pane_error_stalled thread ACTIVE while the error is still in the live region", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-		const captureRunner = vi.fn(async () => "runner moved");
+		const stalled = [
+			"  ⎿  API Error: Server error mid-response. Please try again.",
+			"",
+			"──────────────────────────────── @tadashi ──",
+			"❯",
+			"────────────────────────────────────────────",
+			"  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+		].join("\n");
 		const hub = new AlertChannelHub({
 			store,
 			notifier,
 			discord,
-			captureRunner,
+			capturePane: async () => stalled,
 		});
-		const ck = "flywheel|tadashi|runner_stuck_unhandled|exec-7";
-		store.openAlertThread({
-			correlationKey: ck,
-			eventId: "evt-rs",
-			episodeSignature: "aaaaaaaaaaaaaaaa",
-			threadId: "thread-rs",
-			channelId: "UNI",
-			leadId: "tadashi",
-			projectName: "flywheel",
-			eventType: "runner_stuck_unhandled",
-			sessionKey: "exec-7",
-		});
-
+		await hub.handle(
+			payload({ eventType: "pane_error_stalled", eventId: "evt-pes" }),
+		);
+		const ck = "flywheel|tadashi|pane_error_stalled|";
+		expect(store.getActiveAlertThread(ck)).toBeDefined();
 		await hub.reconcile();
-
-		expect(store.getActiveAlertThread(ck)?.ticket_status).toBeNull();
-		expect(captureRunner).not.toHaveBeenCalled();
-		expect(discord.posts).toHaveLength(0);
+		expect(store.getActiveAlertThread(ck)).toBeDefined();
 	});
 
-	it("ticketed legacy runner-stuck rows stay NEW without automatic escalation", async () => {
+	it("FLY-1048: reconcile RESOLVES a pane_error_stalled thread once the error left the live region (restart-safe)", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
-		const captureRunner = vi.fn(async () => "runner moved");
-		const previousBotId = process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID;
-		process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = "111111111111111111";
+		const hub1 = new AlertChannelHub({ store, notifier, discord });
+		await hub1.handle(
+			payload({ eventType: "pane_error_stalled", eventId: "evt-pes2" }),
+		);
+		const ck = "flywheel|tadashi|pane_error_stalled|";
+		expect(store.getActiveAlertThread(ck)).toBeDefined();
+		// Fresh Hub (Bridge restart) + healthy pane → resolve from the durable row.
+		const hub2 = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			capturePane: async () => "all good now, idle\n❯\n",
+		});
+		await hub2.reconcile();
+		expect(store.getActiveAlertThread(ck)).toBeUndefined();
+	});
+
+	it("reconcile does NOT resolve a still-frozen pane_hash_stuck on the first pass (two-capture rule)", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+		const frozen = "frozen pane no markers and no idle hint\n";
 		const hub = new AlertChannelHub({
 			store,
 			notifier,
 			discord,
-			captureRunner,
+			capturePane: async () => frozen,
 		});
-		const ck = "flywheel|tadashi|runner_stuck_unhandled|exec-8";
-		store.openAlertThread({
-			correlationKey: ck,
-			eventId: "evt-rs2",
-			threadId: "thread-rs2",
-			channelId: "UNI",
-			leadId: "tadashi",
-			projectName: "flywheel",
-			eventType: "runner_stuck_unhandled",
-			sessionKey: "exec-8",
-			ticketStatus: "NEW",
-			ownerRef: "infra_bot:claude",
-			firstSeenAt: "2020-01-01 00:00:00",
-		});
-		try {
-			await hub.reconcile();
-		} finally {
-			if (previousBotId === undefined) {
-				delete process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID;
-			} else {
-				process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = previousBotId;
-			}
-		}
+		await hub.handle(
+			payload({ eventType: "pane_hash_stuck", eventId: "evt-f" }),
+		);
+		const ck = "flywheel|tadashi|pane_hash_stuck|";
+		await hub.reconcile(); // first pass: record hash, do NOT resolve
+		expect(store.getActiveAlertThread(ck)).toBeDefined();
+	});
 
-		expect(store.getActiveAlertThread(ck)?.ticket_status).toBe("NEW");
-		expect(captureRunner).not.toHaveBeenCalled();
-		expect(discord.posts).toHaveLength(0);
+	it("reconcile resolves a RUNNER alert when the terminal advanced while session stays running (Codex HIGH-1)", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+		store.upsertSession({
+			execution_id: "exec-7",
+			issue_id: "FLY-9",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const hub = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			// runner moved on: live fingerprint differs from the stuck signature.
+			captureRunner: async () => "runner is making progress again now\n",
+		});
+		await hub.handle(
+			payload({
+				eventType: "runner_stuck_unhandled",
+				eventId: "evt-rs",
+				sessionKey: "exec-7",
+				metadata: {
+					runnerStuck: {
+						executionId: "exec-7",
+						episodeFingerprint: "aaaaaaaaaaaaaaaa",
+					},
+				},
+			}),
+		);
+		const ck = "flywheel|tadashi|runner_stuck_unhandled|exec-7";
+		expect(store.getActiveAlertThread(ck)).toBeDefined();
+		await hub.reconcile(); // session still running, but fingerprint changed → resolve
+		expect(store.getActiveAlertThread(ck)).toBeUndefined();
+		expect(discord.posts.some(([, c]) => c.includes("已恢复"))).toBe(true);
+	});
+
+	it("reconcile does NOT resolve a runner alert when capture is unavailable (fail-closed)", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+		store.upsertSession({
+			execution_id: "exec-8",
+			issue_id: "FLY-9",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const hub = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			captureRunner: async () => null, // cannot tell
+		});
+		await hub.handle(
+			payload({
+				eventType: "runner_stuck_unhandled",
+				eventId: "evt-rs2",
+				sessionKey: "exec-8",
+				metadata: {
+					runnerStuck: {
+						executionId: "exec-8",
+						episodeFingerprint: "bbbbbbbbbbbbbbbb",
+					},
+				},
+			}),
+		);
+		const ck = "flywheel|tadashi|runner_stuck_unhandled|exec-8";
+		await hub.reconcile();
+		expect(store.getActiveAlertThread(ck)).toBeDefined(); // stays active
 	});
 
 	// ── FLY-929 A5: Claude account-cap needs_human → owner-bot assignment ──
 	//
 	// When self-heal + P-identity + the infra bot id are ALL present, a
 	// usage_limit alert carrying CLAUDE accountLimit metadata routes its
-	// needs_human may post a pure assignment to the OWNER BOT. Any env missing
-	// or any other kind stays NEW without an automatic founder escalation.
+	// needs_human post to the OWNER BOT (assignment mention) instead of the
+	// immediate founder escalation. Any env missing / any other kind ⇒ the
+	// legacy founder escalation byte-for-byte.
 	describe("FLY-929 A5 account-cap owner routing", () => {
 		const A5_ENV = {
 			FLYWHEEL_ACCOUNT_SELF_HEAL: "1",
@@ -655,63 +614,67 @@ describe("AlertChannelHub (FLY-368)", () => {
 			expect(assignment![1]).toContain(
 				`<@${A5_ENV.FLYWHEEL_INFRA_BOT_USER_ID}>`,
 			);
-			expect(assignment![1]).not.toContain("T2");
+			expect(assignment![1]).toContain("T2");
 			expect(assignment![2]).toEqual({
 				mentionUserId: A5_ENV.FLYWHEEL_INFRA_BOT_USER_ID,
 			});
 			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 		});
 
-		it("P-identity incomplete (no notify channel) → no automatic post", async () => {
+		it("P-identity incomplete (no notify channel) → legacy founder escalation", async () => {
 			setEnv(["FLYWHEEL_NOTIFY_CHANNEL"]);
 			const discord = await run(capPayload("claude"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
+			expect(nh).toBeDefined();
+			expect(nh![2]).toEqual({
+				mentionUserId: A5_ENV.FLYWHEEL_FOUNDER_DISCORD_USER_ID,
+			});
 		});
 
 		// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL no longer gates A5 owner routing
 		// (resolveAccountCapOwnerId drops that conjunct). Rewritten to cover the
 		// other half of P-identity absence not exercised below ("no notify
 		// channel" already covers a missing channel) — a missing infra bot
-		// token → no owner assignment and no automatic founder post.
-		it("P-identity incomplete (no infra bot token) → no automatic post", async () => {
+		// token → still legacy founder escalation.
+		it("P-identity incomplete (no infra bot token) → legacy founder escalation", async () => {
 			setEnv(["CLAUDE_INFRA_BOT_TOKEN"]);
 			const discord = await run(capPayload("claude"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
 		});
 
-		it("missing infra bot user id → no automatic post", async () => {
+		it("missing infra bot user id → legacy founder escalation", async () => {
 			setEnv(["FLYWHEEL_INFRA_BOT_USER_ID"]);
 			const discord = await run(capPayload("claude"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
 		});
 
-		it("usage_limit without accountLimit metadata → no automatic post", async () => {
+		it("usage_limit WITHOUT accountLimit metadata → founder escalation even with all envs", async () => {
 			setEnv();
 			const discord = await run(
 				payload({ eventType: "usage_limit", eventId: "no-meta" }),
 			);
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
 		});
 
-		it("codex-provider accountLimit → no automatic post (Claude caps only)", async () => {
+		it("codex-provider accountLimit → founder escalation (Claude caps only)", async () => {
 			setEnv();
 			const discord = await run(capPayload("codex"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
 		});
 
-		it("other needs_human kinds stay NEW without an automatic post", async () => {
+		it("other needs_human kinds (rate_limit / login_expired / generic) stay founder-routed", async () => {
 			setEnv();
 			for (const eventType of ["rate_limit", "login_expired"] as const) {
 				const discord = await run(
 					payload({ eventType, eventId: `neg-${eventType}` }),
 				);
 				expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-				expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+				expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
 			}
 		});
 	});
@@ -783,58 +746,11 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 		expect(await ops.createThreadFromMessage("ch", "msg", "name")).toBe(
 			"new-thread",
 		);
-		const [, init] = (
-			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
-		).mock.calls[0]!;
-		expect(JSON.parse(String(init.body)).auto_archive_duration).toBe(1440);
-	});
-
-	it("FLY-802: createThreadFromMessage accepts a resolved archive duration", async () => {
-		const fetchFn = vi.fn(async () => ({
-			ok: true,
-			status: 200,
-			json: async () => ({ id: "new-thread" }),
-		})) as never;
-		const ops = createDiscordOps(() => ["cass-tok"], fetchFn);
-
-		await ops.createThreadFromMessage("ch", "msg", "name", 60);
-
-		const [, init] = (
-			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
-		).mock.calls[0]!;
-		expect(JSON.parse(String(init.body)).auto_archive_duration).toBe(60);
 	});
 });
 
-// FLY-1929: the voucher guard deliberately ships ONE kind (host_voucher_incident)
-// carrying two sources (occupancy pressure + kernel-panic recurrence), because
-// neither has an executable remediation and a second kind would make
-// KIND_CONTRACTS claim an ARC difference that does not exist.
-//
-// This test pins the CONSEQUENCE of that choice so it is a recorded decision
-// rather than a surprise: queued warn/severe/panic events share one correlation
-// key, so the newest voucher event replaces the previous voucher ticket thread.
-// Root-channel alerts stay distinct because their event ids differ (severity and
-// source are encoded in the signature + body).
-describe("FLY-1929 single-kind correlation consequence", () => {
-	it("queued voucher events share one correlation key (latest replaces the prior thread)", () => {
-		const base = {
-			projectName: "flywheel",
-			leadId: "system",
-			eventType: "host_voucher_incident",
-		};
-		const warnKey = correlationKeyFor(base);
-		const severeKey = correlationKeyFor(base);
-		const panicKey = correlationKeyFor(base);
-
-		// Shell-emitted queue records carry no sessionKey, so all three collapse.
-		expect(warnKey).toBe(severeKey);
-		expect(severeKey).toBe(panicKey);
-		expect(warnKey).toBe("flywheel|system|host_voucher_incident|");
-
-		// A different kind must NOT collide with it.
-		expect(
-			correlationKeyFor({ ...base, eventType: "swap_pressure_high" }),
-		).not.toBe(warnKey);
-	});
-});
+// NOTE: FLY-818 M3 (the genuinely-stuck-runner founder page) is NOT in the Hub.
+// It posts an @founder message into the stuck runner's OWN [FLY-XX] issue thread
+// from `createStuckUnhandledAlerter` (see stuck-escalation.test.ts) using the
+// owning Lead's bot — Annie's design; the alert-channel page was the rejected
+// FLY-523 path. This Hub only owns the alert thread + auto-repair.

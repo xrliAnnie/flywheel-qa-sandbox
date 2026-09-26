@@ -9,10 +9,7 @@
  * - FSM reject logs at error level with pre-state + target + route
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -21,7 +18,6 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -60,7 +56,6 @@ describe("session_completed route guard (FLY-108)", () => {
 	let baseUrl: string;
 	let warnSpy: ReturnType<typeof vi.spyOn>;
 	let errorSpy: ReturnType<typeof vi.spyOn>;
-	let stateRoot: string;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -81,19 +76,6 @@ describe("session_completed route guard (FLY-108)", () => {
 			}),
 		});
 		expect(res.status).toBe(200);
-		const session = store.getSession(executionId);
-		store.upsertSession({
-			execution_id: executionId,
-			issue_id: session?.issue_id ?? issueId,
-			project_name: session?.project_name ?? "geoforge3d",
-			status: session?.status ?? "running",
-			worktree_path: process.cwd(),
-		});
-		setHistoricalQaRequiredSnapshot(store, {
-			executionId,
-			required: 0,
-			reason: "route guard fixture",
-		});
 	}
 
 	async function postCompleted(body: Record<string, unknown>) {
@@ -105,9 +87,9 @@ describe("session_completed route guard (FLY-108)", () => {
 	}
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
-		stateRoot = mkdtempSync(join(tmpdir(), "fly108-guard-"));
-		store = await StateStore.create(join(stateRoot, "teamlead.db"));
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
@@ -129,12 +111,12 @@ describe("session_completed route guard (FLY-108)", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
-		rmSync(stateRoot, { recursive: true, force: true });
 		warnSpy.mockRestore();
 		errorSpy.mockRestore();
 	});
@@ -219,7 +201,7 @@ describe("session_completed route guard (FLY-108)", () => {
 		expect(store.getSession("exec-aa-empty")!.status).toBe("awaiting_review");
 	});
 
-	it("route=auto_approve + merged without approval fails closed", async () => {
+	it("route=auto_approve + landingStatus.merged → completed", async () => {
 		await startRunning("exec-aa-merged", "issue-aa-merged");
 
 		const res = await postCompleted({
@@ -241,7 +223,7 @@ describe("session_completed route guard (FLY-108)", () => {
 			},
 		});
 		expect(res.status).toBe(200);
-		expect(store.getSession("exec-aa-merged")!.status).toBe("awaiting_review");
+		expect(store.getSession("exec-aa-merged")!.status).toBe("completed");
 	});
 
 	it("route=needs_review → awaiting_review", async () => {
@@ -265,7 +247,7 @@ describe("session_completed route guard (FLY-108)", () => {
 	// action has run. Status must short-circuit to "completed" — leaving it at
 	// "awaiting_review" used to make Lead notify Annie about a PR already on
 	// main (Round 5 deadlock evidence).
-	it("route=needs_review + merged without approval fails closed", async () => {
+	it("route=needs_review + landingStatus.merged → completed (FLY-120)", async () => {
 		await startRunning("exec-nr-merged", "issue-nr-merged");
 
 		const res = await postCompleted({
@@ -282,7 +264,7 @@ describe("session_completed route guard (FLY-108)", () => {
 			},
 		});
 		expect(res.status).toBe(200);
-		expect(store.getSession("exec-nr-merged")!.status).toBe("awaiting_review");
+		expect(store.getSession("exec-nr-merged")!.status).toBe("completed");
 	});
 
 	it("route=blocked → blocked", async () => {

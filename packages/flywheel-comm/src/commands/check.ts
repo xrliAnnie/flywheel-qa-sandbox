@@ -5,7 +5,6 @@ import type { CheckResult } from "../types.js";
 export interface CheckArgs {
 	questionId: string;
 	dbPath: string;
-	executionId?: string;
 }
 
 export function check(args: CheckArgs): CheckResult {
@@ -16,11 +15,7 @@ export function check(args: CheckArgs): CheckResult {
 	}
 	const db = new CommDB(args.dbPath, false);
 	try {
-		const question = db.getMessageById(args.questionId);
-		const response =
-			args.executionId && question?.from_agent === args.executionId
-				? db.consumeGateResponse(args.questionId, args.executionId)
-				: db.getResponse(args.questionId);
+		const response = db.getResponse(args.questionId);
 		if (response) {
 			return {
 				status: "answered",

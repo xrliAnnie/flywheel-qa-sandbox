@@ -59,9 +59,7 @@ describe("AssistantSpeaker (FLY-967 P3)", () => {
 		speaker.feed(Buffer.from("aa"));
 		speaker.feed(Buffer.from("bb"));
 		expect(player.played).toHaveLength(1);
-		// raw-stream since the 545/967 createResource reconciliation — the
-		// explicit kind is what keeps this headerless PCM on StreamType.Raw.
-		expect(created[0].kind).toBe("raw-stream");
+		expect(created[0].kind).toBe("stream");
 		const chunks = collect((created[0] as { stream: Readable }).stream);
 		speaker.feed(Buffer.from("cc"));
 		speaker.endTurn();

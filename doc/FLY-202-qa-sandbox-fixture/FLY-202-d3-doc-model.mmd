@@ -1,0 +1,16 @@
+flowchart LR
+    subgraph SRC["数据来源(run 时实时取)"]
+        R1["仓库根目录 ls"]
+        R2["packages/qa-framework/README.md"]
+        R3["ls -R doc/ 实时输出"]
+    end
+    subgraph NOTES["产出物 doc/qa/sandbox-notes.md"]
+        A["§1 仓库用途说明<br/>2-3 段文字"]
+        B["§2 顶层目录表<br/>目录名 + 一行描述"]
+        C["§3 qa-framework 摘要<br/>约 10 条 bullet"]
+        D["§4 doc/ 目录树快照<br/>fenced 代码块"]
+    end
+    R1 --> B
+    R2 --> C
+    R3 --> D
+    NOTES --> PR["唯一改动进 PR<br/>零生产代码"]

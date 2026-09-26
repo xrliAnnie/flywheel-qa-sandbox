@@ -8,16 +8,12 @@ function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 	return {
 		FLYWHEEL_LEAD_ID: "mufasa",
 		FLYWHEEL_PROJECT_NAME: "mufasa-project",
-		FLYWHEEL_LEAD_KEY: "mufasa-project-mufasa",
-		FLYWHEEL_LEAD_BACKEND: "codex-app-server",
-		FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
-		DISCORD_EXPECTED_BOT_USER_ID: "bot-1",
+		FLYWHEEL_LEAD_BOT_USER_ID: "bot-1",
 		DISCORD_BOT_TOKEN: "tok",
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chan-chat",
 		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876",
 		FLYWHEEL_API_TOKEN: "api",
 		FLYWHEEL_CODEX_LEAD_STATE_DIR: "/var/state/mufasa",
-		FLYWHEEL_COMM_DB: "/var/state/mufasa/comm.db",
 		FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex",
 		CODEX_HOME: "/Users/x/.codex-mufasa",
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: RT,
@@ -69,11 +65,24 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 			autoContinue: true,
 		});
 	});
-	it("FLY-314 Part(b): resolvable parent + THREAD_BUDGET → autoContinue + budgetN", () => {
+	it("FLY-676: THREAD_AUTOCONTINUE=0 (kill-switch) → autoContinue OMITTED (reverse-compat OFF-shape)", () => {
 		const cfg = parseCodexLeadRuntimeConfig(
 			env({
 				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
 				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
+				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "0",
+			}),
+		).replyInThread;
+		expect(cfg).toEqual({ enabled: true, parentChannelId: RT });
+		expect("autoContinue" in (cfg ?? {})).toBe(false);
+	});
+
+	it("FLY-314 Part(b): THREAD_AUTOCONTINUE=1 + THREAD_BUDGET → autoContinue + budgetN", () => {
+		const cfg = parseCodexLeadRuntimeConfig(
+			env({
+				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
+				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
+				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "1",
 				FLYWHEEL_ROUNDTABLE_THREAD_BUDGET: "3",
 			}),
 		).replyInThread;
@@ -179,58 +188,5 @@ describe("buildReplyInThreadWiring (FLY-314 Phase 2)", () => {
 		expect(r?.replyChannelId).toBe("other-shared");
 		expect(r?.replyRoute).toBeUndefined();
 		expect(source.added).toHaveLength(0);
-	});
-
-	it("FLY-802: reuses one cached parent-channel read across consecutive ensures", async () => {
-		const parentReads: string[] = [];
-		const createBodies: Array<Record<string, unknown>> = [];
-		const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-			const method = (init?.method ?? "GET").toUpperCase();
-			if (method === "GET" && url.endsWith(`/channels/${RT}`)) {
-				parentReads.push(url);
-				return {
-					ok: true,
-					status: 200,
-					json: async () => ({ default_auto_archive_duration: 60 }),
-				} as Response;
-			}
-			if (method === "POST" && url.endsWith("/threads")) {
-				createBodies.push(JSON.parse(String(init?.body ?? "{}")));
-				return {
-					ok: true,
-					status: 201,
-					json: async () => ({ id: url.includes("/100/") ? "100" : "101" }),
-				} as Response;
-			}
-			throw new Error(`unexpected ${method} ${url}`);
-		});
-		const wiring = buildReplyInThreadWiring({
-			cfg: { enabled: true, parentChannelId: RT },
-			botToken: "tok",
-			botUserId: "bot-1",
-			crossDeptChannelIds: [RT],
-			source: fakeSource(),
-			fetchImpl: fetchImpl as typeof fetch,
-		});
-
-		await wiring?.ensureReplyRoute({
-			kind: "roundtable_thread_from_message",
-			parentChannelId: RT,
-			sourceMessageId: "100",
-			threadId: "100",
-			threadName: "first topic",
-		});
-		await wiring?.ensureReplyRoute({
-			kind: "roundtable_thread_from_message",
-			parentChannelId: RT,
-			sourceMessageId: "101",
-			threadId: "101",
-			threadName: "second topic",
-		});
-
-		expect(parentReads).toHaveLength(1);
-		expect(createBodies.map((body) => body.auto_archive_duration)).toEqual([
-			60, 60,
-		]);
 	});
 });

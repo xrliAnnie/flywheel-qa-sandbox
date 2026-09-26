@@ -6,39 +6,27 @@
  * is started via index.ts instead of scripts/run-bridge.ts).
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
 import type {
-	FlagStoreRawValue,
+	PhaseDispatchVendor,
 	RoleBackendMap,
 	RoleEffort,
-	RunnerModelDisplay,
-	SkillFrameworkMode,
-	WorkflowDispatchVendor,
 } from "flywheel-config";
 import {
-	adapterTypeToFamily,
-	isWorkflowPhaseRole,
-	renderRunnerModelDisplay,
+	isThreeStagePhaseRole,
 	resolveRunnerMcpProfile,
-	SKILL_FRAMEWORK_SPLIT,
 } from "flywheel-config";
-import {
-	type LaunchPrecommitFailure,
-	type LaunchPrecommitOutcome,
-	openTmuxViewer,
-} from "flywheel-core";
+import { openTmuxViewer } from "flywheel-core";
 import type { AgentDispatcher } from "flywheel-edge-worker";
 import type {
 	Blueprint,
 	BlueprintContext,
-	BlueprintResult,
 } from "flywheel-edge-worker/dist/Blueprint.js";
-import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
 import type { ProgressResumeInfo } from "./progress-resume.js";
@@ -54,95 +42,42 @@ import {
 	type ResolvedRoleAdapter,
 	resolveRoleAdapter,
 } from "./role-adapter-resolver.js";
-import { grantPrelaunchWorkflowTurn } from "./workflow-turn-bundle.js";
+import { threeStageKeepAliveEnabled } from "./three-stage-policy.js";
+import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 
-export type TmuxGenerationRecorder = (
-	executionId: string,
-	info: {
-		baseSessionName: string;
-		windowId: string;
-		socketPath: string;
-		serverStartTime: string;
+/**
+ * FLY-1232 module ②: the narrow seam RunDispatcher.start() drives — the
+ * T1/T2/T7 pre-launch composite shadow write and the evidence-checked
+ * dispatch-failure callback. Structurally satisfied by WorkflowShadowWriter;
+ * `undefined` (flag OFF / external injection) ⇒ the seam is inert and the
+ * fresh path keeps `launchCommitPath` undefined (the byte-compat sentinel).
+ */
+export interface WorkflowShadowSeam {
+	onSpawnDispatch(args: {
+		projectName: string;
+		issueId: string;
 		executionId: string;
-		launchGeneration?: number;
-		launchFingerprint?: string;
-	},
-) => void;
-
-export type TmuxWorkflowWindowAuthority = (
-	launchExecutionId: string,
-	candidate: {
-		windowId: string;
-		windowName: string;
-		executionId?: string;
-		launchGeneration?: number;
-		launchFingerprint?: string;
-	},
-) => "prune" | "keep";
-
-export type InflightSessionTerminalProbe = (executionId: string) => boolean;
-
-interface InflightEntry {
-	executionId: string;
-	promise: Promise<void>;
-	launchOutcome?: Promise<LaunchPrecommitOutcome>;
+		context: WorkflowShadowContext;
+	}): void;
+	onDispatchFailed(args: {
+		projectName: string;
+		issueId: string;
+		executionId: string;
+		node: string;
+		attempt: number;
+		error: string;
+	}): void;
 }
 
-interface LaunchOutcomeDeferred {
-	promise: Promise<LaunchPrecommitOutcome>;
-	commit: (() => { ok: boolean; reason?: string }) | undefined;
-	observeResult(result: BlueprintResult): void;
-	observeError(error: unknown): void;
-}
-
-function createLaunchOutcomeDeferred(
-	commit: (() => { ok: boolean; reason?: string }) | undefined,
-): LaunchOutcomeDeferred {
-	let settled = false;
-	let resolve!: (outcome: LaunchPrecommitOutcome) => void;
-	const promise = new Promise<LaunchPrecommitOutcome>((done) => {
-		resolve = done;
-	});
-	const settle = (outcome: LaunchPrecommitOutcome) => {
-		if (settled) return;
-		settled = true;
-		resolve(outcome);
-	};
-	const genericFailure = (error: unknown): LaunchPrecommitFailure => ({
-		code: "LAUNCH_PRECOMMIT_FAILED",
-		reason: error instanceof Error ? error.message : String(error),
-		physicalEvidence: "unknown",
-	});
-	return {
-		promise,
-		commit: commit
-			? () => {
-					const result = commit();
-					if (result.ok) settle({ status: "committed" });
-					return result;
-				}
-			: undefined,
-		observeResult(result) {
-			if (result.success) {
-				settle({
-					status: "precommit_failed",
-					failure: genericFailure(
-						"Blueprint completed without committing its workflow launch fence",
-					),
-				});
-				return;
-			}
-			settle({
-				status: "precommit_failed",
-				failure:
-					result.launchFailure ??
-					genericFailure(result.error ?? "Blueprint launch failed"),
-			});
-		},
-		observeError(error) {
-			settle({ status: "precommit_failed", failure: genericFailure(error) });
-		},
-	};
+/** FLY-1244: fail-closed admission seam for durable three-stage QA spawns. */
+export interface WorkflowClaimsAdmissionSeam {
+	admit(args: {
+		projectName: string;
+		issueId: string;
+		executionId: string;
+		node: string;
+		attempt: number;
+	}): { credential: string };
 }
 
 /**
@@ -155,40 +90,7 @@ export type ResumeComputer = (
 	issueId: string,
 	role: string,
 	projectName: string,
-) => ProgressResumeInfo | null | Promise<ProgressResumeInfo | null>;
-
-/** FLY-1718 P1: explanatory metadata for a structurally inherited branch. */
-export interface ContinuityInherit {
-	branch: string;
-	sha: string;
-	prNumber?: number;
-	prUrl?: string;
-}
-
-/** FLY-1718 P1: origin-backed decision for an otherwise-fresh dispatch. */
-export type ContinuityStartPoint =
-	| ({ kind: "found" } & ContinuityInherit)
-	| { kind: "missing"; branch?: string }
-	| { kind: "indeterminate"; error: string };
-
-export type ContinuityComputer = (input: {
-	issueId: string;
-	role: string;
-	projectName: string;
-	shareParentBranch?: boolean;
-}) => Promise<ContinuityStartPoint>;
-
-/** FLY-1257 M3: machine-readable branch-tip probe result for phase retries. */
-export type PhaseRetryStartPoint =
-	| { kind: "found"; sha: string }
-	| { kind: "missing" }
-	| { kind: "indeterminate"; error: string };
-
-export type PhaseRetryStartPointComputer = (
-	issueId: string,
-	role: string,
-	projectName: string,
-) => PhaseRetryStartPoint;
+) => ProgressResumeInfo | null;
 
 import {
 	AdmissionDeferredError,
@@ -210,24 +112,21 @@ export function launchCommitPath(executionId: string): string {
 
 /**
  * FLY-793 follow-up (cmux phase visibility): the display name that goes into the
- * cmux/tmux window label (`{issueId}-{runner}-{title}`). A DAG workflow
+ * cmux/tmux window label (`{issueId}-{runner}-{title}`). A three-stage PHASE
  * runner shows its phase (`design` / `implement` / `qa`) so the founder can see
  * which phase is live in cmux at a glance — instead of every phase showing the
- * generic `claude`. FLY-1255 adds the resolved executor family/model while
- * keeping that phase prefix authoritative for shared-branch runs.
+ * generic `claude`.
  *
- * Gated on `shareParentBranch` (the DAG workflow marker), NOT `sessionRole` alone:
- * historical standalone QA sessions also carried `sessionRole: "qa"` without
- * `shareParentBranch`, so keying on the role alone would change their window
- * identity. Mirrors Blueprint's DAG workflow discriminator
- * (`ctx.shareParentBranch && ctx.sessionRole`). When no model is resolved,
- * every non-DAG workflow run stays `claude` → byte-compatible. With a resolved
- * model, non-phase runs use the
- * narrow `runner-<family>-<model>` namespace consumed by cmux cleanup.
+ * Gated on `shareParentBranch` (the three-stage marker), NOT `sessionRole` alone:
+ * the FLY-579 Auto-QA session also carries `sessionRole: "qa"` but is a standalone
+ * QA runner (no `shareParentBranch`), so keying on the role alone would flip its
+ * window from `-claude-` to `-qa-` and break byte-compat. Mirrors Blueprint's
+ * three-stage discriminator (`ctx.shareParentBranch && ctx.sessionRole`). Every
+ * non-three-stage run (main + Auto-QA) stays `claude` → byte-compatible.
  *
  * SCOPE (FLY-840 → resolved by FLY-1224): the RETRY path (actions.ts
  * `handleRetry`) now propagates `shareParentBranch` for PHASE rows
- * (chat_thread_role ∈ design/implement/qa), so a retried DAG workflow
+ * (chat_thread_role ∈ design/implement/qa), so a retried three-stage phase
  * shows its phase name here too — the FLY-840 label debt is settled as a
  * deliberate side effect of the phase-row retry keeping its shared-branch
  * identity (a codex implement retry MUST stay on branch B). Non-phase retries
@@ -236,18 +135,10 @@ export function launchCommitPath(executionId: string): string {
 export function runnerDisplayName(
 	sessionRole: string | undefined,
 	shareParentBranch: boolean | undefined,
-	modelDisplay?: RunnerModelDisplay,
 ): string {
-	const phase =
-		shareParentBranch && isWorkflowPhaseRole(sessionRole)
-			? sessionRole
-			: undefined;
-	if (modelDisplay) {
-		return phase
-			? `${phase}-${modelDisplay.windowLabel}`
-			: `runner-${modelDisplay.windowLabel}`;
-	}
-	return phase ?? "claude";
+	return shareParentBranch && isThreeStagePhaseRole(sessionRole)
+		? sessionRole
+		: "claude";
 }
 
 export interface ProjectRuntime {
@@ -318,12 +209,22 @@ export function buildRunnerSpawnFields(
 	 */
 	dispatchModel?: string,
 	/**
+	 * FLY-752: require a MAILBOX-CAPABLE backend. When the resolved backend would be
+	 * no-transport (antigravity/kimi → transport:"none", which project roles / env
+	 * default can still select even under `ignoreRunnerLabelSelection`), FORCE the
+	 * transported `claude-tmux` lane and DROP the (possibly Claude-incompatible)
+	 * model/effort from the no-transport source (→ Claude account defaults). Auto-QA
+	 * sets this so its QA runner can always receive a `retest_wake`. Default false →
+	 * byte-compatible (no forcing).
+	 */
+	requireMailboxTransport?: boolean,
+	/**
 	 * FLY-1224: the phase table's explicit vendor for this dispatch — resolves
 	 * the executor backend on the 1b dispatch layer via the ONE existing
-	 * VENDOR_TO_EXECUTOR map. Only ever set for DAG workflow dispatches
+	 * VENDOR_TO_EXECUTOR map. Only ever set for three-stage phase dispatches
 	 * (Bridge-internal); absent → FLY-728 claude-tmux status quo.
 	 */
-	dispatchVendor?: WorkflowDispatchVendor,
+	dispatchVendor?: PhaseDispatchVendor,
 	/** FLY-1224: the phase table's reasoning effort (outranks project roles). */
 	dispatchEffort?: RoleEffort,
 ): Pick<
@@ -353,7 +254,19 @@ export function buildRunnerSpawnFields(
 		...(dispatchEffort && { dispatchEffort }),
 		...(rolesConfig && { projectRoles: rolesConfig }),
 	});
-	const resolved: ResolvedRoleAdapter = resolvedRaw;
+	// FLY-752: force a mailbox-capable lane when required. A no-transport backend
+	// (antigravity/kimi) has no mailbox → a QA runner on it could never receive its
+	// retest_wake. Rewrite to claude-tmux + drop the source model/effort so the
+	// forced Claude lane uses account defaults (the no-transport role's model may be
+	// Claude-incompatible; Blueprint forwards runnerModel to the adapter).
+	const resolved: ResolvedRoleAdapter =
+		requireMailboxTransport && resolvedRaw.transport === "none"
+			? {
+					backend: "claude-tmux",
+					transport: "claude-code",
+					vendor: "claude-code",
+				}
+			: resolvedRaw;
 	// FLY-493: a no-transport backend (antigravity, transport === "none") carries
 	// an EXPLICIT marker so the absence of vendor/Agent-Team identity below is an
 	// intentional contract, not the legacy/rollback "default claude" absence.
@@ -453,48 +366,6 @@ export class LifecycleParkedError extends Error {
 	}
 }
 
-export class ContinuityIndeterminateError extends Error {
-	readonly code = "CONTINUITY_INDETERMINATE";
-	readonly retryable = true;
-
-	constructor(public readonly detail: string) {
-		super(`branch continuity is indeterminate: ${detail}`);
-		this.name = "ContinuityIndeterminateError";
-	}
-}
-
-export class DoaBackoffError extends Error {
-	readonly code = "DOA_BACKOFF";
-
-	constructor(
-		public readonly reason: string,
-		public readonly retryAfterSeconds?: number,
-	) {
-		super(`DOA re-dispatch admission denied: ${reason}`);
-		this.name = "DoaBackoffError";
-	}
-}
-
-export class FreshStartAuditError extends Error {
-	readonly code = "FRESH_START_AUDIT_FAILED";
-
-	constructor(detail: string) {
-		super(`fresh-start override refused: ${detail}`);
-		this.name = "FreshStartAuditError";
-	}
-}
-
-export type FreshStartAuditRecorder = (record: {
-	executionId: string;
-	projectName: string;
-	issueId: string;
-	role: string;
-	actor: string;
-	reason: string;
-	branch: string;
-	skippedOriginTip?: string;
-}) => boolean;
-
 /** FLY-1185: the admission decorator seam (single dispatcher chokepoint). */
 export type LifecycleAdmissionFn = (input: {
 	issueKey: string;
@@ -503,21 +374,6 @@ export type LifecycleAdmissionFn = (input: {
 	executionId: string;
 	role?: string;
 }) => Promise<{ admitted: boolean; reason?: string }>;
-
-/** FLY-1718 P4: canonical predecessor reconciliation before branch/network IO. */
-export type DoaBackoffAdmissionFn = (input: {
-	issueKey: string;
-	issueIdentifier?: string;
-	projectName: string;
-	executionId: string;
-	role: string;
-	leadId?: string;
-}) => Promise<{
-	admitted: boolean;
-	reason?: string;
-	status?: "allow" | "reserved" | "backoff" | "needs_lead";
-	retryAfterSeconds?: number;
-}>;
 
 /**
  * FLY-1188: transport vendor for the CommDB pre-registration row. The
@@ -535,36 +391,11 @@ export function preRegistrationVendor(
 	return runnerSpawn.vendor;
 }
 
-/** Fail closed before any dispatch side effect for a design-node completion. */
-export function assertDesignDispatchContract(
-	req: Pick<
-		StartRequest | RetryRequest,
-		"sessionRole" | "shareParentBranch" | "leadId" | "generalizedExecution"
-	>,
-): void {
-	const generalizedRoute =
-		req.generalizedExecution?.capabilities?.completion_route;
-	const isDesignNode =
-		(req.shareParentBranch === true && req.sessionRole === "design") ||
-		generalizedRoute === "phase_design_complete";
-	if (!isDesignNode) return;
-	if (
-		generalizedRoute === "phase_design_complete" &&
-		req.generalizedExecution?.capabilities.shared_branch_writer !== true
-	) {
-		throw new Error(
-			"design-node completion requires a shared branch writer for its committed founder HTML",
-		);
-	}
-	if (typeof req.leadId !== "string" || !req.leadId.trim()) {
-		throw new Error(
-			"design-node completion requires a resolved Lead for founder HTML delivery",
-		);
-	}
-}
-
 export class RetryDispatcher implements IRetryDispatcher {
-	protected inflight = new Map<string, InflightEntry>();
+	protected inflight = new Map<
+		string,
+		{ executionId: string; promise: Promise<void> }
+	>();
 	protected accepting = true;
 
 	constructor(
@@ -588,87 +419,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected lifecycleAdmission?: LifecycleAdmissionFn,
 		/** FLY-1185 (Codex R1#5): pre-launch recheck + claim CAS hooks. */
 		protected lifecycleLaunchGuard?: LifecycleLaunchGuard,
-		/** FLY-1257 M3: recover the shared branch tip before a phase retry. */
-		protected phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
-		/**
-		 * FLY-1356 (R1#4): sticky-stamp lookup (production: store.
-		 * getSkillFrameworkStamp). The hash only fires on an issue's FIRST
-		 * admission; later dispatches carry the prior arm so identifier-source
-		 * instability can never split one issue across arms. Undefined ⇒ no
-		 * stamp threaded (byte-compatible; resolver falls through normally).
-		 */
-		protected skillFrameworkStampLookup?: (
-			issueId: string,
-		) => SkillFrameworkMode | undefined,
-		protected tmuxGenerationRecorder?: TmuxGenerationRecorder,
-		/** FLY-1638: one admission controller shared by fresh and retry lanes. */
-		protected runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
-		protected tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
-		protected doaBackoffAdmission?: DoaBackoffAdmissionFn,
-		/**
-		 * FLY-1775: StateStore-authoritative irreversible-terminal probe. A
-		 * Blueprint promise may outlive the runner session it launched; a terminal
-		 * session must not leave this process-local dedup lane poisoned forever.
-		 */
-		protected inflightSessionTerminal?: InflightSessionTerminalProbe,
-		/** FLY-1944: closes the pause-check → durable-claim visibility gap. */
-		protected admissionCrossingBarrier?: AdmissionCrossingBarrier,
-		protected skillFrameworkModeControl: () => FlagStoreRawValue = () => ({
-			hasOverride: false,
-			raw: null,
-		}),
 	) {}
-
-	/** Typed fleet admission check, deliberately before shutdown semantics. */
-	protected assertRunnerAdmission(): void {
-		const decision = this.runnerAdmission.tryAdmit();
-		if (!decision.admit) {
-			throw new AdmissionDeferredError(
-				decision.reason,
-				decision.detail,
-				decision.retryAfterSeconds,
-			);
-		}
-	}
-
-	/**
-	 * FLY-1356 (Bar-Raiser MED-1 + Codex R1 HIGH-2): sticky-stamp read,
-	 * consulted ONLY under `split` — the default path stays zero-IO (no
-	 * per-dispatch table scan). A store throw must never fail the dispatch,
-	 * but it must equally never be swallowed into "no stamp": the resolver
-	 * would hash the issue into an experimental arm on a broken read. It
-	 * surfaces as `readFailed` and the resolver fails closed to superpowers.
-	 */
-	protected skillFrameworkPrior(
-		issueId: string,
-	): { stamp: SkillFrameworkMode } | { readFailed: true } | undefined {
-		if (this.skillFrameworkModeControl().raw !== SKILL_FRAMEWORK_SPLIT) {
-			return undefined;
-		}
-		try {
-			const stamp = this.skillFrameworkStampLookup?.(issueId);
-			return stamp ? { stamp } : undefined;
-		} catch (err) {
-			console.warn(
-				`[dispatcher] skill-framework stamp lookup failed for ${issueId} — failing closed to superpowers (resolver pins A, never the hash): ${(err as Error).message}`,
-			);
-			return { readFailed: true };
-		}
-	}
-
-	/** Spread-shape helper for the two ctx build sites (start / retry). */
-	protected skillFrameworkPriorCtx(
-		issueId: string,
-	):
-		| { skillFrameworkModePrior: SkillFrameworkMode }
-		| { skillFrameworkModeStampReadFailed: true }
-		| Record<string, never> {
-		const prior = this.skillFrameworkPrior(issueId);
-		if (!prior) return {};
-		return "stamp" in prior
-			? { skillFrameworkModePrior: prior.stamp }
-			: { skillFrameworkModeStampReadFailed: true };
-	}
 
 	/** Shared admission gate — throws LifecycleParkedError on refusal. */
 	protected async admitLifecycle(input: {
@@ -685,27 +436,6 @@ export class RetryDispatcher implements IRetryDispatcher {
 		}
 	}
 
-	/** FLY-1718 P4: run before branch continuity, CommDB, TURN, or worktree IO. */
-	protected async admitDoaBackoff(input: {
-		issueKey: string;
-		issueIdentifier?: string;
-		projectName: string;
-		executionId: string;
-		role: string;
-		leadId?: string;
-	}): Promise<void> {
-		if (!this.doaBackoffAdmission) {
-			return;
-		}
-		const result = await this.doaBackoffAdmission(input);
-		if (!result.admitted) {
-			throw new DoaBackoffError(
-				result.reason ?? "denied",
-				result.retryAfterSeconds,
-			);
-		}
-	}
-
 	/** FLY-59: Composite inflight key for per-role dedup */
 	protected inflightKey(issueId: string, role: string): string {
 		// FLY-95: Normalize role to match Blueprint worktree naming —
@@ -716,71 +446,23 @@ export class RetryDispatcher implements IRetryDispatcher {
 		return `${issueId}:${normalized}`;
 	}
 
-	/**
-	 * Return only a live inflight owner. StateStore is the durable lifecycle
-	 * authority; this Map is merely a process-local launch dedup. Probe failures
-	 * fail closed (keep the exclusion record) so an unreadable store cannot admit
-	 * a duplicate runner.
-	 */
-	protected currentInflightEntry(key: string): InflightEntry | undefined {
-		const entry = this.inflight.get(key);
-		if (!entry || !this.inflightSessionTerminal) return entry;
-		let terminal = false;
-		try {
-			terminal = this.inflightSessionTerminal(entry.executionId);
-		} catch (error) {
-			console.warn(
-				`[RunDispatcher] terminal inflight probe failed for ${entry.executionId}; keeping lane occupied: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return entry;
-		}
-		if (!terminal) return entry;
-		this.clearInflightEntry(key, entry);
-		return this.inflight.get(key);
-	}
-
-	/** Identity-guard cleanup so a late old promise cannot erase a replacement. */
-	protected clearInflightEntry(key: string, entry: InflightEntry): void {
-		if (this.inflight.get(key) === entry) {
-			this.inflight.delete(key);
-		}
-	}
-
-	protected pruneTerminalInflightEntries(): void {
-		for (const key of [...this.inflight.keys()]) {
-			this.currentInflightEntry(key);
-		}
-	}
-
 	async dispatch(req: RetryRequest): Promise<RetryResult> {
-		const release = this.admissionCrossingBarrier?.enter("dispatch");
-		try {
-			return await this.dispatchInsideBarrier(req);
-		} finally {
-			release?.();
-		}
-	}
-
-	private async dispatchInsideBarrier(req: RetryRequest): Promise<RetryResult> {
-		this.assertRunnerAdmission();
 		if (!this.accepting) {
 			throw new Error("RetryDispatcher is shutting down");
 		}
-		assertDesignDispatchContract(req);
 
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
 
-		const inflightEntry = this.currentInflightEntry(key);
+		const inflightEntry = this.inflight.get(key);
 		if (inflightEntry) {
 			// FLY-245 D2: a replay of the IDENTICAL gateway-bound dispatch (same
 			// pre-bound successor id) converges on the in-flight execution instead
 			// of erroring — exactly-one-started, never a silent second runner.
 			// Anything else (different/absent pre-bound id) keeps the legacy throw.
 			if (
-				(req.successorExecutionId || req.generalizedExecution) &&
-				inflightEntry.executionId ===
-					(req.generalizedExecution?.executionId ?? req.successorExecutionId)
+				req.successorExecutionId &&
+				inflightEntry.executionId === req.successorExecutionId
 			) {
 				return {
 					newExecutionId: inflightEntry.executionId,
@@ -803,42 +485,18 @@ export class RetryDispatcher implements IRetryDispatcher {
 		// FLY-245 D2 (plan §5.2.1): honor a gateway PRE-BOUND successor id so
 		// recovery can reconcile/re-drive by a durably-bound key; legacy callers
 		// (no pre-bound id) keep the self-generated UUID byte-for-byte.
-		const newExecutionId =
-			req.generalizedExecution?.executionId ??
-			req.successorExecutionId ??
-			randomUUID();
-		if (
-			req.generalizedExecution &&
-			req.successorExecutionId &&
-			req.successorExecutionId !== req.generalizedExecution.executionId
-		) {
-			throw new Error("generalized retry execution id mismatch");
-		}
-
-		await this.admitDoaBackoff({
-			issueKey: req.issueId,
-			issueIdentifier: req.issueIdentifier,
-			projectName: req.projectName,
-			executionId: newExecutionId,
-			role,
-			leadId: req.leadId,
-		});
+		const newExecutionId = req.successorExecutionId ?? randomUUID();
 
 		// FLY-1185 (R11#1): lifecycle admission — a founder-parked issue must not
 		// grow a retry runner. Fresh tombstone check + durable starting claim
 		// inside the issue mutex; throws LifecycleParkedError on refusal.
-		try {
-			await this.admitLifecycle({
-				issueKey: req.issueId,
-				issueIdentifier: req.issueIdentifier,
-				projectName: req.projectName,
-				executionId: newExecutionId,
-				role,
-			});
-		} catch (error) {
-			this.abortPreLaunch(key, newExecutionId, req.projectName);
-			throw error;
-		}
+		await this.admitLifecycle({
+			issueKey: req.issueId,
+			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
+			projectName: req.projectName,
+			executionId: newExecutionId,
+			role,
+		});
 
 		// FLY-245 R1/R2/R5 HIGH-3: durable cross-restart find-or-create. The
 		// in-flight map above only dedups within THIS process; after a Bridge crash
@@ -859,10 +517,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		//     SAME execId (FLY-99 converges). A recorded-but-never-committed window
 		//     is never mistaken for a started Runner (the R5 zero-convergence bug).
 		const committedDir = launchCommitPath(newExecutionId);
-		if (
-			(req.successorExecutionId || req.generalizedExecution) &&
-			this.launchClaims
-		) {
+		if (req.successorExecutionId && this.launchClaims) {
 			const claimResult = this.launchClaims.claim(newExecutionId, Date.now());
 			if (claimResult === "exists" && this.isCommitted(newExecutionId)) {
 				return {
@@ -884,326 +539,168 @@ export class RetryDispatcher implements IRetryDispatcher {
 			promise: null! as Promise<void>,
 		};
 		this.inflight.set(key, entry);
-		try {
-			// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
-			// resolution. No-op on rollback path (backend fields still set).
-			// Uses runnerAgentName/agentTeamName/vendor — distinct from
-			// FLY-137's agentName (dispatcher key) above.
-			// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
-			// row already carries the runner's transport vendor (pure function —
-			// no ordering dependency).
-			const runnerSpawn = buildRunnerSpawnFields(
-				newExecutionId,
-				req.leadId,
-				req.issueLabels,
-				runtime.rolesConfig,
-				// FLY-887 R2 (Codex R1 #2): now carried on the retry path — actions.ts
-				// sets it for PHASE rows so a refreshed label cannot bypass the phase
-				// table on retry. Undefined for non-phase retries (byte-compatible with
-				// the previous hardcoded undefined). The FLY-728 dispatch model is
-				// carried as before (`runner_model` is display/audit output only,
-				// FLY-751 Codex R1 #2).
-				req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
-				req.generalizedExecution?.dispatch.model ?? req.dispatchModel,
-				req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor,
-				req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
-			);
-			const modelDisplay = renderRunnerModelDisplay({
-				vendor: runnerSpawn.runnerBackend
-					? adapterTypeToFamily(runnerSpawn.runnerBackend)
-					: undefined,
-				model: runnerSpawn.runnerModel,
-			});
 
-			// FLY-80: Pre-register in CommDB before blueprint starts.
-			// FLY-1188: carry the resolved vendor — the adapter's self-registration
-			// overwrites this row later, but a Lead `send` inside that window would
-			// otherwise fall to the process-wide env default (claude mailbox) and a
-			// codex runner would never see the instruction.
-			this.preRegisterCommDb(
-				newExecutionId,
-				runtime.tmuxSessionName,
-				req.projectName,
-				req.issueId,
-				req.leadId,
-				preRegistrationVendor(runnerSpawn),
-			);
+		// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
+		// resolution. No-op on rollback path (backend fields still set).
+		// Uses runnerAgentName/agentTeamName/vendor — distinct from
+		// FLY-137's agentName (dispatcher key) above.
+		// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
+		// row already carries the runner's transport vendor (pure function —
+		// no ordering dependency).
+		const runnerSpawn = buildRunnerSpawnFields(
+			newExecutionId,
+			req.leadId,
+			req.issueLabels,
+			runtime.rolesConfig,
+			// FLY-887 R2 (Codex R1 #2): now carried on the retry path — actions.ts
+			// sets it for PHASE rows so a refreshed label cannot bypass the phase
+			// table on retry. Undefined for non-phase retries (byte-compatible with
+			// the previous hardcoded undefined). The FLY-728 dispatch model is
+			// carried as before (`runner_model` is display/audit output only,
+			// FLY-751 Codex R1 #2).
+			req.ignoreRunnerLabelSelection,
+			req.dispatchModel,
+			// FLY-1224: retry has no requireMailboxTransport source (positional gap);
+			// phase-row retries re-derive vendor/effort from the table (actions.ts).
+			undefined,
+			req.dispatchVendor,
+			req.dispatchEffort,
+		);
 
-			// FLY-1257 M3: every phase retry (independent of keep-alive) recovers
-			// branch B's current tip before either granting TURN or touching Blueprint.
-			// Only a confirmed missing branch may use WorktreeManager's fresh fallback;
-			// an indeterminate git/IO failure must never reset branch B to origin/main.
-			const isPhaseRetry =
-				req.shareParentBranch === true && isWorkflowPhaseRole(role);
-			const engineOwnedRetry = req.generalizedExecution?.engineOwned === true;
-			let retryStartPoint: string | undefined;
-			const computeRetryStartPoint = (): string | undefined => {
-				const computed = this.phaseRetryStartPointComputer?.(
-					req.issueId,
-					role,
-					req.projectName,
-				) ?? {
-					kind: "indeterminate" as const,
-					error: "phase retry startPoint computer unavailable",
-				};
-				if (computed.kind === "indeterminate") {
-					throw new Error(
-						`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: ${computed.error}`,
-					);
-				}
-				if (computed.kind === "missing") return undefined;
-				const sha = computed.sha.trim();
-				if (!sha) {
-					throw new Error(
-						`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: found probe returned an empty sha`,
-					);
-				}
-				return sha;
-			};
-			if (isPhaseRetry) {
-				try {
-					retryStartPoint = computeRetryStartPoint();
-				} catch (error) {
-					this.abortPreLaunch(key, newExecutionId, req.projectName);
-					throw error;
-				}
-			}
-
-			// FLY-1257 / FLY-1788: a shared-worktree phase retry needs the TURN as
-			// its single-writer fence; every engine-owned retry also needs the same
-			// atomic TURN + activation bundle as workflow authority. The phase-only
-			// branch-tip probes above and below intentionally stay gated by
-			// isPhaseRetry.
-			if (isPhaseRetry || engineOwnedRetry) {
-				const turnPhase = isWorkflowPhaseRole(role)
-					? role
-					: req.generalizedExecution!.nodeId;
-				try {
-					const db = new CommDB(defaultGetCommDbPath(req.projectName));
-					try {
-						grantPrelaunchWorkflowTurn({
-							db,
-							issueId: req.issueId,
-							projectName: req.projectName,
-							executionId: newExecutionId,
-							phase: turnPhase,
-							grantedAtMs: Date.now(),
-							generalizedExecution: req.generalizedExecution,
-						});
-					} finally {
-						db.close();
-					}
-				} catch (err) {
-					this.abortPreLaunch(key, newExecutionId, req.projectName);
-					throw new Error(
-						`pre-launch TURN grant failed for ${turnPhase} workflow retry on ${req.issueId}: ${(err as Error).message}`,
-					);
-				}
-			}
-			// Re-probe after TURN transfer. The first read prevents an ambiguous probe
-			// from moving ownership; this second read is the authoritative branch tip
-			// under the single-writer fence. A failure leaves TURN on the successor for
-			// the normal dead-holder reconciler and never launches with a stale SHA.
-			if (isPhaseRetry) {
-				try {
-					retryStartPoint = computeRetryStartPoint();
-				} catch (error) {
-					this.abortPreLaunch(key, newExecutionId, req.projectName);
-					throw error;
-				}
-			}
-			const ctx: BlueprintContext = {
-				teamName: "eng",
-				// FLY-1255: phase/model identity is composed once from the resolved spawn.
-				runnerName: runnerDisplayName(
-					req.sessionRole,
-					req.shareParentBranch,
-					modelDisplay,
-				),
-				projectName: req.projectName,
-				executionId: newExecutionId,
-				leadId: req.leadId,
-				sessionRole: req.sessionRole,
-				...(req.designBackend && { designBackend: req.designBackend }),
-				// FLY-1356: forced-arm continuation + sticky stamp (see StartRequest
-				// docs; the resolver owns precedence and kill semantics).
-				...(req.skillFrameworkMode && {
-					skillFrameworkModeOverride: req.skillFrameworkMode,
+		// FLY-80: Pre-register in CommDB before blueprint starts.
+		// FLY-1188: carry the resolved vendor — the adapter's self-registration
+		// overwrites this row later, but a Lead `send` inside that window would
+		// otherwise fall to the process-wide env default (claude mailbox) and a
+		// codex runner would never see the instruction.
+		this.preRegisterCommDb(
+			newExecutionId,
+			runtime.tmuxSessionName,
+			req.projectName,
+			req.issueId,
+			req.leadId,
+			preRegistrationVendor(runnerSpawn),
+		);
+		const ctx: BlueprintContext = {
+			teamName: "eng",
+			// FLY-793 follow-up: phase runners show their phase in the cmux window.
+			runnerName: runnerDisplayName(req.sessionRole, req.shareParentBranch),
+			projectName: req.projectName,
+			executionId: newExecutionId,
+			leadId: req.leadId,
+			sessionRole: req.sessionRole,
+			// FLY-793: three-stage phases share one branch B (Bridge-internal).
+			shareParentBranch: req.shareParentBranch,
+			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
+			issueTitle: req.issueTitle,
+			issueIdentifier: req.issueIdentifier,
+			// FLY-137 v1.27.2: thread Lead override + dispatch context
+			agentName: req.agentName,
+			issueLabels: req.issueLabels,
+			owningDept: req.owningDept,
+			// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
+			docTier: req.docTier,
+			issueUrl: req.issueUrl,
+			...runnerSpawn,
+			// FLY-751: recompute the MCP slim profile on retry from the persisted
+			// session fields (sessionRole + issue labels flow through the retry
+			// request) — a QA retry keeps its browser exemption.
+			...(runnerSpawn.runnerBackend === "claude-tmux" && {
+				runnerMcpProfile: resolveRunnerMcpProfile({
+					sessionRole: req.sessionRole,
+					issueLabels: req.issueLabels,
 				}),
-				...this.skillFrameworkPriorCtx(req.issueId),
-				// FLY-793: DAG workflows share one branch B (Bridge-internal).
-				shareParentBranch: req.shareParentBranch,
-				// FLY-1257 M3: found branch B tip; absent only when branch absence was
-				// confirmed (or no computer was injected on a legacy external dispatcher).
-				...(retryStartPoint && { startPoint: retryStartPoint }),
-				// Forward pre-fetched metadata so EventEnvelope retains title/identifier
-				issueTitle: req.issueTitle,
-				issueIdentifier: req.issueIdentifier,
-				// FLY-137 v1.27.2: thread Lead override + dispatch context
-				agentName: req.agentName,
-				issueLabels: req.issueLabels,
-				owningDept: req.owningDept,
-				// FLY-1609: Blueprint validates frozen arm intent against the final mode.
-				ponytailRetry: req.ponytailRetry,
-				// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
-				docTier: req.docTier,
-				issueUrl: req.issueUrl,
-				// FLY-1372 §2.5: behavior snapshot rides the retry context too.
-				codexSkip: req.codexSkip,
-				...(req.generalizedExecution && {
-					generalizedExecutionContext: {
-						runId: req.generalizedExecution.runId,
-						nodeId: req.generalizedExecution.nodeId,
-						attempt: req.generalizedExecution.attempt,
-						snapshotDigest: req.generalizedExecution.snapshotDigest,
-						gateCarrierEpoch: req.generalizedExecution.gateCarrierEpoch,
-					},
-					workflowCapabilities: req.generalizedExecution.capabilities,
-					workflowAgentContent: req.generalizedExecution.agentContent,
-					workflowOutputCredential: req.generalizedExecution.outputCredential,
-					workflowSubmissionCredential:
-						req.generalizedExecution.submissionCredential,
-					workflowSubmissionExpected: true,
-				}),
-				...runnerSpawn,
-				// FLY-751: recompute the MCP slim profile on retry from the persisted
-				// session fields (sessionRole + issue labels flow through the retry
-				// request) — a QA retry keeps its browser exemption.
-				...(runnerSpawn.runnerBackend === "claude-tmux" && {
-					runnerMcpProfile: resolveRunnerMcpProfile({
-						sessionRole: req.sessionRole,
-						issueLabels: req.issueLabels,
-					}),
-				}),
-				retryContext: {
-					predecessorExecutionId: req.oldExecutionId,
-					previousError: req.previousError,
-					previousDecisionRoute: req.previousDecisionRoute,
-					previousReasoning: req.previousReasoning,
-					attempt: req.runAttempt,
-					reason: req.reason,
-				},
-				// R5 HIGH-3: durable COMMIT record for the gateway pre-bound path only.
-				// The adapter GATES the Runner on this file (Claude/Codex cannot start
-				// until the adapter writes it at the commit point) so a post-crash
-				// replay adopts ONLY a committed Runner, never a recorded-but-never-
-				// started gated shell. Deterministic path → a new Bridge computes the
-				// same path on replay.
-				launchCommitPath:
-					req.successorExecutionId || req.generalizedExecution
-						? committedDir
-						: undefined,
-				launchGateToken: req.generalizedExecution?.launchGateToken,
-				launchGeneration: req.generalizedExecution?.launchGeneration,
-				launchFingerprint:
-					req.generalizedExecution?.launchGeneration !== undefined
-						? createHash("sha256")
-								.update(
-									`${newExecutionId}:${req.generalizedExecution.launchGeneration}:${req.generalizedExecution.launchGateToken ?? ""}`,
-								)
-								.digest("hex")
-						: undefined,
-				commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
-				prepareWorkflowIssueDelivery:
-					req.generalizedExecution?.prepareWorkflowIssueDelivery,
-				workflowTmuxWindowAuthority: (candidate) =>
-					this.tmuxWindowAuthority?.(newExecutionId, candidate) ?? "keep",
-				...(runnerSpawn.runnerBackend === "claude-tmux" &&
-					this.tmuxGenerationRecorder && {
-						onTmuxWindowOpened: (info) =>
-							this.tmuxGenerationRecorder?.(newExecutionId, info),
-					}),
-				// FLY-116: spawn macOS Terminal viewer once tmux window exists
-				onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
-					openTmuxViewer({
-						baseSessionName,
-						windowId,
-						executionId: newExecutionId,
-						projectName: req.projectName,
-						sessionRole: req.sessionRole,
-					});
-				},
-			};
+			}),
+			retryContext: {
+				predecessorExecutionId: req.oldExecutionId,
+				previousError: req.previousError,
+				previousDecisionRoute: req.previousDecisionRoute,
+				previousReasoning: req.previousReasoning,
+				attempt: req.runAttempt,
+				reason: req.reason,
+			},
+			// R5 HIGH-3: durable COMMIT record for the gateway pre-bound path only.
+			// The adapter GATES the Runner on this file (Claude/Codex cannot start
+			// until the adapter writes it at the commit point) so a post-crash
+			// replay adopts ONLY a committed Runner, never a recorded-but-never-
+			// started gated shell. Deterministic path → a new Bridge computes the
+			// same path on replay.
+			launchCommitPath: req.successorExecutionId ? committedDir : undefined,
+			// FLY-116: spawn macOS Terminal viewer once tmux window exists
+			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
+				openTmuxViewer({
+					baseSessionName,
+					windowId,
+					executionId: newExecutionId,
+					projectName: req.projectName,
+					sessionRole: req.sessionRole,
+				});
+			},
+		};
 
-			// FLY-1185 (Codex R3#2 + R4#1): the retry path verifies its launch
-			// through the SAME mutex-guarded gate as start() — a park cancelling
-			// the claim between the retry admission and here wins and the spawn
-			// aborts. R4#1: refusal cleans up SYMMETRICALLY (inflight + CommDB
-			// pre-registration) so a later retry never converges on a ghost entry.
-			if (this.lifecycleLaunchGuard) {
-				const commit =
-					await this.lifecycleLaunchGuard.commitLaunch(newExecutionId);
-				if (!commit.ok) {
-					this.abortPreLaunch(key, newExecutionId, req.projectName, false);
-					throw new LifecycleParkedError(
-						commit.reason ?? "cancelled_between_admission_and_launch",
+		// FLY-1185 (Codex R3#2 + R4#1): the retry path verifies its launch
+		// through the SAME mutex-guarded gate as start() — a park cancelling
+		// the claim between the retry admission and here wins and the spawn
+		// aborts. R4#1: refusal cleans up SYMMETRICALLY (inflight + CommDB
+		// pre-registration) so a later retry never converges on a ghost entry.
+		if (this.lifecycleLaunchGuard) {
+			const commit =
+				await this.lifecycleLaunchGuard.commitLaunch(newExecutionId);
+			if (!commit.ok) {
+				this.inflight.delete(key);
+				this.cleanupPreRegistration(newExecutionId, req.projectName);
+				throw new LifecycleParkedError(
+					commit.reason ?? "cancelled_between_admission_and_launch",
+				);
+			}
+		}
+
+		entry.promise = runtime.blueprint
+			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
+			.then((result) => {
+				if (result.worktreePath) {
+					console.log(
+						`[RetryDispatcher] ${newExecutionId} ran in worktree: ${result.worktreePath}`,
 					);
 				}
-			}
-
-			entry.promise = runtime.blueprint
-				.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
-				.then((result) => {
-					// Publish no failure signal while the lane still points at this
-					// failed launch: an immediate retry must see it clear. Successful
-					// launches retain the existing finally()-ordered convergence.
-					if (!result.success) this.clearInflightEntry(key, entry);
-					if (result.worktreePath) {
-						console.log(
-							`[RetryDispatcher] ${newExecutionId} ran in worktree: ${result.worktreePath}`,
-						);
-					}
-					if (result.success) {
-						console.log(
-							`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
-						);
-					} else {
-						// R4#1: close the launch claim on spawn failure (mirror start()).
-						try {
-							this.lifecycleLaunchGuard?.onSpawnFailed(newExecutionId);
-						} catch {
-							/* guard must never break the launch pipeline */
-						}
-						console.warn(
-							`[RetryDispatcher] ${newExecutionId} resolved with failure for issue ${req.issueIdentifier ?? req.issueId}: ${result.error ?? "unknown"}`,
-						);
-						// FLY-95: Clean up orphan pre-registration when Runner never self-registered
-						if (!result.sessionId) {
-							this.cleanupPreRegistration(newExecutionId, req.projectName);
-						}
-					}
-				})
-				.catch((err: unknown) => {
-					this.clearInflightEntry(key, entry);
-					console.error(
-						`[RetryDispatcher] ${newExecutionId} failed:`,
-						err instanceof Error ? err.message : err,
+				if (result.success) {
+					console.log(
+						`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
 					);
-					// R4#1: symmetric claim cleanup on thrown spawn failure.
+				} else {
+					// R4#1: close the launch claim on spawn failure (mirror start()).
 					try {
 						this.lifecycleLaunchGuard?.onSpawnFailed(newExecutionId);
 					} catch {
 						/* guard must never break the launch pipeline */
 					}
-					// FLY-80: Clean up orphan pre-registration on failed start
-					this.cleanupPreRegistration(newExecutionId, req.projectName);
-				})
-				.finally(() => {
-					this.clearInflightEntry(key, entry);
-				});
-
-			return { newExecutionId, oldExecutionId: req.oldExecutionId };
-		} catch (err) {
-			if (this.inflight.get(key) === entry) {
-				this.abortPreLaunch(
-					key,
-					newExecutionId,
-					req.projectName,
-					!(err instanceof LifecycleParkedError),
+					console.warn(
+						`[RetryDispatcher] ${newExecutionId} resolved with failure for issue ${req.issueIdentifier ?? req.issueId}: ${result.error ?? "unknown"}`,
+					);
+					// FLY-95: Clean up orphan pre-registration when Runner never self-registered
+					if (!result.sessionId) {
+						this.cleanupPreRegistration(newExecutionId, req.projectName);
+					}
+				}
+			})
+			.catch((err: unknown) => {
+				console.error(
+					`[RetryDispatcher] ${newExecutionId} failed:`,
+					err instanceof Error ? err.message : err,
 				);
-			}
-			throw err;
-		}
+				// R4#1: symmetric claim cleanup on thrown spawn failure.
+				try {
+					this.lifecycleLaunchGuard?.onSpawnFailed(newExecutionId);
+				} catch {
+					/* guard must never break the launch pipeline */
+				}
+				// FLY-80: Clean up orphan pre-registration on failed start
+				this.cleanupPreRegistration(newExecutionId, req.projectName);
+			})
+			.finally(() => {
+				this.inflight.delete(key);
+			});
+
+		return { newExecutionId, oldExecutionId: req.oldExecutionId };
 	}
 
 	/**
@@ -1261,44 +758,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		}
 	}
 
-	/**
-	 * FLY-1257 M2: one symmetric pre-launch abort for fresh and retry paths.
-	 * Every cleanup is best-effort and independent so a broken CommDB cannot
-	 * leave the inflight entry or durable lifecycle claim stuck at `starting`.
-	 */
-	protected abortPreLaunch(
-		key: string,
-		executionId: string,
-		projectName: string,
-		notifySpawnFailed = true,
-	): void {
-		try {
-			// Several failures happen before this execution installs its own entry.
-			// A concurrent launch may already own the same lane by then; never let the
-			// older abort erase that newer execution's in-memory exclusion record.
-			const entry = this.inflight.get(key);
-			if (entry?.executionId === executionId)
-				this.clearInflightEntry(key, entry);
-		} catch {
-			/* Map.delete is expected not to throw; keep the remaining cleanup alive. */
-		}
-		try {
-			this.cleanupPreRegistration(executionId, projectName);
-		} catch {
-			/* best-effort; cleanupPreRegistration already contains its own guard */
-		}
-		if (notifySpawnFailed) {
-			try {
-				this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
-			} catch {
-				/* lifecycle cleanup must never mask the original launch failure */
-			}
-		}
-	}
-
 	/** FLY-59: Returns unique issueIds from composite keys (backward compat) */
 	getInflightIssues(): Set<string> {
-		this.pruneTerminalInflightEntries();
 		const issueIds = new Set<string>();
 		for (const key of this.inflight.keys()) {
 			const issueId = key.split(":")[0];
@@ -1309,7 +770,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 	/** FLY-59: Check if a specific issue+role combo is currently inflight */
 	hasInflightForRole(issueId: string, role: string): boolean {
-		return Boolean(this.currentInflightEntry(this.inflightKey(issueId, role)));
+		return this.inflight.has(this.inflightKey(issueId, role));
 	}
 
 	stopAccepting(): void {
@@ -1317,7 +778,6 @@ export class RetryDispatcher implements IRetryDispatcher {
 	}
 
 	async drain(): Promise<void> {
-		this.pruneTerminalInflightEntries();
 		const promises = [...this.inflight.values()].map((v) => v.promise);
 		await Promise.allSettled(promises);
 	}
@@ -1336,7 +796,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 	constructor(
 		blueprintsByProject: Map<string, ProjectRuntime>,
 		cleanupHandles: Array<() => Promise<void>>,
-		runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
+		private runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
 		/** FLY-245 R1 HIGH-3: durable launch claim (gateway pre-bound retry path). */
 		launchClaims?: LaunchClaimStore,
 		/** FLY-245 R5: test seam for the commit-record existence check. */
@@ -1351,24 +811,14 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		lifecycleAdmission?: LifecycleAdmissionFn,
 		/** FLY-1185 (Codex R1#5): launch guard seam (see base class). */
 		lifecycleLaunchGuard?: LifecycleLaunchGuard,
-		/** FLY-1257 M3: retry branch-tip recovery seam (production: run-infra). */
-		phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
-		/** FLY-1356 (R1#4): sticky-stamp lookup (see the base-class field docs). */
-		skillFrameworkStampLookup?: (
-			issueId: string,
-		) => SkillFrameworkMode | undefined,
-		tmuxGenerationRecorder?: TmuxGenerationRecorder,
-		tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
-		/** FLY-1718 P1: origin continuity check for true fresh starts. */
-		private continuityComputer?: ContinuityComputer,
-		/** FLY-1718 P1: always-on durable receipt for explicit fresh overrides. */
-		private freshStartAudit?: FreshStartAuditRecorder,
-		/** FLY-1718 P4: predecessor reconciliation (base fresh + retry seam). */
-		doaBackoffAdmission?: DoaBackoffAdmissionFn,
-		/** FLY-1775: durable session terminality for process-local inflight repair. */
-		inflightSessionTerminal?: InflightSessionTerminalProbe,
-		admissionCrossingBarrier?: AdmissionCrossingBarrier,
-		skillFrameworkModeControl?: () => FlagStoreRawValue,
+		/**
+		 * FLY-1232 module ②: optional shadow seam (constructed by plugin.ts ONLY
+		 * when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1, threaded through run-infra).
+		 * Undefined ⇒ zero shadow writes AND the fresh path keeps
+		 * launchCommitPath undefined (byte-compatible).
+		 */
+		private workflowShadow?: WorkflowShadowSeam,
+		private workflowClaimsAdmission?: WorkflowClaimsAdmissionSeam,
 	) {
 		super(
 			blueprintsByProject,
@@ -1377,21 +827,11 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			isCommitted,
 			lifecycleAdmission,
 			lifecycleLaunchGuard,
-			phaseRetryStartPointComputer,
-			skillFrameworkStampLookup,
-			tmuxGenerationRecorder,
-			runnerAdmission,
-			tmuxWindowAuthority,
-			doaBackoffAdmission,
-			inflightSessionTerminal,
-			admissionCrossingBarrier,
-			skillFrameworkModeControl,
 		);
 	}
 
 	/** FLY-59: Count all inflight entries (each issue+role combo counts separately) */
 	getInflightCount(): number {
-		this.pruneTerminalInflightEntries();
 		return this.inflight.size;
 	}
 
@@ -1435,42 +875,22 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 	}
 
 	async start(req: StartRequest): Promise<StartResult> {
-		const release = this.admissionCrossingBarrier?.enter("start");
-		try {
-			return await this.startInsideBarrier(req);
-		} finally {
-			release?.();
-		}
-	}
-
-	private async startInsideBarrier(req: StartRequest): Promise<StartResult> {
-		this.assertRunnerAdmission();
 		if (!this.accepting) {
 			throw new Error("RunDispatcher is shutting down");
 		}
-		assertDesignDispatchContract(req);
 
 		// FLY-123 WS-D (P4): resource-based admission — defer only under real
 		// load/memory pressure, never a count cap. Typed error → route maps to
 		// 429 with the reason (R1 MED #4), never a 500 string-match miss.
+		const decision = this.runnerAdmission.tryAdmit();
+		if (!decision.admit) {
+			throw new AdmissionDeferredError(decision.reason, decision.detail);
+		}
+
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
 
-		const inflightEntry = this.currentInflightEntry(key);
-		if (
-			inflightEntry &&
-			req.generalizedExecution &&
-			inflightEntry.executionId === req.generalizedExecution.executionId
-		) {
-			return {
-				executionId: inflightEntry.executionId,
-				issueId: req.issueId,
-				...(inflightEntry.launchOutcome && {
-					launchOutcome: inflightEntry.launchOutcome,
-				}),
-			};
-		}
-		if (inflightEntry) {
+		if (this.inflight.has(key)) {
 			throw new Error(
 				`Run already in progress for issue ${req.issueId} role ${role}`,
 			);
@@ -1483,424 +903,320 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 
 		// FLY-116: opener moved into BlueprintContext callback below.
 
-		const executionId =
-			req.generalizedExecution?.executionId ??
-			req.successorExecutionId ??
-			randomUUID();
+		const executionId = randomUUID();
 
-		await this.admitDoaBackoff({
-			issueKey: req.issueId,
-			issueIdentifier: req.issueIdentifier,
-			projectName: req.projectName,
-			executionId,
-			role,
-			leadId: req.leadId,
-		});
-
-		// FLY-1718 P1: reconcile branch state BEFORE lifecycle admission, CommDB
-		// pre-registration, TURN, or worktree mutation. Progress resume remains the
-		// richer first choice; only a true fresh start consults origin continuity.
-		// A caller-pinned startPoint already carries explicit head authority.
-		if (req.freshStart && req.startPoint) {
-			this.abortPreLaunch(key, executionId, req.projectName);
-			throw new FreshStartAuditError(
-				"freshStart cannot be combined with a caller-pinned start",
-			);
-		}
-		let computedResume: ProgressResumeInfo | null;
-		try {
-			computedResume =
-				(await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
-				null;
-		} catch (error) {
-			this.abortPreLaunch(key, executionId, req.projectName);
-			throw error;
-		}
-		const resume = req.freshStart ? null : computedResume;
-		let continuityInherit: ContinuityInherit | undefined;
-		let continuityBranch: string | undefined;
-		let skippedOriginTip: string | undefined;
-		if (!req.startPoint && !resume && this.continuityComputer) {
-			let continuity: ContinuityStartPoint;
-			try {
-				continuity = await this.continuityComputer({
-					issueId: req.issueId,
-					role,
-					projectName: req.projectName,
-					shareParentBranch: req.shareParentBranch,
-				});
-			} catch (error) {
-				this.abortPreLaunch(key, executionId, req.projectName);
-				throw error;
-			}
-			if (continuity.kind === "indeterminate") {
-				this.abortPreLaunch(key, executionId, req.projectName);
-				throw new ContinuityIndeterminateError(continuity.error);
-			}
-			continuityBranch = continuity.branch;
-			if (continuity.kind === "found") {
-				skippedOriginTip = continuity.sha;
-				if (!req.freshStart) {
-					continuityInherit = {
-						branch: continuity.branch,
-						sha: continuity.sha,
-						...(continuity.prNumber !== undefined && {
-							prNumber: continuity.prNumber,
-						}),
-						...(continuity.prUrl && { prUrl: continuity.prUrl }),
-					};
-				}
-			}
-		}
-		if (req.freshStart) {
-			if (!this.continuityComputer || !continuityBranch) {
-				this.abortPreLaunch(key, executionId, req.projectName);
-				throw new FreshStartAuditError(
-					"managed branch authority is unavailable",
-				);
-			}
-			if (
-				!this.freshStartAudit?.({
-					executionId,
-					projectName: req.projectName,
-					issueId: req.issueId,
-					role,
-					actor: req.freshStart.actor,
-					reason: req.freshStart.reason,
-					branch: continuityBranch,
-					...(skippedOriginTip && { skippedOriginTip }),
-				})
-			) {
-				this.abortPreLaunch(key, executionId, req.projectName);
-				throw new FreshStartAuditError("durable audit write failed");
-			}
-		}
 		// FLY-1185 (R11#1): lifecycle admission at the single spawn chokepoint —
 		// every surface (HTTP start / phase handoff / auto-QA / rescue) flows
 		// through here. Fresh founder-park tombstone check + durable `starting`
 		// launch claim inside the issue mutex; throws LifecycleParkedError on
 		// refusal (routes map to 409, never a silent respawn of a zeroed issue).
-		try {
-			await this.admitLifecycle({
-				issueKey: req.issueId,
-				issueIdentifier: req.issueIdentifier,
-				projectName: req.projectName,
-				executionId,
-				role,
-			});
-		} catch (error) {
-			this.abortPreLaunch(key, executionId, req.projectName);
-			throw error;
-		}
+		await this.admitLifecycle({
+			issueKey: req.issueId,
+			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
+			projectName: req.projectName,
+			executionId,
+			role,
+		});
 
-		const launchOutcome = req.generalizedExecution
-			? createLaunchOutcomeDeferred(
-					req.generalizedExecution.commitWorkflowLaunch,
-				)
-			: undefined;
 		const entry = {
 			executionId,
 			promise: null! as Promise<void>,
-			...(launchOutcome && { launchOutcome: launchOutcome.promise }),
 		};
 		this.inflight.set(key, entry);
-		try {
-			// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
-			// resolution (labels > roles config > env > claude).
-			// Generalized DAG starts bypass issue vendor labels; the phase table owns
-			// the backend selection.
-			// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
-			// row already carries the runner's transport vendor (pure function —
-			// no ordering dependency on the TURN grant / resume computation below).
-			const runnerSpawn = buildRunnerSpawnFields(
-				executionId,
-				req.leadId,
-				req.issueLabels,
-				runtime.rolesConfig,
-				req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
-				req.generalizedExecution?.dispatch.model ?? req.dispatchModel, // FLY-728 Part C
-				req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor, // FLY-1224/1281
-				req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
-			);
-			const modelDisplay = renderRunnerModelDisplay({
-				vendor: runnerSpawn.runnerBackend
-					? adapterTypeToFamily(runnerSpawn.runnerBackend)
-					: undefined,
-				model: runnerSpawn.runnerModel,
-			});
 
-			// Generalized runs require a durable launch marker for their commit gate.
-			const workflowLaunchCommitPath = req.generalizedExecution
-				? launchCommitPath(executionId)
-				: undefined;
-			if (workflowLaunchCommitPath) {
-				try {
-					mkdirSync(join(workflowLaunchCommitPath, ".."), { recursive: true });
-				} catch {
-					// best-effort; the adapter also mkdir's defensively
-				}
-			}
-			const launchFingerprint =
-				req.generalizedExecution?.launchGeneration !== undefined
-					? createHash("sha256")
-							.update(
-								`${executionId}:${req.generalizedExecution.launchGeneration}:${req.generalizedExecution.launchGateToken ?? ""}`,
-							)
-							.digest("hex")
-					: undefined;
+		// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
+		// resolution (labels > roles config > env > claude).
+		// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
+		// vendor labels can't pick the QA backend (issueLabels still flow below
+		// for Lead/thread routing).
+		// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
+		// row already carries the runner's transport vendor (pure function —
+		// no ordering dependency on the TURN grant / resume computation below).
+		const runnerSpawn = buildRunnerSpawnFields(
+			executionId,
+			req.leadId,
+			req.issueLabels,
+			runtime.rolesConfig,
+			req.ignoreRunnerLabelSelection,
+			req.dispatchModel, // FLY-728 Part C
+			req.requireMailboxTransport, // FLY-752
+			req.dispatchVendor, // FLY-1224 per-phase vendor
+			req.dispatchEffort, // FLY-1224 per-phase effort
+		);
 
-			// FLY-80: Pre-register in CommDB before blueprint starts.
-			// FLY-1188: see the retry path — the pending row carries the resolved
-			// vendor so a Lead `send` in the pre-self-registration window routes to
-			// the right mailbox.
-			this.preRegisterCommDb(
-				executionId,
-				runtime.tmuxSessionName,
-				req.projectName,
-				req.issueId,
-				req.leadId,
-				preRegistrationVendor(runnerSpawn),
-			);
-
-			// FLY-887: pre-launch TURN grant seam. A DAG workflow SPAWN must have
-			// its shared-worktree TURN recorded in CommDB BEFORE the runner's first
-			// `turn` self-check — a caller-side grant (after start() returns) would race
-			// the launch and leave the runner seeing `no-turn`. This ONE seam covers
-			// every spawn path (all route through start()): the fresh Design entry
-			// (runs-route), the handoff spawn-fallback, the QA-FAIL spawn-fallback, and
-			// the reconcile spawn. Already-alive WAKE targets grant their TURN before the
-			// wake instead (orchestrator). Fail-closed: a grant failure fails the
-			// dispatch. Shared-worktree phases need the single-writer fence; all
-			// engine-owned nodes need the atomic TURN + activation authority bundle.
-			// Legacy non-engine dispatches remain byte-compatible and grant nothing.
-			const engineOwnedSpawn = req.generalizedExecution?.engineOwned === true;
-			if (
-				engineOwnedSpawn ||
-				(req.shareParentBranch === true && isWorkflowPhaseRole(role))
-			) {
-				const turnPhase = isWorkflowPhaseRole(role)
-					? role
-					: req.generalizedExecution!.nodeId;
-				try {
-					const dbPath = defaultGetCommDbPath(req.projectName);
-					const db = new CommDB(dbPath);
-					try {
-						grantPrelaunchWorkflowTurn({
-							db,
-							issueId: req.issueId,
-							projectName: req.projectName,
-							executionId,
-							phase: turnPhase,
-							grantedAtMs: Date.now(),
-							generalizedExecution: req.generalizedExecution,
-						});
-					} finally {
-						db.close();
-					}
-				} catch (err) {
-					this.abortPreLaunch(key, executionId, req.projectName);
-					throw new Error(
-						`pre-launch TURN grant failed for ${turnPhase} workflow spawn on ${req.issueId}: ${(err as Error).message}`,
-					);
-				}
-			}
-
-			const ctx: BlueprintContext = {
-				teamName: "eng",
-				// FLY-1255: fresh starts use the same phase/model composition as retries.
-				runnerName: runnerDisplayName(
-					req.sessionRole,
-					req.shareParentBranch,
-					modelDisplay,
-				),
-				projectName: req.projectName,
-				executionId,
-				leadId: req.leadId,
-				sessionRole: req.sessionRole,
-				...(req.designBackend && { designBackend: req.designBackend }),
-				// FLY-1356: explicit per-dispatch arm (529) + sticky stamp. The
-				// resolver owns precedence and kill semantics.
-				...(req.skillFrameworkMode && {
-					skillFrameworkModeOverride: req.skillFrameworkMode,
-				}),
-				...this.skillFrameworkPriorCtx(req.issueId),
-				// FLY-793: DAG workflows share one branch B (Bridge-internal).
-				// FLY-795: a resume also shares branch B (reuse the same mechanism).
-				shareParentBranch: req.shareParentBranch ?? (resume ? true : undefined),
-				// FLY-859: Implement-fix round context after a QA FAIL (Bridge-internal).
-				phaseFixContext: req.phaseFixContext,
-				// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
-				issueTitle: req.issueTitle,
-				issueIdentifier: req.issueIdentifier,
-				routeSummary: req.routeSummary,
-				// FLY-137 v1.27.2: thread Lead override + dispatch context (runs-route resolves)
-				agentName: req.agentName,
-				issueLabels: req.issueLabels,
-				owningDept: req.owningDept,
-				// FLY-615: per-run + per-issue ponytail signal (Blueprint resolves it)
-				ponytailInput: req.ponytailInput,
-				// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
-				docTier: req.docTier,
-				issueUrl: req.issueUrl,
-				// FLY-1372 §2.5: Bridge-trusted behavior snapshot for the durable
-				// emitStarted seam (pipeline.dag entry / engine successor only).
-				codexSkip: req.codexSkip,
-				// FLY-795: a resume pins startPoint = branch B tip so `worktree add -B`
-				// rebuilds WITH the committed progress.md (never override a caller's own).
-				startPoint:
-					req.startPoint ?? resume?.startPoint ?? continuityInherit?.sha,
-				...(req.workflowResume && { workflowResume: req.workflowResume }),
-				...(continuityInherit && { continuityInherit }),
-				...(req.generalizedExecution && {
-					generalizedExecutionContext: {
-						runId: req.generalizedExecution.runId,
-						nodeId: req.generalizedExecution.nodeId,
-						attempt: req.generalizedExecution.attempt,
-						snapshotDigest: req.generalizedExecution.snapshotDigest,
-						gateCarrierEpoch: req.generalizedExecution.gateCarrierEpoch,
-					},
-					workflowCapabilities: req.generalizedExecution.capabilities,
-					workflowAgentContent: req.generalizedExecution.agentContent,
-					workflowOutputCredential: req.generalizedExecution.outputCredential,
-					workflowSubmissionCredential:
-						req.generalizedExecution.submissionCredential,
-					workflowSubmissionExpected: true,
-				}),
-				launchCommitPath: workflowLaunchCommitPath,
-				launchGateToken: req.generalizedExecution?.launchGateToken,
-				launchGeneration: req.generalizedExecution?.launchGeneration,
-				launchFingerprint,
-				workflowTmuxWindowAuthority: (candidate) =>
-					this.tmuxWindowAuthority?.(executionId, candidate) ?? "keep",
-				commitWorkflowLaunch:
-					launchOutcome?.commit ??
-					req.generalizedExecution?.commitWorkflowLaunch,
-				prepareWorkflowIssueDelivery:
-					req.generalizedExecution?.prepareWorkflowIssueDelivery,
-				...(runnerSpawn.runnerBackend === "claude-tmux" &&
-					this.tmuxGenerationRecorder && {
-						onTmuxWindowOpened: (info) =>
-							this.tmuxGenerationRecorder?.(executionId, info),
-					}),
-				// FLY-795: restart-resilient resume context (Blueprint renders resume mode).
-				...(resume && {
-					progressResume: {
-						progressPath: resume.progressPath,
-						priorExecutionId: resume.priorExecutionId,
-						resumeKind: resume.resumeKind,
-						...(resume.effectiveStage && {
-							effectiveStage: resume.effectiveStage,
-						}),
-					},
-				}),
-				...runnerSpawn,
-				// FLY-751: per-runner MCP slim profile — claude-tmux only, gated on
-				// the FINAL resolved backend (runnerSpawn.runnerBackend reflects the
-				// FLY-752 mailbox-forcing rewrite, not the raw label/role pick); QA
-				// keeps the browser (sessionRole="qa"); full-mcp label / env
-				// kill-switch resolve to null inside (→ byte-compatible spawn).
-				...(runnerSpawn.runnerBackend === "claude-tmux" && {
-					runnerMcpProfile: resolveRunnerMcpProfile({
-						sessionRole: req.sessionRole,
-						issueLabels: req.issueLabels,
-					}),
-				}),
-				// FLY-116: spawn macOS Terminal viewer once tmux window exists
-				onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
-					openTmuxViewer({
-						baseSessionName,
-						windowId,
-						executionId,
-						projectName: req.projectName,
-						sessionRole: req.sessionRole,
-					});
-				},
-			};
-
-			// FLY-1185 (Codex R1#5 + R4#1): LAST pre-launch admission recheck — a
-			// founder park that ran between admission and here CASed our claim
-			// starting→cancelled; the spawn must abort instead of launching a
-			// runner on a zeroed issue. VERIFY-only: the claim stays `starting`
-			// until emitStarted persists the session row (plan.md:145).
-			if (this.lifecycleLaunchGuard) {
-				const commit =
-					await this.lifecycleLaunchGuard.commitLaunch(executionId);
-				if (!commit.ok) {
-					this.abortPreLaunch(key, executionId, req.projectName, false);
-					throw new LifecycleParkedError(
-						commit.reason ?? "cancelled_between_admission_and_launch",
-					);
-				}
-			}
-
-			entry.promise = runtime.blueprint
-				.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
-				.then((result) => {
-					// A failed launchOutcome wakes the workflow engine. Clear first so
-					// that wake cannot race finally() and poison the retry with itself.
-					if (!result.success) this.clearInflightEntry(key, entry);
-					launchOutcome?.observeResult(result);
-					if (result.worktreePath) {
-						console.log(
-							`[RunDispatcher] ${executionId} ran in worktree: ${result.worktreePath}`,
-						);
-					}
-					if (result.success) {
-						// (R4#1: the claim advanced starting→active at emitStarted, once
-						// the session row was durable — not at the pre-run verify.)
-						console.log(
-							`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
-						);
-					} else {
-						try {
-							this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
-						} catch {
-							/* guard must never break the launch pipeline */
-						}
-						console.warn(
-							`[RunDispatcher] ${executionId} resolved with failure for issue ${req.issueId}: ${result.error ?? "unknown"}`,
-						);
-						// FLY-95: Clean up orphan pre-registration when Runner never self-registered
-						if (!result.sessionId) {
-							this.cleanupPreRegistration(executionId, req.projectName);
-						}
-					}
+		// FLY-1232 T1/T2/T7 pre-launch seam: ONE composite shadow transaction
+		// after execId allocation, BEFORE the CommDB pre-registration and
+		// Blueprint.run(). The orchestrator supplies shadowContext for handoff
+		// spawns (T2) and replacement starts (T7); a fresh entry synthesizes the
+		// T1 default. The writer never throws into this flow (loud warn inside).
+		const shadowContext: WorkflowShadowContext | undefined = this.workflowShadow
+			? (req.shadowContext ?? {
+					node: role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main",
+					attempt: 1,
 				})
-				.catch((err: unknown) => {
-					this.clearInflightEntry(key, entry);
-					launchOutcome?.observeError(err);
-					console.error(
-						`[RunDispatcher] ${executionId} failed:`,
-						err instanceof Error ? err.message : err,
+			: undefined;
+		if (this.workflowShadow && shadowContext) {
+			this.workflowShadow.onSpawnDispatch({
+				projectName: req.projectName,
+				issueId: req.issueId,
+				executionId,
+				context: shadowContext,
+			});
+		}
+		let workflowSubmissionCredential: string | undefined;
+		if (
+			this.workflowClaimsAdmission &&
+			req.shareParentBranch === true &&
+			role === "qa" &&
+			shadowContext
+		) {
+			try {
+				workflowSubmissionCredential = this.workflowClaimsAdmission.admit({
+					projectName: req.projectName,
+					issueId: req.issueId,
+					executionId,
+					node: shadowContext.node,
+					attempt: shadowContext.attempt,
+				}).credential;
+			} catch (err) {
+				this.inflight.delete(key);
+				throw new Error(
+					`workflow claims admission failed for ${executionId}: ${(err as Error).message}`,
+				);
+			}
+		}
+		// Flag ON: the fresh path also passes the durable commit-marker path so
+		// the ②b evidence chain gets its launch_committed fact (BlueprintContext
+		// field + adapter write already exist — the retry path has used them
+		// since FLY-245). Flag OFF keeps undefined = the existing "normal path
+		// sets no marker" sentinel. NOTE: this makes a flag-ON fresh launch go
+		// through the commit-gate wrapper (same shape as retry) — declared in
+		// the plan's risk section; B11 real-machine QA covers it.
+		const shadowCommitDir = this.workflowShadow
+			? launchCommitPath(executionId)
+			: undefined;
+		if (shadowCommitDir) {
+			try {
+				mkdirSync(join(shadowCommitDir, ".."), { recursive: true });
+			} catch {
+				// best-effort; the adapter also mkdir's defensively
+			}
+		}
+
+		// FLY-80: Pre-register in CommDB before blueprint starts.
+		// FLY-1188: see the retry path — the pending row carries the resolved
+		// vendor so a Lead `send` in the pre-self-registration window routes to
+		// the right mailbox.
+		this.preRegisterCommDb(
+			executionId,
+			runtime.tmuxSessionName,
+			req.projectName,
+			req.issueId,
+			req.leadId,
+			preRegistrationVendor(runnerSpawn),
+		);
+
+		// FLY-887: pre-launch TURN grant seam. A three-stage phase SPAWN must have
+		// its shared-worktree TURN recorded in CommDB BEFORE the runner's first
+		// `turn` self-check — a caller-side grant (after start() returns) would race
+		// the launch and leave the runner seeing `no-turn`. This ONE seam covers
+		// every spawn path (all route through start()): the fresh Design entry
+		// (runs-route), the handoff spawn-fallback, the QA-FAIL spawn-fallback, and
+		// the reconcile spawn. Already-alive WAKE targets grant their TURN before the
+		// wake instead (orchestrator). Fail-closed: a grant failure fails the
+		// dispatch (never launch a phase that cannot establish single-writer
+		// ownership). Gated on keep-alive (=0 → the legacy path needs no TURN).
+		if (
+			req.shareParentBranch === true &&
+			isThreeStagePhaseRole(role) &&
+			threeStageKeepAliveEnabled()
+		) {
+			try {
+				const dbPath = defaultGetCommDbPath(req.projectName);
+				const db = new CommDB(dbPath);
+				try {
+					db.grantTurn(req.issueId, executionId, role, Date.now(), {
+						project: req.projectName,
+						sourceEventId: `turn:spawn:${executionId}`,
+					});
+				} finally {
+					db.close();
+				}
+			} catch (err) {
+				this.inflight.delete(key);
+				this.cleanupPreRegistration(executionId, req.projectName);
+				throw new Error(
+					`pre-launch TURN grant failed for ${role} phase on ${req.issueId}: ${(err as Error).message}`,
+				);
+			}
+		}
+
+		// FLY-795: restart-resilient resume. If a prior execution + a committed
+		// progress.md on branch B exist, continue from the real cursor instead of
+		// fresh — reusing FLY-793's shareParentBranch/startPoint worktree mechanism
+		// (startPoint = branch B tip, so `git worktree add -B <branch> <tip>`
+		// rebuilds WITH progress.md). Undefined computer / no prior progress ⇒ fresh
+		// (byte-compatible). Never overrides a caller-supplied startPoint (793 phase
+		// handoff already pins its own).
+		const resume =
+			this.resumeComputer?.(req.issueId, role, req.projectName) ?? null;
+
+		const ctx: BlueprintContext = {
+			teamName: "eng",
+			// FLY-793 follow-up: phase runners show their phase in the cmux window.
+			runnerName: runnerDisplayName(req.sessionRole, req.shareParentBranch),
+			projectName: req.projectName,
+			executionId,
+			leadId: req.leadId,
+			sessionRole: req.sessionRole,
+			// FLY-793: three-stage phases share one branch B (Bridge-internal).
+			// FLY-795: a resume also shares branch B (reuse the same mechanism).
+			shareParentBranch: req.shareParentBranch || (resume ? true : undefined),
+			// FLY-859: Implement-fix round context after a QA FAIL (Bridge-internal).
+			phaseFixContext: req.phaseFixContext,
+			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
+			issueTitle: req.issueTitle,
+			issueIdentifier: req.issueIdentifier,
+			// FLY-137 v1.27.2: thread Lead override + dispatch context (runs-route resolves)
+			agentName: req.agentName,
+			issueLabels: req.issueLabels,
+			owningDept: req.owningDept,
+			// FLY-615: per-run + per-issue ponytail signal (Blueprint resolves it)
+			ponytailInput: req.ponytailInput,
+			// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
+			docTier: req.docTier,
+			issueUrl: req.issueUrl,
+			// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context.
+			// FLY-795: a resume pins startPoint = branch B tip so `worktree add -B`
+			// rebuilds WITH the committed progress.md (never override a caller's own).
+			startPoint: req.startPoint ?? resume?.startPoint,
+			qaContext: req.qaContext,
+			workflowSubmissionCredential,
+			// FLY-1232: durable commit marker on the fresh path — flag ON only
+			// (undefined otherwise, byte-compatible with the normal-path sentinel).
+			launchCommitPath: shadowCommitDir,
+			// FLY-795: restart-resilient resume context (Blueprint renders resume mode).
+			...(resume && {
+				progressResume: {
+					progressPath: resume.progressPath,
+					priorExecutionId: resume.priorExecutionId,
+					resumeKind: resume.resumeKind,
+					...(resume.effectiveStage && {
+						effectiveStage: resume.effectiveStage,
+					}),
+				},
+			}),
+			...runnerSpawn,
+			// FLY-751: per-runner MCP slim profile — claude-tmux only, gated on
+			// the FINAL resolved backend (runnerSpawn.runnerBackend reflects the
+			// FLY-752 mailbox-forcing rewrite, not the raw label/role pick); QA
+			// keeps the browser (sessionRole="qa"); full-mcp label / env
+			// kill-switch resolve to null inside (→ byte-compatible spawn).
+			...(runnerSpawn.runnerBackend === "claude-tmux" && {
+				runnerMcpProfile: resolveRunnerMcpProfile({
+					sessionRole: req.sessionRole,
+					issueLabels: req.issueLabels,
+				}),
+			}),
+			// FLY-116: spawn macOS Terminal viewer once tmux window exists
+			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
+				openTmuxViewer({
+					baseSessionName,
+					windowId,
+					executionId,
+					projectName: req.projectName,
+					sessionRole: req.sessionRole,
+				});
+			},
+		};
+
+		// FLY-1185 (Codex R1#5 + R4#1): LAST pre-launch admission recheck — a
+		// founder park that ran between admission and here CASed our claim
+		// starting→cancelled; the spawn must abort instead of launching a
+		// runner on a zeroed issue. VERIFY-only: the claim stays `starting`
+		// until emitStarted persists the session row (plan.md:145).
+		if (this.lifecycleLaunchGuard) {
+			const commit = await this.lifecycleLaunchGuard.commitLaunch(executionId);
+			if (!commit.ok) {
+				this.inflight.delete(key);
+				this.cleanupPreRegistration(executionId, req.projectName);
+				throw new LifecycleParkedError(
+					commit.reason ?? "cancelled_between_admission_and_launch",
+				);
+			}
+		}
+
+		entry.promise = runtime.blueprint
+			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
+			.then((result) => {
+				if (result.worktreePath) {
+					console.log(
+						`[RunDispatcher] ${executionId} ran in worktree: ${result.worktreePath}`,
 					);
-					// R4#1: symmetric claim cleanup on thrown spawn failure.
+				}
+				if (result.success) {
+					// (R4#1: the claim advanced starting→active at emitStarted, once
+					// the session row was durable — not at the pre-run verify.)
+					console.log(
+						`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
+					);
+				} else {
 					try {
 						this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
 					} catch {
 						/* guard must never break the launch pipeline */
 					}
-					// FLY-80: Clean up orphan pre-registration on failed start
-					this.cleanupPreRegistration(executionId, req.projectName);
-				})
-				.finally(() => {
-					this.clearInflightEntry(key, entry);
-				});
-
-			return {
-				executionId,
-				issueId: req.issueId,
-				...(launchOutcome && { launchOutcome: launchOutcome.promise }),
-			};
-		} catch (err) {
-			if (this.inflight.get(key) === entry) {
-				this.abortPreLaunch(
-					key,
-					executionId,
-					req.projectName,
-					!(err instanceof LifecycleParkedError),
+					console.warn(
+						`[RunDispatcher] ${executionId} resolved with failure for issue ${req.issueId}: ${result.error ?? "unknown"}`,
+					);
+					// FLY-95: Clean up orphan pre-registration when Runner never self-registered
+					if (!result.sessionId) {
+						this.cleanupPreRegistration(executionId, req.projectName);
+						// FLY-1232: evidence-checked ledger outcome — abandons ONLY on
+						// positive pre-commit failure (no marker, no non-pending row);
+						// a durable marker stops the row at launch_committed instead.
+						if (shadowContext) {
+							this.workflowShadow?.onDispatchFailed({
+								projectName: req.projectName,
+								issueId: req.issueId,
+								executionId,
+								node: shadowContext.node,
+								attempt: shadowContext.attempt,
+								error: result.error ?? "blueprint resolved with failure",
+							});
+						}
+					}
+				}
+			})
+			.catch((err: unknown) => {
+				console.error(
+					`[RunDispatcher] ${executionId} failed:`,
+					err instanceof Error ? err.message : err,
 				);
-			}
-			throw err;
-		}
+				// R4#1: symmetric claim cleanup on thrown spawn failure.
+				try {
+					this.lifecycleLaunchGuard?.onSpawnFailed(executionId);
+				} catch {
+					/* guard must never break the launch pipeline */
+				}
+				// FLY-80: Clean up orphan pre-registration on failed start
+				this.cleanupPreRegistration(executionId, req.projectName);
+				// FLY-1232: same evidence-checked outcome on the rejection path.
+				if (shadowContext) {
+					this.workflowShadow?.onDispatchFailed({
+						projectName: req.projectName,
+						issueId: req.issueId,
+						executionId,
+						node: shadowContext.node,
+						attempt: shadowContext.attempt,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			})
+			.finally(() => {
+				this.inflight.delete(key);
+			});
+
+		return { executionId, issueId: req.issueId };
 	}
 }

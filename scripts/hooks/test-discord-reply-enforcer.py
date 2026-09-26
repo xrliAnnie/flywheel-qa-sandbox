@@ -23,7 +23,6 @@ import json  # noqa: E402
 import os  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
-import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "discord-reply-enforcer.py"
@@ -103,7 +102,6 @@ def run_hook(transcript_path: str, cwd: str, *, stop_hook_active=False, env_lead
     }
     env = dict(os.environ)
     env.pop("FLYWHEEL_LEAD_ID", None)
-    env.pop("FLYWHEEL_EXEC_ID", None)
     # FLY-583: keep auto-exec OFF by default for legacy tests; opt-in per test.
     env.setdefault("FLYWHEEL_REPLY_AUTO_EXEC", "0")
     for k in ("PROJECT_NAME", "FLYWHEEL_PROJECT_NAME", "FLYWHEEL_PROJECTS_FILE",
@@ -170,35 +168,6 @@ DIAGNOSTIC_QUOTE = (
 
 def main() -> int:
     mod = load_hook_module()
-
-    print("Unit: stale reply-enforcer log lock recovery")
-    with tempfile.TemporaryDirectory() as tmp:
-        log = Path(tmp) / "reply-enforcer.log"
-        lock = Path(f"{log}.rotate.lock")
-        log.write_text("stale-lock-evidence\n")
-        lock.mkdir()
-        old_lock_time = time.time() - 10 * 60
-        os.utime(lock, (old_lock_time, old_lock_time))
-        prior = os.environ.get("FLYWHEEL_REPLY_ENFORCER_LOG")
-        os.environ["FLYWHEEL_REPLY_ENFORCER_LOG"] = str(log)
-        old_max = mod.LOG_MAX_BYTES
-        try:
-            mod.LOG_MAX_BYTES = 8
-            mod.log("after-stale-lock")
-        finally:
-            mod.LOG_MAX_BYTES = old_max
-            if prior is None:
-                os.environ.pop("FLYWHEEL_REPLY_ENFORCER_LOG", None)
-            else:
-                os.environ["FLYWHEEL_REPLY_ENFORCER_LOG"] = prior
-        archive = Path(f"{log}.1")
-        assert_unit(
-            "stale crash-residue lock is recovered before reply-enforcer append",
-            archive.exists()
-            and archive.read_text() == "stale-lock-evidence\n"
-            and "after-stale-lock" in log.read_text()
-            and not lock.exists(),
-        )
 
     # ───────────────────────── UNIT: LEAK_RE ────────────────────────────────
     print("Unit: LEAK_RE")
@@ -337,7 +306,6 @@ def main() -> int:
     logp = Path(tempfile.mkdtemp()) / "enf.log"
     env = dict(os.environ)
     env.pop("FLYWHEEL_LEAD_ID", None)
-    env.pop("FLYWHEEL_EXEC_ID", None)
     env["FLYWHEEL_LEAD_ID"] = "product-lead"
     env["FLYWHEEL_REPLY_ENFORCER_LOG"] = str(logp)
     p = write_transcript([user_text("hi"), assistant_text(REAL_LEAK)])
@@ -404,7 +372,6 @@ def main() -> int:
     logp = Path(tempfile.mkdtemp()) / "enf.log"
     env = dict(os.environ)
     env.pop("FLYWHEEL_LEAD_ID", None)
-    env.pop("FLYWHEEL_EXEC_ID", None)
     env["FLYWHEEL_REPLY_ENFORCER_LOG"] = str(logp)
     p = write_transcript([
         user_text(
@@ -837,20 +804,6 @@ def main() -> int:
     _, out = run_hook(p, LEAD_CWD, env_lead="belle-lead", extra_env=env)
     assert_e2e("W1 Write leak -> nudge", blocked(out))
     assert_e2e("W1 Write leak NEVER writes the file", not os.path.exists(target))
-
-    # FLY-1571: Runner processes also carry FLYWHEEL_LEAD_ID for their approval
-    # protocol. FLYWHEEL_EXEC_ID is the exact discriminator; a Runner must never
-    # enter the Lead-only reply enforcement tier or block its Stop notification.
-    print("E2E: Runner env bypasses Lead-only enforcer")
-    p = write_transcript([user_text("go"), assistant_text(wl)])
-    rc, out = run_hook(
-        p,
-        LEAD_CWD,
-        env_lead="flywheel-eng-lead",
-        extra_env={"FLYWHEEL_EXEC_ID": "exec-fly1571"},
-    )
-    assert_e2e("FLY-1571 Runner with Lead id exits zero", rc == 0)
-    assert_e2e("FLY-1571 Runner with Lead id emits no block", out == "")
 
     # ── E2E: Tier A (runner) reply leak -> never auto-exec (false-pos immune) ─
     print("E2E: Tier A runner never auto-exec")

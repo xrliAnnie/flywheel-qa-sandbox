@@ -26,8 +26,6 @@
  * runtime entrypoint (Phase 2b).
  */
 
-import { formatFounderLocal, resolveFounderTimezone } from "flywheel-config";
-import { snowflakeToMs } from "../../bridge/founder-notify-utils.js";
 import type { LeadInputRouter } from "./LeadInputRouter.js";
 import type { RoundtableReplyRoute } from "./roundtable-reply-route.js";
 
@@ -39,8 +37,6 @@ export interface DiscordInboundMessage {
 	/** Whether the author is a bot (any bot, incl. this Lead or other Leads). */
 	authorBot: boolean;
 	content: string;
-	/** Discord's message send instant. Missing sources fall back to the snowflake. */
-	timestampMs?: number;
 	/** FLY-267: ids of users explicitly @-mentioned (Discord `mentions[].id`).
 	 * Optional/empty when unknown — mention detection then falls back to scanning
 	 * `content` for the `<@id>` / `<@!id>` token. */
@@ -65,12 +61,6 @@ export interface DiscordInboundMessage {
  * journal write threw) so the source does NOT advance and re-delivers it (HIGH-4
  * at-least-once: never advance past a message that wasn't durably accepted). */
 export interface DiscordInboundSource {
-	/**
-	 * A2 identity assertion. Implementations must authenticate the configured
-	 * credential and prove that it belongs to this exact Discord bot before any
-	 * message handler is registered or polling begins.
-	 */
-	assertAuthenticatedBotUser(expectedBotUserId: string): Promise<void>;
 	onMessage(handler: (msg: DiscordInboundMessage) => boolean): void;
 	start(): Promise<void>;
 	stop(): Promise<void>;
@@ -103,28 +93,6 @@ export interface CodexDiscordGatewayOptions {
 	 * R1#1 — the gateway has its OWN static allowlist; without this it would drop the
 	 * thread message even though RestPoll polls it). Omitted → only static channels. */
 	registry?: { has: (channelId: string) => boolean };
-	/** FLY-1392 v2: cross-store receipt saga for messages that the transport
-	 * classified as cross-department (a reply route is present). `begin` must
-	 * durably create delivery_pending before journal accept; `complete` closes
-	 * the delivery after accepted-new or accepted-duplicate. */
-	externalReceiptSaga?: {
-		begin: (message: {
-			messageId: string;
-			channelId: string;
-			content: string;
-			createdAt: string;
-		}) => void;
-		complete: (messageId: string) => void;
-	};
-	durableAccept?: (input: {
-		message: DiscordInboundMessage;
-		payload: string;
-		createdAt: string;
-		replyChannelId?: string;
-		replyRoute?: RoundtableReplyRoute;
-	}) => "handled" | "legacy" | "retry";
-	/** Current founder timezone provider (injectable for deterministic tests). */
-	founderTimezone?: () => string;
 	logger?: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -145,9 +113,6 @@ export class CodexDiscordGateway {
 		replyRoute?: RoundtableReplyRoute;
 	};
 	private readonly registry?: { has: (channelId: string) => boolean };
-	private readonly externalReceiptSaga?: CodexDiscordGatewayOptions["externalReceiptSaga"];
-	private readonly durableAccept?: CodexDiscordGatewayOptions["durableAccept"];
-	private readonly founderTimezone: () => string;
 	private readonly logger: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -167,15 +132,11 @@ export class CodexDiscordGateway {
 		this.resolveReplyChannelId = opts.resolveReplyChannelId;
 		this.resolveReplyRoute = opts.resolveReplyRoute;
 		this.registry = opts.registry;
-		this.externalReceiptSaga = opts.externalReceiptSaga;
-		this.durableAccept = opts.durableAccept;
-		this.founderTimezone = opts.founderTimezone ?? resolveFounderTimezone;
 		this.logger = opts.logger ?? { warn: (m, c) => console.warn(m, c ?? "") };
 	}
 
 	async start(): Promise<void> {
 		if (this.started) return;
-		await this.source.assertAuthenticatedBotUser(this.botUserId);
 		this.started = true;
 		this.source.onMessage((msg) => this.handle(msg));
 		await this.source.start();
@@ -212,45 +173,13 @@ export class CodexDiscordGateway {
 				? route.replyChannelId
 				: this.resolveReplyChannelId?.(msg);
 			const replyRoute = route?.replyRoute;
-			const explicitTimestamp = msg.timestampMs;
-			const sentAt =
-				typeof explicitTimestamp === "number" &&
-				Number.isFinite(explicitTimestamp)
-					? explicitTimestamp
-					: snowflakeToMs(msg.id);
-			const payload =
-				sentAt === null
-					? msg.content
-					: `[sent ${formatFounderLocal(new Date(sentAt), this.founderTimezone())} — founder 当前时区渲染]\n${msg.content}`;
-			const createdAt = new Date(sentAt ?? Date.now()).toISOString();
-			const durable = this.durableAccept?.({
-				message: msg,
-				payload,
-				createdAt,
-				...(replyChannelId ? { replyChannelId } : {}),
-				...(replyRoute ? { replyRoute } : {}),
-			});
-			if (durable === "handled") return true;
-			if (durable === "retry") return false;
-			const crossDepartment = Boolean(replyChannelId || replyRoute);
-			if (crossDepartment && this.externalReceiptSaga) {
-				this.externalReceiptSaga.begin({
-					messageId: msg.id,
-					channelId: msg.channelId,
-					content: payload,
-					createdAt,
-				});
-			}
 			this.router.submit({
 				idempotencyKey: msg.id,
 				source: "discord",
-				payload,
+				payload: msg.content,
 				...(replyChannelId ? { replyChannelId } : {}),
 				...(replyRoute ? { replyRoute } : {}),
 			});
-			if (crossDepartment && this.externalReceiptSaga) {
-				this.externalReceiptSaga.complete(msg.id);
-			}
 			return true;
 		} catch (err) {
 			// DURABLE-ACCEPT FAILURE (e.g. journal DB write threw). Do NOT advance —

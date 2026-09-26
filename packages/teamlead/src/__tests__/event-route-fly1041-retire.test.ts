@@ -9,6 +9,7 @@
  *
  * Order: rebind FIRST (authoritative), retire after; a retire failure is a
  * warn (the gate-poller sweeper converges it) and never fails the completion.
+ * Kill-switch `FLYWHEEL_SHIP_GATE_RETIRE=0` restores byte-compatible behavior.
  */
 import type http from "node:http";
 import { CommDB } from "flywheel-comm/db";
@@ -70,6 +71,8 @@ describe("FLY-1041 Fix A: retire-on-rebind (HTTP /events)", () => {
 	};
 
 	beforeEach(async () => {
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
@@ -92,6 +95,9 @@ describe("FLY-1041 Fix A: retire-on-rebind (HTTP /events)", () => {
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		delete process.env.FLYWHEEL_SHIP_GATE_RETIRE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -178,14 +184,6 @@ describe("FLY-1041 Fix A: retire-on-rebind (HTTP /events)", () => {
 		// …and the superseded gate is retired: only the NEW gate stays bindable.
 		expect(pendingGateIds()).not.toContain(q1);
 		expect(pendingGateIds()).toContain(q2);
-		const commDb = new CommDB(commDbPathForProject(PROJECT));
-		try {
-			expect(commDb.getMessageById(q1)).toMatchObject({
-				superseded_by: q2,
-			});
-		} finally {
-			commDb.close();
-		}
 
 		const events = store.getEventsByExecution(execId);
 		const audit = events.find(
@@ -255,6 +253,25 @@ describe("FLY-1041 Fix A: retire-on-rebind (HTTP /events)", () => {
 
 		expect(store.getSession(execId)?.review_question_id).toBe(q1);
 		expect(pendingGateIds()).toContain(q1);
+	});
+
+	it("FLYWHEEL_SHIP_GATE_RETIRE=0 restores byte-compatible behavior (no retire, no audit)", async () => {
+		process.env.FLYWHEEL_SHIP_GATE_RETIRE = "0";
+		const execId = "exec-killswitch";
+		await startRunning(execId);
+		const q1 = insertShipGate(execId);
+		await postEvent(completedBody(execId, "k1", H1, q1));
+		const q2 = insertShipGate(execId);
+		await postEvent(completedBody(execId, "k2", H2, q2));
+
+		// Rebind still happens; the zombie gate stays (pre-FLY-1041 behavior).
+		expect(store.getSession(execId)?.review_question_id).toBe(q2);
+		expect(pendingGateIds()).toContain(q1);
+		expect(
+			store
+				.getEventsByExecution(execId)
+				.find((e) => e.event_type === "ship_gate_superseded"),
+		).toBeUndefined();
 	});
 
 	it("retire failure (comm.db absent) never fails the completion — rebind still lands", async () => {

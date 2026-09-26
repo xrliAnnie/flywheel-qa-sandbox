@@ -151,12 +151,6 @@ export interface FinalizeStore {
 		projectName: string;
 		ok: boolean;
 		error?: string;
-		/** FLY-1328: ask-disposal forensics — see StateStore for the contract. */
-		audit?: {
-			retiredGateCount: number;
-			retiredAskCount: number;
-			source: string;
-		};
 	}): unknown;
 	insertEvent(e: {
 		event_id: string;
@@ -218,11 +212,6 @@ export async function finalizeStaleBlocker(
 			projectName: project,
 			ok: finalized.ok,
 			error: finalized.error,
-			audit: {
-				retiredGateCount: finalized.retiredGateCount,
-				retiredAskCount: finalized.retiredAskCount,
-				source: "bridge.stale-blocker-guard",
-			},
 		});
 		return finalized;
 	};
@@ -419,7 +408,7 @@ export function staleBlockerEventAnchor(blocker: Session): string {
  * Durable, deduped "scheduled run blocked" alert to the issue's Lead. Persisted
  * dedup via `tryClaimLeadEvent` on a stable `(leadId, event_id)`; the event type
  * is in GUARDRAIL_EVENT_TYPES so a failed inline delivery is redelivered by
- * the durable failed-delivery row (reliability boundary is
+ * `HeartbeatService.retryUndeliveredGuardrailEvents()` (reliability boundary is
  * the persisted lead_events row, NOT an in-memory set — Codex R1 #5).
  *
  * Ordering (Codex R2 #2): resolve lead + build payload → `tryClaimLeadEvent`
@@ -481,7 +470,6 @@ export async function alertStaleBlockerToLead(
 	);
 	const envelope: LeadEventEnvelope = {
 		seq,
-		eventId,
 		event: payload,
 		sessionKey,
 		leadId,
@@ -490,7 +478,7 @@ export async function alertStaleBlockerToLead(
 	try {
 		const result = await deps.deliver(leadId, envelope);
 		if (result.delivered) deps.store.markLeadEventDelivered(seq);
-		else if (!(result as { queued?: boolean }).queued)
+		else
 			deps.store.recordDeliveryFailure(
 				seq,
 				result.error ?? "deliver returned false",
@@ -503,12 +491,7 @@ export async function alertStaleBlockerToLead(
 // ── Orchestration (mounted in runs-route via plugin.ts) ──────────────────────
 
 export interface StaleBlockerGuardDeps {
-	/**
-	 * FLY-1066 scope-free targeted StateStore ghost reconciliation. Optional is
-	 * the residue kill-switch's zero-call path. Runs before every FLY-742 gate.
-	 */
-	reconcileGhost?: (blocker: Session) => Promise<boolean>;
-	/** Whether this guard is wired for the caller. */
+	/** FLYWHEEL_CRON_STALE_GUARD !== "0" (default-on). */
 	enabled: boolean;
 	/** FLYWHEEL_CRON_STALE_TTL_MIN (default 120), in ms. */
 	staleTtlMs: number;
@@ -541,9 +524,6 @@ export function createStaleBlockerGuard(
 
 	return {
 		async handleActiveBlocker(blocker) {
-			if (deps.reconcileGhost && (await deps.reconcileGhost(blocker))) {
-				return { proceed: true };
-			}
 			if (!deps.enabled) return { proceed: false };
 
 			const nowMs = deps.now();

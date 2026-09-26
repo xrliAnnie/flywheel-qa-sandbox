@@ -44,10 +44,7 @@ export PATH="$STUB_BIN:$PATH"
 FLEET="$SANDBOX/fleet"; mkdir -p "$FLEET"
 cat > "$FLEET/projects.json" <<'EOF'
 [ { "projectName": "flywheel", "projectRoot": "Dev/flywheel", "projectRepo": "xrliAnnie/flywheel",
-    "leads": [
-      { "agentId": "flywheel-cos-lead", "chatChannel": "1", "match": { "labels": ["cos"] }, "botTokenEnv": "CASS_BOT_TOKEN", "canSpawnRunners": false },
-      { "agentId": "codex-infra-bot-lead", "backend": "codex-app-server", "botTokenEnv": "CODEX_BOT_TOKEN" }
-    ] } ]
+    "leads": [ { "agentId": "flywheel-cos-lead", "chatChannel": "1", "match": { "labels": ["cos"] }, "botTokenEnv": "CASS_BOT_TOKEN", "canSpawnRunners": false } ] } ]
 EOF
 cat > "$FLEET/env.example" <<'EOF'
 CASS_BOT_TOKEN=
@@ -121,33 +118,17 @@ fi
 
 # ── L6: --apply launchd ACTUALLY installs systemd units (Codex R1 HIGH-1) ──
 # flywheel-home (L2) already copied projects.json. Now really install.
-# Preserve the production legacy shape: projects.json says Codex while the
-# already-existing manifest has no optional leadBackend projection.
-mkdir -p "$H/.flywheel/manifests"
-cat > "$H/.flywheel/manifests/flywheel-codex-infra-bot-lead.json" <<'EOF'
-{"projectName":"flywheel","leadId":"codex-infra-bot-lead","projectDir":"/tmp/flywheel"}
-EOF
 : > "$CALLS"; rm -rf "$UNIT_DIR"
-OUT="$(prov --apply --skip-token-check --only launchd 2>&1)"
+prov --apply --skip-token-check --only launchd >/dev/null 2>&1
 MAT_OK=0; [ -f "$H/.flywheel/manifests/flywheel-flywheel-cos-lead.json" ] && MAT_OK=1
 if [ "$MAT_OK" -eq 1 ] \
    && grep -q "enable --now flywheel-bridge.service" "$CALLS" \
    && grep -q "enable --now flywheel-lead-flywheel-flywheel-cos-lead.service" "$CALLS" \
    && [ -f "$UNIT_DIR/flywheel-bridge.service" ] \
-   && grep -q "DirectoryNotEmpty=$H/.flywheel/self-ship-urgent.d" "$UNIT_DIR/flywheel-updater.path" \
    && grep -q "enable-linger" "$CALLS"; then
-  pass "L6 --apply launchd materializes bridge/lead + urgent-only updater + linger"
+  pass "L6 --apply launchd materializes + supervisor_install (bridge + lead + linger)"
 else
   fail "L6 actual install: mat=$MAT_OK units=$(ls "$UNIT_DIR" 2>/dev/null) calls=$(grep -E 'enable|linger' "$CALLS")"
-fi
-
-if [ -f "$H/.flywheel/manifests/flywheel-codex-infra-bot-lead.json" ] \
-   && [ ! -e "$UNIT_DIR/flywheel-lead-flywheel-codex-infra-bot-lead.service" ] \
-   && ! grep -q "enable --now flywheel-lead-flywheel-codex-infra-bot-lead.service" "$CALLS" \
-   && grep -q "skipping bespoke backend codex-app-server" <<<"$OUT"; then
-  pass "L6b generic provision skips bespoke Codex manifests instead of launching Claude wrapper-v2"
-else
-  fail "L6b Codex manifest was not skipped safely: units=$(ls "$UNIT_DIR" 2>/dev/null) calls=$(grep codex "$CALLS") out=$(grep codex <<<"$OUT")"
 fi
 
 # ── L5: validate phase plans systemctl is-active (not launchctl) on linux ──

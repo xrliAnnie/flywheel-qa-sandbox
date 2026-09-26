@@ -29,17 +29,13 @@ describe("classifyRunnerRow", () => {
 		expect(classifyRunnerRow("running", true)).toBe("running");
 		expect(classifyRunnerRow("running", false)).toBe("running");
 	});
-	it("every terminal status + alive → parked-alive", () => {
+	it("completed/timeout + alive → parked-alive", () => {
 		expect(classifyRunnerRow("completed", true)).toBe("parked-alive");
 		expect(classifyRunnerRow("timeout", true)).toBe("parked-alive");
-		expect(classifyRunnerRow("failed", true)).toBe("parked-alive");
-		expect(classifyRunnerRow("blocked", true)).toBe("parked-alive");
 	});
-	it("every terminal status + not alive → dead", () => {
+	it("completed/timeout + not alive → dead", () => {
 		expect(classifyRunnerRow("completed", false)).toBe("dead");
 		expect(classifyRunnerRow("timeout", false)).toBe("dead");
-		expect(classifyRunnerRow("failed", false)).toBe("dead");
-		expect(classifyRunnerRow("blocked", false)).toBe("dead");
 	});
 });
 
@@ -168,7 +164,7 @@ describe("abandon status set", () => {
 });
 
 // FLY-638 + FLY-1204: done-mode lookup status set (running + the two parked
-// states + the DAG workflow Design phase-session state design_done).
+// states + the three-stage Design phase-session state design_done).
 describe("done status set", () => {
 	it("mirrors FINALIZE_DONE_SOURCE_STATES incl. design_done (FLY-1204)", () => {
 		expect([...DONE_STATUS_SET]).toEqual([

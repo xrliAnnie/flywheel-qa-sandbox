@@ -2,8 +2,8 @@
  * FLY-1188 M4c-2 — the runner-side resident-/goal runtime: composes the daemon
  * spawn primitive (M4c-1), the ws transport (M4b), and the daemon client + goal
  * loop (M4a) into one "drive a goal to terminal on a resident daemon" call, and
- * survives a daemon death mid-run by restarting the daemon on the same
- * explicitly selected account and RESUMING the same thread —
+ * survives a daemon death mid-run by restarting the daemon (optionally on the
+ * NEXT account, for 429/usage-limit rotation) and RESUMING the same thread —
  * the goal state is persisted with the thread (V2-verified), so a restart
  * continues where it left off rather than starting over.
  *
@@ -61,8 +61,9 @@ export interface CodexDaemonGoalRuntimeOptions {
 	executionId: string;
 	codexBin: string;
 	/**
-	 * Exactly one manually selected CODEX_HOME. Automatic account switching is
-	 * retired; daemon recovery restarts on this same home.
+	 * Account rotation pool of CODEX_HOMEs. The first is used initially; a
+	 * daemon death restarts on the NEXT (429/usage-limit rotation). At least one
+	 * is required.
 	 */
 	codexHomes: string[];
 	/** Worktree the daemon's thread runs in. */
@@ -73,7 +74,7 @@ export interface CodexDaemonGoalRuntimeOptions {
 	/**
 	 * FLY-1224: reasoning effort delivered as a DAEMON-level config override
 	 * (`-c model_reasoning_effort="<effort>"` on the app-server spawn — the
-	 * thread/start API has no effort field). Replayed on every daemon restart.
+	 * thread/start API has no effort field). Replayed on every rotation restart.
 	 * Absent → the CODEX_HOME config default.
 	 */
 	effort?: string;
@@ -121,14 +122,10 @@ export interface RunGoalInput {
 	waitingTimeoutMs?: number;
 	/** FLY-1188 MED-7: is this run currently blocked on an OPEN gate? */
 	isWaiting?: () => boolean;
-	/** FLY-1269 explicit resident DAG workflow controller. */
+	/** FLY-1269 explicit resident three-stage phase controller. */
 	phaseLifecycle?: GoalPhaseLifecycle;
 	phaseControlPollIntervalMs?: number;
 	phaseControlRpcTimeoutMs?: number;
-	/** FLY-1257: durable blocked-on-gate latch reader, forwarded across restarts. */
-	readGateHoldLatch?: () => boolean;
-	/** FLY-1257: durable blocked-on-gate latch writer, forwarded across restarts. */
-	writeGateHoldLatch?: (held: boolean) => void;
 	/**
 	 * FLY-1188 M4d: fired the moment OUR thread is confirmed ready (right after
 	 * `ensureThread` resolves the authoritative own-thread id) — NOT a raw
@@ -155,18 +152,19 @@ export interface RunGoalInput {
 	 */
 	reapOrphanPid?: number;
 	/**
-	 * FLY-1940: synchronously persist the LIVE detached daemon's process-group
-	 * identity on every spawn/restart, before the first socket await. A throwing
-	 * handler aborts spawn after killing and verifying the just-created group;
-	 * ownership persistence is therefore a hard precondition, not telemetry.
+	 * FLY-1188 HIGH-3: fired with the LIVE daemon's pid right after each spawn
+	 * (and on every account-rotation restart). The caller persists it so a later
+	 * resuming redrive can reap this daemon if the Bridge dies without killing it.
+	 * `undefined` when the spawn seam did not surface a pid. A throwing handler is
+	 * swallowed (it must never break the run).
 	 */
-	onSpawnIdentity?: (pgid: number) => void;
+	onDaemonPid?: (pid: number | undefined) => void;
 }
 
 export interface RunGoalOutcome {
 	threadId: string;
 	result: GoalRunResult;
-	/** How many same-account daemon restarts the run survived. */
+	/** How many daemon restarts (account rotations) the run survived. */
 	restarts: number;
 }
 
@@ -201,6 +199,7 @@ export class CodexDaemonGoalRuntime {
 	private readonly runGoalFn: typeof runGoalToTerminal;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly exitWaitMs: number;
+	private accountCursor = 0;
 	private session: DaemonSession | null = null;
 	private stopped = false;
 	private running = false;
@@ -212,14 +211,14 @@ export class CodexDaemonGoalRuntime {
 	/** The in-flight runGoal's completion marker (resolves, never rejects, once
 	 * the run has fully settled + done its own daemon cleanup); null when idle. */
 	private inflight: Promise<void> | null = null;
+	/** HIGH-3: per-run callback fired with each spawned daemon's pid so the
+	 * caller can persist it for post-crash orphan reaping. Set in runGoal,
+	 * cleared in its finally. */
+	private onDaemonPidCb?: (pid: number | undefined) => void;
+
 	constructor(opts: CodexDaemonGoalRuntimeOptions) {
 		if (opts.codexHomes.length === 0) {
 			throw new Error("CodexDaemonGoalRuntime requires at least one codexHome");
-		}
-		if (opts.codexHomes.length !== 1) {
-			throw new Error(
-				"CodexDaemonGoalRuntime requires exactly one codexHome; automatic account switching is retired",
-			);
 		}
 		this.opts = opts;
 		this.log = opts.logger ?? (() => {});
@@ -241,9 +240,11 @@ export class CodexDaemonGoalRuntime {
 		this.exitWaitMs = opts.exitWaitMs ?? 5_000;
 	}
 
-	/** The manually selected account used by every daemon start/restart. */
-	private selectedCodexHome(): string {
-		const home = this.opts.codexHomes[0];
+	/** The account (CODEX_HOME) the NEXT daemon start will use, then advance. */
+	private nextCodexHome(): string {
+		const homes = this.opts.codexHomes;
+		const home = homes[this.accountCursor % homes.length];
+		this.accountCursor += 1;
 		if (home === undefined) {
 			throw new Error("codexHomes unexpectedly empty"); // guarded in ctor
 		}
@@ -265,17 +266,14 @@ export class CodexDaemonGoalRuntime {
 	}
 
 	/**
-	 * Spawn a daemon on the selected account, connect, initialize; store session.
+	 * Spawn a daemon on the next account, connect, initialize; store the session.
 	 * Every partial-failure path closes the resources it created AND drains the
 	 * daemon to exit before throwing — so a subsequent restart never races a
 	 * still-dying daemon on the same socket, and a stop() that raced startup
 	 * leaves no live daemon.
 	 */
-	private async startSession(
-		reapOrphanPid?: number,
-		onSpawnIdentity?: (pgid: number) => void,
-	): Promise<DaemonSession> {
-		const codexHome = this.selectedCodexHome();
+	private async startSession(reapOrphanPid?: number): Promise<DaemonSession> {
+		const codexHome = this.nextCodexHome();
 		const handle = await this.spawnDaemon({
 			codexBin: this.opts.codexBin,
 			codexHome,
@@ -291,9 +289,18 @@ export class CodexDaemonGoalRuntime {
 			// HIGH-3: reap a prior orphaned daemon of THIS execution (if any) so
 			// the resuming redrive can reclaim the socket instead of blocking.
 			...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
-			...(onSpawnIdentity ? { onSpawnIdentity } : {}),
 			logger: this.log,
 		});
+		// HIGH-3: surface the live daemon pid so the caller can persist it — a
+		// later resuming redrive uses it to reap this daemon if the Bridge dies
+		// without killing it. Swallow a throwing handler (must never break spawn).
+		try {
+			this.onDaemonPidCb?.(handle.child.pid ?? undefined);
+		} catch (err) {
+			this.safeLog(
+				`onDaemonPid handler threw (ignored): ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 		const exited = this.makeExitPromise(handle);
 		const dying: DyingDaemon = { handle, exited };
 		// Close the given resources, then SIGTERM the daemon and WAIT for it to
@@ -398,9 +405,10 @@ export class CodexDaemonGoalRuntime {
 			}
 		}
 		// QA · FLY-1188 HIGH-2: the promise above tracks the process we SPAWNED —
-		// A launcher may still fork before exec in an operator override. Therefore
-		// "the spawned process exited" is not sufficient proof that the socket-owning
-		// daemon is dead. Ask the socket as the authoritative teardown check.
+		// the rotation shim. The `codex app-server` the shim forked is a different
+		// process and outlives it happily, still holding the socket (that is the
+		// ~178MB orphan the real-machine QA found alive 5 minutes after teardown).
+		// So "the shim exited" is NOT "the daemon is dead". Ask the socket.
 		if (!(await ensureDaemonDead(dying.handle))) {
 			throw new Error(
 				`codex daemon still listening on ${dying.handle.socketPath} after teardown — refusing to leave an unmonitored orphan`,
@@ -412,7 +420,7 @@ export class CodexDaemonGoalRuntime {
 	 * Drive a goal to a terminal status on the resident daemon. A daemon death
 	 * mid-run — the goal loop's transport_closed OR a raw client "closed" from a
 	 * setup RPC (both inside the recovery boundary) — tears the dead session
-	 * down, waits for it to exit, restarts on the same account and RESUMES the
+	 * down, waits for it to exit, restarts on the NEXT account and RESUMES the
 	 * same thread; up to maxRestarts. A terminal status (incl.
 	 * blocked/usageLimited/budgetLimited) resolves for the caller to act on. A
 	 * timeout / setup_failed / goal_replaced propagates. Not re-entrant.
@@ -438,13 +446,14 @@ export class CodexDaemonGoalRuntime {
 			const maxRestarts = this.opts.maxRestarts ?? 5;
 			let threadId = input.resumeThreadId;
 			let restarts = 0;
-			// HIGH-3/FLY-1940: reap a prior orphan only on the FIRST spawn of this
-			// run. Every new spawn persists its group before the socket wait through
-			// the hard onSpawnIdentity contract.
+			// HIGH-3: persist the live daemon pid on every spawn; reap a prior
+			// orphan only on the FIRST spawn of this run (a within-run restart
+			// tears down its own session first, so there is no orphan to reap).
+			this.onDaemonPidCb = input.onDaemonPid;
 			let reapPid = input.reapOrphanPid;
 			// MED-7 R2 (Codex full-PR review): arm the RUN's start ONCE. Every
 			// restart's runGoalToTerminal gets this SAME anchor, so the active +
-			// waiting ceilings are absolute for the run — a daemon
+			// waiting ceilings are absolute for the run — an account-rotation
 			// restart can no longer re-arm a full fresh budget (which let N
 			// restarts multiply the cap).
 			const runStartedAt = Date.now();
@@ -458,9 +467,7 @@ export class CodexDaemonGoalRuntime {
 
 			while (true) {
 				try {
-					const session =
-						this.session ??
-						(await this.startSession(reapPid, input.onSpawnIdentity));
+					const session = this.session ?? (await this.startSession(reapPid));
 					reapPid = undefined; // reap applies only to the first spawn
 					threadId = await this.ensureThread(session, threadId);
 					// AUTHORITATIVE own-thread signal (FLY-1188 M4d): the thread is
@@ -518,12 +525,6 @@ export class CodexDaemonGoalRuntime {
 								? { waitingTimeoutMs: input.waitingTimeoutMs }
 								: {}),
 							...(input.isWaiting ? { isWaiting: input.isWaiting } : {}),
-							...(input.readGateHoldLatch
-								? { readGateHoldLatch: input.readGateHoldLatch }
-								: {}),
-							...(input.writeGateHoldLatch
-								? { writeGateHoldLatch: input.writeGateHoldLatch }
-								: {}),
 							...(input.onGoalActive
 								? { onGoalActive: input.onGoalActive }
 								: {}),
@@ -564,6 +565,7 @@ export class CodexDaemonGoalRuntime {
 			}
 		} finally {
 			this.running = false;
+			this.onDaemonPidCb = undefined;
 			// SUCCESS OR FAILURE: if stop() ran during this call, wait for its
 			// session-drain so this run never returns/throws ahead of the daemon's
 			// exit (M4a's terminal-before-close can let runGoalFn succeed after a

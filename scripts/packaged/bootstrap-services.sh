@@ -31,7 +31,6 @@ DRY_RUN=0
 INSTALL_LEADS=1
 
 log() { echo "[packaged-bootstrap] $*"; }
-warn() { echo "[packaged-bootstrap][warn] $*" >&2; }
 err() { echo "[packaged-bootstrap][error] $*" >&2; }
 die() { err "$*"; exit 1; }
 
@@ -57,8 +56,6 @@ SCRIPTS="$PKG_ROOT/scripts"
 source "$SCRIPTS/lib/script-sanity.sh"
 # shellcheck source=../lib/host-config.sh
 source "$SCRIPTS/lib/host-config.sh"
-# shellcheck source=../lib/lead-restart-lifecycle.sh
-source "$SCRIPTS/lib/lead-restart-lifecycle.sh"
 # shellcheck source=../lib/supervisor.sh
 source "$SCRIPTS/lib/supervisor.sh"
 
@@ -94,7 +91,7 @@ ensure_host_json() {
 install_bin() {
   local f
   mkdir -p "$STATE_DIR/bin/lib" "$STATE_DIR/pids" "$STATE_DIR/state" "$STATE_DIR/logs" "$STATE_DIR/manifests"
-  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh; do
+  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper.sh; do
     [ -f "$SCRIPTS/$f" ] || die "wrapper missing from package: scripts/$f"
     if [ "$DRY_RUN" -eq 1 ]; then log "[dry-run] would install $f -> $STATE_DIR/bin/$f"; continue; fi
     install_script_atomic "$SCRIPTS/$f" "$STATE_DIR/bin/$f" \
@@ -102,7 +99,7 @@ install_bin() {
   done
   # Codex R2#2 closure: the copied wrappers source $SELF_DIR/lib/host-config.sh;
   # without it they silently fall back to ~/Dev/flywheel.
-  for f in lib/host-config.sh lib/lead-address.sh; do
+  for f in lib/host-config.sh; do
     [ -f "$SCRIPTS/$f" ] || die "support lib missing from package: scripts/$f"
     if [ "$DRY_RUN" -eq 1 ]; then log "[dry-run] would install $f -> $STATE_DIR/bin/$f"; continue; fi
     install_script_atomic "$SCRIPTS/$f" "$STATE_DIR/bin/$f" \
@@ -112,23 +109,16 @@ install_bin() {
 
 # ── service specs (same shape both platforms; supervisor renders per-OS) ────
 emit_specs() {
-  supervisor_bridge_spec "$STATE_DIR/bin/flywheel-bridge-wrapper.sh"
+  jq -nc --arg bin "$STATE_DIR/bin" \
+    '{name:"bridge",kind:"service",exec:("/bin/bash "+$bin+"/flywheel-bridge-wrapper.sh"),keepAlive:true,stdout:"/tmp/flywheel-bridge.log"}'
   jq -nc --arg cur "$CURRENT" \
     '{name:"daily-standup",kind:"timer",exec:("/bin/bash "+$cur+"/scripts/daily-standup.sh"),schedule:[{hour:3,minute:0}]}'
   if [ "$INSTALL_LEADS" -eq 1 ]; then
-    local m project_name lead_id backend
+    local m
     for m in "$STATE_DIR/manifests"/*.json; do
       [ -e "$m" ] || continue
-      project_name=$(jq -er '.projectName' "$m") || die "invalid manifest projectName: $m"
-      lead_id=$(jq -er '.leadId' "$m") || die "invalid manifest leadId: $m"
-      backend=$(lead_restart_project_backend "$STATE_DIR/projects.json" "$project_name" "$lead_id") \
-        || die "projects.json has no unique backend authority for ${project_name}/${lead_id}"
-      if [ "$backend" != "claude-code" ]; then
-        warn "lead ${project_name}/${lead_id}: skipping bespoke backend ${backend}; generic provision only installs Claude v2"
-        continue
-      fi
       jq -c --arg bin "$STATE_DIR/bin" --arg m "$m" \
-        '{name:("lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$bin+"/flywheel-lead-wrapper-v2.sh "+$m),keepAlive:true}' "$m"
+        '{name:("lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$bin+"/flywheel-lead-wrapper.sh "+$m),keepAlive:true}' "$m"
     done
   fi
 }

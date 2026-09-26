@@ -1,5 +1,5 @@
 /**
- * FLY-1041 — QA phase (DAG workflow) independent end-to-end verification.
+ * FLY-1041 — QA phase (three-stage) independent end-to-end verification.
  *
  * Encodes the ISSUE'S CORE ACCEPTANCE CRITERION at the real-CommDB boundary
  * (better-sqlite3, no mocks): after a ship-gate re-fire, the founder-binding
@@ -128,7 +128,7 @@ describe("FLY-1041 QA · single bindable ship gate (real CommDB, end-to-end)", (
 		db.insertQuestion("exec-1", "lead-1", "g2", {
 			checkpoint: "approve_to_ship",
 		});
-		// No retireShipGate call, leaving both gates live for candidate selection.
+		// No retireShipGate call (mirrors FLYWHEEL_SHIP_GATE_RETIRE=0 leaving both live).
 		expect(shipBindingCandidates(db, "lead-1")).toHaveLength(2);
 	});
 });

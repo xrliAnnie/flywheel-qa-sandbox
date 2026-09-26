@@ -12,32 +12,25 @@
 
 You (the Lead) are an LM that has followed this project. When you spawn a
 Runner (`POST /api/runs/start`), you also decide **how heavy a model the task
-warrants** and map that difficulty through the live fleet policy. The mapping
-is a founder decision, not a permanent price/strength ladder: today heavy work
-uses Fable while every lower bucket uses Opus 5. There is **no separate
-classifier and no extra LLM call**: you already understand the issue at
-dispatch time, so you make a quick **holistic judgment** from the signals below
-and pass the configured model on the same `/api/runs/start` call.
+warrants** — heavier tasks earn a stronger (more expensive) model, trivial
+ones a cheap fast model. There is **no separate classifier and no extra LLM
+call**: you already understand the issue at dispatch time, so you make a quick
+**holistic judgment** from the signals below and pass the chosen model on the
+same `/api/runs/start` call.
 
 ## The model tiers
 
 | Difficulty | Model | `model` value |
 |------------|-------|---------------|
 | **Heavy** — architecture, migration, redesign, gnarly multi-file/cross-system change, deep debugging | Fable 5 | `fable` |
-| **Medium** — a normal feature or bug fix of moderate scope | Opus 5 | `opus` |
-| **Simple** — a small, well-scoped change | Opus 5 | `opus` |
-| **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Opus 5 | `opus` |
+| **Medium** — a normal feature or bug fix of moderate scope | Opus 4.8 | `opus` |
+| **Simple** — a small, well-scoped change | Sonnet 5 | `sonnet` |
+| **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Haiku 4.5 | `haiku` |
 
 The bare aliases (`fable`/`opus`/`sonnet`/`haiku`) are accepted; so are the full
-ids (`claude-fable-5`, `claude-opus-5`, `claude-sonnet-5`,
-`claude-haiku-4-5-20251001`). The live mappings come from
-`~/.flywheel/models.json`; unknown values are rejected `400 INVALID_MODEL`.
-Sonnet and Haiku remain recognizable for explicit legacy/manual choices but are
-not default difficulty tiers.
-
-There is **no model blocklist**. A model is used because config names it, so the
-difficulty table above is the whole routing decision — do not expect the Bridge
-to second-guess a value you send.
+ids (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`,
+`claude-haiku-4-5-20251001`). Anything else is rejected `400 INVALID_MODEL`
+(the error payload lists every accepted spelling).
 
 ## 1M context is explicit opt-in (FLY-751)
 
@@ -46,7 +39,7 @@ Claude process costs ~0.35GB more RAM per Runner, and the fleet hit swap
 exhaustion when every runner inherited a 1M default — so 1M is now something
 you ask for, not something you get.
 
-- Pass `"model": "opus-1m"` (Opus 5 · 1M) or `"model": "fable-1m"`
+- Pass `"model": "opus-1m"` (Opus 4.8 · 1M) or `"model": "fable-1m"`
   (Fable 5 · 1M) **only when the task genuinely needs the huge window** — e.g.
   it must hold a massive corpus/log/diff in one context and cannot be chunked.
 - The same spellings work as issue labels (`opus-1m` / `fable-1m`) when the
@@ -100,23 +93,9 @@ The resolved model shows as a short code on the `[FLY-XX]` thread title
 (**F**able / **O**pus / **S**onnet / **H**aiku) and on the Bridge dashboard, so
 the founder can see at a glance which model each issue is running.
 
-## Configuration is the authority
+## Calibration is still being learned
 
-The table above is the built-in fail-safe. Read the live mapping from
-`~/.flywheel/models.json` for each dispatch decision; an atomic config edit
-changes the next decision without a code release. Do not maintain a second
-mapping in prompts or scripts.
-
-## DAG-enrolled projects (FLY-1372)
-
-When a project is DAG-enrolled (the project-scoped `pipeline_dag` flag + the
-workflow dispatch flags are ON), a fresh dispatch runs the workflow-template
-(DAG) engine and the
-TEMPLATE pins each node's vendor/model. **Keep passing `model` as usual** — it
-is accepted, recorded for audit, and explicitly echoed back as overridden
-(`templateAuthority.overrode` in the response). Nothing breaks; the template
-simply wins over the sorter's run-level pin.
-
-Enrollment is flag-store state, never project YAML. Change it only through the
-governed scoped surface, for example
-`node "$FLYWHEEL_COMM_CLI" feature-flags set --name pipeline_dag --to on --project <project> --reason "enroll DAG"`.
+The exact difficulty→tier boundaries are **not yet fixed** — the founder will
+tune them with real examples and an eval of each model's capability. For now,
+**trust your judgment** with the signals above; do not hard-code thresholds in
+your head. This will get sharper over time.

@@ -16,7 +16,7 @@ export function cleanupMessages(
 	if (!existsSync(args.dbPath)) {
 		return { cleaned: 0 };
 	}
-	const db = new CommDB(args.dbPath, true, false);
+	const db = new CommDB(args.dbPath);
 	try {
 		const cleaned = db.cleanupReadMessagesWithRefs(args.ttlHours);
 		return { cleaned };

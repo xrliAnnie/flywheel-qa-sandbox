@@ -1,13 +1,3 @@
-import { createHash } from "node:crypto";
-import { isRunnerStopReport } from "flywheel-comm/runner-stop-report";
-import {
-	truncateCodePoints,
-	truncateCodePointsFromEnd,
-} from "flywheel-comm/text-truncate";
-import type { DesignBackend } from "flywheel-config";
-import { WORKFLOW_RUN_NODE_STATES } from "../workflow-ledger-states.js";
-import type { PatrolLoopEntry } from "./patrol-loop-ledger.js";
-
 export interface HookPayload {
 	event_type: string;
 	execution_id: string;
@@ -24,27 +14,6 @@ export interface HookPayload {
 	last_error?: string;
 	chat_channel?: string;
 	issue_labels?: string[];
-	/** FLY-1687: Bridge ledger declaration only; Lead independently verifies it. */
-	roster?: PatrolRosterEntry[];
-	/** FLY-1925: issue-scoped loop ledger projection; absent on legacy replays. */
-	loops?: PatrolLoopEntry[];
-	generated_at?: string;
-	/** FLY-2018: stable informational outbox identity and retry projection. */
-	workflow_event_id?: string;
-	workflow_run_id?: string;
-	workflow_node_id?: string;
-	workflow_attempt?: number;
-	launch_ordinal?: number;
-	blind_replacements?: number;
-	max_blind_replacements?: number;
-	next_check_at?: string;
-	next_check_disposition?:
-		| "replacement_candidate"
-		| "environment_hold_candidate"
-		| "retry_limit_hold_candidate";
-	/** FLY-1771: patrol_tick's scheduled per-Lead wall-clock phase. Drift is
-	 * `generated_at - scheduled_at`; journal-only, never rendered to the Lead. */
-	scheduled_at?: string;
 	// stuck-specific
 	minutes_since_activity?: number;
 	/** FLY-1234: session_stuck confirm-layer annotation — the bounded reason
@@ -52,30 +21,11 @@ export interface HookPayload {
 	 * through (dead_pin / judge c_stuck / budget exhausted / fail-open …).
 	 * Never pane text, never model rationale. Absent on the legacy path. */
 	confirm_note?: string;
-	// FLY-1282: liveness-evidence fields for zombie/reestablished events.
-	/** Point-in-time pane-probe evidence — the reestablished/zombie claim is
-	 * only as good as this record (never a bare assertion). */
-	liveness_probe?: {
-		method: "tmux_pane_probe";
-		/** tmux window target probed. */
-		target?: string;
-		result: "alive" | "absent";
-		probed_at?: string;
-		/** Consecutive server-up absent probes behind a zombie declaration. */
-		consecutive_probes?: number;
-	};
-	/** FLY-1282: read-only worktree unpushed-work summary attached to
-	 * session_zombie_detected (rescue is the Lead's decision, never automated). */
-	unpushed_work?: import("./worktree-inspect.js").WorktreeInspection;
-	/** FLY-1282 (observation only): sessions newly re-adopted in the SAME
-	 * reconcile pass; present only when >= 3 — a monitoring-side-interruption
-	 * suspicion signal, not a diagnosis. */
-	concurrent_reestablished?: number;
 	// FLY-195: runner_stuck_escalation evidence fields (plan §3.1/§3.2).
 	// Evidence ONLY — the Lead judges; none of these are act-triggers.
 	/** Whole minutes the runner's terminal output has been unchanged. */
 	stuck_minutes?: number;
-	/** Stable episode reference — receipt-derived detections use their bounded parent id. */
+	/** Stable fingerprint of this stuck episode — echo it back when writing a disposition or nudging. */
 	episode_fingerprint?: string;
 	/** Trailing non-empty terminal lines (helps the Lead judge fast). */
 	terminal_tail?: string;
@@ -114,12 +64,9 @@ export interface HookPayload {
 	// and the presence/absence of `checkpoint`.
 	checkpoint?: string;
 	question_id?: string;
-	question_kind?: string;
 	from_agent?: string;
 	comm_db_path?: string;
-	/** FLY-1392: opaque Discord id for a raw founder→Lead conveyor event. */
-	founder_message_id?: string;
-	// FLY-159 gate timeout / FLY-1279 park notice: elapsed wait duration.
+	// FLY-159: gate_timed_out event fields (Lead notifies Annie via Discord)
 	waited_ms?: number;
 	original_message?: string;
 	timeout_behavior?: string;
@@ -129,8 +76,6 @@ export interface HookPayload {
 	pr_number?: number;
 	// FLY-59: Session role for multi-session-per-issue support
 	session_role?: string;
-	/** FLY-1259: effective per-dispatch backend locked for a design phase. */
-	design_backend?: DesignBackend;
 	// FLY-47: stage context — explicit guidance for Lead (e.g., "Runner completed work, PR still needs review")
 	stage_context?: string;
 	// EventFilter fields (GEO-187)
@@ -140,7 +85,7 @@ export interface HookPayload {
 	chat_thread_id?: string;
 
 	// FLY-1048 (A5): detection_suspicious fields — the fail-suspicious
-	// contract. The mechanical detection layer could not conclude a/b/c; the
+	// contract. The mechanical watchdog layer could not conclude a/b/c; the
 	// owner Lead gets a QUIET report instead of silence.
 	/** "runner" | "lead" — what kind of target the report is about. */
 	detection_target_kind?: string;
@@ -159,7 +104,7 @@ export interface HookPayload {
 	escalation_kind?: string;
 	/** Kind-specific one-sentence summary (no pane content). */
 	escalation_reason?: string;
-	/** Truthful next step for the Lead's parked-runner alert. */
+	/** Truthful next step for the Lead (formatParkAlert wording family). */
 	escalation_next_step?: string;
 
 	// GEO-151: ProofShot artifact delivery fields. Only populated when
@@ -190,14 +135,6 @@ export interface HookPayload {
 	requester?: string;
 	/** Optional short note on who asked and in what context. */
 	requester_context?: string;
-}
-
-export interface PatrolRosterEntry {
-	identifier: string;
-	issueId?: string;
-	sessionRole: string;
-	status: string;
-	executionId8: string;
 }
 
 export function buildSessionKey(session: {
@@ -234,47 +171,6 @@ export function formatDurationMs(ms: number | undefined | null): string {
 	return min === 0 ? `${hours}h` : `${hours}h ${min}m`;
 }
 
-export function formatRunnerQuestion(env: StuckEscalationEnvelopeLike): string {
-	const e = env.event;
-	const issueRef = e.issue_identifier || e.issue_id;
-	const roleLabel =
-		e.session_role && e.session_role !== "main"
-			? `[${e.session_role.toUpperCase()}] `
-			: "";
-	const runnerStopReport = isRunnerStopReport({
-		id: e.question_id,
-		kind: e.question_kind,
-		content: e.summary,
-	});
-	const lines = [
-		`[Event #${env.seq}] ${roleLabel}runner_question`,
-		`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
-	];
-	if (runnerStopReport) {
-		lines.push(
-			"[REPORT] Runner lifecycle declaration (one-way status — ACK the enclosing mailbox batch/event only):",
-			"---",
-			e.summary ?? "(no content)",
-			"---",
-			"Do not respond to this report; a response would wake the parked Runner.",
-			`Question ID: ${e.question_id}`,
-			`CommDB: ${e.comm_db_path}`,
-		);
-	} else {
-		lines.push(
-			"[ASK] Runner is asking (non-blocking — Runner continues working):",
-			"---",
-			e.summary ?? "(no content)",
-			"---",
-			`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
-			`Question ID: ${e.question_id}`,
-			`CommDB: ${e.comm_db_path}`,
-		);
-	}
-	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
-	return lines.join("\n");
-}
-
 // ── FLY-195 hotfix: shared runner_stuck_escalation renderer ──
 
 /**
@@ -286,409 +182,6 @@ export interface StuckEscalationEnvelopeLike {
 	event: HookPayload;
 	sessionKey: string;
 	timestamp: string;
-}
-
-export function formatWorkflowReplacementEligibility(
-	env: StuckEscalationEnvelopeLike,
-): string {
-	const event = env.event;
-	const disposition =
-		event.next_check_disposition === "environment_hold_candidate"
-			? "环境类收口"
-			: event.next_check_disposition === "retry_limit_hold_candidate"
-				? "配额收口"
-				: "铸替换体";
-	return [
-		`[Event #${env.seq}] workflow_replacement_eligibility`,
-		`Stable Event: ${event.workflow_event_id ?? "---"}`,
-		`ID: ${event.execution_id || "---"} | Issue: ${event.issue_identifier || event.issue_id || "---"}`,
-		`引擎最早于 ~${event.next_check_at ?? "未知"} 重新检查(盲换 ${event.blind_replacements ?? 0}/${event.max_blind_replacements ?? 3});若死亡确认与 current-execution fencing 成立,将执行 ${disposition}。`,
-		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
-	].join("\n");
-}
-
-const PATROL_TOKEN_GRAMMAR = /^[A-Za-z0-9._-]{1,64}$/;
-const PATROL_STEP_GRAMMAR = /^[A-Za-z0-9._:-]{1,64}$/;
-const PATROL_DIRECTIVE_WORDS = /check|verify|suggest|inspect|建议|怀疑|该查/iu;
-const PATROL_STATUSES = new Set([
-	"running",
-	"ship_parked",
-	"awaiting_review",
-	"approved_to_ship",
-	"pending",
-	"design_done",
-]);
-const PATROL_LOOP_STATES = new Set([
-	...WORKFLOW_RUN_NODE_STATES,
-	"active",
-	"held",
-	"turn_granted",
-	"wake_delivered",
-	"replacement_pending",
-	"needs_lead",
-	"intent",
-	"partial",
-	"materializing",
-	"awaiting_review",
-	"approved",
-	"grant_started",
-	"receipt_started",
-	"pending",
-	"sent",
-	"stale",
-	"exhausted",
-]);
-const PATROL_LOOP_KINDS = new Set([
-	"rework",
-	"land",
-	"wake",
-	"gate",
-	"carrier",
-]);
-const PATROL_UNKNOWN_REASONS = new Set([
-	"ambiguous_runs",
-	"turn_tuple_moved",
-	"ledger_unreadable:comm_db",
-	"ledger_unreadable:collector",
-	"ledger_unreadable:three_stage_turn",
-	"ledger_unreadable:turn_wait_ledger",
-	"ledger_unreadable:turn_wake_outbox",
-	"ledger_unreadable:workflow_run",
-	"ledger_unreadable:workflow_run_node",
-	"ledger_unreadable:workflow_rework_delivery",
-	"ledger_unreadable:land_operation",
-	"ledger_unreadable:workflow_gate_holder",
-	"ledger_unreadable:sessions",
-]);
-
-function canonicalPatrolToken(value: unknown): string {
-	const text = typeof value === "string" ? value : String(value ?? "");
-	if (PATROL_TOKEN_GRAMMAR.test(text) && !PATROL_DIRECTIVE_WORDS.test(text)) {
-		return text;
-	}
-	return `unsafe-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
-}
-
-function canonicalPatrolStep(value: unknown): string {
-	const text = typeof value === "string" ? value : String(value ?? "");
-	if (PATROL_STEP_GRAMMAR.test(text) && !PATROL_DIRECTIVE_WORDS.test(text)) {
-		return text;
-	}
-	return `unsafe-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
-}
-
-function canonicalPatrolState(value: unknown): string {
-	return PATROL_LOOP_STATES.has(String(value))
-		? String(value)
-		: canonicalPatrolToken(value);
-}
-
-function canonicalUnknownReason(value: unknown): string {
-	const text = String(value);
-	if (PATROL_UNKNOWN_REASONS.has(text)) return text;
-	const livenessMatch = /^process_liveness_unknown:(.*)$/.exec(text);
-	if (livenessMatch) {
-		return `process_liveness_unknown:${canonicalPatrolToken(livenessMatch[1])}`;
-	}
-	return canonicalPatrolToken(value);
-}
-
-function safePatrolInteger(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-		? value
-		: undefined;
-}
-
-function canonicalPatrolTarget(value: unknown): string {
-	if (typeof value === "string") {
-		const match = /^(.*)@(\d+)$/.exec(value);
-		if (match) {
-			const attempt = safePatrolInteger(Number(match[2]));
-			if (attempt !== undefined) {
-				return `${canonicalPatrolToken(match[1])}@${attempt}`;
-			}
-		}
-	}
-	return canonicalPatrolToken(value);
-}
-
-function legacyPatrolBody(
-	roster: Array<{
-		identifier: string;
-		sessionRole: string;
-		status: string;
-		executionId8: string;
-	}>,
-): string {
-	return [
-		"[patrol_tick] 巡检时间到。",
-		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
-		...roster.map(
-			(item) =>
-				`- ${item.identifier} [${item.executionId8}] (${item.sessionRole}, ${item.status})`,
-		),
-	].join("\n");
-}
-
-function renderOpenLoop(loop: PatrolLoopEntry["openLoops"][number]): string {
-	const kind = PATROL_LOOP_KINDS.has(String(loop.kind))
-		? String(loop.kind)
-		: canonicalPatrolToken(loop.kind);
-	const state = canonicalPatrolState(loop.state);
-	const target = loop.target ? canonicalPatrolTarget(loop.target) : undefined;
-	const step = loop.step ? canonicalPatrolStep(loop.step) : undefined;
-	if (kind === "rework" || kind === "wake") {
-		return `${kind}:${state}${target ? `→${target}` : ""}`;
-	}
-	if (kind === "land") return `${kind}:${state}${step ? `@${step}` : ""}`;
-	return `${kind}:${state}`;
-}
-
-function renderLoopGroup(
-	loop: PatrolLoopEntry,
-	roster: Array<{
-		sessionRole: string;
-		status: string;
-		executionId8: string;
-	}>,
-): string[] {
-	const openLoops = Array.isArray(loop.openLoops) ? loop.openLoops : [];
-	const identifier = canonicalPatrolToken(loop.identifier);
-	const runId = loop.runId8 ? canonicalPatrolToken(loop.runId8) : undefined;
-	const runStatus = loop.runStatus
-		? canonicalPatrolState(loop.runStatus)
-		: undefined;
-	const currentNode = loop.currentNode
-		? canonicalPatrolToken(loop.currentNode)
-		: undefined;
-	const currentAttempt = safePatrolInteger(loop.currentAttempt);
-	const currentState = loop.currentAttemptState
-		? canonicalPatrolState(loop.currentAttemptState)
-		: undefined;
-	const turnHolder = loop.turnHolderExecId8
-		? canonicalPatrolToken(loop.turnHolderExecId8)
-		: undefined;
-	const turnPhase = loop.turnPhase
-		? canonicalPatrolToken(loop.turnPhase)
-		: undefined;
-	const turnEpoch = safePatrolInteger(loop.turnEpoch);
-	const processes = Array.isArray(loop.processes)
-		? loop.processes.filter(
-				(process) =>
-					process != null &&
-					(process.state === "alive" ||
-						process.state === "dead" ||
-						process.state === "unknown"),
-			)
-		: [];
-	const processStateFor = (executionId8: string): string | undefined =>
-		processes.find(
-			(process) => canonicalPatrolToken(process.executionId8) === executionId8,
-		)?.state;
-	const header: string[] = [identifier];
-	if (runId && runStatus) {
-		let runText = `run=${runId}(${runStatus})`;
-		if (currentNode && currentAttempt !== undefined && currentState) {
-			runText += ` node=${currentNode}@${currentAttempt}(${currentState})`;
-		}
-		header.push(runText);
-	}
-	if (turnHolder && turnPhase && turnEpoch !== undefined) {
-		header.push(`棒=${turnHolder}/${turnPhase}/e${turnEpoch}`);
-		const holderLiveness = processStateFor(turnHolder);
-		if (holderLiveness) header.push(`现场=${holderLiveness}`);
-	}
-	if (loop.light === "unknown") {
-		header.push(
-			`圈=⚠️ 账面不可读(${canonicalUnknownReason(loop.unknownReason)})`,
-		);
-	} else if (openLoops.length === 0) {
-		header.push("圈=无");
-	} else {
-		const rendered = openLoops.slice(0, 3).map(renderOpenLoop);
-		const more = openLoops.length - rendered.length;
-		header.push(`圈=${rendered.join(",")}${more > 0 ? ` +${more} more` : ""}`);
-	}
-	header.push(
-		loop.light === "red" ? "🔴" : loop.light === "unknown" ? "⚠️" : "—",
-	);
-	const warnings = Array.isArray(loop.displayWarnings)
-		? loop.displayWarnings.filter((warning) => warning === "parked_unavailable")
-		: [];
-	if (warnings.length > 0) header.push("(parked 显示不可用)");
-
-	const waiters = Array.isArray(loop.waiters) ? loop.waiters : [];
-	const sessionLines = roster.map((session) => {
-		const suffixes: string[] = [];
-		const processState = processStateFor(session.executionId8);
-		if (processState) suffixes.push(`现场=${processState}`);
-		for (const waiter of waiters) {
-			if (canonicalPatrolToken(waiter.executionId8) !== session.executionId8) {
-				continue;
-			}
-			if (waiter.kind === "turn-poll") {
-				const age = safePatrolInteger(waiter.waitedMinutes);
-				suffixes.push(
-					age === undefined
-						? "等待账=turn-poll"
-						: `等待账=turn-poll(账龄${age}m)`,
-				);
-			} else if (waiter.kind === "turn-poll-stale") {
-				suffixes.push("等待账=turn-poll-stale");
-			} else if (waiter.kind === "parked") {
-				suffixes.push("声明=parked");
-			}
-		}
-		return `  - [${session.executionId8}] (${session.sessionRole}, ${session.status})${suffixes.length > 0 ? ` ${suffixes.join(" ")}` : ""}`;
-	});
-	return [header.join(" | "), ...sessionLines];
-}
-
-/** Founder-fixed body: alarm + Bridge roster claim, with zero judgment/action. */
-export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
-	const rawRoster = Array.isArray(env.event.roster) ? env.event.roster : [];
-	const roster = rawRoster.map((item) => ({
-		issueId: typeof item?.issueId === "string" ? item.issueId : undefined,
-		identifier: canonicalPatrolToken(item?.identifier),
-		sessionRole: canonicalPatrolToken(item?.sessionRole),
-		status: PATROL_STATUSES.has(item?.status)
-			? item.status
-			: canonicalPatrolToken(item?.status),
-		executionId8: canonicalPatrolToken(item?.executionId8),
-	}));
-	const loops = Array.isArray(env.event.loops)
-		? env.event.loops.filter(
-				(loop): loop is PatrolLoopEntry =>
-					loop != null && typeof loop === "object",
-			)
-		: [];
-	const loopsByIssue = new Map(loops.map((loop) => [loop.issueId, loop]));
-	if (
-		loops.length === 0 ||
-		roster.some(
-			(session) => !session.issueId || !loopsByIssue.has(session.issueId),
-		)
-	) {
-		return legacyPatrolBody(roster);
-	}
-
-	const redLoops = loops.filter((loop) => loop.light === "red");
-	type RedEvidence = { kind: "holder" | "waiter"; line: string };
-	const redEvidence = redLoops.flatMap<RedEvidence>((loop) => {
-		const holder = loop.turnHolderExecId8
-			? canonicalPatrolToken(loop.turnHolderExecId8)
-			: "—";
-		const runStatus =
-			loop.runStatus === "active" || loop.runStatus === "held"
-				? loop.runStatus
-				: undefined;
-		if (loop.redCause && runStatus && loop.turnHolderExecId8) {
-			if (loop.redCause.kind === "holder_process_dead") {
-				return [
-					{
-						kind: "holder" as const,
-						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 的现场探针=dead,run 仍 ${runStatus}`,
-					},
-				];
-			}
-			if (loop.redCause.kind === "holder_terminal_attempt") {
-				const attempt = safePatrolInteger(loop.redCause.attempt);
-				if (attempt === undefined) return [];
-				return [
-					{
-						kind: "holder" as const,
-						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 的当前 attempt ${canonicalPatrolToken(loop.redCause.nodeId)}@${attempt} 已终态(${canonicalPatrolState(loop.redCause.state)}),run 仍 ${runStatus}`,
-					},
-				];
-			}
-			if (loop.redCause.kind === "holder_terminal_session") {
-				return [
-					{
-						kind: "holder" as const,
-						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 的 session 已终态(${canonicalPatrolToken(loop.redCause.status)}),run 仍 ${runStatus}`,
-					},
-				];
-			}
-			if (loop.redCause.kind === "holder_parked") {
-				return [
-					{
-						kind: "holder" as const,
-						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 在册且声明=parked,run 仍 ${runStatus}`,
-					},
-				];
-			}
-		}
-		const waiter = (Array.isArray(loop.waiters) ? loop.waiters : [])
-			.filter((candidate) => {
-				return (
-					candidate.kind === "turn-poll" &&
-					candidate.redQualified === true &&
-					safePatrolInteger(candidate.waitedMinutes) !== undefined &&
-					canonicalPatrolToken(candidate.executionId8) !== holder
-				);
-			})
-			.sort(
-				(left, right) =>
-					(safePatrolInteger(right.waitedMinutes) ?? 0) -
-					(safePatrolInteger(left.waitedMinutes) ?? 0),
-			)[0];
-		if (!waiter) return [];
-		const phase = loop.turnPhase ? canonicalPatrolToken(loop.turnPhase) : "—";
-		const epoch = safePatrolInteger(loop.turnEpoch);
-		return [
-			{
-				kind: "waiter" as const,
-				line: `- ${canonicalPatrolToken(loop.identifier)}: ${canonicalPatrolToken(waiter.executionId8)} TURN 等待账记录账龄 ${safePatrolInteger(waiter.waitedMinutes)} 分钟(棒=${holder}/${phase}/e${epoch ?? "—"}),账上没有任何可证在推进、会向它发棒的 attempt/返工/land/wake/gate`,
-			},
-		];
-	});
-	const redEvidenceLines = redEvidence.map((evidence) => evidence.line);
-	const hasHolderEvidence = redEvidence.some(
-		(evidence) => evidence.kind === "holder",
-	);
-	const hasWaiterEvidence = redEvidence.some(
-		(evidence) => evidence.kind === "waiter",
-	);
-	const redHeadline =
-		hasHolderEvidence && hasWaiterEvidence
-			? "棒持有者不在干活 / 有人在等不存在的圈"
-			: hasHolderEvidence
-				? "棒持有者不在干活"
-				: "有人在等不存在的圈";
-	const redLines = redEvidenceLines.slice(0, 5);
-	const summary =
-		redEvidenceLines.length === 0
-			? []
-			: [
-					`🔴 按账面有 ${redEvidenceLines.length} 个 issue「${redHeadline}」(账面自检,非结论,仍需独立核验):`,
-					...redLines,
-					...(redEvidenceLines.length > 5
-						? [`(+${redEvidenceLines.length - 5} more 🔴)`]
-						: []),
-				];
-	const issueOrder = [
-		...new Set(roster.map((session) => session.issueId).filter(Boolean)),
-	] as string[];
-	const groupLines = issueOrder.flatMap((issueId) => {
-		const loop = loopsByIssue.get(issueId);
-		if (!loop) return [];
-		return renderLoopGroup(
-			loop,
-			roster
-				.filter((session) => session.issueId === issueId)
-				.map(({ sessionRole, status, executionId8 }) => ({
-					sessionRole,
-					status,
-					executionId8,
-				})),
-		);
-	});
-	return [
-		"[patrol_tick] 巡检时间到。",
-		...summary,
-		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
-		...groupLines,
-	].join("\n");
 }
 
 const STUCK_TAIL_MAX_LINES = 8;
@@ -722,7 +215,7 @@ export function formatStuckEscalation(
 		`ID: ${e.execution_id || "—"} | Issue: ${issueRef}`,
 		`STUCK candidate: output unchanged for ${e.stuck_minutes ?? "?"} min while status=${e.status ?? "running"} — judge and re-manage (candidate, NOT a verdict).`,
 		`Episode-Fingerprint: ${e.episode_fingerprint ?? "(missing)"}`,
-		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your detection-ack / recovery-nudge call)',
+		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your stuck-disposition / recovery-nudge call)',
 		`Evidence: input_box_present=${e.input_box_present ?? "?"} | stream_error_signature=${e.stream_error_signature ?? "?"}`,
 	];
 	// FLY-1048 (A3): the error-signature KIND behind a repeated-signature
@@ -734,9 +227,9 @@ export function formatStuckEscalation(
 	if (e.terminal_tail) {
 		const tailLines = e.terminal_tail.split("\n").slice(-STUCK_TAIL_MAX_LINES);
 		let tail = tailLines.join("\n");
-		// FLY-1586 C: negative-direction cut — `.slice(-N)` splits a pair at the
-		// LEADING edge. A `.slice(0, N)` grep cannot even find this one.
-		tail = truncateCodePointsFromEnd(tail, STUCK_TAIL_MAX_CHARS).text;
+		if (tail.length > STUCK_TAIL_MAX_CHARS) {
+			tail = tail.slice(-STUCK_TAIL_MAX_CHARS);
+		}
 		lines.push(
 			"--- terminal tail (truncated; capture live before acting) ---",
 			tail,
@@ -775,11 +268,8 @@ export function formatSessionStuck(env: StuckEscalationEnvelopeLike): string {
 	if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
 	if (e.status) lines.push(`Status: ${e.status}`);
 	if (e.decision_route) lines.push(`Route: ${e.decision_route}`);
-	// FLY-1586 C: shared session-stuck renderer — both runtimes reach it.
-	if (e.summary)
-		lines.push(`Summary: ${truncateCodePoints(e.summary, 300).text}`);
-	if (e.last_error)
-		lines.push(`Error: ${truncateCodePoints(e.last_error, 200).text}`);
+	if (e.summary) lines.push(`Summary: ${e.summary.slice(0, 300)}`);
+	if (e.last_error) lines.push(`Error: ${e.last_error.slice(0, 200)}`);
 	if (e.action) {
 		lines.push(
 			`Action: ${e.action} (${e.action_source_status} → ${e.action_target_status})`,
@@ -929,10 +419,7 @@ export function formatDetectionEscalation(
 	return [
 		`[Event #${env.seq}] detection_escalation`,
 		`Issue: ${label} | Target: ${e.detection_target_key ?? "—"} | Project: ${e.project_name ?? "—"}`,
-		...(e.waited_ms == null
-			? []
-			: [`Waited: ${formatDurationMs(e.waited_ms)}`]),
-		`[ESCALATION] Detected: ${e.escalation_kind ?? "?"} — you are the first responder (PRD §4.5):`,
+		`[ESCALATION] Watchdog detected: ${e.escalation_kind ?? "?"} — you are the first responder (PRD §4.5):`,
 		"---",
 		e.escalation_reason ?? "(no reason captured)",
 		"---",
@@ -950,7 +437,7 @@ export function formatDetectionSuspicious(
 	const lines = [
 		`[Event #${env.seq}] detection_suspicious`,
 		`Target: ${e.detection_target_kind ?? "?"} ${e.detection_target_key ?? "—"} | Project: ${e.project_name ?? "—"}`,
-		"[SUSPICIOUS] Quiet FYI — mechanical detection could not conclude working/parked/stuck:",
+		"[SUSPICIOUS] Watchdog quiet FYI — mechanical detection could not conclude working/parked/stuck:",
 		"---",
 		e.suspicious_reason ?? "(no reason captured)",
 		"---",
@@ -958,7 +445,7 @@ export function formatDetectionSuspicious(
 	if (e.suspicious_pane_tail) {
 		lines.push(
 			"Pane tail (▏-quoted; never share the quoted pane lines outside this inbox — not in threads, never to the founder):",
-			truncateCodePoints(e.suspicious_pane_tail, 2_000).text,
+			e.suspicious_pane_tail.slice(0, 2_000),
 			"---",
 		);
 	}

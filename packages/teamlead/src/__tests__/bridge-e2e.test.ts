@@ -10,7 +10,6 @@ import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { insertHistoricalAutoQaRecord } from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -154,22 +153,6 @@ describe("Bridge E2E lifecycle", () => {
 		});
 		expect(completeRes.status).toBe(200);
 		expect(store.getSession("exec-e2e")!.status).toBe("awaiting_review");
-		// FLY-1251: approval fixtures may not bypass the production PR/QA
-		// evidence guard. This code-bearing lifecycle has passing exact-head QA.
-		const head = "a".repeat(40);
-		store.patchSessionMetadata("exec-e2e", {
-			pr_head_sha: head,
-			pr_number: 95,
-			codex_skip: 1,
-		});
-		insertHistoricalAutoQaRecord(store, {
-			parentExecutionId: "exec-e2e",
-			targetPrHeadSha: head,
-			issueId: "issue-e2e",
-			projectName: "geoforge3d",
-			status: "passed",
-			verdictEventId: "qa-pass-e2e",
-		});
 
 		// 3. GET /api/sessions → active sessions include our session
 		const activeRes = await fetch(`${baseUrl}/api/sessions`);

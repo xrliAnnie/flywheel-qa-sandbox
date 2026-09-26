@@ -19,30 +19,12 @@ import {
 import { resolveCommBackend } from "flywheel-config";
 import type { CommDB } from "./db.js";
 
-export type RunnerWakeBackend = "claude-code" | "codex";
-export type RunnerWakeSettlement = "on_delivery" | "on_consume";
-/** One verified retry at T+3m; shared with the Bridge outbox patrol. */
-export const TURN_WAKE_RETRY_AFTER_MS = 3 * 60_000;
-export type WakeResult =
-	| {
-			ok: true;
-			backend: RunnerWakeBackend;
-			settlement: RunnerWakeSettlement;
-	  }
-	| {
-			ok: false;
-			/** Set when the wake was intentionally skipped (not an error). */
-			skippedReason?: "backend_commdb" | "no_session_lead";
-			/** Set when the transport write failed (best-effort — caller already has the durable CommDB record). */
-			error?: string;
-	  };
-
-function successfulWake(backend: RunnerWakeBackend): WakeResult {
-	return {
-		ok: true,
-		backend,
-		settlement: backend === "claude-code" ? "on_delivery" : "on_consume",
-	};
+export interface WakeResult {
+	ok: boolean;
+	/** Set when the wake was intentionally skipped (not an error). */
+	skippedReason?: "backend_commdb" | "no_session_lead";
+	/** Set when the transport write failed (best-effort — caller already has the durable CommDB record). */
+	error?: string;
 }
 
 export interface WakeRunnerArgs {
@@ -66,29 +48,10 @@ export interface WakeRunnerArgs {
 	 * behavior (claude approve_to_ship path, byte-compat).
 	 */
 	backend?: string;
-	/** T1 retry path: verify the durable mailbox entry after write. */
-	verified?: boolean;
 	/** Injectable for tests. */
 	transportFactory?: (
 		backend: "claude-code" | "codex",
-	) => Pick<ReturnType<typeof AgentTeamTransportFactory.forBackend>, "write"> &
-		Partial<
-			Pick<
-				ReturnType<typeof AgentTeamTransportFactory.forBackend>,
-				"verifyLastWrite"
-			>
-		>;
-}
-
-export interface DurableTurnWakeArgs extends WakeRunnerArgs {
-	wakeId: string;
-	issueId: string;
-	epoch: number;
-	activationId?: string;
-	purpose: string;
-	nowMs?: number;
-	retryAfterMs?: number;
-	leaseMs?: number;
+	) => Pick<ReturnType<typeof AgentTeamTransportFactory.forBackend>, "write">;
 }
 
 export async function wakeRunnerMailbox(
@@ -119,14 +82,7 @@ export async function wakeRunnerMailbox(
 		let transport: Pick<
 			ReturnType<typeof AgentTeamTransportFactory.forBackend>,
 			"write"
-		> &
-			Partial<
-				Pick<
-					ReturnType<typeof AgentTeamTransportFactory.forBackend>,
-					"verifyLastWrite"
-				>
-			>;
-		let actualBackend: RunnerWakeBackend;
+		>;
 		if (args.backend !== undefined) {
 			if (args.backend !== "claude-code" && args.backend !== "codex") {
 				return {
@@ -137,117 +93,24 @@ export async function wakeRunnerMailbox(
 			transport = (
 				args.transportFactory ?? AgentTeamTransportFactory.forBackend
 			)(args.backend);
-			actualBackend = args.backend;
 		} else {
-			const selected = AgentTeamTransportFactory.fromEnv();
-			const vendor = selected.vendorId();
-			if (vendor !== "claude-code" && vendor !== "codex") {
-				return {
-					ok: false,
-					error: `unsupported wake transport backend "${vendor}" (expected "claude-code" | "codex")`,
-				};
-			}
-			transport = selected;
-			actualBackend = vendor;
+			transport = AgentTeamTransportFactory.fromEnv();
 		}
-		const payload = {
-			from: args.fromAgent,
-			to: agentName,
-			content: args.content,
-			metadata: args.metadata,
-		};
-		const writeResult = await transport.write({
+		await transport.write({
 			// leadName === teamName === leadId: each Lead owns one team named
 			// after itself; the Runner inbox lives at
 			// teams/<leadId>/inboxes/<agentName>.json.
 			leadName: teamName,
 			recipient: agentName,
-			payload,
+			payload: {
+				from: args.fromAgent,
+				to: agentName,
+				content: args.content,
+				metadata: args.metadata,
+			},
 		});
-		if (
-			args.verified &&
-			!(writeResult.idempotent && writeResult.finalized === true)
-		) {
-			if (!transport.verifyLastWrite) {
-				throw new Error("wake transport does not support verified writes");
-			}
-			await transport.verifyLastWrite({
-				leadName: teamName,
-				recipient: agentName,
-				expected: payload,
-			});
-		}
-		return successfulWake(actualBackend);
+		return { ok: true };
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
 	}
-}
-
-/**
- * Persist a TURN wake before transport I/O. Replays use the same wake id and
- * can perform at most one T1 retry; the retry is verified read-after-write.
- */
-export async function deliverDurableTurnWake(
-	args: DurableTurnWakeArgs,
-): Promise<WakeResult> {
-	const nowMs = args.nowMs ?? Date.now();
-	const retryAfterMs = args.retryAfterMs ?? TURN_WAKE_RETRY_AFTER_MS;
-	const leaseMs = args.leaseMs ?? 30_000;
-	args.db.enqueueTurnWake({
-		wakeId: args.wakeId,
-		executionId: args.execId,
-		issueId: args.issueId,
-		epoch: args.epoch,
-		...(args.activationId ? { activationId: args.activationId } : {}),
-		purpose: args.purpose,
-		envelope: {
-			fromAgent: args.fromAgent,
-			content: args.content,
-			...(args.metadata ? { metadata: args.metadata } : {}),
-		},
-		backend: args.backend ?? "claude-code",
-		createdAtMs: nowMs,
-	});
-	const claim = args.db.claimTurnWakeById({
-		wakeId: args.wakeId,
-		nowMs,
-		retryAfterMs,
-		leaseMs,
-	});
-	if (!claim) {
-		const row = args.db.getTurnWake(args.wakeId);
-		if (row?.state === "acked" || row?.last_push_result === "ok") {
-			if (row.backend === "claude-code" || row.backend === "codex") {
-				return successfulWake(row.backend);
-			}
-			return { ok: false, error: `unsupported wake backend:${row.backend}` };
-		}
-		return {
-			ok: false,
-			error:
-				row?.state === "cancelled"
-					? `wake_cancelled:${row.cancel_reason ?? "unknown"}`
-					: (row?.last_push_result?.replace(/^error:/, "") ??
-						"wake_pending_retry"),
-		};
-	}
-	const outcome = await wakeRunnerMailbox({
-		db: args.db,
-		execId: args.execId,
-		fromAgent: args.fromAgent,
-		content: args.content,
-		metadata: args.metadata,
-		backend: args.backend,
-		verified: claim.push_count === 1,
-		transportFactory: args.transportFactory,
-	});
-	args.db.finishTurnWakePush({
-		wakeId: args.wakeId,
-		claimToken: claim.claim_token!,
-		pushedAtMs: nowMs,
-		result: outcome.ok
-			? "ok"
-			: `error:${outcome.error ?? outcome.skippedReason ?? "wake_failed"}`,
-	});
-	return outcome;
 }

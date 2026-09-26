@@ -17,10 +17,7 @@
  *   count without wiring Discord/fetch stubs.
  * - transitionOpts is wired so FSM transitions happen; post-ship gate runs.
  */
-import { mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -30,7 +27,6 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 // Mock post-ship-finalization. Keep isPostApproveShipComplete real so the
 // gate logic matches production; only runPostShipFinalization is spied.
@@ -81,7 +77,6 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let transitionOpts: ApplyTransitionOpts;
-	let stateRoot: string;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -89,12 +84,12 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	};
 
 	beforeEach(async () => {
-		// FLY-869: these FSM-mapping tests bypass merge approval. Their sessions
-		// carry a durable QA exemption instead of relying on a process switch.
-		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0"); // retired input is ignored
+		// FLY-869: these FSM-mapping tests bypass the new merge/QA ship gates (the
+		// approval gate is covered by ship-eligibility + dedicated integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		runPostShipSpy.mockClear();
-		stateRoot = mkdtempSync(join(tmpdir(), "fly108-dual-"));
-		store = await StateStore.create(join(stateRoot, "teamlead.db"));
+		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		transitionOpts = { store, fsm, executor };
@@ -113,12 +108,12 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	});
 
 	afterEach(async () => {
-		vi.unstubAllEnvs();
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
-		rmSync(stateRoot, { recursive: true, force: true });
 	});
 
 	async function postEvent(body: Record<string, unknown>) {
@@ -127,22 +122,6 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			headers: ingestHeaders,
 			body: JSON.stringify(body),
 		});
-		if (body.event_type === "session_started") {
-			const executionId = String(body.execution_id);
-			const session = store.getSession(executionId);
-			store.upsertSession({
-				execution_id: executionId,
-				issue_id: session?.issue_id ?? String(body.issue_id),
-				project_name: session?.project_name ?? String(body.project_name),
-				status: session?.status ?? "running",
-				worktree_path: process.cwd(),
-			});
-			setHistoricalQaRequiredSnapshot(store, {
-				executionId,
-				required: 0,
-				reason: "FSM mapping fixture",
-			});
-		}
 		return res;
 	}
 
@@ -190,7 +169,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(approveResult.ok).toBe(true);
 		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
 
-		// 4. A status-only approve has no durable gate evidence, so merge blocks.
+		// 4. session_completed (auto_approve + landingStatus.merged) → completed
 		const mergedRes = await postEvent({
 			event_id: "evtA-merged",
 			execution_id: execId,
@@ -210,8 +189,8 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(mergedRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("awaiting_review");
-		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(store.getSession(execId)!.status).toBe("completed");
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 
 		// 5. Second session_completed with NEW event_id from terminal state
 		// → FSM rejects completed→completed, no second call. (In prod, Runner
@@ -235,7 +214,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(dupRes.status).toBe(200);
-		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 	});
 
 	// FLY-115 v1.24.5 (FLY-120): production approve path uses `flywheel-comm
@@ -290,8 +269,8 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(mergedRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("awaiting_review");
-		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(store.getSession(execId)!.status).toBe("completed");
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 	});
 
 	// FLY-115 v1.24.5 (Codex R2 HIGH regression guard): the natural completion
@@ -412,8 +391,8 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(completeRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("awaiting_review");
-		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(store.getSession(execId)!.status).toBe("completed");
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("Scenario D3 (FLY-208 5a): approved_to_ship + route=needs_review + NOT merged → completed with evidence-gap (no FSM reject, no finalization)", async () => {
@@ -470,13 +449,23 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(d3Params.fly208_evidence_gap?.landing_status).toBe("ready_to_merge");
 	});
 
-	// FLY-1505: the explicit failed-attempt route preserves the live founder
-	// approval and leaves durable per-approval/head recovery evidence. The repeat
-	// uses the legacy blocked route to pin backward-compatible deflection.
-	it("Scenario E (FLY-1505): explicit ship_attempt_failed settles durably and legacy blocked stays compatible", async () => {
+	// FLY-115 v1.24.5 (Codex R3 HIGH regression guard): the pre-R3 status
+	// mapping had `if (isPostApproveShip)` before the route checks, which
+	// incorrectly mapped `approved_to_ship + route="blocked"` (ship failed)
+	// to `completed` and ran post-ship cleanup on a failure. Mirrors
+	// DirectEventSink.test.ts:798-820 ("does NOT trigger finalization when
+	// approved_to_ship → blocked (ship failed)"). With the R3 fix the
+	// route="blocked" branch wins, status mapping resolves to "blocked",
+	// the FSM rejects approved_to_ship → blocked (only `completed`/`failed`/
+	// `terminated` are allowed transitions out of approved_to_ship per
+	// workflow-fsm.ts:131), `transitionRejected` is set, and the
+	// post-ship-finalization gate's `!transitionRejected` guard keeps
+	// `runPostShipFinalization` from firing. Pre-R3 the mapping resolved to
+	// "completed" which the FSM accepted, and the cleanup ran on a failed
+	// ship — that's the bug this scenario locks down.
+	it("Scenario E (Codex R3): approved_to_ship + route=blocked → no post-ship", async () => {
 		const execId = "exec-scenarioE";
 		const issueId = "issue-scenarioE";
-		const head = "e".repeat(40);
 
 		// 1. session_started → running.
 		const startRes = await postEvent({
@@ -503,11 +492,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(needsRes.status).toBe(200);
 		expect(store.getSession(execId)!.status).toBe("awaiting_review");
 
-		// 3. Bind the actual review gate + head, then approve.
-		store.setReviewBinding(execId, {
-			questionId: "11111111-1111-1111-1111-111111111111",
-			prHeadSha: head,
-		});
+		// 3. approve action → approved_to_ship.
 		const approveResult = applyTransition(
 			transitionOpts,
 			execId,
@@ -523,7 +508,16 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
 		expect(runPostShipSpy).not.toHaveBeenCalled();
 
-		// 4. Runner reports ship FAILED via the explicit non-terminal route.
+		// 4. Runner reports ship FAILED via session_completed with
+		//    route="blocked". The R3 fix routes through the `route==="blocked"`
+		//    branch (status="blocked") instead of the natural-completion
+		//    fallback. FLY-208 5a: the FSM now ALLOWS approved_to_ship →
+		//    blocked (the missing edge was the same stuck-state family as the
+		//    LEARN-12 incident — the rejection used to leave the session in
+		//    approved_to_ship forever with close_runner protecting it). The
+		//    regression guard stands: failed ship must NEVER trigger Runner
+		//    tmux teardown / chat thread archive — now via status="blocked"
+		//    (≠ completed) gating finalization out, not via an FSM rejection.
 		const blockedRes = await postEvent({
 			event_id: "evtE-blocked",
 			execution_id: execId,
@@ -531,51 +525,17 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			project_name: "geoforge3d",
 			event_type: "session_completed",
 			payload: {
-				decision: {
-					route: "ship_attempt_failed",
-					reasoning: "ship gate failed",
-				},
-				summary: "ship workflow still in progress",
-				evidence: { headSha: head },
+				decision: { route: "blocked", reasoning: "ship gate failed" },
+				evidence: {},
 			},
 		});
 		expect(blockedRes.status).toBe(200);
-		expect(await blockedRes.json()).toMatchObject({
-			ok: true,
-			warning: expect.stringContaining("approved_to_ship preserved"),
-		});
-		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
+		// FLY-208: ship failure lands in "blocked" (human-unblockable:
+		// deferred/shelved/terminated exits) instead of being silently
+		// swallowed by an FSM rejection.
+		expect(store.getSession(execId)!.status).toBe("blocked");
+		// Failed ship still never triggers finalization.
 		expect(runPostShipSpy).not.toHaveBeenCalled();
-		expect(store.getSessionParams(execId)).toMatchObject({
-			fly1505_ship_attempt_failed: {
-				head_sha: head,
-				attempt_count: 1,
-				summary: "ship workflow still in progress",
-			},
-		});
-
-		// A distinct emission is settled again without changing the session.
-		const repeatRes = await postEvent({
-			event_id: "evtE-blocked-repeat",
-			execution_id: execId,
-			issue_id: issueId,
-			project_name: "geoforge3d",
-			event_type: "session_completed",
-			payload: {
-				decision: { route: "blocked", reasoning: "repeat" },
-				summary: "repeat blocked completion",
-				evidence: { headSha: head },
-			},
-		});
-		expect(repeatRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
-		expect(store.getSessionParams(execId)).toMatchObject({
-			fly1505_ship_attempt_failed: {
-				head_sha: head,
-				attempt_count: 2,
-				summary: "repeat blocked completion",
-			},
-		});
 	});
 
 	it("Scenario B: docs-only compressed pipeline — running → completed fires post-ship once", async () => {
@@ -614,7 +574,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(mergedRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("awaiting_review");
-		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(store.getSession(execId)!.status).toBe("completed");
+		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 	});
 });

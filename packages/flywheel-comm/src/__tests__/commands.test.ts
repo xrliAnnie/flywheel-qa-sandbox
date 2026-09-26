@@ -1,38 +1,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ask } from "../commands/ask.js";
 import { capture } from "../commands/capture.js";
 import { check } from "../commands/check.js";
 import { cleanupMessages } from "../commands/cleanup-messages.js";
-import { inbox, renderInboxInstruction } from "../commands/inbox.js";
+import { inbox } from "../commands/inbox.js";
 import { pending } from "../commands/pending.js";
-import {
-	type RespondArgs,
-	respond as rawRespond,
-} from "../commands/respond.js";
-import { send as rawSend, type SendArgs } from "../commands/send.js";
+import { respond } from "../commands/respond.js";
+import { send } from "../commands/send.js";
 import { sessions } from "../commands/sessions.js";
 import { CommDB } from "../db.js";
-import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
-
-let identityEnvs: Record<string, NodeJS.ProcessEnv> = {};
-
-function respond(args: RespondArgs): Promise<void> {
-	return rawRespond({
-		...args,
-		env: { ...identityEnvs[args.fromAgent], ...args.env },
-	});
-}
-
-function send(args: SendArgs): Promise<string> {
-	return rawSend({
-		...args,
-		env: { ...identityEnvs[args.fromAgent], ...args.env },
-	});
-}
 
 describe("commands round-trip", () => {
 	let tmpDir: string;
@@ -41,24 +20,13 @@ describe("commands round-trip", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-cmd-"));
 		dbPath = join(tmpDir, "comm.db");
-		identityEnvs = createTestLeadIdentityEnvs(tmpDir, [
-			"product-lead",
-			"ops-lead",
-		]);
 	});
 
 	afterEach(() => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	function bindRunner(execId: string, leadId: string): void {
-		const db = new CommDB(dbPath);
-		db.registerSession(execId, "runner", "test", `issue-${execId}`, leadId);
-		db.close();
-	}
-
-	it("should complete a full ask → pending → respond → check cycle", async () => {
-		bindRunner("exec-123", "product-lead");
+	it("should complete a full ask → pending → respond → check cycle", () => {
 		// Runner asks a question
 		const questionId = ask({
 			lead: "product-lead",
@@ -81,7 +49,7 @@ describe("commands round-trip", () => {
 		expect(pendingQs[0]!.content).toBe("Should I use REST or GraphQL?");
 
 		// Lead responds
-		await respond({
+		respond({
 			questionId,
 			fromAgent: "product-lead",
 			answer: "Use REST for simplicity.",
@@ -97,43 +65,7 @@ describe("commands round-trip", () => {
 		expect(pending({ lead: "product-lead", dbPath })).toHaveLength(0);
 	});
 
-	it("only the explicitly matching runner consumes a gate response", async () => {
-		bindRunner("exec-owner", "product-lead");
-		const questionId = ask({
-			lead: "product-lead",
-			execId: "exec-owner",
-			question: "Ship?",
-			dbPath,
-		});
-		await respond({
-			questionId,
-			fromAgent: "product-lead",
-			answer: "yes",
-			dbPath,
-		});
-
-		expect(check({ questionId, dbPath }).content).toBe("yes");
-		let db = new CommDB(dbPath, false);
-		expect(db.getResponse(questionId)?.delivered_at).toBeNull();
-		db.close();
-
-		expect(
-			check({ questionId, dbPath, executionId: "exec-observer" }).content,
-		).toBe("yes");
-		db = new CommDB(dbPath, false);
-		expect(db.getResponse(questionId)?.delivered_at).toBeNull();
-		db.close();
-
-		expect(
-			check({ questionId, dbPath, executionId: "exec-owner" }).content,
-		).toBe("yes");
-		db = new CommDB(dbPath, false);
-		expect(db.getResponse(questionId)?.delivered_at).not.toBeNull();
-		db.close();
-	});
-
-	it("should handle multiple runners asking different leads", async () => {
-		bindRunner("runner", "product-lead");
+	it("should handle multiple runners asking different leads", () => {
 		const q1 = ask({
 			lead: "product-lead",
 			question: "Q1 from runner-1",
@@ -153,7 +85,7 @@ describe("commands round-trip", () => {
 		expect(pending({ lead: "product-lead", dbPath })).toHaveLength(2);
 		expect(pending({ lead: "ops-lead", dbPath })).toHaveLength(1);
 
-		await respond({
+		respond({
 			questionId: q1,
 			fromAgent: "product-lead",
 			answer: "A1",
@@ -171,23 +103,6 @@ describe("commands round-trip", () => {
 
 		const pendingQs = pending({ lead: "product-lead", dbPath });
 		expect(pendingQs[0]!.from_agent).toBe("runner");
-	});
-
-	it("persists a queue-native UTC deadline on an ask", () => {
-		const deadlineAt = "2026-07-20T08:30:00.000Z";
-		const questionId = ask({
-			lead: "product-lead",
-			execId: "exec-deadline",
-			question: "urgent question",
-			dbPath,
-			deadlineAt,
-		});
-		const db = new CommDB(dbPath);
-		try {
-			expect(db.getMessageById(questionId)?.deadline_at).toBe(deadlineAt);
-		} finally {
-			db.close();
-		}
 	});
 
 	it("should throw when responding to non-existent question", async () => {
@@ -210,10 +125,6 @@ describe("send/inbox round-trip", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-sendinbox-"));
 		dbPath = join(tmpDir, "comm.db");
-		identityEnvs = createTestLeadIdentityEnvs(tmpDir, [
-			"product-lead",
-			"ops-lead",
-		]);
 	});
 
 	afterEach(() => {
@@ -253,27 +164,6 @@ describe("send/inbox round-trip", () => {
 		// Second inbox call should return empty
 		const second = inbox({ execId: "exec-123", dbPath });
 		expect(second.instructions).toHaveLength(0);
-	});
-
-	it("renders absolute creation time with a dynamic age at pull", async () => {
-		await send({
-			fromAgent: "product-lead",
-			toAgent: "exec-age",
-			content: "Time-sensitive instruction",
-			dbPath,
-		});
-		const instruction = inbox({ execId: "exec-age", dbPath }).instructions[0]!;
-		const createdAtMs = Date.parse(instruction.created_at);
-
-		const firstPull = renderInboxInstruction(instruction, createdAtMs + 60_000);
-		const laterPull = renderInboxInstruction(
-			instruction,
-			createdAtMs + 11 * 60_000,
-		);
-		expect(firstPull).toContain(`created_at ${instruction.created_at}`);
-		expect(firstPull).toContain("age at pull: 1 minute");
-		expect(laterPull).toContain("age at pull: 11 minutes");
-		expect(laterPull).toContain("Time-sensitive instruction");
 	});
 
 	it("should isolate instructions per runner", async () => {
@@ -449,7 +339,7 @@ describe("cleanup-messages command", () => {
 		db.markInstructionRead(instId);
 		(db as any).db
 			.prepare(
-				"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
+				"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
 			)
 			.run(instId);
 		db.close();
@@ -458,30 +348,24 @@ describe("cleanup-messages command", () => {
 		expect(result.cleaned).toBe(1);
 	});
 
-	it("should respect a custom TTL above the 72-hour retention floor", () => {
+	it("should respect custom TTL", () => {
 		const db = new CommDB(dbPath);
-		const instId = db.insertInstruction(
-			"product-lead",
-			"exec-1",
-			"96h old msg",
-		);
+		const instId = db.insertInstruction("product-lead", "exec-1", "2h old msg");
 		db.markInstructionRead(instId);
 		(db as any).db
 			.prepare(
-				"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-96 hours') WHERE id = ?",
+				"UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE id = ?",
 			)
 			.run(instId);
 		db.close();
 
-		expect(cleanupMessages({ dbPath, ttlHours: 120 }).cleaned).toBe(0);
-		const raw = new Database(dbPath);
-		raw
-			.prepare(
-				"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-121 hours') WHERE id = ?",
-			)
-			.run(instId);
-		raw.close();
-		expect(cleanupMessages({ dbPath, ttlHours: 120 }).cleaned).toBe(1);
+		// 24h TTL: should NOT clean (only 3h old)
+		const result24 = cleanupMessages({ dbPath, ttlHours: 24 });
+		expect(result24.cleaned).toBe(0);
+
+		// 2h TTL: should clean
+		const result2 = cleanupMessages({ dbPath, ttlHours: 2 });
+		expect(result2.cleaned).toBe(1);
 	});
 
 	it("should return 0 when DB does not exist", () => {

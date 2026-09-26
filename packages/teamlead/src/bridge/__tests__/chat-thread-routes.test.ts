@@ -55,7 +55,7 @@ const TEST_PROJECT: ProjectEntry = {
 			agentId: "lead-beta",
 			chatChannel: "ch-200",
 			match: { labels: ["beta"] },
-			// no botToken — Lead-attributed routes must fail loud
+			// no botToken — should fall back to global
 		},
 		{
 			// FLY-369: a second lead used to verify the archive endpoint resolves
@@ -449,10 +449,7 @@ describe("chat-thread routes (tools.ts)", () => {
 		it("returns 502 when ChatThreadCreator returns error", async () => {
 			const creator = createFakeCreator(async () => ({
 				created: false,
-				threadId: "root-gone",
-				rootMessageId: "root-gone",
-				errorCode: "canonical_root_gone",
-				error: "Canonical root is gone",
+				error: "Discord 500: Internal Server Error",
 			}));
 			createTestServer({
 				chatThreadsEnabled: true,
@@ -468,12 +465,7 @@ describe("chat-thread routes (tools.ts)", () => {
 				projectName: "TestProject",
 			});
 			expect(res.status).toBe(502);
-			expect(res.body).toEqual({
-				error: "Canonical root is gone",
-				errorCode: "canonical_root_gone",
-				rootMessageId: "root-gone",
-				threadId: "root-gone",
-			});
+			expect((res.body as { error: string }).error).toContain("Discord 500");
 		});
 
 		it("returns 502 when ChatThreadCreator throws", async () => {
@@ -499,7 +491,7 @@ describe("chat-thread routes (tools.ts)", () => {
 			);
 		});
 
-		it("does not let a Lead-attributed route borrow the global bot token", async () => {
+		it("per-lead token fallback to global", async () => {
 			const capturedCtx: ChatThreadContext[] = [];
 			const creator = createFakeCreator(async (ctx) => {
 				capturedCtx.push(ctx);
@@ -518,9 +510,8 @@ describe("chat-thread routes (tools.ts)", () => {
 				leadId: "lead-beta",
 				projectName: "TestProject",
 			});
-			expect(res.status).toBe(503);
-			expect((res.body as { error: string }).error).toMatch(/bot token/i);
-			expect(capturedCtx).toHaveLength(0);
+			expect(res.status).toBe(200);
+			expect(capturedCtx[0].botToken).toBe("global-fallback-token");
 		});
 	});
 
@@ -1025,98 +1016,6 @@ describe("chat-thread routes (tools.ts)", () => {
 			// Fail-fast — only 2 fetches issued
 			expect(mockFetch).toHaveBeenCalledTimes(2);
 		});
-
-		it("returns a typed loud failure when the registered canonical channel is missing", async () => {
-			store.upsertChatThread(
-				"root-gone",
-				"ch-100",
-				"uuid-fly-162",
-				"lead-alpha",
-			);
-			mockFetch.mockResolvedValueOnce({
-				ok: false,
-				status: 404,
-				text: () => Promise.resolve("Unknown Channel"),
-			});
-			const creator = createFakeCreator(async () => ({
-				created: false,
-				threadId: "root-gone",
-				rootMessageId: "root-gone",
-				errorCode: "canonical_root_gone",
-				error: "canonical root is gone",
-			}));
-			createTestServer({
-				chatThreadsEnabled: true,
-				replyByIssueEnabled: true,
-				discordFetch: mockFetch,
-				chatThreadCreator: creator,
-				globalBotToken: "global-token",
-			});
-
-			const res = await request(server, "POST", "/api/chat-threads/send", {
-				issueId: "uuid-fly-162",
-				channelId: "ch-100",
-				leadId: "lead-alpha",
-				projectName: "TestProject",
-				text: "hello",
-			});
-
-			expect(res.status).toBe(502);
-			expect(res.body).toMatchObject({
-				threadId: "root-gone",
-				rootMessageId: "root-gone",
-				errorCode: "canonical_root_gone",
-			});
-		});
-
-		it("re-enters same-root recovery and retries the message when a canonical claim is not a thread yet", async () => {
-			store.upsertChatThread(
-				"root-pending",
-				"ch-100",
-				"uuid-fly-162",
-				"lead-alpha",
-			);
-			const ensureCalls: ChatThreadContext[] = [];
-			const creator = createFakeCreator(async (ctx) => {
-				ensureCalls.push(ctx);
-				return { created: false, threadId: "root-pending" };
-			});
-			mockFetch
-				.mockResolvedValueOnce({
-					ok: false,
-					status: 404,
-					text: () => Promise.resolve("Unknown Channel"),
-				})
-				.mockResolvedValueOnce({
-					ok: true,
-					status: 200,
-					json: () => Promise.resolve({ id: "msg-recovered" }),
-				});
-			createTestServer({
-				chatThreadsEnabled: true,
-				replyByIssueEnabled: true,
-				discordFetch: mockFetch,
-				chatThreadCreator: creator,
-				globalBotToken: "global-token",
-			});
-
-			const res = await request(server, "POST", "/api/chat-threads/send", {
-				issueId: "uuid-fly-162",
-				channelId: "ch-100",
-				leadId: "lead-alpha",
-				projectName: "TestProject",
-				text: "hello after claim",
-			});
-
-			expect(res.status).toBe(200);
-			expect(res.body).toEqual({
-				threadId: "root-pending",
-				messageIds: ["msg-recovered"],
-				created: false,
-			});
-			expect(ensureCalls).toHaveLength(1);
-			expect(mockFetch).toHaveBeenCalledTimes(2);
-		});
 	});
 
 	// ─── GET /api/chat-threads/by-thread/:threadId (FLY-162 P3) ───
@@ -1446,19 +1345,9 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
-		it("archive-once: local archived_at delegates to the sink and reports verified Discord state", async () => {
+		it("archive-once: already-archived thread is a no-op (respects a Discord re-open)", async () => {
 			store.upsertChatThread("t-arch", "ch-100", "FLY-77b", "lead-alpha");
 			store.markChatThreadArchived("t-arch");
-			mockFetch.mockResolvedValueOnce({
-				ok: true,
-				status: 200,
-				headers: { get: () => null },
-				json: async () => ({
-					name: "FLY-77b",
-					thread_metadata: { archived: true },
-				}),
-				text: async () => "",
-			});
 			createTestServer({
 				chatThreadsEnabled: true,
 				apiTokenConfigured: true,
@@ -1476,8 +1365,8 @@ describe("chat-thread routes (tools.ts)", () => {
 				archived: true,
 				reason: "already_archived",
 			});
-			expect(mockFetch).toHaveBeenCalledOnce();
-			expect(mockFetch.mock.calls[0]?.[1]?.method).toBeUndefined();
+			// no Discord PATCH — we do not re-archive (archive-once)
+			expect(mockFetch).not.toHaveBeenCalled();
 		});
 	});
 
@@ -1485,7 +1374,10 @@ describe("chat-thread routes (tools.ts)", () => {
 	describe("FLY-927 alert-channel gating (ticket queue)", () => {
 		const saved: Record<string, string | undefined> = {};
 		beforeEach(() => {
-			for (const k of ["FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID"]) {
+			for (const k of [
+				"FLYWHEEL_ALERT_ROUTING",
+				"FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID",
+			]) {
 				saved[k] = process.env[k];
 			}
 		});
@@ -1505,6 +1397,7 @@ describe("chat-thread routes (tools.ts)", () => {
 		}
 
 		it("REFUSES /send targeting the unified alert channel when gating is on", async () => {
+			process.env.FLYWHEEL_ALERT_ROUTING = "1";
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/send", {
@@ -1519,6 +1412,7 @@ describe("chat-thread routes (tools.ts)", () => {
 		});
 
 		it("REFUSES /create targeting the unified alert channel when gating is on", async () => {
+			process.env.FLYWHEEL_ALERT_ROUTING = "1";
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/create", {
@@ -1532,6 +1426,7 @@ describe("chat-thread routes (tools.ts)", () => {
 		});
 
 		it("ALLOWS a different channel while gating is on (proceeds past the gate)", async () => {
+			process.env.FLYWHEEL_ALERT_ROUTING = "1";
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-alert-999";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/send", {
@@ -1544,8 +1439,8 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(res.status).not.toBe(403); // gate not tripped (downstream may fail otherwise)
 		});
 
-		it("ignores the retired routing env and still gates the alert channel", async () => {
-			process.env.FLYWHEEL_ALERT_ROUTING = "0";
+		it("SENTINEL: env unset → alert-channel sends are NOT gated (byte-compat)", async () => {
+			delete process.env.FLYWHEEL_ALERT_ROUTING;
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/send", {
@@ -1555,8 +1450,7 @@ describe("chat-thread routes (tools.ts)", () => {
 				projectName: "TestProject",
 				text: "hello",
 			});
-			expect(res.status).toBe(403);
-			delete process.env.FLYWHEEL_ALERT_ROUTING;
+			expect(res.status).not.toBe(403);
 		});
 	});
 });

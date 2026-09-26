@@ -47,24 +47,6 @@ describe("MetaAlertNotifier", () => {
 		expect(body).toContain("sent=0 remaining=1667");
 	});
 
-	it("prefixes the file with founder local time and timezone", async () => {
-		const n = new MetaAlertNotifier({
-			stateDir,
-			execFileFn: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
-			now: () => new Date("2026-07-17T02:23:05.000Z").getTime(),
-			founderTimezone: () => "Asia/Tokyo",
-			logger: () => {},
-		});
-
-		await n.notify({ reason: "drain_stuck", title: "T", body: "B" });
-
-		const body = await readFile(
-			join(stateDir, "meta-alert", "drain_stuck.txt"),
-			"utf-8",
-		);
-		expect(body).toMatch(/^\[2026-07-17 11:23 GMT\+9\] T\n/);
-	});
-
 	it("debounces the same reason within the window", async () => {
 		const exec = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
 		let t = 1_000_000;
@@ -110,7 +92,8 @@ describe("MetaAlertNotifier", () => {
 			logger: () => {},
 		});
 		await n.notify({ reason: "drain_stuck", title: "a", body: "b" });
-		expect(exec).toHaveBeenCalledTimes(1);
+		await n.notify({ reason: "mailbox_overflow", title: "c", body: "d" });
+		expect(exec).toHaveBeenCalledTimes(2);
 	});
 
 	it("never throws when osascript fails — file channel still used", async () => {

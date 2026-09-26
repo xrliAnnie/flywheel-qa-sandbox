@@ -31,7 +31,6 @@ class FakeConnection implements LiveConnection {
 		this.sentAudio.push(frame);
 	}
 	sendText(): void {}
-	injectContext(): void {}
 	endAudioStream(): void {
 		this.audioStreamEnds++;
 	}

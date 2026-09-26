@@ -50,7 +50,7 @@ describe("isSupersededShipGate (pure judgement — FLY-1041)", () => {
 		).toBe(true);
 	});
 
-	it("false: equal creation timestamps — NEVER widen to >=", () => {
+	it("false: same-second creation (SQLite 1s resolution) — NEVER widen to >=", () => {
 		expect(
 			isSupersededShipGate(
 				gate({ created_at: NOW }),
@@ -140,9 +140,11 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		tmp = mkdtempSync(join(tmpdir(), "fly1041-sweeper-"));
 		dbPath = join(tmp, "comm.db");
 		insertedEvents = [];
+		delete process.env.FLYWHEEL_SHIP_GATE_RETIRE;
 	});
 
 	afterEach(() => {
+		delete process.env.FLYWHEEL_SHIP_GATE_RETIRE;
 		rmSync(tmp, { recursive: true, force: true });
 		vi.restoreAllMocks();
 	});
@@ -187,28 +189,17 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		};
 	}
 
-	function setCreatedAt(db: CommDB, timestamp: string, ...ids: string[]): void {
-		(
-			db as unknown as {
-				db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
-			}
-		).db
-			.prepare(
-				`UPDATE mailbox SET created_at = ? WHERE id IN (${ids.map(() => "?").join(",")})`,
-			)
-			.run(timestamp, ...ids);
-	}
-
-	it("sweeps a superseded gate: retired from pending + audit event + returns true (skip relay)", () => {
+	it("sweeps a superseded gate: retired from pending + audit event + returns true (skip relay)", async () => {
 		const db = new CommDB(dbPath);
 		const q1 = db.insertQuestion("exec-sw", "lead", "old gate", {
 			checkpoint: "approve_to_ship",
 		});
+		// SQLite created_at has 1s resolution — the strictly-later judgement
+		// needs a real second boundary between the two gates.
+		await new Promise((r) => setTimeout(r, 1_100));
 		const q2 = db.insertQuestion("exec-sw", "lead", "new gate", {
 			checkpoint: "approve_to_ship",
 		});
-		setCreatedAt(db, "2026-08-05T12:00:00.000Z", q1);
-		setCreatedAt(db, "2026-08-05T12:00:00.001Z", q2);
 
 		const poller = makePoller();
 		const swept = poller.maybeSweepSupersededShipGate(
@@ -219,7 +210,6 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 
 		expect(swept).toBe(true);
 		expect(db.getPendingQuestions("lead").map((q) => q.id)).toEqual([q2]);
-		expect(db.getMessageById(q1)).toMatchObject({ superseded_by: q2 });
 		expect(insertedEvents).toHaveLength(1);
 		expect(insertedEvents[0]).toMatchObject({
 			event_id: `ship-gate-superseded-${q1}`,
@@ -233,7 +223,7 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		db.close();
 	}, 15_000);
 
-	it("equal-timestamp pair is NOT swept (conservative tradeoff — accepted noise over false kill)", () => {
+	it("same-second pair is NOT swept (conservative tradeoff — accepted noise over false kill)", () => {
 		const db = new CommDB(dbPath);
 		const q1 = db.insertQuestion("exec-sw", "lead", "old gate", {
 			checkpoint: "approve_to_ship",
@@ -241,7 +231,6 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		const q2 = db.insertQuestion("exec-sw", "lead", "new gate", {
 			checkpoint: "approve_to_ship",
 		});
-		setCreatedAt(db, "2026-08-05T12:00:00.000Z", q1, q2);
 
 		const poller = makePoller();
 		const swept = poller.maybeSweepSupersededShipGate(
@@ -288,4 +277,26 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		).toBe(false);
 		db.close();
 	});
+
+	it("FLYWHEEL_SHIP_GATE_RETIRE=0 disables the sweeper (byte-compat sentinel)", async () => {
+		process.env.FLYWHEEL_SHIP_GATE_RETIRE = "0";
+		const db = new CommDB(dbPath);
+		const q1 = db.insertQuestion("exec-sw", "lead", "old gate", {
+			checkpoint: "approve_to_ship",
+		});
+		await new Promise((r) => setTimeout(r, 1_100));
+		const q2 = db.insertQuestion("exec-sw", "lead", "new gate", {
+			checkpoint: "approve_to_ship",
+		});
+		const poller = makePoller();
+		expect(
+			poller.maybeSweepSupersededShipGate(
+				pendingRow(db, q1),
+				makeSession(q2),
+				dbPath,
+			),
+		).toBe(false);
+		expect(db.getPendingQuestions("lead").map((q) => q.id)).toContain(q1);
+		db.close();
+	}, 15_000);
 });

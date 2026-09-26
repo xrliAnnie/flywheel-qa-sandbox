@@ -5,70 +5,48 @@
 
 import { randomUUID } from "node:crypto";
 import {
-	adapterTypeToFamily,
 	DEFAULT_PROOFSHOT_CONFIG,
-	isWorkflowPhaseRole,
-	renderRunnerModelDisplay,
+	isThreeStagePhaseRole,
+	modelShortCode,
 	resolveCompletionSessionRole,
 	type SkillsConfig,
 } from "flywheel-config";
-import {
-	isNoOutEdgeTerminalStatus,
-	type TerminalFailureInfo,
-} from "flywheel-core";
+import { WORKFLOW_TRANSITIONS } from "flywheel-core";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { AutoQaCoordinator } from "./bridge/auto-qa-coordinator.js";
+import { isReviewHeld } from "./bridge/auto-qa-held.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
-import type { CodexReviewHoldCoordinator } from "./bridge/codex-review-hold.js";
-import {
-	archiveEpochInterval,
-	reactivateChatThreadForStartedSession,
-	stateTimestampMs,
-} from "./bridge/done-thread-archiver.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
-import type { MaterializedHeadAuthority } from "./bridge/materialized-head-authority.js";
 import {
 	computeAuthoritativeShipDecision,
 	isMergeBlocked,
-	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./bridge/merge-ship-gate.js";
+import type { PhaseOrchestrator } from "./bridge/phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
-	settleShipAttemptFailed,
 } from "./bridge/post-ship-finalization.js";
 import {
 	getProofShotParams,
 	patchSessionParams,
 } from "./bridge/proofshot-session.js";
-import type { ReviewAuthorizationAlerts } from "./bridge/review-authorization-alerts.js";
-import { isReviewHeld } from "./bridge/review-hold.js";
-import {
-	dispatchLeadEventCompat,
-	type RuntimeRegistry,
-} from "./bridge/runtime-registry.js";
+import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
-import type { TerminalCommDbSync } from "./bridge/terminal-commdb-sync.js";
-import type { TurnBeltReconciler } from "./bridge/turn-belt-reconcile.js";
 import type { BridgeConfig } from "./bridge/types.js";
-import {
-	enqueueWorkflowReplacementLeadEvent,
-	resolveWorkflowReplacementLeadIntent,
-} from "./bridge/workflow-replacement-lead-event.js";
 import type { WorktreeCleanupFn } from "./bridge/worktree-cleanup.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
-import { normalizeTerminalFailureInfo } from "./terminal-failure-info.js";
 
 function sqliteDatetime(): string {
 	return new Date().toISOString().replace("T", " ").replace("Z", "");
@@ -86,31 +64,28 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	/** FLY-1185: ship-entry lifecycle bundle (remote CAS + closeout + sweep). */
 	public lifecycleInfra?: import("./bridge/post-ship-finalization.js").LifecycleShipInfra;
 
-	/** Neutral exact-head Codex review hold, independent of auto-QA lifecycle. */
-	public codexReviewHold?: {
-		current: CodexReviewHoldCoordinator | undefined;
-	};
-	/** Neutral review/ship authorization alerts, independent of auto-QA. */
-	public reviewAuthorizationAlerts?: {
-		current: ReviewAuthorizationAlerts | undefined;
-	};
-	/** Late-bound TURN recovery shared by generalized workflow actors. */
-	public turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
-
 	/**
-	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
-	 * FLY-1165 scheduler consumer). Production always wires it; optionality is
-	 * retained for embedding/test callers.
+	 * FLY-579 (Codex R1 HIGH-1): late-bound auto-QA coordinator holder, set by
+	 * the composition root after construction (the coordinator is built later, in
+	 * startBridge). This in-process completed path is a production / dual-sink
+	 * emitter, so it MUST drive auto-QA + suppress the founder review-required
+	 * delivery exactly like the HTTP /events route — otherwise a held founder
+	 * gate leaks here. Absent / `.current` undefined → byte-compatible (isQaHeld
+	 * is always false with no held record).
 	 */
-	public terminalArchiveEnqueue?: (issueId: string) => void;
+	public autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	// FLY-793: three-stage PhaseOrchestrator (design_done → Implement; implement
+	// awaiting_review → QA). Undefined until the plugin constructs it → no-op
+	// (byte-compat); onPhaseComplete itself gates on three-stage phase + status.
+	public phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 
 	/**
-	 * FLY-887: ship-time DAG workflow finalizer (closes the parked design +
+	 * FLY-887: ship-time three-stage phase finalizer (closes the parked design +
 	 * implement sessions before the shared worktree is removed). Set by the
 	 * composition root after construction. Absent → no phase finalization
 	 * (byte-compat; a single-session issue leaves nothing to finalize anyway).
 	 */
-	public finalizeWorkflowPhaseRoles?: (
+	public finalizeThreeStagePhases?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
@@ -128,14 +103,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	public issueDisplayRefresh?: IssueDisplayRefreshHolder;
 
 	/**
-	 * FLY-1066 Layer 1: this sink persists terminal StateStore rows directly,
-	 * bypassing applyTransition. The composition root supplies the shared,
-	 * non-blocking CommDB sync queue so failed/blocked registrations converge
-	 * without doing SQLite work in this event path.
-	 */
-	public terminalCommDbSync?: Pick<TerminalCommDbSync, "enqueue">;
-
-	/**
 	 * FLY-1185 (Codex R4#1, plan.md:145): launch-claim activation hook — CAS
 	 * starting→active under the canonical issue mutex, called by emitStarted
 	 * AFTER the session row is durable. Refusal (a park cancelled the claim
@@ -146,8 +113,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		executionId: string,
 	) => Promise<{ ok: boolean; reason?: string }>;
 
-	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
-	public materializedHeadAuthority?: MaterializedHeadAuthority;
+	/**
+	 * FLY-1232 module ② (T9): optional lifecycle shadow hook, set by run-infra
+	 * ONLY when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1. Threaded into this sink's
+	 * runPostShipFinalization deps (the in-process ship path); external-merge
+	 * finalization paths rely on the claim-based startup repair instead.
+	 * Absent → byte-compatible. Never throws (writer contract).
+	 */
+	public workflowShadow?: {
+		onShipFinalized(args: { projectName: string; issueId: string }): void;
+	};
 
 	private notifyDisplayChanged(issueId: string): void {
 		try {
@@ -155,20 +130,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		} catch (err) {
 			console.warn(
 				`[DirectEventSink] issue-display enqueue threw for ${issueId}: ${(err as Error).message}`,
-			);
-		}
-	}
-
-	private enqueueTerminalCommDbStatus(
-		executionId: string,
-		status: "failed" | "blocked",
-		projectName: string,
-	): void {
-		try {
-			this.terminalCommDbSync?.enqueue(executionId, status, projectName);
-		} catch (err) {
-			console.warn(
-				`[DirectEventSink] terminal CommDB enqueue threw for ${executionId}: ${(err as Error).message}`,
 			);
 		}
 	}
@@ -189,17 +150,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		 * (`enabled=false`), which makes ProofShot a no-op for them.
 		 */
 		private skillsConfig?: SkillsConfig,
-		/** FLY-2103: call-time project flag reader; failures disable locally. */
-		private proofshotEnabled: (projectName: string) => boolean = () => false,
+		/**
+		 * FLY-598: the project's founder_ux_gate.mode (off|audit_only|enforce),
+		 * snapshotted onto the session at start so the Layer B stage guard reads
+		 * it per-run. Absent → the guard treats the run as "off".
+		 */
+		private founderUxGateMode?: string,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
 		const now = sqliteDatetime();
-		const existingSession = this.store.getSession(env.executionId);
-		const startedAt = existingSession?.started_at ?? now;
-		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
-			env.executionId,
-		);
 		// GEO-202: Ensure issue_identifier is never null — fallback to issueId
 		const identifier = env.issueIdentifier || env.issueId;
 
@@ -219,9 +179,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			issue_id: env.issueId,
 			project_name: env.projectName,
 			status: "running",
-			// FLY-1709: activation time is set-once. A replay of an old running
-			// execution must not impersonate a post-archive rework admission.
-			started_at: startedAt,
+			started_at: now,
 			last_activity_at: now,
 			heartbeat_at: now,
 			issue_identifier: identifier,
@@ -246,28 +204,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// is using. The HTTP /events session_started handler persists the same
 			// field for the loopback path.
 			runner_model: env.runnerModel,
-			// FLY-1259: run-level effective design backend, set-once in StateStore.
-			design_backend: env.designBackend,
 			// FLY-615: persist the resolved ponytail condition (A/B join key for
 			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
 			// persists the same field.
 			ponytail_condition: env.ponytailCondition,
-			// FLY-1356: persist the effective skill-framework arm + attribution
-			// (A/B/C split eval join keys). Absent when the flag sat at its
-			// default (upsertSession leaves the columns untouched when undefined).
-			// HTTP /events path persists the same fields behind closed-enum guards.
-			skill_framework_mode: env.skillFrameworkMode,
-			skill_framework_mode_via: env.skillFrameworkModeVia,
-			// FLY-1372 §2.5: Bridge-trusted behavior fields — set ONLY on engine-
-			// owned generalized (pipeline.dag) starts, persisted atomically with
-			// row creation (upsertSession leaves them untouched when undefined).
-			// This in-process sink is the ONLY writer; the HTTP client never
-			// transmits them and /events ignores same-named runner payload fields.
-			doc_tier: env.docTier,
-			issue_url: env.issueUrl,
-			codex_skip:
-				env.codexSkip === undefined ? undefined : env.codexSkip ? 1 : 0,
-			workflow_node_id: workflowNodeId,
 		});
 
 		// FLY-1185 (Codex R5#1): the launch-claim starting→active CAS is NOT done
@@ -281,12 +221,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// Uses patchSessionParams (read-modify-write) so a replayed session_started
 		// event does NOT clobber existing `proofshot.runs` or `last_artifact`
 		// state from prior captures in the same execution (Bridge restart safety).
-		this.persistProofShotConfig(env.executionId, env.projectName);
-		if (env.routeSummary) {
-			patchSessionParams(this.store, env.executionId, (cur) => ({
-				...cur,
-				workflowRoute: { summary: env.routeSummary },
-			}));
+		this.persistProofShotConfig(env.executionId);
+
+		// FLY-598: snapshot founder_ux_gate.mode onto the session (a dedicated
+		// column, not session_params) so the Layer B stage guard reads the run's
+		// effective mode without re-loading the project config. upsertSession's
+		// fixed column list doesn't carry it, so patch after the upsert. Absent →
+		// guard treats the run as "off" (byte-compatible).
+		if (this.founderUxGateMode) {
+			this.store.patchSessionMetadata(env.executionId, {
+				founder_ux_gate_mode: this.founderUxGateMode,
+			});
 		}
 
 		// FLY-91: Await chat thread creation so first notification includes chat_thread_id.
@@ -303,36 +248,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				if (ctLead.chatChannel) {
 					const botToken = ctLead.botToken ?? this.config.discordBotToken;
 					if (botToken) {
-						const existingThread = this.store.getChatThreadByIssue(
-							env.issueId,
-							ctLead.chatChannel,
-						);
-						const archivedAt = existingThread?.archived_at;
-						const archiveEpoch = archivedAt
-							? archiveEpochInterval(archivedAt)
-							: null;
-						const activationMs = stateTimestampMs(startedAt);
-						if (
-							existingThread &&
-							archiveEpoch &&
-							activationMs !== null &&
-							activationMs > archiveEpoch.endMs
-						) {
-							await reactivateChatThreadForStartedSession(
-								this.store,
-								{
-									threadId: existingThread.thread_id,
-									issueId: env.issueId,
-									projectName: env.projectName,
-									executionId: env.executionId,
-								},
-								botToken,
-							);
-						} else if (archivedAt) {
-							console.warn(
-								`[DirectEventSink] cannot prove reactivation epoch for ${env.executionId}; archived thread remains protected (activation=${startedAt}, archive=${archivedAt})`,
-							);
-						}
 						const resolvedTitle =
 							env.issueTitle ??
 							this.store.getSessionByIssue(env.issueId)?.issue_title ??
@@ -345,20 +260,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							issueId: env.issueId,
 							issueIdentifier: env.issueIdentifier,
 							issueTitle: resolvedTitle,
-							routeSummary: env.routeSummary,
 							botToken,
 							leadId: ctLead.agentId,
 							ownerUserId: this.config.discordOwnerUserId,
-							// FLY-1255: stamp the resolved runner model at thread creation.
-							// `?? null` is authoritative and clears a stale marker when no
-							// model was selected.
-							modelMarker:
-								renderRunnerModelDisplay({
-									vendor: env.runnerBackend
-										? adapterTypeToFamily(env.runnerBackend)
-										: undefined,
-									model: env.runnerModel,
-								})?.threadMarker ?? null,
+							// FLY-728 Part D: stamp the model code at thread creation so a
+							// new [FLY-XX] thread shows F/O/S/H immediately (not only after
+							// the first stage_changed). `?? null` = authoritative (no stale
+							// code carried onto a reused thread).
+							modelCode: modelShortCode(env.runnerModel) ?? null,
 							// FLY-892 (converge): one issue = one thread — no per-phase
 							// thread role is passed; the phase session and the Lead resolve
 							// the SAME (issue, channel) thread. `chat_thread_role` is still
@@ -411,12 +320,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	async emitWorktreeReady(
 		env: EventEnvelope,
 		worktreePath: string,
-		binding?: {
-			branch: string;
-			generation: string;
-			repoBaselineSetJson?: string;
-			repoBaselineSetDigest?: string;
-		},
+		binding?: { branch: string; generation: string },
 	): Promise<void> {
 		if (!worktreePath || worktreePath.length === 0) {
 			console.warn(
@@ -456,12 +360,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					path: worktreePath,
 					branch: binding.branch,
 					generation: binding.generation,
-					...(binding.repoBaselineSetJson && binding.repoBaselineSetDigest
-						? {
-								repoBaselineSetJson: binding.repoBaselineSetJson,
-								repoBaselineSetDigest: binding.repoBaselineSetDigest,
-							}
-						: {}),
 				},
 				{ issueId: env.issueId, projectName: env.projectName },
 			);
@@ -529,56 +427,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		summary?: string,
 	): Promise<void> {
 		const now = sqliteDatetime();
-		// FLY-1404: this in-process carrier has no field that can hold the
-		// CLI-minted, git-proven designHtmlEvidence attestation. Never fabricate a
-		// positive state here: design-node completion must arrive through the HTTP
-		// or marker carrier.
-		const route: string | undefined = result.decision?.route;
-		if (route === "phase_design_complete") {
-			console.warn(
-				`[DirectEventSink] founder design HTML evidence unavailable for ${env.executionId}; refusing design-node completion (use the flywheel-comm HTTP/marker path)`,
-			);
-			return;
-		}
-		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
-			env.executionId,
-		);
-		const generalizedExecution =
-			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
-		if (generalizedExecution) {
-			// FLY-1434: BlueprintResult has no PR-number/target-repository evidence
-			// carrier. Never infer a binding from session display metadata here.
-			// PR-producing generalized nodes must complete through flywheel-comm's
-			// HTTP /events path (`complete --route needs_review --pr ...`), where
-			// Bridge re-derives repository/head authority server-side.
-			if (generalizedExecution.node.capabilities.creates_pr) {
-				console.warn(
-					`[DirectEventSink] generalized PR completion rejected for ${env.executionId}; use flywheel-comm complete --pr via HTTP`,
-				);
-				return;
-			}
-			const recorded = this.store.recordEnrolledTerminalSignal({
-				executionId: env.executionId,
-				sourceEventId: randomUUID(),
-				signal: "completed",
-				source: "direct-event-sink",
-				now,
-			});
-			if (!recorded.ok) {
-				console.error(
-					`[DirectEventSink] generalized completion persistence refused for ${env.executionId}: ${recorded.reason}`,
-				);
-			} else if (recorded.statusPreserved) {
-				console.warn(
-					`[DirectEventSink] FLY-1427 terminal-immune: ignored generalized completion overwrite for ${env.executionId}; effective status remains ${recorded.effectiveStatus}`,
-				);
-			}
-			return;
-		}
 
-		const completionEventId = randomUUID();
 		this.store.insertEvent({
-			event_id: completionEventId,
+			event_id: randomUUID(),
 			execution_id: env.executionId,
 			issue_id: env.issueId,
 			project_name: env.projectName,
@@ -594,6 +445,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// runner-emitted completion route, not a Decision Layer output — so we do
 		// not pollute that type; the HTTP `/events` sink already reads route as a
 		// plain string for the same reason.
+		const route: string | undefined = result.decision?.route;
 		const landingStatus = result.evidence?.landingStatus as
 			| { status?: string }
 			| undefined;
@@ -602,7 +454,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// transition; FLY-208 5a additionally needs it for the status mapping
 		// itself (hoisted above the mapping for that reason).
 		const preExistingSession = this.store.getSession(env.executionId);
-		const isApprovedToShip = preExistingSession?.status === "approved_to_ship";
 
 		// FLY-222 #1 (Codex code-review MED-2): no_code is ONLY a running→completed
 		// terminal. A no_code emission for a non-running (e.g. review-gated) session
@@ -616,7 +467,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// FLY-793 (Codex full-PR R1 #3): phase_design_complete has the SAME
 		// running-only constraint — a duplicate/late Design completion for a session
 		// already moved to design_done/completed must NOT re-write design_done and
-		// re-invoke the workflow engine (→ duplicate Implement dispatch / status
+		// re-invoke the PhaseOrchestrator (→ duplicate Implement dispatch / status
 		// regression). Parity with event-route.ts's phase_design_complete guard.
 		if (
 			(route === "no_code" ||
@@ -659,8 +510,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const desPrHead =
 			preExistingSession?.pr_head_sha?.trim() ||
 			(result.evidence?.headSha as string | undefined)?.trim();
-		// Always route through the shared ship predicate. A missing/empty head fails
-		// closed, and every merged landing must pass verifyApproval.
+		// Always route through the shared predicate (it uniformly honors the
+		// independent kill-switches). A missing/empty head → verifyApproval
+		// fail-closes when the gate is ON, and the kill-switch still bypasses when OFF.
 		const desDecision = desMergedLanding
 			? await computeAuthoritativeShipDecision(
 					this.store,
@@ -669,9 +521,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						project_name: env.projectName,
 					},
 					desPrHead,
-					process.env,
-					this.materializedHeadAuthority,
-					mergedPrCiProbe,
 				)
 			: undefined;
 		const desShipEligible = desMergedLanding
@@ -700,7 +549,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					);
 					// FLY-869 决定③: one loud Discord alert (once per head — the
 					// in-process twin of the event-route path).
-					void this.reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
+					void this.autoQaCoordinator?.current?.alertMergeWithoutApproval(
 						preExistingSession,
 						`⛔ Runner ${env.executionId}（${preExistingSession.issue_id}）自行 merge 但未获批准 —— merged head ${desPrHead ?? "(none)"} 未通过 ship 闸（merge=${desDecision?.mergeReason ?? "no_head"} qa=${desDecision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
 					);
@@ -727,8 +576,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// reconciler, both of which carry the questionId.
 		let evidenceGap = false;
 		if (route === "phase_design_complete") {
-			// FLY-793: a DAG workflow Design phase-session completed (docs on the
-			// shared branch, no PR). Non-terminal design_done; the workflow engine
+			// FLY-793: a three-stage Design phase-session completed (docs on the
+			// shared branch, no PR). Non-terminal design_done; the PhaseOrchestrator
 			// hands off to Implement. Sister mapping: event-route.ts session_completed.
 			status = "design_done";
 		} else if (route === "needs_review") {
@@ -761,53 +610,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			} else {
 				status = "awaiting_review";
 			}
-		} else if (route === "blocked" || route === "ship_attempt_failed") {
-			if (isApprovedToShip) {
-				const settle = settleShipAttemptFailed(this.store, env.executionId, {
-					// FLY-1505: the completion event owns the attempt head. Do
-					// not reuse desPrHead (which is deliberately row-first).
-					attemptHeadSha: result.evidence?.headSha,
-					currentHeadSha: preExistingSession?.pr_head_sha,
-					prNumber:
-						result.evidence?.prNumber ??
-						preExistingSession?.pr_number ??
-						undefined,
-					// This is a live sink: when a legacy completion omits its
-					// binding, the simultaneously-read row is authoritative.
-					// Delayed marker replay deliberately does not use this fallback.
-					reviewQuestionId:
-						result.reviewQuestionId ?? preExistingSession?.review_question_id,
-					currentReviewQuestionId: preExistingSession?.review_question_id,
-					summary,
-				});
-				if (
-					(settle.outcome === "marked" ||
-						settle.outcome === "unknown_head_marked") &&
-					settle.firstAttemptForHead &&
-					preExistingSession
-				) {
-					const retryPosture =
-						settle.outcome === "marked"
-							? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
-							: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
-					void this.reviewAuthorizationAlerts?.current?.alertShipAttemptFailedBestEffort(
-						preExistingSession,
-						`⚠️ Runner ${env.executionId}（${preExistingSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${preExistingSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
-					);
-				}
-				console.warn(
-					`[DirectEventSink] FLY-1505 ship_attempt_failed deflected for ${env.executionId} — approved_to_ship preserved (${settle.outcome})`,
-				);
-				return;
-			}
-			if (route === "ship_attempt_failed") {
-				console.warn(
-					`[DirectEventSink] ignoring ship_attempt_failed for non-approved session ${env.executionId} (status=${preExistingSession?.status ?? "missing"})`,
-				);
-				return;
-			}
-			status = "blocked";
-		} else if (route === "no_code" || route === "pr_handoff") {
+		} else if (route === "blocked") status = "blocked";
+		else if (route === "no_code" || route === "pr_handoff") {
 			// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 			// Sister branch: event-route.ts. evidenceGap stays false (not an
 			// approved_to_ship merge-evidence gap); runPostShipFinalization is
@@ -853,7 +657,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// patchSessionMetadata / markEvidenceGapCompletion), so it is unaffected.
 		if (
 			preExistingSession &&
-			isNoOutEdgeTerminalStatus(preExistingSession.status)
+			(WORKFLOW_TRANSITIONS[preExistingSession.status]?.length ?? -1) === 0
 		) {
 			console.warn(
 				`[DirectEventSink] ignoring duplicate/spurious "${status}" completion for already-terminal ${env.executionId} ` +
@@ -943,15 +747,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					preExistingSession?.session_role,
 					env.sessionRole,
 				),
-				workflow_node_id: workflowNodeId,
 			});
-		}
-		if (!evidenceOnly && status === "blocked") {
-			this.enqueueTerminalCommDbStatus(
-				env.executionId,
-				"blocked",
-				env.projectName,
-			);
 		}
 
 		// FLY-208 5a: evidence-gap completion — persist the marker (FLY-210
@@ -1052,11 +848,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		// Neutral exact-head Codex evidence gate. Both production ingest paths run
-		// this before any founder-facing review delivery.
+		// FLY-579 (Codex R1 HIGH-1): this in-process completed path is a
+		// production / dual-sink emitter — it must drive auto-QA and suppress the
+		// founder review-required delivery exactly like the HTTP /events route, or
+		// a held founder gate leaks here. onMainAwaitingReview is idempotent
+		// (atomic record claim) so a concurrent event-route claim is a no-op.
 		if (
 			status === "awaiting_review" &&
-			(env.sessionRole ?? "main") === "main"
+			(env.sessionRole ?? "main") === "main" &&
+			this.autoQaCoordinator?.current
 		) {
 			const mainSession = this.store.getSession(env.executionId);
 			// FLY-869 B: a merged-but-unapproved parked session sits in awaiting_review
@@ -1064,12 +864,33 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// suppressor). Recovery (same-head approval) clears the marker + finalizes.
 			if (mainSession && !isMergeBlocked(mainSession)) {
 				try {
-					await this.codexReviewHold?.current?.onSessionAwaitingReview(
+					await this.autoQaCoordinator.current.onMainAwaitingReview(
 						mainSession,
+						{
+							// FLY-752: fresh review-pass (prior status wasn't
+							// awaiting_review) vs re-emitted / parked-for-founder.
+							freshTransition: preExistingSession?.status !== "awaiting_review",
+						},
 					);
 				} catch (err) {
 					console.error(
-						`[DirectEventSink] Codex review hold threw for ${env.executionId}: ${(err as Error).message}`,
+						`[DirectEventSink] onMainAwaitingReview threw for ${env.executionId}: ${(err as Error).message}`,
+					);
+				}
+			}
+		}
+
+		// FLY-793: three-stage phase handoff. onPhaseComplete no-ops unless this is
+		// a three-stage phase session (per-project ON) at its handoff status, so it
+		// is safe to call on every completion. Sister call: event-route.ts.
+		if (this.phaseOrchestrator?.current) {
+			const phaseSession = this.store.getSession(env.executionId);
+			if (phaseSession) {
+				try {
+					await this.phaseOrchestrator.current.onPhaseComplete(phaseSession);
+				} catch (err) {
+					console.error(
+						`[DirectEventSink] onPhaseComplete threw for ${env.executionId}: ${(err as Error).message}`,
 					);
 				}
 			}
@@ -1082,20 +903,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 		// FLY-579 + FLY-827: hold the founder while review-held — suppress the
 		// review-required delivery (the 🧪 / ship-ready posts reach the thread via the
-		// coordinator's ThreadPoster, not this sink). isReviewHeld releases only when
-		// the exact-head Codex predicate and the applicable QA evidence are satisfied.
-		// FLY-827 (R4-HIGH-1): DirectEventSink is the
+		// coordinator's ThreadPoster, not this sink). isReviewHeld is false with no
+		// held record AND codex satisfied, so this is byte-compatible when auto-QA is
+		// off and the hard gate is off. FLY-827 (R4-HIGH-1): DirectEventSink is the
 		// FOURTH founder-surface path — without isReviewHeld a Codex-held session
 		// (no auto_qa_record → isQaHeld false) would leak the review-required push.
-		if (
-			isReviewHeld(this.store, this.store.getSession(env.executionId)) ||
-			!this.store.workflowGatePresentationDisposition({
-				executionId: env.executionId,
-				checkpoint: "approve_to_ship",
-			}).allow
-		) {
+		if (isReviewHeld(this.store, this.store.getSession(env.executionId))) {
 			console.log(
-				`[DirectEventSink] suppressing non-authoritative review-required delivery for ${env.executionId}`,
+				`[DirectEventSink] FLY-827 review-held: suppressing review-required delivery for ${env.executionId}`,
 			);
 		} else {
 			this.pushNotification(env, "session_completed");
@@ -1109,13 +924,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// would still trigger tmux teardown / thread archive before ship completes.
 		// Must match event-route.ts:482 gate.
 		const landingStatusForHook = result.evidence?.landingStatus as
-			| { status?: string; prNumber?: number }
+			| { status?: string }
 			| undefined;
-		// FLY-1282 Part C: hoisted — the same predicate gates post-ship
-		// finalization below AND excludes this completion from the targeted
-		// terminal-archive enqueue (the post-ship owner's cleanup→archive
-		// sequence is exclusive).
-		const postShipOwned =
+		if (
 			status === "completed" &&
 			isPostApproveShipComplete({
 				existingStatus: preExistingSession?.status,
@@ -1124,23 +935,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				// FLY-869 B: thread the pre-transition decision (a parked session is
 				// awaiting_review, not completed, so this is also guarded above).
 				shipEligible: desShipEligible,
-			});
-		if (postShipOwned) {
+			})
+		) {
 			this.pending.push(
 				runPostShipFinalization(
 					{
 						executionId: env.executionId,
-						runId: this.store.getWorkflowRunIdForExecution(env.executionId),
-						...(Number.isInteger(landingStatusForHook?.prNumber) &&
-						landingStatusForHook!.prNumber! > 0 &&
-						!!desPrHead
-							? {
-									mergedPr: {
-										prNumber: landingStatusForHook!.prNumber!,
-										headSha: desPrHead,
-									},
-								}
-							: {}),
 						issueId: env.issueId,
 						issueIdentifier: env.issueIdentifier,
 						projectName: env.projectName,
@@ -1156,7 +956,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						removeCleanWorktree: this.removeCleanWorktree,
 						// FLY-887: close the parked design + implement phases before the
 						// shared worktree is removed.
-						finalizeWorkflowPhaseRoles: this.finalizeWorkflowPhaseRoles,
+						finalizeThreeStagePhases: this.finalizeThreeStagePhases,
+						// FLY-1232 T9: shadow-run finalization (flag ON only).
+						workflowShadow: this.workflowShadow,
 						// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 						// by runPostShipFinalization's merge-evidence predicate).
 						markIssueDone: makeLinearDoneFinalizer(this.config),
@@ -1171,97 +973,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				),
 			);
 		}
-
-		// FLY-1282 Part C: targeted terminal-archive enqueue. Runs AFTER the
-		// phase handoff above so a DAG workflow successor row is durable before
-		// the targeted check reads alias state. Fresh getSession confirms the
-		// row actually landed completed (a skipped / non-terminal write → zero
-		// enqueue). Post-ship (merged) completions and FLY-208 evidence-gap
-		// completions never enqueue. Sister call: event-route.ts.
-		if (this.terminalArchiveEnqueue && !postShipOwned && !evidenceGap) {
-			const freshTerminalRow = this.store.getSession(env.executionId);
-			if (freshTerminalRow?.status === "completed") {
-				try {
-					this.terminalArchiveEnqueue(env.issueId);
-				} catch (err) {
-					console.error(
-						`[DirectEventSink] terminal-archive enqueue threw for ${env.issueId}: ${(err as Error).message}`,
-					);
-				}
-			}
-		}
 	}
 
 	async emitFailed(
 		env: EventEnvelope,
 		error: string,
 		_lastActivity?: string,
-		failure?: TerminalFailureInfo,
 	): Promise<void> {
 		const now = sqliteDatetime();
-		const normalizedFailure = normalizeTerminalFailureInfo(failure);
-		const goalBlocked = normalizedFailure?.failureKind === "goal_blocked";
-		const terminalStatus = goalBlocked ? "blocked" : "failed";
-		const terminalError = goalBlocked ? normalizedFailure.failureReason : error;
-		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
-			env.executionId,
-		);
-		const generalizedExecution =
-			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
-		if (generalizedExecution) {
-			const leadIntent = resolveWorkflowReplacementLeadIntent({
-				projects: this.projects,
-				run: generalizedExecution.run,
-				labels: this.store.getSessionLabels(env.executionId),
-			});
-			const recorded = this.store.recordEnrolledTerminalSignal({
-				executionId: env.executionId,
-				sourceEventId: randomUUID(),
-				signal: "failed",
-				failureKind: normalizedFailure?.failureKind,
-				failureClass: normalizedFailure?.failureClass,
-				failureCode: normalizedFailure?.failureCode,
-				lastError: terminalError,
-				source: "direct-event-sink",
-				now,
-				...(leadIntent ? { leadIntent } : {}),
-			});
-			if (!recorded.ok) {
-				console.error(
-					`[DirectEventSink] generalized failure persistence refused for ${env.executionId}: ${recorded.reason}`,
-				);
-				return;
-			}
-			await this.alertWorktreeTakeoverFailure(
-				env.executionId,
-				normalizedFailure,
-			);
-			if (this.registry && recorded.leadEventSeq !== undefined) {
-				try {
-					enqueueWorkflowReplacementLeadEvent({
-						store: this.store,
-						registry: this.registry,
-						seq: recorded.leadEventSeq,
-					});
-				} catch (err) {
-					console.warn(
-						`[DirectEventSink] replacement-eligibility enqueue failed for ${env.executionId}: ${(err as Error).message}`,
-					);
-				}
-			}
-			if (recorded.statusPreserved) {
-				console.warn(
-					`[DirectEventSink] FLY-1427 terminal-immune: ignored generalized failure overwrite for ${env.executionId}; effective status remains ${recorded.effectiveStatus}`,
-				);
-				return;
-			}
-			this.enqueueTerminalCommDbStatus(
-				env.executionId,
-				recorded.status === "blocked" ? "blocked" : "failed",
-				env.projectName,
-			);
-			return;
-		}
 		// FLY-793: pre-failure snapshot so a failure signal doesn't downgrade a
 		// dispatched phase role (sister of the event-route failed guard).
 		const preFailureSession = this.store.getSession(env.executionId);
@@ -1279,9 +998,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			execution_id: env.executionId,
 			issue_id: env.issueId,
 			project_name: env.projectName,
-			status: terminalStatus,
+			status: "failed",
 			last_activity_at: now,
-			last_error: terminalError,
+			last_error: error,
 			// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 			issue_identifier: env.issueIdentifier || undefined,
 			issue_title: env.issueTitle,
@@ -1289,13 +1008,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				preFailureSession?.session_role,
 				env.sessionRole,
 			),
-			workflow_node_id: workflowNodeId,
 		});
-		this.enqueueTerminalCommDbStatus(
-			env.executionId,
-			terminalStatus,
-			env.projectName,
-		);
+
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
 		{
 			const session = this.store.getSession(env.executionId);
@@ -1305,7 +1019,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				});
 			}
 		}
-		await this.alertWorktreeTakeoverFailure(env.executionId, failure);
+
+		// FLY-1050: a three-stage QA row that just FAILED may have stranded its
+		// implement at awaiting_review — re-drive the implement→QA handoff
+		// (respawn a fresh QA) BEFORE the belt reconcile: a successful respawn's
+		// pre-launch grant overwrites the TURN (guard 1 then no-ops, no
+		// stale-holder alert noise); a refused respawn leaves the belt reconcile
+		// to recover it. Sister call: event-route.ts session_failed path.
+		await this.maybeReconcileQaLoss(env.executionId);
 
 		// FLY-921 Fix C: session_failed never reaches onPhaseComplete — a killed
 		// TURN holder (FLY-543 shape) must still release the belt. Sister call:
@@ -1319,34 +1040,47 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pushNotification(env, "session_failed");
 	}
 
-	private async alertWorktreeTakeoverFailure(
-		executionId: string,
-		failure?: TerminalFailureInfo,
-	): Promise<void> {
-		if (failure?.failureKind !== "worktree_takeover_failed") return;
+	/**
+	 * FLY-1050: scoped QA-loss reconcile — a dead three-stage QA row may have
+	 * stranded its implement at awaiting_review; the orchestrator re-drives the
+	 * implement→QA handoff (respawn) when the pipeline lost itself. All the
+	 * precise guards (terminal status, respawn cap, alive-QA idempotency) live
+	 * inside reconcileQaLoss; this seam only pre-filters to three-stage qa rows.
+	 * Never throws.
+	 */
+	private async maybeReconcileQaLoss(executionId: string): Promise<void> {
+		const orchestrator = this.phaseOrchestrator?.current;
+		if (!orchestrator) return;
 		const session = this.store.getSession(executionId);
-		if (!session) return;
-		await this.turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
-			session,
-			failure.failureReason,
-		);
+		if (!session?.project_name) return;
+		if ((session.chat_thread_role ?? "main") !== "qa") return;
+		try {
+			await orchestrator.reconcileQaLoss({
+				issueId: session.issue_id,
+				terminalExecId: executionId,
+			});
+		} catch (err) {
+			console.error(
+				`[DirectEventSink] reconcileQaLoss threw for ${executionId}: ${(err as Error).message}`,
+			);
+		}
 	}
 
 	/**
-	 * FLY-921 Fix C: scoped turn-belt reconcile after a DAG workflow
+	 * FLY-921 Fix C: scoped turn-belt reconcile after a three-stage phase
 	 * session hit a terminal signal (completed/failed). Guard 1 lives inside
 	 * reconcileTurnBelt (terminalExecId must BE the holder). Never throws.
 	 */
 	private async reconcileTurnBeltAfterTerminal(
 		executionId: string,
 	): Promise<void> {
-		const reconciler = this.turnBeltReconciler?.current;
-		if (!reconciler) return;
+		const orchestrator = this.phaseOrchestrator?.current;
+		if (!orchestrator) return;
 		const session = this.store.getSession(executionId);
 		if (!session?.project_name) return;
-		if (!isWorkflowPhaseRole(session.session_role)) return;
+		if (!isThreeStagePhaseRole(session.session_role)) return;
 		try {
-			await reconciler.reconcileTurnBelt({
+			await orchestrator.reconcileTurnBelt({
 				issueId: session.issue_id,
 				projectName: session.project_name,
 				terminalExecId: executionId,
@@ -1380,20 +1114,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * Only overwrites `proofshot.config`; preserves `proofshot.runs` and
 	 * unrelated `session_params` keys (e.g., `last_artifact`).
 	 */
-	private persistProofShotConfig(
-		executionId: string,
-		projectName: string,
-	): void {
-		let enabled = false;
-		try {
-			enabled = this.proofshotEnabled(projectName);
-		} catch (error) {
-			console.warn(
-				`[DirectEventSink] proofshot flag read failed for ${projectName}: ${error instanceof Error ? error.message : String(error)} — disabling ProofShot`,
-			);
-		}
-		const authoring = this.skillsConfig?.proofshot ?? DEFAULT_PROOFSHOT_CONFIG;
-		const effective = { ...authoring, enabled };
+	private persistProofShotConfig(executionId: string): void {
+		const effective = this.skillsConfig?.proofshot ?? DEFAULT_PROOFSHOT_CONFIG;
 		patchSessionParams(this.store, executionId, (cur) => {
 			const prior = getProofShotParams(cur);
 			return {
@@ -1445,7 +1167,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				chat_channel: lead.chatChannel,
 				issue_labels: labels,
 				session_role: session.session_role ?? "main",
-				design_backend: session.design_backend,
 			};
 
 			// FLY-91: Fill chat_thread_id for Lead thread routing
@@ -1479,18 +1200,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				);
 				const envelope: LeadEventEnvelope = {
 					seq,
-					eventId,
 					event: hookPayload,
 					sessionKey,
 					leadId: lead.agentId,
 					timestamp: new Date().toISOString(),
 				};
-				const result = await dispatchLeadEventCompat(
-					this.registry!,
-					runtime,
-					envelope,
-				);
-				if (result.delivered) this.store.markLeadEventDelivered(seq);
+				await runtime.deliver(envelope);
+				this.store.markLeadEventDelivered(seq);
 			};
 
 			this.pending.push(

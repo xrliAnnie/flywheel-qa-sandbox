@@ -9,12 +9,7 @@
  * combination WITHOUT a new questionId stays on the FLY-208 5a evidence-gap
  * completion (byte-compat).
  */
-
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -24,7 +19,6 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 const runPostShipSpy = vi.fn(async () => {});
 vi.mock("../bridge/post-ship-finalization.js", async () => {
@@ -38,9 +32,7 @@ vi.mock("../bridge/post-ship-finalization.js", async () => {
 });
 
 const H1 = "a".repeat(40);
-const H2 = execFileSync("git", ["rev-parse", "HEAD"], {
-	encoding: "utf8",
-}).trim();
+const H2 = "b".repeat(40);
 const Q1 = "11111111-1111-1111-1111-111111111111";
 const Q2 = "22222222-2222-2222-2222-222222222222";
 
@@ -79,7 +71,6 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	let server: http.Server;
 	let baseUrl: string;
 	let transitionOpts: ApplyTransitionOpts;
-	let stateRoot: string;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -87,10 +78,10 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	};
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		runPostShipSpy.mockClear();
-		stateRoot = mkdtempSync(join(tmpdir(), "fly945-reopen-"));
-		store = await StateStore.create(join(stateRoot, "teamlead.db"));
+		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		transitionOpts = { store, fsm, executor };
@@ -109,41 +100,24 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
-		rmSync(stateRoot, { recursive: true, force: true });
 	});
 
 	async function postEvent(body: Record<string, unknown>) {
-		const response = await fetch(`${baseUrl}/events`, {
+		return fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: ingestHeaders,
 			body: JSON.stringify(body),
 		});
-		if (body.event_type === "session_started") {
-			const executionId = String(body.execution_id);
-			const session = store.getSession(executionId);
-			store.upsertSession({
-				execution_id: executionId,
-				issue_id: session?.issue_id ?? String(body.issue_id),
-				project_name: session?.project_name ?? String(body.project_name),
-				status: session?.status ?? "running",
-				worktree_path: process.cwd(),
-			});
-			setHistoricalQaRequiredSnapshot(store, {
-				executionId,
-				required: 0,
-				reason: "re-open review fixture",
-			});
-		}
-		return response;
 	}
 
 	/** running → awaiting_review(Q1,H1) → approved_to_ship. */
-	async function driveToApproved(execId: string, head = H1) {
+	async function driveToApproved(execId: string) {
 		await postEvent({
 			event_id: `${execId}-start`,
 			execution_id: execId,
@@ -160,13 +134,13 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 			event_type: "session_completed",
 			payload: {
 				decision: { route: "needs_review" },
-				evidence: { headSha: head },
+				evidence: { headSha: H1 },
 				reviewQuestionId: Q1,
 			},
 		});
 		expect(store.getSession(execId)?.status).toBe("awaiting_review");
 		expect(store.getSession(execId)?.review_question_id).toBe(Q1);
-		expect(store.getSession(execId)?.pr_head_sha).toBe(head);
+		expect(store.getSession(execId)?.pr_head_sha).toBe(H1);
 		const approved = applyTransition(
 			transitionOpts,
 			execId,
@@ -263,9 +237,9 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 		expect(params.fly208_evidence_gap).toBeTruthy();
 	});
 
-	it("NEW unbound questionId plus MERGED landing fails closed", async () => {
+	it("NEW questionId but MERGED landing → completed (ship wins; not a recovery lap)", async () => {
 		const execId = "exec-merged";
-		await driveToApproved(execId, H2);
+		await driveToApproved(execId);
 
 		await postEvent({
 			event_id: `${execId}-review2`,
@@ -282,6 +256,6 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 				reviewQuestionId: Q2,
 			},
 		});
-		expect(store.getSession(execId)?.status).toBe("awaiting_review");
+		expect(store.getSession(execId)?.status).toBe("completed");
 	});
 });

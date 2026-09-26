@@ -5,47 +5,20 @@
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js"
-		},
-		"./bridge/chat-thread-utils": {
-			"types": "./dist/bridge/chat-thread-utils.d.ts",
-			"import": "./dist/bridge/chat-thread-utils.js"
-		},
-		"./bridge/worktree-cleanup": {
-			"types": "./dist/bridge/worktree-cleanup.d.ts",
-			"import": "./dist/bridge/worktree-cleanup.js"
-		},
-		"./bridge/branch-cleanup": {
-			"types": "./dist/bridge/branch-cleanup.d.ts",
-			"import": "./dist/bridge/branch-cleanup.js"
-		},
-		"./bridge/cmux-close-request": {
-			"types": "./dist/bridge/cmux-close-request.d.ts",
-			"import": "./dist/bridge/cmux-close-request.js"
-		}
-	},
 	"bin": {
 		"teamlead": "dist/index.js",
 		"flywheel-claude-freshness": "bin/flywheel-claude-freshness",
-		"flywheel-claude-quota-guard": "bin/flywheel-claude-quota-guard",
 		"flywheel-account-summary": "bin/flywheel-account-summary",
-		"flywheel-claude-pool-rebuild": "bin/flywheel-claude-pool-rebuild",
-		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",
-		"flywheel-quota-monitor": "bin/flywheel-quota-monitor"
+		"flywheel-rescue-lead": "bin/flywheel-rescue-lead"
 	},
 	"files": [
 		"dist",
 		"bin"
 	],
 	"scripts": {
-		"prebuild": "rm -f dist/bridge/auto-qa-held.* dist/bridge/auto-qa-config-source.* dist/bridge/auto-qa-coordinator.* dist/bridge/auto-qa-effects.* dist/bridge/auto-qa-policy.* dist/bridge/manual-qa-routes.* dist/bridge/ship-gate-rebind.* dist/bridge/founder-milestone-config-source.* dist/bridge/milestone-report-policy.* dist/bridge/checkpoint-park.* dist/bridge/__tests__/checkpoint-park.test.*",
-		"build": "tsc && node -e \"require('fs').writeFileSync('dist/build-identity.json', JSON.stringify({artifactBuildSha:require('child_process').execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()})+'\\n')\" && rm -f dist/__tests__/StateStore.fly939-stranded-implement.test.* dist/__tests__/StateStore.three-stage-qa.test.* dist/__tests__/actions-fly1050-terminate-qa-loss.test.* dist/__tests__/event-route-fly859-three-stage-qa.test.* dist/__tests__/phase-orchestrator.fly921-adversarial.test.* dist/__tests__/three-stage-dedup.test.* dist/bridge/__tests__/phase-orchestrator*.test.* dist/bridge/__tests__/retest-head-delta.test.* dist/bridge/__tests__/run-dispatcher.fly887-label-bypass.test.* dist/bridge/__tests__/runs-route.dag-recovery.test.* dist/bridge/__tests__/three-stage-policy.test.* dist/bridge/__tests__/workflow-b11-freshspawn.test.* dist/bridge/__tests__/workflow-shadow-wiring.test.* dist/bridge/__tests__/workflow-shadow-writer.test.* dist/bridge/phase-orchestrator.* dist/bridge/retest-head-delta.* dist/bridge/three-stage-policy.* dist/bridge/workflow-shadow-writer.* && rm -rf dist/static dist/workflow-seeds dist/bridge/publish-broker && cp -r static dist/static",
+		"build": "tsc && rm -rf dist/static dist/workflow-seeds && cp -r static dist/static && cp -r src/workflow-seeds dist/workflow-seeds",
 		"dev": "tsc --watch",
 		"test": "vitest run",
-		"test:stub-hygiene": "vitest run --config vitest.stub-hygiene.config.ts --no-cache src/__tests__/post-ship-finalization.test.ts src/bridge/__tests__/lifecycle-routes.test.ts",
 		"test:watch": "vitest --watch",
 		"test:run": "vitest run",
 		"typecheck": "tsc --noEmit"
@@ -74,7 +47,6 @@
 		"@types/node": "^20.0.0",
 		"@types/sql.js": "^1.4.9",
 		"@types/ws": "^8.18.0",
-		"happy-dom": "^20.10.6",
 		"typescript": "^5.3.3",
 		"vitest": "^3.1.4"
 	}

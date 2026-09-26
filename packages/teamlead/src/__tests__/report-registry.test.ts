@@ -187,140 +187,16 @@ describe("ReportRegistry", () => {
 		expect(reg.list()).toHaveLength(2);
 	});
 
-	it("default caps are 100 entries / 8.5 MiB", () => {
+	it("default caps are 100 entries / 10MB", () => {
 		expect(DEFAULT_RETENTION_MAX).toBe(100);
-		expect(DEFAULT_RETENTION_BYTES).toBe(8.5 * 1024 * 1024);
+		expect(DEFAULT_RETENTION_BYTES).toBe(10 * 1024 * 1024);
 	});
-
-	it("default byte cap prunes an incident-shaped 21-report body below Vercel's 10 MB cap", () => {
-		const reportBytes = 480 * 1024;
-		const now = Date.parse("2026-08-21T21:00:00.000Z");
-		const prefix = `<!doctype html><html><head>${REPORT_REGISTRY_INTERNALS.NOINDEX_META}${REPORT_REGISTRY_INTERNALS.CSP_META}</head><body>`;
-		const suffix = "</body></html>";
-		// Exactly 100 raw bytes with 5 JSON-escaped bytes (quotes, newline,
-		// backslash, tab). A plain x.repeat fixture would not distinguish the
-		// old 10 MiB raw cap from the Vercel JSON-body cap that caused FLY-1728.
-		const escapeChunk = `${"x".repeat(95)}""\n\\\t`;
-		const contentBytes = reportBytes - Buffer.byteLength(prefix + suffix);
-		const content = escapeChunk
-			.repeat(Math.ceil(contentBytes / Buffer.byteLength(escapeChunk)))
-			.slice(0, contentBytes);
-		const reportHtml = `${prefix}${content}${suffix}`;
-		expect(Buffer.byteLength(reportHtml)).toBe(reportBytes);
-
-		const reports = Array.from({ length: 20 }, (_, i) => ({
-			token: `f${String(i).padStart(31, "0")}`,
-			projectName: "flywheel",
-			title: `heavy-${i}`,
-			createdAt: new Date(now - (20 - i) * 1000).toISOString(),
-			bytes: reportBytes,
-		}));
-		mkdirSync(join(dir, "files"), { recursive: true });
-		for (const report of reports) {
-			writeFileSync(
-				join(dir, "files", `${report.token}.html`),
-				reportHtml,
-				"utf-8",
-			);
-		}
-		writeFileSync(
-			join(dir, "registry.json"),
-			JSON.stringify({
-				vercelProjectName: "fw-reports-seeded",
-				reports,
-			}),
-			"utf-8",
-		);
-
-		const reg = makeRegistry({ now: () => now });
-		const staged = reg.stagePublish("flywheel", reportHtml, "heavy-20");
-		const prePruneFiles = [
-			{
-				file: "robots.txt",
-				data: REPORT_REGISTRY_INTERNALS.ROBOTS_TXT,
-			},
-			...reports.map((report) => ({
-				file: `r/${report.token}/index.html`,
-				data: reportHtml,
-			})),
-			{
-				file: `r/${staged.entry.token}/index.html`,
-				data: reportHtml,
-			},
-		];
-		const serializeDeployBody = (
-			files: Array<{ file: string; data: string }>,
-		) =>
-			Buffer.byteLength(
-				JSON.stringify({
-					name: staged.vercelProjectName,
-					target: "production",
-					files: files.map((file) => ({ ...file, encoding: "utf-8" })),
-					projectSettings: { framework: null },
-				}),
-			);
-
-		const prePruneHtmlBytes = 21 * reportBytes;
-		expect(prePruneHtmlBytes).toBeLessThan(10 * 1024 * 1024);
-		expect(serializeDeployBody(prePruneFiles)).toBeGreaterThan(10_000_000);
-
-		const deployedPaths = staged.deployFiles.map((file) => file.file);
-		expect(staged.deployFiles).toHaveLength(19); // robots.txt + 18 reports
-		expect(deployedPaths).not.toContain(`r/${reports[0]?.token}/index.html`);
-		expect(deployedPaths).not.toContain(`r/${reports[1]?.token}/index.html`);
-		expect(deployedPaths).not.toContain(`r/${reports[2]?.token}/index.html`);
-		expect(deployedPaths).toContain(`r/${reports[3]?.token}/index.html`);
-		expect(deployedPaths).toContain(`r/${staged.entry.token}/index.html`);
-		expect(
-			staged.deployFiles
-				.filter((file) => file.file !== "robots.txt")
-				.reduce((sum, file) => sum + Buffer.byteLength(file.data), 0),
-		).toBeLessThanOrEqual(DEFAULT_RETENTION_BYTES);
-		expect(serializeDeployBody(staged.deployFiles)).toBeLessThan(10_000_000);
-		staged.abort();
-	}, 10_000);
 
 	// ── TTL expiry (founder requirement: links die after 7 days) ────────
 
 	it("default TTL is 7 days", () => {
 		expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
 	});
-
-	it.each(["0", "30"])(
-		"FLY-1981 keeps the Bridge report TTL at seven days when the retired env is %s",
-		(raw) => {
-			const previous = process.env.FLYWHEEL_REPORTS_TTL_DAYS;
-			process.env.FLYWHEEL_REPORTS_TTL_DAYS = raw;
-			try {
-				let clock = Date.parse("2026-06-04T00:00:00Z");
-				const reg = makeRegistry({ now: () => clock });
-				const old = reg.stagePublish("p", HTML, "old");
-				old.commit();
-				clock += 7 * 24 * 60 * 60 * 1000;
-				const current = reg.stagePublish("p", HTML, "current");
-				expect(current.deployFiles.map((file) => file.file)).not.toContain(
-					`r/${old.entry.token}/index.html`,
-				);
-				current.abort();
-
-				const pluginSource = readFileSync(
-					new URL("../bridge/plugin.ts", import.meta.url),
-					"utf8",
-				);
-				expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
-				expect(pluginSource).toContain(
-					"retentionMaxAgeMs: DEFAULT_RETENTION_MAX_AGE_MS",
-				);
-				expect(pluginSource).not.toContain("FLYWHEEL_REPORTS_TTL_DAYS");
-			} finally {
-				if (previous === undefined) {
-					delete process.env.FLYWHEEL_REPORTS_TTL_DAYS;
-				} else {
-					process.env.FLYWHEEL_REPORTS_TTL_DAYS = previous;
-				}
-			}
-		},
-	);
 
 	it("entries older than the TTL are pruned at the next publish", () => {
 		let clock = Date.parse("2026-06-04T00:00:00Z");

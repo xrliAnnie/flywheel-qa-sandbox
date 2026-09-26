@@ -105,73 +105,6 @@ describe("TeamLeadClient", () => {
 		expect(payload.runnerModel).toBeUndefined();
 	});
 
-	it("never sends the Bridge-owned route summary over runner-authenticated HTTP", async () => {
-		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitStarted(
-			makeEnvelope({
-				routeSummary: "🧭 **Route**: `generic` · source `default_fallback`",
-			}),
-		);
-		await client.flush();
-		const payload = (receivedBodies[0] as Record<string, unknown>)
-			.payload as Record<string, unknown>;
-		expect(payload.routeSummary).toBeUndefined();
-	});
-
-	// FLY-1356 (Codex R1 HIGH-3 — the FLY-793 lesson caught again one field
-	// down): the arm attribution must survive REAL serialization. These
-	// assertions read the actual HTTP body a live server received, so a
-	// payload literal that forgets the fields cannot pass — mocking the whole
-	// envelope would prove nothing about the wire bytes event-route.ts reads.
-	it("emitStarted carries skillFrameworkMode + skillFrameworkModeVia on the wire", async () => {
-		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitStarted(
-			makeEnvelope({
-				skillFrameworkMode: "matt",
-				skillFrameworkModeVia: "hash",
-			}),
-		);
-		await client.flush();
-
-		expect(receivedBodies).toHaveLength(1);
-		const body = receivedBodies[0] as Record<string, unknown>;
-		expect(body.event_type).toBe("session_started");
-		const payload = body.payload as Record<string, unknown>;
-		expect(payload.skillFrameworkMode).toBe("matt");
-		expect(payload.skillFrameworkModeVia).toBe("hash");
-	});
-
-	it("emitStarted omits BOTH skill-framework keys when the envelope has none (byte-compat)", async () => {
-		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitStarted(makeEnvelope());
-		await client.flush();
-
-		const payload = (receivedBodies[0] as Record<string, unknown>)
-			.payload as Record<string, unknown>;
-		expect("skillFrameworkMode" in payload).toBe(false);
-		expect("skillFrameworkModeVia" in payload).toBe(false);
-	});
-
-	it("FLY-1259: emitStarted carries designBackend in the payload", async () => {
-		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitStarted(makeEnvelope({ designBackend: "claude" }));
-		await client.flush();
-
-		const body = receivedBodies[0] as Record<string, unknown>;
-		const payload = body.payload as Record<string, unknown>;
-		expect(payload.designBackend).toBe("claude");
-	});
-
-	it("FLY-1259: emitStarted omits an absent designBackend (byte-compat)", async () => {
-		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitStarted(makeEnvelope());
-		await client.flush();
-
-		const body = receivedBodies[0] as Record<string, unknown>;
-		const payload = body.payload as Record<string, unknown>;
-		expect(payload).not.toHaveProperty("designBackend");
-	});
-
 	it("emitCompleted includes evidence in payload", async () => {
 		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
 		const result = makeResult();
@@ -201,40 +134,6 @@ describe("TeamLeadClient", () => {
 		const payload = body.payload as Record<string, unknown>;
 		expect(payload.error).toBe("git preflight failed");
 		expect(payload.lastActivity).toBe("2024-01-01T00:00:00Z");
-	});
-
-	it("FLY-1279: emitFailed carries typed terminal failure metadata", async () => {
-		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitFailed(makeEnvelope(), "blocked", undefined, {
-			failureKind: "goal_blocked",
-			failureReason: "goal ended non-complete: blocked",
-		});
-
-		const body = receivedBodies[0] as Record<string, unknown>;
-		const payload = body.payload as Record<string, unknown>;
-		expect(payload.failure).toEqual({
-			failureKind: "goal_blocked",
-			failureReason: "goal ended non-complete: blocked",
-		});
-	});
-
-	it("FLY-2018: emitFailed preserves environment failure metadata on the wire", async () => {
-		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitFailed(makeEnvelope(), "blocked", undefined, {
-			failureKind: "goal_blocked",
-			failureReason: "refresh token revoked",
-			failureClass: "environment",
-			failureCode: "codex:unauthorized",
-		});
-
-		const body = receivedBodies[0] as Record<string, unknown>;
-		const payload = body.payload as Record<string, unknown>;
-		expect(payload.failure).toEqual({
-			failureKind: "goal_blocked",
-			failureReason: "refresh token revoked",
-			failureClass: "environment",
-			failureCode: "codex:unauthorized",
-		});
 	});
 
 	it("emitStarted silently catches HTTP errors (fire-and-forget)", async () => {

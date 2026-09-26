@@ -1,5 +1,5 @@
 /**
- * FLY-887 — Blueprint DAG workflow keep-alive worktree IN-PLACE TAKEOVER.
+ * FLY-887 — Blueprint three-stage keep-alive worktree IN-PLACE TAKEOVER.
  *
  * When a later phase (implement/qa) dispatches on the SHARED branch-B worktree
  * and the prior phase parked (worktree still registered), the worktree is REUSED
@@ -34,17 +34,12 @@ function makeHydrator() {
 		labels: [],
 	}));
 }
-function makeGitChecker(opts: {
-	clean: boolean;
-	head: string;
-	ancestor?: boolean;
-}) {
+function makeGitChecker(opts: { clean: boolean; head: string }) {
 	return {
 		assertCleanTree: vi.fn(async () => {
 			if (!opts.clean) throw new Error("dirty tree");
 		}),
 		captureBaseline: vi.fn(async () => opts.head),
-		isAncestorOf: vi.fn(async () => opts.ancestor ?? false),
 		check: vi.fn(async () => ({
 			hasNewCommits: true,
 			commitCount: 1,
@@ -92,17 +87,6 @@ function makeWtManager(opts: {
 		})),
 		isRegistered: vi.fn(async () => opts.registered),
 		removeIfExists: vi.fn(async () => true),
-		quarantineAndRebuild: vi.fn(async () => ({
-			ok: true as const,
-			worktree: {
-				projectName: "flywheel",
-				issueId: "FLY-887",
-				worktreePath: opts.path,
-				branch: opts.branch ?? "feat/branch-b",
-				mainRepoPath: "/project",
-				generation: "resume-generation",
-			},
-		})),
 		create: vi.fn(async () => ({
 			projectName: "flywheel",
 			issueId: "FLY-887",
@@ -158,6 +142,7 @@ async function run(
 describe("FLY-887 worktree in-place takeover", () => {
 	const created: string[] = [];
 	afterEach(() => {
+		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
 		for (const p of created) rmSync(p, { recursive: true, force: true });
 		created.length = 0;
 	});
@@ -191,29 +176,6 @@ describe("FLY-887 worktree in-place takeover", () => {
 		expect(wt.create).not.toHaveBeenCalled();
 	});
 
-	it("clean descendant HEAD fast-forwards the frozen startPoint and reuses in place", async () => {
-		const path = makeRealWorktree();
-		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
-		const gitChecker = makeGitChecker({
-			clean: true,
-			head: `fedcba98${"0".repeat(32)}`,
-			ancestor: true,
-		});
-		const { result } = await run(wt, gitChecker, {
-			sessionRole: "implement",
-			shareParentBranch: true,
-			startPoint: HEAD,
-		});
-		expect(result.success).toBe(true);
-		expect(gitChecker.isAncestorOf).toHaveBeenCalledWith(
-			path,
-			HEAD,
-			`fedcba98${"0".repeat(32)}`,
-		);
-		expect(wt.create).not.toHaveBeenCalled();
-	});
-
 	it("dirty worktree → worktree_takeover_failed (never removeIfExists an active phase worktree)", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
@@ -225,10 +187,6 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(false);
 		expect(result.error).toContain("worktree_takeover_failed");
-		expect(result.failure).toEqual({
-			failureKind: "worktree_takeover_failed",
-			failureReason: result.error,
-		});
 		expect(wt.removeIfExists).not.toHaveBeenCalled();
 		expect(wt.create).not.toHaveBeenCalled();
 	});
@@ -244,8 +202,6 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(false);
 		expect(result.error).toContain("worktree_takeover_failed");
-		expect(result.failure?.failureKind).toBe("worktree_takeover_failed");
-		expect(result.failure?.failureReason).toContain("head=deadbeef");
 		expect(wt.create).not.toHaveBeenCalled();
 	});
 
@@ -260,12 +216,10 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(true);
 		expect(wt.removeIfExists).toHaveBeenCalled();
-		expect(wt.create).toHaveBeenCalledWith(
-			expect.objectContaining({ startPoint: HEAD }),
-		);
+		expect(wt.create).toHaveBeenCalled();
 	});
 
-	it("FLY-1257 review R1: design retry with startPoint reuses the registered branch-B worktree", async () => {
+	it("byte-compat: design phase → legacy create path even if registered", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
 		const wt = makeWtManager({ registered: true, path });
@@ -275,70 +229,24 @@ describe("FLY-887 worktree in-place takeover", () => {
 			{ sessionRole: "design", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
-		expect(wt.removeIfExists).not.toHaveBeenCalled();
-		expect(wt.create).not.toHaveBeenCalled();
+		expect(wt.create).toHaveBeenCalled();
 	});
 
-	it("byte-compat: fresh design without startPoint uses the legacy create path", async () => {
+	it("byte-compat: kill-switch=0 → legacy create path (no takeover)", async () => {
+		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
 		const path = makeRealWorktree();
 		created.push(path);
 		const wt = makeWtManager({ registered: true, path });
 		const { result } = await run(
 			wt,
 			makeGitChecker({ clean: true, head: HEAD }),
-			{
-				sessionRole: "design",
-				shareParentBranch: true,
-			},
+			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(true);
 		expect(wt.create).toHaveBeenCalled();
 	});
 
-	it("fresh root implement without startPoint uses the legacy create path", async () => {
-		const path = makeRealWorktree();
-		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
-		const { result } = await run(
-			wt,
-			makeGitChecker({ clean: true, head: HEAD }),
-			{
-				sessionRole: "implement",
-				shareParentBranch: true,
-			},
-		);
-		expect(result.success).toBe(true);
-		expect(wt.removeIfExists).toHaveBeenCalled();
-		expect(wt.create).toHaveBeenCalledWith(
-			expect.objectContaining({ startPoint: undefined }),
-		);
-	});
-
-	it("FLY-1718 continuity startPoint does not turn a design dispatch into a phase takeover", async () => {
-		const path = makeRealWorktree();
-		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
-		const { result } = await run(
-			wt,
-			makeGitChecker({ clean: true, head: HEAD }),
-			{
-				sessionRole: "design",
-				shareParentBranch: true,
-				startPoint: HEAD,
-				continuityInherit: {
-					branch: "flywheel-FLY-1718",
-					sha: HEAD,
-				},
-			},
-		);
-		expect(result.success).toBe(true);
-		expect(wt.removeIfExists).toHaveBeenCalled();
-		expect(wt.create).toHaveBeenCalledWith(
-			expect.objectContaining({ startPoint: HEAD }),
-		);
-	});
-
-	it("standalone run without shareParentBranch uses the create path", async () => {
+	it("byte-compat: non-three-stage (no shareParentBranch) → legacy create path", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
 		const wt = makeWtManager({ registered: true, path });
@@ -349,88 +257,5 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(true);
 		expect(wt.create).toHaveBeenCalled();
-	});
-
-	it("resume launch quarantines and rebuilds instead of taking over in place", async () => {
-		const path = makeRealWorktree();
-		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
-		const prepareWorkflowIssueDelivery = vi.fn();
-		const { result, adapter } = await run(
-			wt,
-			makeGitChecker({ clean: true, head: HEAD }),
-			{
-				sessionRole: "implement",
-				shareParentBranch: true,
-				startPoint: HEAD,
-				workflowResume: {
-					runId: "run-1",
-					admissionKey: "admission-1",
-					sourceAttachmentId: "attachment-1",
-					anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
-					anchorCommit: HEAD,
-					frozenBody: "Frozen issue body",
-				},
-				prepareWorkflowIssueDelivery,
-			},
-		);
-
-		expect(result.success).toBe(true);
-		expect(wt.quarantineAndRebuild).toHaveBeenCalledWith({
-			mainRepoPath: "/project",
-			projectName: "eng",
-			issueId: "FLY-887",
-			runId: "run-1",
-			admissionKey: "admission-1",
-			anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
-			anchorCommit: HEAD,
-		});
-		expect(wt.removeIfExists).not.toHaveBeenCalled();
-		expect(wt.create).not.toHaveBeenCalled();
-		expect(prepareWorkflowIssueDelivery).toHaveBeenCalledWith({
-			sourceKind: "frozen_replay",
-			body: "Frozen issue body",
-			admissionKey: "admission-1",
-			sourceAttachmentId: "attachment-1",
-			anchorCommit: HEAD,
-		});
-		expect(adapter.execute).toHaveBeenCalledWith(
-			expect.objectContaining({
-				prompt: expect.stringContaining("Frozen issue body"),
-			}),
-		);
-		expect(adapter.execute).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				prompt: expect.stringContaining("Description for FLY-887"),
-			}),
-		);
-	});
-
-	it("resume launch fails closed when startPoint does not match the admitted anchor", async () => {
-		const path = makeRealWorktree();
-		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
-		const { result, adapter } = await run(
-			wt,
-			makeGitChecker({ clean: true, head: HEAD }),
-			{
-				sessionRole: "implement",
-				shareParentBranch: true,
-				startPoint: "f".repeat(40),
-				workflowResume: {
-					runId: "run-1",
-					admissionKey: "admission-1",
-					sourceAttachmentId: "attachment-1",
-					anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
-					anchorCommit: HEAD,
-					frozenBody: "frozen",
-				},
-			},
-		);
-
-		expect(result).toMatchObject({ success: false });
-		expect(result.error).toContain("resume_start_point_mismatch");
-		expect(wt.quarantineAndRebuild).not.toHaveBeenCalled();
-		expect(adapter.execute).not.toHaveBeenCalled();
 	});
 });

@@ -85,30 +85,15 @@ fi
 
 # ── S4: linux render path ──
 : > "$CALLS"; rm -rf "$UNIT_DIR"
-SPEC='{"name":"updater","kind":"path","exec":"/bin/bash /opt/fw/scripts/update-flywheel.sh","watch":["/opt/state/self-ship-urgent.d"]}'
+SPEC='{"name":"updater","kind":"path","exec":"/bin/bash /opt/fw/scripts/update-flywheel.sh","watch":["/opt/state/self-ship-pending.d"]}'
 sup systemd-user supervisor_install "$SPEC" >/dev/null 2>&1
 SVC="$UNIT_DIR/updater.service"; PTH="$UNIT_DIR/updater.path"
 if [ -f "$SVC" ] && [ -f "$PTH" ] \
-   && grep -q "DirectoryNotEmpty=/opt/state/self-ship-urgent.d" "$PTH" \
+   && grep -q "DirectoryNotEmpty=/opt/state/self-ship-pending.d" "$PTH" \
    && grep -q "enable --now updater.path" "$CALLS"; then
   pass "S4 linux path unit (.service + .path DirectoryNotEmpty)"
 else
   fail "S4 path render: svc=$(cat "$SVC" 2>/dev/null) pth=$(cat "$PTH" 2>/dev/null) | calls: $(cat "$CALLS")"
-fi
-
-# ── S3b: bounded interval timer + explicit trigger ──
-: > "$CALLS"; rm -rf "$UNIT_DIR"
-SPEC='{"name":"interval-worker","kind":"timer","exec":"/bin/bash /opt/fw/scripts/interval-worker-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
-sup systemd-user supervisor_install "$SPEC" >/dev/null 2>&1
-SVC="$UNIT_DIR/interval-worker.service"; TMR="$UNIT_DIR/interval-worker.timer"
-sup systemd-user supervisor_trigger "interval-worker" "timer" >/dev/null 2>&1
-if grep -q "TimeoutStartSec=60" "$SVC" \
-   && grep -q "OnBootSec=60s" "$TMR" \
-   && grep -q "OnUnitActiveSec=60s" "$TMR" \
-   && grep -q "systemctl --user start interval-worker.service" "$CALLS"; then
-  pass "S3b bounded interval timer renders and triggers its oneshot service"
-else
-  fail "S3b interval timer: svc=$(cat "$SVC" 2>/dev/null) tmr=$(cat "$TMR" 2>/dev/null) calls=$(cat "$CALLS")"
 fi
 
 # ── S5: darwinOnly skipped on linux ──

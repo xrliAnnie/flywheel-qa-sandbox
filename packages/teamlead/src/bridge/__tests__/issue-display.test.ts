@@ -11,7 +11,7 @@
  *    and the unified face-C line render (`🎨设计✅·🔨实现▶·🧪QA◾` style).
  */
 
-import type { WorkflowPhaseRole } from "flywheel-config";
+import type { ThreeStagePhase } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
 	deriveIssueTitleBadge,
@@ -64,7 +64,6 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 	it("handoff-boundary statuses + park parked/unknown → done (到达 handoff 边界=该段工作到位)", () => {
 		for (const status of [
 			"design_done",
-			"ship_parked",
 			"awaiting_review",
 			"approved_to_ship",
 		]) {
@@ -79,7 +78,6 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 	it("handoff-boundary statuses + park not_parked → active (FLY-543: woken rework must show ▶, not a fake ✅)", () => {
 		for (const status of [
 			"design_done",
-			"ship_parked",
 			"awaiting_review",
 			"approved_to_ship",
 		]) {
@@ -101,17 +99,6 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 		}
 	});
 
-	it("terminated cleanup after issue conclusion → done", () => {
-		expect(
-			derivePhaseDisplayState({
-				role: "qa",
-				status: "terminated",
-				park: "unknown",
-				issueConcluded: true,
-			}),
-		).toBe("done");
-	});
-
 	it("other/unknown statuses with a session → active (conservative)", () => {
 		for (const status of ["pending", "shelved-ish", "weird"]) {
 			expect(
@@ -122,26 +109,25 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 });
 
 function states(
-	entries: Partial<Record<WorkflowPhaseRole, PhaseDisplayState>>,
-): Map<WorkflowPhaseRole, PhaseDisplayState> {
+	entries: Partial<Record<ThreeStagePhase, PhaseDisplayState>>,
+): Map<ThreeStagePhase, PhaseDisplayState> {
 	return new Map(
-		Object.entries(entries) as [WorkflowPhaseRole, PhaseDisplayState][],
+		Object.entries(entries) as [ThreeStagePhase, PhaseDisplayState][],
 	);
 }
 
 function statuses(
-	entries: Partial<Record<WorkflowPhaseRole, string>>,
-): Map<WorkflowPhaseRole, string> {
-	return new Map(Object.entries(entries) as [WorkflowPhaseRole, string][]);
+	entries: Partial<Record<ThreeStagePhase, string>>,
+): Map<ThreeStagePhase, string> {
+	return new Map(Object.entries(entries) as [ThreeStagePhase, string][]);
 }
 
 function titleBadge(args: {
-	phaseStates: ReadonlyMap<WorkflowPhaseRole, PhaseDisplayState>;
-	phaseStatuses?: ReadonlyMap<WorkflowPhaseRole, string>;
+	phaseStates: ReadonlyMap<ThreeStagePhase, PhaseDisplayState>;
+	phaseStatuses?: ReadonlyMap<ThreeStagePhase, string>;
 	shipFinalizationClaimed?: boolean;
 	mainSessionStage?: string;
 	mainSessionStatus?: string;
-	issueConcluded?: boolean;
 }) {
 	return deriveIssueTitleBadge({
 		phaseStates: args.phaseStates,
@@ -149,7 +135,6 @@ function titleBadge(args: {
 		shipFinalizationClaimed: args.shipFinalizationClaimed ?? false,
 		mainSessionStage: args.mainSessionStage,
 		mainSessionStatus: args.mainSessionStatus,
-		issueConcluded: args.issueConcluded ?? false,
 	});
 }
 
@@ -182,31 +167,6 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 				phaseStates: new Map(),
 				mainSessionStage: "ship",
 				mainSessionStatus: "completed",
-			}),
-		).toEqual({ kind: "completed" });
-	});
-
-	it("empty map + terminated cleanup after conclusion → completed kind", () => {
-		expect(
-			titleBadge({
-				phaseStates: new Map(),
-				mainSessionStage: "completed",
-				mainSessionStatus: "terminated",
-				issueConcluded: true,
-			}),
-		).toEqual({ kind: "completed" });
-	});
-
-	it("concluded DAG workflow cleanup with a terminated phase stays completed", () => {
-		expect(
-			titleBadge({
-				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
-				phaseStatuses: statuses({
-					design: "completed",
-					implement: "merged",
-					qa: "terminated",
-				}),
-				issueConcluded: true,
 			}),
 		).toEqual({ kind: "completed" });
 	});

@@ -52,6 +52,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 
 describe("HeartbeatService", () => {
 	let store: {
+		getStuckSessions: ReturnType<typeof vi.fn>;
 		getOrphanSessions: ReturnType<typeof vi.fn>;
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
 		forceStatus: ReturnType<typeof vi.fn>;
@@ -62,6 +63,7 @@ describe("HeartbeatService", () => {
 		pruneQuietWakeNotifiedNotIn: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
+		onSessionStuck: ReturnType<typeof vi.fn>;
 		onSessionOrphaned: ReturnType<typeof vi.fn>;
 		onSessionStale: ReturnType<typeof vi.fn>;
 	};
@@ -71,6 +73,7 @@ describe("HeartbeatService", () => {
 		const quietNotified = new Set<string>();
 		const qk = (e: string, s: string, f: string) => `${e}|${s}|${f}`;
 		store = {
+			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 			forceStatus: vi.fn(),
@@ -94,6 +97,9 @@ describe("HeartbeatService", () => {
 			}),
 		};
 		notifier = {
+			// FLY-637: onSessionStuck now returns a "persisted" boolean; true so the
+			// stuck dedup engages exactly as before.
+			onSessionStuck: vi.fn().mockResolvedValue(true),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};
@@ -110,46 +116,51 @@ describe("HeartbeatService", () => {
 		service.stop();
 	});
 
-	it("check() does nothing when no orphan sessions", async () => {
+	// --- Stuck detection (inherited from StuckWatcher) ---
+
+	it("check() detects stuck session and notifies", async () => {
+		const session = makeSession();
+		store.getStuckSessions.mockReturnValue([session]);
+
 		await service.check();
 
-		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
+		expect(notifier.onSessionStuck).toHaveBeenCalledWith(
+			session,
+			expect.any(Number),
+		);
 	});
 
-	it("dispatches residue maintenance once after a throwing server-loss phase", async () => {
-		const order: string[] = [];
-		const error = vi.spyOn(console, "error").mockImplementation(() => {});
-		service = new HeartbeatService(
-			store as any,
-			notifier as any,
-			15,
-			60_000,
-			60,
-			undefined,
-			24,
-			6 * 3_600_000,
-			undefined,
-			48,
-			undefined,
-			undefined,
-			undefined,
-			{
-				check: async () => {
-					order.push("server-loss");
-					throw new Error("probe failed");
-				},
-			},
-			undefined,
-			async () => {
-				order.push("maintenance");
-			},
-		);
+	it("check() skips already-notified stuck sessions", async () => {
+		const session = makeSession();
+		store.getStuckSessions.mockReturnValue([session]);
 
 		await service.check();
-		await vi.waitFor(() =>
-			expect(order).toEqual(["server-loss", "maintenance"]),
-		);
-		error.mockRestore();
+		await service.check();
+
+		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
+	});
+
+	it("check() re-notifies if session leaves and re-enters stuck", async () => {
+		const session = makeSession();
+		store.getStuckSessions.mockReturnValue([session]);
+		await service.check();
+		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
+
+		// Session is no longer stuck
+		store.getStuckSessions.mockReturnValue([]);
+		await service.check();
+
+		// Session becomes stuck again
+		store.getStuckSessions.mockReturnValue([session]);
+		await service.check();
+		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(2);
+	});
+
+	it("check() does nothing when no stuck or orphan sessions", async () => {
+		await service.check();
+
+		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
+		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
 	});
 
 	// --- FLY-639: StateStore corruption containment + self-heal ---
@@ -159,7 +170,7 @@ describe("HeartbeatService", () => {
 		const recoverSpy = vi.fn();
 		(store as { recoverFromCorruption?: unknown }).recoverFromCorruption =
 			recoverSpy;
-		store.getOrphanSessions.mockImplementation(() => {
+		store.getStuckSessions.mockImplementation(() => {
 			throw new Error("no such table: sessions");
 		});
 
@@ -246,15 +257,21 @@ describe("HeartbeatService", () => {
 		expect(notifier.onSessionOrphaned).toHaveBeenCalledTimes(2);
 	});
 
-	it("check() reaps orphans", async () => {
+	it("check() calls both checkStuck and reapOrphans", async () => {
+		const stuck = makeSession({ execution_id: "exec-stuck" });
 		const orphan = makeSession({
 			execution_id: "exec-orphan",
 			heartbeat_at: "2026-03-06 08:00:00",
 		});
+		store.getStuckSessions.mockReturnValue([stuck]);
 		store.getOrphanSessions.mockReturnValue([orphan]);
 
 		await service.check();
 
+		expect(notifier.onSessionStuck).toHaveBeenCalledWith(
+			stuck,
+			expect.any(Number),
+		);
 		expect(notifier.onSessionOrphaned).toHaveBeenCalledWith(
 			orphan,
 			expect.any(Number),
@@ -267,40 +284,6 @@ describe("HeartbeatService", () => {
 		);
 	});
 
-	it("durable tmux holds suppress orphan actions in the same cycle", async () => {
-		const held = makeSession({ execution_id: "exec-held" });
-		store.getOrphanSessions.mockReturnValue([held]);
-		const claimed = new Set<string>() as ReadonlySet<string> & {
-			claimed: ReadonlySet<string>;
-			heldExecutionIds: ReadonlySet<string>;
-		};
-		Object.assign(claimed, {
-			claimed,
-			heldExecutionIds: new Set([held.execution_id]),
-		});
-		const heldService = new HeartbeatService(
-			store as any,
-			notifier as any,
-			15,
-			60_000,
-			60,
-			undefined,
-			24,
-			6 * 3_600_000,
-			undefined,
-			48,
-			undefined,
-			undefined,
-			undefined,
-			{ check: vi.fn().mockResolvedValue(claimed) },
-		);
-
-		await heldService.check();
-
-		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-	});
-
 	// --- Timer management ---
 
 	it("start/stop manages interval", async () => {
@@ -311,13 +294,15 @@ describe("HeartbeatService", () => {
 		service.start();
 
 		vi.advanceTimersByTime(60_000);
-		// Flush async microtasks so check() completes fully.
+		// Flush async microtasks so check() completes fully (checkStuck + reapOrphans)
 		await vi.advanceTimersByTimeAsync(0);
+		expect(store.getStuckSessions).toHaveBeenCalledTimes(1);
 		expect(store.getOrphanSessions).toHaveBeenCalledTimes(1);
 
 		service.stop();
 		vi.advanceTimersByTime(60_000);
 		await vi.advanceTimersByTimeAsync(0);
+		expect(store.getStuckSessions).toHaveBeenCalledTimes(1);
 		expect(store.getOrphanSessions).toHaveBeenCalledTimes(1);
 
 		vi.useRealTimers();
@@ -488,54 +473,35 @@ describe("RegistryHeartbeatNotifier", () => {
 		store.close();
 	});
 
-	it("reconnect title carries the resolved Codex marker without skipping the reconnect state", async () => {
-		const { registry } = createMockRegistry();
+	it("sends session_stuck envelope via registry runtime with sessionKey", async () => {
+		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
-		const projects: ProjectEntry[] = [
-			{
-				projectName: "geo",
-				projectRoot: "/tmp/geo",
-				leads: [
-					{
-						agentId: "product-lead",
-						chatChannel: "test-chat",
-						botToken: "bot-token",
-						match: { labels: [] },
-					},
-				],
-			},
-		];
-		hbStore.upsertChatThread("thread-1255", "test-chat", "i-1255");
-		const stampStatusBadge = vi.fn().mockResolvedValue(undefined);
 		const notifier = new RegistryHeartbeatNotifier(
 			registry,
-			projects,
+			testProjects,
 			hbStore,
-			undefined,
-			true,
-			{ stampStatusBadge } as never,
 		);
 		const session: Session = {
-			execution_id: "exec-1255",
-			issue_id: "i-1255",
+			execution_id: "exec-stuck",
+			issue_id: "i1",
 			project_name: "geo",
 			status: "running",
-			issue_identifier: "FLY-1255",
-			adapter_type: "codex-tmux",
-			runner_model: "gpt-5.6-sol",
-			chat_thread_role: "implement",
-			session_stage: "implement",
+			issue_identifier: "GEO-100",
 		};
 
-		await notifier.onSessionMonitoringReestablished(session, 5);
+		await notifier.onSessionStuck(session, 30);
 
-		expect(stampStatusBadge).toHaveBeenCalledTimes(1);
-		expect(stampStatusBadge.mock.calls[0]?.[0]).toMatchObject({
-			modelMarker: "G",
-		});
-		expect(stampStatusBadge.mock.calls[0]?.[2]).toBe("⚠️重连中");
+		expect(envelopes).toHaveLength(1);
+		const env = envelopes[0];
+		expect(env.leadId).toBe("product-lead");
+		expect(env.sessionKey).toBe("flywheel:GEO-100");
+		expect(env.event.event_type).toBe("session_stuck");
+		expect(env.event.minutes_since_activity).toBe(30);
+		// FLY-163: thread_id + forum_channel removed from HookPayload
+
 		hbStore.close();
 	});
+
 	it("sends session_orphaned envelope via registry runtime with sessionKey", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
@@ -565,12 +531,94 @@ describe("RegistryHeartbeatNotifier", () => {
 
 		hbStore.close();
 	});
+
+	it("delivers via registry runtime (not direct HTTP)", async () => {
+		const { registry, mockRuntime } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+		await notifier.onSessionStuck(
+			{
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "p",
+				status: "running",
+			},
+			15,
+		);
+
+		expect(mockRuntime.deliver).toHaveBeenCalledTimes(1);
+
+		hbStore.close();
+	});
+
+	// FLY-163: PM/triage lead heartbeat notification (formerly "no-forum")
+	it("sends session_stuck for PM lead routed via chat_channel", async () => {
+		const noForumProjects: ProjectEntry[] = [
+			{
+				projectName: "geo-nf",
+				projectRoot: "/tmp/geo-nf",
+				leads: [
+					{
+						agentId: "pm-lead",
+						chatChannel: "core-channel",
+						match: { labels: ["PM"] },
+						canSpawnRunners: false,
+					},
+				],
+			},
+		];
+		const envelopes: LeadEventEnvelope[] = [];
+		const mockRuntime = {
+			type: "commdb" as const,
+			deliver: vi.fn(async (env: LeadEventEnvelope) => {
+				envelopes.push(env);
+				return { delivered: true };
+			}),
+			sendBootstrap: vi.fn(async () => {}),
+			health: vi.fn(async () => ({
+				status: "healthy" as const,
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			})),
+			shutdown: vi.fn(async () => {}),
+		};
+		const registry = new RuntimeRegistry();
+		for (const lead of noForumProjects[0]!.leads) {
+			registry.register(lead, mockRuntime);
+		}
+
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			noForumProjects,
+			hbStore,
+		);
+		const session: Session = {
+			execution_id: "exec-nf-stuck",
+			issue_id: "i-nf",
+			project_name: "geo-nf",
+			status: "running",
+			issue_identifier: "GEO-500",
+		};
+
+		await notifier.onSessionStuck(session, 30);
+
+		expect(envelopes).toHaveLength(1);
+		expect(envelopes[0].event.event_type).toBe("session_stuck");
+		expect(envelopes[0].event.chat_channel).toBe("core-channel");
+
+		hbStore.close();
+	});
 });
 
 // --- FLY-25: Delivery contract upgrade tests ---
 
 describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
-	it("marks orphan guardrail event as delivered only on success", async () => {
+	it("marks guardrail event as delivered only on success", async () => {
 		const { registry } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
 		const notifier = new RegistryHeartbeatNotifier(
@@ -586,17 +634,17 @@ describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
 			issue_identifier: "GEO-100",
 		};
 
-		await notifier.onSessionOrphaned(session, 30);
+		await notifier.onSessionStuck(session, 30);
 
 		// Should be delivered
 		const events = hbStore.getRecentDeliveredEvents("product-lead", 60);
 		expect(events).toHaveLength(1);
-		expect(events[0]!.event_type).toBe("session_orphaned");
+		expect(events[0]!.event_type).toBe("session_stuck");
 
 		hbStore.close();
 	});
 
-	it("does NOT mark orphan guardrail delivered on transport failure", async () => {
+	it("does NOT mark guardrail event as delivered on transport failure", async () => {
 		const { registry, mockRuntime } = createMockRegistry();
 		mockRuntime.deliver.mockResolvedValue({
 			delivered: false,
@@ -616,7 +664,7 @@ describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
 			issue_identifier: "GEO-100",
 		};
 
-		await notifier.onSessionOrphaned(session, 30);
+		await notifier.onSessionStuck(session, 30);
 
 		// Should NOT be delivered
 		const events = hbStore.getRecentDeliveredEvents("product-lead", 60);
@@ -625,7 +673,7 @@ describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
 		// Should have recorded failure
 		const undelivered = hbStore.getUndeliveredGuardrailEvents(
 			"product-lead",
-			["session_orphaned"],
+			["session_stuck"],
 			3,
 		);
 		expect(undelivered).toHaveLength(1);
@@ -652,9 +700,122 @@ describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
 		expect(GUARDRAIL_EVENT_TYPES.has("session_orphaned")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_stale_completed")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_completed")).toBe(false);
-		// Historical gate_timed_out rows remain classified as guardrails.
+		// FLY-159: gate_timed_out must retry via HeartbeatService when Lead delivery fails
 		expect(GUARDRAIL_EVENT_TYPES.has("gate_timed_out")).toBe(true);
 
+		hbStore.close();
+	});
+
+	it("retryUndeliveredGuardrailEvents re-delivers failed events", async () => {
+		const { registry, mockRuntime } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+
+		// First delivery fails
+		mockRuntime.deliver.mockResolvedValue({
+			delivered: false,
+			error: "timeout",
+		});
+		const session: Session = {
+			execution_id: "exec-stuck",
+			issue_id: "i1",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-100",
+		};
+		await notifier.onSessionStuck(session, 30);
+
+		// Verify not delivered
+		expect(hbStore.getRecentDeliveredEvents("product-lead", 60)).toHaveLength(
+			0,
+		);
+
+		// Now retry succeeds
+		mockRuntime.deliver.mockResolvedValue({ delivered: true });
+		await notifier.retryUndeliveredGuardrailEvents();
+
+		// Should now be delivered
+		const events = hbStore.getRecentDeliveredEvents("product-lead", 60);
+		expect(events).toHaveLength(1);
+
+		hbStore.close();
+	});
+
+	it("retryUndeliveredGuardrailEvents respects max attempts (3)", async () => {
+		const { registry, mockRuntime } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+
+		// Delivery always fails
+		mockRuntime.deliver.mockResolvedValue({
+			delivered: false,
+			error: "persistent failure",
+		});
+		const session: Session = {
+			execution_id: "exec-stuck",
+			issue_id: "i1",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-100",
+		};
+		await notifier.onSessionStuck(session, 30); // attempt 1
+
+		await notifier.retryUndeliveredGuardrailEvents(); // attempt 2
+		await notifier.retryUndeliveredGuardrailEvents(); // attempt 3
+
+		// Should be exhausted now (3 attempts from recordDeliveryFailure)
+		// The initial failure in deliverHook records attempt 1,
+		// then two retries record attempts 2 and 3
+		const undelivered = hbStore.getUndeliveredGuardrailEvents(
+			"product-lead",
+			["session_stuck"],
+			3,
+		);
+		expect(undelivered).toHaveLength(0); // exhausted — no longer eligible
+
+		// Verify it's still not delivered
+		expect(hbStore.getRecentDeliveredEvents("product-lead", 60)).toHaveLength(
+			0,
+		);
+
+		hbStore.close();
+	});
+});
+
+describe("FLY-25: HeartbeatService.check() integrates retry", () => {
+	it("check() calls retryUndeliveredGuardrailEvents on RegistryHeartbeatNotifier", async () => {
+		const { registry } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+
+		// Spy on retryUndeliveredGuardrailEvents
+		const retrySpy = vi.spyOn(notifier, "retryUndeliveredGuardrailEvents");
+
+		const service = new HeartbeatService(
+			hbStore as any,
+			notifier,
+			15,
+			60_000,
+			60,
+		);
+
+		await service.check();
+
+		expect(retrySpy).toHaveBeenCalledTimes(1);
+
+		service.stop();
 		hbStore.close();
 	});
 });

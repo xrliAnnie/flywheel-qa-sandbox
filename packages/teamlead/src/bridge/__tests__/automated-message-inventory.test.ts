@@ -65,10 +65,10 @@ describe("automated Discord sender inventory", () => {
 		}
 
 		expect(refs.sort()).toEqual([
+			"bridge/auto-qa-effects.ts",
 			"bridge/gate-poller.ts",
 			"bridge/infra-notify.ts",
 			"bridge/reports-route.ts",
-			"bridge/review-thread-effect.ts",
 			"bridge/tools.ts",
 			"lead-backends/codex/DirectDiscordOutboundSender.ts",
 			"lead-backends/codex/discord-send-core.ts",
@@ -125,18 +125,11 @@ describe("automated Discord sender inventory", () => {
 			"LeadAlertNotifier.ts",
 			"bridge/AlertChannelHub.ts",
 			"bridge/ChatThreadCreator.ts",
-			// FLY-1544 ③: the shared thread-create/post REST mechanics (extracted
-			// from ChatThreadCreator; the v2 Discord messenger's one sender). Marks
-			// its own text idempotently.
-			"bridge/chat-thread-utils.ts",
 			"bridge/discord-post-file.ts",
 			"bridge/discord-utils.ts",
-			// FLY-1282 Part D: disposition-receipt delivery (bounded, marked).
-			"bridge/disposition-receipt.ts",
-			// FLY-1847: founder-review verdict receipts and discussion guidance.
-			"bridge/founder-reply-deliverer.ts",
 			"bridge/founder-thread-notifier.ts",
 			"bridge/legacy-phase-thread-sweep.ts",
+			"bridge/publish-broker/wire.ts",
 			"bridge/roundtable/RoundtableThreadManager.ts",
 			"bridge/runner-ready-to-close-notifier.ts",
 			"bridge/standup-service.ts",

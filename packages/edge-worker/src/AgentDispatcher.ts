@@ -146,10 +146,12 @@ export function registeredDepts(cfg: AgentConfig): string[] | null {
 const RESERVED_GENERIC_AGENT_NAME = "generic";
 
 /**
- * Reserved QA agent name for explicit DAG or manual QA dispatch. A
- * project-declared `agents.qa` (e.g. Flywheel's
- * `.flywheel/agents/engineering/qa-executor.md`) takes precedence; otherwise
- * the shipped project-agnostic `agents/qa-executor.md` is used.
+ * FLY-579: reserved QA agent name. The Auto-QA coordinator spawns with
+ * `agentName: "qa"`. Resolution: a project-declared `agents.qa` (e.g.
+ * flywheel's `.flywheel/agents/engineering/qa-executor.md`) takes precedence
+ * (project override); otherwise the shipped project-agnostic
+ * `agents/qa-executor.md` is used — so EVERY project gets an independent QA
+ * runner without declaring one.
  */
 const RESERVED_QA_AGENT_NAME = "qa";
 

@@ -122,10 +122,9 @@ describe("GatePoller (FLY-161)", () => {
 		circuitThreshold?: number;
 		circuitCooldownTicks?: number;
 		evictionRetryTicks?: number;
-		ensureShipRelevantDiff?: (
-			session: import("../StateStore.js").Session,
-		) => Promise<void>;
-		recordSpan?: (name: string, startMs: number, endMs: number) => void;
+		patrolEveryNTicks?: number;
+		transport?: import("../bridge/gate-poller.js").MisroutePatrolTransport;
+		misrouteArchiveDir?: string;
 	}): GatePoller {
 		return new GatePoller({
 			pollIntervalMs: 60_000, // not auto-started in tests
@@ -136,8 +135,9 @@ describe("GatePoller (FLY-161)", () => {
 			circuitThreshold: opts?.circuitThreshold,
 			circuitCooldownTicks: opts?.circuitCooldownTicks,
 			evictionRetryTicks: opts?.evictionRetryTicks,
-			ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
-			recordSpan: opts?.recordSpan,
+			patrolEveryNTicks: opts?.patrolEveryNTicks,
+			transport: opts?.transport,
+			misrouteArchiveDir: opts?.misrouteArchiveDir,
 		});
 	}
 
@@ -170,15 +170,11 @@ describe("GatePoller (FLY-161)", () => {
 		leadId: string;
 		content: string;
 		checkpoint?: string;
-		id?: string;
-		kind?: "report";
 	}): string {
 		const db = new CommDB(dbPath);
 		try {
 			return db.insertQuestion(opts.execId, opts.leadId, opts.content, {
 				checkpoint: opts.checkpoint,
-				id: opts.id,
-				kind: opts.kind,
 			});
 		} finally {
 			db.close();
@@ -208,15 +204,6 @@ describe("GatePoller (FLY-161)", () => {
 		expect(env.event.checkpoint).toBe("brainstorm");
 		expect(env.event.question_id).toBe(qid);
 		expect(env.event.summary).toBe("Please review my plan");
-		const protectedDb = new CommDB(dbPath);
-		try {
-			expect(protectedDb.getMessageById(qid)).toMatchObject({
-				relay_state: "protected",
-				logical_event_id: String(env.seq),
-			});
-		} finally {
-			protectedDb.close();
-		}
 	});
 
 	it("Case 2: emits runner_question for pending question without checkpoint", async () => {
@@ -235,29 +222,6 @@ describe("GatePoller (FLY-161)", () => {
 		expect(env.event.checkpoint).toBeUndefined();
 		expect(env.event.question_id).toBe(qid);
 		expect(env.event.summary).toBe("Should we use UTC or local time?");
-	});
-
-	it("preserves report kind on the legacy runner_question path", async () => {
-		insertSession("exec-report", {
-			status: "running",
-			labels: ["product"],
-		});
-		const qid = insertQuestion({
-			execId: "exec-report",
-			leadId: "product-lead",
-			content:
-				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-report route=- detail=parked",
-			id: `rstop-${"e".repeat(32)}`,
-			kind: "report",
-		});
-
-		await runPoll(makePoller());
-
-		expect(runtime.captured[0]?.envelope.event).toMatchObject({
-			event_type: "runner_question",
-			question_id: qid,
-			question_kind: "report",
-		});
 	});
 
 	it("Case 3: partitions mixed pending questions by checkpoint presence", async () => {
@@ -281,53 +245,6 @@ describe("GatePoller (FLY-161)", () => {
 		const types = runtime.captured.map((c) => c.envelope.event.event_type);
 		expect(types).toContain("gate_question");
 		expect(types).toContain("runner_question");
-	});
-
-	it("FLY-1251: a code-capable run cannot surface approve_to_ship without QA evidence", async () => {
-		const head = "a".repeat(40);
-		insertSession("exec-held", {
-			status: "awaiting_review",
-			labels: ["product"],
-		});
-		const qid = insertQuestion({
-			execId: "exec-held",
-			leadId: "product-lead",
-			content: "PR ready",
-			checkpoint: "approve_to_ship",
-		});
-		store.setReviewBinding("exec-held", {
-			questionId: qid,
-			prHeadSha: head,
-		});
-		store.patchSessionMetadata("exec-held", {
-			pr_number: 42,
-			codex_skip: 1,
-		});
-		const ensureShipRelevantDiff = vi.fn(async () => {});
-		const poller = makePoller({ ensureShipRelevantDiff });
-
-		await runPoll(poller);
-
-		expect(ensureShipRelevantDiff).toHaveBeenCalledOnce();
-		expect(runtime.captured).toHaveLength(0);
-		expect(pendingFor("product-lead")).toHaveLength(1);
-
-		store.putShipRelevantDiffSnapshot({
-			execution_id: "exec-held",
-			pr_head_sha: head,
-			repo: "owner/repo",
-			pr_number: 42,
-			base_ref: "main",
-			base_oid: "b".repeat(40),
-			classifier_version: 1,
-			ship_relevant: 0,
-			file_count: 1,
-		});
-
-		await runPoll(poller);
-
-		expect(runtime.captured).toHaveLength(1);
-		expect(runtime.captured[0]!.envelope.event.question_id).toBe(qid);
 	});
 
 	it("Case 4: does not re-deliver already-delivered events", async () => {
@@ -409,82 +326,6 @@ describe("GatePoller (FLY-161)", () => {
 			JSON.stringify(args).includes("orphan question"),
 		);
 		expect(warnedOrphan).toBe(true);
-	});
-
-	it("FLY-1995: rechecks an orphan only every 20 ticks and resumes relay when its session appears", async () => {
-		insertQuestion({
-			execId: "late-session",
-			leadId: "product-lead",
-			content: "session registration is late",
-		});
-		const getSessionSpy = vi.spyOn(store, "getSession");
-		const poller = makePoller();
-
-		await runPoll(poller);
-		expect(getSessionSpy).toHaveBeenCalledTimes(1);
-		expect(
-			warnSpy.mock.calls.filter((args) =>
-				JSON.stringify(args).includes("orphan question"),
-			),
-		).toHaveLength(1);
-
-		for (let tick = 0; tick < 19; tick += 1) await runPoll(poller);
-		expect(getSessionSpy).toHaveBeenCalledTimes(1);
-		expect(
-			warnSpy.mock.calls.filter((args) =>
-				JSON.stringify(args).includes("orphan question"),
-			),
-		).toHaveLength(1);
-
-		insertSession("late-session", { status: "running", labels: ["product"] });
-		await runPoll(poller);
-		// Tick 21 also runs an independent founder-reply rider, which may perform
-		// another lookup after the orphan cache's scheduled recheck.
-		expect(getSessionSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
-		expect(runtime.captured).toHaveLength(1);
-	});
-
-	it("FLY-1995: rechecks a founder-facing gate every tick so late session registration relays immediately", async () => {
-		insertQuestion({
-			execId: "late-gate-session",
-			leadId: "product-lead",
-			content: "session registration is late",
-			checkpoint: "brainstorm",
-		});
-		const poller = makePoller();
-
-		await runPoll(poller);
-		insertSession("late-gate-session", {
-			status: "running",
-			labels: ["product"],
-		});
-		await runPoll(poller);
-
-		expect(runtime.captured).toHaveLength(1);
-	});
-
-	it("FLY-1995: a throwing diagnostics hook never wedges the poller", async () => {
-		const recordSpan = vi.fn(() => {
-			throw new Error("diagnostics unavailable");
-		});
-		const poller = makePoller({ recordSpan });
-
-		await expect(runPoll(poller)).resolves.toBeUndefined();
-		await expect(runPoll(poller)).resolves.toBeUndefined();
-		expect((poller as unknown as { tickCount: number }).tickCount).toBe(2);
-	});
-
-	it("FLY-1995: bounds the orphan working set at 500 entries", () => {
-		const poller = makePoller() as unknown as {
-			rememberOrphanQuestion(questionId: string): void;
-			orphanQuestions: Map<string, unknown>;
-		};
-		for (let index = 0; index < 501; index += 1) {
-			poller.rememberOrphanQuestion(`bounded-orphan-${index}`);
-		}
-		expect(poller.orphanQuestions.size).toBe(500);
-		expect(poller.orphanQuestions.has("bounded-orphan-0")).toBe(false);
-		expect(poller.orphanQuestions.has("bounded-orphan-500")).toBe(true);
 	});
 
 	it("Case 8 (FLY-307 A): EVICTS gate_question when source session is terminal", async () => {
@@ -592,97 +433,6 @@ describe("GatePoller (FLY-161)", () => {
 		resolveSpy.mockRestore();
 	});
 
-	// FLY-1257 defect ④ path-2. The FLY-307 A premise — "a gate from a terminal
-	// session can never be answered (the Runner is gone)" — does NOT hold for a
-	// review gate: it is consumed by the review-request coordinator + reviewer,
-	// never by the authoring runner. Evicting it expired the gate BEFORE
-	// `request-review` could bind it, so a blocked/completed session could never
-	// re-request review (checkGate → answered/expired → fail-close forever).
-	// Sibling of the FLY-579 approve_to_ship QA-held carve-out above.
-	// Both review checkpoints × BOTH terminal statuses. `completed` is covered
-	// explicitly (Codex review LOW-2): a fix that only special-cased `blocked`
-	// would otherwise slip through, and `completed` is the status the production
-	// incident actually hit once the author finished.
-	for (const checkpoint of ["review_code", "review_design"] as const) {
-		for (const status of ["blocked", "completed"] as const) {
-			it(`Case 8e (FLY-1257 path-2): ${checkpoint} gate from a ${status} session is NOT evicted — the review coordinator consumes it, not the runner`, async () => {
-				insertSession(`exec-${checkpoint}-${status}`, {
-					status,
-					labels: ["product"],
-				});
-				insertQuestion({
-					execId: `exec-${checkpoint}-${status}`,
-					leadId: "product-lead",
-					content: `${checkpoint} requested for PR #599`,
-					checkpoint,
-				});
-				expect(pendingFor("product-lead")).toHaveLength(1);
-
-				const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
-				await runPoll(makePoller());
-
-				// Terminal session ⇒ still no Lead delivery (unchanged). But the gate
-				// MUST survive to its natural TTL so request-review can bind it.
-				expect(runtime.captured).toHaveLength(0);
-				expect(resolveSpy).not.toHaveBeenCalled();
-				expect(pendingFor("product-lead")).toHaveLength(1);
-				resolveSpy.mockRestore();
-			});
-		}
-	}
-
-	// Codex review LOW-2: pin the CHOKEPOINT itself, not just the relay path.
-	// Without this, deleting the guard inside evictTerminalGateQuestion() (leaving
-	// only the relay-side one) would keep every other test green — yet the
-	// eviction-retry short-circuit could still expire a review gate.
-	it("Case 8e-chokepoint (FLY-1257 path-2): evictTerminalGateQuestion itself refuses a review gate, whatever the caller", async () => {
-		insertSession("exec-choke", { status: "completed", labels: ["product"] });
-		const qid = insertQuestion({
-			execId: "exec-choke",
-			leadId: "product-lead",
-			content: "review_code requested",
-			checkpoint: "review_code",
-		});
-		const poller = makePoller();
-		const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
-
-		// Call the private mutation chokepoint DIRECTLY — bypassing relayToLead,
-		// which is exactly what the eviction-retry short-circuit does.
-		(
-			poller as unknown as {
-				evictTerminalGateQuestion: (q: unknown, p: string) => void;
-			}
-		).evictTerminalGateQuestion(
-			{ id: qid, from_agent: "exec-choke", checkpoint: "review_code" },
-			dbPath,
-		);
-
-		expect(resolveSpy).not.toHaveBeenCalled();
-		expect(pendingFor("product-lead")).toHaveLength(1);
-		resolveSpy.mockRestore();
-	});
-
-	it("Case 8f (FLY-1257 path-2 control): a NON-review gate from a blocked session is still evicted (FLY-307 A preserved)", async () => {
-		insertSession("exec-blocked-bs", {
-			status: "blocked",
-			labels: ["product"],
-		});
-		const qid = insertQuestion({
-			execId: "exec-blocked-bs",
-			leadId: "product-lead",
-			content: "Brainstorm gate on a blocked session",
-			checkpoint: "brainstorm",
-		});
-
-		await runPoll(makePoller());
-
-		expect(pendingFor("product-lead")).toHaveLength(0);
-		const warnedEvict = warnSpy.mock.calls.some((args: unknown[]) =>
-			JSON.stringify(args).includes(`evicting stale gate_question qid=${qid}`),
-		);
-		expect(warnedEvict).toBe(true);
-	});
-
 	it("Case 10 (FLY-307 B): circuit opens after N consecutive failures and skips the lead", async () => {
 		insertSession("exec-trap", { status: "running", labels: ["product"] });
 		insertQuestion({
@@ -749,6 +499,89 @@ describe("GatePoller (FLY-161)", () => {
 		getSessionSpy.mockRestore();
 		await runPoll(poller); // tick5: probe (cooldown elapsed) → succeeds → reset
 		expect(runtime.captured).toHaveLength(1); // delivered on the probe
+	});
+
+	it("Case 10c (FLY-307 B): FLYWHEEL_GATEPOLLER_CIRCUIT=0 never skips a failing lead", async () => {
+		const prev = process.env.FLYWHEEL_GATEPOLLER_CIRCUIT;
+		process.env.FLYWHEEL_GATEPOLLER_CIRCUIT = "0";
+		try {
+			insertSession("exec-nocirc", { status: "running", labels: ["product"] });
+			insertQuestion({
+				execId: "exec-nocirc",
+				leadId: "product-lead",
+				content: "Always fails",
+			});
+			const getSessionSpy = vi
+				.spyOn(store, "getSession")
+				.mockImplementation(() => {
+					// Neutral non-corruption fault: these FLY-307 circuit tests only
+					// need getSession to FAIL repeatedly; the cause is irrelevant to
+					// circuit counting. (Avoid a sql.js-corruption signature so the
+					// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
+					throw new Error("simulated getSession failure (FLY-307 circuit)");
+				});
+
+			const poller = makePoller({ circuitThreshold: 2 });
+			await runPoll(poller);
+			await runPoll(poller);
+			await runPoll(poller);
+			await runPoll(poller);
+			// Circuit disabled → every poll still reaches getSession (never skipped).
+			expect(getSessionSpy).toHaveBeenCalledTimes(4);
+			getSessionSpy.mockRestore();
+		} finally {
+			if (prev === undefined) delete process.env.FLYWHEEL_GATEPOLLER_CIRCUIT;
+			else process.env.FLYWHEEL_GATEPOLLER_CIRCUIT = prev;
+		}
+	});
+
+	it("Case 10d (FLY-307 B): a relay failure skips the misroute patrol in the same tick", async () => {
+		insertSession("exec-patrolskip", {
+			status: "running",
+			labels: ["product"],
+		});
+		insertQuestion({
+			execId: "exec-patrolskip",
+			leadId: "product-lead",
+			content: "fails before patrol",
+		});
+		const getSessionSpy = vi
+			.spyOn(store, "getSession")
+			.mockImplementation(() => {
+				// Neutral non-corruption fault: these FLY-307 circuit tests only
+				// need getSession to FAIL repeatedly; the cause is irrelevant to
+				// circuit counting. (Avoid a sql.js-corruption signature so the
+				// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
+				throw new Error("simulated getSession failure (FLY-307 circuit)");
+			});
+		const readUnread = vi.fn(async () => []);
+		const transport = {
+			readUnread,
+			ack: vi.fn(async () => {}),
+		};
+		const archiveDir = join(tmpHome, "misroute-archive");
+
+		// patrolEveryNTicks=2 → patrol due on ticks 1,3,... — exactly the ticks
+		// where the relay fails (and on tick 3 the circuit also opens).
+		const poller = makePoller({
+			circuitThreshold: 3,
+			patrolEveryNTicks: 2,
+			transport,
+			misrouteArchiveDir: archiveDir,
+		});
+		await runPoll(poller); // tick1: patrolDue, relay fails → patrol skipped
+		await runPoll(poller); // tick2
+		await runPoll(poller); // tick3: patrolDue + circuit opens → patrol skipped
+
+		// The failing lead's patrol must never run (it would re-touch sql.js).
+		// Other leads (ops-lead, whose relay did NOT fail) still patrol normally —
+		// proving the skip is scoped to the failing lead, not a global disable.
+		const calls = readUnread.mock.calls.map(
+			(c) => (c[0] as { leadName: string }).leadName,
+		);
+		expect(calls.filter((l) => l === "product-lead")).toHaveLength(0);
+		expect(calls.filter((l) => l === "ops-lead").length).toBeGreaterThan(0);
+		getSessionSpy.mockRestore();
 	});
 
 	it("Case 9: skips gate_question when source session resolves to a different Lead (lead-scope check)", async () => {
@@ -839,100 +672,5 @@ describe("GatePoller (FLY-161)", () => {
 
 		appendSpy.mockRestore();
 		recoverSpy.mockRestore();
-	});
-
-	it("FLY-1570: production wrapper never retires terminal gates", async () => {
-		insertSession("exec-chronology", {
-			status: "blocked",
-			labels: ["product"],
-		});
-		(
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db.run(
-			"UPDATE sessions SET terminal_at = '2099-01-01 00:00:00' WHERE execution_id = 'exec-chronology'",
-		);
-
-		// A NON-review carrier: this case asserts the wrapper hands CommDB's
-		// created_at to the zombie candidates (pre-terminal ⇒ retired). Review
-		// gates are exempt from Z1 outright (see the sibling case below), so they
-		// can no longer carry a chronology assertion.
-		const qid = insertQuestion({
-			execId: "exec-chronology",
-			leadId: "product-lead",
-			content: "old blocked run — design?",
-			checkpoint: "brainstorm",
-		});
-		const db = new CommDB(dbPath);
-		try {
-			(
-				db as unknown as {
-					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
-				}
-			).db
-				.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
-				.run("2000-01-01 00:00:00", qid);
-		} finally {
-			db.close();
-		}
-
-		await (
-			makePoller() as unknown as {
-				zombieGateHygienePass: () => Promise<void>;
-			}
-		).zombieGateHygienePass();
-
-		expect(pendingFor("product-lead")).toHaveLength(1);
-	});
-
-	// FLY-1257 defect ④ (Codex R5 HIGH) through the REAL wrapper: same terminal
-	// session + same pre-terminal chronology that retires the brainstorm gate
-	// above, but a review gate survives the whole zombieGateHygienePass. The
-	// reviewer — not the gone author — answers it, so Z1 must never retire it.
-	// Drop the isReviewGateCheckpoint exemption and this goes red (length 0).
-	it("FLY-1257 defect ④: a review_code gate is NOT retired by the zombie pass (Z1 exemption, real wrapper)", async () => {
-		insertSession("exec-review-z1", {
-			status: "blocked",
-			labels: ["product"],
-		});
-		(
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db.run(
-			"UPDATE sessions SET terminal_at = '2099-01-01 00:00:00' WHERE execution_id = 'exec-review-z1'",
-		);
-
-		const qid = insertQuestion({
-			execId: "exec-review-z1",
-			leadId: "product-lead",
-			content: "review requested",
-			checkpoint: "review_code",
-		});
-		const db = new CommDB(dbPath);
-		try {
-			// created_at BEFORE terminal_at — the exact chronology that makes a
-			// non-review gate a "true Z1 zombie".
-			(
-				db as unknown as {
-					db: { prepare(sql: string): { run(...args: unknown[]): unknown } };
-				}
-			).db
-				.prepare("UPDATE mailbox SET created_at = ? WHERE id = ?")
-				.run("2000-01-01 00:00:00", qid);
-		} finally {
-			db.close();
-		}
-
-		await (
-			makePoller() as unknown as {
-				zombieGateHygienePass: () => Promise<void>;
-			}
-		).zombieGateHygienePass();
-
-		const pending = pendingFor("product-lead") as Array<{ id: string }>;
-		expect(pending).toHaveLength(1);
-		expect(pending[0]?.id).toBe(qid);
 	});
 });

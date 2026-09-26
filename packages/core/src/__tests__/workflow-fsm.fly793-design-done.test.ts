@@ -2,13 +2,12 @@ import { describe, expect, it } from "vitest";
 import { WORKFLOW_TRANSITIONS } from "../workflow-fsm.js";
 
 describe("WORKFLOW_TRANSITIONS — FLY-793 design_done", () => {
-	it("running can transition to design_done (DAG workflow Design phase handoff)", () => {
+	it("running can transition to design_done (three-stage Design phase handoff)", () => {
 		expect(WORKFLOW_TRANSITIONS.running).toContain("design_done");
 	});
 
-	it("design_done can reactivate for a durable rework wake or finalize", () => {
+	it("design_done is a non-terminal state with finalization/failure exits", () => {
 		expect(WORKFLOW_TRANSITIONS.design_done).toEqual([
-			"running",
 			"completed",
 			"blocked",
 			"failed",

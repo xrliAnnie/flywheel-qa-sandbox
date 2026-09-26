@@ -10,27 +10,21 @@ import {
 	addThreadMember,
 	parseRetryAfterMs,
 	pinThreadMessage,
-	postThreadRootMessage,
 	removeUserFromChatThread,
-	startThreadFromMessage,
 } from "./chat-thread-utils.js";
-import { deleteDiscordMessageInChannel } from "./discord-utils.js";
 import {
 	type DisplayWriteResult,
 	PHASE_DISPLAY_GLYPHS,
 	type PhaseDisplayState,
 } from "./issue-display.js";
 import {
-	applyModelMarker,
-	modelMarkerLabel,
+	hasIssueKeyHead,
+	modelMarkerCode,
 	splitStatusEmoji,
 	stageBadge,
 	stripModelMarker,
 } from "./stage-utils.js";
-import {
-	classifyRootMessageExistence,
-	classifyThreadExistence,
-} from "./thread-validator.js";
+import { validateThreadExists } from "./thread-validator.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const CREATE_TIMEOUT_MS = 5_000;
@@ -136,29 +130,26 @@ export interface ChatThreadContext {
 	leadId?: string;
 	/** Discord user ID to auto-add as thread member (for sidebar visibility). */
 	ownerUserId?: string;
-	/** Founder-visible route line; rendered in messages/pins, never the title. */
-	routeSummary?: string;
 	/**
-	 * FLY-755/1255: the resolved model's display marker, stamped as a FRONT
-	 * bracket marker (`[F] ` or `[Model GPT-5.6] ` between the stage badge and
-	 * issue key) that rides the same rename as the stage-emoji prefix.
+	 * FLY-755 (was FLY-728 Part D): the resolved model's F/O/S/H short code,
+	 * stamped as a FRONT bracket marker (`[F] ` between the stage badge and the
+	 * issue key) that rides the same rename as the stage-emoji prefix — the old
+	 * tail suffix was invisible on mobile truncation.
 	 * Tri-state (Codex code R1 MEDIUM — an authoritative stamp must be able to
 	 * CLEAR a stale marker when a reused thread's run has no model):
-	 *   - a string       → SET the validated marker to it
+	 *   - a code ("F"…) → SET the marker to it
 	 *   - `null`        → CLEAR it (the caller KNOWS this run is account-default)
 	 *   - absent        → PRESERVE the existing marker (caller has no model context)
-	 * Every stamp caller that has model context passes the shared display
-	 * descriptor's thread marker, or null so account-default clears a stale one.
+	 * Every stamp caller that has the session passes `modelShortCode(runner_model)
+	 * ?? null` so account-default clears rather than preserving a prior model.
 	 */
-	modelMarker?: string | null;
+	modelCode?: "F" | "O" | "S" | "H" | null;
 }
 
 export interface ChatThreadResult {
 	created: boolean;
 	threadId?: string;
 	error?: string;
-	errorCode?: string;
-	rootMessageId?: string;
 }
 
 function effectiveIssueKey(
@@ -175,7 +166,7 @@ function buildIssueThreadName(
 ): string {
 	const issueKey = effectiveIssueKey(ctx);
 	// FLY-892 (converge): the base title is `[FLY-XX] <title>` for every role. The
-	// DAG workflow is no longer a separate thread with a base-title badge —
+	// three-stage phase is no longer a separate thread with a base-title badge —
 	// the current phase is shown as a STAGE-level title prefix (Step 6, stamped by
 	// stampStageEmoji) and as a message tag, not baked into the base title.
 	const title = ctx.issueTitle ?? ctx.issueId;
@@ -184,19 +175,24 @@ function buildIssueThreadName(
 }
 
 /**
- * FLY-755/1255: compose the final ≤100-char thread title. The model marker is a
- * FRONT bracket marker between the status prefix and base, so truncation eats
- * only the base's tail and the model stays visible on mobile. Validation and
- * issue-key anchoring are delegated to stage-utils' paired parser/inserter.
+ * FLY-755: compose the final ≤100-char thread title. The model code is a FRONT
+ * bracket marker (`[F] `) between the status `prefix` (e.g. "🔨实现中 ") and the
+ * base, so truncation eats only the base's tail and the code stays visible on
+ * mobile (the FLY-728 tail suffix + mid-truncation reservation are gone).
+ * Insertion is gated on hasIssueKeyHead — the SAME issue-key anchor the marker
+ * recognition uses (stage-utils paired contract), so keyless titles are never
+ * stamped. `base` must be marker-free; the anchor is evaluated on the full
+ * pre-truncation base (truncation never touches the key head).
  */
 function composeThreadTitle(
 	prefix: string,
 	base: string,
-	modelMarker: string | null | undefined,
+	modelCode: "F" | "O" | "S" | "H" | null | undefined,
 ): string {
-	const markedBase = applyModelMarker(base, modelMarker ?? undefined);
-	const budget = DISCORD_THREAD_NAME_MAX - prefix.length;
-	return `${prefix}${markedBase.slice(0, Math.max(0, budget))}`;
+	const marker = modelCode && hasIssueKeyHead(base) ? `[${modelCode}] ` : "";
+	const budget = DISCORD_THREAD_NAME_MAX - prefix.length - marker.length;
+	const cutBase = base.slice(0, Math.max(0, budget));
+	return `${prefix}${marker}${cutBase}`;
 }
 
 function isPlaceholderThreadName(
@@ -214,7 +210,7 @@ function isPlaceholderThreadName(
 }
 
 /**
- * FLY-892 (Step 4): one row of the pinned DAG workflow header. The caller
+ * FLY-892 (Step 4): one row of the pinned three-stage pipeline header. The caller
  * (event-route) pre-builds `label` (`[设计·Fable]`) and `plannedModel` so this
  * renderer stays config-free.
  */
@@ -255,15 +251,12 @@ export interface PhaseHeaderRow {
  * usability-driven, this reads CommDB only and never touches 887's lifecycle.
  */
 export function buildPipelineHeaderContent(
-	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier" | "routeSummary">,
+	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier">,
 	phases: PhaseHeaderRow[],
 ): string {
 	const key = effectiveIssueKey(ctx);
 	const label = key ? `[${key}]` : ctx.issueId;
-	const lines: string[] = [
-		...(ctx.routeSummary ? [ctx.routeSummary] : []),
-		`📌 **${label} DAG 工作流**`,
-	];
+	const lines: string[] = [`📌 **${label} 三段流水线**`];
 	for (const p of phases) {
 		const head = `**${p.label}** ${PHASE_DISPLAY_GLYPHS[p.status]}`;
 		if (p.status === "pending") {
@@ -278,7 +271,7 @@ export function buildPipelineHeaderContent(
 		else if (p.sessionEnded) lines.push("_（session 已结束）_");
 	}
 	lines.push(
-		"_自动更新：各节点用什么模型、跑到哪、去哪看终端，一条置顶看全。_",
+		"_自动更新：三段各用什么模型、跑到哪、去哪看终端，一条置顶看全。_",
 	);
 	return lines.join("\n");
 }
@@ -340,263 +333,150 @@ export class ChatThreadCreator {
 	}
 
 	private async _doEnsure(ctx: ChatThreadContext): Promise<ChatThreadResult> {
-		// 1. The existing canonical row is also FLY-1927's recovery anchor. A 404
-		// no longer tombstones and auto-rebuilds: we first retry start on this exact
-		// root, or fail loudly if the root itself is gone.
+		// 1. Check existing mapping (FLY-892: the single (issue, channel) thread).
 		const existing = this.store.getChatThreadByIssue(
 			ctx.issueId,
 			ctx.chatChannelId,
 		);
-		if (existing) return this.reuseOrRecoverCanonical(ctx, existing.thread_id);
+		if (existing) {
+			const valid = await validateThreadExists(
+				existing.thread_id,
+				ctx.botToken,
+				{
+					markDiscordMissing: (id) => this.store.markChatThreadMissing(id),
+				},
+			);
+			if (valid) {
+				await this.maybeBackfillThreadName(ctx, existing.thread_id);
+				// FLY-91: Even when reusing existing thread, post a notification
+				// in the main channel so Annie sees the issue is active.
+				await this.postChannelNotification(ctx, existing.thread_id);
+				// FLY-91: Re-add owner as thread member (idempotent) — ensures
+				// sidebar visibility even if they previously left/were removed.
+				if (ctx.ownerUserId) {
+					await addThreadMember(
+						existing.thread_id,
+						ctx.ownerUserId,
+						ctx.botToken,
+					);
+				}
+				return { created: false, threadId: existing.thread_id };
+			}
+			// Thread gone in Discord — fall through to create new
+		}
 
 		// 2. Compose thread name + initial message visible in main channel.
 		// FLY-91 UX fix: "Start Thread from Message" makes the root message
 		// appear in the channel, so users can see the thread was created.
-		// FLY-755/1255: stamp the model marker at thread creation
+		// FLY-755 (was FLY-728 Part D): stamp the model code at thread creation
 		// so a new thread shows `[F] [FLY-XX] …` immediately, not only after the
 		// first stage_changed.
 		const threadName = composeThreadTitle(
 			"",
 			buildIssueThreadName(ctx),
-			ctx.modelMarker,
+			ctx.modelCode,
 		);
 
 		const issueKey = effectiveIssueKey(ctx);
-		const issueMessage = issueKey
+		const messageContent = issueKey
 			? `🧵 **${issueKey}** — ${ctx.issueTitle ?? "Runner session"}`
 			: `🧵 ${ctx.issueTitle ?? ctx.issueId}`;
-		const messageContent = ctx.routeSummary
-			? `${ctx.routeSummary}\n${issueMessage}`
-			: issueMessage;
 
-		// FLY-1927: post the root first, then claim its future thread id in the
-		// existing canonical table BEFORE start-from-message. This closes the crash /
-		// timeout window without a second recovery-ticket table.
-		console.log(
-			`[ChatThreadCreator] create thread channel=${ctx.chatChannelId} name="${threadName.slice(0, 60)}" content="${messageContent.slice(0, 80)}"`,
-		);
-		const root = await postThreadRootMessage(
-			{
-				channelId: ctx.chatChannelId,
-				messageContent: markAutomatedDiscordText(messageContent),
-				botToken: ctx.botToken,
-			},
-			{ timeoutMs: CREATE_TIMEOUT_MS },
-		);
-		if (!root.posted) {
-			console.warn(`[ChatThreadCreator] root POST FAILED: ${root.error}`);
-			return { created: false, error: root.error };
-		}
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 
-		let claim: ReturnType<StateStore["registerChatThreadConditional"]>;
 		try {
-			claim = this.store.registerChatThreadConditional(
-				root.rootMessageId,
+			// Step 1: Post initial message to channel (visible in main channel)
+			console.log(
+				`[ChatThreadCreator] Step 1: POST message to channel=${ctx.chatChannelId} content="${messageContent.slice(0, 80)}"`,
+			);
+			const msgRes = await fetch(
+				`${DISCORD_API}/channels/${ctx.chatChannelId}/messages`,
+				{
+					method: "POST",
+					headers: {
+						Authorization: `Bot ${ctx.botToken}`,
+						"Content-Type": "application/json",
+					},
+					// FLY-162 Codex R3 #2: never let issue title / generated
+					// notification text trigger @everyone/@here/role pings.
+					body: JSON.stringify({
+						content: markAutomatedDiscordText(messageContent),
+						allowed_mentions: { parse: [] },
+					}),
+					signal: controller.signal,
+				},
+			);
+
+			if (!msgRes.ok) {
+				const body = await msgRes.text().catch(() => "");
+				console.warn(
+					`[ChatThreadCreator] Step 1 FAILED: ${msgRes.status} ${body.slice(0, 200)}`,
+				);
+				return {
+					created: false,
+					error: `Discord ${msgRes.status}: ${body.slice(0, 200)}`,
+				};
+			}
+
+			const msgData = (await msgRes.json()) as { id?: string };
+			if (!msgData.id) {
+				return { created: false, error: "no message ID in response" };
+			}
+
+			// Step 2: Create thread FROM that message (thread attaches to the message)
+			console.log(
+				`[ChatThreadCreator] Step 2: POST thread from message=${msgData.id} name="${threadName.slice(0, 60)}"`,
+			);
+			const res = await fetch(
+				`${DISCORD_API}/channels/${ctx.chatChannelId}/messages/${msgData.id}/threads`,
+				{
+					method: "POST",
+					headers: {
+						Authorization: `Bot ${ctx.botToken}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						name: threadName,
+						auto_archive_duration: 4320, // 3 days
+					}),
+					signal: controller.signal,
+				},
+			);
+
+			if (!res.ok) {
+				const body = await res.text().catch(() => "");
+				return {
+					created: false,
+					error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+				};
+			}
+
+			const data = (await res.json()) as { id?: string };
+			if (!data.id)
+				return { created: false, error: "no thread ID in response" };
+
+			// 3. Store mapping (FLY-892: the single (issue, channel) thread).
+			this.store.upsertChatThread(
+				data.id,
 				ctx.chatChannelId,
 				ctx.issueId,
 				ctx.leadId,
 			);
-		} catch (err) {
-			await this.cleanupFreshRoot(ctx, root.rootMessageId);
-			const message = err instanceof Error ? err.message : String(err);
-			return {
-				created: false,
-				rootMessageId: root.rootMessageId,
-				errorCode: "canonical_claim_failed",
-				error: `Could not claim canonical root ${root.rootMessageId}: ${message}`,
-			};
-		}
-		if (claim.status !== "registered") {
-			await this.cleanupFreshRoot(ctx, root.rootMessageId);
-			if (claim.status === "canonical_exists") {
-				return { created: false, threadId: claim.threadId };
-			}
-			return {
-				created: false,
-				rootMessageId: root.rootMessageId,
-				errorCode: "root_id_conflict",
-				error: `Fresh root ${root.rootMessageId} was already mapped to issue ${claim.issueId}`,
-			};
-		}
 
-		return this.startCanonicalRoot(ctx, root.rootMessageId, threadName, true);
-	}
-
-	private async cleanupFreshRoot(
-		ctx: ChatThreadContext,
-		rootMessageId: string,
-	): Promise<void> {
-		const cleanup = await deleteDiscordMessageInChannel(
-			ctx.chatChannelId,
-			rootMessageId,
-			ctx.botToken,
-			fetch,
-			CREATE_TIMEOUT_MS,
-		);
-		if (!cleanup.ok) {
-			console.warn(
-				`[ChatThreadCreator] unclaimed root cleanup failed root=${rootMessageId}: ${cleanup.error}`,
-			);
-		}
-	}
-
-	private async reuseOrRecoverCanonical(
-		ctx: ChatThreadContext,
-		threadId: string,
-	): Promise<ChatThreadResult> {
-		const thread = await classifyThreadExistence(
-			threadId,
-			ctx.chatChannelId,
-			ctx.botToken,
-		);
-		if (thread.state !== "absent") {
-			// Preserve the historical fail-open behavior for rate limits, permission
-			// errors and timeouts. None of these cases may create another root.
-			await this.maybeBackfillThreadName(ctx, threadId);
-			await this.postChannelNotification(ctx, threadId);
+			// 4. Auto-add owner as thread member (sidebar visibility + notifications)
 			if (ctx.ownerUserId) {
-				await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken);
+				await addThreadMember(data.id, ctx.ownerUserId, ctx.botToken);
 			}
-			return { created: false, threadId };
-		}
 
-		const root = await classifyRootMessageExistence(
-			ctx.chatChannelId,
-			threadId,
-			ctx.botToken,
-		);
-		if (root.state === "confirmed") {
-			return this.startCanonicalRoot(
-				ctx,
-				threadId,
-				composeThreadTitle("", buildIssueThreadName(ctx), ctx.modelMarker),
-				false,
-			);
-		}
-		if (root.state === "absent") {
-			return {
-				created: false,
-				threadId,
-				rootMessageId: threadId,
-				errorCode: "canonical_root_gone",
-				error: `Canonical thread ${threadId} and its root message are missing; manual abandon is required before rebuilding`,
-			};
-		}
-		return {
-			created: false,
-			threadId,
-			rootMessageId: threadId,
-			errorCode: "canonical_recovery_uncertain",
-			error: `Could not verify canonical root ${threadId}; refusing to create a replacement`,
-		};
-	}
-
-	private async startCanonicalRoot(
-		ctx: ChatThreadContext,
-		rootMessageId: string,
-		threadName: string,
-		createdByThisCall: boolean,
-	): Promise<ChatThreadResult> {
-		let attempt = await startThreadFromMessage(
-			{
-				channelId: ctx.chatChannelId,
-				rootMessageId,
-				threadName,
-				botToken: ctx.botToken,
-			},
-			{ timeoutMs: CREATE_TIMEOUT_MS },
-		);
-		if (attempt.created) {
-			await this.addOwnerAfterCreate(ctx, rootMessageId);
-			return { created: createdByThisCall, threadId: rootMessageId };
-		}
-
-		let thread = await classifyThreadExistence(
-			rootMessageId,
-			ctx.chatChannelId,
-			ctx.botToken,
-		);
-		if (thread.state === "confirmed") {
-			await this.addOwnerAfterCreate(ctx, rootMessageId);
-			return { created: createdByThisCall, threadId: rootMessageId };
-		}
-		if (thread.state !== "absent") {
-			return this.uncertainStartResult(rootMessageId, attempt.error);
-		}
-
-		const root = await classifyRootMessageExistence(
-			ctx.chatChannelId,
-			rootMessageId,
-			ctx.botToken,
-		);
-		if (root.state === "absent") {
-			return {
-				created: false,
-				threadId: rootMessageId,
-				rootMessageId,
-				errorCode: "canonical_root_gone",
-				error: `Canonical root ${rootMessageId} disappeared while starting the thread; manual abandon is required`,
-			};
-		}
-		if (root.state !== "confirmed") {
-			return this.uncertainStartResult(rootMessageId, attempt.error);
-		}
-
-		// One bounded replay, always against the SAME root. A source message can
-		// have at most one Discord thread, so this cannot create a duplicate.
-		attempt = await startThreadFromMessage(
-			{
-				channelId: ctx.chatChannelId,
-				rootMessageId,
-				threadName,
-				botToken: ctx.botToken,
-			},
-			{ timeoutMs: CREATE_TIMEOUT_MS },
-		);
-		if (attempt.created) {
-			await this.addOwnerAfterCreate(ctx, rootMessageId);
-			return { created: createdByThisCall, threadId: rootMessageId };
-		}
-		thread = await classifyThreadExistence(
-			rootMessageId,
-			ctx.chatChannelId,
-			ctx.botToken,
-		);
-		if (thread.state === "confirmed") {
-			await this.addOwnerAfterCreate(ctx, rootMessageId);
-			return { created: createdByThisCall, threadId: rootMessageId };
-		}
-		if (thread.state !== "absent") {
-			return this.uncertainStartResult(rootMessageId, attempt.error);
-		}
-		return {
-			created: false,
-			threadId: rootMessageId,
-			rootMessageId,
-			errorCode: "thread_start_failed",
-			error: `Discord did not create canonical thread ${rootMessageId}: ${attempt.error}`,
-		};
-	}
-
-	private uncertainStartResult(
-		rootMessageId: string,
-		attemptError: string,
-	): ChatThreadResult {
-		return {
-			created: false,
-			threadId: rootMessageId,
-			rootMessageId,
-			errorCode: "thread_start_uncertain",
-			error: `Canonical thread ${rootMessageId} could not be verified after start failure (${attemptError}); refusing to create a replacement`,
-		};
-	}
-
-	private async addOwnerAfterCreate(
-		ctx: ChatThreadContext,
-		threadId: string,
-	): Promise<void> {
-		if (ctx.ownerUserId) {
-			await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken);
+			return { created: true, threadId: data.id };
+		} catch (err) {
+			if ((err as Error).name === "AbortError") {
+				return { created: false, error: "timeout" };
+			}
+			throw err;
+		} finally {
+			clearTimeout(timeout);
 		}
 	}
 
@@ -628,8 +508,8 @@ export class ChatThreadCreator {
 	 *
 	 * `withWord` (FLY-560 UX iteration): when true the badge carries a short word
 	 * after the emoji (Annie's feedback — emoji alone is hard to memorise). The
-	 * production wiring passes true; it defaults to false here so an omitted arg
-	 * keeps the API's historical emoji-only behaviour.
+	 * production wiring reads it from `FLYWHEEL_ISSUE_STATUS_WORD` (default ON);
+	 * it defaults to false here so an omitted arg keeps the emoji-only behaviour.
 	 *
 	 * Idempotent + churn-safe: reads the current name, swaps only the leading
 	 * status badge (the title text is preserved, or rebuilt from `ctx` when the
@@ -645,11 +525,11 @@ export class ChatThreadCreator {
 		withWord = false,
 		phaseBadge?: string | null,
 	): Promise<void> {
-		// FLY-892 (Step 6): on a DAG workflow issue the title carries the STAGE-LEVEL
+		// FLY-892 (Step 6): on a three-stage issue the title carries the STAGE-LEVEL
 		// phase badge (🎨设计/🔨实现/🧪QA) — Annie's locked glyphs — INSTEAD of the
 		// FLY-560 fine-grained per-stage word, so the whole pipeline renames ~twice.
 		// A non-empty `phaseBadge` overrides; else fall back to the FLY-560 stage
-		// badge (non-DAG workflow byte-compat). Same coalescing writer either way.
+		// badge (non-three-stage byte-compat). Same coalescing writer either way.
 		const badge = phaseBadge ? phaseBadge : stageBadge(stage, withWord);
 		if (!badge) return; // unknown stage + no phase badge → no-op (no fetch)
 		return this.enqueueTitleWrite(threadId, ctx, badge);
@@ -856,7 +736,7 @@ export class ChatThreadCreator {
 			// canonical `[FLY-XX] Title` from ctx only when the current title is a
 			// placeholder (or empty) and the real title is known.
 			// FLY-560 strips the leading stage emoji; FLY-755 works on a MARKER-FREE
-			// base and re-inserts the model marker via composeThreadTitle (so it rides
+			// base and re-inserts the model code via composeThreadTitle (so it rides
 			// the same rename as the stage badge). The placeholder check uses the
 			// bare base. stripModelMarker also peels a legacy FLY-728 tail (` ·F`),
 			// so pre-755 threads migrate to the front marker on this re-stamp.
@@ -867,10 +747,10 @@ export class ChatThreadCreator {
 			// default — so a stale [F] from a prior run on a REUSED thread is
 			// removed), and ABSENT preserves whatever is there (a caller with no
 			// model context) — front marker first, legacy tail as fallback.
-			const effectiveMarker =
-				ctx.modelMarker === undefined
-					? modelMarkerLabel(rawBase) // preserve
-					: (ctx.modelMarker ?? undefined); // set or clear (null → undefined)
+			const effectiveCode =
+				ctx.modelCode === undefined
+					? modelMarkerCode(rawBase) // preserve
+					: (ctx.modelCode ?? undefined); // set (code) or clear (null → undefined)
 			let base: string | undefined;
 			if (bareBase && !isPlaceholderThreadName(bareBase, ctx)) {
 				base = bareBase;
@@ -884,7 +764,7 @@ export class ChatThreadCreator {
 			const desired = composeThreadTitle(
 				badge ? `${badge} ` : "",
 				base,
-				effectiveMarker,
+				effectiveCode,
 			);
 			if (currentName === desired) return { status: "noop" }; // already stamped
 
@@ -973,7 +853,7 @@ export class ChatThreadCreator {
 			now?: () => string;
 		} = {},
 	): Promise<DisplayWriteResult> {
-		// Single-runner (non-DAG workflow) path: fingerprint = the raw command
+		// Single-runner (non-three-stage) path: fingerprint = the raw command
 		// (byte-compat), rendered message = the "📌 Runner terminal" template.
 		return this.enqueueAttachPin(
 			ctx,
@@ -1002,7 +882,6 @@ export class ChatThreadCreator {
 		const key = effectiveIssueKey(ctx);
 		const label = key ? `[${key}]` : (ctx.issueTitle ?? ctx.issueId);
 		const content =
-			`${ctx.routeSummary ? `${ctx.routeSummary}\n` : ""}` +
 			`📌 **${label} Runner terminal** — _（终端待解析）_\n` +
 			"_当前 tmux 目标与本 issue 不符，已暂不显示 attach 命令；解析恢复后自动更新。_";
 		return this.enqueueAttachPin(
@@ -1015,7 +894,7 @@ export class ChatThreadCreator {
 	}
 
 	/**
-	 * FLY-892 (Step 4): ensure the issue thread's pinned message is the DAG workflow
+	 * FLY-892 (Step 4): ensure the issue thread's pinned message is the three-stage
 	 * PIPELINE HEADER (`content` pre-rendered by `buildPipelineHeaderContent`). Uses
 	 * the SAME per-thread serialized pin state-machine as the single-runner attach
 	 * pin — it just absorbs the existing "Runner terminal" pin into a richer body.
@@ -1096,7 +975,6 @@ export class ChatThreadCreator {
 		const key = effectiveIssueKey(ctx);
 		const label = key ? `[${key}]` : (ctx.issueTitle ?? ctx.issueId);
 		return (
-			`${ctx.routeSummary ? `${ctx.routeSummary}\n` : ""}` +
 			`📌 **${label} Runner terminal** — copy & run to attach to this issue's runner:\n` +
 			"```\n" +
 			`${command}\n` +
@@ -1395,17 +1273,17 @@ export class ChatThreadCreator {
 				? stripModelMarker(currentName)
 				: undefined;
 			if (!isPlaceholderThreadName(bareCurrentName, ctx)) return;
-			// Same tri-state as the stage stamp: absent modelMarker (e.g. the /send
-			// route in tools.ts) PRESERVES the marker already on the placeholder —
+			// Same tri-state as the stage stamp: absent modelCode (e.g. the /send
+			// route in tools.ts) PRESERVES the code already on the placeholder —
 			// front marker first, legacy tail as fallback (which thereby migrates).
-			const effectiveMarker =
-				ctx.modelMarker === undefined
-					? modelMarkerLabel(currentName ?? "")
-					: (ctx.modelMarker ?? undefined);
+			const effectiveCode =
+				ctx.modelCode === undefined
+					? modelMarkerCode(currentName ?? "")
+					: (ctx.modelCode ?? undefined);
 			const desiredName = composeThreadTitle(
 				"",
 				buildIssueThreadName(ctx),
-				effectiveMarker,
+				effectiveCode,
 			);
 			if (!desiredName || desiredName === ctx.issueId) return;
 			if (currentName === desiredName) return;
@@ -1452,10 +1330,7 @@ export class ChatThreadCreator {
 		const label = ctx.issueIdentifier
 			? `**${ctx.issueIdentifier}** — ${ctx.issueTitle ?? "Runner session"}`
 			: (ctx.issueTitle ?? ctx.issueId);
-		const threadLink = `🧵 ${label} — <#${threadId}>`;
-		const content = ctx.routeSummary
-			? `${ctx.routeSummary}\n${threadLink}`
-			: threadLink;
+		const content = `🧵 ${label} — <#${threadId}>`;
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);

@@ -111,6 +111,19 @@ describe("publishReport", () => {
 		);
 	}
 
+	// ── kill switch ─────────────────────────────────────────────────────
+
+	it("FLYWHEEL_REMOTE_REPORTS=0 → skipped envelope, exit 0, zero network", async () => {
+		const args = makeArgs();
+		(args.env as Record<string, string>).FLYWHEEL_REMOTE_REPORTS = "0";
+		const { envelope, exitCode } = await publishReport(args);
+		expect(exitCode).toBe(0);
+		expect(envelope.skipped).toBe(true);
+		expect(envelope.delivered).toBe(false);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(proofShotCalls).toEqual([]);
+	});
+
 	// ── input validation ────────────────────────────────────────────────
 
 	it("missing bridge url env → exit 1", async () => {
@@ -223,109 +236,6 @@ describe("publishReport", () => {
 		expect(deliverBody.screenshotPath).toBeUndefined();
 	});
 
-	it("FLY-1404: publish-only returns the hosted URL without screenshot or Discord delivery", async () => {
-		publishOk();
-		const { envelope, exitCode } = await publishReport(
-			makeArgs({ publishOnly: true }),
-		);
-
-		expect(exitCode).toBe(0);
-		expect(envelope).toMatchObject({
-			url: "https://fw-reports-abc123.vercel.app/r/tok123/",
-			reportId: "tok123",
-			messageId: null,
-			screenshot: null,
-			delivered: false,
-			publishOnly: true,
-		});
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(proofShotCalls).toEqual([]);
-	});
-
-	it.each([
-		["default", {}],
-		["channel", { channelId: "chan" }],
-		["issue", { issueIdentifier: "FLY-1715" }],
-	])(
-		"FLY-1715: ingest-only %s delivery fails before file read, screenshot, or fetch",
-		async (_name, deliveryArgs) => {
-			const readHtmlFile = vi.fn(() => HTML);
-			const result = await publishReport(
-				makeArgs({
-					...deliveryArgs,
-					env: {
-						FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
-						FLYWHEEL_INGEST_TOKEN: " ingest-token ",
-					} as NodeJS.ProcessEnv,
-					readHtmlFile,
-				}),
-			);
-			expect(result.exitCode).toBe(1);
-			expect(result.envelope.error).toMatch(/runner.*publish-only/i);
-			expect(readHtmlFile).not.toHaveBeenCalled();
-			expect(fetchMock).not.toHaveBeenCalled();
-			expect(proofShotCalls).toEqual([]);
-		},
-	);
-
-	it("FLY-1715: ingest-only publish-only succeeds with a normalized bearer", async () => {
-		publishOk();
-		const result = await publishReport(
-			makeArgs({
-				publishOnly: true,
-				env: {
-					FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
-					FLYWHEEL_INGEST_TOKEN: "  ingest-token  ",
-				} as NodeJS.ProcessEnv,
-			}),
-		);
-		expect(result.exitCode).toBe(0);
-		expect(fetchMock).toHaveBeenCalledOnce();
-		expect(
-			(fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>)
-				.Authorization,
-		).toBe("Bearer ingest-token");
-	});
-
-	it("FLY-1715: master is preferred over ingest and both blank values are treated as absent", async () => {
-		publishOk();
-		deliverOk();
-		await publishReport(
-			makeArgs({
-				noScreenshot: true,
-				env: {
-					FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
-					TEAMLEAD_API_TOKEN: " master-token ",
-					FLYWHEEL_INGEST_TOKEN: "ingest-token",
-				} as NodeJS.ProcessEnv,
-			}),
-		);
-		expect(
-			(fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>)
-				.Authorization,
-		).toBe("Bearer master-token");
-
-		fetchMock.mockReset().mockResolvedValueOnce(
-			new Response(JSON.stringify({ error: "unauthorized" }), {
-				status: 401,
-			}),
-		);
-		await publishReport(
-			makeArgs({
-				publishOnly: true,
-				env: {
-					FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
-					TEAMLEAD_API_TOKEN: " ",
-					FLYWHEEL_INGEST_TOKEN: "",
-				} as NodeJS.ProcessEnv,
-			}),
-		);
-		expect(
-			(fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>)
-				.Authorization,
-		).toBeUndefined();
-	});
-
 	// ── FLY-929 B1: receipt fields ride the deliver body ────────────────
 
 	it("kind + expectedDate are forwarded verbatim in the deliver body", async () => {
@@ -346,7 +256,7 @@ describe("publishReport", () => {
 		expect(deliverBody.expectedDate).toBe("2026-07-06");
 	});
 
-	it("absent optional delivery fields stay byte-compatible", async () => {
+	it("absent kind/expectedDate → deliver body carries NEITHER key (byte-compat)", async () => {
 		publishOk();
 		deliverOk();
 		await publishReport(makeArgs({ noScreenshot: true }));
@@ -355,45 +265,6 @@ describe("publishReport", () => {
 		);
 		expect("kind" in deliverBody).toBe(false);
 		expect("expectedDate" in deliverBody).toBe(false);
-		expect("issueIdentifier" in deliverBody).toBe(false);
-	});
-
-	it("issueIdentifier targets delivery by issue without adding channelId", async () => {
-		publishOk();
-		deliverOk();
-		const { exitCode } = await publishReport(
-			makeArgs({
-				noScreenshot: true,
-				issueIdentifier: "FLY-1463",
-			}),
-		);
-		expect(exitCode).toBe(0);
-		const deliverBody = JSON.parse(
-			(fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
-		);
-		expect(deliverBody.issueIdentifier).toBe("FLY-1463");
-		expect("channelId" in deliverBody).toBe(false);
-	});
-
-	it("channelId plus issueIdentifier fails before publishing", async () => {
-		const { envelope, exitCode } = await publishReport(
-			makeArgs({
-				channelId: "chan-explicit",
-				issueIdentifier: "FLY-1463",
-			}),
-		);
-		expect(exitCode).toBe(1);
-		expect(envelope.error).toContain("mutually exclusive");
-		expect(fetchMock).not.toHaveBeenCalled();
-	});
-
-	it("invalid issueIdentifier fails before publishing", async () => {
-		const { envelope, exitCode } = await publishReport(
-			makeArgs({ issueIdentifier: "not-an-issue" }),
-		);
-		expect(exitCode).toBe(1);
-		expect(envelope.error).toContain("--issue");
-		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	// ── failure paths ───────────────────────────────────────────────────
@@ -680,23 +551,6 @@ describe("publish-report CLI wrapper (subprocess, built dist)", () => {
 		expect(r.exitCode).toBe(1);
 		const envelope = JSON.parse(r.stdout);
 		expect(envelope.error).toContain("invalid arguments");
-	});
-
-	it("--channel plus --issue → exit 1 with one JSON envelope", () => {
-		const r = runCliSafe([
-			"publish-report",
-			"--html",
-			"/tmp/x.html",
-			"--project",
-			"p",
-			"--channel",
-			"chan",
-			"--issue",
-			"FLY-1463",
-		]);
-		expect(r.exitCode).toBe(1);
-		const envelope = JSON.parse(r.stdout);
-		expect(envelope.error).toContain("mutually exclusive");
 	});
 
 	it("stdout is EXACTLY one JSON object (no extra lines)", () => {

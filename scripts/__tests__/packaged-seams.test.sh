@@ -33,58 +33,22 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SANDBOX="$(mktemp -d -t fly1062-seams-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 REAL_USER_HOME="$HOME"
-PACKAGED_ASSEMBLY="$SANDBOX/assembled-payload"
-
-# Build the scripts subtree through the REAL packaging assembler. Packaged
-# fixtures below must consume this tree, never hand-copy runtime dependencies
-# from the repository: a hand copy can make a seam test green for a file the
-# customer payload does not ship.
-if env PACKAGE_ONBOARD_SOURCED=1 bash -c \
-  'source "$1"; po_copy_curated_scripts "$2" "$3"' \
-  _ "$REPO_ROOT/scripts/package-onboard.sh" "$REPO_ROOT" "$PACKAGED_ASSEMBLY"; then
-  echo "1.0.0-test" > "$PACKAGED_ASSEMBLY/.flywheel-prebuilt"
-else
-  fail "S0 real packaged scripts assembly failed"
-  echo ""
-  echo "packaged-seams: PASSED=$PASSED FAILED=$FAILED"
-  exit 1
-fi
-
-closure_ok=1
-for f in restart-storm-gate.py lib/bounded-run.sh meta-alert.sh lead-alert.sh \
-  flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh \
-  flywheel-node-status.sh lib/lead-address.sh; do
-  [ -x "$PACKAGED_ASSEMBLY/scripts/$f" ] || closure_ok=0
-done
-if [ "$closure_ok" -eq 1 ]; then
-  pass "S0 packaged restart-gate runtime closure is assembled and executable"
-else
-  fail "S0 packaged restart-gate runtime closure incomplete"
-fi
 
 # ── fixture tree builder ─────────────────────────────────────────────────────
 # mk_tree <dir> [prebuilt] — a minimal tree carrying the REAL scripts under
-# test. Prebuilt fixtures copy from PACKAGED_ASSEMBLY; monorepo sentinels copy
-# repository files directly.
+# test (copied, so their self-derived SCRIPT_DIR/.. lands in the fixture).
 mk_tree() {
   local dir="$1" prebuilt="${2:-}"
   mkdir -p "$dir/scripts/lib"
-  if [ "$prebuilt" = "prebuilt" ]; then
-    cp -Rp "$PACKAGED_ASSEMBLY/scripts/." "$dir/scripts/"
-    cp -p "$PACKAGED_ASSEMBLY/.flywheel-prebuilt" "$dir/.flywheel-prebuilt"
-    return 0
-  fi
-  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh daily-standup.sh \
-           update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh \
-           launchd-census.sh restart-storm-gate.py meta-alert.sh lead-alert.sh \
-           flywheel-view-attach.sh flywheel-node-status.sh; do
+  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper.sh daily-standup.sh \
+           update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
-  for f in lib/script-sanity.sh lib/host-config.sh lib/supervisor.sh \
-           lib/bounded-run.sh lib/discord-pointer-guard.sh \
-           lib/converge-nonlead-daemons.sh; do
+  for f in lib/script-sanity.sh lib/host-config.sh lib/self-ship-queue.sh \
+           lib/supervisor.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
+  [ "$prebuilt" = "prebuilt" ] && echo "1.0.0-test" > "$dir/.flywheel-prebuilt"
   return 0
 }
 
@@ -123,64 +87,30 @@ run_bridge_wrapper() { # <tree> <home>
   rm -f "$tree/scripts/lib/bridge-port.sh"
   env -i HOME="$h" PATH="/usr/bin:/bin" FLYWHEEL_DIR="$tree" \
     FLYWHEEL_STATE_DIR="$h/.flywheel" \
-    FLYWHEEL_BRIDGE_LOG_PATH="$h/bridge-main.log" \
     bash "$tree/scripts/flywheel-bridge-wrapper.sh" >"$h/out.log" 2>&1
 }
 
 T="$SANDBOX/s1-tree"; H="$SANDBOX/s1-home"
 mk_tree "$T"; mk_home "$H"
-printf 'stale-wrapper-capture\n' > "$H/.flywheel/state/bridge-startup.log"
-stub "$H" node \
-  'printf "%s\n" "${FLYWHEEL_TMUX_SOCKET_OVERRIDE-}" > "$HOME/bridge-socket"' \
-  'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/bridge-log-env"' \
-  'printf "packaged-wrapper-startup\n"' \
-  'exit 0'
-stub "$H" npx 'exit 0'
+stub "$H" node 'exit 0'; stub "$H" npx 'exit 0'
 mkdir -p "$T/dist"; echo "// compiled" > "$T/dist/run-bridge.js"
 run_bridge_wrapper "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^node dist/run-bridge.js$" <(calls "$H") \
-   && ! grep -q "^npx " <(calls "$H") \
-   && [ -z "$(cat "$H/bridge-socket")" ] \
-   && [ "$(cat "$H/bridge-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
-   && grep -q '^packaged-wrapper-startup$' "$H/.flywheel/state/bridge-startup.log" \
-   && ! grep -q 'stale-wrapper-capture' "$H/.flywheel/state/bridge-startup.log"; then
-  pass "S1 bridge-wrapper packaged: command unchanged, rotation env isolated, startup capture truncated"
+   && ! grep -q "^npx " <(calls "$H"); then
+  pass "S1 bridge-wrapper packaged: exec node dist/run-bridge.js (npx untouched)"
 else
-  fail "S1 rc=$rc socket=[$(cat "$H/bridge-socket" 2>/dev/null || true)] env=[$(cat "$H/bridge-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S1 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 T="$SANDBOX/s2-tree"; H="$SANDBOX/s2-home"
 mk_tree "$T"; mk_home "$H"
-printf 'stale-wrapper-capture\n' > "$H/.flywheel/state/bridge-startup.log"
-stub "$H" node 'exit 0'
-stub "$H" npx \
-  'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/bridge-log-env"' \
-  'printf "monorepo-wrapper-startup\n"' \
-  'exit 0'
-run_bridge_wrapper "$T" "$H"; rc=$?
-if [ "$rc" -eq 0 ] && grep -q "^npx tsx scripts/run-bridge.ts$" <(calls "$H") \
-   && ! grep -q "^node " <(calls "$H") \
-   && [ "$(cat "$H/bridge-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
-   && grep -q '^monorepo-wrapper-startup$' "$H/.flywheel/state/bridge-startup.log" \
-   && ! grep -q 'stale-wrapper-capture' "$H/.flywheel/state/bridge-startup.log"; then
-  pass "S2 bridge-wrapper monorepo sentinel: command unchanged, rotation env isolated, startup capture truncated"
-else
-  fail "S2 rc=$rc env=[$(cat "$H/bridge-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
-fi
-
-T="$SANDBOX/s2b-tree"; H="$SANDBOX/s2b-home"
-mk_tree "$T"; mk_home "$H"
-printf 'must-not-be-truncated\n' > "$H/startup-target"
-ln -s "$H/startup-target" "$H/.flywheel/state/bridge-startup.log"
 stub "$H" node 'exit 0'; stub "$H" npx 'exit 0'
 run_bridge_wrapper "$T" "$H"; rc=$?
-if [ "$rc" -eq 0 ] \
-   && [ "$(cat "$H/startup-target")" = "must-not-be-truncated" ] \
-   && grep -q '^npx tsx scripts/run-bridge.ts$' <(calls "$H") \
-   && grep -qi 'unsafe Bridge raw startup log.*continuing via /dev/null' "$H/out.log"; then
-  pass "S2b bridge-wrapper bypasses an unsafe raw capture and still starts"
+if [ "$rc" -eq 0 ] && grep -q "^npx tsx scripts/run-bridge.ts$" <(calls "$H") \
+   && ! grep -q "^node " <(calls "$H"); then
+  pass "S2 bridge-wrapper monorepo sentinel: exec npx tsx verbatim (node untouched)"
 else
-  fail "S2b rc=$rc target=[$(cat "$H/startup-target")] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S2 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,8 +123,6 @@ run_standup() { # <tree> <home>
   local tree="$1" h="$2"
   env -i HOME="$h" PATH="$h/.local/bin:/usr/bin:/bin" \
     STANDUP_MARKER="$h/bridge-up" \
-    FLYWHEEL_STATE_DIR="$h/.flywheel" \
-    FLYWHEEL_BRIDGE_LOG_PATH="$h/bridge-main.log" \
     bash "$tree/scripts/daily-standup.sh" >"$h/out.log" 2>&1
 }
 mk_standup_stubs() { # <home>
@@ -204,63 +132,33 @@ mk_standup_stubs() { # <home>
     '  [ -f "${STANDUP_MARKER:?}" ] && exit 0 || exit 22 ;;' \
     'esac; done' \
     'echo "{}"; exit 0'
-  stub "$h" node \
-    'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/standup-log-env"' \
-    'printf "daily-node-startup\n"' \
-    'touch "${STANDUP_MARKER:?}"; sleep 3'
-  stub "$h" npx \
-    'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/standup-log-env"' \
-    'printf "daily-npx-startup\n"' \
-    'touch "${STANDUP_MARKER:?}"; sleep 3'
+  stub "$h" node 'touch "${STANDUP_MARKER:?}"; sleep 3'
+  stub "$h" npx  'touch "${STANDUP_MARKER:?}"; sleep 3'
 }
 
 T="$SANDBOX/s3-tree"; H="$SANDBOX/s3-home"
 mk_tree "$T"; mk_home "$H"; mk_standup_stubs "$H"
-printf 'stale-daily-capture\n' > "$H/.flywheel/state/bridge-startup-daily.log"
 mkdir -p "$T/dist" "$T/packages/teamlead/dist/bridge"
 echo "// compiled" > "$T/dist/run-bridge.js"
 echo "// plugin"   > "$T/packages/teamlead/dist/bridge/plugin.js"
 run_standup "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^node $T/dist/run-bridge.js$" <(calls "$H") \
-   && ! grep -q "^npx " <(calls "$H") \
-   && [ "$(cat "$H/standup-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup-daily.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
-   && grep -q '^daily-node-startup$' "$H/.flywheel/state/bridge-startup-daily.log" \
-   && ! grep -q 'stale-daily-capture' "$H/.flywheel/state/bridge-startup-daily.log"; then
-  pass "S3 daily-standup packaged: command unchanged, distinct startup capture truncated"
+   && ! grep -q "^npx " <(calls "$H"); then
+  pass "S3 daily-standup packaged: self-start via node dist/run-bridge.js"
 else
-  fail "S3 rc=$rc env=[$(cat "$H/standup-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup-daily.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S3 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 T="$SANDBOX/s4-tree"; H="$SANDBOX/s4-home"
 mk_tree "$T"; mk_home "$H"; mk_standup_stubs "$H"
-printf 'stale-daily-capture\n' > "$H/.flywheel/state/bridge-startup-daily.log"
 mkdir -p "$T/packages/teamlead/dist/bridge"
 echo "// plugin" > "$T/packages/teamlead/dist/bridge/plugin.js"
 run_standup "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^npx tsx $T/scripts/run-bridge.ts$" <(calls "$H") \
-   && ! grep -q "^node " <(calls "$H") \
-   && [ "$(cat "$H/standup-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup-daily.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
-   && grep -q '^daily-npx-startup$' "$H/.flywheel/state/bridge-startup-daily.log" \
-   && ! grep -q 'stale-daily-capture' "$H/.flywheel/state/bridge-startup-daily.log"; then
-  pass "S4 daily-standup monorepo sentinel: command unchanged, distinct startup capture truncated"
+   && ! grep -q "^node " <(calls "$H"); then
+  pass "S4 daily-standup monorepo sentinel: self-start via npx tsx verbatim"
 else
-  fail "S4 rc=$rc env=[$(cat "$H/standup-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup-daily.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
-fi
-
-T="$SANDBOX/s4b-tree"; H="$SANDBOX/s4b-home"
-mk_tree "$T"; mk_home "$H"; mk_standup_stubs "$H"
-mkdir -p "$T/packages/teamlead/dist/bridge"
-echo "// plugin" > "$T/packages/teamlead/dist/bridge/plugin.js"
-printf 'must-not-be-truncated\n' > "$H/daily-startup-target"
-ln -s "$H/daily-startup-target" "$H/.flywheel/state/bridge-startup-daily.log"
-run_standup "$T" "$H"; rc=$?
-if [ "$rc" -eq 0 ] \
-   && [ "$(cat "$H/daily-startup-target")" = "must-not-be-truncated" ] \
-   && grep -q "^npx tsx $T/scripts/run-bridge.ts$" <(calls "$H") \
-   && grep -qi 'unsafe Bridge raw startup log.*continuing via /dev/null' "$H/out.log"; then
-  pass "S4b daily fallback bypasses an unsafe raw capture and still starts"
-else
-  fail "S4b rc=$rc target=[$(cat "$H/daily-startup-target")] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S4 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -286,13 +184,12 @@ fi
 
 T="$SANDBOX/s6-tree"; H="$SANDBOX/s6-home"
 mk_tree "$T"; mk_home "$H"
-# monorepo side: no urgent token → scheduled sweep → stubbed fetch fails with
-# the new indeterminate rc=2. The refusal must NOT fire and git MUST be exercised
-# (proves the script ran past the sentinel check into the updater flow).
-mkdir -p "$H/.flywheel/restart.lock.d"
+# monorepo side: empty self-ship queue → fallback sweep → stubbed fetch fails →
+# clean exit 0. The refusal must NOT fire and git MUST be exercised (proves the
+# script ran past the sentinel check into the verbatim updater flow).
 stub "$H" git 'exit 1'; stub "$H" curl 'exit 0'
 run_update "$T" "$H"; rc=$?
-if [ "$rc" -eq 2 ] && ! grep -q "安装包形态" "$H/out.log" \
+if [ "$rc" -eq 0 ] && ! grep -q "安装包形态" "$H/out.log" \
    && grep -q "^git " <(calls "$H"); then
   pass "S6 update-flywheel monorepo sentinel: no refusal, updater flow runs"
 else
@@ -306,7 +203,6 @@ run_converge() { # <tree> <home>
   local tree="$1" h="$2"
   env -i HOME="$h" PATH="/usr/bin:/bin" \
     FLYWHEEL_STATE_DIR="$h/.flywheel" \
-    FLYWHEEL_CONVERGE_ALLOW_TEMP_ROOT=1 \
     FLYWHEEL_CONVERGE_ALERT_BIN="$h/.local/bin/alert-stub" \
     bash "$tree/scripts/converge-flywheel-bin.sh" >"$h/out.log" 2>&1
 }
@@ -317,23 +213,11 @@ mk_alert_stub() { # <home>
 
 T="$SANDBOX/s7-tree"; H="$SANDBOX/s7-home"
 mk_tree "$T" prebuilt; mk_home "$H"; mk_alert_stub "$H"
-# FLY-1577: mark this converge fixture worktree-shaped EXPLICITLY instead of
-# relying on the sandbox landing somewhere path-hygiene calls temp. Under a
-# valid custom TMPDIR it does not, the tree is judged trusted, and the strict
-# meta-alert lane creates a link + alert that this zero-alert case then counts.
-# Scoped to the converge seams (S7/S8) so the other packaged/monorepo seams keep
-# their existing shape.
-echo "gitdir: /main/.git/worktrees/s7-fixture" > "$T/.git"
 # steady-state Lead start: bin copies already converged (555) — the ONLY thing
 # that could ring here is the restart-services.sh source-missing false positive
 # this branch removes.
-# FLY-1577 widened the packaged FILES with the cmux watcher's launch-path
-# dependencies (both ship in a packaged tree — see the S0 closure check above),
-# so steady state now has to include them or this case counts their repairs.
-mkdir -p "$H/.flywheel/bin/lib"
-for f in flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
-  flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh \
-  restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
+mkdir -p "$H/.flywheel/bin"
+for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done
 run_converge "$T" "$H"; rc=$?
@@ -346,7 +230,6 @@ fi
 
 T="$SANDBOX/s8-tree"; H="$SANDBOX/s8-home"
 mk_tree "$T"; mk_home "$H"; mk_alert_stub "$H"
-echo "gitdir: /main/.git/worktrees/s8-fixture" > "$T/.git"   # FLY-1577: see S7
 run_converge "$T" "$H"; rc=$?
 if [ "$rc" -eq 1 ] && grep -q "repo source missing.*restart-services.sh" "$H/out.log" \
    && grep -q "srcmissing" <(calls "$H"); then
@@ -436,24 +319,6 @@ if [ "$rc" -eq 0 ] && [ -f "$PLIST" ] \
   pass "S11b supervisor darwin opt-in: timer spec renders StartCalendarInterval"
 else
   fail "S11b rc=$rc out=[$out]"
-fi
-
-# interval timer spec renders StartInterval and stays non-KeepAlive
-H="$SANDBOX/s11c-home"; mk_home "$H"
-stub "$H" launchctl 'exit 0'
-LDIR="$SANDBOX/s11c-launchd"
-SPEC='{"name":"interval-worker","kind":"timer","exec":"/bin/bash /x/interval-worker-once.sh","intervalSeconds":60,"timeoutSeconds":60}'
-out="$(env HOME="$H" PATH="$H/.local/bin:$PATH" \
-  FLYWHEEL_SUPERVISOR_BACKEND=launchd FLYWHEEL_LAUNCHD_DIR="$LDIR" \
-  FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1 \
-  bash -c 'source "'"$REPO_ROOT"'/scripts/lib/supervisor.sh"; supervisor_install "$1"' _ "$SPEC" 2>&1)"; rc=$?
-PLIST="$LDIR/com.flywheel.interval-worker.plist"
-if [ "$rc" -eq 0 ] && [ -f "$PLIST" ] \
-   && grep -q "<key>StartInterval</key><integer>60</integer>" "$PLIST" \
-   && ! grep -q "<key>KeepAlive</key>" "$PLIST"; then
-  pass "S11c supervisor darwin opt-in: bounded interval timer renders StartInterval"
-else
-  fail "S11c rc=$rc out=[$out]"
 fi
 
 H="$SANDBOX/s12-home"; mk_home "$H"

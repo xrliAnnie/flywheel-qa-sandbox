@@ -17,7 +17,6 @@
  *     blocks" (the spike saw zero-tool models pretend to run commands).
  */
 import { existsSync } from "node:fs";
-import { mergeNonLeadClaudeSettingsArgv } from "flywheel-config";
 import {
 	NodeProcessRunner,
 	type ProcessHandle,
@@ -55,9 +54,6 @@ export interface HeadlessClaudeBrainOptions {
 	runner?: ProcessRunner;
 	/** use --resume to keep one headless session across turns (default true). */
 	useResume?: boolean;
-	/** FLY-545: working directory for the claude -p child — the read-only
-	 * huddle brain anchors Read/Grep/Glob at the project root. */
-	cwd?: string;
 }
 
 export class HeadlessClaudeBrain implements BrainAdapter {
@@ -100,18 +96,13 @@ export class HeadlessClaudeBrain implements BrainAdapter {
 			"--verbose",
 		);
 		args.push(...(this.opts.extraArgs ?? []));
-		const safeArgs = mergeNonLeadClaudeSettingsArgv(args);
 
 		// resume keeps history in-session → send only the new turn; else re-inject.
 		const prompt = useResume
 			? buildPrompt(voiceContext, [], turn.text)
 			: buildPrompt(voiceContext, turn.history, turn.text);
 
-		const child = this.runner.spawn(
-			this.opts.claudeBin,
-			safeArgs,
-			this.opts.cwd ? { cwd: this.opts.cwd } : {},
-		);
+		const child = this.runner.spawn(this.opts.claudeBin, args);
 		const stream = new BrainStream(child, opts.signal, this.opts.timeoutMs);
 		child.end(prompt); // write prompt + close stdin (EOF) so claude -p starts
 		try {

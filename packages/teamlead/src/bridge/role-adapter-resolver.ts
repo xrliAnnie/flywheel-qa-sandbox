@@ -18,17 +18,13 @@
 
 import type {
 	ExecutorBackend,
+	PhaseDispatchVendor,
 	RoleBackendMap,
 	RoleEffort,
 	RoleName,
 	RunnerVendorType,
-	WorkflowDispatchVendor,
 } from "flywheel-config";
-import {
-	getModelConfigSnapshot,
-	parseRunnerLabels,
-	resolveAllowedCanonicalModel,
-} from "flywheel-config";
+import { parseRunnerLabels } from "flywheel-config";
 
 /** Transport vendor ids — matches `IAgentTeamTransport.vendorId()`. */
 export type TransportBackend = "claude-code" | "codex";
@@ -107,7 +103,7 @@ export interface ResolveRoleAdapterArgs {
 	 * maps through the ONE existing VENDOR_TO_EXECUTOR table — never a second
 	 * mapping (drift risk). Absent → FLY-728 status quo (claude-tmux).
 	 */
-	dispatchVendor?: WorkflowDispatchVendor;
+	dispatchVendor?: PhaseDispatchVendor;
 	/**
 	 * FLY-1224: the phase table's reasoning effort. Takes precedence over the
 	 * project roles effort (dispatch layer > project config); absent → the
@@ -185,7 +181,6 @@ export function resolveRoleAdapter(
 	args: ResolveRoleAdapterArgs,
 ): ResolvedRoleAdapter {
 	const env = args.env ?? process.env;
-	const modelSnapshot = getModelConfigSnapshot();
 
 	let backend: ExecutorBackend | undefined;
 	let model: string | undefined;
@@ -193,7 +188,7 @@ export function resolveRoleAdapter(
 	// 1. Task override — labels (runner role only; a label can't re-bind the
 	//    Lead, which doesn't flow through the dispatcher).
 	if (args.role === "runner") {
-		const labelSelection = parseRunnerLabels(args.issueLabels, modelSnapshot);
+		const labelSelection = parseRunnerLabels(args.issueLabels);
 		if (labelSelection.runnerType) {
 			const mapped = VENDOR_TO_EXECUTOR[labelSelection.runnerType];
 			if (mapped) {
@@ -246,8 +241,8 @@ export function resolveRoleAdapter(
 	// (~0.35GB extra RAM per runner, FLY-753 measured). Inject the explicit
 	// small-context fleet default instead. Layers above (label / dispatch /
 	// project roles) still win; leads and non-claude backends are untouched.
-	// `FLYWHEEL_RUNNER_DEFAULT_MODEL` overrides the default; `off` opts back out
-	// to the account default.
+	// `FLYWHEEL_RUNNER_DEFAULT_MODEL` overrides the default; the value `off`
+	// restores the legacy inherit-account behavior.
 	if (!model && args.role === "runner" && backend === "claude-tmux") {
 		const configured = env.FLYWHEEL_RUNNER_DEFAULT_MODEL?.trim();
 		if (configured?.toLowerCase() !== "off") {
@@ -255,15 +250,6 @@ export function resolveRoleAdapter(
 		}
 	}
 
-	// Final Claude role boundary: canonicalize aliases so no adapter can turn a
-	// bare alias into CLI argv and let the CLI's own table pick the version.
-	if (model && backend === "claude-tmux") {
-		model = resolveAllowedCanonicalModel(model, {
-			surface: args.role === "lead" ? "lead" : "runner",
-			runtimeVendor: "claude",
-			snapshot: modelSnapshot,
-		});
-	}
 	// FLY-671: effort resolves INDEPENDENTLY of the backend/model precedence above
 	// (Codex design review R2 HIGH-2). The model layer gates the whole project
 	// `roles` block behind "no label backend selected"; if effort rode along, a

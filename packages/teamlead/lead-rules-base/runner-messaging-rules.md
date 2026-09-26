@@ -2,17 +2,6 @@
 
 When you (the Lead) need to message a Runner agent, choose the path by purpose:
 
-## Trusted runner-stop exception (FLY-2017)
-
-Treat a Runner lifecycle declaration as an ACK-only report only when all three
-complete values match: `question_kind=report`, Question ID
-`rstop-<32 lowercase hex>`, and content beginning
-`RUNNER-STOPPED kind=runner_stopped `. Bridge labels this trusted triple
-`[REPORT]`. Relay the status once, then ACK the enclosing mailbox batch/event;
-never run `flywheel-comm respond` for it. A response would wake the parked
-Runner, while an ACK retires the report. Any near-match remains an ordinary
-answerable `[ASK] runner_question`.
-
 ## Ordinary chat / non-gate instructions → `SendMessage` MCP tool
 
 - For everyday "talk to Runner" — context handoff, status checks, follow-up
@@ -47,17 +36,8 @@ flywheel-comm respond --db <DB-path> --bridge-url $BRIDGE_URL \
   --lead <your-id> <question-id> "<your-reply>"
 ```
 - **Why**: the CLI routes the response through the Bridge founder-consent
-  evaluator, which **may** check the issue's chat thread before the CommDB
-  response is written.
-  ⚠️ **This is not proof of authorization.** The evaluator has three modes and
-  they differ:
-  **off** — no check and **no audit record** at all; the call passes straight
-  through. **audit-only** — it checks and records, but **does not block**.
-  **enforcing** — it may block. It also only sees the endpoints wired into it.
-  Which mode is live is an operational fact to check at the time, never to
-  assume. A response that went through, an ALLOW verdict, or the absence of a
-  `403`, are **none of them** evidence the founder authorized anything — see
-  AUTH-CANON in R5 of `founder-only-authority.md` for what actually counts.
+  evaluator, which verifies the founder authorized this ship in the issue's
+  chat thread before the CommDB response is written.
 - **Fail-closed**: if you omit `--bridge-url` (and `BRIDGE_URL` is unset) for an
   `approve_to_ship` gate, the CLI **refuses** to write and exits non-zero. You
   cannot resolve this gate directly. Always copy-paste the exact command from
@@ -87,7 +67,6 @@ footgun stranded parked Runners (FLY-351 S2/S3 diff-approval). Keep `respond` fo
 |------|:------:|-----|
 | `SendMessage` / `flywheel-comm send` | ✅ | unconditional mailbox write (FLY-168) — the driver path |
 | `respond` to a checkpoint-less `ask` | ✅ | FLY-142 `wakeAskedRunnerBestEffort` (vendor-neutral) |
-| `respond` to a trusted `[REPORT]` runner-stop declaration | Rejected | ACK-only by FLY-2017; never wake a parked Runner with a response |
 | `respond` to a **marker-bearing** no-block gate (Codex) | ✅ | `wakeNoBlockGateRunnerBestEffort` via the gate marker |
 | `respond` to a markerless non-`approve_to_ship` checkpoint (Claude) | ❌ | byte-compat: blocking gates poll for their own answer, no marker → no wake |
 | `respond` to `approve_to_ship` | ✅ | Bridge founder-consent / bypass path writes the wake |
@@ -104,7 +83,7 @@ Runner forward.
 | "Status update — Annie wants ETA" | `SendMessage` |
 | Approving `approve_to_ship` gate | `flywheel-comm respond` |
 | Answering a `clarify_question` gate | `flywheel-comm respond` |
-| Asking the Runner to abort | `SendMessage` (Runner cooperatively stops). ⚠️ Ending a Runner's work is reserved under **R2** whichever words you use — a cooperative stop is not a way around it |
+| Asking the Runner to abort | `SendMessage` (Runner cooperatively stops) |
 
 ## Sentinel safety net
 

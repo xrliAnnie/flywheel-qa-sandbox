@@ -19,7 +19,6 @@
 #   FLYWHEEL_TOKEN_USAGE_PROJECT   publish-report --project (default: flywheel)
 #   TOKEN_USAGE_OUT                HTML output path (default: /tmp/flywheel-token-usage-daily.html)
 #   TOKEN_USAGE_TIMEZONE           report timezone (default: America/Los_Angeles)
-#   TOKEN_USAGE_ALLOW_EMPTY        1/true/yes permits an integrity-warning report to exit 0
 set -euo pipefail
 
 # Only $HOME-derived paths may be resolved before sourcing .env (the .env location
@@ -42,7 +41,7 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 # checkout (Codex R1 HIGH). `set -a; . .env` clobbers already-exported vars, so:
 # snapshot the process values → source .env (fills Supabase creds + any unset config)
 # → restore the snapshots so process env wins. .env-only vars (Supabase creds) survive.
-_PROCESS_WINS="FLYWHEEL_REPO TOKEN_USAGE_OUT FLYWHEEL_TOKEN_USAGE_CHANNEL FLYWHEEL_TOKEN_USAGE_PROJECT TOKEN_USAGE_TIMEZONE TOKEN_USAGE_ROLLOUT_DATE TOKEN_USAGE_WINDOW_DAYS TOKEN_USAGE_BACKFILL_DAYS TOKEN_USAGE_LINEAR_WORKSPACE TOKEN_USAGE_PRICING_FILE TOKEN_USAGE_ALLOW_EMPTY"
+_PROCESS_WINS="FLYWHEEL_REPO TOKEN_USAGE_OUT FLYWHEEL_TOKEN_USAGE_CHANNEL FLYWHEEL_TOKEN_USAGE_PROJECT TOKEN_USAGE_TIMEZONE TOKEN_USAGE_ROLLOUT_DATE TOKEN_USAGE_WINDOW_DAYS TOKEN_USAGE_BACKFILL_DAYS TOKEN_USAGE_LINEAR_WORKSPACE TOKEN_USAGE_PRICING_FILE"
 for _v in $_PROCESS_WINS; do
 	if [ -n "${!_v:-}" ]; then eval "_SNAP_${_v}=\${${_v}}"; fi
 done
@@ -71,9 +70,10 @@ fi
 
 # FLY-929 C2 / FLY-1243: fail-loud — a failing pipeline step raises a
 # notify_digest_failed alert via lead-alert.sh (claims-deduped, Bridge-independent).
-# The alert always fires on failure. Best-effort ('|| true'): the alert must
-# never mask the original exit code.
-raise_alert() {
+# The FLYWHEEL_NOTIFY_DIGEST_EXPECT gate is retired (固化 default-on) — the alert
+# always fires on failure. Best-effort ('|| true'): the alert must never mask the
+# original exit code.
+fail_loud() {
 	local step="$1" code="$2"
 	local alert_sh="${REPO}/scripts/lead-alert.sh"
 	if [ -f "$alert_sh" ]; then
@@ -86,23 +86,14 @@ raise_alert() {
 	else
 		log "WARNING: lead-alert.sh not found at $alert_sh — fail-loud alert skipped"
 	fi
-}
-
-fail_loud() {
-	local step="$1" code="$2"
-	raise_alert "$step" "$code"
 	exit "$code"
 }
 
 # Aggregate the rolling window (default 14 days) and render yesterday's report to HTML.
 log "aggregating + rendering daily report → $OUT"
-daily_rc=0
-node "$COMM" token-report daily --out "$OUT" || daily_rc=$?
-if [ "$daily_rc" -eq 3 ]; then
-	log "report integrity check failed; publishing the visible warning report before alerting"
-elif [ "$daily_rc" -ne 0 ]; then
-	fail_loud "token-report daily" "$daily_rc"
-fi
+rc=0
+node "$COMM" token-report daily --out "$OUT" || rc=$?
+if [ "$rc" -ne 0 ]; then fail_loud "token-report daily" "$rc"; fi
 
 # Publish to the dedicated channel if configured (best-effort).
 if [ -n "$CHANNEL" ]; then
@@ -125,11 +116,6 @@ else
 	log "WARNING: FLYWHEEL_TOKEN_USAGE_CHANNEL is unset — report NOT delivered to Discord."
 	log "         Set it in the plist or in $ENV_FILE to auto-publish (see token-usage-setup-channel.sh)."
 	log "         HTML written to $OUT (not published)."
-fi
-
-if [ "$daily_rc" -eq 3 ]; then
-	raise_alert "token-report integrity-check" "$daily_rc"
-	exit "$daily_rc"
 fi
 
 log "done"

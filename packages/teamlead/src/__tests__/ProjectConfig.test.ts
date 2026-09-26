@@ -1,6 +1,3 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type LeadConfig,
@@ -17,7 +14,6 @@ describe("LeadConfig type", () => {
 	it("LeadConfig has agentId, chatChannel, and match.labels", () => {
 		const lead: LeadConfig = {
 			agentId: "product-lead",
-			summaryRole: "producer",
 			chatChannel: "789",
 			match: { labels: ["Product"] },
 		};
@@ -33,185 +29,12 @@ describe("LeadConfig type", () => {
 			leads: [
 				{
 					agentId: "eng-lead",
-					summaryRole: "producer",
 					chatChannel: "012",
 					match: { labels: ["Engineering"] },
 				},
 			],
 		};
 		expect(entry.leads[0]!.agentId).toBe("eng-lead");
-	});
-
-	it("LeadConfig exposes registry-owned Discord identity fields", () => {
-		const lead: LeadConfig = {
-			agentId: "eng-lead",
-			summaryRole: "producer",
-			chatChannel: "012",
-			match: { labels: ["Engineering"] },
-			botTokenEnv: "ENG_BOT_TOKEN",
-			botUserId: "12345678901234567",
-			discordStateDir: "/tmp/discord-eng-lead",
-		};
-		expect(lead.botUserId).toBe("12345678901234567");
-		expect(lead.discordStateDir).toBe("/tmp/discord-eng-lead");
-	});
-
-	it("LeadConfig exposes an identity-bound Playwright MCP opt-in", () => {
-		const lead: LeadConfig = {
-			agentId: "eng-lead",
-			summaryRole: "producer",
-			chatChannel: "012",
-			match: { labels: ["Engineering"] },
-			playwrightMcp: true,
-		};
-		expect(lead.playwrightMcp).toBe(true);
-	});
-});
-
-describe("FLY-1726 identity schema boundary", () => {
-	const lead = (agentId: string, overrides: Record<string, unknown> = {}) => ({
-		agentId,
-		summaryRole: "producer",
-		chatChannel: `${agentId}-channel`,
-		match: { labels: ["Engineering"] },
-		...overrides,
-	});
-
-	it("rejects the same bare agentId across different projects", () => {
-		expect(() =>
-			parseAndValidateProjects([
-				{
-					projectName: "flywheel",
-					projectRoot: "/tmp/flywheel",
-					leads: [lead("eng-lead")],
-				},
-				{
-					projectName: "sub",
-					projectRoot: "/tmp/sub",
-					leads: [lead("eng-lead")],
-				},
-			]),
-		).toThrow(/identity_bare_id_collision/);
-	});
-
-	it("requires an independent botUserId for every token-managed Lead", () => {
-		expect(() =>
-			parseAndValidateProjects([
-				{
-					projectName: "flywheel",
-					projectRoot: "/tmp/flywheel",
-					leads: [lead("eng-lead", { botTokenEnv: "ENG_BOT_TOKEN" })],
-				},
-			]),
-		).toThrow(/identity_bot_user_id_missing/);
-	});
-
-	it("rejects duplicate Discord botUserId values", () => {
-		expect(() =>
-			parseAndValidateProjects([
-				{
-					projectName: "flywheel",
-					projectRoot: "/tmp/flywheel",
-					leads: [
-						lead("eng-lead", { botUserId: "12345678901234567" }),
-						lead("product-lead", { botUserId: "12345678901234567" }),
-					],
-				},
-			]),
-		).toThrow(/identity_bot_user_id_collision/);
-	});
-
-	it("accepts a non-existent absolute discordStateDir for later provisioning", () => {
-		const projects = parseAndValidateProjects([
-			{
-				projectName: "flywheel",
-				projectRoot: "/tmp/flywheel",
-				leads: [
-					lead("eng-lead", {
-						discordStateDir: "/tmp/fly1726-not-yet-provisioned/eng",
-					}),
-				],
-			},
-		]);
-		expect(projects[0]!.leads[0]!.discordStateDir).toBe(
-			"/tmp/fly1726-not-yet-provisioned/eng",
-		);
-	});
-
-	it.each([undefined, "Producer", "writer", 1])(
-		"rejects invalid summaryRole %j at the TeamLead schema boundary",
-		(summaryRole) => {
-			expect(() =>
-				parseAndValidateProjects([
-					{
-						projectName: "flywheel",
-						projectRoot: "/tmp/flywheel",
-						leads: [lead("eng-lead", { summaryRole })],
-					},
-				]),
-			).toThrow(/identity_summary_role_invalid/);
-		},
-	);
-
-	it("preserves the project-level summary aggregator assignment", () => {
-		const projects = parseAndValidateProjects([
-			{
-				projectName: "growth",
-				projectRoot: "/tmp/growth",
-				summaryAggregatorLeadId: "growth-lead",
-				leads: [lead("growth-lead", { summaryRole: "aggregator" })],
-			},
-		]);
-
-		expect(projects[0]!.summaryAggregatorLeadId).toBe("growth-lead");
-	});
-});
-
-describe("FLY-1726 loadProjects registry source", () => {
-	const originalInline = process.env.FLYWHEEL_PROJECTS;
-	const originalFile = process.env.FLYWHEEL_PROJECTS_FILE;
-	const originalHome = process.env.HOME;
-	const tempDirs: string[] = [];
-
-	afterEach(() => {
-		if (originalInline === undefined) delete process.env.FLYWHEEL_PROJECTS;
-		else process.env.FLYWHEEL_PROJECTS = originalInline;
-		if (originalFile === undefined) delete process.env.FLYWHEEL_PROJECTS_FILE;
-		else process.env.FLYWHEEL_PROJECTS_FILE = originalFile;
-		if (originalHome === undefined) delete process.env.HOME;
-		else process.env.HOME = originalHome;
-		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true });
-	});
-
-	it("loads the exact registry named by FLYWHEEL_PROJECTS_FILE", () => {
-		const dir = mkdtempSync(join(tmpdir(), "fly1726-projects-file-"));
-		tempDirs.push(dir);
-		const projectsFile = join(dir, "projects.json");
-		writeFileSync(
-			projectsFile,
-			JSON.stringify([
-				{
-					projectName: "qa-slot",
-					projectRoot: "/tmp/qa-slot",
-					leads: [
-						{
-							agentId: "qa-lead",
-							summaryRole: "producer",
-							chatChannel: "qa-channel",
-							match: { labels: ["QA"] },
-						},
-					],
-				},
-			]),
-		);
-
-		delete process.env.FLYWHEEL_PROJECTS;
-		process.env.FLYWHEEL_PROJECTS_FILE = projectsFile;
-		process.env.HOME = join(dir, "empty-home");
-
-		const projects = loadProjects();
-		expect(projects).toHaveLength(1);
-		expect(projects[0]!.projectName).toBe("qa-slot");
 	});
 });
 
@@ -305,45 +128,6 @@ describe("loadProjects validation", () => {
 		expect(() => loadProjects()).toThrow(/labels/);
 	});
 
-	it("rejects a non-boolean playwrightMcp Lead capability", () => {
-		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
-			{
-				projectName: "test",
-				projectRoot: "/tmp",
-				leads: [
-					{
-						agentId: "eng-lead",
-						chatChannel: "456",
-						match: { labels: ["Engineering"] },
-						playwrightMcp: "yes",
-					},
-				],
-			},
-		]);
-		expect(() => loadProjects()).toThrow(/playwrightMcp.*boolean/);
-	});
-
-	it("rejects a Playwright MCP opt-in on the Codex Lead backend", () => {
-		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
-			{
-				projectName: "test",
-				projectRoot: "/tmp",
-				leads: [
-					{
-						agentId: "codex-lead",
-						chatChannel: "456",
-						match: { labels: ["Engineering"] },
-						canSpawnRunners: false,
-						codexProfile: "companion",
-						backend: "codex-app-server",
-						playwrightMcp: true,
-					},
-				],
-			},
-		]);
-		expect(() => loadProjects()).toThrow(/playwrightMcp.*claude-code/);
-	});
-
 	it("throws on duplicate projectName", () => {
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{
@@ -380,7 +164,6 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
 					},
@@ -414,7 +197,6 @@ describe("loadProjects validation", () => {
 	const baseLeads = [
 		{
 			agentId: "cos-lead",
-			summaryRole: "aggregator",
 			chatChannel: "ch-core",
 			match: { labels: ["PM"] },
 			canSpawnRunners: false,
@@ -477,7 +259,6 @@ describe("loadProjects companion validation", () => {
 
 	const companionLead = (companion: unknown) => ({
 		agentId: "mufasa-lead",
-		summaryRole: "producer",
 		chatChannel: "ch-growth",
 		match: { labels: ["growth"] },
 		canSpawnRunners: false,
@@ -538,7 +319,6 @@ describe("loadProjects companion validation", () => {
 				leads: [
 					{
 						agentId: "cos-lead",
-						summaryRole: "aggregator",
 						chatChannel: "ch",
 						match: { labels: ["PM"] },
 						canSpawnRunners: false,
@@ -564,7 +344,6 @@ describe("loadProjects external validation", () => {
 	// NOT PM/Triage, to avoid the PM/Triage validator) + department "external".
 	const externalLead = (overrides: Record<string, unknown> = {}) => ({
 		agentId: "anna-interviewer-lead",
-		summaryRole: "exempt",
 		chatChannel: "ch-customer",
 		match: { labels: ["external-interviews"] },
 		department: "external",
@@ -591,7 +370,6 @@ describe("loadProjects external validation", () => {
 		// objects keep their exact shape. Consumers check `=== true`.
 		const lead = loadWith({
 			agentId: "product-lead",
-			summaryRole: "producer",
 			chatChannel: "ch",
 			match: { labels: ["Product"] },
 		})[0]!.leads[0]!;
@@ -601,7 +379,6 @@ describe("loadProjects external validation", () => {
 	it("preserves explicit external: false", () => {
 		const lead = loadWith({
 			agentId: "product-lead",
-			summaryRole: "producer",
 			chatChannel: "ch",
 			match: { labels: ["Product"] },
 			external: false,
@@ -620,7 +397,6 @@ describe("loadProjects external validation", () => {
 		// after normalization an absent field becomes `true`, which must be rejected.
 		const lead = {
 			agentId: "anna-interviewer-lead",
-			summaryRole: "exempt",
 			chatChannel: "ch-customer",
 			match: { labels: ["external-interviews"] },
 			department: "external",
@@ -650,7 +426,6 @@ describe("loadProjects external validation", () => {
 	it("is orthogonal to companion — a companion lead keeps external undefined", () => {
 		const lead = loadWith({
 			agentId: "mufasa-lead",
-			summaryRole: "producer",
 			chatChannel: "ch",
 			match: { labels: ["growth"] },
 			canSpawnRunners: false,
@@ -686,7 +461,6 @@ describe("FLY-163: deprecated field handling", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						summaryRole: "producer",
 						forumChannel: "deprecated-id",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
@@ -711,7 +485,6 @@ describe("FLY-163: deprecated field handling", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
 						statusTagMap: { running: ["tag-1"] },
@@ -754,7 +527,6 @@ describe("FLY-163: PM/Triage canSpawnRunners validator", () => {
 				leads: [
 					{
 						agentId: "lead-x",
-						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["PM"] },
 						...overrides,
@@ -788,7 +560,6 @@ describe("FLY-163: PM/Triage canSpawnRunners validator", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
 					},
@@ -879,13 +650,11 @@ describe("resolveLeadForIssue", () => {
 			leads: [
 				{
 					agentId: "product-lead",
-					summaryRole: "producer",
 					chatChannel: "111-chat",
 					match: { labels: ["Product"] },
 				},
 				{
 					agentId: "eng-lead",
-					summaryRole: "producer",
 					chatChannel: "333-chat",
 					match: { labels: ["Engineering", "Backend"] },
 				},
@@ -898,7 +667,6 @@ describe("resolveLeadForIssue", () => {
 			leads: [
 				{
 					agentId: "marketing-lead",
-					summaryRole: "producer",
 					chatChannel: "222-chat",
 					match: { labels: ["Marketing"] },
 				},
@@ -981,7 +749,6 @@ describe("memoryAllowedUsers validation", () => {
 
 	const validLead = {
 		agentId: "product-lead",
-		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
 	};
@@ -1045,7 +812,6 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 	let savedTokenEnv: string | undefined;
 
 	afterEach(() => {
-		vi.restoreAllMocks();
 		if (originalEnv === undefined) {
 			delete process.env.FLYWHEEL_PROJECTS;
 		} else {
@@ -1061,10 +827,8 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 
 	const baseLead = {
 		agentId: "product-lead",
-		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
-		botUserId: "12345678901234567",
 	};
 
 	it("resolves botToken from env var when botTokenEnv is set", () => {
@@ -1082,35 +846,18 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 		expect(projects[0]!.leads[0]!.botTokenEnv).toBe("TEST_PETER_TOKEN");
 	});
 
-	it("loads a multi-Lead registry when only the current Lead token is available", () => {
+	it("warns but does not throw when botTokenEnv is set but env var missing", () => {
 		savedTokenEnv = process.env.TEST_PETER_TOKEN;
-		process.env.TEST_PETER_TOKEN = "current-lead-token";
-		delete process.env.FLY1726_FOREIGN_LEAD_TOKEN;
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		delete process.env.TEST_PETER_TOKEN;
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{
 				projectName: "test",
 				projectRoot: "/tmp",
-				leads: [
-					{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" },
-					{
-						agentId: "eng-lead",
-						summaryRole: "producer",
-						chatChannel: "789",
-						match: { labels: ["Engineering"] },
-						botTokenEnv: "FLY1726_FOREIGN_LEAD_TOKEN",
-						botUserId: "22345678901234567",
-					},
-				],
+				leads: [{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" }],
 			},
 		]);
-
 		const projects = loadProjects();
-		expect(projects[0]!.leads[0]!.botToken).toBe("current-lead-token");
-		expect(projects[0]!.leads[1]!.botToken).toBeUndefined();
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringMatching(/FLY1726_FOREIGN_LEAD_TOKEN.*not found/),
-		);
+		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
 	});
 
 	it("botToken is undefined when botTokenEnv is not configured (backward-compat)", () => {
@@ -1375,7 +1122,6 @@ describe("FLY-83 alert fields", () => {
 	function validLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 		return {
 			agentId: "product-lead",
-			summaryRole: "producer",
 			chatChannel: "222",
 			match: { labels: ["Product"] },
 			...overrides,
@@ -1475,7 +1221,6 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 	function fleetLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 		return {
 			agentId: "product-lead",
-			summaryRole: "producer",
 			chatChannel: "222",
 			match: { labels: ["Product"] },
 			...overrides,
@@ -1582,51 +1327,6 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 			}),
 		);
 		expect(projects[0]!.leads[0]!.codexProfile).toBe("companion");
-	});
-
-	it("accepts active Codex model, effort, and context-window configuration", () => {
-		const projects = loadWith(
-			fleetLead({
-				backend: "codex-app-server",
-				codexProfile: "full-access",
-				canSpawnRunners: false,
-				model: "gpt-5.6-sol",
-				effort: "xhigh",
-				modelContextWindow: 1_000_000,
-			}),
-		);
-		expect(projects[0]!.leads[0]).toMatchObject({
-			model: "gpt-5.6-sol",
-			effort: "xhigh",
-			modelContextWindow: 1_000_000,
-		});
-	});
-
-	it.each([0, -1, 1.5, 10_000_001, "1000000"])(
-		"rejects invalid modelContextWindow %j",
-		(modelContextWindow) => {
-			expect(() =>
-				loadWith(
-					fleetLead({
-						backend: "codex-app-server",
-						codexProfile: "full-access",
-						canSpawnRunners: false,
-						modelContextWindow,
-					} as Partial<LeadConfig>),
-				),
-			).toThrow(/modelContextWindow/);
-		},
-	);
-
-	it("rejects modelContextWindow on Claude where the field would be inert", () => {
-		expect(() =>
-			loadWith(
-				fleetLead({
-					backend: "claude-code",
-					modelContextWindow: 1_000_000,
-				}),
-			),
-		).toThrow(/modelContextWindow.*codex-app-server/);
 	});
 
 	it("FLY-350 (Z): accepts codexProfile:write-capable (canSpawnRunners:false, not a companion)", () => {
@@ -1741,48 +1441,6 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		);
 	});
 
-	it("accepts an uppercase restart child key containing repeated separators at the 128-byte boundary", () => {
-		const projectName = `P__${"x".repeat(57)}`;
-		const agentId = `Lead__${"y".repeat(56)}`;
-		const restartChildKey = `lead.${projectName}-${agentId}`;
-		expect(restartChildKey).toHaveLength(128);
-		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
-			{
-				projectName,
-				projectRoot: "/tmp/upper",
-				leads: [
-					{
-						agentId,
-						summaryRole: "producer",
-						chatChannel: "1",
-						match: { labels: ["P"] },
-					},
-				],
-			},
-		]);
-		expect(() => loadProjects()).not.toThrow();
-	});
-
-	it("rejects a derived restart child key longer than 128 bytes at the config boundary", () => {
-		const projectName = `P__${"x".repeat(57)}`;
-		const agentId = `Lead__${"y".repeat(57)}`;
-		expect(`lead.${projectName}-${agentId}`).toHaveLength(129);
-		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
-			{
-				projectName,
-				projectRoot: "/tmp/too-long",
-				leads: [
-					{
-						agentId,
-						chatChannel: "1",
-						match: { labels: ["P"] },
-					},
-				],
-			},
-		]);
-		expect(() => loadProjects()).toThrow(/restart child_key.*128/);
-	});
-
 	it("rejects exact-key collisions across (projectName, agentId) pairs (R5#6)", () => {
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{
@@ -1825,10 +1483,8 @@ describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () 
 				leads: [
 					{
 						agentId: "product-lead",
-						summaryRole: "producer",
 						chatChannel: "222",
 						match: { labels: ["Product"] },
-						botUserId: "12345678901234567",
 						...leadOverrides,
 					},
 				],
@@ -1900,7 +1556,6 @@ describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () 
 describe("FLY-371: ProjectEntry.linear binding validation", () => {
 	const validLead = {
 		agentId: "product-lead",
-		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
 	};
@@ -1992,39 +1647,18 @@ describe("FLY-371: resolveProjectLinearBinding", () => {
 		{
 			projectName: "flywheel",
 			projectRoot: "/tmp/flywheel",
-			leads: [
-				{
-					agentId: "eng",
-					summaryRole: "producer",
-					chatChannel: "c",
-					match: { labels: ["Eng"] },
-				},
-			],
+			leads: [{ agentId: "eng", chatChannel: "c", match: { labels: ["Eng"] } }],
 			linear: { team: "FLY", project: "Flywheel", label: "Flywheel" },
 		},
 		{
 			projectName: "no-binding",
 			projectRoot: "/tmp/nb",
-			leads: [
-				{
-					agentId: "x",
-					summaryRole: "producer",
-					chatChannel: "c",
-					match: { labels: ["X"] },
-				},
-			],
+			leads: [{ agentId: "x", chatChannel: "c", match: { labels: ["X"] } }],
 		},
 		{
 			projectName: "null-binding",
 			projectRoot: "/tmp/null",
-			leads: [
-				{
-					agentId: "y",
-					summaryRole: "producer",
-					chatChannel: "c",
-					match: { labels: ["Y"] },
-				},
-			],
+			leads: [{ agentId: "y", chatChannel: "c", match: { labels: ["Y"] } }],
 			linear: null,
 		},
 	];
@@ -2121,7 +1755,6 @@ describe("leads[].voice per-agent voice config (FLY-546 A3)", () => {
 
 	const baseLead = {
 		agentId: "eng-lead",
-		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Engineering"] },
 	};

@@ -10,7 +10,6 @@ interface RawMsg {
 	channel_id: string;
 	content: string;
 	author: { id: string; bot: boolean };
-	timestamp?: string;
 }
 
 /** Fake Discord REST: per-channel message log (chronological); serves
@@ -62,28 +61,6 @@ describe("RestPollDiscordInboundSource — construction", () => {
 			() =>
 				new RestPollDiscordInboundSource({ botToken: "", channelIds: ["c"] }),
 		).toThrow(/botToken/);
-	});
-
-	it("asserts /users/@me exactly once and rejects a mismatched bot before polling", async () => {
-		const calls: string[] = [];
-		const fetchImpl = (async (url: string) => {
-			calls.push(url);
-			return {
-				ok: true,
-				status: 200,
-				json: async () => ({ id: "actual-bot" }),
-			} as unknown as Response;
-		}) as unknown as typeof fetch;
-		const src = new RestPollDiscordInboundSource({
-			botToken: "tok",
-			channelIds: ["c1"],
-			fetchImpl,
-		});
-
-		await expect(
-			src.assertAuthenticatedBotUser("expected-bot"),
-		).rejects.toThrow("identity_bot_login_mismatch");
-		expect(calls).toEqual(["https://discord.com/api/v10/users/@me"]);
 	});
 });
 
@@ -140,34 +117,6 @@ describe("RestPollDiscordInboundSource — baseline + poll", () => {
 		got.length = 0;
 		await src.pollOnce();
 		expect(got).toEqual([]);
-	});
-
-	it("maps Discord's raw timestamp to timestampMs", async () => {
-		const log = [msg("1", "c1", "old")];
-		const { fetchImpl } = fakeDiscord({ c1: log });
-		const got: DiscordInboundMessage[] = [];
-		const src = new RestPollDiscordInboundSource({
-			botToken: "tok",
-			channelIds: ["c1"],
-			fetchImpl,
-			setTimer: () => ({ cancel: () => {} }),
-			logger: silent,
-		});
-		src.onMessage((message) => {
-			got.push(message);
-			return true;
-		});
-		await src.start();
-		log.push({
-			...msg("2", "c1", "timestamped"),
-			timestamp: "2026-07-17T02:23:05.000Z",
-		});
-
-		await src.pollOnce();
-
-		expect(got[0].timestampMs).toBe(
-			new Date("2026-07-17T02:23:05.000Z").getTime(),
-		);
 	});
 
 	it("polls multiple channels independently", async () => {

@@ -20,6 +20,19 @@
 /** The generic name the Belle plugin hard-codes and the placeholder fallback. */
 export const ROUNDTABLE_PLACEHOLDER_NAME = "Roundtable topic";
 
+/**
+ * FLY-802: roundtable topic threads auto-archive after 1h of inactivity —
+ * Discord's shortest `auto_archive_duration` (valid enum: 60/1440/4320/10080
+ * minutes). 1h so a finished topic collapses out of the sidebar (archived, NOT
+ * deleted — messages stay + search finds them + a new message unarchives it)
+ * instead of piling up. Shared by BOTH create paths (the Bridge poller +
+ * `ensureThreadFromMessage`) so the value can't drift between them — the same
+ * one-canonical-value discipline the placeholder name above already follows.
+ * Deliberately distinct from issue chat threads (3 days, FLY-292) and alert
+ * threads (1 day) — this constant is roundtable-topic-only.
+ */
+export const ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES = 60;
+
 /** Minimum semantic (letter/number) characters for a message to be a real topic. */
 export const MIN_TOPIC_CHARS = 3;
 

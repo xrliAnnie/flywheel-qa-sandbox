@@ -1,15 +1,18 @@
 /**
- * /events wiring pins for workflow TURN reconciliation. A workflow actor
- * reaching a terminal signal must trigger a scoped reconcile carrying that
- * execution as terminalExecId. Sister pins: DirectEventSink.test.ts.
+ * FLY-921 Fix C — /events wiring pins for the turn-belt reconcile. A
+ * three-stage phase session reaching a terminal signal (session_completed OR
+ * session_failed — the failed path never goes through onPhaseComplete) must
+ * trigger a SCOPED reconcileTurnBelt carrying that exec as terminalExecId
+ * (guard 1 lives inside the orchestrator). Sister pins for the in-process
+ * sink: DirectEventSink.test.ts.
  */
 
 import type http from "node:http";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
+import type { PhaseOrchestrator } from "../bridge/phase-orchestrator.js";
 import { createBridgeApp } from "../bridge/plugin.js";
-import type { TurnBeltReconciler } from "../bridge/turn-belt-reconcile.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -49,6 +52,9 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let reconcileCalls: Array<Record<string, unknown> | undefined>;
+	let qaLossCalls: Array<Record<string, unknown>>;
+	// FLY-1050: interleaved call order — reconcileQaLoss must run BEFORE the belt.
+	let callOrder: string[];
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -66,12 +72,20 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		reconcileCalls = [];
+		qaLossCalls = [];
+		callOrder = [];
 
-		const turnBeltReconciler = {
+		const fakeOrchestrator = {
+			onPhaseComplete: vi.fn(async () => {}),
 			reconcileTurnBelt: vi.fn(async (scope?: Record<string, unknown>) => {
 				reconcileCalls.push(scope);
+				callOrder.push("belt");
 			}),
-		} as unknown as TurnBeltReconciler;
+			reconcileQaLoss: vi.fn(async (scope: Record<string, unknown>) => {
+				qaLossCalls.push(scope);
+				callOrder.push("qaLoss");
+			}),
+		} as unknown as PhaseOrchestrator;
 
 		// Real FSM transitionOpts — the Codex R1 HIGH shape needs the genuine
 		// awaiting_review→failed FSM rejection, not a transition-less upsert.
@@ -97,7 +111,7 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 			undefined,
 			undefined,
 			{
-				turnBeltReconciler: { current: turnBeltReconciler },
+				phaseOrchestrator: { current: fakeOrchestrator },
 			},
 		);
 		server = app.listen(0, "127.0.0.1");
@@ -128,7 +142,7 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 		});
 	}
 
-	it("session_failed of a workflow actor → scoped reconcile with terminalExecId", async () => {
+	it("session_failed of a three-stage phase session → scoped reconcile with terminalExecId", async () => {
 		seedPhaseSession("qa-exec-1", "qa");
 		const res = await postEvent({
 			event_id: "evt-fail-1",
@@ -147,7 +161,7 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 		});
 	});
 
-	it("session_completed of a workflow actor → scoped reconcile", async () => {
+	it("session_completed of a three-stage phase session → scoped reconcile (after onPhaseComplete)", async () => {
 		seedPhaseSession("impl-exec-1", "implement");
 		const res = await postEvent({
 			event_id: "evt-done-1",
@@ -207,5 +221,59 @@ describe("event-route turn-belt reconcile wiring (FLY-921 Fix C)", () => {
 		});
 		expect(res.status).toBe(200);
 		expect(reconcileCalls).toHaveLength(0);
+		expect(qaLossCalls).toHaveLength(0);
+	});
+
+	// ─── FLY-1050: QA-loss re-drive wiring pins (sister: DirectEventSink) ───
+
+	it("FLY-1050: session_failed of a three-stage QA row fires reconcileQaLoss BEFORE the belt reconcile", async () => {
+		seedPhaseSession("qa-exec-1050", "qa");
+		const res = await postEvent({
+			event_id: "evt-fail-1050",
+			execution_id: "qa-exec-1050",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: { error: "killed by lead" },
+		});
+		expect(res.status).toBe(200);
+		expect(qaLossCalls).toHaveLength(1);
+		expect(qaLossCalls[0]).toMatchObject({
+			issueId: "FLY-543",
+			terminalExecId: "qa-exec-1050",
+		});
+		expect(callOrder).toEqual(["qaLoss", "belt"]);
+	});
+
+	it("FLY-1050: session_failed of a non-qa phase row does NOT fire reconcileQaLoss", async () => {
+		seedPhaseSession("impl-exec-1050", "implement");
+		const res = await postEvent({
+			event_id: "evt-fail-impl-1050",
+			execution_id: "impl-exec-1050",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: { error: "boom" },
+		});
+		expect(res.status).toBe(200);
+		expect(qaLossCalls).toHaveLength(0);
+		expect(reconcileCalls).toHaveLength(1); // belt still runs
+	});
+
+	it("FLY-1050: the FSM-rejected path (parked qa killed) does NOT fire reconcileQaLoss (row never terminal)", async () => {
+		seedPhaseSession("qa-parked-1050", "qa", "awaiting_review");
+		const res = await postEvent({
+			event_id: "evt-fail-parked-1050",
+			execution_id: "qa-parked-1050",
+			issue_id: "FLY-543",
+			project_name: "flywheel",
+			event_type: "session_failed",
+			payload: { error: "killed by lead" },
+		});
+		expect(res.status).toBe(200);
+		// FSM rejected awaiting_review→failed → row not terminal → belt-only path.
+		expect(store.getSession("qa-parked-1050")!.status).toBe("awaiting_review");
+		expect(qaLossCalls).toHaveLength(0);
+		expect(reconcileCalls).toHaveLength(1);
 	});
 });

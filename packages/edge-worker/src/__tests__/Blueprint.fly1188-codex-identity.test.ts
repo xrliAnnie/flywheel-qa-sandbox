@@ -183,10 +183,6 @@ describe("FLY-1188 executor-identity discriminant (gate text by runnerBackend)",
 		// "END YOUR TURN + resumed automatically" is gone from the gate branches).
 		expect(prompt).toContain("POLL for the reply");
 		expect(prompt).not.toContain("resumed automatically");
-		expect(prompt).toContain("gate/review pending is NEVER blocked");
-		expect(prompt).toContain(
-			"A successful `turn` answer of `not-yours` is a wait state, NOT a command failure.",
-		);
 	});
 
 	it("runnerBackend=codex-tmux WITH vendor=codex → same codex gate text (unchanged combo)", async () => {
@@ -207,7 +203,6 @@ describe("FLY-1188 executor-identity discriminant (gate text by runnerBackend)",
 		expect(prompt).toContain("This command BLOCKS until your Lead confirms");
 		expect(prompt).toContain("This command BLOCKS until your Lead responds");
 		expect(prompt).not.toMatch(/gate brainstorm[^\n]*--no-block/);
-		expect(prompt).not.toContain("gate/review pending is NEVER blocked");
 	});
 
 	it("explicit claude backend + vendor claude-code → blocking gate text", async () => {

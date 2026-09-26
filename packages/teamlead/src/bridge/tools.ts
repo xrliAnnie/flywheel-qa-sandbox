@@ -83,8 +83,6 @@ export interface QueryRouterOptions {
 	 * router tests are unaffected.
 	 */
 	apiTokenConfigured?: boolean;
-	/** FLY-2076: late-bound alert dispatcher identity for Claw startup. */
-	dispatcherBotUserId?: () => string | null;
 }
 
 function omitIssueId(
@@ -108,10 +106,12 @@ function isLinearUuid(s: string): boolean {
 
 /**
  * FLY-927 (Task 1.6): true iff a chat-threads write targets the unified alert
- * channel. The alert channel is a bot ticket queue — only the infra alert
- * pipeline may write there. FLY-1831 welded this safety boundary on.
+ * channel WHILE the ticket-queue gating is on. The alert channel is a bot
+ * ticket queue — only the infra alert pipeline may write there. Both envs are
+ * read at CALL time (live flips apply); either unset ⇒ no gating (byte-compat).
  */
 function isGatedAlertChannel(channelId: string): boolean {
+	if (process.env.FLYWHEEL_ALERT_ROUTING !== "1") return false;
 	const alertChannel = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID?.trim();
 	return !!alertChannel && channelId === alertChannel;
 }
@@ -131,12 +131,6 @@ export function createQueryRouter(
 	const apiTokenConfigured = opts?.apiTokenConfigured ?? false;
 	const router = Router();
 
-	router.get("/alert-duty/seat", (_req, res) => {
-		res.status(200).json({
-			dispatcherBotUserId: opts?.dispatcherBotUserId?.() ?? null,
-		});
-	});
-
 	router.get("/sessions", (req, res) => {
 		const mode = (req.query.mode as string) ?? "active";
 		const leadId = req.query.leadId as string | undefined;
@@ -151,21 +145,6 @@ export function createQueryRouter(
 			case "active":
 				sessions = store.getActiveSessions();
 				break;
-			case "live":
-				sessions = store.getLiveSessions();
-				break;
-			case "recent_terminal": {
-				const rawHours = parseInt((req.query.hours as string) ?? "48", 10);
-				const hours = Number.isFinite(rawHours)
-					? Math.min(Math.max(rawHours, 1), 168)
-					: 48;
-				const since = new Date(Date.now() - hours * 60 * 60_000)
-					.toISOString()
-					.replace("T", " ")
-					.replace(/\.\d+Z$/, "");
-				sessions = store.getOperationalTerminalSessionsSince(since);
-				break;
-			}
 			case "recent":
 				sessions = store.getRecentSessions(limit);
 				break;
@@ -323,7 +302,7 @@ export function createQueryRouter(
 		});
 	});
 
-	// FLY-10: Runner status detection (four-state model; the 45s stall downgrade was removed in FLY-1560)
+	// FLY-10: Runner status detection (four-state model + 45s stall watchdog)
 	router.get("/sessions/:id/status", async (req, res) => {
 		if (!statusQueryFn) {
 			res.status(501).json({ error: "Status detection not configured" });
@@ -502,7 +481,7 @@ export function createQueryRouter(
 		// Resolve botToken for Discord validation
 		const proj = projects.find((p) => p.projectName === projectName);
 		const leadCfg = proj?.leads.find((l) => l.agentId === leadId);
-		const regBotToken = leadCfg?.botToken;
+		const regBotToken = leadCfg?.botToken ?? opts?.globalBotToken;
 
 		const result = await validateAndRegisterChatThread(
 			{
@@ -558,6 +537,7 @@ export function createQueryRouter(
 		// FLY-927 (Task 1.6): sender gating — the unified alert channel is a bot
 		// TICKET QUEUE; generic Lead sends are refused so nothing but the infra
 		// alert pipeline (LeadAlertNotifier / lead-alert.sh) can write there.
+		// Same switch as the Router (FLYWHEEL_ALERT_ROUTING); unset = no gating.
 		if (isGatedAlertChannel(channelId)) {
 			res.status(403).json({
 				error: "alert_channel_gated",
@@ -635,8 +615,8 @@ export function createQueryRouter(
 			resolvedIdentifier ??
 			resolvedIssueId;
 
-		// Lead-attributed writes may use only that canonical Lead's credential.
-		const botToken = validation.leadConfig.botToken;
+		// Resolve bot token (per-lead or global fallback)
+		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;
 		if (!botToken) {
 			res.status(503).json({ error: "No Discord bot token available" });
 			return;
@@ -668,14 +648,7 @@ export function createQueryRouter(
 		}
 
 		if (result.error) {
-			res.status(502).json({
-				error: result.error,
-				...(result.errorCode ? { errorCode: result.errorCode } : {}),
-				...(result.rootMessageId
-					? { rootMessageId: result.rootMessageId }
-					: {}),
-				...(result.threadId ? { threadId: result.threadId } : {}),
-			});
+			res.status(502).json({ error: result.error });
 			return;
 		}
 
@@ -855,21 +828,12 @@ export function createQueryRouter(
 			resolvedIdentifier ??
 			resolvedIssueId;
 
-		// Lead-attributed writes may use only that canonical Lead's credential.
-		const botToken = validation.leadConfig.botToken;
+		// Resolve bot token (per-lead or global fallback)
+		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;
 		if (!botToken) {
 			res.status(503).json({ error: "No Discord bot token available" });
 			return;
 		}
-		const threadContext = {
-			chatChannelId: channelId,
-			issueId: resolvedIssueId,
-			issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
-			issueTitle: resolvedTitle,
-			botToken,
-			leadId,
-			ownerUserId: opts.discordOwnerUserId,
-		};
 
 		// Lookup-first: only call ensureChatThread on row miss (AC1 + AC2)
 		let threadId: string;
@@ -879,7 +843,15 @@ export function createQueryRouter(
 			threadId = existing.thread_id;
 			if (opts?.chatThreadCreator) {
 				await opts.chatThreadCreator.backfillThreadName(
-					threadContext,
+					{
+						chatChannelId: channelId,
+						issueId: resolvedIssueId,
+						issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
+						issueTitle: resolvedTitle,
+						botToken,
+						leadId,
+						ownerUserId: opts.discordOwnerUserId,
+					},
 					threadId,
 				);
 			}
@@ -890,8 +862,15 @@ export function createQueryRouter(
 			}
 			let ensureResult: ChatThreadResult;
 			try {
-				ensureResult =
-					await opts.chatThreadCreator.ensureChatThread(threadContext);
+				ensureResult = await opts.chatThreadCreator.ensureChatThread({
+					chatChannelId: channelId,
+					issueId: resolvedIssueId,
+					issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
+					issueTitle: resolvedTitle,
+					botToken,
+					leadId,
+					ownerUserId: opts.discordOwnerUserId,
+				});
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				res.status(502).json({ error: `Thread creation failed: ${msg}` });
@@ -900,13 +879,6 @@ export function createQueryRouter(
 			if (ensureResult.error || !ensureResult.threadId) {
 				res.status(502).json({
 					error: ensureResult.error ?? "ChatThreadCreator returned no threadId",
-					...(ensureResult.errorCode
-						? { errorCode: ensureResult.errorCode }
-						: {}),
-					...(ensureResult.rootMessageId
-						? { rootMessageId: ensureResult.rootMessageId }
-						: {}),
-					...(ensureResult.threadId ? { threadId: ensureResult.threadId } : {}),
 				});
 				return;
 			}
@@ -916,7 +888,7 @@ export function createQueryRouter(
 
 		// Sequential POST via helper (handles split + allowed_mentions)
 		const { postDiscordMessageToChannel } = await import("./discord-utils.js");
-		let postResult = await postDiscordMessageToChannel(
+		const postResult = await postDiscordMessageToChannel(
 			threadId,
 			text,
 			botToken,
@@ -924,60 +896,9 @@ export function createQueryRouter(
 			opts?.discordFetch,
 		);
 
-		// FLY-1927: a canonical row can be claimed just before Discord turns its
-		// root message into a thread. A first-chunk 404 is therefore recoverable:
-		// re-enter the creator, which probes/replays ONLY this exact root, then
-		// retry the message once. Never retry after a partial multi-chunk send.
-		if (
-			!postResult.ok &&
-			postResult.error.startsWith("Discord 404") &&
-			postResult.chunksSent === 0 &&
-			opts?.chatThreadCreator
-		) {
-			let recovery: ChatThreadResult;
-			try {
-				recovery = await opts.chatThreadCreator.ensureChatThread(threadContext);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				res.status(502).json({
-					error: `Thread recovery failed: ${msg}`,
-					errorCode: "canonical_thread_unavailable",
-					rootMessageId: threadId,
-					threadId,
-				});
-				return;
-			}
-			if (recovery.error || !recovery.threadId) {
-				res.status(502).json({
-					error: recovery.error ?? "ChatThreadCreator returned no threadId",
-					...(recovery.errorCode
-						? { errorCode: recovery.errorCode }
-						: { errorCode: "canonical_thread_unavailable" }),
-					rootMessageId: recovery.rootMessageId ?? threadId,
-					threadId: recovery.threadId ?? threadId,
-				});
-				return;
-			}
-			threadId = recovery.threadId;
-			created = created || recovery.created;
-			postResult = await postDiscordMessageToChannel(
-				threadId,
-				text,
-				botToken,
-				{ origin: "lead_authored", ...(replyTo ? { replyTo } : {}) },
-				opts.discordFetch,
-			);
-		}
-
 		if (!postResult.ok) {
 			res.status(502).json({
 				error: postResult.error,
-				...(postResult.error.startsWith("Discord 404")
-					? {
-							errorCode: "canonical_thread_unavailable",
-							rootMessageId: threadId,
-						}
-					: {}),
 				threadId,
 				messageIds: postResult.messageIds,
 				chunksSent: postResult.chunksSent,
@@ -1191,6 +1112,18 @@ export function createQueryRouter(
 		if (!thread) {
 			res.status(404).json({
 				error: `No chat thread for issue ${canonicalKey} in channel ${channelId}`,
+			});
+			return;
+		}
+
+		// FLY-369 archive-once: a thread already archived is not re-archived, so a
+		// re-open (Discord auto-unarchive on a new message) is not fought. No-op 200.
+		if (thread.archived_at) {
+			res.json({
+				threadId: thread.thread_id,
+				archived: true,
+				reason: "already_archived",
+				attempts: 0,
 			});
 			return;
 		}

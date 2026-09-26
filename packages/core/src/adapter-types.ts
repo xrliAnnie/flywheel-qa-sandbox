@@ -144,8 +144,6 @@ export interface AdapterExecutionContext {
 	prompt: string;
 	/** Working directory for the agent session */
 	cwd: string;
-	/** FLY-1961: seed this real worktree in the selected vendor trust store. */
-	pretrustWorkspace?: boolean;
 	/** AI model to use (e.g., "opus", "sonnet") */
 	model?: string;
 	/**
@@ -170,12 +168,6 @@ export interface AdapterExecutionContext {
 	 * (byte-compatible spawn).
 	 */
 	enablePonytail?: boolean;
-	/** FLY-1395: resolved prompt/skill arm for a Codex runner. */
-	skillFrameworkMode?: "superpowers" | "matt" | "bare";
-	/** Fully-qualified machine-global Codex skill names disabled for this run. */
-	codexSkillDisableNames?: string[];
-	/** Verified vendored matt-skills source copied into this run's CODEX_HOME. */
-	codexMattSkillsSourceDir?: string;
 	/**
 	 * FLY-751: per-runner MCP slimming. Marketplace-qualified plugin keys to
 	 * disable for THIS launch (merged into the same `--settings enabledPlugins`
@@ -203,7 +195,7 @@ export interface AdapterExecutionContext {
 	/** Process-level timeout in milliseconds */
 	timeoutMs?: number;
 	/**
-	 * FLY-1269: explicit DAG workflow Codex phase lifetime. Present only for a
+	 * FLY-1269: explicit three-stage Codex phase lifetime. Present only for a
 	 * share-parent Design/Implement/QA execution while the keep-alive flag is on.
 	 * Adapters must not infer this identity from environment variables or labels.
 	 */
@@ -298,12 +290,6 @@ export interface AdapterExecutionContext {
 	 * fleet-wide ingest bearer, a leak is scoped to one execution + TTL.
 	 */
 	workflowSubmissionCredential?: string;
-	/** FLY-1425: engine-owned runners must never fall back to legacy /events. */
-	workflowSubmissionExpected?: boolean;
-	/** FLY-1281: one-shot credential for a generalized generic node output. */
-	workflowOutputCredential?: string;
-	/** Sealed product-node capability; enables the founder_review CLI/prompt contract. */
-	founderReviewRequired?: boolean;
 	/**
 	 * FLY-191 Phase 2: the Bridge's StateStore path, propagated to the Runner
 	 * env as FLYWHEEL_STATE_DB_PATH so `flywheel-comm verify-approval` reads
@@ -363,18 +349,11 @@ export interface AdapterExecutionContext {
 	 * before the agent is usable. The gateway-retry dispatcher binds this to its
 	 * durable launch claim so a post-crash replay can discover the live Runner by
 	 * execId and adopt it rather than re-driving (which would orphan it). Distinct
-	 * from `onTmuxWindowCreated` (viewer spawn, fired later). For claude-tmux this
-	 * is a required launch fence: the callback must durably persist and re-read
-	 * the tmux generation tuple before the gated runner is released.
+	 * from `onTmuxWindowCreated` (viewer spawn, fired later). Best-effort.
 	 */
 	onTmuxWindowOpened?: (info: {
 		baseSessionName: string;
 		windowId: string;
-		socketPath: string;
-		serverStartTime: string;
-		executionId: string;
-		launchGeneration?: number;
-		launchFingerprint?: string;
 	}) => void;
 	/**
 	 * FLY-245 R5 HIGH — the DURABLE "this Runner is committed to start" record.
@@ -387,76 +366,11 @@ export interface AdapterExecutionContext {
 	 * executionId so a replay (new Bridge process) computes the same path.
 	 */
 	launchCommitPath?: string;
-	/** FLY-1281: deterministic fenced token for the generalized launch gate. */
-	launchGateToken?: string;
-	launchGeneration?: number;
-	launchFingerprint?: string;
-	workflowTmuxWindowAuthority?: (candidate: {
-		windowId: string;
-		windowName: string;
-		executionId?: string;
-		launchGeneration?: number;
-		launchFingerprint?: string;
-	}) => "prune" | "keep";
-	/** Bridge-owned marker-first commit; adapters must not write the marker directly. */
-	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
 }
 
 // ---------------------------------------------------------------------------
 // AdapterExecutionResult — Execution output
 // ---------------------------------------------------------------------------
-
-/**
- * A machine-readable terminal failure that must survive adapter, orchestration,
- * and Bridge boundaries. Unknown failures deliberately remain on the legacy
- * untyped `failed` path.
- */
-export type TerminalFailureKind = "goal_blocked" | "worktree_takeover_failed";
-
-export interface TerminalFailureInfo {
-	failureKind: TerminalFailureKind;
-	failureReason: string;
-	failureClass?: "environment";
-	failureCode?: string;
-}
-
-/** FLY-1638: machine-readable failure before the workflow launch fence commits. */
-export type LaunchPrecommitFailure =
-	| {
-			code: "LAUNCH_COMMAND_OVERSIZE";
-			reason: "tmux_command_budget" | "prompt_size_budget";
-			physicalEvidence: "absent";
-	  }
-	| {
-			code: "LAUNCH_TMUX_SESSION_HELD";
-			reason:
-				| "saturated"
-				| "split_brain"
-				| "ambiguous"
-				| "unknown"
-				| "rescue_failed"
-				| "lock_unavailable";
-			physicalEvidence: "absent";
-	  }
-	| {
-			code: "LAUNCH_WINDOW_IDENTITY_FAILED";
-			reason: "identity_publish_failed" | "generation_record_failed";
-			physicalEvidence: "cleaned" | "unknown";
-	  }
-	| {
-			code: "LAUNCH_PRECOMMIT_TIMEOUT";
-			reason: "deadline_exhausted";
-			physicalEvidence: "unknown";
-	  }
-	| {
-			code: "LAUNCH_PRECOMMIT_FAILED";
-			reason: string;
-			physicalEvidence: "cleaned" | "unknown";
-	  };
-
-export type LaunchPrecommitOutcome =
-	| { status: "committed" }
-	| { status: "precommit_failed"; failure: LaunchPrecommitFailure };
 
 /**
  * Result returned by `IAdapter.execute()`.
@@ -479,8 +393,6 @@ export interface AdapterExecutionResult {
 	numTurns?: number;
 	/** The agent's text result */
 	resultText?: string;
-	/** Typed terminal cause for failures whose semantics must not be flattened. */
-	failure?: TerminalFailureInfo;
 
 	// -- Session persistence --
 

@@ -44,7 +44,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 FIX="$SANDBOX/fixture-repo"
 mk_fixture() {
   rm -rf "$FIX"
-  mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/agents" "$FIX/menus/shapes" "$FIX/node_modules" \
+  mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/agents" "$FIX/node_modules" \
            "$FIX/packages/alpha/dist" "$FIX/packages/beta/dist" \
            "$FIX/packages/alpha/node_modules/zeta" \
            "$FIX/packages/alpha/node_modules/omega" \
@@ -56,7 +56,6 @@ mk_fixture() {
   # real typescript for the run-bridge transpile step
   ln -s "$REPO_ROOT/node_modules/typescript" "$FIX/node_modules/typescript"
   echo "# generic executor" > "$FIX/agents/generic-executor.md"
-  echo "shape: code" > "$FIX/menus/shapes/code.yaml"
 
   cat > "$FIX/packages/alpha/package.json" <<'EOF'
 { "name": "fw-alpha", "version": "0.1.0",
@@ -105,7 +104,6 @@ README.md
 .flywheel-prebuilt
 dist/run-bridge.js
 agents/generic-executor.md
-menus/shapes/code.yaml
 scripts/flywheel-onboard.sh
 node_modules/fw-alpha/package.json
 node_modules/fw-alpha/dist/*
@@ -128,7 +126,6 @@ run_po() {
     PO_SCRIPT_FILES="flywheel-onboard.sh" \
     PO_SCRIPT_DIRS=" " \
     PO_AGENT_FILES="generic-executor.md" \
-    PO_MENU_FILES="shapes/code.yaml" \
     PO_FILES_ALLOWLIST="$FIX/files.allow" \
     PO_GREP_ALLOWLIST="$FIX/grep.allow" \
     bash -c 'source "$1"; shift; "$@"' _ "$PO" "$@"
@@ -142,7 +139,6 @@ if run_po po_assemble "$FIX" "$TREE" >/dev/null 2>&1; then
   ok=1
   [ -f "$TREE/node_modules/fw-alpha/dist/index.js" ] || ok=0
   [ -f "$TREE/node_modules/fw-beta/dist/index.js" ] || ok=0
-  [ -f "$TREE/menus/shapes/code.yaml" ] || ok=0
   [ "$(cat "$TREE/.flywheel-prebuilt")" = "9.9.9" ] || ok=0
   [ "$(jq -r '.version' "$TREE/package.json")" = "9.9.9" ] || ok=0
   [ "$(jq -r '.dependencies["lodash-x"]' "$TREE/package.json")" = "^1.4.0" ] || ok=0
@@ -270,19 +266,12 @@ if [ -n "$TARBALL" ] && run_po po_gate_tarball "$TARBALL" "$FIX" >/dev/null 2>&1
 else
   fail "G0b clean tarball failed gates: $(run_po po_gate_tarball "$TARBALL" "$FIX" 2>&1 | tail -6)"
 fi
-# the vendored nested closure must ride the tarball (staged under vendor/).
-# Capture once so grep -q cannot close tar's stdout early under pipefail (SIGPIPE).
-TARBALL_CONTENTS=""
-TARBALL_LIST_OK=0
-if [ -n "$TARBALL" ] && TARBALL_CONTENTS="$(tar -tzf "$TARBALL" 2>/dev/null)"; then
-  TARBALL_LIST_OK=1
-fi
-if [ "$TARBALL_LIST_OK" -eq 1 ] \
-   && grep -Fqx "package/vendor/fw-alpha/zeta/package.json" <<<"$TARBALL_CONTENTS" \
-   && grep -Fqx "package/node_modules/fw-alpha/dist/index.js" <<<"$TARBALL_CONTENTS"; then
+# the vendored nested closure must ride the tarball (staged under vendor/)
+if [ -n "$TARBALL" ] && tar -tzf "$TARBALL" | grep -q "package/vendor/fw-alpha/zeta/package.json" \
+   && tar -tzf "$TARBALL" | grep -q "package/node_modules/fw-alpha/dist/index.js"; then
   pass "G0c tarball carries bundled packages AND the staged vendor closure"
 else
-  fail "G0c tarball contents: $(head -20 <<<"$TARBALL_CONTENTS")"
+  fail "G0c tarball contents: $(tar -tzf "$TARBALL" 2>/dev/null | head -20)"
 fi
 
 # gate-injection helper: unpack the clean tarball, mutate, gate the tree.
@@ -380,21 +369,6 @@ if PO_FORCE_NESTED="$FIX/force-nest.tsv" run_po po_assemble "$FIX" "$SANDBOX/tre
   fail "F1b unresolvable force-nest row did NOT fail the build"
 else
   pass "F1b unresolvable force-nest row fails the build"
-fi
-
-# ── X0 · launcher runtime closure stays complete ──────────────────────────────
-default_asset_files="$(env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; printf "%s\n" "$PO_PACKAGE_ASSET_FILES"' _ "$PO")"
-if grep -qx 'teamlead:scripts/lib/lead-identity-preflight.sh' <<<"$default_asset_files" \
-    && grep -qx 'teamlead:scripts/lead-body.sh' <<<"$default_asset_files" \
-    && grep -qx 'teamlead:scripts/lib/lead-body-receipt.sh' <<<"$default_asset_files" \
-    && grep -qx 'teamlead:scripts/session-start-adopt-inflight.sh' <<<"$default_asset_files" \
-    && grep -qx 'teamlead:scripts/lib/lead-session-authority.sh' <<<"$default_asset_files" \
-    && grep -qx 'teamlead:scripts/lib/lead-session-resume-gate.sh' <<<"$default_asset_files" \
-    && grep -qx 'teamlead:scripts/lib/session-ctx-usage.mjs' <<<"$default_asset_files" \
-    && env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; grep -qx "lib/lead-body-evidence.sh" <<<"$PO_SCRIPT_FILES"' _ "$PO"; then
-  pass "X0 Lead v2 identity, context gate, clear handoff, body, and evidence assets ship with the launcher runtime closure"
-else
-  fail "X0 Lead launcher body assets missing from PO_PACKAGE_ASSET_FILES"
 fi
 
 # ── X1 · audit-table closure over the REAL default whitelist ─────────────────

@@ -25,15 +25,6 @@ const BLOCKER = {
 // Only getActiveSessions() is reached before the 409 / admission branch.
 const fakeStore = {
 	getActiveSessions: () => [BLOCKER],
-	getActiveWorkflowRunForIssue: () => undefined,
-	getWorkflowStartReservation: (key: string) =>
-		key === "legacy-replay"
-			? { execution_id: "old-exec", run_id: "legacy-run" }
-			: undefined,
-	getWorkflowRun: (runId: string) =>
-		runId === "legacy-run"
-			? { snapshot: JSON.stringify({ schema_version: 1 }) }
-			: undefined,
 } as unknown as Parameters<typeof createRunsRouter>[1];
 
 const fakeDispatcher = {
@@ -75,7 +66,7 @@ function startApp(guard?: {
 	});
 }
 
-async function post(url: string, idempotencyKey?: string) {
+async function post(url: string) {
 	return fetch(`${url}/api/runs/start`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -83,7 +74,6 @@ async function post(url: string, idempotencyKey?: string) {
 			issueId: "issue-1",
 			projectName: "sub",
 			sessionRole: "main",
-			...(idempotencyKey ? { idempotencyKey } : {}),
 		}),
 	});
 }
@@ -125,23 +115,6 @@ describe("runs-route stale-blocker guard integration", () => {
 		server = app.server;
 		const res = await post(app.url);
 		expect(res.status).toBe(409);
-	});
-
-	it("a matching terminal reservation cannot bypass start admission", async () => {
-		const app = await startApp(undefined);
-		server = app.server;
-		const res = await post(app.url, "legacy-replay");
-		expect(res.status).toBe(409);
-		const body = (await res.json()) as {
-			code: string;
-			hint: string;
-			runId: string;
-		};
-		expect(body).toMatchObject({
-			code: "RUN_NOT_REWORKABLE_VIA_START",
-			hint: "use /api/runs/:runId/rework",
-			runId: "legacy-run",
-		});
 	});
 
 	it("guard proceed:true → falls through past 409 (reaches admission → 429)", async () => {

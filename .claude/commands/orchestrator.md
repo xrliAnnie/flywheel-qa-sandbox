@@ -211,7 +211,6 @@ QA agent spawn checklist:
    ```
    **Team-lead 不写测试细节。** QA agent 自己读协议、自己决定怎么测。Team-lead 只提供参数。
 4. QA reports PASS/FAIL to team-lead
-<!-- FLY-1759 domain allowlist: QA scratch teardown belongs to FLY-1482. -->
 5. QA 完成后清理 worktree: `git worktree remove ../flywheel-qa-{XX}`
 
 **QA 资源隔离 + 调度规则**:
@@ -248,7 +247,6 @@ curl -X POST http://localhost:9877/api/runs/start -H "Content-Type: application/
 # 7. 清理
 kill $BRIDGE_PID
 cd -
-# FLY-1759 domain allowlist: QA scratch teardown belongs to FLY-1482.
 git worktree remove ../flywheel-qa-{XX}
 ```
 
@@ -331,40 +329,6 @@ For each PR the user approves to ship:
    ```bash
    cd {worktree_path}
    ISSUE_ID="FLY-{XX}"  # or GEO-{XX}
-
-   # FLY-2045-REPO-PREDICATE / branch fence — FIRST, before anything writes or stages.
-   #
-   # A0 commits onto whatever HEAD points at, but the ship step pushes {branch}. If those are
-   # not the same ref the bookkeeping lands on an unreachable commit while the pushed branch
-   # has none, and CI and merge both continue against the older head — silently.
-   #
-   # EXPECTED_BRANCH must come from the SAME {branch} value the push uses; an unset variable
-   # must fail, never disable the comparison. And these checks run before the archive loop,
-   # so a refusal does not leave a half-staged worktree for a later command to consume.
-   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-   if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
-     EXPECTED_BRANCH="{branch}"
-     # Detect an unrendered template WITHOUT writing the token literally a second time.
-     # A sentinel spelled "{branch}" is self-defeating: under the ordinary rule "replace
-     # every {branch}", the sentinel is replaced too and a CORRECT branch false-refuses.
-     # Matching the shape {...} instead is rendering-agnostic. (A branch literally named
-     # "{branch}" is valid to Git and would be refused here; that trade is deliberate.)
-     case "$EXPECTED_BRANCH" in
-       "" | "{"*"}")
-         echo "[orchestrator] FATAL: the branch token was not substituted (got '$EXPECTED_BRANCH');" >&2
-         echo "[orchestrator]        refusing to guess where A0's commit belongs" >&2
-         exit 1 ;;
-     esac
-     current_branch=$(git symbolic-ref --quiet --short HEAD || true)
-     if [[ -z "$current_branch" ]]; then
-       echo "[orchestrator] FATAL: detached HEAD; A0's commit would not be on the branch being pushed" >&2
-       exit 1
-     fi
-     if [[ "$current_branch" != "$EXPECTED_BRANCH" ]]; then
-       echo "[orchestrator] FATAL: on '$current_branch' but the ship step pushes '$EXPECTED_BRANCH'" >&2
-       exit 1
-     fi
-   fi
    for dir_pair in \
        "doc/engineer/plan/inprogress:doc/engineer/plan/archive" \
        "doc/engineer/research/new:doc/engineer/research/archive" \
@@ -374,50 +338,12 @@ For each PR the user approves to ship:
        git mv "$f" "$dst/"
      done
    done
-   # FLY-2045 — Flywheel milestone file. The ledger is one file per issue under
-   # engineering/doc/milestones/, NOT a row in CLAUDE.md: the old shared table made any two
-   # parallel PRs conflict 100% of the time, and a conflicted PR has no merge commit, so its
-   # pull_request workflow never queues and the branch loses CI entirely.
-   #
-   # FLY-2045-REPO-PREDICATE: decide by the REPO, not by the issue prefix. Flywheel's own
-   # history lives partly under GEO-, so a `FLY-` test would route those down the generic path.
-   if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
-     milestone_path="engineering/doc/milestones/${ISSUE_ID}.md"
-     # The owner of this path is THIS issue's ship PR. The executor is the primary creator
-     # (engineer-executor step 7); A0 is a non-overwriting last-mile ensure.
-     git fetch --quiet origin main || { echo "[orchestrator] FATAL: cannot fetch origin/main" >&2; exit 1; }
-     if git cat-file -e "origin/main:${milestone_path}" 2>/dev/null; then
-       # FLY-2045-A0-BASE-FENCE: already on main => the canonical id is taken. Fail closed.
-       echo "[orchestrator] FATAL: ${milestone_path} already exists on origin/main (canonical id taken)" >&2
-       exit 1
-     elif [[ -e "$milestone_path" ]]; then
-       # FLY-2045-A0-HANDOFF: this branch's own new file. Verify, hand off, NEVER overwrite.
-       git ls-files --error-unmatch "$milestone_path" >/dev/null 2>&1 \
-         || { echo "[orchestrator] FATAL: $milestone_path exists but is untracked" >&2; exit 1; }
-       echo "[orchestrator] milestone already created by the executor: $milestone_path"
-     else
-       # FLY-2045-A0-ADD: neither base nor branch has it — create and stage it.
-       # A template is a placeholder, not a milestone. Write it, stage it so the PR is not
-       # silently missing the file, and then STOP: committing "<short title>" and "#NNN" into
-       # the permanent ledger is worse than failing here, and only the executor knows what
-       # the entry should say.
-       printf '# %s — <short title>\n\n**Status**: ⏳ Pending ship\n**PR**: #%s\n**Date**: %s\n\n<summary>\n' \
-         "$ISSUE_ID" "${PR_NUMBER:-NNN}" "$(date +%F)" > "$milestone_path"
-       git add -- "$milestone_path"
-       echo "[orchestrator] FATAL: the executor did not create $milestone_path." >&2
-       echo "[orchestrator]        A template has been staged — fill it in and re-run; do not ship a placeholder." >&2
-       exit 1
-     fi
-   fi
-
    if ! git diff --cached --quiet; then
      git commit -m "docs: archive ${ISSUE_ID} docs (final commit before ship)"
    fi
    ```
 
    If no docs to move, skip silently. Matches `spin.md` Stage: Ship Step 1.
-   Note the commit gate above is `git diff --cached`, so anything the milestone step writes
-   MUST be `git add`-ed or it would stay untracked and never reach the PR.
 
    **A. Ship via :cool: flow (MANDATORY — do not skip)**
 
@@ -452,62 +378,57 @@ For each PR the user approves to ship:
    - Wait for merge to complete: `gh pr view {PR_NUMBER} --json state --jq '.state'` until `MERGED`
    - **Do NOT use `gh pr merge` directly** — all ships must go through the `:cool:` flow for audit trail and CI gating
 
-   **B2. Finish Flywheel merge without deploy/restart (MANDATORY) — FLY-1959**
+   **B2. Trigger deploy after merge (MANDATORY) — FLY-270 self-hosting ship (Method B)**
 
    > ⚠️ **Explicit Flywheel-only guard — derive from the ACTUAL orchestrated repo,
    > not a hardcoded path** (code-review R2 HIGH-3). A hardcoded `MAIN_REPO=.../flywheel`
-   > self-check is tautological (always passes) and would let this branch clean up
-   > a geoforge3d/sub/joycon worktree under Flywheel-specific rules. Resolve the main
-   > repo of the worktree being orchestrated and require it to BE the flywheel repo:
+   > self-check is tautological (always passes) and would let this branch fire while
+   > orchestrating a geoforge3d/sub/joycon PR — enqueuing a foreign SHA into the
+   > Flywheel updater. Resolve the main repo of the worktree being orchestrated and
+   > require it to BE the flywheel repo; otherwise skip BEFORE `gh pr view`, worktree
+   > removal, or handoff:
    ```bash
    # main repo of the worktree currently being orchestrated (NOT a hardcoded path)
    MAIN_REPO="$(git -C "$WORKTREE_PATH" rev-parse --git-common-dir 2>/dev/null | sed 's#/\.git$##' | xargs -I{} dirname {} 2>/dev/null || true)"
    [[ -z "$MAIN_REPO" || ! -d "$MAIN_REPO" ]] && MAIN_REPO="$(cd "$WORKTREE_PATH" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
    if [[ "$(basename "${MAIN_REPO:-}")" != "flywheel" ]]; then
-       echo "[orchestrator] B2 Flywheel cleanup does not apply to '${MAIN_REPO:-unknown}' — use generic cleanup." ; exit 0
+       echo "[orchestrator] B2 self-ship is Flywheel-only; orchestrated repo is '${MAIN_REPO:-unknown}' — skipping (use the generic restart path)." ; exit 0
    fi
    ```
-   <!-- FLY-1759 reap-first: every removal described below calls the sibling reaper. -->
-   - A Flywheel merge **never** starts the updater and never restarts services. Normal
-     deployment waits for the local 00:00/12:00 shuttle; only a separately authorized
-     founder emergency may call `scripts/request-restart.sh`. The merge path performs
-     worktree cleanup and a clean-checkout preflight, then reports completion:
+   - **Do NOT run `restart-services.sh` inline** (it would deadlock on this still-active
+     session's idle-wait and tear down the coordinating Eng Lead). Instead, hand the
+     merged ship to the detached launchd updater via the durable queue. **Worktree
+     cleanup + clean-checkout preflight MUST happen BEFORE the handoff** (code-review R1
+     HIGH-3 / §2.3): `git worktree remove` mutates the shared `.git/worktrees` state and
+     must be the last git operation before the updater takes over (else it races the
+     updater's pull). Exact order (mirrors spin.md Step 3.4):
      ```bash
-     # Worktree cleanup — final post-merge git operation.
-     # FLY-1759 reap-first: reap non-protected cwd-rooted process trees while
-     # the live worktree path still provides reliable attribution.
-     REAP_LIB="$WORKTREE_PATH/.claude/orchestrator/lib/reap-worktree.sh"
-     if [[ -r "$REAP_LIB" ]]; then
-       source "$REAP_LIB"
-       reap_worktree_processes "$MAIN_REPO" "$WORKTREE_PATH" \
-         || echo "[orchestrator] WARNING: worktree reap incomplete; continuing removal with audit debt" >&2
-     else
-       echo "[orchestrator] WARNING: worktree reaper missing; continuing removal with audit debt" >&2
-     fi
+     set -a && source ~/.flywheel/.env && set +a
+     # (1) canonical squash-merge SHA (NOT feature HEAD)
+     MERGE_SHA="$(gh pr view {PR_NUMBER} --json mergeCommit -q '.mergeCommit.oid')"
+     [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "[orchestrator] FATAL: no canonical merge SHA" >&2; exit 1; }
+     # (2) worktree cleanup — LAST git op before handoff
      cd "$MAIN_REPO" && git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
      git branch -D "$BRANCH" 2>/dev/null || true
-     # Clean-checkout preflight preserves the scheduled updater's single-writer invariant.
-     [[ -z "$(git -C "$MAIN_REPO" status --porcelain)" ]] || { echo "[orchestrator] FATAL: main checkout dirty after cleanup" >&2; exit 1; }
-     # Intentionally no updater kick, restart ticket, or inline restart here.
+     # (3) clean-checkout preflight (single-writer; updater pull + rollback need it)
+     [[ -z "$(git -C "$MAIN_REPO" status --porcelain)" ]] || { echo "[orchestrator] FATAL: main checkout dirty — refusing handoff" >&2; exit 1; }
+     # (4) durable handoff (fail-close: no success session_completed if this fails)
+     bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER} --issue {ISSUE_ID} \
+       || { echo "[orchestrator] FATAL: self-ship handoff failed — do not report success" >&2; exit 1; }
      ```
+   - The detached updater pulls main + runs `restart-services.sh`, restarting only
+     affected services (Bridge / Lead config / Discord plugin); Bridge + Eng Lead
+     self-recover via launchd KeepAlive + resume.
+   - QueueDirectories + the 12h launchd cron are durability/fallback — this post-merge
+     handoff is the primary trigger.
+   - **Bootstrap exception:** FLY-270's own first rollout uses the old controlled deploy
+     (plan Bootstrap Phase 0); this contract takes effect for ships AFTER that.
 
-   **C. Clean up worktree** — **for Flywheel this already happened in B2**
-   (do NOT remove it again here). For non-Flywheel repos:
-   ```bash
-   cd "$MAIN_REPO"
-   # FLY-1759 reap-first: cleanup-agent's sibling library applies the same
-   # path guard, identity fence, descendant closure, and TERM→KILL verification.
-   REAP_LIB="$WORKTREE_PATH/.claude/orchestrator/lib/reap-worktree.sh"
-   if [[ -r "$REAP_LIB" ]]; then
-     source "$REAP_LIB"
-     reap_worktree_processes "$MAIN_REPO" "$WORKTREE_PATH" \
-       || echo "[orchestrator] WARNING: worktree reap incomplete; continuing removal with audit debt" >&2
-   else
-     echo "[orchestrator] WARNING: worktree reaper missing; continuing removal with audit debt" >&2
-   fi
-   git worktree remove "$WORKTREE_PATH"
-   git branch -D "$BRANCH" # if not already deleted by --delete-branch
-   ```
+   **C. Clean up worktree** — **for the Flywheel self-ship path this already happened in
+   B2 step (2), before the handoff** (do NOT remove it again here). For non-Flywheel repos:
+   - `cd` out of worktree
+   - `git worktree remove {worktree_path}`
+   - `git branch -D {branch}` (if not already deleted by --delete-branch)
 
    **D. Verify archive docs landed** (done on feature branch in Step A0 — this is just a check)
    - The `docs: archive ${ISSUE_ID} docs` commit was pushed as the final commit on the feature
@@ -521,16 +442,8 @@ For each PR the user approves to ship:
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **F. Update the milestone ledger + VERSION** (non-Flywheel repos)
-   - <a id="FLY-2045-F-SKIP"></a>**FLY-2045-F-SKIP — Flywheel: skip the milestone here.** It already
-     landed inside the PR at `engineering/doc/milestones/<ID>.md` (step A0), because Flywheel's main
-     checkout must stay clean for the scheduled updater. Writing it post-merge would put a tracked
-     file on main.
-     > TODO (pre-existing, not FLY-2045): the `doc/VERSION` bump below is ALSO a post-merge tracked
-     > write, which contradicts `spin.md`'s "Flywheel post-merge writes NO tracked files to main".
-     > Out of scope here — it is VERSION bookkeeping, not milestone bookkeeping, and measurement
-     > shows it is dormant for flywheel (0 of the last 12 merges touched `doc/VERSION`).
-   - Non-Flywheel repos: add milestone to the milestone table
+   **F. Update CLAUDE.md + VERSION**
+   - Add milestone to the milestone table
    - Bump `doc/VERSION` to `SPRINT_VERSION` if not already bumped (first ship of the sprint writes the new version; subsequent ships in the same sprint skip this step since VERSION is already correct):
      ```bash
      bash -c 'source .claude/orchestrator/config.sh && current=$(get_current_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
@@ -575,7 +488,6 @@ spawn → /spin pipeline → PR created → WAIT (idle, alive) → user approves
 | 结束场景 | 谁清理 | 怎么清理 |
 |---------|--------|---------|
 | Ship 成功 | Teammate 自己 | ship 步骤里的 Step C |
-<!-- FLY-1759 reap-first: this summary table inherits cleanup-agent/B2/C reap. -->
 | PR closed/abandoned | Team-lead | `git worktree remove` + `git branch -D` |
 | Issue 合并到其他 issue | Team-lead | 关闭 agent + 清理 worktree |
 | Agent shutdown/crash | Team-lead | `cleanup-agent.sh` + `git worktree remove` |

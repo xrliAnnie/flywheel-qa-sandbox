@@ -85,18 +85,6 @@ describe("resolveTicketOwner (PRD CH-1 whitelist matrix)", () => {
 		).toEqual({ kind: "none" });
 	});
 
-	it("delivery_dead_letter has NO bot owner after its founder page is confirmed", () => {
-		expect(resolveTicketOwner("delivery_dead_letter", "unknown", FULL)).toEqual(
-			{ kind: "none" },
-		);
-	});
-
-	it("inbox_loop_stalled has NO bot owner after its founder alert", () => {
-		expect(resolveTicketOwner("inbox_loop_stalled", "unknown", FULL)).toEqual({
-			kind: "none",
-		});
-	});
-
 	it("registry unset ⇒ userId null (label-only, no ping, no T2 fallback)", () => {
 		expect(resolveTicketOwner("usage_limit", "claude", EMPTY)).toEqual({
 			kind: "infra_bot",
@@ -114,30 +102,12 @@ describe("resolveTicketOwner (PRD CH-1 whitelist matrix)", () => {
 		}
 	});
 
-	it("every bot-routed TICKET_KIND has an owner when registry is full", () => {
+	it("every TICKET_KIND except permission_blocked has a bot owner when registry is full", () => {
 		for (const kind of TICKET_KINDS) {
-			if (
-				kind === "permission_blocked" ||
-				kind === "tmux_split_brain" ||
-				kind === "quota_choice"
-			) {
-				continue;
-			}
+			if (kind === "permission_blocked") continue;
 			const owner = resolveTicketOwner(kind, "unknown", FULL);
 			expect(owner.kind, kind).toBe("infra_bot");
 		}
-	});
-
-	it("tmux_split_brain stays founder-direct instead of assigning a bot owner", () => {
-		expect(resolveTicketOwner("tmux_split_brain", "unknown", FULL)).toEqual({
-			kind: "none",
-		});
-	});
-
-	it("quota_choice stays founder-direct instead of assigning a bot owner", () => {
-		expect(resolveTicketOwner("quota_choice", "claude", FULL)).toEqual({
-			kind: "none",
-		});
 	});
 });
 

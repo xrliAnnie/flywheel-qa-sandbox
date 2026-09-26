@@ -47,9 +47,7 @@ CANARY_TL="CANARYTLtok_$$"
 make_home() {
   local h; h=$(mktemp -d "/tmp/fly879-test.XXXXXX")
   mkdir -p "$h/proj-fly/.lead/anna-interviewer-lead" \
-           "$h/proj-fly/.lead/product-lead" \
-           "$h/.flywheel"
-  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
+           "$h/proj-fly/.lead/product-lead"
   printf -- '---\nname: anna-interviewer-lead\n---\nAnna\n' > "$h/proj-fly/.lead/anna-interviewer-lead/agent.md"
   printf -- '---\nname: product-lead\n---\nPeter\n'         > "$h/proj-fly/.lead/product-lead/identity.md"
   echo "$h"
@@ -61,8 +59,8 @@ fixture_projects() {
   cat <<JSON
 [
  {"projectName":"flywheel","projectRoot":"${h}/proj-fly","leads":[
-   {"agentId":"anna-interviewer-lead","summaryRole":"exempt","chatChannel":"111","alertChannel":"999","match":{"labels":["external-interviews"]},"department":"external","botTokenEnv":"ANNA_BOT_TOKEN","botUserId":"10000000000000001","alertBotTokenEnv":"ANNA_BOT_TOKEN","canSpawnRunners":false,"external":${external}},
-   {"agentId":"product-lead","summaryRole":"producer","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","botUserId":"10000000000000002","canSpawnRunners":true}]}
+   {"agentId":"anna-interviewer-lead","chatChannel":"111","alertChannel":"999","match":{"labels":["external-interviews"]},"department":"external","botTokenEnv":"ANNA_BOT_TOKEN","alertBotTokenEnv":"ANNA_BOT_TOKEN","canSpawnRunners":false,"external":${external}},
+   {"agentId":"product-lead","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","canSpawnRunners":true}]}
 ]
 JSON
 }
@@ -78,31 +76,13 @@ run_dry() {
     bash "$LEAD_SH" "$lead" "$pdir" "$pname" 2>&1
 }
 
-# FLY-1402 LEGITIMATE RETARGET: the one argv target is now a generated bundle.
-# Attach its manifest header so the existing role-surface assertions continue
-# proving the selected sources without reading arbitrary rule prose.
-plan_of() {
-  local plan target
-  plan="$(sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p')"
-  printf '%s\n' "$plan"
-  target="$(printf '%s\n' "$plan" | awk -F'\t' '
-    $1 == "ARG" && previous == "--append-system-prompt-file" { print $2 }
-    $1 == "ARG" { previous = $2 }
-  ')"
-  if [ -n "$target" ] && [ -r "$target" ]; then
-    sed '/^═══ RULE SOURCE \[/,$d' "$target"
-  fi
-}
+plan_of() { sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p'; }
 has()  { grep -qF "$1"; }
 # Count the appended rule basenames in a plan.
 rule_names() {
-  awk '
-    $0 ~ /^  [0-9]+\. [^\/]+\// {
-      line=$0
-      sub(/^  [0-9]+\. [^\/]+\//, "", line)
-      sub(/ — .*/, "", line)
-      print line
-    }
+  awk -F'\t' '
+    $1=="ARG" && prev=="--append-system-prompt-file"{n=split($2,a,"/"); print a[n]}
+    $1=="ARG"{prev=$2}
   '
 }
 
@@ -118,7 +98,7 @@ _rule_count=$(printf '%s\n' "$_rules" | grep -c . )
 [ "$(printf '%s' "$_rules")" = "external-agent-contract.md" ] && ok "T1 the one rule IS the contract" || bad "T1 the one rule is not the contract (got '$_rules')"
 # Negative: none of the internal/eng/cross-dept/reply/screencap/founder rules.
 for forbidden in department-lead-rules.md cos-lead-rules.md founder-only-authority.md \
-  founder-html-delivery.md cross-dept-channel-rules.md \
+  founder-html-delivery.md founder-ux-rules.md cross-dept-channel-rules.md \
   discord-reply-contract.md screencapture-l3-skill.md inbox-ack-rule.md \
   common-rules.md companion-safety-contract.md executor-routing.md \
   runner-messaging-rules.md doc-flow-rules.md; do

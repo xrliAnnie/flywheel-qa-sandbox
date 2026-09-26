@@ -20,8 +20,9 @@
  * explicitly at-least-once (a crash between the side effect and the
  * `delivered` mark may repeat one message — accepted, never lost).
  *
- * Runs on the GatePoller founder-reply sub-cadence. Already-committed
- * notices/alerts converge independently from founder-reply ingestion.
+ * Runs on the GatePoller founder-reply sub-cadence but OUTSIDE the
+ * `FLYWHEEL_FOUNDER_REPLY_DELIVER` ingest switch (§8): already-committed
+ * notices/alerts still converge when ops turn ingest off.
  */
 
 import type {
@@ -79,6 +80,12 @@ export interface FounderActionDrainDeps {
 		projectName: string;
 		executionId: string;
 	}): Promise<{ ok: boolean; error?: string }>;
+	/** Queue /codex-code-review with the sink-stable instruction id. */
+	queueCodexInstruction(args: {
+		projectName: string;
+		executionId: string;
+		instructionId: string;
+	}): { queued: boolean; deduped?: boolean; error?: string };
 	/** Non-authoritative mailbox wake. */
 	wake(args: {
 		projectName: string;
@@ -88,8 +95,6 @@ export interface FounderActionDrainDeps {
 	}): Promise<{ ok: boolean; error?: string }>;
 	/** Must-deliver alert sink (duplicate claim ≠ receipt — §7.1). */
 	alertSink?: DrainAlertSink;
-	/** FLY-2076: hot master switch; false defers emit_alert without attempts. */
-	alertsEnabled?: () => boolean;
 	/** Lead routing for the failed-action alert (infra-owner fallback inside). */
 	resolveAlertRoute(
 		projectName: string,
@@ -102,7 +107,14 @@ export interface FounderActionDrainDeps {
 	resolveProjectRoot?: (projectName: string) => string | undefined;
 }
 
-export const FOUNDER_NOTIFY_RETRY_MAX = 5;
+const DEFAULT_NOTIFY_RETRY_MAX = 5;
+
+export function founderNotifyRetryMax(
+	env: Record<string, string | undefined> = process.env,
+): number {
+	const n = Number.parseInt(env.FLYWHEEL_FOUNDER_NOTIFY_RETRY_MAX ?? "", 10);
+	return Number.isFinite(n) && n > 0 ? n : DEFAULT_NOTIFY_RETRY_MAX;
+}
 
 const NOTICE_KINDS = new Set([
 	"held_reply",
@@ -142,12 +154,30 @@ interface ExecResult {
 
 function verifyEligibility(
 	row: FounderActionRow,
+	payload: Record<string, unknown>,
 	deps: FounderActionDrainDeps,
 ): { ok: true } | { ok: false; reason: string } {
 	// R2 #2: re-verify the expected context AT EXECUTION time — never deliver a
 	// stale action. Notice kinds rely on supersede-at-source (the terminal
 	// transaction marks pending held_reply rows superseded), so pending status
 	// itself is their eligibility.
+	if (row.kind === "codex_nudge_queue" || row.kind === "codex_nudge_wake") {
+		const session = deps.store.getSession(row.execution_id);
+		const expectedHead =
+			typeof payload.head === "string" ? payload.head.toLowerCase() : undefined;
+		if (
+			!session ||
+			session.status !== "awaiting_review" ||
+			!expectedHead ||
+			session.pr_head_sha?.toLowerCase() !== expectedHead
+		) {
+			return {
+				ok: false,
+				reason: `moved_on_${session?.status ?? "missing"}`,
+			};
+		}
+		return { ok: true };
+	}
 	if (row.kind === "feedback_wake") {
 		const session = deps.store.getSession(row.execution_id);
 		if (!session) return { ok: false, reason: "session_missing" };
@@ -173,10 +203,27 @@ async function executeAction(
 			executionId: row.execution_id,
 		});
 	}
-	if (row.kind === "feedback_wake") {
-		const content = feedbackWakeContent(
-			typeof payload.feedback === "string" ? payload.feedback : "",
-		);
+	if (row.kind === "codex_nudge_queue") {
+		const res = deps.queueCodexInstruction({
+			projectName: row.project_name,
+			executionId: row.execution_id,
+			// R3 #3: the action_key IS the CommDB instruction id — a redelivery
+			// after crash-before-mark is a sink-side no-op.
+			instructionId: row.action_key,
+		});
+		return res.queued
+			? { ok: true }
+			: { ok: false, error: res.error ?? "queue_failed" };
+	}
+	if (row.kind === "codex_nudge_wake" || row.kind === "feedback_wake") {
+		const content =
+			row.kind === "feedback_wake"
+				? feedbackWakeContent(
+						typeof payload.feedback === "string" ? payload.feedback : "",
+					)
+				: typeof payload.text === "string" && payload.text
+					? payload.text + NON_AUTHORITATIVE_FOOTER
+					: `Codex code review 还没收敛,已重新排了 /codex-code-review 指令——请跑完 review 再继续。${NON_AUTHORITATIVE_FOOTER}`;
 		return deps.wake({
 			projectName: row.project_name,
 			executionId: row.execution_id,
@@ -283,7 +330,7 @@ async function drainOne(
 
 	// 2. Eligibility re-verify.
 	const payload = parsePayload(row);
-	const elig = verifyEligibility(row, deps);
+	const elig = verifyEligibility(row, payload, deps);
 	if (!elig.ok) {
 		deps.store.cancelFounderAction(row.action_key, elig.reason);
 		return;
@@ -319,10 +366,7 @@ async function drainOne(
 		}
 	}
 
-	// 3. Execute → outcome. A disabled alert system is an operator-requested
-	// deferral, not a failed delivery attempt. Leave the durable row untouched so
-	// the must-deliver channel resumes when the store-managed flag turns ON.
-	if (row.kind === "emit_alert" && deps.alertsEnabled?.() === false) return;
+	// 3. Execute → outcome.
 	let result: ExecResult;
 	try {
 		result = await executeAction(row, payload, deps);
@@ -380,7 +424,7 @@ export async function drainFounderActionLedger(
 ): Promise<void> {
 	const rows = deps.store.listPendingFounderActions();
 	if (rows.length === 0) return;
-	const maxAttempts = FOUNDER_NOTIFY_RETRY_MAX;
+	const maxAttempts = founderNotifyRetryMax(deps.env ?? process.env);
 	const nowMs = deps.nowMs?.() ?? Date.now();
 	for (const row of rows) {
 		try {

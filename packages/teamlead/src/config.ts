@@ -1,12 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isAllowedLoopbackHostname } from "flywheel-comm/lead-lease";
-import { normalizeOptionalBearer } from "flywheel-config";
 import { parseFounderConsentConfig } from "./bridge/founder-consent/config.js";
 import { RunnerAdmissionController } from "./bridge/runner-admission.js";
 import type { BridgeConfig } from "./bridge/types.js";
 
 export type { BridgeConfig };
+
+const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
 function parsePositiveInt(
 	value: string | undefined,
@@ -23,7 +23,7 @@ function parsePositiveInt(
 
 export function loadConfig(): BridgeConfig {
 	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
-	if (!isAllowedLoopbackHostname(host)) {
+	if (!ALLOWED_HOSTS.has(host)) {
 		throw new Error(
 			`TEAMLEAD_HOST must be loopback (127.0.0.1, localhost, or ::1), got: ${host}`,
 		);
@@ -54,21 +54,7 @@ export function loadConfig(): BridgeConfig {
 	// is enabled but TEAMLEAD_API_TOKEN is missing/empty, the routes would be
 	// exposed unauthenticated — fail-startup rather than emit a warning. See
 	// plan §4.3 + Codex Round 2 issue #2.
-	const apiTokenRaw = process.env.TEAMLEAD_API_TOKEN;
-	if (apiTokenRaw !== undefined && apiTokenRaw !== apiTokenRaw.trim()) {
-		throw new Error(
-			"TEAMLEAD_API_TOKEN must not contain outer whitespace (trim the configured value; refusing to start)",
-		);
-	}
-	const apiToken = normalizeOptionalBearer(apiTokenRaw);
-	const ingestToken = normalizeOptionalBearer(
-		process.env.TEAMLEAD_INGEST_TOKEN,
-	);
-	if (apiToken && ingestToken && apiToken === ingestToken) {
-		throw new Error(
-			"TEAMLEAD_INGEST_TOKEN must differ from TEAMLEAD_API_TOKEN (refusing to start)",
-		);
-	}
+	const apiToken = process.env.TEAMLEAD_API_TOKEN;
 	const replyByIssueEnabled =
 		process.env.TEAMLEAD_REPLY_BY_ISSUE_ENABLED === "true";
 	if (replyByIssueEnabled && (!apiToken || apiToken.length === 0)) {
@@ -98,44 +84,19 @@ export function loadConfig(): BridgeConfig {
 	//     bare-token posture.
 	const geminiAgentTokenRaw = process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;
 	let geminiAgentToken: string | undefined;
-	const scoped = normalizeOptionalBearer(geminiAgentTokenRaw);
-	if (scoped) {
-		if (apiToken && scoped === apiToken) {
+	if (geminiAgentTokenRaw !== undefined && geminiAgentTokenRaw.trim() !== "") {
+		const scoped = geminiAgentTokenRaw.trim();
+		if (apiToken && scoped === apiToken.trim()) {
 			throw new Error(
 				"TEAMLEAD_GEMINI_AGENT_TOKEN must differ from TEAMLEAD_API_TOKEN — a scoped token equal to the master token is a full-privilege credential in disguise (refusing to start)",
 			);
 		}
-		if (!apiToken) {
+		if (!apiToken || apiToken.length === 0) {
 			console.error(
 				"[config] ERROR: TEAMLEAD_GEMINI_AGENT_TOKEN is set but TEAMLEAD_API_TOKEN is not — scoped token IGNORED (without a master token the /api surface is unauthenticated; configure TEAMLEAD_API_TOKEN first)",
 			);
 		} else {
-			if (ingestToken && scoped === ingestToken) {
-				throw new Error(
-					"TEAMLEAD_GEMINI_AGENT_TOKEN must differ from TEAMLEAD_INGEST_TOKEN (refusing to start)",
-				);
-			}
 			geminiAgentToken = scoped;
-		}
-	}
-
-	// FLY-2076: the duty surface is deliberately isolated from every existing
-	// Bridge credential. Claw receives this bearer and no broader API token.
-	const alertDutyToken = normalizeOptionalBearer(
-		process.env.FLYWHEEL_ALERT_DUTY_TOKEN,
-	);
-	if (alertDutyToken) {
-		const collisions: Array<[string, string | undefined]> = [
-			["TEAMLEAD_API_TOKEN", apiToken],
-			["TEAMLEAD_INGEST_TOKEN", ingestToken],
-			["TEAMLEAD_GEMINI_AGENT_TOKEN", geminiAgentToken],
-		];
-		for (const [name, token] of collisions) {
-			if (token && token === alertDutyToken) {
-				throw new Error(
-					`FLYWHEEL_ALERT_DUTY_TOKEN must differ from ${name} (refusing to start)`,
-				);
-			}
 		}
 	}
 
@@ -169,16 +130,16 @@ export function loadConfig(): BridgeConfig {
 		dbPath:
 			process.env.TEAMLEAD_DB_PATH ??
 			join(homedir(), ".flywheel", "teamlead.db"),
-		ingestToken,
+		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 		apiToken,
-		alertDutyToken,
 		notificationChannel:
 			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
 		defaultLeadAgentId: (() => {
-			const val = process.env.TEAMLEAD_DEFAULT_LEAD_AGENT?.trim();
-			if (!val) {
+			const val =
+				process.env.TEAMLEAD_DEFAULT_LEAD_AGENT?.trim() ?? "product-lead";
+			if (val.length === 0) {
 				throw new Error(
-					"TEAMLEAD_DEFAULT_LEAD_AGENT is required and must identify one canonical Lead",
+					"TEAMLEAD_DEFAULT_LEAD_AGENT must be a non-empty string",
 				);
 			}
 			return val;
@@ -207,9 +168,9 @@ export function loadConfig(): BridgeConfig {
 		// prefixes. Validation (must have apiToken) happens above.
 		replyGuardEnabled,
 		issuePrefixes,
-		// FLY-175 Track 2: mandatory production founder-consent policy. Identity
-		// resolves from canonical DISCORD_OWNER_USER_ID (with a compatibility
-		// fallback), and the decision mode is permanently audit_only.
+		// FLY-175 Track 2: founder-consent hard gate. Parsed from
+		// FLYWHEEL_FOUNDER_CONSENT_* env. decisionMode defaults to "off" so a
+		// boot without explicit opt-in is byte-compatible with pre-Track-2.
 		founderConsent: parseFounderConsentConfig(process.env),
 		// FLY-1018 M4: scoped gemini-agent token (validated above; undefined
 		// when unset, invalid-without-master, or blank — byte-compatible).

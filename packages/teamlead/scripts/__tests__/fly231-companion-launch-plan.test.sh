@@ -41,9 +41,7 @@ make_home() {
   local h; h=$(mktemp -d "/tmp/fly231-test.XXXXXX")
   mkdir -p "$h/proj-growth/.lead/mufasa-lead" \
            "$h/proj-gf/.lead/product-lead" \
-           "$h/proj-gf/.lead/cos-lead" \
-           "$h/.flywheel"
-  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
+           "$h/proj-gf/.lead/cos-lead"
   printf -- '---\nname: mufasa-lead\n---\nMufasa\n' > "$h/proj-growth/.lead/mufasa-lead/identity.md"
   printf -- '---\nname: product-lead\n---\nPeter\n'  > "$h/proj-gf/.lead/product-lead/identity.md"
   printf -- '---\nname: cos-lead\n---\nSimba\n'       > "$h/proj-gf/.lead/cos-lead/identity.md"
@@ -56,10 +54,10 @@ fixture_projects() {
   cat <<JSON
 [
  {"projectName":"growth","projectRoot":"${h}/proj-growth","leads":[
-   {"agentId":"mufasa-lead","summaryRole":"producer","chatChannel":"111","alertChannel":"111","match":{"labels":["growth"]},"botTokenEnv":"MUFASA_BOT_TOKEN","botUserId":"10000000000000001","canSpawnRunners":false,"companion":${companion},"department":"growth"}]},
+   {"agentId":"mufasa-lead","chatChannel":"111","alertChannel":"111","match":{"labels":["growth"]},"botTokenEnv":"MUFASA_BOT_TOKEN","canSpawnRunners":false,"companion":${companion},"department":"growth"}]},
  {"projectName":"geoforge3d","projectRoot":"${h}/proj-gf","leads":[
-   {"agentId":"product-lead","summaryRole":"producer","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","botUserId":"10000000000000002","canSpawnRunners":true},
-   {"agentId":"cos-lead","summaryRole":"aggregator","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"TEST_COS_BOT_TOKEN","botUserId":"10000000000000003","canSpawnRunners":false}]}
+   {"agentId":"product-lead","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","canSpawnRunners":true},
+   {"agentId":"cos-lead","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"TEST_COS_BOT_TOKEN","canSpawnRunners":false}]}
 ]
 JSON
 }
@@ -74,21 +72,7 @@ run_dry() {
     bash "$LEAD_SH" "$lead" "$pdir" "$pname" 2>&1
 }
 
-# FLY-1402 LEGITIMATE RETARGET: argv now carries one generated bundle. Preserve
-# this test's selected-rule assertions by appending only that bundle's manifest
-# header (never the rule bodies) to the structured launch plan.
-plan_of() {
-  local plan target
-  plan="$(sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p')"
-  printf '%s\n' "$plan"
-  target="$(printf '%s\n' "$plan" | awk -F'\t' '
-    $1 == "ARG" && previous == "--append-system-prompt-file" { print $2 }
-    $1 == "ARG" { previous = $2 }
-  ')"
-  if [ -n "$target" ] && [ -r "$target" ]; then
-    sed '/^═══ RULE SOURCE \[/,$d' "$target"
-  fi
-}
+plan_of() { sed -n '/LAUNCH_PLAN_BEGIN/,/LAUNCH_PLAN_END/p'; }
 has()  { grep -qF "$1"; }
 
 # ───────────────────────────────────────────────────────────── T1: companion
@@ -97,7 +81,6 @@ OUT=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth); PLAN=$(printf '%s'
 printf '%s\n' "$PLAN" | has $'ROLE\tcompanion'                         && ok "T1 companion role" || bad "T1 companion role"
 printf '%s\n' "$PLAN" | grep -qF 'companion-safety-contract.md'        && ok "T1 has safety-contract" || bad "T1 has safety-contract"
 printf '%s\n' "$PLAN" | grep -qF 'cross-dept-channel-rules.md'         && ok "T1 has cross-dept" || bad "T1 has cross-dept"
-printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'               && ok "T1 has founder-local-time" || bad "T1 has founder-local-time"
 printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort'                      && ok "T1 has --effort flag" || bad "T1 has --effort flag"
 # FLY-583: companion effort is pinned to xhigh (was medium). Evidence showed medium
 # did NOT prevent the FLY-306/387 reply-leak (Belle leaked at xhigh too) and only
@@ -126,11 +109,8 @@ PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d | plan_of)
 printf '%s\n' "$PLAN" | has $'ROLE\tstandard'                         && ok "T2 standard role" || bad "T2 standard role"
 printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'           && ok "T2 has department-lead-rules" || bad "T2 has department-lead-rules"
 printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'          && ok "T2 has founder-only-authority" || bad "T2 has founder-only-authority"
-printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'              && ok "T2 has founder-local-time" || bad "T2 has founder-local-time"
 printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\tflywheel-terminal'     && ok "T2 has terminal MCP" || bad "T2 has terminal MCP"
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tTEAMLEAD_API_TOKEN\tset'      && ok "T2 token SET (unchanged)" || bad "T2 token set"
-printf '%s\n' "$PLAN" | has $'PANE_ENV\tUSER\tset'                    && ok "T2 v1 preserves OS USER" || bad "T2 v1 USER missing"
-printf '%s\n' "$PLAN" | has $'PANE_ENV\tLOGNAME\tset'                 && ok "T2 v1 preserves OS LOGNAME" || bad "T2 v1 LOGNAME missing"
 printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort'                     && bad "T2 must NOT have --effort" || ok "T2 no --effort"
 printf '%s\n' "$PLAN" | grep -qF 'companion-safety-contract.md'       && bad "T2 must NOT have safety-contract" || ok "T2 no safety-contract"
 printf '%s\n' "$PLAN" | grep -qF 'FLYWHEEL_LEAD_COMPANION'            && bad "T2 must NOT have companion marker" || ok "T2 no companion marker"
@@ -143,23 +123,6 @@ printf '%s\n' "$PLAN" | has $'ROLE\tstandard'                        && ok "T3 c
 printf '%s\n' "$PLAN" | grep -qF 'cos-lead-rules.md'                 && ok "T3 has cos-lead-rules" || bad "T3 has cos-lead-rules"
 printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'          && bad "T3 cos must NOT have dept base rules" || ok "T3 no dept base rules"
 printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'         && ok "T3 has founder-only-authority" || bad "T3 has founder-only-authority"
-printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'             && ok "T3 has founder-local-time" || bad "T3 has founder-local-time"
-rm -rf "$H"
-
-# FLY-1319: a configured founder timezone crosses the tmux env boundary for
-# every internal Lead role. The launch plan redacts values, so `set` is the
-# stable proof that companion/cos/dept panes receive the override.
-H=$(make_home); P=$(fixture_projects "$H" true)
-for ROLE_CASE in \
-  "mufasa-lead|$H/proj-growth|growth" \
-  "product-lead|$H/proj-gf|geoforge3d" \
-  "cos-lead|$H/proj-gf|geoforge3d"; do
-  IFS='|' read -r CASE_LEAD CASE_DIR CASE_PROJECT <<<"$ROLE_CASE"
-  PLAN=$(run_dry "$H" "$P" "$CASE_LEAD" "$CASE_DIR" "$CASE_PROJECT" FLYWHEEL_FOUNDER_TZ=Asia/Tokyo | plan_of)
-  printf '%s\n' "$PLAN" | has $'PANE_ENV\tFLYWHEEL_FOUNDER_TZ\tset' \
-    && ok "T3a $CASE_LEAD founder timezone reaches pane" \
-    || bad "T3a $CASE_LEAD founder timezone reaches pane"
-done
 rm -rf "$H"
 
 # ──────────────────────────────────── T4: notfound → fail-STOP, no side effect
@@ -210,12 +173,7 @@ normalize_plan() {
   awk -F'\t' '
     $1=="ROLE"{print "role="$2}
     $1=="ARG" && $2=="--effort"{print "flag=--effort"}
-    $0 ~ /^  [0-9]+\. [^\/]+\// {
-      line=$0
-      sub(/^  [0-9]+\. [^\/]+\//, "", line)
-      sub(/ — .*/, "", line)
-      print "rule="line
-    }
+    $1=="ARG" && prev=="--append-system-prompt-file"{n=split($2,a,"/"); print "rule="a[n]}
     $1=="ARG"{prev=$2}
     $1=="PANE_ENV"{print "env="$2"="$3}
     $1=="MCP_SERVER"{print "mcp="$2}
@@ -225,57 +183,42 @@ normalize_plan() {
 # the role changes. The FLY-231 goldens predate later base rules that
 # claude-lead.sh now emits for standard/cos leads — discord-reply-contract.md
 # (FLY-387), runner-reengage-rules.md (FLY-229), xiaohongshu-memory-rules.md
-# (FLY-222), default-enable-policy.md (FLY-707), model-routing.md (FLY-728), and
+# (FLY-222), and (added in this FLY-879 refresh) auto-qa-pipeline.md (FLY-579),
+# default-enable-policy.md (FLY-707), model-routing.md (FLY-728), and
 # runner-patrol-rules.md (FLY-369). Proven pre-existing: HEAD's claude-lead.sh
 # appends all four but the committed golden lacked them, and the FLY-879 external
 # role diff never touches these dept-branch appends. This sentinel is not wired
 # into vitest/CI, so the drift went unnoticed.
 #
+# FLY-900 (2026-07-06): the founder-UX signoff gate is RETIRED fleet-wide by
+# default. claude-lead.sh now appends founder-ux-rules.md only when
+# FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1. run_dry uses `env -i` (no such env), so the
+# DEFAULT plan no longer carries founder-ux-rules.md — it was removed from both
+# goldens. The reverse (env=1 → still appended) is covered by T11 below.
 read -r -d '' DEPT_GOLDEN <<'G'
 env=BRIDGE_URL=set
+env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
 env=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=set
 env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
-env=DISCORD_EXPECTED_BOT_USER_ID=empty
-env=DISCORD_IDENTITY_MODE=empty
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
-env=FLYWHEEL_FOUNDER_TZ=empty
-env=FLYWHEEL_LEAD_AUTHORITY_LIB=set
-env=FLYWHEEL_LEAD_BACKEND=empty
-env=FLYWHEEL_LEAD_CARRIER=set
-env=FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=set
 env=FLYWHEEL_LEAD_ID=set
-env=FLYWHEEL_LEAD_IDENTITY_DIGEST=empty
-env=FLYWHEEL_LEAD_KEY=empty
-env=FLYWHEEL_LEAD_LAUNCH_GEN=empty
-env=FLYWHEEL_LEAD_PROJECTS_DIGEST=empty
-env=FLYWHEEL_LEAD_ROLE=empty
-env=FLYWHEEL_LEAD_SUMMARY_ROLE=set
-env=FLYWHEEL_PROJECTS_FILE=empty
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
-env=FLYWHEEL_RECEIPT_WINDOW_P0_MIN=empty
-env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
-env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
-env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
-env=FLYWHEEL_SESSION_ID_FILE=empty
-env=FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=set
-env=FLYWHEEL_SUMMARY_GRANULARITY=set
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set
-env=LOGNAME=set
 env=OPENAI_API_KEY=empty
 env=PATH=set
 env=PROJECT_NAME=set
 env=TEAMLEAD_API_TOKEN=set
 env=TEAMLEAD_ISSUE_PREFIXES=set
-env=USER=set
 mcp=flywheel-inbox
 mcp=flywheel-terminal
 role=standard
+rule=auto-qa-pipeline.md
 rule=cross-dept-channel-rules.md
 rule=default-enable-policy.md
 rule=department-lead-rules.md
@@ -283,7 +226,6 @@ rule=discord-reply-contract.md
 rule=doc-flow-rules.md
 rule=executor-routing.md
 rule=founder-html-delivery.md
-rule=founder-local-time.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md
 rule=model-routing.md
@@ -292,51 +234,28 @@ rule=runner-patrol-rules.md
 rule=runner-reengage-rules.md
 rule=screencapture-l3-skill.md
 rule=stuck-runner-remanage.md
-rule=summary-inflow.md
 rule=xiaohongshu-memory-rules.md
 G
 read -r -d '' COS_GOLDEN <<'G'
 env=BRIDGE_URL=set
+env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
 env=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=set
 env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
-env=DISCORD_EXPECTED_BOT_USER_ID=empty
-env=DISCORD_IDENTITY_MODE=empty
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
-env=FLYWHEEL_FOUNDER_TZ=empty
-env=FLYWHEEL_LEAD_AUTHORITY_LIB=set
-env=FLYWHEEL_LEAD_BACKEND=empty
-env=FLYWHEEL_LEAD_CARRIER=set
-env=FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=set
 env=FLYWHEEL_LEAD_ID=set
-env=FLYWHEEL_LEAD_IDENTITY_DIGEST=empty
-env=FLYWHEEL_LEAD_KEY=empty
-env=FLYWHEEL_LEAD_LAUNCH_GEN=empty
-env=FLYWHEEL_LEAD_PROJECTS_DIGEST=empty
-env=FLYWHEEL_LEAD_ROLE=empty
-env=FLYWHEEL_LEAD_SUMMARY_ROLE=set
-env=FLYWHEEL_PROJECTS_FILE=empty
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
-env=FLYWHEEL_RECEIPT_WINDOW_P0_MIN=empty
-env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
-env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
-env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
-env=FLYWHEEL_SESSION_ID_FILE=empty
-env=FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=set
-env=FLYWHEEL_SUMMARY_GRANULARITY=set
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set
-env=LOGNAME=set
 env=OPENAI_API_KEY=empty
 env=PATH=set
 env=PROJECT_NAME=set
 env=TEAMLEAD_API_TOKEN=set
 env=TEAMLEAD_ISSUE_PREFIXES=set
-env=USER=set
 mcp=flywheel-inbox
 mcp=flywheel-terminal
 role=standard
@@ -344,7 +263,6 @@ rule=cos-lead-rules.md
 rule=cross-dept-channel-rules.md
 rule=discord-reply-contract.md
 rule=founder-html-delivery.md
-rule=founder-local-time.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md
 rule=screencapture-l3-skill.md
@@ -356,7 +274,6 @@ for L in product-lead ops-lead cos-lead joycon-lead sub-lead; do
 done
 # Deterministic transport stub (shadows any host agent-team-transport).
 mkdir -p "$H/.flywheel/bin"
-printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$H/.flywheel/summary-config.json"
 cat > "$H/.flywheel/bin/agent-team-transport" <<'STUB'
 #!/bin/bash
 case "$1" in
@@ -368,11 +285,11 @@ esac
 STUB
 chmod +x "$H/.flywheel/bin/agent-team-transport"
 P5='[{"projectName":"gf","projectRoot":"'"$H"'/proj","leads":[
-  {"agentId":"product-lead","summaryRole":"producer","chatChannel":"1","match":{"labels":["Product"]}},
-  {"agentId":"ops-lead","summaryRole":"producer","chatChannel":"2","match":{"labels":["Operations"]}},
-  {"agentId":"cos-lead","summaryRole":"aggregator","chatChannel":"3","match":{"labels":["PM"]},"canSpawnRunners":false},
-  {"agentId":"joycon-lead","summaryRole":"producer","chatChannel":"4","match":{"labels":["joycon"]}},
-  {"agentId":"sub-lead","summaryRole":"producer","chatChannel":"5","match":{"labels":["Sub"]}}]}]'
+  {"agentId":"product-lead","chatChannel":"1","match":{"labels":["Product"]}},
+  {"agentId":"ops-lead","chatChannel":"2","match":{"labels":["Operations"]}},
+  {"agentId":"cos-lead","chatChannel":"3","match":{"labels":["PM"]},"canSpawnRunners":false},
+  {"agentId":"joycon-lead","chatChannel":"4","match":{"labels":["joycon"]}},
+  {"agentId":"sub-lead","chatChannel":"5","match":{"labels":["Sub"]}}]}]'
 for L in product-lead ops-lead cos-lead joycon-lead sub-lead; do
   GOT=$(run_dry "$H" "$P5" "$L" "$H/proj" gf | plan_of | normalize_plan)
   if [ "$L" = "cos-lead" ]; then WANT="$COS_GOLDEN"; else WANT="$DEPT_GOLDEN"; fi
@@ -417,6 +334,18 @@ EMPTY_RULES=$(mktemp -d "/tmp/fly231-emptyrules.XXXXXX")  # no companion-safety-
 run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth FLYWHEEL_BASE_RULES_DIR="$EMPTY_RULES" >/dev/null 2>&1
 [ $? -ne 0 ] && ok "T10 companion fail-STOP when safety-contract missing" || bad "T10 companion fail-STOP on missing contract"
 rm -rf "$H" "$EMPTY_RULES"
+
+# ───────── T11: FLY-900 reverse-compat — env=1 re-enables the founder-ux rules
+# The default (T8, env -i) drops founder-ux-rules.md. With the kill-switch
+# explicitly re-enabled a standard dept Lead gets it appended again (proves the
+# gate is reversible, not deleted). A companion still never gets it (env-agnostic
+# — the companion guard short-circuits before the founder-ux append).
+H=$(make_home); P=$(fixture_projects "$H" true)
+PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1 | plan_of)
+printf '%s\n' "$PLAN" | grep -qF 'founder-ux-rules.md' && ok "T11 env=1 re-appends founder-ux-rules (reversible)" || bad "T11 env=1 must re-append founder-ux-rules"
+PLAN=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1 | plan_of)
+printf '%s\n' "$PLAN" | grep -qF 'founder-ux-rules.md' && bad "T11 companion must NOT get founder-ux-rules even with env=1" || ok "T11 companion still excluded (env=1)"
+rm -rf "$H"
 
 echo ""
 echo "FLY-231 launch-plan test: ${PASS} passed, ${FAIL} failed"

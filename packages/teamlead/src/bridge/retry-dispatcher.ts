@@ -1,57 +1,17 @@
 /** GEO-168: IRetryDispatcher interface — retry creates a new execution. */
 
+// FLY-579: QaContext is defined in edge-worker (Blueprint owns the prompt
+// rendering); teamlead depends on edge-worker, so we import the type here for
+// StartRequest. Defining it in teamlead would invert the dependency.
 import type {
-	DesignBackend,
+	PhaseDispatchVendor,
 	PonytailInput,
-	PonytailRetryInput,
 	RoleEffort,
-	SkillFrameworkMode,
-	WorkflowDispatchVendor,
 } from "flywheel-config";
-import type { LaunchPrecommitOutcome } from "flywheel-core";
-import type {
-	WorkflowIssueDeliveryInput,
-	WorkflowResumeContext,
-} from "flywheel-edge-worker/dist/Blueprint.js";
+import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 
-export type { WorkflowResumeContext };
-
-export interface GeneralizedExecutionDispatch {
-	/** True only for a typed run whose transitions are owned by the DAG engine. */
-	engineOwned?: boolean;
-	executionId: string;
-	/** Exact StateStore admission bound before dispatch. Required when engineOwned. */
-	activationId?: string;
-	runId: string;
-	nodeId: string;
-	attempt: number;
-	snapshotDigest: string;
-	gateCarrierEpoch: 0 | 1;
-	dispatch: {
-		vendor: "claude" | "codex";
-		model: string;
-		effort?: RoleEffort;
-	};
-	capabilities: Record<string, boolean | string>;
-	agentContent: string;
-	outputCredential?: string;
-	submissionCredential?: string;
-	idempotencyKey: string;
-	launchGateToken?: string;
-	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
-	prepareWorkflowIssueDelivery?: (input: WorkflowIssueDeliveryInput) => void;
-	/** Persist CommDB's granted TURN epoch into the activation ledger before launch. */
-	projectTurn?: (input: {
-		activationId: string;
-		issueId: string;
-		executionId: string;
-		epoch: number;
-		sourceEventId: string;
-		grantedAt: string;
-	}) => { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
-	/** Current launch-owner generation, used to bind physical tmux identity. */
-	launchGeneration?: number;
-}
+export type { QaContext };
 
 export interface RetryRequest {
 	oldExecutionId: string;
@@ -109,20 +69,9 @@ export interface RetryRequest {
 	 * never enter phase dispatch. actions.ts re-derives it from the phase table
 	 * for PHASE rows; undefined for every non-phase retry (byte-compatible).
 	 */
-	dispatchVendor?: WorkflowDispatchVendor;
+	dispatchVendor?: PhaseDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
-	/** FLY-1259: effective design backend locked at DAG workflow admission. */
-	designBackend?: DesignBackend;
-	/**
-	 * FLY-1356: per-dispatch skill-framework arm continuation. Set ONLY when the
-	 * predecessor session was itself explicitly overridden (via === "override")
-	 * — a 529 forced arm stays forced for the whole retry/successor pipeline.
-	 * The resolver ignores it outside `split` (kill total-semantics, R1#1).
-	 */
-	skillFrameworkMode?: SkillFrameworkMode;
-	/** FLY-1609: frozen predecessor intent plus this retry's fresh selector. */
-	ponytailRetry?: PonytailRetryInput;
 	/**
 	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
 	 * When present the dispatcher MUST use it instead of generating a fresh
@@ -132,7 +81,7 @@ export interface RetryRequest {
 	 */
 	successorExecutionId?: string;
 	/**
-	 * FLY-793: DAG workflow shares the parent issue's single branch B.
+	 * FLY-793: three-stage phase shares the parent issue's single branch B.
 	 * Bridge-INTERNAL; carried on the retry path so a retried phase keeps the
 	 * shared-branch behavior. Absent → role-aware worktree key (byte-compatible).
 	 */
@@ -147,8 +96,6 @@ export interface RetryRequest {
 	 * for `chat_thread_role='main'` rows, incl. auto-QA).
 	 */
 	ignoreRunnerLabelSelection?: boolean;
-	/** FLY-1281: Bridge-internal, pre-bound generalized retry execution. */
-	generalizedExecution?: GeneralizedExecutionDispatch;
 }
 
 export interface RetryResult {
@@ -170,19 +117,11 @@ export interface IRetryDispatcher {
 export interface StartRequest {
 	issueId: string;
 	projectName: string;
-	/**
-	 * FLY-1279 B2: durable recovery successor id. The coordinator persists this
-	 * before dispatch so a crash can adopt/re-drive the same physical launch.
-	 * Absent keeps the fresh-start random UUID behavior.
-	 */
-	successorExecutionId?: string;
 	leadId?: string;
 	/** FLY-24: Pre-fetched issue title from runs-route Linear pre-flight */
 	issueTitle?: string;
 	/** FLY-24: Pre-fetched issue identifier (e.g. "GEO-304") from runs-route Linear pre-flight */
 	issueIdentifier?: string;
-	/** Bridge-derived founder-visible route line; never accepted from HTTP input. */
-	routeSummary?: string;
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
 	/** FLY-137 v1.27.2: explicit Lead override (bypasses label match in AgentDispatcher) */
@@ -225,49 +164,52 @@ export interface StartRequest {
 	dispatchModel?: string;
 	/**
 	 * FLY-1224: per-phase vendor (phase table output; Bridge-INTERNAL — set only
-	 * by the workflow engine / the server-side DAG workflow entry, never from
+	 * by the PhaseOrchestrator / the server-side three-stage entry, never from
 	 * the public `/api/runs/start` body). Only transported vendors. Absent →
 	 * the resolver's FLY-728 claude-tmux behavior (byte-compatible).
 	 */
-	dispatchVendor?: WorkflowDispatchVendor;
+	dispatchVendor?: PhaseDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
-	/** FLY-1259: effective design backend locked at DAG workflow admission. */
-	designBackend?: DesignBackend;
 	/**
-	 * FLY-1356: explicit per-dispatch skill-framework arm (529 eval forced-arm).
-	 * Validated at the runs-route boundary (∈ three modes AND flag === split).
-	 * Sticky for the whole pipeline via the session-row via="override" record.
-	 */
-	skillFrameworkMode?: SkillFrameworkMode;
-	/**
-	 * Explicit git start point for the worktree (a commit SHA / ref), threaded to
-	 * `WorktreeManager.create({ startPoint })` for internal resume/dispatch flows.
+	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
+	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA
+	 * coordinator passes the parent main session's `pr_head_sha` so the QA
+	 * worktree is pinned to the exact reviewed commit (NOT `origin/main`).
 	 * Absent → existing behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
 	 */
 	startPoint?: string;
-	/** FLY-1707: Bridge-internal resume admission; never accepted from HTTP. */
-	workflowResume?: WorkflowResumeContext;
 	/**
-	 * FLY-1718 P1: authenticated human override that deliberately starts from
-	 * main even when the managed origin branch exists. Only runs-route may mint
-	 * this object; engine/reconcile/retry callers leave it absent.
+	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
+	 * Auto-QA spawns. Blueprint renders it into a QA-mode prompt (independent
+	 * verification of `parentExecutionId`'s PR at `prHeadSha`) and the QA runner
+	 * reports its verdict back via `flywheel-comm qa-result --target-exec
+	 * <parentExecutionId>`.
 	 */
-	freshStart?: {
-		authority: "authenticated_runs_route";
-		actor: string;
-		reason: string;
-	};
+	qaContext?: QaContext;
 	/**
 	 * FLY-643: when true, the runner's executor backend is resolved WITHOUT the
 	 * issue's vendor labels (project roles config > env > built-in claude-tmux).
 	 * `issueLabels` is still carried on the BlueprintContext for Lead/thread
 	 * routing — only the backend-selection label layer is bypassed.
 	 *
-	 * Generalized DAG dispatches use this so the phase table, not issue vendor
-	 * labels, selects the execution backend.
+	 * Auto-QA sets this so a QA runner spawned on a separate QA·FLY-XX issue (or
+	 * mirroring the parent's labels) cannot inherit the parent task's vendor
+	 * backend (e.g. `agy`/`kimi` → no-transport) and must run on the normal
+	 * transported Claude lane (Claude-in-Chrome E2E). Absent → existing
+	 * label-driven backend resolution (byte-compatible).
 	 */
 	ignoreRunnerLabelSelection?: boolean;
+	/**
+	 * FLY-752: require a MAILBOX-CAPABLE executor backend. Auto-QA sets this so the
+	 * QA runner can always receive a `retest_wake` across the fix loop. If backend
+	 * resolution would pick a no-transport lane (antigravity/kimi → transport:none,
+	 * even after `ignoreRunnerLabelSelection` because project roles / env default
+	 * still apply), it is FORCED to `claude-tmux` (and the no-transport role/env
+	 * runner model is dropped to the Claude account default, since it may be
+	 * Claude-incompatible). Absent → no forcing (byte-compatible).
+	 */
+	requireMailboxTransport?: boolean;
 	/**
 	 * FLY-615: per-run + per-issue ponytail signal (run-param override + issue
 	 * labels + read status), built by runs-route. Resolved against project
@@ -275,8 +217,8 @@ export interface StartRequest {
 	 */
 	ponytailInput?: PonytailInput;
 	/**
-	 * FLY-793: DAG workflow shares the parent issue's single branch B.
-	 * Bridge-INTERNAL — set ONLY by the workflow engine when dispatching a
+	 * FLY-793: three-stage phase shares the parent issue's single branch B.
+	 * Bridge-INTERNAL — set ONLY by the PhaseOrchestrator when dispatching a
 	 * Design/Implement/QA phase-session; MUST NEVER be populated from the public
 	 * `/api/runs/start` body or a runner payload (runs-route does not read it).
 	 * Threaded to `BlueprintContext.shareParentBranch`. Absent → role-aware
@@ -285,7 +227,7 @@ export interface StartRequest {
 	shareParentBranch?: boolean;
 	/**
 	 * FLY-859: fix-round context for an Implement-fix dispatch after a
-	 * DAG workflow QA FAIL. Bridge-INTERNAL — set ONLY by the workflow engine;
+	 * three-stage QA FAIL. Bridge-INTERNAL — set ONLY by the PhaseOrchestrator;
 	 * MUST NEVER be populated from the public `/api/runs/start` body or a
 	 * runner payload (runs-route does not read it). Threaded to
 	 * `BlueprintContext.phaseFixContext`. Absent → plain implement prompt
@@ -296,25 +238,20 @@ export interface StartRequest {
 	 * FLY-1232 module ②: SEMANTIC shadow context for the T2/T7 spawn moments
 	 * (node / attempt / preceding edge — NEVER an ordinal, which only the
 	 * writer allocates in-transaction). Bridge-INTERNAL — set ONLY by the
-	 * workflow engine; runs-route does not read it. Absent → the pre-launch
+	 * PhaseOrchestrator; runs-route does not read it. Absent → the pre-launch
 	 * seam synthesizes the T1 default ({node: role, attempt: 1}) when a shadow
 	 * writer is present, and is entirely inert when it is not.
 	 */
-	/** FLY-1281: Bridge-internal, pre-bound generalized node execution. */
-	generalizedExecution?: GeneralizedExecutionDispatch;
+	shadowContext?: WorkflowShadowContext;
 }
 
 export interface StartResult {
 	executionId: string;
 	issueId: string;
-	/** Resolves at launch commit or a proven pre-commit failure; never rejects. */
-	launchOutcome?: Promise<LaunchPrecommitOutcome>;
 }
 
 export interface IStartDispatcher {
 	start(req: StartRequest): Promise<StartResult>;
-	/** FLY-1279: fail-closed recovery gate; production RunDispatcher implements it. */
-	hasInflightForRole?(issueId: string, role: string): boolean;
 	/** Current count of inflight (dispatched but not yet completed) executions */
 	getInflightCount(): number;
 	/**

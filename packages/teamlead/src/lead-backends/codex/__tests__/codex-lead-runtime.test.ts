@@ -43,10 +43,7 @@ function fullEnv(
 	return {
 		FLYWHEEL_LEAD_ID: "mufasa",
 		FLYWHEEL_PROJECT_NAME: "mufasa-project",
-		FLYWHEEL_LEAD_KEY: "mufasa-project-mufasa",
-		FLYWHEEL_LEAD_BACKEND: "codex-app-server",
-		FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
-		DISCORD_EXPECTED_BOT_USER_ID: "1499895683287748679",
+		FLYWHEEL_LEAD_BOT_USER_ID: "1499895683287748679",
 		DISCORD_BOT_TOKEN: "tok",
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chan-chat",
 		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876",
@@ -54,7 +51,6 @@ function fullEnv(
 		FLYWHEEL_CODEX_LEAD_STATE_DIR: "/var/state/mufasa",
 		FLYWHEEL_CODEX_BIN: "/usr/local/bin/codex",
 		CODEX_HOME: "/Users/x/.codex-mufasa",
-		FLYWHEEL_COMM_DB: "/var/state/flywheel/comm.db",
 		...over,
 	};
 }
@@ -63,8 +59,6 @@ describe("parseCodexLeadRuntimeConfig", () => {
 	it("parses a full env and derives the state paths", () => {
 		const c = parseCodexLeadRuntimeConfig(fullEnv());
 		expect(c.leadId).toBe("mufasa");
-		expect(c.leadKey).toBe("mufasa-project-mufasa");
-		expect(c.identityDigest).toBe("a".repeat(64));
 		expect(c.botUserId).toBe("1499895683287748679");
 		expect(c.codexHome).toBe("/Users/x/.codex-mufasa");
 		expect(c.journalDbPath).toBe("/var/state/mufasa/journal.db");
@@ -73,60 +67,6 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.channelIds).toEqual(["chan-chat"]); // no core channel set
 		expect(c.chrome).toBeUndefined();
 	});
-
-	it("keeps model, effort, and context window absent without materializing empty config", () => {
-		const c = parseCodexLeadRuntimeConfig(fullEnv());
-		expect(Object.hasOwn(c, "model")).toBe(false);
-		expect(Object.hasOwn(c, "reasoningEffort")).toBe(false);
-		expect(Object.hasOwn(c, "modelContextWindow")).toBe(false);
-		expect(buildThreadParams(c, undefined)).toEqual({
-			approvalPolicy: "never",
-			sandbox: "read-only",
-		});
-		expect(Object.hasOwn(buildThreadParams(c, undefined), "config")).toBe(
-			false,
-		);
-	});
-
-	it("maps configured model, effort, and 1M window into the Codex thread schema", () => {
-		const c = parseCodexLeadRuntimeConfig(
-			fullEnv({
-				FLYWHEEL_LEAD_MODEL: "gpt-5.6-sol",
-				FLYWHEEL_LEAD_EFFORT: "xhigh",
-				FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "1000000",
-			}),
-		);
-		expect(c).toMatchObject({
-			model: "gpt-5.6-sol",
-			reasoningEffort: "xhigh",
-			modelContextWindow: 1_000_000,
-		});
-		expect(buildThreadParams(c, undefined)).toEqual({
-			approvalPolicy: "never",
-			sandbox: "read-only",
-			model: "gpt-5.6-sol",
-			config: {
-				model_reasoning_effort: "xhigh",
-				model_context_window: 1_000_000,
-			},
-		});
-	});
-
-	it.each([
-		[{ FLYWHEEL_LEAD_MODEL: "gpt\n5" }, /FLYWHEEL_LEAD_MODEL/],
-		[{ FLYWHEEL_LEAD_EFFORT: "ultra" }, /FLYWHEEL_LEAD_EFFORT/],
-		[{ FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "0" }, /MODEL_CONTEXT_WINDOW/],
-		[{ FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "1.5" }, /MODEL_CONTEXT_WINDOW/],
-		[
-			{ FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "10000001" },
-			/MODEL_CONTEXT_WINDOW/,
-		],
-	] as const)(
-		"fails loudly on invalid model runtime parameters: %j",
-		(over, error) => {
-			expect(() => parseCodexLeadRuntimeConfig(fullEnv(over))).toThrow(error);
-		},
-	);
 
 	it("defaults codexProfile to companion when unset", () => {
 		expect(parseCodexLeadRuntimeConfig(fullEnv()).codexProfile).toBe(
@@ -174,15 +114,19 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		);
 	});
 
-	it("includes the core channel while Chrome integration stays disabled", () => {
+	it("includes the core channel + chrome when set", () => {
 		const c = parseCodexLeadRuntimeConfig(
 			fullEnv({
 				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "chan-core",
+				FLYWHEEL_LEAD_CHROME_ENABLED: "1",
 				FLYWHEEL_LEAD_CHROME_URL: "http://127.0.0.1:9222",
 			}),
 		);
 		expect(c.channelIds).toEqual(["chan-chat", "chan-core"]);
-		expect(c.chrome).toBeUndefined();
+		expect(c.chrome).toEqual({
+			enabled: true,
+			browserUrl: "http://127.0.0.1:9222",
+		});
 	});
 
 	// ── FLY-267 收: cross-dept channels merged into channelIds ──────────────
@@ -256,15 +200,35 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.mentionPatterns).toEqual(["\\bMufasa\\b", "\\bMufu\\b"]);
 	});
 
-	it("FLY-1806: typingEnabled is fixed on (parity with Claude Lead)", () => {
+	// FLY-404: Discord typing indicator — default ON, kill-switch via "=0".
+	it("FLY-404: typingEnabled defaults to true (parity with Claude Lead)", () => {
 		expect(parseCodexLeadRuntimeConfig(fullEnv()).typingEnabled).toBe(true);
+	});
+
+	it("FLY-404: FLYWHEEL_CODEX_LEAD_TYPING=0 disables typing (kill-switch)", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "0" }),
+		);
+		expect(c.typingEnabled).toBe(false);
+	});
+
+	it("FLY-404: any non-'0' value keeps typing ON (only '0' is the off switch)", () => {
+		expect(
+			parseCodexLeadRuntimeConfig(fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "1" }))
+				.typingEnabled,
+		).toBe(true);
+		expect(
+			parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "false" }),
+			).typingEnabled,
+		).toBe(true);
 	});
 
 	it("fail-loud: lists ALL missing always-required env in one error", () => {
 		const env = fullEnv({
 			DISCORD_BOT_TOKEN: undefined,
 			CODEX_HOME: undefined,
-			DISCORD_EXPECTED_BOT_USER_ID: "  ", // whitespace = missing
+			FLYWHEEL_LEAD_BOT_USER_ID: "  ", // whitespace = missing
 		});
 		expect(() => parseCodexLeadRuntimeConfig(env)).toThrow(/DISCORD_BOT_TOKEN/);
 		try {
@@ -272,30 +236,9 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		} catch (e) {
 			const msg = (e as Error).message;
 			expect(msg).toContain("CODEX_HOME");
-			expect(msg).toContain("DISCORD_EXPECTED_BOT_USER_ID");
+			expect(msg).toContain("FLYWHEEL_LEAD_BOT_USER_ID");
 		}
 	});
-
-	it.each([
-		["lead key", { FLYWHEEL_LEAD_KEY: "wrong-key" }, "FLYWHEEL_LEAD_KEY"],
-		[
-			"backend",
-			{ FLYWHEEL_LEAD_BACKEND: "claude-code" },
-			"FLYWHEEL_LEAD_BACKEND",
-		],
-		[
-			"identity digest",
-			{ FLYWHEEL_LEAD_IDENTITY_DIGEST: "short" },
-			"FLYWHEEL_LEAD_IDENTITY_DIGEST",
-		],
-	] as const)(
-		"rejects a non-canonical %s projection",
-		(_label, over, expected) => {
-			expect(() => parseCodexLeadRuntimeConfig(fullEnv(over))).toThrow(
-				expected,
-			);
-		},
-	);
 
 	it("DEFAULT direct mode needs NO Bridge env (low-risk first test)", () => {
 		const env = fullEnv({
@@ -348,10 +291,18 @@ describe("dryRunReport", () => {
 		expect(report).toContain("WILL CONNECT (bridge mode)");
 	});
 
-	it("surfaces the fixed-on typing state in the dry-run", () => {
+	// FLY-404: the typing-indicator state is auditable in the dry-run.
+	it("surfaces typing ON by default and OFF under the kill-switch", () => {
 		expect(
 			dryRunReport(parseCodexLeadRuntimeConfig(fullEnv())).join("\n"),
 		).toContain("typing        : ON");
+		expect(
+			dryRunReport(
+				parseCodexLeadRuntimeConfig(
+					fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "0" }),
+				),
+			).join("\n"),
+		).toContain("typing        : OFF");
 	});
 
 	// FLY-350 (Z) L-1 (Codex review LOW): a write-capable dry-run surfaces the
@@ -872,7 +823,6 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 			TEAMLEAD_API_TOKEN: "tl", // Claude pane HAS this — allowed
 			OPENAI_API_KEY: "oai", // Claude pane HAS this — allowed
 			FLYWHEEL_COMM_DB: "/db",
-			FLYWHEEL_FOUNDER_TZ: "Asia/Tokyo",
 			BRIDGE_URL: "http://b", // Claude pane HAS this (NOT the FLYWHEEL_ alias)
 			// NOT in the Claude pane allowlist — must be dropped even though needed
 			// elsewhere; a full-access Lead must never get MORE secrets than Claude.
@@ -887,7 +837,6 @@ describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pa
 		expect(out.DISCORD_BOT_TOKEN).toBe("discord");
 		expect(out.TEAMLEAD_API_TOKEN).toBe("tl");
 		expect(out.BRIDGE_URL).toBe("http://b");
-		expect(out.FLYWHEEL_FOUNDER_TZ).toBe("Asia/Tokyo");
 		expect(out.FLYWHEEL_API_TOKEN).toBeUndefined(); // extra token — dropped
 		expect(out.SOME_OTHER_LEAD_BOT_TOKEN).toBeUndefined();
 		expect(out.VERCEL_TOKEN).toBeUndefined();

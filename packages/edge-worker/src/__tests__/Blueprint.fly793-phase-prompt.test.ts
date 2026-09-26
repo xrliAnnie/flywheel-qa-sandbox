@@ -1,7 +1,7 @@
 /**
- * FLY-793 — Blueprint DAG workflow-prompt contract.
+ * FLY-793 — Blueprint three-stage phase-prompt contract.
  *
- * A DAG workflow run is ONE issue with Design → Implement → QA phase-sessions on
+ * A three-stage run is ONE issue with Design → Implement → QA phase-sessions on
  * one shared branch (shareParentBranch). The Design phase prompt must do the
  * design and complete via `phase_design_complete` WITHOUT implementing / PR /
  * land; the Implement phase reads the committed design and does the PR. The
@@ -69,7 +69,6 @@ function makeMockAdapter(): IAdapter {
 
 async function buildPrompt(
 	ctxOverrides: Partial<BlueprintContext> = {},
-	nodeId = "FLY-793",
 ): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
@@ -92,13 +91,13 @@ async function buildPrompt(
 		leadId: "product-lead",
 		...ctxOverrides,
 	};
-	await blueprint.run(makeNode(nodeId), "/tmp/fly793-blueprint-test", ctx);
+	await blueprint.run(makeNode(), "/tmp/fly793-blueprint-test", ctx);
 	const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
 		.calls[0]![0] as AdapterExecutionContext;
 	return call.appendSystemPrompt ?? "";
 }
 
-describe("Blueprint DAG workflow prompt (FLY-793)", () => {
+describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 	it("Design phase: designs + completes via phase_design_complete, no implement/land steps", async () => {
 		const p = await buildPrompt({
 			sessionRole: "design",
@@ -106,65 +105,13 @@ describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 		});
 		expect(p).toContain("DESIGN phase");
 		expect(p).toContain("phase_design_complete");
-		expect(p).toContain("Founder design HTML (MANDATORY)");
-		expect(p).toContain("1) one-sentence summary");
-		expect(p).toContain("2) core flow diagram");
-		expect(p).toContain("3) data / structure model");
-		expect(p).toContain("4) key tradeoffs and rejected alternatives");
-		expect(p).toContain("5) honest boundary");
-		expect(p).toContain("INTERACTIVE COMMENT LAYER (MANDATORY");
-		expect(p).toContain("localStorage");
-		expect(p).toContain("location.pathname");
-		expect(p).toContain('nonce="__CSP_NONCE__"');
-		expect(p).toContain("Do NOT include your own Content-Security-Policy meta");
-		expect(p).toContain("addEventListener");
-		expect(p).toContain("HTML-escape");
-		expect(p).toContain("textContent/value");
-		expect(p).toContain("navigator.clipboard.writeText");
-		expect(p).toContain("unavailable OR its promise rejects");
-		expect(p).toContain("execCommand('copy')");
-		expect(p).toContain("【页面意见汇总】FLY-793");
-		expect(p).toContain("about 1800 characters");
-		expect(p).toContain("repeat the marker on every chunk");
-		expect(p).toContain("DIAGRAMS AND LANGUAGE (MANDATORY");
-		expect(p).toContain("mmdc");
-		expect(p).toContain("inline that SVG");
-		expect(p).toContain("no runtime mermaid.js");
-		expect(p).toContain("first time each technical term appears");
-		expect(p).toContain("Do NOT fake diagrams with CSS boxes");
-		expect(p).toContain("retry once with standard flags");
-		expect(p).toContain("DIAGRAM PENDING LOCAL RENDER");
-		expect(p).toContain("hosted or remote diagram rendering service");
-		expect(p).toContain("mmdc --svgId");
-		expect(p).toContain("unique per diagram");
-		expect(p).toContain("plain-language explanation");
-		expect(p).toContain("doc/FLY-793-<slug>/");
-		expect(p).toContain("--publish-only");
-		expect(p).toContain("--lead product-lead");
-		expect(p).toContain("DESIGN-HTML ready:");
-		expect(p).toContain("does NOT wait for founder review");
 		// design does NOT get the default implement step (step 6 controls this)
 		expect(p).not.toContain("Create a feature branch");
 		// NOTE: the shared LEAD-REPORT-BACK / approve-gate contract still appears
 		// here (it lives inside the leadId block). Gating that per-phase is coupled
 		// to the orchestration flow (approve fires after QA, not at Design) →
-		// completed in Step 7 (workflow engine). Design's explicit "do NOT PR/ship"
-		// step overrides in the meantime, and shared_workflow is off by default.
-	});
-
-	it("Design phase: uses the human issue identifier when the canonical issue id is a UUID", async () => {
-		const p = await buildPrompt(
-			{
-				sessionRole: "design",
-				shareParentBranch: true,
-				issueIdentifier: "FLY-1404",
-			},
-			"71abbe4c-117d-475c-8adc-ce4d0dba9e84",
-		);
-
-		expect(p).toContain("doc/FLY-1404-<slug>/");
-		expect(p).toContain("issue: FLY-1404");
-		expect(p).not.toContain("doc/71abbe4c-117d-475c-8adc-ce4d0dba9e84-");
+		// completed in Step 7 (PhaseOrchestrator). Design's explicit "do NOT PR/ship"
+		// step overrides in the meantime, and three_stage is off by default.
 	});
 
 	it("Implement phase: reads committed design, does the PR", async () => {
@@ -175,9 +122,6 @@ describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 		expect(p).toContain("IMPLEMENT phase");
 		expect(p).toContain("committed design");
 		expect(p).toContain("create a GitHub PR");
-		expect(p).not.toContain("Founder design HTML (MANDATORY)");
-		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
-		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 
 	it("QA phase: writer on the shared branch, emits qa-result, does NOT open a second PR", async () => {
@@ -191,8 +135,6 @@ describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 		// PR-create / land block (no "create a GitHub PR", no landing signal).
 		expect(p).not.toContain("create a GitHub PR");
 		expect(p).not.toContain("Create a feature branch");
-		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
-		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 
 	it("byte-compat: no shareParentBranch → default single-session prompt", async () => {
@@ -200,15 +142,11 @@ describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 		expect(p).toContain("Create a feature branch");
 		expect(p).not.toContain("DESIGN phase");
 		expect(p).not.toContain("IMPLEMENT phase");
-		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
-		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 
 	it("shareParentBranch but sessionRole main → still default (not a phase)", async () => {
 		const p = await buildPrompt({ shareParentBranch: true });
 		expect(p).toContain("Create a feature branch");
 		expect(p).not.toContain("DESIGN phase");
-		expect(p).not.toContain("INTERACTIVE COMMENT LAYER");
-		expect(p).not.toContain("DIAGRAMS AND LANGUAGE");
 	});
 });

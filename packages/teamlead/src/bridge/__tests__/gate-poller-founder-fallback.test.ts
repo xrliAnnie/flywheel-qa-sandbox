@@ -1,10 +1,8 @@
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
 
 const OWNER = "123456789012345678";
 const GRACE = 10 * 60_000;
-const REPO_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
 
 function sqliteAgo(ms: number): string {
 	return new Date(Date.now() - ms)
@@ -21,15 +19,6 @@ interface FakeEvent {
 
 function makeStore(existingEvents: FakeEvent[] = []) {
 	const events: FakeEvent[] = [...existingEvents];
-	let founderReviewBinding:
-		| {
-				question_id: string;
-				message_id: string;
-				run_id: string;
-				artifact_digest: string;
-				created_at: string;
-		  }
-		| undefined;
 	const store = {
 		getChatThreadByIssue: vi.fn(() => ({
 			thread_id: "T1",
@@ -46,24 +35,6 @@ function makeStore(existingEvents: FakeEvent[] = []) {
 			});
 			return true;
 		}),
-		getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
-			run: { run_id: "run-1" },
-			node: { id: "produce" },
-			snapshot: {
-				manifest: { nodes: [{ id: "produce", founder_review: true }] },
-			},
-		})),
-		getFounderReviewCardBindingByQuestion: vi.fn(() => founderReviewBinding),
-		bindFounderReviewCard: vi.fn((input) => {
-			founderReviewBinding = {
-				question_id: input.questionId,
-				message_id: input.messageId,
-				run_id: input.runId,
-				artifact_digest: input.artifactDigest,
-				created_at: input.createdAt,
-			};
-			return { status: "inserted" as const };
-		}),
 	} as unknown as GatePollerConfig["store"];
 	return { store, events };
 }
@@ -76,7 +47,7 @@ const LEAD = {
 };
 
 const PROJECTS = [
-	{ projectName: "flywheel", projectRoot: REPO_ROOT, leads: [LEAD] },
+	{ projectName: "flywheel", leads: [LEAD] },
 ] as unknown as GatePollerConfig["projects"];
 
 function makeSession(over: Record<string, unknown> = {}) {
@@ -103,21 +74,6 @@ function makeQuestion(over: Record<string, unknown> = {}) {
 		content_ref: null,
 		...over,
 	};
-}
-
-function founderReviewQuestion(over: Record<string, unknown> = {}) {
-	return makeQuestion({
-		checkpoint: "founder_review",
-		content: JSON.stringify({
-			version: 1,
-			round: 1,
-			runId: "run-1",
-			artifactDigest: "a".repeat(64),
-			hostedUrl: "https://reports.example/prd",
-			paths: ["review.html"],
-		}),
-		...over,
-	});
 }
 
 function makePoller(
@@ -159,7 +115,14 @@ async function fallback(
 }
 
 describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
+	let envBak: string | undefined;
+	beforeEach(() => {
+		envBak = process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
+		delete process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
+	});
 	afterEach(() => {
+		if (envBak === undefined) delete process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
+		else process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY = envBak;
 		vi.restoreAllMocks();
 	});
 
@@ -188,98 +151,6 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 			makeQuestion({ checkpoint: "approve_to_ship" }),
 		);
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
-	});
-
-	it("holder-backed approve gate yields to the materializer while a legacy gate still posts", async () => {
-		const { store } = makeStore();
-		store.workflowGatePresentationDisposition = vi.fn((input) =>
-			input.questionId === "holder-q"
-				? { allow: true, reason: "holder_authoritative" }
-				: { allow: true, reason: "legacy" },
-		) as never;
-		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-		const poller = makePoller(
-			{ fetchImpl: fetchImpl as unknown as typeof fetch },
-			store,
-		);
-
-		await fallback(
-			poller,
-			makeSession(),
-			makeQuestion({
-				id: "holder-q",
-				checkpoint: "approve_to_ship",
-			}),
-		);
-		await fallback(
-			poller,
-			makeSession(),
-			makeQuestion({ id: "legacy-q", checkpoint: "approve_to_ship" }),
-		);
-
-		expect(fetchImpl).toHaveBeenCalledTimes(1);
-	});
-
-	it("founder_review becomes delivered only after the Discord card is immutably bound", async () => {
-		const { store, events } = makeStore();
-		const fetchImpl = vi.fn(
-			async () =>
-				new Response(JSON.stringify({ id: "card-1" }), {
-					status: 200,
-					headers: { "content-type": "application/json" },
-				}),
-		);
-		const poller = makePoller(
-			{ fetchImpl: fetchImpl as unknown as typeof fetch },
-			store,
-		);
-		await fallback(poller, makeSession(), founderReviewQuestion());
-		expect(store.bindFounderReviewCard).toHaveBeenCalledWith(
-			expect.objectContaining({
-				questionId: "q1",
-				messageId: "card-1",
-				runId: "run-1",
-				artifactDigest: "a".repeat(64),
-			}),
-		);
-		expect(
-			events.some((event) => event.event_id === "founder-thread-notify-q1"),
-		).toBe(true);
-	});
-
-	it("founder_review 2xx without a message id is not delivered or counted", async () => {
-		const { store, events } = makeStore();
-		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-		const poller = makePoller(
-			{ fetchImpl: fetchImpl as unknown as typeof fetch },
-			store,
-		);
-		await fallback(poller, makeSession(), founderReviewQuestion());
-		expect(store.bindFounderReviewCard).not.toHaveBeenCalled();
-		expect(
-			events.some((event) => event.event_id === "founder-thread-notify-q1"),
-		).toBe(false);
-	});
-
-	it("recovers the founder_review marker from an existing binding without reposting", async () => {
-		const { store, events } = makeStore();
-		store.getFounderReviewCardBindingByQuestion = vi.fn(() => ({
-			question_id: "q1",
-			message_id: "card-1",
-			run_id: "run-1",
-			artifact_digest: "a".repeat(64),
-			created_at: "2026-08-14T00:00:00.000Z",
-		})) as never;
-		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-		const poller = makePoller(
-			{ fetchImpl: fetchImpl as unknown as typeof fetch },
-			store,
-		);
-		await fallback(poller, makeSession(), founderReviewQuestion());
-		expect(fetchImpl).not.toHaveBeenCalled();
-		expect(
-			events.some((event) => event.event_id === "founder-thread-notify-q1"),
-		).toBe(true);
 	});
 
 	it("FLY-1238: MERGED approve gate is silent and gets no durable done marker", async () => {
@@ -409,7 +280,7 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		// The founder was not pinged → alert-channel escalation fired.
 		expect(alert).toHaveBeenCalledTimes(1);
 		expect((alert.mock.calls[0]?.[0] as { eventType: string }).eventType).toBe(
-			"founder_gate_delivery_failed",
+			"founder_milestone_undelivered",
 		);
 		// Terminal marker still written (a 4xx won't fix itself).
 		expect(events.some((e) => e.event_id === "founder-thread-notify-q1")).toBe(
@@ -460,7 +331,7 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
-	it("chatThreadsEnabled=false / missing owner → never triggers", async () => {
+	it("chatThreadsEnabled=false / env=0 / missing owner → never triggers", async () => {
 		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
 		await fallback(
 			makePoller({
@@ -470,6 +341,13 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 			makeSession(),
 			makeQuestion(),
 		);
+		process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY = "0";
+		await fallback(
+			makePoller({ fetchImpl: fetchImpl as unknown as typeof fetch }),
+			makeSession(),
+			makeQuestion(),
+		);
+		delete process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
 		await fallback(
 			makePoller({
 				discordOwnerUserId: undefined,
@@ -497,6 +375,8 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 
 describe("FLY-1041 Chunk 6: ship-gate card promotion (15s grace)", () => {
 	afterEach(() => {
+		delete process.env.FLYWHEEL_SHIP_GATE_CARD;
+		delete process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS;
 		vi.restoreAllMocks();
 	});
 
@@ -529,11 +409,28 @@ describe("FLY-1041 Chunk 6: ship-gate card promotion (15s grace)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
-	it("keeps the explicit card-grace test seam", async () => {
+	it("FLYWHEEL_SHIP_GATE_CARD=0 → ship gate 30s old NOT posted (byte-compat 10min sentinel)", async () => {
+		process.env.FLYWHEEL_SHIP_GATE_CARD = "0";
 		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
 		const poller = makePoller({
 			fetchImpl: fetchImpl as unknown as typeof fetch,
-			shipGateCardGraceMs: 60_000,
+		});
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({
+				checkpoint: "approve_to_ship",
+				created_at: sqliteAgo(30_000),
+			}),
+		);
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
+	it("FLYWHEEL_SHIP_GATE_CARD_GRACE_MS env override wins over the default", async () => {
+		process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS = "60000";
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller({
+			fetchImpl: fetchImpl as unknown as typeof fetch,
 		});
 		await fallback(
 			poller,

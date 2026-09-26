@@ -28,7 +28,7 @@ describe("parseRunnerLabels", () => {
 	it("model labels infer agent type", () => {
 		expect(parseRunnerLabels(["opus"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5",
+			modelOverride: "opus",
 		});
 		expect(parseRunnerLabels(["gpt-5.5-codex"])).toEqual({
 			runnerType: "codex",
@@ -141,18 +141,19 @@ describe("parseRunnerLabels", () => {
 		expect(kimi.modelOverride).toBeUndefined();
 	});
 
-	it("canonicalizes every configured Claude family alias", () => {
+	it("fable does not perturb existing model labels", () => {
+		// Regression guard: opus/sonnet/haiku resolve exactly as before.
 		expect(parseRunnerLabels(["opus"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5",
+			modelOverride: "opus",
 		});
 		expect(parseRunnerLabels(["sonnet"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-sonnet-5",
+			modelOverride: "sonnet",
 		});
 		expect(parseRunnerLabels(["haiku"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-haiku-4-5-20251001",
+			modelOverride: "haiku",
 		});
 	});
 
@@ -161,7 +162,7 @@ describe("parseRunnerLabels", () => {
 	it("resolves opus-1m / fable-1m labels to the [1m] ids (Claude runner)", () => {
 		expect(parseRunnerLabels(["opus-1m"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5[1m]",
+			modelOverride: "claude-opus-4-8[1m]",
 		});
 		expect(parseRunnerLabels(["FABLE-1M"])).toEqual({
 			runnerType: "claude",
@@ -172,7 +173,7 @@ describe("parseRunnerLabels", () => {
 	it("1m label wins over the bare alias when both are present", () => {
 		expect(parseRunnerLabels(["opus", "opus-1m"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-opus-5[1m]",
+			modelOverride: "claude-opus-4-8[1m]",
 		});
 		expect(parseRunnerLabels(["fable-1m", "fable"])).toEqual({
 			runnerType: "claude",

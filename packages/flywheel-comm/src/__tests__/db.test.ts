@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CommDB, UNREAD_INSTRUCTIONS_SQL } from "../db.js";
+import { CommDB } from "../db.js";
 
 describe("CommDB", () => {
 	let db: CommDB;
@@ -64,23 +64,6 @@ describe("CommDB", () => {
 		});
 	});
 
-	describe("event ACK receipts", () => {
-		it("stores one consumable backend-neutral receipt without exposing token fields", () => {
-			const id = db.insertAckReceipt("test-lead", 42, "secret-token");
-			expect(db.getPendingAckReceipts()).toMatchObject([
-				{
-					id,
-					from_agent: "test-lead",
-					type: "ack_receipt",
-					content: JSON.stringify({ event_seq: 42, ack_token: "secret-token" }),
-				},
-			]);
-			expect(db.markAckReceiptConsumed(id)).toBe(true);
-			expect(db.getPendingAckReceipts()).toEqual([]);
-			expect(db.markAckReceiptConsumed(id)).toBe(false);
-		});
-	});
-
 	describe("pending questions", () => {
 		it("should list unanswered questions for a lead", () => {
 			const q1 = db.insertQuestion("runner-1", "product-lead", "Q1?");
@@ -105,90 +88,21 @@ describe("CommDB", () => {
 	});
 
 	describe("expiry", () => {
-		it("protects an expired unanswered question by default, including on reopen", () => {
-			const dbPath = join(tmpDir, "comm.db");
-			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?", {
-				checkpoint: "approve_to_ship",
-			});
+		it("should purge expired messages", () => {
+			// Insert a question, then manually set expires_at to past
+			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?");
+			// Access internal db to force expire
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 				)
 				.run(qId);
 
-			expect(db.purgeExpired()).toBe(0);
-			expect(db.isQuestionPending(qId)).toBe(true);
-			expect(db.getPendingQuestions("product-lead").map((q) => q.id)).toEqual([
-				qId,
-			]);
+			const purged = db.purgeExpired();
+			expect(purged).toBe(1);
 
-			db.close();
-			db = new CommDB(dbPath);
-			expect(db.getMessageById(qId)?.relay_state).not.toBe("terminal_disposed");
-			expect(db.isQuestionPending(qId)).toBe(true);
-		});
-
-		it("purges an expired question only after an explicit terminal disposition", () => {
-			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?", {
-				checkpoint: "approve_to_ship",
-			});
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
-				)
-				.run(qId);
-
-			expect(db.markQuestionTerminalDisposed(qId)).toBe(true);
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
-				)
-				.run(qId);
-			expect(db.purgeExpired()).toBe(1);
-			expect(db.getMessageById(qId)).toBeUndefined();
-		});
-
-		it("keeps an expired protected gate answerable and disposes it with the response", () => {
-			const qId = db.insertQuestion("runner-1", "product-lead", "Ship?", {
-				checkpoint: "approve_to_ship",
-			});
-			expect(db.markQuestionProtected(qId, "lead-event-1")).toBe(true);
-			expect(db.getMessageById(qId)).toMatchObject({
-				relay_state: "protected",
-				logical_event_id: "lead-event-1",
-			});
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
-				)
-				.run(qId);
-
-			expect(
-				db.insertResponseIfGateOpen({
-					questionId: qId,
-					fromAgent: "product-lead",
-					content: "approved",
-					expectedOwner: "runner-1",
-					expectedCheckpoint: "approve_to_ship",
-				}),
-			).toBe(true);
-			expect(db.getResponse(qId)?.content).toBe("approved");
-			expect(db.getMessageById(qId)?.relay_state).toBe("terminal_disposed");
-			expect(db.isQuestionPending(qId)).toBe(false);
-		});
-
-		it("does not let read-message hygiene delete an unanswered action row", () => {
-			const qId = db.insertQuestion("runner-1", "product-lead", "Still open?");
-			(db as any).db
-				.prepare(
-					`UPDATE mailbox SET state = 'ACKED',
-					 acked_at = datetime('now', '-96 hours'),
-					 created_at = datetime('now', '-96 hours') WHERE id = ?`,
-				)
-				.run(qId);
-
-			expect(db.cleanupReadMessages()).toBe(0);
-			expect(db.isQuestionPending(qId)).toBe(true);
+			// Should not appear in pending
+			expect(db.getPendingQuestions("product-lead")).toHaveLength(0);
 		});
 	});
 
@@ -218,7 +132,7 @@ describe("CommDB", () => {
 	});
 
 	describe("schema migration", () => {
-		it("should expose read_at through the mailbox compatibility projection on reopen", () => {
+		it("should add read_at column to existing database on reopen", () => {
 			const dbPath = join(tmpDir, "migrate.db");
 			const db1 = new CommDB(dbPath);
 			const qId = db1.insertQuestion("runner-1", "lead", "Q?");
@@ -227,7 +141,7 @@ describe("CommDB", () => {
 			// Reopen — migration should run
 			const db2 = new CommDB(dbPath);
 			const columns = (db2 as any).db
-				.prepare("PRAGMA table_info(mailbox_message_projection)")
+				.prepare("PRAGMA table_info(messages)")
 				.all() as Array<{ name: string }>;
 			expect(columns.some((c: { name: string }) => c.name === "read_at")).toBe(
 				true,
@@ -247,45 +161,6 @@ describe("CommDB", () => {
 			expect(tables.some((t: { name: string }) => t.name === "sessions")).toBe(
 				true,
 			);
-		});
-
-		it("keeps durable relay protection columns on mailbox idempotently", () => {
-			const dbPath = join(tmpDir, "relay-migrate.db");
-			const first = new CommDB(dbPath);
-			first.close();
-			const second = new CommDB(dbPath);
-			const columns = (second as any).db
-				.prepare("PRAGMA table_info(mailbox)")
-				.all() as Array<{ name: string }>;
-			expect(columns.map((column) => column.name)).toEqual(
-				expect.arrayContaining(["relay_state", "source_ref"]),
-			);
-			second.close();
-		});
-
-		it("rejects an unmigrated legacy message table", () => {
-			const dbPath = join(tmpDir, "legacy-message-types.db");
-			const legacy = new Database(dbPath);
-			legacy.exec(`
-				CREATE TABLE messages (
-				  id TEXT PRIMARY KEY,
-				  from_agent TEXT NOT NULL,
-				  to_agent TEXT NOT NULL,
-				  type TEXT NOT NULL CHECK(type IN ('question','response','instruction','progress')),
-				  content TEXT NOT NULL,
-				  parent_id TEXT,
-				  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-				  expires_at DATETIME NOT NULL DEFAULT (datetime('now', '+72 hours')),
-				  FOREIGN KEY (parent_id) REFERENCES messages(id)
-				);
-				INSERT INTO messages (id, from_agent, to_agent, type, content)
-				VALUES ('legacy-q', 'runner', 'lead', 'question', 'old question');
-				INSERT INTO messages (id, from_agent, to_agent, type, content, parent_id)
-				VALUES ('legacy-r', 'lead', 'runner', 'response', 'old response', 'legacy-q');
-			`);
-			legacy.close();
-
-			expect(() => new CommDB(dbPath)).toThrow(/FLY-1572 mailbox migration/);
 		});
 	});
 
@@ -376,7 +251,7 @@ describe("CommDB", () => {
 			const raw = new Database(join(tmpDir, "comm.db"));
 			raw
 				.prepare(
-					`UPDATE mailbox SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '-' || ? || ' seconds')
+					`UPDATE messages SET created_at = datetime('now', '-' || ? || ' seconds')
 					 WHERE from_agent = ?`,
 				)
 				.run(seconds, execId);
@@ -424,113 +299,7 @@ describe("CommDB", () => {
 		});
 	});
 
-	describe("countMessagesFrom", () => {
-		it("returns an identity-bound activity cursor across message types", () => {
-			expect(db.countMessagesFrom("exec-cursor")).toBe(0);
-			const qId = db.insertQuestion("exec-cursor", "sub-lead", "Q?");
-			expect(db.countMessagesFrom("exec-cursor")).toBe(1);
-			db.insertResponse(qId, "sub-lead", "A");
-			expect(db.countMessagesFrom("exec-cursor")).toBe(1);
-			const inbound = db.insertQuestion("sub-lead", "exec-cursor", "reply?");
-			db.insertResponse(inbound, "exec-cursor", "receipt");
-			expect(db.countMessagesFrom("exec-cursor")).toBe(2);
-		});
-	});
-
 	describe("session CRUD", () => {
-		it("FLY-1066: migrates the blocked-era sessions schema and persists failed", () => {
-			const legacyPath = join(tmpDir, "fly1066-legacy.db");
-			new CommDB(legacyPath).close();
-			const legacy = new Database(legacyPath);
-			legacy.exec(`
-				DROP TABLE sessions;
-				CREATE TABLE sessions (
-					execution_id TEXT PRIMARY KEY,
-					tmux_window TEXT NOT NULL,
-					project_name TEXT NOT NULL,
-					issue_id TEXT,
-					lead_id TEXT,
-					started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-					ended_at DATETIME,
-					status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked')),
-					vendor TEXT
-				);
-				CREATE INDEX idx_sessions_project ON sessions(project_name);
-				CREATE INDEX idx_sessions_status ON sessions(status);
-				INSERT INTO sessions (
-					execution_id, tmux_window, project_name, issue_id, lead_id,
-					started_at, ended_at, status, vendor
-				) VALUES (
-					'exec-failed', '@7', 'flywheel', 'FLY-1066', 'flywheel-eng-lead',
-					'2026-07-16 10:00:00', NULL, 'running', 'codex'
-				);
-			`);
-			legacy.close();
-
-			const migrated = new CommDB(legacyPath);
-			migrated.markSessionTerminalStatus("exec-failed", "failed");
-
-			expect(migrated.getSession("exec-failed")).toMatchObject({
-				tmux_window: "@7",
-				project_name: "flywheel",
-				issue_id: "FLY-1066",
-				lead_id: "flywheel-eng-lead",
-				status: "failed",
-				vendor: "codex",
-				phase_keep_alive: 0,
-			});
-			migrated.close();
-
-			const raw = new Database(legacyPath, { readonly: true });
-			const schema = raw
-				.prepare(
-					"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'",
-				)
-				.get() as { sql: string };
-			expect(schema.sql).toContain("'failed'");
-			expect(schema.sql).toContain("phase_keep_alive");
-			expect(
-				raw
-					.prepare(
-						"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'sessions' ORDER BY name",
-					)
-					.all(),
-			).toEqual(
-				expect.arrayContaining([
-					{ name: "idx_sessions_project" },
-					{ name: "idx_sessions_status" },
-				]),
-			);
-			raw.close();
-		});
-
-		it("FLY-1279: migrates legacy session status constraints and persists blocked", () => {
-			const legacyPath = join(tmpDir, "legacy.db");
-			new CommDB(legacyPath).close();
-			const legacy = new Database(legacyPath);
-			legacy.exec(`
-				DROP TABLE sessions;
-				CREATE TABLE sessions (
-					execution_id TEXT PRIMARY KEY,
-					tmux_window TEXT NOT NULL,
-					project_name TEXT NOT NULL,
-					issue_id TEXT,
-					lead_id TEXT,
-					started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-					ended_at DATETIME,
-					status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout')),
-					vendor TEXT
-				);
-			`);
-			legacy.close();
-
-			const migrated = new CommDB(legacyPath);
-			migrated.registerSession("exec-blocked", "@7", "flywheel", "FLY-1279");
-			migrated.updateSessionStatus("exec-blocked", "blocked");
-			expect(migrated.getSession("exec-blocked")?.status).toBe("blocked");
-			migrated.close();
-		});
-
 		it("should register and retrieve a session", () => {
 			db.registerSession(
 				"exec-1",
@@ -548,19 +317,6 @@ describe("CommDB", () => {
 			expect(session!.lead_id).toBe("product-lead");
 			expect(session!.status).toBe("running");
 			expect(session!.ended_at).toBeNull();
-		});
-
-		it("updates only the tmux target without replacing session lifecycle metadata", () => {
-			db.registerSession("exec-1", "flywheel:FLY-1269", "flywheel", "FLY-1269");
-			db.updateSessionStatus("exec-1", "completed");
-			const before = db.getSession("exec-1");
-
-			db.updateSessionTmuxWindow("exec-1", "flywheel:@7");
-
-			const after = db.getSession("exec-1");
-			expect(after?.tmux_window).toBe("flywheel:@7");
-			expect(after?.status).toBe("completed");
-			expect(after?.ended_at).toBe(before?.ended_at);
 		});
 
 		it("should list active sessions", () => {
@@ -583,70 +339,6 @@ describe("CommDB", () => {
 
 			// No longer active
 			expect(db.getActiveSessions()).toHaveLength(0);
-		});
-
-		describe("FLY-1066 terminal status ordering", () => {
-			it("adapter completion before authoritative mark converges to the mark", () => {
-				db.registerSession("exec-1", "@42", "flywheel");
-				db.updateSessionStatusIfRunning("exec-1", "completed");
-				db.markSessionTerminalStatus("exec-1", "failed");
-
-				expect(db.getSession("exec-1")?.status).toBe("failed");
-			});
-
-			it("adapter completion after authoritative mark cannot overwrite it", () => {
-				db.registerSession("exec-1", "@42", "flywheel");
-				db.markSessionTerminalStatus("exec-1", "blocked");
-				db.updateSessionStatusIfRunning("exec-1", "timeout");
-
-				expect(db.getSession("exec-1")?.status).toBe("blocked");
-			});
-
-			it("duplicate authoritative marks preserve the first terminal timestamp", () => {
-				db.registerSession("exec-1", "@42", "flywheel");
-				(db as unknown as { db: Database.Database }).db
-					.prepare(
-						"UPDATE sessions SET ended_at = '2026-07-16 10:00:00' WHERE execution_id = ?",
-					)
-					.run("exec-1");
-
-				db.markSessionTerminalStatus("exec-1", "failed");
-				db.markSessionTerminalStatus("exec-1", "blocked");
-
-				expect(db.getSession("exec-1")).toMatchObject({
-					status: "blocked",
-					ended_at: "2026-07-16 10:00:00",
-				});
-			});
-
-			it("late self-registration updates routing metadata without reviving a terminal row", () => {
-				db.registerSession(
-					"exec-1",
-					"runner-flywheel:pending",
-					"flywheel",
-					"FLY-1066",
-					"flywheel-eng-lead",
-					"codex",
-				);
-				db.markSessionTerminalStatus("exec-1", "failed");
-				const endedAt = db.getSession("exec-1")?.ended_at;
-
-				db.registerSession(
-					"exec-1",
-					"runner-flywheel:@7",
-					"flywheel",
-					"FLY-1066",
-					"flywheel-eng-lead",
-					"codex",
-				);
-
-				expect(db.getSession("exec-1")).toMatchObject({
-					tmux_window: "runner-flywheel:@7",
-					status: "failed",
-					ended_at: endedAt,
-					vendor: "codex",
-				});
-			});
 		});
 
 		// FLY-638: deleteSession
@@ -679,7 +371,7 @@ describe("CommDB", () => {
 
 		// FLY-229: parked-alive detection helpers
 		describe("getRecentTerminalSessions / countTerminalSessions", () => {
-			it("returns every terminal row for the project (not running)", () => {
+			it("returns only completed/timeout rows for the project (not running)", () => {
 				db.registerSession(
 					"run-1",
 					"@1",
@@ -696,20 +388,6 @@ describe("CommDB", () => {
 				);
 				db.registerSession("to-1", "@3", "geoforge3d", "GEO-3", "product-lead");
 				db.registerSession(
-					"failed-1",
-					"@5",
-					"geoforge3d",
-					"GEO-5",
-					"product-lead",
-				);
-				db.registerSession(
-					"blocked-1",
-					"@6",
-					"geoforge3d",
-					"GEO-6",
-					"product-lead",
-				);
-				db.registerSession(
 					"other-1",
 					"@4",
 					"other-proj",
@@ -718,18 +396,14 @@ describe("CommDB", () => {
 				);
 				db.updateSessionStatus("done-1", "completed");
 				db.updateSessionStatus("to-1", "timeout");
-				db.markSessionTerminalStatus("failed-1", "failed");
-				db.markSessionTerminalStatus("blocked-1", "blocked");
 				db.updateSessionStatus("other-1", "completed");
 
 				const rows = db.getRecentTerminalSessions("geoforge3d", undefined, 50);
 				expect(rows.map((r) => r.execution_id).sort()).toEqual([
-					"blocked-1",
 					"done-1",
-					"failed-1",
 					"to-1",
 				]);
-				expect(db.countTerminalSessions("geoforge3d")).toBe(4);
+				expect(db.countTerminalSessions("geoforge3d")).toBe(2);
 			});
 
 			it("Lead-scopes in SQL (lead_id = leadId OR NULL) BEFORE limit", () => {
@@ -778,17 +452,17 @@ describe("CommDB", () => {
 	});
 
 	describe("cleanupReadMessages", () => {
-		it("should archive ACKED messages after the 72-hour retention floor", () => {
+		it("should delete read messages older than TTL", () => {
 			const instId = db.insertInstruction(
 				"product-lead",
 				"exec-123",
 				"Old instruction",
 			);
 			db.markInstructionRead(instId);
-			// Terminal retention is measured from acked_at, not creation time.
+			// Backdate created_at to 25 hours ago
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
+					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
 				)
 				.run(instId);
 
@@ -796,7 +470,7 @@ describe("CommDB", () => {
 			expect(cleaned).toBe(1);
 		});
 
-		it("should NOT archive ACKED messages within the retention window", () => {
+		it("should NOT delete read messages within TTL window", () => {
 			const instId = db.insertInstruction(
 				"product-lead",
 				"exec-123",
@@ -818,7 +492,7 @@ describe("CommDB", () => {
 			// Backdate but do NOT mark as read
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET created_at = datetime('now', '-96 hours') WHERE id = ?",
+					"UPDATE messages SET created_at = datetime('now', '-48 hours') WHERE id = ?",
 				)
 				.run(instId);
 
@@ -830,7 +504,7 @@ describe("CommDB", () => {
 			expect(unread).toHaveLength(1);
 		});
 
-		it("should use the 72-hour retention floor when no argument is provided", () => {
+		it("should use 24h default TTL when no argument provided", () => {
 			const instId = db.insertInstruction(
 				"product-lead",
 				"exec-123",
@@ -839,7 +513,7 @@ describe("CommDB", () => {
 			db.markInstructionRead(instId);
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours') WHERE id = ?",
+					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
 				)
 				.run(instId);
 
@@ -851,10 +525,10 @@ describe("CommDB", () => {
 			const qId = db.insertQuestion("runner-1", "product-lead", "Q?");
 			db.insertResponse(qId, "product-lead", "A");
 
-			// Mark the whole family terminal and past the retention floor.
+			// Mark both as read and backdate
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET state = 'ACKED', acked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-73 hours')",
+					"UPDATE messages SET read_at = datetime('now', '-25 hours'), created_at = datetime('now', '-25 hours')",
 				)
 				.run();
 
@@ -899,36 +573,223 @@ describe("CommDB", () => {
 		});
 	});
 
-	describe("instruction pull path", () => {
-		it("hides DEAD messages", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "dead pull");
+	// ── FLY-109: push-path helpers (delivered_at + ack semantics) ──
+
+	describe("FLY-109 push-path helpers", () => {
+		it("should add delivered_at column via migration", () => {
+			const dbPath = join(tmpDir, "delivered-migrate.db");
+			const db1 = new CommDB(dbPath);
+			db1.close();
+
+			const db2 = new CommDB(dbPath);
+			const columns = (db2 as any).db
+				.prepare("PRAGMA table_info(messages)")
+				.all() as Array<{ name: string }>;
+			expect(
+				columns.some((c: { name: string }) => c.name === "delivered_at"),
+			).toBe(true);
+			db2.close();
+		});
+
+		it("should be idempotent when migration runs multiple times", () => {
+			const dbPath = join(tmpDir, "delivered-idempotent.db");
+			const db1 = new CommDB(dbPath);
+			db1.close();
+			const db2 = new CommDB(dbPath);
+			db2.close();
+			// Third open should not throw
+			expect(() => {
+				const db3 = new CommDB(dbPath);
+				db3.close();
+			}).not.toThrow();
+		});
+
+		it("migration re-apply is race-safe against duplicate delivered_at ADD COLUMN", () => {
+			// Regression for the race Codex flagged in Round 1: two inbox-mcp
+			// openers of the same old-schema DB both see delivered_at missing,
+			// both issue ADD COLUMN, one wins and the loser used to crash with
+			// "duplicate column name". The catch in applyMigrations must swallow
+			// it. We simulate the precondition by forcing the column-missing
+			// branch to run on an opener that already has the column.
+			const dbPath = join(tmpDir, "delivered-race.db");
+
+			const first = new CommDB(dbPath);
+			first.close();
+
+			// Second opener: force re-run of applyMigrations; the column is
+			// already present, so the PRAGMA guard skips it. Then force the
+			// ALTER path anyway via explicit invocation — should not throw.
+			const racer = new CommDB(dbPath);
+			expect(() => {
+				(racer as any).db.prepare("PRAGMA table_info(messages)").all();
+				// Directly re-run the guarded ALTER: this is the exact statement
+				// applyMigrations runs; with the FLY-109 try/catch, the duplicate
+				// error from ADD COLUMN on an already-migrated DB must be swallowed.
+				try {
+					(racer as any).db.exec(
+						"ALTER TABLE messages ADD COLUMN delivered_at DATETIME",
+					);
+				} catch (err) {
+					const msg = (err as Error).message ?? "";
+					if (!/duplicate column name: delivered_at/i.test(msg)) {
+						throw err;
+					}
+				}
+			}).not.toThrow();
+			racer.close();
+		});
+
+		it("getPendingPushInstructions returns undelivered instructions", () => {
+			const id1 = db.insertInstruction("bridge", "lead-1", "msg 1");
+			db.insertInstruction("bridge", "lead-1", "msg 2");
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(2);
+			expect(pending[0]!.id).toBe(id1);
+			expect(pending[0]!.delivered_at).toBeNull();
+		});
+
+		it("getPendingPushInstructions hides delivered messages within retry window", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(0);
+		});
+
+		it("getPendingPushInstructions re-surfaces messages after retry window", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "stale");
+			db.markInstructionDelivered(id);
+			// Backdate delivered_at 60s ago
 			(db as any).db
 				.prepare(
-					`UPDATE mailbox
-					 SET state = 'DEAD', dead_at = datetime('now'),
-					     dead_reason = 'lease_expired_unacked'
-					 WHERE id = ?`,
+					"UPDATE messages SET delivered_at = datetime('now', '-60 seconds') WHERE id = ?",
 				)
 				.run(id);
 
-			expect(db.getUnreadInstructions("test-lead")).toHaveLength(0);
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(1);
+			expect(pending[0]!.id).toBe(id);
+			expect(pending[0]!.delivered_at).not.toBeNull();
 		});
 
-		it("hides messages after markInstructionRead", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "cli path");
+		it("getPendingPushInstructions hides acked messages regardless of retry window", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "acked");
+			db.markInstructionDelivered(id);
+			db.ackInstructionRead(id);
+			// Backdate delivered_at far past retry window
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET delivered_at = datetime('now', '-600 seconds') WHERE id = ?",
+				)
+				.run(id);
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(0);
+		});
+
+		it("markInstructionDelivered sets delivered_at to now", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+
+			const row = (db as any).db
+				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.get(id) as { delivered_at: string | null };
+			expect(row.delivered_at).not.toBeNull();
+		});
+
+		it("markInstructionDelivered is idempotent — refreshes delivered_at on repeat", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+			// Backdate delivered_at
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET delivered_at = datetime('now', '-60 seconds') WHERE id = ?",
+				)
+				.run(id);
+			const before = (db as any).db
+				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.get(id) as { delivered_at: string };
+
+			// Re-deliver
+			db.markInstructionDelivered(id);
+			const after = (db as any).db
+				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.get(id) as { delivered_at: string };
+			expect(after.delivered_at > before.delivered_at).toBe(true);
+		});
+
+		it("ackInstructionRead sets read_at", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+			db.ackInstructionRead(id);
+
+			const row = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(id) as { read_at: string | null };
+			expect(row.read_at).not.toBeNull();
+		});
+
+		it("ackInstructionRead is idempotent — preserves original read_at on repeat", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+			db.ackInstructionRead(id);
+
+			const first = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(id) as { read_at: string };
+
+			db.ackInstructionRead(id);
+
+			const second = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(id) as { read_at: string };
+			expect(second.read_at).toBe(first.read_at);
+		});
+
+		it("ackInstructionRead is a no-op for unknown id (no throw)", () => {
+			expect(() => db.ackInstructionRead("nonexistent-id")).not.toThrow();
+		});
+
+		it("does NOT change getUnreadInstructions semantics — CLI pull path unaffected by delivered_at", () => {
+			// Instruction marked delivered but NOT acked — CLI pull should still see it
+			const id = db.insertInstruction(
+				"bridge",
+				"lead-1",
+				"delivered not acked",
+			);
+			db.markInstructionDelivered(id);
+
+			const unread = db.getUnreadInstructions("lead-1");
+			expect(unread).toHaveLength(1);
+			expect(unread[0]!.id).toBe(id);
+		});
+
+		it("markInstructionRead (CLI pull path) still hides from getUnreadInstructions", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "cli path");
 			db.markInstructionRead(id);
 
-			expect(db.getUnreadInstructions("test-lead")).toHaveLength(0);
+			expect(db.getUnreadInstructions("lead-1")).toHaveLength(0);
 		});
 
-		it("uses mailbox_live for the production query", () => {
-			const plan = (db as any).db
-				.prepare(`EXPLAIN QUERY PLAN ${UNREAD_INSTRUCTIONS_SQL}`)
-				.all("test-lead") as Array<{ detail: string }>;
+		it("getPendingPushInstructions filters out expired instructions", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "expired");
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				)
+				.run(id);
 
-			expect(plan[0]?.detail).toContain(
-				"SEARCH m USING INDEX mailbox_live (to_agent=?)",
-			);
+			expect(db.getPendingPushInstructions("lead-1", 30)).toHaveLength(0);
+		});
+
+		it("getPendingPushInstructions returns FIFO by created_at", () => {
+			const id1 = db.insertInstruction("bridge", "lead-1", "first");
+			const id2 = db.insertInstruction("bridge", "lead-1", "second");
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending[0]!.id).toBe(id1);
+			expect(pending[1]!.id).toBe(id2);
 		});
 	});
 
@@ -986,35 +847,6 @@ describe("CommDB", () => {
 			expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
 				unrelated,
 			]);
-			const settled = (db as any).db
-				.prepare("SELECT state, delivered_at FROM mailbox WHERE id = ?")
-				.get(bound) as { state: string; delivered_at: string | null };
-			expect(settled).toMatchObject({ state: "ACKED" });
-			expect(settled.delivered_at).not.toBeNull();
-		});
-
-		it("preserves an earlier delivery stamp when a bound send is queued", () => {
-			const bound = db.insertInstruction("lead", "exec-1", "already emitted");
-			const earlier = "2026-08-20T01:02:03.004Z";
-			(db as any).db
-				.prepare("UPDATE mailbox SET delivered_at = ? WHERE id = ?")
-				.run(earlier, bound);
-
-			db.enqueueRunnerPhaseWake(
-				"exec-1",
-				{
-					id: "vendor-send-preserve",
-					to: "runner-agent",
-					content: "already emitted",
-					metadata: { flywheelId: bound, execId: "exec-1" },
-				},
-				2_001,
-			);
-
-			const settled = (db as any).db
-				.prepare("SELECT state, delivered_at FROM mailbox WHERE id = ?")
-				.get(bound) as { state: string; delivered_at: string | null };
-			expect(settled).toEqual({ state: "ACKED", delivered_at: earlier });
 		});
 
 		it("dedupes different vendor ids bound to the same instruction source", () => {
@@ -1096,7 +928,7 @@ describe("CommDB", () => {
 			).toThrow();
 			expect(db.listRunnerPhaseWakes("exec-1")).toEqual([]);
 			const row = (db as any).db
-				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
 				.get(instructionId) as { read_at: string | null } | undefined;
 			expect(row?.read_at ?? null).toBeNull();
 		});
@@ -1123,14 +955,15 @@ describe("CommDB", () => {
 			});
 		});
 
-		it("readonly fails closed on a database without the mailbox generation", () => {
+		it("readonly missing phase table is empty while other database errors throw", () => {
 			const legacyPath = join(tmpDir, "legacy-readonly.db");
 			const legacy = new Database(legacyPath);
 			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
 			legacy.close();
-			expect(() => CommDB.openReadonly(legacyPath)).toThrow(
-				/FLY-1572 mailbox migration/,
-			);
+			const readonly = CommDB.openReadonly(legacyPath);
+			expect(readonly.listRunnerPhaseWakes("exec-1")).toEqual([]);
+			readonly.close();
+			expect(() => readonly.listRunnerPhaseWakes("exec-1")).toThrow();
 		});
 
 		it("uses idempotent request-bound shutdown CAS", () => {
@@ -1179,14 +1012,15 @@ describe("CommDB", () => {
 			});
 		});
 
-		it("readonly shutdown lookup fails closed without the mailbox generation", () => {
+		it("readonly missing shutdown table returns null", () => {
 			const legacyPath = join(tmpDir, "legacy-shutdown-readonly.db");
 			const legacy = new Database(legacyPath);
 			legacy.exec("CREATE TABLE legacy_only (id TEXT PRIMARY KEY)");
 			legacy.close();
-			expect(() => CommDB.openReadonly(legacyPath)).toThrow(
-				/FLY-1572 mailbox migration/,
-			);
+			const readonly = CommDB.openReadonly(legacyPath);
+			expect(readonly.getRunnerShutdown("exec-1")).toBeNull();
+			readonly.close();
+			expect(() => readonly.getRunnerShutdown("exec-1")).toThrow();
 		});
 
 		it("atomically deletes phase rows, shutdown control, and the session", () => {
@@ -1220,7 +1054,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 		const m = db.getMessageById(id);
 		expect(m).toBeDefined();
 		// default +72h → well beyond 1h from now
-		expect(new Date(m?.expires_at ?? "").getTime()).toBeGreaterThan(
+		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
 			Date.now() + 60 * 60 * 1000,
 		);
 	});
@@ -1231,7 +1065,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 			ttlSeconds: 120,
 		});
 		const m = db.getMessageById(id);
-		const exp = new Date(m?.expires_at ?? "").getTime();
+		const exp = new Date(`${m?.expires_at}Z`).getTime();
 		// ~2 minutes out, definitely under 1h
 		expect(exp).toBeLessThan(Date.now() + 60 * 60 * 1000);
 		expect(exp).toBeGreaterThan(Date.now());
@@ -1240,7 +1074,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 	it("a non-positive ttlSeconds falls back to the default", () => {
 		const id = db.insertQuestion("lead", "founder", "q", { ttlSeconds: 0 });
 		const m = db.getMessageById(id);
-		expect(new Date(m?.expires_at ?? "").getTime()).toBeGreaterThan(
+		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
 			Date.now() + 60 * 60 * 1000,
 		);
 	});
@@ -1325,7 +1159,7 @@ describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => 
 		// suite above) — the `expires_at > now` guard must reject the claim.
 		(db as unknown as { db: import("better-sqlite3").Database }).db
 			.prepare(
-				"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 			)
 			.run(id);
 		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(

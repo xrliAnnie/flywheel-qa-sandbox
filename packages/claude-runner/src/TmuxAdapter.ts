@@ -1,4 +1,4 @@
-import { execFile as execFileCallback, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
@@ -6,8 +6,6 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
-	realpathSync,
-	unlinkSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
@@ -15,24 +13,15 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import {
-	buildNonLeadClaudeSettings,
-	PONYTAIL_PLUGIN,
-	resolveAllowedCanonicalModel,
-	resolveAllowedEffort,
-	resolveCommBackend,
-} from "flywheel-config";
+import { PONYTAIL_PLUGIN, resolveCommBackend } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
 	AdapterHealthCheck,
 	IAdapter,
 	IHookCallbackServer,
-	LaunchPrecommitFailure,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
-import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
-import { pretrustClaudeWorkspace } from "./workspace-trust.js";
 
 /**
  * FLY-494: optional per-call exec options.
@@ -55,243 +44,6 @@ export type ExecFileFn = (
 	args: string[],
 	opts?: ExecFileOpts,
 ) => { stdout: string };
-
-export type AsyncExecFileFn = (
-	cmd: string,
-	args: string[],
-	opts?: ExecFileOpts,
-) => Promise<{ stdout: string; stderr: string }>;
-
-/** FLY-1999: OS/tmux coordinates a runner pane may inherit. Every launch adds
- * only its own explicit `new-window -e` names to this positive set. */
-export const RUNNER_PANE_BASE_ALLOWLIST = [
-	"PATH",
-	"HOME",
-	"SHELL",
-	"USER",
-	"LOGNAME",
-	"LANG",
-	"LANGUAGE",
-	"TERM",
-	"TZ",
-	"TMPDIR",
-	"TMP",
-	"TEMP",
-	"PWD",
-	"COLUMNS",
-	"LINES",
-	"EDITOR",
-	"VISUAL",
-	"PAGER",
-	"XDG_RUNTIME_DIR",
-	"XDG_CACHE_HOME",
-	"XDG_CONFIG_HOME",
-	"XDG_DATA_HOME",
-	"LC_ALL",
-	"LC_CTYPE",
-	"LC_COLLATE",
-	"LC_MESSAGES",
-	"LC_MONETARY",
-	"LC_NUMERIC",
-	"LC_TIME",
-	"TMUX",
-	"TMUX_PANE",
-] as const;
-
-const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Values stay in the pane environment; only validated names enter shell source. */
-export function buildRunnerPaneEnvironmentPrefix(
-	allowedEnvNames: Iterable<string> = [],
-): string {
-	const names = [
-		...new Set([...RUNNER_PANE_BASE_ALLOWLIST, ...allowedEnvNames]),
-	].sort();
-	for (const name of names) {
-		if (!ENVIRONMENT_NAME.test(name)) {
-			throw new Error(
-				`invalid environment variable name: ${JSON.stringify(name)}`,
-			);
-		}
-	}
-	return `/usr/bin/env -i ${names
-		.map((name) => `\${${name}+"${name}=$${name}"}`)
-		.join(" ")}`;
-}
-
-export interface AmbientSafeWindowCommandOptions {
-	binaryName: string;
-	binaryArgs: string[];
-	allowedEnvNames?: Iterable<string>;
-	gateFile?: string;
-	launchToken?: string;
-	cleanup?: "keep" | "unlink";
-	promptFile?: string;
-}
-
-export interface BuiltCliArgs {
-	args: string[];
-	windowPromptFile?: string;
-}
-
-// FLY-1869: keep the complete tmux command below its observed 16–20KB parser
-// ceiling, and keep the eventual single prompt argv below Linux MAX_ARG_STRLEN.
-export const TMUX_COMMAND_BUDGET_BYTES = 12_288;
-export const WINDOW_PROMPT_BUDGET_BYTES = 120_000;
-
-export type LaunchCommandOversizeReason =
-	| "tmux_command_budget"
-	| "prompt_size_budget";
-
-export class LaunchCommandOversizeError extends Error {
-	readonly name = "LaunchCommandOversizeError";
-	readonly code = "LAUNCH_COMMAND_OVERSIZE";
-
-	constructor(
-		readonly reason: LaunchCommandOversizeReason,
-		readonly actualBytes: number,
-		readonly budgetBytes: number,
-		message: string,
-	) {
-		super(message);
-	}
-}
-
-function tmuxCommandBytes(args: string[]): number {
-	return ["tmux", ...args].reduce(
-		(total, arg) => total + Buffer.byteLength(arg, "utf8") + 1,
-		0,
-	);
-}
-
-function largestArgSummary(args: string[]): string {
-	return args
-		.map((arg, index) => ({
-			index,
-			bytes: Buffer.byteLength(arg, "utf8"),
-			label:
-				index > 0 && args[index - 1]?.startsWith("-")
-					? `${args[index - 1]} value`
-					: `argv[${index}]`,
-		}))
-		.sort((a, b) => b.bytes - a.bytes)
-		.slice(0, 3)
-		.map(({ label, bytes }) => `${label}=${bytes}B`)
-		.join(", ");
-}
-
-export function assertLaunchCommandBudgets(
-	tmuxArgs: string[],
-	windowPromptFile?: string,
-): void {
-	if (windowPromptFile) {
-		const promptBytes = readFileSync(windowPromptFile).byteLength;
-		if (promptBytes > WINDOW_PROMPT_BUDGET_BYTES) {
-			throw new LaunchCommandOversizeError(
-				"prompt_size_budget",
-				promptBytes,
-				WINDOW_PROMPT_BUDGET_BYTES,
-				`[TmuxAdapter] LAUNCH_COMMAND_OVERSIZE prompt_size_budget: prompt file is ${promptBytes} bytes; budget is ${WINDOW_PROMPT_BUDGET_BYTES} bytes (${windowPromptFile})`,
-			);
-		}
-	}
-
-	const commandBytes = tmuxCommandBytes(tmuxArgs);
-	if (commandBytes > TMUX_COMMAND_BUDGET_BYTES) {
-		throw new LaunchCommandOversizeError(
-			"tmux_command_budget",
-			commandBytes,
-			TMUX_COMMAND_BUDGET_BYTES,
-			`[TmuxAdapter] LAUNCH_COMMAND_OVERSIZE tmux_command_budget: tmux command is ${commandBytes} bytes; budget is ${TMUX_COMMAND_BUDGET_BYTES} bytes; largest args: ${largestArgSummary(tmuxArgs)}`,
-		);
-	}
-}
-
-/**
- * Build the final pane command. Both direct adapters and the generation-gated
- * Claude path reconstruct the child environment from the same positive set.
- * Binary names, arguments, and values remain positional data, never shell source.
- */
-export function buildAmbientSafeWindowCommand(
-	opts: AmbientSafeWindowCommandOptions,
-): string[] {
-	const envPrefix = buildRunnerPaneEnvironmentPrefix(opts.allowedEnvNames);
-
-	const hasGate = opts.gateFile !== undefined || opts.launchToken !== undefined;
-	if (opts.promptFile && !hasGate) {
-		throw new Error("ambient-safe prompt file requires a gated launch");
-	}
-	if (!hasGate) {
-		return [
-			"sh",
-			"-c",
-			`exec ${envPrefix} "$@"`,
-			"flywheel-runner-env",
-			opts.binaryName,
-			...opts.binaryArgs,
-		];
-	}
-	if (!opts.gateFile || !opts.launchToken) {
-		throw new Error(
-			"ambient-safe gated launch requires gateFile and launchToken",
-		);
-	}
-
-	return [
-		"sh",
-		"-c",
-		// $0 = commit file; $1 = this launch token; $2 = cleanup policy;
-		// $3 = optional prompt file;
-		// after shift, "$@" is binary + args. Only validated environment names
-		// enter this source; their values are expanded by the pane shell.
-		`cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift 3; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; set -- "$@" "$p"; fi; exec ${envPrefix} "$@"`,
-		opts.gateFile,
-		opts.launchToken,
-		opts.cleanup ?? "keep",
-		opts.promptFile ?? "",
-		opts.binaryName,
-		...opts.binaryArgs,
-	];
-}
-
-export interface EnsureRunnerSessionOptions {
-	asyncExecFileFn?: AsyncExecFileFn;
-	attemptCapMs?: number;
-	deadlineMs?: number;
-	retryDelayMs?: number;
-	rescueCliPath?: string;
-	socketPath?: string;
-}
-
-export type TmuxHoldKind =
-	| "saturated"
-	| "split_brain"
-	| "ambiguous"
-	| "unknown"
-	| "rescue_failed"
-	| "lock_unavailable";
-
-export class TmuxSessionHoldError extends Error {
-	constructor(
-		readonly kind: TmuxHoldKind,
-		readonly evidence: Record<string, unknown>,
-		message = `tmux session ensure held: ${kind}`,
-	) {
-		super(message);
-		this.name = "TmuxSessionHoldError";
-	}
-}
-
-export class LaunchPrecommitError extends Error {
-	readonly name = "LaunchPrecommitError";
-
-	constructor(
-		readonly launchFailure: LaunchPrecommitFailure,
-		message: string,
-	) {
-		super(message);
-	}
-}
 
 /**
  * TmuxAdapter — launches Claude Code in an interactive tmux window.
@@ -356,7 +108,7 @@ export class TmuxAdapter implements IAdapter {
 		// probes through the same injectable (test-mockable) seam.
 		protected execFileFn: ExecFileFn = defaultExecFile,
 		private pollIntervalMs: number = 5000,
-		private defaultTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; FLY-92 idle detection retired in FLY-1560)
+		private defaultTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
 		private hookServer?: IHookCallbackServer,
 		/**
 		 * FLY-142 PR 1.2: optional vendor-neutral transport adapter. When
@@ -379,7 +131,6 @@ export class TmuxAdapter implements IAdapter {
 		 * as `null`, which the reaper treats as unowned → foreign → never reaped.
 		 */
 		private ownerStateDbPath?: string,
-		private ensureSessionOptions?: EnsureRunnerSessionOptions,
 	) {}
 
 	/**
@@ -471,11 +222,8 @@ export class TmuxAdapter implements IAdapter {
 			this.runPreflight();
 			this.preflightDone = true;
 		}
-		if (this.type === "claude-tmux" && ctx.pretrustWorkspace === true) {
-			await pretrustClaudeWorkspace(realpathSync(ctx.cwd));
-		}
 
-		let windowName = this.sanitizeWindowName(
+		const windowName = this.sanitizeWindowName(
 			ctx.label ?? `issue-${Date.now()}`,
 		);
 		const claudeSessionId = randomUUID();
@@ -485,13 +233,21 @@ export class TmuxAdapter implements IAdapter {
 		// Generate per-run callback token if hookServer available
 		const callbackToken = this.hookServer ? randomUUID() : undefined;
 
-		// FLY-1638: a completed generation can leave a same-name window behind.
-		// Resolve those exact identities before the capacity guard runs; otherwise
-		// ensureSession reports saturation and a fresh launch never gets a chance.
-		windowName = this.purgeTerminalSameNameWorkflowWindows(ctx, windowName);
-
 		// Ensure session exists (idempotent)
-		await this.ensureSession();
+		this.ensureSession();
+
+		if (this.hookServer) {
+			// v0.2 mode: no marker dir needed
+		} else {
+			// v0.1.1 mode: inject FLYWHEEL_MARKER_DIR into tmux session environment
+			this.execFileFn("tmux", [
+				"set-environment",
+				"-t",
+				`=${this.sessionName}`,
+				"FLYWHEEL_MARKER_DIR",
+				FLYWHEEL_MARKER_DIR,
+			]);
+		}
 
 		// Unset CLAUDECODE to prevent nested Claude hang/refuse
 		this.execFileFn("tmux", [
@@ -500,6 +256,15 @@ export class TmuxAdapter implements IAdapter {
 			`=${this.sessionName}`,
 			"-u",
 			"CLAUDECODE",
+		]);
+
+		// Enable remain-on-exit so dead panes stay visible.
+		this.execFileFn("tmux", [
+			"set-option",
+			"-t",
+			`=${this.sessionName}:`,
+			"remain-on-exit",
+			"on",
 		]);
 
 		// GEO-269: allow-rename ON so Claude CLI's --name can set the tmux window title.
@@ -512,61 +277,38 @@ export class TmuxAdapter implements IAdapter {
 		// isn't wired OR ctx lacks agentName/teamName/vendor → backward-
 		// compatible spawn (skipped wiring).
 		const transportSpawnConfig = this.tryBuildTransportSpawnConfig(ctx);
-		const commitFile = ctx.launchCommitPath;
-		const generationGated = this.type === "claude-tmux";
-		const launchToken =
-			generationGated || commitFile
-				? (ctx.launchGateToken ?? randomUUID())
-				: undefined;
-		const directGateFile =
-			generationGated && !commitFile && launchToken
-				? join(tmpdir(), "flywheel-launch-gates", `launch-${launchToken}`)
-				: undefined;
-		const gateFile = commitFile ?? directGateFile;
 
 		// Build CLI args (interactive mode — NO --print, NO --output-format).
-		// FLY-493: `buildCliArgs` is an overridable seam; the Claude default
-		// delegates to `buildClaudeArgs` and may return a file-backed task prompt.
-		const { args: claudeArgs, windowPromptFile } = this.buildCliArgs(
-			ctx,
-			claudeSessionId,
-			launchToken,
-		);
+		// FLY-493: `buildCliArgs` is an overridable seam; the claude default
+		// delegates to `buildClaudeArgs` (byte-identical).
+		const claudeArgs = this.buildCliArgs(ctx, claudeSessionId);
 
-		// Prepend transport-supplied identity flags before the standard CLI args.
-		// The gated shell appends a file-backed task prompt only at exec time.
+		// Prepend transport-supplied identity flags BEFORE standard claudeArgs
+		// so the prompt (last positional) stays last.
 		if (transportSpawnConfig) {
 			claudeArgs.unshift(...transportSpawnConfig.args);
 		}
 
-		// FLY-1999: one source of truth for both tmux `-e` injection and the
-		// positive child-environment name set. Values never enter shell source.
-		const envArgs: string[] = [];
-		const allowedEnvNames = new Set<string>();
-		const appendPaneEnv = (name: string, value: string): void => {
-			envArgs.push("-e", `${name}=${value}`);
-			allowedEnvNames.add(name);
-		};
-		if (this.hookServer && callbackToken) {
-			appendPaneEnv(
-				"FLYWHEEL_CALLBACK_PORT",
-				String(this.hookServer.getPort()),
-			);
-			appendPaneEnv("FLYWHEEL_CALLBACK_TOKEN", callbackToken);
-			appendPaneEnv("FLYWHEEL_ISSUE_ID", ctx.issueId ?? "unknown");
-		} else {
-			// v0.1.1 compatibility must be per-window: a session-level value would
-			// be discarded by the positive environment boundary.
-			appendPaneEnv("FLYWHEEL_MARKER_DIR", FLYWHEEL_MARKER_DIR);
-		}
+		// Build per-window env args for v0.2 HTTP callback
+		const envArgs =
+			this.hookServer && callbackToken
+				? [
+						"-e",
+						`FLYWHEEL_CALLBACK_PORT=${this.hookServer.getPort()}`,
+						"-e",
+						`FLYWHEEL_CALLBACK_TOKEN=${callbackToken}`,
+						"-e",
+						`FLYWHEEL_ISSUE_ID=${ctx.issueId ?? "unknown"}`,
+					]
+				: [];
 
 		// GEO-206: Inject comm DB path for flywheel-comm CLI
 		if (ctx.commDbPath) {
-			appendPaneEnv("FLYWHEEL_COMM_DB", ctx.commDbPath);
+			envArgs.push("-e", `FLYWHEEL_COMM_DB=${ctx.commDbPath}`);
 		}
 
 		// GEO-266: Inject execution ID for inbox PostToolUse hook
-		appendPaneEnv("FLYWHEEL_EXEC_ID", ctx.executionId);
+		envArgs.push("-e", `FLYWHEEL_EXEC_ID=${ctx.executionId}`);
 
 		// FLY-142 PR 1.4: Mailbox sentinel — when present, ~/.flywheel/hooks/inbox-check.sh
 		// short-circuits to a no-op. Lead → Runner delivery uses claude-code's
@@ -612,7 +354,7 @@ export class TmuxAdapter implements IAdapter {
 					),
 					"utf-8",
 				);
-				appendPaneEnv("FLYWHEEL_RUNNER_STATE_DIR", sentinelDir);
+				envArgs.push("-e", `FLYWHEEL_RUNNER_STATE_DIR=${sentinelDir}`);
 			} catch (err) {
 				// Non-fatal: hook will fall back to old behavior (and thus the wake
 				// bug). Log loudly so this gets caught in QA.
@@ -623,7 +365,7 @@ export class TmuxAdapter implements IAdapter {
 		} else {
 			// Rollback: defense-in-depth — even if a stale sentinel exists from a
 			// previous mailbox-mode spawn, force the hook to ignore it via env.
-			appendPaneEnv("FLYWHEEL_DISABLE_MAILBOX_SENTINEL", "1");
+			envArgs.push("-e", "FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
 			console.warn(
 				`[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for ${ctx.executionId} + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.`,
 			);
@@ -661,7 +403,7 @@ export class TmuxAdapter implements IAdapter {
 					{ mode: 0o600 },
 				);
 				chmodSync(markerPath, 0o600);
-				appendPaneEnv("TMPDIR", browserTmp);
+				envArgs.push("-e", `TMPDIR=${browserTmp}`);
 			} catch (err) {
 				console.warn(
 					`[TmuxAdapter] FLY-766 browser-tmp/owner-marker setup FAILED for ${ctx.executionId}: ${(err as Error).message}. Runner falls back to system TMPDIR; its agent-browser Chrome will be unattributed (reaper log-only).`,
@@ -671,72 +413,42 @@ export class TmuxAdapter implements IAdapter {
 
 		// GEO-292: Bridge connection for stage reporting
 		if (ctx.bridgeUrl) {
-			appendPaneEnv("FLYWHEEL_BRIDGE_URL", ctx.bridgeUrl);
+			envArgs.push("-e", `FLYWHEEL_BRIDGE_URL=${ctx.bridgeUrl}`);
 		}
 		if (ctx.bridgeIngestToken) {
-			appendPaneEnv("FLYWHEEL_INGEST_TOKEN", ctx.bridgeIngestToken);
+			envArgs.push("-e", `FLYWHEEL_INGEST_TOKEN=${ctx.bridgeIngestToken}`);
 		}
 		if (ctx.workflowSubmissionCredential) {
-			appendPaneEnv(
-				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
-				ctx.workflowSubmissionCredential,
+			envArgs.push(
+				"-e",
+				`FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=${ctx.workflowSubmissionCredential}`,
 			);
-		}
-		if (ctx.workflowSubmissionExpected) {
-			appendPaneEnv("FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED", "1");
-		}
-		if (ctx.workflowOutputCredential) {
-			appendPaneEnv(
-				"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
-				ctx.workflowOutputCredential,
-			);
-		}
-		if (ctx.founderReviewRequired) {
-			appendPaneEnv("FLYWHEEL_FOUNDER_REVIEW_REQUIRED", "1");
 		}
 		// FLY-191 Phase 2: verify-approval must read the SAME StateStore the
 		// Bridge writes (QA-caught: custom TEAMLEAD_DB_PATH deployments left
 		// the Runner on the default-path DB → fail-closed forever).
 		if (ctx.stateDbPath) {
-			appendPaneEnv("FLYWHEEL_STATE_DB_PATH", ctx.stateDbPath);
-		}
-		// FLY-1608: the runner is the complete-failed marker writer. A tmux
-		// window does not inherit the slot Bridge's live env, so pass the isolated
-		// directory explicitly; unset keeps the legacy HOME default.
-		const completeMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
-		if (completeMarkerDir) {
-			appendPaneEnv("FLYWHEEL_COMPLETE_MARKER_DIR", completeMarkerDir);
+			envArgs.push("-e", `FLYWHEEL_STATE_DB_PATH=${ctx.stateDbPath}`);
 		}
 		// FLY-795: where a resumed runner writes its progress cursor back.
 		if (ctx.progressPath) {
-			appendPaneEnv("FLYWHEEL_PROGRESS_PATH", ctx.progressPath);
+			envArgs.push("-e", `FLYWHEEL_PROGRESS_PATH=${ctx.progressPath}`);
 		}
 		if (ctx.projectName) {
-			appendPaneEnv("FLYWHEEL_PROJECT_NAME", ctx.projectName);
+			envArgs.push("-e", `FLYWHEEL_PROJECT_NAME=${ctx.projectName}`);
 		}
-		// FLY-1726: tmux inherits its server-global environment unless each key is
-		// explicitly replaced. A Runner owns a Lead lane (FLYWHEEL_LEAD_ID) but is
-		// not the Lead Discord identity itself, so clear the bare Lead/Discord
-		// coordinates and project only the canonical runner project name.
-		if (ctx.projectName !== undefined) {
-			appendPaneEnv("PROJECT_NAME", ctx.projectName);
-		}
-		appendPaneEnv("LEAD_ID", "");
-		appendPaneEnv("DISCORD_STATE_DIR", "");
-		appendPaneEnv("DISCORD_IDENTITY_MODE", "");
-		appendPaneEnv("DISCORD_BOT_TOKEN", "");
 
 		// FLY-80: Inject Lead ID + comm CLI path so Runner's /spin approve gate works.
 		// Without these, the gate's `if [ -n "$FLYWHEEL_COMM_CLI" ]` check fails
 		// and the Runner completes without waiting for Annie's approval.
 		if (ctx.leadId) {
-			appendPaneEnv("FLYWHEEL_LEAD_ID", ctx.leadId);
+			envArgs.push("-e", `FLYWHEEL_LEAD_ID=${ctx.leadId}`);
 		}
 		if (ctx.commDbPath) {
 			try {
 				const req = createRequire(import.meta.url);
 				const commCliPath = req.resolve("flywheel-comm");
-				appendPaneEnv("FLYWHEEL_COMM_CLI", commCliPath);
+				envArgs.push("-e", `FLYWHEEL_COMM_CLI=${commCliPath}`);
 			} catch {
 				// flywheel-comm not resolvable — gate will fall back to manual mode
 			}
@@ -750,7 +462,7 @@ export class TmuxAdapter implements IAdapter {
 		// (codex-approved §12.3 of the FLY-60 plan). Other code paths that
 		// don't pass `sentinelPath` are unaffected (env var simply absent).
 		if (ctx.sentinelPath) {
-			appendPaneEnv("FLYWHEEL_LAND_STATUS_PATH", ctx.sentinelPath);
+			envArgs.push("-e", `FLYWHEEL_LAND_STATUS_PATH=${ctx.sentinelPath}`);
 		}
 
 		// FLY-102 / FLY-159: Override Claude Code's Bash tool max timeout.
@@ -758,13 +470,13 @@ export class TmuxAdapter implements IAdapter {
 		// human decisions. Set to 49h = 48h gate timeout + 1h buffer so the
 		// gate CLI can fire its own fail-close path and emit gate_timed_out
 		// before the Bash tool kills it.
-		appendPaneEnv("BASH_MAX_TIMEOUT_MS", "176400000");
+		envArgs.push("-e", "BASH_MAX_TIMEOUT_MS=176400000");
 
 		// FLY-142 PR 1.2: merge transport-supplied env vars into envArgs.
 		// (`transportSpawnConfig` was computed earlier — reused here.)
 		if (transportSpawnConfig) {
 			for (const [key, value] of Object.entries(transportSpawnConfig.env)) {
-				appendPaneEnv(key, value);
+				envArgs.push("-e", `${key}=${value}`);
 			}
 		}
 
@@ -773,14 +485,14 @@ export class TmuxAdapter implements IAdapter {
 		// NODE_OPTIONS=--dns-result-order=ipv4first so each kimi model call in the
 		// pane skips kimi 0.18.0's IPv6-resolution startup stall (~6s, FLY-494 F0).
 		for (const [key, value] of Object.entries(this.extraPaneEnv())) {
-			appendPaneEnv(key, value);
+			envArgs.push("-e", `${key}=${value}`);
 		}
 
-		// FLY-245 / FLY-1628: every claude-tmux launch is two-phase gated. The
-		// durable workflow path keeps its deterministic commit marker; the direct
-		// path uses a private, per-physical-launch token file that the shell removes
-		// immediately before exec. In both cases the runner cannot start until the
-		// Bridge has synchronously persisted the tmux generation credential.
+		// FLY-245 R4/R5/R6 HIGH-3: TWO-PHASE gated launch for every path that sets
+		// `launchCommitPath`. Originally the gateway-retry path was the only one;
+		// since FLY-1232 the FRESH dispatch path also sets it when the workflow
+		// shadow write flag (FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1) is ON — flag OFF
+		// keeps the fresh path unset and byte-identical.
 		// This adapter normally starts Claude AS PART of `tmux new-window`,
 		// so a recorded-but-never-started window could be mis-adopted on replay.
 		// Instead, the gateway path opens a tiny shell that BLOCKS on the durable
@@ -799,27 +511,36 @@ export class TmuxAdapter implements IAdapter {
 		//     replay sees no commit → re-drives (writes a fresh token);
 		//   - commit written → only THIS launch's shell `exec`s Claude; a replay
 		//     sees the file exists → adopts → exactly one started Runner.
-		const windowCommand = buildAmbientSafeWindowCommand({
-			binaryName: this.binaryName,
-			binaryArgs: claudeArgs,
-			allowedEnvNames,
-			...(windowPromptFile ? { promptFile: windowPromptFile } : {}),
-			...(gateFile && launchToken
-				? {
-						gateFile,
+		// The non-gateway fleet path keeps the byte-identical direct `claude` launch.
+		const commitFile = ctx.launchCommitPath;
+		const launchToken = commitFile ? randomUUID() : undefined;
+		const windowCommand =
+			commitFile && launchToken
+				? [
+						"sh",
+						"-c",
+						// $0 = commit file; $1 = THIS launch's token; "$@" (after shift) =
+						// the claude args. Wait (bounded ~30s) until the commit file
+						// CONTAINS our exact token (a replay's different token won't match),
+						// then exec Claude so the pane process IS claude (remain-on-exit /
+						// pane-death detection unaffected). Timeout → exit (dead pane).
+						// `-qF` = quiet fixed-string (the token is a uuid — no regex chars).
+						// FLY-493: `exec ${binaryName}` (default "claude") — byte-identical
+						// claude launch; agy launches the same gated way.
+						`cf="$0"; tok="$1"; shift; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; exec ${this.binaryName} "$@"`,
+						commitFile,
 						launchToken,
-						cleanup: directGateFile ? ("unlink" as const) : ("keep" as const),
-					}
-				: {}),
-		});
+						...claudeArgs,
+					]
+				: [this.binaryName, ...claudeArgs];
 
 		// Launch the tmux window WITH cwd (Claude directly on the fleet path; the
 		// gated waiting shell on the gateway-retry path).
-		const tmuxLaunchArgs = [
+		const launchResult = this.execFileFn("tmux", [
 			"new-window",
 			"-P",
 			"-F",
-			"#{window_id}|#{socket_path}|#{start_time}",
+			"#{window_id}",
 			"-t",
 			`=${this.sessionName}`,
 			...envArgs,
@@ -828,161 +549,8 @@ export class TmuxAdapter implements IAdapter {
 			"-c",
 			ctx.cwd,
 			...windowCommand,
-		];
-		try {
-			assertLaunchCommandBudgets(tmuxLaunchArgs, windowPromptFile);
-		} catch (error) {
-			if (
-				error instanceof LaunchCommandOversizeError &&
-				ctx.commitWorkflowLaunch
-			) {
-				throw new LaunchPrecommitError(
-					{
-						code: "LAUNCH_COMMAND_OVERSIZE",
-						reason: error.reason,
-						physicalEvidence: "absent",
-					},
-					error.message,
-				);
-			}
-			throw error;
-		}
-		const launchResult = this.execFileFn("tmux", tmuxLaunchArgs);
-		// Both capture and later probe use tmux's raw `#{start_time}` decimal
-		// POSIX epoch seconds. Do not format it through Date/local timezone.
-		const launchFields = launchResult.stdout.trim().split("|");
-		const [windowId = "", socketPath = "", serverStartTime = ""] = launchFields;
-		if (
-			generationGated &&
-			(launchFields.length !== 3 ||
-				!/^@\d+$/.test(windowId) ||
-				!socketPath ||
-				!/^[0-9]+$/.test(serverStartTime))
-		) {
-			if (/^@\d+$/.test(windowId)) {
-				try {
-					this.execFileFn("tmux", [
-						"kill-window",
-						"-t",
-						`=${this.sessionName}:${windowId}`,
-					]);
-				} catch {
-					// best-effort cleanup
-				}
-			}
-			throw new Error(
-				`[TmuxAdapter] launch aborted: malformed tmux generation output for ${ctx.executionId}`,
-			);
-		}
-		const exactWindowTarget = `=${this.sessionName}:${windowId}`;
-
-		// FLY-1374: publish the execution identity on the exact window. If its
-		// CommDB row is later lost, the event-driven WAKE path can rediscover this
-		// one live holder without guessing from StateStore metadata.
-		try {
-			const identityOptions: Array<[string, string]> = [
-				["@flywheel_exec_id", ctx.executionId],
-			];
-			if (ctx.commitWorkflowLaunch) {
-				if (ctx.launchGeneration === undefined || !ctx.launchFingerprint) {
-					throw new Error("workflow launch generation identity is missing");
-				}
-				identityOptions.push(
-					["@flywheel_launch_generation", String(ctx.launchGeneration)],
-					["@flywheel_launch_fingerprint", ctx.launchFingerprint],
-				);
-			}
-			for (const [option, value] of identityOptions) {
-				this.execFileFn("tmux", [
-					"set-option",
-					"-w",
-					"-t",
-					exactWindowTarget,
-					option,
-					value,
-				]);
-			}
-		} catch (err) {
-			if (ctx.commitWorkflowLaunch) {
-				const physicalEvidence = this.cleanupExactWindow(exactWindowTarget);
-				throw new LaunchPrecommitError(
-					{
-						code: "LAUNCH_WINDOW_IDENTITY_FAILED",
-						reason: "identity_publish_failed",
-						physicalEvidence,
-					},
-					`[TmuxAdapter] workflow identity publish failed for ${exactWindowTarget}: ${(err as Error).message}`,
-				);
-			}
-			console.warn(
-				`[TmuxAdapter] execution identity publish failed for ${exactWindowTarget}: ${(err as Error).message}`,
-			);
-		}
-
-		// FLY-1272: remain-on-exit is a window option. The former pre-spawn
-		// `=<session>:` target changed whichever window happened to be current,
-		// not the runner window created above. Scope the option to the exact new
-		// Claude window before releasing a gated launch or pruning the scaffold.
-		// Kimi/Antigravity inherit this execute() path but intentionally retain
-		// their existing exit semantics.
-		if (this.type === "claude-tmux") {
-			try {
-				this.execFileFn("tmux", [
-					"set-option",
-					"-w",
-					"-t",
-					exactWindowTarget,
-					"remain-on-exit",
-					"on",
-				]);
-			} catch (err) {
-				try {
-					this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
-				} catch {
-					// Best-effort cleanup; the launch still fails closed below.
-				}
-				throw new Error(
-					`[TmuxAdapter] remain-on-exit setup failed for ${exactWindowTarget}: ${(err as Error).message}`,
-				);
-			}
-		}
-
-		// FLY-1628: this is the crash-atomic generation fence. Nothing below may
-		// release the waiting shell until the Bridge confirms the exact tuple is
-		// durable. A missing/throwing callback kills the still-gated window.
-		if (generationGated) {
-			try {
-				if (!ctx.onTmuxWindowOpened) {
-					throw new Error("generation credential callback is required");
-				}
-				ctx.onTmuxWindowOpened({
-					baseSessionName: this.sessionName,
-					windowId,
-					socketPath,
-					serverStartTime,
-					executionId: ctx.executionId,
-					launchGeneration: ctx.launchGeneration,
-					launchFingerprint: ctx.launchFingerprint,
-				});
-			} catch (err) {
-				const physicalEvidence = this.cleanupExactWindow(exactWindowTarget);
-				if (directGateFile) {
-					try {
-						unlinkSync(directGateFile);
-					} catch {
-						// file normally does not exist yet
-					}
-				}
-				throw new LaunchPrecommitError(
-					{
-						code: "LAUNCH_WINDOW_IDENTITY_FAILED",
-						reason: "generation_record_failed",
-						physicalEvidence,
-					},
-					`[TmuxAdapter] launch aborted before generation commit for ${ctx.executionId}: ${(err as Error).message}`,
-				);
-			}
-		}
+		]);
+		const windowId = launchResult.stdout.trim();
 
 		// FLY-245 R5/R6 HIGH-3: write THIS launch's token to the durable COMMIT file
 		// = release ONLY this launch's gated shell. The file's existence is the
@@ -992,34 +560,21 @@ export class TmuxAdapter implements IAdapter {
 		// (no file); after it, only this shell starts and a replay adopts (file
 		// present). On a write failure the gated shell never matches its token and
 		// self-reaps — a replay re-drives cleanly; no kill is required for safety.
-		if (gateFile && launchToken) {
+		if (commitFile && launchToken) {
 			try {
-				if (commitFile && ctx.commitWorkflowLaunch) {
-					const committed = ctx.commitWorkflowLaunch();
-					if (!committed.ok) {
-						throw new Error(committed.reason ?? "Bridge launch fence rejected");
-					}
-				} else {
-					mkdirSync(dirname(gateFile), { recursive: true, mode: 0o700 });
-					if (directGateFile) chmodSync(dirname(gateFile), 0o700);
-					writeFileSync(gateFile, launchToken, { mode: 0o600 });
-					chmodSync(gateFile, 0o600);
-				}
+				mkdirSync(dirname(commitFile), { recursive: true });
+				writeFileSync(commitFile, launchToken);
 			} catch (err) {
-				const physicalEvidence = this.cleanupExactWindow(exactWindowTarget);
-				if (directGateFile) {
-					try {
-						unlinkSync(directGateFile);
-					} catch {
-						// best-effort; the killed gated shell cannot start.
-					}
+				try {
+					this.execFileFn("tmux", [
+						"kill-window",
+						"-t",
+						`${this.sessionName}:${windowId}`,
+					]);
+				} catch {
+					// best-effort; the gated shell self-exits on its bounded timeout.
 				}
-				throw new LaunchPrecommitError(
-					{
-						code: "LAUNCH_PRECOMMIT_FAILED",
-						reason: `launch_commit_failed:${(err as Error).message}`,
-						physicalEvidence,
-					},
+				throw new Error(
 					`[TmuxAdapter] launch aborted: could not write durable commit for ${ctx.executionId} ` +
 						`(Claude never started; gated shell self-reaps): ${(err as Error).message}`,
 				);
@@ -1096,7 +651,7 @@ export class TmuxAdapter implements IAdapter {
 			if (registeredSession && ctx.commDbPath) {
 				try {
 					const commDb = new CommDB(ctx.commDbPath);
-					commDb.updateSessionStatusIfRunning(ctx.executionId, sessionStatus);
+					commDb.updateSessionStatus(ctx.executionId, sessionStatus);
 					commDb.close();
 				} catch {
 					// Update failure is non-fatal
@@ -1161,23 +716,21 @@ export class TmuxAdapter implements IAdapter {
 
 	/**
 	 * FLY-493: overridable CLI-arg seam. The claude default delegates to
-	 * `buildClaudeArgs`. AntigravityTmuxAdapter overrides this
+	 * `buildClaudeArgs` (byte-identical). AntigravityTmuxAdapter overrides this
 	 * to emit `agy` flags (which lack `--session-id`, `--permission-mode`,
 	 * `--append-system-prompt-file`, `--allowed-tools`, `--name`).
 	 */
 	protected buildCliArgs(
 		ctx: AdapterExecutionContext,
 		sessionId: string,
-		launchToken?: string,
-	): BuiltCliArgs {
-		return this.buildClaudeArgs(ctx, sessionId, launchToken);
+	): string[] {
+		return this.buildClaudeArgs(ctx, sessionId);
 	}
 
 	private buildClaudeArgs(
 		ctx: AdapterExecutionContext,
 		sessionId: string,
-		launchToken?: string,
-	): BuiltCliArgs {
+	): string[] {
 		// CLI syntax: claude [options] [prompt] — options MUST come before prompt
 		const args: string[] = [];
 		args.push("--session-id", sessionId);
@@ -1209,40 +762,20 @@ export class TmuxAdapter implements IAdapter {
 			});
 			args.push("--append-system-prompt-file", promptPath);
 		}
-		// FLY-1496 final Claude spawn seam: a bare alias must never reach the CLI,
-		// or the CLI's own alias table — not our registry — picks the version.
-		// Absent stays absent: no model means inherit the account default, which
-		// is what FLYWHEEL_RUNNER_DEFAULT_MODEL=off asks for.
-		let canonicalModel: string | undefined;
-		if (ctx.model) {
-			canonicalModel = resolveAllowedCanonicalModel(ctx.model, {
-				surface: "runner",
-				runtimeVendor: "claude",
-			});
-			args.push("--model", canonicalModel);
-		}
+		if (ctx.model) args.push("--model", ctx.model);
 		// FLY-671: reasoning-effort override (roles.runner.effort). Absent ⇒ no
 		// flag (byte-compat). claude-tmux only; codex/agy/kimi adapters ignore it.
-		// FLY-1650: the model and the effort come from different config keys, so
-		// this is the first point that sees the resolved pair. A model that does
-		// not support the requested effort (Opus 4.6 has no `xhigh`) would
-		// otherwise carry a flag the CLI passes straight upstream for a 400.
-		// Narrowing only — an unknown model keeps its effort verbatim.
-		const effort = resolveAllowedEffort(canonicalModel, ctx.effort, {
-			surface: "runner",
-		});
-		if (effort) args.push("--effort", effort);
+		if (ctx.effort) args.push("--effort", ctx.effort);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
-		// FLY-615 + FLY-751 + FLY-1715: per-launch inline settings (highest non-managed
+		// FLY-615 + FLY-751: per-launch inline settings (highest non-managed
 		// precedence; per-plugin merge — does not disturb other enabled plugins).
 		// BOTH sources write the same `enabledPlugins` map, so they MUST merge
 		// into a single --settings flag: ponytail enables its plugin (true) and
 		// the FLY-751 slim profile disables heavy per-session MCP plugins
 		// (false). Real-machine spike (2026-07-01) confirmed a `false` entry
-		// prevents that plugin's MCP server subprocess from spawning. FLY-1715
-		// writes the non-Lead Discord deny contract LAST, independent
-		// of the optional slim profile, so caller opt-ins cannot turn it back on.
+		// prevents that plugin's MCP server subprocess from spawning. Neither
+		// source present → no flag → byte-compatible.
 		const enabledPlugins: Record<string, boolean> = {
 			...(ctx.enablePonytail && { [PONYTAIL_PLUGIN]: true }),
 		};
@@ -1257,10 +790,9 @@ export class TmuxAdapter implements IAdapter {
 		for (const plugin of ctx.enabledPluginsExtra ?? []) {
 			enabledPlugins[plugin] = true;
 		}
-		args.push(
-			"--settings",
-			JSON.stringify(buildNonLeadClaudeSettings({ enabledPlugins })),
-		);
+		if (Object.keys(enabledPlugins).length > 0) {
+			args.push("--settings", JSON.stringify({ enabledPlugins }));
+		}
 		// FLY-751: Claude-in-Chrome off for slimmed (non-QA) runners.
 		if (ctx.disableChrome) {
 			args.push("--no-chrome");
@@ -1268,33 +800,9 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
 		// NOTE: previousSession intentionally ignored — no resume in interactive tmux mode
-		// Blank prompts must stay inline: shell command substitution strips trailing
-		// newlines, so externalizing whitespace-only input would turn it into an
-		// empty file-backed prompt and fail the launch gate.
-		if (ctx.prompt.trim() === "") {
-			args.push(ctx.prompt);
-			return { args };
-		}
-		if (!launchToken) {
-			throw new Error("claude prompt externalization requires a launch token");
-		}
-		// FLY-1869: tmux carries only this owner-readable path. The gated pane
-		// shell reads it after the generation fence and appends the content to the
-		// Claude argv, keeping issue-description size out of `tmux new-window`.
-		const promptDir = join(
-			tmpdir(),
-			"flywheel-runner-prompts",
-			ctx.executionId,
-		);
-		mkdirSync(promptDir, { recursive: true, mode: 0o700 });
-		chmodSync(promptDir, 0o700);
-		const windowPromptFile = join(promptDir, `prompt-${launchToken}.md`);
-		writeFileSync(windowPromptFile, ctx.prompt, {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-		chmodSync(windowPromptFile, 0o600);
-		return { args, windowPromptFile };
+		// Prompt as last CLI arg — Claude starts processing immediately on launch
+		args.push(ctx.prompt);
+		return args;
 	}
 
 	/**
@@ -1632,111 +1140,8 @@ export class TmuxAdapter implements IAdapter {
 		});
 	}
 
-	private cleanupExactWindow(exactWindowTarget: string): "cleaned" | "unknown" {
-		try {
-			this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
-		} catch {
-			// Verification below is authoritative; the window may already be absent.
-		}
-		try {
-			this.execFileFn("tmux", [
-				"display-message",
-				"-p",
-				"-t",
-				exactWindowTarget,
-				"#{window_id}",
-			]);
-			return "unknown";
-		} catch {
-			return "cleaned";
-		}
-	}
-
-	private purgeTerminalSameNameWorkflowWindows(
-		ctx: AdapterExecutionContext,
-		windowName: string,
-	): string {
-		if (!ctx.workflowTmuxWindowAuthority) return windowName;
-		let listed: string;
-		try {
-			listed = this.execFileFn("tmux", [
-				"list-windows",
-				"-t",
-				`=${this.sessionName}`,
-				"-F",
-				"#{window_id}|#{window_name}|#{@flywheel_exec_id}|#{@flywheel_launch_generation}|#{@flywheel_launch_fingerprint}",
-			]).stdout;
-		} catch {
-			// A missing base session is the normal first-launch shape; ensureSession
-			// below creates it. Other lookup failures stay fail-closed there.
-			return windowName;
-		}
-		let collisionRemains = false;
-		const occupiedNames = new Set<string>();
-		for (const line of listed.split("\n")) {
-			if (!line.trim()) continue;
-			const [windowId, candidateName, executionId, rawGeneration, fingerprint] =
-				line.split("|");
-			if (candidateName) occupiedNames.add(candidateName);
-			if (candidateName !== windowName) continue;
-			if (!windowId || !/^@\d+$/.test(windowId)) {
-				collisionRemains = true;
-				continue;
-			}
-			const launchGeneration = /^\d+$/.test(rawGeneration ?? "")
-				? Number(rawGeneration)
-				: undefined;
-			const authority = ctx.workflowTmuxWindowAuthority({
-				windowId,
-				windowName: candidateName,
-				...(executionId && { executionId }),
-				...(launchGeneration !== undefined && { launchGeneration }),
-				...(fingerprint && { launchFingerprint: fingerprint }),
-			});
-			if (authority !== "prune") {
-				collisionRemains = true;
-				continue;
-			}
-			if (
-				this.cleanupExactWindow(`=${this.sessionName}:${windowId}`) !==
-				"cleaned"
-			) {
-				collisionRemains = true;
-			}
-		}
-		if (!collisionRemains) return windowName;
-		const identitySuffix = `-${ctx.executionId.slice(0, 8)}${
-			ctx.launchGeneration === undefined ? "" : `-g${ctx.launchGeneration}`
-		}`;
-		// tmux permits duplicate display names, so the fallback must itself be
-		// preflighted. A session cannot hold this many windows under our admission
-		// cap; the bound still makes a corrupt inventory fail closed.
-		for (let retry = 0; retry <= 100; retry += 1) {
-			const suffix = `${identitySuffix}${retry === 0 ? "" : `-r${retry}`}`;
-			const availableBaseLength = Math.max(1, 50 - suffix.length);
-			const selected = this.sanitizeWindowName(
-				`${windowName.slice(0, availableBaseLength)}${suffix}`,
-			);
-			if (!occupiedNames.has(selected)) return selected;
-		}
-		throw new TmuxSessionHoldError(
-			"ambiguous",
-			{ windowName, executionId: ctx.executionId },
-			"tmux session ensure held: no unique workflow window name",
-		);
-	}
-
-	private async ensureSession(): Promise<void> {
-		let options = this.ensureSessionOptions;
-		if (!options && this.execFileFn !== defaultExecFile) {
-			// Existing unit/integration seams inject a synchronous tmux fake. Keep
-			// those hermetic without weakening the default production path: real
-			// adapters always use the deployed async guard below.
-			options = {
-				asyncExecFileFn: legacyInjectedEnsureAdapter(this.execFileFn),
-			};
-		}
-		await ensureRunnerSession(this.execFileFn, this.sessionName, options);
+	private ensureSession(): void {
+		ensureRunnerSession(this.execFileFn, this.sessionName);
 	}
 
 	sanitizeWindowName(name: string): string {
@@ -1772,232 +1177,50 @@ export class TmuxAdapter implements IAdapter {
  * pre-fix behavior (scaffold cleaned once auto-rename settles on a later spawn),
  * never blocks the spawn.
  */
-function positiveInt(raw: string | undefined, fallback: number): number {
-	const value = Number(raw);
-	return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-}
-
-function tmuxDefaultSocketPath(): string {
-	const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-	const root = process.env.TMUX_TMPDIR?.trim() || "/tmp";
-	return join(root, `tmux-${uid}`, "default");
-}
-
-function parseHold(error: unknown): TmuxSessionHoldError {
-	const candidate = error as {
-		code?: string | number;
-		stdout?: string | Buffer;
-		message?: string;
-	};
-	const stdout = candidate?.stdout
-		? Buffer.isBuffer(candidate.stdout)
-			? candidate.stdout.toString("utf8")
-			: String(candidate.stdout)
-		: "";
-	let parsed: { action?: string; evidence?: Record<string, unknown> } = {};
-	try {
-		parsed = JSON.parse(stdout);
-	} catch {
-		// A missing/corrupt helper response is unknown evidence, never permission
-		// to fall back to an unguarded tmux create.
-	}
-	const action = parsed.action ?? "hold_unknown";
-	const rawKind = action.startsWith("hold_") ? action.slice(5) : "unknown";
-	const allowed: TmuxHoldKind[] = [
-		"saturated",
-		"split_brain",
-		"ambiguous",
-		"unknown",
-		"rescue_failed",
-		"lock_unavailable",
-	];
-	const kind = allowed.includes(rawKind as TmuxHoldKind)
-		? (rawKind as TmuxHoldKind)
-		: candidate?.code === "ENOENT"
-			? "lock_unavailable"
-			: "unknown";
-	return new TmuxSessionHoldError(
-		kind,
-		parsed.evidence ?? {
-			reason:
-				candidate?.code === "ENOENT"
-					? "helper_missing"
-					: "invalid_helper_output",
-		},
-		candidate?.message,
-	);
-}
-
-function deadlineRace<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => {
-			reject(
-				new TmuxSessionHoldError("unknown", {
-					reason: "command_timeout",
-				}),
-			);
-		}, timeoutMs);
-		(timer as { unref?: () => void }).unref?.();
-		promise.then(
-			(value) => {
-				clearTimeout(timer);
-				resolve(value);
-			},
-			(error) => {
-				clearTimeout(timer);
-				reject(error);
-			},
-		);
-	});
-}
-
-function asyncDelay(ms: number): Promise<void> {
-	if (ms <= 0) return Promise.resolve();
-	return new Promise((resolve) => {
-		const timer = setTimeout(resolve, ms);
-		(timer as { unref?: () => void }).unref?.();
-	});
-}
-
-function legacyInjectedEnsureAdapter(execFileFn: ExecFileFn): AsyncExecFileFn {
-	return async (cmd, args) => {
-		if (!cmd.includes("tmux-server-rescue")) {
-			return { ...execFileFn(cmd, args), stderr: "" };
-		}
-		const verifyIndex = args.indexOf("--verify");
-		const createIndex = args.indexOf("--create");
-		const verifyArgs = args.slice(verifyIndex + 1, createIndex);
-		const createArgs = args.slice(createIndex + 1);
-		const withoutSocket = (argv: string[]) =>
-			argv[1] === "-S" ? [argv[0]!, ...argv.slice(3)] : argv;
-		const legacyVerify = withoutSocket(verifyArgs);
-		const legacyCreate = withoutSocket(createArgs);
-		try {
-			execFileFn(legacyVerify[0]!, legacyVerify.slice(1));
-			return {
-				stdout: JSON.stringify({
-					action: "verified",
-					createStdout: "",
-					reachablePid: 1,
-				}),
-				stderr: "",
-			};
-		} catch {
-			const created = execFileFn(legacyCreate[0]!, legacyCreate.slice(1));
-			return {
-				stdout: JSON.stringify({
-					action: "created",
-					createStdout: created.stdout,
-					reachablePid: 1,
-				}),
-				stderr: "",
-			};
-		}
-	};
-}
-
-export async function ensureRunnerSession(
-	_execFileFn: ExecFileFn,
+export function ensureRunnerSession(
+	execFileFn: ExecFileFn,
 	sessionName: string,
-	options: EnsureRunnerSessionOptions = {},
-): Promise<void> {
-	const asyncExecFileFn = options.asyncExecFileFn ?? defaultAsyncExecFile;
-	const deadlineMs =
-		options.deadlineMs ??
-		positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS, 210_000);
-	const attemptCapMs =
-		options.attemptCapMs ??
-		positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS, 90_000);
-	const retryDelayMs = options.retryDelayMs ?? 1_000;
-	const rescueCliPath =
-		options.rescueCliPath ??
-		(process.env.FLYWHEEL_TMUX_RESCUE_CLI?.trim() ||
-			join(homedir(), ".flywheel", "bin", "tmux-server-rescue"));
-	const socketPath =
-		options.socketPath ??
-		(process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE?.trim() ||
-			tmuxDefaultSocketPath());
-	const startedAt = Date.now();
-	const args = [
-		"ensure",
-		socketPath,
-		"--verify",
-		"tmux",
-		"-S",
-		socketPath,
-		"has-session",
-		"-t",
-		`=${sessionName}`,
-		"--create",
-		"tmux",
-		"-S",
-		socketPath,
-		"new-session",
-		"-d",
-		"-P",
-		"-F",
-		"#{window_id}",
-		"-s",
-		sessionName,
-	];
+): void {
+	try {
+		execFileFn("tmux", ["has-session", "-t", `=${sessionName}`]);
+		return; // session already exists — scaffold (if any) is aged; prune's name path handles it
+	} catch {
+		// session does not exist — create it below
+	}
 
-	let lastHold = new TmuxSessionHoldError("unknown", {
-		reason: "deadline_exhausted",
-	});
-	while (Date.now() - startedAt < deadlineMs) {
-		const remaining = Math.max(1, deadlineMs - (Date.now() - startedAt));
-		const attemptTimeoutMs = Math.min(attemptCapMs, remaining);
+	let scaffoldWindowId = "";
+	try {
+		const created = execFileFn("tmux", [
+			"new-session",
+			"-d",
+			"-P",
+			"-F",
+			"#{window_id}",
+			"-s",
+			sessionName,
+		]);
+		scaffoldWindowId = created.stdout.trim();
+	} catch {
+		// -P/-F unexpectedly failed — fall back to a plain create so the spawn can
+		// proceed. The scaffold keeps its async name; prune's aged-name path cleans
+		// it on a later spawn.
 		try {
-			const result = await deadlineRace(
-				asyncExecFileFn(rescueCliPath, args, {
-					timeoutMs: attemptTimeoutMs,
-				}),
-				attemptTimeoutMs,
-			);
-			const parsed = parseTmuxEnsureSuccess(result.stdout);
-			if (!parsed) {
-				throw new TmuxSessionHoldError("unknown", {
-					reason: "invalid_helper_output",
-				});
-			}
-			const scaffoldWindowId = parsed.createStdout?.trim() ?? "";
-			if (scaffoldWindowId && sessionName.startsWith("runner-")) {
-				try {
-					await deadlineRace(
-						asyncExecFileFn(
-							"tmux",
-							[
-								"-S",
-								socketPath,
-								"rename-window",
-								"-t",
-								scaffoldWindowId,
-								"zsh",
-							],
-							{ timeoutMs: Math.min(5_000, remaining) },
-						),
-						Math.min(5_000, remaining),
-					);
-				} catch {
-					// Cosmetic only. The guarded session creation has already succeeded;
-					// pruneScaffoldWindow still catches the aged shell later.
-				}
-			}
-			return;
-		} catch (error) {
-			lastHold =
-				error instanceof TmuxSessionHoldError ? error : parseHold(error);
-			if (
-				(error as { code?: string })?.code === "ENOENT" ||
-				Date.now() - startedAt >= deadlineMs ||
-				deadlineMs <= 1
-			) {
-				throw lastHold;
-			}
-			await asyncDelay(Math.min(retryDelayMs, remaining));
+			execFileFn("tmux", ["new-session", "-d", "-s", sessionName]);
+		} catch {
+			// best-effort — a create failure surfaces later via the runner launch.
+		}
+		return;
+	}
+
+	// Normalize the fresh scaffold's name to `zsh` (defeats the async rename race)
+	// — runner-scoped so a non-runner base session's window naming is never touched.
+	if (scaffoldWindowId && sessionName.startsWith("runner-")) {
+		try {
+			execFileFn("tmux", ["rename-window", "-t", scaffoldWindowId, "zsh"]);
+		} catch {
+			// best-effort — prune's aged-name path still catches it later.
 		}
 	}
-	throw lastHold;
 }
 
 /**
@@ -2144,37 +1367,4 @@ export function defaultExecFile(
 		}
 		throw err;
 	}
-}
-
-export function defaultAsyncExecFile(
-	cmd: string,
-	args: string[],
-	opts?: ExecFileOpts,
-): Promise<{ stdout: string; stderr: string }> {
-	return new Promise((resolve, reject) => {
-		execFileCallback(
-			cmd,
-			args,
-			{
-				encoding: "utf8",
-				timeout: opts?.timeoutMs,
-				killSignal: "SIGKILL",
-				maxBuffer: 1024 * 1024,
-				env: opts?.env ? { ...process.env, ...opts.env } : undefined,
-			},
-			(error, stdout, stderr) => {
-				if (error) {
-					const enriched = error as Error & {
-						stdout?: string;
-						stderr?: string;
-					};
-					enriched.stdout = stdout;
-					enriched.stderr = stderr;
-					reject(enriched);
-					return;
-				}
-				resolve({ stdout, stderr });
-			},
-		);
-	});
 }

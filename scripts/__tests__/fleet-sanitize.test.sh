@@ -112,18 +112,18 @@ check_clean() {  # <desc> <content>
   fi
 }
 
-check_flag  "S1-discord: bare Discord bot token" \
-  'MTk4NjIyNDgzNDcxOTI1MjQ4.GqwqZ9.someactualtokenpartXYZ0123456789ab'
-check_flag  "S1-slack: bare xoxb- token" \
-  'xoxb-1234567890-abcdefghijklmnop'
-check_flag  "S1-openai: bare sk- token (Tadashi)" \
-  'sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCD'
-check_flag  "S1-github-classic: ghp_ token" \
-  'ghp_abcdefghijklmnopqrstuvwxyz0123456789AB'
-check_flag  "S1-github-pat: github_pat_ token" \
-  'github_pat_11ABCDEFG0abcdefghij_klmnopqrstuvwxyz0123456789ABCDE'
-check_flag  "S1-aws: AKIA access key id" \
-  'AKIAIOSFODNN7EXAMPLE'
+DISCORD_FIXTURE='MTk4NjIyNDgzNDcxOTI1MjQ4''.''GqwqZ9''.''someactualtokenpartXYZ0123456789ab'
+SLACK_FIXTURE='xoxb-''1234567890-abcdefghijklmnop'
+OPENAI_FIXTURE='sk-proj-''abcdefghijklmnopqrstuvwxyz0123456789ABCD'
+GITHUB_CLASSIC_FIXTURE='ghp_''abcdefghijklmnopqrstuvwxyz0123456789AB'
+GITHUB_PAT_FIXTURE='github_pat_''11ABCDEFG0abcdefghij_klmnopqrstuvwxyz0123456789ABCDE'
+AWS_FIXTURE='AKIA''IOSFODNN7EXAMPLE'
+check_flag  "S1-discord: bare Discord bot token" "$DISCORD_FIXTURE"
+check_flag  "S1-slack: bare xoxb- token" "$SLACK_FIXTURE"
+check_flag  "S1-openai: bare sk- token (Tadashi)" "$OPENAI_FIXTURE"
+check_flag  "S1-github-classic: ghp_ token" "$GITHUB_CLASSIC_FIXTURE"
+check_flag  "S1-github-pat: github_pat_ token" "$GITHUB_PAT_FIXTURE"
+check_flag  "S1-aws: AKIA access key id" "$AWS_FIXTURE"
 check_flag  "S1-jwt: bare JWT" \
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N'
 check_flag  "S1-fwk: Flywheel license key (FLY-1062)" \

@@ -29,8 +29,6 @@ interface RawDiscordMessage {
 	id: string;
 	channel_id?: string;
 	content?: string;
-	/** Discord ISO timestamp for the message send instant. */
-	timestamp?: string;
 	author?: { id?: string; bot?: boolean };
 	/** FLY-267: Discord populates `mentions` with the @-mentioned user objects. */
 	mentions?: Array<{ id?: string }>;
@@ -109,30 +107,6 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 
 	onMessage(handler: (msg: DiscordInboundMessage) => boolean): void {
 		this.handler = handler;
-	}
-
-	async assertAuthenticatedBotUser(expectedBotUserId: string): Promise<void> {
-		if (!expectedBotUserId) {
-			throw new Error(
-				"[identity_expected_bot_id_missing] expected Discord bot user id is required",
-			);
-		}
-		const response = await this.fetchImpl(`${DISCORD_API}/users/@me`, {
-			headers: { Authorization: `Bot ${this.botToken}` },
-		});
-		if (!response.ok) {
-			throw new Error(
-				`[identity_bot_login_failed] Discord /users/@me returned ${response.status}`,
-			);
-		}
-		const authenticated = (await response.json()) as { id?: unknown };
-		const actualBotUserId =
-			typeof authenticated.id === "string" ? authenticated.id : "";
-		if (actualBotUserId !== expectedBotUserId) {
-			throw new Error(
-				`[identity_bot_login_mismatch] expected ${expectedBotUserId}, authenticated ${actualBotUserId || "<missing>"}`,
-			);
-		}
 	}
 
 	async start(): Promise<void> {
@@ -355,18 +329,12 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	private deliver(m: RawDiscordMessage): boolean {
 		if (!this.handler || !m.id) return true;
 		try {
-			const parsedTimestamp = m.timestamp
-				? Date.parse(m.timestamp)
-				: Number.NaN;
 			return this.handler({
 				id: m.id,
 				channelId: m.channel_id ?? "",
 				authorId: m.author?.id ?? "",
 				authorBot: m.author?.bot === true,
 				content: m.content ?? "",
-				...(Number.isFinite(parsedTimestamp)
-					? { timestampMs: parsedTimestamp }
-					: {}),
 				// FLY-267: explicit @-mention ids (for shared-channel mention-gating).
 				mentions: (m.mentions ?? [])
 					.map((u) => u.id)

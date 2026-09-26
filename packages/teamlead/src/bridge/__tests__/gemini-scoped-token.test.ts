@@ -162,13 +162,8 @@ describe("loadConfig — TEAMLEAD_GEMINI_AGENT_TOKEN validation", () => {
 	const SAVED = { ...process.env };
 
 	beforeEach(() => {
-		process.env.TEAMLEAD_DEFAULT_LEAD_AGENT = "product-lead";
-		process.env.DISCORD_OWNER_USER_ID = "founder-owner";
-		delete process.env.FLYWHEEL_FOUNDER_USER_ID;
 		delete process.env.TEAMLEAD_API_TOKEN;
-		delete process.env.TEAMLEAD_INGEST_TOKEN;
 		delete process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;
-		delete process.env.FLYWHEEL_ALERT_DUTY_TOKEN;
 		delete process.env.TEAMLEAD_REPLY_BY_ISSUE_ENABLED;
 		delete process.env.TEAMLEAD_REPLY_GUARD_ENABLED;
 	});
@@ -187,31 +182,6 @@ describe("loadConfig — TEAMLEAD_GEMINI_AGENT_TOKEN validation", () => {
 		process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = SCOPED;
 		expect(loadConfig().geminiAgentToken).toBe(SCOPED);
 	});
-
-	it("distinct alert-duty bearer is exposed only as alertDutyToken", () => {
-		process.env.TEAMLEAD_API_TOKEN = MASTER;
-		process.env.TEAMLEAD_INGEST_TOKEN = "ingest-secret";
-		process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = SCOPED;
-		process.env.FLYWHEEL_ALERT_DUTY_TOKEN = " alert-duty-secret ";
-		expect(loadConfig().alertDutyToken).toBe("alert-duty-secret");
-	});
-
-	it.each([
-		["TEAMLEAD_API_TOKEN", MASTER],
-		["TEAMLEAD_INGEST_TOKEN", "ingest-secret"],
-		["TEAMLEAD_GEMINI_AGENT_TOKEN", SCOPED],
-	])(
-		"alert-duty bearer collision with %s refuses startup",
-		(_name, collision) => {
-			process.env.TEAMLEAD_API_TOKEN = MASTER;
-			process.env.TEAMLEAD_INGEST_TOKEN = "ingest-secret";
-			process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = SCOPED;
-			process.env.FLYWHEEL_ALERT_DUTY_TOKEN = collision;
-			expect(() => loadConfig()).toThrow(
-				new RegExp(`FLYWHEEL_ALERT_DUTY_TOKEN.*${_name}`),
-			);
-		},
-	);
 
 	it("collision (scoped == master, trim-compared) → loadConfig THROWS, Bridge refuses to start", () => {
 		process.env.TEAMLEAD_API_TOKEN = MASTER;
@@ -236,47 +206,5 @@ describe("loadConfig — TEAMLEAD_GEMINI_AGENT_TOKEN validation", () => {
 		process.env.TEAMLEAD_API_TOKEN = MASTER;
 		process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = "   ";
 		expect(loadConfig().geminiAgentToken).toBeUndefined();
-	});
-
-	it("FLY-1715: tokenless remains legal, but a provided master token with outer whitespace fails start", () => {
-		expect(loadConfig().apiToken).toBeUndefined();
-		process.env.TEAMLEAD_API_TOKEN = ` ${MASTER} `;
-		expect(() => loadConfig()).toThrow(/TEAMLEAD_API_TOKEN.*outer whitespace/i);
-		process.env.TEAMLEAD_API_TOKEN = "   ";
-		expect(() => loadConfig()).toThrow(/TEAMLEAD_API_TOKEN.*outer whitespace/i);
-	});
-
-	it("FLY-1715: ingest and scoped bearers normalize at the config boundary", () => {
-		process.env.TEAMLEAD_API_TOKEN = MASTER;
-		process.env.TEAMLEAD_INGEST_TOKEN = "  ingest-secret  ";
-		process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = `  ${SCOPED}  `;
-		const cfg = loadConfig();
-		expect(cfg.apiToken).toBe(MASTER);
-		expect(cfg.ingestToken).toBe("ingest-secret");
-		expect(cfg.geminiAgentToken).toBe(SCOPED);
-	});
-
-	it.each([
-		["master/ingest", MASTER, ` ${MASTER} `, SCOPED],
-		["master/gemini", MASTER, "ingest-secret", ` ${MASTER} `],
-		["ingest/gemini", MASTER, " ingest-secret ", "ingest-secret"],
-	])(
-		"FLY-1715: rejects normalized %s bearer collision",
-		(_name, master, ingest, gemini) => {
-			process.env.TEAMLEAD_API_TOKEN = master;
-			process.env.TEAMLEAD_INGEST_TOKEN = ingest;
-			process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = gemini;
-			expect(() => loadConfig()).toThrow(/must differ/i);
-		},
-	);
-
-	it("FLY-1715: whitespace-only ingest remains absent and gemini unset remains legal", () => {
-		process.env.TEAMLEAD_API_TOKEN = MASTER;
-		process.env.TEAMLEAD_INGEST_TOKEN = "  ";
-		expect(loadConfig()).toMatchObject({
-			apiToken: MASTER,
-			ingestToken: undefined,
-			geminiAgentToken: undefined,
-		});
 	});
 });

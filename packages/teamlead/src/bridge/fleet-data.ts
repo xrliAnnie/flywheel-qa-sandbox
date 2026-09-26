@@ -15,7 +15,7 @@
  *    confirmed verdict (R4#1).
  *  - `deriveDecision()` — the ONE function mapping (desired, management,
  *    runtime) → {presentation, paneWatch}, consumed by both Dashboard and
- *    the pane alert path so the two can never disagree (R8#4).
+ *    the pane watchdog so the two can never disagree (R8#4).
  *  - `FleetPoller` — 30s cadence with overlap guard; SSE's 2s payload
  *    reuses the latest snapshot (F9).
  */
@@ -24,13 +24,6 @@ import { execFile } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-	type CarrierEvidenceEntry,
-	processAliveWithStart as defaultProcessAliveWithStart,
-	readCarrierRuntimeAssertion,
-	writeCarrierAuthorizationEvidenceSnapshot,
-} from "flywheel-comm/lead-lease";
-import { deriveLeadSocketPath } from "../lead-address.js";
 import {
 	DEFAULT_LEAD_BACKEND,
 	effectiveLeadBackend,
@@ -69,8 +62,6 @@ export interface FleetLeadState {
 		/** FLY-671: desired effort, or null = default (no override). */
 		effort: string | null;
 		backend: LeadBackendId;
-		/** FLY-1680: absent and explicit v2 are equivalent for Claude Leads. */
-		carrier: "v2" | "none";
 		source: "explicit" | "legacy" | "default";
 	};
 	carrier: {
@@ -82,7 +73,6 @@ export interface FleetLeadState {
 		/** FLY-671: effort carriers (manifest field + plist FLYWHEEL_LEAD_EFFORT). */
 		manifestEffort: string | null;
 		plistEffort: string | null;
-		plistCarrier: "v2" | "unknown";
 	};
 	observed: {
 		management: FleetManagement;
@@ -92,18 +82,13 @@ export interface FleetLeadState {
 	};
 	/** Derived via deriveDecision() — never interpreted ad hoc (R8#4). */
 	presentation: FleetPresentation;
-	/** Same single decision function feeds the pane alert path. */
+	/** Same single decision function feeds the pane watchdog. */
 	paneWatch: boolean;
 	/**
 	 * Drift is only computed for alignable standard-managed leads; codex
 	 * external carriers are N/A, not drift (R3#5). FLY-671 adds the effort axis.
 	 */
-	drift: {
-		model: boolean;
-		backend: boolean;
-		effort: boolean;
-		carrier: boolean;
-	} | null;
+	drift: { model: boolean; backend: boolean; effort: boolean } | null;
 }
 
 export interface FleetSnapshot {
@@ -121,14 +106,14 @@ export type ConfigSnapshotState =
 // ── Single decision function (R8#4) ─────────────────────────────────────
 
 /**
- * The total presentation/alert table from plan §WI-4. Both the Dashboard
- * and the pane alert path derive from THIS function — never from raw axes.
+ * The total presentation/watchdog table from plan §WI-4. Both the Dashboard
+ * and the pane watchdog derive from THIS function — never from raw axes.
  *
  * 漏报>误报: only `external-confirmed × no-claude-confirmed` under a codex
- * desire is excluded from the pane alert path; every indeterminate keeps
+ * desire is excluded from the pane watchdog; every indeterminate keeps
  * watching. `codex + standard×no-claude` shows a loud CONFLICT-CARRIER but
  * is excluded — the evidence positively says no Claude pane exists, and a
- * pane-text alert aimed at a backend it cannot observe only makes noise.
+ * pane-text watchdog aimed at a backend it cannot observe only makes noise.
  */
 export function deriveDecision(
 	desiredBackend: LeadBackendId,
@@ -187,13 +172,6 @@ export interface FleetProbeDeps {
 		panePid: number;
 		dead: boolean;
 	}> | null>;
-	/** FLY-1663: query one canonical private tmux server; absent = old probe. */
-	listPanesAtSocket?(socketPath: string): Promise<Array<{
-		windowName: string;
-		command: string;
-		panePid: number;
-		dead: boolean;
-	}> | null>;
 	/**
 	 * QA F-3: process-tree commands for a pid (self + 2 child levels);
 	 * null = probe failure. Healthy production Claude panes report a bare
@@ -202,32 +180,19 @@ export interface FleetProbeDeps {
 	 */
 	processCommandsOf(pid: number): Promise<string[] | null>;
 	homeDir(): string;
-	/** Runtime state root; defaults to $HOME/.flywheel. */
-	stateDir?(): string;
 	now(): Date;
 }
 
 const PLIST_PREFIX = "com.flywheel.lead";
 
-function manifestPathFor(stateDir: string, key: string): string {
-	return join(stateDir, "manifests", `${key}.json`);
+function manifestPathFor(home: string, key: string): string {
+	return join(home, ".flywheel", "manifests", `${key}.json`);
 }
 function plistPathFor(home: string, key: string): string {
 	return join(home, "Library", "LaunchAgents", `${PLIST_PREFIX}.${key}.plist`);
 }
-function wrapperV2PathFor(stateDir: string): string {
-	return join(stateDir, "bin", "flywheel-lead-wrapper-v2.sh");
-}
-
-export function classifyLeadPlistCarrier(
-	plist: string,
-	home: string,
-	stateDir = join(home, ".flywheel"),
-): "v2" | "unknown" {
-	return plist.includes(`<string>${wrapperV2PathFor(stateDir)}</string>`) &&
-		!plist.includes("flywheel-codex-lead-wrapper-")
-		? "v2"
-		: "unknown";
+function wrapperPathFor(home: string): string {
+	return join(home, ".flywheel", "bin", "flywheel-lead-wrapper.sh");
 }
 
 // ── Evidence collection (§2.4) ──────────────────────────────────────────
@@ -238,12 +203,10 @@ interface CarrierRead {
 	manifestModel: string | null;
 	manifestBackend: string | null;
 	manifestPid: number;
-	manifestSocketPath: string | null;
 	plistModel: string | null;
 	/** FLY-671: effort carriers. */
 	manifestEffort: string | null;
 	plistEffort: string | null;
-	plistCarrier: "v2" | "unknown";
 	plistOk: boolean; // structural binding: wrapper + canonical manifest + label
 	identityOk: boolean; // manifest projectName/leadId bind to this exact key
 	probeFailed: boolean;
@@ -251,10 +214,7 @@ interface CarrierRead {
 
 function readCarrier(
 	home: string,
-	stateDir: string,
 	key: string,
-	projectName: string,
-	leadId: string,
 	deps: FleetProbeDeps,
 ): CarrierRead {
 	const out: CarrierRead = {
@@ -263,16 +223,14 @@ function readCarrier(
 		manifestModel: null,
 		manifestBackend: null,
 		manifestPid: 0,
-		manifestSocketPath: null,
 		plistModel: null,
 		manifestEffort: null,
 		plistEffort: null,
-		plistCarrier: "unknown",
 		plistOk: false,
 		identityOk: false,
 		probeFailed: false,
 	};
-	const mPath = manifestPathFor(stateDir, key);
+	const mPath = manifestPathFor(home, key);
 	const pPath = plistPathFor(home, key);
 	try {
 		out.manifestExists = deps.fileExists(mPath);
@@ -290,11 +248,10 @@ function readCarrier(
 				pid?: number;
 				projectName?: string;
 				leadId?: string;
-				socketPath?: string;
 			};
 			// Identity binding (code-review R2-M2): a copied/renamed manifest
 			// must not lend standard-managed status to this exact key.
-			out.identityOk = m.projectName === projectName && m.leadId === leadId;
+			out.identityOk = `${m.projectName ?? ""}-${m.leadId ?? ""}` === key;
 			out.manifestModel = typeof m.model === "string" ? m.model : null;
 			out.manifestEffort = typeof m.effort === "string" ? m.effort : null;
 			out.manifestBackend =
@@ -302,8 +259,6 @@ function readCarrier(
 					? m.leadBackend.backendId
 					: null;
 			out.manifestPid = typeof m.pid === "number" ? m.pid : 0;
-			out.manifestSocketPath =
-				typeof m.socketPath === "string" ? m.socketPath : null;
 		} catch {
 			out.probeFailed = true;
 		}
@@ -322,17 +277,10 @@ function readCarrier(
 				/<key>\s*FLYWHEEL_LEAD_EFFORT\s*<\/key>\s*<string>([^<]*)<\/string>/,
 			);
 			out.plistEffort = effortMatch?.[1] ?? null;
-			out.plistCarrier = classifyLeadPlistCarrier(plist, home, stateDir);
 			out.plistOk =
-				out.plistCarrier !== "unknown" &&
+				plist.includes(`<string>${wrapperPathFor(home)}</string>`) &&
 				plist.includes(`<string>${mPath}</string>`) &&
 				plist.includes(`<string>${PLIST_PREFIX}.${key}</string>`);
-			if (out.plistCarrier === "v2") {
-				out.identityOk =
-					out.identityOk &&
-					out.manifestSocketPath ===
-						deriveLeadSocketPath(`${projectName}/${leadId}`, stateDir);
-			}
 		} catch {
 			out.probeFailed = true;
 		}
@@ -384,7 +332,6 @@ async function observeRuntime(
 		dead: boolean;
 	}> | null,
 	deps: FleetProbeDeps,
-	privateCarrier = false,
 ): Promise<{ runtime: FleetRuntime; reasons: string[] }> {
 	// Axis-1 (QA F-3, aligns with bash): the launchd pid's process tree.
 	if (launchdPid > 0 && deps.pidAlive(launchdPid)) {
@@ -404,11 +351,7 @@ async function observeRuntime(
 	// reuses the exact window name; the pane COMMAND must prove Claude
 	// (R8#3) OR the pane PID's process tree must (QA F-3 — healthy Claude
 	// panes report a bare version number as their command).
-	const matching = panes.filter(
-		(p) =>
-			!p.dead &&
-			(privateCarrier ? p.windowName === "main" : p.windowName.includes(key)),
-	);
+	const matching = panes.filter((p) => !p.dead && p.windowName.includes(key));
 	for (const p of matching) {
 		if (/claude/i.test(p.command)) {
 			return { runtime: "claude-confirmed", reasons: [] };
@@ -428,7 +371,7 @@ async function observeRuntime(
 
 /**
  * Collect the full fleet evidence map. The SINGLE probe owner for Bridge
- * consumers (Dashboard + fleet sensors); the fleet CLI takes its own fresh
+ * consumers (Dashboard + watchdog); the fleet CLI takes its own fresh
  * probes under the restart lock (R7#4 — separate process, never this map).
  */
 export async function collectFleetSnapshot(
@@ -438,7 +381,6 @@ export async function collectFleetSnapshot(
 	configState: ConfigSnapshotState = "live",
 ): Promise<FleetSnapshot> {
 	const home = deps.homeDir();
-	const stateDir = deps.stateDir?.() ?? join(home, ".flywheel");
 	const collectedAt = deps.now().toISOString();
 	// ONE batched tmux query per refresh (F9/R6#5).
 	let panes: Array<{
@@ -464,35 +406,13 @@ export async function collectFleetSnapshot(
 			let reasons: string[] = [];
 			let runtime: FleetRuntime;
 			try {
-				carrier = readCarrier(
-					home,
-					stateDir,
-					key,
-					project.projectName,
-					lead.agentId,
-					deps,
-				);
+				carrier = readCarrier(home, key, deps);
 				const m = await observeManagement(key, carrier, deps);
 				management = m.management;
 				reasons = m.reasons;
 				const print = await deps.launchdPrint(`${PLIST_PREFIX}.${key}`);
 				const launchdPid = print?.loaded ? print.pid : 0;
-				let leadPanes = panes;
-				const privateCarrier = carrier.plistCarrier === "v2";
-				if (privateCarrier) {
-					leadPanes =
-						carrier.identityOk && carrier.manifestSocketPath
-							? ((await deps.listPanesAtSocket?.(carrier.manifestSocketPath)) ??
-								null)
-							: [];
-				}
-				const r = await observeRuntime(
-					key,
-					launchdPid,
-					leadPanes,
-					deps,
-					privateCarrier,
-				);
+				const r = await observeRuntime(key, launchdPid, panes, deps);
 				runtime = r.runtime;
 				reasons = reasons.concat(r.reasons);
 			} catch {
@@ -503,11 +423,9 @@ export async function collectFleetSnapshot(
 					manifestModel: null,
 					manifestBackend: null,
 					manifestPid: 0,
-					manifestSocketPath: null,
 					plistModel: null,
 					manifestEffort: null,
 					plistEffort: null,
-					plistCarrier: "unknown",
 					plistOk: false,
 					identityOk: false,
 					probeFailed: true,
@@ -524,12 +442,10 @@ export async function collectFleetSnapshot(
 				model: boolean;
 				backend: boolean;
 				effort: boolean;
-				carrier: boolean;
 			} | null = null;
 			if (eff.backend === "claude-code" && carrier.manifestExists) {
 				const configuredModel = lead.model ?? null;
 				const configuredEffort = lead.effort ?? null;
-				const configuredCarrier = lead.carrier ?? "v2";
 				drift = {
 					model:
 						configuredModel !== carrier.manifestModel ||
@@ -539,7 +455,6 @@ export async function collectFleetSnapshot(
 					effort:
 						configuredEffort !== carrier.manifestEffort ||
 						configuredEffort !== carrier.plistEffort,
-					carrier: configuredCarrier !== carrier.plistCarrier,
 				};
 			}
 
@@ -553,7 +468,6 @@ export async function collectFleetSnapshot(
 					model: lead.model ?? null,
 					effort: lead.effort ?? null,
 					backend: eff.backend,
-					carrier: eff.backend === "claude-code" ? "v2" : "none",
 					source: eff.source,
 				},
 				carrier: {
@@ -564,7 +478,6 @@ export async function collectFleetSnapshot(
 					plistModel: carrier.plistModel,
 					manifestEffort: carrier.manifestEffort,
 					plistEffort: carrier.plistEffort,
-					plistCarrier: carrier.plistCarrier,
 				},
 				observed: {
 					management,
@@ -603,15 +516,7 @@ function structuralProjection(projects: ProjectEntry[]): string {
 				// FLY-671: effort is a HOT fleet field (like model/backend) — exclude
 				// it from the structural projection so a projects.json effort edit is
 				// a hot overlay, NOT a restart-required structural change.
-				const {
-					model: _m,
-					backend: _b,
-					effort: _e,
-					modelContextWindow: _w,
-					botToken: _t,
-					carrier: _c,
-					...rest
-				} = l;
+				const { model: _m, backend: _b, effort: _e, botToken: _t, ...rest } = l;
 				return rest;
 			}),
 		})),
@@ -650,8 +555,7 @@ export class ConfigSnapshotProvider {
 				(l) =>
 					l.model !== undefined ||
 					l.backend !== undefined ||
-					l.effort !== undefined ||
-					l.modelContextWindow !== undefined,
+					l.effort !== undefined, // FLY-671
 			),
 		);
 	}
@@ -696,9 +600,6 @@ export class ConfigSnapshotProvider {
 				else delete next.backend;
 				if (f.effort !== undefined) next.effort = f.effort;
 				else delete next.effort;
-				if (f.modelContextWindow !== undefined)
-					next.modelContextWindow = f.modelContextWindow;
-				else delete next.modelContextWindow;
 				return next;
 			}),
 		}));
@@ -735,65 +636,6 @@ export interface FleetPollerOptions {
 	legacyBackendOf: (project: ProjectEntry) => string | undefined;
 	deps: FleetProbeDeps;
 	logger?: (msg: string) => void;
-	/** FLY-1309: opt-in production wiring for the carrier evidence writer. */
-	carrierEnv?: NodeJS.ProcessEnv;
-	processAliveWithStart?: (pid: number, lstart: string) => boolean;
-}
-
-/**
- * Aggregate generation-bound runtime assertions into one fresh authorization
- * snapshot. Assertion wall-clock age is intentionally not an expiry signal:
- * pid+lstart liveness is the generation boundary. A future timestamp is still
- * rejected as malformed evidence.
- */
-export function materializeCarrierAuthorizationEvidence(input: {
-	projects: ProjectEntry[];
-	legacyBackendOf: (project: ProjectEntry) => string | undefined;
-	env: NodeJS.ProcessEnv;
-	collectedAt: string;
-	processAliveWithStart?: (pid: number, lstart: string) => boolean;
-}): void {
-	const collectedAtMs = Date.parse(input.collectedAt);
-	if (!Number.isFinite(collectedAtMs)) {
-		throw new Error("carrier evidence collectedAt is invalid");
-	}
-	const isAlive = input.processAliveWithStart ?? defaultProcessAliveWithStart;
-	const leads: Record<string, CarrierEvidenceEntry> = {};
-	for (const project of input.projects) {
-		const legacyBackend = input.legacyBackendOf(project);
-		for (const lead of project.leads) {
-			if (
-				effectiveLeadBackend(lead.backend, legacyBackend).backend !==
-				"codex-app-server"
-			) {
-				continue;
-			}
-			const leadKey = `${project.projectName}-${lead.agentId}`;
-			const assertion = readCarrierRuntimeAssertion(input.env, leadKey);
-			if (!assertion) continue;
-			const publishedAtMs = Date.parse(assertion.publishedAt);
-			if (
-				!Number.isFinite(publishedAtMs) ||
-				publishedAtMs > collectedAtMs + 5_000 ||
-				!isAlive(assertion.pid, assertion.lstart)
-			) {
-				continue;
-			}
-			leads[leadKey] = {
-				leadKey,
-				backend: "codex-app-server",
-				identityDigest: assertion.identityDigest,
-				pid: assertion.pid,
-				lstart: assertion.lstart,
-				instanceDigest: assertion.instanceDigest,
-			};
-		}
-	}
-	writeCarrierAuthorizationEvidenceSnapshot({
-		env: input.env,
-		collectedAt: input.collectedAt,
-		leads,
-	});
 }
 
 export class FleetPoller {
@@ -827,26 +669,12 @@ export class FleetPoller {
 		try {
 			this.opts.provider.refresh();
 			const { projects, state } = this.opts.provider.snapshot();
-			const snapshot = await collectFleetSnapshot(
+			this.last = await collectFleetSnapshot(
 				projects,
 				this.opts.legacyBackendOf,
 				this.opts.deps,
 				state,
 			);
-			if (this.opts.carrierEnv) {
-				materializeCarrierAuthorizationEvidence({
-					projects,
-					legacyBackendOf: this.opts.legacyBackendOf,
-					env: this.opts.carrierEnv,
-					collectedAt: snapshot.collectedAt,
-					...(this.opts.processAliveWithStart
-						? {
-								processAliveWithStart: this.opts.processAliveWithStart,
-							}
-						: {}),
-				});
-			}
-			this.last = snapshot;
 		} catch (err) {
 			this.opts.logger?.(
 				`[FleetPoller] collection failed — keeping previous snapshot: ${(err as Error).message}`,
@@ -859,7 +687,7 @@ export class FleetPoller {
 	/**
 	 * Latest snapshot, or null when never collected / stale. Stale evidence
 	 * resolves to "no snapshot" so consumers degrade to indeterminate
-	 * (alert inclusion), never to a stale confirmed verdict (R6#5).
+	 * (watchdog inclusion), never to a stale confirmed verdict (R6#5).
 	 */
 	snapshot(): FleetSnapshot | null {
 		if (!this.last) return null;
@@ -869,6 +697,54 @@ export class FleetPoller {
 		if (age > this.stalenessMs) return null;
 		return this.last;
 	}
+}
+
+// ── Watchdog membership (per-lead, consuming the evidence map) ──────────
+
+/**
+ * Per-lead pane-watchdog membership (plan §2.4): exclusion requires a FRESH
+ * evidence verdict with paneWatch=false from the single decision function.
+ * No/stale evidence → include (indeterminate keeps watching; 漏报>误报).
+ *
+ * BYTE-COMPAT: when nothing is excluded, the ORIGINAL array reference is
+ * returned (all-claude deployments are a no-op, same elements same order).
+ */
+export function filterPaneWatchedLeads(
+	projects: ProjectEntry[],
+	legacyBackendOf: (project: ProjectEntry) => string | undefined,
+	evidence: FleetSnapshot | null,
+): ProjectEntry[] {
+	const byKey = new Map<string, FleetLeadState>();
+	if (evidence) {
+		for (const l of evidence.leads) byKey.set(l.key, l);
+	}
+	let changed = false;
+	const out: ProjectEntry[] = [];
+	for (const p of projects) {
+		const legacy = legacyBackendOf(p);
+		const watched = p.leads.filter((lead) => {
+			const eff = effectiveLeadBackend(lead.backend, legacy);
+			if (eff.backend !== "codex-app-server") return true;
+			const ev = byKey.get(`${p.projectName}-${lead.agentId}`);
+			if (!ev) {
+				// No FRESH evidence for a codex-desired lead → indeterminate →
+				// keep watching (code-review H8). Exclusion requires a fresh
+				// paneWatch=false verdict from the shared decision function —
+				// desired config alone must never silence the watchdog (漏报>误报).
+				// Cold-start window is seconds (poller collects at start()) and
+				// pane alerts need multiple cycles, so brief inclusion is noise-free.
+				return true;
+			}
+			return ev.paneWatch;
+		});
+		if (watched.length === p.leads.length) {
+			out.push(p);
+		} else {
+			changed = true;
+			if (watched.length > 0) out.push({ ...p, leads: watched });
+		}
+	}
+	return changed ? out : projects;
 }
 
 // ── Production probe deps ───────────────────────────────────────────────
@@ -975,38 +851,6 @@ export function buildDefaultFleetProbeDeps(): FleetProbeDeps {
 					};
 				});
 		},
-		listPanesAtSocket: async (socketPath) => {
-			const r = await execProbe("tmux", [
-				"-S",
-				socketPath,
-				"list-panes",
-				"-a",
-				"-F",
-				"#{pane_dead}\t#{window_name}\t#{pane_pid}\t#{pane_current_command}",
-			]);
-			if (
-				r.kind === "known-negative" &&
-				/no server running|no current client|no such file or directory/i.test(
-					r.stderr + r.stdout,
-				)
-			) {
-				return [];
-			}
-			if (r.kind !== "ok") return null;
-			return r.stdout
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => {
-					const [dead = "0", windowName = "", panePidRaw = "0", command = ""] =
-						line.split("\t");
-					return {
-						windowName,
-						command,
-						panePid: Number(panePidRaw) || 0,
-						dead: dead === "1",
-					};
-				});
-		},
 		processCommandsOf: async (pid) => {
 			// self + children + grandchildren commands (mirrors bash
 			// process_tree_has_claude). ps "no such pid" is a determined
@@ -1032,8 +876,6 @@ export function buildDefaultFleetProbeDeps(): FleetProbeDeps {
 			return out;
 		},
 		homeDir: () => homedir(),
-		stateDir: () =>
-			process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
 		now: () => new Date(),
 	};
 }

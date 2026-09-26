@@ -10,11 +10,7 @@
  * surface for the `direct`-toggleable flags only.
  */
 
-import {
-	type FlagEffectiveByProject,
-	type FlagView,
-	isDirectToggleMetadata,
-} from "flywheel-config";
+import type { FlagView } from "flywheel-config";
 
 /** HTML-escape (attributes + text). */
 export function esc(s: string): string {
@@ -29,15 +25,8 @@ export function esc(s: string): string {
 /** 生效路径 label (how a change to this flag takes effect). */
 export function effectLabel(flag: FlagView): string {
 	if (flag.source === "project_config") return "新 run 生效";
-	if (
-		flag.readTimings.length > 0 &&
-		flag.readTimings.every(
-			(timing) => timing === "call_time" || timing === "dotenv_live",
-		)
-	) {
-		return "热生效";
-	}
 	if (flag.readTimings.includes("cli_invocation")) return "命令级";
+	if (flag.readTimings.every((t) => t === "call_time")) return "热生效";
 	return "需重启";
 }
 
@@ -115,53 +104,20 @@ export function categoryClass(cat: FlagView["category"]): string {
  * server re-checks on stage/apply — this is only which cards show a control.
  */
 export function isFlagViewDirectToggleable(flag: FlagView): boolean {
-	return !flag.storeManaged && isDirectToggleMetadata(flag);
+	return (
+		flag.toggleable === "direct" &&
+		flag.scope === "bridge_global" &&
+		flag.source === "env" &&
+		!flag.dormant &&
+		flag.readTimings.length > 0 &&
+		flag.readTimings.every((t) => t === "call_time")
+	);
 }
 
 function boolBadge(on: boolean): string {
 	return on
 		? '<span class="ff-badge ff-on">ON</span>'
 		: '<span class="ff-badge ff-off">OFF</span>';
-}
-
-function observedValue(
-	flag: FlagView,
-	value: boolean | string | undefined,
-): string {
-	if (flag.valueKind === "bool") return value === true ? "ON" : "OFF";
-	return String(value ?? "unknown");
-}
-
-/** Shared source-divergence explanation for both flag-console projections. */
-export function formatFlagDivergence(flag: FlagView): string | undefined {
-	if (!flag.divergence) return undefined;
-	const message = {
-		staged_restart: ".env 已改,待重启生效",
-		split_brain: "⚠ CLI 与 Bridge 见值不同",
-		bridge_stale: ".env 已改,Bridge 未拾取",
-		source_unavailable: ".env 不可读,无法确认或操作;Bridge 值仅供观测",
-	}[flag.divergence];
-	const bridge = `Bridge: ${observedValue(flag, flag.bridgeEffective ?? flag.effective)}`;
-	const file =
-		flag.divergence === "source_unavailable"
-			? ""
-			: ` · .env: ${observedValue(flag, flag.fileEffective)}`;
-	return `${message} · ${bridge}${file}`;
-}
-
-function renderDivergence(flag: FlagView): string {
-	const explanation = formatFlagDivergence(flag);
-	return explanation
-		? `<span class="ff-divergence"><span class="ff-badge ff-err">${esc(explanation)}</span></span>`
-		: "";
-}
-
-function projectViaLabel(via: FlagEffectiveByProject["via"]): string {
-	return {
-		project_row: "项目行",
-		star_row: "* 行",
-		default: "默认",
-	}[via ?? "default"];
 }
 
 /** Render the current-state badge for a flag view (read-only). */
@@ -171,7 +127,6 @@ export function renderFlagState(flag: FlagView): string {
 	if (flag.error) {
 		return `<span class="ff-badge ff-err">⚠ ${esc(flag.error)}</span>`;
 	}
-	if (flag.divergence) return renderDivergence(flag);
 	if (flag.dormant) {
 		return '<span class="ff-badge ff-dim">validated-only (dormant)</span>';
 	}
@@ -190,109 +145,22 @@ export function renderFlagState(flag: FlagView): string {
 					flag.valueKind === "bool"
 						? boolBadge(r.value === true)
 						: `<span class="ff-badge ff-val">${esc(String(r.value ?? ""))}</span>`;
-				const via = r.via
-					? `<span class="ff-badge ff-via">${esc(projectViaLabel(r.via))}</span>`
-					: "";
-				return `<span class="ff-proj">${name}: ${val} ${via}</span>`;
+				return `<span class="ff-proj">${name}: ${val}</span>`;
 			})
 			.join(" ");
 	}
 	// bridge_global
-	const display = flag.displayEffective ?? flag.effective;
-	if (flag.valueKind === "bool") return boolBadge(display === true);
-	return `<span class="ff-badge ff-val">${esc(String(display ?? ""))}</span>`;
+	if (flag.valueKind === "bool") return boolBadge(flag.effective === true);
+	return `<span class="ff-badge ff-val">${esc(String(flag.effective ?? ""))}</span>`;
 }
 
 /** How the per-card interactive control is rendered (differs by surface). */
 export type FlagControlMode = "none" | "console" | "phone";
 
-interface ProjectControlState {
-	p: 0 | 1;
-	v?: "on" | "off";
-}
-
-function projectValueOptions(state: ProjectControlState): string {
-	if (state.p === 0) {
-		return [
-			'<option value="inherit" selected>继承（未设行）</option>',
-			'<option value="on">ON（新建显式行）</option>',
-			'<option value="off">OFF（新建显式行）</option>',
-		].join("");
-	}
-	return [
-		`<option value="on"${state.v === "on" ? " selected" : ""}>ON（显式行）</option>`,
-		`<option value="off"${state.v === "off" ? " selected" : ""}>OFF（显式行）</option>`,
-		'<option value="clear">清除（回落继承）</option>',
-	].join("");
-}
-
-function renderProjectFlagControl(flag: FlagView): string {
-	const projectNames = [
-		...new Set((flag.effectiveByProject ?? []).map((row) => row.projectName)),
-	];
-	const scopes = ["*", ...projectNames];
-	const storeRows = new Map(
-		(flag.scopedStore?.rows ?? []).map((row) => [row.scope, row]),
-	);
-	const state: Record<string, ProjectControlState> = {};
-	for (const scope of scopes) {
-		const row = storeRows.get(scope);
-		state[scope] = row
-			? { p: 1, v: row.value === true ? "on" : "off" }
-			: { p: 0 };
-	}
-	const scopeOptions = scopes
-		.map(
-			(scope) =>
-				`<option value="${esc(scope)}"${scope === "*" ? " selected" : ""}>${scope === "*" ? "*（全项目）" : esc(scope)}</option>`,
-		)
-		.join("");
-	const initial = state["*"] ?? { p: 0 };
-	const current = initial.p === 1 ? initial.v : "inherit";
-	return [
-		`<span class="ffc-project-control" data-ffp-control data-ffp-name="${esc(flag.name)}" data-ffp-state="${esc(JSON.stringify(state))}">`,
-		`<label>项目 <select data-ffp-scope>${scopeOptions}</select></label>`,
-		`<label>值 <select data-ffp-value data-current="${current}">${projectValueOptions(initial)}</select></label>`,
-		"</span>",
-	].join("");
-}
-
 /** The in-card control for a direct-toggleable flag (console button / phone checkbox). */
 function renderFlagControl(flag: FlagView, mode: FlagControlMode): string {
-	if (
-		mode === "phone" &&
-		flag.projectStoreManaged &&
-		flag.scopedStore &&
-		flag.clockReadiness === "ready" &&
-		!flag.retiring &&
-		!flag.error
-	) {
-		return renderProjectFlagControl(flag);
-	}
-	if (
-		mode === "none" ||
-		flag.retiring ||
-		flag.divergence ||
-		!isFlagViewDirectToggleable(flag)
-	) {
-		return "";
-	}
-	// FLY-1356: enum direct flags (skill_framework_mode) get a value dropdown
-	// instead of an on/off control. The phone copy-paste script turns a changed
-	// select into a `feature-flags apply --name <flag> --to <value>` line.
-	if (flag.valueKind === "enum") {
-		const current = String(
-			flag.displayEffective ?? flag.effective ?? flag.default,
-		);
-		const opts = (flag.enumValues ?? [])
-			.map(
-				(v) =>
-					`<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(v)}</option>`,
-			)
-			.join("");
-		return `<select class="ffc-select" data-ff-enum data-ff-name="${esc(flag.name)}" data-current="${esc(current)}">${opts}</select>`;
-	}
-	const on = (flag.displayEffective ?? flag.effective) === true;
+	if (mode === "none" || !isFlagViewDirectToggleable(flag)) return "";
+	const on = flag.effective === true;
 	const to = on ? "off" : "on";
 	if (mode === "console") {
 		return `<button type="button" class="ffc-btn" data-ff-apply data-ff-name="${esc(flag.name)}" data-ff-to="${to}">切到 ${on ? "OFF" : "ON"}</button>`;
@@ -315,10 +183,6 @@ export function renderFlagCard(
 				? "ff-kill"
 				: "ff-feat";
 	const control = renderFlagControl(flag, mode);
-	const ignoredManagedEnv =
-		flag.storeManaged && flag.fileConfigured && flag.clockReadiness === "ready"
-			? '<span class="ff-badge ff-warn">legacy .env 行已忽略;删这行,改值走 SQLite flag store stage/apply</span>'
-			: "";
 	return [
 		`<div class="ffc ${categoryClass(flag.category)}">`,
 		'<div class="ffc-head">',
@@ -330,10 +194,6 @@ export function renderFlagCard(
 		'<div class="ffc-foot">',
 		`<span class="ff-badge ${catClass}">${esc(cat)}</span>`,
 		`<span class="ff-badge ff-eff">${esc(effectLabel(flag))}</span>`,
-		flag.retiring
-			? `<span class="ff-badge ff-retiring">退役中 ${esc(flag.retiring)}</span>`
-			: "",
-		ignoredManagedEnv,
 		control,
 		"</div>",
 		"</div>",
@@ -366,10 +226,6 @@ export const FEATURE_FLAG_CSS = `
   padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
 .ffc-btn:disabled{opacity:.5;cursor:default}
 .ffc-check{margin-left:auto;font-size:12px;color:#1d1d1f;display:flex;align-items:center;gap:5px;cursor:pointer}
-.ffc-project-control{margin-left:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:11px;color:#48484a}
-.ffc-project-control label{display:flex;align-items:center;gap:4px}
-.ffc-project-control select{border:1px solid #d5d5da;border-radius:7px;background:#fff;color:#1d1d1f;
-  font-family:inherit;font-size:11px;padding:3px 5px;max-width:170px}
 .ff-badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600}
 .ff-on{background:#e3f7ea;color:#248a3d}
 .ff-off{background:#f0f0f2;color:#86868b}
@@ -380,11 +236,7 @@ export const FEATURE_FLAG_CSS = `
 .ff-kill{background:#fff3e0;color:#c66a00}
 .ff-gov{background:#f3e8fe;color:#8944ab}
 .ff-eff{background:#f5f5f7;color:#48484a}
-.ff-warn{background:#fff3e0;color:#9a5b00}
-.ff-via{background:#eef2f7;color:#59636e}
-.ff-retiring{background:#fff0f0;color:#c40018}
 .ff-proj{display:inline-block;margin-right:8px}
-.ff-divergence{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
 `;
 
 /**

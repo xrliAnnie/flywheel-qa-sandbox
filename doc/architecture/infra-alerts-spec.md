@@ -61,7 +61,7 @@ owner 由 `resolveTicketOwner(kind, provider, registry)` 决定(`ticket-owner-ma
 
 ## 4. 消息 schema(逐字段)
 
-统一频道模式下(路由与工单 schema 已由 FLY-1831 welded on),每条工单 root 消息:
+统一频道模式 + `FLYWHEEL_ALERT_TICKETS=1` 下,每条工单 root 消息:
 
 ```
 ${sev} **${title}** (${leadId} / ${eventType})
@@ -71,7 +71,7 @@ ${body}
 
 | 字段 | 来源 | 约束 |
 |---|---|---|
-| 首行 `(leadId / kind)` | 现状锚,**一字节不动**(`pane-live-region.ts` 的 `ALERT_ECHO_START` 依赖它剥回声,FLY-220) | append-only:🎫 行只追加不改首行 |
+| 首行 `(leadId / kind)` | 现状锚,**一字节不动**(LeadWatchdog `ALERT_ECHO_START` 依赖它剥回声,FLY-220) | append-only:🎫 行只追加不改首行 |
 | `projectName` | payload(修现状缺 project 的问题) | — |
 | 首见 | `ticket.firstSeenMs`(PR-2 起取 `alert_threads.first_seen_at`;缺省 = 发射时刻) | 本地 HH:MM |
 | owner | owner map(§3);snowflake 校验通过才渲染 `<@id>` + `allowed_mentions.users=[id]` | malformed → 降级 label/—,`parse:[]` |
@@ -100,14 +100,14 @@ stateDiagram-v2
 - **T2(已锁)**:修不掉判定 = **重试 2 次 或 距 first-seen 5 分钟超时**;无人认领兜底 = 5min 未 ACK(owner 已配置时)。
 - **幂等**:同一问题不重复开工单(claims.db + episode-latch + `alert_threads` active-mapping 复用)。
 - **行为变更(Annie 早报确认项)**:`runner_stuck_unhandled` 的 founder page 从「立即页」改为
-  「T2 修不掉才页」;FLY-1831 后这是固定生产合同,不再受运行时 flag 控制。
+  「T2 修不掉才页」(`FLYWHEEL_ALERT_TICKETS` 未设 = 立即页现状)。
 
 ## 6. 发送方门禁(三层)
 
 | 层 | 机制 | 位置 |
 |---|---|---|
 | Discord 权限(硬边界) | 告警频道只给 infra bot + 发送身份 Send(ops,写进 FLY-928 部署 runbook) | Discord server 设置 |
-| Bridge 代码 | `/api/chat-threads/send`、`/api/chat-threads/create` 目标 = 统一告警频道 → `403 alert_channel_gated`(FLY-1831 后 welded on) | `bridge/tools.ts` |
+| Bridge 代码 | `/api/chat-threads/send`、`/api/chat-threads/create` 目标 = 统一告警频道 → `403 alert_channel_gated`(挂 `FLYWHEEL_ALERT_ROUTING=1`) | `bridge/tools.ts` |
 | shell 兜底(D3,与 FLY-954 对齐) | `lead-alert.sh` 认 `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID` + `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` + 分钟级速率近似(超限落 queue 由 Bridge 代发);token 不进 argv;`allowed_mentions: {parse:[]}` | `scripts/lead-alert.sh` |
 
 **单一发送身份(D2)**:`FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 设了 → root/DM/drain/Hub thread 操作全部坍缩为该身份;
@@ -129,21 +129,21 @@ bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fai
 - **按真实 stage 报,不靠 heuristic 猜**:kind/措辞取自 `flywheel-comm stage set` 上报的 `sessions.session_stage`。
 - **park 元组归属**:〈真实 stage,阻塞方(founder|lead|runner|ci),owner Lead,waiting_since,投递证据〉
   (`checkpoint-park.ts` 纯函数派生)。
-- **历史时效 1h**:该 checkpoint-park patrol 已由 FLY-1456 移除；不得再设置已退役的 `FLYWHEEL_CHECKPOINT_STUCK_MS`。
+- **时效 1h(可配)**:`FLYWHEEL_CHECKPOINT_STUCK_MS`(默认 3600000)。
 - **首响应人 = owner,不是 founder**:第一响 wake owning Runner/Lead 自查自愈;再超一窗才 founder page 落 issue thread。
 - **文案模板(真话)**:`[FLY-XXX] [Runner] 停在<真实stage>已<N>h,球在<party>,owner=<Lead>,下一步=<…>`
   —— approve 停等的告警必须含「待你拍板/等你 ship」、**绝不**写「code review 卡住」(FLY-912 回归测试)。
 
-## 9. env 管道与墓碑
+## 9. env 开关一览(全部 default-off = 现状逐字节)
 
 | env | 作用 | 生产值 |
 |---|---|---|
-| `FLYWHEEL_ALERT_ROUTING` | **已退役(FLY-1831)**:D1 Router + `/send` 门禁已 welded on | 不得设置;从生产 `.env` 删除 |
-| `FLYWHEEL_ALERT_TICKETS` | **已退役(FLY-1831)**:🎫 schema 头 + owner @ + 生命周期/T2 已 welded on | 不得设置;从生产 `.env` 删除 |
+| `FLYWHEEL_ALERT_ROUTING` | D1 Router + `/send` 门禁 | `1` |
+| `FLYWHEEL_ALERT_TICKETS` | 🎫 schema 头 + owner @ + 生命周期/T2 | `1` |
 | `FLYWHEEL_ALERT_RATE_PER_MIN` | T1 令牌桶 | `20` |
 | `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` | D2 单一发送身份(存 env 名) | `FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN`(专用 dispatcher,作者≠owner —— FLY-1049 修正,CASS 过渡态已裁掉) |
 | `FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID` | Claude bot owner @(T3/FLY-928 后填) | 待 FLY-928 |
-| `FLYWHEEL_CHECKPOINT_WATCHDOG` / `FLYWHEEL_CHECKPOINT_STUCK_MS` | **已退役(FLY-1456)**:checkpoint-park patrol 已移除,两变量均不得再设置 | n/a |
+| `FLYWHEEL_CHECKPOINT_WATCHDOG` / `FLYWHEEL_CHECKPOINT_STUCK_MS` | Watchdog v2 巡检 / 时效 | `1` / 默认 1h |
 
 ## 10. 判例链接
 
@@ -168,59 +168,3 @@ bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fai
 - **FLY-925 先行 env**(`FLYWHEEL_BRIDGE_URL` / `STANDUP_PROJECT_NAME`)已落机
   (2026-07-09,token report 已 GREEN);防复发说明见根目录 `SETUP.md`。
 - enable 后的探活/演练/观察 = runbook 步 5-9;验收 = FLY-1049 plan §3 七条。
-
-## 12. Claw 全队列值守合同（FLY-2076；覆盖旧的 mention-only 首响口径）
-
-FLY-2076 把 `claude-infra-bot-lead` 定为 CH-1 唯一常设值守席位。对 Claw 而言，
-§2 铁律 3 和 §5 的 owner mention 不再表示「没 @ 就不看」：owner map 仍决定具体
-修复归属和「谁都不救自己」，但**每条工单根消息都由 Claw 先做只读初审**。Cass
-完全退出值守。此变更不新增告警层、不改变 kind 分类、不做噪音判断；入站仍是
-FLY-2075 修复后的 Discord 主消息管道，工单仍由既有 `AlertChannelHub` 创建。
-
-### 12.1 初审只有三个去向
-
-| 去向 | 判据 | 值守动作 |
-|---|---|---|
-| ① 自己解决 | `runbook/<kind>` 命中、动作在 infra carve-out 内、证据足够 | thread 先留 🧭 → ACK → 执行和验证 → ✅ → resolve → 立刻写 runbook 草稿 |
-| ② 转负责人 | 自己解决不了，contact book 按精确 kind 查到负责人 | thread 先留恰一个负责人 @ 的 🧭 → `handoff --to <leadId>` |
-| ③ Tadashi 兜底 | contact book 没有可用的 roster leadId + Discord id | thread 标 `📒 册上无此 kind`，恰一个 @Tadashi → handoff |
-
-没有第四种，也没有 silent close。没有 runbook、动作未授权、证据不足或不确定时，
-值守只能读 thread / 日志 / 状态 / 只读数据库 / GET；禁止通过改状态「试试看」。原则：
-**宁转勿吞**。Claude 侧账号/auth 继续归 Codex Infra Bot，任何 bot 都不救自己的
-账号体系；owner 为 Codex bot 的工单，Claw 只做无 @ 初审 + ACK，不改 owner。
-
-### 12.2 现有管道上的处置手
-
-- Claw 的 `access.json` 仅把既有 Alerts group 改为 `requireMention:false`、
-  `allowFrom:[]`，并把 dispatcher id 加入 `allowBots`；不创建 group。
-- `GET /api/alert-duty/seat` 只供启动解析现有 dispatcher 身份。
-- `/duty/alert-tickets/{outstanding,transition}` 只读写既有 `alert_threads` 列并调用
-  既有 `AlertChannelHub.resolve()`；它不发告警、不 @ 人、不构成第四条告警路径。
-- `outstanding` 服务端默认 25、最大 100，按 `(opened_at,event_id)` newest-first；响应将
-  该 tuple 编成 opaque `since` cursor。满批逐批处置并主动报压力；没有新表、列或 scheduler。
-- `/duty` 只接受 `FLYWHEEL_ALERT_DUTY_TOKEN`。此 token 与 Bridge 其他 bearer 碰撞
-  时拒绝启动，只投递给 Claw；这是同 OS user 下的防误用 capability，不宣称身份隔离。
-- `ack` / `handoff` / `resolve` 全部以 `event_id` 围栏当前 episode；新 episode 覆盖
-  后返回 `409 stale_episode`，不得误写新工单。
-- 留痕顺序固定为**先发帖、后记账**；`acked_at IS NULL` 是重启恢复游标。自动
-  RESOLVED 的欠账只 ACK，不重开 thread。rescue/ARC 不代替值守 ACK。
-
-### 12.3 压力与根因
-
-值守看到批次接力、outstanding 返回满批或本次处理不完的欠账时，必须主动在 Alerts 根频道
-发一帖 @Tadashi，说明未初审数量、最早时间和 kind 分布。同一会话一次即可；这里
-**不设指标、SLA、考核、阈值或 hard limit**，也不新增噪音判定层。
-
-每条 🧭 都带「根因线」：能判定代码/配置问题时，链接已有 issue 或新建 FLY issue，
-记录已知步骤与防复发思路；判不清只写已知到哪一步，不硬下结论。① 解决后立刻把
-「现象 / 动作 / 验证」通用条目贴入 thread 并写入
-`$FLYWHEEL_STATE_DIR/oncall-drafts/<kind>.md`，由 FLY-2077 后续收进正式册子。
-
-### 12.4 告警系统总开关
-
-`alert_system` 是 store-managed、默认 ON 的告警系统总开关。OFF 关闭的是整套告警
-投递，不是 Claw：告警不进频道、不建 thread / 工单，也不交给 Claw；既有
-`lead_events` 账本仍照常记录，待恢复后继续处理。操作只走本机 Fleet 管理面的
-`POST /api/fleet/flag/stage` → `POST /api/fleet/flag/apply`，值写入 `flag_values` 并在
-下一次读取时立即生效，无需重启 Bridge。

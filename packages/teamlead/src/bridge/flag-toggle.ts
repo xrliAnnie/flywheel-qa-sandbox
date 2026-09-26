@@ -23,13 +23,7 @@
  * consistent) and live is unchanged — never "live changed but not persisted".
  */
 
-import {
-	FEATURE_FLAGS,
-	type FeatureFlagSpec,
-	getFlagStoreCodec,
-	isDirectToggleMetadata,
-	STORE_MANAGED_FLAGS,
-} from "flywheel-config";
+import { FEATURE_FLAGS, type FeatureFlagSpec } from "flywheel-config";
 import {
 	applyEnvChange,
 	computeEnvSha,
@@ -74,25 +68,14 @@ export interface FlagToggleResult {
 
 /** Only flags read at call-time (live), non-governance, marked direct. */
 export function isDirectToggleable(spec: FeatureFlagSpec): boolean {
-	const codec = getFlagStoreCodec(spec.name);
-	let strictValueCodec = false;
-	if (
-		spec.valueKind === "value" &&
-		STORE_MANAGED_FLAGS.has(spec.name) &&
-		codec !== undefined
-	) {
-		try {
-			strictValueCodec =
-				typeof codec.parse({ hasOverride: false, raw: null }) === "string";
-		} catch {
-			strictValueCodec = false;
-		}
-	}
-	return isDirectToggleMetadata({
-		...spec,
-		strictValueCodec,
-		readTimings: spec.readSites.map((site) => site.timing),
-	});
+	return (
+		spec.source === "env" &&
+		spec.scope === "bridge_global" &&
+		spec.toggleable === "direct" &&
+		spec.category !== "governance_gate" &&
+		spec.readSites.length > 0 &&
+		spec.readSites.every((s) => s.timing === "call_time")
+	);
 }
 
 export function applyFlagToggle(
@@ -112,13 +95,6 @@ export function applyFlagToggle(
 			ok: false,
 			code: 400,
 			reason: `${change.name} is not an env flag`,
-		};
-	}
-	if (STORE_MANAGED_FLAGS.has(spec.name)) {
-		return {
-			ok: false,
-			code: 409,
-			reason: `${change.name} is managed by the SQLite flag store`,
 		};
 	}
 	if (!isDirectToggleable(spec)) {

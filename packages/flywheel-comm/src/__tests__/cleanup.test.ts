@@ -48,7 +48,7 @@ describe("cleanupStaleSessions", () => {
 			tmux_window: string;
 			project_name: string;
 			issue_id?: string;
-			status: "running" | "completed" | "timeout" | "failed" | "blocked";
+			status: "running" | "completed" | "timeout";
 			ended_at?: string;
 		}>,
 	): string {
@@ -62,11 +62,7 @@ describe("cleanupStaleSessions", () => {
 				s.issue_id,
 			);
 			if (s.status !== "running") {
-				if (s.status === "failed" || s.status === "blocked") {
-					db.markSessionTerminalStatus(s.execution_id, s.status);
-				} else {
-					db.updateSessionStatus(s.execution_id, s.status);
-				}
+				db.updateSessionStatus(s.execution_id, s.status);
 			}
 			if (s.ended_at) {
 				// Override ended_at for precise timeout testing
@@ -315,7 +311,7 @@ describe("cleanupStaleSessions", () => {
 		expect(result.cleaned).toBe(1);
 	});
 
-	it("records an error for a database without the mailbox generation", () => {
+	it("records warning for legacy DB without sessions table", () => {
 		const legacyDbPath = join(tmpDir, "legacy.db");
 		const legacyDb = new Database(legacyDbPath);
 		legacyDb.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, content TEXT)");
@@ -325,9 +321,9 @@ describe("cleanupStaleSessions", () => {
 			dbPaths: [legacyDbPath],
 			timeoutMinutes: 30,
 		});
-		expect(result.warnings).toHaveLength(0);
-		expect(result.errors).toHaveLength(1);
-		expect(result.errors[0]).toContain("FLY-1572 mailbox migration");
+		expect(result.warnings.length).toBe(1);
+		expect(result.warnings[0]).toContain("legacy");
+		expect(result.errors).toHaveLength(0);
 	});
 
 	it("treats TOCTOU race (session/window disappears mid-cleanup) as skip, not error", () => {
@@ -450,36 +446,6 @@ describe("cleanupStaleSessions", () => {
 		});
 		expect(result.cleaned).toBe(2);
 		expect(result.skipped).toBe(0);
-	});
-
-	it("FLY-1066: does not kill preserved failed/blocked windows", () => {
-		const dbPath = createDbWithSessions([
-			{
-				execution_id: "failed-1",
-				tmux_window: "GEO-1:@0",
-				project_name: "test",
-				status: "failed",
-				ended_at: "2020-01-01 00:00:00",
-			},
-			{
-				execution_id: "blocked-1",
-				tmux_window: "GEO-2:@0",
-				project_name: "test",
-				status: "blocked",
-				ended_at: "2020-01-01 00:00:00",
-			},
-		]);
-
-		const result = cleanupStaleSessions({
-			dbPaths: [dbPath],
-			timeoutMinutes: 30,
-		});
-		expect(result).toMatchObject({ cleaned: 0, skipped: 0 });
-		const killCalls = mockExecFileSync.mock.calls.filter(
-			(c: unknown[]) =>
-				c[0] === "tmux" && Array.isArray(c[1]) && c[1][0] === "kill-window",
-		);
-		expect(killCalls).toHaveLength(0);
 	});
 
 	it("uses default 30 minute timeout when not specified", () => {

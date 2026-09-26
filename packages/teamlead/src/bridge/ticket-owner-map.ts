@@ -11,7 +11,8 @@
  *    the CLAUDE bot (the resident workhorse, CMP-2).
  *
  * Owner env ids unset ⇒ `userId: null` ⇒ the caller renders the label without
- * a ping. The ticket remains NEW for explicit duty handling.
+ * a ping and does NOT arm the T2 unclaimed fallback — today's Cass behavior,
+ * zero regression until FLY-928 deploys the bots (pure config flip).
  */
 
 import type { AlertEventType } from "../LeadAlertNotifier.js";
@@ -68,28 +69,9 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// needs_human, never bot-owned.
 	"permission_blocked",
 	// FLY-637-ext ladder output: the owner-first response ALREADY happened (K
-	// nudge rounds); re-@'ing the Lead would fight the approved thresholds. The
-	// Hub still records a NEW ticket without an automatic mention or escalation.
+	// nudge rounds); re-@'ing the Lead would fight the approved thresholds.
+	// Callers set the ticket status straight to ESCALATED for this kind.
 	"runner_lead_pending_unhandled",
-	// FLY-1279: the canonical founder issue-thread page already landed before
-	// this best-effort mirror fires; no infra bot should re-own the occurrence.
-	"delivery_dead_letter",
-	// FLY-1373: the alert is already founder-directed; no infra bot should
-	// create a second response loop for the consume loop itself.
-	"inbox_loop_stalled",
-	// FLY-1573: dead mailbox rows require an explicit replay/discard/reassign
-	// decision, so the founder-directed alert must not acquire an infra-bot ARC.
-	"mailbox_dead_letter",
-	// FLY-1586: same family as inbox_loop_stalled — a REAL notification is being
-	// held back and only a human can decide replay vs discard. An infra bot has
-	// no way to know whether the withheld message still matters.
-	"legacy_row_quarantined",
-	"stale_approved_ship_dead",
-	// FLY-1285: choosing between conflicting tmux generations is explicitly a
-	// founder decision; neither infra bot may guess and signal a candidate.
-	"tmux_split_brain",
-	// Paid-model choices are intentionally never delegated to an infra bot.
-	"quota_choice",
 ]);
 
 /**

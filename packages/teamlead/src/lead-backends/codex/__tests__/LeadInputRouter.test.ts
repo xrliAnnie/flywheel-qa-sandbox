@@ -100,76 +100,6 @@ function make() {
 }
 
 describe("LeadInputRouter — happy path", () => {
-	it("accepts one immutable mailbox batch as exactly one model turn", async () => {
-		const { router, executor, store } = make();
-		const first = router.submitBatch({
-			batchId: "batch-1",
-			memberIds: ["delivery-1", "delivery-2"],
-			payload: "[batched]\nfirst\nsecond",
-		});
-		expect(first.status).toBe("accepted_new");
-		await router.whenIdle();
-		expect(executor.startCalls.map((call) => call.input)).toEqual([
-			"[batched]\nfirst\nsecond",
-		]);
-		expect(store.listMemberIds(first.entryId)).toEqual([
-			"delivery-1",
-			"delivery-2",
-		]);
-	});
-
-	it("does not requeue an identical batch and rejects changed membership", async () => {
-		const { router, executor } = make();
-		const batch = {
-			batchId: "batch-1",
-			memberIds: ["delivery-1", "delivery-2"],
-			payload: "payload",
-		};
-		expect(router.submitBatch(batch).status).toBe("accepted_new");
-		expect(router.submitBatch(batch).status).toBe(
-			"accepted_duplicate_same_membership",
-		);
-		expect(
-			router.submitBatch({ ...batch, memberIds: ["delivery-1"] }).status,
-		).toBe("membership_conflict");
-		await router.whenIdle();
-		expect(executor.startCalls).toHaveLength(1);
-	});
-
-	it("keeps a mailbox batch pending while a turn is busy, then submits it whole", async () => {
-		const { router, executor } = make();
-		let release!: () => void;
-		const gate = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		const realAwait = executor.awaitCompletion.bind(executor);
-		executor.awaitCompletion = async (turnId: string) => {
-			if (turnId === "turn-1") await gate;
-			return realAwait(turnId);
-		};
-		router.submit({
-			idempotencyKey: "regular-1",
-			source: "discord",
-			payload: "busy turn",
-		});
-		router.submitBatch({
-			batchId: "batch-while-busy",
-			memberIds: ["delivery-a", "delivery-b"],
-			payload: "whole batch",
-		});
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(executor.startCalls.map((call) => call.input)).toEqual([
-			"busy turn",
-		]);
-		release();
-		await router.whenIdle();
-		expect(executor.startCalls.map((call) => call.input)).toEqual([
-			"busy turn",
-			"whole batch",
-		]);
-	});
-
 	it("processes an accepted input through to completed (turn + delivery)", async () => {
 		const { router, executor, sender, store } = make();
 		const { accepted, entryId } = router.submit({
@@ -184,43 +114,6 @@ describe("LeadInputRouter — happy path", () => {
 		expect(sender.enqueued[0].text).toBe("reply:hello");
 		expect(sender.delivered).toHaveLength(1);
 		expect(store.getById(entryId)?.state).toBe("completed");
-	});
-
-	it("publishes the durable inbound-to-outbound mapping after completion", async () => {
-		const store = new InMemoryJournalStore();
-		const journal = new LeadJournal({
-			store,
-			idFactory: () => "entry-cross",
-			now: () => 1,
-		});
-		const completed = vi.fn();
-		const router = new LeadInputRouter({
-			leadId: "lead-x",
-			threadId: "th-1",
-			journal,
-			executor: new FakeExecutor(),
-			sender: new FakeSender(),
-			onEntryCompleted: completed,
-			logger: silent,
-		});
-
-		router.submit({
-			idempotencyKey: "discord-cross",
-			source: "discord",
-			payload: "coordinate",
-			replyChannelId: "roundtable",
-		});
-		await router.whenIdle();
-
-		expect(completed).toHaveBeenCalledTimes(1);
-		expect(completed).toHaveBeenCalledWith(
-			expect.objectContaining({
-				id: "entry-cross",
-				idempotencyKey: "discord-cross",
-				replyChannelId: "roundtable",
-				state: "completed",
-			}),
-		);
 	});
 
 	it("dedupes a duplicate idempotencyKey (not reprocessed)", async () => {

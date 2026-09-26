@@ -23,26 +23,14 @@
  */
 
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
-	getProcessStart,
-	publishCarrierRuntimeAssertion,
-} from "flywheel-comm/lead-lease";
-import { MailboxQueue } from "flywheel-comm/mailbox-queue";
-import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
 } from "./CodexDiscordGateway.js";
-import { CodexDiscordMailboxStrategy } from "./CodexDiscordMailboxStrategy.js";
-import { CodexDiscordRuntimeOwnership } from "./CodexDiscordRuntimeOwnership.js";
-import {
-	CodexLeadInboxServer,
-	resolveCodexLeadInboxSocketPath,
-} from "./CodexLeadInboxSocket.js";
 import { CodexLeadProcess, CodexLeadProcessError } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
@@ -60,13 +48,12 @@ import {
 	resolveCoreStrictChannelIds,
 	writeThreadId,
 } from "./codex-lead-runtime.js";
-import { recordContextUsage } from "./context-usage-recorder.js";
 import { DaemonConnectionSupervisor } from "./DaemonConnectionSupervisor.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
 import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
 import { connectDaemonWs } from "./daemon-ws.js";
-import { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
+import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
@@ -101,8 +88,6 @@ const TUI_LIVENESS_INTERVAL_MS = 20_000;
 export interface CodexLeadTuiRuntimeConfig extends CodexLeadRuntimeConfig {
 	/** Working directory for the founder's TUI (`-C`). */
 	tuiCwd: string;
-	/** Runtime-only generation capability; absent while parsing/dry-running. */
-	carrierInstanceId?: string;
 }
 
 export function parseCodexLeadTuiRuntimeConfig(
@@ -131,8 +116,6 @@ export function parseCodexLeadTuiRuntimeConfig(
  *     allowlist), so without re-pinning it the home script's `ensure_daemon` would
  *     NOT do stop-before-start and a stale
  *     read-only daemon could survive the flip (pin ⑤ — Codex R1 HIGH-1). Non-secret.
- *     The governed alert route reuses that same generic bot-token name, so no
- *     additional secret crosses the runtime→home boundary.
  *   - companion → raw env (byte-compat; no action secrets in play).
  *
  * Every branch sets `FLYWHEEL_CODEX_TUI_HOME` (the home script reads it for CODEX_HOME).
@@ -142,48 +125,20 @@ export function buildTuiDaemonEnv(opts: {
 	env: NodeJS.ProcessEnv;
 	codexHome: string;
 	botToken: string;
-	carrierInstanceId?: string;
-	leadId?: string;
-	projectName?: string;
 }): NodeJS.ProcessEnv {
 	const { profile, env, codexHome, botToken } = opts;
-	const carrierEnv = opts.carrierInstanceId
-		? {
-				FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: opts.carrierInstanceId,
-				...(opts.leadId ? { FLYWHEEL_LEAD_ID: opts.leadId } : {}),
-				...(opts.projectName
-					? { FLYWHEEL_PROJECT_NAME: opts.projectName }
-					: {}),
-			}
-		: {};
 	if (profile === "full-access") {
-		const alertChannel = env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID?.trim();
 		return {
 			...buildFullAccessEnv(env),
-			...(alertChannel
-				? {
-						FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: alertChannel,
-						FLYWHEEL_ALERT_SENDER_TOKEN_ENV: "DISCORD_BOT_TOKEN",
-					}
-				: {}),
 			DISCORD_BOT_TOKEN: botToken,
 			FLYWHEEL_CODEX_TUI_HOME: codexHome,
 			// Re-pin the daemon-control flags buildFullAccessEnv strips, so the home
 			// script's ensure-daemon does stop-before-start (no stale read-only daemon
 			// survives the flip — Codex R1 HIGH-1). Non-secret.
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
-			...carrierEnv,
 		};
 	}
-	return { ...env, FLYWHEEL_CODEX_TUI_HOME: codexHome, ...carrierEnv };
-}
-
-export function reportSuccessfulDaemonEnsure(
-	stderr: string | Buffer,
-	log: (message: string) => void,
-): void {
-	const output = String(stderr).trimEnd();
-	if (output) log(output);
+	return { ...env, FLYWHEEL_CODEX_TUI_HOME: codexHome };
 }
 
 // ── demuxed process facade (pure glue — unit-tested) ───────────────────────
@@ -218,7 +173,6 @@ export interface DemuxedWiring {
 export function wireDemuxedProcess(args: {
 	proc: CodexLeadProcess;
 	onFounderTurnCompleted: (turnId: string) => void;
-	onTokenUsage?: (params: unknown) => void;
 	onActivity?: () => void;
 	log?: (m: string) => void;
 }): DemuxedWiring {
@@ -266,10 +220,7 @@ export function wireDemuxedProcess(args: {
 		onActivity: args.onActivity,
 		log: args.log,
 	});
-	args.proc.on("notification", (method, params) => {
-		if (method === "thread/tokenUsage/updated") args.onTokenUsage?.(params);
-		demux.route(method, params);
-	});
+	args.proc.on("notification", (method, params) => demux.route(method, params));
 	args.proc.on("turnCompleted", (params) =>
 		demux.route("turn/completed", params),
 	);
@@ -498,7 +449,11 @@ function buildTuiGeneration(
 				// turn with no persistent ready status, so that gate false-timed-out and
 				// tore Mufasa down. codex can only spawn what the (gated) config declares.
 
-				let activeThreadId: string | null = null;
+				let alive = true;
+				let lastActivityAt: number | undefined;
+				proc.on("exit", () => {
+					alive = false;
+				});
 				const { facade, awaitTurnCompletion } = wireDemuxedProcess({
 					proc,
 					onFounderTurnCompleted: (turnId) => {
@@ -507,25 +462,9 @@ function buildTuiGeneration(
 							payload: "founder terminal turn (observed; see TUI/rollout)",
 						});
 					},
-					...(config.leadId === "raya" &&
-					config.contextUsagePath &&
-					config.contextUsageUnavailablePath
-						? {
-								onTokenUsage: (params: unknown) => {
-									if (!activeThreadId) return;
-									const result = recordContextUsage({
-										activeThreadId,
-										notification: params,
-										usagePath: config.contextUsagePath!,
-										unavailablePath: config.contextUsageUnavailablePath!,
-										log: (message) => logger.warn(message),
-									});
-									if (result === "unavailable") {
-										logger.warn("Raya context usage sample unavailable");
-									}
-								},
-							}
-						: {}),
+					onActivity: () => {
+						lastActivityAt = Date.now();
+					},
 					log: (m) => logger.warn(m),
 				});
 
@@ -545,6 +484,12 @@ function buildTuiGeneration(
 				sender = builtSender; // closure-tracked so stop() can close its DB handle
 
 				const threadParams = buildThreadParams(config, baseInstructions);
+				const health = new LeadHealthProbe({
+					processAlive: () => alive,
+					lastActivityAt: () => lastActivityAt,
+					journal: { listUnfinished: () => journal.listUnfinished() },
+				});
+
 				const p = proc;
 				runtime = new CodexLeadRuntime({
 					startProcess: () => p.start(), // initialize/initialized over WS
@@ -553,7 +498,6 @@ function buildTuiGeneration(
 						if (saved) {
 							try {
 								await p.resumeThread(saved, threadParams); // re-pin (HIGH-1)
-								activeThreadId = saved;
 								return saved;
 							} catch (err) {
 								// Real-machine finding: a TURNLESS thread has no rollout —
@@ -572,16 +516,9 @@ function buildTuiGeneration(
 						}
 						const id = await p.startThread(threadParams);
 						writeThreadId(config.threadIdPath, id);
-						activeThreadId = id;
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
-						const externalReceiptQueue = new MailboxQueue(config.commDbPath);
-						const externalReceiptSaga = new ExternalReceiptSaga({
-							leadId: config.leadId,
-							queue: externalReceiptQueue,
-							journal,
-						});
 						// The full-access tool-surface guarantee is enforced by the config
 						// gate in main() BEFORE the daemon
 						// starts — not by a runtime "wait for the live MCP to report ready"
@@ -593,8 +530,8 @@ function buildTuiGeneration(
 							process: facade, // demuxed: foreign turns never arrive
 							threadId,
 						});
-						// FLY-1806: Discord typing indicator is fixed on. The TUI sidecar drives
-						// Discord I/O through this SAME router,
+						// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
+						// disables). The TUI sidecar drives Discord I/O through this SAME router,
 						// so the founder sees "typing…" in Discord while a windowed Mufasa works.
 						// Closed on stopGateway (also fired on each generation rebuild).
 						const typing = config.typingEnabled
@@ -624,14 +561,6 @@ function buildTuiGeneration(
 							journal,
 							executor,
 							sender: builtSender,
-							onEntryCompleted: (entry) => {
-								if (
-									entry.source === "discord" &&
-									(entry.replyChannelId || entry.replyRoute)
-								) {
-									externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
-								}
-							},
 							...(typing ? { typing } : {}),
 							...(replyInThread
 								? {
@@ -639,12 +568,6 @@ function buildTuiGeneration(
 										onTopicEngaged: replyInThread.seedBudgetForRoute,
 									}
 								: {}),
-						});
-						const inboxServer = new CodexLeadInboxServer({
-							socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
-							leadId: config.leadId,
-							router,
-							authSecret: config.botToken,
 						});
 						// FLY-267 判 + 回: mirror the headless mention-gate + reply-routing so
 						// the TUI runtime does NOT spam shared channels and routes replies back
@@ -675,24 +598,11 @@ function buildTuiGeneration(
 								? (msg: DiscordInboundMessage) =>
 										crossDeptSet.has(msg.channelId) ? msg.channelId : undefined
 								: undefined;
-						const mailboxStrategy = new CodexDiscordMailboxStrategy({
-							leadId: config.leadId,
-							...(config.founderId ? { founderId: config.founderId } : {}),
-							dbPath: config.commDbPath,
-							queue: externalReceiptQueue,
-							journal,
-							router,
-							externalReceiptSaga,
-							mailboxReady: () => ownership?.mailboxReady() === true,
-							logger,
-						});
 						const gateway = new CodexDiscordGateway({
 							source,
 							router,
 							botUserId: config.botUserId,
 							channelIds: config.channelIds,
-							externalReceiptSaga,
-							durableAccept: (input) => mailboxStrategy.accept(input),
 							...(shouldHandle ? { shouldHandle } : {}),
 							...(replyInThread
 								? {
@@ -702,31 +612,6 @@ function buildTuiGeneration(
 								: resolveReplyChannelId
 									? { resolveReplyChannelId }
 									: {}),
-						});
-						const ownership = new CodexDiscordRuntimeOwnership({
-							stateDir: config.stateDir,
-							leadId: config.leadId,
-							authSecret: config.botToken,
-							server: inboxServer,
-							gateway: {
-								start: async () => {
-									await gateway.start();
-									try {
-										await replyInThread?.start();
-									} catch (error) {
-										await gateway.stop();
-										throw error;
-									}
-								},
-								stop: async () => {
-									try {
-										await replyInThread?.stop();
-									} finally {
-										await gateway.stop();
-									}
-								},
-							},
-							logger,
 						});
 						// FIRST-BOOT/TURNLESS bootstrap turn (real-machine finding): the daemon
 						// persists a thread's rollout only at its FIRST TURN — a turnless
@@ -786,9 +671,6 @@ function buildTuiGeneration(
 							// workspace-write sandbox → the founder resume pane passes
 							// `-s workspace-write` (buildTuiCommand), not `-s read-only`.
 							fullAccess: config.codexProfile === "full-access",
-							...(config.carrierInstanceId
-								? { carrierInstanceId: config.carrierInstanceId }
-								: {}),
 						};
 						// Identity-aware ensure (review R2 HIGH-2 + R3 MED-1 + R4 MED-1):
 						// ensureTuiHealthy does the UNCONDITIONAL ensure (PR-C stale-kill)
@@ -813,29 +695,29 @@ function buildTuiGeneration(
 							// gate in main(), before the daemon
 							// starts — not by a runtime gate here. See main() / mcp-config.ts.)
 							startGateway: async () => {
-								externalReceiptSaga.reconcile({
-									olderThan: new Date().toISOString(),
-									absenceProvenThroughMessageId: "0",
-								});
 								// FLY-314 Phase 2 (Codex code review #1): gateway FIRST so the
 								// source.onMessage handler is installed before discovery's
 								// addChannel() can drain a resumed thread (else downtime thread
 								// messages are dropped + cursor advances past them).
-								// FLY-1373: open Bridge batch ingress only AFTER journal recovery
-								// (CodexLeadRuntime orders recover() before startGateway()).
-								await ownership.start();
+								await gateway.start();
+								await replyInThread?.start();
 							},
 							stopGateway: async () => {
+								// Stop discovery first (no addChannel mid-shutdown), then gateway.
+								await replyInThread?.stop();
+								// FLY-404 (Codex review LOW): close the typing keepalive in a
+								// `finally` so a throwing gateway.stop() can never leak the
+								// interval across a generation rebuild.
 								try {
-									await ownership.stop();
+									await gateway.stop();
 								} finally {
 									typing?.close();
-									externalReceiptQueue.close();
 								}
 							},
 						};
 					},
 					shutdownProcess: () => p.stop(),
+					healthProbe: () => health.probe(),
 					logger,
 				});
 				await runtime.start();
@@ -902,19 +784,6 @@ export async function main(
 		for (const line of dryRunReport(config)) console.log(line);
 		return;
 	}
-	const carrierInstanceId = randomBytes(32).toString("base64url");
-	const carrierConfig: CodexLeadTuiRuntimeConfig = {
-		...config,
-		carrierInstanceId,
-	};
-	publishCarrierRuntimeAssertion({
-		env,
-		leadKey: config.leadKey,
-		identityDigest: config.identityDigest,
-		rawCarrierInstanceId: carrierInstanceId,
-		pid: process.pid,
-		lstart: getProcessStart(process.pid),
-	});
 	// Resolve the home script for BOTH layouts: from dist/lead-backends/codex
 	// it's ../../../scripts; from src/lead-backends/codex it's ../../scripts
 	// is wrong too — scripts/ lives at the package root in both cases, three
@@ -950,7 +819,6 @@ export async function main(
 			chatChannelId: config.chatChannelId,
 			crossDeptChannelIds: config.crossDeptChannelIds,
 			stateDir,
-			commDbPath: config.commDbPath,
 			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
 			// FLY-676: forward the effective roundtable autoContinue (parity with headless).
 			// codex-lead-tui-home.sh writes the matching env into config.toml; the full-access
@@ -985,25 +853,17 @@ export async function main(
 		);
 	}
 	const ensureDaemon = async () => {
-		const { stderr } = await execFileP(
-			"/bin/bash",
-			[homeScript, "ensure-daemon"],
-			{
-				env: buildTuiDaemonEnv({
-					profile: config.codexProfile,
-					env,
-					codexHome: config.codexHome,
-					botToken: config.botToken,
-					carrierInstanceId,
-					leadId: config.leadId,
-					projectName: config.projectName,
-				}),
-			},
-		);
-		reportSuccessfulDaemonEnsure(stderr, console.warn);
+		await execFileP("/bin/bash", [homeScript, "ensure-daemon"], {
+			env: buildTuiDaemonEnv({
+				profile: config.codexProfile,
+				env,
+				codexHome: config.codexHome,
+				botToken: config.botToken,
+			}),
+		});
 	};
 	const supervisor = new DaemonConnectionSupervisor({
-		buildGeneration: buildTuiGeneration(carrierConfig, console),
+		buildGeneration: buildTuiGeneration(config, console),
 		ensureDaemon,
 		log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`),
 	});

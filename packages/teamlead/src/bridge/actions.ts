@@ -1,18 +1,11 @@
-import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
-import {
-	decodePonytailConditionForRetry,
-	isWorkflowPhaseRole,
-} from "flywheel-config";
+import { isThreeStagePhaseRole, resolvePhaseDispatch } from "flywheel-config";
 import { ACTION_DEFINITIONS, closeRunnerTerminalView } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
-import {
-	parseDocTier,
-	type WorkflowIssueDeliveryInput,
-} from "flywheel-edge-worker/dist/Blueprint.js";
+import { parseDocTier } from "flywheel-edge-worker/dist/Blueprint.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -25,46 +18,23 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
-import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
-import {
-	nodeRequiresFounderReview,
-	parseWorkflowRunSnapshot,
-	resolveWorkflowDecisionContract,
-	workflowGateEntryPromptCapabilities,
-	workflowNodeAgentContent,
-} from "../workflow-run-snapshot.js";
-import { credentialWindowForNode } from "../workflow-submission-expiry.js";
-import type { GateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import {
 	type FounderApprovalCardAuthority,
 	writeGateResponseAndRunPostWrite,
 } from "./approval-signal/write-gate-response.js";
+import { reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
-import {
-	AUTO_CLOSE_STATES,
-	closeRunner,
-	type RunCloseAuthority,
-} from "./close-runner.js";
-import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
+import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
-import {
-	getGeneralizedLaunchDelivery,
-	probeGeneralizedLaunchLiveness,
-	waitForGeneralizedLaunchDelivery,
-} from "./generalized-launch-recovery.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
-import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import { finalizeRecoveredMerge } from "./merge-ship-gate.js";
-import { makeFinalizeWorkflowPhaseRoles } from "./post-ship-finalization.js";
+import type { PhaseOrchestrator } from "./phase-orchestrator.js";
+import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
 import { reconcileGatewayRetry } from "./retry-dispatch-wal.js";
-import type {
-	GeneralizedExecutionDispatch,
-	IRetryDispatcher,
-} from "./retry-dispatcher.js";
-import { reviewHoldReason } from "./review-hold.js";
+import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
@@ -79,7 +49,6 @@ import {
 	killTmuxWindow,
 	lookupTmuxTarget,
 } from "./tmux-lookup.js";
-import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -139,7 +108,7 @@ function sendActionHook(
 	if (!session) return;
 	try {
 		const labels = store.getSessionLabels(executionId);
-		const { lead } = registry.resolveWithLead(
+		const { runtime, lead } = registry.resolveWithLead(
 			projects,
 			session.project_name,
 			labels,
@@ -193,14 +162,13 @@ function sendActionHook(
 			);
 			const envelope: LeadEventEnvelope = {
 				seq,
-				eventId,
 				event: hookPayload,
 				sessionKey,
 				leadId: lead.agentId,
 				timestamp: new Date().toISOString(),
 			};
-			const result = await registry.dispatchLeadEvent(envelope);
-			if (result.delivered) store.markLeadEventDelivered(seq);
+			await runtime.deliver(envelope);
+			store.markLeadEventDelivered(seq);
 		};
 		doDeliver().catch((err) => {
 			console.warn(
@@ -240,31 +208,27 @@ export async function approveExecution(
 	// applyTransition hook and the DirectEventSink hook).
 	refreshIssueDisplay?: (issueId: string) => Promise<void>,
 	cardAuthority?: FounderApprovalCardAuthority,
-	materializedHeadAuthority?: MaterializedHeadAuthority,
-	gateAuthorityView?: GateAuthorityView,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
-	const engineAuthority = gateAuthorityView?.resolveForExecution?.(executionId);
-	if (!session && !engineAuthority) {
+	if (!session) {
 		return {
 			success: false,
 			message: `No session found for execution_id ${executionId}`,
 		};
 	}
 
-	if (!engineAuthority && session?.status !== "awaiting_review") {
+	if (session.status !== "awaiting_review") {
 		return {
 			success: false,
-			message: `Cannot approve ${identifier ?? executionId}: status is "${session?.status ?? "unknown"}", expected "awaiting_review"`,
+			message: `Cannot approve ${identifier ?? executionId}: status is "${session.status}", expected "awaiting_review"`,
 		};
 	}
 
-	const projectName = engineAuthority?.projectName ?? session!.project_name;
-	const project = projects.find((p) => p.projectName === projectName);
+	const project = projects.find((p) => p.projectName === session.project_name);
 	if (!project) {
 		return {
 			success: false,
-			message: `Unknown project: ${projectName}`,
+			message: `Unknown project: ${session.project_name}`,
 		};
 	}
 
@@ -281,7 +245,7 @@ export async function approveExecution(
 	// counts as written (so an FSM-rejected attempt can be retried).
 	let gateUnblocked = false;
 	try {
-		const commDbPath = commDbPathFor(projectName);
+		const commDbPath = commDbPathFor(session.project_name);
 		const db = new CommDB(commDbPath, false);
 		try {
 			// Bound question first (Codex PR R1 CRITICAL): the session's CURRENT
@@ -292,8 +256,7 @@ export async function approveExecution(
 			// strand the session (verify-approval can never pass) — refuse and
 			// point at the recovery path instead.
 			let targetQuestionId: string | undefined;
-			const boundId =
-				engineAuthority?.questionId ?? session?.review_question_id?.trim();
+			const boundId = session.review_question_id?.trim();
 			if (boundId === REVIEW_BINDING_UNBOUND) {
 				return {
 					success: false,
@@ -332,7 +295,6 @@ export async function approveExecution(
 				executionId,
 				source: "actions",
 				cardAuthority,
-				gateAuthorityView,
 				actor: "bridge",
 				answer: JSON.stringify({ approved: true }),
 				expectedCurrentReviewQuestionId: boundId || undefined,
@@ -372,20 +334,6 @@ export async function approveExecution(
 		return {
 			success: false,
 			message: `Cannot approve ${identifier ?? executionId}: CommDB gate response write failed (${(err as Error).message}). Session stays awaiting_review; retry once CommDB is reachable.`,
-		};
-	}
-	if (engineAuthority) {
-		return {
-			success: true,
-			message: `Approved ${identifier ?? executionId} → automated land activated (gate unblocked)`,
-			alreadyResponded: true,
-			gateUnblocked,
-		};
-	}
-	if (!session) {
-		return {
-			success: false,
-			message: `No session found for execution_id ${executionId}`,
 		};
 	}
 
@@ -451,15 +399,14 @@ export async function approveExecution(
 			undefined,
 			refreshIssueDisplay,
 			// FLY-907 Codex R1 MED-2: the recovered-merge path must finalize a
-			// DAG workflow issue's parked phases like every other completion sink.
+			// three-stage issue's parked phases like every other completion sink.
 			transitionOpts
-				? makeFinalizeWorkflowPhaseRoles(
+				? makeFinalizeThreeStagePhases(
 						store,
 						transitionOpts,
 						refreshIssueDisplay,
 					)
 				: undefined,
-			materializedHeadAuthority,
 		);
 		if (completed) {
 			console.log(
@@ -787,49 +734,6 @@ async function handleRetry(
 		}
 	}
 
-	// FLY-1404: admission belongs to the design-node completion semantic, not
-	// to a particular workflow topology. Resolve it BEFORE closeRunner: a
-	// missing Lead must not destroy the preserved design context and only then
-	// discover that nobody can consume the founder HTML report.
-	const phaseRole = isWorkflowPhaseRole(session.chat_thread_role)
-		? session.chat_thread_role
-		: undefined;
-	const preflightGeneralizedBinding =
-		store.getGeneralizedWorkflowNodeForExecution(executionId)?.binding;
-	let generalizedDesignNode = false;
-	if (preflightGeneralizedBinding) {
-		const run = store.getWorkflowRun(preflightGeneralizedBinding.run_id);
-		if (!run?.snapshot) {
-			return {
-				success: false,
-				message: "Retry dispatch failed: generalized workflow snapshot missing",
-			};
-		}
-		try {
-			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-			const node = snapshot.resolved.nodes.find(
-				(candidate) => candidate.id === preflightGeneralizedBinding.node_id,
-			);
-			generalizedDesignNode =
-				node?.capabilities.completion_route === "phase_design_complete";
-		} catch (error) {
-			return {
-				success: false,
-				message: `Retry dispatch failed: ${(error as Error).message}`,
-			};
-		}
-	}
-	if (
-		(phaseRole === "design" || generalizedDesignNode) &&
-		(typeof retryLeadId !== "string" || !retryLeadId.trim())
-	) {
-		return {
-			success: false,
-			message:
-				"Retry dispatch failed: design-node completion requires a resolved Lead for founder HTML delivery; preserved runner left intact",
-		};
-	}
-
 	// FLY-116: cleanup old preserved Runner window/tab BEFORE dispatching new
 	// execution. If status is failed/blocked it defaulted to crash_preserve;
 	// retry indicates the user has decided to discard the dead window.
@@ -892,7 +796,6 @@ async function handleRetry(
 	// a warning. Annie's mental model: "label the issue codex-skip, retry
 	// the Runner" — degrade gracefully on Linear unreachable.
 	let retryCodexSkip = !!session.codex_skip;
-	let retryLabelsReadable = false;
 	if (process.env.LINEAR_API_KEY) {
 		try {
 			const { LinearClient } = await import("@linear/sdk");
@@ -913,7 +816,6 @@ async function handleRetry(
 			// Persist the refreshed labels too so subsequent retries see
 			// the latest snapshot (matches the start-time semantics).
 			retryIssueLabels = labelNames;
-			retryLabelsReadable = true;
 		} catch (err) {
 			console.warn(
 				`[retry] Linear label refresh failed; using stored codex_skip=${!!session.codex_skip}: ${(err as Error).message}`,
@@ -924,332 +826,22 @@ async function handleRetry(
 			`[retry] LINEAR_API_KEY not set; using stored codex_skip=${!!session.codex_skip}`,
 		);
 	}
-	const ponytailRetryPlan = decodePonytailConditionForRetry(
-		session.ponytail_condition,
-	);
-	const ponytailRetry = {
-		...(ponytailRetryPlan?.kind === "frozen" && {
-			frozen: ponytailRetryPlan.requested,
-		}),
-		freshSignal: retryLabelsReadable
-			? {
-					labelStatus: "readable" as const,
-					labels: retryIssueLabels ?? [],
-				}
-			: { labelStatus: "unreadable" as const },
-	};
 
-	let generalizedExecution: GeneralizedExecutionDispatch | undefined;
-	let adoptedGeneralizedExecutionId: string | undefined;
-	let generalizedLaunchReleaseFence:
-		| {
-				executionId: string;
-				ownerId: string;
-				generation: number;
-				markerPath: string;
-		  }
-		| undefined;
-	const predecessorBinding = preflightGeneralizedBinding;
-	if (predecessorBinding) {
-		const run = store.getWorkflowRun(predecessorBinding.run_id);
-		if (!run?.snapshot) {
-			return {
-				success: false,
-				message: "Retry dispatch failed: generalized workflow snapshot missing",
-			};
-		}
-		let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
-		try {
-			snapshot = parseWorkflowRunSnapshot(run.snapshot);
-		} catch (error) {
-			return {
-				success: false,
-				message: `Retry dispatch failed: ${(error as Error).message}`,
-			};
-		}
-		const node = snapshot.resolved.nodes.find(
-			(candidate) => candidate.id === predecessorBinding.node_id,
-		);
-		const agentContent = node ? workflowNodeAgentContent(node) : undefined;
-		if (!node?.dispatch || !agentContent) {
-			return {
-				success: false,
-				message:
-					"Retry dispatch failed: generalized node is not an executable generic node",
-			};
-		}
-		const successorExecutionId =
-			gatewayDispatch?.successorExecutionId ?? randomUUID();
-		const now = new Date();
-		const credentialWindow = credentialWindowForNode(snapshot, node.id, now);
-		const decisionContract = resolveWorkflowDecisionContract(snapshot, node.id);
-		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
-			runId: predecessorBinding.run_id,
-			nodeId: predecessorBinding.node_id,
-		});
-		const admitted = store.admitGeneralizedWorkflowExecution({
-			runId: predecessorBinding.run_id,
-			nodeId: predecessorBinding.node_id,
-			executionId: successorExecutionId,
-			attempt: predecessorBinding.attempt + 1,
-			expiresAt: credentialWindow.expiresAt,
-			absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
-			now: now.toISOString(),
-			dispatchResolution,
-		});
-		if (!admitted.ok) {
-			return {
-				success: false,
-				message: `Retry dispatch failed: generalized admission ${admitted.reason}`,
-			};
-		}
-		const runtime = store.getWorkflowExecutionRuntime(successorExecutionId);
-		if (!runtime) {
-			return {
-				success: false,
-				message: "Retry dispatch failed: generalized runtime dispatch missing",
-			};
-		}
-		const runtimeDispatch = {
-			vendor: runtime.vendor as "claude" | "codex",
-			model: runtime.model,
-			...(runtime.effort
-				? {
-						effort: runtime.effort as
-							| "low"
-							| "medium"
-							| "high"
-							| "xhigh"
-							| "max",
-					}
-				: {}),
-		};
-		const launchOwnerId = randomUUID();
-		const launchMarkerPath = join(
-			process.env.HOME ?? homedir(),
-			".flywheel",
-			"state",
-			"launch-commits",
-			successorExecutionId,
-		);
-		const launch = store.recoverOrAcquireWorkflowLaunch({
-			executionId: successorExecutionId,
-			ownerId: launchOwnerId,
-			now: now.toISOString(),
-			leaseExpiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(),
-			markerPath: launchMarkerPath,
-		});
-		if (
-			launch.status === "hold" ||
-			launch.status === "busy" ||
-			launch.status === "cancelled"
-		) {
-			return {
-				success: false,
-				message:
-					launch.status === "hold"
-						? `Retry dispatch held: generalized launch ${launch.reason}`
-						: launch.status === "cancelled"
-							? `Retry dispatch held: generalized launch generation ${launch.generation} was cancelled`
-							: `Retry dispatch held: generalized owner generation ${launch.generation} is active`,
-			};
-		}
-		let outputCredential = admitted.outputCredential;
-		let submissionCredential = admitted.submissionCredential;
-		let launchGateToken: string | undefined;
-		let launchGeneration: number | undefined;
-		let launchDeliveryAuthority:
-			| { generation: number; attempt: number }
-			| undefined;
-		let commitWorkflowLaunch:
-			| (() => { ok: boolean; reason?: string })
-			| undefined;
-		if (launch.status === "committed") {
-			const liveness = store.getSession(successorExecutionId)
-				? "alive"
-				: await probeGeneralizedLaunchLiveness(
-						successorExecutionId,
-						session.project_name,
-					);
-			if (liveness === "unknown") {
-				return {
-					success: false,
-					message:
-						"Retry dispatch held: committed generalized launch liveness is unknown",
-				};
-			}
-			if (liveness === "alive") {
-				adoptedGeneralizedExecutionId = successorExecutionId;
-			} else {
-				if (node.capabilities.produces_output) {
-					return {
-						success: false,
-						message:
-							"Retry dispatch held: committed output credential cannot be reconstructed for delivery repair",
-					};
-				}
-				const repairNow = new Date();
-				const repair = store.claimWorkflowLaunchDeliveryRepair({
-					executionId: successorExecutionId,
-					repairOwner: launchOwnerId,
-					now: repairNow.toISOString(),
-					leaseExpiresAt: new Date(
-						repairNow.getTime() + 15 * 60_000,
-					).toISOString(),
-				});
-				if (repair.status !== "claimed") {
-					return {
-						success: false,
-						message:
-							repair.status === "busy"
-								? `Retry dispatch held: delivery repair attempt ${repair.attempt} is active`
-								: repair.status === "cancelled"
-									? `Retry dispatch held: delivery repair generation ${repair.generation} was cancelled`
-									: `Retry dispatch held: delivery repair ${repair.reason}`,
-					};
-				}
-				launchGateToken = repair.token;
-				launchGeneration = repair.generation;
-				launchDeliveryAuthority = {
-					generation: repair.generation,
-					attempt: repair.attempt,
-				};
-				commitWorkflowLaunch = () =>
-					store.commitWorkflowLaunchDeliveryRepair({
-						executionId: successorExecutionId,
-						repairOwner: launchOwnerId,
-						generation: repair.generation,
-						attempt: repair.attempt,
-						markerPath: launchMarkerPath,
-						now: new Date().toISOString(),
-					});
-			}
-		} else {
-			generalizedLaunchReleaseFence = {
-				executionId: successorExecutionId,
-				ownerId: launchOwnerId,
-				generation: launch.generation,
-				markerPath: launchMarkerPath,
-			};
-			const rotationNow = new Date();
-			const rotationWindow = credentialWindowForNode(
-				snapshot,
-				node.id,
-				rotationNow,
-			);
-			if (node.capabilities.produces_output && !outputCredential) {
-				const rotated = store.rotateGeneralizedWorkflowOutputCredential({
-					executionId: successorExecutionId,
-					ownerId: launchOwnerId,
-					generation: launch.generation,
-					now: rotationNow.toISOString(),
-					expiresAt: rotationWindow.expiresAt,
-					absoluteDeadlineAt: rotationWindow.absoluteDeadlineAt,
-				});
-				if (!rotated.ok) {
-					return {
-						success: false,
-						message: `Retry dispatch held: generalized credential rotation ${rotated.reason}`,
-					};
-				}
-				outputCredential = rotated.outputCredential;
-			}
-			if (decisionContract && !submissionCredential) {
-				const rotated = store.rotateGeneralizedWorkflowSubmissionCredential({
-					executionId: successorExecutionId,
-					ownerId: launchOwnerId,
-					generation: launch.generation,
-					now: rotationNow.toISOString(),
-					expiresAt: rotationWindow.expiresAt,
-					absoluteDeadlineAt: rotationWindow.absoluteDeadlineAt,
-				});
-				if (!rotated.ok) {
-					return {
-						success: false,
-						message: `Retry dispatch held: generalized submission credential rotation ${rotated.reason}`,
-					};
-				}
-				submissionCredential = rotated.submissionCredential;
-			}
-			const renewalNow = new Date();
-			const renewed = store.renewWorkflowLaunchOwner({
-				executionId: successorExecutionId,
-				ownerId: launchOwnerId,
-				generation: launch.generation,
-				now: renewalNow.toISOString(),
-				leaseExpiresAt: new Date(
-					renewalNow.getTime() + 15 * 60_000,
-				).toISOString(),
-			});
-			if (!renewed.ok) {
-				return {
-					success: false,
-					message: `Retry dispatch held: generalized launch renewal ${renewed.reason}`,
-				};
-			}
-			launchGateToken = launch.token;
-			launchGeneration = launch.generation;
-			launchDeliveryAuthority = {
-				generation: launch.generation,
-				attempt: launch.deliveryAttempt,
-			};
-			commitWorkflowLaunch = () =>
-				store.fencedCommitWorkflowLaunch({
-					executionId: successorExecutionId,
-					ownerId: launchOwnerId,
-					generation: launch.generation,
-					deliveryAttempt: launch.deliveryAttempt,
-					markerPath: launchMarkerPath,
-					now: new Date().toISOString(),
-				});
-		}
-		if (!adoptedGeneralizedExecutionId) {
-			const deliveryAuthority = launchDeliveryAuthority;
-			const prepareWorkflowIssueDelivery = deliveryAuthority
-				? (input: WorkflowIssueDeliveryInput) => {
-						const { anchorCommit, ...candidate } = input;
-						const prepared = store.prepareWorkflowIssueDelivery({
-							executionId: successorExecutionId,
-							activationId: admitted.activationId,
-							ownerId: launchOwnerId,
-							ownerGeneration: deliveryAuthority.generation,
-							deliveryAttempt: deliveryAuthority.attempt,
-							anchorCommit,
-							candidate,
-							now: new Date().toISOString(),
-						});
-						if (!prepared.ok) throw new Error(prepared.reason);
-					}
-				: undefined;
-			generalizedExecution = {
-				engineOwned: run.engine_owned === 1,
-				executionId: successorExecutionId,
-				activationId: admitted.activationId,
-				runId: predecessorBinding.run_id,
-				nodeId: predecessorBinding.node_id,
-				attempt: predecessorBinding.attempt + 1,
-				snapshotDigest: snapshot.snapshot_digest,
-				gateCarrierEpoch: run.gate_carrier_epoch,
-				dispatch: runtimeDispatch,
-				capabilities: {
-					...node.capabilities,
-					founder_review_required: nodeRequiresFounderReview(snapshot, node.id),
-					...workflowGateEntryPromptCapabilities(snapshot, node.id),
-				},
-				agentContent,
-				outputCredential,
-				submissionCredential,
-				idempotencyKey: `retry:${executionId}:${successorExecutionId}`,
-				launchGateToken,
-				launchGeneration,
-				commitWorkflowLaunch,
-				...(prepareWorkflowIssueDelivery && {
-					prepareWorkflowIssueDelivery,
-				}),
-				projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),
-			};
-		}
-	}
+	// FLY-887 R2 (Codex R1 #2): PHASE-row retries stay under the phase table.
+	// Discriminator = the durable `chat_thread_role` three-stage marker
+	// (auto-QA / single-session rows are 'main' → untouched, which is exactly
+	// the "don't touch auto-QA" boundary). For a phase row:
+	//   - the dispatch {model, vendor, effort} is resolvePhaseDispatch(role)
+	//     UNCONDITIONALLY — never the persisted `dispatch_model` (a pre-fix
+	//     phase row may have persisted a sorter pin or NULL; replaying it would
+	//     put the phase back on Sonnet, or a codex phase back on claude);
+	//   - `ignoreRunnerLabelSelection: true` is threaded through the retry
+	//     dispatcher (previously hardcoded undefined there) so a refreshed
+	//     `sonnet`/vendor label cannot bypass the table either.
+	const phaseRole = isThreeStagePhaseRole(session.chat_thread_role)
+		? session.chat_thread_role
+		: undefined;
+	const phaseDispatch = phaseRole ? resolvePhaseDispatch(phaseRole) : undefined;
 
 	// R2 MED-6: the dispatch call and the POST-dispatch bookkeeping are split into
 	// TWO try blocks. A throw from `dispatch()` itself is PRE-start (admission
@@ -1261,144 +853,92 @@ async function handleRetry(
 	// "never dispatched" and allow a SECOND successor). So post-dispatch errors
 	// are logged but STILL report success with the bound successor id.
 	let result: { newExecutionId: string; oldExecutionId: string };
-	if (adoptedGeneralizedExecutionId) {
-		result = {
-			newExecutionId: adoptedGeneralizedExecutionId,
+	try {
+		result = await retryDispatcher.dispatch({
 			oldExecutionId: executionId,
-		};
-	} else {
-		try {
-			result = await retryDispatcher.dispatch({
-				oldExecutionId: executionId,
-				issueId: session.issue_id,
-				issueIdentifier: session.issue_identifier,
-				issueTitle: session.issue_title,
-				projectName: session.project_name,
-				reason,
-				previousError: session.last_error,
-				previousDecisionRoute: session.decision_route,
-				previousReasoning: ceoContext ?? session.decision_reasoning,
-				runAttempt,
-				leadId: retryLeadId,
-				// FLY-1224 (R2 #3): sessionRole follows the SAME durable phase
-				// discriminator as the dispatch table — an old/polluted row can carry
-				// chat_thread_role=implement while session_role drifted to main;
-				// re-deriving only the vendor would start the codex runner in a
-				// non-phase identity. Non-phase rows keep the persisted role verbatim.
-				sessionRole: phaseRole ?? sessionRole,
-				...(phaseRole && session.design_backend
-					? { designBackend: session.design_backend }
-					: {}),
-				// FLY-1356: forced-arm continuation on retry (via==="override" only;
-				// sticky/hash ride the dispatcher's stamp lookup — R1#4).
-				...(session.skill_framework_mode_via === "override" &&
-					session.skill_framework_mode && {
-						skillFrameworkMode: session.skill_framework_mode,
-					}),
-				ponytailRetry,
-				// FLY-1224 (R1 #1, settles FLY-840): a PHASE-row retry keeps its
-				// shared-branch identity — without this the retried implement rebuilds
-				// an independent branch instead of branch B, making the codex-retry /
-				// kill-switch recovery path unsafe. FLY-840's worry was "propagating
-				// the marker on EVERY retry changes retry branch behavior"; the
-				// phase-row-scoped propagation is exactly the behavior a phase row
-				// should have had (FLY-887 R2 same shape). Side effect (intentional,
-				// test-locked): runnerDisplayName now labels the retry's cmux window
-				// with the phase name. Non-phase retries: undefined (byte-compatible).
-				shareParentBranch: phaseRole ? true : undefined,
-				// FLY-137 v1.27.2: dept-aware dispatch context for retry
-				issueLabels: retryIssueLabels,
-				owningDept: retryOwningDept,
-				// FLY-137 Phase 5: refreshed (or stored-fallback) codex-skip
-				// snapshot. Persisted on the new session row below so the
-				// event-route stage_changed handler picks it up at design_review.
-				codexSkip: retryCodexSkip,
-				// FLY-137 v1.27.2: thread stored Lead override (if any) so a
-				// previously-overridden Runner stays on the same agent across
-				// retries.
-				agentName: session.agent_name,
-				// FLY-205: REUSE the predecessor's doc tier — never silently upgrade
-				// a plan_only/none run back to full on retry. Missing value
-				// (pre-FLY-205 session) → undefined → Blueprint defaults to "full".
-				// issue_url keeps the doc header identical between start and retry.
-				docTier: parseDocTier(session.doc_tier),
-				issueUrl: session.issue_url,
-				// FLY-728 Part C: REUSE the predecessor's persisted dispatch model — the
-				// param the Lead-sorter chose at the original dispatch, NOT the resolved
-				// runner_model (which conflates label/project/account sources). So a
-				// removed label or a changed project default is NOT reintroduced; only a
-				// genuine sorter/dispatch choice survives. NULL (no dispatch param) →
-				// undefined → the retry re-resolves from current labels/project/account.
-				dispatchModel: session.dispatch_model ?? undefined,
-				// FLY-245 D2: gateway pre-bound successor id (plan §5.2.1) — the
-				// dispatcher uses it instead of a fresh randomUUID so recovery can
-				// reconcile by the durably-bound key. Absent for legacy retries.
-				successorExecutionId:
-					generalizedExecution?.executionId ??
-					gatewayDispatch?.successorExecutionId,
-				generalizedExecution,
-			});
-		} catch (err) {
-			// PRE-dispatch failure — provably nothing started. Safe to terminalize.
-			const msg = err instanceof Error ? err.message : String(err);
-			if (generalizedLaunchReleaseFence) {
-				const released = store.releaseFailedWorkflowLaunch({
-					...generalizedLaunchReleaseFence,
-					now: new Date().toISOString(),
-					reason: `dispatcher_start_failed:${msg}`,
-					physicalEvidence: "absent",
-				});
-				if (!released.ok) {
-					console.error(
-						`[retry] generalized launch release failed for ${generalizedLaunchReleaseFence.executionId}: ${released.reason}`,
-					);
-				}
-			}
-			return { success: false, message: `Retry dispatch failed: ${msg}` };
-		}
+			issueId: session.issue_id,
+			issueIdentifier: session.issue_identifier,
+			issueTitle: session.issue_title,
+			projectName: session.project_name,
+			reason,
+			previousError: session.last_error,
+			previousDecisionRoute: session.decision_route,
+			previousReasoning: ceoContext ?? session.decision_reasoning,
+			runAttempt,
+			leadId: retryLeadId,
+			// FLY-1224 (R2 #3): sessionRole follows the SAME durable phase
+			// discriminator as the dispatch table — an old/polluted row can carry
+			// chat_thread_role=implement while session_role drifted to main;
+			// re-deriving only the vendor would start the codex runner in a
+			// non-phase identity. Non-phase rows keep the persisted role verbatim.
+			sessionRole: phaseRole ?? sessionRole,
+			// FLY-1224 (R1 #1, settles FLY-840): a PHASE-row retry keeps its
+			// shared-branch identity — without this the retried implement rebuilds
+			// an independent branch instead of branch B, making the codex-retry /
+			// kill-switch recovery path unsafe. FLY-840's worry was "propagating
+			// the marker on EVERY retry changes retry branch behavior"; the
+			// phase-row-scoped propagation is exactly the behavior a phase row
+			// should have had (FLY-887 R2 same shape). Side effect (intentional,
+			// test-locked): runnerDisplayName now labels the retry's cmux window
+			// with the phase name. Non-phase retries: undefined (byte-compatible).
+			shareParentBranch: phaseRole ? true : undefined,
+			// FLY-137 v1.27.2: dept-aware dispatch context for retry
+			issueLabels: retryIssueLabels,
+			owningDept: retryOwningDept,
+			// FLY-137 Phase 5: refreshed (or stored-fallback) codex-skip
+			// snapshot. Persisted on the new session row below so the
+			// event-route stage_changed handler picks it up at design_review.
+			codexSkip: retryCodexSkip,
+			// FLY-137 v1.27.2: thread stored Lead override (if any) so a
+			// previously-overridden Runner stays on the same agent across
+			// retries.
+			agentName: session.agent_name,
+			// FLY-205: REUSE the predecessor's doc tier — never silently upgrade
+			// a plan_only/none run back to full on retry. Missing value
+			// (pre-FLY-205 session) → undefined → Blueprint defaults to "full".
+			// issue_url keeps the doc header identical between start and retry.
+			docTier: parseDocTier(session.doc_tier),
+			issueUrl: session.issue_url,
+			// FLY-728 Part C: REUSE the predecessor's persisted dispatch model — the
+			// param the Lead-sorter chose at the original dispatch, NOT the resolved
+			// runner_model (which conflates label/project/account sources). So a
+			// removed label or a changed project default is NOT reintroduced; only a
+			// genuine sorter/dispatch choice survives. NULL (no dispatch param) →
+			// undefined → the retry re-resolves from current labels/project/account.
+			// FLY-887 R2: EXCEPT phase rows — their {model, vendor, effort} comes
+			// from the phase table unconditionally (see phaseDispatch above).
+			dispatchModel: phaseDispatch
+				? phaseDispatch.model
+				: (session.dispatch_model ?? undefined),
+			// FLY-1224: phase rows re-derive vendor + effort from the table (never
+			// persisted — the table is the single source); non-phase → undefined.
+			dispatchVendor: phaseDispatch?.vendor,
+			dispatchEffort: phaseDispatch?.effort,
+			// FLY-887 R2: phase rows bypass the label layer on retry too.
+			ignoreRunnerLabelSelection: phaseRole ? true : undefined,
+			// FLY-245 D2: gateway pre-bound successor id (plan §5.2.1) — the
+			// dispatcher uses it instead of a fresh randomUUID so recovery can
+			// reconcile by the durably-bound key. Absent for legacy retries.
+			successorExecutionId: gatewayDispatch?.successorExecutionId,
+		});
+	} catch (err) {
+		// PRE-dispatch failure — provably nothing started. Safe to terminalize.
+		const msg = err instanceof Error ? err.message : String(err);
+		return { success: false, message: `Retry dispatch failed: ${msg}` };
 	}
+
 	// ── Post-dispatch: the Runner is starting; the successor is bound. Any error
 	//    from here is best-effort bookkeeping and must NOT flip the result to a
 	//    "not dispatched" failure (R2 MED-6). ───────────────────────────────────
 	try {
+		// Link predecessor → successor
 		store.setRetrySuccessor(executionId, result.newExecutionId);
-	} catch (err) {
-		console.error(
-			`[retry] post-dispatch lineage write failed for successor ${result.newExecutionId} ` +
-				`(the Runner is already starting): ${(err as Error).message}`,
-		);
-	}
-	if (gatewayDispatch) {
-		try {
+		// FLY-245 D2: blueprint.run() kicked off — flip the WAL to 'dispatched'
+		// (informational; recovery still trusts only started evidence).
+		if (gatewayDispatch) {
 			store.markRetryDispatchDispatched(gatewayDispatch.gatewayRequestId);
-		} catch (err) {
-			console.error(
-				`[retry] post-dispatch WAL write failed for successor ${result.newExecutionId} ` +
-					`(the Runner is already starting): ${(err as Error).message}`,
-			);
 		}
-	}
 
-	let launchPending = false;
-	if (predecessorBinding) {
-		try {
-			let delivered = await waitForGeneralizedLaunchDelivery(
-				store,
-				result.newExecutionId,
-			);
-			// Close the same wait-boundary race as /api/runs/start.
-			delivered ??= getGeneralizedLaunchDelivery(store, result.newExecutionId);
-			launchPending = !delivered;
-		} catch (err) {
-			launchPending = true;
-			console.error(
-				`[retry] generalized launch delivery check failed for successor ${result.newExecutionId} ` +
-					`(reporting accepted-pending): ${(err as Error).message}`,
-			);
-		}
-	}
-
-	try {
 		// FLY-137 Phase 5: persist codex_skip + agent_name + agent_match_method
 		// on the NEW session row so event-route stage_changed reads the right
 		// values for the retried Runner (instead of inheriting from the old row).
@@ -1467,14 +1007,6 @@ async function handleRetry(
 		);
 	}
 
-	if (launchPending) {
-		return {
-			success: true,
-			pending: true,
-			message: `${session.issue_identifier ?? executionId} retry accepted → ${result.newExecutionId}; generalized launch delivery confirmation is pending`,
-		};
-	}
-
 	return {
 		success: true,
 		message: `${session.issue_identifier ?? executionId} retry dispatched → ${result.newExecutionId} (attempt #${runAttempt})`,
@@ -1529,7 +1061,6 @@ export async function handleTerminate(
 	eventFilter?: EventFilter,
 	registry?: RuntimeRegistry,
 	reason?: string,
-	runCloseAuthority?: RunCloseAuthority,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -1537,37 +1068,6 @@ export async function handleTerminate(
 			success: false,
 			message: `No session found for execution_id ${executionId}`,
 		};
-	}
-	if (
-		session.status === "terminated" &&
-		runCloseAuthority?.mode === "abandon"
-	) {
-		const intent = store.getWorkflowOperatorCloseIntent(executionId);
-		if (intent?.stage === "committed" && intent.mode === "abandon") {
-			try {
-				const cascade = store.cascadeRunTerminationOnCarrierClose({
-					executionId,
-					mode: "abandon",
-					principal: runCloseAuthority.principal,
-					now: new Date().toISOString(),
-				});
-				if (cascade.ok && !cascade.idempotentReplay) {
-					store.ensureTerminalWorkflowRunCollection({
-						runId: cascade.runId,
-						now: new Date().toISOString(),
-					});
-				}
-				return {
-					success: true,
-					message: `${session.issue_identifier ?? executionId} already terminated`,
-				};
-			} catch (error) {
-				return {
-					success: false,
-					message: `Run close cascade failed: ${error instanceof Error ? error.message : String(error)}`,
-				};
-			}
-		}
 	}
 
 	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === "terminate");
@@ -1583,17 +1083,6 @@ export async function handleTerminate(
 	// EVERY caller (not just the MCP abandon client) gets the same bound on the
 	// persisted last_error / hook audit content.
 	const auditReason = (reason?.trim() || "Terminated by CEO").slice(0, 500);
-	if (runCloseAuthority) {
-		const prepared = store.prepareWorkflowOperatorCloseIntent({
-			executionId,
-			mode: runCloseAuthority.mode,
-			reason: auditReason,
-			now: new Date().toISOString(),
-		});
-		if (!prepared.ok) {
-			return { success: false, message: prepared.reason };
-		}
-	}
 
 	// 1) TRANSITION FIRST (race-safe): if a concurrent change made this illegal,
 	// fail here with the FSM + tmux untouched.
@@ -1611,13 +1100,6 @@ export async function handleTerminate(
 			{ last_activity_at: sqliteDatetime(), last_error: auditReason },
 		);
 		if (!result.ok) {
-			if (runCloseAuthority) {
-				store.finalizeWorkflowOperatorCloseIntent({
-					executionId,
-					stage: "failed",
-					now: new Date().toISOString(),
-				});
-			}
 			return {
 				success: false,
 				message: result.error ?? "Transition rejected by FSM",
@@ -1632,15 +1114,13 @@ export async function handleTerminate(
 		);
 	}
 
-	// 2) Cleanup (OBSERVABLE partial-failure): reap the detached Codex group,
-	// then kill tmux via CommDB (source of
+	// 2) Cleanup (OBSERVABLE partial-failure): kill tmux via CommDB (source of
 	// truth, not StateStore.tmux_session — see tmux-lookup.ts) + close viewer.
 	// Codex code-review MED-3: a CommDB read error (corruption/lock) is NOT the
 	// same as "already gone" — we can't verify tmux liveness, so it must surface
 	// as cleanup-pending rather than a false success.
 	let cleanupError: string | undefined;
 	let physicalGone = false;
-	await reapCodexDaemonForSession(store, session, "bridge.terminate");
 	const lookup = session.project_name
 		? lookupTmuxTarget(executionId, session.project_name)
 		: ({ kind: "gone" } as const);
@@ -1686,44 +1166,9 @@ export async function handleTerminate(
 			projectName: session.project_name,
 			ok: finalized.ok,
 			error: finalized.error,
-			audit: {
-				retiredGateCount: finalized.retiredGateCount,
-				retiredAskCount: finalized.retiredAskCount,
-				source: "bridge.actions",
-			},
 		});
 		if (!finalized.ok) {
 			cleanupError = `commdb finalize failed: ${finalized.error ?? "unknown"}`;
-		}
-	}
-	if (runCloseAuthority) {
-		const intentStage = cleanupError ? "failed" : "committed";
-		const finalized = store.finalizeWorkflowOperatorCloseIntent({
-			executionId,
-			stage: intentStage,
-			now: new Date().toISOString(),
-		});
-		if (!finalized.ok) {
-			cleanupError = `close intent finalization failed: ${finalized.reason}`;
-		} else if (intentStage === "committed") {
-			try {
-				const cascade = store.cascadeRunTerminationOnCarrierClose({
-					executionId,
-					mode: runCloseAuthority.mode,
-					principal: runCloseAuthority.principal,
-					now: new Date().toISOString(),
-				});
-				if (cascade.ok && !cascade.idempotentReplay) {
-					store.ensureTerminalWorkflowRunCollection({
-						runId: cascade.runId,
-						now: new Date().toISOString(),
-					});
-				}
-			} catch (error) {
-				console.warn(
-					`[terminate] run close cascade deferred for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
 		}
 	}
 	if (cleanupError) {
@@ -1835,10 +1280,14 @@ export function createActionRouter(
 	issueDisplayRefresh?: {
 		current?: { refresh(issueId: string): Promise<void> };
 	},
-	turnBeltReconciler?: { current?: TurnBeltReconciler },
+	// FLY-1050: late-bound three-stage PhaseOrchestrator holder (same pattern
+	// as issueDisplayRefresh). A terminate of a three-stage QA row re-drives
+	// the implement→QA handoff (respawn) + the scoped belt reconcile —
+	// terminate previously notified the orchestrator of NOTHING (the FLY-967
+	// strand). plugin.ts must pass it at BOTH createActionRouter call sites
+	// (/actions dashboard alias + /api/actions — the FLY-175 dual-mount).
+	phaseOrchestrator?: { current?: PhaseOrchestrator },
 	cardAuthority?: FounderApprovalCardAuthority,
-	materializedHeadAuthority?: MaterializedHeadAuthority,
-	gateAuthorityView?: GateAuthorityView,
 ): Router {
 	const router = Router();
 
@@ -1853,16 +1302,6 @@ export function createActionRouter(
 				const { execution_id, identifier } = req.body ?? {};
 				if (!execution_id || typeof execution_id !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
-					return;
-				}
-				if (typeof leadId === "string" && leadId.trim()) {
-					res.status(403).json({
-						success: false,
-						error: "lead_ack_rejected",
-						message:
-							"Lead-attributed approval cannot resolve a founder-bound gate",
-						action: "approve",
-					});
 					return;
 				}
 				{
@@ -1895,8 +1334,6 @@ export function createActionRouter(
 								Promise.resolve()
 						: undefined,
 					cardAuthority,
-					materializedHeadAuthority,
-					gateAuthorityView,
 				);
 				if (result.success) {
 					res.json({
@@ -1942,30 +1379,34 @@ export function createActionRouter(
 					registry,
 					// FLY-228: optional audit reason (e.g. close_runner --abandon).
 					typeof terminateReason === "string" ? terminateReason : undefined,
-					{
-						mode: "abandon",
-						principal:
-							typeof leadId === "string" && leadId.trim()
-								? leadId.trim()
-								: "founder",
-					},
 				);
+				// FLY-1050: a terminated three-stage QA row may have stranded its
+				// implement at awaiting_review — fire the scoped QA-loss re-drive,
+				// then the scoped belt reconcile (terminate previously did NEITHER).
+				// The guard MUST include cleanupPending (Codex R1 #2): that shape is
+				// success:false + cleanupPending:true, but the FSM row is already
+				// terminal either way — a residual live tmux is caught downstream by
+				// the ghostGuard (spawn) and the liveness probe (belt). Never-throw,
+				// fire-and-forget (mirrors plugin.ts holder conventions).
 				if (
 					(terminateResult.success || terminateResult.cleanupPending) &&
 					sess?.project_name &&
-					isWorkflowPhaseRole(sess.session_role)
+					(sess.chat_thread_role ?? "main") === "qa"
 				) {
 					const issueId = sess.issue_id;
 					const projectName = sess.project_name;
-					void turnBeltReconciler?.current
-						?.reconcileTurnBelt({
-							issueId,
-							projectName,
-							terminalExecId: eid,
-						})
+					void phaseOrchestrator?.current
+						?.reconcileQaLoss({ issueId, terminalExecId: eid })
+						.then(() =>
+							phaseOrchestrator?.current?.reconcileTurnBelt({
+								issueId,
+								projectName,
+								terminalExecId: eid,
+							}),
+						)
 						.catch((err) =>
 							console.warn(
-								`[terminate] TURN reconcile failed for ${eid}: ${(err as Error).message}`,
+								`[terminate] FLY-1050 qa-loss reconcile failed for ${eid}: ${(err as Error).message}`,
 							),
 						);
 				}
@@ -2059,9 +1500,8 @@ export function createActionRouter(
 							: undefined,
 					);
 					if (retryResult.success) {
-						res.status(retryResult.pending ? 202 : 200).json({
+						res.json({
 							success: true,
-							...(retryResult.pending ? { pending: true } : {}),
 							message: retryResult.message,
 							action: "retry",
 						});

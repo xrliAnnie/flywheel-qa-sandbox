@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { tryFounderShipApproval as tryFounderShipApprovalImpl } from "../approval-signal/founder-ship-approval-handler.js";
+import { tryFounderShipApproval } from "../approval-signal/founder-ship-approval-handler.js";
 
 const CTX = {
 	issueId: "issue-uuid",
@@ -44,18 +44,6 @@ const oneShipGate = [
 		createdAtMs: 1,
 	},
 ];
-
-// Existing handler scenarios model messages already narrowed to the current
-// ship card. Keep that premise explicit while a dedicated regression test
-// exercises the new FLY-1847 card-anchor guard below.
-const tryFounderShipApproval = (
-	args: Parameters<typeof tryFounderShipApprovalImpl>[0],
-	deps: Parameters<typeof tryFounderShipApprovalImpl>[1],
-) =>
-	tryFounderShipApprovalImpl(
-		{ ...args, replyToCard: args.replyToCard ?? true },
-		deps,
-	);
 
 /**
  * FLY-1099 (Codex R2 #1): the fixture models the PRODUCTION postcondition —
@@ -99,29 +87,6 @@ function deps(over: Record<string, unknown> = {}) {
 const founderMsg = { id: "MSG-1", content: "ship it", authorId: "FOUNDER-1" };
 
 describe("tryFounderShipApproval — approve path", () => {
-	it("pins before writing when durable decision classification fails", async () => {
-		const d = deps();
-		const result = await tryFounderShipApproval(
-			{
-				msg: founderMsg,
-				shipGates: oneShipGate,
-				ctx: CTX,
-				recordDecisionClassification: vi.fn(() => {
-					throw new Error("classification store unavailable");
-				}),
-			},
-			d,
-		);
-
-		expect(result).toMatchObject({
-			bound: [],
-			deferred: [],
-			retry: true,
-			stage: "decision_classification_failed",
-		});
-		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
-	});
-
 	it("founder approval on the one current gate → writes approval, returns handled", async () => {
 		const cardAuthority = vi.fn().mockReturnValue({ ok: true });
 		const d = deps({ cardAuthority });
@@ -141,58 +106,9 @@ describe("tryFounderShipApproval — approve path", () => {
 		expect(JSON.parse(writeArgs.answer).approved).toBe(true);
 		expect(writeArgs).toMatchObject({ source: "text", cardAuthority });
 	});
-
-	it("engine gate remains approvable after its QA source session is gone", async () => {
-		const authority = {
-			kind: "engine" as const,
-			runId: "run-1",
-			questionId: "Q-1",
-			executionId: "E-1",
-			issueId: "issue-uuid",
-			projectName: "proj",
-			headSha: HEAD,
-			state: "awaiting_review" as const,
-			cardMessageId: "GATE-CARD",
-			prNumber: 799,
-			issueIdentifier: "FLY-1375",
-		};
-		const gateAuthorityView = { resolve: vi.fn().mockReturnValue(authority) };
-		const d = deps({
-			store: { getSession: vi.fn().mockReturnValue(undefined) },
-			gateAuthorityView,
-		});
-
-		const result = await tryFounderShipApproval(
-			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
-			d,
-		);
-
-		expect(result).toEqual({
-			bound: [{ questionId: "Q-1", decision: "approve" }],
-			deferred: [],
-			retry: false,
-		});
-		expect(d.writeGateResponseImpl).toHaveBeenCalledWith(
-			expect.objectContaining({ gateAuthorityView }),
-		);
-	});
 });
 
 describe("tryFounderShipApproval — fail-closed (returns null → WAKE-only)", () => {
-	it("rejects ordinary thread speech before gate narrowing or classification", async () => {
-		const auditSink = vi.fn();
-		const d = deps({ auditSink });
-		const result = await tryFounderShipApprovalImpl(
-			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
-			d,
-		);
-
-		expect(result).toBeNull();
-		expect(d.evaluateTextImpl).not.toHaveBeenCalled();
-		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
-		expect(auditSink).toHaveBeenCalledWith("card_anchor_missing", {});
-	});
-
 	it("non-founder author → null (never evaluates)", async () => {
 		const d = deps();
 		const r = await tryFounderShipApproval(
@@ -289,13 +205,6 @@ describe("tryFounderShipApproval — fail-closed (returns null → WAKE-only)", 
 
 describe("tryFounderShipApproval — reject path", () => {
 	it("TextSource reject → writes feedback (not approval), returns handled", async () => {
-		const founderRework = {
-			target: "qa" as const,
-			invalidationScope: ["qa" as const],
-			verificationPolicy: ["qa_retest" as const, "founder_gate" as const],
-			interpretedBy: "founder-reply-prefix",
-			interpretationReason: "matched_prefix:qa",
-		};
 		const d = deps({
 			evaluateTextImpl: vi.fn().mockResolvedValue({
 				source: "text",
@@ -304,7 +213,6 @@ describe("tryFounderShipApproval — reject path", () => {
 				prHeadSha: HEAD,
 				messageId: "MSG-1",
 				authorUserId: "FOUNDER-1",
-				founderRework,
 			}),
 		});
 		const r = await tryFounderShipApproval(
@@ -317,8 +225,6 @@ describe("tryFounderShipApproval — reject path", () => {
 		});
 		const [writeArgs] = d.writeGateResponseImpl.mock.calls[0];
 		expect(JSON.parse(writeArgs.answer).approved).not.toBe(true);
-		expect(writeArgs.intent).toBe("kickback");
-		expect(writeArgs.founderRework).toEqual(founderRework);
 	});
 });
 
@@ -403,81 +309,33 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 	});
 
 	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
-		"FLY-1251: %s is never deferred; it rejects the click with an explicit held notice",
-		async (holdReason) => {
+		"%s is NEVER deferrable and requires a fresh founder action",
+		async (reason) => {
 			const deferral = {
-				holdReason: vi.fn(() => holdReason),
-				defer: vi.fn(() => "inserted" as const),
+				holdReason: vi.fn().mockReturnValue(reason),
+				deferredEnabled: vi.fn().mockReturnValue(true),
+				heldReplyEnabled: vi.fn().mockReturnValue(true),
+				defer: vi.fn().mockReturnValue("inserted"),
 				queueHeldNotice: vi.fn(),
-				parkForConvergence: vi.fn(),
-				queueFeedbackWake: vi.fn(),
 			};
 			const d = deps({ deferral });
 
-			const result = await tryFounderShipApproval(
+			const r = await tryFounderShipApproval(
 				{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
-				d,
+				d as never,
 			);
 
-			expect(result).toBeNull();
+			expect(r).toBeNull();
 			expect(deferral.defer).not.toHaveBeenCalled();
-			expect(d.evaluateTextImpl).not.toHaveBeenCalled();
-			expect(deferral.queueHeldNotice).toHaveBeenCalledWith({
-				questionId: "Q-1",
-				msgId: "MSG-1",
-				executionId: "E-1",
-				kind: "readiness_hold",
-				holdReason,
-			});
+			expect(deferral.queueHeldNotice).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "deferred_off",
+					holdReason: reason,
+				}),
+			);
+			expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
 		},
 	);
-
-	it("held reject parks the same immutable route hint for deferred replay", async () => {
-		const founderRework = {
-			target: "design" as const,
-			invalidationScope: [
-				"design" as const,
-				"implement" as const,
-				"qa" as const,
-			],
-			verificationPolicy: [
-				"design_review" as const,
-				"code_review" as const,
-				"qa_retest" as const,
-				"founder_gate" as const,
-			],
-			interpretedBy: "founder-reply-prefix",
-			interpretationReason: "matched_prefix:design",
-		};
-		const deferral = {
-			holdReason: vi.fn(() => "codex_pending" as const),
-			defer: vi.fn(() => "inserted" as const),
-			queueHeldNotice: vi.fn(),
-			parkForConvergence: vi.fn(),
-			queueFeedbackWake: vi.fn(),
-		};
-		const d = deps({
-			deferral,
-			evaluateTextImpl: vi.fn().mockResolvedValue({
-				source: "text",
-				kind: "reject",
-				questionId: "Q-1",
-				prHeadSha: HEAD,
-				messageId: "MSG-1",
-				authorUserId: "FOUNDER-1",
-				founderRework,
-			}),
-		});
-
-		await tryFounderShipApproval(
-			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
-			d,
-		);
-
-		expect(deferral.defer).toHaveBeenCalledWith(
-			expect.objectContaining({ decision: "reject", founderRework }),
-		);
-	});
 
 	it("un-held session: isHeld false → normal write path", async () => {
 		const d = deps({ isHeld: vi.fn().mockReturnValue(false) });
@@ -571,6 +429,8 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 describe("FLY-1099 Codex code R1 fixes — postcondition ownership", () => {
 	const baseDeferral = () => ({
 		holdReason: vi.fn(() => null),
+		deferredEnabled: () => true,
+		heldReplyEnabled: () => true,
 		defer: vi.fn(() => "inserted" as const),
 		queueHeldNotice: vi.fn(),
 		parkForConvergence: vi.fn(),
@@ -652,6 +512,8 @@ describe("Codex code R2 HIGH: reject wake-intent failure is PARKED (not an unrea
 	it("queueFeedbackWake throws after the reject response is durable → parkForConvergence(reject) → deferred outcome", async () => {
 		const deferral = {
 			holdReason: vi.fn(() => null),
+			deferredEnabled: () => true,
+			heldReplyEnabled: () => true,
 			defer: vi.fn(() => "inserted" as const),
 			queueHeldNotice: vi.fn(),
 			parkForConvergence: vi.fn(),
@@ -695,6 +557,8 @@ describe("Codex code R3 HIGH: double failure (wake intent + park) → deadLetter
 	it("queueFeedbackWake AND parkForConvergence both throw → immediate deadLetter, never a bare retry", async () => {
 		const deferral = {
 			holdReason: vi.fn(() => null),
+			deferredEnabled: () => true,
+			heldReplyEnabled: () => true,
 			defer: vi.fn(() => "inserted" as const),
 			queueHeldNotice: vi.fn(),
 			parkForConvergence: vi.fn(() => {
@@ -740,6 +604,8 @@ describe("FLY-1238 merged-PR last-mile guard", () => {
 	it("silences the exact merge_block incident before queuing the stale pointer", async () => {
 		const deferral = {
 			holdReason: vi.fn(() => "merge_block" as const),
+			deferredEnabled: () => true,
+			heldReplyEnabled: () => true,
 			defer: vi.fn(() => "inserted" as const),
 			queueHeldNotice: vi.fn(),
 			parkForConvergence: vi.fn(),

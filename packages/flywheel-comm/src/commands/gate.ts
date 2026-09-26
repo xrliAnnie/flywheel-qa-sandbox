@@ -1,14 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { normalizeOptionalBearer } from "flywheel-config";
 import { CommDB } from "../db.js";
-import {
-	createFounderReviewQuestionContent,
-	FOUNDER_REVIEW_CHECKPOINT,
-	type FounderReviewGateEvidence,
-	parseFounderReviewQuestionContent,
-} from "../founder-review.js";
-import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
-import { truncateWithEllipsis } from "../text-truncate.js";
 import {
 	CONTENT_REF_THRESHOLD,
 	writeContentRef,
@@ -47,16 +38,6 @@ export interface GateArgs {
 	 * from the wake message itself.
 	 */
 	noBlock?: boolean;
-	/** Test seam; production probes the current branch's GitHub PR. */
-	shipCiProbe?: () => ShipCiGuardResult;
-	/** Best-effort queue doorbell; durable DB state remains authoritative. */
-	nudge?: () => Promise<void>;
-	/** Queue-native SLA carried by the canonical mailbox row. */
-	deadlineAt?: string;
-	/** Engine-owned workflow gates use a deterministic insert-or-verify id. */
-	questionId?: string;
-	/** Verified current-run artifact evidence required by founder_review. */
-	founderReviewEvidence?: FounderReviewGateEvidence;
 }
 
 export interface GateResult {
@@ -85,29 +66,6 @@ export interface GateResult {
  * - fail-open:  stderr "continuing" msg + exitCode=0 (no event POST, by design)
  */
 export async function gate(args: GateArgs): Promise<GateResult> {
-	// FLY-1314 material #8: this is an authorization prerequisite, not a
-	// timeout-policy infrastructure error. Keep it OUTSIDE the fail-open catch so
-	// even a misconfigured approve gate cannot open while CI is red/unknown.
-	if (args.checkpoint === "approve_to_ship") {
-		const ci = args.shipCiProbe?.() ?? probeShipCiGreen({ cwd: process.cwd() });
-		if (!ci.green) {
-			throw new Error(`CI not green: ${ci.detail}`);
-		}
-	}
-	if (args.checkpoint === FOUNDER_REVIEW_CHECKPOINT) {
-		if (args.timeoutBehavior !== "fail-close") {
-			throw new Error("founder_review must use fail-close timeout behavior");
-		}
-		if (!args.founderReviewEvidence) {
-			throw new Error("founder_review requires committed artifact evidence");
-		}
-		// Validate every field before opening CommDB so malformed evidence cannot
-		// leave a pending-but-never-valid review round behind.
-		createFounderReviewQuestionContent({
-			round: 1,
-			evidence: args.founderReviewEvidence,
-		});
-	}
 	let questionId: string | undefined;
 	try {
 		return await gateInner(args, (id) => {
@@ -140,78 +98,29 @@ async function gateInner(
 	const db = new CommDB(args.dbPath);
 	let questionId: string;
 	try {
-		let questionContent = args.message;
-		let priorFounderReviewQuestions: Array<{
-			id: string;
-			fromAgent: string;
-		}> = [];
-		if (
-			args.checkpoint === FOUNDER_REVIEW_CHECKPOINT &&
-			args.founderReviewEvidence
-		) {
-			const priorRounds = db
-				.getQuestionsByCheckpoint(FOUNDER_REVIEW_CHECKPOINT)
-				.map((question) => ({
-					question,
-					content: parseFounderReviewQuestionContent(
-						db.getFounderReviewFamily(question.id)?.question.content ??
-							question.content,
-					),
-				}))
-				.filter(
-					(candidate) =>
-						candidate.content?.runId === args.founderReviewEvidence?.runId,
-				);
-			priorFounderReviewQuestions = priorRounds.map((candidate) => ({
-				id: candidate.question.id,
-				fromAgent: candidate.question.from_agent,
-			}));
-			const round =
-				Math.max(
-					0,
-					...priorRounds.map((candidate) => candidate.content?.round ?? 0),
-				) + 1;
-			questionContent = createFounderReviewQuestionContent({
-				round,
-				evidence: args.founderReviewEvidence,
-			});
-		}
 		const useRef =
-			Buffer.byteLength(questionContent, "utf-8") > CONTENT_REF_THRESHOLD;
+			Buffer.byteLength(args.message, "utf-8") > CONTENT_REF_THRESHOLD;
 		let contentRef: string | undefined;
-		let dbContent = questionContent;
+		let dbContent = args.message;
 
 		if (useRef) {
 			// Two-phase write: create ref file first, then DB row
 			const tempId = crypto.randomUUID();
-			contentRef = writeContentRef(args.dbPath, tempId, questionContent);
+			contentRef = writeContentRef(args.dbPath, tempId, args.message);
 			dbContent = `[content_ref: ${contentRef}]`;
 		}
 
 		questionId = db.insertQuestion(args.execId, args.lead, dbContent, {
-			...(args.questionId ? { id: args.questionId } : {}),
 			checkpoint: args.checkpoint,
 			contentRef,
 			contentType: useRef ? "ref" : "text",
-			...(args.deadlineAt ? { deadlineAt: args.deadlineAt } : {}),
-			...(args.checkpoint === FOUNDER_REVIEW_CHECKPOINT
-				? { ttlSeconds: 7 * 24 * 60 * 60 }
-				: {}),
 		});
-		for (const previous of priorFounderReviewQuestions) {
-			db.retireQuestionGuarded(previous.id, {
-				expectedFromAgent: previous.fromAgent,
-				requireUnanswered: true,
-				supersededBy: questionId,
-			});
-		}
 	} finally {
 		db.close();
 	}
 
 	// Notify outer scope that question was created (for cleanup on error)
 	onQuestionCreated(questionId);
-	await args.nudge?.();
 
 	// Phase 1b: Report stage if configured (best-effort — don't block on error)
 	if (args.stage) {
@@ -222,7 +131,9 @@ async function gateInner(
 	// founder-consent approval path; return immediately. Deliberately NO
 	// resolveGate/expiry here: the pending question must remain visible to
 	// GatePoller (Lead relay) and the founder-consent wrapper after this
-	// process exits. There is deliberately no in-process timeout patrol.
+	// process exits. Timeout escalation moves Bridge-side
+	// (HeartbeatService.checkAwaitingReviewTimeout, keyed on the persisted
+	// awaiting_review_entered_at — NOT on this process's lifetime).
 	//
 	// FLY-123: when FLYWHEEL_GATE_MARKER_DIR is set (Codex runner env,
 	// injected by CodexTmuxAdapter), also write the question-bound
@@ -251,7 +162,10 @@ async function gateInner(
 				timeoutBehavior: args.timeoutBehavior,
 				timeoutBehaviorSource: args.timeoutBehaviorSource ?? "default",
 				cleanupTtlHours: args.cleanupTtlHours,
-				message: truncateWithEllipsis(args.message, 500),
+				message:
+					args.message.length > 500
+						? `${args.message.slice(0, 500)}…`
+						: args.message,
 			});
 		}
 		return { status: "pending", questionId, exitCode: 0 };
@@ -272,16 +186,13 @@ async function gateInner(
 			if (response) {
 				// Got answer — resolve the gate
 				const writeDb = new CommDB(args.dbPath);
-				let consumed = response;
 				try {
-					consumed =
-						writeDb.consumeGateResponse(questionId, args.execId) ?? response;
 					writeDb.resolveGate(questionId, args.cleanupTtlHours);
 				} finally {
 					writeDb.close();
 				}
 
-				let content = consumed.content;
+				let content = response.content;
 				// If original was ref, try to parse structured response
 				let approved: boolean | undefined;
 				try {
@@ -371,9 +282,7 @@ async function reportStageBestEffort(stageName: string): Promise<void> {
 	const execId = process.env.FLYWHEEL_EXEC_ID;
 	const issueId = process.env.FLYWHEEL_ISSUE_ID;
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME;
-	const ingestToken = normalizeOptionalBearer(
-		process.env.FLYWHEEL_INGEST_TOKEN,
-	);
+	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
 
 	if (!bridgeUrl || !execId || !issueId || !projectName) return;
 
@@ -408,18 +317,14 @@ async function reportGateTimedOutBestEffort(
 	const execId = process.env.FLYWHEEL_EXEC_ID;
 	const issueId = process.env.FLYWHEEL_ISSUE_ID;
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME;
-	const ingestToken = normalizeOptionalBearer(
-		process.env.FLYWHEEL_INGEST_TOKEN,
-	);
+	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
 
 	if (!bridgeUrl || !execId || !issueId || !projectName) return;
 
-	// Truncate original_message to 500 code points to keep event payload small
+	// Truncate original_message to 500 chars to keep event payload small
 	// (full content already lives in CommDB content_ref if it was large).
-	// FLY-1586 C: code points, not code units — a cut mid-surrogate-pair produces
-	// half a character, which SQLite rewrites to U+FFFD and which then fails
-	// every insert-then-verify read-back downstream.
-	const truncated = truncateWithEllipsis(args.message, 500);
+	const truncated =
+		args.message.length > 500 ? `${args.message.slice(0, 500)}…` : args.message;
 
 	const body = {
 		event_id: randomUUID(),

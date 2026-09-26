@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatFounderLocal, resolveFounderTimezone } from "flywheel-config";
 import type {
 	Comment,
 	EdgeWorkerConfig,
@@ -614,7 +613,6 @@ Focus on addressing the specific request in the mention. You can use the Linear 
 		this.logger.debug(
 			`buildIssueContextPrompt called for issue ${issue.identifier}${newComment ? " with new comment" : ""}`,
 		);
-		const founderTimezone = resolveFounderTimezone();
 
 		try {
 			// Use custom template if provided (repository-specific)
@@ -661,10 +659,7 @@ Focus on addressing the specific request in the mention. You can use the Linear 
 
 					const commentNodes = comments.nodes;
 					if (commentNodes.length > 0) {
-						commentThreads = await this.formatCommentThreads(
-							commentNodes,
-							founderTimezone,
-						);
+						commentThreads = await this.formatCommentThreads(commentNodes);
 						this.logger.debug(
 							`Formatted ${commentNodes.length} comments into threads`,
 						);
@@ -770,10 +765,7 @@ IMPORTANT: Focus specifically on addressing the new comment above. This is a new
 
 				prompt = prompt
 					.replace(/{{new_comment_author}}/g, authorName)
-					.replace(
-						/{{new_comment_timestamp}}/g,
-						formatFounderLocal(new Date(), founderTimezone),
-					)
+					.replace(/{{new_comment_timestamp}}/g, new Date().toLocaleString())
 					.replace(/{{new_comment_content}}/g, newComment.body || "");
 			} else {
 				// Remove the new comment section entirely (including preceding newlines)
@@ -924,10 +916,7 @@ ${newComment ? `New comment to address:\n${newComment.body}\n\n` : ""}Please ana
 	 * @param comments Array of Linear comments
 	 * @returns Formatted string showing comment threads
 	 */
-	async formatCommentThreads(
-		comments: Comment[],
-		founderTimezone = resolveFounderTimezone(),
-	): Promise<string> {
+	async formatCommentThreads(comments: Comment[]): Promise<string> {
 		if (comments.length === 0) {
 			return "No comments yet.";
 		}
@@ -968,10 +957,7 @@ ${newComment ? `New comment to address:\n${newComment.body}\n\n` : ""}Please ana
 			const rootUser = await rootComment.user;
 			const rootAuthor =
 				rootUser?.displayName || rootUser?.name || rootUser?.email || "Unknown";
-			const rootTime = formatFounderLocal(
-				new Date(rootComment.createdAt),
-				founderTimezone,
-			);
+			const rootTime = new Date(rootComment.createdAt).toLocaleString();
 
 			let threadText = `<comment_thread>
 	<root_comment>
@@ -992,10 +978,7 @@ ${rootComment.body}
 						replyUser?.name ||
 						replyUser?.email ||
 						"Unknown";
-					const replyTime = formatFounderLocal(
-						new Date(reply.createdAt),
-						founderTimezone,
-					);
+					const replyTime = new Date(reply.createdAt).toLocaleString();
 
 					threadText += `
 		<reply>

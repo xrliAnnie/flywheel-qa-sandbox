@@ -1,31 +1,21 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { SummaryRole } from "flywheel-comm/lead-identity";
-import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
 
-export type LeadCarrier = "v2";
-
 export interface LeadConfig {
 	agentId: string;
-	/** FLY-2030: explicit summary inflow assignment. Missing/unknown values fail config load. */
-	summaryRole: SummaryRole;
 	chatChannel: string;
 	match: {
 		labels: string[];
 	};
 	/** Env var name for this lead's Discord bot token (e.g., "PETER_BOT_TOKEN"). */
 	botTokenEnv?: string;
-	/** Registry-owned expected Discord bot user ID. Never derived from the token at runtime. */
-	botUserId?: string;
-	/** Registry-owned Discord plugin state directory. Defaults from agentId when absent. */
-	discordStateDir?: string;
 	/** Resolved bot token (populated at load time from botTokenEnv). NOT from JSON input. */
 	botToken?: string;
 	/**
-	 * FLY-83: Discord channel ID where lead-alert.sh posts
+	 * FLY-83: Discord channel ID where LeadWatchdog / lead-alert.sh post
 	 * operator-facing alerts (login expired, permission blocked, silent pane).
 	 * If omitted and alertFallbackToCore is false, alerts are skipped.
 	 */
@@ -67,7 +57,7 @@ export interface LeadConfig {
 	/**
 	 * FLY-231: companion (non-engineering) Lead marker — a warm persona agent
 	 * (e.g. Mufasa, Belle) wrapped in Flywheel Lead infra for launchd residency +
-	 * Discord adapter + Lead alert coverage, but with NO Runner spawning, NO
+	 * Discord adapter + LeadWatchdog coverage, but with NO Runner spawning, NO
 	 * code, and NO engineering-governance rules. `claude-lead.sh` reads this
 	 * (single source of truth) to skip the eng-governance base rules and trim the
 	 * companion's capability surface.
@@ -84,7 +74,7 @@ export interface LeadConfig {
 	/**
 	 * FLY-879: external (customer-facing) Lead marker — an outward-facing agent
 	 * (e.g. Anna the interviewer) wrapped in Flywheel Lead infra for launchd
-	 * residency + Discord adapter + Lead alert coverage, but with a HARD-LOCKED
+	 * residency + Discord adapter + LeadWatchdog coverage, but with a HARD-LOCKED
 	 * capability surface: NO Runner spawning, NO Bridge/CommDB/internal MCP, and —
 	 * unlike a companion — NONE of the internal engineering rules AND not even the
 	 * cross-dept roundtable. Its ENTIRE rule surface is one `external-agent-contract.md`
@@ -110,24 +100,15 @@ export interface LeadConfig {
 	 * model does this Lead run on" (previously a hand-edited plist env that any
 	 * `flywheel-daemon.sh install` silently wiped).
 	 *
-	 * Effective for both Lead backends. Claude consumes the launchd value as a CLI
-	 * flag; Codex consumes the same `FLYWHEEL_LEAD_MODEL` carrier in thread params.
+	 * Only effective for the `claude-code` backend (flows into the launchd plist
+	 * as `FLYWHEEL_LEAD_MODEL` via `fleet apply` → manifest → `generate_plist`).
+	 * For codex Leads it is display-only ("configured", never claimed active).
 	 *
 	 * Absent = account default model. Deliberately NOT normalized (FLY-231
 	 * pattern): absent stays absent so existing in-memory Lead objects keep
 	 * their exact shape (reverse-compat).
 	 */
 	model?: string;
-	/** FLY-2131: Codex-only protocol context-window pin. The numeric registry
-	 * field is projected to FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW by the launcher. */
-	modelContextWindow?: number;
-	/**
-	 * FLY-1867: identity-bound opt-in for the official Playwright MCP plugin.
-	 * Machine settings keep the plugin disabled by default; `claude-lead.sh`
-	 * adds a per-launch `--settings` override only when this exact project+Lead
-	 * entry declares `true`. Absent / false stays off. Claude-code only.
-	 */
-	playwrightMcp?: boolean;
 	/**
 	 * FLY-247: per-Lead backend (vendor) — `"claude-code" | "codex-app-server"`
 	 * (the Lead seam from FLY-224, NOT the Runner's `claude-tmux`).
@@ -142,11 +123,6 @@ export interface LeadConfig {
 	 * itself is NOT normalized into the object (reverse-compat).
 	 */
 	backend?: LeadBackendId;
-	/**
-	 * FLY-1663 launchd-native carrier marker. Absence and explicit `"v2"` are
-	 * equivalent for Claude Leads; other values are rejected.
-	 */
-	carrier?: LeadCarrier;
 	/**
 	 * FLY-350: Codex Lead capability profile (only meaningful for the
 	 * `codex-app-server` backend). Expresses which Codex tier this Lead runs as,
@@ -185,8 +161,13 @@ export interface LeadConfig {
 	voice?: string | { voiceId: string; rate?: string; pitch?: string };
 	/**
 	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
-	 * Mirrors `model`: Claude consumes it as `claude-lead.sh --effort`; Codex maps
-	 * the same carrier to thread config `model_reasoning_effort` (FLY-2131).
+	 * Mirrors `model`: only effective for the `claude-code` backend, flowing
+	 * `fleet apply → manifest → generate_plist` as `FLYWHEEL_LEAD_EFFORT` →
+	 * `claude-lead.sh --effort`. Lowering it from the account default (effectively
+	 * xhigh) directly saves tokens.
+	 *
+	 * Cross-field (validated below): rejected on a `codex-app-server` Lead — Codex
+	 * has no `--effort` runtime path, so a value there would be inert dead config.
 	 *
 	 * Absent = account default (companions still get their FLY-583 `xhigh`).
 	 * Deliberately NOT normalized (FLY-231 pattern): absent stays absent so
@@ -239,7 +220,7 @@ export interface ProjectLinearBinding {
  * the standalone voice-bridge daemon (packages/voice-bridge reads
  * ~/.flywheel/projects.json itself — this validator only guards the shape).
  * Absent OR `null` ⇒ huddle disabled for the project (byte-compat). Defaults
- * (commandName "glaw", moveMembers true) are applied by the CONSUMER, not
+ * (commandName "meet", moveMembers true) are applied by the CONSUMER, not
  * normalized in here (FLY-231 pattern).
  */
 export interface HuddleConfig {
@@ -251,7 +232,7 @@ export interface HuddleConfig {
 	orchestratorBotTokenEnv: string;
 	/** Env var NAME for the ears (receive) bot token (pool claim). REQUIRED. */
 	earsBotTokenEnv: string;
-	/** Slash-command name (PRD R10: configurable). Consumer default: "glaw" (Annie-final ①). */
+	/** Slash-command name (PRD R10: configurable). Consumer default: "meet". */
 	commandName?: string;
 	/** Zero-tap MOVE_MEMBERS when the founder is already in a VC. Consumer default: true. */
 	moveMembers?: boolean;
@@ -262,8 +243,6 @@ export interface ProjectEntry {
 	projectRoot: string;
 	projectRepo?: string;
 	leads: LeadConfig[];
-	/** Required only while the founder-selected summary mode is per-project. */
-	summaryAggregatorLeadId?: string;
 	generalChannel?: string;
 	/**
 	 * FLY-892 (Step 7, ④): env var name holding the dedicated "system announcer"
@@ -305,11 +284,8 @@ export function loadProjects(): ProjectEntry[] {
 	if (envProjects) {
 		raw = JSON.parse(envProjects);
 	} else {
-		// Source 2: the wrapper-selected registry file. Source 3 is the resident
-		// default for processes that were not launched through a scoped wrapper.
-		const filePath =
-			process.env.FLYWHEEL_PROJECTS_FILE ??
-			join(homedir(), ".flywheel", "projects.json");
+		// Source 2: ~/.flywheel/projects.json
+		const filePath = join(homedir(), ".flywheel", "projects.json");
 		try {
 			const data = readFileSync(filePath, "utf-8");
 			raw = JSON.parse(data);
@@ -621,16 +597,6 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].agentId: must match ${SAFE_ID} (it becomes a filesystem path component), got ${JSON.stringify(lead.agentId)}`,
 				);
 			}
-			// FLY-1501 W3: the launch wrapper derives this exact key and the
-			// restart-storm gate deliberately refuses to normalize/truncate it.
-			// Reject at the config boundary so a config accepted by Bridge can
-			// never strand its Lead behind a permanently fail-closed gate.
-			const restartChildKey = `lead.${entry.projectName}-${lead.agentId}`;
-			if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(restartChildKey)) {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}]: derived restart child_key "${restartChildKey}" must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ (maximum 128 ASCII bytes)`,
-				);
-			}
 			const exactKey = `${entry.projectName}-${lead.agentId}`;
 			if (seenExactKeys.has(exactKey)) {
 				throw new Error(
@@ -658,14 +624,6 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					);
 				}
 			}
-			if (
-				lead.playwrightMcp !== undefined &&
-				typeof lead.playwrightMcp !== "boolean"
-			) {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].playwrightMcp: must be a boolean, got ${JSON.stringify(lead.playwrightMcp)}`,
-				);
-			}
 			if (lead.backend !== undefined) {
 				if (
 					lead.backend !== "claude-code" &&
@@ -673,23 +631,6 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}].backend: must be "claude-code" | "codex-app-server" (the Lead backend seam, not the Runner's executor id), got ${JSON.stringify(lead.backend)}`,
-					);
-				}
-			}
-			if (lead.playwrightMcp === true && lead.backend === "codex-app-server") {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].playwrightMcp: is only supported by the "claude-code" Lead launcher; codex-app-server cannot consume Claude plugin settings`,
-				);
-			}
-			if (lead.carrier !== undefined) {
-				if (lead.carrier !== "v2") {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].carrier: must be "v2", got ${JSON.stringify(lead.carrier)}`,
-					);
-				}
-				if (lead.backend === "codex-app-server") {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].carrier: is only valid for backend "claude-code"; codex-app-server uses its bespoke runtime`,
 					);
 				}
 			}
@@ -739,28 +680,22 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				}
 			}
 
-			// FLY-671/FLY-2131: validate optional per-lead effort (closed enum).
-			// Both backends consume it now; absent stays absent (reverse-compat).
+			// FLY-671: validate optional per-lead effort (closed CLI enum). Absent
+			// stays absent (reverse-compat). Codex Leads have no `--effort` runtime
+			// path → reject the mixture as dead config (Codex design review R2 LOW-5,
+			// same fail-closed cross-field discipline as the codexProfile block).
 			if (lead.effort !== undefined) {
 				if (!isLeadEffort(lead.effort)) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}].effort: must be "low"|"medium"|"high"|"xhigh"|"max", got ${JSON.stringify(lead.effort)}`,
 					);
 				}
-			}
-			if (lead.modelContextWindow !== undefined) {
-				if (
-					!Number.isSafeInteger(lead.modelContextWindow) ||
-					lead.modelContextWindow < 1 ||
-					lead.modelContextWindow > 10_000_000
-				) {
+				if (lead.backend === "codex-app-server") {
 					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].modelContextWindow: must be an integer from 1 through 10000000, got ${JSON.stringify(lead.modelContextWindow)}`,
-					);
-				}
-				if (lead.backend !== "codex-app-server") {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].modelContextWindow: is only supported on backend "codex-app-server"`,
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`effort is not supported on backend "codex-app-server" (Codex has no ` +
+							`--effort runtime path — it would be inert config). Remove effort or ` +
+							`use the claude-code backend.`,
 					);
 				}
 			}
@@ -976,12 +911,6 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 			}
 		}
 	}
-
-	// FLY-1726: one shared identity validator owns the cross-project invariants
-	// that the richer TeamLead schema cannot safely enforce one row at a time:
-	// bare Lead IDs, expected bot IDs, and effective state directories must all
-	// be globally unique; token-managed Leads require an independent botUserId.
-	compileLeadIdentityRegistry(raw);
 
 	return raw as ProjectEntry[];
 }

@@ -20,7 +20,7 @@
  * brainstorm/design gate.
  */
 
-import type { WorkflowPhaseRole } from "flywheel-config";
+import type { ThreeStagePhase } from "flywheel-config";
 import {
 	parseProgress,
 	resolveProgressPath,
@@ -35,7 +35,7 @@ export interface ProgressResumeInfo {
 	priorExecutionId: string;
 	resumeKind: ResumeKind;
 	/** phase to suppress up-to; undefined = suppress nothing (fail-closed on mismatch). */
-	effectiveStage?: WorkflowPhaseRole;
+	effectiveStage?: ThreeStagePhase;
 	/** branch B tip SHA — reuses 793's worktree startPoint so progress.md survives. */
 	startPoint: string;
 	/** always true for a resume — reuse 793's single-branch worktree mechanism. */
@@ -108,7 +108,7 @@ export function computeProgressResume(
 	const blob = deps.readBranchFile(branch, progressPath);
 	if (blob == null) return null;
 
-	let ledgerPhase: WorkflowPhaseRole;
+	let ledgerPhase: ThreeStagePhase;
 	try {
 		ledgerPhase = parseProgress(blob).phase;
 	} catch {

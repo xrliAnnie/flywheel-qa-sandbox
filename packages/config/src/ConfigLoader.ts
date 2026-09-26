@@ -1,12 +1,13 @@
 import * as path from "node:path";
 import { parse } from "yaml";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
-import { RETIRED_CONFIG_PATHS } from "./feature-flags/truth.js";
-import { getModelConfigSnapshot } from "./model-config.js";
+import { normalizeDispatchModel } from "./model-tiers.js";
 import type { CheckpointConfig, FlywheelConfig, RoleEffort } from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
+	FOUNDER_UX_GATE_MODES,
 	ROLE_EFFORT_LEVELS,
+	SUPPORTED_MILESTONE_KINDS_V1,
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
@@ -14,12 +15,6 @@ import {
 
 /** Function signature for reading a file — injected for testability */
 export type ReadFileFn = (path: string) => Promise<string>;
-
-function retiredProjectFlag(key: string): never {
-	throw new Error(
-		`${key} was retired (FLY-2103): per-project flags live in the flag store — delete this key; see flywheel-comm feature-flags`,
-	);
-}
 
 /**
  * Loads and validates .flywheel/config.yaml.
@@ -38,21 +33,11 @@ export class ConfigLoader {
 	}
 
 	private validate(config: unknown): asserts config is FlywheelConfig {
-		// A project file is one validation decision: every collection row must
-		// see the same hot model-policy generation.
-		const modelSnapshot = getModelConfigSnapshot();
 		if (!config || typeof config !== "object") {
 			throw new Error("Config must be a YAML object");
 		}
 
 		const c = config as Record<string, unknown>;
-		for (const retired of RETIRED_CONFIG_PATHS) {
-			if (Object.hasOwn(c, retired.path)) {
-				throw new Error(
-					`${retired.path} is retired by ${retired.retiredBy}; remove the entire top-level block`,
-				);
-			}
-		}
 
 		// Required top-level fields
 		if (!c.project || typeof c.project !== "string") {
@@ -126,28 +111,6 @@ export class ConfigLoader {
 			);
 		}
 
-		// FLY-1687: optional per-project patrol tuning (not an enable/disable flag).
-		const patrol = c.patrol as Record<string, unknown> | undefined;
-		if (Object.hasOwn(c, "patrol")) {
-			if (
-				patrol == null ||
-				typeof patrol !== "object" ||
-				Array.isArray(patrol)
-			) {
-				throw new Error("patrol must be a YAML mapping (object)");
-			}
-			if (
-				Object.hasOwn(patrol, "interval_minutes") &&
-				(typeof patrol.interval_minutes !== "number" ||
-					!Number.isFinite(patrol.interval_minutes) ||
-					patrol.interval_minutes <= 0)
-			) {
-				throw new Error(
-					"patrol.interval_minutes must be a positive finite number",
-				);
-			}
-		}
-
 		// skills.proofshot (optional — GEO-151)
 		const skills = c.skills as Record<string, unknown> | undefined;
 		if (skills != null) {
@@ -161,8 +124,8 @@ export class ConfigLoader {
 						"skills.proofshot must be a YAML mapping (object), not an array or scalar",
 					);
 				}
-				if (Object.hasOwn(ps, "enabled")) {
-					retiredProjectFlag("skills.proofshot.enabled");
+				if (ps.enabled != null && typeof ps.enabled !== "boolean") {
+					throw new Error("skills.proofshot.enabled must be a boolean");
 				}
 				if (ps.dev_command != null && typeof ps.dev_command !== "string") {
 					throw new Error("skills.proofshot.dev_command must be a string");
@@ -279,8 +242,8 @@ export class ConfigLoader {
 				if (cp.stage != null && typeof cp.stage !== "string") {
 					throw new Error(`checkpoints.${name}.stage must be a string`);
 				}
-				if (Object.hasOwn(cp, "enabled")) {
-					retiredProjectFlag(`checkpoints.${name}.enabled`);
+				if (cp.enabled != null && typeof cp.enabled !== "boolean") {
+					throw new Error(`checkpoints.${name}.enabled must be a boolean`);
 				}
 			}
 		}
@@ -360,39 +323,225 @@ export class ConfigLoader {
 					"doc_flow must be a YAML mapping (object), not an array or scalar",
 				);
 			}
-			if (Object.hasOwn(docFlow, "enabled")) {
-				retiredProjectFlag("doc_flow.enabled");
+			if (typeof docFlow.enabled !== "boolean") {
+				throw new Error("doc_flow.enabled must be a boolean");
 			}
-			if (docFlow.default_department == null) {
+			// default_department is validated whenever PRESENT (even with
+			// enabled=false) so a disabled-but-malformed config fails loudly
+			// instead of detonating later when someone flips enabled on.
+			if (docFlow.default_department != null) {
+				if (
+					typeof docFlow.default_department !== "string" ||
+					!/^[a-z0-9-]+$/.test(docFlow.default_department)
+				) {
+					throw new Error(
+						`doc_flow.default_department must be a non-empty lowercase directory name matching ^[a-z0-9-]+$ (no slashes, dots, spaces or uppercase), got "${docFlow.default_department}"`,
+					);
+				}
+			}
+			if (docFlow.enabled === true && docFlow.default_department == null) {
 				throw new Error(
-					"doc_flow.default_department is required when doc_flow is present",
+					"doc_flow.default_department is required when doc_flow.enabled is true",
+				);
+			}
+		}
+
+		// qa (optional — FLY-579). Absent or auto:false → off (byte-compatible).
+		// Shape validated whenever PRESENT so a malformed config fails loudly.
+		const qa = c.qa as Record<string, unknown> | undefined;
+		if (qa != null) {
+			if (typeof qa !== "object" || Array.isArray(qa)) {
+				throw new Error(
+					"qa must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			// FLY-752: `auto` is OPTIONAL (opt-out default). Absent → ON downstream.
+			// A PRESENT non-boolean is still malformed → throw (fails CLOSED at the
+			// policy resolver, never silently on).
+			if (qa.auto != null && typeof qa.auto !== "boolean") {
+				throw new Error("qa.auto must be a boolean");
+			}
+			if (qa.skip_labels != null) {
+				if (
+					!Array.isArray(qa.skip_labels) ||
+					qa.skip_labels.some((l) => typeof l !== "string")
+				) {
+					throw new Error("qa.skip_labels must be an array of strings");
+				}
+			}
+			if (
+				qa.agent != null &&
+				(typeof qa.agent !== "string" || qa.agent.length === 0)
+			) {
+				throw new Error("qa.agent must be a non-empty string");
+			}
+		}
+
+		// detection (optional — FLY-1048 PR-C). Absent → no per-project override
+		// (byte-compatible: the global FLYWHEEL_DETECTION_LEAD_GRACE_MS / default
+		// applies). Shape validated whenever PRESENT so a fat-fingered tuning
+		// knob fails loudly instead of being silently reinterpreted.
+		const detection = c.detection as Record<string, unknown> | undefined;
+		if (detection != null) {
+			if (typeof detection !== "object" || Array.isArray(detection)) {
+				throw new Error(
+					"detection must be a YAML mapping (object), not an array or scalar",
 				);
 			}
 			if (
-				typeof docFlow.default_department !== "string" ||
-				!/^[a-z0-9-]+$/.test(docFlow.default_department)
+				detection.lead_grace_ms != null &&
+				(typeof detection.lead_grace_ms !== "number" ||
+					!Number.isInteger(detection.lead_grace_ms) ||
+					detection.lead_grace_ms <= 0)
 			) {
 				throw new Error(
-					`doc_flow.default_department must be a non-empty lowercase directory name matching ^[a-z0-9-]+$ (no slashes, dots, spaces or uppercase), got "${docFlow.default_department}"`,
+					"detection.lead_grace_ms must be a positive integer (milliseconds)",
 				);
 			}
 		}
 
-		if (Object.hasOwn(c, "skill_framework")) {
-			retiredProjectFlag("skill_framework.split");
+		// pipeline (optional — FLY-793). Absent / three_stage:false → off
+		// (byte-compatible; single-session task as before). Shape validated
+		// whenever PRESENT so a malformed block fails loudly at load (mirrors
+		// doc_flow), instead of silently no-op-ing the toggle later.
+		const pipeline = c.pipeline as Record<string, unknown> | undefined;
+		if (pipeline != null) {
+			if (typeof pipeline !== "object" || Array.isArray(pipeline)) {
+				throw new Error(
+					"pipeline must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (
+				pipeline.three_stage != null &&
+				typeof pipeline.three_stage !== "boolean"
+			) {
+				throw new Error("pipeline.three_stage must be a boolean");
+			}
+			// FLY-887 R2: three_stage_channels — channel allowlist for three-stage
+			// entry. Items must be QUOTED strings: a bare YAML number would
+			// silently lose precision on 19-digit Discord snowflakes and the gate
+			// would never match, so numeric items fail loudly with a quoting hint.
+			const channels = pipeline.three_stage_channels;
+			if (channels != null) {
+				if (!Array.isArray(channels)) {
+					throw new Error(
+						"pipeline.three_stage_channels must be an array of channel-id strings",
+					);
+				}
+				for (const item of channels) {
+					if (typeof item === "number") {
+						throw new Error(
+							`pipeline.three_stage_channels item ${item} is a bare YAML number — ` +
+								"quote Discord channel ids (they exceed safe integer precision), " +
+								'e.g. three_stage_channels: ["1516209714097291335"]',
+						);
+					}
+					if (typeof item !== "string" || item.length === 0) {
+						throw new Error(
+							"pipeline.three_stage_channels items must be non-empty strings",
+						);
+					}
+				}
+			}
 		}
 
-		if (Object.hasOwn(c, "pipeline")) {
-			const pipeline = c.pipeline as Record<string, unknown> | undefined;
-			retiredProjectFlag(
-				pipeline && Object.hasOwn(pipeline, "work_kind")
-					? "pipeline.work_kind"
-					: "pipeline.dag",
-			);
+		// founder_ux_gate (optional — FLY-598 / FLY-869). Absent → resolved to
+		// `enforce` downstream by resolveEffectiveFounderUxConfig (NOT this
+		// loader — ConfigLoader only validates the raw YAML shape whenever
+		// PRESENT so a malformed config fails loudly instead of silently
+		// no-op-ing the gate). Kept separate from FLY-175 founderConsent so this
+		// gate can never toggle reserved-action consent.
+		const founderUxGate = c.founder_ux_gate as
+			| Record<string, unknown>
+			| undefined;
+		if (founderUxGate != null) {
+			if (typeof founderUxGate !== "object" || Array.isArray(founderUxGate)) {
+				throw new Error(
+					"founder_ux_gate must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (
+				typeof founderUxGate.mode !== "string" ||
+				!FOUNDER_UX_GATE_MODES.includes(
+					founderUxGate.mode as (typeof FOUNDER_UX_GATE_MODES)[number],
+				)
+			) {
+				throw new Error(
+					`founder_ux_gate.mode must be one of ${FOUNDER_UX_GATE_MODES.join(" | ")}, got "${String(founderUxGate.mode)}"`,
+				);
+			}
+			// FLY-869: exempt_labels — issues carrying one of these labels skip the
+			// now-default-on gate. Optional; resolveEffectiveFounderUxConfig
+			// supplies ["brainstorm-exempt"] when absent. Normalize to lowercase
+			// here (same contract as issue labels, which the Bridge lowercases at
+			// the boundary — runs-route.ts) so a case-mismatched project config
+			// never silently fails to exempt an issue.
+			if (founderUxGate.exempt_labels != null) {
+				if (
+					!Array.isArray(founderUxGate.exempt_labels) ||
+					founderUxGate.exempt_labels.some((l) => typeof l !== "string")
+				) {
+					throw new Error(
+						"founder_ux_gate.exempt_labels must be an array of strings",
+					);
+				}
+				founderUxGate.exempt_labels = (
+					founderUxGate.exempt_labels as string[]
+				).map((l) => l.toLowerCase());
+			}
 		}
 
-		if (Object.hasOwn(c, "ponytail")) {
-			retiredProjectFlag("ponytail.enabled");
+		// founder_milestone_report (optional — FLY-725). Absent or enabled:false →
+		// off (byte-compatible). Shape validated whenever PRESENT so a malformed
+		// config fails loudly. `milestones` values are restricted to
+		// SUPPORTED_MILESTONE_KINDS_V1 — `ship_ready` and unknown kinds are
+		// REJECTED so an operator cannot silently opt into an unimplemented no-op.
+		const fmr = c.founder_milestone_report as
+			| Record<string, unknown>
+			| undefined;
+		if (fmr != null) {
+			if (typeof fmr !== "object" || Array.isArray(fmr)) {
+				throw new Error(
+					"founder_milestone_report must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (typeof fmr.enabled !== "boolean") {
+				throw new Error("founder_milestone_report.enabled must be a boolean");
+			}
+			if (fmr.milestones != null) {
+				if (!Array.isArray(fmr.milestones)) {
+					throw new Error(
+						"founder_milestone_report.milestones must be an array of strings",
+					);
+				}
+				for (const m of fmr.milestones) {
+					if (
+						typeof m !== "string" ||
+						!SUPPORTED_MILESTONE_KINDS_V1.includes(
+							m as (typeof SUPPORTED_MILESTONE_KINDS_V1)[number],
+						)
+					) {
+						throw new Error(
+							`founder_milestone_report.milestones: "${String(m)}" is not supported in v1 (allowed: ${SUPPORTED_MILESTONE_KINDS_V1.join(" | ")})`,
+						);
+					}
+				}
+			}
+		}
+
+		// ponytail (optional — FLY-615). Absent or enabled:false → project does
+		// not opt ponytail on by default (byte-compatible). Shape validated
+		// whenever PRESENT so a malformed config fails loudly.
+		const ponytail = c.ponytail as Record<string, unknown> | undefined;
+		if (ponytail != null) {
+			if (typeof ponytail !== "object" || Array.isArray(ponytail)) {
+				throw new Error(
+					"ponytail must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (typeof ponytail.enabled !== "boolean") {
+				throw new Error("ponytail.enabled must be a boolean");
+			}
 		}
 
 		// xiaohongshu_learning (optional — FLY-222)
@@ -401,8 +550,8 @@ export class ConfigLoader {
 		// Linear team/project/label resolve) is a RUNTIME check the scheduler
 		// performs against projects.json + Linear — on failure it skips that
 		// collection with a bounded alert, NOT a config-load throw. Like
-		// doc_flow, authoring fields are validated whenever PRESENT so malformed
-		// metadata fails loudly instead of later.
+		// doc_flow, fields are validated whenever PRESENT (even enabled=false)
+		// so a disabled-but-malformed config fails loudly instead of later.
 		const xhs = c.xiaohongshu_learning as Record<string, unknown> | undefined;
 		if (xhs != null) {
 			if (typeof xhs !== "object" || Array.isArray(xhs)) {
@@ -410,8 +559,8 @@ export class ConfigLoader {
 					"xiaohongshu_learning must be a YAML mapping (object), not an array or scalar",
 				);
 			}
-			if (Object.hasOwn(xhs, "enabled")) {
-				retiredProjectFlag("xiaohongshu_learning.enabled");
+			if (xhs.enabled != null && typeof xhs.enabled !== "boolean") {
+				throw new Error("xiaohongshu_learning.enabled must be a boolean");
 			}
 			if (xhs.video_opt_in != null && typeof xhs.video_opt_in !== "boolean") {
 				throw new Error("xiaohongshu_learning.video_opt_in must be a boolean");
@@ -475,7 +624,7 @@ export class ConfigLoader {
 					if (
 						col.model != null &&
 						(typeof col.model !== "string" ||
-							modelSnapshot.normalizeDispatchModel(col.model) === null)
+							normalizeDispatchModel(col.model) === null)
 					) {
 						throw new Error(
 							`${where}.model must be a recognized model tier id or alias (normalizeDispatchModel), got "${col.model}"`,
@@ -494,7 +643,7 @@ export class ConfigLoader {
 						}
 					}
 					// FLY-286: review_channel (enum), first_run_cap (0..ceiling),
-					// first_run_analyze_limit (1..ceiling). auto_create is retired.
+					// first_run_analyze_limit (1..ceiling), auto_create (boolean).
 					if (
 						col.review_channel != null &&
 						!XIAOHONGSHU_REVIEW_CHANNELS.includes(col.review_channel as never)
@@ -527,10 +676,19 @@ export class ConfigLoader {
 							);
 						}
 					}
-					if (Object.hasOwn(col, "auto_create")) {
-						retiredProjectFlag(`${where}.auto_create`);
+					if (col.auto_create != null && typeof col.auto_create !== "boolean") {
+						throw new Error(`${where}.auto_create must be a boolean`);
 					}
 				});
+			}
+			// enabled with nothing to study is a config mistake — fail loudly.
+			if (
+				xhs.enabled === true &&
+				(!Array.isArray(xhs.collections) || xhs.collections.length === 0)
+			) {
+				throw new Error(
+					"xiaohongshu_learning.collections must be a non-empty array when xiaohongshu_learning.enabled is true",
+				);
 			}
 		}
 
@@ -676,30 +834,6 @@ export class ConfigLoader {
 			}
 			if (!(defaultAgent in agents)) {
 				throw new Error(`default_agent "${defaultAgent}" not found in agents`);
-			}
-		}
-
-		// FLY-1335: an empty match.labels array NEVER wins label matching
-		// (AgentDispatcher.labelsMatch returns false on an empty array — empty is
-		// NOT a wildcard). Such an agent is selected only by an explicit agentName
-		// override, or — when its name is declared as `default_agent` — via the
-		// Step-3a unmatched-label fallback. This warning fires for empty-labels
-		// agents that are NOT the default_agent: they are name-only, and if the
-		// author meant "catch-all", that intent silently doesn't work. Warn, don't
-		// throw — boot continuity for existing configs (FLY-159 precedent);
-		// name-only agents stay legitimate.
-		if (agents && typeof agents === "object") {
-			for (const [name, agentRaw] of Object.entries(agents)) {
-				const match = (agentRaw as Record<string, unknown>).match as {
-					labels: string[];
-				};
-				if (match.labels.length === 0 && name !== defaultAgent) {
-					console.warn(
-						`[ConfigLoader] agents.${name}.match.labels is empty — an empty array is NOT a wildcard; ` +
-							`label dispatch will never select this agent (it is name-only). ` +
-							`For a "no label matched" catch-all, declare default_agent: ${name} (FLY-1335).`,
-					);
-				}
 			}
 		}
 	}

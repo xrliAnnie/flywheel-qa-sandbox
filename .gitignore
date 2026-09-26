@@ -21,10 +21,6 @@ logs/
 
 # pnpm
 .pnpm-debug.log
-.pnpm-store/
-
-# Local Flywheel run artifacts
-.flywheel/runs/
 
 # TypeScript
 *.tsbuildinfo

@@ -3,7 +3,7 @@
  *
  * ONE derive-from-real-state render path for the three founder-facing display
  * faces of a `[FLY-XX]` thread — A title badge, B pinned pipeline header,
- * C DAG workflow status line — triggered from EVERY lifecycle change source
+ * C three-stage status line — triggered from EVERY lifecycle change source
  * (applyTransition hook, DirectEventSink, park/wake, stage_changed,
  * qa_result/finalize, recovered-merge finalization, GatePoller sweep) instead
  * of only `stage_changed` (the FLY-902 Finding #4 root cause: FLY-887's
@@ -14,21 +14,23 @@
  * variants; per-issue coalesce-to-latest keeps Discord traffic flat under
  * trigger bursts. This file also hosts the moved-verbatim legacy
  * `stage_changed` renderers (`stampStageEmojiForSession` /
- * `pinRunnerAttachForSession`) as the fallback when the unified refresher is
- * unavailable (event-route
+ * `pinRunnerAttachForSession`) so the `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0`
+ * escape hatch falls back to the exact pre-FLY-907 behavior (event-route
  * keeps thin forwards), now with the Step-3 attach cross-wire guard.
  */
 
 import { existsSync } from "node:fs";
 import Database from "better-sqlite3";
 import {
-	isWorkflowPhaseRole,
+	DEFAULT_PHASE_TIER,
 	modelDisplayName,
-	PHASE_ROLE_SEQUENCE,
+	modelShortCode,
 	PHASE_THREAD_BADGE,
 	phaseMessageTag,
 	phaseThreadBadge,
-	type WorkflowPhaseRole,
+	resolvePhaseDispatch,
+	THREE_STAGE_PHASE_SEQUENCE,
+	type ThreeStagePhase,
 } from "flywheel-config";
 import {
 	type ProjectEntry,
@@ -36,7 +38,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import { isQaHeld } from "./auto-qa-held.js";
 import {
 	buildPipelineHeaderContent,
 	type ChatThreadContext,
@@ -52,8 +54,6 @@ import {
 	type ParkProbe,
 	type PhaseDisplayState,
 } from "./issue-display.js";
-import { isQaHeld } from "./review-hold.js";
-import { sessionModelDisplay } from "./runner-model-display.js";
 import { BLOCKED_EMOJI, BLOCKED_WORD } from "./stage-utils.js";
 import {
 	type AttachTarget,
@@ -78,7 +78,8 @@ export type IssueDisplayRefreshHandle = {
 };
 
 /** Forward-reference holder (same pattern as phaseStatusLineRefreshHolder):
- *  populated post-listen; `current` undefined = triggers dormant. */
+ *  populated post-listen; `current` undefined = triggers dormant (byte-compat
+ *  and the FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 escape hatch). */
 export type IssueDisplayRefreshHolder = {
 	current?: IssueDisplayRefreshHandle;
 };
@@ -96,67 +97,27 @@ export function parseIssueLabels(raw: string | undefined): string[] {
 	}
 }
 
-/** Read the Bridge-owned route visibility payload from session_params. */
-export function parseWorkflowRouteSummary(
-	raw: string | undefined,
-): string | undefined {
-	if (!raw) return undefined;
-	try {
-		const parsed = JSON.parse(raw) as {
-			workflowRoute?: { summary?: unknown };
-		};
-		return typeof parsed.workflowRoute?.summary === "string" &&
-			parsed.workflowRoute.summary.trim().length > 0
-			? parsed.workflowRoute.summary
-			: undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function plannedPhaseModels(
-	store: StateStore,
-	issueId: string,
-): Map<WorkflowPhaseRole, { model: string; display: string }> {
-	const run = store.getActiveWorkflowRunForIssue(issueId);
-	if (!run?.snapshot) return new Map();
-	try {
-		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-		const planned = new Map<
-			WorkflowPhaseRole,
-			{ model: string; display: string }
-		>();
-		for (const node of snapshot.resolved.nodes) {
-			if (!isWorkflowPhaseRole(node.type) || !node.dispatch?.model) continue;
-			const display = modelDisplayName(node.dispatch.model);
-			if (display) {
-				planned.set(node.type, { model: node.dispatch.model, display });
-			}
-		}
-		return planned;
-	} catch {
-		return new Map();
-	}
-}
-
-/** FLY-560: issue status badges always include their short status word. */
+/**
+ * FLY-560 UX iteration: emoji-only vs emoji+word badge mode. Default emoji+word
+ * (Annie's feedback — emoji alone is hard to memorise); set
+ * `FLYWHEEL_ISSUE_STATUS_WORD=0` to fall back to emoji-only. Read at stamp time
+ * so a flag flip takes effect on the next refresh without a code path change.
+ */
 export function issueStatusWordEnabled(): boolean {
-	return true;
+	return process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0";
 }
 
 /**
  * FLY-907 (Step 3): does the resolved tmux window belong to this issue? The
  * window-name anchor is `buildWindowLabel` = `<identifier>-<runner>-<title>`
- * (core/tmux-naming.ts, FLY-272 identifier-first). A missing issue identifier
- * has no comparison anchor. A known issue with no resolved window name fails
- * closed: founder-facing attach must never guess.
+ * (core/tmux-naming.ts, FLY-272 identifier-first). Identifier or windowName
+ * missing → no anchor to verify → treat as belonging (no new false kills).
  */
 export function attachTargetMatchesIssue(
 	issueIdentifier: string | undefined,
 	windowName: string | undefined,
 ): boolean {
-	if (!issueIdentifier) return true;
-	if (!windowName) return false;
+	if (!issueIdentifier || !windowName) return true;
 	return windowName.startsWith(`${issueIdentifier}-`);
 }
 
@@ -164,11 +125,10 @@ function warnAttachCrossWire(
 	executionId: string,
 	issueIdentifier: string | undefined,
 	windowName: string | undefined,
-	resolutionFailure?: string,
 ): void {
 	// Loud, structured — this is the FLY-923 registration-side evidence trail.
 	console.warn(
-		`[issue-display] attach cross-wire for exec ${executionId}: expected window prefix "${issueIdentifier}-", actual window_name "${windowName}"${resolutionFailure ? `, resolution_failure "${resolutionFailure}"` : ""} — withholding attach command (FLY-923 evidence)`,
+		`[issue-display] attach cross-wire for exec ${executionId}: expected window prefix "${issueIdentifier}-", actual window_name "${windowName}" — withholding attach command (FLY-923 evidence)`,
 	);
 }
 
@@ -182,8 +142,8 @@ interface StampDeps {
 /**
  * FLY-560 Feature A (moved verbatim from event-route.ts for FLY-907): the
  * legacy stage_changed title stamp — badge = the REPORTED stage (or the
- * reporting session's phase badge on a DAG workflow issue). This remains the
- * fallback when the unified refresher is unavailable. Fire-and-forget.
+ * reporting session's phase badge on a three-stage issue). Still the active
+ * path when `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` (escape hatch). Fire-and-forget.
  */
 export function stampStageEmojiForSession(
 	deps: StampDeps,
@@ -209,9 +169,8 @@ export function stampStageEmojiForSession(
 
 	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
 	if (!thread) return; // thread not created yet — a later stage_changed catches it
-	if (thread.archived_at) return; // archived issue threads stay silent
 
-	// FLY-892 (Step 6): on a DAG workflow issue the title prefix is the STAGE-level
+	// FLY-892 (Step 6): on a three-stage issue the title prefix is the STAGE-level
 	// phase badge (🎨设计/🔨实现/🧪QA) of the reporting session's phase, which
 	// REPLACES the FLY-560 fine-grained stage word. `""` for a non-phase (main)
 	// session → falls back to the FLY-560 stage badge (byte-compat).
@@ -226,9 +185,9 @@ export function stampStageEmojiForSession(
 				issueTitle: session.issue_title,
 				botToken,
 				leadId,
-				// FLY-1255: derive the title marker from the actual runner model,
-				// falling back to the planned phase dispatch when needed.
-				modelMarker: sessionModelDisplay(session)?.threadMarker ?? null,
+				// FLY-728 Part D: ride the stage rename with the model short code
+				// (F/O/S/H). `?? null` = authoritative CLEAR on account-default.
+				modelCode: modelShortCode(session.runner_model) ?? null,
 			},
 			thread.thread_id,
 			stage,
@@ -246,7 +205,7 @@ export function stampStageEmojiForSession(
 /**
  * FLY-560 Feature C + FLY-892 Step 4 (moved verbatim from event-route.ts for
  * FLY-907, + the Step-3 attach cross-wire guard): the legacy stage_changed pin
- * fallback when the unified refresher is unavailable.
+ * renderer. Still the active path when `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0`.
  * Fire-and-forget; the whole chain (incl. sync CommDB reads) runs past a real
  * async boundary (CommDB busy_timeout must never stall the caller).
  */
@@ -273,7 +232,6 @@ export function pinRunnerAttachForSession(
 
 	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
 	if (!thread) return; // thread not created yet — a later stage_changed catches it
-	if (thread.archived_at) return; // archived issue threads stay silent
 
 	const resolvedChannel = chatChannel;
 	const resolvedToken = botToken;
@@ -285,7 +243,6 @@ export function pinRunnerAttachForSession(
 		issueTitle: session.issue_title,
 		botToken: resolvedToken,
 		leadId,
-		routeSummary: parseWorkflowRouteSummary(session.session_params),
 	};
 	const headerBotToken =
 		resolveAnnouncerBotToken(deps.projects, session.project_name) ??
@@ -304,19 +261,15 @@ export function pinRunnerAttachForSession(
 					session.project_name,
 				);
 				if (!target) return; // tmux_window not registered yet — next stage reconciles
-				const attach = await resolveCmuxAttachTarget(target.tmuxWindow, {
-					expectedExecutionId: session.execution_id,
-				});
+				const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
 				// FLY-907 (Step 3): never render a link into another issue's window.
 				if (
-					attach.kind === "unresolved" ||
 					!attachTargetMatchesIssue(session.issue_identifier, attach.windowName)
 				) {
 					warnAttachCrossWire(
 						session.execution_id,
 						session.issue_identifier,
 						attach.windowName,
-						attach.kind === "unresolved" ? attach.reason : undefined,
 					);
 					await deps.chatThreadCreator.ensureRunnerAttachUnresolvedResult(
 						ctx,
@@ -333,16 +286,21 @@ export function pinRunnerAttachForSession(
 			}
 
 			const byRole = new Map(phaseSessions.map((s) => [s.chat_thread_role, s]));
-			const plannedByRole = plannedPhaseModels(deps.store, session.issue_id);
 			const rows: PhaseHeaderRow[] = [];
-			for (const role of PHASE_ROLE_SEQUENCE) {
+			for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+				// FLY-1224 (R1 #3): a pending row's planned model comes from the
+				// DISPATCH table (kill-switch aware) — implement shows GPT-5.6, not
+				// the legacy tier's Fable. The tier stays the last-resort fallback.
+				const plannedModel = modelDisplayName(
+					resolvePhaseDispatch(role).model,
+					DEFAULT_PHASE_TIER[role],
+				);
 				const ps = byRole.get(role);
 				if (!ps) {
-					const planned = plannedByRole.get(role);
 					rows.push({
-						label: phaseMessageTag(role, planned?.model, undefined).trim(),
+						label: phaseMessageTag(role).trim(),
 						status: "pending",
-						...(planned ? { plannedModel: planned.display } : {}),
+						plannedModel,
 					});
 					continue;
 				}
@@ -350,11 +308,7 @@ export function pinRunnerAttachForSession(
 				const status: PhaseHeaderRow["status"] =
 					LEGACY_HEADER_DONE_STATUSES.has(ps.status) ? "done" : "active";
 				const row: PhaseHeaderRow = {
-					label: phaseMessageTag(
-						role,
-						ps.runner_model,
-						ps.design_backend,
-					).trim(),
+					label: phaseMessageTag(role, ps.runner_model).trim(),
 					status,
 					execId: ps.execution_id.slice(0, 8),
 				};
@@ -363,19 +317,15 @@ export function pinRunnerAttachForSession(
 					ps.project_name,
 				);
 				if (target) {
-					const attach = await resolveCmuxAttachTarget(target.tmuxWindow, {
-						expectedExecutionId: ps.execution_id,
-					});
+					const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
 					// FLY-907 (Step 3): identifier-prefix guard on every header row.
 					if (
-						attach.kind === "unresolved" ||
 						!attachTargetMatchesIssue(ps.issue_identifier, attach.windowName)
 					) {
 						warnAttachCrossWire(
 							ps.execution_id,
 							ps.issue_identifier,
 							attach.windowName,
-							attach.kind === "unresolved" ? attach.reason : undefined,
 						);
 						row.attachUnresolved = true;
 					} else {
@@ -403,8 +353,8 @@ export function pinRunnerAttachForSession(
 }
 
 /**
- * FLY-892 (Step 4) — the legacy header-local done set for the fallback path
- * above. The unified
+ * FLY-892 (Step 4) — the legacy header-local done set, kept ONLY for the
+ * `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` escape-hatch path above. The unified
  * refresher derives through `derivePhaseDisplayState` instead.
  */
 const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
@@ -415,31 +365,10 @@ const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
 	"design_done",
 ]);
 
-type IssueConclusionStore = Pick<
-	StateStore,
-	"hasFinalizationCompletedForIssue" | "hasMergeConfirmedForIssue"
->;
-
-/**
- * FLY-1709: `terminated` is concluded cleanup only when the issue has durable
- * ship evidence. A historical completed session is not sufficient: generalized
- * DAGs can leave several main-role rows on one issue, and a later abandoned node
- * must not inherit an earlier node's success.
- */
-export function hasDurableIssueConclusion(
-	store: IssueConclusionStore,
-	issueId: string,
-): boolean {
-	return (
-		store.hasFinalizationCompletedForIssue(issueId) ||
-		store.hasMergeConfirmedForIssue(issueId)
-	);
-}
-
 /**
  * FLY-907 sweep layer-1 fast hash input: the sessions-table component of the
  * display fingerprint — per-role latest {role, status, exec} + the issue's
- * latest session {status, session_stage, exec} + the DAG workflow issue's
+ * latest session {status, session_stage, exec} + the three-stage issue's
  * post-ship finalization-claim bit. Cheap (StateStore only, zero CommDB), and
  * computed IDENTICALLY by the refresher's fingerprint writer so layer-1
  * comparison is exact.
@@ -447,8 +376,7 @@ export function hasDurableIssueConclusion(
 export function computeSessionsFingerprint(
 	store: Pick<
 		StateStore,
-		| "hasFinalizationCompletedForIssue"
-		| "hasMergeConfirmedForIssue"
+		| "countEventsByIssueAndType"
 		| "getLatestPhaseSessionsForIssue"
 		| "getSessionByIssue"
 	>,
@@ -460,14 +388,15 @@ export function computeSessionsFingerprint(
 		e: s.execution_id,
 	}));
 	const main = store.getSessionByIssue(issueId);
-	const issueConcluded = hasDurableIssueConclusion(store, issueId);
 	return JSON.stringify({
 		p: phases,
 		// `getLatestPhaseSessionsForIssue` only returns design/implement/qa rows,
-		// so a non-empty result is the same DAG workflow guard used by derivation.
+		// so a non-empty result is the same three-stage guard used by derivation.
 		// Single-session issues retain the pre-FLY-1225 zero-query path.
-		fc: phases.length > 0 && store.hasFinalizationCompletedForIssue(issueId),
-		cc: issueConcluded,
+		fc:
+			phases.length > 0 &&
+			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
+				0,
 		m: main
 			? { st: main.status, sg: main.session_stage ?? "", e: main.execution_id }
 			: null,
@@ -521,10 +450,7 @@ export interface IssueDisplayRefresherDeps {
 		execId: string,
 		projectName: string,
 	) => TmuxTarget | undefined;
-	resolveAttach?: (
-		tmuxWindow: string,
-		expectedExecutionId: string,
-	) => Promise<AttachTarget>;
+	resolveAttach?: (tmuxWindow: string) => Promise<AttachTarget>;
 	/**
 	 * Lead directive 17ab4f53 cleanup seam: delete a legacy scattered
 	 * status-line message (defaults to the real Discord DELETE).
@@ -702,23 +628,9 @@ export class IssueDisplayRefresher {
 		const thread = store.getChatThreadByIssue(issueId, chatChannel);
 		if (!thread) return; // no thread → nothing to render (and no fingerprint home)
 		const threadId = thread.thread_id;
-		if (thread.archived_at) {
-			const fingerprint: DisplayFingerprint = {
-				s: computeSessionsFingerprint(store, issueId),
-				c: JSON.stringify({ archived: true }),
-			};
-			store.setChatThreadDisplayFingerprint(
-				issueId,
-				chatChannel,
-				JSON.stringify(fingerprint),
-				new Date().toISOString(),
-			);
-			return;
-		}
 
 		const latestPhase = store.getLatestPhaseSessionsForIssue(issueId);
-		const isWorkflowPhase = latestPhase.length > 0;
-		const issueConcluded = hasDurableIssueConclusion(store, issueId);
+		const isThreeStage = latestPhase.length > 0;
 
 		// Park probes — once per involved exec (the map dedupes).
 		const parkByExec = new Map<string, ParkProbe>();
@@ -731,25 +643,22 @@ export class IssueDisplayRefresher {
 		};
 
 		// Unified per-phase states (face A aggregation + face B rows).
-		const phaseStates = new Map<WorkflowPhaseRole, PhaseDisplayState>();
-		const phaseStatuses = new Map<WorkflowPhaseRole, string>();
-		const phaseSessionByRole = new Map<WorkflowPhaseRole, Session>();
+		const phaseStates = new Map<ThreeStagePhase, PhaseDisplayState>();
+		const phaseStatuses = new Map<ThreeStagePhase, string>();
+		const phaseSessionByRole = new Map<ThreeStagePhase, Session>();
 		for (const s of latestPhase) {
-			const role = s.chat_thread_role as WorkflowPhaseRole;
+			const role = s.chat_thread_role as ThreeStagePhase;
 			phaseSessionByRole.set(role, s);
 			phaseStatuses.set(role, s.status);
 			phaseStates.set(
 				role,
-				derivePhaseDisplayState({
-					role,
-					status: s.status,
-					park: parkFor(s),
-					issueConcluded,
-				}),
+				derivePhaseDisplayState({ role, status: s.status, park: parkFor(s) }),
 			);
 		}
 		const shipFinalizationClaimed =
-			isWorkflowPhase && store.hasFinalizationCompletedForIssue(issueId);
+			isThreeStage &&
+			store.countEventsByIssueAndType(issueId, "post_ship_finalization_claim") >
+				0;
 
 		// ── Face A: title badge ──
 		let badge = deriveIssueTitleBadge({
@@ -758,7 +667,6 @@ export class IssueDisplayRefresher {
 			shipFinalizationClaimed,
 			mainSessionStage: anySession.session_stage,
 			mainSessionStatus: anySession.status,
-			issueConcluded,
 		});
 		// FLY-579/827 interaction (feedback: founder status must be QA-gated): a
 		// single-session issue whose independent auto-QA is in flight shows 🧪QA
@@ -766,7 +674,7 @@ export class IssueDisplayRefresher {
 		// from this issue's session rows.
 		if (
 			badge.kind === "stage" &&
-			!isWorkflowPhase &&
+			!isThreeStage &&
 			isQaHeld(store, anySession)
 		) {
 			badge = { kind: "stage", stage: "test" };
@@ -784,8 +692,7 @@ export class IssueDisplayRefresher {
 			issueTitle: anySession.issue_title,
 			botToken,
 			leadId,
-			modelMarker: sessionModelDisplay(badgeSession)?.threadMarker ?? null,
-			routeSummary: parseWorkflowRouteSummary(anySession.session_params),
+			modelCode: modelShortCode(badgeSession.runner_model) ?? null,
 		};
 
 		let resultA: DisplayWriteResult = "noop";
@@ -831,31 +738,27 @@ export class IssueDisplayRefresher {
 		if (flags.issueAttachPinEnabled) {
 			const headerBotToken =
 				resolveAnnouncerBotToken(projects, anySession.project_name) ?? botToken;
-			if (isWorkflowPhase) {
-				const plannedByRole = plannedPhaseModels(store, issueId);
+			if (isThreeStage) {
 				const rows: PhaseHeaderRow[] = [];
-				for (const role of PHASE_ROLE_SEQUENCE) {
+				for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+					// FLY-1224 (R1 #3): planned model from the dispatch table (see the
+					// legacy header path above — same honesty fix, second injection point).
+					const plannedModel = modelDisplayName(
+						resolvePhaseDispatch(role).model,
+						DEFAULT_PHASE_TIER[role],
+					);
 					const ps = phaseSessionByRole.get(role);
 					const state = phaseStates.get(role) ?? "pending";
 					if (!ps || state === "pending") {
-						const planned = plannedByRole.get(role);
 						rows.push({
-							label: phaseMessageTag(
-								role,
-								ps?.runner_model ?? planned?.model,
-								ps?.design_backend,
-							).trim(),
+							label: phaseMessageTag(role).trim(),
 							status: "pending",
-							...(planned ? { plannedModel: planned.display } : {}),
+							plannedModel,
 						});
 						continue;
 					}
 					const row: PhaseHeaderRow = {
-						label: phaseMessageTag(
-							role,
-							ps.runner_model,
-							ps.design_backend,
-						).trim(),
+						label: phaseMessageTag(role, ps.runner_model).trim(),
 						status: state,
 						execId: ps.execution_id.slice(0, 8),
 					};
@@ -864,17 +767,13 @@ export class IssueDisplayRefresher {
 						ps.project_name,
 					);
 					if (target) {
-						const attach = this.deps.resolveAttach
-							? await this.deps.resolveAttach(
-									target.tmuxWindow,
-									ps.execution_id,
-								)
-							: await resolveCmuxAttachTarget(target.tmuxWindow, {
-									expectedExecutionId: ps.execution_id,
-								});
-						const matches =
-							attach.kind !== "unresolved" &&
-							attachTargetMatchesIssue(ps.issue_identifier, attach.windowName);
+						const attach = await (
+							this.deps.resolveAttach ?? resolveCmuxAttachTarget
+						)(target.tmuxWindow);
+						const matches = attachTargetMatchesIssue(
+							ps.issue_identifier,
+							attach.windowName,
+						);
 						commComponent[ps.execution_id] = {
 							w: target.tmuxWindow,
 							n: attach.windowName ?? null,
@@ -885,7 +784,6 @@ export class IssueDisplayRefresher {
 								ps.execution_id,
 								ps.issue_identifier,
 								attach.windowName,
-								attach.kind === "unresolved" ? attach.reason : undefined,
 							);
 							row.attachUnresolved = true;
 						} else {
@@ -908,7 +806,7 @@ export class IssueDisplayRefresher {
 					content,
 				);
 			} else {
-				// Non-DAG workflow: the byte-compat single-runner "Runner terminal"
+				// Non-three-stage: the byte-compat single-runner "Runner terminal"
 				// pin (Lead bot, NEVER the announcer — FLY-892 Codex R1 Med).
 				const target = (this.deps.getTmuxTarget ?? getTmuxTargetFromCommDb)(
 					anySession.execution_id,
@@ -920,20 +818,13 @@ export class IssueDisplayRefresher {
 					commComponent[anySession.execution_id] = { w: null };
 					resultB = "deferred";
 				} else {
-					const attach = this.deps.resolveAttach
-						? await this.deps.resolveAttach(
-								target.tmuxWindow,
-								anySession.execution_id,
-							)
-						: await resolveCmuxAttachTarget(target.tmuxWindow, {
-								expectedExecutionId: anySession.execution_id,
-							});
-					const matches =
-						attach.kind !== "unresolved" &&
-						attachTargetMatchesIssue(
-							anySession.issue_identifier,
-							attach.windowName,
-						);
+					const attach = await (
+						this.deps.resolveAttach ?? resolveCmuxAttachTarget
+					)(target.tmuxWindow);
+					const matches = attachTargetMatchesIssue(
+						anySession.issue_identifier,
+						attach.windowName,
+					);
 					commComponent[anySession.execution_id] = {
 						w: target.tmuxWindow,
 						n: attach.windowName ?? null,
@@ -944,7 +835,6 @@ export class IssueDisplayRefresher {
 							anySession.execution_id,
 							anySession.issue_identifier,
 							attach.windowName,
-							attach.kind === "unresolved" ? attach.reason : undefined,
 						);
 						resultB =
 							await chatThreadCreator.ensureRunnerAttachUnresolvedResult(

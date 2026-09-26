@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../StateStore.js";
 import {
-	DEFAULT_ACK_TIMEOUT_MS,
-	DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS,
-	isFreshControllerHeartbeat,
-	parseControllerHeartbeatMs,
 	prepareCodexPhaseShutdown,
 	type RunnerShutdownDb,
 } from "../codex-phase-shutdown.js";
@@ -92,25 +88,6 @@ function harness(args: {
 }
 
 describe("prepareCodexPhaseShutdown", () => {
-	it("exports the exact heartbeat ruler used by the shutdown decision", () => {
-		const now = Date.parse("2026-07-14T12:00:10Z");
-		expect(DEFAULT_ACK_TIMEOUT_MS).toBe(30_000);
-		expect(DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS).toBe(60_000);
-		expect(parseControllerHeartbeatMs("2026-07-14 12:00:00")).toBe(
-			Date.parse("2026-07-14T12:00:00Z"),
-		);
-		expect(parseControllerHeartbeatMs("malformed")).toBeUndefined();
-		expect(isFreshControllerHeartbeat("2026-07-14 12:00:00", now, 60_000)).toBe(
-			true,
-		);
-		expect(isFreshControllerHeartbeat("2026-07-14 11:58:00", now, 60_000)).toBe(
-			false,
-		);
-		expect(isFreshControllerHeartbeat("2026-07-14 12:00:11", now, 60_000)).toBe(
-			false,
-		);
-	});
-
 	it.each([
 		phaseSession({ adapter_type: "claude-tmux" }),
 		phaseSession({ chat_thread_role: "main" }),
@@ -123,47 +100,17 @@ describe("prepareCodexPhaseShutdown", () => {
 		},
 	);
 
-	it("applies the resident shutdown protocol to a workflow-bound generic main actor", async () => {
-		const h = harness({
-			session: phaseSession({
-				chat_thread_role: "main",
-				workflow_node_id: "execute",
-			}),
-			probe: "absent",
-		});
-		expect(await h.run()).toEqual({ kind: "direct", reason: "absent" });
-	});
-
-	// FLY-1269 regression: these previously asserted `direct/controller_lease_stale`
-	// — i.e. they GREEN-LIT culling a window whose pane had just probed ALIVE. A
-	// missing/stale lease proves only that we cannot read the controller's beat,
-	// never that the controller is gone, and killing a live one orphans its daemon.
 	it.each([
 		phaseSession({ heartbeat_at: undefined }),
 		phaseSession({ heartbeat_at: "2026-07-14 11:58:00" }),
 	])(
-		"fails closed when the controller lease is missing or stale but the pane is alive",
+		"falls through to direct cleanup when the controller lease is missing or stale",
 		async (session) => {
 			const h = harness({ session });
 			expect(await h.run()).toEqual({
-				kind: "blocked",
-				error: "phase_shutdown_controller_lease_stale_live_pane",
+				kind: "direct",
+				reason: "controller_lease_stale",
 			});
-			expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
-		},
-	);
-
-	// FLY-1269 Authority Matrix: a stale lease is NOT what licenses cleanup — the
-	// tmux-identity verdict is. Same stale/missing lease as above, but with a probe
-	// that PROVES absence, must still cull (the fix must not over-block).
-	it.each(["dead_pin", "absent"] as const)(
-		"still culls a stale-lease phase when the probe proves it is %s",
-		async (probe) => {
-			const h = harness({
-				session: phaseSession({ heartbeat_at: "2026-07-14 11:58:00" }),
-				probe,
-			});
-			expect(await h.run()).toEqual({ kind: "direct", reason: probe });
 			expect(h.db.requestRunnerShutdown).not.toHaveBeenCalled();
 		},
 	);
@@ -245,12 +192,9 @@ describe("prepareCodexPhaseShutdown", () => {
 			})),
 		});
 		const h = harness({ db });
-		// FLY-1269: previously `direct/controller_heartbeat_stopped`. The pending
-		// request is still reused (no second request written), but the ack wait
-		// times out against a LIVE pane, so the decision must fail closed.
 		expect(await h.run()).toEqual({
-			kind: "blocked",
-			error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_pane",
+			kind: "direct",
+			reason: "controller_heartbeat_stopped",
 		});
 		expect(db.requestRunnerShutdown).not.toHaveBeenCalled();
 	});
@@ -302,34 +246,13 @@ describe("prepareCodexPhaseShutdown", () => {
 		});
 	});
 
-	// FLY-1269 regression: this previously asserted `direct/controller_heartbeat_stopped`
-	// — the "orphan fallback". But a stopped heartbeat cannot tell a DEAD controller
-	// from a live-but-wedged one, and the pane here probes ALIVE, so the fallback was
-	// culling exactly the case it must not. Absence has one authority: the tmux probe.
-	it("fails closed when the heartbeat stops during the ack wait but the pane is alive", async () => {
+	it("uses the orphan fallback when the heartbeat stops during the ack wait", async () => {
 		const h = harness({});
 		expect(await h.run()).toEqual({
-			kind: "blocked",
-			error: "phase_shutdown_ack_timeout_heartbeat_stopped_live_pane",
+			kind: "direct",
+			reason: "controller_heartbeat_stopped",
 		});
 	});
-
-	// FLY-1269 invariant: the whole point of the fix in one assertion — no heartbeat
-	// shape may ever yield `direct` while the pane probes ALIVE. Guards against a
-	// future heartbeat-derived cull path being reintroduced anywhere in the flow.
-	it.each([
-		["missing", undefined],
-		["stale", "2026-07-14 11:58:00"],
-		["fresh-then-frozen", "2026-07-14 12:00:00"],
-	])(
-		"never returns direct on a live pane when the heartbeat is %s",
-		async (_label, heartbeat_at) => {
-			const h = harness({ session: phaseSession({ heartbeat_at }) });
-			const decision = await h.run();
-			expect(decision.kind).not.toBe("direct");
-			expect(decision.kind).toBe("blocked");
-		},
-	);
 
 	it("fails closed when opening or reading the shutdown DB fails", async () => {
 		const h = harness({});

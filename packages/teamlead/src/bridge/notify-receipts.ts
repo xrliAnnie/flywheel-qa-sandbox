@@ -2,7 +2,9 @@
  * FLY-929 B1 — the notify delivery receipt file.
  *
  * Written by the Bridge (single writer) after a successful token-report
- * delivery.
+ * delivery; read by the digest-expect watchdog (notify-digest-expect.ts).
+ * FLY-1243: the notify self-health check is固化 default-on (the
+ * FLYWHEEL_NOTIFY_DIGEST_EXPECT gate is retired) — the receipt is always written.
  *
  * Date contract (Codex design R1#5): the receipt `date` is the report day the
  * CLI computed under `TOKEN_USAGE_TIMEZONE` and passed through
@@ -25,7 +27,9 @@ export interface NotifyReceipts {
 }
 
 /** `FLYWHEEL_NOTIFY_RECEIPTS_PATH` override (tests) → ~/.flywheel/notify-receipts.json. */
-function defaultReceiptsPath(env: NodeJS.ProcessEnv = process.env): string {
+export function defaultReceiptsPath(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
 	return (
 		env.FLYWHEEL_NOTIFY_RECEIPTS_PATH ??
 		join(homedir(), ".flywheel", "notify-receipts.json")
@@ -34,7 +38,7 @@ function defaultReceiptsPath(env: NodeJS.ProcessEnv = process.env): string {
 
 /** Missing / unreadable / corrupt file ⇒ {} — the expect check treats that as
  *  "no receipt" (better one deduped alert too many than a silent gap). */
-function readNotifyReceipts(path: string): NotifyReceipts {
+export function readNotifyReceipts(path: string): NotifyReceipts {
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8"));
 		return parsed && typeof parsed === "object"

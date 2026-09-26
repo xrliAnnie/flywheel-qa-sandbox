@@ -1,0 +1,37 @@
+template_id: tpl_eng_light
+name: Engineering light
+project_scope: global
+manifest:
+  schema_version: 1
+  nodes:
+    - id: design
+      type: design
+      vendor: codex
+      model: gpt-5.6-sol
+      handoff_pointer: { worktree: true, design_doc: true }
+    - id: implement
+      type: implement
+      vendor: codex
+      model: gpt-5.6-sol
+      handoff_pointer: { worktree: true, design_doc: true }
+    - id: qa
+      type: qa
+      vendor: claude
+      model: claude-opus-4-8
+      handoff_pointer: { worktree: true, design_doc: true }
+    - id: founder_gate
+      type: gate
+  edges:
+    - { id: design_done, from: design, to: implement, condition: design_done }
+    - { id: implement_done, from: implement, to: qa, condition: implement_done }
+    - { id: qa_pass, from: qa, to: founder_gate, condition: qa_pass }
+  loops:
+    - id: qa_retry
+      from: qa
+      to: implement
+      loop_when: qa_fail
+      exit_when: qa_pass
+      max_iterations: 3
+      on_limit: escalate
+  terminal_gate: { node: founder_gate, predicate: founder_approved }
+  ship_claims: [qa_passed, founder_approved]

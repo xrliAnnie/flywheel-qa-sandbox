@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
 /**
- * FLY-887: StateStore queries backing the DAG workflow keep-alive orchestrator —
+ * FLY-887: StateStore queries backing the three-stage keep-alive orchestrator —
  * (1) `getPhaseSessionsForIssue` returns ALL phase sessions (design/implement/qa
  * by `chat_thread_role`) for an issue so the ship-time finalizer can close the
  * parked design + implement sessions; (2) `countEventsByIssueAndType` is the
@@ -21,7 +21,6 @@ function seedSession(
 		status?: string;
 		session_role?: string;
 		chat_thread_role?: string;
-		workflow_node_id?: string;
 	},
 ): void {
 	store.upsertSession({
@@ -31,47 +30,8 @@ function seedSession(
 		status: over.status ?? "running",
 		session_role: over.session_role,
 		chat_thread_role: over.chat_thread_role,
-		workflow_node_id: over.workflow_node_id,
 	});
 }
-
-describe("getWorkflowManagedSessionsForIssue (FLY-2027)", () => {
-	it("adds workflow-bound main actors without changing the phase query", async () => {
-		const store = await freshStore();
-		seedSession(store, {
-			execution_id: "phase",
-			issue_id: "FLY-1",
-			chat_thread_role: "implement",
-		});
-		seedSession(store, {
-			execution_id: "generic",
-			issue_id: "FLY-1",
-			chat_thread_role: "main",
-			workflow_node_id: "execute",
-		});
-		seedSession(store, {
-			execution_id: "review",
-			issue_id: "FLY-1",
-			chat_thread_role: "main",
-			workflow_node_id: "review",
-		});
-		seedSession(store, {
-			execution_id: "ordinary-main",
-			issue_id: "FLY-1",
-			chat_thread_role: "main",
-		});
-
-		expect(
-			store
-				.getWorkflowManagedSessionsForIssue("FLY-1")
-				.map((row) => row.execution_id)
-				.sort(),
-		).toEqual(["generic", "phase", "review"]);
-		expect(
-			store.getPhaseSessionsForIssue("FLY-1").map((row) => row.execution_id),
-		).toEqual(["phase"]);
-	});
-});
 
 describe("getPhaseSessionsForIssue (FLY-887)", () => {
 	it("returns design/implement/qa phase sessions for the issue", async () => {
@@ -231,33 +191,74 @@ describe("getParkedPhaseCandidates (FLY-1204)", () => {
 		});
 		expect(store.getParkedPhaseCandidates()).toEqual([]);
 	});
+});
 
-	it("exposes only workflow-bound main actors on the additive managed patrol query", async () => {
+describe("countEventsByIssueAndType (FLY-887 fix-round ledger)", () => {
+	it("counts only events of the requested type for the issue", async () => {
 		const store = await freshStore();
-		seedSession(store, {
-			execution_id: "generic-parked",
+		store.insertEvent({
+			event_id: "fr-1",
+			execution_id: "q",
 			issue_id: "FLY-1",
-			chat_thread_role: "main",
-			workflow_node_id: "execute",
-			status: "ship_parked",
+			project_name: "flywheel",
+			event_type: "three_stage_fix_round",
+			source: "test",
 		});
-		seedSession(store, {
-			execution_id: "generic-failed",
+		store.insertEvent({
+			event_id: "fr-2",
+			execution_id: "q",
 			issue_id: "FLY-1",
-			chat_thread_role: "main",
-			workflow_node_id: "execute",
-			status: "failed",
+			project_name: "flywheel",
+			event_type: "three_stage_fix_round",
+			source: "test",
 		});
-		seedSession(store, {
-			execution_id: "ordinary-main",
+		// a different event type must not be counted
+		store.insertEvent({
+			event_id: "qa-1",
+			execution_id: "q",
 			issue_id: "FLY-1",
-			chat_thread_role: "main",
-			status: "ship_parked",
+			project_name: "flywheel",
+			event_type: "qa_result",
+			source: "test",
 		});
-
 		expect(
-			store.getWorkflowManagedParkedCandidates().map((row) => row.execution_id),
-		).toEqual(["generic-parked"]);
-		expect(store.getParkedPhaseCandidates()).toEqual([]);
+			store.countEventsByIssueAndType("FLY-1", "three_stage_fix_round"),
+		).toBe(2);
+		expect(store.countEventsByIssueAndType("FLY-1", "qa_result")).toBe(1);
+	});
+
+	it("is replay-idempotent — a duplicate event_id is not double-counted", async () => {
+		const store = await freshStore();
+		expect(
+			store.insertEvent({
+				event_id: "fr-1",
+				execution_id: "q",
+				issue_id: "FLY-1",
+				project_name: "flywheel",
+				event_type: "three_stage_fix_round",
+				source: "test",
+			}),
+		).toBe(true);
+		// same event_id replayed → UNIQUE constraint → false, no new row
+		expect(
+			store.insertEvent({
+				event_id: "fr-1",
+				execution_id: "q",
+				issue_id: "FLY-1",
+				project_name: "flywheel",
+				event_type: "three_stage_fix_round",
+				source: "test",
+			}),
+		).toBe(false);
+		expect(
+			store.countEventsByIssueAndType("FLY-1", "three_stage_fix_round"),
+		).toBe(1);
+	});
+
+	it("returns 0 for an issue with no such events", async () => {
+		const store = await freshStore();
+		expect(
+			store.countEventsByIssueAndType("FLY-404", "three_stage_fix_round"),
+		).toBe(0);
 	});
 });

@@ -23,11 +23,9 @@ import {
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { deriveCanonicalFounderId } from "../approval-signal/canonical-founder-id.js";
-import { makeGateAuthorityView } from "../approval-signal/gate-authority-view.js";
-import type { MaterializedHeadAuthority } from "../materialized-head-authority.js";
+import { reviewHoldReason } from "../auto-qa-held.js";
 import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
-import { makeFinalizeWorkflowPhaseRoles } from "../post-ship-finalization.js";
-import { reviewHoldReason } from "../review-hold.js";
+import { makeFinalizeThreeStagePhases } from "../post-ship-finalization.js";
 import { sendRunnerWake } from "../runner-wake.js";
 import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {
@@ -63,27 +61,6 @@ export interface FounderConsentWiring {
 	middlewareFor: (
 		mount: MountKind,
 	) => ReturnType<typeof founderConsentMiddleware>;
-	authorizeWorkflowRework: (input: {
-		runId: string;
-		requestedReason: string;
-		leadId?: string;
-	}) => Promise<
-		| {
-				ok: true;
-				consent: {
-					mode: "off" | "audit_only" | "enforce";
-					decision: string;
-					auditId?: number;
-				};
-		  }
-		| {
-				ok: false;
-				status: 403 | 503;
-				code: string;
-				reason?: string;
-				auditId?: number;
-		  }
-	>;
 	/** Surface B router — ALWAYS present (pass-through write when off). */
 	gateRouter: Router;
 	/** Read-only debug router — undefined when off. */
@@ -131,7 +108,6 @@ export function buildGateResponsePostWriteHook(deps: {
 	issueDisplayRefresh?: {
 		current?: { refresh(issueId: string): Promise<void> };
 	};
-	materializedHeadAuthority?: MaterializedHeadAuthority;
 }): (info: {
 	executionId: string;
 	questionId: string;
@@ -209,15 +185,14 @@ export function buildGateResponsePostWriteHook(deps: {
 					// FLY-907: terminal-state display refresh on the recovered path.
 					refreshIssueDisplay,
 					// FLY-907 Codex R1 MED-2: the recovered-merge path must finalize a
-					// DAG workflow issue's parked phases like every other completion sink.
+					// three-stage issue's parked phases like every other completion sink.
 					transitionOpts
-						? makeFinalizeWorkflowPhaseRoles(
+						? makeFinalizeThreeStagePhases(
 								store,
 								transitionOpts,
 								refreshIssueDisplay,
 							)
 						: undefined,
-					deps.materializedHeadAuthority,
 				);
 				if (completed) {
 					log.warn(
@@ -271,7 +246,6 @@ export function buildFounderConsentWiring(
 	issueDisplayRefresh?: {
 		current?: { refresh(issueId: string): Promise<void> };
 	},
-	materializedHeadAuthority?: MaterializedHeadAuthority,
 ): FounderConsentWiring | null {
 	const fc = config.founderConsent;
 	if (!fc) return null; // Track 2 not compiled into this config at all.
@@ -298,7 +272,7 @@ export function buildFounderConsentWiring(
 				// FLY-793 (Codex full-PR R1 #5) — DOCUMENTED EXCEPTION: this
 				// founder-consent audit path operates on a NARROW session projection
 				// with no chat_thread_role, and it fires only for reserved actions
-				// (merge/ship/runner-lifecycle) that a DAG workflow runner never
+				// (merge/ship/runner-lifecycle) that a three-stage PHASE runner never
 				// self-invokes. So it intentionally stays on the main thread mapping.
 				const t = store.getChatThreadByIssue(s.issue_id, lead.chatChannel);
 				if (t) {
@@ -332,115 +306,10 @@ export function buildFounderConsentWiring(
 		};
 		return ctx;
 	};
-	const resolveRunContext = async (
-		runId: string,
-	): Promise<ResolvedConsentContext | null> => {
-		const run = store.getWorkflowRun(runId);
-		if (!run) return null;
-		const currentExecutionId = run.current_node_id
-			? store
-					.listWorkflowRunNodes(runId, run.current_node_id)
-					.filter((node) => node.execution_id)
-					.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id
-			: undefined;
-		if (currentExecutionId) {
-			const sessionContext = await resolveContext(currentExecutionId);
-			if (sessionContext) {
-				return {
-					...sessionContext,
-					sessionStatusAtCall: run.status,
-				};
-			}
-		}
-		const project = projects.find(
-			(candidate) => candidate.projectName === run.project_name,
-		);
-		let threadId: string | undefined;
-		let channelId: string | undefined;
-		let botToken: string | undefined = config.discordBotToken;
-		for (const lead of project?.leads ?? []) {
-			const thread = store.getChatThreadByIssue(run.issue_id, lead.chatChannel);
-			if (!thread) continue;
-			threadId = thread.thread_id;
-			channelId = thread.channel_id;
-			botToken = lead.botToken ?? config.discordBotToken;
-			break;
-		}
-		return {
-			issueId: run.issue_id,
-			issueIdentifier: run.issue_id,
-			projectName: run.project_name,
-			executionId: currentExecutionId ?? undefined,
-			sessionRole: run.current_node_id ?? undefined,
-			sessionStatusAtCall: run.status,
-			threadId,
-			discordChannelId: channelId,
-			botToken,
-			leadBotIds: new Set<string>(),
-			runnerBotIds: new Set<string>(),
-		};
-	};
-	const makeAuthorizeWorkflowRework = (
-		evaluator?: FounderConsentEvaluator,
-	): FounderConsentWiring["authorizeWorkflowRework"] => {
-		return async (input) => {
-			if (!evaluator) {
-				return {
-					ok: true,
-					consent: { mode: "off", decision: "pass_through" },
-				};
-			}
-			const context = await resolveRunContext(input.runId);
-			if (!context) {
-				return {
-					ok: false,
-					status: 503,
-					code: "FOUNDER_CONSENT_RUN_CONTEXT_MISSING",
-					reason: "workflow run context unavailable",
-				};
-			}
-			const evaluated = await evaluator.evaluate({
-				...context,
-				action: "workflow_rework",
-				actorSource: "http_middleware",
-				leadId: input.leadId,
-				requestedBy: input.leadId ?? "master",
-				requestReason: input.requestedReason,
-			});
-			if (
-				evaluator.decisionMode === "audit_only" ||
-				evaluated.decision === "allow" ||
-				evaluated.decision === "bypass"
-			) {
-				return {
-					ok: true,
-					consent: {
-						mode: evaluator.decisionMode,
-						decision: evaluated.decision,
-						auditId: evaluated.auditId,
-					},
-				};
-			}
-			return {
-				ok: false,
-				status: evaluated.decision === "fail_closed" ? 503 : 403,
-				code:
-					evaluated.code ??
-					(evaluated.decision === "fail_closed"
-						? "FOUNDER_CONSENT_FAIL_CLOSED"
-						: "FOUNDER_CONSENT_REQUIRED"),
-				reason: evaluated.failReason ?? evaluated.llmReason ?? undefined,
-				auditId: evaluated.auditId,
-			};
-		};
-	};
 
-	const gateAuthorityView = makeGateAuthorityView(store);
 	const getSessionProject = (executionId: string) => {
 		const sess = store.getSession(executionId);
-		if (sess) return { project_name: sess.project_name };
-		const authority = gateAuthorityView.resolveForExecution?.(executionId);
-		return authority ? { project_name: authority.projectName } : undefined;
+		return sess ? { project_name: sess.project_name } : undefined;
 	};
 
 	// FLY-191 Phase 2 / FLY-799: post-write hook for the gate-response endpoint
@@ -456,7 +325,6 @@ export function buildFounderConsentWiring(
 		projects,
 		// FLY-907: terminal-state display refresh on the recovered-merge path.
 		issueDisplayRefresh,
-		materializedHeadAuthority,
 	});
 
 	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers
@@ -464,8 +332,7 @@ export function buildFounderConsentWiring(
 	const getCurrentReviewQuestionId = (
 		executionId: string,
 	): string | undefined =>
-		store.getSession(executionId)?.review_question_id ??
-		gateAuthorityView.resolveForExecution?.(executionId)?.questionId;
+		store.getSession(executionId)?.review_question_id ?? undefined;
 
 	// ── Off: pass-through gate router only, no evaluator/audit/debug ──
 	if (!enabled) {
@@ -475,7 +342,6 @@ export function buildFounderConsentWiring(
 			getSessionProject,
 			getCurrentReviewQuestionId,
 			writerStore: store,
-			gateAuthorityView,
 			holdReasonFor: (executionId) =>
 				reviewHoldReason(store, store.getSession(executionId)),
 			founderId,
@@ -487,7 +353,6 @@ export function buildFounderConsentWiring(
 		return {
 			resolveContext,
 			middlewareFor: () => (_q, _s, next) => next(),
-			authorizeWorkflowRework: makeAuthorizeWorkflowRework(),
 			gateRouter: createGateResponseRouter(gateDeps),
 			onResponseWritten,
 		};
@@ -534,7 +399,6 @@ export function buildFounderConsentWiring(
 		getSessionProject,
 		getCurrentReviewQuestionId,
 		writerStore: store,
-		gateAuthorityView,
 		holdReasonFor: (executionId) =>
 			reviewHoldReason(store, store.getSession(executionId)),
 		founderId,
@@ -550,7 +414,6 @@ export function buildFounderConsentWiring(
 		resolveContext,
 		middlewareFor: (mount) =>
 			founderConsentMiddleware(mount, { evaluator, resolveContext, logger }),
-		authorizeWorkflowRework: makeAuthorizeWorkflowRework(evaluator),
 		gateRouter: createGateResponseRouter(gateDeps),
 		debugRouter,
 		onResponseWritten,

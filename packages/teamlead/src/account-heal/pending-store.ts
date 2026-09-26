@@ -4,16 +4,15 @@
  * File-backed (atomic 0600, like the account state), so a pending switch survives
  * a Bridge restart (Codex R4#3). Callers that read→mutate→write MUST hold the
  * shared account flock (withMkdirLock) — the same lock the switch executor takes —
- * so a manual profile use, a QA-slot Bridge, or the deadline sweep can't interleave.
+ * so a manual profile use, a QA-slot Bridge, or the watchdog can't interleave.
  *
  * The record is keyed by sourceAlertId+observedAccount+generation so a duplicate
  * trigger for the same cap upserts one record (no double-switch), and a
- * cross-provider Infra Bot can `claim` it before the Bridge deadline sweep fires.
+ * cross-provider Infra Bot can `claim` it before the Bridge watchdog fires.
  */
 
 import {
 	closeSync,
-	existsSync,
 	fsyncSync,
 	mkdirSync,
 	openSync,
@@ -23,7 +22,6 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { withMkdirLock } from "./mkdir-lock.js";
 
 export interface PendingSwitch {
 	key: string;
@@ -33,10 +31,10 @@ export interface PendingSwitch {
 	observedGeneration: number;
 	scope: "5h" | "weekly" | "both";
 	resetAt: string;
-	/** ISO — the deadline sweep fires the switch after this if still unclaimed. */
+	/** ISO — the watchdog fires the switch after this if still unclaimed. */
 	deadlineAt: string;
 	createdAt: string;
-	/** The Infra Bot (M2) that took ownership; unset → the deadline sweep may fire it. */
+	/** The Infra Bot (M2) that took ownership; unset → the watchdog may fire it. */
 	claimedBy?: string;
 }
 
@@ -126,38 +124,7 @@ export function claimPending(
 	return true;
 }
 
-export interface QuarantinePendingSwitchesOpts {
-	path?: string;
-	lockPath?: string;
-	now?: () => number;
-	withLock?: <T>(lockPath: string, fn: () => Promise<T>) => Promise<T>;
-}
-
-/**
- * Atomically retire the entire legacy queue under its shared lock. Renaming,
- * rather than deleting, keeps an audit trail while making every old key
- * unclaimable by both the HTTP route and the deadline sweep.
- */
-export async function quarantinePendingSwitches(
-	opts: QuarantinePendingSwitchesOpts = {},
-): Promise<string | undefined> {
-	const path = opts.path ?? defaultPendingPath();
-	const lockPath = opts.lockPath ?? `${path}.lock`;
-	const withLock = opts.withLock ?? withMkdirLock;
-	const now = opts.now ?? Date.now;
-	return withLock(lockPath, async () => {
-		if (!existsSync(path)) return undefined;
-		const stamp = new Date(now()).toISOString().replace(/[-:.]/g, "");
-		const base = `${path}.quarantine-${stamp}`;
-		let target = base;
-		let suffix = 0;
-		while (existsSync(target)) target = `${base}.${++suffix}`;
-		renameSync(path, target);
-		return target;
-	});
-}
-
-/** Records past their deadline that no bot has claimed — the deadline sweep fires these. */
+/** Records past their deadline that no bot has claimed — the watchdog fires these. */
 export function duePending(
 	records: PendingSwitch[],
 	nowMs: number,

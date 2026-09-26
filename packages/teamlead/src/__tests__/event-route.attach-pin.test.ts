@@ -22,7 +22,6 @@ vi.mock("../bridge/tmux-lookup.js", async (importActual) => {
 		resolveCmuxAttachTarget: vi.fn(async () => ({
 			kind: "cmux" as const,
 			session: "cmux-FLY-560-claude-x",
-			windowName: "FLY-560-claude-x",
 		})),
 		// buildAttachCommand: real (from actual) — renders the asserted command.
 	};
@@ -179,9 +178,9 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 
 	// FLY-892 (Codex code R1 Med): the single-runner "Runner terminal" pin is NOT
 	// a system broadcast — even when the project configures an announcer bot, the
-	// non-DAG workflow fallback must post/edit/pin as the LEAD bot (byte-compat),
-	// not the announcer. Only the DAG workflow header rides the announcer.
-	it("announcer configured + non-DAG workflow → single-runner pin stays on the LEAD bot", async () => {
+	// non-three-stage fallback must post/edit/pin as the LEAD bot (byte-compat),
+	// not the announcer. Only the three-stage pipeline header rides the announcer.
+	it("announcer configured + non-three-stage → single-runner pin stays on the LEAD bot", async () => {
 		const announcerProjects: ProjectEntry[] = [
 			{
 				...projects[0]!,
@@ -211,36 +210,6 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 		const [ctx] = attachSpy.mock.calls[0]!;
 		expect(ctx.botToken).toBe("bot-token"); // LEAD bot, NOT announcer
 	});
-
-	it.each(["codex", "claude"] as const)(
-		"pipeline header does not guess a model from persisted %s design backend metadata",
-		async (designBackend) => {
-			store.upsertSession({
-				execution_id: `exec-design-${designBackend}`,
-				issue_id: ISSUE_ID,
-				issue_identifier: ISSUE_ID,
-				issue_title: "Discord issue status",
-				project_name: PROJECT,
-				status: "running",
-				started_at: new Date().toISOString(),
-				issue_labels: JSON.stringify(["Flywheel"]),
-				session_role: "design",
-				chat_thread_role: "design",
-				design_backend: designBackend,
-			});
-
-			await postStage(
-				buildApp({
-					issueStatusEmojiEnabled: false,
-					issueAttachPinEnabled: true,
-				}),
-				`evt-backend-${designBackend}`,
-			);
-
-			expect(headerSpy).toHaveBeenCalledTimes(1);
-			expect(headerSpy.mock.calls[0]?.[2]).not.toMatch(/\[设计·/);
-		},
-	);
 
 	it("emoji on + attach off → stamps only (attach not pinned)", async () => {
 		await postStage(

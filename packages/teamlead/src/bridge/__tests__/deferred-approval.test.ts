@@ -1,6 +1,6 @@
 /**
- * FLY-1099 §4 — deferred founder approvals: capture support via the handler's
- * DeferralSupport + the rebind pass state machine
+ * FLY-1099 §4 — deferred founder approvals: capture support (2×2 truth table
+ * via the handler's DeferralSupport) + the rebind pass state machine
  * (TTL / identity / gate_gone / head drift / hold recheck / write outcomes,
  * incl. the R4 #2 conflicting_prior_feedback terminal via the REAL
  * writeGateResponseAndRunPostWrite + a spy production hook — Codex R5 #1
@@ -11,13 +11,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
 	deferredApprovalTtlMs,
-	founderMsgClock,
 	headDriftText,
 	heldReplyText,
 	makeDeferralSupport,
 	mergeBlockPointerText,
 	type RebindCommDb,
-	readinessHoldPointerText,
 	runDeferredApprovalRebindPass,
 	ttlExpiredText,
 } from "../approval-signal/deferred-approval.js";
@@ -26,35 +24,15 @@ const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 const FOUNDER = "F-1";
 
-function snowflakeAt(iso: string): string {
-	const discordEpoch = 1_420_070_400_000n;
-	return ((BigInt(new Date(iso).getTime()) - discordEpoch) << 22n).toString();
-}
-
 afterEach(() => {
+	delete process.env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL;
+	delete process.env.FLYWHEEL_HELD_DECLINED_REPLY;
 	vi.restoreAllMocks();
 });
 
 async function freshStore(): Promise<StateStore> {
 	return StateStore.create(":memory:");
 }
-
-describe("founderMsgClock", () => {
-	it("keeps the legacy LA bytes when LA is the resolved founder timezone", () => {
-		expect(
-			founderMsgClock(
-				snowflakeAt("2026-07-17T02:23:00.000Z"),
-				"America/Los_Angeles",
-			),
-		).toBe("19:23");
-	});
-
-	it("renders the message instant in the current founder timezone", () => {
-		expect(
-			founderMsgClock(snowflakeAt("2026-07-17T02:23:00.000Z"), "Asia/Tokyo"),
-		).toBe("11:23");
-	});
-});
 
 /** Minimal writable-CommDB fake for the rebind write (real writer drives it). */
 function fakeCommDb(opts: {
@@ -76,7 +54,6 @@ function fakeCommDb(opts: {
 				throw new Error("UNIQUE constraint failed: messages.parent_id");
 			}
 			state.responses.set(qid, { content, from_agent: from });
-			return { written: true as const };
 		},
 		close: () => {
 			state.closed = true;
@@ -107,15 +84,6 @@ async function rebindHarness(opts: {
 		| { kind: "suppress_merged"; cleanupComplete: boolean }
 		| { kind: "retry_later"; reason: "unknown" | "missing_binding" }
 		| { kind: "terminal_unavailable"; reason: "unknown_exhausted" };
-	founderRework?: {
-		target: "design" | "implement" | "qa";
-		invalidationScope: Array<"design" | "implement" | "qa">;
-		verificationPolicy: Array<
-			"design_review" | "code_review" | "qa_retest" | "founder_gate"
-		>;
-		interpretedBy: string;
-		interpretationReason: string;
-	};
 }) {
 	const store = await freshStore();
 	const sessionState: SessionState = opts.session ?? {
@@ -137,7 +105,6 @@ async function rebindHarness(opts: {
 		authorUserId: FOUNDER,
 		founderIdAtCapture: FOUNDER,
 		ttlSeconds: opts.expiresInSeconds ?? 2700,
-		founderRework: opts.founderRework,
 	});
 	const { db, state } = fakeCommDb({
 		pending: opts.pending,
@@ -286,6 +253,14 @@ describe("rebind pass — guard chain", () => {
 		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
 		expect(hook).not.toHaveBeenCalled();
 	});
+
+	it("kill-switch FLYWHEEL_DEFERRED_FOUNDER_APPROVAL=0 → whole pass inert", async () => {
+		process.env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL = "0";
+		const { store, deps, hook } = await rebindHarness({});
+		await runDeferredApprovalRebindPass(deps);
+		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
+		expect(hook).not.toHaveBeenCalled();
+	});
 });
 
 describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", () => {
@@ -304,31 +279,6 @@ describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", ()
 			source: "deferred",
 			cardAuthority,
 		});
-	});
-
-	it("replays a deferred reject with the exact persisted QA route hint", async () => {
-		const founderRework = {
-			target: "qa" as const,
-			invalidationScope: ["qa" as const],
-			verificationPolicy: ["qa_retest" as const, "founder_gate" as const],
-			interpretedBy: "founder-reply-prefix",
-			interpretationReason: "matched_prefix:qa",
-		};
-		const { deps } = await rebindHarness({
-			decision: "reject",
-			content: "qa: test the regression",
-			founderRework,
-		});
-		const writeImpl = vi
-			.fn()
-			.mockResolvedValue({ written: true, retrySafe: true });
-		Object.assign(deps, { writeImpl });
-
-		await runDeferredApprovalRebindPass(deps as never);
-
-		expect(writeImpl).toHaveBeenCalledWith(
-			expect.objectContaining({ founderRework, intent: "kickback" }),
-		);
 	});
 
 	it("硬要求③代码级: hold clear → writes {approved:true} via the REAL writer, hook flips FSM, consume + ✅ upgrade + rebound notice", async () => {
@@ -422,7 +372,7 @@ describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", ()
 	});
 });
 
-describe("capture support", () => {
+describe("capture support — 2×2 truth table (§4.4)", () => {
 	async function captureHarness(holdReason: "codex_pending" | "merge_block") {
 		const store = await freshStore();
 		const support = makeDeferralSupport({
@@ -433,7 +383,7 @@ describe("capture support", () => {
 		return { store, support };
 	}
 
-	it("defer lands the row + the 已存着 held_reply notice atomically", async () => {
+	it("ON/ON: defer lands the row + the 已存着 held_reply notice atomically", async () => {
 		const { store, support } = await captureHarness("codex_pending");
 		support.defer({
 			questionId: "Q-1",
@@ -458,6 +408,24 @@ describe("capture support", () => {
 		);
 	});
 
+	it("ON/OFF: defer WITHOUT the thread notice (reply flag off)", async () => {
+		process.env.FLYWHEEL_HELD_DECLINED_REPLY = "0";
+		const { store, support } = await captureHarness("codex_pending");
+		support.defer({
+			questionId: "Q-1",
+			msgId: "100",
+			executionId: "E-1",
+			prHeadSha: SHA_A,
+			decision: "approve",
+			content: "ship",
+			authorUserId: FOUNDER,
+			founderIdAtCapture: FOUNDER,
+			holdReason: "codex_pending",
+		});
+		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
+		expect(store.getFounderAction("held-reply-Q-1-100")).toBeUndefined();
+	});
+
 	it("queueHeldNotice(merge_block) lands the recovery pointer text", async () => {
 		const { store, support } = await captureHarness("merge_block");
 		support.queueHeldNotice({
@@ -473,26 +441,15 @@ describe("capture support", () => {
 		);
 	});
 
-	it.each(["qa_evidence_missing", "qa_evidence_unknown"] as const)(
-		"queueHeldNotice(readiness_hold) truthfully says fresh QA is required for %s",
-		async (holdReason) => {
-			const { store, support } = await captureHarness(holdReason);
-			support.queueHeldNotice({
-				questionId: "Q-1",
-				msgId: "100",
-				executionId: "E-1",
-				kind: "readiness_hold",
-				holdReason,
-			});
-			const notice = store.getFounderAction("held-reply-Q-1-100");
-			expect(JSON.parse(notice?.payload ?? "{}").text).toBe(
-				readinessHoldPointerText(holdReason),
-			);
-			expect(JSON.parse(notice?.payload ?? "{}").text).not.toContain(
-				"暂存功能当前关闭",
-			);
-		},
-	);
+	it("flag faces read env per call", async () => {
+		const { support } = await captureHarness("codex_pending");
+		expect(support.deferredEnabled()).toBe(true);
+		process.env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL = "0";
+		expect(support.deferredEnabled()).toBe(false);
+		expect(support.heldReplyEnabled()).toBe(true);
+		process.env.FLYWHEEL_HELD_DECLINED_REPLY = "0";
+		expect(support.heldReplyEnabled()).toBe(false);
+	});
 });
 
 describe("founder-facing texts", () => {

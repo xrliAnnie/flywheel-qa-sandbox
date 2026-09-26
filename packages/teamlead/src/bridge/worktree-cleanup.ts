@@ -27,13 +27,10 @@
  */
 
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
 	canonicalizeWorktreePath,
 	deriveWorktreeKey,
-	isReapIncomplete,
 	WorktreeManager,
-	type WorktreeReapRecord,
 } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -61,9 +58,10 @@ export function gitWorktreeClean(
 	});
 }
 
-/** FLY-603: worktree autoclean is permanently enabled in production. */
+/** FLY-603: `FLYWHEEL_WORKTREE_AUTOCLEAN=0` disables both Layer A + Layer B
+ *  (default on; byte-compat escape hatch). */
 export function worktreeAutocleanEnabled(): boolean {
-	return true;
+	return process.env.FLYWHEEL_WORKTREE_AUTOCLEAN !== "0";
 }
 
 export interface WorktreeCleanupInput {
@@ -93,8 +91,6 @@ export interface WorktreeCleanupAttestation {
 	bindingBranch?: string;
 	bindingGeneration?: string;
 	skippedReason?: string;
-	/** FLY-1759: pre-delete process census/reap evidence. */
-	reaps?: WorktreeReapRecord[];
 }
 
 export interface WorktreeCleanupDeps {
@@ -111,7 +107,7 @@ export interface WorktreeCleanupDeps {
 	resolveProjectRoot: (projectName: string) => string | undefined;
 	/** `git status --porcelain` empty? `"unknown"` on probe error (fail-closed). */
 	isWorktreeClean: (worktreePath: string) => Promise<boolean | "unknown">;
-	/** Generic test/integration seam; production always supplies true. */
+	/** FLYWHEEL_WORKTREE_AUTOCLEAN !== "0". */
 	autoclean: boolean;
 	/** FLY-1185 §2.11: repo mutation lock (re-entrant). Absent → unlocked. */
 	withRepoLock?: WithRepoLock;
@@ -140,10 +136,9 @@ export function makeWorktreeCleanup(
 		input: WorktreeCleanupInput,
 		eventType: string,
 		payload: Record<string, unknown>,
-		eventKey = eventType,
 	) => {
 		deps.store.insertEvent({
-			event_id: `worktree-cleanup-${input.executionId}-${eventKey}`,
+			event_id: `worktree-cleanup-${input.executionId}-${eventType}`,
 			execution_id: input.executionId,
 			issue_id: input.issueId,
 			project_name: input.projectName,
@@ -317,23 +312,6 @@ export function makeWorktreeCleanup(
 					registeredPath,
 					null,
 				);
-				for (const reap of res.reaps ?? []) {
-					if (!isReapIncomplete(reap.summary)) continue;
-					const pathHash = createHash("sha256")
-						.update(reap.path)
-						.digest("hex")
-						.slice(0, 16);
-					audit(
-						input,
-						"worktree_reap_incomplete",
-						{
-							worktreePath: registeredPath,
-							path: reap.path,
-							summary: reap.summary,
-						},
-						`worktree_reap_incomplete-${pathHash}`,
-					);
-				}
 
 				// (5b) local branch CAS delete against the ATTESTED head — inside
 				// the same repo lock. Missing head → leave the ref to the sweep.
@@ -364,7 +342,6 @@ export function makeWorktreeCleanup(
 						bindingVerified,
 						headSha: headSha ?? null,
 						error: res.error,
-						reaps: res.reaps ?? [],
 					},
 				);
 				return {
@@ -376,7 +353,6 @@ export function makeWorktreeCleanup(
 					bindingBranch: binding?.branch,
 					bindingGeneration: binding?.generation,
 					skippedReason: res.removed ? undefined : `remove_failed:${res.error}`,
-					reaps: res.reaps,
 				};
 			};
 

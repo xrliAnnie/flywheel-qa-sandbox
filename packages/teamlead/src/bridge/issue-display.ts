@@ -4,7 +4,7 @@
  * The three founder-facing display faces of a `[FLY-XX]` issue thread —
  *   A. the thread-title status badge,
  *   B. the pinned pipeline header (FLY-892),
- *   C. the DAG workflow status line (FLY-887)
+ *   C. the three-stage status line (FLY-887)
  * — previously each derived their own notion of "phase state" (B had a 3-state
  * table keyed on HEADER_DONE_STATUSES; C had a 4-state table keyed on raw
  * status) and refreshed ONLY on `stage_changed`. FLY-907 replaces both with
@@ -14,9 +14,9 @@
  */
 
 import {
-	PHASE_ROLE_SEQUENCE,
 	PHASE_THREAD_BADGE,
-	type WorkflowPhaseRole,
+	THREE_STAGE_PHASE_SEQUENCE,
+	type ThreeStagePhase,
 } from "flywheel-config";
 
 /** Unified per-phase founder display state (plan 1a). */
@@ -33,12 +33,10 @@ export type PhaseDisplayState = "pending" | "active" | "done" | "blocked";
 export type ParkProbe = "parked" | "not_parked" | "unknown";
 
 export interface PhaseDisplayInput {
-	role: WorkflowPhaseRole;
+	role: ThreeStagePhase;
 	/** The phase's latest session status; undefined = no session row yet. */
 	status?: string;
 	park: ParkProbe;
-	/** Durable evidence that a terminated row is post-conclusion cleanup. */
-	issueConcluded?: boolean;
 }
 
 /**
@@ -66,7 +64,6 @@ const PHASE_DONE_STATUSES: ReadonlySet<string> = new Set([
  * a woken rework session sits at one of these with its park marker cleared). */
 const PHASE_BOUNDARY_STATUSES: ReadonlySet<string> = new Set([
 	"design_done",
-	"ship_parked",
 	"awaiting_review",
 	"approved_to_ship",
 ]);
@@ -104,7 +101,6 @@ export function derivePhaseDisplayState(
 ): PhaseDisplayState {
 	if (!p.status) return "pending";
 	if (PHASE_DONE_STATUSES.has(p.status)) return "done";
-	if (p.status === "terminated" && p.issueConcluded) return "done";
 	if (PHASE_BLOCKED_STATUSES.has(p.status)) return "blocked";
 	// An explicit park marker = the runner itself declared "this round's work
 	// is handed off" — regardless of which live status it parks at.
@@ -120,7 +116,7 @@ export function derivePhaseDisplayState(
 /** Issue-level thread-title badge aggregate (plan 1b). */
 export type IssueTitleBadge =
 	| { kind: "stage"; stage?: string }
-	| { kind: "phase"; phase: WorkflowPhaseRole }
+	| { kind: "phase"; phase: ThreeStagePhase }
 	| { kind: "blocked" }
 	| { kind: "completed" };
 
@@ -135,33 +131,28 @@ const MAIN_BLOCKED_STATUSES: ReadonlySet<string> = new Set([
  * Plan 1b: aggregate the issue's title badge from real state.
  *
  * `phaseStates` holds ONLY phases that have a session row (存在的 phase);
- * an empty map = a non-DAG workflow issue → the existing single-session
+ * an empty map = a non-three-stage issue → the existing single-session
  * formula (session_stage badge; terminal statuses map to blocked/completed).
  * The single-session `stage` output at a stage_changed moment is byte-identical
  * to the pre-FLY-907 behavior (sentinel-tested); kill/finalize moments are NEW
  * refreshes (the old code simply never refreshed there).
  */
 export function deriveIssueTitleBadge(args: {
-	phaseStates: ReadonlyMap<WorkflowPhaseRole, PhaseDisplayState>;
+	phaseStates: ReadonlyMap<ThreeStagePhase, PhaseDisplayState>;
 	/** Raw per-phase session status. Display-state `done` also means a phase
 	 * handed off at the ship gate, so issue-level completion must inspect the
 	 * recorded status before presenting ✅. */
-	phaseStatuses: ReadonlyMap<WorkflowPhaseRole, string>;
+	phaseStatuses: ReadonlyMap<ThreeStagePhase, string>;
 	/** Durable evidence that a validated post-ship finalization flow claimed
 	 * this issue. This covers the short window before stale phase rows are
 	 * converted from awaiting_review to a terminal status. */
 	shipFinalizationClaimed: boolean;
-	/** Completed/merged history or finalization proves cleanup, not abandonment. */
-	issueConcluded?: boolean;
 	mainSessionStage?: string;
 	mainSessionStatus?: string;
 }): IssueTitleBadge {
 	const { phaseStates } = args;
 	if (phaseStates.size === 0) {
 		const status = args.mainSessionStatus;
-		if (status === "terminated" && args.issueConcluded) {
-			return { kind: "completed" };
-		}
 		if (status && MAIN_BLOCKED_STATUSES.has(status)) return { kind: "blocked" };
 		if (status === "completed") return { kind: "completed" };
 		// A runner-reported stage is a label, while status is the durable fact.
@@ -177,12 +168,13 @@ export function deriveIssueTitleBadge(args: {
 		return { kind: "stage", stage: args.mainSessionStage };
 	}
 
-	for (const phase of PHASE_ROLE_SEQUENCE) {
+	for (const phase of THREE_STAGE_PHASE_SEQUENCE) {
 		if (phaseStates.get(phase) === "blocked") return { kind: "blocked" };
 	}
 
 	const allExistingDone = [...phaseStates.values()].every((s) => s === "done");
-	const lastPhase = PHASE_ROLE_SEQUENCE[PHASE_ROLE_SEQUENCE.length - 1]!;
+	const lastPhase =
+		THREE_STAGE_PHASE_SEQUENCE[THREE_STAGE_PHASE_SEQUENCE.length - 1]!;
 	if (allExistingDone && phaseStates.get(lastPhase) === "done") {
 		// Per-phase display `done` means "this phase handed off" and therefore
 		// includes parked ship-gate rows. Issue-level ✅ requires positive ship
@@ -195,10 +187,7 @@ export function deriveIssueTitleBadge(args: {
 		if (statuses.includes("awaiting_review")) {
 			return { kind: "stage", stage: "approve" };
 		}
-		if (
-			statuses.every((status) => PHASE_DONE_STATUSES.has(status)) ||
-			args.issueConcluded
-		) {
+		if (statuses.every((status) => PHASE_DONE_STATUSES.has(status))) {
 			return { kind: "completed" };
 		}
 		// Otherwise fall through to the conservative phase badge below. Parked
@@ -207,19 +196,19 @@ export function deriveIssueTitleBadge(args: {
 
 	// The LAST active phase in the sequence wins (FLY-543: a woken rework
 	// implement flips the title back to 🔨实现, never a premature ✅).
-	for (let i = PHASE_ROLE_SEQUENCE.length - 1; i >= 0; i--) {
-		const phase = PHASE_ROLE_SEQUENCE[i]!;
+	for (let i = THREE_STAGE_PHASE_SEQUENCE.length - 1; i >= 0; i--) {
+		const phase = THREE_STAGE_PHASE_SEQUENCE[i]!;
 		if (phaseStates.get(phase) === "active") return { kind: "phase", phase };
 	}
 
 	// No active phase (handoff gap): the phase BEFORE the first pending one
 	// (absent-from-map = pending); all-pending degenerates to the first phase.
-	for (let i = 0; i < PHASE_ROLE_SEQUENCE.length; i++) {
-		const phase = PHASE_ROLE_SEQUENCE[i]!;
+	for (let i = 0; i < THREE_STAGE_PHASE_SEQUENCE.length; i++) {
+		const phase = THREE_STAGE_PHASE_SEQUENCE[i]!;
 		if ((phaseStates.get(phase) ?? "pending") === "pending") {
 			return {
 				kind: "phase",
-				phase: PHASE_ROLE_SEQUENCE[Math.max(0, i - 1)]!,
+				phase: THREE_STAGE_PHASE_SEQUENCE[Math.max(0, i - 1)]!,
 			};
 		}
 	}
@@ -253,12 +242,12 @@ export const PHASE_DISPLAY_GLYPHS: Readonly<Record<PhaseDisplayState, string>> =
 /**
  * Face C render (replaces phase-orchestrator's `renderPhaseStatusLine` + its
  * local PHASE_LINE_ORDER copy): `🎨设计✅·🔨实现▶·🧪QA◾`. Order derives from
- * PHASE_ROLE_SEQUENCE so FLY-905's 3→2 re-sequencing follows for free.
+ * THREE_STAGE_PHASE_SEQUENCE so FLY-905's 3→2 re-sequencing follows for free.
  */
 export function renderPhaseStatusLine(
-	states: Readonly<Record<WorkflowPhaseRole, PhaseDisplayState>>,
+	states: Readonly<Record<ThreeStagePhase, PhaseDisplayState>>,
 ): string {
-	return PHASE_ROLE_SEQUENCE.map(
+	return THREE_STAGE_PHASE_SEQUENCE.map(
 		(phase) =>
 			`${PHASE_THREAD_BADGE[phase]}${PHASE_DISPLAY_GLYPH_PARTS[states[phase]].symbol}`,
 	).join("·");

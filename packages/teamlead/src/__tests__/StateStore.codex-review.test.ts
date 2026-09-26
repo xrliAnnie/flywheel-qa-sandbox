@@ -16,55 +16,6 @@ import { StateStore } from "../StateStore.js";
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
-describe("StateStore — FLY-1278 frozen review payload", () => {
-	it("persists reviewer/effective verdict split and the exact canonical response", async () => {
-		const store = await StateStore.create(":memory:");
-		store.insertCodexReviewJob({
-			requestId: "r1",
-			executionId: "e1",
-			issueId: "FLY-1278",
-			projectName: "proj",
-			reviewType: "code",
-			questionId: "q1",
-		});
-		const responseJson = JSON.stringify({ reviewVerdict: "APPROVED" });
-		store.completeCodexReviewJob("r1", "APPROVED", "[]", {
-			reviewerVerdict: "CHANGES_REQUESTED",
-			advisoriesJson: "[]",
-			settledJson: "[]",
-			responseJson,
-			payloadVersion: 2,
-		});
-
-		expect(store.getCodexReviewJob("r1")).toMatchObject({
-			verdict: "APPROVED",
-			reviewer_verdict: "CHANGES_REQUESTED",
-			advisories_json: "[]",
-			settled_json: "[]",
-			response_json: responseJson,
-			payload_version: 2,
-		});
-	});
-
-	it("keeps the legacy completion call byte-compatible", async () => {
-		const store = await StateStore.create(":memory:");
-		store.insertCodexReviewJob({
-			requestId: "r1",
-			executionId: "e1",
-			projectName: "proj",
-			reviewType: "design",
-			questionId: "q1",
-		});
-		store.completeCodexReviewJob("r1", "CHANGES_REQUESTED", "[]");
-
-		expect(store.getCodexReviewJob("r1")).toMatchObject({
-			verdict: "CHANGES_REQUESTED",
-		});
-		expect(store.getCodexReviewJob("r1")?.payload_version).toBeUndefined();
-		expect(store.getCodexReviewJob("r1")?.response_json).toBeUndefined();
-	});
-});
-
 describe("StateStore — FLY-827 codex_review_record", () => {
 	let store: StateStore;
 
@@ -182,31 +133,6 @@ describe("StateStore — FLY-827 codex_review_record", () => {
 		expect(store.isCodexCodeReviewApproved("exec1", SHA_B)).toBe(false);
 	});
 
-	it("keys by (exec, repo identity, head) so identical cross-repo SHAs coexist", () => {
-		store.recordCodexReviewApproved({
-			executionId: "exec1",
-			targetRepoIdentity: "__main__",
-			targetPrHeadSha: SHA_A,
-			issueId: "FLY-1434",
-			projectName: "proj",
-		});
-		store.recordCodexReviewApproved({
-			executionId: "exec1",
-			targetRepoIdentity: "acme/fork",
-			targetPrHeadSha: SHA_A,
-			issueId: "FLY-1434",
-			projectName: "proj",
-		});
-
-		expect(
-			store.getCodexReviewRecord("exec1", SHA_A)?.target_repo_identity,
-		).toBe("__main__");
-		expect(
-			store.getCodexReviewRecord("exec1", "acme/fork", SHA_A)
-				?.target_repo_identity,
-		).toBe("acme/fork");
-	});
-
 	it("normalizes sha case on write and read", () => {
 		const upper = SHA_A.toUpperCase();
 		store.recordCodexReviewApproved({
@@ -286,6 +212,106 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 		).toBeUndefined();
 	});
 });
+
+describe("StateStore — FLY-863 codex-hold stuck escalation", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const HOUR_MS = 60 * 60 * 1000;
+
+	it("listCodexHoldsPendingOlderThan excludes a fresh hold below the threshold", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		expect(store.listCodexHoldsPendingOlderThan(Date.now(), HOUR_MS)).toEqual(
+			[],
+		);
+	});
+
+	it("listCodexHoldsPendingOlderThan includes a hold once the threshold has elapsed", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		const rows = store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.execution_id).toBe("exec1");
+		expect(rows[0]?.target_pr_head_sha).toBe(SHA_A);
+	});
+
+	it("excludes a row that was never live-held (upsertCodexReviewPending only)", () => {
+		store.upsertCodexReviewPending({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		expect(store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS)).toEqual(
+			[],
+		);
+	});
+
+	it("excludes a head that has since been approved", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		store.recordCodexReviewApproved({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		expect(store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS)).toEqual(
+			[],
+		);
+	});
+
+	it("claimCodexHoldStuckNotify fires exactly once per (exec, head)", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		expect(store.claimCodexHoldStuckNotify("exec1", SHA_A)).toBe(true);
+		expect(store.claimCodexHoldStuckNotify("exec1", SHA_A)).toBe(false);
+	});
+
+	it("listCodexHoldsPendingOlderThan excludes a row already escalated", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		store.claimCodexHoldStuckNotify("exec1", SHA_A);
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		expect(store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS)).toEqual(
+			[],
+		);
+	});
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// FLY-1188 §7.3 — family-aware review authority (reviewer-inversion
+// invariant: the reviewer must come from a DIFFERENT agent family than
+// the author). Legacy unstamped rows stay valid ONLY for claude-family
+// authors; a codex author with an unstamped record fails closed.
+// ══════════════════════════════════════════════════════════════════════
 
 describe("StateStore — FLY-1188 family-aware review authority", () => {
 	let store: StateStore;

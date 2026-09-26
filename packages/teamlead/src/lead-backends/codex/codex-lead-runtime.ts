@@ -12,7 +12,6 @@
  */
 
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -23,11 +22,6 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	getProcessStart,
-	publishCarrierRuntimeAssertion,
-} from "flywheel-comm/lead-lease";
-import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import {
 	assertGatewayOnlyToolSurface,
 	GATEWAY_ACTION_TOOL_NAMES,
@@ -40,12 +34,6 @@ import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
 } from "./CodexDiscordGateway.js";
-import { CodexDiscordMailboxStrategy } from "./CodexDiscordMailboxStrategy.js";
-import { CodexDiscordRuntimeOwnership } from "./CodexDiscordRuntimeOwnership.js";
-import {
-	CodexLeadInboxServer,
-	resolveCodexLeadInboxSocketPath,
-} from "./CodexLeadInboxSocket.js";
 import { type ChildTransport, CodexLeadProcess } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
@@ -53,9 +41,9 @@ import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
 import { assertConfinement, extractThreadDescriptor } from "./confinement.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
 import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
-import { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
 import { parseOwnerRepo } from "./gateway/GitPushRunner.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
+import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
@@ -73,8 +61,6 @@ import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 export interface CodexLeadRuntimeConfig {
 	projectName: string;
 	leadId: string;
-	leadKey: string;
-	identityDigest: string;
 	botUserId: string;
 	botToken: string;
 	chatChannelId: string;
@@ -110,7 +96,6 @@ export interface CodexLeadRuntimeConfig {
 	/** Durable inbound-poll cursor (FLY-224 review HIGH-4): restart resumes from the
 	 * persisted last-seen Discord msg id instead of re-baselining (no downtime loss). */
 	inboundCursorPath: string;
-	commDbPath: string;
 	codexBin: string;
 	codexHome: string;
 	chrome?: { enabled: boolean; browserUrl?: string };
@@ -119,18 +104,10 @@ export interface CodexLeadRuntimeConfig {
 	 * exactly-once). Default "direct". */
 	outboundMode: "direct" | "bridge";
 	/** FLY-404: show the Discord "typing…" indicator while processing a founder
-	 * message. Permanently enabled; posts via the Lead's own bot token. */
+	 * message (parity with the Claude Lead). Default ON; the kill-switch
+	 * FLYWHEEL_CODEX_LEAD_TYPING=0 disables it (defensive — touches live Mufasa).
+	 * Posts via the Lead's own bot token, independent of the outbound mode. */
 	typingEnabled: boolean;
-	/** FLY-2131: optional Codex thread model pin. Absent stays absent so existing
-	 * Leads keep byte-identical thread/start and thread/resume params. */
-	model?: string;
-	/** FLY-2131: Codex protocol reasoning effort (not a CLI flag). */
-	reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
-	/** FLY-2131: explicit Codex model context window, e.g. Raya's 1M pin. */
-	modelContextWindow?: number;
-	/** FLY-2131: Raya-only v1 context metrics + explicit unavailable ledger. */
-	contextUsagePath?: string;
-	contextUsageUnavailablePath?: string;
 	/** Persona/identity files (e.g. `.lead/<id>/identity.md` + companion-safety-
 	 * contract) read + concatenated into the thread's `baseInstructions` system
 	 * prompt — the Codex equivalent of claude-lead.sh's `--append-system-prompt-file`.
@@ -251,14 +228,6 @@ export function pathsOverlap(a: string, b: string): boolean {
 		rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 	// `b` under `a`  OR  `a` under `b`.
 	return under(relative(a, b)) || under(relative(b, a));
-}
-
-function containsAsciiControl(value: string): boolean {
-	for (const character of value) {
-		const code = character.charCodeAt(0);
-		if (code <= 31 || code === 127) return true;
-	}
-	return false;
 }
 
 export interface LeadWorkspaceContext {
@@ -412,7 +381,6 @@ export const FULL_ACCESS_ENV_ALLOWLIST = [
 	"FLYWHEEL_LEAD_ID",
 	"FLYWHEEL_COMM_DB",
 	"FLYWHEEL_COMM_CLI",
-	"FLYWHEEL_FOUNDER_TZ",
 	"PROJECT_NAME",
 	"FLYWHEEL_PROJECT_NAME",
 	"FLYWHEEL_PROJECT_DIR",
@@ -420,6 +388,7 @@ export const FULL_ACCESS_ENV_ALLOWLIST = [
 	"TEAMLEAD_API_TOKEN",
 	"TEAMLEAD_ISSUE_PREFIXES",
 	"DISCORD_CORE_CHANNEL",
+	"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 	"OPENAI_API_KEY",
 	"FLYWHEEL_TEAMLEAD_SCRIPT_DIR",
 	// gh/git auth — the ONLY sanctioned addition beyond the Claude-pane set (plan
@@ -526,21 +495,17 @@ export function parseCodexLeadRuntimeConfig(
 
 	const outboundMode: "direct" | "bridge" =
 		env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct";
-	const typingEnabled = true;
+	// FLY-404: Discord typing indicator — default ON, kill-switch via "=0".
+	const typingEnabled = env.FLYWHEEL_CODEX_LEAD_TYPING !== "0";
 
 	const leadId = req("FLYWHEEL_LEAD_ID");
 	const projectName = req("FLYWHEEL_PROJECT_NAME");
-	const leadKey = req("FLYWHEEL_LEAD_KEY");
-	const backend = req("FLYWHEEL_LEAD_BACKEND");
-	const identityDigest = req("FLYWHEEL_LEAD_IDENTITY_DIGEST");
-	const botUserId = req("DISCORD_EXPECTED_BOT_USER_ID");
+	const botUserId = req("FLYWHEEL_LEAD_BOT_USER_ID");
 	const botToken = req("DISCORD_BOT_TOKEN");
 	const chatChannelId = req("FLYWHEEL_LEAD_CHAT_CHANNEL_ID");
 	const stateDir = req("FLYWHEEL_CODEX_LEAD_STATE_DIR");
 	const codexBin = req("FLYWHEEL_CODEX_BIN");
 	const codexHome = req("CODEX_HOME");
-	const commDbPath = req("FLYWHEEL_COMM_DB");
-	const rayaMetricsDir = leadId === "raya" ? req("RAYA_METRICS_DIR") : "";
 	// Bridge fields: required only when outbound routes through the Bridge.
 	const bridgeUrl =
 		outboundMode === "bridge"
@@ -553,45 +518,6 @@ export function parseCodexLeadRuntimeConfig(
 	if (missing.length > 0) {
 		throw new Error(
 			`codex-lead-runtime: missing required env: ${missing.join(", ")}`,
-		);
-	}
-	const expectedLeadKey = `${projectName}-${leadId}`;
-	if (leadKey !== expectedLeadKey) {
-		throw new Error(
-			`codex-lead-runtime: FLYWHEEL_LEAD_KEY must be ${expectedLeadKey}, got ${leadKey}`,
-		);
-	}
-	if (backend !== "codex-app-server") {
-		throw new Error(
-			`codex-lead-runtime: FLYWHEEL_LEAD_BACKEND must be codex-app-server, got ${backend}`,
-		);
-	}
-	if (!/^[a-f0-9]{64}$/.test(identityDigest)) {
-		throw new Error(
-			"codex-lead-runtime: FLYWHEEL_LEAD_IDENTITY_DIGEST must be a 64-character lowercase hex digest",
-		);
-	}
-	if (rayaMetricsDir && !isAbsolute(rayaMetricsDir)) {
-		throw new Error(
-			"codex-lead-runtime: RAYA_METRICS_DIR must be an absolute path",
-		);
-	}
-	if (env.LEAD_ID !== undefined && env.LEAD_ID.trim() !== leadId) {
-		throw new Error(
-			"codex-lead-runtime: LEAD_ID conflicts with FLYWHEEL_LEAD_ID",
-		);
-	}
-	if (
-		env.PROJECT_NAME !== undefined &&
-		env.PROJECT_NAME.trim() !== projectName
-	) {
-		throw new Error(
-			"codex-lead-runtime: PROJECT_NAME conflicts with FLYWHEEL_PROJECT_NAME",
-		);
-	}
-	if (env.FLYWHEEL_LEAD_BOT_USER_ID !== undefined) {
-		throw new Error(
-			"codex-lead-runtime: legacy FLYWHEEL_LEAD_BOT_USER_ID is forbidden; use canonical DISCORD_EXPECTED_BOT_USER_ID",
 		);
 	}
 
@@ -662,9 +588,11 @@ export function parseCodexLeadRuntimeConfig(
 			(env.FLYWHEEL_ROUNDTABLE_REPLY_CAP ?? "").trim(),
 			10,
 		);
-		// FLY-676: no-@ in-thread continuation is permanent when a resolvable
-		// roundtable parent exists. The EFFECTIVE marker still encodes that parent
-		// precondition for downstream consumers.
+		// FLY-676: no-@ in-thread continuation (member-follow) is now DEFAULT-ON when
+		// reply-in-thread is enabled — on unless explicitly disabled with "0" (the
+		// kill-switch). Was `=== "1"` (default-off) under FLY-314. Mirrors the Claude
+		// plugin's loadRoundtableConfig. Same env names across both backends.
+		const autoContinue = env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE !== "0";
 		const budgetParsed = Number.parseInt(
 			(env.FLYWHEEL_ROUNDTABLE_THREAD_BUDGET ?? "").trim(),
 			10,
@@ -672,7 +600,10 @@ export function parseCodexLeadRuntimeConfig(
 		replyInThread = {
 			enabled: true,
 			parentChannelId,
-			autoContinue: true,
+			// Only include autoContinue when ON — preserves the prior config shape when
+			// off (Codex code review R1 finding 3: keep the exact-shape test / OFF-config
+			// consumers byte-compatible).
+			...(autoContinue ? { autoContinue: true } : {}),
 			...(Number.isFinite(budgetParsed) && budgetParsed > 0
 				? { budgetN: budgetParsed }
 				: {}),
@@ -682,56 +613,15 @@ export function parseCodexLeadRuntimeConfig(
 			...(Number.isFinite(capN) && capN > 0 ? { cap: capN } : {}),
 		};
 	}
-	const chrome = undefined;
+	const chromeEnabled = env.FLYWHEEL_LEAD_CHROME_ENABLED === "1";
+	const chrome = chromeEnabled
+		? { enabled: true, browserUrl: env.FLYWHEEL_LEAD_CHROME_URL?.trim() }
+		: undefined;
 	// Persona/identity files → baseInstructions (comma-separated paths; missing skipped).
 	const systemPromptFiles = (env.FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES ?? "")
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
-	// FLY-2131 M2-a: these are thread protocol fields, shared by the headless and
-	// TUI runtimes through buildThreadParams. Do not materialize absent fields: the
-	// default path must retain the exact pre-M2 JSON frame bytes.
-	let model: string | undefined;
-	if (env.FLYWHEEL_LEAD_MODEL !== undefined) {
-		model = env.FLYWHEEL_LEAD_MODEL.trim();
-		if (!model || containsAsciiControl(model)) {
-			throw new Error(
-				"codex-lead-runtime: FLYWHEEL_LEAD_MODEL must be a non-empty string without control characters",
-			);
-		}
-	}
-	let reasoningEffort: CodexLeadRuntimeConfig["reasoningEffort"];
-	if (env.FLYWHEEL_LEAD_EFFORT !== undefined) {
-		const effort = env.FLYWHEEL_LEAD_EFFORT.trim();
-		if (
-			effort !== "low" &&
-			effort !== "medium" &&
-			effort !== "high" &&
-			effort !== "xhigh" &&
-			effort !== "max"
-		) {
-			throw new Error(
-				`codex-lead-runtime: FLYWHEEL_LEAD_EFFORT="${effort}" invalid (one of: low, medium, high, xhigh, max)`,
-			);
-		}
-		reasoningEffort = effort;
-	}
-	let modelContextWindow: number | undefined;
-	if (env.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW !== undefined) {
-		const raw = env.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW.trim();
-		const parsed = Number(raw);
-		if (
-			!/^\d+$/.test(raw) ||
-			!Number.isSafeInteger(parsed) ||
-			parsed < 1 ||
-			parsed > 10_000_000
-		) {
-			throw new Error(
-				`codex-lead-runtime: FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW="${raw}" must be an integer from 1 through 10000000`,
-			);
-		}
-		modelContextWindow = parsed;
-	}
 	// App-server sandbox policy (HIGH-1) — validate against the schema enum; default
 	// read-only (companion). An unknown value fails loud rather than silently default.
 	const sandboxRaw = env.FLYWHEEL_CODEX_LEAD_SANDBOX?.trim() || "read-only";
@@ -871,8 +761,6 @@ export function parseCodexLeadRuntimeConfig(
 	return {
 		projectName,
 		leadId,
-		leadKey,
-		identityDigest,
 		botUserId,
 		botToken,
 		chatChannelId,
@@ -889,24 +777,11 @@ export function parseCodexLeadRuntimeConfig(
 		outboxDbPath: join(stateDir, "outbox.db"),
 		threadIdPath: join(stateDir, "thread-id"),
 		inboundCursorPath: join(stateDir, "inbound-cursor.json"),
-		commDbPath,
 		codexBin,
 		codexHome,
 		chrome,
 		outboundMode,
 		typingEnabled,
-		...(model ? { model } : {}),
-		...(reasoningEffort ? { reasoningEffort } : {}),
-		...(modelContextWindow ? { modelContextWindow } : {}),
-		...(rayaMetricsDir
-			? {
-					contextUsagePath: join(rayaMetricsDir, "context-usage.jsonl"),
-					contextUsageUnavailablePath: join(
-						rayaMetricsDir,
-						"context-usage-unavailable.jsonl",
-					),
-				}
-			: {}),
 		systemPromptFiles,
 		sandboxMode,
 		codexProfile,
@@ -984,7 +859,6 @@ function fullAccessLeadActionsMcpConfig(
 		| "chatChannelId"
 		| "crossDeptChannelIds"
 		| "stateDir"
-		| "commDbPath"
 		| "leadActionsChannelAliases"
 	>,
 	entry: string,
@@ -1000,7 +874,6 @@ function fullAccessLeadActionsMcpConfig(
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: config.chatChannelId,
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: config.crossDeptChannelIds.join(","),
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: config.stateDir,
-		FLYWHEEL_COMM_DB: config.commDbPath,
 		// R1#2: forward explicit alias pins so the documented roundtable
 		// disambiguation works for full-access (non-secret).
 		...(config.leadActionsChannelAliases
@@ -1069,12 +942,7 @@ export function resolveControlPlaneRoots(
 export function buildThreadParams(
 	config: Pick<
 		CodexLeadRuntimeConfig,
-		| "sandboxMode"
-		| "workspace"
-		| "fullAccessProjectRoot"
-		| "model"
-		| "reasoningEffort"
-		| "modelContextWindow"
+		"sandboxMode" | "workspace" | "fullAccessProjectRoot"
 	>,
 	baseInstructions: string | undefined,
 ): Record<string, unknown> {
@@ -1093,20 +961,6 @@ export function buildThreadParams(
 	else if (config.fullAccessProjectRoot)
 		params.cwd = config.fullAccessProjectRoot;
 	if (baseInstructions) params.baseInstructions = baseInstructions;
-	if (config.model) params.model = config.model;
-	if (
-		config.reasoningEffort !== undefined ||
-		config.modelContextWindow !== undefined
-	) {
-		params.config = {
-			...(config.reasoningEffort !== undefined
-				? { model_reasoning_effort: config.reasoningEffort }
-				: {}),
-			...(config.modelContextWindow !== undefined
-				? { model_context_window: config.modelContextWindow }
-				: {}),
-		};
-	}
 	return params;
 }
 
@@ -1313,9 +1167,6 @@ export function spawnCodexAppServer(cfg: {
 	 * confined / read-only / (Z) write-capable path keeps the unconditional
 	 * action-secret wash (byte-compat — the FLY-245 Phase E sentinel holds). */
 	washSecrets?: boolean;
-	carrierInstanceId?: string;
-	leadId?: string;
-	projectName?: string;
 }): ChildTransport {
 	const args = ["app-server", "--strict-config", ...cfg.mcpArgv];
 	const base = cfg.baseEnv ?? process.env;
@@ -1323,15 +1174,6 @@ export function spawnCodexAppServer(cfg: {
 		env: {
 			...(cfg.washSecrets === false ? base : washActionSecretEnv(base)),
 			CODEX_HOME: cfg.codexHome,
-			...(cfg.carrierInstanceId
-				? {
-						FLYWHEEL_LEAD_CARRIER_INSTANCE_ID: cfg.carrierInstanceId,
-						...(cfg.leadId ? { FLYWHEEL_LEAD_ID: cfg.leadId } : {}),
-						...(cfg.projectName
-							? { FLYWHEEL_PROJECT_NAME: cfg.projectName }
-							: {}),
-					}
-				: {}),
 		},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
@@ -1533,22 +1375,11 @@ export function buildCodexLeadRuntime(
 		: undefined;
 
 	const proc = new CodexLeadProcess({
-		spawnChild: () => {
-			const carrierInstanceId = randomBytes(32).toString("base64url");
-			publishCarrierRuntimeAssertion({
-				leadKey: config.leadKey,
-				identityDigest: config.identityDigest,
-				rawCarrierInstanceId: carrierInstanceId,
-				pid: process.pid,
-				lstart: getProcessStart(process.pid),
-			});
-			const transport = spawnCodexAppServer({
+		spawnChild: () =>
+			spawnCodexAppServer({
 				codexBin: config.codexBin,
 				mcpArgv: spawnArgv,
 				codexHome: config.codexHome,
-				carrierInstanceId,
-				leadId: config.leadId,
-				projectName: config.projectName,
 				// FLY-350 full-access: the app-server child inherits the H-1 positive
 				// env allowlist (Claude-pane mirror + gh auth) AS-IS — washSecrets:false
 				// so its gh/Discord/Bridge auth survives. Every other path keeps the
@@ -1568,9 +1399,7 @@ export function buildCodexLeadRuntime(
 					: gatewayEnv
 						? { baseEnv: gatewayEnv }
 						: {}),
-			});
-			return transport;
-		},
+			}),
 	});
 
 	// ④ runtime half: collect MCP startup notifications; ensureThread blocks on
@@ -1581,6 +1410,16 @@ export function buildCodexLeadRuntime(
 			inventory.record(method, params),
 		);
 	}
+
+	// Liveness + activity signals for the health probe.
+	let alive = true;
+	let lastActivityAt: number | undefined;
+	proc.on("exit", () => {
+		alive = false;
+	});
+	proc.on("notification", () => {
+		lastActivityAt = Date.now();
+	});
 
 	// Outbound: "direct" (default) posts to Discord with the Lead's own token — no
 	// Bridge route / restart (low-risk first bring-up). "bridge" uses the durable
@@ -1624,6 +1463,12 @@ export function buildCodexLeadRuntime(
 	// network/socket actions, the gateway (④) is its only action channel, and
 	// every reserved action there passes founder preflight/consent (C2/D).
 	const threadParams = buildThreadParams(config, baseInstructions);
+
+	const health = new LeadHealthProbe({
+		processAlive: () => alive,
+		lastActivityAt: () => lastActivityAt,
+		journal: { listUnfinished: () => journal.listUnfinished() },
+	});
 
 	const steps = {
 		startProcess: async () => {
@@ -1677,16 +1522,10 @@ export function buildCodexLeadRuntime(
 			return id;
 		},
 		wire: async (threadId: string): Promise<RuntimeWiring> => {
-			const externalReceiptQueue = new MailboxQueue(config.commDbPath);
-			const externalReceiptSaga = new ExternalReceiptSaga({
-				leadId: config.leadId,
-				queue: externalReceiptQueue,
-				journal,
-			});
 			const executor = new CodexTurnExecutor({ process: proc, threadId });
-			// FLY-1806: Discord typing is fixed on. Posts with the Lead's own bot token
-			// in the reply channel while a founder message is processed; closed on
-			// stopGateway.
+			// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
+			// disables). Posts with the Lead's own bot token in the reply channel while a
+			// founder message is processed; closed on stopGateway.
 			const typing = config.typingEnabled
 				? new DiscordTypingNotifier({
 						botToken: config.botToken,
@@ -1715,14 +1554,6 @@ export function buildCodexLeadRuntime(
 				journal,
 				executor,
 				sender,
-				onEntryCompleted: (entry) => {
-					if (
-						entry.source === "discord" &&
-						(entry.replyChannelId || entry.replyRoute)
-					) {
-						externalReceiptSaga.handle(entry.idempotencyKey, entry.id);
-					}
-				},
 				...(typing ? { typing } : {}),
 				...(replyInThread
 					? {
@@ -1730,12 +1561,6 @@ export function buildCodexLeadRuntime(
 							onTopicEngaged: replyInThread.seedBudgetForRoute,
 						}
 					: {}),
-			});
-			const inboxServer = new CodexLeadInboxServer({
-				socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
-				leadId: config.leadId,
-				router,
-				authSecret: config.botToken,
 			});
 			// FLY-267 判 + 回: when cross-dept channels are configured, gate them on
 			// mention AND route replies back to the source channel (chat/core stay
@@ -1770,24 +1595,11 @@ export function buildCodexLeadRuntime(
 					? (m: DiscordInboundMessage) =>
 							crossDeptSet.has(m.channelId) ? m.channelId : undefined
 					: undefined;
-			const mailboxStrategy = new CodexDiscordMailboxStrategy({
-				leadId: config.leadId,
-				...(config.founderId ? { founderId: config.founderId } : {}),
-				dbPath: config.commDbPath,
-				queue: externalReceiptQueue,
-				journal,
-				router,
-				externalReceiptSaga,
-				mailboxReady: () => ownership?.mailboxReady() === true,
-				logger,
-			});
 			const gateway = new CodexDiscordGateway({
 				source,
 				router,
 				botUserId: config.botUserId,
 				channelIds: config.channelIds,
-				externalReceiptSaga,
-				durableAccept: (input) => mailboxStrategy.accept(input),
 				...(shouldHandle ? { shouldHandle } : {}),
 				// FLY-314 Phase 2 ON → registry allowlist + structured route supersede
 				// resolveReplyChannelId; OFF → FLY-267 source-channel routing.
@@ -1800,54 +1612,26 @@ export function buildCodexLeadRuntime(
 						? { resolveReplyChannelId }
 						: {}),
 			});
-			const ownership = new CodexDiscordRuntimeOwnership({
-				stateDir: config.stateDir,
-				leadId: config.leadId,
-				authSecret: config.botToken,
-				server: inboxServer,
-				gateway: {
-					start: async () => {
-						await gateway.start();
-						try {
-							await replyInThread?.start();
-						} catch (error) {
-							await gateway.stop();
-							throw error;
-						}
-					},
-					stop: async () => {
-						try {
-							await replyInThread?.stop();
-						} finally {
-							await gateway.stop();
-						}
-					},
-				},
-				logger,
-			});
 			return {
 				recover: () => router.recover(),
 				startGateway: async () => {
-					externalReceiptSaga.reconcile({
-						olderThan: new Date().toISOString(),
-						// Without an authoritative Discord watermark, startup may repair
-						// accepted rows but never guesses that a message is absent.
-						absenceProvenThroughMessageId: "0",
-					});
-					// Open Bridge batch ingress after journal recovery and before Discord intake.
 					// FLY-314 Phase 2 (Codex code review #1): START THE GATEWAY FIRST so
 					// `source.onMessage(handler)` is installed BEFORE discovery's
 					// `addChannel()` can drain a resumed thread — otherwise drained downtime
 					// messages hit a missing handler (safe-to-advance) and are dropped while
 					// the cursor advances past them.
-					await ownership.start();
+					await gateway.start();
+					await replyInThread?.start();
 				},
 				stopGateway: async () => {
+					// Stop discovery first (no addChannel mid-shutdown), then the gateway.
+					await replyInThread?.stop();
+					// FLY-404 (Codex review LOW): close the typing keepalive in a
+					// `finally` so a throwing gateway.stop() can never leak the interval.
 					try {
-						await ownership.stop();
+						await gateway.stop();
 					} finally {
 						typing?.close();
-						externalReceiptQueue.close();
 					}
 				},
 			};
@@ -1856,6 +1640,7 @@ export function buildCodexLeadRuntime(
 			await proc.stop();
 			await broker?.close();
 		},
+		healthProbe: () => health.probe(),
 		logger,
 	};
 
@@ -1947,7 +1732,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`outbound mode : ${config.outboundMode}${noBridge ? " → DIRECT post to Discord (own bot token), NO Bridge" : ` → Bridge ${config.bridgeUrl}`}`,
 		// FLY-404: surface the typing indicator state so the operator can verify it
 		// before the Mufasa flip (parity with the Claude Lead's "typing…").
-		"typing        : ON (Discord typing… while processing — parity with Claude Lead)",
+		`typing        : ${config.typingEnabled ? "ON (Discord typing… while processing — parity with Claude Lead; kill-switch FLYWHEEL_CODEX_LEAD_TYPING=0)" : "OFF (FLYWHEEL_CODEX_LEAD_TYPING=0)"}`,
 		`bridge env    : url=${config.bridgeUrl || "(unset — not needed in direct)"} apiToken=${config.apiToken ? redactSecret(config.apiToken) : "(unset — not needed in direct)"}`,
 		`prod Bridge   : ${noBridge ? "NOT CONNECTED (zero prod intrusion)" : "WILL CONNECT (bridge mode)"}`,
 		`persona       : ${persona ? `baseInstructions ${persona.length} chars from ${config.systemPromptFiles.length} file(s) → injected` : "(none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)"}`,

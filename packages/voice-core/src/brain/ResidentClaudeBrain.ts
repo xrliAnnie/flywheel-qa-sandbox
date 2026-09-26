@@ -21,7 +21,6 @@
  * never argv (argv hygiene).
  */
 import { existsSync } from "node:fs";
-import { buildNonLeadClaudeSettings } from "flywheel-config";
 import {
 	NodeProcessRunner,
 	type ProcessHandle,
@@ -410,18 +409,12 @@ export class ResidentClaudeBrain implements BrainAdapter {
 		pid?: number;
 		turns: number;
 		sessionId?: string;
-		/** FLY-1160 §4.1-6: true once dispose()/forceKill() started — set BEFORE
-		 * the interrupt that ends any in-flight turn, so a consumer (the meeting
-		 * summary) can tell a NORMAL completion from an EXTERNAL teardown interrupt
-		 * (both leave the turn's iterator returning cleanly). */
-		disposed: boolean;
 	} {
 		return {
 			state: this.state,
 			pid: this.alive ? this.child?.pid : undefined,
 			turns: this.turnsCompleted,
 			sessionId: this.sessionId,
-			disposed: this.disposed,
 		};
 	}
 
@@ -442,7 +435,6 @@ export class ResidentClaudeBrain implements BrainAdapter {
 	private buildArgs(resume?: string): string[] {
 		const settings: Record<string, unknown> = { alwaysThinkingEnabled: false };
 		if (this.opts.effort) settings.effortLevel = this.opts.effort;
-		const safeSettings = buildNonLeadClaudeSettings(settings);
 		// SAFETY FLAGS ARE FROZEN (Codex R1 #7): read-only tool whitelist +
 		// --strict-mcp-config + explicit --settings (global settings drift must
 		// not reach the resident). Callers cannot override any of this.
@@ -458,7 +450,7 @@ export class ResidentClaudeBrain implements BrainAdapter {
 			"Read,Grep,Glob",
 			"--strict-mcp-config",
 			"--settings",
-			JSON.stringify(safeSettings),
+			JSON.stringify(settings),
 			"--append-system-prompt-file",
 			this.opts.identityFile,
 		];

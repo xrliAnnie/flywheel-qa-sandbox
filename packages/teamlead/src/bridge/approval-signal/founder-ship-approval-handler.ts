@@ -22,17 +22,15 @@
  *     refused) → the deliverer's byte-compatible WAKE-only fallback.
  */
 
-import type { FounderReworkHint } from "../../workflow-rework-hint.js";
+import {
+	isDeferrableReviewHoldReason,
+	type ReviewHoldReason,
+} from "../auto-qa-held.js";
 import type { ShipApprovalOutcome } from "../founder-reply-deliverer.js";
 import type {
 	MergedGateGuard,
 	MergedGateGuardResult,
 } from "../merged-gate-guard.js";
-import {
-	isDeferrableReviewHoldReason,
-	type ReviewHoldReason,
-} from "../review-hold.js";
-import type { GateAuthorityView } from "./gate-authority-view.js";
 import {
 	makeGuardedOnResponseWritten,
 	type ResponseGuardDb,
@@ -44,7 +42,6 @@ import type {
 	GateBinding,
 } from "./types.js";
 import {
-	type FounderGateMessageContext,
 	type GateResponseDb,
 	type WriteGateResponseArgs,
 	writeGateResponseAndRunPostWrite,
@@ -75,6 +72,10 @@ const APPROVE_FLIPPED_STATUSES = new Set(["approved_to_ship", "completed"]);
 export interface DeferralSupport {
 	/** Why the session is founder-held (null = not held). */
 	holdReason(executionId: string): ReviewHoldReason | null;
+	/** FLYWHEEL_DEFERRED_FOUNDER_APPROVAL !== "0" (read per call). */
+	deferredEnabled(): boolean;
+	/** FLYWHEEL_HELD_DECLINED_REPLY !== "0" (read per call). */
+	heldReplyEnabled(): boolean;
 	/**
 	 * Durable single-transaction deferral: deferred row + `held_reply` thread
 	 * notice intent (§4.2 step 2). Throws on failure (mapped to retry).
@@ -90,18 +91,17 @@ export interface DeferralSupport {
 		/** The canonical founder id THIS attribution ran under (rebind re-verifies). */
 		founderIdAtCapture: string;
 		holdReason: "codex_pending" | "qa_not_green";
-		founderRework?: FounderReworkHint;
 	}): "inserted" | "noop_existing";
 	/**
-	 * Queue the held explainer thread notice (merge_block recovery pointer,
-	 * readiness pointer, or deferred-OFF explainer). Idempotent per
+	 * Queue the held explainer thread notice (merge_block pointer / the
+	 * deferred-OFF "请再说一次" explainer — §4.4 truth table). Idempotent per
 	 * (questionId, msgId); best-effort (must not throw into attribution).
 	 */
 	queueHeldNotice(args: {
 		questionId: string;
 		msgId: string;
 		executionId: string;
-		kind: "merge_block" | "readiness_hold" | "deferred_off";
+		kind: "merge_block" | "deferred_off";
 		holdReason: ReviewHoldReason;
 	}): void;
 	/**
@@ -125,7 +125,6 @@ export interface DeferralSupport {
 		authorUserId: string;
 		founderIdAtCapture: string;
 		reason: string;
-		founderRework?: FounderReworkHint;
 	}): void;
 	/**
 	 * FLY-1099 (Codex code R1 HIGH-2): durably commit the reject feedback wake
@@ -145,7 +144,6 @@ export interface DeferralSupport {
 export interface ShipApprovalHandlerDeps {
 	canonicalFounderId: string;
 	store: { getSession(executionId: string): HandlerSession | undefined };
-	gateAuthorityView?: GateAuthorityView;
 	db: GateResponseDb;
 	evaluateTextImpl?: typeof evaluateTextSource;
 	writeGateResponseImpl?: typeof writeGateResponseAndRunPostWrite;
@@ -193,7 +191,6 @@ export interface ShipApprovalHandlerArgs {
 		projectName?: string;
 		projectRoot?: string;
 	};
-	recordDecisionClassification?: (decision: "approve" | "reject") => void;
 	/**
 	 * FLY-1041 Chunk 7: this founder message is a VERIFIED Discord reply
 	 * (type 19 + reference in this thread) to THIS gate's ship card — the
@@ -201,7 +198,6 @@ export interface ShipApprovalHandlerArgs {
 	 * Tier-3 prompt so short affirmations on the card bind deterministically.
 	 */
 	replyToCard?: boolean;
-	founderMessage?: FounderGateMessageContext;
 }
 
 const excerpt = (s: string | undefined, max = 200): string => {
@@ -215,21 +211,10 @@ export async function tryFounderShipApproval(
 ): Promise<ShipApprovalOutcome | null> {
 	// Identity: only the canonical founder's own message can attribute approval.
 	if (args.msg.authorId !== deps.canonicalFounderId) return null;
-	// FLY-1847: machine verdicts require an immutable card anchor. Ordinary
-	// thread speech belongs to the Lead discussion lane and cannot close a gate.
-	if (args.replyToCard !== true) {
-		deps.auditSink?.("card_anchor_missing", {});
-		return null;
-	}
 
 	// A-2: narrow to gates whose session is awaiting_review AND whose current
 	// review question is exactly this gate. Require EXACTLY ONE (Codex R1 #2).
 	const current = args.shipGates.filter((g) => {
-		const authority = deps.gateAuthorityView?.resolve(
-			g.questionId,
-			g.executionId,
-		);
-		if (authority) return authority.state === "awaiting_review";
 		const s = deps.store.getSession(g.executionId);
 		return (
 			s?.status === "awaiting_review" && s?.review_question_id === g.questionId
@@ -258,19 +243,7 @@ export async function tryFounderShipApproval(
 
 	const gate = current[0];
 	if (!gate) return null;
-	const engineAuthority = deps.gateAuthorityView?.resolve(
-		gate.questionId,
-		gate.executionId,
-	);
-	const session = engineAuthority
-		? {
-				status: engineAuthority.state,
-				review_question_id: engineAuthority.questionId,
-				pr_head_sha: engineAuthority.headSha,
-				pr_number: engineAuthority.prNumber,
-				issue_identifier: engineAuthority.issueIdentifier,
-			}
-		: deps.store.getSession(gate.executionId);
+	const session = deps.store.getSession(gate.executionId);
 	if (!session?.pr_head_sha) {
 		deps.auditSink?.("narrow_no_head", { questionId: gate.questionId });
 		return null;
@@ -343,7 +316,6 @@ export async function tryFounderShipApproval(
 
 	// ── signal evaluation (text), shared by the live and held paths ──
 	let signalAudited = false;
-	let classificationFailure: Error | undefined;
 	const evaluateSignal = async (): Promise<ApprovalSignal | null> => {
 		const evaluateText = deps.evaluateTextImpl ?? evaluateTextSource;
 		const signal = await evaluateText({
@@ -367,22 +339,6 @@ export async function tryFounderShipApproval(
 				kind: signal.kind,
 				...(evidence?.reason !== undefined ? { reason: evidence.reason } : {}),
 			});
-		}
-		if (
-			(signal.kind === "approve" || signal.kind === "reject") &&
-			args.recordDecisionClassification
-		) {
-			try {
-				args.recordDecisionClassification(signal.kind);
-			} catch (error) {
-				classificationFailure =
-					error instanceof Error ? error : new Error(String(error));
-				deps.auditSink?.("decision_classification_failed", {
-					questionId: gate.questionId,
-					decision: signal.kind,
-					error: classificationFailure.message,
-				});
-			}
 		}
 		return signal;
 	};
@@ -431,38 +387,46 @@ export async function tryFounderShipApproval(
 				const disposition = guardDisposition(guardResult);
 				if (disposition !== undefined) return disposition;
 			}
-			deferral.queueHeldNotice({
+			if (deferral.heldReplyEnabled()) {
+				deferral.queueHeldNotice({
+					questionId: gate.questionId,
+					msgId: args.msg.id,
+					executionId: gate.executionId,
+					kind: reason === "merge_block" ? "merge_block" : "deferred_off",
+					holdReason: reason,
+				});
+			}
+			return null;
+		}
+		if (!deferral.deferredEnabled()) {
+			// §4.4 OFF rows: no deferral (today's early decline), but with the
+			// reply flag ON the founder still gets an explanation (硬要求① — the
+			// silence is what made tonight dangerous).
+			deps.auditSink?.("held_declined", {
 				questionId: gate.questionId,
-				msgId: args.msg.id,
 				executionId: gate.executionId,
-				kind:
-					reason === "merge_block"
-						? "merge_block"
-						: reason === "qa_evidence_missing" ||
-								reason === "qa_evidence_unknown"
-							? "readiness_hold"
-							: "deferred_off",
 				holdReason: reason,
 			});
+			if (deferral.heldReplyEnabled()) {
+				deferral.queueHeldNotice({
+					questionId: gate.questionId,
+					msgId: args.msg.id,
+					executionId: gate.executionId,
+					kind: "deferred_off",
+					holdReason: reason,
+				});
+			}
 			return null;
 		}
 		// Deferred flag ON: classify (read-only; fail-closed semantics unchanged).
 		const signal =
 			preEvaluated === undefined ? await evaluateSignal() : preEvaluated;
 		if (!signal) return null;
-		if (classificationFailure) {
-			return retryOutcome(
-				"decision_classification_failed",
-				classificationFailure.message,
-			);
-		}
 		if (signal.kind === "unclear") {
 			// R1 #2 truth-in-time: NEVER a "已存着" reply for unclear — nothing was
 			// stored. WAKE-only + ❓ (or bounded retry on infra failure).
 			return unclearDisposition(signal);
 		}
-		const founderRework =
-			signal.source === "text" ? signal.founderRework : undefined;
 		try {
 			const outcome = deferral.defer({
 				questionId: gate.questionId,
@@ -474,7 +438,6 @@ export async function tryFounderShipApproval(
 				authorUserId: args.msg.authorId ?? "",
 				founderIdAtCapture: deps.canonicalFounderId,
 				holdReason: reason,
-				founderRework,
 			});
 			deps.auditSink?.("founder_approval_deferred", {
 				questionId: gate.questionId,
@@ -512,12 +475,6 @@ export async function tryFounderShipApproval(
 
 	const signal = await evaluateSignal();
 	if (!signal) return null;
-	if (classificationFailure) {
-		return retryOutcome(
-			"decision_classification_failed",
-			classificationFailure.message,
-		);
-	}
 	if (signal.kind === "unclear") return unclearDisposition(signal);
 
 	// ── FLY-1099 §4.3 (Codex R3 #2): pre-write re-verify, immediately before the
@@ -526,20 +483,10 @@ export async function tryFounderShipApproval(
 	// session: hold reappeared → the held disposition (with the signal already
 	// in hand); anything else drifted → fail-closed WAKE-only (never write a
 	// stale gate).
-	const liveAuthority = deps.gateAuthorityView?.resolve(
-		gate.questionId,
-		gate.executionId,
-	);
-	const live = liveAuthority
-		? {
-				status: liveAuthority.state,
-				review_question_id: liveAuthority.questionId,
-				pr_head_sha: liveAuthority.headSha,
-			}
-		: deps.store.getSession(gate.executionId);
+	const live = deps.store.getSession(gate.executionId);
 	if (
 		!live ||
-		(live.status !== "awaiting_review" && !liveAuthority) ||
+		live.status !== "awaiting_review" ||
 		live.review_question_id !== gate.questionId ||
 		live.pr_head_sha !== session.pr_head_sha
 	) {
@@ -560,10 +507,6 @@ export async function tryFounderShipApproval(
 	}
 
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
-	const founderRework =
-		signal.source === "text" && signal.kind === "reject"
-			? signal.founderRework
-			: undefined;
 	const answer =
 		signal.kind === "approve"
 			? '{"approved": true}'
@@ -614,7 +557,6 @@ export async function tryFounderShipApproval(
 					authorUserId: args.msg.authorId ?? "",
 					founderIdAtCapture: deps.canonicalFounderId,
 					reason,
-					founderRework,
 				});
 				deps.auditSink?.("founder_approval_parked_convergence", {
 					questionId: gate.questionId,
@@ -659,16 +601,12 @@ export async function tryFounderShipApproval(
 		res = await write({
 			db: deps.db,
 			store: deps.store,
-			gateAuthorityView: deps.gateAuthorityView,
 			questionId: gate.questionId,
 			executionId: gate.executionId,
 			source: "text",
 			cardAuthority: deps.cardAuthority,
 			actor: deps.canonicalFounderId,
 			founderId: deps.canonicalFounderId,
-			founderMessage: args.founderMessage,
-			founderRework,
-			...(signal.kind === "reject" ? { intent: "kickback" as const } : {}),
 			answer,
 			expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
 			holdReasonFor: deps.deferral
@@ -771,15 +709,8 @@ export async function tryFounderShipApproval(
 					"post-write hook did not reach a safe state",
 				);
 			}
-			const afterAuthority = deps.gateAuthorityView?.resolve(
-				gate.questionId,
-				gate.executionId,
-			);
 			const after = deps.store.getSession(gate.executionId);
-			if (
-				!afterAuthority &&
-				(!after || !APPROVE_FLIPPED_STATUSES.has(after.status ?? ""))
-			) {
+			if (!after || !APPROVE_FLIPPED_STATUSES.has(after.status ?? "")) {
 				return parkOrRetry(
 					decision,
 					"postcondition_pending",

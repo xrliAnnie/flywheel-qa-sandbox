@@ -2,16 +2,19 @@
  * FLY-709 — feature-flag resolver.
  *
  * Computes the effective (current) value of each registered flag from
- * process.env (Bridge-global flags). Project-scoped runtime values are enriched
- * from SQLite by the Bridge after this registry view is constructed.
+ * process.env (Bridge-global env flags) and per-project config (project-scoped
+ * config flags), reusing each flag's real in-line semantics so the displayed
+ * value is byte-identical to what the owning code actually observes.
  *
  * env flags are Bridge-global → single `effective`.
- * project_config flags are per-project → `effectiveByProject[]` populated by
- * the store enrichment path (env is global, but doc_flow / proofshot / etc.
- * differ per project).
+ * project_config flags are per-project → `effectiveByProject[]` (env is global,
+ * but qa.auto / doc_flow / etc. differ per project). Config-load errors are
+ * surfaced as data, never silently defaulted. Dormant flags (ponytail: validated
+ * by ConfigLoader but not loaded by run-infra) report no effective value.
  */
 
-import { type EnvFileSource, readEnvFileValue } from "../env-file.js";
+import { resolveDecisionMode } from "../decision-mode.js";
+import type { FlywheelConfig } from "../types.js";
 import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
@@ -22,42 +25,22 @@ import {
 	type FlagValueKind,
 	type ReadTiming,
 } from "./registry.js";
-import type { FlagStoreCodec } from "./store-policy.js";
 
 export interface FlagResolveCtx {
 	/** Defaults to process.env — the Bridge-global env for env flags. */
 	env?: Record<string, string | undefined>;
-	/** Explicit shared .env snapshot. Omit for legacy Bridge-only resolution. */
-	envFile?: EnvFileSource;
+	/** project name → its loaded config (or a load error). Used for project flags. */
+	projectConfigs?: Map<string, { config?: FlywheelConfig; error?: string }>;
 }
 
 /** A project-scoped flag's effective value on one project. */
 export interface FlagEffectiveByProject {
 	projectName: string;
-	/** Present when the project store resolved. */
+	/** Present when the project config loaded. */
 	value?: boolean | string;
-	/** Present when the project store failed to resolve. */
+	/** Present when the project config failed to load (surfaced, not defaulted). */
 	error?: string;
 	isDefault?: boolean;
-	/** FLY-2100: which layer supplied the displayed project value. */
-	via?: "project_row" | "star_row" | "default";
-}
-
-export interface FlagScopedStoreView {
-	/** Present rows only; absence means inherit. No revision or actor metadata. */
-	rows: Array<{
-		scope: string;
-		raw: string;
-		value: boolean | string;
-	}>;
-}
-
-/** Persistent stable-value clock for one flag scope. Secret-free by design. */
-export interface FlagValueClock {
-	scopeKey: string;
-	valueLastChanged: number | null;
-	firstRegisteredAt: number;
-	readiness: "ready" | "no_clock";
 }
 
 /** Secret-free DTO handed to the console / snapshot / report renderers. */
@@ -77,19 +60,6 @@ export interface FlagView {
 	default: boolean | string;
 	/** scope === "bridge_global": the single effective value. */
 	effective?: boolean | string;
-	/** Bridge process.env value. `effective` remains its compatibility alias. */
-	bridgeEffective?: boolean | string;
-	/** Current shared .env value; absent when the file is unavailable. */
-	fileEffective?: boolean | string;
-	/** Whether the readable shared .env still contains this exact assignment. */
-	fileConfigured?: boolean;
-	/** Safe display/control value; absent whenever sources disagree/degrade. */
-	displayEffective?: boolean | string;
-	divergence?:
-		| "staged_restart"
-		| "split_brain"
-		| "bridge_stale"
-		| "source_unavailable";
 	/** scope === "project": per-project effective values. */
 	effectiveByProject?: FlagEffectiveByProject[];
 	/** Validated by ConfigLoader but not loaded by runtime → no effective value. */
@@ -103,21 +73,16 @@ export interface FlagView {
 	 */
 	error?: string;
 	note?: string;
-	retiring?: string;
-	/** FLY-1778: true when SQLite, rather than legacy env/config, owns the value. */
-	storeManaged?: boolean;
-	/** FLY-2100: this project flag is writable through scoped SQLite rows. */
-	projectStoreManaged?: boolean;
-	/** Secret-free row-presence DTO used by phone controls. */
-	scopedStore?: FlagScopedStoreView;
-	/** Current effective value read from the owning SQLite row. */
-	storeEffective?: boolean | string;
-	/** Epoch milliseconds when the canonical effective value last changed. */
-	valueLastChanged?: number | null;
-	/** Whether the persistent value clock is safe for downstream consumers. */
-	clockReadiness?: "ready" | "no_clock:degraded" | "no_clock:unmanaged";
-	/** FLY-2104: scope-aware clocks; current single-row schema projects `*`. */
-	valueClocks?: FlagValueClock[];
+}
+
+/** Navigate a dot path (e.g. "qa.auto") on a plain object; undefined if absent. */
+function getByPath(obj: unknown, path: string): unknown {
+	let cur: unknown = obj;
+	for (const key of path.split(".")) {
+		if (cur == null || typeof cur !== "object") return undefined;
+		cur = (cur as Record<string, unknown>)[key];
+	}
+	return cur;
 }
 
 function uniqueTimings(spec: FeatureFlagSpec): ReadTiming[] {
@@ -132,124 +97,25 @@ function resolveEnvEffective(
 	env: Record<string, string | undefined>,
 ): boolean | string {
 	const raw = spec.envVar ? env[spec.envVar] : undefined;
-	// enum: a raw value outside enumValues THROWS (FLY-1356 R1#8) — the callers
-	// (resolveFlag / withEnvSources) turn it into an explicit display-only
-	// `error`, never a fake "valid" effective state. Empty string is treated as
-	// unset (default), matching the owning parsers' fail-closed semantics.
-	// DECISION_MODE's real-parser path is handled separately in resolveFlag.
-	if (spec.valueKind === "enum") {
-		if (raw === undefined || raw === "") return String(spec.default);
-		if (spec.enumValues && !spec.enumValues.includes(raw)) {
-			throw new Error(`invalid enum value: ${raw}`);
-		}
-		return raw;
-	}
-	// value: surface the raw value (or default).
-	if (spec.valueKind === "value") {
+	// enum / value: surface the raw value (or default). DECISION_MODE's real-parser
+	// path (which throws on invalid) is handled in resolveFlag so a malformed value
+	// becomes an explicit `error`, never a fake "valid" effective state.
+	if (spec.valueKind === "enum" || spec.valueKind === "value") {
 		return raw ?? String(spec.default);
 	}
 	// bool: reuse the two idioms exactly.
 	return spec.polarity === "default_on" ? raw !== "0" : raw === "1";
 }
 
-function divergenceFor(
+/** Effective value of a project_config flag on one loaded config. */
+function resolveConfigValue(
 	spec: FeatureFlagSpec,
-): NonNullable<FlagView["divergence"]> {
-	const timings = uniqueTimings(spec);
-	if (timings.includes("dotenv_live")) return "split_brain";
-	if (
-		timings.includes("bridge_boot") ||
-		timings.includes("object_construction")
-	) {
-		return "staged_restart";
-	}
-	return "bridge_stale";
-}
-
-function withEnvSources(
-	base: FlagView,
-	spec: FeatureFlagSpec,
-	bridgeEffective: boolean | string,
-	ctx: FlagResolveCtx,
-): FlagView {
-	const common = {
-		...base,
-		effective: bridgeEffective,
-		bridgeEffective,
-		isDefault: bridgeEffective === spec.default,
-	};
-	// Backward-compatible callers that have not supplied the file source retain
-	// the historical single-source display behavior.
-	if (!ctx.envFile) {
-		return { ...common, displayEffective: bridgeEffective };
-	}
-	if (ctx.envFile.status === "unavailable") {
-		return { ...common, divergence: "source_unavailable" };
-	}
-	const fileValue = spec.envVar
-		? readEnvFileValue(ctx.envFile, spec.envVar)
-		: { status: "readable" as const, raw: undefined };
-	if (fileValue.status === "unavailable") {
-		return { ...common, divergence: "source_unavailable" };
-	}
-	const fileRaw = fileValue.raw;
-	const fileConfigured = fileRaw !== undefined;
-	let fileEffective: boolean | string;
-	try {
-		fileEffective = resolveEnvEffective(spec, {
-			...(spec.envVar ? { [spec.envVar]: fileRaw } : {}),
-		});
-	} catch {
-		return {
-			...common,
-			fileConfigured,
-			error: `invalid ${spec.envVar} in shared .env: ${fileRaw}`,
-		};
-	}
-	if (fileEffective === bridgeEffective) {
-		return {
-			...common,
-			fileConfigured,
-			fileEffective,
-			displayEffective: bridgeEffective,
-		};
-	}
-	return {
-		...common,
-		fileConfigured,
-		fileEffective,
-		divergence: divergenceFor(spec),
-	};
-}
-
-/**
- * Resolve project-scoped SQLite rows. An explicit project row wins over the
- * `*` row; no row means the registry default.
- */
-export function resolveScopedEffective(input: {
-	spec: FeatureFlagSpec;
-	projectName: string;
-	rows: ReadonlyArray<{ scope: string; raw: string | null }>;
-	codec: FlagStoreCodec;
-}): FlagEffectiveByProject {
-	const row =
-		input.rows.find((candidate) => candidate.scope === input.projectName) ??
-		input.rows.find((candidate) => candidate.scope === "*");
-	if (row) {
-		const value = input.codec.parse({ hasOverride: true, raw: row.raw });
-		return {
-			projectName: input.projectName,
-			value,
-			isDefault: value === input.spec.default,
-			via: row.scope === "*" ? "star_row" : "project_row",
-		};
-	}
-	return {
-		projectName: input.projectName,
-		value: input.spec.default,
-		isDefault: true,
-		via: "default",
-	};
+	config: FlywheelConfig,
+): boolean | string {
+	const raw = spec.configKey ? getByPath(config, spec.configKey) : undefined;
+	if (raw === undefined || raw === null) return spec.default;
+	if (spec.valueKind === "bool") return Boolean(raw);
+	return String(raw);
 }
 
 export function resolveFlag(
@@ -272,27 +138,58 @@ export function resolveFlag(
 		default: spec.default,
 		dormant: spec.dormant,
 		note: spec.note,
-		retiring: spec.retiring,
 	};
 
 	if (spec.scope === "bridge_global") {
-		// FLY-1356 R1#8: an enum raw outside enumValues throws in
-		// resolveEnvEffective — surface it as an explicit display-only error so
-		// the console never shows garbage as the current mode while the owning
-		// code actually runs its fail-closed default.
-		let effective: boolean | string;
-		try {
-			effective = resolveEnvEffective(spec, env);
-		} catch {
-			return {
-				...base,
-				error: `invalid ${spec.envVar}: ${env[spec.envVar ?? ""]}`,
-			};
+		// DECISION_MODE: reuse the real parser (throws on invalid). A dashboard must
+		// not crash on a bad env var, but must NOT present the raw invalid string as
+		// a valid governance mode — surface an explicit display-only error instead.
+		if (spec.envVar === "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE") {
+			try {
+				const effective = resolveDecisionMode(env);
+				return { ...base, effective, isDefault: effective === spec.default };
+			} catch {
+				return {
+					...base,
+					error: `invalid ${spec.envVar}: ${env[spec.envVar]}`,
+				};
+			}
 		}
-		return withEnvSources(base, spec, effective, ctx);
+		const effective = resolveEnvEffective(spec, env);
+		return { ...base, effective, isDefault: effective === spec.default };
 	}
 
-	return { ...base, effectiveByProject: [] };
+	// project scope. Dormant flags never report an effective value.
+	if (spec.dormant) return base;
+
+	const configs = ctx.projectConfigs;
+	if (!configs || configs.size === 0) {
+		return { ...base, effectiveByProject: [] };
+	}
+	const effectiveByProject: FlagEffectiveByProject[] = [];
+	for (const [projectName, entry] of configs) {
+		// Only a real load error is an error row.
+		if (entry.error !== undefined) {
+			effectiveByProject.push({ projectName, error: entry.error });
+			continue;
+		}
+		// Absent config (ENOENT → {}) = absent/default semantics, NOT an error.
+		if (entry.config === undefined) {
+			effectiveByProject.push({
+				projectName,
+				value: spec.default,
+				isDefault: true,
+			});
+			continue;
+		}
+		const value = resolveConfigValue(spec, entry.config);
+		effectiveByProject.push({
+			projectName,
+			value,
+			isDefault: value === spec.default,
+		});
+	}
+	return { ...base, effectiveByProject };
 }
 
 export function resolveAllFlags(ctx: FlagResolveCtx): FlagView[] {

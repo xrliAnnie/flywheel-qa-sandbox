@@ -120,13 +120,6 @@ function launchCommand(calls: ExecCall[]): string[] {
 	return nw.args.slice(cIdx + 2);
 }
 
-/** Resolve the positional binary after the FLY-1999 shell env boundary. */
-function launchedBinary(calls: ExecCall[]): string | undefined {
-	const command = launchCommand(calls);
-	if (command[0] !== "sh" || command[1] !== "-c") return command[0];
-	return command[command[2]?.includes('cf="$0"') ? 7 : 4];
-}
-
 describe("KimiTmuxAdapter", () => {
 	it("has type 'kimi-tmux'", () => {
 		const { fn } = makeMockExec();
@@ -140,7 +133,7 @@ describe("KimiTmuxAdapter", () => {
 		await new TestKimiAdapter(configuredDir(), "flywheel", fn, 10).execute(
 			makeCtx(),
 		);
-		expect(launchedBinary(calls)).toBe("kimi");
+		expect(launchCommand(calls)[0]).toBe("kimi");
 		expect(calls.some((c) => c.cmd === "claude")).toBe(false);
 	});
 
@@ -175,7 +168,7 @@ describe("KimiTmuxAdapter", () => {
 		writeFileSync(join(dir, "credentials", "token.json"), "{}");
 		const { fn, calls } = makeMockExec();
 		await new TestKimiAdapter(dir, "flywheel", fn, 10).execute(makeCtx());
-		expect(launchedBinary(calls)).toBe("kimi");
+		expect(launchCommand(calls)[0]).toBe("kimi");
 	});
 
 	// Codex R1 (LOW): a DIRECTORY named config.toml has non-zero size but is not

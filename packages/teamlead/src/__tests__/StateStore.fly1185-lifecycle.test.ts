@@ -9,7 +9,6 @@
 
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
-import { insertHistoricalAutoQaRecord } from "./helpers/historical-qa.js";
 
 async function freshStore(): Promise<StateStore> {
 	return StateStore.create(":memory:");
@@ -308,29 +307,6 @@ describe("FLY-1185 R11#1 launch claims", () => {
 		expect(store.listOpenLaunchClaims("root-1")).toEqual([]);
 	});
 
-	it("counts every open launch claim across lifecycle roots for host quiescence", async () => {
-		const store = await freshStore();
-		store.insertLaunchClaim({
-			executionId: "e1",
-			rootUuid: "root-1",
-			project: "p",
-		});
-		store.insertLaunchClaim({
-			executionId: "e2",
-			rootUuid: "root-2",
-			project: "p",
-		});
-		store.setLaunchClaimState("e2", "active");
-		store.insertLaunchClaim({
-			executionId: "e3",
-			rootUuid: "root-3",
-			project: "p",
-		});
-		store.setLaunchClaimState("e3", "closed");
-
-		expect(store.countOpenLaunchClaims()).toBe(2);
-	});
-
 	it("stale starting claims surface for maintenance convergence", async () => {
 		const store = await freshStore();
 		store.insertLaunchClaim({ executionId: "e2", rootUuid: "r", project: "p" });
@@ -342,14 +318,16 @@ describe("FLY-1185 R11#1 launch claims", () => {
 describe("FLY-1185 auto-QA record lookups (lifecycle-root fold inputs)", () => {
 	it("findAutoQaRecordsByQaIssueKeys / ByParentIssueKeys", async () => {
 		const store = await freshStore();
-		insertHistoricalAutoQaRecord(store, {
+		store.claimAutoQaRecord({
 			parentExecutionId: "pe",
 			targetPrHeadSha: "sha1",
 			issueId: "parent-uuid",
 			projectName: "p",
-			qaExecutionId: "qe",
-			qaIssueId: "qa-uuid",
-			qaIssueIdentifier: "FLY-2000",
+		});
+		store.setAutoQaQaExecutionId("pe", "sha1", "qe");
+		store.setAutoQaIssue("pe", "sha1", {
+			issueId: "qa-uuid",
+			issueIdentifier: "FLY-2000",
 		});
 		expect(
 			store.findAutoQaRecordsByQaIssueKeys(["qa-uuid"]).map((r) => r.issue_id),

@@ -81,10 +81,8 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 	it("observes declared parked, cleared active, and DB errors as unknown", () => {
 		const lifecycle = controller();
 		db.upsertDeclaredState("exec-1", "parked", "handoff", 900, null);
-		expect(lifecycle.observeBoundary()).toMatchObject({ kind: "parked" });
 		expect(lifecycle.observe()).toMatchObject({ kind: "parked" });
 		db.clearDeclaredState("exec-1");
-		expect(lifecycle.observeBoundary()).toEqual({ kind: "active" });
 		expect(lifecycle.observe()).toEqual({ kind: "active" });
 		lifecycle.stop();
 
@@ -93,16 +91,9 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 				getRunnerShutdown: () => {
 					throw new Error("sqlite unavailable");
 				},
-				getEffectiveDeclaredState: () => {
-					throw new Error("sqlite unavailable");
-				},
 			} as never,
 		});
 		expect(broken.observe()).toEqual({
-			kind: "unknown",
-			error: "sqlite unavailable",
-		});
-		expect(broken.observeBoundary()).toEqual({
 			kind: "unknown",
 			error: "sqlite unavailable",
 		});
@@ -201,67 +192,6 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 		expect(
 			db.listRunnerPhaseWakes("exec-1").map((wake) => wake.message_id),
 		).toEqual(["v-1", "v-2"]);
-		await lifecycle.stop();
-	});
-
-	it("routes queue batches through the zero-settlement doorbell path", async () => {
-		db.registerSession(
-			"exec-1",
-			"flywheel:@1",
-			"flywheel",
-			"FLY-1774",
-			"flywheel-eng-lead",
-			"codex",
-			true,
-		);
-		const first = db.insertInstruction("lead", "exec-1", "first");
-		const second = db.insertInstruction("lead", "exec-1", "second");
-		const raw = (db as unknown as { db: import("better-sqlite3").Database }).db;
-		raw
-			.prepare(
-				`UPDATE mailbox SET state='LEASED', batch_id='mailbox-batch:batch-a',
-				 claimed_by='bridge:1', claim_expires_at='2099-01-01T00:00:00.000Z'
-				 WHERE id IN (?, ?)`,
-			)
-			.run(first, second);
-		const memberIds = (
-			raw
-				.prepare(
-					"SELECT delivery_id FROM mailbox WHERE id IN (?, ?) ORDER BY seq",
-				)
-				.all(first, second) as Array<{ delivery_id: string }>
-		).map((row) => row.delivery_id);
-		const watcher = new FakeWatcher();
-		const lifecycle = controller(watcher);
-		await lifecycle.start();
-		await lifecycle.enterHold({
-			deadlineRemainingMs: 1,
-			hardDeadlineRemainingMs: 2,
-		});
-		await lifecycle.confirmHoldPaused();
-
-		await watcher.emit({
-			id: "transport-batch-a",
-			to: "runner-agent",
-			content: "full transport body",
-			metadata: {
-				flywheelId: "mailbox-batch:batch-a#r0",
-				durableBatchId: "mailbox-batch:batch-a",
-				memberIds,
-				execId: "exec-1",
-			},
-		});
-
-		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
-			{
-				message_id: "doorbell:mailbox-batch:batch-a#r0",
-				source_instruction_id: null,
-			},
-		]);
-		expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
-			first,
-			second,
-		]);
 		await lifecycle.stop();
 	});
 

@@ -1,4 +1,3 @@
-import { WORKFLOW_MENU_SHAPES } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import type { BridgeClient } from "../tools/bridge-client.js";
 import { createToolRegistry, validateArgs } from "../tools/registry.js";
@@ -78,18 +77,6 @@ describe("TOOL_DECLARATIONS (plan §2.2 D3 — the closed 6-tool MVP registry)",
 		const desc = TOOL_DECLARATIONS.dispatch_runner.description;
 		expect(desc).toContain("department label");
 		expect(desc).toContain("DEPT_SCOPE_REJECT");
-	});
-
-	it("dispatch_runner requires the canonical work-kind enum and mirrors the runtime vocabulary", () => {
-		const params = TOOL_DECLARATIONS.dispatch_runner.parameters;
-		expect(params.required).toEqual(["issueId", "projectName", "taskCategory"]);
-		expect(params.properties?.taskCategory?.enum).toEqual(WORKFLOW_MENU_SHAPES);
-		expect(
-			validateArgs(params, {
-				issueId: "FLY-1436",
-				projectName: "flywheel",
-			}),
-		).toContain("missing required parameter: taskCategory");
 	});
 
 	it("create_issue documents team-scoped label-name resolution (F1)", () => {

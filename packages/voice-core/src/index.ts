@@ -111,11 +111,6 @@ export {
 	type TalkSessionRotatorOptions,
 } from "./TalkSessionRotator.js";
 // shared layer
-export {
-	clearTranscriptWriteFailure,
-	getTranscriptWriteFailure,
-	JsonlTranscriptSink,
-	MemoryTranscriptSink,
-} from "./transcript.js";
+export { JsonlTranscriptSink, MemoryTranscriptSink } from "./transcript.js";
 // contract
 export * from "./types.js";
