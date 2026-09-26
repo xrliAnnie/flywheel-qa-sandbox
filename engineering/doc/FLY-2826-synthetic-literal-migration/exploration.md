@@ -69,7 +69,7 @@ packages/runner-test-discipline-fixture/
 
 ### 2.5 测试与 CI 事实
 
-- 6 个测试文件 / 34 个 test（4×6 + 1 + 1 + 8）。迁移前全绿；只改断言后 26 fail / 8 pass（RED）；再改源值后 34/34（GREEN）。
+- 7 个测试文件 / 34 个 test（4×6 + 1 + 1 + 8）。迁移前全绿；只改断言后 25 fail / 9 pass（RED：4×6 + static 1 翻红；`literal-only` 自比较改后即绿，`unrelated` 8 条不动）；再改源值后 34/34（GREEN）。
 - 根 `package.json`：`"test": "pnpm -r test"`。DoD 明说 **`pnpm test` 不得裸跑**；本机只跑该包：`pnpm --filter @flywheel/runner-test-discipline-fixture test`。
 - 本 worktree **没有 `node_modules`**（`ls node_modules` 不存在），implement 必须先 `pnpm install --frozen-lockfile`。
 - **pnpm-lock 陷阱**：subject fixture commit 不含 `pnpm-lock.yaml` importer 条目，CI `pnpm install --frozen-lockfile` 会 `ERR_PNPM_OUTDATED_LOCKFILE`。FLY-2857 用 importer-only 补丁 `8b32c84dc` 修过（vitest `^3.1.4 → 3.2.4`，与其它包同一解析）。本 plan 必须包含同款步骤。

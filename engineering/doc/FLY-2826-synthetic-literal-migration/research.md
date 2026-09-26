@@ -52,7 +52,7 @@ perl -pi -e 's/claude-opus-5(?![.\d])/claude-opus-5.5/g' \
 | A. 单 commit（FLY-2879 做法） | 简单 | 没有 RED 证据；评审只能靠 diff 相信 |
 | C. 逐文件手改 | 无 | 38 处易漏；无幂等保证 |
 
-选 B。RED 段只改 6 个测试文件（26 个断言翻红：4×6 + static 1 + literal 1；`unrelated` 8 条保持绿），GREEN 段只改 4 个 `model.ts`。
+选 B。RED 段只改 6 个测试文件（25 个 test 翻红：4×6 + static 1；`literal-only` 自比较改后即绿，`unrelated` 8 条保持绿，共 9 绿），GREEN 段只改 4 个 `model.ts`。
 
 > 注意 `literal-only.test.ts` 没有 import：改它属于 RED 段（改断言）。它在 RED 段就会直接变绿（自比较），这是预期，不是遗漏——RED 段的红来自另外 25 条。
 
@@ -63,7 +63,7 @@ perl -pi -e 's/claude-opus-5(?![.\d])/claude-opus-5.5/g' \
 - 校验器：`node packages/runner-test-discipline-fixture/verify.mjs` → 期望 `{"passed":true,"oldMatches":[],"newMatches":38,...}`。
 - 完整套件：由 PR exact-head CI 证明，本机不重复。
 
-期望计数：迁移前 34/34 绿 → RED 26 fail / 8 pass → GREEN 34/34。
+期望计数：迁移前 34/34 绿（7 文件）→ RED 25 fail / 9 pass → GREEN 34/34。
 
 ## 6. Q5 — CI lockfile 陷阱
 
