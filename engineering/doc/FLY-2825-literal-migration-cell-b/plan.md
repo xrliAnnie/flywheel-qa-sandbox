@@ -3,7 +3,7 @@ Issue: FLY-2825 (https://linear.app/geoforge3d/issue/FLY-2825/qa-fly-2802-qa-san
 日期: 2026-09-26
 基于: research.md
 
-**Status**: draft（Codex R1/R2 CHANGES REQUESTED → R3 修订）
+**Status**: codex-approved（Codex design review 3 轮：R1 5 项 → R2 4 项 → R3 APPROVED，thread 01a0df16-12d6-71a0-afb5-92f0fea2b764）
 **Version**: n/a（QA 沙箱 fixture 迁移，不改 `doc/VERSION`）
 
 ## 给 founder 的说明
