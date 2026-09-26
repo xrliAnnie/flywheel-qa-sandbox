@@ -553,6 +553,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2903 terminal reap switch observes the next store write",
 		note: "Controls only the sweep's stop request and reap. Terminal paths always stop the in-process runtime before reaping, and the restart gate never resurrects a stopped body, whatever this switch says.",
 	},
+	// ─── FLY-2919: process evidence authorizes physical death ───
+	{
+		name: "execution_body_death_enabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_EXECUTION_BODY_DEATH_ENABLED",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2919: permits current independent process evidence to authorize body death; off returns unknown and never falls back to window-based death",
+		whenOn: "确认任务进程已退出后结束旧执行；关闭后只观察，不自动判死",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/execution-body-liveness.ts",
+				"createStoredExecutionBodyObserver",
+				"storeExecutionBodyDeathEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/execution-body-liveness.test.ts: the runtime switch is re-read after capture and at consumption; flag-store-runtime.test.ts proves live store writes",
+		note: "Disables new death authorizations, not completion reconciliation or explicit stop authority; committed death obligations still replay idempotently.",
+	},
 	// ─── FLY-1781: weekly retirement candidate scan ───
 	{
 		name: "flag_retirement_scan",

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { resolveAllFlags, resolveSkillFrameworkMode } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import * as FlagRuntime from "../flag-store-runtime.js";
 import {
 	enrichFlagViewsWithStore,
 	initializeFlagStore,
@@ -171,6 +172,30 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			FLYWHEEL_CODEX_TERMINAL_REAP_ENABLED: "0",
 		});
 		expect(storeCodexTerminalReapEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2919 death authorization observes store writes without reconstructing the observer", () => {
+		const read = Reflect.get(FlagRuntime, "storeExecutionBodyDeathEnabled") as
+			| ((runtime: FlagRuntime.FlagStoreRuntime) => boolean)
+			| undefined;
+		expect(read).toBeTypeOf("function");
+		const runtime = initializeFlagStore(store, {});
+		expect(read!(runtime)).toBe(true);
+		for (const rawTo of ["0", "1"]) {
+			const revision = store.getFlagValueRow(
+				"execution_body_death_enabled",
+			)!.revision;
+			expect(
+				store.applyFlagValueChange({
+					name: "execution_body_death_enabled",
+					rawTo,
+					expectedRevision: revision,
+					actor: "bridge-local-operator",
+					reason: "prove dynamic death authorization",
+				}),
+			).toMatchObject({ ok: true });
+			expect(read!(runtime)).toBe(rawTo === "1");
+		}
 	});
 
 	it("FLY-2076 keeps the alert system default-on and observes an off write without restart", () => {

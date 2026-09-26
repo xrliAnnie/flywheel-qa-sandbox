@@ -1,6 +1,6 @@
 import type { ExecutionProcessSample } from "flywheel-claude-runner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createExecutionBodyObserver } from "../execution-body-liveness.js";
+import { createStoredExecutionBodyObserver } from "../execution-body-liveness.js";
 
 describe("FLY-2919 current execution body observations", () => {
 	let clock: number;
@@ -72,12 +72,23 @@ describe("FLY-2919 current execution body observations", () => {
 		};
 	});
 	function observer(capture = vi.fn(async () => sample)) {
-		return createExecutionBodyObserver(store, {
-			now: () => clock,
-			isEnabled: () => enabled,
-			isRecoveryActive: () => recovering,
-			sample: capture,
-		});
+		return createStoredExecutionBodyObserver(
+			store,
+			{
+				mode: "ready",
+				store: {
+					getFlagValueRow: () => ({
+						hasOverride: true,
+						raw: enabled ? "1" : "0",
+					}),
+				} as never,
+			},
+			{
+				now: () => clock,
+				isRecoveryActive: () => recovering,
+				sample: capture,
+			},
+		);
 	}
 	it.each(["running", "ship_parked", "awaiting_review", "failed", "completed"])(
 		"does not let %s override independently absent controller and writers",

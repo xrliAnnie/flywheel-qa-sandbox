@@ -456,6 +456,12 @@ export function storeCodexTerminalReapEnabled(
 	return readBoolean(runtime, "codex_terminal_reap_enabled");
 }
 
+export function storeExecutionBodyDeathEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "execution_body_death_enabled");
+}
+
 export function storeShippedHuskForceEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

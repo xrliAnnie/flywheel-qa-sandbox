@@ -7,6 +7,10 @@ import {
 	observeExecutionProcesses,
 } from "flywheel-claude-runner";
 import type { StateStore } from "../StateStore.js";
+import {
+	type FlagStoreRuntime,
+	storeExecutionBodyDeathEnabled,
+} from "./flag-store-runtime.js";
 
 type BodyStore = Pick<
 	StateStore,
@@ -173,4 +177,16 @@ export function createExecutionBodyObserver(
 			);
 		},
 	};
+}
+
+/** Production construction keeps the managed flag read inside each use. */
+export function createStoredExecutionBodyObserver(
+	store: BodyStore,
+	flagStore: FlagStoreRuntime,
+	options: Omit<ExecutionBodyObserverOptions, "isEnabled">,
+) {
+	return createExecutionBodyObserver(store, {
+		...options,
+		isEnabled: () => storeExecutionBodyDeathEnabled(flagStore),
+	});
 }

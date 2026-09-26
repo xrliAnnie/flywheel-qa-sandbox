@@ -443,6 +443,17 @@ describe("feature-flag drift guard", () => {
 				},
 			})),
 			{
+				name: "execution_body_death_enabled",
+				site: {
+					file: "packages/teamlead/src/bridge/execution-body-liveness.ts",
+					symbol: "createStoredExecutionBodyObserver",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeExecutionBodyDeathEnabled",
+				},
+			},
+			{
 				name: "flag_retirement_scan",
 				site: {
 					file: "packages/teamlead/src/bridge/plugin.ts",

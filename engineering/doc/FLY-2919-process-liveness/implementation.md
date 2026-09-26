@@ -257,3 +257,16 @@ B1/B2 + A6 owning related 使用25个明确相关文件的 include 上界，实�
 全仓五类探针当前343处引用、31个非测试源文件的原始基线见 `implementation-probe-inventory-baseline.json.gz`；记录仍标未处置，不是最终消费者扫尾通过。源码核实 started-evidence 的无窗→未启动、worktree-reconciler 的 lookup gone→dead、lifecycle-sweep 的工作树删除准入仍依赖这些窗口结果，必须随 B/C/E/F 一起迁移。FLY-2921 继续拥有铸替身协调，不在本批新增平行协调器。
 
 没有请求 full CI、代码评审、PR、QA529 或 needs_review，仍为 implement 0/6。
+
+
+## A7 运行时死亡授权开关（2026-09-26，执行 b3d59196）
+
+按现有 flag-authoring-runbook 落实 `execution_body_death_enabled`：bridge_global、default-on、store codec、命名 wrapper `storeExecutionBodyDeathEnabled`、精确 delegated/call_time read site。`createStoredExecutionBodyObserver` 在每次使用时读取同一个 store runtime，不缓存 bool；采样返回后和同步消费前再读，关闭/读取失败只返回 unknown 或拒绝消费，不回落到窗口判死。registry 的新 whenOn 和精确条目数37→38同步加入守卫，未改成宽松断言。
+
+红绿：registry/codec 缺失2 RED；store wrapper 缺失1 RED（另39原回归通过）；实现后对应2/40 GREEN。原观测入口20项改走真实命名 flag wrapper 与 codec 路径，继续20 GREEN，其中采样中关闭、消费前关闭及随后重新启用均验证。store runtime 文件用真实 StateStore 热写证明；flag-routes 35项包含对每个 bridge-global flag 的实际 stage/apply/读取 round trip，新 flag 自动纳入。
+
+本批显式定向18文件、391 pass（config10/235，teamlead8/156）；owning related config8文件184 pass、teamlead3文件95 pass。保留 `fly2102-flag-freeze.test.sh` 独立执行40 pass；build（teamlead及依赖）与 lint均exit0，25个既有warnings。首次registry守卫只因未同步精确数量37→38失败，原失败与后续通过都归档；没有扩大本机测试到整包。消费者/排除清单见 `implementation-a7-consumers.json.gz`，源码hash/完整日志/related配置见 `implementation-a7-evidence.json.gz`。
+
+此批完成的是registry→store→新观测工厂的动态开关链，**尚未将全部生产死亡消费者迁入该工厂**，因此 Lead 的 no-runtime-kill-switch 义务仍须在 B–F 末尾逐消费者证明。新死亡提交应受开关控制，已提交跨库义务的幂等重放不得被开关卡住（C组仍待实现）。
+
+下一步继续批准范围：三种Tmux载体生产绑定与旧体补采、统一观测的生产接线及reown预算优先、独立公平采样节奏、死亡CAS与marker优先/双库义务、其余B–F消费者和九单矩阵。任务仍implement 0/6；没有PR、有效代码评审、full CI、QA529或交卷完成声明。
