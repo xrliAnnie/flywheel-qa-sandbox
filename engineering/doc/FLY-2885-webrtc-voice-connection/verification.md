@@ -36,6 +36,7 @@ Issue: FLY-2885 (https://linear.app/geoforge3d/issue/FLY-2885/语音b核心连�
 - **合并后暴露的测试基建问题**：合并后 `git ls-files` 输出 1,051,121 字节，超过 `execFileSync` 默认的 1 MiB。于是 `feature-flags-drift` 和 `required-wall-clock-thresholds` 两个测试还没断言就以 `spawnSync git ENOBUFS` 失败。
   - main 自身是 1,043,760 字节，只差几 KB；换成下一个加文件的分支也会撞上。
   - 修复（`4da2adb25`）：两处 `maxBuffer` 调到 64 MiB。修复前两者都复现 ENOBUFS，修复后 1/1、69/69 过。
+  - 之后 main 的 FLY-2907（`dcc7142e2`）用同样的 `maxBuffer` 修了这两处。第二次合并 main（`9030308e5`）时两个文件都采用 main 的版本，本分支不再改动它们。合并后 `required-wall-clock-thresholds`、`run-infra-async-child`、`repository-git-listing-buffer` 共 5/5 过，漂移守卫 69/69 过。
 
 | 命令或范围 | 结果 |
 |---|---|
