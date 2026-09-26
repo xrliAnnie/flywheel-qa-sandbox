@@ -40,3 +40,17 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 - GREEN：`land-alert-delivery.test.ts` 4/4，覆盖稳定 eventId、无 receipt 拒绝、queued receipt 免重发、30 分钟后同身份 replay；dead-letter receipt 连续三次最终进入可检索 `failed`，不冒充送达。
 - 直接 literal 消费者保留 `StateStore.land-lifecycle.test.ts` 与 `LeadAlertNotifier.test.ts`；分别 40/40、69/69。`vitest related` 使用外部临时 config，先以 `vitest list --filesOnly` 核对仅这三文件，随后 3 files / 113 tests 全绿。宽目录/通用文件名命中均为历史文档、静态 inventory 或与该 claim/receipt 契约无直接关系的测试，排除；没有新增 `scripts/__tests__/*.test.sh`。
 - `pnpm --filter "flywheel-teamlead..." build` 成功；`pnpm lint` exit 0（5111 files，25 个既有 warning，本批无 error）。
+
+## C2：stock cleanup apply 的 scoped CAS
+
+根因：既有 `lifecycle_apply_claims` 只以 `(root_uuid, approved_hash)` 标识全 issue closeout，`putApplyClaim` 是无条件 upsert。它没有目录效果 scope、稳定 effect key、requestId/target digest 内容绑定，也无法阻止两个不同请求同时认领同一目录删除效果。
+
+最小修复：兼容迁移原表，把旧行保留为 `effect_scope=issue_closeout`、`effect_key=root_uuid`；stock 路径使用独立 `stock_worktree_cleanup` scope，并持久化 effect key、requestId、target digest、project 与 actor。两个 partial unique indexes 分别锁定 stock effect 和 requestId。新 `claimApplyEffect` 以 `INSERT ... ON CONFLICT DO NOTHING` 原子认领：完全相同请求只重放原 claim，同 request 内容变化或另一请求争抢同 effect 均拒绝；`casApplyEffect` 还要求 scope/key/hash/request/digest/root/project/actor/前态全部匹配才写 receipt。
+
+### 红绿与选择
+
+- RED：新具体文件 4 项中 3 fail / 1 pass，旧代码没有 scoped claim/CAS 接口；旧表迁移正对照已先通过。
+- GREEN：`StateStore.lifecycle-apply-claims.test.ts` 4/4，覆盖旧 epoch 迁移、两个独立 StateStore connection 争抢同 effect 仅一方成功、request 内容漂移拒绝、非赢家与错误前态均不能写 receipt。
+- 直接受影响旧契约：`lifecycle-closeout.test.ts` 64/64、`StateStore.fly663-migration.test.ts` 11/11、`fly-2413-retention-migration.test.ts` 1/1 均分别通过。没有新增表，既有 `lifecycle_apply_claims` retention 分类继续生效。
+- 受限 related config 经 `vitest list --filesOnly` 确认为上述 4 个具体文件；`vitest related` 实际选中 3 文件，79 项中 76 pass，3 项仅因当时 host load 65–79 下超过既有 5 秒超时。相同 `lifecycle-closeout.test.ts` 已在默认超时下单独 64/64 通过，因此该轮不计绿，最终验证需在负载恢复后按原 timeout 重跑；未提高 timeout、未放宽断言。
+- `pnpm --filter "flywheel-teamlead..." build` 成功。diff 不含进程 signal/spawn/kill 字面或 FLY-1560 禁用词；因此 kill-path inventory 与 lexical guard 均记录为本批排除项，不以无关全包运行代替。

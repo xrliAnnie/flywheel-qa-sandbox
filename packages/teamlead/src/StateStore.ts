@@ -7374,6 +7374,55 @@ export class StateStore {
 		this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 	}
 
+	private migrateLifecycleApplyClaimsScope(): void {
+		const columns = this.workflowTableColumns("lifecycle_apply_claims");
+		if (!columns.has("effect_scope")) {
+			this.db.transaction(() => {
+				this.db.run("DROP TABLE IF EXISTS lifecycle_apply_claims_next");
+				this.db.run(`
+					CREATE TABLE lifecycle_apply_claims_next (
+						root_uuid      TEXT NOT NULL,
+						effect_scope  TEXT NOT NULL,
+						effect_key    TEXT NOT NULL,
+						approved_hash TEXT NOT NULL,
+						request_id    TEXT,
+						target_digest TEXT,
+						project       TEXT,
+						actor         TEXT,
+						status        TEXT NOT NULL,
+						report_json   TEXT,
+						created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+						updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+						PRIMARY KEY (effect_scope, effect_key, approved_hash)
+					)
+				`);
+				this.db.run(`
+					INSERT INTO lifecycle_apply_claims_next (
+						root_uuid, effect_scope, effect_key, approved_hash,
+						status, report_json, created_at, updated_at
+					)
+					SELECT root_uuid, 'issue_closeout', root_uuid, approved_hash,
+						status, report_json, created_at, updated_at
+					FROM lifecycle_apply_claims
+				`);
+				this.db.run("DROP TABLE lifecycle_apply_claims");
+				this.db.run(
+					"ALTER TABLE lifecycle_apply_claims_next RENAME TO lifecycle_apply_claims",
+				);
+			});
+		}
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_apply_claim_stock_effect
+			ON lifecycle_apply_claims(effect_scope, effect_key)
+			WHERE effect_scope = 'stock_worktree_cleanup'
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_apply_claim_stock_request
+			ON lifecycle_apply_claims(effect_scope, request_id)
+			WHERE effect_scope = 'stock_worktree_cleanup' AND request_id IS NOT NULL
+		`);
+	}
+
 	private migrateDetectionEscalationLineageColumns(): void {
 		const retiredColumns = [
 			"source_receipt_id",
@@ -12511,15 +12560,22 @@ export class StateStore {
 		// instead of a spurious snapshot-drift rejection.
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS lifecycle_apply_claims (
-				root_uuid     TEXT NOT NULL,
+				root_uuid      TEXT NOT NULL,
+				effect_scope  TEXT NOT NULL,
+				effect_key    TEXT NOT NULL,
 				approved_hash TEXT NOT NULL,
-				status        TEXT NOT NULL,
-				report_json   TEXT,
-				created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-				updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
-				PRIMARY KEY (root_uuid, approved_hash)
+				request_id    TEXT,
+				target_digest TEXT,
+				project       TEXT,
+				actor         TEXT,
+				status         TEXT NOT NULL,
+				report_json    TEXT,
+				created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (effect_scope, effect_key, approved_hash)
 			)
 		`);
+		this.migrateLifecycleApplyClaimsScope();
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_launch_claims_root ON lifecycle_launch_claims(root_uuid)",
 		);
@@ -32280,7 +32336,8 @@ export class StateStore {
 	): { status: string; reportJson: string | null } | undefined {
 		const stmt = this.db.prepare(
 			`SELECT status, report_json FROM lifecycle_apply_claims
-			 WHERE root_uuid = ? AND approved_hash = ?`,
+			 WHERE effect_scope = 'issue_closeout' AND effect_key = ?
+			   AND approved_hash = ?`,
 		);
 		stmt.bind([rootUuid, approvedHash]);
 		let out: { status: string; reportJson: string | null } | undefined;
@@ -32303,14 +32360,137 @@ export class StateStore {
 		reportJson: string,
 	): void {
 		this.db.run(
-			`INSERT INTO lifecycle_apply_claims (root_uuid, approved_hash, status, report_json)
-			 VALUES (?, ?, ?, ?)
-			 ON CONFLICT(root_uuid, approved_hash) DO UPDATE SET
+			`INSERT INTO lifecycle_apply_claims
+			 (root_uuid, effect_scope, effect_key, approved_hash, status, report_json)
+			 VALUES (?, 'issue_closeout', ?, ?, ?, ?)
+			 ON CONFLICT(effect_scope, effect_key, approved_hash) DO UPDATE SET
 				status = excluded.status, report_json = excluded.report_json,
 				updated_at = datetime('now')`,
-			[rootUuid, approvedHash, status, reportJson],
+			[rootUuid, rootUuid, approvedHash, status, reportJson],
 		);
 		this.save();
+	}
+
+	getApplyEffect(
+		effectScope: ApplyEffectScope,
+		effectKey: string,
+		approvedHash: string,
+	): ApplyEffectClaimRow | undefined {
+		const row = this.db.raw
+			.prepare(
+				`SELECT root_uuid AS rootUuid, effect_scope AS effectScope,
+				        effect_key AS effectKey, approved_hash AS approvedHash,
+				        request_id AS requestId, target_digest AS targetDigest,
+				        project, actor, status, report_json AS reportJson
+				 FROM lifecycle_apply_claims
+				 WHERE effect_scope = ? AND effect_key = ? AND approved_hash = ?`,
+			)
+			.get(effectScope, effectKey, approvedHash) as
+			| ApplyEffectClaimRow
+			| undefined;
+		return row;
+	}
+
+	/**
+	 * FLY-2778: atomically claim a destructive lifecycle apply effect. The scope
+	 * and key are first-class database fields: a request id cannot be rebound to
+	 * new content, and a second request cannot claim the same stock-cleanup
+	 * target even when it races through another StateStore connection.
+	 */
+	claimApplyEffect(input: ApplyEffectClaimInput): ApplyEffectClaimResult {
+		let result: ApplyEffectClaimResult | undefined;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO lifecycle_apply_claims (
+					root_uuid, effect_scope, effect_key, approved_hash,
+					request_id, target_digest, project, actor, status, report_json
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'claimed', NULL)
+				 ON CONFLICT DO NOTHING`,
+				[
+					input.rootUuid,
+					input.effectScope,
+					input.effectKey,
+					input.approvedHash,
+					input.requestId,
+					input.targetDigest,
+					input.project,
+					input.actor,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				const claim = this.getApplyEffect(
+					input.effectScope,
+					input.effectKey,
+					input.approvedHash,
+				);
+				if (!claim) throw new Error("apply_effect_claim_missing_after_insert");
+				result = { outcome: "claimed", claim };
+				return;
+			}
+
+			const byRequest = this.db.raw
+				.prepare(
+					`SELECT root_uuid AS rootUuid, effect_scope AS effectScope,
+					        effect_key AS effectKey, approved_hash AS approvedHash,
+					        request_id AS requestId, target_digest AS targetDigest,
+					        project, actor, status, report_json AS reportJson
+					 FROM lifecycle_apply_claims
+					 WHERE effect_scope = ? AND request_id = ?`,
+				)
+				.get(input.effectScope, input.requestId) as
+				| ApplyEffectClaimRow
+				| undefined;
+			if (byRequest) {
+				const exact =
+					byRequest.rootUuid === input.rootUuid &&
+					byRequest.effectKey === input.effectKey &&
+					byRequest.approvedHash === input.approvedHash &&
+					byRequest.targetDigest === input.targetDigest &&
+					byRequest.project === input.project &&
+					byRequest.actor === input.actor;
+				result = exact
+					? { outcome: "replay", claim: byRequest }
+					: { outcome: "conflict", reason: "request_content_mismatch" };
+				return;
+			}
+
+			result = { outcome: "conflict", reason: "effect_already_claimed" };
+		});
+		if (!result) throw new Error("apply_effect_claim_result_missing");
+		this.save();
+		return result;
+	}
+
+	casApplyEffect(
+		input: ApplyEffectClaimInput & {
+			fromStatus: ApplyEffectStatus;
+			toStatus: ApplyEffectStatus;
+			reportJson: string;
+		},
+	): boolean {
+		this.db.run(
+			`UPDATE lifecycle_apply_claims
+			 SET status = ?, report_json = ?, updated_at = datetime('now')
+			 WHERE effect_scope = ? AND effect_key = ? AND approved_hash = ?
+			   AND request_id = ? AND target_digest = ? AND root_uuid = ?
+			   AND project = ? AND actor = ? AND status = ?`,
+			[
+				input.toStatus,
+				input.reportJson,
+				input.effectScope,
+				input.effectKey,
+				input.approvedHash,
+				input.requestId,
+				input.targetDigest,
+				input.rootUuid,
+				input.project,
+				input.actor,
+				input.fromStatus,
+			],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
 	}
 
 	/** Read a single launch claim (any state). */
@@ -87777,6 +87957,34 @@ export interface WorkflowGateOriginInspectionReceiptPayload {
 
 export type WorkflowGateOriginInspectionReceipt =
 	WorkflowGateOriginInspectionReceiptPayload & { digest: string };
+
+export type ApplyEffectScope = "stock_worktree_cleanup";
+export type ApplyEffectStatus = "claimed" | "applied" | "rejected";
+
+export interface ApplyEffectClaimRow {
+	rootUuid: string;
+	effectScope: ApplyEffectScope;
+	effectKey: string;
+	approvedHash: string;
+	requestId: string;
+	targetDigest: string;
+	project: string;
+	actor: string;
+	status: ApplyEffectStatus;
+	reportJson: string | null;
+}
+
+export type ApplyEffectClaimInput = Omit<
+	ApplyEffectClaimRow,
+	"status" | "reportJson"
+>;
+
+export type ApplyEffectClaimResult =
+	| { outcome: "claimed" | "replay"; claim: ApplyEffectClaimRow }
+	| {
+			outcome: "conflict";
+			reason: "request_content_mismatch" | "effect_already_claimed";
+	  };
 
 export function workflowGateOriginInspectionReceiptDigest(
 	receipt: WorkflowGateOriginInspectionReceiptPayload,
