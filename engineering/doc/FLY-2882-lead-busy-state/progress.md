@@ -1,13 +1,15 @@
 ---
 issue: FLY-2882
 phase: implement
-phaseCursor: 9/9
-updated: 2026-09-25T22:30:13.880Z
-nextStep: rework pushed; delta code review on final head; complete needs_review
+phaseCursor: 1/5
+updated: 2026-09-26T00:55:56.447Z
+nextStep: "QA attempt 2 rework: room-authority locator via
+  FLYWHEEL_LEAD_LAUNCHD_REGISTRY (registry->plist->manifest), then >=60s
+  long-turn QA fixture"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2882 progress
-**phase**: implement (9/9)
-**next**: rework pushed; delta code review on final head; complete needs_review
+**phase**: implement (1/5)
+**next**: QA attempt 2 rework: room-authority locator via FLYWHEEL_LEAD_LAUNCHD_REGISTRY (registry->plist->manifest), then >=60s long-turn QA fixture
