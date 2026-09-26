@@ -83,7 +83,7 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
-import { WorktreeManager } from "flywheel-edge-worker";
+import { resolveWorktreeKey, WorktreeManager } from "flywheel-edge-worker";
 import { identityKey as claudeIdentityKey } from "../account-heal/account-identity.js";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
@@ -166,6 +166,7 @@ import {
 	reconcileCodexCanonicalRoot,
 	wireCodexQuotaDispatcher,
 } from "../codex-quota/runtime.js";
+import type { TakeoverRescuedAlertHook } from "../DirectEventSink.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	readAttentionSources,
@@ -553,6 +554,7 @@ import {
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeWorktreeTakeoverRescueDisabled,
 	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
@@ -7806,8 +7808,12 @@ export async function startBridge(
 		current: ReviewRequestCoordinator | undefined;
 	} = { current: undefined };
 
+	// FLY-2901: the takeover-rescued INFO alert hook rides this holder too — the
+	// DirectEventSink is built inside setupRunInfrastructure, and this is the
+	// reference it already receives (run-infra copies it onto the sink).
 	const turnBeltReconcilerHolder: {
 		current: TurnBeltReconciler | undefined;
+		alertWorktreeTakeoverRescued?: TakeoverRescuedAlertHook;
 	} = { current: undefined };
 	const workflowReworkCoordinatorHolder: {
 		current: WorkflowReworkCoordinator | undefined;
@@ -9501,6 +9507,28 @@ export async function startBridge(
 					storeWorkflowReworkReentryEnabled(flagStore),
 				nodeStandbyResumeEnabled: () =>
 					storeNodeStandbyResumeEnabled(flagStore),
+				// FLY-2901 §7: call-time kill switch snapshot for the successor's
+				// shared-worktree takeover (the dispatcher treats a reader failure
+				// as off; an opt-in kill switch cannot be asserted by an unreadable
+				// flag).
+				takeoverRescueDisabled: () =>
+					storeWorktreeTakeoverRescueDisabled(flagStore),
+				// FLY-2901 §3/§4.6: the shared branch-B worktree exactly as Blueprint
+				// derives it (same manager, projectRoot, projectName and shared key).
+				resolveSharedWorktree: ({ projectName, issueId }) => {
+					const projectRoot = resolveProjectRootByName(projectName);
+					if (!projectRoot) return undefined;
+					const expected = lifecycleWorktreeManager.expectedWorktree(
+						projectRoot,
+						projectName,
+						resolveWorktreeKey(issueId, { shareParentBranch: true }),
+					);
+					return {
+						projectRoot,
+						path: expected.path,
+						branch: expected.branch,
+					};
+				},
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				armResidentReceiver: (executionId, source) =>
 					residentReceiverSupervisor.arm(executionId, source),
@@ -14539,6 +14567,66 @@ export async function startBridge(
 			},
 			logger: { warn: (message) => console.warn(`[turn-belt] ${message}`) },
 		});
+
+		// FLY-2901 §4.8 item 4: Lead INFO alert once a head_diverged / nested_repo
+		// shared-worktree takeover rescue has been cleaned. DirectEventSink fires
+		// it right after the checked `worktree_takeover_cleaned` event lands (and
+		// never on a deduped replay). Same Lead resolution as the sibling
+		// alertWorktreeTakeoverFailure above; paths are data inside the body only.
+		turnBeltReconcilerHolder.alertWorktreeTakeoverRescued = async ({
+			session,
+			rescueEventUid,
+			rescue,
+		}) => {
+			const projectName = session.project_name;
+			let leadId: string | undefined;
+			try {
+				leadId = resolveLeadForIssue(
+					projects,
+					projectName,
+					parseJsonStringArray(
+						store.getSession(session.execution_id)?.issue_labels,
+					),
+				).lead.agentId;
+			} catch {
+				console.error(
+					`[workflow] worktree takeover rescue has no Lead: ${rescueEventUid}`,
+				);
+				return;
+			}
+			const lines = [
+				`class: ${rescue.class}`,
+				`branch: ${rescue.branch}`,
+				`target: ${rescue.target}`,
+				`worktree: ${rescue.canonicalPath}`,
+				`manifest: ${rescue.manifestPath} (sha256 ${rescue.manifestSha256})`,
+				`event: ${rescueEventUid}`,
+			];
+			if (rescue.rescues.length > 0) {
+				lines.push("rescue refs:");
+				for (const ref of rescue.rescues) {
+					lines.push(`  ${ref.kind}: ${ref.remoteBranch}@${ref.tip}`);
+				}
+			} else {
+				lines.push("rescue refs: none (nothing unique to preserve)");
+			}
+			if (rescue.nestedMoves.length > 0) {
+				lines.push("nested repos moved:");
+				for (const move of rescue.nestedMoves) {
+					lines.push(`  ${move.source} → ${move.destination}`);
+				}
+			}
+			await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+				leadId,
+				projectName,
+				eventId: `workflow-worktree-takeover-rescued:${rescueEventUid}`,
+				eventType: "worktree_takeover_rescued",
+				title: `Workflow worktree takeover rescued — ${session.issue_identifier ?? session.issue_id}`,
+				body: lines.join("\n"),
+				severity: "info",
+				sessionKey: session.execution_id,
+			});
+		};
 
 		const assertWorkflowActorWorktreeReady = async (
 			session: WorkflowActorSession,

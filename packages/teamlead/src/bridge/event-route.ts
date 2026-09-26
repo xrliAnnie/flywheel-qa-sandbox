@@ -28,6 +28,8 @@ import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import {
 	extractDimensions,
 	generatePatternKeys,
+	TAKEOVER_CLEANED_EVENT_KIND,
+	TAKEOVER_RESCUED_EVENT_KIND,
 	WorktreeManager,
 } from "flywheel-edge-worker";
 import {
@@ -1471,6 +1473,35 @@ export function createEventRouter(
 			res.status(400).json({
 				error: "pre_adapter_failure_kind_http_forbidden",
 				failureKind: normalizedTerminalFailure.failureKind,
+			});
+			return;
+		}
+
+		// FLY-2901 §4.5: the two takeover-rescue events are Bridge-local
+		// authority (DirectEventSink → checked workflow run-event ledger). The
+		// generic path below persists any event_type, so an HTTP client claiming
+		// one of these kinds is refused outright — same anti-forgery shape as the
+		// pre-adapter receipt above: nothing of the claimed event is stored, only
+		// a rejection receipt for forensics.
+		if (
+			event.event_type === TAKEOVER_RESCUED_EVENT_KIND ||
+			event.event_type === TAKEOVER_CLEANED_EVENT_KIND
+		) {
+			store.insertEvent({
+				event_id: `takeover-rescue-rejected:${event.event_id}`,
+				execution_id: event.execution_id,
+				issue_id: event.issue_id,
+				project_name: event.project_name,
+				event_type: "events_takeover_rescue_kind_rejected",
+				source: "bridge.event-route",
+				payload: {
+					claimedKind: event.event_type,
+					claimedSource: event.source,
+				},
+			});
+			res.status(400).json({
+				error: "takeover_rescue_kind_http_forbidden",
+				eventType: event.event_type,
 			});
 			return;
 		}

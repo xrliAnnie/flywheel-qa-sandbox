@@ -1,0 +1,111 @@
+[
+  {
+    "mode": "assume-unchanged-ignore",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/assume-unchanged-ignore-c7qvWO",
+    "H": "e3e1567950793fd44da2dc2c4588ab81a6cdb599",
+    "S": "0fcfd0c337c2e11c71cdfb769d4c8d7d2148d843",
+    "beforeStatus": "",
+    "checkIgnore": ".gitignore:1:drafts/\tdrafts/unpublished.md\n",
+    "guard": {
+      "allowed": true,
+      "D": [
+        "tracked"
+      ],
+      "index": [
+        ".gitignore",
+        "tracked"
+      ],
+      "ignoreCase": true,
+      "excludesFile": null,
+      "conflicts": []
+    },
+    "reset": "HEAD is now at 0fcfd0c S\n",
+    "afterReset": true,
+    "ignoreAfterReset": "# base\n",
+    "clean": "Removing drafts/\n",
+    "afterClean": false,
+    "finalStatus": ""
+  },
+  {
+    "mode": "skip-worktree-ignore",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/skip-worktree-ignore-WWbXFT",
+    "H": "ec939194e2e1176b3cf30e134a03cf96e77b2234",
+    "S": "9aa3e96129300a1c8ef1c59bac64568af2fe020f",
+    "beforeStatus": "",
+    "checkIgnore": ".gitignore:1:drafts/\tdrafts/unpublished.md\n",
+    "guard": {
+      "allowed": true,
+      "D": [
+        "tracked"
+      ],
+      "index": [
+        ".gitignore",
+        "tracked"
+      ],
+      "ignoreCase": true,
+      "excludesFile": null,
+      "conflicts": []
+    },
+    "reset": "HEAD is now at 9aa3e96 S\n",
+    "afterReset": true,
+    "ignoreAfterReset": "drafts/\n",
+    "clean": "",
+    "afterClean": true,
+    "finalStatus": ""
+  },
+  {
+    "mode": "untracked-ignore-clean",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/untracked-ignore-clean-Wmtem3",
+    "H": "0babe5e1c122d6f9bec9e8b0bf2835949d4b3359",
+    "S": "5cd6d65e3d232800e4745c284027c47cdfd29542",
+    "beforeStatus": "? .gitignore\n",
+    "checkIgnore": ".gitignore:1:drafts/\tdrafts/unpublished.md\n",
+    "guard": {
+      "allowed": true,
+      "D": [
+        "tracked"
+      ],
+      "index": [
+        "tracked"
+      ],
+      "ignoreCase": true,
+      "excludesFile": null,
+      "conflicts": []
+    },
+    "reset": "HEAD is now at 5cd6d65 S\n",
+    "afterReset": true,
+    "ignoreAfterReset": "drafts/\n",
+    "clean": "Removing .gitignore\n",
+    "afterClean": true,
+    "finalStatus": "? drafts/unpublished.md\n"
+  },
+  {
+    "mode": "default-excludes-in-worktree",
+    "root": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/default-excludes-in-worktree-oGS0n6",
+    "H": "90fc89dc54af6cbb51482907bd12bf8598f5d4b4",
+    "S": "3db88e4ce088ec52eeb6c4c88944bac208dee529",
+    "beforeStatus": "",
+    "checkIgnore": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2901/17494d5c-1fa0-41f4-8991-3e04157b3751/scratchpad/fly2901-r4-_xsud_65/default-excludes-in-worktree-oGS0n6/xdg/git/ignore:1:drafts/\tdrafts/unpublished.md\n",
+    "guard": {
+      "allowed": true,
+      "D": [
+        "tracked",
+        "xdg/git/ignore"
+      ],
+      "index": [
+        ".gitignore",
+        "tracked",
+        "xdg/git/ignore"
+      ],
+      "ignoreCase": true,
+      "excludesFile": null,
+      "conflicts": []
+    },
+    "reset": "HEAD is now at 3db88e4 S\n",
+    "afterReset": true,
+    "ignoreAfterReset": "# removed\n",
+    "clean": "Removing drafts/\n",
+    "afterClean": false,
+    "finalStatus": ""
+  }
+]

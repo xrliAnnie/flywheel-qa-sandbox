@@ -25,6 +25,8 @@ const EXPECTED_WHEN_ON = {
 	cmux_rebind_disabled: "停止自动补建并重新连接丢失的 Runner cmux 窗口",
 	opus_model_sync_disabled:
 		"停止自动把 Opus 线推进到最新版本;models.json 保持原样,版本变化与回滚失败告警仍按 models.json 与状态文件照常发出",
+	worktree_takeover_rescue_disabled:
+		"接棒时发现共享工作树有脏改动、HEAD 分叉或目录丢失，不再自动保全并清理重建，而是像以前一样拒绝接棒并告警；防止丢工作的两道硬拒绝照常生效",
 	summary_absorption_cadence_ms:
 		"Raya 两轮总结复盘之间要等待的毫秒数；默认 21600000 毫秒（6 小时）",
 	summary_due_activity_gate:
@@ -552,6 +554,44 @@ describe("feature-flag registry invariants", () => {
 			}),
 		]);
 		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
+	});
+
+	it("FLY-2901 registers the takeover rescue kill switch as a default-off live bridge-global e-stop", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) =>
+				candidate.envVar === "FLYWHEEL_WORKTREE_TAKEOVER_RESCUE_DISABLED",
+		);
+		expect(flag).toMatchObject({
+			name: "worktree_takeover_rescue_disabled",
+			category: "kill_switch",
+			source: "env",
+			scope: "bridge_global",
+			polarity: "opt_in",
+			valueKind: "bool",
+			onMeans: "disables",
+			default: false,
+			toggleable: "direct",
+		});
+		// Every read is a call-time delegated store read through one wrapper, so
+		// the running Bridge observes a flip without a restart.
+		expect(flag?.readSites.length).toBeGreaterThan(0);
+		for (const site of flag?.readSites ?? []) {
+			expect(site).toMatchObject({
+				pattern: "delegated",
+				timing: "call_time",
+				resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+				resolverSymbol: "storeWorktreeTakeoverRescueDisabled",
+			});
+		}
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/plugin.ts",
+				symbol: "workflowEngineDispatcher",
+			}),
+		]);
+		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
+		// Founder copy: the result of turning it on, no issue ids, no code names.
+		expect(flag?.whenOn).not.toMatch(/FLY-|worktree_takeover|_failed/);
 	});
 
 	it("FLY-1456 removes the temporary quota daemon cutover flag", () => {

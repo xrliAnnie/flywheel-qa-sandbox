@@ -96,6 +96,13 @@ function makeWtManager(worktreePath: string) {
 			branch: "flywheel-FLY-1188",
 		})),
 		isRegistered: vi.fn(async () => false),
+		// FLY-2901: shared-branch takeovers classify registration inside the
+		// transaction; "not registered + absent" is its create path.
+		runTakeoverTransaction: vi.fn(async function (this: {
+			create: () => Promise<unknown>;
+		}) {
+			return { kind: "created", worktree: await this.create() };
+		}),
 		removeIfExists: vi.fn(async () => true),
 		create: vi.fn(async () => ({
 			projectName: "proj",

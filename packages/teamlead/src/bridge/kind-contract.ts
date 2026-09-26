@@ -130,6 +130,9 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
 	three_stage_stuck: { owner: "claude", arc: "human_by_design" },
 	three_stage_takeover_failed: { owner: "claude", arc: "human_by_design" },
+	// FLY-2901: success receipt of the shared worktree takeover rescue. Same
+	// owner as the refusal; nothing to remediate, so no ARC by design.
+	worktree_takeover_rescued: { owner: "claude", arc: "human_by_design" },
 	workflow_engine_escalation: {
 		owner: "claude",
 		arc: "human_by_design",

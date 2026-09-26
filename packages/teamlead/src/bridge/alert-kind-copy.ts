@@ -264,6 +264,10 @@ export function titleFor(kind: AlertEventType): string {
 			return "DAG workflow stuck";
 		case "three_stage_takeover_failed":
 			return "DAG workflow worktree takeover failed";
+		// FLY-2901: the takeover went through only after Bridge preserved the
+		// predecessor's work (rescue refs pushed / nested repos moved aside).
+		case "worktree_takeover_rescued":
+			return "DAG workflow worktree takeover rescued predecessor work";
 		case "workflow_engine_escalation":
 			return "Workflow engine recovery escalated";
 		case "workflow_engine_issue_alert":
@@ -483,6 +487,8 @@ export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 	if (kind === "activation_probe") return "info";
 	if (kind === "model_family_updated") return "info";
 	if (kind === "codex_quota_automation_disabled") return "info";
+	// FLY-2901: a success receipt — the predecessor's work was preserved.
+	if (kind === "worktree_takeover_rescued") return "info";
 	if (
 		kind === "crash_loop" ||
 		kind === "login_expired" ||
@@ -565,6 +571,11 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A DAG workflow handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
 		case "three_stage_takeover_failed":
 			return "A shared branch-B worktree was dirty or at an unexpected HEAD, so Flywheel refused the in-place phase takeover. Inspect and preserve the parked phase's work before retrying.";
+		// FLY-2901: the caller's body lists the class, target, rescue refs and
+		// moved paths; this static copy says what happened and where the
+		// evidence lives.
+		case "worktree_takeover_rescued":
+			return "A shared branch-B worktree could not be reused as-is (its HEAD had diverged, or it held nested repositories), so Flywheel preserved the predecessor's work before the successor took it over: rescue refs were pushed to origin as flywheel-rescue/<issue>/… branches and nested repositories were moved aside into the rescue directory. Nothing was lost and no action is needed. The class, target, rescue refs and moved paths are listed in this alert's body and mirrored in <worktree>/.flywheel/runs/takeover/<successorExec>.json; the successor's first progress carries a rescue= pointer to them.";
 		case "workflow_engine_escalation":
 			return "A workflow execution died without a completion receipt. The engine either held the run after a non-retryable/exhausted failure or used the approved design Fable→GPT-5.6 fallback. Inspect the run audit and use the quiescence-gated hold/terminate endpoints.";
 		case "workflow_engine_issue_alert":

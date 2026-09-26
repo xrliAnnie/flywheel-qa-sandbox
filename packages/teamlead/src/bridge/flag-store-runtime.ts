@@ -410,6 +410,17 @@ export function storeOpusModelSyncDisabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "opus_model_sync_disabled");
 }
 
+/**
+ * FLY-2901: emergency stop for the shared worktree takeover preserve+clean
+ * rescue. true → a registered-but-not-reusable shared branch-B worktree gets
+ * today's takeover refusal instead; the non-disableable loss guards still apply.
+ */
+export function storeWorktreeTakeoverRescueDisabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "worktree_takeover_rescue_disabled");
+}
+
 export function storeReviewQuotaAutoRetryEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

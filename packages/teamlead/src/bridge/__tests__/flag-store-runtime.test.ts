@@ -40,6 +40,7 @@ import {
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeWorktreeTakeoverRescueDisabled,
 	storeXiaohongshuLearningEnabled,
 } from "../flag-store-runtime.js";
 
@@ -223,6 +224,24 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeCmuxRebindDisabled(runtime)).toBe(true);
+	});
+
+	it("FLY-2901 opt-in takeover rescue disable observes the next store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeWorktreeTakeoverRescueDisabled(runtime)).toBe(false);
+		const revision = store.getFlagValueRow(
+			"worktree_takeover_rescue_disabled",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "worktree_takeover_rescue_disabled",
+				rawTo: "1",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "fall back to takeover refusal during a rescue incident",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeWorktreeTakeoverRescueDisabled(runtime)).toBe(true);
 	});
 
 	it("FLY-2775 opt-in Opus sync disable observes the next store write", () => {

@@ -278,6 +278,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Read at each updater run by the sync CLI through a read-only teamlead.db handle (the lead_token_savings launch-reader pattern). Unset/default false lets the sync run; on skips discovery, admission and every authority write while version-change alerts are still derived from models.json and delivered. Rollback = turn it on, then pin bindings.opus/opus1m in models.json.",
 	},
 	{
+		name: "worktree_takeover_rescue_disabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKTREE_TAKEOVER_RESCUE_DISABLED",
+		polarity: "opt_in",
+		valueKind: "bool",
+		onMeans: "disables",
+		default: false,
+		description:
+			"FLY-2901: emergency stop for the automatic preserve-and-clean rescue when a registered shared branch-B worktree cannot be reused as-is",
+		whenOn:
+			"接棒时发现共享工作树有脏改动、HEAD 分叉或目录丢失，不再自动保全并清理重建，而是像以前一样拒绝接棒并告警；防止丢工作的两道硬拒绝照常生效",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflowEngineDispatcher",
+				"storeWorktreeTakeoverRescueDisabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2901 opt-in takeover rescue disable observes the next store write",
+		note: "Unset/default false keeps preserve+clean enabled. =1 returns registered dirty / diverged / directory-missing shared worktrees to today's takeover refusal (failureKind and held semantics unchanged; the refusal copy may still add dirty-path diagnostics). Not controlled by this flag: the non-disableable loss guards (unregistered-but-present, unregistered branch with unique commits still refuse), the dispatcher head fallback + its alert, and the FLY-2122 exclude repair. Read through the flag store at each handoff dispatch and carried into the successor's Blueprint ctx.",
+	},
+	{
 		name: "cmux_rebind_disabled",
 		category: "kill_switch",
 		source: "env",

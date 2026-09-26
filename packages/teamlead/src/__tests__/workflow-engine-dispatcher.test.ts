@@ -1,11 +1,19 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CommDB } from "flywheel-comm/db";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
+import { probeGeneralizedLaunchLiveness } from "../bridge/generalized-launch-recovery.js";
 import { executeLandOperation } from "../bridge/land-executor.js";
 import {
 	type MaterializedHeadAuthority,
@@ -6064,6 +6072,636 @@ describe("FLY-2504 replacement envelope preservation", () => {
 			});
 		} finally {
 			h.cleanup();
+		}
+	});
+});
+
+// FLY-2901 §3 / §4.6: the engine computes the "predecessor will not write
+// again" permit for every shared branch-B dispatch and falls back through the
+// binding path and the branch tip when the predecessor's persisted worktree is
+// gone. Predecessor `design-1` is the parked/dead body on the shared path; the
+// successor is `implement-1`.
+describe("FLY-2901 takeover rescue permit + predecessor head fallback", () => {
+	function rawDb(store: StateStore) {
+		return (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+	}
+
+	function setPredecessor(
+		store: StateStore,
+		input: { status: string; worktreePath: string | null },
+	): void {
+		rawDb(store).run(
+			"UPDATE sessions SET status = ?, worktree_path = ? WHERE execution_id = 'design-1'",
+			[input.status, input.worktreePath],
+		);
+	}
+
+	function git(cwd: string, args: string[]): string {
+		return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
+	}
+
+	function makeRepo(root: string, name: string, branch = "main"): string {
+		const dir = join(root, name);
+		mkdirSync(dir, { recursive: true });
+		git(dir, ["init", "-q", "-b", branch]);
+		git(dir, ["config", "user.email", "test@example.com"]);
+		git(dir, ["config", "user.name", "Flywheel Test"]);
+		git(dir, ["config", "commit.gpgsign", "false"]);
+		writeFileSync(join(dir, `${name}.txt`), `${name}\n`);
+		git(dir, ["add", `${name}.txt`]);
+		git(dir, ["commit", "-qm", name]);
+		return dir;
+	}
+
+	async function harness(input: {
+		predecessorStatus: string;
+		worktreePath: string | null;
+		binding?: { path: string; branch: string };
+		shared?: { projectRoot: string; path: string; branch: string } | null;
+		probeLaunchLiveness?: (
+			executionId: string,
+			projectName: string,
+		) => Promise<"alive" | "dead" | "unknown">;
+		resolvePredecessorHead?: () => Promise<string>;
+		takeoverRescueDisabled?: () => boolean;
+		alert?: ReturnType<typeof vi.fn>;
+	}) {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-permit-"));
+		const shared =
+			input.shared === undefined
+				? {
+						projectRoot: root,
+						path: join(root, "worktrees", "flywheel-FLY-1307"),
+						branch: "flywheel-FLY-1307",
+					}
+				: input.shared;
+		const store = await storeWithIntent("implement");
+		setPredecessor(store, {
+			status: input.predecessorStatus,
+			worktreePath: input.worktreePath,
+		});
+		if (input.binding) {
+			expect(
+				store.bindWorktreeOnce("design-1", {
+					path: input.binding.path,
+					branch: input.binding.branch,
+					generation: "gen-design-1",
+				}),
+			).toEqual({ bound: true });
+		}
+		const fake = fakeStartDispatcher(store);
+		const probeLaunchLiveness = vi.fn(
+			input.probeLaunchLiveness ?? (async () => "dead" as const),
+		);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:06:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2901-state-")),
+			...(input.resolvePredecessorHead
+				? { resolvePredecessorHead: input.resolvePredecessorHead }
+				: {}),
+			probeLaunchLiveness,
+			resolveSharedWorktree: () => shared ?? undefined,
+			...(input.takeoverRescueDisabled
+				? { takeoverRescueDisabled: input.takeoverRescueDisabled }
+				: {}),
+			...(input.alert
+				? { alertSink: { current: { alert: input.alert } } }
+				: {}),
+		});
+		return {
+			root,
+			shared,
+			store,
+			fake,
+			dispatcher,
+			probeLaunchLiveness,
+			cleanup: () => {
+				store.close();
+				rmSync(root, { recursive: true, force: true });
+			},
+		};
+	}
+
+	it.each([
+		{
+			row: "completed/parked predecessor is allowed without a probe",
+			status: "design_done",
+			liveness: "alive" as const,
+			allowed: true,
+			reason: "no_live_writer",
+			recorded: "not_probed",
+			probed: 0,
+		},
+		{
+			row: "terminal completed predecessor is allowed without a probe",
+			status: "completed",
+			liveness: "alive" as const,
+			allowed: true,
+			reason: "no_live_writer",
+			recorded: "not_probed",
+			probed: 0,
+		},
+		{
+			row: "judged-dead predecessor proven dead is allowed",
+			status: "failed",
+			liveness: "dead" as const,
+			allowed: true,
+			reason: "no_live_writer",
+			recorded: "dead",
+			probed: 1,
+		},
+		{
+			row: "judged-dead predecessor with unknown liveness is indeterminate",
+			status: "failed",
+			liveness: "unknown" as const,
+			allowed: false,
+			reason: "permit_indeterminate",
+			recorded: "unknown",
+			probed: 1,
+		},
+		{
+			row: "judged-dead predecessor still alive is a zombie writer",
+			status: "terminated",
+			liveness: "alive" as const,
+			allowed: false,
+			reason: "zombie_writer",
+			recorded: "alive",
+			probed: 1,
+		},
+		{
+			row: "non-terminal predecessor is a live writer without a probe",
+			status: "running",
+			liveness: "dead" as const,
+			allowed: false,
+			reason: "live_writer",
+			recorded: "not_probed",
+			probed: 0,
+		},
+	])("truth table: $row", async (row) => {
+		const h = await harness({
+			predecessorStatus: row.status,
+			worktreePath: "",
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => row.liveness,
+		});
+		try {
+			setPredecessor(h.store, {
+				status: row.status,
+				worktreePath: h.shared!.path,
+			});
+			expect(await h.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(h.fake.requests[0]).toMatchObject({
+				sessionRole: "implement",
+				shareParentBranch: true,
+				startPoint: HEAD,
+				takeoverRescueDisabled: false,
+				takeoverRescuePermit: {
+					allowed: row.allowed,
+					reason: row.reason,
+					predecessors: [
+						{
+							executionId: "design-1",
+							sessionStatus: row.status,
+							liveness: row.recorded,
+							pathSource: "session",
+						},
+					],
+				},
+			});
+			expect(h.probeLaunchLiveness).toHaveBeenCalledTimes(row.probed);
+			if (row.probed) {
+				expect(h.probeLaunchLiveness).toHaveBeenCalledWith(
+					"design-1",
+					"flywheel",
+				);
+			}
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("denies a running session on the shared path even without a worktree binding", async () => {
+		const h = await harness({
+			predecessorStatus: "running",
+			worktreePath: "",
+			resolvePredecessorHead: async () => HEAD,
+		});
+		try {
+			setPredecessor(h.store, {
+				status: "running",
+				worktreePath: h.shared!.path,
+			});
+			expect(h.store.getWorktreeBinding("design-1")).toBeUndefined();
+			await h.dispatcher.reconcile();
+			expect(h.fake.requests[0]?.takeoverRescuePermit).toEqual({
+				allowed: false,
+				reason: "live_writer",
+				predecessors: [
+					{
+						executionId: "design-1",
+						sessionStatus: "running",
+						liveness: "not_probed",
+						pathSource: "session",
+					},
+				],
+			});
+			expect(h.probeLaunchLiveness).not.toHaveBeenCalled();
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("denies as indeterminate when the session path and the binding path disagree", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-conflict-"));
+		const sharedPath = join(root, "worktrees", "flywheel-FLY-1307");
+		const h = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: sharedPath,
+			binding: { path: join(root, "elsewhere"), branch: "flywheel-FLY-1307" },
+			shared: {
+				projectRoot: root,
+				path: sharedPath,
+				branch: "flywheel-FLY-1307",
+			},
+			resolvePredecessorHead: async () => HEAD,
+		});
+		try {
+			await h.dispatcher.reconcile();
+			expect(h.fake.requests[0]?.takeoverRescuePermit).toEqual({
+				allowed: false,
+				reason: "permit_indeterminate",
+				predecessors: [
+					{
+						executionId: "design-1",
+						sessionStatus: "design_done",
+						liveness: "not_probed",
+						pathSource: "session",
+					},
+				],
+			});
+		} finally {
+			h.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("counts symlink-equivalent session and binding paths as one shared path", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-both-"));
+		const sharedPath = join(root, "worktrees", "flywheel-FLY-1307");
+		mkdirSync(sharedPath, { recursive: true });
+		const h = await harness({
+			predecessorStatus: "ship_parked",
+			worktreePath: realpathSync(sharedPath),
+			binding: { path: sharedPath, branch: "flywheel-FLY-1307" },
+			shared: {
+				projectRoot: root,
+				path: sharedPath,
+				branch: "flywheel-FLY-1307",
+			},
+			resolvePredecessorHead: async () => HEAD,
+		});
+		try {
+			await h.dispatcher.reconcile();
+			expect(h.fake.requests[0]?.takeoverRescuePermit).toEqual({
+				allowed: true,
+				reason: "no_live_writer",
+				predecessors: [
+					{
+						executionId: "design-1",
+						sessionStatus: "ship_parked",
+						liveness: "not_probed",
+						pathSource: "both",
+					},
+				],
+			});
+		} finally {
+			h.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("allows the quota-wall dead body: tmux target gone and no host process for the exec id", async () => {
+		const h = await harness({
+			predecessorStatus: "failed",
+			worktreePath: "",
+			resolvePredecessorHead: async () => HEAD,
+			// The exact shape the dead-exec scan proves for the 21/40 quota-wall
+			// bodies: CommDB target gone, no discoverable tmux window, host
+			// process table absent — through the real probe with the terminal
+			// caller's allowMissingTargetHostAbsence.
+			probeLaunchLiveness: (executionId, projectName) =>
+				probeGeneralizedLaunchLiveness(executionId, projectName, {
+					allowMissingTargetHostAbsence: true,
+					lookup: () => ({ kind: "gone" }),
+					discover: async () => ({ kind: "missing" }),
+					probeHostProcess: async () => ({
+						verdict: "absent",
+						source: "process-environment",
+					}),
+				}),
+		});
+		try {
+			setPredecessor(h.store, {
+				status: "failed",
+				worktreePath: h.shared!.path,
+			});
+			expect(await h.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(h.fake.requests[0]?.takeoverRescuePermit).toEqual({
+				allowed: true,
+				reason: "no_live_writer",
+				predecessors: [
+					{
+						executionId: "design-1",
+						sessionStatus: "failed",
+						liveness: "dead",
+						pathSource: "session",
+					},
+				],
+			});
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("allows with an empty predecessor list when nobody is on the shared path", async () => {
+		const h = await harness({
+			predecessorStatus: "running",
+			worktreePath: "/unused/design",
+			resolvePredecessorHead: async () => HEAD,
+		});
+		try {
+			await h.dispatcher.reconcile();
+			expect(h.fake.requests[0]?.takeoverRescuePermit).toEqual({
+				allowed: true,
+				reason: "no_live_writer",
+				predecessors: [],
+			});
+			expect(h.probeLaunchLiveness).not.toHaveBeenCalled();
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("is indeterminate when the shared worktree path cannot be resolved", async () => {
+		const h = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: "/unused/design",
+			shared: null,
+			resolvePredecessorHead: async () => HEAD,
+		});
+		try {
+			await h.dispatcher.reconcile();
+			expect(h.fake.requests[0]?.takeoverRescuePermit).toEqual({
+				allowed: false,
+				reason: "permit_indeterminate",
+				predecessors: [],
+			});
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("ranks denial reasons live_writer > zombie_writer > permit_indeterminate", async () => {
+		const h = await harness({
+			predecessorStatus: "terminated",
+			worktreePath: "",
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => "alive",
+		});
+		try {
+			setPredecessor(h.store, {
+				status: "terminated",
+				worktreePath: h.shared!.path,
+			});
+			// A second attributed execution of the same run, still running on
+			// the shared path (a live writer outranks the zombie).
+			seedWorkflowBinding(h.store, {
+				nodeId: "design",
+				executionId: "design-0",
+				attempt: 2,
+			});
+			h.store.upsertSession({
+				execution_id: "design-0",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status: "running",
+				worktree_path: h.shared!.path,
+			});
+			await h.dispatcher.reconcile();
+			const permit = h.fake.requests[0]?.takeoverRescuePermit;
+			expect(permit).toMatchObject({ allowed: false, reason: "live_writer" });
+			expect(permit?.predecessors.map((p) => p.executionId).sort()).toEqual([
+				"design-0",
+				"design-1",
+			]);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("reads the kill switch at dispatch time and treats an unreadable flag as off", async () => {
+		const on = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: "/unused/design",
+			resolvePredecessorHead: async () => HEAD,
+			takeoverRescueDisabled: () => true,
+		});
+		try {
+			expect(await on.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(on.fake.requests[0]?.takeoverRescueDisabled).toBe(true);
+		} finally {
+			on.cleanup();
+		}
+		const broken = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: "/unused/design",
+			resolvePredecessorHead: async () => HEAD,
+			takeoverRescueDisabled: () => {
+				throw new Error("missing managed flag row");
+			},
+		});
+		try {
+			expect(await broken.dispatcher.reconcile()).toEqual({
+				started: 1,
+				held: 0,
+			});
+			expect(broken.fake.requests[0]?.takeoverRescueDisabled).toBe(false);
+			expect(broken.fake.requests[0]?.takeoverRescuePermit).toMatchObject({
+				allowed: true,
+			});
+		} finally {
+			broken.cleanup();
+		}
+	});
+
+	it("does not compute a permit for a root phase dispatch without a start point", async () => {
+		const store = await storeWithIntent("design");
+		const fake = fakeStartDispatcher(store);
+		const resolveSharedWorktree = vi.fn(() => undefined);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:06:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2901-root-")),
+			resolveSharedWorktree,
+		});
+		try {
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(fake.requests[0]?.startPoint).toBeUndefined();
+			expect(fake.requests[0]).not.toHaveProperty("takeoverRescuePermit");
+			expect(fake.requests[0]).not.toHaveProperty("takeoverRescueDisabled");
+			expect(resolveSharedWorktree).not.toHaveBeenCalled();
+		} finally {
+			store.close();
+		}
+	});
+
+	it("head fallback level 1: reads HEAD from the predecessor's persisted worktree", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-head1-"));
+		const repo = makeRepo(root, "worktree");
+		const h = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: repo,
+			shared: { projectRoot: root, path: join(root, "nobody"), branch: "x" },
+		});
+		try {
+			expect(await h.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(h.fake.requests[0]?.startPoint).toBe(
+				git(repo, ["rev-parse", "HEAD"]),
+			);
+		} finally {
+			h.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("head fallback level 2: reads HEAD from the binding path when the session path is unset", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-head2-"));
+		const bound = makeRepo(root, "bound");
+		const h = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: null,
+			binding: { path: bound, branch: "flywheel-FLY-1307" },
+			shared: { projectRoot: root, path: join(root, "nobody"), branch: "x" },
+		});
+		try {
+			expect(await h.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(h.fake.requests[0]?.startPoint).toBe(
+				git(bound, ["rev-parse", "HEAD"]),
+			);
+			// The predecessor's persisted worktree path is never written back.
+			expect(h.store.getSession("design-1")?.worktree_path ?? null).toBeNull();
+		} finally {
+			h.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("head fallback level 3: reads the main repo branch tip named by the binding", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-head3-"));
+		const main = makeRepo(root, "main-repo");
+		git(main, ["branch", "flywheel-FLY-1307-bound"]);
+		const h = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: join(root, "gone-worktree"),
+			binding: {
+				path: join(root, "gone-binding"),
+				branch: "flywheel-FLY-1307-bound",
+			},
+			shared: {
+				projectRoot: main,
+				path: join(root, "gone-worktree"),
+				branch: "flywheel-FLY-1307",
+			},
+		});
+		try {
+			expect(await h.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(h.fake.requests[0]?.startPoint).toBe(
+				git(main, ["rev-parse", "refs/heads/flywheel-FLY-1307-bound"]),
+			);
+		} finally {
+			h.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("head fallback level 3: derives the shared branch name when there is no binding", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-head3b-"));
+		const main = makeRepo(root, "main-repo");
+		git(main, ["branch", "flywheel-FLY-1307"]);
+		const h = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: join(root, "gone-worktree"),
+			shared: {
+				projectRoot: main,
+				path: join(root, "gone-worktree"),
+				branch: "flywheel-FLY-1307",
+			},
+		});
+		try {
+			expect(await h.dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(h.fake.requests[0]?.startPoint).toBe(
+				git(main, ["rev-parse", "refs/heads/flywheel-FLY-1307"]),
+			);
+		} finally {
+			h.cleanup();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("alerts predecessor_head_unavailable once and keeps retrying every tick when every level fails", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2901-headfail-"));
+		const main = makeRepo(root, "main-repo");
+		const alert = vi.fn(async () => ({ sent: true as const }));
+		const h = await harness({
+			predecessorStatus: "design_done",
+			worktreePath: join(root, "gone-worktree"),
+			binding: { path: join(root, "gone-binding"), branch: "no-such-branch" },
+			shared: {
+				projectRoot: main,
+				path: join(root, "gone-worktree"),
+				branch: "flywheel-FLY-1307",
+			},
+			alert,
+		});
+		try {
+			for (let tick = 0; tick < 3; tick += 1) {
+				expect(await h.dispatcher.reconcile()).toEqual({
+					started: 0,
+					held: 1,
+				});
+			}
+			expect(h.fake.start).not.toHaveBeenCalled();
+			expect(alert).toHaveBeenCalledOnce();
+			expect(alert).toHaveBeenCalledWith(
+				expect.objectContaining({
+					eventType: "three_stage_takeover_failed",
+					severity: "warning",
+					projectName: "flywheel",
+					sessionKey: "design-1",
+					body: expect.stringContaining("predecessor_head_unavailable"),
+					metadata: {
+						workflowEngine: expect.objectContaining({
+							runId: "run-1",
+							issueId: "FLY-1307",
+							nodeId: "implement",
+							executionId: "design-1",
+							disposition: "held",
+						}),
+					},
+				}),
+			);
+		} finally {
+			h.cleanup();
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 });

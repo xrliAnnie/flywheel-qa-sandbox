@@ -114,6 +114,12 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1279: shared branch-B takeover was refused (dirty/head drift). Separate
 	// from generic handoff failures so the Lead sees the exact recovery class.
 	"three_stage_takeover_failed",
+	// FLY-2901: shared branch-B takeover SUCCEEDED only after Bridge preserved
+	// the predecessor's work (rescue refs pushed / nested repos moved aside) —
+	// head_diverged and nested_repo classes. An info receipt, not an incident:
+	// same issue-progress routing as the refusal kind above, but informational
+	// (no ticket/thread/ARC lifecycle). Refusals keep using the refusal kind.
+	"worktree_takeover_rescued",
 	// FLY-1385: the workflow engine exhausted dead-execution recovery, found a
 	// non-retryable quota/auth failure, or used the one approved design fallback.
 	// The run/node has already been durably held or reassigned; this alert gives
@@ -408,6 +414,8 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"flag_scan_handoff",
 	"shuttle_unit_unhealthy",
 	"voice_daemon_unhealthy",
+	// FLY-2901: "nothing was lost" receipt — no ticket, thread, or ARC to run.
+	"worktree_takeover_rescued",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {

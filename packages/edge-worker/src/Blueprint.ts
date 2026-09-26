@@ -91,6 +91,15 @@ import {
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
 import { resolveWorktreeKey } from "./WorktreeManager.js";
+import type {
+	TakeoverRescuePermit,
+	TakeoverRescueRecorder,
+} from "./worktree-takeover-rescue.js";
+import {
+	renderTakeoverRescueMarkdown,
+	type TakeoverRescueEvidence,
+	type TakeoverTransactionResult,
+} from "./worktree-takeover-transaction.js";
 
 /**
  * FLY-205: Lead-judged doc tier — controls DOCUMENT OUTPUT ONLY (checkpoint
@@ -664,6 +673,20 @@ export interface BlueprintContext {
 	startPoint?: string;
 	/** FLY-1707: quarantine stale state, then rebuild at the admitted anchor. */
 	workflowResume?: WorkflowResumeContext;
+	/**
+	 * FLY-2901: Bridge-INTERNAL proof (workflow engine only) that no predecessor
+	 * on the shared branch-B path can still write. Required before the takeover
+	 * path may preserve + clean a non-reusable worktree; absent ⇒ treated as
+	 * `permit_indeterminate` (refuse, never clean).
+	 */
+	takeoverRescuePermit?: TakeoverRescuePermit;
+	/**
+	 * FLY-2901: call-time read of the bridge_global kill switch
+	 * `worktree_takeover_rescue_disabled` (dispatcher-supplied). true ⇒ a
+	 * registered non-reusable worktree gets today's refusal; the non-disableable
+	 * loss guards (unregistered-present / unique-branch refusals) still apply.
+	 */
+	takeoverRescueDisabled?: boolean;
 
 	/**
 	 * FLY-1718 P1: the dispatcher found the managed origin branch for an
@@ -1382,6 +1405,9 @@ export class Blueprint {
 		const executionId = env.executionId;
 		let cwd = projectRoot;
 		let worktreeInfo: WorktreeInfo | undefined;
+		// FLY-2901: evidence of an automatic takeover rescue, rendered into the
+		// successor's prompt below (absent on every other path).
+		let takeoverRescue: TakeoverRescueEvidence | undefined;
 
 		// ── Worktree setup (v0.2 — own try/catch) ──────────────
 		if (this.worktreeManager) {
@@ -1404,6 +1430,10 @@ export class Blueprint {
 			// phase's cwd out from under it. FAIL-CLOSED: only take over a worktree
 			// that is clean AND at the exact captured head (`ctx.startPoint`); any
 			// drift → error (never silently discard the parked phase's work).
+			// FLY-2901: the candidate predicate no longer consults isRegistered —
+			// registration × existence is classified INSIDE the repo lock by the
+			// takeover transaction, so an `isRegistered` false/throw can never
+			// silently fall into the destructive removeIfExists+create path.
 			const takeover =
 				!ctx.workflowResume &&
 				ctx.shareParentBranch === true &&
@@ -1411,17 +1441,7 @@ export class Blueprint {
 					ctx.startPoint !== undefined) ||
 					(ctx.sessionRole === "design" &&
 						ctx.startPoint !== undefined &&
-						ctx.continuityInherit === undefined)) &&
-				(await this.worktreeManager
-					.isRegistered(
-						projectRoot,
-						this.worktreeManager.expectedWorktree(
-							projectRoot,
-							projectName,
-							worktreeIssueId,
-						).path,
-					)
-					.catch(() => false));
+						ctx.continuityInherit === undefined));
 			const processBodyResume = ctx.workflowProcessLifecycle?.mode === "resume";
 			if (processBodyResume) {
 				const expected = this.worktreeManager.expectedWorktree(
@@ -1512,62 +1532,51 @@ export class Blueprint {
 					projectName,
 					worktreeIssueId,
 				);
-				let clean = false;
+				const takeoverFailure = (failureReason: string): BlueprintResult => ({
+					success: false,
+					error: failureReason,
+					failure: {
+						failureKind: "worktree_takeover_failed",
+						failureReason,
+					},
+					worktreePath: expected.path,
+				});
+				let outcome: TakeoverTransactionResult;
 				try {
-					await this.gitChecker.assertCleanTree(expected.path);
-					clean = true;
-				} catch {
-					clean = false;
+					outcome = await this.worktreeManager.runTakeoverTransaction({
+						mainRepoPath: projectRoot,
+						projectName,
+						issueId: worktreeIssueId,
+						issueKey: node.id,
+						...(ctx.generalizedExecutionContext?.runId && {
+							runId: ctx.generalizedExecutionContext.runId,
+						}),
+						successorExec: executionId,
+						startPoint: ctx.startPoint!,
+						...(ctx.takeoverRescuePermit && {
+							permit: ctx.takeoverRescuePermit,
+						}),
+						rescueDisabled: ctx.takeoverRescueDisabled === true,
+						recorder: takeoverRescueRecorder(this.eventEmitter, env),
+					});
+				} catch (error) {
+					return takeoverFailure(
+						`worktree_takeover_failed: takeover transaction threw at ${expected.path}: ${oneLine(error instanceof Error ? error.message : String(error))}`,
+					);
 				}
-				let head: string | null = null;
-				try {
-					head = await this.gitChecker.captureBaseline(expected.path);
-				} catch {
-					head = null;
-				}
-				const reusableHead =
-					!!ctx.startPoint &&
-					!!head &&
-					(head === ctx.startPoint ||
-						(await this.gitChecker.isAncestorOf(
-							expected.path,
-							ctx.startPoint,
-							head,
-						)));
-				if (!clean || !reusableHead) {
-					const failureReason = `worktree_takeover_failed: shared branch-B worktree ${expected.path} is not reusable in place (clean=${clean}, head=${head ?? "?"}, expected=${ctx.startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`;
-					return {
-						success: false,
-						error: failureReason,
-						failure: {
-							failureKind: "worktree_takeover_failed",
-							failureReason,
-						},
-						worktreePath: expected.path,
-					};
+				if (outcome.kind === "refused") {
+					return takeoverFailure(
+						takeoverRefusalReason(outcome, expected.path, ctx.startPoint),
+					);
 				}
 				// FLY-1185 §2.1: a takeover REUSES the existing worktree — carry its
 				// existing generation marker forward (the parked phase's binding and
 				// this phase's binding then agree on the same physical worktree); a
 				// marker-less legacy worktree gets none (generation "" → this phase
-				// binds nothing, worktree stays manual-only — fail-closed).
-				let takenGeneration = "";
-				try {
-					takenGeneration =
-						(await this.worktreeManager.readWorktreeGeneration?.(
-							expected.path,
-						)) ?? "";
-				} catch {
-					takenGeneration = "";
-				}
-				worktreeInfo = {
-					projectName,
-					issueId: worktreeIssueId,
-					worktreePath: expected.path,
-					branch: expected.branch,
-					mainRepoPath: projectRoot,
-					generation: takenGeneration,
-				};
+				// binds nothing, worktree stays manual-only — fail-closed). A
+				// `worktree_missing` rebuild carries the admin-area generation.
+				worktreeInfo = outcome.worktree;
+				if (outcome.kind === "rescued") takeoverRescue = outcome.evidence;
 				cwd = worktreeInfo.worktreePath;
 			} else {
 				try {
@@ -1938,6 +1947,9 @@ export class Blueprint {
 		} else {
 			prompt = `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
 		}
+		if (takeoverRescue) {
+			prompt = `${prompt}\n\n${renderTakeoverRescuePromptSection(takeoverRescue, commCliPath, executionId)}`;
+		}
 
 		let systemPromptLines: string[];
 		if (isGeneralizedExecution) {
@@ -2024,7 +2036,7 @@ export class Blueprint {
 				systemPromptLines.push(
 					ctx.workflowCapabilities.creates_pr === true &&
 						completionRoute === "needs_review"
-						? `When the bounded work is complete, open the PR and run \`node ${commCliPath} complete --route needs_review --pr <NUMBER>\` (add \`--target-repo <relative-repo-path>\` for a nested repository).`
+						? `When the bounded work is complete, open the PR and run \`node ${commCliPath} complete --route needs_review --pr <NUMBER>\` (add \`--target-repo <relative-repo-path>\` for a nested repository; a nested target repository must live ONLY under \`.flywheel/review-targets/<repo>/\` inside this worktree — that directory is git-excluded, while a nested repository anywhere else makes the shared worktree dirty and blocks the next phase).`
 						: `When the bounded work is complete, run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
 			}
@@ -3594,4 +3606,89 @@ async function ensureFlywheelRunsExclude(cwd: string): Promise<void> {
 			`${content}${suffix}${RUNS_EXCLUDE_ENTRY}\n`,
 		);
 	}
+}
+
+/**
+ * FLY-2901: adapt the Bridge-local emitter capability to the transaction's
+ * recorder. Absent unless the emitter implements all three methods (only the
+ * in-process DirectEventSink does); the transaction then only allows today's
+ * reuse / fresh-create paths.
+ */
+function takeoverRescueRecorder(
+	emitter: ExecutionEventEmitter | undefined,
+	env: EventEnvelope,
+): TakeoverRescueRecorder | undefined {
+	if (
+		!emitter?.loadPendingTakeoverRescue ||
+		!emitter.recordTakeoverRescue ||
+		!emitter.recordTakeoverCleaned
+	) {
+		return undefined;
+	}
+	return {
+		loadPendingTakeoverRescue: (input) =>
+			emitter.loadPendingTakeoverRescue!(env, input),
+		recordRescue: (input) => emitter.recordTakeoverRescue!(env, input),
+		recordCleaned: (input) => emitter.recordTakeoverCleaned!(env, input),
+	};
+}
+
+function oneLine(text: string, max = 300): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/**
+ * FLY-2901 §4.8-5: refusal copy. The kill switch keeps today's sentence (plus
+ * the dirty-path diagnostic); every other stop names class/reason, what was
+ * already preserved, and the concrete non-clean paths (data only — rendered by
+ * the alert copy's existing escaping, never into a shell or SQL).
+ */
+function takeoverRefusalReason(
+	outcome: Extract<TakeoverTransactionResult, { kind: "refused" }>,
+	worktreePath: string,
+	startPoint: string | undefined,
+): string {
+	const dirty =
+		outcome.dirtyPaths.length > 0
+			? `; dirty paths: ${outcome.dirtyPaths.join(", ")}${outcome.dirtyPathsOverflow > 0 ? ` …(+${outcome.dirtyPathsOverflow} more)` : ""}`
+			: "";
+	if (outcome.legacy) {
+		return `worktree_takeover_failed: shared branch-B worktree ${worktreePath} is not reusable in place (clean=${outcome.clean ?? false}, head=${outcome.head ?? "?"}, expected=${startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work${dirty}`;
+	}
+	const preserved =
+		outcome.completedRescues.length > 0
+			? `; preserved (kept): ${outcome.completedRescues.map((rescue) => `${rescue.kind} ${rescue.remoteBranch}@${rescue.tip}`).join(", ")}`
+			: "";
+	const detail = outcome.detail ? `: ${oneLine(outcome.detail)}` : "";
+	return `worktree_takeover_failed: rescue refused (${outcome.class ?? "entry"}/${outcome.reason})${detail} at ${worktreePath} (head=${outcome.head ?? "?"}, expected=${startPoint ?? "?"})${preserved}${dirty}`;
+}
+
+/** FLY-2901 §4.8-2: the successor's "Worktree takeover rescue" prompt section. */
+function renderTakeoverRescuePromptSection(
+	evidence: TakeoverRescueEvidence,
+	commCliPath: string,
+	executionId: string,
+): string {
+	const details = renderTakeoverRescueMarkdown(
+		evidence.manifest,
+		evidence.eventUid,
+		evidence.pointer,
+	)
+		.split("\n")
+		.slice(2)
+		.join("\n")
+		.replace(/^## /gm, "### ");
+	return [
+		"## Worktree takeover rescue",
+		"Bridge could not reuse the shared branch-B worktree as-is, so before handing it to you it PRESERVED the predecessor's state (nothing was discarded): uncommitted work and unpublished commits were pushed to origin as the rescue refs below, and nested repositories were moved aside. Your worktree is now clean at the target commit.",
+		`Evidence: manifest ${evidence.manifestPath} (sha256 ${evidence.manifestSha256}); git-ignored copy in your worktree at ${evidence.mirrorMdPath}.`,
+		"",
+		details.trimEnd(),
+		"",
+		"Instructions:",
+		`1. Your FIRST progress-ledger write MUST carry the rescue pointer: \`node ${commCliPath} progress --exec-id ${executionId} … --pointer 'rescue=${evidence.pointer}'\`.`,
+		"2. Same-phase successor (the predecessor was an earlier attempt of THIS node/role): restore its uncommitted work BEFORE any other change, layer by layer with the restore commands above (skip a layer that has no command), and move nested repositories back with the listed commands. If a patch does not apply cleanly, STOP and `ask` your Lead — never discard it.",
+		"3. Cross-phase takeover (the predecessor was a different phase): do not blindly restore; review the rescued content and decide whether any of it belongs in your work.",
+	].join("\n");
 }

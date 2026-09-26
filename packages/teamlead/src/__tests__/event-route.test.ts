@@ -11,6 +11,10 @@ import {
 	inspectFounderReviewArtifactsAtCommit,
 } from "flywheel-comm/founder-review";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import {
+	TAKEOVER_CLEANED_EVENT_KIND,
+	TAKEOVER_RESCUED_EVENT_KIND,
+} from "flywheel-edge-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { EventFilter } from "../bridge/EventFilter.js";
@@ -2333,6 +2337,58 @@ describe("Event route", () => {
 					(event) => event.event_type === "events_pre_adapter_kind_rejected",
 				),
 			).toHaveLength(1);
+		},
+	);
+
+	// FLY-2901 §4.5: the takeover-rescue events are Bridge-local authority
+	// (DirectEventSink → checked run-event ledger). The generic /events path
+	// otherwise persists ANY event_type, so these two kinds need an explicit
+	// refusal — mirroring the forged pre-adapter receipt above.
+	it.each([TAKEOVER_RESCUED_EVENT_KIND, TAKEOVER_CLEANED_EVENT_KIND])(
+		"FLY-2901 rejects HTTP %s with 400 and persists nothing but a rejection receipt",
+		async (kind) => {
+			bindGeneralizedExecution(store, "exec-1");
+			const before = store.getSession("exec-1");
+			const res = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: `forged-${kind}`,
+						event_type: kind,
+						source: "direct-event-sink",
+						payload: { canonicalPath: "/tmp/geoforge3d", forged: true },
+					}),
+				),
+			});
+			expect(res.status).toBe(400);
+			expect(await res.json()).toMatchObject({
+				error: "takeover_rescue_kind_http_forbidden",
+				eventType: kind,
+			});
+			expect(store.getSession("exec-1")).toEqual(before);
+			const events = store.getEventsByExecution("exec-1");
+			expect(events.filter((event) => event.event_type === kind)).toHaveLength(
+				0,
+			);
+			expect(
+				events.filter(
+					(event) =>
+						event.event_type === "events_takeover_rescue_kind_rejected",
+				),
+			).toMatchObject([{ payload: { claimedKind: kind } }]);
+			expect(
+				store
+					.listWorkflowRunEvents("run-exec-1")
+					.filter(
+						(event) =>
+							event.kind === TAKEOVER_RESCUED_EVENT_KIND ||
+							event.kind === TAKEOVER_CLEANED_EVENT_KIND,
+					),
+			).toHaveLength(0);
 		},
 	);
 
