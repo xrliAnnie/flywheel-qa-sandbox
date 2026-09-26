@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "kind": "DOM controller validation, not browser/CSP visual QA",
+  "tests": [
+    "static: one nonced inline script; all cards have comments; no inline handlers, author CSP or external assets",
+    "input saved under pathname; unsafe comment rendered literally",
+    "reload restores; second report path isolated",
+    "long Unicode comments split; every chunk repeats exact marker",
+    "copy-all includes every chunk",
+    "clipboard promise rejection falls back to execCommand",
+    "missing Clipboard API falls back; individual chunk copies",
+    "storage failures contained; aggregation still works"
+  ]
+}
