@@ -3,13 +3,28 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 日期: 2026-09-25
 基于: exploration.md、research.md
 
-状态：v5 — Lead effective APPROVED（问询 947a7585，R4 后裁定；附 3 条实现条件，见 §4.3）。本文只设计，不含实现。
+状态：v6 — §5.3 有界实验后设计修正，等待 scoped design review；v5 其余部分仍按 Lead effective APPROVED（问询 947a7585，R4 后裁定）。§5.3 复审通过前不做依赖第 3 层注入的生产实现。
 
 修订记录：
+- v6（§5.3 设计修正）：实测否定 `appendText(developer)`；0.157.0 无 live instructions/session update 接口；A「user-role 静默旁注」5/5 通过，B「重开 realtime leg 刷 prompt」3/3 丢失上一 leg 口令，故选择 A，并把 B 降为只在自然重开时重装最近背景环的回退，不为背景事件主动重开。
 - v5（R4 + Lead 裁定）：锁只凭可信终态证据释放（abort/超时/5xx/含糊/目标未变一律保持 unknown），对账无「旧请求已完成」证据不清，唯一例外是带审计的人工 force-clear；关开关进入 draining，存量 held/unknown 清零前常驻仍做只检查的锁约束；unknown 行对 Lead 可见。
 - v4（R3）：目标锁 unknown 对双方都阻断写、只凭可信对账解除；补目标锁完整状态转换合同（等待绑定与移除、幂等、holder/fence 匹配、派发标记、崩溃/失联/重启恢复、回滚）；常驻 broker 只为开启语音后台的 Lead 接锁（控制影响面）；迟到交办涉及写时不诱导重做；地板兜底计时取补静音前的原始接收活动。
 - v3（R2）：义务结算不再按段数推断、迟到交办有明确终态；授权合同贯穿 provider / envelope / Bridge scope / runner 路由；常驻优先改为 Bridge 托管的目标锁（语音与 Codex broker 写互斥），Claude 常驻路径如实写为尽力预检；地板以房间本地 VAD 为权威、按语音段身份复位、跨重开保留；确认语改为模型独占；改稿用独立的「无工具 + 订阅」配置档；拒绝按目录 classification 分类。
 - v2（R1 + Lead 指令 ad0b344d）：后台并发改按「单活动回合 + start/steer」真实语义（删 3+1）；语音能力 parent 与常驻 Lead 的共存、授权、回执、撤销写清；C1 启动链改为专用启动档并列出准入改动；常驻优先改为 broker 目标级冲突检查 + 失败交接带操作账本；保真来源排除回答自身；后台事件订阅挂在进程级、不依赖实时腿；地板信号与唯一播报仲裁点；reserved 拒绝按真实错误码、只在确有卡片/回执时才说「已提交」；浏览器三档作为能力装配的可信输入、founder Chrome 走同一门面与回执钩子；权限下限 = 所有 Lead 权限并集；三条建议（议程收尾、改稿隔离、事件时效）纳入。
+
+## 0. §5.3 设计修正（2026-09-25）
+
+Step 0 在 Codex 0.157.0 上得到与 v5 假设冲突的事实：V2 `thread/realtime/appendText` 以 `role:"developer"` 调用时 RPC 先成功，约 146ms 后异步报 `Developer messages are not supported for realtime sessions.` 并关闭 realtime。生成的 app-server TypeScript 协议只暴露 `thread/realtime/start|stop|appendAudio|appendText|appendSpeech|listVoices`；`thread/settings/update` 与 `turn/settings/update` 也没有 instructions/prompt 字段，因此候选 C「在线更新 instructions/session」不存在。`prompt`、`realtimeStartInstructions`（以及 V3 的 `initialItems`）只在 realtime start 入参存在。
+
+按 Lead 对问询 `a510a57d-bcab-4ea2-988f-eaf6db2fcf37` 及后续收窄回复的裁定，在隔离临时 `CODEX_HOME`、不切账号、不 login/logout、无工具且 thread receipt 为 read-only 的条件下，A 跑 5 次；B 的 3 次是在后续「A 通过则无需 B」回复到达前按原裁定完成，保留原始结果但不再追加：
+
+| 候选 | 结果 | 决策 |
+|---|---|---|
+| A：`appendText(role:"user")` 写入 `[旁注,勿回应]`，不请求响应 | 5/5：4 秒观察窗内无 assistant transcript/audio、handoff 或 realtime error；随后问 `2+2` 只答 `4`，未复述旁注 | **选择** |
+| B：stop/start realtime leg，以新 prompt 重装背景 | 0/3 保留上一 leg 的 `ORBIT-N`；重启 ready 548/647/602ms，停止前 500ms 无输出音频事件；新 prompt 的 `1326` 三次都进回答，但格式被模型改写 | **淘汰为主动注入方案**；隔离台架没有 Discord 输出链，不能把音频事件代理冒充 founder 真人无切口证明 |
+| C：live instructions/session update | 0 次；0.157.0 协议无该接口 | 不存在 |
+
+原始 JSONL、判据与环境边界见 `evidence/README.md`。选择 A 的运行时合同写入 §5.3：旁注是 generation-bound 上下文，不触发 `appendSpeech`、handoff 或额外 response；一旦观察到旁注诱发任何模型输出、复述、跑题或 realtime error，本场立即熔断 live context 注入，仅把事件保留在最近背景环，等**自然发生**的下一次 realtime start 重装。绝不为了背景事件主动 stop/start，因 B 已证明这样会丢上一 leg 对话连续性。
 
 ## 1. 一句话
 
@@ -174,7 +189,7 @@ type LeadCapabilityAuthority =
 - 改代码默认派 runner。
 - founder-only 被拒不重试、不绕路（浏览器里也不点 merge/ship/批准按钮）。
 
-### 5.3 第 3 层 会话中新事件（R1#12）
+### 5.3 第 3 层 会话中新事件（R1#12；v6 design correction）
 
 | 事件 | 键 | 投递类 |
 |---|---|---|
@@ -186,7 +201,9 @@ type LeadCapabilityAuthority =
 - 只为 `voiceBackground.enabled` 且引擎 B 的会话生产；关闭档与 Engine A 不产生新行（测试）。
 - 键集：简报时刻写入 `voice_sessions.brief_keys_json`；poller 推新键，`message_id = bridge-event:<sessionId>:<key>`（`INSERT OR IGNORE` 去重）。
 - `tell` 播前复核：注意力项已解决 / 状态已变 → 丢弃（证据 `agenda_stale_dropped`）。
-- `context`：`appendText(developer, "[背景] …只供你知道，不要主动念")`，合并节流 ≤1 条/10s、≤600 字符；同时写入会话「最近背景」环（≤10 条），实时腿重开时与最新简报一起重新装入 prompt。
+- `context`：合并节流 ≤1 条/10s、≤600 字符，写入会话「最近背景」环（≤10 条）；仅在本场 live-context 熔断器未触发时，调用 `appendText(role:"user", "[旁注,勿回应] …只供你知道；不要回应、复述或改变当前话题")`。这是**只追加输入、不生成回答**的路径：不调用 `appendSpeech`，不创建 handoff/义务，不请求额外 response，也不进入 SpeechArbiter。
+- live-context 熔断：从旁注 append 开始到下一条真实 founder 输入前，若出现 assistant transcript/audio、handoff、realtime error，或下一次回答复述旁注/因旁注跑题，则记录 `voice_live_context_disabled` 并对该会话永久停用 live `context` append；事件仍留在最近背景环。进程/实时腿自然重开时，将最近背景环与最新简报放进 start prompt；**不得为投递背景主动 stop/start**。`tell` 不走旁注，仍按议程复核后排队播报。
+- 启用条件：发布前相关单测之外，QA 真房须做至少 5 次 generation-bound 语义抽样；任一次出现旁注诱发输出/复述/跑题即判 live 路径不合格，只允许上述背景环回退。Step 0 的 5/5 是隔离台架 scoped 设计选择证据，不冒充真人场验收。
 - 关闭开关 / 回滚：未投递的 `context` 行置 `dropped`；旧 daemon 只按 `delivery_class` 缺省 `tell` 理解（新列默认值），enabled 会话之外不会出现 `context` 行。
 
 ### 5.4 体积与失败
@@ -280,7 +297,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 
 | Step | 内容 | 验证 |
 |---|---|---|
-| 0 | 协议实测（订阅、单账号、≤4 场 ≤2 分钟）：① WS V2 下 auth.json 订阅 + env API key 实时腿，后台回合 `account.type=chatgpt`；② 实时腿 stop+start 时进行中回合继续且客户端（进程级订阅）收到 `turn/completed`；③ `appendText(developer)` V2 静默；④ 活动回合中连续提第二、三个查询的 handoff/turn/steer 顺序；⑤ 模型确认语措辞遵从率（10 次，只作兼容性证据）；⑥ 改稿 voice-scribe 档订阅 + 空工具集 | 证据 JSONL 进 `evidence/`；与假设不符 → 停下报 Lead 改 plan |
+| 0 | 协议实测（订阅、单账号、隔离临时 home）：① WS V2 下 auth.json 订阅 + env API key 实时腿，后台回合 `account.type=chatgpt`；② `appendText(developer)` 反证；③ A user-role 静默旁注 N=5；B realtime leg 重开 N=3（后续收窄回复到达前已完成）；④ 0.157.0 live instructions/session update 接口检查；⑤ 改稿 voice-scribe 档订阅 + 空工具集 | 证据 JSONL 进 `evidence/`；已按 §0 修正 §5.3，scoped review 通过前不做其依赖生产代码 |
 | 1 | C2 + C1：语音能力 parent 与启动档；read 成功、reserved 被拒（真实错误码）；**常驻 Lead 有在途写时启停语音 parent，常驻回执不变**；关闭后 socket 不可连；授权联合类型贯穿（真实 Claude Lead 身份一读一写、失租约/关开关后写被拒、常驻 Codex 路径回归不变） | 集成测试 + 一次真 broker 读写 |
 | 2 | C7：事件路由、enabled 不中断、终态处理、三种完成时机 | 单测 + Step 0 台架复跑 |
 | 3 | C5 + C6：口语稿、保真（含循环来源反例、token 边界）、改稿进程空工具集 | 表驱动单测 |
@@ -292,7 +309,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 ## 9. 测试计划（本机只跑相关测试）
 
 - 按包、按文件跑 vitest；排除 `**/tmux-viewer.macos.test.ts`；teamlead 里起 Bridge 的用例先隔离 `FLYWHEEL_CODEX_HOMES_ROOT`。
-- 负向守卫：关闭档行为不变（既有测试全绿）；shell 读不到凭据、连不上 127.0.0.1（`verifyModelIsolation`）；保真循环来源反例；前台 prompt 不含「逐字」「exactly as written」；后台直发会话 thread 的消息不被念回；非 enabled 会话不产生 `context` 行；常驻回执不被语音 parent 恢复逻辑改写；写操作缺 `targetKey` 时语音 actor fail-closed。
+- 负向守卫：关闭档行为不变（既有测试全绿）；shell 读不到凭据、连不上 127.0.0.1（`verifyModelIsolation`）；保真循环来源反例；前台 prompt 不含「逐字」「exactly as written」；后台直发会话 thread 的消息不被念回；非 enabled 会话不产生 `context` 行；旁注不得触发 `appendSpeech`/handoff/义务/额外 response，观察到旁注诱发输出或 realtime error 后本场只保留背景环且不得主动重开腿；`RealtimeTransport` 回归必须覆盖「append RPC ack 后异步 `thread/realtime/error` + closed」并断言熔断/回退，不能只用 mock 断言 developer 消息已派发；常驻回执不被语音 parent 恢复逻辑改写；写操作缺 `targetKey` 时语音 actor fail-closed。
 - 迁移：新列带默认值 + 迁移测试；新表 `capability_target_locks`、`capability_target_lock_waiters` 必须补 `fly-2006-retention-tables` 片段。
 - 新增 spawn（改稿进程、founder-chrome provider）按 shell 枚举 / child-process census / kill-path inventory 清册登记。
 
@@ -323,6 +340,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 | 她的 Chrome 规约级风险 | 可切 `isolated`；HTML 如实写 |
 | auth.json 刷新竞争 | 软链接宿主真源（FLY-2358 同法），不复制不写 |
 | 模型仍把闲聊交后台 | 证据计数 `handoff_smalltalk_suspect`，不硬拦 |
+| user-role 旁注产生模型输出或改变话题 | 会话级熔断 live context；保留最近背景环，等自然 realtime start 重装；QA N≥5 任一失败即不启用 live 路径 |
 
 ## 13. 不做什么
 

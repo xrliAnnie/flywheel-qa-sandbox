@@ -1,0 +1,39 @@
+{"t":0.005,"kind":"request","data":{"method":"initialize"}}
+{"t":0.012,"kind":"stderr","data":{"text":"WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir \"/private/tmp/fly2886-step0-restart-context-3-50726\" (codex_home: AbsolutePathBuf(\"/private/tmp/fly2886-step0-restart-context-3-50726/home\"))\n"}}
+{"t":0.061,"kind":"response","data":{"method":"initialize","error":null,"result":{}}}
+{"t":0.061,"kind":"request","data":{"method":"account/read"}}
+{"t":0.392,"kind":"response","data":{"method":"account/read","error":null,"result":{"type":"chatgpt","planType":"pro","requiresOpenaiAuth":true}}}
+{"t":0.392,"kind":"request","data":{"method":"config/read"}}
+{"t":0.395,"kind":"response","data":{"method":"config/read","error":null,"result":{"webSearch":"disabled","mcpServers":[],"features":{"shell_tool":false,"unified_exec":false,"view_image":false,"image_generation":false,"code_mode_host":false,"standalone_web_search":false,"memories":false,"apps":false,"plugins":false,"browser_use":false,"computer_use":false,"multi_agent":false,"hooks":false}}}}
+{"t":0.396,"kind":"request","data":{"method":"thread/start"}}
+{"t":1.031,"kind":"response","data":{"method":"thread/start","error":null,"result":{"threadId":"01a0db62-a875-74c0-9123-820491bc2119","model":"gpt-6-astra","approvalPolicy":"on-request","sandbox":{"type":"readOnly","networkAccess":false}}}}
+{"t":1.031,"kind":"request","data":{"method":"thread/realtime/start"}}
+{"t":1.031,"kind":"response","data":{"method":"thread/realtime/start","error":null,"result":{}}}
+{"t":1.646,"kind":"notification","data":{"method":"thread/realtime/started","threadId":"01a0db62-a875-74c0-9123-820491bc2119"}}
+{"t":1.646,"kind":"request","data":{"method":"thread/realtime/appendText"}}
+{"t":1.646,"kind":"response","data":{"method":"thread/realtime/appendText","error":null,"result":{}}}
+{"t":1.647,"kind":"request","data":{"method":"thread/realtime/appendSpeech"}}
+{"t":1.647,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null,"result":{}}}
+{"t":1.81,"kind":"notification","data":{"method":"thread/realtime/itemAdded","threadId":"01a0db62-a875-74c0-9123-820491bc2119","itemType":"message","itemId":"item_ESBklD6NVqkvMGD1un80U"}}
+{"t":1.813,"kind":"notification","data":{"method":"thread/realtime/itemAdded","threadId":"01a0db62-a875-74c0-9123-820491bc2119","itemType":"message","itemId":"item_ESBklaC92GoiylIcsZjrh"}}
+{"t":2.675,"kind":"notification","data":{"method":"thread/realtime/itemAdded","threadId":"01a0db62-a875-74c0-9123-820491bc2119","itemType":"message","itemId":"item_ESBklf3oKH3hUBEWxdRJo"}}
+{"t":3.003,"kind":"notification","data":{"method":"thread/realtime/transcript/done","threadId":"01a0db62-a875-74c0-9123-820491bc2119","text":"收到"}}
+{"t":4.006,"kind":"request","data":{"method":"thread/realtime/stop"}}
+{"t":4.006,"kind":"response","data":{"method":"thread/realtime/stop","error":null,"result":{}}}
+{"t":4.007,"kind":"notification","data":{"method":"thread/realtime/closed","threadId":"01a0db62-a875-74c0-9123-820491bc2119"}}
+{"t":4.007,"kind":"request","data":{"method":"thread/realtime/start"}}
+{"t":4.008,"kind":"response","data":{"method":"thread/realtime/start","error":null,"result":{}}}
+{"t":4.608,"kind":"notification","data":{"method":"thread/realtime/started","threadId":"01a0db62-a875-74c0-9123-820491bc2119"}}
+{"t":4.609,"kind":"request","data":{"method":"thread/realtime/appendText"}}
+{"t":4.609,"kind":"response","data":{"method":"thread/realtime/appendText","error":null,"result":{}}}
+{"t":4.609,"kind":"request","data":{"method":"thread/realtime/appendSpeech"}}
+{"t":4.61,"kind":"response","data":{"method":"thread/realtime/appendSpeech","error":null,"result":{}}}
+{"t":4.762,"kind":"notification","data":{"method":"thread/realtime/itemAdded","threadId":"01a0db62-a875-74c0-9123-820491bc2119","itemType":"message","itemId":"item_ESBkoBkwPwUNYkYuVRYS2"}}
+{"t":4.767,"kind":"notification","data":{"method":"thread/realtime/itemAdded","threadId":"01a0db62-a875-74c0-9123-820491bc2119","itemType":"message","itemId":"item_ESBkovaZ7i8CDG2XUnBsy"}}
+{"t":5.635,"kind":"notification","data":{"method":"thread/realtime/itemAdded","threadId":"01a0db62-a875-74c0-9123-820491bc2119","itemType":"message","itemId":"item_ESBkotg9lBmCG3SlY5zEn"}}
+{"t":6.531,"kind":"notification","data":{"method":"thread/realtime/transcript/done","threadId":"01a0db62-a875-74c0-9123-820491bc2119","text":"口令：未知。 PR号：1326。"}}
+{"t":6.531,"kind":"restart_context_summary","data":{"iteration":3,"accountType":"chatgpt","harnessSandbox":"danger-full-access","threadSandbox":"readOnly","firstAnswer":"收到","secondAnswer":"口令：未知。 PR号：1326。","restartReadyMs":602,"closedToStartedMs":601,"outputActiveAtStop":false,"directFounderAudibleObservation":false,"continuityPreserved":false,"refreshedPromptApplied":false,"errorCount":0,"pass":false}}
+{"t":6.531,"kind":"request","data":{"method":"thread/realtime/stop"}}
+{"t":6.532,"kind":"response","data":{"method":"thread/realtime/stop","error":null,"result":{}}}
+{"t":6.532,"kind":"notification","data":{"method":"thread/realtime/closed","threadId":"01a0db62-a875-74c0-9123-820491bc2119"}}
+{"t":6.544,"kind":"exit","data":{"code":0,"signal":null}}

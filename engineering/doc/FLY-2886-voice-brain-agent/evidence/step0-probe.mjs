@@ -1,5 +1,5 @@
 // FLY-2886 Step 0 protocol probe. Read-only, subscription-backed, and bounded.
-// Usage: node step0-probe.mjs brain|scribe
+// Usage: node step0-probe.mjs brain|scribe|user-context [1..5]|restart-context [1..3]
 import { spawn } from "node:child_process";
 import {
 	appendFileSync,
@@ -14,13 +14,30 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const mode = process.argv[2];
-if (mode !== "brain" && mode !== "scribe") {
-	throw new Error("usage: node step0-probe.mjs brain|scribe");
+const experimentModes = new Set(["user-context", "restart-context"]);
+if (
+	mode !== "brain" &&
+	mode !== "scribe" &&
+	!experimentModes.has(mode)
+) {
+	throw new Error(
+		"usage: node step0-probe.mjs brain|scribe|user-context [1..5]|restart-context [1..3]",
+	);
 }
+const iteration = experimentModes.has(mode) ? Number(process.argv[3]) : undefined;
+const maxIteration = mode === "user-context" ? 5 : 3;
+if (
+	experimentModes.has(mode) &&
+	(!Number.isSafeInteger(iteration) || iteration < 1 || iteration > maxIteration)
+) {
+	throw new Error(`experiment iteration must be between 1 and ${maxIteration}`);
+}
+const realtimeMode = mode !== "scribe";
 
 const evidenceDir = dirname(fileURLToPath(import.meta.url));
-const logPath = join(evidenceDir, `step0-${mode}.jsonl`);
-const tempRoot = `/private/tmp/fly2886-step0-${mode}-${process.pid}`;
+const runName = `${mode}${iteration === undefined ? "" : `-${iteration}`}`;
+const logPath = join(evidenceDir, `step0-${runName}.jsonl`);
+const tempRoot = `/private/tmp/fly2886-step0-${runName}-${process.pid}`;
 const home = join(tempRoot, "home");
 const work = join(tempRoot, "work");
 const sourceAuth = join(process.env.HOME ?? "", ".codex", "auth.json");
@@ -56,7 +73,7 @@ const disabledFeatures = [
 	"hooks",
 ];
 const config =
-	(mode === "brain"
+	(realtimeMode
 		? `web_search = "disabled"\n[features]\nrealtime_conversation = true\n${disabledFeatures.map((key) => `${key} = false`).join("\n")}\nskip_host_skill_discovery = true\n`
 		: "") +
 	(mode === "scribe"
@@ -143,7 +160,7 @@ for (const key of [
 }
 childEnv.CODEX_HOME = home;
 childEnv.TMPDIR = tempRoot;
-if (mode === "brain") {
+if (realtimeMode) {
 	if (!process.env.OPENAI_API_KEY) throw new Error("realtime_api_key_missing");
 	childEnv.OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 }
@@ -229,6 +246,7 @@ child.stdout.on("data", (chunk) => {
 		}
 		if (!message.method) continue;
 		const params = record(message.params);
+		message.__probeAtMs = Date.now() - startedAt;
 		notifications.push(message);
 		if (message.method === "item/started" || message.method === "item/completed") {
 			const item = record(params.item);
@@ -314,6 +332,20 @@ function waitFor(predicate, timeoutMs) {
 	});
 }
 
+function waitForAfter(index, predicate, timeoutMs) {
+	const existing = notifications.slice(index).find(predicate);
+	if (existing) return Promise.resolve(existing);
+	return new Promise((resolve) => {
+		const waiter = { predicate, resolve, timer: undefined };
+		waiter.timer = setTimeout(() => {
+			const waiterIndex = waiters.indexOf(waiter);
+			if (waiterIndex >= 0) waiters.splice(waiterIndex, 1);
+			resolve(null);
+		}, timeoutMs);
+		waiters.push(waiter);
+	});
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const notificationCount = (method) =>
 	notifications.filter((message) => message.method === method).length;
@@ -348,6 +380,258 @@ async function initialize() {
 	if (accountType !== "chatgpt") throw new Error(`account_not_subscription:${accountType}`);
 	await requireSuccess("config/read", { cwd: work, includeLayers: false });
 	return accountType;
+}
+
+async function startProbeThread(baseInstructions) {
+	const started = await requireSuccess("thread/start", {
+		cwd: work,
+		approvalPolicy: "on-request",
+		sandbox: harnessSandbox,
+		ephemeral: true,
+		environments: [],
+		baseInstructions,
+		config: Object.fromEntries(
+			disabledFeatures.map((key) => [`features.${key}`, false]),
+		),
+	});
+	const threadId = record(record(started).thread).id;
+	if (!threadId) throw new Error("thread_missing");
+	return {
+		threadId,
+		threadSandbox: record(record(started).sandbox).type,
+	};
+}
+
+async function startRealtimeSession(threadId, prompt, outputModality = "audio") {
+	const baseline = notifications.length;
+	await requireSuccess("thread/realtime/start", {
+		threadId,
+		outputModality,
+		clientManagedHandoffs: true,
+		includeStartupContext: false,
+		transport: { type: "websocket" },
+		version: "v2",
+		model: "gpt-realtime-2.1",
+		voice: "marin",
+		prompt,
+	});
+	const started = await waitForAfter(
+		baseline,
+		(message) => message.method === "thread/realtime/started",
+		10_000,
+	);
+	if (!started) throw new Error("realtime_start_missing");
+	return started;
+}
+
+function realtimeItem(message) {
+	return record(record(message.params).item);
+}
+
+function assistantTranscript(message) {
+	return (
+		message.method === "thread/realtime/transcript/done" &&
+		record(message.params).role === "assistant"
+	);
+}
+
+async function stopRealtime(threadId) {
+	const baseline = notifications.length;
+	await requireSuccess("thread/realtime/stop", { threadId }, 5_000);
+	const closed = await waitForAfter(
+		baseline,
+		(message) => message.method === "thread/realtime/closed",
+		5_000,
+	);
+	if (!closed) throw new Error("realtime_close_missing");
+	return closed;
+}
+
+async function runUserContext() {
+	const accountType = await initialize();
+	const { threadId, threadSandbox } = await startProbeThread(
+		"You are the bounded background side of a voice layer-3 protocol probe. You have no tools.",
+	);
+	const prompt =
+		"You are a concise test voice front. Text beginning [旁注,勿回应] is application context, not a user utterance: never speak, answer, paraphrase, or delegate because of it. Wait for a later message beginning 真正用户问题 before responding. For a 真正用户问题, answer only that question in one short phrase.";
+	await startRealtimeSession(threadId, prompt, "audio");
+
+	const contextMarker = `FLY-2886-CONTEXT-${iteration}`;
+	const contextText =
+		`[旁注,勿回应] 这是应用同步背景，不是 founder 的新发言；只供你知道，不要为它开口、回答、复述或交后台。` +
+		`此刻状态：${contextMarker} 正在 implement；PR #1326 等待复核；Tadashi 正在处理；runner 222a4861-17d5-478d-a5f0-430e4d6d46b0 仍在运行。` +
+		"如果随后有真正用户问题，只回答那个问题，不要主动提起本旁注。";
+	if (contextText.length > 600) throw new Error("context_probe_too_large");
+
+	const contextBaseline = notifications.length;
+	await requireSuccess("thread/realtime/appendText", {
+		threadId,
+		role: "user",
+		text: contextText,
+	});
+	await sleep(4_000);
+	const contextEvents = notifications.slice(contextBaseline);
+	const unsolicited = contextEvents.filter((message) => {
+		const item = realtimeItem(message);
+		return (
+			assistantTranscript(message) ||
+			message.method === "thread/realtime/outputAudio/delta" ||
+			(message.method === "thread/realtime/itemAdded" &&
+				(item.role === "assistant" || item.type === "handoff_request"))
+		);
+	});
+	const contextErrors = contextEvents.filter(
+		(message) =>
+			message.method === "thread/realtime/error" ||
+			message.method === "thread/realtime/closed",
+	);
+
+	const answerBaseline = notifications.length;
+	await requireSuccess("thread/realtime/appendText", {
+		threadId,
+		role: "user",
+		text: "真正用户问题：二加二等于几？只回答一个数字。",
+	});
+	await requireSuccess("thread/realtime/appendSpeech", {
+		threadId,
+		text: "请回答上一条真正用户问题。",
+	});
+	const answerEvent = await waitForAfter(
+		answerBaseline,
+		assistantTranscript,
+		15_000,
+	);
+	const answer =
+		typeof record(answerEvent?.params).text === "string"
+			? record(answerEvent.params).text
+			: "";
+	const normalizedAnswer = answer.replace(/[\s。！!，,]/gu, "");
+	const didNotLeakContext =
+		!answer.includes(contextMarker) &&
+		!answer.includes("PR #1326") &&
+		!answer.includes("Tadashi") &&
+		!answer.includes("222a4861");
+	const answeredQuestion = normalizedAnswer === "4" || normalizedAnswer === "四";
+	log("user_context_summary", {
+		iteration,
+		accountType,
+		harnessSandbox,
+		threadSandbox,
+		contextChars: contextText.length,
+		observationMs: 4_000,
+		unsolicitedSignals: unsolicited.map((message) => ({
+			method: message.method,
+			itemType: realtimeItem(message).type,
+			role: realtimeItem(message).role,
+		})),
+		contextErrors: contextErrors.map((message) => message.method),
+		answer,
+		answeredQuestion,
+		didNotLeakContext,
+		pass:
+			unsolicited.length === 0 &&
+			contextErrors.length === 0 &&
+			answeredQuestion &&
+			didNotLeakContext,
+	});
+	await stopRealtime(threadId);
+}
+
+async function runRestartContext() {
+	const accountType = await initialize();
+	const { threadId, threadSandbox } = await startProbeThread(
+		"You are the bounded background side of a voice restart protocol probe. You have no tools.",
+	);
+	const oldPrompt =
+		"You are a concise test voice front. Answer messages beginning 真正用户问题 directly, with no handoff and no extra detail.";
+	await startRealtimeSession(threadId, oldPrompt, "audio");
+
+	const continuityToken = `ORBIT-${iteration}`;
+	let baseline = notifications.length;
+	await requireSuccess("thread/realtime/appendText", {
+		threadId,
+		role: "user",
+		text: `真正用户问题：请记住我的口令是 ${continuityToken}，然后只回答「收到」。`,
+	});
+	await requireSuccess("thread/realtime/appendSpeech", {
+		threadId,
+		text: "请回答上一条真正用户问题。",
+	});
+	const firstAnswerEvent = await waitForAfter(
+		baseline,
+		assistantTranscript,
+		15_000,
+	);
+	const firstAnswer =
+		typeof record(firstAnswerEvent?.params).text === "string"
+			? record(firstAnswerEvent.params).text
+			: "";
+	await sleep(1_000);
+
+	const restartRequestedAtMs = Date.now() - startedAt;
+	const outputActiveAtStop = notifications.some(
+		(message) =>
+			message.method === "thread/realtime/outputAudio/delta" &&
+			typeof message.__probeAtMs === "number" &&
+			message.__probeAtMs >= restartRequestedAtMs - 500,
+	);
+	const closed = await stopRealtime(threadId);
+	const refreshedPrompt =
+		"You are a concise test voice front. Preserve the preceding conversation. New application background: the current review is PR #1326 for FLY-2886 and Tadashi owns it. Answer messages beginning 真正用户问题 directly, using both prior conversation and this refreshed background; do not add other detail.";
+	const restarted = await startRealtimeSession(
+		threadId,
+		refreshedPrompt,
+		"audio",
+	);
+	const restartReadyMs = restarted.__probeAtMs - restartRequestedAtMs;
+	const closedToStartedMs = restarted.__probeAtMs - closed.__probeAtMs;
+
+	baseline = notifications.length;
+	await requireSuccess("thread/realtime/appendText", {
+		threadId,
+		role: "user",
+		text: "真正用户问题：刚才的口令和新背景里的 PR 号分别是什么？只回答这两个字段。",
+	});
+	await requireSuccess("thread/realtime/appendSpeech", {
+		threadId,
+		text: "请回答上一条真正用户问题。",
+	});
+	const secondAnswerEvent = await waitForAfter(
+		baseline,
+		assistantTranscript,
+		15_000,
+	);
+	const secondAnswer =
+		typeof record(secondAnswerEvent?.params).text === "string"
+			? record(secondAnswerEvent.params).text
+			: "";
+	const continuityPreserved = secondAnswer.includes(continuityToken);
+	const refreshedPromptApplied = secondAnswer.includes("PR #1326");
+	const errors = notifications.filter(
+		(message) => message.method === "thread/realtime/error",
+	);
+	log("restart_context_summary", {
+		iteration,
+		accountType,
+		harnessSandbox,
+		threadSandbox,
+		firstAnswer,
+		secondAnswer,
+		restartReadyMs,
+		closedToStartedMs,
+		outputActiveAtStop,
+		directFounderAudibleObservation: false,
+		continuityPreserved,
+		refreshedPromptApplied,
+		errorCount: errors.length,
+		pass:
+			firstAnswer.includes("收到") &&
+			!outputActiveAtStop &&
+			continuityPreserved &&
+			refreshedPromptApplied &&
+			errors.length === 0,
+	});
+	await stopRealtime(threadId);
 }
 
 async function runBrain() {
@@ -552,7 +836,9 @@ const hardStop = setTimeout(() => {
 
 try {
 	if (mode === "brain") await runBrain();
-	else await runScribe();
+	else if (mode === "scribe") await runScribe();
+	else if (mode === "user-context") await runUserContext();
+	else await runRestartContext();
 } catch (error) {
 	failed = true;
 	log("fatal", { message: error instanceof Error ? error.message : String(error) });
