@@ -24,6 +24,14 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 - 重新运行原 `/tmp/fly2920-report-check.cjs` 对当前生成页的源码/Node VM 检查：7 节意见、按路径隔离、保存恢复、存储异常、字面恶意标签、1800 字符分段与三个 clipboard 分支全部通过。`git diff --check` 通过。未运行产品代码测试。
 - 无新增可复用的角色判断需要写入记忆；本次延续既有的精确身份、有效裁决和托管校验要求。
 
+## R2 与 R3 续接
+
+- R2 有效 `reviewVerdict=CHANGES_REQUESTED`，完整结构化结果保存于 `review-r2.json`。阻断项为 `pressure-unknown-fail-open-at-restart`，不能将未知读数默认当作恢复。
+- 提交 `c5d14937f` 修订 F1/F2：2P有界新鲜证据、单次失败保留可用baseline、启动有界等待、首次可算delta危险时保守交接、有效non-danger立即解除、过期未知明确降级不锁存。更正默认free-bytes关闭。其他R2建议逐项在plan末节处置，六单范围保持。
+- R3 gate=`c9e0efe1-bfff-4c84-bce6-6e95b8eac574`，request=`7f8e4b43-079e-406e-954e-26857ce374ad`，accepted=true、skipped=false、duplicate=false；送审plan blob=`72f8b4bb002058a2f60e37c37c00ae2e1c14398d`。此处登记请求不表示评审通过。
+- Lead 回复 `ab0ab586-3dac-41c9-ae12-1a5f5c75c45a` 明确保留 Mermaid 占位，交卷注明 pending，由 Lead 在沙箱外补画后发给 founder。已报告执行此指示（report `83f0da2a-ca76-4388-ac9b-21cf192a3145`）。
+- Chrome DevTools `list_pages` 两次各300s超时；未据超时重启浏览器，也不声称真实布局/浏览器CSP执行通过。当前HTML再次通过7节意见控制器检查。托管HTTP、CSP与字节检查仍待有效APPROVED后发布时执行。
+
 ## 待完成
 
 有效评审 → 最终页状态刷新 → commit/push → publish-only → 托管 HTTP/CSP/source 校验 → Lead URL report → exact complete/park。
