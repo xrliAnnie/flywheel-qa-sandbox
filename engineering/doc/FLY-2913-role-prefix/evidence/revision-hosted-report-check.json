@@ -1,0 +1,17 @@
+{
+  "url": "https://fw-reports-6da062.vercel.app/r/3e94308ff6b105176863c572fc3e2d8d/",
+  "httpStatus": 200,
+  "reportId": "3e94308ff6b105176863c572fc3e2d8d",
+  "publishOnly": true,
+  "delivered": false,
+  "localHtmlSha256": "25c715f9b3a9f9e82408d6058c18afd2a67d45a4becf73b57fe332cf9a2ca254",
+  "hostedHtmlSha256": "1ae571be6a2c986b33bf86ef80fc7a5860ecbb4d350a286f33e2b3f183cc553e",
+  "noncePlaceholderAbsent": true,
+  "scriptNonceMatchesCsp": true,
+  "sourceMatchAfterPublisherNonceCspAndNoindexNormalization": true,
+  "noExternalAssets": true,
+  "commentMarkerPresent": true,
+  "diagramRenderLimitationVisible": true,
+  "browserVisualQa": "not performed: browser connection check did not return; pending call terminated",
+  "controllerCheck": "see revision-report-controller-check.json; DOM only"
+}

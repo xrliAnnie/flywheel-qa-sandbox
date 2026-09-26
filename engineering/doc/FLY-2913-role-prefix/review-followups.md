@@ -109,4 +109,3 @@ Disposition: non-blocking Follow-up; no change to approved design in this closeo
 被审的 84e68c66b 只改了文档。worktree 没有安装依赖（没有 node_modules，也没有 packages/*/dist），所以没有跑任何 vitest 套件。本次结论完全基于静态核对代码：workflow-template.ts 的校验器、workflow-run-snapshot.ts、workflow-template-publication.ts、StateStore 的 createAndPublish/publishWorkflowTemplate 及其表结构（下一个修订号取 MAX+1，回退指针后再发布也不会撞号）、flywheel-comm 的 workflow-template CLI、run-dispatcher、review-prefix-profile、land-executor 的 implementationExecutionId。C6 列出的测试文件和 package 名均已核实存在。
 
 Disposition: non-blocking Follow-up; no change to approved design in this closeout.
-
