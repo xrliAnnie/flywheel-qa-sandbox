@@ -1,13 +1,13 @@
 ---
 issue: FLY-2883
 phase: implement
-phaseCursor: 7/8
-updated: 2026-09-26T22:29:43.432Z
-nextStep: full code review round (all of FLY-2883), fix, then PR (milestone file last)
+phaseCursor: 8/8
+updated: 2026-09-26T22:43:53.843Z
+nextStep: open PR (milestone last), complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2883 progress
-**phase**: implement (7/8)
-**next**: full code review round (all of FLY-2883), fix, then PR (milestone file last)
+**phase**: implement (8/8)
+**next**: open PR (milestone last), complete needs_review
