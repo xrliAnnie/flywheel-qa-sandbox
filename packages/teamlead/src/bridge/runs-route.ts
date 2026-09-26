@@ -559,6 +559,16 @@ export function createRunsRouter(
 			return;
 		}
 		if (normalized.canonical.version === 2) {
+			const recoveryTarget = normalized.canonical.target;
+			if (!recoveryTarget) {
+				res.status(400).json({ ok: false, reason: "invalid_request" });
+				return;
+			}
+			const staleTarget = store.getWorkflowNodeRecoveryConflict(recoveryTarget);
+			if (staleTarget) {
+				res.status(409).json({ ok: false, ...staleTarget });
+				return;
+			}
 			try {
 				const prepared = await prepareWorkflowNodeRecovery(
 					store,
@@ -589,7 +599,14 @@ export function createRunsRouter(
 					const project = store.getWorkflowRun(runId)?.project_name;
 					if (project) notifyEpicChanged(project, "run_resumed");
 				}
-				res.status(result.ok ? 200 : 409).json(result);
+				res.status(result.ok ? 200 : 409).json(
+					result.ok
+						? result
+						: {
+								...result,
+								...store.getWorkflowNodeRecoveryConflict(recoveryTarget),
+							},
+				);
 			} catch (error) {
 				res.status(409).json({
 					ok: false,
@@ -597,6 +614,7 @@ export function createRunsRouter(
 						error instanceof Error
 							? error.message
 							: "recovery_preflight_failed",
+					...store.getWorkflowNodeRecoveryConflict(recoveryTarget),
 				});
 			}
 			return;

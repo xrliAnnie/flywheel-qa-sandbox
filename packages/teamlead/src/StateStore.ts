@@ -57437,7 +57437,7 @@ export class StateStore {
 			const current = Boolean(
 				input.executionId && run?.engine_owned === 1 &&
 				run.current_node_id === input.nodeId &&
-				node?.attempt === input.payload.attempt &&
+				node && node.attempt === input.payload.attempt &&
 				node.execution_id === input.executionId &&
 				["failed", "running", "admitted", "pending"].includes(node.state) &&
 				!this.getWorkflowNodeCompletion(input.runId, input.nodeId!, node.attempt),
@@ -58672,6 +58672,44 @@ export class StateStore {
 				cancellation: cancellation ?? null,
 				owner: owner ?? null,
 			}),
+		};
+	}
+
+	/** Public conflict identity is read from current state and validated receipts. */
+	getWorkflowNodeRecoveryConflict(target: WorkflowRecoveryTarget): {
+		reason: "recovery_target_changed";
+		currentTarget: {runId: string; nodeId: string | null; attempt: number | null;
+			executionId: string | null; launchOrdinal: number; runStatus: string} | null;
+		originalOperationId: string | null;
+	} | undefined {
+		const run = this.getWorkflowRun(target.runId);
+		const node = run?.current_node_id
+			? this.listWorkflowRunNodes(target.runId, run.current_node_id).at(-1) : undefined;
+		const latest = node ? this.listWorkflowSideEffects(target.runId)
+			.filter(row => row.kind === "dispatch" && row.node_id === node.node_id && row.attempt === node.attempt)
+			.sort((a,b) => b.launch_ordinal-a.launch_ordinal)[0] : undefined;
+		if (run?.status === "held" && run.current_node_id === target.nodeId &&
+			node?.attempt === target.attempt && node.execution_id === target.previousExecutionId &&
+			(latest?.launch_ordinal ?? 0) === target.previousLaunchOrdinal) return undefined;
+		const originalOperations = new Set<string>();
+		for (const row of this.workflowSelectAll(
+			"SELECT client_request_id FROM workflow_delivery_operation WHERE run_id = ? AND kind = 'hold_resume' AND recovery_receipt_json IS NOT NULL",
+			[target.runId],
+		)) {
+			const receipt = this.getWorkflowHoldResumeReceipt(String(row.client_request_id))?.recoveryReceipt;
+			if (receipt && receipt.target.nodeId === target.nodeId &&
+				receipt.target.attempt === target.attempt &&
+				receipt.target.previousExecutionId === target.previousExecutionId &&
+				receipt.target.previousLaunchOrdinal === target.previousLaunchOrdinal &&
+				receipt.target.snapshotDigest === target.snapshotDigest &&
+				receipt.target.holdSetDigest === target.holdSetDigest) originalOperations.add(receipt.operationId);
+		}
+		return {
+			reason: "recovery_target_changed",
+			currentTarget: run ? {runId: run.run_id, nodeId:run.current_node_id,
+				attempt:node?.attempt ?? null, executionId:node?.execution_id ?? null,
+				launchOrdinal:latest?.launch_ordinal ?? 0, runStatus:run.status} : null,
+			originalOperationId: originalOperations.size === 1 ? [...originalOperations][0]! : null,
 		};
 	}
 

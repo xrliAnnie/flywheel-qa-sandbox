@@ -485,16 +485,25 @@ describe("FLY-2329 unified recovery through HTTP and dispatcher consumption", ()
 				intentsBeforeReplay,
 			);
 			expect(
-				(
-					await post("/resume", {
-						...applyRequest,
-						canonical: {
-							...canonical,
-							clientRequestId: "stale-second-request",
-						},
-					})
-				).status,
-			).toBe(409);
+				await post("/resume", {
+					...applyRequest,
+					canonical: { ...canonical, clientRequestId: "stale-second-request" },
+				}),
+			).toMatchObject({
+				status: 409,
+				body: {
+					reason: "recovery_target_changed",
+					originalOperationId: receipt.operationId,
+					currentTarget: {
+						runId: RUN_ID,
+						nodeId: "implement",
+						attempt: 1,
+						executionId: receipt.executionId,
+						launchOrdinal: 2,
+						runStatus: "active",
+					},
+				},
+			});
 			expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(
 				intentsBeforeReplay,
 			);

@@ -43,22 +43,24 @@ import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
 import {
-	resolveWorkflowStartPolicy,
+	type ContinuityComputer,
 	FreshStartAuditError,
 	type ResumeComputer,
-	type ContinuityComputer,
+	resolveWorkflowStartPolicy,
 	type WorkflowStartPolicy,
+} from "./workflow-start-policy.js";
+
+export type {
+	ContinuityComputer,
+	ContinuityInherit,
+	ContinuityStartPoint,
+	ResumeComputer,
 } from "./workflow-start-policy.js";
 export {
 	ContinuityIndeterminateError,
 	FreshStartAuditError,
 } from "./workflow-start-policy.js";
-export type {
-	ResumeComputer,
-	ContinuityComputer,
-	ContinuityInherit,
-	ContinuityStartPoint,
-} from "./workflow-start-policy.js";
+
 import type {
 	IRetryDispatcher,
 	IStartDispatcher,
@@ -1531,9 +1533,11 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				},
 				{
 					observeResume: this.resumeComputer
-                        ? (...args) => this.resumeComputer!(...args) : undefined,
+						? (...args) => this.resumeComputer!(...args)
+						: undefined,
 					observeContinuity: this.continuityComputer
-                        ? (input) => this.continuityComputer!(input) : undefined,
+						? (input) => this.continuityComputer!(input)
+						: undefined,
 				},
 			);
 		} catch (error) {

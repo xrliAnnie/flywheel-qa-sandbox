@@ -5,7 +5,6 @@ import { promisify } from "node:util";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import type { StateStore, WorkflowHoldResumeCanonical } from "../StateStore.js";
 import { resolveWorkflowDispatchLineage } from "../workflow-dispatch-lineage.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	type WorkflowRecoveryCanonical,
 	type WorkflowRecoveryPreflight,
@@ -13,6 +12,7 @@ import {
 	workflowRecoveryCanonicalSchema,
 	workflowRecoveryEvidenceDigest,
 } from "../workflow-recovery-contract.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { probeGeneralizedLaunchLiveness } from "./generalized-launch-recovery.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 
