@@ -88,6 +88,53 @@ Codex R3（MEDIUM）：`settleStoppedVoiceRun` 先释放锁、后写 `STOPPED`�
 15. 行为变化：回执为 `STARTED` 但已无锁（例如 `stop` 在释放后、写回执前崩溃）时，需再跑一次（幂等的）`stop` 才能 `start`；事故路径（回执随 slot 目录消失）不受影响。
 16. 确定性测试：锁已不存在 + 回执 `STARTED` ⇒ `created:false` 且不留锁目录；回执改为 `STOPPED` ⇒ `created:true`。变异 M9（去掉这道检查）被杀。
 
+## 设计评审 D1 后修订（2026-09-26，Codex gpt-6-astra xhigh，CHANGES REQUESTED）
+
+设计评审用可执行的交错实验推翻了第 10 条与第 13 条的"结构性"结论。两条发现都成立，本节按其修订并发合同；范围、自然结束策略、异 slot 规则、teardown 与 voice-codex 均不变。
+
+**D1-1（HIGH）重复 `stop` 推翻"进行中的 stop 必然对应 STARTED 回执"的前提。** `stop` 没有排他入口：两个 `stop`（S1、S2）都读到同一份 `STARTED` 回执后，
+S2 在 `releaseVoiceRoomLease` 比较完 `leaseId` 之后、`rmSync` 之前暂停；S1 释放并写 `STOPPED`；任何 slot 的新 `start`（B）建锁；S2 恢复按路径删掉 B 的锁。
+回执同理：S2 在 `settleStoppedVoiceRun` 重读回执后、`privateWrite` 的 rename 之前暂停，最后用 A 的 `STOPPED` 覆盖 B 的 `STARTED`。
+`leaseId` 与回执归属检查只能拒绝"已经看到新代次"的旧 stop，挡不住"检查后再删/写"的窗口。顺序幂等 ≠ 并发幂等。
+
+**D1-2（MEDIUM）第 13 条的 mkdir 前回执检查可以过期。** B 读到 `STOPPED` 后、mkdir 前暂停；A 抢先 `start` 并写 `STARTED`，随后 `stop` 到写 `STOPPED` 前暂停；
+B 恢复 mkdir 成功、写自己的 `STARTED`；A 的 `stop` 恢复，把 B 的回执覆盖成 A 的 `STOPPED`。B 的锁在、回执丢，后续 `stop` 管不了 B。
+
+**修法：同 slot 关键区互斥锁（`<slotDir>/voice-run.mutex`）。**
+
+17. 新增 `withVoiceRunMutex(slotDir, fn)`：`mkdirSync(<slotDir>/voice-run.mutex, 0o700)` 原子取锁，目录内 `owner.json` 记 `{pid, processIdentity}`；
+    `EEXIST` 时读 owner，`recordedProcessAlive` 为假（持锁进程已死）⇒ 沿用 rename→墓碑→复核→删的回收再取；为真 ⇒ 以 50ms 间隔（同步 `Atomics.wait`）等待，上限 15s，超时报 `voice_run_mutex_busy`。
+    `fn` 无论成功失败都在 `finally` 释放（只删自己建的那把：比 pid+身份）。互斥锁住在 slot 目录内，随 teardown 一起消失，不进 `/tmp`。
+    它只有 holder 语义、没有回执语义，"孤儿互斥锁"只需一条 pid 存活判定即可回收，不会再递归出新的孤儿问题（这正是 R2 反对互斥锁的理由；R2 反对的是给回收路径再套一把锁，本条锁的是关键区）。
+18. 关键区 A：`acquireVoiceRoomLease` 整体（含第 13 条的回执检查、mkdir、owner.json 写入、同/异 slot 回收）在互斥锁内执行 ⇒ D1-2 的"检查后暂停"不再可达：A 的建锁与收尾都拿不到锁。
+19. 关键区 B：`settleStoppedVoiceRun` 整体在互斥锁内执行，且进锁后**先重读回执**：`status === "STOPPED"` 或 `sessionId`/`leaseId` 不是本 run ⇒ 直接返回当前回执，不释放、不写；
+    否则按代次释放并写 `STOPPED`。⇒ D1-1 的 S2 在 S1 之后进锁，看到 `STOPPED` 即退出；它永远不会在持有"过期比较结果"的状态下执行 `rmSync` / `privateWrite`。
+    异 slot 的 B 只能在 S1 释放之后建锁，而 S2 的检查在 S1 之后串行执行，同样看到 owner 已换人（`slotDir` 不同）⇒ `releaseVoiceRoomLease` 返回 `false`。
+20. `start` 写 `STARTED` 回执（脚本 :1235）也放进关键区 A 的同一把锁内的一次短临界区（重读 owner.json 仍是本 `leaseId` 才写）；daemon 的 spawn 不在锁内。
+21. `stop` 入口在读回执前先取互斥锁做一次"已 `STOPPED` 则直接返回"的快速判定，再释放锁去做 Bridge/进程收尾（网络等待不持锁），最后进关键区 B。
+22. 跨 slot 不串行：一把互斥锁只管一个 slot 的 start/stop；跨 slot 的安全仍由 `/tmp` 锁目录 mkdir 原子性 + 同 slot 串行共同给出（见 19 的论证）。
+    仍不覆盖：teardown 与 `stop` 并发操作同一 slot（都是该 slot 的操作者，属操作错误）；acquire 的 EEXIST 分支读到尚未写出的 owner.json（`ENOENT`）时按 `voice_room_lease_conflict` 失败，这是 #1323 既有行为。
+23. 第 10、13 条的措辞改为："在同 slot 串行（第 17–21 条）前提下，进行中的 stop 与 start 不可能交错"，不再单独宣称结构性保证。
+
+**测试补充（确定性交错，导出 `__voiceRoomTestHooks`：`beforeLeaseRemove` / `beforeReceiptWrite` / `beforeLeaseMkdir` 三个可注入的同步回调，默认 no-op，仅测试使用）：**
+
+| # | 场景 | 期望 |
+|---|------|------|
+| T10 | 同 slot 双 stop：S2 在比较后、删除前被钩子暂停；S1 释放并写 STOPPED；B（同 slot）建锁写 STARTED；S2 恢复 | B 的锁与回执原样；S2 返回 B 之前的当前回执（STOPPED） |
+| T11 | 同上但 B 属于另一 slot | B 的锁原样；S2 返回 false/不删 |
+| T12 | 回执覆盖交错：S2 在写回执前暂停；S1 写 STOPPED；B 写 STARTED；S2 恢复 | 回执仍是 B 的 STARTED |
+| T13 | 延迟预检（D1-2）：B 在 mkdir 前暂停；A 建锁写 STARTED 并 stop 到写 STOPPED 前暂停；B 恢复 | 因互斥，A 的操作在 B 释放锁后才开始，B 成功且 A 的 acquire `created:false`；反向顺序（A 先）时 B `created:false`；无论哪种，最终回执与锁属于同一 run |
+| T14 | 互斥锁孤儿：owner pid 已死 ⇒ 回收后可取；pid 活 ⇒ 15s 内等待，超时 `voice_run_mutex_busy` | 用短超时参数（`options.mutexTimeoutMs`）测 |
+| T15 | 旧格式（无 leaseId）锁+回执在互斥锁下仍配对释放 | 与 T8 一致 |
+
+上述 T10–T13 在修法前必须为红（Codex 已用同类交错实验复现 `newLeaseStillExists=false` / `receiptOverwritten=true`）。
+`process.kill` 若新增，继续登记 kill-path 清册（qa-only）。
+
+**评审环境说明。** Codex 沙箱内 `spawnSync ps` 为 `EPERM`，其本轮 `node --test` 结果 15/9 失败源于环境，不是实现缺陷；本节点在真实环境复跑为 24/24。实现节点需在 CI 与本机各跑一次以覆盖两种环境。
+
+**与 Lead R2 裁定的关系。** R2 裁定"减法而非互斥锁"的前提是"减法后竞态在结构上消失"；D1-1 用可执行反例推翻了该前提。
+本修订保留减法（`STARTED` 一律算活）作为第一道防线，把互斥锁限定在关键区。已向 Lead 非阻塞报备，若 Lead 另有裁定则按 design-correction.md 追加修正。
+
 ## 已知限制
 
 - 合入前遗留的租约没有 `holder`/`daemon` 字段；若其回执也已删除，但一个未登记的旧 daemon 仍在跑，本判定无法识别，会按孤儿回收。
