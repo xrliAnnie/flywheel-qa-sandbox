@@ -7,9 +7,9 @@ const MAX_DEPTH = 4;
 function render(value: JsonSchema, depth: number): string {
 	const variants = (value.anyOf ?? value.oneOf) as JsonSchema[] | undefined;
 	if (Array.isArray(variants) && variants.length > 0)
-		return [
-			...new Set(variants.map((variant) => render(variant, depth))),
-		].join(" | ");
+		return [...new Set(variants.map((variant) => render(variant, depth)))].join(
+			" | ",
+		);
 	const values = value.enum as unknown[] | undefined;
 	if (Array.isArray(values) && values.length <= 8)
 		return values.map((entry) => JSON.stringify(entry)).join("|");

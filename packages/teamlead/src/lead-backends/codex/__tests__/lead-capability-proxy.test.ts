@@ -184,7 +184,9 @@ describe("native lead capability MCP proxy", () => {
 					schemaVersion: 1,
 					operationId: "bridge.read",
 					requestId: request.requestId,
-					input: { request: { method: "GET", path: "/api/issues/SECRET-VALUE" } },
+					input: {
+						request: { method: "GET", path: "/api/issues/SECRET-VALUE" },
+					},
 				},
 			});
 			expect(call.isError).toBe(true);

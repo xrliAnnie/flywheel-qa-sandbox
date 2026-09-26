@@ -903,8 +903,7 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	observeProcessItemCompleted(item: ThreadCompletedItem): void {
-		if (!this.options.backgroundEnabled || this.closing || !item.itemId)
-			return;
+		if (!this.options.backgroundEnabled || this.closing || !item.itemId) return;
 		this.recordLeadOperation(item);
 		if (item.raw.status !== "completed") return;
 		let text: string | undefined;
