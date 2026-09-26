@@ -68,7 +68,7 @@ describe("evaluateLongTurn", () => {
 		assert.equal(result.verdict, "pass");
 		assert.equal(result.checks.longTurnObserved, true);
 		assert.equal(result.checks.startErrorMs, 1_000);
-		assert.ok(result.turn.observedBusyAfterTruthMs >= 60_000);
+		assert.ok(result.turn.observedBusyMs >= 60_000);
 	});
 
 	it("fails when every busy answer reports a start more than 30 s from the true start", () => {
@@ -118,6 +118,31 @@ describe("evaluateLongTurn", () => {
 		const result = judge(samples);
 		assert.equal(result.verdict, "inconclusive");
 		assert.match(result.why, /longTurnObserved/);
+	});
+
+	it("does not pass a 56 s turn that the start-up wait would pad to 60 s (review R2)", () => {
+		// Delivered at T, busy 10–66 s, idle from 70 s: T→last busy is 65 s, but the
+		// fixture only ever saw 55 s of busy and the Lead went idle before the 75 s hold.
+		const truth = T0 + 1_000;
+		const samples = [idle(T0 - 5_000), idle(truth + 5_000)];
+		for (let at = truth + 10_000; at <= truth + 65_000; at += 5_000)
+			samples.push(busy(at, truth + 10_000));
+		samples.push(idle(truth + 70_000), idle(truth + 75_000));
+		const result = judge(samples, truth);
+		assert.equal(result.verdict, "inconclusive");
+		assert.match(result.why, /longTurnObserved/);
+		assert.equal(result.checks.idleBeforeHoldEnd, true);
+	});
+
+	it("does not pass a ≥60 s turn that still went idle before the requested hold ended", () => {
+		const samples = [idle(T0 - 5_000)];
+		for (let at = T0 + 5_000; at <= T0 + 70_000; at += 5_000)
+			samples.push(busy(at, T0 + 3_000));
+		samples.push(idle(T0 + 72_000), idle(T0 + 90_000));
+		const result = judge(samples);
+		assert.equal(result.checks.longTurnObserved, true);
+		assert.equal(result.verdict, "inconclusive");
+		assert.match(result.why, /idleBeforeHoldEnd/);
 	});
 
 	it("fails when a chat-triggered turn is attributed to an issue", () => {

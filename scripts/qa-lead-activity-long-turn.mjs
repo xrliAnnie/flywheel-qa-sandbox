@@ -218,8 +218,10 @@ export function toSample(atMs, dto) {
  * The fixture's turn is the set of busy answers whose reported start is within
  * tolerance of the true start. From `truth + grace` up to the last of them,
  * every answer must belong to that turn: an idle / unknown / HTTP error / other
- * turn in that window is FAIL evidence. The turn must be seen busy for at least
- * `minBusyMs` after the true start, and idle before and after.
+ * turn in that window is FAIL evidence. For a PASS the fixture itself must
+ * see the turn busy for at least `minBusyMs` (first to last busy sample — the
+ * start-up wait never counts), no idle before the requested hold ends, and
+ * idle before and after.
  */
 export function evaluateLongTurn({
 	samples,
@@ -266,15 +268,15 @@ export function evaluateLongTurn({
 	checks.startErrorMs = Math.max(
 		...turn.map((s) => Math.abs(s.startedAtMs - truthStartMs)),
 	);
-	checks.longTurnObserved = last.atMs - truthStartMs >= minBusyMs;
+	checks.longTurnObserved = last.atMs - first.atMs >= minBusyMs;
 	checks.triggerUndetermined = turn.every(
 		(s) => s.trigger?.kind === "undetermined",
 	);
 	checks.idleAfter = after.some(
 		(s) => s.atMs > last.atMs && s.state === "idle",
 	);
-	// Evidence only: an idle before the requested hold ended cannot be told
-	// apart from a Lead that stopped early, so it is never a PASS.
+	// An idle before the requested hold ended cannot be told apart from a Lead
+	// that stopped early, so it is never a PASS (review R2).
 	checks.idleBeforeHoldEnd = after.some(
 		(s) =>
 			s.atMs > last.atMs &&
@@ -284,7 +286,10 @@ export function evaluateLongTurn({
 	const failed = !checks.onlyBusyInsideTurn || !checks.triggerUndetermined;
 	const verdict = failed
 		? "fail"
-		: !checks.longTurnObserved || !checks.idleBefore || !checks.idleAfter
+		: !checks.longTurnObserved ||
+				checks.idleBeforeHoldEnd ||
+				!checks.idleBefore ||
+				!checks.idleAfter
 			? "inconclusive"
 			: "pass";
 	return {
@@ -293,21 +298,22 @@ export function evaluateLongTurn({
 			verdict === "pass"
 				? "ok"
 				: [
-						"onlyBusyInsideTurn",
-						"triggerUndetermined",
-						"longTurnObserved",
-						"idleBefore",
-						"idleAfter",
-					]
-						.filter((key) => checks[key] === false)
-						.join(","),
+						...[
+							"onlyBusyInsideTurn",
+							"triggerUndetermined",
+							"longTurnObserved",
+							"idleBefore",
+							"idleAfter",
+						].filter((key) => checks[key] === false),
+						...(checks.idleBeforeHoldEnd ? ["idleBeforeHoldEnd"] : []),
+					].join(","),
 		checks,
 		turn: {
 			startedAt: first.startedAt,
 			samples: turn.length,
 			firstBusyAt: first.at,
 			lastBusyAt: last.at,
-			observedBusyAfterTruthMs: last.atMs - truthStartMs,
+			observedBusyMs: last.atMs - first.atMs,
 		},
 		insideAnswers: inside.map(answer),
 	};
