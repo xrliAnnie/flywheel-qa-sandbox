@@ -2,13 +2,14 @@
 issue: FLY-2886
 phase: design
 phaseCursor: 3/5
-updated: 2026-09-26T12:14:38.865Z
-nextStep: plan v12 §14 已提交 ec2c394c3;manifest 4c93da89 blob 7d00d5c9;Codex
-  R1(gpt-6-astra xhigh)在跑;并行做 founder HTML
+updated: 2026-09-26T12:22:58.340Z
+nextStep: R1 CHANGES_REQUESTED(5 blocker)已修 ca4e22bc6;R2 scoped(resume,
+  gpt-6-astra xhigh)在跑;HTML 已同步;APPROVED 后 stage set 重铸
+  manifest→design-review.json→await-codex-gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
 **phase**: design (3/5)
-**next**: plan v12 §14 已提交 ec2c394c3;manifest 4c93da89 blob 7d00d5c9;Codex R1(gpt-6-astra xhigh)在跑;并行做 founder HTML
+**next**: R1 CHANGES_REQUESTED(5 blocker)已修 ca4e22bc6;R2 scoped(resume, gpt-6-astra xhigh)在跑;HTML 已同步;APPROVED 后 stage set 重铸 manifest→design-review.json→await-codex-gate
