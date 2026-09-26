@@ -1,14 +1,13 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 6/6
-updated: 2026-07-19T16:31:41.187Z
-nextStep: run required code review gate, monitor CI, write landing signal,
-  complete needs_review, and park
+phase: design
+phaseCursor: 1/7
+updated: 2026-09-26T22:17:50.251Z
+nextStep: audit current slot-6 sandbox baseline and explore implementation approaches
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (6/6)
-**next**: run required code review gate, monitor CI, write landing signal, complete needs_review, and park
+**phase**: design (1/7)
+**next**: audit current slot-6 sandbox baseline and explore implementation approaches
