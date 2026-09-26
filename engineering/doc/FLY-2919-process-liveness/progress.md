@@ -1,18 +1,19 @@
 ---
 issue: FLY-2919
 phase: design
-phaseCursor: 4/5
-updated: 2026-09-26T17:10:20.498Z
-nextStep: "Lead answer 1fb8f125 confirms verify-only handoff: plan/HTML restored
-  byte-identical to 241e6b439, gate f4e94872 live APPROVED; VM comments
-  rechecked. No implementation edits/tests. Prior implement 0/6 remains at
-  241e6b439 and implementation.md. Next silent publish/report then
-  phase_design_complete/park. Redundant review 3ea25547 registered before Lead
-  answer is pending; no new design scope."
+phaseCursor: 5/5
+updated: 2026-09-26T17:11:40.273Z
+nextStep: Verify-only design handoff per Lead answer 1fb8f125. Original f4e94872
+  live APPROVED; plan/HTML and implementation code unchanged from 241e6b439.
+  HTML silently published/reported and hosted source/CSP verified
+  (resume-publication-receipt.json). Run phase_design_complete then park.
+  Successor implements A-F from preserved WIP; implementation.md and 241e6b439
+  progress.md retain implement 0/6. Redundant review 3ea25547 reported to Lead;
+  no new design scope.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: design (4/5)
-**next**: Lead answer 1fb8f125 confirms verify-only handoff: plan/HTML restored byte-identical to 241e6b439, gate f4e94872 live APPROVED; VM comments rechecked. No implementation edits/tests. Prior implement 0/6 remains at 241e6b439 and implementation.md. Next silent publish/report then phase_design_complete/park. Redundant review 3ea25547 registered before Lead answer is pending; no new design scope.
+**phase**: design (5/5)
+**next**: Verify-only design handoff per Lead answer 1fb8f125. Original f4e94872 live APPROVED; plan/HTML and implementation code unchanged from 241e6b439. HTML silently published/reported and hosted source/CSP verified (resume-publication-receipt.json). Run phase_design_complete then park. Successor implements A-F from preserved WIP; implementation.md and 241e6b439 progress.md retain implement 0/6. Redundant review 3ea25547 reported to Lead; no new design scope.
