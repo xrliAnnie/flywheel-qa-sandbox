@@ -1,13 +1,14 @@
 ---
 issue: FLY-2919
 phase: design
-phaseCursor: 1/5
-updated: 2026-09-26T14:55:15.817Z
-nextStep: Audit nine incident paths and consolidate exploration/research in plan.md
+phaseCursor: 2/5
+updated: 2026-09-26T15:01:18.765Z
+nextStep: Commit and push plan, request effective design review; build founder
+  HTML while review runs
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
-**phase**: design (1/5)
-**next**: Audit nine incident paths and consolidate exploration/research in plan.md
+**phase**: design (2/5)
+**next**: Commit and push plan, request effective design review; build founder HTML while review runs
