@@ -54,7 +54,7 @@ const assertCurrent = () => {
 };
 try {
 	stage = "host-identity";
-	verifyBrowserHostIdentity({
+	await verifyBrowserHostIdentity({
 		nodeExecutable: process.execPath,
 		chromeExecutable:
 			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
