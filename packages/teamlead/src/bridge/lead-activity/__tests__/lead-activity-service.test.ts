@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../../ProjectConfig.js";
-import { LeadActivityService } from "../lead-activity-service.js";
+import {
+	claudeLeadLocatorOptions,
+	LeadActivityService,
+} from "../lead-activity-service.js";
 import { isValidLeadActivity, isValidLeadActivityFleet } from "../types.js";
 
 const NOW = Date.parse("2026-09-25T20:00:00.000Z");
@@ -273,5 +276,27 @@ describe("LeadActivityService — carrier resolution and deadline", () => {
 		});
 		expect(isValidLeadActivityFleet(fleet)).toBe(true);
 		expect(vi.getTimerCount()).toBe(0);
+	});
+});
+
+describe("claudeLeadLocatorOptions", () => {
+	it("reads production LaunchAgents when the Bridge config names no registry", () => {
+		for (const env of [{}, { FLYWHEEL_LEAD_LAUNCHD_REGISTRY: "  " }]) {
+			const options = claudeLeadLocatorOptions(env, "/state");
+			expect(options.stateDir).toBe("/state");
+			expect("launchdRegistryPath" in options).toBe(false);
+		}
+	});
+
+	it("hands the locator this Bridge's own launchd registry when configured", () => {
+		expect(
+			claudeLeadLocatorOptions(
+				{
+					FLYWHEEL_LEAD_LAUNCHD_REGISTRY:
+						" /tmp/flywheel-test-slot-2/launchd-leads.json ",
+				},
+				"/tmp/flywheel-test-slot-2",
+			).launchdRegistryPath,
+		).toBe("/tmp/flywheel-test-slot-2/launchd-leads.json");
 	});
 });

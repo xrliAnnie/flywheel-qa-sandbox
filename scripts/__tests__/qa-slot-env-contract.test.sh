@@ -46,6 +46,13 @@ rendered="$(qa_slot_env_contract_render "$slot" "flywheel-test-91")"
   || fail "renderer omitted slot TMPDIR"
 [[ "$rendered" != *'${'* ]] || fail "renderer left an unexpanded template"
 
+[[ "$rendered" == *"FLYWHEEL_LEAD_LAUNCHD_REGISTRY=$slot/launchd-leads.json"* ]] \
+  || fail "renderer omitted the room launchd registry"
+# FLY-2882: the Bridge's lead-activity locator reads the registry test-deploy
+# writes; the two paths must stay one path.
+rg -Fq 'QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"' "$ROOT/scripts/test-deploy.sh" \
+  || fail "contract launchd registry drifted from test-deploy QA_LEAD_REGISTRY"
+
 for disposition in redirect clear passthrough; do
   [[ -n "$(qa_slot_env_contract_names "$disposition")" ]] \
     || fail "missing $disposition names"

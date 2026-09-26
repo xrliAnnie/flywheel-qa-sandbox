@@ -18,7 +18,11 @@ import { effectiveLeadBackend } from "../../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { resolveCommDbPath } from "../commdb-session-prune.js";
-import { locateConfiguredLeadWindow } from "../fleet-lead-locator.js";
+import {
+	type ConfiguredLeadWindowLocatorOptions,
+	LEAD_LAUNCHD_REGISTRY_ENV,
+	locateConfiguredLeadWindow,
+} from "../fleet-lead-locator.js";
 import { defaultLeadPaneCapture } from "../lead-alert-helpers.js";
 import { resolveCodexLeadStateDir } from "../lead-inbox-runtime.js";
 import { readClaudeLeadActivity } from "./claude-lead-activity.js";
@@ -170,6 +174,25 @@ export class LeadActivityService {
 	}
 }
 
+/**
+ * Where this Bridge finds its Claude Leads' launchd authority: the production
+ * LaunchAgents directory, or — when the Bridge config names one — its own
+ * launchd registry (a 529 room's `launchd-leads.json`). A blank value is not
+ * a registry; an invalid one fails closed inside the locator.
+ */
+export function claudeLeadLocatorOptions(
+	env: NodeJS.ProcessEnv,
+	stateDir: string,
+): Omit<ConfiguredLeadWindowLocatorOptions, "execFn"> {
+	const registry = env[LEAD_LAUNCHD_REGISTRY_ENV]?.trim();
+	return {
+		homeDir: homedir(),
+		stateDir,
+		readFile: (path) => readFileSync(path, "utf8"),
+		...(registry ? { launchdRegistryPath: registry } : {}),
+	};
+}
+
 /** Production wiring: live pane capture, sidecar socket, read-only CommDB. */
 export function createProductionLeadActivityService(args: {
 	projects: ProjectEntry[];
@@ -182,6 +205,7 @@ export function createProductionLeadActivityService(args: {
 	const capture = defaultLeadPaneCapture();
 	const resolveBotToken = buildResolveBotToken(args.projects, env);
 	const log = (message: string) => console.warn(message);
+	const locatorOptions = claudeLeadLocatorOptions(env, stateDir);
 	return new LeadActivityService({
 		projects: () => args.projects,
 		now: Date.now,
@@ -189,12 +213,7 @@ export function createProductionLeadActivityService(args: {
 		legacyBackend: () => env.FLYWHEEL_LEAD_BACKEND,
 		readClaude: (projectName, leadId) =>
 			readClaudeLeadActivity(projectName, leadId, {
-				locate: (p, l) =>
-					locateConfiguredLeadWindow(p, l, {
-						homeDir: homedir(),
-						stateDir,
-						readFile: (path) => readFileSync(path, "utf8"),
-					}),
+				locate: (p, l) => locateConfiguredLeadWindow(p, l, locatorOptions),
 				capture,
 				claudeProcess: (window) => readV2LeadClaudePid(window),
 				now: Date.now,

@@ -150,6 +150,12 @@
 		"value": "${SLOT_DIR}/state/lead-identity-failures",
 		"boot": "mustBeUnderRoot"
 	},
+	{
+		"name": "FLYWHEEL_LEAD_LAUNCHD_REGISTRY",
+		"disposition": "redirect",
+		"value": "${SLOT_DIR}/launchd-leads.json",
+		"boot": "mustBeUnderRootIfSet"
+	},
 	{ "name": "TMUX", "disposition": "clear", "boot": "mustBeAbsent" },
 	{ "name": "TMUX_PANE", "disposition": "clear", "boot": "mustBeAbsent" },
 	{
