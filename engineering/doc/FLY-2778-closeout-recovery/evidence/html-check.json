@@ -1,0 +1,11 @@
+{
+  "staticStructure": "pass",
+  "pathScopedStorage": "pass",
+  "liveAggregation": "pass",
+  "chunkLimitAndMarker": "pass",
+  "clipboardRejectedFallback": "pass",
+  "clipboardMissingFallback": "pass",
+  "storageFailure": "pass",
+  "browserVisualQA": "not run: Chromium sandbox launch denied",
+  "diagrams": "pending local render"
+}
