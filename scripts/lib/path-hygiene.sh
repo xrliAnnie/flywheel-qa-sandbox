@@ -158,7 +158,6 @@ scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 scripts/resident-codex-lead-recover.sh
 scripts/flywheel-bridge-wrapper.sh
 scripts/packaged/flywheel-auto-update.sh
-scripts/flywheel-voice-bridge-wrapper.sh
 scripts/flywheel-voice-wrapper.sh
 scripts/flywheel-quota-monitor-wrapper.sh
 scripts/restart-services.sh

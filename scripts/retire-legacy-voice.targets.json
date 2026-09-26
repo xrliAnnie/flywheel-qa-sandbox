@@ -1,0 +1,67 @@
+[
+	{
+		"envName": "FLY2860_POOL06_BOT_TOKEN",
+		"appId": "1523232391349403850",
+		"guildIds": ["1485787271192907816"],
+		"required": true,
+		"note": "flywheel-pool-06 'Huddle' orchestrator bot (engineering/doc/FLY-545-huddle-mode/evidence/bot-provisioning.md, deploy-kit.md; FLY-1006 staged venue): registered /glaw, /gemini, /eleven as guild commands in the production guild. Export from ~/.flywheel/discord-bot-pool/flywheel-pool-06/token. Also ran the staged huddle rig, whose /glaw command was registered as /meet (voice-bridge e2e/lib/rig-config.mjs commandName \"meet\"; FLY-2860 QA@1 sweep found it).",
+		"extraCommandNames": ["meet"]
+	},
+	{
+		"envName": "FLY2860_POOL05_BOT_TOKEN",
+		"appId": "1523230048243417178",
+		"guildIds": ["1485787271192907816"],
+		"required": true,
+		"note": "flywheel-pool-05 served as HUDDLE_ORCH_BOT_TOKEN in the FLY-967/FLY-1047 staged venue (engineering/doc/FLY-1047-gemini-bargein-opening-qa/research.md), so it registered /gemini in the production guild. Export from ~/.flywheel/discord-bot-pool/flywheel-pool-05/token. Also carries /meet from the staged huddle rig (FLY-2860 QA@1 sweep).",
+		"extraCommandNames": ["meet"]
+	},
+	{
+		"envName": "TEST_BOT_TOKEN_1",
+		"appId": "1493068669444427927",
+		"guildIds": ["1485787271192907816"],
+		"required": true,
+		"extraCommandNames": ["meet"],
+		"note": "flywheel-test-1 QA slot bot: the FLY-2860 QA@1 read-only sweep of all 28 host bot apps found /gemini, /eleven and /meet registered by it in the production guild (it served as a staged-rig orchestrator). Read from the private ~/.flywheel/.env."
+	},
+	{
+		"envName": "FLYWHEEL_GEMINI_AGENT_DISCORD_TOKEN",
+		"guildIds": ["1485787271192907816"],
+		"required": false,
+		"note": "gemini-agent daemon (/gemini-advanced) upserted guild commands with this token; no deployment record names its bot, so it is checked only when the token is supplied."
+	},
+	{
+		"envName": "TEST_BOT_TOKEN_2",
+		"guildIds": ["1485787271192907816"],
+		"required": false,
+		"note": "QA slot bot; swept whenever its token is readable (Lead instruction 3c2aa497: sweep test-1..6). Current voice sessions register no slash commands (Lead verified), so /meet on a QA slot bot can only be the staged huddle rig's leftover; the FLY-2860 QA@1 sweep found none on this bot.",
+		"extraCommandNames": ["meet"]
+	},
+	{
+		"envName": "TEST_BOT_TOKEN_3",
+		"guildIds": ["1485787271192907816"],
+		"required": false,
+		"note": "QA slot bot; swept whenever its token is readable (Lead instruction 3c2aa497: sweep test-1..6). Current voice sessions register no slash commands (Lead verified), so /meet on a QA slot bot can only be the staged huddle rig's leftover; the FLY-2860 QA@1 sweep found none on this bot.",
+		"extraCommandNames": ["meet"]
+	},
+	{
+		"envName": "TEST_BOT_TOKEN_4",
+		"guildIds": ["1485787271192907816"],
+		"required": false,
+		"note": "QA slot bot; swept whenever its token is readable (Lead instruction 3c2aa497: sweep test-1..6). Current voice sessions register no slash commands (Lead verified), so /meet on a QA slot bot can only be the staged huddle rig's leftover; the FLY-2860 QA@1 sweep found none on this bot.",
+		"extraCommandNames": ["meet"]
+	},
+	{
+		"envName": "TEST_BOT_TOKEN_5",
+		"guildIds": ["1485787271192907816"],
+		"required": false,
+		"note": "QA slot bot; swept whenever its token is readable (Lead instruction 3c2aa497: sweep test-1..6). Current voice sessions register no slash commands (Lead verified), so /meet on a QA slot bot can only be the staged huddle rig's leftover; the FLY-2860 QA@1 sweep found none on this bot.",
+		"extraCommandNames": ["meet"]
+	},
+	{
+		"envName": "TEST_BOT_TOKEN_6",
+		"guildIds": ["1485787271192907816"],
+		"required": false,
+		"note": "QA slot bot; swept whenever its token is readable (Lead instruction 3c2aa497: sweep test-1..6). Current voice sessions register no slash commands (Lead verified), so /meet on a QA slot bot can only be the staged huddle rig's leftover; the FLY-2860 QA@1 sweep found none on this bot.",
+		"extraCommandNames": ["meet"]
+	}
+]

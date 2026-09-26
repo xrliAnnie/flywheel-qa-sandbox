@@ -1,0 +1,255 @@
+# FLY-2860 deletion manifest — every file this PR deletes (git diff --diff-filter=D must equal this path set).
+# baseline (after merge origin/main): 050c887ad95e2af6a39a0da0a5eda19f83b7c4a7
+# columns: path<TAB>category<TAB>evidence
+engineering/spike/FLY-1006-eleven/audition.html	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/latency-report.mjs	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/latency-report.test.mjs	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/package.json	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/personas/belle.md	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/personas/cass.md	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/personas/tadashi.md	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/serve.mjs	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/serve.test.mjs	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-1006-eleven/talk.html	spike	legacy voice spike dir FLY-1006-eleven removed whole (C7)
+engineering/spike/FLY-545-huddle/.gitignore	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-545-huddle/package-lock.json	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-545-huddle/package.json	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-545-huddle/README.md	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-545-huddle/ref/s1-question.txt	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-545-huddle/ref/s1-reply.txt	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-545-huddle/s1-audio-modality.mjs	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-545-huddle/s1-text-modality.mjs	spike	legacy voice spike dir FLY-545-huddle removed whole (C7)
+engineering/spike/FLY-967-live-assistant/.gitignore	spike	legacy voice spike dir FLY-967-live-assistant removed whole (C7)
+engineering/spike/FLY-967-live-assistant/README.md	spike	legacy voice spike dir FLY-967-live-assistant removed whole (C7)
+engineering/spike/FLY-967-live-assistant/s-a1-gemini-side.mjs	spike	legacy voice spike dir FLY-967-live-assistant removed whole (C7)
+engineering/spike/FLY-968-voice-bakeoff/s4-gemini-multisession.mjs	spike	Gemini/ElevenLabs voice bakeoff script (C7)
+engineering/spike/FLY-968-voice-bakeoff/s4a-gemini-voice-sweep.mjs	spike	Gemini/ElevenLabs voice bakeoff script (C7)
+engineering/spike/FLY-968-voice-bakeoff/s4b-voice-judge.mjs	spike	Gemini/ElevenLabs voice bakeoff script (C7)
+engineering/spike/FLY-968-voice-bakeoff/s4c-feed-comparison.mjs	spike	Gemini/ElevenLabs voice bakeoff script (C7)
+engineering/spike/FLY-968-voice-bakeoff/s5-elevenlabs-agent.mjs	spike	Gemini/ElevenLabs voice bakeoff script (C7)
+engineering/spike/FLY-980-eleven/.gitignore	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/audition.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/bench-brain.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/bench-warm.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/build-report.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/create-agent.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/delete-agent.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/e2e-session.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/gen-ref-audio.sh	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/lib/eleven.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/lib/env.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/lib/shim-core.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/package-lock.json	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/package.json	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/patch-agent.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/shim.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/shim.test.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/usage.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-980-eleven/v5a-silence.mjs	spike	legacy voice spike dir FLY-980-eleven removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/.gitignore	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/agent-loop.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/config.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/evidence/s1-environment.json	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/evidence/s2-matrix-summary.json	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/evidence/s3-live-summary.json	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/evidence/s4-guardrail-summary.json	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/harness.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/judge.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/mock-bridge.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/package-lock.json	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/package.json	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/README.md	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/run-matrix.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/run-s1-smoke.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/run-s3-live.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/run-s4-guardrail.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/run.sh	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/sandbox-guard.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+engineering/spike/FLY-997-gemini-agent/tools.mjs	spike	legacy voice spike dir FLY-997-gemini-agent removed whole (C7)
+packages/gemini-agent/.env.example	package	packages/gemini-agent removed whole (C1); no workspace dependents (git grep flywheel-gemini-agent)
+packages/gemini-agent/package.json	package	packages/gemini-agent removed whole (C1); no workspace dependents (git grep flywheel-gemini-agent)
+packages/gemini-agent/README.md	package	packages/gemini-agent removed whole (C1); no workspace dependents (git grep flywheel-gemini-agent)
+packages/gemini-agent/src/__tests__/audit.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/bindings.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/bridge-client.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/client.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/config.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/daemon.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/delegate.test.ts	test	refgraph cls=mixed; subject=/gemini-advanced(gemini-agent); keep-imports=types.ts
+packages/gemini-agent/src/__tests__/fixtures/mock-bridge.ts	fixture	refgraph cls=no-lib-import; only imported by gemini-agent tests (package removed) | git grep -lF mock-bridge.ts outside set: none
+packages/gemini-agent/src/__tests__/full-stack-integration.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/loop.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/registry.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/session.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/__tests__/truncate.test.ts	test	refgraph cls=delete; subject=/gemini-advanced(gemini-agent); keep-imports=-
+packages/gemini-agent/src/audit.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/cli.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/client.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/config.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/context.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/delegate.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/discord/bindings.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/discord/daemon.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/discord/render.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/errors.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/index.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/loop.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/session.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/tools/bridge-client.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/tools/registry.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/tools/schemas.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/truncate.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/src/types.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/gemini-agent/tsconfig.json	package	packages/gemini-agent removed whole (C1); no workspace dependents (git grep flywheel-gemini-agent)
+packages/gemini-agent/vitest.config.ts	package	packages/gemini-agent removed whole (C1); no workspace dependents (git grep flywheel-gemini-agent)
+packages/voice-bridge/e2e/clips/short.txt	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF short.txt outside set: none
+packages/voice-bridge/e2e/debug-receive.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF debug-receive.mjs outside set: none
+packages/voice-bridge/e2e/eleven-staged.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF eleven-staged.mjs outside set: none
+packages/voice-bridge/e2e/eleven-voice-loop.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF eleven-voice-loop.mjs outside set: none
+packages/voice-bridge/e2e/fly1065-staged-discord.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF fly1065-staged-discord.mjs outside set: none
+packages/voice-bridge/e2e/gemini-staged.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF gemini-staged.mjs outside set: scripts/__tests__/fly2102-flag-freeze.test.sh
+packages/voice-bridge/e2e/gemini-voice-loop.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF gemini-voice-loop.mjs outside set: scripts/__tests__/fly2102-flag-freeze.test.sh
+packages/voice-bridge/e2e/glaw-injector.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF glaw-injector.mjs outside set: none
+packages/voice-bridge/e2e/lib/rig-config.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF rig-config.mjs outside set: none
+packages/voice-bridge/e2e/p6-live-venue.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF p6-live-venue.mjs outside set: none
+packages/voice-bridge/e2e/pr1-loop.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF pr1-loop.mjs outside set: none
+packages/voice-bridge/e2e/qa-codec-chain.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF qa-codec-chain.mjs outside set: none
+packages/voice-bridge/e2e/qa-cue-verify.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF qa-cue-verify.mjs outside set: none
+packages/voice-bridge/e2e/reply-classifier.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF reply-classifier.mjs outside set: none
+packages/voice-bridge/e2e/staged-bridge.mjs	harness	voice-bridge e2e drives legacy daemon (../dist/cli.js) / legacy modules; removed whole (C2) | git grep -lF staged-bridge.mjs outside set: none
+packages/voice-bridge/src/__tests__/address-router.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/assistant-advanced.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/assistant-landing.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/assistant-session.test.ts	test	refgraph cls=mixed; subject=/gemini+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=emitter.ts
+packages/voice-bridge/src/__tests__/assistant-speaker.test.ts	test	refgraph cls=mixed; subject=/gemini; keep-imports=LeadSpeaker.ts
+packages/voice-bridge/src/__tests__/assistant-tools.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/assistant-wiring.test.ts	test	refgraph cls=mixed; subject=/gemini+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=discordWiring.ts
+packages/voice-bridge/src/__tests__/brain-config.test.ts	test	refgraph cls=delete; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/brain-port.test.ts	test	refgraph cls=delete; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/bridge-linear-client.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/briefing-engine.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/conclusion-pipeline.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/config.test.ts	test	refgraph cls=delete; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/confirm-heuristics-hardening.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/confirmation-ladder.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/daemon-brain-port.test.ts	test	refgraph cls=mixed; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=discordWiring.ts
+packages/voice-bridge/src/__tests__/daemon-health.test.ts	test	refgraph cls=mixed; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=discordWiring.ts
+packages/voice-bridge/src/__tests__/ears-receiver.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/eleven-command.test.ts	test	refgraph cls=delete; subject=/eleven+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/eleven-config.test.ts	test	refgraph cls=delete; subject=/eleven; keep-imports=-
+packages/voice-bridge/src/__tests__/eleven-landing.test.ts	test	refgraph cls=delete; subject=/eleven; keep-imports=-
+packages/voice-bridge/src/__tests__/eleven-session.test.ts	test	refgraph cls=delete; subject=/eleven+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/eleven-wiring.test.ts	test	refgraph cls=mixed; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample)+/eleven; keep-imports=discordWiring.ts
+packages/voice-bridge/src/__tests__/eleven-ws.test.ts	test	refgraph cls=delete; subject=/eleven; keep-imports=-
+packages/voice-bridge/src/__tests__/feed-pipeline.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/gemini-command-and-config.test.ts	test	refgraph cls=delete; subject=/gemini+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/gemini-turn-mouth.test.ts	test	refgraph cls=mixed; subject=/gemini; keep-imports=LeadSpeaker.ts
+packages/voice-bridge/src/__tests__/glaw-command.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/huddle-session-resident.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/huddle-session.test.ts	test	refgraph cls=mixed; subject=/glaw; keep-imports=types.ts
+packages/voice-bridge/src/__tests__/huddle-tiv.test.ts	test	refgraph cls=delete; subject=/gemini+/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly1006-r3-bargein-storm.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly1006-waiting-cue.test.ts	test	refgraph cls=mixed; subject=/gemini+/glaw+/eleven+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=LeadSpeaker.ts
+packages/voice-bridge/src/__tests__/qa-fly1065-integration.test.ts	test	refgraph cls=mixed; subject=/gemini; keep-imports=GeminiLiveBackend.ts,transport.ts,transcript.ts
+packages/voice-bridge/src/__tests__/qa-fly1159-injection.test.ts	test	refgraph cls=delete; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly545-confirm-heuristic.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly545-feedback.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly545-r17-aggregation.test.ts	test	refgraph cls=mixed; subject=/glaw; keep-imports=transport.ts,GeminiLiveBackend.ts
+packages/voice-bridge/src/__tests__/qa-fly545-r23.test.ts	test	refgraph cls=mixed; subject=GeminiLive+POC talk+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=types.ts,transport.ts,GeminiLiveBackend.ts
+packages/voice-bridge/src/__tests__/qa-fly545-r3-defects.test.ts	test	refgraph cls=delete; subject=/glaw+/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly545-r4.test.ts	test	refgraph cls=mixed; subject=/gemini+/glaw; keep-imports=types.ts
+packages/voice-bridge/src/__tests__/qa-fly545-r5-stt-leg.test.ts	test	refgraph cls=mixed; subject=/glaw; keep-imports=types.ts
+packages/voice-bridge/src/__tests__/qa-fly967-naming.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly967-round2-fixes.test.ts	test	refgraph cls=mixed; subject=/gemini; keep-imports=discordWiring.ts
+packages/voice-bridge/src/__tests__/qa-fly967-round3-presence.test.ts	test	refgraph cls=mixed; subject=/gemini; keep-imports=discordWiring.ts
+packages/voice-bridge/src/__tests__/qa-fly967-round5-connect.test.ts	test	refgraph cls=delete; subject=/gemini+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/qa-fly967-round5b-livechain.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/resample.test.ts	test	refgraph cls=delete; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/resident-line-driver.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/resident-minutes.test.ts	test	refgraph cls=delete; subject=/glaw; keep-imports=-
+packages/voice-bridge/src/__tests__/rig-config.test.ts	test	refgraph cls=no-lib-import; manual: imports ../../e2e/lib/rig-config.mjs and reads gemini-voice-loop/gemini-staged harnesses -> dies with e2e
+packages/voice-bridge/src/__tests__/session-slot.test.ts	test	refgraph cls=delete; subject=legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/text-turn-mouth.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/tiv-presenter.test.ts	test	refgraph cls=delete; subject=/gemini; keep-imports=-
+packages/voice-bridge/src/__tests__/voice-room-runtime.test.ts	test	refgraph cls=delete; subject=/glaw+legacy daemon(cli/config/SessionSlot/VoiceRoomRuntime/BrainPort/preflight/resample); keep-imports=-
+packages/voice-bridge/src/__tests__/wire-meeting-resident.test.ts	test	refgraph cls=mixed; subject=/gemini+/glaw; keep-imports=types.ts,LeadSpeaker.ts
+packages/voice-bridge/src/__tests__/wire-meeting.test.ts	test	refgraph cls=mixed; subject=/gemini+/glaw; keep-imports=types.ts,LeadSpeaker.ts
+packages/voice-bridge/src/assistant/advanced.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/AssistantLanding.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/AssistantSession.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/AssistantSpeaker.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/BriefingEngine.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/config.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/GeminiCommand.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/tools.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/assistant/wiring.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/audio/defaultCues.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/audio/EarsReceiver.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/audio/GeminiTurnMouth.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/audio/resample.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/audio/TextTurnMouth.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/brain/BrainPort.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/cli.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/config.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/discord/TivPresenter.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/eleven/config.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/eleven/ElevenCommand.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/eleven/ElevenSession.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/eleven/ElevenWs.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/eleven/landing.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/eleven/wiring.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/AddressRouter.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/ConclusionPipeline.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/confirm-heuristics.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/ConfirmationLadder.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/FeedPipeline.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/GlawCommand.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/HuddleSession.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/huddleTiv.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/ReadOnlyLeadBrain.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/ResidentLineDriver.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/residentMinutes.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/huddle/wireMeeting.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/linear/BridgeLinearClient.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/preflight.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/roomEars.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/SessionSlot.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-bridge/src/VoiceRoomRuntime.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-core/e2e/fly1065-live-aggregation.mjs	harness	Gemini Live aggregation harness (C3) | git grep -lF fly1065-live-aggregation.mjs outside set: none
+packages/voice-core/evidence/fly-959-e2e-events.json	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF fly-959-e2e-events.json outside set: packages/voice-core/evidence/README.md
+packages/voice-core/evidence/fly-959-qa-verification.md	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF fly-959-qa-verification.md outside set: none
+packages/voice-core/evidence/fly-959-regression.md	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF fly-959-regression.md outside set: packages/voice-core/evidence/README.md
+packages/voice-core/evidence/gemini-live-e2e-attempt1-wrong-model-error.json	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF gemini-live-e2e-attempt1-wrong-model-error.json outside set: none
+packages/voice-core/evidence/gemini-live-e2e-events.json	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF gemini-live-e2e-events.json outside set: packages/voice-core/evidence/README.md
+packages/voice-core/evidence/gemini-live-full-e2e-events.json	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF gemini-live-full-e2e-events.json outside set: none
+packages/voice-core/evidence/gemini-raw-debug-messages.json	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF gemini-raw-debug-messages.json outside set: none
+packages/voice-core/evidence/poc-converse.md	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF poc-converse.md outside set: packages/voice-core/evidence/README.md,packages/voice-core/evidence/poc-announce.md
+packages/voice-core/evidence/real-live-models-list.json	evidence	Gemini Live converse-face evidence (FLY-543 POC-B / FLY-959 converse regressions); README rows removed | git grep -lF real-live-models-list.json outside set: packages/voice-core/evidence/README.md
+packages/voice-core/src/__tests__/assistant-live-options.test.ts	test	refgraph cls=mixed; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/extra-tools.test.ts	test	refgraph cls=keep; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/gemini-live.test.ts	test	refgraph cls=keep; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/genai-config.test.ts	test	refgraph cls=keep; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/genai-connector.test.ts	test	refgraph cls=keep; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/inject-context.test.ts	test	refgraph cls=mixed; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/qa-fly545-resilience.test.ts	test	refgraph cls=mixed; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/resident-brain.smoke.test.ts	test	refgraph cls=mixed; subject=/glaw resident brain
+packages/voice-core/src/__tests__/resident-brain.test.ts	test	refgraph cls=mixed; subject=/glaw resident brain
+packages/voice-core/src/__tests__/resident-manager.smoke.test.ts	test	refgraph cls=mixed; subject=/glaw resident brain
+packages/voice-core/src/__tests__/resident-manager.test.ts	test	refgraph cls=mixed; subject=/glaw resident brain
+packages/voice-core/src/__tests__/rotator-backend-integration.test.ts	test	refgraph cls=mixed; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/rotator.test.ts	test	refgraph cls=mixed; subject=GeminiLive+POC talk
+packages/voice-core/src/__tests__/turn-accumulator.test.ts	test	refgraph cls=keep; subject=GeminiLive+POC talk
+packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts	src-cut-shared	refgraph shared only via voice-core factory.ts buildGeminiBackend (removed in C3) and other gemini/* files | git grep -lF GeminiLiveBackend.ts outside set: none
+packages/voice-core/src/backends/gemini/genaiConnector.ts	src-cut-shared	refgraph shared only via voice-core factory.ts buildGeminiBackend (removed in C3) and other gemini/* files | git grep -lF genaiConnector.ts outside set: packages/voice-core/evidence/README.md
+packages/voice-core/src/backends/gemini/transport.ts	src-cut-shared	refgraph shared only via voice-core factory.ts buildGeminiBackend (removed in C3) and other gemini/* files | git grep -lF transport.ts outside set: packages/claude-runner/test/fixtures/kill-path-inventory.json,packages/teamlead/src/bridge/child-process-census.json
+packages/voice-core/src/backends/gemini/turn-accumulator.ts	src-cut-shared	refgraph shared only via voice-core factory.ts buildGeminiBackend (removed in C3) and other gemini/* files | git grep -lF turn-accumulator.ts outside set: none
+packages/voice-core/src/brain/ResidentBrainManager.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-core/src/brain/ResidentClaudeBrain.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+packages/voice-core/src/TalkSessionRotator.ts	src-onlyOld	refgraph onlyOld (graph-before.json)
+scripts/__tests__/restart-services-voice-bridge.test.sh	test	tests the deleted restart step; replaced by restart-services-no-voice-bridge.test.sh (C4) | git grep -lF restart-services-voice-bridge.test.sh outside set: .github/workflows/ci.yml,scripts/__tests__/ci-structure.test.sh
+scripts/__tests__/voice-bridge-wrapper.test.sh	test	tests the deleted wrapper (C4) | git grep -lF voice-bridge-wrapper.test.sh outside set: scripts/__tests__/ci-shell-suite-manual-only.txt
+scripts/flywheel-voice-bridge-wrapper.sh	script	launchd wrapper for the voice-bridge daemon (C4) | git grep -lF flywheel-voice-bridge-wrapper.sh outside set: packages/claude-runner/test/fixtures/kill-path-inventory.json,scripts/__tests__/check-global-path-hygiene.test.sh,scripts/__tests__/host-tmux-selection-mounts.test.sh,scripts/__tests__/host-tmux-selection-s0-scope.test.sh,scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh,scripts/lib/path-hygiene.sh
+scripts/gemini-agent-guard.sh	ci	FLY-1018 gemini-agent guard; ci.yml step removed (C1) | git grep -lF gemini-agent-guard.sh outside set: .github/workflows/ci.yml
+scripts/launchd/com.flywheel.voice-bridge.plist	script	launchd unit for the deleted daemon (C4); units.manifest row removed | git grep -lF com.flywheel.voice-bridge.plist outside set: scripts/__tests__/launchd-census.test.sh,scripts/__tests__/launchd-units-manifest.test.sh,scripts/launchd/units.manifest
+scripts/lib/restart-voice-bridge.sh	script	restart-services voice-bridge step library (C4) | git grep -lF restart-voice-bridge.sh outside set: packages/claude-runner/test/fixtures/kill-path-inventory.json,scripts/restart-services.sh,scripts/test-restart-services.sh
+scripts/run-voice-bridge.ts	script	voice-bridge daemon entry (C4) | git grep -lF run-voice-bridge.ts outside set: none

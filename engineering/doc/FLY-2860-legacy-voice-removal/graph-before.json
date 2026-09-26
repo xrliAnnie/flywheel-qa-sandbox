@@ -1,0 +1,1277 @@
+{
+ "root": "/Users/xiaorongli/Dev/flywheel-FLY-2860",
+ "counts": {
+  "files": 3400,
+  "prod": 1240,
+  "old": 80,
+  "onlyOld": 62,
+  "shared": 18,
+  "orphan": 6
+ },
+ "onlyOld": [
+  "packages/gemini-agent/src/audit.ts",
+  "packages/gemini-agent/src/cli.ts",
+  "packages/gemini-agent/src/client.ts",
+  "packages/gemini-agent/src/config.ts",
+  "packages/gemini-agent/src/context.ts",
+  "packages/gemini-agent/src/delegate.ts",
+  "packages/gemini-agent/src/discord/bindings.ts",
+  "packages/gemini-agent/src/discord/daemon.ts",
+  "packages/gemini-agent/src/discord/render.ts",
+  "packages/gemini-agent/src/errors.ts",
+  "packages/gemini-agent/src/index.ts",
+  "packages/gemini-agent/src/loop.ts",
+  "packages/gemini-agent/src/session.ts",
+  "packages/gemini-agent/src/tools/bridge-client.ts",
+  "packages/gemini-agent/src/tools/registry.ts",
+  "packages/gemini-agent/src/tools/schemas.ts",
+  "packages/gemini-agent/src/truncate.ts",
+  "packages/gemini-agent/src/types.ts",
+  "packages/voice-bridge/src/SessionSlot.ts",
+  "packages/voice-bridge/src/VoiceRoomRuntime.ts",
+  "packages/voice-bridge/src/assistant/AssistantLanding.ts",
+  "packages/voice-bridge/src/assistant/AssistantSession.ts",
+  "packages/voice-bridge/src/assistant/AssistantSpeaker.ts",
+  "packages/voice-bridge/src/assistant/BriefingEngine.ts",
+  "packages/voice-bridge/src/assistant/GeminiCommand.ts",
+  "packages/voice-bridge/src/assistant/advanced.ts",
+  "packages/voice-bridge/src/assistant/config.ts",
+  "packages/voice-bridge/src/assistant/tools.ts",
+  "packages/voice-bridge/src/assistant/wiring.ts",
+  "packages/voice-bridge/src/audio/EarsReceiver.ts",
+  "packages/voice-bridge/src/audio/GeminiTurnMouth.ts",
+  "packages/voice-bridge/src/audio/TextTurnMouth.ts",
+  "packages/voice-bridge/src/audio/defaultCues.ts",
+  "packages/voice-bridge/src/audio/resample.ts",
+  "packages/voice-bridge/src/brain/BrainPort.ts",
+  "packages/voice-bridge/src/cli.ts",
+  "packages/voice-bridge/src/config.ts",
+  "packages/voice-bridge/src/discord/TivPresenter.ts",
+  "packages/voice-bridge/src/eleven/ElevenCommand.ts",
+  "packages/voice-bridge/src/eleven/ElevenSession.ts",
+  "packages/voice-bridge/src/eleven/ElevenWs.ts",
+  "packages/voice-bridge/src/eleven/config.ts",
+  "packages/voice-bridge/src/eleven/landing.ts",
+  "packages/voice-bridge/src/eleven/wiring.ts",
+  "packages/voice-bridge/src/huddle/AddressRouter.ts",
+  "packages/voice-bridge/src/huddle/ConclusionPipeline.ts",
+  "packages/voice-bridge/src/huddle/ConfirmationLadder.ts",
+  "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+  "packages/voice-bridge/src/huddle/GlawCommand.ts",
+  "packages/voice-bridge/src/huddle/HuddleSession.ts",
+  "packages/voice-bridge/src/huddle/ReadOnlyLeadBrain.ts",
+  "packages/voice-bridge/src/huddle/ResidentLineDriver.ts",
+  "packages/voice-bridge/src/huddle/confirm-heuristics.ts",
+  "packages/voice-bridge/src/huddle/huddleTiv.ts",
+  "packages/voice-bridge/src/huddle/residentMinutes.ts",
+  "packages/voice-bridge/src/huddle/wireMeeting.ts",
+  "packages/voice-bridge/src/linear/BridgeLinearClient.ts",
+  "packages/voice-bridge/src/preflight.ts",
+  "packages/voice-bridge/src/roomEars.ts",
+  "packages/voice-core/src/TalkSessionRotator.ts",
+  "packages/voice-core/src/brain/ResidentBrainManager.ts",
+  "packages/voice-core/src/brain/ResidentClaudeBrain.ts"
+ ],
+ "shared": {
+  "packages/voice-bridge/src/audio/LeadSpeaker.ts": [
+   "packages/voice-bridge/src/bots/discordWiring.ts"
+  ],
+  "packages/voice-bridge/src/audio/VoiceConnSupervisor.ts": [
+   "packages/voice-bridge/src/bots/discordWiring.ts"
+  ],
+  "packages/voice-bridge/src/bots/BotRegistry.ts": [
+   "packages/voice-bridge/src/bots/discordWiring.ts",
+   "packages/voice-codex/src/discord-room.ts"
+  ],
+  "packages/voice-bridge/src/bots/discordWiring.ts": [
+   "packages/voice-codex/src/cli.ts",
+   "packages/voice-codex/src/discord-room.ts",
+   "packages/voice-codex/src/receive-health.ts"
+  ],
+  "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts": [
+   "packages/voice-core/src/factory.ts"
+  ],
+  "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts": [
+   "packages/voice-core/src/factory.ts"
+  ],
+  "packages/voice-core/src/backends/gemini/genaiConnector.ts": [
+   "packages/voice-core/src/factory.ts"
+  ],
+  "packages/voice-core/src/backends/gemini/transport.ts": [
+   "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+   "packages/voice-core/src/backends/gemini/genaiConnector.ts",
+   "packages/voice-core/src/factory.ts"
+  ],
+  "packages/voice-core/src/backends/gemini/turn-accumulator.ts": [
+   "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts"
+  ],
+  "packages/voice-core/src/brain/HeadlessClaudeBrain.ts": [
+   "packages/voice-core/src/factory.ts"
+  ],
+  "packages/voice-core/src/brain/stream-parse.ts": [
+   "packages/voice-core/src/brain/HeadlessClaudeBrain.ts"
+  ],
+  "packages/voice-core/src/config.ts": [
+   "packages/voice-core/src/cli.ts",
+   "packages/voice-core/src/factory.ts",
+   "packages/voice-headphone/src/daemon.ts"
+  ],
+  "packages/voice-core/src/emitter.ts": [
+   "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+   "packages/voice-codex/src/codex/CodexVoiceBackend.ts"
+  ],
+  "packages/voice-core/src/errors.ts": [
+   "packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+   "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts"
+  ],
+  "packages/voice-core/src/process.ts": [
+   "packages/voice-core/src/audio/FilePlayer.ts",
+   "packages/voice-core/src/audio/MicCapture.ts",
+   "packages/voice-core/src/audio/StreamPlayer.ts",
+   "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts",
+   "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+   "packages/voice-core/src/errors.ts",
+   "packages/voice-core/src/factory.ts"
+  ],
+  "packages/voice-core/src/scrub.ts": [
+   "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+   "packages/voice-codex/src/codex/CodexVoiceHandoff.ts",
+   "packages/voice-codex/src/delivery.ts",
+   "packages/voice-codex/src/speech.ts",
+   "packages/teamlead/src/bridge/voice-session-poller.ts"
+  ],
+  "packages/voice-core/src/transcript.ts": [
+   "packages/voice-core/src/cli.ts",
+   "packages/voice-codex/src/cli.ts"
+  ],
+  "packages/voice-core/src/types.ts": [
+   "packages/voice-bridge/src/audio/LeadSpeaker.ts",
+   "packages/voice-core/src/audio/FilePlayer.ts",
+   "packages/voice-core/src/audio/MicCapture.ts",
+   "packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+   "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts",
+   "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+   "packages/voice-core/src/backends/gemini/transport.ts",
+   "packages/voice-core/src/backends/registry.ts",
+   "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+   "packages/voice-core/src/cli.ts",
+   "packages/voice-core/src/config.ts",
+   "packages/voice-core/src/errors.ts",
+   "packages/voice-core/src/factory.ts",
+   "packages/voice-core/src/headphone/voice-directory.ts",
+   "packages/voice-core/src/transcript.ts",
+   "packages/voice-codex/src/bridge-client.ts",
+   "packages/voice-codex/src/cli.ts",
+   "packages/voice-codex/src/codex/CodexProofSpeaker.ts",
+   "packages/voice-codex/src/codex/CodexRoomFrontend.ts",
+   "packages/voice-codex/src/codex/CodexVoiceBackend.ts",
+   "packages/voice-codex/src/codex/CodexVoiceHandoff.ts",
+   "packages/voice-headphone/src/config.ts",
+   "packages/voice-headphone/src/local-announcer.ts",
+   "packages/voice-headphone/src/null-audio-io.ts"
+  ]
+ },
+ "orphan": [
+  "packages/voice-bridge/src/index.ts",
+  "packages/voice-core/src/audio/MicCapture.ts",
+  "packages/voice-core/src/audio/StreamPlayer.ts",
+  "packages/voice-core/src/cli.ts",
+  "packages/voice-core/src/headphone/index.ts",
+  "packages/voice-core/src/index.ts"
+ ],
+ "tests": {
+  "packages/voice-bridge/e2e/debug-receive.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/eleven-staged.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/eleven-voice-loop.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/fly1065-staged-discord.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/gemini-staged.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/gemini-voice-loop.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/glaw-injector.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/lib/rig-config.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/p6-live-venue.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/pr1-loop.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/qa-codec-chain.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/qa-cue-verify.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/reply-classifier.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/e2e/staged-bridge.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/address-router.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/assistant-advanced.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/advanced.ts",
+    "packages/voice-bridge/src/assistant/config.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/assistant-landing.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantLanding.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/assistant-session.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantSession.ts",
+    "packages/voice-bridge/src/SessionSlot.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/emitter.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/assistant-speaker.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantSpeaker.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/audio/LeadSpeaker.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/assistant-tools.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/tools.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/assistant-wiring.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantSession.ts",
+    "packages/voice-bridge/src/assistant/wiring.ts",
+    "packages/voice-bridge/src/cli.ts",
+    "packages/voice-bridge/src/config.ts",
+    "packages/voice-bridge/src/SessionSlot.ts",
+    "packages/voice-bridge/src/VoiceRoomRuntime.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/bot-registry.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/bots/BotRegistry.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/brain-config.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/config.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/brain-port.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/brain/BrainPort.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/bridge-linear-client.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/linear/BridgeLinearClient.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/briefing-engine.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/BriefingEngine.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/conclusion-pipeline.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/ConclusionPipeline.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/config.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/config.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/confirm-heuristics-hardening.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/ConfirmationLadder.ts",
+    "packages/voice-bridge/src/huddle/confirm-heuristics.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/confirmation-ladder.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/ConfirmationLadder.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/daemon-brain-port.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/cli.ts",
+    "packages/voice-bridge/src/config.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/daemon-health.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/cli.ts",
+    "packages/voice-bridge/src/config.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/discord-wiring-policy.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/ears-receiver.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/audio/EarsReceiver.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/eleven-command.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/eleven/config.ts",
+    "packages/voice-bridge/src/eleven/ElevenCommand.ts",
+    "packages/voice-bridge/src/SessionSlot.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/eleven-config.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/eleven/config.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/eleven-landing.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/eleven/landing.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/eleven-session.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/eleven/config.ts",
+    "packages/voice-bridge/src/eleven/ElevenSession.ts",
+    "packages/voice-bridge/src/VoiceRoomRuntime.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/eleven-wiring.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/config.ts",
+    "packages/voice-bridge/src/eleven/ElevenSession.ts",
+    "packages/voice-bridge/src/eleven/wiring.ts",
+    "packages/voice-bridge/src/VoiceRoomRuntime.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/eleven-ws.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/eleven/ElevenWs.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/feed-pipeline.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/gemini-command-and-config.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/config.ts",
+    "packages/voice-bridge/src/assistant/GeminiCommand.ts",
+    "packages/voice-bridge/src/SessionSlot.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/gemini-turn-mouth.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/audio/GeminiTurnMouth.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/audio/LeadSpeaker.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/glaw-command.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/GlawCommand.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/huddle-session-resident.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/huddle-session.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/huddle-tiv.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/discord/TivPresenter.ts",
+    "packages/voice-bridge/src/huddle/huddleTiv.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/lead-speaker.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/audio/LeadSpeaker.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly1006-r3-bargein-storm.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/audio/EarsReceiver.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly1006-waiting-cue.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantSpeaker.ts",
+    "packages/voice-bridge/src/audio/EarsReceiver.ts",
+    "packages/voice-bridge/src/eleven/config.ts",
+    "packages/voice-bridge/src/eleven/ElevenSession.ts",
+    "packages/voice-bridge/src/VoiceRoomRuntime.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/audio/LeadSpeaker.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly1065-integration.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantLanding.ts",
+    "packages/voice-bridge/src/discord/TivPresenter.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/transcript.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly1159-injection.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/cli.ts",
+    "packages/voice-bridge/src/config.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly545-confirm-heuristic.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/ConfirmationLadder.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly545-feedback.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly545-r17-aggregation.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly545-r23.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/TalkSessionRotator.ts",
+    "packages/voice-bridge/src/config.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly545-r3-defects.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/audio/defaultCues.ts",
+    "packages/voice-bridge/src/audio/EarsReceiver.ts",
+    "packages/voice-bridge/src/audio/GeminiTurnMouth.ts",
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts",
+    "packages/voice-bridge/src/huddle/ReadOnlyLeadBrain.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly545-r4.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/discord/TivPresenter.ts",
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts",
+    "packages/voice-bridge/src/huddle/huddleTiv.ts",
+    "packages/voice-bridge/src/huddle/wireMeeting.ts",
+    "packages/voice-bridge/src/assistant/AssistantLanding.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly545-r5-stt-leg.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/huddle/AddressRouter.ts",
+    "packages/voice-bridge/src/huddle/FeedPipeline.ts",
+    "packages/voice-bridge/src/huddle/HuddleSession.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly967-naming.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantLanding.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly967-round2-fixes.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/assistant/GeminiCommand.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly967-round3-presence.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/assistant/wiring.ts"
+   ],
+   "keep": [
+    "packages/voice-bridge/src/bots/discordWiring.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly967-round5-connect.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantSession.ts",
+    "packages/voice-bridge/src/assistant/GeminiCommand.ts",
+    "packages/voice-bridge/src/SessionSlot.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/qa-fly967-round5b-livechain.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/assistant/AssistantSpeaker.ts",
+    "packages/voice-bridge/src/assistant/wiring.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/resample.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/audio/resample.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/resident-line-driver.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/ResidentLineDriver.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/resident-minutes.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/huddle/residentMinutes.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/rig-config.test.ts": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/session-slot.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/SessionSlot.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/text-turn-mouth.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/audio/TextTurnMouth.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/tiv-presenter.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/discord/TivPresenter.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/voice-conn-supervisor.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-bridge/src/audio/VoiceConnSupervisor.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/voice-room-runtime.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/voice-bridge/src/roomEars.ts",
+    "packages/voice-bridge/src/VoiceRoomRuntime.ts"
+   ],
+   "keep": []
+  },
+  "packages/voice-bridge/src/__tests__/wire-meeting-resident.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/discord/TivPresenter.ts",
+    "packages/voice-bridge/src/huddle/huddleTiv.ts",
+    "packages/voice-bridge/src/huddle/ResidentLineDriver.ts",
+    "packages/voice-bridge/src/huddle/wireMeeting.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts",
+    "packages/voice-bridge/src/audio/LeadSpeaker.ts"
+   ]
+  },
+  "packages/voice-bridge/src/__tests__/wire-meeting.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-bridge/src/discord/TivPresenter.ts",
+    "packages/voice-bridge/src/huddle/huddleTiv.ts",
+    "packages/voice-bridge/src/huddle/wireMeeting.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts",
+    "packages/voice-bridge/src/audio/LeadSpeaker.ts"
+   ]
+  },
+  "packages/voice-core/e2e/fly1065-live-aggregation.mjs": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/voice-core/src/__tests__/announcer.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+    "packages/voice-core/src/transcript.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/assistant-live-options.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/TalkSessionRotator.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/emitter.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/audio.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/audio/FilePlayer.ts",
+    "packages/voice-core/src/audio/MicCapture.ts",
+    "packages/voice-core/src/audio/StreamPlayer.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/cli-factory.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/cli.ts",
+    "packages/voice-core/src/config.ts",
+    "packages/voice-core/src/factory.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/config.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/config.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/edge-tts.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/edge-tts/EdgeTtsEngine.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/extra-tools.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/fakes.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/audio/FilePlayer.ts",
+    "packages/voice-core/src/process.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/gemini-live.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/transcript.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/genai-config.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/backends/gemini/genaiConnector.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/genai-connector.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/backends/gemini/genaiConnector.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headless-brain.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-phrases.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/phrases.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-queue.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/queue.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-tap-filter.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/tap-filter.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-turn-machine.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/queue.ts",
+    "packages/voice-core/src/headphone/turn-machine.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-voice-directory.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/voice-directory.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/headphone-worked-example.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/headphone/queue.ts",
+    "packages/voice-core/src/headphone/turn-machine.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/inject-context.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/TalkSessionRotator.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/types.ts",
+    "packages/voice-core/src/backends/gemini/genaiConnector.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/process-resident.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/process.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/process.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/process.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/public-exports.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/index.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/qa-fly545-resilience.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/TalkSessionRotator.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/types.ts",
+    "packages/voice-core/src/backends/gemini/genaiConnector.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/receive-health.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/receive-health.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/registry.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/registry.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/brain/ResidentClaudeBrain.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/resident-brain.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/brain/ResidentClaudeBrain.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/process.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/resident-manager.smoke.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/brain/ResidentBrainManager.ts",
+    "packages/voice-core/src/brain/ResidentClaudeBrain.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/resident-manager.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/brain/ResidentBrainManager.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/rotator-backend-integration.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/TalkSessionRotator.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/GeminiLiveBackend.ts",
+    "packages/voice-core/src/backends/gemini/transport.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/rotator.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/voice-core/src/TalkSessionRotator.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/emitter.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/scrub.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/scrub.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/stream-parse.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/brain/stream-parse.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/transcript.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/transcript.ts",
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/voice-core/src/__tests__/turn-accumulator.test.ts": {
+   "cls": "keep",
+   "del": [],
+   "keep": [
+    "packages/voice-core/src/backends/gemini/turn-accumulator.ts"
+   ]
+  },
+  "packages/gemini-agent/src/__tests__/audit.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/audit.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/bindings.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/config.ts",
+    "packages/gemini-agent/src/discord/bindings.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/bridge-client.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/tools/bridge-client.ts",
+    "packages/gemini-agent/src/tools/registry.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/client.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/client.ts",
+    "packages/gemini-agent/src/errors.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/config.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/config.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/daemon.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/config.ts",
+    "packages/gemini-agent/src/discord/daemon.ts",
+    "packages/gemini-agent/src/discord/render.ts",
+    "packages/gemini-agent/src/session.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/delegate.test.ts": {
+   "cls": "mixed",
+   "del": [
+    "packages/gemini-agent/src/config.ts",
+    "packages/gemini-agent/src/delegate.ts",
+    "packages/gemini-agent/src/session.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": [
+    "packages/voice-core/src/types.ts"
+   ]
+  },
+  "packages/gemini-agent/src/__tests__/fixtures/mock-bridge.ts": {
+   "cls": "no-lib-import",
+   "del": [],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/full-stack-integration.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/loop.ts",
+    "packages/gemini-agent/src/tools/bridge-client.ts",
+    "packages/gemini-agent/src/tools/registry.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/loop.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/errors.ts",
+    "packages/gemini-agent/src/loop.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/registry.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/tools/bridge-client.ts",
+    "packages/gemini-agent/src/tools/registry.ts",
+    "packages/gemini-agent/src/tools/schemas.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/session.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/cli.ts",
+    "packages/gemini-agent/src/client.ts",
+    "packages/gemini-agent/src/config.ts",
+    "packages/gemini-agent/src/context.ts",
+    "packages/gemini-agent/src/session.ts",
+    "packages/gemini-agent/src/types.ts"
+   ],
+   "keep": []
+  },
+  "packages/gemini-agent/src/__tests__/truncate.test.ts": {
+   "cls": "delete",
+   "del": [
+    "packages/gemini-agent/src/truncate.ts"
+   ],
+   "keep": []
+  }
+ },
+ "prodSyms": {
+  "flywheel-voice-core": [
+   "AnnouncerSession <- packages/voice-core/src/types.ts",
+   "AudioFormat <- packages/voice-core/src/types.ts",
+   "BackendFactory <- packages/voice-core/src/backends/registry.ts",
+   "BackendRegistry <- packages/voice-core/src/backends/registry.ts",
+   "BrainAdapter <- packages/voice-core/src/types.ts",
+   "ConversationEventMap <- packages/voice-core/src/types.ts",
+   "ConversationOptions <- packages/voice-core/src/types.ts",
+   "ConversationSession <- packages/voice-core/src/types.ts",
+   "EdgeTtsBackend <- packages/voice-core/src/backends/edge-tts/EdgeTtsBackend.ts",
+   "HeadphoneIO <- packages/voice-core/src/headphone/turn-machine.ts",
+   "HeadphoneQueue <- packages/voice-core/src/headphone/queue.ts",
+   "HeadphoneTurnMachine <- packages/voice-core/src/headphone/turn-machine.ts",
+   "JsonlTranscriptSink <- packages/voice-core/src/transcript.ts",
+   "OPEN_WORD <- packages/voice-core/src/headphone/phrases.ts",
+   "PersistedTurnState <- packages/voice-core/src/headphone/turn-machine.ts",
+   "QueueItem <- packages/voice-core/src/headphone/queue.ts",
+   "QueueSnapshot <- packages/voice-core/src/headphone/queue.ts",
+   "ReceiveHealth <- packages/voice-core/src/receive-health.ts",
+   "ReceiveReason <- packages/voice-core/src/receive-health.ts",
+   "STOP_WORD <- packages/voice-core/src/headphone/phrases.ts",
+   "SpeakReceipt <- packages/voice-core/src/types.ts",
+   "TimerHost <- packages/voice-core/src/headphone/turn-machine.ts",
+   "TranscriptEntry <- packages/voice-core/src/types.ts",
+   "TurnEvent <- packages/voice-core/src/headphone/turn-machine.ts",
+   "TypedEmitter <- packages/voice-core/src/emitter.ts",
+   "VOICE_MIRROR_MARKS <- packages/voice-core/src/voice-mirror.ts",
+   "VoiceBackend <- packages/voice-core/src/types.ts",
+   "VoiceBackendCapabilities <- packages/voice-core/src/types.ts",
+   "VoiceDirectory <- packages/voice-core/src/headphone/voice-directory.ts",
+   "VoiceError <- packages/voice-core/src/types.ts",
+   "VoiceSpeakKind <- packages/voice-core/src/types.ts",
+   "VoiceSpeakOptions <- packages/voice-core/src/types.ts",
+   "VoiceSpeakVerification <- packages/voice-core/src/types.ts",
+   "VoiceSpec <- packages/voice-core/src/types.ts",
+   "VoiceUtterance <- packages/voice-core/src/types.ts",
+   "buildEdgeTtsBackend <- packages/voice-core/src/factory.ts",
+   "getTranscriptWriteFailure <- packages/voice-core/src/transcript.ts",
+   "isVoiceMirrorText <- packages/voice-core/src/voice-mirror.ts",
+   "matchPhrase <- packages/voice-core/src/headphone/phrases.ts",
+   "parseReceiveHealth <- packages/voice-core/src/receive-health.ts",
+   "resolveConfig <- packages/voice-core/src/config.ts",
+   "scrubTranscript <- packages/voice-core/src/scrub.ts",
+   "shouldEnqueue <- packages/voice-core/src/headphone/tap-filter.ts"
+  ],
+  "flywheel-voice-bridge": [
+   "BotRegistry <- packages/voice-bridge/src/bots/BotRegistry.ts",
+   "DiscordDeps <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "DiscordReceiveDiagnostic <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "DiscordReceivePolicy <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "DiscordReceiveRuntimeDiagnostic <- packages/voice-bridge/src/bots/discordWiring.ts",
+   "RegistryClientLike <- packages/voice-bridge/src/bots/BotRegistry.ts",
+   "createDiscordDeps <- packages/voice-bridge/src/bots/discordWiring.ts"
+  ],
+  "flywheel-voice-core (via voice-bridge kept)": [
+   "TtsEngine <- packages/voice-core/src/types.ts"
+  ]
+ },
+ "dynamic": [
+  [
+   "packages/voice-bridge/src/__tests__/qa-fly545-r4.test.ts",
+   [
+    "DYN:flywheel-voice-core"
+   ]
+  ]
+ ]
+}

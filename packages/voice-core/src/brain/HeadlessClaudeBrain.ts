@@ -55,8 +55,8 @@ export interface HeadlessClaudeBrainOptions {
 	runner?: ProcessRunner;
 	/** use --resume to keep one headless session across turns (default true). */
 	useResume?: boolean;
-	/** FLY-545: working directory for the claude -p child — the read-only
-	 * huddle brain anchors Read/Grep/Glob at the project root. */
+	/** FLY-545: working directory for the claude -p child — anchors
+	 * Read/Grep/Glob at the project root. */
 	cwd?: string;
 }
 

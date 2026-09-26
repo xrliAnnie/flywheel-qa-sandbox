@@ -148,7 +148,7 @@ function configuredProject(): ProjectEntry {
 	} as ProjectEntry;
 }
 
-it.each(["bot", "room", "guild", "missing", "duplicate"])(
+it.each(["bot", "room", "guild", "missing", "duplicate", "legacy-huddle"])(
 	"rejects %s registry drift before provision or projection effects",
 	async (drift) => {
 		const project = configuredProject();
@@ -159,6 +159,7 @@ it.each(["bot", "room", "guild", "missing", "duplicate"])(
 		if (drift === "guild") project.voiceRoom!.guildId = "100000000000000099";
 		if (drift === "missing") projects.length = 0;
 		if (drift === "duplicate") projects.push(project);
+		if (drift === "legacy-huddle") project.huddle = { guildId: "retired" };
 		const factory = vi.spyOn(routes, "createVoiceSessionRouter");
 		const fetchImpl = vi.fn();
 		const { runtime } = createVoiceSessionServices({

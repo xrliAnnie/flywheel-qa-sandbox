@@ -4,12 +4,6 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { EdgeTtsBackend } from "../backends/edge-tts/EdgeTtsBackend.js";
-import { GeminiLiveBackend } from "../backends/gemini/GeminiLiveBackend.js";
-import type {
-	GeminiLiveTransport,
-	LiveConnection,
-	LiveConnectParams,
-} from "../backends/gemini/transport.js";
 import { overridesFromArgs, parseCliArgs, readSayText } from "../cli.js";
 import { resolveConfig } from "../config.js";
 import { buildRegistry } from "../factory.js";
@@ -27,19 +21,10 @@ describe("parseCliArgs", () => {
 		expect(a.stdin).toBe(true);
 		expect(a.voice).toBe("en-US-X");
 	});
-	it("parses the talk command", () => {
-		const a = parseCliArgs([
-			"talk",
-			"--lead",
-			"tadashi",
-			"--project",
-			"/repo",
-			"--device",
-			":1",
-		]);
-		expect(a.command).toBe("talk");
-		expect(a.leadId).toBe("tadashi");
-		expect(a.device).toBe(":1");
+	it("no longer accepts the retired talk command (FLY-2860)", () => {
+		const a = parseCliArgs(["talk", "--lead", "tadashi", "--device", ":1"]);
+		expect(a.command).toBe("help");
+		expect(Object.keys(a).sort()).toEqual(["command", "help", "stdin"]);
 	});
 	it("defaults to help for an unknown command", () => {
 		expect(parseCliArgs(["wat"]).command).toBe("help");
@@ -48,11 +33,21 @@ describe("parseCliArgs", () => {
 });
 
 describe("overridesFromArgs", () => {
-	it("derives identity path from project + lead", () => {
+	it("maps only the say options (voice, transcript dir)", () => {
 		const o = overridesFromArgs(
-			parseCliArgs(["talk", "--lead", "belle", "--project", "/x"]),
+			parseCliArgs([
+				"say",
+				"--voice",
+				"en-US-X",
+				"--transcript-dir",
+				"/t",
+				"--lead",
+				"belle",
+				"--project",
+				"/x",
+			]),
 		);
-		expect(o.identityFile).toBe("/x/.lead/belle/identity.md");
+		expect(o).toEqual({ voice: "en-US-X", transcriptDir: "/t" });
 	});
 });
 
@@ -78,37 +73,14 @@ describe("readSayText (argv hygiene at the CLI)", () => {
 });
 
 // A5 — the pluggability proof: switching backend routes through the registry.
-describe("buildRegistry (A5 pluggability, dual-face)", () => {
+describe("buildRegistry (A5 pluggability)", () => {
 	const config = resolveConfig({}, {} as NodeJS.ProcessEnv);
-	const fakeTransport: GeminiLiveTransport = {
-		async connect(_p: LiveConnectParams): Promise<LiveConnection> {
-			return {
-				sendAudio() {},
-				sendText() {},
-				injectContext() {},
-				sendToolResponse() {},
-				onEvent() {},
-				async close() {},
-			};
-		},
-	};
 
-	it("registers only the announce backend by default", () => {
+	it("registers only the announce backend (no bundled converse backend)", async () => {
 		const r = buildRegistry(config);
 		expect(r.ids()).toEqual(["edge-tts"]);
-	});
-
-	it("registers both faces and creates each by id (consistency passes)", async () => {
-		const r = buildRegistry(config, {
-			enableConverse: true,
-			converse: { transport: fakeTransport },
-		});
-		expect(r.ids().sort()).toEqual(["edge-tts", "gemini-live"]);
 		const announce = await r.create("edge-tts");
-		const converse = await r.create("gemini-live");
 		expect(announce).toBeInstanceOf(EdgeTtsBackend);
 		expect(announce.capabilities.announce).toBe(true);
-		expect(converse).toBeInstanceOf(GeminiLiveBackend);
-		expect(converse.capabilities.converse).toBe(true);
 	});
 });

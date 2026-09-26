@@ -5,12 +5,11 @@
  *
  * QA R4 (d): append used to be appendFileSync ON THE EVENT PATH — every
  * turn-final blocked the event loop on a disk write, and under load that
- * starves the ws keepalives of EVERY live Gemini session on this loop (the
+ * starves the ws keepalives of EVERY live voice session on this loop (the
  * repeated-abort root). Writes are now an ordered async chain; the first
  * failure surfaces ONCE through onError (default: stderr) and further writes
  * are dropped fail-visibly instead of throwing where no caller can catch.
- * Readers that consume the file (landing/record) must await flush() first —
- * GeminiLiveBackend.close() drains it before resolving.
+ * Readers that consume the file (landing/record) must await flush() first.
  */
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";

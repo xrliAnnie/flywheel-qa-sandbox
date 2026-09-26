@@ -1,0 +1,7 @@
+flowchart TB
+  PR["生产根<br/>voice-codex / voice-headphone / teamlead"] --> SH["共用 18 个文件<br/>保留"]
+  OLD["旧命令根<br/>assistant / eleven / huddle / cli.ts / gemini-agent"] --> SH
+  OLD --> ONLY["只被旧命令到达 62 个文件<br/>整文件删除"]
+  SH --> MIX["混合文件 7 个<br/>保留, 剪掉旧段落"]
+  MIX --> RE["剪段后重跑引用图 + tsc"]
+  RE --> GATE["residue-check.sh<br/>允许清单外零命中"]

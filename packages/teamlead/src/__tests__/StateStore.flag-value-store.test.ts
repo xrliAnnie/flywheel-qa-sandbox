@@ -332,7 +332,9 @@ describe("StateStore FLY-1778 flag value store", () => {
 	it("mutator independently rejects unlisted and retired identities", () => {
 		store.ensureFlagValueRows({ env: {}, now: 100 });
 		for (const [name, reason] of [
-			["voice_qa_presence_override", "not_store_managed"],
+			["never_registered_flag_identity", "not_store_managed"],
+			// FLY-2860 retired the staged-voice-rig presence override to a tombstone.
+			["voice_qa_presence_override", "retired_flag"],
 			["workflow_resume", "retired_flag"],
 			["three_stage", "retired_flag"],
 		] as const) {

@@ -369,8 +369,8 @@ rn_run_terminal_case() {
       stop_bridge() { [[ "$mode" != "rollback-port-stuck" ]]; }
       start_bridge() { :; }
       bridge_port() { printf "9876\n"; }
-      restart_voice_bridge_managed() {
-        VOICE_BRIDGE_RESTART_DETAIL="simulated voice rollback failure"
+      restart_voice_managed() {
+        VOICE_RESTART_DETAIL="simulated voice rollback failure"
         [[ "$mode" != "rollback-voice-failed" ]]
       }
       trigger_cmux_refresh() { :; }
@@ -416,8 +416,13 @@ rn_run_terminal_case() {
         rollback-no-sha)
           rollback_and_restart "" || true
           ;;
-        rollback-result-unreadable|rollback-leads-failed|rollback-recovered|rollback-voice-failed)
+        rollback-result-unreadable|rollback-leads-failed|rollback-recovered)
           restart_all_leads=true
+          rollback_and_restart 1111111 || true
+          ;;
+        rollback-voice-failed)
+          restart_all_leads=true
+          restart_voice=true
           rollback_and_restart 1111111 || true
           ;;
         *)
@@ -453,7 +458,7 @@ rn_run_terminal_case rollback-port-stuck rollback-port-stuck
 rn_run_terminal_case rollback-result-unreadable rollback-lead-result-unreadable
 rn_run_terminal_case rollback-leads-failed rollback-leads-failed
 rn_run_terminal_case rollback-recovered update-rolled-back
-rn_run_terminal_case rollback-voice-failed rollback-voice-bridge-failed
+rn_run_terminal_case rollback-voice-failed rollback-voice-failed
 
 echo "Test: FLY-1926 host-tmux diagnostics never pollute the Lead count channel"
 rn_host_tmux_funcs="$TMPDIR_ROOT/restart-host-tmux-functions.sh"
@@ -1024,7 +1029,7 @@ fi
 # cannot silently re-add an execution from the fast-forwarded checkout.
 out_of_package_refs="$(grep -nE '\$\{?FLYWHEEL_DIR\}?/(scripts|packages)' "$SCRIPT_DIR/restart-services.sh" || true)"
 if [[ -z "$out_of_package_refs" ]] \
-  && [[ "$(grep -c 'FLYWHEEL_RUNTIME_DIR:-\${FLYWHEEL_DIR}}' "$SCRIPT_DIR/restart-services.sh")" -ge 48 ]]; then
+  && [[ "$(grep -c 'FLYWHEEL_RUNTIME_DIR:-\${FLYWHEEL_DIR}}' "$SCRIPT_DIR/restart-services.sh")" -ge 47 ]]; then
     pass "FLY-2654 restart-services resolves every script/package reference through the runtime package root"
 else
     fail "FLY-2654 out-of-package execution references in restart-services.sh: ${out_of_package_refs:-<runtime-dir count drifted>}"
@@ -2518,7 +2523,6 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
    "$REAL_REPO_ROOT/scripts/lib/converge-nonlead-daemons.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-quota-monitor.sh" \
-   "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-voice.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
@@ -2559,9 +2563,6 @@ if [[ "\${1:-}" == "print" ]]; then
     fi
     echo "state = running"
     echo "pid = \$(cat "$BO_CALLS/lead.pid" 2>/dev/null || echo 424242)"
-  elif [[ "\${2:-}" == *"com.flywheel.voice-bridge" ]]; then
-    echo "Could not find service"
-    exit 3
   else
     echo "state = running"
     echo "pid = 434343"
@@ -3138,7 +3139,7 @@ rm -f "$identity_marker"
 # ── 3) dry-run exposes full scope + reason with no side effects ──
 echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
 out=$(bo_run --dry-run --reason env-change) && rc=0 || rc=$?
-if (( rc == 0 )) && echo "$out" | grep -q "Would restart Bridge + voice-bridge (when configured/loaded) + all Leads" \
+if (( rc == 0 )) && echo "$out" | grep -q "Would restart Bridge + all Leads + voice when changed/loaded" \
    && echo "$out" | grep -q "reason=env-change" \
    && [[ -z "$(bo_calls launchctl)" && -z "$(bo_calls pnpm)" ]] \
    && [[ -f "$BO_HOME/.flywheel/plugin-restart-pending" ]]; then

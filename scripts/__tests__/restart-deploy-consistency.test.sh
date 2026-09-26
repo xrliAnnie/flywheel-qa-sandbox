@@ -81,7 +81,6 @@ env \
     alert_severe() { printf "%s|%s|%s\n" "$1" "$2" "$3" >> "$FLY1743_SEVERE_FILE"; }
     alert_warning() { :; }
     pnpm() { printf "%s\n" "$*" >> "$FLY1743_PNPM_CALLS"; return 0; }
-    restart_voice_bridge_managed() { return 0; }
     rn_parse_count() { printf "0\n"; }
     restart_bridge=false
     restart_all_leads=false
@@ -150,7 +149,6 @@ env \
     alert_severe() { printf "%s|%s|%s\n" "$1" "$2" "$3" >> "$FLY1743_SEVERE_FILE"; }
     alert_warning() { :; }
     pnpm() { printf "%s\n" "$*" >> "$FLY1743_PNPM_CALLS"; return 0; }
-    restart_voice_bridge_managed() { return 0; }
     rn_parse_count() { printf "0\n"; }
     restart_bridge=false
     restart_all_leads=false
@@ -189,7 +187,6 @@ run_standard_rollback() {
       alert_severe() { printf "%s|%s|%s\n" "$1" "$2" "$3" >> "$FLY1743_SEVERE_FILE"; }
       alert_warning() { :; }
       pnpm() { printf "%s\n" "$*" >> "$FLY1743_PNPM_CALLS"; return 0; }
-      restart_voice_bridge_managed() { return 0; }
       rn_parse_count() { printf "0\n"; }
       restart_bridge=false
       restart_all_leads=false

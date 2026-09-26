@@ -1137,7 +1137,6 @@ expected_shard_tests = {
         "Test — FLY-1887 bounded Flywheel logs",
         "Test — FLY-957 record_deployed_range best-effort",
         "Test — FLY-2459 Codex department capability and migration",
-        "Test — FLY-1018 gemini-agent guard",
         "Test — FLY-880 PM executor role contract",
         "Test — FLY-2015 diagram-design role routing",
         "Test — FLY-2022 diagram-design project install",
@@ -1452,7 +1451,7 @@ fly1715_commands = [
 ]
 expected_fly1715_commands = [
     "bash scripts/__tests__/runner-tier-token-preflight.test.sh",
-    "bash scripts/__tests__/restart-services-voice-bridge.test.sh",
+    "bash scripts/__tests__/restart-services-no-voice-bridge.test.sh",
 ]
 require(
     fly1715_commands == expected_fly1715_commands,
