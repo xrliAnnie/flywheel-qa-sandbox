@@ -115,6 +115,52 @@ describe("execution process inspector", () => {
 			});
 		else expect(result).toBeNull();
 	});
+	it.each(["same", "forked", "reused", "boot", "changed_during_sample"])(
+		"ties a registered launch to its exact pre-exec leader: %s",
+		async (mode) => {
+			const { options } = fixture([
+				{ pid: mode === "forked" ? 43 : 42, pgid: 42 },
+			]);
+			let censusReads = 0;
+			const result = await bindSpawnedExecutionProcessGroup(
+				{
+					...binding,
+					expectedLeader: {
+						pid: 42,
+						startIdentity: mode === "reused" ? "previous-start" : start,
+						hostBootId: mode === "boot" ? "previous-boot" : boot,
+					},
+				},
+				{
+					...options,
+					runCommand: async (f, a, c) => {
+						const output = await options.runCommand!(f, a, c);
+						if (f.endsWith("lsof"))
+							return {
+								stdout: output.stdout.replace(
+									"p42",
+									`p${a[a.indexOf("-p") + 1]}`,
+								),
+							};
+						if (
+							mode === "changed_during_sample" &&
+							a.includes("pid=,ppid=,pgid=,uid=,stat=,lstart=") &&
+							++censusReads > 1
+						)
+							return {
+								stdout: output.stdout.replace(
+									start,
+									"Sat Sep 26 10:00:01 2026",
+								),
+							};
+						return output;
+					},
+				},
+			);
+			if (mode === "same") expect(result?.pid).toBe(42);
+			else expect(result).toBeNull();
+		},
+	);
 	it("reads native identity independently of a rewritten process title", async () => {
 		const { options } = fixture();
 		expect(await readExecutionProcessIdentity(42, options)).toEqual({

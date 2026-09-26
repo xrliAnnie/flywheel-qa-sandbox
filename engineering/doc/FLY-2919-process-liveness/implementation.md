@@ -270,3 +270,21 @@ B1/B2 + A6 owning related 使用25个明确相关文件的 include 上界，实�
 此批完成的是registry→store→新观测工厂的动态开关链，**尚未将全部生产死亡消费者迁入该工厂**，因此 Lead 的 no-runtime-kill-switch 义务仍须在 B–F 末尾逐消费者证明。新死亡提交应受开关控制，已提交跨库义务的幂等重放不得被开关卡住（C组仍待实现）。
 
 下一步继续批准范围：三种Tmux载体生产绑定与旧体补采、统一观测的生产接线及reown预算优先、独立公平采样节奏、死亡CAS与marker优先/双库义务、其余B–F消费者和九单矩阵。任务仍implement 0/6；没有PR、有效代码评审、full CI、QA529或交卷完成声明。
+
+## A8 启动身份接纳前置（2026-09-26，执行 7d99e8e8）
+
+本轮从 `583b9e6d0`、TURN implement epoch 13 续接；A7 已提交推送，未重做设计或重复已完成的 B1/B2 验证。仍保留 A–F 和九单全范围，以下仅为 A 的一个必要前置批次。
+
+新增 `expectedLeader` 的独立 OS 接纳约束：Tmux 最终 exec 必须延续登记的 PID/start/boot，不允许仅因为同组里存在另一个相同 executable 就接纳。Codex 原有可 fork 的 group 接纳路径不要求这个可选约束。采样中更换 PID 身份仍拒绝，接纳 binding 不携带临时 expectedLeader 字段。
+
+登记 helper 现在接收同一个 shell 将传给 exec 的实际位置参数；写候选之前核对 binary 与 Claude 的唯一精确 `--session-id`/`--resume` 参数（也支持等号形式），不从改写后的 ps 标题恢复 session。Kimi/Antigravity 不要求不存在的 Claude session 参数。参数仍作为数据转发，没有写入候选文件或日志。登记是未受信候选，不能代替生产 factory 的独立 executable/cwd/nonce/身份复核。
+
+红绿证据：同组其他 PID、PID/start 复用、host boot 不同三项因旧 binder 错误接纳而 RED，修正后 inspector 文件 43 pass；实际参数的 binary/session 缺失、重复、前缀、`--` 后伪装等六项 RED，修正后 launch 文件 14 pass。真实 `/bin/sh` + 临时 helper 测试原本只能读到空参数数组（RED），修后完整位置参数逐字匹配，`$(literal)` 不执行，登记 shell PID 与最终 exec 后程序 PID 相同（GREEN）；adapter 文件 12 pass。
+
+验证：16 个具体文件逐一运行，397 pass；owner controller、FLY-1560、child census、FLY-2211 kill inventory 和运行时 flag drift 守卫均保留。限定 11 个已发现单元文件的 owning runner `vitest related` 实际选择 8 文件，292 pass。`pnpm --filter "flywheel-teamlead..." build` 与 `pnpm lint` exit 0（25 个既有 warning）。voice-codex 类型检查首次因 voice-bridge dist 缺失失败，补建 `flywheel-voice-codex^...` 依赖后同一 typecheck exit 0；不计为产品 RED。未新增 shell 测试文件，新增真实 shell fixture 位于上述 adapter vitest 文件。真实 tmux/viewer 验证仍归 QA529，未以 mock 代替。
+
+**未完成的生产接线：**`expectedLeader` 目前尚无生产调用方；三载体的 `processLaunchDeps` 仍未由 run-infra factory 注入。后续需要按本机已核实的真实 binary 形态处理独立 executable：Claude 与 agy 是 native executable，Kimi 当前安装为带绝对 Node interpreter shebang 的脚本。不能将 Kimi 的脚本路径直接与 OS 的 Node executable 比较，也不能因此永久返回 unknown。生产 factory 还须把 trusted request 与候选逐字段匹配，将登记 identity 传入 expectedLeader，核验 executable/cwd/nonce 后持久接纳；旧体补采仍待实现。
+
+B–F 的共同观测生产接线、reown 预算优先、独立公平采样、marker-first 死亡 CAS、双库义务重放、全部消费者迁移、standby writer-empty、九单验收、有效代码评审/PR/full CI/QA529/needs_review 均未完成。保持 implement 0/6；本批不能作为生产故障已修复的声明。
+
+本批完整逐查询消费者匹配与逐文件排除理由归档 `implementation-a8-consumers.json.gz`；红绿日志、显式/related 命令、配置和最终源码 SHA256 归档 `implementation-a8-evidence.json.gz`。所有 16 个选择文件 exit 0；所有匹配测试均有保留或排除处置。

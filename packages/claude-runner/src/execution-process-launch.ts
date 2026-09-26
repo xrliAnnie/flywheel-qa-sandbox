@@ -166,10 +166,37 @@ export async function registerExecutionProcessLaunchCandidate(
 	requestPath: string,
 	shellPid: number,
 	options: {
+		/** Actual positional command passed to exec by the same registered shell. */
+		launchArgv?: readonly string[];
 		readIdentity?: (pid: number) => Promise<InspectedExecutionProcess | null>;
 	} = {},
 ): Promise<void> {
 	const request = requestSchema.parse(readObject(requestPath));
+	const argv = options.launchArgv;
+	if (!argv || argv[0] !== request.binaryName)
+		throw new Error("process_launch_arguments_mismatch");
+	if (request.adapter === "claude-tmux") {
+		const sessions: string[] = [];
+		for (let i = 1; i < argv.length && argv[i] !== "--"; i++) {
+			const arg = argv[i]!;
+			if (arg === "--session-id" || arg === "--resume") {
+				sessions.push(argv[++i] ?? "");
+			} else if (
+				arg.startsWith("--session-id=") ||
+				arg.startsWith("--resume=")
+			) {
+				sessions.push(arg.slice(arg.indexOf("=") + 1));
+			}
+		}
+		if (
+			!request.nativeSessionId ||
+			sessions.length !== 1 ||
+			sessions[0] !== request.nativeSessionId
+		)
+			throw new Error("process_launch_arguments_mismatch");
+	} else if (request.nativeSessionId !== null) {
+		throw new Error("process_launch_arguments_mismatch");
+	}
 	if (!requestPath.endsWith(`process-launch-${request.nonce}.request.json`))
 		throw new Error("process_launch_invalid");
 	const native = await (options.readIdentity ?? readExecutionProcessIdentity)(
@@ -259,10 +286,10 @@ if (
 	)
 		process.exitCode = 78;
 	else
-		void registerExecutionProcessLaunchCandidate(process.argv[3], pid).catch(
-			() => {
-				process.stderr.write("FLYWHEEL_PROCESS_REGISTRATION_FAILED\n");
-				process.exitCode = 78;
-			},
-		);
+		void registerExecutionProcessLaunchCandidate(process.argv[3], pid, {
+			launchArgv: process.argv.slice(5),
+		}).catch(() => {
+			process.stderr.write("FLYWHEEL_PROCESS_REGISTRATION_FAILED\n");
+			process.exitCode = 78;
+		});
 }

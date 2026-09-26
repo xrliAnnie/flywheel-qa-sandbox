@@ -1,12 +1,16 @@
+import { execFile } from "node:child_process";
 import {
 	existsSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AntigravityTmuxAdapter } from "../src/AntigravityTmuxAdapter.js";
 import type {
@@ -267,6 +271,42 @@ describe("FLY-2919 tmux launch admission", () => {
 		};
 		await expect(h.adapter.execute(h.ctx)).rejects.toThrow("owner unavailable");
 		expect(h.calls.some((a) => a[0] === "new-window")).toBe(false);
+	});
+	it("passes the exact exec arguments to registration as data before native launch", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "fly2919-a8-shell-"));
+		dirs.push(directory);
+		const gate = join(directory, "gate"),
+			helper = join(directory, "helper.cjs"),
+			receipt = join(directory, "receipt");
+		writeFileSync(gate, "token");
+		writeFileSync(
+			helper,
+			'require("node:fs").writeFileSync(process.argv[3], JSON.stringify({pid: process.argv[4], args: process.argv.slice(5)}));',
+		);
+		const args = [
+			"-e",
+			"process.stdout.write(String(process.pid))",
+			"--",
+			"space and $(literal)",
+		];
+		const command = buildAmbientSafeWindowCommand({
+			binaryName: process.execPath,
+			binaryArgs: args,
+			gateFile: gate,
+			launchToken: "token",
+			processRegistration: {
+				nodePath: process.execPath,
+				helperPath: helper,
+				requestPath: receipt,
+			},
+		});
+		const { stdout } = await promisify(execFile)("/bin/sh", command.slice(1), {
+			timeout: 3000,
+		});
+		const actual = JSON.parse(readFileSync(receipt, "utf8"));
+		expect(actual.args).toEqual([process.execPath, ...args]);
+		expect(Number(actual.pid)).toBeGreaterThan(1);
+		expect(stdout).toBe(actual.pid);
 	});
 	it("puts pre-exec registration before the commit wait and passes the shell PID", () => {
 		const command = buildAmbientSafeWindowCommand({

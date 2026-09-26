@@ -56,6 +56,7 @@ describe("FLY-2919 provisional tmux process launch", () => {
 	it("atomically records the supplied shell PID with OS identity, never the helper PID", async () => {
 		const m = manifest();
 		await registerExecutionProcessLaunchCandidate(m.requestPath, 42, {
+			launchArgv: ["claude", "--session-id", "session-1"],
 			readIdentity: async (pid) => {
 				expect(pid).toBe(42);
 				return native;
@@ -73,6 +74,58 @@ describe("FLY-2919 provisional tmux process launch", () => {
 		expect(statSync(m.requestPath).mode & 0o777).toBe(0o600);
 		expect(statSync(m.candidatePath).mode & 0o777).toBe(0o600);
 	});
+	it.each([
+		["wrong binary", ["other", "--session-id", "session-1"]],
+		["wrong session", ["claude", "--session-id", "foreign"]],
+		["missing session", ["claude", "--print", "hello"]],
+		[
+			"duplicate session",
+			["claude", "--session-id", "session-1", "--resume", "foreign"],
+		],
+		["prefix match", ["claude", "--session-id", "session-10"]],
+		["prompt impersonates flag", ["claude", "--", "--session-id", "session-1"]],
+	] as const)(
+		"does not register %s as a verified launch",
+		async (_name, argv) => {
+			const m = manifest();
+			await expect(
+				registerExecutionProcessLaunchCandidate(m.requestPath, 42, {
+					launchArgv: [...argv],
+					readIdentity: async () => native,
+				}),
+			).rejects.toThrow("process_launch_arguments_mismatch");
+			expect(readdirSync(dirs.at(-1)!)).toHaveLength(1);
+		},
+	);
+	it.each(["kimi-tmux", "antigravity-tmux"] as const)(
+		"does not require a nonexistent Claude session argument for %s",
+		async (adapter) => {
+			const directory = mkdtempSync(join(tmpdir(), "fly2919-a8-other-"));
+			dirs.push(directory);
+			const binaryName = adapter === "kimi-tmux" ? "kimi" : "agy";
+			const m = createExecutionProcessLaunchManifest(directory, {
+				...request,
+				adapter,
+				binaryName,
+				nativeSessionId: null,
+			});
+			await registerExecutionProcessLaunchCandidate(m.requestPath, 42, {
+				launchArgv: [binaryName, "--prompt", "hello"],
+				readIdentity: async () => native,
+			});
+			expect(readExecutionProcessLaunchCandidate(m).nativeSessionId).toBeNull();
+		},
+	);
+	it("accepts an exact resume argument without inspecting the future process title", async () => {
+		const m = manifest();
+		await registerExecutionProcessLaunchCandidate(m.requestPath, 42, {
+			launchArgv: ["claude", "--resume", "session-1"],
+			readIdentity: async () => native,
+		});
+		expect(readExecutionProcessLaunchCandidate(m).nativeSessionId).toBe(
+			"session-1",
+		);
+	});
 	it("refuses a nonleader/shared process group and PID reuse", async () => {
 		const m = manifest();
 		for (const identity of [
@@ -81,6 +134,7 @@ describe("FLY-2919 provisional tmux process launch", () => {
 		])
 			await expect(
 				registerExecutionProcessLaunchCandidate(m.requestPath, 42, {
+					launchArgv: ["claude", "--session-id", "session-1"],
 					readIdentity: async () => identity,
 				}),
 			).rejects.toThrow("process_launch_identity_unavailable");
@@ -95,6 +149,7 @@ describe("FLY-2919 provisional tmux process launch", () => {
 		writeFileSync(m.candidatePath, "x".repeat(17000));
 		expect(() => readExecutionProcessLaunchCandidate(m)).toThrow();
 		await registerExecutionProcessLaunchCandidate(m.requestPath, 42, {
+			launchArgv: ["claude", "--session-id", "session-1"],
 			readIdentity: async () => native,
 		});
 		const valid = JSON.parse(readFileSync(m.candidatePath, "utf8"));

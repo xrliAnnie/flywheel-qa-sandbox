@@ -294,7 +294,7 @@ export function buildAmbientSafeWindowCommand(
 		// $3 = optional prompt file;
 		// after shift, "$@" is binary + args. Only validated environment names
 		// enter this source; their values are expanded by the pane shell.
-		`${opts.processRegistration ? `${envPrefix} "$4" "$5" register "$6" "$$" || exit 78; ` : ""}cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift ${opts.processRegistration ? 6 : 3}; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; set -- "$@" "$p"; fi; exec ${envPrefix} "$@"`,
+		`${opts.processRegistration ? 'process_node="$4"; process_helper="$5"; process_request="$6"; ' : ""}cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift ${opts.processRegistration ? 6 : 3}; ${opts.processRegistration ? `${envPrefix} "$process_node" "$process_helper" register "$process_request" "$$" "$@" || exit 78; ` : ""}n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; set -- "$@" "$p"; fi; exec ${envPrefix} "$@"`,
 		opts.gateFile,
 		opts.launchToken,
 		opts.cleanup ?? "keep",

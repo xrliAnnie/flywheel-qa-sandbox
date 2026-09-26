@@ -63,7 +63,10 @@ export type InspectedExecutionProcess = ExecutionProcessIdentity & {
 export type SpawnedExecutionProcessInput = Pick<
 	ExecutionProcessBinding,
 	"adapter" | "pgid" | "executable" | "cwd" | "nonce" | "nativeSessionId"
->;
+> & {
+	/** Tmux exec preserves this registered shell identity; never adopt a sibling. */
+	expectedLeader?: ExecutionProcessIdentity;
+};
 
 /** Accept only an independently identified native worker in the newly spawned group. */
 export async function bindSpawnedExecutionProcessGroup(
@@ -76,18 +79,26 @@ export async function bindSpawnedExecutionProcessGroup(
 		absolutePath(input.cwd);
 		const c = capture(options);
 		const hostBootId = await c.boot();
+		const { expectedLeader, ...bindingInput } = input;
+		if (
+			expectedLeader &&
+			(expectedLeader.pid !== input.pgid ||
+				expectedLeader.hostBootId !== hostBootId)
+		)
+			return null;
 		const group = (await c.processes()).filter(
 			(row) => row.pgid === input.pgid && row.state === "running",
 		);
 		if (group.length === 0 || group.length > 32) return null;
 		const candidates: ExecutionProcessBinding[] = [];
 		for (const row of group) {
+			if (expectedLeader && !matches(row, expectedLeader, hostBootId)) continue;
 			const worker = await c.worker(row.pid);
 			if (worker.executable !== input.executable || worker.cwd !== input.cwd)
 				continue;
 			candidates.push({
 				version: 1,
-				...input,
+				...bindingInput,
 				...identity(row, hostBootId),
 				writers: group
 					.filter((writer) => writer.pid !== row.pid)
