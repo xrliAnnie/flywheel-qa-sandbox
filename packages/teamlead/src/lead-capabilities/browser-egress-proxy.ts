@@ -26,6 +26,8 @@ export interface BrowserEgressProxyOptions {
 	policy(): BrowserEgressPolicy;
 	assertCurrent(): void;
 	lookup?: (hostname: string) => Promise<BrowserEgressAddress[]>;
+	/** Bound on establishing a CONNECT tunnel (default 30s). */
+	connectTimeoutMs?: number;
 }
 function headers(input: IncomingHttpHeaders): IncomingHttpHeaders {
 	const blocked = new Set([
@@ -51,6 +53,7 @@ export async function startBrowserEgressProxy(
 	options: BrowserEgressProxyOptions,
 ) {
 	options.assertCurrent();
+	const connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
 	const lifetime = new AbortController();
 	const sockets = new Set<Socket>();
 	const probes = new Set<string>();
@@ -263,13 +266,18 @@ export async function startBrowserEgressProxy(
 			});
 			upstream.on("error", () => client.destroy());
 			client.once("close", () => upstream.destroy());
-			upstream.setTimeout(30_000, () => upstream.destroy());
+			upstream.setTimeout(connectTimeoutMs, () => upstream.destroy());
 			upstream.once("connect", () => {
 				try {
 					options.assertCurrent();
 					if (signal.aborted || revision !== JSON.stringify(options.policy()))
 						throw new Error("revoked");
 					client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+					// Only establishing is time-bounded. Codex's own model and realtime
+					// websockets ride these tunnels (FLY-2886 ruling B); a quiet voice
+					// session must not be cut. Close/revocation still tear them down.
+					upstream.setTimeout(0);
+					client.setTimeout(0);
 					if (head.length) upstream.write(head);
 					client.pipe(upstream);
 					upstream.pipe(client);
@@ -289,7 +297,7 @@ export async function startBrowserEgressProxy(
 	server.requestTimeout = 30_000;
 	server.on("connection", (socket) => {
 		sockets.add(socket);
-		socket.setTimeout(30_000, () => socket.destroy());
+		socket.setTimeout(connectTimeoutMs, () => socket.destroy());
 		socket.once("close", () => sockets.delete(socket));
 	});
 	server.on("clientError", (_error, socket) => socket.destroy());

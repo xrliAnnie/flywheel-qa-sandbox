@@ -1,5 +1,5 @@
 import { createServer, get } from "node:http";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { startBrowserEgressProxy } from "../browser-egress-proxy.js";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -265,4 +265,54 @@ it("answers the isolation probe URL itself and records its nonce once (FLY-2886 
 	])
 		expect(await status(path)).toBe(403);
 	expect(proxy.probeSeen(nonce)).toBe(false);
+});
+
+it("keeps an established CONNECT tunnel open while idle; only connecting is time-bounded (FLY-2886 ruling B)", async () => {
+	// Codex's own model and realtime websockets now traverse this proxy; a quiet
+	// voice session must not be cut after the connect timeout.
+	const { createServer: tcpServer, connect } = await import("node:net");
+	const echo = tcpServer((socket) =>
+		socket.on("data", (bytes) => socket.write(`echo:${bytes}`)),
+	);
+	await new Promise<void>((resolve) => echo.listen(0, "127.0.0.1", resolve));
+	cleanup.push(
+		() => new Promise<void>((resolve) => echo.close(() => resolve())),
+	);
+	const port = (echo.address() as { port: number }).port;
+	const proxy = await startBrowserEgressProxy({
+		policy: () => ({
+			localQaTargets: [
+				{ origin: `https://localhost:${port}`, address: "127.0.0.1" },
+			],
+			protectedPorts: [9876, 9222],
+		}),
+		assertCurrent: () => {},
+		connectTimeoutMs: 150,
+	});
+	cleanup.push(proxy.close);
+	const client = connect(proxy.port, "127.0.0.1");
+	cleanup.push(async () => {
+		client.destroy();
+	});
+	let received = "";
+	let ended = false;
+	client.on("data", (chunk) => {
+		received += chunk;
+	});
+	client.on("end", () => {
+		ended = true;
+	});
+	await new Promise<void>((resolve) => client.once("connect", resolve));
+	client.write(
+		`CONNECT localhost:${port} HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n`,
+	);
+	await vi.waitFor(() =>
+		expect(received).toContain("200 Connection Established"),
+	);
+	// Idle well past the connect timeout.
+	await new Promise((resolve) => setTimeout(resolve, 450));
+	expect(ended).toBe(false);
+	expect(client.destroyed).toBe(false);
+	client.write("ping");
+	await vi.waitFor(() => expect(received).toContain("echo:ping"));
 });
