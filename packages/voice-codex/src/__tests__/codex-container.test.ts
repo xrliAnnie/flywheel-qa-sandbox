@@ -13,6 +13,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildVoiceSessionContext } from "flywheel-teamlead/bridge/voice-session-context";
+import {
+	type VoiceRealtimeItem,
+	voiceContextDigest,
+	voiceContextHeader,
+} from "flywheel-teamlead/voice-context-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CODEX_VOICE_BINARY_SHA256,
@@ -72,20 +78,55 @@ function context(
 	sessionId: string,
 	capturedAt = "2026-09-23T10:00:00.000Z",
 	fact = "RAYA_UNIQUE_CONTEXT_FACT",
+	initialItems: VoiceRealtimeItem[] = [
+		{
+			role: "developer",
+			text: "【记忆文件 memory/MEMORY.md 第 1/1 段·只读数据】\nMEMORY_FACT",
+		},
+	],
 ): CodexVoiceContextSnapshot {
-	const snapshotDigest = "a".repeat(64);
-	const header = `[voice-context version=1 snapshotDigest=${snapshotDigest} sessionId=${sessionId}]`;
-	const baseInstructions = `${header}\n\n${fact}`;
-	const realtimePrompt = `${baseInstructions}\n\n# Realtime voice protocol`;
+	const sourceManifest = {
+		version: 1,
+		projectName: "raya",
+		leadId: "raya",
+		sourceKind: "codex-workspace",
+		sourceRevision: "rev",
+		files: [],
+		unloadedReferences: [],
+	};
+	const baseBody = `${fact}\n\n# Selected Lead memory\n\nMEMORY_FACT`;
+	const realtimePromptBody = `${fact}\n\n# Realtime voice protocol`;
+	const leaseBindingDigest = "b".repeat(64);
+	const rosterDigest = "c".repeat(64);
+	const snapshotDigest = voiceContextDigest({
+		baseBody,
+		realtimePromptBody,
+		initialItems,
+		leaseBindingDigest,
+		sourceManifest,
+		rosterDigest,
+		sessionId,
+	});
+	const header = voiceContextHeader(snapshotDigest, sessionId);
+	const baseInstructions = `${header}\n\n${baseBody}`;
+	const prompt = `${header}\n\n${realtimePromptBody}`;
+	const itemBytes = initialItems.reduce(
+		(total, item) => total + Buffer.byteLength(item.text),
+		0,
+	);
 	return {
 		baseInstructions,
-		realtimePrompt,
+		realtime: { prompt, initialItems },
 		snapshotDigest,
 		manifest: {
-			version: 1,
+			...sourceManifest,
+			version: 2,
+			sourceVersion: 1,
 			capturedAt,
+			rosterDigest,
 			snapshotDigest,
-			leaseBindingDigest: "b".repeat(64),
+			leaseBindingDigest,
+			tokenizer: "js-tiktoken@1.0.21/o200k_base",
 		},
 		measurements: {
 			baseInstructions: {
@@ -93,8 +134,13 @@ function context(
 				estimatedTokens: 100,
 			},
 			realtimePrompt: {
-				bytes: Buffer.byteLength(realtimePrompt),
+				bytes: Buffer.byteLength(prompt),
 				estimatedTokens: 110,
+			},
+			initialItems: {
+				count: initialItems.length,
+				bytes: itemBytes,
+				codexEstimatedTokens: Math.ceil(itemBytes / 4),
 			},
 		},
 	};
@@ -394,6 +440,12 @@ describe("Codex voice container", () => {
 					clientManagedHandoffs: true,
 					includeStartupContext: false,
 					transport: { type: "webrtc", sdp: "v=0\r\no=offer" },
+					initialItems: [
+						{
+							role: "developer",
+							text: "【记忆文件 memory/MEMORY.md 第 1/1 段·只读数据】\nMEMORY_FACT",
+						},
+					],
 				},
 			});
 		}
@@ -765,6 +817,171 @@ describe("Codex voice container", () => {
 		);
 		expect(h.legs[0]!.closeCount).toBeGreaterThanOrEqual(1);
 		await opened.close();
+	});
+
+	it("accepts a snapshot the Bridge builder produced (builder → container)", async () => {
+		const h = harness();
+		const memory = Array.from(
+			{ length: 400 },
+			(_, index) => `- 第 ${index + 1} 条记忆：只读数据。`,
+		).join("\n");
+		const snapshot = buildVoiceSessionContext({
+			sources: {
+				manifest: {
+					version: 1,
+					projectName: "raya",
+					leadId: "raya",
+					sourceKind: "codex-workspace",
+					sourceRevision: "rev",
+					files: [],
+					unloadedReferences: [],
+				},
+				contents: [
+					{
+						kind: "identity",
+						relativePath: ".lead/raya/identity.md",
+						content: "IDENTITY",
+					},
+					{
+						kind: "workspace-memory",
+						relativePath: "memory/MEMORY.md",
+						content: memory,
+					},
+				],
+			},
+			rosterDigest: "c".repeat(64),
+			leaseBindingDigest: "d".repeat(64),
+			capturedAt: "2026-09-23T10:00:00.000Z",
+			openInitiatedAt: "2026-09-23T10:00:00.000Z",
+			state: {
+				leadId: "raya",
+				activeSessions: [],
+				pendingDecisions: [],
+				recentFailures: [],
+			} as never,
+			session: { sessionId: "session-built", mode: "meeting" },
+			// Shape and digest are under test here, not the tokenizer.
+			countTokens: (value) => Math.ceil(Buffer.byteLength(value) / 4),
+		}) as unknown as CodexVoiceContextSnapshot;
+		expect(snapshot.realtime.initialItems.length).toBeGreaterThan(1);
+		const opened = await h.container.open({
+			sessionId: "session-built",
+			voice: "cove",
+			loadContext: async () => snapshot,
+		});
+		expect(
+			h.processes[0]!.requests.find(
+				(request) => request.method === "thread/realtime/start",
+			)?.params,
+		).toMatchObject({ initialItems: snapshot.realtime.initialItems });
+		await opened.close();
+	});
+
+	it("passes the verified v2 prompt and items unchanged to every generation", async () => {
+		const h = harness();
+		const snapshot = context("session-v2");
+		const opened = await h.container.open({
+			sessionId: "session-v2",
+			voice: "cove",
+			loadContext: async () => snapshot,
+		});
+		opened.reconnect("test");
+		await vi.waitFor(() => expect(opened.generation).toBe(2));
+		const starts = h.processes[0]!.requests.filter(
+			(request) => request.method === "thread/realtime/start",
+		);
+		expect(starts).toHaveLength(2);
+		for (const start of starts) {
+			expect(start.params).toMatchObject({
+				prompt: snapshot.realtime.prompt,
+				initialItems: snapshot.realtime.initialItems,
+			});
+		}
+		expect(h.processes[0]!.threadParams?.baseInstructions).toBe(
+			snapshot.baseInstructions,
+		);
+		await opened.close();
+	});
+
+	it.each([
+		[
+			"a tampered item",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.realtime.initialItems[0]!.text += "!";
+				snapshot.measurements.initialItems.bytes += 1;
+			},
+		],
+		[
+			"a tampered prompt body",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.realtime.prompt += " ";
+				snapshot.measurements.realtimePrompt.bytes += 1;
+			},
+		],
+		[
+			"a v1 manifest",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				(snapshot.manifest as { version: number }).version = 1;
+			},
+		],
+		[
+			"a prompt over 15,500 tokens",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.measurements.realtimePrompt.estimatedTokens = 15_501;
+			},
+		],
+		[
+			"a user-role item",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				(snapshot.realtime.initialItems[0] as { role: string }).role = "user";
+			},
+		],
+		[
+			"a measurement that does not match the items",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.measurements.initialItems.count = 2;
+			},
+		],
+		[
+			"a prompt header from another session",
+			(snapshot: CodexVoiceContextSnapshot) => {
+				snapshot.realtime.prompt = snapshot.realtime.prompt.replace(
+					"sessionId=session-bad",
+					"sessionId=session-other",
+				);
+			},
+		],
+	] as const)(
+		"refuses %s as context_invalid before spawning Codex",
+		async (_name, mutate) => {
+			const h = harness();
+			const snapshot = context("session-bad");
+			mutate(snapshot);
+			await expect(
+				h.container.open({
+					sessionId: "session-bad",
+					voice: "cove",
+					loadContext: async () => snapshot,
+				}),
+			).rejects.toMatchObject({ reason: "context_invalid" });
+			expect(h.processes).toHaveLength(0);
+		},
+	);
+
+	it("refuses more than 128 items", async () => {
+		const h = harness();
+		const items = Array.from({ length: 129 }, (_, index) => ({
+			role: "developer" as const,
+			text: `item ${index}`,
+		}));
+		await expect(
+			h.container.open({
+				sessionId: "session-many",
+				voice: "cove",
+				loadContext: async () =>
+					context("session-many", undefined, undefined, items),
+			}),
+		).rejects.toMatchObject({ reason: "context_invalid" });
 	});
 
 	it.each([

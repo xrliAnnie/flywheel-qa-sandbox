@@ -42,6 +42,10 @@
 			"types": "./dist/voice-context-contract.d.ts",
 			"import": "./dist/voice-context-contract.js"
 		},
+		"./bridge/voice-session-context": {
+			"types": "./dist/bridge/voice-session-context.d.ts",
+			"import": "./dist/bridge/voice-session-context.js"
+		},
 		"./cos-ports/voice-intent": {
 			"types": "./dist/cos-ports/voice-intent.d.ts",
 			"import": "./dist/cos-ports/voice-intent.js"

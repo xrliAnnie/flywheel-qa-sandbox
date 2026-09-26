@@ -17,6 +17,19 @@ import {
 	spawnCodexAppServer,
 } from "flywheel-teamlead/codex-process";
 import {
+	VOICE_BASE_MAX_BYTES,
+	VOICE_BASE_MAX_ESTIMATED_TOKENS,
+	VOICE_CONTEXT_VERSION,
+	VOICE_INITIAL_ITEMS_MAX_BYTES,
+	VOICE_INITIAL_ITEMS_MAX_COUNT,
+	VOICE_REALTIME_PROMPT_MAX_BYTES,
+	VOICE_REALTIME_PROMPT_MAX_TOKENS,
+	type VoiceRealtimeItem,
+	voiceContextDigest,
+	voiceContextHeader,
+	voiceContextSourceManifest,
+} from "flywheel-teamlead/voice-context-contract";
+import {
 	assertVoiceCodexHome,
 	pinVoiceCodexAuthSource,
 	VOICE_CODEX_HOME_CONFIG,
@@ -46,26 +59,36 @@ export const CODEX_VOICE_REALTIME_VERSION = "v3";
 export const CODEX_VOICE_OPEN_TIMEOUT_MS = 60_000;
 export const CODEX_VOICE_MAX_JSON_LINE_BYTES = 1024 * 1024;
 const CONTEXT_MAX_AGE_MS = 60_000;
-const CONTEXT_MAX_BYTES = 128 * 1024;
-const CONTEXT_MAX_ESTIMATED_TOKENS = 32_768;
 const CLOSE_RPC_TIMEOUT_MS = 5_000;
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * FLY-2885 T8 (v2): the backing thread gets the whole context as
+ * baseInstructions; the realtime session gets a prompt without the memory
+ * plus the memory as developer initialItems.
+ */
 export interface CodexVoiceContextSnapshot {
 	baseInstructions: string;
-	realtimePrompt: string;
+	realtime: { prompt: string; initialItems: VoiceRealtimeItem[] };
 	snapshotDigest: string;
 	manifest: {
-		version: 1;
+		version: 2;
+		sourceVersion: number;
 		capturedAt: string;
 		snapshotDigest: string;
 		leaseBindingDigest: string;
+		rosterDigest: string;
 		[key: string]: unknown;
 	};
 	measurements: {
 		baseInstructions: { bytes: number; estimatedTokens: number };
 		realtimePrompt: { bytes: number; estimatedTokens: number };
+		initialItems: {
+			count: number;
+			bytes: number;
+			codexEstimatedTokens: number;
+		};
 	};
 }
 
@@ -414,33 +437,82 @@ function contextIsFresh(
 	);
 }
 
+/**
+ * T8: re-verify the Bridge's v2 snapshot before anything opens: one header on
+ * both texts, the digest recomputed from the unheaded bodies, items and
+ * source manifest (the same code the Bridge used), and every budget.
+ */
 function assertContext(
 	snapshot: CodexVoiceContextSnapshot,
 	sessionId: string,
 ): void {
-	const marker = `snapshotDigest=${snapshot.snapshotDigest} sessionId=${sessionId}]`;
+	const invalid = () => new CodexVoiceContainerError("context_invalid");
 	const digest = /^[a-f0-9]{64}$/u;
-	const baseBytes = Buffer.byteLength(snapshot.baseInstructions, "utf8");
-	const realtimeBytes = Buffer.byteLength(snapshot.realtimePrompt, "utf8");
+	const manifest = snapshot?.manifest;
+	const realtime = snapshot?.realtime;
 	if (
+		!manifest ||
+		!realtime ||
+		typeof snapshot.baseInstructions !== "string" ||
+		typeof realtime.prompt !== "string" ||
+		!Array.isArray(realtime.initialItems) ||
 		!digest.test(snapshot.snapshotDigest) ||
-		snapshot.manifest.version !== 1 ||
-		snapshot.manifest.snapshotDigest !== snapshot.snapshotDigest ||
-		!digest.test(snapshot.manifest.leaseBindingDigest) ||
-		!snapshot.baseInstructions.includes(marker) ||
-		!snapshot.realtimePrompt.includes(marker) ||
-		!snapshot.realtimePrompt.startsWith(snapshot.baseInstructions) ||
-		baseBytes !== snapshot.measurements.baseInstructions.bytes ||
-		realtimeBytes !== snapshot.measurements.realtimePrompt.bytes ||
-		baseBytes > CONTEXT_MAX_BYTES ||
-		realtimeBytes > CONTEXT_MAX_BYTES ||
-		snapshot.measurements.baseInstructions.estimatedTokens >
-			CONTEXT_MAX_ESTIMATED_TOKENS ||
-		snapshot.measurements.realtimePrompt.estimatedTokens >
-			CONTEXT_MAX_ESTIMATED_TOKENS
-	) {
-		throw new CodexVoiceContainerError("context_invalid");
-	}
+		manifest.version !== VOICE_CONTEXT_VERSION ||
+		manifest.snapshotDigest !== snapshot.snapshotDigest ||
+		!digest.test(String(manifest.leaseBindingDigest)) ||
+		!digest.test(String(manifest.rosterDigest))
+	)
+		throw invalid();
+	const header = `${voiceContextHeader(snapshot.snapshotDigest, sessionId)}\n\n`;
+	if (
+		!snapshot.baseInstructions.startsWith(header) ||
+		!realtime.prompt.startsWith(header)
+	)
+		throw invalid();
+	const items = realtime.initialItems;
+	if (
+		items.length > VOICE_INITIAL_ITEMS_MAX_COUNT ||
+		!items.every(
+			(item) =>
+				item !== null &&
+				typeof item === "object" &&
+				item.role === "developer" &&
+				typeof item.text === "string" &&
+				item.text.length > 0 &&
+				Object.keys(item).length === 2,
+		)
+	)
+		throw invalid();
+	const recomputed = voiceContextDigest({
+		baseBody: snapshot.baseInstructions.slice(header.length),
+		realtimePromptBody: realtime.prompt.slice(header.length),
+		initialItems: items,
+		leaseBindingDigest: manifest.leaseBindingDigest,
+		sourceManifest: voiceContextSourceManifest(manifest),
+		rosterDigest: manifest.rosterDigest,
+		sessionId,
+	});
+	if (recomputed !== snapshot.snapshotDigest) throw invalid();
+	const baseBytes = Buffer.byteLength(snapshot.baseInstructions, "utf8");
+	const promptBytes = Buffer.byteLength(realtime.prompt, "utf8");
+	const itemBytes = items.reduce(
+		(total, item) => total + Buffer.byteLength(item.text, "utf8"),
+		0,
+	);
+	const measured = snapshot.measurements;
+	if (
+		baseBytes !== measured?.baseInstructions?.bytes ||
+		promptBytes !== measured.realtimePrompt?.bytes ||
+		itemBytes !== measured.initialItems?.bytes ||
+		items.length !== measured.initialItems.count ||
+		baseBytes > VOICE_BASE_MAX_BYTES ||
+		promptBytes > VOICE_REALTIME_PROMPT_MAX_BYTES ||
+		itemBytes > VOICE_INITIAL_ITEMS_MAX_BYTES ||
+		measured.baseInstructions.estimatedTokens >
+			VOICE_BASE_MAX_ESTIMATED_TOKENS ||
+		measured.realtimePrompt.estimatedTokens > VOICE_REALTIME_PROMPT_MAX_TOKENS
+	)
+		throw invalid();
 }
 
 function withTimeout<T>(
@@ -918,7 +990,13 @@ export class CodexVoiceContainer {
 		if (!contextIsFresh(snapshot, this.now())) {
 			throw new CodexVoiceContainerError("context_stale");
 		}
-		assertContext(snapshot, input.sessionId);
+		try {
+			assertContext(snapshot, input.sessionId);
+		} catch (error) {
+			throw error instanceof CodexVoiceContainerError
+				? error
+				: new CodexVoiceContainerError("context_invalid", error);
+		}
 		let authSource: string;
 		try {
 			authSource = pinVoiceCodexAuthSource(this.options.authSource);
@@ -1016,7 +1094,9 @@ export class CodexVoiceContainer {
 				outputModality: "audio",
 				clientManagedHandoffs: true,
 				includeStartupContext: false,
-				prompt: snapshot.realtimePrompt,
+				// T8: the same snapshot for every generation of this session.
+				prompt: snapshot.realtime.prompt,
+				initialItems: snapshot.realtime.initialItems,
 				model: CODEX_VOICE_REALTIME_MODEL,
 				voice: input.voice,
 			};
