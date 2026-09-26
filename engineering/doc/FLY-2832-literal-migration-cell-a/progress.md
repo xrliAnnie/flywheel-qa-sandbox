@@ -1,14 +1,14 @@
 ---
 issue: FLY-2832
 phase: design
-phaseCursor: 2/8
-updated: 2026-09-26T19:03:09.995Z
-nextStep: enter research; map exact consumers, test selection, and
-  fixture-baseline evidence
+phaseCursor: 3/8
+updated: 2026-09-26T19:04:42.921Z
+nextStep: enter plan; convert the 10-file migration and targeted-test evidence
+  into implementation tasks
 chunks: []
 pointers: {}
 ---
 
 # FLY-2832 progress
-**phase**: design (2/8)
-**next**: enter research; map exact consumers, test selection, and fixture-baseline evidence
+**phase**: design (3/8)
+**next**: enter plan; convert the 10-file migration and targeted-test evidence into implementation tasks
