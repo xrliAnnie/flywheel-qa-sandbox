@@ -1,0 +1,57 @@
+[
+  {
+    "event_type": "session_started",
+    "payload": null,
+    "execution_id": "ee549594-ccb1-4163-a68a-9ab770335aea"
+  },
+  {
+    "event_type": "session_failed",
+    "payload": "{\"failureKind\":null,\"lastError\":\"Codex source auth is unavailable at /Users/xiaorongli/.codex/auth.json: ENOENT: no such file or directory, lstat '/Users/xiaorongli/.codex/auth.json'\"}",
+    "execution_id": "ee549594-ccb1-4163-a68a-9ab770335aea"
+  },
+  {
+    "event_type": "session_started",
+    "payload": null,
+    "execution_id": "d249a2c3-2f7c-41c8-889f-373f6c79437e"
+  },
+  {
+    "event_type": "lead_close_runner_failed",
+    "payload": "{\"cleanupPending\":true,\"reason\":\"codex_daemon_unverifiable\",\"origin\":\"bridge.close-runner\",\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/63456bbe4dc22744.sock\"}",
+    "execution_id": "d249a2c3-2f7c-41c8-889f-373f6c79437e"
+  },
+  {
+    "event_type": "lead_close_runner_failed",
+    "payload": "{\"closed\":false,\"reason\":\"workflow_force_cancel:episode:e6bacd05-9b33-4021-b92b-eff2fc9abb94:0\",\"executorType\":\"workflow-collector\",\"tmuxError\":\"tmux window identity is still pending\"}",
+    "execution_id": "d249a2c3-2f7c-41c8-889f-373f6c79437e"
+  },
+  {
+    "event_type": "lead_close_runner_failed",
+    "payload": "{\"cleanupPending\":true,\"reason\":\"codex_daemon_unverifiable\",\"origin\":\"bridge.terminate\",\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/63456bbe4dc22744.sock\"}",
+    "execution_id": "d249a2c3-2f7c-41c8-889f-373f6c79437e"
+  },
+  {
+    "event_type": "lead_terminate_cleanup_failed",
+    "payload": "{\"tmuxError\":\"tmux window identity is still pending\",\"previousStatus\":\"running\",\"reason\":\"ghost session: body never spawned\"}",
+    "execution_id": "d249a2c3-2f7c-41c8-889f-373f6c79437e"
+  },
+  {
+    "event_type": "lead_close_runner_failed",
+    "payload": "{\"closed\":false,\"reason\":\"FLY-1185 lifecycle closeout (shipped)\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\",\"tmuxError\":\"tmux window identity is still pending\"}",
+    "execution_id": "d249a2c3-2f7c-41c8-889f-373f6c79437e"
+  },
+  {
+    "event_type": "session_started",
+    "payload": null,
+    "execution_id": "a542ae1d-4904-4760-a7fa-5103bd12426e"
+  },
+  {
+    "event_type": "session_started",
+    "payload": null,
+    "execution_id": "47b666b1-b6a8-4c8b-8308-bddcd3fc6a8c"
+  },
+  {
+    "event_type": "session_failed",
+    "payload": "{\"failureKind\":null,\"lastError\":\"Child stdio did not close within 250ms\"}",
+    "execution_id": "47b666b1-b6a8-4c8b-8308-bddcd3fc6a8c"
+  }
+]

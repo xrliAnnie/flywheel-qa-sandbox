@@ -1,0 +1,1747 @@
+[
+  {
+    "issue": "FLY-2688",
+    "execution": "ee549594-ccb1-4163-a68a-9ab770335aea",
+    "session": {
+      "execution_id": "ee549594-ccb1-4163-a68a-9ab770335aea",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-18 22:05:43.099"
+    },
+    "evidence": null,
+    "events": [
+      {
+        "event_type": "lead_close_runner_preserved",
+        "payload": "{\"status\":\"failed\",\"reason\":\"crash_preserve\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "event_type": "instruction_skipped_recipient_terminal",
+        "payload": "{\"fromAgent\":\"bridge-land\",\"reason\":\"land-cleanup:land:b1c8324719f76ff5a8a9673c323d718d3680df7e868a9d4676e848bba857c9f3\",\"contentDigest\":\"ab3660ae29ad984e\"}"
+      },
+      {
+        "event_type": "lead_close_runner_preserved",
+        "payload": "{\"status\":\"failed\",\"reason\":\"crash_preserve\",\"leadId\":\"flywheel-eng-lead\",\"executorType\":\"engineer\"}"
+      },
+      {
+        "event_type": "linear_issue_start_outcome",
+        "payload": "{\"issueId\":\"FLY-2688\",\"executionId\":\"ee549594-ccb1-4163-a68a-9ab770335aea\",\"outcome\":\"started\"}"
+      },
+      {
+        "event_type": "session_failed",
+        "payload": "{\"failureKind\":null,\"lastError\":\"Codex source auth is unavailable at /Users/xiaorongli/.codex/auth.json: ENOENT: no such file or directory, lstat '/Users/xiaorongli/.codex/auth.json'\"}"
+      },
+      {
+        "event_type": "session_started",
+        "payload": null
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2688",
+    "execution": "657bd84c-1010-4bd9-8835-68b654241b6a",
+    "session": {
+      "execution_id": "657bd84c-1010-4bd9-8835-68b654241b6a",
+      "status": "terminated",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-19 15:53:03.514"
+    },
+    "evidence": {
+      "activationId": "activation:657bd84c-1010-4bd9-8835-68b654241b6a:d6b34663-d251-4174-9e96-281c09ae7241:implement:4",
+      "adapter": "codex-tmux",
+      "attributionDigest": "0873783609496d700bbcda5d38f6adb73e2a1c7f26dc58f10a947395894e32e4",
+      "commIdentityRevision": "epoch:3",
+      "controllerGeneration": null,
+      "evidenceId": "c10a7cbb-e9d9-4bfc-93fa-13622a134dfb",
+      "executionId": "657bd84c-1010-4bd9-8835-68b654241b6a",
+      "expiresAt": "2026-09-22T20:16:06.761Z",
+      "issueUuid": "FLY-2688",
+      "lifecycleRevision": 2,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "hostProcess:execution_process_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:3",
+          "observedAt": "2026-09-22T20:15:36.705Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "657bd84c-1010-4bd9-8835-68b654241b6a",
+          "observedAt": "2026-09-22T20:15:36.705Z",
+          "reason": "codex_daemon_unknown",
+          "source": "daemon",
+          "state": "unknown"
+        },
+        "heartbeat": {
+          "identity": "657bd84c-1010-4bd9-8835-68b654241b6a",
+          "observedAt": "2026-09-22T20:15:36.705Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "657bd84c-1010-4bd9-8835-68b654241b6a",
+          "observedAt": "2026-09-22T20:15:36.761Z",
+          "reason": "execution_process_absent",
+          "source": "hostProcess",
+          "state": "absent"
+        },
+        "launch": {
+          "identity": "657bd84c-1010-4bd9-8835-68b654241b6a",
+          "observedAt": "2026-09-22T20:15:36.705Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "657bd84c-1010-4bd9-8835-68b654241b6a",
+          "observedAt": "2026-09-22T20:15:36.705Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "657bd84c-1010-4bd9-8835-68b654241b6a",
+          "observedAt": "2026-09-22T20:15:36.705Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-22T20:15:36.761Z",
+      "operationGeneration": 10,
+      "operationId": "land:b1c8324719f76ff5a8a9673c323d718d3680df7e868a9d4676e848bba857c9f3",
+      "project": "flywheel",
+      "runId": "1314690d-b2dd-4211-9bab-bd39ca94128d",
+      "unknownReasons": [
+        "daemon:codex_daemon_unknown"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "lead_close_runner",
+        "payload": "{\"closed\":true,\"alreadyGone\":true,\"reason\":\"FLY-1185 lifecycle closeout (shipped)\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "event_type": "lead_close_runner_failed",
+        "payload": "{\"cleanupPending\":true,\"reason\":\"codex_daemon_unverifiable\",\"origin\":\"bridge.close-runner\",\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/456ec2f784cb35f3.sock\"}"
+      },
+      {
+        "event_type": "exec_host_processes_residual",
+        "payload": "{\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/456ec2f784cb35f3.sock\"}"
+      },
+      {
+        "event_type": "instruction_skipped_recipient_terminal",
+        "payload": "{\"fromAgent\":\"bridge-land\",\"reason\":\"land-cleanup:land:b1c8324719f76ff5a8a9673c323d718d3680df7e868a9d4676e848bba857c9f3\",\"contentDigest\":\"d1282f716195bb6f\"}"
+      },
+      {
+        "event_type": "lead_close_runner_failed",
+        "payload": "{\"cleanupPending\":true,\"reason\":\"codex_daemon_unverifiable\",\"origin\":\"bridge.terminate\",\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/456ec2f784cb35f3.sock\"}"
+      },
+      {
+        "event_type": "exec_host_processes_residual",
+        "payload": "{\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/456ec2f784cb35f3.sock\"}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2751",
+    "execution": "d249a2c3-2f7c-41c8-889f-373f6c79437e",
+    "session": {
+      "execution_id": "d249a2c3-2f7c-41c8-889f-373f6c79437e",
+      "status": "terminated",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-19 04:51:07.698"
+    },
+    "evidence": null,
+    "events": [
+      {
+        "event_type": "lead_close_runner_failed",
+        "payload": "{\"closed\":false,\"reason\":\"FLY-1185 lifecycle closeout (shipped)\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\",\"tmuxError\":\"tmux window identity is still pending\"}"
+      },
+      {
+        "event_type": "instruction_skipped_recipient_terminal",
+        "payload": "{\"fromAgent\":\"bridge-land\",\"reason\":\"land-cleanup:land:29dc025eff9f9385250773b7736ec275e3abcc763c2d12beb760f1b8872184cb\",\"contentDigest\":\"b96e8d96eb91d389\"}"
+      },
+      {
+        "event_type": "lead_terminate_cleanup_failed",
+        "payload": "{\"tmuxError\":\"tmux window identity is still pending\",\"previousStatus\":\"running\",\"reason\":\"ghost session: body never spawned\"}"
+      },
+      {
+        "event_type": "lead_close_runner_failed",
+        "payload": "{\"cleanupPending\":true,\"reason\":\"codex_daemon_unverifiable\",\"origin\":\"bridge.terminate\",\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/63456bbe4dc22744.sock\"}"
+      },
+      {
+        "event_type": "exec_host_processes_residual",
+        "payload": "{\"outcome\":\"unverifiable\",\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/63456bbe4dc22744.sock\"}"
+      },
+      {
+        "event_type": "state_transition",
+        "payload": "{\"from\":\"running\",\"to\":\"terminated\",\"trigger\":\"terminate\"}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2766",
+    "execution": "cf70ee17-21cd-48e5-a993-63f246ac2a48",
+    "session": {
+      "execution_id": "cf70ee17-21cd-48e5-a993-63f246ac2a48",
+      "status": "completed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-23 07:01:44"
+    },
+    "evidence": null,
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cf70ee17-21cd-48e5-a993-63f246ac2a48\",\"pgid\":77379,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/2c1dd8baed9e698e.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cf70ee17-21cd-48e5-a993-63f246ac2a48\",\"pgid\":77379,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/2c1dd8baed9e698e.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cf70ee17-21cd-48e5-a993-63f246ac2a48\",\"pgid\":77379,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/2c1dd8baed9e698e.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cf70ee17-21cd-48e5-a993-63f246ac2a48\",\"pgid\":77379,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/2c1dd8baed9e698e.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cf70ee17-21cd-48e5-a993-63f246ac2a48\",\"pgid\":77379,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/2c1dd8baed9e698e.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cf70ee17-21cd-48e5-a993-63f246ac2a48\",\"pgid\":77379,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/2c1dd8baed9e698e.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2917",
+    "execution": "0143d036-b051-443a-8194-f79374813d93",
+    "session": {
+      "execution_id": "0143d036-b051-443a-8194-f79374813d93",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 04:00:52.562"
+    },
+    "evidence": null,
+    "events": [
+      {
+        "event_type": "codex_terminal_close_pending_confirm",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"ok\",\"count\":0},\"liveness\":\"unknown\",\"ledger\":\"missing\",\"socketLive\":false,\"spawnLock\":\"absent\",\"rollout\":\"unresolved\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      },
+      {
+        "event_type": "lead_close_runner_preserved",
+        "payload": "{\"status\":\"failed\",\"reason\":\"crash_preserve\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "event_type": "instruction_skipped_recipient_terminal",
+        "payload": "{\"fromAgent\":\"bridge-land\",\"reason\":\"land-cleanup:land:0aee52104656b6fb76a746afe51e1853029c7c5237a02dc53b2c8b0ad435b400\",\"contentDigest\":\"a582f0069db34165\"}"
+      },
+      {
+        "event_type": "session_failed",
+        "payload": "{\"failureKind\":null,\"lastError\":\"worktree create failed and rollback also failed: /Users/xiaorongli/Dev/flywheel-FLY-2917\"}"
+      },
+      {
+        "event_type": "linear_issue_start_outcome",
+        "payload": "{\"issueId\":\"FLY-2917\",\"executionId\":\"0143d036-b051-443a-8194-f79374813d93\",\"outcome\":\"started\"}"
+      },
+      {
+        "event_type": "session_started",
+        "payload": null
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2917",
+    "execution": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+    "session": {
+      "execution_id": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 06:08:44"
+    },
+    "evidence": {
+      "activationId": "activation:17dbb84d-5ef5-49e0-9313-b00a6e6807a8:7649ac47-6b6b-414e-9ee2-a79344421106:qa:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "5e82db8ff6d43be01d360f60da53638512ed63560edf496aa0fa466c0aeb267e",
+      "commIdentityRevision": "epoch:3",
+      "controllerGeneration": null,
+      "evidenceId": "d7e1ec38-2417-4fdd-b45c-bb1e2fca5ccb",
+      "executionId": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+      "expiresAt": "2026-09-26T17:03:41.272Z",
+      "issueUuid": "FLY-2917",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "window:execution_window_absent",
+        "hostProcess:execution_process_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:3",
+          "observedAt": "2026-09-26T17:03:11.085Z",
+          "reason": "comm_session_present",
+          "source": "commSession",
+          "state": "present"
+        },
+        "daemon": {
+          "identity": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+          "observedAt": "2026-09-26T17:03:11.085Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+          "observedAt": "2026-09-26T17:03:11.085Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+          "observedAt": "2026-09-26T17:03:11.272Z",
+          "reason": "execution_process_absent",
+          "source": "hostProcess",
+          "state": "absent"
+        },
+        "launch": {
+          "identity": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+          "observedAt": "2026-09-26T17:03:11.085Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+          "observedAt": "2026-09-26T17:03:11.085Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "17dbb84d-5ef5-49e0-9313-b00a6e6807a8",
+          "observedAt": "2026-09-26T17:03:11.085Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T17:03:11.272Z",
+      "operationGeneration": 11,
+      "operationId": "land:0aee52104656b6fb76a746afe51e1853029c7c5237a02dc53b2c8b0ad435b400",
+      "project": "flywheel",
+      "runId": "4148f393-3ae5-43fc-af50-bfa20064bdf3",
+      "unknownReasons": [],
+      "verdict": "gone",
+      "version": 1,
+      "windowIdentity": "runner-flywheel:pending"
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"17dbb84d-5ef5-49e0-9313-b00a6e6807a8\",\"pgid\":32441,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/d4b206a9636a5348.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"17dbb84d-5ef5-49e0-9313-b00a6e6807a8\",\"pgid\":32441,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/d4b206a9636a5348.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"17dbb84d-5ef5-49e0-9313-b00a6e6807a8\",\"pgid\":32441,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/d4b206a9636a5348.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_terminal_close_probe_unknown",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"unknown\",\"count\":0},\"liveness\":\"absent\",\"ledger\":\"valid_group\",\"socketLive\":false,\"spawnLock\":\"absent\",\"rollout\":\"ok\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":0}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"17dbb84d-5ef5-49e0-9313-b00a6e6807a8\",\"pgid\":32441,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/d4b206a9636a5348.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"17dbb84d-5ef5-49e0-9313-b00a6e6807a8\",\"pgid\":32441,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/d4b206a9636a5348.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2917",
+    "execution": "401ec61e-8878-492e-b22b-7d371219c61b",
+    "session": {
+      "execution_id": "401ec61e-8878-492e-b22b-7d371219c61b",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 06:13:01"
+    },
+    "evidence": {
+      "activationId": "activation:401ec61e-8878-492e-b22b-7d371219c61b:7649ac47-6b6b-414e-9ee2-a79344421106:qa:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "5e82db8ff6d43be01d360f60da53638512ed63560edf496aa0fa466c0aeb267e",
+      "commIdentityRevision": "epoch:3",
+      "controllerGeneration": null,
+      "evidenceId": "a6a03e49-c6f2-432e-868e-14c766a6ed98",
+      "executionId": "401ec61e-8878-492e-b22b-7d371219c61b",
+      "expiresAt": "2026-09-26T19:07:06.298Z",
+      "issueUuid": "FLY-2917",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "window:execution_window_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:3",
+          "observedAt": "2026-09-26T19:06:31.139Z",
+          "reason": "comm_session_present",
+          "source": "commSession",
+          "state": "present"
+        },
+        "daemon": {
+          "identity": "401ec61e-8878-492e-b22b-7d371219c61b",
+          "observedAt": "2026-09-26T19:06:31.139Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "401ec61e-8878-492e-b22b-7d371219c61b",
+          "observedAt": "2026-09-26T19:06:31.139Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "401ec61e-8878-492e-b22b-7d371219c61b",
+          "observedAt": "2026-09-26T19:06:36.298Z",
+          "reason": "probe_timeout",
+          "source": "hostProcess",
+          "state": "unknown"
+        },
+        "launch": {
+          "identity": "401ec61e-8878-492e-b22b-7d371219c61b",
+          "observedAt": "2026-09-26T19:06:31.139Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "401ec61e-8878-492e-b22b-7d371219c61b",
+          "observedAt": "2026-09-26T19:06:31.139Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "401ec61e-8878-492e-b22b-7d371219c61b",
+          "observedAt": "2026-09-26T19:06:31.139Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:06:36.298Z",
+      "operationGeneration": 12,
+      "operationId": "land:0aee52104656b6fb76a746afe51e1853029c7c5237a02dc53b2c8b0ad435b400",
+      "project": "flywheel",
+      "runId": "4148f393-3ae5-43fc-af50-bfa20064bdf3",
+      "unknownReasons": [
+        "hostProcess:probe_timeout"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": "runner-flywheel:pending"
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"401ec61e-8878-492e-b22b-7d371219c61b\",\"pgid\":60124,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/b9634a07bc1b6c7c.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"401ec61e-8878-492e-b22b-7d371219c61b\",\"pgid\":60124,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/b9634a07bc1b6c7c.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"401ec61e-8878-492e-b22b-7d371219c61b\",\"pgid\":60124,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/b9634a07bc1b6c7c.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_terminal_close_probe_unknown",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"unknown\",\"count\":0},\"liveness\":\"absent\",\"ledger\":\"valid_group\",\"socketLive\":false,\"spawnLock\":\"absent\",\"rollout\":\"ok\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":0}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"401ec61e-8878-492e-b22b-7d371219c61b\",\"pgid\":60124,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/b9634a07bc1b6c7c.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"401ec61e-8878-492e-b22b-7d371219c61b\",\"pgid\":60124,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/b9634a07bc1b6c7c.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2917",
+    "execution": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+    "session": {
+      "execution_id": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+      "status": "terminated",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 06:42:04"
+    },
+    "evidence": {
+      "activationId": "activation:62aadb00-d820-426c-9a9f-f51fa7aa47b5:7649ac47-6b6b-414e-9ee2-a79344421106:qa:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "5e82db8ff6d43be01d360f60da53638512ed63560edf496aa0fa466c0aeb267e",
+      "commIdentityRevision": "epoch:4",
+      "controllerGeneration": null,
+      "evidenceId": "68a72e57-fbc9-4d92-9b9c-ae80f295bd28",
+      "executionId": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+      "expiresAt": "2026-09-26T19:07:13.421Z",
+      "issueUuid": "FLY-2917",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:4",
+          "observedAt": "2026-09-26T19:06:37.937Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+          "observedAt": "2026-09-26T19:06:37.937Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+          "observedAt": "2026-09-26T19:06:37.937Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+          "observedAt": "2026-09-26T19:06:43.421Z",
+          "reason": "probe_timeout",
+          "source": "hostProcess",
+          "state": "unknown"
+        },
+        "launch": {
+          "identity": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+          "observedAt": "2026-09-26T19:06:37.937Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+          "observedAt": "2026-09-26T19:06:37.937Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "62aadb00-d820-426c-9a9f-f51fa7aa47b5",
+          "observedAt": "2026-09-26T19:06:37.937Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:06:43.421Z",
+      "operationGeneration": 12,
+      "operationId": "land:0aee52104656b6fb76a746afe51e1853029c7c5237a02dc53b2c8b0ad435b400",
+      "project": "flywheel",
+      "runId": "4148f393-3ae5-43fc-af50-bfa20064bdf3",
+      "unknownReasons": [
+        "hostProcess:probe_timeout"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"62aadb00-d820-426c-9a9f-f51fa7aa47b5\",\"pgid\":11738,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/1565c58731001a37.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"62aadb00-d820-426c-9a9f-f51fa7aa47b5\",\"pgid\":11738,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/1565c58731001a37.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"62aadb00-d820-426c-9a9f-f51fa7aa47b5\",\"pgid\":11738,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/1565c58731001a37.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"62aadb00-d820-426c-9a9f-f51fa7aa47b5\",\"pgid\":11738,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/1565c58731001a37.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"62aadb00-d820-426c-9a9f-f51fa7aa47b5\",\"pgid\":11738,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/1565c58731001a37.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_terminal_close_close_attempted",
+        "payload": "{\"source\":\"bridge.close-runner\",\"ownerStop\":\"not_owned\",\"reap\":\"absent\",\"previousState\":null,\"sessionStatus\":\"terminated\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2917",
+    "execution": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+    "session": {
+      "execution_id": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 07:06:11"
+    },
+    "evidence": {
+      "activationId": "activation:cb0a5905-ca8d-4120-9bee-deda645a8876:4148f393-3ae5-43fc-af50-bfa20064bdf3:implement:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "5e82db8ff6d43be01d360f60da53638512ed63560edf496aa0fa466c0aeb267e",
+      "commIdentityRevision": "epoch:5",
+      "controllerGeneration": null,
+      "evidenceId": "341888f3-f12f-4d4b-b237-9b66047eb80f",
+      "executionId": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+      "expiresAt": "2026-09-26T17:03:42.916Z",
+      "issueUuid": "FLY-2917",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "window:execution_window_absent",
+        "hostProcess:execution_process_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:5",
+          "observedAt": "2026-09-26T17:03:12.705Z",
+          "reason": "comm_session_present",
+          "source": "commSession",
+          "state": "present"
+        },
+        "daemon": {
+          "identity": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+          "observedAt": "2026-09-26T17:03:12.706Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+          "observedAt": "2026-09-26T17:03:12.705Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+          "observedAt": "2026-09-26T17:03:12.916Z",
+          "reason": "execution_process_absent",
+          "source": "hostProcess",
+          "state": "absent"
+        },
+        "launch": {
+          "identity": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+          "observedAt": "2026-09-26T17:03:12.705Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+          "observedAt": "2026-09-26T17:03:12.705Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "cb0a5905-ca8d-4120-9bee-deda645a8876",
+          "observedAt": "2026-09-26T17:03:12.705Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T17:03:12.916Z",
+      "operationGeneration": 11,
+      "operationId": "land:0aee52104656b6fb76a746afe51e1853029c7c5237a02dc53b2c8b0ad435b400",
+      "project": "flywheel",
+      "runId": "4148f393-3ae5-43fc-af50-bfa20064bdf3",
+      "unknownReasons": [],
+      "verdict": "gone",
+      "version": 1,
+      "windowIdentity": "runner-flywheel:pending"
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cb0a5905-ca8d-4120-9bee-deda645a8876\",\"pgid\":32457,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/aefa1ed1f792d631.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cb0a5905-ca8d-4120-9bee-deda645a8876\",\"pgid\":32457,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/aefa1ed1f792d631.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cb0a5905-ca8d-4120-9bee-deda645a8876\",\"pgid\":32457,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/aefa1ed1f792d631.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_terminal_close_probe_unknown",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"unknown\",\"count\":0},\"liveness\":\"absent\",\"ledger\":\"valid_group\",\"socketLive\":false,\"spawnLock\":\"stale\",\"rollout\":\"unresolved\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cb0a5905-ca8d-4120-9bee-deda645a8876\",\"pgid\":32457,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/aefa1ed1f792d631.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cb0a5905-ca8d-4120-9bee-deda645a8876\",\"pgid\":32457,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/aefa1ed1f792d631.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2917",
+    "execution": "cdef445c-5d20-4936-93e2-5602c726b617",
+    "session": {
+      "execution_id": "cdef445c-5d20-4936-93e2-5602c726b617",
+      "status": "completed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 08:40:29"
+    },
+    "evidence": {
+      "activationId": "activation:cdef445c-5d20-4936-93e2-5602c726b617:4148f393-3ae5-43fc-af50-bfa20064bdf3:implement:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "5e82db8ff6d43be01d360f60da53638512ed63560edf496aa0fa466c0aeb267e",
+      "commIdentityRevision": "epoch:5",
+      "controllerGeneration": null,
+      "evidenceId": "af231c62-7498-4d82-b86f-b15c543b14fe",
+      "executionId": "cdef445c-5d20-4936-93e2-5602c726b617",
+      "expiresAt": "2026-09-26T19:07:49.085Z",
+      "issueUuid": "FLY-2917",
+      "lifecycleRevision": 2,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:5",
+          "observedAt": "2026-09-26T19:07:09.828Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "cdef445c-5d20-4936-93e2-5602c726b617",
+          "observedAt": "2026-09-26T19:07:09.895Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "cdef445c-5d20-4936-93e2-5602c726b617",
+          "observedAt": "2026-09-26T19:07:09.828Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "cdef445c-5d20-4936-93e2-5602c726b617",
+          "observedAt": "2026-09-26T19:07:19.085Z",
+          "reason": "probe_timeout",
+          "source": "hostProcess",
+          "state": "unknown"
+        },
+        "launch": {
+          "identity": "cdef445c-5d20-4936-93e2-5602c726b617",
+          "observedAt": "2026-09-26T19:07:09.828Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "cdef445c-5d20-4936-93e2-5602c726b617",
+          "observedAt": "2026-09-26T19:07:09.828Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "cdef445c-5d20-4936-93e2-5602c726b617",
+          "observedAt": "2026-09-26T19:07:09.828Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:07:19.085Z",
+      "operationGeneration": 12,
+      "operationId": "land:0aee52104656b6fb76a746afe51e1853029c7c5237a02dc53b2c8b0ad435b400",
+      "project": "flywheel",
+      "runId": "4148f393-3ae5-43fc-af50-bfa20064bdf3",
+      "unknownReasons": [
+        "hostProcess:probe_timeout"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cdef445c-5d20-4936-93e2-5602c726b617\",\"pgid\":77884,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/ec1228fd9017bc56.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cdef445c-5d20-4936-93e2-5602c726b617\",\"pgid\":77884,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/ec1228fd9017bc56.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cdef445c-5d20-4936-93e2-5602c726b617\",\"pgid\":77884,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/ec1228fd9017bc56.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cdef445c-5d20-4936-93e2-5602c726b617\",\"pgid\":77884,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/ec1228fd9017bc56.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"cdef445c-5d20-4936-93e2-5602c726b617\",\"pgid\":77884,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/ec1228fd9017bc56.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "chat_thread_archived",
+        "payload": "{\"threadId\":\"1553255013034238088\",\"attempts\":1,\"status\":200,\"reason\":\"ok\"}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2917",
+    "execution": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+    "session": {
+      "execution_id": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+      "status": "completed",
+      "adapter_type": "claude-tmux",
+      "heartbeat_at": "2026-09-26 15:02:43"
+    },
+    "evidence": {
+      "activationId": "activation:4854bb02-d879-45a6-b3d2-fe4eb0c622b9:4148f393-3ae5-43fc-af50-bfa20064bdf3:qa:1",
+      "adapter": "claude-tmux",
+      "attributionDigest": "5e82db8ff6d43be01d360f60da53638512ed63560edf496aa0fa466c0aeb267e",
+      "commIdentityRevision": "epoch:3",
+      "controllerGeneration": null,
+      "evidenceId": "5284fb8c-ed6b-4264-b2eb-c511deebc109",
+      "executionId": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+      "expiresAt": "2026-09-26T19:07:55.347Z",
+      "issueUuid": "FLY-2917",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:3",
+          "observedAt": "2026-09-26T19:07:19.547Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+          "observedAt": "2026-09-26T19:07:19.547Z",
+          "reason": "adapter_has_no_codex_daemon",
+          "source": "daemon",
+          "state": "not_applicable"
+        },
+        "heartbeat": {
+          "identity": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+          "observedAt": "2026-09-26T19:07:19.547Z",
+          "reason": "adapter_has_no_controller_heartbeat",
+          "source": "heartbeat",
+          "state": "not_applicable"
+        },
+        "hostProcess": {
+          "identity": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+          "observedAt": "2026-09-26T19:07:25.347Z",
+          "reason": "probe_timeout",
+          "source": "hostProcess",
+          "state": "unknown"
+        },
+        "launch": {
+          "identity": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+          "observedAt": "2026-09-26T19:07:19.547Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+          "observedAt": "2026-09-26T19:07:19.547Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "4854bb02-d879-45a6-b3d2-fe4eb0c622b9",
+          "observedAt": "2026-09-26T19:07:19.547Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:07:25.347Z",
+      "operationGeneration": 12,
+      "operationId": "land:0aee52104656b6fb76a746afe51e1853029c7c5237a02dc53b2c8b0ad435b400",
+      "project": "flywheel",
+      "runId": "4148f393-3ae5-43fc-af50-bfa20064bdf3",
+      "unknownReasons": [
+        "hostProcess:probe_timeout"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "external_merge_suspect",
+        "payload": "{\"boundHead\":\"81f1d608068bc7445b19646b713f555ec1bf7fa7\",\"mergedHead\":\"81f1d608068bc7445b19646b713f555ec1bf7fa7\",\"trustedApproval\":false,\"engineShipEligible\":true,\"engineShipReason\":null}"
+      },
+      {
+        "event_type": "lead_close_runner",
+        "payload": "{\"closed\":true,\"alreadyGone\":true,\"reason\":\"FLY-1185 lifecycle closeout (shipped)\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "event_type": "session_completed",
+        "payload": "{\"failureKind\":null,\"lastError\":null}"
+      },
+      {
+        "event_type": "commdb_ask_disposed",
+        "payload": "{\"retiredGateCount\":0,\"retiredAskCount\":3,\"resolvedVia\":\"owner_closed\",\"source\":\"bridge.close-runner\"}"
+      },
+      {
+        "event_type": "lead_close_runner",
+        "payload": "{\"closed\":true,\"reason\":\"DAG workflow ship finalization\",\"executorType\":\"phase\"}"
+      },
+      {
+        "event_type": "lead_close_runner_finalized",
+        "payload": "{\"fromStatus\":\"running\",\"toStatus\":\"completed\",\"reason\":\"DAG workflow ship finalization\",\"executorType\":\"phase\"}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2916",
+    "execution": "a542ae1d-4904-4760-a7fa-5103bd12426e",
+    "session": {
+      "execution_id": "a542ae1d-4904-4760-a7fa-5103bd12426e",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 03:56:59.721"
+    },
+    "evidence": null,
+    "events": [
+      {
+        "event_type": "codex_terminal_close_pending_confirm",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"ok\",\"count\":0},\"liveness\":\"unknown\",\"ledger\":\"missing\",\"socketLive\":false,\"spawnLock\":\"absent\",\"rollout\":\"unresolved\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      },
+      {
+        "event_type": "lead_close_runner_preserved",
+        "payload": "{\"status\":\"failed\",\"reason\":\"crash_preserve\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "event_type": "instruction_skipped_recipient_terminal",
+        "payload": "{\"fromAgent\":\"bridge-land\",\"reason\":\"land-cleanup:land:f42bc1d657f021b004470e0821ec03942d8afb9bc78530daa10fe2dc24e49203\",\"contentDigest\":\"dd4d7edd888f1b30\"}"
+      },
+      {
+        "event_type": "codex_home_lease_swept",
+        "payload": "{\"executionId\":\"a542ae1d-4904-4760-a7fa-5103bd12426e\",\"home\":\"/Users/xiaorongli/.flywheel/codex-homes/agents/flywheel/implement\",\"remaining\":5}"
+      },
+      {
+        "event_type": "codex_transport_death_snapshot",
+        "payload": "{\"at\":\"2026-09-26T04:19:09.488Z\",\"trigger\":\"zombie_declaration\",\"reason\":\"zombie: tmux window runner-flywheel:pending dead (pane probe absent x2, server up, at 2026-09-26T04:19:09.061Z)\",\"socket\":{\"path\":\"/Users/xiaorongli/.flywheel/cdx-sock/ac638b458e7d61fa.sock\",\"exists\":false,\"lsofError\":\"Command failed: lsof -nP /Users/xiaorongli/.flywheel/cdx-sock/ac638b458e7d61fa.sock\\nlsof: status error on /Users/xiaorongli/.flywheel/cdx-sock/ac638b458e7d61fa.sock: No such file or directory\\nlsof 4.91\\n latest revision: ftp://lsof.itap.purdue.edu/pub/tools/unix/lsof/\\n latest FAQ: ftp://lsof.itap.purdue.edu/pub/tools/unix/lsof/FAQ\\n latest man page: ftp://lsof.itap.purdue.edu/pub/tools/unix/lsof/lsof_man\\n usage: [-?abhlnNoOPRtUvVX] [+|-c c] [+|-d s] [+D D] [+|-f[cgG]]\\n [-F [f]] [-g [s]] [-i [i]] [+|-L [l]] [+|-M] [-o [o]] [-p s]\\n [+|-r [t]] [-s [p:s]] [-S [t]] [-T [t]] [-u s] [+|-w] [-x [fl]] [--] [names]\\nUse the ``-h'' option to get more help information.\\n\"},\"processRows\":[],\"processError\":\"stdout maxBuffer length exceeded\",\"maintenanceTicks\":[\"2026-09-26T04:06:31.338Z\",\"2026-09-26T04:15:18.135Z\"]}"
+      },
+      {
+        "event_type": "state_transition",
+        "payload": "{\"from\":\"running\",\"to\":\"failed\",\"trigger\":\"zombie_reap\"}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2910",
+    "execution": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+    "session": {
+      "execution_id": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 05:15:27"
+    },
+    "evidence": {
+      "activationId": "activation:a4b0851c-c2a8-4560-98fe-ef1cbdc636d5:07a8f309-e14b-474c-a2da-496809a093fa:implement:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "6631bfe85a05f23a780b0ec015489bcfaef064c1950798ba68cb5d6e3501a7b2",
+      "commIdentityRevision": "epoch:2",
+      "controllerGeneration": null,
+      "evidenceId": "4c2547cf-7c38-4927-ada0-f6e55e147af9",
+      "executionId": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+      "expiresAt": "2026-09-26T18:03:39.347Z",
+      "issueUuid": "FLY-2910",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "window:execution_window_absent",
+        "hostProcess:execution_process_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:2",
+          "observedAt": "2026-09-26T18:03:08.764Z",
+          "reason": "comm_session_present",
+          "source": "commSession",
+          "state": "present"
+        },
+        "daemon": {
+          "identity": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+          "observedAt": "2026-09-26T18:03:08.764Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+          "observedAt": "2026-09-26T18:03:08.764Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+          "observedAt": "2026-09-26T18:03:09.347Z",
+          "reason": "execution_process_absent",
+          "source": "hostProcess",
+          "state": "absent"
+        },
+        "launch": {
+          "identity": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+          "observedAt": "2026-09-26T18:03:08.764Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+          "observedAt": "2026-09-26T18:03:08.764Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "a4b0851c-c2a8-4560-98fe-ef1cbdc636d5",
+          "observedAt": "2026-09-26T18:03:08.764Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T18:03:09.347Z",
+      "operationGeneration": 23,
+      "operationId": "land:9bfd5ab9fea8128d33cd13505c08fd6bb64bf0decf4e70e56c059b469099d0d1",
+      "project": "flywheel",
+      "runId": "0c11eb57-32d9-4f5e-860f-87596fe252cb",
+      "unknownReasons": [],
+      "verdict": "gone",
+      "version": 1,
+      "windowIdentity": "runner-flywheel:pending"
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"a4b0851c-c2a8-4560-98fe-ef1cbdc636d5\",\"pgid\":5385,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/91d4e0f04c4bf3f2.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":true,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"a4b0851c-c2a8-4560-98fe-ef1cbdc636d5\",\"pgid\":5385,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/91d4e0f04c4bf3f2.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":true,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"a4b0851c-c2a8-4560-98fe-ef1cbdc636d5\",\"pgid\":5385,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/91d4e0f04c4bf3f2.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"a4b0851c-c2a8-4560-98fe-ef1cbdc636d5\",\"pgid\":5385,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/91d4e0f04c4bf3f2.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_terminal_close_pending_confirm",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"ok\",\"count\":0},\"liveness\":\"absent\",\"ledger\":\"valid_group\",\"socketLive\":false,\"spawnLock\":\"stale\",\"rollout\":\"unresolved\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"a4b0851c-c2a8-4560-98fe-ef1cbdc636d5\",\"pgid\":5385,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/91d4e0f04c4bf3f2.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2910",
+    "execution": "47b666b1-b6a8-4c8b-8308-bddcd3fc6a8c",
+    "session": {
+      "execution_id": "47b666b1-b6a8-4c8b-8308-bddcd3fc6a8c",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 07:46:52.606"
+    },
+    "evidence": null,
+    "events": [
+      {
+        "event_type": "codex_terminal_close_pending_confirm",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"ok\",\"count\":0},\"liveness\":\"unknown\",\"ledger\":\"missing\",\"socketLive\":false,\"spawnLock\":\"absent\",\"rollout\":\"unresolved\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      },
+      {
+        "event_type": "lead_close_runner_preserved",
+        "payload": "{\"status\":\"failed\",\"reason\":\"crash_preserve\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "event_type": "instruction_skipped_recipient_terminal",
+        "payload": "{\"fromAgent\":\"bridge-land\",\"reason\":\"land-cleanup:land:9bfd5ab9fea8128d33cd13505c08fd6bb64bf0decf4e70e56c059b469099d0d1\",\"contentDigest\":\"29a73a004e072e65\"}"
+      },
+      {
+        "event_type": "session_failed",
+        "payload": "{\"failureKind\":null,\"lastError\":\"Child stdio did not close within 250ms\"}"
+      },
+      {
+        "event_type": "linear_issue_start_outcome",
+        "payload": "{\"issueId\":\"FLY-2910\",\"executionId\":\"47b666b1-b6a8-4c8b-8308-bddcd3fc6a8c\",\"outcome\":\"started\"}"
+      },
+      {
+        "event_type": "session_started",
+        "payload": null
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2934",
+    "execution": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+    "session": {
+      "execution_id": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+      "status": "terminated",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 15:47:34"
+    },
+    "evidence": {
+      "activationId": "activation:ca5cf4a9-4da6-49e7-aacf-c3035ce0be17:9c40b5d5-f520-4635-8eb2-959778f71783:implement:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "2ccaca9a77ad31e68dadc1a81f885f5a10ee797b653ff73a97574480a922ce62",
+      "commIdentityRevision": "epoch:4",
+      "controllerGeneration": null,
+      "evidenceId": "4091dded-841e-4ce0-a4cb-91ec00857a9e",
+      "executionId": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+      "expiresAt": "2026-09-26T19:43:02.315Z",
+      "issueUuid": "FLY-2934",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:4",
+          "observedAt": "2026-09-26T19:42:26.203Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+          "observedAt": "2026-09-26T19:42:26.324Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+          "observedAt": "2026-09-26T19:42:26.203Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+          "observedAt": "2026-09-26T19:42:32.315Z",
+          "reason": "probe_timeout",
+          "source": "hostProcess",
+          "state": "unknown"
+        },
+        "launch": {
+          "identity": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+          "observedAt": "2026-09-26T19:42:26.203Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+          "observedAt": "2026-09-26T19:42:26.203Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "ca5cf4a9-4da6-49e7-aacf-c3035ce0be17",
+          "observedAt": "2026-09-26T19:42:26.203Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:42:32.315Z",
+      "operationGeneration": 11,
+      "operationId": "land:3ab180b1b00f7dbe8f089723eb74c98d7596a7861c37b21801311cab89bf25bd",
+      "project": "flywheel",
+      "runId": "5d402254-8aa3-42e0-8d2b-73b72e7320b1",
+      "unknownReasons": [
+        "hostProcess:probe_timeout"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"ca5cf4a9-4da6-49e7-aacf-c3035ce0be17\",\"pgid\":7684,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f1807744091d57b7.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"ca5cf4a9-4da6-49e7-aacf-c3035ce0be17\",\"pgid\":7684,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f1807744091d57b7.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"ca5cf4a9-4da6-49e7-aacf-c3035ce0be17\",\"pgid\":7684,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f1807744091d57b7.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"ca5cf4a9-4da6-49e7-aacf-c3035ce0be17\",\"pgid\":7684,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f1807744091d57b7.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"ca5cf4a9-4da6-49e7-aacf-c3035ce0be17\",\"pgid\":7684,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f1807744091d57b7.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_terminal_close_close_attempted",
+        "payload": "{\"source\":\"bridge.close-runner\",\"ownerStop\":\"not_owned\",\"reap\":\"absent\",\"previousState\":null,\"sessionStatus\":\"terminated\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2934",
+    "execution": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+    "session": {
+      "execution_id": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 15:47:50.991"
+    },
+    "evidence": {
+      "activationId": "activation:5095c67d-5e01-4edd-a526-9555041d5bf1:92da5f82-d0be-4a43-9fd0-17a666027989:implement:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "2ccaca9a77ad31e68dadc1a81f885f5a10ee797b653ff73a97574480a922ce62",
+      "commIdentityRevision": "epoch:3",
+      "controllerGeneration": null,
+      "evidenceId": "a48005d8-00c5-4334-a5f8-80be340f9a1a",
+      "executionId": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+      "expiresAt": "2026-09-26T19:12:47.831Z",
+      "issueUuid": "FLY-2934",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "hostProcess:execution_process_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:3",
+          "observedAt": "2026-09-26T19:12:16.205Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+          "observedAt": "2026-09-26T19:12:16.205Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+          "observedAt": "2026-09-26T19:12:16.205Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+          "observedAt": "2026-09-26T19:12:17.831Z",
+          "reason": "execution_process_absent",
+          "source": "hostProcess",
+          "state": "absent"
+        },
+        "launch": {
+          "identity": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+          "observedAt": "2026-09-26T19:12:16.205Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+          "observedAt": "2026-09-26T19:12:16.205Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "5095c67d-5e01-4edd-a526-9555041d5bf1",
+          "observedAt": "2026-09-26T19:12:16.205Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:12:17.831Z",
+      "operationGeneration": 10,
+      "operationId": "land:3ab180b1b00f7dbe8f089723eb74c98d7596a7861c37b21801311cab89bf25bd",
+      "project": "flywheel",
+      "runId": "5d402254-8aa3-42e0-8d2b-73b72e7320b1",
+      "unknownReasons": [],
+      "verdict": "gone",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "codex_terminal_close_pending_confirm",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"ok\",\"count\":0},\"liveness\":\"unknown\",\"ledger\":\"missing\",\"socketLive\":false,\"spawnLock\":\"absent\",\"rollout\":\"unresolved\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":null,\"tokensAfterTerminal\":null}"
+      },
+      {
+        "event_type": "lead_close_runner_preserved",
+        "payload": "{\"status\":\"failed\",\"reason\":\"crash_preserve\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "event_type": "instruction_skipped_recipient_terminal",
+        "payload": "{\"fromAgent\":\"bridge-land\",\"reason\":\"land-cleanup:land:3ab180b1b00f7dbe8f089723eb74c98d7596a7861c37b21801311cab89bf25bd\",\"contentDigest\":\"daad5515fed85c97\"}"
+      },
+      {
+        "event_type": "lead_close_runner_preserved",
+        "payload": "{\"status\":\"failed\",\"reason\":\"crash_preserve\",\"leadId\":\"flywheel-eng-lead\",\"executorType\":\"engineer\"}"
+      },
+      {
+        "event_type": "issue_thread_infra_notified",
+        "payload": "{\"kind\":\"three_stage_takeover_failed\",\"threadId\":\"1553431982401257603\",\"status\":200,\"attempt\":1}"
+      },
+      {
+        "event_type": "session_failed",
+        "payload": "{\"failureKind\":\"worktree_takeover_failed\",\"lastError\":\"worktree_takeover_failed: shared branch-B worktree /Users/xiaorongli/Dev/flywheel-FLY-2934 is not reusable in place (clean=false, head=a83d4df1de185c5ee073c8ceb6c9805972c8e0c2, expected=a83d4df1de185c5ee073c8ceb6c9805972c8e0c2) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work\"}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2934",
+    "execution": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+    "session": {
+      "execution_id": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+      "status": "completed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 18:33:09"
+    },
+    "evidence": {
+      "activationId": null,
+      "adapter": "codex-tmux",
+      "attributionDigest": "2ccaca9a77ad31e68dadc1a81f885f5a10ee797b653ff73a97574480a922ce62",
+      "commIdentityRevision": "epoch:12",
+      "controllerGeneration": null,
+      "evidenceId": "a32098ca-5532-4180-8f61-055966a91144",
+      "executionId": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+      "expiresAt": "2026-09-26T19:43:16.813Z",
+      "issueUuid": "FLY-2934",
+      "lifecycleRevision": 5,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:12",
+          "observedAt": "2026-09-26T19:42:41.549Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+          "observedAt": "2026-09-26T19:42:41.766Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+          "observedAt": "2026-09-26T19:42:41.549Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+          "observedAt": "2026-09-26T19:42:46.813Z",
+          "reason": "probe_timeout",
+          "source": "hostProcess",
+          "state": "unknown"
+        },
+        "launch": {
+          "identity": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+          "observedAt": "2026-09-26T19:42:41.549Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+          "observedAt": "2026-09-26T19:42:41.549Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "4dd53180-625b-44d7-9a3a-6620fdfb02ec",
+          "observedAt": "2026-09-26T19:42:41.549Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:42:46.813Z",
+      "operationGeneration": 11,
+      "operationId": "land:3ab180b1b00f7dbe8f089723eb74c98d7596a7861c37b21801311cab89bf25bd",
+      "project": "flywheel",
+      "runId": "5d402254-8aa3-42e0-8d2b-73b72e7320b1",
+      "unknownReasons": [
+        "hostProcess:probe_timeout"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"4dd53180-625b-44d7-9a3a-6620fdfb02ec\",\"pgid\":61806,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/04ec5f401223eef1.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"4dd53180-625b-44d7-9a3a-6620fdfb02ec\",\"pgid\":61806,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/04ec5f401223eef1.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"4dd53180-625b-44d7-9a3a-6620fdfb02ec\",\"pgid\":61806,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/04ec5f401223eef1.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"4dd53180-625b-44d7-9a3a-6620fdfb02ec\",\"pgid\":61806,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/04ec5f401223eef1.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"4dd53180-625b-44d7-9a3a-6620fdfb02ec\",\"pgid\":61806,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/04ec5f401223eef1.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "post_merge_completed",
+        "payload": "{\"tmuxClosed\":false,\"commDbFinalized\":true,\"retiredGateCount\":0}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2934",
+    "execution": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+    "session": {
+      "execution_id": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 16:39:48"
+    },
+    "evidence": {
+      "activationId": "activation:bf4b78d3-7d29-4096-815e-beba5b204fc6:5d402254-8aa3-42e0-8d2b-73b72e7320b1:qa:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "2ccaca9a77ad31e68dadc1a81f885f5a10ee797b653ff73a97574480a922ce62",
+      "commIdentityRevision": "epoch:5",
+      "controllerGeneration": null,
+      "evidenceId": "98cf7e60-8721-4ffc-af28-3b6e60885a6e",
+      "executionId": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+      "expiresAt": "2026-09-26T19:12:52.570Z",
+      "issueUuid": "FLY-2934",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "hostProcess:execution_process_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:5",
+          "observedAt": "2026-09-26T19:12:19.769Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+          "observedAt": "2026-09-26T19:12:19.770Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+          "observedAt": "2026-09-26T19:12:19.769Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+          "observedAt": "2026-09-26T19:12:22.570Z",
+          "reason": "execution_process_absent",
+          "source": "hostProcess",
+          "state": "absent"
+        },
+        "launch": {
+          "identity": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+          "observedAt": "2026-09-26T19:12:19.769Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+          "observedAt": "2026-09-26T19:12:19.769Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "bf4b78d3-7d29-4096-815e-beba5b204fc6",
+          "observedAt": "2026-09-26T19:12:19.769Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:12:22.570Z",
+      "operationGeneration": 10,
+      "operationId": "land:3ab180b1b00f7dbe8f089723eb74c98d7596a7861c37b21801311cab89bf25bd",
+      "project": "flywheel",
+      "runId": "5d402254-8aa3-42e0-8d2b-73b72e7320b1",
+      "unknownReasons": [],
+      "verdict": "gone",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"bf4b78d3-7d29-4096-815e-beba5b204fc6\",\"pgid\":24661,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f7b1d4015ceaeb85.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_terminal_close_pending_confirm",
+        "payload": "{\"source\":\"bridge.codex-terminal-sweep\",\"ownership\":\"none\",\"procs\":{\"status\":\"ok\",\"count\":0},\"liveness\":\"absent\",\"ledger\":\"valid_group\",\"socketLive\":false,\"spawnLock\":\"absent\",\"rollout\":\"ok\",\"previousState\":null,\"sessionStatus\":\"failed\",\"tokensAtTerminal\":5108037,\"tokensAfterTerminal\":0}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"bf4b78d3-7d29-4096-815e-beba5b204fc6\",\"pgid\":24661,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f7b1d4015ceaeb85.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"bf4b78d3-7d29-4096-815e-beba5b204fc6\",\"pgid\":24661,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f7b1d4015ceaeb85.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"bf4b78d3-7d29-4096-815e-beba5b204fc6\",\"pgid\":24661,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f7b1d4015ceaeb85.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"bf4b78d3-7d29-4096-815e-beba5b204fc6\",\"pgid\":24661,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/f7b1d4015ceaeb85.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      }
+    ]
+  },
+  {
+    "issue": "FLY-2934",
+    "execution": "68284088-277d-42a2-befe-b70ca17bd9c5",
+    "session": {
+      "execution_id": "68284088-277d-42a2-befe-b70ca17bd9c5",
+      "status": "failed",
+      "adapter_type": "codex-tmux",
+      "heartbeat_at": "2026-09-26 16:46:06"
+    },
+    "evidence": {
+      "activationId": "activation:68284088-277d-42a2-befe-b70ca17bd9c5:5d402254-8aa3-42e0-8d2b-73b72e7320b1:qa:1",
+      "adapter": "codex-tmux",
+      "attributionDigest": "2ccaca9a77ad31e68dadc1a81f885f5a10ee797b653ff73a97574480a922ce62",
+      "commIdentityRevision": "epoch:4",
+      "controllerGeneration": null,
+      "evidenceId": "1c31e303-3ae7-49e8-ac8c-6b0b7dabc19b",
+      "executionId": "68284088-277d-42a2-befe-b70ca17bd9c5",
+      "expiresAt": "2026-09-26T19:43:44.144Z",
+      "issueUuid": "FLY-2934",
+      "lifecycleRevision": 1,
+      "liveVetoes": [],
+      "negativeReasons": [
+        "commSession:comm_session_absent",
+        "window:execution_window_absent",
+        "daemon:codex_daemon_absent",
+        "heartbeat:controller_heartbeat_stale",
+        "launch:launch_settled"
+      ],
+      "observations": {
+        "commSession": {
+          "identity": "epoch:4",
+          "observedAt": "2026-09-26T19:43:09.161Z",
+          "reason": "comm_session_absent",
+          "source": "commSession",
+          "state": "absent"
+        },
+        "daemon": {
+          "identity": "68284088-277d-42a2-befe-b70ca17bd9c5",
+          "observedAt": "2026-09-26T19:43:09.161Z",
+          "reason": "codex_daemon_absent",
+          "source": "daemon",
+          "state": "absent"
+        },
+        "heartbeat": {
+          "identity": "68284088-277d-42a2-befe-b70ca17bd9c5",
+          "observedAt": "2026-09-26T19:43:09.161Z",
+          "reason": "controller_heartbeat_stale",
+          "source": "heartbeat",
+          "state": "stale"
+        },
+        "hostProcess": {
+          "identity": "68284088-277d-42a2-befe-b70ca17bd9c5",
+          "observedAt": "2026-09-26T19:43:14.144Z",
+          "reason": "probe_timeout",
+          "source": "hostProcess",
+          "state": "unknown"
+        },
+        "launch": {
+          "identity": "68284088-277d-42a2-befe-b70ca17bd9c5",
+          "observedAt": "2026-09-26T19:43:09.161Z",
+          "reason": "launch_settled",
+          "source": "launch",
+          "state": "absent"
+        },
+        "stateSession": {
+          "identity": "68284088-277d-42a2-befe-b70ca17bd9c5",
+          "observedAt": "2026-09-26T19:43:09.161Z",
+          "reason": "state_session_present",
+          "source": "stateSession",
+          "state": "present"
+        },
+        "window": {
+          "identity": "68284088-277d-42a2-befe-b70ca17bd9c5",
+          "observedAt": "2026-09-26T19:43:09.161Z",
+          "reason": "execution_window_absent",
+          "source": "window",
+          "state": "absent"
+        }
+      },
+      "observedAt": "2026-09-26T19:43:14.144Z",
+      "operationGeneration": 11,
+      "operationId": "land:3ab180b1b00f7dbe8f089723eb74c98d7596a7861c37b21801311cab89bf25bd",
+      "project": "flywheel",
+      "runId": "5d402254-8aa3-42e0-8d2b-73b72e7320b1",
+      "unknownReasons": [
+        "hostProcess:probe_timeout"
+      ],
+      "verdict": "unknown",
+      "version": 1,
+      "windowIdentity": null
+    },
+    "events": [
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"68284088-277d-42a2-befe-b70ca17bd9c5\",\"pgid\":96776,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/478cff761155acc9.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"68284088-277d-42a2-befe-b70ca17bd9c5\",\"pgid\":96776,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/478cff761155acc9.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"68284088-277d-42a2-befe-b70ca17bd9c5\",\"pgid\":96776,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/478cff761155acc9.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"68284088-277d-42a2-befe-b70ca17bd9c5\",\"pgid\":96776,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/478cff761155acc9.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"68284088-277d-42a2-befe-b70ca17bd9c5\",\"pgid\":96776,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/478cff761155acc9.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      },
+      {
+        "event_type": "codex_app_server_orphan_identity_mismatch",
+        "payload": "{\"executionId\":\"68284088-277d-42a2-befe-b70ca17bd9c5\",\"pgid\":96776,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/478cff761155acc9.sock\",\"evidence\":{\"canonicalHome\":true,\"argvSocket\":false,\"pgidFresh\":false,\"socketHolder\":false}}"
+      }
+    ]
+  }
+]

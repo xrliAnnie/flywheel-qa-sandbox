@@ -1,0 +1,149 @@
+[
+  {
+    "id": 9884107,
+    "ts": "2026-09-22 20:15:37",
+    "issue_id": "FLY-2688",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2688\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":32,\"operatorItems\":[]}"
+  },
+  {
+    "id": 9884106,
+    "ts": "2026-09-22 20:15:37",
+    "issue_id": "FLY-2688",
+    "event_type": "closeout_issue_items_blocked",
+    "payload": "{\"rootKey\":\"FLY-2688\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"ee549594-ccb1-4163-a68a-9ab770335aea\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"657bd84c-1010-4bd9-8835-68b654241b6a\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+  },
+  {
+    "id": 9860225,
+    "ts": "2026-09-22 18:15:37",
+    "issue_id": "FLY-2688",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2688\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":32,\"operatorItems\":[]}"
+  },
+  {
+    "id": 9749561,
+    "ts": "2026-09-22 09:19:31",
+    "issue_id": "FLY-2751",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2751\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":12,\"operatorItems\":[]}"
+  },
+  {
+    "id": 9749560,
+    "ts": "2026-09-22 09:19:31",
+    "issue_id": "FLY-2751",
+    "event_type": "closeout_issue_items_blocked",
+    "payload": "{\"rootKey\":\"FLY-2751\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"d249a2c3-2f7c-41c8-889f-373f6c79437e\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+  },
+  {
+    "id": 9724770,
+    "ts": "2026-09-22 07:19:28",
+    "issue_id": "FLY-2751",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2751\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":12,\"operatorItems\":[]}"
+  },
+  {
+    "id": 10014216,
+    "ts": "2026-09-23 06:41:09",
+    "issue_id": "FLY-2766",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2766\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":4,\"operatorItems\":[]}"
+  },
+  {
+    "id": 10014215,
+    "ts": "2026-09-23 06:41:09",
+    "issue_id": "FLY-2766",
+    "event_type": "closeout_issue_items_blocked",
+    "payload": "{\"rootKey\":\"FLY-2766\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"cf70ee17-21cd-48e5-a993-63f246ac2a48\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+  },
+  {
+    "id": 10013135,
+    "ts": "2026-09-23 06:33:06",
+    "issue_id": "FLY-2766",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2766\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":4,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11148380,
+    "ts": "2026-09-26 19:07:28",
+    "issue_id": "FLY-2917",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2917\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":10,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11148379,
+    "ts": "2026-09-26 19:07:28",
+    "issue_id": "FLY-2917",
+    "event_type": "closeout_issue_items_blocked",
+    "payload": "{\"rootKey\":\"FLY-2917\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"0143d036-b051-443a-8194-f79374813d93\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"17dbb84d-5ef5-49e0-9313-b00a6e6807a8\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"401ec61e-8878-492e-b22b-7d371219c61b\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"62aadb00-d820-426c-9a9f-f51fa7aa47b5\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"cb0a5905-ca8d-4120-9bee-deda645a8876\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"cdef445c-5d20-4936-93e2-5602c726b617\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"4854bb02-d879-45a6-b3d2-fe4eb0c622b9\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+  },
+  {
+    "id": 11118702,
+    "ts": "2026-09-26 17:03:13",
+    "issue_id": "FLY-2917",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2917\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":10,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11148457,
+    "ts": "2026-09-26 19:12:32",
+    "issue_id": "FLY-2916",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2916\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":9,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11148456,
+    "ts": "2026-09-26 19:12:32",
+    "issue_id": "FLY-2916",
+    "event_type": "closeout_issue_items_blocked",
+    "payload": "{\"rootKey\":\"FLY-2916\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"a542ae1d-4904-4760-a7fa-5103bd12426e\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+  },
+  {
+    "id": 11118756,
+    "ts": "2026-09-26 17:03:56",
+    "issue_id": "FLY-2916",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2916\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":9,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11155340,
+    "ts": "2026-09-26 20:03:14",
+    "issue_id": "FLY-2910",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2910\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":9,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11155339,
+    "ts": "2026-09-26 20:03:14",
+    "issue_id": "FLY-2910",
+    "event_type": "closeout_issue_items_blocked",
+    "payload": "{\"rootKey\":\"FLY-2910\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"a4b0851c-c2a8-4560-98fe-ef1cbdc636d5\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"47b666b1-b6a8-4c8b-8308-bddcd3fc6a8c\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+  },
+  {
+    "id": 11134050,
+    "ts": "2026-09-26 18:03:20",
+    "issue_id": "FLY-2910",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2910\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":9,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11149957,
+    "ts": "2026-09-26 19:43:19",
+    "issue_id": "FLY-2934",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2934\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":8,\"operatorItems\":[]}"
+  },
+  {
+    "id": 11149956,
+    "ts": "2026-09-26 19:43:19",
+    "issue_id": "FLY-2934",
+    "event_type": "closeout_issue_items_blocked",
+    "payload": "{\"rootKey\":\"FLY-2934\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"ca5cf4a9-4da6-49e7-aacf-c3035ce0be17\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"5095c67d-5e01-4edd-a526-9555041d5bf1\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"4dd53180-625b-44d7-9a3a-6620fdfb02ec\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"bf4b78d3-7d29-4096-815e-beba5b204fc6\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]},{\"executionId\":\"68284088-277d-42a2-befe-b70ca17bd9c5\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+  },
+  {
+    "id": 11148469,
+    "ts": "2026-09-26 19:12:49",
+    "issue_id": "FLY-2934",
+    "event_type": "closeout_report",
+    "payload": "{\"rootKey\":\"FLY-2934\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":8,\"operatorItems\":[]}"
+  }
+]

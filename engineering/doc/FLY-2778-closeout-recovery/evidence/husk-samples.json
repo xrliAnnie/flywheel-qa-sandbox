@@ -1,0 +1,137 @@
+[
+  {
+    "operation_id": "land:02652de48d2f9964b46f2a9bbddb939f2346f9555ef041e3845162c650a89efa",
+    "issue_id": "FLY-2753",
+    "state": "completed",
+    "last_error": "issue_closeout_incomplete:cause=husk_lease_stale",
+    "updated_at": "2026-09-21T02:21:30.285Z",
+    "events": [
+      {
+        "ts": "2026-09-21 02:21:50",
+        "event_type": "closeout_report",
+        "execution_id": "closeout-FLY-2753",
+        "payload": "{\"rootKey\":\"FLY-2753\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"complete\",\"nodes\":5,\"operatorItems\":[]}"
+      },
+      {
+        "ts": "2026-09-21 02:21:34",
+        "event_type": "closeout_report",
+        "execution_id": "closeout-FLY-2753",
+        "payload": "{\"rootKey\":\"FLY-2753\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"complete\",\"nodes\":5,\"operatorItems\":[]}"
+      },
+      {
+        "ts": "2026-09-21 02:21:34",
+        "event_type": "lead_close_runner",
+        "execution_id": "bc4d95cc-fbe2-4023-a49a-3358d1d9378d",
+        "payload": "{\"closed\":true,\"alreadyGone\":true,\"reason\":\"FLY-1185 lifecycle closeout (shipped)\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "ts": "2026-09-21 02:21:32",
+        "event_type": "lead_close_runner",
+        "execution_id": "bc4d95cc-fbe2-4023-a49a-3358d1d9378d",
+        "payload": "{\"closed\":true,\"alreadyGone\":true,\"reason\":\"DAG workflow ship finalization\",\"executorType\":\"phase\"}"
+      },
+      {
+        "ts": "2026-09-21 02:21:31",
+        "event_type": "shipped_husk_force_reaped",
+        "execution_id": "bc4d95cc-fbe2-4023-a49a-3358d1d9378d",
+        "payload": "{\"intentId\":\"shipped-husk-force:land:02652de48d2f9964b46f2a9bbddb939f2346f9555ef041e3845162c650a89efa:46:bc4d95cc-fbe2-4023-a49a-3358d1d9378d:d36d4e5e87c7237543d5bd7f2a38166bf64d670b8101f651547f5b173f5aaf0a\",\"tmuxWindow\":\"runner-flywheel:@8419\"}"
+      },
+      {
+        "ts": "2026-09-21 02:21:31",
+        "event_type": "shipped_husk_force_started",
+        "execution_id": "bc4d95cc-fbe2-4023-a49a-3358d1d9378d",
+        "payload": "{\"intentId\":\"shipped-husk-force:land:02652de48d2f9964b46f2a9bbddb939f2346f9555ef041e3845162c650a89efa:46:bc4d95cc-fbe2-4023-a49a-3358d1d9378d:d36d4e5e87c7237543d5bd7f2a38166bf64d670b8101f651547f5b173f5aaf0a\",\"requestId\":\"resident-expiry:bc4d95cc-fbe2-4023-a49a-3358d1d9378d:r1\",\"retryCount\":1,\"tmuxWindow\":\"runner-flywheel:@8419\"}"
+      }
+    ]
+  },
+  {
+    "operation_id": "land:fa9e7637826e20d5750cacbc2579c7bea9a1135af31910a73d7f8e6018e5f681",
+    "issue_id": "FLY-2638",
+    "state": "held",
+    "last_error": "retry_exhausted:issue_closeout_incomplete:cause=husk_lease_stale",
+    "updated_at": "2026-09-19T19:48:17.205Z",
+    "events": [
+      {
+        "ts": "2026-09-25 07:03:39",
+        "event_type": "lead_close_runner_failed",
+        "execution_id": "9f360087-6397-4df6-ac10-01adbe6437ff",
+        "payload": "{\"cleanupPending\":true,\"reason\":\"codex_daemon_unverifiable\",\"origin\":\"bridge.close-runner\",\"outcome\":\"unverifiable\",\"pgid\":20196,\"socketPath\":\"/Users/xiaorongli/.flywheel/cdx-sock/46888e974f3b05b2.sock\"}"
+      },
+      {
+        "ts": "2026-09-20 07:03:47",
+        "event_type": "lead_close_runner",
+        "execution_id": "e3499d48-6a81-48a9-b93e-1b720206036d",
+        "payload": "{\"closed\":true,\"alreadyGone\":true,\"reason\":\"FLY-1185 lifecycle closeout (shipped)\",\"leadId\":\"bridge.lifecycle-closeout\",\"executorType\":\"lifecycle\"}"
+      },
+      {
+        "ts": "2026-09-20 01:11:57",
+        "event_type": "tmux_closed",
+        "execution_id": "e3499d48-6a81-48a9-b93e-1b720206036d",
+        "payload": "{\"leadId\":\"unknown\",\"tmuxWindow\":\"runner-flywheel:@8150\"}"
+      },
+      {
+        "ts": "2026-09-19 19:48:20",
+        "event_type": "closeout_report",
+        "execution_id": "closeout-FLY-2638",
+        "payload": "{\"rootKey\":\"FLY-2638\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":10,\"operatorItems\":[]}"
+      },
+      {
+        "ts": "2026-09-19 19:48:20",
+        "event_type": "closeout_issue_items_blocked",
+        "execution_id": "closeout-FLY-2638",
+        "payload": "{\"rootKey\":\"FLY-2638\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"e3499d48-6a81-48a9-b93e-1b720206036d\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+      },
+      {
+        "ts": "2026-09-19 17:48:19",
+        "event_type": "closeout_report",
+        "execution_id": "closeout-FLY-2638",
+        "payload": "{\"rootKey\":\"FLY-2638\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":10,\"operatorItems\":[]}"
+      }
+    ]
+  },
+  {
+    "operation_id": "land:345c1807a7702c4e22d5224d3debbf276a5c8c2c64fa327193c835dbb0a9ec30",
+    "issue_id": "FLY-2697",
+    "state": "held",
+    "last_error": "retry_exhausted:issue_closeout_incomplete:cause=husk_lease_stale",
+    "updated_at": "2026-09-19T03:52:56.089Z",
+    "events": [
+      {
+        "ts": "2026-09-19 13:14:00",
+        "event_type": "tmux_closed",
+        "execution_id": "032b2026-c208-4b44-83aa-97d13250aae5",
+        "payload": "{\"leadId\":\"unknown\",\"tmuxWindow\":\"runner-flywheel:@4752\"}"
+      },
+      {
+        "ts": "2026-09-19 03:52:57",
+        "event_type": "closeout_report",
+        "execution_id": "closeout-FLY-2697",
+        "payload": "{\"rootKey\":\"FLY-2697\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":6,\"operatorItems\":[]}"
+      },
+      {
+        "ts": "2026-09-19 03:52:57",
+        "event_type": "closeout_issue_items_blocked",
+        "execution_id": "closeout-FLY-2697",
+        "payload": "{\"rootKey\":\"FLY-2697\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"032b2026-c208-4b44-83aa-97d13250aae5\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+      },
+      {
+        "ts": "2026-09-19 01:52:57",
+        "event_type": "closeout_report",
+        "execution_id": "closeout-FLY-2697",
+        "payload": "{\"rootKey\":\"FLY-2697\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":6,\"operatorItems\":[]}"
+      },
+      {
+        "ts": "2026-09-19 01:52:57",
+        "event_type": "closeout_issue_items_blocked",
+        "execution_id": "closeout-FLY-2697",
+        "payload": "{\"rootKey\":\"FLY-2697\",\"reason\":\"nodes_not_confirmed_gone\",\"nodes\":[{\"executionId\":\"032b2026-c208-4b44-83aa-97d13250aae5\",\"blockedBy\":[\"confirmed_gone_false\",\"communications_finalized_false\"]}]}"
+      },
+      {
+        "ts": "2026-09-19 00:53:01",
+        "event_type": "closeout_report",
+        "execution_id": "closeout-FLY-2697",
+        "payload": "{\"rootKey\":\"FLY-2697\",\"disposition\":\"shipped\",\"authority\":\"ship_complete\",\"outcome\":\"blocked\",\"nodes\":6,\"operatorItems\":[]}"
+      }
+    ]
+  }
+]
