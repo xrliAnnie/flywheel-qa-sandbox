@@ -1,0 +1,84 @@
+{
+  "job": {
+    "request_id": "1dfddf70-eecd-4411-ad1d-e4d770d85f4c",
+    "status": "done",
+    "reviewer_session_uuid": "3c316913-c66e-469d-b623-472ba11abee3",
+    "verdict": "APPROVED",
+    "reviewer_verdict": "APPROVED"
+  },
+  "proof": {
+    "proof_id": "b022a5ff-ef6b-487b-bced-7a18e9ed03a5",
+    "state": "approved",
+    "plan_path": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+    "reviewed_commit_sha": "07e830a5e52e963881db479e620fb5e216c44136",
+    "expected_blob_sha": "ab06ff9db83ddba71f4cf70f84b6a2c16a5da251",
+    "approved_at": "2026-09-26T20:38:07.825Z"
+  },
+  "effectiveResponse": {
+    "reviewVerdict": "APPROVED",
+    "reviewerVerdict": "APPROVED",
+    "requestId": "1dfddf70-eecd-4411-ad1d-e4d770d85f4c",
+    "round": 3,
+    "findings": [
+      {
+        "id": "stock-reclose-window-teardown-signal",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+        "line": 93,
+        "title": "The rule 'stock execute never sends signals' does not say what happens to leftover runner tmux windows on the MERGED held/partial reclose path",
+        "detail": "The round-2 HIGH is fixed: §5.2 now does a census-only check under the lock, adds a processHandling=refuse primitive, persists a stock-cleanup context, and has race tests. lsof census was checked read-only on this host (exit 0). One gap remains. The reclose finalizer's physical pass runs closeRunner/window cleanup before worktree settlement. A tmux kill-window sends SIGHUP to the pane's processes, which can include a founder-driven shell in a leftover runner pane (founders watch and drive panes in cmux). The plan forbids stopping the body and path-reap, but says nothing about window teardown. So a leftover pane can either be killed before the census runs, silently weakening the no-signal promise, or make every such item fail as process_present. State which: stock mode must not kill windows (such items are excluded as process_present/window_present), or it may kill only panes whose processes are all 2919-registered pure viewers of a proven-dead body. Add a negative test.",
+        "findingKey": "stock-reclose-window-teardown-signal"
+      },
+      {
+        "id": "never-started-branch-liveness-source-undefined",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+        "line": 174,
+        "title": "The absorbed FLY-2754 never-started branch needs an 'is it alive' census that 2919 cannot attribute without a binding",
+        "detail": "§12 routes 2754 provenance checks into the 2919 provider's trusted never-started branch. It forbids carrying over the helper-level pgrep/ps/window scans, yet still requires the provider to prove 'no socket/spawn lock/owner/restart/live body'. 2919's observeExecutionProcesses returns unknown whenever there is no binding (origin/flywheel-FLY-2919 execution-process-liveness.ts:119). Its OS census attributes processes only through a binding or nonce. Never-started executions have neither. The branch will therefore either always be unknown, in which case §12 recovers nothing, or someone will reintroduce the FLYWHEEL_EXEC_ID env scan inside the provider. Spell out exactly which facts count as 'no live body' for a bindingless never-started execution (for example, a typed proof that the runtime was never invoked plus closed launch claim plus zero owner/spawn_inflight plus no socket/lock), and which component owns any execution-id census.",
+        "findingKey": "never-started-branch-liveness-source-undefined"
+      },
+      {
+        "id": "apply-claim-scope-not-in-schema",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+        "line": 97,
+        "title": "Reusing lifecycle_apply_claims for stock directory receipts needs an explicit scope/key and CAS",
+        "detail": "putApplyClaim (StateStore.ts:32131) is an unconditional upsert keyed only on (root_uuid, approved_hash) and has no effect-scope column. closeoutIssueWithSnapshotGuard replays any `complete` report stored under the same key. The plan requires a scope separate from the whole-issue closeout epoch and a requestId+digest unique mapping. Say concretely whether that means a new column or a namespaced key, and use a compare-and-set status transition rather than a blind upsert, so a stock directory receipt can never collide with or overwrite a founder apply epoch.",
+        "findingKey": "apply-claim-scope-not-in-schema"
+      }
+    ],
+    "advisories": [
+      {
+        "id": "stock-reclose-window-teardown-signal",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+        "line": 93,
+        "title": "The rule 'stock execute never sends signals' does not say what happens to leftover runner tmux windows on the MERGED held/partial reclose path",
+        "detail": "The round-2 HIGH is fixed: §5.2 now does a census-only check under the lock, adds a processHandling=refuse primitive, persists a stock-cleanup context, and has race tests. lsof census was checked read-only on this host (exit 0). One gap remains. The reclose finalizer's physical pass runs closeRunner/window cleanup before worktree settlement. A tmux kill-window sends SIGHUP to the pane's processes, which can include a founder-driven shell in a leftover runner pane (founders watch and drive panes in cmux). The plan forbids stopping the body and path-reap, but says nothing about window teardown. So a leftover pane can either be killed before the census runs, silently weakening the no-signal promise, or make every such item fail as process_present. State which: stock mode must not kill windows (such items are excluded as process_present/window_present), or it may kill only panes whose processes are all 2919-registered pure viewers of a proven-dead body. Add a negative test.",
+        "findingKey": "stock-reclose-window-teardown-signal"
+      },
+      {
+        "id": "never-started-branch-liveness-source-undefined",
+        "severity": "MEDIUM",
+        "file": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+        "line": 174,
+        "title": "The absorbed FLY-2754 never-started branch needs an 'is it alive' census that 2919 cannot attribute without a binding",
+        "detail": "§12 routes 2754 provenance checks into the 2919 provider's trusted never-started branch. It forbids carrying over the helper-level pgrep/ps/window scans, yet still requires the provider to prove 'no socket/spawn lock/owner/restart/live body'. 2919's observeExecutionProcesses returns unknown whenever there is no binding (origin/flywheel-FLY-2919 execution-process-liveness.ts:119). Its OS census attributes processes only through a binding or nonce. Never-started executions have neither. The branch will therefore either always be unknown, in which case §12 recovers nothing, or someone will reintroduce the FLYWHEEL_EXEC_ID env scan inside the provider. Spell out exactly which facts count as 'no live body' for a bindingless never-started execution (for example, a typed proof that the runtime was never invoked plus closed launch claim plus zero owner/spawn_inflight plus no socket/lock), and which component owns any execution-id census.",
+        "findingKey": "never-started-branch-liveness-source-undefined"
+      },
+      {
+        "id": "apply-claim-scope-not-in-schema",
+        "severity": "LOW",
+        "file": "engineering/doc/FLY-2778-closeout-recovery/plan.md",
+        "line": 97,
+        "title": "Reusing lifecycle_apply_claims for stock directory receipts needs an explicit scope/key and CAS",
+        "detail": "putApplyClaim (StateStore.ts:32131) is an unconditional upsert keyed only on (root_uuid, approved_hash) and has no effect-scope column. closeoutIssueWithSnapshotGuard replays any `complete` report stored under the same key. The plan requires a scope separate from the whole-issue closeout epoch and a requestId+digest unique mapping. Say concretely whether that means a new column or a namespaced key, and use a compare-and-set status transition rather than a blind upsert, so a stock directory receipt can never collide with or overwrite a founder apply epoch.",
+        "findingKey": "apply-claim-scope-not-in-schema"
+      }
+    ],
+    "settled": [],
+    "policyNote": "medium_low_findings_are_non_blocking_v1"
+  },
+  "currentPlanBlobVerified": "ab06ff9db83ddba71f4cf70f84b6a2c16a5da251"
+}
