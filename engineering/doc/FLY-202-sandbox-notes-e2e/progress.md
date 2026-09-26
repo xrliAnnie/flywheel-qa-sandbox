@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
-phase: design
-phaseCursor: 8/8
-updated: 2026-09-26T11:47:41.710Z
-nextStep: design phase complete; await DAG phase wake/implementation handoff
+phase: implement
+phaseCursor: 1/6
+updated: 2026-09-26T11:51:48.243Z
+nextStep: "Task 1: RED evidence (enumerate dirs, discovery, stale listing parser)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (8/8)
-**next**: design phase complete; await DAG phase wake/implementation handoff
+**phase**: implement (1/6)
+**next**: Task 1: RED evidence (enumerate dirs, discovery, stale listing parser)
