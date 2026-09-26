@@ -2,13 +2,13 @@
 issue: FLY-2921
 phase: design
 phaseCursor: 4/6
-updated: 2026-09-26T16:47:09.806Z
-nextStep: 等 Lead 裁 Codex 额度 (q 1c436a9d)；之后 R1 重跑 gpt-6-astra，改 plan 后必须重 stage
-  set design_review
+updated: 2026-09-26T16:49:41.332Z
+nextStep: Bridge 评审门 409（路由钉 codex）已报 Lead q=04c34578；独立 fable 子代理 R1 评审进行中；不写
+  APPROVED 记录直到 Lead 裁
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
 **phase**: design (4/6)
-**next**: 等 Lead 裁 Codex 额度 (q 1c436a9d)；之后 R1 重跑 gpt-6-astra，改 plan 后必须重 stage set design_review
+**next**: Bridge 评审门 409（路由钉 codex）已报 Lead q=04c34578；独立 fable 子代理 R1 评审进行中；不写 APPROVED 记录直到 Lead 裁
