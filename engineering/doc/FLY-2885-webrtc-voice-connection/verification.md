@@ -112,3 +112,22 @@ plan §12 第 4 轮复核 APPROVED（`7d7299528`，blob `9813d70d`）后，设�
 修复后的最终一轮：
 - `pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-teamlead" --filter "...flywheel-voice-codex" typecheck` 全部 exit 0；
 - teamlead `vitest related src/voice-context-contract.ts src/bridge/voice-session-context.ts`：110 个文件，1,329/1,329 过。
+
+## 代码评审 R1 的修复（`a9d29f37b`、`5c11f17e2`）
+
+Codex 代码评审 R1（gpt-5.6-sol xhigh）给了 1 HIGH、1 MEDIUM，都已修复：
+- **HIGH（T5c 顺序）**：v3 实测里 data channel 的 `turn.done` 比 app-server final 早约 12 ms。原来 done 一到就结算并清掉 pending，只有 final 才越界的情况因此漏检，越界内容会被完整持久化和镜像。
+  - 修复：done 最多等 2 s app-server final 再结算。越界若在 done 之后才判出，丢弃态直接按「done 已到」处理，静音 240 ms 就恢复，不会等一个不会再来的 done 而被迫换代。
+  - 新增测试：speaker 两条（done 先、final 后越界 ⇒ `speech_overrun` 并截断；final 不来 ⇒ 2 s 后按 done 转写结算）；房间一条（done 先、final 越界 ⇒ 尾音静音、镜像截断、静音后恢复、不换代）。
+  - 负对照：去掉「回合已 done」分支，房间用例失败。
+  - 旧测试改为按实测顺序（先 done 后 final）驱动；无声回合没有 final，改为推进 2.7 s。
+- **MEDIUM（container 复算不全）**：measurements 不在 digest 覆盖范围内。
+  - 修复：container 用自己的 o200k 复算 base、prompt 和每条 item，要求与 Bridge 的测量完全一致（安全非负整数）；每条 item 限 2,000 token（含 8 的包装）且 8,000 字节。Bridge 按真实标题守同样的单条上限，发出的 item 不会被 container 拒收。
+  - 新增测试：container 五条（prompt / base 少报、小数、单条超 2,000、单条超 8,000 字节）；构建器一条（真实标题比预留标题贵时，该段改进 prompt）。
+
+修复后的定向验证：
+- `pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-teamlead" --filter "...flywheel-voice-codex" typecheck` 全部 exit 0。
+- voice-codex：`vitest related` 三个改动源文件（`CodexProofSpeaker`、`CodexVoiceBackend`、`CodexVoiceContainer`）共 5 个文件，135/135 过；`git grep` 找到的消费者都在其中。
+- teamlead：`vitest related src/bridge/voice-session-context.ts src/__tests__/voice-handoff.test.ts` 共 110 个文件，1,323 过、7 失败。
+  - 7 条都是 5 s 超时，出现在 `bridge.test.ts` 和 `event-route.codex-trigger.test.ts`，当时 load1 81–135。
+  - 两个文件单独重跑，65/66 过；剩下的 `routes QA report publishing` 单独跑也过（3.1 s）。
