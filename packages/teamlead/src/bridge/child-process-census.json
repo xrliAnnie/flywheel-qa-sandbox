@@ -445,11 +445,6 @@
 			"disposition": "Lead parent: bounded MCP stdio transport, owned detached process group, byte limits and TERM/KILL cleanup"
 		},
 		{
-			"file": "packages/teamlead/src/lead-capabilities/browser-host-identity.ts",
-			"sync_child": 2,
-			"disposition": "Lead startup only: fixed PlistBuddy/codesign checks, 15 second timeout and 4 KiB output bound; no browser launch"
-		},
-		{
 			"file": "packages/teamlead/src/lead-capabilities/browser-isolation.ts",
 			"raw_spawn": 1,
 			"disposition": "Lead parent startup: bounded disposable browser isolation probe"

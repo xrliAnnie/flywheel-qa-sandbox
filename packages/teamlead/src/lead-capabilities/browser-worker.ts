@@ -88,7 +88,7 @@ export class BrowserWorker {
 					{ errorCode: "browser_lost" },
 				);
 			} else {
-				verifyBrowserHostIdentity(this.options.input);
+				await verifyBrowserHostIdentity(this.options.input);
 				const launch = buildBrowserSandboxSpec(this.options.input);
 				await this.options.verifyIsolation(launch);
 				transport = new BrowserStdioTransport(launch);

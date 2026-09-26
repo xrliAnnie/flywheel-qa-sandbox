@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
@@ -40,6 +40,30 @@ export const BROWSER_HOST_BASELINE = Object.freeze({
 	}),
 });
 const denied = () => new Error("browser_host_identity_unverified");
+/**
+ * Child processes run asynchronously: `codesign --deep` alone takes 27-45s under
+ * load, and the voice daemon's lease heartbeat shares this event loop (QA@3 H1).
+ */
+function run(
+	command: string,
+	args: string[],
+	options: { timeout: number; env: NodeJS.ProcessEnv },
+): Promise<{ stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		execFile(
+			command,
+			args,
+			{
+				encoding: "utf8",
+				timeout: options.timeout,
+				maxBuffer: 4096,
+				env: options.env,
+			},
+			(error, stdout, stderr) =>
+				error ? reject(error) : resolve({ stdout, stderr }),
+		);
+	});
+}
 function digest(path: string) {
 	if (realpathSync(path) !== path) throw denied();
 	const fd = openSync(
@@ -73,7 +97,7 @@ function digest(path: string) {
 	}
 }
 /** Parent-only pre-spawn identity check; no production profile or credential reads. */
-export function verifyBrowserHostIdentity(
+export async function verifyBrowserHostIdentity(
 	input: {
 		nodeExecutable: string;
 		chromeExecutable: string;
@@ -96,31 +120,36 @@ export function verifyBrowserHostIdentity(
 				throw denied();
 		};
 		hashes();
-		const run = (command: string, args: string[], timeout = 15000) =>
-			execFileSync(command, args, {
-				encoding: "utf8",
-				timeout,
-				maxBuffer: 4096,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { PATH: "/usr/bin:/bin", HOME: "/var/empty", LANG: "en_US.UTF-8" },
-			}).trim();
+		const output = async (command: string, args: string[], timeout = 15000) =>
+			(
+				await run(command, args, {
+					timeout,
+					env: {
+						PATH: "/usr/bin:/bin",
+						HOME: "/var/empty",
+						LANG: "en_US.UTF-8",
+					},
+				})
+			).stdout.trim();
 		const version = () =>
-			run("/usr/libexec/PlistBuddy", [
+			output("/usr/libexec/PlistBuddy", [
 				"-c",
 				"Print :CFBundleShortVersionString",
 				join(pin.chrome.root, "Contents/Info.plist"),
 			]);
-		const observedChromeVersion = version();
+		const observedChromeVersion = await version();
 		if (!/^[0-9]+(?:\.[0-9]+){3}$/.test(observedChromeVersion)) throw denied();
-		run("/usr/bin/codesign", ["--verify", "--deep", pin.chrome.root], 60000);
+		await output(
+			"/usr/bin/codesign",
+			["--verify", "--deep", pin.chrome.root],
+			60000,
+		);
 
-		const signature = spawnSync("/usr/bin/codesign", ["-dv", pin.chrome.root], {
-			encoding: "utf8",
+		// A non-zero exit rejects, exactly like the former status check.
+		const signature = await run("/usr/bin/codesign", ["-dv", pin.chrome.root], {
 			timeout: 15000,
-			maxBuffer: 4096,
 			env: { PATH: "/usr/bin:/bin", HOME: "/var/empty" },
 		});
-		if (signature.status !== 0 || signature.error) throw denied();
 		const fields = (name: string) =>
 			signature.stderr
 				.split("\n")
@@ -134,8 +163,8 @@ export function verifyBrowserHostIdentity(
 		)
 			throw denied();
 		if (
-			run(pin.node.path, ["--version"]) !== pin.node.version ||
-			version() !== observedChromeVersion
+			(await output(pin.node.path, ["--version"])) !== pin.node.version ||
+			(await version()) !== observedChromeVersion
 		)
 			throw denied();
 		hashes();
