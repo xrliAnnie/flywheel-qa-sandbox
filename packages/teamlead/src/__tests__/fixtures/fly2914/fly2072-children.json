@@ -1,0 +1,277 @@
+{
+	"observedAt": "2026-09-26T05:32:26.371Z",
+	"parent": {
+		"id": "5914cef5-05bf-45a3-be14-edbc858147a2",
+		"identifier": "FLY-2072",
+		"title": "[EPIC·引擎可靠性] DAG/Bridge 整体审视——不逐单修,一起审(founder 8-26 直令;删状态不加层)"
+	},
+	"note": "FLY-2914 test fixture reduced from the 2026-09-26 read-only design census; descriptions keep only class_key/occurrences lines.",
+	"children": [
+		{
+			"id": "6b265ee0-e32a-4291-9331-572971f8dceb",
+			"identifier": "FLY-2098",
+			"title": "[病根] ship 卡在 PR CI 未跑完时铸出:founder 批后 land policy_blocked held,issue thread 无人告知 · ×3",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:30d95b269f82c7eb4c6f7a1b557fc2f863010ae6a0971088bf0d3598b22769cc\noccurrences: 2",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2098/病根-ship-卡在-pr-ci-未跑完时铸出founder-批后-land-policy-blocked-heldissue-thread",
+			"updatedAt": "2026-09-17T03:41:30.609Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "8c32867a-0cbe-469d-817c-3dee542a32f4",
+			"identifier": "FLY-2107",
+			"title": "[病根·信箱] founder 的信被 runner 事件挤在队里：3 个在途批次 × 30 分钟租约 = 一次上下文清理放大成半小时静默 · ×5",
+			"description": "(fixture: description reduced to metadata lines)\noccurrences: 5(第 2 次=runner 收件侧;第 3 次=过期指令补投几乆误发无棒写入;第 5 次=patrol_tick 自身被卡 90m22s≈3×租约 且 12:36 一拍丢失,见评论)",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2107/病根信箱-founder-的信被-runner-事件挤在队里3-个在途批次-30-分钟租约-一次上下文清理放大成半小时静默-5",
+			"updatedAt": "2026-09-10T22:05:36.834Z",
+			"state": {
+				"name": "Canceled",
+				"type": "canceled"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "c593371a-9f0c-4b6e-ba7f-49be833909ed",
+			"identifier": "FLY-2114",
+			"title": "[病根] 巡检 STALLED_60M 跟踪的是一行按宽度右对齐的静态 TUI 横幅:真实工作不移动它(连「体重建自己的子进程」也不移动,已复现),而任一次重绘会清零它 · ×289",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:1418c1f63918075ff6b3a2e65f7a5df674ec174698efb94d70669e62990a129a\noccurrences: 289",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2114/病根-巡检-stalled-60m-跟踪的是一行按宽度右对齐的静态-tui",
+			"updatedAt": "2026-09-15T20:00:15.282Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "fe38ac21-c452-4f35-a495-1b005696972d",
+			"identifier": "FLY-2120",
+			"title": "[病根] 返工活性看门狗把 run 判 held 之后,没有任何路径能解除 —— 工人活着如此,工人死了 hold 还挡换体路 · ×3",
+			"description": "(fixture: description reduced to metadata lines)\noccurrences: 3",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2120/病根-返工活性看门狗把-run-判-held-之后没有任何路径能解除-工人活着如此工人死了-hold-还挡换体路-3",
+			"updatedAt": "2026-09-04T06:40:17.699Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "f397e879-8e6c-4891-bf21-b7a343d1cb6d",
+			"identifier": "FLY-2344",
+			"title": "[病根] 完工被 409 拒的 Codex 体自行以 blocked 结束 goal → adapter 当失败收掉:节点仍 running 绑死体、run 仍 held,替身要等 hold 清掉才能铸 · ×8",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:a2ea088f09c1b6106945b0a235ba9abe43e11c26b37b22568dff5e52059006a5\noccurrences: 7",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2344/病根-完工被-409-拒的-codex-体自行以-blocked-结束-goal-adapter-当失败收掉节点仍-running",
+			"updatedAt": "2026-09-17T02:51:13.952Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "a2ea4f2f-8d58-4e5d-8640-6b3e6fcf1881",
+			"identifier": "FLY-2371",
+			"title": "[病根] Codex 账号额度打满时引擎照样盲换三具替身(每具起跑即 usageLimited 死)→ run 停 retry_limit hold,额度回来也不自动重臂,只能人手 resume · ×14",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:6beef55c4267aa67047f3e4047c263202dba3f3318eead2f649545b14677aeb8\noccurrences: 13",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2371/病根-codex-账号额度打满时引擎照样盲换三具替身每具起跑即-usagelimited-死-run-停-retry-limit",
+			"updatedAt": "2026-09-18T02:46:58.604Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "bff5c1b6-c7f6-4017-9710-52ff55b37c34",
+			"identifier": "FLY-2373",
+			"title": "[病根] 完工 drain 与「中途延后门铃」互锁:Codex 体在一个 turn 里轮询等 Lead 答案 ⇒ deferred_midturn 门铃永不被 markTurnCompleted 提升 ⇒ complete 永远 409 consume_pending_mail / drain_receipt_rejected · ×34",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:9247d1d2dab0a8bf989e59b112e67672856adddfddd66e04acac9fb6a62012ae\noccurrences: 31",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2373/病根-完工-drain-与中途延后门铃互锁codex-体在一个-turn-里轮询等-lead-答案-deferred-midturn",
+			"updatedAt": "2026-09-26T04:47:29.206Z",
+			"state": {
+				"name": "In Progress",
+				"type": "started"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "f318da17-c4e3-4c41-b6ed-f129e8e823bc",
+			"identifier": "FLY-2613",
+			"title": "[病根] ship 合入后 land 收尾卡 issue_closeout_incomplete:cause=nodes_not_confirmed_gone：判决体的 session 行已被收走，closeout 无法证明节点体消失 ⇒ 每次重试同败、run 永不终结、Linear 永远停在 In Progress（founder 看到假「在跑」，首例 FLY-2588）· ×3",
+			"description": "(fixture: description reduced to metadata lines)\noccurrences: 3",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2613/病根-ship-合入后-land-收尾卡-issue-closeout-incompletecausenodes-not-confirmed",
+			"updatedAt": "2026-09-22T16:47:45.598Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "d0b3255a-d92b-439f-85db-8bd9665fdc2f",
+			"identifier": "FLY-2637",
+			"title": "[病根] Claude 体撞 Fable 周额度（school 7d 100%）在 pane 静默停住：Bridge 无事件无告警、quota-monitor 的 Fable 列永远 n/a、切号器切了机器号但在飞体 token 焊死；只能 Lead 巡检肉眼发现后保全 WIP + terminate + restart（2026-09-16 17:20Z FLY-2634 60f9708f，23 分钟设计工作靠手工保全）",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key: claude_fable_weekly_limit_inflight_body_silent_stall|pane \"You've reached your Fable limit\"|quota-monitor Fable=n/a|switcher rotates host account only",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2637/病根-claude-体撞-fable-周额度school-7d-100percent在-pane-静默停住bridge",
+			"updatedAt": "2026-09-16T17:32:01.253Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "7a92925c-ac87-464a-86e1-58a3b7ef8664",
+			"identifier": "FLY-2828",
+			"title": "[病根] 返工回执投影停摆：体已 ACK 但 receipt_projected_at 永不写入 → delivery 卡 awaiting_receipt → 同 run 的返工/打回被 rework_already_open 挡死（9-23 全舰队 28 条 / 14 单）",
+			"description": "(fixture: description reduced to metadata lines)",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2828/病根-返工回执投影停摆体已-ack-但-receipt-projected-at-永不写入-delivery-卡-awaiting",
+			"updatedAt": "2026-09-24T18:49:21.084Z",
+			"state": {
+				"name": "Done",
+				"type": "completed"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "503b699d-ca3b-43ed-ae66-3d0b9add5352",
+			"identifier": "FLY-2891",
+			"title": "[病根→修复] Claude 线本地 Codex 评审：每一轮结论 + 评审模型写回 Bridge（设计 / 代码），评审门校验模型 · ×4",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:d638be59d2b67c0faa42c4b5ebcbf1e7be7b52eded11a8d0b6bb43fb4396ea30\noccurrences: 4",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2891/病根修复-claude-线本地-codex-评审每一轮结论-评审模型写回-bridge设计-代码评审门校验模型-4",
+			"updatedAt": "2026-09-26T02:58:34.033Z",
+			"state": {
+				"name": "In Progress",
+				"type": "started"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "2882b065-6d32-465e-b044-1c9ca072d901",
+			"identifier": "FLY-2893",
+			"title": "[调研→修] Codex 体为什么老出事：近两周每次 Codex 体死掉 / 换体 / 被判死按原因分类计数 + 各类浪费的时长与额度 → 前三类修掉",
+			"description": "(fixture: description reduced to metadata lines)",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2893/调研修-codex-体为什么老出事近两周每次-codex-体死掉-换体-被判死按原因分类计数-各类浪费的时长与额度-前三类修掉",
+			"updatedAt": "2026-09-26T04:02:06.099Z",
+			"state": {
+				"name": "Done",
+				"type": "completed"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "9e02c174-5a6f-440b-8130-43b3a478dbc0",
+			"identifier": "FLY-2906",
+			"title": "[病根] 529 强度二驱动 qa-529-generalized-e2e 第 2 步要求设计体 status=ship_parked，FLY-2808 合入后房里设计体落成 completed（phase_keep_alive=0、无 process_body 行）⇒ 每次强度二都在 step 2 超时 exit 1，所有要强度二证据的 QA 都卡死 · ×3",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:e5e9406ad55361e6735aca077cfd509705424c47ec767723f1d14b2c0ab3506d\noccurrences: 3",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2906/病根-529-强度二驱动-qa-529-generalized-e2e-第-2-步要求设计体-statusship-parkedfly",
+			"updatedAt": "2026-09-26T04:49:28.616Z",
+			"state": {
+				"name": "In Progress",
+				"type": "started"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": null
+		},
+		{
+			"id": "febfa1a1-5eb9-4fff-9aca-442864905b4b",
+			"identifier": "FLY-2892",
+			"title": "[病根] Codex 0.157 起 --listen socket 是软链：lsof 持有者探针查软链路径无人 ⇒ daemon 判死 ⇒ 自动切号就绪恒 authority_unavailable + 完成体 app-server 收不掉 · ×2",
+			"description": "(fixture: description reduced to metadata lines)\nclass_key:68d71469de1364847e6f28b7b569c15caf4e2ac30c9db133bc4bc88c4dfdcc0e\noccurrences: 2",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2892/病根-codex-0157-起-listen-socket-是软链lsof-持有者探针查软链路径无人-daemon-判死-自动切号就绪恒",
+			"updatedAt": "2026-09-25T21:50:29.793Z",
+			"state": {
+				"name": "Backlog",
+				"type": "backlog"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": {
+				"id": "764d7ab4-9a3b-43ea-99d9-7e881bb3b376"
+			}
+		},
+		{
+			"id": "794e5051-aaa6-4903-ba95-b0d2ce3a7a61",
+			"identifier": "FLY-2721",
+			"title": "[引擎·死结] 体在 worktree 注册前死掉（spawn 失败）→ 替身永久 held on worktree_not_found，无自动救援",
+			"description": "(fixture: description reduced to metadata lines)",
+			"url": "https://linear.app/geoforge3d/issue/FLY-2721/引擎死结-体在-worktree-注册前死掉spawn-失败-替身永久-held-on-worktree-not-found无自动救援",
+			"updatedAt": "2026-09-18T04:57:50.299Z",
+			"state": {
+				"name": "Duplicate",
+				"type": "duplicate"
+			},
+			"parent": {
+				"id": "5914cef5-05bf-45a3-be14-edbc858147a2"
+			},
+			"project": null
+		}
+	]
+}
