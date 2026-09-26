@@ -11,3 +11,5 @@ Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913)
 - HTML regenerated around the correction; nine comment inputs cover every card including summary. Eight DOM/controller checks pass: save/restore, pathname isolation, injection-as-text, chunking with exact marker, copy-all, rejected/missing Clipboard fallback, blocked localStorage. Evidence: evidence/revision-report-controller-check.json. This is not real-browser/CSP execution proof.
 - Both new Mermaid diagrams failed initial local rendering and exactly one standard-flag retry, with distinct svgId FLY-2913-d1/d2. Chromium bootstrap_check_in Permission denied (1100). Sources and logs retained, visible DIAGRAM PENDING LOCAL RENDER; no remote renderer or fake diagram.
 - No production template mutation, global flag mutation, restart, deploy, room creation/teardown or ship action performed.
+
+Browser connection attempt: chrome_devtools list_pages returned no result during a several-minute wait; the pending tool call was terminated. Browser availability is unresolved; no browser visual/CSP execution PASS is claimed.
