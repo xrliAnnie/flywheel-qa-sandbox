@@ -44,6 +44,7 @@ const manifestSchema = z
 		profile: z.literal("full-access"),
 		activationId: bounded,
 		browserGeneration: z.string().uuid().optional(),
+		browserMode: z.enum(["founder_chrome", "isolated", "off"]).optional(),
 		sourceRevision: bounded,
 		operationIds: z.array(bounded).min(1).max(512),
 		deniedOperationIds: z.array(bounded).max(512),

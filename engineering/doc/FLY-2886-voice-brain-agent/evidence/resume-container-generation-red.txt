@@ -1,0 +1,68 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex
+
+ ❯ src/__tests__/codex-container.test.ts (32 tests | 1 failed) 4378ms
+   ✓ Codex voice container > opens every meeting in a distinct ephemeral home, workdir, process, and thread  773ms
+   ✓ Codex voice container > restarts only the realtime connection and advances its generation after a confirmed close 240ms
+   ✓ Codex voice container > reloads fresh background context once per natural realtime generation  335ms
+   × Codex voice container > uses durable context generation after process recreation and never reuses failed start generations 314ms
+     → expected 1 to be 8 // Object.is equality
+   ✓ Codex voice container > opens subscription capability and isolated scribe children and binds each background turn 252ms
+   ✓ Codex voice container > rejects enabled admission drift background_api_account and closes parent and both acquired children 280ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_api_account and closes parent and both acquired children 69ms
+   ✓ Codex voice container > rejects enabled admission drift extra_tool and closes parent and both acquired children 8ms
+   ✓ Codex voice container > rejects enabled admission drift missing_tool and closes parent and both acquired children  303ms
+   ✓ Codex voice container > rejects enabled admission drift extra_server and closes parent and both acquired children 42ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_tool and closes parent and both acquired children 207ms
+   ✓ Codex voice container > rejects enabled admission drift permission_profile and closes parent and both acquired children 26ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_probe_failed and closes parent and both acquired children 126ms
+   ✓ Codex voice container > revokes the capability parent and stops the scribe even if the background child cannot stop 15ms
+   ✓ Codex voice container > keeps process-level background completion during old_cancel_wait 200ms
+   ✓ Codex voice container > keeps process-level background completion during new_opening 233ms
+   ✓ Codex voice container > keeps process-level background completion during new_started 91ms
+   ✓ Codex voice container > interrupts an enabled active background turn when the conversation closes 106ms
+   ✓ Codex voice container > refuses a mismatched fixed binary version 2ms
+   ✓ Codex voice container > refuses a mismatched fixed binary digest 3ms
+   ✓ Codex voice container > refuses a mismatched fixed binary feature 6ms
+   ✓ Codex voice container > refreshes a stale snapshot once, but does not reopen when a 59-second snapshot ages during open 150ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: cwd 5ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: writable roots 119ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: instruction source 10ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: sandbox 154ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: ephemeral 13ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: cli version 12ms
+   ✓ Codex voice container > passes the full context and interrupts backend execution before surfacing the handoff 160ms
+   ✓ Codex voice container > reports quota exhaustion as voice unavailable and cleans up 42ms
+   ✓ Codex voice container > keeps the original realtime start failure in error and evidence 76ms
+   ✓ Codex voice container > fences the child and removes scratch when the single 60-second open deadline expires 8ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/codex-container.test.ts > Codex voice container > uses durable context generation after process recreation and never reuses failed start generations
+AssertionError: expected 1 to be 8 // Object.is equality
+
+- Expected
++ Received
+
+- 8
++ 1
+
+ ❯ src/__tests__/codex-container.test.ts:506:29
+    504|   const loadContext = vi.fn(async (generation?: number) => ({...contex…
+    505|   const opened = await h.container.open({sessionId: "session-durable",…
+    506|   expect(opened.generation).toBe(8);
+       |                             ^
+    507|   h.processes[0]!.requestHook = method => method === "thread/realtime/…
+    508|   await expect(opened.restart()).rejects.toThrow();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 31 passed (32)
+   Start at  00:06:32
+   Duration  29.34s (transform 13.27s, setup 0ms, collect 24.42s, tests 4.38s, environment 0ms, prepare 108ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/__tests__/codex-container.test.ts

@@ -113,6 +113,20 @@ export function migrateOperationReceipts(db: Database.Database): void {
 /** Owns no connection. Journal.close() closes this store too. Callers are trusted broker code, never model input. */
 export class OperationReceiptStore {
 	constructor(private readonly db: Database.Database) {}
+	/** Complete, read-only session ledger; the caller supplies trusted activation scope. */
+	listByActivation(raw: {
+		projectName: string;
+		leadId: string;
+		activationId: string;
+	}): OperationReceipt[] {
+		const scope = scopeSchema.omit({ now: true }).parse(raw);
+		const rows = this.db
+			.prepare(
+				"SELECT * FROM lead_operation_receipts WHERE project_name=@projectName AND lead_id=@leadId AND activation_id=@activationId ORDER BY started_at,operation_id,request_id",
+			)
+			.all(scope) as ReceiptRow[];
+		return rows.map(fromRow);
+	}
 	get(key: OperationReceiptKey): OperationReceipt | undefined {
 		const parsed = keySchema.parse(key);
 		const row = this.db

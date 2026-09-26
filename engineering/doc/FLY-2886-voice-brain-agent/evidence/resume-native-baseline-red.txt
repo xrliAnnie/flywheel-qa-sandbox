@@ -1,0 +1,34 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/native-skill-baseline.test.ts (4 tests | 1 failed) 12ms
+   ✓ version-keyed native Codex skill baselines > pins the target release while retaining exact transition and rollback versions 4ms
+   ✓ version-keyed native Codex skill baselines > binds 0.153.2 to the old tree and 0.154.0/0.156.0 to the measured new tree 1ms
+   ✓ version-keyed native Codex skill baselines > fails closed for every unreviewed version 3ms
+   × admits measured voice 0.156.1 with the exact 60-file native tree 3ms
+     → baseline_drift
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/native-skill-baseline.test.ts > admits measured voice 0.156.1 with the exact 60-file native tree
+Error: baseline_drift
+ ❯ resolvePinnedNativeSkillBaseline src/lead-capabilities/native-skill-baseline.ts:116:23
+    114| ): NativeSkillBaseline {
+    115|  if (!Object.hasOwn(PINNED_NATIVE_CODEX_SKILL_BASELINES, codexVersion))
+    116|   throw Object.assign(new Error("baseline_drift"), {
+       |                       ^
+    117|    receipt: { status: "baseline_drift", codexVersion },
+    118|   });
+ ❯ src/lead-capabilities/__tests__/native-skill-baseline.test.ts:63:19
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (4)
+   Start at  23:56:31
+   Duration  849ms (transform 104ms, setup 25ms, collect 93ms, tests 12ms, environment 0ms, prepare 104ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/native-skill-baseline.test.ts

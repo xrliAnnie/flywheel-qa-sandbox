@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { buildCodexLeadMcpArgv } from "../../lead-backends/codex/buildCodexLeadMcpArgv.js";
 import { LeadArtifactStore } from "../artifacts.js";
+import { startBrowserProvider } from "../browser-provider.js";
 import { LEAD_CAPABILITY_CATALOG } from "../catalog.js";
 import { recordActualLeadRuleSources } from "../rule-sources.js";
 import {
@@ -109,7 +110,7 @@ vi.mock("../context7-provider.js", () => ({
 	startContext7Provider: () => upstream("context7"),
 }));
 vi.mock("../browser-provider.js", () => ({
-	startBrowserProvider: async () => {
+	startBrowserProvider: vi.fn(async () => {
 		state.events.push("start:browser");
 		if (state.fail === "browser") throw new Error("browser_start_failed");
 		return {
@@ -127,7 +128,7 @@ vi.mock("../browser-provider.js", () => ({
 				state.events.push("close:browser");
 			},
 		};
-	},
+	}),
 }));
 const roots: string[] = [];
 afterEach(() => {
@@ -644,3 +645,110 @@ it("assembles receipt writes only through the verified authority client and keep
 	).rejects.toThrow("runtime_providers_closed");
 	expect(authority.call).toHaveBeenCalledTimes(1);
 });
+
+it("browser off starts no browser provider and retains restricted model egress", async () => {
+	const session = await startLeadRuntimeProviders({
+		...fixture(),
+		browserMode: "off",
+	});
+	try {
+		expect(state.events).not.toContain("start:browser");
+		expect(
+			[...session.handlers.keys()].some((id) => id.startsWith("browser.")),
+		).toBe(false);
+		expect(session.integrationIds).not.toContain("browser");
+		expect(session.browserGeneration).toBeUndefined();
+		expect((await fetch(`http://127.0.0.1:${session.proxyPort}/`)).status).toBe(
+			403,
+		);
+	} finally {
+		await session.close();
+	}
+	await expect(
+		fetch(`http://127.0.0.1:${session.proxyPort}/`),
+	).rejects.toThrow();
+});
+
+it.each(["founder_chrome", "isolated"] as const)(
+	"passes trusted %s mode to the provider",
+	async (browserMode) => {
+		const session = await startLeadRuntimeProviders({
+			...fixture(),
+			browserMode,
+		});
+		try {
+			expect(startBrowserProvider).toHaveBeenLastCalledWith(
+				expect.objectContaining({ mode: browserMode }),
+			);
+		} finally {
+			await session.close();
+		}
+	},
+);
+
+it.each(["founder_chrome", "isolated", "off"] as const)(
+	"assembles provider, manifest and MCP consistently for %s",
+	async (browserMode) => {
+		const options = fixture();
+		const session = await startLeadRuntimeParent({
+			...options,
+			browserMode,
+			operations: LEAD_CAPABILITY_CATALOG.filter(
+				(row) =>
+					row.classification !== "reserved" &&
+					!(browserMode === "off" && row.credentialConsumer === "browser"),
+			),
+			sources: {
+				sourceRevision: "head-fixture",
+				records: options.ruleRecords,
+				skillInventory: [],
+			},
+			adoptedMenuShapes: ["implement"],
+			assertPreparedCurrent: async () => {},
+			parent: {
+				journal: {} as never,
+				activationRoot: "/fixture/activation",
+				codexHome: "/fixture/home",
+				artifactRoot: "/fixture/artifacts",
+				modelTempRoot: "/fixture/temp",
+				nodePath: process.execPath,
+				codexPath: "/fixture/codex",
+				proxyEntryPath: "/fixture/proxy",
+				codexVersion: "0.154.0",
+				permissionProfile: {
+					deploymentRoot: "/fixture/deploy",
+					projectRoot: "/fixture/work",
+					readPaths: [],
+					credentialPaths: ["/fixture/auth"],
+				},
+				verifyDeployment: async () => {},
+			},
+		});
+		try {
+			const manifest = state.parent!.manifest;
+			expect(manifest.browserMode).toBe(browserMode);
+			expect(
+				manifest.operationIds.some((id) => id.startsWith("browser.")),
+			).toBe(browserMode !== "off");
+			expect(manifest.integrations.some((row) => row.id === "browser")).toBe(
+				browserMode !== "off",
+			);
+			const mcp = buildCodexLeadMcpArgv({
+				capabilityV2: {
+					nodePath: process.execPath,
+					proxyEntryPath: "/fixture/proxy.js",
+					socketPath: "/tmp/fixture.sock",
+					manifestPath: "/fixture/manifest.json",
+					manifest,
+				},
+			});
+			expect(mcp.included).toEqual(
+				browserMode === "off"
+					? ["lead_actions"]
+					: ["lead_actions", "chrome_devtools"],
+			);
+		} finally {
+			await session.close();
+		}
+	},
+);

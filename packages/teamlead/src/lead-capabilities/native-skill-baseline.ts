@@ -76,7 +76,7 @@ const NEW_SOURCES = Object.freeze(
 );
 
 function baseline(
-	codexVersion: "0.153.2" | "0.154.0" | "0.156.0",
+	codexVersion: "0.153.2" | "0.154.0" | "0.156.0" | "0.156.1",
 	files: readonly { path: string; sha256: string }[],
 	sources: NativeSkillBaseline["sources"],
 ): NativeSkillBaseline {
@@ -100,6 +100,13 @@ export const PINNED_NATIVE_CODEX_SKILL_BASELINES = Object.freeze({
 	),
 	"0.156.0": baseline(
 		"0.156.0",
+		PINNED_NATIVE_RESOURCE_FILES_0154_0156,
+		NEW_SOURCES,
+	),
+	// FLY-2886: actual 0.156.1 app-server startup in an empty temporary HOME
+	// emitted the identical 60-file tree and six source hashes; no model turn started.
+	"0.156.1": baseline(
+		"0.156.1",
 		PINNED_NATIVE_RESOURCE_FILES_0154_0156,
 		NEW_SOURCES,
 	),

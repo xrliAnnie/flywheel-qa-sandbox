@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveLeadIdentityRow } from "flywheel-comm/lead-identity";
-import { SqliteJournalStore } from "../lead-backends/codex/SqliteJournalStore.js";
+
 import type { VoiceBackgroundBrowserMode } from "../ProjectConfig.js";
 import { parseAndValidateProjects } from "../ProjectConfig.js";
 import { resolveLeadMenus } from "../workflow-menu.js";
@@ -23,6 +23,12 @@ import { preparePinnedNativeSkillHome } from "./native-home.js";
 import { leadModelWritableRoot } from "./permission-profile.js";
 import { startLeadRuntimeParent } from "./runtime-factory.js";
 import { discoverLeadRuleSources } from "./skill-discovery.js";
+import { voiceCapabilityActionLedger } from "./voice-action-ledger.js";
+import {
+	createVoiceCapabilityTurns,
+	openVoiceCapabilityJournal,
+	prepareVoiceCapabilityAuth,
+} from "./voice-capability-session.js";
 import { resolveVoiceBackgroundCapabilities } from "./voice-resolve.js";
 
 export interface VoiceCapabilityParentInput {
@@ -35,6 +41,10 @@ export interface VoiceCapabilityParentInput {
 	codexBin: string;
 	activationRoot: string;
 	projectsPath: string;
+	/** Durable daemon state root; journals survive activation teardown. */
+	stateDir: string;
+	/** Trusted host subscription source; defaults to HOME/.codex/auth.json. */
+	authSourcePath?: string;
 	/** Synchronous local lease fence owned by the voice daemon. */
 	assertLeaseCurrent(): void;
 	env?: NodeJS.ProcessEnv;
@@ -140,9 +150,21 @@ export async function startVoiceCapabilityParent(
 	const modelTempRoot = realpathSync(
 		mkdtempSync(join(writableRoot, ".flywheel-voice-model-")),
 	);
-	const journalRoot = join(activationRoot, "journal");
-	mkdirSync(journalRoot, { mode: 0o700 });
-	const journal = new SqliteJournalStore(join(journalRoot, "journal.db"));
+	const journal = openVoiceCapabilityJournal(input.stateDir, input.sessionId);
+	let finalActionLedger:
+		| ReturnType<typeof voiceCapabilityActionLedger>
+		| undefined;
+	const actionLedger = () =>
+		finalActionLedger ??
+		voiceCapabilityActionLedger(
+			journal.operationReceipts.listByActivation({
+				projectName: input.projectName,
+				leadId: input.leadId,
+				activationId: resolution.identity.activationId,
+			}),
+		);
+	let auth: ReturnType<typeof prepareVoiceCapabilityAuth> | undefined;
+	let turns: ReturnType<typeof createVoiceCapabilityTurns> | undefined;
 	let native: ReturnType<typeof preparePinnedNativeSkillHome> | undefined;
 	let artifacts: LeadArtifactStore | undefined;
 	let parent: Awaited<ReturnType<typeof startLeadRuntimeParent>> | undefined;
@@ -150,13 +172,22 @@ export async function startVoiceCapabilityParent(
 		if (closed) return;
 		closed = true;
 		try {
-			await parent?.close();
+			try {
+				turns?.close();
+			} finally {
+				await parent?.close();
+			}
 		} finally {
 			try {
-				journal.close();
+				try {
+					finalActionLedger = actionLedger();
+				} finally {
+					journal.close();
+				}
 			} finally {
 				artifacts?.close();
 				native?.close();
+				auth?.close();
 				for (const path of [artifactRoot, modelTempRoot]) {
 					if (existsSync(path) && !lstatSync(path).isSymbolicLink())
 						rmSync(path, { recursive: true, force: true });
@@ -165,6 +196,11 @@ export async function startVoiceCapabilityParent(
 		}
 	};
 	try {
+		auth = prepareVoiceCapabilityAuth({
+			codexHome,
+			authSourcePath:
+				input.authSourcePath ?? join(hostHome, ".codex", "auth.json"),
+		});
 		native = preparePinnedNativeSkillHome({
 			codexHome,
 			codexVersion: version,
@@ -173,6 +209,7 @@ export async function startVoiceCapabilityParent(
 		const current = () => {
 			const row = currentIdentity();
 			native!.assertCurrent();
+			auth!.assertCurrent();
 			for (const path of [artifactRoot, modelTempRoot, activationRoot]) {
 				const stat = lstatSync(path);
 				if (stat.isSymbolicLink() || realpathSync(path) !== path)
@@ -241,6 +278,7 @@ export async function startVoiceCapabilityParent(
 			artifacts,
 			secrets,
 			operations: resolution.operations,
+			browserMode: input.browserMode,
 			sources: {
 				sourceRevision: baseline.headSha,
 				records: sources.records,
@@ -249,6 +287,7 @@ export async function startVoiceCapabilityParent(
 			adoptedMenuShapes: adopted,
 			assertPreparedCurrent,
 			browser: {
+				hostHome,
 				packageRoot: dirname(
 					require.resolve("chrome-devtools-mcp/package.json"),
 				),
@@ -283,8 +322,19 @@ export async function startVoiceCapabilityParent(
 				verifyDeployment: async () => assertPreparedCurrent(),
 			},
 		});
+		turns = createVoiceCapabilityTurns({
+			sessionId: input.sessionId,
+			journal,
+			enterDeliveryContext: parent.enterDeliveryContext,
+			assertCurrent: current,
+		});
 		return Object.freeze({
 			...parent,
+			capabilityModelEnv: parent.pins,
+			actionLedger,
+			authSourcePath: auth.authSourcePath,
+			beginTurn: turns.beginTurn,
+			endTurn: turns.endTurn,
 			cwd: projectRoot,
 			close: cleanup,
 		});

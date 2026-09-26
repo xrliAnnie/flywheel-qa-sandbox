@@ -1,0 +1,60 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex
+
+ ❯ src/__tests__/codex-container.test.ts (31 tests | 1 failed) 672ms
+   ✓ Codex voice container > opens every meeting in a distinct ephemeral home, workdir, process, and thread 20ms
+   ✓ Codex voice container > restarts only the realtime connection and advances its generation after a confirmed close 57ms
+   ✓ Codex voice container > reloads fresh background context once per natural realtime generation 6ms
+   ✓ Codex voice container > opens subscription capability and isolated scribe children and binds each background turn 22ms
+   ✓ Codex voice container > rejects enabled admission drift background_api_account and closes parent and both acquired children 10ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_api_account and closes parent and both acquired children 52ms
+   ✓ Codex voice container > rejects enabled admission drift extra_tool and closes parent and both acquired children 6ms
+   ✓ Codex voice container > rejects enabled admission drift missing_tool and closes parent and both acquired children 5ms
+   ✓ Codex voice container > rejects enabled admission drift extra_server and closes parent and both acquired children 7ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_tool and closes parent and both acquired children 7ms
+   ✓ Codex voice container > rejects enabled admission drift permission_profile and closes parent and both acquired children 5ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_probe_failed and closes parent and both acquired children 7ms
+   × Codex voice container > revokes the capability parent and stops the scribe even if the background child cannot stop 10ms
+     → expected "spy" to be called 1 times, but got 0 times
+   ✓ Codex voice container > keeps process-level background completion during old_cancel_wait 104ms
+   ✓ Codex voice container > keeps process-level background completion during new_opening 96ms
+   ✓ Codex voice container > keeps process-level background completion during new_started 6ms
+   ✓ Codex voice container > interrupts an enabled active background turn when the conversation closes 6ms
+   ✓ Codex voice container > refuses a mismatched fixed binary version 2ms
+   ✓ Codex voice container > refuses a mismatched fixed binary digest 2ms
+   ✓ Codex voice container > refuses a mismatched fixed binary feature 1ms
+   ✓ Codex voice container > refreshes a stale snapshot once, but does not reopen when a 59-second snapshot ages during open 7ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: cwd 6ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: writable roots 3ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: instruction source 4ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: sandbox 4ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: ephemeral 25ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: cli version 28ms
+   ✓ Codex voice container > passes the full context and interrupts backend execution before surfacing the handoff 147ms
+   ✓ Codex voice container > reports quota exhaustion as voice unavailable and cleans up 6ms
+   ✓ Codex voice container > keeps the original realtime start failure in error and evidence 5ms
+   ✓ Codex voice container > fences the child and removes scratch when the single 60-second open deadline expires 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/codex-container.test.ts > Codex voice container > revokes the capability parent and stops the scribe even if the background child cannot stop
+AssertionError: expected "spy" to be called 1 times, but got 0 times
+ ❯ src/__tests__/codex-container.test.ts:664:26
+    662|   h.processes[0]!.stop = vi.fn(async () => {throw new Error("still_ali…
+    663|   await expect(opened.close()).rejects.toMatchObject({reason: "cleanup…
+    664|   expect(h.parent.close).toHaveBeenCalledTimes(1);
+       |                          ^
+    665|   expect(h.processes[1]!.stopCount).toBe(1);
+    666|   expect(existsSync(opened.root)).toBe(true);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 30 passed (31)
+   Start at  00:05:01
+   Duration  15.44s (transform 7.94s, setup 0ms, collect 14.06s, tests 672ms, environment 0ms, prepare 152ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/__tests__/codex-container.test.ts

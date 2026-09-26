@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { browserFacadeSchemaDigest } from "../lead-backends/codex/browser-capability-proxy.js";
+import type { VoiceBackgroundBrowserMode } from "../ProjectConfig.js";
 import { createParentXhsAuthorityClient } from "../xiaohongshu-write/parent-client-policy.js";
 import type { LeadArtifactStore } from "./artifacts.js";
 import type { LeadCapabilityAuthority } from "./authority.js";
@@ -177,21 +178,26 @@ export async function startLeadRuntimeParent(
 			profile: "full-access",
 			activationId: options.activationId,
 			browserGeneration: providers.browserGeneration,
+			browserMode: options.browserMode,
 			operations: resolved.operations,
 			integrations: [
 				...localIntegrations,
 				...providers.upstreamIntegrations,
-				{
-					id: "browser",
-					version: BROWSER_MCP_VERSION,
-					toolSchemaDigest: browserFacadeSchemaDigest(
-						resolved.operations
-							.filter((operation) =>
-								operation.operationId.startsWith("browser."),
-							)
-							.map((operation) => operation.operationId.slice(8)),
-					),
-				},
+				...(options.browserMode === "off"
+					? []
+					: [
+							{
+								id: "browser",
+								version: BROWSER_MCP_VERSION,
+								toolSchemaDigest: browserFacadeSchemaDigest(
+									resolved.operations
+										.filter((operation) =>
+											operation.operationId.startsWith("browser."),
+										)
+										.map((operation) => operation.operationId.slice(8)),
+								),
+							},
+						]),
 			],
 			nativeSkillBaseline: {
 				codexVersion: nativeSkillBaseline.codexVersion,
@@ -251,6 +257,8 @@ export async function startLeadRuntimeParent(
 
 /** Trusted default-factory provider inputs; never obtained from model operation arguments. */
 export interface LeadRuntimeProviderOptions {
+	/** Trusted voice input; absent preserves resident isolated browser behavior. */
+	browserMode?: VoiceBackgroundBrowserMode;
 	env: NodeJS.ProcessEnv;
 	activationId: string;
 	authority?: LeadCapabilityAuthority;
@@ -430,45 +438,63 @@ export async function startLeadRuntimeProviders(
 		cleanup.push(context7.close);
 		add(context7.handlers);
 		current();
-		const browser = await startBrowserProvider({
-			...options.browser,
-			activationId: options.activationId,
-			store: options.artifacts,
-			assertCurrent: current,
-		}).catch(async () => {
-			// Native browser startup already attempts cleanup of its worker/profile/proxy.
-			// Keep the model's restricted egress proxy without admitting any browser calls.
-			current();
-			const proxy = await startBrowserEgressProxy({
-				policy: options.browser.egress,
-				assertCurrent: current,
-			});
-			return {
-				generation: randomUUID(),
-				proxyPort: proxy.port,
-				close: () => proxy.close(),
-				handlers: new Map<string, LeadOperationHandler>(
-					LEAD_CAPABILITY_CATALOG.filter(
-						(row) => row.credentialConsumer === "browser",
-					).map((row) => [
-						row.operationId,
-						{
-							authorize: async () => {},
-							execute: async () => ({
-								status: "rejected",
-								errorCode: "browser_unavailable",
-							}),
-						},
-					]),
-				),
-			};
-		});
+		const browser =
+			options.browserMode === "off"
+				? await (async () => {
+						const proxy = await startBrowserEgressProxy({
+							policy: options.browser.egress,
+							assertCurrent: current,
+						});
+						return {
+							generation: undefined,
+							proxyPort: proxy.port,
+							close: () => proxy.close(),
+							handlers: new Map<string, LeadOperationHandler>(),
+						};
+					})()
+				: await startBrowserProvider({
+						...options.browser,
+						mode: options.browserMode ?? "isolated",
+						activationId: options.activationId,
+						store: options.artifacts,
+						assertCurrent: current,
+					}).catch(async () => {
+						// Native browser startup already attempts cleanup of its worker/profile/proxy.
+						// Keep the model's restricted egress proxy without admitting any browser calls.
+						current();
+						const proxy = await startBrowserEgressProxy({
+							policy: options.browser.egress,
+							assertCurrent: current,
+						});
+						return {
+							generation: randomUUID(),
+							proxyPort: proxy.port,
+							close: () => proxy.close(),
+							handlers: new Map<string, LeadOperationHandler>(
+								LEAD_CAPABILITY_CATALOG.filter(
+									(row) => row.credentialConsumer === "browser",
+								).map((row) => [
+									row.operationId,
+									{
+										authorize: async () => {},
+										execute: async () => ({
+											status: "rejected",
+											errorCode: "browser_unavailable",
+										}),
+									},
+								]),
+							),
+						};
+					});
 		cleanup.push(browser.close);
 		add(browser.handlers);
 		current();
 		const missing = LEAD_CAPABILITY_CATALOG.filter(
 			(row) =>
 				row.classification !== "reserved" &&
+				!(
+					options.browserMode === "off" && row.credentialConsumer === "browser"
+				) &&
 				!row.unconditionalDenial &&
 				!handlers.has(row.operationId),
 		);
@@ -528,7 +554,7 @@ export async function startLeadRuntimeProviders(
 				"gbrain",
 				"xiaohongshu-mcp",
 				"context7",
-				"browser",
+				...(options.browserMode === "off" ? [] : ["browser"]),
 			] as const,
 			upstreamIntegrations: [
 				gbrain.integration,

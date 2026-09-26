@@ -1,0 +1,12 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/native-pinned-home.test.ts (4 tests) 70ms
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-capability-session.test.ts (5 tests) 228ms
+ ✓ |parallel| src/lead-capabilities/__tests__/native-skill-baseline.test.ts (4 tests) 10ms
+
+ Test Files  3 passed (3)
+      Tests  13 passed (13)
+   Start at  00:02:17
+   Duration  9.54s (transform 2.98s, setup 210ms, collect 5.06s, tests 308ms, environment 1ms, prepare 483ms)
+

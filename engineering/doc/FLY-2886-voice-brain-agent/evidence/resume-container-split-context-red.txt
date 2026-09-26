@@ -1,0 +1,63 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex
+
+ ❯ src/__tests__/codex-container.test.ts (33 tests | 1 failed) 1782ms
+   ✓ Codex voice container > opens every meeting in a distinct ephemeral home, workdir, process, and thread 162ms
+   ✓ Codex voice container > restarts only the realtime connection and advances its generation after a confirmed close 61ms
+   ✓ Codex voice container > reloads fresh background context once per natural realtime generation 19ms
+   ✓ Codex voice container > uses durable context generation after process recreation and never reuses failed start generations 99ms
+   × Codex voice container > admits separate bounded realtime brief and background detail in enabled mode 14ms
+     → voice_unavailable: context_invalid
+   ✓ Codex voice container > opens subscription capability and isolated scribe children and binds each background turn 152ms
+   ✓ Codex voice container > rejects enabled admission drift background_api_account and closes parent and both acquired children 23ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_api_account and closes parent and both acquired children 20ms
+   ✓ Codex voice container > rejects enabled admission drift extra_tool and closes parent and both acquired children 35ms
+   ✓ Codex voice container > rejects enabled admission drift missing_tool and closes parent and both acquired children 91ms
+   ✓ Codex voice container > rejects enabled admission drift extra_server and closes parent and both acquired children 33ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_tool and closes parent and both acquired children 30ms
+   ✓ Codex voice container > rejects enabled admission drift permission_profile and closes parent and both acquired children 10ms
+   ✓ Codex voice container > rejects enabled admission drift scribe_probe_failed and closes parent and both acquired children 32ms
+   ✓ Codex voice container > revokes the capability parent and stops the scribe even if the background child cannot stop 16ms
+   ✓ Codex voice container > keeps process-level background completion during old_cancel_wait 20ms
+   ✓ Codex voice container > keeps process-level background completion during new_opening 114ms
+   ✓ Codex voice container > keeps process-level background completion during new_started 41ms
+   ✓ Codex voice container > interrupts an enabled active background turn when the conversation closes 75ms
+   ✓ Codex voice container > refuses a mismatched fixed binary version 3ms
+   ✓ Codex voice container > refuses a mismatched fixed binary digest 6ms
+   ✓ Codex voice container > refuses a mismatched fixed binary feature 1ms
+   ✓ Codex voice container > refreshes a stale snapshot once, but does not reopen when a 59-second snapshot ages during open 104ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: cwd 38ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: writable roots 49ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: instruction source 128ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: sandbox 26ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: ephemeral 102ms
+   ✓ Codex voice container > closes and removes the container when thread metadata mismatches: cli version 100ms
+   ✓ Codex voice container > passes the full context and interrupts backend execution before surfacing the handoff 83ms
+   ✓ Codex voice container > reports quota exhaustion as voice unavailable and cleans up 21ms
+   ✓ Codex voice container > keeps the original realtime start failure in error and evidence 54ms
+   ✓ Codex voice container > fences the child and removes scratch when the single 60-second open deadline expires 18ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/__tests__/codex-container.test.ts > Codex voice container > admits separate bounded realtime brief and background detail in enabled mode
+CodexVoiceContainerError: voice_unavailable: context_invalid
+ ❯ assertContext src/codex/CodexVoiceContainer.ts:544:9
+    542|    CONTEXT_MAX_ESTIMATED_TOKENS
+    543|  ) {
+    544|   throw new CodexVoiceContainerError("context_invalid");
+       |         ^
+    545|  }
+    546| }
+ ❯ CodexVoiceContainer.openWithinDeadline src/codex/CodexVoiceContainer.ts:851:3
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 32 passed (33)
+   Start at  00:09:29
+   Duration  22.24s (transform 9.57s, setup 0ms, collect 18.65s, tests 1.78s, environment 0ms, prepare 248ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/__tests__/codex-container.test.ts

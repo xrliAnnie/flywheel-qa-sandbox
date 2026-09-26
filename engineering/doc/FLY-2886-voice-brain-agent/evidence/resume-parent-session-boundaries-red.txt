@@ -1,0 +1,61 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/voice-capability-session.test.ts (5 tests | 2 failed) 99ms
+   ✓ owns only the fresh home auth link and detects replacement without reading credentials 17ms
+   ✓ binds durable turn context once, fences concurrent turns, and preserves restart evidence 16ms
+   ✓ rejects escaped session paths before creating a journal 1ms
+   × rejects a dangling journal symlink without creating its target 9ms
+     → expected [Function] to throw an error
+   × keeps thread and turn identity boundaries distinct in durable deduplication 12ms
+     → expected [Function] to not throw an error but 'Error: voice_capability_turn_replayed' was thrown
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-capability-session.test.ts > rejects a dangling journal symlink without creating its target
+AssertionError: expected [Function] to throw an error
+
+- Expected: 
+null
+
++ Received: 
+undefined
+
+ ❯ src/lead-capabilities/__tests__/voice-capability-session.test.ts:117:80
+    115|  symlinkSync(target, join(dir, "journal.db"));
+    116|  let opened: ReturnType<typeof openVoiceCapabilityJournal> | undefined;
+    117|  try { expect(() => { opened = openVoiceCapabilityJournal(root, sessio…
+       |                                                                                ^
+    118|  finally { opened?.close(); }
+    119|  expect(existsSync(target)).toBe(false);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-capability-session.test.ts > keeps thread and turn identity boundaries distinct in durable deduplication
+AssertionError: expected [Function] to not throw an error but 'Error: voice_capability_turn_replayed' was thrown
+
+- Expected: 
+undefined
+
++ Received: 
+"Error: voice_capability_turn_replayed"
+
+ ❯ src/lead-capabilities/__tests__/voice-capability-session.test.ts:127:57
+    125|  try {
+    126|   turns.beginTurn("thread:a", "turn"); turns.endTurn("turn", "complete…
+    127|   expect(() => turns.beginTurn("thread", "a:turn")).not.toThrow();
+       |                                                         ^
+    128|  } finally { turns.close(); journal.close(); }
+    129| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 3 passed (5)
+   Start at  00:01:29
+   Duration  4.84s (transform 1.78s, setup 42ms, collect 3.03s, tests 99ms, environment 0ms, prepare 357ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/lead-capabilities/__tests__/voice-capability-session.test.ts

@@ -94,52 +94,84 @@ it("rejects tampered manifests, absent browser integration and invalid public co
 	])
 		expect(() => buildCodexLeadMcpArgv({ capabilityV2: bad })).toThrow();
 });
-it("starts both real stdio facade entry modes without provider credentials", async () => {
-	const { createRequire } = await import("node:module");
-	const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-	const { StdioClientTransport } = await import(
-		"@modelcontextprotocol/sdk/client/stdio.js"
-	);
-	const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
-	const { tmpdir } = await import("node:os");
-	const { join } = await import("node:path");
-	const { fileURLToPath } = await import("node:url");
-	const root = mkdtempSync(join(tmpdir(), "capability-entry-"));
-	const path = join(root, "manifest.json");
-	writeFileSync(path, JSON.stringify(manifest));
-	try {
-		for (const mode of ["actions", "browser"]) {
-			const client = new Client({ name: "entry-test", version: "1" });
-			const transport = new StdioClientTransport({
-				command: process.execPath,
-				args: [
-					"--import",
-					createRequire(import.meta.url).resolve("tsx"),
-					fileURLToPath(new URL("../capability-mcp-entry.ts", import.meta.url)),
-					mode,
-				],
-				env: {
-					HOME: root,
-					PATH: "/usr/bin:/bin",
-					FLYWHEEL_LEAD_CAPABILITY_MANIFEST: path,
-					FLYWHEEL_LEAD_CAPABILITY_SOCKET: "/tmp/test-broker.sock",
-				},
-				stderr: "pipe",
-			});
-			try {
-				await client.connect(transport);
-				expect((await client.listTools()).tools.map((t) => t.name)).toEqual(
-					mode === "actions" ? ["lead_operation"] : ["list_pages"],
-				);
-			} finally {
-				await client.close();
-				await transport.close();
+it.each(["founder_chrome", "isolated", "off"] as const)(
+	"discovers actual stdio facade tools for browser mode %s",
+	async (browserMode) => {
+		const { createRequire } = await import("node:module");
+		const { Client } = await import(
+			"@modelcontextprotocol/sdk/client/index.js"
+		);
+		const { StdioClientTransport } = await import(
+			"@modelcontextprotocol/sdk/client/stdio.js"
+		);
+		const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { fileURLToPath } = await import("node:url");
+		const root = mkdtempSync(join(tmpdir(), "capability-entry-"));
+		const path = join(root, "manifest.json");
+		const modeManifest = createLeadCapabilityManifest({
+			...manifest,
+			browserMode,
+			browserGeneration:
+				browserMode === "off" ? undefined : manifest.browserGeneration,
+			operations:
+				browserMode === "off"
+					? [getLeadCapability("git.feature.push")!]
+					: [
+							getLeadCapability("git.feature.push")!,
+							getLeadCapability("browser.list_pages")!,
+						],
+			integrations: browserMode === "off" ? [] : manifest.integrations,
+		});
+		const included = buildCodexLeadMcpArgv({
+			capabilityV2: { ...capabilityV2, manifest: modeManifest },
+		}).included;
+		expect(included).toEqual(
+			browserMode === "off"
+				? ["lead_actions"]
+				: ["lead_actions", "chrome_devtools"],
+		);
+		writeFileSync(path, JSON.stringify(modeManifest));
+		try {
+			for (const mode of included.map((name) =>
+				name === "lead_actions" ? "actions" : "browser",
+			)) {
+				const client = new Client({ name: "entry-test", version: "1" });
+				const transport = new StdioClientTransport({
+					command: process.execPath,
+					args: [
+						"--import",
+						createRequire(import.meta.url).resolve("tsx"),
+						fileURLToPath(
+							new URL("../capability-mcp-entry.ts", import.meta.url),
+						),
+						mode,
+					],
+					env: {
+						HOME: root,
+						PATH: "/usr/bin:/bin",
+						FLYWHEEL_LEAD_CAPABILITY_MANIFEST: path,
+						FLYWHEEL_LEAD_CAPABILITY_SOCKET: "/tmp/test-broker.sock",
+					},
+					stderr: "pipe",
+				});
+				try {
+					await client.connect(transport);
+					expect((await client.listTools()).tools.map((t) => t.name)).toEqual(
+						mode === "actions" ? ["lead_operation"] : ["list_pages"],
+					);
+				} finally {
+					await client.close();
+					await transport.close();
+				}
 			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-}, 15000);
+	},
+	15000,
+);
 it("changes the effective v2 config digest when the native tool allowlist changes", () => {
 	const changed = createLeadCapabilityManifest({
 		...manifest,
@@ -160,4 +192,36 @@ it("changes the effective v2 config digest when the native tool allowlist change
 			capabilityV2: { ...capabilityV2, manifest: changed },
 		}).configHash,
 	).not.toBe(buildCodexLeadMcpArgv({ capabilityV2 }).configHash);
+});
+
+it("off produces an actions-only facade and rejects stray browser authority", () => {
+	const off = createLeadCapabilityManifest({
+		...manifest,
+		browserMode: "off",
+		browserGeneration: undefined,
+		operations: [getLeadCapability("git.feature.push")!],
+		integrations: [],
+	});
+	expect(off.browserMode).toBe("off");
+	expect(
+		buildCodexLeadMcpArgv({ capabilityV2: { ...capabilityV2, manifest: off } })
+			.included,
+	).toEqual(["lead_actions"]);
+	for (const changed of [
+		{ browserGeneration: manifest.browserGeneration },
+		{ integrations: manifest.integrations },
+		{ operations: [getLeadCapability("browser.list_pages")!] },
+	])
+		expect(() =>
+			buildCodexLeadMcpArgv({
+				capabilityV2: {
+					...capabilityV2,
+					manifest: createLeadCapabilityManifest({
+						...off,
+						operations: [getLeadCapability("git.feature.push")!],
+						...changed,
+					}),
+				},
+			}),
+		).toThrow(/browser/);
 });

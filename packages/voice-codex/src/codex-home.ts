@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	closeSync,
 	constants,
@@ -141,5 +142,62 @@ export function assertVoiceScribeHome(
 	} finally {
 		if (configFd !== undefined) closeSync(configFd);
 		if (authFd !== undefined) closeSync(authFd);
+	}
+}
+
+/** Admission only: the capability parent is the sole config and auth-link writer. */
+export function assertVoiceCapabilityHome(
+	home: string,
+	expectedAuthPath: string,
+): void {
+	const descriptors: number[] = [];
+	try {
+		const uid = process.getuid?.();
+		const directory = lstatSync(home);
+		if (
+			!directory.isDirectory() ||
+			directory.isSymbolicLink() ||
+			(directory.mode & 0o777) !== 0o700 ||
+			(uid !== undefined && directory.uid !== uid)
+		)
+			throw new Error("directory");
+		const readPrivate = (path: string, maximumBytes: number): string => {
+			const fd = openSync(
+				path,
+				constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+			);
+			descriptors.push(fd);
+			const stat = fstatSync(fd);
+			if (
+				!stat.isFile() ||
+				(stat.mode & 0o777) !== 0o600 ||
+				(uid !== undefined && stat.uid !== uid) ||
+				stat.size > maximumBytes
+			)
+				throw new Error("file");
+			return readFileSync(fd, "utf8");
+		};
+		const auth = join(home, "auth.json");
+		if (
+			!lstatSync(auth).isSymbolicLink() ||
+			realpathSync(auth) !== realpathSync(expectedAuthPath)
+		)
+			throw new Error("auth_link");
+		readPrivate(expectedAuthPath, 1024 * 1024);
+		const config = readPrivate(join(home, "config.toml"), 1024 * 1024);
+		const proof = readPrivate(
+			join(home, ".flywheel-capability-config.sha256"),
+			130,
+		).trim();
+		if (
+			!config.startsWith("# Flywheel managed capability bundle v2\n") ||
+			/forced_login_method\s*=\s*["']api["']/u.test(config) ||
+			proof !== createHash("sha256").update(config).digest("hex")
+		)
+			throw new Error("config");
+	} catch {
+		throw new Error("voice_capability_home_invalid");
+	} finally {
+		for (const fd of descriptors) closeSync(fd);
 	}
 }

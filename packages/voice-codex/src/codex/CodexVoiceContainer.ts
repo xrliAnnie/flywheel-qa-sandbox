@@ -1,7 +1,15 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	lstat,
+	mkdir,
+	mkdtemp,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -9,8 +17,15 @@ import {
 	spawnCodexAppServer,
 } from "flywheel-teamlead/codex-process";
 import {
+	startVoiceCapabilityParent,
+	type VoiceCapabilityParentInput,
+} from "flywheel-teamlead/voice-capability";
+import {
+	assertVoiceCapabilityHome,
 	assertVoiceCodexHome,
+	assertVoiceScribeHome,
 	VOICE_CODEX_HOME_CONFIG,
+	VOICE_SCRIBE_HOME_CONFIG,
 } from "../codex-home.js";
 import type { BackgroundTurnTerminal } from "./BrainCoordinator.js";
 import {
@@ -21,6 +36,7 @@ import {
 	type CodexRealtimeTranscript,
 	CodexRealtimeTransport,
 } from "./RealtimeTransport.js";
+import { ScriptWriter, type ScriptWriterResult } from "./ScriptWriter.js";
 import {
 	type ThreadCompletedItem,
 	ThreadEventRouter,
@@ -41,6 +57,7 @@ const CLOSE_RPC_TIMEOUT_MS = 5_000;
 const execFileAsync = promisify(execFile);
 
 export interface CodexVoiceContextSnapshot {
+	contextGeneration?: number;
 	baseInstructions: string;
 	realtimePrompt: string;
 	snapshotDigest: string;
@@ -86,7 +103,11 @@ export interface CodexVoiceProcessFactoryOptions {
 	cwd: string;
 	mcpArgv: string[];
 	baseEnv: NodeJS.ProcessEnv;
-	voiceProfile: { openAiApiKey: string };
+	voiceProfile?: { openAiApiKey: string };
+	profile?: "voice-capability";
+	capabilityModelEnv?: Parameters<
+		typeof spawnCodexAppServer
+	>[0]["capabilityModelEnv"];
 	knownServerMethods: string[];
 	maxJsonLineBytes: number;
 }
@@ -99,10 +120,16 @@ interface BinaryEvidence {
 
 type EvidenceSink = (record: Record<string, unknown>) => void;
 
+export type VoiceCapabilityParent = Awaited<
+	ReturnType<typeof startVoiceCapabilityParent>
+>;
+
 interface OpenResources {
 	cancelled: boolean;
 	root?: string;
 	process?: CodexVoiceProcess;
+	scribe?: CodexVoiceProcess;
+	parent?: VoiceCapabilityParent;
 	cleanup?: Promise<void>;
 }
 
@@ -167,6 +194,141 @@ function assertThreadReceipt(
 	) {
 		throw new CodexVoiceContainerError("codex_profile_mismatch");
 	}
+}
+
+async function readRpc(
+	process: CodexVoiceProcess,
+	method: string,
+	params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+	const response = await process.request(method, params);
+	const result = asRecord(response.result);
+	if (response.error || !result)
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
+	return result;
+}
+
+async function assertSubscription(process: CodexVoiceProcess): Promise<void> {
+	const account = await readRpc(process, "account/read", {
+		refreshToken: false,
+	});
+	if (asRecord(account.account)?.type !== "chatgpt")
+		throw new CodexVoiceContainerError("codex_auth_rejected");
+}
+
+async function assertTools(
+	process: CodexVoiceProcess,
+	expected: Record<string, unknown>,
+): Promise<void> {
+	const status = await readRpc(process, "mcpServerStatus/list", { limit: 100 });
+	if (!Array.isArray(status.data) || status.nextCursor != null)
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
+	const names = status.data.map((value: unknown) => asRecord(value)?.name);
+	if (
+		JSON.stringify([...names].sort()) !==
+		JSON.stringify(Object.keys(expected).sort())
+	)
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
+	for (const value of status.data) {
+		const server = asRecord(value)!;
+		const spec = asRecord(expected[String(server.name)]);
+		const toolNames = Array.isArray(server.tools)
+			? server.tools.map((tool: unknown) => asRecord(tool)?.name)
+			: Object.keys(asRecord(server.tools) ?? {});
+		const allowed = spec?.enabled_tools;
+		if (
+			!Array.isArray(allowed) ||
+			!allowed.length ||
+			JSON.stringify(toolNames.sort()) !== JSON.stringify([...allowed].sort())
+		)
+			throw new CodexVoiceContainerError("codex_profile_mismatch");
+	}
+}
+
+async function assertCapabilityProcess(
+	process: CodexVoiceProcess,
+	parent: VoiceCapabilityParent,
+): Promise<void> {
+	await parent.assertCurrent();
+	await assertSubscription(process);
+	const configResult = await readRpc(process, "config/read", {
+		cwd: parent.cwd,
+		includeLayers: false,
+	});
+	const config = asRecord(configResult.config);
+	if (!config || config.forced_login_method === "api")
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
+	await parent.verifyEffectiveConfig(config);
+	const skills = await readRpc(process, "skills/list", {
+		cwds: [parent.cwd],
+		forceReload: true,
+	});
+	if (!parent.verifyEffectiveSkills)
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
+	await parent.verifyEffectiveSkills(skills, parent.cwd);
+	await assertTools(process, asRecord(config.mcp_servers) ?? {});
+	await parent.assertCurrent();
+}
+
+async function assertScribeTools(
+	process: CodexVoiceProcess,
+	cwd: string,
+): Promise<void> {
+	const result = await readRpc(process, "config/read", {
+		cwd,
+		includeLayers: false,
+	});
+	const config = asRecord(result.config);
+	const features = asRecord(config?.features);
+	const disabled = [
+		"shell_tool",
+		"unified_exec",
+		"view_image",
+		"image_generation",
+		"code_mode_host",
+		"standalone_web_search",
+		"memories",
+		"apps",
+		"plugins",
+		"browser_use",
+		"computer_use",
+		"multi_agent",
+		"hooks",
+	];
+	if (
+		!config ||
+		config.forced_login_method === "api" ||
+		config.web_search !== "disabled" ||
+		disabled.some((key) => features?.[key] !== false) ||
+		Object.keys(asRecord(config.mcp_servers) ?? {}).length
+	)
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
+	await assertTools(process, {});
+}
+
+function assertCapabilityThreadReceipt(
+	result: unknown,
+	threadId: string,
+	cwd: string,
+): void {
+	const row = asRecord(result);
+	const thread = asRecord(row?.thread);
+	const profile = asRecord(row?.activePermissionProfile);
+	if (
+		!row ||
+		!thread ||
+		thread.id !== threadId ||
+		thread.cwd !== cwd ||
+		thread.ephemeral !== true ||
+		thread.cliVersion !== "0.156.1" ||
+		thread.modelProvider !== "openai" ||
+		!emptyStringArray(thread.environments) ||
+		row.cwd !== cwd ||
+		row.approvalPolicy !== "never" ||
+		profile?.id !== "flywheel-lead-v2" ||
+		profile.extends !== ":workspace"
+	)
+		throw new CodexVoiceContainerError("codex_profile_mismatch");
 }
 
 function sha256(value: string): string {
@@ -254,6 +416,8 @@ function defaultCreateProcess(
 				cwd: options.cwd,
 				baseEnv: options.baseEnv,
 				voiceProfile: options.voiceProfile,
+				profile: options.profile,
+				capabilityModelEnv: options.capabilityModelEnv,
 			}),
 		experimentalApi: true,
 		knownServerMethods: options.knownServerMethods,
@@ -355,6 +519,7 @@ function contextIsFresh(
 function assertContext(
 	snapshot: CodexVoiceContextSnapshot,
 	sessionId: string,
+	backgroundEnabled = false,
 ): void {
 	const marker = `snapshotDigest=${snapshot.snapshotDigest} sessionId=${sessionId}]`;
 	const digest = /^[a-f0-9]{64}$/u;
@@ -367,7 +532,8 @@ function assertContext(
 		!digest.test(snapshot.manifest.leaseBindingDigest) ||
 		!snapshot.baseInstructions.includes(marker) ||
 		!snapshot.realtimePrompt.includes(marker) ||
-		!snapshot.realtimePrompt.startsWith(snapshot.baseInstructions) ||
+		(!backgroundEnabled &&
+			!snapshot.realtimePrompt.startsWith(snapshot.baseInstructions)) ||
 		baseBytes !== snapshot.measurements.baseInstructions.bytes ||
 		realtimeBytes !== snapshot.measurements.realtimePrompt.bytes ||
 		baseBytes > CONTEXT_MAX_BYTES ||
@@ -375,7 +541,7 @@ function assertContext(
 		snapshot.measurements.baseInstructions.estimatedTokens >
 			CONTEXT_MAX_ESTIMATED_TOKENS ||
 		snapshot.measurements.realtimePrompt.estimatedTokens >
-			CONTEXT_MAX_ESTIMATED_TOKENS
+			(backgroundEnabled ? 4096 : CONTEXT_MAX_ESTIMATED_TOKENS)
 	) {
 		throw new CodexVoiceContainerError("context_invalid");
 	}
@@ -399,10 +565,25 @@ function withTimeout<T>(
 	});
 }
 
+async function closeOwnedProcesses(
+	process: CodexVoiceProcess | undefined,
+	scribe: CodexVoiceProcess | undefined,
+	parent: VoiceCapabilityParent | undefined,
+): Promise<void> {
+	// Revoke broker authority even when a child fails its shutdown handshake.
+	const results = await Promise.allSettled([
+		parent?.close(),
+		process?.stop(),
+		scribe?.stop(),
+	]);
+	if (results.some((result) => result.status === "rejected"))
+		throw new CodexVoiceContainerError("cleanup_pending");
+}
+
 export class CodexVoiceConversation {
 	private closePromise?: Promise<void>;
 	private restartPromise?: Promise<number>;
-	private currentGeneration = 1;
+	private currentGeneration: number;
 	private currentTransport: CodexRealtimeTransport;
 
 	constructor(
@@ -416,14 +597,33 @@ export class CodexVoiceConversation {
 		transport: CodexRealtimeTransport,
 		private readonly createTransport: (
 			generation: number,
-		) => CodexRealtimeTransport,
+		) => Promise<CodexRealtimeTransport>,
 		private readonly evidence: EvidenceSink,
+		private readonly capability?: {
+			parent: VoiceCapabilityParent;
+			scribe: CodexVoiceProcess;
+			writer: ScriptWriter;
+		},
 		private readonly threadEvents?: {
 			router: ThreadEventRouter;
 			unregister(): void;
 		},
 	) {
 		this.currentTransport = transport;
+		this.currentGeneration = transport.generation;
+	}
+
+	rewriteSpeech(input: {
+		sourceText: string;
+		rosterNames: readonly string[];
+	}): Promise<ScriptWriterResult> {
+		if (this.closePromise || !this.capability)
+			return Promise.reject(new Error("voice_scribe_unavailable"));
+		return this.capability.writer.rewrite(input);
+	}
+
+	actionLedger() {
+		return this.capability?.parent.actionLedger() ?? [];
 	}
 
 	get generation(): number {
@@ -451,8 +651,13 @@ export class CodexVoiceConversation {
 			"codex_open_failed",
 		);
 		if (this.closePromise) throw new Error("conversation_closed");
-		const generation = this.currentGeneration + 1;
-		const next = this.createTransport(generation);
+		const generation = ++this.currentGeneration;
+		const next = await withTimeout(
+			this.createTransport(generation),
+			CODEX_VOICE_OPEN_TIMEOUT_MS,
+			"codex_open_failed",
+		);
+		if (this.closePromise) throw new Error("conversation_closed");
 		await next.start();
 		if (this.closePromise) {
 			await next.cancel().catch(() => undefined);
@@ -505,7 +710,11 @@ export class CodexVoiceConversation {
 				CLOSE_RPC_TIMEOUT_MS,
 				"codex_open_failed",
 			).catch(() => undefined);
-			await this.process.stop();
+			await closeOwnedProcesses(
+				this.process,
+				this.capability?.scribe,
+				this.capability?.parent,
+			);
 		} catch {
 			this.evidence({
 				kind: "codex_voice_cleanup_pending",
@@ -529,7 +738,7 @@ export class CodexVoiceConversation {
 export interface CodexVoiceOpenInput {
 	sessionId: string;
 	voice: string;
-	loadContext: () => Promise<CodexVoiceContextSnapshot>;
+	loadContext: (generation?: number) => Promise<CodexVoiceContextSnapshot>;
 	realtime?: {
 		onAudio?(delta: CodexRealtimeAudioDelta): void;
 		onTranscript?(transcript: CodexRealtimeTranscript): void;
@@ -573,6 +782,11 @@ export class CodexVoiceContainer {
 			scratchRoot: string;
 			openAiApiKey: string;
 			processEnv?: NodeJS.ProcessEnv;
+			capability?: Omit<
+				VoiceCapabilityParentInput,
+				"sessionId" | "codexHome" | "codexBin" | "activationRoot" | "env"
+			>;
+			createCapabilityParent?: typeof startVoiceCapabilityParent;
 			now?: () => number;
 			inspectBinary?: (path: string) => Promise<BinaryEvidence>;
 			createProcess?: (
@@ -628,15 +842,22 @@ export class CodexVoiceContainer {
 			throw new CodexVoiceContainerError("codex_binary_mismatch");
 		}
 
-		let snapshot = await input.loadContext();
+		let snapshot = await input.loadContext(undefined);
 		assertActive();
 		if (!contextIsFresh(snapshot, this.now()))
-			snapshot = await input.loadContext();
+			snapshot = await input.loadContext(undefined);
 		assertActive();
 		if (!contextIsFresh(snapshot, this.now())) {
 			throw new CodexVoiceContainerError("context_stale");
 		}
-		assertContext(snapshot, input.sessionId);
+		assertContext(
+			snapshot,
+			input.sessionId,
+			input.background?.enabled === true,
+		);
+		const initialGeneration = snapshot.contextGeneration ?? 1;
+		if (!Number.isSafeInteger(initialGeneration) || initialGeneration < 1)
+			throw new CodexVoiceContainerError("context_invalid");
 
 		let conversation: CodexVoiceConversation | undefined;
 		let violation: string | undefined;
@@ -663,19 +884,49 @@ export class CodexVoiceContainer {
 			const workdir = join(root, "work");
 			await mkdir(home, { mode: 0o700 });
 			await mkdir(workdir, { mode: 0o700 });
-			await writeFile(join(home, "config.toml"), VOICE_CODEX_HOME_CONFIG, {
-				mode: 0o600,
-				flag: "wx",
-			});
+			let parent: VoiceCapabilityParent | undefined;
+			if (input.background?.enabled) {
+				if (!this.options.capability)
+					throw new Error("voice_capability_identity_missing");
+				const activationRoot = join(root, "activation");
+				await mkdir(activationRoot, { mode: 0o700 });
+				parent = await (
+					this.options.createCapabilityParent ?? startVoiceCapabilityParent
+				)({
+					...this.options.capability,
+					sessionId: input.sessionId,
+					codexHome: home,
+					codexBin: this.options.binaryPath,
+					activationRoot,
+					env: this.options.processEnv ?? processEnv(),
+				});
+				resources.parent = parent;
+				if (resources.cancelled) {
+					await parent.close();
+					assertActive();
+				}
+				assertVoiceCapabilityHome(home, parent.authSourcePath);
+			} else {
+				await writeFile(join(home, "config.toml"), VOICE_CODEX_HOME_CONFIG, {
+					mode: 0o600,
+					flag: "wx",
+				});
+				assertVoiceCodexHome(home);
+			}
 			assertActive();
-			assertVoiceCodexHome(home);
 
 			const processOptions: CodexVoiceProcessFactoryOptions = {
 				root,
 				codexBin: this.options.binaryPath,
 				codexHome: home,
-				cwd: workdir,
-				mcpArgv: [],
+				cwd: parent?.cwd ?? workdir,
+				mcpArgv: parent ? [...parent.permissionArgv, ...parent.mcp.argv] : [],
+				...(parent
+					? {
+							profile: "voice-capability" as const,
+							capabilityModelEnv: parent.capabilityModelEnv,
+						}
+					: {}),
 				baseEnv: positiveChildEnv(
 					this.options.processEnv ?? processEnv(),
 					home,
@@ -695,27 +946,132 @@ export class CodexVoiceContainer {
 			await process.start();
 			assertActive();
 			if (violation) throw new Error(violation);
-			const opened = await process.startThreadWithResult({
-				cwd: workdir,
-				approvalPolicy: "never",
-				sandbox: "read-only",
-				ephemeral: true,
-				environments: [],
-				baseInstructions: snapshot.baseInstructions,
-				config: {
-					"features.shell_tool": false,
-					"features.memories": false,
-					"features.unified_exec": false,
-					"features.view_image": false,
-					"features.image_generation": false,
-					"features.code_mode_host": false,
-					"features.standalone_web_search": false,
-					web_search: "disabled",
-				},
-			});
+			if (parent) await assertCapabilityProcess(process, parent);
+			const opened = await process.startThreadWithResult(
+				parent
+					? {
+							cwd: parent.cwd,
+							approvalPolicy: "never",
+							permissions: "flywheel-lead-v2",
+							ephemeral: true,
+							environments: [],
+							baseInstructions: parent.baseInstructions,
+							developerInstructions: snapshot.baseInstructions,
+							config: { "features.realtime_conversation": true },
+						}
+					: {
+							cwd: workdir,
+							approvalPolicy: "never",
+							sandbox: "read-only",
+							ephemeral: true,
+							environments: [],
+							baseInstructions: snapshot.baseInstructions,
+							config: {
+								"features.shell_tool": false,
+								"features.memories": false,
+								"features.unified_exec": false,
+								"features.view_image": false,
+								"features.image_generation": false,
+								"features.code_mode_host": false,
+								"features.standalone_web_search": false,
+								web_search: "disabled",
+							},
+						},
+			);
 			assertActive();
 			if (violation) throw new Error(violation);
-			assertThreadReceipt(opened.result, opened.id, workdir);
+			if (parent)
+				assertCapabilityThreadReceipt(opened.result, opened.id, parent.cwd);
+			else assertThreadReceipt(opened.result, opened.id, workdir);
+			let scribe: CodexVoiceProcess | undefined;
+			let writer: ScriptWriter | undefined;
+			if (parent) {
+				const scribeHome = join(root, "scribe-home");
+				const scribeWork = join(root, "scribe-work");
+				await mkdir(scribeHome, { mode: 0o700 });
+				await mkdir(scribeWork, { mode: 0o700 });
+				await writeFile(
+					join(scribeHome, "config.toml"),
+					VOICE_SCRIBE_HOME_CONFIG,
+					{ mode: 0o600, flag: "wx" },
+				);
+				await symlink(parent.authSourcePath, join(scribeHome, "auth.json"));
+				assertVoiceScribeHome(scribeHome, parent.authSourcePath);
+				scribe = this.createProcess({
+					root,
+					codexBin: this.options.binaryPath,
+					codexHome: scribeHome,
+					cwd: scribeWork,
+					mcpArgv: [],
+					baseEnv: positiveChildEnv(
+						this.options.processEnv ?? processEnv(),
+						scribeHome,
+						scribeWork,
+					),
+					knownServerMethods: [],
+					maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
+				});
+				resources.scribe = scribe;
+				await scribe.start();
+				assertActive();
+				await assertSubscription(scribe);
+				await assertScribeTools(scribe, scribeWork);
+				const scribeThread = await scribe.startThreadWithResult({
+					cwd: scribeWork,
+					approvalPolicy: "never",
+					sandbox: "read-only",
+					ephemeral: true,
+					environments: [],
+				});
+				assertThreadReceipt(scribeThread.result, scribeThread.id, scribeWork);
+				writer = new ScriptWriter({
+					process: scribe,
+					threadId: scribeThread.id,
+				});
+				// This ordinary subscription turn also admits the structured-output protocol.
+				await writer.rewrite({ sourceText: "准备好了。", rosterNames: [] });
+				assertActive();
+			}
+			const unregisterBackground = input.background
+				? threadEventRouter.register(opened.id, {
+						onTurnStarted: (turnId) => {
+							try {
+								parent?.beginTurn(opened.id, turnId);
+								input.background!.onTurnStarted(turnId);
+							} catch (error) {
+								violation = "background_context_failed";
+								this.evidence({
+									kind: "codex_background_context_failed",
+									threadId: opened.id,
+									turnId,
+									reason: rpcErrorMessage(error),
+								});
+								void process
+									.request("turn/interrupt", { threadId: opened.id, turnId })
+									.catch(() => undefined);
+								void conversation?.close(violation).catch(() => undefined);
+							}
+						},
+						onTurnTerminal: (turn) => {
+							try {
+								parent?.endTurn(turn.turnId, turn.outcome);
+							} catch (error) {
+								violation = "background_context_failed";
+								this.evidence({
+									kind: "codex_background_context_failed",
+									threadId: opened.id,
+									turnId: turn.turnId,
+									reason: rpcErrorMessage(error),
+								});
+								void conversation?.close(violation).catch(() => undefined);
+							}
+							input.background!.onTurnTerminal(turn);
+						},
+						...(input.background.onItemCompleted
+							? { onItemCompleted: input.background.onItemCompleted }
+							: {}),
+					})
+				: undefined;
 			const realtimeStart = {
 				outputModality: "audio",
 				clientManagedHandoffs: true,
@@ -726,31 +1082,38 @@ export class CodexVoiceContainer {
 				model: CODEX_VOICE_REALTIME_MODEL,
 				voice: input.voice,
 			};
-			const createTransport = (generation: number) =>
-				new CodexRealtimeTransport({
+			const createTransport = async (generation: number) => {
+				if (generation !== initialGeneration) {
+					snapshot = await input.loadContext(generation);
+					if (!contextIsFresh(snapshot, this.now()))
+						throw new CodexVoiceContainerError("context_stale");
+					assertContext(
+						snapshot,
+						input.sessionId,
+						input.background?.enabled === true,
+					);
+					if (
+						snapshot.contextGeneration !== undefined &&
+						snapshot.contextGeneration !== generation
+					)
+						throw new CodexVoiceContainerError("context_invalid");
+				}
+				return new CodexRealtimeTransport({
 					rpc: process,
 					sessionId: input.sessionId,
 					threadId: opened.id,
 					generation,
-					start: realtimeStart,
+					start: { ...realtimeStart, prompt: snapshot.realtimePrompt },
 					backgroundExecution: input.background?.enabled
 						? "allow"
 						: "interrupt",
 					...input.realtime,
 				});
-			const transport = createTransport(1);
+			};
+			const transport = await createTransport(initialGeneration);
 			await transport.start();
 			assertActive();
 			if (violation) throw new Error(violation);
-			const unregisterBackground = input.background
-				? threadEventRouter.register(opened.id, {
-						onTurnStarted: input.background.onTurnStarted,
-						onTurnTerminal: input.background.onTurnTerminal,
-						...(input.background.onItemCompleted
-							? { onItemCompleted: input.background.onItemCompleted }
-							: {}),
-					})
-				: undefined;
 			conversation = new CodexVoiceConversation(
 				input.sessionId,
 				opened.id,
@@ -762,6 +1125,7 @@ export class CodexVoiceContainer {
 				transport,
 				createTransport,
 				this.evidence,
+				parent && scribe && writer ? { parent, scribe, writer } : undefined,
 				unregisterBackground
 					? {
 							router: threadEventRouter,
@@ -774,8 +1138,13 @@ export class CodexVoiceContainer {
 				sessionId: input.sessionId,
 				threadId: opened.id,
 				binaryDigest: binary.sha256,
-				configDigest: sha256(VOICE_CODEX_HOME_CONFIG),
+				configDigest: parent?.mcp.configHash ?? sha256(VOICE_CODEX_HOME_CONFIG),
 				contextDigest: snapshot.snapshotDigest,
+				generation: initialGeneration,
+				backgroundExecution: parent ? "enabled" : "disabled",
+				...(parent
+					? { accountType: "chatgpt", toolServers: parent.mcp.included }
+					: {}),
 			});
 			return conversation;
 		} catch (error) {
@@ -792,16 +1161,15 @@ export class CodexVoiceContainer {
 		if (resources.cleanup) return resources.cleanup;
 		if (!resources.process && !resources.root) return;
 		resources.cleanup = (async () => {
-			if (resources.process) {
-				try {
-					await resources.process.stop();
-				} catch {
-					this.evidence({
-						kind: "codex_voice_cleanup_pending",
-						sessionId,
-					});
-					throw new CodexVoiceContainerError("cleanup_pending");
-				}
+			try {
+				await closeOwnedProcesses(
+					resources.process,
+					resources.scribe,
+					resources.parent,
+				);
+			} catch {
+				this.evidence({ kind: "codex_voice_cleanup_pending", sessionId });
+				throw new CodexVoiceContainerError("cleanup_pending");
 			}
 			if (resources.root) {
 				await rm(resources.root, { recursive: true, force: true });

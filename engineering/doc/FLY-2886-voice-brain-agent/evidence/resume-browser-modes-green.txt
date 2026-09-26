@@ -1,0 +1,38 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-backends/codex/__tests__/capability-mcp-argv.test.ts (8 tests) 15679ms
+   ✓ discovers actual stdio facade tools for browser mode founder_chrome  6966ms
+   ✓ discovers actual stdio facade tools for browser mode isolated  5746ms
+   ✓ discovers actual stdio facade tools for browser mode off  2936ms
+stderr | src/lead-capabilities/__tests__/browser-config.test.ts > matches the installed pinned MCP parser and URLPattern scheme restrictions without launching a worker
+turning off usage statistics. process.env['CI'] || process.env['CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS'] is set.
+
+(node:32196) Warning: `--localstorage-file` was provided without a valid path
+(Use `node --trace-warnings ...` to show where the warning was created)
+stderr | src/lead-capabilities/__tests__/browser-config.test.ts > founder launch uses installed pinned MCP auto-connect without owning a Chrome profile
+turning off usage statistics. process.env['CI'] || process.env['CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS'] is set.
+
+ ✓ |parallel| src/lead-capabilities/__tests__/browser-config.test.ts (4 tests) 3635ms
+   ✓ matches the installed pinned MCP parser and URLPattern scheme restrictions without launching a worker  670ms
+   ✓ founder launch uses installed pinned MCP auto-connect without owning a Chrome profile  2890ms
+ ✓ |parallel| src/lead-capabilities/__tests__/browser-worker.test.ts (11 tests) 3872ms
+   ✓ invalidates page generation on crash and never silently restarts  401ms
+   ✓ keeps two Lead processes separate when one owner closes  496ms
+   ✓ rejects concurrent selection changes while preserving a live session after cancellation  393ms
+   ✓ preserves the live generation after an MCP request timeout  649ms
+   ✓ founder Chrome uses auto-connect transport with real discovery and shares facade validation  648ms
+   ✓ founder Chrome rejects upstream inventory drift before any browser call  526ms
+ ✓ |parallel| src/lead-capabilities/__tests__/runtime-parent.test.ts (4 tests) 3088ms
+   ✓ verifies effective config and broker lifecycle with browser mode undefined  1334ms
+   ✓ verifies effective config and broker lifecycle with browser mode founder_chrome  602ms
+   ✓ verifies effective config and broker lifecycle with browser mode isolated  658ms
+   ✓ verifies effective config and broker lifecycle with browser mode off  492ms
+ ✓ |parallel| src/lead-capabilities/__tests__/runtime-factory.test.ts (19 tests) 498ms
+ ✓ |parallel| src/lead-capabilities/__tests__/browser-provider.test.ts (3 tests) 267ms
+
+ Test Files  6 passed (6)
+      Tests  49 passed (49)
+   Start at  00:00:45
+   Duration  53.47s (transform 6.15s, setup 509ms, collect 17.51s, tests 27.04s, environment 1ms, prepare 1.37s)
+

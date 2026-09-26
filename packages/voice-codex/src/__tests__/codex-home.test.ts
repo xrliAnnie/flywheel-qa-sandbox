@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	mkdtempSync,
@@ -9,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	assertVoiceCapabilityHome,
 	assertVoiceCodexHome,
 	assertVoiceScribeHome,
 	VOICE_CODEX_HOME_CONFIG,
@@ -188,6 +190,28 @@ describe("voice scribe Codex home", () => {
 			);
 		expect(() => assertVoiceScribeHome(fixture.path, fixture.auth)).toThrow(
 			"voice_scribe_home_invalid",
+		);
+	});
+});
+
+describe("voice capability home", () => {
+	it("admits only a subscription symlink and the parent-proven managed config", () => {
+		const h = scribeHome();
+		const config =
+			'# Flywheel managed capability bundle v2\ndefault_permissions = "flywheel-lead-v2"\n';
+		writeFileSync(join(h.path, "config.toml"), config, { mode: 0o600 });
+		writeFileSync(
+			join(h.path, ".flywheel-capability-config.sha256"),
+			`${createHash("sha256").update(config).digest("hex")}\n`,
+			{ mode: 0o600 },
+		);
+		expect(() => assertVoiceCapabilityHome(h.path, h.auth)).not.toThrow();
+		writeFileSync(
+			join(h.path, "config.toml"),
+			`${config}forced_login_method = "api"\n`,
+		);
+		expect(() => assertVoiceCapabilityHome(h.path, h.auth)).toThrow(
+			"voice_capability_home_invalid",
 		);
 	});
 });

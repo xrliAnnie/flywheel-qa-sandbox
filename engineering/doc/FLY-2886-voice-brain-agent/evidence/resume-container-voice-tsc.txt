@@ -1,0 +1,11 @@
+src/cli.ts(661,37): error TS2339: Property 'actionLedger' does not exist on type 'CodexVoiceBackend'.
+src/voice-minutes.ts(168,250): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/voice-minutes.ts(168,331): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/voice-minutes.ts(168,401): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/voice-minutes.ts(168,530): error TS18046: 'item.attempts' is of type 'unknown'.
+src/voice-minutes.ts(169,247): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/voice-minutes.ts(169,275): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+src/voice-minutes.ts(169,465): error TS2345: Argument of type 'unknown' is not assignable to parameter of type 'string'.
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 2: tsc --noEmit

@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import type { BrowserWorkerSpecInput } from "./browser-config.js";
+import { BoundedStdioTransport } from "./bounded-stdio-transport.js";
+import {
+	type BrowserWorkerSpecInput,
+	buildFounderChromeWorkerSpec,
+} from "./browser-config.js";
 import type { BrowserEgressPolicy } from "./browser-egress.js";
 import { verifyBrowserHostIdentity } from "./browser-host-identity.js";
 import { buildBrowserSandboxSpec } from "./browser-sandbox.js";
@@ -36,12 +40,14 @@ export function browserUpstreamSchemaDigest(
 		.digest("hex");
 }
 export interface BrowserWorkerOptions {
+	mode?: "founder_chrome" | "isolated";
+	hostHome?: string;
 	input: BrowserWorkerSpecInput;
 	artifactRoot: string;
 	expectedUpstreamSchemaDigest: string;
 	assertCurrent(): void;
 	egress?: () => BrowserEgressPolicy;
-	/** Mandatory trusted host verifier. Must bind actual OS canaries to this launch.
+	/** Mandatory for isolated mode. Must bind actual OS canaries to this launch.
 	 * Production assembly must never substitute config validation or a constant callback. */
 	verifyIsolation(
 		launch: ReturnType<typeof buildBrowserSandboxSpec>,
@@ -52,7 +58,7 @@ export interface BrowserWorkerOptions {
  * before a façade returns anything to the model. It never auto-recovers old pages. */
 export class BrowserWorker {
 	private client?: Client;
-	private transport?: BrowserStdioTransport;
+	private transport?: BoundedStdioTransport;
 	private readonly generation = randomUUID();
 	private status: "new" | "starting" | "ready" | "lost" | "closed" = "new";
 	private busy = false;
@@ -71,13 +77,28 @@ export class BrowserWorker {
 		this.status = "starting";
 		try {
 			this.options.assertCurrent();
-			verifyBrowserHostIdentity(this.options.input);
-			const launch = buildBrowserSandboxSpec(this.options.input);
-			await this.options.verifyIsolation(launch);
+			let transport: BoundedStdioTransport;
+			if (this.options.mode === "founder_chrome") {
+				if (!this.options.hostHome) throw lost();
+				transport = new BoundedStdioTransport(
+					buildFounderChromeWorkerSpec({
+						...this.options.input,
+						hostHome: this.options.hostHome,
+					}),
+					{ errorCode: "browser_lost" },
+				);
+			} else {
+				verifyBrowserHostIdentity(this.options.input);
+				const launch = buildBrowserSandboxSpec(this.options.input);
+				await this.options.verifyIsolation(launch);
+				transport = new BrowserStdioTransport(launch);
+			}
 			this.options.assertCurrent();
 			if (this.status !== "starting") throw lost();
-			const transport = new BrowserStdioTransport(launch),
-				client = new Client({ name: "flywheel-browser-parent", version: "2" });
+			const client = new Client({
+				name: "flywheel-browser-parent",
+				version: "2",
+			});
 			this.client = client;
 			this.transport = transport;
 			client.onclose = () => {

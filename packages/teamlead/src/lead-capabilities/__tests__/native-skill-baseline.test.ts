@@ -57,3 +57,16 @@ describe("version-keyed native Codex skill baselines", () => {
 		}
 	});
 });
+
+it("admits measured voice 0.156.1 with the exact 60-file native tree", () => {
+	const baseline = resolvePinnedNativeSkillBaseline("0.156.1");
+	expect(baseline.codexVersion).toBe("0.156.1");
+	expect(baseline.origin?.root).toBe(`${ORIGIN_ROOT}/0.156.1/skills/.system`);
+	expect(baseline.origin?.files).toHaveLength(60);
+	expect(baseline.origin?.files).toEqual(
+		resolvePinnedNativeSkillBaseline("0.156.0").origin?.files,
+	);
+	expect(baseline.sources).toEqual(
+		resolvePinnedNativeSkillBaseline("0.156.0").sources,
+	);
+});

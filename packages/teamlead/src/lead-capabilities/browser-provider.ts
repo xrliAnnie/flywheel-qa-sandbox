@@ -22,6 +22,8 @@ import { createBrowserHandlers } from "./handlers/browser.js";
 export async function startBrowserProvider(
 	options: Omit<BrowserWorkerSpecInput, "qaRoot" | "proxyPort"> & {
 		activationId: string;
+		mode?: "founder_chrome" | "isolated";
+		hostHome?: string;
 		qaParentRoot: string;
 		store: LeadArtifactStore;
 		assertCurrent(): void;
@@ -49,7 +51,8 @@ export async function startBrowserProvider(
 					await proxy?.close();
 				} finally {
 					try {
-						await options.revokeQaIdentity();
+						if (options.mode !== "founder_chrome")
+							await options.revokeQaIdentity();
 					} finally {
 						if (qaRoot) rmSync(qaRoot, { recursive: true, force: true });
 					}
@@ -73,7 +76,9 @@ export async function startBrowserProvider(
 		)
 			throw new Error("browser_provider_root_invalid");
 		qaRoot = mkdtempSync(join(parent, "browser-"));
-		for (const name of ["profile", "tmp", "artifacts"])
+		for (const name of options.mode === "founder_chrome"
+			? ["tmp", "artifacts"]
+			: ["profile", "tmp", "artifacts"])
 			mkdirSync(join(qaRoot, name), { mode: 0o700 });
 		proxy = await startBrowserEgressProxy({
 			policy: options.egress,
@@ -82,6 +87,8 @@ export async function startBrowserProvider(
 		current();
 		const workerArtifactRoot = join(qaRoot, "artifacts");
 		worker = new BrowserWorker({
+			mode: options.mode,
+			hostHome: options.hostHome,
 			input: {
 				packageRoot: options.packageRoot,
 				nodeExecutable: options.nodeExecutable,

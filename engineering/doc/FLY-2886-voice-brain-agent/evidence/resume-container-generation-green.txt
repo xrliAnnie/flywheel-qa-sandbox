@@ -1,0 +1,11 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/voice-codex
+
+ ✓ src/__tests__/codex-container.test.ts (32 tests) 1061ms
+ ✓ src/__tests__/codex-home.test.ts (20 tests) 124ms
+
+ Test Files  2 passed (2)
+      Tests  52 passed (52)
+   Start at  00:07:36
+   Duration  19.76s (transform 8.98s, setup 0ms, collect 16.80s, tests 1.18s, environment 0ms, prepare 329ms)
+

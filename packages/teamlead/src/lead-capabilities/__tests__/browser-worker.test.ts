@@ -25,6 +25,14 @@ const state = vi.hoisted(() => ({
 		};
 	}[],
 }));
+vi.mock("../browser-config.js", () => ({
+	buildFounderChromeWorkerSpec: (input: { qaRoot: string }) => ({
+		command: process.execPath,
+		args: ["/trusted/mcp", "--auto-connect", "--channel=stable"],
+		env: { HOME: input.qaRoot },
+		cwd: input.qaRoot,
+	}),
+}));
 vi.mock("../browser-sandbox.js", () => ({
 	buildBrowserSandboxSpec: (input: { qaRoot: string }) => ({
 		command: "/usr/bin/sandbox-exec",
@@ -67,7 +75,10 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 	state.launches = 0;
 });
-function setup(mutateTools?: (tools: typeof state.tools) => void) {
+function setup(
+	mutateTools?: (tools: typeof state.tools) => void,
+	mode?: "founder_chrome",
+) {
 	const root = realpathSync(
 		mkdtempSync(join(tmpdir(), "fly2519-browser-worker-")),
 	);
@@ -80,6 +91,7 @@ function setup(mutateTools?: (tools: typeof state.tools) => void) {
 	const assertCurrent = vi.fn(),
 		verifyIsolation = vi.fn(async () => {});
 	const worker = new BrowserWorker({
+		...(mode ? { mode, hostHome: root } : {}),
 		input: {
 			qaRoot: root,
 			projectRoot: "/unread/project",
@@ -210,4 +222,27 @@ it("preserves the live generation after an MCP request timeout", async () => {
 	}
 	expect(await worker.call(generation, "list_pages", {})).toEqual(before);
 	expect(state.launches).toBe(1);
+});
+
+it("founder Chrome uses auto-connect transport with real discovery and shares facade validation", async () => {
+	const { worker, verifyIsolation } = setup(undefined, "founder_chrome");
+	vi.mocked(verifyBrowserHostIdentity).mockClear();
+	const generation = await worker.start();
+	expect(verifyIsolation).not.toHaveBeenCalled();
+	expect(verifyBrowserHostIdentity).not.toHaveBeenCalled();
+	expect(
+		(await worker.call(generation, "list_pages", {})).result,
+	).toHaveProperty("content");
+	await expect(
+		worker.call(generation, "upload_file", { filePaths: ["/etc/passwd"] }),
+	).rejects.toThrow(/browser/);
+	await worker.close();
+	await expect(worker.call(generation, "list_pages", {})).rejects.toThrow(
+		"browser_lost",
+	);
+});
+it("founder Chrome rejects upstream inventory drift before any browser call", async () => {
+	const { worker } = setup(undefined, "founder_chrome");
+	state.tools.pop();
+	await expect(worker.start()).rejects.toThrow("browser_lost");
 });

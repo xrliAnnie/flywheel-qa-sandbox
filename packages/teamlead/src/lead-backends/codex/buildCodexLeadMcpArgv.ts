@@ -171,11 +171,16 @@ export function buildCodexLeadMcpArgv(
 			.sort();
 		const browser = manifest.integrations.filter((i) => i.id === "browser");
 		if (
-			!manifest.browserGeneration ||
-			!browserTools.length ||
-			browser.length !== 1 ||
-			browser[0]?.version !== "1.9.0" ||
-			browser[0].toolSchemaDigest !== browserFacadeSchemaDigest(browserTools)
+			manifest.browserMode === "off"
+				? !!manifest.browserGeneration ||
+					!!browserTools.length ||
+					!!browser.length
+				: !manifest.browserGeneration ||
+					!browserTools.length ||
+					browser.length !== 1 ||
+					browser[0]?.version !== "1.9.0" ||
+					browser[0].toolSchemaDigest !==
+						browserFacadeSchemaDigest(browserTools)
 		)
 			throw new Error("invalid v2 browser integration");
 		const env = {
@@ -198,15 +203,19 @@ export function buildCodexLeadMcpArgv(
 						) / 1000,
 					) + 5,
 			},
-			{
-				name: CHROME_SERVER_NAME,
-				command: config.nodePath,
-				args: [config.proxyEntryPath, "browser"],
-				env,
-				enabledTools: browserTools,
-				defaultToolsApprovalMode: "approve",
-				toolTimeoutSec: 20,
-			},
+			...(manifest.browserMode === "off"
+				? []
+				: [
+						{
+							name: CHROME_SERVER_NAME,
+							command: config.nodePath,
+							args: [config.proxyEntryPath, "browser"],
+							env,
+							enabledTools: browserTools,
+							defaultToolsApprovalMode: "approve",
+							toolTimeoutSec: 20,
+						} as McpServerSpec,
+					]),
 		];
 		for (const spec of specs) assertNoRawSecret(spec);
 		return {

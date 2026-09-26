@@ -1,8 +1,17 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { buildBrowserWorkerSpec } from "../browser-config.js";
+import {
+	buildBrowserWorkerSpec,
+	buildFounderChromeWorkerSpec,
+} from "../browser-config.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -168,5 +177,71 @@ it("redacts Cookie and Set-Cookie in actual upstream text and structured network
 			/qa-cookie-secret|qa-auth-secret|qa-response-secret/,
 		);
 		expect(output).toContain("text/html");
+	}
+});
+
+it("founder launch uses installed pinned MCP auto-connect without owning a Chrome profile", async () => {
+	const { createRequire } = await import("node:module");
+	const { dirname } = await import("node:path");
+	const { pathToFileURL } = await import("node:url");
+	const packageRoot = dirname(
+		createRequire(import.meta.url).resolve("chrome-devtools-mcp/package.json"),
+	);
+	const root = mkdtempSync(join(tmpdir(), "founder-browser-config-"));
+	dirs.push(root);
+	const qaRoot = join(root, "qa"),
+		projectRoot = join(root, "project");
+	mkdirSync(qaRoot);
+	mkdirSync(projectRoot);
+	const spec = buildFounderChromeWorkerSpec({
+		packageRoot,
+		qaRoot,
+		projectRoot,
+		nodeExecutable: process.execPath,
+		hostHome: root,
+	});
+	expect(spec.args).toContain("--auto-connect");
+	expect(spec.args).toContain("--channel=stable");
+	expect(spec.args.join(" ")).not.toMatch(
+		/user-data-dir|executable-path|proxy-server|no-sandbox|browser-url/,
+	);
+	expect(spec.env.HOME).toBe(realpathSync(root));
+	const { parseArguments } = await import(
+		pathToFileURL(join(packageRoot, "build/src/config/mcp-options.js")).href
+	);
+	const parsed = parseArguments(
+		"1.9.0",
+		[spec.command, ...spec.args],
+		spec.env,
+	);
+	expect(parsed.autoConnect).toBe(true);
+	expect(parsed.channel).toBe("stable");
+	expect(parsed.pageIdRouting).toBe(false);
+	expect(parsed.filesystemRoot).toEqual([join(spec.cwd, "artifacts")]);
+	// MCP discovery is lazy: no browser tool is called and the HOME is a temporary fixture.
+	const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+	const { StdioClientTransport } = await import(
+		"@modelcontextprotocol/sdk/client/stdio.js"
+	);
+	const { browserUpstreamSchemaDigest } = await import("../browser-worker.js");
+	const { BROWSER_UPSTREAM_SCHEMA_DIGEST } = await import(
+		"../browser-config.js"
+	);
+	const client = new Client({ name: "founder-inventory-test", version: "1" });
+	const transport = new StdioClientTransport({
+		...spec,
+		args: [...spec.args],
+		stderr: "pipe",
+	});
+	try {
+		await client.connect(transport);
+		const inventory = await client.listTools();
+		expect(inventory.nextCursor).toBeUndefined();
+		expect(browserUpstreamSchemaDigest(inventory.tools)).toBe(
+			BROWSER_UPSTREAM_SCHEMA_DIGEST,
+		);
+	} finally {
+		await client.close();
+		await transport.close();
 	}
 });

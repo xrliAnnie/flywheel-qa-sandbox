@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { SqliteJournalStore } from "../../lead-backends/codex/SqliteJournalStore.js";
+import { voiceCapabilityActionLedger } from "../voice-action-ledger.js";
 
 const key = {
 	projectName: "flywheel",
@@ -182,4 +183,59 @@ it("serializes competing connections and recovery preserves prepared and foreign
 			now: 150,
 		}),
 	).toThrow("receipt_transition_conflict");
+});
+
+it("lists a complete activation ledger without mixing another Lead, project or activation", () => {
+	const receipts = open().operationReceipts;
+	receipts.prepare({ ...input, targetKey: "linear:FLY-2886" });
+	for (const changed of [
+		{ leadId: "other" },
+		{ projectName: "other" },
+		{
+			activationId: "activation-2",
+			requestId: "223e4567-e89b-42d3-a456-426614174000",
+		},
+	])
+		receipts.prepare({ ...input, ...changed });
+	const rows = receipts.listByActivation({
+		projectName: input.projectName,
+		leadId: input.leadId,
+		activationId: input.activationId,
+	});
+	expect(rows).toHaveLength(1);
+	expect(rows[0]).toMatchObject({
+		requestId: input.requestId,
+		targetKey: "linear:FLY-2886",
+		state: "prepared",
+	});
+	rows[0]!.state = "succeeded";
+	expect(receipts.get(key)?.state).toBe("prepared");
+});
+
+it("projects write outcomes conservatively and keeps receipt identities for handoff", () => {
+	const receipts = open().operationReceipts;
+	receipts.prepare(input);
+	const prepared = receipts.get(key)!;
+	const ledger = voiceCapabilityActionLedger([
+		...(
+			["prepared", "rejected", "dispatched", "unknown", "succeeded"] as const
+		).map((state) => ({ ...prepared, state })),
+		{ ...prepared, operationId: "browser.list_pages", state: "succeeded" },
+	]);
+	expect(ledger.map((row) => row.outcome)).toEqual([
+		"not_executed",
+		"not_executed",
+		"unknown",
+		"unknown",
+		"succeeded",
+	]);
+	expect(
+		ledger.every(
+			(row) =>
+				row.requestId === input.requestId &&
+				row.operationId === input.operationId,
+		),
+	).toBe(true);
+	expect(Object.isFrozen(ledger)).toBe(true);
+	expect(Object.isFrozen(ledger[0])).toBe(true);
 });

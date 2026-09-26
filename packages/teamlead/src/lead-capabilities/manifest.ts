@@ -93,6 +93,7 @@ const projection = z.object({
 	profile: z.literal("full-access"),
 	activationId: bounded,
 	browserGeneration: z.string().uuid().optional(),
+	browserMode: z.enum(["founder_chrome", "isolated", "off"]).optional(),
 	sourceRevision: bounded,
 	operationIds: z.array(bounded),
 	deniedOperationIds: z.array(bounded),
@@ -117,6 +118,7 @@ export interface LeadCapabilityManifestInput {
 	profile: "full-access";
 	activationId: string;
 	browserGeneration?: string;
+	browserMode?: "founder_chrome" | "isolated" | "off";
 	sourceRevision: string;
 	operations: readonly LeadCapabilityDefinition[];
 	ruleSources: readonly { path: string; sha256: string }[];
@@ -164,6 +166,7 @@ export function createLeadCapabilityManifest(
 		backend: input.backend,
 		profile: input.profile,
 		activationId: input.activationId,
+		...(input.browserMode ? { browserMode: input.browserMode } : {}),
 		...(input.browserGeneration
 			? { browserGeneration: input.browserGeneration }
 			: {}),

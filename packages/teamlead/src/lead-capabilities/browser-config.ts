@@ -118,3 +118,62 @@ export function buildBrowserWorkerSpec(input: BrowserWorkerSpecInput) {
 		},
 	});
 }
+
+/** Founder Chrome is an authenticated host browser, not an isolated QA identity.
+ * Its webpage founder-only actions remain rule-level constraints. The parent owns
+ * this MCP process and artifacts only; it never launches or kills founder Chrome. */
+export function buildFounderChromeWorkerSpec(
+	input: Omit<BrowserWorkerSpecInput, "chromeExecutable" | "proxyPort"> & {
+		hostHome: string;
+	},
+) {
+	const packageRoot = path(input.packageRoot, true),
+		qaRoot = path(input.qaRoot, true),
+		projectRoot = path(input.projectRoot, true);
+	const nodeExecutable = path(input.nodeExecutable, false),
+		hostHome = path(input.hostHome, true);
+	for (const source of [packageRoot, nodeExecutable])
+		if (
+			under(source, projectRoot) ||
+			under(source, qaRoot) ||
+			under(qaRoot, source)
+		)
+			throw invalid();
+	if (under(qaRoot, projectRoot) || under(projectRoot, qaRoot)) throw invalid();
+	const pkg = JSON.parse(
+		readFileSync(join(packageRoot, "package.json"), "utf8"),
+	);
+	if (pkg.name !== "chrome-devtools-mcp" || pkg.version !== BROWSER_MCP_VERSION)
+		throw invalid();
+	const entry = path(
+		join(packageRoot, "build", "src", "bin", "chrome-devtools-mcp.js"),
+		false,
+	);
+	if (!under(entry, packageRoot)) throw invalid();
+	return Object.freeze({
+		command: nodeExecutable,
+		args: [
+			entry,
+			"--auto-connect",
+			"--channel=stable",
+			"--no-page-id-routing",
+			`--filesystem-root=${join(qaRoot, "artifacts")}`,
+			"--no-allow-unrestricted-paths",
+			"--no-usage-statistics",
+			"--no-performance-crux",
+			"--redact-network-headers",
+			...BROWSER_URL_PATTERNS.map(
+				(pattern) => `--allowed-url-pattern=${pattern}`,
+			),
+		],
+		cwd: qaRoot,
+		env: {
+			HOME: hostHome,
+			TMPDIR: join(qaRoot, "tmp"),
+			PATH: "/usr/bin:/bin",
+			LANG: "en_US.UTF-8",
+			CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1",
+			CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1",
+		},
+	});
+}

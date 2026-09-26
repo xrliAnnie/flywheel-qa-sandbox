@@ -116,3 +116,56 @@ it.each([false, true])(
 		}
 	},
 );
+
+it("founder provider owns MCP artifacts and model proxy without deleting the founder profile", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "founder-provider-")));
+	const projectRoot = join(root, "project"),
+		qaParentRoot = join(root, "qa"),
+		hostHome = join(root, "home");
+	for (const path of [projectRoot, qaParentRoot, hostHome])
+		mkdirSync(path, { mode: 0o700 });
+	const artifactRoot = join(projectRoot, "artifacts");
+	mkdirSync(artifactRoot, { mode: 0o700 });
+	const store = new LeadArtifactStore({
+		projectRoot,
+		artifactRoot,
+		assertCurrent() {},
+	});
+	worker.start
+		.mockReset()
+		.mockResolvedValue("aaaa0000-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+	worker.close.mockReset().mockResolvedValue(undefined);
+	const revokeQaIdentity = vi.fn(async () => {});
+	let provider: Awaited<ReturnType<typeof startBrowserProvider>> | undefined;
+	try {
+		provider = await startBrowserProvider({
+			mode: "founder_chrome",
+			hostHome,
+			projectRoot,
+			qaParentRoot,
+			activationId: "a1",
+			packageRoot: "/opt/browser",
+			nodeExecutable: process.execPath,
+			chromeExecutable: "/unused",
+			store,
+			assertCurrent() {},
+			egress: () => ({ protectedPorts: [], localQaTargets: [] }),
+			revokeQaIdentity,
+		});
+		expect(worker.input.mode).toBe("founder_chrome");
+		expect(worker.input.hostHome).toBe(hostHome);
+		expect(provider.handlers.has("browser.click")).toBe(true);
+		expect(existsSync(join(worker.input.input.qaRoot, "profile"))).toBe(false);
+		expect(
+			(await fetch(`http://127.0.0.1:${provider.proxyPort}/`)).status,
+		).toBe(403);
+		await provider.close();
+		expect(existsSync(hostHome)).toBe(true);
+		expect(existsSync(worker.input.input.qaRoot)).toBe(false);
+		expect(revokeQaIdentity).not.toHaveBeenCalled();
+	} finally {
+		await provider?.close();
+		store.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
