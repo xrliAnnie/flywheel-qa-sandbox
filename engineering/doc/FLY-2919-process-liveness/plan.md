@@ -1,10 +1,10 @@
 # FLY-2919 进程生死单一真源 — 实施计划
 Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体的生死只认一个真源死体当场终结活体不再按窗口判死9-张-68)
 日期: 2026-09-26
-基于: 无
+基于: research.md
 
-状态: DRAFT — 等待有效 design review；本文件含探索、源码调研与实施计划（plan_only）。
-审计基线: `af853328d`，分支 `flywheel-FLY-2919`。设计执行 `416169c3-8d61-4fc1-b20a-3e2263115f31`。
+状态: DRAFT — 等待有效 design review；full DOC-FLOW 的 exploration.md、research.md 与本计划共同交付。
+审计基线: `af853328d`，分支 `flywheel-FLY-2919`。原设计执行 `416169c3-8d61-4fc1-b20a-3e2263115f31`；续稿执行 `1b78af3a-1a6f-4ee1-8061-a92d4e8338df`，继承 `7520e274b`。
 
 ## 1. 给 founder 的说明
 
@@ -35,7 +35,7 @@ flowchart TD
 
 基线已经含 FLY-2808（`a084f3a99`）的 controller-approved retiring → standby → resume。standby 指已批准退下、可按原会话恢复；它证明旧物理代次结束，不伪称进程还活着。本单不打开默认关闭的 standby flag，也不改变已有 snapshot 的入组规则。仅有 parked 自报不是批准退下回执。
 
-FLY-2903 PR #1343 在本轮 `gh pr view` 查询时仍 OPEN、无 mergeCommit；不能把其 stop-owner-before-reap 当基线已交付。实现前再核最新 main/PR：若已合，复用其 closeRunner/controller 停止与 daemon 回收并跑本单负控；未合则在本单实现必要的精确收体部分或由 Lead 明确排序，不可将 FLY-2512/2690 验收划掉。无需另造回收器。
+FLY-2903 PR #1343 已于 2026-09-26T15:15:00Z 合并，merge SHA `cfc8d52d81ed0f4f2a0d79bc3825ae22107a4bba`（本轮 gh 与 git show 核验）。当前设计分支尚不含该提交；实现开工先同步并复用 stop-owner-before-reap、runtime drained 与 closeRunner/controller 回收原语，补本单进程判据、正常重启与跨库负控，不另造回收器。合并不证明已部署，不可将 FLY-2512/2690 验收划掉。
 
 已通过非阻塞问题向 Lead 报告两项差异：九单实际横跨超过 5–6 个文件；K02 快照里“终态直接视死”和“全删 completion_receipt_missing”不能直接照做。原任务的九单验收与单一物理真源优先。问题 ID：`2c84cc0d-af3c-43c0-91ad-6363e170589d`、`2909bd8f-dcfb-4351-9bdf-5ecb31872e5e`。
 
@@ -105,15 +105,23 @@ type BodyObservation = {
 
 源码 `codex-daemon-goal-runtime.ts:639,763,788` 会 killSession → drainExit → startSession → onSpawnIdentity，最多既有 maxRestarts=5 次、resume 同一 thread；当前账号选择语义不变。旧 daemon 退出不是整个 resident 控制器的死亡。不能依赖当前不存在的“持久重启 lease”，也不能通过关掉正常重启来让测试变绿。
 
-新增 StateStore `execution_process_owner` 身份/启动所有权记录（不是第二份生命判定）：`execution_id TEXT PRIMARY KEY`、`activation_id TEXT NULL`、`generation INTEGER NOT NULL`、`owner_token TEXT NOT NULL`、`controller_pid INTEGER`、`controller_start TEXT`、`host_boot_id TEXT`、`spawn_epoch INTEGER NOT NULL DEFAULT 0`、`restart_in_progress INTEGER NOT NULL DEFAULT 0`、`spawn_inflight INTEGER NOT NULL DEFAULT 0`、`close_requested INTEGER NOT NULL DEFAULT 0`、`binding_json TEXT`、`binding_digest TEXT`。正整数/0或1 CHECK，参数化写入。generation 是逻辑物理代次，spawn_epoch 是其内部 daemon 的第几次启动；替换不得复用旧 owner_token。表只记录身份与排他资格，不存 alive/dead，不能用旗标代替 OS 进程探测。
+新增 StateStore `execution_process_owner` 身份/启动所有权记录（不是第二份生命判定）：`execution_id TEXT PRIMARY KEY`、`activation_id TEXT NULL`、`generation INTEGER NOT NULL`、`owner_token TEXT NOT NULL`、`controller_pid INTEGER`、`controller_start TEXT`、`host_boot_id TEXT`、`spawn_epoch INTEGER NOT NULL DEFAULT 0`、`restart_in_progress INTEGER NOT NULL DEFAULT 0`、`spawn_inflight INTEGER NOT NULL DEFAULT 0`、`close_requested INTEGER NOT NULL DEFAULT 0`、`binding_json TEXT`、`binding_digest TEXT`、`owner_drained_at TEXT NULL`、`owner_drained_receipt TEXT NULL`。正整数/0或1 CHECK，参数化写入。generation 是逻辑物理代次，spawn_epoch 是其内部 daemon 的第几次启动；替换不得复用旧 owner_token。表只记录身份与排他资格，不存 alive/dead，不能用旗标代替 OS 进程探测。
 
-- Bridge 在调用 runtime.runGoal 前登记自己的 PID/start/boot 与 owner_token，并与既有 `CodexExecutionOwnershipRegistry` 的活 runtime handle 绑定；所有 launch/rescue 都走这个门，spawn 前缺 accepted owner 就失败关闭。旧控制器未持久登记时先登记/核验，不开放新死亡消费者。Bridge 重启不能仅因内存 registry 空就判死，须验证旧 controller 的实际进程身份。
+- Bridge 在调用 runtime.runGoal 前登记自己的 PID/start/boot 与 owner_token。复用 FLY-2903 的 `CodexExecutionOwnershipRegistry.claim(...,{onStopRequested})` 与 lease.stopRequested/requestStop；现有 registry 不暴露 runtime handle 或 token，需扩展 lease 接受受控 ownerToken/返回绑定身份，由 adapter 的 stop callback 连接 runtime，不再造 registry。所有 launch/rescue 都走这个门，spawn 前缺 accepted owner 就失败关闭。旧控制器未持久登记时先登记/核验，不开放新死亡消费者。Bridge 重启不能仅因内存 registry 空就判死，须验证旧 controller 的实际进程身份。
 - **活 owner 的守卫覆盖整个 runGoal**：daemon absent、而该 exact controller 仍活且没有 close/drained 证据时返回 unknown，reason 为 `controller_recovery_active`。这也覆盖异常 transport close 到 catch 尚未写 restart 标记的短窗。当前 probe 的 dead 指该执行已没有可续写/可重启的控制器和 worker，不只是一个 daemon 曾退出。
 - catch 在 `killSession` 前调用 await `beginDaemonRestart(ownerToken, expectedSpawnEpoch)`，CAS 同代 owner 且 close_requested=0，设置 restart_in_progress=1；拒绝则调用 runtime.stop，不再进入 retry。预算用尽仍走原失败/stop/drained，而非提前释放 owner。
 - **每一次** startSession（初启、同线程 restart、rescue）经 `beforeCodexDaemonStart` 等所有可等待步骤后，在真正 native spawn 前调用 `beginSpawn`；用现有 mutation lease 串行化、校验 ownerToken/generation/close_requested，再令 spawn_epoch+1、spawn_inflight=1。将同一 permit 传到低层 spawnCodexDaemon（在 `codex-daemon-runtime.ts`）的实际 spawn 调用前校验；不得在校验和实际 spawn 之间留下未被 permit 覆盖的 await。onSpawnIdentity 必须绑定该 permit 并保存新 group/PID/start 后才清 spawn_inflight/restart_in_progress。
-- death/terminal close 与 beginSpawn 共用同一 execution mutation lease。正常自动重启期间不夺权、不写 failed、不耗 fault-replacement 预算。只有显式 terminal/terminate/批准退下才 CAS close_requested=1，发既有 cooperative shutdown，runtime.stop → await runtime.drained → 独立探测 group/writer gone 后终结。spawn 已在途则 close 等它归档或 drain 掉部分 newborn；不能因租约到时、回调超时就宣称 drain 完成。
+- death/terminal close 与 beginSpawn 共用同一 execution 的底层同步 fail-closed CAS。正常自动重启期间不夺权、不写 failed、不耗 fault-replacement 预算。只有显式 terminal/terminate/批准退下才 CAS close_requested=1，发既有 cooperative shutdown，runtime.stop → await runtime.drained → 独立探测 group/writer gone 后终结。spawn 已在途则 close 等它归档或 drain 掉部分 newborn；不能因租约到时、回调超时就宣称 drain 完成。
 - controller 真死时，由 OS PID/start/boot 证明后 CAS 关闭旧 owner；核验最后一份 accepted daemon binding 与 socket/group。beginSpawn 在途中而绑定缺失时保持 unknown，走现有受控残留恢复，不能从空表补造死亡。任何新代次/新 owner 接纳前必须先解决旧 spawn 的物理去向。close_requested 提交后旧 token 的 startSession 必须拒绝；若低层已经 spawn，则该在途 handle 必须先 drain、零工作 turn 才允许死亡提交。
 - 死亡事务必须检查 `spawn_inflight=0`、旧 owner 已 stopped+drained 或其 OS 身份已确认 gone、观察绑定的 spawn_epoch 未变，再提交 body_death。R1 原来的“一句 lease 守卫”由以上具体写点替代。
+
+**必须实现的收尾与异步边界：**
+
+- `execution-mutation-lease.ts` 的现有 helper 接受同步 `mutate: () => T`，且缺 session 会直接执行回调；禁止把 async spawn/drain 放进它来假定锁仍有效。beginSpawn/close/death 直接使用拒绝 session_missing 的底层 claim 与同步事务，缺 session/owner 一律拒绝。短 lease 只保护同步 CAS，跨 await 靠 durable spawn_inflight/ownerToken/spawn_epoch 排他；60 秒 TTL 到期也不能清除在途资格。
+- 当前 `onSpawnIdentity(pgid): void` 是同步回调。本单采用完整 awaited 身份提交：改 runtime options、底层 spawn 调用、adapter 及所有注入调用点为 `Promise<void>` 并 await。独立读取 start/boot 后提交 StateStore accepted binding，成功前 permit 始终在途，不进行 socket admission 或模型 turn。任一步失败先停并 drain newborn；session.json 已写但 StateStore 未写只能视为恢复候选，经同 permit/OS 复核补交，不能直接清 in-flight 或判死。
+- 在 runGoal 正常返回、预算耗尽、非 transport 错误与显式 stop 的所有 adapter finally 路径，await `runtime.drained()`，独立确认该 worker/group gone，再 CAS 写入 `owner_drained_at/receipt`（绑定 execution/generation/ownerToken/spawn_epoch 和退出原因），最后 release ownership lease。失败不写 drained；共享 Bridge PID 存活不能覆盖这一精确收尾收据。没有收尾收据而活 Bridge 中的 execution handle 确认缺失时，先沿相同 stop/drain 协调器恢复收尾，不永久 unknown，也不把“内存缺失”当物理死亡。
+- FLY-2903 `requestStop` 的 stopped 仅表示 lease 已释放，timeout/not_owned/reserved_fenced 同样不是进程死亡证据；所有返回后仍需要上述 OS 验证。`process_retirement` 不永久 fence execution_id；本单 close_requested 限旧 generation/token。旧体 drained 且有批准 resume 后，同 execution 的新 generation 可以接纳，旧 token 永久拒绝。
+- 新增负控：共享 Bridge 仍活而该 execution 已正常收尾，daemon gone 能得 dead；spawn 跨 mutation TTL 仍零死亡/零第二 writer；批准 process_retirement 后新 generation 成功恢复、旧 token 拒绝；异步 identity 提交失败时零模型 turn、部分 session.json 不获死亡或启动权。
 
 A/B/E 明确加入 `codex-daemon-goal-runtime.ts`、`codex-daemon-runtime.ts`、`codex-execution-ownership.ts`、`CodexTmuxAdapter.ts`、StateStore 与 Bridge wiring。红测阻塞 killSession/drainExit/startSession/onSpawnIdentity 四个边界并同时运行 Heartbeat/dispatcher：有重启预算时零死亡写、零后继、仍同 thread，恢复后新 group 被接受；预算用尽才按原失败处理；已提交 close/death 的旧 token 在任意边界恢复后都零模型 turn；stop 与在途 spawn 竞态必须等 drain，拒绝第二 writer。Bridge 在四边界重启的恢复分支也进 529。
 
@@ -219,7 +227,7 @@ pnpm --filter flywheel-comm exec vitest run src/__tests__/db.fly1238.test.ts src
 
 回滚代码只影响以后探测；已提交死亡和通信回执不可撤销/复活。若新版探针有误，停止其新增死亡写入并交 Lead 处理；不得回放旧 pane 判死补账。通过现有可控部署/回滚流程交独立 updater，设计节点不操作服务。新 schema 的增量字段旧版本可忽略，死亡义务要保留以供恢复；部署前兼容性测试验证旧版本读取不崩溃。
 
-设计节点交付：本 plan、Mermaid 源、最终 founder HTML（各节评论、路径隔离存储、汇总复制）、有效 design-review APPROVED、全部提交推送、静默发布并验证托管内容/CSP、向 Lead 报告 URL，然后 exact phase_design_complete 与 park。没有实现/生产验收完成的声明。
+设计节点交付：exploration.md、research.md、本 plan、Mermaid 源、最终 founder HTML（各节评论、路径隔离存储、汇总复制）、有效 design-review APPROVED、全部提交推送、静默发布并验证托管内容/CSP、向 Lead 报告 URL，然后 exact phase_design_complete 与 park。没有实现/生产验收完成的声明。
 
 实现节点交付：六组改动、精确删除清单、九行 before/after 证据与相关回归；QA 节点补 529 真机验收。所有未知/未跑项显式列出，不能用“单测全绿”代替九单及专项验收。
 
@@ -227,7 +235,7 @@ pnpm --filter flywheel-comm exec vitest run src/__tests__/db.fly1238.test.ts src
 
 R1 gate `15661cf1-6968-4f0c-b402-0f616d0ec462` / request `dc7b19ef-84d8-48a7-9286-1da87bb8cddd`：effective CHANGES_REQUESTED。唯一 HIGH `codex-inprocess-restart-gap` 在 §4.1 明确修复，新增真实运行时写点与四边界竞态负控。R2 gate `3a74d1a4-b2c6-438a-8812-2f6a88918e3b` / request `fc83e506-8079-4972-921d-ed4053010eb8` 在收到 R1 前已注册，现也返回 CHANGES_REQUESTED（同一 HIGH）；本次实质修订必须再提交新请求，不沿用旧 verdict。R2 新增 MEDIUM `commdb-retained-status-completed` 已改为镜像 failed/blocked/completed 等既有结局并保留具体原因，增加 runner-stopped reason=error 负控。
 
-MEDIUM：消费者遗漏纳入 §3/§6 与后附映射；无后继 wake/TURN 以 §5.3 具体 API 处置；writer 集合锚点与 probe budget 纳入 §4.2；现有 Kimi/Antigravity 纳入共用启动壳。LOW：binding 文件仅输入、accepted binding 入 StateStore；STATUSES 符号已纠正；代码测试未执行是设计阶段的诚实限制，后继需先安装仓库依赖，再跑列出的精确文件，不能把本轮文档检查当实现回归。
+MEDIUM：消费者遗漏纳入 §3/§6 与后附映射；无后继 wake/TURN 以 §5 第 3 步具体 API 处置；writer 集合锚点与 probe budget 纳入 §4.2；现有 Kimi/Antigravity 纳入共用启动壳。LOW：binding 文件仅输入、accepted binding 入 StateStore；STATUSES 符号已纠正；代码测试未执行是设计阶段的诚实限制，后继需先安装仓库依赖，再跑列出的精确文件，不能把本轮文档检查当实现回归。
 
 ### 10.1 旁路消费者分组（R1/R2 medium 的落实）
 
