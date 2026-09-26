@@ -759,7 +759,32 @@ export function assertCodexSourceIdentity({
 	return readCodexSourceAuth({ env, registryPath }).identity;
 }
 
+/** Exact discriminator for source credential reads at the pre-spawn boundary. */
+export class CodexSourceAuthError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "CodexSourceAuthError";
+	}
+}
+
 function readCodexSourceAuth({
+	env,
+	registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+}: {
+	env: NodeJS.ProcessEnv;
+	registryPath?: string;
+}): { raw: string; identity: CodexAuthIdentity } {
+	try {
+		return readCodexSourceAuthUnchecked({ env, registryPath });
+	} catch (error) {
+		if (error instanceof CodexSourceAuthError) throw error;
+		throw new CodexSourceAuthError(
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+}
+
+function readCodexSourceAuthUnchecked({
 	env,
 	registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
 }: {

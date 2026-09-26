@@ -2516,6 +2516,21 @@ describe("provisionCodexHome (WS-A)", () => {
 		});
 	});
 
+	it("FLY-2754 classifies source-auth read failures without classifying later provisioning failures", () => {
+		rmSync(join(sourceCodexDir(env), "auth.json"));
+		let caught: unknown;
+		try {
+			assertCodexSourceIdentity({ env, registryPath });
+		} catch (error) {
+			caught = error;
+		}
+		expect(caught).toMatchObject({ name: "CodexSourceAuthError" });
+		expect(caught).toBeInstanceOf(Error);
+		expect((caught as Error).message).toContain(
+			"Codex source auth is unavailable",
+		);
+	});
+
 	it("links a new runner home to the canonical credential truth without changing it", () => {
 		const truthPath = codexCredentialTruthPath(env);
 		chmodSync(truthPath, 0o600);

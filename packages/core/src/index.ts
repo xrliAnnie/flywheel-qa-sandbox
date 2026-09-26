@@ -33,6 +33,7 @@ export type {
 	TerminalFailureInfo,
 	TerminalFailureKind,
 } from "./adapter-types.js";
+export { CodexAuthPreSpawnError } from "./adapter-types.js";
 // Agent Runner types
 export type {
 	AgentMessage,

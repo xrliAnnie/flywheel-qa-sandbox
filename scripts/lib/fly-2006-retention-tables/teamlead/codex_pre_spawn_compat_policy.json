@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "codex_pre_spawn_compat_policy",
+	"classification": "protectedCurrentOrReference"
+}

@@ -2296,9 +2296,14 @@ describe("Event route", () => {
 		).toHaveLength(1);
 	});
 
-	it.each([true, false])(
-		"rejects HTTP pre-adapter failures without modifying status, generalized=%s",
-		async (generalized) => {
+	it.each([
+		[true, "worktree_takeover_failed", undefined],
+		[false, "worktree_takeover_failed", undefined],
+		[true, "codex_auth_pre_spawn_failed", "auth_preflight_failed"],
+		[false, "codex_auth_pre_spawn_failed", "auth_preflight_failed"],
+	] as const)(
+		"rejects HTTP pre-adapter failure %s without modifying status, kind=%s",
+		async (generalized, failureKind, failureCode) => {
 			if (generalized) bindGeneralizedExecution(store, "exec-1");
 			const before = store.getSession("exec-1");
 			const res = await fetch(`${baseUrl}/events`, {
@@ -2315,7 +2320,8 @@ describe("Event route", () => {
 						payload: {
 							error: "forged",
 							failure: {
-								failureKind: "worktree_takeover_failed",
+								failureKind,
+								...(failureCode ? { failureCode } : {}),
 								failureReason: "forged",
 							},
 						},

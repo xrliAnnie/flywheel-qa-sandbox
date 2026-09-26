@@ -154,6 +154,7 @@ export {
 	type CodexCredentialMigrationState,
 	type CodexLeaseGuardOptions,
 	type CodexLeaseReleaseOutcome,
+	CodexSourceAuthError,
 	codexAgentHomeDir,
 	codexCredentialTruthPath,
 	codexHomeDir,

@@ -890,6 +890,25 @@ export type StageEventInsertResult =
 	| { kind: "duplicate"; row: PersistedStageEvent; source: "hot" | "archived" }
 	| { kind: "payload_conflict"; row: PersistedStageEvent };
 
+export interface CodexPreSpawnFailureReceipt {
+	executionId: string;
+	projectName: string;
+	issueId: string;
+	executionRunId: string;
+	activationId: string;
+	lifecycleRevision: number;
+	sourceEventId: string;
+	failureCode:
+		| "auth_preflight_failed"
+		| "source_auth_unavailable"
+		| "source_identity_unknown";
+	origin: "live_preflight" | "legacy_compat";
+	proofDigest: string;
+	terminalAt: string;
+	recordedAt: string;
+	invalidatedAt: string | null;
+}
+
 /** FLY-2118: durable Bridge-owned continuity for one unclaimed tmux target. */
 export interface PatrolOrphanWatch {
 	target: string;
@@ -10373,6 +10392,65 @@ export class StateStore {
 	migrate(): void {
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
+		this.db.raw.transaction(() => {
+			this.db.raw.exec(`
+				CREATE TABLE IF NOT EXISTS codex_pre_spawn_failure_receipt (
+					execution_id TEXT NOT NULL,
+					project_name TEXT NOT NULL,
+					issue_id TEXT NOT NULL,
+					execution_run_id TEXT NOT NULL,
+					activation_id TEXT NOT NULL,
+					lifecycle_revision INTEGER NOT NULL,
+					source_event_id TEXT NOT NULL,
+					failure_code TEXT NOT NULL CHECK(failure_code IN ('auth_preflight_failed','source_auth_unavailable','source_identity_unknown')),
+					origin TEXT NOT NULL CHECK(origin IN ('live_preflight','legacy_compat')),
+					proof_digest TEXT NOT NULL,
+					terminal_at TEXT NOT NULL,
+					recorded_at TEXT NOT NULL,
+					invalidated_at TEXT,
+					PRIMARY KEY (execution_id, source_event_id)
+				);
+				CREATE UNIQUE INDEX IF NOT EXISTS codex_pre_spawn_one_valid
+					ON codex_pre_spawn_failure_receipt(execution_id)
+					WHERE invalidated_at IS NULL;
+				CREATE TABLE IF NOT EXISTS codex_pre_spawn_compat_policy (
+					singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+					cutoff_at TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				);
+				CREATE TRIGGER IF NOT EXISTS codex_pre_spawn_receipt_update_guard
+					BEFORE UPDATE ON codex_pre_spawn_failure_receipt
+					WHEN NOT (
+						OLD.invalidated_at IS NULL AND NEW.invalidated_at IS NOT NULL
+						AND NEW.execution_id IS OLD.execution_id
+						AND NEW.project_name IS OLD.project_name
+						AND NEW.issue_id IS OLD.issue_id
+						AND NEW.execution_run_id IS OLD.execution_run_id
+						AND NEW.activation_id IS OLD.activation_id
+						AND NEW.lifecycle_revision IS OLD.lifecycle_revision
+						AND NEW.source_event_id IS OLD.source_event_id
+						AND NEW.failure_code IS OLD.failure_code
+						AND NEW.origin IS OLD.origin
+						AND NEW.proof_digest IS OLD.proof_digest
+						AND NEW.terminal_at IS OLD.terminal_at
+						AND NEW.recorded_at IS OLD.recorded_at
+					)
+					BEGIN SELECT RAISE(ABORT, 'codex pre-spawn receipt proof is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS codex_pre_spawn_policy_no_update
+					BEFORE UPDATE ON codex_pre_spawn_compat_policy
+					BEGIN SELECT RAISE(ABORT, 'codex pre-spawn compatibility cutoff is immutable'); END;
+				CREATE TRIGGER IF NOT EXISTS codex_pre_spawn_policy_no_delete
+					BEFORE DELETE ON codex_pre_spawn_compat_policy
+					BEGIN SELECT RAISE(ABORT, 'codex pre-spawn compatibility cutoff is immutable'); END;
+			`);
+			this.db.raw
+				.prepare(
+					`INSERT OR IGNORE INTO codex_pre_spawn_compat_policy
+					 (singleton, cutoff_at, created_at)
+					 VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+				)
+				.run();
+		})();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS discord_config (
 				singleton_key TEXT PRIMARY KEY CHECK (singleton_key = 'discord'),
@@ -27519,6 +27597,60 @@ export class StateStore {
 		).get(executionId) as { failureKind: string; sourceEventId: string; recordedAt: string } | undefined;
 	}
 
+	getCodexPreSpawnCompatPolicy():
+		| { singleton: 1; cutoffAt: string; createdAt: string }
+		| undefined {
+		return this.db.raw
+			.prepare(
+				`SELECT singleton, cutoff_at AS cutoffAt, created_at AS createdAt
+				   FROM codex_pre_spawn_compat_policy WHERE singleton = 1`,
+			)
+			.get() as
+			| { singleton: 1; cutoffAt: string; createdAt: string }
+			| undefined;
+	}
+
+	getCodexPreSpawnFailureReceipts(
+		executionId: string,
+	): CodexPreSpawnFailureReceipt[] {
+		return this.db.raw
+			.prepare(
+				`SELECT execution_id AS executionId, project_name AS projectName,
+				        issue_id AS issueId, execution_run_id AS executionRunId,
+				        activation_id AS activationId,
+				        lifecycle_revision AS lifecycleRevision,
+				        source_event_id AS sourceEventId,
+				        failure_code AS failureCode, origin,
+				        proof_digest AS proofDigest, terminal_at AS terminalAt,
+				        recorded_at AS recordedAt, invalidated_at AS invalidatedAt
+				   FROM codex_pre_spawn_failure_receipt
+				  WHERE execution_id = ?
+				  ORDER BY recorded_at, source_event_id`,
+			)
+			.all(executionId) as CodexPreSpawnFailureReceipt[];
+	}
+
+	getCodexPreSpawnFailureReceipt(
+		executionId: string,
+	): CodexPreSpawnFailureReceipt | undefined {
+		return this.getCodexPreSpawnFailureReceipts(executionId).find(
+			(receipt) => receipt.invalidatedAt === null,
+		);
+	}
+
+	private invalidateCodexPreSpawnReceiptTx(
+		executionId: string,
+		invalidatedAt: string,
+	): void {
+		this.db.raw
+			.prepare(
+				`UPDATE codex_pre_spawn_failure_receipt
+				    SET invalidated_at = ?
+				  WHERE execution_id = ? AND invalidated_at IS NULL`,
+			)
+			.run(invalidatedAt, executionId);
+	}
+
 	recordAlertDeliveryReceipt(
 		eventId: string,
 		outcome: AlertDeliveryReceiptOutcome,
@@ -31951,14 +32083,20 @@ export class StateStore {
 		project: string;
 		role?: string;
 	}): void {
-		this.db.run(
-			`INSERT INTO lifecycle_launch_claims (execution_id, root_uuid, project, role, state)
-			 VALUES (?, ?, ?, ?, 'starting')
-			 ON CONFLICT(execution_id) DO UPDATE SET
-				root_uuid = excluded.root_uuid, project = excluded.project,
-				role = excluded.role, state = 'starting', updated_at = datetime('now')`,
-			[input.executionId, input.rootUuid, input.project, input.role ?? null],
-		);
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO lifecycle_launch_claims (execution_id, root_uuid, project, role, state)
+				 VALUES (?, ?, ?, ?, 'starting')
+				 ON CONFLICT(execution_id) DO UPDATE SET
+					root_uuid = excluded.root_uuid, project = excluded.project,
+					role = excluded.role, state = 'starting', updated_at = datetime('now')`,
+				[input.executionId, input.rootUuid, input.project, input.role ?? null],
+			);
+			this.invalidateCodexPreSpawnReceiptTx(
+				input.executionId,
+				new Date().toISOString(),
+			);
+		});
 		this.save();
 	}
 
@@ -32066,6 +32204,16 @@ export class StateStore {
 					input.role ?? null,
 				],
 			);
+			const currentClaim = this.getLaunchClaim(input.executionId);
+			if (
+				currentClaim?.state === "starting" ||
+				currentClaim?.state === "active"
+			) {
+				this.invalidateCodexPreSpawnReceiptTx(
+					input.executionId,
+					new Date().toISOString(),
+				);
+			}
 		});
 		this.save();
 		return result;
@@ -32076,11 +32224,22 @@ export class StateStore {
 		executionId: string,
 		state: "starting" | "active" | "closed" | "cancelled",
 	): void {
-		this.db.run(
-			`UPDATE lifecycle_launch_claims SET state = ?, updated_at = datetime('now')
-			 WHERE execution_id = ?`,
-			[state, executionId],
-		);
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE lifecycle_launch_claims SET state = ?, updated_at = datetime('now')
+				 WHERE execution_id = ?`,
+				[state, executionId],
+			);
+			if (
+				this.db.getRowsModified() > 0 &&
+				(state === "starting" || state === "active")
+			) {
+				this.invalidateCodexPreSpawnReceiptTx(
+					executionId,
+					new Date().toISOString(),
+				);
+			}
+		});
 		this.save();
 	}
 
@@ -32095,12 +32254,21 @@ export class StateStore {
 		from: "starting" | "active",
 		to: "starting" | "active" | "closed" | "cancelled",
 	): boolean {
-		this.db.run(
-			`UPDATE lifecycle_launch_claims SET state = ?, updated_at = datetime('now')
-			 WHERE execution_id = ? AND state = ?`,
-			[to, executionId, from],
-		);
-		const changed = this.db.getRowsModified() > 0;
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE lifecycle_launch_claims SET state = ?, updated_at = datetime('now')
+				 WHERE execution_id = ? AND state = ?`,
+				[to, executionId, from],
+			);
+			changed = this.db.getRowsModified() > 0;
+			if (changed && (to === "starting" || to === "active")) {
+				this.invalidateCodexPreSpawnReceiptTx(
+					executionId,
+					new Date().toISOString(),
+				);
+			}
+		});
 		this.save();
 		return changed;
 	}
@@ -41817,6 +41985,10 @@ export class StateStore {
 					 VALUES (?, 1, ?, ?, ?)`,
 					[input.executionId, input.ownerId, input.now, leaseExpiresAt],
 				);
+				this.invalidateCodexPreSpawnReceiptTx(
+					input.executionId,
+					input.now,
+				);
 				result = {
 					status: "acquired",
 					generation: 1,
@@ -41873,6 +42045,10 @@ export class StateStore {
 				result = { status: "busy", generation: owner.owner_generation };
 				return;
 			}
+			this.invalidateCodexPreSpawnReceiptTx(
+				input.executionId,
+				input.now,
+			);
 			this.db.run(
 				`UPDATE lifecycle_launch_claims
 				    SET state = 'starting', updated_at = datetime('now')
@@ -47269,6 +47445,7 @@ export class StateStore {
 				return;
 			}
 			if(quotaPaused()) {quotaRefused=true;return;}
+			this.invalidateCodexPreSpawnReceiptTx(input.executionId, now);
 			this.appendWorkflowEngineParkEventTx({
 				eventId: `engine-park-clear:${activationId}`,
 				projectName: run.project_name,
@@ -50572,6 +50749,10 @@ export class StateStore {
 		lastError?: string;
 		source: string;
 		now?: string;
+		trustedPreSpawnFailure?: {
+			activationId: string;
+			failureCode: "auth_preflight_failed";
+		};
 		leadIntent?: WorkflowReplacementLeadIntent;
 	}):
 		| {
@@ -50620,12 +50801,28 @@ export class StateStore {
 						failureCode: input.failureCode,
 					}
 				: undefined;
+		const terminalFailureCode =
+			input.failureKind === "codex_auth_pre_spawn_failed" &&
+			input.failureCode === "auth_preflight_failed"
+				? input.failureCode
+				: failureClassification?.failureCode;
 		let idempotentReplay = false;
 		let refusal: string | undefined;
 		let effectiveStatus: string = status;
 		let statusPreserved = false;
 		let statusChanged = false;
 		let leadEventSeq: number | undefined;
+		let preSpawnReceipt:
+			| { disposition: "recorded" }
+			| {
+					disposition: "skipped";
+					reason:
+						| "invalid_internal_proof"
+						| "activation_mismatch"
+						| "terminal_status_ineligible"
+						| "existing_valid_receipt";
+			  }
+			| undefined;
 		const shouldPreserveSessionStatus = (currentStatus: string | undefined) => {
 			if (currentStatus === status) return false;
 			if (isNoOutEdgeTerminalStatus(currentStatus)) return true;
@@ -50663,7 +50860,7 @@ export class StateStore {
 					(priorPayload.failureClass ?? null) !==
 						(failureClassification?.failureClass ?? null) ||
 					(priorPayload.failureCode ?? null) !==
-						(failureClassification?.failureCode ?? null)
+						(terminalFailureCode ?? null)
 				) {
 					refusal = "terminal_signal_conflict";
 					return;
@@ -50715,7 +50912,12 @@ export class StateStore {
 							failureKind: input.failureKind ?? null,
 							...(quotaSignal ? {quotaSignal} : {}),
 							lastError: input.lastError ?? null,
-							...(failureClassification ?? {}),
+							...(failureClassification?.failureClass
+								? { failureClass: failureClassification.failureClass }
+								: {}),
+							...(terminalFailureCode
+								? { failureCode: terminalFailureCode }
+								: {}),
 						}),
 						input.source,
 					],
@@ -50758,6 +50960,83 @@ export class StateStore {
 					this.bumpLifecycleRevision(input.executionId);
 				}
 			}
+			if (input.trustedPreSpawnFailure) {
+				const trustedContextMatches =
+					input.trustedPreSpawnFailure.activationId ===
+					context.binding.activation_id;
+				let skipReason:
+					| "invalid_internal_proof"
+					| "activation_mismatch"
+					| "terminal_status_ineligible"
+					| "existing_valid_receipt"
+					| undefined;
+				if (
+					input.signal !== "failed" ||
+					input.source !== "direct-event-sink" ||
+					input.failureKind !== "codex_auth_pre_spawn_failed" ||
+					terminalFailureCode !== "auth_preflight_failed" ||
+					input.trustedPreSpawnFailure.failureCode !==
+						"auth_preflight_failed"
+				) {
+					skipReason = "invalid_internal_proof";
+				} else if (!trustedContextMatches) {
+					skipReason = "activation_mismatch";
+				} else if (
+					statusPreserved ||
+					effectiveStatus !== "failed" ||
+					status !== "failed"
+				) {
+					skipReason = "terminal_status_ineligible";
+				} else if (this.getCodexPreSpawnFailureReceipt(input.executionId)) {
+					skipReason = "existing_valid_receipt";
+				}
+				if (skipReason) {
+					preSpawnReceipt = {
+						disposition: "skipped",
+						reason: skipReason,
+					};
+				} else {
+					const lifecycleRevision = this.getLifecycleRevision(
+						input.executionId,
+					);
+					const proof = {
+						executionId: input.executionId,
+						projectName: context.run.project_name,
+						issueId: context.run.issue_id,
+						executionRunId: context.binding.run_id,
+						activationId: context.binding.activation_id,
+						lifecycleRevision,
+						sourceEventId: input.sourceEventId,
+						failureCode: "auth_preflight_failed" as const,
+						origin: "live_preflight" as const,
+						terminalAt: now,
+					};
+					this.db.raw
+						.prepare(
+							`INSERT INTO codex_pre_spawn_failure_receipt
+							 (execution_id, project_name, issue_id, execution_run_id,
+							  activation_id, lifecycle_revision, source_event_id,
+							  failure_code, origin, proof_digest, terminal_at,
+							  recorded_at, invalidated_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+						)
+						.run(
+							proof.executionId,
+							proof.projectName,
+							proof.issueId,
+							proof.executionRunId,
+							proof.activationId,
+							proof.lifecycleRevision,
+							proof.sourceEventId,
+							proof.failureCode,
+							proof.origin,
+							canonicalSubmissionDigest(proof),
+							proof.terminalAt,
+							now,
+						);
+					preSpawnReceipt = { disposition: "recorded" };
+				}
+			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: context.binding.run_id,
 				eventUid: `teardown_recorded:${context.binding.run_id}:${input.executionId}:${input.sourceEventId}`,
@@ -50772,7 +51051,13 @@ export class StateStore {
 					effectiveStatus,
 					statusPreserved,
 					failureKind: input.failureKind ?? null,
-					...(failureClassification ?? {}),
+					...(failureClassification?.failureClass
+						? { failureClass: failureClassification.failureClass }
+						: {}),
+					...(terminalFailureCode
+						? { failureCode: terminalFailureCode }
+						: {}),
+					...(preSpawnReceipt ? { preSpawnReceipt } : {}),
 					at: now,
 				},
 			});

@@ -13,6 +13,27 @@ describe("normalizeTerminalFailureInfo", () => {
 			failureReason: "Codex recovery exhausted after 2 attempts",
 		});
 	});
+
+	it("FLY-2778 accepts only the internal Codex auth pre-spawn failure code", () => {
+		const failure = {
+			failureKind: "codex_auth_pre_spawn_failed",
+			failureCode: "auth_preflight_failed",
+			failureReason: "source auth unavailable",
+		};
+		expect(normalizeTerminalFailureInfo(failure)).toEqual(failure);
+		expect(
+			normalizeTerminalFailureInfo({
+				...failure,
+				failureCode: "codex:unauthorized",
+			}),
+		).toBeUndefined();
+		expect(
+			normalizeTerminalFailureInfo({
+				...failure,
+				failureClass: "environment",
+			}),
+		).toBeUndefined();
+	});
 });
 
 const quotaSignal = {

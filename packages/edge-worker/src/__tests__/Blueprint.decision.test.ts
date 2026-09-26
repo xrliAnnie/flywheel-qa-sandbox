@@ -6,6 +6,7 @@ import type {
 	DecisionResult,
 	ExecutionContext,
 } from "flywheel-core";
+import { CodexAuthPreSpawnError } from "flywheel-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
@@ -212,6 +213,57 @@ describe("Blueprint Decision Layer Integration", () => {
 			"goal ended non-complete: usageLimited",
 			undefined,
 			result.failure,
+		);
+	});
+
+	it("FLY-2778: trusted Codex auth pre-spawn failure reaches the terminal event", async () => {
+		const gitChecker = makeMockGitChecker({ commitCount: 3 });
+		const decisionLayer = makeMockDecisionLayer({ route: "auto_approve" });
+		const emitCompleted = vi.fn(async () => {});
+		const emitFailed = vi.fn(async () => {});
+		const failure = new CodexAuthPreSpawnError("source auth unavailable");
+		const adapter = makeMockAdapter();
+		adapter.execute.mockRejectedValue(failure);
+		const blueprint = new Blueprint(
+			makeMockHydrator(),
+			gitChecker,
+			() => adapter,
+			makeMockShell(),
+			undefined,
+			undefined,
+			makeMockEvidenceCollector(),
+			undefined,
+			decisionLayer,
+			{
+				emitStarted: vi.fn(async () => {}),
+				emitWorktreeReady: vi.fn(async () => {}),
+				emitCompleted,
+				emitFailed,
+				emitHeartbeat: vi.fn(async () => {}),
+				flush: vi.fn(async () => {}),
+			},
+		);
+
+		const result = await blueprint.run(
+			{ id: "GEO-101", blockedBy: [] },
+			"/project",
+			makeContext(),
+		);
+
+		expect(result).toMatchObject({
+			success: false,
+			error: "source auth unavailable",
+			failure: failure.terminalFailure,
+		});
+		expect(result.decision).toBeUndefined();
+		expect(gitChecker.check).not.toHaveBeenCalled();
+		expect(decisionLayer.decide).not.toHaveBeenCalled();
+		expect(emitCompleted).not.toHaveBeenCalled();
+		expect(emitFailed).toHaveBeenCalledWith(
+			expect.anything(),
+			"source auth unavailable",
+			undefined,
+			failure.terminalFailure,
 		);
 	});
 

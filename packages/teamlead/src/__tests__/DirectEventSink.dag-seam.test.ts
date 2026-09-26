@@ -12,6 +12,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
+import { CodexAuthPreSpawnError } from "flywheel-core";
+import { Blueprint } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { EventEnvelope } from "flywheel-edge-worker/dist/ExecutionEventEmitter.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BridgeConfig } from "../bridge/plugin.js";
@@ -73,7 +75,7 @@ async function harness() {
 			reader.close();
 		}
 	};
-	return { store, sink, raw };
+	return { store, sink, raw, dir };
 }
 
 const baseEnv: EventEnvelope = {
@@ -218,6 +220,260 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 });
 
 describe("FLY-1385 enrolled teardown seam", () => {
+	it("FLY-2778 carries a typed Blueprint failure through the real sink into a receipt", async () => {
+		const { store, sink, dir } = await harness();
+		const seed = legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		const env = {
+			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+		};
+		store.importWorkflowTemplateSeed(seed);
+		store.materializeWorkflowRun({
+			runId: "run-pre-spawn-chain",
+			issueId: "FLY-2778",
+			projectName: "flywheel",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			env,
+			startReservation: {
+				idempotencyKey: "pre-spawn-chain-start",
+				selectionDigest: "pre-spawn-chain-selection",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "pre-spawn-chain-exec",
+				createdAt: "2026-09-26T20:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-pre-spawn-chain",
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: "pre-spawn-chain-exec",
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-pre-spawn-chain",
+				nodeId: "design",
+				executionId: "pre-spawn-chain-exec",
+				activationId: "activation-pre-spawn-chain",
+				attempt: 1,
+				now: "2026-09-26T20:00:00.000Z",
+				expiresAt: "2026-09-26T21:00:00.000Z",
+				absoluteDeadlineAt: "2026-09-27T20:00:00.000Z",
+				env,
+			}),
+		).toMatchObject({ ok: true });
+
+		const gitChecker = {
+			assertCleanTree: vi.fn(async () => {}),
+			captureBaseline: vi.fn(async () => "base-sha"),
+			check: vi.fn(async () => ({
+				hasNewCommits: true,
+				commitCount: 1,
+				filesChanged: 1,
+				commitMessages: ["already present"],
+			})),
+		};
+		const evidenceCollector = {
+			collect: vi.fn(async () => ({
+				commitCount: 1,
+				filesChangedCount: 1,
+				commitMessages: ["already present"],
+				changedFilePaths: ["src/existing.ts"],
+				linesAdded: 1,
+				linesRemoved: 0,
+				diffSummary: "existing ready PR",
+				headSha: "head-sha",
+				partial: false,
+				durationMs: 1,
+				landingStatus: {
+					status: "ready_to_merge" as const,
+					prNumber: 2778,
+				},
+			})),
+			getFullDiff: vi.fn(async () => "diff"),
+		};
+		const decisionLayer = {
+			decide: vi.fn(async () => ({
+				route: "auto_approve" as const,
+				confidence: 1,
+				reasoning: "should not run",
+				concerns: [],
+				decisionSource: "hard_rule" as const,
+			})),
+		};
+		const adapter = {
+			type: "codex-tmux" as const,
+			supportsStreaming: false as const,
+			checkEnvironment: vi.fn(async () => ({ healthy: true, message: "ok" })),
+			execute: vi.fn(async () => {
+				throw new CodexAuthPreSpawnError("source auth unavailable");
+			}),
+		};
+		const emitCompleted = vi.spyOn(sink, "emitCompleted");
+		const emitFailed = vi.spyOn(sink, "emitFailed");
+		const blueprint = new Blueprint(
+			{
+				hydrate: vi.fn(async () => ({
+					issueId: "FLY-2778",
+					issueTitle: "pre-spawn auth",
+					issueDescription: "fixture",
+					labels: [],
+					projectId: "flywheel",
+					issueIdentifier: "FLY-2778",
+				})),
+			} as never,
+			gitChecker as never,
+			() => adapter as never,
+			{ execFile: vi.fn(async () => ({ stdout: "", exitCode: 0 })) } as never,
+			undefined,
+			undefined,
+			evidenceCollector as never,
+			undefined,
+			decisionLayer as never,
+			sink,
+		);
+
+		const result = await blueprint.run({ id: "FLY-2778", blockedBy: [] }, dir, {
+			teamName: "eng",
+			runnerName: "codex",
+			projectName: "flywheel",
+			executionId: "pre-spawn-chain-exec",
+			leadId: "flywheel-eng-lead",
+			generalizedExecutionContext: {
+				activationId: "activation-pre-spawn-chain",
+				runId: "run-pre-spawn-chain",
+				nodeId: "design",
+				attempt: 1,
+				snapshotDigest: "snapshot-pre-spawn-chain",
+			},
+			workflowCapabilities: {
+				shared_branch_writer: true,
+				completion_route: "phase_design_complete",
+			},
+			workflowAgentContent: "Pinned design role",
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: "source auth unavailable",
+			failure: {
+				failureKind: "codex_auth_pre_spawn_failed",
+				failureCode: "auth_preflight_failed",
+			},
+		});
+		expect(result.decision).toBeUndefined();
+		expect(gitChecker.check).not.toHaveBeenCalled();
+		expect(evidenceCollector.collect).not.toHaveBeenCalled();
+		expect(decisionLayer.decide).not.toHaveBeenCalled();
+		expect(emitCompleted).not.toHaveBeenCalled();
+		expect(emitFailed).toHaveBeenCalledOnce();
+		expect(store.getSession("pre-spawn-chain-exec")?.status).toBe("failed");
+		expect(
+			store.getCodexPreSpawnFailureReceipt("pre-spawn-chain-exec"),
+		).toMatchObject({
+			activationId: "activation-pre-spawn-chain",
+			origin: "live_preflight",
+			failureCode: "auth_preflight_failed",
+		});
+	});
+
+	it("FLY-2778 carries the trusted activation into the atomic pre-spawn receipt", async () => {
+		const { store, sink } = await harness();
+		const seed = legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!;
+		const env = {
+			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+		};
+		store.importWorkflowTemplateSeed(seed);
+		store.materializeWorkflowRun({
+			runId: "run-pre-spawn",
+			issueId: "FLY-2778",
+			projectName: "flywheel",
+			taskCategory: "code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			env,
+			startReservation: {
+				idempotencyKey: "pre-spawn-start",
+				selectionDigest: "pre-spawn-selection",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "pre-spawn-exec",
+				createdAt: "2026-09-26T20:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-pre-spawn",
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: "pre-spawn-exec",
+		});
+		const admission = store.admitGeneralizedWorkflowExecution({
+			runId: "run-pre-spawn",
+			nodeId: "design",
+			executionId: "pre-spawn-exec",
+			activationId: "activation-pre-spawn",
+			attempt: 1,
+			now: "2026-09-26T20:00:00.000Z",
+			expiresAt: "2026-09-26T21:00:00.000Z",
+			absoluteDeadlineAt: "2026-09-27T20:00:00.000Z",
+			env,
+		});
+		expect(admission).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "pre-spawn-exec",
+			issue_id: "FLY-2778",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "design",
+		});
+		const record = vi.spyOn(store, "recordEnrolledTerminalSignal");
+
+		await sink.emitFailed(
+			{
+				executionId: "pre-spawn-exec",
+				issueId: "FLY-2778",
+				projectName: "flywheel",
+			},
+			"Codex source auth is unavailable",
+			undefined,
+			{
+				failureKind: "codex_auth_pre_spawn_failed",
+				failureCode: "auth_preflight_failed",
+				failureReason: "Codex source auth is unavailable",
+			},
+		);
+
+		expect(record).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sourceEventId: expect.any(String),
+				trustedPreSpawnFailure: {
+					activationId: "activation-pre-spawn",
+					failureCode: "auth_preflight_failed",
+				},
+			}),
+		);
+		expect(
+			store.getCodexPreSpawnFailureReceipt("pre-spawn-exec"),
+		).toMatchObject({
+			activationId: "activation-pre-spawn",
+			origin: "live_preflight",
+			failureCode: "auth_preflight_failed",
+		});
+	});
+
 	it("persists a failed takeover signal and alerts before returning from the generalized path", async () => {
 		const { store, sink } = await harness();
 		const seed = legacyWorkflowSeeds().find(

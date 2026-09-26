@@ -39,11 +39,26 @@ export function normalizeTerminalFailureInfo(
 	if (
 		(failureKind !== "goal_usage_limited" &&
 			failureKind !== "goal_blocked" &&
+			failureKind !== "codex_auth_pre_spawn_failed" &&
 			failureKind !== "worktree_takeover_failed" &&
 			failureKind !== "reown_exhausted") ||
 		!failureReason
 	) {
 		return undefined;
+	}
+	if (failureKind === "codex_auth_pre_spawn_failed") {
+		if (
+			failure.failureCode !== "auth_preflight_failed" ||
+			failure.failureClass !== undefined ||
+			failure.quotaSignal !== undefined
+		) {
+			return undefined;
+		}
+		return {
+			failureKind,
+			failureCode: "auth_preflight_failed",
+			failureReason,
+		};
 	}
 	const quotaSignal = parseCodexQuotaSignalV1(failure.quotaSignal);
 	if (

@@ -64,7 +64,11 @@ import type {
 	LaunchPrecommitFailure,
 	TerminalFailureInfo,
 } from "flywheel-core";
-import { buildWindowLabel, cleanIssueTitle } from "flywheel-core";
+import {
+	buildWindowLabel,
+	CodexAuthPreSpawnError,
+	cleanIssueTitle,
+} from "flywheel-core";
 import type { AgentDispatcher } from "./AgentDispatcher.js";
 import type { DagNode } from "./dag-node.js";
 import type { IDecisionLayer } from "./decision/DecisionLayer.js";
@@ -3202,6 +3206,8 @@ export class Blueprint {
 			result = await adapter.execute(adapterContext);
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
+			const failure =
+				err instanceof CodexAuthPreSpawnError ? err.terminalFailure : undefined;
 			const held = err as {
 				name?: unknown;
 				kind?: unknown;
@@ -3224,6 +3230,7 @@ export class Blueprint {
 				durationMs: Date.now() - startTime,
 				error: errorMsg,
 				...(launchFailure && { launchFailure }),
+				...(failure && { failure }),
 				worktreePath: worktreeInfo?.worktreePath,
 			};
 		}

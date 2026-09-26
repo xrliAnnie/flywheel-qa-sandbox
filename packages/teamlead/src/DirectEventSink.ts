@@ -1685,7 +1685,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const sourceEventId = randomUUID();
 		if (
 			normalizedFailure &&
-			PRE_ADAPTER_FAILURE_KINDS.has(normalizedFailure.failureKind)
+			PRE_ADAPTER_FAILURE_KINDS.has(normalizedFailure.failureKind) &&
+			normalizedFailure.failureKind !== "codex_auth_pre_spawn_failed"
 		) {
 			this.store.recordPreAdapterFailureReceipt({
 				executionId: env.executionId,
@@ -1741,6 +1742,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				lastError: terminalError,
 				source: "direct-event-sink",
 				now,
+				...(normalizedFailure?.failureKind === "codex_auth_pre_spawn_failed"
+					? {
+							trustedPreSpawnFailure: {
+								activationId: generalizedExecution.binding.activation_id,
+								failureCode: "auth_preflight_failed" as const,
+							},
+						}
+					: {}),
 				...(leadIntent ? { leadIntent } : {}),
 			});
 			if (!recorded.ok) {

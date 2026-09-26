@@ -27,6 +27,8 @@ it("preserves existing feature protection contracts at the FLY-2413 migration", 
 	expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toEqual(
 		expect.arrayContaining([
 			"pre_adapter_failure_receipts",
+			"codex_pre_spawn_failure_receipt",
+			"codex_pre_spawn_compat_policy",
 			"beta_schedule_lanes",
 			"beta_schedule_occurrences",
 			"ship_judgment_clarification",

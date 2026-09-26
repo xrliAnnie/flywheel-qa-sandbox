@@ -234,14 +234,16 @@ export function findArchivedTerminalRow(
 		throw new Error("invalid_terminal_archive_lookup");
 	}
 	const archived = db
-		.prepare(`SELECT row_json FROM workflow_terminal_archive INDEXED BY ${lookup.indexName}
+		.prepare(`SELECT row_json,row_sha256 FROM workflow_terminal_archive INDEXED BY ${lookup.indexName}
 			WHERE source_table='${sourceTable}'
 			  AND ${lookup.expressions.map((expression) => `${expression}=?`).join(" AND ")}
 			LIMIT 1`)
-		.get(...values) as { row_json: string } | undefined;
-	return archived
-		? (JSON.parse(archived.row_json) as Record<string, unknown>)
-		: undefined;
+		.get(...values) as { row_json: string; row_sha256: string } | undefined;
+	if (!archived) return undefined;
+	if (digest(archived.row_json) !== archived.row_sha256) {
+		throw new Error("archive_digest_invalid");
+	}
+	return JSON.parse(archived.row_json) as Record<string, unknown>;
 }
 
 export function maxArchivedWorkflowRunEventSeq(

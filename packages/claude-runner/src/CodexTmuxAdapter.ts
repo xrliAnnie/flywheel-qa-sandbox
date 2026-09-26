@@ -59,6 +59,7 @@ import type {
 	IHookCallbackServer,
 } from "flywheel-core";
 import {
+	CodexAuthPreSpawnError,
 	CodexRecoveryError,
 	createCodexRecoveryFailure,
 	normalizeCodexRecoveryFailure,
@@ -105,6 +106,7 @@ import {
 	type CodexAgentHomeIdentity,
 	type CodexLeaseGuardOptions,
 	type CodexLeaseReleaseOutcome,
+	CodexSourceAuthError,
 	flywheelCodexBin,
 	provisionCodexAgentHome,
 	provisionCodexHome,
@@ -1286,6 +1288,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		}
 
 		const start = Date.now();
+		const canClassifyAuthPreSpawn = this.isFreshAuthPreSpawnBoundary(
+			ctx,
+			snapshotExecution,
+		);
 
 		// FLY-1188 (sandbox scope): realpath the worktree + resolve its git
 		// metadata dirs FIRST (fail-loud — a runner that cannot commit is
@@ -1349,9 +1355,18 @@ export class CodexTmuxAdapter implements IAdapter {
 			(ctx.label ? sanitizeTmuxName(ctx.label) : undefined);
 		// FLY-2003: reject unknown/zombie/malformed source auth before `gh auth`
 		// or worktree git config can create any credential-bearing residue.
-		assertCodexSourceIdentity({
-			registryPath: this.codexAccountRegistryPath,
-		});
+		try {
+			assertCodexSourceIdentity({
+				registryPath: this.codexAccountRegistryPath,
+			});
+		} catch (error) {
+			if (canClassifyAuthPreSpawn) {
+				throw new CodexAuthPreSpawnError(
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			throw error;
+		}
 
 		throwIfTerminationRequested();
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
@@ -1385,15 +1400,23 @@ export class CodexTmuxAdapter implements IAdapter {
 			}),
 		};
 		throwIfTerminationRequested();
-		const codexHome = ctx.codexAgentHome
-			? await provisionCodexAgentHome(this.agentHomeHandle(ctx), {
-					...provisionOptions,
-					skillFrameworkMode: ctx.codexAgentHome.assemblyArm,
-				})
-			: provisionCodexHome({
-					...provisionOptions,
-					executionId: ctx.executionId,
-				});
+		let codexHome: string;
+		try {
+			codexHome = ctx.codexAgentHome
+				? await provisionCodexAgentHome(this.agentHomeHandle(ctx), {
+						...provisionOptions,
+						skillFrameworkMode: ctx.codexAgentHome.assemblyArm,
+					})
+				: provisionCodexHome({
+						...provisionOptions,
+						executionId: ctx.executionId,
+					});
+		} catch (error) {
+			if (canClassifyAuthPreSpawn && error instanceof CodexSourceAuthError) {
+				throw new CodexAuthPreSpawnError(error.message);
+			}
+			throw error;
+		}
 
 		let tmuxWindow: string | undefined;
 		let founderWindowId: string | undefined;
@@ -2826,6 +2849,56 @@ export class CodexTmuxAdapter implements IAdapter {
 				);
 		}
 		return result;
+	}
+
+	private isFreshAuthPreSpawnBoundary(
+		ctx: AdapterExecutionContext,
+		snapshotExecution?: CodexSnapshotExecution,
+	): boolean {
+		if (
+			snapshotExecution ||
+			ctx.previousSession?.threadId ||
+			(ctx.launchCommitPath && existsSync(ctx.launchCommitPath))
+		) {
+			return false;
+		}
+		const statePath = join(
+			codexSessionStateDir(ctx.executionId),
+			"session.json",
+		);
+		if (!existsSync(statePath)) return true;
+		if (!ctx.codexAgentHome) return false;
+		try {
+			const parsed = JSON.parse(readFileSync(statePath, "utf-8")) as unknown;
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				Array.isArray(parsed)
+			) {
+				return false;
+			}
+			const state = parsed as Record<string, unknown>;
+			if (
+				!Object.keys(state).every(
+					(key) => key === "codexAgentHome" || key === "updatedAt",
+				) ||
+				typeof state.updatedAt !== "string"
+			) {
+				return false;
+			}
+			const home = state.codexAgentHome;
+			return (
+				typeof home === "object" &&
+				home !== null &&
+				!Array.isArray(home) &&
+				(home as Record<string, unknown>).project ===
+					ctx.codexAgentHome.project &&
+				(home as Record<string, unknown>).role === ctx.codexAgentHome.role &&
+				(home as Record<string, unknown>).home === ctx.codexAgentHome.home
+			);
+		} catch {
+			return false;
+		}
 	}
 
 	/**

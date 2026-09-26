@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
 import {
 	archiveTerminalRows,
+	findArchivedTerminalRow,
 	installTerminalRowArchiveSchema,
 	MAX_TERMINAL_ARCHIVE_DURATION_MS,
 	MAX_TERMINAL_ARCHIVE_PAGE_DURATION_MS,
@@ -170,6 +171,24 @@ it("retains oversize payloads and fails safe on an oversized active snapshot", (
 		expect(db.prepare("SELECT event_id FROM session_events").all()).toEqual([
 			{ event_id: "oversize" },
 		]);
+	} finally {
+		db.close();
+	}
+});
+
+it("fails closed when a point lookup finds a tampered archived terminal row", () => {
+	const db = database();
+	try {
+		const rowJson = JSON.stringify({ id: 1, event_id: "digest-probe" });
+		db.prepare(
+			`INSERT INTO workflow_terminal_archive
+			 (source_table, source_identity, source_created_at, archived_at, row_json, row_sha256)
+			 VALUES ('session_events', '1', ?, ?, ?, ?)`,
+		).run(OLD, NOW, rowJson, "0".repeat(64));
+
+		expect(() =>
+			findArchivedTerminalRow(db, "session_events", ["digest-probe"]),
+		).toThrow("archive_digest_invalid");
 	} finally {
 		db.close();
 	}

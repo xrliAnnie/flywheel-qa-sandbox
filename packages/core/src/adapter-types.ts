@@ -525,11 +525,13 @@ export interface AdapterExecutionContext {
 export type TerminalFailureKind =
 	| "goal_usage_limited"
 	| "goal_blocked"
+	| "codex_auth_pre_spawn_failed"
 	| "worktree_takeover_failed"
 	| "reown_exhausted";
 
 /** Bridge-proven failures before adapter.execute(); never infer these from HTTP events. */
 export const PRE_ADAPTER_FAILURE_KINDS: ReadonlySet<string> = new Set([
+	"codex_auth_pre_spawn_failed",
 	"worktree_takeover_failed",
 ]);
 
@@ -539,6 +541,24 @@ export interface TerminalFailureInfo {
 	failureReason: string;
 	failureClass?: "environment";
 	failureCode?: string;
+}
+
+/**
+ * Trusted, in-process evidence that Codex authentication failed before any
+ * runner runtime, daemon, thread, or founder window could start.
+ */
+export class CodexAuthPreSpawnError extends Error {
+	readonly terminalFailure: TerminalFailureInfo;
+
+	constructor(message: string) {
+		super(message);
+		this.name = "CodexAuthPreSpawnError";
+		this.terminalFailure = {
+			failureKind: "codex_auth_pre_spawn_failed",
+			failureCode: "auth_preflight_failed",
+			failureReason: message,
+		};
+	}
 }
 
 /** FLY-1638: machine-readable failure before the workflow launch fence commits. */

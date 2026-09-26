@@ -95,6 +95,7 @@ class FakeExec {
 	gitRevParseThrows = false;
 	gitConfigCalls: string[][] = [];
 	ghCalls: string[][] = [];
+	beforeGh?: () => void;
 	tmuxCalls: string[][] = [];
 	displayMessageOut = `${WINDOW_ID}\n`;
 	listWindowsOut = "";
@@ -115,6 +116,7 @@ class FakeExec {
 		if (cmd === "codex") return { stdout: "codex-cli 0.144.1" };
 		if (cmd === "gh") {
 			this.ghCalls.push(args);
+			this.beforeGh?.();
 			if (this.ghAuthThrows) throw new Error("gh: not logged in");
 			return { stdout: `${this.ghToken}\n` };
 		}
@@ -1252,6 +1254,115 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 		expect(fake.ghCalls).toEqual([]);
 		expect(existsSync(join(homesRoot, execId))).toBe(false);
+	});
+
+	it("FLY-2754: fresh auth preflight failure is typed before any runner starts", async () => {
+		unlinkSync(join(process.env.FLYWHEEL_CODEX_SOURCE_HOME!, "auth.json"));
+		const deps = makeDeps();
+		const runtimeFactory = vi.fn(deps.runtimeFactory!);
+		const ensureWindow = vi.fn(deps.ensureWindow!);
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{ ...deps, runtimeFactory, ensureWindow },
+		);
+
+		await expect(adapter.execute(ctx())).rejects.toMatchObject({
+			name: "CodexAuthPreSpawnError",
+			terminalFailure: {
+				failureKind: "codex_auth_pre_spawn_failed",
+				failureCode: "auth_preflight_failed",
+			},
+		});
+		expect(runtimeFactory).not.toHaveBeenCalled();
+		expect(ensureWindow).not.toHaveBeenCalled();
+		expect(fake.ghCalls).toHaveLength(0);
+		expect(
+			existsSync(join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId)),
+		).toBe(false);
+	});
+
+	it("FLY-2754: a second source-auth read failure stays typed and pre-spawn", async () => {
+		fake.beforeGh = () => {
+			unlinkSync(join(process.env.FLYWHEEL_CODEX_SOURCE_HOME!, "auth.json"));
+			fake.beforeGh = undefined;
+		};
+		const deps = makeDeps();
+		const runtimeFactory = vi.fn(deps.runtimeFactory!);
+		const ensureWindow = vi.fn(deps.ensureWindow!);
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{ ...deps, runtimeFactory, ensureWindow },
+		);
+
+		await expect(adapter.execute(ctx())).rejects.toMatchObject({
+			name: "CodexAuthPreSpawnError",
+			terminalFailure: {
+				failureKind: "codex_auth_pre_spawn_failed",
+				failureCode: "auth_preflight_failed",
+			},
+		});
+		expect(fake.ghCalls).toHaveLength(1);
+		expect(runtimeFactory).not.toHaveBeenCalled();
+		expect(ensureWindow).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2754: an execution with launch evidence cannot claim a fresh pre-spawn failure", async () => {
+		await makeAdapter().execute(ctx());
+		unlinkSync(join(process.env.FLYWHEEL_CODEX_SOURCE_HOME!, "auth.json"));
+
+		let caught: unknown;
+		try {
+			await makeAdapter().execute(ctx());
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toMatchObject({ name: "CodexSourceAuthError" });
+		expect(caught).not.toHaveProperty("terminalFailure");
+	});
+
+	it("FLY-2754: recovery auth failure stays an untyped recovery failure", async () => {
+		const adapter = makeAdapter();
+		await adapter.execute(ctx());
+		unlinkSync(join(process.env.FLYWHEEL_CODEX_SOURCE_HOME!, "auth.json"));
+
+		const result = await adapter.resumeExistingExecution(ctx(), {
+			onRecoveryOwnershipEstablished: vi.fn(async () => undefined),
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			recoveryFailure: { stage: "preflight" },
+		});
+		expect(result.failure).toBeUndefined();
+	});
+
+	it("FLY-2754: non-auth provisioning failure stays untyped", async () => {
+		let caught: unknown;
+		try {
+			await makeAdapter().execute(
+				ctx({
+					skillFrameworkMode: "matt",
+					codexMattSkillsSourceDir: join(dir, "missing-matt-skills"),
+				}),
+			);
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(Error);
+		expect(caught).not.toHaveProperty("terminalFailure");
+		expect((caught as Error).message).toMatch(/matt skills source/);
 	});
 
 	it("FLY-1961 trusts the real cwd in this execution's CODEX_HOME", async () => {
