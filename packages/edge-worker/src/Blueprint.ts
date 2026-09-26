@@ -3230,7 +3230,10 @@ export class Blueprint {
 
 		// A physical exit without an accepted workflow completion is not work
 		// completion. Old commits or the legacy DecisionLayer cannot bless it.
-		if (isGeneralizedExecution && result.exitKind === "abnormal_process_exit") {
+		if (
+			(isGeneralizedExecution || ctx.workflowProcessLifecycle) &&
+			result.exitKind === "abnormal_process_exit"
+		) {
 			return {
 				success: false,
 				sessionId: result.sessionId,

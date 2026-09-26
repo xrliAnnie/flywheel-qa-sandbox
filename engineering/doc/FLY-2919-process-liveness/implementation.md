@@ -335,3 +335,17 @@ D1 仍是 WIP：DirectEventSink 与 HTTP event-route 在落库时尚未重新采
 保持 implement 0/6；本批没有代码评审、PR、full CI、QA或交卷完成声明。消费者查询/逐文件排除与红绿、related、构建日志归档 implementation-d1-consumers.json.gz / implementation-d1-evidence.json.gz。
 
 最终源码的 teamlead 及依赖 build、lint 均exit0（保留25个既有warning）；voice-codex依赖方typecheck exit0。首轮build发现 CommDB updater 的有限状态类型不接受 failed，已去除adapter独立失败投影，失败及最终成功日志均保留。
+
+## A10 恢复启动的 activation 与异常退出贯通（执行 7d99e8e8）
+
+续接已推送的 D1 检查点 d61ddd613。沿实际 buildStandbyResumeStartRequest → Blueprint → owner factory 核实：恢复请求保留 execution/generation，但没有 workflowActivationId。owner 的 activation_missing 拒绝是必要守卫，本批不删除它；仅在 processLifecycle.mode=resume 时，从 StateStore.resolveCurrentWorkflowActivation 取得唯一当前绑定。缺失/歧义拒绝，显式 activation 与当前绑定不同也拒绝，不覆盖为另一个身份。
+
+owner claim 的每次 lease retry、prepareSpawn、authorizeSpawn 和 restart 准入均重新核对捕获的 activation。绑定的 OS await 期间被取代时，先保存该 newborn 的真实绑定供清理，再拒绝模型准入；close/finish 不要求逻辑 activation 仍活跃，避免完成后无法清理原物理体。没有改 execution/activation 凭证、恢复预算或 StateStore 的 owner CAS 规则；Codex 非 resume 的 reown 路径仍由原 recovery reservation 驱动。
+
+同一路径另有两处遗漏：多 activation 的执行按 execution 单值查询会返回 undefined；现在 Tmux 死亡分类按观测内精确 activation 查 workflow context 和完成凭证。Blueprint 的异常退出分支也覆盖 workflowProcessLifecycle，避免只带恢复生命周期的无判决退出掉进 legacy DecisionLayer。legacy 不带 generalized/context/lifecycle 的成功决策保留。
+
+新测试用真实临时 StateStore 的 admitted binding、注入 OS 样本验证两载体缺 activation 的成功恢复、缺失/歧义拒绝、显式冲突、lease retry 和 OS await 期间身份变化、拒绝旧 native permit、逻辑结束后的 drain。首轮8 RED中2项是原本已拒绝但错误分类字符串不同的负控，不计因果行为修复；其余6项为错误拒绝合法恢复或错误接纳失效身份。随后新增精确 activation 完成查询1 RED和Blueprint resume无判决退出1 RED；目标文件最终分别10/13 GREEN。多 activation 查询歧义在该接线测试中注入，不能冒充完整 standby 真机恢复验收。
+
+本批仍不是 B–F 完成：共同死亡事务与最终 sink 的 marker/receipt/CAS、跨库义务、所有窗口消费者、独立公平采样、旧体补采、restart争用中性分类、九单矩阵、评审/PR/CI/QA/handoff仍待完成。实际跨 activation 但不换物理generation的 re-entry，也须在最终共同收敛中核对当下逻辑归属，不能以本批 resume 新启动身份测试代替。
+
+A10 验证收齐：13个明确文件逐一运行306 pass；限定文件的 owning related 为 teamlead3文件51 pass、edge-worker3文件82 pass。teamlead及依赖build、lint均exit0（25个既有warning）。没有公共类型/schema变更，不新增shell测试；此次没有重跑A9遗留的routes原15秒导入超时，不能据此关闭该旧验证缺口。逐查询匹配、44条排除理由和全部红绿/命令/源码hash归档 implementation-a10-consumers.json.gz / implementation-a10-evidence.json.gz。

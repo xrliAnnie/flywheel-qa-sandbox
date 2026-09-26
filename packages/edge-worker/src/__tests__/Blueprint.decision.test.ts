@@ -106,9 +106,9 @@ function makeContext(
 }
 
 describe("Blueprint Decision Layer Integration", () => {
-	it.each([true, false])(
-		"FLY-2919 preserves process exit versus legacy decision semantics (generalized=%s)",
-		async (generalized) => {
+	it.each(["generalized", "legacy", "resume"])(
+		"FLY-2919 preserves process exit versus legacy decision semantics (%s)",
+		async (mode) => {
 			const decisionLayer = makeMockDecisionLayer();
 			const emitFailed = vi.fn(async () => {}),
 				emitCompleted = vi.fn(async () => {});
@@ -139,7 +139,7 @@ describe("Blueprint Decision Layer Integration", () => {
 				{ id: "GEO-101", blockedBy: [] },
 				"/project",
 				makeContext(
-					generalized
+					mode === "generalized"
 						? {
 								generalizedExecutionContext: {
 									runId: "run-1",
@@ -157,10 +157,12 @@ describe("Blueprint Decision Layer Integration", () => {
 									completion_route: "no_code",
 								},
 							}
-						: {},
+						: mode === "resume"
+							? { workflowProcessLifecycle: { mode: "resume", generation: 2 } }
+							: {},
 				),
 			);
-			if (generalized) {
+			if (mode !== "legacy") {
 				expect(result.success).toBe(false);
 				expect(result.failure?.failureKind).toBe("abnormal_process_exit");
 				expect(decisionLayer.decide).not.toHaveBeenCalled();

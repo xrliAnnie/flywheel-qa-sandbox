@@ -47,6 +47,7 @@ type ProcessControllerStore = Pick<
 	| "getSession"
 	| "getWorkflowExecutionProcessBody"
 	| "getCodexRecoveryEpisode"
+	| "resolveCurrentWorkflowActivation"
 >;
 
 export interface TmuxProcessControllerOptions
@@ -136,9 +137,11 @@ export function createTmuxProcessLaunchDeps(
 						hasUnresolvedCompleteMarker(ctx.executionId)
 					)
 						return "pending";
-					const context = store.getGeneralizedWorkflowNodeForExecution(
-						ctx.executionId,
-					);
+					const context = observation.identity.activationId
+						? store.getGeneralizedWorkflowNodeForActivation(
+								observation.identity.activationId,
+							)
+						: store.getGeneralizedWorkflowNodeForExecution(ctx.executionId);
 					if (!context)
 						return ctx.workflowActivationId ||
 							ctx.workflowSubmissionExpected ||
@@ -231,9 +234,36 @@ export function createExecutionProcessOwnerFactory(
 					rawCodexBin({ ...process.env, FLYWHEEL_CODEX_TUI_BIN: undefined }),
 				))
 		)();
+		// Standby resumes retain their execution but the launch request need not
+		// carry an activation. Only the unique current durable binding can supply it.
+		const resumeActivation =
+			ctx.processLifecycle?.mode === "resume"
+				? store.resolveCurrentWorkflowActivation(ctx.executionId)
+				: undefined;
+		if (resumeActivation && resumeActivation.kind !== "current")
+			throw new Error("process_resume_activation_unavailable");
+		const activationId =
+			resumeActivation?.kind === "current"
+				? resumeActivation.binding.activation_id
+				: (ctx.workflowActivationId ?? null);
+		if (
+			resumeActivation &&
+			ctx.workflowActivationId &&
+			ctx.workflowActivationId !== activationId
+		)
+			throw new Error("process_resume_activation_changed");
+		const assertResumeActivation = () => {
+			if (!resumeActivation) return;
+			const live = store.resolveCurrentWorkflowActivation(ctx.executionId);
+			if (
+				live.kind !== "current" ||
+				live.binding.activation_id !== activationId
+			)
+				throw new Error("process_resume_activation_changed");
+		};
 		const identity = {
 			executionId: ctx.executionId,
-			activationId: ctx.workflowActivationId ?? null,
+			activationId,
 			generation:
 				ctx.processLifecycle?.generation ??
 				store.getWorkflowExecutionProcessBody(ctx.executionId)?.generation ??
@@ -251,7 +281,8 @@ export function createExecutionProcessOwnerFactory(
 		)
 			throw new Error("process_recovery_authority_unavailable");
 		let recoveryCommitted = false;
-		const current = () => {
+		const current = (launch = false) => {
+			if (launch) assertResumeActivation();
 			const session = store.getSession(ctx.executionId);
 			if (!session) throw new Error("process_owner_session_missing");
 			const lifecycleRevision = session.lifecycle_revision ?? 0;
@@ -379,7 +410,7 @@ export function createExecutionProcessOwnerFactory(
 		requireAccepted(
 			await mutate(() =>
 				owners.claim({
-					...current(),
+					...current(true),
 					controller,
 					...(recovery ? { recovery } : {}),
 				}),
@@ -389,7 +420,7 @@ export function createExecutionProcessOwnerFactory(
 		let spawnPrepared = false;
 		let closed = false;
 		const nonce = (options.nonce ?? randomUUID)();
-		const mutation = () => ({ ...current(), spawnEpoch });
+		const mutation = (launch = false) => ({ ...current(launch), spawnEpoch });
 		const close = async () => {
 			// A synchronous local fence precedes even a temporary lease-contention await.
 			closed = true;
@@ -402,7 +433,7 @@ export function createExecutionProcessOwnerFactory(
 				const result = await mutate(() =>
 					closed
 						? { ok: false as const, reason: "close_requested" }
-						: owners.beginSpawn({ ...mutation(), nonce }),
+						: owners.beginSpawn({ ...mutation(true), nonce }),
 				);
 				requireAccepted(result);
 				if (result.ok) {
@@ -416,7 +447,7 @@ export function createExecutionProcessOwnerFactory(
 						!closed &&
 						owners.authorizeSpawn(
 							{ ...identity, spawnEpoch },
-							current().lifecycleRevision,
+							current(true).lifecycleRevision,
 						)
 					);
 				} catch {
@@ -428,7 +459,7 @@ export function createExecutionProcessOwnerFactory(
 				const result = await mutate(() =>
 					closed
 						? { ok: false as const, reason: "close_requested" }
-						: owners.beginRestart(mutation()),
+						: owners.beginRestart(mutation(true)),
 				);
 				return result.ok && !closed;
 			},
@@ -488,6 +519,9 @@ export function createExecutionProcessOwnerFactory(
 						}),
 					),
 				);
+				// Preserve the newborn binding for cleanup even when admission was
+				// superseded while the independent OS verifier awaited.
+				assertResumeActivation();
 			},
 			close,
 			finish: async () => {
