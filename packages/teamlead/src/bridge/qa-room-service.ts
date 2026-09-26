@@ -714,6 +714,7 @@ export class QaRoomService {
 			for (const op of this.store
 				.operations()
 				.filter((o) => o.status === "queued")) {
+				if (!this.options.enabled()) return;
 				const room = this.room(op.room_id);
 				if (this.store.getOperation(op.operation_id)?.status !== "queued")
 					continue;
@@ -771,6 +772,8 @@ export class QaRoomService {
 						this.settleDrill(room, drill, "cancelled_by_teardown");
 					}
 				}
+				// Cancellation awaits may span a managed kill-switch update.
+				if (!this.options.enabled()) return;
 				let phaseBound: number | null = null;
 				if (op.kind === "drill") {
 					try {

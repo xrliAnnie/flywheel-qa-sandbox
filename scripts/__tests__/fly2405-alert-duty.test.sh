@@ -252,11 +252,11 @@ PYCODE
   [[ $? == 0 ]] || return 1
   local BRIDGE_EXTRA_ENV=() TEST_QA_ROOM_SERVICE=1
   source "$TEST_ROOT/room-service-toggle.sh"
-  [[ " ${BRIDGE_EXTRA_ENV[*]} " == *' FLYWHEEL_QA_ROOM_SERVICE=on '* ]] || return 1
+  [[ " ${BRIDGE_EXTRA_ENV[*]} " == *' TEST_QA_ROOM_SERVICE=1 '* ]] || return 1
   TEST_QA_ROOM_SERVICE=0; BRIDGE_EXTRA_ENV=()
   source "$TEST_ROOT/room-service-toggle.sh"
   (( ${#BRIDGE_EXTRA_ENV[@]} == 0 )) || return 1
-  jq -e 'any(.[]; .name == "FLYWHEEL_QA_ROOM_SERVICE" and .disposition == "clear" and .boot == "unchecked")' "$ROOT/scripts/lib/qa-slot-env-contract.json" >/dev/null
+  jq -e 'any(.[]; .name == "TEST_QA_ROOM_SERVICE" and .disposition == "clear" and .boot == "unchecked")' "$ROOT/scripts/lib/qa-slot-env-contract.json" >/dev/null
 }
 check nested_room_toggle
 (( failures == 0 ))

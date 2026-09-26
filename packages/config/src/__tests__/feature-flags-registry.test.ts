@@ -36,6 +36,8 @@ const EXPECTED_WHEN_ON = {
 		"Codex 额度耗尽后自动切换可用账号，并恢复受影响的任务",
 	account_switch_wake_sweep:
 		"Claude 死号切换成功后，自动唤醒切号前已在运行的 Claude 节点继续工作",
+	qa_room_service:
+		"Runner 可以请求起房、运行验证和拆房，由 Bridge 在沙箱外执行",
 	loop_profiler: "Bridge 卡顿时自动抓取一份限时 CPU 分析，方便排查原因",
 	shipped_husk_force:
 		"合入后的节点正常关闭失败一次后，自动清理已确认无用的残留进程",
@@ -88,7 +90,7 @@ describe("feature-flag registry invariants", () => {
 	});
 
 	it("FLY-2368 gives every current flag its reviewed founder copy", () => {
-		expect(FEATURE_FLAGS).toHaveLength(35);
+		expect(FEATURE_FLAGS).toHaveLength(36);
 		expect(
 			Object.fromEntries(FEATURE_FLAGS.map((flag) => [flag.name, flag.whenOn])),
 		).toEqual(EXPECTED_WHEN_ON);

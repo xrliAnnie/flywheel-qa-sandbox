@@ -1025,7 +1025,7 @@ while IFS= read -r _qa_slot_assignment; do
 done < <(qa_slot_env_contract_render "$SLOT_DIR" "$TEST_PROJECT_NAME")
 # FLY-2405: explicit nested-room QA opt-in; ambient production values are scrubbed.
 if [[ "${TEST_QA_ROOM_SERVICE:-0}" == 1 ]]; then
-  BRIDGE_EXTRA_ENV+=("FLYWHEEL_QA_ROOM_SERVICE=on")
+  BRIDGE_EXTRA_ENV+=("TEST_QA_ROOM_SERVICE=1")
 fi
 LEAD_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"

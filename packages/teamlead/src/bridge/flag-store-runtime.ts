@@ -686,3 +686,7 @@ export function storeAutoReleaseOnSilenceEnabled(
 		projectName,
 	);
 }
+
+export function storeQaRoomServiceEnabled(runtime: FlagStoreRuntime): boolean {
+	return readBoolean(runtime, "qa_room_service");
+}

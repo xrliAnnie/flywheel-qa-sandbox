@@ -135,13 +135,11 @@ export function createQaRoomRouter(options: Options): express.Router {
 					failure.reason,
 					req.body,
 				);
-			res
-				.status(failure.code)
-				.json({
-					ok: false,
-					reason: failure.reason,
-					...(failure.fields ? { fields: failure.fields } : {}),
-				});
+			res.status(failure.code).json({
+				ok: false,
+				reason: failure.reason,
+				...(failure.fields ? { fields: failure.fields } : {}),
+			});
 		}
 	});
 	const handle =
@@ -156,13 +154,11 @@ export function createQaRoomRouter(options: Options): express.Router {
 					error instanceof QaRoomError
 						? error
 						: new QaRoomError("room_service_failure", 500);
-				res
-					.status(failure.code)
-					.json({
-						ok: false,
-						reason: failure.reason,
-						...(failure.fields ? { fields: failure.fields } : {}),
-					});
+				res.status(failure.code).json({
+					ok: false,
+					reason: failure.reason,
+					...(failure.fields ? { fields: failure.fields } : {}),
+				});
 			}
 		};
 	router.post(

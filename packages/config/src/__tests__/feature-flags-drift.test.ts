@@ -429,6 +429,17 @@ describe("feature-flag drift guard", () => {
 				},
 			})),
 			{
+				name: "qa_room_service",
+				site: {
+					file: "packages/teamlead/src/bridge/qa-room-host.ts",
+					symbol: "qaRoomServiceEnabled",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeQaRoomServiceEnabled",
+				},
+			},
+			{
 				name: "flag_retirement_scan",
 				site: {
 					file: "packages/teamlead/src/bridge/plugin.ts",

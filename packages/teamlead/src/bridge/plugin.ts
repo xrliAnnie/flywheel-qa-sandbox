@@ -6179,7 +6179,7 @@ export function createBridgeApp(
 					service: opts.qaRoomService,
 					apiToken: config.apiToken,
 					ingestToken: config.ingestToken,
-					enabled: () => qaRoomServiceEnabled(),
+					enabled: () => qaRoomServiceEnabled(store),
 				})
 			: (_req, res) => {
 					res.status(503).json({ ok: false, reason: "room_service_disabled" });

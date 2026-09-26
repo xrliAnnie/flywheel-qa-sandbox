@@ -3,15 +3,18 @@ import { cpus, homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import type { StateStore } from "../StateStore.js";
+import { storeQaRoomServiceEnabled } from "./flag-store-runtime.js";
 import { LocalQaRoomRuntime } from "./qa-room-runtime.js";
 import { QaRoomService } from "./qa-room-service.js";
 
 export function qaRoomServiceEnabled(
+	store: StateStore,
 	env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-	if (env.FLYWHEEL_QA_ROOM_SERVICE !== undefined)
-		return env.FLYWHEEL_QA_ROOM_SERVICE === "on";
-	return !env.FLYWHEEL_ISOLATION_ROOT;
+	return (
+		storeQaRoomServiceEnabled({ mode: "ready", store }) &&
+		(!env.FLYWHEEL_ISOLATION_ROOT || env.TEST_QA_ROOM_SERVICE === "1")
+	);
 }
 export function createLocalQaRoomService(
 	store: StateStore,
@@ -47,7 +50,7 @@ export function createLocalQaRoomService(
 				(isOperationalTerminalStatus(session.status) || !!session.terminal_at)
 			);
 		},
-		enabled: () => qaRoomServiceEnabled(env),
+		enabled: () => qaRoomServiceEnabled(store, env),
 		onError: (reason) => console.error(`[qa-rooms] ${reason}`),
 	});
 }

@@ -669,6 +669,32 @@ describe("QA room lifecycle", () => {
 		expect(events).toEqual([`cancel:${drill.operation_id}`, "teardown"]);
 	});
 
+	it("stops new launches when disabled during awaited drill cancellation and resumes after enable", async () => {
+		const id = await readyDrillRoom();
+		service.drill(actor, id, drillRequest());
+		await service.tick();
+		let resume!: (value: RoomJobObservation) => void;
+		vi.mocked(runtime.observe).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resume = resolve;
+				}),
+		);
+		vi.mocked(runtime.terminate).mockImplementation(async () => {
+			enabled = false;
+		});
+		vi.mocked(runtime.start).mockClear();
+		const tick = service.tick();
+		const teardown = service.teardown(lead, id, { request_id: randomUUID() });
+		resume({ alive: true });
+		await tick;
+		expect(runtime.start).not.toHaveBeenCalled();
+		expect(store.getOperation(teardown.operation_id!)?.status).toBe("queued");
+		enabled = true;
+		await service.tick();
+		expect(store.getOperation(teardown.operation_id!)?.status).toBe("running");
+	});
+
 	it("does not launch a queued drill whose room entered teardown during another cancellation", async () => {
 		const a = await readyDrillRoom();
 		const b = service.deploy(

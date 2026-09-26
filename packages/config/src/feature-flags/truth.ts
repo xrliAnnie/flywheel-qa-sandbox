@@ -557,6 +557,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: explicit wrapper/body environment file path, not a feature switch",
 	FLYWHEEL_ISOLATION_ROOT:
 		"plumbing: fail-closed 529 slot ownership root (FLY-2454), not an on/off gate",
+	FLYWHEEL_ALERT_DUTY_LEAD_ID:
+		"plumbing: isolated QA room duty Lead identity; ignored outside the isolation root (FLY-2405), not an on/off gate",
+	FLYWHEEL_QA_ROOM_ID:
+		"plumbing: immutable room identity for per-operation evidence and physical claims (FLY-2405), not an on/off gate",
+	FLYWHEEL_QA_ROOM_CLAIM:
+		"plumbing: per-room ownership token checked before adopting or removing slot resources (FLY-2405), not an on/off gate",
 	FLYWHEEL_ISOLATION_CONTRACT:
 		"plumbing: fail-closed 529 slot env contract path (FLY-2454), not an on/off gate",
 	FLYWHEEL_KILL_LEDGER_ROOT:

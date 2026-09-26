@@ -156,6 +156,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 		name === "account_switch_wake_sweep" ||
 		name === "codex_quota_auto_switch" ||
 		name === "loop_profiler" ||
+		name === "qa_room_service" ||
 		name === "shipped_husk_force" ||
 		name === "flag_retirement_scan" ||
 		name === "summary_due_activity_gate" ||

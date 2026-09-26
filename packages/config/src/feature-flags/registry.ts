@@ -502,6 +502,29 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	// ─── FLY-1781: weekly retirement candidate scan ───
 	{
+		name: "qa_room_service",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_QA_ROOM_SERVICE",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description: "FLY-2405: authenticated Bridge-owned QA room operations",
+		whenOn: "Runner 可以请求起房、运行验证和拆房，由 Bridge 在沙箱外执行",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/qa-room-host.ts",
+				"qaRoomServiceEnabled",
+				"storeQaRoomServiceEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/qa-room-wiring.test.ts: managed switch updates immediately and cannot be bypassed by isolated opt-in",
+	},
+	{
 		name: "flag_retirement_scan",
 		category: "kill_switch",
 		source: "env",

@@ -277,5 +277,10 @@
 		"name": "FLYWHEEL_QA_ROOM_SERVICE",
 		"disposition": "clear",
 		"boot": "unchecked"
+	},
+	{
+		"name": "TEST_QA_ROOM_SERVICE",
+		"disposition": "clear",
+		"boot": "unchecked"
 	}
 ]

@@ -523,3 +523,11 @@ erDiagram
 - 该轮实现体最后的进度账本原文(`a8ae0af2a`):「C3 14 shell tests green;C1 claims18/pits5/launchd60/multilead29 green but generalized native socket regression red (lsof observation). C4 state17+runtime8+schema26 green; route/wiring in progress. C5 two audit fixes. C7 alert-duty implementation.」
 - 新实现体:先 `git show 22c94c810 --stat` 与读上一条,再按 §16 顺序(C1–C5、C7 代码 → C8 → C6 文档)推进;C8 会改 C2 已提交的 `CREATE TABLE`(kind/action CHECK、`result_json`),分支未合入,直接改即可。
 
+
+## 实现说明：回退控制由 env 改为 flag store
+
+2026-09-26 Lead 对问题 `e77dd177-2b14-42f4-842b-c6fa4358568b` 的裁定替代 §15 的 env-only 开关与重启回退步骤。`qa_room_service` 使用现有 bridge-global flag store，生产默认 on，所有业务读取均经命名 wrapper 按调用读取。registry 的 env 身份仅沿用现有首次 bootstrap 合同，禁止业务直读或增加豁免；运行中以 SQLite 状态为准。
+
+回退命令：`node "$FLYWHEEL_COMM_CLI" feature-flags set --name qa_room_service --to off --reason "FLY-2405 rollback"`。此命令使用既有 stage/apply 管理路径；下一次 API admission / reconciler tick 即读取 off，无需重启。已启动的外部 job 继续按既有归属规则观察、收据与残留回收；off 阻止新 admission 与 queued job 启动（含异步取消后的重新检查）。现有房可由 Lead 按维护规程拆除，或恢复 on 后继续服务拆房。恢复命令将 `--to off` 改为 `--to on`。
+
+隔离房仍默认禁止服务。只有外层房由维护者显式用 `TEST_QA_ROOM_SERVICE=1` provisioning，且 flag store 仍为 on，才允许服务；TEST_ seam 不能覆盖 store off。slot 环境合同清除继承值，test-deploy 只在显式请求时注入这一 TEST_ 值，不再注入产品 env 开关。现有 flag / drift / scope 守卫全部保留。
