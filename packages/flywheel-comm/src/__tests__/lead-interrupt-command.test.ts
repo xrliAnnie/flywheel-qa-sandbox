@@ -182,6 +182,14 @@ describe("FLY-2883 flywheel-comm lead-interrupt", () => {
 	it.each([
 		[["reply", "not-an-id", "--text-stdin"]],
 		[["reply", "li_00000000-0000-4000-8000-000000000001"]],
+		[
+			[
+				"reply",
+				"li_00000000-0000-4000-8000-000000000001",
+				"--text",
+				"reply text must never ride argv",
+			],
+		],
 		[["unknown"]],
 		[[]],
 	])("rejects malformed usage %j without calling the Bridge", async (args) => {

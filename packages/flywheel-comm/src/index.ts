@@ -165,7 +165,7 @@ Commands:
   inbox     Check for instructions from Lead (Runner use)
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
   lead-interrupt  Read and answer controlled interrupts relayed by the voice agent
-                  (pending [--json] | reply <li_id> --text-stdin|--text <text>)
+                  (pending [--json] | reply <li_id> --text-stdin)
   voice-session  Start, stop, inspect, or schedule a generic Codex realtime voice session
                  (start|stop|status|schedule-status|reschedule|cancel-schedule)
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)

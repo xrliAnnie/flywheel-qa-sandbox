@@ -50,7 +50,7 @@ async function readAllStdin(): Promise<string> {
 function usage(): string {
 	return [
 		"usage: flywheel-comm lead-interrupt pending [--lead <id>] [--project <name>] [--json]",
-		"       flywheel-comm lead-interrupt reply <interruptId> (--text-stdin | --text <text>) [--lead <id>] [--project <name>]",
+		"       flywheel-comm lead-interrupt reply <interruptId> --text-stdin [--lead <id>] [--project <name>]",
 	].join("\n");
 }
 
@@ -80,7 +80,6 @@ export async function runLeadInterruptCommand(
 		project?: string;
 		json?: boolean;
 		"text-stdin"?: boolean;
-		text?: string;
 	};
 	let positionals: string[];
 	try {
@@ -90,8 +89,8 @@ export async function runLeadInterruptCommand(
 				lead: { type: "string" },
 				project: { type: "string" },
 				json: { type: "boolean", default: false },
+				// The reply is read from stdin only: never argv or shell history.
 				"text-stdin": { type: "boolean", default: false },
-				text: { type: "string" },
 			},
 			allowPositionals: true,
 		}));
@@ -102,15 +101,13 @@ export async function runLeadInterruptCommand(
 	const [subcommand, interruptId, ...extra] = positionals;
 	try {
 		if (subcommand === "pending") {
-			if (interruptId !== undefined || values.text || values["text-stdin"])
+			if (interruptId !== undefined || values["text-stdin"])
 				throw new UsageError("pending takes no interrupt id or text");
 		} else if (subcommand === "reply") {
 			if (!interruptId || !INTERRUPT_ID.test(interruptId) || extra.length > 0)
 				throw new UsageError("reply requires exactly one interrupt id (li_…)");
-			if (Boolean(values.text) === Boolean(values["text-stdin"]))
-				throw new UsageError(
-					"reply requires exactly one of --text-stdin or --text",
-				);
+			if (!values["text-stdin"])
+				throw new UsageError("reply reads its text from stdin: --text-stdin");
 		} else {
 			throw new UsageError(`unknown subcommand: ${subcommand ?? "(none)"}`);
 		}
@@ -168,9 +165,7 @@ export async function runLeadInterruptCommand(
 			path = "/api/lead-interrupts/pending/query";
 			body = identity;
 		} else {
-			const text = values["text-stdin"]
-				? await (deps.readStdin ?? readAllStdin)()
-				: (values.text ?? "");
+			const text = await (deps.readStdin ?? readAllStdin)();
 			path = `/api/lead-interrupts/${encodeURIComponent(interruptId!)}/reply`;
 			body = { ...identity, text };
 		}

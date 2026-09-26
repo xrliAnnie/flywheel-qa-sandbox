@@ -497,10 +497,17 @@ export class LeadInboxLoop {
 		let interrupt: LeadInterruptDecision | undefined;
 		if (
 			this.opts.interruptHooks &&
-			rows.length === 1 &&
-			rows[0]?.type === LEAD_INTERRUPT_MESSAGE_TYPE
+			rows.some((row) => row.type === LEAD_INTERRUPT_MESSAGE_TYPE)
 		) {
-			interrupt = await this.decideInterrupt(rows[0], batch);
+			// A controlled interrupt letter always travels alone (its sender id is
+			// unique). Anything else claiming the type is dead-lettered unseen.
+			if (rows.length !== 1) {
+				this.assertInterruptClaim(rows);
+				this.opts.interruptHooks.rejectBatch?.(rows);
+				this.deadLetterInterrupt(rows, "lead_interrupt_batch_invalid");
+				return;
+			}
+			interrupt = await this.decideInterrupt(rows[0]!, batch);
 			if (!interrupt) return;
 		}
 		try {
@@ -508,6 +515,7 @@ export class LeadInboxLoop {
 			if (interrupt?.kind === "custom") {
 				const handled = await interrupt.deliver();
 				if ("hold" in handled) {
+					this.assertInterruptClaim(rows);
 					this.holdInterrupt(rows[0]!, handled.hold);
 					return;
 				}
@@ -690,7 +698,9 @@ export class LeadInboxLoop {
 	): Promise<LeadInterruptDecision | undefined> {
 		let decision: LeadInterruptDecision;
 		try {
-			decision = await this.opts.interruptHooks!.decide(row, batch);
+			decision = await this.opts.interruptHooks!.decide(row, batch, {
+				assertCurrentOwner: () => this.assertInterruptClaim([row]),
+			});
 		} catch (error) {
 			this.opts.logger?.warn("lead_interrupt_hook_failed", {
 				leadId: this.opts.leadId,
@@ -703,16 +713,23 @@ export class LeadInboxLoop {
 				reason: "lead_interrupt_hook_failed",
 			};
 		}
+		// The hook awaited; another Bridge may own this lead now. Nothing below
+		// (ack, dead-letter, hold, or handoff) may run on a lost owner or claim.
+		this.assertInterruptClaim([row]);
 		if (decision.kind === "ack") {
-			if (!this.opts.queue.ack(row.id, this.isoNow()))
+			if (
+				!this.opts.queue.ackBatch({
+					batchId: row.batch_id!,
+					ownerEpoch: this.opts.ownerEpoch,
+					memberIds: [row.delivery_id],
+					now: this.isoNow(),
+				})
+			)
 				throw new Error("owner fence lost while acking interrupt letter");
 			return undefined;
 		}
 		if (decision.kind === "dead") {
-			if (!this.opts.queue.markDead(row.id, this.isoNow(), decision.reason))
-				throw new Error(
-					"owner fence lost while dead-lettering interrupt letter",
-				);
+			this.deadLetterInterrupt([row], decision.reason);
 			return undefined;
 		}
 		if (decision.kind === "hold") {
@@ -720,6 +737,43 @@ export class LeadInboxLoop {
 			return undefined;
 		}
 		return decision;
+	}
+
+	/** Owner lease AND this batch's claim, or throw (no write happens). */
+	private assertInterruptClaim(rows: readonly MailboxRow[]): void {
+		if (!this.opts.queue.isCurrentOwner(this.opts.ownerEpoch, this.isoNow())) {
+			throw new Error("owner fence lost during interrupt handling");
+		}
+		for (const row of rows) {
+			const live = this.opts.queue.getById(row.id);
+			if (
+				!live ||
+				live.state !== "LEASED" ||
+				live.claimed_by !== this.opts.ownerEpoch ||
+				live.batch_id !== row.batch_id
+			) {
+				throw new Error(`interrupt claim lost: ${row.id}`);
+			}
+		}
+	}
+
+	/** Claim-fenced terminal dead-letter for every member of the batch. */
+	private deadLetterInterrupt(
+		rows: readonly MailboxRow[],
+		reason: string,
+	): void {
+		const changed = this.opts.queue.recordLeadDeliveryFailure({
+			batchId: rows[0]!.batch_id!,
+			ownerEpoch: this.opts.ownerEpoch,
+			now: this.isoNow(),
+			nextRetryAt: this.isoNow(),
+			error: reason,
+			maxAttempts: 1,
+			deadReason: reason,
+		});
+		if (changed !== rows.length) {
+			throw new Error("owner fence lost while dead-lettering interrupt letter");
+		}
 	}
 
 	private holdInterrupt(

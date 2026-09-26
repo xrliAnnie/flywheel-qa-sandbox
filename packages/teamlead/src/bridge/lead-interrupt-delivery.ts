@@ -57,11 +57,19 @@ export type LeadInterruptDecision =
 			>;
 	  };
 
+export interface LeadInterruptFence {
+	/** Throws when this loop no longer owns the Lead or the letter's claim. */
+	assertCurrentOwner(): void;
+}
+
 export interface LeadInterruptLoopHooks {
 	decide(
 		row: MailboxRow,
 		batch: LeadDeliveryBatch,
+		fence: LeadInterruptFence,
 	): Promise<LeadInterruptDecision>;
+	/** Audit trail for an invalid multi-member batch the loop dead-letters. */
+	rejectBatch?(rows: readonly MailboxRow[]): void;
 }
 
 export type { CodexInterruptResult } from "./lead-delivery-adapter.js";
@@ -78,10 +86,13 @@ export interface ClaudeInterruptPane {
 	/** Capture and judge the Lead's pane once. */
 	assess(): Promise<ClaudePaneAssessment>;
 	/**
-	 * Re-capture, re-verify identity + judgment, then type the fixed phrase.
-	 * Must never type anything else.
+	 * Re-capture, re-verify identity + judgment, call `assertCurrentOwner`
+	 * immediately before sending, then type the fixed phrase. Must never type
+	 * anything else; a throwing guard means nothing is sent.
 	 */
-	typePhrase(): Promise<
+	typePhrase(
+		assertCurrentOwner: () => void,
+	): Promise<
 		{ outcome: "nudged" } | { outcome: "skipped" | "failed"; reason: string }
 	>;
 }
@@ -112,6 +123,11 @@ export function interruptRowMatchesRecord(
 	if (!record) return false;
 	return (
 		row.type === LEAD_INTERRUPT_MESSAGE_TYPE &&
+		row.msg_class === "model" &&
+		row.carrier === "inbox" &&
+		// The loop delivers delivery_content ?? content; only content is bound.
+		row.delivery_content === null &&
+		row.content_ref === null &&
 		row.delivery_id === record.deliveryId &&
 		row.id === record.deliveryId &&
 		row.from_agent === `${LEAD_INTERRUPT_FROM_PREFIX}${record.interruptId}` &&
@@ -183,8 +199,16 @@ export function createLeadInterruptHooks(
 		onDelivered: () => recordDisposition(interruptId, "mailbox_only", reason),
 	});
 
+	/** Re-read after every await: an answered letter is never delivered. */
+	const answered = (interruptId: string): LeadInterruptDecision | undefined => {
+		if (store().get(interruptId)?.state !== "replied") return undefined;
+		audit(interruptId, "acked_after_reply", null);
+		return { kind: "ack", reason: "lead_interrupt_replied" };
+	};
+
 	const claudeDecision = async (
 		record: LeadInterruptRow,
+		fence: LeadInterruptFence,
 	): Promise<LeadInterruptDecision> => {
 		const pane = deps.claudePane;
 		if (!pane) return mail(record.interruptId, "pane_judge_unavailable");
@@ -197,6 +221,8 @@ export function createLeadInterruptHooks(
 				reason: `assess_error:${describe(error)}`,
 			};
 		}
+		const repliedDuringAssess = answered(record.interruptId);
+		if (repliedDuringAssess) return repliedDuringAssess;
 		if (store().hasAuditEvent(record.interruptId, "nudged")) {
 			// Already typed once: never type again. Keep holding while it works.
 			return assessment.state === "busy_safe" ||
@@ -214,12 +240,14 @@ export function createLeadInterruptHooks(
 						: `pane_unknown:${assessment.reason}`,
 			);
 		}
+		// Outside any try: a lost owner must never degrade into "deliver as mail".
+		fence.assertCurrentOwner();
 		if (!audit(record.interruptId, "nudge_attempt", null)) {
 			return mail(record.interruptId, "nudge_audit_unavailable");
 		}
 		let typed: Awaited<ReturnType<ClaudeInterruptPane["typePhrase"]>>;
 		try {
-			typed = await pane.typePhrase();
+			typed = await pane.typePhrase(() => fence.assertCurrentOwner());
 		} catch (error) {
 			typed = { outcome: "failed", reason: `type_error:${describe(error)}` };
 		}
@@ -240,7 +268,7 @@ export function createLeadInterruptHooks(
 			);
 			audit(record.interruptId, "nudged", "disposition_unrecorded");
 		}
-		return hold("nudged");
+		return answered(record.interruptId) ?? hold("nudged");
 	};
 
 	const codexDecision = (
@@ -273,7 +301,17 @@ export function createLeadInterruptHooks(
 	};
 
 	return {
-		async decide(row, batch) {
+		rejectBatch(rows) {
+			for (const row of rows) {
+				try {
+					if (row.source_ref && store().get(row.source_ref))
+						audit(row.source_ref, "refused", "batch_invalid");
+				} catch (error) {
+					warn(`batch refusal audit failed for ${row.id}: ${describe(error)}`);
+				}
+			}
+		},
+		async decide(row, batch, fence) {
 			const interruptId = row.source_ref ?? "";
 			let record: LeadInterruptRow | undefined;
 			try {
@@ -319,7 +357,7 @@ export function createLeadInterruptHooks(
 			}
 			return deps.backend === "codex-app-server"
 				? codexDecision(record, batch)
-				: claudeDecision(record);
+				: claudeDecision(record, fence);
 		},
 	};
 }
