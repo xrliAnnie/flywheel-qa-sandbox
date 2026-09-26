@@ -36,7 +36,11 @@
  *     split/trim/filter. An empty override leaves chrome ON unless `no-chrome`.
  */
 
+import type { RunnerPrefixRequest } from "./runner-prefix-profile.js";
+
 export interface RunnerMcpProfile {
+	/** FLY-2913: pinned source for compilation after the skill arm is resolved. */
+	prefix?: RunnerPrefixRequest;
 	/** Marketplace-qualified plugin keys to disable for this launch. */
 	disabledPlugins: string[];
 	/** When true the launch gets `--no-chrome` (Claude-in-Chrome off). */

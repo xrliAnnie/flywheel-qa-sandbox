@@ -475,6 +475,12 @@ export {
 	encodeMemoryPathComponent,
 	RUNNER_MEMORY_ID_MAX_LENGTH,
 } from "./runner-memory-path.js";
+export type {
+	RunnerPrefixContext,
+	RunnerPrefixRequest,
+	RunnerPrefixSelection,
+} from "./runner-prefix-profile.js";
+export { resolveRunnerPrefixSelection } from "./runner-prefix-profile.js";
 // FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
 export type {
 	BackendSkillAssembly,

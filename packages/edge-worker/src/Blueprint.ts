@@ -27,6 +27,7 @@ import type {
 	PonytailConfig,
 	PonytailInput,
 	PonytailRetryInput,
+	RunnerMcpProfile,
 	SkillAssemblyBaseArm,
 	SkillFrameworkMode,
 	SkillFrameworkVia,
@@ -636,6 +637,7 @@ export interface BlueprintContext {
 	 * Absent/null ⇒ no slimming (byte-compatible spawn).
 	 */
 	runnerMcpProfile?: {
+		prefix?: RunnerMcpProfile["prefix"];
 		disabledPlugins: string[];
 		disableChrome: boolean;
 		/** FLY-1185 §2.7: positive opt-ins (playwright back-enable channel). */

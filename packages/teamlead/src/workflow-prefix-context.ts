@@ -1,13 +1,8 @@
-import type { WorkflowRunRow } from "./StateStore.js";
+import type { RunnerPrefixContext } from "flywheel-config";
+import type { StateStore, WorkflowRunRow } from "./StateStore.js";
 import { parseWorkflowRunSnapshot } from "./workflow-run-snapshot.js";
 
-export interface WorkflowPrefixContext {
-	workflow: { runId: string; templateId: string; snapshotDigest: string };
-	nodeId: string;
-	phase: "design" | "implement" | "qa";
-	/** Unknown on old snapshots; never hydrate it from mutable role files. */
-	agent: { content: string; digest: string } | null;
-}
+export type WorkflowPrefixContext = RunnerPrefixContext;
 
 /**
  * FLY-2913: server-side provenance only, with no profile selection or launch
@@ -66,4 +61,36 @@ export function resolveWorkflowPrefixContext(input: {
 			? { content: node.agent.content, digest: node.agent.digest }
 			: null,
 	};
+}
+
+export interface WorkflowPrefixLookupInput {
+	executionId: string;
+	expected?: { runId: string; nodeId: string; snapshotDigest: string };
+}
+/** Runtime binding survives resident reentry; the single-activation binding lookup does not. */
+export function resolveExecutionWorkflowPrefixContext(
+	store: Pick<StateStore, "getWorkflowExecutionRuntime" | "getWorkflowRun">,
+	input: WorkflowPrefixLookupInput,
+): WorkflowPrefixContext | undefined {
+	const runtime = store.getWorkflowExecutionRuntime(input.executionId);
+	if (!runtime) {
+		if (input.expected)
+			throw new Error("workflow_prefix_context: runtime missing");
+		return undefined;
+	}
+	if (
+		runtime.execution_id !== input.executionId ||
+		(input.expected &&
+			(runtime.run_id !== input.expected.runId ||
+				runtime.node_id !== input.expected.nodeId))
+	)
+		throw new Error("workflow_prefix_context: runtime identity mismatch");
+	const run = store.getWorkflowRun(runtime.run_id);
+	if (!run || run.run_id !== runtime.run_id)
+		throw new Error("workflow_prefix_context: run missing or mismatched");
+	return resolveWorkflowPrefixContext({
+		run,
+		nodeId: runtime.node_id,
+		expectedSnapshotDigest: input.expected?.snapshotDigest,
+	});
 }

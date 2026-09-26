@@ -1,14 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { resolveWorkflowPrefixContext } from "../workflow-prefix-context.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { StateStore } from "../StateStore.js";
 import {
-	buildWorkflowRunSnapshotV1,
-	buildWorkflowRunSnapshotV2,
-	buildWorkflowRunSnapshotV3,
-} from "../workflow-run-snapshot.js";
-import { legacyEngineeringManifest } from "./fixtures/legacy-workflow-manifests.js";
+	resolveExecutionWorkflowPrefixContext,
+	resolveWorkflowPrefixContext,
+} from "../workflow-prefix-context.js";
+import { createWorkflowPrefixFixture } from "./fixtures/workflow-prefix.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -18,87 +17,7 @@ afterEach(() => {
 function fixture(version: 1 | 2 | 3 = 3, templateId = "tpl_code") {
 	const root = mkdtempSync(join(tmpdir(), "fly2913-prefix-context-"));
 	roots.push(root);
-	mkdirSync(join(root, "agents"));
-	mkdirSync(join(root, ".flywheel/menus"), { recursive: true });
-	writeFileSync(
-		join(root, ".flywheel/menus/ic-roster.yaml"),
-		"implement: agents/role.md\nqa: agents/qa.md\n",
-	);
-	writeFileSync(
-		join(root, "agents/role.md"),
-		"---\nskills: [implement]\n---\nPinned role.\n",
-	);
-	writeFileSync(join(root, "agents/qa.md"), "Independent QA.\n");
-	const authorId = version === 2 ? "author" : "implement";
-	writeFileSync(
-		join(root, ".flywheel/config.yaml"),
-		"project: fly2913-fixture\n",
-	);
-	const template = { id: templateId, revision: 2 };
-	const manifest = {
-		schema_version: version,
-		nodes: [
-			{
-				id: authorId,
-				type: "implement",
-				vendor: "claude",
-				model: "claude-fable-5",
-				...(version === 2 ? { role: "implement" } : {}),
-				effort: "high",
-				...(version === 3 ? { handbook_ref: authorId } : {}),
-			},
-			{
-				id: "qa",
-				type: "qa",
-				vendor: "codex",
-				model: "gpt-5.6-sol",
-				effort: "low",
-				...(version === 3 ? { handbook_ref: "qa" } : {}),
-			},
-			{ id: "approval", type: "gate" },
-		],
-		edges: [
-			{ id: "done", from: authorId, to: "qa", condition: "implement_done" },
-			{ id: "pass", from: "qa", to: "approval", condition: "qa_pass" },
-		],
-		loops: [
-			{
-				id: "retry",
-				from: "qa",
-				to: authorId,
-				loop_when: "qa_fail",
-				exit_when: "qa_pass",
-				max_iterations: 3,
-				on_limit: "escalate",
-			},
-		],
-		terminal_gate: { node: "approval", predicate: "founder_approved" },
-		ship_claims: ["qa_passed", "founder_approved"],
-	};
-	const snapshot =
-		version === 1
-			? buildWorkflowRunSnapshotV1({
-					template,
-					manifest: legacyEngineeringManifest(),
-				})
-			: (version === 2
-					? buildWorkflowRunSnapshotV2
-					: buildWorkflowRunSnapshotV3)({
-					template,
-					manifest,
-					canonicalRoot: root,
-				});
-	return {
-		root,
-		snapshot,
-		run: {
-			run_id: "run-2913",
-			template_id: templateId,
-			template_revision: 2,
-			snapshot: JSON.stringify(snapshot),
-		},
-		nodeId: authorId,
-	};
+	return createWorkflowPrefixFixture(root, version, templateId);
 }
 
 describe("pinned workflow prefix provenance (FLY-2913)", () => {
@@ -220,5 +139,98 @@ describe("pinned workflow prefix provenance (FLY-2913)", () => {
 		]);
 		expect(JSON.stringify(result)).not.toContain("PRIVATE_VALUE");
 		expect(result).not.toHaveProperty("capabilities");
+	});
+});
+
+describe("execution-bound prefix source lookup", () => {
+	function bound() {
+		const pinned = fixture();
+		const runtime = {
+			execution_id: "execution-2913",
+			run_id: pinned.run.run_id,
+			node_id: pinned.nodeId,
+		};
+		const store = {
+			getWorkflowExecutionRuntime: vi.fn(() => runtime),
+			getWorkflowRun: vi.fn(() => pinned.run),
+			getWorkflowExecutionBinding: vi.fn(() => {
+				throw new Error("ambiguous after reentry");
+			}),
+		};
+		const lookup = (expected?: {
+			runId: string;
+			nodeId: string;
+			snapshotDigest: string;
+		}) =>
+			resolveExecutionWorkflowPrefixContext(
+				store as unknown as Pick<
+					StateStore,
+					"getWorkflowExecutionRuntime" | "getWorkflowRun"
+				>,
+				{ executionId: runtime.execution_id, expected },
+			);
+		return { pinned, runtime, store, lookup };
+	}
+	it("uses immutable runtime after multiple activations instead of the single-activation lookup", () => {
+		const { lookup, store, pinned } = bound();
+		expect(lookup()).toMatchObject({
+			workflow: { runId: pinned.run.run_id },
+			phase: "implement",
+		});
+		expect(store.getWorkflowExecutionBinding).not.toHaveBeenCalled();
+	});
+	it.each(["runId", "nodeId", "snapshotDigest"] as const)(
+		"rejects mismatched dispatcher %s",
+		(key) => {
+			const { lookup, pinned } = bound();
+			const expected = {
+				runId: pinned.run.run_id,
+				nodeId: pinned.nodeId,
+				snapshotDigest: pinned.snapshot.snapshot_digest,
+			};
+			expected[key] = "wrong";
+			expect(() => lookup(expected)).toThrow(
+				/workflow_prefix_context: (runtime identity|digest) mismatch/,
+			);
+		},
+	);
+	it("distinguishes an unbound legacy execution from a missing engine binding", () => {
+		const { store, pinned } = bound();
+		const lookupStore = {
+			...store,
+			getWorkflowExecutionRuntime: () => undefined,
+		};
+		const input = { executionId: "missing" };
+		expect(
+			resolveExecutionWorkflowPrefixContext(
+				lookupStore as unknown as Pick<
+					StateStore,
+					"getWorkflowExecutionRuntime" | "getWorkflowRun"
+				>,
+				input,
+			),
+		).toBeUndefined();
+		expect(() =>
+			resolveExecutionWorkflowPrefixContext(
+				lookupStore as unknown as Pick<
+					StateStore,
+					"getWorkflowExecutionRuntime" | "getWorkflowRun"
+				>,
+				{
+					...input,
+					expected: {
+						runId: pinned.run.run_id,
+						nodeId: pinned.nodeId,
+						snapshotDigest: pinned.snapshot.snapshot_digest,
+					},
+				},
+			),
+		).toThrow(/runtime missing/);
+		expect(store.getWorkflowRun).not.toHaveBeenCalled();
+	});
+	it("rejects a run row mismatched with its execution binding", () => {
+		const { lookup, pinned } = bound();
+		pinned.run.run_id = "different";
+		expect(() => lookup()).toThrow(/run missing or mismatched/);
 	});
 });

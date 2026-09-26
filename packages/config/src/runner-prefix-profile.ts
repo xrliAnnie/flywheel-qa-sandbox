@@ -16,6 +16,18 @@ export interface RunnerPrefixWorkflow {
 	templateId: string;
 }
 
+/** Server-derived source identity; never accepted from an HTTP start payload. */
+export interface RunnerPrefixContext {
+	workflow: RunnerPrefixWorkflow;
+	nodeId: string;
+	phase: "design" | "implement" | "qa";
+	agent: { content: string; digest: string } | null;
+}
+export interface RunnerPrefixRequest {
+	selection: Extract<RunnerPrefixSelection, { mode: "role-v1" }>;
+	context: RunnerPrefixContext;
+}
+
 export interface ResolveRunnerPrefixSelectionArgs {
 	actor: "runner" | "reviewer" | "lead";
 	backend: string;

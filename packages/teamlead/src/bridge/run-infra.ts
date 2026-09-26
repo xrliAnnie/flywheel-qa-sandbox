@@ -1,4 +1,5 @@
 import { normalizeCodexRecoveryFailure } from "flywheel-core";
+import { resolveExecutionWorkflowPrefixContext } from "../workflow-prefix-context.js";
 /**
  * FLY-22/FLY-50: Run infrastructure setup — creates per-project Blueprint + RunDispatcher.
  *
@@ -1264,6 +1265,7 @@ export function createRunInfraDispatcher(input: {
 				);
 			}
 		},
+		(lookup) => resolveExecutionWorkflowPrefixContext(input.store, lookup),
 	);
 }
 

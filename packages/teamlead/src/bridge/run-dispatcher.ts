@@ -17,6 +17,7 @@ import type {
 	FlagStoreRawValue,
 	RoleBackendMap,
 	RoleEffort,
+	RunnerMcpProfile,
 	RunnerModelDisplay,
 	SkillFrameworkMode,
 	WorkflowDispatchVendor,
@@ -26,6 +27,7 @@ import {
 	isWorkflowPhaseRole,
 	renderRunnerModelDisplay,
 	resolveRunnerMcpProfile,
+	resolveRunnerPrefixSelection,
 	SKILL_FRAMEWORK_SPLIT,
 } from "flywheel-config";
 import {
@@ -39,6 +41,10 @@ import type {
 	BlueprintContext,
 	BlueprintResult,
 } from "flywheel-edge-worker/dist/Blueprint.js";
+import type {
+	WorkflowPrefixContext,
+	WorkflowPrefixLookupInput,
+} from "../workflow-prefix-context.js";
 import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
@@ -629,7 +635,59 @@ export class RetryDispatcher implements IRetryDispatcher {
 		}),
 		protected prelaunchWorkflowTurnGrant: GrantPrelaunchWorkflowTurn = grantPrelaunchWorkflowTurn,
 		protected workflowUsageRecorder?: BlueprintContext["onWorkflowUsageEvent"],
+		protected workflowPrefixLookup?: (
+			input: WorkflowPrefixLookupInput,
+		) => WorkflowPrefixContext | undefined,
 	) {}
+
+	protected resolveMcpProfileForExecution(
+		executionId: string,
+		req: Pick<
+			StartRequest,
+			"sessionRole" | "issueLabels" | "generalizedExecution"
+		>,
+	): RunnerMcpProfile | null {
+		const legacy = resolveRunnerMcpProfile({
+			sessionRole: req.sessionRole,
+			issueLabels: req.issueLabels,
+		});
+		const select = (context?: WorkflowPrefixContext) =>
+			resolveRunnerPrefixSelection({
+				actor: "runner",
+				backend: "claude-tmux",
+				issueLabels: req.issueLabels,
+				phase: context?.phase,
+				workflow: context?.workflow,
+			});
+		// Check mode/escape hatches before consulting persisted data. Legacy launch
+		// behavior must not acquire new reads or failure modes.
+		const eligibility = select();
+		if (
+			eligibility.mode === "legacy" &&
+			eligibility.reason !== "unmapped-trigger"
+		)
+			return legacy;
+		const context = this.workflowPrefixLookup?.({
+			executionId,
+			expected: req.generalizedExecution
+				? {
+						runId: req.generalizedExecution.runId,
+						nodeId: req.generalizedExecution.nodeId,
+						snapshotDigest: req.generalizedExecution.snapshotDigest,
+					}
+				: undefined,
+		});
+		const selection = select(context);
+		if (selection.mode === "legacy" || !context) return legacy;
+		return {
+			...(legacy ?? {
+				disabledPlugins: [],
+				disableChrome: false,
+				enabledPluginsExtra: [],
+			}),
+			prefix: { selection, context },
+		};
+	}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
 	protected assertRunnerAdmission(): void {
@@ -1090,10 +1148,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 				// session fields (sessionRole + issue labels flow through the retry
 				// request) — a QA retry keeps its browser exemption.
 				...(runnerSpawn.runnerBackend === "claude-tmux" && {
-					runnerMcpProfile: resolveRunnerMcpProfile({
-						sessionRole: req.sessionRole,
-						issueLabels: req.issueLabels,
-					}),
+					runnerMcpProfile: this.resolveMcpProfileForExecution(
+						newExecutionId,
+						req,
+					),
 				}),
 				retryContext: {
 					predecessorExecutionId: req.oldExecutionId,
@@ -1391,6 +1449,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		skillFrameworkModeControl?: () => FlagStoreRawValue,
 		prelaunchWorkflowTurnGrant: GrantPrelaunchWorkflowTurn = grantPrelaunchWorkflowTurn,
 		workflowUsageRecorder?: BlueprintContext["onWorkflowUsageEvent"],
+		workflowPrefixLookup?: (
+			input: WorkflowPrefixLookupInput,
+		) => WorkflowPrefixContext | undefined,
 	) {
 		super(
 			blueprintsByProject,
@@ -1410,6 +1471,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			skillFrameworkModeControl,
 			prelaunchWorkflowTurnGrant,
 			workflowUsageRecorder,
+			workflowPrefixLookup,
 		);
 	}
 
@@ -1857,10 +1919,10 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// keeps the browser (sessionRole="qa"); full-mcp label / env
 				// kill-switch resolve to null inside (→ byte-compatible spawn).
 				...(runnerSpawn.runnerBackend === "claude-tmux" && {
-					runnerMcpProfile: resolveRunnerMcpProfile({
-						sessionRole: req.sessionRole,
-						issueLabels: req.issueLabels,
-					}),
+					runnerMcpProfile: this.resolveMcpProfileForExecution(
+						executionId,
+						req,
+					),
 				}),
 				// FLY-116: spawn macOS Terminal viewer once tmux window exists
 				onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
