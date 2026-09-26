@@ -2,8 +2,8 @@ import type { Readable } from "node:stream";
 import type { BrainAdapter, ConversationSession } from "flywheel-voice-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpusDownlink } from "../audio/OpusDownlink.js";
-import { CodexRoomFrontend } from "../codex/CodexRoomFrontend.js";
 import { SPEECH_TRUNCATED_NOTE } from "../codex/CodexProofSpeaker.js";
+import { CodexRoomFrontend } from "../codex/CodexRoomFrontend.js";
 import { CodexVoiceBackend } from "../codex/CodexVoiceBackend.js";
 import { GenericVoiceSession, type RoomHandlers } from "../session.js";
 import { prepareReplySpeech } from "../speech.js";
@@ -68,7 +68,6 @@ async function harness(
 	const appendAudio = vi.fn(() => "sent" as const);
 	const appendSpeech = vi.fn(async () => undefined);
 	let generation = 1;
-	let finishRestart: ((next: number) => void) | undefined;
 	const conversation = {
 		get generation() {
 			return generation;
@@ -79,18 +78,13 @@ async function harness(
 			appendText: vi.fn(async () => undefined),
 			cancel: vi.fn(async () => undefined),
 		},
-		restart: vi.fn(
-			() =>
-				new Promise<number>((resolve) => {
-					finishRestart = (next) => {
-						generation = next;
-						resolve(next);
-					};
-				}),
+		reconnect: vi.fn((reason: string) =>
+			callbacks.onGenerationLost({ generation, reason } as never),
 		),
 		close: vi.fn(async () => undefined),
 	};
 	const evidence: Record<string, unknown>[] = [];
+	const statuses: string[] = [];
 	const persisted: Array<{ role: string; text: string }> = [];
 	const handoffToLead = vi.fn(async () => ({
 		handoffId: "handoff-a",
@@ -118,6 +112,9 @@ async function harness(
 			: {}),
 		...(options.handoff ? { handoffToLead } : {}),
 		onEvidence: (record) => evidence.push(record),
+		postStatus: async (text) => {
+			statuses.push(text);
+		},
 	});
 	let nextPacket = 1;
 	const events: string[] = [];
@@ -198,6 +195,7 @@ async function harness(
 		room,
 		events,
 		evidence,
+		statuses,
 		persisted,
 		appendAudio,
 		appendSpeech,
@@ -211,7 +209,10 @@ async function harness(
 		get callbacks() {
 			return callbacks;
 		},
-		finishRestart: (next: number) => finishRestart?.(next),
+		finishReconnect: (next: number) => {
+			generation = next;
+			callbacks.onGenerationReady({ generation: next } as never);
+		},
 	};
 }
 
@@ -403,7 +404,7 @@ describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
 		h.founderSpeaks();
 		await h.step("vvvvvvvvvv");
 		expect(h.heardIds().filter((id) => queued.includes(id))).toEqual([]);
-		expect(h.conversation.restart).not.toHaveBeenCalled();
+		expect(h.conversation.reconnect).not.toHaveBeenCalled();
 		expect(h.appendAudio).toHaveBeenLastCalledWith(
 			expect.any(Buffer),
 			1,
@@ -451,7 +452,10 @@ describe("engine B barge-in through the room session (FLY-2885 T5)", () => {
 		const heardBefore = h.heardIds().length;
 		await h.step("ssssssssss");
 		expect(
-			h.heardIds().slice(heardBefore).filter((id) => answer.includes(id)),
+			h
+				.heardIds()
+				.slice(heardBefore)
+				.filter((id) => answer.includes(id)),
 		).toEqual([]);
 	});
 });
@@ -499,7 +503,7 @@ describe("engine B read-aloud overrun in the room (FLY-2885 T5c)", () => {
 		});
 		// The turn pauses >1.5 s and its done never comes: new generation.
 		await h.step("s".repeat(76));
-		expect(h.conversation.restart).toHaveBeenCalledOnce();
+		expect(h.conversation.reconnect).toHaveBeenCalledOnce();
 		// Founder audio during the generation change is dropped as a gap.
 		h.founder(true);
 		expect(h.evidence).toContainEqual(
@@ -508,7 +512,7 @@ describe("engine B read-aloud overrun in the room (FLY-2885 T5c)", () => {
 				reason: "generation_changed_uplink",
 			}),
 		);
-		h.finishRestart(2);
+		h.finishReconnect(2);
 		await vi.advanceTimersByTimeAsync(0);
 		const next = await h.step("vvv");
 		expect(h.heardIds().slice(-3)).toEqual(next);
@@ -545,5 +549,41 @@ describe("engine B read-aloud overrun in the room (FLY-2885 T5c)", () => {
 		await h.step("vvv");
 		h.turn("turn.done", "r2", "assistant", "好的。");
 		await expect(second).resolves.toMatchObject({ outcome: "completed" });
+	});
+});
+
+describe("engine B generation change in the session (FLY-2885 T7)", () => {
+	it("settles the read-aloud, marks the gap, tells the thread, and resumes on the new generation", async () => {
+		const h = await harness();
+		const receipt = h.session.speak!("你好。", "readback", {
+			pendingKey: "lost",
+			verification: "required",
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		const old = await h.step("vvvv");
+		h.callbacks.onGenerationLost({
+			generation: 1,
+			reason: "webrtc_downlink_silent",
+		} as never);
+		await expect(receipt).resolves.toMatchObject({
+			outcome: "failed",
+			reason: "generation_changed",
+			transport: "submitted",
+		});
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_input_gap",
+				reason: "generation_changed",
+			}),
+		);
+		// Packets of the lost generation are ignored while it is replaced.
+		const stale = h.burst("vvv");
+		h.finishReconnect(2);
+		const fresh = await h.step("vvv");
+		expect(h.heardIds().filter((id) => stale.includes(id))).toEqual([]);
+		expect(h.heardIds().slice(-3)).toEqual(fresh);
+		expect(h.heardIds().slice(0, old.length)).toEqual(old);
+		expect(h.statuses).toEqual(["📻 语音连接断了，正在重连", "📻 已重连"]);
 	});
 });

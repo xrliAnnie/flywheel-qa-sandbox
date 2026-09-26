@@ -14,20 +14,20 @@ import {
 } from "flywheel-voice-core";
 import type { RealtimeAudioOwner } from "../realtime.js";
 import { CodexProofSpeaker } from "./CodexProofSpeaker.js";
-import { type DownlinkSink, DownlinkController } from "./DownlinkController.js";
 import type {
 	CodexVoiceContextSnapshot,
 	CodexVoiceOpenInput,
 } from "./CodexVoiceContainer.js";
 import type { CodexHandoffResult } from "./CodexVoiceHandoff.js";
-import {
-	type CodexRealtimeAppendOutcome,
-	type CodexRealtimeBackgroundTurn,
-	type CodexRealtimeExecutionIntent,
-	type CodexRealtimeInputOwner,
-	type CodexRealtimeItem,
-	type CodexRealtimeTranscript,
-	type CodexRealtimeUnsettledInput,
+import { DownlinkController, type DownlinkSink } from "./DownlinkController.js";
+import type {
+	CodexRealtimeAppendOutcome,
+	CodexRealtimeBackgroundTurn,
+	CodexRealtimeExecutionIntent,
+	CodexRealtimeInputOwner,
+	CodexRealtimeItem,
+	CodexRealtimeTranscript,
+	CodexRealtimeUnsettledInput,
 } from "./RealtimeTransport.js";
 import { TurnLedger } from "./TurnLedger.js";
 import type { RealtimeDataEvent } from "./WebRtcLeg.js";
@@ -87,7 +87,8 @@ interface CodexTransportLike {
 interface CodexConversationLike {
 	readonly generation?: number;
 	readonly transport: CodexTransportLike;
-	restart?(): Promise<number>;
+	/** T7: give up the current generation; a new one follows via events. */
+	reconnect?(reason: string): void;
 	close(reason?: string): Promise<void>;
 }
 
@@ -121,6 +122,8 @@ export interface CodexVoiceBackendOptions {
 	now?: () => Date;
 	monotonicNow?: () => number;
 	onEvidence?: (record: Record<string, unknown>) => void;
+	/** One line in the voice thread (T7 reconnect notices). */
+	postStatus?: (text: string) => Promise<void>;
 	confirmTimeoutMs?: number;
 }
 
@@ -142,6 +145,8 @@ export class CodexVoiceBackend implements VoiceBackend {
 			loadContext: this.options.loadContext,
 			realtime: {
 				onDownlink: (input) => callbacks.session?.observeDownlink(input),
+				onGenerationLost: (input) => callbacks.session?.generationLost(input),
+				onGenerationReady: (input) => callbacks.session?.generationReady(input),
 				onDataEvent: (input) => callbacks.session?.observeDataEvent(input),
 				onTranscript: (input) => callbacks.session?.observeTranscript(input),
 				onItem: (input) => callbacks.session?.observeItem(input),
@@ -352,57 +357,70 @@ class CodexVoiceSession implements ConversationSession {
 
 	/**
 	 * T5c forced restart: the overrunning turn cannot be resumed on this
-	 * generation. The old generation's audio is never released again.
+	 * generation. The conversation opens a new one (T7); its audio is never
+	 * released again.
 	 */
 	private restartGeneration(reason: string): void {
 		if (this.closing || this.restarting || !this.live) return;
-		const unsettled =
-			this.options.conversation.transport.unsettledInput?.() ?? null;
-		const lost = {
-			generation: this.generation,
-			droppedBytes: unsettled?.droppedBytes ?? null,
-			providerInputPending: unsettled?.providerInputPending ?? null,
-		};
-		this.restarting = true;
-		this.markInputGap();
-		this.options.onEvidence?.({
-			kind: "codex_input_gap",
-			reason: "generation_changed",
-			...lost,
-		});
 		this.options.onEvidence?.({
 			kind: "codex_generation_restart",
 			reason,
 			generation: this.generation,
 		});
-		this.latestKnownUser = undefined;
-		this.latestUserTranscriptId = undefined;
-		this.speaker.interrupt("generation_changed");
-		const restart = this.options.conversation.restart;
-		if (!restart) {
-			this.restarting = false;
-			this.transportError(new Error("codex_realtime_restart_unsupported"));
+		if (!this.options.conversation.reconnect) {
+			this.transportError(new Error("codex_realtime_reconnect_unsupported"));
+			void this.close();
 			return;
 		}
-		void restart
-			.call(this.options.conversation)
-			.then((generation) => {
-				if (this.closing) return;
-				this.generation = generation;
-				this.turns.reset();
-				this.downlink.reset();
-				this.overrunTurnId = undefined;
-				this.audible = false;
-				this.restarting = false;
-				this.uplinkLostDuringRestart = false;
-			})
-			.catch((error) => {
-				this.restarting = false;
-				this.transportError(
-					error instanceof Error ? error : new Error(String(error)),
-				);
-				void this.close();
-			});
+		this.options.conversation.reconnect(reason);
+	}
+
+	/**
+	 * T7: the current generation is gone. Nothing of it may be heard again,
+	 * no read-aloud is left pending, and speech it had not transcribed can no
+	 * longer be attributed.
+	 */
+	generationLost(input: { generation: number; reason: string }): void {
+		if (this.closing || input.generation !== this.generation) return;
+		const unsettled =
+			this.options.conversation.transport.unsettledInput?.() ?? null;
+		this.restarting = true;
+		this.downlink.reset();
+		this.speaker.interrupt("generation_changed");
+		this.turns.reset();
+		this.overrunTurnId = undefined;
+		this.latestKnownUser = undefined;
+		this.latestUserTranscriptId = undefined;
+		this.markInputGap();
+		this.options.onEvidence?.({
+			kind: "codex_input_gap",
+			reason: "generation_changed",
+			generation: input.generation,
+			droppedBytes: unsettled?.droppedBytes ?? null,
+			providerInputPending: unsettled?.providerInputPending ?? null,
+		});
+		if (this.audible) {
+			this.audible = false;
+			this.events.emit("response-cancelled");
+		}
+		this.status("📻 语音连接断了，正在重连");
+	}
+
+	generationReady(input: { generation: number }): void {
+		if (this.closing) return;
+		this.generation = input.generation;
+		this.restarting = false;
+		this.uplinkLostDuringRestart = false;
+		this.status("📻 已重连");
+	}
+
+	private status(text: string): void {
+		void this.options.postStatus?.(text).catch((error) =>
+			this.options.onEvidence?.({
+				kind: "codex_status_failed",
+				reason: error instanceof Error ? error.message : "unknown_error",
+			}),
+		);
 	}
 
 	injectToolResult(): void {
@@ -457,7 +475,11 @@ class CodexVoiceSession implements ConversationSession {
 		payload: Buffer;
 		voiced: boolean;
 	}): void {
-		if (this.closing || this.restarting || packet.generation !== this.generation)
+		if (
+			this.closing ||
+			this.restarting ||
+			packet.generation !== this.generation
+		)
 			return;
 		this.downlink.packet(packet);
 		this.updateAudible();

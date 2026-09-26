@@ -26,11 +26,16 @@ import { CodexVoiceBackend } from "./codex/CodexVoiceBackend.js";
 import {
 	CodexVoiceContainer,
 	type CodexVoiceContextSnapshot,
+	type CodexVoiceConversation,
 } from "./codex/CodexVoiceContainer.js";
 import {
 	buildCodexDelegateHandoff,
 	CodexTranscriptPublisher,
 } from "./codex/CodexVoiceHandoff.js";
+import {
+	listProcessCwds,
+	sweepStaleCodexContainers,
+} from "./codex/stale-roots.js";
 import {
 	loadVoiceDaemonConfig,
 	loadVoiceProjects,
@@ -208,6 +213,24 @@ export async function main(): Promise<void> {
 			body: VOICE_LOCK_UNAVAILABLE_BODY,
 		});
 		return;
+	}
+
+	if (config.backendId === "codex-realtime") {
+		// FLY-2885 T7: the lock proves no other daemon runs and this one has
+		// opened nothing yet, so any container root here is a leftover.
+		await sweepStaleCodexContainers(
+			join(config.voiceRoot, "codex-containers"),
+			{
+				listCwds: listProcessCwds,
+				evidence: (record) => console.log(`[voice] ${JSON.stringify(record)}`),
+			},
+		);
+	}
+	// QA-3a only: the production wrapper never sets FLYWHEEL_VOICE_QA_FAULTS.
+	let qaConversation: CodexVoiceConversation | undefined;
+	if (config.qaFaults) {
+		console.log("[voice] QA fault hook armed: SIGUSR2 drops the WebRTC leg");
+		process.on("SIGUSR2", () => qaConversation?.qaDropLeg());
 	}
 
 	const discordDeps = await createDiscordDeps(VOICE_CODEX_RECEIVE_POLICY);
@@ -415,6 +438,13 @@ export async function main(): Promise<void> {
 				authSource: config.codexAuthSource,
 				stunUrls: config.webrtcStunUrls,
 				processEnv: process.env,
+				...(config.qaFaults
+					? {
+							onOpened: (conversation: CodexVoiceConversation) => {
+								qaConversation = conversation;
+							},
+						}
+					: {}),
 				onEvidence: (record) =>
 					evidence.appendBuffered({
 						ts: new Date().toISOString(),
@@ -471,6 +501,15 @@ export async function main(): Promise<void> {
 							);
 						},
 						resolveSoleRoomUser: () => room?.soleHuman() ?? null,
+						postStatus: async (text) => {
+							if (room) await room.status(text);
+							else
+								await mirror.post(
+									context.projection.threadId,
+									text,
+									discordNonce(),
+								);
+						},
 						onEvidence: (record) =>
 							evidence.appendBuffered({
 								ts: new Date().toISOString(),

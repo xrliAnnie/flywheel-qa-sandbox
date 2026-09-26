@@ -1,0 +1,104 @@
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+	parseLsofCwds,
+	sweepStaleCodexContainers,
+} from "../codex/stale-roots.js";
+
+const roots: string[] = [];
+afterEach(() => {
+	for (const root of roots.splice(0))
+		rmSync(root, { recursive: true, force: true });
+});
+
+function scratch() {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "fly2885-sweep-")));
+	roots.push(root);
+	const containers = join(root, "codex-containers");
+	mkdirSync(containers, { mode: 0o700 });
+	return { root, containers };
+}
+
+describe("stale Codex container sweep (FLY-2885 T7)", () => {
+	it("parses lsof -d cwd -Fn records", () => {
+		expect(
+			parseLsofCwds("p212\nfcwd\nn/Users/a/work\np298\nfcwd\nn/tmp/x y\n"),
+		).toEqual(["/Users/a/work", "/tmp/x y"]);
+	});
+
+	it("removes an idle leftover root, keeps a busy one, and never follows a symlink", async () => {
+		const { root, containers } = scratch();
+		const idle = join(containers, "container-idle");
+		const busy = join(containers, "container-busy");
+		mkdirSync(join(idle, "home"), { recursive: true });
+		mkdirSync(join(busy, "work"), { recursive: true });
+		// A credential link inside the idle root must go without its target.
+		const credential = join(root, "fleet-auth.json");
+		writeFileSync(credential, "secret", { mode: 0o600 });
+		symlinkSync(credential, join(idle, "home", "auth.json"));
+		// A symlinked "container" pointing outside must not be followed.
+		const outside = join(root, "outside");
+		mkdirSync(outside);
+		writeFileSync(join(outside, "keep"), "keep");
+		symlinkSync(outside, join(containers, "container-link"));
+		const evidence: Record<string, unknown>[] = [];
+		await sweepStaleCodexContainers(containers, {
+			listCwds: async () => [join(busy, "work"), "/elsewhere"],
+			evidence: (record) => evidence.push(record),
+		});
+		expect(existsSync(idle)).toBe(false);
+		expect(readFileSync(credential, "utf8")).toBe("secret");
+		expect(existsSync(busy)).toBe(true);
+		expect(existsSync(join(outside, "keep"))).toBe(true);
+		expect(evidence).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "codex_voice_stale_root_removed",
+					root: idle,
+				}),
+				expect.objectContaining({
+					kind: "codex_voice_stale_root_busy",
+					root: busy,
+				}),
+			]),
+		);
+	});
+
+	it("keeps every leftover root when lsof cannot answer", async () => {
+		const { containers } = scratch();
+		const leftover = join(containers, "container-unknown");
+		mkdirSync(leftover);
+		const evidence: Record<string, unknown>[] = [];
+		await sweepStaleCodexContainers(containers, {
+			listCwds: async () => undefined,
+			evidence: (record) => evidence.push(record),
+		});
+		expect(existsSync(leftover)).toBe(true);
+		expect(evidence).toEqual([
+			expect.objectContaining({
+				kind: "codex_voice_stale_root_unverified",
+				root: leftover,
+			}),
+		]);
+	});
+
+	it("does nothing when the containers directory does not exist", async () => {
+		const evidence: Record<string, unknown>[] = [];
+		await sweepStaleCodexContainers(join(tmpdir(), "fly2885-missing-dir"), {
+			listCwds: async () => [],
+			evidence: (record) => evidence.push(record),
+		});
+		expect(evidence).toEqual([]);
+	});
+});

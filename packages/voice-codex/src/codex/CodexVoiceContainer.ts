@@ -520,10 +520,30 @@ export interface CodexVoiceGeneration {
 	leg: RealtimeMediaLeg;
 }
 
+/** Plan T7: at most three generation changes per session. */
+const RECONNECT_BACKOFF_MS = [0, 2_000, 5_000] as const;
+const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000;
+
+export interface CodexVoiceGenerationEvents {
+	/** The current generation is gone; a new one is being opened (T7). */
+	onGenerationLost?(input: { generation: number; reason: string }): void;
+	/** A new generation is live. */
+	onGenerationReady?(input: { generation: number }): void;
+	/** Terminal: the session cannot continue. */
+	onClosed?(input: { generation: number; reason: string }): void;
+}
+
+type ConversationState = "live" | "draining" | "reopening" | "closed";
+
 export class CodexVoiceConversation {
 	private closePromise?: Promise<void>;
-	private restartPromise?: Promise<number>;
+	private reconnectPromise?: Promise<void>;
+	private readonly closing = new AbortController();
+	private state: ConversationState = "live";
 	private current: CodexVoiceGeneration;
+	private nextGeneration: number;
+	private reconnects = 0;
+	private pending?: { generation: number; controller: AbortController };
 
 	constructor(
 		readonly sessionId: string,
@@ -539,12 +559,15 @@ export class CodexVoiceConversation {
 		) => CodexVoiceGeneration,
 		private readonly retireGeneration: (generation: number) => void,
 		private readonly evidence: EvidenceSink,
-		private readonly onLegLost: (input: {
-			generation: number;
-			reason: string;
-		}) => void = () => undefined,
+		private readonly events: CodexVoiceGenerationEvents = {},
+		private readonly timing: {
+			backoffMs?: readonly number[];
+			attemptTimeoutMs?: number;
+			closeTimeoutMs?: number;
+		} = {},
 	) {
 		this.current = initial;
+		this.nextGeneration = initial.generation + 1;
 	}
 
 	get generation(): number {
@@ -559,59 +582,177 @@ export class CodexVoiceConversation {
 		return this.current.leg;
 	}
 
+	/**
+	 * T7: one entry for every way a generation dies — the WebRTC leg lost, the
+	 * realtime session closed or errored. The first one starts a generation
+	 * change; the rest only leave evidence.
+	 */
+	fault(generation: number, reason: string): void {
+		if (this.pending?.generation === generation) {
+			this.pending.controller.abort(new Error(reason));
+			return;
+		}
+		if (this.state !== "live" || generation !== this.current.generation) {
+			this.evidence({
+				kind: "codex_voice_fault_merged",
+				sessionId: this.sessionId,
+				generation,
+				reason,
+				state: this.state,
+			});
+			return;
+		}
+		this.reconnectPromise = this.reconnectOnce(reason).finally(() => {
+			this.reconnectPromise = undefined;
+		});
+	}
+
 	/** The WebRTC leg of `generation` reported its peer gone. */
 	legLost(generation: number, reason: string): void {
+		this.fault(generation, `webrtc_${reason}`);
+	}
+
+	/** T5c: the current generation cannot continue; open a new one. */
+	reconnect(reason: string): void {
+		this.fault(this.current.generation, reason);
+	}
+
+	/** QA-3a only (FLYWHEEL_VOICE_QA_FAULTS=1): drop the current WebRTC leg. */
+	qaDropLeg(): void {
+		const current = this.current;
+		void current.leg.close();
+		this.fault(current.generation, "qa_leg_closed");
+	}
+
+	/** The session is over for a reason outside this conversation. */
+	terminate(reason: string): void {
+		if (this.state === "closed") return;
+		this.state = "closed";
+		this.events.onClosed?.({ generation: this.current.generation, reason });
+		void this.close(reason).catch(() => undefined);
+	}
+
+	private async reconnectOnce(reason: string): Promise<void> {
+		const lost = this.current;
+		this.state = "draining";
 		this.evidence({
-			kind: "codex_voice_webrtc_lost",
+			kind: "codex_voice_realtime_reconnecting",
 			sessionId: this.sessionId,
-			threadId: this.threadId,
-			generation,
+			generation: lost.generation,
 			reason,
-			current: generation === this.current.generation,
 		});
-		if (this.closePromise || generation !== this.current.generation) return;
-		this.onLegLost({ generation, reason: `webrtc_${reason}` });
+		this.events.onGenerationLost?.({ generation: lost.generation, reason });
+		// Error/closed notifications carry no realtime generation: only the
+		// old session's confirmed close makes the thread safe to reuse.
+		const confirmed = await this.barrier(lost);
+		await lost.leg.close();
+		this.retireGeneration(lost.generation);
+		if (!confirmed) {
+			this.fail("realtime_reconnect_unconfirmed");
+			return;
+		}
+		const backoff = this.timing.backoffMs ?? RECONNECT_BACKOFF_MS;
+		while (this.reconnects < backoff.length) {
+			const delay = backoff[this.reconnects] ?? 0;
+			this.reconnects += 1;
+			if (!(await this.sleep(delay))) return;
+			this.state = "reopening";
+			const generation = this.nextGeneration++;
+			const controller = new AbortController();
+			this.pending = { generation, controller };
+			const next = this.createGeneration(generation);
+			const timer = setTimeout(
+				() => controller.abort(new Error("reconnect_attempt_timeout")),
+				this.timing.attemptTimeoutMs ?? RECONNECT_ATTEMPT_TIMEOUT_MS,
+			);
+			timer.unref?.();
+			const stopAttempt = () =>
+				controller.abort(new Error("conversation_closed"));
+			this.closing.signal.addEventListener("abort", stopAttempt, {
+				once: true,
+			});
+			try {
+				await next.transport.start(controller.signal);
+				if (this.closePromise) throw new Error("conversation_closed");
+				this.pending = undefined;
+				this.current = next;
+				this.state = "live";
+				this.evidence({
+					kind: "codex_voice_realtime_reconnected",
+					sessionId: this.sessionId,
+					generation,
+					attempt: this.reconnects,
+				});
+				this.events.onGenerationReady?.({ generation });
+				return;
+			} catch (error) {
+				this.pending = undefined;
+				this.state = "draining";
+				this.evidence({
+					kind: "codex_voice_reconnect_attempt_failed",
+					sessionId: this.sessionId,
+					generation,
+					attempt: this.reconnects,
+					reason: error instanceof Error ? error.message : String(error),
+				});
+				await next.leg.close();
+				const settled = next.transport.startRequested
+					? await this.barrier(next)
+					: true;
+				this.retireGeneration(generation);
+				if (this.closePromise) return;
+				if (!settled) {
+					this.fail("realtime_reconnect_unconfirmed");
+					return;
+				}
+			} finally {
+				clearTimeout(timer);
+				this.closing.signal.removeEventListener("abort", stopAttempt);
+			}
+		}
+		this.fail("realtime_reconnect_exhausted");
 	}
 
-	restart(): Promise<number> {
-		if (this.closePromise)
-			return Promise.reject(new Error("conversation_closed"));
-		this.restartPromise ??= this.restartOnce().finally(() => {
-			this.restartPromise = undefined;
-		});
-		return this.restartPromise;
-	}
-
-	private async restartOnce(): Promise<number> {
-		const previous = this.current;
-		await withTimeout(
-			previous.transport.cancel(),
-			CLOSE_RPC_TIMEOUT_MS,
-			"codex_open_failed",
-		);
-		await previous.leg.close();
-		this.retireGeneration(previous.generation);
-		if (this.closePromise) throw new Error("conversation_closed");
-		const next = this.createGeneration(previous.generation + 1);
+	/** Stop and wait for closed (≤5 s); false when it cannot be confirmed. */
+	private async barrier(generation: CodexVoiceGeneration): Promise<boolean> {
 		try {
-			await next.transport.start();
-		} catch (error) {
-			await next.leg.close();
-			throw error;
+			await withTimeout(
+				generation.transport.cancel(),
+				this.timing.closeTimeoutMs ?? CLOSE_RPC_TIMEOUT_MS,
+				"codex_open_failed",
+			);
+			return true;
+		} catch {
+			return false;
 		}
-		if (this.closePromise) {
-			await next.transport.cancel().catch(() => undefined);
-			await next.leg.close();
-			throw new Error("conversation_closed");
-		}
-		this.current = next;
-		this.evidence({
-			kind: "codex_voice_realtime_restarted",
-			sessionId: this.sessionId,
-			threadId: this.threadId,
-			generation: next.generation,
+	}
+
+	private sleep(ms: number): Promise<boolean> {
+		if (this.closePromise) return Promise.resolve(false);
+		if (ms <= 0) return Promise.resolve(true);
+		return new Promise((resolve) => {
+			const timer = setTimeout(() => {
+				this.closing.signal.removeEventListener("abort", stop);
+				resolve(true);
+			}, ms);
+			timer.unref?.();
+			const stop = () => {
+				clearTimeout(timer);
+				resolve(false);
+			};
+			this.closing.signal.addEventListener("abort", stop, { once: true });
 		});
-		return next.generation;
+	}
+
+	private fail(reason: string): void {
+		if (this.closePromise) return;
+		this.evidence({
+			kind: "codex_voice_realtime_reconnect_failed",
+			sessionId: this.sessionId,
+			reason,
+			attempts: this.reconnects,
+		});
+		this.terminate(reason);
 	}
 
 	close(reason = "session_end"): Promise<void> {
@@ -625,11 +766,13 @@ export class CodexVoiceConversation {
 	 * app-server, and last the temporary root.
 	 */
 	private async closeOnce(reason: string): Promise<void> {
+		this.state = "closed";
+		this.closing.abort();
 		try {
-			await this.restartPromise?.catch(() => undefined);
+			await this.reconnectPromise?.catch(() => undefined);
 			await withTimeout(
 				this.current.transport.cancel(),
-				CLOSE_RPC_TIMEOUT_MS,
+				this.timing.closeTimeoutMs ?? CLOSE_RPC_TIMEOUT_MS,
 				"codex_open_failed",
 			).catch(() => undefined);
 			await this.current.leg.close();
@@ -663,6 +806,8 @@ export interface CodexVoiceOpenInput {
 		onDownlink?(packet: DownlinkPacket & { generation: number }): void;
 		/** oai-events of the current generation (not a Codex protocol surface). */
 		onDataEvent?(input: { generation: number; event: RealtimeDataEvent }): void;
+		onGenerationLost?(input: { generation: number; reason: string }): void;
+		onGenerationReady?(input: { generation: number }): void;
 		onTranscript?(transcript: CodexRealtimeTranscript): void;
 		onItem?(item: CodexRealtimeItem): void;
 		onInputGap?(gap: {
@@ -700,6 +845,14 @@ export class CodexVoiceContainer {
 			/** FLY-2885 T2: ICE servers for the WebRTC leg; empty = host only. */
 			stunUrls?: string[];
 			createLeg?: (options: WebRtcLegOptions) => RealtimeMediaLeg;
+			/** Every conversation this container opens (QA fault hook). */
+			onOpened?: (conversation: CodexVoiceConversation) => void;
+			/** Tests only: shorter T7 backoff/attempt/close timings. */
+			reconnectTiming?: {
+				backoffMs?: readonly number[];
+				attemptTimeoutMs?: number;
+				closeTimeoutMs?: number;
+			};
 			/** FLY-2885: the fleet's subscription credential; linked, never copied. */
 			authSource: string;
 			processEnv?: NodeJS.ProcessEnv;
@@ -828,7 +981,8 @@ export class CodexVoiceContainer {
 			resources.process = process;
 			process.on("exit", () => {
 				if (!conversation) violation ??= "process_exited_during_open";
-				else void conversation.close("process_exit").catch(() => undefined);
+				// No reconnect without the app-server: the session ends here.
+				else conversation.terminate("process_exit");
 			});
 			await process.start();
 			assertActive();
@@ -866,8 +1020,15 @@ export class CodexVoiceContainer {
 				model: CODEX_VOICE_REALTIME_MODEL,
 				voice: input.voice,
 			};
-			const { onDownlink, onDataEvent, onClosed, ...transportCallbacks } =
-				input.realtime ?? {};
+			const {
+				onDownlink,
+				onDataEvent,
+				onClosed,
+				onError,
+				onGenerationLost,
+				onGenerationReady,
+				...transportCallbacks
+			} = input.realtime ?? {};
 			const router = new GenerationRouter(process);
 			const createGeneration = (generation: number): CodexVoiceGeneration => {
 				router.activate(generation);
@@ -900,7 +1061,25 @@ export class CodexVoiceContainer {
 					leg,
 					start: realtimeStart,
 					...transportCallbacks,
-					...(onClosed ? { onClosed } : {}),
+					// T7: a closed or errored generation is recoverable; the
+					// conversation decides, and only a terminal end reaches the
+					// session as onClosed.
+					onClosed: ({ reason }) => {
+						if (conversation)
+							conversation.fault(generation, `realtime_closed:${reason}`);
+					},
+					onError: (error) => {
+						this.evidence({
+							kind: "codex_voice_realtime_error",
+							sessionId: input.sessionId,
+							generation,
+							errorType: error.name,
+							message: error.message,
+						});
+						if (conversation)
+							conversation.fault(generation, `realtime_error:${error.message}`);
+						else onError?.(error);
+					},
 				});
 				return { generation, transport, leg };
 			};
@@ -921,7 +1100,12 @@ export class CodexVoiceContainer {
 				createGeneration,
 				(generation) => router.retire(generation),
 				this.evidence,
-				(lost) => onClosed?.(lost),
+				{
+					onGenerationLost: (lost) => onGenerationLost?.(lost),
+					onGenerationReady: (ready) => onGenerationReady?.(ready),
+					onClosed: (closed) => onClosed?.(closed),
+				},
+				this.options.reconnectTiming,
 			);
 			this.evidence({
 				kind: "codex_voice_container_opened",
@@ -931,6 +1115,7 @@ export class CodexVoiceContainer {
 				configDigest: sha256(VOICE_CODEX_HOME_CONFIG),
 				contextDigest: snapshot.snapshotDigest,
 			});
+			this.options.onOpened?.(conversation);
 			return conversation;
 		} catch (error) {
 			resources.cancelled = true;

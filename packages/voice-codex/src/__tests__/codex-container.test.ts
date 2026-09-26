@@ -132,6 +132,11 @@ class FakeProcess implements CodexVoiceProcess {
 	threadResult?: Record<string, unknown>;
 	startThreadError?: Error;
 	realtimeError?: { code: number; message: string };
+	/** Per realtime/start after the first: "ok" | "error" | "silent" (no sdp). */
+	startScript: Array<"ok" | "error" | "silent"> = [];
+	private starts = 0;
+	/** false: a stop never produces closed (the barrier cannot confirm). */
+	closedOnStop = true;
 	account: { result?: unknown; error?: { code: number; message: string } } = {
 		result: { account: { type: "chatgpt", planType: "pro" } },
 	};
@@ -180,6 +185,14 @@ class FakeProcess implements CodexVoiceProcess {
 	async request(method: string, params?: unknown) {
 		this.requests.push({ method, params });
 		if (method === "account/read") return this.account;
+		if (method === "thread/realtime/start") {
+			this.starts += 1;
+			const scripted =
+				this.starts > 1 ? (this.startScript.shift() ?? "ok") : "ok";
+			if (scripted === "error")
+				return { error: { code: -32000, message: "scripted start failure" } };
+			if (scripted === "silent") return { result: {} };
+		}
 		if (!this.realtimeError && method === "thread/realtime/start") {
 			const threadId = (params as { threadId: string }).threadId;
 			queueMicrotask(() => {
@@ -197,12 +210,13 @@ class FakeProcess implements CodexVoiceProcess {
 		if (method === "thread/realtime/stop") {
 			this.order?.push("realtime/stop");
 			const threadId = (params as { threadId: string }).threadId;
-			queueMicrotask(() =>
-				this.emit("thread/realtime/closed", {
-					threadId,
-					reason: "client_stop",
-				}),
-			);
+			if (this.closedOnStop)
+				queueMicrotask(() =>
+					this.emit("thread/realtime/closed", {
+						threadId,
+						reason: "client_stop",
+					}),
+				);
 		}
 		return this.realtimeError ? { error: this.realtimeError } : { result: {} };
 	}
@@ -277,6 +291,11 @@ function harness(
 				realtimeFeatureEnabled: true,
 			})),
 		createProcess,
+		reconnectTiming: {
+			backoffMs: [0, 30, 60],
+			attemptTimeoutMs: 150,
+			closeTimeoutMs: 80,
+		},
 		createLeg: (options) => {
 			const leg = new FakeLeg(options, order);
 			legs.push(leg);
@@ -533,7 +552,8 @@ describe("Codex voice container", () => {
 			generation: 1,
 			event: { type: "session.started", expiresAt: null },
 		});
-		await opened.restart();
+		opened.reconnect("test");
+		await vi.waitFor(() => expect(opened.generation).toBe(2));
 		expect(first.closeCount).toBe(1);
 		first.options.onDownlink(packet);
 		expect(downlink).toHaveBeenCalledTimes(1);
@@ -544,87 +564,207 @@ describe("Codex voice container", () => {
 
 	it("delivers app-server notifications only to the current generation's transport", async () => {
 		const h = harness();
-		const closed = vi.fn();
+		const lost = vi.fn();
 		const opened = await h.container.open({
 			sessionId: "session-retired",
 			voice: "cove",
 			loadContext: async () => context("session-retired"),
-			realtime: { onClosed: closed },
+			realtime: { onGenerationLost: lost },
 		});
-		await opened.restart();
-		// The first generation's closed arrived during restart and was consumed
-		// by its own stop barrier; afterwards only generation 2 is listening.
-		closed.mockClear();
+		opened.reconnect("test");
+		await vi.waitFor(() => expect(opened.generation).toBe(2));
+		lost.mockClear();
 		h.processes[0]!.emit("thread/realtime/closed", {
 			threadId: opened.threadId,
 			reason: "transport_closed",
 		});
-		expect(closed).toHaveBeenCalledOnce();
-		expect(closed).toHaveBeenCalledWith({
+		expect(lost).toHaveBeenCalledOnce();
+		expect(lost).toHaveBeenCalledWith({
 			generation: 2,
-			reason: "transport_closed",
+			reason: "realtime_closed:transport_closed",
 		});
+		await vi.waitFor(() => expect(opened.generation).toBe(3));
 		await opened.close();
 	});
 
-	it("reports a lost current leg as the generation closing, and ignores a retired one", async () => {
+	it("merges a lost leg, a closed session and an error into one generation change", async () => {
 		const h = harness();
+		const lost = vi.fn();
+		const ready = vi.fn();
 		const closed = vi.fn();
 		const opened = await h.container.open({
-			sessionId: "session-lost",
+			sessionId: "session-merge",
 			voice: "cove",
-			loadContext: async () => context("session-lost"),
-			realtime: { onClosed: closed },
+			loadContext: async () => context("session-merge"),
+			realtime: {
+				onGenerationLost: lost,
+				onGenerationReady: ready,
+				onClosed: closed,
+			},
 		});
 		h.legs[0]!.options.onLost("downlink_silent");
-		expect(closed).toHaveBeenCalledWith({
+		h.processes[0]!.emit("thread/realtime/error", {
+			threadId: opened.threadId,
+			message: "sideband gone",
+		});
+		h.processes[0]!.emit("thread/realtime/closed", {
+			threadId: opened.threadId,
+			reason: "transport_closed",
+		});
+		await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce());
+		expect(lost).toHaveBeenCalledOnce();
+		expect(lost).toHaveBeenCalledWith({
 			generation: 1,
 			reason: "webrtc_downlink_silent",
 		});
-		await opened.restart();
-		closed.mockClear();
-		h.legs[0]!.options.onLost("failed");
+		expect(ready).toHaveBeenCalledWith({ generation: 2 });
 		expect(closed).not.toHaveBeenCalled();
+		expect(opened.generation).toBe(2);
+		expect(h.legs[0]!.closeCount).toBe(1);
+		expect(
+			h.processes[0]!.requests.filter(
+				(request) => request.method === "thread/realtime/start",
+			),
+		).toHaveLength(2);
+		// A late fault of the retired generation only leaves evidence.
+		h.legs[0]!.options.onLost("failed");
+		expect(lost).toHaveBeenCalledOnce();
 		expect(h.evidence).toContainEqual(
 			expect.objectContaining({
-				kind: "codex_voice_webrtc_lost",
+				kind: "codex_voice_fault_merged",
 				generation: 1,
-				reason: "failed",
-				current: false,
 			}),
 		);
 		await opened.close();
 	});
 
-	it("restarts only the realtime connection and advances its generation after a confirmed close", async () => {
-		const h = harness();
-		const opened = await h.container.open({
-			sessionId: "session-restart",
-			voice: "marin",
-			loadContext: async () => context("session-restart"),
+	it("ends cleanly when the old session's close cannot be confirmed", async () => {
+		const h = harness({
+			configureProcess: (process) => {
+				process.closedOnStop = false;
+			},
 		});
-		const firstTransport = opened.transport;
-
-		expect(opened.generation).toBe(1);
-		await expect(opened.restart()).resolves.toBe(2);
-		expect(opened.generation).toBe(2);
-		expect(opened.transport).not.toBe(firstTransport);
-		expect(h.processes[0]?.requests.map(({ method }) => method)).toEqual([
-			"account/read",
-			"thread/realtime/start",
-			"thread/realtime/stop",
-			"thread/realtime/start",
-		]);
-		expect(h.processes[0]?.stopCount).toBe(0);
-		expect(h.evidence).toContainEqual(
-			expect.objectContaining({
-				kind: "codex_voice_realtime_restarted",
-				generation: 2,
+		const closed = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-unconfirmed",
+			voice: "cove",
+			loadContext: async () => context("session-unconfirmed"),
+			realtime: { onClosed: closed },
+		});
+		h.legs[0]!.options.onLost("failed");
+		await vi.waitFor(() =>
+			expect(closed).toHaveBeenCalledWith({
+				generation: 1,
+				reason: "realtime_reconnect_unconfirmed",
 			}),
 		);
+		await vi.waitFor(() => expect(existsSync(opened.root)).toBe(false));
+		expect(h.processes[0]!.stopCount).toBe(1);
+		expect(
+			h.processes[0]!.requests.filter(
+				(request) => request.method === "thread/realtime/start",
+			),
+		).toHaveLength(1);
+	});
 
+	it("aborts an attempt stuck waiting for the answer, closes its leg, and tries again", async () => {
+		const h = harness({
+			configureProcess: (process) => {
+				process.startScript = ["silent", "ok"];
+			},
+		});
+		const ready = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-abort",
+			voice: "cove",
+			loadContext: async () => context("session-abort"),
+			realtime: { onGenerationReady: ready },
+		});
+		opened.reconnect("test");
+		await vi.waitFor(() => expect(ready).toHaveBeenCalledOnce(), {
+			timeout: 2_000,
+		});
+		expect(ready).toHaveBeenCalledWith({ generation: 3 });
+		// The stuck attempt's leg was closed; its started session was stopped.
+		expect(h.legs[1]!.closeCount).toBe(1);
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_voice_reconnect_attempt_failed",
+				generation: 2,
+				reason: "reconnect_attempt_timeout",
+			}),
+		);
 		await opened.close();
-		expect(h.processes[0]?.stopCount).toBe(1);
+	});
+
+	it("gives up after three attempts with backoff and cleans up", async () => {
+		const h = harness({
+			configureProcess: (process) => {
+				process.startScript = ["error", "error", "error"];
+			},
+		});
+		const closed = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-exhausted",
+			voice: "cove",
+			loadContext: async () => context("session-exhausted"),
+			realtime: { onClosed: closed },
+		});
+		const lostAt = Date.now();
+		h.legs[0]!.options.onLost("failed");
+		await vi.waitFor(
+			() =>
+				expect(closed).toHaveBeenCalledWith({
+					generation: 1,
+					reason: "realtime_reconnect_exhausted",
+				}),
+			{ timeout: 2_000 },
+		);
+		// Backoff 0 + 30 + 60 ms (test timing) elapsed between attempts.
+		expect(Date.now() - lostAt).toBeGreaterThanOrEqual(85);
+		expect(
+			h.processes[0]!.requests.filter(
+				(request) => request.method === "thread/realtime/start",
+			),
+		).toHaveLength(4);
+		expect(h.legs.slice(1).every((leg) => leg.closeCount === 1)).toBe(true);
+		await vi.waitFor(() => expect(existsSync(opened.root)).toBe(false));
+	});
+
+	it("ends the session without a reconnect when the app-server exits", async () => {
+		const h = harness();
+		const closed = vi.fn();
+		const lost = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-exit",
+			voice: "cove",
+			loadContext: async () => context("session-exit"),
+			realtime: { onClosed: closed, onGenerationLost: lost },
+		});
+		for (const exit of h.processes[0]!.exits) exit(null, "SIGKILL");
+		expect(closed).toHaveBeenCalledWith({
+			generation: 1,
+			reason: "process_exit",
+		});
+		expect(lost).not.toHaveBeenCalled();
+		await vi.waitFor(() => expect(existsSync(opened.root)).toBe(false));
+	});
+
+	it("drops the WebRTC leg on the QA fault hook and recovers on a new generation", async () => {
+		const h = harness();
+		const ready = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-qa",
+			voice: "cove",
+			loadContext: async () => context("session-qa"),
+			realtime: { onGenerationReady: ready },
+		});
+		opened.qaDropLeg();
+		await vi.waitFor(() =>
+			expect(ready).toHaveBeenCalledWith({ generation: 2 }),
+		);
+		expect(h.legs[0]!.closeCount).toBeGreaterThanOrEqual(1);
+		await opened.close();
 	});
 
 	it.each([
