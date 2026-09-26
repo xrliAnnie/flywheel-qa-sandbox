@@ -39,6 +39,9 @@ function fixture(options?: {
 	founderPresent?: boolean;
 	playSpeech?: (speechId: string, pcm: Buffer) => Promise<void>;
 	roomIO?: RoomIO;
+	replyWaitMs?: number;
+	capture?: () => Promise<boolean>;
+	roomHumanCount?: () => number | null;
 	createHeadphoneSession?: (control: { fail(reason: string): void }) => {
 		start(): Promise<void>;
 		close(): Promise<void>;
@@ -69,12 +72,18 @@ function fixture(options?: {
 		setWaiting: vi.fn(),
 		setBedEnabled: vi.fn(),
 	};
-	const delivery = { capture: vi.fn(async () => true) };
+	const delivery = { capture: vi.fn(options?.capture ?? (async () => true)) };
 	const lifecycle = vi.fn(async () => {});
 	const evidence = vi.fn();
 	const session = new GenericVoiceSession({
 		projection,
 		delivery,
+		...(options?.replyWaitMs === undefined
+			? {}
+			: { replyWaitMs: options.replyWaitMs }),
+		...(options?.roomHumanCount
+			? { roomHumanCount: options.roomHumanCount }
+			: {}),
 		createFrontend: (handlers) => {
 			frontendHandlers = handlers;
 			return frontend;
@@ -227,7 +236,8 @@ describe("GenericVoiceSession", () => {
 			rawText: "请检查 FLY-2655",
 			ts: expect.any(String),
 		});
-		expect(test.room.setWaiting).toHaveBeenCalledWith(true);
+		// FLY-2796 founder ruling (2026-09-24 23:44 PDT): no waiting sound.
+		expect(test.room.setWaiting).not.toHaveBeenCalled();
 	});
 
 	it("confirms a reply only after validated audio finishes paced playback", async () => {
@@ -349,18 +359,21 @@ describe("GenericVoiceSession", () => {
 		});
 	});
 
-	it("handles founder-only local commands without mailbox delivery", async () => {
+	it("keeps only the founder's exit command local; the retired waiting-sound commands reach the Lead", async () => {
 		const test = fixture();
 		await test.session.start();
 		await test.session.markLive();
 		test.getFrontendHandlers().onTranscript(userTranscript("等待音关掉"));
-		expect(test.room.setBedEnabled).toHaveBeenCalledWith(false);
-		expect(test.delivery.capture).not.toHaveBeenCalled();
+		await vi.waitFor(() =>
+			expect(test.delivery.capture).toHaveBeenCalledOnce(),
+		);
+		expect(test.room.setBedEnabled).not.toHaveBeenCalled();
 		test.getFrontendHandlers().onTranscript(userTranscript("退出语音模式"));
 		expect(await test.session.waitForEnd()).toEqual({
 			kind: "ended",
 			reason: "voice-stop",
 		});
+		expect(test.delivery.capture).toHaveBeenCalledOnce();
 	});
 
 	it("ignores late transport callbacks once teardown begins", async () => {
@@ -1012,5 +1025,355 @@ describe("GenericVoiceSession start fails fast on the first failure", () => {
 
 		landRoom({ founderPresent: true });
 		await vi.waitFor(() => expect(room.stop).toHaveBeenCalled());
+	});
+});
+
+/**
+ * FLY-2796 founder bounce (2026-09-24): in two real rooms a delivered sentence
+ * got no answer and she was left waiting for minutes. Founder ruling 23:44 PDT:
+ * no waiting sound at all — silence means nothing new — but a sentence the Lead
+ * never answers still ends in a spoken "reply unavailable". QA r7: that notice
+ * must never fire while a reply is still being said or is queued, nor land
+ * between two replies or between the parts of one. Every assertion here is
+ * about state and order — what she hears next — never about wall-clock latency.
+ */
+describe("GenericVoiceSession reply wait (FLY-2796)", () => {
+	/** What the voice is asked to read: the reply projection (NFKC, no emoji). */
+	const said = (text: string) => prepareReplySpeech(text)[0]!.spokenText;
+	const UNAVAILABLE = said("回话暂时不通，你可以再说一遍");
+	/** 8 s of audio: longer than the 1 s test ceiling, inside the playback budget. */
+	const LONG_PCM = Buffer.alloc(48 * 8_000, 1);
+
+	function spokenTexts(test: ReturnType<typeof fixture>): string[] {
+		return test.frontend.appendSpeech.mock.calls.map(
+			(call) => (call as unknown as [{ spokenText: string }])[0].spokenText,
+		);
+	}
+
+	async function liveFixture(options?: Parameters<typeof fixture>[0]) {
+		const test = fixture({ replyWaitMs: 1_000, ...options });
+		await test.session.start();
+		await test.session.markLive();
+		return test;
+	}
+
+	/** A room whose playback only finishes when the test says so. */
+	function heldPlayback() {
+		const pending: Array<() => void> = [];
+		return {
+			playSpeech: () => new Promise<void>((resolve) => pending.push(resolve)),
+			finishNext: () => pending.shift()!(),
+		};
+	}
+
+	/**
+	 * The daemon's way of saying one outbound item: each part is handed over
+	 * only after the previous one finished playing.
+	 */
+	function daemonSays(
+		test: ReturnType<typeof fixture>,
+		parts: ReturnType<typeof prepareReplySpeech>,
+	): Promise<void> {
+		return (async () => {
+			for (const part of parts) await test.session.speak(part);
+		})();
+	}
+
+	it("says the reply is unavailable once the ceiling passes in silence, with no waiting sound", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(999);
+			expect(spokenTexts(test)).toEqual([]);
+
+			await vi.advanceTimersByTimeAsync(1);
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE]);
+			expect(test.room.status).toHaveBeenCalledWith(
+				"📻 回话暂时不通，你可以再说一遍",
+			);
+			expect(test.room.setWaiting).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("uses a 15 second ceiling when none is configured", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = fixture();
+			await test.session.start();
+			await test.session.markLive();
+			test.getFrontendHandlers().onTranscript(userTranscript("在吗"));
+			await vi.advanceTimersByTimeAsync(14_999);
+			expect(spokenTexts(test)).toEqual([]);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("ends the wait when the Lead answers, with no unavailable prompt afterwards", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(500);
+			const reply = prepareReplySpeech("看过了。", 80)[0]!;
+			void test.session.speak(reply);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(spokenTexts(test)).toEqual([reply.spokenText]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("says so at once when the sentence could not be delivered", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture({ capture: async () => false });
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(0);
+			expect(spokenTexts(test)).toEqual([said("有一句可能没送到，请再说一遍")]);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(spokenTexts(test)).not.toContain(UNAVAILABLE);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("answers aloud at once when the Lead reply has nothing to read", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(100);
+			test.session.notify("📻 没有可朗读内容，请看文字");
+			expect(spokenTexts(test)).toEqual([said("没有可朗读内容，请看文字")]);
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(spokenTexts(test)).not.toContain(UNAVAILABLE);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("queues a Lead reply behind a prompt that is still being spoken instead of dropping it", async () => {
+		vi.useFakeTimers();
+		try {
+			const test = await liveFixture();
+			test.getFrontendHandlers().onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(1_000);
+			const prompt = test.frontend.appendSpeech.mock.calls[0]![0] as {
+				speechId: string;
+			};
+			const reply = prepareReplySpeech("刚看完。", 80)[0]!;
+			let settled: string | undefined;
+			void test.session.speak(reply).then((value) => {
+				settled = value;
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(settled).toBeUndefined();
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE]);
+
+			test.getFrontendHandlers().onSpeechAudioReady({
+				speechId: prompt.speechId,
+				pcm24Mono: Buffer.alloc(960, 1),
+			});
+			await vi.advanceTimersByTimeAsync(0);
+			expect(spokenTexts(test)).toEqual([UNAVAILABLE, reply.spokenText]);
+			// A local prompt is not a Lead reply: no "已念完" receipt for it.
+			expect(test.room.status).not.toHaveBeenCalledWith("📻 已念完");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	/**
+	 * QA r7 S4 / founder room fcfbaaa9: the Lead answered sentence A with a long
+	 * two-part reply; she said B while it played; the Lead's answer to B only
+	 * reached the room after the first reply finished.
+	 */
+	it("never says the reply is unavailable while an earlier reply is still playing, nor between its parts", async () => {
+		vi.useFakeTimers();
+		try {
+			const room = heldPlayback();
+			const test = await liveFixture({ playSpeech: room.playSpeech });
+			const handlers = test.getFrontendHandlers();
+			handlers.onTranscript(userTranscript("现在几点了"));
+			await vi.advanceTimersByTimeAsync(100);
+
+			const reply1 = prepareReplySpeech(
+				"现在是晚上十一点。今天有三件事要你决定。",
+				12,
+			);
+			expect(reply1).toHaveLength(2);
+			const reply1Said = daemonSays(test, reply1);
+			await vi.advanceTimersByTimeAsync(0);
+			handlers.onSpeechAudioReady({
+				speechId: reply1[0]!.speechId,
+				pcm24Mono: LONG_PCM,
+			});
+			await vi.advanceTimersByTimeAsync(0);
+
+			handlers.onTranscript({
+				...userTranscript("好的谢谢"),
+				itemId: "item-2",
+				utteranceId: "utterance-2",
+			});
+			// Far past the ceiling, but the first part is still playing.
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(spokenTexts(test)).toEqual([reply1[0]!.spokenText]);
+
+			room.finishNext();
+			await vi.advanceTimersByTimeAsync(0);
+			// The second part follows the first directly: nothing cut in.
+			expect(spokenTexts(test)).toEqual(reply1.map((part) => part.spokenText));
+			handlers.onSpeechAudioReady({
+				speechId: reply1[1]!.speechId,
+				pcm24Mono: LONG_PCM,
+			});
+			await vi.advanceTimersByTimeAsync(5_000);
+			room.finishNext();
+			await reply1Said;
+
+			// One outbound poll later the answer to B arrives.
+			await vi.advanceTimersByTimeAsync(500);
+			const reply2 = prepareReplySpeech("不客气。", 80);
+			void daemonSays(test, reply2);
+			await vi.advanceTimersByTimeAsync(0);
+			handlers.onSpeechAudioReady({
+				speechId: reply2[0]!.speechId,
+				pcm24Mono: Buffer.alloc(960, 1),
+			});
+			room.finishNext();
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(spokenTexts(test)).toEqual([
+				...reply1.map((part) => part.spokenText),
+				reply2[0]!.spokenText,
+			]);
+			expect(test.room.setWaiting).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("still owes an answer to a sentence said during a reply, counted from the moment the room goes quiet", async () => {
+		vi.useFakeTimers();
+		try {
+			const room = heldPlayback();
+			const test = await liveFixture({ playSpeech: room.playSpeech });
+			const handlers = test.getFrontendHandlers();
+			handlers.onTranscript(userTranscript("现在几点了"));
+			await vi.advanceTimersByTimeAsync(100);
+
+			const reply1 = prepareReplySpeech(
+				"现在是晚上十一点。今天有三件事要你决定。",
+				12,
+			);
+			const reply1Said = daemonSays(test, reply1);
+			await vi.advanceTimersByTimeAsync(0);
+			handlers.onSpeechAudioReady({
+				speechId: reply1[0]!.speechId,
+				pcm24Mono: LONG_PCM,
+			});
+			handlers.onTranscript({
+				...userTranscript("那第三件是什么"),
+				itemId: "item-2",
+				utteranceId: "utterance-2",
+			});
+			await vi.advanceTimersByTimeAsync(3_000);
+			room.finishNext();
+			await vi.advanceTimersByTimeAsync(0);
+			handlers.onSpeechAudioReady({
+				speechId: reply1[1]!.speechId,
+				pcm24Mono: LONG_PCM,
+			});
+			// The second part is the rest of the first answer, not an answer to
+			// the new sentence, and the clock does not run while it plays.
+			await vi.advanceTimersByTimeAsync(3_000);
+			expect(spokenTexts(test)).toEqual(reply1.map((part) => part.spokenText));
+			room.finishNext();
+			await reply1Said;
+
+			// The Lead never answers the new sentence: the full ceiling of quiet.
+			await vi.advanceTimersByTimeAsync(999);
+			expect(spokenTexts(test)).not.toContain(UNAVAILABLE);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(spokenTexts(test)).toEqual([
+				...reply1.map((part) => part.spokenText),
+				UNAVAILABLE,
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not count a please-repeat line being said toward the ceiling", async () => {
+		vi.useFakeTimers();
+		try {
+			const room = heldPlayback();
+			const test = await liveFixture({ playSpeech: room.playSpeech });
+			const handlers = test.getFrontendHandlers();
+			handlers.onTranscript(userTranscript("帮我看一下"));
+			await vi.advanceTimersByTimeAsync(500);
+			handlers.onStatus("📻 有一句话没能确认说话人，请再说一遍");
+			const repeat = test.frontend.appendSpeech.mock.calls[0]![0] as {
+				speechId: string;
+			};
+			handlers.onSpeechAudioReady({
+				speechId: repeat.speechId,
+				pcm24Mono: LONG_PCM,
+			});
+			await vi.advanceTimersByTimeAsync(3_000);
+			expect(spokenTexts(test)).not.toContain(UNAVAILABLE);
+			room.finishNext();
+			await vi.advanceTimersByTimeAsync(999);
+			expect(spokenTexts(test)).not.toContain(UNAVAILABLE);
+			await vi.advanceTimersByTimeAsync(1);
+			expect(spokenTexts(test)).toContain(UNAVAILABLE);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("says a frontend please-repeat status aloud as well as posting it", async () => {
+		const test = await liveFixture();
+		test
+			.getFrontendHandlers()
+			.onStatus("📻 有一句话没能确认说话人，请再说一遍");
+		expect(test.room.status).toHaveBeenCalledWith(
+			"📻 有一句话没能确认说话人，请再说一遍",
+		);
+		expect(spokenTexts(test)).toEqual([
+			said("有一句话没能确认说话人，请再说一遍"),
+		]);
+	});
+
+	it("names her as the sole speaker only while the room counts exactly one human", async () => {
+		let humans: number | null = 1;
+		const test = await liveFixture({ roomHumanCount: () => humans });
+		const handlers = test.getFrontendHandlers();
+		expect(handlers.soleSpeaker()).toEqual({
+			ownerUserId: "founder",
+			ownerName: null,
+		});
+		humans = 2;
+		expect(handlers.soleSpeaker()).toBeNull();
+		// Unknown (someone just joined or left, recount pending) fails closed.
+		humans = null;
+		expect(handlers.soleSpeaker()).toBeNull();
+	});
+
+	it("never names a sole speaker once she has left", async () => {
+		const test = await liveFixture({ roomHumanCount: () => 1 });
+		test.getRoomHandlers().onFounderPresence(false);
+		expect(test.getFrontendHandlers().soleSpeaker()).toBeNull();
+	});
+
+	it("does not name a sole speaker without a live head count", async () => {
+		const test = await liveFixture();
+		expect(test.getFrontendHandlers().soleSpeaker()).toBeNull();
 	});
 });

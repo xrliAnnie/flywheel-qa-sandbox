@@ -65,6 +65,7 @@ describe("resolveHuddleBridgeConfig", () => {
 		expect(cfg.ffmpegBin).toBe("ffmpeg");
 		expect(cfg.allowUserIds).toEqual([]);
 		expect(cfg.bridgeUrl).toBe("http://127.0.0.1:9876"); // default
+		expect(cfg.leaseHttpTimeoutMs).toBe(2_000);
 		expect(cfg.apiToken).toBe("tok-bridge");
 		expect(cfg.founderUserId).toBe("annie-1");
 		expect(cfg.geminiApiKey).toBe("tok-gemini");
@@ -188,6 +189,7 @@ describe("resolveHuddleBridgeConfig", () => {
 				FLYWHEEL_VOICE_BRIDGE_HEALTH_PORT: "9999",
 				FLYWHEEL_VOICE_FFMPEG: "/opt/bin/ffmpeg",
 				FLYWHEEL_HUDDLE_ALLOW_USER_IDS: "111, 222",
+				FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS: "3456",
 			},
 		);
 		expect(cfg.commandName).toBe("hud");
@@ -195,6 +197,7 @@ describe("resolveHuddleBridgeConfig", () => {
 		expect(cfg.backchannelMs).toBe(500);
 		expect(cfg.healthPort).toBe(9999);
 		expect(cfg.ffmpegBin).toBe("/opt/bin/ffmpeg");
+		expect(cfg.leaseHttpTimeoutMs).toBe(3_456);
 		expect(cfg.allowUserIds).toEqual(["111", "222"]);
 		expect(
 			resolveHuddleBridgeConfig([project()], {
@@ -314,5 +317,16 @@ describe("resolveHuddleBridgeConfig", () => {
 				FLYWHEEL_VOICE_BRIDGE_HEALTH_PORT: "not-a-port",
 			}),
 		).toThrow(/FLYWHEEL_VOICE_BRIDGE_HEALTH_PORT/);
+	});
+
+	it("fails on an invalid resident lease HTTP timeout", () => {
+		for (const timeout of ["0", "1.5", "nope"]) {
+			expect(() =>
+				resolveHuddleBridgeConfig([project()], {
+					...env,
+					FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS: timeout,
+				}),
+			).toThrow(/FLYWHEEL_VOICE_LEASE_HTTP_TIMEOUT_MS/);
+		}
 	});
 });

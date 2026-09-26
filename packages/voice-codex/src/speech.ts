@@ -34,6 +34,11 @@ export interface PreparedSpeech {
 	spokenText: string;
 	expectedTokens: string[];
 	generationBudgetMs: number;
+	/**
+	 * FLY-2796: position within one prepared reply. Part 0 begins an answer;
+	 * later parts continue it and are not a new answer to anything.
+	 */
+	part: number;
 }
 
 export function stripForSpeech(value: string): string {
@@ -177,7 +182,7 @@ export function prepareReplySpeech(
 ): PreparedSpeech[] {
 	const projected = projectForSpeech(rawText);
 	if (!projected) return [];
-	return splitSpeech(projected, configuredMax).map((spokenText) => {
+	return splitSpeech(projected, configuredMax).map((spokenText, part) => {
 		const codePoints = Array.from(spokenText).length;
 		return {
 			speechId: randomUUID(),
@@ -187,6 +192,7 @@ export function prepareReplySpeech(
 				70_000,
 				Math.max(20_000, 10_000 + 700 * codePoints),
 			),
+			part,
 		};
 	});
 }

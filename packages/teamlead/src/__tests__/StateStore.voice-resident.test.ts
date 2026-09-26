@@ -201,4 +201,174 @@ describe("StateStore resident voice carrier", () => {
 			}),
 		).toBe(true);
 	});
+
+	it("releases a normally ended resident room for an immediate replacement claim", () => {
+		const first = store.reserveAndClaimResidentVoiceSession(input());
+		if (!("leaseToken" in first)) throw new Error("resident claim missing");
+		const sessionId = input().reservation.sessionId;
+		const owner = {
+			sessionId,
+			leaseToken: first.leaseToken,
+			ownerBootId: "voice-bridge-boot-1",
+			sessionGeneration: 7,
+		};
+		expect(
+			store.setVoiceSessionState({
+				...owner,
+				state: "warming",
+				now: T0,
+			}),
+		).toBe(true);
+		expect(
+			store.setVoiceSessionState({
+				...owner,
+				state: "live",
+				now: "2026-09-23T20:00:01.000Z",
+			}),
+		).toBe(true);
+		expect(
+			store.setVoiceSessionState({
+				...owner,
+				state: "ended",
+				reason: "voice-stop",
+				now: "2026-09-23T20:00:02.000Z",
+			}),
+		).toBe(true);
+		expect(store.getVoiceSession(sessionId)).toMatchObject({
+			state: "ended",
+			reason: "voice-stop",
+		});
+
+		const replacement = store.reserveAndClaimResidentVoiceSession(
+			input({
+				requestId: "resident-request-2",
+				inputDigest: "digest-2",
+				ownerBootId: "voice-bridge-boot-2",
+				sessionGeneration: 8,
+				bindingProof: {
+					...input().bindingProof,
+					ownerBootId: "voice-bridge-boot-2",
+					sessionGeneration: 8,
+					observedAt: "2026-09-23T20:00:02.000Z",
+					expiresAt: "2026-09-23T20:01:02.000Z",
+				},
+				reservation: {
+					...input().reservation,
+					sessionId: "10000000-0000-4000-8000-000000000102",
+					createdAt: "2026-09-23T20:00:02.000Z",
+				},
+			}),
+		);
+		expect(replacement).toMatchObject({
+			status: "inserted",
+			session: {
+				sessionId: "10000000-0000-4000-8000-000000000102",
+				state: "claimed",
+			},
+		});
+	});
+
+	it("expires an abandoned resident lease before admitting a new room owner", () => {
+		const first = store.reserveAndClaimResidentVoiceSession(input());
+		expect(first).toHaveProperty("leaseToken");
+		const takeoverAt = "2026-09-23T20:00:15.000Z";
+		const takeover = store.reserveAndClaimResidentVoiceSession(
+			input({
+				requestId: "resident-request-2",
+				inputDigest: "digest-2",
+				ownerBootId: "voice-bridge-boot-2",
+				sessionGeneration: 8,
+				bindingProof: {
+					...input().bindingProof,
+					ownerBootId: "voice-bridge-boot-2",
+					sessionGeneration: 8,
+					observedAt: takeoverAt,
+					expiresAt: "2026-09-23T20:01:15.000Z",
+				},
+				reservation: {
+					...input().reservation,
+					sessionId: "10000000-0000-4000-8000-000000000102",
+					createdAt: takeoverAt,
+				},
+			}),
+		);
+
+		expect(takeover).toMatchObject({
+			status: "inserted",
+			session: {
+				sessionId: "10000000-0000-4000-8000-000000000102",
+				ownerBootId: "voice-bridge-boot-2",
+				state: "claimed",
+			},
+		});
+		expect(store.getVoiceSession(input().reservation.sessionId)).toMatchObject({
+			state: "failed",
+			reason: "resident_lease_expired",
+			endedAt: takeoverAt,
+		});
+	});
+
+	it("keeps a renewed resident lease exclusive until its extended expiry", () => {
+		const first = store.reserveAndClaimResidentVoiceSession(input());
+		if (!("leaseToken" in first)) throw new Error("resident claim missing");
+		const renewedAt = "2026-09-23T20:00:10.000Z";
+		expect(
+			store.renewVoiceSession({
+				sessionId: input().reservation.sessionId,
+				leaseToken: first.leaseToken,
+				now: renewedAt,
+				leaseTtlMs: 15_000,
+				ownerBootId: "voice-bridge-boot-1",
+				sessionGeneration: 7,
+				bindingProof: {
+					...input().bindingProof,
+					observedAt: renewedAt,
+					expiresAt: "2026-09-23T20:01:10.000Z",
+				},
+			}),
+		).toMatchObject({ leaseExpiresAt: "2026-09-23T20:00:25.000Z" });
+		const replacement = {
+			requestId: "resident-request-2",
+			inputDigest: "digest-2",
+			ownerBootId: "voice-bridge-boot-2",
+			sessionGeneration: 8,
+			bindingProof: {
+				...input().bindingProof,
+				ownerBootId: "voice-bridge-boot-2",
+				sessionGeneration: 8,
+				observedAt: "2026-09-23T20:00:16.000Z",
+				expiresAt: "2026-09-23T20:01:16.000Z",
+			},
+			reservation: {
+				...input().reservation,
+				sessionId: "10000000-0000-4000-8000-000000000102",
+				createdAt: "2026-09-23T20:00:16.000Z",
+			},
+		};
+		expect(
+			store.reserveAndClaimResidentVoiceSession(input(replacement)),
+		).toEqual({
+			status: "session_active",
+		});
+		expect(store.getVoiceSession(input().reservation.sessionId)).toMatchObject({
+			state: "claimed",
+			leaseExpiresAt: "2026-09-23T20:00:25.000Z",
+		});
+
+		const afterExpiry = store.reserveAndClaimResidentVoiceSession(
+			input({
+				...replacement,
+				bindingProof: {
+					...replacement.bindingProof,
+					observedAt: "2026-09-23T20:00:25.000Z",
+					expiresAt: "2026-09-23T20:01:25.000Z",
+				},
+				reservation: {
+					...replacement.reservation,
+					createdAt: "2026-09-23T20:00:25.000Z",
+				},
+			}),
+		);
+		expect(afterExpiry).toMatchObject({ status: "inserted" });
+	});
 });

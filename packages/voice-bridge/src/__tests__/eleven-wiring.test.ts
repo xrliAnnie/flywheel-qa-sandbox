@@ -176,6 +176,37 @@ describe("wireElevenMode (FLY-1006 S7)", () => {
 		await h.runtime.close();
 	});
 
+	it.each([
+		{ blocked: "agent", expected: "ElevenLabs API 超时(10ms)" },
+		{ blocked: "shim", expected: "shim 探针超时(10ms)" },
+	])(
+		"bounds a blackholed $blocked preflight and releases the shared slot",
+		async ({ blocked, expected }) => {
+			const h = await wire({
+				config: { ...CONFIG, leaseHttpTimeoutMs: 10 },
+				fetchImpl: (async (url: unknown, init?: RequestInit) => {
+					if (blocked === "shim" && String(url).includes("convai/agents")) {
+						return Response.json({ ok: true });
+					}
+					return new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener(
+							"abort",
+							() => reject(init.signal?.reason),
+							{ once: true },
+						);
+					});
+				}) as typeof fetch,
+			});
+			try {
+				const replies = await invoke(h);
+				expect(replies[0].text).toContain(expected);
+				expect(h.room.slot.current()).toBe(null);
+			} finally {
+				await h.runtime.close();
+			}
+		},
+	);
+
 	it("/eleven stop tears the live session down and frees the room", async () => {
 		const h = await wire();
 		await invoke(h);

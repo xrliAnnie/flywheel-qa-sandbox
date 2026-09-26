@@ -53,6 +53,7 @@ import {
 	voiceReceiveRuntimeEvidence,
 } from "./receive-health.js";
 import { recoverPinnedVoiceSession } from "./recovery.js";
+import { ChannelHeadcount } from "./room-headcount.js";
 import { GenericVoiceSession, type HeadphoneControl } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
 import {
@@ -268,6 +269,10 @@ export async function main(): Promise<void> {
 			}),
 		);
 		let room: DiscordVoiceRoom | undefined;
+		const headcount = new ChannelHeadcount({
+			guildId: context.projection.guildId,
+			voiceChannelId: context.projection.voiceChannelId,
+		});
 		const saved: SavedVoiceSession = {
 			sessionId: context.sessionId,
 			leaseToken: context.leaseToken,
@@ -336,7 +341,7 @@ export async function main(): Promise<void> {
 							ts: new Date().toISOString(),
 							...record,
 						}),
-					deps: discordDeps,
+					deps: headcount.wrap(discordDeps),
 					token,
 					expectedBotUserId: context.projection.voiceBotUserId,
 					guildId: context.projection.guildId,
@@ -508,6 +513,8 @@ export async function main(): Promise<void> {
 			},
 			evidence: (record) => evidence.appendBuffered(record),
 			confirmationMs: config.confirmationMs,
+			replyWaitMs: config.replyWaitMs,
+			roomHumanCount: () => headcount.current(),
 			assertLease: () => context.lease.assert(),
 			postStatus: async (text) => {
 				await mirror.post(context.projection.threadId, text, discordNonce());

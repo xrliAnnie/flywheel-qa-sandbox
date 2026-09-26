@@ -491,6 +491,7 @@ import {
 	storeCodexQuotaAutoSwitchEnabled,
 	storeDatabaseArchiveEnabled,
 	storeFlagRetirementScanEnabled,
+	storeHeadphoneBackgroundEnabled,
 	storeLoopProfilerEnabled,
 	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
@@ -562,6 +563,7 @@ import {
 } from "./headphone-collector.js";
 import { HeadphoneQuestionAuthority } from "./headphone-question-authority.js";
 import { createHeadphoneRouter } from "./headphone-routes.js";
+import { resolveHeadphoneBackgroundConfig } from "./headphone-runtime-config.js";
 import {
 	activateHolderForWake,
 	type HolderWakeCause,
@@ -11594,6 +11596,7 @@ export async function startBridge(
 		config.discordOwnerUserId,
 		config.founderConsent?.founderUserId,
 	);
+	const headphoneBackground = resolveHeadphoneBackgroundConfig(process.env);
 	let headphoneCollectorTimer: ReturnType<typeof setInterval> | undefined;
 	let voiceHandoffReconcileTimer: ReturnType<typeof setInterval> | undefined;
 	if (headphoneFounderId) {
@@ -11670,38 +11673,52 @@ export async function startBridge(
 				? "found"
 				: "conflict";
 		};
-		const questionIdByMessage = (
+		const questionIdsByMessages = (
 			projectName: string,
-			messageId: string,
-		): string | undefined => {
-			const questionIds = new Set<string>();
-			const founderReview =
-				store.getFounderReviewCardBindingByMessage(messageId);
-			if (
-				founderReview &&
-				store.getWorkflowRun(founderReview.run_id)?.project_name === projectName
-			)
-				questionIds.add(founderReview.question_id);
-			const workflow = store.getWorkflowGateHolderByCardMessageId(messageId);
-			if (
-				workflow &&
-				store.getWorkflowRun(workflow.run_id)?.project_name === projectName
-			)
-				questionIds.add(workflow.question_id);
+			messageIds: readonly string[],
+		): ReadonlyMap<string, readonly string[]> => {
+			const requested = new Set(messageIds);
+			const questionIdsByMessage = new Map<string, Set<string>>();
+			const add = (messageId: string, questionId: string) => {
+				const questionIds =
+					questionIdsByMessage.get(messageId) ?? new Set<string>();
+				questionIds.add(questionId);
+				questionIdsByMessage.set(messageId, questionIds);
+			};
+			for (const messageId of messageIds) {
+				const founderReview =
+					store.getFounderReviewCardBindingByMessage(messageId);
+				if (
+					founderReview &&
+					store.getWorkflowRun(founderReview.run_id)?.project_name ===
+						projectName
+				)
+					add(messageId, founderReview.question_id);
+				const workflow = store.getWorkflowGateHolderByCardMessageId(messageId);
+				if (
+					workflow &&
+					store.getWorkflowRun(workflow.run_id)?.project_name === projectName
+				)
+					add(messageId, workflow.question_id);
+			}
 			for (const event of store.getEventsByType("ship_gate_msg_binding")) {
 				const binding = event.payload as
 					| { gateMessageId?: unknown; questionId?: unknown }
 					| undefined;
 				if (
 					event.project_name === projectName &&
-					binding?.gateMessageId === messageId &&
+					typeof binding?.gateMessageId === "string" &&
+					requested.has(binding.gateMessageId) &&
 					typeof binding.questionId === "string"
 				)
-					questionIds.add(binding.questionId);
+					add(binding.gateMessageId, binding.questionId);
 			}
-			if (questionIds.size > 1)
-				throw new Error("headphone_question_binding_ambiguous");
-			return questionIds.values().next().value;
+			return new Map(
+				[...questionIdsByMessage].map(([messageId, questionIds]) => [
+					messageId,
+					[...questionIds],
+				]),
+			);
 		};
 		const headphoneQuestionAuthority = new HeadphoneQuestionAuthority({
 			store: store.headphoneInbox,
@@ -11709,7 +11726,7 @@ export async function startBridge(
 			projects,
 			openCommDb: (projectName) =>
 				CommDB.openReadonly(commDbPathForProject(projectName)),
-			questionIdByMessage,
+			questionIdsByMessages,
 			botUserIdFromToken,
 			globalBotUserId: botUserIdFromToken(config.discordBotToken),
 			log: (message) => console.warn(message),
@@ -11730,14 +11747,29 @@ export async function startBridge(
 					now: new Date().toISOString(),
 				}),
 		});
-		const collectHeadphonePage = () =>
+		const collectHeadphonePage = () => {
+			if (!storeHeadphoneBackgroundEnabled(flagStore)) return;
 			void headphoneCollector
 				.tick()
 				.catch((error) =>
 					console.warn(
 						`[headphone-inbox] collector tick failed: ${error instanceof Error ? error.message : String(error)}`,
 					),
-				);
+				)
+				.finally(() => {
+					try {
+						store.headphoneInbox.pruneOlderThan(
+							new Date(
+								Date.now() - headphoneBackground.retentionMs,
+							).toISOString(),
+						);
+					} catch (error) {
+						console.warn(
+							`[headphone-inbox] retention failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				});
+		};
 		collectHeadphonePage();
 		headphoneCollectorTimer = setInterval(collectHeadphonePage, 5_000);
 		headphoneCollectorTimer.unref?.();
@@ -12004,6 +12036,7 @@ export async function startBridge(
 		voiceAgendaRouterHolder.current = agendaRoutes.sessionRouter;
 		voiceAgendaLeadRouterHolder.current = agendaRoutes.leadRouter;
 		const reconcileVoiceHandoffs = () => {
+			if (!storeHeadphoneBackgroundEnabled(flagStore)) return;
 			const now = new Date().toISOString();
 			store.voiceHandoffs.promoteStaleDispatching(now, 30_000);
 			for (const record of store.voiceHandoffs.listAmbiguous(now)) {

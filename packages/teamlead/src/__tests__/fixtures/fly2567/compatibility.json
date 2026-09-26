@@ -5,15 +5,15 @@
 	"pairs": [
 		{
 			"id": "department-lead-rules.md",
-			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence. FLY-2597 adds the same explicit founderAsk, reply acknowledgement, shared title/page attention, no periodic prose and quiet-record duties to ON and OFF; existing historical duties outside that exact insertion are preserved. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2655 adds the same manifest-only voice session start, status and stop duty to ON and OFF; both modes reject shell, legacy huddle and caller-supplied authority fields, preserve request identity on replay, and do not claim real audio success from request acceptance.",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence. FLY-2597 adds the same explicit founderAsk, reply acknowledgement, shared title/page attention, no periodic prose and quiet-record duties to ON and OFF; existing historical duties outside that exact insertion are preserved. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2655 adds the same manifest-only voice session start, status and stop duty to ON and OFF; both modes reject shell, legacy huddle and caller-supplied authority fields, preserve request identity on replay, and do not claim real audio success from request acceptance. FLY-2796 adds the same founder-ruled voice duty to ON and OFF: every sentence she says in a voice session reaches the Lead as usual, and a \"what's new\" question is answered from current state, saying plainly when nothing is new. To stay inside the FLY-2567 resident budget, ON also shortens one non-normative history paragraph (\"Why this is stricter than the previous rule\"); no clause changes, and OFF keeps its historical text.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
-					"sha256": "de131c6c8b5c463629610424eca9d5fa16e393f2d914cf64b09b247472f4dfdc"
+					"sha256": "c67e245459547bbc9170181e6b679670f26ec1f74fb2bfd0a6ff76ae4fe9e4e6"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/department-lead-rules.md",
-					"sha256": "4d0e1216ec71b50c2e4999f4597dccdbb37171ac72f7c3052818029cb8a822df"
+					"sha256": "44675498c57d0607a0366b1c15cdf0d239a97511283aa014746363d721e9fc34"
 				}
 			]
 		},

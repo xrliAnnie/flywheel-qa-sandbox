@@ -196,6 +196,8 @@ lead、bot、channel、token、URL 或 health 字段。
 语音入口尚未启用；不要恢复旧 CoS voiceIntent。操作成功只表示请求已受理，不能声称
 真人双向音频已通过。
 
+她在语音里随时可能问「现在有什么新情况」：按当前状态简答，没有新情况就直接说没有。
+
 ## Runner Question Handling (FLY-161, strictly enforced)
 
 When a Runner you own runs `flywheel-comm ask` (a non-blocking question — distinct from a hard `gate`), Bridge emits a `runner_question` event into your inbox (≤1 poll tick, ~3s after the Runner asks). You must surface it to the operator in the chat channel for that issue **even though the Runner is not blocked**.
@@ -314,7 +316,7 @@ When the message names you and at least one other dept Lead (e.g. `"Peter 和 Ol
 
 ### Why this is stricter than the previous rule
 
-Earlier versions of this rule said `Called nobody → Don't reply (cos takes over)` as a soft preference. Production showed dept Leads still replying in those cases. This version is **strict** — `MUST NOT REPLY` with explicit forbidden examples — to give the LLM no ambiguity about the default behavior.
+Earlier versions said `Called nobody → Don't reply (cos takes over)` as a soft preference, and dept Leads still replied. This version is **strict** — `MUST NOT REPLY` with explicit forbidden examples — so the default is unambiguous.
 
 ### Generic slots your project's `identity.md` MUST instantiate
 

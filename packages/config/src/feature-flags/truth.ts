@@ -267,6 +267,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2798 configured OpenAI Live frontend voice identifier, not an on/off gate",
 	FLYWHEEL_CLAUDE_BIN:
 		"FLY-2775 plumbing: path override for the claude binary the Opus model sync probes, not an on/off gate",
+	FLYWHEEL_HEADPHONE_INBOX_RETENTION_DAYS:
+		"FLY-2796 bounded retention duration for the headphone inbox producer, not an on/off gate",
 	FLYWHEEL_NATIVE_SKILL_BASELINE_VERSION:
 		"FLY-2766 per-invocation exact version selector for a read-only native-skill origin canary, not an on/off gate",
 	FLYWHEEL_STANDING_AUTHORITY_STATE_DIR:
@@ -409,6 +411,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"FLY-2863 numeric tuning: how far back the headphone inbox backfill reads (default 86400000), not an on/off gate",
 	FLYWHEEL_VOICE_IDLE_EXIT_MS:
 		"FLY-2701 numeric tuning: how long the on-demand daemon stays after its last successful empty read before exiting 0, not an on/off gate",
+	FLYWHEEL_VOICE_REPLY_WAIT_MS:
+		"FLY-2796 numeric tuning: quiet ceiling (default 15000ms) after a delivered sentence before the voice session says the reply is unavailable, not an on/off gate",
 	...Object.fromEntries(
 		[
 			"FLYWHEEL_VOICE_CLOCK_SKEW_GRACE_MS",

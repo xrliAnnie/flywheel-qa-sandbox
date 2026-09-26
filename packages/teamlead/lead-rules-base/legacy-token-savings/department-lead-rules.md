@@ -301,6 +301,8 @@ lead、bot、channel、token、URL 或 health 字段。
 语音入口尚未启用；不要恢复旧 CoS voiceIntent。操作成功只表示请求已受理，不能声称
 真人双向音频已通过。
 
+她在语音里随时可能问「现在有什么新情况」：按当前状态简答，没有新情况就直接说没有。
+
 ## Runner Question Handling (FLY-161, strictly enforced)
 
 When a Runner you own runs `flywheel-comm ask` (a non-blocking question — distinct from a hard `gate`), Bridge emits a `runner_question` event into your inbox (≤1 poll tick, ~3s after the Runner asks). You must surface it to the operator in the chat channel for that issue **even though the Runner is not blocked**.

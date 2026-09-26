@@ -4,9 +4,9 @@
  * bare product-test surface — the resident brain writes minutes onto its own
  * meeting issue):
  *
- *   preflight (agent reachable + shim healthy + key present; any gap is a
- *   fail-loud founder-facing reply, NEVER a silent degrade — research §2.3)
- *   → shared-slot acquire("eleven") (busy → founder-facing rejection)
+ *   shared-slot acquire("eleven") (busy → immediate founder-facing rejection)
+ *   → preflight (agent reachable + shim healthy + key present; any gap is a
+ *   fail-loud founder-facing reply and releases the pending slot)
  *   → kickoff issue (FLY-1160; failure = no issue, no meeting — fail-loud)
  *   → session start (owns the slot + issue from here; the resident brain is
  *     pre-heated by the wiring in the assembling window — plan §4.2-3).
@@ -73,8 +73,25 @@ export class ElevenCommand {
 			return;
 		}
 
-		const pre = await this.opts.preflight();
+		const pendingSessionId = randomUUID();
+		const pending = this.opts.slot.acquire(ELEVEN_SLOT_MODE, pendingSessionId);
+		if (!pending.ok) {
+			await inv.reply(pending.message);
+			return;
+		}
+
+		let pre: ElevenPreflightResult;
+		try {
+			pre = await this.opts.preflight();
+		} catch (err) {
+			this.opts.slot.release(ELEVEN_SLOT_MODE, pendingSessionId);
+			await inv.reply(
+				`/${this.name} 语音不可用:预检失败(${String((err as Error).message ?? err)})。稍后再试。`,
+			);
+			return;
+		}
 		if (!pre.ok) {
+			this.opts.slot.release(ELEVEN_SLOT_MODE, pendingSessionId);
 			await inv.reply(
 				`/${this.name} 没起起来（预检失败）:${pre.reason}。修好再试——不带病开会话。`,
 			);
@@ -85,24 +102,34 @@ export class ElevenCommand {
 		try {
 			lease = await this.opts.claimSession?.();
 		} catch (err) {
+			this.opts.slot.release(ELEVEN_SLOT_MODE, pendingSessionId);
 			await inv.reply(
-				`/${this.name} 没起起来:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
+				`/${this.name} 语音不可用:房间租约获取失败(${String((err as Error).message ?? err)})。稍后再试。`,
 			);
 			return;
 		}
-		const sessionId = lease?.sessionId ?? randomUUID();
-		const slotLease = lease?.toSlotLease(ELEVEN_SLOT_MODE);
-		const acquired = slotLease
-			? this.opts.slot.acquireLease(slotLease)
-			: this.opts.slot.acquire(ELEVEN_SLOT_MODE, sessionId);
-		if (!acquired.ok) {
-			await lease?.close("failed", "slot_busy").catch((err: unknown) => {
-				this.opts.log?.(
-					`[eleven-command] resident lease cleanup failed: ${String((err as Error).message ?? err)}`,
+		let sessionId: string = pendingSessionId;
+		let slotLease: ReturnType<ResidentVoiceLease["toSlotLease"]> | undefined;
+		if (lease) {
+			slotLease = lease.toSlotLease(ELEVEN_SLOT_MODE);
+			if (!this.opts.slot.release(ELEVEN_SLOT_MODE, pendingSessionId)) {
+				await lease.close("failed", "slot_busy").catch(() => undefined);
+				await inv.reply(
+					`/${this.name} 语音不可用:本地会话占位已丢失。稍后再试。`,
 				);
-			});
-			await inv.reply(acquired.message);
-			return;
+				return;
+			}
+			const projected = this.opts.slot.acquireLease(slotLease);
+			if (!projected.ok) {
+				await lease.close("failed", "slot_busy").catch((err: unknown) => {
+					this.opts.log?.(
+						`[eleven-command] resident lease cleanup failed: ${String((err as Error).message ?? err)}`,
+					);
+				});
+				await inv.reply(projected.message);
+				return;
+			}
+			sessionId = lease.sessionId;
 		}
 
 		// FLY-1160: kickoff issue BEFORE the session — the resident brain lands

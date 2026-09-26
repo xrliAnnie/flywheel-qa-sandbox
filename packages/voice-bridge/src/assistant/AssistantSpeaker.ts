@@ -53,6 +53,8 @@ export class AssistantSpeaker {
 	private chunksThisTurn = 0;
 	private bytesThisTurn = 0;
 	private roomSpeechId?: string;
+	/** Completed RoomIO speech ids whose estimated audible tail can still play. */
+	private readonly endedRoomSpeechIds = new Set<string>();
 	private roomSequence = 0;
 	private roomCommands: Promise<void> = Promise.resolve();
 	private readonly cancelledRoomSpeech = new Set<string>();
@@ -69,6 +71,9 @@ export class AssistantSpeaker {
 		this.chunksThisTurn = 0;
 		this.bytesThisTurn = 0;
 		if (this.opts.roomIO) {
+			const room = this.opts.roomIO();
+			// Retire completed ids once RoomIO's estimated audible tail is drained.
+			if (room?.audibleTail().drained) this.endedRoomSpeechIds.clear();
 			const speechId = `assistant:${randomUUID()}`;
 			this.roomSpeechId = speechId;
 			this.roomSequence = 0;
@@ -156,6 +161,7 @@ export class AssistantSpeaker {
 			const speechId = this.roomSpeechId;
 			this.roomSpeechId = undefined;
 			if (speechId) {
+				this.endedRoomSpeechIds.add(speechId);
 				this.roomCommands = this.roomCommands.then(async () => {
 					if (this.cancelledRoomSpeech.delete(speechId)) return;
 					const room = this.opts.roomIO?.();
@@ -174,19 +180,31 @@ export class AssistantSpeaker {
 		this.stream = null;
 	}
 
+	/** Whether RoomIO still reports an estimated audible tail for this mouth. */
+	hasEstimatedAudibleTail(): boolean {
+		const room = this.opts.roomIO?.();
+		return Boolean(room && !room.audibleTail().drained);
+	}
+
 	/** barge-in / response-cancelled: stop sound NOW and kill the dead turn. */
 	flush(): void {
 		this.active = false;
 		this.clearFiller();
 		if (this.opts.roomIO) {
-			const speechId = this.roomSpeechId;
+			const speechIds = new Set(this.endedRoomSpeechIds);
+			if (this.roomSpeechId) speechIds.add(this.roomSpeechId);
 			this.roomSpeechId = undefined;
-			if (speechId) {
-				this.cancelledRoomSpeech.add(speechId);
+			this.endedRoomSpeechIds.clear();
+			if (speechIds.size > 0) {
 				const room = this.opts.roomIO();
-				if (room) room.localPlaybackCancel(speechId, room.identity.generation);
+				for (const speechId of speechIds) {
+					this.cancelledRoomSpeech.add(speechId);
+					if (room)
+						room.localPlaybackCancel(speechId, room.identity.generation);
+				}
 				this.roomCommands = this.roomCommands.then(() => {
-					this.cancelledRoomSpeech.delete(speechId);
+					for (const speechId of speechIds)
+						this.cancelledRoomSpeech.delete(speechId);
 				});
 				this.observeRoomCommands();
 			}

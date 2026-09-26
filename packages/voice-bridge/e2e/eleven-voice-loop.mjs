@@ -27,7 +27,7 @@
  *        keyed by guild+bot and wedges boot B's resident join → entersState
  *        AbortError). Two invocations, each exit-code gated, stay fail-closed.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	createWriteStream,
 	existsSync,
@@ -37,7 +37,32 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runVoiceBridge } from "../dist/cli.js";
+import { buildStagedResidentIdentity } from "./lib/rig-config.mjs";
+
+const LEGS = process.env.ELEVEN_LOOP_LEGS ?? "all";
+if (LEGS === "all") {
+	for (const leg of ["mutex", "audio"]) {
+		const child = spawnSync(
+			process.execPath,
+			[fileURLToPath(import.meta.url)],
+			{
+				env: { ...process.env, ELEVEN_LOOP_LEGS: leg },
+				stdio: "inherit",
+			},
+		);
+		if (child.error) {
+			console.error(
+				`eleven-voice-loop ${leg} boot failed: ${child.error.message}`,
+			);
+			process.exit(1);
+		}
+		if (child.status !== 0) process.exit(child.status ?? 1);
+	}
+	console.log("eleven-voice-loop (isolated boots) VERDICT: PASS");
+	process.exit(0);
+}
 
 const need = (k) => {
 	const v = process.env[k];
@@ -64,6 +89,8 @@ need("ELEVENLABS_API_KEY");
 const probeWav = need("PROBE_WAV");
 const interruptWav = need("INTERRUPT_WAV");
 const injectorToken = need("INJECTOR_BOT_TOKEN");
+const stagedBridgeUrl = need("FLYWHEEL_BRIDGE_URL");
+const stagedApiToken = process.env.FLYWHEEL_API_TOKEN ?? "staged-mutex-leg";
 const outDir = process.env.OUT_DIR ?? "/tmp/fly1006-voice-loop";
 execFileSync("mkdir", ["-p", outDir]);
 
@@ -74,29 +101,6 @@ const fail = (m) => {
 	log(`FAIL: ${m}`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const elevenConfig = {
-	commandName: "eleven",
-	agentId,
-	apiKeyEnv: "ELEVENLABS_API_KEY",
-	shimHealthUrl:
-		process.env.ELEVEN_SHIM_HEALTH_URL ?? "http://127.0.0.1:8980/health",
-};
-const baseConfig = (allowUserIds) => ({
-	projectName: "flywheel",
-	projectRoot: process.cwd(),
-	guildId,
-	voiceChannelId,
-	commandName: "meet",
-	moveMembers: false,
-	orchestratorToken: need("HUDDLE_ORCH_BOT_TOKEN"),
-	earsToken: need("HUDDLE_EARS_BOT_TOKEN"),
-	leads: [],
-	backchannelMs: 350,
-	allowUserIds,
-	healthPort: Number(process.env.STAGED_HEALTH_PORT ?? 9879),
-	ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
-});
 
 // ---- injector bot (WAV speaker + orchestrator recorder + channel reader) ----
 const { Client, GatewayIntentBits } = await import("discord.js");
@@ -117,8 +121,38 @@ await injector.login(injectorToken);
 await new Promise((r) => injector.once("clientReady", r));
 const injectorId = injector.user.id;
 log(`injector online as ${injector.user.tag} (${injectorId})`);
+const founderUserId = (await injector.guilds.fetch(guildId)).ownerId;
+const residentIdentity = buildStagedResidentIdentity(
+	process.env,
+	founderUserId,
+);
 
-const LEGS = process.env.ELEVEN_LOOP_LEGS ?? "all";
+const elevenConfig = {
+	commandName: "eleven",
+	agentId,
+	leadId: residentIdentity.leadId,
+	apiKeyEnv: "ELEVENLABS_API_KEY",
+	shimHealthUrl:
+		process.env.ELEVEN_SHIM_HEALTH_URL ?? "http://127.0.0.1:8980/health",
+};
+const baseConfig = (allowUserIds) => ({
+	projectName: "flywheel",
+	projectRoot: process.cwd(),
+	guildId,
+	voiceChannelId,
+	commandName: "meet",
+	moveMembers: false,
+	orchestratorToken: need("HUDDLE_ORCH_BOT_TOKEN"),
+	earsToken: need("HUDDLE_EARS_BOT_TOKEN"),
+	leads: [],
+	bridgeUrl: need("FLYWHEEL_BRIDGE_URL"),
+	apiToken: need("FLYWHEEL_API_TOKEN"),
+	founderUserId: residentIdentity.founderUserId,
+	backchannelMs: 350,
+	allowUserIds,
+	healthPort: Number(process.env.STAGED_HEALTH_PORT ?? 9879),
+	ffmpegBin: process.env.FFMPEG_BIN ?? "ffmpeg",
+});
 
 // ===================== Boot A — cross-mode slot mutex =====================
 if (LEGS !== "audio") {
@@ -126,7 +160,7 @@ if (LEGS !== "audio") {
 	// black-hole Bridge: the /gemini kickoff createIssue hangs AFTER the slot
 	// acquire, holding the room deterministically for the mutex window.
 	process.env.FLYWHEEL_BRIDGE_URL = "http://10.255.255.255:9877";
-	process.env.FLYWHEEL_API_TOKEN ??= "staged-mutex-leg";
+	process.env.FLYWHEEL_API_TOKEN = stagedApiToken;
 	process.env.FLYWHEEL_GEMINI_AUTOSTART = "mutex-leg 占坑";
 	process.env.FLYWHEEL_ELEVEN_AUTOSTART = "mutex-leg 拒入验证";
 	const bootAt = Date.now();
@@ -134,6 +168,7 @@ if (LEGS !== "audio") {
 		config: baseConfig([]),
 		assistant: {
 			commandName: "gemini",
+			leadId: residentIdentity.leadId,
 			voice: "Kore",
 			assistantToken: null,
 			briefing: {
@@ -172,7 +207,8 @@ if (LEGS !== "audio") {
 	}
 	await runtime.close();
 	delete process.env.FLYWHEEL_GEMINI_AUTOSTART;
-	delete process.env.FLYWHEEL_BRIDGE_URL;
+	process.env.FLYWHEEL_BRIDGE_URL = stagedBridgeUrl;
+	process.env.FLYWHEEL_API_TOKEN = stagedApiToken;
 	await sleep(3_000);
 }
 
@@ -215,7 +251,8 @@ log("injector in VC");
 const outPcm = join(outDir, "eleven-out-48k-stereo.s16le");
 const sink = createWriteStream(outPcm);
 let recordedBytes = 0;
-let lastAudioAt = 0;
+let nonSilentBytes = 0;
+let lastNonSilentAt = 0;
 const recorded = new Set();
 conn.receiver.speaking.on("start", (userId) => {
 	if (userId === injectorId || recorded.has(userId)) return;
@@ -231,7 +268,16 @@ conn.receiver.speaking.on("start", (userId) => {
 	});
 	opus.pipe(dec).on("data", (pcm) => {
 		recordedBytes += pcm.length;
-		lastAudioAt = Date.now();
+		let sum = 0;
+		for (let i = 0; i < pcm.length - 1; i += 2) {
+			const sample = pcm.readInt16LE(i) / 32768;
+			sum += sample * sample;
+		}
+		const rms = Math.sqrt(sum / Math.max(1, pcm.length / 2));
+		if (rms > 0.01) {
+			nonSilentBytes += pcm.length;
+			lastNonSilentAt = Date.now();
+		}
 		sink.write(pcm);
 	});
 });
@@ -262,6 +308,7 @@ if (userLines > 0) {
 	);
 }
 const leg1Bytes = recordedBytes;
+const leg1NonSilentBytes = nonSilentBytes;
 if (leg1Bytes > 192_000) {
 	// non-silence: RMS over the recorded s16le
 	const buf = readFileSync(outPcm);
@@ -289,28 +336,34 @@ player.play(voice.createAudioResource(probeWav));
 // wait for agent audio to be actively streaming again
 const streamStart = Date.now();
 while (Date.now() - streamStart < 35_000) {
-	if (Date.now() - lastAudioAt < 500 && recordedBytes > leg1Bytes + 96_000)
+	if (
+		Date.now() - lastNonSilentAt < 500 &&
+		nonSilentBytes > leg1NonSilentBytes + 9_600
+	)
 		break;
 	await sleep(250);
 }
-if (recordedBytes <= leg1Bytes + 96_000) {
+if (nonSilentBytes <= leg1NonSilentBytes + 9_600) {
 	fail("leg 2: second round produced no streaming audio to interrupt");
 } else {
 	log("leg 2: agent streaming — injecting interrupt speech");
 	player.play(voice.createAudioResource(interruptWav));
 	await sleep(4_000); // interrupt utterance (~2-3s) + platform interruption
 	const bytesAtCut = recordedBytes;
+	const nonSilentBytesAtCut = nonSilentBytes;
 	await sleep(3_000);
 	const grewAfterCut = recordedBytes - bytesAtCut;
-	// the dying stream may flush a tail; anything beyond ~1.5s of audio
-	// (288000 bytes @48k stereo s16le) means playback did NOT stop.
-	if (grewAfterCut < 288_000) {
+	const nonSilentAfterCut = nonSilentBytes - nonSilentBytesAtCut;
+	// RoomIO keeps a continuous silence clock, so total PCM bytes continue to
+	// grow after playback stops. Only non-silent PCM proves the old answer kept
+	// playing; allow at most ~1.5s (288000 bytes @48k stereo s16le) of tail.
+	if (nonSilentAfterCut < 288_000) {
 		log(
-			`leg 2 STOP PASS — playback stalled after barge-in (+${grewAfterCut} bytes tail)`,
+			`leg 2 STOP PASS — non-silent playback stopped after barge-in (+${nonSilentAfterCut} non-silent bytes; +${grewAfterCut} clock bytes)`,
 		);
 	} else {
 		fail(
-			`leg 2 STOP: audio kept streaming after barge-in (+${grewAfterCut} bytes)`,
+			`leg 2 STOP: non-silent audio kept streaming after barge-in (+${nonSilentAfterCut} non-silent bytes; +${grewAfterCut} clock bytes)`,
 		);
 	}
 	// survival: the session must answer one more round

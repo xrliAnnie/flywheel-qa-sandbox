@@ -304,6 +304,8 @@ export class HeadphoneInboxCollector {
 			.sort(
 				(left, right) =>
 					sourceTime(left.state) - sourceTime(right.state) ||
+					Number(left.state?.bootstrapComplete ?? false) -
+						Number(right.state?.bootstrapComplete ?? false) ||
 					left.scope.channelId.localeCompare(right.scope.channelId),
 			);
 		const candidate = candidates[0];
@@ -446,32 +448,56 @@ export class HeadphoneInboxCollector {
 				? highWatermark
 				: first
 			: (last ?? candidate.state?.cursor);
-		this.options.store.ingestPage({
-			items: accepted,
-			// An urgent mark commits with the page: if it fails, the cursor does
-			// not move and the next tick reads the same page again.
-			...(urgentMarks.length > 0 && this.options.recordUrgent
-				? {
-						withinPage: () => {
-							for (const mark of urgentMarks) this.options.recordUrgent?.(mark);
-						},
-					}
-				: {}),
-			source: {
+		try {
+			this.options.store.ingestPage({
+				items: accepted,
+				// An urgent mark commits with the page: if it fails, the cursor does
+				// not move and the next tick reads the same page again.
+				...(urgentMarks.length > 0 && this.options.recordUrgent
+					? {
+							withinPage: () => {
+								for (const mark of urgentMarks) this.options.recordUrgent?.(mark);
+							},
+						}
+					: {}),
+				source: {
+					projectName: candidate.scope.projectName,
+					founderUserId: candidate.scope.founderUserId,
+					channelId: candidate.scope.channelId,
+					cursor: cursor ?? undefined,
+					highWatermark: highWatermark ?? undefined,
+					bootstrapComplete:
+						(candidate.state?.bootstrapComplete ?? false) || bootstrapComplete,
+					bootstrapPages,
+					health: "healthy",
+					nextAllowedAt: new Date(this.nextPageAt).toISOString(),
+					updatedAt,
+					...(founderLastMessageAt ? { founderLastMessageAt } : {}),
+				},
+			});
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				error.message !== "headphone_inbox_revision_conflict"
+			)
+				throw error;
+			// Keep the cursor on the conflicting page for audit/recovery, but move
+			// this source to the back of the fair rotation so one poisoned Discord
+			// revision cannot starve every other channel.
+			this.options.store.setSourceState({
 				projectName: candidate.scope.projectName,
 				founderUserId: candidate.scope.founderUserId,
 				channelId: candidate.scope.channelId,
-				cursor: cursor ?? undefined,
-				highWatermark: highWatermark ?? undefined,
-				bootstrapComplete:
-					(candidate.state?.bootstrapComplete ?? false) || bootstrapComplete,
-				bootstrapPages,
-				health: "healthy",
+				cursor: candidate.state?.cursor ?? undefined,
+				highWatermark: candidate.state?.highWatermark ?? undefined,
+				bootstrapComplete: candidate.state?.bootstrapComplete ?? false,
+				health: "recovering",
+				healthReason: error.message,
 				nextAllowedAt: new Date(this.nextPageAt).toISOString(),
 				updatedAt,
-				...(founderLastMessageAt ? { founderLastMessageAt } : {}),
-			},
-		});
+			});
+			return "unavailable";
+		}
 		return "collected";
 	}
 }

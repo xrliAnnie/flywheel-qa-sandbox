@@ -68,6 +68,7 @@ async function readyHarness(options?: {
 	onSpeechResult?: ReturnType<typeof vi.fn>;
 	onStatus?: ReturnType<typeof vi.fn>;
 	onEvidence?: ReturnType<typeof vi.fn>;
+	soleSpeaker?: () => { ownerUserId: string; ownerName?: string | null } | null;
 	inputFinalTimeoutMs?: number;
 	commitTimeoutMs?: number;
 	inputGapTimeoutMs?: number;
@@ -118,6 +119,7 @@ async function readyHarness(options?: {
 		onSpeechResult: options?.onSpeechResult,
 		onStatus: options?.onStatus,
 		onEvidence: options?.onEvidence,
+		soleSpeaker: options?.soleSpeaker,
 		onClosed: closed,
 	});
 	await client.start();
@@ -595,6 +597,149 @@ describe("direct realtime transport", () => {
 				transcript: "中间缺口仍应拒绝",
 			},
 		]) {
+			harness.emit(event);
+		}
+		await vi.waitFor(() =>
+			expect(status).toHaveBeenCalledWith(
+				"📻 有一句话没能确认说话人，请再说一遍",
+			),
+		);
+		expect(harness.transcript).not.toHaveBeenCalled();
+		await harness.client.stop();
+	});
+
+	/**
+	 * FLY-2796 founder bounce: alone in the room she lost 3 of 7 clear
+	 * sentences as skipped_unknown — a short pause inside one server-VAD turn
+	 * split it into two Discord utterances or left a silent gap mid-range.
+	 * Every captured frame carries its speaker; null frames are the clock's
+	 * silence. When she is the only human and every voiced frame in the range
+	 * is hers, the sentence is hers.
+	 */
+	function commitEvents(itemId: string, endMs: number, transcript: string) {
+		return [
+			{ type: "input_audio_buffer.speech_started", audio_start_ms: 0 },
+			{ type: "input_audio_buffer.speech_stopped", audio_end_ms: endMs },
+			{
+				type: "input_audio_buffer.committed",
+				item_id: itemId,
+				previous_item_id: null,
+			},
+			{
+				type: "conversation.item.input_audio_transcription.completed",
+				item_id: itemId,
+				content_index: 0,
+				transcript,
+			},
+		];
+	}
+
+	it("gives a split or gapped range to the only human in the room", async () => {
+		const status = vi.fn();
+		const evidence = vi.fn();
+		const harness = await readyHarness({
+			onStatus: status,
+			onEvidence: evidence,
+			soleSpeaker: () => ({ ownerUserId: "founder", ownerName: null }),
+		});
+		const frame = Buffer.alloc(960, 1);
+		for (const [ownerUserId, utteranceId] of [
+			["founder", "utterance-1"],
+			[null, null],
+			["founder", "utterance-2"],
+		] as const) {
+			harness.client.appendAudio(frame, {
+				ownerUserId,
+				ownerName: ownerUserId ? "Founder" : null,
+				utteranceId,
+			});
+		}
+		for (const event of commitEvents("item-split", 60, "刚说完就接着说")) {
+			harness.emit(event);
+		}
+		await vi.waitFor(() => expect(harness.transcript).toHaveBeenCalledOnce());
+		expect(harness.transcript).toHaveBeenCalledWith({
+			itemId: "item-split",
+			contentIndex: 0,
+			text: "刚说完就接着说",
+			ownerUserId: "founder",
+			speakerName: "Founder",
+			utteranceId: "utterance-1",
+		});
+		expect(status).not.toHaveBeenCalled();
+		expect(evidence).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "realtime_input_terminal",
+				itemId: "item-split",
+				status: "delivered",
+				attribution: "sole_human",
+			}),
+		);
+		await harness.client.stop();
+	});
+
+	it("never gives another captured speaker's audio to the sole human", async () => {
+		const status = vi.fn();
+		const harness = await readyHarness({
+			onStatus: status,
+			soleSpeaker: () => ({ ownerUserId: "founder", ownerName: null }),
+		});
+		for (const [ownerUserId, utteranceId] of [
+			["founder", "utterance-1"],
+			["qa", "utterance-2"],
+		] as const) {
+			harness.client.appendAudio(Buffer.alloc(960, 1), {
+				ownerUserId,
+				utteranceId,
+			});
+		}
+		for (const event of commitEvents("item-mixed", 40, "两个人的声音")) {
+			harness.emit(event);
+		}
+		await vi.waitFor(() =>
+			expect(status).toHaveBeenCalledWith(
+				"📻 有一句话没能确认说话人，请再说一遍",
+			),
+		);
+		expect(harness.transcript).not.toHaveBeenCalled();
+		await harness.client.stop();
+	});
+
+	it("does not invent a speaker for a range with no voiced frame at all", async () => {
+		const status = vi.fn();
+		const harness = await readyHarness({
+			onStatus: status,
+			soleSpeaker: () => ({ ownerUserId: "founder", ownerName: null }),
+		});
+		harness.client.appendAudio(Buffer.alloc(960, 1), {
+			ownerUserId: null,
+			utteranceId: null,
+		});
+		for (const event of commitEvents("item-silence", 20, "谢谢观看")) {
+			harness.emit(event);
+		}
+		await vi.waitFor(() =>
+			expect(status).toHaveBeenCalledWith(
+				"📻 有一句话没能确认说话人，请再说一遍",
+			),
+		);
+		expect(harness.transcript).not.toHaveBeenCalled();
+		await harness.client.stop();
+	});
+
+	it("asks her to repeat a gapped range when more than one human is present", async () => {
+		const status = vi.fn();
+		const harness = await readyHarness({
+			onStatus: status,
+			soleSpeaker: () => null,
+		});
+		for (const ownerUserId of ["founder", null, "founder"] as const) {
+			harness.client.appendAudio(Buffer.alloc(960, 1), {
+				ownerUserId,
+				utteranceId: ownerUserId ? "utterance-gap" : null,
+			});
+		}
+		for (const event of commitEvents("item-multi", 60, "多人房")) {
 			harness.emit(event);
 		}
 		await vi.waitFor(() =>

@@ -91,6 +91,7 @@ describe("AssistantSpeaker (FLY-967 P3)", () => {
 				speechId,
 				generation: 7,
 			})),
+			audibleTail: vi.fn(() => ({ estimated: true, drained: true })),
 		} as unknown as RoomIO;
 		const speaker = new AssistantSpeaker({ roomIO: () => room });
 
@@ -112,6 +113,43 @@ describe("AssistantSpeaker (FLY-967 P3)", () => {
 		expect(room.writeSpeech).toHaveBeenNthCalledWith(
 			2,
 			expect.objectContaining({ sequence: 1, pcm: Buffer.from([3, 4]) }),
+		);
+	});
+
+	it("reports and cancels an estimated RoomIO audible tail after endTurn", async () => {
+		const room = {
+			identity: { generation: 7 },
+			startSpeech: vi.fn(({ speechId }) => ({
+				outcome: "accepted",
+				speechId,
+				generation: 7,
+			})),
+			writeSpeech: vi.fn(async ({ speechId, sequence }) => ({
+				outcome: "submitted",
+				speechId,
+				generation: 7,
+				sequence,
+			})),
+			endSpeech: vi.fn(async (speechId) => ({
+				outcome: "submitted",
+				speechId,
+				generation: 7,
+			})),
+			audibleTail: vi.fn(() => ({ estimated: true, drained: false })),
+			localPlaybackCancel: vi.fn(),
+		} as unknown as RoomIO;
+		const speaker = new AssistantSpeaker({ roomIO: () => room });
+
+		speaker.beginTurn();
+		speaker.feed(Buffer.from([1, 2]));
+		speaker.endTurn();
+		await vi.waitFor(() => expect(room.endSpeech).toHaveBeenCalledOnce());
+
+		expect(speaker.hasEstimatedAudibleTail()).toBe(true);
+		speaker.flush();
+		expect(room.localPlaybackCancel).toHaveBeenCalledWith(
+			expect.stringMatching(/^assistant:/u),
+			7,
 		);
 	});
 

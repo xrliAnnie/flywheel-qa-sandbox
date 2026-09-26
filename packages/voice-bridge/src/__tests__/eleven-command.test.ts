@@ -83,6 +83,18 @@ describe("ElevenCommand (FLY-1006 S7)", () => {
 		expect(f.slot.current()).toBe(null);
 	});
 
+	it("a thrown preflight releases the pending slot and reports voice unavailable", async () => {
+		const f = makeCommand({
+			preflight: async () => {
+				throw new Error("shim probe timeout");
+			},
+		});
+		await f.invoke();
+		expect(f.replies.at(-1)?.text).toContain("语音不可用");
+		expect(f.replies.at(-1)?.text).toContain("shim probe timeout");
+		expect(f.slot.current()).toBe(null);
+	});
+
 	it("busy room (e.g. /gemini live) → founder-facing rejection, no session", async () => {
 		const f = makeCommand();
 		f.slot.acquire("gemini", "meeting-1");
@@ -122,6 +134,21 @@ describe("ElevenCommand (FLY-1006 S7)", () => {
 		});
 	});
 
+	it("resident claim failure releases the pending slot and reports voice unavailable with the reason", async () => {
+		const f = makeCommand({
+			claimSession: async () => {
+				throw new Error("resident_voice_claim_timeout:2000ms");
+			},
+		});
+		await f.invoke();
+		expect(f.replies.at(-1)?.text).toContain("语音不可用");
+		expect(f.replies.at(-1)?.text).toContain(
+			"resident_voice_claim_timeout:2000ms",
+		);
+		expect(f.calls.issues).toBe(0);
+		expect(f.slot.current()).toBe(null);
+	});
+
 	it("resident startup failure releases both lease authorities", async () => {
 		const lease = residentLease();
 		const f = makeCommand({
@@ -135,12 +162,14 @@ describe("ElevenCommand (FLY-1006 S7)", () => {
 		expect(f.slot.current()).toBe(null);
 	});
 
-	it("closes a claimed resident lease when the local room is already occupied", async () => {
+	it("rejects a locally busy room before claiming a remote resident lease", async () => {
 		const lease = residentLease();
-		const f = makeCommand({ claimSession: async () => lease });
+		const claimSession = vi.fn(async () => lease);
+		const f = makeCommand({ claimSession });
 		f.slot.acquire("gemini", "existing-session");
 		await f.invoke();
-		expect(lease.close).toHaveBeenCalledWith("failed", "slot_busy");
+		expect(claimSession).not.toHaveBeenCalled();
+		expect(lease.close).not.toHaveBeenCalled();
 		expect(f.calls.issues).toBe(0);
 		expect(f.slot.current()?.holder).toBe("existing-session");
 	});

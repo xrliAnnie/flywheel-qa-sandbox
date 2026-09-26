@@ -152,6 +152,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	if (name === "runner_memory_mode") return runnerMemoryModeCodec;
 	if (
 		name === "alert_system" ||
+		name === "headphone_background" ||
 		name === "review_quota_auto_retry" ||
 		name === "account_switch_wake_sweep" ||
 		name === "codex_quota_auto_switch" ||

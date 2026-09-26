@@ -34,7 +34,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { runVoiceBridge } from "../dist/cli.js";
-import { buildStagedConfig } from "./lib/rig-config.mjs";
+import {
+	buildStagedConfig,
+	buildStagedResidentIdentity,
+} from "./lib/rig-config.mjs";
 
 const need = (k) => {
 	const v = process.env[k];
@@ -82,6 +85,8 @@ await injector.login(injectorToken);
 await new Promise((r) => injector.once("clientReady", r));
 const injectorId = injector.user.id;
 log(`injector online as ${injector.user.tag} (${injectorId})`);
+const probeGuild = await injector.guilds.fetch(guildId);
+const founderUserId = probeGuild.ownerId;
 
 // ---- bug-3 regression probe (Codex R11): the audio loop below admits the
 // injector via allowUserIds, which BYPASSES the human filter — so probe
@@ -91,8 +96,7 @@ log(`injector online as ${injector.user.tag} (${injectorId})`);
 // the first burst and self-healed admission after the background fetch. ----
 {
 	const { makeIsHuman } = await import("../dist/bots/discordWiring.js");
-	const probeGuild = await injector.guilds.fetch(guildId);
-	const ownerId = probeGuild.ownerId;
+	const ownerId = founderUserId;
 	injector.guilds.cache.get(guildId)?.members.cache.delete(ownerId);
 	const isHuman = makeIsHuman(injector, guildId);
 	const firstBurst = isHuman(ownerId); // kicks the REST resolve
@@ -114,6 +118,10 @@ process.env.FLYWHEEL_GEMINI_AUTOSTART = "voice-loop 自验";
 // FLY-1353: a headless rig has no human in the VC. Override this to "0"
 // for the required negative control, which must remain stalled in invoked.
 process.env.FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE ??= "1";
+const residentIdentity = buildStagedResidentIdentity(
+	process.env,
+	founderUserId,
+);
 const config = {
 	...buildStagedConfig({
 		...process.env,
@@ -124,12 +132,14 @@ const config = {
 		HUDDLE_ORCH_BOT_TOKEN: orchestratorToken,
 		HUDDLE_EARS_BOT_TOKEN: earsToken,
 	}),
+	founderUserId: residentIdentity.founderUserId,
 	allowUserIds: [injectorId], // ears admits the synthetic speaker
 };
 const runtime = await runVoiceBridge({
 	config,
 	assistant: {
 		commandName: process.env.STAGED_COMMAND_NAME ?? "gemini",
+		leadId: residentIdentity.leadId,
 		voice: process.env.STAGED_VOICE ?? "Kore",
 		assistantToken: null,
 		briefing: { refreshSec: 600, maxAgeSec: 1800, charBudget: 8000, docs: [] },

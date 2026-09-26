@@ -1,14 +1,15 @@
 ---
 issue: FLY-2796
 phase: implement
-phaseCursor: 6/7
-updated: 2026-09-24T06:17:06.210Z
-nextStep: refresh literal-last milestone and request exact-head code review
-  after failure-isolation fixes
+phaseCursor: 4/5
+updated: 2026-09-25T07:37:39.500Z
+nextStep: QA r8 rework committed (resident rule budget fit); milestone last,
+  push, stage pr_created, codex review, await-codex-gate code, complete --route
+  needs_review --pr 1309
 chunks: []
 pointers: {}
 ---
 
 # FLY-2796 progress
-**phase**: implement (6/7)
-**next**: refresh literal-last milestone and request exact-head code review after failure-isolation fixes
+**phase**: implement (4/5)
+**next**: QA r8 rework committed (resident rule budget fit); milestone last, push, stage pr_created, codex review, await-codex-gate code, complete --route needs_review --pr 1309

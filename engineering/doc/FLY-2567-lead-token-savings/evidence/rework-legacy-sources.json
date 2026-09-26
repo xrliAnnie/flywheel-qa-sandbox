@@ -41,9 +41,9 @@
     },
     {
       "path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
-      "revision": "41947cec9e157d9be5faf0eae8260bc3272d2def",
-      "bytes": 42534,
-      "sha256": "4d0e1216ec71b50c2e4999f4597dccdbb37171ac72f7c3052818029cb8a822df"
+      "revision": "6546834f1be9a820abf9745ea525bce0c34336dd",
+      "bytes": 42659,
+      "sha256": "44675498c57d0607a0366b1c15cdf0d239a97511283aa014746363d721e9fc34"
     },
     {
       "path": "packages/teamlead/lead-rules-base/runner-messaging-rules.md",

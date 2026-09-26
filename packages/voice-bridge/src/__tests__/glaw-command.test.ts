@@ -171,6 +171,7 @@ describe("happy path", () => {
 
 		await cmd.handleInteraction(interaction);
 
+		expect(String(edits[0]?.content)).toContain("语音不可用");
 		expect(String(edits[0]?.content)).toContain("房间租约获取失败");
 		expect(createIssue).not.toHaveBeenCalled();
 		expect(onMeet).not.toHaveBeenCalled();
