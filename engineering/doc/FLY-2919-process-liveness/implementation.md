@@ -223,3 +223,12 @@ Owner 持久保存 spawn_nonce/pending_pgid/binding_spawn_epoch；兼容旧表�
 A5 验证续记：lint 通过（5115 文件，25 个既有 warning）；Codex adapter 显式 190 pass、同步 timeout guard 2 pass。统一 runner related 因 TmuxAdapter 导入链带入 real-tmux 项而停止，保留其超时/失败日志，不计为本批通过或 529 验收；改用 /tmp/fly2919-a5-runner-related.config.mts 的 16 个明确相关单元文件待重跑。该次 async stdin 500ms 和 TUI timeout 负控也出现失败，必须按原限额独立复核。child census 与 flag drift 各一个原 5 秒超时也待重跑，不修改断言。
 
 2026-09-26 19:22Z 本机 uptime 显示 load averages 131.82/122.70/136.36（73 users）。已减少并发，没有触碰其他执行或服务。A5 作为 WIP 保全：teamlead... build 仍在 tsc（tool session 44125），flag drift 单文件重跑仍在采集（54600）。源码已冻结，后继先收这两个任务结果，再完成 bounded runner related、child census、async/TUI 复核、repo-fable argv 直接消费者和导出依赖 typecheck；不能将 WIP 当绿头或请求交卷。临时配置和命令日志同时归档供重启恢复。
+
+
+### A5 定向复核收尾（2026-09-26 19:40Z）
+
+前述 pending build（44125）与 flag drift（54600）均已 exit 0：受影响 teamlead 加依赖构建通过、flag drift 14 pass；导出依赖 runner/edge/teamlead/voice-codex 四包 typecheck 通过。child-process census 1 pass、repo-fable argv 直接消费者 3 pass。
+
+限定16个单元文件 include 的 runner related 实际选中13文件：679 pass、2个既定 sandbox skip、1个原5秒 shell gate timeout；该 related 命令不是全绿。原源码/原限额独立复跑 TmuxAdapter.test.ts 得187 pass，其中同一 shell gate 2.413秒通过。此前 async stdin 与 TUI timeout 负控在这次 bounded related 中通过。没有再跑 real-tmux，没有增加超时或改断言。此前失败日志与最终结果都已更新进 implementation-a5-evidence.json.gz。
+
+这关闭 A5 WIP 的待收结果，仍只是 A 的局部证据；生产 Tmux factory/native session 核验、旧体补采、开关、B–F 与九单验收均未完成。当前先落实 Lead HIGH 的 complete marker 优先不变式：Heartbeat 与 crash-reaper 跨 await 后必须先对账，未知/held 阻止死亡，最终 CAS 前同步检查。后续新 BodyObservation 死亡收敛同样必须消费此守卫，不能以当前两个消费者覆盖声称 HIGH 已全完成。
