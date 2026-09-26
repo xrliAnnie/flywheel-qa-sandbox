@@ -170,25 +170,31 @@ async function createDeliveredRework(
 		grantedAt: "2026-07-23T00:11:30.000Z",
 	});
 	if (!turn.ok) throw new Error(turn.reason);
-	for (const [from, to] of [
-		["pending", "turn_granted"],
-		["turn_granted", "awaiting_receipt"],
-	] as const) {
-		const advanced = store.advanceWorkflowReworkDelivery({
-			requestId,
-			ownerId: "coordinator",
-			generation: claim.generation,
-			from,
-			to,
-			now: "2026-07-23T00:12:00.000Z",
-			...(to === "awaiting_receipt" ? { releaseOwner: true } : {}),
-		});
-		if (!advanced.ok) throw new Error(advanced.reason);
-	}
+	const advanced = store.advanceWorkflowReworkDelivery({
+		requestId,
+		ownerId: "coordinator",
+		generation: claim.generation,
+		from: "pending",
+		to: "turn_granted",
+		now: "2026-07-23T00:12:00.000Z",
+	});
+	if (!advanced.ok) throw new Error(advanced.reason);
+	// FLY-2921: the pushed wake is the `wake_sent_at` fact on `turn_granted`
+	// (which also releases the coordinator's claim); there is no
+	// awaiting_receipt state any more.
+	const sent = store.markWorkflowReworkWakeSent({
+		requestId,
+		ownerId: "coordinator",
+		generation: claim.generation,
+		now: "2026-07-23T00:12:00.000Z",
+	});
+	if (!sent.ok) throw new Error(sent.reason);
 	if (!receipt) {
-		expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
-			"awaiting_receipt",
-		);
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "turn_granted",
+			wake_sent_at: "2026-07-23T00:12:00.000Z",
+			owner_id: null,
+		});
 		expect(store.getWorkflowReworkVerificationPath(requestId)?.state).toBe(
 			"pending",
 		);
@@ -601,8 +607,8 @@ describe("FLY-2921 C7 rework completion needs a new commit (StateStore)", () => 
 	it("keeps the refusal audit even though the implied receipt rolled back", async () => {
 		// Wake sent, receipt not yet acked: the completion projects the receipt
 		// inline (impliedApplied). The refusal must roll that projection back
-		// (delivery stays awaiting_receipt, path stays pending) while the audit
-		// written outside the savepoint survives.
+		// (delivery stays turn_granted with its wake_sent_at fact, path stays
+		// pending) while the audit written outside the savepoint survives.
 		const { store, requestId, activationId } = await createDeliveredRework({
 			receipt: false,
 		});
@@ -623,12 +629,13 @@ describe("FLY-2921 C7 rework completion needs a new commit (StateStore)", () => 
 				detail: {
 					transitionReason: "rework_head_unchanged",
 					requestId,
-					deliveryState: "awaiting_receipt",
+					deliveryState: "turn_granted",
 				},
 			});
-			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
-				"awaiting_receipt",
-			);
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "turn_granted",
+				wake_sent_at: "2026-07-23T00:12:00.000Z",
+			});
 			expect(store.getWorkflowReworkVerificationPath(requestId)?.state).toBe(
 				"pending",
 			);

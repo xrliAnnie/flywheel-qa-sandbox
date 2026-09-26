@@ -175,8 +175,9 @@ function completeImplement(
 /**
  * Coordinator-equivalent wake grant: claim the rework delivery, admit the
  * wake activation on the target body, project the TURN, mark turn_granted.
- * With `ack`, also advance to awaiting_receipt and project the body's
- * receipt (wake_delivered), which is what lets that node transition next.
+ * With `ack`, also record the pushed wake (`wake_sent_at` on turn_granted;
+ * FLY-2921 has no awaiting_receipt state) and project the body's receipt
+ * (wake_delivered), which is what lets that node transition next.
  */
 function grantReworkWake(
 	store: StateStore,
@@ -224,27 +225,23 @@ function grantReworkWake(
 		grantedAt: input.now,
 	});
 	if (!turn.ok) throw new Error(`turn projection failed: ${turn.reason}`);
-	const hops: Array<
-		["pending" | "turn_granted", "turn_granted" | "awaiting_receipt"]
-	> = input.ack
-		? [
-				["pending", "turn_granted"],
-				["turn_granted", "awaiting_receipt"],
-			]
-		: [["pending", "turn_granted"]];
-	for (const [from, to] of hops) {
-		const advanced = store.advanceWorkflowReworkDelivery({
+	const advanced = store.advanceWorkflowReworkDelivery({
+		requestId,
+		ownerId: "coordinator",
+		generation: claim.generation,
+		from: "pending",
+		to: "turn_granted",
+		now: input.now,
+	});
+	if (!advanced.ok) throw new Error(`turn_granted failed: ${advanced.reason}`);
+	if (input.ack) {
+		const sent = store.markWorkflowReworkWakeSent({
 			requestId,
 			ownerId: "coordinator",
 			generation: claim.generation,
-			from,
-			to,
 			now: input.now,
-			...(to === "awaiting_receipt" ? { releaseOwner: true } : {}),
 		});
-		if (!advanced.ok) throw new Error(`${to} failed: ${advanced.reason}`);
-	}
-	if (input.ack) {
+		if (!sent.ok) throw new Error(`wake_sent failed: ${sent.reason}`);
 		const receipt = store.recordWorkflowReworkWakeReceipt({
 			activationId,
 			executionId: input.executionId,

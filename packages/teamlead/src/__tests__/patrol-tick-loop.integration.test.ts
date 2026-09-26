@@ -374,14 +374,18 @@ describe("FLY-1925 real patrol loop acceptance", () => {
 		expect(body).toContain("圈=rework:wake_delivered→implement@2 | 🔴");
 	});
 
-	it("prints the production FLY-1925 held needs-lead live-idle shape as red", async () => {
+	it("prints the production FLY-1925 returned-to-Lead live-idle shape as red", async () => {
+		// FLY-2921: a rework the engine gave up on is `returned_to_lead` and the
+		// run stays `active` (no more `needs_lead` + frozen `held` run). The
+		// shape is still red: the holder's current attempt is terminal and the
+		// returned rework is waiting on the Lead, so it is not progress.
 		const body = await renderTick({
 			issueId: "issue-1925",
 			identifier: "FLY-1925",
 			openRework: true,
-			reworkState: "needs_lead",
+			reworkState: "returned_to_lead",
 			reworkActorExecutionId: "waiter-exec-12345678",
-			runStatus: "held",
+			runStatus: "active",
 			waiterStatus: "ship_parked",
 			holderStatus: "running",
 			waitAgeMinutes: 233,
@@ -394,9 +398,9 @@ describe("FLY-1925 real patrol loop acceptance", () => {
 
 		expect(body).toContain("🔴 按账面有 1 个 issue「棒持有者不在干活」");
 		expect(body).toContain(
-			"FLY-1925: 棒持有者 holder-e 的当前 attempt qa@1 已终态(done),run 仍 held",
+			"FLY-1925: 棒持有者 holder-e 的当前 attempt qa@1 已终态(done),run 仍 active",
 		);
-		expect(body).toContain("圈=rework:needs_lead→implement@2 | 🔴");
+		expect(body).toContain("圈=rework:returned_to_lead→implement@2 | 🔴");
 		expect(body).toContain("[waiter-e] (implement, ship_parked) 现场=alive");
 	});
 

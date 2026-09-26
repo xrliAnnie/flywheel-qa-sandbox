@@ -204,9 +204,9 @@ async function stateFixture(family: "rework" | "carrier") {
 		).run(physicalId, executionId, "2026-09-03T20:00:00.000Z");
 		db.prepare(
 			`INSERT INTO workflow_rework_delivery
-			   (request_id, route_revision, state, updated_at)
-			 VALUES (?, 1, 'awaiting_receipt', ?)`,
-		).run(physicalId, "2026-09-03T20:00:00.000Z");
+			   (request_id, route_revision, state, wake_sent_at, updated_at)
+			 VALUES (?, 1, 'turn_granted', ?, ?)`,
+		).run(physicalId, "2026-09-03T20:00:00.000Z", "2026-09-03T20:00:00.000Z");
 	} else {
 		db.prepare(
 			`INSERT INTO workflow_gate_holder
@@ -335,7 +335,7 @@ describe("FLY-2278 canonical undeliverable cancel", () => {
 					"SELECT state, last_error FROM workflow_rework_delivery WHERE request_id = ?",
 				)
 				.get(fixture.physicalId),
-		).toEqual({ state: "awaiting_receipt", last_error: null });
+		).toEqual({ state: "turn_granted", last_error: null });
 		expect(
 			db
 				.prepare(
