@@ -1,4 +1,6 @@
+import { isWorkflowNodeRecoveryFaultShape } from "../workflow-recovery-contract.js";
 import { CodexQuotaQueuedError } from "./retry-dispatcher.js";
+import { prepareWorkflowNodeRecovery } from "./workflow-node-recovery.js";
 /**
  * GEO-267: /api/runs routes — start new Runner executions.
  *
@@ -451,7 +453,7 @@ export function createRunsRouter(
 			holds: store.listWorkflowHolds(String(req.params.runId ?? "")),
 		});
 	});
-	router.post("/:runId/resume/stage", requireMaster, (req, res) => {
+	router.post("/:runId/resume/stage", requireMaster, async (req, res) => {
 		const runId = String(req.params.runId ?? "");
 		if (
 			!req.body ||
@@ -467,6 +469,30 @@ export function createRunsRouter(
 			res.status(400).json({ ok: false, reason: "invalid_request" });
 			return;
 		}
+		if (isWorkflowNodeRecoveryFaultShape(normalized.canonical.shape)) {
+			try {
+				const prepared = await prepareWorkflowNodeRecovery(
+					store,
+					normalized.canonical,
+					auth?.probeRunLiveness,
+				);
+				const digest = canonicalSubmissionDigest(prepared.canonical);
+				res.status(200).json({
+					ok: true,
+					canonical: prepared.canonical,
+					confirmToken: auth!.confirmTokens!.issue(digest),
+				});
+			} catch (error) {
+				res.status(409).json({
+					ok: false,
+					reason:
+						error instanceof Error
+							? error.message
+							: "recovery_preflight_failed",
+				});
+			}
+			return;
+		}
 		if (!currentHold(normalized.canonical)) {
 			res.status(409).json({ ok: false, reason: "hold_changed" });
 			return;
@@ -477,7 +503,7 @@ export function createRunsRouter(
 			confirmToken: auth!.confirmTokens!.issue(normalized.digest),
 		});
 	});
-	router.post("/:runId/resume", requireMaster, (req, res) => {
+	router.post("/:runId/resume", requireMaster, async (req, res) => {
 		const runId = String(req.params.runId ?? "");
 		if (
 			!req.body ||
@@ -511,12 +537,68 @@ export function createRunsRouter(
 				res.status(409).json({ ok: false, reason: "request_conflict" });
 				return;
 			}
+			if (prior.receiptKind === "invalid_receipt") {
+				res.status(409).json({ ok: false, reason: "recovery_receipt_invalid" });
+				return;
+			}
+			if (prior.recoveryReceipt) {
+				res.status(200).json({
+					ok: true,
+					idempotentReplay: true,
+					...prior.recoveryReceipt,
+					dispatchState: prior.dispatchState,
+				});
+				return;
+			}
 			res.status(200).json({
 				ok: true,
 				idempotentReplay: true,
 				operationId: prior.operationId,
 				state: prior.state,
 			});
+			return;
+		}
+		if (normalized.canonical.version === 2) {
+			try {
+				const prepared = await prepareWorkflowNodeRecovery(
+					store,
+					normalized.canonical,
+					auth?.probeRunLiveness,
+				);
+				if (
+					canonicalSubmissionDigest(prepared.canonical) !== normalized.digest
+				) {
+					res
+						.status(409)
+						.json({ ok: false, reason: "recovery_target_changed" });
+					return;
+				}
+				const verified = auth!.confirmTokens!.verifyAndConsume(
+					confirmToken,
+					normalized.digest,
+				);
+				if (!verified.ok) {
+					res.status(403).json({ ok: false, reason: verified.reason });
+					return;
+				}
+				const result = store.recoverWorkflowNode({
+					...prepared,
+					now: new Date().toISOString(),
+				});
+				if (result.ok && !result.idempotentReplay) {
+					const project = store.getWorkflowRun(runId)?.project_name;
+					if (project) notifyEpicChanged(project, "run_resumed");
+				}
+				res.status(result.ok ? 200 : 409).json(result);
+			} catch (error) {
+				res.status(409).json({
+					ok: false,
+					reason:
+						error instanceof Error
+							? error.message
+							: "recovery_preflight_failed",
+				});
+			}
 			return;
 		}
 		if (!currentHold(normalized.canonical)) {

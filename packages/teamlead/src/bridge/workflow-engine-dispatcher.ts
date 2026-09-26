@@ -71,6 +71,7 @@ import { RESIDENT_EXPIRY_FAST_RETRY_MS } from "./resident-hold.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
+import { resolveRecoveryExecutionStartAuthority } from "./workflow-node-recovery.js";
 import { isWorkflowProcessRetirementApproved } from "./workflow-process-retirement.js";
 import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
 import {
@@ -2780,6 +2781,31 @@ export class WorkflowEngineDispatcher {
 			if (!contextualAgentContent.startsWith(replacementContext.fullSection))
 				throw new Error("engine_rework_replacement_context_invalid");
 		}
+		const recoveryProof =
+			store.getWorkflowNodeRecoveryDispatchAuthority(intent);
+		const recoveryAuthority = recoveryProof?.authority;
+		if (recoveryAuthority) {
+			if (
+				recoveryAuthority.mode !== "execution_head" ||
+				!recoveryAuthority.sourceExecutionId
+			)
+				throw new Error("recovery_start_authority_unsupported");
+			const observed = await resolveRecoveryExecutionStartAuthority(
+				store,
+				recoveryAuthority.sourceExecutionId,
+			);
+			if (
+				canonicalSubmissionDigest({
+					...observed,
+					evidenceDigest: recoveryAuthority.evidenceDigest,
+				}) !== canonicalSubmissionDigest(recoveryAuthority) ||
+				observed.evidenceDigest !== recoveryProof!.sourceEvidenceDigest ||
+				store.getWorkflowRecoverySourceBindingDigest(
+					recoveryAuthority.sourceExecutionId,
+				) !== recoveryProof!.sourceSessionDigest
+			)
+				throw new Error("recovery_start_authority_changed");
+		}
 		let startPoint: string | undefined;
 		if (workflowResume) {
 			startPoint = workflowResume.anchorCommit;
@@ -2831,6 +2857,8 @@ export class WorkflowEngineDispatcher {
 				}
 			}
 		}
+		if (recoveryAuthority && startPoint !== recoveryAuthority.headSha)
+			throw new Error("recovery_start_authority_changed");
 		const now = this.now();
 		const credentialExpiry = credentialWindowForNode(snapshot, node.id, now);
 		const quotaRootKey = this.options.codexQuotaRootKey?.(run.project_name);

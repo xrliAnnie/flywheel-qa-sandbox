@@ -26,8 +26,12 @@ import { WorkflowScorecardStore } from "./workflow-scorecard.js";
 import {
 	workflowRecoveryCanonicalSchema,
 	workflowRecoveryReceiptSchema,
+	workflowRecoveryEvidenceDigest,
+	isWorkflowNodeRecoveryFaultShape,
 	type WorkflowRecoveryReceipt,
 	type WorkflowRecoveryTarget,
+	type WorkflowRecoveryPreflight,
+	type WorkflowRecoveryCanonical,
 } from "./workflow-recovery-contract.js";
 import { EvidenceAuthorityReader } from "./ship-judgment/evidence-authority.js";
 import { migrateEvidenceLedger } from "./ship-judgment/evidence-migration.js";
@@ -58141,14 +58145,6 @@ export class StateStore {
 			const value = payload[key];
 			return typeof value === "string" && value.trim() ? value : undefined;
 		};
-		const eventNodeId =
-			typeof event.node_id === "string" && event.node_id.trim()
-				? event.node_id
-				: undefined;
-		const eventExecutionId =
-			typeof event.execution_id === "string" && event.execution_id.trim()
-				? event.execution_id
-				: undefined;
 
 		switch (input.resumeAction) {
 			case "resume_receipt_deadlock":
@@ -58358,152 +58354,6 @@ export class StateStore {
 				}
 				break;
 			}
-			case "resume_unlaunched": {
-				const attempt = Number(payload.attempt);
-				if (
-					!eventNodeId ||
-					!eventExecutionId ||
-					!Number.isInteger(attempt) ||
-					attempt < 1
-				) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_unlaunched_identity_missing:${input.holdEventUid}`,
-					);
-				}
-				this.db.run(
-					`UPDATE workflow_run_node
-					    SET state = 'pending', execution_id = NULL, ended_at = NULL
-					  WHERE run_id = ? AND node_id = ? AND attempt = ?
-					    AND execution_id = ? AND state IN ('failed','admitted')`,
-					[input.runId, eventNodeId, attempt, eventExecutionId],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_unlaunched_changed:${eventExecutionId}`,
-					);
-				}
-				break;
-			}
-			case "reconstruct_completion": {
-				const attempt = Number(payload.attempt);
-				if (
-					!eventNodeId ||
-					!eventExecutionId ||
-					!Number.isInteger(attempt) ||
-					attempt < 1
-				) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_completion_identity_missing:${input.holdEventUid}`,
-					);
-				}
-				const context = this.generalizedExecutionContext(eventExecutionId);
-				const completionEdge = context?.snapshot.manifest.edges.filter(
-					(edge) => edge.from === eventNodeId,
-				);
-				if (
-					!context ||
-					context.binding.run_id !== input.runId ||
-					context.binding.node_id !== eventNodeId ||
-					context.binding.attempt !== attempt ||
-					completionEdge?.length !== 1 ||
-					this.getSession(eventExecutionId)?.status !== "completed" ||
-					this.getWorkflowNodeCompletion(input.runId, eventNodeId, attempt)
-				) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_completion_evidence_changed:${eventExecutionId}`,
-					);
-				}
-				const route = context.node.capabilities.completion_route;
-				const completionEventUid = `wfc:${input.runId}:${eventNodeId}:${attempt}`;
-				const completionSubmission = {
-					reconstructedFrom: input.holdEventUid,
-					executionId: eventExecutionId,
-				};
-				this.db.run(
-					`INSERT INTO workflow_node_completion
-					   (activation_id, run_id, node_id, attempt, execution_id, route,
-					    event_uid, source_event_id, completion_submission_digest, completed_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[
-						context.binding.activation_id,
-						input.runId,
-						eventNodeId,
-						attempt,
-						eventExecutionId,
-						route,
-						completionEventUid,
-						input.holdEventUid,
-						canonicalSubmissionDigest(completionSubmission),
-						input.now,
-					],
-				);
-				this.db.run(
-					"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held'",
-					[input.runId],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_completion_run_changed:${input.runId}`,
-					);
-				}
-				const sessionHead = this.getSession(eventExecutionId)?.pr_head_sha;
-				const transition = this.commitWorkflowTransitionTx({
-					nodeReuseEnabled: false,
-					runId: input.runId,
-					nodeId: eventNodeId,
-					attempt,
-					executionId: eventExecutionId,
-					outcome: completionEdge[0]!.condition,
-					nodeCompletionEventUid: completionEventUid,
-					allowCompletedWriter: true,
-					...(sessionHead && /^[0-9a-f]{40}$/i.test(sessionHead)
-						? { subjectDigest: sessionHead.toLowerCase() }
-						: {}),
-					now: input.now,
-					deferSave: true,
-				});
-				if (!transition.ok) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_completion_transition_refused:${transition.reason}`,
-					);
-				}
-				this.projectGeneralizedCompletionTx({
-					context,
-					route,
-					completedAt: input.now,
-					...(sessionHead && /^[0-9a-f]{40}$/i.test(sessionHead)
-						? { subjectDigest: sessionHead.toLowerCase() }
-						: {}),
-				});
-				break;
-			}
-			case "resume_retry_limit": {
-				const attempt = Number(payload.attempt);
-				if (
-					input.decision !== "retry" ||
-					!eventNodeId ||
-					!eventExecutionId ||
-					!Number.isInteger(attempt) ||
-					attempt < 1
-				) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_retry_identity_missing:${input.holdEventUid}`,
-					);
-				}
-				this.db.run(
-					`UPDATE workflow_run_node
-					    SET state = 'pending', execution_id = NULL, ended_at = NULL
-					  WHERE run_id = ? AND node_id = ? AND attempt = ?
-					    AND execution_id = ? AND state = 'running'`,
-					[input.runId, eventNodeId, attempt, eventExecutionId],
-				);
-				if (this.db.getRowsModified() !== 1) {
-					throw new WorkflowEngineInvariantError(
-						`workflow_hold_retry_changed:${eventExecutionId}`,
-					);
-				}
-				break;
-			}
 			case "resume_loop_limit": {
 				const targetNodeId = payloadId("targetNodeId");
 				const targetAttempt = Number(payload.targetAttempt);
@@ -58698,6 +58548,393 @@ export class StateStore {
 		});
 	}
 
+	/** Read-only CAS material for trusted service preflight; no recovery is applied here. */
+	inspectWorkflowNodeRecovery(runId: string): {
+		target: WorkflowRecoveryTarget;
+		stateDigest: string;
+		projectName: string;
+	} {
+		const run = this.getWorkflowRun(runId);
+		if (
+			!run ||
+			run.engine_owned !== 1 ||
+			run.status !== "held" ||
+			!run.current_node_id ||
+			!run.snapshot
+		)
+			throw new Error("engine_run_not_held");
+		const node = this.listWorkflowRunNodes(runId, run.current_node_id).at(-1);
+		if (
+			!node?.execution_id ||
+			!["failed", "running", "admitted", "pending"].includes(node.state)
+		)
+			throw new Error("recovery_target_unavailable");
+		if (this.getWorkflowNodeCompletion(runId, node.node_id, node.attempt))
+			throw new Error("completion_already_committed");
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		const definition = snapshot.manifest.nodes.find(
+			(candidate) => candidate.id === node.node_id,
+		);
+		if (!definition || definition.type === "gate" || definition.type === "land")
+			throw new Error("recovery_dependency_preflight_required");
+		const latest = this.listWorkflowSideEffects(runId)
+			.filter(
+				(row) =>
+					row.kind === "dispatch" &&
+					row.node_id === node.node_id &&
+					row.attempt === node.attempt,
+			)
+			.sort((a, b) => b.launch_ordinal - a.launch_ordinal)[0];
+		if (!latest || latest.execution_id !== node.execution_id)
+			throw new Error("recovery_dispatch_identity_missing");
+		if (
+			this.resolveOpenWorkflowReworkTarget({
+				runId,
+				nodeId: node.node_id,
+				attempt: node.attempt,
+			})
+		)
+			throw new Error("rework_recovery_preflight_required");
+		const holds = this.listWorkflowHolds(runId).filter((hold) => hold.runLevel);
+		if (
+			!holds.length ||
+			holds.some((hold) => !isWorkflowNodeRecoveryFaultShape(hold.shape))
+		)
+			throw new Error("recovery_dependency_unresolved");
+		const events = this.listWorkflowRunEvents(runId);
+		for (const hold of holds) {
+			const event = events.find(
+				(candidate) => candidate.event_uid === hold.holdEventUid,
+			);
+			const payload = event?.payload as Record<string, unknown> | undefined;
+			if (
+				!event ||
+				event.node_id !== node.node_id ||
+				event.execution_id !== node.execution_id ||
+				payload?.attempt !== node.attempt
+			)
+				throw new Error("recovery_hold_evidence_missing");
+		}
+		const cancellation = this.getWorkflowLaunchCancellation(node.execution_id);
+		const owner = this.getWorkflowLaunchOwner(node.execution_id);
+		// An uncommitted intent needs the existing cancellation/absence protocol.
+		// A liveness observation alone cannot authorize abandoning it.
+		if (
+			latest.state === "intent_recorded" ||
+			(latest.state === "abandoned" &&
+				(!cancellation || owner?.committed_generation != null))
+		)
+			throw new Error("unlaunched_recovery_evidence_required");
+		const sourceHoldEventUids = holds.map((hold) => hold.holdEventUid).sort();
+		const target: WorkflowRecoveryTarget = {
+			operationKind: "redispatch_current",
+			runId,
+			nodeId: node.node_id,
+			attempt: node.attempt,
+			previousExecutionId: node.execution_id,
+			previousLaunchOrdinal: latest.launch_ordinal,
+			snapshotDigest: snapshot.snapshot_digest,
+			holdSetDigest: canonicalSubmissionDigest(sourceHoldEventUids),
+			startAuthority: null,
+			sourceHoldEventUids,
+			rework: null,
+			land: null,
+		};
+		return {
+			target,
+			projectName: run.project_name,
+			stateDigest: canonicalSubmissionDigest({
+				target,
+				node,
+				latest,
+				cancellation: cancellation ?? null,
+				owner: owner ?? null,
+			}),
+		};
+	}
+
+	getWorkflowRecoverySourceBindingDigest(executionId: string): string {
+		const session = this.getSession(executionId);
+		if (!session?.worktree_path)
+			throw new Error("recovery_source_session_missing");
+		return canonicalSubmissionDigest({
+			executionId,
+			projectName: session.project_name,
+			issueId: session.issue_id,
+			worktreePath: session.worktree_path,
+			branch: session.branch ?? null,
+		});
+	}
+
+	getWorkflowNodeRecoveryDispatchAuthority(
+		intent: WorkflowSideEffectRow,
+	):
+		| {
+				authority: NonNullable<WorkflowRecoveryTarget["startAuthority"]>;
+				sourceEvidenceDigest: string;
+				sourceSessionDigest: string;
+		  }
+		| undefined {
+		// The mutable ledger reason is diagnostic; immutable lineage owns recovery identity.
+		const candidates = this.workflowSelectAll(
+			`SELECT event_uid, execution_id, payload FROM workflow_run_event
+			 WHERE run_id = ? AND node_id = ? AND kind = 'execution_dead_rolled_back'
+			   AND substr(event_uid, 1, 14) = 'node_recovery:'
+			   AND json_extract(payload, '$.newExecutionId') = ?`,
+			[intent.run_id, intent.node_id, intent.execution_id],
+		);
+		if (!candidates.length) {
+			if (intent.reason?.startsWith("node_recovery:")) throw new Error("recovery_dispatch_proof_invalid");
+			return undefined;
+		}
+		if (candidates.length !== 1) throw new Error("recovery_dispatch_proof_ambiguous");
+		const lineage = candidates[0]!;
+		const operationId = `hold-resume:${String(lineage.event_uid).slice("node_recovery:".length)}`;
+		const row = this.workflowSelectAll(
+			"SELECT client_request_id FROM workflow_delivery_operation WHERE operation_id = ? AND kind = 'hold_resume'",
+			[operationId],
+		)[0];
+		const prior = row
+			? this.getWorkflowHoldResumeReceipt(String(row.client_request_id))
+			: undefined;
+		const receipt = prior?.recoveryReceipt;
+		if (
+			receipt?.state !== "dispatch_recorded" ||
+			prior?.receiptKind !== "dispatch_recorded" ||
+			receipt.dispatchLedgerId !== intent.id ||
+			receipt.executionId !== intent.execution_id ||
+			receipt.target.runId !== intent.run_id ||
+			receipt.target.nodeId !== intent.node_id ||
+			receipt.target.attempt !== intent.attempt ||
+			receipt.launchOrdinal !== intent.launch_ordinal ||
+			!receipt.target.startAuthority
+		)
+			throw new Error("recovery_dispatch_receipt_invalid");
+
+		const payload = lineage ? JSON.parse(String(lineage.payload)) : undefined;
+		const proof = payload?.recoveryPreflight;
+		if (
+			lineage?.execution_id !== receipt.target.previousExecutionId ||
+			payload?.newExecutionId !== intent.execution_id ||
+			payload?.launchOrdinal !== intent.launch_ordinal ||
+			!proof ||
+			![
+				proof.stateDigest,
+				proof.sourceSessionDigest,
+				proof.sourceEvidenceDigest,
+			].every(
+				(value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value),
+			) ||
+			workflowRecoveryEvidenceDigest(proof) !==
+				receipt.target.startAuthority.evidenceDigest
+		)
+			throw new Error("recovery_dispatch_proof_invalid");
+		return {
+			authority: receipt.target.startAuthority,
+			sourceEvidenceDigest: proof.sourceEvidenceDigest,
+			sourceSessionDigest: proof.sourceSessionDigest,
+		};
+	}
+
+	/** Revalidate the entire observed tuple inside the materializer's transaction. */
+	private assertWorkflowRecoveryPreflightTx(
+		canonical: WorkflowRecoveryCanonical,
+		preflight: WorkflowRecoveryPreflight,
+		now: string,
+	): void {
+		if (!this.db.raw.inTransaction)
+			throw new Error("replacement_transaction_required");
+		const observationAge = Date.parse(now) - Date.parse(preflight.observedAt);
+		if (
+			preflight.liveness !== "dead" ||
+			!Number.isFinite(observationAge) ||
+			observationAge < 0 ||
+			observationAge > 30_000 ||
+			!canonical.target.startAuthority ||
+			canonicalSubmissionDigest(canonical.target) !==
+				canonicalSubmissionDigest(preflight.target)
+		)
+			throw new Error("recovery_preflight_required");
+		if (
+			canonical.target.startAuthority.evidenceDigest !==
+			workflowRecoveryEvidenceDigest(preflight)
+		)
+			throw new Error("recovery_preflight_required");
+		if (
+			!canonical.target.startAuthority.sourceExecutionId ||
+			this.getWorkflowRecoverySourceBindingDigest(
+				canonical.target.startAuthority.sourceExecutionId,
+			) !== preflight.sourceSessionDigest
+		)
+			throw new Error("recovery_start_authority_changed");
+		if (
+			this.listWorkflowHolds(canonical.runId).some(
+				(hold) =>
+					hold.runLevel &&
+					hold.requiredDecision &&
+					(canonical.decision !== "retry" ||
+						!hold.requiredDecision.includes(canonical.decision)),
+			)
+		)
+			throw new Error("recovery_decision_required");
+		const current = this.inspectWorkflowNodeRecovery(canonical.runId);
+		if (
+			current.stateDigest !== preflight.stateDigest ||
+			canonicalSubmissionDigest({
+				...canonical.target,
+				startAuthority: null,
+			}) !== canonicalSubmissionDigest(current.target)
+		)
+			throw new Error("recovery_target_changed");
+		const run = this.getWorkflowRun(canonical.runId)!;
+		if (
+			this.workflowSelectAll(
+				"SELECT run_id FROM workflow_run WHERE project_name = ? AND issue_id = ? AND status = 'active' AND run_id <> ? LIMIT 1",
+				[run.project_name, run.issue_id, run.run_id],
+			).length
+		)
+			throw new Error("issue_has_active_run");
+		// Until the exact quota delegation CAS is connected, never race its old terminate/start worker.
+		if (
+			this.workflowSelectAll(
+				"SELECT 1 FROM codex_quota_target WHERE old_execution_id = ? AND state NOT IN ('recovered','abandoned') LIMIT 1",
+				[canonical.target.previousExecutionId],
+			).length
+		)
+			throw new Error("quota_recovery_preflight_required");
+	}
+
+	recoverWorkflowNode(input: {
+		canonical: WorkflowRecoveryCanonical;
+		preflight: WorkflowRecoveryPreflight;
+		now: string;
+	}):
+		| ({ ok: true; idempotentReplay: boolean } & WorkflowRecoveryReceipt)
+		| { ok: false; reason: string } {
+		const normalized = workflowRecoveryCanonicalSchema.safeParse(
+			input.canonical,
+		);
+		if (!normalized.success || !StateStore.workflowFiniteTimestamp(input.now))
+			return { ok: false, reason: "invalid_hold_resume" };
+		const canonical = normalized.data;
+		const digest = canonicalSubmissionDigest(canonical);
+		const operationId = `hold-resume:${digest}`;
+		let result: ReturnType<StateStore["recoverWorkflowNode"]> = {
+			ok: false,
+			reason: "recovery_not_committed",
+		};
+		try {
+			this.db.transaction(() => {
+				const prior = this.getWorkflowHoldResumeReceipt(
+					canonical.clientRequestId,
+				);
+				if (prior) {
+					if (prior.canonicalDigest !== digest)
+						throw new Error("request_conflict");
+					if (!prior.recoveryReceipt || prior.receiptKind === "invalid_receipt")
+						throw new Error("recovery_receipt_invalid");
+					result = {
+						ok: true,
+						idempotentReplay: true,
+						...prior.recoveryReceipt,
+					};
+					return;
+				}
+				this.assertWorkflowRecoveryPreflightTx(
+					canonical,
+					input.preflight,
+					input.now,
+				);
+				const executionId = randomUUID();
+				const target = canonical.target;
+				const { launchOrdinal, dispatchLedgerId } =
+					this.materializeWorkflowNodeReplacementTx({
+						runId: target.runId,
+						nodeId: target.nodeId,
+						attempt: target.attempt,
+						deadExecutionId: target.previousExecutionId!,
+						newExecutionId: executionId,
+						reason: canonical.reason,
+						eventUid: `node_recovery:${digest}`,
+						now: input.now,
+						livenessEvidence: {
+							liveness: "dead",
+							observedAt: input.preflight.observedAt,
+						},
+						operatorRecovery: { canonical, preflight: input.preflight },
+					});
+				const receipt = workflowRecoveryReceiptSchema.parse({
+					operationId,
+					canonicalDigest: digest,
+					target,
+					executionId,
+					launchOrdinal,
+					dispatchLedgerId,
+					state: "dispatch_recorded",
+				});
+				this.db.run(
+					`INSERT INTO workflow_delivery_operation
+					(operation_id, kind, run_id, shape_id, hold_event_uid, client_request_id, canonical_digest, state, recovery_receipt_json, created_at, updated_at)
+					VALUES (?, 'hold_resume', ?, 'workflow_node_recovery', ?, ?, ?, 'projected', ?, ?, ?)`,
+					[
+						operationId,
+						canonical.runId,
+						canonical.holdEventUid,
+						canonical.clientRequestId,
+						digest,
+						JSON.stringify(receipt),
+						input.now,
+						input.now,
+					],
+				);
+				for (const holdEventUid of target.sourceHoldEventUids) {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: target.runId,
+						eventUid: `hold_resumed:workflow_node_recovery:${holdEventUid}`,
+						kind: "hold_resumed",
+						nodeId: target.nodeId,
+						executionId,
+						payload: {
+							shape: "workflow_node_recovery",
+							holdEventUid,
+							operationId,
+							decision: canonical.decision,
+							reason: canonical.reason,
+							principal: canonical.principal,
+							remainingRunHolds: [],
+						},
+					});
+				}
+				this.appendWorkflowRunEventCheckedTx({
+					runId: target.runId,
+					eventUid: `node_dispatched:recovery:${digest}`,
+					kind: "node_dispatched",
+					nodeId: target.nodeId,
+					executionId,
+					payload: { attempt: target.attempt, launchOrdinal, operationId },
+				});
+				this.db.run(
+					"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held' AND current_node_id = ?",
+					[target.runId, target.nodeId],
+				);
+				if (this.db.getRowsModified() !== 1)
+					throw new Error("recovery_run_cas_failed");
+				this.reviveHeldWorkflowCarrierDeliveriesTx({
+					runId: target.runId,
+					now: input.now,
+					reason: `node_recovery:${operationId}`,
+				});
+				result = { ok: true, idempotentReplay: false, ...receipt };
+			});
+		} catch (error) {
+			return {
+				ok: false,
+				reason: error instanceof Error ? error.message : "recovery_failed",
+			};
+		}
+		if (result.ok) this.save();
+		return result;
+	}
 	resumeWorkflowHold(request: {
 		canonical: WorkflowHoldResumeCanonical;
 		digest: string;
@@ -58832,6 +59069,8 @@ export class StateStore {
 			}
 			return { ok: false, reason: "hold_changed" };
 		}
+		if (isWorkflowNodeRecoveryFaultShape(normalized.canonical.shape)) return {ok: false, reason: "unified_recovery_required"};
+
 		let deliveryResume:
 			| {
 					family: WorkflowDeliveryAttemptRow["family"];
@@ -61813,20 +62052,26 @@ export class StateStore {
 		now: string;
 		livenessEvidence: { liveness: "dead"; observedAt: string };
 		activityBaseline?: WorkflowDeadExecutionActivityBaseline;
+		operatorRecovery?: {canonical: WorkflowRecoveryCanonical; preflight: WorkflowRecoveryPreflight};
 	}): { launchOrdinal: number; dispatchLedgerId: number } {
 		if (!this.db.raw.inTransaction) throw new Error("replacement_transaction_required");
 		const { now, eventUid } = input;
+		if (input.operatorRecovery) {
+			const {canonical, preflight} = input.operatorRecovery;
+			this.assertWorkflowRecoveryPreflightTx(canonical, preflight, now);
+			if (canonical.target.runId !== input.runId || canonical.target.nodeId !== input.nodeId || canonical.target.attempt !== input.attempt || canonical.target.previousExecutionId !== input.deadExecutionId) throw new Error("replacement_target_changed");
+		}
 		const run = this.getWorkflowRun(input.runId);
 		const node = this.listWorkflowRunNodes(input.runId, input.nodeId).at(-1);
 		if (
-			!run || run.engine_owned !== 1 || run.status !== "active" ||
+			!run || run.engine_owned !== 1 || run.status !== (input.operatorRecovery ? "held" : "active") ||
 			run.current_node_id !== input.nodeId || !node ||
-			node.attempt !== input.attempt || node.state !== "running" ||
+			node.attempt !== input.attempt || (!input.operatorRecovery && node.state !== "running") ||
 			node.execution_id !== input.deadExecutionId ||
 			this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
 		) throw new Error("replacement_target_changed");
 		// Check the automatic budget here as well as at the producer's hold boundary.
-		if (this.countWorkflowFaultReplacements(input.runId, input.nodeId, input.attempt) >= MAX_BLIND_REPLACEMENTS) {
+		if (!input.operatorRecovery && this.countWorkflowFaultReplacements(input.runId, input.nodeId, input.attempt) >= MAX_BLIND_REPLACEMENTS) {
 			throw new Error("replacement_budget_exhausted");
 		}
 		if (
@@ -61865,6 +62110,16 @@ export class StateStore {
 			input.attempt,
 			input.newExecutionId,
 		);
+		if (input.operatorRecovery) {
+			const operationId = `hold-resume:${canonicalSubmissionDigest(input.operatorRecovery.canonical)}`;
+			this.db.run("UPDATE workflow_side_effect_ledger SET reason = ? WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ? AND launch_ordinal = ? AND state = 'intent_recorded'", [`node_recovery:${operationId}`, input.runId, input.nodeId, input.attempt, input.newExecutionId, launchOrdinal]);
+			if (this.db.getRowsModified() !== 1) throw new Error("replacement_dispatch_cas_failed");
+			const owner = this.getWorkflowLaunchOwner(input.deadExecutionId);
+			if (!this.getWorkflowLaunchCancellation(input.deadExecutionId)) {
+				this.db.run("INSERT INTO workflow_launch_cancellation (execution_id, generation, reason, created_at) VALUES (?, ?, ?, ?)", [input.deadExecutionId, (owner?.owner_generation ?? 0)+1, `node_recovery:${operationId}`, now]);
+			}
+			this.settleWorkflowDeliveryAttemptIfPresentTx({family: "launch", table: "workflow_execution_binding", pk: input.deadExecutionId, reason: "source_terminal", now});
+		}
 		const deadBinding = this.getWorkflowActivationForAttempt({
 			executionId: input.deadExecutionId,
 			runId: input.runId,
@@ -61875,17 +62130,14 @@ export class StateStore {
 			this.workflowScorecard.closeActivationSafely({
 				activationId: deadBinding.activation_id,
 				closedAt: now,
-				closeEventUid: `dead_rollback:${input.runId}:${input.nodeId}:${input.attempt}:${input.deadExecutionId}`,
+				closeEventUid: eventUid,
 				closeKind: "replaced",
 			});
 		}
-		this.upsertWorkflowRunNodeTx({
-			runId: input.runId,
-			nodeId: input.nodeId,
-			attempt: input.attempt,
-			state: "pending",
-			executionId: input.newExecutionId,
-		});
+		this.db.run(`UPDATE workflow_run_node SET state = 'pending', execution_id = ?, ended_at = NULL
+			WHERE run_id = ? AND node_id = ? AND attempt = ? AND execution_id = ? AND state = ?`,
+			[input.newExecutionId, input.runId, input.nodeId, input.attempt, input.deadExecutionId, node.state]);
+		if (this.db.getRowsModified() !== 1) throw new Error("replacement_node_cas_failed");
 		const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
 			{
 				runId: input.runId,
@@ -62057,6 +62309,11 @@ export class StateStore {
 				reason: input.reason,
 				retryDisposition: "retry",
 				livenessEvidence: input.livenessEvidence,
+				...(input.operatorRecovery ? {recoveryPreflight: {
+					stateDigest: input.operatorRecovery.preflight.stateDigest,
+					sourceSessionDigest: input.operatorRecovery.preflight.sourceSessionDigest,
+					sourceEvidenceDigest: input.operatorRecovery.preflight.sourceEvidenceDigest,
+				}} : {}),
 				at: now,
 			},
 		});
@@ -67525,8 +67782,6 @@ export class StateStore {
 		now?: string;
 		/** Internal composition seam: caller owns one larger durable transaction. */
 		deferSave?: boolean;
-		/** Recovery-only: a completed lifecycle row is the evidence being repaired. */
-		allowCompletedWriter?: boolean;
 	}): WorkflowTransitionResult {
 		const now = input.now ?? new Date().toISOString();
 		if (
@@ -67704,11 +67959,7 @@ export class StateStore {
 						activationId: writerActivation.activation_id,
 					})
 				: undefined;
-			const completedWriterRecovery =
-				input.allowCompletedWriter === true &&
-				writerClassification?.ok === false &&
-				writerClassification.reason === "writer_session_terminal" &&
-				this.getSession(input.executionId)?.status === "completed";
+
 			if (
 				!source ||
 				!current ||
@@ -67717,8 +67968,7 @@ export class StateStore {
 				(!authorityDrivenGate &&
 					writerActivation !== undefined &&
 					writerClassification?.ok === false &&
-					writerClassification.reason !== "writer_session_missing" &&
-					!completedWriterRecovery) ||
+					writerClassification.reason !== "writer_session_missing") ||
 				(!authorityDrivenGate && current.state === "done")
 			) {
 				result = { ok: false, reason: "node_attempt_not_current" };

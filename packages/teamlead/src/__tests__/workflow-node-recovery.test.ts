@@ -248,6 +248,7 @@ describe("FLY-2329 unified recovery through HTTP and dispatcher consumption", ()
 				.filter((event) => event.kind === "unlaunched_admission_rolled_back");
 			expect(rollbackEvents).toHaveLength(1);
 
+			let liveness: "alive" | "dead" | "unknown" = "dead";
 			const app = express();
 			app.use(express.json());
 			app.use(
@@ -270,7 +271,7 @@ describe("FLY-2329 unified recovery through HTTP and dispatcher consumption", ()
 						masterToken: "test-master",
 						scopedToken: "test-scoped",
 						confirmTokens: new ConfirmTokenStore(),
-						probeRunLiveness: async () => "dead",
+						probeRunLiveness: async () => liveness,
 					},
 				),
 			);
@@ -335,8 +336,87 @@ describe("FLY-2329 unified recovery through HTTP and dispatcher consumption", ()
 				canonical,
 				confirmToken: staged.body.confirmToken,
 			};
+			const unchanged = () => ({
+				run: store.getWorkflowRun(RUN_ID),
+				node: store.getWorkflowRunNode(RUN_ID, "implement", 1),
+				ledger: store.listWorkflowSideEffects(RUN_ID),
+				events: store.listWorkflowRunEvents(RUN_ID),
+			});
+			const beforeApply = unchanged();
+			liveness = "alive";
+			expect(await post("/resume", applyRequest)).toMatchObject({
+				status: 409,
+				body: { reason: "recovery_target_alive" },
+			});
+			liveness = "unknown";
+			expect(await post("/resume", applyRequest)).toMatchObject({
+				status: 409,
+				body: { reason: "recovery_liveness_unknown" },
+			});
+			liveness = "dead";
+			execFileSync("git", [
+				"-C",
+				projectRoot,
+				"commit",
+				"--allow-empty",
+				"-m",
+				"changed after confirmation",
+			]);
+			const changedHead = execFileSync(
+				"git",
+				["-C", projectRoot, "rev-parse", "HEAD"],
+				{ encoding: "utf8" },
+			).trim();
+			expect(await post("/resume", applyRequest)).toMatchObject({
+				status: 409,
+				body: { reason: "recovery_target_changed" },
+			});
+			execFileSync("git", [
+				"-C",
+				projectRoot,
+				"update-ref",
+				"HEAD",
+				head,
+				changedHead,
+			]);
+			expect(unchanged()).toEqual(beforeApply);
+			// Fail after the receipt/watch/writer writes to prove the full SQLite
+			// transaction rolls back, rather than merely rejecting before mutation.
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			const stagedOwner = store.getWorkflowLaunchOwner(ORIGINAL_EXECUTION)!;
+			db.run(
+				"UPDATE workflow_launch_owner SET owner_generation = owner_generation + 1 WHERE execution_id = ?",
+				[ORIGINAL_EXECUTION],
+			);
+			expect(await post("/resume", applyRequest)).toMatchObject({
+				status: 409,
+				body: { reason: "recovery_target_changed" },
+			});
+			db.run(
+				"UPDATE workflow_launch_owner SET owner_generation = ? WHERE execution_id = ?",
+				[stagedOwner.owner_generation, ORIGINAL_EXECUTION],
+			);
+			db.run(
+				`CREATE TRIGGER fail_recovery_run BEFORE UPDATE OF status ON workflow_run WHEN NEW.status = 'active' BEGIN SELECT RAISE(ABORT, 'test_recovery_commit_failure'); END`,
+			);
+			expect(await post("/resume", applyRequest)).toMatchObject({
+				status: 409,
+				body: { reason: "test_recovery_commit_failure" },
+			});
+			db.run("DROP TRIGGER fail_recovery_run");
+			expect(unchanged()).toEqual(beforeApply);
+			expect(
+				store.getWorkflowHoldResumeReceipt(stageRequest.clientRequestId),
+			).toBeUndefined();
+			const restaged = await post("/resume/stage", stageRequest);
+			expect(restaged.body.canonical).toEqual(canonical);
+			applyRequest.confirmToken = restaged.body.confirmToken;
 			const applied = await post("/resume", applyRequest);
-			expect(applied.status).toBe(200);
+			expect(applied.status, JSON.stringify(applied.body)).toBe(200);
 			expect(applied.body).toMatchObject({
 				ok: true,
 				state: "dispatch_recorded",
@@ -389,6 +469,45 @@ describe("FLY-2329 unified recovery through HTTP and dispatcher consumption", ()
 			expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(
 				intentsBeforeReplay,
 			);
+			expect(
+				(
+					await post("/resume", {
+						...applyRequest,
+						canonical: {
+							...canonical,
+							clientRequestId: "stale-second-request",
+						},
+					})
+				).status,
+			).toBe(409);
+			expect(store.listWorkflowSideEffects(RUN_ID)).toEqual(
+				intentsBeforeReplay,
+			);
+			db.run(
+				"UPDATE workflow_delivery_operation SET recovery_receipt_json = '{}' WHERE client_request_id = ?",
+				[stageRequest.clientRequestId],
+			);
+			expect(await post("/resume", applyRequest)).toMatchObject({
+				status: 409,
+				body: { reason: "recovery_receipt_invalid" },
+			});
+			db.run(
+				"UPDATE workflow_delivery_operation SET recovery_receipt_json = ? WHERE client_request_id = ?",
+				[JSON.stringify(receipt), stageRequest.clientRequestId],
+			);
+
+			// Mutable dispatch diagnostics must not disable the immutable recovery proof.
+			db.run(
+				"UPDATE workflow_side_effect_ledger SET reason = 'diagnostic_updated' WHERE id = ?",
+				[receipt.dispatchLedgerId],
+			);
+			expect(
+				store.getWorkflowNodeRecoveryDispatchAuthority(
+					store
+						.listWorkflowSideEffects(RUN_ID)
+						.find((row) => row.id === receipt.dispatchLedgerId)!,
+				),
+			).toMatchObject({ authority: canonical.target.startAuthority });
 
 			// Storage assertions alone do not prove that the engine can consume the
 			// new intent: this pass must recover predecessor lineage and commit launch.

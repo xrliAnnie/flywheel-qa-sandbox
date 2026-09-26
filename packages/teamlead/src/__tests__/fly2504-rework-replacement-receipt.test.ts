@@ -1163,15 +1163,13 @@ describe("FLY-2504 remaining transition acceptance", () => {
 			clientRequestId: "reconstruct-1",
 		});
 		if (!normalized) throw new Error("invalid hold resume");
-		expect(() =>
+		expect(
 			store.resumeWorkflowHold({
 				canonical: normalized.canonical,
 				digest: normalized.digest,
 				now: at(2),
 			}),
-		).toThrow(
-			"workflow_hold_completion_transition_refused:rework_content_not_delivered",
-		);
+		).toMatchObject({ ok: false, reason: "unified_recovery_required" });
 		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
 		expect(
 			store.getWorkflowNodeCompletion("run-1", "implement", 2),

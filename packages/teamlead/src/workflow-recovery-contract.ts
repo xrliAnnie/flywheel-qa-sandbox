@@ -148,3 +148,38 @@ export const workflowRecoveryReceiptSchema = z
 export type WorkflowRecoveryReceipt = z.infer<
 	typeof workflowRecoveryReceiptSchema
 >;
+
+/** Server-only observation. Never deserialize this from an HTTP request. */
+export interface WorkflowRecoveryPreflight {
+	target: WorkflowRecoveryTarget;
+	stateDigest: string;
+	sourceSessionDigest: string;
+	sourceEvidenceDigest: string;
+	observedAt: string;
+	liveness: "dead";
+}
+
+export function workflowRecoveryEvidenceDigest(
+	proof: Pick<
+		WorkflowRecoveryPreflight,
+		"stateDigest" | "sourceSessionDigest" | "sourceEvidenceDigest"
+	>,
+): string {
+	return canonicalSubmissionDigest({
+		stateDigest: proof.stateDigest,
+		sourceSessionDigest: proof.sourceSessionDigest,
+		sourceEvidenceDigest: proof.sourceEvidenceDigest,
+	});
+}
+
+/** Legacy diagnostic names only locate the unified recovery operation. */
+export function isWorkflowNodeRecoveryFaultShape(shape: string): boolean {
+	return [
+		"workflow_node_recovery",
+		"unlaunched_admission_rolled_back",
+		"unlaunched_admission_held",
+		"completion_receipt_missing",
+		"retry_limit_escalated",
+		"environment_failure_escalated",
+	].includes(shape);
+}

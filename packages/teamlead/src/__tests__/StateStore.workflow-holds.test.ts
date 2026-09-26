@@ -576,7 +576,7 @@ describe("FLY-2248 sanctioned workflow hold recovery", () => {
 		});
 	});
 
-	it("requeues an unlaunched admission before closing its hold", async () => {
+	it("refuses direct legacy unlaunched recovery without trusted preflight", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		store.createWorkflowRun({
@@ -619,13 +619,15 @@ describe("FLY-2248 sanctioned workflow hold recovery", () => {
 				clientRequestId: "resume:unlaunched",
 				now: "2026-09-02T06:01:00.000Z",
 			}),
-		).toMatchObject({ ok: true, state: "projected" });
+		).toMatchObject({ ok: false, reason: "unified_recovery_required" });
 		expect(
 			store.getWorkflowRunNode("run-unlaunched-hold", "worker-node", 1),
-		).toMatchObject({ state: "pending", execution_id: null, ended_at: null });
+		).toMatchObject({ state: "failed", execution_id: "unlaunched-execution" });
+		expect(store.listWorkflowSideEffects("run-unlaunched-hold")).toEqual([]);
+		expect(store.getWorkflowRun("run-unlaunched-hold")?.status).toBe("held");
 	});
 
-	it("reconstructs a completion receipt from the pinned activation and advances once", async () => {
+	it("refuses direct legacy completion reconstruction from a terminal session", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		const env = {
@@ -734,19 +736,17 @@ describe("FLY-2248 sanctioned workflow hold recovery", () => {
 				clientRequestId: "resume:completion-repair",
 				now: "2026-09-02T06:02:00.000Z",
 			}),
-		).toMatchObject({ ok: true, state: "projected" });
+		).toMatchObject({ ok: false, reason: "unified_recovery_required" });
 		expect(
 			store.getWorkflowNodeCompletion("run-completion-repair", "execute", 1),
-		).toMatchObject({
-			execution_id: "completion-execution",
-			route: "needs_review",
-		});
+		).toBeUndefined();
 		expect(
 			store.getWorkflowRunNode("run-completion-repair", "founder_gate", 1),
-		).toMatchObject({ state: "review" });
+		).toBeUndefined();
+		expect(store.getWorkflowRun("run-completion-repair")?.status).toBe("held");
 	});
 
-	it("requeues the held node when an operator authorizes a retry", async () => {
+	it("refuses direct legacy retry without a materialized dispatch", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		store.createWorkflowRun({
@@ -785,10 +785,12 @@ describe("FLY-2248 sanctioned workflow hold recovery", () => {
 				clientRequestId: "resume:retry-limit",
 				now: "2026-09-02T06:01:00.000Z",
 			}),
-		).toMatchObject({ ok: true, state: "projected" });
+		).toMatchObject({ ok: false, reason: "unified_recovery_required" });
 		expect(
 			store.getWorkflowRunNode("run-retry-hold", "worker-node", 3),
-		).toMatchObject({ state: "pending", execution_id: null });
+		).toMatchObject({ state: "running", execution_id: "failed-execution" });
+		expect(store.listWorkflowSideEffects("run-retry-hold")).toEqual([]);
+		expect(store.getWorkflowRun("run-retry-hold")?.status).toBe("held");
 	});
 
 	it("materializes the held loop target before closing the limit hold", async () => {
