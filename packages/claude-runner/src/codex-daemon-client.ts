@@ -162,7 +162,9 @@ export type ResidentWaitReason =
 	| "native_blocked"
 	| "upstream_error_wait"
 	| "upstream_retry"
-	| "upstream_retry_exhausted";
+	| "upstream_retry_exhausted"
+	/** A goal someone paused (not a Flywheel latch) stays paused across restarts. */
+	| "manual_pause";
 
 export interface ResidentWaitObservation {
 	reason: ResidentWaitReason;
@@ -1856,7 +1858,11 @@ export async function runGoalToTerminal(
 			return "exhausted";
 		}
 		if (!proceedAllowed()) return "refused";
-		const delayMs = UPSTREAM_RETRY_BACKOFF_MS[attempt - 1] ?? 0;
+		// A replay honours the ORIGINAL schedule; a restart never re-arms it.
+		const delayMs =
+			reobserved && prior
+				? Math.max(0, prior.nextAt - now())
+				: (UPSTREAM_RETRY_BACKOFF_MS[attempt - 1] ?? 0);
 		if (remainingBudget() <= delayMs) return "refused";
 		try {
 			input.writeUpstreamRetryEpisode({
@@ -1865,7 +1871,7 @@ export async function runGoalToTerminal(
 				category,
 				attempts: attempt,
 				lastFailedTurnId: failure.turnId,
-				nextAt: now() + delayMs,
+				nextAt: reobserved && prior ? prior.nextAt : now() + delayMs,
 			});
 			retryEpisodeOpen = true;
 		} catch {
@@ -1891,9 +1897,72 @@ export async function runGoalToTerminal(
 		await setGoalStatus("active", remainingBudget());
 		return "retried";
 	};
+	/**
+	 * FLY-2925: after a restart the failed turn's `turn/completed` is history —
+	 * no notification replays it. Rebuild the retry context from the persisted
+	 * episode plus the thread's native last turn: the same failed turn is a
+	 * re-observation (replay), a newer failed turn is the next attempt, and a
+	 * completed last turn is model progress that ends the episode.
+	 */
+	const recoverPersistedRetryFailure = async (): Promise<
+		| {
+				failure: NonNullable<GoalRunResult["lastTurnError"]>;
+				category: UpstreamRetryCategory;
+		  }
+		| undefined
+	> => {
+		if (!input.readUpstreamRetryEpisode) return undefined;
+		let episode: UpstreamRetryEpisode | null;
+		try {
+			episode = parseUpstreamRetryEpisode(input.readUpstreamRetryEpisode());
+		} catch {
+			return undefined;
+		}
+		if (!episode || episode.threadId !== input.threadId) return undefined;
+		let last: ThreadReadTurn | undefined;
+		try {
+			last = parseThreadReadTurns(
+				await client.readThread(input.threadId, phaseControlRpcTimeoutMs),
+				input.threadId,
+			).at(-1);
+		} catch (error) {
+			if (client.isClosed()) {
+				failClose(
+					`daemon transport closed reading the retry episode's last turn: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return undefined;
+		}
+		if (!last) return undefined;
+		if (last.status === "completed") {
+			try {
+				input.writeUpstreamRetryEpisode?.(null);
+				retryEpisodeOpen = false;
+			} catch {
+				/* kept; the next successful boundary retries the clear */
+			}
+			return undefined;
+		}
+		if (last.status !== "failed") return undefined;
+		return {
+			failure: {
+				turnId: last.id,
+				message: "upstream failure restored from the persisted retry episode",
+			},
+			category: episode.category,
+		};
+	};
+
 	const settleResidentBlocked = async (): Promise<TerminalVerdict> => {
-		const failure = lastThreadTurnError;
-		const category = classifyRetryableUpstreamError(failure);
+		let failure = lastThreadTurnError;
+		let category = classifyRetryableUpstreamError(failure);
+		if (!failure) {
+			const recovered = await recoverPersistedRetryFailure();
+			if (recovered) {
+				failure = recovered.failure;
+				category = recovered.category;
+			}
+		}
 		if (failure && category) {
 			const retry = await tryUpstreamRetry(failure, category);
 			if (retry === "retried") return "resident";
@@ -2047,6 +2116,32 @@ export async function runGoalToTerminal(
 						gatePauseAttempted = true;
 						await establishRecoveryOwnership({
 							kind: "gate_hold_confirmed",
+							threadId: input.threadId,
+							goalStatus: "paused",
+						});
+						skipInitialActivation = true;
+					} else if (
+						input.adoptExisting &&
+						existingGoal.status === "paused" &&
+						!gateHoldLatched
+					) {
+						// FLY-2925: no Flywheel latch owns this pause — someone paused
+						// the goal. A restart or adoption is never resume authority.
+						goalArmed = true;
+						if (phase) {
+							writeResidentWaitLatch(true);
+							const t = now();
+							residentWait = {
+								deadlineRemainingMs: Math.max(0, deadline - t),
+								hardDeadlineRemainingMs: Math.max(0, hardDeadline - t),
+							};
+							observeResidentWait({
+								reason: "manual_pause",
+								threadId: input.threadId,
+							});
+						}
+						await establishRecoveryOwnership({
+							kind: "resident_wait_confirmed",
 							threadId: input.threadId,
 							goalStatus: "paused",
 						});

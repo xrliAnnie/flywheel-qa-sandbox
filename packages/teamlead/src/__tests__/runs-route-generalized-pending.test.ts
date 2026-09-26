@@ -372,6 +372,17 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 		});
 	});
 
+	it("FLY-2925: a run finished while delivery was pending answers RUN_TERMINAL, not 202 success", async () => {
+		terminateRunDuringStart = true;
+		const response = await postStart("FLY-2689-LATE", "late-key");
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			success: false,
+			code: "RUN_TERMINAL",
+			runStatus: "cancelled",
+		});
+	});
+
 	it("returns a structured tmux hold and releases that uncommitted generation immediately", async () => {
 		dispatchMode = "tmux_hold";
 		const response = await postStart("FLY-HOLD", "hold-key");

@@ -3988,6 +3988,19 @@ export function createRunsRouter(
 				);
 			}
 			if (!committedOwner) {
+				// FLY-2925 / FLY-2689: the engine may have finished the run while we
+				// waited for delivery; that terminal fact wins over "pending".
+				const settled = admittedRunLaunchPending(store, {
+					runId: generalizedSelection.runId,
+					nodeId: generalizedSelection.nodeId,
+					executionId: generalizedSelection.executionId,
+					issueId,
+					reason: "launch delivery confirmation is pending",
+				});
+				if (settled.status !== 202) {
+					res.status(settled.status).json(settled.body);
+					return;
+				}
 				// The run and launch owner are already durable, so reporting failure here
 				// invites a duplicate caller retry. Do not cache this transitional reply:
 				// the same idempotency key must be able to upgrade to the delivered 200.

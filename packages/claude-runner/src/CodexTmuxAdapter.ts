@@ -77,6 +77,7 @@ import {
 import type {
 	CodexDaemonEvents,
 	CodexResumeObservation,
+	RecoveryOwnershipReceipt,
 	ResidentWaitObservation,
 	UpstreamRetryEpisode,
 } from "./codex-daemon-client.js";
@@ -2112,15 +2113,6 @@ export class CodexTmuxAdapter implements IAdapter {
 				restarts: number,
 				observedIdentity?: CodexResumeObservation,
 			): Promise<void> => {
-				if (restarts === 0 && snapshotExecution?.adoptLiveDaemon) {
-					try {
-						snapshotExecution.onAdopted?.(threadId);
-					} catch (error) {
-						this.log(
-							`[CodexTmuxAdapter] adoption observer threw (ignored): ${safeErr(error)}`,
-						);
-					}
-				}
 				if (
 					ctx.processLifecycle?.expectedSessionId !== undefined &&
 					ctx.processLifecycle.expectedSessionId !== threadId
@@ -2409,7 +2401,23 @@ export class CodexTmuxAdapter implements IAdapter {
 									snapshotExecution.recoveryHooks
 										.onRecoveryOwnershipEstablished,
 							}
-						: {}),
+						: snapshotExecution?.adoptLiveDaemon
+							? {
+									// FLY-2925: adoption commits only once the goal loop
+									// confirmed THIS run's goal posture on the attached thread.
+									onRecoveryOwnershipEstablished: (
+										receipt: RecoveryOwnershipReceipt,
+									) => {
+										try {
+											snapshotExecution.onAdopted?.(receipt.threadId);
+										} catch (error) {
+											this.log(
+												`[CodexTmuxAdapter] adoption observer threw (ignored): ${safeErr(error)}`,
+											);
+										}
+									},
+								}
+							: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 					...(turnLifecycle ? { turnLifecycle } : {}),
 					// FLY-2903: a daemon killed by a Bridge terminal path (stop

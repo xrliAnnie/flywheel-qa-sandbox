@@ -1499,9 +1499,19 @@ describe("FLY-2925 live-daemon adoption", () => {
 		const h = makeHarness({
 			runGoalScript: [],
 			adoptDaemon: async () => fakeHandle(() => {}),
-			runGoalFn: (async (_c: unknown, input: Record<string, unknown>) => {
+			runGoalFn: (async (
+				_c: unknown,
+				input: Record<string, unknown> & {
+					onRecoveryOwnershipEstablished?: (r: unknown) => Promise<void>;
+				},
+			) => {
 				seen.push(input);
 				if (seen.length === 1) {
+					await input.onRecoveryOwnershipEstablished?.({
+						kind: "goal_resumed",
+						threadId: "t-live",
+						goalStatus: "active",
+					});
 					throw new GoalRunError("adopted daemon died", "transport_closed");
 				}
 				return COMPLETE;
@@ -1518,6 +1528,40 @@ describe("FLY-2925 live-daemon adoption", () => {
 		expect(seen.map((i) => i.threadId)).toEqual(["t-live", "t-live"]);
 		expect(seen.every((i) => i.adoptExisting === true)).toBe(true);
 	});
+
+	it.each([
+		["a foreign goal", new GoalRunError("foreign goal", "setup_failed")],
+		["a transport death", new GoalRunError("socket died", "transport_closed")],
+	])(
+		"a pre-confirmation failure (%s) detaches the adopted body: no signal, no restart",
+		async (_label, failure) => {
+			let stopped = 0;
+			let detached = 0;
+			const h = makeHarness({
+				runGoalScript: [failure, COMPLETE],
+				adoptDaemon: async () => {
+					const handle = fakeHandle(() => {
+						stopped += 1;
+					});
+					(handle as { detach?: () => void }).detach = () => {
+						detached += 1;
+					};
+					return handle;
+				},
+			});
+			await expect(
+				new CodexDaemonGoalRuntime(h.opts).runGoal({
+					objective: "x",
+					resumeThreadId: "t-live",
+					adoptLiveDaemon: true,
+					mayRestartAfterTransportDeath: () => true,
+				}),
+			).rejects.toBe(failure);
+			expect(detached).toBe(1);
+			expect(stopped).toBe(0);
+			expect(h.spawns).toEqual([]);
+		},
+	);
 
 	it("refuses adoption without the original thread id", async () => {
 		const h = makeHarness({

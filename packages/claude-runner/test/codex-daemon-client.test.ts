@@ -3368,7 +3368,7 @@ describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
 			category: "server_overloaded",
 			attempts: 1,
 			lastFailedTurnId: "turn-1",
-			nextAt: 0,
+			nextAt: 10_000,
 		};
 		await expect(
 			runGoalToTerminal(makeClient(daemon), {
@@ -3615,4 +3615,107 @@ describe("runGoalToTerminal — FLY-2925 adopt existing goal (no re-activation, 
 		expect(result.status).toBe("complete");
 		expect(d.sentMethods()).toContain("turn/start");
 	});
+});
+
+describe("runGoalToTerminal — FLY-2925 review R1 fixes", () => {
+	it("a restart/adoption never resumes a goal someone paused (no Flywheel latch)", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "paused", objective: "OURS" },
+		}));
+		d.responders.set("thread/goal/set", () => ({}));
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => d.triggerClose("engine stop");
+		const latch: boolean[] = [];
+		const reasons: string[] = [];
+		const receipts: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				adoptExisting: true,
+				phaseLifecycle: phase,
+				readGateHoldLatch: () => false,
+				readResidentWaitLatch: () => false,
+				writeResidentWaitLatch: (held) => latch.push(held),
+				onResidentWait: (o) => reasons.push(o.reason),
+				onRecoveryOwnershipEstablished: (r) => {
+					receipts.push(r.kind);
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(d.sentMethods()).not.toContain("thread/goal/set");
+		expect(d.sentMethods()).not.toContain("turn/start");
+		expect(reasons).toEqual(["manual_pause"]);
+		expect(latch).toEqual([true]);
+		expect(receipts).toEqual(["resident_wait_confirmed"]);
+	});
+
+	it.each([
+		{ lastTurn: "turn-9", expectAttempts: 1, expectDelay: 25_000 },
+		{ lastTurn: "turn-10", expectAttempts: 2, expectDelay: 30_000 },
+	])(
+		"after a restart the persisted episode resumes from the thread's last failed turn ($lastTurn)",
+		async ({ lastTurn, expectAttempts, expectDelay }) => {
+			const d = new FakeDaemon();
+			let current: GoalStatus = "blocked";
+			d.responders.set("thread/goal/get", () => ({
+				goal: { status: current, objective: "OURS" },
+			}));
+			d.responders.set("thread/goal/set", (params) => {
+				current = (params as { status: GoalStatus }).status;
+				return {};
+			});
+			d.responders.set("thread/read", () => ({
+				thread: {
+					id: "t",
+					turns: [
+						{ id: "turn-1", status: "completed" },
+						{ id: lastTurn, status: "failed" },
+					],
+				},
+			}));
+			const phase = new FakePhaseLifecycle();
+			phase.onWait = () => d.triggerClose("engine stop");
+			let episode: unknown = {
+				v: 1,
+				threadId: "t",
+				category: "rate_limited",
+				attempts: 1,
+				lastFailedTurnId: "turn-9",
+				nextAt: 25_000,
+			};
+			const sleeps: number[] = [];
+			await expect(
+				runGoalToTerminal(makeClient(d), {
+					threadId: "t",
+					objective: "OURS",
+					now: () => 0,
+					sleep: async (ms) => {
+						sleeps.push(ms);
+						if (current === "active") d.triggerClose("engine stop");
+					},
+					pollIntervalMs: 1,
+					adoptExisting: true,
+					phaseLifecycle: phase,
+					readUpstreamRetryEpisode: () => episode as never,
+					writeUpstreamRetryEpisode: (next) => {
+						episode = next;
+					},
+				}),
+			).rejects.toMatchObject({ kind: "transport_closed" });
+			expect(sleeps.filter((ms) => ms >= 10_000)).toEqual([expectDelay]);
+			expect(episode).toMatchObject({
+				attempts: expectAttempts,
+				lastFailedTurnId: lastTurn,
+			});
+			expect(
+				d.sent
+					.filter((f) => f.method === "thread/goal/set")
+					.map((f) => (f.params as { status: GoalStatus }).status),
+			).toEqual(["active"]);
+		},
+	);
 });

@@ -723,6 +723,10 @@ export class CodexDaemonGoalRuntime {
 			// the hard onSpawnIdentity contract.
 			let reapPid = input.adoptLiveDaemon ? undefined : input.reapOrphanPid;
 			let adoptPending = input.adoptLiveDaemon === true;
+			// FLY-2925: until the goal loop confirms the adopted goal posture, the
+			// adopted daemon is NOT ours to signal — any failure detaches only.
+			let adoptedHandle: DaemonHandle | undefined;
+			let adoptionConfirmed = false;
 			if (adoptPending && !input.resumeThreadId) {
 				throw new Error(
 					"adopting a live daemon requires the original thread id",
@@ -749,6 +753,7 @@ export class CodexDaemonGoalRuntime {
 						(adoptPending
 							? await this.adoptSession()
 							: await this.startSession(reapPid, input.onSpawnIdentity));
+					if (adoptPending) adoptedHandle = session.handle;
 					adoptPending = false; // adoption applies only to the first session
 					reapPid = undefined; // reap applies only to the first spawn
 					if (
@@ -854,12 +859,23 @@ export class CodexDaemonGoalRuntime {
 							...(input.onGoalActive
 								? { onGoalActive: input.onGoalActive }
 								: {}),
-							...(input.onRecoveryOwnershipEstablished
+							...(adoptedHandle && !adoptionConfirmed
 								? {
-										onRecoveryOwnershipEstablished:
-											input.onRecoveryOwnershipEstablished,
+										// FLY-2925: an adopted body is OURS only once the goal
+										// loop confirmed this run's goal posture (the receipt).
+										onRecoveryOwnershipEstablished: async (
+											receipt: RecoveryOwnershipReceipt,
+										) => {
+											await input.onRecoveryOwnershipEstablished?.(receipt);
+											adoptionConfirmed = true;
+										},
 									}
-								: {}),
+								: input.onRecoveryOwnershipEstablished
+									? {
+											onRecoveryOwnershipEstablished:
+												input.onRecoveryOwnershipEstablished,
+										}
+									: {}),
 							...(input.mayProceed ? { mayProceed: input.mayProceed } : {}),
 							...(input.onResidentWait
 								? { onResidentWait: input.onResidentWait }
@@ -895,6 +911,25 @@ export class CodexDaemonGoalRuntime {
 						...(this.quotaBinding ? { quotaBinding: this.quotaBinding } : {}),
 					};
 				} catch (err) {
+					// FLY-2925: a pre-confirmation failure on an adopted body (attach,
+					// identity, foreign goal, persistence, transport) leaves the live
+					// body exactly as found: release ownership, never signal, never
+					// restart a second daemon next to it.
+					if (
+						adoptedHandle &&
+						!adoptionConfirmed &&
+						this.session?.handle === adoptedHandle
+					) {
+						const adopted = this.session;
+						this.session = null;
+						safeClose(adopted.client);
+						try {
+							adopted.handle.detach?.();
+						} catch {
+							/* best-effort ownership release; the body is untouched */
+						}
+						throw err;
+					}
 					// ANY failure tears the (possibly dead) session down first and
 					// WAITS for the daemon to exit — so we never leak a daemon and a
 					// restart never races the dying one on the same socket. (A

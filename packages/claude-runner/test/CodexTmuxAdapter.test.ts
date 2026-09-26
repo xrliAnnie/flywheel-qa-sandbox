@@ -3938,6 +3938,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		const snapshot = readCodexLaunchSnapshot(execId);
 		runtime = new FakeRuntime(async (input) => {
 			input.onThreadReady?.(THREAD_ID, 0);
+			// Attach alone is not adoption; the goal-posture receipt is.
+			await input.onRecoveryOwnershipEstablished?.({
+				kind: "goal_resumed",
+				threadId: THREAD_ID,
+				goalStatus: "active",
+			});
 			return complete();
 		});
 
@@ -3955,9 +3961,23 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(input.adoptExistingGoal).toBe(true);
 		expect(input.resumeThreadId).toBe(THREAD_ID);
 		expect(input.reapOrphanPid).toBeUndefined();
-		expect(input.onRecoveryOwnershipEstablished).toBeUndefined();
+		expect(input.onRecoveryOwnershipEstablished).toBeTypeOf("function");
 		expect(input.objective).toBe(snapshot.objective);
 		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+	});
+
+	it("FLY-2925: an attached thread whose goal posture is never confirmed is not reported as adopted", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			throw new Error("adopted thread carries a goal that is not this run's");
+		});
+		const adopted: string[] = [];
+		const result = await makeAdapter().adoptLiveExecution(ctx(), undefined, {
+			onAdopted: (threadId) => adopted.push(threadId),
+		});
+		expect(adopted).toEqual([]);
+		expect(result.success).toBe(false);
 	});
 
 	it("FLY-2925: a dead-daemon recovery resume never re-kicks the thread's own goal", async () => {
