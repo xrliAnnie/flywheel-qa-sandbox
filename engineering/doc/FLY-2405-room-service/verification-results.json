@@ -2,7 +2,7 @@
   "schema": 1,
   "issue": "FLY-2405",
   "partial": true,
-  "recorded_at": "2026-09-26T19:36:25.500620+00:00",
+  "recorded_at": "2026-09-26T19:56:03.350789+00:00",
   "observed_head": "a9857f3f734f9c193014dcc08be179f2a1f7839a",
   "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
   "subsequent_changes": [
@@ -83,7 +83,7 @@
   "post_sync_results": [
     {
       "name": "claude-runner",
-      "cwd": "packages/claude-runner",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/claude-runner",
       "args": [
         "pnpm",
         "exec",
@@ -94,19 +94,11 @@
       ],
       "log": "/tmp/fly2405-postsync-claude-runner.log",
       "exit": 0,
-      "seconds": 27.26,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "893809de9de6f99720e6a2d6062756d40d4092a952ebc6b824f68bb84f08b1d1",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  5 passed (5)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 27.26
     },
     {
       "name": "config",
-      "cwd": "packages/config",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/config",
       "args": [
         "pnpm",
         "exec",
@@ -120,19 +112,11 @@
       ],
       "log": "/tmp/fly2405-postsync-config.log",
       "exit": 0,
-      "seconds": 46.62,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "7a247ce692b7b75ab1305a32c1db56d0d2954a5763587dc6e50927c2e128b181",
-      "summary": [
-        "\n Test Files  21 passed (21)",
-        "      Tests  386 passed (386)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 46.62
     },
     {
       "name": "comm",
-      "cwd": "packages/flywheel-comm",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/flywheel-comm",
       "args": [
         "pnpm",
         "exec",
@@ -145,19 +129,11 @@
       ],
       "log": "/tmp/fly2405-postsync-comm.log",
       "exit": 0,
-      "seconds": 12.33,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "f302024e20cca14e10f283e1accc42dd414697110667aa7794c8eae0cb895a08",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  97 passed (97)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 12.33
     },
     {
       "name": "edge-worker",
-      "cwd": "packages/edge-worker",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/edge-worker",
       "args": [
         "pnpm",
         "exec",
@@ -169,19 +145,11 @@
       ],
       "log": "/tmp/fly2405-postsync-edge-worker.log",
       "exit": 0,
-      "seconds": 178.35,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "722c5ad4b1974d910c99ffeb0ce8a1b42d200ccdf71e988fec7003ad8804f32a",
-      "summary": [
-        "\n Test Files  29 passed (29)",
-        "      Tests  356 passed (356)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 178.35
     },
     {
       "name": "teamlead-DirectEventSink.fly2901-takeover-rescue.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -192,19 +160,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-DirectEventSink.fly2901-takeover-rescue.test.log",
       "exit": 0,
-      "seconds": 35.2,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "53be613d23e89ddf1324cbd32ba17e97080c66d92e0c53996b556dc2d50a5594",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  28 passed (28)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 35.2
     },
     {
       "name": "teamlead-StateStore.alert-wake-dedup.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -215,19 +175,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-StateStore.alert-wake-dedup.test.log",
       "exit": 0,
-      "seconds": 15.09,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "d9a0b64a80b749204b9bc5e35a321711c00613c37c0dcbb8ec3122b3774b88bf",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  13 passed (13)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 15.09
     },
     {
       "name": "teamlead-StateStore.fly663-migration.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -238,19 +190,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-StateStore.fly663-migration.test.log",
       "exit": 0,
-      "seconds": 17.22,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "306f90277c5efb10c972fa9d5af1aed293ef6a45d79de96daef6e8e5ad0ff364",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  11 passed (11)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 17.22
     },
     {
       "name": "teamlead-StateStore.generalized-execution.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -261,19 +205,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-StateStore.generalized-execution.test.log",
       "exit": 0,
-      "seconds": 64.6,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "f774655a6172a64992ddf120b1fb0213f1478d817451763a851e98276023e44b",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  73 passed (73)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 64.6
     },
     {
       "name": "teamlead-StateStore.qa-room.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -284,19 +220,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-StateStore.qa-room.test.log",
       "exit": 0,
-      "seconds": 13.94,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "c3a35c0a9a3b53eb6eace64b26cf76a1230dbeecdbab427cc0fa67a097513c5c",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  1 passed (1)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 13.94
     },
     {
       "name": "teamlead-actions.terminate.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -307,19 +235,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-actions.terminate.test.log",
       "exit": 0,
-      "seconds": 28.74,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "9f92897effd4a4f375c30fdabfe8b085a4b2cee9da0a22ec502f0721deff1945",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  16 passed (16)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 28.74
     },
     {
       "name": "teamlead-bridge.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -330,30 +250,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-bridge.test.log",
       "exit": 1,
-      "seconds": 225.12,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "6f3bf2e5073063fd9ad76d18d3082992ae91a01440a00fac39a8d009e945009b",
-      "summary": [
-        "\n\n Test Files  1 failed (1)",
-        "      Tests  10 failed | 29 passed (39)"
-      ],
-      "failures": [
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > GET /health returns 200 with uptime (no auth required)",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > fail-closes the strength-two evidence mount and requires the ingest bearer",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > fail-closes the shadow declaration mount and requires the master bearer",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > exposes a master-auth admission pause with TTL health and explicit resume",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > keeps Discord delivery failures on the independent alert_unreachable_config reason",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > surfaces rejected retired project config through the existing founder meta-alert",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > fails loud when the Hub has no valid founder escalation id",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > routes QA report publishing to the isolated loopback host and report root",
-        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > startBridge starts and closes cleanly"
-      ],
-      "unhandled": []
+      "seconds": 225.12
     },
     {
       "name": "teamlead-close-runner.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -364,24 +265,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-close-runner.test.log",
       "exit": 1,
-      "seconds": 426.95,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "700d10617f65d2d67c4fd394d506f24e8f03fd6ac50046d01f182c0509484a74",
-      "summary": [
-        "\n\n Test Files  1 failed (1)",
-        "      Tests  2 failed | 81 passed (83)"
-      ],
-      "failures": [
-        " FAIL  |serial| src/__tests__/close-runner.test.ts > closeRunner > R4#2: an authorized check lets the teardown proceed to the kill (byte-compat)",
-        " FAIL  |serial| src/__tests__/close-runner.test.ts > closeRunner > FLY-116: PRESERVE \u2014 status=failed defaults to preserved (no kill, no close)"
-      ],
-      "unhandled": [
-        "Error: [vitest-worker]: Timeout calling \"onTaskUpdate\""
-      ]
+      "seconds": 426.95
     },
     {
       "name": "teamlead-createFetchIssue.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -392,19 +280,11 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-createFetchIssue.test.log",
       "exit": 0,
-      "seconds": 139.04,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "73d84f481c401f6e51cb6d471bf33a5dc6160fea9147bdfe8dd9792a2649dd80",
-      "summary": [
-        "\n Test Files  1 passed (1)",
-        "      Tests  7 passed (7)"
-      ],
-      "failures": [],
-      "unhandled": []
+      "seconds": 139.04
     },
     {
       "name": "teamlead-event-route.test",
-      "cwd": "packages/teamlead",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
       "args": [
         "pnpm",
         "exec",
@@ -415,36 +295,25 @@
       ],
       "log": "/tmp/fly2405-postsync-teamlead-event-route.test.log",
       "exit": 1,
-      "seconds": 447.46,
-      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-      "log_sha256": "6a058912a2cecd54daf674684ad94bb66729c08c4df61432d0cf434afee27e67",
-      "summary": [
-        "\n\n Test Files  1 failed (1)",
-        "      Tests  4 failed | 108 passed (112)"
-      ],
-      "failures": [
-        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > admits same-repository distinct PR declarations and freezes their authoritative heads",
-        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects declared PR authority when duplicates_primary",
-        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects a forged generalized completion until the current artifact has founder_review pass",
-        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > books replacement completion against the explicit activation and TURN epoch"
-      ],
-      "unhandled": []
+      "seconds": 447.46
     }
   ],
   "pending_commands_file": "/tmp/fly2405-postsync-commands.json",
   "post_sync_scheduling": {
-    "at": "2026-09-26T19:35:23.697551+00:00",
-    "reason": "host load observed 205.42 and large compressed memory; serialize our own test jobs",
-    "original_session": 89513,
-    "stopped_session": 3117,
-    "interrupted_concrete_test": "src/__tests__/flag-routes.test.ts",
-    "interrupted_log": "/tmp/fly2405-postsync-teamlead-flag-routes.test.log",
-    "resume": "After original related finishes, resume commands skipping completed names. event-route finished exit1 immediately before cancellation; retain its result and inspect failures for exact retries. flag-routes is interrupted and must rerun; it has no completed result."
+    "session3117": "cancelled while flag-routes ran; preceding event-route finished4failed108passed",
+    "session72705": "cancelled on receiving Lead ruling; missing-related recovery cancelled and must not resume",
+    "unreported_recovery": "withdrawn under Lead scope; no absent-file result treated as green"
   },
   "original_related": {
     "session": 89513,
-    "log": "/tmp/fly2405-related-teamlead.log",
-    "status": "running; final counts not available",
+    "status": "terminated_by_Lead; not validation evidence; do not rerun",
+    "question_id": "298915b0-fccc-4d03-92ed-e60fefb65b26",
+    "wrapper_exit": 0,
+    "final_report_present": false,
+    "observed_file_results": 426,
+    "observed_test_results": 7807,
+    "observed_failures": 11,
+    "command_workers": 4,
     "uniform_exact_head": false
   },
   "retry_plan": {
@@ -509,5 +378,641 @@
     "CI OK",
     "real Codex/Claude QA acceptance",
     "production or ship"
-  ]
+  ],
+  "lead_verification_ruling": {
+    "question_id": "298915b0-fccc-4d03-92ed-e60fefb65b26",
+    "reason": "host load170 on18cores; production Bridge liveness deaths; Lead SIGTERM original workers56115/56969 after1h50m",
+    "scope": "Only changed concrete test files or direct changed-module importers, one concrete file per invocation, sequentially. Do not rerun StateStore/plugin broad related. Retry each timeout file once; if still timing out record load-timeout and continue. Effective exact-head review then push and injected handoff. No current-head full-CI freeze provided.",
+    "ack_report": "2bcf05d2-14a4-4e77-be45-f99299ac5e27"
+  },
+  "bounded_selection": [
+    {
+      "name": "lead-retry-event-route",
+      "cwd": "/private/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/event-route.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": "one full concrete-file retry of observed post-sync failure per Lead ruling"
+    },
+    {
+      "name": "lead-retry-close-runner",
+      "cwd": "/private/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/close-runner.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": "one full concrete-file retry of observed post-sync failure per Lead ruling"
+    },
+    {
+      "name": "lead-retry-bridge",
+      "cwd": "/private/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/bridge.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": "one full concrete-file retry of observed post-sync failure per Lead ruling"
+    },
+    {
+      "name": "teamlead-flag-routes.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/flag-routes.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/flag-store-runtime.ts",
+          "packages/teamlead/src/bridge/flag-store-runtime.ts",
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-fly-2413-retention-registry.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/fly-2413-retention-registry.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-run-dispatcher.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/run-dispatcher.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-workflow-engine-dispatcher.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/workflow-engine-dispatcher.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-worktree-takeover-rescue.real-sink.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/worktree-takeover-rescue.real-sink.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-alert-duty-router.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/alert-duty-router.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-alert-threads-tickets.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/alert-threads-tickets.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-alert-wake-dedup.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/alert-wake-dedup.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-close-tmux.fly2498.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/close-tmux.fly2498.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/plugin.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-codex-daemon-teardown.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/codex-daemon-teardown.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-codex-terminal-close-ledger.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/codex-terminal-close-ledger.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-codex-terminal-sweep.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/codex-terminal-sweep.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-completion-drain-v2.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/completion-drain-v2.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-flag-store-runtime.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/flag-store-runtime.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/flag-store-runtime.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-infra-alert-wiring.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/infra-alert-wiring.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/infra-event-router.ts",
+          "packages/teamlead/src/bridge/lead-inbox-runtime.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-infra-event-router.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/infra-event-router.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/infra-event-router.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-kind-contract.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/kind-contract.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": false,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/infra-event-router.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-lead-inbox-runtime.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/lead-inbox-runtime.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/lead-inbox-runtime.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-qa-room-contract.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-contract.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/qa-room-contract.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-qa-room-drill-contract.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-drill-contract.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/qa-room-contract.ts",
+          "packages/teamlead/src/bridge/qa-room-runtime.ts",
+          "packages/teamlead/src/bridge/qa-room-store.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-qa-room-routes.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-routes.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/qa-room-routes.ts",
+          "packages/teamlead/src/bridge/qa-room-runtime.ts",
+          "packages/teamlead/src/bridge/qa-room-service.ts",
+          "packages/teamlead/src/bridge/qa-room-store.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-qa-room-runtime.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-runtime.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/qa-room-runtime.ts",
+          "packages/teamlead/src/bridge/qa-room-store.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-qa-room-service.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-service.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/qa-room-runtime.ts",
+          "packages/teamlead/src/bridge/qa-room-service.ts",
+          "packages/teamlead/src/bridge/qa-room-store.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-qa-room-store.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-store.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/bridge/qa-room-store.ts"
+        ]
+      }
+    },
+    {
+      "name": "teamlead-qa-room-wiring.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782/packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-wiring.test.ts",
+        "--maxWorkers=1"
+      ],
+      "selection": {
+        "changed_test": true,
+        "direct_changed_imports": [
+          "packages/teamlead/src/StateStore.ts",
+          "packages/teamlead/src/bridge/flag-store-runtime.ts",
+          "packages/teamlead/src/bridge/qa-room-host.ts"
+        ]
+      }
+    },
+    {
+      "name": "fly1663-qa-launchd.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/fly1663-qa-launchd.test.sh"
+      ]
+    },
+    {
+      "name": "fly2405-alert-duty.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/fly2405-alert-duty.test.sh"
+      ]
+    },
+    {
+      "name": "fly2405-room-job.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/fly2405-room-job.test.sh"
+      ]
+    },
+    {
+      "name": "fly2405-service-claim.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/fly2405-service-claim.test.sh"
+      ]
+    },
+    {
+      "name": "fly2405-teardown-pits.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/fly2405-teardown-pits.test.sh"
+      ]
+    },
+    {
+      "name": "fly2874-slot-pool.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/fly2874-slot-pool.test.sh"
+      ]
+    },
+    {
+      "name": "qa-slot-env-contract.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/qa-slot-env-contract.test.sh"
+      ]
+    },
+    {
+      "name": "restart-cmux-watcher.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/restart-cmux-watcher.test.sh"
+      ]
+    },
+    {
+      "name": "test-deploy-fly1389.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/test-deploy-fly1389.test.sh"
+      ]
+    },
+    {
+      "name": "test-deploy-generalized.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/test-deploy-generalized.test.sh"
+      ]
+    },
+    {
+      "name": "test-deploy-launch-boundary.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/test-deploy-launch-boundary.test.sh"
+      ]
+    },
+    {
+      "name": "test-deploy-multilead.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "bash",
+        "scripts/__tests__/test-deploy-multilead.test.sh"
+      ]
+    },
+    {
+      "name": "fly2874-test-slot-capacity.test",
+      "cwd": "/tmp/fly2405-main-sync-612f9782",
+      "args": [
+        "node",
+        "--test",
+        "scripts/__tests__/fly2874-test-slot-capacity.test.mjs"
+      ]
+    }
+  ],
+  "bounded_exclusions": [
+    {
+      "file": "src/__tests__/lead-rules-bundle.test.ts",
+      "reason": "no direct changed-module import and test not changed; excluded under Lead 298915b0 ruling; any earlier guard evidence remains labeled pre-sync"
+    },
+    {
+      "file": "src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+      "reason": "no direct changed-module import and test not changed; excluded under Lead 298915b0 ruling; any earlier guard evidence remains labeled pre-sync"
+    }
+  ],
+  "bounded_run": {
+    "session": 12160,
+    "results_file": "/tmp/fly2405-lead-bounded-results.json",
+    "status": "running",
+    "script": "/tmp/fly2405-run-bounded.py"
+  }
 }

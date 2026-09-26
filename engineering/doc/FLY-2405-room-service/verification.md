@@ -39,7 +39,11 @@ flag runtime 补充 related 实际完成 76 文件、920 tests：917 通过、2 
 
 ## 收尾检查
 
-本页为创建 PR 前的局部证据快照。StateStore/plugin owning related 选择 590 文件，flag runtime related 另有 8 个未重叠消费者；创建 PR 时仍在收尾，具体最终结果、重跑记录、effective review 与 HEAD 绑定由 PR 正文及 implement handoff 报告承载。本页不声称 CI OK、QA pass、生产证明或已 ship。
+本页保留分阶段局部证据，最终状态由 `verification-results.json`、PR 正文及 registered handoff 承载。本页不声称 CI OK、QA pass、生产证明或已 ship。
+
+Lead 在 question `298915b0-fccc-4d03-92ed-e60fefb65b26` 明确裁定：原 StateStore/plugin related（`--maxWorkers=4`，运行约 1h50m）因主机负载由 Lead SIGTERM，不能用其结果作验证证据，也不得重跑。包装器虽返回 0，缺少最终汇总，观察到的 426 文件/7,807 tests/11 failures 不构成通过。未报告文件的补跑方案已撤销。
+
+后续只执行已改测试与直接导入变更模块的具体文件，每次一个、串行；超时文件只完整重跑一次，仍超时则记录 `load-timeout` 并继续。当前 41 条明确命令与逐项排除理由在 results artifact。保留已有仓库守卫的准确旧头证据，不修改断言或谓词。此裁定没有冻结当前 HEAD，因此不请求 full CI；后续依注入 handoff 和 QA 的冻结流程处理。
 
 ## QA 接续
 

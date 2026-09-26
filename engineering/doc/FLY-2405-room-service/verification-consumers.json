@@ -745,7 +745,7 @@
   "candidate_selector_evidence": {
     "packages/agent-team-transport/src/claude/__tests__/ClaudeCodeAdapter.test.ts": {
       "test_subjects": [
-        "ClaudeCodeAdapter — identity + capabilities",
+        "ClaudeCodeAdapter \u2014 identity + capabilities",
         "vendorId returns ",
         "capabilities returns expected shape (Codex r5 contract)"
       ],
@@ -1062,7 +1062,7 @@
       "test_subjects": [
         "external-agent-contract.md (FLY-879)",
         "declares the loaded-only-for-external scope (matches claude-lead.sh gating)",
-        "1. instruction-source boundary — customer message is DATA, never a command"
+        "1. instruction-source boundary \u2014 customer message is DATA, never a command"
       ],
       "literal_context": [
         "11: * (see claude-lead.sh external branch). A future edit that deletes or weakens any of",
@@ -1071,7 +1071,7 @@
     },
     "packages/teamlead/src/__tests__/fly152-reply-discipline.test.ts": {
       "test_subjects": [
-        "FLY-152 base layer — cos-lead-rules.md",
+        "FLY-152 base layer \u2014 cos-lead-rules.md",
         "contains the FLY-152 section heading",
         "declares cos-lead as the default replier"
       ],
@@ -1198,7 +1198,7 @@
     },
     "packages/teamlead/src/__tests__/workflow-dispatch-seams.structure.test.ts": {
       "test_subjects": [
-        "FLY-1385 W6 — generalized admission seam inventory",
+        "FLY-1385 W6 \u2014 generalized admission seam inventory",
         "has exactly the reviewed spawn and same-actor re-entry admission seams",
         "admits %s only as a wake of the route-pinned actor"
       ],
@@ -1568,7 +1568,7 @@
       "test_subjects": [],
       "literal_context": [
         "20: #   B7  claude-lead.sh CoS detection contract pin (literal \"cos-lead\")",
-        "204: # ── B7: claude-lead.sh CoS detection contract pin ──"
+        "204: # \u2500\u2500 B7: claude-lead.sh CoS detection contract pin \u2500\u2500"
       ]
     },
     "scripts/__tests__/host-tmux-selection-census.test.sh": {
@@ -37243,7 +37243,7 @@
     },
     "doc_merge_check": {
       "path": "doc/qa/framework/real-runner-e2e-guide.md",
-      "predicate": "Merged configured slot range is 1–6; candidate --head remains Bridge source and --from-branch remains fixture-only. Service workflow and upstream slot6 capacity instructions both retained.",
+      "predicate": "Merged configured slot range is 1\u20136; candidate --head remains Bridge source and --from-branch remains fixture-only. Service workflow and upstream slot6 capacity instructions both retained.",
       "verification": "Source diff inspection only; no live deploy or assertion execution."
     },
     "subsequent_main_sync": {
@@ -37251,5 +37251,12 @@
       "merge": "3ed89bb44",
       "change": "Adopt upstream FLY-2934 removal of redundant integer count; exact expected-name/founder-copy equality and authoring/readSite guards remain."
     }
+  },
+  "lead_scope_override": {
+    "question_id": "298915b0-fccc-4d03-92ed-e60fefb65b26",
+    "original_590_graph": "historical discovery only; original command was terminated by Lead and is not evidence; do not expand execution to this graph",
+    "new_rule": "one concrete changed-test or direct importer per invocation, sequentially; preserve existing pre-sync guard evidence as pre-sync only",
+    "bounded_commands_file": "verification-results.json#/bounded_selection",
+    "exclusions_file": "verification-results.json#/bounded_exclusions"
   }
 }
