@@ -164,7 +164,9 @@ export type ResidentWaitReason =
 	| "upstream_retry"
 	| "upstream_retry_exhausted"
 	/** A goal someone paused (not a Flywheel latch) stays paused across restarts. */
-	| "manual_pause";
+	| "manual_pause"
+	/** Native budgetLimited: no governance consumes it; the body waits for a decision. */
+	| "budget_limited";
 
 export interface ResidentWaitObservation {
 	reason: ResidentWaitReason;
@@ -1907,7 +1909,7 @@ export async function runGoalToTerminal(
 	const recoverPersistedRetryFailure = async (): Promise<
 		| {
 				failure: NonNullable<GoalRunResult["lastTurnError"]>;
-				category: UpstreamRetryCategory;
+				category?: UpstreamRetryCategory;
 		  }
 		| undefined
 	> => {
@@ -1944,12 +1946,20 @@ export async function runGoalToTerminal(
 			return undefined;
 		}
 		if (last.status !== "failed") return undefined;
+		// Only the SAME failed turn inherits the episode's category (a replay).
+		// A newer failed turn has no structured error evidence here — it may be
+		// unauthorized or a bad request — so it waits instead of retrying.
 		return {
 			failure: {
 				turnId: last.id,
-				message: "upstream failure restored from the persisted retry episode",
+				message:
+					last.id === episode.lastFailedTurnId
+						? "upstream failure restored from the persisted retry episode"
+						: "newer failed turn without structured error evidence",
 			},
-			category: episode.category,
+			...(last.id === episode.lastFailedTurnId
+				? { category: episode.category }
+				: {}),
 		};
 	};
 
@@ -1963,9 +1973,22 @@ export async function runGoalToTerminal(
 				category = recovered.category;
 			}
 		}
+		// FLY-2925: an exhausted account is quota governance's job (account switch
+		// → restart), never a body parked in place on the same exhausted account.
+		const handToQuotaGovernance = (): TerminalVerdict => {
+			client.logDiagnostic(
+				"resident goal blocked on usage exhaustion — ending as usageLimited for quota governance",
+			);
+			terminalSeen = "usageLimited";
+			return "terminal";
+		};
+		if (failure?.code === "usageLimitExceeded") return handToQuotaGovernance();
 		if (failure && category) {
 			const retry = await tryUpstreamRetry(failure, category);
 			if (retry === "retried") return "resident";
+			if (retry === "exhausted" && category === "rate_limited") {
+				return handToQuotaGovernance();
+			}
 			await enterResidentWait({
 				reason:
 					retry === "exhausted"
@@ -1999,6 +2022,15 @@ export async function runGoalToTerminal(
 		}
 		if (phase && status === "blocked") {
 			return settleResidentBlocked();
+		}
+		if (phase && status === "budgetLimited") {
+			// FLY-2925: unlike usageLimited (quota governance's input), no actor
+			// consumes a budgetLimited terminal — keep the body for a decision.
+			await enterResidentWait({
+				reason: "budget_limited",
+				threadId: input.threadId,
+			});
+			return "resident";
 		}
 		return "terminal";
 	};
@@ -2110,17 +2142,7 @@ export async function runGoalToTerminal(
 					// Native paused state is persisted with the thread. If the marker is
 					// still open, adopt it without an active set or kick; if the marker
 					// resolved during daemon downtime, replay the cached fields and wake.
-					if (existingGoal.status === "paused" && waiting) {
-						goalArmed = true;
-						enterGateHold();
-						gatePauseAttempted = true;
-						await establishRecoveryOwnership({
-							kind: "gate_hold_confirmed",
-							threadId: input.threadId,
-							goalStatus: "paused",
-						});
-						skipInitialActivation = true;
-					} else if (
+					if (
 						input.adoptExisting &&
 						existingGoal.status === "paused" &&
 						!gateHoldLatched
@@ -2142,6 +2164,16 @@ export async function runGoalToTerminal(
 						}
 						await establishRecoveryOwnership({
 							kind: "resident_wait_confirmed",
+							threadId: input.threadId,
+							goalStatus: "paused",
+						});
+						skipInitialActivation = true;
+					} else if (existingGoal.status === "paused" && waiting) {
+						goalArmed = true;
+						enterGateHold();
+						gatePauseAttempted = true;
+						await establishRecoveryOwnership({
+							kind: "gate_hold_confirmed",
 							threadId: input.threadId,
 							goalStatus: "paused",
 						});
