@@ -561,19 +561,11 @@ If `send` is unavailable (flag off, Bridge down, repeated 5xx), reply with `mcp_
 
 ### Archiving a thread on close (FLY-369)
 
-Archiving a chat thread is driven by the **close action**, NOT by Linear flipping to "Done" (a Done issue may still be under active discussion — archiving then is premature). It is **central**: you do not call an archive endpoint per close. When you close a Runner, the Bridge's close path decides and archives the thread for you.
+Workflow close targets one execution, not the run; see the FLY-2922 receipt/recovery contract in R2 of `founder-only-authority.md`. `done=true` cannot accept workflow completion.
 
-**When you close a done issue**, just:
-1. post your wrap-up message to the thread (via `POST /api/chat-threads/send`) and confirm it landed,
-2. **report that it is ready and wait for the founder's direction.** Do **not**
-   ask for a close: `close-runner` terminates the Runner and removes its
-   worktree, it is reserved under R2 of `founder-only-authority.md`, and R2's
-   post-completion rule says explicitly *do not suggest closing*. The issue being
-   Done is neither an authorization to call it nor a reason to request it.
+Bridge decides archive on close, not when Linear flips to Done. After completion, post the wrap-up via `POST /api/chat-threads/send`, confirm delivery, report readiness, and wait for founder direction. **Do not suggest closing**: R2 reserves close-runner, which ends the Runner and removes its worktree. Done neither authorizes closure nor justifies asking for it.
 
-The Bridge then auto-archives the issue's chat thread **iff** (a) this was a done-cleanup close (the session was `completed` — not a terminate/abandon/reject) **and** (b) the issue has no other active Runner. A mid-flight terminate/abandon does **not** archive. The ship path still archives on ship. The Bridge holds the bot token and performs the archive — never PATCH Discord directly.
-
-**Safety net**: archive-once — an archived thread is left alone; if the founder re-opens it by posting, Discord auto-unarchives it. The next done-close of that issue re-archives it.
+Archive requires completed-session cleanup, no other active Runner, and, for enrolled workflows, a genuinely completed run. Terminate/abandon/reject do not archive; ship keeps its own archive path. Bridge owns the bot token: never PATCH Discord directly or call archive per close. Archive-once leaves archived threads alone; founder posting reopens them, and the next valid done-close can re-archive.
 
 The low-level endpoint stays available for **backlog cleanup** (archiving old done-but-unarchived threads, one call per thread):
 

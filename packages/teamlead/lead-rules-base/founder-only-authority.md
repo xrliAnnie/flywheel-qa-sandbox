@@ -277,7 +277,7 @@ but it is a backstop for accidents — not permission.)
 
 ## R2 — Runner Lifecycle Authorization (founder-routed, this window)
 
-**Workflow execution close (FLY-2922):** `terminate` with an executionId and `close_runner` (including `abandon=true` or `done=true`) close only that execution. They do not cancel its run or collect other parked residents. Read `executionClosed`, `runTerminated:false`, `runStatus`, and `recoveryTarget` in the receipt. Without a genuine completion receipt, `done=true` is not success authority; the current incomplete run becomes held for the unified recovery entry. To abandon the whole task chain, explicitly target its runId through `POST /api/runs/:runId/terminate` with that route's existing authority. All existing R2 authorization and phase-hold protections still apply.
+**Workflow close (FLY-2922):** executionId `terminate`/`close_runner` (done or abandon) closes only that body; other parked residents and the run remain. Read `executionClosed`, `runTerminated:false`, `runStatus`, `completionAccepted`, `recoveryTarget`. Without a real completion receipt, done means cleanup and the current run becomes held for unified recovery. Cancelling the chain requires runId `POST /api/runs/:runId/terminate` and its existing authority. R2 and phase-hold guards still apply.
 
 
 ### Reserved actions (current scope)

@@ -5,15 +5,15 @@
 	"pairs": [
 		{
 			"id": "department-lead-rules.md",
-			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence. FLY-2597 adds the same explicit founderAsk, reply acknowledgement, shared title/page attention, no periodic prose and quiet-record duties to ON and OFF; existing historical duties outside that exact insertion are preserved. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2655 adds the same manifest-only voice session start, status and stop duty to ON and OFF; both modes reject shell, legacy huddle and caller-supplied authority fields, preserve request identity on replay, and do not claim real audio success from request acceptance.",
+			"rationale": "ON retains the reviewed shortened duties; OFF preserves pre-savings text at f022a0a7. Any shared duty change must update both modes and the historical compatibility evidence. FLY-2597 adds the same explicit founderAsk, reply acknowledgement, shared title/page attention, no periodic prose and quiet-record duties to ON and OFF; existing historical duties outside that exact insertion are preserved. Reproduction: engineering/doc/FLY-2597-thread-title-needs-you/capture-rule-evolution.py verifies the historical bundle before replaying its pinned patch. FLY-2655 adds the same manifest-only voice session start, status and stop duty to ON and OFF; both modes reject shell, legacy huddle and caller-supplied authority fields, preserve request identity on replay, and do not claim real audio success from request acceptance. FLY-2922 reviewed both ON and OFF close/archiving duties. Both use the identical compact close section: execution-only closure references the resident R2 receipt/recovery contract; done is not completion authority; archive requires genuine run completion. Both preserve wrap-up delivery, wait for founder/no close suggestion, R2 authorization, no direct Discord PATCH, no archive on abort, ship archive, reopen/archive-once, and the unchanged backlog endpoint. Compaction stays within the original bundle budget without weakening its guard.",
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/department-lead-rules.md",
-					"sha256": "de131c6c8b5c463629610424eca9d5fa16e393f2d914cf64b09b247472f4dfdc"
+					"sha256": "b5ab4d5a96e6b5c68f54b25d52cca333a4b3dc123c136f9c4009580f0e1d01da"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/department-lead-rules.md",
-					"sha256": "4d0e1216ec71b50c2e4999f4597dccdbb37171ac72f7c3052818029cb8a822df"
+					"sha256": "c640932bb09ef9c61927919cefff89a6ef76f7ff592cad4765e22c7655e1d679"
 				}
 			]
 		},
