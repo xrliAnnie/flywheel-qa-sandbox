@@ -3,11 +3,13 @@
  * answer; a reader crash becomes `unknown/read_failed` for that Lead only.
  */
 
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import Database from "better-sqlite3";
-import { readV2LeadClaudePid } from "../../LeadWindowLocator.js";
+import { type ExecFn, readV2LeadClaudePid } from "../../LeadWindowLocator.js";
 import {
 	probeCodexLeadInboxCapabilities,
 	readCodexLeadTurnState,
@@ -193,6 +195,22 @@ export function claudeLeadLocatorOptions(
 	};
 }
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * QA@2 (claim 1599): every tmux read behind this service passes `-u`. A
+ * launchd Bridge inherits no TMUX and no LANG/LC_*, so its tmux client is not
+ * UTF-8 and tmux rewrites each tab and non-ASCII byte of command output to
+ * `_`: the tab-separated `list-panes -F` rows stop parsing and every Claude
+ * Lead reads as `lead_window_unavailable`. `-u` declares the client UTF-8
+ * whatever it inherits. Other commands (`ps`) pass through unchanged.
+ */
+export const utf8TmuxExec: ExecFn = (file, args, options) =>
+	execFileAsync(file, file === "tmux" ? ["-u", ...args] : [...args], {
+		encoding: "utf8",
+		...(options?.timeout !== undefined ? { timeout: options.timeout } : {}),
+	});
+
 /** Production wiring: live pane capture, sidecar socket, read-only CommDB. */
 export function createProductionLeadActivityService(args: {
 	projects: ProjectEntry[];
@@ -202,10 +220,17 @@ export function createProductionLeadActivityService(args: {
 	const env = args.env ?? process.env;
 	const stateDir =
 		env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel");
-	const capture = defaultLeadPaneCapture();
+	// Its identity probe and capture-pane both go through `utf8TmuxExec`.
+	const capture = defaultLeadPaneCapture(
+		undefined,
+		utf8TmuxExec as unknown as Parameters<typeof defaultLeadPaneCapture>[1],
+	);
 	const resolveBotToken = buildResolveBotToken(args.projects, env);
 	const log = (message: string) => console.warn(message);
-	const locatorOptions = claudeLeadLocatorOptions(env, stateDir);
+	const locatorOptions = {
+		...claudeLeadLocatorOptions(env, stateDir),
+		execFn: utf8TmuxExec,
+	};
 	return new LeadActivityService({
 		projects: () => args.projects,
 		now: Date.now,
@@ -215,7 +240,7 @@ export function createProductionLeadActivityService(args: {
 			readClaudeLeadActivity(projectName, leadId, {
 				locate: (p, l) => locateConfiguredLeadWindow(p, l, locatorOptions),
 				capture,
-				claudeProcess: (window) => readV2LeadClaudePid(window),
+				claudeProcess: (window) => readV2LeadClaudePid(window, utf8TmuxExec),
 				now: Date.now,
 			}),
 		readCodex: (projectName, leadId) =>
