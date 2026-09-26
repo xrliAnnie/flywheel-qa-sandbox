@@ -558,7 +558,12 @@ Lead 按 hook 要求附上的「关联 Handoff ID：<uuid>」只在朗读投影�
 - **现象**（QA@2，529 房 3/3）：她打断一段 Lead 朗读，本地 0.4 s 内就切掉了旧声音，也说了「剩下的内容在频道里。」。但模型的下一轮回答先把那段没念完的内容接着说完（从断点接，连半个词也补上），然后才回答她的新问题。
 - **原因**：v3 的 `appendSpeech` 是 `session.context.append`（`channel:"speakable"`），要念的文本常驻在模型上下文里。v3 没有撤销这类追加的接口（上行只有 `input_audio.append`、`delegation.context.append`、`session.context.append`、`session.close`、`response.create`、`session.update`、`conversation.item.create`）。prompt 里已有的「被打断就放弃没说完的话」压不住它。
 - **做法**：已发出的 Lead 朗读块被她打断（`speech_interrupted`）或抢先（`speech_preempted`）时，后端立刻用 `thread/realtime/appendText`（developer，v3 下是不带 channel 的 `session.context.append`，不会念出）追加一条提示。提示给出这块的原文，要求从被打断处起一个字都不再说：不补完没说完的词句、不接着念、不复述或总结，只回应她刚说的话。随后照旧念「剩下的内容在频道里。」。
-- **不追加提示的情况**：还在等停顿、没发出的块；遇到换代（新一代没有旧上下文）；非朗读类提示音。
+- **不追加提示的情况**（评审 R1 补全）：
+  - 还在等停顿、没发出的块；
+  - 遇到换代（新一代没有旧上下文），提示只发到存着原文的那一代；
+  - 非朗读类提示音，以及「剩下的内容在频道里。」这句提示本身（`noteOnAbandon:false`）；
+  - 房间停止（`GenericVoiceSession.stop` 带着朗读的 id 调 `cancelSpeech`）：`CodexRoomFrontend` 改走 `stopSpeech()`，同样在本地切断，但按 `session_closed` 结算，不算她打断。
+- **越界间隙里被打断**（评审 R1）：越界截断了一块、续读还没发出时，这块没念的部分仍在上下文里。此时她打断，就对这块追加提示，并停掉这条回复（不再续读，随后念「剩下的内容在频道里。」）。只是在队列里等待的回复，她说话不会停，也不追加提示（B 的语义不变）。
 - **探针 8**（`evidence/probe8-bargein.mjs`，日志 `evidence/probe-run8-*.jsonl`）：固定 0.156.1、v3 WebRTC、订阅、无 key。prompt 用生产 protocol 原文，朗读文本和打断时机取 QA R8，问句为合成语音「打断一下，四加四等于几？」。
 
 | 组 | 次数 | 下一轮续念旧内容 |

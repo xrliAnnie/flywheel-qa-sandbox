@@ -430,3 +430,17 @@ QA@2 唯一阻断项：她打断 Lead 朗读后，模型的下一轮先补上没
 - teamlead 消费者 36/36。
 
 **复现探针**：问句 WAV 用 `say -v Tingting -o q.aiff "打断一下，四加四等于几？" && afconvert -f WAVE -d LEI16@48000 -c 1 q.aiff q.wav` 生成；运行命令为 `PROBE_ARM=control|steer|steer2 PROBE_LOG=… PROBE_SCRATCH=… PROBE_WAV=q.wav node probe8-bargein.mjs`。
+
+### QA@2 返工评审 R1 的修复（`3e06dcd94`）
+
+Codex（新线程 `01a0df98-9c61-7cc3-9505-31cd30ca0302`，范围 `cf47afa01..HEAD`）：1 MEDIUM，三点都成立，已全部修复。
+
+| 问题 | 修复 | 回归测试 | 负对照 |
+|---|---|---|---|
+| 「剩下的内容在频道里。」也走朗读路径，她打断它会再追加一条内容错误的提示 | `readReply` 增加 `noteOnAbandon`；提示本身传 `false` | `codex-room-webrtc`：先后打断回复和提示，只追加一条提示且原文是 Lead 的块；`codex-speak`：提示本身不追加 | 提示也追加 → 红 |
+| 房间停止走 `cancelSpeech → interrupt`，在 `closing` 置位前，可能被当成她的打断 | `cancelSpeech(id)`：`__conversation__` 是打断，其余 id 是停止，改走 `stopSpeech()`，按 `session_closed` 结算 | `codex-room-webrtc`（经 `GenericVoiceSession` + `CodexRoomFrontend`，结束态 lifecycle 耗时 200 ms）：停止时不追加；经房间的真实打断追加 | 停止当打断 → 红（lifecycle 不耗时的话 `closing` 会先置位，测试分不出来，所以加了耗时） |
+| 越界截断后、续读发出前她打断：没有进行中的块，钩子不触发，没念完的 speakable 仍在上下文 | 记下这次截断；她此时打断就对原块追加提示并停掉回复 | `codex-speak`、`codex-room-webrtc`：追加提示（原块原文、第 1 代），不再续读，随后念提示；只是在排队的回复不受影响 | 去掉这段处理 → 2 条红 |
+
+另：钩子带上块所在的代次，提示只发往存有原文的那一代。
+
+验证：`pnpm lint` exit 0；voice-codex `tsc --noEmit` 通过；`vitest related`（7 个源文件）12 个文件 265 条通过（另有 3 条按环境门控跳过，含 founder 回放与 A/B/C/D 主路径）；teamlead 消费者 36/36。
