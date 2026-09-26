@@ -1141,6 +1141,18 @@ describe("WorkflowEngineDispatcher", () => {
 						}),
 					}),
 				]);
+				expect(store.listWorkflowAlertOutbox()).toEqual([
+					expect.objectContaining({
+						payload: expect.objectContaining({
+							title: "FLY-1307 implement failed before admission",
+							metadata: expect.objectContaining({
+								workflowEngine: expect.objectContaining({
+									disposition: "pre_admission_failed",
+								}),
+							}),
+						}),
+					}),
+				]);
 				await dispatcher.reconcile();
 				expect(failures()).toHaveLength(1);
 				expect(
@@ -6160,6 +6172,55 @@ async function fly2504ReplacementHarness() {
 }
 
 describe("FLY-2504 replacement launch fences", () => {
+	it.each(["replacement_reason", "persisted_target"])(
+		"FLY-2922 leaves pre-admission rework failures to the delivery owner (%s)",
+		async (identity) => {
+			const h = await fly2504ReplacementHarness();
+			try {
+				if (identity === "persisted_target") {
+					h.db.run(
+						"UPDATE workflow_side_effect_ledger SET reason = 'generic_retry' WHERE execution_id = 'replacement-2504'",
+					);
+				}
+				const before = {
+					node: h.store.getWorkflowRunNode("run-1", "implement", 2),
+					delivery: h.store.getWorkflowReworkDelivery(h.requestId),
+					effects: h.store.listWorkflowSideEffects("run-1"),
+					events: h.store.listWorkflowRunEvents("run-1"),
+				};
+				const intent = before.effects.find(
+					(row) => row.execution_id === "replacement-2504",
+				)!;
+				expect(
+					h.store.recordWorkflowPreAdmissionFailure({
+						runId: intent.run_id,
+						nodeId: intent.node_id,
+						attempt: intent.attempt,
+						executionId: intent.execution_id,
+						launchOrdinal: intent.launch_ordinal,
+						errorCode: "engine_rework_replacement_context_invalid",
+						rollbackMs: 600_000,
+						now: "2026-07-16T00:16:00.000Z",
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved",
+						},
+					}),
+				).toEqual({ ok: false, reason: "rework_delivery_owned" });
+				expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+				expect({
+					node: h.store.getWorkflowRunNode("run-1", "implement", 2),
+					delivery: h.store.getWorkflowReworkDelivery(h.requestId),
+					effects: h.store.listWorkflowSideEffects("run-1"),
+					events: h.store.listWorkflowRunEvents("run-1"),
+				}).toEqual(before);
+			} finally {
+				h.cleanup();
+			}
+		},
+	);
+
 	it("N9 adopts committed delivery after a crash before marking without another start", async () => {
 		const h = await fly2504ReplacementHarness();
 		try {
@@ -6210,6 +6271,12 @@ describe("FLY-2504 replacement launch fences", () => {
 				expect(h.logs.join("\n")).toContain(
 					"engine_rework_replacement_context_invalid",
 				);
+				expect(h.store.getWorkflowRun("run-1")?.status).toBe("active");
+				expect(
+					h.store
+						.listWorkflowRunEvents("run-1")
+						.filter((event) => event.kind === "run_recovery_required"),
+				).toEqual([]);
 				expect(
 					h.store
 						.listWorkflowRunEvents("run-1")

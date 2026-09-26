@@ -33,3 +33,37 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 6. 完整消费者 sweep、其余守卫与定点验证、literal-last milestone、commit/push/PR、effective code review、正式 report + needs_review receipt + park。
 
 最初通信 health 超时导致三个 stage 排队，progress CLI 以旧 onboard 阶段拒绝。已通过 ask --report `b47da4e1-7d60-4abf-8869-b6ef7783bcdc` 报 Lead；恢复后 progress CLI 成功提交 `bc80001e1`（implement 0/6）。未改通信库或伪造回执。
+
+
+## 2026-09-26 implement 重开：准入前 producer WIP 审计
+
+基线 `7e52c8dba` 含保留 WIP `d35da9cde`。TURN 为 implement / epoch 8，execution `76dcb547-4e56-43b6-8700-b04975fce7e0`。本块没有完成统一恢复事务，六组剩余合同不减少。
+
+- MEDIUM `preadmission-producer-rework-carveout`：StateStore 在读取最新 dispatch 且证明 pending / 无 binding、activation、owner、completion 后，按持久 reason 的 `rework_replacement:` 前缀或同 tuple 的 open rework target 明确返回 `rework_delivery_owned`。不写 run hold、诊断 episode 或改变投递，由 FLY-2921 coordinator 计数。直接调用 producer 的两个反例（正常 reason、错误 reason 但有持久目标）在修改前均错误返回 held；修改后同时验证 run/node/delivery/events/ledger 未变。普通节点的结构性拒绝、跨重启暂时错误计数和 admission 竞争保护继续通过。
+- WIP 构建失败根因：准入失败错误调用只接受死体复活 disposition 的 `workflowDeadExecutionAlertPayload`，还会发送 FALSE-POSITIVE 标题。先加断言复现错误标题，再改为准确的准入失败告警，并在 StateStore/LeadAlertNotifier 两端既有 metadata union 中声明 `pre_admission_failed`。没有放宽原死体复活 helper。
+- WIP dispatcher 的一处长行格式已按 biome 修正。
+- 原 WIP producer 的红测试历史未经此轮重新证明；本轮为上述 carveout / alert 补有明确红绿证据，不将继承测试的现状称作新增 TDD。
+
+当前已核验本机证据（不等于整单完成/QA/CI）：
+
+| 范围 | 结果 | 日志 |
+|---|---|---|
+| carveout 红 | 2 failed，实际错误返回 held | `/tmp/fly2922-rework-carveout-red.log` |
+| 告警红 | 1 failed，实际错误标题 FALSE-POSITIVE | `/tmp/fly2922-producer-alert-red.log` |
+| producer/FLY-2504 子集 | 21 passed | `/tmp/fly2922-producer-green.log` |
+| dispatcher + dead-exec 两个完整定点文件 | 165 passed / 1 原有 skip | `/tmp/fly2922-producer-focused.log` |
+| owning-package vitest related，配置仅限上述两个相关文件 | 165 passed / 1 原有 skip | `/tmp/fly2922-producer-related.log` |
+| FLY-1560 / FLY-2567 / dispatch seam / FLY-2248 守卫 | 4 files / 41 passed | `/tmp/fly2922-producer-guards.log` |
+| FLY-2211 kill-path inventory | 1 file / 5 passed | `/tmp/fly2922-producer-kill-guard.log` |
+| pnpm lint | exit 0，25 warnings，未自动改无关代码 | `/tmp/fly2922-producer-lint-green.log` |
+
+消费者 sweep：按四个变更 TS 文件的完整路径、文件名、父目录执行 `git grep -lF`，1872 个去重匹配保存于 `/tmp/fly2922-producer-consumers.json`，每条处置在 `/tmp/fly2922-producer-consumer-disposition.tsv`。精确符号 sweep 证明 producer 的唯一生产调用在 dispatcher catch；诊断事件无其他当前消费者。保留上述结构/兼容/进程守卫，文档、证据和其他 StateStore 子系统的路径引用按本 slice 排除。后续恢复/complete/close/receipt schema 变更必须重新选测，不能沿用本块排除结论。未执行本地全包或全仓测试。
+
+Lead 对 question `d0680b7b-9362-4d25-8126-f43dbea7ddf5` 的当前答复：FLY-2921 仍在实现，无 PR/可同步实现 SHA，合入顺序未定；本单不等待，后合者同步全部 pending 消费路径、不 force-push。已通过 report `489b839e-18a0-4624-9e20-6ec0661cb1ef` 确认。PR 仍未创建，该 merge-order 约束必须写进最终 PR body。
+
+本块追加验证：
+- `pnpm --filter "flywheel-teamlead..." build` exit 0（`/tmp/fly2922-producer-build-final.log`）。
+- LeadAlertNotifier 的受限 related：1 file / 69 passed（`/tmp/fly2922-producer-alert-related.log`）。
+- 公共 dispatcher 真实替身的无效/超长 context 两个负控追加断言 run active、零 recovery episode：2 passed（`/tmp/fly2922-producer-rework-consumer.log`）。
+- 全仓 lint 最后一次 exit 0（`/tmp/fly2922-producer-lint-final.log`）；测试追加断言后 3 文件 biome 检查通过。
+- dependent typecheck 首次因缺少 voice-bridge dist 失败；`pnpm --filter "flywheel-voice-bridge..." build` 补齐后，`pnpm --filter "...flywheel-teamlead" typecheck` exit 0，teamlead/voice-codex 均通过（`/tmp/fly2922-producer-dependent-types-verified.log`）。

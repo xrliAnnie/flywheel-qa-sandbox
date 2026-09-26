@@ -448,6 +448,7 @@ export interface AlertMetadata {
 		disposition:
 			| "held"
 			| "partial"
+			| "pre_admission_failed"
 			| "completion_receipt_missing"
 			| "rework_suppressed_idle_spin"
 			| "rework_retry_exhausted"

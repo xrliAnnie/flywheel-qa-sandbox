@@ -60452,7 +60452,7 @@ export class StateStore {
 				return;
 			}
 			const latest = this.workflowSelectAll(
-				`SELECT launch_ordinal, execution_id, state FROM workflow_side_effect_ledger
+				`SELECT launch_ordinal, execution_id, state, reason FROM workflow_side_effect_ledger
 				  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
 				  ORDER BY launch_ordinal DESC LIMIT 1`,
 				[input.runId, input.nodeId, input.attempt],
@@ -60470,6 +60470,21 @@ export class StateStore {
 				this.getWorkflowNodeCompletion(input.runId, input.nodeId, input.attempt)
 			)
 				return;
+			// FLY-2921 owns replacement delivery failures, including failures before
+			// admission. Never turn its pending/returned-to-Lead delivery into a run
+			// hold. Read the persisted target too: a mismatched dispatch reason must
+			// not bypass that ownership boundary and create a second recovery path.
+			if (
+				String(latest.reason ?? "").startsWith("rework_replacement:") ||
+				this.resolveOpenWorkflowReworkTarget({
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+				})
+			) {
+				result = { ok: false, reason: "rework_delivery_owned" };
+				return;
+			}
 			const priorRow = this.workflowSelectAll(
 				`SELECT payload FROM workflow_run_event
 				  WHERE run_id = ? AND node_id = ? AND execution_id = ?
@@ -60604,17 +60619,26 @@ export class StateStore {
 				escalationUid: eventUid,
 				runId: input.runId,
 				now: input.now,
-				payload: this.workflowDeadExecutionAlertPayload({
-					escalationUid: eventUid,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
 					eventType: "workflow_engine_escalation",
-					runId: input.runId,
-					issueId: run.issue_id,
-					nodeId: input.nodeId,
-					executionId: input.executionId,
-					disposition: "pre_admission_failed",
+					severity: "severe",
+					sessionKey: `wf:${input.runId}`,
+					title: `${run.issue_id} ${input.nodeId} failed before admission`,
 					body: `Execution ${input.executionId} failed before admission (${input.errorCode}); run ${input.runId} requires current-node recovery.`,
-					identity: input.alertIdentity,
-				}),
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: run.issue_id,
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							disposition: "pre_admission_failed",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
 			});
 			result = { ok: true, held: true };
 		});
@@ -89399,6 +89423,7 @@ export interface WorkflowEngineAlertPayload {
 			disposition:
 				| "held"
 				| "partial"
+				| "pre_admission_failed"
 				| "completion_receipt_missing"
 				| "rework_suppressed_idle_spin"
 				| "rework_retry_exhausted"

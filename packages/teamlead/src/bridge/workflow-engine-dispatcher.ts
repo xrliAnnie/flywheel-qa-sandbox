@@ -426,7 +426,8 @@ export class WorkflowEngineDispatcher {
 					else result.held += 1;
 				} catch (error) {
 					result.held += 1;
-					const message = error instanceof Error ? error.message : String(error);
+					const message =
+						error instanceof Error ? error.message : String(error);
 					const code = message.split(":", 1)[0]?.trim() ?? "";
 					this.options.store.recordWorkflowPreAdmissionFailure({
 						runId: intent.run_id,
