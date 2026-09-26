@@ -91,3 +91,17 @@ C6.1/C6.2 的「未关账返工目标 → 交给协调器」守卫（`handOffDea
   在活体旁造替身」而选的 fail-closed。
 - phase_wake 家族「投不到」冻 run 不在本单范围（plan §7）。
 - 现存 held run 上的 8 行返工投递只映射字面值，不自动解冻；由原门、FLY-2922 统一入口或 terminate 处理。
+
+## 6. 代码评审记录
+
+Codex `gpt-6-astra` xhigh，线程 `01a0df1a-4e97-7402-a389-23f45bf8f21e`，原文见同目录 `codex-code-review-r1.md`～`r5.md`。
+
+| 轮次 | 结论 | 处理 |
+|---|---|---|
+| R1 | CHANGES REQUESTED：3 MAJOR | 返工 TURN wake 的通用冻结交回协调器；Lead 重投后等待启动围栏按启动阈值有界计失败；`/rework` 清理后的拒绝改为抛出、整笔回滚 |
+| R2 | R1 全部关闭；1 MAJOR | 重投复位与推进之间崩溃会让巡检取消 wake：仍归该执行体的 `pending/returned_to_lead` 返工改为 `wait` |
+| R3 | R2 关闭；1 MAJOR | 长期 `wait` 占满巡检每轮额度：`wait` 不计额度 |
+| R4 | 1 MAJOR | 上限只抬高饥饿阈值：改为单轮内单调前进的扫描游标（`claimDueTurnWake` 新增 `after`），无上限、无排除列表 |
+| R5 | **APPROVED** | — |
+
+每轮修复都有回归测试，并做过突变验证（撤掉修复后测试转红，突变装载以标记计数确认）。
