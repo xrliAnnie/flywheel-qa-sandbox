@@ -1,0 +1,30 @@
+erDiagram
+    ROOM ||--o{ ROOM_SLOT : "预留房位"
+    ROOM ||--o{ OPERATION : "1 次部署 + n 次拆房"
+    ROOM ||--o{ AUDIT : "每次变更都记一笔"
+    ROOM {
+        text room_id "房间编号"
+        text status "当前状态"
+        text owner "谁起的"
+        text head "跑哪个 commit"
+        int slot "哪个房位"
+        text evidence_dir "证据快照在哪"
+    }
+    ROOM_SLOT {
+        int slot "房位号(唯一)"
+        text room_id "被哪个房间占"
+    }
+    OPERATION {
+        text operation_id "操作编号"
+        text kind "部署或拆房"
+        text request_id "防重复提交"
+        text status "进行中/成功/失败"
+        text residue_check "残留检查结果"
+    }
+    AUDIT {
+        text at "时间"
+        text actor "谁"
+        text action "做什么"
+        text decision "放行或拒绝"
+        text reason "原因"
+    }

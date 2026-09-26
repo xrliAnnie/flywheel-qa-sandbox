@@ -1,0 +1,16 @@
+flowchart LR
+  subgraph BEFORE["今天:Codex 体自己起房 ✗"]
+    direction TB
+    A1["Codex 体<br/>(在沙箱里)"] -->|bash test-deploy.sh| A2["launchctl bootstrap"]
+    A2 -->|"Bootstrap failed: 5"| A3["起不来"]
+    A3 --> A4["只能找 Lead<br/>在沙箱外代起代拆"]
+  end
+  subgraph AFTER["本设计:Codex / Claude 体都一样 ✓"]
+    direction TB
+    B1["Runner<br/>(在沙箱里)"] -->|"flywheel-comm room deploy"| B2["Bridge 起房服务<br/>(在沙箱外)"]
+    B2 --> B3{"身份 / 头 / 负载 / 房位<br/>检查"}
+    B3 -->|通过| B4["在沙箱外跑<br/>test-deploy.sh"]
+    B3 -->|不通过| B5["拒绝 + 审计"]
+    B4 --> B6["房间就绪<br/>runner 通过网络进房验证"]
+    B6 -->|"room teardown"| B7["先存证据快照<br/>再拆房,零残留"]
+  end

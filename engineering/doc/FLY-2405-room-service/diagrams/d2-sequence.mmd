@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    participant R as Runner(沙箱内)
+    participant C as flywheel-comm room
+    participant B as 生产 Bridge(沙箱外)
+    participant DB as 状态库
+    participant J as 受信包装器
+    participant S as 该房专属源码目录
+    R->>C: room deploy --head sha
+    C->>B: POST /api/qa-rooms
+    B->>B: 校验请求 / 身份 / 头已推送
+    B->>DB: 排队 + 审计 + 预留房位
+    B-->>C: 202 room_id
+    loop 每 5 秒
+        B->>B: 负载 < 144 且没有别的部署?
+    end
+    B->>B: 物理认领房位锁(带认领口令)
+    B->>J: 沙箱外、最小环境启动
+    J->>S: 检出该 commit + install + build
+    J->>S: test-deploy.sh(凭口令收养房位)
+    J-->>B: 本次操作的收据
+    B->>B: 核对 /health 版本 == sha
+    B->>DB: 房间就绪
+    C-->>R: 房信息(端口 / 目录)
+    R->>R: 在房里做真验证
+    R->>C: room teardown
+    C->>B: POST teardown
+    B->>J: 新一次拆房操作
+    J->>J: 先存证据快照(数据库 + 日志)
+    J->>S: test-teardown.sh(先核口令)
+    B->>B: 沙箱外残留检查
+    B->>DB: 已拆 / 释放房位 / 删源码目录
