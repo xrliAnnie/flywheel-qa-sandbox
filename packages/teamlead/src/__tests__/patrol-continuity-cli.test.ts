@@ -213,6 +213,38 @@ describe("FLY-2914 validate-report root-cause verification", () => {
 			delete process.env.TEAMLEAD_API_TOKEN;
 		}
 	});
+	it("fails an owner's unavailable section when the verifier cannot be reached", async () => {
+		const path = file(
+			`${header}MECHANISM_REVIEW result=none count=0\nSTEP 6: UNAVAILABLE(transient: root_cause_source_unavailable)\nROOT_CAUSE_REVIEW status=unavailable parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z token=linear_deadline\nUNAVAILABLE_CAUSE step=6 class=transient token=root_cause_source_unavailable\n`,
+		);
+		const saved = process.env.BRIDGE_URL;
+		process.env.BRIDGE_URL = "http://127.0.0.1:9";
+		process.env.TEAMLEAD_API_TOKEN = "token-2914";
+		try {
+			expect(
+				await runPatrolContinuity(["validate-report", "--report", path]),
+			).toBe(1);
+		} finally {
+			if (saved === undefined) delete process.env.BRIDGE_URL;
+			else process.env.BRIDGE_URL = saved;
+			delete process.env.TEAMLEAD_API_TOKEN;
+		}
+	});
+	it("binds the report path's Lead to the header", async () => {
+		const root = mkdtempSync(join(tmpdir(), "patrol-cli-2914-"));
+		roots.push(root);
+		const dir = join(root, "patrol-reports", "flywheel-eng-lead");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(dir, { recursive: true });
+		const path = join(dir, "20260926T060000Z-tick1.md");
+		writeFileSync(
+			path,
+			"# Lead Patrol Snapshot\npatrol_schema=2\nproject: geoforge3d\nlead: product-lead\nMECHANISM_REVIEW result=none count=0\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z token=project_scope\n",
+		);
+		expect(
+			await runPatrolContinuity(["validate-report", "--report", path]),
+		).toBe(1);
+	});
 	it("never contacts the Bridge for a not_applicable section", async () => {
 		const path = file(
 			"# Lead Patrol Snapshot\npatrol_schema=2\nproject: geoforge3d\nlead: product-lead\nMECHANISM_REVIEW result=none count=0\nROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z token=project_scope\n",

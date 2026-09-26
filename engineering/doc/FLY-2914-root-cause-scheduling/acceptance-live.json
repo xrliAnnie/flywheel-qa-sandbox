@@ -1,11 +1,11 @@
 {
- "note": "FLY-2914 implementation acceptance: real read-only Linear GraphQL (FLY-2072 children, archived included) + read-only StateStore SELECTs; no Linear/StateStore/Discord write. Rendered through the real lead-patrol-snapshot.sh (--root-cause-facts, isolated state dir) and checked by the shipped gate functions.",
- "observedAt": "2026-09-26T07:15:09.277Z",
+ "note": "FLY-2914 implementation acceptance (after code review R1): real read-only Linear GraphQL (FLY-2072 children, archived included) + read-only StateStore SELECTs; no Linear/StateStore/Discord write. Rendered through the real lead-patrol-snapshot.sh (--root-cause-facts, isolated state dir) and checked by the shipped gate functions.",
+ "observedAt": "2026-09-26T09:09:38.940Z",
  "status": "complete",
  "children": 221,
  "pages": 3,
  "nonCategory": 12,
- "sourceDigest": "36a30d3c23b09ffa8f9cecf3f720e90c358c772a332228dc637345dd14dbbf84",
+ "sourceDigest": "0e4a97e3f361867d9d9a3e77b3fa6310dfd2d57bb3bbc55ab7fc7ddc4b35c340",
  "founderAskScheduleColumnPresent": false,
  "candidates": [
   {
@@ -68,13 +68,19 @@
   },
   {
    "identifier": "FLY-2371",
-   "occurrences": 14,
-   "titleCount": 14,
+   "occurrences": 15,
+   "titleCount": 15,
+   "descriptionCount": 15,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2127",
+   "occurrences": 13,
+   "titleCount": 13,
    "descriptionCount": 13,
    "state": "Backlog",
-   "diagnostics": [
-    "count_mismatch"
-   ]
+   "diagnostics": []
   },
   {
    "identifier": "FLY-2328",
@@ -85,18 +91,10 @@
    "diagnostics": []
   },
   {
-   "identifier": "FLY-2127",
+   "identifier": "FLY-2666",
    "occurrences": 12,
    "titleCount": 12,
    "descriptionCount": 12,
-   "state": "Backlog",
-   "diagnostics": []
-  },
-  {
-   "identifier": "FLY-2666",
-   "occurrences": 10,
-   "titleCount": 10,
-   "descriptionCount": 10,
    "state": "Backlog",
    "diagnostics": []
   },
@@ -194,7 +192,31 @@
    "diagnostics": []
   },
   {
+   "identifier": "FLY-2586",
+   "occurrences": 6,
+   "titleCount": 6,
+   "descriptionCount": 6,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
    "identifier": "FLY-2590",
+   "occurrences": 6,
+   "titleCount": 6,
+   "descriptionCount": 6,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2814",
+   "occurrences": 6,
+   "titleCount": 6,
+   "descriptionCount": 6,
+   "state": "Backlog",
+   "diagnostics": []
+  },
+  {
+   "identifier": "FLY-2821",
    "occurrences": 6,
    "titleCount": 6,
    "descriptionCount": 6,
@@ -242,31 +264,7 @@
    "diagnostics": []
   },
   {
-   "identifier": "FLY-2586",
-   "occurrences": 5,
-   "titleCount": 5,
-   "descriptionCount": 5,
-   "state": "Backlog",
-   "diagnostics": []
-  },
-  {
    "identifier": "FLY-2690",
-   "occurrences": 5,
-   "titleCount": 5,
-   "descriptionCount": 5,
-   "state": "Backlog",
-   "diagnostics": []
-  },
-  {
-   "identifier": "FLY-2814",
-   "occurrences": 5,
-   "titleCount": 5,
-   "descriptionCount": 5,
-   "state": "Backlog",
-   "diagnostics": []
-  },
-  {
-   "identifier": "FLY-2821",
    "occurrences": 5,
    "titleCount": 5,
    "descriptionCount": 5,
@@ -343,14 +341,6 @@
    "diagnostics": []
   },
   {
-   "identifier": "FLY-2891",
-   "occurrences": 4,
-   "titleCount": 4,
-   "descriptionCount": 4,
-   "state": "In Progress",
-   "diagnostics": []
-  },
-  {
    "identifier": "FLY-2098",
    "occurrences": 3,
    "titleCount": 3,
@@ -359,6 +349,14 @@
    "diagnostics": [
     "count_mismatch"
    ]
+  },
+  {
+   "identifier": "FLY-2109",
+   "occurrences": 3,
+   "titleCount": 3,
+   "descriptionCount": 3,
+   "state": "Backlog",
+   "diagnostics": []
   },
   {
    "identifier": "FLY-2116",
@@ -541,14 +539,22 @@
    "identifier": "FLY-2373",
    "reason": "active_run",
    "runId": "110e738b-87ff-4332-91a4-a29be96018be",
-   "occurrences": 34,
-   "titleCount": 34,
-   "descriptionCount": 31
+   "occurrences": 35,
+   "titleCount": 35,
+   "descriptionCount": 35
+  },
+  {
+   "identifier": "FLY-2891",
+   "reason": "active_run",
+   "runId": "8e0c6240-53d7-4c11-8e8c-8b0f3d5f504c",
+   "occurrences": 4,
+   "titleCount": 4,
+   "descriptionCount": 4
   },
   {
    "identifier": "FLY-2906",
    "reason": "active_run",
-   "runId": "e3277136-8ff3-4721-afb6-2d7b25ace960",
+   "runId": "4e87f41d-41c9-4b89-a0a4-fb1b2b11ea67",
    "occurrences": 3,
    "titleCount": 3,
    "descriptionCount": 3

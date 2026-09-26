@@ -7,11 +7,15 @@ import { guardChatThreadFetch } from "../../bridge/chat-thread-write-guard.js";
 import {
 	editDiscordMessageInChannel,
 	reactDiscordMessageInChannel,
+	splitDiscordMessage,
 } from "../../bridge/discord-utils.js";
 import type { DiscordFetcher } from "../../bridge/founder-consent/discord-fetch.js";
 import { lookupThreadParent } from "../../bridge/thread-validator.js";
 import type { CodexOutboundSender } from "../../lead-backends/codex/CodexOutboundSender.js";
-import { rootCauseMessageMarker } from "../../patrol-root-causes.js";
+import {
+	rootCauseMessageMarker,
+	rootCauseRequestHeader,
+} from "../../patrol-root-causes.js";
 import type { LeadOperationContext, LeadOperationHandler } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
 
@@ -562,17 +566,16 @@ export function createDiscordHandlers(
 					});
 					if (
 						identity.identifier !== initial.issueId ||
-						!/^[0-9a-f]{64}$/.test(identity.scheduleKey) ||
-						[...text].length > 1800 ||
-						!new RegExp(
-							`(^|[^A-Za-z0-9-])${identity.identifier}(?![0-9])`,
-						).test(text)
+						!/^[0-9a-f]{64}$/.test(identity.scheduleKey)
 					)
 						throw deny();
 					scheduleKey = identity.scheduleKey;
 				}
 				patrol = { askId, scheduleKey };
-				text = `${text}\n\`${rootCauseMessageMarker(scheduleKey)}\``;
+				// Server-owned request line (identifier-only, so reconcile rebuilds the
+				// exact text) and exactly one Discord chunk as the sender splits it.
+				text = `${rootCauseRequestHeader(initial.issueId)}\n${text}\n\`${rootCauseMessageMarker(scheduleKey)}\``;
+				if (splitDiscordMessage(text).length !== 1) throw deny();
 			}
 			const expected = {
 				leadId: context.leadId,

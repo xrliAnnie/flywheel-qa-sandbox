@@ -77,8 +77,11 @@ export interface RootCauseCandidate {
 export interface RootCauseExcluded {
 	identifier: string;
 	issueUuid: string;
-	/** active_run: its own run is fixing it; repair_ticket: a count-less fix ticket, not a category. */
-	reason: "active_run" | "repair_ticket";
+	/**
+	 * active_run: its own run is fixing it; repair_ticket: a count-less fix
+	 * ticket, not a category; project_scope_mismatch: moved to another project.
+	 */
+	reason: "active_run" | "repair_ticket" | "project_scope_mismatch";
 	runId: string | null;
 	occurrences: number | null;
 	titleCount: number | null;
@@ -150,6 +153,13 @@ export const rootCauseRef = (scheduleKey: string) => `rootcause:${scheduleKey}`;
 /** Short marker the send path appends so a delivered message is attributable. */
 export const rootCauseMessageMarker = (scheduleKey: string) =>
 	`rootcause:${scheduleKey.slice(0, 12)}`;
+/**
+ * Server-owned first line of every patrol schedule ask, so the delivered
+ * message always carries the scheduling request whatever the Lead adds.
+ * Identifier-only keeps a Codex reconcile able to rebuild the exact text.
+ */
+export const rootCauseRequestHeader = (identifier: string) =>
+	`【排修请求】${identifier}：这个病根类别反复出现、目前没有修复在跑，请决定是否排修（回复只代表需要 Lead 重新判断，不是派单或 ship 批准）。`;
 
 function count(value: string): number | undefined {
 	if (!/^(?:0|[1-9][0-9]{0,15})$/.test(value)) return undefined;
@@ -220,6 +230,12 @@ export function parseRootCauseMetadata(
 			? null
 			: Math.max(titleCount ?? 0, descriptionCount ?? 0);
 	if (occurrences === null) diagnostics.push("count_unreadable");
+	// An unreadable count line means the true value is unknown: never drop it as "< 3".
+	else if (
+		diagnostics.includes("title_count_invalid") ||
+		diagnostics.includes("description_count_invalid")
+	)
+		diagnostics.push("count_incomplete");
 	const category =
 		title.includes("[病根") ||
 		titleCount !== null ||
@@ -266,9 +282,31 @@ export function selectRootCauseCandidates(input: {
 			continue;
 		}
 		if (["completed", "canceled"].includes(child.state.type)) continue;
-		if (meta.occurrences !== null && meta.occurrences < ROOT_CAUSE_THRESHOLD)
+		if (
+			meta.occurrences !== null &&
+			meta.occurrences < ROOT_CAUSE_THRESHOLD &&
+			!meta.diagnostics.includes("count_incomplete")
+		)
 			continue;
 		const diagnostics = [...meta.diagnostics];
+		// A child moved to another Linear project may be run under that project;
+		// show it instead of reporting it to the founder as unscheduled here.
+		if (
+			child.project !== null &&
+			child.project.id !== ROOT_CAUSE_LINEAR_PROJECT_ID
+		) {
+			excluded.push({
+				identifier: child.identifier,
+				issueUuid: child.id,
+				reason: "project_scope_mismatch",
+				runId: null,
+				occurrences: meta.occurrences,
+				titleCount: meta.titleCount,
+				descriptionCount: meta.descriptionCount,
+				diagnostics: diagnostics.sort(),
+			});
+			continue;
+		}
 		// A founder-scheduled fix ticket (e.g. "[病根·修复 #2]") carries no category
 		// metadata; show it as excluded rather than as an unscheduled category.
 		if (
@@ -292,11 +330,6 @@ export function selectRootCauseCandidates(input: {
 		}
 		if ((classKeys.get(meta.classKey ?? "") ?? 0) > 1)
 			diagnostics.push("duplicate_class_key");
-		if (
-			child.project !== null &&
-			child.project.id !== ROOT_CAUSE_LINEAR_PROJECT_ID
-		)
-			diagnostics.push("project_scope_mismatch");
 		const runId = input.state.activeRunId(input.projectName, [
 			child.identifier,
 			child.id,
@@ -832,6 +865,12 @@ export function validateRootCauseStructure(text: string): {
 	} else if (scope) {
 		errors.push("root_cause_scope_mismatch");
 	}
+	// The owner Lead patrols only its own project; an edited header cannot opt out.
+	if (
+		lead === ROOT_CAUSE_OWNER.leadId &&
+		project !== ROOT_CAUSE_OWNER.projectName
+	)
+		errors.push("root_cause_scope_mismatch");
 	if (review.status === "unavailable") {
 		if (
 			!/^[a-z0-9_]+$/.test(review.token ?? "") ||
@@ -1011,7 +1050,7 @@ export function verifyRootCauseEvidence(
 }
 
 const SCHEDULE_IDENTITY_QUERY = `query RootCauseScheduleIdentity($id: String!) {
- issue(id: $id) { id identifier title description parent { id identifier } }
+ issue(id: $id) { id identifier title description team { key } project { id } parent { id identifier } }
 }`;
 
 /**
@@ -1035,6 +1074,8 @@ export async function resolveRootCauseScheduleIdentity(input: {
 				identifier?: unknown;
 				title?: unknown;
 				description?: unknown;
+				team?: { key?: unknown } | null;
+				project?: { id?: unknown } | null;
 				parent?: { id?: unknown; identifier?: unknown } | null;
 			} | null;
 		};
@@ -1054,6 +1095,9 @@ export async function resolveRootCauseScheduleIdentity(input: {
 		!IDENTIFIER.test(issue.identifier) ||
 		typeof issue.title !== "string" ||
 		(issue.description !== null && typeof issue.description !== "string") ||
+		issue.team?.key !== "FLY" ||
+		(issue.project !== null &&
+			issue.project?.id !== ROOT_CAUSE_LINEAR_PROJECT_ID) ||
 		issue.parent?.identifier !== ROOT_CAUSE_PARENT_IDENTIFIER ||
 		typeof issue.parent.id !== "string" ||
 		!UUID.test(issue.parent.id)

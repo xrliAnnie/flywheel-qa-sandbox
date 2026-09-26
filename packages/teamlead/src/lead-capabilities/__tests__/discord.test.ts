@@ -5,6 +5,7 @@ import { DiscordFetcher } from "../../bridge/founder-consent/discord-fetch.js";
 import { InMemoryOutboundDedupStore } from "../../lead-backends/codex/CodexLeadOutboundHandler.js";
 import type { CodexOutboundSender } from "../../lead-backends/codex/CodexOutboundSender.js";
 import { createBrokerDiscordOutboundSender } from "../../lead-backends/codex/capability-outbound.js";
+import { rootCauseRequestHeader } from "../../patrol-root-causes.js";
 import { StateStore } from "../../StateStore.js";
 import type { LeadOperationContext } from "../broker.js";
 import { getLeadCapability } from "../catalog.js";
@@ -1144,6 +1145,9 @@ describe("FLY-2914 patrol root-cause schedule reply", () => {
 		expect(f.enqueue.mock.calls[0]![0].text).toContain(
 			`rootcause:${KEY.slice(0, 12)}`,
 		);
+		expect(f.enqueue.mock.calls[0]![0].text.split("\n")[0]).toBe(
+			rootCauseRequestHeader("FLY-2519"),
+		);
 		expect(schedule.delivered).toHaveBeenCalledWith(
 			askId,
 			"444444444444444444",
@@ -1186,12 +1190,12 @@ describe("FLY-2914 patrol root-cause schedule reply", () => {
 		).rejects.toThrow("discord_scope_denied");
 		expect(f.enqueue).not.toHaveBeenCalled();
 	});
-	it("denies a multi-chunk body or one that never names the category", async () => {
+	it("denies a body that is not exactly one Discord chunk (code points or UTF-16)", async () => {
 		const { schedule } = patrol();
 		const f = fixture(false, false, false, true, { patrolSchedule: schedule });
 		for (const text of [
 			`FLY-2519 ${"很".repeat(1800)}`,
-			"请决定这个老问题是否排修。",
+			`FLY-2519 ${"😀".repeat(900)}`,
 		])
 			await expect(
 				f.handlers

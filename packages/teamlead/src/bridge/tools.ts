@@ -5,6 +5,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import {
 	resolveRootCauseScheduleIdentity,
 	rootCauseMessageMarker,
+	rootCauseRequestHeader,
 } from "../patrol-root-causes.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type {
@@ -15,6 +16,7 @@ import {
 	validateAndRegisterChatThread,
 	validateChatThreadParams,
 } from "./chat-thread-register.js";
+import { splitDiscordMessage } from "./discord-utils.js";
 import {
 	type ArchiveAuthority,
 	archiveThreadAndRecord,
@@ -36,6 +38,15 @@ import {
 	type CaptureResult,
 	isCaptureError,
 } from "./session-capture.js";
+
+/** FLY-2914: server-owned request line, Lead context, attributable marker. */
+function patrolScheduleText(
+	identifier: string,
+	text: string,
+	scheduleKey: string,
+): string {
+	return `${rootCauseRequestHeader(identifier)}\n${text}\n\`${rootCauseMessageMarker(scheduleKey)}\``;
+}
 
 async function defaultRootCauseScheduleResolver(
 	issueUuid: string,
@@ -831,8 +842,7 @@ export function createQueryRouter(
 							"string" ||
 						!isLinearUuid((schedule as { issueUuid: string }).issueUuid) ||
 						bodyIssueId !== (schedule as { issueUuid: string }).issueUuid ||
-						bodyIdentifier !== undefined ||
-						[...text].length > 1800))
+						bodyIdentifier !== undefined))
 			) {
 				res.status(400).json({ error: "invalid_founder_ask" });
 				return;
@@ -971,9 +981,11 @@ export function createQueryRouter(
 			if (
 				identity.identifier !== resolvedIdentifier ||
 				!/^[0-9a-f]{64}$/.test(identity.scheduleKey) ||
-				!new RegExp(`(^|[^A-Za-z0-9-])${identity.identifier}(?![0-9])`).test(
-					text,
-				)
+				// One Discord chunk exactly as the sender splits it: never a request
+				// whose first chunk lands while the rest fails.
+				splitDiscordMessage(
+					patrolScheduleText(identity.identifier, text, identity.scheduleKey),
+				).length !== 1
 			) {
 				res.status(400).json({ error: "invalid_founder_ask" });
 				return;
@@ -1081,9 +1093,10 @@ export function createQueryRouter(
 				return;
 			}
 		} else if (askRow) store.insertFounderAsk(askRow);
-		const outboundText = patrolScheduleKey
-			? `${text}\n\`${rootCauseMessageMarker(patrolScheduleKey)}\``
-			: text;
+		const outboundText =
+			patrolScheduleKey && resolvedIdentifier
+				? patrolScheduleText(resolvedIdentifier, text, patrolScheduleKey)
+				: text;
 		const finishFounderAsk = (messageId?: string) => {
 			if (!founderAskId) return;
 			if (messageId)
@@ -1149,7 +1162,13 @@ export function createQueryRouter(
 			);
 		}
 
-		finishFounderAsk(postResult.messageIds[0]);
+		// A patrol schedule ask counts as delivered only when the whole single
+		// message landed; ordinary asks keep the existing partial-send attention.
+		finishFounderAsk(
+			patrolScheduleKey && !postResult.ok
+				? undefined
+				: postResult.messageIds[0],
+		);
 
 		if (!postResult.ok) {
 			res.status(502).json({

@@ -41,7 +41,7 @@
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "fd55f785e38dbf3a469a3b4d55f158e48180f8a5ff599774ffffbde64391e8f0"
+					"sha256": "d1538cf00bf324fdacc40b366339ec50f039b944ec333ae7ae150148c01fcfbb"
 				}
 			]
 		},
@@ -65,11 +65,11 @@
 			"members": [
 				{
 					"path": "packages/teamlead/lead-rules-base/runbooks/patrol-v1.md",
-					"sha256": "27cb1be226d00d4cc7a3b025388bd430c5c44d915d7b2550022bec5e71bfa987"
+					"sha256": "7d9f61753d3bfea7e74624cd552d1670eea1398e8996922ebbe83a12e44ee9bb"
 				},
 				{
 					"path": "packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md",
-					"sha256": "fd55f785e38dbf3a469a3b4d55f158e48180f8a5ff599774ffffbde64391e8f0"
+					"sha256": "d1538cf00bf324fdacc40b366339ec50f039b944ec333ae7ae150148c01fcfbb"
 				}
 			]
 		},

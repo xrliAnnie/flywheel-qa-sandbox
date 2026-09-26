@@ -29,8 +29,12 @@ async function verifyRootCausesViaBridge(
 	const errors: string[] = [];
 	const pathLead = /\/patrol-reports\/([^/]+)\/[^/]+$/.exec(reportPath)?.[1];
 	const headerLead = /^lead: (.*)$/m.exec(text)?.[1];
-	if (pathLead === ROOT_CAUSE_OWNER.leadId && headerLead !== pathLead)
+	// The snapshot writes under patrol-reports/<lead>/; an edited header cannot move scope.
+	if (pathLead !== undefined && headerLead !== pathLead)
 		errors.push("root_cause_scope_mismatch");
+	const owner =
+		headerLead === ROOT_CAUSE_OWNER.leadId ||
+		pathLead === ROOT_CAUSE_OWNER.leadId;
 	if (status !== "complete" && status !== "unavailable") return errors;
 	const base = (process.env.BRIDGE_URL || "http://127.0.0.1:9876").replace(
 		/\/+$/,
@@ -65,8 +69,10 @@ async function verifyRootCausesViaBridge(
 				"root_cause_verification_failed",
 			);
 	} catch {
-		// Both sources down agree with an unavailable section; a complete one is unproven.
-		if (status === "complete") errors.push("root_cause_verifier_unavailable");
+		// The owner's section is proven only by the Bridge; a report cannot vouch
+		// for its own "unavailable". Non-owner scopes never reach this point.
+		if (status === "complete" || owner)
+			errors.push("root_cause_verifier_unavailable");
 	}
 	return errors;
 }

@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
+import { rootCauseRequestHeader } from "../../patrol-root-causes.js";
 import { StateStore } from "../../StateStore.js";
 import { createQueryRouter, type QueryRouterOptions } from "../tools.js";
 
@@ -131,7 +132,10 @@ describe("FLY-2914 /chat-threads/send founderAsk.patrolSchedule", () => {
 		const sent = JSON.parse(
 			(fetchMock.mock.calls[0]![1] as { body: string }).body,
 		) as { content: string };
-		expect(sent.content).toContain("FLY-2373");
+		expect(sent.content.startsWith(rootCauseRequestHeader("FLY-2373"))).toBe(
+			true,
+		);
+		expect(sent.content).toContain("FLY-2373 已出现 34 次");
 		expect(sent.content).toContain(`rootcause:${KEY.slice(0, 12)}`);
 
 		const again = await post(body());
@@ -173,8 +177,8 @@ describe("FLY-2914 /chat-threads/send founderAsk.patrolSchedule", () => {
 		],
 		["a multi-chunk body", { text: `FLY-2373 ${"很".repeat(1800)}` }, 400],
 		[
-			"text that never names the category",
-			{ text: "请看一下这个老问题，是否排修？" },
+			"a body short in code points but multi-chunk in UTF-16",
+			{ text: `FLY-2373 ${"😀".repeat(900)}` },
 			400,
 		],
 		[
@@ -193,5 +197,16 @@ describe("FLY-2914 /chat-threads/send founderAsk.patrolSchedule", () => {
 		expect(res.status).toBe(status);
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(store.listOpenFounderAsks("flywheel")).toEqual([]);
+	});
+
+	it("prefixes the server-owned request even when the Lead text omits or contradicts it", async () => {
+		const res = await post(body({ text: "FLY-2373 无需排修" }));
+		expect(res.status).toBe(200);
+		const sent = JSON.parse(
+			(fetchMock.mock.calls[0]![1] as { body: string }).body,
+		) as { content: string };
+		expect(sent.content.split("\n")[0]).toBe(
+			rootCauseRequestHeader("FLY-2373"),
+		);
 	});
 });

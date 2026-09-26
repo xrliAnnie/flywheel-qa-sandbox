@@ -449,7 +449,8 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
   该 token 不走 `[patrol-unavailable]` 建单，下轮重试。
 - `status=complete`：每行 `ROOT_CAUSE_CANDIDATE <JSON>` 是 FLY-2072 下 occurrences ≥3、非 Done/Canceled、
   无 active run 的类别（次数降序；`occurrences:null` 是计数不可读，仍需处置）；`ROOT_CAUSE_EXCLUDED`
-  是因 active run 排除的类别或无计数的「[病根·修复」修复单，只展示。有候选时 STEP 6 必须 FINDING。
+  是因 active run 排除的类别、无计数的「[病根·修复」修复单或已移到其它项目的子单，只展示。
+  有候选时 STEP 6 必须 FINDING。
 
 每个候选恰好一行 FINDING 加一行 `ROOT_CAUSE_DISPOSITION`，id/ref/scheduleKey 取候选 JSON，sourceDigest 取 review 的 source_digest：
 `FINDING id=<findingId> category=incident step=6 bridge_problem=no result=escalated-with-plan evidence=<ref> owner=<founder|agent:<lead>> next=<route:rootcause-schedule|inspect:rootcause-schedule> epic=n/a epic_marker=n/a disposition_ref=<ref>`
@@ -457,8 +458,9 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
 严格这些键，无值写 null。mode 三选一：
 - `reported`：本轮经既有发送口向 founder 请求排修。Claude Lead 用 `POST /api/chat-threads/send`，
   `issueId` 与 `founderAsk.patrolSchedule.issueUuid` 都填候选 issueUuid；Codex Lead 在该类别 canonical
-  thread 用 `discord.thread.reply` 加 `patrolSchedule:{issueUuid}`。正文单条 ≤1800 字，含类别 identifier、
-  次数与排修请求；服务端自算 key、附 `rootcause:<前12位>` 标记。填返回的 askId/threadId/messageId，
+  thread 用 `discord.thread.reply` 加 `patrolSchedule:{issueUuid}`。服务端自算 key，在正文前加规范的
+  「【排修请求】<identifier>…」首行、末尾附 `rootcause:<前12位>` 标记；Lead 的正文写次数与背景即可，
+  整条必须是一段 Discord 消息（超长直接拒，不分段）。填返回的 askId/threadId/messageId，
   owner=founder，nextReviewAt=null。回 409 `patrol_schedule_ask_open` 表示已有未结呈报，改 waiting_founder，不重发。
 - `waiting_founder`：已投递、founder 未回，快照自动预填，Lead 不必重写。founder 在该 thread 回复即结束等待，
   下轮不再预填；回复只表示需要 Lead 重新判断，不是派单或 ship 批准。
@@ -470,7 +472,8 @@ STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 caus
 `ROOT_CAUSE_DISPOSITION` 与 FINDING，不再追加第二行。Codex 用 `patrol.judgment.record` 的 findings（带
 dispositionRef）加 `rootCauseDispositions` 提交，gate 3 核验 founder_ask 真实记录。Claude 路径的
 `validate-report` 把 complete/unavailable 段交 Bridge 用 fresh 数据复核（需要 BRIDGE_URL 与
-TEAMLEAD_API_TOKEN）；`root_cause_snapshot_stale` 表示快照后出现新候选，重跑快照再处置。
+TEAMLEAD_API_TOKEN；负责 Lead 的报告复核不到就不能完成，报告不能自证 unavailable）；
+`root_cause_snapshot_stale` 表示快照后出现新候选，重跑快照再处置。
 
 ### FLY-1945 机制缺陷 finding：声明后必须三选一
 

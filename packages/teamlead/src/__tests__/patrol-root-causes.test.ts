@@ -13,6 +13,7 @@ import {
 	type RootCauseFacts,
 	renderRootCauseLines,
 	resolveRootCauseScheduleIdentity,
+	rootCauseRequestHeader,
 	rootCauseScheduleKey,
 	selectRootCauseCandidates,
 	validateRootCauseStructure,
@@ -727,6 +728,8 @@ describe("FLY-2914 send-path schedule identity", () => {
 					identifier: c.identifier,
 					title: c.title,
 					description: c.description,
+					team: { key: "FLY" },
+					project: null,
 					parent,
 				},
 			},
@@ -808,5 +811,93 @@ describe("FLY-2914 repair tickets under FLY-2072", () => {
 			"FLY-9002",
 			"FLY-9003",
 		]);
+	});
+});
+
+describe("FLY-2914 code review R1", () => {
+	it("keeps a category whose count metadata is partly invalid instead of dropping it below threshold", () => {
+		const result = selectRootCauseCandidates({
+			projectName: "flywheel",
+			parentUuid: PARENT,
+			children: [
+				child(
+					1,
+					"[病根] a · ×2",
+					"occurrences: 2\noccurrences: 99999999999999999999",
+				),
+				child(2, "[病根] b · ×2", "occurrences: 2"),
+			],
+			state: noState,
+		});
+		expect(result.candidates.map((c) => c.identifier)).toEqual(["FLY-9001"]);
+		expect(result.candidates[0]!.diagnostics).toContain("count_incomplete");
+	});
+	it("shows a child moved to another Linear project as excluded, keeps project-less children", () => {
+		const moved = {
+			...child(1, "[病根] a · ×5", "occurrences: 5"),
+			project: { id: "other-project" },
+		};
+		const bare = {
+			...child(2, "[病根] b · ×4", "occurrences: 4"),
+			project: null,
+		};
+		const result = selectRootCauseCandidates({
+			projectName: "flywheel",
+			parentUuid: PARENT,
+			children: [moved, bare],
+			state: noState,
+		});
+		expect(result.excluded).toEqual([
+			expect.objectContaining({
+				identifier: "FLY-9001",
+				reason: "project_scope_mismatch",
+				runId: null,
+			}),
+		]);
+		expect(result.candidates.map((c) => c.identifier)).toEqual(["FLY-9002"]);
+	});
+	it("never lets the owner Lead's report claim another project's scope", () => {
+		const text = [
+			"# Lead Patrol Snapshot",
+			"patrol_schema=2",
+			"project: geoforge3d",
+			"lead: flywheel-eng-lead",
+			"STEP 6: OK",
+			"ROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z token=project_scope",
+		].join("\n");
+		expect(validateRootCauseStructure(text).errors).toContain(
+			"root_cause_scope_mismatch",
+		);
+	});
+	it("builds the canonical request header from the identifier only", () => {
+		expect(rootCauseRequestHeader("FLY-2373")).toContain("FLY-2373");
+		expect(rootCauseRequestHeader("FLY-2373")).toContain("排修");
+	});
+	it("rejects a send identity outside the FLY team or the Flywheel project", async () => {
+		const c = child(7, "[病根] drain · ×34", `class_key: ${"7".repeat(64)}`);
+		for (const [team, project] of [
+			["GEO", null],
+			["FLY", { id: "other-project" }],
+		] as const)
+			await expect(
+				resolveRootCauseScheduleIdentity({
+					request: (async () => ({
+						data: {
+							issue: {
+								id: c.id,
+								identifier: c.identifier,
+								title: c.title,
+								description: c.description,
+								team: { key: team },
+								project,
+								parent: { id: PARENT, identifier: "FLY-2072" },
+							},
+						},
+					})) as unknown as LinearRequest,
+					issueUuid: c.id,
+					projectName: "flywheel",
+					leadId: "flywheel-eng-lead",
+				}),
+			).rejects.toMatchObject({ token: "patrol_schedule_not_category" });
 	});
 });
