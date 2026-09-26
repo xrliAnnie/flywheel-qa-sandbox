@@ -1,17 +1,15 @@
 ---
 issue: FLY-2913
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-26T04:40:18.173Z
-nextStep: Approved design and hosted report delivered to Lead; commit final
-  evidence, run complete --route phase_design_complete, then park. HTML
-  https://fw-reports-6da062.vercel.app/r/a9e695bdff5424a094602c82314af2cf/;
-  follow-ups in review-followups.md; do not implement or terminalize phase-held
-  goal.
+phase: implement
+phaseCursor: 0/6
+updated: 2026-09-26T04:51:42.067Z
+nextStep: "T1: collect actual prefix baseline and seven-day tool usage before
+  any reductions; engineering producer question
+  93ae0be6-8090-4d8c-b20c-376d94b56f79 pending."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
-**phase**: design (6/6)
-**next**: Approved design and hosted report delivered to Lead; commit final evidence, run complete --route phase_design_complete, then park. HTML https://fw-reports-6da062.vercel.app/r/a9e695bdff5424a094602c82314af2cf/; follow-ups in review-followups.md; do not implement or terminalize phase-held goal.
+**phase**: implement (0/6)
+**next**: T1: collect actual prefix baseline and seven-day tool usage before any reductions; engineering producer question 93ae0be6-8090-4d8c-b20c-376d94b56f79 pending.
