@@ -497,6 +497,9 @@ function recordLegacyPrefixLaunch(
 		...(ctx.prefixProfile?.stamp ?? {}),
 		...ctx.prefixAudit,
 		executionId: ctx.executionId,
+		...(ctx.workflowActivationId && {
+			activationId: ctx.workflowActivationId,
+		}),
 		sessionId,
 		mode: "legacy",
 		effectiveProfile: "legacy",

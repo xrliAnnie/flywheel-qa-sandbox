@@ -1202,6 +1202,16 @@ script_shards = {
     "script-tests-5": (script_tests_5, script_steps_5),
     "script-tests-6": (script_tests_6, script_steps_6),
 }
+prefix_revision_steps = [
+    step for step in script_steps_5
+    if step.get("name") == "Test — FLY-2913 role prefix inventory and weekly metadata census"
+]
+require(
+    len(prefix_revision_steps) == 1
+    and "node --test scripts/__tests__/prepare-2913-prefix-revisions.test.mjs"
+    in str(prefix_revision_steps[0].get("run", "")).splitlines(),
+    "FLY-2913 candidate preparation fixtures must remain in the existing prefix CI step",
+)
 expected_shard_names = {
     "script-tests": "Script Tests 1/6 — balanced shell suites A",
     "script-tests-2": "Script Tests 2/6 — balanced shell suites B",

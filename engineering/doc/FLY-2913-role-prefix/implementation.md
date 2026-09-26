@@ -178,3 +178,17 @@ Round 2 的三项生产修复经 Codex 复核正确。剩余 MEDIUM（测量驱�
 QA 在两个 529 房（slot 1、4）用真实 tpl_code run 验证了五角色 role-v1 均无缺工具/技能失败、settings 文件绑定、强制 deny 与 hooks 保留、Codex 不读开关、legacy 回退后的新启动无 stamp；只因两个 PR 引起的确定性 CI 红项判 FAIL，均已修：
 - **Unit heavy：kill-path-inventory 期望 773 实得 775**：本单新增的两处 `child.kill`（`scripts/lib/qa-2913-context-probe.mjs` 的探针收尾、`scripts/qa-2913-prefix-controls.mjs` 的首轮 240s 超时）按现有扫描器路径规则即为 qa-only；用 `scanKillPathInventory()` 重新生成 `packages/claude-runner/test/fixtures/kill-path-inventory.json`，只增这 2 条（+12 行），分类不变、扫描器未改。`kill-path-inventory.test.ts` 5/5。
 - **teamlead required-wall-clock-thresholds 标出 `runner-prefix-profiles.test.ts:325`**：去掉 FIFO 用例里的 `Date.now() - started < 5000` 毫秒上限，改为结果断言（无写端的 FIFO 以“非普通文件”被拒即证明未阻塞；真正挂死由测试超时兜底）。守卫本地 1/1 通过；负控：临时加回该断言，守卫即红（报 `real duration has an absolute upper bound`），已还原。
+
+## 2026-09-26 — DAG revision 续做（execution 6c3014ba）
+
+当前唯一实施合同是 plan §九与 design-correction C1–C6；以上 FlagStore、每启动读取全局 mode、旧未完成事项均是历史过程记录，不是当前验收口径。接续救援提交 `5c6b157e75114bc1199847189e0599b138ee7b01`，设计交接头 `9b5a93c53`。实时核验 gate `53e1859b-f323-4509-abca-a44e6661b3d3` effective/raw APPROVED，并取得 implement TURN epoch 17；没有重做设计或重写 WIP。
+
+救援内容现已实测：C4 发布服务、路由、事务、migration 四文件 58 tests 通过；C2/C5 的 dispatcher、review resolver、review runner、coordinator、land reviewer、FlagStore 历史行兼容、pinned context 七文件 275 tests 通过；C3 selector/compiler/registry/drift/store-policy 五文件 144 tests 通过。候选生成器 23 tests、prefix controls 12 fixtures 通过。受影响 teamlead/comm 及依赖 build 通过；根 lint 通过（25 条既有 warning）。这些是本地相关验证，不能当作 C6 房内验收或 exact-head CI。
+
+C5 补齐一个实际审计缺口：`recordLegacyPrefixLaunch` 原来漏掉 `workflowActivationId`，而 role-v1 路径已记录。先在 legacy 启动回归要求 activationId，观察断言缺字段失败，再只将该身份加入 metadata。单项回归转绿；未改 profile 清单或 settings 合并。fixture 带 activation 后既有测试策略 hook 会出现，因此同时校验 `enabledPlugins` 与 `hooks`，没有删除 hook。
+
+依赖方 typecheck 首轮只有 voice-codex 因缺本地 voice-bridge dist 失败，补建依赖后该包 typecheck 通过；没有修改 voice 源码。继续按 `evidence/revision-test-consumers.md` 的直接消费者清单跑 owning-package `vitest related --run` 与未被 import graph 命中的词法/合同守卫；显式排除清单外的间接/无关测试，绝不跑全包。core 的 adapter-types 为类型接口，单独 related 零命中不算通过；补入两个明确保留的 AdapterRegistry 测试源并加 `--passWithNoTests=false`。新日志暂存 `/tmp/fly2913-*`，最终结果与源文件哈希待收齐后归档。
+
+C3/C6 补齐候选生成器的 CI 接线：现有 FLY-2913 step 未运行 `prepare-2913-prefix-revisions.test.mjs`。先添加结构守卫并观察失败，再仅向既有 step 添加该 Node fixture。CI structure 与 shell/Node enumeration 转绿（91 个 Node suite），不增加 job、不请求 full CI。PR 设计交接头的 Quick Gate 日志也因该 fixture 未枚举失败；这是同一缺口，最终推送后须核验新头的 scoped CI。
+
+未完成：其余相关消费者与 typecheck 结果收齐、当前源码最终 build/lint、C6 受管 529 版本链、当前头 code review 与 PR 更新、push 后 needs_review。QA@2 的旧配对数据只复用内容省量结论，不冒称新版发布/回退链已通过。

@@ -1397,7 +1397,10 @@ describe("TmuxAdapter", () => {
 			};
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			await new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ prefixAudit: audit }),
+				makeCtx({
+					prefixAudit: audit,
+					workflowActivationId: "activation:legacy",
+				}),
 			);
 			const args = calls.find((c) => c.args[0] === "new-window")!.args;
 			const stamp = JSON.parse(
@@ -1407,10 +1410,14 @@ describe("TmuxAdapter", () => {
 				),
 			);
 			expect(settingsArg(args).startsWith("{")).toBe(true);
-			expect(Object.keys(settingsOf(args))).toEqual(["enabledPlugins"]);
+			expect(Object.keys(settingsOf(args))).toEqual([
+				"enabledPlugins",
+				"hooks",
+			]);
 			expect(stamp).toMatchObject({
 				...audit,
 				executionId: "test-exec-1",
+				activationId: "activation:legacy",
 				settingsSha256: createHash("sha256")
 					.update(settingsArg(args))
 					.digest("hex"),
