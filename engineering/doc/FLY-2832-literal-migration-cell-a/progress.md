@@ -1,13 +1,14 @@
 ---
 issue: FLY-2832
 phase: design
-phaseCursor: 6/8
-updated: 2026-09-26T19:17:07.166Z
-nextStep: commit review advisories; open final design review against updated plan
+phaseCursor: 7/8
+updated: 2026-09-26T19:20:59.813Z
+nextStep: run completion audit; publish committed founder HTML; report URL and
+  Mermaid render failure; complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2832 progress
-**phase**: design (6/8)
-**next**: commit review advisories; open final design review against updated plan
+**phase**: design (7/8)
+**next**: run completion audit; publish committed founder HTML; report URL and Mermaid render failure; complete phase_design_complete
