@@ -11,9 +11,21 @@ HERE = pathlib.Path(__file__).resolve().parent
 DIAG = HERE / "diagrams"
 
 
+def _round(match: "re.Match[str]") -> str:
+    value = round(float(match.group(0)), 1)
+    return f"{value:.0f}" if value == int(value) else f"{value:.1f}"
+
+
 def svg(name: str) -> str:
     raw = (DIAG / name).read_text(encoding="utf-8")
     raw = re.sub(r"<\?xml[^>]*\?>", "", raw)
+    # Mermaid 11 draws state nodes as long sketch paths; 1-decimal coordinates are
+    # visually lossless here and keep the page under the 512 KB publish cap.
+    raw = re.sub(
+        r'(<path[^>]* d=")([^"]*)(")',
+        lambda m: m.group(1) + re.sub(r"-?\d+\.\d+", _round, m.group(2)) + m.group(3),
+        raw,
+    )
     return f'<div class="diagram">{raw}</div>'
 
 
@@ -63,7 +75,7 @@ Bridge 检查通过后在罩外执行,拆房前先把房里的数据库和日志
         svg("d2-sequence.svg")
         + """<p class="gloss"><b>head / commit</b> = 某一版代码的唯一指纹(40 位编号);
 <b>受信包装器</b> = 一段来自已合入主干的小脚本,负责在罩外按固定步骤执行,不接受请求里的任意命令;
-<b>认领口令</b> = Bridge 在房位锁里放的一次性暗号,起房/拆房脚本都要对上暗号才动手,防止拆错别人的房;
+<b>认领口令</b> = Bridge 在房位锁里放的一次性暗号,起房/拆房脚本都要对上暗号才动手,防止拆错别人的房;拆房脚本自己<b>不</b>放房位,等 Bridge 在罩外确认零残留后才凭口令放——中途出错随时可以重拆;
 <b>负载 144</b> = 机器 18 个核 × 每核 8 的忙碌度上限,超过就先排队,和现有派工限流用同一个旋钮。</p>""",
     ),
     (
@@ -131,13 +143,14 @@ Bridge 检查通过后在罩外执行,拆房前先把房里的数据库和日志
 <li>发帖的「dispatcher 机器人」身份在测试房里被刻意清掉,硬塞进去 Bridge 还会拒绝启动;</li>
 <li>测试 Lead 的频道订阅里没有告警频道。</li>
 </ol>
-<p><b>方案:</b>起房时可选打开「告警值守」:每间房随机生成一次性口令;值守 Lead 名字改成从一个统一入口读取,<b>只有在测试房里</b>才允许改成测试 Lead,生产里无论环境怎么配都还是 Claw;发帖只用<b>测试机器人</b>,绝不把生产机器人口令放进房;测试 Lead 自动订阅告警频道。前提:Discord 里要先给测试机器人开告警频道权限(这是运维动作,没开会明确报错,不会假装成功)。</p>""",
+<p><b>方案:</b>起房时可选打开「告警值守」:每间房随机生成一次性口令;值守 Lead 名字改成从一个统一入口读取,<b>只有在测试房里</b>才允许改成测试 Lead,生产里无论环境怎么配都还是 Claw;发帖只用<b>登记在册的测试机器人</b>(名字必须是测试机器人格式,还要向 Discord 核对真实身份,且不能和房里任何 Lead 是同一个机器人),绝不把生产机器人口令放进房;测试 Lead 自动订阅告警频道。前提:Discord 里要先给测试机器人开告警频道权限(这是运维动作,没开会明确报错,不会假装成功)。</p>""",
     ),
     (
         "boundary",
         "诚实边界:做什么 / 不做什么",
         "purple",
-        """<p><b>做:</b>runner 一条命令起房/拆房;房位归属与口令防误拆;版本核对;负载排队;证据快照;审计;两个拆房坑;QA 规则改成「要房就调服务」。</p>
+        """<p><b>评审:</b>本设计经 Codex(manifest 指定的 gpt-6-astra、最高强度)3 轮评审通过:第 1 轮 6 个阻断、第 2 轮 4 个、第 3 轮 0 个;另有 2 条实现期建议已单独记录。</p>
+<p><b>做:</b>runner 一条命令起房/拆房;房位归属与口令防误拆;版本核对;负载排队;证据快照;审计;两个拆房坑;QA 规则改成「要房就调服务」。</p>
 <p><b>不做 / 做不到:</b></p>
 <ul>
 <li>这不是防「恶意 runner」的安全墙:所有 runner 和 Bridge 是同一个系统用户,Claude runner 本来就不在罩里。它防的是「好意但会犯错」的 runner(拆错房、高负载时硬起、带错版本)。信任边界和今天 Lead 手工代起完全一样,没有放宽。</li>
