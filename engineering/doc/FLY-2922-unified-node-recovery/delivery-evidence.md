@@ -37,3 +37,15 @@ HTML 按 publishOnly=true 发布，无频道消息（messageId=null, delivered=f
 完成审计：exploration/research/plan 前置三行齐全；九单矩阵及新增根/非根、失败、并发、迁移、权限负控齐全；有效设计评审已批准；文档/HTML 已提交推送；HTML 已发布、线上内容/CSP 已验证并按指定 DESIGN-HTML ready 通道报告。未实现、未派发后继、未申请 ship、未 merge/部署。学习写为允许目录下的一条 memory update note，未直接修改共享 role memory 索引。
 
 下一步仅执行 `complete --route phase_design_complete` 后 park。完成命令自身的结构化收据是阶段交接权威；本段审计不冒充该收据。交接后无 TURN 不再写共享工作区。
+
+## 2026-09-26 重开后的增量交接核对
+
+本次 design execution `70911aab-49d0-4c5a-92fa-d32875c0884f`，TURN design epoch 6。Lead 在问题 `5bd87c4e-37a5-43f3-b1c0-bb9c5f1f151a` 的答复确认：设计重开正常，只核对 FLY-2921 合同补充并做 scoped review，不重做其余设计。
+
+- 原实现 WIP `d35da9cde` 原样保留；本次相对它的 packages/scripts 差异为零。
+- 原 plan.md SHA-256 仍是 `7de9bef9d44818fa2a689a98dc517087154cafbe568126e6cb2aeb4edf11a1c5`；原门重查为 APPROVED。
+- 新补充 `design-correction.md` 提交 `af2178f24`，核对的 FLY-2921 远端头为 `d12124f39d07413a7ba3cab17aab9dc124859482`，仅作为未合并分支合同证据。
+- scoped review gate `0f29f815-f140-4e68-ac08-073a9a996389`，request `b5e92e5c-ce11-4f40-ab94-35d74af3e4c9`，已 accepted，结果在下方追加；未把旧批准冒充补充的批准。
+- 更新后 HTML 仍为 7 节/7 评论框、单一 nonced inline script、零外部资源、零 inline handlers/innerHTML、自定义 CSP 为零。重新抽取实际页面脚本，正常复制/拒绝 fallback/缺剪贴板且存储抛错的三组检查均通过；长意见拆为 4 段，每段带 marker 且不超过 1800 字符。
+- 原托管页重查 HTTP 200、nonce/CSP/期望内容通过；新页须在本轮批准后重新发布，不沿用旧 URL 冒充新内容。未重试已记录的本地 Mermaid 环境故障，保留原允许的两处占位与图源。
+- 未新增可复用的 role memory 判断；本次是既有合同的定向对齐，未重复写学习条目。未运行实现测试或声称 WIP 验收通过。
