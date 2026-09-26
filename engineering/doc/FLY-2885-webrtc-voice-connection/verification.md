@@ -26,10 +26,26 @@ Issue: FLY-2885 (https://linear.app/geoforge3d/issue/FLY-2885/语音b核心连�
 | 脚本 | `flywheel-voice-wrapper.test.sh` | 37/37 过 |
 | 脚本 | `fly2655-voice-room.test.mjs`、`fly2799-codex-container.test.mjs`、`fly2598-voice-coexistence.test.mjs` | 20/20、4/4、1/1 过 |
 
-**已知的本地失败**：teamlead `voice-session-services.test.ts` 里的「projects authoritative demand into the durable voice health store」报 `Cannot open database because the directory does not exist`。
-- 用 `origin/main` 版本的同一测试文件跑，失败完全一样；去掉 runner 的状态目录环境变量也一样失败。
-- 本分支对 `voice-session-services.ts` 只多投影了一个 `liveVoice` 字段，碰不到该数据库路径。
-- 所以判为本地环境或已有问题，与本单无关；等 CI 裁定。
+**合并前的本地失败（合并 main 后已消失）**：teamlead `voice-session-services.test.ts` 里的「projects authoritative demand into the durable voice health store」曾报 `Cannot open database because the directory does not exist`。
+- 当时用 `origin/main` 版本的同一测试文件跑，失败完全一样，判为已有问题。
+- 合并 `origin/main`（`afb4b25eb`）后重跑：`huddle-config` + `voice-session-services` 53/53 过。
+
+## 合并 origin/main 之后（`afb4b25eb`、`4da2adb25`）
+
+- **冲突**：main（FLY-2860）删除了 `voice-bridge/src/__tests__/qa-fly967-round2-fixes.test.ts`。本分支在那里只加过一个用例（`opus-stream` 声明为 `StreamType.Opus`），已挪到新文件 `opus-stream-resource.test.ts`；其余内容按 main 的决定保持删除。
+- **合并后暴露的测试基建问题**：合并后 `git ls-files` 输出 1,051,121 字节，超过 `execFileSync` 默认的 1 MiB。于是 `feature-flags-drift` 和 `required-wall-clock-thresholds` 两个测试还没断言就以 `spawnSync git ENOBUFS` 失败。
+  - main 自身是 1,043,760 字节，只差几 KB；换成下一个加文件的分支也会撞上。
+  - 修复（`4da2adb25`）：两处 `maxBuffer` 调到 64 MiB。修复前两者都复现 ENOBUFS，修复后 1/1、69/69 过。
+
+| 命令或范围 | 结果 |
+|---|---|
+| `CI=1 pnpm install --frozen-lockfile` | 通过（main 改了 lockfile） |
+| `pnpm --filter "flywheel-voice-codex..." --filter "flywheel-voice-bridge..." build` | exit 0 |
+| `pnpm --filter "...flywheel-voice-bridge" --filter "...flywheel-teamlead" --filter "...flywheel-voice-codex" typecheck` | exit 0 |
+| voice-bridge：`discordWiring.ts`、`LeadSpeaker.ts`、新测试文件的 `vitest related` | 31/31 过 |
+| teamlead：`huddle-config`、`voice-session-services`、`voice-session-context`、`required-wall-clock-thresholds` | 53/53、11/11、1/1 过 |
+| voice-codex：`codex-container`、`codex-room-webrtc`、`projection` | 61/61 过（main 没改 voice-codex） |
+| config：漂移守卫三件套 | 69/69 过 |
 
 ## 没在本地跑的，及原因
 
