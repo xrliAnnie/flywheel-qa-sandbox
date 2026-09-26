@@ -1,0 +1,1400 @@
+{
+ "purpose": "FLY-2913 five-role paired legacy/role-v1 fixed-prefix measurement (implement node: probe pairing + control verification; real-role task acceptance belongs to QA)",
+ "capturedAt": "2026-09-26T10:29:57.583Z",
+ "room": {
+  "slot": 4,
+  "head": "5c061c862f8f1af88149c2107703ede01c7245a1",
+  "cwd": "/tmp/flywheel-test-slot-4/project-slot-4"
+ },
+ "driver": "scripts/qa-2913-prefix-controls.mjs @ 437e09c3a (compiler v2)",
+ "cli": "2.1.283",
+ "model": "claude-opus-5-5",
+ "effort": "high",
+ "rounds": 3,
+ "conditions": "per pair: identical CLI/model/effort/cwd/flags; only --settings differs; legacy then role-v1 interleaved; fresh session ids; caller runner identity scrubbed from child env; --no-session-persistence",
+ "measurementMethod": "primary = first-turn API usage (input + cache_creation + cache_read of one request with a fixed 'Reply with exactly: OK' prompt); auxiliary = CLI get_context_usage diagnostic (unreliable for skillOverrides, see control-ablation.json)",
+ "rawSha256": "1b3b393632b21d20b5b610ba69e4726dd84dded1ba024fbd386838a26017ce5b",
+ "roles": {
+  "design": {
+   "profileDigest": "9d47a1939af1c7cc09b37dfe7751092e6d3ce6092d9e7491806fff0f6a0d5343",
+   "hiddenSkillDescriptions": [
+    "cleanup",
+    "code-review",
+    "codex-image",
+    "codex-relogin",
+    "computer-bootstrap",
+    "create-issue",
+    "deep-research",
+    "defining-product-vision",
+    "docs",
+    "docx",
+    "dogfooding",
+    "fewer-permission-prompts",
+    "flywheel-land",
+    "gemini-code-review",
+    "gemini-design-review",
+    "gemini-image",
+    "gemini-video",
+    "google-workspace",
+    "gws",
+    "import-memory",
+    "init",
+    "keybindings-help",
+    "learn-permissions",
+    "loop-codex",
+    "morning",
+    "notion",
+    "orchestrator",
+    "pdf",
+    "peer-review",
+    "pptx",
+    "prioritizing-roadmap",
+    "retro",
+    "schedule",
+    "setup-discord-lead",
+    "setup-flywheel-hooks",
+    "ship-pr",
+    "simplify",
+    "skill-creator",
+    "spin",
+    "update-config",
+    "video-watch",
+    "workflow-authoring",
+    "working-backwards",
+    "writing-engine",
+    "xiaohongshu-learning",
+    "xlsx"
+   ],
+   "excludedRules": [
+    "deep-research.md",
+    "gemini-cli.md",
+    "gog.md",
+    "image-generation.md",
+    "summarize-toolchain.md",
+    "video-generation.md"
+   ],
+   "summary": {
+    "samples": 3,
+    "completePairs": 3,
+    "measurementMethod": "first-turn-api-usage",
+    "before": {
+     "p50": 72496,
+     "min": 72496,
+     "max": 72940
+    },
+    "after": {
+     "p50": 65725,
+     "min": 65725,
+     "max": 66169
+    },
+    "deltaP50": 6771,
+    "diagnosticEstimate": {
+     "before": {
+      "p50": 55695,
+      "min": 55695,
+      "max": 55695
+     },
+     "after": {
+      "p50": 53827,
+      "min": 53827,
+      "max": 53827
+     },
+     "deltaP50": 1868
+    },
+    "allPairsPass": true,
+    "ineffective": {
+     "skills": [],
+     "rules": []
+    },
+    "mcpDegraded": [
+     "linear-api:failed"
+    ],
+    "allControlsEffective": true
+   },
+   "pairs": [
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 65725
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 53827
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 6
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 46,
+        "reduced": 46,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 6,
+        "removed": 6,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72496,
+      "roleV1": 66169
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 53827
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 6
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 46,
+        "reduced": 46,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 6,
+        "removed": 6,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72496,
+      "roleV1": 65725
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 53827
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 6
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 46,
+        "reduced": 46,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 6,
+        "removed": 6,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    }
+   ]
+  },
+  "implement": {
+   "profileDigest": "e398eb5c1740eef7bd349a10679190edc7166786daf29e292a7aaeac1fda78ef",
+   "hiddenSkillDescriptions": [
+    "cleanup",
+    "codex-image",
+    "codex-relogin",
+    "competitive-analysis",
+    "computer-bootstrap",
+    "create-issue",
+    "deep-research",
+    "defining-product-vision",
+    "docs",
+    "docx",
+    "dogfooding",
+    "fewer-permission-prompts",
+    "flywheel-land",
+    "gemini-code-review",
+    "gemini-design-review",
+    "gemini-image",
+    "gemini-video",
+    "google-workspace",
+    "gws",
+    "import-memory",
+    "init",
+    "keybindings-help",
+    "learn-permissions",
+    "loop-codex",
+    "morning",
+    "notion",
+    "orchestrator",
+    "pdf",
+    "peer-review",
+    "pptx",
+    "prioritizing-roadmap",
+    "problem-definition",
+    "retro",
+    "schedule",
+    "scoping-cutting",
+    "setup-discord-lead",
+    "setup-flywheel-hooks",
+    "ship-pr",
+    "skill-creator",
+    "spin",
+    "update-config",
+    "video-watch",
+    "workflow-authoring",
+    "working-backwards",
+    "writing-engine",
+    "xiaohongshu-learning",
+    "xlsx"
+   ],
+   "excludedRules": [
+    "deep-research.md",
+    "gemini-cli.md",
+    "gog.md",
+    "image-generation.md",
+    "summarize-toolchain.md",
+    "video-generation.md"
+   ],
+   "summary": {
+    "samples": 3,
+    "completePairs": 3,
+    "measurementMethod": "first-turn-api-usage",
+    "before": {
+     "p50": 72940,
+     "min": 72496,
+     "max": 72940
+    },
+    "after": {
+     "p50": 65866,
+     "min": 65866,
+     "max": 66310
+    },
+    "deltaP50": 7074,
+    "diagnosticEstimate": {
+     "before": {
+      "p50": 55695,
+      "min": 55695,
+      "max": 55695
+     },
+     "after": {
+      "p50": 53827,
+      "min": 53827,
+      "max": 53827
+     },
+     "deltaP50": 1868
+    },
+    "allPairsPass": true,
+    "ineffective": {
+     "skills": [],
+     "rules": []
+    },
+    "mcpDegraded": [
+     "linear-api:failed"
+    ],
+    "allControlsEffective": true
+   },
+   "pairs": [
+    {
+     "firstTurn": {
+      "legacy": 72496,
+      "roleV1": 65866
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 53827
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 6
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 47,
+        "reduced": 47,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 6,
+        "removed": 6,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 66310
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 53827
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 6
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 47,
+        "reduced": 47,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 6,
+        "removed": 6,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 65866
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 53827
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 6
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 47,
+        "reduced": 47,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 6,
+        "removed": 6,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    }
+   ]
+  },
+  "qa": {
+   "profileDigest": "2e6ba730a30a39b77d84369b2c6afacb714b3319525a10d864d66a845866ff0f",
+   "hiddenSkillDescriptions": [
+    "cleanup",
+    "code-review",
+    "codex",
+    "codex-image",
+    "codex-relogin",
+    "competitive-analysis",
+    "computer-bootstrap",
+    "create-issue",
+    "deep-research",
+    "defining-product-vision",
+    "docs",
+    "docx",
+    "dogfooding",
+    "fewer-permission-prompts",
+    "flywheel-land",
+    "gemini-code-review",
+    "gemini-design-review",
+    "gemini-image",
+    "gemini-video",
+    "google-workspace",
+    "gws",
+    "import-memory",
+    "init",
+    "keybindings-help",
+    "learn-permissions",
+    "loop-codex",
+    "morning",
+    "notion",
+    "orchestrator",
+    "pdf",
+    "peer-review",
+    "pptx",
+    "prioritizing-roadmap",
+    "problem-definition",
+    "retro",
+    "schedule",
+    "scoping-cutting",
+    "setup-discord-lead",
+    "setup-flywheel-hooks",
+    "ship-pr",
+    "simplify",
+    "skill-creator",
+    "spin",
+    "update-config",
+    "video-watch",
+    "workflow-authoring",
+    "working-backwards",
+    "writing-engine",
+    "xiaohongshu-learning",
+    "xlsx"
+   ],
+   "excludedRules": [
+    "codex-multi-account.md",
+    "codex-review.md",
+    "deep-research.md",
+    "gemini-cli.md",
+    "gog.md",
+    "image-generation.md",
+    "summarize-toolchain.md",
+    "video-generation.md"
+   ],
+   "summary": {
+    "samples": 3,
+    "completePairs": 3,
+    "measurementMethod": "first-turn-api-usage",
+    "before": {
+     "p50": 72496,
+     "min": 72496,
+     "max": 72940
+    },
+    "after": {
+     "p50": 64250,
+     "min": 63806,
+     "max": 64250
+    },
+    "deltaP50": 8246,
+    "diagnosticEstimate": {
+     "before": {
+      "p50": 55695,
+      "min": 55695,
+      "max": 55695
+     },
+     "after": {
+      "p50": 52226,
+      "min": 52226,
+      "max": 52226
+     },
+     "deltaP50": 3469
+    },
+    "allPairsPass": true,
+    "ineffective": {
+     "skills": [],
+     "rules": []
+    },
+    "mcpDegraded": [
+     "linear-api:failed"
+    ],
+    "allControlsEffective": true
+   },
+   "pairs": [
+    {
+     "firstTurn": {
+      "legacy": 72496,
+      "roleV1": 64250
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 52226
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 4
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 50,
+        "reduced": 50,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 8,
+        "removed": 8,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 64250
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 52226
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 4
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 50,
+        "reduced": 50,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 8,
+        "removed": 8,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72496,
+      "roleV1": 63806
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 52226
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 4
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 50,
+        "reduced": 50,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 8,
+        "removed": 8,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    }
+   ]
+  },
+  "review-design": {
+   "profileDigest": "df215ade8c25d6a990e4dc718852f85ef2bd1befacb2a63635c3c51f14e32463",
+   "hiddenSkillDescriptions": [
+    "brainstorm",
+    "chrome-repair",
+    "cleanup",
+    "code-review",
+    "codex",
+    "codex-code-review",
+    "codex-design-review",
+    "codex-image",
+    "codex-relogin",
+    "competitive-analysis",
+    "compound",
+    "computer-bootstrap",
+    "create-issue",
+    "dataviz",
+    "deep-research",
+    "defining-product-vision",
+    "docs",
+    "docx",
+    "dogfooding",
+    "fewer-permission-prompts",
+    "flywheel-land",
+    "founder-html-delivery",
+    "gemini-code-review",
+    "gemini-design-review",
+    "gemini-image",
+    "gemini-video",
+    "google-workspace",
+    "gws",
+    "implement",
+    "import-memory",
+    "init",
+    "keybindings-help",
+    "learn-permissions",
+    "loop-codex",
+    "mermaid",
+    "morning",
+    "notion",
+    "orchestrator",
+    "pdf",
+    "peer-review",
+    "pptx",
+    "prioritizing-roadmap",
+    "problem-definition",
+    "proofshot",
+    "research",
+    "retro",
+    "run",
+    "schedule",
+    "scoping-cutting",
+    "setup-discord-lead",
+    "setup-flywheel-hooks",
+    "ship-pr",
+    "simplify",
+    "skill-creator",
+    "spin",
+    "update-config",
+    "video-watch",
+    "workflow-authoring",
+    "working-backwards",
+    "write-plan",
+    "writing-engine",
+    "xiaohongshu-learning",
+    "xlsx"
+   ],
+   "excludedRules": [
+    "codex-multi-account.md",
+    "codex-review.md",
+    "deep-research.md",
+    "gemini-cli.md",
+    "gog.md",
+    "html-report-style.md",
+    "image-generation.md",
+    "summarize-toolchain.md",
+    "video-generation.md"
+   ],
+   "summary": {
+    "samples": 3,
+    "completePairs": 3,
+    "measurementMethod": "first-turn-api-usage",
+    "before": {
+     "p50": 72940,
+     "min": 72940,
+     "max": 72940
+    },
+    "after": {
+     "p50": 62195,
+     "min": 62195,
+     "max": 62195
+    },
+    "deltaP50": 10745,
+    "diagnosticEstimate": {
+     "before": {
+      "p50": 55695,
+      "min": 55695,
+      "max": 55695
+     },
+     "after": {
+      "p50": 51355,
+      "min": 51355,
+      "max": 51355
+     },
+     "deltaP50": 4340
+    },
+    "allPairsPass": true,
+    "ineffective": {
+     "skills": [],
+     "rules": []
+    },
+    "mcpDegraded": [
+     "linear-api:failed"
+    ],
+    "allControlsEffective": true
+   },
+   "pairs": [
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 62195
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 51355
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 3
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 63,
+        "reduced": 63,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 9,
+        "removed": 9,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 62195
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 51355
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 3
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 63,
+        "reduced": 63,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 9,
+        "removed": 9,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 62195
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 51355
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 3
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 63,
+        "reduced": 63,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 9,
+        "removed": 9,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    }
+   ]
+  },
+  "review-code": {
+   "profileDigest": "beb5bc815b787851623d937857f106afe32a397974728c92d17f974a262beff7",
+   "hiddenSkillDescriptions": [
+    "brainstorm",
+    "chrome-repair",
+    "cleanup",
+    "codex",
+    "codex-code-review",
+    "codex-design-review",
+    "codex-image",
+    "codex-relogin",
+    "competitive-analysis",
+    "compound",
+    "computer-bootstrap",
+    "create-issue",
+    "dataviz",
+    "deep-research",
+    "defining-product-vision",
+    "docs",
+    "docx",
+    "dogfooding",
+    "fewer-permission-prompts",
+    "flywheel-land",
+    "founder-html-delivery",
+    "gemini-code-review",
+    "gemini-design-review",
+    "gemini-image",
+    "gemini-video",
+    "google-workspace",
+    "gws",
+    "implement",
+    "import-memory",
+    "init",
+    "keybindings-help",
+    "learn-permissions",
+    "loop-codex",
+    "mermaid",
+    "morning",
+    "notion",
+    "orchestrator",
+    "pdf",
+    "peer-review",
+    "pptx",
+    "prioritizing-roadmap",
+    "problem-definition",
+    "proofshot",
+    "research",
+    "retro",
+    "run",
+    "schedule",
+    "scoping-cutting",
+    "setup-discord-lead",
+    "setup-flywheel-hooks",
+    "ship-pr",
+    "simplify",
+    "skill-creator",
+    "spin",
+    "update-config",
+    "video-watch",
+    "workflow-authoring",
+    "working-backwards",
+    "write-plan",
+    "writing-engine",
+    "xiaohongshu-learning",
+    "xlsx"
+   ],
+   "excludedRules": [
+    "codex-multi-account.md",
+    "codex-review.md",
+    "deep-research.md",
+    "gemini-cli.md",
+    "gog.md",
+    "html-report-style.md",
+    "image-generation.md",
+    "summarize-toolchain.md",
+    "video-generation.md"
+   ],
+   "summary": {
+    "samples": 3,
+    "completePairs": 3,
+    "measurementMethod": "first-turn-api-usage",
+    "before": {
+     "p50": 72940,
+     "min": 72496,
+     "max": 72940
+    },
+    "after": {
+     "p50": 62466,
+     "min": 62022,
+     "max": 62466
+    },
+    "deltaP50": 10474,
+    "diagnosticEstimate": {
+     "before": {
+      "p50": 55695,
+      "min": 55695,
+      "max": 55695
+     },
+     "after": {
+      "p50": 51355,
+      "min": 51355,
+      "max": 51355
+     },
+     "deltaP50": 4340
+    },
+    "allPairsPass": true,
+    "ineffective": {
+     "skills": [],
+     "rules": []
+    },
+    "mcpDegraded": [
+     "linear-api:failed"
+    ],
+    "allControlsEffective": true
+   },
+   "pairs": [
+    {
+     "firstTurn": {
+      "legacy": 72496,
+      "roleV1": 62022
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 51355
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 3
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 62,
+        "reduced": 62,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 9,
+        "removed": 9,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 62466
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 51355
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 3
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 62,
+        "reduced": 62,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 9,
+        "removed": 9,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    },
+    {
+     "firstTurn": {
+      "legacy": 72940,
+      "roleV1": 62466
+     },
+     "diagnosticFixed": {
+      "legacy": 55695,
+      "roleV1": 51355
+     },
+     "probeStatus": {
+      "legacy": [
+       "incomplete",
+       "mcp_not_connected"
+      ],
+      "roleV1": [
+       "incomplete",
+       "mcp_not_connected"
+      ]
+     },
+     "inventoryCounts": {
+      "legacy": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 12
+      },
+      "roleV1": {
+       "skills": 111,
+       "agents": 46,
+       "memoryFiles": 3
+      }
+     },
+     "verdict": {
+      "pass": true,
+      "controls": {
+       "skills": {
+        "targetedPresentInLegacy": 62,
+        "reduced": 62,
+        "stillPresent": [],
+        "effective": true
+       },
+       "rules": {
+        "targetedPresentInLegacy": 9,
+        "removed": 9,
+        "stillPresent": [],
+        "effective": true
+       }
+      },
+      "unintendedLoss": {
+       "skills": [],
+       "unintendedHidden": [],
+       "agents": [],
+       "rules": []
+      },
+      "requiredMissing": []
+     }
+    }
+   ]
+  }
+ }
+}

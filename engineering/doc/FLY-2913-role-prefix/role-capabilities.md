@@ -60,6 +60,18 @@ Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913)
 - 合同必需（`RUNNER_PREFIX_REQUIRED_SKILLS`）：design — onboarding/brainstorm/research/write-plan/codex-design-review/founder-html-delivery/mermaid/claude-api；implement — onboarding/implement/codex-code-review/codex:rescue/codex:codex-cli-runtime/proofshot/simplify/code-review/security-review/everything-claude-code:security-review/claude-api；qa — onboarding/proofshot/research/chrome-repair/founder-html-delivery/dataviz/claude-api；review-design — claude-api/security-review；review-code — claude-api/code-review/security-review/everything-claude-code:security-review。
 - 规则：context7.md、git-workflow.md 五角色全留；项目与 `~/Dev` CLAUDE.md、auto memory、managed 规则不在控制范围。
 
-## 五角色 before/after
+## 五角色 before/after（529 slot 4，每角色 3 组交替配对）
 
-见 `evidence/role-prefix-controls.json`（五角色 × 3 组交替配对；首轮真实 usage 为主，诊断为辅；逐项核验 name-only 仍列出且变小、规则消失、必需与未列项不变）及 PR 描述中的表。
+条件：CLI 2.1.283、claude-opus-5-5、effort high、cwd `/tmp/flywheel-test-slot-4/project-slot-4`、相同 flags，每组只换 `--settings`。主测量是首轮真实 API usage（input + cache_creation + cache_read），诊断估算只作辅助。该 cwd 的项目 CLAUDE.md 有 57,904 字节，所以绝对值比生产 worktree 大，但差额与项目文件无关。`linear-api` MCP 在两侧都鉴权失败（账号级环境事实），状态一致，按同条件计入。
+
+| 角色 | 改前 p50（min–max） | 改后 p50（min–max） | 节省 p50 | 比例 | 描述隐藏技能 | 排除规则 | 能力核验 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| design | 72,496（72,496–72,940） | 65,725（65,725–66,169） | 6,771 | 9.3% | 46/46 变小 | 6/6 | 3/3 通过 |
+| implement | 72,940（72,496–72,940） | 65,866（65,866–66,310） | 7,074 | 9.7% | 47/47 | 6/6 | 3/3 通过 |
+| qa | 72,496（72,496–72,940） | 64,250（63,806–64,250） | 8,246 | 11.4% | 50/50 | 8/8 | 3/3 通过 |
+| review-design | 72,940（72,940） | 62,195（62,195） | 10,745 | 14.7% | 63/63 | 9/9 | 3/3 通过 |
+| review-code | 72,940（72,496–72,940） | 62,466（62,022–62,466） | 10,474 | 14.4% | 62/62 | 9/9 | 3/3 通过 |
+
+逐项核验每组都满足四条：111 个技能两侧都在列表中；目标技能描述 token 全部变小；排除规则在改后消失；必需技能与未列入清单的技能、子代理、规则都没有变化。任何一项没做到都会判失败。原始数据见 `evidence/role-prefix-controls.json`，含每组数值、状态与核验结果，以及原始输出的 sha256。
+
+这组数字只是固定前缀的配对测量，**不是**五角色真实任务验收。按 Lead 裁定，真实任务验收由 QA 节点在新头房间执行。
