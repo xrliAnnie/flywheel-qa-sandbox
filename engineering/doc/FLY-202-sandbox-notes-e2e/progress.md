@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 3/8
-updated: 2026-09-26T20:53:46.166Z
-nextStep: Refresh research with current branch, target, PR, CI, and verification evidence
+phaseCursor: 4/8
+updated: 2026-09-26T20:55:01.938Z
+nextStep: Write an implementation-ready idempotent revalidation plan
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (3/8)
-**next**: Refresh research with current branch, target, PR, CI, and verification evidence
+**phase**: design (4/8)
+**next**: Write an implementation-ready idempotent revalidation plan
