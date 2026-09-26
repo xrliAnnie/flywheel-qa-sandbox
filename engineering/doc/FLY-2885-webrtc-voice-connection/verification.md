@@ -281,3 +281,29 @@ R4 结论：H1、H2 和重启清扫测试都没有新的 HIGH。唯一的 HIGH �
 - `pnpm lint`、构建、typecheck 均为 exit 0。
 - `health-alert.test.ts` 10/10 过。
 - `shutdown-exit.test.ts` 10/10 过。它的 fixture 在子进程里加载 `health-alert.ts`，不在 `vitest related` 的依赖图里，所以单独跑。
+
+## QA@2 返工：4 条 CI 守卫（`d0ade5876`，Lead 2026-09-26 11:3xZ）
+
+QA@2 房内判据全过；唯一阻断是返工引入的 4 条确定性 CI 红（上一版 `cd30b6ee9` 全绿）。本轮只修守卫，已验过的语音行为不动。
+
+| 守卫 | CI 上的红 | 修复 | 本地证据 |
+|---|---|---|---|
+| teamlead FLY-2331 子进程普查 | `health-alert.ts` 新 `spawn(` 未登记（104 ≠ 103） | 登记进 `child-process-census.json`：`standalone_runtime_bounded`，写明边界：仅 voice daemon 的 lead-alert 发送；`/bin/bash lead-alert.sh`、`shell:false`；独立 detached 进程组；30 s 超时、4 KiB 输出上限；整组 TERM，2 s 后 KILL；关停时整组停止；Bridge 不 import（`git grep` 确认只有 `cli.ts` 引用） | `bridge-child-process-census.test.ts` 过 |
+| teamlead 真实时长守卫 | `shutdown-exit.test.ts:244` 断言 `at - sentAt < signalGrace + 1500`，是宿主时长上限 | 守卫不删。进程测试改为断言“是哪条路径结束的”：sigterm 模式清理完即退，stderr 有 `exiting after shutdown … UDPWrap×N`，没有 `overran`；hang 模式 stderr 为 `shutdown (signal) overran 2500 ms`。idle 期限是 60 s，所以只能是信号期限或清理完成结束了进程。`Date.now()` 已从测试中移除 | `required-wall-clock-thresholds.test.ts` 过。负对照：信号期限改成 idle 期限，hang 用例失败 |
+| heavy FLY-2211 kill-path 清单 | 新增 12 处（11 处测试 + 生产 `process.kill(-pid)`） | 收敛：voice 测试里 11 处探活和发信号都改走新助手 `__tests__/process-probes.ts`（`isAlive` / `signalOwn`；pid 必须是正整数，杜绝 `Number("")=0` 给测试自身进程组发 SIGKILL）。清单只新增 3 条，见下表 | `kill-path-inventory.test.ts` 5/5 过。重新扫描与原清单对比：只新增 3 条，无删改 |
+| Script 3/6 onboard smoke ②i | 启动拒绝时多打一行 `[voice] exiting after shutdown with handles still open (PipeWrap×3)` | `finish()` 只在关停真正开始过（`begin` 被调用过）时才报残留句柄；启动拒绝路径不打这行。已开始的关停照旧 | 单测：未开始关停时即使有 3 个 PipeWrap 也不打日志（RED→GREEN）。按 CI 原命令（`env -i … cli.js --check-config 2>&1`，三路 stdio 都是管道）：旧构建复现 CI 的两行输出，新构建只剩契约那一行。完整 `package-onboard-smoke.test.sh` 本地 PASSED=26 FAILED=0（含 ②i） |
+
+kill-path 清单新增的 3 条及理由：
+
+| 条目 | 分类 | 理由 |
+|---|---|---|
+| `packages/voice-codex/src/__tests__/process-probes.ts:process.kill(pid, 0);#1` | qa-only | 测试对自己启动的进程做 signal-0 探活（daemon/app-server 替身、告警 shell 及其孙进程） |
+| `packages/voice-codex/src/__tests__/process-probes.ts:process.kill(pid, signal);#1` | qa-only | 测试给自己启动的进程发信号：用例动作 SIGTERM，失败清理 SIGKILL。不是自己启动的 pid 一律不发 |
+| `packages/voice-codex/src/health-alert.ts:process.kill(-pid, signal);#1` | out-of-scope | 生产侧唯一 kill 点（`signalGroup`），对象只会是本 daemon 以 detached 方式起的 lead-alert 发送进程组，不会是 runner、Bridge 或 tmux。理由也写在调用处注释里 |
+
+验证：
+- `pnpm lint` exit 0；`pnpm --filter "flywheel-voice-codex..." build` 通过；voice-codex `tsc --noEmit` 通过。
+- voice-codex `vitest related`（改动的 TS 文件 + 3 个测试）：3 个文件 26/26 过。
+- 3 条 vitest 守卫：`bridge-child-process-census.test.ts`、`required-wall-clock-thresholds.test.ts`（teamlead `--project=parallel`）、claude-runner `kill-path-inventory.test.ts`，全部通过。
+- `origin/main` 比本分支多 3 个提交（`eabcd72a5`、`af729d662`、`6145a4038`）：`git merge-tree` 无冲突，也没有改到任何守卫清单，所以本轮没有同步 main。
+- 消费者排查（`git grep -lF` 查完整路径和文件名）：`shutdown-exit` → `cli.ts`（无单测，已用构建产物按 ②i 原命令验证）、`leaky-daemon.mjs`（由 `shutdown-exit.test.ts` 覆盖）；`health-alert` → `health-alert.test.ts`、`leaky-daemon.mjs`、两份清单。排除项：`voice-health-alert-route.*`、`ci.yml`、`ci-structure.test.sh`、`lead-alert.sh` 只是子串命中，与本文件无关；`engineering/doc/**` 为文档；`ci-test-costs.json` 为耗时数据。
