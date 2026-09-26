@@ -1383,26 +1383,27 @@ export class Blueprint {
 			claudePluginAssembly && skillFrameworkMode === "matt"
 				? [MATT_SKILLS_PLUGIN_KEY]
 				: [];
-		// FLY-2913: compile the pinned role-v1 prefix once the arm is final and
-		// before any worktree side effect. Claude-only; absent ⇒ legacy launch.
-		// Legacy is the only fallback: a compile failure never blocks the launch.
-		let prefixProfile:
-			| ReturnType<typeof compileRunnerPrefixProfile>
-			| undefined;
-		if (backend === "claude-tmux" && ctx.runnerMcpProfile?.prefix) {
+		// FLY-2913: compile the pinned role-v1 prefix once the arm is final, against
+		// the FINAL runner cwd (its checked-in project settings are a lower layer).
+		// Claude-only; absent ⇒ legacy launch. Legacy is the only fallback: a
+		// compile or settings-read failure never blocks the launch.
+		const compilePrefixProfile = (
+			runnerCwd: string,
+		): ReturnType<typeof compileRunnerPrefixProfile> | undefined => {
+			if (backend !== "claude-tmux" || !ctx.runnerMcpProfile?.prefix)
+				return undefined;
 			try {
 				const claudeConfigDir =
 					process.env.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude");
-				prefixProfile = compileRunnerPrefixProfile({
+				return compileRunnerPrefixProfile({
 					request: ctx.runnerMcpProfile.prefix,
 					claudeConfigDir,
 					skillArm: skillFrameworkMode,
-					// User, then project, then project-local layers (worktrees share
-					// the project's checked-in settings).
+					// User, then project, then project-local layers of the runner cwd.
 					lowerSkillOverrides: readLowerSkillOverrides([
 						path.join(claudeConfigDir, "settings.json"),
-						path.join(projectRoot, ".claude", "settings.json"),
-						path.join(projectRoot, ".claude", "settings.local.json"),
+						path.join(runnerCwd, ".claude", "settings.json"),
+						path.join(runnerCwd, ".claude", "settings.local.json"),
 					]),
 				});
 			} catch (error) {
@@ -1413,8 +1414,9 @@ export class Blueprint {
 						.replace(/[^A-Za-z0-9_:.-]+/g, "-")
 						.slice(0, 120)} exec=${env.executionId}`,
 				);
+				return undefined;
 			}
-		}
+		};
 		const startTime = Date.now();
 		const executionId = env.executionId;
 		let cwd = projectRoot;
@@ -3065,6 +3067,7 @@ export class Blueprint {
 			hydrated.issueId;
 		let result: AdapterExecutionResult;
 		try {
+			const prefixProfile = compilePrefixProfile(cwd);
 			const adapterContext: AdapterExecutionContext = {
 				executionId,
 				issueId: hydrated.issueId,

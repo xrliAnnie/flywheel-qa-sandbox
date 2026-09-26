@@ -1377,6 +1377,34 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		expect(execArgs).not.toHaveProperty("prefix");
 	});
 
+	it("keeps skills the runner cwd's project settings hide further", async () => {
+		const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fly2913-cwd-"));
+		try {
+			fs.mkdirSync(path.join(projectRoot, ".claude"));
+			fs.writeFileSync(
+				path.join(projectRoot, ".claude", "settings.local.json"),
+				JSON.stringify({ skillOverrides: { notion: "off" } }),
+			);
+			const { execArgs } = await runBlueprint({
+				projectRoot,
+				ctxExtra: {
+					runnerMcpProfile: {
+						disabledPlugins: [],
+						disableChrome: false,
+						prefix,
+					},
+				},
+			});
+			expect(execArgs.cwd).toBe(projectRoot);
+			const stamp = execArgs.prefixProfile?.stamp as {
+				keptLowerRestrictions?: string[];
+			};
+			expect(stamp.keptLowerRestrictions).toEqual(["gws", "notion"]);
+		} finally {
+			fs.rmSync(projectRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("falls back to the legacy launch with a visible reason when compilation fails", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const broken = {

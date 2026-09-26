@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import type {
 	RunnerPrefixRequest,
@@ -314,6 +314,36 @@ const sorted = (values: Iterable<string>) => [...new Set(values)].sort();
 // A lower settings layer that already hides a skill further than name-only.
 const RESTRICTIVE_OVERRIDES = new Set(["off", "user-invocable-only"]);
 
+const MAX_SETTINGS_BYTES = 1024 * 1024;
+
+/**
+ * Reads one settings file as a bounded regular file. Opens non-blocking (a
+ * FIFO never stalls the Bridge), then requires a regular file of at most
+ * 1 MiB on the opened descriptor (a symlink to /dev/zero or a device is
+ * refused). A symlink to a regular file — e.g. dotfile-managed settings — is
+ * fine. ENOENT is passed through so a missing layer is skipped.
+ */
+function readSettingsFileBounded(path: string): string {
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isFile()) throw new Error("not a regular file");
+		if (stat.size > MAX_SETTINGS_BYTES) throw new Error("settings too large");
+		const buffer = Buffer.alloc(stat.size + 1);
+		let length = 0;
+		for (;;) {
+			const read = readSync(fd, buffer, length, buffer.length - length, length);
+			if (read === 0) break;
+			length += read;
+			if (length > MAX_SETTINGS_BYTES || length === buffer.length)
+				throw new Error("settings grew while reading");
+		}
+		return buffer.subarray(0, length).toString("utf8");
+	} finally {
+		closeSync(fd);
+	}
+}
+
 /**
  * `skillOverrides` merged from lower settings layers, later files winning
  * (pass user settings first, then project settings, then project local).
@@ -322,7 +352,7 @@ const RESTRICTIVE_OVERRIDES = new Set(["off", "user-invocable-only"]);
  */
 export function readLowerSkillOverrides(
 	paths: readonly string[],
-	read: (path: string) => string = (path) => readFileSync(path, "utf8"),
+	read: (path: string) => string = readSettingsFileBounded,
 ): Record<string, unknown> {
 	const merged: Record<string, unknown> = {};
 	for (const path of paths) {

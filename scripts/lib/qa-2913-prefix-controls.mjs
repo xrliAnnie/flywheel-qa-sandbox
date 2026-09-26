@@ -20,7 +20,9 @@ export const CONTROL_ROLES = [
  * session to the caller's Bridge as a completed runner session.
  */
 // Minimal allowlist: locale/terminal/path basics plus the Claude config dir.
-// Everything else (runner identity, cloud/ssh/git credentials) stays out.
+// Everything else (runner identity, cloud/ssh/git credential variables) stays
+// out. HOME is kept on purpose: the user's Claude configuration under it is
+// exactly what is being measured, as production runners load it.
 const PROBE_ENV_ALLOWLIST = new Set([
 	"HOME",
 	"PATH",
@@ -66,6 +68,8 @@ export function buildFirstTurnArgv({
 		"json",
 		"--settings",
 		JSON.stringify(settings),
+		// Same permission mode as production runners: a stricter mode changes
+		// the model's behavior (a denied tool call adds a second request).
 		"--permission-mode",
 		"bypassPermissions",
 		"--no-session-persistence",
@@ -77,7 +81,12 @@ export const FIRST_TURN_PROMPT = "Reply with exactly: OK";
 /** Only the usage numbers of a `-p --output-format json` result; never text. */
 export function parseFirstTurnUsage(stdout) {
 	try {
-		const usage = JSON.parse(stdout)?.usage;
+		const result = JSON.parse(stdout);
+		// usage sums every request of the session; only one request measures
+		// the fixed prefix.
+		if (result?.num_turns !== 1 || result?.is_error === true)
+			return { status: "failed", failure: "not_single_request" };
+		const usage = result?.usage;
 		const n = (v) => (Number.isFinite(v) && v >= 0 ? v : null);
 		const input = n(usage?.input_tokens);
 		const cacheCreation = n(usage?.cache_creation_input_tokens);

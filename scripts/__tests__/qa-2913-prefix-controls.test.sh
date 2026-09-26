@@ -92,13 +92,16 @@ await test('summaries use real first-turn usage as the primary measure', async (
 });
 
 await test('first-turn usage keeps only numbers and fails closed on missing fields', async () => {
-  assert.deepEqual(parseFirstTurnUsage(JSON.stringify({ result: 'PRIVATE_TEXT', usage: { input_tokens: 2, cache_creation_input_tokens: 70000, cache_read_input_tokens: 448 } })),
+  assert.deepEqual(parseFirstTurnUsage(JSON.stringify({ num_turns: 1, result: 'PRIVATE_TEXT', usage: { input_tokens: 2, cache_creation_input_tokens: 70000, cache_read_input_tokens: 448 } })),
     { status: 'complete', promptTokens: 70450, usage: { input: 2, cacheCreation: 70000, cacheRead: 448 } });
-  assert.deepEqual(parseFirstTurnUsage(JSON.stringify({ usage: { input_tokens: 2 } })), { status: 'failed', failure: 'missing_usage' });
+  assert.deepEqual(parseFirstTurnUsage(JSON.stringify({ num_turns: 1, usage: { input_tokens: 2 } })), { status: 'failed', failure: 'missing_usage' });
+  assert.deepEqual(parseFirstTurnUsage(JSON.stringify({ num_turns: 2, usage: { input_tokens: 4, cache_creation_input_tokens: 1, cache_read_input_tokens: 1 } })), { status: 'failed', failure: 'not_single_request' });
+  assert.deepEqual(parseFirstTurnUsage(JSON.stringify({ num_turns: 1, is_error: true, usage: { input_tokens: 2, cache_creation_input_tokens: 1, cache_read_input_tokens: 1 } })), { status: 'failed', failure: 'not_single_request' });
   assert.deepEqual(parseFirstTurnUsage('PRIVATE not json'), { status: 'failed', failure: 'malformed_result' });
   const argv = buildFirstTurnArgv({ model: 'm', effort: 'low', sessionId: 's', settings: { a: 1 }, noChrome: false });
   assert.deepEqual(argv.slice(0, 2), ['-p', 'Reply with exactly: OK']);
   assert.ok(argv.includes('--no-session-persistence'));
+  assert.equal(argv[argv.indexOf('--permission-mode') + 1], 'bypassPermissions');
 });
 
 await test('pairs differ only in settings and run interleaved for every role', async () => {

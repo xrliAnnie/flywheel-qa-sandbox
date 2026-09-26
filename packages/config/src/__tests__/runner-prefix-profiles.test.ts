@@ -1,4 +1,13 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { RunnerPrefixRequest } from "../runner-prefix-profile.js";
@@ -292,6 +301,38 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 				throw Object.assign(new Error("denied"), { code: "EACCES" });
 			}),
 		).toThrow(/runner_prefix_profile/);
+	});
+
+	it("reads settings files only as bounded regular files", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2913-settings-"));
+		try {
+			const real = join(dir, "real.json");
+			writeFileSync(real, JSON.stringify({ skillOverrides: { gws: "off" } }));
+			symlinkSync(real, join(dir, "linked.json"));
+			expect(readLowerSkillOverrides([join(dir, "linked.json")])).toEqual({
+				gws: "off",
+			});
+			expect(readLowerSkillOverrides([join(dir, "absent.json")])).toEqual({});
+			symlinkSync("/dev/zero", join(dir, "zero.json"));
+			expect(() => readLowerSkillOverrides([join(dir, "zero.json")])).toThrow(
+				/runner_prefix_profile: unreadable settings zero\.json/,
+			);
+			execFileSync("mkfifo", [join(dir, "fifo.json")]);
+			const started = Date.now();
+			expect(() => readLowerSkillOverrides([join(dir, "fifo.json")])).toThrow(
+				/runner_prefix_profile: unreadable settings fifo\.json/,
+			);
+			expect(Date.now() - started).toBeLessThan(5_000);
+			writeFileSync(
+				join(dir, "huge.json"),
+				`{"a":"${"x".repeat(1024 * 1024)}"}`,
+			);
+			expect(() => readLowerSkillOverrides([join(dir, "huge.json")])).toThrow(
+				/runner_prefix_profile: unreadable settings huge\.json/,
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("always keeps the pinned role's frontmatter skills (union)", () => {
