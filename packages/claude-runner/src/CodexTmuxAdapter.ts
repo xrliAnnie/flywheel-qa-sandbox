@@ -2227,6 +2227,12 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				: undefined;
 			throwIfTerminationRequested();
+			// The same owner intent controls retry and physical spawn. In particular,
+			// a stop/retirement received during low-level preflight cannot create a
+			// newborn before the next phase-control poll.
+			const mayStartDaemon = () =>
+				(termination?.reason() ?? null) === null &&
+				!(ctx.processLifecycle?.retirementApproved?.() ?? false);
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
@@ -2292,9 +2298,8 @@ export class CodexTmuxAdapter implements IAdapter {
 						: {}),
 					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 					onThreadReady,
-					// FLY-1940: this hard callback runs synchronously before socket
-					// polling. Any persistence failure throws and forces spawn cleanup.
-					onSpawnIdentity: (pgid) => {
+					// Awaited before socket admission; failure forces newborn cleanup.
+					onSpawnIdentity: async (pgid) => {
 						this.persistSpawnIdentity(ctx, pgid);
 						try {
 							transcriptSink?.appendMeta(`daemon pgid: ${pgid}`);
@@ -2318,9 +2323,8 @@ export class CodexTmuxAdapter implements IAdapter {
 					// requested) or during an approved retirement is not a crash and
 					// is never resumed. A throwing retirement reader throws here, which
 					// the runtime treats as a refusal (fail-closed).
-					mayRestartAfterTransportDeath: () =>
-						(termination?.reason() ?? null) === null &&
-						!(ctx.processLifecycle?.retirementApproved?.() ?? false),
+					authorizeSpawn: mayStartDaemon,
+					mayRestartAfterTransportDeath: mayStartDaemon,
 					onRestartDecision: (decision) =>
 						this.recordRestartDecision(ctx.executionId, socketPath, decision),
 				},

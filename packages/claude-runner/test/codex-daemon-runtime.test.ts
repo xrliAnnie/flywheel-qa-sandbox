@@ -703,6 +703,131 @@ describe("spawnCodexDaemon", () => {
 		expect(order).toEqual([`identity:${child.pid}`, "socket-probe"]);
 	});
 
+	it("FLY-2919: waits for accepted identity before socket admission", async () => {
+		const child = new FakeChild();
+		let accept!: () => void;
+		const accepted = new Promise<void>((resolve) => {
+			accept = resolve;
+		});
+		let spawned = false;
+		const admitted = vi.fn();
+		const running = spawnCodexDaemon({
+			...baseOpts(child),
+			spawnFn: () => {
+				spawned = true;
+				return child;
+			},
+			onSpawnIdentity: () => accepted,
+			socketExists: () => {
+				if (spawned) admitted();
+				return spawned;
+			},
+		});
+		await Promise.resolve();
+		try {
+			expect(admitted).not.toHaveBeenCalled();
+		} finally {
+			accept();
+			await running;
+		}
+		expect(admitted).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-2919: rejected async identity drains the newborn before releasing ownership", async () => {
+		const child = new FakeChild();
+		const order: string[] = [];
+		let spawned = false;
+		const rejected = Promise.reject(new Error("accepted binding failed"));
+		// The old implementation ignores this Promise; keep its expected red
+		// assertion from creating a process-wide unhandled rejection.
+		void rejected.catch(() => {});
+		const running = spawnCodexDaemon({
+			...baseOpts(child),
+			spawnFn: () => {
+				spawned = true;
+				return child;
+			},
+			onSpawnIdentity: () => rejected,
+			killGroup: () => {
+				order.push("drain");
+				child.emitExit(null, "SIGKILL");
+			},
+			acquireLock: () => ({ release: () => order.push("release") }),
+			socketExists: () => spawned,
+		});
+		await expect(running).rejects.toMatchObject({
+			message: "accepted binding failed",
+			recoveryFailure: { cleanup: "confirmed_absent" },
+		});
+		expect(order).toEqual(["drain", "release"]);
+	});
+
+	it.each([false, undefined, "throw"])(
+		"FLY-2919: refuses revoked spawn permit after socket preflight (%s)",
+		async (verdict) => {
+			const child = new FakeChild();
+			const spawnFn = vi.fn(() => child);
+			const release = vi.fn();
+			let valid = true;
+			await expect(
+				spawnCodexDaemon({
+					...baseOpts(child),
+					spawnFn,
+					socketExists: () => true,
+					isSocketLive: async () => {
+						valid = false;
+						return false;
+					},
+					acquireLock: () => ({ release }),
+					authorizeSpawn: () => {
+						if (valid) return true;
+						if (verdict === "throw") throw new Error("owner unavailable");
+						return verdict as boolean;
+					},
+				}),
+			).rejects.toMatchObject({
+				recoveryFailure: { code: "owner_admission_failed" },
+			});
+			expect(spawnFn).not.toHaveBeenCalled();
+			expect(release).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("FLY-2919: close during identity commit drains before socket admission", async () => {
+		const child = new FakeChild();
+		let valid = true;
+		let spawned = false;
+		const admitted = vi.fn();
+		const release = vi.fn();
+		await expect(
+			spawnCodexDaemon({
+				...baseOpts(child),
+				spawnFn: () => {
+					spawned = true;
+					return child;
+				},
+				authorizeSpawn: () => valid,
+				onSpawnIdentity: async () => {
+					await Promise.resolve();
+					valid = false;
+				},
+				killGroup: () => child.emitExit(null, "SIGKILL"),
+				acquireLock: () => ({ release }),
+				socketExists: () => {
+					if (spawned) admitted();
+					return spawned;
+				},
+			}),
+		).rejects.toMatchObject({
+			recoveryFailure: {
+				code: "owner_admission_failed",
+				cleanup: "confirmed_absent",
+			},
+		});
+		expect(admitted).not.toHaveBeenCalled();
+		expect(release).toHaveBeenCalledOnce();
+	});
+
 	it("FLY-1940: a spawn-identity persistence failure kills the whole group and rejects", async () => {
 		const child = new FakeChild();
 		child.exitCode = 1;

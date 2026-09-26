@@ -705,12 +705,17 @@ export interface SpawnCodexDaemonOptions {
 	 */
 	processGroupOf?: (pid: number) => number | undefined;
 	/**
-	 * FLY-1940: synchronously persist the detached daemon's process-group
-	 * identity immediately after spawn and before any socket wait. A throw is
+	 * FLY-1940/2919: commit the detached daemon's process-group identity
+	 * immediately after spawn, awaiting acceptance before any socket wait. Failure is
 	 * fail-close: the just-spawned group is killed and proven gone before spawn
 	 * rejects, so Bridge crash recovery never inherits an unowned daemon.
 	 */
-	onSpawnIdentity?: (pgid: number) => void;
+	onSpawnIdentity?: (pgid: number) => void | Promise<void>;
+	/** FLY-2919: synchronous validation of the current owner/spawn permit.
+	 * Checked after asynchronous preflight immediately before native spawn and
+	 * again before socket admission. Only literal true admits; absent preserves
+	 * legacy callers. This callback must not acquire ownership asynchronously. */
+	authorizeSpawn?: () => boolean;
 	spawnFn?: DaemonSpawnFn;
 	/** Socket-appeared probe (default: fs statSync). */
 	socketExists?: (p: string) => boolean;
@@ -951,6 +956,21 @@ export async function spawnCodexDaemon(
 			}
 		}
 
+		const assertSpawnAuthorized = (): void => {
+			if (!opts.authorizeSpawn) return;
+			try {
+				if (opts.authorizeSpawn() === true) return;
+			} catch {
+				// A failed owner read cannot authorize a new writer.
+			}
+			throw new CodexRecoveryError(
+				createCodexRecoveryFailure({
+					code: "owner_admission_failed",
+					stage: "daemon_spawn",
+				}),
+			);
+		};
+		assertSpawnAuthorized();
 		const child = spawnFn(
 			opts.codexBin,
 			[
@@ -1167,7 +1187,7 @@ export async function spawnCodexDaemon(
 				);
 			}
 			try {
-				opts.onSpawnIdentity(pgid as number);
+				await opts.onSpawnIdentity(pgid as number);
 			} catch (error) {
 				return await cleanupAndThrow(
 					error instanceof Error ? error : new Error(String(error)),
@@ -1177,6 +1197,11 @@ export async function spawnCodexDaemon(
 
 		const deadline = now() + timeoutMs;
 		while (true) {
+			try {
+				assertSpawnAuthorized();
+			} catch (error) {
+				return await cleanupAndThrow(error as Error);
+			}
 			if (deadReason) return await cleanupAndThrow(deadReason);
 			if (socketExists(opts.socketPath)) {
 				log(`codex daemon socket up: ${opts.socketPath}`);

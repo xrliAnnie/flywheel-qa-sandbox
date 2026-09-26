@@ -11,7 +11,10 @@ import {
 	CodexDaemonGoalRuntime,
 	type CodexDaemonGoalRuntimeOptions,
 } from "../src/codex-daemon-goal-runtime.js";
-import type { DaemonHandle } from "../src/codex-daemon-runtime.js";
+import {
+	type DaemonHandle,
+	spawnCodexDaemon,
+} from "../src/codex-daemon-runtime.js";
 
 // ── FLY-1188 M4c-2 — resident /goal runtime (collaborators injected) ──────
 
@@ -476,6 +479,52 @@ describe("CodexDaemonGoalRuntime", () => {
 		rt.stop();
 	});
 
+	it.each(["stop", "owner_revoked"])(
+		"FLY-2919: %s during low-level preflight prevents native spawn",
+		async (mode) => {
+			const h = makeHarness({ runGoalScript: [COMPLETE] });
+			let ownerActive = true;
+			const nativeSpawn = vi.fn(() => {
+				const handle = fakeHandle(() => {});
+				handle.child.kill = () => {
+					handle.stop();
+					return true;
+				};
+				return handle.child;
+			});
+			const rt = new CodexDaemonGoalRuntime({
+				...h.opts,
+				spawnDaemon: (options) =>
+					spawnCodexDaemon({
+						...options,
+						ensureDir: () => {},
+						acquireLock: () => ({ release: () => {} }),
+						removeStaleSocket: () => {},
+						socketExists: () => true,
+						isSocketLive: async () => {
+							await Promise.resolve();
+							if (mode === "stop") rt.stop();
+							else ownerActive = false;
+							return false;
+						},
+						spawnFn: nativeSpawn,
+					}),
+			});
+			const run = rt.runGoal({
+				objective: "x",
+				authorizeSpawn: () => ownerActive,
+			});
+			try {
+				await expect(run).rejects.toBeDefined();
+				expect(nativeSpawn).not.toHaveBeenCalled();
+				expect(h.clients).toHaveLength(0);
+			} finally {
+				rt.stop();
+				await rt.drained();
+			}
+		},
+	);
+
 	it("FLY-1940: threads reapOrphanPid to the first spawn and hard ownership persistence to every spawn", async () => {
 		const seenReap: Array<number | undefined> = [];
 		const persistedGroups: number[] = [];
@@ -490,14 +539,16 @@ describe("CodexDaemonGoalRuntime", () => {
 			...h.opts,
 			spawnDaemon: async (o) => {
 				seenReap.push(o.reapOrphanPid);
-				o.onSpawnIdentity?.(1);
+				await o.onSpawnIdentity?.(1);
 				return fakeHandle(() => {});
 			},
 		});
 		await rt.runGoal({
 			objective: "x",
 			reapOrphanPid: 4321,
-			onSpawnIdentity: (pgid) => persistedGroups.push(pgid),
+			onSpawnIdentity: (pgid) => {
+				persistedGroups.push(pgid);
+			},
 		});
 		// first spawn reaps a prior orphan; the within-run restart tears down its
 		// own daemon first, so there is NO orphan → reapOrphanPid omitted.

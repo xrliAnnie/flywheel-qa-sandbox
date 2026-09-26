@@ -210,12 +210,14 @@ export interface RunGoalInput {
 	 */
 	reapOrphanPid?: number;
 	/**
-	 * FLY-1940: synchronously persist the LIVE detached daemon's process-group
-	 * identity on every spawn/restart, before the first socket await. A throwing
+	 * FLY-1940/2919: await acceptance of the LIVE daemon's process-group
+	 * identity on every spawn/restart, before the first socket await. A failing
 	 * handler aborts spawn after killing and verifying the just-created group;
 	 * ownership persistence is therefore a hard precondition, not telemetry.
 	 */
-	onSpawnIdentity?: (pgid: number) => void;
+	onSpawnIdentity?: (pgid: number) => void | Promise<void>;
+	/** Current durable owner/spawn permit, checked by the physical spawn seam. */
+	authorizeSpawn?: () => boolean;
 	/**
 	 * FLY-2903: asked after every restartable transport death. A Bridge
 	 * terminal path that stopped or reaped this execution on purpose answers
@@ -347,7 +349,8 @@ export class CodexDaemonGoalRuntime {
 	 */
 	private async startSession(
 		reapOrphanPid?: number,
-		onSpawnIdentity?: (pgid: number) => void,
+		onSpawnIdentity?: (pgid: number) => void | Promise<void>,
+		authorizeSpawn?: () => boolean,
 	): Promise<DaemonSession> {
 		const codexHome = this.selectedCodexHome();
 		let binding: CodexQuotaBindingV1 | undefined;
@@ -410,6 +413,8 @@ export class CodexDaemonGoalRuntime {
 			// the resuming redrive can reclaim the socket instead of blocking.
 			...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 			...(onSpawnIdentity ? { onSpawnIdentity } : {}),
+			authorizeSpawn: () =>
+				!this.stopped && (!authorizeSpawn || authorizeSpawn() === true),
 			logger: this.log,
 		});
 		if (binding) this.quotaBinding = binding;
@@ -654,7 +659,11 @@ export class CodexDaemonGoalRuntime {
 				try {
 					const session =
 						this.session ??
-						(await this.startSession(reapPid, input.onSpawnIdentity));
+						(await this.startSession(
+							reapPid,
+							input.onSpawnIdentity,
+							input.authorizeSpawn,
+						));
 					reapPid = undefined; // reap applies only to the first spawn
 					if (
 						input.beforeFirstThread &&

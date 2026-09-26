@@ -1742,7 +1742,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			item: { type: "agentMessage", text: "visible progress" },
 		};
 		runtime = new FakeRuntime(async (input, events) => {
-			input.onSpawnIdentity?.(4321);
+			await input.onSpawnIdentity?.(4321);
 			input.onThreadReady?.(THREAD_ID, 0);
 			events?.onNotification?.("item/completed", params);
 			return complete();
@@ -4051,7 +4051,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		async (order) => {
 			runtime = new FakeRuntime(async (input) => {
 				if (order === "latch-first") input.writeGateHoldLatch?.(true);
-				input.onSpawnIdentity?.(4321);
+				await input.onSpawnIdentity?.(4321);
 				input.onThreadReady?.(THREAD_ID, 0);
 				if (order === "session-first") input.writeGateHoldLatch?.(true);
 				return complete();
@@ -4496,7 +4496,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			return () => {};
 		};
 		runtime = new FakeRuntime(async (input) => {
-			input.onSpawnIdentity?.(4321);
+			await input.onSpawnIdentity?.(4321);
 			input.onThreadReady?.(THREAD_ID, 0);
 			const pendingDb = new CommDB(dbPath);
 			try {
@@ -4576,7 +4576,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		// Run 1: the daemon reports its pid, then OUR thread becomes ready →
 		// onSpawnIdentity writes daemonPgid before thread-ready adds threadId.
 		runtime = new FakeRuntime(async (input) => {
-			input.onSpawnIdentity?.(4321);
+			await input.onSpawnIdentity?.(4321);
 			input.onThreadReady?.(THREAD_ID, 0);
 			return complete();
 		});
@@ -4735,6 +4735,40 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(harness.restarts()).toBe(0);
 			await expect(stopped).resolves.toBe("stopped");
 		});
+
+		it.each(["terminate", "retirement"])(
+			"FLY-2919: %s revokes native spawn and restart through the same owner predicate",
+			async (mode) => {
+				const harness = blockingRuntime();
+				runtime = harness.rt;
+				let approved = false;
+				const execution = makeAdapter().execute(
+					ctx({
+						processLifecycle: {
+							mode: "initial",
+							generation: 1,
+							retirementGraceMs: 60_000,
+							retirementApproved: () => approved,
+						},
+					}),
+				);
+				await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+				const input = runtime.runGoalInputs[0]!;
+				const before = input.authorizeSpawn?.();
+				if (mode === "retirement") approved = true;
+				else
+					void executionOwners.requestStop(execId, "terminate", {
+						timeoutMs: 5_000,
+					});
+				const after = input.authorizeSpawn?.();
+				harness.killDaemon();
+				await execution;
+				expect(before).toBe(true);
+				expect(after).toBe(false);
+				expect(input.authorizeSpawn).toBe(input.mayRestartAfterTransportDeath);
+				expect(harness.restarts()).toBe(0);
+			},
+		);
 
 		it("an approved retirement refuses the restart (retirement race)", async () => {
 			const harness = blockingRuntime();
