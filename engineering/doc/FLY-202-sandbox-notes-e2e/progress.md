@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-26T13:27:48.016Z
-nextStep: Commit the refreshed design docs and request explicit design review
+phaseCursor: 4/6
+updated: 2026-09-26T13:34:37.896Z
+nextStep: Finalize and verify founder HTML with local-render failure placeholders
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (3/6)
-**next**: Commit the refreshed design docs and request explicit design review
+**phase**: design (4/6)
+**next**: Finalize and verify founder HTML with local-render failure placeholders
