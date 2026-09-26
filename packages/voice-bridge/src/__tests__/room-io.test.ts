@@ -383,12 +383,14 @@ describe("RoomIO v1", () => {
 			"flywheel-voice-codex",
 		);
 		expect(codexPackage.dependencies).toHaveProperty("flywheel-voice-bridge");
+		// Engine A reaches Discord only through RoomIO. The legacy and Codex
+		// engines keep voice-codex's own room (FLY-2799) until the two are unified.
 		const codexShim = readFileSync(
-			new URL("../../../voice-codex/src/discord-room.ts", import.meta.url),
+			new URL("../../../voice-codex/src/roomio-room.ts", import.meta.url),
 			"utf8",
 		);
 		expect(codexShim).toContain("createRoomIO");
-		expect(codexShim).not.toContain("class DiscordVoiceRoom implements");
+		expect(codexShim).not.toContain("BotRegistry");
 	});
 
 	it("emits versioned capture frames and exact founder plus human presence", async () => {
