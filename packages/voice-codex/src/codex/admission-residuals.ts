@@ -36,6 +36,8 @@ export interface ResidualSystem {
 	identityOf?(pid: number): ProcessRow | undefined;
 	signal(pid: number, signal: "SIGSTOP" | "SIGKILL"): void;
 	removeDirectory(path: string): void;
+	/** Deletes one residual file; absent is success. Defaults to unlinkSync. */
+	removeFile?(path: string): void;
 	/** Lets the event loop reap killed children between checks. */
 	pause(ms: number): Promise<void>;
 }
@@ -84,6 +86,36 @@ export function parseProcessTable(text: string): ProcessRow[] {
 	return rows;
 }
 
+/**
+ * `ps -o … -p <pid>` exits 1 with no output when the pid does not exist; that is
+ * the only answer that proves absence. Timeouts, spawn failures or unexpected
+ * output are infrastructure errors and must not retire an identity (R2#2).
+ */
+export function interpretPsLookup(
+	run: () => string,
+	pid: number,
+): ProcessRow | undefined {
+	let text: string;
+	try {
+		text = run();
+	} catch (error) {
+		const failure = error as { status?: unknown; stdout?: unknown };
+		if (
+			failure.status === 1 &&
+			(failure.stdout === undefined ||
+				failure.stdout === null ||
+				String(failure.stdout).trim() === "")
+		)
+			return undefined;
+		throw error;
+	}
+	const row = parseProcessTable(text).find(
+		(candidate) => candidate.pid === pid,
+	);
+	if (!row) throw new Error("voice_residual_ps_output_invalid");
+	return row;
+}
+
 export const hostResidualSystem: ResidualSystem = {
 	snapshot: () =>
 		parseProcessTable(
@@ -95,9 +127,9 @@ export const hostResidualSystem: ResidualSystem = {
 				env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
 			}),
 		),
-	identityOf: (pid) => {
-		try {
-			return parseProcessTable(
+	identityOf: (pid) =>
+		interpretPsLookup(
+			() =>
 				execFileSync(
 					"/bin/ps",
 					["-o", "pid=,ppid=,stat=,lstart=", "-p", String(pid)],
@@ -109,16 +141,13 @@ export const hostResidualSystem: ResidualSystem = {
 						env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
 					},
 				),
-			).find((row) => row.pid === pid);
-		} catch {
-			// ps exits non-zero when the pid does not exist.
-			return undefined;
-		}
-	},
+			pid,
+		),
 	signal: (pid, signal) => {
 		process.kill(pid, signal);
 	},
 	removeDirectory: (path) => rmSync(path, { recursive: true, force: true }),
+	removeFile: (path) => rmSync(path, { force: true }),
 	pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
@@ -204,8 +233,16 @@ export class AdmissionResiduals {
 		this.released = true;
 		this.identities.clear();
 		this.directories.clear();
-		this.remove();
-		this.detach();
+		// First make the file harmless (no identity left to reap), then delete it.
+		// Only if neither worked does this daemon keep holding the session (R2#1).
+		let neutralised = false;
+		try {
+			this.write();
+			neutralised = true;
+		} catch {
+			/* Deletion below may still succeed. */
+		}
+		if (this.remove() || neutralised) this.detach();
 	}
 
 	/** This daemon's own teardown is done; periodic sweeps may take over. */
@@ -402,7 +439,11 @@ export class AdmissionResiduals {
 	}
 
 	private persist(): void {
-		if (this.removed) return;
+		if (this.removed || this.released) return;
+		this.write();
+	}
+
+	private write(): void {
 		const file: ResidualFile = {
 			version: 1,
 			sessionId: this.options.sessionId,
@@ -417,12 +458,16 @@ export class AdmissionResiduals {
 		renameSync(temp, this.options.path);
 	}
 
-	private remove(): void {
+	/** True when the file is gone (deleted now or already absent). */
+	private remove(): boolean {
 		this.removed = true;
 		try {
-			unlinkSync(this.options.path);
-		} catch {
-			/* Already gone. */
+			const system = this.options.system;
+			if (system.removeFile) system.removeFile(this.options.path);
+			else unlinkSync(this.options.path);
+			return !existsSync(this.options.path);
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === "ENOENT";
 		}
 	}
 }

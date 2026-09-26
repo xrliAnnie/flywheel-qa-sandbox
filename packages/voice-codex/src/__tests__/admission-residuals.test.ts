@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AdmissionResidualRegistry,
 	parseProcessTable,
@@ -19,6 +19,12 @@ class FakeHost implements ResidualSystem {
 	/** Runs after every signal; lets a test fork "during" the reap. */
 	onSignal?: (pid: number, signal: string) => void;
 	refuseKill = new Set<number>();
+	failRemoveFile = false;
+	removeFile(path: string) {
+		if (this.failRemoveFile)
+			throw Object.assign(new Error("EIO"), { code: "EIO" });
+		rmSync(path, { force: true });
+	}
 
 	spawn(pid: number, ppid: number): number {
 		this.clock += 1000;
@@ -336,4 +342,62 @@ it("re-reads the exact identity right before each signal: a pid reused after the
 	await residuals.reap();
 	expect(host.signals).toEqual([]);
 	expect(host.rows.has(701)).toBe(true);
+});
+
+describe("review R2 durability", () => {
+	it("a release whose unlink fails leaves no reapable identity and keeps the session held (R2#1)", async () => {
+		const reg = registry();
+		const claimed = reg.claim(SESSION);
+		claimed.registerSpawned(host.spawn(701, DAEMON));
+		host.failRemoveFile = true;
+		claimed.release();
+		host.failRemoveFile = false;
+		await reg.sweep();
+		await registry().sweep(); // e.g. after a restart: only the file remains
+		expect(host.rows.has(701)).toBe(true);
+		expect(host.signals).toEqual([]);
+	});
+
+	it("a failing identity read is not proof the process is gone (R2#2)", async () => {
+		const reg = registry();
+		const residuals = reg.claim(SESSION);
+		residuals.registerSpawned(host.spawn(701, DAEMON));
+		const identityOf = host.identityOf.bind(host);
+		host.identityOf = () => {
+			throw Object.assign(new Error("ps timed out"), { code: "ETIMEDOUT" });
+		};
+		expect(await residuals.reap()).toBe("pending");
+		expect(host.signals).toEqual([]);
+		host.identityOf = identityOf;
+		residuals.detach();
+		await reg.sweep();
+		expect(host.rows.has(701)).toBe(false);
+	});
+});
+
+it("host ps lookups: only exit 1 with no output means absent; other failures throw (R2#2)", async () => {
+	const { interpretPsLookup } = await import("../codex/admission-residuals.js");
+	expect(
+		interpretPsLookup(() => {
+			throw Object.assign(new Error("exit 1"), { status: 1, stdout: "" });
+		}, 701),
+	).toBeUndefined();
+	expect(
+		interpretPsLookup(() => "  701   500 Ss   Sat Sep 26 08:00:01 2026\n", 701),
+	).toEqual({
+		pid: 701,
+		ppid: 500,
+		start: "Sat Sep 26 08:00:01 2026",
+		zombie: false,
+	});
+	for (const error of [
+		Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
+		Object.assign(new Error("spawn failed"), { code: "EAGAIN" }),
+		Object.assign(new Error("odd"), { status: 1, stdout: "garbage" }),
+	])
+		expect(() =>
+			interpretPsLookup(() => {
+				throw error;
+			}, 701),
+		).toThrow();
 });

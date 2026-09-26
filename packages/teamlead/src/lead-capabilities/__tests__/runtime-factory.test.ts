@@ -1097,3 +1097,41 @@ it("an unavailable integration keeps none of its operations: reads, writes, deni
 		await session.close();
 	}
 });
+
+it("the voice manifest drops an unavailable integration's unconditional denials too (review R2#3)", async () => {
+	const options = withoutGithubCredential(fixture());
+	const session = await startLeadRuntimeParent({
+		...options,
+		...OMIT,
+		browserMode: "off",
+		operations: voiceOperations("off"),
+		sources: {
+			sourceRevision: "head-fixture",
+			records: options.ruleRecords,
+			skillInventory: [],
+		},
+		adoptedMenuShapes: ["implement"],
+		assertPreparedCurrent: async () => {},
+		parent: voiceParent,
+	});
+	try {
+		const manifest = state.parent!.manifest;
+		expect(manifest.unavailableIntegrations).toEqual([
+			{ id: "github", reason: "credential_missing" },
+		]);
+		const githubOwned = LEAD_CAPABILITY_CATALOG.filter(
+			(row) => row.credentialConsumer === "github",
+		).map((row) => row.operationId);
+		expect(
+			manifest.operationIds.filter((id) => githubOwned.includes(id)),
+		).toEqual([]);
+		for (const id of [
+			"github.pr.create",
+			"github.issue.comment",
+			"git.feature.push",
+		])
+			expect(manifest.operationIds).not.toContain(id);
+	} finally {
+		await session.close();
+	}
+});

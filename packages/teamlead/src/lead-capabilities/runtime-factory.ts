@@ -198,9 +198,12 @@ export async function startLeadRuntimeParent(
 		await current();
 		const resolved = options.operations
 			? {
+					// An unavailable integration's operations, its unconditional denials
+					// included, are not published at all (review R2#3).
 					operations: options.operations.filter(
 						(operation) =>
 							operation.classification !== "reserved" &&
+							!providers.omittedOperationIds.has(operation.operationId) &&
 							(!!operation.unconditionalDenial ||
 								providers.handlers.has(operation.operationId)),
 					),
