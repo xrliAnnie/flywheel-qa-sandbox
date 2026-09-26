@@ -18,6 +18,8 @@ export type ResidentReceiverArmSource =
 	| "admission"
 	| "reown_watch"
 	| "reown_revive"
+	/** FLY-2925: a live daemon re-controlled after a Bridge restart. */
+	| "reown_adopt"
 	| "boot"
 	| "rearm";
 

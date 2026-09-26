@@ -273,6 +273,8 @@ interface CodexSnapshotExecution {
 	 * (no spawn, no reap, no recovery commit, no goal re-activation or kick).
 	 */
 	adoptLiveDaemon?: true;
+	/** FLY-2925: fired once the adopted daemon's exact thread is attached. */
+	onAdopted?: (threadId: string) => void;
 	founderWindow: CodexRecoveryOptions["founderWindow"];
 	windowName?: string;
 }
@@ -1018,6 +1020,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	async adoptLiveExecution(
 		ctx: AdapterExecutionContext,
 		options?: CodexRecoveryOptions,
+		hooks?: { onAdopted?: (threadId: string) => void },
 	): Promise<AdapterExecutionResult> {
 		let snapshot: CodexLaunchSnapshot;
 		try {
@@ -1031,6 +1034,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		return this.runWithOwnership(ctx, "rescue", {
 			snapshot,
 			adoptLiveDaemon: true,
+			...(hooks?.onAdopted ? { onAdopted: hooks.onAdopted } : {}),
 			founderWindow: options?.founderWindow ?? "open",
 			...(options?.founderWindow === "open" && options.windowName
 				? { windowName: options.windowName }
@@ -2108,6 +2112,15 @@ export class CodexTmuxAdapter implements IAdapter {
 				restarts: number,
 				observedIdentity?: CodexResumeObservation,
 			): Promise<void> => {
+				if (restarts === 0 && snapshotExecution?.adoptLiveDaemon) {
+					try {
+						snapshotExecution.onAdopted?.(threadId);
+					} catch (error) {
+						this.log(
+							`[CodexTmuxAdapter] adoption observer threw (ignored): ${safeErr(error)}`,
+						);
+					}
+				}
 				if (
 					ctx.processLifecycle?.expectedSessionId !== undefined &&
 					ctx.processLifecycle.expectedSessionId !== threadId

@@ -3941,11 +3941,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			return complete();
 		});
 
+		const adopted: string[] = [];
 		const result = await makeAdapter().adoptLiveExecution(
 			ctx({ prompt: "must not reconstruct this kick", model: "drifted-model" }),
+			undefined,
+			{ onAdopted: (threadId) => adopted.push(threadId) },
 		);
 
 		expect(result.success).toBe(true);
+		expect(adopted).toEqual([THREAD_ID]);
 		const input = runtime.runGoalInputs[0]!;
 		expect(input.adoptLiveDaemon).toBe(true);
 		expect(input.adoptExistingGoal).toBe(true);

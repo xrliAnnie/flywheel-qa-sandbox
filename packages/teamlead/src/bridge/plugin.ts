@@ -10278,81 +10278,17 @@ export async function startBridge(
 					reapEnabled: () => storeCodexTerminalReapEnabled(flagStore),
 					alertSink: codexTerminalSweepAlertHolder,
 				});
-	const codexSessionReowner = new CodexSessionReowner({
-		store,
-		isIntentionalStandby: (executionId) => {
-			const state = store.getWorkflowExecutionProcessBody(executionId)?.state;
-			return (
-				state === "retiring" || state === "standby" || state === "resuming"
-			);
-		},
-		alertIdentity: (session) => {
-			const bound = store.getCodexRecoveryAlertBinding(session.execution_id);
-			if (!bound) return undefined;
-			return resolveWorkflowRunAlertIdentity({
-				store,
-				projects,
-				defaultLeadAgentId: config.defaultLeadAgentId,
-				projectName: session.project_name,
-				issueId: session.issue_id,
-				runId: bound.run_id,
-			});
-		},
-		owners: codexExecutionOwners,
-		isCurrentBinding: (session) => {
-			const bound = store.getWorkflowRunNodeForExecution(session.execution_id);
-			if (!bound) return true; // legacy/non-engine session
-			const latest = store
-				.listWorkflowRunNodes(bound.run_id, bound.node_id)
-				.at(-1);
-			return (
-				store.getWorkflowRun(bound.run_id)?.status === "active" &&
-				latest?.attempt === bound.attempt &&
-				latest.execution_id === session.execution_id
-			);
-		},
-		preflightRecovery: (session) => {
-			const snapshot = readCodexLaunchSnapshot(session.execution_id);
-			if (!snapshot.rehydrationContext) {
-				throw new Error(
-					`immutable launch snapshot for ${session.execution_id} lacks rehydration context`,
-				);
-			}
-			if (!codexRecoveryRuntimes.has(session.project_name)) {
-				throw new Error(
-					`Codex recovery runtime unavailable for ${session.project_name}`,
-				);
-			}
-		},
-		hasOpenGate: (session) => {
-			const latched = readCodexGateHoldLatch(session.execution_id);
-			let db: CommDB | undefined;
-			try {
-				db = CommDB.openReadonly(commDbPathForProject(session.project_name));
-				return (
-					latched || db.getOpenGatesByRunner(session.execution_id).length > 0
-				);
-			} catch (error) {
-				if (latched) return true;
-				throw error;
-			} finally {
-				db?.close();
-			}
-		},
-		probe: (executionId) => probeCodexDaemonLiveness(executionId),
-		probeRolloutMtime: async (executionId) =>
-			probeCodexRolloutMtime(executionId),
-		reap: (executionId) => reapCodexDaemonForExecution(executionId),
-		revive: async (
-			session,
-			{ capabilities, onRecoveryOwnershipEstablished, isRecoveryCommitted },
-		) => {
-			const runtime = codexRecoveryRuntimes.get(session.project_name);
-			if (!runtime) {
-				throw new Error(
-					`Codex recovery runtime unavailable for ${session.project_name}`,
-				);
-			}
+	/**
+	 * FLY-2211/FLY-2925: rebuild the adapter input for a re-owned Codex
+	 * execution exclusively from its immutable launch snapshot plus current
+	 * engine facts — shared by the dead-daemon revive and live-daemon adoption.
+	 */
+	const buildCodexOwnerContext = async (
+		session: Parameters<typeof buildCodexRecoveryContext>[0]["session"],
+		capabilities: Parameters<
+			typeof buildCodexRecoveryContext
+		>[0]["capabilities"],
+	) => {
 			const snapshot = readCodexLaunchSnapshot(session.execution_id);
 			let windowDecision: Awaited<
 				ReturnType<typeof resolveCodexRecoveryWindow>
@@ -10443,18 +10379,134 @@ export async function startBridge(
 				snapshot,
 				context: baseContext,
 			});
+			return {
+				context,
+				windowOptions:
+					windowDecision.founderWindow === "open"
+						? {
+								founderWindow: "open" as const,
+								...("windowName" in windowDecision &&
+								windowDecision.windowName
+									? { windowName: windowDecision.windowName }
+									: {}),
+							}
+						: { founderWindow: "suppressed" as const },
+			};
+	};
+
+	const codexSessionReowner = new CodexSessionReowner({
+		store,
+		isIntentionalStandby: (executionId) => {
+			const state = store.getWorkflowExecutionProcessBody(executionId)?.state;
+			return (
+				state === "retiring" || state === "standby" || state === "resuming"
+			);
+		},
+		alertIdentity: (session) => {
+			const bound = store.getCodexRecoveryAlertBinding(session.execution_id);
+			if (!bound) return undefined;
+			return resolveWorkflowRunAlertIdentity({
+				store,
+				projects,
+				defaultLeadAgentId: config.defaultLeadAgentId,
+				projectName: session.project_name,
+				issueId: session.issue_id,
+				runId: bound.run_id,
+			});
+		},
+		owners: codexExecutionOwners,
+		isCurrentBinding: (session) => {
+			const bound = store.getWorkflowRunNodeForExecution(session.execution_id);
+			if (!bound) return true; // legacy/non-engine session
+			const latest = store
+				.listWorkflowRunNodes(bound.run_id, bound.node_id)
+				.at(-1);
+			return (
+				store.getWorkflowRun(bound.run_id)?.status === "active" &&
+				latest?.attempt === bound.attempt &&
+				latest.execution_id === session.execution_id
+			);
+		},
+		preflightRecovery: (session) => {
+			const snapshot = readCodexLaunchSnapshot(session.execution_id);
+			if (!snapshot.rehydrationContext) {
+				throw new Error(
+					`immutable launch snapshot for ${session.execution_id} lacks rehydration context`,
+				);
+			}
+			if (!codexRecoveryRuntimes.has(session.project_name)) {
+				throw new Error(
+					`Codex recovery runtime unavailable for ${session.project_name}`,
+				);
+			}
+		},
+		hasOpenGate: (session) => {
+			const latched = readCodexGateHoldLatch(session.execution_id);
+			let db: CommDB | undefined;
+			try {
+				db = CommDB.openReadonly(commDbPathForProject(session.project_name));
+				return (
+					latched || db.getOpenGatesByRunner(session.execution_id).length > 0
+				);
+			} catch (error) {
+				if (latched) return true;
+				throw error;
+			} finally {
+				db?.close();
+			}
+		},
+		probe: (executionId) => probeCodexDaemonLiveness(executionId),
+		probeRolloutMtime: async (executionId) =>
+			probeCodexRolloutMtime(executionId),
+		reap: (executionId) => reapCodexDaemonForExecution(executionId),
+		revive: async (
+			session,
+			{ capabilities, onRecoveryOwnershipEstablished, isRecoveryCommitted },
+		) => {
+			const runtime = codexRecoveryRuntimes.get(session.project_name);
+			if (!runtime) {
+				throw new Error(
+					`Codex recovery runtime unavailable for ${session.project_name}`,
+				);
+			}
+			const { context, windowOptions } = await buildCodexOwnerContext(
+				session,
+				capabilities,
+			);
 			return runtime.resume(
 				context,
 				{ onRecoveryOwnershipEstablished, isRecoveryCommitted },
-				windowDecision.founderWindow === "open"
-					? {
-							founderWindow: "open",
-							...("windowName" in windowDecision && windowDecision.windowName
-								? { windowName: windowDecision.windowName }
-								: {}),
-						}
-					: { founderWindow: "suppressed" },
+				windowOptions,
 			);
+		},
+		// FLY-2925 §6.1: a live daemon survived the Bridge restart — re-control it
+		// on its original thread. No recovery claim, no credential rotation (the
+		// running body keeps its launch credentials), no respawn, no kick.
+		adopt: async (session, hooks) => {
+			const runtime = codexRecoveryRuntimes.get(session.project_name);
+			if (!runtime) {
+				throw new Error(
+					`Codex recovery runtime unavailable for ${session.project_name}`,
+				);
+			}
+			const snapshot = readCodexLaunchSnapshot(session.execution_id);
+			if (!snapshot.rehydrationContext) {
+				throw new Error(
+					`immutable launch snapshot for ${session.execution_id} lacks rehydration context`,
+				);
+			}
+			const { context, windowOptions } = await buildCodexOwnerContext(
+				session,
+				{
+					ok: true,
+					enrolled: false,
+					workflowSubmissionExpected:
+						snapshot.rehydrationContext.workflowSubmissionExpected,
+					founderReviewRequired:
+						snapshot.rehydrationContext.founderReviewRequired,
+				},
+			);
+			return runtime.adopt(context, hooks, windowOptions);
 		},
 		reconcileTurn: async (session, recoveredThreadId) => {
 			const threadId = (() => {
@@ -10559,7 +10611,9 @@ export async function startBridge(
 					? ("reown_watch" as const)
 					: event === "reown_revive_succeeded"
 						? ("reown_revive" as const)
-						: undefined;
+						: event === "reown_adopt_succeeded"
+							? ("reown_adopt" as const)
+							: undefined;
 			if (armSource) {
 				void residentReceiverSupervisor
 					.arm(session.execution_id, armSource)

@@ -513,7 +513,7 @@ describe("FLY-2211 Codex session re-owner", () => {
 		expect(h.events).toContain("reown_revive_succeeded");
 	});
 
-	it("does not publish a revive-arm event when post-commit reconciliation fails", async () => {
+	it("FLY-2925: a post-commit turn reconciliation conflict is recorded but never judges the recovered body dead", async () => {
 		const h = harness({ liveness: "absent", gateHeld: false });
 		h.reconcileTurn.mockRejectedValue(new Error("commdb unavailable"));
 
@@ -521,7 +521,12 @@ describe("FLY-2211 Codex session re-owner", () => {
 		await settle();
 
 		expect(h.events).toContain("reown_turn_reconcile_failed");
-		expect(h.events).not.toContain("reown_revive_succeeded");
+		expect(h.events).toContain("reown_revive_succeeded");
+		expect(h.events).not.toContain("reown_revive_failed");
+		expect(h.deps.alert).toHaveBeenCalledWith(
+			h.candidate,
+			expect.stringContaining("kept running"),
+		);
 	});
 
 	it("filters superseded, non-Codex, and explicit generalized-room rows before liveness", async () => {
@@ -892,6 +897,115 @@ describe("FLY-2211 Codex session re-owner", () => {
 		expect(h.onRecoveryExhausted).toHaveBeenCalledWith(h.candidate, 2);
 		expect(h.events).toContain("reown_revive_failed");
 		expect(h.deps.alert).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("FLY-2925 live-daemon adoption after a Bridge restart", () => {
+	function withAdopt(
+		h: ReturnType<typeof harness>,
+		behavior: "attach" | "fail_before_attach" = "attach",
+	) {
+		const adopt = vi.fn(
+			async (
+				candidate: Session,
+				hooks: { onAdopted(threadId: string): void },
+			) => {
+				h.order.push("adopt");
+				if (behavior === "attach") hooks.onAdopted("thread-1");
+				return {
+					success: behavior === "attach",
+					sessionId: candidate.execution_id,
+					durationMs: 1,
+					timedOut: false,
+					...(behavior === "attach"
+						? {}
+						: { resultText: "daemon lock held by a live owner" }),
+				};
+			},
+		);
+		h.deps.adopt = adopt;
+		h.reconcileTurn.mockImplementation(async () => {
+			h.order.push("reconcile");
+		});
+		return adopt;
+	}
+
+	it.each([
+		{ gateHeld: false, posture: "running" },
+		{ gateHeld: true, posture: "gate-held" },
+	])(
+		"re-controls a live $posture body: reconcile → adopt, never claim/reap/revive/commit",
+		async ({ gateHeld }) => {
+			const h = harness({ liveness: "alive", gateHeld });
+			const adopt = withAdopt(h);
+
+			await new CodexSessionReowner(h.deps).runPass();
+			await settle();
+
+			expect(h.order).toEqual(["reconcile", "adopt"]);
+			expect(adopt).toHaveBeenCalledOnce();
+			expect(h.claim).not.toHaveBeenCalled();
+			expect(h.deps.reap).not.toHaveBeenCalled();
+			expect(h.revive).not.toHaveBeenCalled();
+			expect(h.commit).not.toHaveBeenCalled();
+			expect(h.events).toEqual(["reown_adopt_started", "reown_adopt_succeeded"]);
+		},
+	);
+
+	it("re-controls a live parked body instead of reaping it for a replacement", async () => {
+		const h = harness({
+			liveness: "alive",
+			candidate: session({ status: "ship_parked" }),
+		});
+		withAdopt(h);
+
+		await new CodexSessionReowner(h.deps).runPass();
+		await settle();
+
+		expect(h.order).toEqual(["reconcile", "adopt"]);
+		expect(h.deps.reap).not.toHaveBeenCalled();
+	});
+
+	it("holds (no adoption, no judgment) when the live turn cannot be reconciled", async () => {
+		const h = harness({ liveness: "alive" });
+		const adopt = withAdopt(h);
+		h.reconcileTurn.mockRejectedValue(new Error("active turn mismatch"));
+
+		await new CodexSessionReowner(h.deps).runPass();
+		await settle();
+
+		expect(adopt).not.toHaveBeenCalled();
+		expect(h.events).toEqual(["reown_turn_reconcile_failed"]);
+		expect(h.claim).not.toHaveBeenCalled();
+	});
+
+	it("a pre-attach adoption failure leaves the body untouched and alerts on the second pass", async () => {
+		const h = harness({ liveness: "alive" });
+		withAdopt(h, "fail_before_attach");
+		const reowner = new CodexSessionReowner(h.deps);
+
+		await reowner.runPass();
+		await settle();
+		expect(h.events).toEqual(["reown_adopt_started", "reown_adopt_failed"]);
+		expect(h.deps.alert).not.toHaveBeenCalled();
+
+		await reowner.runPass();
+		await settle();
+		expect(h.deps.alert).toHaveBeenCalledOnce();
+		expect(h.claim).not.toHaveBeenCalled();
+		expect(h.deps.reap).not.toHaveBeenCalled();
+		expect(h.revive).not.toHaveBeenCalled();
+	});
+
+	it("a dead daemon still takes the same-thread revive path", async () => {
+		const h = harness({ liveness: "absent" });
+		const adopt = withAdopt(h);
+
+		await new CodexSessionReowner(h.deps).runPass();
+		await settle();
+
+		expect(adopt).not.toHaveBeenCalled();
+		expect(h.revive).toHaveBeenCalledOnce();
 	});
 });
 
