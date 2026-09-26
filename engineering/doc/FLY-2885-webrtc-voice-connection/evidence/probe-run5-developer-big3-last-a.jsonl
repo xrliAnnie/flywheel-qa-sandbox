@@ -1,0 +1,21 @@
+{"t":4.6,"kind":"items_shape","data":{"role":"developer","layout":"big3-last","count":3,"itemBytes":[10126,10126,10189],"totalBytes":30441,"codexEstimatedTokens":7611}}
+{"t":97.5,"kind":"response","data":{"method":"initialize","error":null}}
+{"t":412.1,"kind":"response","data":{"method":"account/read","error":null}}
+{"t":412.3,"kind":"account","data":{"type":"chatgpt"}}
+{"t":1200.9,"kind":"response","data":{"method":"thread/start","error":null}}
+{"t":1319.2,"kind":"response","data":{"method":"thread/realtime/start","error":null}}
+{"t":1319.4,"kind":"start_response","data":{"error":null}}
+{"t":1917.2,"kind":"started","data":{"version":"v3"}}
+{"t":1925,"kind":"pc_state","data":{"s":"connecting"}}
+{"t":2535.6,"kind":"pc_state","data":{"s":"connected"}}
+{"t":2619.8,"kind":"dc_event","data":{"type":"session.started"}}
+{"t":5608.5,"kind":"watch_window_done","data":{"errors":0,"closed":0}}
+{"t":5612.5,"kind":"question_sent","data":{"ms":2340}}
+{"t":9540.5,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"user","transcript":"你好,请问暗号 是什么?"}}}
+{"t":9541.3,"kind":"transcript_done","data":{"role":"user","text":"你好,请问暗号 是什么?"}}
+{"t":11522.9,"kind":"dc_event","data":{"type":"turn.done","turn":{"role":"assistant","transcript":"今天天气真好。"}}}
+{"t":11531.5,"kind":"transcript_done","data":{"role":"assistant","text":"今天天气真好。"}}
+{"t":12047.5,"kind":"response","data":{"method":"thread/realtime/stop","error":null}}
+{"t":12071.4,"kind":"pc_state","data":{"s":"closed"}}
+{"t":12075.8,"kind":"realtime_closed","data":{"reason":"requested"}}
+{"t":12201.3,"kind":"summary","data":{"why":"done","role":"developer","layout":"big3-last","itemBytes":[10126,10126,10189],"totalBytes":30441,"errors":[],"closed":[{"t":12075.8,"reason":"requested"}],"transcripts":[{"t":9541.2,"role":"user","text":"你好,请问暗号 是什么?"},{"t":11531.5,"role":"assistant","text":"今天天气真好。"}],"dc":{"session.started":1,"input_transcript.added":5,"turn.created":2,"turn.delta":4,"output_transcript.added":4,"turn.done":2},"codeWordAnswered":false,"verdict":"NOT_ACCEPTED","authSourceStillFile":true}}
