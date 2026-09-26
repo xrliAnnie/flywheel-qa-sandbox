@@ -3134,8 +3134,8 @@ describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
 					.map(
 						(frame) =>
 							(
-								(frame.params as { input: Array<{ text: string }> }).input[0] ??
-								{ text: "" }
+								(frame.params as { input: Array<{ text: string }> })
+									.input[0] ?? { text: "" }
 							).text,
 					),
 		};
@@ -3227,7 +3227,13 @@ describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
 		]);
 		// Retries resume the native goal; they never start a new turn or thread.
 		expect(starts()).toHaveLength(1);
-		expect(statuses()).toEqual(["active", "active", "active", "active", "paused"]);
+		expect(statuses()).toEqual([
+			"active",
+			"active",
+			"active",
+			"active",
+			"paused",
+		]);
 		expect(observations.map((o) => o.reason)).toEqual([
 			"upstream_retry",
 			"upstream_retry",
@@ -3309,7 +3315,10 @@ describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
 	});
 
 	it("a persisted exhausted episode is not reset by a restart re-observing the same failure", async () => {
-		const overloaded = { message: "at capacity", codexErrorInfo: "serverOverloaded" };
+		const overloaded = {
+			message: "at capacity",
+			codexErrorInfo: "serverOverloaded",
+		};
 		const { daemon, statuses } = scriptedDaemon([
 			{ status: "blocked", error: overloaded },
 		]);
@@ -3342,7 +3351,10 @@ describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
 	});
 
 	it("a restart re-observing the failure it already scheduled replays that retry without consuming another attempt", async () => {
-		const overloaded = { message: "at capacity", codexErrorInfo: "serverOverloaded" };
+		const overloaded = {
+			message: "at capacity",
+			codexErrorInfo: "serverOverloaded",
+		};
 		const { daemon, statuses } = scriptedDaemon([
 			{ status: "blocked", error: overloaded },
 			{ status: "blocked" },
@@ -3380,7 +3392,9 @@ describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
 	});
 
 	it("sends no wake or retry input once the engine withdrew the body (mayProceed=false)", async () => {
-		const { daemon, starts, statuses } = scriptedDaemon([{ status: "blocked" }]);
+		const { daemon, starts, statuses } = scriptedDaemon([
+			{ status: "blocked" },
+		]);
 		const phase = new FakePhaseLifecycle();
 		let waits = 0;
 		phase.onWait = () => {
@@ -3500,7 +3514,10 @@ describe("runGoalToTerminal — FLY-2925 resident wait survives restart", () => 
 		d.responders.set("turn/start", (_p, _id, push) => {
 			push({
 				method: "thread/goal/updated",
-				params: { threadId: "t", goal: { status: "blocked", objective: "OURS" } },
+				params: {
+					threadId: "t",
+					goal: { status: "blocked", objective: "OURS" },
+				},
 			});
 			return { turn: { id: "kick" } };
 		});

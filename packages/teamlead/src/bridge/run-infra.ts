@@ -405,8 +405,7 @@ export async function runCodexAdoptionOwner(input: {
 		};
 	}
 	if (!adopted) return result;
-	const role =
-		input.context.sessionRole ?? input.context.phaseKeepAlive?.role;
+	const role = input.context.sessionRole ?? input.context.phaseKeepAlive?.role;
 	const env = {
 		executionId: input.context.executionId,
 		issueId: input.context.issueId,

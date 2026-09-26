@@ -446,15 +446,14 @@ export class HeartbeatService implements ReconnectController {
 	 * sweep) decides.
 	 */
 	private liveCodexBodies: ReadonlySet<string> = new Set();
-	private codexBodyProbe?: (
-		executionId: string,
-	) => Promise<{ liveness: "alive" | "absent" | "unknown"; socketLive: boolean }>;
+	private codexBodyProbe?: (executionId: string) => Promise<{
+		liveness: "alive" | "absent" | "unknown";
+		socketLive: boolean;
+	}>;
 
 	/** FLY-2925: wire the non-destructive Codex daemon evidence probe. */
 	setCodexBodyProbe(
-		probe: (
-			executionId: string,
-		) => Promise<{
+		probe: (executionId: string) => Promise<{
 			liveness: "alive" | "absent" | "unknown";
 			socketLive: boolean;
 		}>,

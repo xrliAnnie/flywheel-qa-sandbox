@@ -421,7 +421,10 @@ export class CodexDaemonGoalRuntime {
 			return giveUp(err, client, transport);
 		}
 		if (this.stopped) {
-			return giveUp(new Error("runtime stopped during daemon adoption"), client);
+			return giveUp(
+				new Error("runtime stopped during daemon adoption"),
+				client,
+			);
 		}
 		const session: DaemonSession = { handle, client, codexHome, exited };
 		this.session = session;
@@ -721,7 +724,9 @@ export class CodexDaemonGoalRuntime {
 			let reapPid = input.adoptLiveDaemon ? undefined : input.reapOrphanPid;
 			let adoptPending = input.adoptLiveDaemon === true;
 			if (adoptPending && !input.resumeThreadId) {
-				throw new Error("adopting a live daemon requires the original thread id");
+				throw new Error(
+					"adopting a live daemon requires the original thread id",
+				);
 			}
 			// MED-7 R2 (Codex full-PR review): arm the RUN's start ONCE. Every
 			// restart's runGoalToTerminal gets this SAME anchor, so the active +

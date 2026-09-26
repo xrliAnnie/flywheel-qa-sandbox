@@ -2291,7 +2291,9 @@ export class CodexTmuxAdapter implements IAdapter {
 			}
 			const adoptLiveDaemon = snapshotExecution?.adoptLiveDaemon === true;
 			if (adoptLiveDaemon && (!resumeThreadId || !resumeThreadId.trim())) {
-				throw new Error("Codex live-daemon adoption requires the persisted thread id");
+				throw new Error(
+					"Codex live-daemon adoption requires the persisted thread id",
+				);
 			}
 			// FLY-2925: an adopted body is never reaped as an "orphan".
 			const reapOrphanPid = adoptLiveDaemon

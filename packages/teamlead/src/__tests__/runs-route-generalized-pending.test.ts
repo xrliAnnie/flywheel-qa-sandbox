@@ -161,9 +161,10 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 					store as unknown as {
 						db: { run(sql: string, params?: unknown[]): void };
 					}
-				).db.run("UPDATE workflow_run SET status = 'cancelled' WHERE run_id = ?", [
-					generalized.runId,
-				]);
+				).db.run(
+					"UPDATE workflow_run SET status = 'cancelled' WHERE run_id = ?",
+					[generalized.runId],
+				);
 			}
 			if (dispatchMode !== "ghost" && dispatchMode !== "tmux_hold") {
 				store.upsertSession({

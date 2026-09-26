@@ -10290,109 +10290,104 @@ export async function startBridge(
 			typeof buildCodexRecoveryContext
 		>[0]["capabilities"],
 	) => {
-			const snapshot = readCodexLaunchSnapshot(session.execution_id);
-			let windowDecision: Awaited<
-				ReturnType<typeof resolveCodexRecoveryWindow>
-			>;
-			try {
-				windowDecision = await resolveCodexRecoveryWindow({
-					executionId: session.execution_id,
-					projectName: session.project_name,
-					snapshotLabel: snapshot.label,
-					listWindows: listTmuxWindowsByExecutionId,
-					lookupTarget: lookupTmuxTarget,
-				});
-			} catch {
-				windowDecision = {
-					founderWindow: "suppressed",
-					reason: "candidates_indeterminate",
-				};
-			}
-			if (windowDecision.founderWindow === "suppressed") {
-				console.warn(
-					`[codex-session-reown] label unavailable for ${session.execution_id}: ${windowDecision.reason}`,
-				);
-			}
-			let leadId: string | undefined;
-			try {
-				leadId = resolveLeadForIssue(
-					projects,
-					session.project_name,
-					store.getSessionLabels(session.execution_id),
-				).lead.agentId;
-			} catch {
-				leadId = undefined;
-			}
-			const mailboxIdentity = leadId
-				? deriveRunnerMailboxIdentity(session.execution_id, leadId)
-				: undefined;
-			const progressPath = session.plan_path
-				? pathIsAbsolute(session.plan_path)
-					? join(dirname(session.plan_path), "progress.md")
-					: join(snapshot.cwd, dirname(session.plan_path), "progress.md")
-				: undefined;
-			const stateDbPath = store.getDbPath();
-			const activation = store.resolveCurrentWorkflowActivation(
-				session.execution_id,
-			);
-			if (activation.kind === "ambiguous") {
-				throw new Error(
-					`current workflow activation is ambiguous for ${session.execution_id}`,
-				);
-			}
-			const loopTarget =
-				activation.kind === "current" &&
-				isLoopTargetNode(activation.snapshot, activation.binding.node_id)
-					? { nodeId: activation.binding.node_id }
-					: undefined;
-			const baseContext = buildCodexRecoveryContext({
-				session,
-				snapshot,
-				capabilities,
-				...(windowDecision.founderWindow === "open" &&
-				"label" in windowDecision &&
-				windowDecision.label
-					? { label: windowDecision.label }
-					: {}),
-				...(leadId ? { leadId } : {}),
-				...(mailboxIdentity
-					? {
-							agentName: mailboxIdentity.agentName,
-							teamName: mailboxIdentity.teamName,
-						}
-					: {}),
-				commDbPath: commDbPathForProject(session.project_name),
-				...(stateDbPath !== ":memory:" ? { stateDbPath } : {}),
-				bridgeUrl: loopbackBaseUrl,
-				...(config.ingestToken
-					? { bridgeIngestToken: config.ingestToken }
-					: {}),
-				...(progressPath ? { progressPath } : {}),
-				...(loopTarget ? { loopTarget } : {}),
-				...(activation.kind === "current"
-					? { workflowActivationId: activation.binding.activation_id }
-					: {}),
-				...(session.session_role ? { sessionRole: session.session_role } : {}),
-				onHeartbeat: (executionId) => store.updateHeartbeat(executionId),
+		const snapshot = readCodexLaunchSnapshot(session.execution_id);
+		let windowDecision: Awaited<ReturnType<typeof resolveCodexRecoveryWindow>>;
+		try {
+			windowDecision = await resolveCodexRecoveryWindow({
+				executionId: session.execution_id,
+				projectName: session.project_name,
+				snapshotLabel: snapshot.label,
+				listWindows: listTmuxWindowsByExecutionId,
+				lookupTarget: lookupTmuxTarget,
 			});
-			const context = await prepareCodexRecoveryAgentHome({
-				session,
-				snapshot,
-				context: baseContext,
-			});
-			return {
-				context,
-				windowOptions:
-					windowDecision.founderWindow === "open"
-						? {
-								founderWindow: "open" as const,
-								...("windowName" in windowDecision &&
-								windowDecision.windowName
-									? { windowName: windowDecision.windowName }
-									: {}),
-							}
-						: { founderWindow: "suppressed" as const },
+		} catch {
+			windowDecision = {
+				founderWindow: "suppressed",
+				reason: "candidates_indeterminate",
 			};
+		}
+		if (windowDecision.founderWindow === "suppressed") {
+			console.warn(
+				`[codex-session-reown] label unavailable for ${session.execution_id}: ${windowDecision.reason}`,
+			);
+		}
+		let leadId: string | undefined;
+		try {
+			leadId = resolveLeadForIssue(
+				projects,
+				session.project_name,
+				store.getSessionLabels(session.execution_id),
+			).lead.agentId;
+		} catch {
+			leadId = undefined;
+		}
+		const mailboxIdentity = leadId
+			? deriveRunnerMailboxIdentity(session.execution_id, leadId)
+			: undefined;
+		const progressPath = session.plan_path
+			? pathIsAbsolute(session.plan_path)
+				? join(dirname(session.plan_path), "progress.md")
+				: join(snapshot.cwd, dirname(session.plan_path), "progress.md")
+			: undefined;
+		const stateDbPath = store.getDbPath();
+		const activation = store.resolveCurrentWorkflowActivation(
+			session.execution_id,
+		);
+		if (activation.kind === "ambiguous") {
+			throw new Error(
+				`current workflow activation is ambiguous for ${session.execution_id}`,
+			);
+		}
+		const loopTarget =
+			activation.kind === "current" &&
+			isLoopTargetNode(activation.snapshot, activation.binding.node_id)
+				? { nodeId: activation.binding.node_id }
+				: undefined;
+		const baseContext = buildCodexRecoveryContext({
+			session,
+			snapshot,
+			capabilities,
+			...(windowDecision.founderWindow === "open" &&
+			"label" in windowDecision &&
+			windowDecision.label
+				? { label: windowDecision.label }
+				: {}),
+			...(leadId ? { leadId } : {}),
+			...(mailboxIdentity
+				? {
+						agentName: mailboxIdentity.agentName,
+						teamName: mailboxIdentity.teamName,
+					}
+				: {}),
+			commDbPath: commDbPathForProject(session.project_name),
+			...(stateDbPath !== ":memory:" ? { stateDbPath } : {}),
+			bridgeUrl: loopbackBaseUrl,
+			...(config.ingestToken ? { bridgeIngestToken: config.ingestToken } : {}),
+			...(progressPath ? { progressPath } : {}),
+			...(loopTarget ? { loopTarget } : {}),
+			...(activation.kind === "current"
+				? { workflowActivationId: activation.binding.activation_id }
+				: {}),
+			...(session.session_role ? { sessionRole: session.session_role } : {}),
+			onHeartbeat: (executionId) => store.updateHeartbeat(executionId),
+		});
+		const context = await prepareCodexRecoveryAgentHome({
+			session,
+			snapshot,
+			context: baseContext,
+		});
+		return {
+			context,
+			windowOptions:
+				windowDecision.founderWindow === "open"
+					? {
+							founderWindow: "open" as const,
+							...("windowName" in windowDecision && windowDecision.windowName
+								? { windowName: windowDecision.windowName }
+								: {}),
+						}
+					: { founderWindow: "suppressed" as const },
+		};
 	};
 
 	const codexSessionReowner = new CodexSessionReowner({
@@ -10496,17 +10491,14 @@ export async function startBridge(
 					`immutable launch snapshot for ${session.execution_id} lacks rehydration context`,
 				);
 			}
-			const { context, windowOptions } = await buildCodexOwnerContext(
-				session,
-				{
-					ok: true,
-					enrolled: false,
-					workflowSubmissionExpected:
-						snapshot.rehydrationContext.workflowSubmissionExpected,
-					founderReviewRequired:
-						snapshot.rehydrationContext.founderReviewRequired,
-				},
-			);
+			const { context, windowOptions } = await buildCodexOwnerContext(session, {
+				ok: true,
+				enrolled: false,
+				workflowSubmissionExpected:
+					snapshot.rehydrationContext.workflowSubmissionExpected,
+				founderReviewRequired:
+					snapshot.rehydrationContext.founderReviewRequired,
+			});
 			return runtime.adopt(context, hooks, windowOptions);
 		},
 		reconcileTurn: async (session, recoveredThreadId) => {

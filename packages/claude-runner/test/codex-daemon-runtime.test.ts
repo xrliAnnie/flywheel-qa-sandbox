@@ -16,10 +16,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	adoptCodexDaemon,
 	assertSocketPathFitsSunLen,
-	CodexDaemonAdoptionError,
 	buildDaemonAppsApprovalArgs,
 	buildDaemonEffortArgs,
 	buildDaemonSandboxArgs,
+	CodexDaemonAdoptionError,
 	codexDaemonExitWaitMs,
 	codexSessionStateDir,
 	createDefaultKillGroup,

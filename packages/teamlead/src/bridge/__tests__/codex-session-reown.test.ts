@@ -948,7 +948,10 @@ describe("FLY-2925 live-daemon adoption after a Bridge restart", () => {
 			expect(h.deps.reap).not.toHaveBeenCalled();
 			expect(h.revive).not.toHaveBeenCalled();
 			expect(h.commit).not.toHaveBeenCalled();
-			expect(h.events).toEqual(["reown_adopt_started", "reown_adopt_succeeded"]);
+			expect(h.events).toEqual([
+				"reown_adopt_started",
+				"reown_adopt_succeeded",
+			]);
 		},
 	);
 

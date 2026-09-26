@@ -1845,7 +1845,9 @@ export async function runGoalToTerminal(
 			prior.threadId === input.threadId &&
 			prior.category === category;
 		const reobserved =
-			sameEpisode && prior !== null && prior.lastFailedTurnId === failure.turnId;
+			sameEpisode &&
+			prior !== null &&
+			prior.lastFailedTurnId === failure.turnId;
 		const attempts = sameEpisode && prior ? prior.attempts : 0;
 		// A re-observed failure (duplicate notification / restart) never consumes
 		// another attempt; it only replays the retry it already scheduled.
@@ -2121,7 +2123,11 @@ export async function runGoalToTerminal(
 						threadId: input.threadId,
 						goalStatus: "active",
 					});
-				} else if (status && status !== "paused" && isTerminalGoalStatus(status)) {
+				} else if (
+					status &&
+					status !== "paused" &&
+					isTerminalGoalStatus(status)
+				) {
 					terminalSeen = status;
 					await establishRecoveryOwnership({
 						kind: "terminal_goal_confirmed",
