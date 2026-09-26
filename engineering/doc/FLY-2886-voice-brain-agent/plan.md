@@ -3,9 +3,10 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 日期: 2026-09-25
 基于: exploration.md、research.md
 
-状态：v7 — §5.3 第二轮 scoped design review 修正，等待复审；v5 其余部分仍按 Lead effective APPROVED（问询 947a7585，R4 后裁定）。§5.3 复审与真实语音准入全部通过前，live 旁注保持关闭，只实现并使用持久背景环回退。
+状态：v8 — §5.3 第三轮 scoped design review 修正，等待复审；v5 其余部分仍按 Lead effective APPROVED（问询 947a7585，R4 后裁定）。§5.3 复审与真实语音准入全部通过前，live 旁注保持关闭，只实现并使用持久背景环回退。
 
 修订记录：
+- v8（§5.3 scoped review 修正）：不确定输出归属时保留已授权 tell/结果并永久关闭 live；无 provider 音频项到本地 utterance 的可信绑定时一律隔离，不再凭 VAD 时间窗放行；V2 泄漏处置改为按 itemId 本地持续拦截，不调用实际会 stop realtime leg 的 `cancel()`；熔断位与启停位分离，关闭再开启同一 session 也不得恢复 live。
 - v7（§5.3 scoped review 修正）：把 v6 的 5/5 降格为候选可行性证据，不再授权 live 路径；补生产 prompt + 真语音 + 近 600 字多事件/连续批次/完整回答准入、静默上限探测、静止窗口与 generation 顺序合同、上下文来源隔离、可执行泄漏判据和不可逆音频处置；熔断位与背景环改为 sessionId 绑定的持久状态。
 - v6（§5.3 设计修正）：实测否定 `appendText(developer)`；0.157.0 无 live instructions/session update 接口；A「user-role 静默旁注」5/5 通过，B「重开 realtime leg 刷 prompt」3/3 丢失上一 leg 口令，故选择 A，并把 B 降为只在自然重开时重装最近背景环的回退，不为背景事件主动重开。
 - v5（R4 + Lead 裁定）：锁只凭可信终态证据释放（abort/超时/5xx/含糊/目标未变一律保持 unknown），对账无「旧请求已完成」证据不清，唯一例外是带审计的人工 force-clear；关开关进入 draining，存量 held/unknown 清零前常驻仍做只检查的锁约束；unknown 行对 Lead 可见。
@@ -204,14 +205,14 @@ type LeadCapabilityAuthority =
 - 只为 `voiceBackground.enabled` 且引擎 B 的会话生产；关闭档与 Engine A 不产生新行（测试）。
 - 键集：简报时刻写入 `voice_sessions.brief_keys_json`；poller 推新键，`message_id = bridge-event:<sessionId>:<key>`（`INSERT OR IGNORE` 去重）。
 - `tell` 播前复核：注意力项已解决 / 状态已变 → 丢弃（证据 `agenda_stale_dropped`）。
-- **持久真源与恢复顺序**：`voice_sessions` 以 `session_id` 保存 `live_context_state = disabled|eligible|fused`、`live_context_fuse_reason`、`live_context_fused_at`、`context_ring_json`、`context_ring_revision`、`context_prompt_generation`；新列有关闭态默认值。poller 先以事件 key 幂等更新最近背景环（≤10 个唯一 key，并受 §0 token 上限约束），再考虑 live 投递。daemon/进程恢复先读 fuse，再读并校验环，最后才启动 realtime；`fused` 永不因实时腿或进程重开复位。自然 realtime start 只把去重后的环按 key 各装一次，并把本 generation 原子记入 `context_prompt_generation`；同 generation 重试不重复装载，旧 generation 的待发项只留在环中。
-- **容量**：每批合并节流 ≤1 条/10s，必须同时满足 `≤600` Unicode 字符、`≤768 o200k_base token`；每 generation live append 累计与自然 start 动态上下文分别 `≤4,096 token`，超出只留背景环。V2 静默上限未完成 §0 探测前 `live_context_state` 不得进入 `eligible`。
+- **持久真源与恢复顺序**：`voice_sessions` 以 `session_id` 分开保存可变启停位 `live_context_mode = disabled|eligible` 与不可逆熔断位 `live_context_fused_at`、`live_context_fuse_reason`，另存 `context_ring_json`、`context_ring_revision`、`context_prompt_generation`；新列默认 `disabled` 且未熔断。有效资格必须同时满足 `mode=eligible AND fused_at IS NULL`。poller 先以事件 key 幂等更新最近背景环（≤10 个唯一 key，并受 §0 token 上限约束），再考虑 live 投递。daemon/进程恢复**先读熔断位**，再读 mode 与环，最后才启动 realtime；有 `fused_at` 时同一 session 永不再进入 eligible。自然 realtime start 只把去重后的环按 key 各装一次，并把本 generation 原子记入 `context_prompt_generation`；同 generation 重试不重复装载，旧 generation 的待发项只留在环中。
+- **容量**：每批合并节流 ≤1 条/10s，必须同时满足 `≤600` Unicode 字符、`≤768 o200k_base token`；每 generation live append 累计与自然 start 动态上下文分别 `≤4,096 token`，超出只留背景环。V2 静默上限未完成 §0 探测前 `live_context_mode` 不得进入 `eligible`；有熔断位时无论容量证据如何都不得进入。
 - **注入准入与顺序**：新增 `LiveContextInjector`，与 `BrainCoordinator`/`SpeechArbiter` 共用单一派发锁。只有同一 generation 在发送前、RPC 返回后两次都满足以下条件才可 append：本地 VAD 无开放 founder utterance；没有未结算的 founder transcript/input；没有 active/未终态 assistant response；SpeechArbiter 无正在播放或已获地板的 result/tell；没有 handoff/义务派发；realtime 状态为 ready 且 generation 未变。`tell`、真实语音、结果播报优先，任何一项到达都取消尚未发出的旁注；RPC 等待中 generation 变化则把该批只留环，不向新 leg 重放。已完成 append 不请求 response、不调用 `appendSpeech`、不创建 handoff/义务，也不进入 SpeechArbiter。
-- **来源标记与镜像隔离**：每次 append 先持久登记 `(sessionId,generation,injectionId,nonce,exactTextHash,state)`；payload 带不可口述的唯一 nonce。`RealtimeTransport` 在调用 `CodexVoiceBackend.observeTranscript` **之前**做来源分类：匹配 provider itemId，或在无 itemId 时匹配当前 generation 的 nonce + exact normalized payload，标为 `live_context`。该来源不得归属 founder、不得写 transcript、不得发 thread mirror、不得创建 handoff/义务、不得作为授权或交办输入；只更新注入记录。若 provider 去掉标记、改写文本或 itemId 缺失导致无法可靠区分，当前可疑 user transcript 先进入隔离区，不进任何外部 sink；只有与本地 VAD 的真实 utteranceId/时间窗明确匹配才回放为 founder 输入，否则丢弃为未知 echo，同时持久熔断。某 Codex build 的真房样本出现一次不可区分 echo，即该 build 禁止 live 路径，只用背景环。
-- **可执行泄漏判据**：`LiveContextGuard` 持有每批 nonce、事件 key、关键字段与归一化内容指纹，并收集到 `response/done|cancelled` 的**完整** assistant transcript/audio/handoff 序列。下一条真实 founder utterance 前，任一 assistant transcript/audio/handoff（包括「收到」式确认）即为主动泄漏。真实 founder 输入后，只有当输入含明确的背景查询意图（如「刚才/最新状态/那条待批」）或与环中至少一个受保护 subject key 完整相交时，回答才可使用相应背景；否则回答出现 nonce、context-only 关键字段或内容指纹即为改写泄漏/跑题。不满足确定条件一律按泄漏处理，不让语义猜测 fail-open。QA 另以人工语义判据检查无关键字段的改写跑题。
-- **熔断与已产生输出**：检测到来源不明、主动确认、改写泄漏、跑题、realtime 异步 error/closed 或顺序条件失效时，在同一事务把 session 置 `fused` 并保留环；取消当前 response、清空尚未播放音频、隔离 assistant transcript、撤销由该旁注产生且尚未执行的 handoff（不建义务）。若音频已经送到房间，事实不可撤回：记录 `voice_live_context_leak_audible`（generation/injectionId/已播时长），该 build 的 live 准入失败，并在地板空闲时排一条「刚才那句是后台旁注误触发，请忽略」；不得继续 append。自然 realtime start 仍只装背景环，**不得为背景事件主动 stop/start**。`tell` 不走旁注，仍按议程复核后排队播报。
+- **来源标记与镜像隔离**：每次 append 先持久登记 `(sessionId,generation,injectionId,nonce,exactTextHash,state)`；payload 带不可口述的唯一 nonce。`RealtimeTransport` 在调用 `CodexVoiceBackend.observeTranscript` **之前**做来源分类：匹配 provider itemId，或在无 itemId 时匹配当前 generation 的 nonce + exact normalized payload，标为 `live_context`。该来源不得归属 founder、不得写 transcript、不得发 thread mirror、不得创建 handoff/义务、不得作为授权或交办输入；只更新注入记录。provider 去掉标记、改写文本或缺 itemId 时一律进入隔离区并持久熔断，**绝不凭 VAD 时间邻近放行**；只有 provider 音频 item 明确携带 `inputOwner.utteranceId`，且它与 RoomIO 已登记的同一本地 utterance 的 owner、generation 与音频 ownership binding 全相符，才可作为 founder 输入。markerless echo 即使与真实语音落在同一时间窗也不得放行。某 Codex build 的真房样本出现一次不可区分 echo，即该 build 禁止 live 路径，只用背景环。
+- **授权输出归属与泄漏判据**：`SpeechArbiter` 给每条已授权 tell/结果分配 `speechAttemptId`，在 appendSpeech 前把其 generation、pendingKey 和随后得到的 provider assistant itemId 登记为 `authorized_output`；`LiveContextGuard` 持有每批 nonce、事件 key、关键字段与归一化内容指纹，并收集到 item 终态的**完整** assistant transcript/audio/handoff 序列。下一条真实 founder utterance 前，只有不属于 `authorized_output` 的 assistant transcript/audio/handoff（包括「收到」式确认）才是旁注主动泄漏。append 成功后到来的 tell/结果照常优先播报；若其输出 itemId 无法与授权记录可靠绑定，**保留这次正常播报、不丢不截**，同时因归属不确定持久熔断 live，后续只用背景环。真实 founder 输入后，只有当输入含明确的背景查询意图（如「刚才/最新状态/那条待批」）或与环中至少一个受保护 subject key 完整相交时，回答才可使用相应背景；否则回答出现 nonce、context-only 关键字段或内容指纹即为改写泄漏/跑题。不满足确定条件一律按泄漏处理，不让语义猜测 fail-open。QA 另以人工语义判据检查无关键字段的改写跑题。
+- **熔断与已产生输出（V2 可执行合同）**：V2 没有 response cancel；现有 `RealtimeTransport.cancel()` 实际是 realtime stop，因此本路径**不得调用 cancel/stop，也不重开腿**。检测到来源不明、主动确认、改写泄漏、跑题、realtime 异步 error/closed 或顺序条件失效时，先在同一事务写 `fused_at` 并保留环，再把已观察到且不属于 `authorized_output` 的 assistant itemId 加入 generation-bound `blockedOutputItems`。`RealtimeTransport`/`CodexVoiceBackend` 对这些 item 持续丢弃后续 audio/transcript/handoff 直到 item terminal，未入播放队列的音频不会送房、转写不持久化/镜像、handoff 不建义务；没有 itemId 的可疑输出整段隔离并熔断。属于或可能属于授权 tell/结果的输出永不因旁注守卫被拦。若泄漏音频在识别前已经送房，事实不可撤回：记录 `voice_live_context_leak_audible`（generation/injectionId/已播时长），该 build 的 live 准入失败，并在地板空闲时排一条「刚才那句是后台旁注误触发，请忽略」；不得继续 append。自然 realtime start 仍只装背景环，**不得为背景事件主动 stop/start**。
 - **启用条件**：单测通过后，按精确 Codex build 在 QA 真房用**生产 prompt、真实语音、真实 transcript/mirror 链路**至少 5 轮；每轮发送含多个事件、接近 600 字且不超 token 上限的批次，并覆盖至少两个连续批次。每轮先问一个无关问题（完整等到 response done，零确认/零泄漏），再问与最新背景相关的问题（回答必须使用尾部与中部哨兵，证明背景不是被忽略）；同时核对 transcript、thread mirror、handoff/义务均零泄漏。任一失败、静默丢尾、来源不可区分或 §0 容量探测未完成，live 保持关闭，只允许背景环回退。v6 的 5/5 不计入这 5 轮。
-- **关闭开关 / 回滚**：原子置 `disabled`，未投递的 `context` 行置 `dropped`，环可留作纪要但不装载；旧 daemon 只按 `delivery_class` 缺省 `tell` 理解（新列默认值），enabled 会话之外不会出现 `context` 行。
+- **关闭开关 / 回滚**：只原子把 `live_context_mode` 置 `disabled`，**绝不清空或覆盖** `live_context_fused_at/reason`；未投递的 `context` 行置 `dropped`，环可留作纪要但不装载。同一 session 关闭、daemon/实时腿/进程重启再开启时，只要熔断位存在就拒绝 eligible；只有新 sessionId 才有新的未熔断位。旧 daemon 只按 `delivery_class` 缺省 `tell` 理解（新列默认值），enabled 会话之外不会出现 `context` 行。
 
 ### 5.4 体积与失败
 
@@ -317,8 +318,8 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 
 - 按包、按文件跑 vitest；排除 `**/tmux-viewer.macos.test.ts`；teamlead 里起 Bridge 的用例先隔离 `FLYWHEEL_CODEX_HOMES_ROOT`。
 - 负向守卫：关闭档行为不变（既有测试全绿）；shell 读不到凭据、连不上 127.0.0.1（`verifyModelIsolation`）；保真循环来源反例；前台 prompt 不含「逐字」「exactly as written」；后台直发会话 thread 的消息不被念回；非 enabled 会话不产生 `context` 行；旁注不得触发 `appendSpeech`/handoff/义务/额外 response；`RealtimeTransport` 回归必须覆盖「append RPC ack 后异步 `thread/realtime/error` + closed」并断言持久熔断/回退，不能只用 dispatch mock。
-- live-context 顺序矩阵：旧回答在 append 前后迟到、founder 同时开口、tell/结果已获地板、append RPC 等待中 generation 重开；断言真实语音/tell/结果优先、旧 generation 不向新 leg 重放。来源矩阵覆盖 echo 有 itemId、无 itemId 但 exact nonce、无 itemId 且被改写、与真实语音交错；断言 founder attribution、持久 transcript、thread mirror、handoff/义务和授权输入全部零泄漏。
-- live-context 输出矩阵：旁注后主动说「收到」、旁注同义改写、无关问题跑题、明确询问最新背景的合法使用；收集到 response done 而不是见到首 token 即停。检测后断言 response cancel、未播音频清空、assistant transcript 隔离、旁注 handoff 不结算；已播音频断言不可逆事故与纠正话术。重开实时腿与重启进程后断言 `fused` 不恢复、背景环按唯一 key/上限重装且同 generation 不重复。
+- live-context 顺序矩阵：旧回答在 append 前后迟到、founder 同时开口、tell/结果已获地板、append 成功后且 founder 未再输入时新 tell/结果到达、append RPC 等待中 generation 重开；断言真实语音/tell/结果优先，授权输出照常完整播报，归属不明时只熔断 live 而不误杀播报，旧 generation 不向新 leg 重放。来源矩阵覆盖 echo 有 itemId、无 itemId但 exact nonce、markerless echo 与真实语音处于同一时间窗、provider item 与本地 utterance 有/无可信 ownership binding；无绑定一律隔离，断言 founder attribution、持久 transcript、thread mirror、handoff/义务和授权输入全部零泄漏。
+- live-context 输出矩阵：旁注后主动说「收到」、旁注同义改写、无关问题跑题、明确询问最新背景的合法使用；收集到 item/response terminal 而不是见到首 token 即停。用真实 V2 transport 事件序列（非 mock cancel）证明 `blockedOutputItems` 持续丢弃该 item 的 audio/transcript/handoff，且整个过程中 realtime stop/cancel 调用数为 0；已播音频断言不可逆事故与纠正话术。重开实时腿与重启进程后断言熔断位不恢复、背景环按唯一 key/上限重装且同 generation 不重复；同 sessionId 的「熔断→关闭→进程重启→开启」仍拒绝 live append。
 - 容量矩阵用真实 `o200k_base` token 生成首中尾哨兵，覆盖 start prompt、单次 append、连续 append 的 4,096/6,144/8,192/9,216 档；发现静默丢失即不启用 live。常驻回执不被语音 parent 恢复逻辑改写；写操作缺 `targetKey` 时语音 actor fail-closed。
 - 迁移：新列带默认值 + 迁移测试；新表 `capability_target_locks`、`capability_target_lock_waiters` 必须补 `fly-2006-retention-tables` 片段。
 - 新增 spawn（改稿进程、founder-chrome provider）按 shell 枚举 / child-process census / kill-path inventory 清册登记。
@@ -331,7 +332,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 | 2 | >45s 查询 | 「还在查」1-2 次 |
 | 3 | 后台在跑时插话 | 前台立停；她说完补「刚才查到的：…」 |
 | 4 | 开场抽 3 项对照 Bridge；会话中造一条待批 | 3/3；新待批在停顿时说出；已解决的不说 |
-| 4b | 精确 Codex build 的 §5.3 准入：生产 prompt + 真语音，N≥5 轮近 600 字多事件和连续批次；每轮先无关问、再相关问，并查完整 transcript/thread/handoff | 无关问到 response done 零确认/零泄漏；相关问能用中尾哨兵；来源链零镜像/零误归属；容量首中尾都可见。任一失败则本次发布只开持久背景环，不开 live append |
+| 4b | 精确 Codex build 的 §5.3 准入：生产 prompt + 真语音，N≥5 轮近 600 字多事件和连续批次；每轮先无关问、再相关问，append 后插入一条授权 tell/结果，并查完整 transcript/thread/handoff | 无关问到 response done 零确认/零泄漏；相关问能用中尾哨兵；授权播报不被旁注守卫截断；无 ownership binding 的 markerless echo 即使同 VAD 窗也隔离；来源链零镜像/零误归属；容量首中尾都可见。任一失败则本次发布只开持久背景环，不开 live append |
 | 5 | 改测试 issue 状态 / 派空活；再让它 merge、停 runner | 前者成功且 Lead 信箱有动作日志；后者被拒，文案符合 §4.5 |
 | 5b | 打开网页读标题（founder_chrome） | 成功；若是写操作有日志 |
 | 5c | 常驻 Codex Lead 正在改同一张单时让语音改它；以及语音先写、常驻后到 | 前者被 `resident_lead_active_on_target` 拒并照实说；后者常驻排队后执行，结果以常驻为准。Claude 常驻按 §4.3 诚实边界只验预检与日志 |
@@ -351,7 +352,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 | 她的 Chrome 规约级风险 | 可切 `isolated`；HTML 如实写 |
 | auth.json 刷新竞争 | 软链接宿主真源（FLY-2358 同法），不复制不写 |
 | 模型仍把闲聊交后台 | 证据计数 `handoff_smalltalk_suspect`，不硬拦 |
-| user-role 旁注产生模型输出、来源不可区分或改变话题 | sessionId 持久熔断 live context；先取消/隔离可逆输出，已播音频记不可逆事故并纠正；保留背景环，等自然 realtime start 去重重装；scoped review、容量探测、QA N≥5 任一未过即不启用 live 路径 |
+| user-role 旁注产生模型输出、来源不可区分或改变话题 | sessionId 独立持久熔断位；按 itemId 本地隔离可逆输出，绝不调用会 stop realtime leg 的 V2 cancel；授权 tell/结果归属不明时保留播报并关闭 live；已播泄漏音频记不可逆事故并纠正；开关不清熔断，保留背景环；scoped review、容量探测、QA N≥5 任一未过即不启用 live 路径 |
 
 ## 13. 不做什么
 
