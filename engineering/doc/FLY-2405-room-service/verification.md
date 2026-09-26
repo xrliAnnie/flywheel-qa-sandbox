@@ -29,6 +29,14 @@ C1–C8 按已批准设计实现：服务归属锁、拆房坑修复、持久化
 - `tmux-viewer.macos.test.ts` 为真实 macOS GUI/进程测试，在 owning related 命令中显式排除；本轮没有该能力的验收证据。
 - 打包 smoke 绑定源码 HEAD 与构建身份；提交移动后必须在最终 head 重建身份再跑，不复用旧 SHA 的成功。
 
+## 技术同步与后续复核
+
+Draft PR #1363 与 main 的冲突在隔离工作树解决：`67123bebe` 合并 `d52df7841`，保持六房位配置、上游 Codex teardown disposer 与本单 room stop/marker 行为。随后 `3ed89bb44` 合并 `fdd1b404d` 的 FLY-2934 上游清理，删除其已退休的冗余整数计数断言，完整 flag 名称/文案相等与 authoring/readSite 守卫继续保留。
+
+flag runtime 补充 related 实际完成 76 文件、920 tests：917 通过、2 超时、1 skip；请求的重叠路径排除在 workspace projects 中没有全部生效，不将这次执行称为仅 8 文件或 175 文件。两项超时与主 related 的五项超时一起，用原默认 5 秒门限精确重跑 7 cases / 5 files，全部通过；没有改超时或产品断言。
+
+基线/沙箱限制的可复核输入见 `verification-baseline.json`。合并后的新消费者与准确父提交已追加到消费者 artifact；合并后验证不能沿用旧源码的成功作为新字节的证明。
+
 ## 收尾检查
 
 本页为创建 PR 前的局部证据快照。StateStore/plugin owning related 选择 590 文件，flag runtime related 另有 8 个未重叠消费者；创建 PR 时仍在收尾，具体最终结果、重跑记录、effective review 与 HEAD 绑定由 PR 正文及 implement handoff 报告承载。本页不声称 CI OK、QA pass、生产证明或已 ship。

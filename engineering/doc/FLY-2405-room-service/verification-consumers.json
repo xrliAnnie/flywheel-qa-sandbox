@@ -35510,7 +35510,7 @@
       "packages/teamlead/src/bridge/__tests__/customer-release-lifecycle.test.ts"
     ],
     "additional_run": "Intended: related src/bridge/flag-store-runtime.ts with per-path overlap exclusions. Discovery graph contains 175 files and 8 additions. Actual completed Vitest summary: 76 files (74 passed, 2 failed), 920 tests (917 passed, 2 timed out, 1 skipped); workspace projects did not honor every requested overlap exclusion. All 8 additional paths have actual output. Actual scope is the final Vitest result, not the discovery count.",
-    "status": "Completed on pre-sync source head5a62a7119; two default-5s timeouts await isolated retry. No eight-file-only or 175-file-execution claim.",
+    "status": "Completed on pre-sync source head5a62a7119; both default-5s timeouts passed in the isolated 7-case retry across 5 files without timeout or assertion changes. No eight-file-only or 175-file-execution claim.",
     "actual_result": {
       "files": 76,
       "passed_files": 74,
@@ -35520,6 +35520,14 @@
       "failed_tests": 2,
       "skipped_tests": 1,
       "log": "/tmp/fly2405-flag-related-delta.log"
+    },
+    "timeout_retry": {
+      "head": "5a62a7119f8498f33481298bf19738bb23432f20",
+      "cases": 7,
+      "files": 5,
+      "passed": 7,
+      "timeout_override": false,
+      "log": "/tmp/fly2405-timeout-retry.log"
     }
   },
   "main_sync_discovery": {
@@ -37237,6 +37245,11 @@
       "path": "doc/qa/framework/real-runner-e2e-guide.md",
       "predicate": "Merged configured slot range is 1–6; candidate --head remains Bridge source and --from-branch remains fixture-only. Service workflow and upstream slot6 capacity instructions both retained.",
       "verification": "Source diff inspection only; no live deploy or assertion execution."
+    },
+    "subsequent_main_sync": {
+      "main": "fdd1b404d",
+      "merge": "3ed89bb44",
+      "change": "Adopt upstream FLY-2934 removal of redundant integer count; exact expected-name/founder-copy equality and authoring/readSite guards remain."
     }
   }
 }

@@ -1,0 +1,29 @@
+{
+  "merge_base": "af853328d33b2e3cb7ad812f537bac8ced499b34",
+  "checks": [
+    {
+      "path": "scripts/__tests__/audit-discord-mailbox-ingest.test.sh",
+      "base_line": 29,
+      "needle": "protocolVersion\":2",
+      "present_at_merge_base": true
+    },
+    {
+      "path": "packages/flywheel-comm/src/index.ts",
+      "base_line": 874,
+      "needle": "protocolVersion: 3",
+      "present_at_merge_base": true
+    },
+    {
+      "path": "scripts/__tests__/fly2655-voice-room.test.mjs",
+      "base_line": 613,
+      "needle": "function fly2867LiveDaemon()",
+      "present_at_merge_base": true
+    }
+  ],
+  "voice_ps_current_probe": {
+    "error": "spawnSync ps EPERM",
+    "status": null,
+    "stdoutType": "undefined",
+    "command": "ps -o lstart=,command= -p <own node pid>"
+  }
+}
