@@ -80,3 +80,10 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 - 单纯给 `check` 增加提示唤不醒 gate-hold 作者。实施合同 D3a/D6 要求持久退休/ready 通知、CommDB 与 marker fallback 两条 hold 消费路径、原审查期限，以及真实作者 turn 发起重发的证据。
 - 内存未知沿用本项 probe fail-open，保留独立 load/free-bytes 护栏；两次危险才阻断，当前有效 non-danger 立即放行，通知另做确认。原人工暂停独立保留。
 - 续接只读复核当前源码：EventLoopGuard 仍有自杀；TmuxAdapter 仍有 250ms drain timer；review coordinator 仍 running→pending 后重排；progress-resume 仍从 session_stage 推 effectiveStage。这里没有把设计内容声称为已实现。
+
+
+## R2 后校正（覆盖 R1 的未知读数结论）
+
+实核 `machine-watermark.ts:195–209`：一次读失败保留 pressure 和 baseline；`fleet-sensors.ts:224–236`：重启首个 delta=null 不清 durable hold。`runner-admission.ts` 的异常 fail-open 只针对 hold probe，不能推广到 sensor unknown。默认 minFreeMemBytes=0（关闭），load/core=8，不能替代换页压力保护。R2 的 F1/F2 因此改为2P内新鲜证据和有界启动采样等待，有效 non-danger立即放行，超期未知告知降级并不锁存。
+
+R2 同时实核：review coordinator 只有 per-job retry timer，没有通用30s recovery patrol；plan明确新增窄单飞回合。`stop()` 当前只清定时器，shutdown kill回调仍有写普通failure的路径，设计统一退休。退出marker当前以同代stall推“自杀”，删除kill后须改为仅诊断线索。这些均是实现合同，不是已实现行为。

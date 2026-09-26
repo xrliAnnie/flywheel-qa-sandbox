@@ -3,7 +3,7 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 日期: 2026-09-26
 基于: research.md
 
-状态：R1 CHANGES_REQUESTED 已修订，待 R2 有效 design-review。设计基线 d52df7841。本文为实现合同；没有生产验证或 ship 授权。
+状态：R2 CHANGES_REQUESTED 已修订，待 R3 有效 design-review。设计基线 d52df7841。本文为实现合同；没有生产验证或 ship 授权。
 
 ## 第一部分：交付给 founder 的结果
 
@@ -42,18 +42,19 @@ flowchart TD
 
 ### B. 卡顿只观察，不成为自杀开关
 
-修改 `packages/teamlead/src/bridge/BridgeEventLoopGuard.ts`、`plugin.ts`；调整 `src/__tests__/bridge-event-loop-guard.test.ts`、其 `fixtures/loop-guard/run-kill-harness.ts`。
+修改 `packages/teamlead/src/bridge/BridgeEventLoopGuard.ts`、`bridge-exit-marker.ts`、`plugin.ts`；调整 `src/__tests__/bridge-event-loop-guard.test.ts`、其 `fixtures/loop-guard/run-kill-harness.ts`。
 
 - 删除 worker `process.kill(process.pid,"SIGKILL")` 及 killing/restart 文案；不转移到别的线程/超时器。
 - 每个连续无 heartbeat 前进的事件只取证一次。保存 `reportedBeat`，继续廉价 heartbeat 采样；同 beat 不再 ps/写审计。beat 前进后清除此标记，恢复事件最多一次；下一独立 stall 可再次记录。
 - 保留现有证据脱敏、log rotate、child/marker attribution；不在繁忙期反复生成重型进程树。停止时取消所有定时器。
 - 删除测试对生产 SIGKILL 的正向期待，改真隔离子进程断言：停顿超过阈值、活过观察窗口、恢复、再次停顿有第二条事件。不要只在 testMode 下断言未 kill。
 - 永久 wedge 的验收：隔离 Bridge `/health` 超时→外部 `bridge-liveness-probe.sh` 达阈值只 page 一次→恢复一次 all-clear；用测试 sink，不向生产发信。值守核对实际 service label/进程与诊断后，按既有 `scripts/restart-services.sh` runbook 由有权限操作者恢复 `com.flywheel.bridge`；本单不运行 kickstart，也不把手工路径改为自动 kill。
+- `bridge-exit-marker.ts` 的 stall 记录仅作为诊断线索，不再作为退出原因；`buildAbnormalExitAlertContent` 统一使用“Bridge 非正常退出”，若附带同代 stall 明示“曾观察到卡顿，退出原因未证实”。保留 pid/bootTs 绑定与告警幂等键，不凭最近一条 stall 推断自杀。补 `bridge-exit-marker.test.ts`：stall→恢复→其他原因退出，以及未恢复 stall→退出，两者均不声称自杀。
 - 同步 `packages/claude-runner/test/fixtures/kill-path-inventory.json` 精确移除该 kill 源；不借机重写其他 kill 路径。`fly1560-teardown-guard.test.ts` 保留监测器存在合同；更新 guard fixture 与相关文案。
 
 ### C. 删除 250ms 排空判败，保留完整成功证据
 
-修改 `packages/claude-runner/src/TmuxAdapter.ts:defaultAsyncExecFile`，消费者为 ensureRunnerSession 与 CodexTmuxAdapter 的 async helper。
+修改 `packages/claude-runner/src/TmuxAdapter.ts:defaultAsyncExecFile`，消费者包含 ensureRunnerSession 与 CodexTmuxAdapter 的 async helper，以及跨包 git/命令探针。实施时在 acceptance.md 逐项记下当前 timeout：edge-worker 的 Blueprint.ts、WorktreeManager.ts；teamlead 的 ActionExecutor.ts、fleet-console.ts、phase-branch-tip.ts、run-infra.ts、workflow-docs-git.ts；TmuxAdapter.ts 的其余调用。目前这些跨包调用都传 timeoutMs，删除 drain 后要等各自整体 deadline；补至少一项 WorktreeManager 或 run-infra 非 claude-runner 包回归。
 
 - 移除 `drainTimeoutMs`、drainTimer 及 `ERR_CHILD_STDIO_DRAIN_TIMEOUT`。成功仍须 exit=0 且 close 已到；不会在 spawn/exit 当刻丢弃尾部输出或伪造成功。
 - 使用整次命令 deadline（涵盖 spawn、执行、输出关闭）；调用者 timeout 优先。对未传 timeout 的 helper 调用，默认 90,000ms（沿用现有 ensure attempt 预算）；不可无限等继承管道。所有消费者列清 timeout 和协议解析。
@@ -73,24 +74,26 @@ D1. 启动恢复顺序：
 2. 对其余上一 Bridge 的 running 做一次条件转换到 `failed`，reason=`bridge_restart_retired`；保存原绑定、清空此尝试 retry_at，记录 `retired_at` 与 attempt。不得调用通用失败 helper 的自动重排副作用。
 3. source 为该 reason 的 reuse follower 保留其原门/绑定，记录相同待重发原因，不执行 `releaseReuseBindingToOwnLane`。以后每次 boot、source 失败回调也必须遵守此规则。
 4. 从未启动的 pending 仍可首次执行；与重启无关的既有 quota 定时重试继续。曾运行的退休尝试不在任何 automatic enqueue 查询中。
+5. 优雅关停同样使用退休事务：`stop()` 先置 stopped、阻止新认领及回调分类，对本 Bridge 所有仍 running 的 generation 条件退休并写 notice，再由原 `killAllClaudeReviewChildren` 终止子进程。runJob 的每个异步返回点在存储 outcome 前重验 stopped、generation 和 running 状态；stop 之后不得写普通 nonzero_exit、自动重排或覆盖已存 verdict。若崩溃发生在退休事务前，下次 boot 处理仍 running；事务后则幂等重投 notice。done/verdict 已先提交者仍只投递其结果。不要假定 stop() 当前已具备此语义。
 
 D2. 状态扩展（StateStore additive migration，旧字段不删）：`codex_review_job.attempt_generation INTEGER NOT NULL DEFAULT 0`、`retired_at TEXT NULL`；retry notice 由 failed reason+generation 派生，无需第二套队列。认领事务只允许 pending/failed，generation 加一。完成/失败/延迟 callback 的更新必须带 generation，旧 callback 不能写新尝试结果。复用 binding 添加 `retry_required_reason` 及 source generation，或使用现有明确非终态字段实现同等语义；不得用 responded_at 伪装已答。
 
-D3. 可见重发路径：在 `plugin.ts` 增加 `POST /review-requests/status`，复用 `/review-requests` 的 ingest-token middleware；body 为 `{executionId,questionId}`，coordinator 核对原 question owner/checkpoint 和 job/reuse 绑定，只返回该门的状态，不接收任意文件路径。为未决退休请求提供 `{status:"pending", reviewRetry:{requestId,questionId,reviewType,planPath?,attemptGeneration,reason}}`，保持 question open、无 final response。`check` 在未答时经上述 Bridge endpoint 查询此提示（沿用 request-review 的身份认证；数据库不可用/网络失败仍 pending，不能返回通过）。CLI 打印精确命令 `request-review --request-id <R> --question-id <Q> --type <T> [--plan <P>]`；不得通过 shell 拼接执行。源合同指示作者在看到该结构化提示后显式重发，保留相同 requestId，失败时继续观察，不自动造新 gate。兼容旧客户端只会继续等，Lead 的一次 failure 通知附同一恢复指引。
+D3. 可见重发路径：在 `plugin.ts` 增加 `POST /review-requests/status`，复用 `/review-requests` 的 ingest-token middleware；body 为 `{executionId,questionId}`，coordinator 核对原 question owner/checkpoint 和 job/reuse 绑定，只返回该门的状态，不接收任意文件路径。为未决退休请求提供 `{status:"pending", reviewRetry:{requestId,questionId,reviewType,planPath?,attemptGeneration,reason}}`，保持 question open、无 final response。`check` 在未答且本地 question checkpoint 是 review_design/review_code 时才经上述 Bridge endpoint 查询此提示；其他 gate 零新增 HTTP 请求。返回仅限重发所需绑定与状态，共享 ingest token 不被当作执行体独占凭据。查询沿用 request-review 的认证通道；数据库不可用/网络失败仍 pending，不能返回通过。CLI 打印精确命令 `request-review --request-id <R> --question-id <Q> --type <T> [--plan <P>]`；不得通过 shell 拼接执行。源合同指示作者在看到该结构化提示后显式重发，保留相同 requestId，失败时继续观察，不自动造新 gate。兼容旧客户端只会继续等，Lead 的一次 failure 通知附同一恢复指引。
 
-D3a. **作者停等也必须收到通知，不能依赖它主动 check。** 在 StateStore 增加窄表 `review_recovery_notice`，键 `(request_id,attempt_generation,stage)`，stage 为 `retired|ready|operator_required`；保存精确 question/execution、不可变 notice 文本与 pending/delivered/acted 状态。退休事务同时写 retired notice；与 CommDB 的投递用持久 outbox 重放。coordinator 的启动及现有 retry patrol 只排送这些通知，绝不因此执行 reviewer。
+D3a. **作者停等也必须收到通知，不能依赖它主动 check。** 在 StateStore 增加窄表 `review_recovery_notice`，键 `(request_id,attempt_generation,stage)`，stage 为 `retired|ready|operator_required`；保存精确 question/execution、不可变 notice 文本与 pending/delivered/acted 状态。退休事务同时写 retired notice；与 CommDB 的投递用持久 outbox 重放。coordinator 的启动及下述新增 recovery pass 只排送这些通知，绝不因此执行 reviewer。
 
 - sink 使用 `CommDB.insertInstructionAndClearDeclaredState`，稳定消息 id=`review-recovery:<request>:<generation>:<stage>`，sender 为真实 `bridge` provenance，不冒充 Lead/审批。正文含恢复原因、原 R/Q/type/plan、精确重发命令及“先核 TURN，仅可恢复原评审，不是最终裁决”。既有 `RunnerMailboxLane` + `wakeRunnerMailbox` 负责真实 transport、重试与消费；只在 durable enqueue 后 stamp outbox，断点重复投递是同 id，不多生消息。
 - **传输 ACK 不等于模型已恢复。** 扩展 `CodexTmuxAdapter` / `codex-daemon-client.ts` / `codex-daemon-goal-runtime.ts` 的 gate-hold 输入：新增 `readActionableReviewRecovery`（从当前执行的持久未 acted 通知投影读取），在正常 CommDB `hasPendingBlockingGateFrom` 和 marker fallback 两条分支中，都允许待处理 review recovery 启动一个工作 turn；不调用 markGateAnswered，不填 answeredAt，不删 gate，不释放其他审批的权限。marker 增加 `recoveryNoticeId` 非终态提示只作 fallback；真实 notice 仍需校验 R/Q/exec/generation。原 final verdict marker 语义保持不变。
-- 同一 turn 明确重发被服务端接受后，将 notice acted，并回到原 gate-hold；`retry-held` 则原子写 recovery_state=held/next_probe_at，retired notice acted。由现有 review retry patrol 每 30s 对这个**有限旧 attempt**做身份检查；发现 absent 时一次写 ready notice，再走相同 outbox/doorbell/hold 唤醒。期间不重审、不起 reviewer、不每 tick 发消息。重启从 held 行恢复观察同一身份，不重建 attempts。
+- 同一 turn 明确重发被服务端接受后，将 notice acted，并回到原 gate-hold；`retry-held` 则原子写 recovery_state=held/next_probe_at，retired notice acted。由新增 recovery pass 每 30s 对这个**有限旧 attempt**做身份检查；发现 absent 时一次写 ready notice，再走相同 outbox/doorbell/hold 唤醒。期间不重审、不起 reviewer、不每 tick 发消息。重启从 held 行恢复观察同一身份，不重建 attempts。
 - deadline 到达而不能安全证明退出时写 operator_required，停止自动身份巡查并向 owning Lead 提交明确所需证据（不能静默 hold）。作者收到这份有限状态结果，不自动无限 reissue。notice 不给 TURN；当前 execution 已 terminal 或不再绑定该节点时不激活旧体，通知转交当前 holder/Lead，原 gate 按现有绑定规则处置。
+- 明确新增 coordinator `runRecoveryPass()`，复用现有注入式 setTimer/clearTimer，采用一次性 timer 在上一回合结束后安排下一次（30s），以单飞 guard 防止 boot/manual/timer 重入，绝不叠加慢回合。启动立即一次，停止清 timer、禁止重新安排，并在每次 await 后重验 stopped。回合按原预算到期优先，随后 bounded batch（每回合最多 100 条，按 next_probe_at/request_id 排序并推进游标）重投 pending notice、探测精确退休身份及 held→ready；每回合另有5s调度预算，到点不开始下一项并保存游标；每项失败更新 next_probe_at=now+30s，不能导致全回合永停或反复占住队首。每次探测/投递设 5s 上限；观察超时只算 unknown，绝不视为死亡。stop 时取消尚未开始的工作，已进行的投递仅可幂等落收据；不得起 reviewer。该窄回合是新增代码，不宣称现有 quota armRetryTimer 或 account-switch 回合已实现它。
 - 补消费者测试：真实 persisted gate-open + gateHold=true + 队列通知 + daemon hold 读路径，覆盖 CommDB 和 marker fallback；仅手工调用 CLI 不算。进程/传输探针允许隔离替身，但必须断言实际作者 turn 被调用并消费同一 notice，后续 request-review 是该 turn 的动作。
 
-D4. 防止作者重发又叠一只旧审查体：新尝试 spawn 前持久记录 `(requestId,generation,reviewerSessionUuid,ownerBootId)`，并让子进程携带精确 request+generation 标记；记录 PID/启动身份为补充证据，不凭 PID 单值杀。Bridge 重启只退休作业，不盲杀残存 reviewer。显式 retry 前读取一次精确旧身份进程证据：仍活/unknown 返回 retry-held（门仍 open，不 enqueue），已证实不存在才 CAS 新 generation 并执行。两个并发 retry 只有一个认领赢家。新进程 pre-spawn intent 后崩溃也可通过精确标记判 absent；旧版本优先用已存 reviewerSessionUuid 对照 argv 中精确 `--session-id/--resume`，再核对执行目录、process start identity、PGID 与原作业 started_at；无法精确对应才 `legacy_owner_unverified`。持久 `reviewer_started_at + configured_timeout_ms` 是原预算（默认30分钟），重启不延长。截止前保持 held；截止时仅对重新验证匹配的原进程组通过现有 exact-identity kill guard 发一次终止并验证退出，禁止裸 PID 群杀。成功退出才 ready wake；身份未知/杀后仍活则 operator_required，一次告知 Lead，附 R/Q/session UUID/预算/探测原因，不把它视为可重试。身份巡查只存在于这个 held attempt 的截止窗口，不是全局孤儿扫描器。
+D4. 防止作者重发又叠一只旧审查体：新尝试 spawn 前持久记录 `(requestId,generation,reviewerSessionUuid,ownerBootId)`，并让子进程携带精确 request+generation 标记；记录 PID/启动身份为补充证据，不凭 PID 单值杀。Bridge 重启只退休作业，不盲杀残存 reviewer。显式 retry 前读取一次精确旧身份进程证据：仍活/unknown 返回 retry-held（门仍 open，不 enqueue），已证实不存在才 CAS 新 generation 并执行。两个并发 retry 只有一个认领赢家。新进程 pre-spawn intent 后崩溃也可通过精确标记判 absent；旧版本优先用已存 reviewerSessionUuid 对照 argv 中精确 `--session-id/--resume`，再核对执行目录、process start identity、PGID 与原作业 started_at；无法精确对应才 `legacy_owner_unverified`。持久 `reviewer_started_at + configured_timeout_ms` 是原预算（默认30分钟），重启不延长。截止前保持 held；截止时仅对重新验证匹配的原进程组通过现有 exact-identity kill guard 发一次终止并验证退出，禁止裸 PID 群杀。成功退出才 ready wake；身份未知/杀后仍活则 operator_required，一次告知 Lead，附 R/Q/session UUID/预算/探测原因，不把它视为可重试。原预算管理覆盖全部退休 attempt，不依赖作者是否重发或是否仍活。boot 退休时即登记固定 deadline；新代精确身份在原预算到期后走同一 exact-identity guard 并验证退出，旧身份可精确证实时同样处理。无法精确证明的 legacy 项一次 operator_required、不杀。作者不重发/旧客户端/terminal 时也不能遗留无限期 reviewer；只对本表已知有限退休身份处理，不扫描全机。作者仍待答时才投 ready wake；其他情况只保存收口记录。重启不延长 deadline，operator_required/已退休完结者不再巡查。
 
 D5. 同 request retry 重新校验 open gate、exec、review type、repo、plan/head。head 已动走现有 head-move 合同，不能将旧结果授予新头。follower 作者显式重发才原子转其 own lane； source 完成可先回填 follower，不重复开体。response 赢过 retry 时返回已有结果；closed/superseded/wrong owner 一律无 spawn。
 
-D6. 不丢结果的决定性测试：真实临时 StateStore + CommDB，登记认领 R/Q，作者进入持久 gateHold/park 且**禁止测试直接替作者 check**→销毁 coordinator（模拟 Bridge 崩溃）→新 coordinator boot 两次→R retired、Q open、spawn=0→队列投递 retired notice、真实 hold 消费路径启动作者 turn→作者重发得到 held→旧 process 退出→patrol 写 ready notice、再次唤醒作者→作者带 R/Q 重发两次→只执行一次→保存 verdict→答原 Q→作者 check 取得结论。增加 transport 首次失败、enqueue 后 crash-before-stamp、模型消费前 daemon 重启、通知晚于最终 verdict、其他 gate 同时未答五个断点；无重复 spawn、无伪造 answeredAt、不得推进其他 gate。另在保存 verdict 与答门之间中断，重启只重投、不重算。已提交 code authority/job 未完成的窗口也必须回填。测试 fake reviewer 输出可以，但真实持久化和 CLI/HTTP 状态读取不能全 stub 掉。
+D6. 不丢结果的决定性测试：真实临时 StateStore + CommDB，登记认领 R/Q，作者进入持久 gateHold/park 且**禁止测试直接替作者 check**→销毁 coordinator（模拟 Bridge 崩溃）→新 coordinator boot 两次→R retired、Q open、spawn=0→队列投递 retired notice、真实 hold 消费路径启动作者 turn→作者重发得到 held→旧 process 退出→recovery pass 写 ready notice、再次唤醒作者→作者带 R/Q 重发两次→只执行一次→保存 verdict→答原 Q→作者 check 取得结论。增加 transport 首次失败且不重启（下个 recovery pass 即重投）、enqueue 后 crash-before-stamp、模型消费前 daemon 重启、通知晚于最终 verdict、其他 gate 同时未答、优雅 stop→kill 与 verdict 回调竞态、作者始终不重发而旧 reviewer 到期七类断点；断言 recovery pass 不重入、停止后无新 timer/认领、过载分批不饿死到期项；无重复 spawn、无伪造 answeredAt、不得推进其他 gate。另在保存 verdict 与答门之间中断，重启只重投、不重算。已提交 code authority/job 未完成的窗口也必须回填。测试 fake reviewer 输出可以，但真实持久化和 CLI/HTTP 状态读取不能全 stub 掉。
 
 ### E. 孤儿身份一次退休，不删除整个 session
 
@@ -106,13 +109,28 @@ D6. 不丢结果的决定性测试：真实临时 StateStore + CommDB，登记�
 
 修改 `machine-watermark.ts`、`fleet-sensors.ts`、`runner-admission.ts`、`capacity-snapshot.ts`、`plugin.ts`、StateStore migration/兼容读 API。
 
-F1. 单一当前快照 `PressureSnapshot={sampledAtMs,source:"vm_stat",freePct,swapoutDeltaPages,baselineAtMs,state:"healthy"|"pressure"|"unknown",reason}`。只存最新读数；相邻完整采样间隔≤2×sensor pollIntervalMs 才可计算 delta，计数倒退/失败/过期要重置 baseline。内存通知 episode 可继续有状态，但不能作为准入阻断位。
+F1. 单一决策快照 `PressureSnapshot={sampledAtMs,source:"vm_stat",freePct,swapoutDeltaPages,baselineAtMs,state:"healthy"|"pressure"|"warming"|"unknown",reason,evidenceValidUntilMs}`；准入和 capacity 都调用同一 `evaluatePressure(now)`，即时校验新鲜度，而非只读上次评估值。保存最多两个完整采样及最近一次已确认 pressure 的证据时间。相邻完整采样间隔≤2×pollIntervalMs 才计算 delta；单次读失败不立即丢 baseline，超过此间隔或累计计数倒退才重置。失败与通知不能刷新 sampledAt 或 evidenceValidUntil。
 
-F2. 判据明确且不依赖历史 pressure latch：保存最多两个新鲜采样的滑动窗口；连续两次 danger（freePct<LOW 或 delta>MIN）才 pressure。一次 spike 是 observing，暂不挡此项；当前有效 delta≤MIN 且 freePct≥LOW（含8–15%的 band）便放行此项，原因标 normal_band/healthy，不沿用曾经危险的状态。HIGH 15 仅用于对外宣布“充足恢复”，不让 band 变成永久停派。首次 baseline/失败/过期为 unknown：沿用原 probe fail-open，仅跳过本项并保持独立 load/free-bytes 护栏，页面明确标 degraded/unknown，绝不说健康。连续 unknown 达2个采样周期给 Lead 一次 degraded 告警，恢复有效读数一次 all-clear；持续未知不重复通知。传感器明确关闭时此项 disabled，不因缺快照误停全队；保留已有 load/最低 free bytes 等独立护栏。
+F2. 有限的新鲜度保护，不使用永久暂停位。令 P 为当前 pollIntervalMs；证据有效期最多 2P，读时还取存储期限与当前配置计算期限的较早者。
 
-F3. 删除 `ensureSensorHold/liftSensorHold` 作为传感器权威的路径。admission 不再读取 sensor DB 行；capacity 的压力原因与放行结果读同一 snapshot，标明时间、来源、% free 与 pages/tick 单位。历史 `set_by='swap-sensor'` 行一次迁移删除；无法删除也不能继续阻挡。非 sensor 行保留为 operator pause 兼容输入，明确显示“人工暂停”，不被健康读数自动撤销。传感器 pressure/unknown 沿用 typed reason `pressure_hold` 并提供 snapshot.reason，人工暂停保留 `pressure_hold` + manual sub-reason（不冒充有期限的 `admission_paused`）；同步 `lead-backends/codex/runner-action-http.ts` 和 capacity 映射，旧客户端仍理解暂停。不 drop 表以免破坏脚本读表/人工兼容。
+| 当前证据 | 本项准入 | 期限与转换 |
+|---|---|---|
+| 有效 delta≤MIN 且 freePct≥LOW，含8–15% band | 立即放行 | 清除旧 pressure 依据；不等两次恢复，不要求达到 HIGH |
+| 正常运行时连续两次有效 danger（freePct<LOW 或 delta>MIN） | 暂停 | 最新确认样本产生有效期≤2P的 pressure 证据 |
+| 已有仍新鲜 pressure + 一次失败/未知 | 暂停至原证据到期 | 失败不续期；下个≤2P完整样本跨空档算 delta，有效 non-danger 立即放行；有效 danger 可刷新压力证据 |
+| 全新采样链、boot 无可验证的新鲜样本 | warming，有界暂缓 | 首次启动该采样链即冻结 warmupUntil=startedAt+2P；第一次可算 delta 的 non-danger 立即放行，danger 则保守进入 pressure（启动专用一次确认），后续 non-danger 即解除。不能在每次读失败或 Bridge 重启时重设期限 |
+| 证据与 warm-up 都已到期，仍无法计算 | unknown/degraded，本项放行并一次告警 | 不伪称健康；不无限保留历史 pressure，也不重新进入启动等待。后续新鲜样本按正常确认规则恢复 |
+| 传感器明确关闭 | disabled，本项不阻断 | 不因缺快照误停派 |
 
-F4. 通知与准入分离：暂停通知只在连续两次 danger 时发；准入首次有效 non-danger 即放行，恢复通知在两次有效 non-danger 后发（band 表述为“恢复派发”，不谎称free≥HIGH）。episode 内零散波动不重复发 pause；每个 incident 最多一 pause/一 resume，30s spike 不造告警风暴。暂停/恢复通知基于上述确认变化，借现有 owner-routed alert/Lead 事件通道，使用独立 kind/reason 防止吞掉别的通知。一 episode 的 pause/resume 事件各一份持久去重键；只有 durable accepted 才标已发送，失败重试不改变准入结果。短于旧告警 debounce 的 episode 也能告知恢复。持久 episode/通知历史仅供消息，不参与 admission。boot 用历史通知补恢复告知，但不能恢复旧手刹。
+启动专用一次 danger 确认只保护 warm-up 到首个完整 delta 的交接；消息仍采用两次确认，避免一次尖峰制造告警风暴。正常运行时单次 spike 不阻断。HIGH 15 只用于对外说明“充足恢复”，不控制本项放行。
+
+复用 StateStore 增加一条版本化采样缓存（不是 fleet_pressure_hold）：保存真实完整样本、hostBootId、sampledAt、pressureEvidenceAt/validUntil，以及该采样链首次 warmupUntil。只接受同一主机启动代、时间非未来且年龄≤2P、阈值/来源兼容的数据，counter 倒退不得计算 delta。Bridge 重启继承仍新鲜 pressure 与其原期限，不能把写库/重启时间当采样时间；缓存缺失时在接受 admission 前持久冻结一次 warm-up 期限。反复 Bridge 重启或传感器失败不延长同一主机代的该期限。缓存无效时保留可验证的原 warmupUntil，不能因解析失败重新计时；缓存不可读且无法持久冻结期限时明确 unknown/degraded 并一次告警，不能假装有新鲜压力，也不引入每次重启重新计时的替代暂停位。该存储故障降级不提供重启压力保护，必须单独验收并报告；迁移中的旧无时间戳 sensor hold 不可当作证据。持久失败不能造成无限锁存。主机实际重启/计数器新代允许创建新的有界采样链。
+
+更正 R1 的源码判断：现有 hold probe 异常 fail-open 不等于传感器未知会放行；旧 monitor 的 unknown 保持 pressure。独立 load/core 默认8，最低 free bytes 默认0（关闭），它们不能替代换页压力保护，本单不改这些配置。超过2P未知后放行是明确的可用性取舍：一次告知 Lead 采样退化、页面显示未知，恢复有效读数一次 all-clear；不得把这段称为“内存已恢复”。
+
+F3. 删除 `ensureSensorHold/liftSensorHold` 作为传感器权威的路径。admission 不再读取 sensor DB 行；capacity 的压力原因与放行结果读同一 snapshot，标明时间、来源、% free 与 pages/tick 单位。历史 `set_by='swap-sensor'` 行一次迁移删除；无法删除也不能继续阻挡。非 sensor 行保留为 operator pause 兼容输入，明确显示“人工暂停”，不被健康读数自动撤销。只有仍有效 pressure 或 warming 阻断时才返回 typed reason `pressure_hold` 并提供 snapshot.reason；unknown 到期放行时不返回阻断 reason，人工暂停保留 `pressure_hold` + manual sub-reason（不冒充有期限的 `admission_paused`）；同步 `lead-backends/codex/runner-action-http.ts` 和 capacity 映射，旧客户端仍理解暂停。不 drop 表以免破坏脚本读表/人工兼容。
+
+F4. 通知与准入分离：暂停通知只在连续两次 danger 时发；准入首次有效 non-danger 即放行，恢复通知在两次有效 non-danger 后发（band 表述为“恢复派发”，不谎称free≥HIGH）。episode 内零散波动不重复发 pause；每个 incident 最多一 pause/一 resume，30s spike 不造告警风暴。暂停/恢复通知基于上述确认变化，借现有 owner-routed alert/Lead 事件通道，使用独立 kind/reason 防止吞掉别的通知。一 episode 的 pause/resume 事件各一份持久去重键；只有 durable accepted 才标已发送，失败重试不改变准入结果。短于旧告警 debounce 的 episode 也能告知恢复。持久 episode/通知历史仅供消息，不参与 admission。boot 用历史通知补恢复告知，但历史通知不能恢复旧手刹；只有 F2 新鲜采样证据能有限阻断。warm-up 或 pressure 因过期转 unknown 时只能通知“采样未知，保护降级”，不能发虚假“恢复”消息。
 
 F5. `swapPressureRepair` 与 recovery probe 只读取当前 snapshot；旧排队 alert 不再能 setFleetPressureHold。已有告警工单可继续 resolve。通知到达不证明快照当前有效，页面/准入都即时检查新鲜度。
 
@@ -131,12 +149,12 @@ F5. `swapPressureRepair` 与 recovery probe 只读取当前 snapshot；旧排队
 
 | 组 | 测试文件（包内路径） | 必须保留的反例 |
 |---|---|---|
-| B | teamlead `src/__tests__/bridge-event-loop-guard.test.ts` | 非 testMode 真 worker，不自杀、取证一次、恢复后二次事件 |
+| B | teamlead `src/__tests__/bridge-event-loop-guard.test.ts`, `src/bridge/__tests__/bridge-exit-marker.test.ts` | 非 testMode 真 worker，不自杀、取证一次、恢复后二次事件 |
 | C | claude-runner `test/async-exec-file.test.ts`, `test/TmuxAdapter.test.ts`, `test/CodexTmuxAdapter.test.ts` | 非零退出/ENOENT/超时/overflow 仍失败；两个 vendor 延迟600ms成功 |
 | C lifecycle | teamlead `src/bridge/__tests__/run-dispatcher-pre-registration-cleanup.test.ts`, `src/__tests__/runs-route-generalized-pending.test.ts`, `src/bridge/__tests__/generalized-launch-recovery.test.ts` | absent失败收口；alive/unknown不重开；原 claim 可恢复 |
 | D | teamlead `src/bridge/__tests__/review-request-coordinator.test.ts`, `src/__tests__/StateStore.codex-review.test.ts`; flywheel-comm `src/__tests__/request-review.test.ts`；新 `src/__tests__/review-retry-status.test.ts` | 原门不丢；boot两次零spawn；作者重发一次spawn；旧generation回调被拒；follower不自动重跑 |
 | E | teamlead `src/bridge/__tests__/codex-runner-orphan-reaper.test.ts` | home未知/活execution/换代/新home/复用PGID不退休；session其余字节保留 |
-| F | teamlead `src/bridge/__tests__/machine-watermark.test.ts`, `fleet-sensors.test.ts`, `pressure-hold.test.ts`, `capacity-snapshot.test.ts`; `src/__tests__/capacity-route.test.ts` | 旧sensor行无权；人工pause保留；单spike/band不全队暂停、unknown告警有界、真实持续swap增长阻断；通知失败不锁派发 |
+| F | teamlead `src/bridge/__tests__/machine-watermark.test.ts`, `fleet-sensors.test.ts`, `pressure-hold.test.ts`, `capacity-snapshot.test.ts`; `src/__tests__/capacity-route.test.ts` | 旧sensor行无权；人工pause保留；单spike/band不全队暂停、unknown告警有界、真实持续swap增长阻断；通知失败不锁派发；swap持续增长时重启与一次读失败均不瞬间放行；2P后未知必降级告知且不锁存；反复重启不延长证据期限 |
 | G | teamlead `src/__tests__/rescue-runtime.test.ts`, `src/bridge/__tests__/progress-resume.test.ts`, `run-infra-continuity.test.ts` | terminal不复活；未推tip/description/cursor不改；未知node不退main |
 
 命令模板（从仓根执行；每次列出该组具体文件，禁止把下式文件名单变为整包）：
@@ -157,7 +175,7 @@ pnpm --filter flywheel-comm exec vitest run src/__tests__/request-review.test.ts
 - additive 数据字段可被旧版本忽略，但**旧版本会重启重排与读旧 sensor 行**，所以不能把直接回滚代码叫安全恢复。回滚前暂停新 review/admission 工作并由 Lead 选择向前修复或受控版本切换；本设计不授权生产操作。
 - 旧 verdict/gate/repo/head、人工 pause、session.json 元数据和工作分支不重写；新退休记录保持可审计。
 - 旧版本无 reviewer ownership 的遗留项可能需要一次人工核验才能重发；新协议下自动路径必须有完整身份证据。
-- 长期完全无内存读数明确显示 degraded/unknown 并一次告知；本项不锁派发，独立 load/free-bytes 护栏仍有效，需修复采样。
+- 内存采样未知只在新鲜证据或启动等待的固定2P窗口内暂停；超窗明确 degraded/unknown 并一次告知后放行本项。load/core 默认8、free-bytes默认关闭，不能宣称它们提供等价内存保护；需修复采样。
 - 非目标：通用进程杀器、全库清洗、扩大自动重试、账号/并发/班车重构、生产故障复演、部署。原六单结果不因这些排除被缩减。
 
 ## 设计节点交付门
@@ -177,3 +195,13 @@ pnpm --filter flywheel-comm exec vitest run src/__tests__/request-review.test.ts
 - LOW `tests_incomplete`：本阶段无实现且 worktree 未装依赖，未声称测试绿；实现节点安装本仓 pinned 依赖后按白名单执行。
 
 追加相关验收：`flywheel-claude-runner` 的 `test/codex-daemon-client.test.ts`、`test/CodexTmuxAdapter.test.ts`（按实际文件核路径），`flywheel-comm` 的 `src/__tests__/gate-marker.test.ts` 与 mailbox instruction 去重测试，`flywheel-teamlead` 的 RunnerMailboxLane 测试，`flywheel-edge-worker` 的 `src/__tests__/Blueprint.fly1188-codex-prompt.test.ts`，`bash scripts/__tests__/bridge-liveness-probe.test.sh`。全部隔离输入和具体文件，不运行整包。
+
+## R2 findings 处置（2026-09-26）
+
+- HIGH `pressure-unknown-fail-open-at-restart`：F1/F2 改为2P新鲜证据、跨单次空档保留 baseline、启动有界等待及首个可算 danger 的保守交接；有效 non-danger 立即放行。更正默认 free-bytes 关闭及旧 sensor unknown 不放行事实，补重启压力、单次失败、到期和重启不续期反例。
+- MEDIUM `review-recovery-patrol-nonexistent`：D3a 明确新增窄 recovery pass、30s单飞、分批、逐项deadline与stop语义；不再声称有现成 patrol。
+- MEDIUM `retired-orphan-reviewer-unbounded-without-retry`：D4 所有精确退休身份均守原预算，不依赖作者重发；legacy未知一次 operator_required。
+- MEDIUM `loop-guard-exit-marker-misattribution`：B 纳入退出归因消费者和测试；stall仅作线索，不称自杀原因。
+- MEDIUM `graceful-shutdown-review-path-undefined`：D1 stop先退休再kill，延迟callback不能改分类；D6纳入竞态。
+- LOW `async-exec-consumer-list-incomplete`、`check-status-query-all-gates`：补跨包清单/回归及仅review门查询。
+- LOW `tests_incomplete`：设计期未运行产品套件，不声称回归绿；实现/QA按白名单产证据。
