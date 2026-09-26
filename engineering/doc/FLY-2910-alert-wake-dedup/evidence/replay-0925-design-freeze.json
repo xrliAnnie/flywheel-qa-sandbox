@@ -1,0 +1,484 @@
+{
+ "window_utc": [
+  "2026-09-25T07:00:00Z",
+  "2026-09-26T04:00:00Z"
+ ],
+ "letters": 154,
+ "before_letters_by_lead": {
+  "claude-infra-bot-lead": 139,
+  "flywheel-eng-lead": 15
+ },
+ "before_wake_batches": 152,
+ "before_wake_batches_by_lead": {
+  "claude-infra-bot-lead": 138,
+  "flywheel-eng-lead": 14
+ },
+ "title": {
+  "wake_batches_after": 37,
+  "wake_batches_after_by_lead": {
+   "claude-infra-bot-lead": 31,
+   "flywheel-eng-lead": 6
+  },
+  "wake_by_lead": {
+   "claude-infra-bot-lead": 31,
+   "flywheel-eng-lead": 6
+  },
+  "dispositions": {
+   "wake": 37,
+   "suppress": 117
+  },
+  "reasons": {
+   "first": 37,
+   "repeat": 117
+  },
+  "per_key": [
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "zombie_session_backlog",
+    "key": "跨 Lead 僵尸 session 积压（<n> 个）",
+    "wake:first": 4,
+    "suppress:repeat": 25
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery contract stalled",
+    "wake:first": 3,
+    "suppress:repeat": 24
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Workflow land cleanup needs attention for <issue>",
+    "wake:first": 3,
+    "suppress:repeat": 24
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "review_advisory_pass",
+    "key": "Review passed with non-blocking advisories",
+    "wake:first": 3,
+    "suppress:repeat": 15
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "cmux_watcher_stalled",
+    "key": "cmux watcher unhealthy (event_backlog)",
+    "wake:first": 2,
+    "suppress:repeat": 11
+   },
+   {
+    "lead": "flywheel-eng-lead",
+    "carrier": "mailbox",
+    "event": "review_job_failed",
+    "key": "Cross-family review job failed",
+    "wake:first": 3,
+    "suppress:repeat": 7
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "external_merge_suspect",
+    "key": "Unverified external merge — <issue>",
+    "wake:first": 2,
+    "suppress:repeat": 5
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Rework retry budget exhausted for <issue>",
+    "wake:first": 3,
+    "suppress:repeat": 2
+   },
+   {
+    "lead": "flywheel-eng-lead",
+    "carrier": "mailbox",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery contract stalled",
+    "wake:first": 3,
+    "suppress:repeat": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "bridge_abnormal_exit",
+    "key": "Bridge 非正常退出 — 复活对账中",
+    "wake:first": 3
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Land operation held for <issue>",
+    "wake:first": 2,
+    "suppress:repeat": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Runner admission pause has remained active for <n> minutes",
+    "wake:first": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Workflow liveness is unknown for <issue>",
+    "wake:first": 1,
+    "suppress:repeat": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery operation stalled",
+    "wake:first": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "ship_judgment_observation_unavailable",
+    "key": "Ship-judgment observation unavailable or starved",
+    "wake:first": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "bridge_boot_stale_checkout",
+    "key": "Bridge running a STALE checkout — merged work is NOT live",
+    "wake:first": 1
+   }
+  ]
+ },
+ "full": {
+  "wake_batches_after": 85,
+  "wake_batches_after_by_lead": {
+   "claude-infra-bot-lead": 72,
+   "flywheel-eng-lead": 13
+  },
+  "wake_by_lead": {
+   "flywheel-eng-lead": 14,
+   "claude-infra-bot-lead": 72
+  },
+  "dispositions": {
+   "digest": 18,
+   "wake": 86,
+   "suppress": 50
+  },
+  "reasons": {
+   "info": 18,
+   "first": 34,
+   "new_action": 13,
+   "repeat": 50,
+   "new_object": 37,
+   "severity_up": 2
+  },
+  "per_key": [
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "zombie_session_backlog",
+    "key": "跨 Lead 僵尸 session 积压（<n> 个）",
+    "wake:first": 4,
+    "suppress:repeat": 21,
+    "wake:new_action": 4
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery contract stalled",
+    "wake:first": 3,
+    "wake:new_object": 13,
+    "wake:new_action": 3,
+    "suppress:repeat": 6,
+    "wake:severity_up": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Workflow land cleanup needs attention for <issue>",
+    "wake:first": 3,
+    "wake:new_object": 14,
+    "suppress:repeat": 7,
+    "wake:new_action": 3
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "review_advisory_pass",
+    "key": "Review passed with non-blocking advisories",
+    "digest:info": 18
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "cmux_watcher_stalled",
+    "key": "cmux watcher unhealthy (event_backlog)",
+    "wake:first": 2,
+    "wake:new_action": 2,
+    "suppress:repeat": 9
+   },
+   {
+    "lead": "flywheel-eng-lead",
+    "carrier": "mailbox",
+    "event": "review_job_failed",
+    "key": "Cross-family review job failed",
+    "wake:first": 3,
+    "wake:new_object": 5,
+    "suppress:repeat": 1,
+    "wake:new_action": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "external_merge_suspect",
+    "key": "Unverified external merge — <issue>",
+    "wake:first": 2,
+    "suppress:repeat": 4,
+    "wake:new_object": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Rework retry budget exhausted for <issue>",
+    "wake:first": 3,
+    "suppress:repeat": 1,
+    "wake:new_object": 1
+   },
+   {
+    "lead": "flywheel-eng-lead",
+    "carrier": "mailbox",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery contract stalled",
+    "wake:first": 3,
+    "wake:new_object": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "bridge_abnormal_exit",
+    "key": "Bridge 非正常退出 — 复活对账中",
+    "wake:first": 3
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Land operation held for <issue>",
+    "wake:first": 2,
+    "wake:new_object": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Runner admission pause has remained active for <n> minutes",
+    "wake:first": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Workflow liveness is unknown for <issue>",
+    "wake:first": 1,
+    "suppress:repeat": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery operation stalled",
+    "wake:first": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "ship_judgment_observation_unavailable",
+    "key": "Ship-judgment observation unavailable or starved",
+    "wake:first": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "bridge_boot_stale_checkout",
+    "key": "Bridge running a STALE checkout — merged work is NOT live",
+    "wake:first": 1
+   }
+  ]
+ },
+ "full_occ": {
+  "wake_batches_after": 97,
+  "wake_batches_after_by_lead": {
+   "claude-infra-bot-lead": 84,
+   "flywheel-eng-lead": 13
+  },
+  "wake_by_lead": {
+   "flywheel-eng-lead": 14,
+   "claude-infra-bot-lead": 85
+  },
+  "dispositions": {
+   "digest": 18,
+   "wake": 99,
+   "suppress": 37
+  },
+  "reasons": {
+   "info": 18,
+   "first": 34,
+   "occurrences_doubled": 28,
+   "new_action": 9,
+   "repeat": 37,
+   "new_object": 26,
+   "severity_up": 2
+  },
+  "per_key": [
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "zombie_session_backlog",
+    "key": "跨 Lead 僵尸 session 积压（<n> 个）",
+    "wake:first": 4,
+    "wake:occurrences_doubled": 8,
+    "wake:new_action": 2,
+    "suppress:repeat": 15
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery contract stalled",
+    "wake:first": 3,
+    "wake:occurrences_doubled": 2,
+    "wake:new_action": 3,
+    "suppress:repeat": 6,
+    "wake:new_object": 11,
+    "wake:severity_up": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Workflow land cleanup needs attention for <issue>",
+    "wake:first": 3,
+    "wake:occurrences_doubled": 4,
+    "suppress:repeat": 7,
+    "wake:new_action": 3,
+    "wake:new_object": 10
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "review_advisory_pass",
+    "key": "Review passed with non-blocking advisories",
+    "digest:info": 18
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "cmux_watcher_stalled",
+    "key": "cmux watcher unhealthy (event_backlog)",
+    "wake:first": 2,
+    "wake:occurrences_doubled": 4,
+    "suppress:repeat": 6,
+    "wake:new_action": 1
+   },
+   {
+    "lead": "flywheel-eng-lead",
+    "carrier": "mailbox",
+    "event": "review_job_failed",
+    "key": "Cross-family review job failed",
+    "wake:first": 3,
+    "wake:occurrences_doubled": 3,
+    "suppress:repeat": 1,
+    "wake:new_object": 3
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "external_merge_suspect",
+    "key": "Unverified external merge — <issue>",
+    "wake:first": 2,
+    "wake:occurrences_doubled": 2,
+    "wake:new_object": 1,
+    "suppress:repeat": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Rework retry budget exhausted for <issue>",
+    "wake:first": 3,
+    "wake:occurrences_doubled": 1,
+    "wake:new_object": 1
+   },
+   {
+    "lead": "flywheel-eng-lead",
+    "carrier": "mailbox",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery contract stalled",
+    "wake:first": 3,
+    "wake:occurrences_doubled": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "bridge_abnormal_exit",
+    "key": "Bridge 非正常退出 — 复活对账中",
+    "wake:first": 3
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Land operation held for <issue>",
+    "wake:first": 2,
+    "wake:occurrences_doubled": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Runner admission pause has remained active for <n> minutes",
+    "wake:first": 2
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "Workflow liveness is unknown for <issue>",
+    "wake:first": 1,
+    "wake:occurrences_doubled": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "discord",
+    "event": "workflow_engine_escalation",
+    "key": "<issue> delivery operation stalled",
+    "wake:first": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "ship_judgment_observation_unavailable",
+    "key": "Ship-judgment observation unavailable or starved",
+    "wake:first": 1
+   },
+   {
+    "lead": "claude-infra-bot-lead",
+    "carrier": "mailbox",
+    "event": "bridge_boot_stale_checkout",
+    "key": "Bridge running a STALE checkout — merged work is NOT live",
+    "wake:first": 1
+   }
+  ]
+ }
+}

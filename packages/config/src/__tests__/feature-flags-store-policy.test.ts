@@ -157,6 +157,27 @@ function withFutureProjectManaged(): Set<string> {
 }
 
 describe("FLY-1778 flag store policy", () => {
+	it("registers alert wake dedup as a default-on project store flag", () => {
+		const name = "lead_alert_wake_dedup";
+		expect(FEATURE_FLAGS.find((flag) => flag.name === name)).toMatchObject({
+			configKey: "lead.alert_wake_dedup_enabled",
+			category: "feature",
+			source: "project_config",
+			scope: "project",
+			polarity: "default_on",
+			valueKind: "bool",
+			onMeans: "enables",
+			default: true,
+			toggleable: "conversational",
+		});
+		expect(STORE_MANAGED_FLAGS.has(name)).toBe(true);
+		expect(PROJECT_STORE_MANAGED_FLAGS.has(name)).toBe(true);
+		const codec = getFlagStoreCodec(name)!;
+		expect(codec.parse({ hasOverride: false, raw: null })).toBe(true);
+		expect(codec.parse({ hasOverride: true, raw: "0" })).toBe(false);
+		expect(codec.parse({ hasOverride: true, raw: "1" })).toBe(true);
+	});
+
 	it("keeps the registry and store ledgers closed over the same names", () => {
 		const registryNames = FEATURE_FLAGS.map(({ name }) => name).sort();
 		const projectNames = FEATURE_FLAGS.filter(

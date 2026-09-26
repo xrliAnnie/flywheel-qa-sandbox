@@ -7289,7 +7289,9 @@ export async function startBridge(
 			replayAfterAmbiguousAttempt: boolean;
 		}) => Promise<void>;
 	} = {};
+	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const leadInboxRuntime = new LeadInboxRuntime({
+		dispatcherUserId: () => alertDutyDispatcherBotUserId.current,
 		leadLeaseDbPath:
 			process.env.FLYWHEEL_LEAD_LEASE_DB ??
 			join(homedir(), ".flywheel", "lead-lease.db"),
@@ -9684,7 +9686,6 @@ export async function startBridge(
 	// below only when the rescue runtime is built (self-heal on + unified Alerts
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
-	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
 	const oncallReceiptStore = new OncallReceiptStore(
 		join(
