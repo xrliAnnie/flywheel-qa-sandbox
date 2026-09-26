@@ -154,7 +154,10 @@ stateDiagram-v2
 - **它目前不是跨推送幂等的**，本单修两处：
   - 4213 只在 `state === pending && cancel_reason === receiptId` 时返回重放。一旦推送完成（`finishTurnWakePush` 把状态写成 `sent`，且不动 `cancel_reason`），同一个 receipt 会再次清零。改为：`state IN ('pending','sent') && cancel_reason === receiptId` 一律按重放返回，不再清零。**一次 Lead 重投只复位一次。**
   - 存在未过期的推送认领（`claim_expires_at > now`）时，不复位，返回 `busy`。协调器下一轮再试，不会撤掉 patrol 刚拿到的有效认领。
-  - delivery-operations.ts:611 的现有调用使用操作回执 ID，同一回执本来就不该复位两次，这一改动对它只会更安全；实现时补它的回归。
+  - **所有调用方都必须按结果分支处理**：`busy` 是「可重试、未执行」。只有「复位成功」「同 receipt 幂等重放」「acked/cancelled 的终态 noop」三种结果可以继续做成功结算。
+    - `delivery-operations.ts:611`：现在调用后直接 `break`，619 无条件 `markWorkflowHoldResumeApplied`，625 再 `projectWorkflowHoldResume`。改为：收到 `busy` 时保留 `staged`，本 pass 不调用 applied 和 projected，由下一 pass 重试。否则真实复位没发生，门却被标成已处理，恢复动作会被丢失。
+    - 协调器的 `rearmReworkWake`：收到 `busy` 时用 `deferWorkflowReworkDelivery` 延后（不计失败、不当作已重臂），也不当作投递失败。
+    - 验收走真实 delivery-operations pass：有效认领 → `busy` → 操作仍是 `staged`、零 applied/projected → 认领释放或过期 → 下一 pass 实际复位一次并 applied/projected。
 - 协调器新增一个效果 `rearmReworkWake(wakeId, receiptId)`，只在一种情况下调用：当前路由版本由 `engine:hold_resume`（Lead 重投）创建，且该版本还没有推送过。`receiptId = rework-rearm:<req>:<routeRevision>`。调完再走正常唤醒。
 - **wakeId、TURN source、epoch、activationId 全部不变。**所以退役表 `UNIQUE(execution_id, activation_id, epoch)`、退役证明（db.ts:6009）、签收投影、物化证明的读取端都不受影响。迟到的 ACK 仍然属于同一个 wake、同一份返工内容，按签收处理是正确的。
 - 覆盖面：`acked` 说明已签收，签收投影会把投递推到 `wake_delivered`；`cancelled` 只会发生在收件体终止时，此时走第 4 步的证死换体。这两种都不需要复位。
@@ -504,4 +507,6 @@ pnpm --filter flywheel-teamlead exec tsc --noEmit && pnpm exec biome check <改�
 - **#2**：采纳。running 或 `wake_delivered` 的目标改走 2919 的受控收尾，不放宽本单的授权。
 - **#3**：采纳。准入前按精确 dispatch 意图识别；动作表改为互斥、覆盖性动作排在前面。
 - **#4**：采纳。`resumeTurnWakeHold` 的重放条件扩到 `sent`，有活认领时不复位。
+
+| 有效 R3 | Codex gpt-6-astra xhigh（同一线程） | CHANGES REQUESTED：0 BLOCKER、1 MAJOR（R2 四项均已关闭） | MAJOR：新增的 `busy` 结果必须由既有调用方（delivery-operations.ts:611–625）和协调器消费，不能记成成功。已采纳，见 C2「Lead 重投时复位原来那个 wake」一节 |
 
