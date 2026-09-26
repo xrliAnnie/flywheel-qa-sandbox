@@ -55,6 +55,100 @@ function active(
 }
 
 describe("VoiceDaemon", () => {
+	it.each([410, 409])(
+		"handles a listed outbound claim returning %s without losing the lease distinction",
+		async (status) => {
+			let end!: (value: { kind: "ended"; reason: "voice-stop" }) => void;
+			const ended = new Promise<{ kind: "ended"; reason: "voice-stop" }>(
+				(resolve) => {
+					end = resolve;
+				},
+			);
+			const runtime = active({ waitForEnd: vi.fn(() => ended) });
+			const claimedLease = lease();
+			const bridge = {
+				desired: vi.fn(async () => ({ sessionId: SESSION_ID })),
+				claim: vi.fn(async () => ({
+					lease: claimedLease,
+					leaseToken: "lease",
+					leaseExpiresAt: "later",
+					projection,
+				})),
+				renew: vi.fn(async () => ({ state: "live", leaseExpiresAt: "later" })),
+				renewRecovered: vi.fn(),
+				ready: vi.fn(),
+				setState: vi.fn(async () => {}),
+				outbound: vi
+					.fn()
+					.mockResolvedValueOnce([
+						{ seq: 1, messageId: "withdrawn", text: "must not speak" },
+						{ seq: 2, messageId: "next", text: "下一条" },
+					])
+					.mockResolvedValue([]),
+				claimOutbound: vi
+					.fn()
+					.mockRejectedValueOnce(
+						new BridgeVoiceHttpError(
+							status,
+							status === 410
+								? "voice_outbound_not_claimable"
+								: "voice_lease_conflict",
+						),
+					)
+					.mockResolvedValue("attempt-2"),
+				receipt: vi.fn(async () => {
+					end({ kind: "ended", reason: "voice-stop" });
+				}),
+			};
+			const daemon = new VoiceDaemon({
+				bridge,
+				stateStore: {
+					save: vi.fn(),
+					list: vi.fn(() => []),
+					remove: vi.fn(),
+					quarantine: vi.fn(),
+				},
+				bootId: "22222222-2222-4222-8222-222222222222",
+				createSession: () => runtime,
+				recoverSession: vi.fn(),
+				sleep: vi.fn(() => new Promise((resolve) => setTimeout(resolve, 0))),
+				timing: {
+					idlePollMs: 5_000,
+					leaseRenewMs: 1,
+					leaseMissMax: 2,
+					presenceGraceMs: 10,
+					speechChunkTokens: 600,
+				},
+			});
+			const result = await daemon.runOnce();
+			if (status === 410) {
+				expect(result).toMatchObject({
+					kind: "session_ended",
+					reason: "voice-stop",
+				});
+				expect(runtime.speak).toHaveBeenCalledTimes(1);
+				expect(runtime.speak).toHaveBeenCalledWith(
+					expect.objectContaining({ spokenText: "下一条" }),
+				);
+				expect(bridge.receipt).toHaveBeenCalledWith(
+					SESSION_ID,
+					2,
+					"lease",
+					claimedLease,
+					"attempt-2",
+					"confirmed",
+				);
+			} else {
+				expect(result).toMatchObject({
+					kind: "session_failed",
+					reason: "lease_lost",
+				});
+				expect(runtime.speak).not.toHaveBeenCalled();
+				expect(bridge.receipt).not.toHaveBeenCalled();
+			}
+		},
+	);
+
 	it("persists authority before side effects and receipts each claimed reply", async () => {
 		const calls: string[] = [];
 		const runtime = active({

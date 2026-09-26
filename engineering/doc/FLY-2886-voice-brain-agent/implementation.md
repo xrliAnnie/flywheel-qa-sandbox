@@ -26,10 +26,13 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886)
 | 版本基线 | 语音容器固定 0.156.1；native-skill-baseline 无 0.156.1/0.157.0 | 按既有采集流程准备实际启用版本基线，不放宽比较 |
 | §4.3 目标锁 | acquire/mark/release/cancel 原型已存在；runtime-factory 无条件建立锁 client | 补 disabled/draining 范围、可信 reconcile 与带审计 force-clear、unknown 状态/信箱提醒、重启 waiter 清理、目标别名归一、终态证据分类与迟到成功 |
 | C11 写日志 | target-lock release 中仅成功时 tryClaimLeadEvent | 完整 actor/回执/目标/纪要与通知失败幂等补送；失权/关闭后的未知状态与失败交接账本 |
-| C6 改稿 | ScriptWriter 与测试已存在 | 核实生产接线与隔离订阅配置，不能仅凭类存在判完成 |
-| C10/C12 | 持久背景环已提交；plan 明确 live 未准入时保持关闭 | 核实 daemon 实际背景环恢复、议程 stale、410 跳过接线；不实现未经准入的 live append |
+| C6 改稿 | ScriptWriter 与测试已存在，生产源码没有调用方；CodexRoomFrontend.appendSpeech 仍 required readback | 接隔离订阅改稿器与单一 SpeechArbiter，按 enabled 档处理 Lead/tell |
+| C10 | Bridge 已生产背景环；容器 restart 沿用旧 realtimeStart，尚无读取 contextRing 的生产路径 | 接自然重开恢复/按 generation 标记、播前 stale 复核；不实现未经准入的 live append |
+| C12 | daemon 新增真实错误分支测试：410 跳过并播下一条、409 终止；35/35 绿 | 路由/StateStore 已有三态测试，最终相关验证再核对 |
 | 完整实现收尾 | 无当前 PR/code-review/handoff 证据 | 剩余 TDD、相关测试、登记清册、最后 milestone commit、push、PR、有效代码审查、needs_review completion |
 
 ## 相关测试范围
 
 已对 64 个变更生产 TS 文件逐个执行 `git grep -lF`，查询全路径、文件名、父目录；初次发现 78 个测试匹配（跨包的结构守卫也保留）。全量原始清单暂在 `/tmp/fly2886-consumers.json`、`/tmp/fly2886-retained-tests.txt`，实现最终稳定后刷新并归档。非测试文档/源码引用从直接测试清单排除；TS import 还需 owning package 的 `vitest related <files> --run`。计划指定的 tmux-viewer.macos 排除。当前仅启动授权边界四文件的 related 验证，整单相关测试与 retained matches 尚未全跑。没有本机全包套件，没有请求 full CI。
+
+恢复修复已推送 `56dee3c79`。授权四文件 related 命令仍在运行（exec session `60899`，日志 `/tmp/fly2886-authority-related.log`）；它经路由依赖选中了 actions/event-route 等间接测试，目前不将未终态输出计作通过证据。继续时先轮询现有 handle，不要重启同一测试。
