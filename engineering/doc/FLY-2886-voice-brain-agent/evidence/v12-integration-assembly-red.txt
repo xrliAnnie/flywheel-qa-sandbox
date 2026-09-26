@@ -1,0 +1,38 @@
+   ✓ connects the public manifest and outbound path to the parent, failure=false 25ms
+   ✓ connects the public manifest and outbound path to the parent, failure=true 8ms
+   ✓ connects the public manifest and outbound path to the parent, failure=identity 2ms
+   ✓ attempts all cleanup after one provider close rejects 2ms
+   ✓ fails startup with cleanup instead of silently dropping a missing provider operation 2ms
+   ✓ shutdown aborts an actual Bridge transport and also rejects receipt reconciliation 3ms
+   ✓ assembles every non-reserved operation and closes activation providers in reverse order 2ms
+   ✓ cleans up earlier resources when gbrain startup fails 2ms
+   ✓ cleans up earlier resources when xiaohongshu-mcp startup fails 2ms
+   ✓ cleans up earlier resources when context7 startup fails 1ms
+   ✓ keeps non-browser capabilities available when native browser startup fails 19ms
+   ✓ routes feed reads through the verified authority without reminting resource handles 5ms
+   ✓ assembles receipt writes only through the verified authority client and keeps default denial 4ms
+   ✓ browser off starts no browser provider and retains restricted model egress 9ms
+   ✓ passes trusted founder_chrome mode to the provider 2ms
+   ✓ passes trusted isolated mode to the provider 1ms
+   ✓ assembles provider, manifest and MCP consistently for founder_chrome 7ms
+   ✓ assembles provider, manifest and MCP consistently for isolated 6ms
+   ✓ assembles provider, manifest and MCP consistently for off 5ms
+   × omit_integration keeps every other capability when optional providers fail, one reason each 4ms
+   × omit_integration records missing Linear and GitHub credentials and drops only their groups 36ms
+   × omit_integration drops browser operations instead of minting rejection handlers 3ms
+   ✓ fail_closed (the resident default) still fails the whole activation on one provider 3ms
+   × omit_integration still fails closed when an available integration leaves an operation unhandled 3ms
+   × coverage: each checked operation is handled, denied or owned by an unavailable integration 0ms
+     → expected [Function] to not throw an error but 'TypeError: assertRunt…' was thrown
+   × voice parent (founder_chrome) publishes unavailableIntegrations and a consistent manifest/MCP 1ms
+   × voice parent (off) publishes unavailableIntegrations and a consistent manifest/MCP 1ms
+   ✓ a resident (fail_closed) manifest carries no unavailableIntegrations field 6ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+Error: gbrain_host_unverified
+Error: github_credentials_unavailable
+AssertionError: expected undefined to deeply equal [ { id: 'browser', …(1) } ]
+AssertionError: expected [Function] to throw error including 'runtime_handler_coverage_incomplete' but got 'baseline_drift'
+AssertionError: expected [Function] to not throw an error but 'TypeError: assertRunt…' was thrown
+"TypeError: __vi_import_8__.assertRuntimeHandlerCoverage is not a function"
+Error: linear_credentials_unavailable
+      Tests  7 failed | 21 passed (28)

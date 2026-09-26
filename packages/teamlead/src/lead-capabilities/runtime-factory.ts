@@ -34,8 +34,12 @@ import {
 	createTerminalInputHandlers,
 } from "./handlers/bridge-read.js";
 import { createBridgeVoiceHandlers } from "./handlers/bridge-voice.js";
+import { createContext7Handlers } from "./handlers/context7.js";
 import { createGithubReadProviderHandlers } from "./handlers/github-provider.js";
-import { createLinearProviderSession } from "./handlers/linear-provider.js";
+import {
+	createLinearProviderHandlers,
+	createLinearProviderSession,
+} from "./handlers/linear-provider.js";
 import { createReportDeliverHandlers } from "./handlers/report-deliver.js";
 import { createReportPublishHandlers } from "./handlers/report-publish.js";
 import { createReportVerifyHandlers } from "./handlers/report-verify.js";
@@ -58,7 +62,77 @@ import {
 } from "./runtime-parent.js";
 import type { LeadSkillInventoryEntry } from "./skill-discovery.js";
 import { createLeadTargetLockClient } from "./target-lock-client.js";
+import { UPSTREAM_TOOL_ROWS } from "./upstream-inputs.js";
 import { startXiaohongshuProvider } from "./xiaohongshu-provider.js";
+
+/** Integrations a voice parent may run without (plan v12 §14.1). Core ones never are. */
+export type OptionalIntegrationId =
+	| "browser"
+	| "context7"
+	| "gbrain"
+	| "github"
+	| "linear"
+	| "xiaohongshu-mcp";
+/** The only public reasons; raw provider errors stay in local evidence. */
+export type IntegrationUnavailableReason =
+	| "credential_missing"
+	| "host_config_unverified"
+	| "baseline_drift"
+	| "provider_start_failed";
+export interface UnavailableIntegration {
+	id: OptionalIntegrationId;
+	reason: IntegrationUnavailableReason;
+}
+
+/** Maps a provider startup error code to its public reason. */
+export function integrationUnavailableReason(
+	error: unknown,
+): IntegrationUnavailableReason {
+	const code = error instanceof Error ? error.message : "";
+	if (code === "gbrain_host_unverified") return "host_config_unverified";
+	if (code === "baseline_drift") return "baseline_drift";
+	return "provider_start_failed";
+}
+
+/**
+ * Every checked operation is reserved, unconditionally denied, handled, or owned
+ * by an unavailable integration; code that forgets a handler still fails closed.
+ * The checked set is the catalog minus trusted exclusions (browser off).
+ */
+export function assertRuntimeHandlerCoverage(input: {
+	handlers: ReadonlyMap<string, unknown>;
+	omitted: ReadonlySet<string>;
+	browserMode?: VoiceBackgroundBrowserMode;
+}): void {
+	const missing = LEAD_CAPABILITY_CATALOG.filter(
+		(row) =>
+			row.classification !== "reserved" &&
+			!(input.browserMode === "off" && row.credentialConsumer === "browser") &&
+			!row.unconditionalDenial &&
+			!input.handlers.has(row.operationId) &&
+			!input.omitted.has(row.operationId),
+	);
+	if (missing.length) throw new Error("runtime_handler_coverage_incomplete");
+	for (const id of input.handlers.keys()) {
+		const row = LEAD_CAPABILITY_CATALOG.find(
+			(candidate) => candidate.operationId === id,
+		);
+		if (!row || row.classification === "reserved" || input.omitted.has(id))
+			throw new Error("invalid_runtime_handler");
+	}
+}
+
+/** Stand-in dependency: learning a group's operation ids must never touch it. */
+function unavailableDependency<T>(): T {
+	return new Proxy(
+		{},
+		{
+			get() {
+				throw new Error("integration_unavailable");
+			},
+		},
+	) as T;
+}
 
 /** Sources and directories are prepared by the trusted launcher, not model inputs. */
 export interface LeadRuntimeParentOptions extends LeadRuntimeProviderOptions {
@@ -129,11 +203,14 @@ export async function startLeadRuntimeParent(
 							(!!operation.unconditionalDenial ||
 								providers.handlers.has(operation.operationId)),
 					),
+					// An operation may be missing only because its integration is
+					// recorded unavailable (omit_integration); anything else fails.
 					missingOperationIds: options.operations
 						.filter(
 							(operation) =>
 								!operation.unconditionalDenial &&
-								!providers.handlers.has(operation.operationId),
+								!providers.handlers.has(operation.operationId) &&
+								!providers.omittedOperationIds.has(operation.operationId),
 						)
 						.map((operation) => operation.operationId),
 				}
@@ -148,8 +225,12 @@ export async function startLeadRuntimeParent(
 		const nativeSkillBaseline = resolvePinnedNativeSkillBaseline(
 			options.parent.codexVersion ?? "",
 		);
-		const localIntegrations = ["bridge", "discord", "linear", "github"].map(
-			(id) => ({
+		const unavailableIds = new Set<string>(
+			(providers.unavailableIntegrations ?? []).map((row) => row.id),
+		);
+		const localIntegrations = ["bridge", "discord", "linear", "github"]
+			.filter((id) => !unavailableIds.has(id))
+			.map((id) => ({
 				id,
 				version: options.sources.sourceRevision,
 				toolSchemaDigest: createHash("sha256")
@@ -165,8 +246,7 @@ export async function startLeadRuntimeParent(
 						),
 					)
 					.digest("hex"),
-			}),
-		);
+			}));
 		const manifest = createLeadCapabilityManifest({
 			...sources,
 			sourceRevision: options.sources.sourceRevision,
@@ -183,7 +263,7 @@ export async function startLeadRuntimeParent(
 			integrations: [
 				...localIntegrations,
 				...providers.upstreamIntegrations,
-				...(options.browserMode === "off"
+				...(options.browserMode === "off" || unavailableIds.has("browser")
 					? []
 					: [
 							{
@@ -199,6 +279,9 @@ export async function startLeadRuntimeParent(
 							},
 						]),
 			],
+			...(providers.unavailableIntegrations
+				? { unavailableIntegrations: providers.unavailableIntegrations }
+				: {}),
 			nativeSkillBaseline: {
 				codexVersion: nativeSkillBaseline.codexVersion,
 				...(nativeSkillBaseline.origin
@@ -274,8 +357,15 @@ export interface LeadRuntimeProviderOptions {
 	assertActivationCurrent?: ReturnType<
 		typeof createLeadCapabilityContext
 	>["assertActivationCurrent"];
-	linearToken: string;
+	/** Absent only under omit_integration, where Linear is then recorded unavailable. */
+	linearToken?: string;
 	context7ApiKey?: string;
+	/**
+	 * Trusted launcher choice (plan v12 §14.1). Absent = fail_closed: any provider
+	 * failure fails the activation (resident, unchanged). omit_integration: an
+	 * optional integration that cannot start is left out with a recorded reason.
+	 */
+	integrationFailurePolicy?: "fail_closed" | "omit_integration";
 	artifacts: LeadArtifactStore;
 	secrets: readonly string[];
 	fetchImpl?: typeof fetch;
@@ -287,6 +377,8 @@ export interface LeadRuntimeProviderOptions {
 
 /** Assemble actual adapters once per activation. The outer factory owns sources/home/parent.
  * Child providers own their partial-start cleanup; this layer owns every completed child.
+ * Under omit_integration an optional integration that cannot start is recorded
+ * unavailable (with its group's operations) and the others stay up (plan v12 §14.1).
  */
 export async function startLeadRuntimeProviders(
 	options: LeadRuntimeProviderOptions,
@@ -296,6 +388,20 @@ export async function startLeadRuntimeProviders(
 		...options,
 		env,
 	});
+	const omitMode = options.integrationFailurePolicy === "omit_integration";
+	const unavailable = new Map<
+		OptionalIntegrationId,
+		IntegrationUnavailableReason
+	>();
+	const omitted = new Set<string>();
+	const markUnavailable = (
+		id: OptionalIntegrationId,
+		reason: IntegrationUnavailableReason,
+		operationIds: Iterable<string>,
+	) => {
+		unavailable.set(id, reason);
+		for (const operationId of operationIds) omitted.add(operationId);
+	};
 	const lifetime = new AbortController();
 	const cleanup: Array<() => Promise<void>> = [];
 	let closed = false,
@@ -321,14 +427,42 @@ export async function startLeadRuntimeProviders(
 		if (closed) throw new Error("runtime_providers_closed");
 		trusted.assertActivationCurrent();
 	};
+	/** fail_closed rethrows; omit_integration records the integration and continues. */
+	const optional = async <T>(
+		id: OptionalIntegrationId,
+		start: () => T | Promise<T>,
+		operationIds: () => Iterable<string>,
+		reason: (error: unknown) => IntegrationUnavailableReason = (error) =>
+			integrationUnavailableReason(error),
+	): Promise<T | undefined> => {
+		if (!omitMode) return start();
+		try {
+			return await start();
+		} catch (error) {
+			// A revoked activation is never an unavailable integration.
+			current();
+			markUnavailable(id, reason(error), operationIds());
+			return undefined;
+		}
+	};
 	try {
 		current();
-		const githubToken = resolveLeadGithubToken(env);
+		let githubToken: string | undefined;
+		let githubCredentialMissing = false;
+		try {
+			githubToken = resolveLeadGithubToken(env);
+		} catch (error) {
+			if (!omitMode) throw error;
+			githubCredentialMissing = true;
+		}
+		if (!omitMode && !options.linearToken)
+			throw new Error("runtime_linear_unavailable");
+		const linearToken = options.linearToken || undefined;
 		const secrets = Object.freeze([
 			...new Set([
 				...options.secrets,
-				githubToken,
-				options.linearToken,
+				...(githubToken ? [githubToken] : []),
+				...(linearToken ? [linearToken] : []),
 				...(env.FLYWHEEL_API_TOKEN ? [env.FLYWHEEL_API_TOKEN] : []),
 				...(options.context7ApiKey ? [options.context7ApiKey] : []),
 			]),
@@ -361,16 +495,56 @@ export async function startLeadRuntimeProviders(
 			client: authorityClient,
 		}))
 			writeHandlers.set(id, handler);
-		const github = createLeadGithubClient({
-			token: githubToken,
-			fetchImpl: options.fetchImpl,
-		});
-		cleanup.push(github.close);
-		const linear = createLinearProviderSession({
-			...common,
-			token: options.linearToken,
-		});
-		cleanup.push(linear.close);
+		// Groups that use the GitHub client require "github" (read provider and
+		// patrol snapshots alike); without it both are left out together.
+		const githubGroups = (
+			client: ReturnType<typeof createLeadGithubClient>["client"],
+		) => [
+			createGithubReadProviderHandlers({ ...common, client }),
+			createPatrolHandlers({
+				...common,
+				artifacts: options.artifacts,
+				githubClient: client,
+			}),
+		];
+		const githubOperations = () =>
+			githubGroups(unavailableDependency()).flatMap((group) => [
+				...group.keys(),
+			]);
+		if (githubCredentialMissing)
+			markUnavailable("github", "credential_missing", githubOperations());
+		const github =
+			githubToken === undefined
+				? undefined
+				: await optional(
+						"github",
+						() =>
+							createLeadGithubClient({
+								token: githubToken,
+								fetchImpl: options.fetchImpl,
+							}),
+						githubOperations,
+					);
+		if (github) cleanup.push(github.close);
+		const linearOperations = () =>
+			createLinearProviderHandlers({
+				...common,
+				client: unavailableDependency(),
+			}).keys();
+		const linear = linearToken
+			? await optional(
+					"linear",
+					() =>
+						createLinearProviderSession({
+							...common,
+							token: linearToken,
+						}),
+					linearOperations,
+				)
+			: undefined;
+		if (!linearToken)
+			markUnavailable("linear", "credential_missing", linearOperations());
+		if (linear) cleanup.push(linear.close);
 		const handlers = new Map<string, LeadOperationHandler>([
 			[
 				"artifact.text.create",
@@ -390,6 +564,7 @@ export async function startLeadRuntimeProviders(
 				handlers.set(id, handler);
 			}
 		};
+		const [githubRead, patrol] = github ? githubGroups(github.client) : [];
 		for (const group of [
 			createRunnerBridgeHandlers(common),
 			createBridgeReadHandlers(common),
@@ -397,20 +572,16 @@ export async function startLeadRuntimeProviders(
 			createBridgeDiscordHandlers(common),
 			createBridgeVoiceHandlers(common),
 			createBridgeAttachmentHandlers({ ...common, store: options.artifacts }),
-			createGithubReadProviderHandlers({ ...common, client: github.client }),
+			...(githubRead ? [githubRead] : []),
 			createGithubBridgeHandlers(common),
 			createTerminalInputHandlers(common),
 			createInboxBatchAckHandlers(common),
 			createInboxEventAckHandlers(common),
-			createPatrolHandlers({
-				...common,
-				artifacts: options.artifacts,
-				githubClient: github.client,
-			}),
+			...(patrol ? [patrol] : []),
 			createReportPublishHandlers({ ...common, store: options.artifacts }),
 			createReportDeliverHandlers(common),
 			createReportVerifyHandlers(common),
-			linear.handlers,
+			...(linear ? [linear.handlers] : []),
 			writeHandlers,
 			createXhsWriteManagementHandlers({
 				...common,
@@ -420,32 +591,66 @@ export async function startLeadRuntimeProviders(
 		])
 			add(group);
 		current();
-		const gbrain = await startGbrainProvider({
-			...common,
-			artifacts: options.artifacts,
-		});
-		cleanup.push(gbrain.close);
-		add(gbrain.handlers);
+		const upstreamReads = (serverId: "gbrain" | "xiaohongshu-mcp") =>
+			UPSTREAM_TOOL_ROWS.filter(
+				(row) => row.serverId === serverId && row.classification === "read",
+			).map((row) => row.operationId);
+		const gbrain = await optional(
+			"gbrain",
+			() =>
+				startGbrainProvider({
+					...common,
+					artifacts: options.artifacts,
+				}),
+			() => upstreamReads("gbrain"),
+		);
+		if (gbrain) {
+			cleanup.push(gbrain.close);
+			add(gbrain.handlers);
+		}
 		current();
-		const xiaohongshu = await startXiaohongshuProvider({
-			...common,
-			artifacts: options.artifacts,
-		});
-		cleanup.push(xiaohongshu.close);
-		const xhsReads = new Map(xiaohongshu.handlers);
-		for (const [id, handler] of createXhsAuthorityReadHandlers({
-			...common,
-			client: authorityClient,
-		}))
-			xhsReads.set(id, handler);
-		add(xhsReads);
+		const xhsAuthorityReads = () =>
+			createXhsAuthorityReadHandlers({
+				...common,
+				client: authorityClient,
+			});
+		const xiaohongshu = await optional(
+			"xiaohongshu-mcp",
+			() =>
+				startXiaohongshuProvider({
+					...common,
+					artifacts: options.artifacts,
+				}),
+			() => [
+				...upstreamReads("xiaohongshu-mcp"),
+				...xhsAuthorityReads().keys(),
+			],
+		);
+		if (xiaohongshu) {
+			cleanup.push(xiaohongshu.close);
+			const xhsReads = new Map(xiaohongshu.handlers);
+			for (const [id, handler] of xhsAuthorityReads())
+				xhsReads.set(id, handler);
+			add(xhsReads);
+		}
 		current();
-		const context7 = await startContext7Provider({
-			...common,
-			apiKey: options.context7ApiKey,
-		});
-		cleanup.push(context7.close);
-		add(context7.handlers);
+		const context7 = await optional(
+			"context7",
+			() =>
+				startContext7Provider({
+					...common,
+					apiKey: options.context7ApiKey,
+				}),
+			() =>
+				createContext7Handlers({
+					...common,
+					client: unavailableDependency(),
+				}).keys(),
+		);
+		if (context7) {
+			cleanup.push(context7.close);
+			add(context7.handlers);
+		}
 		current();
 		const browser =
 			options.browserMode === "off"
@@ -475,14 +680,29 @@ export async function startLeadRuntimeProviders(
 							policy: options.browser.egress,
 							assertCurrent: current,
 						});
+						const browserOperations = LEAD_CAPABILITY_CATALOG.filter(
+							(row) => row.credentialConsumer === "browser",
+						);
+						if (omitMode) {
+							// Voice: the browser is absent (as with off), not a denying facade.
+							markUnavailable(
+								"browser",
+								"provider_start_failed",
+								browserOperations.map((row) => row.operationId),
+							);
+							return {
+								generation: undefined,
+								proxyPort: proxy.port,
+								close: () => proxy.close(),
+								handlers: new Map<string, LeadOperationHandler>(),
+							};
+						}
 						return {
 							generation: randomUUID(),
 							proxyPort: proxy.port,
 							close: () => proxy.close(),
 							handlers: new Map<string, LeadOperationHandler>(
-								LEAD_CAPABILITY_CATALOG.filter(
-									(row) => row.credentialConsumer === "browser",
-								).map((row) => [
+								browserOperations.map((row) => [
 									row.operationId,
 									{
 										authorize: async () => {},
@@ -498,23 +718,11 @@ export async function startLeadRuntimeProviders(
 		cleanup.push(browser.close);
 		add(browser.handlers);
 		current();
-		const missing = LEAD_CAPABILITY_CATALOG.filter(
-			(row) =>
-				row.classification !== "reserved" &&
-				!(
-					options.browserMode === "off" && row.credentialConsumer === "browser"
-				) &&
-				!row.unconditionalDenial &&
-				!handlers.has(row.operationId),
-		);
-		if (missing.length) throw new Error("runtime_handler_coverage_incomplete");
-		for (const id of handlers.keys()) {
-			const row = LEAD_CAPABILITY_CATALOG.find(
-				(candidate) => candidate.operationId === id,
-			);
-			if (!row || row.classification === "reserved")
-				throw new Error("invalid_runtime_handler");
-		}
+		assertRuntimeHandlerCoverage({
+			handlers,
+			omitted,
+			browserMode: options.browserMode,
+		});
 		const guarded = new Map<string, LeadOperationHandler>();
 		for (const [id, handler] of handlers)
 			guarded.set(id, {
@@ -555,21 +763,28 @@ export async function startLeadRuntimeProviders(
 			secrets,
 			browserGeneration: browser.generation,
 			proxyPort: browser.proxyPort,
-			integrationIds: [
-				"bridge",
-				"discord",
-				"linear",
-				"github",
-				"gbrain",
-				"xiaohongshu-mcp",
-				"context7",
-				...(options.browserMode === "off" ? [] : ["browser"]),
-			] as const,
-			upstreamIntegrations: [
-				gbrain.integration,
-				xiaohongshu.integration,
-				context7.integration,
-			],
+			integrationIds: (
+				[
+					"bridge",
+					"discord",
+					"linear",
+					"github",
+					"gbrain",
+					"xiaohongshu-mcp",
+					"context7",
+					...(options.browserMode === "off" ? [] : ["browser"]),
+				] as const
+			).filter((id) => !unavailable.has(id as OptionalIntegrationId)),
+			upstreamIntegrations: [gbrain, xiaohongshu, context7].flatMap(
+				(provider) => (provider ? [provider.integration] : []),
+			),
+			/** Present only under omit_integration; sorted by id. */
+			unavailableIntegrations: omitMode
+				? [...unavailable]
+						.map(([id, reason]) => ({ id, reason }))
+						.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+				: undefined,
+			omittedOperationIds: omitted as ReadonlySet<string>,
 			assertCurrent: current,
 			close,
 		};

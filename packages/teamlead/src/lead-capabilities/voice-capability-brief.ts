@@ -12,6 +12,31 @@ interface VoiceBriefSnapshot {
 		realtimePrompt: { bytes: number; estimatedTokens: number };
 	};
 }
+/** Fixed spoken names; raw provider errors never reach the prompt (plan v12 §14.1). */
+const UNAVAILABLE_NAMES: Record<string, string> = {
+	browser: "浏览器",
+	context7: "Context7 文档",
+	gbrain: "记忆库",
+	github: "GitHub",
+	linear: "Linear",
+	"xiaohongshu-mcp": "小红书",
+};
+const UNAVAILABLE_REASONS: Record<string, string> = {
+	credential_missing: "缺凭据",
+	host_config_unverified: "宿主没配置",
+	baseline_drift: "工具表跟登记的不一致",
+	provider_start_failed: "启动失败",
+};
+/** Operation families owned by an optional integration. */
+const FAMILY_INTEGRATION: Record<string, string> = {
+	browser: "browser",
+	docs: "context7",
+	git: "github",
+	github: "github",
+	knowledge: "gbrain",
+	linear: "linear",
+	xiaohongshu: "xiaohongshu-mcp",
+};
 let tokenizer: ReturnType<typeof getEncoding> | undefined;
 const countTokens = (text: string) => {
 	tokenizer ??= getEncoding("o200k_base");
@@ -23,9 +48,15 @@ export function bindAdmittedVoiceCapabilities<T extends VoiceBriefSnapshot>(
 	snapshot: T,
 	manifest: Pick<
 		LeadCapabilityManifest,
-		"manifestDigest" | "operationIds" | "deniedOperationIds" | "browserMode"
+		| "manifestDigest"
+		| "operationIds"
+		| "deniedOperationIds"
+		| "browserMode"
+		| "unavailableIntegrations"
 	>,
 ): T {
+	const unavailable = manifest.unavailableIntegrations ?? [];
+	const unavailableIds = new Set<string>(unavailable.map((row) => row.id));
 	const browser =
 		manifest.browserMode !== "off" &&
 		manifest.browserMode !== undefined &&
@@ -53,6 +84,8 @@ export function bindAdmittedVoiceCapabilities<T extends VoiceBriefSnapshot>(
 			manifest.operationIds.flatMap((id) => {
 				const family = id.split(".")[0]!;
 				if (family === "browser" && !browser) return [];
+				const owner = FAMILY_INTEGRATION[family];
+				if (owner && unavailableIds.has(owner)) return [];
 				return [id.includes("runner") ? "Runner" : (labels[family] ?? family)];
 			}),
 		),
@@ -65,7 +98,15 @@ export function bindAdmittedVoiceCapabilities<T extends VoiceBriefSnapshot>(
 			? "网页操作可交后台使用 founder Chrome；我不能直接看到你的整块屏幕。"
 			: "网页操作可交后台使用隔离浏览器；我不能直接看到你的屏幕。"
 		: "这场没有浏览器工具；我不能直接看到你的屏幕。";
-	const section = `## 能做 / 不能做\n我自己聊天、回答简报里已有的信息；${capabilityText}${browserText}\n不能：${[...manifest.deniedOperationIds].sort().join("、") || "当前清单未列出；不能据此视为授权"}。不确定能不能做时先让后台查，不夸口；需要给链接时发到文字 thread。`;
+	const unavailableText = unavailable.length
+		? `这场没接上：${unavailable
+				.map(
+					(row) =>
+						`${UNAVAILABLE_NAMES[row.id] ?? row.id}（${UNAVAILABLE_REASONS[row.reason] ?? "启动失败"}）`,
+				)
+				.join("、")}。问到这些我直接说查不了，不去试。\n`
+		: "";
+	const section = `## 能做 / 不能做\n我自己聊天、回答简报里已有的信息；${capabilityText}${browserText}\n${unavailableText}不能：${[...manifest.deniedOperationIds].sort().join("、") || "当前清单未列出；不能据此视为授权"}。不确定能不能做时先让后台查，不夸口；需要给链接时发到文字 thread。`;
 	const originalHeader = snapshot.realtimePrompt.split("\n", 1)[0]!;
 	if (
 		!originalHeader.includes(`snapshotDigest=${snapshot.snapshotDigest} `) ||

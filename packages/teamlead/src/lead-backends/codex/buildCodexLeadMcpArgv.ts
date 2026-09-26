@@ -173,8 +173,13 @@ export function buildCodexLeadMcpArgv(
 			.map((id) => id.slice(8))
 			.sort();
 		const browser = manifest.integrations.filter((i) => i.id === "browser");
+		// Absent = trusted off, or a voice parent whose browser could not start
+		// (FLY-2886 §14.1); both admit no generation, tools or integration entry.
+		const browserAbsent =
+			manifest.browserMode === "off" ||
+			!!manifest.unavailableIntegrations?.some((row) => row.id === "browser");
 		if (
-			manifest.browserMode === "off"
+			browserAbsent
 				? !!manifest.browserGeneration ||
 					!!browserTools.length ||
 					!!browser.length
@@ -209,7 +214,7 @@ export function buildCodexLeadMcpArgv(
 						) / 1000,
 					) + 5,
 			},
-			...(manifest.browserMode === "off"
+			...(browserAbsent
 				? []
 				: [
 						{

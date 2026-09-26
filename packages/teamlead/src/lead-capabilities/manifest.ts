@@ -83,6 +83,25 @@ export const nativeSkillBaselineSchema = z
 			.length(6),
 	})
 	.strict();
+/** FLY-2886 §14.1: optional integrations a voice parent runs without. */
+export const unavailableIntegrationSchema = z
+	.object({
+		id: z.enum([
+			"browser",
+			"context7",
+			"gbrain",
+			"github",
+			"linear",
+			"xiaohongshu-mcp",
+		]),
+		reason: z.enum([
+			"credential_missing",
+			"host_config_unverified",
+			"baseline_drift",
+			"provider_start_failed",
+		]),
+	})
+	.strict();
 const projection = z.object({
 	schemaVersion: z.literal(1),
 	bundleVersion: z.literal(2),
@@ -103,6 +122,10 @@ const projection = z.object({
 	skillInventory: z.array(skillInventorySchema).max(512).optional(),
 	nativeSkillBaseline: nativeSkillBaselineSchema.optional(),
 	integrations: z.array(integration),
+	unavailableIntegrations: z
+		.array(unavailableIntegrationSchema)
+		.max(6)
+		.optional(),
 });
 export type LeadCapabilityManifest = z.infer<typeof projection> & {
 	manifestDigest: string;
@@ -128,6 +151,10 @@ export interface LeadCapabilityManifestInput {
 		version: string;
 		toolSchemaDigest: string;
 	}[];
+	/** Absent for resident (fail_closed) activations: their manifest is unchanged. */
+	unavailableIntegrations?: readonly z.infer<
+		typeof unavailableIntegrationSchema
+	>[];
 }
 function uniqueSorted<T>(
 	values: readonly T[],
@@ -212,6 +239,14 @@ export function createLeadCapabilityManifest(
 				}
 			: {}),
 		integrations: uniqueSorted(input.integrations, (source) => source.id),
+		...(input.unavailableIntegrations !== undefined
+			? {
+					unavailableIntegrations: uniqueSorted(
+						input.unavailableIntegrations,
+						(row) => row.id,
+					),
+				}
+			: {}),
 	});
 	return {
 		...publicProjection,

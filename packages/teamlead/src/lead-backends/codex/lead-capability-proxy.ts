@@ -20,6 +20,7 @@ import {
 	nativeSkillBaselineSchema,
 	personaSkillGapSchema,
 	skillInventorySchema,
+	unavailableIntegrationSchema,
 } from "../../lead-capabilities/manifest.js";
 
 import { RUNNER_ACTION_TOOL_NAMES } from "./runner-action-names.js";
@@ -61,6 +62,10 @@ const manifestSchema = z
 		nativeSkillBaseline: nativeSkillBaselineSchema.optional(),
 		skillGaps: z.array(personaSkillGapSchema).max(128).optional(),
 		skillInventory: z.array(skillInventorySchema).max(512).optional(),
+		unavailableIntegrations: z
+			.array(unavailableIntegrationSchema)
+			.max(6)
+			.optional(),
 		manifestDigest: hash,
 	})
 	.strict();

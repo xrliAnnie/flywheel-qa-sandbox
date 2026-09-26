@@ -105,4 +105,37 @@ describe("admitted capability opening brief", () => {
 			"voice_capability_context_invalid",
 		);
 	});
+	it("says which integrations this session runs without, in fixed words, and never lists them as usable (FLY-2886 §14.1)", () => {
+		const completed = bindAdmittedVoiceCapabilities(snapshot(), {
+			...manifest,
+			operationIds: [
+				"github.pr.read",
+				"knowledge.put_page",
+				"docs.lookup",
+				"start_runner",
+			],
+			browserMode: "founder_chrome" as const,
+			unavailableIntegrations: [
+				{ id: "browser", reason: "provider_start_failed" },
+				{ id: "context7", reason: "baseline_drift" },
+				{ id: "gbrain", reason: "host_config_unverified" },
+				{ id: "linear", reason: "credential_missing" },
+			],
+		});
+		expect(completed.realtimePrompt).toContain(
+			"这场没接上：浏览器（启动失败）、Context7 文档（工具表跟登记的不一致）、记忆库（宿主没配置）、Linear（缺凭据）。问到这些我直接说查不了，不去试。",
+		);
+		expect(completed.realtimePrompt).toContain(
+			"后台工具类别：GitHub、Runner。",
+		);
+		expect(completed.realtimePrompt).toContain("这场没有浏览器工具");
+		expect(completed.realtimePrompt).not.toMatch(/founder Chrome/u);
+	});
+	it("adds no line when every integration is connected", () => {
+		const completed = bindAdmittedVoiceCapabilities(snapshot(), {
+			...manifest,
+			unavailableIntegrations: [],
+		});
+		expect(completed.realtimePrompt).not.toContain("这场没接上");
+	});
 });

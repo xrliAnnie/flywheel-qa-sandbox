@@ -104,8 +104,12 @@ export async function startVoiceCapabilityParent(
 		FLYWHEEL_API_TOKEN:
 			sourceEnv.FLYWHEEL_API_TOKEN ?? sourceEnv.TEAMLEAD_API_TOKEN ?? "",
 	});
-	const linearToken = env.LINEAR_API_KEY;
-	if (!linearToken) throw new Error("voice_capability_linear_unavailable");
+	// Bridge is core: without it no Lead-authority call can succeed (plan v12 §14.2).
+	if (!env.FLYWHEEL_BRIDGE_URL || !env.FLYWHEEL_API_TOKEN)
+		throw new Error("voice_capability_bridge_unavailable");
+	// Optional integrations (Linear included) are assembled or recorded
+	// unavailable by the runtime factory; only core preconditions fail here.
+	const linearToken = env.LINEAR_API_KEY || undefined;
 	const baseline = verifyLeadDeployment({
 		checkoutRoot: deploymentRoot,
 		deployedShaPath: join(hostHome, ".flywheel/deployed-sha"),
@@ -118,14 +122,15 @@ export async function startVoiceCapabilityParent(
 	const secrets = [
 		env.FLYWHEEL_API_TOKEN ?? "",
 		input.leaseFence,
-		linearToken,
+		linearToken ?? "",
 		env.CONTEXT7_API_KEY ?? "",
 		env.GH_TOKEN ?? "",
 		env.GITHUB_TOKEN ?? "",
 	].filter(Boolean);
 	let closed = false;
+	let revoked = false;
 	const currentIdentity = () => {
-		if (closed) throw new Error("voice_capability_closed");
+		if (revoked || closed) throw new Error("voice_capability_closed");
 		input.assertLeaseCurrent();
 		const row = resolveLeadIdentityRow({
 			projectsPath,
@@ -184,7 +189,16 @@ export async function startVoiceCapabilityParent(
 	let native: ReturnType<typeof preparePinnedNativeSkillHome> | undefined;
 	let artifacts: LeadArtifactStore | undefined;
 	let parent: Awaited<ReturnType<typeof startLeadRuntimeParent>> | undefined;
+	/**
+	 * Synchronous authority revocation (plan v12 §14.2): every provider handler and
+	 * broker call fails from here on. No socket, provider or directory is touched,
+	 * so an admission reaper can still observe provider children before close().
+	 */
+	const revoke = () => {
+		revoked = true;
+	};
 	const cleanup = async () => {
+		revoke();
 		if (closed) return;
 		closed = true;
 		try {
@@ -290,6 +304,7 @@ export async function startVoiceCapabilityParent(
 			},
 			assertActivationCurrent: currentIdentity,
 			linearToken,
+			integrationFailurePolicy: "omit_integration",
 			context7ApiKey: env.CONTEXT7_API_KEY,
 			artifacts,
 			secrets,
@@ -363,6 +378,7 @@ export async function startVoiceCapabilityParent(
 			beginTurn: turns.beginTurn,
 			endTurn: turns.endTurn,
 			cwd: projectRoot,
+			revoke,
 			close: cleanup,
 		});
 	} catch (error) {
