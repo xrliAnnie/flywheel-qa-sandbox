@@ -1,14 +1,14 @@
 ---
 issue: FLY-2876
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-26T16:46:50.112Z
-nextStep: "design_review: manifest rev1 8bafb546; gate q e9876d7a; Codex R1
-  running (profile personal); then design-review.json + await-codex-gate design"
+phaseCursor: 4/6
+updated: 2026-09-26T16:50:36.225Z
+nextStep: design gate blocked on Codex quota (Lead q a45f6fee); Gemini
+  independent review running; HTML assembled, publish after ruling
 chunks: []
 pointers: {}
 ---
 
 # FLY-2876 progress
-**phase**: design (3/6)
-**next**: design_review: manifest rev1 8bafb546; gate q e9876d7a; Codex R1 running (profile personal); then design-review.json + await-codex-gate design
+**phase**: design (4/6)
+**next**: design gate blocked on Codex quota (Lead q a45f6fee); Gemini independent review running; HTML assembled, publish after ruling
