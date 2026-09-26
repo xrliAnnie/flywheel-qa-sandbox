@@ -19,3 +19,6 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912)
 R1有效verdict=CHANGES_REQUESTED，唯一HIGH为生产DirectEventSink入口漏查。计划revision2在§11.1/T3/T6补齐，并处理关联MEDIUM证据/时序问题；未实现生产代码。R1完整收据在evidence/review-round1.json。新请求52e0e9a4-a162-442d-a558-705bd631eef4 / question aaceefb4-073f-4544-a93f-12c52fda24c4已accepted，尚无批准。
 
 补充证据manifest v3保留21条DirectEventSink原启动事件（它们的random source ID不同于direct通知ID）、21条派发账、22条execution binding、191条带时间的workflow事件。本机当前派发账无purpose列，checkout源码有该列及历史backfill；不能从listWorkflowSideEffects的缺省initial或升级默认值反推9-25事件的来源。mutable当前ledger状态不作历史发生时的状态。回放须锁实际部署build，不能把本分支base SHA冒充当晚生产carrier；证据缺项如实保留，不缩样本。这是实施回放仍需解决的证据约束，不是已得改后对比。
+
+## 有效批准
+R2 effective reviewVerdict=APPROVED（2026-09-26T04:30Z读取）。7条advisories已通过ask --report向Lead汇报，逐条处置在review-followups.md；不重开设计。仅修附件模块绝对路径并复测，plan保留审查快照字节。接下来只做托管核验与结构化交接。

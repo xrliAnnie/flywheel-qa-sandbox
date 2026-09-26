@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-const {Window}=await import('/Users/xiaorongli/Dev/flywheel/packages/teamlead/node_modules/happy-dom/lib/index.js');
+const {Window}=await import(process.env.FLY2912_HAPPY_DOM_MODULE ?? 'happy-dom');
 const html=readFileSync(process.argv[2] || new URL('./founder-report.html',import.meta.url),'utf8');
 assert.equal((html.match(/<script\b/g)||[]).length,1);
 assert(!/\son\w+\s*=|<script[^>]+src=|<link\b|<iframe\b/i.test(html));
