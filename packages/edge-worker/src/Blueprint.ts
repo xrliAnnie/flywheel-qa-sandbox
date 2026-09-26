@@ -2364,6 +2364,7 @@ export class Blueprint {
 						`  none runs: \`node ${commCliPath} gate review_design --lead ${ctx.leadId ?? "<lead>"} --exec-id ${executionId} --no-block "Design review requested for ${issueKey}"\` (the message positional is REQUIRED)`,
 						`  → capture questionId → \`node ${commCliPath} request-review --type design --question-id <id> --plan ${docDir}/plan.md\``,
 						`  → poll \`node ${commCliPath} check <questionId>\` for APPROVED/CHANGES before implementing.`,
+						"  Interrupted review recovery: bridge_restart_retired remains pending. Check TURN, then reissue request-review --type design --request-id <original requestId> --question-id <original questionId> with the same --plan and repository binding; do not create a new gate. retry-held returns to gate hold until the durable ready notice; operator_required needs Lead evidence. A recovery notice is not a verdict or unrelated gate permission.",
 					);
 				}
 				if (tier !== "none") {
@@ -2722,6 +2723,7 @@ export class Blueprint {
 								`a. Run: \`node ${commCliPath} gate review_code --lead ${ctx.leadId} --exec-id ${executionId} --no-block "Code review requested: PR <url>"\` (the message positional is REQUIRED) — capture the questionId.`,
 								`b. Run: \`node ${commCliPath} request-review --type code --question-id <questionId>\` — the server freezes your CURRENT head as the reviewed target (do NOT push again until the verdict; a moved head voids the round).`,
 								`c. POLL \`node ${commCliPath} check <questionId>\` across your turns for the verdict:`,
+								"   - Interrupted review recovery: bridge_restart_retired remains pending. Check TURN, then reissue request-review --type code --request-id <original requestId> --question-id <original questionId> with the same repository binding; do not create a new gate. retry-held returns to gate hold until the durable ready notice; operator_required needs Lead evidence. A recovery notice is not a verdict or unrelated gate permission.",
 								"   - APPROVED → the code gate is satisfied; proceed to the APPROVE GATE steps below.",
 								"   - SKIPPED (governance-level codex-skip, founder-sanctioned) → also proceed; the skip record is head-bound server-side.",
 								"   - CHANGES_REQUESTED → the answered question is CONSUMED and cannot be reused: fix exactly what the findings name, push the new head, then open a NEW `gate review_code --no-block` + a NEW `request-review --type code --question-id <new id>` and poll again (the server increments the round and resumes the same reviewer session).",

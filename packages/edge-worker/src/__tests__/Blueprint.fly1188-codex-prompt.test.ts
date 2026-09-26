@@ -153,6 +153,7 @@ function makeBlueprint(input: {
 	dispatcher?: unknown;
 	checkpointConfig: Record<string, { enabled?: boolean }>;
 	memoryMode?: RunnerMemoryMode;
+	docFlow?: boolean;
 }): Blueprint {
 	return Reflect.construct(Blueprint, [
 		makeHydrator(),
@@ -168,14 +169,14 @@ function makeBlueprint(input: {
 		input.dispatcher,
 		input.checkpointConfig,
 		undefined,
+		input.docFlow ? { default_department: "engineering" } : undefined,
 		undefined,
 		undefined,
 		undefined,
 		undefined,
 		undefined,
 		undefined,
-		undefined,
-		undefined,
+		() => input.docFlow === true,
 		undefined,
 		() => ({
 			hasOverride: true,
@@ -583,6 +584,10 @@ describe("FLY-1257 M1-a — resident Codex gate-wait law", () => {
 		const prompt = await buildCodexPrompt();
 		expect(prompt).toContain("BRAINSTORM GATE");
 		expect(prompt).toContain("CODE REVIEW GATE (codex author");
+		expect(prompt).toContain("bridge_restart_retired");
+		expect(prompt).toContain("--request-id <original requestId>");
+		expect(prompt).toContain("retry-held");
+		expect(prompt).toContain("operator_required");
 		expect(prompt).toContain("APPROVE GATE (MANDATORY");
 		expect(prompt).toContain("QUESTION GATE");
 		expect(prompt.match(new RegExp(WAIT_LAW, "g")) ?? []).toHaveLength(1);
@@ -661,4 +666,31 @@ describe("FLY-1224 — codex author CODE REVIEW GATE guidance (T13 ①)", () => 
 		expect(prompt).not.toContain("CODE REVIEW GATE (codex author");
 		expect(prompt).not.toContain("request-review --type code");
 	});
+});
+
+it("FLY-2920 retains the original request and plan when recovering a design review", async () => {
+	const adapter = makeMockAdapter();
+	const worktree = makeRealWorktree();
+	cleanups.push(worktree);
+	const blueprint = makeBlueprint({
+		adapter,
+		worktreeManager: makeWtManager(worktree),
+		checkpointConfig: CHECKPOINTS,
+		docFlow: true,
+	});
+	await blueprint.run(makeNode(), worktree, {
+		teamName: "eng",
+		runnerName: "runner",
+		leadId: "flywheel-eng-lead",
+		projectName: "proj",
+		runnerBackend: "codex-tmux",
+		docTier: "full",
+	});
+	const call = vi.mocked(adapter.execute).mock.calls[0]?.[0];
+	expect(call?.appendSystemPrompt).toContain(
+		"request-review --type design --request-id <original requestId>",
+	);
+	expect(call?.appendSystemPrompt).toContain(
+		"with the same --plan and repository binding",
+	);
 });

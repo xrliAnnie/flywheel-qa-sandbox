@@ -159,6 +159,7 @@ export interface RunGoalInput {
 	waitingTimeoutMs?: number;
 	/** FLY-1188 MED-7: is this run currently blocked on an OPEN gate? */
 	isWaiting?: () => boolean;
+	readActionableReviewRecovery?: () => { id: string; text: string } | null;
 	/** FLY-1269 explicit resident DAG workflow controller. */
 	phaseLifecycle?: GoalPhaseLifecycle;
 	/** FLY-2268 durable turn-boundary writer, shared across daemon restarts. */
@@ -748,6 +749,12 @@ export class CodexDaemonGoalRuntime {
 								? { waitingTimeoutMs: input.waitingTimeoutMs }
 								: {}),
 							...(input.isWaiting ? { isWaiting: input.isWaiting } : {}),
+							...(input.readActionableReviewRecovery
+								? {
+										readActionableReviewRecovery:
+											input.readActionableReviewRecovery,
+									}
+								: {}),
 							...(input.readGateHoldLatch
 								? { readGateHoldLatch: input.readGateHoldLatch }
 								: {}),

@@ -89,7 +89,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
 import {
 	canonicalJsonString,
@@ -2069,6 +2069,7 @@ export interface CodexReviewAttempt {
 	recovery_state: CodexReviewRecoveryState | null;
 	retired_at: string | null;
 	next_probe_at: string | null;
+	termination_claimed_at: string | null;
 }
 
 export interface ReviewRecoveryNotice {
@@ -2083,6 +2084,9 @@ export interface ReviewRecoveryNotice {
 	created_at: string;
 	delivered_at: string | null;
 	acted_at: string | null;
+	next_delivery_at: string | null;
+	delivery_attempt_order: number;
+ acted_projected_at: string | null;
 }
 
 export interface ReviewRecoveryNoticeBinding {
@@ -12281,6 +12285,15 @@ export class StateStore {
 			acted_at TEXT,
 			PRIMARY KEY(request_id, attempt_generation, stage)
 		)`);
+		for (const [table, column, type] of [
+			["codex_review_attempt", "termination_claimed_at", "TEXT"],
+			["review_recovery_notice", "next_delivery_at", "TEXT"],
+ ["review_recovery_notice", "acted_projected_at", "TEXT"],
+			["review_recovery_notice", "delivery_attempt_order", "INTEGER NOT NULL DEFAULT 0"],
+		] as const) {
+			if (!(this.db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((row) => row.name === column))
+				this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+		}
 		this.db.run(`CREATE INDEX IF NOT EXISTS idx_review_recovery_notice_pending
 			ON review_recovery_notice(created_at, request_id) WHERE delivered_at IS NULL AND acted_at IS NULL`);
 		this.db.run(`CREATE INDEX IF NOT EXISTS idx_review_recovery_notice_execution
@@ -22603,6 +22616,7 @@ export class StateStore {
 				);
 				released = this.db.getRowsModified() > 0;
 			}
+			if (released) this.db.run(`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, datetime('now')), next_delivery_at = NULL WHERE request_id = ? AND source_request_id = ?`,[binding.request_id,binding.source_request_id]);
 			this.db.raw.exec("COMMIT");
 			this.save();
 		} catch (error) {
@@ -23057,6 +23071,43 @@ export class StateStore {
 			.map((row) => this.rowToCodexReviewJob(row as Record<string, unknown>));
 	}
 
+	/** Undefined is the main repo; null means no safe executable retry selector. */
+	getReviewRecoveryTargetRepoPath(
+		binding: Pick<
+			CodexReviewJob,
+			"execution_id" | "target_repo_identity" | "target_repo_path"
+		>,
+	): string | undefined | null {
+		if (binding.target_repo_identity === "__main__") return undefined;
+		const authorityRoot = this.getWorktreeBinding(binding.execution_id)?.path;
+		if (
+			!authorityRoot ||
+			!binding.target_repo_path ||
+			!isAbsolute(binding.target_repo_path)
+		)
+			return null;
+		try {
+			const root = realpathSync(authorityRoot);
+			const target = realpathSync(binding.target_repo_path);
+			// Accepted nested paths are canonical. A replaced symlink is not that binding.
+			if (target !== binding.target_repo_path) return null;
+			const selector = relative(root, target);
+			if (
+				!selector ||
+				selector.length > 512 ||
+				isAbsolute(selector) ||
+				selector.startsWith("~") ||
+				selector.split(/[\\/]/).includes("..")
+			)
+				return null;
+			// biome-ignore lint/suspicious/noControlCharactersInRegex: recovery commands reject prompt/control injection
+			if (/[\u0000-\u001f\u007f]/.test(selector)) return null;
+			return selector;
+		} catch {
+			return null;
+		}
+	}
+
 	private insertReviewRecoveryNotices(
 		job: CodexReviewJob,
 		stage: ReviewRecoveryNotice["stage"],
@@ -23073,8 +23124,12 @@ export class StateStore {
 		const quote = (value: string): string =>
 			"'" + value.replaceAll("'", "'\\''") + "'";
 		for (const binding of bindings) {
-			const command = `node "$FLYWHEEL_COMM_CLI" request-review --type ${quote(job.review_type)} --request-id ${quote(binding.request_id)} --question-id ${quote(binding.question_id)}${job.target_path ? ` --plan ${quote(job.target_path)}` : ""}`;
-			const text = `${noticeText ?? `Review attempt ${job.attempt_generation} ${stage}; the original review gate remains open.`}\nRequest: ${binding.request_id}; question: ${binding.question_id}.\n${command}`;
+			const targetRepoPath = this.getReviewRecoveryTargetRepoPath(binding);
+			const command =
+				targetRepoPath === null
+					? "Recovery command unavailable: operator evidence is required to verify the persisted target repository under this author's immutable worktree. Ask the owning Lead before retrying."
+					: `node "$FLYWHEEL_COMM_CLI" request-review --type ${quote(job.review_type)} --request-id=${quote(binding.request_id)} --question-id=${quote(binding.question_id)}${job.target_path ? ` --plan=${quote(job.target_path)}` : ""}${targetRepoPath ? ` --target-repo=${quote(targetRepoPath)}` : ""}`;
+			const text = `${noticeText ?? `Review attempt ${job.attempt_generation} ${stage}; the original review gate remains open.`}\nCheck TURN first. This is recovery of the original review only, not a verdict or permission for other gates.\nRequest: ${binding.request_id}; question: ${binding.question_id}.\n${command}`;
 			this.db.run(
 				`INSERT OR IGNORE INTO review_recovery_notice
 				(request_id, source_request_id, attempt_generation, stage, question_id, execution_id, project_name, text, created_at)
@@ -23152,7 +23207,7 @@ export class StateStore {
 						"legacy_owner_unverified: original reviewer identity or deadline is unavailable; operator evidence is required.",
 					);
 					this.db.run(
-						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, ?)
+						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, ?), next_delivery_at = NULL
 					WHERE source_request_id = ? AND attempt_generation = ? AND stage = 'retired'`,
 						[now, input.requestId, input.expectedGeneration],
 					);
@@ -23226,7 +23281,7 @@ export class StateStore {
 				if (this.db.getRowsModified() !== 1) return false;
 				if (input.state !== "retired") {
 					this.db.run(
-						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, ?)
+						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, ?), next_delivery_at = NULL
 				WHERE source_request_id = ? AND attempt_generation = ? AND stage = 'retired'`,
 						[now, input.requestId, input.attemptGeneration],
 					);
@@ -23244,13 +23299,112 @@ export class StateStore {
 			.immediate();
 	}
 
-	listPendingReviewRecoveryNotices(limit = 50): ReviewRecoveryNotice[] {
+	/** Durable at-most-once termination claim; a crash after this requires operator evidence. */
+	claimCodexReviewTermination(input: {
+		requestId: string;
+		attemptGeneration: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE codex_review_attempt SET termination_claimed_at = datetime('now')
+			WHERE request_id = ? AND attempt_generation = ? AND termination_claimed_at IS NULL
+			AND recovery_state IN ('retired','held') AND EXISTS (SELECT 1 FROM codex_review_job j
+			WHERE j.request_id = codex_review_attempt.request_id AND j.attempt_generation = codex_review_attempt.attempt_generation
+			AND j.status = 'failed' AND j.failure_reason = 'bridge_restart_retired')`,
+			[input.requestId, input.attemptGeneration],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	getReviewRecoveryNotice(
+		input: ReviewRecoveryNoticeBinding,
+	): ReviewRecoveryNotice | undefined {
+		return this.db.raw
+			.prepare(
+				`SELECT * FROM review_recovery_notice WHERE request_id = ? AND attempt_generation = ? AND stage = ? AND question_id = ? AND execution_id = ? AND project_name = ?`,
+			)
+			.get(
+				input.requestId,
+				input.attemptGeneration,
+				input.stage,
+				input.questionId,
+				input.executionId,
+				input.projectName,
+			) as ReviewRecoveryNotice | undefined;
+	}
+
+	listPendingReviewRecoveryNotices(
+		limit = 50,
+		dueAt?: string,
+	): ReviewRecoveryNotice[] {
 		return this.db.raw
 			.prepare(`SELECT * FROM review_recovery_notice WHERE delivered_at IS NULL AND acted_at IS NULL
-			ORDER BY created_at, request_id, attempt_generation, stage LIMIT ?`)
+			AND (? IS NULL OR next_delivery_at IS NULL OR julianday(next_delivery_at) <= julianday(?))
+			ORDER BY delivery_attempt_order, created_at, request_id, attempt_generation, stage LIMIT ?`)
 			.all(
+				dueAt ?? null,
+				dueAt ?? null,
 				Math.min(100, Math.max(1, Math.trunc(limit) || 1)),
 			) as ReviewRecoveryNotice[];
+	}
+
+	/** Move the durable cursor before I/O; failed or interrupted delivery waits one pass. */
+	beginReviewRecoveryNoticeDelivery(
+		input: ReviewRecoveryNoticeBinding,
+		nextDeliveryAt: string,
+	): boolean {
+		this.db.run(
+			`UPDATE review_recovery_notice SET next_delivery_at = ?,
+			delivery_attempt_order = (SELECT COALESCE(MAX(delivery_attempt_order), 0) + 1 FROM review_recovery_notice)
+			WHERE request_id = ? AND attempt_generation = ? AND stage = ? AND question_id = ? AND execution_id = ? AND project_name = ?
+			AND delivered_at IS NULL AND acted_at IS NULL`,
+			[
+				nextDeliveryAt,
+				input.requestId,
+				input.attemptGeneration,
+				input.stage,
+				input.questionId,
+				input.executionId,
+				input.projectName,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	listUnprojectedActedReviewNotices(
+		limit: number,
+		dueAt: string,
+	): ReviewRecoveryNotice[] {
+		return this.db.raw
+			.prepare(`SELECT * FROM review_recovery_notice WHERE acted_at IS NOT NULL AND acted_projected_at IS NULL
+		 AND (next_delivery_at IS NULL OR julianday(next_delivery_at) <= julianday(?))
+		 ORDER BY delivery_attempt_order, created_at, request_id LIMIT ?`)
+			.all(dueAt, Math.min(100, Math.max(1, limit))) as ReviewRecoveryNotice[];
+	}
+	beginActedReviewNoticeProjection(
+		input: ReviewRecoveryNoticeBinding,
+		nextAttemptAt: string,
+	): boolean {
+		this.db.run(
+			`UPDATE review_recovery_notice SET next_delivery_at = ?,
+		 delivery_attempt_order = (SELECT COALESCE(MAX(delivery_attempt_order),0)+1 FROM review_recovery_notice)
+		 WHERE request_id = ? AND attempt_generation = ? AND stage = ? AND question_id = ? AND execution_id = ? AND project_name = ?
+		 AND acted_at IS NOT NULL AND acted_projected_at IS NULL`,
+			[
+				nextAttemptAt,
+				input.requestId,
+				input.attemptGeneration,
+				input.stage,
+				input.questionId,
+				input.executionId,
+				input.projectName,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+	markReviewRecoveryNoticeActedProjected(
+		input: ReviewRecoveryNoticeBinding,
+	): boolean {
+		return this.stampReviewRecoveryNotice(input, "acted_projected_at");
 	}
 
 	markReviewRecoveryNoticeDelivered(
@@ -23265,7 +23419,7 @@ export class StateStore {
 
 	private stampReviewRecoveryNotice(
 		input: ReviewRecoveryNoticeBinding,
-		column: "delivered_at" | "acted_at",
+		column: "delivered_at" | "acted_at" | "acted_projected_at",
 	): boolean {
 		this.db.run(
 			`UPDATE review_recovery_notice SET ${column} = COALESCE(${column}, datetime('now'))
@@ -23353,7 +23507,7 @@ export class StateStore {
 						[requestId, before.attempt_generation],
 					);
 					this.db.run(
-						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, datetime('now'))
+						`UPDATE review_recovery_notice SET acted_at = COALESCE(acted_at, datetime('now')), next_delivery_at = NULL
 					WHERE source_request_id = ? AND attempt_generation = ?`,
 						[requestId, before.attempt_generation],
 					);

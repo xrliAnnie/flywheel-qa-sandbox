@@ -1,0 +1,85 @@
+{
+  "scope": "FLY-2920 D implementation checkpoint; not full CI, QA, production or ship evidence",
+  "approved_plan_blob": "da53ca9012d3c9894d14df4f70e15ead060d55c6",
+  "source_and_test_blobs": {
+    "packages/claude-runner/agents/codex-runner-contract.md": "eada43e387e426a3ea46120653af81251ccc98de",
+    "packages/claude-runner/src/CodexTmuxAdapter.ts": "e58ac679691713e54de0ffc4161058b367e7cce1",
+    "packages/claude-runner/src/codex-daemon-client.ts": "722d329510058eca12077424d91c93d3691076cf",
+    "packages/claude-runner/src/codex-daemon-goal-runtime.ts": "ecf60ba00d5a5e6d00f51afde544b57704b0b77b",
+    "packages/claude-runner/test/CodexTmuxAdapter.test.ts": "ff25f628a28dc45c90692fc9a798b6781b3dc1ae",
+    "packages/claude-runner/test/codex-daemon-client.test.ts": "ee718f00206bd078599ef331cf4ba60cc56aab19",
+    "packages/claude-runner/test/codex-daemon-goal-runtime.test.ts": "7b909f84139bc3e51ea9485780e7309842ed2a04",
+    "packages/claude-runner/test/codex-home.test.ts": "b27fabb8cd74a129d78636b4ecafb4af0e5774bb",
+    "packages/claude-runner/test/kill-path-inventory.test.ts": "54faf196413efc33e599d40686c67174869136a4",
+    "packages/edge-worker/src/Blueprint.ts": "77e87129fb9160556d184e6efd89e369e7100d4d",
+    "packages/edge-worker/src/__tests__/Blueprint.fly1188-codex-prompt.test.ts": "ac7107134a7e25ff6fcf2e44954e70ad760427c4",
+    "packages/flywheel-comm/src/commands/check.ts": "36e847ada6dabc3264bbab530c633fff132b6f56",
+    "packages/flywheel-comm/src/db.ts": "e48faca449a17613b48a438f28bb23febb03db36",
+    "packages/flywheel-comm/src/gate-marker.ts": "6fc8491076455af37da8e132291fa9383b0b6a72",
+    "packages/flywheel-comm/src/index.ts": "d91dfa74605b2766877a9a19efd0b35a05eb000c",
+    "packages/flywheel-comm/src/types.ts": "bac0b077fd69b75821faa61741d99864a9939204",
+    "packages/teamlead/src/StateStore.ts": "396f07c0d8c6f1f7b54f61dd7d8b33cf1996c7aa",
+    "packages/teamlead/src/__tests__/StateStore.review-retirement.test.ts": "81b1119c57f4cfc3420452976f9f12e91c9e3e1a",
+    "packages/teamlead/src/__tests__/fixtures/fly2567/compatibility.json": "75abaebb818287904505ae9f7dc2c5dc7c93033c",
+    "packages/teamlead/src/bridge/__tests__/claude-review-runner.test.ts": "bbc9ef1e14816a9601ffaae3431e7075e3248eb0",
+    "packages/teamlead/src/bridge/__tests__/review-request-coordinator.test.ts": "2fc7ce2c4a7cebb6b56eb9a28b7be652be6e63e3",
+    "packages/teamlead/src/bridge/claude-review-runner.ts": "898f987d21a9e1d72f50ef90ec4857a7b91b30fa",
+    "packages/teamlead/src/bridge/plugin.ts": "864dedf510630c9b4f3447b7958399f899997390",
+    "packages/teamlead/src/bridge/review-request-coordinator.ts": "ba38069023c422d82a80f2e54d7dd5729333fb3c",
+    "packages/flywheel-comm/src/__tests__/check-review-recovery.test.ts": "5da4a1e7aeb0c4dd1138a70984735ca2f87c11f9",
+    "packages/flywheel-comm/src/__tests__/db.review-recovery.test.ts": "85cce2d6dba6bfd5afab43d3bc0c62152ec3b2a4",
+    "packages/teamlead/src/bridge/__tests__/review-process-identity.test.ts": "aab0bcccb1555c08fdbca65e8455c45a2bc9611a",
+    "packages/teamlead/src/bridge/__tests__/review-recovery-integration.test.ts": "c73c13491013c15961b2ab37e1bcef66de867d12",
+    "packages/teamlead/src/bridge/__tests__/review-recovery-notice-sink.test.ts": "33d1e39e232e21e2e06b6126c4863671131e19ba",
+    "packages/teamlead/src/bridge/__tests__/review-recovery-pass.test.ts": "5f5cf1e15052deb38685a37906025a7b44014c4a",
+    "packages/teamlead/src/bridge/__tests__/review-recovery-status-route.test.ts": "a67a4a899cdf1a0e10a1157ce93b0a40c52ce36b",
+    "packages/teamlead/src/bridge/__tests__/review-recovery-target-repo.test.ts": "962b3c20a3cd9ec290beb781a820eb2c12cf3d70",
+    "packages/teamlead/src/bridge/review-process-identity.ts": "de461a8bde88d496f7ecc5dcc481eb0c43759394",
+    "packages/teamlead/src/bridge/review-recovery-notice-sink.ts": "328da455a3463b7eedbd9fa00bcce4f8ccd08690"
+  },
+  "related": [
+    {
+      "package": "claude-runner",
+      "kind": "scoped related",
+      "files_passed": 4,
+      "tests_passed": 338,
+      "log": "/tmp/fly2920-D-claude-runner-related.log",
+      "log_sha256": "a229f45eff212ea510dcb9b8fc3024b6c72aae9a2fa9d94e3d6de714bf3481fc"
+    },
+    {
+      "package": "edge-worker",
+      "kind": "scoped related",
+      "files_passed": 2,
+      "tests_passed": 44,
+      "log": "/tmp/fly2920-D-edge-worker-related.log",
+      "log_sha256": "6c54f063af58e14f581961c4701eecc49d1514ebdd8560d7049c8be2571fdf71"
+    },
+    {
+      "package": "flywheel-comm",
+      "kind": "scoped related",
+      "files_passed": 11,
+      "tests_passed": 210,
+      "log": "/tmp/fly2920-D-flywheel-comm-related.log",
+      "log_sha256": "fd089931fc448b967cfd611e0a1726715530f014afe2a156d64b479bb3b673a2"
+    },
+    {
+      "package": "teamlead",
+      "kind": "scoped related",
+      "files_passed": 21,
+      "tests_passed": 368,
+      "log": "/tmp/fly2920-D-teamlead-related.log",
+      "log_sha256": "2d40b3d358a317340947c5f886c170e28ed9a6efb50d9042340d9a57b90d436c"
+    }
+  ],
+  "explicit_selection": "consumers-D.json",
+  "build_log": "/tmp/fly2920-D-build-frozen.log",
+  "lint_log": "/tmp/fly2920-D-lint-frozen.log",
+  "lint_warnings": 25,
+  "typecheck_logs": [
+    "/tmp/fly2920-D-dependent-typecheck.log",
+    "/tmp/fly2920-D-dependent-preflight-build.log",
+    "/tmp/fly2920-D-dependent-typecheck-retry.log"
+  ],
+  "typecheck_status": "7 packages passed after missing voice-bridge dist preflight was built",
+  "review": "local spec and independent quality findings closed; effective code gate still required after E/F/G"
+}

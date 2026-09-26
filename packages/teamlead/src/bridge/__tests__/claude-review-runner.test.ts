@@ -457,6 +457,46 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 		if (out.kind === "verdict") expect(out.verdict).toBe("APPROVED");
 	});
 
+	it("carries exact attempt ownership in child environment and contains callback failures", async () => {
+		let captured: Parameters<ClaudeReviewSpawner>[0] | undefined;
+		const onSpawnIdentity = async () => {
+			throw new Error("storage unavailable");
+		};
+		const out = await runClaudeReviewRound(
+			{
+				...base,
+				ownership: { requestId: "r1", attemptGeneration: 3, ownerBootId: "b1" },
+				onSpawnIdentity,
+				env: { FLYWHEEL_REVIEW_REQUEST_ID: "spoofed" },
+			},
+			{
+				spawner: async (opts) => {
+					captured = opts;
+					await opts.onSpawnIdentity?.({
+						pid: 42,
+						pgid: 42,
+						processStartedAt: "start",
+					});
+					return {
+						code: 0,
+						stdout: '{"verdict":"APPROVED","findings":[]}',
+						stderr: "",
+						timedOut: false,
+						overflowed: false,
+						spawnError: null,
+					};
+				},
+				logger: () => {},
+			},
+		);
+		expect(captured?.env).toMatchObject({
+			FLYWHEEL_REVIEW_REQUEST_ID: "r1",
+			FLYWHEEL_REVIEW_ATTEMPT_GENERATION: "3",
+			FLYWHEEL_REVIEW_OWNER_BOOT_ID: "b1",
+		});
+		expect(out.kind).toBe("verdict");
+	});
+
 	it("washes Bridge credentials and fixes the reviewer vitest worker bounds", async () => {
 		let capturedEnv: NodeJS.ProcessEnv | undefined;
 		const capture: ClaudeReviewSpawner = async (opts) => {
@@ -610,6 +650,33 @@ describe("defaultClaudeReviewSpawner (real subprocess)", () => {
 		expect(res.timedOut).toBe(false);
 		expect(res.code).toBe(0);
 		expect(res.stdout).toContain("done");
+	});
+
+	it("contains a rejecting persistence callback after bounded identity capture", async () => {
+		let seen:
+			| { pid: number; pgid: number; processStartedAt: string }
+			| undefined;
+		const res = await defaultClaudeReviewSpawner({
+			binary: process.execPath,
+			argv: ["-e", "setTimeout(()=>{},1000)"],
+			cwd: dir,
+			env: process.env,
+			timeoutMs: 10000,
+			maxStdoutBytes: 1024,
+			onSpawnIdentity: async (identity) => {
+				seen = identity;
+				throw new Error("persistence failed");
+			},
+			captureSpawnIdentity: async (pid) => ({
+				pid,
+				pgid: pid,
+				processStartedAt: new Date().toISOString(),
+			}),
+		});
+		expect(res.code).toBe(0);
+		expect(seen?.pid).toBeGreaterThan(0);
+		expect(seen?.pgid).toBe(seen?.pid);
+		expect(Date.parse(seen?.processStartedAt ?? "")).toBeGreaterThan(0);
 	});
 
 	it("captures bounded stderr continuously and retains its tail", async () => {

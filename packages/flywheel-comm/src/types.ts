@@ -66,8 +66,20 @@ export interface MessageProvenance {
 	writerStart?: string | null;
 }
 
+export interface ReviewRetryHint {
+	requestId: string;
+	questionId: string;
+	reviewType: "design" | "code";
+	planPath?: string;
+	/** Server-derived selector relative to this author's immutable worktree. */
+	targetRepoPath?: string;
+	attemptGeneration: number;
+	reason: string;
+}
+
 export interface CheckResult {
 	status: "answered" | "pending";
+	reviewRetry?: ReviewRetryHint;
 	content?: string;
 	from_agent?: string;
 	created_at?: string;

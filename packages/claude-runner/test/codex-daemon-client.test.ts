@@ -1,4 +1,8 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { CommDB } from "../../flywheel-comm/src/db.js";
 import {
 	CodexDaemonClient,
 	CodexDaemonError,
@@ -3044,4 +3048,266 @@ describe("runGoalToTerminal — FLY-2018 owned turn failures", () => {
 
 		expect(result.lastTurnError).toBeUndefined();
 	});
+});
+
+// FLY-2920: a recovery instruction permits one working turn without releasing gates.
+it("recovers an ACKed durable notice while gate-held, deduplicates, and retries after daemon restart", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "author-recovery-"));
+	const db = new CommDB(join(dir, "comm.db"));
+	try {
+		db.registerSession("exec", "window", "p");
+		const questionId = db.insertQuestion("exec", "lead", "review", {
+			checkpoint: "review_code",
+		});
+		const other = db.insertQuestion("exec", "lead", "other", {
+			checkpoint: "brainstorm",
+		});
+		db.projectReviewRecoveryNotice(
+			{
+				requestId: "R",
+				sourceRequestId: "R",
+				questionId,
+				executionId: "exec",
+				projectName: "p",
+				generation: 1,
+				stage: "retired",
+				checkpoint: "review_code",
+				text: "Reissue R against Q",
+				actedAt: null,
+			},
+			{ writerPid: 123, writerStart: "bridge" },
+		);
+		db.markInstructionRead("review-recovery:R:1:retired");
+		for (let restart = 0; restart < 2; restart++) {
+			const d = new FakeDaemon();
+			d.responders.set("thread/goal/get", () => ({
+				goal: { status: "paused", objective: "recovery" },
+			}));
+			d.responders.set("turn/start", (_params, _id, push) => {
+				push({
+					method: "turn/completed",
+					params: {
+						threadId: "t",
+						turn: { id: "recovery-turn", status: "completed" },
+					},
+				});
+				return { turn: { id: "recovery-turn" } };
+			});
+			let ticks = 0;
+			const writes: boolean[] = [];
+			await expect(
+				runGoalToTerminal(makeClient(d), {
+					threadId: "t",
+					objective: "recovery",
+					isWaiting: () => db.hasPendingBlockingGateFrom("exec"),
+					readGateHoldLatch: () => true,
+					writeGateHoldLatch: (value) => writes.push(value),
+					readActionableReviewRecovery: () =>
+						db.readActionableReviewRecovery("exec", "p"),
+					now: () => ticks,
+					overallTimeoutMs: 5,
+					waitingTimeoutMs: 5,
+					sleep: async () => {
+						ticks++;
+					},
+					pollIntervalMs: 1,
+				}),
+			).rejects.toThrow();
+			expect(d.sent.filter((f) => f.method === "turn/start")).toHaveLength(1);
+			expect(writes).not.toContain(false);
+			expect(db.getResponse(questionId)).toBeFalsy();
+			expect(db.getResponse(other)).toBeFalsy();
+		}
+	} finally {
+		db.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+it.each(["acted", "verdict", "wrong-execution", "old-generation"])(
+	"does not start a gate-held recovery turn for %s notice",
+	async (reason) => {
+		const dir = mkdtempSync(join(tmpdir(), "author-recovery-negative-"));
+		const db = new CommDB(join(dir, "comm.db"));
+		try {
+			db.registerSession("exec", "window", "p");
+			const questionId = db.insertQuestion("exec", "lead", "review", {
+				checkpoint: "review_code",
+			});
+			db.insertQuestion("exec", "lead", "unrelated", {
+				checkpoint: "brainstorm",
+			});
+			const notice = {
+				requestId: "R",
+				sourceRequestId: "R",
+				questionId,
+				executionId: "exec",
+				projectName: "p",
+				generation: 1,
+				stage: "retired" as const,
+				checkpoint: "review_code" as const,
+				text: "Reissue R",
+				actedAt: null,
+			};
+			const provenance = { writerPid: 123, writerStart: "bridge" };
+			db.projectReviewRecoveryNotice(notice, provenance);
+			if (reason === "acted")
+				db.markReviewRecoveryNoticeActed(
+					"review-recovery:R:1:retired",
+					new Date().toISOString(),
+				);
+			if (reason === "verdict")
+				db.insertResponse(questionId, "lead", "APPROVED");
+			if (reason === "old-generation")
+				db.projectReviewRecoveryNotice(
+					{ ...notice, generation: 2, actedAt: new Date().toISOString() },
+					provenance,
+				);
+			const d = new FakeDaemon();
+			d.responders.set("thread/goal/get", () => ({
+				goal: { status: "paused", objective: "recovery" },
+			}));
+			let ticks = 0;
+			await expect(
+				runGoalToTerminal(makeClient(d), {
+					threadId: "t",
+					objective: "recovery",
+					isWaiting: () => db.hasPendingBlockingGateFrom("exec"),
+					readGateHoldLatch: () => true,
+					readActionableReviewRecovery: () =>
+						db.readActionableReviewRecovery(
+							reason === "wrong-execution" ? "other" : "exec",
+							"p",
+						),
+					now: () => ticks,
+					overallTimeoutMs: 3,
+					waitingTimeoutMs: 3,
+					sleep: async () => {
+						ticks++;
+					},
+					pollIntervalMs: 1,
+				}),
+			).rejects.toThrow();
+			expect(d.sentMethods()).not.toContain("turn/start");
+		} finally {
+			db.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	},
+);
+
+it.each([false, true])(
+	"FLY-2920 waits for owned recovery completion with missing response id=%s",
+	async (missingResponseId) => {
+		const d = new FakeDaemon();
+		let waiting = true;
+		let ticks = 0;
+		const writes: boolean[] = [];
+		const activeSets = () =>
+			d.sent.filter(
+				(f) =>
+					f.method === "thread/goal/set" &&
+					(f.params as { status?: string }).status === "active",
+			);
+		d.responders.set("thread/goal/get", () => ({
+			goal: { status: "paused", objective: "recovery-race" },
+		}));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			if (missingResponseId) {
+				push({
+					method: "turn/started",
+					params: { threadId: "t", turn: { id: "owned-recovery" } },
+				});
+				return {};
+			}
+			return { turn: { id: "owned-recovery" } };
+		});
+		d.responders.set("thread/goal/set", (params, _id, push) => {
+			if ((params as { status?: string }).status === "active")
+				push({
+					method: "goal/updated",
+					params: {
+						threadId: "t",
+						goal: { status: "complete", objective: "recovery-race" },
+					},
+				});
+			return {};
+		});
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "recovery-race",
+			isWaiting: () => waiting,
+			readGateHoldLatch: () => true,
+			writeGateHoldLatch: (value) => writes.push(value),
+			readActionableReviewRecovery: () => ({
+				id: "recovery-R",
+				text: "repair",
+			}),
+			now: () => ticks,
+			overallTimeoutMs: 10,
+			pollIntervalMs: 1,
+			sleep: async () => {
+				ticks++;
+				waiting = false;
+				expect(activeSets()).toHaveLength(0);
+				expect(writes).not.toContain(false);
+				if (ticks === 2)
+					d.push({
+						method: "turn/completed",
+						params: {
+							threadId: "t",
+							turn: { id: "unowned-turn", status: "completed" },
+						},
+					});
+				if (ticks === 3)
+					d.push({
+						method: "turn/completed",
+						params: {
+							threadId: "t",
+							turn: { id: "owned-recovery", status: "completed" },
+						},
+					});
+			},
+		});
+		expect(ticks).toBe(3);
+		expect(result.status).toBe("complete");
+		expect(activeSets()).toHaveLength(1);
+		expect(writes).toEqual([false]);
+	},
+);
+
+it("FLY-2920 defers recovery turn when native pause fails while preserving the local gate hold", async () => {
+	const d = new FakeDaemon();
+	let ticks = 0;
+	const writes: boolean[] = [];
+	d.responders.set("thread/goal/get", () => ({
+		goal: { status: "blocked", objective: "pause-failure" },
+	}));
+	d.responders.set("thread/goal/set", (_params, id, push) => {
+		push({ id, error: { code: -1, message: "pause unavailable" } });
+		return {};
+	});
+	await expect(
+		runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "pause-failure",
+			isWaiting: () => true,
+			readGateHoldLatch: () => true,
+			writeGateHoldLatch: (value) => writes.push(value),
+			readActionableReviewRecovery: () => ({
+				id: "recovery-R",
+				text: "repair",
+			}),
+			now: () => ticks,
+			overallTimeoutMs: 3,
+			waitingTimeoutMs: 3,
+			pollIntervalMs: 1,
+			sleep: async () => {
+				ticks++;
+			},
+		}),
+	).rejects.toThrow();
+	expect(d.sentMethods()).not.toContain("turn/start");
+	expect(d.sent.filter((f) => f.method === "thread/goal/set")).toHaveLength(1);
+	expect(writes).not.toContain(false);
 });

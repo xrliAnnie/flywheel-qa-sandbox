@@ -8,6 +8,7 @@ import { StateStore } from "../../StateStore.js";
 import type { ClaudeReviewOutcome } from "../claude-review-runner.js";
 import { toReviewFindingRulingSnapshot } from "../review-governance-effects.js";
 import {
+	type RetiredReviewProbe,
 	type ReviewCommDb,
 	ReviewRequestCoordinator,
 } from "../review-request-coordinator.js";
@@ -141,6 +142,7 @@ interface Harness {
 async function makeHarness(
 	// FLY-1224 (T13 ②): optional reviewerEffort override seam under test.
 	harnessOpts: {
+		probeRetiredAttempt?: () => Promise<RetiredReviewProbe>;
 		reviewerEffort?: "low" | "medium" | "high" | "xhigh";
 		reviewSeverityPolicyEnabled?: boolean;
 		postReviewRulingOk?: boolean;
@@ -181,6 +183,7 @@ async function makeHarness(
 	const logs: string[] = [];
 	const coordinator = new ReviewRequestCoordinator({
 		store,
+		probeRetiredAttempt: harnessOpts.probeRetiredAttempt,
 		commDbPathFor: (p) => `/fake/${p}/comm.db`,
 		openCommDb: () => harnessOpts.openCommDb?.(comm) ?? comm,
 		...(harnessOpts.reviewerEffort && {
@@ -3213,7 +3216,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		await settle();
 		expect(calls).toBe(1);
 		expect(h.store.getCodexReviewJob("r2")?.failure_reason).toBe(
-			"nonzero_exit",
+			"bridge_restart_retired",
 		);
 		expect(h.store.getCodexReviewJob("r2")?.reviewer_session_uuid).toBe(
 			"lost-session",
@@ -3555,7 +3558,7 @@ describe("ReviewRequestCoordinator — boot redrive", () => {
 		expect(h.invocations).toHaveLength(1);
 	});
 
-	it("running/pending jobs re-enqueue and complete after a restart", async () => {
+	it("retires running jobs after restart without recomputing or answering", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
 		openGate(h.comm, "q1", "e1", "review_design");
@@ -3579,10 +3582,13 @@ describe("ReviewRequestCoordinator — boot redrive", () => {
 			raw: "",
 		});
 		const n = h.coordinator.redriveOnBoot();
-		expect(n).toBe(1);
+		expect(n).toBe(0);
 		await settle();
-		expect(h.store.getCodexReviewJob("r1")?.status).toBe("done");
-		expect(h.comm.getResponse("q1")).toBeDefined();
+		expect(h.store.getCodexReviewJob("r1")?.failure_reason).toBe(
+			"bridge_restart_retired",
+		);
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		expect(h.invocations).toHaveLength(0);
 	});
 
 	it("redrives distinct executions concurrently while preserving same-execution serialization", async () => {
@@ -5791,4 +5797,285 @@ describe("FLY-1278 — canonical payload v2 outbox ownership", () => {
 		expect(h.store.getCodexReviewJob("r1")?.responded_at).toBeUndefined();
 		expect(h.alerts.some((message) => message.includes("FOREIGN"))).toBe(true);
 	});
+});
+
+describe("FLY-2920 review attempt retirement", () => {
+	it("retires a running attempt once across two boots without answering its gate or spawning", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+		});
+		h.store.claimCodexReviewJobRunning("r1");
+		h.coordinator.redriveOnBoot();
+		h.coordinator.redriveOnBoot();
+		await settle();
+		expect(h.invocations).toHaveLength(0);
+		expect(h.store.getCodexReviewJob("r1")).toMatchObject({
+			status: "failed",
+			failure_reason: "bridge_restart_retired",
+		});
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		expect(h.gateAnswers).toEqual([]);
+		h.coordinator.stop();
+		h.store.close();
+	});
+
+	it("retires before shutdown and refuses a late reviewer verdict", async () => {
+		const outcome = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({ reviewRound: () => outcome.promise });
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		await h.coordinator.accept({
+			requestId: "r1",
+			executionId: "e1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		h.coordinator.stop();
+		outcome.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await settle();
+		expect(h.store.getCodexReviewJob("r1")).toMatchObject({
+			status: "failed",
+			failure_reason: "bridge_restart_retired",
+		});
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
+		h.store.close();
+	});
+});
+
+describe("FLY-2920 review recovery status binding", () => {
+	it("shows the retired original request only to its exact open review gate owner", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		registerSession(h.store, "foreign");
+		openGate(h.comm, "q1");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+		});
+		h.store.claimCodexReviewJobRunning("r1");
+		h.coordinator.redriveOnBoot();
+		expect(
+			h.coordinator.reviewStatus({
+				executionId: "e1",
+				questionId: "q1",
+				planPath: "/not/read",
+			}),
+		).toMatchObject({
+			status: "pending",
+			reviewRetry: {
+				requestId: "r1",
+				questionId: "q1",
+				reviewType: "code",
+				attemptGeneration: 1,
+			},
+		});
+		expect(
+			h.coordinator.reviewStatus({ executionId: "foreign", questionId: "q1" }),
+		).toEqual({ status: "pending" });
+		h.comm.questions.get("q1")!.superseded_at = new Date().toISOString();
+		expect(
+			h.coordinator.reviewStatus({ executionId: "e1", questionId: "q1" }),
+		).toEqual({ status: "pending" });
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		h.coordinator.stop();
+		h.store.close();
+	});
+});
+
+describe("FLY-2920 explicit retired retry", () => {
+	it("holds a live old attempt, then accepts concurrent absent retries exactly once on the original gate", async () => {
+		let absent = false;
+		const h = await makeHarness({
+			probeRetiredAttempt: async () => ({ state: absent ? "absent" : "alive" }),
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		const request = {
+			requestId: "r1",
+			executionId: "e1",
+			reviewType: "code",
+			questionId: "q1",
+		};
+		h.store.insertCodexReviewJob({
+			...request,
+			reviewType: "code",
+			projectName: "proj",
+			targetRepoPath: "/fake/worktree",
+			frozenHeadSha: HEAD,
+		});
+		h.store.claimCodexReviewJobRunning("r1");
+		h.store.recordCodexReviewAttemptIntent({
+			requestId: "r1",
+			attemptGeneration: 1,
+			reviewerSessionUuid: "s",
+			ownerBootId: "old",
+			reviewerStartedAt: new Date().toISOString(),
+			configuredTimeoutMs: 60000,
+		});
+		h.store.retireCodexReviewJob({ requestId: "r1", expectedGeneration: 1 });
+		const held = await h.coordinator.accept(request);
+		expect(held).toMatchObject({ accepted: true, retryHeld: true });
+		expect(h.store.getCodexReviewAttempt("r1", 1)?.recovery_state).toBe("held");
+		expect(h.invocations).toHaveLength(0);
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		absent = true;
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			repairedTrailingBrace: false,
+			raw: "",
+		});
+		await Promise.all([
+			h.coordinator.accept(request),
+			h.coordinator.accept(request),
+		]);
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("r1")).toMatchObject({
+			attempt_generation: 2,
+			status: "done",
+		});
+		expect(h.comm.getResponse("q1")).toBeDefined();
+		h.coordinator.stop();
+		h.store.close();
+	});
+});
+it("FLY-2920 follower waits for old identity absence even when its head moved, then takes only its own lane", async () => {
+	let absent = false;
+	const h = await makeHarness({
+		probeRetiredAttempt: async () => ({ state: absent ? "absent" : "alive" }),
+	});
+	registerSession(h.store, "e1");
+	registerSession(h.store, "e2");
+	openGate(h.comm, "q1");
+	openGate(h.comm, "q2", "e2", "review_code");
+	h.store.insertCodexReviewJob({
+		requestId: "source",
+		executionId: "e1",
+		projectName: "proj",
+		questionId: "q1",
+		reviewType: "code",
+		targetRepoPath: "/fake/worktree",
+		frozenHeadSha: HEAD,
+	});
+	h.store.claimCodexReviewJobRunning("source");
+	h.store.recordCodexReviewAttemptIntent({
+		requestId: "source",
+		attemptGeneration: 1,
+		reviewerSessionUuid: "s",
+		ownerBootId: "old",
+		reviewerStartedAt: new Date().toISOString(),
+		configuredTimeoutMs: 60000,
+	});
+	h.store.insertCodexReviewReuseBinding({
+		requestId: "follower",
+		sourceRequestId: "source",
+		executionId: "e2",
+		questionId: "q2",
+	});
+	h.store.retireCodexReviewJob({ requestId: "source", expectedGeneration: 1 });
+	h.setHead("b".repeat(40));
+	const req = {
+		requestId: "follower",
+		executionId: "e2",
+		questionId: "q2",
+		reviewType: "code",
+	};
+	expect(await h.coordinator.accept(req)).toMatchObject({
+		accepted: true,
+		retryHeld: true,
+	});
+	expect(h.store.getCodexReviewJob("follower")).toBeNull();
+	absent = true;
+	h.outcomes.push({
+		kind: "verdict",
+		verdict: "APPROVED",
+		findings: [],
+		reviewedHeadSha: "b".repeat(40),
+		repairedTrailingBrace: false,
+		raw: "",
+	});
+	await h.coordinator.accept(req);
+	await settle();
+	expect(h.invocations).toHaveLength(1);
+	expect(h.store.getCodexReviewJob("source")?.status).toBe("failed");
+	expect(h.comm.getResponse("q1")).toBeUndefined();
+	expect(h.comm.getResponse("q2")).toBeDefined();
+	h.coordinator.stop();
+	h.store.close();
+});
+
+it("FLY-2920 repeated boot retires a running source without releasing its live reviewer follower", async () => {
+	const h = await makeHarness({
+		probeRetiredAttempt: async () => ({ state: "alive" }),
+	});
+	registerSession(h.store, "e1");
+	registerSession(h.store, "e2");
+	openGate(h.comm, "q1");
+	openGate(h.comm, "q2", "e2", "review_code");
+	h.store.insertCodexReviewJob({
+		requestId: "source",
+		executionId: "e1",
+		projectName: "proj",
+		questionId: "q1",
+		reviewType: "code",
+		targetRepoPath: "/fake/worktree",
+		frozenHeadSha: HEAD,
+	});
+	h.store.claimCodexReviewJobRunning("source");
+	h.store.recordCodexReviewAttemptIntent({
+		requestId: "source",
+		attemptGeneration: 1,
+		reviewerSessionUuid: "old-session",
+		ownerBootId: "old",
+		reviewerStartedAt: new Date().toISOString(),
+		configuredTimeoutMs: 60000,
+	});
+	h.store.insertCodexReviewReuseBinding({
+		requestId: "follower",
+		sourceRequestId: "source",
+		executionId: "e2",
+		questionId: "q2",
+	});
+	h.coordinator.redriveOnBoot();
+	await settle();
+	h.coordinator.redriveOnBoot();
+	await settle();
+	expect(h.invocations).toHaveLength(0);
+	expect(h.store.getCodexReviewJob("follower")).toBeNull();
+	expect(h.store.getCodexReviewReuseBinding("follower")).not.toBeNull();
+	expect(
+		h.store.getCodexReviewReuseBinding("follower")?.released_at,
+	).toBeUndefined();
+	expect(h.store.getCodexReviewJob("source")?.failure_reason).toBe(
+		"bridge_restart_retired",
+	);
+	expect(h.comm.getResponse("q1")).toBeUndefined();
+	expect(h.comm.getResponse("q2")).toBeUndefined();
+	h.coordinator.stop();
+	h.store.close();
 });

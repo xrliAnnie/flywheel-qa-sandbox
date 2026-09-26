@@ -1349,6 +1349,57 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(authority).toHaveBeenCalledWith(execId);
 	});
 
+	it("FLY-2920 validates durable recovery independently when gate query and long-lived projection read fail", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = db.insertQuestion(execId, "lead", "review", {
+			checkpoint: "review_code",
+		});
+		db.projectReviewRecoveryNotice(
+			{
+				requestId: "R",
+				sourceRequestId: "R",
+				questionId,
+				executionId: execId,
+				projectName: "proj",
+				generation: 1,
+				stage: "retired",
+				checkpoint: "review_code",
+				text: "Reissue R",
+				actedAt: null,
+			},
+			{ writerPid: 123, writerStart: "bridge" },
+		);
+		db.close();
+		writeGateMarker(markerDir, {
+			questionId,
+			executionId: execId,
+			backend: "codex-tmux",
+			vendor: "codex",
+			checkpoint: "review_code",
+			recoveryNoticeId: "untrusted-hint",
+		});
+		vi.spyOn(CommDB.prototype, "hasPendingBlockingGateFrom").mockImplementation(
+			() => {
+				throw new Error("closed gate handle");
+			},
+		);
+		const original = CommDB.prototype.readActionableReviewRecovery;
+		vi.spyOn(CommDB.prototype, "readActionableReviewRecovery")
+			.mockImplementationOnce(() => {
+				throw new Error("closed projection handle");
+			})
+			.mockImplementation(original);
+		runtime = new FakeRuntime(async (input) => {
+			expect(input.isWaiting?.()).toBe(true);
+			expect(input.readActionableReviewRecovery?.()).toMatchObject({
+				id: "review-recovery:R:1:retired",
+				questionId,
+			});
+			return complete();
+		});
+		await makeAdapter().execute(ctx());
+	});
+
 	it("ignores a marker mirror when CommDB has no open gate", async () => {
 		writeGateMarker(markerDir, {
 			questionId: "marker-only",

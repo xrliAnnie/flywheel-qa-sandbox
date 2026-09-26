@@ -790,6 +790,8 @@ export async function runGoalToTerminal(
 		 * decide whether the extended ceiling applies. Absent → never (the run is
 		 * always capped at the active ceiling). */
 		isWaiting?: () => boolean;
+		/** Trusted durable Bridge projection; mailbox ACK is not consumption. */
+		readActionableReviewRecovery?: () => { id: string; text: string } | null;
 		/** FLY-1257: durable restart latch for a blocked goal held on an open gate. */
 		readGateHoldLatch?: () => boolean;
 		/** FLY-1257: persist/clear the gate-hold latch. Throwing fails closed. */
@@ -925,6 +927,9 @@ export async function runGoalToTerminal(
 			throw new GoalRunError(`turn barrier failed: ${message}`, "setup_failed");
 		}
 	};
+	let recoveryTurnNoticeId: string | null = null;
+	let recoveryTurnId: string | null = null;
+	const attemptedRecoveryNotices = new Set<string>();
 	let lastTurnError: GoalRunResult["lastTurnError"];
 	let pendingTurnDispatch:
 		| { notifications: Array<{ method: string; params: unknown }> }
@@ -932,6 +937,12 @@ export async function runGoalToTerminal(
 	const applyOwnedTurnCompletion = (params: unknown): void => {
 		const completion = extractTurnCompletion(params);
 		if (!completion || !ownedTurnIds.has(completion.turnId)) return;
+		if (recoveryTurnNoticeId && recoveryTurnId === completion.turnId) {
+			if (completion.status !== "completed" || completion.error)
+				attemptedRecoveryNotices.delete(recoveryTurnNoticeId);
+			recoveryTurnNoticeId = null;
+			recoveryTurnId = null;
+		}
 		if (completion.status === "completed" && !completion.error) {
 			lastTurnError = undefined;
 			return;
@@ -1000,6 +1011,7 @@ export async function runGoalToTerminal(
 			);
 			return;
 		}
+		if (recoveryTurnNoticeId) recoveryTurnId = claimedTurnId;
 		ownedTurnIds.add(claimedTurnId);
 		enqueueTurnStarted(claimedTurnId);
 		for (const event of pending.notifications) {
@@ -1023,6 +1035,7 @@ export async function runGoalToTerminal(
 	let gateHoldActive = false;
 	let gateHoldLatched = false;
 	let gatePauseAttempted = false;
+	let gatePauseConfirmed = false;
 	// R23 HIGH-2: lifecycle authority is armed only AFTER THIS run's setGoal is
 	// confirmed. A late terminal from a PRIOR goal on the same thread (e.g. a
 	// resumed thread) can arrive before our setGoal response — it must never
@@ -1332,6 +1345,7 @@ export async function runGoalToTerminal(
 		gateHoldActive = false;
 		// Let the next episode attempt its own best-effort pause.
 		gatePauseAttempted = false;
+		gatePauseConfirmed = false;
 		let latched = gateHoldLatched;
 		if (!latched) {
 			try {
@@ -1364,6 +1378,7 @@ export async function runGoalToTerminal(
 		if (budget <= 0) return;
 		try {
 			await setGoalStatus("paused", budget);
+			gatePauseConfirmed = true;
 		} catch (error) {
 			// Pausing is an optimization layered over the durable local hold. Never
 			// lose that safety behavior because the optional RPC is unavailable.
@@ -1386,6 +1401,7 @@ export async function runGoalToTerminal(
 				throw new Error("daemon did not confirm the recovered paused goal");
 			}
 			gatePauseAttempted = true;
+			gatePauseConfirmed = true;
 		} catch (error) {
 			if (client.isClosed()) {
 				failClose(
@@ -1454,16 +1470,19 @@ export async function runGoalToTerminal(
 		if (remainingBudget() <= 0) timedOut("before setGoal");
 		await setGoalStatus("active", remainingBudget());
 		gatePauseAttempted = false;
+		gatePauseConfirmed = false;
 		goalArmed = true;
 		fireGoalActive();
 	};
-	const startInitialTurn = async (): Promise<void> => {
+	const startInitialTurn = async (
+		text = input.kickText ?? "Begin working toward the goal now.",
+	): Promise<void> => {
 		if (remainingBudget() <= 0) timedOut("before startTurn");
 		beginTurnDispatch();
 		try {
 			const turnId = await client.startTurn(
 				input.threadId,
-				input.kickText ?? "Begin working toward the goal now.",
+				text,
 				remainingBudget(),
 			);
 			claimTurnDispatch(turnId);
@@ -1602,6 +1621,7 @@ export async function runGoalToTerminal(
 						goalArmed = true;
 						enterGateHold();
 						gatePauseAttempted = true;
+						gatePauseConfirmed = true;
 						await establishRecoveryOwnership({
 							kind: "gate_hold_confirmed",
 							threadId: input.threadId,
@@ -1739,7 +1759,28 @@ export async function runGoalToTerminal(
 				if (input.isWaiting?.()) {
 					terminalSeen = null;
 					await pauseGateGoal();
-				} else {
+					// A narrow repair turn runs while the native goal remains paused. Never
+					// clear gateHold or goal/set(active): either would release other gates.
+					const recovery = input.readActionableReviewRecovery?.();
+					if (
+						recovery &&
+						gatePauseConfirmed &&
+						!recoveryTurnNoticeId &&
+						!attemptedRecoveryNotices.has(recovery.id)
+					) {
+						attemptedRecoveryNotices.add(recovery.id);
+						recoveryTurnNoticeId = recovery.id;
+						try {
+							await startInitialTurn(recovery.text);
+						} catch (error) {
+							attemptedRecoveryNotices.delete(recovery.id);
+							recoveryTurnNoticeId = null;
+							throw error;
+						}
+					}
+				} else if (!recoveryTurnNoticeId && !recoveryTurnId) {
+					// A review verdict can arrive before the repair turn finishes.
+					// Native resume auto-starts work, so wait for our owned completion.
 					terminalSeen = null;
 					await resumeHeldGoal();
 					gateHoldActive = false;

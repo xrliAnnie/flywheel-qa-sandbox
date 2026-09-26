@@ -152,6 +152,29 @@ function makeHarness(
 }
 
 describe("CodexDaemonGoalRuntime", () => {
+	it("forwards durable recovery authority unchanged across daemon restart", async () => {
+		const reader = () => ({
+			id: "review-recovery:R:1:retired",
+			text: "repair",
+		});
+		const seen: unknown[] = [];
+		const h = makeHarness({
+			runGoalScript: [],
+			runGoalFn: async (_client, input) => {
+				seen.push(input.readActionableReviewRecovery);
+				if (seen.length === 1)
+					throw new GoalRunError("daemon gone", "transport_closed");
+				return COMPLETE;
+			},
+			sleep: async () => {},
+		});
+		await new CodexDaemonGoalRuntime(h.opts).runGoal({
+			objective: "repair",
+			readActionableReviewRecovery: reader,
+		});
+		expect(seen).toEqual([reader, reader]);
+	});
+
 	it("happy path: spawn → connect → initialize → startThread → runGoal → complete", async () => {
 		const h = makeHarness({ runGoalScript: [COMPLETE] });
 		const rt = new CodexDaemonGoalRuntime(h.opts);

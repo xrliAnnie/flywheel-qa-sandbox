@@ -880,6 +880,11 @@ import {
 	toReviewFindingRulingSnapshot,
 } from "./review-governance-effects.js";
 import { founderApprovalHoldGuard, reviewHoldReason } from "./review-hold.js";
+import {
+	probeRetiredReviewAttempt,
+	terminateRetiredReviewAttempt,
+} from "./review-process-identity.js";
+import { createReviewRecoveryNoticeSink } from "./review-recovery-notice-sink.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
 import { createReviewRulingHandler } from "./review-ruling-route.js";
 import { ReviewThreadEffect } from "./review-thread-effect.js";
@@ -3234,6 +3239,25 @@ export function createBridgeApp(
 					);
 					res.status(500).json({ accepted: false, reason: "internal error" });
 				});
+		},
+	);
+
+	app.post(
+		"/review-requests/status",
+		tokenAuthMiddleware(config.ingestToken),
+		(req, res) => {
+			const coordinator = opts?.reviewCoordinator?.current;
+			if (!coordinator) {
+				res.status(503).json({ status: "pending" });
+				return;
+			}
+			try {
+				res.json(
+					coordinator.reviewStatus((req.body ?? {}) as Record<string, unknown>),
+				);
+			} catch {
+				res.status(503).json({ status: "pending" });
+			}
 		},
 	);
 
@@ -14227,8 +14251,43 @@ export async function startBridge(
 			alert: (payload) =>
 				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
 		});
+		const recoveryNotices = createReviewRecoveryNoticeSink({
+			store,
+			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
+			resolveOwningLead: (session) =>
+				resolveLeadForIssue(
+					projects,
+					session.project_name,
+					parseJsonStringArray(session.issue_labels),
+				).lead.agentId,
+			markerDir: defaultGateMarkerDir(process.env),
+		});
 		reviewCoordinatorHolder.current = new ReviewRequestCoordinator({
 			store,
+			probeRetiredAttempt: (job, attempt, signal) =>
+				probeRetiredReviewAttempt(
+					{
+						...job,
+						target_repo_path:
+							job.target_repo_path ??
+							store.getWorktreeBinding(job.execution_id)?.path,
+					},
+					attempt,
+					signal,
+				),
+			terminateRetiredAttempt: (job, attempt, signal) =>
+				terminateRetiredReviewAttempt(
+					{
+						...job,
+						target_repo_path:
+							job.target_repo_path ??
+							store.getWorktreeBinding(job.execution_id)?.path,
+					},
+					attempt,
+					signal,
+				),
+			deliverRecoveryNotice: recoveryNotices.deliver,
+			markRecoveryNoticeActed: recoveryNotices.markActed,
 			commDbPathFor: (projectName) => join(commRoot, projectName, "comm.db"),
 			openCommDb: (path) => new CommDB(path, false),
 			reviewerTimeoutMs: parseReviewerTimeoutMs(

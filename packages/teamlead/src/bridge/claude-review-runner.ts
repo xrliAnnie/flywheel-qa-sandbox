@@ -32,6 +32,11 @@ import {
 	resolveAllowedEffort,
 } from "flywheel-config";
 
+import {
+	captureSpawnedReviewIdentity,
+	type ReviewProcessIdentity,
+} from "./review-process-identity.js";
+
 const RUNNER_TEST_POLICY_HOOK = fileURLToPath(
 	new URL(
 		"../../../../scripts/hooks/inject-runner-test-policy.mjs",
@@ -102,6 +107,14 @@ export interface ClaudeReviewInvocation {
 	maxStdoutBytes?: number;
 	env?: NodeJS.ProcessEnv;
 	binary?: string;
+	/** FLY-2920: durable pre-spawn attempt identity, carried in actual env. */
+	ownership?: {
+		requestId: string;
+		attemptGeneration: number;
+		ownerBootId: string;
+	};
+	/** Supplemental identity only; capture or persistence failure never fabricates it. */
+	onSpawnIdentity?: (identity: ReviewProcessIdentity) => void | Promise<void>;
 }
 
 /**
@@ -110,7 +123,7 @@ export interface ClaudeReviewInvocation {
  * weaker than the work it judges. Exported for the coordinator-layer test.
  */
 export const DEFAULT_REVIEW_EFFORT: RoleEffort = "xhigh";
-const DEFAULT_TIMEOUT_MS = 30 * 60_000; // §7.2: 30min per round
+export const DEFAULT_REVIEW_TIMEOUT_MS = 30 * 60_000; // §7.2: 30min per round
 const DEFAULT_MAX_STDOUT_BYTES = 8 * 1_048_576; // 8MB
 const MAX_STDERR_BYTES = 16 * 1024;
 
@@ -190,6 +203,9 @@ export type ClaudeReviewSpawner = (opts: {
 	env: NodeJS.ProcessEnv;
 	timeoutMs: number;
 	maxStdoutBytes: number;
+	onSpawnIdentity?: (identity: ReviewProcessIdentity) => void | Promise<void>;
+	/** Injectable sensor; failure leaves identity unknown. */
+	captureSpawnIdentity?: typeof captureSpawnedReviewIdentity;
 }) => Promise<SpawnResult>;
 
 /** Real spawner — never rejects; every failure lands in the result shape. */
@@ -219,10 +235,28 @@ export const defaultClaudeReviewSpawner: ClaudeReviewSpawner = (opts) =>
 				}
 			}
 		};
-		if (child.pid) liveChildren.set(child.pid, killTree);
+		const identityCapture = new AbortController();
+		if (child.pid) {
+			liveChildren.set(child.pid, killTree);
+			if (opts.onSpawnIdentity) {
+				void (opts.captureSpawnIdentity ?? captureSpawnedReviewIdentity)(
+					child.pid,
+					identityCapture.signal,
+				)
+					.then(async (identity) => {
+						if (identity && !done && !identityCapture.signal.aborted)
+							await opts.onSpawnIdentity?.(identity);
+					})
+					.catch(() => {
+						/* metadata remains unknown; no detached rejection */
+					});
+			}
+		}
+		child.once("exit", () => identityCapture.abort());
 		const finish = (code: number | null) => {
 			if (done) return;
 			done = true;
+			identityCapture.abort();
 			clearTimeout(timer);
 			if (child.pid) liveChildren.delete(child.pid);
 			resolve({
@@ -518,13 +552,27 @@ export async function runClaudeReviewRound(
 		// the reviewer's stdout, so it needs no FLYWHEEL_ posting token.
 		env: {
 			...washReviewEnv(inv.env ?? process.env),
+			FLYWHEEL_REVIEW_REQUEST_ID: inv.ownership?.requestId,
+			FLYWHEEL_REVIEW_ATTEMPT_GENERATION: inv.ownership
+				? String(inv.ownership.attemptGeneration)
+				: undefined,
+			FLYWHEEL_REVIEW_OWNER_BOOT_ID: inv.ownership?.ownerBootId,
 			VITEST_MAX_THREADS: "4",
 			VITEST_MIN_THREADS: "1",
 			VITEST_MAX_FORKS: "4",
 			VITEST_MIN_FORKS: "1",
 		},
-		timeoutMs: inv.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+		timeoutMs: inv.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
 		maxStdoutBytes: inv.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES,
+		onSpawnIdentity: inv.onSpawnIdentity
+			? async (identity) => {
+					try {
+						await inv.onSpawnIdentity?.(identity);
+					} catch {
+						logger("review spawn identity persistence failed");
+					}
+				}
+			: undefined,
 	});
 	if (res.spawnError !== null) {
 		logger(`spawn failed: ${res.spawnError}`);
@@ -542,7 +590,7 @@ export async function runClaudeReviewRound(
 		return {
 			kind: "failed",
 			reason: "timeout",
-			detail: `timed out after ${inv.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms`,
+			detail: `timed out after ${inv.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS}ms`,
 			exitCode: res.code,
 			timedOut: true,
 			stderrTail: res.stderr.slice(-2000),

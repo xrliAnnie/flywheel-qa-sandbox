@@ -582,19 +582,27 @@ it("keeps follower notice generations distinct from its later own-lane attempt",
 		targetRepoPath: "/tmp/follower",
 	});
 	retire();
-	store.markReviewRecoveryNoticeActed({
-		requestId: "follower",
+	store.transitionCodexReviewRecovery({
+		requestId: "request",
 		attemptGeneration: 1,
-		stage: "retired",
-		questionId: "follower-question",
-		executionId: "other",
-		projectName: "project",
+		expectedState: "retired",
+		state: "ready",
 	});
 	store.releaseCodexReviewReuseBinding({
 		requestId: "follower",
 		reason: "explicit_retry",
 		frozenHeadSha: "a".repeat(40),
 	});
+	expect(
+		store.getReviewRecoveryNotice({
+			requestId: "follower",
+			attemptGeneration: 1,
+			stage: "ready",
+			questionId: "follower-question",
+			executionId: "other",
+			projectName: "project",
+		}),
+	).toMatchObject({ acted_at: expect.any(String) });
 	expect(store.claimCodexReviewJobRunning("follower")).toBe(true);
 	expect(store.getCodexReviewJob("follower")?.attempt_generation).toBe(2);
 	store.recordCodexReviewAttemptIntent({
@@ -635,7 +643,11 @@ it("advances the persisted probe cursor past slow rows before their deadlines", 
 		reviewerStartedAt: startedAt,
 		configuredTimeoutMs: 120_000,
 	});
-	store.retireCodexReviewJob({ requestId: "untouched", expectedGeneration: 1, retiredAt: startedAt });
+	store.retireCodexReviewJob({
+		requestId: "untouched",
+		expectedGeneration: 1,
+		retiredAt: startedAt,
+	});
 	store.transitionCodexReviewRecovery({
 		requestId: "request",
 		attemptGeneration: 1,

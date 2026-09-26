@@ -135,6 +135,15 @@ not native memory tools.
      `advisories` are non-blocking MEDIUM/LOW findings; `settled` records findings
      covered by an active Lead governance ruling. These fields are audit context —
      only `reviewVerdict` tells you whether this review request passed.
+- **Interrupted review recovery (FLY-2920)**: `bridge_restart_retired` is pending,
+  not a verdict. On its durable recovery notice or `check` hint, check TURN, then
+  explicitly reissue the original request with `request-review --type <original type>
+  --request-id <original requestId> --question-id <original questionId>` and the
+  same `--plan` / repository binding. Do not open a new gate for retirement.
+  `retry-held` means the old identity is alive or unknown: return to the original
+  gate hold and wait for the durable ready notice; do not loop reissue.
+  `operator_required` requires the owning Lead's evidence, not another automatic
+  retry. A recovery notice never answers the gate or permits unrelated actions.
 - **APPROVED with advisories** means the hard review gate passed. Continue the
   pipeline, and relay the advisories to your Lead as a fire-and-forget report so
   they can choose follow-up work: `node "$FLYWHEEL_COMM_CLI" ask --lead <lead>

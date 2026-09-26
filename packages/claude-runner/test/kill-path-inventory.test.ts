@@ -21,6 +21,11 @@ interface MutationRegistration {
 
 const MUTATION_REGISTRY: readonly MutationRegistration[] = [
 	{
+		path: "packages/teamlead/src/bridge/review-process-identity.ts",
+		callFragment: 'reason: "retired_review_original_deadline"',
+		disposition: "boundary",
+	},
+	{
 		path: "packages/claude-runner/src/TmuxAdapter.ts",
 		callFragment: 'source: "tmux_adapter"',
 		disposition: "boundary",

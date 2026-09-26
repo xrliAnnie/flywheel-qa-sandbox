@@ -18,7 +18,10 @@ import { runAlertTicketCommand } from "./commands/alert-ticket.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
-import { check } from "./commands/check.js";
+import {
+	checkWithReviewRecovery,
+	formatReviewRetryCommand,
+} from "./commands/check.js";
 import { runCiFullCommand } from "./commands/ci-full.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { codexResume } from "./commands/codex-resume.js";
@@ -341,7 +344,7 @@ async function main(): Promise<void> {
 			await runAsk(commandArgs);
 			break;
 		case "check":
-			runCheck(commandArgs);
+			await runCheck(commandArgs);
 			break;
 		case "ci-full":
 			process.exitCode = await runCiFullCommand(commandArgs);
@@ -719,7 +722,7 @@ async function runAsk(args: string[]): Promise<void> {
 	}
 }
 
-function runCheck(args: string[]): void {
+async function runCheck(args: string[]): Promise<void> {
 	const { values, positionals } = parseArgs({
 		args,
 		options: {
@@ -736,7 +739,7 @@ function runCheck(args: string[]): void {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = check({
+	const result = await checkWithReviewRecovery({
 		questionId,
 		dbPath,
 		executionId: process.env.FLYWHEEL_EXEC_ID,
@@ -748,6 +751,10 @@ function runCheck(args: string[]): void {
 		console.log(result.content);
 	} else {
 		console.log("not yet");
+		if (result.reviewRetry) {
+			console.log(`Review recovery: ${result.reviewRetry.reason}`);
+			console.log(formatReviewRetryCommand(result.reviewRetry));
+		}
 	}
 	// Always exit 0 per Codex #4
 }

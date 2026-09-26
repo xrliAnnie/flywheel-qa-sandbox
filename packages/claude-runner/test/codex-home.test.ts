@@ -3161,6 +3161,10 @@ hide_full_access_warning = true
 			// FLY-1278: effective-vs-reviewer verdict + supervised finding-ruling
 			// convergence protocol must survive materialization into every Codex home.
 			expect(agents).toContain("reviewVerdict is the effective gate verdict");
+			expect(agents).toContain("bridge_restart_retired");
+			expect(agents).toContain("--request-id <original requestId>");
+			expect(agents).toContain("retry-held");
+			expect(agents).toContain("operator_required");
 			expect(agents).toContain("APPROVED with advisories");
 			expect(agents).toContain("review-ruling");
 			expect(agents).toContain("/tmp/flywheel-snapshots/<exec>/");

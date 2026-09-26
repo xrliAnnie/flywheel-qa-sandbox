@@ -83,6 +83,26 @@ import type {
 } from "./types.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
+/** Derived Bridge projection; StateStore review_recovery_notice remains authority. */
+export interface ReviewRecoveryNoticeProjection {
+	workflow?: {
+		issueId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+	};
+	requestId: string;
+	sourceRequestId: string;
+	questionId: string;
+	executionId: string;
+	projectName: string;
+	generation: number;
+	stage: "retired" | "ready" | "operator_required";
+	checkpoint: "review_design" | "review_code";
+	text: string;
+	actedAt: string | null;
+}
+
 export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
   FROM mailbox AS m
   JOIN mailbox_message_projection AS p ON p.id = m.id
@@ -217,6 +237,16 @@ export const RUNNER_DELIVERY_PROJECTION_ROW_SQL = `SELECT m.seq, m.id, m.from_ag
 	   ))`;
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS review_recovery_notice_projection (
+ id TEXT PRIMARY KEY,
+ request_id TEXT NOT NULL,
+ generation INTEGER NOT NULL,
+ binding_json TEXT NOT NULL,
+ sender_ref TEXT NOT NULL,
+ acted_at TEXT,
+ UNIQUE(request_id, generation, id)
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   execution_id  TEXT PRIMARY KEY,
   tmux_window   TEXT NOT NULL,
@@ -4854,6 +4884,134 @@ export class CommDB {
 				senderRef: encodeSenderRef(provenance),
 			}).outcome === "inserted"
 		);
+	}
+
+	/** Privileged Bridge sink only: mirrors a StateStore notice and its existing mailbox transport atomically. */
+	projectReviewRecoveryNotice(
+		input: ReviewRecoveryNoticeProjection,
+		provenance: MessageProvenance,
+	): boolean {
+		const id = `review-recovery:${input.requestId}:${input.generation}:${input.stage}`;
+		if (
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 0 ||
+			!["retired", "ready", "operator_required"].includes(input.stage) ||
+			!["review_design", "review_code"].includes(input.checkpoint)
+		)
+			throw new Error("invalid review recovery binding");
+		const { actedAt, ...binding } = input;
+		const bindingJson = canonicalJsonString(binding);
+		return this.db
+			.transaction(() => {
+				const existing = this.db
+					.prepare(
+						"SELECT binding_json, sender_ref FROM review_recovery_notice_projection WHERE id = ?",
+					)
+					.get(id) as { binding_json: string; sender_ref: string } | undefined;
+				if (existing) {
+					if (existing.binding_json !== bindingJson)
+						throw new Error("review recovery identity collision");
+					if (actedAt) this.markReviewRecoveryNoticeActed(id, actedAt);
+					return true;
+				}
+				if (
+					!Number.isSafeInteger(provenance.writerPid) ||
+					(provenance.writerPid ?? 0) <= 0 ||
+					!provenance.writerStart ||
+					provenance.senderLeaseKey != null
+				)
+					throw new Error("review recovery requires Bridge writer provenance");
+				const senderRef = encodeSenderRef(provenance);
+				this.insertInstructionAndClearDeclaredState(
+					id,
+					"bridge",
+					input.executionId,
+					input.text,
+					provenance,
+				);
+				this.db
+					.prepare(
+						"INSERT INTO review_recovery_notice_projection (id, request_id, generation, binding_json, sender_ref, acted_at) VALUES (?, ?, ?, ?, ?, ?)",
+					)
+					.run(
+						id,
+						input.requestId,
+						input.generation,
+						bindingJson,
+						senderRef,
+						actedAt,
+					);
+				return true;
+			})
+			.immediate();
+	}
+
+	/** Source acceptance/replay only; delivery ACK deliberately does not call this. */
+	markReviewRecoveryNoticeActed(id: string, actedAt: string): void {
+		assertUtcIsoTimestamp(actedAt, "actedAt");
+		this.db
+			.transaction(() => {
+				const updated = this.db
+					.prepare(
+						"UPDATE review_recovery_notice_projection SET acted_at = COALESCE(acted_at, ?) WHERE id = ?",
+					)
+					.run(actedAt, id);
+				if (!updated.changes) return;
+				// Source handling/retirement cancels only this pending recovery wake.
+				// It does not fabricate an ACK or touch the original review question.
+				this.db
+					.prepare(`UPDATE mailbox SET state = 'DEAD', dead_reason = 'review_recovery_acted', dead_at = ?,
+			 claimed_by = NULL, claim_expires_at = NULL, batch_id = NULL, next_retry_at = NULL, last_error = NULL
+			 WHERE id = ? AND recipient_kind = 'runner' AND type = 'instruction' AND from_agent = 'bridge'
+			 AND state IN ('QUEUED','LEASED') AND EXISTS (SELECT 1 FROM review_recovery_notice_projection p
+			 WHERE p.id = mailbox.id AND p.sender_ref = mailbox.sender_ref AND p.acted_at IS NOT NULL)`)
+					.run(actedAt, id);
+			})
+			.immediate();
+	}
+
+	readActionableReviewRecovery(
+		executionId: string,
+		projectName: string,
+	): (ReviewRecoveryNoticeProjection & { id: string }) | null {
+		const rows = this.db
+			.prepare(`SELECT p.id, p.binding_json FROM review_recovery_notice_projection p
+   JOIN mailbox m ON m.id = p.id
+   JOIN mailbox_message_projection q ON q.id = json_extract(p.binding_json, '$.questionId')
+   WHERE p.acted_at IS NULL
+    AND json_extract(p.binding_json, '$.executionId') = ?
+    AND json_extract(p.binding_json, '$.projectName') = ?
+    AND m.type = 'instruction' AND m.from_agent = 'bridge' AND m.to_agent = ? AND m.sender_ref = p.sender_ref
+    AND m.content = json_extract(p.binding_json, '$.text')
+    AND q.type = 'question' AND q.from_agent = ? AND q.checkpoint = json_extract(p.binding_json, '$.checkpoint')
+    AND EXISTS (SELECT 1 FROM sessions s WHERE s.execution_id = q.from_agent
+      AND s.project_name = json_extract(p.binding_json, '$.projectName') AND s.status = 'running')
+    AND q.relay_state != 'terminal_disposed' AND q.resolved_at IS NULL AND q.superseded_at IS NULL
+    AND (q.expires_at IS NULL OR julianday(q.expires_at) > julianday('now'))
+    AND NOT EXISTS (SELECT 1 FROM mailbox_message_projection r WHERE r.parent_id = q.id AND r.type = 'response')
+    AND NOT EXISTS (SELECT 1 FROM review_recovery_notice_projection newer WHERE newer.request_id = p.request_id AND newer.generation > p.generation)
+   ORDER BY p.generation DESC, p.rowid DESC`)
+			.all(executionId, projectName, executionId, executionId) as Array<{
+			id: string;
+			binding_json: string;
+		}>;
+		const row = rows[0];
+		if (!row) return null;
+		const notice = JSON.parse(
+			row.binding_json,
+		) as ReviewRecoveryNoticeProjection;
+		if (notice.workflow) {
+			const turn = this.getTurn(notice.workflow.issueId);
+			if (
+				!turn ||
+				turn.holder_exec_id !== executionId ||
+				turn.target_run_id !== notice.workflow.runId ||
+				turn.target_node_id !== notice.workflow.nodeId ||
+				turn.target_attempt !== notice.workflow.attempt
+			)
+				return null;
+		}
+		return { ...notice, id: row.id, actedAt: null };
 	}
 
 	/** Atomically re-engage a Runner only for a newly inserted instruction. */

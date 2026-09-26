@@ -18,8 +18,7 @@
  *
  * Scheduling: serial per execution, with no coordinator-wide concurrency
  * ceiling by default (§7.1 / FLY-2037); an optional cap can queue jobs.
- * Boot redrive: pending/running jobs re-enqueue
- * (`redriveOnBoot`).
+ * Boot recovery retires interrupted attempts; only never-claimed pending work enqueues.
  */
 
 import { execFile } from "node:child_process";
@@ -38,9 +37,11 @@ import {
 	writeQuotaWitness as writeQuotaWitnessFile,
 } from "../account-heal/quota-witness.js";
 import type {
+	CodexReviewAttempt,
 	CodexReviewJob,
 	CodexReviewReuseBinding,
 	ReviewFindingRuling,
+	ReviewRecoveryNotice,
 	Session,
 	StateStore,
 } from "../StateStore.js";
@@ -51,6 +52,7 @@ import {
 } from "../workflow-review-routing.js";
 import {
 	type ClaudeReviewOutcome,
+	DEFAULT_REVIEW_TIMEOUT_MS,
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
 import { snapshotDesignReviewPlan } from "./design-review-manifest.js";
@@ -119,6 +121,8 @@ export type AcceptReviewResult =
 			requestId: string;
 			skipped: boolean;
 			duplicate: boolean;
+			retryHeld?: boolean;
+			reason?: string;
 	  }
 	| { accepted: false; httpStatus: number; reason: string };
 
@@ -161,7 +165,30 @@ export interface ReviewAlertEvent {
 	message: string;
 }
 
+export interface RetiredReviewProbe {
+	state: "absent" | "alive" | "unknown";
+	reason?: string;
+}
+
 export interface ReviewCoordinatorDeps {
+	probeRetiredAttempt?: (
+		job: CodexReviewJob,
+		attempt: CodexReviewAttempt,
+		signal: AbortSignal,
+	) => Promise<RetiredReviewProbe>;
+	terminateRetiredAttempt?: (
+		job: CodexReviewJob,
+		attempt: CodexReviewAttempt,
+		signal: AbortSignal,
+	) => Promise<RetiredReviewProbe>;
+	deliverRecoveryNotice?: (
+		notice: ReviewRecoveryNotice,
+		signal: AbortSignal,
+	) => Promise<{ accepted: boolean }>;
+	markRecoveryNoticeActed?: (notice: ReviewRecoveryNotice) => void;
+	recoveryClock?: () => number;
+	recoveryIoTimeoutMs?: number;
+
 	store: StateStore;
 	commDbPathFor: (projectName: string) => string;
 	openCommDb: (path: string) => ReviewCommDb;
@@ -480,6 +507,11 @@ export class ReviewRequestCoordinator {
 	private readonly setTimer: (callback: () => void, delayMs: number) => unknown;
 	private readonly clearTimer: (handle: unknown) => void;
 	private stopped = false;
+	private readonly ownedAttempts = new Map<string, number>();
+	private readonly ownerBootId = randomUUID();
+	private recoveryPass: Promise<void> | undefined;
+	private recoveryTimer: unknown;
+	private readonly recoveryControllers = new Set<AbortController>();
 	private readonly maxConcurrent: number;
 	private active = 0;
 	private readonly slotWaiters: Array<(acquired: boolean) => void> = [];
@@ -508,9 +540,339 @@ export class ReviewRequestCoordinator {
 
 	stop(): void {
 		this.stopped = true;
+		if (this.recoveryTimer !== undefined) this.clearTimer(this.recoveryTimer);
+		this.recoveryTimer = undefined;
+		for (const controller of this.recoveryControllers) controller.abort();
 		for (const wake of this.slotWaiters.splice(0)) wake(false);
 		for (const handle of this.retryTimers.values()) this.clearTimer(handle);
 		this.retryTimers.clear();
+		for (const [requestId, expectedGeneration] of this.ownedAttempts) {
+			this.store.retireCodexReviewJob({
+				requestId,
+				expectedGeneration,
+				retiredAt: new Date(this.now()).toISOString(),
+				noticeText:
+					"Bridge stopped this review attempt. Check TURN before explicitly recovering the original review; this is not a verdict.",
+			});
+		}
+		this.ownedAttempts.clear();
+	}
+
+	private canWriteAttempt(job: CodexReviewJob): boolean {
+		if (this.stopped) return false;
+		const current = this.store.getCodexReviewJob(job.request_id);
+		return (
+			current?.status === "running" &&
+			current.attempt_generation === job.attempt_generation
+		);
+	}
+
+	/** One finite pass observes old attempts and delivers notices; it never enqueues review work. */
+	runRecoveryPass(): Promise<void> {
+		if (this.stopped) return Promise.resolve();
+		if (this.recoveryPass) return this.recoveryPass;
+		if (this.recoveryTimer !== undefined) this.clearTimer(this.recoveryTimer);
+		this.recoveryTimer = undefined;
+		const work = this.performRecoveryPass()
+			.catch((error) => {
+				this.log(
+					`review recovery deferred: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			})
+			.finally(() => {
+				this.recoveryPass = undefined;
+				if (this.stopped) return;
+				this.recoveryTimer = this.setTimer(() => {
+					this.recoveryTimer = undefined;
+					void this.runRecoveryPass();
+				}, 30_000);
+				(this.recoveryTimer as { unref?: () => void } | undefined)?.unref?.();
+			});
+		this.recoveryPass = work;
+		return work;
+	}
+
+	private async recoveryIo<T>(
+		operation: (signal: AbortSignal) => Promise<T>,
+		budgetMs: number,
+	): Promise<T> {
+		const controller = new AbortController();
+		this.recoveryControllers.add(controller);
+		const timeoutMs = Math.max(
+			1,
+			Math.min(5_000, this.deps.recoveryIoTimeoutMs ?? 5_000, budgetMs),
+		);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let onAbort: (() => void) | undefined;
+		try {
+			const cancelled = new Promise<never>((_, reject) => {
+				onAbort = () => reject(new Error("review_recovery_aborted"));
+				controller.signal.addEventListener("abort", onAbort, { once: true });
+				timer = setTimeout(() => controller.abort(), timeoutMs);
+			});
+			return await Promise.race([cancelled, operation(controller.signal)]);
+		} finally {
+			if (timer) clearTimeout(timer);
+			if (onAbort) controller.signal.removeEventListener("abort", onAbort);
+			this.recoveryControllers.delete(controller);
+		}
+	}
+
+	private projectActedNotices(
+		limit = 100,
+		clock = () => performance.now(),
+		deadline = clock() + 5_000,
+	): number {
+		if (!this.deps.markRecoveryNoticeActed || this.stopped || limit <= 0)
+			return 0;
+		let visited = 0;
+		for (const notice of this.store.listUnprojectedActedReviewNotices(
+			limit,
+			new Date(this.now()).toISOString(),
+		)) {
+			if (this.stopped || clock() >= deadline) break;
+			visited++;
+			this.projectActedNotice(notice);
+		}
+		return visited;
+	}
+
+	private projectActedNotice(notice: ReviewRecoveryNotice): void {
+		if (!this.deps.markRecoveryNoticeActed || this.stopped) return;
+		const binding = {
+			requestId: notice.request_id,
+			attemptGeneration: notice.attempt_generation,
+			stage: notice.stage,
+			questionId: notice.question_id,
+			executionId: notice.execution_id,
+			projectName: notice.project_name,
+		};
+		if (
+			!this.store.beginActedReviewNoticeProjection(
+				binding,
+				new Date(this.now() + 30_000).toISOString(),
+			)
+		)
+			return;
+		try {
+			this.deps.markRecoveryNoticeActed(notice);
+			this.store.markReviewRecoveryNoticeActedProjected(binding);
+		} catch {
+			/* Source action survives and retries without another author wake. */
+		}
+	}
+
+	private async performRecoveryPass(): Promise<void> {
+		const clock = this.deps.recoveryClock ?? (() => performance.now());
+		const deadline = clock() + 5_000;
+		// Expired attempts retain first priority, but probes cannot consume the
+		// notification lane's time or item budget on every 30s pass.
+		const probeDeadline = Math.min(deadline, clock() + 2_000);
+		let visited = 0;
+		for (const attempt of this.store.listDueCodexReviewRecoveries({
+			now: new Date(this.now()).toISOString(),
+			limit: 50,
+		})) {
+			if (this.stopped) return;
+			if (clock() >= probeDeadline || visited >= 50) break;
+			visited++;
+			const job = this.store.getCodexReviewJob(attempt.request_id);
+			if (!job || !attempt.recovery_state) continue;
+			const expired =
+				!attempt.deadline_at || Date.parse(attempt.deadline_at) <= this.now();
+			let result: RetiredReviewProbe = {
+				state: "unknown",
+				reason: "identity_probe_unavailable",
+			};
+			try {
+				if (this.deps.probeRetiredAttempt)
+					result = await this.recoveryIo(
+						(signal) => this.deps.probeRetiredAttempt!(job, attempt, signal),
+						probeDeadline - clock(),
+					);
+				if (this.stopped) return;
+				if (expired && result.state === "alive") {
+					result =
+						this.deps.terminateRetiredAttempt &&
+						clock() < probeDeadline &&
+						this.store.claimCodexReviewTermination({
+							requestId: attempt.request_id,
+							attemptGeneration: attempt.attempt_generation,
+						})
+							? await this.recoveryIo(
+									(signal) =>
+										this.deps.terminateRetiredAttempt!(job, attempt, signal),
+									probeDeadline - clock(),
+								)
+							: {
+									state: "unknown",
+									reason: "exact_identity_termination_unavailable",
+								};
+				}
+			} catch {
+				result = {
+					state: "unknown",
+					reason: "identity_probe_failed_or_timed_out",
+				};
+			}
+			if (this.stopped) return;
+			const state =
+				result.state === "absent"
+					? "ready"
+					: expired
+						? "operator_required"
+						: attempt.recovery_state;
+			this.store.transitionCodexReviewRecovery({
+				requestId: attempt.request_id,
+				attemptGeneration: attempt.attempt_generation,
+				expectedState: attempt.recovery_state,
+				state,
+				nextProbeAt: new Date(this.now() + 30_000).toISOString(),
+				noticeText:
+					state === "operator_required"
+						? `Original review budget expired; operator evidence is required (${result.reason ?? result.state}). Check TURN. Do not retry automatically; this is not a verdict.`
+						: "The exact retired reviewer is absent. Check TURN, then explicitly recover the original review request; this is not a verdict.",
+			});
+		}
+		if (this.stopped || clock() >= deadline) return;
+		const dueAt = new Date(this.now()).toISOString();
+		// Both notice kinds already share a durable delivery_attempt_order. Merge
+		// them rather than always spending the remaining budget on acted rows:
+		// even one slow synchronous projection must yield to older pending rows
+		// on the next pass, including after a coordinator restart.
+		const notices = [
+			...(this.deps.markRecoveryNoticeActed
+				? this.store.listUnprojectedActedReviewNotices(50, dueAt)
+				: []),
+			...(this.deps.deliverRecoveryNotice
+				? this.store.listPendingReviewRecoveryNotices(50, dueAt)
+				: []),
+		]
+			.sort(
+				(a, b) =>
+					a.delivery_attempt_order - b.delivery_attempt_order ||
+					a.created_at.localeCompare(b.created_at) ||
+					a.request_id.localeCompare(b.request_id) ||
+					a.attempt_generation - b.attempt_generation ||
+					a.stage.localeCompare(b.stage),
+			)
+			.slice(0, 50);
+		for (const notice of notices) {
+			if (this.stopped || clock() >= deadline || visited >= 100) return;
+			visited++;
+			if (notice.acted_at) {
+				this.projectActedNotice(notice);
+				continue;
+			}
+			try {
+				if (!this.deps.deliverRecoveryNotice) continue;
+				if (
+					!this.store.beginReviewRecoveryNoticeDelivery(
+						{
+							requestId: notice.request_id,
+							questionId: notice.question_id,
+							executionId: notice.execution_id,
+							projectName: notice.project_name,
+							attemptGeneration: notice.attempt_generation,
+							stage: notice.stage,
+						},
+						new Date(this.now() + 30_000).toISOString(),
+					)
+				)
+					continue;
+				const result = await this.recoveryIo(
+					(signal) => this.deps.deliverRecoveryNotice!(notice, signal),
+					deadline - clock(),
+				);
+				// A completed enqueue may stamp its idempotent receipt even during stop.
+				if (result.accepted)
+					this.store.markReviewRecoveryNoticeDelivered({
+						requestId: notice.request_id,
+						questionId: notice.question_id,
+						executionId: notice.execution_id,
+						projectName: notice.project_name,
+						attemptGeneration: notice.attempt_generation,
+						stage: notice.stage,
+					});
+			} catch {
+				/* Durable pending notice remains retryable next pass. */
+			}
+			if (this.stopped) return;
+		}
+	}
+
+	/** Authenticated status is a hint, never a gate answer or permission. */
+	reviewStatus(payload: Record<string, unknown>): {
+		status: "pending";
+		reviewRetry?: {
+			requestId: string;
+			questionId: string;
+			reviewType: "design" | "code";
+			planPath?: string;
+			targetRepoPath?: string;
+			attemptGeneration: number;
+			reason: string;
+		};
+	} {
+		const pending = { status: "pending" as const };
+		const executionId = str(payload.executionId);
+		const questionId = str(payload.questionId);
+		if (!executionId || !questionId) return pending;
+		const session = this.store.getSession(executionId);
+		if (!session) return pending;
+		const job = this.store.getCodexReviewJobByQuestionId(questionId);
+		if (
+			!job ||
+			job.status !== "failed" ||
+			job.failure_reason !== "bridge_restart_retired" ||
+			job.project_name !== session.project_name
+		)
+			return pending;
+		const binding =
+			job.execution_id === executionId && job.question_id === questionId
+				? job
+				: this.store
+						.listCodexReviewReuseBindings(job.request_id)
+						.find(
+							(row) =>
+								row.execution_id === executionId &&
+								row.question_id === questionId &&
+								!row.released_at &&
+								!row.responded_at,
+						);
+		if (
+			!binding ||
+			this.checkGate(
+				session.project_name,
+				questionId,
+				executionId,
+				job.review_type,
+			) !== "open"
+		)
+			return pending;
+		const targetRepoPath = this.store.getReviewRecoveryTargetRepoPath(binding);
+		if (targetRepoPath === null) return pending;
+		const attempt = this.store.getCodexReviewAttempt(
+			job.request_id,
+			job.attempt_generation,
+		);
+		return {
+			status: "pending",
+			reviewRetry: {
+				requestId: binding.request_id,
+				questionId,
+				reviewType: job.review_type,
+				...(job.target_path ? { planPath: job.target_path } : {}),
+				...(targetRepoPath ? { targetRepoPath } : {}),
+				attemptGeneration: job.attempt_generation,
+				reason:
+					attempt?.recovery_state === "operator_required"
+						? "operator_required"
+						: attempt?.recovery_state === "held"
+							? "retry-held"
+							: "bridge_restart_retired",
+			},
+		};
 	}
 
 	/**
@@ -646,6 +1008,7 @@ export class ReviewRequestCoordinator {
 	 * after the job row is committed (the HTTP 200 = durable-accepted ack).
 	 */
 	async accept(payload: ReviewRequestPayload): Promise<AcceptReviewResult> {
+		if (this.stopped) return reject(503, "review coordinator stopped");
 		const executionId = str(payload.executionId);
 		const requestId = str(payload.requestId);
 		const reviewType = str(payload.reviewType);
@@ -767,6 +1130,12 @@ export class ReviewRequestCoordinator {
 					`requestId ${requestId} is already bound to a different request (execution ${existing.execution_id}, question ${existing.question_id}, type ${existing.review_type})`,
 				);
 			}
+			if (this.stopped) return reject(503, "review coordinator stopped");
+			if (existing.failure_reason === "bridge_restart_retired") {
+				if ((existing.target_path ?? "") !== (planPath ?? ""))
+					return reject(409, "retry plan binding mismatch");
+				return this.acceptRetiredRetry(existing);
+			}
 			if (existing.status === "pending") {
 				this.enqueue(existing.request_id, existing.execution_id);
 			} else if (existing.status === "failed") {
@@ -858,6 +1227,11 @@ export class ReviewRequestCoordinator {
 					`retry refused for reused request ${requestId}: gate ${reuseGate} (question ${questionId})`,
 				);
 			}
+			if (source.failure_reason === "bridge_restart_retired") {
+				if ((source.target_path ?? "") !== (planPath ?? ""))
+					return reject(409, "retry plan binding mismatch");
+				return this.acceptRetiredRetry(source, existingReuse);
+			}
 			if (reviewType === "code") {
 				const current = await this.tryDeriveHead(
 					executionId,
@@ -892,7 +1266,10 @@ export class ReviewRequestCoordinator {
 				await this.deliverReuseBinding(source, existingReuse);
 			} else if (source.status === "pending") {
 				this.enqueue(source.request_id, source.execution_id);
-			} else if (source.status === "failed" || source.status === "skipped") {
+			} else if (
+				(source.status === "failed" || source.status === "skipped") &&
+				source.failure_reason !== "bridge_restart_retired"
+			) {
 				const released = await this.releaseReuseBindingToOwnLane(
 					source,
 					existingReuse,
@@ -1156,9 +1533,41 @@ export class ReviewRequestCoordinator {
 	/**
 	 * Bridge boot: (1) R12 HIGH-4 outbox — re-deliver terminal verdicts whose
 	 * gate response was lost in a crash (from the STORED verdict, never a
-	 * re-review); (2) running → pending, then enqueue every redrivable job.
+	 * re-review); (2) retire running attempts once; enqueue never-claimed pending work.
 	 */
 	redriveOnBoot(): number {
+		if (this.stopped) return 0;
+		// A request-bound committed approval wins before retiring its old attempt.
+		for (const job of this.store.listRunningCodexReviewJobs()) {
+			const authority =
+				job.review_type === "code" && job.frozen_head_sha
+					? this.store.getCodexReviewRecord(
+							job.execution_id,
+							job.target_repo_identity,
+							job.frozen_head_sha,
+						)
+					: null;
+			if (
+				authority?.status === "approved" &&
+				authority.request_id === job.request_id
+			) {
+				this.store.completeCodexReviewJob(
+					job.request_id,
+					"APPROVED",
+					job.findings_json ?? "[]",
+					undefined,
+					job.attempt_generation,
+				);
+			} else {
+				this.store.retireCodexReviewJob({
+					requestId: job.request_id,
+					expectedGeneration: job.attempt_generation,
+					retiredAt: new Date(this.now()).toISOString(),
+					noticeText:
+						"Bridge restarted; the old review attempt is retired. Check TURN before explicitly recovering this original review; this is not a verdict.",
+				});
+			}
+		}
 		for (const ruling of this.store.listPendingReviewRulingNotifications()) {
 			void this.notifyReviewRuling(ruling).catch((err) => {
 				this.log(
@@ -1191,7 +1600,10 @@ export class ReviewRequestCoordinator {
 						`reuse outbox delivery failed for ${binding.request_id}: ${err instanceof Error ? err.message : String(err)}`,
 					);
 				});
-			} else if (source.status === "failed" || source.status === "skipped") {
+			} else if (
+				(source.status === "failed" || source.status === "skipped") &&
+				source.failure_reason !== "bridge_restart_retired"
+			) {
 				void this.releaseReuseBindingToOwnLane(
 					source,
 					binding,
@@ -1203,12 +1615,11 @@ export class ReviewRequestCoordinator {
 				});
 			}
 		}
-		const reset = this.store.resetRunningCodexReviewJobs();
-		if (reset > 0) this.log(`boot: reset ${reset} in-flight job(s) → pending`);
 		const jobs = this.store.listRedrivableCodexReviewJobs();
 		for (const job of jobs) this.enqueue(job.request_id, job.execution_id);
 		const scheduled = this.store.listScheduledCodexReviewJobs();
 		for (const job of scheduled) this.armRetryTimer(job);
+		void this.runRecoveryPass();
 		return jobs.length + scheduled.length;
 	}
 
@@ -1411,7 +1822,11 @@ export class ReviewRequestCoordinator {
 		else this.active -= 1;
 	}
 
-	private enqueue(requestId: string, executionId: string): void {
+	private enqueue(
+		requestId: string,
+		executionId: string,
+		claimedGeneration?: number,
+	): void {
 		const chain = this.execChains.get(executionId) ?? Promise.resolve();
 		const next = chain.then(async () => {
 			// R13 HIGH-3: this link starts only after its execution predecessor.
@@ -1420,7 +1835,7 @@ export class ReviewRequestCoordinator {
 			if (this.maxConcurrent > 0 && !(await this.acquireSlot())) return;
 			try {
 				if (this.stopped) return;
-				await this.runJob(requestId);
+				await this.runJob(requestId, claimedGeneration);
 			} catch (err) {
 				this.log(
 					`job ${requestId} crashed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1442,12 +1857,150 @@ export class ReviewRequestCoordinator {
 		});
 	}
 
+	private async acceptRetiredRetry(
+		job: CodexReviewJob,
+		follower?: CodexReviewReuseBinding,
+	): Promise<AcceptReviewResult> {
+		try {
+			const duplicate = {
+				accepted: true as const,
+				requestId: follower?.request_id ?? job.request_id,
+				duplicate: true,
+				skipped: false,
+			};
+			const gate = () =>
+				this.checkGate(
+					job.project_name,
+					follower?.question_id ?? job.question_id,
+					follower?.execution_id ?? job.execution_id,
+					job.review_type,
+				);
+			if (gate() !== "open") return reject(409, "retry gate is not open");
+			if (job.review_type === "design" && job.target_path) {
+				const proof = this.store.getDesignReviewProofForReviewJob(
+					job.request_id,
+				);
+				const snapshot = snapshotDesignReviewPlan(
+					{ worktree_path: job.target_repo_path },
+					job.target_path,
+				);
+				if (
+					!proof ||
+					!snapshot.ok ||
+					snapshot.blobSha !== proof.expected_blob_sha
+				)
+					return reject(409, "retry plan proof changed or unavailable");
+			}
+			const attempt = this.store.getCodexReviewAttempt(
+				job.request_id,
+				job.attempt_generation,
+			);
+			if (!attempt || attempt.recovery_state === "operator_required")
+				return { ...duplicate, retryHeld: true, reason: "operator_required" };
+			let probe: RetiredReviewProbe = {
+				state: "unknown",
+				reason: "identity_probe_unavailable",
+			};
+			try {
+				if (this.deps.probeRetiredAttempt)
+					probe = await this.recoveryIo(
+						(signal) => this.deps.probeRetiredAttempt!(job, attempt, signal),
+						5000,
+					);
+			} catch {
+				probe = {
+					state: "unknown",
+					reason: "identity_probe_failed_or_timed_out",
+				};
+			}
+			if (this.stopped) return reject(503, "review coordinator stopped");
+			if (gate() !== "open")
+				return reject(409, "retry gate closed during ownership probe");
+			const current = this.store.getCodexReviewJob(job.request_id);
+			if (
+				!current ||
+				current.attempt_generation !== job.attempt_generation ||
+				current.status !== "failed" ||
+				current.failure_reason !== "bridge_restart_retired"
+			)
+				return duplicate;
+			const latest = this.store.getCodexReviewAttempt(
+				job.request_id,
+				job.attempt_generation,
+			);
+			if (!latest || latest.recovery_state === "operator_required")
+				return { ...duplicate, retryHeld: true, reason: "operator_required" };
+			if (probe.state !== "absent") {
+				if (
+					latest.recovery_state === "retired" ||
+					latest.recovery_state === "held"
+				)
+					this.store.transitionCodexReviewRecovery({
+						requestId: job.request_id,
+						attemptGeneration: job.attempt_generation,
+						expectedState: latest.recovery_state,
+						state: "held",
+						nextProbeAt: new Date(this.now() + 30_000).toISOString(),
+					});
+				return { ...duplicate, retryHeld: true, reason: "retry-held" };
+			}
+			if (
+				latest.recovery_state === "retired" ||
+				latest.recovery_state === "held"
+			)
+				this.store.transitionCodexReviewRecovery({
+					requestId: job.request_id,
+					attemptGeneration: job.attempt_generation,
+					expectedState: latest.recovery_state,
+					state: "ready",
+				});
+			if (follower) {
+				const released = await this.releaseReuseBindingToOwnLane(
+					job,
+					follower,
+					"explicit_retired_retry",
+				);
+				return released
+					? duplicate
+					: reject(409, "follower retry no longer eligible");
+			}
+			if (
+				this.store.claimCodexReviewJobRunning(job.request_id, {
+					expectedGeneration: job.attempt_generation,
+					explicitRetiredRetry: true,
+				})
+			) {
+				const generation = job.attempt_generation + 1;
+				this.ownedAttempts.set(job.request_id, generation);
+				this.enqueue(job.request_id, job.execution_id, generation);
+			}
+			return duplicate;
+		} finally {
+			this.projectActedNotices();
+		}
+	}
+
 	// ── job execution ──────────────────────────────────────────────────────
 
-	private async runJob(requestId: string): Promise<void> {
+	private async runJob(
+		requestId: string,
+		claimedGeneration?: number,
+	): Promise<void> {
+		if (
+			this.stopped ||
+			(claimedGeneration === undefined &&
+				!this.store.claimCodexReviewJobRunning(requestId))
+		)
+			return;
 		const job = this.store.getCodexReviewJob(requestId);
-		if (!job) return;
-		if (!this.store.claimCodexReviewJobRunning(requestId)) return;
+		if (
+			!job ||
+			job.status !== "running" ||
+			(claimedGeneration !== undefined &&
+				job.attempt_generation !== claimedGeneration)
+		)
+			return;
+		this.ownedAttempts.set(requestId, job.attempt_generation);
 		const session = this.store.getSession(job.execution_id);
 		if (!session) {
 			this.failReviewJob(requestId, "session_missing");
@@ -1519,6 +2072,7 @@ export class ReviewRequestCoordinator {
 		}
 		if (job.review_type === "code") {
 			const current = await this.tryDeriveHead(job.execution_id, cwd);
+			if (!this.canWriteAttempt(job)) return;
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
 				this.handleHeadMoved(job, current);
@@ -1537,7 +2091,11 @@ export class ReviewRequestCoordinator {
 		let resume = true;
 		if (job.round <= 1 || !sessionUuid) {
 			sessionUuid = randomUUID();
-			this.store.setCodexReviewJobReviewerSession(requestId, sessionUuid);
+			this.store.setCodexReviewJobReviewerSession(
+				requestId,
+				sessionUuid,
+				job.attempt_generation,
+			);
 			resume = false;
 		}
 
@@ -1567,6 +2125,7 @@ export class ReviewRequestCoordinator {
 				message: `${governancePrompt.elided} older active governance ruling(s) were elided from the bounded reviewer prompt; review whether stale rulings should be revoked.`,
 			});
 		}
+		if (!this.canWriteAttempt(job)) return;
 		const workflowReviewRoute = resolveWorkflowReviewRouteForExecution(
 			this.store,
 			job.execution_id,
@@ -1580,6 +2139,20 @@ export class ReviewRequestCoordinator {
 				route: workflowReviewRoute,
 			});
 		}
+		const configuredTimeoutMs =
+			this.deps.reviewerTimeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS;
+		const startedAt = this.now();
+		if (
+			!this.store.recordCodexReviewAttemptIntent({
+				requestId,
+				attemptGeneration: job.attempt_generation,
+				reviewerSessionUuid: sessionUuid,
+				ownerBootId: this.ownerBootId,
+				reviewerStartedAt: new Date(startedAt).toISOString(),
+				configuredTimeoutMs,
+			})
+		)
+			return;
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
 		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
 			roundRunner({
@@ -1606,9 +2179,24 @@ export class ReviewRequestCoordinator {
 					workflowReviewRoute?.reviewerVendor === "claude"
 						? workflowReviewRoute.reviewerEffort
 						: this.deps.reviewerEffort,
-				timeoutMs: this.deps.reviewerTimeoutMs,
+				timeoutMs: Math.max(1, startedAt + configuredTimeoutMs - this.now()),
+				ownership: {
+					requestId,
+					attemptGeneration: job.attempt_generation,
+					ownerBootId: this.ownerBootId,
+				},
+				onSpawnIdentity: (identity) => {
+					this.store.recordCodexReviewAttemptProcess({
+						requestId,
+						attemptGeneration: job.attempt_generation,
+						reviewerSessionUuid: roundSessionUuid,
+						ownerBootId: this.ownerBootId,
+						...identity,
+					});
+				},
 			});
 		let outcome: ClaudeReviewOutcome = await runRound(resume, sessionUuid);
+		if (!this.canWriteAttempt(job)) return;
 		const failedAttempts: FailedReviewAttempt[] = [];
 
 		if (outcome.kind === "failed") {
@@ -1623,10 +2211,7 @@ export class ReviewRequestCoordinator {
 			// A fresh fallback is bounded to once per runJob invocation. The new
 			// uuid is durable, so a crash before its spawn may redrive as a resume;
 			// that later runJob can independently fall back once and still converges.
-			if (this.stopped) {
-				this.failReviewerOutcome(job, outcome, failedAttempts);
-				return;
-			}
+			if (!this.canWriteAttempt(job)) return;
 			const fallbackGate = this.inspectGate(
 				job.project_name,
 				job.question_id,
@@ -1646,6 +2231,7 @@ export class ReviewRequestCoordinator {
 			}
 			if (job.review_type === "code") {
 				const current = await this.tryDeriveHead(job.execution_id, cwd);
+				if (!this.canWriteAttempt(job)) return;
 				const frozen = job.frozen_head_sha?.toLowerCase();
 				if (!current || !frozen || current !== frozen) {
 					this.handleHeadMoved(job, current, composeFailureRaw(failedAttempts));
@@ -1658,9 +2244,23 @@ export class ReviewRequestCoordinator {
 			this.log(
 				`job ${requestId}: resume session lost — falling back to a fresh reviewer session (once)`,
 			);
-			sessionUuid = randomUUID();
-			this.store.setCodexReviewJobReviewerSession(requestId, sessionUuid);
+			const freshSessionUuid = randomUUID();
+			if (
+				this.now() >= startedAt + configuredTimeoutMs ||
+				!this.store.replaceCodexReviewAttemptSession({
+					requestId,
+					attemptGeneration: job.attempt_generation,
+					expectedSessionUuid: sessionUuid,
+					newSessionUuid: freshSessionUuid,
+					ownerBootId: this.ownerBootId,
+				})
+			) {
+				this.failReviewJob(requestId, "timeout");
+				return;
+			}
+			sessionUuid = freshSessionUuid;
 			outcome = await runRound(false, sessionUuid);
+			if (!this.canWriteAttempt(job)) return;
 			if (outcome.kind === "failed") {
 				failedAttempts.push({ label: "ATTEMPT 2 FRESH", outcome });
 			}
@@ -1672,7 +2272,10 @@ export class ReviewRequestCoordinator {
 		}
 		if (
 			outcome.repairedTrailingBrace &&
-			!this.store.markCodexReviewJobTrailingBraceRepaired(requestId)
+			!this.store.markCodexReviewJobTrailingBraceRepaired(
+				requestId,
+				job.attempt_generation,
+			)
 		) {
 			this.failReviewJob(requestId, "repair_audit_failed");
 			this.alert(
@@ -1755,6 +2358,7 @@ export class ReviewRequestCoordinator {
 			// (R3 #2 + R12 MEDIUM: findings against a moved head are as
 			// misleading as a stale approval).
 			const current = await this.tryDeriveHead(job.execution_id, cwd);
+			if (!this.canWriteAttempt(job)) return;
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
 				this.handleHeadMoved(job, current);
@@ -1819,6 +2423,7 @@ export class ReviewRequestCoordinator {
 						payloadVersion: 2,
 					}
 				: undefined,
+			job.attempt_generation,
 		);
 		if (
 			policyResult.effectiveVerdict === "APPROVED" &&
@@ -1871,6 +2476,7 @@ export class ReviewRequestCoordinator {
 		outcome: FailedClaudeReviewOutcome,
 		attempts: FailedReviewAttempt[],
 	): void {
+		if (!this.canWriteAttempt(job)) return;
 		const failureRaw = composeFailureRaw(attempts);
 		const failureAtMs = this.now();
 		let classification: ReturnType<typeof classifyReviewFailure> = null;
@@ -1906,6 +2512,7 @@ export class ReviewRequestCoordinator {
 		}
 		const persisted = this.store.recordCodexReviewJobFailure({
 			requestId: job.request_id,
+			expectedGeneration: job.attempt_generation,
 			reason: outcome.reason,
 			failureRaw,
 			retryAt,
@@ -2024,7 +2631,13 @@ export class ReviewRequestCoordinator {
 		reason: string,
 		knownCurrentHead?: string | null,
 	): Promise<CodexReviewJob | null> {
-		if (binding.responded_at) return null;
+		if (this.stopped || binding.responded_at) return null;
+		if (
+			reason !== "explicit_retired_retry" &&
+			this.store.getCodexReviewJob(job.request_id)?.failure_reason ===
+				"bridge_restart_retired"
+		)
+			return null;
 		const existing = this.store.getCodexReviewJob(binding.request_id);
 		if (existing) {
 			if (existing.status === "pending") {
@@ -2054,6 +2667,37 @@ export class ReviewRequestCoordinator {
 		const currentHead =
 			knownCurrentHead ??
 			(cwd ? await this.tryDeriveHead(binding.execution_id, cwd) : null);
+		if (this.stopped) return null;
+		const liveBinding = this.store.getCodexReviewReuseBinding(
+			binding.request_id,
+		);
+		if (
+			!liveBinding ||
+			liveBinding.responded_at ||
+			liveBinding.released_at ||
+			this.checkGate(
+				job.project_name,
+				binding.question_id,
+				binding.execution_id,
+				job.review_type,
+			) !== "open"
+		)
+			return this.store.getCodexReviewJob(binding.request_id);
+		if (
+			reason !== "explicit_retired_retry" &&
+			this.store.getCodexReviewJob(job.request_id)?.failure_reason ===
+				"bridge_restart_retired"
+		)
+			return null;
+		if (reason === "explicit_retired_retry") {
+			const source = this.store.getCodexReviewJob(job.request_id);
+			if (
+				source?.status !== "failed" ||
+				source.failure_reason !== "bridge_restart_retired" ||
+				source.attempt_generation !== job.attempt_generation
+			)
+				return null;
+		}
 		if (!cwd || !currentHead) {
 			this.store.retireCodexReviewReuseBinding(
 				binding.request_id,
@@ -2079,6 +2723,7 @@ export class ReviewRequestCoordinator {
 	}
 
 	private releaseReuseBindingsForSource(job: CodexReviewJob): void {
+		if (this.stopped || job.failure_reason === "bridge_restart_retired") return;
 		for (const binding of this.store.listCodexReviewReuseBindings(
 			job.request_id,
 		)) {
@@ -2106,10 +2751,12 @@ export class ReviewRequestCoordinator {
 		}
 		const result = this.store.failAndRequeueCodexReviewJobForHeadMove({
 			requestId: job.request_id,
+			expectedGeneration: this.ownedAttempts.get(job.request_id),
 			successorRequestId: randomUUID(),
 			currentHeadSha: currentHead,
 			failureRaw,
 		});
+		if (result.outcome === "stale") return;
 		if (result.outcome === "exhausted" || !result.successor) {
 			this.emitReviewJobFailureAlert(
 				result.parent,
@@ -2184,8 +2831,10 @@ export class ReviewRequestCoordinator {
 		reason: string,
 		failureRaw?: string,
 	): void {
+		if (this.stopped) return;
 		const persisted = this.store.recordCodexReviewJobFailure({
 			requestId,
+			expectedGeneration: this.ownedAttempts.get(requestId),
 			reason,
 			failureRaw,
 		});
@@ -2292,7 +2941,7 @@ export class ReviewRequestCoordinator {
 		origin: "reset_timer" | "account_switch",
 	): Promise<"requeued" | "retired" | "deferred" | "skipped"> {
 		if (this.stopped) return "deferred";
-		const job = this.store.getCodexReviewJob(requestId);
+		let job = this.store.getCodexReviewJob(requestId);
 		if (!job || job.status !== "failed") return "skipped";
 		if (origin === "reset_timer" && !job.retry_at) return "skipped";
 		if (origin === "account_switch" && job.retry_trigger !== "account_switch") {
@@ -2316,6 +2965,14 @@ export class ReviewRequestCoordinator {
 			}
 			return "deferred";
 		}
+		if (
+			!this.store.claimCodexReviewJobRunning(requestId, {
+				expectedGeneration: job.attempt_generation,
+			})
+		)
+			return "skipped";
+		job = this.store.getCodexReviewJob(requestId)!;
+		this.ownedAttempts.set(requestId, job.attempt_generation);
 		const gate = this.inspectGate(
 			job.project_name,
 			job.question_id,
@@ -2333,13 +2990,14 @@ export class ReviewRequestCoordinator {
 			const current = targetPath
 				? await this.tryDeriveHead(job.execution_id, targetPath)
 				: null;
+			if (!this.canWriteAttempt(job)) return "deferred";
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
 				this.handleHeadMoved(job, current);
 				return "retired";
 			}
 		}
-		this.enqueue(requestId, job.execution_id);
+		this.enqueue(requestId, job.execution_id, job.attempt_generation);
 		return "requeued";
 	}
 

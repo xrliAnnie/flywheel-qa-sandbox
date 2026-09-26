@@ -46,6 +46,8 @@ export interface GateMarker {
 	createdAt: string;
 	/** Set by `respond` after the answer is written (wake may still be in flight). */
 	answeredAt?: string;
+	/** Nonterminal hint only; the durable Bridge projection must validate it. */
+	recoveryNoticeId?: string;
 
 	// FLY-123 code review R1 HIGH-2: the marker carries the checkpoint's
 	// CONFIGURED gate semantics so the adapter-owned awaiting_gate deadline

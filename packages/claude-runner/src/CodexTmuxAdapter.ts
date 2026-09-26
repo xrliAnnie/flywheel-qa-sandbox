@@ -2280,6 +2280,33 @@ export class CodexTmuxAdapter implements IAdapter {
 							return false;
 						}
 					},
+					readActionableReviewRecovery: () => {
+						if (!ctx.commDbPath || !ctx.projectName) return null;
+						if (gateDb && gateDbOpen) {
+							try {
+								return gateDb.readActionableReviewRecovery(
+									ctx.executionId,
+									ctx.projectName,
+								);
+							} catch {
+								/* retry independent handle below */
+							}
+						}
+						// A marker is only a hint. Reopen the persistent projection when the
+						// long-lived gate handle fails; never trust marker/mailbox text alone.
+						let recoveryDb: CommDB | undefined;
+						try {
+							recoveryDb = new CommDB(ctx.commDbPath, false, false);
+							return recoveryDb.readActionableReviewRecovery(
+								ctx.executionId,
+								ctx.projectName,
+							);
+						} catch {
+							return null;
+						} finally {
+							recoveryDb?.close();
+						}
+					},
 					readGateHoldLatch: () => this.readPersistedGateHold(ctx.executionId),
 					writeGateHoldLatch: (held) =>
 						this.mergeSessionState(ctx.executionId, { gateHold: held }),
