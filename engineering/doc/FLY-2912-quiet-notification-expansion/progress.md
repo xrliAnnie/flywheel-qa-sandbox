@@ -1,18 +1,16 @@
 ---
 issue: FLY-2912
 phase: implement
-phaseCursor: 6/6
-updated: 2026-09-26T08:38:10.798Z
-nextStep: "QA rework 6e3416ddd: stale query evidence repaired; chronological
-  replay and real scoped OFF corrected; missing historical proofs explicit,
-  conditional 99-to-92 not measured savings. Related replay 2/2, query audit
-  2/2, retention named 2 pass, lint/build pass. Load-probe sandbox identity
-  failure disclosed. Refresh literal-last milestone, push, effective code review
-  and scoped CI, needs_review; QA owns full CI/529 retest."
+phaseCursor: 1/4
+updated: 2026-09-26T16:20:08.662Z
+nextStep: "Founder-approved split: merged origin/main at 53245dbbe; adding four
+  project-scoped live flags with isolated OFF behavior, master override,
+  registry/drift coverage. Red tests written; targeted discovery and locked
+  build preflight underway."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
-**phase**: implement (6/6)
-**next**: QA rework 6e3416ddd: stale query evidence repaired; chronological replay and real scoped OFF corrected; missing historical proofs explicit, conditional 99-to-92 not measured savings. Related replay 2/2, query audit 2/2, retention named 2 pass, lint/build pass. Load-probe sandbox identity failure disclosed. Refresh literal-last milestone, push, effective code review and scoped CI, needs_review; QA owns full CI/529 retest.
+**phase**: implement (1/4)
+**next**: Founder-approved split: merged origin/main at 53245dbbe; adding four project-scoped live flags with isolated OFF behavior, master override, registry/drift coverage. Red tests written; targeted discovery and locked build preflight underway.
