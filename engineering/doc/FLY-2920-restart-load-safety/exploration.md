@@ -36,3 +36,7 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 4. FLY-2084 的 legacy 入口和 FLY-2617 admitted 收口是否已有后续修复，避免重复或扩范围。
 
 已向 Lead 发非阻塞范围核对，questionId=0b7daf6e-bfd9-445c-903b-19b21d9bf86d；继续调研，不设置额外 brainstorm/founder 审批。
+
+## 续接记录（2026-09-26）
+
+原设计体额度耗尽后，Lead 原样保留至 `7f4fac134`。本次设计执行为 `53313403-f4ae-43b1-83be-140eb624a1ea`，run=`44d7b165-f570-4b98-9bb4-6e820193bef7`、node=`eng_design`、attempt=1；实查 TURN 为 yours、epoch=5。沿用已定六单范围与同一文档目录，保留原稿历史，不重做探索。旧评审已返回 R1 CHANGES_REQUESTED；保留稿已有 R1 修订，新评审 gate=`0479dcf9-4c98-4ef9-8bbb-8f2e9f36265f`、request=`8d9a9612-1c5f-4e10-ba56-6d2c14ba3930`，等有效裁决。

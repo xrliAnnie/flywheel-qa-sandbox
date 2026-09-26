@@ -70,3 +70,13 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 相关文件包括：bridge-event-loop-guard、async-exec-file、TmuxAdapter/CodexTmuxAdapter、review-request-coordinator、StateStore review job、request-review/check、codex-runner-orphan-reaper、pressure-hold/fleet-sensors/machine-watermark、capacity、run-dispatcher-pre-registration-cleanup、runs-route-generalized-pending、generalized-launch-recovery、rescue-runtime、progress-resume、run-infra-continuity。
 
 仅具体文件白名单，worker=1；不得 `pnpm test` 全仓，不用 hub 文件的 vitest related。启动 Bridge 的测试须隔离所有状态与 Codex homes，不能碰宿主 lease；禁止真实 GUI 测试。最终验收要求 old/new 同夹具证据、六张单逐项、端到端不丢结果；本阶段只计划和文档检查。
+
+## R1 后校正与续接核对
+
+本节覆盖前文中已被 R1 校正的推论，以 `plan.md` 的 R1 修订合同为实施依据：
+
+- 孤儿退休覆盖 home 缺失和 home 存在但完整证据确认旧进程不存在两支；身份不匹配而无法确认失效时，只去重审计，不退休或杀进程。无需给 spawn writer 新增共享锁。
+- `makeCloseAndDispatchSuccessor` 是有 live-pane 重验的登录失效恢复，不能凭名字归因到 FLY-2084，也不删除这个功能。继续限定真实 boot/node 恢复入口、停止令与分支/游标保护，并要求调用图及负控制。
+- 单纯给 `check` 增加提示唤不醒 gate-hold 作者。实施合同 D3a/D6 要求持久退休/ready 通知、CommDB 与 marker fallback 两条 hold 消费路径、原审查期限，以及真实作者 turn 发起重发的证据。
+- 内存未知沿用本项 probe fail-open，保留独立 load/free-bytes 护栏；两次危险才阻断，当前有效 non-danger 立即放行，通知另做确认。原人工暂停独立保留。
+- 续接只读复核当前源码：EventLoopGuard 仍有自杀；TmuxAdapter 仍有 250ms drain timer；review coordinator 仍 running→pending 后重排；progress-resume 仍从 session_stage 推 effectiveStage。这里没有把设计内容声称为已实现。
