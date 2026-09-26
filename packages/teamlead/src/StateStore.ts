@@ -665,6 +665,8 @@ export interface FounderAskRecord {
 	settled_at: string | null;
 	settled_by: FounderAskSettlement | null;
 	settled_message_id: string | null;
+	/** FLY-2914: patrol root-cause schedule identity; NULL for ordinary asks. */
+	patrol_schedule_key?: string | null;
 }
 
 interface CompatExecResult {
@@ -12659,6 +12661,11 @@ export class StateStore {
 			settled_message_id TEXT
 		)`);
 		this.db.run("CREATE INDEX IF NOT EXISTS founder_ask_open ON founder_ask(project_name, issue_id) WHERE settled_at IS NULL");
+		// FLY-2914: one open patrol schedule episode per project + category key.
+		if (!(this.db.raw.prepare("PRAGMA table_info(founder_ask)").all() as { name: string }[]).some((c) => c.name === "patrol_schedule_key"))
+			this.db.raw.exec("ALTER TABLE founder_ask ADD COLUMN patrol_schedule_key TEXT");
+		this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS founder_ask_patrol_schedule_open ON founder_ask(project_name, patrol_schedule_key)
+			WHERE patrol_schedule_key IS NOT NULL AND settled_at IS NULL`);
 		this.db.run(`CREATE TABLE IF NOT EXISTS founder_attention_reply (
 			project_name TEXT NOT NULL, issue_id TEXT NOT NULL, thread_id TEXT NOT NULL,
 			message_id TEXT NOT NULL, replied_at_ms INTEGER NOT NULL,
@@ -12694,11 +12701,53 @@ export class StateStore {
 	insertFounderAsk(input: Omit<FounderAskRecord, "message_id" | "settled_at" | "settled_by" | "settled_message_id">): void {
 		if (!Number.isFinite(Date.parse(input.asked_at))) throw new Error("invalid_founder_ask_time");
 		this.db.raw.prepare(`INSERT INTO founder_ask
-			(ask_id,project_name,issue_id,channel_id,thread_id,lead_id,question_id,excerpt,asked_at)
-			VALUES (?,?,?,?,?,?,?,?,?)`).run(input.ask_id, input.project_name, input.issue_id,
+			(ask_id,project_name,issue_id,channel_id,thread_id,lead_id,question_id,excerpt,asked_at,patrol_schedule_key)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`).run(input.ask_id, input.project_name, input.issue_id,
 			input.channel_id, input.thread_id, input.lead_id, input.question_id,
-			[...input.excerpt].slice(0, 120).join(""), new Date(input.asked_at).toISOString());
+			[...input.excerpt].slice(0, 120).join(""), new Date(input.asked_at).toISOString(),
+			input.patrol_schedule_key ?? null);
 		this.save();
+	}
+
+	/** FLY-2914: open root-cause schedule ask for this project + category key, if any. */
+	getOpenPatrolScheduleAsk(projectName: string, scheduleKey: string): FounderAskRecord | undefined {
+		return this.db.raw.prepare("SELECT * FROM founder_ask WHERE project_name=? AND patrol_schedule_key=? AND settled_at IS NULL")
+			.get(projectName, scheduleKey) as FounderAskRecord | undefined;
+	}
+
+	/** FLY-2914: find-or-insert under the partial unique index; an existing open ask is never re-sent. */
+	reservePatrolScheduleAsk(
+		input: Omit<FounderAskRecord, "message_id" | "settled_at" | "settled_by" | "settled_message_id"> & { patrol_schedule_key: string },
+	): { reserved: boolean; ask: FounderAskRecord } {
+		if (!/^[0-9a-f]{64}$/.test(input.patrol_schedule_key)) throw new Error("invalid_patrol_schedule_key");
+		let result: { reserved: boolean; ask: FounderAskRecord } | undefined;
+		this.db.transaction(() => {
+			const existing = this.getOpenPatrolScheduleAsk(input.project_name, input.patrol_schedule_key);
+			if (existing) {
+				result = { reserved: false, ask: existing };
+				return;
+			}
+			this.insertFounderAsk(input);
+			result = { reserved: true, ask: this.getFounderAsk(input.ask_id)! };
+		});
+		return result!;
+	}
+
+	/** FLY-2914: alias-aware (identifier or UUID) lookup of a strictly active run. */
+	getActiveWorkflowRunIdForAliases(projectName: string, aliases: string[]): string | undefined {
+		const unique = [...new Set(aliases.filter((alias) => alias.length > 0))];
+		if (unique.length === 0) return undefined;
+		const placeholders = unique.map(() => "?").join(", ");
+		const row = this.workflowSelectAll(
+			`SELECT run.run_id FROM workflow_run run
+			  WHERE run.project_name = ? AND run.status = 'active'
+			    AND (run.issue_id IN (${placeholders}) OR EXISTS (
+			      SELECT 1 FROM workflow_run_issue_alias alias
+			       WHERE alias.run_id = run.run_id AND alias.issue_alias IN (${placeholders})))
+			  ORDER BY run.rowid LIMIT 1`,
+			[projectName, ...unique, ...unique],
+		)[0];
+		return row ? String(row.run_id) : undefined;
 	}
 
 	getFounderAsk(askId: string): FounderAskRecord | undefined {
