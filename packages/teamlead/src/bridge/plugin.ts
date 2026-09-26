@@ -27,6 +27,7 @@ import {
 	codexSessionStateDir,
 	connectDaemonTransport,
 	parseThreadReadTurns,
+	probeCodexDaemonEvidence,
 	probeCodexDaemonLiveness,
 	probeCodexDaemonProcessBinding,
 	probeCodexRolloutMtime,
@@ -11277,6 +11278,12 @@ export async function startBridge(
 			);
 		},
 	);
+	// FLY-2925: a live Codex daemon behind a missing window / stale heartbeat
+	// (Bridge downtime before re-control) is never declared zombie/orphan/crash.
+	heartbeatService.setCodexBodyProbe(async (executionId) => {
+		const evidence = await probeCodexDaemonEvidence(executionId);
+		return { liveness: evidence.liveness, socketLive: evidence.socketLive };
+	});
 	heartbeatService.setCodexRecoveryExhaustionHandler((executionId) =>
 		codexSessionReowner.finalizeDueExhaustion(executionId),
 	);

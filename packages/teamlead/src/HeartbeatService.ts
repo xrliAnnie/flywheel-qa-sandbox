@@ -438,6 +438,55 @@ export class HeartbeatService implements ReconnectController {
 	 * restarts the streak at 1 — R3 #2).
 	 */
 	private zombieDeadStreak = new Map<string, number>();
+	/**
+	 * FLY-2925: Codex bodies whose detached daemon was observed alive (or whose
+	 * control socket still listens) this cycle. A missing TUI window or a stale
+	 * heartbeat — e.g. after Bridge downtime, before the re-owner re-controls
+	 * the body — is NOT death for these; the engine side (re-owner / terminal
+	 * sweep) decides.
+	 */
+	private liveCodexBodies: ReadonlySet<string> = new Set();
+	private codexBodyProbe?: (
+		executionId: string,
+	) => Promise<{ liveness: "alive" | "absent" | "unknown"; socketLive: boolean }>;
+
+	/** FLY-2925: wire the non-destructive Codex daemon evidence probe. */
+	setCodexBodyProbe(
+		probe: (
+			executionId: string,
+		) => Promise<{
+			liveness: "alive" | "absent" | "unknown";
+			socketLive: boolean;
+		}>,
+	): void {
+		this.codexBodyProbe = probe;
+	}
+
+	/**
+	 * FLY-2925: probe every stale-heartbeat running Codex session once per
+	 * cycle. A probe failure protects (unknown is never death evidence).
+	 */
+	async refreshLiveCodexBodies(): Promise<void> {
+		const probe = this.codexBodyProbe;
+		if (!probe || typeof this.store.getOrphanSessions !== "function") return;
+		const live = new Set<string>();
+		const threshold = Math.min(
+			this.thresholdMinutes,
+			this.orphanThresholdMinutes,
+		);
+		for (const session of this.store.getOrphanSessions(threshold)) {
+			if (session.adapter_type !== "codex-tmux") continue;
+			try {
+				const evidence = await probe(session.execution_id);
+				if (evidence.liveness !== "absent" || evidence.socketLive) {
+					live.add(session.execution_id);
+				}
+			} catch {
+				live.add(session.execution_id);
+			}
+		}
+		this.liveCodexBodies = live;
+	}
 	/** FLY-1282: per-exec declaration in-flight guard (defense in depth). */
 	private zombieDeclaring = new Set<string>();
 	/** FLY-1282 (R4 #4): liveness-chain single-flight (zombie-ON only). */
@@ -656,6 +705,16 @@ export class HeartbeatService implements ReconnectController {
 				// Only awaited when wired (production) — skipping the await when
 				// unconfigured keeps the same-tick path synchronous.
 				let zombieHeld: ReadonlySet<string> = EMPTY_SET;
+				// FLY-2925: refresh live-Codex protection before any liveness verdict.
+				if (this.codexBodyProbe) {
+					try {
+						await this.refreshLiveCodexBodies();
+					} catch (err) {
+						console.warn(
+							`[HeartbeatService] codex body probe failed (keeping prior protection): ${(err as Error).message}`,
+						);
+					}
+				}
 				if (runLivenessChain && this.monitorReconcile) {
 					zombieHeld = await this.reconcileMonitorLoss();
 				}
@@ -1165,6 +1224,7 @@ export class HeartbeatService implements ReconnectController {
 		executionId: string,
 		includeExpiredGrace = true,
 	): boolean {
+		if (this.liveCodexBodies.has(executionId)) return true;
 		const deferral = this.store.getCodexRecoveryDeferral?.(
 			executionId,
 			Date.now(),
@@ -2100,7 +2160,9 @@ export class HeartbeatService implements ReconnectController {
 				isSuppressed: (id) =>
 					this.isMonitorSuppressed(id) ||
 					this.markerRetryPending.has(id) ||
-					tmuxHeld.has(id),
+					tmuxHeld.has(id) ||
+					// FLY-2925: a dead TUI pane over a live Codex daemon is not a crash.
+					this.liveCodexBodies.has(id),
 				hasPendingCompleteMarker: (id) => hasPendingCompleteMarker(id),
 			});
 			if (
