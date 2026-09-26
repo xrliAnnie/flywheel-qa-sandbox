@@ -26,3 +26,17 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 
 - `pnpm install --frozen-lockfile` 成功；首次测试因依赖 `dist` 缺失只算 preflight，不算 RED。
 - `pnpm --filter "flywheel-edge-worker..." build` 在实现后成功。
+
+## B：held 告警稳定身份与歧义重放
+
+根因：`land_alert_outbox` 已按 `(operation_id, resume_generation)` 固定一条逻辑告警，但 dispatcher 的 transport `eventId` 追加了 `attempt`。每次重试因而绕过下游去重，且 dispatcher 仅凭 `sink.alert()` 的返回值结账，没有读取 `alert_delivery_receipts`；异常还会立即重新排队，跳过已有的 30 分钟歧义窗口语义。
+
+最小修复：transport identity 固定为 `land-held:<operationId>:<resumeGeneration>`；land outbox claim 标出是否为过期 `delivering` 的重放；首次投递使用 30 分钟 lease。dispatcher 在调用 sink 前后都读取稳定 eventId 的 delivery receipt，仅 `sent` / `queued_durable` 结为 sent，`deadlettered_durable` 和缺 receipt 均按失败累计。sink 抛错保持 `delivering`，过歧义窗口后才以内部 `replayAfterAmbiguousAttempt: true` 重放；该字段不进入 payload。
+
+### 红绿与选择
+
+- RED 1：稳定身份断言 1 fail，旧实现实际产生 `...:0:1` / `...:0:2`。
+- RED 2：receipt/重放三条边界为 3 fail / 1 pass：无 receipt 仍结 sent、已有 queued receipt 仍调用 sink、异常立即回 pending。
+- GREEN：`land-alert-delivery.test.ts` 4/4，覆盖稳定 eventId、无 receipt 拒绝、queued receipt 免重发、30 分钟后同身份 replay；dead-letter receipt 连续三次最终进入可检索 `failed`，不冒充送达。
+- 直接 literal 消费者保留 `StateStore.land-lifecycle.test.ts` 与 `LeadAlertNotifier.test.ts`；分别 40/40、69/69。`vitest related` 使用外部临时 config，先以 `vitest list --filesOnly` 核对仅这三文件，随后 3 files / 113 tests 全绿。宽目录/通用文件名命中均为历史文档、静态 inventory 或与该 claim/receipt 契约无直接关系的测试，排除；没有新增 `scripts/__tests__/*.test.sh`。
+- `pnpm --filter "flywheel-teamlead..." build` 成功；`pnpm lint` exit 0（5111 files，25 个既有 warning，本批无 error）。

@@ -85891,6 +85891,7 @@ export class StateStore {
 				attempt,
 				generation,
 				ownerId: input.ownerId,
+				replay: candidate.state === "delivering",
 			};
 		});
 		if (claimed) this.save();
@@ -88155,6 +88156,7 @@ export interface LandAlertDeliveryClaim {
 	attempt: number;
 	generation: number;
 	ownerId: string;
+	replay: boolean;
 }
 
 export interface LandOwnerHealthPayload {

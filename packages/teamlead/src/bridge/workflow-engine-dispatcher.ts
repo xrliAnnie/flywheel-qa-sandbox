@@ -17,7 +17,11 @@ import type {
 	WorkflowIssueDeliveryInput,
 	WorkflowResumeContext,
 } from "flywheel-edge-worker/dist/Blueprint.js";
-import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
+import type {
+	AlertAttemptOptions,
+	AlertPayload,
+	AlertResult,
+} from "../LeadAlertNotifier.js";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
 	MAX_BLIND_REPLACEMENTS,
@@ -164,7 +168,12 @@ interface WorkflowEngineDispatcherOptions {
 		issueId: string;
 	}) => Promise<DeadTerminalFinalizeOutcome>;
 	alertSink?: {
-		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
+		current?: {
+			alert: (
+				payload: AlertPayload,
+				attempt?: AlertAttemptOptions,
+			) => Promise<AlertResult>;
+		};
 	};
 	resolveRunAlertIdentity?: (
 		projectName: string,
@@ -193,6 +202,8 @@ interface WorkflowEngineDispatcherOptions {
 		source: "admission",
 	) => Promise<void> | void;
 }
+
+const LAND_ALERT_AMBIGUOUS_RECLAIM_MS = 30 * 60_000;
 
 export interface WorkflowEngineReconcileResult {
 	started: number;
@@ -2134,7 +2145,12 @@ export class WorkflowEngineDispatcher {
 	}
 
 	private async reconcileLegacyLandAlerts(
-		sink: { alert: (payload: AlertPayload) => Promise<AlertResult> },
+		sink: {
+			alert: (
+				payload: AlertPayload,
+				attempt?: AlertAttemptOptions,
+			) => Promise<AlertResult>;
+		},
 		max: number,
 	): Promise<number> {
 		let finalized = 0;
@@ -2143,9 +2159,31 @@ export class WorkflowEngineDispatcher {
 			const claim = this.options.store.claimNextLandAlert({
 				ownerId: this.ownerId,
 				now: now.toISOString(),
-				leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+				leaseExpiresAt: new Date(
+					now.getTime() + LAND_ALERT_AMBIGUOUS_RECLAIM_MS,
+				).toISOString(),
 			});
 			if (!claim) break;
+			const eventId = `land-held:${claim.operationId}:${claim.resumeGeneration}`;
+			const priorReceipt = this.options.store.getAlertDeliveryReceipt(eventId);
+			if (priorReceipt) {
+				const delivered =
+					priorReceipt.outcome === "sent" ||
+					priorReceipt.outcome === "queued_durable";
+				this.options.store.finishLandAlertDelivery({
+					operationId: claim.operationId,
+					resumeGeneration: claim.resumeGeneration,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					outcome: delivered ? "sent" : "failed",
+					...(delivered
+						? {}
+						: { error: `delivery_receipt_${priorReceipt.outcome}` }),
+					now: this.now().toISOString(),
+				});
+				finalized += 1;
+				continue;
+			}
 			const operation = this.options.store.getLandOperation(claim.operationId);
 			const runId = claim.payload.runId ?? operation?.run_id ?? null;
 			const approvedHead =
@@ -2165,27 +2203,32 @@ export class WorkflowEngineDispatcher {
 					? `After inspecting the exact merged head, run: flywheel-comm land reclose --operation ${claim.operationId} --expected-generation ${claim.resumeGeneration} --expected-head ${approvedHead} --reason "Lead reviewed held closeout evidence"`
 					: `Inspect the PR, then recover with POST /api/lifecycle/land/${claim.operationId}/resume using audited actor and reason fields.`;
 			try {
-				const delivery = await sink.alert({
-					leadId: identity.leadId,
-					projectName: identity.projectName,
-					eventId: `land-held:${claim.operationId}:${claim.resumeGeneration}:${claim.attempt}`,
-					eventType: "workflow_engine_escalation",
-					severity: "severe",
-					sessionKey: `land:${claim.operationId}`,
-					title: `Land operation held for ${claim.payload.issueId}`,
-					body: `PR #${claim.payload.prNumber} land operation ${claim.operationId} is held after ${retryCount} retries in epoch ${retryEpochKey ?? "unknown"}. Reason: ${claim.payload.reason}. It will not archive without fresh closeout proof. ${recoveryInstruction}`,
-					metadata: {
-						workflowEngine: {
-							runId: runId ?? `land:${claim.operationId}`,
-							issueId: claim.payload.issueId,
-							nodeId: "land",
-							executionId: `land:${claim.operationId}`,
-							disposition: "held",
-							leadResolution: identity.leadResolution,
+				await sink.alert(
+					{
+						leadId: identity.leadId,
+						projectName: identity.projectName,
+						eventId,
+						eventType: "workflow_engine_escalation",
+						severity: "severe",
+						sessionKey: `land:${claim.operationId}`,
+						title: `Land operation held for ${claim.payload.issueId}`,
+						body: `PR #${claim.payload.prNumber} land operation ${claim.operationId} is held after ${retryCount} retries in epoch ${retryEpochKey ?? "unknown"}. Reason: ${claim.payload.reason}. It will not archive without fresh closeout proof. ${recoveryInstruction}`,
+						metadata: {
+							workflowEngine: {
+								runId: runId ?? `land:${claim.operationId}`,
+								issueId: claim.payload.issueId,
+								nodeId: "land",
+								executionId: `land:${claim.operationId}`,
+								disposition: "held",
+								leadResolution: identity.leadResolution,
+							},
 						},
 					},
-				});
-				const accepted = delivery.sent === true || delivery.queued === true;
+					{ replayAfterAmbiguousAttempt: claim.replay },
+				);
+				const receipt = this.options.store.getAlertDeliveryReceipt(eventId);
+				const accepted =
+					receipt?.outcome === "sent" || receipt?.outcome === "queued_durable";
 				this.options.store.finishLandAlertDelivery({
 					operationId: claim.operationId,
 					resumeGeneration: claim.resumeGeneration,
@@ -2194,19 +2237,17 @@ export class WorkflowEngineDispatcher {
 					outcome: accepted ? "sent" : "failed",
 					...(accepted
 						? {}
-						: { error: delivery.skipped ?? "alert_not_delivered" }),
+						: {
+								error: receipt
+									? `delivery_receipt_${receipt.outcome}`
+									: "delivery_receipt_missing",
+							}),
 					now: this.now().toISOString(),
 				});
 			} catch (error) {
-				this.options.store.finishLandAlertDelivery({
-					operationId: claim.operationId,
-					resumeGeneration: claim.resumeGeneration,
-					ownerId: claim.ownerId,
-					generation: claim.generation,
-					outcome: "failed",
-					error: error instanceof Error ? error.message : String(error),
-					now: this.now().toISOString(),
-				});
+				this.log(
+					`land alert delivery ambiguous for ${eventId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
 			}
 			finalized += 1;
 		}
