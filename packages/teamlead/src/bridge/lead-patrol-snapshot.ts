@@ -14,8 +14,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { PATROL_SNAPSHOT_EXECUTION_TIMEOUT_MS } from "../lead-capabilities/patrol-timeouts.js";
-import { ROOT_CAUSE_DEADLINE_MS } from "../patrol-root-causes.js";
+import {
+	PATROL_SNAPSHOT_EXECUTION_TIMEOUT_MS,
+	ROOT_CAUSE_DEADLINE_MS,
+} from "../lead-capabilities/patrol-timeouts.js";
 
 export const PATROL_HELPER_SOURCES = [
 	"scripts/lead-patrol-snapshot.sh",

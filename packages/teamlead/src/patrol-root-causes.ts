@@ -8,6 +8,9 @@
  * state, dispatch or issue creation ever happens on this path.
  */
 import { createHash } from "node:crypto";
+import { ROOT_CAUSE_DEADLINE_MS } from "./lead-capabilities/patrol-timeouts.js";
+
+export { ROOT_CAUSE_DEADLINE_MS };
 
 export const ROOT_CAUSE_PARENT_IDENTIFIER = "FLY-2072";
 /** Flywheel Linear project that owns FLY-2072 (CLAUDE.md "Linear Project"). */
@@ -25,7 +28,6 @@ export const ROOT_CAUSE_SCHEDULE_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 30;
 const MAX_ROWS = 3000;
-export const ROOT_CAUSE_DEADLINE_MS = 30_000;
 
 const HEX = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

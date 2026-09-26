@@ -21,6 +21,8 @@ for module in patrol-continuity-cli patrol-continuity patrol-continuity-collecto
  cp "$ROOT/packages/teamlead/dist/$module.js" "$PAYLOAD/packages/teamlead/dist/$module.js"
 done
 cp "$ROOT/packages/teamlead/dist/bridge/stage-utils.js" "$PAYLOAD/packages/teamlead/dist/bridge/stage-utils.js"
+mkdir -p "$PAYLOAD/packages/teamlead/dist/lead-capabilities"
+cp "$ROOT/packages/teamlead/dist/lead-capabilities/patrol-timeouts.js" "$PAYLOAD/packages/teamlead/dist/lead-capabilities/patrol-timeouts.js"
 cp "$ROOT/packages/teamlead/dist/lead-backends/codex/ProcessLifetimeFileLock.js" "$PAYLOAD/packages/teamlead/dist/lead-backends/codex/ProcessLifetimeFileLock.js"
 ln -s "$ROOT/packages/teamlead/node_modules" "$PAYLOAD/packages/teamlead/node_modules"
 (cd "$TMP/unrelated" && "$PAYLOAD/scripts/flywheel-patrol-continuity.mjs" validate-report --report "$TMP/report.md") | grep -q '"valid":true'
