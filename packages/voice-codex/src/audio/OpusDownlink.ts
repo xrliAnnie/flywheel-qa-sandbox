@@ -95,6 +95,8 @@ export class OpusDownlink {
 	private stream?: OpusPacketStream;
 	private readonly queue: QueuedPacket[] = [];
 	private lastVoicedTakenAt?: number;
+	private voicedTaken = 0;
+	private trims = 0;
 	private stopped = false;
 	private readonly now: () => number;
 
@@ -172,6 +174,14 @@ export class OpusDownlink {
 		);
 	}
 
+	/**
+	 * Counters for playback proof (plan T5b): real voiced packets the player
+	 * took (substituted silence excluded) and backlog trims so far.
+	 */
+	stats(): { consumedVoiced: number; trims: number } {
+		return { consumedVoiced: this.voicedTaken, trims: this.trims };
+	}
+
 	queued(): { total: number; voiced: number } {
 		return {
 			total: this.queue.length,
@@ -208,7 +218,10 @@ export class OpusDownlink {
 		const packet = this.queue.shift();
 		if (!packet) return;
 		const at = this.now();
-		if (packet.voiced && !packet.silenceFill) this.lastVoicedTakenAt = at;
+		if (packet.voiced && !packet.silenceFill) {
+			this.lastVoicedTakenAt = at;
+			this.voicedTaken += 1;
+		}
 		this.options.onConsumed?.({ ...packet, at });
 	}
 
@@ -216,6 +229,7 @@ export class OpusDownlink {
 		const stream = this.stream;
 		if (!stream) return;
 		const from = this.queue.length;
+		this.trims += 1;
 		let voiced = 0;
 		while (this.queue.length > TRIM_TO_PACKETS && stream.discardOne()) {
 			if (this.queue.shift()?.voiced) voiced += 1;

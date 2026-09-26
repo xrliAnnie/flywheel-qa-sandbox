@@ -146,7 +146,9 @@ function canonicalChineseNumber(value: string): string {
 	return `${negative ? "-" : ""}${parsedInteger}.${parsedFraction}`;
 }
 
-function canonicalSpeech(value: string): string {
+/** The normalisation every speech comparison uses: NFKC, lower case, Chinese
+ * numerals as digits, no whitespace or sentence punctuation. */
+export function canonicalSpeech(value: string): string {
 	const projected = projectForSpeech(value).toLowerCase();
 	const numeric = projected.replace(
 		/[负零〇一二两三四五六七八九十百千万点]+/gu,

@@ -121,6 +121,7 @@ describe("Opus downlink", () => {
 			false,
 			true,
 		]);
+		expect(h.downlink.stats()).toEqual({ consumedVoiced: 2, trims: 0 });
 	});
 
 	it.each([10, 25])(
@@ -172,6 +173,7 @@ describe("Opus downlink", () => {
 		for (let index = 0; index < 26; index += 1)
 			h.downlink.push(packet(index), { voiced: true });
 		expect(h.downlink.queued().total).toBe(3);
+		expect(h.downlink.stats().trims).toBe(1);
 		expect(h.diagnostics).toContainEqual({
 			kind: "downlink_queue_trim",
 			from: 26,
