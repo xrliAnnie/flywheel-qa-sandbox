@@ -310,7 +310,6 @@ export class WorkflowEngineDispatcher {
 		string,
 		{ attempts: number; nextAttemptAtMs: number }
 	>();
-	private readonly heldReworkRecoveryProbeAt = new Map<string, number>();
 	private readonly completionExceptionProbeAt = new Map<string, number>();
 	private readonly deadExecutionCommDbSettled = new Set<string>();
 	private readonly deadExecutionCommDbRetries = new Map<
@@ -1248,14 +1247,11 @@ export class WorkflowEngineDispatcher {
 			typeof this.options.store.listWorkflowReworkDeliveries
 		>;
 		try {
+			// FLY-2921: a rework delivery is only ever pending, granted, or
+			// delivered while the engine owns it; `returned_to_lead` waits for
+			// the Lead's door and no state freezes the run.
 			deliveries = this.options.store.listWorkflowReworkDeliveries({
-				states: [
-					"pending",
-					"turn_granted",
-					"awaiting_receipt",
-					"wake_delivered",
-					"held",
-				],
+				states: ["pending", "turn_granted", "wake_delivered"],
 				now: this.now().toISOString(),
 			});
 		} catch (error) {
@@ -1265,7 +1261,6 @@ export class WorkflowEngineDispatcher {
 			);
 			return;
 		}
-		const heldRecoveryCandidates = new Set<string>();
 		for (const delivery of deliveries) {
 			const request = this.options.store.getWorkflowReworkRequest(
 				delivery.request_id,
@@ -1273,99 +1268,6 @@ export class WorkflowEngineDispatcher {
 			const run = request
 				? this.options.store.getWorkflowRun(request.run_id)
 				: undefined;
-			if (
-				delivery.state === "held" &&
-				request &&
-				run?.engine_owned === 1 &&
-				run.status === "held" &&
-				delivery.last_error === "persisted_target_missing"
-			) {
-				heldRecoveryCandidates.add(delivery.request_id);
-				const route = this.options.store.getLatestWorkflowReworkRoute(
-					delivery.request_id,
-				);
-				if (!route) {
-					result.held += 1;
-					continue;
-				}
-				const probeNow = this.now();
-				const nextProbeAt = this.heldReworkRecoveryProbeAt.get(
-					delivery.request_id,
-				);
-				if (nextProbeAt !== undefined && probeNow.getTime() < nextProbeAt) {
-					continue;
-				}
-				// Pace every real probe, including thrown/unknown/alive outcomes. The
-				// durable delivery backoff remains authoritative across restarts.
-				this.heldReworkRecoveryProbeAt.set(
-					delivery.request_id,
-					probeNow.getTime() + 60_000,
-				);
-				let liveness: GeneralizedLaunchLiveness;
-				try {
-					liveness = await this.probeTerminalLaunchLiveness(
-						route.preferred_actor_execution_id,
-						run.project_name,
-					);
-				} catch (error) {
-					result.held += 1;
-					this.log(
-						`workflow rework pane-loss probe held for ${delivery.request_id}: ${error instanceof Error ? error.message : String(error)}`,
-					);
-					continue;
-				}
-				if (liveness !== "dead") {
-					result.held += 1;
-					continue;
-				}
-				let materialized: { ok: boolean; reason?: string };
-				const attemptedAt = this.now().toISOString();
-				try {
-					materialized =
-						this.options.store.materializeWorkflowReworkReplacement({
-							requestId: delivery.request_id,
-							deadExecutionId: route.preferred_actor_execution_id,
-							newExecutionId: randomUUID(),
-							reason: "persisted_target_missing_and_dead_probe",
-							observedAt: attemptedAt,
-							recoverHeldPaneLoss: true,
-						});
-				} catch (error) {
-					result.held += 1;
-					const reason = (
-						error instanceof Error ? error.message : String(error)
-					).slice(0, 240);
-					this.log(
-						`workflow held rework recovery failed for ${delivery.request_id}: ${reason}`,
-					);
-					this.settleHeldReworkRecoveryFailure({
-						requestId: delivery.request_id,
-						run,
-						reason,
-						now: attemptedAt,
-					});
-					continue;
-				}
-				if (!materialized.ok) {
-					result.held += 1;
-					const reason = (materialized.reason ?? "unknown_failure").slice(
-						0,
-						240,
-					);
-					this.log(
-						`workflow held rework recovery failed for ${delivery.request_id}: ${reason}`,
-					);
-					this.settleHeldReworkRecoveryFailure({
-						requestId: delivery.request_id,
-						run,
-						reason,
-						now: attemptedAt,
-					});
-				} else {
-					this.heldReworkRecoveryProbeAt.delete(delivery.request_id);
-				}
-				continue;
-			}
 			if (
 				!request ||
 				!run ||
@@ -1402,23 +1304,6 @@ export class WorkflowEngineDispatcher {
 				);
 				continue;
 			}
-			if (outcome.kind === "replacement_pending") {
-				const materialized =
-					this.options.store.materializeWorkflowReworkReplacement({
-						requestId: delivery.request_id,
-						deadExecutionId: outcome.executionId,
-						newExecutionId: randomUUID(),
-						reason: outcome.reason,
-						observedAt: this.now().toISOString(),
-					});
-				if (!materialized.ok) {
-					result.held += 1;
-					this.log(
-						`workflow rework replacement held for ${delivery.request_id}: ${materialized.reason}`,
-					);
-				}
-				continue;
-			}
 			if (outcome.kind === "disabled") {
 				const now = this.now().toISOString();
 				const alerted = this.options.store.transitionWorkflowReworkPause({
@@ -1444,11 +1329,6 @@ export class WorkflowEngineDispatcher {
 				result.held += 1;
 			}
 		}
-		for (const requestId of this.heldReworkRecoveryProbeAt.keys()) {
-			if (!heldRecoveryCandidates.has(requestId)) {
-				this.heldReworkRecoveryProbeAt.delete(requestId);
-			}
-		}
 	}
 
 	private async reconcileWorkflowCarriers(
@@ -1468,30 +1348,6 @@ export class WorkflowEngineDispatcher {
 			result.held += 1;
 			this.log(
 				`workflow carrier delivery scan held: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-	}
-
-	private settleHeldReworkRecoveryFailure(input: {
-		requestId: string;
-		run: NonNullable<ReturnType<StateStore["getWorkflowRun"]>>;
-		reason: string;
-		now: string;
-	}): void {
-		try {
-			this.options.store.settleHeldReworkRecoveryFailure({
-				requestId: input.requestId,
-				reason: input.reason,
-				alertIdentity: this.resolveRunAlertIdentity(
-					input.run.project_name,
-					input.run.issue_id,
-					input.run.run_id,
-				),
-				now: input.now,
-			});
-		} catch (error) {
-			this.log(
-				`workflow held rework failure ledger held for ${input.requestId}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}
@@ -2343,6 +2199,20 @@ export class WorkflowEngineDispatcher {
 					) {
 						continue;
 					}
+					// FLY-2921 C6.1: an open rework's target is replaced only by the
+					// rework coordinator (with the rework content); its unknown
+					// liveness is escalated there, not by this generic scan.
+					if (
+						store.handOffDeadReworkTargetToCoordinator({
+							runId: run.run_id,
+							nodeId: workflowNode.id,
+							attempt: node.attempt,
+							executionId: node.execution_id,
+							now: this.now().toISOString(),
+						})
+					) {
+						continue;
+					}
 					if (
 						store.shouldSuppressDeadExecutionRecovery({
 							executionId: node.execution_id,
@@ -2812,7 +2682,9 @@ export class WorkflowEngineDispatcher {
 			(reworkTarget.conflict ||
 				reworkTarget.preferredActorExecutionId !== intent.execution_id ||
 				intent.reason !== `rework_replacement:${reworkTarget.requestId}` ||
-				reworkTarget.deliveryState !== "replacement_pending")
+				// FLY-2921: a minted replacement waits on `pending`, pointing at
+				// this exact intent's actor, until its launch proves the content.
+				reworkTarget.deliveryState !== "pending")
 		) {
 			this.log(
 				`engine_rework_target_launch_fenced:${reworkTarget.conflict ? "conflict" : `${reworkTarget.requestId}:${reworkTarget.deliveryState}`}`,
@@ -2845,7 +2717,7 @@ export class WorkflowEngineDispatcher {
 						route.target_attempt !== intent.attempt ||
 						route.preferred_actor_execution_id !== intent.execution_id ||
 						delivery.route_revision !== route.revision ||
-						delivery.state !== "replacement_pending" ||
+						delivery.state !== "pending" ||
 						!baseRevision ||
 						!/^[0-9a-f]{40}$/.test(baseRevision)
 					) {

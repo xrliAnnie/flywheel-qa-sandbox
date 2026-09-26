@@ -465,6 +465,12 @@ export interface AlertMetadata {
 			| "rework_retry_exhausted"
 			| "rework_pane_loss_handoff"
 			| "rework_stall_recovered"
+			// FLY-2921: the only rework delivery failure ending, and the
+			// unknown-liveness escalation that replaced the frozen-run alerts.
+			| "rework_returned_to_lead"
+			| "rework_liveness_unknown"
+			| "rework_replacement_launch_rolled_back"
+			| "rework_replacement_launch_unresolved"
 			| "rework_completion_refused"
 			| "rework_reentry_paused"
 			| "rework_reentry_resumed"

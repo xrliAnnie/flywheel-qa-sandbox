@@ -21,6 +21,13 @@
 		"resumeOwner": "resume_rework"
 	},
 	{
+		"id": "rework_returned_to_lead",
+		"authoritativeStore": "state",
+		"scope": "delivery",
+		"detectOwner": "workflow_rework_delivery",
+		"resumeOwner": "resume_rework"
+	},
+	{
 		"id": "unlaunched_admission_rolled_back",
 		"authoritativeStore": "state",
 		"scope": "run",
