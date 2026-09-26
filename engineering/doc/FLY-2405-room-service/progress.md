@@ -1,16 +1,14 @@
 ---
 issue: FLY-2405
-phase: design
-phaseCursor: 6/6
-updated: 2026-09-26T17:31:14.898Z
-nextStep: "design v2 APPROVED (room drill §10c/C8). Implement: resume from WIP
-  22c94c810 per plan §20 (last implement cursor 2/7: C3 shell green; C1 green
-  except generalized native socket regression red; C4 route/wiring in progress;
-  C5 two audit fixes; C7 pending), then C8, then C6 docs"
+phase: implement
+phaseCursor: 2/8
+updated: 2026-09-26T17:38:24.448Z
+nextStep: Resumed approved v2 at 80fdb7454; audit inherited WIP C1-C5/C7, finish
+  C8 drill and C6 docs; targeted verification only
 chunks: []
 pointers: {}
 ---
 
 # FLY-2405 progress
-**phase**: design (6/6)
-**next**: design v2 APPROVED (room drill §10c/C8). Implement: resume from WIP 22c94c810 per plan §20 (last implement cursor 2/7: C3 shell green; C1 green except generalized native socket regression red; C4 route/wiring in progress; C5 two audit fixes; C7 pending), then C8, then C6 docs
+**phase**: implement (2/8)
+**next**: Resumed approved v2 at 80fdb7454; audit inherited WIP C1-C5/C7, finish C8 drill and C6 docs; targeted verification only
