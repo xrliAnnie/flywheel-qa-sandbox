@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex 体出事普查</title><style>
+:root{--bg:#f5f5f7;--fg:#1d1d1f;--dim:#86868b;--card:#fff;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--gray:#86868b;--navy:#1a365d;--line:#e5e5ea}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,system-ui,sans-serif;line-height:1.55;font-size:15px}
+main{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;margin:0 0 4px;color:var(--navy)}
+.sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+.section{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 18px;margin:14px 0;border-left:4px solid var(--gray)}
+.section.red{border-left-color:var(--red)}.section.amber{border-left-color:var(--amber)}.section.blue{border-left-color:var(--blue)}
+.section.green{border-left-color:var(--green)}.section.purple{border-left-color:var(--purple)}
+.section h2{font-size:18px;margin:0 0 10px;color:var(--navy)}
+ul.big li{margin-bottom:8px}
+code{font-family:'SF Mono',ui-monospace,monospace;font-size:12.5px;background:#f2f2f5;padding:1px 4px;border-radius:4px;word-break:break-all}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
+table{border-collapse:collapse;font-size:13px;min-width:100%}
+table.wide{min-width:880px}
+th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{background:#fafafa;font-weight:600;white-space:nowrap}
+.dim{color:var(--dim);font-size:12.5px}
+.badge{display:inline-block;font-size:11px;padding:1px 6px;border-radius:8px;color:#fff}
+.badge.gray{background:var(--gray)}
+.card{border-radius:10px;border:1px solid var(--line);border-left:4px solid var(--gray);padding:10px 14px;margin:10px 0;background:#fcfcfd}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}.card.blue{border-left-color:var(--blue)}
+.card-title{font-weight:600;margin-bottom:6px}
+.card p{margin:6px 0}
+.cbox{margin-top:12px}
+.cbox label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cbox textarea{width:100%;min-height:60px;border:1px solid #d2d2d7;border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;resize:vertical;background:#fbfbfd}
+.cbox textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.btn{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;margin:4px 6px 4px 0}
+.btn.sec{background:#e8e8ed;color:var(--fg)}
+.status{color:var(--green);font-size:13px;min-height:18px}
+.summary-box{white-space:pre-wrap;background:#f2f2f5;border-radius:8px;padding:10px;font-size:13px;margin:8px 0;word-break:break-word}
+</style></head>
+<body><main>
+<h1>Codex 体为什么老出事 — 近 14 天普查</h1>
+<div class="sub">FLY-2893 · 窗口 2026-09-11 → 2026-09-25（UTC）· 冻结于 2026-09-25T22:57:33Z · 全部只读 · 每节可写意见，底部一键复制</div>
+<section class="section red" id="tldr"><h2>先看结论</h2>
+<ul class="big">
+<li><b>Codex 体确实远比 Claude 体容易出事。</b>近 14 天 Codex 执行体 694 个，出事 477 个（69%），涉及 102 张单；
+Claude 执行体 330 个，出事 25 个（8%）。只看实现节点：Codex 70% 对 Claude 10%。</li>
+<li><b>浪费主要花在「等人手」上，不在死本身。</b>Codex 出事合计浪费 507 单×节点小时，其中 422 小时（83%）是 run 已经被打成 held、等 Lead 手工 resume 或重派。</li>
+<li><b>前三类</b>（按浪费时长）：① 账号额度墙 usageLimited（234 次 / 207.8 h）；② worktree 接管失败（40 次 / 137.8 h，其中 21 次是额度墙死体留下的脏 worktree）；
+③ Codex 凭据与身份（27 次 / 77.4 h，<b>25/27 次发生在全局 ~/.codex 重登或换号后 60 分钟内</b>）。第四名是重启后 reown 失败（64 次，涉及单数第二多，但单次很快接上，56.4 h）。</li>
+<li><b>额度上最亏的是「关了但没关死」。</b>已被 Lead 收掉的体继续在跑，终态后又烧了 1207M token，约合一个 Codex 账号周额度的 112%（区间 60–119%），两具体占了 92%（收尸探针 unverifiable，FLY-2892 / FLY-2814 形状）。</li>
+<li>即使把额度墙整类拿掉，Codex 出事率仍是 35%，Claude 是 7%。差距不只是额度问题。</li>
+</ul><div class="cbox"><label>对这一节的意见</label><textarea data-key="tldr" data-title="先看结论" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section blue" id="method"><h2>口径（怎么数的）</h2>
+<p>窗口：执行体创建时间在 <code>2026-09-11T22:00:00Z</code> 到 <code>2026-09-25T22:00:00Z</code>（14 天）。数据冻结于 <code>2026-09-25T22:57:33Z</code>
+（事件 id 上限 run_event ≤ 193059、session_event ≤ 10864431），重跑结果逐字节相同。全程只读。</p>
+<ul>
+<li><b>出事</b>（一个执行体最多记一条）：会话报 failed、被引擎判死回滚、起跑失败回滚、会话 blocked、run 被运维终结时它正持着 run 且没交卷、或终态后仍在消耗 token。
+<b>不算出事</b>：正常交卷后因 land 冲突被再激活而换体（K0，Codex 43 次 / Claude 14 次，单列）、ship 后的收尾、founder 直令关单或清理。</li>
+<li><b>根因</b>：按错误原文归类，优先读 transcript 里上游返回的 <code>[error]</code>，其次 session_failed 原文、会话 last_error、判死原因。同一错误码 / 守卫 / 结构形状算一类（FLY-2072 class_key 口径）。未归类 0 条。</li>
+<li><b>浪费时长</b>：从出事到「下一个体真正接上」（同单同节点的下一个体第一次消耗 token，跨 run、跨载体都算）。下一个体还没接上又出事，就切段记给它，不重复计。
+单位是<b>单×节点小时</b>，不是舰队墙钟，多张单并行时相加。没有接班者的（单被关、run 永久 held）不进主数字，单列敞口。</li>
+<li><b>其中等人手</b>：出事后 run 被打成 held（盲换用尽 retry_limit_escalated 或起跑失败告警）到接上之间的时长。</li>
+<li><b>额度</b>：token 从 Codex rollout 逐条差分得出。折成周额度用本机全部 Codex rollout 的额度读数估算：每 1 亿 token ≈ 9.3% 周额度（p25–p75 5.0–9.8%），是情景估算。</li>
+</ul><div class="cbox"><label>对这一节的意见</label><textarea data-key="method" data-title="口径（怎么数的）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section red" id="classes"><h2>Codex 出事按根因分类（全量）</h2>
+<p>一行一类，按浪费时长排序。<b>批次</b>：同类出事间隔不超过 10 分钟算一批，比如额度墙一次打满会同时带走多具体。<b>起跑即死</b>：体还没消耗任何 token 就出事（多为盲换的替身）。
+全量逐条清单在 <code>evidence/derived/incidents.csv</code>，每行有 issue、run、exec、出事时刻、原因原文、接班者、浪费区间。</p>
+<div class="tw"><table class="wide"><thead><tr><th>类</th><th>名称</th><th>次数</th><th>单数</th><th>批次</th><th>起跑即死</th><th>浪费 h</th><th>其中等人手 h</th><th>未接上（敞口）</th><th>终态后 token</th><th>病根单</th><th>子类</th></tr></thead><tbody><tr><td><b>K1</b></td><td>账号额度墙 usageLimited</td><td>234</td><td>71</td><td>30</td><td>140</td><td>207.8</td><td>185.9</td><td>5 条 / 642 h</td><td>36M</td><td>FLY-2371 · FLY-2521 · FLY-2572 · FLY-2729</td><td><span class="dim">usage_limit:232; operator_after_quota:2</span></td></tr><tr><td><b>K6</b></td><td>worktree 接管失败</td><td>40</td><td>30</td><td>24</td><td>40</td><td>137.8</td><td>133.3</td><td>—</td><td>—</td><td>FLY-2510 · FLY-2463</td><td><span class="dim">clean=false:39; head_mismatch:1</span></td></tr><tr><td><b>K3</b></td><td>Codex 凭据 / 账号身份</td><td>27</td><td>23</td><td>6</td><td>27</td><td>77.4</td><td>72.5</td><td>1 条 / 169 h</td><td>—</td><td>FLY-2750(已修) · FLY-2404 · FLY-1896</td><td><span class="dim">auth_json_missing:16; unknown_identity:6; refresh_token:5</span></td></tr><tr><td><b>K5</b></td><td>重启后 reown 失败</td><td>64</td><td>48</td><td>44</td><td>0</td><td>56.4</td><td>10.1</td><td>—</td><td>—</td><td>FLY-2586 · FLY-2505 · FLY-2558 · FLY-2352 · FLY-2462</td><td><span class="dim">reown:64</span></td></tr><tr><td><b>K9</b></td><td>体自报 blocked(三轮核验)</td><td>28</td><td>21</td><td>24</td><td>0</td><td>18.8</td><td>17.1</td><td>1 条 / 65 h</td><td>36M</td><td>FLY-2344 · FLY-2507 · 新类</td><td><span class="dim">lead_freeze_or_scope_wait:11; other:6; ci_billing:4; dependency_pr:2; no_turn_or_registration:2; infra_529:2; waiting_engine_hold:1</span></td></tr><tr><td><b>K0</b></td><td>非故障换体(land 冲突再激活) <span class="badge gray">非故障</span></td><td>43</td><td>31</td><td>37</td><td>1</td><td>7.2</td><td>0.0</td><td>1 条 / 65 h</td><td>—</td><td>—</td><td><span class="dim">land_conflict_reactivation:39; operator_scope_or_cleanup:4</span></td></tr><tr><td><b>K8</b></td><td>宿主子进程 / git 异常</td><td>17</td><td>13</td><td>13</td><td>12</td><td>5.8</td><td>2.1</td><td>—</td><td>—</td><td>FLY-2617 · 新类(GitResultChecker)</td><td><span class="dim">child_stdio_250ms:17</span></td></tr><tr><td><b>K2</b></td><td>上游模型满载 serverOverloaded</td><td>15</td><td>14</td><td>11</td><td>0</td><td>1.6</td><td>1.3</td><td>—</td><td>—</td><td>FLY-2630</td><td><span class="dim">model_capacity:15</span></td></tr><tr><td><b>K12</b></td><td>运维收掉(无其他信号)</td><td>16</td><td>14</td><td>15</td><td>4</td><td>0.9</td><td>0.0</td><td>—</td><td>241M</td><td>按原文</td><td><span class="dim">completion_deadlock_FLY-2373:12; dead_knot_FLY-2329:2; other:2</span></td></tr><tr><td><b>K11</b></td><td>无错误原文的判死</td><td>7</td><td>7</td><td>6</td><td>0</td><td>0.5</td><td>0.0</td><td>—</td><td>873M</td><td>FLY-2537 · FLY-2512 · FLY-2618</td><td><span class="dim">actor_session_terminal:failed:3; terminal_session_and_dead_probe:2; persisted_target_missing_and_dead_probe:1; actor_session_terminal:completed:1</span></td></tr><tr><td><b>K7</b></td><td>agent home lease 缺失</td><td>4</td><td>4</td><td>4</td><td>4</td><td>0.2</td><td>0.0</td><td>—</td><td>—</td><td>FLY-2689</td><td><span class="dim">lease_missing:4</span></td></tr><tr><td><b>K10</b></td><td>停驻超时 resident_hold_expired</td><td>5</td><td>5</td><td>5</td><td>0</td><td>0.1</td><td>0.0</td><td>—</td><td>—</td><td>FLY-2477 · FLY-2710</td><td><span class="dim">resident_hold_expired:5</span></td></tr><tr><td><b>K13</b></td><td>终态后复活 / 自续</td><td>19</td><td>16</td><td>17</td><td>0</td><td>0.0</td><td>0.0</td><td>—</td><td>21M</td><td>FLY-2814 · FLY-2572</td><td><span class="dim">post_terminal_tokens:19</span></td></tr><tr><td><b>K4</b></td><td>cyber 400</td><td>1</td><td>1</td><td>1</td><td>0</td><td>0.0</td><td>0.0</td><td>—</td><td>—</td><td>FLY-2743</td><td><span class="dim">cyber_400:1</span></td></tr></tbody></table></div>
+<p class="dim">K3 里的 FLY-2750（unknown identity）已于 9-18 修复。K8 两个子类都是高负载下子进程 250ms stdio 排空超时（FLY-2617）。K9 是 Codex 体连续三轮等不到外部条件后自报 blocked，被当成失败换体，其中 529 房子类占了 16.7 h。</p>
+<div class="cbox"><label>对这一节的意见</label><textarea data-key="classes" data-title="Codex 出事按根因分类（全量）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section amber" id="vendor"><h2>Codex vs Claude（同口径）</h2>
+<div class="tw"><table class="wide"><thead><tr><th>节点</th><th>Codex 体数</th><th>Claude 体数</th><th>Codex 出事率</th><th>Claude 出事率</th><th>Codex 每单额外体数</th><th>Claude 每单额外体数</th><th>Codex 每单因出事重派</th><th>Claude 每单因出事重派</th><th>Codex 出过事的单占比</th><th>Claude 出过事的单占比</th></tr></thead><tbody><tr><td>实现</td><td>601</td><td>62</td><td>70%</td><td>10%</td><td>3.55</td><td>0.72</td><td>3.04</td><td>0.14</td><td>72%</td><td>11%</td></tr><tr><td>设计</td><td>81</td><td>31</td><td>57%</td><td>13%</td><td>0.80</td><td>0.07</td><td>0.53</td><td>0.00</td><td>56%</td><td>14%</td></tr><tr><td>QA</td><td>12</td><td>211</td><td>75% <span class="dim">(样本&lt;30)</span></td><td>7%</td><td>1.40</td><td>0.62</td><td>1.80</td><td>0.11</td><td>80%</td><td>9%</td></tr><tr><td>其他</td><td>—</td><td>26</td><td>—</td><td>0% <span class="dim">(样本&lt;30)</span></td><td>—</td><td>0.00</td><td>—</td><td>0.00</td><td>—</td><td>0%</td></tr><tr><td>合计</td><td>694</td><td>330</td><td>69%</td><td>8%</td><td>2.81</td><td>0.49</td><td>2.38</td><td>0.09</td><td>68%</td><td>9%</td></tr></tbody></table></div>
+<p>「每单」指每张单的一个节点。「额外体数」= 该节点的体数 − 1，包含 QA 打回之类的正常重派；「因出事重派」只算出事后接班的次数。</p>
+<p><b>两点提醒：</b>① Codex 以实现为主、Claude 以 QA 为主，所以要按节点分行比，不看合计；Claude 实现只有 62 个体，样本偏小。
+② <b>Claude 有一部分出事看不见。</b>Claude 体撞额度会静默卡在 pane 里，不报失败、不被判死（FLY-2637），本口径抓不到，所以 Claude 的出事率是偏低估计。
+不过即使把 Codex 的额度墙整类剔除，差距仍然明显（35% 对 7%）。</p><div class="cbox"><label>对这一节的意见</label><textarea data-key="vendor" data-title="Codex vs Claude（同口径）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section purple" id="quota"><h2>额度视角：浪费在哪</h2>
+<ul>
+<li><b>终态后仍在消耗：1207M token，约合一个 Codex 账号周额度的 112%（区间 60–119%）。</b>体已经被标成 completed / terminated / failed，进程却没停。
+最大的两具：FLY-2766 cf70ee17 被 Lead close 后 daemon 收尸结果为 <code>unverifiable</code>，又跑了约 15 小时；FLY-2873 37624e3d 同样形状，约 10 小时。
+这就是 FLY-2892（0.157 起 socket 变软链，探针判不出持有者）加 FLY-2814（关掉后被 goal runtime 当作 daemon 中途死亡而自动复活）的现场。</li>
+<li><b>额度墙的盲换：</b>额度墙这一类里有 140 具体是起跑即死。每具只烧很少 token，真正的代价是时间：盲换 3 具用尽后 run 进 held，只能等人手。</li>
+<li><b>死体自身的消耗</b>（上界，因为死前推过的提交可以被接班者直接复用）：额度墙类 4481M、reown 类 3978M。这不等于浪费，只说明被打断的体通常已经干了很多活。</li>
+<li><b>接班重建成本没法可靠算：</b>Codex 的一个 goal 回合（task_started 到 task_complete）可以包含大量真实工作，第一回合的 token 分不清哪部分是重读上下文、哪部分是实活，所以只放进 CSV（q2 列）作参考，不进结论。Claude 侧没有额度读数，只给 token。</li>
+</ul>
+<div class="tw"><table class=""><thead><tr><th>单</th><th>体</th><th>类</th><th>会话状态</th><th>终态后 token</th></tr></thead><tbody><tr><td>FLY-2766</td><td>cf70ee17</td><td>K11</td><td>completed</td><td>872.6M</td></tr><tr><td>FLY-2873</td><td>37624e3d</td><td>K12</td><td>completed</td><td>241.4M</td></tr><tr><td>FLY-2693</td><td>a103f146</td><td>K9</td><td>completed</td><td>34.5M</td></tr><tr><td>FLY-2523</td><td>3771e914</td><td>K1</td><td>completed</td><td>27.1M</td></tr><tr><td>FLY-2505</td><td>60853b9b</td><td>K13</td><td>completed</td><td>8.3M</td></tr><tr><td>FLY-2804</td><td>4838acca</td><td>K1</td><td>terminated</td><td>5.5M</td></tr></tbody></table></div><div class="cbox"><label>对这一节的意见</label><textarea data-key="quota" data-title="额度视角：浪费在哪" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section amber" id="switch"><h2>Lead 线索：切号 / 重登与凭据类死亡的关系</h2>
+<p><b>核实成立。</b>凭据与身份类（K3）的 27 次死亡中，25 次发生在全局 <code>~/.codex</code> 的凭据操作（交互式重登开始或完成、codex-profile 换号留下的 <code>auth.json.bak-*</code>）之后 60 分钟内，25 次在 12 分钟内。
+作为对照，整个窗口里只有 2.1% 的分钟落在这类操作后 60 分钟内。剩下 2 次（9-19 01:32，FLY-2746 / FLY-2655）比那次换号备份的时间戳早约 30 秒，应当是同一次换号的开始阶段。</p>
+<p><b>机制：</b>runner 起跑时从全局 <code>~/.codex/auth.json</code> 取凭据种子。重登或换号期间这个文件会短暂缺失（报 <code>ENOENT</code>），或换成一个还没登记的号（unknown identity，FLY-2750 已修），或新号让旧进程的 refresh token 作废。
+这一窗口内起跑或续跑的体都会死，然后被盲换、打成 held。9-14 21:26–22:30 的一次重登前后持续约一小时，这期间有 10 个体因凭据文件缺失死掉。</p>
+<p><b>今天又发生了一次，本单撞上了：</b>约 22:43–22:48Z，本单的 Codex 设计评审（companion）和 FLY-2882 的本地复审，连续被 401「Incorrect API key」拒绝；之后变成「Missing bearer」。前情是 22:07–22:09Z FLY-2830 QA 做过 school→shopping→school 的真切号。
+runner 的 agent home 这次没有受波及，但所有走全局 <code>~/.codex</code> 的 companion 评审或 CLI 都会停。</p>
+<div class="tw"><table class=""><thead><tr><th>单</th><th>子类</th><th>出事时刻 (UTC)</th><th>最近一次凭据操作</th><th>操作类型</th><th>相隔分钟</th></tr></thead><tbody><tr><td>FLY-2391</td><td>auth_json_missing</td><td>09-14 21:27</td><td>09-14 21:26</td><td>login_started</td><td>0.2</td></tr><tr><td>FLY-2552</td><td>auth_json_missing</td><td>09-14 21:27</td><td>09-14 21:26</td><td>login_started</td><td>0.5</td></tr><tr><td>FLY-2553</td><td>auth_json_missing</td><td>09-14 21:29</td><td>09-14 21:28</td><td>login_started</td><td>1.1</td></tr><tr><td>FLY-2560</td><td>auth_json_missing</td><td>09-14 21:31</td><td>09-14 21:28</td><td>login_started</td><td>3.9</td></tr><tr><td>FLY-1948</td><td>auth_json_missing</td><td>09-14 21:34</td><td>09-14 21:28</td><td>login_started</td><td>6.1</td></tr><tr><td>FLY-1453</td><td>auth_json_missing</td><td>09-14 21:36</td><td>09-14 21:28</td><td>login_started</td><td>8.6</td></tr><tr><td>FLY-2413</td><td>auth_json_missing</td><td>09-14 21:38</td><td>09-14 21:28</td><td>login_started</td><td>10.8</td></tr><tr><td>FLY-2559</td><td>auth_json_missing</td><td>09-14 21:38</td><td>09-14 21:28</td><td>login_started</td><td>10.8</td></tr><tr><td>FLY-2561</td><td>auth_json_missing</td><td>09-14 21:39</td><td>09-14 21:28</td><td>login_started</td><td>10.9</td></tr><tr><td>FLY-2519</td><td>auth_json_missing</td><td>09-14 21:54</td><td>09-14 21:43</td><td>login_started</td><td>11.1</td></tr><tr><td>FLY-2748</td><td>auth_json_missing</td><td>09-18 22:05</td><td>09-18 22:04</td><td>login_started</td><td>0.6</td></tr><tr><td>FLY-2653</td><td>refresh_token</td><td>09-18 22:05</td><td>09-18 22:04</td><td>login_started</td><td>0.8</td></tr><tr><td>FLY-2727</td><td>auth_json_missing</td><td>09-18 22:05</td><td>09-18 22:04</td><td>login_started</td><td>1.0</td></tr><tr><td>FLY-2523</td><td>auth_json_missing</td><td>09-18 22:05</td><td>09-18 22:04</td><td>login_started</td><td>1.1</td></tr><tr><td>FLY-2688</td><td>auth_json_missing</td><td>09-18 22:05</td><td>09-18 22:04</td><td>login_started</td><td>1.1</td></tr><tr><td>FLY-2737</td><td>auth_json_missing</td><td>09-18 22:05</td><td>09-18 22:04</td><td>login_started</td><td>1.2</td></tr><tr><td>FLY-2720</td><td>unknown_identity</td><td>09-18 22:07</td><td>09-18 22:06</td><td>login_completed</td><td>1.2</td></tr><tr><td>FLY-2655</td><td>unknown_identity</td><td>09-18 22:13</td><td>09-18 22:06</td><td>login_completed</td><td>6.7</td></tr><tr><td>FLY-2656</td><td>unknown_identity</td><td>09-18 22:13</td><td>09-18 22:06</td><td>login_completed</td><td>6.7</td></tr><tr><td>FLY-2745</td><td>unknown_identity</td><td>09-18 22:13</td><td>09-18 22:06</td><td>login_completed</td><td>6.8</td></tr><tr><td>FLY-2643</td><td>unknown_identity</td><td>09-18 22:13</td><td>09-18 22:06</td><td>login_completed</td><td>6.9</td></tr><tr><td>FLY-2653</td><td>unknown_identity</td><td>09-18 22:13</td><td>09-18 22:06</td><td>login_completed</td><td>6.9</td></tr><tr><td>FLY-2746</td><td>refresh_token</td><td>09-19 01:32</td><td>09-18 22:06</td><td>login_completed</td><td>206.0</td></tr><tr><td>FLY-2655</td><td>refresh_token</td><td>09-19 01:32</td><td>09-18 22:06</td><td>login_completed</td><td>206.4</td></tr><tr><td>FLY-2693</td><td>refresh_token</td><td>09-19 01:33</td><td>09-19 01:32</td><td>profile_swap_backup</td><td>0.5</td></tr><tr><td>FLY-2688</td><td>refresh_token</td><td>09-19 04:03</td><td>09-19 04:03</td><td>login_completed</td><td>0.5</td></tr><tr><td>FLY-2688</td><td>auth_json_missing</td><td>09-19 15:53</td><td>09-19 15:51</td><td>login_started</td><td>1.3</td></tr></tbody></table></div><div class="cbox"><label>对这一节的意见</label><textarea data-key="switch" data-title="Lead 线索：切号 / 重登与凭据类死亡的关系" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section green" id="fixes"><h2>前三类修法建议（由 Lead 决定开单）</h2>
+<div class="card red"><div class="card-title">① 账号额度墙 usageLimited — 234 次 · 71 张单 · 30 批 · 浪费 207.8 h（其中等人手 185.9 h）</div>
+<p><b>根因：</b>额度打满时所有在飞体同时死掉。引擎不看死因，照样盲换 3 具替身，替身起跑即死（本类 140 具），用尽后 run 被打成 held。额度回来以后没有自动重新派发，只能人手 resume（FLY-2371）。自动切号子系统又没在宿主上真正部署（FLY-2521）。</p>
+<p><b>最小修法：</b>① 替身派发前读前任死因：同一 vendor、同一 home 刚以 usageLimited 死过，就不盲换，直接进 hold，并把 <code>resume_after</code> 设成额度重置时刻；② 订阅额度恢复事件（同一 home 重新有 token 消耗，或 quota-monitor 切号完成），自动重新派发。</p>
+<p><b>预计节省：</b>下限是额度已回来、还在等人手的那段，本窗口 <b>39.1 h</b>，外加起跑即死的 140 具盲换。另外，下游由额度墙死体留下脏 worktree 引出的 K6 有 21 次、108 h，会随盲换消失而减少。
+其余时间是额度真的没了；要省这部分，得让自动切号真正落地（FLY-2521），并且当时有别的号还有余量。上限约为本类全部 207.8 h。</p>
+<p><b>风险：</b>如果恢复信号误判，可能在额度仍满的时候重新派发。所以自动重臂最多一次，失败后保持 held 并告警，不能退回盲换循环。</p></div>
+
+<div class="card amber"><div class="card-title">② worktree 接管失败 — 40 次 · 30 张单 · 浪费 137.8 h（其中等人手 133.3 h）</div>
+<p><b>根因：</b>前任死前在共享 branch-B worktree 里留了未提交的改动。替身接管时检查到 <code>clean=false</code>，拒绝原地复用 → <code>unlaunched_admission_rolled_back</code> → run 被打成 held。要 Lead 手工 stash 再 hold resume 才能继续（FLY-2510）。
+前任死因以额度墙居多（21/40）。Claude 替身也会撞上（5 次），所以这一类跟载体无关。</p>
+<p><b>最小修法：</b>接管时如果前任已被证明死亡，而 worktree 里有未提交改动，先由引擎把这些改动存档到一个带名字的救援引用（例如 <code>refs/flywheel/rescue/&lt;dead-exec&gt;</code>，stash 并推送），让 worktree 回到干净状态再接管。交接文案里写明救援引用，替身自己决定要不要取回。</p>
+<p><b>预计节省：</b>本类等人手的时间基本全部可省，约 133.3 h；只剩几分钟的自动处理时间。</p>
+<p><b>风险：</b>存档只能在「前任已被证明死亡」之后做（和现有判死条件相同），否则可能跟一个还活着的体抢 worktree（参见 FLY-2572 死而复生的形状）。救援引用必须推送到远端，不能只留在本地。</p></div>
+
+<div class="card blue"><div class="card-title">③ Codex 凭据与身份 — 27 次 · 23 张单 · 6 批 · 浪费 77.4 h（其中等人手 72.5 h）</div>
+<p><b>根因：</b>见上一节。全局 <code>~/.codex</code> 既是人工重登或换号的操作面，又是 runner 起跑时的凭据种子源。操作期间文件缺失或身份不一致，新起的体必死，并且会被当成普通死亡去盲换。</p>
+<p><b>最小修法：</b>① 换号或重登改成原子替换：先写临时文件再 rename，任何时刻都不删 <code>auth.json</code>；重登也在独立目录里完成，成功后再原子换入；② runner 起跑时如果凭据缺失或身份未知，按「凭据暂不可用」退避重试几分钟，不判死、不计入盲换次数；③ 长期方向是 FLY-2404（全机一份凭据真身，原地刷新）。</p>
+<p><b>预计节省：</b>本类几乎都能省，约 77.4 h，外加今天这类 companion 评审停摆。</p>
+<p><b>风险：</b>②的退避要有上限，否则真正的账号失效会被拖延暴露。超过上限仍按现状判死并告警。</p></div>
+
+<p class="dim"><b>第四名以后：</b>重启后 reown 失败（64 次 / 48 张单，涉及单数第二多，但多数 1–2 分钟就换体接上，合计 56.4 h，对应 FLY-2586 / FLY-2505 / FLY-2558）；
+体自报 blocked（28 次，Codex 独有：三轮等不到外部条件就自报 blocked，然后被当作死亡换体）；
+「关了没关死」在额度上最亏（见额度视角，FLY-2892 / FLY-2814）。</p><div class="cbox"><label>对这一节的意见</label><textarea data-key="fixes" data-title="前三类修法建议（由 Lead 决定开单）" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section gray" id="review"><h2>评审子进程</h2>
+<p>窗口内评审任务 failed 的记录里，绝大多数是评审期间 plan 或代码头变了导致的正常作废，不算出事。真正的基础设施失败（nonzero_exit / no_verdict）一共
+14 次，量级很小，不进 K 类。今天因全局凭据失效造成的评审停摆，写在「切号」一节。</p>
+<div class="tw"><table class=""><thead><tr><th>作者方</th><th>类型</th><th>性质</th><th>原因</th><th>次数</th></tr></thead><tbody><tr><td>author=codex</td><td>code</td><td>正常作废</td><td>superseded_by_revision</td><td>62</td></tr><tr><td>author=codex</td><td>code</td><td>正常作废</td><td>head_moved</td><td>39</td></tr><tr><td>author=codex</td><td>code</td><td>正常作废</td><td>gate_answered_externally</td><td>15</td></tr><tr><td>author=codex</td><td>design</td><td>正常作废</td><td>superseded_by_revision</td><td>11</td></tr><tr><td>author=claude</td><td>code</td><td>正常作废</td><td>head_moved</td><td>10</td></tr><tr><td>author=claude</td><td>code</td><td>正常作废</td><td>superseded_by_revision</td><td>7</td></tr><tr><td>author=codex</td><td>code</td><td>基础设施失败</td><td>nonzero_exit</td><td>7</td></tr><tr><td>author=claude</td><td>code</td><td>正常作废</td><td>gate_answered_externally</td><td>5</td></tr><tr><td>author=codex</td><td>code</td><td>基础设施失败</td><td>no_verdict</td><td>4</td></tr><tr><td>author=claude</td><td>code</td><td>基础设施失败</td><td>no_verdict</td><td>2</td></tr><tr><td>author=claude</td><td>code</td><td>基础设施失败</td><td>nonzero_exit</td><td>1</td></tr><tr><td>author=claude</td><td>code</td><td>正常作废</td><td>gate_answered</td><td>1</td></tr><tr><td>author=codex</td><td>code</td><td>正常作废</td><td>head_moved_exhausted</td><td>1</td></tr><tr><td>author=codex</td><td>design</td><td>正常作废</td><td>gate_answered_externally</td><td>1</td></tr><tr><td>author=codex</td><td>design</td><td>正常作废</td><td>reviewed_plan_moved</td><td>1</td></tr></tbody></table></div><div class="cbox"><label>对这一节的意见</label><textarea data-key="review" data-title="评审子进程" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section><section class="section gray" id="limits"><h2>局限与复算方法</h2>
+<ul>
+<li>Bridge 日志只保留约 8 小时，FLY-2814 复活的直接日志证据拿不到。改用「终态后 rollout 仍有 token」间接判断，只能说明终态后仍在消耗，分不清是自动复活还是没杀掉。</li>
+<li>有 81 个 Codex 执行体找不到 rollout（多为起跑失败），token 记 0。</li>
+<li>浪费时长包含 Lead / founder 的反应时间。这是出事造成的真实损失，但它依赖人什么时候在线，所以预计节省写成区间。</li>
+<li>额度折算基于本机可见的 rollout，其他机器上用同一账号的消耗看不到，所以百分比可能偏高。</li>
+<li>复算：<code>cd evidence/scripts && python3 collect.py && python3 usage.py && python3 classify.py && python3 switches.py && python3 build_report.py</code>。
+<code>raw/freeze.json</code> 固定了冻结点，重跑得到的每个 CSV 都逐字节相同（已验证）。抽查 10 条出事记录与生产原始事件和 transcript 的对照，见 <code>derived/spotcheck.md</code>。</li>
+</ul><div class="cbox"><label>对这一节的意见</label><textarea data-key="limits" data-title="局限与复算方法" placeholder="写在这里，自动保存在本机浏览器"></textarea></div></section>
+<section class="section" id="comments"><h2>意见汇总</h2>
+<button class="btn" id="copy-all" type="button">复制全部评论</button><button class="btn sec" id="clear-all" type="button">清空</button>
+<div class="status" id="copy-status"></div><div id="summary-chunks"></div></section>
+</main><script>(function () {
+  var ISSUE = "FLY-2893";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部评论" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script></body></html>

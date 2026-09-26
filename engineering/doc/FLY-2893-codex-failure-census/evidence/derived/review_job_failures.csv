@@ -1,0 +1,16 @@
+author_side,review_type,kind,failure_reason,jobs
+author=codex,code,normal_void,superseded_by_revision,62
+author=codex,code,normal_void,head_moved,39
+author=codex,code,normal_void,gate_answered_externally,15
+author=codex,design,normal_void,superseded_by_revision,11
+author=claude,code,normal_void,head_moved,10
+author=claude,code,normal_void,superseded_by_revision,7
+author=codex,code,infra_failure,nonzero_exit,7
+author=claude,code,normal_void,gate_answered_externally,5
+author=codex,code,infra_failure,no_verdict,4
+author=claude,code,infra_failure,no_verdict,2
+author=claude,code,infra_failure,nonzero_exit,1
+author=claude,code,normal_void,gate_answered,1
+author=codex,code,normal_void,head_moved_exhausted,1
+author=codex,design,normal_void,gate_answered_externally,1
+author=codex,design,normal_void,reviewed_plan_moved,1

@@ -1,0 +1,7 @@
+{
+  "k3_incidents": 27,
+  "within_60min": 25,
+  "within_12min": 25,
+  "baseline_share_of_minutes_within_60min": 0.021,
+  "global_credential_operations": 15
+}
