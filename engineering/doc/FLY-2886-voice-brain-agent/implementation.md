@@ -157,3 +157,5 @@ QA@5（`b6dd7e58f`）：B1 真 scribe 对纯回执给 `spoken:""`（6/6），解
 - M1：失败的 `lead_operation` 回包也作来源；修复后无可核对内容且无工具文字时，不发空帖、不说「发到 thread 了」，改说「这件我没拿到能核对的结果，你再说一下编号，我重新查。」；发帖处加空串兜底。
 
 验证（定向）：voice-codex `vitest related`（5 个改动文件）8 文件 196/196；teamlead `voice-capability-parent` 6/6、子进程清册守卫 1/1；lint 0；构建与依赖方 typecheck 通过。QA 记录的房缺口（`cosContext.memoryPaths` 未建、取上下文 2 s 超时）为 main 既有代码，不在本单。
+
+评审 `7c9f7dbf`（@`217bd43a2` APPROVED，round 4）新增 MEDIUM「被推翻的空稿跳过在来源无单号时静默丢失」：已修（推翻后空稿一律走原文发 thread + 指针句），用例「构建失败了，看 thread。」先红后绿。LOW「子进程清册守卫首跑失败」：本机复现一次，耗时 5132 ms 正好越过 vitest 默认 5 s 超时，随后 4/4 通过；判为负载下超时（宿主 load 见提交时 `uptime`），守卫本身未改。其余 advisory 同上一轮，仍为 Follow-ups。
