@@ -78,7 +78,9 @@ function profileConfig(spec: LeadPermissionProfileSpec) {
 	const filesystem: Record<string, unknown> = {
 		":root": "deny",
 		":minimal": "read",
-		":tmpdir": "deny",
+		// No ":tmpdir" entry: Codex resolves it from the child's TMPDIR, which the
+		// model env pins to modelTempRoot (a workspace scratch). Denying it denied
+		// the model its own scratch (FLY-2886); the host tmpdir stays under :root.
 		":slash_tmp": "deny",
 		// Keep :workspace inheritance; replacing "." loses protected metadata.
 		":workspace_roots": { ".codex": "read", ".git": "read" },

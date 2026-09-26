@@ -1,0 +1,13 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts (4 tests) 934ms
+   ✓ the loader closure plus the pinned OPENSSL_CONF runs node and crypto inside the sandbox  372ms
+   ✓ verifyModelIsolation passes with the real codex, real node and the resident-shaped profile  379ms
+ ✓ |parallel| src/lead-capabilities/__tests__/node-runtime-closure.test.ts (11 tests) 276ms
+
+ Test Files  2 passed (2)
+      Tests  15 passed (15)
+   Start at  06:10:08
+   Duration  1.57s (transform 33ms, setup 12ms, collect 36ms, tests 1.21s, environment 0ms, prepare 50ms)
+

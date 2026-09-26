@@ -20,6 +20,7 @@ import { LeadArtifactStore } from "./artifacts.js";
 import { leadCredentialAliases } from "./credential-paths.js";
 import { verifyLeadDeployment } from "./deployment.js";
 import { preparePinnedNativeSkillHome } from "./native-home.js";
+import { leadNodeRuntimeReadPaths } from "./node-runtime-closure.js";
 import { leadModelWritableRoot } from "./permission-profile.js";
 import { startLeadRuntimeParent } from "./runtime-factory.js";
 import { discoverLeadRuleSources } from "./skill-discovery.js";
@@ -332,7 +333,11 @@ export async function startVoiceCapabilityParent(
 				permissionProfile: {
 					deploymentRoot,
 					projectRoot,
-					readPaths: [deploymentRoot, nodePath, codexPath],
+					readPaths: [
+						deploymentRoot,
+						...leadNodeRuntimeReadPaths(nodePath),
+						codexPath,
+					],
 					credentialPaths: leadCredentialAliases(env, codexHome),
 				},
 				verifyDeployment: async () => assertPreparedCurrent(),

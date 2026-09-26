@@ -42,6 +42,20 @@ describe("bundle v2 model process environment", () => {
 		expect(env).not.toHaveProperty("HTTP_PROXY");
 		expect(env).not.toHaveProperty("NODE_OPTIONS");
 	});
+	it("pins OPENSSL_CONF to the parent-written file and ignores an inherited one (FLY-2886)", () => {
+		expect(
+			buildLeadModelEnv({ OPENSSL_CONF: "/etc/host.cnf" }, pins),
+		).not.toHaveProperty("OPENSSL_CONF");
+		expect(
+			buildLeadModelEnv(
+				{ OPENSSL_CONF: "/etc/host.cnf" },
+				{ ...pins, opensslConf: "/managed/run/openssl.cnf" },
+			).OPENSSL_CONF,
+		).toBe("/managed/run/openssl.cnf");
+		expect(() =>
+			buildLeadModelEnv({}, { ...pins, opensslConf: "run/openssl.cnf" }),
+		).toThrow("invalid capability process path");
+	});
 	it("rejects injected newlines or relative trusted coordinates", () => {
 		expect(() =>
 			buildLeadModelEnv({}, { ...pins, brokerSocket: "relative" }),

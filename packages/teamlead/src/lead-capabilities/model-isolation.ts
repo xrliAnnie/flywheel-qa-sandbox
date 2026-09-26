@@ -31,16 +31,22 @@ export interface ModelIsolationOptions {
 
 const unproven = () => new Error("model_isolation_unproven");
 // Fixed trusted program; only synthetic paths/ports/nonce are passed as data.
+// Codex (>=0.153) starts its own managed proxy for the sandbox and announces it
+// in HTTP_PROXY; that loopback proxy is the only permitted egress (FLY-2886).
+// OPENSSL_CONF is the parent-pinned file every sandboxed node reads at startup.
 const PROBE = `
 const fs=require('node:fs'),net=require('node:net'),p=JSON.parse(process.argv[1]);
 const denied=e=>e && ['EACCES','EPERM'].includes(e.code);
 const attempt=f=>{try{f();return false;}catch(e){return denied(e);}};
+const succeeds=f=>{try{f();return true;}catch{return false;}};
 const writeDenied=path=>{try{fs.writeFileSync(path,'probe',{flag:'wx'});}catch(e){return denied(e);}try{fs.unlinkSync(path);}catch{}return false;};
 const connect=port=>new Promise(resolve=>{const s=net.connect({host:'127.0.0.1',port});const done=v=>{s.destroy();resolve(v);};s.once('connect',()=>done('connected'));s.once('error',e=>done(denied(e)?'denied':'unknown'));s.setTimeout(1500,()=>done('unknown'));});
 const listen=()=>new Promise(resolve=>{const s=net.createServer();s.once('error',e=>resolve(denied(e)));s.listen(0,'127.0.0.1',()=>s.close(()=>resolve(false)));});
+const sandboxProxy=()=>{try{const u=new URL(process.env.HTTP_PROXY);const port=Number(u.port);return u.protocol==='http:'&&u.hostname==='127.0.0.1'&&Number.isInteger(port)&&port>0?port:undefined;}catch{return undefined;}};
 (async()=>{
  let writable=false;try{fs.writeFileSync(p.scratch,'ok',{flag:'wx'});fs.unlinkSync(p.scratch);writable=true;}catch{}
- const result={nonce:p.nonce,writable,readDenied:attempt(()=>fs.readFileSync(p.secret)),credentialDenied:attempt(()=>fs.readFileSync(p.credential)),symlinkDenied:attempt(()=>fs.readFileSync(p.link)),writeDenied:writeDenied(p.outside),artifactWriteDenied:writeDenied(p.artifact),deploymentWriteDenied:writeDenied(p.deployment),proxyAllowed:(await connect(p.proxyPort))==='connected',privateDenied:(await connect(p.privatePort))==='denied',listenDenied:await listen()};
+ const proxy=sandboxProxy();
+ const result={nonce:p.nonce,writable,readDenied:attempt(()=>fs.readFileSync(p.secret)),credentialDenied:attempt(()=>fs.readFileSync(p.credential)),symlinkDenied:attempt(()=>fs.readFileSync(p.link)),writeDenied:writeDenied(p.outside),artifactWriteDenied:writeDenied(p.artifact),deploymentWriteDenied:writeDenied(p.deployment),proxyAllowed:proxy!==undefined&&(await connect(proxy))==='connected',privateDenied:(await connect(p.privatePort))==='denied',listenDenied:await listen(),opensslConfRead:process.env.OPENSSL_CONF===p.opensslConf&&succeeds(()=>fs.readFileSync(p.opensslConf)),cryptoReady:succeeds(()=>{if(require('node:crypto').randomBytes(1).length!==1)throw new Error();})};
  process.stdout.write(JSON.stringify(result));
 })().catch(()=>process.exit(1));
 `;
@@ -54,6 +60,7 @@ export async function verifyModelIsolation(
 		options.codexExecutable,
 		options.nodeExecutable,
 		options.credentialProbePath,
+		options.pins.opensslConf ?? "",
 	];
 	if (
 		unconfinedPaths.some((p) => !isAbsolute(p)) ||
@@ -97,8 +104,8 @@ export async function verifyModelIsolation(
 			outside: join(outer, "write"),
 			artifact: join(options.pins.artifactRoot, `isolation-${nonce}`),
 			deployment: join(options.deploymentRoot, `isolation-${nonce}`),
-			proxyPort: options.proxyPort,
 			privatePort: address.port,
+			opensslConf: options.pins.opensslConf,
 		};
 		const output = await new Promise<string>((resolve, reject) => {
 			const child = spawn(
@@ -171,6 +178,8 @@ export async function verifyModelIsolation(
 			"proxyAllowed",
 			"privateDenied",
 			"listenDenied",
+			"opensslConfRead",
+			"cryptoReady",
 		];
 		if (
 			result.nonce !== nonce ||

@@ -30,7 +30,11 @@ import {
 import type { LeadCapabilityManifest } from "./manifest.js";
 import { readManifestInstructions } from "./manifest-instructions.js";
 import { installManifestSkills } from "./manifest-skills.js";
-import { buildLeadModelEnv, type LeadModelEnvPins } from "./model-env.js";
+import {
+	buildLeadModelEnv,
+	type LeadModelEnvPins,
+	writeLeadOpensslConf,
+} from "./model-env.js";
 import { verifyModelIsolation } from "./model-isolation.js";
 import {
 	assertLeadPermissionProfile,
@@ -256,6 +260,9 @@ export async function startLeadCapabilityParent(
 		)
 			throw new Error("capability_parent_root_invalid");
 		directory = mkdtempSync(join(options.activationRoot, "run-"));
+		// Every sandboxed node (MCP proxies, model shell, isolation probe) reads this
+		// exact file; the profile grants only it, not host OpenSSL paths (FLY-2886).
+		const opensslConf = writeLeadOpensslConf(directory);
 		const pins: LeadModelEnvPins = Object.freeze({
 			codexHome: options.codexHome,
 			brokerSocket: join(directory, "broker.sock"),
@@ -265,6 +272,7 @@ export async function startLeadCapabilityParent(
 			projectName: manifest.projectName,
 			leadId: manifest.leadId,
 			activationId: manifest.activationId,
+			opensslConf,
 		});
 		const writableRoot = leadModelWritableRoot(options.permissionProfile);
 		if (
@@ -281,6 +289,7 @@ export async function startLeadCapabilityParent(
 				socketPath: pins.brokerSocket,
 				manifestPath: pins.manifestPath,
 				manifest,
+				opensslConfPath: opensslConf,
 			},
 		});
 		const expectedMcp = parse(
@@ -289,6 +298,7 @@ export async function startLeadCapabilityParent(
 		writeFileSync(pins.manifestPath, publicJson, { mode: 0o400, flag: "wx" });
 		const permissionProfile = structuredClone({
 			...options.permissionProfile,
+			readPaths: [...options.permissionProfile.readPaths, opensslConf],
 			credentialPaths: [...credentials.paths],
 			artifactRoot: pins.artifactRoot,
 			brokerSocket: pins.brokerSocket,

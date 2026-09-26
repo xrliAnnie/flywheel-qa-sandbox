@@ -1,0 +1,58 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts (4 tests | 2 failed) 1016ms
+   ✓ the executable-only grant cannot even load Homebrew node (the QA@2 exit 134) 189ms
+   × the loader closure plus the pinned OPENSSL_CONF runs node and crypto inside the sandbox 386ms
+     → expected { status: 134, signal: null } to deeply equal { status: +0, signal: null }
+   × verifyModelIsolation passes with the real codex, real node and the resident-shaped profile 390ms
+     → promise rejected "Error: model_isolation_unproven" instead of resolving
+   ✓ verifyModelIsolation rejects the executable-only grant with the real codex 50ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > the loader closure plus the pinned OPENSSL_CONF runs node and crypto inside the sandbox
+AssertionError: expected { status: 134, signal: null } to deeply equal { status: +0, signal: null }
+
+- Expected
++ Received
+
+  {
+    "signal": null,
+-   "status": 0,
++   "status": 134,
+  }
+
+ ❯ src/lead-capabilities/__tests__/model-isolation-host.test.ts:152:5
+    150|     "require('node:fs').readFileSync(process.env.OPENSSL_CONF);require…
+    151|    ),
+    152|   ).toEqual({ status: 0, signal: null });
+       |     ^
+    153|  },
+    154|  30_000,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/lead-capabilities/__tests__/model-isolation-host.test.ts > verifyModelIsolation passes with the real codex, real node and the resident-shaped profile
+AssertionError: promise rejected "Error: model_isolation_unproven" instead of resolving
+ ❯ src/lead-capabilities/__tests__/model-isolation-host.test.ts:173:3
+    171|     assertCurrent: () => {},
+    172|    }),
+    173|   ).resolves.toBeUndefined();
+       |   ^
+    174|  },
+    175|  30_000,
+
+Caused by: Error: model_isolation_unproven
+ ❯ unproven src/lead-capabilities/model-isolation.ts:32:24
+ ❯ verifyModelIsolation src/lead-capabilities/model-isolation.ts:183:9
+ ❯ src/lead-capabilities/__tests__/model-isolation-host.test.ts:161:3
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed (4)
+   Start at  05:59:12
+   Duration  1.28s (transform 37ms, setup 12ms, collect 38ms, tests 1.02s, environment 0ms, prepare 37ms)
+

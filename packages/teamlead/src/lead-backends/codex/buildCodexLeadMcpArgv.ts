@@ -85,6 +85,8 @@ export interface CapabilityV2McpConfig {
 	socketPath: string;
 	manifestPath: string;
 	manifest: LeadCapabilityManifest;
+	/** Parent-pinned OpenSSL config the sandboxed proxy node reads (FLY-2886). */
+	opensslConfPath?: string;
 }
 export interface CodexLeadMcpOptions {
 	capabilityV2?: CapabilityV2McpConfig;
@@ -153,6 +155,7 @@ export function buildCodexLeadMcpArgv(
 			config.proxyEntryPath,
 			config.socketPath,
 			config.manifestPath,
+			...(config.opensslConfPath === undefined ? [] : [config.opensslConfPath]),
 		]) {
 			if (
 				typeof path !== "string" ||
@@ -186,6 +189,9 @@ export function buildCodexLeadMcpArgv(
 		const env = {
 			FLYWHEEL_LEAD_CAPABILITY_SOCKET: config.socketPath,
 			FLYWHEEL_LEAD_CAPABILITY_MANIFEST: config.manifestPath,
+			...(config.opensslConfPath
+				? { OPENSSL_CONF: config.opensslConfPath }
+				: {}),
 		};
 		const specs: McpServerSpec[] = [
 			{

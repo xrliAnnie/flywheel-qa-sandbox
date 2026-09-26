@@ -1,4 +1,5 @@
-import { isAbsolute, normalize } from "node:path";
+import { writeFileSync } from "node:fs";
+import { isAbsolute, join, normalize } from "node:path";
 
 /** An allowlist of shell basics, not a token-name denylist. No auth/provider env. */
 export const LEAD_MODEL_ENV_NAMES = [
@@ -21,6 +22,20 @@ export interface LeadModelEnvPins {
 	projectName: string;
 	leadId: string;
 	activationId: string;
+	/**
+	 * Parent-written fixed OpenSSL config (FLY-2886 §14.3). Sandboxed node reads
+	 * this exact file instead of a host config path the profile does not grant.
+	 */
+	opensslConf?: string;
+}
+
+export const LEAD_OPENSSL_CONF_FILE = "openssl.cnf";
+
+/** Writes the fixed minimal (empty) OpenSSL config into a parent-owned pins directory. */
+export function writeLeadOpensslConf(directory: string): string {
+	const path = join(directory, LEAD_OPENSSL_CONF_FILE);
+	writeFileSync(path, "", { mode: 0o400, flag: "wx" });
+	return path;
 }
 
 /**
@@ -38,6 +53,7 @@ export function buildLeadModelEnv(
 		pins.manifestPath,
 		pins.artifactRoot,
 		pins.modelTempRoot,
+		...(pins.opensslConf === undefined ? [] : [pins.opensslConf]),
 	]) {
 		if (
 			!isAbsolute(value) ||
@@ -72,5 +88,6 @@ export function buildLeadModelEnv(
 		FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
 		FLYWHEEL_LEAD_CAPABILITY_SOCKET: pins.brokerSocket,
 		FLYWHEEL_LEAD_CAPABILITY_MANIFEST: pins.manifestPath,
+		...(pins.opensslConf ? { OPENSSL_CONF: pins.opensslConf } : {}),
 	};
 }

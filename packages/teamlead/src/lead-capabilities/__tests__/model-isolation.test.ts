@@ -40,6 +40,8 @@ it.each(["unconfined", "empty", "failed"])(
 			writeFileSync(credentialProbePath, "synthetic-credential", {
 				mode: 0o600,
 			});
+			const opensslConf = join(root, "openssl.cnf");
+			writeFileSync(opensslConf, "", { mode: 0o400 });
 			const launch: Omit<ModelIsolationOptions, "proxyPort"> = {
 				codexExecutable: "/opt/codex",
 				nodeExecutable: process.execPath,
@@ -52,6 +54,7 @@ it.each(["unconfined", "empty", "failed"])(
 					projectName: "flywheel",
 					leadId: "honey",
 					activationId: "test",
+					opensslConf,
 				},
 				projectRoot: qa,
 				deploymentRoot: deployment,
@@ -92,12 +95,20 @@ it.each(["unconfined", "empty", "failed"])(
 						expect(options.env.FLYWHEEL_SYNTHETIC_SECRET).toBeUndefined();
 						expect(options.env.NODE_OPTIONS).toBeUndefined();
 						expect(options.env.CODEX_HOME).toBe(home);
+						expect(options.env.OPENSSL_CONF).toBe(opensslConf);
 						const child = spawn(
 							process.execPath,
 							mode === "unconfined"
 								? args.slice(7)
 								: ["-e", mode === "empty" ? "" : "process.exit(71)"],
-							options,
+							// Stand in for the sandbox's managed proxy announcement.
+							{
+								...options,
+								env: {
+									...options.env,
+									HTTP_PROXY: `http://127.0.0.1:${address.port}`,
+								},
+							},
 						);
 						child.stdout!.on("data", (chunk) => {
 							observed += chunk.toString();
@@ -120,6 +131,8 @@ it.each(["unconfined", "empty", "failed"])(
 							deploymentWriteDenied: false,
 							privateDenied: false,
 							listenDenied: false,
+							opensslConfRead: true,
+							cryptoReady: true,
 						});
 				} finally {
 					spawnSpy.mockRestore();
@@ -135,3 +148,31 @@ it.each(["unconfined", "empty", "failed"])(
 		}
 	},
 );
+
+it("refuses to probe without the parent-pinned OpenSSL config", async () => {
+	const { spawn } = await import("node:child_process");
+	vi.mocked(spawn).mockClear();
+	await expect(
+		verifyModelIsolation({
+			codexExecutable: "/opt/codex",
+			nodeExecutable: process.execPath,
+			pins: {
+				codexHome: "/tmp/h",
+				brokerSocket: "/tmp/b.sock",
+				manifestPath: "/tmp/m.json",
+				artifactRoot: "/tmp/a",
+				modelTempRoot: "/tmp/t",
+				projectName: "flywheel",
+				leadId: "honey",
+				activationId: "test",
+			},
+			projectRoot: "/tmp/p",
+			deploymentRoot: "/tmp/d",
+			credentialProbePath: "/tmp/h/auth.json",
+			proxyPort: 18080,
+			env: {},
+			assertCurrent: () => {},
+		}),
+	).rejects.toThrow("model_isolation_unproven");
+	expect(spawn).not.toHaveBeenCalled();
+});

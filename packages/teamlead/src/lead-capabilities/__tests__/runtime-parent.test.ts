@@ -6,11 +6,12 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { requestLeadOperation } from "flywheel-comm/lead-operation-client";
 import { parse } from "smol-toml";
 import { expect, it, vi } from "vitest";
@@ -264,9 +265,27 @@ it.each([undefined, "founder_chrome", "isolated", "off"] as const)(
 			expect(parent.baseInstructions).toContain("manual fallback");
 			expect(parent.skillGaps).toEqual(manifest.skillGaps);
 			expect(order).toEqual(["model-verified", "verified"]);
+			// FLY-2886 §14.3: one parent-written OpenSSL config, granted as an exact
+			// read path and injected into every sandboxed node's environment.
+			const opensslConf = parent.pins.opensslConf!;
+			expect(opensslConf).toBe(
+				join(dirname(parent.pins.brokerSocket), "openssl.cnf"),
+			);
+			expect(readFileSync(opensslConf, "utf8")).toBe("");
+			expect(statSync(opensslConf).mode & 0o777).toBe(0o400);
+			expect(
+				parent.mcp.argv.some((value) =>
+					value.includes(`OPENSSL_CONF=${JSON.stringify(opensslConf)}`),
+				) ||
+					parent.mcp.argv.some(
+						(value) =>
+							value.includes("OPENSSL_CONF") && value.includes(opensslConf),
+					),
+			).toBe(true);
 			const config = parse(
 				renderLeadPermissionProfile({
 					...options.permissionProfile,
+					readPaths: [...options.permissionProfile.readPaths, opensslConf],
 					credentialPaths: [
 						...leadCredentialAliases({ HOME: root }, options.codexHome),
 						join(root, "credentials"),

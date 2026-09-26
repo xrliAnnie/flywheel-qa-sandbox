@@ -18,6 +18,7 @@ import { LeadArtifactStore } from "./artifacts.js";
 import { leadCredentialAliases } from "./credential-paths.js";
 import { verifyLeadDeployment } from "./deployment.js";
 import { preparePinnedNativeSkillHome } from "./native-home.js";
+import { leadNodeRuntimeReadPaths } from "./node-runtime-closure.js";
 import { leadModelWritableRoot } from "./permission-profile.js";
 import { createLeadCapabilityContext } from "./runtime-context.js";
 import { startLeadRuntimeParent } from "./runtime-factory.js";
@@ -252,7 +253,7 @@ export async function startDefaultLeadCapabilityParent(input: {
 					projectRoot,
 					readPaths: [
 						deploymentRoot,
-						nodePath,
+						...leadNodeRuntimeReadPaths(nodePath),
 						codexPath,
 						join(realpathSync(config.codexHome), "skills"),
 					],

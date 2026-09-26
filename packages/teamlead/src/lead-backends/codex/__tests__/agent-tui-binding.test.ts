@@ -90,6 +90,39 @@ describe("verifyAgentTuiBinding", () => {
 		});
 	});
 
+	it("accepts the parent-pinned OPENSSL_CONF and rejects a relative one (FLY-2886)", () => {
+		const withConf: TuiWindowSpec = {
+			...CAPABILITY,
+			capabilityModelEnv: {
+				...CAPABILITY.capabilityModelEnv!,
+				pins: { ...PINS, opensslConf: "/tmp/cap/openssl.cnf" },
+			},
+		};
+		const expected = {
+			kind: "capability-v2" as const,
+			codexHome: CAPABILITY.codexHome,
+			cwd: CAPABILITY.cwd,
+			threadId: CAPABILITY.threadId,
+			codexBin: CAPABILITY.codexBin ?? "codex",
+			projectName: CAPABILITY.projectName,
+			leadId: CAPABILITY.leadId,
+			remoteSocket: CAPABILITY.capabilitySocketPath!,
+		};
+		const command = buildTuiCommand(withConf);
+		expect(command).toContain("OPENSSL_CONF=/tmp/cap/openssl.cnf");
+		expect(verdict(command, withConf).ok).toBe(true);
+		expect(verifyAgentTuiBinding(command, expected).ok).toBe(true);
+		expect(
+			verifyAgentTuiBinding(
+				command.replace(
+					"OPENSSL_CONF=/tmp/cap/openssl.cnf",
+					"OPENSSL_CONF=cap.cnf",
+				),
+				expected,
+			),
+		).toEqual({ ok: false, reason: "identity_mismatch" });
+	});
+
 	it("does not allow a trusted grammar to be swapped", () => {
 		expect(verdict(buildTuiCommand(CAPABILITY), LEGACY).ok).toBe(false);
 		expect(verdict(buildTuiCommand(LEGACY), CAPABILITY).ok).toBe(false);
