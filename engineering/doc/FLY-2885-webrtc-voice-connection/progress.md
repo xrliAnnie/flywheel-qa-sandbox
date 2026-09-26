@@ -1,14 +1,13 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 0/14
-updated: 2026-09-26T00:46:58.031Z
-nextStep: install deps (werift/opusscript in voice-codex), then T10
-  config/wrapper/QA-room no-key
+phaseCursor: 2/14
+updated: 2026-09-26T01:00:28.192Z
+nextStep: T2 WebRtcLeg (werift) + loopback test
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (0/14)
-**next**: install deps (werift/opusscript in voice-codex), then T10 config/wrapper/QA-room no-key
+**phase**: implement (2/14)
+**next**: T2 WebRtcLeg (werift) + loopback test
