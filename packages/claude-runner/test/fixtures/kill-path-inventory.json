@@ -378,9 +378,21 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:callFragment: \"process.kill(target, kind);\",#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "callFragment: \"process.kill(target, kind);\",",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:entry.code === 'process.kill(-child.pid, \"SIGKILL\");')#1",
 		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
 		"code": "entry.code === 'process.kill(-child.pid, \"SIGKILL\");')",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:entry.code === \"process.kill(target, kind);\"#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "entry.code === \"process.kill(target, kind);\"",
 		"classification": "qa-only"
 	},
 	{
@@ -1434,6 +1446,12 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "packages/teamlead/src/bridge/qa-room-runtime.ts:process.kill(target, kind);#1",
+		"path": "packages/teamlead/src/bridge/qa-room-runtime.ts",
+		"code": "process.kill(target, kind);",
+		"classification": "runner-affecting-mutation"
+	},
+	{
 		"key": "packages/teamlead/src/bridge/quota-daemon-wake.ts:const kill = deps.kill ?? ((pid, signal) => void process.kill(pid, signal));#1",
 		"path": "packages/teamlead/src/bridge/quota-daemon-wake.ts",
 		"code": "const kill = deps.kill ?? ((pid, signal) => void process.kill(pid, signal));",
@@ -2268,6 +2286,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2405-room-job.test.sh:if [[ \"${TEST_KILL_WRAPPER:-0}\" == 1 ]]; then kill -KILL \"$PPID\"; fi#1",
+		"path": "scripts/__tests__/fly2405-room-job.test.sh",
+		"code": "if [[ \"${TEST_KILL_WRAPPER:-0}\" == 1 ]]; then kill -KILL \"$PPID\"; fi",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly2655-voice-room.test.mjs:process.kill(daemon.pid, \"SIGTERM\");#1",
 		"path": "scripts/__tests__/fly2655-voice-room.test.mjs",
 		"code": "process.kill(daemon.pid, \"SIGTERM\");",
@@ -3024,6 +3048,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/test-deploy-generalized.test.sh:elif kill -0 \"$live_unowned_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
+		"code": "elif kill -0 \"$live_unowned_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/test-deploy-generalized.test.sh:if kill -0 \"$owned_pid\" 2>/dev/null; then#1",
 		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
 		"code": "if kill -0 \"$owned_pid\" 2>/dev/null; then",
@@ -3045,6 +3075,18 @@
 		"key": "scripts/__tests__/test-deploy-generalized.test.sh:node -e 'try { process.kill(-Number(process.argv[1]), \"SIGKILL\"); } catch {}' \\#1",
 		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
 		"code": "node -e 'try { process.kill(-Number(process.argv[1]), \"SIGKILL\"); } catch {}' \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-generalized.test.sh:try { process.kill(Number(process.argv[3]), 0); }#1",
+		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
+		"code": "try { process.kill(Number(process.argv[3]), 0); }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-generalized.test.sh:try { process.kill(Number(process.argv[3]), 0); }#2",
+		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
+		"code": "try { process.kill(Number(process.argv[3]), 0); }",
 		"classification": "qa-only"
 	},
 	{

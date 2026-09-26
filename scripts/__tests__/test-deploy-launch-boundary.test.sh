@@ -40,7 +40,7 @@ bridge_launch_block="$(sed -n \
 	"$DEPLOY")"
 [[ "$(rg -F -c 'BRIDGE_ENV_UNSET_ARGS[@]' <<<"$bridge_launch_block" || true)" == "3" ]] \
 	|| fail "all three Bridge launch branches must consume the shared dynamic deny arguments"
-[[ "$(exact_count '    FLYWHEEL_*|TEAMLEAD_*|DELIVERY_*|*_DB|*_DIR|*_ROOT|*_TOKEN|CODEX_HOME|TMUX|TMUX_PANE|TMUX_TMPDIR|TMPDIR)' "$DEPLOY")" == "1" ]] \
+[[ "$(exact_count '    FLYWHEEL_*|TEAMLEAD_*|DELIVERY_*|*_DB|*_DIR|*_ROOT|*_TOKEN|TEST_BOT_TOKEN_*|CODEX_HOME|TMUX|TMUX_PANE|TMUX_TMPDIR|TMPDIR)' "$DEPLOY")" == "1" ]] \
 	|| fail "dynamic deny must cover the complete coordinate family"
 [[ "$(exact_count '  BRIDGE_ENV_UNSET_ARGS+=(-u FLY1389_ENV_DUMP_NODE)' "$DEPLOY")" == "1" \
 	&& "$(exact_count '  BRIDGE_EXPLICIT_CALLER_ENV+=("FLY1389_ENV_DUMP_NODE=${FLY1389_ENV_DUMP_NODE}")' "$DEPLOY")" == "1" ]] \

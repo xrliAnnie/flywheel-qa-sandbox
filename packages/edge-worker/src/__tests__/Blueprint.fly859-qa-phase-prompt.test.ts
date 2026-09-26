@@ -312,7 +312,9 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		expect(withLead).toContain(
 			"record strength-two evidence immediately after the driver exits",
 		);
-		expect(withLead).toContain("before `test-teardown.sh`");
+		expect(withLead).toMatch(
+			/before `node [^`]+flywheel-comm[^`]* room teardown --room <room-id>`/,
+		);
 		expect(withLead).toContain("before `qa-result`");
 		expect(withLead).toContain(
 			"evidence-run record --exec-id exec-generalized-qa",

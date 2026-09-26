@@ -91,6 +91,11 @@ const MUTATION_REGISTRY: readonly MutationRegistration[] = [
 		disposition: "bounded_child",
 	},
 	{
+		path: "packages/teamlead/src/bridge/qa-room-runtime.ts",
+		callFragment: "process.kill(target, kind);",
+		disposition: "bounded_child",
+	},
+	{
 		path: "packages/teamlead/src/bridge/terminal-tab-reaper.ts",
 		callFragment: "Slot safety is boot-fenced",
 		disposition: "boot_fenced_plain_tmux",
@@ -265,6 +270,12 @@ describe("FLY-2211 kill-path inventory", () => {
 			) {
 				return false;
 			}
+			if (
+				entry.path === "packages/teamlead/src/bridge/qa-room-runtime.ts" &&
+				entry.code === "process.kill(target, kind);"
+			) {
+				return false;
+			}
 			const offset = inventoryEntryOffset(entry);
 			return !calls.some(
 				(call) =>
@@ -363,5 +374,20 @@ describe("FLY-2211 kill-path inventory", () => {
 		expect(tmuxAdapter).toMatch(
 			/const child = spawn\(cmd, args,[\s\S]+detached: process\.platform !== "win32"[\s\S]+if \(!exitSeen && child\.pid[\s\S]+process\.kill\(-child\.pid, "SIGKILL"\)[\s\S]+child\.kill\("SIGKILL"\)/,
 		);
+		const roomRuntime = readFileSync(
+			resolve(REPO_ROOT, "packages/teamlead/src/bridge/qa-room-runtime.ts"),
+			"utf8",
+		);
+		expect(roomRuntime).toMatch(
+			/spawn\("\/bin\/bash", args, \{\s*detached: true/,
+		);
+		expect(roomRuntime).toMatch(
+			/async terminate\(op: QaRoomOperation\)[\s\S]+owner\?\.operation_id === op.operation_id[\s\S]+current.started === this.started\(owner.lstart\)[\s\S]+if \(!matches \|\| current.group !== pid\)[\s\S]+throw new QaRoomError\("job_owner_changed"\)[\s\S]+process.kill\(target, kind\);/,
+		);
+		expect(roomRuntime.match(/\bprocess\.kill\(/g)).toHaveLength(1);
+		expect(roomRuntime.match(/\bsignal\([^)]*\)/g)).toEqual([
+			'signal(-pid, "SIGTERM")',
+			'signal(-pid, "SIGKILL")',
+		]);
 	});
 });

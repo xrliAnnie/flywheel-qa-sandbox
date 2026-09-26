@@ -262,10 +262,20 @@ function normalizeMachinePaths(prompt: string): string {
 	);
 }
 
-function expectPromptGolden(actual: string, fixtureName: string): void {
-	expect(normalizeMachinePaths(actual)).toBe(
-		normalizeMachinePaths(goldenFixture(fixtureName)),
+// Keep the historical memory fixtures immutable. Only the reviewed FLY-2405
+// teardown instruction migrates; all remaining prompt bytes still compare exactly.
+function roomServiceGolden(fixtureName: string): string {
+	const historical = normalizeMachinePaths(goldenFixture(fixtureName));
+	const previous = "before `test-teardown.sh`";
+	expect(historical.split(previous)).toHaveLength(2);
+	return historical.replace(
+		previous,
+		"before `node <COMM_CLI> room teardown --room <room-id>`",
 	);
+}
+
+function expectPromptGolden(actual: string, fixtureName: string): void {
+	expect(normalizeMachinePaths(actual)).toBe(roomServiceGolden(fixtureName));
 }
 
 function expectSelectionLogs(expected: string[]): void {
@@ -414,11 +424,7 @@ describe("FLY-2147 Blueprint runner-memory assembly", () => {
 
 	it("leaves unsupported backend prompt and adapter context byte-identical", async () => {
 		const { adapterContext, prompt } = await runBlueprint();
-		expect(normalizeMachinePaths(prompt)).toBe(
-			normalizeMachinePaths(
-				goldenFixture("fly2147-prompt-golden-unsupported-backend.txt"),
-			),
-		);
+		expectPromptGolden(prompt, "fly2147-prompt-golden-unsupported-backend.txt");
 		expect(adapterContext.runnerMemory).toBeUndefined();
 		expect(console.info).toHaveBeenCalledWith(
 			expect.stringContaining(

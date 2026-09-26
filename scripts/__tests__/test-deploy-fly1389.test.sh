@@ -88,6 +88,7 @@ cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" \
   "${SCRIPT_DIR}/flywheel-config-lock.py" "$FR/scripts/"
 cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-multilead.sh" \
+  "${SCRIPT_DIR}/lib/qa-slot-claim.sh" \
   "${SCRIPT_DIR}/lib/qa-generalized.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh" \

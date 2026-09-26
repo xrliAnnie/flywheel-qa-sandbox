@@ -74,6 +74,11 @@ function isKillPath(code: string): boolean {
 }
 
 function classify(path: string, code: string): KillPathClassification {
+	// FLY-2405 runs in the production Bridge despite the qa- filename. Its
+	// detached operation-group mutation needs an exact bounded-child registration.
+	if (path === "packages/teamlead/src/bridge/qa-room-runtime.ts") {
+		return "runner-affecting-mutation";
+	}
 	if (
 		/(?:^|\/)(?:__tests__|test|tests)(?:\/|$)|(?:^|\/)(?:qa|test|e2e|smoke|spike|r4)[-_/.]/i.test(
 			path,
