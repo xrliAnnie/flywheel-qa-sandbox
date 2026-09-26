@@ -1,14 +1,14 @@
 ---
 issue: FLY-2886
 phase: implement
-phaseCursor: 2/8
-updated: 2026-09-26T03:06:11.914Z
-nextStep: poll Lead for v9 scoped verdict or immutable-binding repair; continue
-  only independent approved chunks
+phaseCursor: 3/8
+updated: 2026-09-26T03:28:44.779Z
+nextStep: wire C7 process-level background turn/handoff lifecycle; keep §5.3
+  live path closed pending v10 verdict
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: implement (2/8)
-**next**: poll Lead for v9 scoped verdict or immutable-binding repair; continue only independent approved chunks
+**phase**: implement (3/8)
+**next**: wire C7 process-level background turn/handoff lifecycle; keep §5.3 live path closed pending v10 verdict
