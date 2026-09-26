@@ -1,0 +1,302 @@
+{
+  "baseHead": "49f239b0d66f4e7893bce988d56bb88012e9d99f",
+  "mergedMain": "fdd1b404d40129f9e5345d325f1c687e52a682e9",
+  "mergeCommit": "41390bed7",
+  "scope": "13 explicit TS files plus2 shell guards, one concrete file at a time; no local full package/repository tests",
+  "focused": [
+    {
+      "file": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-registry.test.ts"
+      ],
+      "exitCode": 0,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/registry.log",
+      "passedTests": 58,
+      "logSha256": "302877697d31a2b5274ec348c938d1f6f8afd7fe75b1bc50b64b56a3d28ee3c7"
+    },
+    {
+      "file": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-drift.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 36.23,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/feature-flags-drift.test.ts.log",
+      "passedTests": 14,
+      "logSha256": "e6778867388b076bf53ce4bb6a177a0027fa281ae5199a9bd445c9a08048f2e8"
+    },
+    {
+      "file": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-config",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/feature-flags-store-policy.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 11.97,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/feature-flags-store-policy.test.ts.log",
+      "passedTests": 22,
+      "logSha256": "f9d0676e8762645321558c8823a374e7eca4cc58b58f2c328a70e243ff3ac963"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/flag-store-runtime.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 36.8,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/flag-store-runtime.test.ts.log",
+      "passedTests": 47,
+      "logSha256": "384663288b8acdce4892eb69a109d5acfc29a423a0c3ba257d647e6c716e8f1c"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/run-dispatcher-prefix.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/run-dispatcher-prefix.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 55.55,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/run-dispatcher-prefix.test.ts.log",
+      "passedTests": 10,
+      "logSha256": "fadf011d48edf3062f83781d3f6f36ee6493b2ad0618665c383c6e7c55a85951"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/review-prefix-profile.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/review-prefix-profile.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 8.35,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/review-prefix-profile.test.ts.log",
+      "passedTests": 9,
+      "logSha256": "9ab820b89e5d62ae80b46278399cdfdf145f226b3e2f457da8b9fc77eb652f94"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/StateStore.flag-value-store.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.flag-value-store.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 19.05,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/StateStore.flag-value-store.test.ts.log",
+      "passedTests": 12,
+      "logSha256": "7f15abadbb671b7ebfb8c3b0cb8bceca8eab8d4ff479c94cd00a0445f417d475"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/workflow-template-publication.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/workflow-template-publication.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 33.55,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/workflow-template-publication.test.ts.log",
+      "passedTests": 29,
+      "logSha256": "3586205291fa457c26e8efed83c0f7432eb365bff0812370f912488d9b75b068"
+    },
+    {
+      "file": "packages/edge-worker/src/__tests__/Blueprint.fly1356-skill-framework.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-edge-worker",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/Blueprint.fly1356-skill-framework.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 23.1,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/Blueprint.fly1356-skill-framework.test.ts.log",
+      "passedTests": 72,
+      "logSha256": "6e90c963627ebba8ece7dd4b1baada07a1dff0a029fcd654f7f89f2c1d38d8bd"
+    },
+    {
+      "file": "packages/teamlead/src/bridge/__tests__/fly1560-teardown-guard.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/fly1560-teardown-guard.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 4.77,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/fly1560-teardown-guard.test.ts.log",
+      "passedTests": 7,
+      "logSha256": "13667a0bddec5cb4f4e869dec4e4e0620d95c3019f57b8ab492f71fc737a8b95"
+    },
+    {
+      "file": "packages/claude-runner/test/kill-path-inventory.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-claude-runner",
+        "exec",
+        "vitest",
+        "run",
+        "test/kill-path-inventory.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 13.82,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/kill-path-inventory.test.ts.log",
+      "passedTests": 5,
+      "logSha256": "17624f61ff098cac7a8db59ba44697e357d969f81efd7dd2ed0c1156a53de0dc"
+    },
+    {
+      "file": "scripts/__tests__/ci-structure.test.sh",
+      "command": [
+        "bash",
+        "scripts/__tests__/ci-structure.test.sh"
+      ],
+      "exitCode": 0,
+      "seconds": 2.37,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/ci-structure.test.sh.log",
+      "logSha256": "dda6b3601b49c5eec7f086ac8836a72c6c1d3e6ab5c174e43e999a45e1dacfd6"
+    },
+    {
+      "file": "scripts/__tests__/ci-shell-suite-enumeration.test.sh",
+      "command": [
+        "bash",
+        "scripts/__tests__/ci-shell-suite-enumeration.test.sh"
+      ],
+      "exitCode": 0,
+      "seconds": 0.68,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/ci-shell-suite-enumeration.test.sh.log",
+      "logSha256": "d422a8cb893cfbdd96acb0cabf0a19b565f4cdbbea414cb4c48b5456279e6d52"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/StateStore.fly663-migration.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.fly663-migration.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 27.0,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/StateStore.fly663-migration.test.ts.log",
+      "passedTests": 11,
+      "logSha256": "d8223cb50f61a993a57d01546ba04b19f12cc5516a0365ece344afc70b7e49f3"
+    },
+    {
+      "file": "packages/teamlead/src/__tests__/lead-token-savings-drift.test.ts",
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/lead-token-savings-drift.test.ts"
+      ],
+      "exitCode": 0,
+      "seconds": 6.79,
+      "log": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/lead-token-savings-drift.test.ts.log",
+      "passedTests": 17,
+      "logSha256": "d6ab14a0d993ebdd9190d1bfeb0ae405197de1be00c7d0f869ebd6deda4e3cfb"
+    }
+  ],
+  "passedTests": 313,
+  "related": {
+    "source": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+    "files": 1,
+    "tests": 58,
+    "exitCode": 0,
+    "logSha256": "047cf796631ce864e4ba97525b6769a79c1cf2b06d34433a2a75f9e0f7910c1e"
+  },
+  "build": {
+    "exitCode": 0,
+    "packages": "flywheel-teamlead... and flywheel-edge-worker...",
+    "logSha256": "bb4adf15fc235dc1beb9b0fa889bf7fda3c320a8fbb600e522f0b86676259440"
+  },
+  "lint": {
+    "exitCode": 0,
+    "warnings": 25,
+    "logSha256": "3b5fd56f2a96b9601525834c2d5ab32c64474d26efd2aa95797261fd75612344"
+  },
+  "sourceHashes": {
+    "packages/config/src/__tests__/feature-flags-registry.test.ts": "0ea204cf77af818558191b8e791d332a01fa57085846f185c50d256558046dc6",
+    "packages/edge-worker/src/Blueprint.ts": "8d00b6fca70fda4ff2a299eef085140fd106150ad2df21c3efe0dd58a5b7cbee",
+    "packages/teamlead/src/StateStore.ts": "cb420e4bed84b1cb57756ba11ccc83fcf2430f41db9b89c6032c3b0e5c783ea5",
+    "packages/teamlead/src/bridge/plugin.ts": "8d3814a4b6007fc6013fb59b82bcbde0756940852cfb929c33c3da087d2dbd6b",
+    "packages/teamlead/src/bridge/run-infra.ts": "75f482877f8a619fc0af9ef9f09541161ee902a6b42977e0e15bb3d10dc4b7a9",
+    "packages/teamlead/src/bridge/run-dispatcher.ts": "c1aefb4d854828bc27e5aea3e9a7dccd501ddc0dc0684d0858e86569abb14f6e"
+  },
+  "logs": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework",
+  "typecheck": {
+    "exitCode": 0,
+    "packages": [
+      "flywheel-edge-worker",
+      "flywheel-teamlead",
+      "flywheel-voice-codex"
+    ],
+    "logSha256": "bfa8cf1b4dce402ec359f49474bc6e36fab0c0de6bb5498d73daf297e1c363a1"
+  },
+  "review": "new exact-head review pending",
+  "fullCI": "QA owns frozen-head full CI request; not requested by implement",
+  "roomAcceptance": "historical49f239b0d3/5; review-code andClaudeQA remain unproven-room",
+  "consumerDiscovery": {
+    "path": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-f44b83c5/rework/consumer-discovery.json",
+    "sha256": "77617a73df2460db302e50e35cda9f0c3a9cf37783b88f3032a7d41ce091c67d",
+    "queries": 35,
+    "testMatches": 370,
+    "retained": 15
+  },
+  "redEvidence": {
+    "run": 36269635458,
+    "url": "https://github.com/xrliAnnie/flywheel/actions/runs/36269635458",
+    "failure": "feature-flags-registry.test.ts:97 expected36 got38",
+    "logSha256": "4869e2f7a6363f5065c3fe3c2def6bee95f044040f0a12defb99bc227465f556"
+  }
+}
