@@ -1,17 +1,17 @@
 ---
 issue: FLY-2912
 phase: implement
-phaseCursor: 2/4
-updated: 2026-09-26T16:27:47.732Z
-nextStep: Four scoped default-on flags wired to live producers; RED 4 category
-  failures + registry missing entries, GREEN classifier 45/45, registry/drift
-  fixed and green. 32 retained files executing one at a time, bounded
-  related/config collection next, then dependent typechecks and same-head
-  review/needs_review.
+phaseCursor: 3/4
+updated: 2026-09-26T16:35:13.669Z
+nextStep: Code 1277a4438 committed. 34 explicit targeted files pass;
+  lint/build/dependent typecheck pass, config related passes; teamlead bounded
+  related still running. Await that handle, finalize evidence and literal-last
+  milestone, push PR 1355, request exact-head code review, then needs_review and
+  park.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
-**phase**: implement (2/4)
-**next**: Four scoped default-on flags wired to live producers; RED 4 category failures + registry missing entries, GREEN classifier 45/45, registry/drift fixed and green. 32 retained files executing one at a time, bounded related/config collection next, then dependent typechecks and same-head review/needs_review.
+**phase**: implement (3/4)
+**next**: Code 1277a4438 committed. 34 explicit targeted files pass; lint/build/dependent typecheck pass, config related passes; teamlead bounded related still running. Await that handle, finalize evidence and literal-last milestone, push PR 1355, request exact-head code review, then needs_review and park.
