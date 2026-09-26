@@ -16,3 +16,9 @@ Submitted plan commit: 8eb2ae53266a8d09a7b54cbf62170f1000696f11
 Status at this record: pending; only the eventual effective reviewVerdict can authorize design completion.
 
 R2 effective/raw APPROVED: gate 5aec411f-dcf1-4ecf-93ba-71fb9d401763, request eff3a170-6ae9-45b4-ad6f-766806747a19. Current plan blob 4e442607602291ce22695e9523a32c108c5416fa is preserved after approval. Remaining advisories are in review-followups.md.
+
+Hosted report: https://fw-reports-6da062.vercel.app/r/a9e695bdff5424a094602c82314af2cf/
+
+Publication is intentionally silent: publishOnly=true, delivered=false, messageId=null. Hosted HTTP 200, no nonce placeholder, exact script nonce in CSP, no external assets. Local/hosted content matches after only publisher-injected nonce/CSP/noindex normalization; see evidence/hosted-report-check.json and publish-receipt.json. First normalization comparison exposed the publisher's expected noindex meta; after accounting for that exact addition, source parity passed. Visual/browser execution remains unverified as stated above; no second browser attempt or permission bypass.
+
+Closeout learning: reusable judgments were staged in the permitted native memory update-note directory. Shared role MEMORY.md was not edited; its measured size was 101 lines / 19,896 bytes, within the completion limit. No new implementation/529 evidence is claimed.

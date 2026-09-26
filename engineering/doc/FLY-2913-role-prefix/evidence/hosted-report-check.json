@@ -1,0 +1,17 @@
+{
+  "url": "https://fw-reports-6da062.vercel.app/r/a9e695bdff5424a094602c82314af2cf/",
+  "httpStatus": 200,
+  "reportId": "a9e695bdff5424a094602c82314af2cf",
+  "publishOnly": true,
+  "delivered": false,
+  "localHtmlSha256": "ffbbdf737a777d9dd8fdef4603815d01654322e89b83f367d6c30d849da116a3",
+  "hostedHtmlSha256": "afc8cb8d218884aa562da94e15946ec29daceb76cd766e0b60841303b9741c23",
+  "noncePlaceholderAbsent": true,
+  "scriptNonceMatchesCsp": true,
+  "sourceMatchAfterPublisherNonceCspAndNoindexNormalization": true,
+  "noExternalAssets": true,
+  "commentMarkerPresent": true,
+  "diagramRenderLimitationVisible": true,
+  "browserVisualQa": "not performed: tool approval policy denied browser tool",
+  "controllerCheck": "see report-controller-check.json; DOM only"
+}
