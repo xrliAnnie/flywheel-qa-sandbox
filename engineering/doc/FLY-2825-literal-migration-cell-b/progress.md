@@ -1,14 +1,15 @@
 ---
 issue: FLY-2825
 phase: design
-phaseCursor: 4/8
-updated: 2026-09-26T19:01:34.220Z
-nextStep: await Codex design-review R1 verdict; fold findings; await-codex-gate;
-  publish-report; report; complete
+phaseCursor: 5/8
+updated: 2026-09-26T19:38:20.607Z
+nextStep: "Codex R2 verdict (bqmozeoc3); if APPROVED: re-stage design_review for
+  new blob, write design-review.json, await-codex-gate; then publish-report +
+  report + complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2825 progress
-**phase**: design (4/8)
-**next**: await Codex design-review R1 verdict; fold findings; await-codex-gate; publish-report; report; complete
+**phase**: design (5/8)
+**next**: Codex R2 verdict (bqmozeoc3); if APPROVED: re-stage design_review for new blob, write design-review.json, await-codex-gate; then publish-report + report + complete
