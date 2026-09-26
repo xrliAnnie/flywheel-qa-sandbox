@@ -615,3 +615,93 @@ describe("DiscordVoiceRoom uplink pre-roll (FLY-2798 on the engine B room path)"
 		}
 	});
 });
+
+describe("DiscordVoiceRoom downlink modes (FLY-2885)", () => {
+	function roomWith(downlink?: "pcm-mouth" | "opus-passthrough") {
+		const createResource = vi.fn((source: { kind: string }) => source);
+		const player = { play: vi.fn(), stop: vi.fn(), on: vi.fn() };
+		const diagnostics: Array<Record<string, unknown>> = [];
+		const room = new DiscordVoiceRoom({
+			createVad: async () => ({
+				score: async (_samples, state) => ({ probability: 1, next: state }),
+				close: async () => {},
+			}),
+			deps: {
+				createClient: () => ({
+					user: { id: "voice-bot" },
+					login: vi.fn(async () => {}),
+					isReady: () => true,
+					once: vi.fn(),
+					destroy: vi.fn(async () => {}),
+				}),
+				joinVoice: vi.fn(async () => ({})),
+				subscribeManual: () => vi.fn(() => new PassThrough()),
+				createDecoder: () => new PassThrough(),
+				createPlayer: () => player,
+				createResource: createResource as never,
+				speakingEvents: () => ({ on: () => undefined }),
+				memberDisplayName: vi.fn(async () => "Annie"),
+				voiceChannelHumanCount: vi.fn(async () => 1),
+				userVoiceChannelId: vi.fn(async () => "voice-channel"),
+				onVoiceStateUpdate: () => () => {},
+				sendMessage: vi.fn(async () => {}),
+				leaveVoice: vi.fn(),
+			},
+			token: "token",
+			expectedBotUserId: "voice-bot",
+			guildId: "guild",
+			voiceChannelId: "voice-channel",
+			threadId: "thread",
+			founderUserId: "founder",
+			qaAllowUserIds: [],
+			...(downlink ? { downlink } : {}),
+			onAudio: vi.fn(),
+			onFounderPresence: vi.fn(),
+			onDiagnostic: (record) => diagnostics.push(record),
+			onError: vi.fn(),
+		});
+		return { room, createResource, player, diagnostics };
+	}
+
+	it("keeps the PCM mouth by default so engine A is unchanged", async () => {
+		const test = roomWith();
+		await test.room.start();
+		try {
+			expect(test.room.opusDownlink).toBeUndefined();
+			expect(
+				test.createResource.mock.calls.map(([source]) => source.kind),
+			).toEqual(["raw-stream"]);
+		} finally {
+			await test.room.stop();
+		}
+	});
+
+	it("plays WebRTC Opus directly and cuts it on cancelAllSpeech", async () => {
+		const test = roomWith("opus-passthrough");
+		await test.room.start();
+		try {
+			expect(
+				test.createResource.mock.calls.map(([source]) => source.kind),
+			).toEqual(["opus-stream"]);
+			const downlink = test.room.opusDownlink!;
+			expect(downlink.push(Buffer.from([0xf8, 1, 1]), { voiced: true })).toBe(
+				true,
+			);
+			test.room.cancelAllSpeech();
+			expect(test.diagnostics).toContainEqual({
+				kind: "downlink_flushed",
+				droppedPackets: 1,
+				droppedVoiced: 1,
+			});
+			await expect(
+				test.room.playSpeech("speech-1", Buffer.alloc(960)),
+			).rejects.toThrow("speech_room_opus_passthrough");
+			expect(() => test.room.openSpeech("speech-2")).toThrow(
+				"speech_room_opus_passthrough",
+			);
+		} finally {
+			await test.room.stop();
+		}
+		expect(test.player.stop).toHaveBeenCalled();
+	});
+});

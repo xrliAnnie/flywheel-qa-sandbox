@@ -121,7 +121,7 @@ describe("FLY-967 ② makeCreateResource — raw PCM streams must not hit ffmpeg
 		return {
 			calls,
 			voice: {
-				StreamType: { Raw: "raw-sentinel" },
+				StreamType: { Raw: "raw-sentinel", Opus: "opus-sentinel" },
 				createAudioResource: (...args: unknown[]) => {
 					calls.push(args);
 					return { resource: true };
@@ -148,6 +148,16 @@ describe("FLY-967 ② makeCreateResource — raw PCM streams must not hit ffmpeg
 		expect(calls).toHaveLength(1);
 		expect(calls[0]![0]).toBe(stream);
 		expect(calls[0]![1]).toBeUndefined();
+	});
+
+	it("opus-stream sources are declared StreamType.Opus so WebRTC Opus packets play without a transcode (FLY-2885)", () => {
+		const { voice, calls } = stubVoice();
+		const createResource = makeCreateResource(voice);
+		const stream = { fake: "object-mode opus packets" };
+		createResource({ kind: "opus-stream", stream } as never);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]![0]).toBe(stream);
+		expect(calls[0]![1]).toEqual({ inputType: "opus-sentinel" });
 	});
 
 	it("file sources keep the ffmpeg path (headers are probeable)", () => {

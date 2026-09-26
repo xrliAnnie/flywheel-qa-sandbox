@@ -35,7 +35,10 @@ export type ResourceSource =
 	| { kind: "stream"; stream: Readable }
 	/** FLY-545 PR-2: raw 48k s16le stereo PCM (GeminiTurnMouth) — the real
 	 * wiring MUST tag it StreamType.Raw or discord.js probes/transcodes it. */
-	| { kind: "raw-stream"; stream: Readable };
+	| { kind: "raw-stream"; stream: Readable }
+	/** FLY-2885: object-mode stream of 20 ms Opus packets (WebRTC downlink),
+	 * played as-is — the wiring MUST tag it StreamType.Opus. */
+	| { kind: "opus-stream"; stream: Readable };
 
 export interface LeadSpeakerResult {
 	/** synth wait for text sources; 0 for pre-synthesized file/audio. */
