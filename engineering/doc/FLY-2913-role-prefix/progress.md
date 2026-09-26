@@ -1,14 +1,17 @@
 ---
 issue: FLY-2913
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-26T17:09:26.644Z
-nextStep: Resume 5c6b157e7 WIP under approved 53e1859b; validate C2-C5 and
-  complete C4 transaction, then targeted verification and review.
+phaseCursor: 4/6
+updated: 2026-09-26T17:24:00.735Z
+nextStep: C2/C3/C4 focused checks passed; C5 legacy activation audit fixed;
+  source commit abcd472f1. Bounded 65-file teamlead consumer verification still
+  running (/tmp/fly2913-scoped-verification.py); then record results, freeze
+  full head, request Lead-managed C6 room, effective code review and
+  needs_review.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
-**phase**: implement (1/6)
-**next**: Resume 5c6b157e7 WIP under approved 53e1859b; validate C2-C5 and complete C4 transaction, then targeted verification and review.
+**phase**: implement (4/6)
+**next**: C2/C3/C4 focused checks passed; C5 legacy activation audit fixed; source commit abcd472f1. Bounded 65-file teamlead consumer verification still running (/tmp/fly2913-scoped-verification.py); then record results, freeze full head, request Lead-managed C6 room, effective code review and needs_review.
