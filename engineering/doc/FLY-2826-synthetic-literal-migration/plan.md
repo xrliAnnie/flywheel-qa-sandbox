@@ -5,7 +5,7 @@ Issue: FLY-2826 (https://linear.app/geoforge3d/issue/FLY-2826/qa-fly-2802-qa-san
 基于: research.md
 
 **Version**: n/a（QA 沙箱 fixture，不 bump `doc/VERSION`）
-**Status**: codex-review R2（R1 5 项全采纳：grep 计数按出现次数、HUSKY=0 + hooksPath 守卫、CI fail-closed 双 head 绑定、账本去掉 no-op set-chunk、Task 1 对固定 SHA 比）
+**Status**: codex-review R3（R2 1 项采纳：lock 零删除断言改 numstat；R1 5 项全采纳：grep 计数按出现次数、HUSKY=0 + hooksPath 守卫、CI fail-closed 双 head 绑定、账本去掉 no-op set-chunk、Task 1 对固定 SHA 比）
 
 ## 0. 一句话
 
@@ -73,7 +73,7 @@ HUSKY=0 pnpm install --lockfile-only               # 只更新 lock，不装依�
 git status --short --untracked-files=all           # 必须恰为一行 " M pnpm-lock.yaml"（不得出现 .husky/ 或其它文件）
 git diff --stat -- pnpm-lock.yaml | tail -1        # 必须 "1 file changed, 6 insertions(+)"
 git diff -- pnpm-lock.yaml | grep -c '^+  packages/runner-test-discipline-fixture:'   # 必须 1
-git diff -- pnpm-lock.yaml | grep -c '^-'                                             # 必须 0（纯新增，无解析变化）
+[ "$(git diff --numstat -- pnpm-lock.yaml)" = $'6\t0\tpnpm-lock.yaml' ] && echo LOCK_NUMSTAT_OK   # 必须 LOCK_NUMSTAT_OK（6 增 0 删；不要用 grep -c '^-'，它会把 '--- a/…' 文件头算成删除）
 git add pnpm-lock.yaml
 git commit -m "chore(FLY-2826): add runner-test-discipline-fixture importer to pnpm-lock.yaml
 
@@ -91,7 +91,7 @@ pnpm --filter @flywheel/runner-test-discipline-fixture test      # 期望 "Test 
 node packages/runner-test-discipline-fixture/verify.mjs; echo "exit=$?"   # 期望 passed:false, oldMatches 长度 10, exit=1
 ```
 
-STOP 条件：lock diff 不是 6 行纯新增 importer（说明解析发生变化，不得合入）；`--frozen-lockfile` 仍失败；hooksPath 变了（**不要自己改回**，ask Lead）；status 出现 allowlist 之外的文件；基线不是 34/34。
+STOP 条件：`LOCK_NUMSTAT_OK` 没打印或 lock diff 不是 6 行纯新增 importer（说明解析发生变化，不得合入）；`--frozen-lockfile` 仍失败；hooksPath 变了（**不要自己改回**，ask Lead）；status 出现 allowlist 之外的文件；基线不是 34/34。
 
 ## 6. Task 3 — RED：只改断言 → cursor 3/5
 
