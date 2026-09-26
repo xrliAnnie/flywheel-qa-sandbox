@@ -3,9 +3,10 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 日期: 2026-09-25
 基于: exploration.md、research.md
 
-状态：v4 draft（R3 CHANGES_REQUESTED 后修订；R3 为规则上限轮，交 Lead 裁定）。本文只设计，不含实现。
+状态：v5 — Lead effective APPROVED（问询 947a7585，R4 后裁定；附 3 条实现条件，见 §4.3）。本文只设计，不含实现。
 
 修订记录：
+- v5（R4 + Lead 裁定）：锁只凭可信终态证据释放（abort/超时/5xx/含糊/目标未变一律保持 unknown），对账无「旧请求已完成」证据不清，唯一例外是带审计的人工 force-clear；关开关进入 draining，存量 held/unknown 清零前常驻仍做只检查的锁约束；unknown 行对 Lead 可见。
 - v4（R3）：目标锁 unknown 对双方都阻断写、只凭可信对账解除；补目标锁完整状态转换合同（等待绑定与移除、幂等、holder/fence 匹配、派发标记、崩溃/失联/重启恢复、回滚）；常驻 broker 只为开启语音后台的 Lead 接锁（控制影响面）；迟到交办涉及写时不诱导重做；地板兜底计时取补静音前的原始接收活动。
 - v3（R2）：义务结算不再按段数推断、迟到交办有明确终态；授权合同贯穿 provider / envelope / Bridge scope / runner 路由；常驻优先改为 Bridge 托管的目标锁（语音与 Codex broker 写互斥），Claude 常驻路径如实写为尽力预检；地板以房间本地 VAD 为权威、按语音段身份复位、跨重开保留；确认语改为模型独占；改稿用独立的「无工具 + 订阅」配置档；拒绝按目录 classification 分类。
 - v2（R1 + Lead 指令 ad0b344d）：后台并发改按「单活动回合 + start/steer」真实语义（删 3+1）；语音能力 parent 与常驻 Lead 的共存、授权、回执、撤销写清；C1 启动链改为专用启动档并列出准入改动；常驻优先改为 broker 目标级冲突检查 + 失败交接带操作账本；保真来源排除回答自身；后台事件订阅挂在进程级、不依赖实时腿；地板信号与唯一播报仲裁点；reserved 拒绝按真实错误码、只在确有卡片/回执时才说「已提交」；浏览器三档作为能力装配的可信输入、founder Chrome 走同一门面与回执钩子；权限下限 = 所有 Lead 权限并集；三条建议（议程收尾、改稿隔离、事件时效）纳入。
@@ -47,7 +48,7 @@ flowchart LR
 - **一个线程两个角色**：实时前台没有工具；后台 agent（backing Codex model）有语音能力包。
 - **大脑在传输之上**：后台事件由进程级路由收取，不依赖实时腿是否 active；连接层换 WebRTC 时只换实时腿。
 - **单一真源**：能力 = Lead 能力目录（`catalog.ts`）；founder-only = 目录 `reserved`；关键字段名册 = Bridge roster。
-- **开关即回滚**：`voiceBackground.enabled=false` 时行为与今天完全一致。
+- **开关即回滚**：`voiceBackground.enabled=false` 且无存量锁行时行为与今天完全一致；有存量锁行时先 draining（§4.3）。
 
 ## 3. 交接与并发（R1#1）
 
@@ -109,8 +110,9 @@ type LeadCapabilityAuthority =
   - 常驻优先：常驻 acquire 遇到语音持锁时**排队等待**（不失败），语音 acquire 遇到常驻持锁或常驻排队时**立即拒绝** `resident_lead_active_on_target`。
   - 语音已派发后常驻到来：常驻等语音这次写结束再执行（常驻后写，结果以常驻为准）。
   - 回执 unknown（R3#1）：锁转 `state=unknown`，**对双方都阻断**该目标的写（语音得 `target_pending_reconcile` 并照实说；常驻也得 `target_pending_reconcile`，不放行），直到可信对账解除：
-    1. broker 保留原 provider 调用的 promise，调用方超时后仍等它真正落定（HTTP 响应或连接中止），落定即写终态回执并解锁；
-    2. 持有进程已死或 promise 丢失 → 只能由常驻 Lead 执行 `reconcile`（读目标当前状态、确认旧操作已落地或未落地后显式清锁，记审计行）；常驻拥有对账优先权与对账后的下一次执行权。
+    1. **只凭可信终态证据释放**（R4#1）：该请求的 provider 成功响应；或证明从未发出（没有 `mark_dispatched`，或发送前失败）；或 provider 对该请求的明确拒绝（执行前的 4xx 校验失败）。连接中止、超时、5xx、含糊错误、「目标当前没变」一律**保持 unknown**。broker 保留原 provider 调用，只按上述结果类别处理，不在 finally 里无条件解锁。
+    2. `reconcile`（常驻 Lead 执行）只有在拿到「旧请求已完成」的证据时才清锁（如 provider 历史 / 审计记录里能看到该请求的改动）；「现在看不到改动」不算证据，保持待对账。
+    3. 唯一例外：常驻 Lead 显式 `force-clear`，必须写明「可能被旧请求覆盖」的风险确认，记审计行（谁、何时、哪个目标、原请求 id）；从不自动发生。
     - **不因 TTL 到期放行**已派发的写。
   - **锁状态转换合同**（R3#2），全部在 Bridge 单事务内：
     - `acquire(target, actor, activation, requestId, deadline)`：同 (activation, requestId) 重复调用返回同一授权（幂等）；空闲 → `held`（发新 fence）；被占 → 常驻写入 `waiters` 行（绑定 activation+requestId+deadline，deadline = 该操作现有 15s 期限的剩余部分，等待计入期限），语音直接拒绝。
@@ -119,9 +121,11 @@ type LeadCapabilityAuthority =
     - waiter 移除：调用方取消、超时、失权时 broker 在 finally 里删；Bridge 也清理 deadline 已过的 waiter（它们从未派发，清理安全）。
     - 持有者崩溃 / release 丢失：`held` 且超 deadline → 未 `mark_dispatched` 则释放，已 `mark_dispatched` 则转 `unknown`（走上面的对账）。
     - Bridge 重启：`waiters` 全部清空（调用方收到错误后按原期限重试或失败）；`held`/`unknown` 行保留并按上面规则处理。
-  - **影响面控制**：常驻 Codex broker 只对 `voiceBackground.enabled` 的 Lead 调用锁；其他 Lead 的写路径字节不变。
-  - **回滚**：关 `voiceBackground.enabled` → 该 Lead 的常驻 broker 不再 acquire；存量 `held` 按规则自然释放，`unknown` 行保留待对账并在 Lead 信箱各发一条提醒；表保留（只增不删）。
-  - 验收（窄集成）：「语音超时 → 常驻尝试写 → 旧 provider 晚成功」断言常驻被 `target_pending_reconcile` 挡住直到旧调用落定；排队者取消；acquire 后进程死亡（已/未 mark_dispatched 两支）；release 丢失 / 迟到；Bridge 重启。
+  - **影响面控制**：常驻 Codex broker 只对「`voiceBackground.enabled` 或处于 draining」的 Lead 调用锁；从未启用且无存量锁行的 Lead 写路径字节不变。
+  - **关开关 = draining（即回滚）**（R4#2）：新的语音工作立即停止；该 Lead 仍有 `held`/`unknown` 行时，常驻 broker 继续对命中这些目标的写做**只检查**的锁约束（命中即 `target_pending_reconcile`），直到该 Lead 行数清零才回到原路径。表只增不删。
+  - **unknown 可见**（Lead 条件 1）：每条 `unknown` 行在该 Lead 的现有状态面（bootstrap「受阻」节与 Lead 信箱提醒）显示目标、卡住时长、原因、原请求 id；超过 30 分钟重复提醒一次；`force-clear` 入口带审计与风险声明。
+  - **Lead 条件 3**：实现阶段代码评审专门核「终态证据分类」与「draining 只检查约束」两处。
+  - 验收（窄集成）：「语音超时 → 常驻尝试写 → 旧 provider 晚成功」断言常驻被 `target_pending_reconcile` 挡住直到拿到终态证据；「连接中止但远端随后提交」「对账读到旧值后原请求才提交」均保持 unknown；**「已派发或 unknown → 关开关 → 常驻同目标写 → 旧请求晚完成」必须被挡住（Lead 条件 2，必须进实现）**；排队者取消；acquire 后进程死亡（已/未 mark_dispatched 两支）；release 丢失 / 迟到；Bridge 重启。
   - 回执表增加 `target_key` 列与索引，两边都写，用于对账与纪要。
 - **诚实边界**：Claude 常驻 Lead 的写不经 Codex broker，拿不到这把锁。对 Claude Lead，语音侧只能做「写前查 Bridge 最近动作 + 写后动作日志通知」，**不能保证**不被在途写覆盖；HTML 与口语能力说明如实写。
 - runner 派活另有 Bridge 既有准入（同 issue 活跃 session 冲突），错误码原样分类。
@@ -307,7 +311,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 
 ## 11. 发布与回滚
 
-合并后默认 `enabled=false`；QA 在测试 Lead 开；founder 验收后按 Lead 开。回滚 = 关开关；数据库改动 = `voice_outbound`/`voice_sessions`/回执表加列 + 新表 `capability_target_locks` 与 `capability_target_lock_waiters`（只增不删，回滚处置见 §4.3）。部署由独立 updater 执行，本单不部署、不重启。
+合并后默认 `enabled=false`；QA 在测试 Lead 开；founder 验收后按 Lead 开。回滚 = 关开关（该 Lead 进入 §4.3 draining，存量锁清零前保护不撤）；数据库改动 = `voice_outbound`/`voice_sessions`/回执表加列 + 新表 `capability_target_locks` 与 `capability_target_lock_waiters`（只增不删，回滚处置见 §4.3）。部署由独立 updater 执行，本单不部署、不重启。
 
 ## 12. 依赖与风险
 
