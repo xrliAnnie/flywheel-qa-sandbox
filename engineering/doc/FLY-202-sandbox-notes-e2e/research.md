@@ -1,56 +1,65 @@
-# Research: 仓库事实盘点 — FLY-202（slot-2 E2E 轮）
-
-**Issue**: FLY-202 — https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up
-**Date**: 2026-07-19
-**基于**: `engineering/doc/FLY-202-sandbox-notes-e2e/exploration.md`；对 tip `7049f719` 的实测
+# FLY-202 QA 沙箱 fixture 笔记 — 调研
+Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up)
+日期: 2026-09-26
+基于: exploration.md
 
 ---
 
-## 1. Git / 分支状态
+所有事实均于 2026-09-26 在分支 tip `2ba0c9e`（+ design 节点自己的 progress commit）上实测。
+
+## 1. Git / PR 状态
 
 | 事实 | 值 |
 |---|---|
-| 工作目录 | `/private/tmp/flywheel-test-slot-2/project-slot-2-FLY-202` |
 | origin | `https://github.com/xrliAnnie/flywheel-qa-sandbox.git` |
-| 当前分支 | `project-slot-2-FLY-202`（harness 创建，clean，无 upstream） |
-| tip | `7049f719` `test(FLY-1286): capture failed resident phase E2E (#58)` |
-| PR base | sandbox 仓库 `main` |
+| 分支 | `project-slot-4-FLY-202`，与 `origin/project-slot-4-FLY-202` 同步，工作区 clean |
+| origin/main tip | `1855f7a1a` Merge #162（FLY-2164 清理 FLY-202 design fixture 残留） |
+| 分支领先 main | 8 个 commit（progress ledger + drill marker + notes 刷新 + handoff） |
+| PR #194 | OPEN、非 draft、base=`main`、head=`project-slot-4-FLY-202`、MERGEABLE |
+| PR CI | `Build & Test` SUCCESS；`FLY-1062 payload distribution` SUCCESS |
 
-**结论**：`project-slot-2-FLY-202` 就是本轮的 feature branch——issue step 5 的
-「feature branch」不需要另建分支，直接在其上 commit、`push -u origin`、开 PR 即可。
-这与历史轮次（#29/#30/#57 均由 slot 分支出 PR）一致。
+## 2. 产物逐项核验（`doc/qa/sandbox-notes.md`）
 
-## 2. 目标文件现状
+| issue 步骤 | 核验方法 | 结果 |
+|---|---|---|
+| 1 用途 2-3 段 | 统计 `## Top-level` 之前的非空非标题行 | 3 段 ✅ |
+| 2 顶层目录表 | 表格行 vs `git ls-tree -d --name-only HEAD` vs `find . -mindepth 1 -maxdepth 1 -type d` | 17 = 17 = 17，集合一致 ✅ |
+| 3 README 摘要 | `## packages…summary` 下 `- ` 行数 | 10 条 ✅ |
+| 4 `ls -R doc/` 快照 | 抽出 ```text 块与现场 `ls -R doc/ \| head -50` 做 `diff` | 零差异 ✅ |
+| 5 commit + PR | PR #194 状态 | OPEN、未 merge ✅ |
 
-- `doc/qa/sandbox-notes.md`：**不存在**（#58 移除）→ step 1 为干净新建。
-- `packages/qa-framework/README.md`：存在，316 行 / 16,485 bytes。主要 section：
-  Architecture、Quick Start、5-Step Protocol、Config Schema、Examples、
-  Test Slot Framework（FLY-115，含 Scripts/Pre-requisites/Runner worktree start point）、
-  FLY-60 Hard Gate Enforcement E2E（manual-trigger suite）、Mirror Mode（FLY-153）。
-  内容量足够支撑 ~10 条 bullet 摘要，implement 段须**通读原文**后归纳，不得照抄本清单。
+补充观察：
+- 目录表包含 5 个点目录（`.claude/ .flywheel/ .github/ .lead/ .serena/`）。issue 说
+  「every top-level directory」，点目录也是目录，收录是正确的；已 tracked，不是本地噪音。
+- 顶层还有一个名为 `=` 的杂散**文件**以及若干普通文件（`CLAUDE.md`、`memory.db` 等），
+  均不是目录，正确地未进表。
+- 文件末尾有一行 `- FLY-2456 drill marker r1 B1`，来自继承的 commit `06a6d4b7f`
+  （另一个 drill 的标记）。PR #194 描述明确「retain the inherited FLY-2456 drill marker」。
+  它不破坏任何一项验收（不在 README 摘要节内——它在 ```text 块之后），按分支连续性保留。
 
-## 3. 顶层目录清单（step 2 表格的原料，实测于 tip）
+## 3. README 源文件
 
-12 个目录：`agents`、`doc`、`docs`、`engineering`、`fleet`、`packages`、`patches`、
-`product`、`qa-fly294`、`qa-fly310`、`scripts`、`supabase`。
+`packages/qa-framework/README.md`：316 行，最近修改 `7049f7199`（#58），此后未变。
+主要 section：Architecture / Quick Start / 5-Step Protocol / Config Schema / Examples /
+Test Slot Framework (FLY-115) / FLY-60 Hard Gate E2E / Mirror Mode (FLY-153) /
+Roundtable Mirror (FLY-529) / Alert Mirror (FLY-529) / Contracts。
+现有 10 条 bullet 覆盖了所有这些 section（FLY-529 两节合并在第 9 条）→ 无漂移。
 
-非目录条目（**不进表**）：`CLAUDE.md`、`SETUP.md`、`VISION.md`、`biome.json`、
-`memory.db`、`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`review.json`、
-`tsconfig.base.json`，以及一个名为 **`=`** 的杂散文件。
+## 4. 快照自我干扰分析
 
-⚠️ 陷阱：裸 `ls` 会把 `=` 列在首位；issue 要求的是「every top-level **directory**」。
-implement 段应用 `find . -maxdepth 1 -type d` 或逐项 `[ -d ]` 判定，只收目录。
+`ls -R doc/ | head -50` 的前 50 行覆盖：`doc/` 顶层 9 项、
+`doc/FLY-145-s6-retry-product-test/`（10 文件）、`doc/FLY-202-qa-sandbox-fixture/`（13 文件）、
+`doc/architecture/` 开头。
 
-## 4. `doc/` 形状（step 4 的 `ls -R doc/ | head -50` 语境）
+- **往这些目录新增/删除文件 → 快照过期。** 修改已有文件内容（比如 progress.md）不影响。
+- 旧 ledger `doc/FLY-202-qa-sandbox-fixture/progress.md` 与 `workflow-output.json` 已存在，
+  继续原地改写不会改变列表。
+- 本轮 design 节点把所有新文件（含 HTML、`.mmd`、`.svg`）放在
+  `engineering/doc/FLY-202-sandbox-notes-e2e/`，位于 `doc/` 之外 → 零干扰。
 
-`doc/` 顶层：`VERSION`、`architecture/`、`engineer/`、`plan/`、`qa/`、`reference/`、`retro/`。
-`doc/qa/` 下有 reports/test-plans/framework 等子目录。`ls -R doc/ | head -50` 输出稳定
-可截取；注意 step 1 新建 `doc/qa/sandbox-notes.md` 之后再跑该命令，输出会包含新文件——
-顺序上把 step 4 放在 step 1-3 之后执行即符合 issue 排序，无需特殊处理。
-
-## 5. doc-flow / 三段式配置
+## 5. 配置事实
 
 - `.flywheel/config.yaml`：`doc_flow.enabled: true`、`default_department: engineering`、
-  `pipeline.three_stage: true`。
-- 过程文档落点：`engineering/doc/FLY-202-sandbox-notes-e2e/`（本文件夹）。
-- progress ledger 由 `flywheel-comm progress` 维护（path-limited 只 commit progress.md）。
+  `qa.auto: true`。
+- 可用 comm 命令：`turn`（TURN 自检，本节点得到 `yours phase=design`）、`progress`、
+  `stage`、`await-codex-gate`、`workflow-output`、`publish-report`、`complete`。
