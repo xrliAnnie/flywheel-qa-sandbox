@@ -4,6 +4,7 @@ import {
 	type CompiledRunnerPrefixProfile,
 	compileRunnerPrefixProfile,
 	type FlagStoreRawValue,
+	readLowerSkillOverrides,
 	resolveRunnerPrefixSelection,
 } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
@@ -28,6 +29,8 @@ export function resolveReviewPrefixProfile(input: {
 	reviewType: string;
 	home?: string;
 	claudeConfigDir?: string;
+	/** The reviewed checkout; its project settings are a lower layer too. */
+	cwd?: string;
 }): ReviewPrefixResolution | undefined {
 	const select = (
 		workflow?: Parameters<typeof resolveRunnerPrefixSelection>[0]["workflow"],
@@ -54,13 +57,23 @@ export function resolveReviewPrefixProfile(input: {
 	const selection = select(context.workflow);
 	if (selection.mode === "legacy") return undefined;
 	const home = input.home ?? homedir();
+	const claudeConfigDir =
+		input.claudeConfigDir ??
+		process.env.CLAUDE_CONFIG_DIR ??
+		join(home, ".claude");
 	return {
 		profile: compileRunnerPrefixProfile({
 			request: { selection, context: { ...context, agent: null } },
-			claudeConfigDir:
-				input.claudeConfigDir ??
-				process.env.CLAUDE_CONFIG_DIR ??
-				join(home, ".claude"),
+			claudeConfigDir,
+			lowerSkillOverrides: readLowerSkillOverrides([
+				join(claudeConfigDir, "settings.json"),
+				...(input.cwd
+					? [
+							join(input.cwd, ".claude", "settings.json"),
+							join(input.cwd, ".claude", "settings.local.json"),
+						]
+					: []),
+			]),
 			// Reviewer launches never apply a skill-arm plugin change.
 			skillArm: "superpowers",
 		}),

@@ -141,8 +141,10 @@ await test('pairs differ only in settings and run interleaved for every role', a
 });
 
 await test('probe children never inherit the caller runner identity or credentials', async () => {
-  const env = lib.probeEnv({ HOME: '/h', PATH: '/bin', FLYWHEEL_CALLBACK_PORT: '1', FLYWHEEL_CALLBACK_TOKEN: 't', FLYWHEEL_EXEC_ID: 'e', TEAMLEAD_API_TOKEN: 'x', GITHUB_TOKEN: 'g', FLYWHEEL_MARKER_DIR: '/tmp/flywheel/sessions' });
-  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', FLYWHEEL_MARKER_DIR: '/nonexistent/fly2913-probe-markers' });
+  const env = lib.probeEnv({ HOME: '/h', PATH: '/bin', LANG: 'C.UTF-8', USER: 'u', FLYWHEEL_CALLBACK_PORT: '1', FLYWHEEL_CALLBACK_TOKEN: 't', FLYWHEEL_EXEC_ID: 'e',
+    TEAMLEAD_API_TOKEN: 'x', GITHUB_TOKEN: 'g', FLYWHEEL_MARKER_DIR: '/tmp/flywheel/sessions', GOOGLE_APPLICATION_CREDENTIALS: '/c.json',
+    SSH_AUTH_SOCK: '/s', AWS_PROFILE: 'p', GH_CONFIG_DIR: '/g', KUBECONFIG: '/k', NPM_CONFIG_USERCONFIG: '/n' });
+  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', LANG: 'C.UTF-8', USER: 'u', FLYWHEEL_MARKER_DIR: '/nonexistent/fly2913-probe-markers' });
   const seen = [];
   const config = await import(pathToFileURL(join(root, 'packages/config/dist/index.js')));
   await runPrefixControls({ binary: '/fake/claude', cwd: '/tmp/flywheel-test-slot-9/p', model: 'm', effort: 'high', rounds: 1, roles: ['qa'],

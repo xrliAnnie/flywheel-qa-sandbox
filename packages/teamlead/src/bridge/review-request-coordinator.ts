@@ -218,6 +218,7 @@ export interface ReviewCoordinatorDeps {
 	reviewPrefixProfile?: (input: {
 		executionId: string;
 		reviewType: "design" | "code";
+		cwd: string;
 	}) => ReviewPrefixResolution | undefined;
 	/** Narrow deterministic clock/timer seams. */
 	now?: () => number;
@@ -1592,7 +1593,7 @@ export class ReviewRequestCoordinator {
 		}
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
 		const runRound = (roundResume: boolean, roundSessionUuid: string) => {
-			const prefix = this.resolveReviewPrefix(job);
+			const prefix = this.resolveReviewPrefix(job, cwd);
 			return roundRunner({
 				...(prefix && {
 					prefixProfile: prefix.profile,
@@ -1885,12 +1886,14 @@ export class ReviewRequestCoordinator {
 	/** FLY-2913: per-launch reviewer prefix; any failure keeps the round legacy. */
 	private resolveReviewPrefix(
 		job: CodexReviewJob,
+		cwd: string,
 	): ReviewPrefixResolution | undefined {
 		if (!this.deps.reviewPrefixProfile) return undefined;
 		try {
 			return this.deps.reviewPrefixProfile({
 				executionId: job.execution_id,
 				reviewType: job.review_type,
+				cwd,
 			});
 		} catch (err) {
 			this.log(

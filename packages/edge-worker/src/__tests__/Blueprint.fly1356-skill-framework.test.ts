@@ -41,7 +41,7 @@ import type {
 	AdapterExecutionResult,
 	IAdapter,
 } from "flywheel-core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentDispatcher } from "../AgentDispatcher.js";
 import type {
 	BlueprintContext,
@@ -1304,6 +1304,21 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 });
 
 describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
+	let configDir: string;
+	beforeEach(() => {
+		configDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), "fly2913-claude-config-"),
+		);
+		fs.writeFileSync(
+			path.join(configDir, "settings.json"),
+			JSON.stringify({ skillOverrides: { gws: "off" } }),
+		);
+		vi.stubEnv("CLAUDE_CONFIG_DIR", configDir);
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		fs.rmSync(configDir, { recursive: true, force: true });
+	});
 	const workflow = {
 		runId: "run-2913",
 		snapshotDigest: "a".repeat(64),
@@ -1344,17 +1359,48 @@ describe("FLY-2913 Blueprint — role-v1 prefix compile after the arm", () => {
 		expect(execArgs.prefixProfile).toEqual(
 			compileRunnerPrefixProfile({
 				request: prefix,
-				claudeConfigDir:
-					process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude"),
+				claudeConfigDir: configDir,
 				skillArm: arm,
+				lowerSkillOverrides: { gws: "off" },
 			}),
 		);
+		// A skill the user turned off is never widened to name-only.
+		expect(
+			(execArgs.prefixProfile?.settings as { skillOverrides: object })
+				.skillOverrides,
+		).not.toHaveProperty("gws");
 		expect(
 			(execArgs.prefixProfile?.settings as { skillOverrides: object })
 				.skillOverrides,
 		).not.toHaveProperty("problem-definition");
 		expect(execArgs.disabledPlugins?.[0]).toBe("heavy-a@x");
 		expect(execArgs).not.toHaveProperty("prefix");
+	});
+
+	it("falls back to the legacy launch with a visible reason when compilation fails", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const broken = {
+			...prefix,
+			context: {
+				...prefix.context,
+				workflow: { ...workflow, snapshotDigest: "e".repeat(64) },
+			},
+		};
+		const { execArgs } = await runBlueprint({
+			ctxExtra: {
+				runnerMcpProfile: {
+					disabledPlugins: ["heavy-a@x"],
+					disableChrome: false,
+					prefix: broken,
+				},
+			},
+		});
+		expect(execArgs).toBeDefined();
+		expect(execArgs).not.toHaveProperty("prefixProfile");
+		expect(execArgs.disabledPlugins?.[0]).toBe("heavy-a@x");
+		expect(warn.mock.calls.flat().join("\n")).toMatch(
+			/FLY-2913 prefix legacy reason=compile-error/,
+		);
 	});
 
 	it("leaves the launch byte-compatible without a pinned prefix", async () => {

@@ -58,14 +58,20 @@ export class GitLandContentReviewer {
 		private readonly reviewPrefixProfile?: (input: {
 			executionId: string;
 			reviewType: "code";
+			cwd: string;
 		}) => ReviewPrefixResolution | undefined,
 	) {}
 
 	private resolvePrefix(
 		executionId: string,
+		cwd: string,
 	): ReviewPrefixResolution | undefined {
 		try {
-			return this.reviewPrefixProfile?.({ executionId, reviewType: "code" });
+			return this.reviewPrefixProfile?.({
+				executionId,
+				reviewType: "code",
+				cwd,
+			});
 		} catch (error) {
 			console.warn(
 				`[land-content-review] FLY-2913 prefix profile unavailable for ${executionId} (${error instanceof Error ? error.message : String(error)}); reviewing with the legacy settings`,
@@ -172,7 +178,7 @@ export class GitLandContentReviewer {
 			if ((await git(checkout, ["rev-parse", "HEAD"])) !== headSha) {
 				return result("pending", "content_review_head_moved");
 			}
-			const prefix = this.resolvePrefix(input.executionId);
+			const prefix = this.resolvePrefix(input.executionId, checkout);
 			outcome = await this.reviewRound({
 				...(prefix && {
 					prefixProfile: prefix.profile,

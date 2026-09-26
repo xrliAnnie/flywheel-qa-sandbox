@@ -142,6 +142,7 @@ describe("GitLandContentReviewer", () => {
 			expect(resolver).toHaveBeenCalledWith({
 				executionId: "implement-c",
 				reviewType: "code",
+				cwd: reviewRound.mock.calls[0]![0].cwd,
 			});
 			const invocation = reviewRound.mock.calls[0]![0];
 			if (resolves) {

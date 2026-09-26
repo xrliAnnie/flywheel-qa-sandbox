@@ -19,13 +19,25 @@ export const CONTROL_ROLES = [
  * reach the child, or the user-level SessionEnd hook would report the probe
  * session to the caller's Bridge as a completed runner session.
  */
+// Minimal allowlist: locale/terminal/path basics plus the Claude config dir.
+// Everything else (runner identity, cloud/ssh/git credentials) stays out.
+const PROBE_ENV_ALLOWLIST = new Set([
+	"HOME",
+	"PATH",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TERM",
+	"TMPDIR",
+	"TZ",
+	"CLAUDE_CONFIG_DIR",
+]);
 export function probeEnv(env) {
 	const clean = Object.fromEntries(
-		Object.entries(env).filter(
-			([key]) =>
-				!/^(FLYWHEEL_|TEAMLEAD_|CLAUDE_CODE_SESSION)/.test(key) &&
-				!/TOKEN|SECRET|PASSWORD|API_KEY/i.test(key),
-		),
+		Object.entries(env).filter(([key]) => PROBE_ENV_ALLOWLIST.has(key)),
 	);
 	return {
 		...clean,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 import type {
 	RunnerPrefixRequest,
 	RunnerPrefixRole,
@@ -243,6 +244,8 @@ export type RunnerPrefixStamp = {
 	skillDescriptions?: "kept-unparsed-pinned-skills";
 	/** Skills still listed and invocable, with their description hidden. */
 	hiddenSkillDescriptions: string[];
+	/** Listed skills a lower settings layer already hides further; untouched. */
+	keptLowerRestrictions?: string[];
 	excludedRules: string[];
 	profileDigest: string;
 };
@@ -308,6 +311,41 @@ export function parsePinnedRoleSkills(content: string): string[] | null {
 
 const sorted = (values: Iterable<string>) => [...new Set(values)].sort();
 
+// A lower settings layer that already hides a skill further than name-only.
+const RESTRICTIVE_OVERRIDES = new Set(["off", "user-invocable-only"]);
+
+/**
+ * `skillOverrides` merged from lower settings layers, later files winning
+ * (pass user settings first, then project settings, then project local).
+ * Missing files are skipped; unreadable or malformed files throw so the
+ * caller keeps the legacy launch instead of guessing.
+ */
+export function readLowerSkillOverrides(
+	paths: readonly string[],
+	read: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): Record<string, unknown> {
+	const merged: Record<string, unknown> = {};
+	for (const path of paths) {
+		let text: string;
+		try {
+			text = read(path);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
+			fail(`unreadable settings ${basename(path)}`);
+		}
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			fail(`malformed settings ${basename(path)}`);
+		}
+		const overrides = (parsed as { skillOverrides?: unknown })?.skillOverrides;
+		if (overrides && typeof overrides === "object" && !Array.isArray(overrides))
+			Object.assign(merged, overrides);
+	}
+	return merged;
+}
+
 /**
  * Pure compiler: role-v1 selection + pinned context → one settings source and
  * a secret-free stamp. The pinned role's frontmatter skills are always kept.
@@ -317,8 +355,11 @@ export function compileRunnerPrefixProfile(input: {
 	/** The runner's Claude config dir (`CLAUDE_CONFIG_DIR` or `~/.claude`). */
 	claudeConfigDir: string;
 	skillArm: string;
+	/** Lower-layer skillOverrides; a stricter value there is never widened. */
+	lowerSkillOverrides?: Readonly<Record<string, unknown>>;
 }): CompiledRunnerPrefixProfile {
 	const { request, claudeConfigDir, skillArm } = input;
+	const lower = input.lowerSkillOverrides ?? {};
 	const { selection, context } = request;
 	if (
 		typeof claudeConfigDir !== "string" ||
@@ -348,11 +389,23 @@ export function compileRunnerPrefixProfile(input: {
 		...pinnedSkills,
 		...RUNNER_PREFIX_REQUIRED_SKILLS[selection.role],
 	]);
+	// A per-launch value outranks lower layers key by key, so a skill that a
+	// lower layer already hides further must be left out of this map.
+	const keptLowerRestrictions = sorted(
+		profile.skillsNameOnly.filter((skill) =>
+			RESTRICTIVE_OVERRIDES.has(String(lower[skill])),
+		),
+	);
 	// Unknown pinned obligations: keep every description rather than guess.
 	const skills =
 		parsed === null
 			? []
-			: sorted(profile.skillsNameOnly.filter((skill) => !keep.has(skill)));
+			: sorted(
+					profile.skillsNameOnly.filter(
+						(skill) =>
+							!keep.has(skill) && !keptLowerRestrictions.includes(skill),
+					),
+				);
 	const rules = sorted(profile.rulesExclude);
 	const settings = {
 		skillOverrides: Object.fromEntries(
@@ -376,6 +429,7 @@ export function compileRunnerPrefixProfile(input: {
 				skillArm,
 				skills,
 				rules,
+				keptLowerRestrictions,
 			}),
 		)
 		.digest("hex");
@@ -396,6 +450,7 @@ export function compileRunnerPrefixProfile(input: {
 				skillDescriptions: "kept-unparsed-pinned-skills" as const,
 			}),
 			hiddenSkillDescriptions: skills,
+			...(keptLowerRestrictions.length > 0 && { keptLowerRestrictions }),
 			excludedRules: rules,
 			profileDigest,
 		},

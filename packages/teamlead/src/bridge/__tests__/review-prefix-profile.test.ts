@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileRunnerPrefixProfile } from "flywheel-config";
@@ -146,6 +146,39 @@ describe("reviewer prefix resolution (FLY-2913)", () => {
 				home,
 			}),
 		).toBeUndefined();
+	});
+
+	it("keeps user and reviewed-project skills that are hidden further", () => {
+		const { store } = harness();
+		const configDir = mkdtempSync(join(tmpdir(), "fly2913-review-config-"));
+		const checkout = mkdtempSync(join(tmpdir(), "fly2913-review-cwd-"));
+		roots.push(configDir, checkout);
+		writeFileSync(
+			join(configDir, "settings.json"),
+			JSON.stringify({ skillOverrides: { gws: "off" } }),
+		);
+		mkdirSync(join(checkout, ".claude"));
+		writeFileSync(
+			join(checkout, ".claude", "settings.json"),
+			JSON.stringify({ skillOverrides: { notion: "user-invocable-only" } }),
+		);
+		const resolved = resolveReviewPrefixProfile({
+			store,
+			profile: roleV1,
+			executionId: "exec-author",
+			reviewType: "code",
+			home,
+			claudeConfigDir: configDir,
+			cwd: checkout,
+		});
+		expect(resolved?.profile.settings.skillOverrides).not.toHaveProperty("gws");
+		expect(resolved?.profile.settings.skillOverrides).not.toHaveProperty(
+			"notion",
+		);
+		expect(resolved?.profile.stamp.keptLowerRestrictions).toEqual([
+			"gws",
+			"notion",
+		]);
 	});
 
 	it("rejects an execution id that could escape the runner-state root", () => {

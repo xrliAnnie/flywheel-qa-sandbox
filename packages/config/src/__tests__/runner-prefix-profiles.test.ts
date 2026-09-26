@@ -7,6 +7,7 @@ import {
 	parsePinnedRoleSkills,
 	RUNNER_PREFIX_PROFILES_V1,
 	RUNNER_PREFIX_REQUIRED_SKILLS,
+	readLowerSkillOverrides,
 } from "../runner-prefix-profiles.js";
 
 const ROLES = [
@@ -227,6 +228,70 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			"stamp",
 		]);
 		expect(compiled.profileDigest).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it("never widens a lower-layer off or user-invocable-only skill to name-only", () => {
+		const p = RUNNER_PREFIX_PROFILES_V1.implement;
+		expect(p.skillsNameOnly).toEqual(
+			expect.arrayContaining(["gws", "notion", "docs"]),
+		);
+		const compiled = compileRunnerPrefixProfile({
+			request: request("implement"),
+			claudeConfigDir,
+			skillArm: "superpowers",
+			lowerSkillOverrides: {
+				gws: "off",
+				notion: "user-invocable-only",
+				docs: "on",
+				"not-in-list": "off",
+			},
+		});
+		expect(compiled.settings.skillOverrides).not.toHaveProperty("gws");
+		expect(compiled.settings.skillOverrides).not.toHaveProperty("notion");
+		expect(compiled.settings.skillOverrides.docs).toBe("name-only");
+		expect(compiled.stamp.keptLowerRestrictions).toEqual(["gws", "notion"]);
+		expect(compiled.profileDigest).not.toBe(
+			compileRunnerPrefixProfile({
+				request: request("implement"),
+				claudeConfigDir,
+				skillArm: "superpowers",
+			}).profileDigest,
+		);
+	});
+
+	it("reads lower-layer skillOverrides from settings files in precedence order", () => {
+		const files: Record<string, string> = {
+			"/u/settings.json": JSON.stringify({
+				skillOverrides: { gws: "off", docs: "off" },
+				model: "x",
+			}),
+			"/p/.claude/settings.local.json": JSON.stringify({
+				skillOverrides: { docs: "on" },
+			}),
+		};
+		const read = (path: string) => {
+			if (!(path in files))
+				throw Object.assign(new Error("missing"), { code: "ENOENT" });
+			return files[path]!;
+		};
+		expect(
+			readLowerSkillOverrides(
+				[
+					"/u/settings.json",
+					"/p/.claude/settings.json",
+					"/p/.claude/settings.local.json",
+				],
+				read,
+			),
+		).toEqual({ gws: "off", docs: "on" });
+		expect(() =>
+			readLowerSkillOverrides(["/bad.json"], () => "{not json"),
+		).toThrow(/runner_prefix_profile/);
+		expect(() =>
+			readLowerSkillOverrides(["/denied.json"], () => {
+				throw Object.assign(new Error("denied"), { code: "EACCES" });
+			}),
+		).toThrow(/runner_prefix_profile/);
 	});
 
 	it("always keeps the pinned role's frontmatter skills (union)", () => {

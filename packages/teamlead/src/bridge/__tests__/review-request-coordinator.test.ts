@@ -3068,7 +3068,11 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 	});
 
 	it("FLY-2913 re-resolves the design-review prefix for the fresh fallback session", async () => {
-		const calls: Array<{ executionId: string; reviewType: string }> = [];
+		const calls: Array<{
+			executionId: string;
+			reviewType: string;
+			cwd: string;
+		}> = [];
 		const h = await makeHarness({
 			reviewPrefixProfile: (input) => {
 				calls.push(input);
@@ -3132,8 +3136,8 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		});
 		await settle();
 		expect(calls).toEqual([
-			{ executionId: "e1", reviewType: "design" },
-			{ executionId: "e1", reviewType: "design" },
+			{ executionId: "e1", reviewType: "design", cwd: "/fake/worktree" },
+			{ executionId: "e1", reviewType: "design", cwd: "/fake/worktree" },
 		]);
 		expect(h.invocations.map((i) => [i.resume, i.prefixDigest])).toEqual([
 			[true, "1".repeat(64)],
@@ -5760,7 +5764,11 @@ describe("FLY-2913 — reviewer role-v1 prefix per launch", () => {
 	});
 
 	it("resolves the profile from the persisted job on every round, including the resumed reround", async () => {
-		const calls: Array<{ executionId: string; reviewType: string }> = [];
+		const calls: Array<{
+			executionId: string;
+			reviewType: string;
+			cwd: string;
+		}> = [];
 		const digests = ["1".repeat(64), "2".repeat(64)];
 		const h = await makeHarness({
 			reviewPrefixProfile: (input) => {
@@ -5800,8 +5808,8 @@ describe("FLY-2913 — reviewer role-v1 prefix per launch", () => {
 		});
 		await settle();
 		expect(calls).toEqual([
-			{ executionId: "e1", reviewType: "code" },
-			{ executionId: "e1", reviewType: "code" },
+			{ executionId: "e1", reviewType: "code", cwd: "/fake/worktree" },
+			{ executionId: "e1", reviewType: "code", cwd: "/fake/worktree" },
 		]);
 		expect(h.invocations.map((i) => [i.resume, i.prefixDigest])).toEqual([
 			[false, digests[0]],

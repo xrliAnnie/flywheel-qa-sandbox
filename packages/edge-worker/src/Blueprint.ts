@@ -49,6 +49,7 @@ import {
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
 	PonytailLabelConflictError,
+	readLowerSkillOverrides,
 	resolvePonytailRequested,
 	resolveRunnerMemorySelection,
 	resolveSkillFrameworkMode,
@@ -1384,15 +1385,36 @@ export class Blueprint {
 				: [];
 		// FLY-2913: compile the pinned role-v1 prefix once the arm is final and
 		// before any worktree side effect. Claude-only; absent ⇒ legacy launch.
-		const prefixProfile =
-			backend === "claude-tmux" && ctx.runnerMcpProfile?.prefix
-				? compileRunnerPrefixProfile({
-						request: ctx.runnerMcpProfile.prefix,
-						claudeConfigDir:
-							process.env.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude"),
-						skillArm: skillFrameworkMode,
-					})
-				: undefined;
+		// Legacy is the only fallback: a compile failure never blocks the launch.
+		let prefixProfile:
+			| ReturnType<typeof compileRunnerPrefixProfile>
+			| undefined;
+		if (backend === "claude-tmux" && ctx.runnerMcpProfile?.prefix) {
+			try {
+				const claudeConfigDir =
+					process.env.CLAUDE_CONFIG_DIR ?? path.join(homedir(), ".claude");
+				prefixProfile = compileRunnerPrefixProfile({
+					request: ctx.runnerMcpProfile.prefix,
+					claudeConfigDir,
+					skillArm: skillFrameworkMode,
+					// User, then project, then project-local layers (worktrees share
+					// the project's checked-in settings).
+					lowerSkillOverrides: readLowerSkillOverrides([
+						path.join(claudeConfigDir, "settings.json"),
+						path.join(projectRoot, ".claude", "settings.json"),
+						path.join(projectRoot, ".claude", "settings.local.json"),
+					]),
+				});
+			} catch (error) {
+				console.warn(
+					`[Blueprint] FLY-2913 prefix legacy reason=compile-error:${String(
+						(error as Error)?.message ?? error,
+					)
+						.replace(/[^A-Za-z0-9_:.-]+/g, "-")
+						.slice(0, 120)} exec=${env.executionId}`,
+				);
+			}
+		}
 		const startTime = Date.now();
 		const executionId = env.executionId;
 		let cwd = projectRoot;

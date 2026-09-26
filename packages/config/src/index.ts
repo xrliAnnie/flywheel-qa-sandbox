@@ -496,6 +496,7 @@ export {
 	parsePinnedRoleSkills,
 	RUNNER_PREFIX_PROFILES_V1,
 	RUNNER_PREFIX_REQUIRED_SKILLS,
+	readLowerSkillOverrides,
 } from "./runner-prefix-profiles.js";
 export {
 	appendRunnerTestPolicyHookSettings,

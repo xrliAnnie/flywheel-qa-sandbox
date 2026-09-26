@@ -153,3 +153,12 @@ Blueprint 在 skill arm 解析后、worktree 副作用前编译（仅 claude-tmu
 据此：技能改为 name-only（仅非插件），删除子代理 deny 与插件技能条目；stamp 改为 `hiddenSkillDescriptions` / `excludedRules`（不再宣称“移除”）；无法解析 pinned 技能时保留全部描述（`skillDescriptions: kept-unparsed-pinned-skills`）。驱动以首轮真实 usage 为主测量、诊断为辅，逐项核验改为“目标技能仍在且变小、规则消失、必需与未列项不变”。这比原计划更保守（不删任何技能），属于基于实测证据的机制修正，已向 Lead 报告。
 
 房内开关：受管 `feature-flags set` 对房 Bridge 返回 401（CLI 不带 bearer）；带房 api-token 走同一 stage 路由返回 404。未继续深挖、未直写 DB；探针测量不依赖房内开关。已请 Lead 用其管理通道设置或确认无需。
+
+## 2026-09-26 — Codex 代码评审 Round 1（PR #1361）处置
+
+三项 MEDIUM 全部修复：
+- **下层 skillOverrides 被放宽**：slot 4 原始数据证明 CLI 对 skillOverrides 按键合并（用户级 10 个 off 技能在 15 组 role-v1 中都未重现），但若用户/项目层把清单中的某技能设为 `off` / `user-invocable-only`，per-launch 的 name-only 会把它放宽成可见。新增 `readLowerSkillOverrides`（用户 → 项目 → 项目本地，缺失跳过，不可读/畸形抛错→legacy），编译器对下层更严格的技能不写入 map，stamp 记 `keptLowerRestrictions`。runner 读 `<Claude 配置目录>/settings.json` 与项目 `.claude/settings(.local).json`；评审读用户层与被审 checkout 的项目层（依赖签名增加 `cwd`）。
+- **Blueprint 编译异常越过回退边界**：编译（含下层 settings 读取）包进 try/catch，失败以 legacy 启动并记 `[Blueprint] FLY-2913 prefix legacy reason=compile-error:*`；新增“编译失败仍调用 adapter 且不带 profile”测试。
+- **探针子进程环境黑名单漏凭据入口**：改为最小白名单（HOME/PATH/USER/LOGNAME/SHELL/LANG/LC_ALL/LC_CTYPE/TERM/TMPDIR/TZ/CLAUDE_CONFIG_DIR + 固定不存在的 marker 目录）；测试覆盖 GOOGLE_APPLICATION_CREDENTIALS/SSH_AUTH_SOCK/AWS_PROFILE/GH_CONFIG_DIR/KUBECONFIG 等。白名单下真实首轮调用仍能鉴权（scratch cwd，44,345 tokens）。
+
+验证：config 52、Blueprint 71、teamlead（review-prefix/coordinator/land/claude-review-runner/dispatcher-prefix）213、驱动 10、探针 31；config/edge-worker/teamlead tsc 通过；相关包构建通过。

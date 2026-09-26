@@ -8517,6 +8517,7 @@ export async function startBridge(
 	const reviewPrefixProfile = (input: {
 		executionId: string;
 		reviewType: "design" | "code";
+		cwd: string;
 	}) =>
 		resolveReviewPrefixProfile({
 			store,
