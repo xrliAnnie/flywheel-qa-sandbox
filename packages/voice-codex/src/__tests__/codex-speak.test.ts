@@ -47,6 +47,7 @@ function harness(options: { live?: boolean } = {}) {
 	const sent: string[] = [];
 	const evidence: Record<string, unknown>[] = [];
 	const overrun = vi.fn();
+	const abandoned = vi.fn();
 	const speaker = new CodexProofSpeaker({
 		sessionId: "session-a",
 		voice: "cove",
@@ -71,6 +72,7 @@ function harness(options: { live?: boolean } = {}) {
 		interference: () => state.interference,
 		trims: () => state.trims,
 		overrun,
+		abandoned,
 		evidence: (record) => evidence.push(record),
 	});
 	const flush = () => vi.advanceTimersByTimeAsync(0);
@@ -84,7 +86,7 @@ function harness(options: { live?: boolean } = {}) {
 			speaker.assistantTranscript({ text: transcript, final: true });
 		await flush();
 	};
-	return { speaker, state, sent, evidence, overrun, flush, answer };
+	return { speaker, state, sent, evidence, overrun, abandoned, flush, answer };
 }
 
 describe("Codex v3 read-aloud receipts (FLY-2885 T5b)", () => {
@@ -1193,5 +1195,79 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		await h.answer("t2", "第二项还在进行。");
 		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
 		expect(h.overrun).toHaveBeenCalledOnce();
+	});
+
+	it("tells the model to drop the rest of a Lead-reply chunk she barged into (QA@2)", async () => {
+		const h = harness();
+		const result = h.speaker.readReply("第一句。第二句。", {
+			pendingKey: "barge-note",
+			chunkCharacters: 4,
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 2;
+		h.speaker.interrupt();
+		await expect(result).resolves.toMatchObject({ unreadChunks: 2 });
+		expect(h.abandoned).toHaveBeenCalledOnce();
+		expect(h.abandoned).toHaveBeenCalledWith("第一句。");
+	});
+
+	it("tells the model to drop a chunk she preempted after it was sent (QA@2)", async () => {
+		const h = harness();
+		const result = h.speaker.readReply("你好。", {
+			pendingKey: "preempt-note",
+		});
+		await h.flush();
+		h.speaker.userEvidence();
+		await expect(result).resolves.toMatchObject({
+			receipt: { reason: "speech_preempted" },
+		});
+		expect(h.abandoned).toHaveBeenCalledWith("你好。");
+	});
+
+	it.each([
+		[
+			"a chunk still waiting for a pause",
+			async (h: ReturnType<typeof harness>) => {
+				h.state.busy = "speaker_active";
+				h.state.active = true;
+				const result = h.speaker.readReply("你好。", { pendingKey: "wait" });
+				await vi.advanceTimersByTimeAsync(1_000);
+				h.state.live = false;
+				await vi.advanceTimersByTimeAsync(60);
+				return result;
+			},
+		],
+		[
+			"a chunk cut by a new generation",
+			async (h: ReturnType<typeof harness>) => {
+				const result = h.speaker.readReply("你好。", { pendingKey: "gen" });
+				await h.flush();
+				h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+				h.speaker.interrupt("generation_changed");
+				return result;
+			},
+		],
+	])(
+		"sends no note for %s: nothing of it is in the model's context",
+		async (_name, run) => {
+			const h = harness();
+			await run(h);
+			expect(h.abandoned).not.toHaveBeenCalled();
+		},
+	);
+
+	it("sends no note for a cue she barged into", async () => {
+		const h = harness();
+		const cue = h.speaker.speak("我确认一下。", "cue", {
+			pendingKey: "cue-cut",
+			verification: "required",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 2;
+		h.speaker.interrupt();
+		await cue;
+		expect(h.abandoned).not.toHaveBeenCalled();
 	});
 });

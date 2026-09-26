@@ -76,6 +76,17 @@ export const READBACK_REMAINDER_STATUS = "📻 剩下的内容在频道里";
 /** The spoken notice gets this long to find a pause of its own. */
 const READBACK_NOTICE_CEILING_MS = 30_000;
 
+/**
+ * QA@2: v3 appendSpeech is speakable context, and after her barge-in the
+ * model's next answer tends to finish it first (probe 8: 2/9 without a note).
+ * This context note — never spoken, naming the text — stopped it (0/8). It
+ * goes in as developer text (v3 `session.context.append`, accepted in every
+ * probe-8 run).
+ */
+export function readbackAbandonedNote(text: string): string {
+	return `（系统提示，不要读出）用户刚刚打断了你正在朗读的 Lead 回复，原文是：「${text}」。从你被打断的地方起，这段原文一个字都不要再说——不要把没说完的词或句子补完，不要接着念，也不要复述或总结；剩下的内容用户会在频道里看到。现在只回应用户刚刚说的话。`;
+}
+
 interface CodexTransportLike {
 	appendAudio(
 		frame: Buffer,
@@ -246,6 +257,7 @@ class CodexVoiceSession implements ConversationSession {
 			busyReason: () => this.readAloudBusyReason(),
 			roomActive: () => this.roomActive(),
 			recovering: () => this.live && this.restarting && !this.closing,
+			abandoned: (text) => this.noteAbandonedReadback(text),
 			consumedVoiced: () => options.downlink?.()?.stats().consumedVoiced ?? 0,
 			queuedVoiced: () => options.downlink?.()?.queued().voiced ?? 0,
 			interference: () => this.downlink.interference,
@@ -371,6 +383,26 @@ class CodexVoiceSession implements ConversationSession {
 		if (notice?.receipt.outcome !== "completed")
 			this.status(READBACK_REMAINDER_STATUS);
 		return receipt;
+	}
+
+	/** QA@2: tell the model not to finish a Lead-reply chunk she cut into. */
+	private noteAbandonedReadback(text: string): void {
+		if (this.closing || this.restarting || !this.live) return;
+		const generation = this.generation;
+		this.options.onEvidence?.({
+			kind: "codex_readback_abandoned_note",
+			generation,
+			chars: Array.from(text).length,
+		});
+		void this.options.conversation.transport
+			.appendText(readbackAbandonedNote(text), "developer", generation)
+			.catch((error) =>
+				this.options.onEvidence?.({
+					kind: "codex_readback_abandoned_note_failed",
+					generation,
+					reason: error instanceof Error ? error.message : "unknown_error",
+				}),
+			);
 	}
 
 	private receiptEvidence(kind: VoiceSpeakKind, receipt: SpeakReceipt): void {

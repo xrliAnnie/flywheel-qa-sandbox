@@ -89,6 +89,12 @@ export interface CodexSpeakerHost {
 	 */
 	recovering?(): boolean;
 	/**
+	 * QA@2: a Lead-reply chunk that was sent (so it sits in the model's
+	 * context as speakable text) was cut by her barge-in or preempt. The model
+	 * must be told not to finish it in its next answer.
+	 */
+	abandoned?(text: string): void;
+	/**
 	 * T5c: mute the overrunning turn (session-level discard state). The turn id
 	 * is known when the chunk was already bound, else its turn.created follows.
 	 */
@@ -662,6 +668,13 @@ export class CodexProofSpeaker {
 			allProof = false;
 			const reason = result.reason ?? "speech_failed";
 			firstFailure ??= reason;
+			// She cut in: what the model was given to read stays in its context,
+			// and its next answer would finish it first (QA@2, probe 8).
+			if (
+				!result.notSent &&
+				(reason === "speech_interrupted" || reason === "speech_preempted")
+			)
+				this.host.abandoned?.(text);
 			if (reason === "speech_overrun" && result.prefix) {
 				const { remainder, spokenSentences, totalSentences } = result.prefix;
 				this.host.evidence({

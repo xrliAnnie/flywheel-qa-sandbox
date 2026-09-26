@@ -13,6 +13,7 @@ import {
 	CodexVoiceBackend,
 	READBACK_REMAINDER_NOTICE,
 	READBACK_REMAINDER_STATUS,
+	readbackAbandonedNote,
 } from "../codex/CodexVoiceBackend.js";
 import { GenericVoiceSession, type RoomHandlers } from "../session.js";
 import { prepareReplySpeech } from "../speech.js";
@@ -76,6 +77,7 @@ async function harness(
 	const room = roomPlayer();
 	const appendAudio = vi.fn(() => "sent" as const);
 	const appendSpeech = vi.fn(async () => undefined);
+	const appendText = vi.fn(async () => undefined);
 	let generation = 1;
 	const conversation = {
 		get generation() {
@@ -84,7 +86,7 @@ async function harness(
 		transport: {
 			appendAudio,
 			appendSpeech,
-			appendText: vi.fn(async () => undefined),
+			appendText,
 			cancel: vi.fn(async () => undefined),
 		},
 		reconnect: vi.fn((reason: string) =>
@@ -218,6 +220,7 @@ async function harness(
 		persisted,
 		appendAudio,
 		appendSpeech,
+		appendText,
 		conversation,
 		handoffToLead,
 		step,
@@ -842,5 +845,85 @@ describe("engine B says when a Lead reply could not be read to the end (FLY-2885
 			reason: "speech_interrupted",
 		});
 		expect(h.statuses).toContain(READBACK_REMAINDER_STATUS);
+	});
+
+	it("tells the model, the moment she barges in, not to finish the Lead reply it was reading (QA@2)", async () => {
+		const h = await harness();
+		const receipt = readReply(
+			h.session,
+			"我把三个风险点列一下。第一个是测试房负载太高。",
+			{
+				pendingKey: "barge-note",
+				verification: "required",
+			},
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		expect(h.appendText).not.toHaveBeenCalled();
+		h.session.interrupt();
+		await vi.advanceTimersByTimeAsync(0);
+		// Before she has even finished speaking, and never spoken aloud.
+		expect(h.appendText).toHaveBeenCalledOnce();
+		expect(h.appendText).toHaveBeenCalledWith(
+			readbackAbandonedNote("我把三个风险点列一下。第一个是测试房负载太高。"),
+			"developer",
+			1,
+		);
+		expect(h.appendSpeech).toHaveBeenCalledTimes(1);
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({ kind: "codex_readback_abandoned_note" }),
+		);
+		h.turn("turn.done", "r1", "assistant", "我把三个风险点列一下。");
+		h.final("我把三个风险点列一下。");
+		for (let i = 0; i < 8 && h.appendSpeech.mock.calls.length < 2; i += 1)
+			await h.step("ssssssssssssssssssssssssssssssssssssssssssssssssss");
+		expect(h.appendSpeech).toHaveBeenLastCalledWith(
+			READBACK_REMAINDER_NOTICE,
+			1,
+		);
+		h.turn("turn.created", "notice", "assistant");
+		await h.step("vvvvv");
+		h.turn("turn.done", "notice", "assistant", READBACK_REMAINDER_NOTICE);
+		h.final(READBACK_REMAINDER_NOTICE);
+		await expect(receipt).resolves.toMatchObject({
+			reason: "speech_interrupted",
+		});
+	});
+
+	it("records a note the provider refused, and still stops and says where the rest is", async () => {
+		const h = await harness();
+		h.appendText.mockRejectedValueOnce(new Error("rpc rejected"));
+		const receipt = readReply(h.session, "第一句。第二句。", {
+			pendingKey: "note-refused",
+			verification: "required",
+			chunkCharacters: 4,
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		h.session.interrupt();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_readback_abandoned_note_failed",
+				reason: "rpc rejected",
+			}),
+		);
+		h.turn("turn.done", "r1", "assistant", "第一");
+		h.final("第一");
+		for (let i = 0; i < 8 && h.appendSpeech.mock.calls.length < 2; i += 1)
+			await h.step("ssssssssssssssssssssssssssssssssssssssssssssssssss");
+		expect(h.appendSpeech).toHaveBeenLastCalledWith(
+			READBACK_REMAINDER_NOTICE,
+			1,
+		);
+		h.turn("turn.created", "notice", "assistant");
+		await h.step("vvvvv");
+		h.turn("turn.done", "notice", "assistant", READBACK_REMAINDER_NOTICE);
+		h.final(READBACK_REMAINDER_NOTICE);
+		await expect(receipt).resolves.toMatchObject({
+			reason: "speech_interrupted",
+		});
 	});
 });
