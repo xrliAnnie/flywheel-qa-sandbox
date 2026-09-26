@@ -3933,6 +3933,42 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
 	});
 
+	it("FLY-2925: adoptLiveExecution reconnects to the live daemon on the SAME thread — no spawn/reap, no commit, no re-kick", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		const snapshot = readCodexLaunchSnapshot(execId);
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			return complete();
+		});
+
+		const result = await makeAdapter().adoptLiveExecution(
+			ctx({ prompt: "must not reconstruct this kick", model: "drifted-model" }),
+		);
+
+		expect(result.success).toBe(true);
+		const input = runtime.runGoalInputs[0]!;
+		expect(input.adoptLiveDaemon).toBe(true);
+		expect(input.adoptExistingGoal).toBe(true);
+		expect(input.resumeThreadId).toBe(THREAD_ID);
+		expect(input.reapOrphanPid).toBeUndefined();
+		expect(input.onRecoveryOwnershipEstablished).toBeUndefined();
+		expect(input.objective).toBe(snapshot.objective);
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+	});
+
+	it("FLY-2925: a dead-daemon recovery resume never re-kicks the thread's own goal", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			return complete();
+		});
+		await makeAdapter().resumeExistingExecution(ctx(), {
+			onRecoveryOwnershipEstablished: vi.fn(async () => undefined),
+		});
+		expect(runtime.runGoalInputs[0]?.adoptExistingGoal).toBe(true);
+		expect(runtime.runGoalInputs[0]?.adoptLiveDaemon).toBeUndefined();
+	});
+
 	it("FLY-2170: recovery preserves an already-sanitized live window name byte-for-byte", async () => {
 		await makeAdapter().execute(ctx({ prompt: "original recovery kick" }));
 		ensureWindowCalls = [];

@@ -1433,3 +1433,103 @@ describe("FLY-2925 resident restart gate + resident wait forwarding", () => {
 		}
 	});
 });
+
+describe("FLY-2925 live-daemon adoption", () => {
+	it("adopts instead of spawning, attaches to the exact thread, and runs the goal loop in adopt mode", async () => {
+		const adopted: string[] = [];
+		const seen: Array<Record<string, unknown>> = [];
+		const h = makeHarness({
+			runGoalScript: [],
+			adoptDaemon: async (o) => {
+				adopted.push(o.executionId);
+				return fakeHandle(() => {});
+			},
+			runGoalFn: (async (_c: unknown, input: Record<string, unknown>) => {
+				seen.push(input);
+				return COMPLETE;
+			}) as unknown as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const out = await new CodexDaemonGoalRuntime(h.opts).runGoal({
+			objective: "x",
+			resumeThreadId: "t-live",
+			adoptLiveDaemon: true,
+			reapOrphanPid: 999,
+		});
+		expect(adopted).toEqual(["exec-1"]);
+		expect(h.spawns).toEqual([]);
+		// Strict attach to the exact thread (identity-checked), never a new thread.
+		expect(h.clients[0]?.observedResumes).toEqual(["t-live"]);
+		expect(h.clients[0]?.started).toEqual([]);
+		expect(seen[0]?.adoptExisting).toBe(true);
+		expect(out.threadId).toBe("t-live");
+	});
+
+	it("a failed adopting connection gives up ownership WITHOUT signalling the live body", async () => {
+		let stopped = 0;
+		let detached = 0;
+		const h = makeHarness({
+			runGoalScript: [],
+			adoptDaemon: async () => {
+				const handle = fakeHandle(() => {
+					stopped += 1;
+				});
+				(handle as { detach?: () => void }).detach = () => {
+					detached += 1;
+				};
+				return handle;
+			},
+			connectTransport: async () => {
+				throw Object.assign(new Error("refused"), { code: "ECONNREFUSED" });
+			},
+		});
+		await expect(
+			new CodexDaemonGoalRuntime(h.opts).runGoal({
+				objective: "x",
+				resumeThreadId: "t-live",
+				adoptLiveDaemon: true,
+			}),
+		).rejects.toThrow("refused");
+		expect(detached).toBe(1);
+		expect(stopped).toBe(0);
+		expect(h.spawns).toEqual([]);
+	});
+
+	it("an adopted daemon that later dies restarts on a fresh daemon for the SAME thread, still in adopt mode", async () => {
+		const seen: Array<Record<string, unknown>> = [];
+		const h = makeHarness({
+			runGoalScript: [],
+			adoptDaemon: async () => fakeHandle(() => {}),
+			runGoalFn: (async (_c: unknown, input: Record<string, unknown>) => {
+				seen.push(input);
+				if (seen.length === 1) {
+					throw new GoalRunError("adopted daemon died", "transport_closed");
+				}
+				return COMPLETE;
+			}) as unknown as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const out = await new CodexDaemonGoalRuntime(h.opts).runGoal({
+			objective: "x",
+			resumeThreadId: "t-live",
+			adoptLiveDaemon: true,
+			mayRestartAfterTransportDeath: () => true,
+		});
+		expect(out.restarts).toBe(1);
+		expect(h.spawns).toEqual(["/home/a"]);
+		expect(seen.map((i) => i.threadId)).toEqual(["t-live", "t-live"]);
+		expect(seen.every((i) => i.adoptExisting === true)).toBe(true);
+	});
+
+	it("refuses adoption without the original thread id", async () => {
+		const h = makeHarness({
+			runGoalScript: [],
+			adoptDaemon: async () => fakeHandle(() => {}),
+		});
+		await expect(
+			new CodexDaemonGoalRuntime(h.opts).runGoal({
+				objective: "x",
+				adoptLiveDaemon: true,
+			}),
+		).rejects.toThrow("original thread id");
+		expect(h.spawns).toEqual([]);
+	});
+});

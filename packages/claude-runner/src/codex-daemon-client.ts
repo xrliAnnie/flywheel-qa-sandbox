@@ -976,6 +976,13 @@ export async function runGoalToTerminal(
 		/** FLY-2925: durable upstream retry episode writer (throw → no retry). */
 		writeUpstreamRetryEpisode?: (episode: UpstreamRetryEpisode | null) => void;
 		/**
+		 * FLY-2925: the thread already carries this run's goal (an adopted live
+		 * daemon, a same-thread restart or a recovery resume). An existing OWN
+		 * goal is observed — never re-activated or re-kicked; a foreign goal
+		 * fails closed. Only a thread with no goal gets its first activation.
+		 */
+		adoptExisting?: boolean;
+		/**
 		 * FLY-2925: durable resident-wait latch. A restart that finds it set
 		 * re-parks the adopted goal instead of resuming it; only a wake clears it.
 		 * Read/write failures fail closed.
@@ -1936,6 +1943,8 @@ export async function runGoalToTerminal(
 			// terminal only once the goal is confirmed set — every branch below
 			// arms `goalArmed` at exactly that point.
 			let skipInitialActivation = false;
+			// FLY-2925: the preflight goal, retained for adopt-mode settlement.
+			let adoptedGoal: GoalNotification["goal"] | null = null;
 			if (held) {
 				// FLY-1269: a durable phase hold survived the restart. Re-assert the
 				// paused goal and stay resident — no kick, the phase is parked.
@@ -1995,6 +2004,7 @@ export async function runGoalToTerminal(
 						"setup_failed",
 					);
 				}
+				adoptedGoal = existingGoal;
 				const existingIsOurs =
 					existingGoal !== null && objectiveIsOurs(existingGoal);
 				// FLY-2925: a restart (or an adoption) never resumes a resident body
@@ -2094,6 +2104,38 @@ export async function runGoalToTerminal(
 
 			// Nothing to adopt: arm a fresh goal and kick it. `activateGoal` fires
 			// the FLY-245 launch-commit handler at the confirmed-set point.
+			if (!skipInitialActivation && input.adoptExisting && adoptedGoal) {
+				// FLY-2925: an adopted/resumed thread's own goal is authoritative.
+				// Observe it; never goal/set(active) or kick it again.
+				if (!objectiveIsOurs(adoptedGoal)) {
+					throw new GoalRunError(
+						`adopted thread ${input.threadId} carries a goal that is not this run's`,
+						"setup_failed",
+					);
+				}
+				goalArmed = true;
+				const status = adoptedGoal.status;
+				if (status === "active") {
+					await establishRecoveryOwnership({
+						kind: "goal_resumed",
+						threadId: input.threadId,
+						goalStatus: "active",
+					});
+				} else if (status && status !== "paused" && isTerminalGoalStatus(status)) {
+					terminalSeen = status;
+					await establishRecoveryOwnership({
+						kind: "terminal_goal_confirmed",
+						threadId: input.threadId,
+						goalStatus: status,
+					});
+				} else {
+					throw new GoalRunError(
+						`adopted goal on ${input.threadId} has unexpected status ${status ?? "missing"}`,
+						"setup_failed",
+					);
+				}
+				skipInitialActivation = true;
+			}
 			if (!skipInitialActivation) {
 				await activateGoal();
 				await startInitialTurn();

@@ -505,6 +505,228 @@ export async function reapCodexDaemonForExecution(
 			};
 }
 
+export interface AdoptCodexDaemonOptions extends CodexDaemonOwnershipDeps {
+	executionId: string;
+	/** Must equal the execution's resolved daemon socket path. */
+	socketPath: string;
+	acquireLock?: AcquireDaemonLockFn;
+	removeStaleSocket?: (p: string) => void;
+	/** Exit-watch poll interval for the adopted group (default 500ms). */
+	exitPollMs?: number;
+}
+
+/** FLY-2925: raised when a live daemon cannot be proven adoptable. */
+export class CodexDaemonAdoptionError extends Error {
+	constructor(
+		readonly reason:
+			| "not_alive"
+			| "identity_unproven"
+			| "socket_mismatch"
+			| "owner_alive",
+		message: string,
+	) {
+		super(message);
+		this.name = "CodexDaemonAdoptionError";
+	}
+}
+
+/**
+ * FLY-2925 §6.1: take control of an execution's STILL-RUNNING detached daemon
+ * without spawning, unlinking its socket or reaping it — the Bridge-restart
+ * reconnect path. Ownership proof is the same evidence FLY-2903 uses for a
+ * destructive reap (a live socket holder inside the persisted process group);
+ * exclusivity is the daemon's single-owner lock, reclaimable only when its
+ * prior holder is proven dead (a live holder → `owner_alive`, never stolen).
+ * The returned handle signals only the proven group and reports exit once the
+ * group AND the socket are gone.
+ */
+export async function adoptCodexDaemon(
+	opts: AdoptCodexDaemonOptions,
+): Promise<DaemonHandle> {
+	assertSocketPathFitsSunLen(opts.socketPath);
+	const env = opts.env ?? process.env;
+	if (resolveDaemonSocketPath(opts.executionId, env) !== opts.socketPath) {
+		throw new CodexDaemonAdoptionError(
+			"socket_mismatch",
+			`daemon socket ${opts.socketPath} is not execution ${opts.executionId}'s socket`,
+		);
+	}
+	const prove = async (): Promise<number> => {
+		const inspected = await inspectCodexDaemonOwnership(opts.executionId, opts);
+		if (inspected.liveness === "absent") {
+			throw new CodexDaemonAdoptionError(
+				"not_alive",
+				`no live daemon for ${opts.executionId}`,
+			);
+		}
+		if (inspected.liveness !== "alive" || inspected.pgid === undefined) {
+			throw new CodexDaemonAdoptionError(
+				"identity_unproven",
+				`daemon ownership for ${opts.executionId} is unproven (${inspected.ledger}/${inspected.groupState})`,
+			);
+		}
+		return inspected.pgid;
+	};
+	const pgid = await prove();
+	let lock: DaemonLock;
+	try {
+		lock = (opts.acquireLock ?? defaultAcquireDaemonLock)(
+			`${opts.socketPath}.lock`,
+		);
+	} catch (error) {
+		throw new CodexDaemonAdoptionError(
+			"owner_alive",
+			`daemon lock for ${opts.executionId} is held by a live owner: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	try {
+		// The lock closes the race window: re-prove the same group after owning it.
+		if ((await prove()) !== pgid) {
+			throw new CodexDaemonAdoptionError(
+				"identity_unproven",
+				`daemon group for ${opts.executionId} changed during adoption`,
+			);
+		}
+	} catch (error) {
+		lock.release();
+		throw error;
+	}
+	const log = opts.logger ?? (() => {});
+	const processGroupOf = opts.processGroupOf ?? defaultProcessGroupOf;
+	const killGroup =
+		opts.killGroup ??
+		createDefaultKillGroup({
+			processGroupOf,
+			logger: opts.logger,
+			env,
+			execId: opts.executionId,
+			reason: "adopted_daemon_teardown",
+			boundary: {
+				socketPath: opts.socketPath,
+				ledgerPath: join(
+					codexSessionStateDir(opts.executionId, env),
+					"session.json",
+				),
+			},
+		});
+	const now = opts.now ?? Date.now;
+	const sleep =
+		opts.sleep ??
+		((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	const waitMs = opts.exitWaitMs ?? codexDaemonExitWaitMs(env);
+	const isAbsent = async (): Promise<boolean> =>
+		(await inspectCodexDaemonOwnership(opts.executionId, opts)).liveness ===
+		"absent";
+
+	let exited = false;
+	const exitListeners: Array<
+		(code: number | null, signal: NodeJS.Signals | null) => void
+	> = [];
+	let poller: ReturnType<typeof setInterval> | undefined;
+	const markExited = (): void => {
+		if (exited) return;
+		exited = true;
+		if (poller) clearInterval(poller);
+		poller = undefined;
+		for (const listener of exitListeners.splice(0)) {
+			try {
+				listener(null, null);
+			} catch {
+				/* exit observers must not throw into the poller */
+			}
+		}
+	};
+	let polling = false;
+	poller = setInterval(() => {
+		if (polling || exited) return;
+		polling = true;
+		void isAbsent()
+			.then((absent) => {
+				if (absent) markExited();
+			})
+			.catch(() => {})
+			.finally(() => {
+				polling = false;
+			});
+	}, opts.exitPollMs ?? 500);
+	(poller as { unref?: () => void }).unref?.();
+
+	const child: DaemonChild = {
+		pid: pgid,
+		kill: (signal) => {
+			try {
+				killGroup(
+					pgid,
+					(typeof signal === "string" ? signal : "SIGTERM") as NodeJS.Signals,
+				);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		once: ((event: string, cb: (...args: never[]) => void) => {
+			if (event !== "exit") return;
+			if (exited) {
+				(cb as (code: number | null, signal: NodeJS.Signals | null) => void)(
+					null,
+					null,
+				);
+				return;
+			}
+			exitListeners.push(
+				cb as (code: number | null, signal: NodeJS.Signals | null) => void,
+			);
+		}) as DaemonChild["once"],
+		get exitCode() {
+			return exited ? 0 : null;
+		},
+		signalCode: null,
+	};
+	let released = false;
+	const releaseOwnership = (): void => {
+		if (released) return;
+		released = true;
+		try {
+			(opts.removeStaleSocket ?? defaultRemoveStaleSocket)(opts.socketPath);
+		} catch {
+			/* the socket probe already proved nothing listens */
+		}
+		lock.release();
+	};
+	const waitForAbsent = async (): Promise<boolean> => {
+		const deadline = now() + waitMs;
+		for (;;) {
+			if (await isAbsent()) return true;
+			if (now() >= deadline) return false;
+			await sleep(Math.min(100, Math.max(1, deadline - now())));
+		}
+	};
+	log(`adopted live codex daemon exec=${opts.executionId} pgid=${pgid}`);
+	return {
+		child,
+		socketPath: opts.socketPath,
+		stop: (signal) => {
+			child.kill(signal ?? "SIGTERM");
+		},
+		ensureDead: async () => {
+			if (!(await waitForAbsent())) {
+				child.kill("SIGKILL");
+				if (!(await waitForAbsent())) return false;
+			}
+			markExited();
+			releaseOwnership();
+			return true;
+		},
+		detach: () => {
+			if (poller) clearInterval(poller);
+			poller = undefined;
+			if (released) return;
+			released = true;
+			lock.release();
+		},
+	};
+}
+
 /** Fail closed if a socket path cannot bind (SUN_LEN) — a clear error beats a
  * cryptic EINVAL from the daemon at listen time. */
 export function assertSocketPathFitsSunLen(socketPath: string): void {
@@ -782,6 +1004,13 @@ export interface DaemonHandle {
 	 * precisely what hid this leak (it fooled the first cut of the QA harness too).
 	 */
 	ensureDead(): Promise<boolean>;
+	/**
+	 * FLY-2925: an ADOPTED daemon's owner may give up control without
+	 * signalling the body (e.g. the adopting connection failed). Releases the
+	 * single-owner lock and stops watching; the daemon keeps running.
+	 * Spawned daemons omit this.
+	 */
+	detach?(): void;
 }
 
 /**

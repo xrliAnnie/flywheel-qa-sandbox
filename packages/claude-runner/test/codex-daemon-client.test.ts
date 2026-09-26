@@ -3528,3 +3528,74 @@ describe("runGoalToTerminal — FLY-2925 resident wait survives restart", () => 
 		expect(order).toEqual(["set:active", "latch:true", "set:paused"]);
 	});
 });
+
+describe("runGoalToTerminal — FLY-2925 adopt existing goal (no re-activation, no kick)", () => {
+	function adoptDaemon(goal: unknown) {
+		const d = new FakeDaemon();
+		let current = goal;
+		d.responders.set("thread/goal/get", () => ({ goal: current }));
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", () => ({ turn: { id: "kick" } }));
+		return {
+			d,
+			setGoal: (g: unknown) => {
+				current = g;
+			},
+		};
+	}
+
+	it("observes an adopted active own goal until its native terminal — zero goal/set, zero turn/start", async () => {
+		const { d, setGoal } = adoptDaemon({ status: "active", objective: "OURS" });
+		const receipts: string[] = [];
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {
+				setGoal({ status: "complete", objective: "OURS" });
+			},
+			pollIntervalMs: 1,
+			adoptExisting: true,
+			onRecoveryOwnershipEstablished: (r) => {
+				receipts.push(r.kind);
+			},
+		});
+		expect(result.status).toBe("complete");
+		expect(d.sentMethods()).not.toContain("thread/goal/set");
+		expect(d.sentMethods()).not.toContain("turn/start");
+		expect(receipts).toEqual(["goal_resumed"]);
+	});
+
+	it("fails closed on a foreign goal instead of overwriting it", async () => {
+		const { d } = adoptDaemon({ status: "active", objective: "SOMEONE ELSE" });
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				adoptExisting: true,
+			}),
+		).rejects.toMatchObject({ kind: "setup_failed" });
+		expect(d.sentMethods()).not.toContain("thread/goal/set");
+		expect(d.sentMethods()).not.toContain("turn/start");
+	});
+
+	it("a thread that never had a goal still gets its first activation", async () => {
+		const { d, setGoal } = adoptDaemon(null);
+		d.responders.set("turn/start", () => {
+			setGoal({ status: "complete", objective: "OURS" });
+			return { turn: { id: "kick" } };
+		});
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+			adoptExisting: true,
+		});
+		expect(result.status).toBe("complete");
+		expect(d.sentMethods()).toContain("turn/start");
+	});
+});

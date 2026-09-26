@@ -268,6 +268,11 @@ export type CodexRecoveryOptions =
 interface CodexSnapshotExecution {
 	snapshot: CodexLaunchSnapshot;
 	recoveryHooks?: CodexRecoveryCommitHooks;
+	/**
+	 * FLY-2925 §6.1: the execution's daemon is still alive — reconnect to it
+	 * (no spawn, no reap, no recovery commit, no goal re-activation or kick).
+	 */
+	adoptLiveDaemon?: true;
 	founderWindow: CodexRecoveryOptions["founderWindow"];
 	windowName?: string;
 }
@@ -1003,6 +1008,36 @@ export class CodexTmuxAdapter implements IAdapter {
 		});
 	}
 
+	/**
+	 * FLY-2925 §6.1: Bridge-restart reconnect. The execution's detached daemon
+	 * survived the Bridge; take control of it and keep driving the SAME thread
+	 * and goal. Nothing is spawned or re-kicked and no recovery budget is
+	 * charged; the engine binding, thread id and daemon identity are unchanged.
+	 * A daemon that cannot be proven adoptable fails before any input is sent.
+	 */
+	async adoptLiveExecution(
+		ctx: AdapterExecutionContext,
+		options?: CodexRecoveryOptions,
+	): Promise<AdapterExecutionResult> {
+		let snapshot: CodexLaunchSnapshot;
+		try {
+			snapshot = readCodexLaunchSnapshot(ctx.executionId);
+		} catch (error) {
+			return this.ownershipFailureResult(
+				ctx,
+				normalizeCodexRecoveryFailure(error, { stage: "context" }),
+			);
+		}
+		return this.runWithOwnership(ctx, "rescue", {
+			snapshot,
+			adoptLiveDaemon: true,
+			founderWindow: options?.founderWindow ?? "open",
+			...(options?.founderWindow === "open" && options.windowName
+				? { windowName: options.windowName }
+				: {}),
+		});
+	}
+
 	private async runWithOwnership(
 		ctx: AdapterExecutionContext,
 		kind: CodexExecutionOwnerKind,
@@ -1599,7 +1634,14 @@ export class CodexTmuxAdapter implements IAdapter {
 				const mismatchFields = (
 					Object.keys(checks) as Array<keyof typeof checks>
 				).filter((key) => checks[key]);
-				if (mismatchFields.length) {
+				if (mismatchFields.length && snapshotExecution.adoptLiveDaemon) {
+					// FLY-2925: the launch-context comparison guards a RE-launch. An
+					// adopted daemon is the original launch, still running — nothing is
+					// re-launched, so drift in today's recovery context is diagnostic.
+					this.log(
+						`[CodexTmuxAdapter] adopting live daemon exec=${ctx.executionId} despite recovery-context drift: ${mismatchFields.join(",")}`,
+					);
+				} else if (mismatchFields.length) {
 					throw new CodexRecoveryError(
 						createCodexRecoveryFailure({
 							code: "launch_snapshot_mismatch",
@@ -2234,7 +2276,14 @@ export class CodexTmuxAdapter implements IAdapter {
 			) {
 				throw new Error("Codex resume session identity mismatch");
 			}
-			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
+			const adoptLiveDaemon = snapshotExecution?.adoptLiveDaemon === true;
+			if (adoptLiveDaemon && (!resumeThreadId || !resumeThreadId.trim())) {
+				throw new Error("Codex live-daemon adoption requires the persisted thread id");
+			}
+			// FLY-2925: an adopted body is never reaped as an "orphan".
+			const reapOrphanPid = adoptLiveDaemon
+				? undefined
+				: this.readPersistedDaemonPid(ctx.executionId);
 			const turnDbPath = ctx.commDbPath;
 			const turnLifecycle = turnDbPath
 				? {
@@ -2314,6 +2363,10 @@ export class CodexTmuxAdapter implements IAdapter {
 					writeGateHoldLatch: (held) =>
 						this.mergeSessionState(ctx.executionId, { gateHold: held }),
 					...(resumeThreadId ? { resumeThreadId } : {}),
+					...(adoptLiveDaemon ? { adoptLiveDaemon: true } : {}),
+					// FLY-2925: recovering an existing execution never re-activates or
+					// re-kicks the thread's own goal.
+					...(snapshotExecution ? { adoptExistingGoal: true } : {}),
 					...(ctx.processLifecycle?.mode === "resume"
 						? {
 								strictResumeIdentity: true,
