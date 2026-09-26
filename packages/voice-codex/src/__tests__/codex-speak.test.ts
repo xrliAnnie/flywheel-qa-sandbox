@@ -37,6 +37,7 @@ function harness(options: { live?: boolean } = {}) {
 		interference: 0,
 		trims: 0,
 		generation: 9,
+		failAppend: false,
 	};
 	const sent: string[] = [];
 	const evidence: Record<string, unknown>[] = [];
@@ -49,6 +50,10 @@ function harness(options: { live?: boolean } = {}) {
 		transport: () => ({
 			appendSpeech: async (text: string) => {
 				sent.push(text);
+				if (state.failAppend) {
+					state.failAppend = false;
+					throw new Error("rpc rejected");
+				}
 			},
 		}),
 		isLive: () => options.live ?? true,
@@ -453,12 +458,14 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 		expect(h.speaker.truncateAssistantFinal(overrunText)).toBe(
 			`${spoken(readback.expected)}${SPEECH_TRUNCATED_NOTE}`,
 		);
+		await vi.advanceTimersByTimeAsync(500);
 		expect(h.evidence).toContainEqual(
 			expect.objectContaining({
 				kind: "codex_speech_overrun",
 				pendingKey: "late-final",
 				turnId: "t1",
 				late: true,
+				stopLatencyMs: expect.any(Number),
 			}),
 		);
 		await vi.advanceTimersByTimeAsync(100);
@@ -541,6 +548,90 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 		await h.answer("n1", "好的。");
 		await expect(next).resolves.toMatchObject({ outcome: "completed" });
 		expect(h.overrun).not.toHaveBeenCalled();
+	});
+
+	it("never takes the founder's answer for a read-aloud she preempted (review R3 H1)", async () => {
+		const h = harness();
+		const result = h.speaker.speak(readback.expected, "readback", {
+			pendingKey: "preempt",
+		});
+		await h.flush();
+		h.speaker.userEvidence();
+		await expect(result).resolves.toMatchObject({
+			reason: "speech_preempted",
+		});
+		const answer = "这是对新问题的完整回答，内容与刚才那句朗读完全不同。";
+		h.speaker.assistantTranscript({ text: answer, final: true });
+		expect(h.overrun).not.toHaveBeenCalled();
+		expect(h.speaker.truncateAssistantFinal(answer)).toBe(answer);
+	});
+
+	it("keeps an interrupted unbound chunk's watch through its own late turn.created (review R3 H2)", async () => {
+		const h = harness();
+		const overrunText = readback.transcripts.find((row) => row.overrun)!.text;
+		const result = h.speaker.speak(readback.expected, "readback", {
+			pendingKey: "unbound-cut",
+		});
+		await h.flush();
+		// Audio before its turn.created, then a local barge-in.
+		h.state.consumed += 5;
+		h.speaker.interrupt();
+		await expect(result).resolves.toMatchObject({
+			reason: "speech_interrupted",
+		});
+		h.speaker.turnCreated({ turnId: "own", role: "assistant" });
+		h.speaker.turnDone({ turnId: "own", role: "assistant", transcript: null });
+		h.speaker.assistantTranscript({ text: overrunText, final: true });
+		expect(h.overrun).toHaveBeenCalledWith("own");
+		expect(h.speaker.truncateAssistantFinal(overrunText)).toBe(
+			`${spoken(readback.expected)}${SPEECH_TRUNCATED_NOTE}`,
+		);
+	});
+
+	it("never lets a silent attempt's late final stand in for its retry's own (review R3 H3)", async () => {
+		const h = harness();
+		const overrunText = readback.transcripts.find((row) => row.overrun)!.text;
+		const result = h.speaker.speak(readback.expected, "readback", {
+			pendingKey: "silent-then-final",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "s1", role: "assistant" });
+		h.speaker.turnDone({ turnId: "s1", role: "assistant", transcript: null });
+		await vi.advanceTimersByTimeAsync(SILENT_SETTLE_MS);
+		expect(h.sent).toHaveLength(2);
+		// The silent attempt's faithful final lands after the retry was sent.
+		h.speaker.assistantTranscript({
+			text: spoken(readback.expected),
+			final: true,
+		});
+		h.speaker.turnCreated({ turnId: "s2", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.turnDone({ turnId: "s2", role: "assistant", transcript: null });
+		await h.flush();
+		// The retry's own final is the overrun.
+		h.speaker.assistantTranscript({ text: overrunText, final: true });
+		await expect(result).resolves.toMatchObject({ reason: "speech_overrun" });
+		expect(h.overrun).toHaveBeenCalledWith("s2");
+		expect(h.speaker.truncateAssistantFinal(overrunText)).toBe(
+			`${spoken(readback.expected)}${SPEECH_TRUNCATED_NOTE}`,
+		);
+	});
+
+	it("does not fence the next reading behind a chunk whose transport was rejected (review R3 M1)", async () => {
+		const h = harness();
+		h.state.failAppend = true;
+		const first = h.speaker.speak("你好", "readback", { pendingKey: "rpc" });
+		await h.flush();
+		await expect(first).resolves.toMatchObject({
+			reason: "speech_transport_failed",
+		});
+		const second = h.speaker.speak("好的。", "readback", {
+			pendingKey: "after-rpc",
+		});
+		await h.flush();
+		expect(h.sent).toEqual(["你好", "好的。"]);
+		await h.answer("t2", "好的。");
+		await expect(second).resolves.toMatchObject({ outcome: "completed" });
 	});
 
 	it("retries a confirmed-silent chunk once and binds the retry only to a new turn", async () => {
