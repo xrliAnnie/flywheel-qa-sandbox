@@ -1,0 +1,192 @@
+{
+ "capturedAt": "2026-09-26",
+ "head": "5c061c862f8f1af88149c2107703ede01c7245a1",
+ "method": "git grep -lF per changed source file: full path, import spelling (<stem>.js/.mjs), parent directory; engineering/doc excluded",
+ "counts": [
+  {
+   "file": "packages/config/src/runner-prefix-profile.ts",
+   "fullPathMatches": 0,
+   "importSpellingMatches": 7,
+   "testImporters": 2,
+   "parentDirMatches": 81
+  },
+  {
+   "file": "packages/config/src/runner-prefix-profiles.ts",
+   "fullPathMatches": 0,
+   "importSpellingMatches": 2,
+   "testImporters": 1,
+   "parentDirMatches": 81
+  },
+  {
+   "file": "packages/config/src/feature-flags/registry.ts",
+   "fullPathMatches": 17,
+   "importSpellingMatches": 173,
+   "testImporters": 91,
+   "parentDirMatches": 27
+  },
+  {
+   "file": "packages/config/src/feature-flags/store-policy.ts",
+   "fullPathMatches": 1,
+   "importSpellingMatches": 8,
+   "testImporters": 5,
+   "parentDirMatches": 27
+  },
+  {
+   "file": "packages/config/src/index.ts",
+   "fullPathMatches": 8,
+   "importSpellingMatches": 293,
+   "testImporters": 104,
+   "parentDirMatches": 81
+  },
+  {
+   "file": "packages/core/src/adapter-types.ts",
+   "fullPathMatches": 16,
+   "importSpellingMatches": 6,
+   "testImporters": 1,
+   "parentDirMatches": 64
+  },
+  {
+   "file": "packages/edge-worker/src/Blueprint.ts",
+   "fullPathMatches": 82,
+   "importSpellingMatches": 50,
+   "testImporters": 39,
+   "parentDirMatches": 140
+  },
+  {
+   "file": "packages/claude-runner/src/TmuxAdapter.ts",
+   "fullPathMatches": 36,
+   "importSpellingMatches": 22,
+   "testImporters": 11,
+   "parentDirMatches": 76
+  },
+  {
+   "file": "packages/teamlead/src/bridge/run-dispatcher.ts",
+   "fullPathMatches": 16,
+   "importSpellingMatches": 12,
+   "testImporters": 10,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "packages/teamlead/src/bridge/run-infra.ts",
+   "fullPathMatches": 26,
+   "importSpellingMatches": 12,
+   "testImporters": 10,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "packages/teamlead/src/bridge/flag-store-runtime.ts",
+   "fullPathMatches": 7,
+   "importSpellingMatches": 36,
+   "testImporters": 19,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "packages/teamlead/src/bridge/review-prefix-profile.ts",
+   "fullPathMatches": 0,
+   "importSpellingMatches": 4,
+   "testImporters": 1,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "packages/teamlead/src/bridge/review-request-coordinator.ts",
+   "fullPathMatches": 3,
+   "importSpellingMatches": 5,
+   "testImporters": 2,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "packages/teamlead/src/bridge/claude-review-runner.ts",
+   "fullPathMatches": 2,
+   "importSpellingMatches": 8,
+   "testImporters": 3,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "packages/teamlead/src/bridge/land-content-review.ts",
+   "fullPathMatches": 0,
+   "importSpellingMatches": 3,
+   "testImporters": 1,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "packages/teamlead/src/bridge/plugin.ts",
+   "fullPathMatches": 89,
+   "importSpellingMatches": 112,
+   "testImporters": 89,
+   "parentDirMatches": 263
+  },
+  {
+   "file": "scripts/lib/qa-2913-context-probe.mjs",
+   "fullPathMatches": 1,
+   "importSpellingMatches": 2,
+   "testImporters": 1,
+   "parentDirMatches": 340
+  },
+  {
+   "file": "scripts/lib/qa-2913-prefix-controls.mjs",
+   "fullPathMatches": 1,
+   "importSpellingMatches": 2,
+   "testImporters": 1,
+   "parentDirMatches": 340
+  },
+  {
+   "file": "scripts/qa-2913-prefix-controls.mjs",
+   "fullPathMatches": 2,
+   "importSpellingMatches": 2,
+   "testImporters": 1,
+   "parentDirMatches": 1209
+  }
+ ],
+ "ran": {
+  "config": [
+   "vitest related runner-prefix-profile.ts feature-flags/registry.ts feature-flags/store-policy.ts: 22 files / 411 tests (pre-merge)",
+   "runner-prefix-profile + runner-prefix-profiles + feature-flags-{registry,drift,store-policy} + runner-test-policy-hook: 138 tests (post-merge)",
+   "drift-scan: 27"
+  ],
+  "claude-runner": [
+   "TmuxAdapter.test.ts 192/192 (post-merge rerun; first post-merge run had 2 load-induced timing failures that passed on isolated and full reruns)",
+   "Antigravity/Codex/Kimi/Kimi.registry/defaultExecFile: 5 files / 202"
+  ],
+  "edge-worker": [
+   "all 27 Blueprint*/blueprint-* suites: 342 (pre-merge)",
+   "ExecutionEventEmitter, e2e-core-loop, resolveBridgeUrl: 36"
+  ],
+  "teamlead": [
+   "run-dispatcher-prefix, review-prefix-profile, flag-store-runtime, claude-review-runner: 91 (post-merge)",
+   "review-request-coordinator, land-content-review + 21 other direct importers of run-dispatcher/run-infra/flag-store-runtime/Blueprint: 23 files / 519 (post-merge)",
+   "workflow-prefix-context: 20"
+  ],
+  "scripts": [
+   "qa-2913-context-probe 29, qa-2913-prefix-controls 6, ci-shell-suite-enumeration, ci-structure"
+  ]
+ },
+ "excluded": [
+  {
+   "match": "packages/claude-runner/test/{prompt-overflow,runner-env-isolation,scaffold-prune,tmux-slot-routing}.real-tmux.test.ts",
+   "reason": "launch a real tmux server; the change is an additive argv/settings branch in buildClaudeArgs that is byte-identical without prefixProfile and covered by TmuxAdapter unit argv tests"
+  },
+  {
+   "match": "packages/claude-runner/test/tmux-3.7c-exact.gate.ts",
+   "reason": "not a vitest suite (manual tmux version gate)"
+  },
+  {
+   "match": "packages/teamlead/src/__tests__/{event-route,start-e2e}.test.ts",
+   "reason": "hub suites importing flag-store-runtime for unrelated wrappers; the only change there is one new exported wrapper"
+  },
+  {
+   "match": "89 test importers of packages/teamlead/src/bridge/plugin.ts",
+   "reason": "plugin.ts hub (vitest related expands to ~whole package); the change is wiring only, proven by the drift readSite code-evidence test with a delete-the-read negative control, teamlead tsc and 12 dependent typechecks"
+  },
+  {
+   "match": "remaining importers of config index.ts / feature-flags/registry.ts in other packages",
+   "reason": "consume unchanged exports; additive exports verified by 12 dependent typechecks"
+  },
+  {
+   "match": "parent-directory matches",
+   "reason": "generic directory-name references (e.g. packages/teamlead/src/bridge/), not consumers of the changed modules"
+  }
+ ],
+ "lint": "pnpm lint exit 0 (25 pre-existing warnings)",
+ "typecheck": "pnpm --filter ...flywheel-config typecheck: 12/12 packages Done (post-merge)",
+ "build": "pnpm --filter flywheel-teamlead... build exit 0 (post-merge)"
+}

@@ -118,3 +118,12 @@ Blueprint 在 skill arm 解析后、worktree 副作用前编译（仅 claude-tmu
 
 - **同 session 恢复复用原 stamp** 未实现：恢复启动按 pinned 快照 + 代码内清单 + 当时 store 值重新编译；若期间开关改为 legacy，恢复的会话得到 legacy（与“开关对新启动生效”一致，但不是计划所写的复用原 stamp）。
 - 控制是否真正移出前缀（插件/同步技能的 `skillOverrides`、`Agent(name)` deny 是否删描述、`--settings` 下的 `claudeMdExcludes`）尚未在 529 证实；`role-capabilities.md` 的节省数字仅为预估。
+- stamp 清理：runner-state 目录目前没有任何既有剪枝（mailbox 哨兵同样常驻），本单未新增清理机制；stamp 约 1KB/次启动，与哨兵同生命周期。
+- 设计要求的配置/来源漂移诊断：v1 清单是代码常量、pinned 快照不可变，编译确定性由测试保证；不存在运行期“可变 cache”漂移面，因此没有单独的漂移检测器。
+
+## 2026-09-26 — 同步 main 与合并后验证
+
+合入 origin/main（74d0fc0c1，7 个提交）。冲突 3 处均来自 af729d662 的 runner 测试策略 hook：TmuxAdapter 与 claude-review-runner 按“prefix 为第一个 settings 源 → 原有合并 → 测试策略 hook 追加 PreToolUse”组合；config index 两组导出并存。lockfile 无变化，未重装依赖。
+
+合并后：TmuxAdapter 192/192（首轮在负载 ~150 下 2 项进程退役/review-wait 时序失败，单测与整文件重跑均通过，判定负载抖动）；teamlead 相关 91 + 直接消费者 23 文件 519；config 138 + drift-scan 27；claude-runner 其他适配器 5 文件 202；edge-worker 3 文件 36；`pnpm lint` exit 0（25 既有 warning）；`...flywheel-config` 12 包 typecheck 通过；`flywheel-teamlead...` build 通过。检索与排除理由见 `evidence/session3-consumer-sweep.json`。
+
