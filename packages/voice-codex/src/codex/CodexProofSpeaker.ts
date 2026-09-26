@@ -16,6 +16,12 @@ const DEFAULT_ADMISSION_TIMEOUT_MS = 10_000;
 const DEFAULT_ADMISSION_POLL_MS = 50;
 /** A done with nothing played is re-checked this much later (T5c ④). */
 const DEFAULT_SILENCE_CONFIRM_MS = 600;
+/**
+ * T5c ①: the data-channel turn.done comes before the app-server final
+ * (probe-run2: ~12 ms). The final is the overrun input, so a done waits this
+ * long for it before settling on the done transcript alone.
+ */
+const DEFAULT_FINAL_WAIT_MS = 2_000;
 /** How long after an overrun the stop latency is measured. */
 const OVERRUN_STOP_WINDOW_MS = 500;
 /** A truncation marker waits this long for its late final (T5c ③). */
@@ -60,6 +66,7 @@ export interface CodexSpeakerHost {
 	admissionTimeoutMs?: number;
 	admissionPollMs?: number;
 	silenceConfirmMs?: number;
+	finalWaitMs?: number;
 }
 
 interface ChunkResult {
@@ -87,6 +94,9 @@ interface PendingChunk {
 	done: boolean;
 	doneTranscript?: string;
 	finalText?: string;
+	/** The wait for the app-server final after done has run out. */
+	finalWaited: boolean;
+	finalWaitArmed?: boolean;
 	accumulated: string;
 	silenceCheck?: boolean;
 	timers: Array<ReturnType<typeof setTimeout>>;
@@ -258,7 +268,12 @@ export class CodexProofSpeaker {
 		else pending.accumulated += input.text;
 		const observed = input.final ? input.text : pending.accumulated;
 		const alignment = speechAlignment(pending.expected, observed);
-		if (alignment.overrun) this.overrun(pending, observed, alignment);
+		if (alignment.overrun) {
+			this.overrun(pending, observed, alignment);
+			return;
+		}
+		// A done that was waiting for this final can settle now.
+		if (input.final) this.evaluate(pending);
 	}
 
 	/** The player took more audio; a done waiting for playback re-evaluates. */
@@ -417,6 +432,7 @@ export class CodexProofSpeaker {
 				interferenceAtSend: 0,
 				trimsAtSend: 0,
 				done: false,
+				finalWaited: false,
 				accumulated: "",
 				timers: [],
 				settled: false,
@@ -506,6 +522,10 @@ export class CodexProofSpeaker {
 
 	private evaluate(pending: PendingChunk): void {
 		if (pending.settled || !pending.done) return;
+		if (pending.finalText === undefined && !pending.finalWaited) {
+			this.awaitFinal(pending);
+			return;
+		}
 		if (this.host.trims() !== pending.trimsAtSend) {
 			this.settle(pending, {
 				ok: false,
@@ -540,6 +560,17 @@ export class CodexProofSpeaker {
 			transport: "submitted",
 			contentProof: equivalent ? "transcript_equivalent" : "none",
 		});
+	}
+
+	private awaitFinal(pending: PendingChunk): void {
+		if (pending.finalWaitArmed) return;
+		pending.finalWaitArmed = true;
+		const timer = setTimeout(() => {
+			pending.finalWaited = true;
+			this.evaluate(pending);
+		}, this.host.finalWaitMs ?? DEFAULT_FINAL_WAIT_MS);
+		timer.unref?.();
+		pending.timers.push(timer);
 	}
 
 	/**

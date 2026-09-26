@@ -183,6 +183,16 @@ async function harness(
 			generation,
 			event: { type, turnId, role, startMs: null, endMs: null, transcript },
 		} as never);
+	/** The app-server final that follows a turn.done (observed v3 order). */
+	const final = (text: string) =>
+		callbacks.onTranscript({
+			generation,
+			association: "unattributed",
+			role: "assistant",
+			text,
+			final: true,
+			raw: {},
+		} as never);
 	const founder = (speaking: boolean) =>
 		owned.sendOwnedAudio(Buffer.alloc(960, speaking ? 1 : 0), {
 			utteranceId: speaking ? "founder-utterance" : null,
@@ -204,6 +214,7 @@ async function harness(
 		step,
 		burst,
 		turn,
+		final,
 		founder,
 		heardIds,
 		get callbacks() {
@@ -267,6 +278,7 @@ describe("engine B room over WebRTC (FLY-2885 T4/T5)", () => {
 		h.turn("turn.created", "readback", "assistant");
 		await h.step("vvvvv");
 		h.turn("turn.done", "readback", "assistant", "你好。");
+		h.final("你好。");
 		await expect(receipt).resolves.toMatchObject({
 			outcome: "completed",
 			transport: "submitted",
@@ -297,6 +309,7 @@ describe("engine B room over WebRTC (FLY-2885 T4/T5)", () => {
 		h.turn("turn.created", "a2", "assistant");
 		await h.step("vvv");
 		h.turn("turn.done", "a2", "assistant", "我确认一下。");
+		h.final("我确认一下。");
 		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
 	});
 
@@ -519,6 +532,46 @@ describe("engine B read-aloud overrun in the room (FLY-2885 T5c)", () => {
 		expect(h.heardIds().filter((id) => invented.includes(id))).toEqual([]);
 	});
 
+	it("mutes a final-only overrun whose turn.done came first, then resumes after the quiet gap without a new generation", async () => {
+		const h = await harness();
+		const receipt = h.session.speak!(line, "readback", {
+			pendingKey: "done-first",
+			verification: "required",
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvvvvvvv");
+		const invented = `${line}另外今天还有两件事情已经顺利完成了呢。`;
+		// Observed v3 order: data-channel turn.done, then the app-server final.
+		h.turn("turn.done", "r1", "assistant", invented);
+		h.callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "assistant",
+			text: invented,
+			final: true,
+			raw: {},
+		} as never);
+		await expect(receipt).resolves.toMatchObject({
+			outcome: "failed",
+			reason: "speech_overrun",
+			transport: "submitted",
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.persisted.at(-1)).toEqual({
+			role: "assistant",
+			text: `${prepareReplySpeech(line)[0]!.spokenText}${SPEECH_TRUNCATED_NOTE}`,
+		});
+		// The invented tail's audio is still arriving: muted.
+		const tail = await h.step("vvvvvvvvvv");
+		expect(h.heardIds().filter((id) => tail.includes(id))).toEqual([]);
+		// Its done already passed, so 240 ms of quiet ends the discard.
+		await h.step("s".repeat(20));
+		const next = await h.step("vvv");
+		expect(h.heardIds().slice(-3)).toEqual(next);
+		expect(h.conversation.reconnect).not.toHaveBeenCalled();
+	});
+
 	it("holds the next read-aloud until the overrun turn is done and quiet", async () => {
 		const h = await harness();
 		const first = h.session.speak!(line, "readback", {
@@ -548,6 +601,7 @@ describe("engine B read-aloud overrun in the room (FLY-2885 T5c)", () => {
 		h.turn("turn.created", "r2", "assistant");
 		await h.step("vvv");
 		h.turn("turn.done", "r2", "assistant", "好的。");
+		h.final("好的。");
 		await expect(second).resolves.toMatchObject({ outcome: "completed" });
 	});
 });

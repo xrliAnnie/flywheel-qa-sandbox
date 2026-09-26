@@ -240,8 +240,13 @@ class CodexVoiceSession implements ConversationSession {
 			interference: () => this.downlink.interference,
 			trims: () => options.downlink?.()?.stats().trims ?? 0,
 			overrun: (turnId) => {
-				this.overrunTurnId = turnId ?? "pending";
 				this.downlink.overrunDiscard();
+				if (turnId !== undefined && this.turns.isDone(turnId)) {
+					// Found by a final that came after its turn.done: the discard
+					// state only waits for the quiet gap, never for another done.
+					this.overrunTurnId = undefined;
+					this.downlink.overrunTurnDone();
+				} else this.overrunTurnId = turnId ?? "pending";
 				this.updateAudible();
 			},
 			evidence: (record) => options.onEvidence?.(record),

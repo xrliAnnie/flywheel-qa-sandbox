@@ -24,6 +24,9 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
+/** A silent turn has no app-server final: 2 s final wait, then 600 ms check. */
+const SILENT_SETTLE_MS = 2_700;
+
 /** The session side of the speaker, fully controllable. */
 function harness(options: { live?: boolean } = {}) {
 	vi.useFakeTimers();
@@ -59,12 +62,14 @@ function harness(options: { live?: boolean } = {}) {
 		evidence: (record) => evidence.push(record),
 	});
 	const flush = () => vi.advanceTimersByTimeAsync(0);
-	/** The bound turn plays and finishes. */
+	/** The bound turn plays and finishes: turn.done, then the app-server final. */
 	const answer = async (turnId: string, transcript: string | null) => {
 		speaker.turnCreated({ turnId, role: "assistant" });
 		state.consumed += 10;
 		speaker.playbackProgress();
 		speaker.turnDone({ turnId, role: "assistant", transcript });
+		if (transcript !== null)
+			speaker.assistantTranscript({ text: transcript, final: true });
 		await flush();
 	};
 	return { speaker, state, sent, evidence, overrun, flush, answer };
@@ -213,6 +218,7 @@ describe("Codex v3 read-aloud receipts (FLY-2885 T5b)", () => {
 		h.state.consumed += 3;
 		h.state.trims += 1;
 		h.speaker.turnDone({ turnId: "t", role: "assistant", transcript: "你好" });
+		h.speaker.assistantTranscript({ text: "你好", final: true });
 		await expect(result).resolves.toMatchObject({
 			outcome: "failed",
 			reason: "playback_trimmed",
@@ -272,6 +278,7 @@ describe("Codex v3 read-aloud receipts (FLY-2885 T5b)", () => {
 		h.speaker.turnCreated({ turnId: "t", role: "assistant" });
 		h.state.queued = 20;
 		h.speaker.turnDone({ turnId: "t", role: "assistant", transcript: "你好" });
+		h.speaker.assistantTranscript({ text: "你好", final: true });
 		await vi.advanceTimersByTimeAsync(1_000);
 		h.state.queued = 0;
 		h.state.consumed += 20;
@@ -345,6 +352,7 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 					role: "assistant",
 					transcript: transcript.text,
 				});
+				h.speaker.assistantTranscript({ text: transcript.text, final: true });
 			}
 			await expect(result).resolves.toMatchObject(
 				transcript.overrun
@@ -370,6 +378,58 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 		await expect(result).resolves.toMatchObject({ reason: "speech_overrun" });
 	});
 
+	it("checks the app-server final that arrives after turn.done before settling (observed v3 order)", async () => {
+		const h = harness();
+		const result = h.speaker.speak(readback.expected, "readback", {
+			pendingKey: "done-first",
+		});
+		await h.flush();
+		const overrunText = readback.transcripts.find((row) => row.overrun)!.text;
+		h.speaker.turnCreated({ turnId: "t", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.playbackProgress();
+		// probe-run2: data-channel turn.done ~12 ms before transcript/done.
+		h.speaker.turnDone({
+			turnId: "t",
+			role: "assistant",
+			transcript: overrunText,
+		});
+		await h.flush();
+		let settled = false;
+		void result.then(() => {
+			settled = true;
+		});
+		await h.flush();
+		expect(settled).toBe(false);
+		h.speaker.assistantTranscript({ text: overrunText, final: true });
+		await expect(result).resolves.toMatchObject({
+			outcome: "failed",
+			reason: "speech_overrun",
+			transport: "submitted",
+		});
+		expect(h.overrun).toHaveBeenCalledWith("t");
+		expect(h.speaker.truncateAssistantFinal(overrunText)).toBe(
+			`${spoken(readback.expected)}${SPEECH_TRUNCATED_NOTE}`,
+		);
+	});
+
+	it("settles on the done transcript when the app-server final never comes", async () => {
+		const h = harness();
+		const result = h.speaker.speak("你好", "readback", {
+			pendingKey: "no-final",
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.turnDone({ turnId: "t", role: "assistant", transcript: "你好" });
+		await vi.advanceTimersByTimeAsync(2_000);
+		await expect(result).resolves.toMatchObject({
+			outcome: "completed",
+			contentProof: "transcript_equivalent",
+		});
+		expect(h.overrun).not.toHaveBeenCalled();
+	});
+
 	it("retries a confirmed-silent chunk once and binds the retry only to a new turn", async () => {
 		const h = harness();
 		const result = h.speaker.speak("你好", "readback", { pendingKey: "mute" });
@@ -380,7 +440,7 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 			role: "assistant",
 			transcript: "你好",
 		});
-		await vi.advanceTimersByTimeAsync(700);
+		await vi.advanceTimersByTimeAsync(SILENT_SETTLE_MS);
 		expect(h.sent).toEqual(["你好", "你好"]);
 		// The first turn's late events cannot settle the retry.
 		h.speaker.turnCreated({ turnId: "silent-1", role: "assistant" });
@@ -396,7 +456,7 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 			role: "assistant",
 			transcript: "你好",
 		});
-		await vi.advanceTimersByTimeAsync(700);
+		await vi.advanceTimersByTimeAsync(SILENT_SETTLE_MS);
 		await expect(result).resolves.toMatchObject({
 			outcome: "failed",
 			reason: "speech_silent",
@@ -414,7 +474,7 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 		h.speaker.turnCreated({ turnId: "t", role: "assistant" });
 		h.state.interference += 1;
 		h.speaker.turnDone({ turnId: "t", role: "assistant", transcript: "你好" });
-		await vi.advanceTimersByTimeAsync(700);
+		await vi.advanceTimersByTimeAsync(SILENT_SETTLE_MS);
 		await expect(result).resolves.toMatchObject({
 			outcome: "failed",
 			reason: "speech_binding_unavailable",
