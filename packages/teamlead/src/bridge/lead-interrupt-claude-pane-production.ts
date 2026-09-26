@@ -41,9 +41,10 @@ export function createProductionClaudeInterruptPane(args: {
 			locateConfiguredLeadWindow(args.projectName, args.leadId, locatorOptions),
 		capture: (window, lines) => capture(window, lines),
 		claudeProcess: (window) => readV2LeadClaudePid(window, utf8TmuxExec),
-		sendPhrase: (window, expectedClaudePid) =>
+		sendPhrase: (window, expectedClaudePid, beforeSend) =>
 			sendLiteralLineToLeadPane(window, LEAD_INTERRUPT_PHRASE, {
 				expectedClaudePid,
+				beforeSend,
 				execFn: utf8TmuxExec,
 			}),
 	});

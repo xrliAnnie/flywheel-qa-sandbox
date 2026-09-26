@@ -924,6 +924,11 @@ export async function sendLiteralLineToLeadPane(
 	text: string,
 	opts: {
 		expectedClaudePid: string;
+		/**
+		 * Called after the last probe and immediately before typing (no await in
+		 * between). A throw propagates and nothing is typed.
+		 */
+		beforeSend?: () => void;
 		execFn?: import("../LeadWindowLocator.js").ExecFn;
 	},
 ): Promise<{ sent: boolean; error?: string }> {
@@ -938,10 +943,11 @@ export async function sendLiteralLineToLeadPane(
 	const execFn =
 		opts.execFn ??
 		(execFileAsync as unknown as import("../LeadWindowLocator.js").ExecFn);
+	const { probeV2LeadPane, readV2LeadClaudePid } = await import(
+		"../LeadWindowLocator.js"
+	);
+	let proven = false;
 	try {
-		const { probeV2LeadPane, readV2LeadClaudePid } = await import(
-			"../LeadWindowLocator.js"
-		);
 		if (!(await probeV2LeadPane(window, execFn, "capture", TMUX_TIMEOUT))) {
 			return {
 				sent: false,
@@ -949,12 +955,19 @@ export async function sendLiteralLineToLeadPane(
 			};
 		}
 		const claude = await readV2LeadClaudePid(window, execFn, TMUX_TIMEOUT);
-		if (claude.state !== "running" || claude.pid !== opts.expectedClaudePid) {
-			return {
-				sent: false,
-				error: "Claude process changed since the judgment",
-			};
-		}
+		proven =
+			claude.state === "running" && claude.pid === opts.expectedClaudePid;
+	} catch (err) {
+		return { sent: false, error: (err as Error).message ?? String(err) };
+	}
+	if (!proven) {
+		return {
+			sent: false,
+			error: "Claude process changed since the judgment",
+		};
+	}
+	opts.beforeSend?.();
+	try {
 		await execFn(
 			"tmux",
 			[

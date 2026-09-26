@@ -257,7 +257,11 @@ export function createLeadInterruptHooks(
 				typed.outcome === "skipped" ? "nudge_skipped" : "nudge_failed",
 				typed.reason,
 			);
-			return mail(record.interruptId, `nudge_${typed.outcome}:${typed.reason}`);
+			// typePhrase re-judged the pane (awaits): the Lead may have answered.
+			return (
+				answered(record.interruptId) ??
+				mail(record.interruptId, `nudge_${typed.outcome}:${typed.reason}`)
+			);
 		}
 		try {
 			recordDisposition(record.interruptId, "nudged", null);

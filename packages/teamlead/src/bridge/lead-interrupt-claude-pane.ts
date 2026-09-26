@@ -35,16 +35,23 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * The `❯` line directly under this Lead's box border (the same border the
- * FLY-2882 parser anchors on) carries nothing but whitespace.
+ * The WHOLE input box under this Lead's border (the same border the FLY-2882
+ * parser anchors on) is empty: a bare `❯` line, then only blank lines, up to
+ * the box's lower border. A multi-line draft (text on any later line) or a
+ * box with no lower border in view is never empty.
  */
 export function claudePromptEmpty(pane: string, leadId: string): boolean {
 	const lines = pane.replace(ANSI, "").replace(/\r/g, "").split("\n");
 	const border = new RegExp(`^─{6,}.*@${escapeRegExp(leadId)}\\s+─`, "u");
 	for (let i = lines.length - 1; i >= 0; i--) {
 		if (!border.test(lines[i]!.replace(/\s+$/u, ""))) continue;
-		const prompt = lines[i + 1];
-		return prompt !== undefined && /^❯\s*$/u.test(prompt);
+		if (!/^❯\s*$/u.test(lines[i + 1] ?? "")) return false;
+		for (let j = i + 2; j < lines.length; j++) {
+			const line = lines[j]!;
+			if (/^─{6,}\s*$/u.test(line)) return true;
+			if (!/^\s*$/u.test(line)) return false;
+		}
+		return false;
 	}
 	return false;
 }
@@ -56,10 +63,14 @@ export interface ClaudeInterruptPaneDeps {
 	capture(window: LeadWindowRef, lines: number): Promise<string>;
 	/** `readV2LeadClaudePid` in production. */
 	claudeProcess(window: LeadWindowRef): Promise<V2LeadClaudeProcess>;
-	/** `sendLiteralLineToLeadPane(window, PHRASE, { expectedClaudePid })`. */
+	/**
+	 * `sendLiteralLineToLeadPane(window, PHRASE, { expectedClaudePid, beforeSend })`:
+	 * `beforeSend` must run after the last await, immediately before typing.
+	 */
 	sendPhrase(
 		window: LeadWindowRef,
 		expectedClaudePid: string,
+		beforeSend: () => void,
 	): Promise<{ sent: boolean; error?: string }>;
 }
 
@@ -120,7 +131,11 @@ export function createClaudeInterruptPane(
 			}
 			// Throws propagate: a lost owner or settled letter sends nothing.
 			assertCurrentOwner();
-			const sent = await deps.sendPhrase(fresh.window, fresh.pid);
+			const sent = await deps.sendPhrase(
+				fresh.window,
+				fresh.pid,
+				assertCurrentOwner,
+			);
 			return sent.sent
 				? { outcome: "nudged" }
 				: { outcome: "failed", reason: "send_failed" };

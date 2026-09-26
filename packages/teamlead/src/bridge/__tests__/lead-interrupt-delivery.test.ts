@@ -848,6 +848,28 @@ describe("FLY-2883 interrupt delivery — code review R1 regressions", () => {
 		expect(nativeInbox()).not.toContain(ID);
 	});
 
+	it("full review #3: a reply during typePhrase's re-judgment is acked, not mailed", async () => {
+		seed();
+		const pane = fakePane([{ state: "busy_safe" }]);
+		pane.typePhrase.mockImplementation(async () => {
+			// Reply committed; the route's best-effort ack of the letter failed.
+			store.leadInterrupts.recordReply({
+				interruptId: ID,
+				text: "马上好",
+				replyDigest: "c".repeat(64),
+				now: iso(),
+			});
+			return { outcome: "skipped" as const, reason: "done_line" };
+		});
+		await makeLoop(
+			realAdapter(),
+			hooks("claude-code", { claudePane: pane }),
+		).tick();
+		expect(letter().state).toBe("ACKED");
+		expect(nativeInbox()).not.toContain(ID);
+		expect(events().slice(-2)).toEqual(["nudge_skipped", "acked_after_reply"]);
+	});
+
 	it("#4 does not type when the Lead answers during the first judgment", async () => {
 		seed();
 		const pane = fakePane([]);

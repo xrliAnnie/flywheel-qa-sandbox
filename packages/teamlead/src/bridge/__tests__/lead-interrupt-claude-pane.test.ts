@@ -63,6 +63,7 @@ function harness(
 		send?: (
 			window: LeadWindowRef,
 			expectedClaudePid: string,
+			beforeSend: () => void,
 		) => Promise<{ sent: boolean; error?: string }>;
 	} = {},
 ) {
@@ -283,6 +284,82 @@ describe("sendLiteralLineToLeadPane", () => {
 				execFn: tmux.fn,
 			}),
 		).toMatchObject({ sent: false });
+		expect(tmux.calls.some((c) => c.args.includes("send-keys"))).toBe(false);
+	});
+});
+
+describe("full review R1 regressions (Claude pane)", () => {
+	function box(promptLines: string[], lowerBorder = true): string {
+		return [
+			"✶ Spelunking… (36s · ↓ 423 tokens)",
+			"",
+			`${"─".repeat(48)} @${LEAD} ──`,
+			...promptLines,
+			...(lowerBorder ? ["─".repeat(64)] : []),
+			"  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+		].join("\n");
+	}
+
+	it("#2 treats a multi-line draft as a non-empty prompt", async () => {
+		const draft = box(["❯ ", "  second line of an unsent draft"]);
+		expect(claudePromptEmpty(draft, LEAD)).toBe(false);
+		const h = harness({ panes: [draft] });
+		expect(await h.paneApi.assess()).toEqual({
+			state: "busy_unsafe",
+			reason: "prompt_not_empty",
+		});
+	});
+
+	it("#2 accepts blank continuation lines and requires the lower border", () => {
+		expect(claudePromptEmpty(box(["❯ ", "   ", ""]), LEAD)).toBe(true);
+		expect(claudePromptEmpty(box(["❯ "], false), LEAD)).toBe(false);
+	});
+
+	it("#1 hands the owner guard all the way to the final send", async () => {
+		const guard = vi.fn();
+		const h = harness({
+			panes: [BUSY],
+			send: async (_window, _pid, beforeSend) => {
+				guard.mockClear();
+				beforeSend();
+				expect(guard).toHaveBeenCalledTimes(1);
+				return { sent: true };
+			},
+		});
+		expect(await h.paneApi.typePhrase(guard)).toEqual({ outcome: "nudged" });
+	});
+});
+
+describe("full review R1 regressions (sendLiteralLineToLeadPane)", () => {
+	it("#1 re-checks the guard after the last probe, immediately before typing", async () => {
+		const tmux = fakeTmux();
+		const order: string[] = [];
+		const beforeSend = vi.fn(() => {
+			order.push(`guard-after-${tmux.calls.length}-calls`);
+		});
+		await sendLiteralLineToLeadPane(WINDOW, LEAD_INTERRUPT_PHRASE, {
+			expectedClaudePid: "5000",
+			execFn: tmux.fn,
+			beforeSend,
+		});
+		const probeCalls = tmux.calls.findIndex((c) =>
+			c.args.includes("send-keys"),
+		);
+		expect(order).toEqual([`guard-after-${probeCalls}-calls`]);
+		expect(probeCalls).toBeGreaterThan(0);
+	});
+
+	it("#1 types nothing when the guard throws after the probes", async () => {
+		const tmux = fakeTmux();
+		await expect(
+			sendLiteralLineToLeadPane(WINDOW, LEAD_INTERRUPT_PHRASE, {
+				expectedClaudePid: "5000",
+				execFn: tmux.fn,
+				beforeSend: () => {
+					throw new Error("owner fence lost");
+				},
+			}),
+		).rejects.toThrow(/owner fence lost/);
 		expect(tmux.calls.some((c) => c.args.includes("send-keys"))).toBe(false);
 	});
 });
