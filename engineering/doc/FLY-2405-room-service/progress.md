@@ -1,14 +1,16 @@
 ---
 issue: FLY-2405
 phase: implement
-phaseCursor: 2/8
-updated: 2026-09-26T17:38:24.448Z
-nextStep: Resumed approved v2 at 80fdb7454; audit inherited WIP C1-C5/C7, finish
-  C8 drill and C6 docs; targeted verification only
+phaseCursor: 6/8
+updated: 2026-09-26T17:56:24.317Z
+nextStep: C8 drill implemented (contract19/core49/routes7/CLI97/wrapper18
+  green); audit fixed explicit env overwrite and teardown await race/orphan
+  group; C6 docs ready. Related tests, consumer guards, lint and dependent
+  verification running; no QA/CI/review claim.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2405 progress
-**phase**: implement (2/8)
-**next**: Resumed approved v2 at 80fdb7454; audit inherited WIP C1-C5/C7, finish C8 drill and C6 docs; targeted verification only
+**phase**: implement (6/8)
+**next**: C8 drill implemented (contract19/core49/routes7/CLI97/wrapper18 green); audit fixed explicit env overwrite and teardown await race/orphan group; C6 docs ready. Related tests, consumer guards, lint and dependent verification running; no QA/CI/review claim.
