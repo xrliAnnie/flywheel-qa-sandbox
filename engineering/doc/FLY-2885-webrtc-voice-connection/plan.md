@@ -3,7 +3,7 @@ Issue: FLY-2885 (https://linear.app/geoforge3d/issue/FLY-2885/语音b核心连�
 日期: 2026-09-25
 基于: research.md
 
-状态:v6(按设计评审 R1–R5 与 Lead 指令/裁定修订),待 T5c 定向复核。本文只设计,不含实现。
+状态:**设计评审 APPROVED**(R6,Codex gpt-6-astra xhigh;v6.1 仅按 R6 LOW 拆开一句文字)。本文只设计,不含实现。本文只设计,不含实现。
 
 ## 0. 边界与验收映射
 
@@ -187,7 +187,9 @@ stateDiagram-v2
 
 **4. 无声与「不知道」分开(R4-3)**
 - 统一用**消费**口径:播放器取走的有声包数(T5b 同口径),外加「仍在队列里的有声包」。
-- **确认无声** = 本块绑定回合的 `turn.done` 已到,且从发出到此刻播放器消费的有声包为 0、队列里也没有有声包、之后再等 600 ms 仍为 0,**并且**这段时间里客户端从未对下行做过 cut 或静音替换(插话静音、OverrunDiscard 等);期间有过客户端静音 ⇒ 不算「服务端无声」,按中断/未知结算、不重试 ⇒ `speech_silent`,**重试 1 次**(重新走空闲准入;旧回合已 done,迟到事件不会被结算给新尝试,因为新尝试只绑定它发出之后才 created 的回合,且旧回合 id 已登记为已结束)。重试仍确认无声 ⇒ `failed{speech_silent, transport:none}` ⇒ 前端 `failed`,thread 有文字。
+- **确认无声**(以下全部成立):本块绑定回合的 `turn.done` 已到;从发出到此刻播放器消费的有声包为 0、队列里也没有有声包;之后再等 600 ms 仍为 0;这段时间里客户端**从未**对下行做过 cut 或静音替换(插话静音、OverrunDiscard 等)。
+  ⇒ `speech_silent`,**重试 1 次**(重新走空闲准入;旧回合已 done,迟到事件不会被结算给新尝试,因为新尝试只绑定它发出之后才 created 的回合,且旧回合 id 已登记为已结束)。重试仍确认无声 ⇒ `failed{speech_silent, transport:none}` ⇒ 前端 `failed`,thread 有文字。
+- **观察窗口里发生过客户端 cut / 静音替换**:不算「服务端无声」⇒ 按中断/未知结算(`speech_interrupted` 或 `speech_binding_unavailable`),**不重试**。
 - **不知道** = 30 s 内没有可绑定的 `turn.created` 或没有 `turn.done`(不论有没有听到声音)⇒ 沿用 T5b 的 `speech_binding_unavailable`,**不自动重试**(可能已经念过,重试会重复);已消费过有声包则 `transport:submitted`,否则 `none`。
 
 **5. 指标与验收口径(R4-4)**
@@ -378,7 +380,11 @@ T10 → T1 → T2 → T3 → T8 → T9 → T4 → T6 → T5 → T5b → T5c → 
   1. OverrunDiscard 只在「已见 done 且其后 ≥240 ms 静音」时恢复播放;无 done 时 1.5 s 静音或 15 s 绝对期限一律走 T7 换代,旧代音频不再放行。
   2. T5b 准入加第⑤条「不在 OverrunDiscard」,无声重试同样过准入;「确认无声」要求观察窗口内没有任何客户端静音/cut。
   3. 统一 `speech_binding_unavailable` 的 transport 口径(按消费,已播 ⇒ unconfirmed,未播 ⇒ failed)。另记 Lead 裁定 `54c3646c`:声线映射写入归本单 T9。
+- R6(2026-09-25,thread `01a0daf5-f9f0-77b2-bc4e-ae18c8f1dfb5`):**APPROVED**。R5-1/2/3 全部关闭,无新 HIGH 以上。
+- v6.1:按 R6 唯一的 LOW 把 T5c「确认无声」与「期间有客户端静音」拆成两条独立分支(纯文字,状态机与判据不变)。
 
 ## 11. Follow-ups(R4 之后按 Lead 裁定 `1b96a832` 登记,由 Lead 开单)
 
-- R4 未发现范围外问题,本表暂无条目。(写 `liveVoice` 的受控写入按 Lead 裁定 `54c3646c` 归本单 T9 实施,不是 follow-up。)
+- R4–R6 未发现范围外问题。
+- R5 LOW(`speech_binding_unavailable` 口径不一)与 R6 LOW(无声分支文字连写)已分别在 v6 / v6.1 直接修正,无需开单。
+- (写 `liveVoice` 的受控写入按 Lead 裁定 `54c3646c` 归本单 T9 实施,不是 follow-up。)
