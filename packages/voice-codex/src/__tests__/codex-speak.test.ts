@@ -32,6 +32,11 @@ function harness(options: { live?: boolean } = {}) {
 	vi.useFakeTimers();
 	const state = {
 		busy: undefined as string | undefined,
+		/** Someone is speaking or the model's audio still flows. */
+		active: false,
+		live: options.live ?? true,
+		/** A new generation is being opened (T7). */
+		recovering: false,
 		consumed: 0,
 		queued: 0,
 		interference: 0,
@@ -56,9 +61,11 @@ function harness(options: { live?: boolean } = {}) {
 				}
 			},
 		}),
-		isLive: () => options.live ?? true,
+		isLive: () => state.live,
+		recovering: () => state.recovering,
 		now: () => Date.now(),
 		busyReason: () => state.busy,
+		roomActive: () => state.active,
 		consumedVoiced: () => state.consumed,
 		queuedVoiced: () => state.queued,
 		interference: () => state.interference,
@@ -142,7 +149,7 @@ describe("Codex v3 read-aloud receipts (FLY-2885 T5b)", () => {
 	it("waits for an idle room and gives up after 10 s without sending", async () => {
 		const h = harness();
 		h.state.busy = "assistant_turn_open";
-		const result = h.speaker.speak("你好", "readback", { pendingKey: "busy" });
+		const result = h.speaker.speak("你好", "cue", { pendingKey: "busy" });
 		await vi.advanceTimersByTimeAsync(9_900);
 		expect(h.sent).toEqual([]);
 		await vi.advanceTimersByTimeAsync(200);
@@ -685,5 +692,351 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 			transport: "none",
 		});
 		expect(h.sent).toHaveLength(1);
+	});
+});
+
+describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)", () => {
+	const settledFlag = (promise: Promise<unknown>) => {
+		const flag = { settled: false };
+		void promise.then(() => {
+			flag.settled = true;
+		});
+		return flag;
+	};
+
+	it("keeps a Lead reply waiting while the conversation goes on past 10 s, then reads it", async () => {
+		const h = harness();
+		h.state.busy = "speaker_active";
+		h.state.active = true;
+		const result = h.speaker.readReply("你好。", { pendingKey: "wait" });
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(h.sent).toEqual([]);
+		h.state.busy = undefined;
+		h.state.active = false;
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["你好。"]);
+		await h.answer("t", "你好。");
+		await expect(result).resolves.toEqual({
+			receipt: expect.objectContaining({
+				outcome: "completed",
+				contentProof: "transcript_equivalent",
+			}),
+			unreadChunks: 0,
+		});
+		expect(
+			h.evidence.some(
+				(record) => record.kind === "codex_speech_admission_timeout",
+			),
+		).toBe(false);
+	});
+
+	it("gives up 8 s after the room went quiet while still busy (a stuck state), not after a count", async () => {
+		const h = harness();
+		h.state.busy = "pending_user_turn";
+		h.state.active = true;
+		const result = h.speaker.readReply("第一句。第二句。", {
+			pendingKey: "stuck",
+			chunkCharacters: 4,
+		});
+		const flag = settledFlag(result);
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(flag.settled).toBe(false);
+		// She stops; nothing is audible; the ledger still says busy.
+		h.state.active = false;
+		await vi.advanceTimersByTimeAsync(7_900);
+		expect(flag.settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(200);
+		await expect(result).resolves.toEqual({
+			receipt: expect.objectContaining({
+				outcome: "rejected",
+				reason: "busy_conversation",
+				transport: "none",
+			}),
+			unreadChunks: 2,
+		});
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_speech_admission_timeout",
+				pendingKey: "stuck",
+				busy: "pending_user_turn",
+				limit: "quiet",
+			}),
+		);
+		expect(h.sent).toEqual([]);
+	});
+
+	it("gives up after 120 s of conversation without a pause", async () => {
+		const h = harness();
+		h.state.busy = "speaker_active";
+		h.state.active = true;
+		const result = h.speaker.readReply("你好。", { pendingKey: "ceiling" });
+		const flag = settledFlag(result);
+		await vi.advanceTimersByTimeAsync(119_900);
+		expect(flag.settled).toBe(false);
+		await vi.advanceTimersByTimeAsync(200);
+		await expect(result).resolves.toMatchObject({
+			receipt: { outcome: "rejected", reason: "busy_conversation" },
+			unreadChunks: 1,
+		});
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_speech_admission_timeout",
+				limit: "ceiling",
+			}),
+		);
+	});
+
+	it("resumes after an overrun from the first sentence not yet read, never repeating one", async () => {
+		const h = harness();
+		const expected = "第一句话已经说完了。第二句话还没有念。";
+		const result = h.speaker.readReply(expected, {
+			pendingKey: "resume",
+			verification: "required",
+		});
+		await h.flush();
+		expect(h.sent).toEqual([expected]);
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "第一句话已经说完了。",
+			final: false,
+		});
+		h.speaker.assistantTranscript({
+			text: "另外今天还有两件事情完成了呢。",
+			final: false,
+		});
+		expect(h.overrun).toHaveBeenCalledWith("t1");
+		// The mirror keeps only what was read.
+		expect(
+			h.speaker.truncateAssistantFinal(
+				"第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			),
+		).toBe(`第一句话已经说完了。${SPEECH_TRUNCATED_NOTE}`);
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual([expected, "第二句话还没有念。"]);
+		await h.answer("t2", "第二句话还没有念。");
+		await expect(result).resolves.toEqual({
+			receipt: expect.objectContaining({
+				outcome: "failed",
+				reason: "speech_overrun",
+				transport: "submitted",
+			}),
+			unreadChunks: 0,
+		});
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_readback_continue",
+				pendingKey: "resume",
+				chunk: 0,
+				spokenSentences: 1,
+				totalSentences: 2,
+			}),
+		);
+	});
+
+	it("goes on to the next chunk when the overrun came after the whole chunk was read", async () => {
+		const h = harness();
+		const result = h.speaker.readReply("第一句。第二句。", {
+			pendingKey: "whole",
+			chunkCharacters: 4,
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "第一句。然后我们还要讨论很多其他的事情。",
+			final: false,
+		});
+		expect(h.overrun).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["第一句。", "第二句。"]);
+		await h.answer("t2", "第二句。");
+		await expect(result).resolves.toMatchObject({
+			receipt: { reason: "speech_overrun" },
+			unreadChunks: 0,
+		});
+	});
+
+	it("re-reads a chunk once when an overrun read none of it, then stops and counts it unread", async () => {
+		const h = harness();
+		const result = h.speaker.readReply("今天下午三点开会。", {
+			pendingKey: "stall",
+		});
+		for (const turnId of ["t1", "t2"]) {
+			await vi.advanceTimersByTimeAsync(60);
+			h.speaker.turnCreated({ turnId, role: "assistant" });
+			h.state.consumed += 10;
+			h.speaker.assistantTranscript({
+				text: "我现在去帮你查一下这个问题的具体情况。",
+				final: false,
+			});
+		}
+		await expect(result).resolves.toEqual({
+			receipt: expect.objectContaining({
+				outcome: "failed",
+				reason: "speech_overrun",
+				transport: "submitted",
+			}),
+			unreadChunks: 1,
+		});
+		expect(h.sent).toEqual(["今天下午三点开会。", "今天下午三点开会。"]);
+		expect(h.overrun).toHaveBeenCalledTimes(2);
+	});
+
+	it("stops the reply when she barges in and reports what was left unread", async () => {
+		const h = harness();
+		const result = h.speaker.readReply("第一句。第二句。", {
+			pendingKey: "barge",
+			chunkCharacters: 4,
+		});
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 2;
+		h.speaker.interrupt();
+		await expect(result).resolves.toEqual({
+			receipt: expect.objectContaining({
+				outcome: "failed",
+				reason: "speech_interrupted",
+				transport: "submitted",
+			}),
+			unreadChunks: 2,
+		});
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(h.sent).toEqual(["第一句。"]);
+	});
+
+	it("moves on past a chunk that was heard but not proven, as the reply loop always did", async () => {
+		const h = harness();
+		const result = h.speaker.readReply("第一句。第二句。", {
+			pendingKey: "unproven",
+			verification: "required",
+			chunkCharacters: 4,
+		});
+		await h.flush();
+		await h.answer("t1", "完全不同的话");
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["第一句。", "第二句。"]);
+		await h.answer("t2", "第二句。");
+		await expect(result).resolves.toEqual({
+			receipt: expect.objectContaining({
+				outcome: "failed",
+				reason: "speech_not_equivalent",
+				transport: "submitted",
+			}),
+			unreadChunks: 0,
+		});
+	});
+
+	it("lets a cue through while a Lead reply waits for the conversation", async () => {
+		const h = harness();
+		h.state.busy = "speaker_active";
+		h.state.active = true;
+		const reply = h.speaker.readReply("你好。", { pendingKey: "reply" });
+		await vi.advanceTimersByTimeAsync(1_000);
+		const cue = h.speaker.speak(
+			"刚才这件事没能交给 Lead。请再说一遍。",
+			"cue",
+			{
+				pendingKey: "cue",
+				verification: "required",
+			},
+		);
+		h.state.busy = undefined;
+		h.state.active = false;
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["刚才这件事没能交给 Lead。请再说一遍。"]);
+		await h.answer("cue-turn", "刚才这件事没能交给 Lead。请再说一遍。");
+		await expect(cue).resolves.toMatchObject({ outcome: "completed" });
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent.at(-1)).toBe("你好。");
+		await h.answer("reply-turn", "你好。");
+		await expect(reply).resolves.toMatchObject({
+			receipt: { outcome: "completed" },
+			unreadChunks: 0,
+		});
+	});
+
+	it("never reads two Lead replies at once", async () => {
+		const h = harness();
+		h.state.busy = "speaker_active";
+		h.state.active = true;
+		void h.speaker.readReply("你好。", { pendingKey: "first" });
+		await h.flush();
+		await expect(
+			h.speaker.readReply("再见。", { pendingKey: "second" }),
+		).resolves.toMatchObject({
+			receipt: { outcome: "rejected", reason: "busy" },
+		});
+	});
+
+	it("waits out a reconnect and reads the reply on the new generation", async () => {
+		const h = harness();
+		h.state.live = false;
+		h.state.recovering = true;
+		const result = h.speaker.readReply("你好。", { pendingKey: "reconnect" });
+		await vi.advanceTimersByTimeAsync(20_000);
+		expect(h.sent).toEqual([]);
+		h.state.generation += 1;
+		h.state.live = true;
+		h.state.recovering = false;
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["你好。"]);
+		await h.answer("t", "你好。");
+		await expect(result).resolves.toMatchObject({
+			receipt: { outcome: "completed" },
+			unreadChunks: 0,
+		});
+	});
+
+	it("counts a reply unread when the session is closing", async () => {
+		const h = harness({ live: false });
+		await expect(
+			h.speaker.readReply("第一句。第二句。", {
+				pendingKey: "closed",
+				chunkCharacters: 4,
+			}),
+		).resolves.toMatchObject({
+			receipt: { outcome: "rejected", reason: "not_live" },
+			unreadChunks: 2,
+		});
+	});
+
+	it("stops a waiting reply when the session closes, with every chunk unread", async () => {
+		const h = harness();
+		h.state.busy = "speaker_active";
+		h.state.active = true;
+		const result = h.speaker.readReply("第一句。第二句。", {
+			pendingKey: "closing",
+			chunkCharacters: 4,
+		});
+		await vi.advanceTimersByTimeAsync(1_000);
+		h.state.live = false;
+		await vi.advanceTimersByTimeAsync(60);
+		await expect(result).resolves.toMatchObject({
+			receipt: { outcome: "rejected", reason: "generation_changed" },
+			unreadChunks: 2,
+		});
+		expect(h.sent).toEqual([]);
+	});
+
+	it("queues a reply behind a cue that is being spoken instead of turning it away", async () => {
+		const h = harness();
+		const cue = h.speaker.speak("我确认一下。", "cue", {
+			pendingKey: "cue-first",
+			verification: "required",
+		});
+		await h.flush();
+		expect(h.sent).toEqual(["我确认一下。"]);
+		const reply = h.speaker.readReply("你好。", { pendingKey: "after-cue" });
+		await vi.advanceTimersByTimeAsync(500);
+		expect(h.sent).toEqual(["我确认一下。"]);
+		await h.answer("cue-turn", "我确认一下。");
+		await expect(cue).resolves.toMatchObject({ outcome: "completed" });
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent).toEqual(["我确认一下。", "你好。"]);
+		await h.answer("reply-turn", "你好。");
+		await expect(reply).resolves.toMatchObject({
+			receipt: { outcome: "completed" },
+		});
 	});
 });

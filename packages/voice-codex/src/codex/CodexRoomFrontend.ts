@@ -1,13 +1,16 @@
+import { randomUUID } from "node:crypto";
 import type {
 	BackendFactory,
 	BackendRegistry,
 	ConversationOptions,
 	ConversationSession,
+	SpeakReceipt,
 	VoiceBackend,
+	VoiceSpeakOptions,
 } from "flywheel-voice-core";
 import type { VoiceEnd } from "../daemon.js";
 import type { RealtimeAudioOwner } from "../realtime.js";
-import type { PreparedSpeech } from "../speech.js";
+import { type PreparedSpeech, stripHandoffCorrelation } from "../speech.js";
 import { CodexVoiceContainerError } from "./CodexVoiceContainer.js";
 
 export interface CodexRoomFrontendHandlers {
@@ -79,6 +82,15 @@ function failureReason(error: Error & { code?: string }): string {
 		: `${original.slice(0, 488)}:[truncated]`;
 }
 
+function readbackStatus(
+	receipt: SpeakReceipt,
+): "confirmed" | "unconfirmed" | "failed" {
+	if (receipt.outcome === "completed") return "confirmed";
+	return receipt.outcome === "failed" && receipt.transport !== "none"
+		? "unconfirmed"
+		: "failed";
+}
+
 /**
  * Adapts the shared ConversationSession contract to the existing room/session
  * lifecycle. It owns no room transport and performs no fallback selection.
@@ -142,10 +154,31 @@ export class CodexRoomFrontend {
 			pendingKey: speech.speechId,
 			verification: "required",
 		});
-		if (receipt.outcome === "completed") return "confirmed";
-		return receipt.outcome === "failed" && receipt.transport !== "none"
-			? "unconfirmed"
-			: "failed";
+		return readbackStatus(receipt);
+	}
+
+	/**
+	 * FLY-2885 founder rework: the whole Lead reply in one read, so it can wait
+	 * for the conversation, resume after an overrun and say what was left
+	 * unread. The handoff-id line the Lead quotes for correlation is not read.
+	 */
+	async appendReply(
+		text: string,
+		chunkCharacters: number,
+	): Promise<"confirmed" | "unconfirmed" | "failed"> {
+		const session = this.requireSession() as ConversationSession & {
+			readReply?: (
+				text: string,
+				options: VoiceSpeakOptions,
+			) => Promise<SpeakReceipt>;
+		};
+		if (!session.readReply) return "failed";
+		const receipt = await session.readReply(stripHandoffCorrelation(text), {
+			pendingKey: randomUUID(),
+			verification: "required",
+			chunkCharacters,
+		});
+		return readbackStatus(receipt);
 	}
 
 	cancelSpeech(): void {

@@ -1,10 +1,19 @@
 import type { Readable } from "node:stream";
-import type { BrainAdapter, ConversationSession } from "flywheel-voice-core";
+import type {
+	BrainAdapter,
+	ConversationSession,
+	SpeakReceipt,
+	VoiceSpeakOptions,
+} from "flywheel-voice-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpusDownlink } from "../audio/OpusDownlink.js";
 import { SPEECH_TRUNCATED_NOTE } from "../codex/CodexProofSpeaker.js";
 import { CodexRoomFrontend } from "../codex/CodexRoomFrontend.js";
-import { CodexVoiceBackend } from "../codex/CodexVoiceBackend.js";
+import {
+	CodexVoiceBackend,
+	READBACK_REMAINDER_NOTICE,
+	READBACK_REMAINDER_STATUS,
+} from "../codex/CodexVoiceBackend.js";
 import { GenericVoiceSession, type RoomHandlers } from "../session.js";
 import { prepareReplySpeech } from "../speech.js";
 
@@ -667,5 +676,139 @@ describe("engine B generation change in the session (FLY-2885 T7)", () => {
 		expect(h.heardIds().slice(-3)).toEqual(fresh);
 		expect(h.heardIds().slice(0, old.length)).toEqual(old);
 		expect(h.statuses).toEqual(["📻 语音连接断了，正在重连", "📻 已重连"]);
+	});
+});
+
+describe("engine B says when a Lead reply could not be read to the end (FLY-2885 founder rework C)", () => {
+	const readReply = (
+		session: ConversationSession,
+		text: string,
+		options: VoiceSpeakOptions,
+	) =>
+		(
+			session as ConversationSession & {
+				readReply(
+					text: string,
+					options: VoiceSpeakOptions,
+				): Promise<SpeakReceipt>;
+			}
+		).readReply(text, options);
+
+	it("says the rest is in the channel once the room pauses after her barge-in", async () => {
+		const h = await harness();
+		const receipt = readReply(h.session, "第一句。第二句。", {
+			pendingKey: "barge",
+			verification: "required",
+			chunkCharacters: 4,
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(h.appendSpeech).toHaveBeenLastCalledWith("第一句。", 1);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		h.session.interrupt();
+		h.turn("turn.done", "r1", "assistant", "第一");
+		h.final("第一");
+		// Silence until the barge-in state releases and the room is quiet.
+		for (let i = 0; i < 8 && h.appendSpeech.mock.calls.length < 2; i += 1)
+			await h.step("ssssssssssssssssssssssssssssssssssssssssssssssssss");
+		expect(h.appendSpeech).toHaveBeenLastCalledWith(
+			READBACK_REMAINDER_NOTICE,
+			1,
+		);
+		h.turn("turn.created", "notice", "assistant");
+		await h.step("vvvvv");
+		h.turn("turn.done", "notice", "assistant", READBACK_REMAINDER_NOTICE);
+		h.final(READBACK_REMAINDER_NOTICE);
+		await expect(receipt).resolves.toMatchObject({
+			outcome: "failed",
+			reason: "speech_interrupted",
+			transport: "submitted",
+		});
+		expect(h.appendSpeech.mock.calls.map(([text]) => text)).toEqual([
+			"第一句。",
+			READBACK_REMAINDER_NOTICE,
+		]);
+		expect(h.statuses).not.toContain(READBACK_REMAINDER_STATUS);
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_readback_unfinished",
+				pendingKey: "barge",
+				reason: "speech_interrupted",
+				unreadChunks: 2,
+			}),
+		);
+	});
+
+	it("posts it to the thread when even the notice cannot be heard", async () => {
+		const h = await harness();
+		// A user turn the data channel never answers: the room stays busy.
+		h.founder(true);
+		h.callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "你好",
+			final: false,
+			raw: {},
+		} as never);
+		h.founder(false);
+		const receipt = readReply(h.session, "你好。", {
+			pendingKey: "stuck",
+			verification: "required",
+		});
+		await vi.advanceTimersByTimeAsync(20_000);
+		await expect(receipt).resolves.toMatchObject({
+			outcome: "rejected",
+			reason: "busy_conversation",
+		});
+		expect(h.appendSpeech).not.toHaveBeenCalled();
+		expect(h.statuses).toContain(READBACK_REMAINDER_STATUS);
+	});
+
+	it("posts it to the thread when the session ends mid-reply, without speaking", async () => {
+		const h = await harness();
+		h.founder(true);
+		h.callbacks.onTranscript({
+			generation: 1,
+			association: "unattributed",
+			role: "user",
+			text: "你好",
+			final: false,
+			raw: {},
+		} as never);
+		h.founder(false);
+		const receipt = readReply(h.session, "你好。", {
+			pendingKey: "closing",
+			verification: "required",
+		});
+		await vi.advanceTimersByTimeAsync(1_000);
+		await h.session.close();
+		await vi.advanceTimersByTimeAsync(100);
+		await expect(receipt).resolves.toMatchObject({ outcome: "rejected" });
+		expect(h.appendSpeech).not.toHaveBeenCalled();
+		expect(h.statuses).toContain(READBACK_REMAINDER_STATUS);
+	});
+
+	it("keeps a waiting reply through a reconnect and reads it on the new generation", async () => {
+		const h = await harness();
+		h.founder(true);
+		const receipt = readReply(h.session, "你好。", {
+			pendingKey: "reconnect",
+			verification: "required",
+		});
+		await vi.advanceTimersByTimeAsync(500);
+		h.conversation.reconnect("webrtc_leg_lost");
+		h.founder(false);
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(h.appendSpeech).not.toHaveBeenCalled();
+		h.finishReconnect(2);
+		await h.step("ssssssssssssssssssssssssssssssssssss");
+		expect(h.appendSpeech).toHaveBeenCalledWith("你好。", 2);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		h.turn("turn.done", "r1", "assistant", "你好。");
+		h.final("你好。");
+		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
+		expect(h.statuses).not.toContain(READBACK_REMAINDER_STATUS);
 	});
 });

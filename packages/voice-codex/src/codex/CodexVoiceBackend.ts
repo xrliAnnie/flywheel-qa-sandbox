@@ -4,6 +4,7 @@ import {
 	type ConversationEventMap,
 	type ConversationOptions,
 	type ConversationSession,
+	type SpeakReceipt,
 	TypedEmitter,
 	type VoiceBackend,
 	type VoiceBackendCapabilities,
@@ -66,6 +67,14 @@ export const CODEX_HANDOFF_UNCONFIRMED_PROMPT =
 	"刚才这件事还没有交给 Lead。我没能确认那句话是你说的。请再说一遍。";
 export const CODEX_HANDOFF_FAILED_PROMPT =
 	"刚才这件事没能交给 Lead。请再说一遍。";
+/**
+ * FLY-2885 founder rework C: a Lead reply that could not be read to the end
+ * says so out loud, and in the thread when it cannot be heard.
+ */
+export const READBACK_REMAINDER_NOTICE = "剩下的内容在频道里。";
+export const READBACK_REMAINDER_STATUS = "📻 剩下的内容在频道里";
+/** The spoken notice gets this long to find a pause of its own. */
+const READBACK_NOTICE_CEILING_MS = 30_000;
 
 interface CodexTransportLike {
 	appendAudio(
@@ -235,6 +244,8 @@ class CodexVoiceSession implements ConversationSession {
 			isLive: () => this.live && !this.restarting && !this.closing,
 			now: this.monotonicNow,
 			busyReason: () => this.readAloudBusyReason(),
+			roomActive: () => this.roomActive(),
+			recovering: () => this.live && this.restarting && !this.closing,
 			consumedVoiced: () => options.downlink?.()?.stats().consumedVoiced ?? 0,
 			queuedVoiced: () => options.downlink?.()?.queued().voiced ?? 0,
 			interference: () => this.downlink.interference,
@@ -316,19 +327,62 @@ class CodexVoiceSession implements ConversationSession {
 
 	speak(text: string, kind: VoiceSpeakKind, options: VoiceSpeakOptions) {
 		return this.speaker.speak(text, kind, options).then((receipt) => {
-			this.options.onEvidence?.({
-				kind: "codex_speak_receipt",
-				speechKind: kind,
-				pendingKey: receipt.pendingKey,
-				requestDigest: receipt.requestDigest,
-				outcome: receipt.outcome,
-				transport: receipt.transport,
-				contentProof: receipt.contentProof,
-				...("reason" in receipt && receipt.reason
-					? { reason: receipt.reason }
-					: {}),
-			});
+			this.receiptEvidence(kind, receipt);
 			return receipt;
+		});
+	}
+
+	/**
+	 * FLY-2885 founder rework: a Lead reply, read to the end or honestly cut
+	 * short. When sentences are left unread (no pause in time, her barge-in,
+	 * a new generation, the session ending), she hears that the rest is in the
+	 * channel; if even that cannot be heard, the thread says it.
+	 */
+	async readReply(
+		text: string,
+		options: VoiceSpeakOptions,
+	): Promise<SpeakReceipt> {
+		const { receipt, unreadChunks } = await this.speaker.readReply(
+			text,
+			options,
+		);
+		this.receiptEvidence("readback", receipt);
+		if (unreadChunks === 0) return receipt;
+		this.options.onEvidence?.({
+			kind: "codex_readback_unfinished",
+			pendingKey: receipt.pendingKey,
+			reason: "reason" in receipt ? receipt.reason : null,
+			unreadChunks,
+		});
+		const notice =
+			this.closing || !this.live
+				? undefined
+				: await this.speaker.readReply(
+						READBACK_REMAINDER_NOTICE,
+						{
+							pendingKey: `${options.pendingKey}:remainder`,
+							verification: "best_effort",
+						},
+						{ ceilingMs: READBACK_NOTICE_CEILING_MS },
+					);
+		if (notice) this.receiptEvidence("cue", notice.receipt);
+		if (notice?.receipt.transport !== "submitted")
+			this.status(READBACK_REMAINDER_STATUS);
+		return receipt;
+	}
+
+	private receiptEvidence(kind: VoiceSpeakKind, receipt: SpeakReceipt): void {
+		this.options.onEvidence?.({
+			kind: "codex_speak_receipt",
+			speechKind: kind,
+			pendingKey: receipt.pendingKey,
+			requestDigest: receipt.requestDigest,
+			outcome: receipt.outcome,
+			transport: receipt.transport,
+			contentProof: receipt.contentProof,
+			...("reason" in receipt && receipt.reason
+				? { reason: receipt.reason }
+				: {}),
 		});
 	}
 
@@ -550,6 +604,21 @@ class CodexVoiceSession implements ConversationSession {
 		if (this.downlink.discarding) return "overrun_discard";
 		if (this.downlink.blocking) return "barge_in";
 		return undefined;
+	}
+
+	/**
+	 * Founder rework B: the conversation is still going — someone is speaking,
+	 * or the model's audio is audible, muted by a barge-in, or under overrun
+	 * discard. A waiting Lead reply keeps waiting while this holds.
+	 */
+	private roomActive(): boolean {
+		this.updateAudible();
+		return (
+			this.speakerActive ||
+			this.audible ||
+			this.monotonicNow() - this.lastAudibleAt < READ_ALOUD_QUIET_MS ||
+			this.downlink.blocking
+		);
 	}
 
 	/** response-started/done follow what the player can still be heard playing. */

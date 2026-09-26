@@ -36,6 +36,18 @@ export interface PreparedSpeech {
 	generationBudgetMs: number;
 }
 
+/**
+ * The Lead quotes the voice handoff id on a line of its own so the session can
+ * correlate the reply (hook-payload.ts). It is protocol, not something she
+ * should hear, so a read-aloud drops exactly that line; the thread keeps it.
+ */
+const HANDOFF_CORRELATION_LINE =
+	/^[ \t]*(?:关联[ \t]*)?Handoff ID[ \t]*[:：][ \t]*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[ \t]*$/gimu;
+
+export function stripHandoffCorrelation(value: string): string {
+	return value.replace(HANDOFF_CORRELATION_LINE, "");
+}
+
 export function stripForSpeech(value: string): string {
 	return value
 		.replace(/^```[^\n]*\n?/gmu, "")

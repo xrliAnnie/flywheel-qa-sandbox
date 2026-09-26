@@ -7,7 +7,12 @@ import type {
 	VoiceSpeakVerification,
 } from "flywheel-voice-core";
 import { isFiniteSpeechEquivalent, prepareReplySpeech } from "../speech.js";
-import { speechAlignment, unalignedText } from "./SpeechOverrun.js";
+import {
+	type SpokenPrefix,
+	speechAlignment,
+	spokenPrefix,
+	unalignedText,
+} from "./SpeechOverrun.js";
 
 /** No turn.created/turn.done within this long: binding is unknown (T5b ⑥). */
 const DEFAULT_CONFIRM_TIMEOUT_MS = 30_000;
@@ -27,6 +32,21 @@ const OVERRUN_STOP_WINDOW_MS = 500;
 /** A truncation marker waits this long for its late final (T5c ③). */
 const TRUNCATION_MARKER_MS = 30_000;
 export const SPEECH_TRUNCATED_NOTE = "（已截断越界内容）";
+/**
+ * FLY-2885 founder rework B: a Lead reply waits for the conversation instead
+ * of for a fixed count. It gives up once the room has been quiet this long
+ * (nobody speaking, nothing audible) and still cannot be read into — the
+ * busy state is then stuck, not a conversation…
+ */
+const DEFAULT_READBACK_QUIET_MS = 8_000;
+/** …or once it has waited this long in all. */
+const DEFAULT_READBACK_CEILING_MS = 120_000;
+/** Heard, only not proven: a Lead reply moves on to its next chunk. */
+const HEARD_BUT_UNPROVEN = new Set([
+	"speech_not_equivalent",
+	"playback_trimmed",
+	"speech_binding_unavailable",
+]);
 
 export interface CodexSpeechTransport {
 	appendSpeech(text: string, generation: number): Promise<void>;
@@ -57,6 +77,17 @@ export interface CodexSpeakerHost {
 	/** Backlog trims so far. */
 	trims(): number;
 	/**
+	 * Founder rework B: someone is speaking or the model's audio is still
+	 * flowing (audible, muted by a barge-in, or under overrun discard). While
+	 * this holds, a waiting Lead reply keeps waiting.
+	 */
+	roomActive?(): boolean;
+	/**
+	 * The generation is being replaced (T7) and the session is not closing: a
+	 * waiting Lead reply waits for the new one instead of giving up.
+	 */
+	recovering?(): boolean;
+	/**
 	 * T5c: mute the overrunning turn (session-level discard state). The turn id
 	 * is known when the chunk was already bound, else its turn.created follows.
 	 */
@@ -67,6 +98,15 @@ export interface CodexSpeakerHost {
 	admissionPollMs?: number;
 	silenceConfirmMs?: number;
 	finalWaitMs?: number;
+	readbackQuietMs?: number;
+	readbackCeilingMs?: number;
+}
+
+/** A Lead reply read aloud: its receipt, and what of it was never read. */
+export interface ReadReplyResult {
+	receipt: SpeakReceipt;
+	/** Chunks (or the rest of one) that were never read; 0 when complete. */
+	unreadChunks: number;
 }
 
 interface ChunkResult {
@@ -78,6 +118,8 @@ interface ChunkResult {
 	notSent?: boolean;
 	/** Confirmed silent: may be retried once (T5c ④). */
 	silent?: boolean;
+	/** Overrun of a Lead-reply chunk: which of its sentences were read. */
+	prefix?: SpokenPrefix;
 }
 
 interface OwedFinal {
@@ -92,6 +134,8 @@ interface PendingChunk {
 	pendingKey: string;
 	generation: number;
 	expected: string;
+	/** A Lead-reply chunk: an overrun resumes after its last read sentence. */
+	readback: boolean;
 	verification: VoiceSpeakVerification;
 	sent: boolean;
 	sentAt: number;
@@ -161,12 +205,22 @@ function digest(value: unknown): string {
  * cut, its tail muted and its mirror truncated; a confirmed-silent chunk is
  * retried once; anything that cannot be bound is reported honestly and never
  * retried (it may already have been heard).
+ *
+ * A Lead reply (`readback`, founder rework 2026-09-26) is read to the end: it
+ * waits for the conversation to pause, and an overrun resumes from the first
+ * sentence not yet read (readReply).
  */
 export class CodexProofSpeaker {
 	private readonly requests = new Map<
 		string,
-		{ requestDigest: string; promise: Promise<SpeakReceipt> }
+		{
+			requestDigest: string;
+			receipt: Promise<SpeakReceipt>;
+			result: Promise<ReadReplyResult>;
+		}
 	>();
+	/** A Lead reply is being read (between chunks it holds no pending chunk). */
+	private replyActive = false;
 	private readonly ended = new Set<string>();
 	private pending?: PendingChunk;
 	private truncation?: { expected: string; until: number };
@@ -187,6 +241,33 @@ export class CodexProofSpeaker {
 		kind: VoiceSpeakKind,
 		options: VoiceSpeakOptions,
 	): Promise<SpeakReceipt> {
+		return this.request(text, kind, options).receipt;
+	}
+
+	/**
+	 * FLY-2885 founder rework: a Lead reply, read to the end. It waits for the
+	 * conversation to pause (a time limit, not a count), resumes after an
+	 * overrun from the first unread sentence, and says how much was left unread
+	 * when it truly could not go on.
+	 */
+	readReply(
+		text: string,
+		options: VoiceSpeakOptions,
+		limits: { ceilingMs?: number } = {},
+	): Promise<ReadReplyResult> {
+		return this.request(text, "readback", options, limits).result;
+	}
+
+	private request(
+		text: string,
+		kind: VoiceSpeakKind,
+		options: VoiceSpeakOptions,
+		limits: { ceilingMs?: number } = {},
+	): { receipt: Promise<SpeakReceipt>; result: Promise<ReadReplyResult> } {
+		const settled = (receipt: SpeakReceipt) => ({
+			receipt: Promise.resolve(receipt),
+			result: Promise.resolve({ receipt, unreadChunks: 0 }),
+		});
 		const verification = options.verification ?? defaultVerification(kind);
 		const sessionGeneration = this.host.sessionGeneration();
 		let requestDigest: string;
@@ -205,7 +286,7 @@ export class CodexProofSpeaker {
 				authorityBinding: options.authorityBinding ?? null,
 			});
 		} catch {
-			return Promise.resolve({
+			return settled({
 				pendingKey: options.pendingKey,
 				requestDigest: "0".repeat(64),
 				outcome: "rejected",
@@ -216,8 +297,8 @@ export class CodexProofSpeaker {
 		}
 		const prior = this.requests.get(options.pendingKey);
 		if (prior) {
-			if (prior.requestDigest === requestDigest) return prior.promise;
-			return Promise.resolve({
+			if (prior.requestDigest === requestDigest) return prior;
+			return settled({
 				pendingKey: options.pendingKey,
 				requestDigest,
 				outcome: "rejected",
@@ -226,16 +307,23 @@ export class CodexProofSpeaker {
 				contentProof: "none",
 			});
 		}
-		const promise = this.run({
+		const result = this.run({
 			text,
+			kind,
 			verification,
 			pendingKey: options.pendingKey,
 			requestDigest,
 			sessionGeneration,
 			chunkCharacters: options.chunkCharacters,
+			ceilingMs: limits.ceilingMs,
 		});
-		this.requests.set(options.pendingKey, { requestDigest, promise });
-		return promise;
+		const entry = {
+			requestDigest,
+			result,
+			receipt: result.then((value) => value.receipt),
+		};
+		this.requests.set(options.pendingKey, entry);
+		return entry;
 	}
 
 	/** Data channel turn.created of the current generation. */
@@ -358,48 +446,69 @@ export class CodexProofSpeaker {
 
 	private async run(input: {
 		text: string;
+		kind: VoiceSpeakKind;
 		verification: VoiceSpeakVerification;
 		pendingKey: string;
 		requestDigest: string;
 		sessionGeneration: number;
 		chunkCharacters?: number;
-	}): Promise<SpeakReceipt> {
+		ceilingMs?: number;
+	}): Promise<ReadReplyResult> {
 		const binding = {
 			pendingKey: input.pendingKey,
 			requestDigest: input.requestDigest,
 		};
-		if (
-			!this.host.isLive() ||
-			input.sessionGeneration !== this.host.sessionGeneration()
-		) {
-			return {
+		const rejected = (reason: string, unreadChunks = 0): ReadReplyResult => ({
+			receipt: {
 				...binding,
 				outcome: "rejected",
-				reason: "not_live",
+				reason,
 				transport: "none",
 				contentProof: "none",
-			};
-		}
-		if (this.pending) {
-			return {
-				...binding,
-				outcome: "rejected",
-				reason: "busy",
-				transport: "none",
-				contentProof: "none",
-			};
-		}
+			},
+			unreadChunks,
+		});
+		const live =
+			this.host.isLive() &&
+			input.sessionGeneration === this.host.sessionGeneration();
 		const chunks = prepareReplySpeech(input.text, input.chunkCharacters ?? 80);
-		if (chunks.length === 0) {
+		if (input.kind !== "readback") {
+			if (!live) return rejected("not_live");
+			if (this.pending) return rejected("busy");
+			if (chunks.length === 0) return rejected("empty_text");
 			return {
-				...binding,
-				outcome: "rejected",
-				reason: "empty_text",
-				transport: "none",
-				contentProof: "none",
+				receipt: await this.speakChunks(input, binding, chunks),
+				unreadChunks: 0,
 			};
 		}
+		// A Lead reply waits out a reconnect and a cue in progress; only a
+		// closed session or another reply turns it away, and then it is unread.
+		if (!live && !this.host.recovering?.())
+			return rejected("not_live", chunks.length);
+		if (this.replyActive) return rejected("busy", chunks.length);
+		if (chunks.length === 0) return rejected("empty_text");
+		this.replyActive = true;
+		try {
+			return await this.readChunks(
+				input,
+				binding,
+				chunks.map((chunk) => chunk.spokenText),
+			);
+		} finally {
+			this.replyActive = false;
+		}
+	}
 
+	/** Every kind but a Lead reply: each chunk once, stop at the first failure. */
+	private async speakChunks(
+		input: {
+			verification: VoiceSpeakVerification;
+			pendingKey: string;
+			sessionGeneration: number;
+		},
+		binding: { pendingKey: string; requestDigest: string },
+		chunks: Array<{ spokenText: string }>,
+	): Promise<SpeakReceipt> {
 		let allProof = true;
 		let anySubmitted = false;
 		for (const [index, chunk] of chunks.entries()) {
@@ -464,17 +573,235 @@ export class CodexProofSpeaker {
 		};
 	}
 
+	/**
+	 * Founder rework A–C: a Lead reply goes on until every sentence was read.
+	 * Each chunk waits for a pause in the conversation. A chunk that was heard
+	 * but not proven moves on, as the reply loop always did; an overrun resumes
+	 * after its last read sentence. Whatever left a chunk unheard — no pause in
+	 * time, her barge-in or preempt, silence, a new generation, a closed
+	 * session — stops the reply, and the unread count goes back to the caller.
+	 */
+	private async readChunks(
+		input: {
+			verification: VoiceSpeakVerification;
+			pendingKey: string;
+			sessionGeneration: number;
+			ceilingMs?: number;
+		},
+		binding: { pendingKey: string; requestDigest: string },
+		chunks: string[],
+	): Promise<ReadReplyResult> {
+		let allProof = true;
+		let anySubmitted = false;
+		let firstFailure: string | undefined;
+		let index = 0;
+		let text = chunks[0]!;
+		/** An overrun that read none of its chunk earns one more try. */
+		let stalled = false;
+		const next = (): void => {
+			index += 1;
+			text = chunks[index] ?? "";
+			stalled = false;
+		};
+		while (index < chunks.length) {
+			let result = await this.readChunk(input, text);
+			if (result.silent) {
+				this.host.evidence({
+					kind: "codex_speech_silent_retry",
+					pendingKey: input.pendingKey,
+					chunk: index,
+				});
+				result = await this.readChunk(input, text);
+			}
+			anySubmitted ||= result.transport === "submitted";
+			if (result.ok) {
+				allProof &&= result.contentProof === "transcript_equivalent";
+				next();
+				continue;
+			}
+			allProof = false;
+			const reason = result.reason ?? "speech_failed";
+			firstFailure ??= reason;
+			if (reason === "speech_overrun" && result.prefix) {
+				const { remainder, spokenSentences, totalSentences } = result.prefix;
+				this.host.evidence({
+					kind: "codex_readback_continue",
+					pendingKey: input.pendingKey,
+					chunk: index,
+					spokenSentences,
+					totalSentences,
+				});
+				if (remainder === "") next();
+				else if (spokenSentences > 0) {
+					text = remainder;
+					stalled = false;
+				} else if (!stalled) stalled = true;
+				else break;
+				continue;
+			}
+			if (result.transport === "submitted" && HEARD_BUT_UNPROVEN.has(reason)) {
+				next();
+				continue;
+			}
+			if (result.notSent && !anySubmitted && index === 0)
+				return {
+					receipt: {
+						...binding,
+						outcome: "rejected",
+						reason,
+						transport: "none",
+						contentProof: "none",
+					},
+					unreadChunks: chunks.length,
+				};
+			break;
+		}
+		if (index < chunks.length)
+			return {
+				receipt: {
+					...binding,
+					outcome: "failed",
+					reason: firstFailure ?? "speech_failed",
+					transport: anySubmitted ? "submitted" : "none",
+					contentProof: "none",
+				},
+				unreadChunks: chunks.length - index,
+			};
+		if (input.verification === "required" && !allProof)
+			return {
+				receipt: {
+					...binding,
+					outcome: "failed",
+					reason: firstFailure ?? "speech_proof_missing",
+					transport: anySubmitted ? "submitted" : "none",
+					contentProof: "none",
+				},
+				unreadChunks: 0,
+			};
+		return {
+			receipt: {
+				...binding,
+				outcome: "completed",
+				transport: "submitted",
+				contentProof: allProof ? "transcript_equivalent" : "none",
+			},
+			unreadChunks: 0,
+		};
+	}
+
+	/** One Lead-reply chunk, sent once the conversation pauses. */
+	private async readChunk(
+		input: {
+			verification: VoiceSpeakVerification;
+			pendingKey: string;
+			sessionGeneration: number;
+			ceilingMs?: number;
+		},
+		text: string,
+	): Promise<ChunkResult> {
+		const startedAt = this.host.now();
+		for (;;) {
+			const reason = await this.awaitPause(input, text, startedAt);
+			if (reason !== undefined)
+				return {
+					ok: false,
+					transport: "none",
+					contentProof: "none",
+					reason,
+					notSent: true,
+				};
+			// A cue can take the idle moment first; then wait for the next one.
+			// After a reconnect the chunk goes to the new generation.
+			if (!this.pending)
+				return this.runChunk(
+					input.pendingKey,
+					text,
+					input.verification,
+					this.host.sessionGeneration(),
+					true,
+				);
+		}
+	}
+
+	/**
+	 * Founder rework B: wait for the conversation to pause. The limit is time,
+	 * never a count: 8 s of a quiet room that is still not idle (a stuck busy
+	 * state), or 120 s in all. No chunk is held meanwhile, so a cue still goes.
+	 */
+	private awaitPause(
+		input: {
+			pendingKey: string;
+			sessionGeneration: number;
+			ceilingMs?: number;
+		},
+		expected: string,
+		startedAt: number,
+	): Promise<string | undefined> {
+		let activeAt = startedAt;
+		return new Promise((resolve) => {
+			const poll = (): void => {
+				const live = this.host.isLive();
+				if (!live && !this.host.recovering?.()) {
+					resolve("generation_changed");
+					return;
+				}
+				const now = this.host.now();
+				if (!live || this.pending || this.host.roomActive?.()) activeAt = now;
+				const busy = !live
+					? "reconnecting"
+					: this.pending
+						? "speech_pending"
+						: (this.host.busyReason() ?? this.awaitingFinal(expected));
+				if (busy === undefined) {
+					resolve(undefined);
+					return;
+				}
+				const quietMs = now - activeAt;
+				const waitedMs = now - startedAt;
+				const limit =
+					quietMs >= (this.host.readbackQuietMs ?? DEFAULT_READBACK_QUIET_MS)
+						? "quiet"
+						: waitedMs >=
+								(input.ceilingMs ??
+									this.host.readbackCeilingMs ??
+									DEFAULT_READBACK_CEILING_MS)
+							? "ceiling"
+							: undefined;
+				if (limit) {
+					this.host.evidence({
+						kind: "codex_speech_admission_timeout",
+						pendingKey: input.pendingKey,
+						busy,
+						limit,
+						waitedMs: Math.round(waitedMs),
+						quietMs: Math.round(quietMs),
+					});
+					resolve("busy_conversation");
+					return;
+				}
+				const timer = setTimeout(
+					poll,
+					this.host.admissionPollMs ?? DEFAULT_ADMISSION_POLL_MS,
+				);
+				timer.unref?.();
+			};
+			poll();
+		});
+	}
+
 	private runChunk(
 		pendingKey: string,
 		expected: string,
 		verification: VoiceSpeakVerification,
 		generation: number,
+		readback = false,
 	): Promise<ChunkResult> {
 		return new Promise<ChunkResult>((resolve) => {
 			const pending: PendingChunk = {
 				pendingKey,
 				generation,
 				expected,
+				readback,
 				verification,
 				sent: false,
 				sentAt: 0,
@@ -509,7 +836,7 @@ export class CodexProofSpeaker {
 			});
 			return;
 		}
-		const busy = this.host.busyReason() ?? this.awaitingFinal(pending);
+		const busy = this.host.busyReason() ?? this.awaitingFinal(pending.expected);
 		if (busy === undefined) {
 			this.send(pending);
 			return;
@@ -613,10 +940,10 @@ export class CodexProofSpeaker {
 	}
 
 	/** An earlier chunk's final is still owed (T5c ③). */
-	private awaitingFinal(pending: PendingChunk): string | undefined {
+	private awaitingFinal(expected: string): string | undefined {
 		this.expireOwed();
 		// A retry of the same line may go: see turnCreated.
-		return this.owed.some((owed) => owed.expected !== pending.expected)
+		return this.owed.some((owed) => owed.expected !== expected)
 			? "awaiting_final"
 			: undefined;
 	}
@@ -710,8 +1037,13 @@ export class CodexProofSpeaker {
 		const detectedAt = this.host.now();
 		const consumedAtDetection = this.host.consumedVoiced();
 		this.host.overrun(pending.boundTurnId);
+		// Founder rework A: a Lead-reply chunk is mirrored only as far as it was
+		// read, and the rest of it is read next.
+		const prefix = pending.readback
+			? spokenPrefix(pending.expected, observed)
+			: undefined;
 		this.truncation = {
-			expected: pending.expected,
+			expected: prefix ? prefix.spoken : pending.expected,
 			until: detectedAt + TRUNCATION_MARKER_MS,
 		};
 		const extra = unalignedText(pending.expected, observed);
@@ -732,6 +1064,7 @@ export class CodexProofSpeaker {
 			transport: "submitted",
 			contentProof: "none",
 			reason: "speech_overrun",
+			...(prefix ? { prefix } : {}),
 		});
 	}
 

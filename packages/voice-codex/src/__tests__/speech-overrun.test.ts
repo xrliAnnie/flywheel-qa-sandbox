@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	readbackSentences,
 	SPEECH_OVERRUN_UNALIGNED_CHARS,
 	speechAlignment,
+	spokenPrefix,
 	unalignedText,
 } from "../codex/SpeechOverrun.js";
+import { stripHandoffCorrelation } from "../speech.js";
 
 const readback = JSON.parse(
 	readFileSync(
@@ -82,5 +85,94 @@ describe("read-aloud overrun alignment (FLY-2885 T5c)", () => {
 				expect(triggeredAt, transcript.run).toBeUndefined();
 			}
 		}
+	});
+});
+
+describe("where a Lead reply resumes after an overrun (FLY-2885 founder rework A)", () => {
+	it("splits a chunk into sentences that join back into the chunk", () => {
+		const text = "第一句。第二句!第三句?\n\n最后一句没有句号";
+		const sentences = readbackSentences(text);
+		expect(sentences).toEqual([
+			"第一句。",
+			"第二句!",
+			"第三句?\n\n",
+			"最后一句没有句号",
+		]);
+		expect(sentences.join("")).toBe(text);
+	});
+
+	it("resumes after the last sentence read, with a 1-6 character rewrite tolerated", () => {
+		const expected =
+			"我有 Peter 的角色背景,但没有读取他的完整 memory。知道他是产品负责人,需要查记录。";
+		expect(
+			spokenPrefix(
+				expected,
+				"我有 Peter 的角色背景,但是没读他的完整 memory。目前还在推进三件事",
+			),
+		).toEqual({
+			spoken: "我有 Peter 的角色背景,但没有读取他的完整 memory。",
+			remainder: "知道他是产品负责人,需要查记录。",
+			spokenSentences: 1,
+			totalSentences: 2,
+		});
+	});
+
+	it("does not count a sentence the invented part only brushes against", () => {
+		// "还", "有" and "两"(=2) of the invented text also occur in sentence two.
+		expect(
+			spokenPrefix(
+				"第一句话已经说完了。第二句话还没有念。",
+				"第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			).remainder,
+		).toBe("第二句话还没有念。");
+	});
+
+	it("has nothing left when every sentence was read before the overrun", () => {
+		expect(
+			spokenPrefix("第一句。第二句。", "第一句。第二句。然后我再补充很多内容"),
+		).toMatchObject({ remainder: "", spokenSentences: 2 });
+	});
+
+	it("resumes from the start when nothing of the chunk was read", () => {
+		expect(
+			spokenPrefix(
+				"今天下午三点开会。",
+				"我现在去帮你查一下这个问题的具体情况。",
+			),
+		).toEqual({
+			spoken: "",
+			remainder: "今天下午三点开会。",
+			spokenSentences: 0,
+			totalSentences: 1,
+		});
+	});
+
+	it("never leaves a punctuation-only remainder to read", () => {
+		expect(
+			spokenPrefix("好的。\n\n", "好的。我再说点别的内容吧"),
+		).toMatchObject({ remainder: "", spokenSentences: 1 });
+	});
+});
+
+describe("the handoff correlation line is not read aloud (FLY-2885 founder rework)", () => {
+	const id = "9cd193a6-7a84-45da-b4af-dcce7d9d3954";
+
+	it.each([
+		`关联 Handoff ID：${id}`,
+		`Handoff ID: ${id}`,
+		`  关联Handoff ID :${id}  `,
+	])("drops the whole line %j", (line) => {
+		expect(stripHandoffCorrelation(`第一句。\n\n${line}\n最后一句。`)).toBe(
+			"第一句。\n\n\n最后一句。",
+		);
+	});
+
+	it.each([
+		`这件事的 Handoff ID: ${id} 我已经记下了`,
+		`Handoff ID: ${id} 已处理`,
+		"Handoff ID: 9cd193a6",
+		`Request ID: ${id}`,
+	])("leaves %j alone", (line) => {
+		expect(stripHandoffCorrelation(line)).toBe(line);
 	});
 });
