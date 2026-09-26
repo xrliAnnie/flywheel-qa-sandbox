@@ -32,6 +32,13 @@ Issue: FLY-2920 (https://linear.app/geoforge3d/issue/FLY-2920/病根修复-4-重
 - Lead 回复 `ab0ab586-3dac-41c9-ae12-1a5f5c75c45a` 明确保留 Mermaid 占位，交卷注明 pending，由 Lead 在沙箱外补画后发给 founder。已报告执行此指示（report `83f0da2a-ca76-4388-ac9b-21cf192a3145`）。
 - Chrome DevTools `list_pages` 两次各300s超时；未据超时重启浏览器，也不声称真实布局/浏览器CSP执行通过。当前HTML再次通过7节意见控制器检查。托管HTTP、CSP与字节检查仍待有效APPROVED后发布时执行。
 
+## R3 与 R4 续接
+
+- R3 有效 `CHANGES_REQUESTED`，完整结果见 `review-r3.json`。唯一HIGH为 `pressure-freshness-window-vs-real-sensor-cadence`：实际swap采样挂在约10分钟的Lead reconcile，不是陈旧注释所写的30秒。
+- 提交 `32f5ab744` 定义独立轻量30秒采样器、5秒读取上限、早于准入开放的组合根接线、90秒新鲜度和60秒warm-up；移出重型巡检的仅是swap采样。新增真实30秒timer的组合根验收，重型巡检挂起65秒仍须采到样本。founder页同步启动等待与未知降级边界。
+- R4 gate=`cdb373cb-c3e9-41cc-b9fb-fd829094d0a5`、request=`f3c26ccf-9397-4a65-8fc3-a604f159f3ac`，accepted=true、skipped=false、duplicate=false；送审plan blob=`da53ca9012d3c9894d14df4f70e15ead060d55c6`。
+- 本轮新增的一条可复用判断“传感器unknown不是恢复；删除锁存须明确证据有效期”已写成允许路径下的memory更新建议 `memories/extensions/ad_hoc/notes/2026-09-26T172700Z-bounded-pressure-evidence.md`。未直接修改共享角色索引；其只读预算检查为102行/19931字节。
+
 ## 待完成
 
 有效评审 → 最终页状态刷新 → commit/push → publish-only → 托管 HTTP/CSP/source 校验 → Lead URL report → exact complete/park。
