@@ -1,15 +1,14 @@
 ---
 issue: FLY-2885
 phase: implement
-phaseCursor: 13/14
-updated: 2026-09-26T03:46:13.282Z
-nextStep: verification sweep (lint, builds, dependents typecheck, targeted
-  tests, drift guard); then §12 code after Lead relays r2 review verdict; then
-  code review + PR
+phaseCursor: 9/11
+updated: 2026-09-26T04:58:54.591Z
+nextStep: await Lead verdict on §12.6 r3 (0245f2c16); then §12 code + tests,
+  design-gate rebind, review, PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2885 progress
-**phase**: implement (13/14)
-**next**: verification sweep (lint, builds, dependents typecheck, targeted tests, drift guard); then §12 code after Lead relays r2 review verdict; then code review + PR
+**phase**: implement (9/11)
+**next**: await Lead verdict on §12.6 r3 (0245f2c16); then §12 code + tests, design-gate rebind, review, PR
