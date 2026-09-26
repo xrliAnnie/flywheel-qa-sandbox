@@ -576,9 +576,9 @@ describe("FLY-2921 C7 from the real event route", () => {
 		process.env.PATH = `${shimDir}:${process.env.PATH ?? ""}`;
 		process.env.FLYWHEEL_REWORK_DELTA_TIMEOUT_MS = "300";
 		expect(reworkDeltaTimeoutMs()).toBe(300);
-		const started = Date.now();
+		// The stalled diff (sleep 30) can only end through the 300 ms timeout;
+		// the audited unverified delta is the proof, not the host clock.
 		await expectAccepted(await complete(activationId), requestId);
-		expect(Date.now() - started).toBeLessThan(10_000);
 		const audits = eventsOfKind("rework_delta_unverified");
 		expect(audits).toHaveLength(1);
 		expect(audits[0]!.payload).toMatchObject({

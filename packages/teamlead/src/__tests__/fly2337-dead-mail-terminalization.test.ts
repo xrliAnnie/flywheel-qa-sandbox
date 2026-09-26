@@ -154,7 +154,7 @@ function seedBlockingRework(store: StateStore, runId: string): void {
 	db.prepare(
 		`INSERT INTO workflow_rework_delivery
 		   (request_id, route_revision, state, updated_at)
-		 VALUES (?, 1, 'held', ?)`,
+		 VALUES (?, 1, 'returned_to_lead', ?)`,
 	).run(requestId, "2026-09-04T09:58:00.000Z");
 }
 
