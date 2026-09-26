@@ -1,14 +1,14 @@
 ---
 issue: FLY-2886
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-26T13:10:34.130Z
-nextStep: "K2: runtime-factory integrationFailurePolicy omit_integration +
-  manifest unavailableIntegrations + brief line (plan §14.1)"
+phaseCursor: 2/6
+updated: 2026-09-26T13:34:31.221Z
+nextStep: "K3: Bridge background-degraded route + voice_sessions columns +
+  degraded context + scope rejection + poller skip (plan §14.2)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: implement (1/6)
-**next**: K2: runtime-factory integrationFailurePolicy omit_integration + manifest unavailableIntegrations + brief line (plan §14.1)
+**phase**: implement (2/6)
+**next**: K3: Bridge background-degraded route + voice_sessions columns + degraded context + scope rejection + poller skip (plan §14.2)
