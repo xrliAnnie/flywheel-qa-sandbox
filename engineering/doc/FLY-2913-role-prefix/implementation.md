@@ -69,3 +69,9 @@ T3/T4 接线的只读路径核对另发现三个必须覆盖的入口：`actions
 本批验证：27 项 probe fixtures、prefix inventory、13 项 weekly collector、CI shell suite enumeration（含删除变异负控）、CI structure 及 `required-wall-clock-thresholds.test.ts` 均通过。`pnpm lint` exit 0（25 条既有 warning）。无 TypeScript 源码/API/导出变更，无 owning package build 或 dependent typecheck 新要求；没有全包测试。按三个改动文件的全路径/文件名/父目录完成消费者搜索，逐匹配排除理由见 `evidence/resume-consumer-sweep.json`。
 
 Lead 回答 `1de718ec-43e5-455a-a259-981a1056f082` / `3c36ba2d-b163-4115-9417-ab744eb1e78e`：房间尚未启动，旧头冻结解除，先提交推送这些修复；房间待机器负载稳定由 Lead 在沙箱外按新完整 SHA 起，再回 room-info 和双 SHA。当前没有五角色基线或真实任务回执，T1/T2 未标完成，T3–T6 仍待执行。
+
+## 房间就绪前的套件准备（2026-09-26 UTC）
+
+已新增计划要求的 `packages/qa-framework/suites/fly-2913-role-prefix.md`，明确五角色、三组同条件配对、实际消费者、必要能力/低频依赖、控制测试、回退及退出判据。只读核对发现 `scripts/lib/qa-generalized-e2e-lib.mjs:657` 的通用 start builder 固定 implement=codex，不能直接当 Claude implement 验收；套件因此明确用独立串行的 Claude 作者/Codex 作者任务组覆盖原有两方向评审，并保留现有家族与阶段门禁。
+
+这只是 T5 的套件文档准备，尚无专项真实模型 driver 或任何角色成功回执，不上调 T1–T6 完成计数。已核对计划引用、五角色标识与 diff whitespace；纯 Markdown 变化未新增测试或运行全包测试。当前 Lead 尚未回 room-info，装房仍由其沙箱外载体执行。
