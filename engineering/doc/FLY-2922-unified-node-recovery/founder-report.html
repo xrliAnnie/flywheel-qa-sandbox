@@ -10,7 +10,7 @@
   H --&gt;|落地节点| J[原落地操作继续未完成步骤]
   I --&gt;|又失败| B
   J --&gt;|又失败| B
-</pre></details><ol><li>确认当前节点和旧执行体，拿到旧体已经退出的证据。</li><li>一次保存新身份、派发账本、前序工作关系和可运行状态；任何一步失败都不算放行。前序工作关系记录新体应从哪次工作取得版本与返工意见。</li><li>调度器读账本启动新体；落地节点继续原操作中未完成的步骤。</li><li>再次失败仍回到同一个恢复入口。</li></ol><p><b>派发账本</b> 是系统承诺启动某个执行身份的持久记录。写入派发与实际启动分开显示；只有启动证据齐全才显示已启动。非首个节点还必须实际读到正确的上游版本与返工意见，不能只有一条无人能接的派发。</p><label for="c-flow">这一节的意见</label><textarea id="c-flow" data-comment="flow" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="保留什么，更新什么"><h2>保留什么，更新什么</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染被系统权限阻止，标准参数重试也失败。已保留 Mermaid 图源（用文字描述图形关系的格式）；这里不以拼接方框冒充图。</p></div><details><summary>查看图源</summary><pre>erDiagram
+</pre></details><ol><li>确认当前节点和旧执行体，拿到旧体已经退出的证据。</li><li>一次保存新身份、派发账本、前序工作关系和可运行状态；任何一步失败都不算放行。前序工作关系记录新体应从哪次工作取得版本与返工意见。</li><li>调度器读账本启动新体；落地节点继续原操作中未完成的步骤。</li><li>首次执行体还没创建工作区就失败时，保留经确认的启动版本；已经开始工作的，保留其真实工作版本。再次失败，包括启动前准备失败，仍回到同一个恢复入口。</li></ol><p><b>派发账本</b> 是系统承诺启动某个执行身份的持久记录。写入派发与实际启动分开显示；只有启动证据齐全才显示已启动。非首个节点还必须实际读到正确的上游版本与返工意见，不能只有一条无人能接的派发。</p><label for="c-flow">这一节的意见</label><textarea id="c-flow" data-comment="flow" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="保留什么，更新什么"><h2>保留什么，更新什么</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染被系统权限阻止，标准参数重试也失败。已保留 Mermaid 图源（用文字描述图形关系的格式）；这里不以拼接方框冒充图。</p></div><details><summary>查看图源</summary><pre>erDiagram
   RUN ||--|| CURRENT_NODE : preserves
   CURRENT_NODE ||--o{ DISPATCH : launches
   RECOVERY_RECEIPT ||--|| DISPATCH : proves

@@ -3,7 +3,7 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 日期: 2026-09-26
 基于: research.md
 
-状态：R2 CHANGES_REQUESTED 已修订，待 R3 设计审阅。设计节点，不含实现或生产验证。基线 `af853328d`。
+状态：R3 CHANGES_REQUESTED 已修订，待 R4 设计审阅。设计节点，不含实现或生产验证。基线 `af853328d`。
 
 ## 1. 给 founder 的结论
 
@@ -106,6 +106,10 @@ type RecoveryTarget = {
   runId: string; nodeId: string; attempt: number;
   previousExecutionId: string | null; previousLaunchOrdinal: number;
   snapshotDigest: string; holdSetDigest: string;
+  startAuthority: null | { mode: 'root_initial' | 'execution_head' | 'resume_anchor';
+    sourceExecutionId: string | null; reservationKey: string | null;
+    repositoryIdentity: string; branch: string; headSha: string; evidenceDigest: string;
+    provenance: string };
   sourceHoldEventUids: string[];
   rework: null | { requestId: string; routeRevision: number };
   land: null | { operationId: string; resumeGeneration: number; approvedHead: string };
@@ -136,7 +140,7 @@ type RecoveryReceipt = {
 4. 固定 current nodeId 和 attempt；服务端生成新 executionId。调用 `allocateWorkflowLaunchOrdinalTx`（purpose=fault_replacement，不新增 purpose），得到递增 ordinal；该方法当前只返回 ordinal，须用完整 run/node/attempt/execution/ordinal 精确读取新 ledger ID 写入 receipt，不能把 ordinal 当作 ledger ID。将节点绑定为 pending/new execution；不清空成 NULL。新 activation、输出 credential、submission credential 仍由现有 admission 铸造，绝不复用旧凭据。
 5. 关联对象归一（下面 §3.4）：只更新这个节点/请求/操作；保持原 snapshot、runId、worktree、branch、业务 attempt、批准 head 不变。参数化 SQL 每个 CAS 必须恰好一行；不成功就 throw 回滚。
 6. 同事务写 §3.5 的前序 lineage 与 writer/resume/watch 证据、新 `node_dispatched`、恢复 receipt、逐个 source UID 的 `hold_resumed`（供历史消费者关闭），清除此次 episode；run held→active（active orphan 保持 active）。同事务调用现有 `reviveHeldWorkflowCarrierDeliveriesTx`，只复活 run_inactive 派生的 carrier，不清除 carrier 自身 needs_lead。其他真实未解决 run blocker存在则在步骤 2 拒绝，不能 mint 后依然 held。多条同故障旧日志不算新 blocker。
-7. commit 后由现有 dispatcher 消费。提交后进程崩溃或 HTTP 丢包无需补偿删除，重启扫描同一 ledger。启动失败形成新的统一 episode，恢复按钮持续可用；重复 request 仍返回旧回执，新 episode 才允许再次 mint。
+7. commit 后由现有 dispatcher 消费。提交后进程崩溃或 HTTP 丢包无需补偿删除，重启扫描同一 ledger。启动失败由 §3.6 的明确 producer 形成新的统一 episode，恢复按钮持续可用；重复 request 仍返回旧回执，新 episode 才允许再次 mint。
 
 重点并发：将统一恢复与自然完成/自动 dead rollback/显式 terminate/新 rework 的写 CAS 建在同一 current tuple 上。完成先提交则恢复失败；恢复先提交则旧完成为 stale_execution_superseded，不能推进 successor。自动恢复继续使用原重试上限，本单不无限 reset faultReplacementCount；明确 operator 确認的新恢复代不抹历史计数，下一次失败继续呈现统一入口。
 
@@ -166,13 +170,32 @@ type RecoveryReceipt = {
 
 当前 dispatcher:2644–2785 只沿 `edge_traversed.payload.successorExecutionId` 或 `execution_dead_rolled_back.payload.newExecutionId → event.execution_id` 回溯上游；`node_dispatched` 和恢复回执本身不会被读取。非根 implement/qa 没有此关系会抛 engine_predecessor_unavailable，且 pending 未进入 admitted 的超时回滚范围。下面的 lineage 与派发是同一提交的必需部分，不是之后补日志。
 
-**同节点物理替换：** 抽取 `rollbackDeadWorkflowNodeExecution` 已有 replacement bookkeeping 事务内 helper，让自动回滚与统一恢复复用。追加现有 `execution_dead_rolled_back` 事件，event.execution_id=精确旧 execution，payload 含 attempt/newExecutionId/launchOrdinal/reason/retryDisposition=retry/livenessEvidence/at，UID 绑定恢复 operation 及旧新 tuple；不冒用旧 dead_rollback UID 覆盖历史。未启动回滚只有在取消 fence 与无启动正证据已成立时才可使用此替换关系，保留原 liveness 事实，不伪称旧体曾启动。连续替换必须能逐个回溯到最初 edge 或 root start reservation；原 edge outcome/loopIteration/founderFeedback 均保留。stage/apply 检查链唯一、无循环、同 run/node/attempt；非根前序不存在返回 lineage_missing，不先 active 后让 dispatcher 静默卡住。
+**同节点物理替换：** 抽取 `rollbackDeadWorkflowNodeExecution` 已有 replacement bookkeeping 事务内 helper，让自动回滚与统一恢复复用。追加现有 `execution_dead_rolled_back` 事件，event.execution_id=精确旧 execution，payload 含 attempt/newExecutionId/launchOrdinal/reason/retryDisposition=retry/livenessEvidence/at，UID 绑定恢复 operation 及旧新 tuple；不冒用旧 dead_rollback UID 覆盖历史。未启动回滚只有在取消 fence 与无启动正证据已成立时才可使用此替换关系，保留原 liveness 事实，不伪称旧体曾启动。连续替换必须能逐个回溯到最初 edge 或 root start reservation；root reservation 只证明启动身份，不含 HEAD，起点按下文单独解析，不能因此调用旧未启动体的 head resolver；原 edge outcome/loopIteration/founderFeedback 均保留。stage/apply 检查链唯一、无循环、同 run/node/attempt；非根前序不存在返回 lineage_missing，不先 active 后让 dispatcher 静默卡住。
+
+**根节点起点与真实 HEAD：** `WorkflowStartReservationRow` 当前只有身份/selection_digest/stage，没有 base SHA。不能声称旧 reservation 已保存原始 HEAD。统一 stage 增加 startAuthority，并抽取 RunDispatcher 的现有 startPoint/resume/continuity/default-base 选择逻辑为可只读预检的同一 resolver，禁止恢复另造默认分支规则。
+
+- root、attempt=1、可信取消证据证明旧体从未启动：不调用 resolveWorkflowHeadAuthority(旧体)，也不把 startRetryExecutionId 当 HEAD 来源。优先复用已有可信 root 起点/冻结 resume anchor；没有历史冻结 SHA 的旧数据，执行原 root 初次启动的同一服务端选择规则（包括既有分支/连续性），在 stage 显示并冻结此次解析出的 repository/branch/commit SHA，明确 provenance=legacy_initial_policy_resolution，不能说这是已知历史 HEAD。该处允许按原启动策略重新解析，是因为无旧体工作成果可丢失；不覆盖已存在的工作区。apply 重验该 commit 存在与 repo/branch 身份，若选择或 head 变化则 409 start_authority_changed，重新确认。
+- root 旧体曾启动：由真实 `resolveWorkflowHeadAuthority` 读取该 execution 持久 worktree 的 git HEAD；若 worktree 丢失，仅可用已有精确冻结 resume anchor 且实际仓库校验通过，不能退回最新默认分支。无法解析在 stage 返回明确 409 head_authority_unavailable，不 mint、不返回恢复成功；保留 run 与恢复入口供修复证据后重试。
+- 非根 phase：沿上文 lineage 找前序，用真实 head authority 预检其 worktree/head；materialized/rework/resume 起点分别走现有真实 authority，不信任 HTTP 自报 SHA。stage/apply 都固定来源与摘要，apply 外部观察后在事务内重验 tuple/generation，再由 admission 重验内容仍匹配，避免 TOCTOU 偷换。
+- dispatcher 优先读取本次持久 recovery receipt 的 startAuthority：root_initial 用已冻结 SHA 传给 RunDispatcher，不再经过 startRetry 的旧体 HEAD 分支；execution_head/resume_anchor 仍通过各自真实 authority 校验后用冻结 SHA。这是起点来源修正，不跳过 lineage、lead 归属、branch 绑定、quota 或 admission guards。连续 root 替换保留最初已冻结的 root_initial 来源，不在每次恢复重新选最新默认 HEAD。
+- 根未启动、根已启动后死亡、非根 implement/qa 四类验收须使用临时真实 git repo/worktree 与实际 `resolveWorkflowHeadAuthority`，不得 stub resolvePredecessorHead；分别断言无旧 worktree 也能按冻结 root 起点 admission、旧工作成果不丢、缺失/变更 head 在 stage/apply 明确拒绝而不写新账本、真实新体取到预期 commit。
 
 helper 同时复用现有 `writer_replacement`、`resume_writer_binding`、`issue_delivery` writer_migration、resume attachment 继承及摘要校验（StateStore:61500–61720）。不使用最新 issue 文本替换冻结交付；附件缺失按原协议记不可恢复证据，若本次 admission 依赖它则拒绝派发，不伪造附件。曾启动的旧体必须建立或核对精确 `workflow_dead_execution_watch` 与 activity baseline；已存在同旧体/同替身可重放，不同替身冲突。未启动体继续使用原 launch cancellation/marker 防护，不构造虚假的启动 watch。安全副作用、lineage 或必需附件失败必须让主事务失败；非关键附件诊断沿用原协议，不能吞掉主事务错误。
 
 **loop / idle force 的业务目标派发：** 从已冻结 hold 事件读取 source node/attempt/execution、edgeId、outcome、targetNodeId/targetAttempt、loopIteration；核对 snapshot 中确有该边和源真实完成收据。与新目标 ledger 同事务追加 `edge_traversed`，event.execution_id=源执行身份，payload.successorExecutionId=新目标身份，保留上述字段及原有 founderFeedback（如适用）。使用 `decision_resume_edge:<operationId>` 唯一 UID 并引用 sourceHoldEventUid；原 loop_limit/idle 事件及其 transition UID 不改写。只完成之前尚未铸出的目标，不再提交源 completion、不重复增加已计入的 loop iteration、不重发源输出。重复 operation 返回同一 edge/ledger。`accept_current_pass` 没有新目标，所以不写此 edge。复用普通 transition 的目标 resume attachment/issue_delivery 材料准备，使后续 admission 获得同样上下文。
 
+**业务继续 edge 的其他消费者：** 合成 edge payload 必须额外带 `origin='hold_decision_resume'`、operationId、sourceHoldEventUid；固定 sourceAttempt/targetNodeId/targetAttempt/outcome/loopIteration/successorExecutionId 与 source event 一致，`gateOpened=false`（本派发分支只用于可执行目标）。不通过 gateOpened 补造审批。StateStore:64239 的 completion-disposition 重建显式跳过此 origin，保留源节点此前的 completion disposition 和 resident park；67364 的 priorEdges 守卫把该 edge 当作目标已经派出，继续拒绝同 source 的再次推进，但已持久源 completion/transition 的幂等回放照旧返回原收据。73048 的 ship-ready entry 搜索显式跳过此 origin，不能让恢复派发产生 ship-ready；其目标本来不是 gate。目标为 gate 的已记录决定沿用原 gate materialization，保持 review+NULL 与 holder，不进入本可执行目标派发分支、不写 gateOpened=false 的假 gate edge。workflow-resume-resolver.ts 的 receiptEventKinds 仍识别 edge_traversed，目标 attachment 必须绑定完整带 origin 的 payload digest，保持恢复材料可核对。StateStore:35170 schema enum、86658 event enum 无类型迁移；67585/68345/73983 的正常 edge producers 不改。实现时对 packages/scripts 及插件消费端完成精确字符串 sweep，新增消费者逐项处置，不把本次源码列表当全局零引用证明。回归固定源 completion 回放结果、park 行、关闭/唤醒状态和 ship-ready 均不受新增 edge 影响，重复决定无第二次派发。
+
 验收直接运行 dispatcher.consume/tick，从非根 implement/qa 恢复到 admission 并解析原上游 head；QA fail 的 loop-limit continue 到 implement 必须携带原 qaSummary 与 loopIteration 的 phaseFixContext。先分别构造“只有新账本、没有 lineage”和错误旧 execution 的负控，证明测试会捕获 R2 故障；补连续替换与旧体迟到信号，无新增 successor、无重复派发。恢复事务通过不等于这些消费验证通过。
+
+### 3.6 准入前失败也要回到统一入口
+
+dispatcher 当前 consume catch 只日志记录，pending+intent_recorded 不被 admitted-only stall reconciler 扫到。修改该 catch 与现有 reconciler，共用 `recordWorkflowPreAdmissionFailure`，不增加新队列。只覆盖当前 tuple/最新 ordinal、node pending、无 activation admission/launch commit 的意图；已经 admitted/committed 的执行继续原安全回滚协议。
+
+- 对结构性永久拒绝（engine_predecessor_head_invalid、engine_resume_admission_invalid、engine_materialized_head_invalid、engine_rework_replacement_context_invalid、lineage_missing）当次登记；对 git_head_unavailable 等可暂时失败，持久记录同 tuple+错误码的 first/last observed 和连续计数，至少 3 次且跨度达到现有 unlaunched rollbackMs 才升级。记录在 workflow_run_event 的诊断事件，重启不丢计数；错误变化重启该计数。quota/capacity/launch flag 的正常等待、已有 owner、返回 false 的忙碌不算故障，保留 demand-aware 语义。
+- 升级前服务端取精确 launch cancellation fence 和 marker/window 的未启动正证据；同事务重验 latest ordinal/node pending、无 binding/committed marker、无自然完成，写 run_recovery_required（原因 pre_admission_failed，绑定此次意图和错误码），node failed、run held。仅在已证无启动时把该 intent 置 abandoned，保留旧 startAuthority 和 lineage。并发 admission/marker commit 胜出则不改状态，改走原已准入恢复路径；不凭“没有 session”推断可安全 abandon。
+- 同一失败意图用稳定 event UID，重复 tick 不重复 hold/alert；恢复后新意图失败产生新 episode。该形状是统一故障入口的有效旧 tuple，即使没有 session/worktree；使用未启动证据及持久 startAuthority，不要求不存在的 head。stage 修复不了来源时明确拒绝，不暗示已启动。
+- 验收从恢复/业务决定产生的真实 intent 注入上述每个错误，验证永久错误进入 held、暂时故障跨阈值才升级、重启保留计数、解除原因后同入口再 mint 并被消费；quota/capacity false、已 admission/commit、旧 ordinal 为负控。不得只断言日志含 dispatch held。
 
 ## 4. complete 与 carrier close
 
@@ -244,6 +267,10 @@ redispatch_current 共同成功断言（state-only/业务决定另见下表）�
 
 | 用例 | 构造 | 验收 |
 |---|---|---|
+| root 未启动 | 根 design/implement attempt=1，旧 session 无 worktree/marker，start reservation 存在 | 真实初始起点 resolver 冻结 SHA，dispatcher 不读旧体 HEAD，真实 admission 使用该 SHA；同请求重放不重新选 base |
+| root 已启动后死亡 | 真实 worktree 有新提交，旧体已死；另测工作区失踪 | 正常恢复保留实际 head；失踪无可信 anchor 时 stage 409 且零 mint，不默默从 main 重开 |
+| 准入前再次失败 | 当前 pending intent 注入结构性与暂时 head 错误 | §3.6 产生统一 episode，可再次恢复；重启/并发/额度正常等待负控通过 |
+| 业务 edge 旁路消费者 | parked QA 源节点已完成，continue 产生带 origin 的 edge | 源 completion disposition/park/ship-ready 不变；重复 completion 回放与重复决定均幂等 |
 | 非根节点替换 | 非根 implement、qa 分别 unlaunched/dead，原 edge 存在；再连续替换一次 | 回溯原前序，admission 用正确 head；writer/附件迁移/watch 齐全；仅 ledger 无 lineage 的负控失败 |
 | 业务继续的前序 | QA fail loop 超限后继续到 implement；idle force 单独夹具 | 一次新 edge/ledger；上游 head、qaSummary、loopIteration 正确，source completion 和计数不重复 |
 | 历史旧 hold | pane-loss 自动重启和 land full resume 后遗留未关闭旧事件，再发生新 hold | 精确旧收据可证明的事件 superseded，当前故障可恢复；当前人工 pause/新代故障不误清 |
@@ -315,3 +342,12 @@ pnpm --dir packages/flywheel-comm exec vitest run src/commands/__tests__/hold.te
 - rework-live-actor-hold-unclassified：接受；§3.1/3.4 明确 alive 原 actor 重臂 wake 与 dead 替换，保留投递权限和回执。
 - quota-worker-redispatch-precondition：接受；§3.4 自动 active 死体回滚同事务结算 waiting target，worker 只接 held，优先读委托收据。
 - tests_not_run：保留为设计边界；本节点未实现，不把静态查阅或报告脚本验证当行为测试。
+
+## 11. R3 审阅处置
+
+有效 verdict：CHANGES_REQUESTED，question `46a1b3cd-9d44-4c3b-8bf9-2659c598f2af`，request `346ee5cf-fa23-48a0-9751-84ae21af29bf`。
+
+- HIGH root-start-lineage-head-unresolvable：接受。§3.2/3.5 区分 root 未启动、root 已启动与非根 head authority，冻结真实起点并修正 dispatcher startRetry 分支；明确 reservation 目前没有 SHA，新增真实 git 测试禁用 head stub。
+- pre-admission-consume-failure-no-episode：接受。§3.6 明确 producer、错误分类、持久计数、无启动正证据与原子 held 转换，补相关负控。
+- decision-edge-consumer-audit：接受。§3.5 固定 origin/payload，逐项定义 completion disposition、transition conflict、ship-ready、resume attachment 的读取语义，补 source park 不变回归。
+- tests_not_run：设计阶段边界不变；实际行为验收交给实现及 QA，不声称已经通过。

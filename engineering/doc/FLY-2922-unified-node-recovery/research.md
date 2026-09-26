@@ -45,3 +45,9 @@ Issue: FLY-2922 (https://linear.app/geoforge3d/issue/FLY-2922/病根修复-8-hel
 已确认 dispatcher:2644–2785 通过 edge_traversed 或 execution_dead_rolled_back 回溯前序；单独 node_dispatched 无效。StateStore:61500–61780 的死体替换还维护 writer replacement、resume attachment/issue_delivery 迁移及 watch，统一入口必须复用这些记账。loop/idle 的现有 resume 分支只有新节点与 node_dispatched，不能直接照搬为完成方案；业务继续须补可消费 edge 与 QA fix context。
 
 同时确认 pane-loss 恢复可写 active 而没有 hold_resumed，land full resume 留下的是 land_operation_step 的 resume_authorized 收据。旧开放事件须按精确关联收据投影 superseded，不能按时间一笔清除。plugin.ts done-close 仍用 legacy finalizeDone，enrolled 分流必须只认真实 completion。以上具体修订及验收见 plan.md §3.1、3.4、3.5、4、7、10。
+
+## R3 追加源码核对
+
+WorkflowStartReservationRow 无原始 base SHA。dispatcher 的 startRetryExecutionId 会使根节点替身读取未启动旧体的 worktree HEAD，而 head-authority.ts 实际需要持久 worktree_path 并执行 git rev-parse。旧体可能尚无工作区，因此修订必须冻结服务端初始起点或真实旧工作区 head，不能只增加 lineage。相关测试用真实 git 仓库及 head authority；单元测试 stub 不足以覆盖。
+
+consume catch 当前只记日志，pending intent 不被 admitted-only reconcile 覆盖；plan.md §3.6 增加明确失败 producer。业务继续 edge 的消费者不仅是 dispatcher，还包括源 completion disposition、priorEdges、ship-ready 和 resume resolver；§3.5 为 origin=hold_decision_resume 逐项规定语义与回归。
