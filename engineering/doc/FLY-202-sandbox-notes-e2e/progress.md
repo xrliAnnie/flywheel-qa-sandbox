@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
-phase: design
-phaseCursor: 7/7
-updated: 2026-09-26T22:42:10.422Z
-nextStep: run exact phase_design_complete route and park for DAG handoff
+phase: implement
+phaseCursor: 1/6
+updated: 2026-09-26T22:52:05.594Z
+nextStep: Refresh sandbox notes from the current tracked tree and QA framework README
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (7/7)
-**next**: run exact phase_design_complete route and park for DAG handoff
+**phase**: implement (1/6)
+**next**: Refresh sandbox notes from the current tracked tree and QA framework README
