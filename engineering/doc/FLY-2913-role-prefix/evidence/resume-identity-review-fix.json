@@ -1,0 +1,40 @@
+{
+  "at": "2026-09-26T18:11:25.709296+00:00",
+  "findingKey": "role-v1-resume-drops-identity-hooks",
+  "sourceHashes": {
+    "packages/claude-runner/src/TmuxAdapter.ts": "52ad9d5c7282f000a36078c1655599205e8b9844c1f1d28a213cbc124d6db2ee",
+    "packages/claude-runner/test/TmuxAdapter.test.ts": "b57517fef72da1e137ab66148dd55447d778b5f3f6fd03ac1c6a49adbee1169f"
+  },
+  "red": "new lifecycle resume regression failed: hooks undefined",
+  "green": "10 focused cases; built-dist reproduction exposes all 3 identity hook events",
+  "relatedPreflight": [
+    "test/KimiTmuxAdapter.registry.test.ts",
+    "test/KimiTmuxAdapter.test.ts",
+    "test/TmuxAdapter.test.ts",
+    "test/defaultExecFile.test.ts",
+    "test/prompt-overflow.real-tmux.test.ts",
+    "test/runner-env-isolation.real-tmux.test.ts",
+    "test/scaffold-prune.real-tmux.test.ts",
+    "test/tmux-slot-routing.real-tmux.test.ts"
+  ],
+  "related": {
+    "files": 8,
+    "passed": 228,
+    "skipped": 2,
+    "failed": 1,
+    "failure": "real tmux five 110KB launches exceeded outer default 5s; isolated diagnostic in separate log",
+    "isolatedRerun": {
+      "command": "pnpm --filter flywheel-claude-runner exec vitest run test/prompt-overflow.real-tmux.test.ts --testTimeout=60000 --reporter=verbose",
+      "passed": 2,
+      "fiveLaunchDurationMs": 3437,
+      "limits": "Only outer test budget changed for diagnostic; adapter per-launch 5000ms and all assertions unchanged; no fixture source changes"
+    }
+  },
+  "contractGuards": {
+    "files": 2,
+    "passed": 7
+  },
+  "build": "affected claude-runner and dependencies passed",
+  "lint": "exit0;25 preexisting warnings",
+  "logs": "/Users/xiaorongli/.flywheel/qa-evidence/FLY-2913-implement-6c3014ba/local-revision"
+}

@@ -377,6 +377,7 @@ function persistRunnerPrefixLaunch(
 	sessionId: string,
 	profile: NonNullable<AdapterExecutionContext["prefixProfile"]>,
 	settingsJson: string,
+	historicalResume = false,
 ): string | undefined {
 	const dir = join(homedir(), ".flywheel", "runner-state", ctx.executionId);
 	const temps: string[] = [];
@@ -397,23 +398,40 @@ function persistRunnerPrefixLaunch(
 			throw new Error("invalid session id");
 		mkdirSync(dir, { recursive: true, mode: 0o700 });
 		chmodSync(dir, 0o700);
-		const settingsFile = `claude-settings.${sessionId}.json`;
+		// A new process needs its own hooks/memory/plugin settings. Retain the
+		// prefix separately so a resume can recompose those launch-time fields.
+		const launchSuffix = ctx.previousSession ? `.${randomUUID()}` : "";
+		const settingsFile = `claude-settings.${sessionId}${launchSuffix}.json`;
+		const prefixSettingsFile = `prefix-settings.${sessionId}.json`;
+		const prefixSettingsJson = JSON.stringify(profile.settings);
+		writeAtomic(prefixSettingsFile, prefixSettingsJson);
 		const settingsPath = writeAtomic(settingsFile, settingsJson);
+		const stamp = {
+			...profile.stamp,
+			...ctx.prefixAudit,
+			...(historicalResume && { selectionSource: "historical-session" }),
+			effectiveProfile: "role-v1",
+			fallbackReason: null,
+			executionId: ctx.executionId,
+			...(ctx.workflowActivationId && {
+				activationId: ctx.workflowActivationId,
+			}),
+			sessionId,
+			settingsFile,
+			settingsSha256: createHash("sha256").update(settingsJson).digest("hex"),
+			prefixSettingsFile,
+			prefixSettingsSha256: createHash("sha256")
+				.update(prefixSettingsJson)
+				.digest("hex"),
+		};
+		if (launchSuffix)
+			writeAtomic(
+				`prefix-profile.${sessionId}${launchSuffix}.json`,
+				`${JSON.stringify(stamp)}\n`,
+			);
 		writeAtomic(
 			`prefix-profile.${sessionId}.json`,
-			`${JSON.stringify({
-				...profile.stamp,
-				...ctx.prefixAudit,
-				effectiveProfile: "role-v1",
-				fallbackReason: null,
-				executionId: ctx.executionId,
-				...(ctx.workflowActivationId && {
-					activationId: ctx.workflowActivationId,
-				}),
-				sessionId,
-				settingsFile,
-				settingsSha256: createHash("sha256").update(settingsJson).digest("hex"),
-			})}\n`,
+			`${JSON.stringify(stamp)}\n`,
 		);
 		return settingsPath;
 	} catch (err) {
@@ -430,11 +448,11 @@ function persistRunnerPrefixLaunch(
 	}
 }
 
-/** A resume must retain the already loaded profile, with verifiable identity/bytes. */
+/** Verify historical bytes, but reuse only the fixed prefix, never launch hooks. */
 function reuseRunnerPrefixLaunch(
 	ctx: AdapterExecutionContext,
 	sessionId: string,
-): string | undefined {
+): AdapterExecutionContext["prefixProfile"] {
 	if (!ctx.previousSession) return undefined;
 	const dir = join(homedir(), ".flywheel", "runner-state", ctx.executionId);
 	const stampPath = join(dir, `prefix-profile.${sessionId}.json`);
@@ -443,10 +461,15 @@ function reuseRunnerPrefixLaunch(
 		const stamp = JSON.parse(readFileSync(stampPath, "utf-8"));
 		if (stamp.mode !== "role-v1" && stamp.effectiveProfile !== "role-v1")
 			return undefined;
+		if (!/^[A-Za-z0-9-]{1,128}$/.test(sessionId)) throw new Error("session");
+		const validSettingsFile = new RegExp(
+			`^claude-settings\\.${sessionId}(?:\\.[a-f0-9-]{36})?\\.json$`,
+		);
 		if (
 			stamp.executionId !== ctx.executionId ||
 			stamp.sessionId !== sessionId ||
-			stamp.settingsFile !== `claude-settings.${sessionId}.json`
+			typeof stamp.settingsFile !== "string" ||
+			!validSettingsFile.test(stamp.settingsFile)
 		)
 			throw new Error("identity");
 		const expected =
@@ -471,15 +494,43 @@ function reuseRunnerPrefixLaunch(
 				: ctx.prefixProfile?.stamp.nodeId;
 		if (!expectedNode || stamp.nodeId !== expectedNode) throw new Error("node");
 		const settingsPath = join(dir, stamp.settingsFile);
+		const settingsBytes = readFileSync(settingsPath);
 		if (
-			createHash("sha256").update(readFileSync(settingsPath)).digest("hex") !==
+			createHash("sha256").update(settingsBytes).digest("hex") !==
 			stamp.settingsSha256
 		)
 			throw new Error("settings");
-		console.info(
-			`[TmuxAdapter] prefix-launch ${JSON.stringify({ ...stamp, executionId: ctx.executionId, activationId: ctx.workflowActivationId ?? null, sessionId, resume: true, workflow: stamp.workflow?.templateRevision ? stamp.workflow : (expected ?? null), selectionSource: "historical-session", requestedProfile: ctx.prefixAudit?.requestedProfile ?? "legacy", effectiveProfile: "role-v1", fallbackReason: null })}`,
-		);
-		return settingsPath;
+		let settings: Record<string, unknown>;
+		if (stamp.prefixSettingsFile !== undefined) {
+			if (stamp.prefixSettingsFile !== `prefix-settings.${sessionId}.json`)
+				throw new Error("prefix file");
+			const prefixBytes = readFileSync(join(dir, stamp.prefixSettingsFile));
+			if (
+				createHash("sha256").update(prefixBytes).digest("hex") !==
+				stamp.prefixSettingsSha256
+			)
+				throw new Error("prefix settings");
+			settings = JSON.parse(prefixBytes.toString("utf8"));
+		} else {
+			// Old role-v1 launches stored only merged settings. Its production
+			// compiler emitted exactly these two fixed-prefix fields.
+			const historical = JSON.parse(settingsBytes.toString("utf8"));
+			settings = Object.fromEntries(
+				["skillOverrides", "claudeMdExcludes"]
+					.filter((key) => Object.hasOwn(historical, key))
+					.map((key) => [key, historical[key]]),
+			);
+		}
+		if (!settings || typeof settings !== "object" || Array.isArray(settings))
+			throw new Error("prefix shape");
+		return {
+			settings,
+			profileDigest: stamp.profileDigest,
+			stamp: {
+				...stamp,
+				workflow: stamp.workflow?.templateRevision ? stamp.workflow : expected,
+			},
+		};
 	} catch {
 		throw new Error("prefix resume identity or settings mismatch");
 	}
@@ -1956,17 +2007,19 @@ export class TmuxAdapter implements IAdapter {
 		// opt-ins, memory, hooks, the test-policy hook and forced denies all merge
 		// over it. It rides a private file whose stamp is durable; otherwise the
 		// launch stays on the inline legacy settings.
-		const resumedPrefixSettings = reuseRunnerPrefixLaunch(ctx, sessionId);
-		const prefixSettingsPath =
-			resumedPrefixSettings ??
-			(ctx.prefixProfile
-				? persistRunnerPrefixLaunch(
-						ctx,
-						sessionId,
-						ctx.prefixProfile,
-						JSON.stringify(composeSettings(ctx.prefixProfile.settings)),
-					)
-				: undefined);
+		const resumedPrefix = reuseRunnerPrefixLaunch(ctx, sessionId);
+		const launchPrefix = resumedPrefix ?? ctx.prefixProfile;
+		const prefixSettingsPath = launchPrefix
+			? persistRunnerPrefixLaunch(
+					ctx,
+					sessionId,
+					launchPrefix,
+					JSON.stringify(composeSettings(launchPrefix.settings)),
+					Boolean(resumedPrefix),
+				)
+			: undefined;
+		if (resumedPrefix && !prefixSettingsPath)
+			throw new Error("prefix resume launch settings could not be persisted");
 		const legacySettings = JSON.stringify(composeSettings());
 		if (!prefixSettingsPath)
 			recordLegacyPrefixLaunch(

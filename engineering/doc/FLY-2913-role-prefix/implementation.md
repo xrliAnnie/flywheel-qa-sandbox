@@ -192,3 +192,21 @@ C5 补齐一个实际审计缺口：`recordLegacyPrefixLaunch` 原来漏掉 `wor
 C3/C6 补齐候选生成器的 CI 接线：现有 FLY-2913 step 未运行 `prepare-2913-prefix-revisions.test.mjs`。先添加结构守卫并观察失败，再仅向既有 step 添加该 Node fixture。CI structure 与 shell/Node enumeration 转绿（91 个 Node suite），不增加 job、不请求 full CI。PR 设计交接头的 Quick Gate 日志也因该 fixture 未枚举失败；这是同一缺口，最终推送后须核验新头的 scoped CI。
 
 未完成：其余相关消费者与 typecheck 结果收齐、当前源码最终 build/lint、C6 受管 529 版本链、当前头 code review 与 PR 更新、push 后 needs_review。QA@2 的旧配对数据只复用内容省量结论，不冒称新版发布/回退链已通过。
+
+## 2026-09-26 — revision code review R1 与恢复身份修复
+
+冻结头 `11b8d75cb6f7198f687f6b79182b080cb1890095` 的 code gate `027a51f7-d420-479f-8be3-0fd84bd8d167` effective/raw CHANGES_REQUESTED；唯一 HIGH 是 `role-v1-resume-drops-identity-hooks`。逐行核验：buildClaudeArgs 已生成 processLifecycle.resume 的 SessionStart/UserPromptSubmit/PreToolUse hooks，但 reuseRunnerPrefixLaunch 返回首次启动的整份 settings 路径，使当前合成配置未进入 argv。外部 built-dist 复现显示 resumeHookEvents=[]；新增仓库回归在同一条件下先红（hooks undefined）。
+
+修复只动 TmuxAdapter 启动合成：首次启动另外保留 0600 的原始 prefix settings 与 hash；同 session 验证 execution/workflow/node/session、前次最终 settings 和 prefix hash，再把固定 prefix 与本次 plugins/memory/usage/identity/test-policy hooks、强制非 Lead deny 重合成。恢复 settings 与 stamp 使用独立启动文件，session stamp 指向最新实际字节。旧 stamp 无独立 prefix 文件时，只从已验证的旧 settings 提取旧生产编译器的 skillOverrides/claudeMdExcludes；不会携入旧 hooks/plugins。恢复落盘失败拒绝启动，不伪报同版本成功。首次启动落盘失败的既有 legacy fallback 保留；role-v1 能力清单与编译器未改。
+
+新旧 stamp 格式、连续恢复 hooks 恰好一次、动态 memory/plugin 更新、强制 deny、前次 settings 不变、prefix hash 篡改拒绝均有回归。focused 10 tests 通过；built-dist 复现转绿（3 类恢复 hooks 都存在）。新一轮相关测试通过 Vitest 实际文件发现 API 先核定 8 文件，再运行 related；日志与完成结果另见 execution evidence。
+
+旧头 CI run `36259377219` 的 Quick Gate 首轮在未改的 package-gate-host 并发初始化遇到 database locked；单项复现通过，重跑失败 job 后 CI Scope OK 通过。没有请求 full CI。
+
+长测 session 82709 已结束 exit0，但需纠正上一节的范围声明：teamlead 给定 12 个源文件和 1529 条 --exclude，子项目配置未采用预期排除清单，实际执行 491 个 related 文件（5814 pass、3 skip），其中 428 个超出计划；另两项词法守卫 17 pass。未起全包命令，但超过直接消费者边界，已向 Lead 披露；Lead 要求不重跑，后续先核实际文件列表。其余包结果已收齐，core 零命中已用明确 retained 源补跑 17 tests。原始日志及范围偏差清单保存在 `~/.flywheel/qa-evidence/FLY-2913-implement-6c3014ba/local-revision/`。
+
+C6 第一房 slot2 是旧头部分证据：A=FLY-202 run `24ee51fc-dc23-400d-9667-461dddfdb163`、execution `f9f5e370-fad3-4942-99c9-708149518aec`，Claude design 实际 stamp 为 tpl_code revision1/legacy；两个模板受管发布至 revision2，A snapshot 不变；过期 CAS、错误 digest、缺失目标、无效确认令牌、请求 digest 改写五项拒绝且模板/revision/receipt 指纹不变。尚未启动 B/C、未验证完整回退链，不是 C6 PASS。代码评审阻塞到达后导出相关 DB 行集并关闭 handle，Lead 受管终止 A、沙箱外 teardown rc0，允许再编辑。新头须新评审 APPROVED 后重装房、重跑 C6；旧房数据不能归给新头。房证据位于该 execution 的 `c6-slot2/`，仅授权夹具 A=FLY-202、B=FLY-2825、C=FLY-2826。
+
+Lead 回答 `361b54e1-a48b-4d99-81c0-c095e9884a78`：非阻塞 advisories 全部写 PR #1361 Follow-ups，不另开单、不扩本单范围。已在 PR 列出 reviewer settings 作者可写边界、prefix mismatch fresh fallback、未接生产的 artifact/plugin 模块、retired flag skip 归属、rollback 500 可诊断性、重 fixture 超时六项；本轮只修 HIGH。
+
+本次修复验证收齐：预检 8 文件 related 共 231 项，228 pass、2 skip、1 个既有 real-tmux 五次 110KB 启动用例触及外层 5s；单文件默认预算也超时，外层 --testTimeout=60000 诊断复跑 2/2，通过项实际 3437ms，adapter 每次 5s 上限和断言未改。其他 7 文件、2 文件词法守卫 7 项通过。affected claude-runner 与依赖 build、最终 root lint（25 既有 warning）、diff check 通过。该 fixture 源码未改；保留红与复跑日志，不把首次失败删掉。详见 evidence/resume-identity-review-fix.json。

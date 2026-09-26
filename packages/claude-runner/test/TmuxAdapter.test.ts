@@ -1349,6 +1349,10 @@ describe("TmuxAdapter", () => {
 				activationId: "activation:test",
 				sessionId,
 				settingsFile: `claude-settings.${sessionId}.json`,
+				prefixSettingsFile: `prefix-settings.${sessionId}.json`,
+				prefixSettingsSha256: createHash("sha256")
+					.update(JSON.stringify(prefixProfile.settings))
+					.digest("hex"),
 				settingsSha256: createHash("sha256")
 					.update(readFileSync(settingsArg(args)))
 					.digest("hex"),
@@ -1461,7 +1465,8 @@ describe("TmuxAdapter", () => {
 			const resumedArgs = resumed.calls.find(
 				(c) => c.args[0] === "new-window",
 			)!.args;
-			expect(settingsArg(resumedArgs)).toBe(file);
+			expect(settingsArg(resumedArgs)).not.toBe(file);
+			expect(readFileSync(settingsArg(resumedArgs), "utf-8")).toBe(before);
 			expect(readFileSync(file, "utf-8")).toBe(before);
 			const unbound = makeMockExec({ paneDead: true });
 			await expect(
@@ -1479,7 +1484,7 @@ describe("TmuxAdapter", () => {
 			).rejects.toThrow(/prefix.*resume.*mismatch/);
 			expect(unbound.calls.some((c) => c.args[0] === "new-window")).toBe(false);
 
-			writeFileSync(file, "{}");
+			writeFileSync(settingsArg(resumedArgs), "{}");
 			const corrupt = makeMockExec({ paneDead: true });
 			await expect(
 				new TmuxAdapter("flywheel", corrupt.fn, 10).execute(
@@ -1488,6 +1493,123 @@ describe("TmuxAdapter", () => {
 			).rejects.toThrow(/prefix.*resume.*mismatch/);
 			expect(corrupt.calls.some((c) => c.args[0] === "new-window")).toBe(false);
 		});
+
+		it.each([false, true])(
+			"recomposes lifecycle hooks and mutable launch settings with historical format=%s",
+			(historicalFormat) => {
+				const workflow = {
+					runId: "run-2913",
+					templateId: "tpl_code",
+					templateRevision: 2,
+					snapshotDigest: "a".repeat(64),
+				};
+				const adapter = new TmuxAdapter() as unknown as {
+					buildClaudeArgs: (
+						ctx: AdapterExecutionContext,
+						session: string,
+						token: string,
+					) => { args: string[] };
+				};
+				const session = "prefix-resume-session";
+				const prefixSettings = historicalFormat
+					? {
+							skillOverrides: prefixProfile.settings.skillOverrides,
+							claudeMdExcludes: prefixProfile.settings.claudeMdExcludes,
+						}
+					: prefixProfile.settings;
+				const first = adapter.buildClaudeArgs(
+					makeCtx({
+						prefixProfile: {
+							...prefixProfile,
+							settings: prefixSettings,
+							stamp: { ...prefixProfile.stamp, workflow, nodeId: "implement" },
+						},
+						enabledPluginsExtra: ["old-plugin@test"],
+						runnerMemory: { status: "disabled", reason: "fixture" },
+					}),
+					session,
+					"initial-token",
+				);
+				const initialBytes = readFileSync(settingsArg(first.args), "utf8");
+				const stampPath = join(stateDir(), `prefix-profile.${session}.json`);
+				if (historicalFormat) {
+					const stamp = JSON.parse(readFileSync(stampPath, "utf8"));
+					rmSync(join(stateDir(), stamp.prefixSettingsFile));
+					delete stamp.prefixSettingsFile;
+					delete stamp.prefixSettingsSha256;
+					writeFileSync(stampPath, JSON.stringify(stamp));
+				}
+				const resumeCtx = makeCtx({
+					previousSession: { sessionId: session },
+					prefixAudit: {
+						workflow,
+						nodeId: "implement",
+						requestedProfile: "legacy",
+					},
+					workflowActivationId: "activation:resume",
+					processLifecycle: { mode: "resume", generation: 2 },
+					enabledPluginsExtra: ["new-plugin@test", "discord@flywheel-plugins"],
+					runnerMemory: { status: "mounted", dir: "/memory/current" },
+				});
+				const resumed = adapter.buildClaudeArgs(
+					resumeCtx,
+					session,
+					"resume-token",
+				);
+				const settings = settingsOf(resumed.args);
+				expect(settings.hooks).toMatchObject({
+					SessionStart: expect.any(Array),
+					UserPromptSubmit: expect.any(Array),
+					PreToolUse: expect.any(Array),
+				});
+				expect(JSON.stringify(settings.hooks)).toContain(
+					"workflow-usage-source",
+				);
+				expect(
+					JSON.stringify(settings.hooks).match(/flywheel-session-identity/g),
+				).toHaveLength(3);
+				expect(settings).toMatchObject({
+					...prefixSettings,
+					autoMemoryEnabled: true,
+					autoMemoryDirectory: "/memory/current",
+					enabledPlugins: {
+						"new-plugin@test": true,
+						"discord@flywheel-plugins": false,
+					},
+				});
+				expect(settings.enabledPlugins).not.toHaveProperty("old-plugin@test");
+				expect(settingsArg(resumed.args)).not.toBe(settingsArg(first.args));
+				expect(readFileSync(settingsArg(first.args), "utf8")).toBe(
+					initialBytes,
+				);
+				const stamp = JSON.parse(
+					readFileSync(
+						join(stateDir(), `prefix-profile.${session}.json`),
+						"utf8",
+					),
+				);
+				expect(stamp).toMatchObject({
+					selectionSource: "historical-session",
+					activationId: "activation:resume",
+					effectiveProfile: "role-v1",
+					settingsSha256: createHash("sha256")
+						.update(readFileSync(settingsArg(resumed.args)))
+						.digest("hex"),
+				});
+				const next = adapter.buildClaudeArgs(
+					{ ...resumeCtx, processLifecycle: { mode: "resume", generation: 3 } },
+					session,
+					"next-token",
+				);
+				expect(settingsOf(next.args)).toEqual(settings);
+				expect(settingsArg(next.args)).not.toBe(settingsArg(resumed.args));
+				const currentStamp = JSON.parse(readFileSync(stampPath, "utf8"));
+				writeFileSync(join(stateDir(), currentStamp.prefixSettingsFile), "{}");
+				expect(() =>
+					adapter.buildClaudeArgs(resumeCtx, session, "tampered-token"),
+				).toThrow(/prefix.*resume.*mismatch/);
+			},
+		);
 
 		it("adds nothing when no profile is supplied (legacy byte-compat)", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
