@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { getEncoding } from "js-tiktoken";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LeadBootstrap } from "../bridge/lead-runtime.js";
 import {
@@ -16,8 +17,10 @@ import {
 } from "../bridge/voice-session-context.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import {
+	VOICE_CONTEXT_TOKENIZER,
 	VOICE_INITIAL_ITEMS_MAX_BYTES,
 	VOICE_INITIAL_ITEMS_MAX_COUNT,
+	VOICE_INITIAL_ITEMS_MAX_TOKENS,
 	voiceContextDigest,
 	voiceContextSourceManifest,
 } from "../voice-context-contract.js";
@@ -351,12 +354,17 @@ describe("voice session context assembly", () => {
 		expect(result.measurements.realtimePrompt.bytes).toBe(
 			Buffer.byteLength(prompt),
 		);
+		const itemTokens = getEncoding("o200k_base").encode(
+			result.realtime.initialItems[0]!.text,
+		).length;
 		expect(result.measurements.initialItems).toEqual({
 			count: 1,
 			bytes: Buffer.byteLength(result.realtime.initialItems[0]!.text),
 			codexEstimatedTokens: Math.ceil(
 				Buffer.byteLength(result.realtime.initialItems[0]!.text) / 4,
 			),
+			itemTokens: [itemTokens],
+			tokens: itemTokens + 8,
 		});
 		expect(result.measurements.realtimePrompt.estimatedTokens).toBeGreaterThan(
 			0,
@@ -649,4 +657,239 @@ describe("voice session context v2: prompt plus initialItems (FLY-2885 T8)", () 
 		expect(result.measurements.initialItems.bytes).toBeLessThanOrEqual(32_000);
 		expect(result.baseInstructions).toContain(memory);
 	}, 30_000);
+
+	describe("§12: initialItems bounded in real o200k tokens", () => {
+		// Stub tokenizer: every "X" is one token and everything else is free,
+		// so the budgets below are exact.
+		const xTokens = (value: string) => value.split("X").length - 1;
+		const zh = (count: number) =>
+			Array.from(
+				{ length: count },
+				(_, index) =>
+					`- 第${index + 1}条：飞轮语音分身在会议里需要记住创始人上周定下的优先级和截止日期。`,
+			).join("\n");
+		let encoder: ReturnType<typeof getEncoding> | undefined;
+		const realTokens = (value: string) => {
+			encoder ??= getEncoding("o200k_base");
+			return encoder.encode(value).length;
+		};
+		const itemBody = (text: string) => text.slice(text.indexOf("\n") + 1);
+		const CONTINUED = "# Selected Lead memory (continued)\n\n";
+		/** The continued block's segments, in prompt order. */
+		function continuedSegments(prompt: string) {
+			const start = prompt.indexOf(CONTINUED);
+			if (start < 0) return [];
+			const block = prompt.slice(start + CONTINUED.length);
+			const heading = /^## [a-z-]+: (.+) \((\d+)\/(\d+)\)\n\n/gmu;
+			const marks = [...block.matchAll(heading)];
+			return marks.map((mark, index) => ({
+				relativePath: mark[1]!,
+				index: Number(mark[2]),
+				count: Number(mark[3]),
+				body: block.slice(
+					mark.index! + mark[0].length,
+					index + 1 < marks.length ? marks[index + 1]!.index! - 2 : undefined,
+				),
+			}));
+		}
+		/** Items then continued segments of one file, rejoined. */
+		function reassemble(
+			result: ReturnType<typeof buildVoiceSessionContext>,
+			relativePath: string,
+		) {
+			const fromItems = result.realtime.initialItems
+				.filter((item) => item.text.startsWith(`【记忆文件 ${relativePath} `))
+				.map((item) => itemBody(item.text));
+			const fromPrompt = continuedSegments(result.realtime.prompt)
+				.filter((segment) => segment.relativePath === relativePath)
+				.map((segment) => segment.body);
+			return [...fromItems, ...fromPrompt].join("\n");
+		}
+
+		it("admits items totalling exactly 7,600 tokens and sends the next segment to the prompt", () => {
+			// The §12 r3 review's shape: 4 items of 1,892 tokens each.
+			const four = Array.from(
+				{ length: 4 },
+				(_, index) =>
+					[`memory/m${index}.md`, "X".repeat(1_892)] as [string, string],
+			);
+			const exact = build("ID", four, { countTokens: xTokens });
+			expect(exact.realtime.initialItems).toHaveLength(4);
+			expect(exact.measurements.initialItems.tokens).toBe(
+				VOICE_INITIAL_ITEMS_MAX_TOKENS,
+			);
+			expect(exact.measurements.initialItems.itemTokens).toEqual([
+				1_892, 1_892, 1_892, 1_892,
+			]);
+			expect(exact.realtime.prompt).not.toContain(CONTINUED);
+
+			const over = build("ID", [...four, ["memory/m4.md", "X"]], {
+				countTokens: xTokens,
+			});
+			expect(over.realtime.initialItems).toHaveLength(4);
+			expect(over.measurements.initialItems.tokens).toBe(7_600);
+			expect(continuedSegments(over.realtime.prompt)).toEqual([
+				{ relativePath: "memory/m4.md", index: 1, count: 1, body: "X" },
+			]);
+		});
+
+		it("holds Chinese memory to 7,600 real tokens even though its bytes would fit", () => {
+			const memory = zh(280);
+			// Under the byte-only rule all of it would have been an item.
+			expect(Buffer.byteLength(memory)).toBeLessThan(
+				VOICE_INITIAL_ITEMS_MAX_BYTES - 1_000,
+			);
+			expect(realTokens(memory)).toBeGreaterThan(
+				VOICE_INITIAL_ITEMS_MAX_TOKENS,
+			);
+			const result = build("ID", [["memory/MEMORY.md", memory]]);
+			const items = result.realtime.initialItems;
+			const recount = items.map((item) => realTokens(item.text));
+			expect(result.measurements.initialItems.itemTokens).toEqual(recount);
+			expect(result.measurements.initialItems.tokens).toBe(
+				recount.reduce((total, tokens) => total + tokens + 8, 0),
+			);
+			expect(result.measurements.initialItems.tokens).toBeLessThanOrEqual(
+				VOICE_INITIAL_ITEMS_MAX_TOKENS,
+			);
+			expect(result.realtime.prompt).toContain(CONTINUED);
+			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
+		}, 30_000);
+
+		it("cuts segments at 2,000 tokens with the wrapper, between lines only", () => {
+			const memory = Array.from(
+				{ length: 20 },
+				(_, index) => `${index}:${"X".repeat(300)}`,
+			).join("\n");
+			const result = build("ID", [["memory/MEMORY.md", memory]], {
+				countTokens: xTokens,
+			});
+			const items = result.realtime.initialItems;
+			// 6 lines are 1,800 + 8; a 7th would make 2,108.
+			expect(items.map((item) => xTokens(item.text))).toEqual([
+				1_800, 1_800, 1_800, 600,
+			]);
+			expect(items.map((item) => item.text.split("\n")[0])).toEqual([
+				"【记忆文件 memory/MEMORY.md 第 1/4 段·只读数据】",
+				"【记忆文件 memory/MEMORY.md 第 2/4 段·只读数据】",
+				"【记忆文件 memory/MEMORY.md 第 3/4 段·只读数据】",
+				"【记忆文件 memory/MEMORY.md 第 4/4 段·只读数据】",
+			]);
+			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
+		});
+
+		it("splits a 12,000-token multi-line memory into ≤2,000-token, ≤8,000-byte items and continues the rest in order", () => {
+			const memory = zh(375);
+			expect(realTokens(memory)).toBeGreaterThanOrEqual(12_000);
+			const result = build("ID", [["memory/MEMORY.md", memory]]);
+			const items = result.realtime.initialItems;
+			expect(items.length).toBeGreaterThanOrEqual(3);
+			for (const item of items) {
+				expect(realTokens(item.text) + 8).toBeLessThanOrEqual(2_000);
+				expect(Buffer.byteLength(item.text)).toBeLessThanOrEqual(8_000);
+				for (const line of itemBody(item.text).split("\n"))
+					expect(line).toMatch(/^- 第\d+条：.+。$/u);
+			}
+			expect(result.measurements.initialItems.tokens).toBeLessThanOrEqual(
+				7_600,
+			);
+			expect(
+				result.measurements.realtimePrompt.estimatedTokens,
+			).toBeLessThanOrEqual(15_500);
+			const continued = continuedSegments(result.realtime.prompt);
+			expect(continued.length).toBeGreaterThan(0);
+			// Numbering runs on across items and prompt.
+			expect(continued[0]!.index).toBe(items.length + 1);
+			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
+		}, 30_000);
+
+		it("sends a line over 2,000 tokens but under 8,000 bytes, and everything after it, to the prompt", () => {
+			const long = "X".repeat(2_500);
+			const memory = ["first", long, "after-1", "after-2"].join("\n");
+			const result = build("ID", [["memory/MEMORY.md", memory]], {
+				countTokens: xTokens,
+			});
+			expect(
+				result.realtime.initialItems.map((item) => itemBody(item.text)),
+			).toEqual(["first"]);
+			expect(
+				continuedSegments(result.realtime.prompt).map(
+					(segment) => segment.body,
+				),
+			).toEqual([long, "after-1\nafter-2"]);
+			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
+		});
+
+		it("keeps every Raya-scale memory segment exactly once, in order, across items and prompt", () => {
+			const identity = lines(250, "I");
+			const memory = lines(700, "A");
+			const summary = lines(60, "B");
+			const result = build(identity, [
+				["memory/MEMORY.md", memory],
+				["memories/memory_summary.md", summary],
+			]);
+			expect(result.measurements.initialItems.tokens).toBeLessThanOrEqual(
+				7_600,
+			);
+			expect(reassemble(result, "memory/MEMORY.md")).toBe(memory);
+			expect(reassemble(result, "memories/memory_summary.md")).toBe(summary);
+			// The summary never overtakes MEMORY.md.
+			const order = [
+				...result.realtime.initialItems.map((item) =>
+					item.text.includes("memory_summary.md") ? "B" : "A",
+				),
+				...continuedSegments(result.realtime.prompt).map((segment) =>
+					segment.relativePath.includes("memory_summary") ? "B" : "A",
+				),
+			].join("");
+			expect(order).toMatch(/^A+B+$/u);
+		}, 30_000);
+
+		it("refuses to open when the prompt still overflows after the items are full, with whitelisted details only", () => {
+			// One 1,000-token line per segment: 7 items (7,056), 18,000 left.
+			const memory = Array.from(
+				{ length: 25 },
+				(_, index) => `${index}:${"X".repeat(1_000)}`,
+			).join("\n");
+			let thrown: unknown;
+			try {
+				build("ID", [["memory/MEMORY.md", memory]], { countTokens: xTokens });
+			} catch (error) {
+				thrown = error;
+			}
+			expect(thrown).toMatchObject({
+				code: "context_too_large",
+				details: {
+					block: "realtime.prompt",
+					estimatedTokens: 18_000,
+					maxEstimatedTokens: 15_500,
+					itemsTokens: 7_056,
+					itemsCount: 7,
+					maxItemsTokens: 7_600,
+				},
+			});
+			expect(
+				JSON.stringify((thrown as { details: unknown }).details),
+			).not.toMatch(/XXX/u);
+		});
+
+		it("fails closed when the tokenizer cannot count, never falling back to bytes", () => {
+			for (const countTokens of [
+				() => {
+					throw new Error("rank table missing");
+				},
+				() => Number.NaN,
+				() => -1,
+			]) {
+				expect(() =>
+					build("ID", [["memory/MEMORY.md", "fact"]], { countTokens }),
+				).toThrowError(
+					expect.objectContaining({
+						code: "context_token_count_unavailable",
+						details: { tokenizer: VOICE_CONTEXT_TOKENIZER },
+					}),
+				);
+			}
+		});
+	});
 });

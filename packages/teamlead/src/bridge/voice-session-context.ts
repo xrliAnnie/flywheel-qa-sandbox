@@ -9,14 +9,19 @@ import {
 	VOICE_BASE_MAX_ESTIMATED_TOKENS,
 	VOICE_CONTEXT_TOKENIZER,
 	VOICE_CONTEXT_VERSION,
+	VOICE_INITIAL_ITEM_WRAPPER_TOKENS,
 	VOICE_INITIAL_ITEMS_MAX_BYTES,
 	VOICE_INITIAL_ITEMS_MAX_COUNT,
+	VOICE_INITIAL_ITEMS_MAX_TOKENS,
+	VOICE_MEMORY_SEGMENT_MAX_BYTES,
+	VOICE_MEMORY_SEGMENT_MAX_TOKENS,
 	VOICE_REALTIME_PROMPT_MAX_BYTES,
 	VOICE_REALTIME_PROMPT_MAX_TOKENS,
 	type VoiceRealtimeItem,
 	voiceContextCanonical,
 	voiceContextDigest,
 	voiceContextHeader,
+	voiceInitialItemsTokens,
 } from "../voice-context-contract.js";
 import type { LeadBootstrap } from "./lead-runtime.js";
 
@@ -42,7 +47,8 @@ export class VoiceSessionContextError extends Error {
 			| "identity_conflict"
 			| "context_state_unavailable"
 			| "context_stale"
-			| "context_too_large",
+			| "context_too_large"
+			| "context_token_count_unavailable",
 		readonly details?: Readonly<Record<string, unknown>>,
 	) {
 		super(code);
@@ -445,8 +451,29 @@ export function digestVoiceContextRoster(projects: ProjectEntry[]): string {
 	);
 }
 
-/** One segment per item; well under Codex's per-item estimate of 8,192. */
-const MEMORY_SEGMENT_TARGET_BYTES = 8_000;
+/**
+ * plan §12.2: a count the builder can trust or a fail-closed error — never a
+ * silent fallback to the byte limits.
+ */
+function strictCounter(
+	countTokens: (value: string) => number,
+): (value: string) => number {
+	return (value) => {
+		let tokens: number;
+		try {
+			tokens = countTokens(value);
+		} catch {
+			throw new VoiceSessionContextError("context_token_count_unavailable", {
+				tokenizer: VOICE_CONTEXT_TOKENIZER,
+			});
+		}
+		if (!Number.isSafeInteger(tokens) || tokens < 0)
+			throw new VoiceSessionContextError("context_token_count_unavailable", {
+				tokenizer: VOICE_CONTEXT_TOKENIZER,
+			});
+		return tokens;
+	};
+}
 
 interface MemorySegment {
 	relativePath: string;
@@ -454,38 +481,93 @@ interface MemorySegment {
 	index: number;
 	count: number;
 	body: string;
+	/** A single line too long for any item (plan §12.4). */
+	promptOnly: boolean;
 }
 
-/** Split each memory file between lines, in manifest order. */
+function segmentTitle(relativePath: string, index: string, count: string) {
+	return `【记忆文件 ${relativePath} 第 ${index}/${count} 段·只读数据】\n`;
+}
+
+/**
+ * plan §12.4: split each memory file between lines, in manifest order. A
+ * segment with its title and the per-item wrapper stays within 2,000 tokens
+ * and 8,000 bytes; the title is sized for the widest possible numbering
+ * because the segment count is only known afterwards. A line that cannot fit
+ * on its own becomes a prompt-only segment.
+ */
 function memorySegments(
 	memories: ResolvedVoiceContextSources["contents"],
+	count: (value: string) => number,
 ): MemorySegment[] {
 	const segments: MemorySegment[] = [];
 	for (const entry of memories) {
-		const chunks: string[] = [];
+		const lines = entry.content.split("\n");
+		const widest = "9".repeat(String(lines.length).length);
+		const title = segmentTitle(entry.relativePath, widest, widest);
+		const titleBytes = Buffer.byteLength(title, "utf8");
+		const titleTokens = count(title);
+		const fits = (bytes: number, tokens: number) =>
+			titleBytes + bytes <= VOICE_MEMORY_SEGMENT_MAX_BYTES &&
+			titleTokens + tokens + VOICE_INITIAL_ITEM_WRAPPER_TOKENS <=
+				VOICE_MEMORY_SEGMENT_MAX_TOKENS;
+		const exactFit = (body: string[]) => {
+			const text = title + body.join("\n");
+			return (
+				Buffer.byteLength(text, "utf8") <= VOICE_MEMORY_SEGMENT_MAX_BYTES &&
+				count(text) + VOICE_INITIAL_ITEM_WRAPPER_TOKENS <=
+					VOICE_MEMORY_SEGMENT_MAX_TOKENS
+			);
+		};
+		const chunks: Array<{ lines: string[]; promptOnly: boolean }> = [];
 		let current: string[] = [];
 		let bytes = 0;
-		for (const line of entry.content.split("\n")) {
+		let tokens = 0;
+		// The running sum per line only decides where to cut; each closed
+		// segment is recounted whole and gives lines back until it fits.
+		const close = () => {
+			const carried: string[] = [];
+			let fit = exactFit(current);
+			while (!fit && current.length > 1) {
+				carried.unshift(current.pop()!);
+				fit = exactFit(current);
+			}
+			chunks.push({ lines: current, promptOnly: !fit });
+			current = [];
+			bytes = 0;
+			tokens = 0;
+			for (const line of carried) add(line);
+		};
+		const add = (line: string): void => {
 			const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+			// Never hand the tokenizer a line already past the byte limit.
+			const alone =
+				titleBytes + lineBytes - 1 <= VOICE_MEMORY_SEGMENT_MAX_BYTES;
+			const lineTokens = alone ? count(line) + 1 : 0;
+			if (!alone || !fits(lineBytes - 1, lineTokens - 1)) {
+				if (current.length > 0) close();
+				chunks.push({ lines: [line], promptOnly: true });
+				return;
+			}
 			if (
 				current.length > 0 &&
-				bytes + lineBytes > MEMORY_SEGMENT_TARGET_BYTES
-			) {
-				chunks.push(current.join("\n"));
-				current = [];
-				bytes = 0;
-			}
+				!fits(bytes + lineBytes - 1, tokens + lineTokens - 1)
+			)
+				close();
 			current.push(line);
 			bytes += lineBytes;
-		}
-		if (current.length > 0) chunks.push(current.join("\n"));
-		chunks.forEach((body, index) =>
+			tokens += lineTokens;
+		};
+		for (const line of lines) add(line);
+		if (current.length > 0) close();
+		chunks.forEach((chunk, index) =>
 			segments.push({
 				relativePath: entry.relativePath,
 				kind: entry.kind,
 				index: index + 1,
 				count: chunks.length,
-				body,
+				body: chunk.lines.join("\n"),
+				promptOnly: chunk.promptOnly,
 			}),
 		);
 	}
@@ -495,35 +577,44 @@ function memorySegments(
 function memoryItem(segment: MemorySegment): VoiceRealtimeItem {
 	return {
 		role: "developer",
-		text: `【记忆文件 ${segment.relativePath} 第 ${segment.index}/${segment.count} 段·只读数据】\n${segment.body}`,
+		text: `${segmentTitle(segment.relativePath, String(segment.index), String(segment.count))}${segment.body}`,
 	};
 }
 
 /**
- * FLY-2885 T8: items in manifest order until one more would pass the byte or
- * count budget; everything after it stays in order for the prompt. A segment
- * that could never be an item (a single overlong line) goes to the prompt too.
+ * plan §12.4: items in manifest order until the next one would pass the
+ * token, byte or count budget or is prompt-only; everything from there on
+ * stays in order for the prompt.
  */
-function packMemory(segments: MemorySegment[]): {
+function packMemory(
+	segments: MemorySegment[],
+	count: (value: string) => number,
+): {
 	items: VoiceRealtimeItem[];
+	itemTokens: number[];
 	continued: MemorySegment[];
 } {
 	const items: VoiceRealtimeItem[] = [];
+	const itemTokens: number[] = [];
 	let bytes = 0;
 	for (const [index, segment] of segments.entries()) {
 		const item = memoryItem(segment);
 		const itemBytes = Buffer.byteLength(item.text, "utf8");
+		const tokens = segment.promptOnly ? 0 : count(item.text);
 		if (
-			itemBytes > VOICE_INITIAL_ITEMS_MAX_BYTES ||
+			segment.promptOnly ||
 			bytes + itemBytes > VOICE_INITIAL_ITEMS_MAX_BYTES ||
-			items.length + 1 > VOICE_INITIAL_ITEMS_MAX_COUNT
+			items.length + 1 > VOICE_INITIAL_ITEMS_MAX_COUNT ||
+			voiceInitialItemsTokens([...itemTokens, tokens]) >
+				VOICE_INITIAL_ITEMS_MAX_TOKENS
 		) {
-			return { items, continued: segments.slice(index) };
+			return { items, itemTokens, continued: segments.slice(index) };
 		}
 		items.push(item);
+		itemTokens.push(tokens);
 		bytes += itemBytes;
 	}
-	return { items, continued: [] };
+	return { items, itemTokens, continued: [] };
 }
 
 const REALTIME_PROTOCOL = [
@@ -628,11 +719,15 @@ export function buildVoiceSessionContext(input: {
 		"# Exit rules",
 		exitRules,
 	].join("\n\n");
+	const countTokens = strictCounter(input.countTokens ?? defaultCountTokens);
 	// FLY-2885 T8: the realtime prompt keeps identity, boundary, state,
 	// meeting, exit rules and protocol; memory rides in initialItems.
-	const { items: initialItems, continued } = packMemory(
-		memorySegments(memories),
-	);
+	const {
+		items: initialItems,
+		itemTokens,
+		continued,
+	} = packMemory(memorySegments(memories, countTokens), countTokens);
+	const itemsTokens = voiceInitialItemsTokens(itemTokens);
 	const realtimePromptBody = [
 		"# Immutable Lead identity",
 		identity,
@@ -669,7 +764,6 @@ export function buildVoiceSessionContext(input: {
 	const header = voiceContextHeader(snapshotDigest, input.session.sessionId);
 	const baseInstructions = `${header}\n\n${baseBody}`;
 	const realtimePrompt = `${header}\n\n${realtimePromptBody}`;
-	const countTokens = input.countTokens ?? defaultCountTokens;
 	const budgets = {
 		baseInstructions: {
 			value: baseInstructions,
@@ -686,6 +780,12 @@ export function buildVoiceSessionContext(input: {
 	} as const;
 	const measured: Record<string, { bytes: number; estimatedTokens: number }> =
 		{};
+	// plan §12.5: a prompt still over budget after the items filled up.
+	const itemsFill = {
+		itemsTokens,
+		itemsCount: initialItems.length,
+		maxItemsTokens: VOICE_INITIAL_ITEMS_MAX_TOKENS,
+	};
 	for (const [name, budget] of Object.entries(budgets)) {
 		const bytes = Buffer.byteLength(budget.value, "utf8");
 		// Reject over-byte-budget input before BPE. Besides being cheaper, this
@@ -700,6 +800,7 @@ export function buildVoiceSessionContext(input: {
 				tokenEstimateSkipped: "byte_limit_exceeded",
 				maxBytes: budget.maxBytes,
 				maxEstimatedTokens: budget.maxEstimatedTokens,
+				...itemsFill,
 				tokenizer: VOICE_CONTEXT_TOKENIZER,
 			});
 		}
@@ -712,6 +813,7 @@ export function buildVoiceSessionContext(input: {
 				estimatedTokens,
 				maxBytes: budget.maxBytes,
 				maxEstimatedTokens: budget.maxEstimatedTokens,
+				...itemsFill,
 				tokenizer: VOICE_CONTEXT_TOKENIZER,
 			});
 		}
@@ -744,6 +846,10 @@ export function buildVoiceSessionContext(input: {
 				count: initialItems.length,
 				bytes: itemsBytes,
 				codexEstimatedTokens: Math.ceil(itemsBytes / 4),
+				/** plan §12.2: o200k per item text, without the wrapper. */
+				itemTokens,
+				/** Σ itemTokens + 8 per item; ≤ 7,600. */
+				tokens: itemsTokens,
 			},
 		},
 	};

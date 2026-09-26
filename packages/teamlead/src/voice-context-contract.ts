@@ -16,10 +16,79 @@ export const VOICE_REALTIME_PROMPT_MAX_TOKENS = 15_500;
 /** Codex estimates bytes/4 and refuses >8,192 or >128 items (R3). */
 export const VOICE_INITIAL_ITEMS_MAX_BYTES = 32_000;
 export const VOICE_INITIAL_ITEMS_MAX_COUNT = 128;
+/**
+ * plan §12.3: past ~8,192 real o200k tokens the server silently drops every
+ * item, so items are also held to Σ tokens + 8 per item ≤ 7,600.
+ */
+export const VOICE_INITIAL_ITEMS_MAX_TOKENS = 7_600;
+/** plan §12.2: upper bound of the server's per-item wrapper (measured < 7.87). */
+export const VOICE_INITIAL_ITEM_WRAPPER_TOKENS = 8;
+/** plan §12.4: one memory segment per item, title and wrapper included. */
+export const VOICE_MEMORY_SEGMENT_MAX_TOKENS = 2_000;
+export const VOICE_MEMORY_SEGMENT_MAX_BYTES = 8_000;
 
 export interface VoiceRealtimeItem {
 	role: "developer";
 	text: string;
+}
+
+/** plan §12.2: what the items cost the server, wrapper included. */
+export function voiceInitialItemsTokens(itemTokens: readonly number[]): number {
+	return itemTokens.reduce(
+		(total, tokens) => total + tokens + VOICE_INITIAL_ITEM_WRAPPER_TOKENS,
+		0,
+	);
+}
+
+/** plan §12.5: context failures the Bridge reports with structured details. */
+export const VOICE_CONTEXT_ERROR_REASONS = [
+	"context_too_large",
+	"context_token_count_unavailable",
+	"context_stale",
+	"context_source_unresolved",
+	"context_state_unavailable",
+] as const;
+export type VoiceContextErrorReason =
+	(typeof VOICE_CONTEXT_ERROR_REASONS)[number];
+
+export function isVoiceContextErrorReason(
+	value: unknown,
+): value is VoiceContextErrorReason {
+	return (VOICE_CONTEXT_ERROR_REASONS as readonly unknown[]).includes(value);
+}
+
+const VOICE_CONTEXT_ERROR_DETAIL_KEYS = [
+	"block",
+	"bytes",
+	"estimatedTokens",
+	"itemsTokens",
+	"itemsCount",
+	"maxBytes",
+	"maxEstimatedTokens",
+	"maxItemsTokens",
+	"tokenizer",
+] as const;
+const SHORT_ASCII_IDENTIFIER = /^[A-Za-z0-9._@/:-]{1,64}$/u;
+
+/**
+ * plan §12.5: the only details that may leave the Bridge — whitelisted keys
+ * holding a finite number or a short ASCII identifier. Never text, paths or
+ * file contents.
+ */
+export function voiceContextErrorDetails(
+	details: unknown,
+): Record<string, number | string> {
+	const safe: Record<string, number | string> = {};
+	if (details === null || typeof details !== "object") return safe;
+	for (const key of VOICE_CONTEXT_ERROR_DETAIL_KEYS) {
+		const value = (details as Record<string, unknown>)[key];
+		if (
+			(typeof value === "number" && Number.isFinite(value)) ||
+			(typeof value === "string" && SHORT_ASCII_IDENTIFIER.test(value))
+		)
+			safe[key] = value;
+	}
+	return safe;
 }
 
 /** Keys the Bridge adds to the source manifest; everything else is source. */
