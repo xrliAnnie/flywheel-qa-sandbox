@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "voice_lead_handoff_results",
+	"classification": "protectedCurrentOrReference"
+}

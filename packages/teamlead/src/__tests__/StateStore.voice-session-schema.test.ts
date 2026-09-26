@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
+import { VoiceHandoffStore } from "../bridge/voice-handoff-store.js";
 import { StateStore } from "../StateStore.js";
 
 const cleanup: string[] = [];
@@ -33,7 +34,6 @@ describe("StateStore voice session schema", () => {
 			"voice_agenda_state",
 			"voice_agenda_turns",
 			"voice_agenda_urgent",
-			"voice_handoff_results",
 			"voice_handoffs",
 			"voice_headphone_ack",
 			"voice_headphone_claim",
@@ -46,6 +46,8 @@ describe("StateStore voice session schema", () => {
 			"voice_health_projection_cursor",
 			"voice_intents",
 			"voice_launch_attempts",
+			"voice_lead_handoff_results",
+			"voice_lead_handoffs",
 			"voice_outbound",
 			"voice_schedule_requests",
 			"voice_schedules",
@@ -113,6 +115,65 @@ describe("StateStore voice session schema", () => {
 			reopened.getVoiceSession("10000000-0000-4000-8000-000000000001"),
 		).toMatchObject({ topic: null });
 		reopened.close();
+	});
+
+	it("FLY-2863: keeps the Lead handoff tables apart from FLY-2799 voice_handoffs in either creation order", async () => {
+		const columns = (db: Database.Database, table: string) =>
+			(
+				db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+					name: string;
+				}>
+			).map(({ name }) => name);
+		const assertApart = (path: string) => {
+			const db = new Database(path, { readonly: true });
+			try {
+				const engineB = columns(db, "voice_handoffs");
+				expect(engineB).toEqual(
+					expect.arrayContaining([
+						"lead_id",
+						"intent_kind",
+						"transcript_receipt_id",
+					]),
+				);
+				expect(engineB).not.toContain("target_lead_id");
+				expect(engineB).not.toContain("request_kind");
+				expect(columns(db, "voice_lead_handoffs")).toEqual(
+					expect.arrayContaining([
+						"target_lead_id",
+						"request_kind",
+						"agenda_json",
+					]),
+				);
+				expect(
+					db
+						.prepare("PRAGMA foreign_key_list(voice_lead_handoff_results)")
+						.all(),
+				).toEqual([expect.objectContaining({ table: "voice_lead_handoffs" })]);
+			} finally {
+				db.close();
+			}
+		};
+
+		// Production order: the Bridge store first, the Lead handoff store on first use.
+		const first = mkdtempSync(join(tmpdir(), "flywheel-voice-schema-"));
+		cleanup.push(first);
+		const firstPath = join(first, "teamlead.db");
+		const store = await StateStore.create(firstPath);
+		expect(store.voiceHandoffs).toBeInstanceOf(VoiceHandoffStore);
+		store.close();
+		assertApart(firstPath);
+
+		// Reverse order: a database the Lead handoff store touched first.
+		const second = mkdtempSync(join(tmpdir(), "flywheel-voice-schema-"));
+		cleanup.push(second);
+		const secondPath = join(second, "teamlead.db");
+		const bare = new Database(secondPath);
+		new VoiceHandoffStore(bare).migrate();
+		bare.close();
+		const reopened = await StateStore.create(secondPath);
+		expect(reopened.voiceHandoffs).toBeInstanceOf(VoiceHandoffStore);
+		reopened.close();
+		assertApart(secondPath);
 	});
 
 	it("upgrades the retained voice_handoffs intent guard", async () => {

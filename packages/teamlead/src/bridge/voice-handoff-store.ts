@@ -159,7 +159,7 @@ export class VoiceHandoffStore {
 
 	migrate(): void {
 		this.db.exec(`
-			CREATE TABLE IF NOT EXISTS voice_handoffs (
+			CREATE TABLE IF NOT EXISTS voice_lead_handoffs (
 				handoff_id TEXT PRIMARY KEY,
 				idempotency_key TEXT NOT NULL UNIQUE,
 				request_digest TEXT NOT NULL,
@@ -183,7 +183,7 @@ export class VoiceHandoffStore {
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			);
-			CREATE TABLE IF NOT EXISTS voice_handoff_results (
+			CREATE TABLE IF NOT EXISTS voice_lead_handoff_results (
 				handoff_id TEXT NOT NULL,
 				result_event_id TEXT NOT NULL,
 				seq INTEGER NOT NULL CHECK(seq > 0),
@@ -197,7 +197,7 @@ export class VoiceHandoffStore {
 				created_at TEXT NOT NULL,
 				PRIMARY KEY(handoff_id, result_event_id),
 				UNIQUE(handoff_id, seq),
-				FOREIGN KEY(handoff_id) REFERENCES voice_handoffs(handoff_id)
+				FOREIGN KEY(handoff_id) REFERENCES voice_lead_handoffs(handoff_id)
 			);
 		`);
 		this.migrateAgendaColumns();
@@ -213,18 +213,18 @@ export class VoiceHandoffStore {
 					}>
 				).map((column) => column.name),
 			);
-		const handoffs = columns("voice_handoffs");
+		const handoffs = columns("voice_lead_handoffs");
 		if (!handoffs.has("request_kind"))
 			this.db.exec(
-				`ALTER TABLE voice_handoffs ADD COLUMN request_kind TEXT NOT NULL DEFAULT 'user_handoff' CHECK(${REQUEST_KIND_CHECK})`,
+				`ALTER TABLE voice_lead_handoffs ADD COLUMN request_kind TEXT NOT NULL DEFAULT 'user_handoff' CHECK(${REQUEST_KIND_CHECK})`,
 			);
 		if (!handoffs.has("agenda_json"))
-			this.db.exec("ALTER TABLE voice_handoffs ADD COLUMN agenda_json TEXT");
+			this.db.exec("ALTER TABLE voice_lead_handoffs ADD COLUMN agenda_json TEXT");
 		const resultSql = String(
 			(
 				this.db
 					.prepare(
-						"SELECT sql FROM sqlite_master WHERE type='table' AND name='voice_handoff_results'",
+						"SELECT sql FROM sqlite_master WHERE type='table' AND name='voice_lead_handoff_results'",
 					)
 					.get() as { sql?: string } | undefined
 			)?.sql ?? "",
@@ -233,7 +233,7 @@ export class VoiceHandoffStore {
 		// SQLite cannot widen a CHECK in place: rebuild once, rows unchanged.
 		this.db.transaction(() => {
 			this.db.exec(`
-				CREATE TABLE voice_handoff_results_fly2863 (
+				CREATE TABLE voice_lead_handoff_results_fly2863 (
 					handoff_id TEXT NOT NULL,
 					result_event_id TEXT NOT NULL,
 					seq INTEGER NOT NULL CHECK(seq > 0),
@@ -247,16 +247,16 @@ export class VoiceHandoffStore {
 					created_at TEXT NOT NULL,
 					PRIMARY KEY(handoff_id, result_event_id),
 					UNIQUE(handoff_id, seq),
-					FOREIGN KEY(handoff_id) REFERENCES voice_handoffs(handoff_id)
+					FOREIGN KEY(handoff_id) REFERENCES voice_lead_handoffs(handoff_id)
 				);
-				INSERT INTO voice_handoff_results_fly2863
+				INSERT INTO voice_lead_handoff_results_fly2863
 				 (handoff_id,result_event_id,seq,request_digest,source_lead_id,
 				  source_delivery_id,result_kind,text,payload_digest,created_at)
 				 SELECT handoff_id,result_event_id,seq,request_digest,source_lead_id,
 				  source_delivery_id,result_kind,text,payload_digest,created_at
-				 FROM voice_handoff_results;
-				DROP TABLE voice_handoff_results;
-				ALTER TABLE voice_handoff_results_fly2863 RENAME TO voice_handoff_results;
+				 FROM voice_lead_handoff_results;
+				DROP TABLE voice_lead_handoff_results;
+				ALTER TABLE voice_lead_handoff_results_fly2863 RENAME TO voice_lead_handoff_results;
 			`);
 		})();
 	}
@@ -267,7 +267,7 @@ export class VoiceHandoffStore {
 		return (
 			this.db
 				.prepare(
-					`SELECT * FROM voice_handoffs
+					`SELECT * FROM voice_lead_handoffs
 					 WHERE state='ambiguous' AND (next_reconcile_at IS NULL OR next_reconcile_at<=?)
 					 ORDER BY updated_at,handoff_id LIMIT ?`,
 				)
@@ -286,7 +286,7 @@ export class VoiceHandoffStore {
 		const cutoff = new Date(Date.parse(now) - staleMs).toISOString();
 		return this.db
 			.prepare(
-				`UPDATE voice_handoffs
+				`UPDATE voice_lead_handoffs
 				 SET state='ambiguous', attempt_token=NULL, terminal_reason='dispatch_interrupted',
 				     next_reconcile_at=NULL, state_version=state_version+1, updated_at=?
 				 WHERE state='dispatching' AND updated_at<=?`,
@@ -302,7 +302,7 @@ export class VoiceHandoffStore {
 		return this.db.transaction(() => {
 			const current = this.db
 				.prepare(
-					"SELECT reconcile_count FROM voice_handoffs WHERE handoff_id=? AND state='ambiguous'",
+					"SELECT reconcile_count FROM voice_lead_handoffs WHERE handoff_id=? AND state='ambiguous'",
 				)
 				.get(input.handoffId) as { reconcile_count: number } | undefined;
 			if (!current) return undefined;
@@ -317,7 +317,7 @@ export class VoiceHandoffStore {
 			]!;
 			this.db
 				.prepare(
-					`UPDATE voice_handoffs
+					`UPDATE voice_lead_handoffs
 					 SET state=?, reconcile_count=?, last_reconcile_at=?, next_reconcile_at=?,
 					     terminal_reason=?, state_version=state_version+1, updated_at=?
 					 WHERE handoff_id=? AND state='ambiguous'`,
@@ -339,7 +339,7 @@ export class VoiceHandoffStore {
 
 	get(handoffId: string): VoiceHandoffRecord | undefined {
 		const row = this.db
-			.prepare("SELECT * FROM voice_handoffs WHERE handoff_id = ?")
+			.prepare("SELECT * FROM voice_lead_handoffs WHERE handoff_id = ?")
 			.get(handoffId) as Record<string, unknown> | undefined;
 		return row ? recordFromRow(row) : undefined;
 	}
@@ -348,7 +348,7 @@ export class VoiceHandoffStore {
 		return this.db.transaction(() => {
 			const prior = this.db
 				.prepare(
-					"SELECT * FROM voice_handoffs WHERE handoff_id = ? OR idempotency_key = ?",
+					"SELECT * FROM voice_lead_handoffs WHERE handoff_id = ? OR idempotency_key = ?",
 				)
 				.get(input.request.handoffId, input.request.idempotencyKey) as
 				| Record<string, unknown>
@@ -365,7 +365,7 @@ export class VoiceHandoffStore {
 			}
 			this.db
 				.prepare(
-					`INSERT INTO voice_handoffs
+					`INSERT INTO voice_lead_handoffs
 					 (handoff_id,idempotency_key,request_digest,project_name,founder_user_id,
 					  target_lead_id,session_id,generation,state,message_id,
 					  provider_operation_id,request_json,agenda_json,created_at,updated_at)
@@ -399,7 +399,7 @@ export class VoiceHandoffStore {
 		return this.db.transaction(() => {
 			const prior = this.db
 				.prepare(
-					"SELECT * FROM voice_handoffs WHERE handoff_id = ? OR idempotency_key = ?",
+					"SELECT * FROM voice_lead_handoffs WHERE handoff_id = ? OR idempotency_key = ?",
 				)
 				.get(input.handoffId, input.idempotencyKey) as
 				| Record<string, unknown>
@@ -416,7 +416,7 @@ export class VoiceHandoffStore {
 			}
 			this.db
 				.prepare(
-					`INSERT INTO voice_handoffs
+					`INSERT INTO voice_lead_handoffs
 					 (handoff_id,idempotency_key,request_digest,project_name,founder_user_id,
 					  target_lead_id,session_id,generation,state,message_id,
 					  provider_operation_id,request_json,request_kind,agenda_json,
@@ -456,7 +456,7 @@ export class VoiceHandoffStore {
 			const attemptToken = randomBytes(32).toString("hex");
 			const changed = this.db
 				.prepare(
-					`UPDATE voice_handoffs
+					`UPDATE voice_lead_handoffs
 					 SET state='dispatching', attempt_token=?, state_version=state_version+1, updated_at=?
 					 WHERE handoff_id=? AND state='authorized'`,
 				)
@@ -475,7 +475,7 @@ export class VoiceHandoffStore {
 		return this.db.transaction(() => {
 			const changed = this.db
 				.prepare(
-					`UPDATE voice_handoffs
+					`UPDATE voice_lead_handoffs
 					 SET state=?, terminal_reason=?, attempt_token=NULL,
 					     state_version=state_version+1, updated_at=?
 					 WHERE handoff_id=? AND state='dispatching' AND attempt_token=?`,
@@ -522,7 +522,7 @@ export class VoiceHandoffStore {
 			const digest = resultDigest(input);
 			const prior = this.db
 				.prepare(
-					"SELECT * FROM voice_handoff_results WHERE handoff_id=? AND result_event_id=?",
+					"SELECT * FROM voice_lead_handoff_results WHERE handoff_id=? AND result_event_id=?",
 				)
 				.get(input.handoffId, input.resultEventId) as
 				| Record<string, unknown>
@@ -534,12 +534,12 @@ export class VoiceHandoffStore {
 			}
 			const row = this.db
 				.prepare(
-					"SELECT COALESCE(MAX(seq),0)+1 AS seq FROM voice_handoff_results WHERE handoff_id=?",
+					"SELECT COALESCE(MAX(seq),0)+1 AS seq FROM voice_lead_handoff_results WHERE handoff_id=?",
 				)
 				.get(input.handoffId) as { seq: number };
 			this.db
 				.prepare(
-					`INSERT INTO voice_handoff_results
+					`INSERT INTO voice_lead_handoff_results
 					 (handoff_id,result_event_id,seq,request_digest,source_lead_id,
 					  source_delivery_id,result_kind,text,agenda_json,payload_digest,created_at)
 					 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
@@ -560,7 +560,7 @@ export class VoiceHandoffStore {
 			return resultFromRow(
 				this.db
 					.prepare(
-						"SELECT * FROM voice_handoff_results WHERE handoff_id=? AND result_event_id=?",
+						"SELECT * FROM voice_lead_handoff_results WHERE handoff_id=? AND result_event_id=?",
 					)
 					.get(input.handoffId, input.resultEventId) as Record<string, unknown>,
 			);
@@ -573,7 +573,7 @@ export class VoiceHandoffStore {
 	): VoiceHandoffResultEvent | undefined {
 		const row = this.db
 			.prepare(
-				"SELECT * FROM voice_handoff_results WHERE handoff_id=? AND result_event_id=?",
+				"SELECT * FROM voice_lead_handoff_results WHERE handoff_id=? AND result_event_id=?",
 			)
 			.get(handoffId, resultEventId) as Record<string, unknown> | undefined;
 		return row ? resultFromRow(row) : undefined;
@@ -600,7 +600,7 @@ export class VoiceHandoffStore {
 			(
 				this.db
 					.prepare(
-						"SELECT COALESCE(MAX(seq),0) AS seq FROM voice_handoff_results WHERE handoff_id=?",
+						"SELECT COALESCE(MAX(seq),0) AS seq FROM voice_lead_handoff_results WHERE handoff_id=?",
 					)
 					.get(handoffId) as { seq: number }
 			).seq,
@@ -608,7 +608,7 @@ export class VoiceHandoffStore {
 		const events = (
 			this.db
 				.prepare(
-					`SELECT * FROM voice_handoff_results
+					`SELECT * FROM voice_lead_handoff_results
 					 WHERE handoff_id=? AND seq>? AND seq<=?
 					 ORDER BY seq LIMIT ?`,
 				)

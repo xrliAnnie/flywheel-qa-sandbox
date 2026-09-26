@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 const LEGACY_HANDOFF_TABLES = `
-	CREATE TABLE voice_handoffs (
+	CREATE TABLE voice_lead_handoffs (
 		handoff_id TEXT PRIMARY KEY,
 		idempotency_key TEXT NOT NULL UNIQUE,
 		request_digest TEXT NOT NULL,
@@ -34,7 +34,7 @@ const LEGACY_HANDOFF_TABLES = `
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	);
-	CREATE TABLE voice_handoff_results (
+	CREATE TABLE voice_lead_handoff_results (
 		handoff_id TEXT NOT NULL,
 		result_event_id TEXT NOT NULL,
 		seq INTEGER NOT NULL CHECK(seq > 0),
@@ -47,7 +47,7 @@ const LEGACY_HANDOFF_TABLES = `
 		created_at TEXT NOT NULL,
 		PRIMARY KEY(handoff_id, result_event_id),
 		UNIQUE(handoff_id, seq),
-		FOREIGN KEY(handoff_id) REFERENCES voice_handoffs(handoff_id)
+		FOREIGN KEY(handoff_id) REFERENCES voice_lead_handoffs(handoff_id)
 	);
 `;
 
@@ -56,10 +56,10 @@ describe("VoiceHandoffStore FLY-2863 migration", () => {
 		db = new Database(":memory:");
 		db.exec(LEGACY_HANDOFF_TABLES);
 		db.prepare(
-			`INSERT INTO voice_handoffs VALUES ('h1','k1','${"a".repeat(64)}','p','f','lead','s',1,'committed','m1','op1',NULL,1,'{"transcriptId":"t"}',NULL,0,NULL,NULL,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
+			`INSERT INTO voice_lead_handoffs VALUES ('h1','k1','${"a".repeat(64)}','p','f','lead','s',1,'committed','m1','op1',NULL,1,'{"transcriptId":"t"}',NULL,0,NULL,NULL,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`,
 		).run();
 		db.prepare(
-			`INSERT INTO voice_handoff_results VALUES ('h1','e1',1,'${"a".repeat(64)}','lead','d1','lead_reply','hi','digest-1','2026-01-01T00:00:00Z')`,
+			`INSERT INTO voice_lead_handoff_results VALUES ('h1','e1',1,'${"a".repeat(64)}','lead','d1','lead_reply','hi','digest-1','2026-01-01T00:00:00Z')`,
 		).run();
 		const store = new VoiceHandoffStore(db);
 		store.migrate();
@@ -166,7 +166,7 @@ describe("VoiceHandoffStore FLY-2863 migration", () => {
 		expect(() =>
 			db!
 				.prepare(
-					`INSERT INTO voice_handoffs (handoff_id,idempotency_key,request_digest,project_name,founder_user_id,target_lead_id,session_id,generation,state,message_id,provider_operation_id,request_json,created_at,updated_at)
+					`INSERT INTO voice_lead_handoffs (handoff_id,idempotency_key,request_digest,project_name,founder_user_id,target_lead_id,session_id,generation,state,message_id,provider_operation_id,request_json,created_at,updated_at)
 					 VALUES ('h','k','d','p','f','l','s',1,'authorized','m','o','{}','t','t')`,
 				)
 				.run(),

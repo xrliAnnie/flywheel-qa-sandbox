@@ -1,5 +1,5 @@
 {
 	"database": "teamlead",
-	"table": "voice_handoff_results",
+	"table": "voice_lead_handoffs",
 	"classification": "protectedCurrentOrReference"
 }
