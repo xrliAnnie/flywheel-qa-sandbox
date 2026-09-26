@@ -5,9 +5,9 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Execute inline in the authorized implementation node; do not dispatch subagents or successors.
 
-**Goal:** 按当前 sandbox checkout 原位刷新 `doc/qa/sandbox-notes.md`，逐项满足 FLY-202 的五个任务要求，并把结果 push 到现有 PR #196。
+**Goal:** 从当前 sandbox checkout 重新取证，确保 `doc/qa/sandbox-notes.md` 逐项满足 FLY-202；只在 evidence mismatch 时最小修改，并把现有 branch fast-forward push 到 PR #196。
 
-**Architecture:** 主交付物保持一个稳定 Markdown 路径。目录表由当前 repository root 生成，QA 摘要由当前 source README 归纳，命令证据由当前 checkout 实际执行后原样嵌入；现有 PR 是 carrier，不重写 published history。
+**Architecture:** 目标 Markdown 是由三类 source facts 生成的 materialized view：repository root directories、`packages/qa-framework/README.md`、live `doc/` listing。实现先运行 bounded validator；PASS 时保持目标字节不变，FAIL 时只修复失败字段。现有 PR #196 是唯一 carrier，不重写 published history。
 
 **Tech Stack:** Markdown、POSIX shell、Git、GitHub CLI (`gh`)、只读 Node.js 验证脚本
 
@@ -17,24 +17,25 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 
 | 文件 | 操作 | 单一职责 |
 | --- | --- | --- |
-| `doc/qa/sandbox-notes.md` | Modify | FLY-202 的用户可见 fixture 产物 |
-| `engineering/doc/FLY-202-sandbox-notes-e2e/progress.md` | Flywheel command only | restart-resilient phase cursor；不与主交付物同 commit 手工编辑 |
+| `doc/qa/sandbox-notes.md` | Verify; modify only on mismatch | FLY-202 用户可见 fixture |
+| `packages/qa-framework/README.md` | Read only | QA framework 摘要 source of truth |
+| `engineering/doc/FLY-202-sandbox-notes-e2e/progress.md` | Flywheel command only | restart-resilient cursor；不得手工与 target 同 commit 编辑 |
 
-不修改 `packages/qa-framework/README.md`；它只是摘要的 source of truth。不新增 verifier、
-runtime code、migration、config 或测试文件。
+不新增 verifier、runtime code、migration、config 或测试文件。preserved baseline `ab1d379b1` 已包含上一轮
+implementation milestone；不要回滚它，也不要为了产生新 commit 而无条件改写 target。
 
 ### Task 0: 取得实现节点写权限并核对 carrier
 
 **Files:** none (read-only checks)
 
-- [ ] **Step 1: 读取实现节点注入命令并取得 TURN**
+- [ ] **Step 1: 取得 implementation TURN 并检查 inbox**
 
-运行 implementation dispatch 提供的精确 `flywheel-comm turn` 与 `inbox` 命令。
+运行 implementation dispatch 注入的精确 `flywheel-comm turn` 与 `inbox` 命令。
 
-Expected: `turn` 返回 `yours phase=implement`。若是 `not-yours`，按 TURN WAIT LAW
-每 60–90 秒继续 poll；不得写 shared worktree，也不得把正常等待标为 blocked。
+Expected: `turn` 返回 `yours phase=implement`。若为 `not-yours`，每 60–90 秒继续 poll；不得写 shared
+worktree，也不得把正常 wait 标为 blocked。
 
-- [ ] **Step 2: 核对 branch、PR 与 main 基线**
+- [ ] **Step 2: 核对 branch、remote 与 PR**
 
 Run:
 
@@ -42,30 +43,49 @@ Run:
 git fetch origin main --quiet
 git remote get-url origin
 git branch --show-current
-git rev-list --count origin/main..HEAD
 git rev-list --count HEAD..origin/main
-gh pr view 196 --json number,state,headRefName,headRefOid,baseRefName,url
+gh pr view 196 --json number,state,isDraft,headRefName,headRefOid,baseRefName,url
 ```
 
 Expected:
 
 - origin = `https://github.com/xrliAnnie/flywheel-qa-sandbox.git`；
 - branch = `project-slot-1-FLY-202`；
-- PR #196 = OPEN，head 为同一 branch，base=`main`；
-- behind = 0；ahead 只包含 inherited FLY-2456 marker、本 issue 设计产物和 progress commits。
+- behind = `0`；
+- PR #196 = OPEN、非 draft、head 为当前 branch、base=`main`。
 
-不要因为 PR title/body 仍描述 FLY-2456 而另开 PR，也不要重锚、rebase 或 force-push。
-若 fetch 后 behind > 0，不自行 merge/rebase main；继续当前 docs-only 任务，并在 handoff 明确记录
-behind 数值，交由 Lead 决定是否需要技术同步。
+若 behind > 0，不自行 rebase 或 force-push；记录事实并按 implementation node 的 technical-sync authority
+处理。不要因为 PR title/body 仍描述 FLY-2456 而另开 PR。
 
-### Task 1: 建立会失败的当前证据检查（RED）
+- [ ] **Step 3: 更新 progress cursor**
+
+用 dispatch 注入的 exact exec id 和 progress path 写 `implement 1/6`，next step 指向 Task 1。只能通过
+`flywheel-comm progress` 更新该文件。
+
+### Task 1: 发现相关测试与收集 source facts
 
 **Files:**
 
 - Read: `doc/qa/sandbox-notes.md`
 - Read: `packages/qa-framework/README.md`
 
-- [ ] **Step 1: 重新枚举顶层目录**
+- [ ] **Step 1: 按 local-test-policy 搜索所有消费者**
+
+Run:
+
+```bash
+git grep -lF -- 'doc/qa/sandbox-notes.md' || true
+git grep -lF -- 'sandbox-notes.md' || true
+git grep -lF -- 'doc/qa' || true
+git grep -lF -- 'FLY-2456 drill marker r2 B1' || true
+git grep -lF -- 'Flywheel QA Sandbox Notes' || true
+```
+
+Expected: exact target/name matches只包含 FLY-202 docs/report/milestone；`doc/qa` 的 test matches 只消费
+generic config/path，不解析 target。逐项记录排除原因；没有 concrete test file 时不得运行 bare Vitest、
+package suite 或 repository suite。
+
+- [ ] **Step 2: 枚举 tracked 与 live 顶层目录**
 
 Run:
 
@@ -74,7 +94,7 @@ git ls-tree -d --name-only HEAD | LC_ALL=C sort
 find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \; | LC_ALL=C sort
 ```
 
-Expected: 两份输出相同，当前为下列 17 项：
+Expected: 两份集合相同。设计时是以下 17 项：
 
 ```text
 .claude
@@ -96,137 +116,33 @@ scripts
 supabase
 ```
 
-若集合变化，以当前两份命令的交集/差异为事实并在 commit 或交接中解释；不要照抄本计划。
+若集合变化，当前命令输出优先；先解释 tracked/live 差异，再决定是否更新 table。
 
-- [ ] **Step 2: 执行 test discovery，记录排除理由**
+- [ ] **Step 3: 完整读取 QA README 与 live listing**
 
 Run:
 
 ```bash
-git grep -lF -- 'doc/qa/sandbox-notes.md' || true
-git grep -lF -- 'sandbox-notes.md' || true
-git grep -lF -- 'doc/qa' || true
-git grep -lF -- 'FLY-2456 drill marker r2 B1' || true
-git grep -lF -- 'Flywheel QA Sandbox Notes' || true
-```
-
-Expected discovery record:
-
-- exact path/name matches are historical FLY-202 design artifacts and the current process docs；无 concrete
-  test file consumes the target document；
-- parent-directory matches include `packages/qa-framework/__tests__/*.test.ts` and shell suites only
-  because they mention generic `doc/qa` paths；它们不解析 `sandbox-notes.md`，故排除；
-- the marker literal matches only the target file and current design docs；必须保留 inherited marker；
-- title literal matches only the target file；用本计划的 bounded parser 直接验证它。
-
-不得因为没有 concrete test match 而退回 bare Vitest、package suite 或 repository suite。
-
-- [ ] **Step 3: 先证明当前 fenced listing 已过期**
-
-Run this read-only parser:
-
-```bash
-node <<'NODE'
-const fs = require('node:fs');
-const cp = require('node:child_process');
-const file = fs.readFileSync('doc/qa/sandbox-notes.md', 'utf8');
-const match = file.match(/Command: `ls -R doc\/ \| head -50`\n\n```text\n([\s\S]*?)\n```/);
-if (!match) throw new Error('missing required doc listing block');
-const live = cp.execFileSync('sh', ['-c', 'ls -R doc/ | head -50'], {
-  encoding: 'utf8',
-  env: { ...process.env, LC_ALL: 'C' },
-}).replace(/\n$/, '');
-if (match[1] !== live) throw new Error('captured doc listing does not match current checkout');
-console.log('captured doc listing: PASS');
-NODE
-```
-
-Expected before editing: FAIL with `captured doc listing does not match current checkout`. This is the
-documentation contract’s RED evidence; do not “fix” the validator to accept stale output.
-
-### Task 2: 刷新目标 Markdown（GREEN）
-
-**Files:**
-
-- Modify: `doc/qa/sandbox-notes.md`
-
-- [ ] **Step 1: 复核并保留 2–3 段仓库用途说明**
-
-The introduction must remain within the issue contract of 2–3 prose paragraphs (the current three are valid)
-and cover these complete statements:
-
-1. the sandbox is an isolated GitHub fork used by test slots to run a genuine Runner end to end；
-2. isolation allows real Git/GitHub/gate behavior without production impact；
-3. the repository is disposable test infrastructure, work stays in the slot clone, and production Leads/Runners
-   must not pick up fixture issues。
-
-Keep the existing precise explanations of slot-suffixed clones, `FLYWHEEL_RUNNER_START_POINT`, and
-deploy/inject/teardown when they remain true after rereading the source docs.
-
-- [ ] **Step 2: 复核完整目录表**
-
-Keep one and only one row for every Task 1 directory. The first column must use these exact Markdown labels:
-
-```markdown
-| `.claude/` | Claude Code project commands, skills, QA configuration, and orchestrator helpers. |
-| `.flywheel/` | Project-local Flywheel configuration and executor role definitions. |
-| `.github/` | GitHub Actions workflows for repository CI and automation. |
-| `.lead/` | Per-Lead identities and shared Lead rules. |
-| `.serena/` | Serena project configuration and local metadata. |
-| `agents/` | Runner executor role prompts. |
-| `doc/` | Primary architecture, engineering, QA, plan, reference, and retrospective docs. |
-| `docs/` | Contributor guidance and operational runbooks. |
-| `engineering/` | Department-scoped engineering documents under doc-flow. |
-| `fleet/` | Fleet manifests and managed-environment examples. |
-| `packages/` | pnpm workspace packages for Flywheel runtime and tooling. |
-| `patches/` | Version-controlled dependency patches. |
-| `product/` | Issue-scoped product research, specifications, and prototypes. |
-| `qa-fly294/` | Checked-in FLY-294 QA harness evidence. |
-| `qa-fly310/` | Checked-in FLY-310 E2E scripts and evidence. |
-| `scripts/` | Development, deployment, maintenance, and QA automation. |
-| `supabase/` | Supabase CLI metadata and database migrations. |
-```
-
-If Task 1 finds a different directory set, update the table from that evidence rather than forcing 17 rows.
-The second-column sentences below are factual examples, not mandatory replacements: preserve existing,
-more-specific descriptions whenever they remain accurate, and edit a description only when current evidence
-shows it is stale or wrong.
-
-- [ ] **Step 3: 复核 QA README 摘要为恰好 10 条**
-
-Read the complete current source:
-
-```bash
 sed -n '1,180p' packages/qa-framework/README.md
 sed -n '181,360p' packages/qa-framework/README.md
+LC_ALL=C ls -R doc/ | head -50
 ```
 
-Keep ten original-language summary bullets, one each for: framework purpose; two-layer model; five-step protocol;
-adoption/config; real-Runner/no-synthetic slots; deploy/inject/teardown; prerequisites;
-`FLYWHEEL_RUNNER_START_POINT`; hard-gate plus mirror/roundtable/alert modes; guides/contracts. Do not copy
-source prose verbatim when a concise summary expresses the same fact.
+Expected: README 仍覆盖 framework purpose、two-layer model、five-step protocol、adoption/config、real
+Runner slots、deploy/inject/teardown、prerequisites、start-point boundary、special modes、guides/contracts；
+listing 恰有 50 行。
 
-- [ ] **Step 4: 替换 live command output 并保留 inherited marker**
+- [ ] **Step 4: 更新 progress cursor**
 
-Set `LC_ALL=C`, run the exact issue command `ls -R doc/ | head -50` after Steps 1–3, copy its exact stdout,
-and use the implementation runner's precise edit tool to replace only the content inside the existing fenced
-`text` block. Keep the visible command label unchanged. This slot runs macOS/BSD `ls`; QA must regenerate the
-evidence on the same slot environment rather than compare output produced by GNU `ls` on another host.
-Keep `- FLY-2456 drill marker r2 B1` after the fence; it predates this run and is not authorized for removal.
+写 `implement 2/6`，next step 指向 Task 2。
 
-### Task 3: 针对主交付物验证
+### Task 2: 先运行 bounded validator（RED-or-already-GREEN）
 
 **Files:**
 
 - Verify: `doc/qa/sandbox-notes.md`
 
-- [ ] **Step 1: 重跑 listing parser**
-
-Repeat Task 1 Step 3 exactly.
-
-Expected: `captured doc listing: PASS`.
-
-- [ ] **Step 2: 验证标题、段落、目录、bullet 和 fence**
+- [ ] **Step 1: 运行单文件结构与 live-output validator**
 
 Run:
 
@@ -238,119 +154,167 @@ const text = fs.readFileSync('doc/qa/sandbox-notes.md', 'utf8');
 if (!text.startsWith('# Flywheel QA Sandbox Notes\n')) throw new Error('wrong title');
 const intro = text.split('\n## Top-level directories\n')[0].split('\n\n').slice(1).filter(Boolean);
 if (intro.length < 2 || intro.length > 3) throw new Error(`expected 2-3 intro paragraphs, got ${intro.length}`);
-const liveDirs = cp.execFileSync('git', ['ls-tree', '-d', '--name-only', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').sort();
-const section = text.split('## Top-level directories\n')[1].split('\n## `packages/qa-framework/README.md` summary')[0];
-const tableDirs = [...section.matchAll(/^\| `([^\u0060]+)\/` \|/gm)].map(m => m[1]).sort();
-if (JSON.stringify(tableDirs) !== JSON.stringify(liveDirs)) throw new Error('directory table mismatch');
+const tracked = cp.execFileSync('git', ['ls-tree', '-d', '--name-only', 'HEAD'], { encoding: 'utf8' }).trim().split('\n').sort();
+const liveDirs = cp.execFileSync('sh', ['-c', "find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \\; | LC_ALL=C sort"], { encoding: 'utf8' }).trim().split('\n');
+if (JSON.stringify(tracked) !== JSON.stringify(liveDirs)) throw new Error('tracked/live directory sets differ');
+const directorySection = text.split('## Top-level directories\n')[1].split('\n## `packages/qa-framework/README.md` summary')[0];
+const tableDirs = [...directorySection.matchAll(/^\| `([^\u0060]+)\/` \|/gm)].map(match => match[1]).sort();
+if (JSON.stringify(tableDirs) !== JSON.stringify(tracked)) throw new Error('directory table mismatch');
 const summary = text.split('## `packages/qa-framework/README.md` summary\n')[1].split('\n## `doc/` listing')[0];
 const bullets = summary.match(/^- /gm) || [];
 if (bullets.length !== 10) throw new Error(`expected 10 summary bullets, got ${bullets.length}`);
 const block = text.match(/Command: `ls -R doc\/ \| head -50`\n\n```text\n([\s\S]*?)\n```/);
 if (!block || block[1].split('\n').length !== 50) throw new Error('listing fence must contain 50 lines');
+const liveListing = cp.execFileSync('sh', ['-c', 'ls -R doc/ | head -50'], {
+  encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' },
+}).replace(/\n$/, '');
+if (block[1] !== liveListing) throw new Error('captured doc listing does not match current checkout');
 if (!text.includes('- FLY-2456 drill marker r2 B1')) throw new Error('inherited marker removed');
 console.log('sandbox-notes structure: PASS');
 NODE
 ```
 
-Expected: `sandbox-notes structure: PASS`.
+Expected on design baseline: `sandbox-notes structure: PASS`.
 
-- [ ] **Step 3: 运行文档与 repository hygiene checks**
+- [ ] **Step 2: 分支选择**
 
-Run:
+- PASS：记录 already-GREEN；不得改写 target，直接进入 Task 4。
+- FAIL：错误消息就是 Task 3 的精确 repair scope；先保存 RED output，再进入 Task 3。
 
-```bash
-git diff --check
-pnpm lint
-git diff --name-status origin/main...HEAD
-```
+- [ ] **Step 3: 更新 progress cursor**
 
-Expected:
+写 `implement 3/6`；PASS 时 next=`Task 4 final verification`，FAIL 时 next=`Task 3 minimal repair`。
 
-- `git diff --check` exit 0 with no output；
-- lint exit 0；
-- diff includes inherited `doc/qa/sandbox-notes.md` plus FLY-202 design/progress artifacts only；
-- no `packages/**`, runtime, migration, config, secret, or production-resource change。
-
-There is no changed TypeScript, so `vitest related` does not apply. Discovery found no concrete test file for
-this Markdown; record that exclusion instead of running a broad test command.
-
-### Task 4: Commit、push 并复用 open PR
+### Task 3: 只在 mismatch 时最小修复
 
 **Files:**
 
-- Commit: `doc/qa/sandbox-notes.md`
-- Do not manually stage unrelated files
+- Modify conditionally: `doc/qa/sandbox-notes.md`
 
-- [ ] **Step 1: 更新 implementation progress cursor**
+- [ ] **Step 1: 修复 intro（仅当 paragraph / content mismatch）**
 
-Use the implementation dispatch’s exact progress command and cursor. The command path-limits its own progress
-commit; do not manually add `progress.md` to the deliverable commit.
+保持 2–3 段，并完整覆盖：
 
-- [ ] **Step 2: 检查 inbox 与 final diff**
+1. sandbox 是 test slots 运行 genuine Runner E2E 的 isolated GitHub fork；
+2. 隔离允许真实 Git、GitHub 与 gate 行为而不影响 production；
+3. repository 是 disposable test infrastructure，工作留在 slot clone，production Leads/Runners 不得拾取
+   fixture issues。
 
-Run the injected `inbox --exec-id ...` command, then:
+- [ ] **Step 2: 修复目录表（仅当 set mismatch）**
+
+第一列必须与 Task 1 的 current tracked/live intersection 一一对应，带 trailing `/`；第二列各用一句
+plain-language description。`.git` 与临时目录不得加入。
+
+- [ ] **Step 3: 修复 README 摘要（仅当 count / semantic mismatch）**
+
+写恰好 10 条，每条分别覆盖 Task 1 Step 3 的十个概念组；用原创摘要，不复制 source 大段文字。
+
+- [ ] **Step 4: 修复 listing（仅当 byte mismatch）**
+
+用 `LC_ALL=C ls -R doc/ | head -50` 的 exact stdout 替换 fenced `text` block 内容，保留 command label 与
+fence 后的 inherited marker。
+
+- [ ] **Step 5: 重跑 Task 2 validator**
+
+Expected: `sandbox-notes structure: PASS`。若仍失败，只处理该错误，不扩大范围。
+
+- [ ] **Step 6: 更新 progress cursor**
+
+写 `implement 4/6`，next step 指向 Task 4。
+
+### Task 4: Final verification
+
+**Files:**
+
+- Verify: `doc/qa/sandbox-notes.md`
+- Verify: branch diff and PR state
+
+- [ ] **Step 1: 重跑 Task 2 validator 与 whitespace check**
+
+Run Task 2 Step 1 again, then:
 
 ```bash
-git status --short
-git diff -- doc/qa/sandbox-notes.md
 git diff --check
 ```
 
-Expected: only the intended notes refresh is unstaged; inherited and design commits remain committed.
+Expected: validator PASS；`git diff --check` exit 0、无输出。
 
-- [ ] **Step 3: Commit 主交付物**
+- [ ] **Step 2: 核对 scope**
 
 Run:
+
+```bash
+git diff --name-status ab1d379b1...HEAD
+git status --short
+```
+
+Expected: 本轮只包含 authorized FLY-202 process docs/report/progress；若 Task 3 触发，可额外包含
+`doc/qa/sandbox-notes.md`。不得出现 `packages/**`、runtime、migration、secret 或 production config。
+
+- [ ] **Step 3: lint（非 test-suite evidence）**
+
+Run:
+
+```bash
+pnpm lint
+```
+
+Expected: exit 0。报告时只称 repository lint，不称 full tests。没有 TypeScript change，故不运行
+`vitest related`；discovery 没有 concrete target consumer，故没有 retained concrete test file。
+
+- [ ] **Step 4: 更新 progress cursor**
+
+写 `implement 5/6`，next step 指向 Task 5。
+
+### Task 5: Commit（如需要）、push、核对 PR 并 handoff
+
+**Files:**
+
+- Commit conditionally: `doc/qa/sandbox-notes.md`
+- Progress: injected progress path via Flywheel command
+
+- [ ] **Step 1: 若 Task 3 有 target diff，提交最小修改**
 
 ```bash
 git add doc/qa/sandbox-notes.md
-git commit -m "docs(FLY-202): refresh QA sandbox notes — slot-1 real-Runner E2E"
+git commit -m "docs(FLY-202): refresh sandbox notes from current evidence"
 ```
 
-Expected: one docs commit. If the file is byte-identical after evidence refresh, do not create an empty commit;
-report the no-op with the validation evidence and follow the implementation node’s injected handoff.
+Expected: commit 只含 target。若 Task 2 already-GREEN，跳过本步且不得创建 empty commit；preserved
+history 已满足 issue 的 commit requirement。
 
-- [ ] **Step 4: Push without rewriting history**
-
-Run:
+- [ ] **Step 2: push 当前 branch**
 
 ```bash
-git push origin project-slot-1-FLY-202
+git push origin HEAD:project-slot-1-FLY-202
 ```
 
-Never use `--force`, `--force-with-lease` or `--no-verify`. A non-fast-forward rejection requires
-the Lead protocol from the injected task; do not set an ACK without explicit authorization.
+Expected: fast-forward success；不得使用 `--no-verify`、force 或 force-with-lease。
 
-- [ ] **Step 5: Prove PR #196 carries the pushed head**
-
-Run:
+- [ ] **Step 3: 核对 remote head 与 PR**
 
 ```bash
-LOCAL_HEAD="$(git rev-parse HEAD)"
-gh pr view 196 --json number,state,headRefName,headRefOid,baseRefName,url,files
-printf '%s\n' "$LOCAL_HEAD"
+local_head=$(git rev-parse HEAD)
+remote_head=$(git ls-remote origin refs/heads/project-slot-1-FLY-202 | awk '{print $1}')
+test "$local_head" = "$remote_head"
+gh pr view 196 --json number,state,isDraft,headRefName,headRefOid,baseRefName,url
 ```
 
-Expected: PR OPEN, base=`main`, head branch=`project-slot-1-FLY-202`, and `headRefOid` equals
-`LOCAL_HEAD`. Do not merge or request ship authority.
+Expected: local = remote = PR head OID；PR OPEN、非 draft、head current branch、base main。
 
-### Task 5: Implementation-node handoff
+- [ ] **Step 4: 最终 progress 与 completion**
 
-Follow the implementation dispatch’s exact code-review gate, report, completion route, and park epilogue.
-The DAG orchestrator—not this plan and not the implementation runner—dispatches QA. Any later QA node should
-re-run Task 3’s two bounded parsers and verify PR #196 remains open and unmerged.
-
-Because PR #196 retains inherited FLY-2456 title/body metadata, the implementation handoff report must include
-all three traceability fields in one sentence: the FLY-202 Linear URL, PR #196 URL, and final delivery commit SHA.
-This preserves reverse lookup without mutating PR metadata outside the node's authorization.
+用 injected command 写 `implement 6/6`，报告 exact SHA、PR URL、target changed/no-op、validator 与 lint
+结果，然后按 implementation dispatch 的 exact completion route 完成节点。不得 merge、request ship
+approval 或 dispatch successor。
 
 ## Requirement-to-evidence map
 
 | Issue requirement | Authoritative evidence |
 | --- | --- |
-| 2–3 purpose paragraphs | bounded parser paragraph count + direct file review |
-| every top-level directory | two live enumeration commands + exact table-set equality |
-| ~10 README bullets | complete README read + exact 10-bullet count |
-| command output in fence | live command vs fenced block byte comparison + 50-line count |
-| feature branch + PR against main | Git branch + PR #196 head/base/state + remote head equality |
-| sandbox only / no production | diff scope, no external deploy/merge/DB action, phase completion route |
+| 2–3 purpose paragraphs | bounded parser count + direct content review against three required statements |
+| every top-level directory | tracked/live enumeration equality + table-set equality |
+| approximately 10 README bullets | complete source read + direct semantic review + exact ten-bullet count |
+| command output in fenced block | live command vs fenced block byte equality + 50-line count |
+| feature branch and PR against main | Git branch/remote + PR #196 head/base/state + remote-head equality |
+| sandbox only / no production | diff-scope review + absence of deploy/merge/DB/config actions |

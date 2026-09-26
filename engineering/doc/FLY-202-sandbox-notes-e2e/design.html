@@ -60,7 +60,7 @@
 
   <section class="card green" data-section="一句话总结">
     <h2>1 · 一句话总结</h2>
-    <p class="lede">用一个真实但低风险的文档任务，让隔离测试环境里的真实 Runner 完整走过“读任务 → 查仓库 → 更新文件 → 验证 → 提交 → PR”链路，供 QA 在中途和结尾观察，而不触碰生产资源。</p>
+    <p class="lede">用一个真实但低风险的文档任务，让隔离测试环境里的真实 Runner 从当前证据核验稳定文件，只在不一致时修复，并把现有分支推到 PR #196，供 QA 观察而不触碰生产资源。</p>
     <p class="term">Runner 是实际执行工程任务的 AI 会话；test slot 是与生产隔离的一套临时测试环境。</p>
     <div class="comment">
       <label for="comment-summary">对这一节的意见（自动保存在本浏览器）</label>
@@ -77,9 +77,9 @@
     </div>
     <ol>
       <li>Harness 注入真实存在的 FLY-202。</li>
-      <li>Runner 从当前 checkout 读取目录树、QA framework README 和目标文件。</li>
-      <li>Runner 只刷新 <code>doc/qa/sandbox-notes.md</code>，并运行针对该文件的检查。</li>
-      <li>Runner把提交推到现有分支；PR（Pull Request，供审阅的分支变更集合）#196 保持 open，供后续 QA 观察。</li>
+      <li>Runner 从当前 checkout 读取目录树、QA framework README、live listing 和目标文件。</li>
+      <li>Bounded validator 是只检查这个文档合同的小型验证器：全部一致时保持目标字节不变；不一致时只修对应段落。</li>
+      <li>Runner 把当前分支 fast-forward push；PR（Pull Request，供审阅的分支变更集合）#196 保持 open，供后续 QA 观察。</li>
     </ol>
     <div class="comment">
       <label for="comment-flow">对这一节的意见（自动保存在本浏览器）</label>
@@ -89,7 +89,7 @@
 
   <section class="card purple" data-section="数据与结构模型">
     <h2>3 · 数据与结构模型</h2>
-    <p>设计坚持一个 source of truth，也就是每项事实只从一个权威来源读取：目录来自当前仓库根，框架说明来自当前 README，命令证据来自现场执行结果。</p>
+    <p>设计坚持一个 source of truth，也就是每项事实只从一个权威来源读取：目录来自 tracked tree 与 live checkout，框架说明来自当前 README，命令证据来自现场执行结果。</p>
     <div class="pending" role="img" aria-label="数据与结构图等待本地渲染">
       <strong>DIAGRAM PENDING LOCAL RENDER</strong>
       <span>Mermaid 源文件：structure-model.mmd。mmdc 两次均因 sandbox 内 Chromium 权限失败。</span>
@@ -97,10 +97,11 @@
     <table>
       <thead><tr><th>来源</th><th>进入主文档的内容</th><th>验证方式</th></tr></thead>
       <tbody>
-        <tr><td>仓库根目录</td><td>每个顶层目录与一行说明</td><td>Git tree 与 filesystem 两种枚举结果一致</td></tr>
+        <tr><td>tracked tree + live checkout</td><td>每个顶层目录与一行说明</td><td>Git tree 与 filesystem 两种枚举结果一致</td></tr>
         <tr><td><code>packages/qa-framework/README.md</code></td><td>恰好 10 条简明摘要</td><td>完整读两段源文件并计数</td></tr>
         <tr><td><code>ls -R doc/ | head -50</code></td><td>50 行原始输出</td><td>文内 fenced block 与现场 stdout 字节一致</td></tr>
-        <tr><td>现有 feature branch</td><td>设计和实现提交</td><td>远端 PR head 等于本地 HEAD</td></tr>
+        <tr><td><code>doc/qa/sandbox-notes.md</code></td><td>稳定的 materialized view，也就是从上述事实汇成的文档视图</td><td>bounded validator 逐项比较</td></tr>
+        <tr><td>现有 feature branch</td><td>设计、已有实现和必要修复</td><td>远端 PR head 等于本地 HEAD</td></tr>
       </tbody>
     </table>
     <p class="term">Fenced block 是 Markdown 中由三枚反引号包住的原样文本区；HEAD 是 Git 当前提交的唯一标识。</p>
@@ -113,9 +114,10 @@
   <section class="card amber" data-section="关键取舍">
     <h2>4 · 关键取舍与被否方案</h2>
     <ul>
-      <li><span class="choice yes">选定</span><strong>稳定文件原位刷新：</strong>同一路径可重复验证，不会堆积按日期命名的垃圾文件。</li>
+      <li><span class="choice yes">选定</span><strong>审计优先的幂等复核：</strong>幂等表示重复执行会收敛到同一正确结果；证据一致时不制造 diff，不一致时才最小修复。</li>
       <li><span class="choice yes">选定</span><strong>复用 PR #196：</strong>动态任务明确要求 branch continuity，也就是沿用现有分支历史，不另开平行 PR。</li>
-      <li><span class="choice no">否决</span><strong>每轮新增一个 notes 文件：</strong>破坏固定路径断言，长期增加维护噪声。</li>
+      <li><span class="choice no">否决</span><strong>无条件重写同一个文件：</strong>source facts 没变化时只制造 churn，还可能改坏已经审核过的措辞。</li>
+      <li><span class="choice no">否决</span><strong>重建 branch 或另开 PR：</strong>破坏 branch continuity，也让 harness 丢失正在观察的 carrier。</li>
       <li><span class="choice no">否决</span><strong>用 synthetic fixture：</strong>synthetic fixture 是伪造的测试输入；它会绕开本任务真正要验证的 Linear、Runner、Git 与 PR 链路。</li>
       <li><span class="choice no">否决</span><strong>顺手改产品代码：</strong>扩大风险和验证范围，也违反“sandbox documentation only”的任务边界。</li>
     </ul>
@@ -127,12 +129,13 @@
 
   <section class="card gray" data-section="诚实边界">
     <h2>5 · 诚实边界</h2>
-    <p><strong>这个设计会做：</strong>提供探索、调研和逐步实施计划；刷新一份 Markdown；用当前仓库事实验证；commit 并 push 到 sandbox branch；复用 open PR。</p>
+    <p><strong>这个设计会做：</strong>提供探索、调研和逐步实施计划；用当前仓库事实验证 Markdown；只在 mismatch 时修改；fast-forward push sandbox branch；复用 open PR。</p>
     <p><strong>这个设计不会做：</strong></p>
     <ul>
       <li>不修改任何 runtime code、package、数据库、生产配置或生产 Discord 资源；</li>
       <li>不删除继承的 FLY-2456 drill marker，也不改写已经发布的 branch 历史；</li>
       <li>不 merge PR、不请求 ship 权限、不部署；</li>
+      <li>不承诺每次 run 都有新的 target diff——当前内容已经正确时，no-op 是诚实结果；</li>
       <li>不保证目录表永久不变——每次 fixture run 都必须重新读取当前 checkout；</li>
       <li>本次 mmdc 本地渲染失败，因此页面诚实保留 pending 占位和 Mermaid 源文件，没有伪造图。</li>
     </ul>
@@ -312,4 +315,3 @@
 </script>
 </body>
 </html>
-

@@ -3,32 +3,40 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 日期: 2026-09-26
 基于: exploration.md
 
-## 1. 仓库与分支事实
+## 1. 仓库、分支与 PR 事实
 
-| 项目 | 当前事实 | 实现含义 |
+| 项目 | 当前权威事实 | 设计含义 |
 | --- | --- | --- |
-| 仓库 | `xrliAnnie/flywheel-qa-sandbox` | 所有写操作都留在 sandbox clone |
-| 分支 | `project-slot-1-FLY-202` | 动态任务要求原分支连续，不另建分支 |
-| main merge-base | `1855f7a1a` | 当前 branch 在最新 fetched `origin/main` 之上，behind=0 |
-| open PR | #196，base=`main`，head=`project-slot-1-FLY-202` | 实现阶段复用，不创建重复 PR |
-| inherited PR 内容 | `FLY-2456 drill marker r2 B1` | 属于既有历史；本轮不重写或删除 |
+| 仓库 | `xrliAnnie/flywheel-qa-sandbox` | 所有写操作仅留在 sandbox clone |
+| 分支 | `project-slot-1-FLY-202` | 继续现有 branch，不另建、不 rebase、不 force-push |
+| preserved baseline | `ab1d379b1` | 本轮 design 从该 implementation milestone 继续 |
+| fetched `origin/main` | `1855f7a1a` | merge-base 与 main 相同，当前 branch behind=0 |
+| open PR | #196，OPEN、MERGEABLE、非 draft | 复用 carrier，不创建第二个 PR |
+| PR checks | exact preserved head 上两个 checks 均 SUCCESS | 是 baseline 证据，不代替本轮文档验证 |
+| inherited 内容 | `FLY-2456 drill marker r2 B1` | 本轮不得删除或改写 |
 | doc-flow | enabled，department=`engineering` | 过程文档复用本文件夹 |
 
-设计开始时 `git status` 无未提交用户改动。进度命令已产生本轮 path-limited progress
-commits；exploration/research/plan/HTML 会由 design node 独立 commit 后 fast-forward push。
+PR title/body 仍描述 FLY-2456 drill。这是 branch continuity 的已知历史，不是 design node 改写 PR
+metadata 的授权。最终 handoff 要明确披露，但不能通过另开 PR、重锚或 force-push “修干净”。
 
 ## 2. 目标文件现状
 
-`doc/qa/sandbox-notes.md` 已存在，不是空白新文件。它当前有：
+对当前 `doc/qa/sandbox-notes.md` 运行 bounded parser 得到：
+
+```json
+{"introParagraphs":3,"directories":17,"summaryBullets":10,"listingLines":50,"listingMatches":true,"marker":true}
+```
+
+这说明 preserved implementation 当前已经满足可机械核验的结构要求：
 
 - 3 段仓库用途说明；
 - 17 行顶层目录表；
 - 10 条 QA framework 摘要；
-- 标注命令 `ls -R doc/ | head -50` 的 fenced `text` block；
-- fenced block 后的 inherited FLY-2456 marker。
+- `ls -R doc/ | head -50` 的 50 行 fenced output，且与 live checkout 字节一致；
+- inherited marker 仍在。
 
-因此实现任务不是“证明旧文件看起来差不多”，而是从当前源重新取证后刷新稳定文件。
-这保证 README 或目录树发生变化时仍产生正确结果，也给 harness 保留多个可观察步骤。
+因此当前实现计划不能继续写“编辑前 parser 预期失败”。它应把首次创建和 re-dispatch 同时建模：
+先校验；失败时最小修复，成功时保留字节并记录 no-op evidence。
 
 ## 3. 顶层目录模型
 
@@ -61,72 +69,84 @@ scripts
 supabase
 ```
 
-实现时要重新运行两个命令。若 working tree 出现未 tracked 的顶层目录，issue 的“repo 中每个
-顶层目录”语义要求先判断它是不是 harness 临时产物；不能静默把临时目录写进长期文档。
+实现时必须重新运行两条命令。若 tracked 与 live 集合不同，先把差异分类为真正的 project directory
+或 harness 临时产物；不能静默把临时目录写进长期文档，也不能只看其中一份集合。
 
 ## 4. QA framework README 事实
 
-`packages/qa-framework/README.md` 当前 316 行，主要内容按源文件顺序为：
+`packages/qa-framework/README.md` 当前 316 行，稳定概念可归纳为十组：
 
-1. 可复用、plan-aware 的 QA Agent Framework；
+1. reusable、plan-aware QA Agent Framework；
 2. framework 与 project config 的两层架构；
-3. Quick Start；
+3. Quick Start / adoption；
 4. Onboard → Analyze + Plan → Research → Write + Execute → Finalize 五步协议；
-5. config schema 与示例；
-6. FLY-115 real-Runner test slots，包括 deploy/inject/teardown 三个脚本、前置条件和
-   `FLYWHEEL_RUNNER_START_POINT`；
-7. FLY-60 hard-gate manual suite；
-8. FLY-153 shared-channel Mirror Mode；
-9. FLY-529 Roundtable Mirror 与 Alert Mirror；
-10. plan-source 与 skill-interface contracts。
+5. config schema、types 与 example；
+6. FLY-115 real-Runner slot model，无 synthetic mode；
+7. deploy / inject / teardown scripts 与 prerequisites；
+8. `FLYWHEEL_RUNNER_START_POINT` 的 slot-only boundary；
+9. hard-gate、Mirror、Roundtable Mirror 与 Alert Mirror 的边界；
+10. guides、plan-source contract 与 skill-interface contract。
 
-“约 10 条”最好收敛为恰好 10 条，每条对应一个稳定概念，避免把 README 大段复制进目标文件。
+目标文档当前已有十条；后续节点仍要从 source README 复核含义，不能只数 bullet。
 
 ## 5. 命令输出取证
 
-Issue 明确要求执行：
+Issue 指定的命令是：
 
 ```bash
 ls -R doc/ | head -50
 ```
 
-这段输出依赖执行时的 `doc/` 内容。当前前 50 行包含历史 FLY-145 与 FLY-202 报告文件夹，
-但 design node 新建在 `engineering/doc/` 的文件不会改变它。实现节点仍必须现场执行，
-原样写入 fenced block；不能复用 research 中的观察值。
+当前 fenced block 与 `LC_ALL=C` 下的 live stdout 完全相同。design node 的文件位于
+`engineering/doc/`，不会改变该 listing；但后续 implementation 在写入前后都应重新执行，因为
+`doc/` 可能被其他 authorized phase 更新。
 
-## 6. PR 与外部状态
+## 6. Test discovery 与排除记录
 
-PR #196 当前状态为 OPEN、MERGEABLE、非 draft；远端 head 仍指向本轮设计开始前的
-`87f4e319f`，因为本轮 design commits 尚未 push。动态任务明确要求继续这个 PR，因此：
+按 local-test-policy 搜索 exact path、filename、parent path、title 与 inherited marker 后：
 
-- design node 只 push 设计产物，不修改 PR title/body；
-- implementation node push 主交付物后再次读取 PR，确认 base/head 与 local HEAD；
-- 是否改 PR 元数据应服从后续节点授权，不把“标题仍是 FLY-2456”误判为需要开第二个 PR；
-- 任何 merge、ship approval 或 force-push 都明确禁止。
+- exact path / filename 只命中历史 FLY-202 设计、当前过程文档、milestone 和 founder HTML；
+- `packages/qa-framework/__tests__/QaConfigLoader.test.ts`、`shell-export.test.ts` 只因 generic
+  `doc/qa` config/path 出现而命中，不读取或解析 `sandbox-notes.md`，因此排除；
+- shell suites 和 runtime files 同样只使用 generic `doc/qa` path，与目标 Markdown contract 无关；
+- marker literal 命中目标文件及 FLY-202 文档，没有 concrete test consumer。
 
-## 7. 验证策略
+结论：没有需要运行的 concrete test file。不得回退到 bare Vitest、package test alias 或 full repository
+suite；目标验证由 bounded Node parser、`git diff --check` 与 PR state inspection 覆盖。
 
-本次主交付物是 Markdown，没有 TypeScript 或运行时代码变更。适用的本地证据是：
+## 7. 数据 / 结构模型
 
-1. `git diff --check`：空输出、exit 0；
-2. 针对 `doc/qa/sandbox-notes.md` 的小型只读解析检查：2–3 段、17 个目录逐一出现、
-   8–12 个摘要 bullet、fenced output 为 50 行；
-3. 重新执行 `ls -R doc/ | head -50`，与 fenced block 字节一致；
-4. `gh pr view 196`：state OPEN、base `main`、head 为当前 branch，且远端 head 与
-   push 后 local HEAD 一致；
-5. `git diff --name-status origin/main...HEAD`：除 inherited marker 与本 issue design/docs
-   外无产品代码变更。
+单一事实流如下：
 
-不会运行 bare Vitest、package suite 或 repository suite；它们既不覆盖 Markdown 合同，也违反
-本任务的 local-test-policy。
+```text
+tracked + live root directories ─┐
+QA framework README ─────────────┼─> doc/qa/sandbox-notes.md ─> PR #196
+live doc listing ────────────────┘
+```
 
-## 8. 风险与回滚边界
+`sandbox-notes.md` 是 materialized view，不是 source of truth。目录名称、README 概念与命令 stdout
+都保持各自单一来源；plan 不维护第二份运行时 vocabulary 或 mirrored config。
+
+## 8. 验证策略
+
+1. bounded parser：标题、2–3 intro paragraphs、tracked directory set、10 bullets、50-line fence、live
+   stdout byte equality、inherited marker；
+2. `git diff --check`：Markdown whitespace hygiene；
+3. `git diff --name-status <preserved-baseline>...HEAD`：本 design node 只改授权过程文档、Mermaid 与 HTML；
+4. `gh pr view 196`：OPEN、base=`main`、head branch 正确，push 后 remote OID 等于 local HEAD；
+5. exact pushed head 的 CI state 由后续 workflow/QA 核验；本地 targeted checks 不能冒充 full-suite evidence。
+
+本轮没有 TypeScript change，`vitest related` 不适用。`pnpm lint` 可作为 repository lint，但不能被描述
+为覆盖 Markdown contract 的 test。
+
+## 9. 风险与回滚边界
 
 | 风险 | 设计对策 | 回滚边界 |
 | --- | --- | --- |
-| 旧 notes 自证导致遗漏 | 总是从目录树与 README 重新取证 | 只回滚本轮 notes commit |
-| 顶层目录数在 implement 前变化 | 实现时重新枚举并解释差异 | 不回滚其他人的目录变更 |
-| 已有 PR 元数据与 FLY-202 不一致 | 复用 PR，报告事实，不自行开新 PR | 不改写 published branch |
-| inherited marker 混入结果 | 在计划与交接中显式标记为 inherited | 不删除既有 FLY-2456 变更 |
-| fenced output 漂移 | 写入后立刻重跑并做字节对比 | 仅刷新 fenced block |
-| 生产资源误触 | 限定当前 clone、禁 merge/ship/deploy | 设计阶段无生产副作用 |
+| 旧文档自证 | 总从目录树、README、live listing 重新取证 | 只回滚 evidence 不符的 target edit |
+| re-dispatch 制造 churn | parser 先行，PASS 时 no-op | 不为 commit 而改字节 |
+| 顶层目录竞态 | implement 时重新枚举 tracked + live | 不回滚他人 authorized changes |
+| PR 元数据与 FLY-202 不一致 | 披露并复用 carrier | 不改写 published history |
+| inherited marker 混入结果 | 明确标为 inherited | 不删除既有 FLY-2456 变更 |
+| fenced output 漂移 | 写入后立即重新比对 | 仅刷新 fenced block |
+| 生产资源误触 | 当前 clone + no deploy/merge/ship | design 阶段无生产副作用 |
