@@ -164,7 +164,6 @@ export function buildBrowserSandboxSpec(input: BrowserWorkerSpecInput) {
 				".codex",
 				".flywheel",
 				".claude",
-				".gbrain",
 				".config",
 				".ssh",
 				".zshrc",

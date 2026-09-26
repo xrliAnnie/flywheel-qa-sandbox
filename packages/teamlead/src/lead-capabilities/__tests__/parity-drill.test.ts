@@ -576,7 +576,7 @@ it("drives one isolated issue through the TUI owner, real parent, UDS and durabl
 	const upstreamAdapters: Array<{ close(): void }> = [];
 	const upstreamCalls: Array<{ serverId: string; name: string }> = [];
 	const upstreamStates = new Map<string, { drift: boolean }>();
-	for (const serverId of ["gbrain", "xiaohongshu-mcp", "context7"] as const) {
+	for (const serverId of ["xiaohongshu-mcp", "context7"] as const) {
 		const snapshot = JSON.parse(
 			readFileSync(
 				resolve(
@@ -644,8 +644,6 @@ it("drives one isolated issue through the TUI owner, real parent, UDS and durabl
 		"report.deliver",
 		"github.pr.view",
 		"github.pr.comment",
-		"knowledge.search",
-		"knowledge.delete_page",
 		"xiaohongshu.list_feeds",
 		"xiaohongshu.get_feed_detail",
 		"xiaohongshu.publish_content",
@@ -917,9 +915,6 @@ it("drives one isolated issue through the TUI owner, real parent, UDS and durabl
 			(await call("github.pr.comment", { number: 7, body: issueId })).status,
 		).toBe("rejected");
 		expect(githubCalls).toHaveLength(beforeWrongPr);
-		expect((await call("knowledge.search", { query: issueId })).status).toBe(
-			"succeeded",
-		);
 		const feeds = await call("xiaohongshu.list_feeds", {});
 		expect(feeds.status).toBe("succeeded");
 		const feed = JSON.parse(
@@ -954,7 +949,6 @@ it("drives one isolated issue through the TUI owner, real parent, UDS and durabl
 			).status,
 		).toBe("succeeded");
 		for (const [id, input, code] of [
-			["knowledge.delete_page", { slug: "fixture" }, "unclassified_write"],
 			[
 				"xiaohongshu.publish_content",
 				{ title: issueId, content: "fixture", artifactHandles: ["fixture"] },
@@ -978,7 +972,6 @@ it("drives one isolated issue through the TUI owner, real parent, UDS and durabl
 		}
 		const beforeDrift = upstreamCalls.length;
 		for (const [serverId, id, input] of [
-			["gbrain", "knowledge.search", { query: issueId }],
 			["xiaohongshu-mcp", "xiaohongshu.list_feeds", {}],
 			[
 				"context7",
@@ -994,7 +987,6 @@ it("drives one isolated issue through the TUI owner, real parent, UDS and durabl
 		}
 		expect(upstreamCalls).toHaveLength(beforeDrift);
 		expect(upstreamCalls).toEqual([
-			{ serverId: "gbrain", name: "search" },
 			{ serverId: "xiaohongshu-mcp", name: "list_feeds" },
 			{ serverId: "xiaohongshu-mcp", name: "get_feed_detail" },
 			{ serverId: "context7", name: "query-docs" },
@@ -1216,7 +1208,7 @@ it("drives one isolated issue through the TUI owner, real parent, UDS and durabl
 						"typed Discord handlers",
 						"typed Linear handlers",
 						"typed Bridge runner, read and inbox handlers",
-						"typed knowledge, Xiaohongshu and Context7 adapters",
+						"typed Xiaohongshu and Context7 adapters",
 						"typed GitHub handlers",
 						"artifact store and typed report handlers",
 						"typed attachment handlers and patrol artifact projection",

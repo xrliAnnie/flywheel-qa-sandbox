@@ -29,7 +29,7 @@ const names = [
 	"browser",
 	"rules",
 	"persona and skills",
-	"gbrain",
+	"memory",
 	"Xiaohongshu",
 	"other integrations",
 ];

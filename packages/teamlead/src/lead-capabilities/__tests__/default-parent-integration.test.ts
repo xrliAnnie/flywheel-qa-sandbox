@@ -155,9 +155,6 @@ async function upstream(id: string) {
 		},
 	};
 }
-vi.mock("../gbrain-provider.js", () => ({
-	startGbrainProvider: () => upstream("gbrain"),
-}));
 vi.mock("../xiaohongshu-provider.js", () => ({
 	startXiaohongshuProvider: () => upstream("xiaohongshu-mcp"),
 }));
@@ -441,12 +438,7 @@ it("executes the default factory, real provider assembly and parent broker with 
 		await parent.close();
 		expect(existsSync(socket)).toBe(false);
 		expect(existsSync(artifacts)).toBe(false);
-		expect(state.closed).toEqual([
-			"browser",
-			"context7",
-			"xiaohongshu-mcp",
-			"gbrain",
-		]);
+		expect(state.closed).toEqual(["browser", "context7", "xiaohongshu-mcp"]);
 		console.info(
 			`FLY2519_DEFAULT_FACTORY=${JSON.stringify({ schemaVersion: 1, scope: "fixture", operationId: "artifact.text.create", result, nativeSourcesVerified: parent.skillSources?.native.length, tuiGeneration: { methods, sameWindowPreserved: state.windows.length === 1, wrongConfigRejected: true }, realComponents: ["default factory", "provider assembly", "parent", "native source verification", "rule loading", "UDS broker", "TUI generation", "SQLite journal", "artifact handler"], fixtureBoundaries: ["Codex version", "deployment receipt", "registry authority", "menu and source selection", "native source pins", "browser", "upstream services", "model isolation", "app-server WS", "terminal window", "process locks", "Discord identity response", "outbound preflight"], cleanup: { socketRemoved: !existsSync(socket), artifactsRemoved: !existsSync(artifacts) }, hostVerified: false })}`,
 		);

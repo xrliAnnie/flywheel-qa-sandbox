@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { ToolSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-const serverId = z.enum(["gbrain", "xiaohongshu-mcp", "context7"]);
+const serverId = z.enum(["xiaohongshu-mcp", "context7"]);
 const coordinate = z
 	.object({ serverId, version: z.string().min(1).max(128) })
 	.strict();

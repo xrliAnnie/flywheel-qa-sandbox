@@ -94,7 +94,8 @@ async function upstream(id: string) {
 			{ execute: async () => ({ status: "unknown" as const }) },
 		]),
 	);
-	if (state.omit && id === "gbrain") handlers.delete("knowledge.get_page");
+	if (state.omit && id === "xiaohongshu-mcp")
+		handlers.delete("xiaohongshu.check_login_status");
 	return {
 		handlers,
 		integration: { id, version: "fixture", toolSchemaDigest: "0".repeat(64) },
@@ -104,9 +105,6 @@ async function upstream(id: string) {
 		},
 	};
 }
-vi.mock("../gbrain-provider.js", () => ({
-	startGbrainProvider: () => upstream("gbrain"),
-}));
 vi.mock("../xiaohongshu-provider.js", () => ({
 	startXiaohongshuProvider: () => upstream("xiaohongshu-mcp"),
 }));
@@ -196,11 +194,10 @@ it.each([false, true, "identity"] as const)(
 		if (failure === "identity") {
 			await expect(pending).rejects.toThrow("runtime_identity_changed");
 			expect(state.parent).toBeUndefined();
-			expect(state.events.slice(-4)).toEqual([
+			expect(state.events.slice(-3)).toEqual([
 				"close:browser",
 				"close:context7",
 				"close:xiaohongshu-mcp",
-				"close:gbrain",
 			]);
 			return;
 		}
@@ -251,7 +248,6 @@ it.each([false, true, "identity"] as const)(
 			"browser",
 			"context7",
 			"discord",
-			"gbrain",
 			"github",
 			"linear",
 			"xiaohongshu-mcp",
@@ -260,11 +256,10 @@ it.each([false, true, "identity"] as const)(
 			"BRIDGE_TOKEN",
 		);
 		expect(state.parent?.outboundTransport).toBeTypeOf("function");
-		expect(state.events.slice(-4)).toEqual([
+		expect(state.events.slice(-3)).toEqual([
 			"close:browser",
 			"close:context7",
 			"close:xiaohongshu-mcp",
-			"close:gbrain",
 		]);
 	},
 );
@@ -274,11 +269,10 @@ it("attempts all cleanup after one provider close rejects", async () => {
 	await expect(session.close()).rejects.toThrow(
 		"runtime_provider_cleanup_failed",
 	);
-	expect(state.events.slice(-4)).toEqual([
+	expect(state.events.slice(-3)).toEqual([
 		"close:browser",
 		"close:context7",
 		"close:xiaohongshu-mcp",
-		"close:gbrain",
 	]);
 });
 
@@ -287,11 +281,10 @@ it("fails startup with cleanup instead of silently dropping a missing provider o
 	await expect(startLeadRuntimeProviders(fixture())).rejects.toThrow(
 		"runtime_handler_coverage_incomplete",
 	);
-	expect(state.events.slice(-4)).toEqual([
+	expect(state.events.slice(-3)).toEqual([
 		"close:browser",
 		"close:context7",
 		"close:xiaohongshu-mcp",
-		"close:gbrain",
 	]);
 });
 
@@ -393,11 +386,10 @@ it("assembles every non-reserved operation and closes activation providers in re
 	);
 	await session.close();
 	await session.close();
-	expect(state.events.slice(-4)).toEqual([
+	expect(state.events.slice(-3)).toEqual([
 		"close:browser",
 		"close:context7",
 		"close:xiaohongshu-mcp",
-		"close:gbrain",
 	]);
 	await expect(
 		session.handlers.get("bridge.read")!.execute(
@@ -413,7 +405,7 @@ it("assembles every non-reserved operation and closes activation providers in re
 		),
 	).rejects.toThrow("runtime_providers_closed");
 });
-it.each(["gbrain", "xiaohongshu-mcp", "context7"])(
+it.each(["xiaohongshu-mcp", "context7"])(
 	"cleans up earlier resources when %s startup fails",
 	async (failure) => {
 		state.fail = failure;
@@ -453,7 +445,7 @@ it("keeps non-browser capabilities available when native browser startup fails",
 				errorCode: "browser_unavailable",
 			});
 		expect(
-			await session.handlers.get("knowledge.get_page")!.execute({}, context),
+			await session.handlers.get("docs.lookup")!.execute({}, context),
 		).toEqual({ status: "unknown" });
 		expect(
 			await session.handlers.get("artifact.text.create")!.execute(
@@ -478,7 +470,6 @@ it("keeps non-browser capabilities available when native browser startup fails",
 	expect(state.events.filter((e) => e.startsWith("close:"))).toEqual([
 		"close:context7",
 		"close:xiaohongshu-mcp",
-		"close:gbrain",
 	]);
 });
 
@@ -796,7 +787,6 @@ function withoutGithubCredential(options: ReturnType<typeof fixture>) {
 
 it("omit_integration keeps every other capability when optional providers fail, one reason each", async () => {
 	state.failures = {
-		gbrain: "gbrain_host_unverified",
 		context7: "baseline_drift",
 		"xiaohongshu-mcp": "upstream_http_unavailable",
 	};
@@ -804,12 +794,10 @@ it("omit_integration keeps every other capability when optional providers fail, 
 	try {
 		expect(session.unavailableIntegrations).toEqual([
 			{ id: "context7", reason: "baseline_drift" },
-			{ id: "gbrain", reason: "host_config_unverified" },
 			{ id: "xiaohongshu-mcp", reason: "provider_start_failed" },
 		]);
 		const ids = [...session.handlers.keys()];
 		expect(ids.filter((id) => id.startsWith("docs."))).toEqual([]);
-		expect(session.handlers.has("knowledge.get_page")).toBe(false);
 		expect(session.handlers.has("xiaohongshu.list_feeds")).toBe(false);
 		for (const kept of [
 			"linear.issue.get",
@@ -859,7 +847,7 @@ it("omit_integration records missing Linear and GitHub credentials and drops onl
 			"patrol.judgment.record",
 		])
 			expect(session.handlers.has(gone)).toBe(false);
-		expect(session.handlers.has("knowledge.get_page")).toBe(true);
+		expect(session.handlers.has("docs.lookup")).toBe(true);
 		expect(session.secrets).not.toContain(undefined);
 		expect(session.integrationIds).not.toContain("linear");
 		expect(session.integrationIds).not.toContain("github");
@@ -894,9 +882,9 @@ it("omit_integration drops browser operations instead of minting rejection handl
 });
 
 it("fail_closed (the resident default) still fails the whole activation on one provider", async () => {
-	state.failures = { gbrain: "gbrain_host_unverified" };
+	state.failures = { context7: "baseline_drift" };
 	await expect(startLeadRuntimeProviders(fixture())).rejects.toThrow(
-		"gbrain_host_unverified",
+		"baseline_drift",
 	);
 	await expect(
 		startLeadRuntimeProviders({
@@ -968,7 +956,6 @@ it.each(["founder_chrome", "off"] as const)(
 	"voice parent (%s) publishes unavailableIntegrations and a consistent manifest/MCP",
 	async (browserMode) => {
 		state.failures = {
-			gbrain: "gbrain_host_unverified",
 			context7: "baseline_drift",
 			...(browserMode === "founder_chrome"
 				? { browser: "browser_start_failed" }
@@ -997,7 +984,6 @@ it.each(["founder_chrome", "off"] as const)(
 					? [{ id: "browser", reason: "provider_start_failed" }]
 					: []),
 				{ id: "context7", reason: "baseline_drift" },
-				{ id: "gbrain", reason: "host_config_unverified" },
 				{ id: "linear", reason: "credential_missing" },
 			]);
 			expect(manifest.browserMode).toBe(browserMode);
@@ -1012,7 +998,6 @@ it.each(["founder_chrome", "off"] as const)(
 				expect(manifest.operationIds.some((id) => id.startsWith(prefix))).toBe(
 					false,
 				);
-			expect(manifest.operationIds).not.toContain("knowledge.get_page");
 			expect(manifest.operationIds).toContain("github.pr.view");
 			// Positive control for the R2#3 negative assertions below.
 			expect(manifest.operationIds).toContain("github.pr.create");
@@ -1057,7 +1042,6 @@ it("a resident (fail_closed) manifest carries no unavailableIntegrations field",
 
 it("an unavailable integration keeps none of its operations: reads, writes, denials or management (review R1#3)", async () => {
 	state.failures = {
-		gbrain: "gbrain_host_unverified",
 		"xiaohongshu-mcp": "upstream_http_unavailable",
 		context7: "baseline_drift",
 	};
@@ -1073,7 +1057,6 @@ it("an unavailable integration keeps none of its operations: reads, writes, deni
 		);
 		expect([...unavailable].sort()).toEqual([
 			"context7",
-			"gbrain",
 			"github",
 			"linear",
 			"xiaohongshu-mcp",
@@ -1086,7 +1069,6 @@ it("an unavailable integration keeps none of its operations: reads, writes, deni
 		);
 		expect(leaked).toEqual([]);
 		for (const id of [
-			"knowledge.put_page",
 			"xiaohongshu.publish_content",
 			"xiaohongshu.write.prepare",
 			"github.pr.edit",

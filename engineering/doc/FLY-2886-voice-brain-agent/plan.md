@@ -533,3 +533,15 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 3. **出网走上游链（Lead 选 B）**。codex sandbox 自起托管代理并只放行连它；权限档 `allow_upstream_proxy = true`，codex 进程 `HTTP(S)_PROXY` / `ALL_PROXY` 指向本 activation 的 Flywheel egress（pins `egressProxyUrl`），模型流量经 codex 与 Flywheel egress 两层。隔离探针改为：连沙箱注入的 `HTTP_PROXY`（回环）必须通；经它请求 `http://example.com/.well-known/flywheel-egress-probe/<nonce>` 必须 204，且 Flywheel egress 必须记到同一 nonce。常驻回归：新旧配置同一出网矩阵结果逐目标相同，只多了 egress 这一跳。代价：隔离证明需要能解析 example.com。
 4. **关掉 codex 自动注入的 `codex_apps`**。ChatGPT 订阅账号下 codex 会给 app-server 注入 `codex_apps` MCP 服务器（非受管工具，不在能力清单、不经 broker），并使 container 的服务器集合断言失败。语音 capability 进程启动参数加 `-c features.apps=false`。本机真宿主预演：parent 起来、capability app-server 起来、订阅 `chatgpt`、有效配置与技能核过、模型侧 MCP 只剩 `lead_actions`（verification §4）。
 5. **egress 隧道建立后不按空闲掐断**。实测 codex 进程自身的 Responses / 实时语音 websocket 也遵守 `HTTP(S)_PROXY`，经 Flywheel egress 以 CONNECT 隧道出网；egress 原有的 30 秒空闲超时会掐断安静的语音会话。改为只限建连阶段，建立后两端解除空闲超时（verification §5）。
+
+### 14.8 founder 直令：整机删除 gbrain（2026-09-26 08:16 PDT，Lead 转达 `ba91cb2c`）
+
+founder：「我们不需要gbrain了 可以把这个东西全机删掉」。宿主已卸载 gbrain（`~/.gbrain` 与 `gbrain` 命令均不存在）。本单把 gbrain 接入从代码里彻底删掉，常驻 Lead 与语音 parent 都不再装配：
+
+- 删除 `gbrain-host.ts` / `gbrain-provider.ts` / `gbrain-transport.ts` 及其测试、`scripts/qa-fly-2519-gbrain-canary.mjs`；部署回执 `LEAD_DEPLOYMENT_ENTRIES` 去掉这三个模块。
+- 能力目录删掉 30 个 `knowledge.*` 操作（18 读 + 12 写拒绝），`CredentialConsumer`、上游基线 serverId、上游读适配器、manifest `unavailableIntegrations.id` 枚举都去掉 `gbrain`；P15 只剩 `memory.*`（Bridge），parity 清单行名改为 `memory`，parity drill 的 P15 代表操作改为 `memory.search`。
+- 语音简报去掉「记忆库」名与 `knowledge` 族映射；`integrationUnavailableReason` 不再把 `gbrain_host_unverified` 映射成 `host_config_unverified`。
+- 浏览器沙箱 credential 读拒清单去掉 `~/.gbrain`（路径已不存在）。
+- 常驻 manifest **有意变化**：与 §14.1 基线相比只少了 `gbrain` 集成行与 30 个 `knowledge.*` 操作（及随之变化的 digest），其余字段逐字节相同（`evidence/v12-resident-manifest-bytes.txt`）。
+- 留着没删：`host_config_unverified` 这个公开原因现在没有产生方（原先只有 gbrain 产生），它属于 §14.1 已批准的原因集合，删不删请 Lead 定；历史文档（FLY-2519 等）里的 gbrain 记录不改。
+

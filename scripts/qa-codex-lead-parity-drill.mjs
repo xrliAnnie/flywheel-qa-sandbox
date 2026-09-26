@@ -66,7 +66,7 @@ export function summarizeFixtureCoverage(fixture) {
 		["browser.list_pages"],
 		[],
 		[],
-		["knowledge.search"],
+		["memory.search"],
 		["xiaohongshu.list_feeds", "xiaohongshu.get_feed_detail"],
 		["docs.lookup"],
 	];
@@ -85,7 +85,7 @@ export function summarizeFixtureCoverage(fixture) {
 		"browser.",
 		"rules.",
 		"skills.",
-		"knowledge.",
+		"memory.",
 		"xiaohongshu.",
 		"docs.",
 	];

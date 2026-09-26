@@ -110,7 +110,7 @@ describe("admitted capability opening brief", () => {
 			...manifest,
 			operationIds: [
 				"github.pr.read",
-				"knowledge.put_page",
+				"xiaohongshu.publish_content",
 				"docs.lookup",
 				"start_runner",
 			],
@@ -118,12 +118,12 @@ describe("admitted capability opening brief", () => {
 			unavailableIntegrations: [
 				{ id: "browser", reason: "provider_start_failed" },
 				{ id: "context7", reason: "baseline_drift" },
-				{ id: "gbrain", reason: "host_config_unverified" },
 				{ id: "linear", reason: "credential_missing" },
+				{ id: "xiaohongshu-mcp", reason: "host_config_unverified" },
 			],
 		});
 		expect(completed.realtimePrompt).toContain(
-			"这场没接上：浏览器（启动失败）、Context7 文档（工具表跟登记的不一致）、记忆库（宿主没配置）、Linear（缺凭据）。问到这些我直接说查不了，不去试。",
+			"这场没接上：浏览器（启动失败）、Context7 文档（工具表跟登记的不一致）、Linear（缺凭据）、小红书（宿主没配置）。问到这些我直接说查不了，不去试。",
 		);
 		expect(completed.realtimePrompt).toContain(
 			"后台工具类别：GitHub、Runner。",

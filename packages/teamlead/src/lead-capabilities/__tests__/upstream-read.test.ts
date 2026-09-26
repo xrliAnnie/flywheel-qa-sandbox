@@ -28,7 +28,7 @@ it("retains all 27 reads while keeping xsec tokens in parent handles", async () 
 	const adapters: Array<{ close(): void }> = [];
 	try {
 		let count = 0;
-		for (const serverId of ["gbrain", "xiaohongshu-mcp"] as const) {
+		for (const serverId of ["xiaohongshu-mcp"] as const) {
 			const snapshot = JSON.parse(
 				readFileSync(
 					resolve(
@@ -77,10 +77,8 @@ it("retains all 27 reads while keeping xsec tokens in parent handles", async () 
 				signal: new AbortController().signal,
 				assertCurrent: async () => {},
 			};
-			const list = adapter.handlers.get(
-				serverId === "gbrain" ? "knowledge.search" : "xiaohongshu.list_feeds",
-			)!;
-			const input = serverId === "gbrain" ? { query: "hello" } : {};
+			const list = adapter.handlers.get("xiaohongshu.list_feeds")!;
+			const input = {};
 			const result = await list.execute(input, ctx);
 			expect(result.status).toBe("succeeded");
 			if (serverId === "xiaohongshu-mcp") {
@@ -130,7 +128,7 @@ it("retains all 27 reads while keeping xsec tokens in parent handles", async () 
 			adapter.close();
 			expect((await list.execute(input, ctx)).status).not.toBe("succeeded");
 		}
-		expect(count).toBe(27);
+		expect(count).toBe(9);
 	} finally {
 		for (const a of adapters) a.close();
 		artifacts.close();

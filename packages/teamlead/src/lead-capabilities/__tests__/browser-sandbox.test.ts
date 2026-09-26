@@ -114,7 +114,6 @@ it("builds only a Seatbelt launcher with fixed worker args, env and proxy endpoi
 		".codex",
 		".flywheel",
 		".claude",
-		".gbrain",
 		".config",
 		".ssh",
 		".zshrc",

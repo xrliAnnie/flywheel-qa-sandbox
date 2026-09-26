@@ -11,10 +11,7 @@ vi.mock("../runtime-context.js", () => ({
 	createLeadCapabilityContext: () => ({ assertActivationCurrent: () => {} }),
 }));
 it("preserves every captured upstream row and records explicit denied writes through the real broker", async () => {
-	for (const [server, prefix] of [
-		["gbrain", "knowledge"],
-		["xiaohongshu-mcp", "xiaohongshu"],
-	]) {
+	for (const [server, prefix] of [["xiaohongshu-mcp", "xiaohongshu"]]) {
 		const snapshot = JSON.parse(
 			readFileSync(
 				resolve(
@@ -53,7 +50,7 @@ it("preserves every captured upstream row and records explicit denied writes thr
 		secrets: [],
 	});
 	try {
-		expect(handlers.size).toBe(19);
+		expect(handlers.size).toBe(7);
 		for (const [operationId, input, errorCode] of [
 			[
 				"xiaohongshu.like_feed",
@@ -65,17 +62,7 @@ it("preserves every captured upstream row and records explicit denied writes thr
 				{ title: "title", content: "body", artifactHandles: ["artifact"] },
 				"founder_write_gate_absent",
 			],
-			[
-				"knowledge.put_page",
-				{ slug: "page", content: "body" },
-				"unclassified_write",
-			],
 			["xiaohongshu.delete_cookies", {}, "unclassified_write"],
-			[
-				"knowledge.put_raw_data",
-				{ slug: "page", source: "fixture", data: { nested: { value: 1 } } },
-				"unclassified_write",
-			],
 		] as const) {
 			const requestId = randomUUID();
 			const request = { schemaVersion: 1, operationId, requestId, input };

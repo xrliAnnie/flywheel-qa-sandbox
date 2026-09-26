@@ -86,14 +86,7 @@ export const nativeSkillBaselineSchema = z
 /** FLY-2886 §14.1: optional integrations a voice parent runs without. */
 export const unavailableIntegrationSchema = z
 	.object({
-		id: z.enum([
-			"browser",
-			"context7",
-			"gbrain",
-			"github",
-			"linear",
-			"xiaohongshu-mcp",
-		]),
+		id: z.enum(["browser", "context7", "github", "linear", "xiaohongshu-mcp"]),
 		reason: z.enum([
 			"credential_missing",
 			"host_config_unverified",

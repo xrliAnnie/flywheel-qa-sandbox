@@ -1614,12 +1614,6 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "packages/teamlead/src/lead-capabilities/__tests__/gbrain-provider.test.ts:expect(() => process.kill(pid, 0)).toThrow();#1",
-		"path": "packages/teamlead/src/lead-capabilities/__tests__/gbrain-provider.test.ts",
-		"code": "expect(() => process.kill(pid, 0)).toThrow();",
-		"classification": "qa-only"
-	},
-	{
 		"key": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts:child.kill(\"SIGKILL\");#1",
 		"path": "packages/teamlead/src/lead-capabilities/__tests__/manifest-skills-host.test.ts",
 		"code": "child.kill(\"SIGKILL\");",

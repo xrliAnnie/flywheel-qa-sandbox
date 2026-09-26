@@ -95,3 +95,10 @@ teamlead 13 项失败分诊：`runtime-parent` 4 项与 `codex-runner-orphan-rea
 真宿主本地预演（verification §4）：语音 parent 1.75s 起来、不可用集成与原因正确、capability app-server 订阅/配置/技能核过、模型侧 MCP 只剩 `lead_actions`。未覆盖、归 529 房 QA：有 Linear key 的一场、完整语音会话、后台读写与 founder 门、浏览器模式、QA-R2a/R2b。
 
 相关验证见 `evidence/v12-related-test-scope.md`。没有跑本机全包套件的意图（teamlead `vitest related` 因叶子模块被 Bridge 插件引用而展开到 614 个文件，全部通过）；没有请求 full CI。
+
+### 第三次恢复续：独立评审 minor 与 founder 删除 gbrain
+
+- `bc4adc7d5`：独立 Claude 评审（非 Codex 门）提出的 minor：`release()` 两步都失败时上报 `admission_residual_release_failed`；清空后删不掉的残留记录只报一次 `admission_residual_file_undeletable`；`ps -p` 只有 exit 1 且 stdout/stderr 全空才算进程不在（真宿主测：不存在范围的 pid 让 ps 打诊断 → 抛错）；R2#1 两步都失败的分支测试；R2#3 负断言补正向对照（`github.pr.create` / `git.feature.push` 在 github 可用时确实在 manifest 里）。
+- founder 直令删除 gbrain（plan §14.8）：先红（`gbrain-removed.test.ts` 4 条全红，`evidence/v12-gbrain-removal.md`）后绿。
+- 仓库级守卫补登记（本单 v12 引入、此前相关测试范围没覆盖到的扫描型测试）：`kill-path-inventory.json` 补 voice-codex 残留回收的 4 处 kill 调用（`out-of-scope` / `qa-only`，由分类器按路径给出）；`child-process-census.json` 补 `node-runtime-closure.ts`（otool）与 `admission-residuals.ts`（ps）的同步子进程。这两条守卫在上一个 HEAD 上是红的，没被发现是因为按变更文件路径 grep 找不到全仓扫描型测试；本轮把全仓扫描型测试单独列出来跑（`evidence/v12-gbrain-removal.md`）。
+

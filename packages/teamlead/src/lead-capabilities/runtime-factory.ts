@@ -15,7 +15,6 @@ import {
 	type LeadCapabilityDefinition,
 } from "./catalog.js";
 import { startContext7Provider } from "./context7-provider.js";
-import { startGbrainProvider } from "./gbrain-provider.js";
 import {
 	createLeadGithubClient,
 	resolveLeadGithubToken,
@@ -69,7 +68,6 @@ import { startXiaohongshuProvider } from "./xiaohongshu-provider.js";
 export type OptionalIntegrationId =
 	| "browser"
 	| "context7"
-	| "gbrain"
 	| "github"
 	| "linear"
 	| "xiaohongshu-mcp";
@@ -89,7 +87,6 @@ export function integrationUnavailableReason(
 	error: unknown,
 ): IntegrationUnavailableReason {
 	const code = error instanceof Error ? error.message : "";
-	if (code === "gbrain_host_unverified") return "host_config_unverified";
 	if (code === "baseline_drift") return "baseline_drift";
 	return "provider_start_failed";
 }
@@ -581,14 +578,14 @@ export async function startLeadRuntimeProviders(
 			...requires: OptionalIntegrationId[]
 		) => slots.push({ requires, handlers });
 		/** Upstream writes and denials belong to the integration they write to. */
-		const writesFor = (consumer: "gbrain" | "xiaohongshu-mcp" | "other") =>
+		const writesFor = (consumer: "xiaohongshu-mcp" | "other") =>
 			new Map(
 				[...writeHandlers].filter(([id]) => {
 					const owner = LEAD_CAPABILITY_CATALOG.find(
 						(row) => row.operationId === id,
 					)?.credentialConsumer;
 					return consumer === "other"
-						? owner !== "gbrain" && owner !== "xiaohongshu-mcp"
+						? owner !== "xiaohongshu-mcp"
 						: owner === consumer;
 				}),
 			);
@@ -611,17 +608,7 @@ export async function startLeadRuntimeProviders(
 		slot(createReportDeliverHandlers(common));
 		slot(createReportVerifyHandlers(common));
 		if (linear) slot(linear.handlers, "linear");
-		slot(
-			new Map(
-				[...writeHandlers].filter(([id]) => {
-					const owner = LEAD_CAPABILITY_CATALOG.find(
-						(row) => row.operationId === id,
-					)?.credentialConsumer;
-					return owner !== "gbrain" && owner !== "xiaohongshu-mcp";
-				}),
-			),
-		);
-		slot(writesFor("gbrain"), "gbrain");
+		slot(writesFor("other"));
 		slot(writesFor("xiaohongshu-mcp"), "xiaohongshu-mcp");
 		slot(
 			createXhsWriteManagementHandlers({
@@ -632,24 +619,10 @@ export async function startLeadRuntimeProviders(
 			"xiaohongshu-mcp",
 		);
 		current();
-		const upstreamReads = (serverId: "gbrain" | "xiaohongshu-mcp") =>
+		const upstreamReads = (serverId: "xiaohongshu-mcp") =>
 			UPSTREAM_TOOL_ROWS.filter(
 				(row) => row.serverId === serverId && row.classification === "read",
 			).map((row) => row.operationId);
-		const gbrain = await optional(
-			"gbrain",
-			() =>
-				startGbrainProvider({
-					...common,
-					artifacts: options.artifacts,
-				}),
-			() => upstreamReads("gbrain"),
-		);
-		if (gbrain) {
-			cleanup.push(gbrain.close);
-			slot(gbrain.handlers, "gbrain");
-		}
-		current();
 		const xhsAuthorityReads = () =>
 			createXhsAuthorityReadHandlers({
 				...common,
@@ -825,14 +798,13 @@ export async function startLeadRuntimeProviders(
 					"discord",
 					"linear",
 					"github",
-					"gbrain",
 					"xiaohongshu-mcp",
 					"context7",
 					...(options.browserMode === "off" ? [] : ["browser"]),
 				] as const
 			).filter((id) => !unavailable.has(id as OptionalIntegrationId)),
-			upstreamIntegrations: [gbrain, xiaohongshu, context7].flatMap(
-				(provider) => (provider ? [provider.integration] : []),
+			upstreamIntegrations: [xiaohongshu, context7].flatMap((provider) =>
+				provider ? [provider.integration] : [],
 			),
 			/** Present only under omit_integration; sorted by id. */
 			unavailableIntegrations: omitMode

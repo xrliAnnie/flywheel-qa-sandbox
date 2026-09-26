@@ -11,12 +11,6 @@ import { assertUpstreamToolsPinned } from "../upstream-baseline.js";
 import { UPSTREAM_TOOL_ROWS } from "../upstream-inputs.js";
 import { XiaohongshuTokenHandles } from "../xiaohongshu-tokens.js";
 export const UPSTREAM_READ_BASELINES = Object.freeze({
-	gbrain: {
-		serverId: "gbrain" as const,
-		version: "0.9.0",
-		toolSchemaDigest:
-			"e0835ffe366c98afdbbd96b6da6f30061e5f0b6cbde24a8a9e61e82df0fc84b2",
-	},
 	"xiaohongshu-mcp": {
 		serverId: "xiaohongshu-mcp" as const,
 		version: "2.0.0",
@@ -44,7 +38,7 @@ const denied = () => new Error("upstream_read_unavailable");
 /** Read adapters own only token associations; the outer provider owns/ closes the SDK connection. */
 export function createUpstreamReadAdapter(
 	options: {
-		serverId: "gbrain" | "xiaohongshu-mcp";
+		serverId: "xiaohongshu-mcp";
 		activationId: string;
 		client: Client;
 		artifacts: LeadArtifactStore;

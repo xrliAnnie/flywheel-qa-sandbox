@@ -93,3 +93,7 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 实测（临时 CODEX_HOME、一个只记录不转发的本地代理、`HTTPS_PROXY` 指向它、`codex exec` 空跑）：codex 进程自身的请求全部走代理——`CONNECT chatgpt.com:443`、`api.openai.com:443`（Responses websocket `wss://api.openai.com`，失败后回落 HTTPS）、`github.com:443` 等。所以裁定 B 落地后，app-server 的模型与实时语音流量也经 Flywheel egress（公网、放行），与「我们自己的出网控制点在路径上、可审计」一致。
 
 但 egress 原本对**所有**入站 socket 与上游 socket 有 30 秒**空闲**超时，隧道建立后也不解除：安静超过 30 秒的实时语音 websocket 或长时间无字节的模型流会被掐断。已修：只限建连阶段（可配置，默认 30s），隧道建立后两端解除空闲超时；proxy close / 撤权照样拆隧道；websocket upgrade 分支不变。回归用例：建连超时 150ms、建立后空闲 450ms 隧道仍在且可回显（改前先红）。
+
+## 6. 整机删除 gbrain 后的常驻 manifest（plan §14.8）
+
+同一 byte harness（`runtime-factory.test.ts` 桩、固定根、default / founder_chrome / isolated 三模式、generation 打码）：与 §14.1 后的基线相比，三份 manifest 都只少了 `gbrain` 集成行和 30 个 `knowledge.*` 操作，`manifestDigest` 随之变化，其余字段逐字节相同。原件在 `evidence/v12-resident-manifest-bytes.txt` 末节。

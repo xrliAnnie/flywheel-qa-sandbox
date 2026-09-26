@@ -16,7 +16,6 @@ interface VoiceBriefSnapshot {
 const UNAVAILABLE_NAMES: Record<string, string> = {
 	browser: "浏览器",
 	context7: "Context7 文档",
-	gbrain: "记忆库",
 	github: "GitHub",
 	linear: "Linear",
 	"xiaohongshu-mcp": "小红书",
@@ -33,7 +32,6 @@ const FAMILY_INTEGRATION: Record<string, string> = {
 	docs: "context7",
 	git: "github",
 	github: "github",
-	knowledge: "gbrain",
 	linear: "linear",
 	xiaohongshu: "xiaohongshu-mcp",
 };

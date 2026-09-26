@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { assertUpstreamToolsPinned } from "../upstream-baseline.js";
 
 it("checks all captured tools against exact server version and schema digests without omissions", () => {
-	for (const server of ["gbrain", "xiaohongshu-mcp", "context7"]) {
+	for (const server of ["xiaohongshu-mcp", "context7"]) {
 		const snapshot = JSON.parse(
 			readFileSync(
 				resolve(

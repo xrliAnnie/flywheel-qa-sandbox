@@ -21,7 +21,6 @@ export type CredentialConsumer =
 	| "discord"
 	| "linear"
 	| "github"
-	| "gbrain"
 	| "xiaohongshu-mcp"
 	| "context7"
 	| "browser"
@@ -821,7 +820,7 @@ add(
 for (const row of UPSTREAM_TOOL_ROWS)
 	add(
 		row.operationId,
-		row.serverId === "gbrain" ? "P15" : "P16",
+		"P16",
 		row.classification,
 		row.serverId,
 		row.input.shape,

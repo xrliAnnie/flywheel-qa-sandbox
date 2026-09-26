@@ -8,3 +8,19 @@ cmp: identical (3 manifests)
 Re-run after the review R1#3 requires-slot restructure:
 0ea4568016be0442e75e7340f82438523c1591410f5a80554697c2cd940f44fd  after-r1
 cmp: identical (3 manifests)
+
+Intentional change — founder 2026-09-26 08:16 PDT removed gbrain (Lead ruling ba91cb2c), same harness:
+f72e3747b36775d011b0589c5ed7a79db5ac178c1eaac84c038619232f5b54af  after-gbrain-removal
+Structural diff vs after-r1 (every other field byte-identical):
+== default
+  integrations: -['gbrain'] +[]
+  manifestDigest: 39063b27bc97bc08286f212645c6cb30a2a38cd89d227817697ea79e5d3843e6 -> 671796acf8c17f21b9a1842aa4973114c5fe5d586df1757fc3491082abbb8dd1
+  operationIds: -30 (all knowledge.*: True), +0
+== founder_chrome
+  integrations: -['gbrain'] +[]
+  manifestDigest: a0a5431dc918984008e309989f9cb7e167ee5c3225715a95c114669cabb0daf1 -> d993acbcb6b11b6d5a544314249370671c21eb72aa29b373f3a25aebf2c4fbd6
+  operationIds: -30 (all knowledge.*: True), +0
+== isolated
+  integrations: -['gbrain'] +[]
+  manifestDigest: 3cb1868794c3dd8571f538e8b14f95aae957f3f2f09149109a1039434f24273b -> 04c80dac07f50c96c80846a9a14823226b66489c276cc5cf9bb58d59944d747e
+  operationIds: -30 (all knowledge.*: True), +0
