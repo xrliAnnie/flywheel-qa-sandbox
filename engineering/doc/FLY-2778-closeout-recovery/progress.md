@@ -1,14 +1,14 @@
 ---
 issue: FLY-2778
 phase: implement
-phaseCursor: 1/6
-updated: 2026-09-26T21:58:14.354Z
-nextStep: Validate inherited pre-spawn receipt WIP with discovered focused
-  tests, then fix only observed failures before continuing plan tasks.
+phaseCursor: 2/6
+updated: 2026-09-26T22:21:42.209Z
+nextStep: Implement stock cleanup apply claim as scoped CAS with concurrent
+  double-claim negative coverage; keep destructive execution provider-gated.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2778 progress
-**phase**: implement (1/6)
-**next**: Validate inherited pre-spawn receipt WIP with discovered focused tests, then fix only observed failures before continuing plan tasks.
+**phase**: implement (2/6)
+**next**: Implement stock cleanup apply claim as scoped CAS with concurrent double-claim negative coverage; keep destructive execution provider-gated.
