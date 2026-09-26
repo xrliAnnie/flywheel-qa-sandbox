@@ -232,3 +232,28 @@ A5 验证续记：lint 通过（5115 文件，25 个既有 warning）；Codex ad
 限定16个单元文件 include 的 runner related 实际选中13文件：679 pass、2个既定 sandbox skip、1个原5秒 shell gate timeout；该 related 命令不是全绿。原源码/原限额独立复跑 TmuxAdapter.test.ts 得187 pass，其中同一 shell gate 2.413秒通过。此前 async stdin 与 TUI timeout 负控在这次 bounded related 中通过。没有再跑 real-tmux，没有增加超时或改断言。此前失败日志与最终结果都已更新进 implementation-a5-evidence.json.gz。
 
 这关闭 A5 WIP 的待收结果，仍只是 A 的局部证据；生产 Tmux factory/native session 核验、旧体补采、开关、B–F 与九单验收均未完成。当前先落实 Lead HIGH 的 complete marker 优先不变式：Heartbeat 与 crash-reaper 跨 await 后必须先对账，未知/held 阻止死亡，最终 CAS 前同步检查。后续新 BodyObservation 死亡收敛同样必须消费此守卫，不能以当前两个消费者覆盖声称 HIGH 已全完成。
+
+
+## 续接 B1/B2 验证与 A6 观测入口（2026-09-26，执行 b3d59196）
+
+继承 `a84a07854`，TURN implement epoch 11。完整 A–F 和九单范围不变。
+
+### B1/B2 继承验证
+
+锁文件安装恢复缺失的 node_modules；首次 build 的缺依赖错误属于 preflight，不是产品 RED。继承源码未修改，24 个具体测试文件逐一执行，**392 pass**；包含 HIGH marker 的 Heartbeat/crash 保护、真实 /events 重放（9 pass）、两份 reown 回归（64 pass）以及 FLY-1560。逐查询消费者和逐文件排除理由见 `implementation-b1-consumers.json.gz`。此批没有改变 StateStore/CommDB 表或新增 kill 操作；对应迁移与 kill inventory 的既有 A5 证据不冒充本轮重跑。
+
+### A6 当前身份与 OS 观测的衔接
+
+新增 `execution-body-liveness.ts`，只组装接受过的 owner/binding 与既有独立 OS sampler，不写生命周期、不创建替身，也不从 pane、heartbeat 或业务停驻状态推导生死。采样前后核验 activation/generation/revision/owner/spawn epoch/binding；在同步消费入口再次核验身份、10 秒期限、spawn/restart/recovery 和动态开关。相同身份只共享正在进行的采样，不缓存完成的观测；缺身份不返回死亡证据，OS 读取失败为 unknown。
+
+20 项新入口断言在 API scaffold 上全部 RED，最小实现后同一文件 20 GREEN；这是新入口的 TDD 记录，**不是九张原现象的 before/after 验收**。覆盖五种账面状态不能否决可靠死亡、活 worker 无窗口依赖、六类采样中身份变化、采样及消费期间开关变化、恢复/重启/在途启动优先、到期和并发采样。保留 controller 21 pass、纯进程证据 52 pass。
+
+B1/B2 + A6 owning related 使用25个明确相关文件的 include 上界，实际选择12文件、**203 pass**；不是全包测试。最终 `pnpm --filter "flywheel-teamlead..." build` exit 0；`pnpm lint` exit 0（5119文件、25个既有 warnings）。没有改公开包导出；类型验证由受影响包加依赖构建覆盖。没有新增 shell 测试。源码 SHA256、完整命令日志与 related 配置归档 `implementation-b1-a6-evidence.json.gz`。
+
+### 仍未完成，下一批必须接上
+
+此入口当前尚无生产消费者，`isEnabled` / `isRecoveryActive` 是必须提供且读取失败保护的内部回调；**不是 feature registry 开关已落实或 reown 预算策略已接线的声明**。运行时 registry/wrapper、独立采样周期与公平预算、三种 Tmux 载体生产 factory/native 身份核验、旧体迁移、B–F 死亡消费者及双库义务、standby writer-empty、九单证据、评审/PR/CI/route 仍待完成。HIGH marker 守卫后续仍须进入新死亡事务，不能以现有两个消费者覆盖宣称全部完成。
+
+全仓五类探针当前343处引用、31个非测试源文件的原始基线见 `implementation-probe-inventory-baseline.json.gz`；记录仍标未处置，不是最终消费者扫尾通过。源码核实 started-evidence 的无窗→未启动、worktree-reconciler 的 lookup gone→dead、lifecycle-sweep 的工作树删除准入仍依赖这些窗口结果，必须随 B/C/E/F 一起迁移。FLY-2921 继续拥有铸替身协调，不在本批新增平行协调器。
+
+没有请求 full CI、代码评审、PR、QA529 或 needs_review，仍为 implement 0/6。
