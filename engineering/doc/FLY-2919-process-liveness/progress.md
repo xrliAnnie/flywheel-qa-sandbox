@@ -2,22 +2,23 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T23:52:03.154Z
-nextStep: A10 WIP 8a0433e28 closes resume launch missing activation using unique
-  current durable binding; retry/native permit/OS-await rechecks preserve
-  cleanup. Exact activation completion classification and Blueprint resume
-  abnormal result now covered. 13 explicit files/306 pass; teamlead related3/51,
-  edge3/82, teamlead+deps build/lint pass; evidence archived. Next C1 existing
-  CommDB finalizer must replay committed receipts before evidence expiry
-  (discovery/test snippet in /tmp/fly2919-c1), then B/C canonical death
-  CAS/crossDB/TURN-wake with sink final marker/receipt guards including
-  multi-activation signals; restart transient contention, all
-  consumers/reown/cadence/legacy migration/nine tickets remain. A9 routes
-  original15s import timeout still unclosed. No review/PR/full CI/QA/handoff.
+updated: 2026-09-26T23:57:52.855Z
+nextStep: D1/A10/C1 checkpoints done locally, full A-F not done. C1 moves
+  existing CommDB expiry after durable receipt lookup; reopen/new
+  identity/expired new request/conflict negative controls green,
+  finalizer-external bytes unchanged and FLY2567 hash rationale refreshed. 7
+  explicit files/106 pass; comm related1/23; comm+deps build/lint pass; evidence
+  archived. Next prioritize core B/C StateStore convergeProvenDeadExecution +
+  trusted crossDB body_death obligation, marker reconciliation and sampling
+  outside lease/final synchronous identity-CAS, receipt/retirement preservation,
+  TURN/wake settlement. Integrate Direct/HTTP sinks and multi-activation
+  terminal signals into same path; remaining all consumers/reown/cadence/legacy
+  migration/restart transient contention/nine tickets. A9 routes original15s
+  import timeout remains. No review/PR/full CI/QA/handoff.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: A10 WIP 8a0433e28 closes resume launch missing activation using unique current durable binding; retry/native permit/OS-await rechecks preserve cleanup. Exact activation completion classification and Blueprint resume abnormal result now covered. 13 explicit files/306 pass; teamlead related3/51, edge3/82, teamlead+deps build/lint pass; evidence archived. Next C1 existing CommDB finalizer must replay committed receipts before evidence expiry (discovery/test snippet in /tmp/fly2919-c1), then B/C canonical death CAS/crossDB/TURN-wake with sink final marker/receipt guards including multi-activation signals; restart transient contention, all consumers/reown/cadence/legacy migration/nine tickets remain. A9 routes original15s import timeout still unclosed. No review/PR/full CI/QA/handoff.
+**next**: D1/A10/C1 checkpoints done locally, full A-F not done. C1 moves existing CommDB expiry after durable receipt lookup; reopen/new identity/expired new request/conflict negative controls green, finalizer-external bytes unchanged and FLY2567 hash rationale refreshed. 7 explicit files/106 pass; comm related1/23; comm+deps build/lint pass; evidence archived. Next prioritize core B/C StateStore convergeProvenDeadExecution + trusted crossDB body_death obligation, marker reconciliation and sampling outside lease/final synchronous identity-CAS, receipt/retirement preservation, TURN/wake settlement. Integrate Direct/HTTP sinks and multi-activation terminal signals into same path; remaining all consumers/reown/cadence/legacy migration/restart transient contention/nine tickets. A9 routes original15s import timeout remains. No review/PR/full CI/QA/handoff.
