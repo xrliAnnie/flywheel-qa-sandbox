@@ -73,13 +73,19 @@ function harness(
 		receipts: journal.operationReceipts,
 		secrets: [],
 		allowedOperationIds: () =>
-			new Set(["linear.issue.update", "linear.issue.get", "start_runner"]),
+			new Set([
+				"linear.issue.update",
+				"linear.issue.get",
+				"start_runner",
+				"browser.press_key",
+			]),
 		assertCurrent: async () => {},
 		deliveryContext: () => ({ id: entryId, assertCurrent: () => {} }),
 		handlers: new Map([
 			["linear.issue.update", { authorize: async () => {}, execute }],
 			["linear.issue.get", { authorize: async () => {}, execute }],
 			["start_runner", { authorize: async () => {}, execute }],
+			["browser.press_key", { authorize: async () => {}, execute }],
 		]),
 		targetLocks: {
 			actor: "voice",
@@ -291,6 +297,69 @@ describe("voice write-before repeat gate (Lead ruling, upstream ordering limit)"
 	});
 });
 
+describe("repeat gate applies only across background turns (Lead ruling dac7093e)", () => {
+	const pressKey = (requestId: string) => ({
+		schemaVersion: 1 as const,
+		operationId: "browser.press_key",
+		requestId,
+		input: {
+			generation: "d0000000-0000-4000-8000-000000000001",
+			arguments: { key: "PageDown" },
+		},
+	});
+	const browserOk = (): HandlerOutcome => ({
+		status: "succeeded",
+		providerRef: "browser:press",
+		data: { content: [{ type: "text", text: "ok" }] },
+	});
+
+	it("runs two identical browser actions of the same turn", async () => {
+		const h = harness(browserOk);
+		expect((await h.broker.execute(pressKey(ids[0]!))).status).toBe(
+			"succeeded",
+		);
+		expect((await h.broker.execute(pressKey(ids[1]!))).status).toBe(
+			"succeeded",
+		);
+		expect(h.execute).toHaveBeenCalledTimes(2);
+	});
+
+	it("blocks the same browser action from a later turn and speaks the confirmation", async () => {
+		const h = harness(browserOk);
+		await h.broker.execute(pressKey(ids[0]!));
+		h.gate!.turnEnded("entry-1");
+		h.setEntry("entry-2");
+		const repeated = await h.broker.execute(pressKey(ids[1]!));
+		expect(repeated).toMatchObject({
+			status: "rejected",
+			errorCode: "duplicate_recent_write",
+			data: {
+				spokenText: "这件刚才已经做了：网页操作已完成，要再做一次吗？",
+			},
+		});
+		expect(h.execute).toHaveBeenCalledTimes(1);
+		h.gate!.turnEnded("entry-2");
+		h.gate!.observeFounderUtterance("对，再按一次");
+		h.setEntry("entry-3");
+		expect((await h.broker.execute(pressKey(ids[2]!))).status).toBe(
+			"succeeded",
+		);
+		expect(h.execute).toHaveBeenCalledTimes(2);
+	});
+
+	it("still blocks when an earlier turn's write was replayed into the current turn", async () => {
+		const h = harness();
+		await h.broker.execute(update(ids[0]!));
+		h.setEntry("entry-2");
+		// Same requestId replay associates the old receipt with this turn too.
+		expect((await h.broker.execute(update(ids[0]!))).status).toBe("succeeded");
+		expect((await h.broker.execute(update(ids[1]!))).errorCode).toBe(
+			"duplicate_recent_write",
+		);
+		expect(h.execute).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("voice repeat gate primitives", () => {
 	it("normalizes key parameters but keeps capability and target distinct", () => {
 		const base = voiceRepeatFingerprint({
@@ -329,6 +398,10 @@ describe("voice repeat gate primitives", () => {
 		["再发一次吧", true],
 		["好，重新做", true],
 		["要再做一次", true],
+		["对，再按一次", true],
+		["再点一下", true],
+		["再说一次？", false],
+		["你再讲一遍", false],
 		["不要", false],
 		["不用再做了", false],
 		["算了", false],

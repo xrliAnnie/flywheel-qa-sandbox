@@ -1,0 +1,63 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ❯ |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts (30 tests | 2 failed) 457ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > blocks the repeated original request after a succeeded write with a late handoff and speaks the confirmation 140ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > writes exactly once more with a different requestId only after her explicit redo reply 24ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > writes normally when the normalized key parameters differ 6ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > uses the unknown wording while the earlier dispatched write has no terminal proof 5ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 她沉默 104ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 其他回答 5ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 无关请求 15ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > never writes again on 否定 9ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > does not treat words spoken before the confirmation could be heard as her answer 6ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > only looks back ten minutes 17ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > excludes the per-attempt business idempotency key from the key parameters 83ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > leaves read capabilities and same-requestId replays untouched 9ms
+   ✓ voice write-before repeat gate (Lead ruling, upstream ordering limit) > keeps a broker without the voice gate byte-for-byte on its existing write path 4ms
+   × repeat gate applies only across background turns (Lead ruling dac7093e) > runs two identical browser actions of the same turn 14ms
+     → expected 'rejected' to be 'succeeded' // Object.is equality
+   × repeat gate applies only across background turns (Lead ruling dac7093e) > blocks the same browser action from a later turn and speaks the confirmation 6ms
+     → expected 'rejected' to be 'succeeded' // Object.is equality
+   ✓ repeat gate applies only across background turns (Lead ruling dac7093e) > still blocks when an earlier turn's write was replayed into the current turn 4ms
+   ✓ voice repeat gate primitives > normalizes key parameters but keeps capability and target distinct 1ms
+   ✓ voice repeat gate primitives > classifies "要" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "要的。" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "嗯，要" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "对，再做一次" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "再发一次吧" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "好，重新做" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "要再做一次" as explicit redo=true 0ms
+   ✓ voice repeat gate primitives > classifies "不要" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "不用再做了" as explicit redo=false 1ms
+   ✓ voice repeat gate primitives > classifies "算了" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "先别发" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "好的我知道了，那 FLY-100 呢" as explicit redo=false 0ms
+   ✓ voice repeat gate primitives > classifies "" as explicit redo=false 1ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > repeat gate applies only across background turns (Lead ruling dac7093e) > runs two identical browser actions of the same turn
+AssertionError: expected 'rejected' to be 'succeeded' // Object.is equality
+Expected: [32m"[7msucceed[27med"[39m
+Received: [31m"[7mreject[27med"[39m
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:321:62
+    319|    "succeeded",
+    320|   );
+    321|   expect((await h.broker.execute(pressKey(ids[1]!))).status).toBe(
+       |                                                              ^
+    322|    "succeeded",
+    323|   );
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/voice-repeat-gate.test.ts > repeat gate applies only across background turns (Lead ruling dac7093e) > blocks the same browser action from a later turn and speaks the confirmation
+AssertionError: expected 'rejected' to be 'succeeded' // Object.is equality
+Expected: [32m"[7msucceed[27med"[39m
+Received: [31m"[7mreject[27med"[39m
+ ❯ src/lead-capabilities/__tests__/voice-repeat-gate.test.ts:344:62
+    342|   h.gate!.observeFounderUtterance("对，再按一次");
+    343|   h.setEntry("entry-3");
+    344|   expect((await h.broker.execute(pressKey(ids[2]!))).status).toBe(
+       |                                                              ^
+    345|    "succeeded",
+    346|   );
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+ Test Files  1 failed (1)
+      Tests  2 failed | 28 passed (30)
+   Start at  02:26:09
+   Duration  2.65s (transform 678ms, setup 52ms, collect 1.42s, tests 457ms, environment 0ms, prepare 108ms)

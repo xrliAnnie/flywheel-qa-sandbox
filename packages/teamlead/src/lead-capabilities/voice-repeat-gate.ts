@@ -74,7 +74,13 @@ export function isExplicitRepeatConfirmation(text: string): boolean {
 		.replace(/[\s\p{P}\p{S}]/gu, "");
 	if (!compact) return false;
 	if (/(?:不|别|没|算了|等等|等一下|取消|停)/u.test(compact)) return false;
-	if (/(?:再|重新|重)(?:做|发|来|弄|派|改|提交|执行|跑)/u.test(compact))
+	// "Say that again" asks to hear the sentence, not to redo the write.
+	if (/(?:再|重新)(?:说|讲|念|重复|听)/u.test(compact)) return false;
+	if (
+		/(?:再|重新|重)(?:做|发|来|弄|派|改|提交|执行|跑|按|点|填|开|打开|截|刷新|写|建|加|操作|试)/u.test(
+			compact,
+		)
+	)
 		return true;
 	const bare = compact
 		.replace(/^(?:嗯|呃|啊|哦|噢)+/u, "")
@@ -171,6 +177,8 @@ export class VoiceRepeatWriteGate {
 		const now = this.now();
 		this.expire(now);
 		const fingerprint = voiceRepeatFingerprint(input);
+		// Lead ruling dac7093e: only a write first dispatched in an earlier
+		// background turn counts; the agent's own steps in one turn are not repeats.
 		const prior = this.options.receipts.findRecentRepeat({
 			projectName: this.options.projectName,
 			leadId: this.options.leadId,
@@ -180,6 +188,7 @@ export class VoiceRepeatWriteGate {
 			dedupeDigest: fingerprint,
 			since: now - VOICE_REPEAT_WINDOW_MS,
 			excludeRequestId: input.requestId,
+			...(input.deliveryId ? { excludeOriginEntryId: input.deliveryId } : {}),
 		});
 		if (!prior) return { kind: "admit", fingerprint };
 		const pending = this.pending.get(fingerprint);

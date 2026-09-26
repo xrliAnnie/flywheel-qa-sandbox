@@ -200,6 +200,8 @@ export class OperationReceiptStore {
 		dedupeDigest: string;
 		since: number;
 		excludeRequestId: string;
+		/** Skip receipts first associated with this turn entry (same-turn steps). */
+		excludeOriginEntryId?: string;
 	}): OperationReceipt | undefined {
 		const input = z
 			.object({
@@ -211,12 +213,16 @@ export class OperationReceiptStore {
 				dedupeDigest: z.string().regex(/^[a-f0-9]{64}$/),
 				since: z.number().int(),
 				excludeRequestId: z.string().uuid(),
+				excludeOriginEntryId: coordinate.optional(),
 			})
 			.strict()
 			.parse(raw);
+		// A receipt's origin turn is its first recorded delivery association.
+		const origin =
+			"(SELECT d.entry_id FROM lead_operation_receipt_deliveries d WHERE d.project_name=r.project_name AND d.lead_id=r.lead_id AND d.activation_id=r.activation_id AND d.operation_id=r.operation_id AND d.request_id=r.request_id ORDER BY d.recorded_at,d.rowid LIMIT 1)";
 		const row = this.db
 			.prepare(
-				"SELECT * FROM lead_operation_receipts WHERE project_name=@projectName AND lead_id=@leadId AND activation_id=@activationId AND operation_id=@operationId AND target_key=@targetKey AND dedupe_digest=@dedupeDigest AND state IN ('dispatched','succeeded','unknown') AND started_at>=@since AND request_id<>@excludeRequestId ORDER BY started_at DESC,request_id DESC LIMIT 1",
+				`SELECT r.* FROM lead_operation_receipts r WHERE r.project_name=@projectName AND r.lead_id=@leadId AND r.activation_id=@activationId AND r.operation_id=@operationId AND r.target_key=@targetKey AND r.dedupe_digest=@dedupeDigest AND r.state IN ('dispatched','succeeded','unknown') AND r.started_at>=@since AND r.request_id<>@excludeRequestId${input.excludeOriginEntryId === undefined ? "" : ` AND COALESCE(${origin},'')<>@excludeOriginEntryId`} ORDER BY r.started_at DESC,r.request_id DESC LIMIT 1`,
 			)
 			.get(input) as ReceiptRow | undefined;
 		return row ? fromRow(row) : undefined;
