@@ -2,15 +2,15 @@
 issue: FLY-2912
 phase: implement
 phaseCursor: 4/6
-updated: 2026-09-26T05:59:27.902Z
-nextStep: Producer proofs, frozen summary/range and carrier wiring committed
-  f5da1d36c; focused checks + teamlead typecheck pass. Finish full257 replay,
-  bounded consumer-related verification, lint/build/dependents, PR and effective
-  code review.
+updated: 2026-09-26T06:33:02.287Z
+nextStep: Resumed 8b29f69cd under implement TURN epoch4. Lint/build and CommDB
+  related 142 tests pass; refreshed bounded consumer audit (51 teamlead + 8 comm
+  files). Teamlead related and dependent typecheck ongoing; replay remains
+  conservative 257-input evidence, then PR/review/handoff.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
 **phase**: implement (4/6)
-**next**: Producer proofs, frozen summary/range and carrier wiring committed f5da1d36c; focused checks + teamlead typecheck pass. Finish full257 replay, bounded consumer-related verification, lint/build/dependents, PR and effective code review.
+**next**: Resumed 8b29f69cd under implement TURN epoch4. Lint/build and CommDB related 142 tests pass; refreshed bounded consumer audit (51 teamlead + 8 comm files). Teamlead related and dependent typecheck ongoing; replay remains conservative 257-input evidence, then PR/review/handoff.
