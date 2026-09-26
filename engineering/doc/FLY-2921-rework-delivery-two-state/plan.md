@@ -76,6 +76,7 @@ stateDiagram-v2
   - 状态属于 `pending | turn_granted | wake_delivered`；
   - 路由版本一致；
   - `preferred_actor_execution_id = deadExecutionId`；
+  - 目标节点 `execution_id = deadExecutionId`，且节点状态为 `pending | admitted | running`，或者为 `failed` 但该执行体有未启动回滚事实（替身启动回滚会把节点写成 `failed`，旧物化只接受前三种，这里要补上）；
   - run 为 active 且 `engine_owned`。
   - 不再要求 `replacement_pending`，删掉 `recoverHeldPaneLoss` 分支。
 - **动作**：保留原物化的全部动作（终结死会话、结清停驻、撤凭据、分配启动序号 reason=`rework_replacement:<req>`、节点换新执行体、追加路由版本 `engine:proven_dead_replacement`、重铸投递 attempt、死体观察），然后把投递置为 `pending`，并清空 owner、lease、`wake_sent_at` 和 `grant_started_at`。
@@ -89,9 +90,9 @@ stateDiagram-v2
    - 其余情况：计一次失败（C3）。
 2. 旧车道收敛（`convergeWorkflowReworkWriterReplacement`）：保留，仅用于兼容已存在的半铸体。结果改为「投递回 `pending` + 新路由版本」，不再写 `replacement_pending`。
 3. **替身启动中**（新谓词 `isReworkReplacementLaunching`）：
-   - 判定条件：投递 `pending`，最新路由的 `interpreted_by` 是两种替身来源之一，目标节点 `pending` 且 `execution_id = preferred_actor`，并且没有未启动回滚事实。
+   - 判定条件：投递 `pending`，最新路由的 `interpreted_by` 是两种替身来源之一（`engine:proven_dead_replacement`、`engine:resume_fallback`），目标节点状态为 `pending` 或 `admitted`（替身准入后、`markStarted` 之前节点是 `admitted`），`execution_id = preferred_actor`，并且没有未启动回滚事实。
    - 结果：`replacement_launching`，释放 owner，设 `next_retry_at = now + 30s`，**不计失败**。
-   - 如果有未启动回滚事实：视为替身已死，走第 4 步。
+   - 如果有未启动回滚事实（此时节点为 `failed`）：视为替身已死，走第 4 步。
 4. **目标体已死**（任一即成立）：
    - 会话处于不可逆终态；
    - 重入分类为 `replace`；
@@ -109,6 +110,8 @@ stateDiagram-v2
    - wake 成功：若原为 `pending` 先推进到 `turn_granted`，然后写 `wake_sent_at`。
    - wake 返回 `resident_hold_expired`：走第 4 步。
    - wake 返回其他错误：计一次失败。
+
+**TURN 与 wake 的身份按路由版本区分**（修「重投读到旧失败」）：现在 `sourceEventId = rework-turn:<req>:<activationId>`、wakeId 由 `{requestId, activationId, epoch}` 派生，同一个请求重投时 TURN source 相同 ⇒ `grantTurn` 回放出同一 epoch ⇒ 同一个 wakeId；CommDB `turn_wake_outbox.push_count` 上限是 2（flywheel-comm db.ts:310），两次推送失败以后，即使 Lead 修好了传输、重投，也只会读到旧的失败结果。改为 `sourceEventId = rework-turn:<req>:<activationId>:r<routeRevision>`。每次 Lead 重投、每次换体都会追加路由版本，于是得到新的 grant、新的 epoch、新的 wakeId。activationId 保持 `activation:<req>` 不变，准入仍按现有幂等回放和凭据轮换（FLY-2332）处理。兼容：迁移过来的 `turn_granted` 且 `wake_sent_at` 非空的行走观察分支，不会重新授予；只有「已授权、未推送」的崩溃窗口行会按新格式再授予一次，生产上这样的活行为 0。
 
 **Outcome 联合类型**改为：`wake_sent`、`receipt_pending`、`replacement_minted`、`replacement_launching`、`disabled`、`retryable`、`busy`、`settled`（state ∈ `wake_delivered | completed | returned_to_lead`）、`invalid`。删掉 `awaiting_receipt` 和 `replacement_pending` 两个 kind。
 
@@ -143,7 +146,7 @@ stateDiagram-v2
 1. **`rollbackUnlaunchedWorkflowAdmission`** 的 replacement 绑定分支（41262–41280）：删除「run 置 held」和「投递置 held」。改为保留事件与告警（降为普通级）、投递留在 `pending`、`next_retry_at = now`，由协调器第 3 步识别未启动回滚，再按第 4 步换体（受预算约束）。非 replacement 绑定的分支不动，归 FLY-2922。
 2. **`delivery-contract/watch.ts:219-225`**：删掉返工那一半（不再因 `awaiting_receipt`/`replacement_pending` 加收件体不活而判「投不到」）。载体那一半不动。
 3. **`holdUndeliverableTx`**（57133）：若 attempt 属于返工（rework 家族，或 turn_wake 家族且 wake 的 `purpose='workflow_rework'` / wakeId 能解析为返工 wake），就不铸 hold、不冻 run。改为结算该 attempt（`recipient_terminal_rework_owned`），把对应投递的 `next_retry_at` 设为 now，由协调器按 C2 第 4 步换体。实现时把 57159 已有的「返工 wake 已退役」短路扩成这条通用规则。`finalizeUndeliverableHoldTx` 的 `runHeld` 条件同步加上 `family !== "rework"` 作为兜底断言。
-4. **`openReworkContentUndeliverableTx`**（64978），即替身交卷时发现缺内容回执：不再铸 hold、不冻 run。交卷照旧拒绝（`rework_content_not_delivered`，可重试），同一事务把投递按同一执行体追加路由版本、回到 `pending` 并计一次失败，让协调器用 TURN 上下文把返工内容重新送到这个活替身手里；5 次后交还 Lead。
+4. **`openReworkContentUndeliverableTx`**（64978），即替身交卷时发现缺内容回执：不再铸 hold、不冻 run。交卷照旧拒绝（`rework_content_not_delivered`，可重试），同一事务把投递按同一执行体追加路由版本、回到 `pending` 并计一次失败。这一步没有协调器的认领，所以用无主 CAS：只有 `owner_id IS NULL` 或租约已过期时才改；有人持有时只记拒绝事件，下一轮协调器会自己看到。改完以后，让协调器用 TURN 上下文把返工内容重新送到这个活替身手里；5 次后交还 Lead。
 5. **暂存取消永不落地**（`delivery-operations.ts:572-592`）：
    - 任何非 ok 分支（没有该家族的取消实现、comm 拒绝、apply 拒绝）一律调用 `markWorkflowHoldResumeFailed`，带上精确原因，不再静默 `continue`；
    - `cancelTurnWakeDelivery` 遇到「源已被 terminal_guard 取消」时，按幂等成功处理，与 mailbox 的 DEAD 同构；
@@ -181,7 +184,8 @@ stateDiagram-v2
 2. **`commitWorkflowTransitionTx`**：在 `activePathCurrentIndex` 算出之后（67979 之后）、`completesConflictResolution` 之前插入校验，只在「当前节点是返工目标（index 0）且 `needs_review`、且为成功边」时生效：
    - `input.subjectDigest` 缺失（例如走了 65626 的会话回落）：拒绝，原因 `rework_head_unavailable`。
    - 与 `activeRequest.base_revision` 相同（大小写不敏感）：拒绝，原因 `rework_head_unchanged`。
-   - `reworkDelta` 缺失、`unavailable`，或 `baseRevision` 与 `activeRequest.base_revision` 不一致（防止检查时和使用时之间被偷换）：拒绝，原因 `rework_delta_unavailable`。
+   - `reworkDelta.baseRevision` 与 `activeRequest.base_revision` 不一致（防止检查时和使用时之间被偷换）：拒绝，原因 `rework_delta_stale`（可重试，下次交卷会重新计算）。
+   - `reworkDelta` 缺失或 `unavailable`（例如 FAIL 那个 head 的对象已不在本地库）：只要 head 已经不同于 base 就放行，并写审计事件 `rework_delta_unverified`。理由：这里如果 fail-closed，体会永远交不了卷，等于造出一个新的卡死态。
    - `changedPaths === 0`：拒绝，原因 `rework_no_product_change`。
    - `base_revision` 不是 40 位十六进制（历史上的 `"unavailable"` 兜底值）：放行，并写审计事件 `rework_head_check_skipped`，因为没有可比对的 head。
    - 拒绝均为 `retryable:true`，不改任何状态。已做的「交卷顺带签收」由 69238–69246 回滚。`WorkflowTransitionResult` 的 reason 联合类型加上这些值。
@@ -253,7 +257,7 @@ stateDiagram-v2
   - 实现阶段要对该脚本做一次「新迁移 → 回滚脚本 → 旧代码启动」的往返测试。
   - 除此之外，代码回退不需要改其他数据。
 
-## 6. 与兄弟单的合同（Lead 已认可边界：问题 `e2641287`；K04/2919 补充确认见 `74884725`）
+## 6. 与兄弟单的合同（Lead 已认可边界：问题 `e2641287`；2919 分工与 K04 不变式确认见问题 `74884725`）
 
 合并规则：**不合并实施，谁后合入谁 rebase 适配**。下表是两边都必须守住的不变式。本节原文交给对方的实现体。
 
@@ -277,7 +281,7 @@ stateDiagram-v2
   - 2921 先合：2919 丢弃这些 hunk。
 - **本单新增**的「未关账返工目标 → 通用死体回收跳过」守卫（C6.1、C6.2）：2919 改死体扫描时必须保留。
 
-### 6.3 与 K04（Codex 交卷/唤醒互锁，待 Lead 确认单号）
+### 6.3 与 K04（Codex 交卷/唤醒互锁；单号以 FLY-2072-triage `fixclasses.json` 的 K04 为准，Lead 已确认只需写明不变式）
 
 - `resident-wake-fence.ts` 的不变式：**`woken` 不等于投不到**。只有 `expired`/`closed` 才算「体已退役、需要换体」。
 - `enterResidentHoldForCompletionTx` 对当前激活的交卷会重新停驻。
@@ -303,8 +307,8 @@ stateDiagram-v2
 | FLY-2330 | 返工 wake 投给已死体，触发投递合同的「投不到」 | run held + `delivery_undeliverable_no_recipient` | 无 hold、run active、attempt 被结算为 `recipient_terminal_rework_owned`、下一次协调铸出替身；另测替身交卷缺内容：拒交卷、无 hold、投递回 pending |
 | FLY-2330 取消门 | 遗留的 turn_wake「投不到」hold，源已被 terminal_guard 取消，再 stage 一个 cancel | 操作永远 staged | 一个 pass 内变成 applied（幂等），或 failed 且带原因；绝不停在 staged |
 | FLY-2821 | 同一 run：首次交卷 → 返工 R1 送达 → R1 交卷 → QA 再 FAIL → R2 | R2 的 wake 返回 `resident_hold_already_woken`，5 次后 needs_lead + held | R1 交卷后 hold 回到 resident；R2 正常送达；另测 hold 卡在 `woken`（旧数据）也能直接投 |
-| FLY-2185 | ①目标体死；②替身死；③替身启动回滚；④通用死体扫描碰到返工目标 | ①② 第二次返回同一具死替身；③ run held；④ 铸出无上下文的体 | 每次一个新体；启动中不计失败；③ 投递 pending 并再换体；④ 跳过并交给协调器；第 4 次换体结算为 returned_to_lead |
-| FLY-2473 | 耗尽 | needs_lead + 两扇门都拒 | returned_to_lead + run active；hold resume 重投成功（preferred 体活着也行）；`/rework` 在 active run 上也接受 |
+| FLY-2185 | ①目标体死；②替身死；③替身启动回滚（节点 `failed`）；④通用死体扫描碰到返工目标；⑤替身已准入（节点 `admitted`）尚未启动时协调器认领 | ①② 第二次返回同一具死替身；③ run held；④ 铸出无上下文的体 | 每次一个新体；启动中不计失败；③ 投递 pending 并再换体；④ 跳过并交给协调器；⑤ 判「启动中」不唤醒、不计数；第 4 次换体结算为 returned_to_lead |
+| FLY-2473 | 耗尽 | needs_lead + 两扇门都拒 | returned_to_lead + run active；hold resume 重投成功（preferred 体活着也行）；用**真实 CommDB** 回归：同一 wake 两次推送失败后 Lead 重投，得到新 epoch、新 wakeId 并推送成功；`/rework` 在 active run 上也接受 |
 | FLY-2092 | 耗尽清理 | 目标节点被置 superseded，复位被拒 | 目标节点不变；重投后协调器正常认领 |
 | FLY-2202 / 2472 | 返工目标零提交交卷；只多了一次 progress.md 提交；真改代码 | 前两种都接受并派 QA | 前两种分别被拒为 `rework_head_unchanged`、`rework_no_product_change`，不派 QA；第三种接受。另测 blocked 路由不受限、非 40 位 base 放行并写审计 |
 
@@ -364,5 +368,5 @@ pnpm --filter flywheel-teamlead exec tsc --noEmit && pnpm exec biome check <改�
 | run 不再冻结后，返工目标节点「挂着」没人动 | `returned_to_lead` 进巡检圈显示、发严重告警；调度器围栏继续挡住无上下文的铸体 |
 | 换体过于积极，误杀活体 | 死亡只认 2919 的进程证据和不可逆终态；未知只复探、不换体 |
 | 删 `validateNeedsLeadReworkQuiescenceTx` 后，`/rework` 期间旧体仍然活着 | 同事务撤凭据；已消费的激活拒绝；TURN 转给新请求后旧体写不进来 |
-| 交卷 diff 在大仓上慢 | 限时加只取前 200 条；失败时拒收可重试，而不是放行 |
+| 交卷 diff 在大仓上慢，或算不出来 | 限时加只取前 200 条；算不出来时退回只比 head（不同即放行并留审计），不制造新的卡死态 |
 | 与 2919/2922/K04 并行改同一片 | §6 合同 + 后合者 rebase；各自回归测试互相保留 |
