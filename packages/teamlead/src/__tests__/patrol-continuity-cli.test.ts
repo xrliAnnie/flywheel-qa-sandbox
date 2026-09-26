@@ -125,7 +125,8 @@ describe("patrol helper CLI", () => {
 });
 
 describe("FLY-2914 validate-report root-cause verification", () => {
-	const header = "# Lead Patrol Snapshot\npatrol_schema=2\nproject: flywheel\nlead: flywheel-eng-lead\n";
+	const header =
+		"# Lead Patrol Snapshot\npatrol_schema=2\nproject: flywheel\nlead: flywheel-eng-lead\n";
 	const complete = `${header}MECHANISM_REVIEW result=none count=0\nSTEP 6: OK\nROOT_CAUSE_REVIEW status=complete parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z count=0 source_digest=4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945 children=0 pages=1 non_category=0 excluded=0\n`;
 	async function withBridge(
 		reply: (body: string) => { status: number; json: unknown },
@@ -145,9 +146,14 @@ describe("FLY-2914 validate-report root-cause verification", () => {
 				res.end(JSON.stringify(r.json));
 			});
 		});
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
 		const address = server.address() as { port: number };
-		const saved = { url: process.env.BRIDGE_URL, token: process.env.TEAMLEAD_API_TOKEN };
+		const saved = {
+			url: process.env.BRIDGE_URL,
+			token: process.env.TEAMLEAD_API_TOKEN,
+		};
 		process.env.BRIDGE_URL = `http://127.0.0.1:${address.port}`;
 		process.env.TEAMLEAD_API_TOKEN = "token-2914";
 		try {
@@ -170,16 +176,25 @@ describe("FLY-2914 validate-report root-cause verification", () => {
 	it("asks the Bridge verifier for a complete section and fails on its verdict", async () => {
 		const path = file(complete);
 		await withBridge(
-			() => ({ status: 200, json: { valid: false, errors: ["root_cause_snapshot_stale"] } }),
+			() => ({
+				status: 200,
+				json: { valid: false, errors: ["root_cause_snapshot_stale"] },
+			}),
 			async (_url, seen) => {
-				expect(await runPatrolContinuity(["validate-report", "--report", path])).toBe(1);
-				expect(seen).toEqual(["POST /api/patrol/root-causes/verify Bearer token-2914"]);
+				expect(
+					await runPatrolContinuity(["validate-report", "--report", path]),
+				).toBe(1);
+				expect(seen).toEqual([
+					"POST /api/patrol/root-causes/verify Bearer token-2914",
+				]);
 			},
 		);
 		await withBridge(
 			() => ({ status: 200, json: { valid: true, errors: [] } }),
 			async () => {
-				expect(await runPatrolContinuity(["validate-report", "--report", path])).toBe(0);
+				expect(
+					await runPatrolContinuity(["validate-report", "--report", path]),
+				).toBe(0);
 			},
 		);
 	});
@@ -189,7 +204,9 @@ describe("FLY-2914 validate-report root-cause verification", () => {
 		process.env.BRIDGE_URL = "http://127.0.0.1:9";
 		process.env.TEAMLEAD_API_TOKEN = "token-2914";
 		try {
-			expect(await runPatrolContinuity(["validate-report", "--report", path])).toBe(1);
+			expect(
+				await runPatrolContinuity(["validate-report", "--report", path]),
+			).toBe(1);
 		} finally {
 			if (saved === undefined) delete process.env.BRIDGE_URL;
 			else process.env.BRIDGE_URL = saved;
@@ -203,7 +220,9 @@ describe("FLY-2914 validate-report root-cause verification", () => {
 		await withBridge(
 			() => ({ status: 500, json: {} }),
 			async (_url, seen) => {
-				expect(await runPatrolContinuity(["validate-report", "--report", path])).toBe(0);
+				expect(
+					await runPatrolContinuity(["validate-report", "--report", path]),
+				).toBe(0);
 				expect(seen).toEqual([]);
 			},
 		);

@@ -14,6 +14,7 @@ import { DepartmentRegistry } from "../department-registry.js";
 import { getLeadCapability } from "../lead-capabilities/catalog.js";
 import { PATROL_SNAPSHOT_SERVER_TIMEOUT_MS } from "../lead-capabilities/patrol-timeouts.js";
 import type { OperationReceiptStore } from "../lead-capabilities/receipts.js";
+import { linearRequestFromClient } from "../patrol-root-causes.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
@@ -31,6 +32,7 @@ import {
 	createLeadTerminalInputIo,
 	createLeadTerminalReadIo,
 } from "./lead-terminal-read-io.js";
+import { renderPatrolRootCauses } from "./patrol-root-cause-route.js";
 
 const envelopeSchema = z
 	.object({
@@ -397,6 +399,19 @@ export function createLeadCapabilityReadRouter(
 								commDbPath: commDbPathForProject(body.projectName, env),
 								tickId: input.data.tickId as string,
 								githubFacts: body.githubFacts,
+								rootCauses: () =>
+									renderPatrolRootCauses(
+										{
+											store: options.store,
+											linearRequest: () =>
+												options.linearClient
+													? linearRequestFromClient(options.linearClient)
+													: undefined,
+											stateDir: options.patrol!.stateDir,
+										},
+										body.projectName,
+										body.leadId,
+									),
 								assertCurrent: async () => {
 									fresh();
 								},

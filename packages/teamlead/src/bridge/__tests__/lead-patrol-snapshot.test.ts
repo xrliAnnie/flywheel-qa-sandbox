@@ -197,3 +197,83 @@ while :; do /bin/sleep 1; done
 		rmSync(root, { recursive: true, force: true });
 	}
 }, 10000);
+
+it("FLY-2914 feeds parent-collected root-cause lines to the owner's helper and degrades a failed collection", async () => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "patrol-rc-")));
+	const deploymentRoot = realpathSync(resolve("../.."));
+	const stateDir = join(root, "state"),
+		activationRoot = join(root, "control");
+	mkdirSync(stateDir, { mode: 0o700 });
+	mkdirSync(activationRoot, { mode: 0o700 });
+	const projectsPath = join(root, "projects.json");
+	writeFileSync(
+		projectsPath,
+		JSON.stringify([
+			{
+				projectName: "flywheel",
+				projectRepo: "owner/repo",
+				leads: [{ agentId: "flywheel-eng-lead" }],
+			},
+		]),
+	);
+	const helperPins = Object.fromEntries(
+		PATROL_HELPER_SOURCES.map((path) => [
+			path,
+			createHash("sha256")
+				.update(readFileSync(join(deploymentRoot, path)))
+				.digest("hex"),
+		]),
+	);
+	const review =
+		"ROOT_CAUSE_REVIEW status=complete parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z count=0 source_digest=4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945 children=3 pages=1 non_category=0 excluded=0";
+	const base = {
+		deploymentRoot,
+		helperPins,
+		nodePath: realpathSync(process.execPath),
+		stateDir,
+		activationRoot,
+		projectsPath,
+		stateDbPath: join(root, "absent-state.db"),
+		commDbPath: join(root, "flywheel", "comm.db"),
+		projectName: "flywheel",
+		leadId: "flywheel-eng-lead",
+		githubFacts: {
+			projectName: "flywheel",
+			leadId: "flywheel-eng-lead",
+			pulls: [],
+			runs: { workflow_runs: [] },
+		},
+		secrets: ["SECRET_CANARY"],
+		signal: new AbortController().signal,
+		assertCurrent: async () => {},
+	};
+	try {
+		const ok = await executeLeadPatrolSnapshot({
+			...base,
+			tickId: "1",
+			rootCauses: async () => ({ v: 1, lines: [review] }),
+		});
+		expect(ok.text).toContain(`\n${review}\n`);
+		const failed = await executeLeadPatrolSnapshot({
+			...base,
+			tickId: "2",
+			rootCauses: async () => {
+				throw new Error("linear down");
+			},
+		});
+		expect(failed.text).toContain("token=parent_collection_failed");
+		expect(failed.text).toContain(
+			"UNAVAILABLE_CAUSE step=6 class=transient token=root_cause_source_unavailable",
+		);
+		const leaked = await executeLeadPatrolSnapshot({
+			...base,
+			tickId: "3",
+			rootCauses: async () => ({ v: 1, lines: [`${review} SECRET_CANARY`] }),
+		});
+		expect(leaked.text).not.toContain("SECRET_CANARY");
+		expect(leaked.text).toContain("token=parent_collection_failed");
+		expect(readdirSync(activationRoot)).toEqual([]);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}, 60000);

@@ -9,11 +9,13 @@ import {
 	openSync,
 	readSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { PATROL_SNAPSHOT_EXECUTION_TIMEOUT_MS } from "../lead-capabilities/patrol-timeouts.js";
+import { ROOT_CAUSE_DEADLINE_MS } from "../patrol-root-causes.js";
 
 export const PATROL_HELPER_SOURCES = [
 	"scripts/lead-patrol-snapshot.sh",
@@ -97,6 +99,12 @@ export async function executeLeadPatrolSnapshot(options: {
 	leadId: string;
 	tickId: string;
 	githubFacts: unknown;
+	/**
+	 * FLY-2914: trusted parent collection of STEP 6 root-cause lines. It runs
+	 * beside the helper (inside the same execution budget); the helper reads the
+	 * private scratch file and never receives a Linear credential.
+	 */
+	rootCauses?: () => Promise<{ v: 1; lines: string[] }>;
 	secrets: readonly string[];
 	signal: AbortSignal;
 	assertCurrent(): Promise<void>;
@@ -173,9 +181,45 @@ export async function executeLeadPatrolSnapshot(options: {
 	)
 		throw invalid();
 	const scratch = mkdtempSync(join(options.activationRoot, "patrol-"));
+	let scratchOpen = true;
 	try {
 		const factsPath = join(scratch, "github.json");
 		writeFileSync(factsPath, json, { mode: 0o600, flag: "wx" });
+		const rootCausePath = join(scratch, "root-causes.json");
+		if (options.rootCauses) {
+			const unavailable = {
+				v: 1,
+				lines: [
+					`ROOT_CAUSE_REVIEW status=unavailable parent=FLY-2072 observed_at=${new Date().toISOString()} token=parent_collection_failed`,
+					"UNAVAILABLE_CAUSE step=6 class=transient token=root_cause_source_unavailable",
+				],
+			};
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			void Promise.race([
+				options.rootCauses(),
+				new Promise<never>((_resolve, reject) => {
+					timer = setTimeout(
+						() => reject(new Error("root_cause_timeout")),
+						ROOT_CAUSE_DEADLINE_MS + 2_000,
+					);
+				}),
+			])
+				.catch(() => unavailable)
+				.then((facts) => {
+					if (timer) clearTimeout(timer);
+					let text = JSON.stringify(facts);
+					if (options.secrets.some((s) => s.length > 0 && text.includes(s)))
+						text = JSON.stringify(unavailable);
+					if (!scratchOpen) return;
+					try {
+						writeFileSync(`${rootCausePath}.part`, text, {
+							mode: 0o600,
+							flag: "wx",
+						});
+						renameSync(`${rootCausePath}.part`, rootCausePath);
+					} catch {}
+				});
+		}
 		await verify();
 		const stdout = await new Promise<Buffer>((resolve, reject) => {
 			const child = spawn(
@@ -190,6 +234,7 @@ export async function executeLeadPatrolSnapshot(options: {
 					options.tickId,
 					"--github-facts",
 					factsPath,
+					...(options.rootCauses ? ["--root-cause-facts", rootCausePath] : []),
 					...(options.tmuxSocketPath
 						? ["--tmux-socket", options.tmuxSocketPath]
 						: []),
@@ -270,6 +315,7 @@ export async function executeLeadPatrolSnapshot(options: {
 		await verify();
 		return result;
 	} finally {
+		scratchOpen = false;
 		rmSync(scratch, { recursive: true, force: true });
 	}
 }
