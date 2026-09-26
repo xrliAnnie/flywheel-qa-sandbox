@@ -13,7 +13,7 @@ Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-cod
 | 对齐最新 Lead 裁定 | plan §13；FLY-2902 已批准原槽合同替代旧在飞切换硬要求；六单 A1–A6、A7/A8 仍保留 |
 | 独立宿主首选比较与可见 TUI | plan §1–4；HTML 首屏明确选择、原因、代价 |
 | 近两周统计 | 冻结 458 事件、100 个报错体、62 个明确失败；分母限制不变 |
-| 设计正式评审 | 本执行待注册；旧 b01b1efa 请求 422 不算正在评审或批准 |
+| 设计正式评审 | 本执行 request 9b8acb0b-8a17-4726-8d52-4e1eafef51ad 已 accepted；gate 3d0bd288-23a3-46e2-a652-86e1fb8e9b88 待有效 verdict；plan blob acfadbf46b5252dafa1b30d5a38fa02ec75f6d8a。旧 b01b1efa 的 422 只属历史 |
 | reviewer 测试政策 | 当前生产 producer 首字节加载 policy；SHA256 69b512badb5fdd37ebe6db6dd3f9f22ca7db577c6539c69252b10ff87858c363 与注入政策一致 |
 | HTML 与图 | 草稿已对齐最新账号边界；原 3 图各两次本地失败记录保留，明确 pending；不远程渲染 |
 | 发布与交接 | 等有效 APPROVED 后最终提交推送、静默发布、HTTP/CSP/源核验、DESIGN-HTML ready、complete phase_design_complete、park |

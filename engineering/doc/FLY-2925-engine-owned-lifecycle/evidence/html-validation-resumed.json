@@ -1,0 +1,7 @@
+{
+  "staticChecks": "passed",
+  "commentCards": 9,
+  "controllerScriptUnchanged": true,
+  "currentHtmlSha256": "8e1996f1ccff42f39d47f5cd6b9656356f9ebda121c1ceaa0bf3142f7458c3e7",
+  "scope": "Static checks current; previous mocked controller scenarios apply to byte-identical script. No browser or hosted proof yet."
+}
