@@ -21,7 +21,17 @@ Issue: FLY-2876 (https://linear.app/geoforge3d/issue/FLY-2876/病根529-语音�
 | Codex（codex-with-fallback exec, gpt-5.6-sol xhigh） | 未能运行：账号 personal1 usage limit 至 2026-10-03 08:33；`codex-profile next` 已停用；`codex-profile use personal` → `codex_candidate_recovery_required`（目标账号租约需人工恢复），未动凭据 | scratchpad `codex/stdout-r1.log`，session 01a0de9c-b4a9-79d1-9172-2d55bdd65236 |
 | Gemini（gemini-cli 0.61.0） | 未能运行：`IneligibleTierError`（Gemini Code Assist 个人版已停用） | scratchpad `gemini-stderr-r1.txt` |
 
+## Codex 设计评审轮次（gpt-6-astra xhigh，session 01a0df4b-9972-70c3-99ca-4a96d62f45f9；账号切至 school 后可用）
+
+| 轮 | manifest | 裁定 | 发现 | 处置 |
+|---|---|---|---|---|
+| R1 | rev1 8bafb546 / blob 819e0a62 | CHANGES REQUESTED | D1-1 HIGH 并发双 stop 删新锁/覆盖新回执（实证）；D1-2 MEDIUM mkdir 前回执检查过期 | plan 增第 17–23 条：同 slot 关键区互斥（初版为目录互斥锁）+ 交错测试 |
+| R2 | rev2 bbd25d19 / blob d6cc8d66 | CHANGES REQUESTED | D2-1 HIGH 目录互斥锁的墓碑回收会挪走活锁 ⇒ 双持有者（协议模型实证）；D2-2 MEDIUM mkdir→owner 发布间崩溃无恢复协议；D2-3 MEDIUM T10–T12 时序与互斥合同矛盾 | plan 增第 24–32 条：改为保留锁文件 + 内核 advisory lock（stdin 系留 helper，lockf→flock→python3），测试重写为子进程 + 屏障 T10–T18 |
+| R3 | rev3 fdc32cd0 / blob 2ae68518 | （进行中） | | |
+
+评审环境备注：Codex 沙箱内 `spawnSync ps` 为 `EPERM`，其 `node --test` 结果（15/9）源于环境；本节点真实环境 24/24。
+
 ## 状态
 
-**待 Lead 裁定**（question a45f6fee / ffb445ca）：(a) 恢复可用 Codex 账号后重跑 R1 并写 `design-review.json` + `await-codex-gate design`；(b) codex-skip 由 Bridge 写 skip.json。
+Codex 账号已由 Lead/founder 切至 school，评审沿路径 (a) 进行中；R3 结果出来后更新本表。
 本记录不构成通过；设计本体此前已经三轮 Codex 代码评审（见 plan.md R1–R3 节与 milestones/FLY-2876.md）。
