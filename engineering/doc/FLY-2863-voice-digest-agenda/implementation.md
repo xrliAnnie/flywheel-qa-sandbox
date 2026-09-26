@@ -175,3 +175,12 @@ main 的 FLY-2799 在同一个 teamlead.db 建了 `voice_handoffs`（schema 完�
 - daemon：main 让运行时原因带上错误名前缀（`Error:…`），导致 2798 的 causeCode 分类回落为 `unknown_runtime_error`；分类前先去掉前缀。
 - voice-core 配置键清单：Gemini 退役后 `openaiLive` 仍在。
 - 负载相关：rotation（假时钟推进 8 天）与 voice-minutes（真 carrier 子进程）在宿主负载 94–119 时越过 5 秒默认超时，负载降下后按默认超时复跑通过，没有改代码。
+
+## 10. 合卡后 QA@1 返工（QA 9b011fcf 在头 `3e6b8404f` 判 FAIL，2026-09-26）
+
+| QA 项 | 根因 | 修法 | 证据 |
+|---|---|---|---|
+| B1 精确头 CI 红：`remove-retired-dist.test.mjs` 第 7 条「voice-bridge 退役清单不能退役活源码」 | main 的 FLY-2860 把 `audio/resample` 写进 `voice-bridge/retired-outputs.json` 并删了源码；本分支为引擎 A 的 RoomIO（`room/audio.ts`、`RoomIO.ts`）恢复了这份源码，清单与源码同时存在 | 清单去掉 `audio/resample`（QA 已核对这是 voice-bridge、voice-core 两份清单与活源码之间唯一的冲突） | 修前本机 7/8 红，修后 8/8 |
+| B2 与 main `33fa00747` 冲突（DIRTY，拿不到精确头 CI） | main 新合入 FLY-2882、FLY-2891 | 合 main：StateStore 的 store 导入、retention 守卫登记两处都是两边并集；两边都给 `LeadJournal` 加了同一个 `listMemberIds`，保留一份 | 受影响包构建、根 lint 0 error；重叠文件相关测试 15 个逐个跑（LeadJournal、SqliteJournalStore、LeadTurnStateTracker、codex-lead-tui-runtime 与 rotation、codex-lead-runtime、LeadInputRouter ×2、child-process census、lead-activity 路由/Codex/CLI、voice-session-schema、headphone-inbox、voice-agenda-routes）全绿；retention 守卫 ok 与 10/10；kill-path 5/5；retired-dist 8/8 |
+
+未跑：529 语音房合并验收，按 Lead 规则顺延到新头。
