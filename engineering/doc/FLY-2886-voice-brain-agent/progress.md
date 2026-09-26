@@ -1,14 +1,14 @@
 ---
 issue: FLY-2886
 phase: implement
-phaseCursor: 3/8
-updated: 2026-09-26T03:28:44.779Z
-nextStep: wire C7 process-level background turn/handoff lifecycle; keep §5.3
-  live path closed pending v10 verdict
+phaseCursor: 4/8
+updated: 2026-09-26T03:45:05.113Z
+nextStep: implement v10 selective output-frame retraction with the two approved
+  player-buffer boundary tests; then wire persistent live-context guard
 chunks: []
 pointers: {}
 ---
 
 # FLY-2886 progress
-**phase**: implement (3/8)
-**next**: wire C7 process-level background turn/handoff lifecycle; keep §5.3 live path closed pending v10 verdict
+**phase**: implement (4/8)
+**next**: implement v10 selective output-frame retraction with the two approved player-buffer boundary tests; then wire persistent live-context guard
