@@ -588,6 +588,10 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 						reason,
 						override,
 					});
+					// A skip usually has no script; an empty one must not pass as
+					// "validated" and fall silent (review 7c9f7dbf).
+					if (!rewrite.spoken.trim())
+						throw new Error("script_writer_output_invalid");
 				}
 				const fidelity = validateSpokenScript({
 					spoken: rewrite.spoken,

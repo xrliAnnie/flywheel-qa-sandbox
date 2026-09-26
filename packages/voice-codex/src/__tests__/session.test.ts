@@ -1536,3 +1536,42 @@ it("falls back to thread + pointer when a skip with an empty script is overridde
 		vi.useRealTimers();
 	}
 });
+
+// Review 7c9f7dbf: with no issue/PR id in the source an empty script passed
+// validation, so the overridden skip spoke nothing and posted nothing.
+it("falls back to thread + pointer for an overridden empty skip whose source has no id", async () => {
+	vi.useFakeTimers();
+	try {
+		const test = fixture({
+			coordinatedSpeech: true,
+			appendSpeech: async () => "confirmed",
+			rewriteSpeech: async () => ({
+				spoken: "",
+				threadText: null,
+				protectedFieldEvidence: [],
+				tell: false,
+				skipReason: "no_new_information",
+			}),
+		});
+		await test.session.start();
+		await test.session.markLive();
+		const result = test.session.deliverTell({
+			businessId: "tell:noid",
+			text: "构建失败了，看 thread。",
+		});
+		await vi.advanceTimersByTimeAsync(1_500);
+		await expect(result).resolves.toBe("fallback_posted");
+		expect(test.postThread).toHaveBeenCalledWith({
+			businessId: "tell:noid",
+			text: "构建失败了，看 thread。",
+		});
+		expect(test.frontend.appendSpeech).toHaveBeenCalledWith(
+			expect.objectContaining({
+				spokenText: "这条我发到 thread 了，编号以文字为准。",
+			}),
+		);
+		await test.session.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
