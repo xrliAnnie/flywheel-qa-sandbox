@@ -43,6 +43,9 @@ export type MetaAlertReason =
 	| "roundtable_patch_permanent_failure"
 	| "roundtable_archive_default_unresolved"
 	| "idle_thread_sweep_denied"
+	// FLY-2916: the QA Testing sweep's own reason, so its denials never share
+	// the per-reason debounce with (and silence) production sweep denials.
+	| "qa_idle_thread_sweep_denied"
 	// FLY-2103: a project runtime was dropped because ConfigLoader rejected its
 	// config. Reuse the independent desktop + state-file founder channel.
 	| "project_config_invalid"

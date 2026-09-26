@@ -603,9 +603,10 @@ import {
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
 import {
+	describeIdleThreadSweepDenial,
 	IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
 	makeIdleThreadArchiveSweep,
-	resolveIdleThreadSweepChannelIds,
+	resolveIdleThreadSweepGroups,
 } from "./idle-thread-archive-sweep.js";
 import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
@@ -8306,7 +8307,6 @@ export async function startBridge(
 	const terminalArchiveEnqueue = (issueId: string) =>
 		terminalArchiveBuffer.enqueue(issueId);
 	const infraDiscordIdentity = resolveInfraDiscordIdentity();
-	const idleThreadSweepChannelIds = resolveIdleThreadSweepChannelIds();
 	const listDiscordOpenThreadIds = infraDiscordIdentity
 		? async () => {
 				const listed = await listGuildActiveThreads(infraDiscordIdentity);
@@ -11307,33 +11307,39 @@ export async function startBridge(
 		projects: projects ?? [],
 		enqueue: doneThreadReconcile.enqueueThread,
 	});
-	const idleThreadSweep =
-		infraDiscordIdentity && idleThreadSweepChannelIds.length > 0
-			? makeIdleThreadArchiveSweep({
-					identity: infraDiscordIdentity,
-					channelIds: idleThreadSweepChannelIds,
-					log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-					onDenied: ({ status, context }) => {
-						void metaAlertNotifier.notify({
-							reason: "idle_thread_sweep_denied",
-							title: "Discord idle-thread sweep denied",
-							body: `Discord HTTP ${status} during ${context}; check claw-infra-bot VIEW_CHANNEL and MANAGE_THREADS permissions.`,
-						});
-					},
-				})
-			: undefined;
-	const idleThreadSweepScheduler = idleThreadSweep
-		? startDoneThreadReconcileScheduler({
-				runOnce: (shouldAbort) => idleThreadSweep.runOnce(shouldAbort),
+	// FLY-2916: each channel group (production, QA Testing) sweeps with its own
+	// bot identity on its own scheduler, so neither can spend the other's budget.
+	const idleThreadSweepSchedulers = resolveIdleThreadSweepGroups().map(
+		(group) => {
+			const tag =
+				group.name === "production"
+					? "idle-thread-sweep"
+					: "qa-idle-thread-sweep";
+			const log = (message: string) => console.log(`[${tag}] ${message}`);
+			const sweep = makeIdleThreadArchiveSweep({
+				identity: group.identity,
+				...(group.name === "production"
+					? { channelIds: group.channelIds }
+					: { qaTestingCategoryId: group.qaTestingCategoryId }),
+				log,
+				onDenied: (detail) =>
+					metaAlertNotifier
+						.notify(describeIdleThreadSweepDenial(group, detail))
+						.then((result) => !result.debounced),
+			});
+			const scheduler = startDoneThreadReconcileScheduler({
+				runOnce: (shouldAbort) => sweep.runOnce(shouldAbort),
 				resolveConfig: () => IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
-				log: (message) => console.log(`[idle-thread-sweep] ${message}`),
-			})
-		: undefined;
-	if (idleThreadSweepScheduler) {
-		console.log(
-			`[Bridge] idle-thread sweep ready — channels=${idleThreadSweepChannelIds.join(",")}`,
-		);
-	}
+				log,
+			});
+			console.log(
+				group.name === "production"
+					? `[Bridge] idle-thread sweep ready — channels=${group.channelIds.join(",")}`
+					: `[Bridge] QA idle-thread sweep ready — category=${group.qaTestingCategoryId} identity=${group.tokenEnv}`,
+			);
+			return scheduler;
+		},
+	);
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -16299,7 +16305,9 @@ export async function startBridge(
 		// FLY-1165: drain the done-thread reconcile (cooperative abort + await
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
-		await idleThreadSweepScheduler?.stop();
+		await Promise.all(
+			idleThreadSweepSchedulers.map((scheduler) => scheduler.stop()),
+		);
 		stopWatchingBotSends();
 		await doneThreadReconcile.stop();
 		await xhsNotificationService.close();
