@@ -1,16 +1,17 @@
 ---
 issue: FLY-2912
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-26T06:33:02.287Z
-nextStep: Resumed 8b29f69cd under implement TURN epoch4. Lint/build and CommDB
-  related 142 tests pass; refreshed bounded consumer audit (51 teamlead + 8 comm
-  files). Teamlead related and dependent typecheck ongoing; replay remains
-  conservative 257-input evidence, then PR/review/handoff.
+phaseCursor: 5/6
+updated: 2026-09-26T06:44:43.014Z
+nextStep: "Local verification complete: 59 unique files, 992 passed/1
+  pre-existing skip; lint/build/dependent typechecks pass. Full257 conservative
+  replay complete; historical savings and real model consumption remain
+  disclosed gaps per Lead. Final milestone, push, PR, effective code review then
+  needs_review."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2912 progress
-**phase**: implement (4/6)
-**next**: Resumed 8b29f69cd under implement TURN epoch4. Lint/build and CommDB related 142 tests pass; refreshed bounded consumer audit (51 teamlead + 8 comm files). Teamlead related and dependent typecheck ongoing; replay remains conservative 257-input evidence, then PR/review/handoff.
+**phase**: implement (5/6)
+**next**: Local verification complete: 59 unique files, 992 passed/1 pre-existing skip; lint/build/dependent typechecks pass. Full257 conservative replay complete; historical savings and real model consumption remain disclosed gaps per Lead. Final milestone, push, PR, effective code review then needs_review.
