@@ -11,3 +11,6 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912)
 - Chrome DevTools list_pages 可读，但 new_page 被工具策略拒绝：MCP tool call requires approval, but approval policy is never。因此视觉浏览器与真实 CSP 下 JS 执行未验证，happy-dom controller检查不能冒充 browser QA。
 - 设计评审已显式注册：question cf1b3c2f-9d24-47a0-90c1-d2731ed7643f / request 163c3b8a-a446-4612-8b25-84c665d14e5f。pending 不是批准。
 - 发布尚未执行：等待有效 APPROVED 后静默发布与 hosted fetch/CSP 核验。
+
+## 冻结样本复核
+全部3份私有输入SHA和行数吻合。257条Lead事件的项目范围已核对；7条不含project_name的升级事件通过exact workflow run绑定确认属于flywheel。18条model阶段分布为code_review 8、design_review 3、pr_created 7；12条model监控恢复全部为ship_parked。它们仍须按历史待办凭证分类，不能把park状态当作无待办证明。细目见evidence/baseline-classification.json。
