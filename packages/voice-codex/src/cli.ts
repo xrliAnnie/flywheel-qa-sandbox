@@ -51,7 +51,7 @@ import { VoiceHealthAlertDispatcher } from "./health-alert.js";
 import { SessionJournal } from "./journal.js";
 import { probeVoiceLaunchdOwner } from "./launchd-owner.js";
 import { writeMeetingVoiceSignal } from "./meeting-voice-signal.js";
-import { parseVoiceProjection } from "./projection.js";
+import { engineBVoice, parseVoiceProjection } from "./projection.js";
 import { RealtimeFrontend } from "./realtime.js";
 import {
 	VOICE_CODEX_RECEIVE_POLICY,
@@ -426,7 +426,7 @@ export async function main(): Promise<void> {
 				() =>
 					new CodexVoiceBackend({
 						sessionId: context.sessionId,
-						voice: context.projection.realtimeVoice,
+						voice: engineBVoice(context.projection),
 						container,
 						loadContext: async () => {
 							const snapshot = await bridge.context<CodexVoiceContextSnapshot>(
@@ -513,7 +513,7 @@ export async function main(): Promise<void> {
 						backend: codexBackend,
 						conversationOptions: {
 							brain: CODEX_VOICE_BRAIN,
-							voice: context.projection.realtimeVoice,
+							voice: engineBVoice(context.projection),
 							transcriptSink: new JsonlTranscriptSink(transcriptPath),
 						},
 						handlers,

@@ -10,6 +10,8 @@ export interface VoiceSessionProjection {
 	leadId: string;
 	displayName: string;
 	realtimeVoice: string;
+	/** FLY-2885: engine B's v3 voice; absent in projections saved before it. */
+	liveVoice?: string;
 	guildId: string;
 	voiceChannelId: string;
 	threadId: string;
