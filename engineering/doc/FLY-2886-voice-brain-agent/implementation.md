@@ -147,3 +147,13 @@ D2 根因（真宿主对照组）：不加开关时，订阅账号会话中途�
 验收用例：跳过留痕（`session.test` tell relevance 三条）、改了关键事实被抓（`spoken-script` 结论翻转 / PR 号 / 时间、`script-writer` 伪造编号整句去掉、`brain-coordinator` 保留正确句）、同事实的自由转述通过（`spoken-script`「passes a free paraphrase…」）。验证：voice-codex `vitest related`（10 个改动文件）13 文件 276/276；teamlead `voice-handoff` 13/13；lint 退出 0；voice-codex 及依赖构建、依赖方 typecheck 通过。
 
 评审 `b5bc5d89`（@`8b3bcd4da` APPROVED，round 2）的 advisory：已修两条——报告「过没过/合没合」结论的消息机械兜底一律说（`reports_result`）；「过了十分钟 / 没过多久」等时间说法不再当结论。未修、列为 PR Follow-ups：结论极性未按主语绑定（「A 过 B 挂」可被说反）；broker 成功后解锁失败回报 unknown；残留清扫遇到坏文件整轮中止；founder-only 拒绝事件无去重；`backgroundPollAfter` 不回收已结束会话。
+
+## 第六次恢复（QA@5 FAIL 返工，implement attempt 2，2026-09-26）
+
+QA@5（`b6dd7e58f`）：B1 真 scribe 对纯回执给 `spoken:""`（6/6），解析器拒收，准入自检「准备好了。」7/9 降级；B2 后台读成功后事件循环同步阻塞 13 s、租约 fenced；M1 thread 贴空串。
+
+- B1：`tell=false` 允许空稿（`tell=true` 仍须非空）；被兜底推翻的空稿走「原文发 thread + 指针句」；提示词写明跳过时 spoken 为空。真模型复测三种输入形状全部可解析（`evidence/qa5-rework/scribe-shape-probe.txt`）。
+- B2：根因是守卫的 `hasTokenBoundaries` 每个匹配都 `Array.from` 整段文本，几百 KB 的 `github.pr.view` 结果进 sources 后变平方（436901 字节 >300 s）；改为按下标取边界字符 + 来源 token 每次修复只提取一次，52 ms（`guard-linear-time.txt`）。另把语音 parent 的 `codex --version` 改异步（负载下同步 4.5 s），子进程清册删去过期条目。仍为同步、未改的常驻共用调用：`node-runtime-closure` 的 `otool`、`deployment.ts` 等（parent 启动期）。
+- M1：失败的 `lead_operation` 回包也作来源；修复后无可核对内容且无工具文字时，不发空帖、不说「发到 thread 了」，改说「这件我没拿到能核对的结果，你再说一下编号，我重新查。」；发帖处加空串兜底。
+
+验证（定向）：voice-codex `vitest related`（5 个改动文件）8 文件 196/196；teamlead `voice-capability-parent` 6/6、子进程清册守卫 1/1；lint 0；构建与依赖方 typecheck 通过。QA 记录的房缺口（`cosContext.memoryPaths` 未建、取上下文 2 s 超时）为 main 既有代码，不在本单。
