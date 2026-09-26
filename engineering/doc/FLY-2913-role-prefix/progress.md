@@ -2,17 +2,17 @@
 issue: FLY-2913
 phase: implement
 phaseCursor: 5/6
-updated: 2026-09-26T21:16:16.212Z
-nextStep: "QA rework epoch21: merged origin/main fdd1b404d in41390bed7; upstream
-  FLY2934 removes stale flag count while exact founder-copy map and prefix
-  retirement guard remain. Registry58 + related58, affected build/lint green.
-  Finish bounded integration and lexical checks, new milestone/push/effective
-  code review, then needs_review for QA retest; missing Claude review-code/QA
-  room cells remain unproven."
+updated: 2026-09-26T21:20:04.526Z
+nextStep: QA rework synced main fdd1b404d via41390bed7; registry CI count
+  failure fixed by upstream FLY2934. Verified13 TS files313tests plus2shell
+  guards, registry related58, affected build/lint and3dependent typechecks.
+  Evidence inqa-rework.md. Freeze milestone head, push and obtain new code
+  review, then needs_review; QA owns fullCI and missing Claude review-code/QA
+  room retest.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
 **phase**: implement (5/6)
-**next**: QA rework epoch21: merged origin/main fdd1b404d in41390bed7; upstream FLY2934 removes stale flag count while exact founder-copy map and prefix retirement guard remain. Registry58 + related58, affected build/lint green. Finish bounded integration and lexical checks, new milestone/push/effective code review, then needs_review for QA retest; missing Claude review-code/QA room cells remain unproven.
+**next**: QA rework synced main fdd1b404d via41390bed7; registry CI count failure fixed by upstream FLY2934. Verified13 TS files313tests plus2shell guards, registry related58, affected build/lint and3dependent typechecks. Evidence inqa-rework.md. Freeze milestone head, push and obtain new code review, then needs_review; QA owns fullCI and missing Claude review-code/QA room retest.
