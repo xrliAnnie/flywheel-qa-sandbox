@@ -27,11 +27,12 @@ Issue: FLY-2876 (https://linear.app/geoforge3d/issue/FLY-2876/病根529-语音�
 |---|---|---|---|---|
 | R1 | rev1 8bafb546 / blob 819e0a62 | CHANGES REQUESTED | D1-1 HIGH 并发双 stop 删新锁/覆盖新回执（实证）；D1-2 MEDIUM mkdir 前回执检查过期 | plan 增第 17–23 条：同 slot 关键区互斥（初版为目录互斥锁）+ 交错测试 |
 | R2 | rev2 bbd25d19 / blob d6cc8d66 | CHANGES REQUESTED | D2-1 HIGH 目录互斥锁的墓碑回收会挪走活锁 ⇒ 双持有者（协议模型实证）；D2-2 MEDIUM mkdir→owner 发布间崩溃无恢复协议；D2-3 MEDIUM T10–T12 时序与互斥合同矛盾 | plan 增第 24–32 条：改为保留锁文件 + 内核 advisory lock（stdin 系留 helper，lockf→flock→python3），测试重写为子进程 + 屏障 T10–T18 |
-| R3 | rev3 fdc32cd0 / blob 2ae68518 | （进行中） | | |
+| R3 | rev3 fdc32cd0 / blob 2ae68518 | CHANGES REQUESTED | D3-1 HIGH 常驻 helper 先死时 Node 仍在同步关键区改文件（实测）；D3-2 HIGH macOS `lockf file cmd` 默认删文件、inode 分裂（实测）；D3-3 HIGH 原生命令无 held 握手、python 未 flush ⇒ 死等（实测） | plan 增第 33–40 条：Node 自己 open guard fd，加锁子进程经继承 fd 3 加锁后退出（qa-slot-bridge 同款），后端全 fd 形式，退出码即确认；T19/T20 新增，T14/T16/T17/T18 修订 |
+| R4 | rev4 84d26c5d / blob 9aefef16 | **APPROVED** | 无 HIGH/MEDIUM；LOW-1 首次创建 guard 时 `trusted()` 应针对父目录、再校验所得文件类型与权限，T19 从无 guard 的新 slot 起；LOW-2 超时 SIGKILL 后须确认子进程结束并关闭父 fd 再报告清理完成，纳入 T20 超时变体 | 两条 LOW 作为实现期注意事项记录于此，不改 plan（保持已评审 blob） |
 
 评审环境备注：Codex 沙箱内 `spawnSync ps` 为 `EPERM`，其 `node --test` 结果（15/9）源于环境；本节点真实环境 24/24。
 
 ## 状态
 
-Codex 账号已由 Lead/founder 切至 school，评审沿路径 (a) 进行中；R3 结果出来后更新本表。
+**APPROVED**（R4，2026-09-26，Codex gpt-6-astra xhigh，session 01a0df4b-9972-70c3-99ca-4a96d62f45f9，rounds=4）。design-review.json 按 manifest rev4（request 84d26c5d，blob 9aefef16）写入并经 `await-codex-gate design` 验证（结果见 progress.md）。
 本记录不构成通过；设计本体此前已经三轮 Codex 代码评审（见 plan.md R1–R3 节与 milestones/FLY-2876.md）。
