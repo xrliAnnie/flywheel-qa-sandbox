@@ -1,0 +1,13 @@
+flowchart TD
+  N["node 可执行文件"] --> R["取真实路径"]
+  R --> O["读它的依赖清单<br/>（/usr/bin/otool）"]
+  O --> S{"系统库？<br/>/usr/lib 或 /System/Library"}
+  S -- "是" --> SKIP["跳过（沙箱本来就能读）"]
+  S -- "否" --> P["记下：写的路径 + 真实路径<br/>只放精确文件，不放目录"]
+  P --> O
+  P --> L["沙箱只读清单 readPaths<br/>（语音和常驻两边同一函数）"]
+  C["OPENSSL_CONF 指向<br/>parent 自己写的最小配置"] --> E["注入 3 处：工具代理 / 模型 shell / 隔离探针"]
+  L --> PROBE["隔离探针：真 node 在真沙箱里跑<br/>+ 初始化一次加密库"]
+  E --> PROBE
+  PROBE -- "通过" --> GO["后台 parent 可以起"]
+  PROBE -- "失败" --> DEG["语音：后台降级；常驻：照旧启动失败"]
