@@ -1,14 +1,14 @@
 ---
 issue: FLY-2914
 phase: implement
-phaseCursor: 3/6
-updated: 2026-09-26T06:27:03.638Z
-nextStep: "C: wire validator into validatePatrolReport, judgment merge, gates,
-  CLI verify via Bridge route"
+phaseCursor: 4/6
+updated: 2026-09-26T07:03:21.434Z
+nextStep: "E: runbook patrol-v1 + legacy OFF source + compatibility hash +
+  budget/drift tests; then live snapshot acceptance"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2914 progress
-**phase**: implement (3/6)
-**next**: C: wire validator into validatePatrolReport, judgment merge, gates, CLI verify via Bridge route
+**phase**: implement (4/6)
+**next**: E: runbook patrol-v1 + legacy OFF source + compatibility hash + budget/drift tests; then live snapshot acceptance
