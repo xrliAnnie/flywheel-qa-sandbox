@@ -683,7 +683,16 @@ export class RetryDispatcher implements IRetryDispatcher {
 				: undefined,
 		});
 		const selection = select(context);
-		if (selection.mode === "legacy" || !context) return legacy;
+		// The switch is role-v1 here: make every fallback reason visible.
+		if (selection.mode === "legacy" || !context) {
+			console.info(
+				`[run-dispatcher] FLY-2913 prefix legacy reason=${selection.mode === "legacy" ? selection.reason : "unbound-execution"} exec=${executionId}`,
+			);
+			return legacy;
+		}
+		console.info(
+			`[run-dispatcher] FLY-2913 prefix role-v1 role=${selection.role} exec=${executionId}`,
+		);
 		return {
 			...(legacy ?? {
 				disabledPlugins: [],

@@ -195,6 +195,7 @@ describe("real dispatcher prefix provenance wiring", () => {
 		);
 	});
 	it("keeps unbound and non-engineering triggers on the original profile", async () => {
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
 		const { dispatcher, store, captures, pinned } = harness();
 		pinned.run.template_id = "tpl_research";
 		await dispatcher.start({
@@ -209,6 +210,9 @@ describe("real dispatcher prefix provenance wiring", () => {
 			enabledPluginsExtra: [],
 		});
 		expect(store.getWorkflowExecutionRuntime).toHaveBeenCalledOnce();
+		expect(info.mock.calls.flat().join("\n")).toMatch(
+			/FLY-2913 prefix legacy reason=unmapped-trigger exec=/,
+		);
 	});
 	it("refuses corrupted pinned engineering provenance before launching", async () => {
 		const { dispatcher, pinned, captures } = harness();
