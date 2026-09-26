@@ -1,0 +1,36 @@
+classDiagram
+    class S6TestCase {
+      attempt_id : 唯一尝试
+      issue : FLY-145
+      label : Product-Test
+      channel : cos-test
+      source_message : 只 @test-2 的唯一根消息
+      gates : 4 个 Bridge 均 on
+      expected_claimer : flywheel-test-2
+      expected_silent : test-1 test-3 test-4
+      cleanup : PASS 后归档
+    }
+    class SlotMatrix {
+      flywheel-test-1 : cos · extra-lead
+      flywheel-test-2 : product-lead-test · 应认领
+      flywheel-test-3 : lead · slot
+      flywheel-test-4 : lead · slot
+    }
+    class EvidenceRecord {
+      slot_id : 哪个 slot
+      received_input : 是否收到根消息
+      reply_count : 回复数
+      start_count : start admission 数
+      spawn_count : Runner 数
+      evidence_refs : 消息与事件引用
+    }
+    class Verdict {
+      pass 条件 : 仅 test-2 认领且其余零反应
+      fail 处置 : 记录违规 slot 并回溯规则
+      inconclusive : fan-out 或证据不完整
+      cleanup : 仅 PASS 归档
+    }
+
+    S6TestCase --> SlotMatrix : 广播到全矩阵
+    SlotMatrix --> EvidenceRecord : 每 slot 一条记录
+    EvidenceRecord --> Verdict : 4 条记录汇总判定
