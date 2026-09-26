@@ -1,14 +1,13 @@
 ---
 issue: FLY-2863
 phase: implement
-phaseCursor: 3/4
-updated: 2026-09-25T12:39:42.347Z
-nextStep: milestone (literal last) → push → stage pr_created → Codex review →
-  await-codex-gate code → inbox check → complete needs_review --pr 1314
+phaseCursor: 1/5
+updated: 2026-09-26T20:57:41.975Z
+nextStep: merge origin/main (>= fdd1b404d), resolve, targeted tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-2863 progress
-**phase**: implement (3/4)
-**next**: milestone (literal last) → push → stage pr_created → Codex review → await-codex-gate code → inbox check → complete needs_review --pr 1314
+**phase**: implement (1/5)
+**next**: merge origin/main (>= fdd1b404d), resolve, targeted tests
