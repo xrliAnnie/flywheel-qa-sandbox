@@ -26,6 +26,7 @@ import {
 	type WorkflowRunRow,
 	type WorkflowSideEffectRow,
 } from "../StateStore.js";
+import { resolveWorkflowDispatchLineage } from "../workflow-dispatch-lineage.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import { WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS } from "../workflow-replacement-policy.js";
 import {
@@ -2655,52 +2656,41 @@ export class WorkflowEngineDispatcher {
 				frozenBody: workflowResumeAdmission.frozen_s3_body,
 			};
 		}
-		let transitionPayload:
-			| {
-					successorExecutionId?: unknown;
-					targetAttempt?: unknown;
-					loopIteration?: unknown;
-					outcome?: unknown;
-					founderFeedback?: unknown;
-			  }
-			| undefined;
-		const events = [...store.listWorkflowRunEvents(intent.run_id)].reverse();
-		let transition: (typeof events)[number] | undefined;
-		let transitionExecutionId = intent.execution_id;
-		const visitedExecutionIds = new Set<string>();
-		while (!visitedExecutionIds.has(transitionExecutionId)) {
-			visitedExecutionIds.add(transitionExecutionId);
-			transition = events.find((event) => {
-				if (event.kind !== "edge_traversed") return false;
-				try {
-					const payload =
-						typeof event.payload === "string"
-							? (JSON.parse(event.payload) as typeof transitionPayload)
-							: (event.payload as typeof transitionPayload);
-					if (payload?.successorExecutionId !== transitionExecutionId)
-						return false;
-					transitionPayload = payload;
-					return true;
-				} catch {
-					return false;
-				}
-			});
-			if (transition) break;
-			const rollback = events.find((event) => {
-				if (event.kind !== "execution_dead_rolled_back") return false;
-				try {
-					const payload =
-						typeof event.payload === "string"
-							? (JSON.parse(event.payload) as { newExecutionId?: unknown })
-							: (event.payload as { newExecutionId?: unknown });
-					return payload?.newExecutionId === transitionExecutionId;
-				} catch {
-					return false;
-				}
-			});
-			if (!rollback?.execution_id) break;
-			transitionExecutionId = rollback.execution_id;
-		}
+		const {
+			transition,
+			transitionPayload,
+			originExecutionId: transitionExecutionId,
+		} = resolveWorkflowDispatchLineage(
+			store.listWorkflowRunEvents(intent.run_id),
+			{
+				runId: intent.run_id,
+				nodeId: intent.node_id,
+				attempt: intent.attempt,
+				executionId: intent.execution_id,
+				...(replacementContext
+					? {
+							hasReworkActorOrigin: (executionId: string, attempt: number) =>
+								Boolean(
+									store.getWorkflowActivationForAttempt({
+										executionId,
+										runId: intent.run_id,
+										nodeId: intent.node_id,
+										attempt,
+									}),
+								) ||
+								store
+									.listWorkflowSideEffects(intent.run_id)
+									.some(
+										(row) =>
+											row.kind === "dispatch" &&
+											row.node_id === intent.node_id &&
+											row.attempt === attempt &&
+											row.execution_id === executionId,
+									),
+						}
+					: {}),
+			},
+		);
 		const startReservation = store.getWorkflowStartReservationForRun(
 			intent.run_id,
 		);

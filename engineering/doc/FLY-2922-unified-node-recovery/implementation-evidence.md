@@ -92,3 +92,13 @@ Lead 对 question `d0680b7b-9362-4d25-8126-f43dbea7ddf5` 的当前答复：FLY-2
 按新版 local-test-policy/v1 逐文件补验时，quota-bench、codex-quota、workflow-holds 通过；workflow-rework 93 passed / 3 timeout（此前 related 同文件 96 passed），伴随 onTaskUpdate RPC 超时。其余逐文件检查和新增 fly2302 consumer 尚待执行。主机负载很高；未放宽既有测试超时、杀进程或删除锁。日志为 `/tmp/fly2922-foundation-related.log`、`/tmp/fly2922-foundation-explicit-01.log` 至 `-04.log` 及 `/tmp/fly2922-foundation-teardown-guard-retry.log`。
 
 下一块公共 FLY-2329 原现象已有效复现（`/tmp/fly2922-node-recovery-public-red.log`）：真实 dispatcher 准入后未启动回滚成功，但 stage 仍返回旧 unlaunched shape、缺 version 2。失败在预期的 canonical 断言，非夹具 setup；单独保留为待实现验收。仍是 implement 0/6，无 PR、review、CI、QA 或完成交付。
+
+## 2026-09-26：共享前序关系解析（接入恢复前的依赖）
+
+从 dispatcher 抽出只读 `resolveWorkflowDispatchLineage`，保留连续 replacement → 原 edge 的 outcome、loopIteration、founderFeedback。stage/apply 尚未调用，当前仍没有正式 held 恢复。旧查找算法遇重复证据取最近一条、遇环静默结束；新定点红测为 3 failed / 2 passed（`/tmp/fly2922-lineage-behavior-red.log`），严格拒绝歧义、循环、跨 run/node/attempt 证据后为 6 passed（`/tmp/fly2922-lineage-green-final.log`）。更早一次缺新模块的 collection failure 不作为行为红测。
+
+接入 dispatcher 首轮 10 个失败指出现有返工 actor 可跨 attempt 复用；精确历史 activation binding 修正后余 2 个 QA 夹具失败，原因是它们有原始派发账本但尚未 activation。最终只在已验证的 replacementContext 下允许较早 attempt，且必须有同 run/node/execution/attempt 的 immutable binding 或 dispatch ledger；普通故障恢复仍严格当前 tuple。剩余用例定点 3 passed（`/tmp/fly2922-lineage-rework-origin.log`）。没有修改既有回归测试来绕过这些失败。
+
+消费者检索含完整路径、文件名、父目录、新旧 literal 和扩展名省略的 import 名；`/tmp/fly2922-lineage-consumers.json`、`/tmp/fly2922-lineage-consumer-disposition.tsv` 记录逐项处置，`/tmp/fly2922-lineage-retained.json` 保留 10 文件。其中公共 FLY-2329 文件仍是明确待实现红测；其余 9 文件进入受限 related。额外 7 个直接 dispatcher consumer 已逐文件通过：rework-stall 7、divergence 5、predeploy replay 2、land alert 1、ship probe 11、FLY-2302 CommDB 2、rework E2E 9，共 37 passed；日志 `/tmp/fly2922-lineage-consumer-1.log` 至 `-7.log`。构建（含 dependencies）与 lint 通过，最终修改后的 owning build / related 仍在执行，不能据中间结果宣称本块全绿。
+
+本块最终检查：`/tmp/fly2922-lineage-related.log` 为 9 files / 180 passed（含完整 dispatcher 137 条）；`/tmp/fly2922-lineage-build-final.log` owning build exit 0。公共恢复红测未包含在这些通过数字中。下一步应直接接通它所约束的 trusted preflight + held CAS/mint/receipt，不能把共享解析完成当成统一恢复完成。
