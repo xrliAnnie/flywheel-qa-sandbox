@@ -1,14 +1,13 @@
 ---
 issue: FLY-2914
-phase: design
-phaseCursor: 5/5
-updated: 2026-09-26T05:59:24.034Z
-nextStep: All design deliverables approved, published, verified and reported;
-  run phase_design_complete then park; keep goal alive for phase wake
+phase: implement
+phaseCursor: 1/6
+updated: 2026-09-26T06:09:14.502Z
+nextStep: "A: write patrol-root-causes collector tests + implementation"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2914 progress
-**phase**: design (5/5)
-**next**: All design deliverables approved, published, verified and reported; run phase_design_complete then park; keep goal alive for phase wake
+**phase**: implement (1/6)
+**next**: A: write patrol-root-causes collector tests + implementation
