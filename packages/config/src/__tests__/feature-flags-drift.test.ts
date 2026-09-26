@@ -572,6 +572,12 @@ describe("feature-flag drift guard", () => {
 					"storeRunnerPrefixProfile",
 				],
 				[
+					"runner_prefix_profile",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"startBridge",
+					"storeRunnerPrefixProfile",
+				],
+				[
 					"skill_framework_mode",
 					"packages/teamlead/src/bridge/plugin.ts",
 					"runsRouter",

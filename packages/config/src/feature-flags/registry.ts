@@ -946,6 +946,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"createRunInfraDispatcher",
 				"storeRunnerPrefixProfile",
 			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeRunnerPrefixProfile",
+			),
 		],
 		toggleable: "direct",
 		directToggleProof:

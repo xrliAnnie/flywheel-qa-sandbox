@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -573,6 +579,134 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 			reason: "stdout_overflow",
 			stderrTail: "overflow diagnostic",
 		});
+	});
+});
+
+describe("FLY-2913 role-v1 reviewer prefix", () => {
+	const prefixProfile = {
+		settings: {
+			skillOverrides: { brainstorm: "off" },
+			claudeMdExcludes: ["/Users/fixture/.claude/rules/gog.md"],
+			permissions: { deny: ["Agent(belle-lead)"] },
+		},
+		profileDigest: "e".repeat(64),
+		stamp: { version: 1, mode: "role-v1", role: "review-code" },
+	};
+	const verdict = JSON.stringify({ verdict: "APPROVED", findings: [] });
+	const roots: string[] = [];
+	afterAll(() => {
+		for (const root of roots) rmSync(root, { recursive: true, force: true });
+	});
+
+	it("merges the profile into the one settings flag and keeps the forced denies", () => {
+		const argv = buildClaudeReviewArgv({
+			prompt: "p",
+			sessionId: "s",
+			resume: false,
+			prefixProfile,
+		});
+		expect(argv.filter((a) => a === "--settings")).toHaveLength(1);
+		expect(JSON.parse(argv.at(-1) as string)).toEqual({
+			...prefixProfile.settings,
+			enabledPlugins: {
+				"discord@flywheel-plugins": false,
+				"discord@claude-plugins-official": false,
+			},
+		});
+		expect(
+			JSON.parse(
+				buildClaudeReviewArgv({
+					prompt: "p",
+					sessionId: "s",
+					resume: false,
+				}).at(-1) as string,
+			),
+		).toEqual({
+			enabledPlugins: {
+				"discord@flywheel-plugins": false,
+				"discord@claude-plugins-official": false,
+			},
+		});
+	});
+
+	it("persists a per-session stamp before launching the profiled round", async () => {
+		const stampDir = mkdtempSync(join(tmpdir(), "fly2913-review-"));
+		roots.push(stampDir);
+		let argv: string[] = [];
+		const out = await runClaudeReviewRound(
+			{
+				prompt: "p",
+				sessionId: "11111111-1111-4111-8111-111111111111",
+				resume: true,
+				cwd: "/tmp",
+				prefixProfile,
+				prefixStamp: { dir: stampDir, requestId: "req-1" },
+			},
+			{
+				spawner: async (opts) => {
+					argv = opts.argv;
+					return {
+						code: 0,
+						stdout: verdict,
+						stderr: "",
+						timedOut: false,
+						overflowed: false,
+						spawnError: null,
+					};
+				},
+				logger: () => {},
+			},
+		);
+		expect(out.kind).toBe("verdict");
+		expect(JSON.parse(argv.at(-1) as string)).toHaveProperty("skillOverrides");
+		const path = join(
+			stampDir,
+			"review-11111111-1111-4111-8111-111111111111.prefix-profile.json",
+		);
+		expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
+			...prefixProfile.stamp,
+			requestId: "req-1",
+			sessionId: "11111111-1111-4111-8111-111111111111",
+			resume: true,
+		});
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	it("reviews with the legacy settings when the stamp cannot be persisted", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2913-review-"));
+		roots.push(root);
+		const blocked = join(root, "not-a-dir");
+		writeFileSync(blocked, "file");
+		const logs: string[] = [];
+		let argv: string[] = [];
+		await runClaudeReviewRound(
+			{
+				prompt: "p",
+				sessionId: "22222222-2222-4222-8222-222222222222",
+				resume: false,
+				cwd: "/tmp",
+				prefixProfile,
+				prefixStamp: { dir: blocked, requestId: "req-2" },
+			},
+			{
+				spawner: async (opts) => {
+					argv = opts.argv;
+					return {
+						code: 0,
+						stdout: verdict,
+						stderr: "",
+						timedOut: false,
+						overflowed: false,
+						spawnError: null,
+					};
+				},
+				logger: (m) => logs.push(m),
+			},
+		);
+		expect(JSON.parse(argv.at(-1) as string)).not.toHaveProperty(
+			"skillOverrides",
+		);
+		expect(logs.join("\n")).toMatch(/prefix-profile.*legacy/i);
 	});
 });
 

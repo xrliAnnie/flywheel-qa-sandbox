@@ -17,6 +17,7 @@ import {
 	buildProofFetchArgs,
 	buildProofGitEnv,
 } from "./land-head-refresh-proof.js";
+import type { ReviewPrefixResolution } from "./review-prefix-profile.js";
 
 const execFileAsync = promisify(execFile);
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -53,7 +54,25 @@ export class GitLandContentReviewer {
 			projectName: string,
 		) => string | undefined,
 		private readonly reviewRound: typeof runClaudeReviewRound = runClaudeReviewRound,
+		/** FLY-2913: review-code prefix; absent/throwing ⇒ legacy settings. */
+		private readonly reviewPrefixProfile?: (input: {
+			executionId: string;
+			reviewType: "code";
+		}) => ReviewPrefixResolution | undefined,
 	) {}
+
+	private resolvePrefix(
+		executionId: string,
+	): ReviewPrefixResolution | undefined {
+		try {
+			return this.reviewPrefixProfile?.({ executionId, reviewType: "code" });
+		} catch (error) {
+			console.warn(
+				`[land-content-review] FLY-2913 prefix profile unavailable for ${executionId} (${error instanceof Error ? error.message : String(error)}); reviewing with the legacy settings`,
+			);
+			return undefined;
+		}
+	}
 
 	async ensureReview(input: {
 		runId: string;
@@ -153,7 +172,12 @@ export class GitLandContentReviewer {
 			if ((await git(checkout, ["rev-parse", "HEAD"])) !== headSha) {
 				return result("pending", "content_review_head_moved");
 			}
+			const prefix = this.resolvePrefix(input.executionId);
 			outcome = await this.reviewRound({
+				...(prefix && {
+					prefixProfile: prefix.profile,
+					prefixStamp: { dir: prefix.stampDir, requestId },
+				}),
 				prompt:
 					`You are the independent cross-family reviewer for ${input.issueId}. ` +
 					`Review CODE at exact commit ${headSha}. Explore this detached repository, ` +

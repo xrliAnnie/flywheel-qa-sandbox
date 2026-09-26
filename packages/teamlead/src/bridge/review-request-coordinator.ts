@@ -56,6 +56,7 @@ import { snapshotDesignReviewPlan } from "./design-review-manifest.js";
 import { storeReviewSameFamilyAllowed } from "./flag-store-runtime.js";
 import { wakeQuotaDaemon as wakeDefaultQuotaDaemon } from "./quota-daemon-wake.js";
 import { buildGovernancePromptSegment } from "./review-governance-prompt.js";
+import type { ReviewPrefixResolution } from "./review-prefix-profile.js";
 import { classifyReviewFailure } from "./review-quota-retry.js";
 import {
 	computeEffectiveVerdict,
@@ -208,6 +209,15 @@ export interface ReviewCoordinatorDeps {
 	}) => Promise<{ ok: boolean }>;
 	/** FLY-2177 call-time kill switch (production: managed flag store). */
 	quotaAutoRetryEnabled?: () => boolean;
+	/**
+	 * FLY-2913: role-v1 reviewer prefix, resolved at EVERY reviewer launch from
+	 * the persisted job (store switch read per call). Absent/undefined/throwing
+	 * ⇒ the round runs with the legacy settings; it never skips a review.
+	 */
+	reviewPrefixProfile?: (input: {
+		executionId: string;
+		reviewType: "design" | "code";
+	}) => ReviewPrefixResolution | undefined;
 	/** Narrow deterministic clock/timer seams. */
 	now?: () => number;
 	setTimer?: (callback: () => void, delayMs: number) => unknown;
@@ -1580,8 +1590,13 @@ export class ReviewRequestCoordinator {
 			});
 		}
 		const roundRunner = this.deps.reviewRound ?? runClaudeReviewRound;
-		const runRound = (roundResume: boolean, roundSessionUuid: string) =>
-			roundRunner({
+		const runRound = (roundResume: boolean, roundSessionUuid: string) => {
+			const prefix = this.resolveReviewPrefix(job);
+			return roundRunner({
+				...(prefix && {
+					prefixProfile: prefix.profile,
+					prefixStamp: { dir: prefix.stampDir, requestId: job.request_id },
+				}),
 				prompt: this.buildPrompt(
 					job,
 					roundResume,
@@ -1607,6 +1622,7 @@ export class ReviewRequestCoordinator {
 						: this.deps.reviewerEffort,
 				timeoutMs: this.deps.reviewerTimeoutMs,
 			});
+		};
 		let outcome: ClaudeReviewOutcome = await runRound(resume, sessionUuid);
 		const failedAttempts: FailedReviewAttempt[] = [];
 
@@ -1863,6 +1879,24 @@ export class ReviewRequestCoordinator {
 		}
 		const completed = this.store.getCodexReviewJob(requestId);
 		if (completed) await this.deliverReuseBindings(completed);
+	}
+
+	/** FLY-2913: per-launch reviewer prefix; any failure keeps the round legacy. */
+	private resolveReviewPrefix(
+		job: CodexReviewJob,
+	): ReviewPrefixResolution | undefined {
+		if (!this.deps.reviewPrefixProfile) return undefined;
+		try {
+			return this.deps.reviewPrefixProfile({
+				executionId: job.execution_id,
+				reviewType: job.review_type,
+			});
+		} catch (err) {
+			this.log(
+				`review ${job.request_id}: FLY-2913 prefix profile unavailable (${err instanceof Error ? err.message : String(err)}); reviewing with the legacy settings`,
+			);
+			return undefined;
+		}
 	}
 
 	private failReviewerOutcome(

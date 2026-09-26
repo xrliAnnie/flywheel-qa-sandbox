@@ -382,6 +382,14 @@ describe("feature-flag registry invariants", () => {
 					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
 					resolverSymbol: "storeRunnerPrefixProfile",
 				},
+				{
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "startBridge",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeRunnerPrefixProfile",
+				},
 			],
 		});
 	});

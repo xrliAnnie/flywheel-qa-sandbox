@@ -127,6 +127,8 @@ interface Harness {
 		cwd: string;
 		effort?: string;
 		model?: string;
+		prefixDigest?: string;
+		prefixStamp?: { dir: string; requestId: string };
 	}>;
 	/** FLY-1257 HIGH-1: capture of markGateAnswered(questionId, executionId). */
 	gateAnswers: Array<{ questionId: string; executionId: string }>;
@@ -166,6 +168,9 @@ async function makeHarness(
 		}) => void;
 		wakeQuotaDaemon?: () => unknown;
 		setTimer?: (callback: () => void, delayMs: number) => unknown;
+		reviewPrefixProfile?: ConstructorParameters<
+			typeof ReviewRequestCoordinator
+		>[0]["reviewPrefixProfile"];
 	} = {},
 ): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
@@ -197,6 +202,10 @@ async function makeHarness(
 				cwd: inv.cwd,
 				effort: inv.effort,
 				model: inv.model,
+				...(inv.prefixProfile && {
+					prefixDigest: inv.prefixProfile.profileDigest,
+				}),
+				...(inv.prefixStamp && { prefixStamp: inv.prefixStamp }),
 			};
 			invocations.push(invocation);
 			if (harnessOpts.reviewRound) {
@@ -237,6 +246,9 @@ async function makeHarness(
 			wakeQuotaDaemon: harnessOpts.wakeQuotaDaemon,
 		}),
 		...(harnessOpts.setTimer && { setTimer: harnessOpts.setTimer }),
+		...(harnessOpts.reviewPrefixProfile && {
+			reviewPrefixProfile: harnessOpts.reviewPrefixProfile,
+		}),
 		logger: (message) => logs.push(message),
 	});
 	return {
@@ -5586,6 +5598,140 @@ describe("FLY-1224 — reviewer effort forwarding (T13 ②)", () => {
 		expect(h.invocations).toHaveLength(2);
 		expect(h.invocations[0]?.effort).toBe("high");
 		expect(h.invocations[1]?.effort).toBe("high");
+	});
+});
+
+describe("FLY-2913 — reviewer role-v1 prefix per launch", () => {
+	const profileFor = (digest: string) => ({
+		profile: {
+			settings: {
+				skillOverrides: {},
+				claudeMdExcludes: [],
+				permissions: { deny: [] },
+			},
+			profileDigest: digest,
+			stamp: {
+				version: 1 as const,
+				compilerVersion: 1,
+				mode: "role-v1" as const,
+				role: "review-code" as const,
+				taskSetId: "engineering" as const,
+				workflow: {
+					runId: "run",
+					snapshotDigest: "a".repeat(64),
+					templateId: "tpl_code",
+				},
+				nodeId: "implement",
+				skillArm: "superpowers",
+				pinnedSkills: [],
+				removed: { skills: [], agents: [], rules: [] },
+				profileDigest: digest,
+			},
+		},
+		stampDir: "/state/runner-state/e1",
+	});
+
+	it("resolves the profile from the persisted job on every round, including the resumed reround", async () => {
+		const calls: Array<{ executionId: string; reviewType: string }> = [];
+		const digests = ["1".repeat(64), "2".repeat(64)];
+		const h = await makeHarness({
+			reviewPrefixProfile: (input) => {
+				calls.push(input);
+				return profileFor(digests[calls.length - 1] as string);
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "CHANGES_REQUESTED",
+			findings: [{ severity: "HIGH", title: "fix me" }],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		openGate(h.comm, "q2");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r2",
+			reviewType: "code",
+			questionId: "q2",
+		});
+		await settle();
+		expect(calls).toEqual([
+			{ executionId: "e1", reviewType: "code" },
+			{ executionId: "e1", reviewType: "code" },
+		]);
+		expect(h.invocations.map((i) => [i.resume, i.prefixDigest])).toEqual([
+			[false, digests[0]],
+			[true, digests[1]],
+		]);
+		expect(h.invocations.map((i) => i.prefixStamp)).toEqual([
+			{ dir: "/state/runner-state/e1", requestId: "r1" },
+			{ dir: "/state/runner-state/e1", requestId: "r2" },
+		]);
+	});
+
+	it("reviews with the legacy prefix when resolution fails, never skipping the review", async () => {
+		const h = await makeHarness({
+			reviewPrefixProfile: () => {
+				throw new Error("workflow_prefix_context: run missing or mismatched");
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.invocations[0]).not.toHaveProperty("prefixDigest");
+		expect(h.logs.join("\n")).toMatch(/prefix.*legacy/i);
+	});
+
+	it("adds no prefix fields without the seam (legacy byte-compat)", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r1",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		expect(h.invocations[0]).not.toHaveProperty("prefixDigest");
+		expect(h.invocations[0]).not.toHaveProperty("prefixStamp");
 	});
 });
 

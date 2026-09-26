@@ -385,7 +385,10 @@ function persistRunnerPrefixStamp(
 		renameSync(temp, target);
 		return true;
 	} catch (err) {
-		rmSync(temp, { force: true });
+		// Best-effort temp cleanup; the primary failure is reported below.
+		try {
+			rmSync(temp, { force: true });
+		} catch {}
 		console.warn(
 			`[TmuxAdapter] FLY-2913 prefix-profile stamp write failed for ${ctx.executionId} (${(err as Error).message}); launching with the legacy settings`,
 		);

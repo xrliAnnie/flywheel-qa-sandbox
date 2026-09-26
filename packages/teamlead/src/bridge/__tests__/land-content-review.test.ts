@@ -86,6 +86,77 @@ describe("GitLandContentReviewer", () => {
 		store.close();
 	});
 
+	it.each([
+		["resolved", true],
+		["throwing", false],
+	])(
+		"FLY-2913 passes a %s review-code prefix without weakening the review",
+		async (_label, resolves) => {
+			const { projectRoot, head } = remoteFixture();
+			const store = await StateStore.create(":memory:");
+			store.upsertSession({
+				execution_id: "implement-c",
+				issue_id: "FLY-2632",
+				project_name: "flywheel",
+				status: "running",
+				adapter_type: "codex",
+			});
+			const profile = {
+				settings: {
+					skillOverrides: {},
+					claudeMdExcludes: [],
+					permissions: { deny: [] },
+				},
+				profileDigest: "c".repeat(64),
+				stamp: { role: "review-code" },
+			};
+			const resolver = vi.fn(() => {
+				if (!resolves)
+					throw new Error("workflow_prefix_context: runtime missing");
+				return { profile, stampDir: "/state/runner-state/implement-c" };
+			});
+			const reviewRound = vi.fn().mockImplementation(async ({ cwd }) => ({
+				kind: "verdict" as const,
+				verdict: "APPROVED" as const,
+				findings: [],
+				reviewedHeadSha: git(cwd, ["rev-parse", "HEAD"]),
+				repairedTrailingBrace: false,
+				raw: "approved",
+			}));
+			const reviewer = new GitLandContentReviewer(
+				store,
+				() => projectRoot,
+				reviewRound,
+				resolver as never,
+			);
+			const result = await reviewer.ensureReview({
+				runId: "run-c",
+				issueId: "FLY-2632",
+				projectName: "flywheel",
+				prNumber: 2632,
+				headSha: head,
+				executionId: "implement-c",
+				repoIdentity: "__main__",
+			});
+			expect(result.status).toBe("approved");
+			expect(resolver).toHaveBeenCalledWith({
+				executionId: "implement-c",
+				reviewType: "code",
+			});
+			const invocation = reviewRound.mock.calls[0]![0];
+			if (resolves) {
+				expect(invocation.prefixProfile).toBe(profile);
+				expect(invocation.prefixStamp).toEqual({
+					dir: "/state/runner-state/implement-c",
+					requestId: result.requestId,
+				});
+			} else {
+				expect(invocation).not.toHaveProperty("prefixProfile");
+			}
+			store.close();
+		},
+	);
+
 	it("rejects codex-skip before invoking any reviewer", async () => {
 		const store = await StateStore.create(":memory:");
 		store.upsertSession({

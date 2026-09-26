@@ -21,8 +21,18 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import {
+	chmodSync,
+	mkdirSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import {
 	buildNonLeadClaudeSettings,
+	type CompiledRunnerPrefixProfile,
 	getModelConfigSnapshot,
 	type RoleEffort,
 	resolveAllowedCanonicalModel,
@@ -92,6 +102,15 @@ export interface ClaudeReviewInvocation {
 	maxStdoutBytes?: number;
 	env?: NodeJS.ProcessEnv;
 	binary?: string;
+	/**
+	 * FLY-2913: compiled role-v1 reviewer profile. Applied only when its stamp
+	 * is durable under `prefixStamp.dir`; otherwise the round stays legacy.
+	 */
+	prefixProfile?: Pick<
+		CompiledRunnerPrefixProfile,
+		"settings" | "profileDigest"
+	> & { stamp: Record<string, unknown> };
+	prefixStamp?: { dir: string; requestId: string };
 }
 
 /**
@@ -118,6 +137,7 @@ export function buildClaudeReviewArgv(
 	inv: Pick<ClaudeReviewInvocation, "prompt" | "sessionId" | "resume"> & {
 		model?: string;
 		effort?: RoleEffort;
+		prefixProfile?: ClaudeReviewInvocation["prefixProfile"];
 	},
 ): string[] {
 	const snapshot = getModelConfigSnapshot();
@@ -151,8 +171,50 @@ export function buildClaudeReviewArgv(
 		canonicalModel,
 		...(effort ? (["--effort", effort] as const) : []),
 		"--settings",
-		JSON.stringify(buildNonLeadClaudeSettings()),
+		// FLY-2913: the role-v1 profile merges first; forced denies still win.
+		JSON.stringify(buildNonLeadClaudeSettings(inv.prefixProfile?.settings)),
 	];
+}
+
+/** FLY-2913: atomic 0600 per-session reviewer stamp; false ⇒ launch legacy. */
+function persistReviewPrefixStamp(
+	inv: ClaudeReviewInvocation,
+	logger: (msg: string) => void,
+): boolean {
+	const { prefixProfile, prefixStamp } = inv;
+	if (!prefixProfile || !prefixStamp) return false;
+	const target = join(
+		prefixStamp.dir,
+		`review-${inv.sessionId}.prefix-profile.json`,
+	);
+	const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		if (!/^[A-Za-z0-9-]{1,128}$/.test(inv.sessionId))
+			throw new Error("invalid review session id");
+		mkdirSync(prefixStamp.dir, { recursive: true, mode: 0o700 });
+		chmodSync(prefixStamp.dir, 0o700);
+		writeFileSync(
+			temp,
+			`${JSON.stringify({
+				...prefixProfile.stamp,
+				requestId: prefixStamp.requestId,
+				sessionId: inv.sessionId,
+				resume: inv.resume,
+			})}\n`,
+			{ encoding: "utf-8", mode: 0o600, flag: "wx" },
+		);
+		renameSync(temp, target);
+		return true;
+	} catch (err) {
+		// Best-effort temp cleanup; the primary failure is reported below.
+		try {
+			rmSync(temp, { force: true });
+		} catch {}
+		logger(
+			`FLY-2913 prefix-profile stamp write failed for review session ${inv.sessionId} (${(err as Error).message}); reviewing with the legacy settings`,
+		);
+		return false;
+	}
 }
 
 interface SpawnResult {
@@ -485,7 +547,12 @@ export async function runClaudeReviewRound(
 	const spawner = deps.spawner ?? defaultClaudeReviewSpawner;
 	const logger =
 		deps.logger ?? ((m: string) => console.log(`[claude-review] ${m}`));
-	const argv = buildClaudeReviewArgv(inv);
+	const argv = buildClaudeReviewArgv({
+		...inv,
+		prefixProfile: persistReviewPrefixStamp(inv, logger)
+			? inv.prefixProfile
+			: undefined,
+	});
 	const res = await spawner({
 		binary: inv.binary ?? "claude",
 		argv,

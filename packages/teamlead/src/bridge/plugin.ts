@@ -523,6 +523,7 @@ import {
 	storeLoopProfilerEnabled,
 	storeNodeStandbyResumeEnabled,
 	storeReviewQuotaAutoRetryEnabled,
+	storeRunnerPrefixProfile,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSummaryAbsorptionCadenceMs,
@@ -855,6 +856,7 @@ import {
 	toReviewFindingRulingSnapshot,
 } from "./review-governance-effects.js";
 import { founderApprovalHoldGuard, reviewHoldReason } from "./review-hold.js";
+import { resolveReviewPrefixProfile } from "./review-prefix-profile.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
 import { createReviewRulingHandler } from "./review-ruling-route.js";
 import { ReviewThreadEffect } from "./review-thread-effect.js";
@@ -8481,9 +8483,21 @@ export async function startBridge(
 		landProjectRootFor,
 	);
 	const landContentProver = new GitLandContentProver(landProjectRootFor);
+	// FLY-2913: Claude reviewers read the store switch at every new launch.
+	const reviewPrefixProfile = (input: {
+		executionId: string;
+		reviewType: "design" | "code";
+	}) =>
+		resolveReviewPrefixProfile({
+			store,
+			profile: storeRunnerPrefixProfile(flagStore),
+			...input,
+		});
 	const landContentReviewer = new GitLandContentReviewer(
 		store,
 		landProjectRootFor,
+		undefined,
+		reviewPrefixProfile,
 	);
 	const recordCarryoverDepartureCutoff = (input: {
 		operation: import("../StateStore.js").LandOperationRow;
@@ -14083,6 +14097,7 @@ export async function startBridge(
 				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
 			),
 			quotaAutoRetryEnabled: () => storeReviewQuotaAutoRetryEnabled(flagStore),
+			reviewPrefixProfile,
 			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
 				store
 					.listActiveReviewFindingRulings(projectName, issueId)

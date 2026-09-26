@@ -1345,6 +1345,25 @@ describe("TmuxAdapter", () => {
 			warn.mockRestore();
 		});
 
+		it("stays legacy when the runner-state parent is not a directory", async () => {
+			mkdirSync(join(tmpHome, ".flywheel", "runner-state"), {
+				recursive: true,
+			});
+			writeFileSync(
+				join(tmpHome, ".flywheel", "runner-state", "test-exec-1"),
+				"file",
+			);
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ prefixProfile }),
+			);
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			expect(newWindow).toBeDefined();
+			expect(settingsOf(newWindow!.args)).not.toHaveProperty("skillOverrides");
+			warn.mockRestore();
+		});
+
 		it("adds nothing when no profile is supplied (legacy byte-compat)", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());

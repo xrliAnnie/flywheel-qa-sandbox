@@ -95,3 +95,26 @@ Lead 回答 `1de718ec-43e5-455a-a259-981a1056f082` / `3c36ba2d-b163-4115-9417-ab
 本批仍为离线编译能力：调用方必须提供经审计的完整文件/依赖清单，它不自动推断脚本引用，不选择最终五角色清单，不执行插件或修改共享安装。真实 namespace、hook 次数和 CLI 组件加载控制仍须在 Lead 提供的 529 房验证；T2 未完成，T3/T4 尚未接线。
 
 红绿证据：生成 manifest 最初 2 个行为测试失败；插件编译空实现 17 失败/1 通过；新增 metadata 保护 3 失败。最终两份相关测试共 70 通过，`vitest related` 同样只命中这 70 项；受影响包及依赖 build、四个依赖方 typecheck 和 lint 结果见 `evidence/plugin-checks.json`。消费者检索逐匹配处置见 `evidence/plugin-consumer-sweep.json`。这些结果不构成五角色 token 表、真实任务、回退、完整 CI 或交卷证据。
+
+## 2026-09-26 — 开关改走 FlagStore（Lead 裁定）
+
+接续 e8f649ec 的 WIP `f3c280e89`（未重写）。`runner_prefix_profile` 登记为 bridge_global store 枚举（`legacy|role-v1`，默认且唯一回退 legacy），照 `runner_memory_mode`：registry + 宽松 enum codec（非法值解析为 legacy，符合 enum codec 合同）+ 具名 wrapper `storeRunnerPrefixProfile`。选择器改收 store 原始行，不再读 env；env 名只作首次建行的引导种子元数据。读点：`run-infra.ts createRunInfraDispatcher`（每次新启动读一次）与 `plugin.ts startBridge`（评审每轮启动读一次）。Lead/Codex 不读；无新 exemption；不默认启用。
+
+红绿：选择器改签名 21 项失败 → 转绿；registry 计数/founder copy/登记形状与 drift 读点清单 3 项失败 → 转绿；flag-store live-observe 2 项与 dispatcher 11 项失败 → 转绿；Lead 点名的 `feature-flags-drift` 2 个失败转绿。负控：删掉 `startBridge` 的 store 读取，drift 的 readSite 代码证据检查即红，已还原。
+
+## 2026-09-26 — T3 角色编译与 runner 启动接线
+
+`packages/config/src/runner-prefix-profiles.ts`：五角色 v1 **移除清单**（技能 `skillOverrides:off`、子代理 `permissions.deny Agent(name)`、用户规则 `claudeMdExcludes`），清单外全部照旧加载；pinned 角色 frontmatter 技能与合同必需技能永远保留（编译时并集 + 模块测试）。纯函数编译器输出一个 settings 源、profileDigest（绑定 role/taskSet/pinned workflow/nodeId/arm/清单）与不含正文/路径/凭据的 stamp。计划写的 JSON 数据文件改为 TS 常量模块（类型检查与构建更简单），语义不变。v1 不发 `--tools`、不用 strict MCP：内置已加载工具仅 782 token、xiaohongshu MCP 全为 deferred，收益小风险高，逐项理由见 `role-capabilities.md`。
+
+Blueprint 在 skill arm 解析后、worktree 副作用前编译（仅 claude-tmux）；TmuxAdapter 把 profile 作为**第一个** `--settings` 源（arm/opt-in/memory/hooks/Discord 强制 deny 依次覆盖其后），并先原子写 `~/.flywheel/runner-state/<exec>/prefix-profile.json`（0700 目录/0600 文件，含 executionId/activationId/sessionId）；写不成则整次启动回落 legacy 并告警。验证工作流执行的 executionId 来自 admission 预铸值，runtime 行先于派发存在；非工作流启动查不到 → legacy。
+
+红绿：编译器模块缺失 → 18 项转绿；TmuxAdapter 3 项失败 → 转绿，另补“runner-state 父路径是文件”回归（修复前 temp 清理会抛出中断启动）；Blueprint 2 项失败 → 转绿。TmuxAdapter 全文件 190/191、Blueprint 27 文件 342 项通过。
+
+## 2026-09-26 — T4 跨家族评审接线
+
+`review-prefix-profile.ts`：角色只取持久 `job.review_type`，engineering 身份只取作者 execution 的 pinned run；作者自己的 skills 不并入评审者保留集；legacy/未设置时不读任何 provenance。coordinator 在**每次评审启动**（首轮、同 session 续轮、新 session 回退）现读 store 现编译；解析抛错只记日志并以 legacy 评审，绝不跳过评审或产生 verdict。`claude-review-runner` 把 profile 合并进唯一 `--settings`（强制 deny 仍最后），按评审 session 写 0600 stamp（含 requestId/sessionId/resume），写失败则该轮 legacy。land-content-review 固定 review-code 走同一解析器。Codex 反向评审（Claude 作者调用 codex-code-review 等）不受影响：design/implement 保留全部 Codex 技能与规则。
+
+## 已知未实现 / 偏差（须在 PR 披露）
+
+- **同 session 恢复复用原 stamp** 未实现：恢复启动按 pinned 快照 + 代码内清单 + 当时 store 值重新编译；若期间开关改为 legacy，恢复的会话得到 legacy（与“开关对新启动生效”一致，但不是计划所写的复用原 stamp）。
+- 控制是否真正移出前缀（插件/同步技能的 `skillOverrides`、`Agent(name)` deny 是否删描述、`--settings` 下的 `claudeMdExcludes`）尚未在 529 证实；`role-capabilities.md` 的节省数字仅为预估。
