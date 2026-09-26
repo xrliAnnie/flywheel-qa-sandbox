@@ -269,6 +269,25 @@ try {
     assert.equal(child.closed, true);
   });
 
+  await test('FLY-2913 counts SessionStart hook frames without keeping their output', async () => {
+    const hookFrame = (subtype) => JSON.stringify({ type: 'system', subtype, hook_id: 'h1', hook_name: 'SessionStart:startup',
+      hook_event: 'SessionStart', output: 'PRIVATE_HOOK_OUTPUT', stdout: 'PRIVATE_HOOK_STDOUT', session_id: 'x' }) + '\n';
+    const child = fake({ onSpawn(c) { c.stdout.write(hookFrame('hook_started')); c.stdout.write(hookFrame('hook_response')); },
+      onRequest(r, c) {
+        if (r.request.subtype === 'initialize') c.stdout.write(hookFrame('hook_progress'));
+        c.reply(r, r.request.subtype === 'mcp_status' ? servers() : r.request.subtype === 'get_context_usage' ? context() : {});
+      } });
+    const result = await run(child);
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.protocol.hookFrames, { hook_started: 1, hook_progress: 1, hook_response: 1 });
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_/);
+  });
+
+  await test('FLY-2913 still rejects other system frames', async () => {
+    const child = fake({ onSpawn(c) { c.stdout.write(JSON.stringify({ type: 'system', subtype: 'PRIVATE_UNKNOWN' }) + '\n'); } });
+    failed(await run(child), 'malformed_response');
+  });
+
   await test('FLY-2913 opt-in inventory emits only item names, source kinds, basenames and tokens', async () => {
     const withNames = () => ({ ...context(),
       memoryFiles: [{ path: '/PRIVATE_ACCOUNT/.claude/rules/gog.md', type: 'User', tokens: 2 }],

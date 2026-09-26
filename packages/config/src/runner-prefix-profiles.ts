@@ -8,19 +8,21 @@ import type {
 /**
  * FLY-2913 role-v1 fixed-prefix profiles.
  *
- * Every entry is an explicit REMOVAL decided from the role contracts, the
- * seven-day call evidence and the pinned role files; anything not listed stays
- * loaded, so a newly installed skill/agent/rule is never silently dropped.
- * Only per-launch settings are produced: shared ~/.claude files, Lead and Codex
- * configuration are never touched, and the skill arm's plugins are left alone.
+ * Two per-launch controls, both measured on CLI 2.1.283 with real first-turn
+ * API usage (engineering/doc/FLY-2913-role-prefix/evidence):
+ * - `skillOverrides: "name-only"` hides the DESCRIPTION of skills the role
+ *   does not need; the name stays listed and the skill stays invocable, so no
+ *   capability is removed. (`off` / `user-invocable-only` measured LARGER
+ *   prompts; plugin skills and `Agent(name)` deny had no effect.)
+ * - `claudeMdExcludes` drops user rule files that do not apply to the role.
+ * Anything not listed keeps its full description or file. Shared ~/.claude
+ * files, Lead and Codex configuration and the skill arm are never touched.
  * Reasons per item live in engineering/doc/FLY-2913-role-prefix.
  */
 export interface RunnerPrefixRoleProfile {
-	/** Exact skill names hidden with `skillOverrides: off`. */
-	skillsOff: readonly string[];
-	/** Exact subagent names denied with `permissions.deny: Agent(name)`. */
-	agentsDeny: readonly string[];
-	/** File names under ~/.claude/rules excluded with `claudeMdExcludes`. */
+	/** Exact non-plugin skill names listed name-only (description hidden). */
+	skillsNameOnly: readonly string[];
+	/** File names under <Claude config dir>/rules excluded with `claudeMdExcludes`. */
 	rulesExclude: readonly string[];
 }
 
@@ -89,23 +91,6 @@ const SYNCED_DOCUMENTS = [
 	"google-workspace",
 	"skill-creator",
 ] as const;
-// Off-stack plugin skills (Go, ClickHouse, Postgres) and plugin self-learning.
-const PLUGIN_OFF_DOMAIN = [
-	"everything-claude-code:go-build",
-	"everything-claude-code:go-review",
-	"everything-claude-code:go-test",
-	"everything-claude-code:golang-patterns",
-	"everything-claude-code:golang-testing",
-	"everything-claude-code:clickhouse-io",
-	"everything-claude-code:postgres-patterns",
-	"everything-claude-code:instinct-export",
-	"everything-claude-code:instinct-import",
-	"everything-claude-code:instinct-status",
-	"everything-claude-code:evolve",
-	"everything-claude-code:skill-create",
-	"everything-claude-code:continuous-learning",
-	"everything-claude-code:continuous-learning-v2",
-] as const;
 // Reviewers judge an existing plan/diff; they do not author, ship or deliver.
 const REVIEWER_NON_AUTHORING = [
 	"brainstorm",
@@ -125,43 +110,6 @@ const REVIEWER_NON_AUTHORING = [
 	"compound",
 ] as const;
 
-// Lead identities and QA slot Leads are never valid runner subagents.
-const LEAD_AGENTS = [
-	"anna-interviewer-lead",
-	"belle-lead",
-	"claude-infra-bot-lead",
-	"cos-lead",
-	"flywheel-cos-lead",
-	"flywheel-eng-lead",
-	"flywheel-product-lead",
-	"flywheel-test-1",
-	"flywheel-test-2",
-	"flywheel-test-3",
-	"flywheel-test-4",
-	"flywheel-test-6",
-	"joycon-lead",
-	"mufasa-lead",
-	"ops-lead",
-	"product-lead",
-	"rafiki-lead",
-	"reflection-lead",
-	"sub-lead",
-	"tidal-echo-content-lead",
-	"tidal-echo-cos-lead",
-] as const;
-// Personas outside this engineering stack; zero calls in the seven-day window.
-const OFF_DOMAIN_AGENTS = [
-	"Content-Writer",
-	"Data-Engineer",
-	"Data-Scientist",
-	"Mobile-Developer",
-	"Orchestrator",
-	"Product-Manager",
-	"everything-claude-code:go-build-resolver",
-	"everything-claude-code:go-reviewer",
-	"everything-claude-code:database-reviewer",
-] as const;
-
 // Personal tooling rules; none applies to an engineering runner.
 const PERSONAL_RULES = [
 	"video-generation.md",
@@ -178,49 +126,42 @@ const CODEX_AUTHOR_RULES = [
 	"codex-review.md",
 ] as const;
 
-const COMMON_SKILLS_OFF = [
+const COMMON_SKILLS_NAME_ONLY = [
 	...PERSONAL_TOOLING,
 	...LEAD_ONLY,
 	...PM_STRATEGY,
 	...HARNESS_CONFIG,
 	...SYNCED_DOCUMENTS,
-	...PLUGIN_OFF_DOMAIN,
 ];
-const COMMON_AGENTS_DENY = [...LEAD_AGENTS, ...OFF_DOMAIN_AGENTS];
 
 export const RUNNER_PREFIX_PROFILES_V1: Readonly<
 	Record<RunnerPrefixRole, RunnerPrefixRoleProfile>
 > = Object.freeze({
 	design: {
-		skillsOff: [...COMMON_SKILLS_OFF, "simplify", "code-review"],
-		// Keeps UX-Designer: design may turn UI mockups into specs.
-		agentsDeny: [...COMMON_AGENTS_DENY],
+		skillsNameOnly: [...COMMON_SKILLS_NAME_ONLY, "simplify", "code-review"],
 		rulesExclude: [...PERSONAL_RULES],
 	},
 	implement: {
-		skillsOff: [...COMMON_SKILLS_OFF, ...PM_BRAINSTORM_DEPENDENCIES],
-		agentsDeny: [...COMMON_AGENTS_DENY, "UX-Designer"],
+		skillsNameOnly: [...COMMON_SKILLS_NAME_ONLY, ...PM_BRAINSTORM_DEPENDENCIES],
 		rulesExclude: [...PERSONAL_RULES],
 	},
 	qa: {
-		skillsOff: [
-			...COMMON_SKILLS_OFF,
+		skillsNameOnly: [
+			...COMMON_SKILLS_NAME_ONLY,
 			...PM_BRAINSTORM_DEPENDENCIES,
 			"simplify",
 			"code-review",
 			"codex",
 		],
-		agentsDeny: [...COMMON_AGENTS_DENY, "UX-Designer"],
 		rulesExclude: [...PERSONAL_RULES, ...CODEX_AUTHOR_RULES],
 	},
 	"review-design": {
-		skillsOff: [
-			...COMMON_SKILLS_OFF,
+		skillsNameOnly: [
+			...COMMON_SKILLS_NAME_ONLY,
 			...PM_BRAINSTORM_DEPENDENCIES,
 			...REVIEWER_NON_AUTHORING,
 			"code-review",
 		],
-		agentsDeny: [...COMMON_AGENTS_DENY, "UX-Designer"],
 		rulesExclude: [
 			...PERSONAL_RULES,
 			...CODEX_AUTHOR_RULES,
@@ -228,12 +169,11 @@ export const RUNNER_PREFIX_PROFILES_V1: Readonly<
 		],
 	},
 	"review-code": {
-		skillsOff: [
-			...COMMON_SKILLS_OFF,
+		skillsNameOnly: [
+			...COMMON_SKILLS_NAME_ONLY,
 			...PM_BRAINSTORM_DEPENDENCIES,
 			...REVIEWER_NON_AUTHORING,
 		],
-		agentsDeny: [...COMMON_AGENTS_DENY, "UX-Designer"],
 		rulesExclude: [
 			...PERSONAL_RULES,
 			...CODEX_AUTHOR_RULES,
@@ -287,7 +227,7 @@ export const RUNNER_PREFIX_REQUIRED_SKILLS: Readonly<
 	],
 });
 
-const COMPILER_VERSION = 1;
+const COMPILER_VERSION = 2;
 
 export type RunnerPrefixStamp = {
 	version: 1;
@@ -299,17 +239,19 @@ export type RunnerPrefixStamp = {
 	nodeId: string;
 	skillArm: string;
 	pinnedSkills: string[];
-	skillRemovals?: "skipped-unparsed-pinned-skills";
-	removed: { skills: string[]; agents: string[]; rules: string[] };
+	/** Set when pinned skills could not be parsed: every description is kept. */
+	skillDescriptions?: "kept-unparsed-pinned-skills";
+	/** Skills still listed and invocable, with their description hidden. */
+	hiddenSkillDescriptions: string[];
+	excludedRules: string[];
 	profileDigest: string;
 };
 
 export interface CompiledRunnerPrefixProfile {
 	/** One `--settings` source, merged before the skill arm and forced denies. */
 	settings: {
-		skillOverrides: Record<string, "off">;
+		skillOverrides: Record<string, "name-only">;
 		claudeMdExcludes: string[];
-		permissions: { deny: string[] };
 	};
 	profileDigest: string;
 	stamp: RunnerPrefixStamp;
@@ -406,19 +348,17 @@ export function compileRunnerPrefixProfile(input: {
 		...pinnedSkills,
 		...RUNNER_PREFIX_REQUIRED_SKILLS[selection.role],
 	]);
-	// Unknown pinned obligations: keep every skill rather than guess.
+	// Unknown pinned obligations: keep every description rather than guess.
 	const skills =
 		parsed === null
 			? []
-			: sorted(profile.skillsOff.filter((skill) => !keep.has(skill)));
-	const agents = sorted(profile.agentsDeny);
+			: sorted(profile.skillsNameOnly.filter((skill) => !keep.has(skill)));
 	const rules = sorted(profile.rulesExclude);
 	const settings = {
 		skillOverrides: Object.fromEntries(
-			skills.map((skill) => [skill, "off" as const]),
+			skills.map((skill) => [skill, "name-only" as const]),
 		),
 		claudeMdExcludes: rules.map((rule) => `${claudeConfigDir}/rules/${rule}`),
-		permissions: { deny: agents.map((agent) => `Agent(${agent})`) },
 	};
 	const workflow = {
 		runId: selection.workflow.runId,
@@ -435,7 +375,6 @@ export function compileRunnerPrefixProfile(input: {
 				nodeId: context.nodeId,
 				skillArm,
 				skills,
-				agents,
 				rules,
 			}),
 		)
@@ -454,9 +393,10 @@ export function compileRunnerPrefixProfile(input: {
 			skillArm,
 			pinnedSkills,
 			...(parsed === null && {
-				skillRemovals: "skipped-unparsed-pinned-skills" as const,
+				skillDescriptions: "kept-unparsed-pinned-skills" as const,
 			}),
-			removed: { skills, agents, rules },
+			hiddenSkillDescriptions: skills,
+			excludedRules: rules,
 			profileDigest,
 		},
 	};

@@ -52,37 +52,32 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 	});
 
 	it.each(ROLES)(
-		"%s never removes a contract-required skill, agent or rule",
+		"%s never hides a contract-required skill or drops a required rule",
 		(role) => {
 			const profile = RUNNER_PREFIX_PROFILES_V1[role];
 			for (const skill of RUNNER_PREFIX_REQUIRED_SKILLS[role]) {
-				expect(profile.skillsOff, `${role}:${skill}`).not.toContain(skill);
-			}
-			// Observed in the seven-day window or required by role contracts.
-			for (const agent of [
-				"Explore",
-				"general-purpose",
-				"Plan",
-				"Bar-Raiser",
-				"codex:codex-rescue",
-				"everything-claude-code:code-reviewer",
-				"everything-claude-code:planner",
-				"everything-claude-code:security-reviewer",
-			]) {
-				expect(profile.agentsDeny, `${role}:${agent}`).not.toContain(agent);
+				expect(profile.skillsNameOnly, `${role}:${skill}`).not.toContain(skill);
 			}
 			for (const rule of ["context7.md", "git-workflow.md"]) {
 				expect(profile.rulesExclude, `${role}:${rule}`).not.toContain(rule);
 			}
 			// Observed calls in the seven-day window.
-			expect(profile.skillsOff).not.toContain("claude-api");
-			expect(profile.skillsOff).not.toContain("onboarding");
+			expect(profile.skillsNameOnly).not.toContain("claude-api");
+			expect(profile.skillsNameOnly).not.toContain("onboarding");
 		},
 	);
 
+	it("only lists non-plugin skills: plugin skills ignore skillOverrides", () => {
+		for (const role of ROLES) {
+			for (const skill of RUNNER_PREFIX_PROFILES_V1[role].skillsNameOnly) {
+				expect(skill, `${role}:${skill}`).not.toContain(":");
+			}
+		}
+	});
+
 	it("keeps authoring and Codex review skills for design and implement", () => {
 		for (const role of ["design", "implement"] as const) {
-			const off = RUNNER_PREFIX_PROFILES_V1[role].skillsOff;
+			const off = RUNNER_PREFIX_PROFILES_V1[role].skillsNameOnly;
 			for (const skill of [
 				"codex-design-review",
 				"codex-code-review",
@@ -103,8 +98,12 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			"competitive-analysis",
 			"scoping-cutting",
 		]) {
-			expect(RUNNER_PREFIX_PROFILES_V1.design.skillsOff).not.toContain(skill);
-			expect(RUNNER_PREFIX_PROFILES_V1.implement.skillsOff).toContain(skill);
+			expect(RUNNER_PREFIX_PROFILES_V1.design.skillsNameOnly).not.toContain(
+				skill,
+			);
+			expect(RUNNER_PREFIX_PROFILES_V1.implement.skillsNameOnly).toContain(
+				skill,
+			);
 		}
 	});
 
@@ -116,7 +115,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			"dataviz",
 			"research",
 		]) {
-			expect(RUNNER_PREFIX_PROFILES_V1.qa.skillsOff).not.toContain(skill);
+			expect(RUNNER_PREFIX_PROFILES_V1.qa.skillsNameOnly).not.toContain(skill);
 		}
 		expect(RUNNER_PREFIX_PROFILES_V1.qa.rulesExclude).not.toContain(
 			"html-report-style.md",
@@ -126,7 +125,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 	it("uses exact names with no duplicates or path syntax", () => {
 		for (const role of ROLES) {
 			const p = RUNNER_PREFIX_PROFILES_V1[role];
-			for (const list of [p.skillsOff, p.agentsDeny, p.rulesExclude]) {
+			for (const list of [p.skillsNameOnly, p.rulesExclude]) {
 				expect(new Set(list).size).toBe(list.length);
 				for (const item of list) expect(item).toMatch(/^[A-Za-z0-9:._-]+$/);
 			}
@@ -199,9 +198,11 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			skillArm: "superpowers",
 		});
 		expect(compiled.settings.skillOverrides).toEqual({});
-		expect(compiled.stamp.removed.skills).toEqual([]);
-		expect(compiled.stamp.skillRemovals).toBe("skipped-unparsed-pinned-skills");
-		expect(compiled.settings.permissions.deny.length).toBeGreaterThan(0);
+		expect(compiled.stamp.hiddenSkillDescriptions).toEqual([]);
+		expect(compiled.stamp.skillDescriptions).toBe(
+			"kept-unparsed-pinned-skills",
+		);
+		expect(compiled.settings.claudeMdExcludes.length).toBeGreaterThan(0);
 	});
 
 	it("compiles into one per-launch settings source", () => {
@@ -213,14 +214,11 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 		const p = RUNNER_PREFIX_PROFILES_V1.implement;
 		expect(compiled.settings).toEqual({
 			skillOverrides: Object.fromEntries(
-				[...p.skillsOff].sort().map((skill) => [skill, "off"]),
+				[...p.skillsNameOnly].sort().map((skill) => [skill, "name-only"]),
 			),
 			claudeMdExcludes: [...p.rulesExclude]
 				.sort()
 				.map((rule) => `${claudeConfigDir}/rules/${rule}`),
-			permissions: {
-				deny: [...p.agentsDeny].sort().map((agent) => `Agent(${agent})`),
-			},
 		});
 		// v1 keeps every built-in tool: no `--tools` allow-list is emitted.
 		expect(Object.keys(compiled).sort()).toEqual([
@@ -232,7 +230,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 	});
 
 	it("always keeps the pinned role's frontmatter skills (union)", () => {
-		const offForImplement = RUNNER_PREFIX_PROFILES_V1.implement.skillsOff;
+		const offForImplement = RUNNER_PREFIX_PROFILES_V1.implement.skillsNameOnly;
 		expect(offForImplement).toContain("problem-definition");
 		const compiled = compileRunnerPrefixProfile({
 			request: request(
@@ -249,7 +247,9 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			"implement",
 			"problem-definition",
 		]);
-		expect(compiled.stamp.removed.skills).not.toContain("problem-definition");
+		expect(compiled.stamp.hiddenSkillDescriptions).not.toContain(
+			"problem-definition",
+		);
 	});
 
 	it("is deterministic and binds role, arm and pinned identity into the digest", () => {
@@ -294,7 +294,7 @@ describe("runner prefix role profiles v1 (FLY-2913)", () => {
 			nodeId: "implement",
 			skillArm: "superpowers",
 			profileDigest: compiled.profileDigest,
-			compilerVersion: 1,
+			compilerVersion: 2,
 		});
 		expect(JSON.stringify(compiled.stamp)).not.toContain("SECRET BODY");
 		expect(JSON.stringify(compiled.stamp)).not.toContain(claudeConfigDir);

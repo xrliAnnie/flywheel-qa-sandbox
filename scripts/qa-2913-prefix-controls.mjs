@@ -5,14 +5,17 @@
  *   [--rounds 3] [--binary <absolute claude path>] [--roles a,b]
  * Requires a built packages/config dist. Never edits shared configuration.
  */
-import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { probeClaudeContext } from "./lib/qa-2913-context-probe.mjs";
 import {
+	buildFirstTurnArgv,
 	CONTROL_ROLES,
+	parseFirstTurnUsage,
 	runPrefixControls,
 } from "./lib/qa-2913-prefix-controls.mjs";
 
@@ -35,6 +38,48 @@ export function readPinnedAgents(root = repoRoot) {
 			];
 		}),
 	);
+}
+
+/** One controlled model turn; keeps only usage numbers and the exit code. */
+export function runFirstTurn({
+	binary,
+	cwd,
+	model,
+	effort,
+	settings,
+	noChrome,
+	env,
+}) {
+	return new Promise((resolveTurn) => {
+		const child = spawn(
+			binary,
+			buildFirstTurnArgv({
+				model,
+				effort,
+				sessionId: randomUUID(),
+				settings,
+				noChrome,
+			}),
+			{ cwd, env, shell: false, stdio: ["ignore", "pipe", "ignore"] },
+		);
+		let stdout = "";
+		const timer = setTimeout(() => child.kill("SIGKILL"), 240000);
+		child.stdout.on("data", (chunk) => {
+			if (stdout.length < 4 * 1024 * 1024) stdout += chunk;
+		});
+		child.on("error", () => {
+			clearTimeout(timer);
+			resolveTurn({ status: "failed", failure: "spawn_error" });
+		});
+		child.on("close", (code) => {
+			clearTimeout(timer);
+			resolveTurn(
+				code === 0
+					? parseFirstTurnUsage(stdout)
+					: { status: "failed", failure: "nonzero_exit", exitCode: code },
+			);
+		});
+	});
 }
 
 function parseArgs(argv) {
@@ -73,6 +118,7 @@ async function main() {
 		rounds: args.rounds,
 		roles: args.roles ?? CONTROL_ROLES,
 		probe: probeClaudeContext,
+		firstTurn: runFirstTurn,
 		config,
 		pinnedAgents: readPinnedAgents(),
 		claudeConfigDir:
@@ -85,7 +131,7 @@ async function main() {
 	);
 	for (const [role, data] of Object.entries(result.roles))
 		console.log(
-			`${role}: pairs=${data.summary.completePairs}/${data.summary.samples} before=${data.summary.before?.p50 ?? "n/a"} after=${data.summary.after?.p50 ?? "n/a"} delta=${data.summary.deltaP50 ?? "n/a"} capabilityPass=${data.summary.allPairsPass} controlsEffective=${data.summary.allControlsEffective} ineffective=${JSON.stringify(data.summary.ineffective)}`,
+			`${role}: pairs=${data.summary.completePairs}/${data.summary.samples} firstTurn before=${data.summary.before?.p50 ?? "n/a"} after=${data.summary.after?.p50 ?? "n/a"} delta=${data.summary.deltaP50 ?? "n/a"} (diagnostic delta=${data.summary.diagnosticEstimate.deltaP50 ?? "n/a"}) capabilityPass=${data.summary.allPairsPass} controlsEffective=${data.summary.allControlsEffective} ineffective=${JSON.stringify(data.summary.ineffective)} mcpDegraded=${JSON.stringify(data.summary.mcpDegraded)}`,
 		);
 }
 

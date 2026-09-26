@@ -265,6 +265,7 @@ export async function probeClaudeContext(options, spawnChild = spawn) {
 			systemInit: 0,
 			pendingPolls: 0,
 			stdoutBytes: 0,
+			hookFrames: { hook_started: 0, hook_progress: 0, hook_response: 0 },
 		},
 		stderr: { bytes: 0, sha256: digest("") },
 		cleanup: { closed: false, signals: [], exitCode: null },
@@ -396,6 +397,15 @@ export async function probeClaudeContext(options, spawnChild = spawn) {
 			) {
 				fail("unexpected_turn");
 				break;
+			}
+			// FLY-2913: SessionStart hooks stream lifecycle frames before and
+			// between controls. Count them; never keep their output.
+			if (
+				frame.type === "system" &&
+				Object.hasOwn(result.protocol.hookFrames, frame.subtype)
+			) {
+				result.protocol.hookFrames[frame.subtype]++;
+				continue;
 			}
 			if (frame.type === "system" && frame.subtype === "init") {
 				result.protocol.systemInit++;

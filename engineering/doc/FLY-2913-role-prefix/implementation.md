@@ -140,3 +140,16 @@ Blueprint 在 skill arm 解析后、worktree 副作用前编译（仅 claude-tmu
 - **LOW 测试缺口 → 已补**：评审新 session 回退轮的 prefix 重解析测试（覆盖既有路径，非红转绿）；控制驱动按 `类型:文件名` 比对记忆文件，避免一个 CLAUDE.md 掩盖另一个的丢失。
 - **LOW QA 移除 codex-multi-account.md → 保留决定**：QA 合同不调用 Codex CLI（frozen-head CI 由 `ci-full` 命令负责），该规则只约束 `codex exec` 与切号；若 529/QA 发现 QA 需要，改回保留。
 - **LOW 评审 stamp 在同 session legacy 续轮后可能陈旧 → 记录不修**：评审 stamp 已按 session 分文件并带 `resume`；同 session 回滚到 legacy 的续轮属极端路径，列入已知局限。
+
+## 2026-09-26 — 529 实测推翻 off/deny，改为 name-only + 规则排除（compiler v2）
+
+房：slot 4，head `5c061c862f8f1af88149c2107703ede01c7245a1`（room-info 与 `/health` buildSha=artifactBuildSha 一致），cwd `/tmp/flywheel-test-slot-4/project-slot-4`。探针子进程清洗 `FLYWHEEL_*`/`TEAMLEAD_*`/凭据变量（否则用户级 SessionEnd hook 会拿本 runner 的回调令牌向 Bridge 报告“会话结束”），加 `--no-session-persistence`。探针改为计数并丢弃 SessionStart hook 生命周期帧（CLI 在控制请求前后输出 hook_started/progress/response；此前被判 malformed）。
+
+先单项消融（`evidence/control-ablation.json`），再用首轮真实 API usage（`-p` 固定极短提示，读 input+cache_creation+cache_read）复核，因为 `get_context_usage` 对 skillOverrides 的分类不可靠：
+- `skillOverrides: off` 与 `user-invocable-only` 让真实 prompt **增大** 0.9～1.8K；`name-only` 让它减少 4.1～4.5K，且技能仍列出、仍可调用。
+- skillOverrides 对插件技能无效；`permissions.deny Agent(name)` 不删描述、不省 token。
+- `claudeMdExcludes` 有效（−2.1～2.5K）。组合 name-only + 规则：65,902 vs 基线 72,532/72,976。
+
+据此：技能改为 name-only（仅非插件），删除子代理 deny 与插件技能条目；stamp 改为 `hiddenSkillDescriptions` / `excludedRules`（不再宣称“移除”）；无法解析 pinned 技能时保留全部描述（`skillDescriptions: kept-unparsed-pinned-skills`）。驱动以首轮真实 usage 为主测量、诊断为辅，逐项核验改为“目标技能仍在且变小、规则消失、必需与未列项不变”。这比原计划更保守（不删任何技能），属于基于实测证据的机制修正，已向 Lead 报告。
+
+房内开关：受管 `feature-flags set` 对房 Bridge 返回 401（CLI 不带 bearer）；带房 api-token 走同一 stage 路由返回 404。未继续深挖、未直写 DB；探针测量不依赖房内开关。已请 Lead 用其管理通道设置或确认无需。

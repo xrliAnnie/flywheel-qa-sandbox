@@ -1,0 +1,92 @@
+{
+ "purpose": "FLY-2913 control ablation on CLI 2.1.283 in 529 slot 4 (room head 5c061c862f8f1af88149c2107703ede01c7245a1); decides which per-launch controls actually shrink the prefix",
+ "capturedAt": "2026-09-26",
+ "cwd": "/tmp/flywheel-test-slot-4/project-slot-4 (slot project CLAUDE.md is 57,904 bytes; absolute totals differ from production worktrees, deltas do not depend on it)",
+ "cli": "2.1.283",
+ "model": "claude-opus-5-5",
+ "env": "probe children with FLYWHEEL_/TEAMLEAD_/credential vars scrubbed; --no-session-persistence; --no-chrome; permission bypassPermissions",
+ "role": "implement (compiled implement v1 lists)",
+ "firstTurnApiUsage": {
+  "method": "claude -p 'Reply with exactly: OK' --output-format json; promptTokens = input + cache_creation + cache_read of the single request",
+  "effort": "low",
+  "samples": {
+   "base": [
+    72976,
+    72532,
+    72532,
+    72976,
+    72976,
+    72532
+   ],
+   "skillOverrides off (47 non-plugin)": [
+    73844,
+    73844
+   ],
+   "claudeMdExcludes (6 rules)": [
+    70450,
+    70450
+   ],
+   "skillOverrides name-only (47 non-plugin)": [
+    68428,
+    68428
+   ],
+   "skillOverrides user-invocable-only (47 non-plugin)": [
+    73844,
+    74288
+   ],
+   "everything-claude-code plugin disabled": [
+    70210,
+    70210
+   ],
+   "skillOverrides name-only (14 plugin skills)": [
+    72976,
+    72532
+   ],
+   "name-only (all 61 incl. plugin) + claudeMdExcludes": [
+    65902,
+    65902
+   ]
+  },
+  "note": "base alternates 72532/72976 (session-start hook output); name-only+rules is stable at 65902 (-6630..-7074)."
+ },
+ "diagnosticGetContextUsage": {
+  "note": "get_context_usage moves hidden-skill tokens into 'System tools' and reports name-only as total-unchanged; it is NOT a reliable measure for skillOverrides. Kept as auxiliary only.",
+  "base": {
+   "fixed": 55695,
+   "systemTools": 668,
+   "customAgents": 8824,
+   "skills": 9133,
+   "memoryFiles": 33219
+  },
+  "skillsOff": {
+   "fixed": 61958,
+   "systemTools": 11557,
+   "skills": 4507
+  },
+  "rules": {
+   "fixed": 53827,
+   "memoryFiles": 31351
+  },
+  "permissionsDenyAgents(31)": {
+   "fixed": 55695,
+   "customAgents": 8824,
+   "agentCount": 46
+  },
+  "oneSkillOff": {
+   "fixed": 55695,
+   "systemTools": 812,
+   "skills": 8989
+  },
+  "nameOnly": {
+   "fixed": 55695,
+   "systemTools": 5016,
+   "skills": 4785
+  }
+ },
+ "decisions": {
+  "skills": "use name-only (description hidden, still listed and invocable); off/user-invocable-only increase the real prompt",
+  "pluginSkills": "not controllable by skillOverrides (no effect); dropped from lists; trimming them needs the selected-component plugin copy (not shipped in v1)",
+  "agents": "permissions.deny Agent(name) removes no description and no tokens; dropped",
+  "rules": "claudeMdExcludes effective; kept"
+ }
+}
