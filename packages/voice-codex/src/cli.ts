@@ -65,7 +65,7 @@ import {
 import { recoverPinnedVoiceSession } from "./recovery.js";
 import { GenericVoiceSession } from "./session.js";
 import { type SavedVoiceSession, SessionStateStore } from "./session-state.js";
-import { exitAfterShutdown } from "./shutdown-exit.js";
+import { createShutdownExit } from "./shutdown-exit.js";
 import {
 	reportFatalStartupFailure,
 	reportStartupRefusal,
@@ -750,7 +750,10 @@ export async function main(): Promise<void> {
 			speechChunkTokens: config.speechChunkTokens,
 		},
 	});
-	const shutdown = () => daemon.shutdown();
+	const shutdown = () => {
+		shutdownExit.begin("signal");
+		daemon.shutdown();
+	};
 	process.once("SIGINT", shutdown);
 	process.once("SIGTERM", shutdown);
 	try {
@@ -763,6 +766,8 @@ export async function main(): Promise<void> {
 		});
 		await daemon.run();
 	} finally {
+		// The idle exit returns here; a signal already armed the deadline.
+		shutdownExit.begin("run_returned");
 		process.off("SIGINT", shutdown);
 		process.off("SIGTERM", shutdown);
 		health.stop();
@@ -771,10 +776,12 @@ export async function main(): Promise<void> {
 	}
 }
 
+/** FLY-2885 QA@1: the daemon exits within a bounded grace, leaks or not. */
+const shutdownExit = createShutdownExit();
+
 main()
 	.catch((error) => {
 		reportFatalStartupFailure(error);
 		process.exitCode = 1;
 	})
-	// FLY-2885 QA@1: a leaked handle must never leave an orphan daemon.
-	.finally(() => exitAfterShutdown());
+	.finally(() => shutdownExit.finish(process.exitCode));
