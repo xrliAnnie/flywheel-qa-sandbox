@@ -5,6 +5,7 @@ import {
 	lstatSync,
 	openSync,
 	readFileSync,
+	realpathSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -14,6 +15,24 @@ export const VOICE_CODEX_HOME_CONFIG =
 	'web_search = "disabled"\n' +
 	"[features]\n" +
 	"realtime_conversation = true\n" +
+	"shell_tool = false\n" +
+	"unified_exec = false\n" +
+	"view_image = false\n" +
+	"image_generation = false\n" +
+	"code_mode_host = false\n" +
+	"standalone_web_search = false\n" +
+	"memories = false\n" +
+	"apps = false\n" +
+	"plugins = false\n" +
+	"browser_use = false\n" +
+	"computer_use = false\n" +
+	"multi_agent = false\n" +
+	"hooks = false\n" +
+	"skip_host_skill_discovery = true\n";
+
+export const VOICE_SCRIBE_HOME_CONFIG =
+	'web_search = "disabled"\n' +
+	"[features]\n" +
 	"shell_tool = false\n" +
 	"unified_exec = false\n" +
 	"view_image = false\n" +
@@ -68,5 +87,59 @@ export function assertVoiceCodexHome(home: string): void {
 		throw new Error("voice_codex_home_invalid");
 	} finally {
 		if (fd !== undefined) closeSync(fd);
+	}
+}
+
+/** Read-only admission for the subscription-backed, no-tool scribe profile. */
+export function assertVoiceScribeHome(
+	home: string,
+	expectedAuthPath: string,
+): void {
+	let configFd: number | undefined;
+	let authFd: number | undefined;
+	try {
+		const directory = lstatSync(home);
+		const uid = process.getuid?.();
+		if (
+			!directory.isDirectory() ||
+			directory.isSymbolicLink() ||
+			(directory.mode & 0o777) !== 0o700 ||
+			(uid !== undefined && directory.uid !== uid)
+		)
+			throw new Error("directory");
+
+		const authLinkPath = join(home, "auth.json");
+		if (!lstatSync(authLinkPath).isSymbolicLink()) throw new Error("auth_link");
+		authFd = openSync(
+			expectedAuthPath,
+			constants.O_RDONLY | constants.O_NOFOLLOW,
+		);
+		const auth = fstatSync(authFd);
+		if (
+			!auth.isFile() ||
+			(auth.mode & 0o777) !== 0o600 ||
+			(uid !== undefined && auth.uid !== uid) ||
+			realpathSync(authLinkPath) !== realpathSync(expectedAuthPath)
+		)
+			throw new Error("auth_source");
+
+		configFd = openSync(
+			join(home, "config.toml"),
+			constants.O_RDONLY | constants.O_NOFOLLOW,
+		);
+		const config = fstatSync(configFd);
+		if (
+			!config.isFile() ||
+			(config.mode & 0o777) !== 0o600 ||
+			(uid !== undefined && config.uid !== uid) ||
+			config.size > 4096 ||
+			readFileSync(configFd, "utf8") !== VOICE_SCRIBE_HOME_CONFIG
+		)
+			throw new Error("config");
+	} catch {
+		throw new Error("voice_scribe_home_invalid");
+	} finally {
+		if (configFd !== undefined) closeSync(configFd);
+		if (authFd !== undefined) closeSync(authFd);
 	}
 }
