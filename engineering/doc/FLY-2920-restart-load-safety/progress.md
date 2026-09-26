@@ -2,15 +2,15 @@
 issue: FLY-2920
 phase: implement
 phaseCursor: 2/7
-updated: 2026-09-26T19:11:17.409Z
-nextStep: B/C done. D storage committed; coordinator retirement/retry, physical
-  identity, held-author wake and durable sink implemented in worktree. D6
-  integrated proof and remaining guard/consumer checks in progress. E-G
-  unstarted. No PR/full CI/QA/handoff.
+updated: 2026-09-26T19:33:00.491Z
+nextStep: "D implementation and cross-component fixes complete in worktree:
+  integrated recovery 8 passed, fair recovery pass 10 passed, TURN reader 9
+  passed. Final scoped consumer audit/guards, build/lint/typecheck and D commit
+  pending. E-G unstarted; no PR/full CI/QA/handoff."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2920 progress
 **phase**: implement (2/7)
-**next**: B/C done. D storage committed; coordinator retirement/retry, physical identity, held-author wake and durable sink implemented in worktree. D6 integrated proof and remaining guard/consumer checks in progress. E-G unstarted. No PR/full CI/QA/handoff.
+**next**: D implementation and cross-component fixes complete in worktree: integrated recovery 8 passed, fair recovery pass 10 passed, TURN reader 9 passed. Final scoped consumer audit/guards, build/lint/typecheck and D commit pending. E-G unstarted; no PR/full CI/QA/handoff.
