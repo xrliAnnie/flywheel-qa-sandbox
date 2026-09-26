@@ -1,0 +1,464 @@
+{
+  "schema": 1,
+  "issue": "FLY-2405",
+  "partial": true,
+  "recorded_at": "2026-09-26T19:32:15.238138+00:00",
+  "observed_head": "e5fba9aeddccff3c081c4dcf8e9fbf45fcfb0380",
+  "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+  "subsequent_changes": "progress.md only; source-byte identity preserved",
+  "source_sha256": {
+    ".flywheel/agents/nodes/qa.md": "fff1ccf344f4f919168033a0bace2e0a540400dec8696745b9c111d5ba985524",
+    "packages/claude-runner/test/fixtures/kill-path-inventory.json": "c972dbc98eea918b4ae0ac9886e8e1b0a5c10d19c211b1af1a0096c3c666c247",
+    "packages/claude-runner/test/kill-path-inventory.test.ts": "f52c179e7a1bb8e2f404aee1106f876fc87d2fb4d33761157a79637eb2aaff1a",
+    "packages/claude-runner/test/kill-path-inventory.ts": "ac05cd14ac0ac9e0747e5955f9067d0e6e2292101d5790519a9d2d1d085d7682",
+    "packages/config/src/__tests__/feature-flags-drift.test.ts": "925808f67194b7dbe6356bc5672bdb78561f24e060cfc78c0f7240b4aed4b53a",
+    "packages/config/src/__tests__/feature-flags-registry.test.ts": "3019f5d959c5f0d1897cbad42bcdd8bbbcaa4bb48efc9b9890a5fa0281b4f3f4",
+    "packages/config/src/feature-flags/registry.ts": "382840cb254229fcdac4525d6e11c6e3b6057ac1ed00a857e5dbb46e13b47dae",
+    "packages/config/src/feature-flags/store-policy.ts": "655d31cd7a1d21cd8c95e80dbb7ec27d76d206641c86a0bf2f8b0ab2c470087c",
+    "packages/config/src/feature-flags/truth.ts": "70efbb250b9d237a261525c2c5870c3ace50a4ee831fa0c3aace71c3dd939729",
+    "packages/edge-worker/src/Blueprint.ts": "647d08fd666b8ccb0169c31fffe127f68e6d30ba5aaeebc0fe1b2d705d6da8f0",
+    "packages/edge-worker/src/__tests__/Blueprint.fly2147-runner-memory.test.ts": "71597a1e648f62fe8f1001595eb513533d8a9bf930e80071c918da3903d4d326",
+    "packages/edge-worker/src/__tests__/Blueprint.fly859-qa-phase-prompt.test.ts": "e717cd6826eaece73a4966834e20193508e3dce3fa62513f0a9858e211a09056",
+    "packages/edge-worker/src/__tests__/fixtures/fly2533-phase-baseline.json": "03904490526dcb4e9bc157cb6ef31f30f9a81ae56d189b12bc7a5703a7a4e2a2",
+    "packages/flywheel-comm/src/commands/__tests__/room.test.ts": "197da211d4c51efb94f28cb7907b9e47a54f97e3ccfee70b9a02a6a5741baff3",
+    "packages/flywheel-comm/src/commands/room.ts": "44858a80e92beca5d294fe042dd2fb26f3866e565619dfb3d4337965ca72208a",
+    "packages/flywheel-comm/src/index.ts": "3988351a1f6cc4a2f8bb02283af61d5e7ede1fb1d25f0113411e538b86606b2e",
+    "packages/qa-framework/README.md": "761d75872b5780957d5cfd5c48d38438d86ab9c85d2786c686e0e265084da3b0",
+    "packages/qa-framework/agents/qa-parallel-executor.md": "461631f140dc8f13257b42307471deb61f42ffe7ace1b44b3bb50e88bb1ec226",
+    "packages/teamlead/scripts/claude-lead.sh": "11bfd41e33a919e633ccf7c823dd9492b005bfc9b97423d06ece8b426bbce24d",
+    "packages/teamlead/scripts/lead-body.sh": "e2eec8a2af0c54442fa248e622bfba47bbed436b3b996ce115997868165c6963",
+    "packages/teamlead/scripts/lead-duty-provision.sh": "6d4be3408dea66d22d6e07ee18aa5bee328e2c37d39e115106bfce1deea2c45a",
+    "packages/teamlead/src/StateStore.ts": "b4eb5e5e0412d9306a0367cf14d51b0fd7a1d5e930008a15a6290146271c816c",
+    "packages/teamlead/src/__tests__/StateStore.qa-room.test.ts": "e7aa3720c5f2f511435f0f5cb5de4ab6cbec8315fa9ae9899baa97f679596d9d",
+    "packages/teamlead/src/__tests__/alert-duty-seat.test.ts": "8566d93a1c694ba100349aefacf41b7677360854a2af9f486d63d9a0cdb10c61",
+    "packages/teamlead/src/alert-duty-seat.ts": "08a96554db95f8eb8d5445375fb95ea69bf9be23ec1a87729df91c49b74605c8",
+    "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts": "64e439f0bfda0e3ad9bef9cefa312f1dbd29a8fdb702f6b3ab0fbdbd5248c85d",
+    "packages/teamlead/src/bridge/__tests__/qa-room-contract.test.ts": "5b8e68afa9946d785a5f4770e6ac2a520041a866c813b5b96ba6633e268dc357",
+    "packages/teamlead/src/bridge/__tests__/qa-room-drill-contract.test.ts": "71b1a34a018419541070290adc2cc51137333313ce87eb430529025d029c14dc",
+    "packages/teamlead/src/bridge/__tests__/qa-room-routes.test.ts": "ca51dc338f299e5750cb970f882d5b473f72e1ea658dd8cf777fedb423d7d310",
+    "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts": "4ff8d8b1b4d75c6c77779a69aa190623252c434c4561a3e87026936173517454",
+    "packages/teamlead/src/bridge/__tests__/qa-room-service.test.ts": "8275820dc077bb826e8ca15b1b4b2dbe63d93c25237d2bbd6b86b651a970da95",
+    "packages/teamlead/src/bridge/__tests__/qa-room-store.test.ts": "8ffad0231242fec190be881acaa3cb47426b254d522e97cefbcba60ae17c9e21",
+    "packages/teamlead/src/bridge/__tests__/qa-room-wiring.test.ts": "b7dc9f4d65d55f69fad3d8abf6a50577dce12d9306913b64ad4b692d62c58ffe",
+    "packages/teamlead/src/bridge/flag-store-runtime.ts": "f47e801a30929d7a338429e8da4e3aad53fd5188eb1ce82027e28cfe87a48e0d",
+    "packages/teamlead/src/bridge/infra-alert-mailbox.ts": "8456da64d0cf5dd3957a95093bb93fbfe1d3185d3ae10079b7122199ab03fd4d",
+    "packages/teamlead/src/bridge/infra-event-router.ts": "95fc8ff010a8a5e96bd4bfe64bf9b775639b5add8ae9a14dd948c6b4342f5bfa",
+    "packages/teamlead/src/bridge/lead-inbox-runtime.ts": "7dad923060d9497eb0be7113b6960b753cd2e818be75dd8cbee7fa3eafe6ff2e",
+    "packages/teamlead/src/bridge/plugin.ts": "ea60c9db934bf6c9855baae4cbfa4326ed30ff0c2b0d4d4a2b95980d79d99394",
+    "packages/teamlead/src/bridge/qa-room-contract.ts": "48ea88d6fcd17a66c548605a3691e8356d54c50c1a8b807e16f022d9d33a0242",
+    "packages/teamlead/src/bridge/qa-room-host.ts": "539cf38ec35326dd6b3e255465ba469853f5fbadc03115a6d8436df2b2d23eb7",
+    "packages/teamlead/src/bridge/qa-room-routes.ts": "f2ced63f6fb7ce324aff8099916ae5a69c3b2b66b88d2775b55d65b441eae927",
+    "packages/teamlead/src/bridge/qa-room-runtime.ts": "3991cac45f7237419b6a344b3247b4e9ab6eae35f11bce64187a006a7559d7e7",
+    "packages/teamlead/src/bridge/qa-room-service.ts": "3d201f86156d5d6a7d614a532ef836accb1202897dfc3e7e878763f6681db159",
+    "packages/teamlead/src/bridge/qa-room-store.ts": "95e1e9367c2f4cb1bbb7f3d33e203140c184680c1afd646ad470f340fb820bdb",
+    "scripts/__tests__/fly2405-alert-duty.test.sh": "68d96de1ce7011f24288791371a0348211dd520f1b02d306390dcb4142ccad6d",
+    "scripts/__tests__/fly2405-room-job.test.sh": "d21620385c5bb55ee29bb47c67918fb2e8466d81c98b8f4601c45f7e51352d54",
+    "scripts/__tests__/fly2405-service-claim.test.sh": "db525d25422edcc596d1494b17ba2b9d66b1b6270a15988935f05f490e5f205d",
+    "scripts/__tests__/fly2405-teardown-pits.test.sh": "3dd3449ee17c2c68f729a1073cbcc129ce237ad99259dadf3d5ce52904eee233",
+    "scripts/__tests__/restart-cmux-watcher.test.sh": "2e9dd5f762e84a28363a950e768bcfeb8c2e01ab48cd9558dca869c9f9e0cc7f",
+    "scripts/__tests__/test-deploy-fly1389.test.sh": "8b35f5affb811d9798c2822ed56c7fed3b5da718d2c58cbe442a97a20a5e6c19",
+    "scripts/__tests__/test-deploy-generalized.test.sh": "a8fc004f6d2cee63a287be594af2e4c5b3964473344506f1972bd6898baca73f",
+    "scripts/__tests__/test-deploy-launch-boundary.test.sh": "b5955dbe4dd90e4ab37e4473523910388eb12aa48552e2461a87a9d8ecbccfa9",
+    "scripts/__tests__/test-qa-executor-529-nton-contract.sh": "9838c3c4ce7da09a92a83b0eb3d5b0bb99c3819ba3a3096adcefdf497c9e9309",
+    "scripts/flywheel-lead-wrapper-v2.sh": "03d4b730d32affa710fcb2a88a65924b1b3137ede767a463bdf8a15e26419f24",
+    "scripts/lib/fly-2006-retention-tables/teamlead/qa_room.json": "539f01bd3dbca4c71276427cece31ad71841fd420c21452766a777c676e55405",
+    "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_audit.json": "4299e73ba7f245acadbba2d2e6a9847dc23a0beacabbc1b3decb0b9bda8439d6",
+    "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_operation.json": "52a8bb6f9e98b684ef4d03dc3fd0c9f429165c3c9ffc1c7b556e49ed4b942ced",
+    "scripts/lib/fly-2006-retention-tables/teamlead/qa_room_slot.json": "6c5f8a4e3735c1a1efe02fa80703ccbf2548a60468ffa03a113f11bc7707c5bf",
+    "scripts/lib/qa-generalized-bridge-wrapper.sh": "18a0f3ae038bf85da540ade213d77db313c7f063fa92412e34daf0600b80aef2",
+    "scripts/lib/qa-generalized.sh": "eabc716f9bf8559ce079bca45712d2e4b0347210dee8fce185fc74f9b2d6f597",
+    "scripts/lib/qa-launchd-lead.sh": "283f36161e6fac0df125813a7c94c942987698611064202587621f6cd5e29574",
+    "scripts/lib/qa-multilead.sh": "e2da549308344d9bc75123e7af44bfc189eaf522ae942468c516bed7a2ff1dc4",
+    "scripts/lib/qa-reap-codex-slot-daemons.mjs": "eab75980dba8fa1ff632228ea09d42dd3759845072e74ee019cbca1e8fbd3321",
+    "scripts/lib/qa-room-job.sh": "28a2c798dc140e43b2ee02b67867f89cb997928687840ff59d3fd94a3f31a5ba",
+    "scripts/lib/qa-room.sh": "4e50a14fab64354a3509926939905591c50950e9e38ace1e48a18c848cadde8d",
+    "scripts/lib/qa-slot-claim.sh": "7c113d78ec1bc4ac6c39b62037f587d71ce7cd98bf59e75c588e7ff7ab78f794",
+    "scripts/lib/qa-slot-env-contract.json": "b0390f23ac00376c1377e17eac087cbb3021fd57c03734ffb8a942ad64be2d23",
+    "scripts/test-deploy.sh": "4b070719c13545e7e03ede960bb875d51c92501e45380325b7ff4347fc3f061c",
+    "scripts/test-teardown.sh": "ab189bfac7a3fbfd75d5b4f97ddc0ae16360b7b9dd89309c2e3f472841085541"
+  },
+  "post_sync_results": [
+    {
+      "name": "claude-runner",
+      "cwd": "packages/claude-runner",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "test/kill-path-inventory.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-claude-runner.log",
+      "exit": 0,
+      "seconds": 27.26,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "893809de9de6f99720e6a2d6062756d40d4092a952ebc6b824f68bb84f08b1d1",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  5 passed (5)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "config",
+      "cwd": "packages/config",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "related",
+        "src/feature-flags/registry.ts",
+        "src/feature-flags/store-policy.ts",
+        "src/feature-flags/truth.ts",
+        "--run",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-config.log",
+      "exit": 0,
+      "seconds": 46.62,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "7a247ce692b7b75ab1305a32c1db56d0d2954a5763587dc6e50927c2e128b181",
+      "summary": [
+        "\n Test Files  21 passed (21)",
+        "      Tests  386 passed (386)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "comm",
+      "cwd": "packages/flywheel-comm",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "related",
+        "src/commands/room.ts",
+        "src/index.ts",
+        "--run",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-comm.log",
+      "exit": 0,
+      "seconds": 12.33,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "f302024e20cca14e10f283e1accc42dd414697110667aa7794c8eae0cb895a08",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  97 passed (97)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "edge-worker",
+      "cwd": "packages/edge-worker",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "related",
+        "src/Blueprint.ts",
+        "--run",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-edge-worker.log",
+      "exit": 0,
+      "seconds": 178.35,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "722c5ad4b1974d910c99ffeb0ce8a1b42d200ccdf71e988fec7003ad8804f32a",
+      "summary": [
+        "\n Test Files  29 passed (29)",
+        "      Tests  356 passed (356)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-DirectEventSink.fly2901-takeover-rescue.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/DirectEventSink.fly2901-takeover-rescue.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-DirectEventSink.fly2901-takeover-rescue.test.log",
+      "exit": 0,
+      "seconds": 35.2,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "53be613d23e89ddf1324cbd32ba17e97080c66d92e0c53996b556dc2d50a5594",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  28 passed (28)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-StateStore.alert-wake-dedup.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.alert-wake-dedup.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-StateStore.alert-wake-dedup.test.log",
+      "exit": 0,
+      "seconds": 15.09,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "d9a0b64a80b749204b9bc5e35a321711c00613c37c0dcbb8ec3122b3774b88bf",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  13 passed (13)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-StateStore.fly663-migration.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.fly663-migration.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-StateStore.fly663-migration.test.log",
+      "exit": 0,
+      "seconds": 17.22,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "306f90277c5efb10c972fa9d5af1aed293ef6a45d79de96daef6e8e5ad0ff364",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  11 passed (11)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-StateStore.generalized-execution.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.generalized-execution.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-StateStore.generalized-execution.test.log",
+      "exit": 0,
+      "seconds": 64.6,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "f774655a6172a64992ddf120b1fb0213f1478d817451763a851e98276023e44b",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  73 passed (73)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-StateStore.qa-room.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/StateStore.qa-room.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-StateStore.qa-room.test.log",
+      "exit": 0,
+      "seconds": 13.94,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "c3a35c0a9a3b53eb6eace64b26cf76a1230dbeecdbab427cc0fa67a097513c5c",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  1 passed (1)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-actions.terminate.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/actions.terminate.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-actions.terminate.test.log",
+      "exit": 0,
+      "seconds": 28.74,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "9f92897effd4a4f375c30fdabfe8b085a4b2cee9da0a22ec502f0721deff1945",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  16 passed (16)"
+      ],
+      "failures": [],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-bridge.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/bridge.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-bridge.test.log",
+      "exit": 1,
+      "seconds": 225.12,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "6f3bf2e5073063fd9ad76d18d3082992ae91a01440a00fac39a8d009e945009b",
+      "summary": [
+        "\n\n Test Files  1 failed (1)",
+        "      Tests  10 failed | 29 passed (39)"
+      ],
+      "failures": [
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > GET /health returns 200 with uptime (no auth required)",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > fail-closes the strength-two evidence mount and requires the ingest bearer",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > fail-closes the shadow declaration mount and requires the master bearer",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > exposes a master-auth admission pause with TTL health and explicit resume",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > keeps Discord delivery failures on the independent alert_unreachable_config reason",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > surfaces rejected retired project config through the existing founder meta-alert",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > fails loud when the Hub has no valid founder escalation id",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > routes QA report publishing to the isolated loopback host and report root",
+        " FAIL  |serial| src/__tests__/bridge.test.ts > Bridge scaffold > startBridge starts and closes cleanly"
+      ],
+      "unhandled": []
+    },
+    {
+      "name": "teamlead-close-runner.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/close-runner.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-close-runner.test.log",
+      "exit": 1,
+      "seconds": 426.95,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "700d10617f65d2d67c4fd394d506f24e8f03fd6ac50046d01f182c0509484a74",
+      "summary": [
+        "\n\n Test Files  1 failed (1)",
+        "      Tests  2 failed | 81 passed (83)"
+      ],
+      "failures": [
+        " FAIL  |serial| src/__tests__/close-runner.test.ts > closeRunner > R4#2: an authorized check lets the teardown proceed to the kill (byte-compat)",
+        " FAIL  |serial| src/__tests__/close-runner.test.ts > closeRunner > FLY-116: PRESERVE \u2014 status=failed defaults to preserved (no kill, no close)"
+      ],
+      "unhandled": [
+        "Error: [vitest-worker]: Timeout calling \"onTaskUpdate\""
+      ]
+    },
+    {
+      "name": "teamlead-createFetchIssue.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/createFetchIssue.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-createFetchIssue.test.log",
+      "exit": 0,
+      "seconds": 139.04,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "73d84f481c401f6e51cb6d471bf33a5dc6160fea9147bdfe8dd9792a2649dd80",
+      "summary": [
+        "\n Test Files  1 passed (1)",
+        "      Tests  7 passed (7)"
+      ],
+      "failures": [],
+      "unhandled": []
+    }
+  ],
+  "pending_commands_file": "/tmp/fly2405-postsync-commands.json",
+  "post_sync_session": 3117,
+  "original_related": {
+    "session": 89513,
+    "log": "/tmp/fly2405-related-teamlead.log",
+    "status": "running; final counts not available",
+    "uniform_exact_head": false
+  },
+  "retry_plan": {
+    "bridge": {
+      "file": "src/__tests__/bridge.test.ts",
+      "cases": [
+        "GET /health returns 200 with uptime (no auth required)",
+        "fail-closes the strength-two evidence mount and requires the ingest bearer",
+        "fail-closes the shadow declaration mount and requires the master bearer",
+        "FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth",
+        "exposes a master-auth admission pause with TTL health and explicit resume",
+        "keeps Discord delivery failures on the independent alert_unreachable_config reason",
+        "surfaces rejected retired project config through the existing founder meta-alert",
+        "fails loud when the Hub has no valid founder escalation id",
+        "routes QA report publishing to the isolated loopback host and report root",
+        "startBridge starts and closes cleanly"
+      ],
+      "timeout": "original defaults; no override"
+    },
+    "preflight": {
+      "file": "src/__tests__/createLeadRuntime-preflight.test.ts",
+      "cases": [
+        "surfaces preflight.message in the thrown error (QA Bug #3)",
+        "falls back to error signal name + detail when message is absent (QA Bug #3)"
+      ],
+      "status": "pending isolated retry; second result unresolved, not classified as load"
+    },
+    "close-runner": {
+      "file": "src/__tests__/close-runner.test.ts",
+      "cases": [
+        "R4#2: an authorized check lets the teardown proceed to the kill (byte-compat)",
+        "FLY-116: PRESERVE \u2014 status=failed defaults to preserved (no kill, no close)"
+      ],
+      "reason": "10s hook timeout plus worker onTaskUpdate RPC timeout; pending default-threshold retry"
+    },
+    "divergence": {
+      "file": "src/__tests__/fly2324-divergence-convergence.test.ts",
+      "cases": [
+        "only scans active or held workflow runs",
+        "records each lifecycle revision once without reusing an event UID"
+      ],
+      "reason": "5s timeout; pending default-threshold retry"
+    }
+  },
+  "review_policy": {
+    "status": "compiled production loader equals complete marked v4 contract block; buildPrompt prepends it",
+    "sha256": "69b512badb5fdd37ebe6db6dd3f9f22ca7db577c6539c69252b10ff87858c363"
+  },
+  "not_proven": [
+    "effective code review",
+    "final-head package smoke",
+    "CI OK",
+    "real Codex/Claude QA acceptance",
+    "production or ship"
+  ]
+}
