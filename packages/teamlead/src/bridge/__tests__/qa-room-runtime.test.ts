@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	LocalQaRoomRuntime,
@@ -164,6 +165,91 @@ describe("QA room host boundary", () => {
 			expect(() => parseRoomOutput(JSON.stringify(invalid), 1)).toThrow(
 				"invalid_room_json",
 			);
+	});
+	it.each(["", ', "generalized": true'])(
+		"accepts actual deployment renderer output (%s)",
+		(generalizedFields) => {
+			const renderer = fileURLToPath(
+				new URL(
+					"../../../../../scripts/lib/qa-lead-artifacts.sh",
+					import.meta.url,
+				),
+			);
+			const stdout = execFileSync(
+				"/bin/bash",
+				[
+					"-c",
+					'source "$1"; shift; qa_lead_render_stdout_json "$@"',
+					"room-contract",
+					renderer,
+					"2",
+					"slot",
+					"true",
+					"",
+					"19802",
+					"flywheel-test-2",
+					"test-slot-2",
+					"123",
+					"TEST_BOT_TOKEN_2",
+					"4242",
+					"",
+					"none",
+					"",
+					"",
+					"",
+					"/tmp/flywheel-test-slot-2",
+					"main",
+					"fixture/repo",
+					"/tmp/fixture",
+					"fixture",
+					"abc",
+					"origin/main",
+					"/tmp/db",
+					"/tmp/log",
+					"/tmp/spec",
+					"/tmp/tmp",
+					"/tmp/reports",
+					"null",
+					"",
+					"/tmp/projects",
+					"/tmp/manifest",
+					"",
+					"",
+					"",
+					"[]",
+					generalizedFields,
+				],
+				{ encoding: "utf8" },
+			);
+			expect(parseRoomOutput(stdout, 2)).toEqual(JSON.parse(stdout));
+		},
+	);
+	it.each([
+		"http://localhost.evil:19802",
+		"http://127.0.0.1.evil:19802",
+		"http://[::ffff:127.0.0.1]:19802",
+		"http://[::ffff:7f00:1]:19802",
+		"http://user@localhost:19802",
+		"http://localhost@evil:19802",
+		"http://127.0.0.1@evil:19802",
+		"http://localhost:19803",
+		"https://localhost:19802",
+		"http://localhost:19802/",
+		"http://LOCALHOST:19802",
+		"http://%6cocalhost:19802",
+	])("rejects nonliteral loopback coordinates %s", (bridgeUrl) => {
+		expect(() =>
+			parseRoomOutput(
+				JSON.stringify({
+					slot: 2,
+					port: 19802,
+					projectName: "test-slot-2",
+					slotDir: "/tmp/flywheel-test-slot-2",
+					bridgeUrl,
+				}),
+				2,
+			),
+		).toThrow("invalid_room_json");
 	});
 	it("verifies health against source and built artifact sha", async () => {
 		const root = fixture();

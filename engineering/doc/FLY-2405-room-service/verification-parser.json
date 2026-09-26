@@ -1,0 +1,388 @@
+{
+  "head": "4459bae4c5d942642c972d44e4a4c93f5bc4bf44",
+  "queries": [
+    {
+      "needle": "packages/teamlead/src/bridge/qa-room-runtime.ts",
+      "non_test_match_count": 4,
+      "test_paths": [
+        "packages/claude-runner/test/kill-path-inventory.test.ts"
+      ]
+    },
+    {
+      "needle": "qa-room-runtime.ts",
+      "non_test_match_count": 6,
+      "test_paths": [
+        "packages/claude-runner/test/kill-path-inventory.test.ts"
+      ]
+    },
+    {
+      "needle": "packages/teamlead/src/bridge",
+      "non_test_match_count": 1013,
+      "test_paths": [
+        "packages/claude-runner/test/kill-path-inventory.test.ts",
+        "packages/config/src/__tests__/drift-scan.test.ts",
+        "packages/config/src/__tests__/feature-flags-drift.test.ts",
+        "packages/config/src/__tests__/feature-flags-registry.test.ts",
+        "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+        "packages/config/src/__tests__/fly1808-wave-a.test.ts",
+        "packages/teamlead/src/__tests__/StateStore.land-carryover.test.ts",
+        "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+        "packages/teamlead/src/__tests__/fly2268-mechanism-guards.test.ts",
+        "packages/teamlead/src/__tests__/fly2398-narrow-boundary.test.ts",
+        "packages/teamlead/src/__tests__/report-hosting-secrets.test.ts",
+        "packages/teamlead/src/bridge/__tests__/land-executor.test.ts",
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+        "scripts/__tests__/fly-1867-playwright-orphan-census.test.sh",
+        "scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs",
+        "scripts/__tests__/fly-2026-browser-idle-census.test.sh",
+        "scripts/__tests__/fly1645-receipt-residue-gate.test.mjs",
+        "scripts/__tests__/fly1674-residue.test.sh",
+        "scripts/__tests__/fly1680-v1-extinction.test.sh",
+        "scripts/__tests__/fly2102-flag-freeze.test.sh",
+        "scripts/__tests__/fly2405-alert-duty.test.sh",
+        "scripts/__tests__/flywheel-log-rotate.test.sh",
+        "scripts/__tests__/legacy-swap-broadcast-retirement.test.sh",
+        "scripts/__tests__/qa-codex-lead-parity.test.mjs",
+        "scripts/__tests__/runtime-role-auto-qa-retirement.test.sh",
+        "scripts/__tests__/ship-judgment-timer.test.mjs",
+        "scripts/__tests__/test-deploy-generalized.test.sh",
+        "scripts/__tests__/v2-retirement-cleanup.test.sh"
+      ]
+    },
+    {
+      "needle": "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts",
+      "non_test_match_count": 2,
+      "test_paths": []
+    },
+    {
+      "needle": "qa-room-runtime.test.ts",
+      "non_test_match_count": 2,
+      "test_paths": []
+    },
+    {
+      "needle": "packages/teamlead/src/bridge/__tests__",
+      "non_test_match_count": 166,
+      "test_paths": [
+        "scripts/__tests__/ci-structure.test.sh",
+        "scripts/__tests__/fly1674-residue.test.sh",
+        "scripts/__tests__/fly2102-flag-freeze.test.sh",
+        "scripts/__tests__/runtime-role-auto-qa-retirement.test.sh"
+      ]
+    },
+    {
+      "needle": "value.bridgeUrl !== `http://127.0.0.1:${value.port}`",
+      "non_test_match_count": 1,
+      "test_paths": []
+    },
+    {
+      "needle": "http://localhost:${value.port}",
+      "non_test_match_count": 0,
+      "test_paths": []
+    },
+    {
+      "needle": "parseRoomOutput",
+      "non_test_match_count": 1,
+      "test_paths": [
+        "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts"
+      ]
+    },
+    {
+      "needle": "qa-room-runtime",
+      "non_test_match_count": 8,
+      "test_paths": [
+        "packages/claude-runner/test/kill-path-inventory.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-drill-contract.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-routes.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts",
+        "packages/teamlead/src/bridge/__tests__/qa-room-service.test.ts"
+      ]
+    }
+  ],
+  "test_decisions": [
+    {
+      "path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+      "retained": true,
+      "reason": "Retained repository process guard directly inventories runtime path; parser-only delta does not weaken guard"
+    },
+    {
+      "path": "packages/config/src/__tests__/drift-scan.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-drift.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-registry.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/config/src/__tests__/fly1808-wave-a.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/StateStore.land-carryover.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2268-mechanism-guards.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fly2398-narrow-boundary.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/report-hosting-secrets.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/land-executor.test.ts",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts",
+      "retained": true,
+      "reason": "Changed test or direct runtime importer"
+    },
+    {
+      "path": "scripts/__tests__/ci-structure.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/codex-home-reconcile-cadence.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly-1867-playwright-orphan-census.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly-2026-browser-idle-census.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly1645-receipt-residue-gate.test.mjs",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly1674-residue.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly1680-v1-extinction.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly2102-flag-freeze.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/fly2405-alert-duty.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/flywheel-log-rotate.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/legacy-swap-broadcast-retirement.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/qa-codex-lead-parity.test.mjs",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/runtime-role-auto-qa-retirement.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/ship-judgment-timer.test.mjs",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/test-deploy-generalized.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "scripts/__tests__/v2-retirement-cleanup.test.sh",
+      "retained": false,
+      "reason": "Parent-directory/path reference only; no direct import of parser runtime. Lead298915b0 excludes broad transitive discovery."
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/qa-room-drill-contract.test.ts",
+      "retained": true,
+      "reason": "Direct runtime import, including type-only runtime contract consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/qa-room-routes.test.ts",
+      "retained": true,
+      "reason": "Direct runtime import, including type-only runtime contract consumers"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/qa-room-service.test.ts",
+      "retained": true,
+      "reason": "Direct runtime import, including type-only runtime contract consumers"
+    }
+  ],
+  "additional": [
+    "scripts/__tests__/qa-lead-artifact-fixtures.test.sh: actual stdout emitter byte contract"
+  ],
+  "related_disposition": "Not run: Lead298915b0 explicitly restricts to concrete changed/direct-import files and forbids broad transitive runtime -> service -> plugin related.",
+  "tests": [
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-runtime.test.ts"
+      ],
+      "red": {
+        "exit": 1,
+        "passed": 26,
+        "failed": 2,
+        "reason": "Both actual renderer contract cases throw invalid_room_json"
+      },
+      "green": {
+        "exit": 0,
+        "passed": 28
+      }
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-drill-contract.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-parser-check-0.log"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-routes.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-parser-check-1.log"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-teamlead",
+        "exec",
+        "vitest",
+        "run",
+        "src/bridge/__tests__/qa-room-service.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-parser-check-2.log"
+    },
+    {
+      "command": [
+        "pnpm",
+        "--filter",
+        "flywheel-claude-runner",
+        "exec",
+        "vitest",
+        "run",
+        "test/kill-path-inventory.test.ts"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-parser-check-3.log"
+    },
+    {
+      "command": [
+        "bash",
+        "scripts/__tests__/qa-lead-artifact-fixtures.test.sh"
+      ],
+      "exit": 0,
+      "log": "/tmp/fly2405-parser-check-4.log"
+    }
+  ],
+  "review": {
+    "question": "17f97c9c-0960-42b6-8599-93bf35c572a2",
+    "head": "4459bae4c5d942642c972d44e4a4c93f5bc4bf44",
+    "verdict": "CHANGES_REQUESTED",
+    "blocking_finding": "room-json-bridgeurl-localhost",
+    "lead_direction_question": "2f4cd4ba-7802-475f-91fd-394885661a71",
+    "fix": "Accept only exact http://localhost:<port> in addition to existing numeric loopback form; keep emitter bytes unchanged."
+  },
+  "build": {
+    "command": [
+      "pnpm",
+      "--filter",
+      "flywheel-teamlead...",
+      "build"
+    ],
+    "exit": 0,
+    "log": "/tmp/fly2405-parser-build.log"
+  },
+  "lint": {
+    "command": [
+      "pnpm",
+      "lint"
+    ],
+    "exit": 0,
+    "warnings": 25,
+    "log": "/tmp/fly2405-parser-lint.log"
+  },
+  "source_sha256": {
+    "packages/teamlead/src/bridge/qa-room-runtime.ts": "ad444266e5f70ef4d4c031095fa553e7873f9f0f6ec73bcf3b995bc8eb42cc20",
+    "packages/teamlead/src/bridge/__tests__/qa-room-runtime.test.ts": "6a9b57ce2c955783f08e0d0f814a38c353e1ba320ffc0a1b77a30899aad01bf9",
+    "scripts/lib/qa-lead-artifacts.sh": "4fc429d2f75b04a7b375ab1745c731738fd4dae7482acf7c9f37a5e4a269650e"
+  }
+}

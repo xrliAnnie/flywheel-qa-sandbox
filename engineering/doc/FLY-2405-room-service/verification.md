@@ -35,3 +35,15 @@ Lead question `298915b0-fccc-4d03-92ed-e60fefb65b26` 裁定：原 StateStore/plu
 QA 使用最终 origin head，由 Codex 与 Claude 各自只经 `room deploy|drill|status|teardown` 完成真起房、房内验证和零残留。验证陌生 owner/生产 label 拒绝审计、同 issue 终止后接管、负载队列、快照失败与显式跳过、C7 实际告警值守座位，按 plan §17 保存真实证据。当前 fixture 通过不等于 launchd/Discord 实测通过。
 
 部署由独立 ship/updater 流程负责。回退使用 `node "$FLYWHEEL_COMM_CLI" feature-flags set --name qa_room_service --to off --reason "FLY-2405 rollback"`，下一次 admission/launch 边界生效，既有 job 安全收敛；恢复使用 `--to on`。不修改生产 `.env`。
+
+## R1 阻断项修复：真实房输出契约
+
+代码审查 `17f97c9c-0960-42b6-8599-93bf35c572a2` 在 `4459bae4c` 返回 CHANGES_REQUESTED，唯一 HIGH 为 `room-json-bridgeurl-localhost`。Lead 在问题 `2f4cd4ba-7802-475f-91fd-394885661a71` 明确要求解析器兼容精确字面量 localhost，保留 emitter fixture。
+
+新增测试直接调用真实 `qa_lead_render_stdout_json`，把普通房与 generalized 房输出传入解析器。修复前两例均因 `invalid_room_json` 失败；最小修复仅接受 `http://localhost:<port>` 与原来的 `http://127.0.0.1:<port>` 两种完整字符串。12 个负例覆盖恶意域名后缀、IPv6 映射写法、userinfo、错误端口、HTTPS、尾斜线、大小写与编码变化，继续拒绝。部署脚本与输出 fixture 均未改。
+
+逐文件验证：runtime 28、drill contract 19、routes 7、service 34、kill-path inventory 5 tests 通过；真实 emitter 字节兼容 shell 守卫 7 项通过。选择与排除理由、红绿结果见 `verification-parser.json`。遵循 Lead298915b0 的具体文件限定，不运行 runtime→service→plugin 的广泛传递 related。本次不改变导出接口或类型。
+
+另外 7 条 MEDIUM/LOW 审查建议已通过 ask --report 交 Lead：Codex 工具 PATH、逐房 tick 异常隔离、丢失 claim/source 恢复、qa-result 后凭据与拆房顺序、source cleanup 阻塞拆房、ps locale、告警 fixture 环境隔离。它们按当前有效审查策略为非阻断建议；本轮仅修唯一 HIGH，不宣称这些建议已解决。
+
+本轮受影响 teamlead 及依赖 build 通过；pnpm lint 通过，25 条既有 warning。重建后的 dist 亦接受真实 renderer 输出。

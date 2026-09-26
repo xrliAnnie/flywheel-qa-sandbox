@@ -156,7 +156,8 @@ export function parseRoomOutput(stdout: string, slot: number): RoomInfo {
 				!Number.isInteger(value.port) ||
 				value.port < 1 ||
 				value.port > 65535 ||
-				value.bridgeUrl !== `http://127.0.0.1:${value.port}` ||
+				(value.bridgeUrl !== `http://127.0.0.1:${value.port}` &&
+					value.bridgeUrl !== `http://localhost:${value.port}`) ||
 				value.slotDir !== `/tmp/flywheel-test-slot-${slot}` ||
 				typeof value.projectName !== "string" ||
 				!/^[A-Za-z0-9._-]+$/.test(value.projectName) ||
