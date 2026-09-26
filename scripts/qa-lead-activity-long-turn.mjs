@@ -219,12 +219,14 @@ export function toSample(atMs, dto) {
  *
  * The fixture's turn is the busy answers read at or after the true start whose
  * reported start is within tolerance of it and stable (one turn: ±5 s of the
- * first such answer) — a busy read before delivery is never this turn. From `truth + grace` up to the last of them,
- * every answer must belong to that turn: an idle / unknown / HTTP error / other
- * turn in that window is FAIL evidence. For a PASS the fixture itself must
- * see the turn busy for at least `minBusyMs` (first to last busy sample — the
- * start-up wait never counts), no idle before the requested hold ends, and
- * idle before and after.
+ * first such answer) — a busy read before delivery is never this turn. The
+ * checked window runs from `truth + grace` to the first idle after the turn's
+ * last busy (to the end of sampling if no idle closes it): every answer in it
+ * must belong to the turn — an idle / unknown / HTTP error / other start there
+ * is FAIL evidence, including an idle the turn's busy later contradicts. For a
+ * PASS the fixture itself must see the turn busy for at least `minBusyMs`
+ * (first to last busy sample — the start-up wait never counts), the closing
+ * idle must not come before the requested hold ends, and idle before.
  */
 export function evaluateLongTurn({
 	samples,
@@ -266,10 +268,11 @@ export function evaluateLongTurn({
 	}
 	const first = turn[0];
 	const last = turn[turn.length - 1];
+	const closing = after.find((s) => s.atMs > last.atMs && s.state === "idle");
 	const inside = after.filter(
 		(s) =>
 			s.atMs >= truthStartMs + graceMs &&
-			s.atMs <= last.atMs &&
+			s.atMs < (closing?.atMs ?? Number.POSITIVE_INFINITY) &&
 			!turn.includes(s),
 	);
 	checks.onlyBusyInsideTurn = inside.length === 0;
@@ -280,17 +283,11 @@ export function evaluateLongTurn({
 	checks.triggerUndetermined = turn.every(
 		(s) => s.trigger?.kind === "undetermined",
 	);
-	checks.idleAfter = after.some(
-		(s) => s.atMs > last.atMs && s.state === "idle",
-	);
+	checks.idleAfter = closing !== undefined;
 	// An idle before the requested hold ended cannot be told apart from a Lead
 	// that stopped early, so it is never a PASS (review R2).
-	checks.idleBeforeHoldEnd = after.some(
-		(s) =>
-			s.atMs > last.atMs &&
-			s.atMs < truthStartMs + holdMs &&
-			s.state === "idle",
-	);
+	checks.idleBeforeHoldEnd =
+		closing !== undefined && closing.atMs < truthStartMs + holdMs;
 	const failed = !checks.onlyBusyInsideTurn || !checks.triggerUndetermined;
 	const verdict = failed
 		? "fail"

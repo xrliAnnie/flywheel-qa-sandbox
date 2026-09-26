@@ -170,6 +170,43 @@ describe("evaluateLongTurn", () => {
 		assert.deepEqual(result.insideAnswers, ["busy"]);
 	});
 
+	it("fails when the start changes near the end and never comes back (review R4)", () => {
+		// Busy (start 3 s) 5–65 s, unknown at 70 s, busy (start 20 s) 75/80 s, idle 85 s:
+		// the checked window must run to the idle, not stop at the last stable busy.
+		const samples = [idle(T0 - 5_000)];
+		for (let at = T0 + 5_000; at <= T0 + 65_000; at += 5_000)
+			samples.push(busy(at, T0 + 3_000));
+		samples.push(
+			unknown(T0 + 70_000, "pane_unrecognized"),
+			busy(T0 + 75_000, T0 + 20_000),
+			busy(T0 + 80_000, T0 + 20_000),
+			idle(T0 + 85_000),
+		);
+		const result = judge(samples);
+		assert.equal(result.verdict, "fail");
+		assert.deepEqual(result.insideAnswers, [
+			"unknown:pane_unrecognized",
+			"busy",
+			"busy",
+		]);
+	});
+
+	it("fails when non-busy answers sit between the last busy and the closing idle", () => {
+		const samples = honoredRun();
+		samples.splice(
+			samples.length - 1,
+			0,
+			unknown(T0 + 81_000, "pane_capture_failed"),
+		);
+		assert.equal(judge(samples).verdict, "fail");
+	});
+
+	it("fails when a non-busy answer arrives after the turn but no idle ever closes it", () => {
+		const samples = honoredRun().slice(0, -1);
+		samples.push(unknown(T0 + 90_000, "pane_capture_failed"));
+		assert.equal(judge(samples).verdict, "fail");
+	});
+
 	it("fails when a chat-triggered turn is attributed to an issue", () => {
 		const start = T0 + 3_000;
 		const samples = [
@@ -219,6 +256,104 @@ describe("evaluateLongTurn", () => {
 		const samples = honoredRun();
 		samples.splice(1, 0, busy(T0 + 1_000, T0 - 60_000));
 		assert.equal(judge(samples).verdict, "pass");
+	});
+});
+
+/**
+ * What a PASS must mean, stated independently of the evaluator: from truth+15 s
+ * the answers are one contiguous run of busy with one start (±5 s, within 30 s
+ * of truth), closed by an idle no earlier than the hold end and never
+ * contradicted by that turn's busy afterwards; the fixture saw that turn busy
+ * ≥60 s after delivery; no issue attributed; idle before injection.
+ */
+function passInvariantViolation(samples, injectedAtMs, truth, holdMs) {
+	const sorted = [...samples].sort((a, b) => a.atMs - b.atMs);
+	if (!sorted.some((s) => s.atMs <= injectedAtMs && s.state === "idle"))
+		return "no idle before injection";
+	const judged = sorted.filter((s) => s.atMs >= truth + 15_000);
+	const close = judged.findIndex((s) => s.state === "idle");
+	if (close < 0) return "no closing idle";
+	const run = judged.slice(0, close);
+	if (run.length === 0 || !run.every((s) => s.state === "busy"))
+		return "non-busy before close";
+	const s0 = run[0].startedAtMs;
+	if (!run.every((s) => Math.abs(s.startedAtMs - s0) <= 5_000))
+		return "start not stable";
+	if (Math.abs(s0 - truth) > 30_000) return "start error > 30 s";
+	if (judged[close].atMs < truth + holdMs) return "closed before hold end";
+	if (
+		judged
+			.slice(close + 1)
+			.some((s) => s.state === "busy" && Math.abs(s.startedAtMs - s0) <= 5_000)
+	)
+		return "turn busy after closing idle";
+	const firstBusy = sorted.find(
+		(s) =>
+			s.state === "busy" &&
+			s.atMs >= truth &&
+			Math.abs(s.startedAtMs - s0) <= 5_000,
+	);
+	if (run.at(-1).atMs - firstBusy.atMs < 60_000) return "span < 60 s";
+	if (!run.every((s) => s.trigger?.kind === "undetermined"))
+		return "issue attributed";
+	return null;
+}
+
+describe("evaluateLongTurn — seeded property check", () => {
+	it("never returns PASS unless the independent PASS invariant holds", () => {
+		let seed = 12_345;
+		const rnd = () => {
+			seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
+			return seed / 2 ** 31;
+		};
+		const pick = (xs) => xs[Math.floor(rnd() * xs.length)];
+		let passes = 0;
+		for (let n = 0; n < 8_000; n++) {
+			const poll = pick([2_000, 5_000, 10_000, 30_000]);
+			const truth = T0 + pick([0, 500, 2_000, 10_000, 35_000]);
+			const holdMs = pick([65_000, 75_000, 90_000]);
+			const starts = [-60_000, -25_000, 0, 3_000, 10_000, 20_000, 40_000].map(
+				(d) => truth + d,
+			);
+			const realStart = truth + pick([1_000, 3_000, 10_000, 25_000]);
+			const realEnd =
+				realStart + pick([20_000, 56_000, 61_000, 76_000, 90_000]);
+			const samples = [];
+			for (let at = T0 - poll; at <= T0 + 200_000; at += poll) {
+				let sample;
+				if (rnd() < 0.15) {
+					const kind = pick(["idle", "busy", "unknown", "http_500"]);
+					sample =
+						kind === "busy"
+							? busy(at, pick(starts))
+							: kind === "idle"
+								? idle(at)
+								: kind === "unknown"
+									? unknown(at, "x")
+									: { at: new Date(at).toISOString(), atMs: at, state: kind };
+				} else {
+					sample =
+						at >= realStart && at < realEnd ? busy(at, realStart) : idle(at);
+				}
+				if (sample.state === "busy" && rnd() < 0.02)
+					sample.trigger = { kind: "issue", issueId: "FLY-1" };
+				samples.push(sample);
+			}
+			const result = evaluateLongTurn({
+				samples,
+				injectedAtMs: T0,
+				truthStartMs: truth,
+				holdMs,
+			});
+			if (result.verdict !== "pass") continue;
+			passes++;
+			assert.equal(
+				passInvariantViolation(samples, T0, truth, holdMs),
+				null,
+				JSON.stringify({ n, poll, truth: truth - T0, holdMs }),
+			);
+		}
+		assert.ok(passes > 300, `the generator must exercise PASS (got ${passes})`);
 	});
 });
 
