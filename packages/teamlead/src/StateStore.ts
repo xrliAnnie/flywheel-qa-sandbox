@@ -53,6 +53,7 @@ import {
 } from "flywheel-core";
 import { buildReworkWakeId, type ReworkWakeIdentity, type ReworkWakeRetirementProof } from "flywheel-comm/db";
 import { BetaReleaseStore } from "./bridge/beta-release-store.js";
+import { QaRoomStore } from "./bridge/qa-room-store.js";
 import type { CompletionWorktreeBranchObservation } from "./bridge/worktree-binding-refresh.js";
 import { CustomerReleaseStore } from "./bridge/customer-release/store.js";
 import { isMailboxTerminalStatus, OUTCOME_STATUSES, TERMINAL_STATUSES } from "flywheel-comm/session-terminal";
@@ -3254,6 +3255,9 @@ export class StateStore {
 	private observationZeroProgress = { verdict: 0, closeout: 0, clarification: 0, archive: 0 };
 	get betaSchedules(): BetaReleaseStore {
 		return new BetaReleaseStore(this.db.raw);
+	}
+	get qaRooms(): QaRoomStore {
+		return new QaRoomStore(this.db.raw);
 	}
 	private db: CompatDb;
 	private dbPath: string;
@@ -10349,6 +10353,7 @@ export class StateStore {
 	}
 
 	migrate(): void {
+		this.qaRooms.migrate();
 		this.betaSchedules.migrate();
 		this.customerReleases.migrate();
 		this.db.run(`
