@@ -379,6 +379,26 @@ export function validateDiscordThreadPermissions(
 	return true;
 }
 
+/**
+ * FLY-2885: only engine A reads the managed platform key. Engine B names the
+ * subscription credential source instead and never touches the key file.
+ */
+export function voiceCredentialInput({
+	backendId,
+	homeDir,
+	env,
+	readManagedKey,
+}) {
+	if (backendId === "codex-realtime") {
+		return {
+			codexAuthSource:
+				env.FLYWHEEL_VOICE_CODEX_AUTH_SOURCE?.trim() ||
+				join(homeDir, ".codex", "auth.json"),
+		};
+	}
+	return { openAiApiKey: readManagedKey(homeDir) };
+}
+
 export function buildVoiceProcessEnv(input) {
 	const stateDir = join(input.slotDir, "state");
 	const projects = JSON.parse(input.projectsJson);
@@ -408,6 +428,13 @@ export function buildVoiceProcessEnv(input) {
 			typeof input.codexBin === "string" && isAbsolute(input.codexBin),
 			"voice_codex_binary_absolute_required",
 		);
+		// FLY-2885: engine B rides the ChatGPT subscription; it gets the
+		// credential source path, never an API key.
+		check(
+			typeof input.codexAuthSource === "string" &&
+				isAbsolute(input.codexAuthSource),
+			"voice_codex_auth_source_absolute_required",
+		);
 	}
 	return {
 		HOME: input.baseEnv.HOME,
@@ -416,7 +443,7 @@ export function buildVoiceProcessEnv(input) {
 		BRIDGE_URL: input.bridgeUrl,
 		FLYWHEEL_BRIDGE_URL: input.bridgeUrl,
 		TEAMLEAD_API_TOKEN: input.apiToken,
-		OPENAI_API_KEY: input.openAiApiKey,
+		...(codexBackendRequested ? {} : { OPENAI_API_KEY: input.openAiApiKey }),
 		[tokenName]: input.botToken,
 		FLYWHEEL_PROJECTS_FILE: input.projectsPath,
 		FLYWHEEL_PROJECTS: input.projectsJson,
@@ -429,6 +456,7 @@ export function buildVoiceProcessEnv(input) {
 			? {
 					FLYWHEEL_VOICE_BACKEND: input.backendId,
 					FLYWHEEL_CODEX_BIN: input.codexBin,
+					FLYWHEEL_VOICE_CODEX_AUTH_SOURCE: input.codexAuthSource,
 				}
 			: {}),
 		FLYWHEEL_VOICE_HOST_CONFIG: input.voiceHostPath,
@@ -688,7 +716,12 @@ function voiceEnv(context) {
 			context.launch,
 			context.lead.botTokenEnv,
 		),
-		openAiApiKey: readManagedOpenAiKey(),
+		...voiceCredentialInput({
+			backendId: process.env.FLYWHEEL_VOICE_BACKEND,
+			homeDir: homedir(),
+			env: process.env,
+			readManagedKey: readManagedOpenAiKey,
+		}),
 		projectsPath: context.projectsPath,
 		projectsJson: context.projectsJson,
 		projectName: context.topology.projectName,

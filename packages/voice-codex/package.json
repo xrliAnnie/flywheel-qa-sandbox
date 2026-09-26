@@ -19,11 +19,13 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
+		"@discordjs/voice": "0.19.2",
 		"flywheel-teamlead": "workspace:*",
 		"flywheel-voice-bridge": "workspace:*",
 		"flywheel-voice-core": "workspace:*",
 		"onnxruntime-node": "1.29.0",
-		"@discordjs/voice": "0.19.2",
+		"opusscript": "0.0.8",
+		"werift": "0.24.4",
 		"ws": "8.19.0"
 	},
 	"devDependencies": {

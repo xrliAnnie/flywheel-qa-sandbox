@@ -76,6 +76,9 @@ if [[ -n "${FLYWHEEL_TEST_INHERITED_SENTINEL:-}" ]]; then
   exit 55
 fi
 printf '%s\n' "$*" >> "$TEST_ROOT/node-calls"
+# FLY-2885: record only whether a key reached the daemon, never its value.
+printf '%s openai=%s codex=%s\n' "$*" "${OPENAI_API_KEY:+present}" \
+  "${CODEX_API_KEY:+present}" >> "$TEST_ROOT/node-env"
 if [[ "${TEST_NODE_FAIL_CHECK:-0}" == "1" && "$*" == *"--check-config"* ]]; then exit 1; fi
 EOF
 cat > "$ROOT/meta-alert" <<'EOF'
@@ -243,6 +246,76 @@ if [[ "$API_RC" -eq 0 && ! -s "$ROOT/node-calls" ]] && grep -qx voice_api_key_un
 else
   fail "missing platform key boundary"
 fi
+
+# FLY-2885: engine B rides the ChatGPT subscription over WebRTC. The shared
+# .env may still hold the platform key for engine A; it must not reach the
+# codex daemon, and a missing key must not block it.
+run_codex_wrapper() {
+  : > "$ROOT/node-calls"
+  : > "$ROOT/node-env"
+  : > "$ROOT/alert-calls"
+  CODEX_RC=0
+  env -i TEST_ROOT="$ROOT" HOME="$ROOT/home" PATH="/usr/bin:/bin" \
+  FLYWHEEL_META_ALERT_BIN="$ROOT/meta-alert" \
+  FLYWHEEL_DIR="$ROOT/repo" FLYWHEEL_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_HOST_TMUX_GATE_BIN="$ROOT/host-gate" \
+  FLYWHEEL_RESTART_STORM_GATE_BIN="$ROOT/restart-gate" \
+  TEST_ON_DEMAND_CONTRACT=1 \
+    bash "$ROOT/repo/scripts/flywheel-voice-wrapper.sh" >/dev/null 2>&1 || CODEX_RC=$?
+}
+mkdir -p "$ROOT/home/.codex"
+printf '{}\n' > "$ROOT/home/.codex/auth.json"
+chmod 600 "$ROOT/home/.codex/auth.json"
+printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=codex-realtime\nexport OPENAI_API_KEY=test-api-only\nexport CODEX_API_KEY=test-codex-only\n' > "$ROOT/state/.env"
+run_codex_wrapper
+if [[ "$CODEX_RC" -eq 0 ]] \
+  && grep -qx 'packages/voice-codex/dist/cli.js openai= codex=' "$ROOT/node-env" \
+  && grep -qx 'packages/voice-codex/dist/cli.js --check-config openai= codex=' "$ROOT/node-env" \
+  && ! grep -q 'present' "$ROOT/node-env"; then
+  pass "codex backend unsets both API keys before exec even when the shared .env holds them"
+else
+  fail "codex backend API key scrub ($(cat "$ROOT/node-env"))"
+fi
+
+printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=codex-realtime\n' > "$ROOT/state/.env"
+run_codex_wrapper
+if [[ "$CODEX_RC" -eq 0 ]] && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls" \
+  && [[ ! -s "$ROOT/alert-calls" ]]; then
+  pass "codex backend starts without any platform key"
+else
+  fail "codex backend required a platform key"
+fi
+
+rm -f "$ROOT/home/.codex/auth.json"
+run_codex_wrapper
+if [[ "$CODEX_RC" -eq 0 && ! -s "$ROOT/node-calls" ]] \
+  && grep -qx voice_codex_auth_unavailable "$ROOT/alert-calls"; then
+  pass "codex backend refuses startup when the subscription credential source is missing"
+else
+  fail "codex backend missing credential source boundary"
+fi
+
+printf '{}\n' > "$ROOT/home/codex-real-auth.json"
+ln -s "$ROOT/home/codex-real-auth.json" "$ROOT/home/.codex/auth.json"
+run_codex_wrapper
+if [[ "$CODEX_RC" -eq 0 && ! -s "$ROOT/node-calls" ]] \
+  && grep -qx voice_codex_auth_unavailable "$ROOT/alert-calls"; then
+  pass "codex backend refuses a symlinked credential source"
+else
+  fail "codex backend symlinked credential source boundary"
+fi
+rm -f "$ROOT/home/.codex/auth.json" "$ROOT/home/codex-real-auth.json"
+
+mkdir -p "$ROOT/custom-auth"
+printf '{}\n' > "$ROOT/custom-auth/auth.json"
+printf 'TEAMLEAD_API_TOKEN=test-only\nFLYWHEEL_VOICE_BACKEND=codex-realtime\nFLYWHEEL_VOICE_CODEX_AUTH_SOURCE=%s\n' "$ROOT/custom-auth/auth.json" > "$ROOT/state/.env"
+run_codex_wrapper
+if [[ "$CODEX_RC" -eq 0 ]] && grep -qx 'packages/voice-codex/dist/cli.js' "$ROOT/node-calls"; then
+  pass "codex backend honours the configured credential source"
+else
+  fail "codex backend configured credential source"
+fi
+printf 'TEAMLEAD_API_TOKEN=test-only\n' > "$ROOT/state/.env"
 
 if [[ -f "$RESTART_LIB" ]]; then
   # shellcheck source=/dev/null

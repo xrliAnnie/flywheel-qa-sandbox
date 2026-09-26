@@ -20,7 +20,7 @@ fail_loud() {
   local bounded_run="${alert_root}/scripts/lib/bounded-run.sh"
   local meta_alert="${FLYWHEEL_META_ALERT_BIN:-${alert_root}/scripts/meta-alert.sh}"
   case "$reason" in
-    voice_config_unavailable|voice_config_invalid|voice_api_key_unset)
+    voice_config_unavailable|voice_config_invalid|voice_api_key_unset|voice_codex_auth_unavailable)
       record_startup_spool startup_config_invalid
       ;;
     *)
@@ -66,7 +66,19 @@ if ! source "$ENV_FILE"; then
 fi
 set +a
 
-if [[ -z "${OPENAI_API_KEY:-}" || -z "${OPENAI_API_KEY//[[:space:]]/}" ]]; then
+if [[ "${FLYWHEEL_VOICE_BACKEND:-}" == "codex-realtime" ]]; then
+  # FLY-2885: engine B connects over WebRTC on the ChatGPT subscription. The
+  # shared .env keeps the platform key for engine A, so drop it here: the codex
+  # daemon neither needs, uses nor receives an API key.
+  unset OPENAI_API_KEY CODEX_API_KEY
+  CODEX_AUTH_SOURCE="${FLYWHEEL_VOICE_CODEX_AUTH_SOURCE:-${HOME}/.codex/auth.json}"
+  # Presence and file type only; the credential itself is never read here.
+  if [[ ! -f "$CODEX_AUTH_SOURCE" || -L "$CODEX_AUTH_SOURCE" ]]; then
+    fail_loud voice_codex_auth_unavailable "Voice Codex subscription unavailable" \
+      "The Codex credential source is missing or is not a regular file."
+    exit 0
+  fi
+elif [[ -z "${OPENAI_API_KEY:-}" || -z "${OPENAI_API_KEY//[[:space:]]/}" ]]; then
   fail_loud voice_api_key_unset "Voice API authentication unavailable" \
     "OPENAI_API_KEY is missing; voice requires platform API credit."
   exit 0
