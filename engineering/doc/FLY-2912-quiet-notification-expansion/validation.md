@@ -22,3 +22,6 @@ R1有效verdict=CHANGES_REQUESTED，唯一HIGH为生产DirectEventSink入口漏�
 
 ## 有效批准
 R2 effective reviewVerdict=APPROVED（2026-09-26T04:30Z读取）。7条advisories已通过ask --report向Lead汇报，逐条处置在review-followups.md；不重开设计。仅修附件模块绝对路径并复测，plan保留审查快照字节。接下来只做托管核验与结构化交接。
+
+## 托管与交接核验
+已静默发布并向Lead发送DESIGN-HTML ready；URL与报告收据见handoff.md。hosted HTTP/CSP/source/零外部资源检查通过，托管下载字节的controller复测通过。当前分支相对基线只改变本issue doc文件夹；批准后plan字节无diff。全部DB只读连接已关闭，无live DB副本。
