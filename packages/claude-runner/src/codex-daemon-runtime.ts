@@ -711,6 +711,10 @@ export interface SpawnCodexDaemonOptions {
 	 * rejects, so Bridge crash recovery never inherits an unowned daemon.
 	 */
 	onSpawnIdentity?: (pgid: number) => void | Promise<void>;
+	/** FLY-2919: obtain the durable permit after socket/quota preflight. May
+	 * retry temporary mutation-lease contention. The synchronous authorizeSpawn
+	 * check follows this await immediately before native spawn. */
+	prepareSpawn?: () => Promise<void>;
 	/** FLY-2919: synchronous validation of the current owner/spawn permit.
 	 * Checked after asynchronous preflight immediately before native spawn and
 	 * again before socket admission. Only literal true admits; absent preserves
@@ -970,6 +974,18 @@ export async function spawnCodexDaemon(
 				}),
 			);
 		};
+		if (opts.prepareSpawn) {
+			try {
+				await opts.prepareSpawn();
+			} catch {
+				throw new CodexRecoveryError(
+					createCodexRecoveryFailure({
+						code: "owner_admission_failed",
+						stage: "daemon_spawn",
+					}),
+				);
+			}
+		}
 		assertSpawnAuthorized();
 		const child = spawnFn(
 			opts.codexBin,

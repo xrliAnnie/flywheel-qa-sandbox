@@ -793,6 +793,71 @@ describe("spawnCodexDaemon", () => {
 		},
 	);
 
+	it("FLY-2919: obtains the spawn permit after async preflight and rechecks before native spawn", async () => {
+		const child = new FakeChild();
+		const order: string[] = [];
+		let spawned = false;
+		let permitted = false;
+		await spawnCodexDaemon({
+			...baseOpts(child),
+			socketExists: () => true,
+			isSocketLive: async () => {
+				order.push("preflight");
+				return false;
+			},
+			prepareSpawn: async () => {
+				await Promise.resolve();
+				order.push("permit");
+				permitted = true;
+			},
+			authorizeSpawn: () => {
+				order.push("validate");
+				return permitted;
+			},
+			spawnFn: () => {
+				order.push("spawn");
+				spawned = true;
+				return child;
+			},
+		});
+		expect(spawned).toBe(true);
+		expect(order.slice(0, 4)).toEqual([
+			"preflight",
+			"permit",
+			"validate",
+			"spawn",
+		]);
+	});
+
+	it.each(["reject", "revoke"])(
+		"FLY-2919: %s during permit acquisition refuses native spawn",
+		async (kind) => {
+			const child = new FakeChild();
+			const spawnFn = vi.fn(() => child);
+			const release = vi.fn();
+			let permitted = true;
+			await expect(
+				spawnCodexDaemon({
+					...baseOpts(child),
+					spawnFn,
+					socketExists: () => true,
+					acquireLock: () => ({ release }),
+					prepareSpawn: async () => {
+						await Promise.resolve();
+						permitted = false;
+						if (kind === "reject")
+							throw new Error("sensitive database diagnostic");
+					},
+					authorizeSpawn: () => permitted,
+				}),
+			).rejects.toMatchObject({
+				recoveryFailure: { code: "owner_admission_failed" },
+			});
+			expect(spawnFn).not.toHaveBeenCalled();
+			expect(release).toHaveBeenCalledOnce();
+		},
+	);
+
 	it("FLY-2919: close during identity commit drains before socket admission", async () => {
 		const child = new FakeChild();
 		let valid = true;

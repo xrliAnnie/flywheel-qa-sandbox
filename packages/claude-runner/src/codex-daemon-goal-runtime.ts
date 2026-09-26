@@ -216,6 +216,8 @@ export interface RunGoalInput {
 	 * ownership persistence is therefore a hard precondition, not telemetry.
 	 */
 	onSpawnIdentity?: (pgid: number) => void | Promise<void>;
+	/** Acquire a fresh durable permit at the physical spawn seam on every attempt. */
+	prepareSpawn?: () => Promise<void>;
 	/** Current durable owner/spawn permit, checked by the physical spawn seam. */
 	authorizeSpawn?: () => boolean;
 	/**
@@ -353,6 +355,7 @@ export class CodexDaemonGoalRuntime {
 		reapOrphanPid?: number,
 		onSpawnIdentity?: (pgid: number) => void | Promise<void>,
 		authorizeSpawn?: () => boolean,
+		prepareSpawn?: () => Promise<void>,
 	): Promise<DaemonSession> {
 		const codexHome = this.selectedCodexHome();
 		let binding: CodexQuotaBindingV1 | undefined;
@@ -415,6 +418,7 @@ export class CodexDaemonGoalRuntime {
 			// the resuming redrive can reclaim the socket instead of blocking.
 			...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 			...(onSpawnIdentity ? { onSpawnIdentity } : {}),
+			...(prepareSpawn ? { prepareSpawn } : {}),
 			authorizeSpawn: () =>
 				!this.stopped && (!authorizeSpawn || authorizeSpawn() === true),
 			logger: this.log,
@@ -665,6 +669,7 @@ export class CodexDaemonGoalRuntime {
 							reapPid,
 							input.onSpawnIdentity,
 							input.authorizeSpawn,
+							input.prepareSpawn,
 						));
 					reapPid = undefined; // reap applies only to the first spawn
 					if (

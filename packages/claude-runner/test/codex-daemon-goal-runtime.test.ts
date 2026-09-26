@@ -155,6 +155,30 @@ function makeHarness(
 }
 
 describe("CodexDaemonGoalRuntime", () => {
+	it("FLY-2919: prepares a fresh physical spawn permit on initial start and same-thread restart", async () => {
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("socket died", "transport_closed"),
+				COMPLETE,
+			],
+		});
+		const prepareSpawn = vi.fn(async () => {});
+		const rt = new CodexDaemonGoalRuntime({
+			...h.opts,
+			spawnDaemon: async (options) => {
+				await options.prepareSpawn?.();
+				return h.opts.spawnDaemon!(options);
+			},
+		});
+		try {
+			const result = await rt.runGoal({ objective: "x", prepareSpawn });
+			expect(result.restarts).toBe(1);
+			expect(prepareSpawn).toHaveBeenCalledTimes(2);
+		} finally {
+			rt.stop();
+			await rt.drained();
+		}
+	});
 	it("happy path: spawn → connect → initialize → startThread → runGoal → complete", async () => {
 		const h = makeHarness({ runGoalScript: [COMPLETE] });
 		const rt = new CodexDaemonGoalRuntime(h.opts);

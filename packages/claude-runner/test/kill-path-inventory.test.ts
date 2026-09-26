@@ -91,6 +91,11 @@ const MUTATION_REGISTRY: readonly MutationRegistration[] = [
 		disposition: "bounded_child",
 	},
 	{
+		path: "packages/claude-runner/src/execution-process-inspector.ts",
+		callFragment: 'child.kill("SIGKILL");',
+		disposition: "bounded_child",
+	},
+	{
 		path: "packages/teamlead/src/bridge/terminal-tab-reaper.ts",
 		callFragment: "Slot safety is boot-fenced",
 		disposition: "boot_fenced_plain_tmux",
@@ -265,6 +270,13 @@ describe("FLY-2211 kill-path inventory", () => {
 			) {
 				return false;
 			}
+			if (
+				entry.path ===
+					"packages/claude-runner/src/execution-process-inspector.ts" &&
+				entry.code === 'child.kill("SIGKILL");'
+			) {
+				return false;
+			}
 			const offset = inventoryEntryOffset(entry);
 			return !calls.some(
 				(call) =>
@@ -363,5 +375,16 @@ describe("FLY-2211 kill-path inventory", () => {
 		expect(tmuxAdapter).toMatch(
 			/const child = spawn\(cmd, args,[\s\S]+detached: process\.platform !== "win32"[\s\S]+if \(!exitSeen && child\.pid[\s\S]+process\.kill\(-child\.pid, "SIGKILL"\)[\s\S]+child\.kill\("SIGKILL"\)/,
 		);
+		const inspector = readFileSync(
+			resolve(
+				REPO_ROOT,
+				"packages/claude-runner/src/execution-process-inspector.ts",
+			),
+			"utf8",
+		);
+		expect(inspector).toMatch(
+			/child = spawnProbe\(file, \[\.\.\.args\],[\s\S]+const cancel = \(\) =>[\s\S]+child\.kill\("SIGKILL"\);[\s\S]+setTimeout\(cancel, Math\.min\(5000, control\.timeoutMs\)\)[\s\S]+child\.on\("close",/,
+		);
+		expect(inspector).not.toMatch(/process\.kill\s*\(/);
 	});
 });

@@ -257,6 +257,23 @@ export {
 	writeTools,
 } from "./config.js";
 export {
+	captureExecutionProcessSample,
+	type ExecutionProcessInspectorOptions,
+	type InspectedExecutionProcess,
+	readExecutionProcessIdentity,
+} from "./execution-process-inspector.js";
+export {
+	type BodyIdentity,
+	type BodyObservation,
+	type ExecutionAdapter,
+	type ExecutionProcessBinding,
+	type ExecutionProcessIdentity,
+	type ExecutionProcessObservationInput,
+	type ExecutionProcessSample,
+	isCurrentBodyObservation,
+	observeExecutionProcesses,
+} from "./execution-process-liveness.js";
+export {
 	ClaudeMessageFormatter,
 	type IMessageFormatter,
 } from "./formatter.js";

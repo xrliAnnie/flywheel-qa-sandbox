@@ -104,3 +104,38 @@ Issue: FLY-2919 (https://linear.app/geoforge3d/issue/FLY-2919/病根修复-2-体
 下一批仍从 A 继续：生产 owner 登记与 awaited binding、实际 native-spawn permit CAS 和 lease_held 有界重试、所有 adapter OS 身份与 writer 集合、单一 BodyObservation。之后逐组 B–F；C 组死亡义务重放与 HIGH complete marker 不变式尚未完成。不得从当前绿色测试推断 Heartbeat 已去除窗口判死。
 
 - 依赖方类型检查：`pnpm --filter "...flywheel-claude-runner" typecheck` 中 claude-runner、edge-worker、teamlead 通过；voice-codex 因 voice-bridge dist 缺失失败。补 `pnpm --filter "flywheel-voice-bridge..." build` 后，`pnpm --filter flywheel-voice-codex typecheck` exit 0。四个依赖方均已验证，未修改 voice 业务代码。
+
+
+## 续接 A 第三小批（2026-09-26，执行 7b52a229）
+
+本批仍执行批准 A 组，未改产品设计。新增下层 `BodyObservation`、独立 OS 采样与 native spawn permit 的等待边界；尚未把生产 owner 登记与 Heartbeat/双库消费者接上。不能将本批下层 fixture 当作九单生产验收。
+
+- `execution-process-liveness.ts` 不接收窗口或 workflow status 作为判生死输入。身份绑定 execution/activation/generation/revision/ownerToken/spawnEpoch/digest；采样最多 5 秒，观察有效 10 秒，CAS 消费前用 `isCurrentBodyObservation` 重核全部字段与时效。四种现有 adapter 都有 live/dead/unknown fixture；PID/start/boot 冲突、缺绑定、控制器仍活、spawn/restart/reown 有效、残留 writer 均不授权死亡。
+- writer 核验包含原组成员、已接受 writer 和本次独立 nonce 归属发现的 detached writer。父进程死亡或被收养不等于 writer 消失；PID 重用拒绝；zombie 不算可写活进程。只有精确登记的纯 viewer 可排除，已绑定或继承 nonce 的 writer 不得降格成 viewer。
+- `execution-process-inspector.ts` 读 OS PID/start/boot、macOS lsof txt/cwd 或 Linux /proc executable/cwd；不从改写后的 argv 推断 executable。nonce 环境归属使用前后稳定 argv 与环境快照，argv 中伪造 nonce 不算环境。复用 Codex daemon/group/socket 探针并注入预采集证据，旧 group ledger 缺失或 PGID 不匹配保持 unknown。每个命令共享递减的 5 秒预算，权限/解析/超时失败关闭；只取消自己创建的 probe child，等 close 才结束，不向目标 worker 发信号。
+- FLY-2211 inventory 按已有 bounded_child 形状只增该精确 child.kill 调用及源码形状约束，保留 runner-affecting 分类、其余审计 predicate 和限额。没有新增通用免责。
+- `prepareSpawn` 经 runGoal 的每次初启/同线程重启传到低层，在异步 socket 预检后等待持久 permit 获取，随后现有同步 `authorizeSpawn` 紧接 native spawn 再核验。获取拒绝转为安全的 owner_admission_failed，释放原 socket 锁；等待期间撤权不启动 worker。这只是调用钩子，Bridge 的实际 owner CAS 和 lease_held 有界重试仍待接线。
+
+红绿记录（详细日志及源码 hashes 归档 `implementation-a3-evidence.json.gz`）：
+
+| 边界 | RED | GREEN |
+|---|---|---|
+| 基础物理 verdict | 27 fail / 7 pass | 34 pass |
+| 时间有效性与消费者身份复核 | 13 fail / 35 pass | 48 pass |
+| 本次发现的 detached writer | 3 fail / 48 pass | 51 pass |
+| 独立 inspector 身份复核、解析 | 2 fail / 20 pass；1 fail / 21 pass | 22 pass |
+| nonce viewer 负控与清理登记 | 3 fail / 25 pass | inspector + inventory 28 pass |
+| 预检后的 permit 获取、拒绝/撤权 | 3 fail | 3 pass |
+| 初启及同线程重启均获取 permit | 1 fail | 1 pass |
+
+测试 fixture 曾因未设置 fake socketExists 进入长轮询，已停止并修正 fixture；该中断不计产品 RED，表中只计修正后真实行为断言失败。
+
+本批消费者清单 `implementation-a3-consumers.json.gz` 按五个源文件 full path/basename/parent/stem 的 git grep -lF 逐路径登记，含新文件补项共 3464 条。宽 src 目录和通用 index 名称命中逐项标明排除理由，直接调用测试与 FLY-2211/child census/reown 保留。没有新 scripts/__tests__/*.test.sh。
+
+已确认 owning related 9 文件 **475 pass / 2 skip**，只排除批准计划禁止的 macOS viewer 测试和此前已证实 EPERM 的两个 real-ps fixture。后者及 qa-fly-2456-liveness 真机项仍交 QA529，不算通过。当前 Inspector Mac/Linux 都是注入式 OS fixture，未冒充真机证明。
+
+Teamlead retained guards 四文件 **71 pass**（reown 63、launch claim 7、child process census 1）。依赖方四包 typecheck 均通过。lint 首次发现新文件导入排序/控制字符正则写法四项错误，修正后通过（5109 文件、25 个既有 warnings）。清理 inventory 一次在并行检查期间超过原 15 秒限额，保留失败记录并单独复跑，未改测试限额。
+
+下一步仍为 A 的生产 owner/accepted OS binding/实际 spawn CAS 与 lease 重试、Claude/Kimi/Antigravity 注册与旧体迁移、runtime flag；随后按 B–F 完成所有消费者。HIGH pending-complete-marker、跨库义务幂等、standby 空 writer 证明、独立采样周期和九单生产验收尚待实现。
+
+本小批最终：独立复跑 inspector/kill inventory/sync-timeout 三文件 **30 pass**，原限额未改；最终 `pnpm --filter "flywheel-claude-runner..." build` exit 0。所有本批红绿/失败后复跑日志及 11 个源码、测试、inventory 文件 hash 已归档；没有请求 full CI、代码 review、PR 或 needs_review，任务仍在 implement 0/6。

@@ -96,6 +96,12 @@
 		"classification": "out-of-scope"
 	},
 	{
+		"key": "packages/claude-runner/src/execution-process-inspector.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/src/execution-process-inspector.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "runner-affecting-mutation"
+	},
+	{
 		"key": "packages/claude-runner/src/kill-ledger.ts:process.kill(target, signal as NodeJS.Signals);#1",
 		"path": "packages/claude-runner/src/kill-ledger.ts",
 		"code": "process.kill(target, signal as NodeJS.Signals);",
@@ -372,9 +378,21 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:callFragment: 'child.kill(\"SIGKILL\");',#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "callFragment: 'child.kill(\"SIGKILL\");',",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:callFragment: 'process.kill(-child.pid, \"SIGKILL\")',#1",
 		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
 		"code": "callFragment: 'process.kill(-child.pid, \"SIGKILL\")',",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.test.ts:entry.code === 'child.kill(\"SIGKILL\");'#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.test.ts",
+		"code": "entry.code === 'child.kill(\"SIGKILL\");'",
 		"classification": "qa-only"
 	},
 	{
