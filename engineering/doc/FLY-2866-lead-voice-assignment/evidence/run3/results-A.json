@@ -1,0 +1,102 @@
+[
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "alloy",
+  "serverVoice": "alloy",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 475200,
+  "modelTranscript": "Annie 你好,我是Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "ash",
+  "serverVoice": "ash",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 547200,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "ballad",
+  "serverVoice": "ballad",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 484800,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "cedar",
+  "serverVoice": "cedar",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 480000,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "coral",
+  "serverVoice": "coral",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 504000,
+  "modelTranscript": "Annie你好,我是Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "echo",
+  "serverVoice": "echo",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 451200,
+  "modelTranscript": "Annie 你好。我是Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "marin",
+  "serverVoice": "marin",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 523200,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "sage",
+  "serverVoice": "sage",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 537600,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "shimmer",
+  "serverVoice": "shimmer",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 499200,
+  "modelTranscript": "Annie 你好,我是 Tadashi,现在有两件事要你看。"
+ },
+ {
+  "engine": "A",
+  "model": "gpt-live-1",
+  "voice": "verse",
+  "serverVoice": "verse",
+  "closed": true,
+  "status": "ok",
+  "pcmBytes": 561600,
+  "modelTranscript": "Annie 你好,我是Tadashi,现在有两件事要你看。"
+ }
+]

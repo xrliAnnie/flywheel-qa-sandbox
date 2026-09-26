@@ -1,0 +1,42 @@
+{
+ "A-alloy": {
+  "f0MedianHz": 144.6,
+  "frames": 307
+ },
+ "A-ash": {
+  "f0MedianHz": 112.1,
+  "frames": 238
+ },
+ "A-ballad": {
+  "f0MedianHz": 153.8,
+  "frames": 226
+ },
+ "A-cedar": {
+  "f0MedianHz": 134.8,
+  "frames": 194
+ },
+ "A-coral": {
+  "f0MedianHz": 193.5,
+  "frames": 362
+ },
+ "A-echo": {
+  "f0MedianHz": 96.8,
+  "frames": 187
+ },
+ "A-marin": {
+  "f0MedianHz": 193.5,
+  "frames": 216
+ },
+ "A-sage": {
+  "f0MedianHz": 184.6,
+  "frames": 315
+ },
+ "A-shimmer": {
+  "f0MedianHz": 150.0,
+  "frames": 227
+ },
+ "A-verse": {
+  "f0MedianHz": 137.9,
+  "frames": 202
+ }
+}

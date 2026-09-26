@@ -1,0 +1,9 @@
+{
+ "voice": "sol",
+ "attempt": "1",
+ "why": "done",
+ "line": "你好，我是你的 Lead，今天由我来跟你同步进度。我这边有两件事已经做完，还有一件在等你拍板，我一件一件跟你说。",
+ "downlinkSeconds": 13.84,
+ "audibleSpanSeconds": 6.4,
+ "assistantTranscript": "你好,我是你的Lead,今天由我来跟你同步进度。我这边有两件事已经做完,还有一件在等你拍板,我一件一件跟你说。"
+}
