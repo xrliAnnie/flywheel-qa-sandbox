@@ -219,7 +219,9 @@ export class VoiceHandoffStore {
 				`ALTER TABLE voice_lead_handoffs ADD COLUMN request_kind TEXT NOT NULL DEFAULT 'user_handoff' CHECK(${REQUEST_KIND_CHECK})`,
 			);
 		if (!handoffs.has("agenda_json"))
-			this.db.exec("ALTER TABLE voice_lead_handoffs ADD COLUMN agenda_json TEXT");
+			this.db.exec(
+				"ALTER TABLE voice_lead_handoffs ADD COLUMN agenda_json TEXT",
+			);
 		const resultSql = String(
 			(
 				this.db

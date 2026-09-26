@@ -456,7 +456,8 @@ export class HeadphoneInboxCollector {
 				...(urgentMarks.length > 0 && this.options.recordUrgent
 					? {
 							withinPage: () => {
-								for (const mark of urgentMarks) this.options.recordUrgent?.(mark);
+								for (const mark of urgentMarks)
+									this.options.recordUrgent?.(mark);
 							},
 						}
 					: {}),
