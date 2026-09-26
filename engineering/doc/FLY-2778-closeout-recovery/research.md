@@ -35,10 +35,18 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 
 ## 5. 相邻设计边界
 FLY-2919 `execution-body-liveness.ts` 组装统一 BodyObservation：exact execution/activation/generation/lifecycleRevision、bindingDigest、alive/dead/unknown、observedAt/expiresAt。其 plan 总探针5秒、有效期10秒；启动/重启 owner 和 writer tree 均为2919所有。FLY-2778 只将它接入 land effect/finalization、收尾诊断与存量回收。实现先核对最终导出与 accepted owner 接线，不能照抄接口另建 evaluator。
-FLY-2754 历史方案只提供 auth-pre-spawn receipt-bound 恢复思路；不代表已部署，也不覆盖任意缺 group / stdio timeout。FLY-2662 已有 reclose 和 target absence；沿用鉴权，不新增 Runner 死亡声明入口。
+FLY-2754 已由founder批准并入本单；远端实现可复用受信auth-pre-spawn来源，具体承接见plan §12。不代表已部署，也不覆盖任意缺group / stdio timeout。FLY-2662 已有 reclose 和 target absence；沿用鉴权，不新增 Runner 死亡声明入口。
 
 ## 6. 未做与后续证据
 没有实现、测试房、真实 ship、删除、重启、部署。两个指定 worktree 的 .git 仍存在。现有数据足以定位入口分裂和预算错配，不足以证明未知旧体已死、全月真实未清数量或 Lead 消费告警。实施/QA 必须按计划补齐，而非把本研究当生产修复成功。
 
 ## 7. Lead 当前决策
 问题回复 cb2a32e9-73f8-4b6e-9520-21223c712403：确认纠正统计口径；2919负责唯一生命真源，2778只消费单一证据seam。2919未合入时可先定义seam并保守回退、记录切换策略；不要求等待才开始实现。继续保留2688/2751，无生产清理。详见plan §2/§10。
+
+## 8. R2源码补核
+WorktreeManager.removeCleanWorktreeByPathUnlocked先reapPath；worktree-process-reaper按cwd census找所有进程并可killGroup，因此旧“non-force git remove”不足以保证不误杀。存量路径必须无signal，不能只在上层证明run writer dead。LeadAlertNotifier claim-before-POST且提供replayAfterAmbiguousAttempt、alert_delivery_receipts及30分钟fence；稳定eventId必须接完整重放协议。land CLI已有Claude peer transport，plain bearer不是Lead身份；completed op reclose为no-op。以上均已落实plan §2–5/§11。
+
+## 9. 并入2754后的实读结果
+Lead回复05415572-ee92-49de-805f-5a910fa80c51授权承接；读取origin/flywheel-FLY-2754 head 3f89b8a76、plan/progress，以及81f8f6afd/2934a3979/fc52ab9c2/e3e4153de/54b634eda相关diff。head两个提交不是全部实现，源码按plan §12选择。原分支4/5尚未完成实现验证/代码审查。
+原fc52ab9c2 collector比较proof.runId===identity.runId，lifecycle调用传operation.run_id，历史执行来自不同run时仍拒绝；需要分别保存executionRunId/operationRunId和准确归属关系。旧helper还独立扫描host/window，与2919共同生命真源冲突，复用来源验证而非旧判定链。新增两表是来源凭证/固定兼容政策，不是第二套生死表。当前quota流程已变更，旧4行分类补丁不直接移植。
+此轮仅设计审计，未执行旧分支代码、未cherry-pick、未声称其测试通过。Lead允许本地渲染失败时保留Mermaid源码和清楚文字流程，继续HTML发布；仍须有效最新设计审查。

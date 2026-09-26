@@ -21,3 +21,6 @@ Issue: FLY-2778 (https://linear.app/geoforge3d/issue/FLY-2778/收尾清理失效
 2. gone 证据与 transition/CommDB 前置判断是否矛盾。
 3. outbox 的 persisted delivered 是否有 Lead receipt；保留去重粒度。
 4. CLOSED 未合入存量的安全回收与 ship 收尾分开，不能伪造 merge receipt。
+
+## 范围追加
+2026-09-26 13:16 PDT founder批准将FLY-2754并入本单，Lead由问题回复05415572-ee92-49de-805f-5a910fa80c51传达。已证明无活体的failed/blocked节点不应再被crash_preserve独立挡住；原失败记录和取证保留。复用旧分支的可信启动前失败凭证，但生命结论统一由2919产生，具体选择与反例见plan §12。
