@@ -346,6 +346,115 @@ describe("voice session context assembly", () => {
 		);
 	});
 
+	it("builds the enabled voice opening brief from bounded identity, location, capabilities, state, and memory index", () => {
+		const identity = [
+			"# Raya",
+			"## Speaking style",
+			"短句，直接，先讲结论。",
+			"## Private detail",
+			"IDENTITY_PRIVATE_DETAIL",
+		].join("\n");
+		const memory = [
+			"# Memory index",
+			"- FLY-2886 voice background agent",
+			"- PR #1306 follow-up",
+			"DETAIL_BODY_THAT_FRONTEND_MUST_NOT_LOAD",
+		].join("\n");
+		const result = buildVoiceSessionContext({
+			sources: sources(identity, memory),
+			rosterDigest: "c".repeat(64),
+			leaseBindingDigest: "d".repeat(64),
+			capturedAt: "2026-09-23T09:00:00.000Z",
+			openInitiatedAt: "2026-09-23T09:00:00.000Z",
+			state,
+			voiceBackground: {
+				enabled: true,
+				displayName: "Raya",
+				browser: "founder_chrome",
+				capabilityCategories: ["Bridge", "Linear", "GitHub", "founder Chrome"],
+				founderOnlyActions: ["merge", "ship", "停 runner", "批准"],
+				founderAttention: ["FLY-2886 等 founder 批准"],
+			},
+			session: {
+				sessionId: "session-1",
+				mode: "meeting",
+				guildId: "100000000000000001",
+				voiceChannelId: "100000000000000002",
+			},
+		});
+
+		expect(result.realtimePrompt).toContain("我是 Raya 的语音分身");
+		expect(result.realtimePrompt).toContain(
+			"Discord server 100000000000000001 的语音房 100000000000000002",
+		);
+		expect(result.realtimePrompt).toContain("founder Chrome");
+		expect(result.realtimePrompt).toContain(
+			"不能：merge、ship、停 runner、批准",
+		);
+		expect(result.realtimePrompt).toContain("不确定能不能做时先让后台查");
+		expect(result.realtimePrompt).toContain(
+			"闲聊、常识、看法、简报里有的自己答",
+		);
+		expect(result.realtimePrompt).toContain("我去看一下");
+		expect(result.realtimePrompt).toContain("FLY-2799");
+		expect(result.realtimePrompt).toContain("FLY-2886 等 founder 批准");
+		expect(result.realtimePrompt).toContain("PR #1306 follow-up");
+		expect(result.realtimePrompt).not.toContain(
+			"DETAIL_BODY_THAT_FRONTEND_MUST_NOT_LOAD",
+		);
+		expect(result.realtimePrompt).not.toContain("IDENTITY_PRIVATE_DETAIL");
+		expect(result.realtimePrompt).not.toContain("逐字");
+		expect(result.baseInstructions).toContain("IDENTITY_PRIVATE_DETAIL");
+		expect(result.baseInstructions).toContain("memory/MEMORY.md");
+		expect(result.baseInstructions).not.toContain(
+			"DETAIL_BODY_THAT_FRONTEND_MUST_NOT_LOAD",
+		);
+	});
+
+	it("shrinks enabled realtime context by whole lines without truncating identifiers", () => {
+		const memory = [
+			"# Memory index",
+			...Array.from(
+				{ length: 200 },
+				(_, index) =>
+					`- FLY-${10_000 + index} commit ${String(index).padStart(40, "a")}`,
+			),
+		].join("\n");
+		const result = buildVoiceSessionContext({
+			sources: sources("# Raya\n## Style\n直接。", memory),
+			rosterDigest: "c".repeat(64),
+			leaseBindingDigest: "d".repeat(64),
+			capturedAt: "2026-09-23T09:00:00.000Z",
+			openInitiatedAt: "2026-09-23T09:00:00.000Z",
+			state,
+			voiceBackground: {
+				enabled: true,
+				displayName: "Raya",
+				browser: "off",
+				capabilityCategories: [],
+				founderOnlyActions: ["merge", "ship"],
+				founderAttention: [],
+			},
+			session: {
+				sessionId: "session-1",
+				mode: "meeting",
+				guildId: "100000000000000001",
+				voiceChannelId: "100000000000000002",
+			},
+			countTokens: (value) => value.length,
+		});
+
+		expect(
+			result.measurements.realtimePrompt.estimatedTokens,
+		).toBeLessThanOrEqual(4_096);
+		expect(result.realtimePrompt).toContain("FLY-2799");
+		for (const line of result.realtimePrompt
+			.split("\n")
+			.filter((candidate) => candidate.startsWith("- FLY-10"))) {
+			expect(memory.split("\n")).toContain(line);
+		}
+	});
+
 	it("accepts exactly 60 seconds old, rejects stale snapshots, and never truncates over budget", () => {
 		expect(() =>
 			buildVoiceSessionContext({

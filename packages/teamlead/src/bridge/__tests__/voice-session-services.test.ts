@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -234,6 +234,67 @@ it("projects the persisted tuple and permits token rotation with unchanged bot i
 		voiceChannelId: "100000000000000002",
 		voiceBotUserId: "100000000000000005",
 	});
+});
+
+it("passes enabled background identity, room binding, and founder attention into the three-layer context", async () => {
+	const identityPath = join(root, "context", "identity.md");
+	const memoryPath = join(root, "context", "MEMORY.md");
+	mkdirSync(join(root, "context"), { recursive: true });
+	writeFileSync(
+		identityPath,
+		"# Lead A\n## Speaking style\n短句，先讲结论。\n## Private\nPRIVATE_IDENTITY",
+	);
+	writeFileSync(
+		memoryPath,
+		"# Memory index\n- FLY-2886 voice brain\nPRIVATE_MEMORY_BODY",
+	);
+	const project = configuredProject();
+	Object.assign(project.leads[0]!, {
+		voiceBackground: { enabled: true, browser: "founder_chrome" },
+		cosContext: {
+			displayName: "Lead A",
+			aliases: [],
+			workingSubdirectory: ".",
+			identityPath,
+			memoryPaths: [memoryPath],
+			writableRoots: [root],
+		},
+	});
+	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
+	createVoiceSessionServices({
+		probeSelfFilter: validProbe,
+		store,
+		projects: [project],
+		env: { LEAD_TOKEN: "test-token" },
+		homeDir: root,
+		cwd: root,
+		config: { discordOwnerUserId: "founder" } as BridgeConfig,
+		readFounderAttention: vi.fn(() => ({
+			available: true,
+			pending: [
+				{
+					key: "attention:founder_gate:gate-1",
+					issue: "FLY-2886",
+					source: {
+						fact: { value: { id: "gate-1", kind: "founder_gate" } },
+					},
+				},
+			],
+		})) as never,
+	});
+	const context = await factory.mock.calls[0]![0].getSessionContext(
+		store.getVoiceSession(SESSION_ID)!,
+		{ leaseBindingDigest: "d".repeat(64) },
+	);
+
+	expect(context.realtimePrompt).toContain("我是 Lead A 的语音分身");
+	expect(context.realtimePrompt).toContain(
+		"Discord server 100000000000000001 的语音房 100000000000000002",
+	);
+	expect(context.realtimePrompt).toContain("FLY-2886 founder_gate gate-1");
+	expect(context.realtimePrompt).toContain("FLY-2886 voice brain");
+	expect(context.realtimePrompt).not.toContain("PRIVATE_MEMORY_BODY");
+	expect(context.baseInstructions).toContain("PRIVATE_IDENTITY");
 });
 
 it("projects authoritative demand into the durable voice health store", async () => {

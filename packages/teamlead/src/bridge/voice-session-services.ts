@@ -3,7 +3,10 @@ import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import type express from "express";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import {
+	effectiveVoiceBackground,
+	type ProjectEntry,
+} from "../ProjectConfig.js";
 import type { StateStore, VoiceSessionRow } from "../StateStore.js";
 import { loadVoiceHostConfig } from "../voice-host-config.js";
 import { generateBootstrap } from "./bootstrap-generator.js";
@@ -11,6 +14,7 @@ import {
 	editDiscordMessageInChannel,
 	postDiscordMessageToChannel,
 } from "./discord-utils.js";
+import { readFounderAttentionFacts } from "./founder-attention-facts.js";
 import { createLeadCapabilityVoiceRouter } from "./lead-capability-voice.js";
 import type { BridgeConfig } from "./types.js";
 import type { VoiceHandoffService } from "./voice-handoff.js";
@@ -60,6 +64,7 @@ export function createVoiceSessionServices(input: {
 	fetchImpl?: typeof fetch;
 	probeSelfFilter?: typeof probeVoiceSelfFilter;
 	voiceHandoffs?: VoiceHandoffService;
+	readFounderAttention?: typeof readFounderAttentionFacts;
 }): {
 	router: ReturnType<typeof createVoiceSessionRouter>;
 	scheduleRouter: ReturnType<typeof createVoiceScheduleRouter>;
@@ -281,6 +286,13 @@ export function createVoiceSessionServices(input: {
 			throw new VoiceSessionContextError("context_state_unavailable");
 		});
 		const capturedAt = new Date().toISOString();
+		const background = effectiveVoiceBackground(lead);
+		const attention = background.enabled
+			? (input.readFounderAttention ?? readFounderAttentionFacts)(
+					{ stateStore: input.store },
+					{ projectName: project.projectName, now: new Date(capturedAt) },
+				)
+			: null;
 		return buildVoiceSessionContext({
 			sources,
 			rosterDigest: digestVoiceContextRoster(input.projects),
@@ -291,10 +303,34 @@ export function createVoiceSessionServices(input: {
 			session: {
 				sessionId: session.sessionId,
 				mode: session.mode,
+				guildId: session.guildId,
+				voiceChannelId: session.voiceChannelId,
 				meetingId: session.meetingId,
 				topic: session.topic,
 				priorMinutes: null,
 			},
+			...(background.enabled
+				? {
+						voiceBackground: {
+							enabled: true,
+							displayName: lead.cosContext?.displayName ?? lead.agentId,
+							browser: background.browser,
+							// The capability parent fills this from its actual manifest.
+							// Until then the opening brief says the list is unavailable,
+							// rather than promising tools that are not yet connected.
+							capabilityCategories: [],
+							founderOnlyActions: ["merge", "ship", "停 runner", "批准"],
+							founderAttention:
+								attention?.available === true
+									? attention.pending.slice(0, 10).map((item) => {
+											const fact = item.source.fact.value;
+											return `${item.issue ?? "未绑定单号"} ${fact?.kind ?? "unknown"} ${fact?.id ?? item.key}`;
+										})
+									: [],
+							founderAttentionUnavailable: attention?.available !== true,
+						},
+					}
+				: {}),
 		});
 	};
 	const postStatus = async (session: VoiceSessionRow, text: string) => {
