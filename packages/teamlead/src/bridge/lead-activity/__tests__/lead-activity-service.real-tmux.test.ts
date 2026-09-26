@@ -67,12 +67,14 @@ function launchdLikeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 describe.skipIf(!hasTools)(
 	"production Claude wiring from a launchd-like env (no TMUX, no LANG/LC_*)",
 	() => {
-		// Short root: the canonical socket path must stay under 90 bytes.
-		const room = mkdtempSync("/tmp/fly2882-");
-		const registry = join(room, "launchd-leads.json");
+		let room = "";
+		let registry = "";
 		const sockets: string[] = [];
 
 		beforeAll(() => {
+			// Short root: the canonical socket path must stay under 90 bytes.
+			room = mkdtempSync("/tmp/fly2882-rt-");
+			registry = join(room, "launchd-leads.json");
 			const claude = join(room, "bin", "claude");
 			mkdirSync(join(room, "bin"));
 			execFileSync("cc", ["-x", "c", "-o", claude, "-"], {
@@ -80,9 +82,9 @@ describe.skipIf(!hasTools)(
 				timeout: 60_000,
 			});
 			const rows = [];
-			for (const leadId of [IDLE_LEAD, BUSY_LEAD]) {
+			for (const [slot, leadId] of [IDLE_LEAD, BUSY_LEAD].entries()) {
 				const runtime = join(room, "launchd", leadId);
-				const leadState = join(room, "q", leadId);
+				const leadState = join(room, "q", String(slot));
 				const socket = deriveLeadSocketPath(`${PROJECT}/${leadId}`, leadState);
 				mkdirSync(runtime, { recursive: true });
 				mkdirSync(join(leadState, "sock"), { recursive: true });
@@ -158,7 +160,7 @@ describe.skipIf(!hasTools)(
 		afterAll(() => {
 			for (const socket of sockets)
 				spawnSync("tmux", ["-S", socket, "kill-server"], { stdio: "ignore" });
-			rmSync(room, { recursive: true, force: true });
+			if (room) rmSync(room, { recursive: true, force: true });
 		});
 
 		it("reads idle and busy (never lead_window_unavailable) with the Bridge's inherited env", async () => {
