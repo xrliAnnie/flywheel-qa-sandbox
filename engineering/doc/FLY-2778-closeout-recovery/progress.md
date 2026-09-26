@@ -1,15 +1,14 @@
 ---
 issue: FLY-2778
 phase: implement
-phaseCursor: 0/6
-updated: 2026-09-26T20:59:45.602Z
-nextStep: "C1 committed at 48c7f2129: no-signal refuse-mode worktree removal.
-  Next implement trusted pre-spawn receipt producer/persistence from approved
-  FLY-2754 subset while FLY-2919 provider remains WIP."
+phaseCursor: 1/6
+updated: 2026-09-26T21:58:14.354Z
+nextStep: Validate inherited pre-spawn receipt WIP with discovered focused
+  tests, then fix only observed failures before continuing plan tasks.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2778 progress
-**phase**: implement (0/6)
-**next**: C1 committed at 48c7f2129: no-signal refuse-mode worktree removal. Next implement trusted pre-spawn receipt producer/persistence from approved FLY-2754 subset while FLY-2919 provider remains WIP.
+**phase**: implement (1/6)
+**next**: Validate inherited pre-spawn receipt WIP with discovered focused tests, then fix only observed failures before continuing plan tasks.
