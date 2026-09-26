@@ -36,7 +36,7 @@ commits；exploration/research/plan/HTML 会由 design node 独立 commit 后 fa
 
 ```bash
 git ls-tree -d --name-only HEAD | LC_ALL=C sort
-find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \\; | LC_ALL=C sort
+find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \; | LC_ALL=C sort
 ```
 
 当前集合：

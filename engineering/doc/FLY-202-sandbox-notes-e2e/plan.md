@@ -40,6 +40,7 @@ Run:
 
 ```bash
 git fetch origin main --quiet
+git remote get-url origin
 git branch --show-current
 git rev-list --count origin/main..HEAD
 git rev-list --count HEAD..origin/main
@@ -48,11 +49,14 @@ gh pr view 196 --json number,state,headRefName,headRefOid,baseRefName,url
 
 Expected:
 
+- origin = `https://github.com/xrliAnnie/flywheel-qa-sandbox.git`；
 - branch = `project-slot-1-FLY-202`；
 - PR #196 = OPEN，head 为同一 branch，base=`main`；
 - behind = 0；ahead 只包含 inherited FLY-2456 marker、本 issue 设计产物和 progress commits。
 
 不要因为 PR title/body 仍描述 FLY-2456 而另开 PR，也不要重锚、rebase 或 force-push。
+若 fetch 后 behind > 0，不自行 merge/rebase main；继续当前 docs-only 任务，并在 handoff 明确记录
+behind 数值，交由 Lead 决定是否需要技术同步。
 
 ### Task 1: 建立会失败的当前证据检查（RED）
 
@@ -128,7 +132,10 @@ const cp = require('node:child_process');
 const file = fs.readFileSync('doc/qa/sandbox-notes.md', 'utf8');
 const match = file.match(/Command: `ls -R doc\/ \| head -50`\n\n```text\n([\s\S]*?)\n```/);
 if (!match) throw new Error('missing required doc listing block');
-const live = cp.execFileSync('sh', ['-c', 'ls -R doc/ | head -50'], { encoding: 'utf8' }).trimEnd();
+const live = cp.execFileSync('sh', ['-c', 'ls -R doc/ | head -50'], {
+  encoding: 'utf8',
+  env: { ...process.env, LC_ALL: 'C' },
+}).replace(/\n$/, '');
 if (match[1] !== live) throw new Error('captured doc listing does not match current checkout');
 console.log('captured doc listing: PASS');
 NODE
@@ -145,7 +152,8 @@ documentation contract’s RED evidence; do not “fix” the validator to accep
 
 - [ ] **Step 1: 复核并保留 2–3 段仓库用途说明**
 
-The introduction must remain exactly three prose paragraphs and cover these complete statements:
+The introduction must remain within the issue contract of 2–3 prose paragraphs (the current three are valid)
+and cover these complete statements:
 
 1. the sandbox is an isolated GitHub fork used by test slots to run a genuine Runner end to end；
 2. isolation allows real Git/GitHub/gate behavior without production impact；
@@ -180,6 +188,9 @@ Keep one and only one row for every Task 1 directory. The first column must use 
 ```
 
 If Task 1 finds a different directory set, update the table from that evidence rather than forcing 17 rows.
+The second-column sentences below are factual examples, not mandatory replacements: preserve existing,
+more-specific descriptions whenever they remain accurate, and edit a description only when current evidence
+shows it is stale or wrong.
 
 - [ ] **Step 3: 复核 QA README 摘要为恰好 10 条**
 
@@ -197,8 +208,10 @@ source prose verbatim when a concise summary expresses the same fact.
 
 - [ ] **Step 4: 替换 live command output 并保留 inherited marker**
 
-Run `ls -R doc/ | head -50` after Steps 1–3, copy its exact stdout, and use `apply_patch` to
-replace only the content inside the existing fenced `text` block. Keep the visible command label unchanged.
+Set `LC_ALL=C`, run the exact issue command `ls -R doc/ | head -50` after Steps 1–3, copy its exact stdout,
+and use the implementation runner's precise edit tool to replace only the content inside the existing fenced
+`text` block. Keep the visible command label unchanged. This slot runs macOS/BSD `ls`; QA must regenerate the
+evidence on the same slot environment rather than compare output produced by GNU `ls` on another host.
 Keep `- FLY-2456 drill marker r2 B1` after the fence; it predates this run and is not authorized for removal.
 
 ### Task 3: 针对主交付物验证
@@ -326,6 +339,10 @@ Expected: PR OPEN, base=`main`, head branch=`project-slot-1-FLY-202`, and `headR
 Follow the implementation dispatch’s exact code-review gate, report, completion route, and park epilogue.
 The DAG orchestrator—not this plan and not the implementation runner—dispatches QA. Any later QA node should
 re-run Task 3’s two bounded parsers and verify PR #196 remains open and unmerged.
+
+Because PR #196 retains inherited FLY-2456 title/body metadata, the implementation handoff report must include
+all three traceability fields in one sentence: the FLY-202 Linear URL, PR #196 URL, and final delivery commit SHA.
+This preserves reverse lookup without mutating PR metadata outside the node's authorization.
 
 ## Requirement-to-evidence map
 
