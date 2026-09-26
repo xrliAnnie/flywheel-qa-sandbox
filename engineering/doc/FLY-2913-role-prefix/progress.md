@@ -1,19 +1,19 @@
 ---
 issue: FLY-2913
 phase: implement
-phaseCursor: 4/6
-updated: 2026-09-26T10:07:16.873Z
-nextStep: "Independent review fixes pushed (df59c9d72): parser fail-closed,
-  role-v1 settings via 0600 file (tmux budget), legacy fallback on
-  switch/provenance errors, CLAUDE_CONFIG_DIR, driver reports ineffective
-  controls. Waiting for Lead room-info (deploy head 5c061c862; slot 3 busy with
-  FLY-2912). Then: run scripts/qa-2913-prefix-controls.mjs in slot cwd (3
-  rounds, 5 roles), drop plugin-skill entries if ineffective, write evidence +
-  before/after table, ff shared branch, milestone, PR, pr_created review lane."
+phaseCursor: 6/6
+updated: 2026-09-26T10:32:45.420Z
+nextStep: "Implement complete on flywheel-FLY-2913: FlagStore switch,
+  name-only+claudeMdExcludes role-v1 profiles (compiler v2, Lead-accepted
+  deviation), runner/reviewer wiring, 5-role x3 paired first-turn measurements
+  in slot 4 (-6.8K..-10.7K, all checks pass). Next: milestone commit (literal
+  last), PR, stage pr_created -> codex code review -> await-codex-gate code ->
+  complete needs_review. Real-role task acceptance belongs to QA (seed
+  runner_prefix_profile=role-v1 in its own room)."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
-**phase**: implement (4/6)
-**next**: Independent review fixes pushed (df59c9d72): parser fail-closed, role-v1 settings via 0600 file (tmux budget), legacy fallback on switch/provenance errors, CLAUDE_CONFIG_DIR, driver reports ineffective controls. Waiting for Lead room-info (deploy head 5c061c862; slot 3 busy with FLY-2912). Then: run scripts/qa-2913-prefix-controls.mjs in slot cwd (3 rounds, 5 roles), drop plugin-skill entries if ineffective, write evidence + before/after table, ff shared branch, milestone, PR, pr_created review lane.
+**phase**: implement (6/6)
+**next**: Implement complete on flywheel-FLY-2913: FlagStore switch, name-only+claudeMdExcludes role-v1 profiles (compiler v2, Lead-accepted deviation), runner/reviewer wiring, 5-role x3 paired first-turn measurements in slot 4 (-6.8K..-10.7K, all checks pass). Next: milestone commit (literal last), PR, stage pr_created -> codex code review -> await-codex-gate code -> complete needs_review. Real-role task acceptance belongs to QA (seed runner_prefix_profile=role-v1 in its own room).
