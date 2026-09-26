@@ -267,3 +267,17 @@ QA@2 判据（按 Lead）：
 - 重启后清扫干净；
 - 连续 ≥3 场，每场后 UDP 回到基线，下一场能正常认领；
 - 插话补足有效样本。
+
+### 返工评审 R4 的修复（`8b6c5f386`，Lead 裁定 `f6c495fa`，最后一轮）
+
+R4 结论：H1、H2 和重启清扫测试都没有新的 HIGH。唯一的 HIGH 出在 H3 修复内部。
+
+- **问题**：已经发起停止后，如果 shell 的 `close` 先到，原逻辑会取消 SIGKILL 升级计时器。孙进程若忽略 TERM 且已放开管道（例如 curl 把输出写到 /dev/null），回调后它仍然活着。
+- **修复**：已发起停止、`close` 又先到时，立即对整组发 SIGKILL，再回调，不再依赖计时器。
+- **测试**：bash 收到 TERM 就退出，孙进程执行 `trap '' TERM` 并把输出重定向到 `/dev/null`；断言回调之后孙进程已经退出。
+- **负对照**：去掉整组 SIGKILL，用例失败。
+
+验证：
+- `pnpm lint`、构建、typecheck 均为 exit 0。
+- `health-alert.test.ts` 10/10 过。
+- `shutdown-exit.test.ts` 10/10 过。它的 fixture 在子进程里加载 `health-alert.ts`，不在 `vitest related` 的依赖图里，所以单独跑。
