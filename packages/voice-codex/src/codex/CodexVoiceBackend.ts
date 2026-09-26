@@ -122,6 +122,7 @@ export interface CodexVoiceBackendOptions {
 	monotonicNow?: () => number;
 	onEvidence?: (record: Record<string, unknown>) => void;
 	confirmTimeoutMs?: number;
+	allowSpokenParaphrase?: boolean;
 }
 
 /** One assistant item's playback, fed while its audio is still arriving. */
@@ -231,6 +232,7 @@ class CodexVoiceSession implements ConversationSession {
 			transport: () => options.conversation.transport,
 			isLive: () => this.live && !this.restarting && !this.closing,
 			confirmTimeoutMs: options.confirmTimeoutMs,
+			allowSpokenParaphrase: options.allowSpokenParaphrase,
 		});
 	}
 

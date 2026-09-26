@@ -12,7 +12,13 @@ class FakeSpeechTransport implements CodexSpeechTransport {
 	});
 }
 
-function harness(options: { live?: boolean; confirmTimeoutMs?: number } = {}) {
+function harness(
+	options: {
+		live?: boolean;
+		confirmTimeoutMs?: number;
+		allowSpokenParaphrase?: boolean;
+	} = {},
+) {
 	const transport = new FakeSpeechTransport();
 	const speaker = new CodexProofSpeaker({
 		sessionId: "session-a",
@@ -22,6 +28,7 @@ function harness(options: { live?: boolean; confirmTimeoutMs?: number } = {}) {
 		transport: () => transport,
 		isLive: () => options.live ?? true,
 		confirmTimeoutMs: options.confirmTimeoutMs,
+		allowSpokenParaphrase: options.allowSpokenParaphrase,
 	});
 	return { speaker, transport };
 }
@@ -131,6 +138,28 @@ describe("Codex proof-bound speak", () => {
 		await expect(result).resolves.toMatchObject({
 			outcome: "completed",
 			contentProof: "transcript_equivalent",
+		});
+	});
+
+	it("lets enabled voice sessions paraphrase while keeping exact proof absent", async () => {
+		const h = harness({ allowSpokenParaphrase: true });
+		const result = h.speaker.speak(
+			"FLY-2886 的 PR #1324 现在通过了。",
+			"readback",
+			{
+				pendingKey: "spoken-paraphrase",
+				verification: "required",
+			},
+		);
+		await completeCurrent(
+			h.speaker,
+			"item-paraphrase",
+			"FLY-2886 这张单的 PR #1324 已经通过。",
+		);
+		await expect(result).resolves.toMatchObject({
+			outcome: "completed",
+			transport: "submitted",
+			contentProof: "none",
 		});
 	});
 

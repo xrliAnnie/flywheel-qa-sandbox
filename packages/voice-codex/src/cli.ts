@@ -34,6 +34,7 @@ import {
 import {
 	loadVoiceDaemonConfig,
 	loadVoiceProjects,
+	resolveLeadVoiceBackground,
 	resolveLeadVoiceToken,
 	resolveVoiceCommDbPath,
 } from "./config.js";
@@ -344,6 +345,10 @@ export async function main(): Promise<void> {
 		const startDeadlineAt = Date.now() + SESSION_START_DEADLINE_MS;
 		context.lease.assert();
 		parseVoiceProjection(context.projection, context.sessionId);
+		const voiceBackground = resolveLeadVoiceBackground(
+			context.projection,
+			projects,
+		);
 		const token = tokenFor(context.projection);
 		await verifyLeadVoiceTokenIdentity(
 			token,
@@ -475,6 +480,7 @@ export async function main(): Promise<void> {
 								voiceSessionId: context.sessionId,
 								...record,
 							}),
+						allowSpokenParaphrase: voiceBackground.enabled,
 					}),
 			);
 			codexBackend = (await registry.create(

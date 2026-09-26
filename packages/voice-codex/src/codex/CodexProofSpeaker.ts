@@ -91,6 +91,7 @@ export class CodexProofSpeaker {
 			transport(): CodexSpeechTransport;
 			isLive(): boolean;
 			confirmTimeoutMs?: number;
+			allowSpokenParaphrase?: boolean;
 		},
 	) {}
 
@@ -99,7 +100,12 @@ export class CodexProofSpeaker {
 		kind: VoiceSpeakKind,
 		options: VoiceSpeakOptions,
 	): Promise<SpeakReceipt> {
-		const verification = options.verification ?? defaultVerification(kind);
+		const requestedVerification =
+			options.verification ?? defaultVerification(kind);
+		const verification =
+			this.options.allowSpokenParaphrase && requestedVerification === "required"
+				? "best_effort"
+				: requestedVerification;
 		const sessionGeneration = this.options.sessionGeneration();
 		let requestDigest: string;
 		try {

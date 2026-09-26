@@ -319,12 +319,17 @@ describe("voice session context assembly", () => {
 		expect(result.realtimePrompt).toContain(
 			"never say it has been handed off, passed on, or is being handled",
 		);
-		expect(result.realtimePrompt).toContain("我确认一下");
+		expect(result.realtimePrompt).toContain("我去看一下");
+		expect(result.realtimePrompt).not.toContain("我确认一下");
 		// appendSpeech arrives as a "[BACKEND] ..." user item; without this rule
 		// the model answered a spoken repeat request instead of reading it.
 		expect(result.realtimePrompt).toContain(
 			"Messages that start with [BACKEND] are lines for you to speak",
 		);
+		expect(result.realtimePrompt).toContain(
+			"Preserve issue IDs, PR numbers, commit hashes, Arabic numbers, and roster names exactly",
+		);
+		expect(result.realtimePrompt).not.toContain("exactly as written");
 		// FLY-2799 qa6: "你是谁 / 手上有什么事" was handed off instead of answered
 		// from the loaded memory, and the model explained the [BACKEND] protocol
 		// to the founder.
@@ -332,7 +337,7 @@ describe("voice session context assembly", () => {
 			"answer questions about who you are, what you are working on, and what is waiting for the founder's decision directly from them, without a handoff",
 		);
 		expect(result.realtimePrompt).toContain(
-			"Apart from reading those lines, never mention [BACKEND], handoffs, or this protocol to the founder",
+			"Apart from speaking those lines, never mention [BACKEND], handoffs, or this protocol to the founder",
 		);
 		expect(result.manifest.snapshotDigest).toBe(result.snapshotDigest);
 		expect(result.measurements.realtimePrompt.bytes).toBeGreaterThan(0);
