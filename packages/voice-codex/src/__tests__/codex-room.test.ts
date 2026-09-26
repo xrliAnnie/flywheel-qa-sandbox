@@ -2291,3 +2291,102 @@ it("collects only completed tool outputs and trusted context, excluding answer a
 	expect(JSON.stringify(result.sources)).not.toContain("FLY-9999");
 	await session.close();
 });
+
+// FLY-2886 QA@4 D1: reads leave no lead_operation receipt by design, so the
+// room needs its own trace that the background agent actually reached a Lead
+// operation. Only the operation id and the broker's status/errorCode — never
+// argument or result values.
+it("records each background lead_operation call as evidence without its values", async () => {
+	let callbacks!: Parameters<
+		ConstructorParameters<typeof CodexVoiceBackend>[0]["container"]["open"]
+	>[0];
+	const onEvidence = vi.fn();
+	const backend = new CodexVoiceBackend({
+		sessionId: "lead-op-evidence",
+		voice: "marin",
+		backgroundEnabled: true,
+		onEvidence,
+		loadContext: async () =>
+			({
+				realtimePrompt: "Trusted",
+				baseInstructions: "background",
+				snapshotDigest: "a".repeat(64),
+			}) as never,
+		container: {
+			open: async (input) => {
+				callbacks = input;
+				await input.loadContext();
+				return {
+					transport: {
+						appendAudio: () => "sent",
+						appendText: async () => {},
+						appendSpeech: async () => {},
+						cancel: async () => {},
+					},
+					close: async () => {},
+				};
+			},
+		},
+	});
+	const session = await backend.createConversation({ brain });
+	callbacks.background!.onTurnStarted("t");
+	const call = (
+		itemId: string,
+		status: string,
+		args: unknown,
+		text: string,
+		server = "lead_actions",
+	) =>
+		callbacks.background!.onItemCompleted?.({
+			turnId: "t",
+			itemId,
+			type: "mcpToolCall",
+			raw: {
+				server,
+				tool: "lead_operation",
+				status,
+				arguments: args,
+				result: { content: [{ type: "text", text }] },
+			},
+		});
+	call(
+		"ok",
+		"completed",
+		JSON.stringify({
+			operationId: "github.pr.view",
+			requestId: "123e4567-e89b-42d3-a456-426614174000",
+			input: { number: 1360 },
+		}),
+		JSON.stringify({ status: "succeeded", data: { title: "SECRET-TITLE" } }),
+	);
+	call(
+		"bad",
+		"failed",
+		{ operationId: "bridge.read", input: { request: "SECRET-ARG" } },
+		JSON.stringify({ errorCode: "invalid_operation_request" }),
+	);
+	call("other", "completed", { operationId: "x" }, "{}", "codex");
+	const events = onEvidence.mock.calls
+		.map(([event]) => event)
+		.filter((event) => event.kind === "codex_background_lead_operation");
+	expect(events).toEqual([
+		{
+			kind: "codex_background_lead_operation",
+			turnId: "t",
+			itemId: "ok",
+			operationId: "github.pr.view",
+			itemStatus: "completed",
+			resultStatus: "succeeded",
+		},
+		{
+			kind: "codex_background_lead_operation",
+			turnId: "t",
+			itemId: "bad",
+			operationId: "bridge.read",
+			itemStatus: "failed",
+			errorCode: "invalid_operation_request",
+		},
+	]);
+	expect(JSON.stringify(events)).not.toMatch(/SECRET|1360/u);
+	await session.close();
+});

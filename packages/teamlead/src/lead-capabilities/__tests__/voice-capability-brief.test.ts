@@ -183,6 +183,27 @@ describe("admitted capability opening brief", () => {
 			Buffer.byteLength(background),
 		);
 	});
+	// FLY-2886 QA@4 D1 (real-host probe): bridge.read was rendered as
+	// `{request: any}`, so the agent guessed three request shapes and gave up.
+	it("spells out discriminated-union inputs instead of `any`", () => {
+		const completed = bindAdmittedVoiceCapabilities(snapshot(), {
+			...manifest,
+			operationIds: ["bridge.read", "linear.issue.assign"],
+			deniedOperationIds: [],
+			unavailableIntegrations: [],
+		});
+		const line = completed.baseInstructions
+			.split("\n")
+			.find((entry) => entry.startsWith("- bridge.read "))!;
+		expect(line).not.toContain("any");
+		expect(line).toContain('resource: "health"');
+		expect(line).toContain('resource: "sessions.list"');
+		expect(line).toMatch(/resource: "session\.status", executionId: string/u);
+		const assign = completed.baseInstructions
+			.split("\n")
+			.find((entry) => entry.startsWith("- linear.issue.assign "))!;
+		expect(assign).not.toMatch(/assigneeId\??: any/u);
+	});
 	it("adds no line when every integration is connected", () => {
 		const completed = bindAdmittedVoiceCapabilities(snapshot(), {
 			...manifest,

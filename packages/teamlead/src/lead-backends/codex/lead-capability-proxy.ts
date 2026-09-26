@@ -14,6 +14,7 @@ import type {
 } from "../../lead-capabilities/broker.js";
 import { OperationRequestSchema } from "../../lead-capabilities/broker.js";
 import { getLeadCapability } from "../../lead-capabilities/catalog.js";
+import { describeOperationInput } from "../../lead-capabilities/input-shape.js";
 import {
 	createLeadCapabilityManifest,
 	type LeadCapabilityManifest,
@@ -123,6 +124,40 @@ const failure = (code: string, requestId?: string) => ({
 		},
 	],
 });
+const MAX_INVALID_HINT_ISSUES = 5;
+const MAX_INVALID_HINT_BYTES = 4096;
+/**
+ * Voice-only invalid-request reply (FLY-2886 QA@4 D1). Codex flattens the
+ * lead_operation oneOf, so the model cannot see the input contract; it gets
+ * the failing paths plus the catalog shape of the operation it named. Paths
+ * and messages come from the schema, never from the rejected values.
+ */
+function invalidRequestHint(
+	error: z.ZodError,
+	operation: { inputSchema: z.ZodType } | undefined,
+) {
+	const issues = error.issues
+		.slice(0, MAX_INVALID_HINT_ISSUES)
+		.map((issue) => ({
+			path: issue.path.map(String).join(".").slice(0, 160) || "(root)",
+			code: issue.code,
+		}));
+	let expectedInput = operation
+		? describeOperationInput(operation.inputSchema)
+		: undefined;
+	const text = () =>
+		JSON.stringify({
+			errorCode: "invalid_operation_request",
+			issues,
+			...(expectedInput ? { expectedInput } : {}),
+		});
+	if (expectedInput && Buffer.byteLength(text()) > MAX_INVALID_HINT_BYTES)
+		expectedInput = `${expectedInput.slice(0, MAX_INVALID_HINT_BYTES - Buffer.byteLength(JSON.stringify({ errorCode: "invalid_operation_request", issues })) - 64)}…`;
+	return {
+		isError: true,
+		content: [{ type: "text" as const, text: text() }],
+	};
+}
 /** Native MCP façade only. The trusted parent owns authorization, credentials and all provider calls. */
 export function createLeadCapabilityProxy(
 	options: LeadCapabilityProxyOptions,
@@ -209,7 +244,10 @@ export function createLeadCapabilityProxy(
 		const parsed = voiceDenial
 			? OperationRequestSchema.safeParse(args)
 			: variants[index]!.safeParse(args);
-		if (!parsed.success) return failure("invalid_operation_request");
+		if (!parsed.success)
+			return /^voice:[0-9a-f-]{36}$/i.test(manifest.activationId)
+				? invalidRequestHint(parsed.error, operations[index])
+				: failure("invalid_operation_request");
 		if (
 			Buffer.byteLength(JSON.stringify(parsed.data)) + 1 >
 			leadOperationRequestBytes(parsed.data.operationId)

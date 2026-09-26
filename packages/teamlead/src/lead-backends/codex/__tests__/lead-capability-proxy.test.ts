@@ -154,6 +154,73 @@ describe("native lead capability MCP proxy", () => {
 			await f.close();
 		}
 	});
+	// FLY-2886 QA@4 D1: Codex hands the model a flattened lead_operation schema
+	// (the top-level oneOf does not survive), so on the real host the voice
+	// background agent guessed `input` three times and each time got a bare
+	// `invalid_operation_request`, then told the founder there was no entry.
+	// Voice sessions get bounded, schema-derived field hints; resident bytes stay.
+	it("tells a voice background agent which input fields were wrong, bounded and without echoing values", async () => {
+		const voiceManifest = createLeadCapabilityManifest({
+			projectName: "flywheel",
+			leadId: "product",
+			identityDigest: "a".repeat(64),
+			backend: "codex-app-server",
+			profile: "full-access",
+			activationId: "voice:11111111-2222-4333-8444-555555555555",
+			sourceRevision: "abc",
+			operations: [getLeadCapability("bridge.read")!],
+			ruleSources: [],
+			skillSources: [],
+			integrations: [],
+		});
+		const f = await connected(
+			vi.fn(async () => result),
+			voiceManifest,
+		);
+		try {
+			const call = await f.client.callTool({
+				name: "lead_operation",
+				arguments: {
+					schemaVersion: 1,
+					operationId: "bridge.read",
+					requestId: request.requestId,
+					input: { request: { method: "GET", path: "/api/issues/SECRET-VALUE" } },
+				},
+			});
+			expect(call.isError).toBe(true);
+			const text = (call.content as Array<{ text: string }>)[0]!.text;
+			const body = JSON.parse(text);
+			expect(body.errorCode).toBe("invalid_operation_request");
+			expect(body.issues.length).toBeGreaterThan(0);
+			expect(body.issues.length).toBeLessThanOrEqual(5);
+			expect(
+				body.issues.some((issue: { path: string }) =>
+					issue.path.startsWith("input.request"),
+				),
+			).toBe(true);
+			expect(body.expectedInput).toContain('resource: "health"');
+			expect(body.expectedInput).toContain('resource: "session.status"');
+			expect(text).not.toContain("SECRET-VALUE");
+			expect(Buffer.byteLength(text)).toBeLessThanOrEqual(4096);
+			expect(f.requestClient).not.toHaveBeenCalled();
+		} finally {
+			await f.close();
+		}
+	});
+	it("keeps the resident invalid-request reply byte-identical", async () => {
+		const f = await connected();
+		try {
+			const call = await f.client.callTool({
+				name: "lead_operation",
+				arguments: { ...request, input: { threadId: 5 } },
+			});
+			expect((call.content as Array<{ text: string }>)[0]!.text).toBe(
+				JSON.stringify({ errorCode: "invalid_operation_request" }),
+			);
+		} finally {
+			await f.close();
+		}
+	});
 	it("fails closed for reserved unknown duplicate or mismatched manifest versions", () => {
 		for (const change of [
 			{ operationIds: ["bridge.ship"] },

@@ -903,13 +903,10 @@ class CodexVoiceSession implements ConversationSession {
 	}
 
 	observeProcessItemCompleted(item: ThreadCompletedItem): void {
-		if (
-			!this.options.backgroundEnabled ||
-			this.closing ||
-			!item.itemId ||
-			item.raw.status !== "completed"
-		)
+		if (!this.options.backgroundEnabled || this.closing || !item.itemId)
 			return;
+		this.recordLeadOperation(item);
+		if (item.raw.status !== "completed") return;
 		let text: string | undefined;
 		if (
 			item.type === "commandExecution" &&
@@ -924,6 +921,56 @@ class CodexVoiceSession implements ConversationSession {
 			new Map<string, SpokenScriptSource>();
 		sources.set(item.itemId, { itemId: item.itemId, text });
 		this.turnSources.set(item.turnId, sources);
+	}
+
+	/**
+	 * Reads leave no receipt, so this is the room's only trace that the
+	 * background agent reached a Lead operation (FLY-2886 QA@4 D1). Carries the
+	 * operation id and the broker's status/errorCode only, never values.
+	 */
+	private recordLeadOperation(item: ThreadCompletedItem): void {
+		if (
+			item.type !== "mcpToolCall" ||
+			item.raw.server !== "lead_actions" ||
+			item.raw.tool !== "lead_operation"
+		)
+			return;
+		const parse = (value: unknown): Record<string, unknown> | undefined => {
+			if (typeof value === "string") {
+				try {
+					return parse(JSON.parse(value));
+				} catch {
+					return undefined;
+				}
+			}
+			return value && typeof value === "object" && !Array.isArray(value)
+				? (value as Record<string, unknown>)
+				: undefined;
+		};
+		const token = (value: unknown, pattern: RegExp) =>
+			typeof value === "string" && pattern.test(value) ? value : undefined;
+		const operationId = token(
+			parse(item.raw.arguments)?.operationId,
+			/^[a-z][a-z0-9_.-]{0,95}$/u,
+		);
+		const content = parse(item.raw.result)?.content;
+		const first = Array.isArray(content) ? parse(content[0]) : undefined;
+		const body = parse(first?.text);
+		const resultStatus = token(
+			body?.status,
+			/^(succeeded|rejected|pending|unknown)$/u,
+		);
+		const errorCode = token(body?.errorCode, /^[a-z][a-z0-9_]{0,95}$/u);
+		const itemStatus = token(item.raw.status, /^[A-Za-z]{1,32}$/u);
+		this.options.onEvidence?.({
+			kind: "codex_background_lead_operation",
+			turnId: item.turnId,
+			itemId: item.itemId,
+			operationId: operationId ?? "unparsed",
+			...(itemStatus ? { itemStatus } : {}),
+			...(resultStatus ? { resultStatus } : {}),
+			...(errorCode ? { errorCode } : {}),
+		});
 	}
 
 	observeProcessTurnStarted(turnId: string): void {
