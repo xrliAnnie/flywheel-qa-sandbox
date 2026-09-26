@@ -10,7 +10,7 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 
 | Directory | Description |
 | --- | --- |
-| `.claude/` | Claude Code project commands, skills, `qa-config.yaml`, and orchestrator helpers. |
+| `.claude/` | Claude Code project commands, `qa-config.yaml`, and orchestrator state/lock/track helpers (Runner-injected skills land in a git-excluded `skills/` at runtime). |
 | `.flywheel/` | Project-local Flywheel configuration (`config.yaml`) and executor role definitions. |
 | `.github/` | GitHub Actions workflows for repository CI and automation. |
 | `.lead/` | Per-Lead identity folders (cos / eng / product / infra-bot / interviewer) plus the shared Lead rule bundle. |
@@ -46,7 +46,7 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 Command: `ls -R doc/ | head -50`
 
 ```text
-FLY-202-generalized-e2e
+FLY-145-s6-retry-product-test
 FLY-202-qa-sandbox-fixture
 VERSION
 architecture
@@ -56,8 +56,17 @@ qa
 reference
 retro
 
-doc//FLY-202-generalized-e2e:
+doc//FLY-145-s6-retry-product-test:
+design-review.md
 design.html
+exploration.md
+flow.mmd
+flow.svg
+model.mmd
+model.svg
+plan.md
+progress.md
+research.md
 
 doc//FLY-202-qa-sandbox-fixture:
 FLY-202-d1-e2e-chain.mmd
@@ -87,15 +96,6 @@ v2.0-product-vision.md
 
 doc//architecture/archive:
 v0.1.0-flywheel-orchestrator.md
-
-doc//engineer:
-deep-research
-exploration
-implementation
-onboarding
-plan
-qa
-research
 ```
 
 - FLY-2456 drill marker r2 B1
