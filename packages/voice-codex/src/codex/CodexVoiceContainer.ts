@@ -22,19 +22,27 @@ import {
 	VOICE_CODEX_HOME_CONFIG,
 } from "../codex-home.js";
 import {
-	type CodexRealtimeAudioDelta,
 	type CodexRealtimeBackgroundTurn,
 	type CodexRealtimeExecutionIntent,
 	type CodexRealtimeItem,
+	type CodexRealtimeRpc,
 	type CodexRealtimeTranscript,
 	CodexRealtimeTransport,
 } from "./RealtimeTransport.js";
+import {
+	type DownlinkPacket,
+	type RealtimeDataEvent,
+	type RealtimeMediaLeg,
+	WebRtcLeg,
+	type WebRtcLegOptions,
+} from "./WebRtcLeg.js";
 
 export const CODEX_VOICE_BINARY_VERSION = "codex-cli 0.156.1";
 export const CODEX_VOICE_BINARY_SHA256 =
 	"0196e89fe5a7598f816ee54232c3d7c26d75e502ab5cfe2c9240e81d90f7255a";
-export const CODEX_VOICE_REALTIME_MODEL = "gpt-realtime-2.1";
-export const CODEX_VOICE_REALTIME_VERSION = "v2";
+/** FLY-2885: the same session parameters as Codex CLI /voice. */
+export const CODEX_VOICE_REALTIME_MODEL = "gpt-live-1-codex";
+export const CODEX_VOICE_REALTIME_VERSION = "v3";
 export const CODEX_VOICE_OPEN_TIMEOUT_MS = 60_000;
 export const CODEX_VOICE_MAX_JSON_LINE_BYTES = 1024 * 1024;
 const CONTEXT_MAX_AGE_MS = 60_000;
@@ -105,6 +113,7 @@ type EvidenceSink = (record: Record<string, unknown>) => void;
 interface OpenResources {
 	cancelled: boolean;
 	root?: string;
+	leg?: RealtimeMediaLeg;
 	process?: CodexVoiceProcess;
 	cleanup?: Promise<void>;
 }
@@ -452,11 +461,69 @@ function withTimeout<T>(
 	});
 }
 
+type NotificationListener = (method: string, params: unknown) => void;
+type ExitListener = (
+	code: number | null,
+	signal: NodeJS.Signals | null,
+) => void;
+
+/**
+ * FLY-2885 T3: the one listener on the shared app-server. Each realtime
+ * generation gets an RPC facade whose notifications flow only while it is
+ * the current generation; a retired generation hears nothing more.
+ */
+class GenerationRouter {
+	private readonly routes = new Map<
+		number,
+		{ notification?: NotificationListener; exit?: ExitListener }
+	>();
+	private current = 0;
+
+	constructor(private readonly process: CodexVoiceProcess) {
+		process.on("notification", ((method: string, params: unknown) =>
+			this.routes
+				.get(this.current)
+				?.notification?.(method, params)) as NotificationListener);
+		process.on("exit", ((code: number | null, signal: NodeJS.Signals | null) =>
+			this.routes.get(this.current)?.exit?.(code, signal)) as ExitListener);
+	}
+
+	rpc(generation: number): CodexRealtimeRpc {
+		const route = this.routes.get(generation) ?? {};
+		this.routes.set(generation, route);
+		return {
+			request: (method, params) => this.process.request(method, params),
+			on: (event, callback) => {
+				if (event === "notification")
+					route.notification = callback as NotificationListener;
+				else route.exit = callback as ExitListener;
+			},
+		};
+	}
+
+	activate(generation: number): void {
+		this.current = generation;
+	}
+
+	isCurrent(generation: number): boolean {
+		return this.current === generation && this.routes.has(generation);
+	}
+
+	retire(generation: number): void {
+		this.routes.delete(generation);
+	}
+}
+
+export interface CodexVoiceGeneration {
+	generation: number;
+	transport: CodexRealtimeTransport;
+	leg: RealtimeMediaLeg;
+}
+
 export class CodexVoiceConversation {
 	private closePromise?: Promise<void>;
 	private restartPromise?: Promise<number>;
-	private currentGeneration = 1;
-	private currentTransport: CodexRealtimeTransport;
+	private current: CodexVoiceGeneration;
 
 	constructor(
 		readonly sessionId: string,
@@ -466,21 +533,44 @@ export class CodexVoiceConversation {
 		readonly workdir: string,
 		readonly snapshotDigest: string,
 		private readonly process: CodexVoiceProcess,
-		transport: CodexRealtimeTransport,
-		private readonly createTransport: (
+		initial: CodexVoiceGeneration,
+		private readonly createGeneration: (
 			generation: number,
-		) => CodexRealtimeTransport,
+		) => CodexVoiceGeneration,
+		private readonly retireGeneration: (generation: number) => void,
 		private readonly evidence: EvidenceSink,
+		private readonly onLegLost: (input: {
+			generation: number;
+			reason: string;
+		}) => void = () => undefined,
 	) {
-		this.currentTransport = transport;
+		this.current = initial;
 	}
 
 	get generation(): number {
-		return this.currentGeneration;
+		return this.current.generation;
 	}
 
 	get transport(): CodexRealtimeTransport {
-		return this.currentTransport;
+		return this.current.transport;
+	}
+
+	get leg(): RealtimeMediaLeg {
+		return this.current.leg;
+	}
+
+	/** The WebRTC leg of `generation` reported its peer gone. */
+	legLost(generation: number, reason: string): void {
+		this.evidence({
+			kind: "codex_voice_webrtc_lost",
+			sessionId: this.sessionId,
+			threadId: this.threadId,
+			generation,
+			reason,
+			current: generation === this.current.generation,
+		});
+		if (this.closePromise || generation !== this.current.generation) return;
+		this.onLegLost({ generation, reason: `webrtc_${reason}` });
 	}
 
 	restart(): Promise<number> {
@@ -493,29 +583,35 @@ export class CodexVoiceConversation {
 	}
 
 	private async restartOnce(): Promise<number> {
-		const previous = this.currentTransport;
+		const previous = this.current;
 		await withTimeout(
-			previous.cancel(),
+			previous.transport.cancel(),
 			CLOSE_RPC_TIMEOUT_MS,
 			"codex_open_failed",
 		);
+		await previous.leg.close();
+		this.retireGeneration(previous.generation);
 		if (this.closePromise) throw new Error("conversation_closed");
-		const generation = this.currentGeneration + 1;
-		const next = this.createTransport(generation);
-		await next.start();
+		const next = this.createGeneration(previous.generation + 1);
+		try {
+			await next.transport.start();
+		} catch (error) {
+			await next.leg.close();
+			throw error;
+		}
 		if (this.closePromise) {
-			await next.cancel().catch(() => undefined);
+			await next.transport.cancel().catch(() => undefined);
+			await next.leg.close();
 			throw new Error("conversation_closed");
 		}
-		this.currentTransport = next;
-		this.currentGeneration = generation;
+		this.current = next;
 		this.evidence({
 			kind: "codex_voice_realtime_restarted",
 			sessionId: this.sessionId,
 			threadId: this.threadId,
-			generation,
+			generation: next.generation,
 		});
-		return generation;
+		return next.generation;
 	}
 
 	close(reason = "session_end"): Promise<void> {
@@ -523,14 +619,21 @@ export class CodexVoiceConversation {
 		return this.closePromise;
 	}
 
+	/**
+	 * Plan T7 order: the caller has stopped the uplink and cut the downlink;
+	 * then realtime stop (waiting up to 5 s for closed), the leg, the
+	 * app-server, and last the temporary root.
+	 */
 	private async closeOnce(reason: string): Promise<void> {
 		try {
 			await this.restartPromise?.catch(() => undefined);
 			await withTimeout(
-				this.currentTransport.cancel(),
+				this.current.transport.cancel(),
 				CLOSE_RPC_TIMEOUT_MS,
 				"codex_open_failed",
 			).catch(() => undefined);
+			await this.current.leg.close();
+			this.retireGeneration(this.current.generation);
 			await this.process.stop();
 		} catch {
 			this.evidence({
@@ -556,7 +659,10 @@ export interface CodexVoiceOpenInput {
 	voice: string;
 	loadContext: () => Promise<CodexVoiceContextSnapshot>;
 	realtime?: {
-		onAudio?(delta: CodexRealtimeAudioDelta): void;
+		/** RTP audio of the current generation, payload untouched. */
+		onDownlink?(packet: DownlinkPacket & { generation: number }): void;
+		/** oai-events of the current generation (not a Codex protocol surface). */
+		onDataEvent?(input: { generation: number; event: RealtimeDataEvent }): void;
 		onTranscript?(transcript: CodexRealtimeTranscript): void;
 		onItem?(item: CodexRealtimeItem): void;
 		onInputGap?(gap: {
@@ -585,11 +691,15 @@ export class CodexVoiceContainer {
 		options: CodexVoiceProcessFactoryOptions,
 	) => CodexVoiceProcess;
 	private readonly evidence: EvidenceSink;
+	private readonly createLeg: (options: WebRtcLegOptions) => RealtimeMediaLeg;
 
 	constructor(
 		private readonly options: {
 			binaryPath: string;
 			scratchRoot: string;
+			/** FLY-2885 T2: ICE servers for the WebRTC leg; empty = host only. */
+			stunUrls?: string[];
+			createLeg?: (options: WebRtcLegOptions) => RealtimeMediaLeg;
 			/** FLY-2885: the fleet's subscription credential; linked, never copied. */
 			authSource: string;
 			processEnv?: NodeJS.ProcessEnv;
@@ -605,6 +715,8 @@ export class CodexVoiceContainer {
 		this.inspectBinary = options.inspectBinary ?? inspectCodexVoiceBinary;
 		this.createProcess = options.createProcess ?? defaultCreateProcess;
 		this.evidence = options.onEvidence ?? (() => undefined);
+		this.createLeg =
+			options.createLeg ?? ((legOptions) => new WebRtcLeg(legOptions));
 	}
 
 	open(input: CodexVoiceOpenInput): Promise<CodexVoiceConversation> {
@@ -745,27 +857,56 @@ export class CodexVoiceContainer {
 			assertActive();
 			if (violation) throw new Error(violation);
 			assertThreadReceipt(opened.result, opened.id, workdir);
+			// transport and version are the transport's own: v3 over WebRTC.
 			const realtimeStart = {
 				outputModality: "audio",
 				clientManagedHandoffs: true,
 				includeStartupContext: false,
 				prompt: snapshot.realtimePrompt,
-				transport: { type: "websocket" },
-				version: CODEX_VOICE_REALTIME_VERSION,
 				model: CODEX_VOICE_REALTIME_MODEL,
 				voice: input.voice,
 			};
-			const createTransport = (generation: number) =>
-				new CodexRealtimeTransport({
-					rpc: process,
+			const { onDownlink, onDataEvent, onClosed, ...transportCallbacks } =
+				input.realtime ?? {};
+			const router = new GenerationRouter(process);
+			const createGeneration = (generation: number): CodexVoiceGeneration => {
+				router.activate(generation);
+				const leg = this.createLeg({
+					stunUrls: this.options.stunUrls ?? [],
+					onDownlink: (packet) => {
+						if (router.isCurrent(generation))
+							onDownlink?.({ ...packet, generation });
+					},
+					onDataEvent: (event) => {
+						if (router.isCurrent(generation))
+							onDataEvent?.({ generation, event });
+					},
+					onLost: (reason) => {
+						if (conversation) conversation.legLost(generation, reason);
+						else violation ??= `webrtc_${reason}`;
+					},
+					onEvidence: (record) =>
+						this.evidence({
+							sessionId: input.sessionId,
+							generation,
+							...record,
+						}),
+				});
+				const transport = new CodexRealtimeTransport({
+					rpc: router.rpc(generation),
 					sessionId: input.sessionId,
 					threadId: opened.id,
 					generation,
+					leg,
 					start: realtimeStart,
-					...input.realtime,
+					...transportCallbacks,
+					...(onClosed ? { onClosed } : {}),
 				});
-			const transport = createTransport(1);
-			await transport.start();
+				return { generation, transport, leg };
+			};
+			const initial = createGeneration(1);
+			resources.leg = initial.leg;
+			await initial.transport.start();
 			assertActive();
 			if (violation) throw new Error(violation);
 			conversation = new CodexVoiceConversation(
@@ -776,9 +917,11 @@ export class CodexVoiceContainer {
 				workdir,
 				snapshot.snapshotDigest,
 				process,
-				transport,
-				createTransport,
+				initial,
+				createGeneration,
+				(generation) => router.retire(generation),
 				this.evidence,
+				(lost) => onClosed?.(lost),
 			);
 			this.evidence({
 				kind: "codex_voice_container_opened",
@@ -803,6 +946,7 @@ export class CodexVoiceContainer {
 		if (resources.cleanup) return resources.cleanup;
 		if (!resources.process && !resources.root) return;
 		resources.cleanup = (async () => {
+			await resources.leg?.close();
 			if (resources.process) {
 				try {
 					await resources.process.stop();

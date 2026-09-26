@@ -149,7 +149,6 @@ export class CodexVoiceBackend implements VoiceBackend {
 			voice: options.voice ?? this.options.voice,
 			loadContext: this.options.loadContext,
 			realtime: {
-				onAudio: (input) => callbacks.session?.observeAudio(input),
 				onTranscript: (input) => callbacks.session?.observeTranscript(input),
 				onItem: (input) => callbacks.session?.observeItem(input),
 				onInputGap: (input) => callbacks.session?.observeInputGap(input),

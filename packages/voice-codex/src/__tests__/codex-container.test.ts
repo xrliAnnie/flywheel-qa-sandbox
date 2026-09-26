@@ -22,6 +22,37 @@ import {
 	type CodexVoiceProcess,
 	type CodexVoiceProcessFactoryOptions,
 } from "../codex/CodexVoiceContainer.js";
+import type { RealtimeMediaLeg, WebRtcLegOptions } from "../codex/WebRtcLeg.js";
+
+/** Records the leg's lifecycle; the transport's handshake drives it. */
+class FakeLeg implements RealtimeMediaLeg {
+	readonly answers: string[] = [];
+	readonly frames: Buffer[] = [];
+	closeCount = 0;
+
+	constructor(
+		readonly options: WebRtcLegOptions,
+		private readonly order: string[],
+	) {}
+
+	async prepareOffer(): Promise<string> {
+		return "v=0\r\no=offer";
+	}
+
+	async acceptAnswer(sdp: string): Promise<void> {
+		this.answers.push(sdp);
+	}
+
+	writePcm24(frame: Buffer): boolean {
+		this.frames.push(frame);
+		return true;
+	}
+
+	async close(): Promise<void> {
+		this.closeCount += 1;
+		this.order.push("leg.close");
+	}
+}
 
 const roots: string[] = [];
 
@@ -105,6 +136,7 @@ class FakeProcess implements CodexVoiceProcess {
 		result: { account: { type: "chatgpt", planType: "pro" } },
 	};
 	onStartThread?: () => void;
+	order?: string[];
 
 	constructor(
 		readonly threadId: string,
@@ -150,15 +182,20 @@ class FakeProcess implements CodexVoiceProcess {
 		if (method === "account/read") return this.account;
 		if (!this.realtimeError && method === "thread/realtime/start") {
 			const threadId = (params as { threadId: string }).threadId;
-			queueMicrotask(() =>
+			queueMicrotask(() => {
 				this.emit("thread/realtime/started", {
 					threadId,
-					version: "v2",
+					version: "v3",
 					realtimeSessionId: `realtime-${threadId}`,
-				}),
-			);
+				});
+				this.emit("thread/realtime/sdp", {
+					threadId,
+					sdp: `v=0\r\no=answer-${this.requests.length}`,
+				});
+			});
 		}
 		if (method === "thread/realtime/stop") {
+			this.order?.push("realtime/stop");
 			const threadId = (params as { threadId: string }).threadId;
 			queueMicrotask(() =>
 				this.emit("thread/realtime/closed", {
@@ -172,6 +209,7 @@ class FakeProcess implements CodexVoiceProcess {
 
 	async stop(): Promise<void> {
 		this.stopCount++;
+		this.order?.push("process.stop");
 	}
 
 	emit(method: string, params: unknown = {}): void {
@@ -204,11 +242,14 @@ function harness(
 	mkdirSync(join(base, "standalone"), { recursive: true });
 	writeFileSync(binaryPath, "fake standalone binary", { mode: 0o700 });
 	const processes: FakeProcess[] = [];
+	const legs: FakeLeg[] = [];
+	const order: string[] = [];
 	const factoryOptions: CodexVoiceProcessFactoryOptions[] = [];
 	const evidence: Record<string, unknown>[] = [];
 	const createProcess = (options: CodexVoiceProcessFactoryOptions) => {
 		factoryOptions.push(options);
 		const process = new FakeProcess(`thread-${processes.length + 1}`, options);
+		process.order = order;
 		processes.push(process);
 		overrides.configureProcess?.(process);
 		return process;
@@ -236,6 +277,11 @@ function harness(
 				realtimeFeatureEnabled: true,
 			})),
 		createProcess,
+		createLeg: (options) => {
+			const leg = new FakeLeg(options, order);
+			legs.push(leg);
+			return leg;
+		},
 		onEvidence: (record) => evidence.push(record),
 	});
 	return {
@@ -244,6 +290,8 @@ function harness(
 		binaryPath,
 		container,
 		processes,
+		legs,
+		order,
 		factoryOptions,
 		evidence,
 	};
@@ -320,13 +368,13 @@ describe("Codex voice container", () => {
 				method: "thread/realtime/start",
 				params: {
 					threadId: `thread-${index + 1}`,
-					version: "v2",
-					model: "gpt-realtime-2.1",
+					version: "v3",
+					model: "gpt-live-1-codex",
 					voice: "marin",
 					outputModality: "audio",
 					clientManagedHandoffs: true,
 					includeStartupContext: false,
-					transport: { type: "websocket" },
+					transport: { type: "webrtc", sdp: "v=0\r\no=offer" },
 				},
 			});
 		}
@@ -443,6 +491,110 @@ describe("Codex voice container", () => {
 			).rejects.toMatchObject({ code: "voice_unavailable", reason });
 		},
 	);
+
+	it("pairs each generation with its own WebRTC leg and closes stop → leg → process → root", async () => {
+		const h = harness();
+		const opened = await h.container.open({
+			sessionId: "session-legs",
+			voice: "cove",
+			loadContext: async () => context("session-legs"),
+		});
+		expect(h.legs).toHaveLength(1);
+		expect(h.legs[0]!.answers).toEqual(["v=0\r\no=answer-2"]);
+		expect(opened.leg).toBe(h.legs[0]);
+		expect(h.legs[0]!.options.stunUrls).toEqual([]);
+		await opened.close("test");
+		expect(h.order).toEqual(["realtime/stop", "leg.close", "process.stop"]);
+		expect(existsSync(opened.root)).toBe(false);
+	});
+
+	it("routes downlink and data events only from the current generation", async () => {
+		const h = harness();
+		const downlink = vi.fn();
+		const data = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-route",
+			voice: "cove",
+			loadContext: async () => context("session-route"),
+			realtime: { onDownlink: downlink, onDataEvent: data },
+		});
+		const first = h.legs[0]!;
+		const packet = {
+			payload: Buffer.from([0xf8]),
+			voiced: true,
+			rms: 900,
+			sequence: 1,
+			receivedAtMs: 1,
+		};
+		first.options.onDownlink(packet);
+		first.options.onDataEvent({ type: "session.started", expiresAt: null });
+		expect(downlink).toHaveBeenCalledWith({ ...packet, generation: 1 });
+		expect(data).toHaveBeenCalledWith({
+			generation: 1,
+			event: { type: "session.started", expiresAt: null },
+		});
+		await opened.restart();
+		expect(first.closeCount).toBe(1);
+		first.options.onDownlink(packet);
+		expect(downlink).toHaveBeenCalledTimes(1);
+		h.legs[1]!.options.onDownlink(packet);
+		expect(downlink).toHaveBeenLastCalledWith({ ...packet, generation: 2 });
+		await opened.close();
+	});
+
+	it("delivers app-server notifications only to the current generation's transport", async () => {
+		const h = harness();
+		const closed = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-retired",
+			voice: "cove",
+			loadContext: async () => context("session-retired"),
+			realtime: { onClosed: closed },
+		});
+		await opened.restart();
+		// The first generation's closed arrived during restart and was consumed
+		// by its own stop barrier; afterwards only generation 2 is listening.
+		closed.mockClear();
+		h.processes[0]!.emit("thread/realtime/closed", {
+			threadId: opened.threadId,
+			reason: "transport_closed",
+		});
+		expect(closed).toHaveBeenCalledOnce();
+		expect(closed).toHaveBeenCalledWith({
+			generation: 2,
+			reason: "transport_closed",
+		});
+		await opened.close();
+	});
+
+	it("reports a lost current leg as the generation closing, and ignores a retired one", async () => {
+		const h = harness();
+		const closed = vi.fn();
+		const opened = await h.container.open({
+			sessionId: "session-lost",
+			voice: "cove",
+			loadContext: async () => context("session-lost"),
+			realtime: { onClosed: closed },
+		});
+		h.legs[0]!.options.onLost("downlink_silent");
+		expect(closed).toHaveBeenCalledWith({
+			generation: 1,
+			reason: "webrtc_downlink_silent",
+		});
+		await opened.restart();
+		closed.mockClear();
+		h.legs[0]!.options.onLost("failed");
+		expect(closed).not.toHaveBeenCalled();
+		expect(h.evidence).toContainEqual(
+			expect.objectContaining({
+				kind: "codex_voice_webrtc_lost",
+				generation: 1,
+				reason: "failed",
+				current: false,
+			}),
+		);
+		await opened.close();
+	});
 
 	it("restarts only the realtime connection and advances its generation after a confirmed close", async () => {
 		const h = harness();
