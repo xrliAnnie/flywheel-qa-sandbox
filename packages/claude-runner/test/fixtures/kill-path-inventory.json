@@ -1776,6 +1776,30 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/voice-codex/src/__tests__/admission-residuals.test.ts:bystander.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-codex/src/__tests__/admission-residuals.test.ts",
+		"code": "bystander.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-codex/src/__tests__/admission-residuals.test.ts:worker.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-codex/src/__tests__/admission-residuals.test.ts",
+		"code": "worker.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-codex/src/codex/admission-residuals.ts:for (const row of this.alive()) this.kill(row, table);#1",
+		"path": "packages/voice-codex/src/codex/admission-residuals.ts",
+		"code": "for (const row of this.alive()) this.kill(row, table);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-codex/src/codex/admission-residuals.ts:process.kill(pid, signal);#1",
+		"path": "packages/voice-codex/src/codex/admission-residuals.ts",
+		"code": "process.kill(pid, signal);",
+		"classification": "out-of-scope"
+	},
+	{
 		"key": "packages/voice-core/src/__tests__/process-resident.test.ts:handle.kill(\"SIGKILL\");#1",
 		"path": "packages/voice-core/src/__tests__/process-resident.test.ts",
 		"code": "handle.kill(\"SIGKILL\");",

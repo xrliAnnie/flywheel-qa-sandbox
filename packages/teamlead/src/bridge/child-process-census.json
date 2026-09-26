@@ -475,6 +475,11 @@
 			"disposition": "Lead parent startup: bounded Codex permission probe in owned process group"
 		},
 		{
+			"file": "packages/teamlead/src/lead-capabilities/node-runtime-closure.ts",
+			"sync_child": 1,
+			"disposition": "Lead/voice parent startup: /usr/bin/otool load-command read per node runtime file (FLY-2886); 5 second timeout, 4 MiB output bound, washed environment, at most 64 files"
+		},
+		{
 			"file": "packages/teamlead/src/lead-capabilities/patrol-completion-gates.ts",
 			"sync_child": 1,
 			"disposition": "Parent verifies pinned patrol rule programs and owned report before each of three gates; 3 second timeout and 4 KiB output bound, washed environment"
@@ -513,6 +518,11 @@
 			"file": "packages/voice-codex/src/adapters.ts",
 			"raw_spawn": 1,
 			"disposition": "standalone_runtime_observed"
+		},
+		{
+			"file": "packages/voice-codex/src/codex/admission-residuals.ts",
+			"sync_child": 2,
+			"disposition": "standalone_runtime_bounded: /bin/ps process-table and single-pid identity reads for admission residual reaping (FLY-2886); 5 second timeout, bounded output, washed environment"
 		},
 		{
 			"file": "packages/voice-codex/src/startup-alert.ts",
