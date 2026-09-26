@@ -37,6 +37,10 @@ pnpm lint
 
 诊断未改共享 settings/Lead 配置、HOME、认证或模型配置。slot Bridge 日志有既有 Codex reconcile 对 `.codex` 的 EPERM；没有拿 boot success 声称全宿主零写证明。
 
+2026-09-26 UTC 进一步只读核对同一 CLI 二进制：`get_context_usage` 接受 `detail: full|summary`；`/context all` 调用同一分类函数，其返回值明确省略 `systemTools`、`deferredBuiltinTools`、`systemPromptSections`，不是 reader 拼错字段。这些逐项值仍需受控消融，不能写 0。分类器还可能返回独立的 `MCP server instructions`，reader 原先拒绝它；已先观察 fixture 失败 `unrecognized context category`，再只补这一合法固定类别并验证通过。二进制身份、函数位置和局限见 `evidence/cli-diagnostic-capabilities.json`；没有改写二进制、调用模型或把静态检查记作实际加载测量。
+
+T3/T4 接线的只读路径核对另发现三个必须覆盖的入口：`actions.ts` 的显式 retry、`workflow-resume-identity.ts` 的 standby resume、`land-content-review.ts` 的独立 Claude 内容评审。standby resume 故意不带 generalizedExecution，不能为传 prefix 身份而伪造它；要从原 run snapshot 独立恢复身份并验证既有 session stamp。首次入口、engine 后继/replay、retry 均已有经过 parse 的 pinned snapshot；评审可从持久 job.execution_id 关联 run，使用 job.review_type。无需增加 API payload、snapshot schema 或数据库表；现有只解析 modelRouting 的 helper 不能冒充完整 prefix provenance。上述接线尚未实现。
+
 ## 未完成事项与外部状态
 
 1. 完成五角色真 consumer 启动、完整 loaded 清单与三组配对采样；先补 hook/工具名 roster/builtin costs 的可归属证据，再决定移除项。

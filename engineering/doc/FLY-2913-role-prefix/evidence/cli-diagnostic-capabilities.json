@@ -1,0 +1,36 @@
+{
+  "capturedAt": "2026-09-26T06:02:51.487250+00:00",
+  "evidenceKind": "read-only installed binary capability inspection",
+  "cliVersion": "2.1.283",
+  "cliPath": "/Users/xiaorongli/.local/bin/claude",
+  "cliSha256": "d8cb1e5c79684cc12a8bfc813e3a2073406921b6245744b3009be3ab5651d21e",
+  "checks": [
+    {
+      "description": "Control request accepts full or summary detail",
+      "byteOffset": 177645944,
+      "anchorSha256": "835c74f04d8110c19b851befb2dc8afdd15ab662d66f106b170535499e085d4c"
+    },
+    {
+      "description": "Native context classifier omits the three optional detail arrays",
+      "byteOffset": 184404571,
+      "anchorSha256": "a322c43e0f964062732f3e3f1d3d7f18e83c3c517d36cefbe4058719e6e43451"
+    },
+    {
+      "description": "Native context classifier has a separate MCP server instructions category",
+      "byteOffset": 184401266,
+      "anchorSha256": "23b35982bbe226f2990b7f2470f7b5a9f8eea4e8deb9e3754c96109c057d1ae1"
+    },
+    {
+      "description": "TUI context command stores a rendered markdown summary, not the complete structured result",
+      "byteOffset": 214326027,
+      "anchorSha256": "7154595a9bf27d4955aa597d6b3c14e216aa8e2283f73c2d45b3bcce8d7ad909"
+    }
+  ],
+  "roleBaseline": false,
+  "modelTurns": 0,
+  "limitations": [
+    "Static code inspection does not prove runtime control activation",
+    "Per-builtin tool and hook/deferred-roster costs remain unknown until controlled measurement",
+    "No binary/source text, credentials or prompt content included"
+  ]
+}

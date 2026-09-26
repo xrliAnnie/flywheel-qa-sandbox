@@ -93,6 +93,16 @@ try {
   assert.equal(diagnostic.skills.skillFrontmatter[0].name,'tdd');
   assert.equal(diagnostic.mcpTools[0].isLoaded,false);
   assert.ok(!JSON.stringify(diagnostic).includes('NEVER-EXPORT'));
+  const mcpInstructions = subject.summarizeClaudeContextDiagnostic({
+    model:'claude-opus-5-5[1m]', totalTokens: 105,
+    categories:[
+      {name:'System prompt',tokens:80,kind:'used'},
+      {name:'MCP server instructions',tokens:20,kind:'used'},
+      {name:'Messages',tokens:5,kind:'used'},
+    ],
+  });
+  assert.equal(mcpInstructions.knownFixedCategoryTokens,100,'server instructions are a separate fixed category in CLI 2.1.283');
+  assert.equal(mcpInstructions.fixedPrefixTokens,null,'recognizing the category does not resolve missing attribution');
   assert.throws(() => subject.summarizeClaudeContextDiagnostic({totalTokens:12,categories:[{name:'New category',tokens:12,kind:'used'}]}), /unrecognized/);
   writeFileSync(join(root,'weekly-manifest.json'),JSON.stringify({version:1,transcripts:[]}));
   const weeklyCli = spawnSync(process.execPath,['scripts/qa-2913-prefix-inventory.mjs','weekly',join(root,'weekly-manifest.json'),'2026-09-26T05:00:00Z',join(root,'weekly-tool-use.json')],{encoding:'utf8'});

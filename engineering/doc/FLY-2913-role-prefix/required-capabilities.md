@@ -25,3 +25,17 @@ Issue: FLY-2913 (https://linear.app/geoforge3d/issue/FLY-2913)
 - 用户级 agent 描述也是前缀成本。当前已查到的官方逐 agent 控制是 `Agent(name)` deny；文档证明可阻止使用，但还未证明诊断清单/实际 prompt 中的描述会消失。不得只凭设置存在就记节省，也不能禁整个 Agent 工具替代必要协作。[官方 subagent 说明](https://code.claude.com/docs/en/sub-agents#disable-specific-subagents)
 
 以上均不是更改共享配置的授权或验收。Lead、HOME、认证、权限模式、原 allowed-tools、managed policy 不变；后续控制探针在受支持的 529 载体执行，逐项证明生效后才写最终 role-v1 清单。
+
+## 传递依赖核对（2026-09-26 UTC）
+
+只保留角色 frontmatter 中的五个名字并不够。以下是对本机实际命令/技能正文的只读核对；它们是保留义务和测量检查项，不是已经加载的证明。
+
+| 入口 | 正文依赖 | profile 处理约束 |
+|---|---|---|
+| design 的 `brainstorm` | `~/.claude/commands/brainstorm.md:230` 起，产品/UI 任务会使用 `problem-definition`、`competitive-analysis`、`scoping-cutting`，并条件引用 `conducting-user-interviews`、`positioning-messaging`、`evaluating-trade-offs` | `tpl_code` 也可承载 UI/产品工程任务，不能把所有 PM 技能按“非工程”统一排除。未安装的引用单列既有缺项，不能假装已经保留可调用能力。 |
+| design / QA 的 `research`、design 的 `write-plan` | user commands 转交 `workflow:research` / `workflow:write-plan`；正文在 `~/.claude/skills/workflow/`，research 调 `Explore` 和 `general-purpose` 子代理 | 旧探针有 command 名，却没有 `workflow:*` 的 advertised 项。必须区分入口、正文文件和实际 Skill 可调用身份，保留资产及必要子代理，再在真实角色验证。 |
+| implement 的 `implement` | `~/.claude/commands/implement.md:152` 的 `pr-review-toolkit:review-pr`，安全敏感修改的 `everything-claude-code:security-review`，以及 `simplify` 和 Codex 评审 | 静态快照里 pr-review-toolkit 已安装但 user settings 为 false；这不是本次删减所致，也不能把 false 当 required closure 已满足。真实启动需核其他层是否启用或有合同允许的现存替代。 |
+| `codex-design-review` / `codex-code-review` | 两份 command 都从 `openai-codex/codex/*/scripts/codex-companion.mjs` 及其 `lib/` 调用 companion | 必留完整脚本依赖；不能只保留 command 描述。这里没有执行命令中提及的升级/发布操作。 |
+| `everything-claude-code` 选定副本 | 当前 plugin.json 的 agents 是逐文件数组，skills/commands 是目录；hooks 指向 `hooks/hooks.json`，多个 hook 引用 `${CLAUDE_PLUGIN_ROOT}/scripts/hooks/` | compiler 不能只删目录却留下悬空 manifest agent 引用。选定副本必须保留 namespace、被选组件、hooks 和完整 scripts/lib 资产，排除运行时 `.in_use`；当前尚未生成或加载副本。 |
+
+优先级仍为当前 pinned 角色和动态 mandate；以上旧命令中与本节点冲突的 merge、ship、全仓测试或额外审批，不进入本单执行动作，也不能借它们扩大角色权限。

@@ -120,6 +120,7 @@ export function summarizeClaudeContextDiagnostic(data) {
 		"System prompt",
 		"System tools",
 		"MCP tools",
+		"MCP server instructions",
 		"Custom agents",
 		"Memory files",
 		"Skills",
