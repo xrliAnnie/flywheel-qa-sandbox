@@ -283,37 +283,35 @@ When you dispatch a continuation / handoff Runner:
 
 ## 5. Durable Lead-event ACK — acknowledge after handling (FLY-1279)
 
-Some actionable Runner events now include an `ACK REQUIRED` block with an event
-sequence, project, and one-time bearer token. Handle the event first, then ACK
-that exact event. For a question/gate, a durable answer or confirmed founder
-surface is machine evidence and no extra ACK is needed.
+For an `ACK REQUIRED` event, emit handling first, then include its exact sequence,
+project and token in the ACK in the **same assistant response as the first handling
+action**, using parallel tool calls; do not wait for its result. Never ACK before
+handling begins or in an ACK-only turn. A question/gate's durable answer or
+confirmed founder surface needs no extra ACK.
 
-- Claude Lead: call `flywheel_inbox_ack_event` with the supplied
-	`event_seq`, `project`, and `token`. Batch inbox transport uses
-	`flywheel_inbox_ack_batch` instead.
-- Any Lead may use the rendered `flywheel-comm ack-event ... --token-stdin`
-  fallback. Supply the bearer through stdin exactly as instructed; never place
-  it in shell arguments, logs, chat, or a report.
+- Claude: `flywheel_inbox_ack_event(event_seq, project, token)`; batches use
+  `flywheel_inbox_ack_batch`.
+- Fallback: rendered `flywheel-comm ack-event ... --token-stdin`; the bearer goes
+  only through stdin, never arguments, logs, chat, or reports.
 
-If the event was already handled, ACK it rather than ignoring a reminder.
-Invalid/expired tokens are not authorization; use the newest reminder's token.
+Already handled or status-only: pair the ACK with the turn's final tool action.
+Invalid/expired tokens give no authority; use the newest token. Do not delay urgent
+founder input to collect ACKs or await a piggyback.
 
 ## 6. Durable mailbox batch ACK — process the whole batch, then ACK once (FLY-1573)
 
-A delivery headed **`[mailbox-batch <batch_id> | N messages | from ...]`** is one
-durable batch, not a collapsed message. Process all N independent messages, then
-acknowledge the batch exactly once using its header id:
+A **`[mailbox-batch <batch_id> | N messages | from ...]`** is one durable batch.
+Decide all N messages' handling, then ACK its header once:
 
 - Claude Lead: `flywheel_inbox_ack_batch({ batch_id: "<batch_id>" })`.
 - Codex Lead: `ack_batch({ batch_id: "<batch_id>" })` from `lead_actions`.
 
-Do not ACK individual rows in a batch or guess an id. In one model response,
-call all ACKs for batches already fully processed; do not create a separate
-thinking or “received” turn for each ACK. Do not delay urgent founder input to
-collect a batch. The tool's queued result means protocol admission, not completed
-business work, gate approval or ship authority. If a lease expires, reliable
-redelivery remains; always use the newly received header id. Never ACK before
-processing or have the transport ACK on the Lead's behalf.
+Do not ACK rows or guess ids. In the **same assistant response as the first handling
+action**, send the batch ACK as a parallel tool call. For status-only input, pair it
+with the turn's final tool action. Never ACK before handling begins, use an ACK-only
+turn, or let transport ACK for the Lead. Do not delay urgent founder input to collect ACKs
+or await a piggyback. `queued` is only admission, never completion/approval/ship
+authority. Redelivery remains; after lease expiry use the new header id.
 
 ### Incremental FOLLOWUPS
 
