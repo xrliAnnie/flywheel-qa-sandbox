@@ -37,7 +37,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 usage() {
-  echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>] [--github-facts <parent-json>] [--tmux-socket <trusted-path>] [--record-dwell-receipts <verdict> [--note <text>]]" >&2
+  echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>] [--github-facts <parent-json>] [--root-cause-facts <parent-json>] [--tmux-socket <trusted-path>] [--record-dwell-receipts <verdict> [--note <text>]]" >&2
 }
 
 PROJECT_NAME=""
@@ -46,10 +46,11 @@ TICK_SEQ="NA"
 RECORD_DWELL_VERDICT=""
 RECORD_DWELL_NOTE=""
 GITHUB_FACTS_PATH=""
+ROOT_CAUSE_FACTS_PATH=""
 TMUX_ARGS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --project|--lead|--tick-seq|--record-dwell-receipts|--note|--github-facts|--tmux-socket)
+    --project|--lead|--tick-seq|--record-dwell-receipts|--note|--github-facts|--root-cause-facts|--tmux-socket)
       if [ "$#" -lt 2 ]; then
         echo "[patrol-snapshot] ERROR: $1 requires a value" >&2
         usage
@@ -71,6 +72,12 @@ while [ "$#" -gt 0 ]; do
         --github-facts)
           [ -n "$2" ] || { echo "[patrol-snapshot] ERROR: parent GitHub facts path is empty" >&2; exit 2; }
           GITHUB_FACTS_PATH="$2"
+          ;;
+        --root-cause-facts)
+          case "$2" in
+            /*) ROOT_CAUSE_FACTS_PATH="$2" ;;
+            *) echo "[patrol-snapshot] ERROR: root-cause facts path must be absolute" >&2; exit 2 ;;
+          esac
           ;;
       esac
       shift 2
@@ -114,7 +121,7 @@ if [ "${#TICK_SEQ}" -gt 16 ]; then
   echo "[patrol-snapshot] ERROR: tick sequence is too long" >&2
   exit 2
 fi
-if [ -n "$GITHUB_FACTS_PATH" ] && [ -n "$RECORD_DWELL_VERDICT" ]; then
+if { [ -n "$GITHUB_FACTS_PATH" ] || [ -n "$ROOT_CAUSE_FACTS_PATH" ]; } && [ -n "$RECORD_DWELL_VERDICT" ]; then
   echo "[patrol-snapshot] ERROR: parent GitHub facts are read-only snapshot input" >&2
   exit 2
 fi
@@ -192,6 +199,70 @@ readonly_sqlite_uri() { # <db> — immutable is safe only for a closed WAL DB
 
 STATE_DB_URI="$(readonly_sqlite_uri "$STATE_DB")"
 COMM_DB_URI="$(readonly_sqlite_uri "$COMM_DB")"
+
+# FLY-2914: root-cause scheduling facts for STEP 6. The owner is config-fixed —
+# keep in sync with ROOT_CAUSE_OWNER in packages/teamlead/src/patrol-root-causes.ts
+# (pinned by patrol-root-causes.test.ts). Other scopes record not_applicable
+# locally; the owner's facts come only from the Bridge (Linear credential and
+# StateStore stay there). Collection starts now and runs beside STEPs 1-DWELL.
+ROOT_CAUSE_OWNER_PROJECT=flywheel
+ROOT_CAUSE_OWNER_LEAD=flywheel-eng-lead
+ROOT_CAUSE_STARTED_EPOCH="$(date +%s)"
+ROOT_CAUSE_SCOPE=""
+if [ "$PROJECT_NAME" != "$ROOT_CAUSE_OWNER_PROJECT" ]; then
+  ROOT_CAUSE_SCOPE=project_scope
+elif [ "$LEAD_ID" != "$ROOT_CAUSE_OWNER_LEAD" ]; then
+  ROOT_CAUSE_SCOPE="owner:$ROOT_CAUSE_OWNER_LEAD"
+fi
+ROOT_CAUSE_FETCH_ERROR=""
+if [ -z "$ROOT_CAUSE_SCOPE" ] && [ -z "$ROOT_CAUSE_FACTS_PATH" ]; then
+  ROOT_CAUSE_FACTS_PATH="$WORK_TMP/root-causes.json"
+  if [ -z "${BRIDGE_URL:-}" ] || [ -z "${TEAMLEAD_API_TOKEN:-}" ] || ! command -v curl >/dev/null 2>&1; then
+    ROOT_CAUSE_FETCH_ERROR=bridge_unconfigured
+  else
+    ( printf 'header = "Authorization: Bearer %s"\n' "$TEAMLEAD_API_TOKEN" \
+        | curl --config - -fsS --max-time 35 --get \
+            --data-urlencode "projectName=$PROJECT_NAME" --data-urlencode "leadId=$LEAD_ID" \
+            "${BRIDGE_URL%/}/api/patrol/root-causes" > "$ROOT_CAUSE_FACTS_PATH.part" 2>/dev/null \
+        && mv -f "$ROOT_CAUSE_FACTS_PATH.part" "$ROOT_CAUSE_FACTS_PATH" \
+        || : > "$WORK_TMP/root-causes.failed" ) &
+  fi
+fi
+
+root_cause_iso_now() { date -u '+%Y-%m-%dT%H:%M:%S.000Z'; }
+root_cause_lines() { # prints the STEP 6 root-cause lines; never fails
+  local token="" deadline
+  if [ -n "$ROOT_CAUSE_SCOPE" ]; then
+    printf 'ROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=%s token=%s\n' "$(root_cause_iso_now)" "$ROOT_CAUSE_SCOPE"
+    return 0
+  fi
+  token="$ROOT_CAUSE_FETCH_ERROR"
+  if [ -z "$token" ]; then
+    deadline=$((ROOT_CAUSE_STARTED_EPOCH + 40))
+    while [ ! -f "$ROOT_CAUSE_FACTS_PATH" ] && [ ! -e "$WORK_TMP/root-causes.failed" ] \
+      && [ "$(date +%s)" -lt "$deadline" ]; do
+      sleep 0.2
+    done
+    if [ -e "$WORK_TMP/root-causes.failed" ]; then
+      token=bridge_unavailable
+    elif [ ! -f "$ROOT_CAUSE_FACTS_PATH" ]; then
+      token=facts_timeout
+    elif ! command -v jq >/dev/null 2>&1 || ! jq -e '
+        .v == 1 and (.lines | type) == "array" and (.lines | length) >= 1 and
+        (.lines | length) <= 5000 and
+        all(.lines[]; type == "string" and (test("[\n\r]") | not) and
+          test("^(ROOT_CAUSE_(REVIEW|CANDIDATE|EXCLUDED|DISPOSITION) |FINDING |UNAVAILABLE_CAUSE step=6 )")) and
+        ([.lines[] | select(startswith("ROOT_CAUSE_REVIEW "))] | length) == 1' \
+        "$ROOT_CAUSE_FACTS_PATH" >/dev/null 2>&1; then
+      token=facts_invalid
+    else
+      jq -r '.lines[]' "$ROOT_CAUSE_FACTS_PATH" 2>/dev/null && return 0
+      token=facts_invalid
+    fi
+  fi
+  printf 'ROOT_CAUSE_REVIEW status=unavailable parent=FLY-2072 observed_at=%s token=%s\n' "$(root_cause_iso_now)" "$token"
+  printf '%s\n' 'UNAVAILABLE_CAUSE step=6 class=transient token=root_cause_source_unavailable'
+}
 
 PROJECT_REPO=""
 PROJECTS_OK=0
@@ -1903,6 +1974,8 @@ $DWELL_ROUTE_ACTIONS"
   fi
 fi
 
+ROOT_CAUSE_LINES="$(root_cause_lines)"
+
 REPORT_CONTENT="# Lead Patrol Snapshot
 patrol_schema=2
 project: $PROJECT_NAME
@@ -1932,6 +2005,8 @@ ${STEP5_FACTS:-(none)}
 ## STEP 6
 STEP 6: $STEP6_STATUS
 ${STEP6_FACTS:-(none)}
+$ROOT_CAUSE_LINES
+<!-- FLY-2914: every ROOT_CAUSE_CANDIDATE needs exactly one FINDING + ROOT_CAUSE_DISPOSITION (reported, waiting_founder or scheduled); see runner-patrol-rules.md. -->
 MECHANISM_REVIEW result=LEAD-JUDGMENT-REQUIRED
 <!-- Declare each mechanism defect before choosing existing, created, or no_issue; see runner-patrol-rules.md. -->
 

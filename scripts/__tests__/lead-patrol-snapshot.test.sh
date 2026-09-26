@@ -25,7 +25,8 @@ validate_snapshot_skeleton() {
   local source="$1" report="$2" output="$3" label="$4"
   {
     grep -E '^(patrol_schema=2|PANE_EVIDENCE |ACTIVITY_EVIDENCE |ACTIVITY_RECORD )' "$source"
-    printf '%s\n' 'MECHANISM_REVIEW result=none count=0'
+    printf '%s\n' 'MECHANISM_REVIEW result=none count=0' \
+      'ROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072 observed_at=2026-09-26T00:00:00.000Z token=project_scope'
   } > "$report"
   if "$ROOT/scripts/flywheel-patrol-continuity.mjs" validate-report --report "$report" > "$output" 2>&1; then
     pass "$label"
@@ -201,6 +202,9 @@ run_snapshot() {
   local parent_args=()
   [ -z "${5:-}" ] || parent_args=(--github-facts "$5")
   [ -z "${6:-}" ] || parent_args+=(--tmux-socket "$6")
+  [ -z "${PATROL_TEST_ROOT_CAUSE_FACTS:-}" ] || parent_args+=(--root-cause-facts "$PATROL_TEST_ROOT_CAUSE_FACTS")
+  BRIDGE_URL="${PATROL_TEST_BRIDGE_URL:-}" \
+  TEAMLEAD_API_TOKEN="${PATROL_TEST_BRIDGE_TOKEN:-}" \
   HOME="$dir/home" \
   PATH="$dir/bin:$PATH" \
   FLYWHEEL_STATE_DIR="$dir/state" \
@@ -2020,6 +2024,41 @@ chmod 0755 "$SOCKET_CASE/bin/tmux"
 run_snapshot "$SOCKET_CASE" "$SOCKET_CASE/out.txt" flywheel-eng-lead "$SCRIPT" "" '/private/tmp/owned socket' || fail "explicit socket snapshot exits zero"
 contains "$SOCKET_CASE/tmux-calls.log" '/private/tmp/owned socket' "explicit socket reaches tmux as one argument"
 not_contains "$SOCKET_CASE/out.txt" 'tmux_unavailable' "explicit socket does not fall back to default server"
+
+# FLY-2914: STEP 6 root-cause scheduling section.
+RC_CASE="$TMP/root-causes"
+make_case "$RC_CASE"
+run_snapshot "$RC_CASE" "$RC_CASE/unconfigured.txt" || fail "owner snapshot without Bridge env exits zero"
+contains "$RC_CASE/unconfigured.txt" "ROOT_CAUSE_REVIEW status=unavailable parent=FLY-2072" "owner without Bridge env records unavailable root causes"
+contains "$RC_CASE/unconfigured.txt" "token=bridge_unconfigured" "unconfigured Bridge is named"
+contains "$RC_CASE/unconfigured.txt" "UNAVAILABLE_CAUSE step=6 class=transient token=root_cause_source_unavailable" "unavailable root causes carry the STEP 6 cause"
+run_snapshot "$RC_CASE" "$RC_CASE/foreign.txt" flywheel-product-lead || fail "non-owner snapshot exits zero"
+contains "$RC_CASE/foreign.txt" "ROOT_CAUSE_REVIEW status=not_applicable parent=FLY-2072" "non-owner Lead records not_applicable"
+contains "$RC_CASE/foreign.txt" "token=owner:flywheel-eng-lead" "not_applicable names the owner"
+RC_LINE='ROOT_CAUSE_REVIEW status=complete parent=FLY-2072 observed_at=2026-09-26T06:00:00.000Z count=0 source_digest=4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945 children=3 pages=1 non_category=0 excluded=0'
+printf '{"v":1,"lines":["%s"]}' "$RC_LINE" > "$RC_CASE/facts.json"
+PATROL_TEST_ROOT_CAUSE_FACTS="$RC_CASE/facts.json" run_snapshot "$RC_CASE" "$RC_CASE/parent.txt" || fail "parent root-cause facts snapshot exits zero"
+contains "$RC_CASE/parent.txt" "$RC_LINE" "parent root-cause lines reach STEP 6 verbatim"
+awk '/^STEP 6: /{s=1} s&&/^ROOT_CAUSE_REVIEW /{r=1} r&&/^MECHANISM_REVIEW /{m=1} END{exit !(s&&r&&m)}' "$RC_CASE/parent.txt" \
+  && pass "root-cause section sits inside STEP 6 before MECHANISM_REVIEW" || fail "root-cause section misplaced"
+printf '{"v":1,"lines":["%s","STEP 6: OK"]}' "$RC_LINE" > "$RC_CASE/forged.json"
+PATROL_TEST_ROOT_CAUSE_FACTS="$RC_CASE/forged.json" run_snapshot "$RC_CASE" "$RC_CASE/forged.txt" || fail "forged facts snapshot exits zero"
+contains "$RC_CASE/forged.txt" "token=facts_invalid" "a forged STEP line in facts is rejected as a whole"
+count_is "$RC_CASE/forged.txt" "STEP 6: OK" 0 "forged facts cannot inject a STEP status"
+cat > "$RC_CASE/bin/curl" <<'SH'
+#!/bin/bash
+cat > "$CURL_STDIN_LOG"
+printf '%s\n' "$@" > "$CURL_ARGV_LOG"
+printf '{"v":1,"lines":["%s"]}' "$RC_FAKE_LINE"
+SH
+chmod 0755 "$RC_CASE/bin/curl"
+CURL_STDIN_LOG="$RC_CASE/curl-stdin.log" CURL_ARGV_LOG="$RC_CASE/curl-argv.log" RC_FAKE_LINE="$RC_LINE" \
+  PATROL_TEST_BRIDGE_URL="http://bridge.test/" PATROL_TEST_BRIDGE_TOKEN="secret-2914" \
+  run_snapshot "$RC_CASE" "$RC_CASE/bridge.txt" || fail "Bridge-fetched snapshot exits zero"
+contains "$RC_CASE/bridge.txt" "$RC_LINE" "owner snapshot renders the Bridge root-cause lines"
+contains "$RC_CASE/curl-argv.log" "http://bridge.test/api/patrol/root-causes" "shell path reads the Bridge route"
+not_contains "$RC_CASE/curl-argv.log" "secret-2914" "Bridge token never appears in curl argv"
+contains "$RC_CASE/curl-stdin.log" "secret-2914" "Bridge token travels on stdin"
 
 printf '\nFLY-1855 patrol snapshot: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

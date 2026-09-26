@@ -11,6 +11,65 @@ import {
 	validSidecar,
 } from "./patrol-continuity.js";
 import { collectPatrolObservations } from "./patrol-continuity-collector.js";
+import { ROOT_CAUSE_OWNER } from "./patrol-root-causes.js";
+
+/**
+ * FLY-2914: a shell Lead edits its own report, so a complete or unavailable
+ * root-cause section is re-verified by the Bridge against fresh Linear facts
+ * and real founder_ask rows. The token comes from the Lead's environment only.
+ */
+async function verifyRootCausesViaBridge(
+	text: string,
+	reportPath: string,
+): Promise<string[]> {
+	const review = text
+		.split(/\r?\n/)
+		.find((line) => line.startsWith("ROOT_CAUSE_REVIEW "));
+	const status = / status=([a-z_]+)(?: |$)/.exec(review ?? "")?.[1];
+	const errors: string[] = [];
+	const pathLead = /\/patrol-reports\/([^/]+)\/[^/]+$/.exec(reportPath)?.[1];
+	const headerLead = /^lead: (.*)$/m.exec(text)?.[1];
+	if (pathLead === ROOT_CAUSE_OWNER.leadId && headerLead !== pathLead)
+		errors.push("root_cause_scope_mismatch");
+	if (status !== "complete" && status !== "unavailable") return errors;
+	const base = (process.env.BRIDGE_URL || "http://127.0.0.1:9876").replace(
+		/\/+$/,
+		"",
+	);
+	const token = process.env.TEAMLEAD_API_TOKEN ?? "";
+	try {
+		if (!token) throw Error("token_missing");
+		const response = await fetch(`${base}/api/patrol/root-causes/verify`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ report: text }),
+			signal: AbortSignal.timeout(45_000),
+		});
+		const verdict = (await response.json()) as {
+			valid?: unknown;
+			errors?: unknown;
+		};
+		if (!response.ok || typeof verdict.valid !== "boolean")
+			throw Error("verifier_failed");
+		if (!verdict.valid)
+			errors.push(
+				...(Array.isArray(verdict.errors)
+					? verdict.errors.filter(
+							(e): e is string =>
+								typeof e === "string" && /^[a-z0-9_]{1,64}$/.test(e),
+						)
+					: []),
+				"root_cause_verification_failed",
+			);
+	} catch {
+		// Both sources down agree with an unavailable section; a complete one is unproven.
+		if (status === "complete") errors.push("root_cause_verifier_unavailable");
+	}
+	return errors;
+}
 
 export function activityEvidence(
 	result: ContinuityResult,
@@ -81,7 +140,13 @@ export async function runPatrolContinuity(argv: string[]): Promise<number> {
 		}
 		if (command === "validate-report") {
 			if (!opts.report) throw Error("report_required");
-			const verdict = validatePatrolReport(readFileSync(opts.report, "utf8"));
+			const text = readFileSync(opts.report, "utf8");
+			const structural = validatePatrolReport(text);
+			const errors = [
+				...structural.errors,
+				...(await verifyRootCausesViaBridge(text, opts.report)),
+			];
+			const verdict = { valid: errors.length === 0, errors };
 			process.stdout.write(`${JSON.stringify(verdict)}\n`);
 			return verdict.valid ? 0 : 1;
 		}
