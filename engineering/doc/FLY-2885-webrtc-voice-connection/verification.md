@@ -371,3 +371,14 @@ Codex R1（xhigh，线程 `01a0deae-a3b0-7390-8544-05306aac5885`）：2 HIGH、1
 测试顺序修正：3 条原有 T5c 用例和 3 条本轮用例原先直接调 `truncateAssistantFinal`，或者没发越界回合的 app-server final。现在按生产顺序（`turn.done` 后约 12 ms 到 final）经 `assistantTranscript` 投递 final，断言含义不变。
 
 验证：`pnpm lint` exit 0；voice-codex `tsc --noEmit` 通过；`vitest related`（7 个源文件）12 个文件 245 条通过（`realtime-live` 3 条按环境门控跳过）；teamlead 消费者 36/36。
+
+### 返工评审 R2 的修复（`1dd968219`）
+
+Codex R2（同一线程）：1 HIGH，成立。R1 让越界块的「仍欠 final」跨过她的发言和新回合保留；如果那条 final 丢了，而她在 30 s 内开了新回合，新回答的 final 会被当成旧的，镜像被改写成旧朗读前缀加截断标记。
+
+修复：登记里记下越界时已念的前缀；一条 final 只有从开头对上这个前缀（按顺序逐句匹配，至少第一句）才归这一块；对不上就放弃这条登记和它的标记，这条 final 原样镜像。一句都没念到的越界块不认领任何 final（fail closed）。
+
+- 回归测试（`codex-speak`）：旧 final 丢失后她问了新问题 → 新回答不截断，续读照常念出；一句都没念到的越界 → 它的 final 不被认领、不截断，同一句重念一次。
+- 负对照：去掉认领检查 → 这 2 条红。
+- 残余边界：越界一句都没念到时，它自己的 final（含编造部分）会原样出现在 thread 里——宁可漏截断，不误改她那一轮的回答。
+- 验证：`pnpm lint` exit 0；voice-codex `tsc --noEmit` 通过；`vitest related` 12 个文件 247 条通过（+3 条环境门控跳过）；teamlead 消费者 36/36。
