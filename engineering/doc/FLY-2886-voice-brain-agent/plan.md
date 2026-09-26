@@ -414,7 +414,8 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 | 可选 | `linear`、`github`、`gbrain`、`context7`、`xiaohongshu-mcp`、`browser` | 只不装配这个集成，记原因，其余照开 |
 
 - **handler 组声明依赖**：`startLeadRuntimeProviders` 里每个 handler 组显式声明 `requires: IntegrationId[]`（例：`createGithubReadProviderHandlers` 与 `createPatrolHandlers` 都用 `github.client`，所以都 `requires: ["github"]`；`linear.handlers` → `["linear"]`；gbrain / context7 / 小红书 provider 各自一项）。任一依赖不可用 → 整组不装配，组内操作记为 omitted，原因取该集成的原因。不靠从操作名猜。
-- **启动顺序**：可选集成逐个 `try` 启动；失败时由该 provider 自己的 partial-start 清理收尾（现有合同），本层把它记进 `unavailable` 表，**不**把已启动的其他 provider 关掉。浏览器沿用现有启动失败回退（`runtime-factory.ts:470-497` 的 `browser_unavailable` handler），本节不改。
+- **启动顺序**：可选集成逐个 `try` 启动；失败时由该 provider 自己的 partial-start 清理收尾（现有合同），本层把它记进 `unavailable` 表，**不**把已启动的其他 provider 关掉。
+- **浏览器（R1#B3）**：`fail_closed` 档沿用现有启动失败回退（`runtime-factory.ts:470-497`：保留受管 egress 代理 + 整组 `browser_unavailable` 拒绝 handler），常驻不变。`omit_integration` 档改为：保留受管 egress 代理（模型网络仍走它，与 `browser: off` 同法），**不**生成拒绝 handler，`browser.*` 操作全部不装配，`unavailable` 记 `{id:"browser", reason:"provider_start_failed"}`；manifest 的 `browser` 集成项、`browserGeneration` 与 MCP 有效配置断言按「浏览器缺席」处理（与 `off` 同一套分支，但 `browserMode` 仍记原配置值、`unavailableIntegrations` 说明原因）。简报因 `browser.*` 不在 `operationIds` 而不再说能开浏览器（`voice-capability-brief.ts:29-32` 现有判断即可）。
 - **原因枚举**（只有这四个，原始错误只进本地 evidence，不进 manifest、简报、模型或 thread）：
 
 | 原因 | 触发（按错误码映射） |
@@ -424,7 +425,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 | `baseline_drift` | gbrain / Context7 工具表与 pin 不一致；`tools.nextCursor` 非空 |
 | `provider_start_failed` | 其他启动失败（`context7_provider_unavailable`、`gbrain_migration_observed`、连接/握手超时等） |
 
-- **覆盖不变式**（替换 `runtime-factory.ts:501-510`）：对每个 catalog 操作，恰好成立一条——reserved；`unconditionalDenial`；有 handler；`omit_integration` 档下属于 `unavailable` 表里的集成。都不成立 → 仍抛 `runtime_handler_coverage_incomplete`（抓代码漏装，fail-closed 不变）。属于不可用集成却有 handler → 抛 `invalid_runtime_handler`。`fail_closed` 档下任何可选集成失败仍然整体抛错（常驻不变）。
+- **覆盖不变式**（替换 `runtime-factory.ts:501-510`）：检查集合与语音解析使用**同一个操作集合**——catalog 去掉可信配置主动排除的操作（现有 `browserMode === "off"` 时的 `browser.*` 排除保留，R1#B2）。对集合内每个操作，恰好成立一条——reserved；`unconditionalDenial`；有 handler；`omit_integration` 档下属于 `unavailable` 表里的集成。都不成立 → 仍抛 `runtime_handler_coverage_incomplete`（抓代码漏装，fail-closed 不变）。属于不可用集成却有 handler → 抛 `invalid_runtime_handler`。`fail_closed` 档下任何可选集成失败仍然整体抛错（常驻不变）。
 - **语音分支**（`runtime-factory.ts:124-147`）：`missingOperationIds` 只允许全部属于 `unavailable` 集成；否则照旧 `runtime_capabilities_incomplete`。
 - **manifest**：`integrations` 去掉不可用项；新增 `unavailableIntegrations: [{ id, reason }]`（按 id 排序、计入 `manifestDigest`）；`fail_closed` 档该字段**缺席**，常驻 manifest 字节不变。`localIntegrations`（`runtime-factory.ts:151`）与 `integrationIds` 同样只列实际装配的。
 - **模型看到的**：不可用集成的操作不在 manifest → 模型调用得到 `operation_not_in_manifest` → §4.5 已有分类为 `unavailable` →「这场没开这个能力」。
@@ -435,13 +436,19 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 
 **后台准入段**（`CodexVoiceContainer.openWithinDeadline` 内）= parent 启动 → capability 进程启动 → `assertCapabilityProcess`（含模型侧 MCP `tools/list`）→ capability thread → scribe 进程与 thread → `writer.rewrite` 试写。这一段里任一失败，除了「open 已被取消 / 失租约」这两种，都**不再**让整场 `voice_unavailable`，而是：
 
-1. 按逆序关闭段内资源：scribe → capability 进程 → parent。parent 启动晚于预算返回时，挂一个 `.then(p => p.close())`，保证迟到的 parent 也被关掉。
-2. 新建前台 home `home-fg`，不复用已被 parent 写过的 `home`（里面有 auth 软链接和能力配置）；在 `home-fg` 上走现有 voice-only 分支（`VOICE_CODEX_HOME_CONFIG` + `assertVoiceCodexHome`、read-only thread）。
-3. 先告诉 Bridge，再拉前台上下文：container 调用 open 输入里新增的回调 `markBackgroundDegraded(reason)`（`CodexVoiceBackend` 转给 `cli.ts`，由现有 bridge client 带租约发 `POST /api/voice/sessions/:id/background-degraded {reason}`），成功后再 `loadContext(undefined)`，拿到前台形状的 snapshot。这个 POST 失败 → 整场 `voice_unavailable`，因为此时 Bridge 仍会给后台形状的 snapshot，不能拿它冒充前台。
+1. **准入段独立所有权（R1#B5）**：准入段用自己的 `AdmissionScope { cancelled; resources[] }`，与整场 open 的 `resources.cancelled` 分开。准入段内每个 `await` 之后都 `assertAdmissionActive()`（整场取消或准入取消任一成立即停）。准入段的全部目录放在 `root/admission/`（`home`、`activation`、`scribe-home`、`scribe-work`）；前台只用 `root/fg/`。准入失败或超时 → 置 `admission.cancelled`，此后到达的任何 continuation 只能**关闭**它手里的资源，不能再装配，也不能清理 `root/fg/` 或整场 root。
+2. 按逆序关闭准入资源：scribe → capability 进程 → parent。每一项独立 try/finally，一项关闭失败不跳过其余；失败写 evidence `codex_voice_admission_teardown_failed {stage}`。迟到才返回的 parent / 进程由 `.then(close)` 关闭，关闭的 promise 被观察（不留未处理拒绝）。`TEARDOWN_RESERVE_MS` 用完仍有进程未确认退出时，前台照常继续，把这些资源登记进整场 conversation 的关闭清单，由会话结束与 `cleanupOpen` 再次关闭并记录。
+3. 在 `root/fg/home` 上走现有 voice-only 分支（`VOICE_CODEX_HOME_CONFIG` + `assertVoiceCodexHome`、read-only thread），不复用准入段写过的任何目录。
+4. 先告诉 Bridge，再拉前台上下文：container 调用 open 输入里新增的回调 `markBackgroundDegraded(reason)`（`CodexVoiceBackend` 转给 `cli.ts`，由现有 bridge client 带租约发 `POST /api/voice/sessions/:id/background-degraded {reason}`），成功后再 `loadContext(undefined)`，拿到前台形状的 snapshot。这个 POST 失败 → 整场 `voice_unavailable`，因为此时 Bridge 仍会给后台形状的 snapshot，不能拿它冒充前台。
 
-**预算**：准入段总预算 `VOICE_BACKGROUND_ADMISSION_BUDGET_MS = 35_000`，在 60s open 截止之内；超时的降级原因为 `admission_timeout`，前台至少还有 25s。
+**时间预算（R1#B4）**：全部按**绝对截止时间**算，不再用相对的段预算。
 
-**降级原因枚举** `VoiceBackgroundDegradedReason`：`native_skill_baseline_unverified` · `model_isolation_unproven` · `node_runtime_closure_unresolved` · `bridge_unavailable` · `subscription_auth_unverified` · `capability_process_failed` · `admission_timeout` · `parent_start_failed`（兜底）。从错误码映射；原始信息只进本地 evidence `codex_voice_background_degraded {reason, stage, errorCode}`。`bridge_unavailable` 在 parent 启动时新增显式检查（Bridge URL 或 token 为空），不再等到第一次调用才失败。
+- open 截止 `openDeadlineAt`：后台会话由 `cli.ts` 传入 `min(open 入口 + 90s, 会话启动截止 − 10s)`（会话启动截止即现有 `SESSION_START_DEADLINE_MS = 120_000` 的 `startDeadlineAt`）；非后台会话保持现有 60s 不变。`withTimeout` 改为对这个绝对时间计时。
+- 两笔预留从截止往回扣：`TEARDOWN_RESERVE_MS = 25_000`（准入段逆序关闭；两个子进程各走 `CodexLeadProcess.stopChild` 的 grace→SIGTERM→SIGKILL 等待，`CodexLeadProcess.ts:369-385`）与 `FOREGROUND_RESERVE_MS = 20_000`（degraded POST + 重拉上下文 + 前台进程与 thread + realtime transport 启动）。
+- 准入截止 `admissionDeadlineAt = openDeadlineAt − TEARDOWN_RESERVE_MS − FOREGROUND_RESERVE_MS`。进入准入段前若剩余 `< 10s`（前置的二进制校验、上下文读取、目录准备太慢），直接跳过后台，原因 `admission_budget_exhausted`。准入段到点未完成 → `admission_timeout`。
+- 每次真宿主启动都记 evidence：前置耗时、准入耗时、关闭耗时、前台耗时，QA-R1 以此核预算是否够用。
+
+**降级原因枚举** `VoiceBackgroundDegradedReason`：`native_skill_baseline_unverified` · `model_isolation_unproven` · `node_runtime_closure_unresolved` · `bridge_unavailable` · `subscription_auth_unverified` · `capability_process_failed` · `admission_timeout` · `admission_budget_exhausted` · `parent_start_failed`（兜底）。从错误码映射；原始信息只进本地 evidence `codex_voice_background_degraded {reason, stage, errorCode}`。`bridge_unavailable` 在 parent 启动时新增显式检查（Bridge URL 或 token 为空），不再等到第一次调用才失败。
 
 **Bridge 侧**：
 
@@ -465,11 +472,11 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 3. 每个依赖同时放两条：load command 里写的字面路径（软链接本身）和它的 realpath（Cellar 里的真文件）。**只放精确文件，不放目录**。
 4. 上限：至多 64 个文件、递归深度至多 8。解析不到、非绝对路径、超限 → `node_runtime_closure_unresolved`。语音侧按 §14.2 降级；常驻侧 parent 启动失败（与今天同向 fail-closed）。
 
-**OpenSSL 配置**：沙箱内的 node 子进程 env 固定 `OPENSSL_CONF=<pins 目录>/openssl.cnf`。这个文件由 parent 写入，内容是固定的最小合法配置（空），权限 0400，放在权限档已可读的 pins 目录下。注入到三处，三处用同一个来源函数：①模型侧 capability MCP 代理的 server env；②`buildLeadModelEnv` 生成的模型 shell env；③`verifyModelIsolation` 探针 env。**不**放行 `/System/Library/OpenSSL` 或 `/opt/homebrew/etc/openssl@3`。
+**OpenSSL 配置（R1#B1）**：沙箱内的 node 子进程 env 固定 `OPENSSL_CONF=<pins 目录>/openssl.cnf`。这个文件由 `runtime-parent.ts` 在建 pins 目录（`activationRoot/run-*`，`runtime-parent.ts:258`）时写入，内容是固定的最小合法配置（空），权限 0400。pins 目录本身**不**可读，所以 `runtime-parent.ts` 在拼有效权限 spec 时（现 `permissionProfile = {...options.permissionProfile, credentialPaths, artifactRoot, brokerSocket}` 那一处）把这个**精确文件路径**追加进 `readPaths`；常驻与语音都经这里，一处改两边生效，不放行整个 activation 或 run 目录。注入到三处，三处用同一个来源函数：①模型侧 capability MCP 代理的 server env；②`buildLeadModelEnv` 生成的模型 shell env；③`verifyModelIsolation` 探针 env。**不**放行 `/System/Library/OpenSSL` 或 `/opt/homebrew/etc/openssl@3`。
 
 **两边同修**：`voice-capability-parent.ts:335` 与 `default-runtime.ts:253` 的 `readPaths` 都改成 `[deploymentRoot, ...leadNodeRuntimeReadPaths(nodePath), codexPath, ...原有其他项]`。有效权限档断言（`assertLeadPermissionProfile`）两边按同一 spec 计算，比较逻辑不用改。凭据重叠检查照旧对新路径生效。
 
-**准入证明**仍是 `verifyModelIsolation`：真 node 在真权限档里跑。探针脚本补一行 `require("node:crypto").randomBytes(1)`，覆盖 OpenSSL 初始化。模型侧 MCP 代理能否起来，由 `assertCapabilityProcess` 的 `tools/list` 证明；失败 → 语音降级（§14.2）。
+**准入证明**仍是 `verifyModelIsolation`：真 node 在真权限档里跑。探针在与 MCP 代理相同的 env（含 `OPENSSL_CONF`）下运行，并补两项：读一次 `OPENSSL_CONF` 指向的文件必须成功、`require("node:crypto").randomBytes(1)` 必须成功，覆盖 OpenSSL 初始化。模型侧 MCP 代理能否起来，由 `assertCapabilityProcess` 的 `tools/list` 证明；失败 → 语音降级（§14.2）。
 
 ### 14.4 部署前置清单（原样写进 PR body）
 
@@ -480,7 +487,7 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 | 3 | 可选：`LINEAR_API_KEY` | 只少 Linear | 简报「没接上」一行与 manifest 一致 |
 | 4 | 可选：`GH_TOKEN` 或 `gh auth` 登录 | 只少 GitHub 与 patrol 快照 | 同上 |
 | 5 | 可选：`~/.gbrain/config.json`（本机当前不存在） | 只少记忆库 gbrain | 同上 |
-| 6 | 可选：Context7 pin 与远端一致（当前漂移）；`CONTEXT7_API_KEY` 可选 | 只少 Context7 文档 | 同上；重新登记 pin 另开单，不在本单 |
+| 6 | 可选：Context7 pin 与远端一致（当前漂移）；`CONTEXT7_API_KEY` 可选 | 只少 Context7 文档 | 同上；重新登记 pin 不在本单，列入 PR Follow-ups |
 | 7 | `voiceBackground` 缺省 `{enabled:false}` 不变 | — | 合并后默认不开，按 §11 由 QA / Lead 打开 |
 
 ### 14.5 验收：真宿主起 parent
@@ -490,14 +497,15 @@ broker 对 actor=voice 的 write 类回执（含 `browser.*` 写）成功 → Le
 | 编号 | 场景 | 判据 |
 |---|---|---|
 | QA-R1 | 真宿主现状（无 gbrain 配置、Context7 漂移），测试 Lead 开 `voiceBackground`；有 Linear key、无 Linear key 各开一场 | ① evidence 有 `codex_voice_container_opened`，`backgroundExecution=enabled`、`accountType=chatgpt`；② manifest `unavailableIntegrations` 恰好等于宿主实际缺的集成，原因正确（gbrain=`host_config_unverified`、context7=`baseline_drift`，无 key 那场 linear=`credential_missing`）；③ `verifyModelIsolation` 用真 Homebrew node 通过；④ capability MCP `tools/list` 非空；⑤ 一次后台读（某单的 PR 状态）成功，口语里单号 / PR 号与 GitHub 一致；⑥ 开场简报「这场没接上」一行与 manifest 一致；⑦ 有 Linear 的那场里，改测试 issue 状态成功（原验收 5） |
-| QA-R2 | 后台准入段失败 → 降级 | 同一真房，用 container 既有构造缝 `createCapabilityParent`，由 harness 替换成抛 `model_isolation_unproven` 的工厂（真宿主上能自然触发的核心失败都和守护进程自身共用配置，没法只坏 parent）。判据：会话**开起来**；Bridge `voice_sessions.background_state=degraded`、reason 正确；thread 里出现那句固定降级提示；她问「FLY-xxxx 的 PR 状态」→ 走 `handoffToLead`，Lead 信箱有这条交办；evidence 里 parent / capability 进程 / scribe 都已退出（按 pid 核）；全程没有 `voice_unavailable` |
+| QA-R2a | 后台准入段在 parent 处失败 → 降级 | 同一真房，用 container 既有构造缝 `createCapabilityParent`，由 harness 替换成抛 `model_isolation_unproven` 的工厂（真宿主上能自然触发的核心失败都和守护进程自身共用配置，没法只坏 parent）。判据：会话**开起来**；Bridge `voice_sessions.background_state=degraded`、reason 正确；thread 里出现那句固定降级提示；她问「FLY-xxxx 的 PR 状态」→ 走 `handoffToLead`，Lead 信箱有这条交办；evidence 记 parent / capability 进程 / scribe「未创建」；全程没有 `voice_unavailable` |
+| QA-R2b | 真 parent 起来之后失败 → 降级且真资源被收回 | 同一构造缝，harness 包一层：先调真 `startVoiceCapabilityParent` 起真 parent，返回后再抛错。判据：同 R2a 的会话判据；另按 pid / socket 核真 parent 的 broker socket 不可连、其 provider 子进程已退出、`root/admission/` 已删除、`root/fg/` 完好。capability 进程与 scribe 的退出证据由本地「后续阶段失败 / 迟到返回」用例提供（R1#A1） |
 | QA-R3 | 常驻回归 | 本机相关测试：`verifyModelIsolation` 用真 codex 0.156.1 + 真 Homebrew node + 常驻形状的权限档真跑通过（旧 readPaths 下同一用例先红：exit 134）。`fail_closed` 档 manifest 快照与改动前逐字节相同 |
 
-本地相关测试（实现阶段先红后绿）：可选集成四种原因各一例、`requires` 连带不装配（github 缺 → patrol 快照一起不装配）、覆盖不变式反例（漏装 handler 仍抛错）、`fail_closed` 档行为不变；准入段每个 stage 失败都降级且资源按 pid 全部退出、parent 迟到返回也被关闭、35s 预算、degraded POST 失败即整场不可用；Bridge 路由的 schema、租约、单调性、重复 POST；闭包解析的 fixture（`@rpath` / `@loader_path` / 软链接 / 超限 / 解析失败）；`OPENSSL_CONF` 三处同源。
+本地相关测试（实现阶段先红后绿）：可选集成四种原因各一例、`browser: off` 正常启动（不触发覆盖失败）、语音档浏览器启动失败 → `browser.*` 不装配且简报不提浏览器、常驻档浏览器失败仍是拒绝 handler、`requires` 连带不装配（github 缺 → patrol 快照一起不装配）、覆盖不变式反例（漏装 handler 仍抛错）、`fail_closed` 档行为不变；准入段每个 stage 失败都降级且资源按 pid 全部退出、parent 迟到返回也被关闭且不再装配、迟到 continuation 不清理 `root/fg/`、某项关闭失败其余仍关闭、慢前置读取 → `admission_budget_exhausted`、慢清理仍在 `openDeadlineAt` 前完成前台、degraded POST 失败即整场不可用；Bridge 路由的 schema、租约、单调性、重复 POST；闭包解析的 fixture（`@rpath` / `@loader_path` / 软链接 / 超限 / 解析失败）；`OPENSSL_CONF` 三处同源。
 
 ### 14.6 取舍与诚实边界
 
-- **只对语音开 `omit_integration`**：Lead 的方向是「缺集成就不装配」，但改常驻会改变生产 Codex Lead 的行为（今天是 fail-closed 的，parity 要求也建立在这个前提上），这属于另一张单的范围。已用问询 `111f5945` 非阻塞报 Lead，默认「常驻不改、列 follow-up」。注意：本机没有 gbrain 配置、Context7 又在漂移，所以常驻 Codex Lead 在这台宿主上起 parent 同样会失败——这是现状，不是本单引入的。
+- **只对语音开 `omit_integration`**：Lead 的方向是「缺集成就不装配」，但改常驻会改变生产 Codex Lead 的行为（今天是 fail-closed 的，parity 要求也建立在这个前提上），这属于另一张单的范围。Lead 已答复问询 `111f5945`：同意常驻保持 `fail_closed` 字节不变。**已知现状**：本机没有 gbrain 配置、Context7 又在漂移，所以常驻 Codex Lead 在这台宿主上起 parent 同样会失败——不是本单引入的；写进 PR Follow-ups，现在不另开单，合入后由 Lead 问 founder。
 - **不采用的做法**：放行整个 `/opt/homebrew`（太宽，会连带其他工具的配置与凭据）；放行真实的 `openssl.cnf`（静态 node 读 `/System/Library/OpenSSL`，Homebrew node 读 `/opt/homebrew/etc/openssl@3`，路径因 node 而异，且没法从 node 可靠查到；`OPENSSL_CONF` 对两种都生效）；用 `DYLD_PRINT_LIBRARIES` 实测装载集（输出格式不是契约，还得额外跑一次）；给不可用集成造「永远拒绝」的假 handler（模型会看到用不了的工具去试，反而夸口）。
 - **降级后不走口语转述**：降级场的交办由 Lead 本体回答，proof speaker 维持逐字——这和 FLY-2884 founder 试过的行为一致。代价是降级场里 Lead 的回答仍然逐字念。
 - **`OPENSSL_CONF` 的代价**：沙箱内 node 用 OpenSSL 默认配置，不读宿主配置。这些 node 子进程只走 unix socket 和受管代理，不依赖宿主 OpenSSL 定制。
