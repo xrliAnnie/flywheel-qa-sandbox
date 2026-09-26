@@ -10171,9 +10171,6 @@ export class CommDB {
 		) {
 			return { finalized: false, reason: "invalid_trusted_context" };
 		}
-		if (nowMs >= expiresMs) {
-			return { finalized: false, reason: "evidence_expired" };
-		}
 		const immutableInput = {
 			reservationId: input.reservationId,
 			evidenceId: input.evidenceId,
@@ -10205,6 +10202,10 @@ export class CommDB {
 					idempotentReplay: true,
 					result: JSON.parse(prior.result_json) as FinalizeSessionResult,
 				};
+			}
+			// A committed receipt is durable authority; expiry only gates new work.
+			if (nowMs >= expiresMs) {
+				return { finalized: false, reason: "evidence_expired" };
 			}
 			if (
 				this.getSessionCloseoutIdentity(executionId).revision !==

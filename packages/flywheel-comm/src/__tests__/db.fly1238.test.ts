@@ -620,6 +620,46 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 		});
 	});
 
+	it("FLY-2919 replays a committed closeout after evidence expiry without touching a newer identity", () => {
+		db.registerSession("exec-replay", "window-old", "proj", "FLY-2919", "lead");
+		const input = {
+			reservationId: "reservation-replay",
+			evidenceId: "evidence-replay",
+			expectedIdentityRevision:
+				db.getSessionCloseoutIdentity("exec-replay").revision,
+			observedAt: "2026-09-26T00:00:00.000Z",
+			expiresAt: "2026-09-26T00:00:10.000Z",
+			now: "2026-09-26T00:00:01.000Z",
+		};
+		const first = db.finalizeProvenGoneSession("exec-replay", input);
+		expect(first).toMatchObject({ finalized: true, idempotentReplay: false });
+		db.close();
+		db = new CommDB(join(tmpDir, "comm.db"));
+		db.registerSession("exec-replay", "window-new", "proj", "FLY-2919", "lead");
+		const pending = db.insertQuestion("exec-replay", "lead", "new work?");
+		const late = { ...input, now: "2026-09-26T00:01:00.000Z" };
+		expect(db.finalizeProvenGoneSession("exec-replay", late)).toEqual({
+			...first,
+			idempotentReplay: true,
+		});
+		expect(
+			db.finalizeProvenGoneSession("exec-replay", {
+				...late,
+				evidenceId: "conflicting-evidence",
+			}),
+		).toEqual({ finalized: false, reason: "closeout_receipt_conflict" });
+		expect(
+			db.finalizeProvenGoneSession("exec-replay", {
+				...late,
+				reservationId: "new-expired-reservation",
+				expectedIdentityRevision:
+					db.getSessionCloseoutIdentity("exec-replay").revision,
+			}),
+		).toEqual({ finalized: false, reason: "evidence_expired" });
+		expect(db.getSession("exec-replay")?.tmux_window).toBe("window-new");
+		expect(db.isQuestionPending(pending)).toBe(true);
+	});
+
 	it("FLY-2616: trusted gone evidence is fenced against identity drift and founder wakes", () => {
 		db.registerSession(
 			"exec-a",

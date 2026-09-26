@@ -349,3 +349,15 @@ owner claim 的每次 lease retry、prepareSpawn、authorizeSpawn 和 restart �
 本批仍不是 B–F 完成：共同死亡事务与最终 sink 的 marker/receipt/CAS、跨库义务、所有窗口消费者、独立公平采样、旧体补采、restart争用中性分类、九单矩阵、评审/PR/CI/QA/handoff仍待完成。实际跨 activation 但不换物理generation的 re-entry，也须在最终共同收敛中核对当下逻辑归属，不能以本批 resume 新启动身份测试代替。
 
 A10 验证收齐：13个明确文件逐一运行306 pass；限定文件的 owning related 为 teamlead3文件51 pass、edge-worker3文件82 pass。teamlead及依赖build、lint均exit0（25个既有warning）。没有公共类型/schema变更，不新增shell测试；此次没有重跑A9遗留的routes原15秒导入超时，不能据此关闭该旧验证缺口。逐查询匹配、44条排除理由和全部红绿/命令/源码hash归档 implementation-a10-consumers.json.gz / implementation-a10-evidence.json.gz。
+
+## C1 已提交结账的过期后重放（执行 7d99e8e8）
+
+续接 ce4afdfc3。Lead obligation-replay-evidence-expiry 的既有 CommDB 入口已定位到 finalizeProvenGoneSession：旧实现先拒绝过期证据，随后才查 closeout_finalization_receipt，因此重启后无法取得已提交的结账结果。本批只将过期拒绝移到事务内的已提交回执查询之后；输入格式/摘要冲突、首次结账的过期/身份epoch/TURN/founder wake守卫全部保留，没有增加死亡授权或把任意字符串变成新义务。
+
+真实临时 CommDB 测试先完成结账、关闭并重开数据库，再登记同 execution 的新身份和新问题。原实现重放返回 evidence_expired（1 RED/22原项通过）；修后返回同一已提交结果且不重复写库。负控验证更换 evidenceId 仍拒绝 receipt conflict，新的过期 reservation 仍拒绝 evidence_expired，新身份和新问题完整保留。该文件最终23 GREEN，不是生产数据库/529验收。
+
+FLY-2567兼容性守卫按预期发现db.ts哈希变化。逐字比对确认 finalizeProvenGoneSession 之外所有内容不变，只刷新对应dependency hash并补充精确理由，旧bootstrap generator源码和hash不动。原守卫失败和随后定向复核均保留。没有schema或公共API变更、没有新增shell测试；新跨库 body_death 义务尚未实现，必须沿同一先查回执规则接入，不能把此既有入口修复报告成C组完成。
+
+C1 验证收齐：7个具体文件逐一执行106 pass；owning comm related 限定到直接finalizer文件，1文件23 pass。comm及依赖build、lint均exit0（25个既有warning）。JSON兼容性fixture变更不涉及公共API，Bridge直接消费者均用新建comm产物验证。27条逐文件排除理由、回执重放红绿、兼容性guard原红/最终绿、源文件边界字节核对和全部命令日志归档 implementation-c1-consumers.json.gz / implementation-c1-evidence.json.gz。
+
+下一批优先B/C核心：StateStore.convergeProvenDeadExecution 与既有 terminalizeProvenDeadSessionTx 接通，采样/marker对账放lease外，最终同步CAS内核对身份、generation、revision、owner/spawn、动态开关和marker；持久body_death义务保留实际完成/retirement结果，随后按epoch处理CommDB投影、TURN和founder wake。DirectEventSink/event-route/recordEnrolledTerminalSignal的execution单值查询在多activation时仍有歧义，须随同一收敛链处理。窗口清理不提供死亡授权，FLY-2921仍独占替身协调。A9 routes旧15秒导入超时与全A-F/九单、review/PR/CI/QA/handoff均保留未完成。
