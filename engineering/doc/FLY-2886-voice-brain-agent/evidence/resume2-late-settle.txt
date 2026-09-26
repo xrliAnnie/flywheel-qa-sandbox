@@ -1,0 +1,7 @@
+# late-settle
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/github-terminal-evidence.test.ts > settles a Bridge inner broker receipt after cancellation without a target lock client
+AssertionError: expected { projectName: 'flywheel', …(11) } to match object { state: 'succeeded', …(1) }
+ Test Files  1 failed | 8 passed (9)
+      Tests  1 failed | 101 passed (102)
+   Duration  23.11s (transform 5.26s, setup 175ms, collect 10.94s, tests 6.57s, environment 1ms, prepare 966ms)

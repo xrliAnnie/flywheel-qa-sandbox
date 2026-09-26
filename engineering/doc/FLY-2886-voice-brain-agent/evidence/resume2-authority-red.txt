@@ -1,0 +1,22 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ❯ |parallel| src/lead-capabilities/__tests__/runtime-authority.test.ts (3 tests | 1 failed) 7ms
+   × keeps the pre-union resident path: registry context without a carrier claim until authority is read 4ms
+     → capability_authority_missing
+   ✓ derives the carrier authority from the resident environment 1ms
+   ✓ uses the explicit voice authority and its trusted activation check 0ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/runtime-authority.test.ts > keeps the pre-union resident path: registry context without a carrier claim until authority is read
+Error: capability_authority_missing
+ ❯ resolveLeadCapabilityRuntimeAuthority src/lead-capabilities/runtime-authority.ts:20:9
+     18|  };
+     19|  if (authority.kind === "carrier" && !authority.carrierClaim)
+     20|   throw new Error("capability_authority_missing");
+       |         ^
+     21|  const trusted = options.assertActivationCurrent
+     22|   ? { assertActivationCurrent: options.assertActivationCurrent }
+ ❯ src/lead-capabilities/__tests__/runtime-authority.test.ts:15:19
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 passed (3)
+   Start at  02:34:12
+   Duration  779ms (transform 69ms, setup 73ms, collect 58ms, tests 7ms, environment 0ms, prepare 64ms)

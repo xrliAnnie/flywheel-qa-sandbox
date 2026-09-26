@@ -57,7 +57,7 @@ it("correlates report verification to the exact report and request through the f
 			reportId,
 			requestId: context.requestId,
 			operationId: "report.verify",
-			carrierClaim: "CLAIM_CANARY",
+			authority: { kind: "carrier", carrierClaim: "CLAIM_CANARY" },
 		},
 	});
 	returnedId = "b".repeat(32);

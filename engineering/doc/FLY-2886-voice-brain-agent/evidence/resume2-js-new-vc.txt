@@ -1,0 +1,4 @@
+# js-new-vc
+ Test Files  7 passed (7)
+      Tests  51 passed (51)
+   Duration  7.87s (transform 859ms, setup 0ms, collect 1.71s, tests 3.08s, environment 1ms, prepare 543ms)

@@ -1,0 +1,100 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ❯ |parallel| src/lead-capabilities/__tests__/report-publish.test.ts (8 tests | 2 failed) 1256ms
+   × publishes only verified HTML bytes through the scoped Bridge route 19ms
+     → expected { projectName: 'flywheel', …(3) } to match object { projectName: 'flywheel', …(2) }
+(8 matching properties omitted from actual)
+   ✓ refuses wrong MIME, invalid UTF8, secret content and oversized artifacts before HTTP 13ms
+   ✓ keeps an uncertain upload unknown across the real broker journal restart  725ms
+   ✓ bounds an abort-ignoring upload without retrying 2ms
+   ✓ sanitizes invalid trusted endpoint failures 2ms
+   ✓ treats mismatched, oversized, secret or stale responses as unknown 3ms
+   × publishes through a real HTTP report router and validates its scoped receipt 481ms
+     → expected 'rejected' to be 'succeeded' // Object.is equality
+   ✓ reconciles a committed upload without re-reading the prior activation artifact or uploading again 10ms
+ ✓ |parallel| src/lead-capabilities/__tests__/xiaohongshu-write.test.ts (5 tests) 259ms
+ ✓ |parallel| src/lead-capabilities/__tests__/xiaohongshu-write-management.test.ts (5 tests) 254ms
+ ❯ |parallel| src/bridge/__tests__/lead-memory.test.ts (2 tests | 1 failed) 34ms
+   ✓ binds memory writes to own project and preserves UUID/provenance on replay 23ms
+   × leaves a cancelled in-flight memory write unknown and never redispatches it 10ms
+     → expected 'succeeded' to be 'unknown' // Object.is equality
+ ✓ |parallel| src/lead-capabilities/__tests__/patrol-github-facts.test.ts (2 tests) 7ms
+ ❯ |parallel| src/lead-capabilities/__tests__/report-verify.test.ts (1 test | 1 failed) 18ms
+   × correlates report verification to the exact report and request through the fixed Bridge endpoint 18ms
+     → expected { projectName: 'flywheel', …(1) } to match object { projectName: 'flywheel', …(1) }
+(7 matching properties omitted from actual)
+ ✓ |parallel| src/lead-capabilities/__tests__/upstream-write-denials.test.ts (1 test) 37ms
+ ✓ |parallel| src/lead-capabilities/__tests__/context7.test.ts (1 test) 23ms
+ ✓ |parallel| src/lead-capabilities/__tests__/runtime-authority.test.ts (3 tests) 7ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/bridge/__tests__/lead-memory.test.ts > leaves a cancelled in-flight memory write unknown and never redispatches it
+AssertionError: expected 'succeeded' to be 'unknown' // Object.is equality
+Expected: [32m"unknown"[39m
+Received: [31m"succeeded"[39m
+ ❯ src/bridge/__tests__/lead-memory.test.ts:127:5
+    125|     })
+    126|    ).status,
+    127|   ).toBe("unknown");
+       |     ^
+    128|   expect(addMessages).toHaveBeenCalledTimes(1);
+    129|  } finally {
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/report-publish.test.ts > publishes only verified HTML bytes through the scoped Bridge route
+AssertionError: expected { projectName: 'flywheel', …(3) } to match object { projectName: 'flywheel', …(2) }
+(8 matching properties omitted from actual)
+[32m- Expected[39m
+[31m+ Received[39m
+[33m@@ -1,8 +1,7 @@[39m
+[2m  {[22m
+[2m    "capability": {[22m
+[32m-     "carrierClaim": "CLAIM_CANARY",[39m
+[2m      "issueId": "FLY-1",[22m
+[2m      "operationId": "report.publish",[22m
+[2m      "requestId": "d7fc9cb5-7a6a-403f-8978-eccd38d203d2",[22m
+[2m    },[22m
+[2m    "html": "<html>Report</html>",[22m
+ ❯ src/lead-capabilities/__tests__/report-publish.test.ts:94:53
+     92|   "http://127.0.0.1:3199/api/lead-capabilities/reports/publish",
+     93|  );
+     94|  expect(JSON.parse(calls[0]!.init!.body as string)).toMatchObject({
+       |                                                     ^
+     95|   projectName: "flywheel",
+     96|   html: "<html>Report</html>",
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/report-publish.test.ts > publishes through a real HTTP report router and validates its scoped receipt
+AssertionError: expected 'rejected' to be 'succeeded' // Object.is equality
+Expected: [32m"[7msucceed[27med"[39m
+Received: [31m"[7mreject[27med"[39m
+ ❯ src/lead-capabilities/__tests__/report-publish.test.ts:314:25
+    312|    f.context,
+    313|   );
+    314|   expect(result.status).toBe("succeeded");
+       |                         ^
+    315|   expect(result.providerRef).toBe(registry.list()[0]!.token);
+    316|   expect(registry.list()[0]!.capabilityOwner).toEqual({
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/report-verify.test.ts > correlates report verification to the exact report and request through the fixed Bridge endpoint
+AssertionError: expected { projectName: 'flywheel', …(1) } to match object { projectName: 'flywheel', …(1) }
+(7 matching properties omitted from actual)
+[32m- Expected[39m
+[31m+ Received[39m
+[33m@@ -1,8 +1,7 @@[39m
+[2m  {[22m
+[2m    "capability": {[22m
+[32m-     "carrierClaim": "CLAIM_CANARY",[39m
+[2m      "operationId": "report.verify",[22m
+[2m      "reportId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",[22m
+[2m      "requestId": "4ebbe8d1-ec2d-4f67-bfc6-558074dab5b6",[22m
+[2m    },[22m
+[2m    "projectName": "flywheel",[22m
+ ❯ src/lead-capabilities/__tests__/report-verify.test.ts:54:43
+     52|   "http://127.0.0.1:3199/api/lead-capabilities/reports/verify",
+     53|  );
+     54|  expect(JSON.parse(init!.body as string)).toMatchObject({
+       |                                           ^
+     55|   projectName: "flywheel",
+     56|   capability: {
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+ Test Files  3 failed | 6 passed (9)
+      Tests  4 failed | 24 passed (28)
+   Start at  02:35:07
+   Duration  8.65s (transform 851ms, setup 227ms, collect 2.09s, tests 1.90s, environment 1ms, prepare 778ms)

@@ -298,8 +298,15 @@ export class LeadCapabilityBroker {
 			requestId: request.requestId,
 			targetKey: targetKey!,
 		});
+		// Late terminal proof after a timeout/abort settles the original receipt only
+		// for fenced or voice-originated requests; resident paths keep the pre-voice
+		// behavior (plan §2 rollback: disabled Leads' write path is unchanged).
+		const settlesLateProof = () =>
+			targetFence !== undefined ||
+			this.options.activationId.startsWith("voice:");
 		const settleProviderEvidence = async (proof: ProviderTerminalEvidence) => {
 			if (!providerInvoked || !dispatched || terminalEvidenceRecorded) return;
+			if (!settlesLateProof()) return;
 			if (
 				containsSecret(proof, this.secrets) ||
 				(proof.status === "succeeded" &&
@@ -524,7 +531,9 @@ export class LeadCapabilityBroker {
 					const prior = this.options.receipts.get(key);
 					if (
 						prior?.state === "dispatched" ||
-						(prior?.state === "unknown" && to !== "unknown")
+						(prior?.state === "unknown" &&
+							to !== "unknown" &&
+							settlesLateProof())
 					)
 						this.options.receipts.transition({
 							...writeInput,

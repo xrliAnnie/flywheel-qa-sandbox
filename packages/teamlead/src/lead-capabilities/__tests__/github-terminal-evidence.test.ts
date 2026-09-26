@@ -148,76 +148,88 @@ it.each(cases)(
 	},
 );
 
-it("settles a Bridge inner broker receipt after cancellation without a target lock client", async () => {
-	const { SqliteJournalStore } = await import(
-		"../../lead-backends/codex/SqliteJournalStore.js"
-	);
-	const { LeadCapabilityBroker } = await import("../broker.js");
-	const journal = new SqliteJournalStore(":memory:");
-	let settle!: (value: unknown) => void;
-	const mutate = vi.fn(
-		() =>
-			new Promise((resolve) => {
-				settle = resolve;
+it.each([
+	["voice:b0000000-0000-4000-8000-000000000001", "succeeded"],
+	// Resident activations keep the pre-voice behavior (plan §2 rollback).
+	["resident-activation", "unknown"],
+] as const)(
+	"settles a Bridge inner broker receipt for %s after cancellation without a target lock client only when voice-originated (%s)",
+	async (activationId, settled) => {
+		const { SqliteJournalStore } = await import(
+			"../../lead-backends/codex/SqliteJournalStore.js"
+		);
+		const { LeadCapabilityBroker } = await import("../broker.js");
+		const journal = new SqliteJournalStore(":memory:");
+		let settle!: (value: unknown) => void;
+		const mutate = vi.fn(
+			() =>
+				new Promise((resolve) => {
+					settle = resolve;
+				}),
+		);
+		const handlers = createGithubHandlers({
+			client: {
+				rest: {
+					pulls: { get: async () => ({ data: pr }) },
+					issues: { createComment: mutate },
+				},
+			} as unknown as Octokit,
+			policy: () => ({
+				projectName: "flywheel",
+				leadId: "eng",
+				owner: "acme",
+				repo: "project",
+				revision: "1",
 			}),
-	);
-	const handlers = createGithubHandlers({
-		client: {
-			rest: {
-				pulls: { get: async () => ({ data: pr }) },
-				issues: { createComment: mutate },
-			},
-		} as unknown as Octokit,
-		policy: () => ({
+			authorizeTarget: async () => {},
+			assertWriteTargetCurrent() {},
+		});
+		const key = {
 			projectName: "flywheel",
 			leadId: "eng",
-			owner: "acme",
-			repo: "project",
-			revision: "1",
-		}),
-		authorizeTarget: async () => {},
-		assertWriteTargetCurrent() {},
-	});
-	const key = {
-		projectName: "flywheel",
-		leadId: "eng",
-		operationId: "github.pr.comment",
-		requestId: "a0000000-0000-4000-8000-000000000001",
-	};
-	let enabled = true;
-	const broker = new LeadCapabilityBroker({
-		...key,
-		activationId: "bridge",
-		receipts: journal.operationReceipts,
-		handlers,
-		secrets: [],
-		allowedOperationIds: () => new Set([key.operationId]),
-		assertCurrent: async () => {
-			if (!enabled) throw new Error("revoked");
-		},
-	});
-	try {
-		const pending = broker.execute({
-			schemaVersion: 1,
-			operationId: key.operationId,
-			requestId: key.requestId,
-			input: { number: 7, body: "comment" },
+			operationId: "github.pr.comment",
+			requestId: "a0000000-0000-4000-8000-000000000001",
+		};
+		let enabled = true;
+		const broker = new LeadCapabilityBroker({
+			...key,
+			activationId,
+			receipts: journal.operationReceipts,
+			handlers,
+			secrets: [],
+			allowedOperationIds: () => new Set([key.operationId]),
+			assertCurrent: async () => {
+				if (!enabled) throw new Error("revoked");
+			},
 		});
-		await vi.waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
-		enabled = false;
-		await broker.close();
-		expect(await pending).toMatchObject({ status: "unknown" });
-		expect(journal.operationReceipts.get(key)?.state).toBe("unknown");
-		settle({ data: { id: 42, html_url: `${pr.html_url}#issuecomment-42` } });
-		await vi.waitFor(() =>
-			expect(journal.operationReceipts.get(key)).toMatchObject({
-				state: "succeeded",
-				providerRef: "42",
-			}),
-		);
-		expect(mutate).toHaveBeenCalledTimes(1);
-	} finally {
-		await broker.close();
-		journal.close();
-	}
-});
+		try {
+			const pending = broker.execute({
+				schemaVersion: 1,
+				operationId: key.operationId,
+				requestId: key.requestId,
+				input: { number: 7, body: "comment" },
+			});
+			await vi.waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+			enabled = false;
+			await broker.close();
+			expect(await pending).toMatchObject({ status: "unknown" });
+			expect(journal.operationReceipts.get(key)?.state).toBe("unknown");
+			settle({ data: { id: 42, html_url: `${pr.html_url}#issuecomment-42` } });
+			if (settled === "succeeded")
+				await vi.waitFor(() =>
+					expect(journal.operationReceipts.get(key)).toMatchObject({
+						state: "succeeded",
+						providerRef: "42",
+					}),
+				);
+			else {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				expect(journal.operationReceipts.get(key)?.state).toBe("unknown");
+			}
+			expect(mutate).toHaveBeenCalledTimes(1);
+		} finally {
+			await broker.close();
+			journal.close();
+		}
+	},
+);

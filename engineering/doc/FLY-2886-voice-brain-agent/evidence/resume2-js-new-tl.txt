@@ -1,0 +1,4 @@
+# js-new-tl
+ Test Files  59 passed (59)
+      Tests  677 passed (677)
+   Duration  207.71s (transform 19.90s, setup 681ms, collect 89.32s, tests 94.64s, environment 13ms, prepare 3.73s)

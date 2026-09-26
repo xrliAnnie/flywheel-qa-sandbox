@@ -1,0 +1,4 @@
+# rel-receipt-consumers2
+ Test Files  52 passed (52)
+      Tests  790 passed (790)
+   Duration  169.60s (transform 19.55s, setup 790ms, collect 56.02s, tests 90.38s, environment 7ms, prepare 3.90s)

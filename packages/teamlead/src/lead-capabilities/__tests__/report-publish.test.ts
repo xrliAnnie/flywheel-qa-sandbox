@@ -97,7 +97,7 @@ it("publishes only verified HTML bytes through the scoped Bridge route", async (
 		capability: {
 			requestId: f.context.requestId,
 			operationId: "report.publish",
-			carrierClaim: "CLAIM_CANARY",
+			authority: { kind: "carrier", carrierClaim: "CLAIM_CANARY" },
 			issueId: "FLY-1",
 		},
 	});
@@ -288,7 +288,7 @@ it("publishes through a real HTTP report router and validates its scoped receipt
 					operationId: "report.publish",
 					leadId: "eng",
 					issueId: "FLY-1",
-					carrierClaim: "CLAIM_CANARY",
+					authority: { kind: "carrier", carrierClaim: "CLAIM_CANARY" },
 				});
 				return () => {};
 			},

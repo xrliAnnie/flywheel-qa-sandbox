@@ -1,0 +1,41 @@
+# rel-receipt-consumers
+⎯⎯⎯⎯⎯⎯ Failed Tests 18 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/lead-capabilities/__tests__/context7.test.ts > calls only pinned docs tools and denies schema drift, stale scope and credential content
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/patrol-github-facts.test.ts > prefetches only fixed bounded reads and strips SDK payloads before helper input
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/patrol-github-facts.test.ts > stops on current repository changes or foreign operation context
+AssertionError: expected "spy" to be called 1 times, but got 0 times
+ FAIL  |parallel| src/lead-capabilities/__tests__/report-publish.test.ts > publishes only verified HTML bytes through the scoped Bridge route
+AssertionError: expected { projectName: 'flywheel', …(3) } to match object { projectName: 'flywheel', …(2) }
+ FAIL  |parallel| src/lead-capabilities/__tests__/report-publish.test.ts > publishes through a real HTTP report router and validates its scoped receipt
+AssertionError: expected 'rejected' to be 'succeeded' // Object.is equality
+ FAIL  |parallel| src/lead-capabilities/__tests__/report-verify.test.ts > correlates report verification to the exact report and request through the fixed Bridge endpoint
+AssertionError: expected { projectName: 'flywheel', …(1) } to match object { projectName: 'flywheel', …(1) }
+ FAIL  |parallel| src/lead-capabilities/__tests__/upstream-write-denials.test.ts > preserves every captured upstream row and records explicit denied writes through the real broker
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write-management.test.ts > prepares with original envelope identity and recovers only by readonly request lookup
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write-management.test.ts > status is read-only and cancellation recovery never cancels twice
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write-management.test.ts > rejects scope or schema injection before transport and keeps unavailable writes uncertain
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write-management.test.ts > uses real broker receipts for preparation and read-only recovery
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write-management.test.ts > reads only registered parent handles, uploads in order and passes authority IDs to prepare
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write.test.ts > maps exactly six registered operations and preserves the caller execution identity
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write.test.ts > retains no-receipt/default-off refusal and blocks stale carriers before authority calls
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write.test.ts > treats lost execute responses as unknown and only queries the bound status to reconcile
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write.test.ts > never labels pending or malformed authority responses successful
+Error: capability_authority_missing
+ FAIL  |parallel| src/lead-capabilities/__tests__/xiaohongshu-write.test.ts > runs receipt inputs through the real catalog/broker and replays unknown results without executing twice
+Error: capability_authority_missing
+ FAIL  |parallel| src/bridge/__tests__/lead-memory.test.ts > leaves a cancelled in-flight memory write unknown and never redispatches it
+AssertionError: expected 'succeeded' to be 'unknown' // Object.is equality
+ Test Files  8 failed | 43 passed (51)
+      Tests  18 failed | 768 passed (786)
+   Duration  243.53s (transform 19.28s, setup 1.36s, collect 75.35s, tests 131.35s, environment 19ms, prepare 6.34s)
