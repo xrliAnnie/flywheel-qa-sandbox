@@ -193,3 +193,18 @@ R4 起每轮都只验上一轮的条目。连续几轮「修复引入新的放�
 
 `8b9fa8de1`(之后只有文档、进度与里程碑提交):`packages/` 自 `7576d2f33` 起无改动,7.2 表里 `7576d2f33` 那几行对它仍然有效;夹具测试 38/38(含 3000 次固定种子性质测试);`ci-shell-suite-enumeration`、`kill-path-inventory` 通过;`pnpm lint` exit 0、0 error。没有请求 full CI,没有进 529 房。
 
+
+## 8. QA 返工(implement attempt 2 @ 本 DAG,QA attempt 3 FAIL)
+
+QA(exec `ebc27720`)在头 `a34acbf28` 判 FAIL。产品部分 Codex 载体在 529 slot 2 用本分支 dist 实测通过:夹具 exit 0,idle → 不间断 busy 92 秒 → idle,开始误差 0.7 秒,聊天引起的回合答「判断不了」;杀掉 sidecar / app-server 后每个采样都是 `unknown / sidecar_unreachable`,从不答 idle。Claude 载体这轮没有空闲的 Claude 槽,只用本分支的房内定位器对 FLY-2906 的活房做了只读探测(slot3 / slot4 的 Claude Lead 读成 idle,与画面真值一致;同一 Lead 用生产读法答 `lead_window_unavailable`)。Claude 长回合与「进程不在」这轮没有证据,留给下一轮 QA。
+
+**阻断项(本单引起)**:exact-head 全量 CI `36219247904` 的 Quick Gate 最后一步「Enforce FLY-2006 retention consumer gate」报 `unclassified_retention_consumer:scripts/qa-lead-activity-long-turn.mjs:mailbox:read`——新夹具读 `mailbox`(取 `notified_at` 作真实开始时间),没在 `scripts/fly-2006-retention-consumer-gate.config.json` 登记。本地 `node scripts/fly-2006-retention-consumer-gate.mjs` 确定性复现。
+
+- **这是第二次同类漏检**(§6 是 `turn-trigger-attribution.ts`)。原因相同:我的消费者扫描是「谁引用了我改的文件」,而这个守卫是扫全仓「谁读了目标表」的 CI 脚本,新增一个读 `mailbox` 的文件就会触发,跟谁引用它无关。
+- **修复**(`82f601950`):登记为 `candidate_guarded`,与其它 QA 读者(`qa-529-discord-roundtrip.mjs`、`qa/fly2446-two-lead-run.mjs`、`lib/qa-fly-2456-db.mjs`)一致。依据:夹具只读几分钟前自己插入的那一行,远在 14 天窗口之内;万一行被清扫,取不到 `notified_at` 就答「不确定」(`no_delivery_evidence`),不会通过。
+- **这次不再只跑定向集合**:在本机把 `ci.yml` 的 **Quick Gate 全部步骤**逐条跑了一遍(除 `pnpm install`,以及全仓 `pnpm build` / `pnpm typecheck`——包代码自 `7576d2f33` 起没有改动,受影响包的 build 与下游 typecheck 已在 §7 通过)。结果:FLY-2006 守卫 `ok:true`、测试 10/10;其余 60 余步 exit 0,两处本地红已查明与本单无关:
+  - `raya-cos-cli-dist.test.mjs`:本地没有 `packages/raya-cos/dist`(CI 在前面的 `pnpm build` 里生成)。补建 `raya-cos` 后 5/5 通过。
+  - `qa-fly-2519-browser-node.test.mjs` 的「final Seatbelt policy boots pinned Node, MCP and native Chrome」:本机真 Chrome + Seatbelt 启动 60 秒后 `browser_lost`,当时负载均值约 150–240。该用例在非 macOS 上 `t.skip("host-only …")`,CI 的 Linux runner 不会跑;本分支没有碰它或 browser worker。
+- **另一处 CI 红** `qa-fly-1986-load-probe.test.sh`(Script Tests 5/6,「all-401 block certified as incomplete_expected=3」)与 §6 同一条、第二次出现;本分支不碰该脚本,按规矩不自行重跑 CI,交 Lead 裁定。
+- 按实现节点规矩,我没有请求 full CI(冻结头的 full CI 归 QA)。
+- **代码评审**:`codex:rescue`(gpt-6-astra,只读)只审 `a34acbf28..82f601950` 这一条登记 → **APPROVED**:`candidate_guarded` 符合该读者「只看本次注入的那一行、缺证据不会判通过」的行为;四字段键与扫描结果精确匹配;评审实测缺行 → `Date.parse("")` 为 `NaN` → `inconclusive / no_delivery_evidence`,旧配置复现唯一的未登记错误,新配置 `ok:true`。
