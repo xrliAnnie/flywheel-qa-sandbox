@@ -54286,6 +54286,10 @@ export class StateStore {
 			} else if (input.founderAuthorEvidence.kind === "founder_message") {
 				throw new OperatorReworkRejected("founder_gate_holder_changed");
 			}
+			// FLY-2921: from here on the transaction may already have cleaned the
+			// returned request (and the unlaunched rollback tuple). Every later
+			// refusal throws OperatorReworkRejected so the whole transaction rolls
+			// back — a refused /rework must not cost the Lead its returned door.
 			if (returnedToLead && returnedRequestId && returnedRoute) {
 				const activation = this.getWorkflowActivationForAttempt({
 					executionId: returnedRoute.preferred_actor_execution_id,
@@ -54376,11 +54380,9 @@ export class StateStore {
 					rolledBackNode.execution_id !== rollbackHoldTuple.executionId ||
 					!(rolledBackNode.state === "admitted" || rolledBackNode.state === "failed")
 				) {
-					result = {
-						ok: false,
-						reason: "unlaunched_rollback_receipt_invalid",
-					};
-					return;
+					throw new OperatorReworkRejected(
+						"unlaunched_rollback_receipt_invalid",
+					);
 				}
 				if (rolledBackNode.state === "admitted") {
 					this.db.run(
@@ -54404,8 +54406,7 @@ export class StateStore {
 				}
 			}
 			if (this.findOpenWorkflowReworkForRun(input.runId).length > 0) {
-				result = { ok: false, reason: "rework_already_open" };
-				return;
+				throw new OperatorReworkRejected("rework_already_open");
 			}
 			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
 			const latestTarget = [...targetAttempts].sort(
@@ -54418,16 +54419,14 @@ export class StateStore {
 					latestTarget.state,
 				)
 			) {
-				result = { ok: false, reason: "target_attempt_already_reserved" };
-				return;
+				throw new OperatorReworkRejected("target_attempt_already_reserved");
 			}
 			const preferredActorExecutionId = this.selectPreferredWorkflowActorTx(
 				input.runId,
 				target.id,
 			)?.executionId;
 			if (!preferredActorExecutionId) {
-				result = { ok: false, reason: "target_actor_history_missing" };
-				return;
+				throw new OperatorReworkRejected("target_actor_history_missing");
 			}
 			const base = this.resolveOperatorReworkBaseRevisionTx({
 				runId: input.runId,
@@ -54436,8 +54435,7 @@ export class StateStore {
 				snapshot,
 			});
 			if (!base) {
-				result = { ok: false, reason: "base_revision_unavailable" };
-				return;
+				throw new OperatorReworkRejected("base_revision_unavailable");
 			}
 			const { baseRevision, baseRevisionSource } = base;
 			const targetAttempt =
@@ -54451,8 +54449,7 @@ export class StateStore {
 					0,
 				) || latestTarget?.attempt;
 			if (!sourceAttempt) {
-				result = { ok: false, reason: "source_attempt_missing" };
-				return;
+				throw new OperatorReworkRejected("source_attempt_missing");
 			}
 
 			const reachable = new Set<string>();
@@ -57350,13 +57347,25 @@ export class StateStore {
 			return { held: false, reason: "run_not_active" };
 		}
 		const attempt = this.workflowSelectAll(
-			`SELECT attempt_id FROM workflow_delivery_attempt
+			`SELECT attempt_id, family, contract_ref_json FROM workflow_delivery_attempt
 			  WHERE attempt_id = ? AND root_id = ?
 			    AND superseded_by_attempt_id IS NULL
 			    AND settlement_reason IS NULL`,
 			[input.attemptId, input.rootId],
 		)[0];
 		if (!attempt) return { held: false, reason: "attempt_not_live" };
+		// FLY-2921: a stuck rework TURN wake (pushed twice, never acked) belongs
+		// to the rework coordinator — it probes the actor, raises the
+		// unknown-liveness alerts, and returns the rework to the Lead. It never
+		// freezes the run.
+		if (
+			this.reworkOwnedUndeliverableRequestId({
+				...attempt,
+				run_id: input.runId,
+			}) !== undefined
+		) {
+			return { held: false, reason: "rework_wake_owned_by_coordinator" };
+		}
 		const session = this.getSession(input.recipientExecutionId);
 		const evidence: LivenessEvidence = {
 			heartbeatAtMs: parseSqliteUtcMs(session?.heartbeat_at),

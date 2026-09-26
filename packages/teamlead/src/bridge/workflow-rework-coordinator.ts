@@ -870,7 +870,24 @@ export class WorkflowReworkCoordinator {
 					}
 				}
 				// Admitted: the dispatcher's unlaunched fence rolls it back; the
-				// rollback fact then proves it unlaunched (row c).
+				// rollback fact then proves it unlaunched (row c). The wait is
+				// bounded from this resume: if the fence cannot complete (e.g. a
+				// leftover marker or unknown external evidence), the stall is
+				// counted against the budget and the rework returns to the Lead.
+				const waitingSinceMs = Date.parse(route.created_at);
+				const stallMs =
+					this.deps.replacementLaunchStallMs?.() ??
+					DEFAULT_REPLACEMENT_LAUNCH_STALL_MS;
+				if (
+					Number.isFinite(waitingSinceMs) &&
+					this.now().getTime() - waitingSinceMs >= stallMs
+				) {
+					return this.releaseRetryable({
+						requestId,
+						generation,
+						reason: "replacement_launch_stalled:awaiting_cancellation",
+					});
+				}
 				return this.defer({
 					requestId,
 					generation,

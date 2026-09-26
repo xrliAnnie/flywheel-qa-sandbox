@@ -191,6 +191,7 @@ type HarnessInput = {
 	runStatus?: string;
 	routeInterpretedBy?: string;
 	routeRevision?: number;
+	routeCreatedAt?: string;
 	/** FLY-2921 C2 step 4: the only trusted death proofs while FLY-2919 is absent. */
 	deathProof?: "unlaunched_rollback" | "launch_abandoned";
 	replacementBudgetExhausted?: boolean;
@@ -236,7 +237,7 @@ function makeHarness(input: HarnessInput) {
 		verification_policy: ["code_review", "qa_retest"],
 		interpreted_by: input.routeInterpretedBy ?? "engine:qa_verdict",
 		interpretation_reason: "qa fail",
-		created_at: NOW,
+		created_at: input.routeCreatedAt ?? NOW,
 	};
 	let delivery: WorkflowReworkDeliveryRow = {
 		request_id: request.request_id,
@@ -2368,6 +2369,35 @@ describe("FLY-2921 C2 step 3: a pending delivery waiting on a replacement launch
 			}),
 		);
 		expect(h.store.settleWorkflowReworkFailure).not.toHaveBeenCalled();
+		expectNoSuccessor(h);
+	});
+
+	it("row b: the wait for the fence is bounded from the Lead resume and then counts against the budget", async () => {
+		// Codex R1 #2: a fence that can never complete (leftover marker,
+		// unknown external evidence) must not defer forever.
+		const h = makeHarness({
+			routeInterpretedBy: "engine:hold_resume",
+			routeRevision: 2,
+			routeCreatedAt: new Date(Date.parse(NOW) - 11 * 60_000).toISOString(),
+			replacementLaunch: {
+				ledgerState: "intent_recorded",
+				bindingMode: "replacement",
+				launchOwnerPresent: true,
+			},
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
+			kind: "retryable",
+			reason: "replacement_launch_stalled:awaiting_cancellation",
+		});
+		expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "replacement_launch_stalled:awaiting_cancellation",
+			}),
+		);
+		expect(h.store.deferWorkflowReworkDelivery).not.toHaveBeenCalled();
+		expect(
+			h.store.abandonUnadmittedReworkReplacementLaunch,
+		).not.toHaveBeenCalled();
 		expectNoSuccessor(h);
 	});
 

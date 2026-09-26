@@ -6597,6 +6597,41 @@ describe("FLY-2921 C3 returned to Lead", () => {
 		}
 	});
 
+	it("rolls back the whole /rework when it refuses after cleaning the returned rework", async () => {
+		// Codex code review R1 #3: a refused /rework must not cost the Lead its
+		// returned door (credentials, node reservation, path, hold).
+		const { store, requestId } = await createActiveOperatorRework();
+		try {
+			fly2828Raw(store)
+				.prepare("UPDATE workflow_run SET status = 'active' WHERE run_id = ?")
+				.run("run-heavy");
+			fly2921ReturnToLead(store, requestId, 0);
+			const before = snapshotUserTables(store);
+			const refused = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "qa",
+				...leadReworkFields("retarget to a node that never ran"),
+				clientRequestId: "fly2921-refused-rework",
+				principal: "master",
+				founderAuthorEvidence: { kind: "operator", principal: "master" },
+				evidence: [],
+				now: fly2921At(90),
+			});
+			expect(refused).toMatchObject({ ok: false });
+			expect(snapshotUserTables(store)).toBe(before);
+			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe(
+				"returned_to_lead",
+			);
+			expect(
+				store
+					.listWorkflowHolds("run-heavy")
+					.map((hold) => hold.shape),
+			).toEqual(["rework_returned_to_lead"]);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("heals a returned rework when its granted actor completes, closing the door", async () => {
 		const { store, requestId } = await createPendingHeavyRework();
 		try {
