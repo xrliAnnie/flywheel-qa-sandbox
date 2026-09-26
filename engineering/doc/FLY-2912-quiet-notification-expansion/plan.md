@@ -132,7 +132,7 @@ pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2912-evening-re
 1. 四类纯通知 ON：同 ID 原始账、业务副作用、audit page 可查；零 enqueue/adapter/wake；无 delivered/ACK 伪记录。
 2. 每类分别混入 question_id、非模板 question 正文、founder message、failed/blocked、needs_action、unknown字段；都即时 model。同 seq duplicate 不丢待办、不重新分类。
 3. stage：普通六阶段；Codex/Claude 两种 reviewer ownership；缺 reviewer request；过期 head/request；非本 exec owner；继承 decision 尚未关 vs exact resolution。
-4. startup：普通首次；机器已完成 replacement handoff；Lead 仍需救援；注册/activation/attempt 不符；线程建立失败。20 条真实 started 要逐条分类，不能按名称全部宣称节省。
+4. startup：普通首次；机器已完成 replacement handoff；Lead 仍需救援；注册/activation/attempt 不符；线程建立失败。21 条真实 started 要逐条分类，不能按名称全部宣称节省。
 5. monitoring：running/合法park、有未结告警/已解决告警/未知 probe/过期episode；不自动 resolve alert；monitoring_lost 仍即时。
 6. replacement：future candidate +真实持久 schedule；timer 缺失/已到期未处理；旧attempt；两类 hold；实际 replacement；claim_recorded 保持即时。
 7. OFF/flag错误/缺字段：新事件与基线一致；ON→OFF retry 不改已冻 bytes；旧 audit 不重放。
@@ -141,7 +141,7 @@ pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2912-evening-re
 10. 实际模型消费证据来自隔离 carrier 的转录/turn identity，成功 transport receipt 仅证提交；不要求向 founder/生产频道发测试消息。
 
 ## 9. 9-25 回放合同与对比口径
-默认窗口 2026-09-25 18:00–20:45 America/Los_Angeles = [2026-09-26T01:00:00Z,03:45:00Z)，lead=flywheel-eng-lead。若 Lead 提供权威窗口，version manifest 并保留初查。冻结时间顺序、原 event ID/seq、原 producer payload + 渲染 payload、source/actor provenance、当时 registration/obligation/review/alert/timer 记录、原批次/载体忙闲时间线和 policy/flag/build SHA。脱敏保留结构和标识关联；原始私有数据保留受控本机路径并记录 hash，不提交凭证/私聊正文。
+Lead 已确认窗口 2026-09-25 18:30–21:00 America/Los_Angeles = [2026-09-26T01:30:00Z,04:00:00Z)，project=flywheel，lead=flywheel-eng-lead；回答 question 5fbba693-8282-4690-9a9c-0020b7aff927。v2 manifest 冻结 257 条 Lead 账、80 条可关联 session 原始事件及 mailbox 输入；初查 v1 保留。冻结时间顺序、原 event ID/seq、原 producer payload + 渲染 payload、source/actor provenance、当时 registration/obligation/review/alert/timer 记录、原批次/载体忙闲时间线和 policy/flag/build SHA。脱敏保留结构和标识关联；原始私有数据保留受控本机路径并记录 hash，不提交凭证/私聊正文。
 
 运行三个世界：A 当前基线行为（不是全开关 OFF）、B 改后 ON、C 改后 OFF。用同 fake clock、同 batch/忙闲/重试条件，通过实际 producer→StateStore→queue→adapter台架；不能只 map classifier。每个输入记录 before/after disposition、proof/理由、model membership、wake/turn identity，以及业务 side-effect hash。
 
@@ -151,3 +151,6 @@ pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2912-evening-re
 
 ## 10. 设计交接门
 设计 artifacts、进度与 Mermaid/HTML commit+push → 显式 review_design gate+request-review → effective APPROVED（advisories 带给 Lead） → 最终 HTML 静默 publish 并验证 hosted 200/CSP nonce/评论交互/零外链 → 结构化 DESIGN-HTML 报告 → complete --route phase_design_complete → park。本节点不跑上述实现测试、不声称上线/节省。评审若修设计必须同步 HTML 后再交接。
+
+## Lead 确认的回放输入（2026-09-25）
+问题 5fbba693-8282-4690-9a9c-0020b7aff927 已答：固定窗口 01:30–04:00Z（18:30–21:00 PDT）。必须含03:58Z重启恢复批（另案FLY-2917），真实待办单列。v2 manifest: 257条，stage 62 audit/18 model，started 21 model，monitoring 26 audit/12 model，replacement 2 model；不是唤醒统计。FLY-2904 证据在 PR #1340 / d4410e7e1 / engineering/doc/FLY-2904-token-waste-census/evidence，derived/recommendations.json 的r9数字仅作问题背景，不作本单验收分母。

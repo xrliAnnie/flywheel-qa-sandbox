@@ -40,3 +40,6 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912/token5-纯通知�
 
 ## 验证边界
 本节点只审代码与设计 HTML；不宣称代码验证、线上收益或真实 Lead 次数已完成。仅运行相关测试；禁止全仓测试。设计审查必须显式 register，reviewVerdict=APPROVED 才发布最终页/交接。
+
+## Lead 确认的回放输入（2026-09-25）
+问题 5fbba693-8282-4690-9a9c-0020b7aff927 已答：固定窗口 01:30–04:00Z（18:30–21:00 PDT）。必须含03:58Z重启恢复批（另案FLY-2917），真实待办单列。v2 manifest: 257条，stage 62 audit/18 model，started 21 model，monitoring 26 audit/12 model，replacement 2 model；不是唤醒统计。FLY-2904 证据在 PR #1340 / d4410e7e1 / engineering/doc/FLY-2904-token-waste-census/evidence，derived/recommendations.json 的r9数字仅作问题背景，不作本单验收分母。

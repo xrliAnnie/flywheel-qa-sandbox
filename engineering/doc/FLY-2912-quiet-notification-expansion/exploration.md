@@ -28,3 +28,6 @@ Issue: FLY-2912 (https://linear.app/geoforge3d/issue/FLY-2912/token5-纯通知�
 ## 工作流与工具
 onboard 已完成，TURN design epoch=1 / activation:0986142c-320f-4371-a143-ce47384f68dd:f4c0a90e-0888-4e52-b2a9-2c5957e23154:eng_design:1。
 采用 research/write-plan 的代码链路审计与任务拆分形状；当前注入角色已授权完成全设计，覆盖通用 skill 的重复人审与版本目录要求。brainstorm/codex-design-review 独立 skill 未找到，按 Runner 环境翻译及项目 spin fallback 手工执行，审查仍走显式 gate+request-review。图遵照 diagram-design 的清晰层次与 Apple-light，使用用户明确要求的本地 Mermaid 渲染。
+
+## Lead 确认的回放输入（2026-09-25）
+问题 5fbba693-8282-4690-9a9c-0020b7aff927 已答：固定窗口 01:30–04:00Z（18:30–21:00 PDT）。必须含03:58Z重启恢复批（另案FLY-2917），真实待办单列。v2 manifest: 257条，stage 62 audit/18 model，started 21 model，monitoring 26 audit/12 model，replacement 2 model；不是唤醒统计。FLY-2904 证据在 PR #1340 / d4410e7e1 / engineering/doc/FLY-2904-token-waste-census/evidence，derived/recommendations.json 的r9数字仅作问题背景，不作本单验收分母。
