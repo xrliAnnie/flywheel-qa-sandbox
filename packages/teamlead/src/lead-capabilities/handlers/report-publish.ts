@@ -37,7 +37,10 @@ export function createReportPublishHandlers(
 	>;
 	let url: URL;
 	try {
-		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({
+			...options,
+			env,
+		});
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 	} catch {
 		throw denied();

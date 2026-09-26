@@ -13,13 +13,15 @@ import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 
 const denied = () => new Error("discord_attachment_denied");
 /** Parent receives result bytes, never a CDN URL or a reusable authorization grant. */
-export function createBridgeAttachmentHandlers(options: {
-	env: NodeJS.ProcessEnv;
-	activationId: string;
-	store: LeadArtifactStore;
-	secrets: readonly string[];
-	fetchImpl?: typeof fetch;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createBridgeAttachmentHandlers(
+	options: {
+		env: NodeJS.ProcessEnv;
+		activationId: string;
+		store: LeadArtifactStore;
+		secrets: readonly string[];
+		fetchImpl?: typeof fetch;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env });
 	const { authority, authoritySecret, trusted } =
 		resolveLeadCapabilityRuntimeAuthority({ ...options, env });

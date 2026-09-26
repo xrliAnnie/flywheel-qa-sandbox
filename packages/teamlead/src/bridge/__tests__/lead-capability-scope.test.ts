@@ -91,6 +91,42 @@ async function fixture() {
 }
 
 describe("voice session capability scope", () => {
+	it("keeps authorization across lease renewal but rejects expiration", async () => {
+		const f = await fixture();
+		let now = T0;
+		try {
+			const scope = captureLeadCapabilityScope({
+				projectsPath: f.projectsPath,
+				homeDir: f.root,
+				projectName: "flywheel",
+				leadId: "eng",
+				identityDigest: f.identity.identityDigest,
+				authority: {
+					kind: "voice_session",
+					sessionId: SESSION_ID,
+					leaseFence: f.claim.leaseToken,
+				},
+				stateStore: f.store,
+				now: () => now,
+				denied: () => new Error("denied"),
+			});
+			now = "2026-09-25T20:00:30.000Z";
+			expect(
+				f.store.renewVoiceSession({
+					sessionId: SESSION_ID,
+					leaseToken: f.claim.leaseToken,
+					now,
+					leaseTtlMs: 60_000,
+				}),
+			).toBeDefined();
+			expect(() => scope.assertSourceCurrent()).not.toThrow();
+			now = "2026-09-25T20:01:31.000Z";
+			expect(() => scope.assertSourceCurrent()).toThrow("denied");
+		} finally {
+			f.store.close();
+		}
+	});
+
 	it("accepts a current Claude Lead voice lease and revokes on config drift", async () => {
 		const f = await fixture();
 		try {

@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/bridge/__tests__/lead-capability-report.test.ts (7 tests) 167ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  23:30:14
+   Duration  3.32s (transform 1.24s, setup 95ms, collect 1.86s, tests 167ms, environment 0ms, prepare 315ms)
+

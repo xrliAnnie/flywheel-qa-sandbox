@@ -1,0 +1,58 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/__tests__/StateStore.voice-target-lock.test.ts (5 tests | 2 failed) 3070ms
+   × voice capability target locks > cannot mark an expired fence as dispatched 599ms
+     → expected true to be false // Object.is equality
+   × voice capability target locks > retains a dispatched lock when a lost mark reply is reported as not dispatched 785ms
+     → expected 'released' to be 'unknown' // Object.is equality
+   ✓ voice capability target locks > gives a queued resident the target after a voice write finishes  615ms
+   ✓ voice capability target locks > rejects voice behind a resident and preserves dispatched uncertainty  413ms
+   ✓ voice capability target locks > safely releases an undispatched expired holder  657ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/__tests__/StateStore.voice-target-lock.test.ts > voice capability target locks > cannot mark an expired fence as dispatched
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/StateStore.voice-target-lock.test.ts:39:8
+     37|    expect(store.markCapabilityTargetLockDispatched({
+     38|     ...owner, fence: lock.fence, now: 2_000,
+     39|    })).toBe(false);
+       |        ^
+     40|   } finally {
+     41|    store.close();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/__tests__/StateStore.voice-target-lock.test.ts > voice capability target locks > retains a dispatched lock when a lost mark reply is reported as not dispatched
+AssertionError: expected 'released' to be 'unknown' // Object.is equality
+
+Expected: "unknown"
+Received: "released"
+
+ ❯ src/__tests__/StateStore.voice-target-lock.test.ts:60:88
+     58|    const holder = { ...owner, fence: lock.fence };
+     59|    expect(store.markCapabilityTargetLockDispatched({ ...holder, now: 1…
+     60|    expect(store.releaseCapabilityTargetLock({ ...holder, outcome: "not…
+       |                                                                                        ^
+     61|    expect(store.acquireCapabilityTargetLock({
+     62|     ...owner, projectName: "flywheel", leadId: "eng", actor: "resident…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 3 passed (5)
+   Start at  23:34:16
+   Duration  18.40s (transform 9.28s, setup 58ms, collect 14.01s, tests 3.07s, environment 0ms, prepare 169ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/__tests__/StateStore.voice-target-lock.test.ts

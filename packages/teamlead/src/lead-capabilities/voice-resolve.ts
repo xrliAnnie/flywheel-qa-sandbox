@@ -1,9 +1,9 @@
+import type { LeadBackendId } from "../lead-backends/lead-backend.js";
 import type {
 	ProjectEntry,
 	VoiceBackgroundBrowserMode,
 } from "../ProjectConfig.js";
 import { effectiveVoiceBackground } from "../ProjectConfig.js";
-import type { LeadBackendId } from "../lead-backends/lead-backend.js";
 import { LEAD_CAPABILITY_CATALOG } from "./catalog.js";
 
 const SESSION_ID =

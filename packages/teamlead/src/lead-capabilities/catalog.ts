@@ -98,6 +98,7 @@ function writeTargetKey(
 			const part = targetPart(input[name]);
 			if (part) return part;
 		}
+		return undefined;
 	};
 	if (["start_runner", "send_runner", "respond_runner"].includes(operationId))
 		return `issue:${first("issueId", "executionId", "questionId") ?? createHash("sha256").update(canonical(input)).digest("hex").slice(0, 32)}`;
@@ -194,7 +195,10 @@ function add(
 					: ["canonical-identity", "provider-receipt", "scope-check"],
 			),
 			...(classification === "write"
-				? { targetKey: (value: Readonly<Record<string, unknown>>) => writeTargetKey(operationId, value) }
+				? {
+						targetKey: (value: Readonly<Record<string, unknown>>) =>
+							writeTargetKey(operationId, value),
+					}
 				: {}),
 		}),
 	);

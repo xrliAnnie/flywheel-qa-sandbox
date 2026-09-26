@@ -98,9 +98,11 @@ export function migrateOperationReceipts(db: Database.Database): void {
  PRIMARY KEY(project_name,lead_id,operation_id,request_id));
  CREATE INDEX IF NOT EXISTS lead_operation_receipts_recovery_idx ON lead_operation_receipts(project_name,lead_id,activation_id,state);`);
 	const columns = new Set(
-		(db.prepare("PRAGMA table_info(lead_operation_receipts)").all() as Array<{
-			name: string;
-		}>).map((column) => column.name),
+		(
+			db.prepare("PRAGMA table_info(lead_operation_receipts)").all() as Array<{
+				name: string;
+			}>
+		).map((column) => column.name),
 	);
 	if (!columns.has("target_key"))
 		db.exec("ALTER TABLE lead_operation_receipts ADD COLUMN target_key TEXT");
@@ -153,7 +155,8 @@ export class OperationReceiptStore {
 						.prepare(
 							`INSERT INTO lead_operation_receipts (project_name,lead_id,operation_id,request_id,input_digest,activation_id,target_key,state,started_at,updated_at) VALUES (@projectName,@leadId,@operationId,@requestId,@inputDigest,@activationId,@targetKey,'prepared',@now,@now) ON CONFLICT(project_name,lead_id,operation_id,request_id) DO NOTHING`,
 						)
-						.run({ ...input, targetKey: input.targetKey ?? null }).changes === 1;
+						.run({ ...input, targetKey: input.targetKey ?? null }).changes ===
+					1;
 				const receipt = this.get({
 					projectName: input.projectName,
 					leadId: input.leadId,

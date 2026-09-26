@@ -62,7 +62,7 @@ export function createLeadTargetLockClient(
 	const env = Object.freeze({ ...options.env });
 	const { authority, authoritySecret, trusted } =
 		resolveLeadCapabilityRuntimeAuthority({ ...options, env });
-	const token = env.FLYWHEEL_API_TOKEN;
+	const token = env.FLYWHEEL_API_TOKEN ?? "";
 	let origin: URL;
 	try {
 		origin = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
@@ -129,7 +129,7 @@ export function createLeadTargetLockClient(
 		trusted.assertActivationCurrent();
 		return parsed;
 	}
-	return Object.freeze({
+	return Object.freeze<LeadTargetLockClient>({
 		actor: authority.kind === "voice_session" ? "voice" : "resident",
 		acquire: async (input) => {
 			const result = await call("acquire", input);

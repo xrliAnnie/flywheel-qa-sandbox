@@ -6058,7 +6058,10 @@ export class StateStore {
 		if (
 			!input.targetKey ||
 			input.targetKey.length > 512 ||
-			/[\u0000-\u001f\u007f]/.test(input.targetKey) ||
+			Array.from(input.targetKey).some((char) => {
+				const code = char.charCodeAt(0);
+				return code < 32 || code === 127;
+			}) ||
 			![input.projectName, input.leadId, input.activationId].every(
 				(value) =>
 					/^[A-Za-z0-9_.:-]{1,256}$/.test(value) && value.length <= 256,
@@ -6183,7 +6186,7 @@ export class StateStore {
 				.prepare(
 					`UPDATE capability_target_locks SET dispatched_at = COALESCE(dispatched_at, ?)
 					 WHERE target_key = ? AND holder_activation = ? AND request_id = ?
-					 AND fence = ? AND state = 'held'`,
+					 AND fence = ? AND state = 'held' AND deadline > ?`,
 				)
 				.run(
 					input.now,
@@ -6191,6 +6194,7 @@ export class StateStore {
 					input.activationId,
 					input.requestId,
 					input.fence,
+					input.now,
 				).changes === 1
 		);
 	}
@@ -6212,7 +6216,10 @@ export class StateStore {
 				current.fence !== input.fence
 			)
 				return "not_owner" as const;
-			if (input.outcome === "unknown" && current.dispatchedAt != null) {
+			if (
+				(input.outcome === "unknown" || input.outcome === "not_dispatched") &&
+				current.dispatchedAt != null
+			) {
 				this.db.raw
 					.prepare(
 						"UPDATE capability_target_locks SET state = 'unknown', reason = ? WHERE target_key = ?",

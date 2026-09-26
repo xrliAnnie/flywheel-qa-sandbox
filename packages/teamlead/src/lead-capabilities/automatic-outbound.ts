@@ -51,12 +51,14 @@ const responseSchema = z
 const denied = () => new Error("automatic_outbound_unverified");
 
 /** Parent-only transport: the model never supplies its endpoint, credentials or journal binding. */
-export function createAutomaticOutboundTransport(options: {
-	activationId: string;
-	journal: SqliteJournalStore;
-	assertCurrent(): Promise<void>;
-	fetchImpl?: typeof fetch;
-} & LeadCapabilityRuntimeAuthorityOptions): HttpPost {
+export function createAutomaticOutboundTransport(
+	options: {
+		activationId: string;
+		journal: SqliteJournalStore;
+		assertCurrent(): Promise<void>;
+		fetchImpl?: typeof fetch;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): HttpPost {
 	const env = Object.freeze({ ...options.env });
 	const { authority, authoritySecret, trusted } =
 		resolveLeadCapabilityRuntimeAuthority({ ...options, env });

@@ -159,7 +159,9 @@ describe("trusted operation broker engine", () => {
 				cancel: async () => {},
 			},
 		});
-		expect(await broker.execute(request)).toMatchObject({ status: "succeeded" });
+		expect(await broker.execute(request)).toMatchObject({
+			status: "succeeded",
+		});
 		expect(order).toEqual([
 			"acquire:flywheel:discord:123:thread",
 			"mark",

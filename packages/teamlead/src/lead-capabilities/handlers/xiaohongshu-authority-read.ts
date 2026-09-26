@@ -16,23 +16,28 @@ import {
 
 /** Authority handles already carry private resource provenance. Never re-project
  * them through the legacy MCP token map, or fall back after an authority error. */
-export function createXhsAuthorityReadHandlers(options: {
-	activationId: string;
-	client: {
-		call(
-			action: PublicReadOperation | LoginReadOperation,
-			input: unknown,
-			signal?: AbortSignal,
-		): Promise<unknown>;
-	} | null;
-	secrets: readonly string[];
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createXhsAuthorityReadHandlers(
+	options: {
+		activationId: string;
+		client: {
+			call(
+				action: PublicReadOperation | LoginReadOperation,
+				input: unknown,
+				signal?: AbortSignal,
+			): Promise<unknown>;
+		} | null;
+		secrets: readonly string[];
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const client = options.client;
 	if (!client) return new Map();
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId;
 	const secrets = [...options.secrets];
-	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({
+		...options,
+		env,
+	});
 	const handlers = new Map<string, LeadOperationHandler>();
 	for (const action of [
 		...publicReadOperation.options,

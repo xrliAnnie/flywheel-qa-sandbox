@@ -206,7 +206,7 @@ export function createLeadCapabilityDiscordRouter(
 		}
 		const body = parsed.data,
 			definition = getLeadCapability(body.operationId)!;
-		let authority;
+		let authority: ReturnType<typeof leadCapabilityAuthorityFromEnvelope>;
 		try {
 			authority = leadCapabilityAuthorityFromEnvelope(body);
 		} catch {

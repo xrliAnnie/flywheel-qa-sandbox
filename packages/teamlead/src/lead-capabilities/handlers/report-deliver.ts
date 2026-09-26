@@ -37,7 +37,10 @@ export function createReportDeliverHandlers(
 		typeof resolveLeadCapabilityRuntimeAuthority
 	>;
 	try {
-		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({
+			...options,
+			env,
+		});
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!["http:", "https:"].includes(url.protocol) ||

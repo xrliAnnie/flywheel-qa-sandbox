@@ -1,0 +1,78 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-capabilities/__tests__/broker.test.ts (25 tests) 345ms
+ ✓ |parallel| src/bridge/__tests__/lead-capability-scope.test.ts (2 tests) 701ms
+   ✓ voice session capability scope > accepts a current Claude Lead voice lease and revokes on config drift  363ms
+   ✓ voice session capability scope > rejects a stale voice lease without consulting a resident carrier  337ms
+ ✓ |parallel| src/lead-backends/codex/__tests__/spawn-env-wash.test.ts (5 tests) 1740ms
+   ✓ spawned app-server env carries NO action secrets but keeps CODEX_HOME + plain vars  316ms
+   ✓ an explicit voice profile preserves only its supplied API key and cwd  377ms
+   ✓ prefixes optional feature argv while keeping the default argv byte-identical  381ms
+   ✓ bundle v2 washes the final spawn boundary even with legacy full-access and carrier inputs  368ms
+ ✓ |parallel| src/__tests__/StateStore.voice-target-lock.test.ts (3 tests) 1152ms
+   ✓ voice capability target locks > gives a queued resident the target after a voice write finishes  504ms
+   ✓ voice capability target locks > rejects voice behind a resident and preserves dispatched uncertainty  318ms
+   ✓ voice capability target locks > safely releases an undispatched expired holder  329ms
+ ❯ |parallel| src/bridge/__tests__/lead-capability-report.test.ts (7 tests | 2 failed) 171ms
+   × authorizes an exact current department issue and keeps a live commit guard 24ms
+     → expected [Function] to throw an error
+   ✓ authorizes a current Claude Lead voice lease and revokes it before commit 10ms
+   ✓ rejects scope drift while issue metadata is pending 11ms
+   ✓ rejects malformed proof and foreign or incomplete issue labels 26ms
+   ✓ bounds a stalled issue lookup and expires a previously granted commit check 20ms
+   × requires persisted matching report ownership and rechecks it after asynchronous authorization 53ms
+     → expected [Function] to throw an error
+   ✓ looks up upload receipts by exact owner/request without republishing 27ms
+ ✓ |parallel| src/lead-capabilities/__tests__/catalog.test.ts (10 tests) 62ms
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-resolve.test.ts (3 tests) 7ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-report.test.ts > authorizes an exact current department issue and keeps a live commit guard
+AssertionError: expected [Function] to throw an error
+
+- Expected: 
+null
+
++ Received: 
+undefined
+
+ ❯ src/bridge/__tests__/lead-capability-report.test.ts:109:24
+    107|  expect(f.client.issue).toHaveBeenCalledWith("FLY-1");
+    108|  identity.valid = false;
+    109|  expect(() => guard()).toThrow("report_scope_denied");
+       |                        ^
+    110| });
+    111| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-report.test.ts > requires persisted matching report ownership and rechecks it after asynchronous authorization
+AssertionError: expected [Function] to throw an error
+
+- Expected: 
+null
+
++ Received: 
+undefined
+
+ ❯ src/bridge/__tests__/lead-capability-report.test.ts:269:39
+    267|  ).rejects.toThrow("report_scope_denied");
+    268|  identity.valid = false;
+    269|  expect(() => result.assertCurrent()).toThrow("report_scope_denied");
+       |                                       ^
+    270| });
+    271| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 6 passed (7)
+      Tests  2 failed | 53 passed (55)
+   Start at  23:28:59
+   Duration  22.90s (transform 7.01s, setup 192ms, collect 15.09s, tests 4.18s, environment 1ms, prepare 692ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/__tests__/StateStore.voice-target-lock.test.ts src/bridge/__tests__/lead-capability-report.test.ts src/bridge/__tests__/lead-capability-scope.test.ts src/lead-backends/codex/__tests__/spawn-env-wash.test.ts src/lead-capabilities/__tests__/broker.test.ts src/lead-capabilities/__tests__/catalog.test.ts src/lead-capabilities/__tests__/voice-resolve.test.ts

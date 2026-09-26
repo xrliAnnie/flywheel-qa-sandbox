@@ -21,11 +21,13 @@ const replySchema = z
 	.strict();
 const denied = () => new Error("report_verify_scope_denied");
 /** Parent-only hosted verification transport; Bridge resolves report ownership and URL. */
-export function createReportVerifyHandlers(options: {
-	env: NodeJS.ProcessEnv;
-	activationId: string;
-	fetchImpl?: typeof fetch;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createReportVerifyHandlers(
+	options: {
+		env: NodeJS.ProcessEnv;
+		activationId: string;
+		fetchImpl?: typeof fetch;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId;
 	let url: URL;
@@ -34,7 +36,10 @@ export function createReportVerifyHandlers(options: {
 		typeof resolveLeadCapabilityRuntimeAuthority
 	>;
 	try {
-		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({
+			...options,
+			env,
+		});
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!["http:", "https:"].includes(url.protocol) ||

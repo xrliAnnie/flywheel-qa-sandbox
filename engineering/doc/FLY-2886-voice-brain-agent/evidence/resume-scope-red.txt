@@ -1,0 +1,39 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ❯ |parallel| src/bridge/__tests__/lead-capability-scope.test.ts (3 tests | 1 failed) 1832ms
+   × voice session capability scope > keeps authorization across lease renewal but rejects expiration 766ms
+     → expected [Function] to not throw an error but 'Error: denied' was thrown
+   ✓ voice session capability scope > accepts a current Claude Lead voice lease and revokes on config drift  551ms
+   ✓ voice session capability scope > rejects a stale voice lease without consulting a resident carrier  514ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |parallel| src/bridge/__tests__/lead-capability-scope.test.ts > voice session capability scope > keeps authorization across lease renewal but rejects expiration
+AssertionError: expected [Function] to not throw an error but 'Error: denied' was thrown
+
+- Expected: 
+undefined
+
++ Received: 
+"Error: denied"
+
+ ❯ src/bridge/__tests__/lead-capability-scope.test.ts:120:50
+    118|     leaseTtlMs: 60_000,
+    119|    })).toBeDefined();
+    120|    expect(() => scope.assertSourceCurrent()).not.toThrow();
+       |                                                  ^
+    121|    now = "2026-09-25T20:01:31.000Z";
+    122|    expect(() => scope.assertSourceCurrent()).toThrow("denied");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 passed (3)
+   Start at  23:31:43
+   Duration  12.76s (transform 6.81s, setup 66ms, collect 10.21s, tests 1.83s, environment 0ms, prepare 106ms)
+
+undefined
+/Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: vitest run src/bridge/__tests__/lead-capability-scope.test.ts

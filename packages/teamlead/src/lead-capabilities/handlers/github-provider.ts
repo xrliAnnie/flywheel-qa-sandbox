@@ -8,12 +8,17 @@ import {
 import { createGithubHandlers } from "./github.js";
 
 /** A reads use current canonical repository authority, without a per-PR grant. */
-export function createGithubReadProviderHandlers(options: {
-	activationId: string;
-	client: Octokit;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createGithubReadProviderHandlers(
+	options: {
+		activationId: string;
+		client: Octokit;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env });
-	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({
+		...options,
+		env,
+	});
 	function current(context?: LeadOperationContext) {
 		if (context) {
 			context.signal.throwIfAborted();

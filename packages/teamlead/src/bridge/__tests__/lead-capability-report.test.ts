@@ -125,20 +125,19 @@ it("authorizes a current Claude Lead voice lease and revokes it before commit", 
 	}).identity.identityDigest;
 	let active = true;
 	const stateStore = {
-		getActiveVoiceLease: vi.fn(
-			(sessionId: string, leaseFence: string) =>
-				active &&
-				sessionId === "10000000-0000-4000-8000-000000000001" &&
-				leaseFence === "lease-fence"
-					? {
-							sessionId,
-							projectName: "flywheel",
-							leadId: "eng",
-							leaseToken: leaseFence,
-							leaseExpiresAt: "2026-09-25T21:00:00.000Z",
-							state: "running",
-						}
-					: undefined,
+		getActiveVoiceLease: vi.fn((sessionId: string, leaseFence: string) =>
+			active &&
+			sessionId === "10000000-0000-4000-8000-000000000001" &&
+			leaseFence === "lease-fence"
+				? {
+						sessionId,
+						projectName: "flywheel",
+						leadId: "eng",
+						leaseToken: leaseFence,
+						leaseExpiresAt: "2026-09-25T21:00:00.000Z",
+						state: "running",
+					}
+				: undefined,
 		),
 	};
 	const authorize = createLeadReportPublishAuthorizer({

@@ -28,11 +28,13 @@ const replySchema = z
 	.strict();
 const denied = () => new Error("bridge_discord_scope_denied");
 /** Parent-only adapter. The outer broker owns all durable dispatch/replay receipts. */
-export function createBridgeDiscordHandlers(options: {
-	env: NodeJS.ProcessEnv;
-	activationId: string;
-	fetchImpl?: typeof fetch;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createBridgeDiscordHandlers(
+	options: {
+		env: NodeJS.ProcessEnv;
+		activationId: string;
+		fetchImpl?: typeof fetch;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	return createHandlers(options, false);
 }
 function createHandlers(
@@ -47,7 +49,10 @@ function createHandlers(
 		typeof resolveLeadCapabilityRuntimeAuthority
 	>;
 	try {
-		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({
+			...options,
+			env,
+		});
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!["http:", "https:"].includes(url.protocol) ||

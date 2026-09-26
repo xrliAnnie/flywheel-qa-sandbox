@@ -1,15 +1,18 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LinearClient } from "@linear/sdk";
-import { forwardedLeadAuthorizationEnv } from "flywheel-comm/lead-lease";
+import {
+	forwardedLeadAuthorizationEnv,
+	validateLeadCarrierAuthorization,
+} from "flywheel-comm/lead-lease";
 import { z } from "zod";
 import { DepartmentRegistry } from "../department-registry.js";
-import type { StateStore } from "../StateStore.js";
 import {
+	type LeadCapabilityAuthority,
 	leadCapabilityAuthorityFields,
 	leadCapabilityAuthorityFromEnvelope,
-	type LeadCapabilityAuthority,
 } from "../lead-capabilities/authority.js";
+import type { StateStore } from "../StateStore.js";
 import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
 import type { ReportRegistry } from "./report-registry.js";
 import { isReportExpired } from "./report-retention.js";
@@ -114,6 +117,13 @@ function createLeadReportIssueAuthorizer(options: LeadReportScopeOptions) {
 			});
 			const current = () => {
 				if (expired || Date.now() >= deadline) throw denied();
+				if (authority.kind === "carrier") {
+					const carrier = validateLeadCarrierAuthorization({
+						claimedLeadId: proof.leadId,
+						env: claimEnv!,
+					});
+					if (!carrier.valid || carrier.processIndeterminate) throw denied();
+				}
 				scope.assertSourceCurrent();
 				if (!scope.project.linear?.team || !scope.project.linear.project)
 					throw denied();

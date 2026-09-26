@@ -32,12 +32,14 @@ const replySchema = z
 	.strict();
 const denied = () => new Error("bridge_voice_scope_denied");
 
-export function createBridgeVoiceHandlers(options: {
-	env: NodeJS.ProcessEnv;
-	activationId: string;
-	fetchImpl?: typeof fetch;
-	secrets?: readonly string[];
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createBridgeVoiceHandlers(
+	options: {
+		env: NodeJS.ProcessEnv;
+		activationId: string;
+		fetchImpl?: typeof fetch;
+		secrets?: readonly string[];
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env });
 	const activationId = options.activationId;
 	const token = env.FLYWHEEL_API_TOKEN;
@@ -46,7 +48,10 @@ export function createBridgeVoiceHandlers(options: {
 	>;
 	let baseUrl: URL;
 	try {
-		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({
+			...options,
+			env,
+		});
 		baseUrl = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!token ||

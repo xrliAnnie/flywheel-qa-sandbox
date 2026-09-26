@@ -3,11 +3,11 @@ import { join } from "node:path";
 import { Router } from "express";
 import { forwardedLeadAuthorizationEnv } from "flywheel-comm/lead-lease";
 import { z } from "zod";
-import type { StateStore } from "../StateStore.js";
 import {
 	leadCapabilityAuthorityFields,
 	leadCapabilityAuthorityFromEnvelope,
 } from "../lead-capabilities/authority.js";
+import type { StateStore } from "../StateStore.js";
 import { captureLeadCapabilityScope } from "./lead-capability-scope.js";
 
 const coordinate = z.string().regex(/^[A-Za-z0-9_.:-]{1,256}$/);
@@ -23,17 +23,23 @@ const base = {
 		.string()
 		.min(1)
 		.max(512)
-		.refine((value) => !/[\u0000-\u001f\u007f]/.test(value)),
+		.refine((value) =>
+			Array.from(value).every((char) => {
+				const code = char.charCodeAt(0);
+				return code > 31 && code !== 127;
+			}),
+		),
 };
 const acquireSchema = z
 	.object({ ...base, deadline: z.number().int().positive().safe() })
 	.strict();
-const fenceSchema = z
-	.object({ ...base, fence: z.string().uuid() })
-	.strict();
+const fenceSchema = z.object({ ...base, fence: z.string().uuid() }).strict();
 const releaseSchema = fenceSchema.extend({
 	outcome: z.enum(["succeeded", "rejected", "not_dispatched", "unknown"]),
-	reason: z.string().regex(/^[a-z][a-z0-9_]{0,95}$/).optional(),
+	reason: z
+		.string()
+		.regex(/^[a-z][a-z0-9_]{0,95}$/)
+		.optional(),
 });
 const cancelSchema = z.object(base).strict();
 const denied = () => new Error("target_lock_scope_denied");

@@ -1,0 +1,27 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/lead-backends/codex/__tests__/spawn-env-wash.test.ts (5 tests) 1750ms
+   ✓ spawned app-server env carries NO action secrets but keeps CODEX_HOME + plain vars  355ms
+   ✓ prefixes optional feature argv while keeping the default argv byte-identical  400ms
+   ✓ bundle v2 washes the final spawn boundary even with legacy full-access and carrier inputs  312ms
+   ✓ admits only the explicit voice-capability profile with subscription pins and realtime transport  394ms
+ ✓ |parallel| src/bridge/__tests__/lead-capability-scope.test.ts (3 tests) 2442ms
+   ✓ voice session capability scope > keeps authorization across lease renewal but rejects expiration  1063ms
+   ✓ voice session capability scope > accepts a current Claude Lead voice lease and revokes on config drift  749ms
+   ✓ voice session capability scope > rejects a stale voice lease without consulting a resident carrier  629ms
+ ✓ |parallel| src/__tests__/StateStore.voice-target-lock.test.ts (3 tests) 1410ms
+   ✓ voice capability target locks > gives a queued resident the target after a voice write finishes  596ms
+   ✓ voice capability target locks > rejects voice behind a resident and preserves dispatched uncertainty  472ms
+   ✓ voice capability target locks > safely releases an undispatched expired holder  342ms
+ ✓ |parallel| src/lead-capabilities/__tests__/broker.test.ts (25 tests) 246ms
+ ✓ |parallel| src/lead-capabilities/__tests__/runtime-factory.test.ts (13 tests) 200ms
+ ✓ |parallel| src/bridge/__tests__/lead-capability-report.test.ts (7 tests) 112ms
+ ✓ |parallel| src/lead-capabilities/__tests__/catalog.test.ts (10 tests) 24ms
+ ✓ |parallel| src/lead-capabilities/__tests__/voice-resolve.test.ts (3 tests) 8ms
+
+ Test Files  8 passed (8)
+      Tests  69 passed (69)
+   Start at  23:33:11
+   Duration  32.21s (transform 8.52s, setup 181ms, collect 21.24s, tests 6.19s, environment 2ms, prepare 839ms)
+

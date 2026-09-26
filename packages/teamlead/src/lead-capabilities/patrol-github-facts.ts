@@ -29,7 +29,10 @@ export async function prefetchPatrolGithubFacts(
 	context: LeadOperationContext,
 ) {
 	const env = Object.freeze({ ...options.env });
-	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({
+		...options,
+		env,
+	});
 	const signal = AbortSignal.any([context.signal, AbortSignal.timeout(15000)]);
 	function current() {
 		signal.throwIfAborted();

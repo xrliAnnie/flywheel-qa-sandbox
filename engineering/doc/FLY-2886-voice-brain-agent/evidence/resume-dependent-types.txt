@@ -1,0 +1,5 @@
+Scope: 2 of 25 workspace projects
+packages/teamlead typecheck$ tsc --noEmit
+packages/teamlead typecheck: Done
+packages/voice-codex typecheck$ tsc --noEmit
+packages/voice-codex typecheck: Done

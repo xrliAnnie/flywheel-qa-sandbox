@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { resolveLeadIdentityRow } from "flywheel-comm/lead-identity";
 import { validateLeadCarrierAuthorization } from "flywheel-comm/lead-lease";
 import { readSummaryGranularity } from "flywheel-comm/summary-config";
+import type { LeadCapabilityAuthority } from "../lead-capabilities/authority.js";
 import {
 	effectiveVoiceBackground,
 	parseAndValidateProjects,
 } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import type { LeadCapabilityAuthority } from "../lead-capabilities/authority.js";
 
 const sha256 = (value: string) =>
 	createHash("sha256").update(value).digest("hex");
@@ -44,8 +44,7 @@ export function captureLeadCapabilityScope(options: {
 			options.authority ??
 			({
 				kind: "carrier",
-				carrierClaim:
-					options.claimEnv?.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID ?? "",
+				carrierClaim: options.claimEnv?.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID ?? "",
 			} as const),
 		carrier =
 			authority.kind === "carrier" && options.claimEnv
@@ -124,8 +123,6 @@ export function captureLeadCapabilityScope(options: {
 			projectName: session.projectName,
 			leadId: session.leadId,
 			leaseToken: session.leaseToken,
-			leaseExpiresAt: session.leaseExpiresAt,
-			state: session.state,
 		});
 	};
 	const voiceRevision = readVoiceRevision();
@@ -133,20 +130,12 @@ export function captureLeadCapabilityScope(options: {
 		readSummaryGranularity({ homeDir: options.homeDir }),
 	);
 	function assertSourceCurrent() {
-		const currentProjects = parseAndValidateProjects(
-			JSON.parse(readFileSync(options.projectsPath, "utf8")),
-		);
-		const currentLead = currentProjects
-			.find((candidate) => candidate.projectName === options.projectName)
-			?.leads.find((candidate) => candidate.agentId === options.leadId);
 		if (
 			sha256(readFileSync(options.projectsPath, "utf8")) !== projectsDigest ||
 			JSON.stringify(readSummaryGranularity({ homeDir: options.homeDir })) !==
 				summaryRevision ||
 			readCarrierRevision() !== carrierRevision ||
-			readVoiceRevision() !== voiceRevision ||
-			(authority.kind === "voice_session" &&
-				(!currentLead || !effectiveVoiceBackground(currentLead).enabled))
+			readVoiceRevision() !== voiceRevision
 		)
 			throw options.denied();
 	}

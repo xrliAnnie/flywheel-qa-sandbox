@@ -1,0 +1,14 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/bridge/__tests__/lead-capability-scope.test.ts (3 tests) 1207ms
+   ✓ voice session capability scope > keeps authorization across lease renewal but rejects expiration  497ms
+   ✓ voice session capability scope > accepts a current Claude Lead voice lease and revokes on config drift  325ms
+   ✓ voice session capability scope > rejects a stale voice lease without consulting a resident carrier  384ms
+ ✓ |parallel| src/bridge/__tests__/lead-capability-report.test.ts (7 tests) 170ms
+
+ Test Files  2 passed (2)
+      Tests  10 passed (10)
+   Start at  23:32:28
+   Duration  12.78s (transform 6.33s, setup 40ms, collect 9.83s, tests 1.38s, environment 0ms, prepare 344ms)
+

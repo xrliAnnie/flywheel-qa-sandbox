@@ -12,11 +12,10 @@ export function resolveLeadCapabilityRuntimeAuthority(
 	options: LeadCapabilityRuntimeAuthorityOptions,
 ) {
 	const carrierClaim = options.env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
-	const authority: LeadCapabilityAuthority =
-		options.authority ?? {
-			kind: "carrier",
-			carrierClaim: carrierClaim ?? "",
-		};
+	const authority: LeadCapabilityAuthority = options.authority ?? {
+		kind: "carrier",
+		carrierClaim: carrierClaim ?? "",
+	};
 	if (authority.kind === "carrier" && !authority.carrierClaim)
 		throw new Error("capability_authority_missing");
 	const trusted = options.assertActivationCurrent

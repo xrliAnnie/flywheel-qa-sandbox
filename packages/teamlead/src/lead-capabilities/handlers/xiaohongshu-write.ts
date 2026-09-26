@@ -14,19 +14,24 @@ const unavailable: HandlerOutcome = {
 };
 /** The parent supplies a root-policy-verified client. A missing client never
  * falls back to raw MCP, and reconciliation only reads an existing attempt. */
-export function createXhsWriteHandlers(options: {
-	activationId: string;
-	client: {
-		call(
-			action: "execute" | "status",
-			input: unknown,
-			signal?: AbortSignal,
-		): Promise<unknown>;
-	} | null;
-	now?: () => number;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createXhsWriteHandlers(
+	options: {
+		activationId: string;
+		client: {
+			call(
+				action: "execute" | "status",
+				input: unknown,
+				signal?: AbortSignal,
+			): Promise<unknown>;
+		} | null;
+		now?: () => number;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env });
-	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({
+		...options,
+		env,
+	});
 	const activationId = options.activationId,
 		client = options.client,
 		now = options.now ?? Date.now;

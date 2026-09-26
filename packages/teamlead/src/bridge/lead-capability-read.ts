@@ -10,11 +10,11 @@ import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import type { TerminalSessionCoreOptions } from "flywheel-comm/terminal-observation";
 import type { MemoryService } from "flywheel-edge-worker";
 import { z } from "zod";
+import { DepartmentRegistry } from "../department-registry.js";
 import {
 	leadCapabilityAuthorityFields,
 	leadCapabilityAuthorityFromEnvelope,
 } from "../lead-capabilities/authority.js";
-import { DepartmentRegistry } from "../department-registry.js";
 import { getLeadCapability } from "../lead-capabilities/catalog.js";
 import { PATROL_SNAPSHOT_SERVER_TIMEOUT_MS } from "../lead-capabilities/patrol-timeouts.js";
 import type { OperationReceiptStore } from "../lead-capabilities/receipts.js";
@@ -146,7 +146,7 @@ export function createLeadCapabilityReadRouter(
 		}
 		const body = parsed.data,
 			input = definition.inputSchema.safeParse(body.input);
-		let authority;
+		let authority: ReturnType<typeof leadCapabilityAuthorityFromEnvelope>;
 		try {
 			authority = leadCapabilityAuthorityFromEnvelope(body);
 		} catch {

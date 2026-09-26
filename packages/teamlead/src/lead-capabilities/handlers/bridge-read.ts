@@ -2,8 +2,6 @@ import type { Octokit } from "@octokit/rest";
 import { z } from "zod";
 import { RUNNER_ACTION_TOOL_NAMES } from "../../lead-backends/codex/runner-action-names.js";
 import type { LeadArtifactStore } from "../artifacts.js";
-import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
-import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 import {
 	type HandlerOutcome,
 	type LeadOperationContext,
@@ -14,6 +12,8 @@ import { getLeadCapability } from "../catalog.js";
 import { PatrolArtifactProjection } from "../patrol-artifacts.js";
 import { prefetchPatrolGithubFacts } from "../patrol-github-facts.js";
 import { PATROL_SNAPSHOT_CLIENT_TIMEOUT_MS } from "../patrol-timeouts.js";
+import type { LeadCapabilityRuntimeAuthorityOptions } from "../runtime-authority.js";
+import { resolveLeadCapabilityRuntimeAuthority } from "../runtime-authority.js";
 
 const operations = [
 	"bridge.read",
@@ -117,7 +117,10 @@ function createBridgeHandlers(
 		typeof resolveLeadCapabilityRuntimeAuthority
 	>;
 	try {
-		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+		runtimeAuthority = resolveLeadCapabilityRuntimeAuthority({
+			...options,
+			env,
+		});
 		url = new URL(env.FLYWHEEL_BRIDGE_URL ?? "");
 		if (
 			!["http:", "https:"].includes(url.protocol) ||

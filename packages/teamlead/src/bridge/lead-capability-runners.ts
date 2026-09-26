@@ -7,9 +7,7 @@ import {
 	identityEnvProjection,
 	resolveLeadIdentityRow,
 } from "flywheel-comm/lead-identity";
-import {
-	forwardedLeadAuthorizationEnv,
-} from "flywheel-comm/lead-lease";
+import { forwardedLeadAuthorizationEnv } from "flywheel-comm/lead-lease";
 import { z } from "zod";
 import { createRunnerActionContext } from "../lead-backends/codex/runner-action-context.js";
 import { RUNNER_ACTION_TOOL_NAMES } from "../lead-backends/codex/runner-action-names.js";
@@ -78,7 +76,7 @@ export function createLeadRunnerRouter(
 		}
 		const body = parsed.data,
 			controller = new AbortController();
-		let authority;
+		let authority: ReturnType<typeof leadCapabilityAuthorityFromEnvelope>;
 		try {
 			authority = leadCapabilityAuthorityFromEnvelope(body);
 		} catch {
@@ -106,17 +104,17 @@ export function createLeadRunnerRouter(
 				leadId: body.leadId,
 			});
 			const identityEnv = {
-					...base,
-					...Object.fromEntries(
-						identityEnvProjection(initial.identity).map((line) => {
-							const at = line.indexOf("=");
-							return [line.slice(0, at), line.slice(at + 1)];
-						}),
-					),
-					HOME: home,
-					FLYWHEEL_PROJECTS_FILE: projectsPath,
-					FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS: "1",
-				};
+				...base,
+				...Object.fromEntries(
+					identityEnvProjection(initial.identity).map((line) => {
+						const at = line.indexOf("=");
+						return [line.slice(0, at), line.slice(at + 1)];
+					}),
+				),
+				HOME: home,
+				FLYWHEEL_PROJECTS_FILE: projectsPath,
+				FLYWHEEL_CODEX_LEAD_RUNNER_ACTIONS: "1",
+			};
 			const env =
 				authority.kind === "carrier"
 					? forwardedLeadAuthorizationEnv(
@@ -166,7 +164,7 @@ export function createLeadRunnerRouter(
 					: {
 							env: Object.freeze({ ...env }),
 							projectsPath,
-							projectRoot: realpathSync(initial.project.projectRoot),
+							projectRoot: realpathSync(captured.project.projectRoot),
 							assertCurrent: current,
 						};
 			const result = await executeLeadRunnerOperation({

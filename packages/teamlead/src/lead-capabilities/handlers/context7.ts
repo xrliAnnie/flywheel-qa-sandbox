@@ -24,11 +24,13 @@ const reply = z.object({
 		.max(32),
 });
 /** Trusted parent SDK client must be connected by the fixed endpoint provider. */
-export function createContext7Handlers(options: {
-	activationId: string;
-	client: Client;
-	secrets: readonly string[];
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createContext7Handlers(
+	options: {
+		activationId: string;
+		client: Client;
+		secrets: readonly string[];
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env }),
 		secrets = Object.freeze([...options.secrets]);

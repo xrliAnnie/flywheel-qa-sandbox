@@ -12,25 +12,30 @@ import {
 } from "../xiaohongshu-write-input.js";
 
 /** Management changes proposals, never approval authority. Recovery is status-only. */
-export function createXhsWriteManagementHandlers(options: {
-	activationId: string;
-	artifacts: Pick<LeadArtifactStore, "read">;
-	client: {
-		importArtifact(
-			input: { data: Buffer; mimeType: string },
-			signal?: AbortSignal,
-		): Promise<unknown>;
-		call(
-			action: "prepare" | "status" | "cancel",
-			input: unknown,
-			signal?: AbortSignal,
-		): Promise<unknown>;
-	} | null;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createXhsWriteManagementHandlers(
+	options: {
+		activationId: string;
+		artifacts: Pick<LeadArtifactStore, "read">;
+		client: {
+			importArtifact(
+				input: { data: Buffer; mimeType: string },
+				signal?: AbortSignal,
+			): Promise<unknown>;
+			call(
+				action: "prepare" | "status" | "cancel",
+				input: unknown,
+				signal?: AbortSignal,
+			): Promise<unknown>;
+		} | null;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		activationId = options.activationId,
 		client = options.client;
-	const { trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
+	const { trusted } = resolveLeadCapabilityRuntimeAuthority({
+		...options,
+		env,
+	});
 	const unknown = (): HandlerOutcome => ({
 		status: "unknown",
 		errorCode: "provider_unknown",

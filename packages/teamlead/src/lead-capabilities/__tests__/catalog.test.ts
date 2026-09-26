@@ -18,7 +18,8 @@ describe("lead capability catalog", () => {
 		for (const op of LEAD_CAPABILITY_CATALOG) {
 			expect(op.scope).toBe("canonical-project-lead");
 			expect(op.evidenceRequirements.length).toBeGreaterThan(0);
-			if (op.classification === "write") expect(op.targetKey).toBeTypeOf("function");
+			if (op.classification === "write")
+				expect(op.targetKey).toBeTypeOf("function");
 			else expect(op.targetKey).toBeUndefined();
 		}
 	});

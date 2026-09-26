@@ -1,0 +1,15 @@
+
+ RUN  v3.2.4 /Users/xiaorongli/Dev/flywheel-FLY-2886/packages/teamlead
+
+ ✓ |parallel| src/__tests__/StateStore.voice-target-lock.test.ts (5 tests) 2117ms
+   ✓ voice capability target locks > cannot mark an expired fence as dispatched  367ms
+   ✓ voice capability target locks > retains a dispatched lock when a lost mark reply is reported as not dispatched  348ms
+   ✓ voice capability target locks > gives a queued resident the target after a voice write finishes  548ms
+   ✓ voice capability target locks > rejects voice behind a resident and preserves dispatched uncertainty  462ms
+   ✓ voice capability target locks > safely releases an undispatched expired holder  392ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  23:35:00
+   Duration  11.97s (transform 6.00s, setup 177ms, collect 8.31s, tests 2.12s, environment 0ms, prepare 227ms)
+

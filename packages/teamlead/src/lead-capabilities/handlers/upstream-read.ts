@@ -42,13 +42,15 @@ const reply = z.object({
 });
 const denied = () => new Error("upstream_read_unavailable");
 /** Read adapters own only token associations; the outer provider owns/ closes the SDK connection. */
-export function createUpstreamReadAdapter(options: {
-	serverId: "gbrain" | "xiaohongshu-mcp";
-	activationId: string;
-	client: Client;
-	artifacts: LeadArtifactStore;
-	secrets: readonly string[];
-} & LeadCapabilityRuntimeAuthorityOptions) {
+export function createUpstreamReadAdapter(
+	options: {
+		serverId: "gbrain" | "xiaohongshu-mcp";
+		activationId: string;
+		client: Client;
+		artifacts: LeadArtifactStore;
+		secrets: readonly string[];
+	} & LeadCapabilityRuntimeAuthorityOptions,
+) {
 	const env = Object.freeze({ ...options.env }),
 		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env }),
 		secrets = Object.freeze([...options.secrets]);

@@ -21,6 +21,82 @@ async function fixture() {
 }
 
 describe("voice capability target locks", () => {
+	it("cannot mark an expired fence as dispatched", async () => {
+		const { store } = await fixture();
+		try {
+			const owner = {
+				targetKey: "flywheel:linear:fly-2",
+				activationId: "voice:session",
+				requestId: request("7"),
+			};
+			const lock = store.acquireCapabilityTargetLock({
+				...owner,
+				projectName: "flywheel",
+				leadId: "eng",
+				actor: "voice",
+				now: 1_000,
+				deadline: 2_000,
+			});
+			if (lock.status !== "acquired") throw new Error("fixture");
+			expect(
+				store.markCapabilityTargetLockDispatched({
+					...owner,
+					fence: lock.fence,
+					now: 2_000,
+				}),
+			).toBe(false);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("retains a dispatched lock when a lost mark reply is reported as not dispatched", async () => {
+		const { store } = await fixture();
+		try {
+			const owner = {
+				targetKey: "flywheel:linear:fly-3",
+				activationId: "voice:session",
+				requestId: request("8"),
+			};
+			const lock = store.acquireCapabilityTargetLock({
+				...owner,
+				projectName: "flywheel",
+				leadId: "eng",
+				actor: "voice",
+				now: 1_000,
+				deadline: 2_000,
+			});
+			if (lock.status !== "acquired") throw new Error("fixture");
+			const holder = { ...owner, fence: lock.fence };
+			expect(
+				store.markCapabilityTargetLockDispatched({ ...holder, now: 1_100 }),
+			).toBe(true);
+			expect(
+				store.releaseCapabilityTargetLock({
+					...holder,
+					outcome: "not_dispatched",
+				}),
+			).toBe("unknown");
+			expect(
+				store.acquireCapabilityTargetLock({
+					...owner,
+					projectName: "flywheel",
+					leadId: "eng",
+					actor: "resident",
+					activationId: "resident:new",
+					requestId: request("9"),
+					now: 1_200,
+					deadline: 3_000,
+				}),
+			).toEqual({ status: "target_pending_reconcile" });
+			expect(
+				store.releaseCapabilityTargetLock({ ...holder, outcome: "succeeded" }),
+			).toBe("released");
+		} finally {
+			store.close();
+		}
+	});
+
 	it("gives a queued resident the target after a voice write finishes", async () => {
 		const { store } = await fixture();
 		try {
@@ -121,9 +197,9 @@ describe("voice capability target locks", () => {
 					deadline: 4_000,
 				}),
 			).toEqual({ status: "target_pending_reconcile" });
-			expect(store.getCapabilityTargetLock("flywheel:issue:fly-2886")?.state).toBe(
-				"unknown",
-			);
+			expect(
+				store.getCapabilityTargetLock("flywheel:issue:fly-2886")?.state,
+			).toBe("unknown");
 		} finally {
 			store.close();
 		}

@@ -13,11 +13,13 @@ import { createLinearHandlers } from "./linear.js";
 
 const denied = () => new Error("linear_provider_scope_denied");
 /** Factory entry: binds every metadata/read/write request to its broker operation lifetime. */
-export function createLinearProviderSession(options: {
-	token: string;
-	activationId: string;
-	fetchImpl?: typeof fetch;
-} & LeadCapabilityRuntimeAuthorityOptions) {
+export function createLinearProviderSession(
+	options: {
+		token: string;
+		activationId: string;
+		fetchImpl?: typeof fetch;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+) {
 	const session = createLeadLinearClient(options);
 	try {
 		const handlers = createLinearProviderHandlers({
@@ -48,10 +50,12 @@ export function createLinearProviderSession(options: {
 	}
 }
 /** Parent-owned SDK client; no model-supplied metadata, cached grants or StateStore handles. */
-export function createLinearProviderHandlers(options: {
-	client: LinearSdk;
-	activationId: string;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createLinearProviderHandlers(
+	options: {
+		client: LinearSdk;
+		activationId: string;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const projectName = env.FLYWHEEL_PROJECT_NAME,

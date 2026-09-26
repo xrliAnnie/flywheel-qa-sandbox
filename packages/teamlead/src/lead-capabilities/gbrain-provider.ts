@@ -13,11 +13,13 @@ import {
 import { assertUpstreamToolsPinned } from "./upstream-baseline.js";
 
 /** Production uses the pinned host stdio/config lifecycle, never a replacement database. */
-export async function startGbrainProvider(options: {
-	activationId: string;
-	artifacts: LeadArtifactStore;
-	secrets: readonly string[];
-} & LeadCapabilityRuntimeAuthorityOptions) {
+export async function startGbrainProvider(
+	options: {
+		activationId: string;
+		artifacts: LeadArtifactStore;
+		secrets: readonly string[];
+	} & LeadCapabilityRuntimeAuthorityOptions,
+) {
 	const env = Object.freeze({ ...options.env }),
 		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	trusted.assertActivationCurrent();

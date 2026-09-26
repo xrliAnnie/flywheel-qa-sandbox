@@ -11,12 +11,14 @@ import { openPinnedHttpMcpSession } from "./upstream-http-session.js";
 
 const denied = () => new Error("context7_provider_unavailable");
 /** Parent-owned SDK session. Endpoint, routing and credentials are never model input. */
-export async function startContext7Provider(options: {
-	activationId: string;
-	apiKey?: string;
-	secrets: readonly string[];
-	fetchImpl?: typeof fetch;
-} & LeadCapabilityRuntimeAuthorityOptions) {
+export async function startContext7Provider(
+	options: {
+		activationId: string;
+		apiKey?: string;
+		secrets: readonly string[];
+		fetchImpl?: typeof fetch;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+) {
 	const env = Object.freeze({ ...options.env }),
 		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env }),
 		key = options.apiKey;

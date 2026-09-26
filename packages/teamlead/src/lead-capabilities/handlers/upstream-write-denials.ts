@@ -5,9 +5,11 @@ import {
 } from "../runtime-authority.js";
 import { UPSTREAM_TOOL_ROWS } from "../upstream-inputs.js";
 /** Lead ruling 3a78eb55: no invented approval authority. Keep rows and durable refusal evidence. */
-export function createUpstreamWriteDenials(options: {
-	activationId: string;
-} & LeadCapabilityRuntimeAuthorityOptions): ReadonlyMap<string, LeadOperationHandler> {
+export function createUpstreamWriteDenials(
+	options: {
+		activationId: string;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+): ReadonlyMap<string, LeadOperationHandler> {
 	const env = Object.freeze({ ...options.env }),
 		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	return new Map(

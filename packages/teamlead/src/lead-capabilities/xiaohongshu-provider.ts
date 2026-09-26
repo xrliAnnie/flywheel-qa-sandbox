@@ -10,12 +10,14 @@ import {
 import { openPinnedHttpMcpSession } from "./upstream-http-session.js";
 
 /** Fixed loopback MCP service owns its cookie state; the parent owns session/token handles. */
-export async function startXiaohongshuProvider(options: {
-	activationId: string;
-	artifacts: LeadArtifactStore;
-	secrets: readonly string[];
-	fetchImpl?: typeof fetch;
-} & LeadCapabilityRuntimeAuthorityOptions) {
+export async function startXiaohongshuProvider(
+	options: {
+		activationId: string;
+		artifacts: LeadArtifactStore;
+		secrets: readonly string[];
+		fetchImpl?: typeof fetch;
+	} & LeadCapabilityRuntimeAuthorityOptions,
+) {
 	const env = Object.freeze({ ...options.env }),
 		{ trusted } = resolveLeadCapabilityRuntimeAuthority({ ...options, env });
 	const session = await openPinnedHttpMcpSession({

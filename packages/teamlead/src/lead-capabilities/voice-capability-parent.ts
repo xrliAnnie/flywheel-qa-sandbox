@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
@@ -13,10 +12,10 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveLeadIdentityRow } from "flywheel-comm/lead-identity";
-import { parseAndValidateProjects } from "../ProjectConfig.js";
-import type { VoiceBackgroundBrowserMode } from "../ProjectConfig.js";
-import { resolveLeadMenus } from "../workflow-menu.js";
 import { SqliteJournalStore } from "../lead-backends/codex/SqliteJournalStore.js";
+import type { VoiceBackgroundBrowserMode } from "../ProjectConfig.js";
+import { parseAndValidateProjects } from "../ProjectConfig.js";
+import { resolveLeadMenus } from "../workflow-menu.js";
 import { LeadArtifactStore } from "./artifacts.js";
 import { leadCredentialAliases } from "./credential-paths.js";
 import { verifyLeadDeployment } from "./deployment.js";
@@ -55,12 +54,14 @@ export async function startVoiceCapabilityParent(
 		leadId: input.leadId,
 	});
 	const resolution = resolveVoiceBackgroundCapabilities({
-		project: initial.project,
+		project: parseAndValidateProjects([initial.project])[0]!,
 		leadId: input.leadId,
 		sessionId: input.sessionId,
 		browserMode: input.browserMode,
 	});
-	const projectRoot = realpathSync(initial.project.projectRoot);
+	const projectRoot = realpathSync(
+		parseAndValidateProjects([initial.project])[0]!.projectRoot,
+	);
 	const deploymentRoot = realpathSync(
 		resolve(dirname(fileURLToPath(import.meta.url)), "../../../.."),
 	);
@@ -123,7 +124,7 @@ export async function startVoiceCapabilityParent(
 		if (row.identity.identityDigest !== initial.identity.identityDigest)
 			throw new Error("voice_capability_identity_changed");
 		resolveVoiceBackgroundCapabilities({
-			project: row.project,
+			project: parseAndValidateProjects([row.project])[0]!,
 			leadId: input.leadId,
 			sessionId: input.sessionId,
 			browserMode: input.browserMode,
@@ -187,11 +188,7 @@ export async function startVoiceCapabilityParent(
 		const discover = () =>
 			discoverLeadRuleSources({
 				homeDir: hostHome,
-				workspaceDir: join(
-					hostHome,
-					".flywheel/lead-workspace",
-					input.leadId,
-				),
+				workspaceDir: join(hostHome, ".flywheel/lead-workspace", input.leadId),
 				scriptsDir: join(deploymentRoot, "packages/teamlead/scripts"),
 				projectRoot,
 				leadId: input.leadId,

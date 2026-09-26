@@ -285,7 +285,10 @@ it("admits only the explicit voice-capability profile with subscription pins and
 		capabilityModelEnv: pins,
 	});
 	await new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error("stub did not exit")), 5000);
+		const timer = setTimeout(
+			() => reject(new Error("stub did not exit")),
+			5000,
+		);
 		transport.onExit(() => {
 			clearTimeout(timer);
 			resolve();

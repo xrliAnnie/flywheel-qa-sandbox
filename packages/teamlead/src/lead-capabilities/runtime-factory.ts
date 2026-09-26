@@ -49,8 +49,8 @@ import {
 	type LeadRuleSourceRecord,
 	prepareLeadManifestSources,
 } from "./rule-sources.js";
-import { createLeadCapabilityContext } from "./runtime-context.js";
 import { resolveLeadCapabilityRuntimeAuthority } from "./runtime-authority.js";
+import type { createLeadCapabilityContext } from "./runtime-context.js";
 import {
 	type LeadCapabilityParentOptions,
 	startLeadCapabilityParent,
