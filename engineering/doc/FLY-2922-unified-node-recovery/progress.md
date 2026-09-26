@@ -2,17 +2,17 @@
 issue: FLY-2922
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T18:37:26.703Z
-nextStep: "Producer slice committed 5b4cf1109: rework carveout and accurate
-  alerts; focused/related 165 passed/1 existing skip, guards 41+5, notifier 69,
-  public rework negatives 2; lint/build/dependent typecheck green. Next
-  implement v2 canonical/receipt + shared recoverCurrentWorkflowNodeTx and
-  original-phenomenon fixtures. No PR/review/handoff; all six plan groups remain
-  incomplete."
+updated: 2026-09-26T18:56:23.465Z
+nextStep: Uncommitted v2 canonical/receipt migration and automatic replacement
+  materializer extracted. Contract/schema 10 tests passed; dead-execution file
+  31 passed. Core writer conflicts now roll back; historical cursor and same-ID
+  replacement refused. Next finish consumer/guard verification, then implement
+  held recovery transaction and trusted preflight. All six approved groups
+  remain incomplete; no PR/review/handoff.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2922 progress
 **phase**: implement (0/6)
-**next**: Producer slice committed 5b4cf1109: rework carveout and accurate alerts; focused/related 165 passed/1 existing skip, guards 41+5, notifier 69, public rework negatives 2; lint/build/dependent typecheck green. Next implement v2 canonical/receipt + shared recoverCurrentWorkflowNodeTx and original-phenomenon fixtures. No PR/review/handoff; all six plan groups remain incomplete.
+**next**: Uncommitted v2 canonical/receipt migration and automatic replacement materializer extracted. Contract/schema 10 tests passed; dead-execution file 31 passed. Core writer conflicts now roll back; historical cursor and same-ID replacement refused. Next finish consumer/guard verification, then implement held recovery transaction and trusted preflight. All six approved groups remain incomplete; no PR/review/handoff.
