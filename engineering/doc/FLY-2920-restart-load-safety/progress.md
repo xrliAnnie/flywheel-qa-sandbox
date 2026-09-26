@@ -2,14 +2,15 @@
 issue: FLY-2920
 phase: implement
 phaseCursor: 2/7
-updated: 2026-09-26T18:46:40.756Z
-nextStep: B/C complete; D storage committed 52b9956b7 with generation and
-  fairness tests. D coordinator, author wake and physical identity integration
-  in progress; E-G unstarted. Targeted local evidence only.
+updated: 2026-09-26T19:11:17.409Z
+nextStep: B/C done. D storage committed; coordinator retirement/retry, physical
+  identity, held-author wake and durable sink implemented in worktree. D6
+  integrated proof and remaining guard/consumer checks in progress. E-G
+  unstarted. No PR/full CI/QA/handoff.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2920 progress
 **phase**: implement (2/7)
-**next**: B/C complete; D storage committed 52b9956b7 with generation and fairness tests. D coordinator, author wake and physical identity integration in progress; E-G unstarted. Targeted local evidence only.
+**next**: B/C done. D storage committed; coordinator retirement/retry, physical identity, held-author wake and durable sink implemented in worktree. D6 integrated proof and remaining guard/consumer checks in progress. E-G unstarted. No PR/full CI/QA/handoff.
