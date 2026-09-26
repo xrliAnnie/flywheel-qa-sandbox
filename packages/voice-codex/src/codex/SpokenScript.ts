@@ -129,6 +129,7 @@ const NEGATIVE_OUTCOMES = [
 	"失败",
 	"挂了",
 	"红了",
+	"红着",
 	"飘红",
 	"被拒",
 	"驳回",
@@ -163,8 +164,12 @@ const NEGATIVE_WORDS =
 const POSITIVE_WORDS =
 	/\b(?:pass(?:ed|es)?|approved|merged|succeeded|success)\b/giu;
 
+/** Time phrases that reuse 过 (过了十分钟, 没过多久) are not outcomes. */
+const TEMPORAL_PHRASES =
+	/过了\s*(?:\d+|[一二两三四五六七八九十半几]+)?\s*(?:个)?\s*(?:秒|分钟|小时|钟头|天|周|会儿|一会|阵|很久|好久|不久)|没过(?:多久|几|一会)|过了没多久/gu;
+
 function outcomeTokens(value: string): ProtectedToken[] {
-	let rest = value.toLocaleLowerCase("en-US");
+	let rest = value.toLocaleLowerCase("en-US").replace(TEMPORAL_PHRASES, " ");
 	let negative = false;
 	for (const word of NEGATIVE_OUTCOMES)
 		if (rest.includes(word)) {

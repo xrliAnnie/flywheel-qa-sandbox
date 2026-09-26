@@ -152,14 +152,15 @@ const RECENT_ASK_WINDOW_MS = 10 * 60_000;
 
 /**
  * Mechanical floor under the writer's relevance call: a message that asks her
- * something, or that names a key fact she herself just mentioned (it answers
- * her), is always told whatever the writer decided.
+ * something, reports a pass/fail/merged outcome, or names a key fact she
+ * herself just mentioned (it answers her) is always told whatever the writer
+ * decided.
  */
 function mustTell(
 	text: string,
 	recentAsks: readonly string[],
 	rosterNames: readonly string[],
-): "asks_her" | "answers_her" | undefined {
+): "asks_her" | "answers_her" | "reports_result" | undefined {
 	if (/[?？]|要不要|是否|可不可以|能不能|行不行|你确认|你看/u.test(text))
 		return "asks_her";
 	const keys = (value: string) =>
@@ -173,6 +174,13 @@ function mustTell(
 	const source = keys(text);
 	for (const ask of recentAsks)
 		for (const key of keys(ask)) if (source.has(key)) return "answers_her";
+	// A pass/fail/merged outcome is a result, never a bare receipt.
+	if (
+		extractProtectedTokens(text, rosterNames).some(
+			(token) => token.kind === "outcome",
+		)
+	)
+		return "reports_result";
 	return undefined;
 }
 

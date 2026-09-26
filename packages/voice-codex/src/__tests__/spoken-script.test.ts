@@ -230,3 +230,24 @@ describe("key-fact guard for free paraphrase", () => {
 		);
 	});
 });
+
+// Review b5bc5d89 advisory: time phrases are not outcomes.
+it("does not read 过了十分钟 / 没过多久 as a yes/no outcome", () => {
+	expect(
+		extractProtectedTokens("过了 10 分钟 CI 还红着", []).filter(
+			(token) => token.kind === "outcome",
+		),
+	).toEqual([{ kind: "outcome", token: "negative" }]);
+	expect(
+		validateSpokenScript({
+			spoken: "CI 过了。",
+			sources: [source("lead", "过了 10 分钟 CI 还红着")],
+			rosterNames: [],
+		}).ok,
+	).toBe(false);
+	expect(
+		extractProtectedTokens("没过多久他就回复了", []).filter(
+			(token) => token.kind === "outcome",
+		),
+	).toEqual([]);
+});

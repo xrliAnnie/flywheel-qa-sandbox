@@ -1460,3 +1460,39 @@ describe("tell relevance", () => {
 		}
 	});
 });
+
+// Review b5bc5d89 advisory: a message that reports a result is always told,
+// mechanically, not only because the prompt says so.
+it("always tells a message that reports a pass/fail outcome, even if the writer wanted to skip it", async () => {
+	vi.useFakeTimers();
+	try {
+		const test = fixture({
+			coordinatedSpeech: true,
+			appendSpeech: async () => "confirmed",
+			rewriteSpeech: async () => ({
+				spoken: "FLY-1234 失败了。",
+				threadText: null,
+				protectedFieldEvidence: [],
+				tell: false,
+				skipReason: "no_new_information",
+			}),
+		});
+		await test.session.start();
+		await test.session.markLive();
+		const result = test.session.deliverTell({
+			businessId: "tell:result",
+			text: "FLY-1234 失败了。",
+		});
+		await vi.advanceTimersByTimeAsync(1_500);
+		await expect(result).resolves.toBe("spoken");
+		expect(test.evidence).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "voice_tell_skip_overridden",
+				override: "reports_result",
+			}),
+		);
+		await test.session.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
