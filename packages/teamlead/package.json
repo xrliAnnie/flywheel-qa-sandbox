@@ -38,6 +38,10 @@
 			"types": "./dist/realtime-voices.d.ts",
 			"import": "./dist/realtime-voices.js"
 		},
+		"./voice-context-contract": {
+			"types": "./dist/voice-context-contract.d.ts",
+			"import": "./dist/voice-context-contract.js"
+		},
 		"./cos-ports/voice-intent": {
 			"types": "./dist/cos-ports/voice-intent.d.ts",
 			"import": "./dist/cos-ports/voice-intent.js"
