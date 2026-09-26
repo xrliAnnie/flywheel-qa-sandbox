@@ -1,13 +1,13 @@
 ---
 issue: FLY-145
 phase: design
-phaseCursor: 1/4
-updated: 2026-09-26T12:47:20.656Z
-nextStep: "write research.md from FLY-127 code, tests, PR #170, and QA harness evidence"
+phaseCursor: 2/4
+updated: 2026-09-26T12:48:51.356Z
+nextStep: write implementation-ready no-code QA execution plan
 chunks: []
 pointers: {}
 ---
 
 # FLY-145 progress
-**phase**: design (1/4)
-**next**: write research.md from FLY-127 code, tests, PR #170, and QA harness evidence
+**phase**: design (2/4)
+**next**: write implementation-ready no-code QA execution plan
