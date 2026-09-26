@@ -13,6 +13,7 @@ import {
 	dropReceiptLedgerSchema,
 	installMailboxRelayInvariantTriggers,
 	installMailboxTerminalArchiveSchema,
+	LEAD_AUDIT_SUMMARY_SCHEMA,
 	MAILBOX_LEGACY_PUSH_BACKFILL_MARKERS,
 	MAILBOX_MESSAGE_PROJECTION_SELECT,
 	MAILBOX_MESSAGE_PROJECTION_VERSION,
@@ -78,6 +79,63 @@ export type MailboxBatchDeliveryResult =
 	| "applied"
 	| "already_settled"
 	| "lost_race";
+export interface LeadAuditSummaryScope {
+	projectName: string;
+	leadId: string;
+	storeEpoch: string;
+}
+export interface LeadAuditSummaryCursor extends LeadAuditSummaryScope {
+	offeredThroughSeq: number;
+	anchorEventId: string | null;
+}
+export interface LeadAuditSummaryOffer extends LeadAuditSummaryScope {
+	transportBatchId: string;
+	fromSeq: number;
+	throughSeq: number;
+	anchorEventId: string | null;
+	content: string;
+	contentSha256: string;
+	acceptedAt: string | null;
+}
+export interface LeadAuditSummaryReceipt extends LeadAuditSummaryScope {
+	transportBatchId: string;
+	memberIds: readonly string[];
+}
+interface LeadAuditSummaryOwner {
+	ownerEpoch: string;
+	now: string;
+}
+type LeadAuditSummaryBatchMember = Pick<
+	MailboxRow,
+	| "state"
+	| "claimed_by"
+	| "to_agent"
+	| "delivery_id"
+	| "lease_retry_count"
+	| "msg_class"
+	| "carrier"
+	| "delivery_disposition"
+>;
+const SUMMARY_CURSOR_SELECT = `SELECT project_name AS projectName, lead_id AS leadId,
+ store_epoch AS storeEpoch, offered_through_seq AS offeredThroughSeq, anchor_event_id AS anchorEventId
+ FROM lead_audit_summary_cursor`;
+const SUMMARY_OFFER_SELECT = `SELECT project_name AS projectName, lead_id AS leadId,
+ store_epoch AS storeEpoch, transport_batch_id AS transportBatchId,
+ from_seq AS fromSeq, through_seq AS throughSeq, anchor_event_id AS anchorEventId,
+ content, content_sha256 AS contentSha256, accepted_at AS acceptedAt
+ FROM lead_audit_summary_offer`;
+
+function assertSummaryBoundary(
+	seq: number,
+	anchorEventId: string | null,
+): void {
+	if (!Number.isSafeInteger(seq) || seq < 0) {
+		throw new Error("summary sequence must be a non-negative safe integer");
+	}
+	if (seq > 0 && !anchorEventId?.trim()) {
+		throw new Error("summary boundary requires an event anchor");
+	}
+}
 export type RunnerMailboxSettlement = "on_delivery" | "on_consume";
 export interface MailboxBatchFailureResult {
 	outcome: "applied" | "already_settled" | "lost_race";
@@ -453,6 +511,7 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 				ON mailbox(claim_expires_at)
 				WHERE state = 'LEASED' AND carrier = 'inbox'`);
 		installMailboxTerminalArchiveSchema(db);
+		db.exec(LEAD_AUDIT_SUMMARY_SCHEMA);
 		// Caller-owned compatibility schemas may expose only the lease columns.
 		// Production FLY-1572 mailboxes have the full set and must receive the
 		// FLY-2136 indexes on their first writable open.
@@ -1825,12 +1884,181 @@ export class MailboxQueue {
 		return rows.length > 0 ? rows : undefined;
 	}
 
+	getLeadAuditSummaryCursor(
+		input: LeadAuditSummaryScope & LeadAuditSummaryOwner,
+	): LeadAuditSummaryCursor | undefined {
+		return this.db.transaction(() => {
+			if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
+			return this.db
+				.prepare(`${SUMMARY_CURSOR_SELECT}
+			 WHERE project_name = ? AND lead_id = ? AND store_epoch = ?`)
+				.get(input.projectName, input.leadId, input.storeEpoch) as
+				| LeadAuditSummaryCursor
+				| undefined;
+		})();
+	}
+
+	/** Insert-only initialization from the independently verified StateStore anchor. */
+	initializeLeadAuditSummaryCursor(
+		input: LeadAuditSummaryScope &
+			LeadAuditSummaryOwner & {
+				throughSeq: number;
+				anchorEventId: string | null;
+			},
+	): LeadAuditSummaryCursor | undefined {
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
+				assertSummaryBoundary(input.throughSeq, input.anchorEventId);
+				this.db
+					.prepare(`INSERT INTO lead_audit_summary_cursor
+			 (project_name, lead_id, store_epoch, offered_through_seq, anchor_event_id)
+			 VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`)
+					.run(
+						requiredText(input.projectName, "projectName"),
+						requiredText(input.leadId, "leadId"),
+						requiredText(input.storeEpoch, "storeEpoch"),
+						input.throughSeq,
+						input.anchorEventId,
+					);
+				return this.getLeadAuditSummaryCursor(input);
+			})
+			.immediate();
+	}
+
+	/** Lookup ignores the current store epoch: a retry must keep its original bytes. */
+	getLeadAuditSummaryOffer(
+		input: Omit<LeadAuditSummaryScope, "storeEpoch"> &
+			LeadAuditSummaryOwner & { transportBatchId: string },
+	): LeadAuditSummaryOffer | undefined {
+		return this.db.transaction(() => {
+			if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
+			return this.db
+				.prepare(`${SUMMARY_OFFER_SELECT}
+			 WHERE project_name = ? AND lead_id = ? AND transport_batch_id = ?`)
+				.get(input.projectName, input.leadId, input.transportBatchId) as
+				| LeadAuditSummaryOffer
+				| undefined;
+		})();
+	}
+
+	private matchesLeadSummaryBatch(
+		input: LeadAuditSummaryReceipt & { batchId: string; ownerEpoch: string },
+		rows: readonly LeadAuditSummaryBatchMember[],
+	): boolean {
+		const attempt = rows[0]?.lease_retry_count;
+		return (
+			rows.length > 0 &&
+			input.memberIds.length === rows.length &&
+			input.transportBatchId === `${input.batchId}#r${attempt}` &&
+			rows.every(
+				(row, index) =>
+					row.state === "LEASED" &&
+					row.msg_class === "model" &&
+					row.carrier === "inbox" &&
+					row.delivery_disposition === "model" &&
+					row.claimed_by === input.ownerEpoch &&
+					row.to_agent === input.leadId &&
+					row.lease_retry_count === attempt &&
+					input.memberIds[index] === `${row.delivery_id}#r${attempt}`,
+			)
+		);
+	}
+
+	freezeLeadAuditSummaryOffer(
+		input: LeadAuditSummaryReceipt &
+			LeadAuditSummaryOwner & {
+				batchId: string;
+				fromSeq: number;
+				throughSeq: number;
+				anchorEventId: string | null;
+				content: string;
+			},
+	): LeadAuditSummaryOffer | undefined {
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
+				const rows = this.db
+					.prepare(`SELECT * FROM mailbox WHERE batch_id = ?
+			 AND recipient_kind = 'lead' ORDER BY priority, seq`)
+					.all(input.batchId) as MailboxRow[];
+				if (!this.matchesLeadSummaryBatch(input, rows)) return undefined;
+				const frozen = this.getLeadAuditSummaryOffer(input);
+				if (frozen) return frozen;
+				if (
+					!Number.isSafeInteger(input.fromSeq) ||
+					input.fromSeq < 0 ||
+					!Number.isSafeInteger(input.throughSeq) ||
+					input.throughSeq < input.fromSeq
+				) {
+					throw new Error("invalid summary range");
+				}
+				assertNoLoneSurrogate("summary content", input.content);
+				if (input.content.length > 0) {
+					assertSummaryBoundary(input.throughSeq, input.anchorEventId);
+					const cursor = this.getLeadAuditSummaryCursor(input);
+					if (!cursor || input.fromSeq > cursor.offeredThroughSeq)
+						return undefined;
+				}
+				this.db
+					.prepare(`INSERT INTO lead_audit_summary_offer
+			 (project_name, lead_id, store_epoch, transport_batch_id, from_seq, through_seq,
+			  anchor_event_id, content, content_sha256)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+					.run(
+						requiredText(input.projectName, "projectName"),
+						requiredText(input.leadId, "leadId"),
+						requiredText(input.storeEpoch, "storeEpoch"),
+						input.transportBatchId,
+						input.fromSeq,
+						input.throughSeq,
+						input.anchorEventId,
+						input.content,
+						createHash("sha256").update(input.content).digest("hex"),
+					);
+				return this.getLeadAuditSummaryOffer(input);
+			})
+			.immediate();
+	}
+
+	private acceptLeadAuditSummaryOffer(
+		offer: LeadAuditSummaryOffer,
+		now: string,
+	): void {
+		// Empty attachments also freeze failures. They carry no coverage evidence.
+		if (!offer.content || offer.acceptedAt) return;
+		this.db
+			.prepare(`UPDATE lead_audit_summary_offer SET accepted_at = ?
+		 WHERE project_name = ? AND lead_id = ? AND store_epoch = ? AND transport_batch_id = ?
+		 AND accepted_at IS NULL`)
+			.run(
+				now,
+				offer.projectName,
+				offer.leadId,
+				offer.storeEpoch,
+				offer.transportBatchId,
+			);
+		this.db
+			.prepare(`UPDATE lead_audit_summary_cursor
+		 SET offered_through_seq = ?, anchor_event_id = ?
+		 WHERE project_name = ? AND lead_id = ? AND store_epoch = ? AND offered_through_seq < ?`)
+			.run(
+				offer.throughSeq,
+				offer.anchorEventId,
+				offer.projectName,
+				offer.leadId,
+				offer.storeEpoch,
+				offer.throughSeq,
+			);
+	}
+
 	private recordBatchDelivered(input: {
 		batchId: string;
 		ownerEpoch: string;
 		now: string;
 		ackLeaseTtlMs: number;
 		recipientKind: "lead" | "runner";
+		auditSummaryReceipt?: LeadAuditSummaryReceipt;
 	}): MailboxBatchDeliveryResult {
 		const expiresAt = addMilliseconds(input.now, input.ackLeaseTtlMs);
 		return this.db
@@ -1839,13 +2067,35 @@ export class MailboxQueue {
 					return "lost_race";
 				const rows = this.db
 					.prepare(
-						"SELECT state, claimed_by FROM mailbox WHERE batch_id = ? AND recipient_kind = ? ORDER BY priority, seq",
+						"SELECT state, claimed_by, to_agent, delivery_id, lease_retry_count, msg_class, carrier, delivery_disposition FROM mailbox WHERE batch_id = ? AND recipient_kind = ? ORDER BY priority, seq",
 					)
-					.all(input.batchId, input.recipientKind) as Array<{
-					state: MailboxState;
-					claimed_by: string | null;
-				}>;
+					.all(
+						input.batchId,
+						input.recipientKind,
+					) as LeadAuditSummaryBatchMember[];
 				if (rows.length === 0) return "lost_race";
+				let summaryOffer: LeadAuditSummaryOffer | undefined;
+				if (input.auditSummaryReceipt) {
+					const summary = {
+						...input.auditSummaryReceipt,
+						batchId: input.batchId,
+						ownerEpoch: input.ownerEpoch,
+						now: input.now,
+					};
+					if (
+						input.recipientKind !== "lead" ||
+						!this.matchesLeadSummaryBatch(summary, rows)
+					)
+						return "lost_race";
+					summaryOffer = this.getLeadAuditSummaryOffer(summary);
+					if (!summaryOffer || summaryOffer.storeEpoch !== summary.storeEpoch)
+						return "lost_race";
+					if (summaryOffer.content) {
+						const cursor = this.getLeadAuditSummaryCursor(summary);
+						if (!cursor || summaryOffer.fromSeq > cursor.offeredThroughSeq)
+							return "lost_race";
+					}
+				}
 				const leased = rows.filter(({ state }) => state === "LEASED");
 				if (leased.length === 0) {
 					return rows.every(({ state }) => state === "ACKED")
@@ -1873,7 +2123,10 @@ export class MailboxQueue {
 						input.recipientKind,
 						input.ownerEpoch,
 					);
-				return updated.changes === leased.length ? "applied" : "lost_race";
+				if (updated.changes !== leased.length) return "lost_race";
+				if (summaryOffer)
+					this.acceptLeadAuditSummaryOffer(summaryOffer, input.now);
+				return "applied";
 			})
 			.immediate();
 	}
@@ -1883,6 +2136,7 @@ export class MailboxQueue {
 		ownerEpoch: string;
 		now: string;
 		ackLeaseTtlMs: number;
+		auditSummaryReceipt?: LeadAuditSummaryReceipt;
 	}): MailboxBatchDeliveryResult {
 		return this.recordBatchDelivered({ ...input, recipientKind: "lead" });
 	}

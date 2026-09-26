@@ -1,0 +1,5 @@
+{
+	"database": "comm",
+	"table": "lead_audit_summary_cursor",
+	"classification": "protectedCurrentOrAuthority"
+}
