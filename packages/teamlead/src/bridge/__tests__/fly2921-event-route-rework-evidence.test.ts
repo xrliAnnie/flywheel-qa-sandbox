@@ -252,21 +252,23 @@ function seedReworkTarget(
 		grantedAt: "2026-07-23T00:11:30.000Z",
 	});
 	if (!turn.ok) throw new Error(turn.reason);
-	for (const [from, to] of [
-		["pending", "turn_granted"],
-		["turn_granted", "awaiting_receipt"],
-	] as const) {
-		const advanced = store.advanceWorkflowReworkDelivery({
-			requestId,
-			ownerId: "coordinator",
-			generation: claim.generation,
-			from,
-			to,
-			now: "2026-07-23T00:12:00.000Z",
-			...(to === "awaiting_receipt" ? { releaseOwner: true } : {}),
-		});
-		if (!advanced.ok) throw new Error(advanced.reason);
-	}
+	const advanced = store.advanceWorkflowReworkDelivery({
+		requestId,
+		ownerId: "coordinator",
+		generation: claim.generation,
+		from: "pending",
+		to: "turn_granted",
+		now: "2026-07-23T00:12:00.000Z",
+	});
+	if (!advanced.ok) throw new Error(advanced.reason);
+	// FLY-2921: the pushed wake is a fact on `turn_granted`.
+	const sent = store.markWorkflowReworkWakeSent({
+		requestId,
+		ownerId: "coordinator",
+		generation: claim.generation,
+		now: "2026-07-23T00:12:00.000Z",
+	});
+	if (!sent.ok) throw new Error(sent.reason);
 	const acked = store.recordWorkflowReworkWakeReceipt({
 		activationId,
 		executionId: "implement-exec",
