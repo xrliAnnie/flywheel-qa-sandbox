@@ -37,3 +37,13 @@ question 3d0bd288-23a3-46e2-a652-86e1fb8e9b88 已返回有效 CHANGES_REQUESTED�
 有效 APPROVED，四项 MEDIUM 已记录 review-followups.md 并报告 Lead；只读核 engine approval proof.state=approved，expected_blob_sha 与当前 HEAD plan 均为 989780531149c2bd73c37bb3da1fe1a08ba60e62。正式凭证在 evidence/review-approved.json。plan 字节冻结；HTML 状态与 Follow-ups 已同步。剩余：最终提交/推送、静默发布、托管页核验、DESIGN-HTML ready、complete、park。
 
 Lead 回复 cf0ed513-7653-42e2-b856-656286d86a14 已消费：四项 MEDIUM 均为实施 must-fix acceptance，不重开设计；人工 reset 限制进后续 PR。交接附件与 HTML 已同步，首屏补首次失败边界，plan blob 不变。
+
+## 发布与交卷前最终核对
+
+- 最终 HTML 已在提交 a12c2e75c 推送后静默发布：https://fw-reports-6da062.vercel.app/r/3b8bf00438af9e5385a4b1469fcacd3a/ 。publishOnly=true、messageId=null、delivered=false 符合不发送频道消息要求。
+- verify-report 通过 HTTP 200、placeholder=0、CSP/script nonce 与首屏预期内容；独立 fetch 对照 report-registry 注入规则后与本地源逐字一致。evidence/hosted-validation.json、publish-receipt.json 保存证据。
+- 九节/九输入、单 nonce 脚本、无 inline handlers/外部资产；controller 脚本 hash 与既有模拟 DOM 四场景通过版本一致。无浏览器视觉或生产修后验证；三图各两次本地渲染失败后保留 Mermaid 源与明确 pending，符合允许降级。
+- DESIGN-HTML ready 已发送到 flywheel-eng-lead，持久报告 id 2bec8807-0eb3-4192-9b18-728c1ed12af1；doorbell 提醒超时不代表持久报告丢失，也不声称 Lead 已读。
+- 有效 R3 APPROVED proof/current plan blob 一致；获批 plan 无修改。四项建议按 Lead 回复升级为实施必须验收，人工 reset 限制留给后续 PR。
+- 设计阶段无实现、无全仓/全包测试、无生产重启、无账号变更、无后继派发、无 ship/merge。角色记忆无新通用条目，本轮保持 unchanged，已报告。
+- 本核对表及发布证据推送后执行 complete --route phase_design_complete；如返回 unread mail 当轮消费/ack/重试，然后 park。阶段完成不将常驻 goal 终结。
