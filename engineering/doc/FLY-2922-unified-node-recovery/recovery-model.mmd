@@ -1,0 +1,41 @@
+erDiagram
+  RUN ||--|| CURRENT_NODE : preserves
+  CURRENT_NODE ||--o{ DISPATCH : launches
+  RECOVERY_RECEIPT ||--|| DISPATCH : proves
+  DISPATCH ||--o| ACTIVATION : admits
+  RUN ||--o| REWORK_REQUEST : retains
+  RUN ||--o| LAND_OPERATION : retains
+  RUN {
+    string run_id PK
+    string pinned_snapshot
+    string branch
+  }
+  CURRENT_NODE {
+    string node_id PK
+    int business_attempt
+    string current_execution
+  }
+  DISPATCH {
+    int ledger_id PK
+    int launch_ordinal
+    string new_execution
+    string launch_state
+  }
+  RECOVERY_RECEIPT {
+    string request_id PK
+    string frozen_target_digest
+    int ledger_id FK
+  }
+  ACTIVATION {
+    string activation_id PK
+    string fresh_credentials
+  }
+  REWORK_REQUEST {
+    string request_id PK
+    int route_revision
+  }
+  LAND_OPERATION {
+    string operation_id PK
+    string approved_head
+    int resume_generation
+  }

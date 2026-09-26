@@ -1,0 +1,116 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FLY-2922 · 卡住之后有出口</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#1d1d1f;font:16px/1.65 -apple-system,system-ui,sans-serif}main{max-width:960px;margin:auto;padding:36px 18px 70px}h1{font-size:34px;line-height:1.25;margin:10px 0 24px}h2{font-size:23px;margin:0 0 18px}.card{background:#fff;border-radius:12px;border-left:4px solid #007aff;padding:26px;margin:22px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}.big{font-size:23px;font-weight:600}.muted{color:#6e6e73;font-size:14px}.pending{background:#fff7e8;border:1px dashed #ff9500;border-radius:8px;padding:24px;margin:18px 0;color:#744800}label{display:block;font-size:14px;color:#6e6e73;margin-top:24px}textarea{display:block;width:100%;min-height:92px;resize:vertical;border:1px solid #d2d2d7;border-radius:8px;padding:12px;margin:8px 0;font:inherit;color:inherit;background:#fafafa}textarea:focus{outline:2px solid #007aff}button{border:0;border-radius:9px;background:#007aff;color:white;padding:10px 16px;font:inherit;cursor:pointer;margin:6px 8px 6px 0}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e5e5ea;padding:12px 9px}th{background:#f5f5f7}.scroll{overflow:auto}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}svg{max-width:100%;height:auto}details{margin:15px 0}#chunks textarea{min-height:180px}@media(max-width:600px){main{padding:22px 12px}.card{padding:20px 16px}h1{font-size:28px}.big{font-size:20px}th,td{padding:9px 5px}}</style></head><body><main><p class="muted">Flywheel · 工程设计</p><h1>卡住之后，有一个可靠的出口</h1><section class="card" data-section="一句话结论"><h2>一句话结论</h2><p class="big">卡住后重派当前节点；放行必须写出新的派发凭据，关掉死体不再顺带终结整条任务链。</p><p><b>run</b> 是一条完整任务链；<b>Runner</b> 是其中干活的执行体；<b>held</b> 表示任务链暂时停住。恢复后仍是同一条任务链、同一分支。</p><p class="muted">设计方案 · FLY-2922 · 2026-09-26 · 覆盖 9 张原单、历史 37 次。本页不代表修复已上线。</p><label for="c-summary">这一节的意见</label><textarea id="c-summary" data-comment="summary" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="恢复怎样真正发生"><h2>恢复怎样真正发生</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染被系统权限阻止，标准参数重试也失败。已保留 Mermaid 图源；这里不以拼接方框冒充图。</p></div><details><summary>查看图源</summary><pre>flowchart TD
+  A[启动失败 或 完成回执缺失] --&gt; B[保留原任务链 记录暂停原因]
+  B --&gt; C[统一入口 重派当前节点]
+  C --&gt; D{身份与旧体退出证据齐全}
+  D --&gt;|否| E[保持暂停 说明缺什么]
+  D --&gt;|是| F[一次提交 新身份加派发账本]
+  F --&gt; G[原任务链恢复可运行]
+  G --&gt; H{调度器消费新派发}
+  H --&gt;|执行体节点| I[新体启动 留下启动证据]
+  H --&gt;|落地节点| J[原落地操作继续未完成步骤]
+  I --&gt;|又失败| B
+  J --&gt;|又失败| B
+</pre></details><ol><li>确认当前节点和旧执行体，拿到旧体已经退出的证据。</li><li>一次保存新身份、派发账本和可运行状态；任何一步失败都不算放行。</li><li>调度器读账本启动新体；落地节点继续原操作中未完成的步骤。</li><li>再次失败仍回到同一个恢复入口。</li></ol><p><b>派发账本</b> 是系统承诺启动某个执行身份的持久记录。写入派发与实际启动分开显示；只有启动证据齐全才显示已启动。</p><label for="c-flow">这一节的意见</label><textarea id="c-flow" data-comment="flow" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="保留什么，更新什么"><h2>保留什么，更新什么</h2><div class="pending"><strong>DIAGRAM PENDING LOCAL RENDER</strong><p>本机图形渲染被系统权限阻止，标准参数重试也失败。已保留 Mermaid 图源；这里不以拼接方框冒充图。</p></div><details><summary>查看图源</summary><pre>erDiagram
+  RUN ||--|| CURRENT_NODE : preserves
+  CURRENT_NODE ||--o{ DISPATCH : launches
+  RECOVERY_RECEIPT ||--|| DISPATCH : proves
+  DISPATCH ||--o| ACTIVATION : admits
+  RUN ||--o| REWORK_REQUEST : retains
+  RUN ||--o| LAND_OPERATION : retains
+  RUN {
+    string run_id PK
+    string pinned_snapshot
+    string branch
+  }
+  CURRENT_NODE {
+    string node_id PK
+    int business_attempt
+    string current_execution
+  }
+  DISPATCH {
+    int ledger_id PK
+    int launch_ordinal
+    string new_execution
+    string launch_state
+  }
+  RECOVERY_RECEIPT {
+    string request_id PK
+    string frozen_target_digest
+    int ledger_id FK
+  }
+  ACTIVATION {
+    string activation_id PK
+    string fresh_credentials
+  }
+  REWORK_REQUEST {
+    string request_id PK
+    int route_revision
+  }
+  LAND_OPERATION {
+    string operation_id PK
+    string approved_head
+    int resume_generation
+  }
+</pre></details><p><b>快照</b> 是任务开始时固定的流程定义。恢复不改快照、任务链编号、分支、业务节点轮次。</p><table><thead><tr><th>保留</th><th>更新</th></tr></thead><tbody><tr><td>当前节点、业务返工请求与反馈</td><td>新执行体身份、递增的物理启动序号</td></tr><tr><td>原审批绑定的具体内容</td><td>返工投递重新绑定新执行体</td></tr><tr><td>原落地操作和已完成步骤</td><td>恢复代次、未完成步骤的调度</td></tr></tbody></table><p><b>恢复回执</b> 是一次放行的固定凭据，包含新执行身份与账本行号。同一个请求重复提交，只返回原回执，不多起一具执行体。</p><label for="c-model">这一节的意见</label><textarea id="c-model" data-comment="model" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="九个原故障，九份证据"><h2>九个原故障，九份证据</h2><p>每一张都单独构造原现象，并记录旧身份、新身份、账本与真实消费结果。今晚的 QA 读分支版本超时、设计体起步即死，也加入同形回归。</p><div class="scroll"><table><thead><tr><th>原单</th><th>原故障</th><th>验收看到什么</th></tr></thead><tbody><tr><td>FLY-2329</td><td>放行后只是待派，没有人再派</td><td>新账本被调度器实际消费</td></tr><tr><td>FLY-2295</td><td>先标完成，完成回执反被拒收</td><td>先提交真实完成，再投影会话；旧缺回执重派</td></tr><tr><td>FLY-2116</td><td>返工替身启动失败，双重冻结</td><td>同一返工请求一次重绑并重派</td></tr><tr><td>FLY-2524</td><td>返工恢复两条路都拒绝</td><td>仅检查当前目标；停驻 QA 不受牵连</td></tr><tr><td>FLY-2095</td><td>关死体，整条任务链被终结</td><td>执行体关闭与任务链终止分开</td></tr><tr><td>FLY-2181</td><td>报告做不下去也被成功审阅门拦住</td><td>独立登记失败，之后可重派当前节点</td></tr><tr><td>FLY-2191</td><td>暂停期间恢复证据被清理</td><td>未收敛证据跨暂停和过期时间仍保留</td></tr><tr><td>FLY-2525</td><td>死体被旧额度暂停标记卡死</td><td>死体可清理，新启动仍受当前额度约束</td></tr><tr><td>FLY-2545</td><td>落地恢复一半，又卡住且没按钮</td><td>任务链、原操作和派发一次恢复；可再次重试</td></tr></tbody></table></div><p>并发点击、响应丢失、进程重启、旧体迟到提交、再次失败都要验证。设计阶段尚未执行这些修复测试。</p><label for="c-evidence">这一节的意见</label><textarea id="c-evidence" data-comment="evidence" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="为什么选这个方案"><h2>为什么选这个方案</h2><p><b>选择同一任务链内恢复。</b> 终结后重开会丢失上下文与仍有效的批准，且把“修一次故障”变成“放弃整条链”。</p><p><b>选择一次写齐凭据。</b> 只改状态、以后再补派发，会重新制造看起来恢复但没人干活的空档。</p><p><b>保留安全检查。</b> 旧体仍活着、身份不明或审批内容已变，都不能硬放行。旧故障名字只说明原因，不再各自拥有一套恢复代码。</p><p><b>根据新证据修正盘点。</b> 当前完成提交已经具备原子顺序；当前 land 恢复外层也有恢复任务链的逻辑。本方案补真实缺口与回归，不机械重复旧结论。land 是合并及收尾的引擎节点，不是一个新 Runner。</p><label for="c-tradeoffs">这一节的意见</label><textarea id="c-tradeoffs" data-comment="tradeoffs" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="这份设计承诺到哪里"><h2>这份设计承诺到哪里</h2><p>本次交付是实施计划与设计审阅。只修改文档，没有实现、重启、部署或操作线上任务链。</p><p>恢复不批准新内容，不补造成功回执，不重复已做的合并，也不清空其他执行体的额度记录。已真正结束的任务链不靠恢复复活。</p><p>本机只跑相关验证；实现后须逐张复现、贯通公共入口与调度器。生产是否可用要由后续真实验收证明。</p><p class="muted">图形限制：两张 Mermaid 均本地尝试并标准参数重试，Chromium MachPortRendezvousServer 权限拒绝，暂保留明确占位。未使用远程渲染。</p><label for="c-boundary">这一节的意见</label><textarea id="c-boundary" data-comment="boundary" placeholder="写下意见，自动保存在本浏览器"></textarea></section><section class="card" data-section="页面意见汇总"><h2>页面意见汇总</h2><p>意见只存于当前浏览器，不会自动发送。复制后交给 Lead；这个标记表示修订意见，不表示批准。</p><div id="chunks"></div><button id="copy-all" type="button">复制全部意见</button><p id="copy-status" role="status" aria-live="polite"></p><label for="c-comments">这一节的意见</label><textarea id="c-comments" data-comment="comments" placeholder="写下意见，自动保存在本浏览器"></textarea></section></main><script nonce="__CSP_NONCE__">
+(() => {
+  'use strict';
+  const marker = '【页面意见汇总】FLY-2922';
+  const prefix = 'flywheel-comments:' + location.pathname + ':';
+  const fields = Array.from(document.querySelectorAll('[data-comment]'));
+  const chunksBox = document.getElementById('chunks');
+  const status = document.getElementById('copy-status');
+  let chunks = [];
+  function fallback(text) {
+    const box = document.createElement('textarea');
+    box.value = text;
+    box.setAttribute('aria-label', '复制缓冲区');
+    box.style.position = 'fixed'; box.style.left = '-10000px';
+    document.body.appendChild(box); box.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } finally { box.remove(); }
+    if (!ok) throw new Error('copy_failed');
+  }
+  async function copy(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try { await navigator.clipboard.writeText(text); }
+        catch (_) { fallback(text); }
+      } else { fallback(text); }
+      status.textContent = '已复制。请把意见发给 Lead。';
+    } catch (_) { status.textContent = '自动复制失败，请选择汇总文字手动复制。'; }
+  }
+  function update() {
+    const entries = fields.filter(f => f.value.trim()).map(f =>
+      '[' + f.closest('[data-section]').dataset.section + ']\n' + f.value.trim());
+    const content = entries.join('\n\n');
+    const chars = Array.from(content);
+    const capacity = 1750 - Array.from(marker).length - 1;
+    chunks = [];
+    for (let n = 0; n < chars.length; n += capacity) {
+      chunks.push(marker + '\n' + chars.slice(n, n + capacity).join(''));
+    }
+    if (!chunks.length) chunks = [marker + '\n（暂无意见）'];
+    chunksBox.replaceChildren();
+    chunks.forEach((text, i) => {
+      const box = document.createElement('textarea');
+      box.readOnly = true; box.value = text;
+      box.setAttribute('aria-label', '意见汇总第 ' + (i + 1) + ' 段');
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.textContent = '复制第 ' + (i + 1) + ' 段';
+      btn.addEventListener('click', () => copy(text));
+      chunksBox.append(box, btn);
+    });
+  }
+  fields.forEach(field => {
+    try { field.value = localStorage.getItem(prefix + field.dataset.comment) || ''; }
+    catch (_) {}
+    field.addEventListener('input', () => {
+      try { localStorage.setItem(prefix + field.dataset.comment, field.value); }
+      catch (_) { status.textContent = '浏览器未允许保存；请及时复制意见。'; }
+      update();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', () => copy(chunks.join('\n\n')));
+  update();
+})();
+</script></body></html>
