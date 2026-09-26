@@ -35,3 +35,5 @@ question 3d0bd288-23a3-46e2-a652-86e1fb8e9b88 已返回有效 CHANGES_REQUESTED�
 ## R3 获批核验
 
 有效 APPROVED，四项 MEDIUM 已记录 review-followups.md 并报告 Lead；只读核 engine approval proof.state=approved，expected_blob_sha 与当前 HEAD plan 均为 989780531149c2bd73c37bb3da1fe1a08ba60e62。正式凭证在 evidence/review-approved.json。plan 字节冻结；HTML 状态与 Follow-ups 已同步。剩余：最终提交/推送、静默发布、托管页核验、DESIGN-HTML ready、complete、park。
+
+Lead 回复 cf0ed513-7653-42e2-b856-656286d86a14 已消费：四项 MEDIUM 均为实施 must-fix acceptance，不重开设计；人工 reset 限制进后续 PR。交接附件与 HTML 已同步，首屏补首次失败边界，plan blob 不变。

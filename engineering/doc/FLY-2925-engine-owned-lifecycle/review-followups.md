@@ -7,7 +7,7 @@ Issue: FLY-2925 (https://linear.app/geoforge3d/issue/FLY-2925/病根修复-7-cod
 
 R3 有效 reviewVerdict=APPROVED，reviewerVerdict=APPROVED，request `b797be09-535e-4a2e-9635-f95e99a0035c`，question `475e1488-63cf-4948-bb03-87b325b0b7f9`。引擎 design_review_approval_proof.state=approved，当前 plan blob `989780531149c2bd73c37bb3da1fe1a08ba60e62` 与批准一致。获批 plan 字节不再修改，原“待评审”状态为提交时历史；正式结论以 evidence/review-approved.json 的持久凭证为准。
 
-## 非阻塞建议（未声称修复）
+## 非阻塞设计建议 → 实施必须验收项（未声称已修复）
 
 ### steady-state-rollback-forward-compat
 
@@ -27,6 +27,15 @@ openExistingWriter 用 `timeout: 0` 打开，定位是“Never ... wait on a loc
 
 ## 交接边界
 
-以上四项已通过 ask --report 向 flywheel-eng-lead 报告（报告 id cf0ed513-7653-42e2-b856-656286d86a14；doorbell 传递超时，持久队列仍保存，不能冒充 Lead 已读）。Lead 决定后续归属；原 plan §15 的人工 reset 可撤掉 checkout wrapper 限制继续有效。没有将非阻塞建议升级为本设计的额外审批门。实施与 QA 仍须按获批方案逐项证明 A1–A9，容量验收报告实际保留集，设计批准不等于真实验收或上线。
+Lead 已回复报告 cf0ed513-7653-42e2-b856-656286d86a14：全部四项转为 FLY-2925 实施必须修复并验收的条目，已写入 issue；不重开设计。原 plan §15 的人工 reset 可撤掉 checkout wrapper 限制保留，后续 PR 必须明写。没有将这些实施要求变成本设计的额外审批门。实施与 QA 仍须按获批方案逐项证明 A1–A9，容量验收报告实际保留集，设计批准不等于真实验收或上线。
 
 本次只补审查闭包，没有新增超出现有“核对实际载体/消费者/权威回执”原则的通用角色记忆，故本轮 role memory 保持 unchanged；审查细节保留在本单文档，避免把任务特例写成全局规则。
+
+## Lead 实施验收裁定（回复 cf0ed513-7653-42e2-b856-656286d86a14）
+
+1. 日常回滚保持前向兼容，必须有跨版本回滚测试。
+2. N 健康等待有界，终态清理持续可用，并记录明确超时结果。
+3. 固定 CLI writer 的 busy 重试有界且保持幂等，只作用于宿主路径；保留非宿主消费者负控。
+4. 每次发布快照保留集/容量提供真实数字，并有超预算回收测试；不删在用版本凑绿。
+
+该裁定叠加在获批计划上，由 implement/QA 执行，不改已批准 plan blob、不重新评审。设计节点仍只发布、报告和交卷。
