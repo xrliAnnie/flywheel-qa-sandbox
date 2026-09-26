@@ -16,6 +16,8 @@ const EXPECTED_WHEN_ON = {
 		"满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
 	lead_token_savings:
 		"恢复时先给摘要与分页入口，例行进度保留审计但不唤醒 Lead；常驻规则精简，巡检细节按需读取。",
+	lead_alert_wake_dedup:
+		"同一 Lead 6 小时内与已送达告警完全等价（同类别、同标题、同对象与处理要求、未升级、同代工单）的告警只记账不叫醒；info（带待办的除外）进下一次叫醒的摘要。",
 	codex_lead_thread_rotation:
 		"常驻 Codex Lead 在满足周期与空闲条件时开启新对话页，让旧页可进入原生记忆整理",
 	codex_memory_distill:

@@ -1,0 +1,22 @@
+FLY-2910 storage implementation evidence (2026-09-25)
+
+Scope: StateStore.ts; StateStore.alert-wake-dedup.test.ts; retention fragments alert_wake_dedup_state.json and alert_wake_letter.json.
+
+RED before implementation:
+cd packages/teamlead && pnpm exec vitest run src/__tests__/StateStore.alert-wake-dedup.test.ts --exclude '**/tmux-viewer.macos.test.ts'
+Exit 1. 1 file failed, 13 tests failed. Missing getAlertWakeDedupRecord/recordAlertWakeDelivered/recordAlertWakeLetter/bump APIs, missing alert_wake_dedup_state table, and inserted ledger result lacked canonicalEventId. Duration 52.14s. Slow-SQL diagnostics appeared under build contention.
+
+GREEN after implementation:
+Same focused command. Exit 0. 1 file passed, 13 tests passed. Duration 28.23s (tests 8.70s). No stderr diagnostics. Full output: /tmp/fly2910-storage-green.log (temporary evidence).
+
+Coverage: pre-feature migration and restart; immutable enqueue mapping; infra_alert and discord_chat A-B-A-B idempotency across restart; atomic marker rollback on evidence INSERT failure in both lanes; generation severity reset G1 severe -> G2 warning -> G2 severe; fixed window including exact6h and6h+1ms; suppression/category/lead isolation; info-only and bounded10-entry digest; pending preservation across expired info window; digest transaction rollback; bounded200-row48h cleanup preserving pending and exact boundary; every canonicalEventId disposition.
+
+Focused retention check:
+cd packages/teamlead && pnpm exec vitest run src/__tests__/fly-2413-retention-registry.test.ts --exclude '**/tmux-viewer.macos.test.ts'
+Exit 1 before collection: missing packages/teamlead/dist/bridge/release-readiness/evaluate.js; teamlead itself had not yet been built. No retention tests ran. Parent will rerun after integrated build. Full output: /tmp/fly2910-storage-retention.log.
+Direct source-loader check: node --input-type=module, import loadRetentionSnapshot from scripts/lib/fly-2006-retention-loader.mjs, load current retention directory and assert both tables in classifications.teamlead.protectedCurrentOrReference: PASS.
+
+Formatting/verification:
+New test formatted with Biome. New StateStore methods and interfaces formatted as isolated snippets; entire StateStore is above Biome file-size limit. git diff --check for owned files passed. Parent runs integrated teamlead typecheck/build. Existing alert-threads-tickets.test.ts merged-result exact expectation requires additive canonicalEventId (parent notified).
+
+All SQLite tests use fresh /tmp fixtures only. Handles closed. No live database access/copy, production proof, full local suite, commits, push, stage/comm, or QA dispatch in this storage subtask.

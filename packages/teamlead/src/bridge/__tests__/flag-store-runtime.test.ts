@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAllFlags, resolveSkillFrameworkMode } from "flywheel-config";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
 	enrichFlagViewsWithStore,
@@ -20,6 +20,7 @@ import {
 	storeDatabaseArchiveEnabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
+	storeLeadAlertWakeDedupEnabled,
 	storeLoopProfilerEnabled,
 	storeNodeDwellEnabled,
 	storeNodeDwellThresholdHours,
@@ -358,6 +359,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 	it.each([
 		["codex_memory_distill", storeCodexMemoryDistillEnabled],
 		["codex_lead_thread_rotation", storeCodexLeadThreadRotationEnabled],
+		["lead_alert_wake_dedup", storeLeadAlertWakeDedupEnabled],
 	] as const)(
 		"%s reads at call time with project, star, default precedence",
 		(name, reader) => {
@@ -390,6 +392,53 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			expect(store.getFlagValueRow(name, "flywheel")).toBeUndefined();
 		},
 	);
+
+	it.each(["", "true", "2", null])(
+		"disables alert wake dedup for invalid explicit raw value %j",
+		(raw) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			try {
+				for (const invalidScope of ["flywheel", "*"]) {
+					expect(
+						storeLeadAlertWakeDedupEnabled(
+							{
+								store: {
+									getFlagValueRow: (_name, scope) =>
+										scope === invalidScope
+											? { hasOverride: true, raw }
+											: undefined,
+								},
+							},
+							"flywheel",
+						),
+					).toBe(false);
+				}
+			} finally {
+				warn.mockRestore();
+			}
+		},
+	);
+
+	it("disables alert wake dedup when the flag store read fails", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				storeLeadAlertWakeDedupEnabled(
+					{
+						store: {
+							getFlagValueRow: () => {
+								throw new Error("flag store unavailable");
+							},
+						},
+					},
+					"flywheel",
+				),
+			).toBe(false);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 	it("keeps database archive default-on and observes a project off write", () => {
 		const runtime = initializeFlagStore(store, {});
 		expect(storeDatabaseArchiveEnabled(runtime, "flywheel")).toBe(true);

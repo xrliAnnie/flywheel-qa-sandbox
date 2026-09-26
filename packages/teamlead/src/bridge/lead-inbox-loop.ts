@@ -60,12 +60,13 @@ export interface LeadInboxLoopOptions {
 	) => Promise<void> | void;
 	/** Fail-closed question/event dispatch revalidation. */
 	revalidateModel?: (row: MailboxRow) => Promise<
-		| { deliver: true }
+		| { deliver: true; deliveryContent?: string }
 		| { deliver: false; disposition: string; retry?: boolean }
 		| {
 				deliver: false;
 				disposition: "audit_only";
 				auditDecision: MailboxAuditDecision;
+				settle?: "acked";
 		  }
 	>;
 	/** Durable audit mirror update, called only after the adapter receipt. */
@@ -364,33 +365,51 @@ export class LeadInboxLoop {
 							? await this.opts.revalidateModel(row)
 							: ({ deliver: true } as const);
 					if (!verdict.deliver) {
-						const changed =
-							"auditDecision" in verdict
-								? this.opts.queue.releaseClaimForAudit({
+						let changed: boolean;
+						if ("auditDecision" in verdict) {
+							const claim = {
+								id: row.id,
+								ownerEpoch: this.opts.ownerEpoch,
+								batchId: row.batch_id!,
+								decision: verdict.auditDecision,
+							};
+							changed =
+								verdict.settle === "acked"
+									? this.opts.queue.settleClaimAsAudit(claim)
+									: this.opts.queue.releaseClaimForAudit(claim);
+						} else {
+							changed = verdict.retry
+								? this.opts.queue.releaseClaimForRetry({
 										id: row.id,
 										ownerEpoch: this.opts.ownerEpoch,
 										batchId: row.batch_id!,
-										decision: verdict.auditDecision,
+										nextRetryAt: new Date(
+											this.now().getTime() + 30_000,
+										).toISOString(),
+										reason: verdict.disposition,
 									})
-								: verdict.retry
-									? this.opts.queue.releaseClaimForRetry({
-											id: row.id,
-											ownerEpoch: this.opts.ownerEpoch,
-											batchId: row.batch_id!,
-											nextRetryAt: new Date(
-												this.now().getTime() + 30_000,
-											).toISOString(),
-											reason: verdict.disposition,
-										})
-									: this.opts.queue.markDead(
-											row.id,
-											this.isoNow(),
-											verdict.disposition,
-										);
+								: this.opts.queue.markDead(
+										row.id,
+										this.isoNow(),
+										verdict.disposition,
+									);
+						}
 						if (!changed) {
 							throw new Error("owner fence lost while revoking model row");
 						}
 						continue;
+					}
+					if (
+						"deliveryContent" in verdict &&
+						verdict.deliveryContent !== undefined &&
+						!this.opts.queue.annotateLeadDelivery({
+							id: row.id,
+							ownerEpoch: this.opts.ownerEpoch,
+							batchId: row.batch_id!,
+							deliveryContent: verdict.deliveryContent,
+						})
+					) {
+						throw new Error("owner fence lost while annotating model row");
 					}
 					const materialized = this.opts.queue.getById(row.id);
 					if (!materialized)

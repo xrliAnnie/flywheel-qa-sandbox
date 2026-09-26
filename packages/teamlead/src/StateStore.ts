@@ -11580,6 +11580,36 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_alert_mailbox_ledger_event ON alert_mailbox_ledger(event_id)",
 		);
+		// FLY-2910: only adapter-confirmed deliveries authorize wake suppression.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_wake_dedup_state (
+				lead_id TEXT NOT NULL,
+				fingerprint TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				event_type TEXT NOT NULL,
+				category_key TEXT NOT NULL,
+				category_title TEXT NOT NULL,
+				info_only INTEGER NOT NULL DEFAULT 0 CHECK (info_only IN (0,1)),
+				window_started_at TEXT NOT NULL,
+				delivered_delivery_id TEXT,
+				max_severity INTEGER NOT NULL DEFAULT 0,
+				ticket_generation TEXT,
+				occurrences INTEGER NOT NULL DEFAULT 0,
+				suppressed INTEGER NOT NULL DEFAULT 0,
+				digest_pending INTEGER NOT NULL DEFAULT 0,
+				last_seen_at TEXT NOT NULL,
+				PRIMARY KEY (lead_id, fingerprint)
+			);
+			CREATE INDEX IF NOT EXISTS alert_wake_dedup_state_category
+				ON alert_wake_dedup_state(lead_id, category_key, window_started_at);
+			CREATE TABLE IF NOT EXISTS alert_wake_letter (
+				delivery_id TEXT PRIMARY KEY,
+				correlation_key TEXT,
+				canonical_event_id TEXT,
+				recorded_at TEXT NOT NULL,
+				evidence_recorded_at TEXT
+			);
+		`);
 
 		// FLY-1082 (Task 2.2): the fleet pressure-hold — a SINGLE durable row
 		// (id=1 enforced). While present, runner admission defers every new
@@ -24713,6 +24743,251 @@ export class StateStore {
 
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
 
+	/** First enqueue mapping wins, including retries after a ticket reopens. */
+	recordAlertWakeLetter(input: {
+		deliveryId: string;
+		correlationKey: string;
+		canonicalEventId: string;
+		recordedAt: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`INSERT OR IGNORE INTO alert_wake_letter
+			 (delivery_id, correlation_key, canonical_event_id, recorded_at)
+			 VALUES (?, ?, ?, ?)`,
+				)
+				.run(
+					input.deliveryId,
+					input.correlationKey,
+					input.canonicalEventId,
+					input.recordedAt,
+				).changes === 1
+		);
+	}
+
+	getAlertWakeLetter(deliveryId: string): AlertWakeLetter | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM alert_wake_letter WHERE delivery_id = ?")
+			.get(deliveryId) as Record<string, unknown> | undefined;
+		return row
+			? {
+					deliveryId: row.delivery_id as string,
+					correlationKey: row.correlation_key as string | null,
+					canonicalEventId: row.canonical_event_id as string | null,
+					recordedAt: row.recorded_at as string,
+					evidenceRecordedAt: row.evidence_recorded_at as string | null,
+				}
+			: undefined;
+	}
+
+	getAlertWakeDedupRecord(
+		leadId: string,
+		fingerprint: string,
+	): AlertWakeDedupRecord | undefined {
+		const row = this.db.raw
+			.prepare(
+				"SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND fingerprint = ?",
+			)
+			.get(leadId, fingerprint) as Record<string, unknown> | undefined;
+		return row ? rowToAlertWakeDedupRecord(row) : undefined;
+	}
+
+	/** Marker and evidence commit together; a frozen delivery replay is a no-op. */
+	recordAlertWakeDelivered(input: AlertWakeDeliveredInput): boolean {
+		return this.db.raw.transaction(() => {
+			const marked =
+				input.sourceKind === "infra_alert"
+					? this.db.raw
+							.prepare(
+								`UPDATE alert_wake_letter SET evidence_recorded_at = ?
+					 WHERE delivery_id = ? AND evidence_recorded_at IS NULL
+					 AND canonical_event_id = ?`,
+							)
+							.run(input.nowIso, input.deliveryId, input.ticketGeneration)
+							.changes
+					: this.db.raw
+							.prepare(
+								`INSERT OR IGNORE INTO alert_wake_letter
+					 (delivery_id, evidence_recorded_at, recorded_at) VALUES (?, ?, ?)`,
+							)
+							.run(input.deliveryId, input.nowIso, input.nowIso).changes;
+			if (marked !== 1) return false;
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			const maxSeverity =
+				reset || previous.ticketGeneration !== input.ticketGeneration
+					? input.severityRank
+					: Math.max(previous.maxSeverity, input.severityRank);
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, delivered_delivery_id, max_severity,
+				  ticket_generation, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  project_name = excluded.project_name, event_type = excluded.event_type,
+				  category_key = excluded.category_key, category_title = excluded.category_title,
+				  info_only = 0, window_started_at = excluded.window_started_at,
+				  delivered_delivery_id = excluded.delivered_delivery_id,
+				  max_severity = excluded.max_severity, ticket_generation = excluded.ticket_generation,
+				  occurrences = excluded.occurrences, suppressed = excluded.suppressed,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					input.deliveryId,
+					maxSeverity,
+					input.ticketGeneration,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 0 : previous.suppressed,
+					previous?.digestPending ?? 0,
+					input.nowIso,
+				);
+			const cutoff = new Date(
+				Date.parse(input.nowIso) - 48 * 3_600_000,
+			).toISOString();
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_dedup_state WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_dedup_state
+				  WHERE last_seen_at < ? AND digest_pending = 0 LIMIT 200)`,
+				)
+				.run(cutoff);
+			this.db.raw
+				.prepare(
+					`DELETE FROM alert_wake_letter WHERE rowid IN
+				 (SELECT rowid FROM alert_wake_letter WHERE recorded_at < ? LIMIT 200)`,
+				)
+				.run(cutoff);
+			return true;
+		})();
+	}
+
+	bumpAlertWakeSuppressed(input: {
+		leadId: string;
+		fingerprint: string;
+		nowIso: string;
+	}): boolean {
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE alert_wake_dedup_state SET occurrences = occurrences + 1,
+			 suppressed = suppressed + 1, digest_pending = digest_pending + 1, last_seen_at = ?
+			 WHERE lead_id = ? AND fingerprint = ? AND info_only = 0
+			 AND delivered_delivery_id IS NOT NULL`,
+				)
+				.run(input.nowIso, input.leadId, input.fingerprint).changes === 1
+		);
+	}
+
+	bumpAlertWakeInfo(input: AlertWakeIdentityInput & { nowIso: string }): void {
+		this.db.raw.transaction(() => {
+			const previous = this.getAlertWakeDedupRecord(
+				input.leadId,
+				input.fingerprint,
+			);
+			const reset =
+				!previous ||
+				Date.parse(input.nowIso) - Date.parse(previous.windowStartedAt) >
+					ALERT_WAKE_WINDOW_MS;
+			this.db.raw
+				.prepare(
+					`INSERT INTO alert_wake_dedup_state
+				 (lead_id, fingerprint, project_name, event_type, category_key, category_title,
+				  info_only, window_started_at, occurrences, suppressed, digest_pending, last_seen_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+				 ON CONFLICT(lead_id, fingerprint) DO UPDATE SET
+				  window_started_at = excluded.window_started_at, occurrences = excluded.occurrences,
+				  suppressed = excluded.suppressed, digest_pending = excluded.digest_pending,
+				  last_seen_at = excluded.last_seen_at`,
+				)
+				.run(
+					input.leadId,
+					input.fingerprint,
+					input.projectName,
+					input.eventType,
+					input.categoryKey,
+					input.categoryTitle,
+					reset ? input.nowIso : previous.windowStartedAt,
+					reset ? 1 : previous.occurrences + 1,
+					reset ? 1 : previous.suppressed + 1,
+					(previous?.digestPending ?? 0) + 1,
+					input.nowIso,
+				);
+		})();
+	}
+
+	sumAlertWakeCategory(
+		leadId: string,
+		categoryKey: string,
+		sinceIso: string,
+	): { occurrences: number; suppressed: number } {
+		return this.db.raw
+			.prepare(
+				`SELECT COALESCE(SUM(occurrences), 0) AS occurrences, COALESCE(SUM(suppressed), 0) AS suppressed
+			 FROM alert_wake_dedup_state WHERE lead_id = ? AND category_key = ? AND window_started_at >= ?`,
+			)
+			.get(leadId, categoryKey, sinceIso) as {
+			occurrences: number;
+			suppressed: number;
+		};
+	}
+
+	takeAlertWakeDigest(
+		leadId: string,
+		limit: number,
+	): {
+		entries: AlertWakeDedupRecord[];
+		total: number;
+		remainingCategories: number;
+	} {
+		return this.db.raw.transaction(() => {
+			const rows = (
+				this.db.raw
+					.prepare(
+						`SELECT * FROM alert_wake_dedup_state WHERE lead_id = ? AND digest_pending > 0
+				 ORDER BY digest_pending DESC, category_key ASC, fingerprint ASC`,
+					)
+					.all(leadId) as Record<string, unknown>[]
+			).map(rowToAlertWakeDedupRecord);
+			this.db.raw
+				.prepare(
+					"UPDATE alert_wake_dedup_state SET digest_pending = 0 WHERE lead_id = ? AND digest_pending > 0",
+				)
+				.run(leadId);
+			const entries = rows.slice(0, Math.max(0, Math.floor(limit)));
+			return {
+				entries,
+				total: rows.reduce((total, row) => total + row.digestPending, 0),
+				remainingCategories: rows.length - entries.length,
+			};
+		})();
+	}
+
+	listAlertWakeDedup(sinceIso: string): AlertWakeDedupRecord[] {
+		return (
+			this.db.raw
+				.prepare(
+					"SELECT * FROM alert_wake_dedup_state WHERE last_seen_at >= ? ORDER BY last_seen_at DESC, lead_id ASC, fingerprint ASC",
+				)
+				.all(sinceIso) as Record<string, unknown>[]
+		).map(rowToAlertWakeDedupRecord);
+	}
+
 	/** Open the first mailbox-lane alert episode for a correlation key. */
 	upsertAlertMailboxLedger(
 		input: AlertMailboxLedgerInput,
@@ -24737,6 +25012,7 @@ export class StateStore {
 		) {
 			return {
 				disposition: "replayed_same",
+				canonicalEventId: null,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 				};
 		}
@@ -24771,12 +25047,14 @@ export class StateStore {
 					this.save();
 					return {
 						disposition: "reseeded",
+						canonicalEventId: input.eventId,
 						deliveryProjection: deliveryProjectionFromInput(input),
 					};
 				}
 			}
 			return {
 				disposition: "locked_canonical",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromLedger(existing),
 			};
 		}
@@ -24793,6 +25071,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "merged",
+				canonicalEventId: existing.event_id,
 				deliveryProjection: deliveryProjectionFromInput(input),
 				};
 		}
@@ -24830,6 +25109,7 @@ export class StateStore {
 			this.save();
 			return {
 				disposition: "new_episode",
+				canonicalEventId: input.eventId,
 				deliveryProjection: deliveryProjectionFromInput(input),
 			};
 		}
@@ -24876,6 +25156,7 @@ export class StateStore {
 		this.save();
 		return {
 				disposition: "inserted",
+			canonicalEventId: input.eventId,
 			deliveryProjection: deliveryProjectionFromInput(input),
 		};
 	}
@@ -90306,6 +90587,68 @@ export interface AlertMailboxLedgerUpsertResult {
 		| "merged"
 		| "new_episode";
 	deliveryProjection: AlertMailboxDeliveryProjection;
+	canonicalEventId: string | null;
+}
+
+const ALERT_WAKE_WINDOW_MS = 6 * 3_600_000;
+
+export interface AlertWakeIdentityInput {
+	leadId: string;
+	fingerprint: string;
+	projectName: string;
+	eventType: string;
+	categoryKey: string;
+	categoryTitle: string;
+}
+
+export interface AlertWakeDeliveredInput extends AlertWakeIdentityInput {
+	deliveryId: string;
+	severityRank: number;
+	ticketGeneration: string;
+	nowIso: string;
+	sourceKind: "infra_alert" | "discord_chat";
+}
+
+export interface AlertWakeDedupRecord extends AlertWakeIdentityInput {
+	infoOnly: boolean;
+	windowStartedAt: string;
+	deliveredDeliveryId: string | null;
+	maxSeverity: number;
+	ticketGeneration: string | null;
+	occurrences: number;
+	suppressed: number;
+	digestPending: number;
+	lastSeenAt: string;
+}
+
+export interface AlertWakeLetter {
+	deliveryId: string;
+	correlationKey: string | null;
+	canonicalEventId: string | null;
+	recordedAt: string;
+	evidenceRecordedAt: string | null;
+}
+
+function rowToAlertWakeDedupRecord(
+	row: Record<string, unknown>,
+): AlertWakeDedupRecord {
+	return {
+		leadId: row.lead_id as string,
+		fingerprint: row.fingerprint as string,
+		projectName: row.project_name as string,
+		eventType: row.event_type as string,
+		categoryKey: row.category_key as string,
+		categoryTitle: row.category_title as string,
+		infoOnly: row.info_only === 1,
+		windowStartedAt: row.window_started_at as string,
+		deliveredDeliveryId: row.delivered_delivery_id as string | null,
+		maxSeverity: row.max_severity as number,
+		ticketGeneration: row.ticket_generation as string | null,
+		occurrences: row.occurrences as number,
+		suppressed: row.suppressed as number,
+		digestPending: row.digest_pending as number,
+		lastSeenAt: row.last_seen_at as string,
+	};
 }
 
 export type AlertDraftBindResult =
