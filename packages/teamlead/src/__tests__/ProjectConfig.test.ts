@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	effectiveVoiceBackground,
 	type LeadConfig,
 	loadProjects,
 	type ProjectEntry,
@@ -2417,5 +2418,69 @@ describe("leads[].voice per-agent voice config (FLY-546 A3)", () => {
 		const lead = projects[0]!.leads[0]!;
 		expect("voice" in lead).toBe(false);
 		expect(lead).toEqual({ ...baseLead, canSpawnRunners: true });
+	});
+});
+
+describe("leads[].voiceBackground config", () => {
+	const lead = {
+		agentId: "eng-lead",
+		summaryRole: "producer",
+		chatChannel: "456",
+		match: { labels: ["Engineering"] },
+	};
+	const projects = (voiceBackground?: unknown) => [
+		{
+			projectName: "test",
+			projectRoot: "/tmp",
+			leads: [
+				{
+					...lead,
+					...(voiceBackground === undefined ? {} : { voiceBackground }),
+				},
+			],
+		},
+	];
+
+	it("keeps valid input explicit and resolves the disabled/default-browser contract", () => {
+		const absent = parseAndValidateProjects(projects())[0]!.leads[0]!;
+		expect("voiceBackground" in absent).toBe(false);
+		expect(effectiveVoiceBackground(absent)).toEqual({
+			enabled: false,
+			browser: "founder_chrome",
+		});
+
+		const enabled = parseAndValidateProjects(projects({ enabled: true }))[0]!
+			.leads[0]!;
+		expect(enabled.voiceBackground).toEqual({ enabled: true });
+		expect(effectiveVoiceBackground(enabled)).toEqual({
+			enabled: true,
+			browser: "founder_chrome",
+		});
+	});
+
+	it.each(["founder_chrome", "isolated", "off"] as const)(
+		"accepts browser mode %s",
+		(browser) => {
+			const loaded = parseAndValidateProjects(
+				projects({ enabled: true, browser }),
+			)[0]!.leads[0]!;
+			expect(effectiveVoiceBackground(loaded)).toEqual({
+				enabled: true,
+				browser,
+			});
+		},
+	);
+
+	it.each([
+		null,
+		[],
+		{},
+		{ enabled: "yes" },
+		{ enabled: true, browser: "chrome" },
+		{ enabled: true, extra: true },
+	])("rejects malformed voiceBackground %j", (voiceBackground) => {
+		expect(() => parseAndValidateProjects(projects(voiceBackground))).toThrow(
+			/voiceBackground/,
+		);
 	});
 });

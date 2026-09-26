@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	loadVoiceDaemonConfig,
+	resolveLeadVoiceBackground,
 	resolveLeadVoiceToken,
 	resolveVoiceCommDbPath,
 	voiceCodexEnv,
@@ -89,6 +90,66 @@ describe("voice daemon config", () => {
 			),
 		).toThrow(/registry_drift/);
 	});
+
+	it("resolves voice background disabled by default and the three trusted browser modes", () => {
+		expect(resolveLeadVoiceBackground(projection, [project])).toEqual({
+			enabled: false,
+			browser: "founder_chrome",
+		});
+		for (const browser of ["founder_chrome", "isolated", "off"] as const) {
+			expect(
+				resolveLeadVoiceBackground(projection, [
+					{
+						...project,
+						leads: [
+							{
+								...project.leads[0],
+								voiceBackground: { enabled: true, browser },
+							},
+						],
+					},
+				]),
+			).toEqual({ enabled: true, browser });
+		}
+		expect(
+			resolveLeadVoiceBackground(projection, [
+				{
+					...project,
+					leads: [
+						{
+							...project.leads[0],
+							voiceBackground: { enabled: true },
+						},
+					],
+				},
+			]),
+		).toEqual({ enabled: true, browser: "founder_chrome" });
+	});
+
+	it.each([
+		null,
+		{},
+		{ enabled: "yes" },
+		{ enabled: true, browser: "chrome" },
+		{ enabled: true, extra: true },
+	])(
+		"fails closed on malformed projected voice background %j",
+		(voiceBackground) => {
+			expect(() =>
+				resolveLeadVoiceBackground(projection, [
+					{
+						...project,
+						leads: [
+							{
+								...project.leads[0],
+								voiceBackground,
+							},
+						],
+					},
+				]),
+			).toThrow("voice_session_registry_drift");
+		},
+	);
 
 	it("rejects lease timings without a strict half-TTL margin", () => {
 		expect(() =>

@@ -5,7 +5,15 @@ export interface VoiceProjectRow {
 	projectName: string;
 	huddle?: unknown;
 	voiceRoom?: { guildId: string; voiceChannelId: string } | null;
-	leads?: { agentId: string; botUserId?: string; botTokenEnv?: string }[];
+	leads?: {
+		agentId: string;
+		botUserId?: string;
+		botTokenEnv?: string;
+		voiceBackground?: {
+			enabled: boolean;
+			browser?: "founder_chrome" | "isolated" | "off";
+		};
+	}[];
 }
 
 export interface VoiceBotBinding {
@@ -14,6 +22,11 @@ export interface VoiceBotBinding {
 	guildId: string;
 	voiceChannelId: string;
 	voiceBotUserId: string;
+}
+
+export interface EffectiveVoiceBackground {
+	enabled: boolean;
+	browser: "founder_chrome" | "isolated" | "off";
 }
 
 export interface VoiceDaemonConfig {
@@ -262,6 +275,52 @@ export function resolveLeadVoiceToken(
 	projects: VoiceProjectRow[],
 	env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
+	const lead = resolveProjectedVoiceLead(projection, projects);
+	const drift = () => new Error("voice_session_registry_drift");
+	if (
+		typeof lead.botTokenEnv !== "string" ||
+		!/^[A-Z_][A-Z0-9_]*$/u.test(lead.botTokenEnv)
+	)
+		throw drift();
+	const token = env[lead.botTokenEnv]?.trim();
+	if (!token) throw new Error("voice_bot_token_unset");
+	return token;
+}
+
+export function resolveLeadVoiceBackground(
+	projection: VoiceBotBinding,
+	projects: VoiceProjectRow[],
+): EffectiveVoiceBackground {
+	const lead = resolveProjectedVoiceLead(projection, projects);
+	const value = lead.voiceBackground as unknown;
+	if (value === undefined) {
+		return { enabled: false, browser: "founder_chrome" };
+	}
+	const drift = () => new Error("voice_session_registry_drift");
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw drift();
+	}
+	const row = value as Record<string, unknown>;
+	if (
+		Object.keys(row).some((key) => key !== "enabled" && key !== "browser") ||
+		typeof row.enabled !== "boolean" ||
+		(row.browser !== undefined &&
+			!new Set(["founder_chrome", "isolated", "off"]).has(String(row.browser)))
+	) {
+		throw drift();
+	}
+	return {
+		enabled: row.enabled,
+		browser:
+			(row.browser as EffectiveVoiceBackground["browser"] | undefined) ??
+			"founder_chrome",
+	};
+}
+
+function resolveProjectedVoiceLead(
+	projection: VoiceBotBinding,
+	projects: VoiceProjectRow[],
+): NonNullable<VoiceProjectRow["leads"]>[number] {
 	const drift = () => new Error("voice_session_registry_drift");
 	if (
 		!projection ||
@@ -289,15 +348,8 @@ export function resolveLeadVoiceToken(
 	const leads = project.leads.filter(
 		(lead) => lead?.agentId === projection.leadId,
 	);
-	if (leads.length !== 1) throw drift();
-	const lead = leads[0]!;
-	if (
-		lead.botUserId !== projection.voiceBotUserId ||
-		typeof lead.botTokenEnv !== "string" ||
-		!/^[A-Z_][A-Z0-9_]*$/u.test(lead.botTokenEnv)
-	)
+	if (leads.length !== 1 || leads[0]!.botUserId !== projection.voiceBotUserId) {
 		throw drift();
-	const token = env[lead.botTokenEnv]?.trim();
-	if (!token) throw new Error("voice_bot_token_unset");
-	return token;
+	}
+	return leads[0]!;
 }

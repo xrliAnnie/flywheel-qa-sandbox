@@ -36,6 +36,13 @@ export interface LeadAutoCompactBaseline {
 	bootstrapPolicyVersion: string;
 }
 
+export type VoiceBackgroundBrowserMode = "founder_chrome" | "isolated" | "off";
+
+export interface VoiceBackgroundConfig {
+	enabled: boolean;
+	browser?: VoiceBackgroundBrowserMode;
+}
+
 export interface LeadConfig {
 	agentId: string;
 	/** FLY-2030: explicit summary inflow assignment. Missing/unknown values fail config load. */
@@ -233,6 +240,8 @@ export interface LeadConfig {
 	voiceModes?: { meeting?: boolean; rg?: boolean };
 	/** Codex Realtime v2 voice. Consumers default an absent value to marin. */
 	realtimeVoice?: RealtimeV2Voice;
+	/** FLY-2886: explicit background-agent opt-in; absent is disabled. */
+	voiceBackground?: VoiceBackgroundConfig;
 	/**
 	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
 	 * Mirrors `model`: Claude consumes it as `claude-lead.sh --effort`; Codex maps
@@ -243,6 +252,15 @@ export interface LeadConfig {
 	 * existing in-memory Lead objects keep their exact shape (reverse-compat).
 	 */
 	effort?: LeadEffort;
+}
+
+export function effectiveVoiceBackground(
+	lead: Pick<LeadConfig, "voiceBackground">,
+): { enabled: boolean; browser: VoiceBackgroundBrowserMode } {
+	return {
+		enabled: lead.voiceBackground?.enabled ?? false,
+		browser: lead.voiceBackground?.browser ?? "founder_chrome",
+	};
 }
 
 /**
@@ -728,6 +746,36 @@ export function parseAndValidateProjects(
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].realtimeVoice: must be a Realtime v2 voice`,
 				);
+			}
+			if (lead.voiceBackground !== undefined) {
+				const value = lead.voiceBackground as unknown;
+				const where = `Project "${entry.projectName}" leads[${i}].voiceBackground`;
+				if (
+					typeof value !== "object" ||
+					value === null ||
+					Array.isArray(value)
+				) {
+					throw new Error(`${where}: must be an object`);
+				}
+				const row = value as Record<string, unknown>;
+				if (
+					Object.keys(row).some((key) => key !== "enabled" && key !== "browser")
+				) {
+					throw new Error(`${where}: unknown field`);
+				}
+				if (typeof row.enabled !== "boolean") {
+					throw new Error(`${where}.enabled: must be a boolean`);
+				}
+				if (
+					row.browser !== undefined &&
+					!new Set(["founder_chrome", "isolated", "off"]).has(
+						String(row.browser),
+					)
+				) {
+					throw new Error(
+						`${where}.browser: must be founder_chrome|isolated|off`,
+					);
+				}
 			}
 
 			// FLY-83: validate optional alert fields
