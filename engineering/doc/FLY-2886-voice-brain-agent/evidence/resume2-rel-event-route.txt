@@ -1,0 +1,4 @@
+# rel-event-route
+ Test Files  1 passed (1)
+      Tests  4 passed | 103 skipped (107)
+   Duration  33.00s (transform 11.44s, setup 59ms, collect 23.62s, tests 8.27s, environment 0ms, prepare 111ms)

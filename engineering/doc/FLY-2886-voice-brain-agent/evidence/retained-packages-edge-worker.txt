@@ -1,2 +1,0 @@
-packages/edge-worker/src/__tests__/cipher-dimensions.test.ts
-packages/edge-worker/src/__tests__/resolveBridgeUrl.test.ts

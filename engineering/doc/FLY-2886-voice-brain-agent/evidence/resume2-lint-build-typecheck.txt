@@ -1,0 +1,24 @@
+# pnpm lint (biome check, max-diagnostics=1000) after formatting
+Found 25 warnings.
+# build
+packages/agent-team-transport build: Done
+packages/token-usage build: Done
+packages/config build: Done
+packages/core build: Done
+packages/slack-event-transport build: Done
+packages/linear-event-transport build: Done
+packages/github-event-transport build: Done
+packages/voice-core build: Done
+packages/flywheel-comm build: Done
+packages/voice-bridge build: Done
+packages/claude-runner build: Done
+packages/edge-worker build: Done
+packages/teamlead prebuild: Done
+packages/teamlead build: Done
+packages/voice-codex build: Done
+# dependents typecheck
+packages/voice-core typecheck: Done
+packages/voice-bridge typecheck: Done
+packages/voice-headphone typecheck: Done
+packages/teamlead typecheck: Done
+packages/voice-codex typecheck: Done

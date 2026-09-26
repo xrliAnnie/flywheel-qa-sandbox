@@ -1,0 +1,16 @@
+# retained shell tests (exit path)
+0 scripts/__tests__/autocompact-override-retirement.test.sh
+0 scripts/__tests__/codex-home-reconcile-cadence.test.sh
+0 scripts/__tests__/fly1674-residue.test.sh
+0 scripts/__tests__/fly1680-v1-extinction.test.sh
+0 scripts/__tests__/fly2102-flag-freeze.test.sh
+0 scripts/__tests__/fly2403-design-model-comparison.test.sh
+0 scripts/__tests__/flywheel-voice-wrapper.test.sh
+0 scripts/__tests__/gate4-allowlist-masking.test.sh
+1 scripts/__tests__/package-onboard-smoke.test.sh
+0 scripts/__tests__/package-onboard.test.sh
+0 scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
+0 scripts/__tests__/v2-retirement-cleanup.test.sh
+# package-onboard-smoke rerun after building missing dists
+
+package-onboard-smoke: PASSED=26 FAILED=0

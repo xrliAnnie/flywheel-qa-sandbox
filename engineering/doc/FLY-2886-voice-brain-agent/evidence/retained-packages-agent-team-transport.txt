@@ -1,2 +1,0 @@
-packages/agent-team-transport/src/__tests__/grep-gate.test.ts
-packages/agent-team-transport/src/claude/__tests__/ClaudeCodeAdapter.test.ts

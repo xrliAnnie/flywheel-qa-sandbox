@@ -1,0 +1,12 @@
+# rel-teamlead-rerun
+[event-route] runner-memory closeout state=unchanged dir=/tmp/flywheel/generic index=3L/113B delta=+0L/+0files — nothing new was written this execution; if you learned a durable, reusable judgment, write it now (one topic file + one pointer line) before you park or exit. exec=exec-1
+     → Test timed out in 5000ms.
+     → Test timed out in 5000ms.
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |serial| src/__tests__/event-route.test.ts > Event route > admits same-repository distinct PR declarations and freezes their authoritative heads
+Error: Test timed out in 5000ms.
+ FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects declared PR authority when head_mismatch
+Error: Test timed out in 5000ms.
+ Test Files  1 failed | 4 passed (5)
+      Tests  2 failed | 173 passed (175)
+   Duration  176.76s (transform 34.96s, setup 76ms, collect 68.43s, tests 104.04s, environment 1ms, prepare 613ms)

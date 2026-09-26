@@ -1,0 +1,13 @@
+# rel-voice-codex
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon > recovery receipt Error: network cannot prevent isolation or idle (formerly final=false)
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon > recovery receipt BridgeVoiceHttpError: voice_bridge_http_error status=503 cannot prevent isolation or idle (formerly final=false)
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon > recovery receipt BridgeVoiceHttpError: voice_bridge_http_error status=408 cannot prevent isolation or idle (formerly final=false)
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon > recovery receipt BridgeVoiceHttpError: voice_bridge_http_error status=429 cannot prevent isolation or idle (formerly final=false)
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon > recovery receipt BridgeVoiceHttpError: voice_bridge_http_error status=409 cannot prevent isolation or idle (formerly final=true)
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon > recovery receipt BridgeVoiceHttpError: voice_bridge_http_error status=404 cannot prevent isolation or idle (formerly final=true)
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon > recovery receipt BridgeVoiceHttpError: voice_bridge_http_error status=403 cannot prevent isolation or idle (formerly final=true)
+stderr | src/__tests__/daemon.test.ts > VoiceDaemon session lifetime > interrupts outbound on codex_process_exit and never claims the next reply
+[voice] session failed sessionId=11111111-1111-4111-8111-111111111111 reason=codex_process_exit
+ Test Files  20 passed (20)
+      Tests  342 passed (342)
+   Duration  61.47s (transform 8.19s, setup 0ms, collect 23.87s, tests 13.78s, environment 3ms, prepare 3.56s)

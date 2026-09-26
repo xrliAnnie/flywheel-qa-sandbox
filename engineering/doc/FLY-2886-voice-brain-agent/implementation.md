@@ -36,3 +36,32 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886)
 早期四个授权文件 related 经 import graph 选中 127 文件，120 文件通过、7 文件9测试失败。失败项逐个定位：createLeadRuntime 冷动态 import 超15秒污染下一用例（改为collection阶段静态导入，5/5）；默认parent新增policy探测需fixture响应（1/1）；runner fixture缺当前carrier evidence（36/36）；其余rotation53、runsroute1、epicwiring3、services24复跑通过。该早期 related 不是当前完整通过证据。
 
 保留 Node 脚本消费者16文件447测试通过（resume-retained-node.txt）。shell、最后依赖构建/typecheck/lint及最终TS相关验证仍在进行。实际 Chrome 接管、真人语音、订阅真请求、写操作及 founder 门验收归 QA；0.156.1 canonical host 基线部署仍为部署前置，未在本实现阶段操作生产。
+
+## 第二次恢复（执行身份 e4592d00，2026-09-26）
+
+从 Lead 保全提交 `a2182c036` 接续，先 `git merge origin/main`（`0cd00c695`，无冲突；main 同期删除旧 voice-bridge/Gemini 语音，语音核心包仍在）。WIP 编译通过；voice-codex 13 文件 227 项绿，teamlead 仅 WIP 先红的 `voice-turn-receipts` 2 项。
+
+- 审计里的 C9 两处（admitted manifest 能力类别进开场简报、enabled 状态读取失败按「现在读不到」回退）与 §4.5 founder-only 分类/信箱回执，均已在 WIP 接通并有测试（`voice-capability-brief` 5、`voice-founder-denial` 5、`voice-session-services`）。
+- §3 重复义务：按 Lead 裁定（问询 `cd6d1609`）实现写入前防重门，plan §3.1 为真源。`voice-repeat-gate.ts` + broker `repeatGate` + 回执可空列 `dedupe_digest`；确认只认拦截所在回合结束后、说话人已归属的 founder 第一句终稿转写。Lead 必测三例先红（`resume2-repeat-red.txt`，11 项红）后绿（29/29）。
+- 每 turn 回执关联：`lead_operation_receipt_deliveries` + `listByDelivery`（WIP 先红的 2 项转绿）；Backend 优先用 parent `turnActionLedger(turnId)`，缺失时回退原差集（`codex-repeat-confirmation.test.ts` 先红后绿 4/4）。
+- 后台规约追加：带 `data.spokenText` 的拒绝，【口语】即该原文；`duplicate_recent_write` 后本回合不再调用，只在她下一句明确要求再做时用新 requestId 调一次。
+- 待 Lead 裁：`browser.*` 除 7 个只读工具外均为 write，字面规则下 10 分钟内参数完全相同的第二次浏览器动作也会被拦下确认（问询 `dac7093e`，默认保持字面）。
+
+### 最终相关验证（合并后 HEAD）
+
+清册在当前 HEAD 重建：94 个变更生产 TS、146 个保留测试路径（teamlead 91、voice-codex 20、config 6、voice-core 1、scripts 28 = 12 shell + 16 Node），34 个排除项逐条写在 `related-test-scope.md`；10MB 机器 JSON 放在 `~/.flywheel/artifacts/FLY-2886/`。旧清册遗留的 agent-team-transport / claude-runner / edge-worker / voice-bridge 分包清单已删除（新清册不含它们）。
+
+| 项 | 结果 |
+|---|---|
+| `pnpm lint`（biome，max-diagnostics=1000） | 退出 0；分支内 13 个格式/导入 error 已修；余 25 个 warning 均为 main 既有（含 plugin.ts 两处 useConst，不在本分支 diff 行内） |
+| `pnpm --filter <teamlead/voice-codex/voice-core>... build` | 全部 Done |
+| `pnpm --filter ...<pkg> typecheck`（依赖方） | voice-core / voice-bridge / voice-headphone / teamlead / voice-codex Done |
+| voice-codex 保留 20 文件 | 342/342 |
+| voice-core 保留 1 文件 | 7/7 |
+| config 保留 6 文件 | 135/136；`fly1981-final-ledgers` 在负载均值 206 下 15s 超时，单独复跑 12/12 |
+| teamlead 保留 91 文件（隔离 `FLYWHEEL_CODEX_HOMES_ROOT`/`SESSION_DIR`，4 线程） | 1267/1280；13 项失败分诊见下 |
+| shell 12 个 | 12/12（`package-onboard-smoke` 首跑因本 worktree 未构建 inbox-mcp 等 6 包 dist 失败，补构建后 26/26） |
+| Node 16 个 | 447/447 |
+| `vitest related` | voice-codex 27 文件 393/393；voice-core 9 文件 69/69；teamlead 叶子模块（voice-repeat-gate / voice-capability-session / voice-capability-parent）2 文件 33/33 |
+
+teamlead 13 项失败分诊：`runtime-parent` 4 项与 `codex-runner-orphan-reaper` 2 项是 runner 的超长 `TMPDIR` 使 unix socket 路径超过 103 字节（`invalid v2 socket path` / `listen EINVAL`），`TMPDIR=/tmp/f2886t` 复跑全过；`default-parent-integration`、`StateStore.fly2341-terminal-archive` 与 event-route 的 409 一项在同一复跑中通过；event-route 两项 PR 声明用例在负载下 5s 超时，`--testTimeout=30000` 复跑 2.3–3.1s 通过。枢纽文件（StateStore.ts、plugin.ts、catalog.ts 等）不跑 `vitest related`（会退化为整包 1606 文件），由清册的 git grep 消费者覆盖。排除 `**/tmux-viewer.macos.test.ts`（plan §9）。没有本机全包套件，没有请求 full CI；真房语音、订阅真请求、founder 门与 Chrome 接管仍归 QA。

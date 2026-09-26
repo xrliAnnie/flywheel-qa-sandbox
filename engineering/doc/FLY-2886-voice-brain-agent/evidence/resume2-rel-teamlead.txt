@@ -1,0 +1,40 @@
+# rel-teamlead
+[event-route] runner-memory closeout state=unchanged dir=/tmp/flywheel/generic index=3L/113B delta=+0L/+0files — nothing new was written this execution; if you learned a durable, reusable judgment, write it now (one topic file + one pointer line) before you park or exit. exec=exec-1
+     → Test timed out in 5000ms.
+     → Test timed out in 5000ms.
+     → Test timed out in 5000ms.
+     → Test timed out in 5000ms.
+   ✓ reapChromeSessions — stale headless screenshot backstop > reaps the two real leaked argv shapes after TERM confirms exit  335ms
+   ✓ reapChromeSessions — stale rod browser backstop > reaps a 31-minute rod main and writes one redacted receipt after confirmed exit  403ms
+     → Test timed out in 5000ms.
+     → Test timed out in 5000ms.
+⎯⎯⎯⎯⎯⎯ Failed Tests 13 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |serial| src/__tests__/event-route.test.ts > Event route > admits same-repository distinct PR declarations and freezes their authoritative heads
+Error: Test timed out in 5000ms.
+ FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects declared PR authority when head_mismatch
+ FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects declared PR authority when duplicates_primary
+Error: Test timed out in 5000ms.
+ FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects a forged generalized completion until the current artifact has founder_review pass
+Error: Test timed out in 5000ms.
+ FAIL  |serial| src/__tests__/event-route.test.ts > Event route > books replacement completion against the explicit activation and TURN epoch
+AssertionError: expected 409 to be 200 // Object.is equality
+ FAIL  |parallel| src/__tests__/StateStore.fly2341-terminal-archive.test.ts > FLY-2341 TeamLead terminal archive > preserves session event idempotency after the hot row is archived
+AssertionError: expected +0 to be 1 // Object.is equality
+ FAIL  |parallel| src/lead-capabilities/__tests__/default-parent-integration.test.ts > executes the default factory, real provider assembly and parent broker with fixture host inputs
+AssertionError: expected "spy" to be called 2 times, but got 1 times
+ FAIL  |parallel| src/lead-capabilities/__tests__/runtime-parent.test.ts > verifies effective config and broker lifecycle with browser mode undefined
+ FAIL  |parallel| src/lead-capabilities/__tests__/runtime-parent.test.ts > verifies effective config and broker lifecycle with browser mode founder_chrome
+ FAIL  |parallel| src/lead-capabilities/__tests__/runtime-parent.test.ts > verifies effective config and broker lifecycle with browser mode isolated
+ FAIL  |parallel| src/lead-capabilities/__tests__/runtime-parent.test.ts > verifies effective config and broker lifecycle with browser mode off
+Error: invalid v2 socket path
+ FAIL  |parallel| src/bridge/__tests__/codex-runner-orphan-reaper.test.ts > FLY-2830 symlinked app-server socket (Codex 0.157 --listen) > finds the live holder through the link with the default lsof probe
+Error: Test timed out in 5000ms.
+ FAIL  |parallel| src/bridge/__tests__/codex-runner-orphan-reaper.test.ts > FLY-2830 symlinked app-server socket (Codex 0.157 --listen) > reports unknown when the link points at a regular file
+Error: Test timed out in 5000ms.
+Error: listen EINVAL: invalid argument ~/.flywheel/runner-state/e4592d00-ca78-479d-b2d6-a1ddffab0ca2/browser-tmp/f2830-6NfRUy/real
+Serialized Error: { code: 'EINVAL', errno: -22, syscall: 'listen', address: '~/.flywheel/runner-state/e4592d00-ca78-479d-b2d6-a1ddffab0ca2/browser-tmp/f2830-6NfRUy/real', port: -1 }
+Error: listen EINVAL: invalid argument ~/.flywheel/runner-state/e4592d00-ca78-479d-b2d6-a1ddffab0ca2/browser-tmp/f2830-EhDilp/real
+Serialized Error: { code: 'EINVAL', errno: -22, syscall: 'listen', address: '~/.flywheel/runner-state/e4592d00-ca78-479d-b2d6-a1ddffab0ca2/browser-tmp/f2830-EhDilp/real', port: -1 }
+ Test Files  5 failed | 86 passed (91)
+      Tests  13 failed | 1267 passed (1280)
+   Duration  854.27s (transform 51.52s, setup 2.78s, collect 293.38s, tests 481.01s, environment 13ms, prepare 13.46s)

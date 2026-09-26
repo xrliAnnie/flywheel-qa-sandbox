@@ -1,0 +1,4 @@
+# rel-config-1981
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Duration  21.39s (transform 367ms, setup 0ms, collect 2.84s, tests 17.14s, environment 0ms, prepare 171ms)

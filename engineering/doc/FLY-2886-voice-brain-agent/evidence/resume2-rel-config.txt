@@ -1,0 +1,8 @@
+# rel-config
+     → Test timed out in 15000ms.
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  src/__tests__/fly1981-final-ledgers.test.ts > FLY-1981 final governance ledgers > freezes the exact five Batch 6 retirement ledgers
+Error: Test timed out in 15000ms.
+ Test Files  1 failed | 5 passed (6)
+      Tests  1 failed | 135 passed (136)
+   Duration  37.46s (transform 1.67s, setup 0ms, collect 40.44s, tests 35.24s, environment 3ms, prepare 742ms)

@@ -1,0 +1,4 @@
+# related-voice-core
+ Test Files  9 passed (9)
+      Tests  69 passed (69)
+   Duration  3.48s (transform 5ms, setup 0ms, collect 1.58s, tests 104ms, environment 27ms, prepare 1.66s)

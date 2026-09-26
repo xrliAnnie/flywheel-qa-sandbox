@@ -1,0 +1,4 @@
+# rel-voice-core
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Duration  1.51s (transform 189ms, setup 0ms, collect 253ms, tests 37ms, environment 0ms, prepare 155ms)
