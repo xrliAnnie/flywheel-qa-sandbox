@@ -296,15 +296,13 @@ describe("target lock provider and durable state integration", () => {
 		const targetKey = h.voiceReceipt(9)!.targetKey!;
 		const original = h.store.getCapabilityTargetLock(targetKey)!;
 		expect(
-			await h
-				.locks("resident", "resident:crashed")
-				.acquire({
-					operationId: "discord.thread.reply",
-					requestId: requestId(10),
-					targetKey,
-					deadline: Date.now() + 15_000,
-					signal: new AbortController().signal,
-				}),
+			await h.locks("resident", "resident:crashed").acquire({
+				operationId: "discord.thread.reply",
+				requestId: requestId(10),
+				targetKey,
+				deadline: Date.now() + 15_000,
+				signal: new AbortController().signal,
+			}),
 		).toMatchObject({ status: "waiting" });
 		await h.restartBridge();
 		expect(h.store.getCapabilityTargetLock(targetKey)).toMatchObject({

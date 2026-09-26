@@ -88,8 +88,12 @@ packages/teamlead/src/lead-capabilities/__tests__/runtime-factory.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/runtime-parent.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/target-lock-client.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-capability-brief.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/voice-capability-session.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-founder-denial.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-repeat-gate.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/voice-resolve.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-turn-receipts.test.ts
 packages/teamlead/src/ship-judgment/__tests__/legacy-retirement.test.ts
 packages/voice-codex/src/__tests__/audio.test.ts
 packages/voice-codex/src/__tests__/brain-coordinator.test.ts
@@ -97,6 +101,7 @@ packages/voice-codex/src/__tests__/bridge-client.test.ts
 packages/voice-codex/src/__tests__/codex-container.test.ts
 packages/voice-codex/src/__tests__/codex-handoff-transcript.test.ts
 packages/voice-codex/src/__tests__/codex-home.test.ts
+packages/voice-codex/src/__tests__/codex-repeat-confirmation.test.ts
 packages/voice-codex/src/__tests__/codex-room.test.ts
 packages/voice-codex/src/__tests__/codex-speak.test.ts
 packages/voice-codex/src/__tests__/codex-transport.test.ts
@@ -111,7 +116,6 @@ packages/voice-codex/src/__tests__/thread-event-router.test.ts
 packages/voice-codex/src/__tests__/voice-minutes.test.ts
 packages/voice-codex/src/pipeline/Uplink.test.ts
 packages/voice-core/src/__tests__/announcer.test.ts
-packages/voice-core/src/__tests__/rotator-backend-integration.test.ts
 scripts/__tests__/autocompact-override-retirement.test.sh
 scripts/__tests__/codex-home-reconcile-cadence.test.sh
 scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs

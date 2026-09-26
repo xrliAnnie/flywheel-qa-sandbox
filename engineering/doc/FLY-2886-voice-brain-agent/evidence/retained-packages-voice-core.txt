@@ -1,2 +1,1 @@
 packages/voice-core/src/__tests__/announcer.test.ts
-packages/voice-core/src/__tests__/rotator-backend-integration.test.ts

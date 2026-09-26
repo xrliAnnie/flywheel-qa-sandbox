@@ -314,9 +314,17 @@ export function createVoiceSessionServices(input: {
 			input.store,
 			input.projects,
 		).catch(() => {
-			if (!background.enabled) throw new VoiceSessionContextError("context_state_unavailable");
+			if (!background.enabled)
+				throw new VoiceSessionContextError("context_state_unavailable");
 			stateUnavailable = true;
-			return { leadId: lead.agentId, activeSessions: [], pendingDecisions: [], recentFailures: [], recentEvents: [], memoryRecall: null };
+			return {
+				leadId: lead.agentId,
+				activeSessions: [],
+				pendingDecisions: [],
+				recentFailures: [],
+				recentEvents: [],
+				memoryRecall: null,
+			};
 		});
 		const capturedAt = new Date().toISOString();
 		const attention = background.enabled

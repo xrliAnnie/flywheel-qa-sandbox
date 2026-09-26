@@ -4,6 +4,7 @@ packages/voice-codex/src/__tests__/bridge-client.test.ts
 packages/voice-codex/src/__tests__/codex-container.test.ts
 packages/voice-codex/src/__tests__/codex-handoff-transcript.test.ts
 packages/voice-codex/src/__tests__/codex-home.test.ts
+packages/voice-codex/src/__tests__/codex-repeat-confirmation.test.ts
 packages/voice-codex/src/__tests__/codex-room.test.ts
 packages/voice-codex/src/__tests__/codex-speak.test.ts
 packages/voice-codex/src/__tests__/codex-transport.test.ts

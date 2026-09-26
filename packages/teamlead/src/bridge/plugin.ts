@@ -676,7 +676,6 @@ import {
 } from "./lead-capability-report-deliver.js";
 import { createLeadReportVerifyRouter } from "./lead-capability-report-verify.js";
 import { mountLeadRunnerProvider } from "./lead-capability-runners.js";
-import { createVoiceCapabilityEventPump } from "./voice-capability-events.js";
 import { createLeadCapabilityTargetLockRouter } from "./lead-capability-target-lock.js";
 import {
 	createProductionLeadConfigService,
@@ -1021,6 +1020,7 @@ import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { classifyTurnWakeReceiptProjection } from "./turn-wake-receipt-classifier.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { reconcileUnanswerableWorkflowGates } from "./unanswerable-workflow-gate-reconciler.js";
+import { createVoiceCapabilityEventPump } from "./voice-capability-events.js";
 import { openVoiceCommDb } from "./voice-comm-scope.js";
 import {
 	VoiceHandoffService,
@@ -3737,7 +3737,10 @@ export function createBridgeApp(
 		app.use(
 			"/api/lead-capabilities/target-lock",
 			tokenAuthMiddleware(config.apiToken, undefined),
-			createLeadCapabilityTargetLockRouter({ store, bridgeReceipts: leadOutboundDedupStore?.operationReceipts }),
+			createLeadCapabilityTargetLockRouter({
+				store,
+				bridgeReceipts: leadOutboundDedupStore?.operationReceipts,
+			}),
 		);
 	}
 
@@ -7360,9 +7363,24 @@ export async function startBridge(
 		leadInboxRuntime.nudge(leadId, projectName),
 	);
 	leadInboxRuntime.start();
-	const voiceCapabilityEvents = createVoiceCapabilityEventPump({ store, deliver: (envelope) => registry.dispatchLeadEvent(envelope) });
-	const tickVoiceCapabilityEvents = () => { void voiceCapabilityEvents.tick().catch((error) => console.warn("[voice-capability-events]", error instanceof Error ? error.message : "retry_pending")); };
-	const voiceCapabilityEventTimer = setInterval(tickVoiceCapabilityEvents, 30_000);
+	const voiceCapabilityEvents = createVoiceCapabilityEventPump({
+		store,
+		deliver: (envelope) => registry.dispatchLeadEvent(envelope),
+	});
+	const tickVoiceCapabilityEvents = () => {
+		void voiceCapabilityEvents
+			.tick()
+			.catch((error) =>
+				console.warn(
+					"[voice-capability-events]",
+					error instanceof Error ? error.message : "retry_pending",
+				),
+			);
+	};
+	const voiceCapabilityEventTimer = setInterval(
+		tickVoiceCapabilityEvents,
+		30_000,
+	);
 	voiceCapabilityEventTimer.unref();
 	tickVoiceCapabilityEvents();
 	const xhsNotificationService = startXhsNotificationService({

@@ -353,30 +353,73 @@ it("passes enabled background identity, room binding, and founder attention into
 	]);
 });
 
-it.each([true, false])("bootstrap failure yields honest unavailable state only when enabled=%s", async (enabled) => {
-	const identityPath = join(root, "identity.md");
-	writeFileSync(identityPath, "# Lead A\n## Speaking style\n简短。");
-	const project = configuredProject();
-	Object.assign(project.leads[0]!, {
-		voiceBackground: { enabled, browser: "off" },
-		cosContext: { displayName: "Lead A", aliases: [], workingSubdirectory: ".", identityPath, memoryPaths: [], writableRoots: [root] },
-	});
-	const factory = vi.spyOn(routes, "createVoiceSessionRouter");
-	createVoiceSessionServices({ probeSelfFilter: validProbe, store, projects: [project], env: { LEAD_TOKEN: "test-token" }, homeDir: root, cwd: root, config: {} as BridgeConfig });
-	const now = new Date().toISOString();
-	store.updateVoiceProvisioning({ sessionId: SESSION_ID, expectedStep: "reserved", nextStep: "done", nextState: "desired", updatedAt: now });
-	const claim = store.claimVoiceSession({ sessionId: SESSION_ID, daemonBootId: "boot-unavailable", now, leaseTtlMs: 60000 })!;
-	vi.spyOn(bootstrap, "generateBootstrap").mockRejectedValueOnce(new Error("state offline"));
-	const result = factory.mock.calls[0]![0].getSessionContext(store.getVoiceSession(SESSION_ID)!, { leaseBindingDigest: "d".repeat(64), leaseToken: claim.leaseToken, requestedAt: now });
-	if (!enabled) await expect(result).rejects.toThrow("context_state_unavailable");
-	else {
-		const context = await result;
-		expect(context.realtimePrompt).toContain("状态现在读不到");
-		expect(context.baseInstructions).toContain("状态现在读不到");
-		expect(context.manifest.stateUnavailable).toMatchObject({ activeSessions: true, pendingDecisions: true, pendingQuestions: true });
-		expect(context.realtimePrompt).not.toContain("没有活跃");
-	}
-});
+it.each([true, false])(
+	"bootstrap failure yields honest unavailable state only when enabled=%s",
+	async (enabled) => {
+		const identityPath = join(root, "identity.md");
+		writeFileSync(identityPath, "# Lead A\n## Speaking style\n简短。");
+		const project = configuredProject();
+		Object.assign(project.leads[0]!, {
+			voiceBackground: { enabled, browser: "off" },
+			cosContext: {
+				displayName: "Lead A",
+				aliases: [],
+				workingSubdirectory: ".",
+				identityPath,
+				memoryPaths: [],
+				writableRoots: [root],
+			},
+		});
+		const factory = vi.spyOn(routes, "createVoiceSessionRouter");
+		createVoiceSessionServices({
+			probeSelfFilter: validProbe,
+			store,
+			projects: [project],
+			env: { LEAD_TOKEN: "test-token" },
+			homeDir: root,
+			cwd: root,
+			config: {} as BridgeConfig,
+		});
+		const now = new Date().toISOString();
+		store.updateVoiceProvisioning({
+			sessionId: SESSION_ID,
+			expectedStep: "reserved",
+			nextStep: "done",
+			nextState: "desired",
+			updatedAt: now,
+		});
+		const claim = store.claimVoiceSession({
+			sessionId: SESSION_ID,
+			daemonBootId: "boot-unavailable",
+			now,
+			leaseTtlMs: 60000,
+		})!;
+		vi.spyOn(bootstrap, "generateBootstrap").mockRejectedValueOnce(
+			new Error("state offline"),
+		);
+		const result = factory.mock.calls[0]![0].getSessionContext(
+			store.getVoiceSession(SESSION_ID)!,
+			{
+				leaseBindingDigest: "d".repeat(64),
+				leaseToken: claim.leaseToken,
+				requestedAt: now,
+			},
+		);
+		if (!enabled)
+			await expect(result).rejects.toThrow("context_state_unavailable");
+		else {
+			const context = await result;
+			expect(context.realtimePrompt).toContain("状态现在读不到");
+			expect(context.baseInstructions).toContain("状态现在读不到");
+			expect(context.manifest.stateUnavailable).toMatchObject({
+				activeSessions: true,
+				pendingDecisions: true,
+				pendingQuestions: true,
+			});
+			expect(context.realtimePrompt).not.toContain("没有活跃");
+		}
+	},
+);
 
 it("polls enabled Engine-B state into durable background tell rows", async () => {
 	const now = new Date().toISOString();

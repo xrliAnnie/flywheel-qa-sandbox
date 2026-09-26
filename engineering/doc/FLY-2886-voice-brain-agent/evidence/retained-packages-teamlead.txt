@@ -82,6 +82,10 @@ packages/teamlead/src/lead-capabilities/__tests__/runtime-factory.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/runtime-parent.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/target-lock-client.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-capability-brief.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/voice-capability-session.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-founder-denial.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-repeat-gate.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/voice-resolve.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-turn-receipts.test.ts
 packages/teamlead/src/ship-judgment/__tests__/legacy-retirement.test.ts

@@ -285,7 +285,11 @@ function harness(
 	const parent = {
 		manifest: {
 			manifestDigest: "c".repeat(64),
-			operationIds: ["linear.issue.read", "github.pr.read", "browser.list_pages"],
+			operationIds: [
+				"linear.issue.read",
+				"github.pr.read",
+				"browser.list_pages",
+			],
 			deniedOperationIds: ["bridge.merge", "bridge.ship"],
 			browserMode: "off" as const,
 		},
@@ -512,12 +516,16 @@ describe("Codex voice container", () => {
 			sessionId: "session-capability-brief",
 			voice: "marin",
 			loadContext: async () => context("session-capability-brief"),
-			background: { enabled: true, onTurnStarted: vi.fn(), onTurnTerminal: vi.fn() },
+			background: {
+				enabled: true,
+				onTurnStarted: vi.fn(),
+				onTurnTerminal: vi.fn(),
+			},
 		});
 		await opened.restart();
-		const prompts = h.processes[0]!.requests
-			.filter((row) => row.method === "thread/realtime/start")
-			.map((row) => (row.params as { prompt: string }).prompt);
+		const prompts = h.processes[0]!.requests.filter(
+			(row) => row.method === "thread/realtime/start",
+		).map((row) => (row.params as { prompt: string }).prompt);
 		expect(prompts).toHaveLength(2);
 		for (const prompt of prompts) {
 			expect(prompt).toContain("后台工具类别：GitHub、Linear");

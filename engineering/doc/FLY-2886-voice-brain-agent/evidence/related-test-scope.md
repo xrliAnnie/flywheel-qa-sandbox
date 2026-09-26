@@ -1,8 +1,8 @@
 # FLY-2886 related verification scope
 
-Discovery merge-base: `ef47e9a05cd4b6e625f58c0dc0abe7ff41a26d6d` (`git merge-base origin/main HEAD`). Discovery HEAD: `b9008dfe357b85720f628069b4c4aae931e391dc`; completion HEAD: `b9008dfe357b85720f628069b4c4aae931e391dc`. Working-tree edits and untracked sources are included. Generated 2026-09-26T07:35:16.672469+00:00.
+Discovery merge-base: `eabcd72a5ab758aa389b71fc67a50731bfe03fcd` (`git merge-base origin/main HEAD`). Discovery HEAD: `98a6889d17b6059847541dc1e507a454c8969f85`; completion HEAD: `98a6889d17b6059847541dc1e507a454c8969f85`. Working-tree edits and untracked sources are included. Generated 2026-09-26T08:29:09.866825+00:00.
 
-Scope: 91 production TypeScript files; 142 retained executable test paths (12 shell, 16 Node); 36 excluded test matches. This is an inventory, not execution evidence. No test suite was run to create it.
+Scope: 94 production TypeScript files; 146 retained executable test paths (12 shell, 16 Node); 34 excluded test matches. This is an inventory, not execution evidence. No test suite was run to create it.
 
 ## Exact discovery commands
 
@@ -22,7 +22,7 @@ Changed tests are independently retained even when import specifiers use `.js` a
 
 ## Snapshot stability
 
-Production files edited during scan: `packages/teamlead/src/bridge/lead-capability-target-lock.ts`, `packages/teamlead/src/bridge/plugin.ts`, `packages/teamlead/src/bridge/voice-target-reconcile.ts`, `packages/voice-codex/src/session.ts`. Newly added production paths after scan input: none. A later production path/content change requires rechecking this inventory; this snapshot is not exact-head CI evidence.
+Production files edited during scan: none. Newly added production paths after scan input: none. A later production path/content change requires rechecking this inventory; this snapshot is not exact-head CI evidence.
 
 ## Package manifests and registration
 
@@ -61,8 +61,6 @@ Always exclude `**/tmux-viewer.macos.test.ts`, as explicitly approved in `plan.m
 | `packages/teamlead/src/__tests__/required-wall-clock-thresholds.test.ts` | Directory hits list unrelated unchanged ship-judgment test thresholds. |
 | `packages/teamlead/src/bridge/__tests__/lead-patrol-config.test.ts` | config.ts is a suffix in unchanged lead-patrol-config.ts. |
 | `packages/teamlead/src/xiaohongshu-write/__tests__/offline-configuration.test.ts` | config.ts is a suffix in unchanged scripts/xhs/assemble-config.ts. |
-| `packages/voice-bridge/src/__tests__/assistant-wiring.test.ts` | cli.ts refers to voice-bridge CLI in a comment, not changed voice-codex CLI. |
-| `packages/voice-bridge/src/__tests__/eleven-config.test.ts` | config.ts refers to voice-bridge assistant config, not changed voice-codex config. |
 | `scripts/__tests__/auto-narrow-rollback-precheck.test.sh` | StateStore.ts is a synthetic temporary repository fixture; this test does not read current StateStore.ts. |
 | `scripts/__tests__/ci-structure.test.sh` | Directory hits point to unchanged review-governance-docs/fly1135-doc-sentinel tests. |
 | `scripts/__tests__/fly-1867-playwright-orphan-census.test.sh` | Directory hits create synthetic source.ts fixtures for dist freshness, not changed files. |
@@ -204,8 +202,11 @@ packages/teamlead/src/lead-capabilities/runtime-factory.ts
 packages/teamlead/src/lead-capabilities/runtime-parent.ts
 packages/teamlead/src/lead-capabilities/target-lock-client.ts
 packages/teamlead/src/lead-capabilities/voice-action-ledger.ts
+packages/teamlead/src/lead-capabilities/voice-capability-brief.ts
 packages/teamlead/src/lead-capabilities/voice-capability-parent.ts
 packages/teamlead/src/lead-capabilities/voice-capability-session.ts
+packages/teamlead/src/lead-capabilities/voice-denial.ts
+packages/teamlead/src/lead-capabilities/voice-repeat-gate.ts
 packages/teamlead/src/lead-capabilities/voice-resolve.ts
 packages/teamlead/src/lead-capabilities/xiaohongshu-provider.ts
 packages/teamlead/src/voice-capability.ts
@@ -298,8 +299,12 @@ packages/teamlead/src/lead-capabilities/__tests__/runtime-factory.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/runtime-parent.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/target-lock-client.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/target-lock-provider-integration.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-capability-brief.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/voice-capability-session.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-founder-denial.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-repeat-gate.test.ts
 packages/teamlead/src/lead-capabilities/__tests__/voice-resolve.test.ts
+packages/teamlead/src/lead-capabilities/__tests__/voice-turn-receipts.test.ts
 packages/teamlead/src/ship-judgment/__tests__/legacy-retirement.test.ts
 ```
 
@@ -341,6 +346,7 @@ packages/voice-codex/src/__tests__/bridge-client.test.ts
 packages/voice-codex/src/__tests__/codex-container.test.ts
 packages/voice-codex/src/__tests__/codex-handoff-transcript.test.ts
 packages/voice-codex/src/__tests__/codex-home.test.ts
+packages/voice-codex/src/__tests__/codex-repeat-confirmation.test.ts
 packages/voice-codex/src/__tests__/codex-room.test.ts
 packages/voice-codex/src/__tests__/codex-speak.test.ts
 packages/voice-codex/src/__tests__/codex-transport.test.ts
@@ -368,7 +374,6 @@ Retained tests:
 
 ```text
 packages/voice-core/src/__tests__/announcer.test.ts
-packages/voice-core/src/__tests__/rotator-backend-integration.test.ts
 ```
 
 ### scripts

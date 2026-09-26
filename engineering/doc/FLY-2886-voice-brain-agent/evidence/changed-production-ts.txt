@@ -61,8 +61,11 @@ packages/teamlead/src/lead-capabilities/runtime-factory.ts
 packages/teamlead/src/lead-capabilities/runtime-parent.ts
 packages/teamlead/src/lead-capabilities/target-lock-client.ts
 packages/teamlead/src/lead-capabilities/voice-action-ledger.ts
+packages/teamlead/src/lead-capabilities/voice-capability-brief.ts
 packages/teamlead/src/lead-capabilities/voice-capability-parent.ts
 packages/teamlead/src/lead-capabilities/voice-capability-session.ts
+packages/teamlead/src/lead-capabilities/voice-denial.ts
+packages/teamlead/src/lead-capabilities/voice-repeat-gate.ts
 packages/teamlead/src/lead-capabilities/voice-resolve.ts
 packages/teamlead/src/lead-capabilities/xiaohongshu-provider.ts
 packages/teamlead/src/voice-capability.ts
