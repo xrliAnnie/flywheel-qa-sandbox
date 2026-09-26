@@ -519,7 +519,8 @@ export function createFetchIssue(store: StateStore) {
 						descriptionSource: "authoritative" as const,
 						updatedAt: issue.updatedAt.toISOString(),
 						labels: labelNames,
-						projectId: issue.project ? (await issue.project)?.id : undefined,
+						// SDK relation getters create requests; the id is already hydrated.
+						projectId: issue.projectId,
 						identifier: issue.identifier,
 					};
 				}
