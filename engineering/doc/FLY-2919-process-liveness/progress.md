@@ -2,20 +2,18 @@
 issue: FLY-2919
 phase: design
 phaseCursor: 5/5
-updated: 2026-09-26T17:13:20.151Z
-nextStep: "Design artifacts verified unchanged from 241e6b439; original gate
-  f4e94872 live APPROVED per Lead answer 1fb8f125. HTML published/reported;
-  resume-publication-receipt.json verifies source/CSP. HANDOFF NOT YET ACCEPTED:
-  phase_design_complete exhausted 4 aborted requests at 17:12:24Z, marker event
-  c18fd76f-342f-472e-a2e2-3d98d39dcc6c persisted; TURN still design epoch 8.
-  Lead failure report 2f72cce6. Next inspect marker/Bridge and complete receipt
-  before phase park. Implementation 0/6 and WIP preserved at
-  241e6b439/implementation.md. Redundant review 3ea25547 reported to Lead; no
-  new design scope."
+updated: 2026-09-26T17:14:44.172Z
+nextStep: Design/HTML/code unchanged; verified publication and inherited
+  APPROVED retained. Bridge health recovered. Completion retry returned
+  consume_pending_mail; check 2f72cce6 consumed Lead response, inbox now empty.
+  Lead says wait 2 min, verify TURN design epoch 8, retry exact completion
+  challenge once; if rejected use new challenge once then report. Pending drain
+  receipt ends 1024764fe8acbcc2; see persisted complete marker. No
+  design/implementation rework.
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: design (5/5)
-**next**: Design artifacts verified unchanged from 241e6b439; original gate f4e94872 live APPROVED per Lead answer 1fb8f125. HTML published/reported; resume-publication-receipt.json verifies source/CSP. HANDOFF NOT YET ACCEPTED: phase_design_complete exhausted 4 aborted requests at 17:12:24Z, marker event c18fd76f-342f-472e-a2e2-3d98d39dcc6c persisted; TURN still design epoch 8. Lead failure report 2f72cce6. Next inspect marker/Bridge and complete receipt before phase park. Implementation 0/6 and WIP preserved at 241e6b439/implementation.md. Redundant review 3ea25547 reported to Lead; no new design scope.
+**next**: Design/HTML/code unchanged; verified publication and inherited APPROVED retained. Bridge health recovered. Completion retry returned consume_pending_mail; check 2f72cce6 consumed Lead response, inbox now empty. Lead says wait 2 min, verify TURN design epoch 8, retry exact completion challenge once; if rejected use new challenge once then report. Pending drain receipt ends 1024764fe8acbcc2; see persisted complete marker. No design/implementation rework.
