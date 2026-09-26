@@ -65716,6 +65716,48 @@ export class StateStore {
 		this.save();
 	}
 
+	/**
+	 * FLY-2921 C7: audit one refused rework-target completion AFTER the
+	 * transition savepoint rolled back. Written at the same layer as
+	 * `recordReworkDeliveryRefusal` because anything appended inside the
+	 * transition is erased by `WorkflowTransitionRollback`. Idempotent on
+	 * request + head + reason; no hold, no alert, no completion marker: the
+	 * body simply has to `complete` again with a new head.
+	 */
+	private recordReworkCompletionHeadRefusal(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		reason: WorkflowReworkCompletionHeadRefusalReason;
+		requestId: string | undefined;
+		head: string | undefined;
+		evidence: WorkflowReworkCompletionEvidence | undefined;
+	}): void {
+		const requestId = input.requestId ?? input.evidence?.requestId ?? "unknown";
+		const head = (input.head ?? input.evidence?.head ?? "unresolved")
+			.trim()
+			.toLowerCase();
+		const baseRevision =
+			this.getWorkflowReworkRequest(requestId)?.base_revision ?? null;
+		// Payload is a pure function of the uid key so a replay dedupes instead
+		// of raising a uid conflict (delta / headSource may differ per attempt).
+		this.appendWorkflowRunEventChecked({
+			runId: input.runId,
+			eventUid: `rework_completion_refused:${requestId}:${head}:${input.reason}`,
+			kind: "rework_completion_refused",
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			payload: {
+				attempt: input.attempt,
+				transitionReason: input.reason,
+				requestId,
+				head,
+				baseRevision,
+			},
+		});
+	}
+
 	private static reworkContentEpisodeId(attemptId: string): string {
 		return `rework-content:${canonicalSubmissionDigest({ attemptId, cause: "rework_content_not_delivered" })}`;
 	}
@@ -65904,6 +65946,71 @@ export class StateStore {
 		return undefined;
 	}
 
+	/**
+	 * FLY-2921 C7 decision table (plan order). Pure: no reads, no writes.
+	 *
+	 * 1. no evidence → head-only compare on `subjectDigest`; missing → unavailable
+	 * 2. evidence for another request / base → stale
+	 * 3. base not 40-hex (historical `unavailable`) → allow, audit skipped
+	 * 4. head unresolved → unavailable
+	 * 5. head == base → unchanged
+	 * 6. delta ledger_only → no_product_change
+	 * 7. delta unverified → allow, audit unverified (fail-open: a missing base
+	 *    object would otherwise make every re-completion refuse forever)
+	 * 8. product_change → allow
+	 */
+	private workflowReworkCompletionHeadCheck(input: {
+		evidence: WorkflowReworkCompletionEvidence | undefined;
+		subjectDigest: string | undefined;
+		request: WorkflowReworkRequestRow;
+	}):
+		| { ok: true; audit?: WorkflowReworkCompletionHeadAudit }
+		| { ok: false; reason: WorkflowReworkCompletionHeadRefusalReason } {
+		const sha = /^[0-9a-f]{40}$/;
+		const base = input.request.base_revision.trim().toLowerCase();
+		const baseIsSha = sha.test(base);
+		const subject = input.subjectDigest?.trim().toLowerCase();
+		const evidence = input.evidence;
+		if (!evidence) {
+			if (!subject || !sha.test(subject)) {
+				return { ok: false, reason: "rework_head_unavailable" };
+			}
+			if (!baseIsSha) return { ok: true, audit: "rework_head_check_skipped" };
+			if (subject === base) {
+				return { ok: false, reason: "rework_head_unchanged" };
+			}
+			return { ok: true };
+		}
+		const evidenceHead = evidence.head?.trim().toLowerCase();
+		if (
+			evidence.requestId !== input.request.request_id ||
+			evidence.baseRevision.trim().toLowerCase() !== base ||
+			(evidence.headSource === "server" &&
+				subject !== undefined &&
+				evidenceHead !== subject)
+		) {
+			return { ok: false, reason: "rework_evidence_stale" };
+		}
+		if (!baseIsSha) return { ok: true, audit: "rework_head_check_skipped" };
+		if (
+			evidence.headSource !== "server" ||
+			!evidenceHead ||
+			!sha.test(evidenceHead)
+		) {
+			return { ok: false, reason: "rework_head_unavailable" };
+		}
+		if (evidenceHead === base) {
+			return { ok: false, reason: "rework_head_unchanged" };
+		}
+		if (evidence.delta === "ledger_only") {
+			return { ok: false, reason: "rework_no_product_change" };
+		}
+		if (evidence.delta === "unverified") {
+			return { ok: true, audit: "rework_delta_unverified" };
+		}
+		return { ok: true };
+	}
+
 	private reworkCompletionRefusalUid(input: {
 		executionId: string;
 		refusal: WorkflowReworkCompletionRefusal;
@@ -65925,6 +66032,8 @@ export class StateStore {
 		drainProof?: CompletionDrainProof;
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
+		/** FLY-2921 C7: Bridge-built rework head/delta evidence; never from payload. */
+		reworkEvidence?: WorkflowReworkCompletionEvidence;
 		workflowActivation?: WorkflowCompletionActivationContext;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 		prBinding?: {
@@ -66595,6 +66704,9 @@ export class StateStore {
 							...(completionSubjectDigest
 								? { subjectDigest: completionSubjectDigest }
 								: {}),
+							...(input.reworkEvidence
+								? { reworkEvidence: input.reworkEvidence }
+								: {}),
 							alertIdentity: input.alertIdentity,
 							now,
 						});
@@ -66664,6 +66776,43 @@ export class StateStore {
 					this.recordReworkDeliveryRefusal({ runId: context.binding.run_id, nodeId: context.binding.node_id, attempt: context.binding.attempt,
 						executionId: context.binding.execution_id, refusal, now, alertIdentity: input.alertIdentity });
 					return { ...refusal, retryable: false };
+				}
+
+				if (isWorkflowReworkCompletionHeadRefusalReason(transitionRefusal)) {
+					// FLY-2921 C7: the savepoint already rolled back (implied receipt
+					// included); write exactly one idempotent audit here, outside it.
+					this.recordReworkCompletionHeadRefusal({
+						runId: context.binding.run_id,
+						nodeId: context.binding.node_id,
+						attempt: context.binding.attempt,
+						executionId: context.binding.execution_id,
+						reason: transitionRefusal,
+						requestId: transitionRefusalDetail?.requestId,
+						head: completionSubjectDigest,
+						evidence: input.reworkEvidence,
+					});
+					// The in-transaction detail may carry the implied receipt's state;
+					// report the durable state the rollback left behind.
+					const durableDelivery = transitionRefusalDetail
+						? this.getWorkflowReworkDelivery(transitionRefusalDetail.requestId)
+						: undefined;
+					return {
+						ok: false,
+						reason: "transition_refused",
+						retryable: true,
+						detail: {
+							transitionReason: transitionRefusal,
+							...(transitionRefusalDetail
+								? {
+										requestId: transitionRefusalDetail.requestId,
+										deliveryState:
+											durableDelivery?.state ??
+											transitionRefusalDetail.deliveryState,
+										routeRevision: transitionRefusalDetail.routeRevision,
+									}
+								: {}),
+						},
+					};
 				}
 
 				if (transitionRefusal === "land_head_unavailable") {
@@ -68376,6 +68525,12 @@ export class StateStore {
 		/** Legacy name: this is also the authoritative rework base Git head, not
 		 * an arbitrary subject digest. Keep the public field stable. */
 		subjectDigest?: string;
+		/**
+		 * FLY-2921 C7: Bridge-built evidence that a rework-target completion
+		 * carries a new commit. Callers without it fall back to a head-only
+		 * compare against `subjectDigest`.
+		 */
+		reworkEvidence?: WorkflowReworkCompletionEvidence;
 		/** Trusted founder feedback carried to the kickback successor receipt. */
 		founderFeedback?: string;
 		/** Resolved Lead target for fail-loud Gate-carrier alerts. */
@@ -68725,6 +68880,68 @@ export class StateStore {
 					return;
 				}
 				selectedId = `rework_verify:${activePath.request_id}:${input.nodeId}:${target.id}`;
+			}
+			// FLY-2921 C7 (FLY-2202 / FLY-2472): a rework target that hands its
+			// work to review must hand over a NEW commit with a product change.
+			// Only the target itself (path index 0) on a needs_review node taking
+			// its success edge is judged; verification nodes downstream re-test
+			// the same head by design. Refusals are retryable and write nothing;
+			// the implied receipt above is rolled back by the savepoint.
+			if (
+				activePath &&
+				activeRoute &&
+				activeRequest &&
+				edge &&
+				activePathCurrentIndex === 0 &&
+				source.capabilities.completion_route === "needs_review"
+			) {
+				const check = this.workflowReworkCompletionHeadCheck({
+					evidence: input.reworkEvidence,
+					subjectDigest: input.subjectDigest,
+					request: activeRequest,
+				});
+				if (!check.ok) {
+					const delivery = this.getWorkflowReworkDelivery(
+						activePath.request_id,
+					);
+					result = {
+						ok: false,
+						reason: check.reason,
+						retryable: true,
+						...(delivery
+							? {
+									detail: {
+										requestId: activePath.request_id,
+										deliveryState: delivery.state,
+										routeRevision: activeRoute.revision,
+									},
+								}
+							: {}),
+					};
+					return;
+				}
+				if (check.audit) {
+					// Payload is a pure function of (kind, request, revision, head) so
+					// a replay of the same completion dedupes instead of conflicting.
+					const auditHead =
+						input.reworkEvidence?.head ??
+						input.subjectDigest?.trim().toLowerCase() ??
+						"unresolved";
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: `${check.audit}:${activePath.request_id}:${activeRoute.revision}:${auditHead}`,
+						kind: check.audit,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						payload: {
+							attempt: input.attempt,
+							requestId: activePath.request_id,
+							routeRevision: activeRoute.revision,
+							baseRevision: activeRequest.base_revision,
+							head: auditHead,
+						},
+					});
+				}
 			}
 			const completesConflictResolution = Boolean(
 				activePath &&
@@ -89360,6 +89577,50 @@ export interface WorkflowTransitionRefusalDetail {
 	deliveryState: WorkflowReworkDeliveryRow["state"];
 	routeRevision: number;
 }
+
+/** FLY-2921 C7: what `git diff <base> <head>` minus the progress ledger showed. */
+export type WorkflowReworkCompletionDelta =
+	| "product_change"
+	| "ledger_only"
+	| "unverified";
+
+/**
+ * FLY-2921 C7: server-side evidence that a rework-target completion carries a
+ * new commit. Built by the Bridge event route from the immutable captured
+ * completion head; never decoded from a runner payload.
+ */
+export interface WorkflowReworkCompletionEvidence {
+	requestId: string;
+	baseRevision: string;
+	/** Lower-case 40-hex when `headSource` is `server`; absent otherwise. */
+	head?: string;
+	headSource: "server" | "unresolved";
+	delta: WorkflowReworkCompletionDelta;
+}
+
+/** FLY-2921 C7: retryable refusals of a rework-target completion. */
+export const WORKFLOW_REWORK_COMPLETION_HEAD_REFUSAL_REASONS = [
+	"rework_head_unavailable",
+	"rework_evidence_stale",
+	"rework_head_unchanged",
+	"rework_no_product_change",
+] as const;
+
+export type WorkflowReworkCompletionHeadRefusalReason =
+	(typeof WORKFLOW_REWORK_COMPLETION_HEAD_REFUSAL_REASONS)[number];
+
+export function isWorkflowReworkCompletionHeadRefusalReason(
+	reason: string,
+): reason is WorkflowReworkCompletionHeadRefusalReason {
+	return (
+		WORKFLOW_REWORK_COMPLETION_HEAD_REFUSAL_REASONS as readonly string[]
+	).includes(reason);
+}
+
+/** FLY-2921 C7: audit kinds written when the head check lets a completion through. */
+export type WorkflowReworkCompletionHeadAudit =
+	| "rework_head_check_skipped"
+	| "rework_delta_unverified";
 
 export type WorkflowTransitionResult =
 	| {

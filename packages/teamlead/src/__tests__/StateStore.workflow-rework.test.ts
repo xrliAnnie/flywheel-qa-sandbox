@@ -1274,6 +1274,12 @@ describe("FLY-2278 rework receipt liveness escalation", () => {
 	);
 });
 
+/**
+ * FLY-2921 C7: a rework target must hand over a NEW head. The operator rework
+ * base is the bound actor head ("b"), so the reworked implement delivers "c".
+ */
+const FLY1912_REWORKED_HEAD = "c".repeat(40);
+
 async function freshDispatchOperatorRework(): Promise<{
 	store: StateStore;
 	requestId: string;
@@ -1286,11 +1292,17 @@ async function freshDispatchOperatorRework(): Promise<{
 		attempt: 2,
 		executionId: "implement-exec",
 		outcome: "implement_done",
+		subjectDigest: FLY1912_REWORKED_HEAD,
 	});
 	if (!completed.ok || !completed.successorExecutionId) {
 		store.close();
 		throw new Error("fresh dispatch missing successor");
 	}
+	// The producer now ships the reworked head; fresh QA judges exactly it
+	// (runner_ship_qa_head_stale otherwise).
+	store.patchSessionMetadata("implement-exec", {
+		pr_head_sha: FLY1912_REWORKED_HEAD,
+	});
 	return {
 		store,
 		requestId,
@@ -1624,7 +1636,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 					credential: admitted.submissionCredential,
 					clientRequestId: "fly1912-qa-pass",
 					predicate: "qa_passed",
-					subjectDigest: "b".repeat(40),
+					subjectDigest: FLY1912_REWORKED_HEAD,
 					issuerVendor: "claude",
 					issuerModel: "claude-opus-4-8",
 					subjectProducerExecutionId: "implement-exec",
@@ -1746,6 +1758,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 					attempt: 2,
 					executionId: "implement-exec",
 					outcome: "implement_done",
+					subjectDigest: FLY1912_REWORKED_HEAD,
 				}),
 			).toMatchObject({
 				ok: true,
@@ -1848,6 +1861,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				attempt: 2,
 				executionId: "implement-exec",
 				outcome: "implement_done",
+				subjectDigest: FLY1912_REWORKED_HEAD,
 			});
 			expect(completed).toMatchObject({
 				ok: true,
@@ -2012,6 +2026,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				attempt: 2,
 				executionId: "implement-exec",
 				outcome: "node_done",
+				subjectDigest: FLY1912_REWORKED_HEAD,
 			});
 			expect(review).toMatchObject({
 				ok: true,

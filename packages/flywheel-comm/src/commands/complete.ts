@@ -510,6 +510,9 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 
 	let lastError: string | undefined;
 	let reworkRefusal: Record<string, unknown> | undefined;
+	let reworkHeadRefusal:
+		| { reason: ReworkHeadRefusalReason; requestId: string | undefined }
+		| undefined;
 	let drainPending: Record<string, unknown> | undefined;
 	let attemptsMade = 0;
 	for (let attempt = 1; attempt <= ATTEMPT_COUNT; attempt += 1) {
@@ -577,6 +580,14 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 				reworkRefusal = responseJson;
 				break;
 			}
+			const headRefusal = parseReworkHeadRefusal(responseJson);
+			if (response.status === 409 && headRefusal) {
+				// FLY-2921 C7: the same bytes will be refused again; retrying or
+				// leaving a FAIL-CLOSE marker for the reconciler only replays the
+				// refusal. The runner must commit and complete again.
+				reworkHeadRefusal = headRefusal;
+				break;
+			}
 			if (
 				response.status === 409 &&
 				responseJson?.reason === "consume_pending_mail"
@@ -632,6 +643,11 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		process.exit(DRAIN_PENDING_EXIT_CODE);
 	}
 
+	if (reworkHeadRefusal) {
+		printReworkHeadRefusal(reworkHeadRefusal);
+		process.exit(1);
+	}
+
 	if (reworkRefusal) {
 		const detail = reworkRefusal.detail as
 			| { requestId?: unknown; deliveryState?: unknown }
@@ -662,6 +678,68 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		`[complete] FAIL-CLOSE: ${attemptsMade} attempts failed. ${markerStatus} Last error: ${lastError}`,
 	);
 	process.exit(1);
+}
+
+/**
+ * FLY-2921 C7 (FLY-2202 / FLY-2472): a rework-target completion whose head is
+ * not a new commit with a product change. Mirrors the Bridge reason set.
+ */
+const REWORK_HEAD_REFUSAL_REASONS = [
+	"rework_head_unavailable",
+	"rework_evidence_stale",
+	"rework_head_unchanged",
+	"rework_no_product_change",
+] as const;
+
+type ReworkHeadRefusalReason = (typeof REWORK_HEAD_REFUSAL_REASONS)[number];
+
+function parseReworkHeadRefusal(
+	responseJson: Record<string, unknown> | undefined,
+):
+	| { reason: ReworkHeadRefusalReason; requestId: string | undefined }
+	| undefined {
+	if (responseJson?.reason !== "transition_refused") return undefined;
+	const detail = responseJson.detail;
+	if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+		return undefined;
+	}
+	const { transitionReason, requestId } = detail as {
+		transitionReason?: unknown;
+		requestId?: unknown;
+	};
+	const reason = (REWORK_HEAD_REFUSAL_REASONS as readonly string[]).includes(
+		String(transitionReason),
+	)
+		? (transitionReason as ReworkHeadRefusalReason)
+		: undefined;
+	if (!reason) return undefined;
+	return {
+		reason,
+		requestId: typeof requestId === "string" ? requestId : undefined,
+	};
+}
+
+function printReworkHeadRefusal(refusal: {
+	reason: ReworkHeadRefusalReason;
+	requestId: string | undefined;
+}): void {
+	const what: Record<ReworkHeadRefusalReason, string> = {
+		rework_head_unchanged: "交卷的 head 和返工基线是同一个 commit",
+		rework_no_product_change:
+			"从返工基线到交卷 head 只改了进度账本（progress.md），没有产品改动",
+		rework_head_unavailable: "Bridge 没能从工作树解析出本次交卷的 head",
+		rework_evidence_stale:
+			"Bridge 的返工证据与当前返工请求不一致（请求或基线已变）",
+	};
+	console.error(
+		`[complete] refused (${refusal.reason}): ${what[refusal.reason]}；返工请求 ${refusal.requestId ?? "unknown"}。`,
+	);
+	console.error(
+		"返工交卷必须带新提交；若你判断确实不需要改代码，请用 `flywheel-comm ask` 向 Lead 说明，由 Lead 决定。",
+	);
+	console.error(
+		"本次交卷没有被记录，也不会自动重试：提交新的产品改动后，再次运行 `flywheel-comm complete`。",
+	);
 }
 
 function printDrainRetryGuidance(
