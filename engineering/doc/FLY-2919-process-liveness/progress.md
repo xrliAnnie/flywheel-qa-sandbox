@@ -2,17 +2,17 @@
 issue: FLY-2919
 phase: implement
 phaseCursor: 0/6
-updated: 2026-09-26T17:53:55.792Z
-nextStep: A second batch committed 8dce46bd6; owner 27, related 413 (2 real-ps
-  EPERM exclusions), StateStore/guard 111, reown 63, registry/drift 53 green;
-  builds/lint/four dependent typechecks pass. Continue A production owner/OS
-  binding/native-spawn CAS/lease retry/BodyObservation. A remains partial; B-F,
-  HIGH pending-complete marker, nine-ticket acceptance, code review, PR and
-  needs_review route pending.
+updated: 2026-09-26T18:16:06.637Z
+nextStep: "A third batch: lower BodyObservation and OS inspector implemented,
+  four-adapter/writer/identity/expiry tests green; native spawn prepare hook
+  green across restart. Related 9 files/475 pass/2 known real-ps exclusions;
+  build passed. Final guards/lint/dependent typecheck in progress. Still pending
+  production owner binding/CAS/retry, runtime flag, all A-F consumer wiring and
+  nine-ticket acceptance; no handoff yet."
 chunks: []
 pointers: {}
 ---
 
 # FLY-2919 progress
 **phase**: implement (0/6)
-**next**: A second batch committed 8dce46bd6; owner 27, related 413 (2 real-ps EPERM exclusions), StateStore/guard 111, reown 63, registry/drift 53 green; builds/lint/four dependent typechecks pass. Continue A production owner/OS binding/native-spawn CAS/lease retry/BodyObservation. A remains partial; B-F, HIGH pending-complete marker, nine-ticket acceptance, code review, PR and needs_review route pending.
+**next**: A third batch: lower BodyObservation and OS inspector implemented, four-adapter/writer/identity/expiry tests green; native spawn prepare hook green across restart. Related 9 files/475 pass/2 known real-ps exclusions; build passed. Final guards/lint/dependent typecheck in progress. Still pending production owner binding/CAS/retry, runtime flag, all A-F consumer wiring and nine-ticket acceptance; no handoff yet.
