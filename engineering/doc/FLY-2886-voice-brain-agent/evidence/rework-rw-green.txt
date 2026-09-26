@@ -1,0 +1,8 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ✓ |parallel| src/__tests__/bridge-child-process-census.test.ts (1 test) 363ms
+   ✓ FLY-2331 production child-process census > fails closed when a sync child, marker, or raw spawn hit changes  362ms
+ ✓ |parallel| src/__tests__/lead-token-savings-drift.test.ts (17 tests) 14ms
+ Test Files  2 passed (2)
+      Tests  18 passed (18)
+   Start at  04:18:16
+   Duration  941ms (transform 21ms, setup 15ms, collect 11ms, tests 377ms, environment 0ms, prepare 88ms)

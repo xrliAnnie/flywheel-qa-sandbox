@@ -1,0 +1,133 @@
+ RUN  v3.2.4 ~/Dev/flywheel-FLY-2886/packages/teamlead
+ ❯ |parallel| src/__tests__/bridge-child-process-census.test.ts (1 test | 1 failed) 402ms
+   × FLY-2331 production child-process census > fails closed when a sync child, marker, or raw spawn hit changes 401ms
+     → expected [ Array(104) ] to deeply equal [ Array(103) ]
+ ❯ |parallel| src/__tests__/lead-token-savings-drift.test.ts (17 tests | 7 failed) 36ms
+   × pins every ON/OFF dependency independently with a reviewed compatibility rationale 6ms
+     → bootstrap-generator: packages/teamlead/src/bridge/bootstrap-generator.ts drift; review shared duties and both modes before updating the manifest rationale and hashes
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/department-lead-rules.md 1ms
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/legacy-token-savings/department-lead-rules.md 1ms
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/runner-messaging-rules.md 1ms
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/legacy-token-savings/runner-messaging-rules.md 1ms
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/runner-patrol-rules.md 1ms
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/legacy-token-savings/runner-patrol-rules.md 1ms
+   ✓ rejects independent drift in packages/teamlead/scripts/inbox-ack-rule.md 0ms
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/legacy-token-savings/inbox-ack-rule.md 1ms
+   ✓ rejects independent drift in packages/teamlead/lead-rules-base/runbooks/patrol-v1.md 3ms
+   ✓ rejects independent drift in packages/teamlead/src/bridge/bootstrap-generator.ts 5ms
+   × rejects independent drift in packages/teamlead/src/__tests__/fixtures/fly2567/bootstrap-generator-legacy.ts 7ms
+     → expected [Function] to throw error including 'packages/teamlead/src/__tests__/fixtu…' but got 'bootstrap-generator: packages/teamlea…'
+   × rejects independent drift in packages/flywheel-comm/src/db.ts 2ms
+     → expected [Function] to throw error including 'packages/flywheel-comm/src/db.ts' but got 'bootstrap-generator: packages/teamlea…'
+   × rejects independent drift in packages/teamlead/src/bridge/bootstrap-format.ts 1ms
+     → expected [Function] to throw error including 'packages/teamlead/src/bridge/bootstra…' but got 'bootstrap-generator: packages/teamlea…'
+   × rejects independent drift in packages/teamlead/src/bridge/bootstrap-format-legacy.ts 2ms
+     → expected [Function] to throw error including 'packages/teamlead/src/bridge/bootstra…' but got 'bootstrap-generator: packages/teamlea…'
+   × rejects independent drift in packages/teamlead/src/bridge/mailbox-lead-runtime.ts 1ms
+     → expected [Function] to throw error including 'packages/teamlead/src/bridge/mailbox-…' but got 'bootstrap-generator: packages/teamlea…'
+   × rejects independent drift in packages/teamlead/src/bridge/commdb-lead-runtime.ts 1ms
+     → expected [Function] to throw error including 'packages/teamlead/src/bridge/commdb-l…' but got 'bootstrap-generator: packages/teamlea…'
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  |parallel| src/__tests__/bridge-child-process-census.test.ts > FLY-2331 production child-process census > fails closed when a sync child, marker, or raw spawn hit changes
+AssertionError: expected [ Array(104) ] to deeply equal [ Array(103) ]
+[32m- Expected[39m
+[31m+ Received[39m
+[33m@@ -383,10 +383,14 @@[39m
+[2m    {[22m
+[2m      "file": "packages/teamlead/src/lead-capabilities/patrol-completion-gates.ts",[22m
+[2m      "sync_child": 1,[22m
+[2m    },[22m
+[2m    {[22m
+[31m+     "file": "packages/teamlead/src/lead-capabilities/voice-capability-parent.ts",[39m
+[31m+     "sync_child": 1,[39m
+[31m+   },[39m
+[31m+   {[39m
+[2m      "file": "packages/teamlead/src/package-gate-queue.ts",[22m
+[2m      "sync_child": 2,[22m
+[2m    },[22m
+[2m    {[22m
+[2m      "file": "packages/teamlead/src/ship-judgment/subscription-process.ts",[22m
+ ❯ src/__tests__/bridge-child-process-census.test.ts:87:18
+     85|   );
+     86|   const actual = sweep().map(({ disposition: _, ...entry }) => entry);
+     87|   expect(actual).toEqual(expected);
+       |                  ^
+     88|  });
+     89| });
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+ FAIL  |parallel| src/__tests__/lead-token-savings-drift.test.ts > pins every ON/OFF dependency independently with a reviewed compatibility rationale
+Error: bootstrap-generator: packages/teamlead/src/bridge/bootstrap-generator.ts drift; review shared duties and both modes before updating the manifest rationale and hashes
+ ❯ verify src/__tests__/lead-token-savings-drift.test.ts:30:11
+     28|     .digest("hex");
+     29|    if (digest !== member.sha256)
+     30|     throw new Error(
+       |           ^
+     31|      `${pair.id}: ${member.path} drift; review shared duties and both …
+     32|     );
+ ❯ src/__tests__/lead-token-savings-drift.test.ts:40:2
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+ FAIL  |parallel| src/__tests__/lead-token-savings-drift.test.ts > rejects independent drift in packages/teamlead/src/__tests__/fixtures/fly2567/bootstrap-generator-legacy.ts
+AssertionError: expected [Function] to throw error including 'packages/teamlead/src/__tests__/fixtu…' but got 'bootstrap-generator: packages/teamlea…'
+Expected: [32m"packages/teamlead/src/[7m__tests__/fixtures/fly2567/bootstrap-generator-legacy.t[27ms"[39m
+Received: [31m"[7mbootstrap-generator: [27mpackages/teamlead/src/[7mbridge/bootstrap-generator.ts drift; review shared duties and both modes before updating the manifest rationale and hashe[27ms"[39m
+ ❯ src/__tests__/lead-token-savings-drift.test.ts:52:5
+     50|      : read(candidate),
+     51|    ),
+     52|   ).toThrow(path);
+       |     ^
+     53|  });
+     54| }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+ FAIL  |parallel| src/__tests__/lead-token-savings-drift.test.ts > rejects independent drift in packages/flywheel-comm/src/db.ts
+AssertionError: expected [Function] to throw error including 'packages/flywheel-comm/src/db.ts' but got 'bootstrap-generator: packages/teamlea…'
+Expected: [32m"[7mpackages/flywheel-comm/src/db.t[27ms"[39m
+Received: [31m"[7mbootstrap-generator: packages/teamlead/src/bridge/bootstrap-generator.ts drift; review shared duties and both modes before updating the manifest rationale and hashe[27ms"[39m
+ ❯ src/__tests__/lead-token-savings-drift.test.ts:52:5
+     50|      : read(candidate),
+     51|    ),
+     52|   ).toThrow(path);
+       |     ^
+     53|  });
+     54| }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+ FAIL  |parallel| src/__tests__/lead-token-savings-drift.test.ts > rejects independent drift in packages/teamlead/src/bridge/bootstrap-format.ts
+ FAIL  |parallel| src/__tests__/lead-token-savings-drift.test.ts > rejects independent drift in packages/teamlead/src/bridge/bootstrap-format-legacy.ts
+AssertionError: expected [Function] to throw error including 'packages/teamlead/src/bridge/bootstra…' but got 'bootstrap-generator: packages/teamlea…'
+Expected: [32m"packages/teamlead/src/bridge/bootstrap-[7mformat.t[27ms"[39m
+Received: [31m"[7mbootstrap-generator: [27mpackages/teamlead/src/bridge/bootstrap-[7mgenerator.ts drift; review shared duties and both modes before updating the manifest rationale and hashe[27ms"[39m
+ ❯ src/__tests__/lead-token-savings-drift.test.ts:52:5
+     50|      : read(candidate),
+     51|    ),
+     52|   ).toThrow(path);
+       |     ^
+     53|  });
+     54| }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+ FAIL  |parallel| src/__tests__/lead-token-savings-drift.test.ts > rejects independent drift in packages/teamlead/src/bridge/mailbox-lead-runtime.ts
+AssertionError: expected [Function] to throw error including 'packages/teamlead/src/bridge/mailbox-…' but got 'bootstrap-generator: packages/teamlea…'
+Expected: [32m"packages/teamlead/src/bridge/[7mmailbox-lead-runtime.t[27ms"[39m
+Received: [31m"[7mbootstrap-generator: [27mpackages/teamlead/src/bridge/[7mbootstrap-generator.ts drift; review shared duties and both modes before updating the manifest rationale and hashe[27ms"[39m
+ ❯ src/__tests__/lead-token-savings-drift.test.ts:52:5
+     50|      : read(candidate),
+     51|    ),
+     52|   ).toThrow(path);
+       |     ^
+     53|  });
+     54| }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+ FAIL  |parallel| src/__tests__/lead-token-savings-drift.test.ts > rejects independent drift in packages/teamlead/src/bridge/commdb-lead-runtime.ts
+AssertionError: expected [Function] to throw error including 'packages/teamlead/src/bridge/commdb-l…' but got 'bootstrap-generator: packages/teamlea…'
+Expected: [32m"packages/teamlead/src/bridge/[7mcommdb-lead-runtime.t[27ms"[39m
+Received: [31m"[7mbootstrap-generator: [27mpackages/teamlead/src/bridge/[7mbootstrap-generator.ts drift; review shared duties and both modes before updating the manifest rationale and hashe[27ms"[39m
+ ❯ src/__tests__/lead-token-savings-drift.test.ts:52:5
+     50|      : read(candidate),
+     51|    ),
+     52|   ).toThrow(path);
+       |     ^
+     53|  });
+     54| }
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+ Test Files  2 failed (2)
+      Tests  8 failed | 10 passed (18)
+   Start at  04:17:10
+   Duration  1.07s (transform 31ms, setup 23ms, collect 27ms, tests 438ms, environment 0ms, prepare 99ms)
