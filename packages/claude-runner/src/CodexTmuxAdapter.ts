@@ -72,10 +72,13 @@ import {
 	classifyGoalOutcome,
 	enforceObjectiveLimit,
 	goalQuotaFailure,
+	sanitizeCodexTurnError,
 } from "./codex-daemon-adapter-helpers.js";
 import type {
 	CodexDaemonEvents,
 	CodexResumeObservation,
+	ResidentWaitObservation,
+	UpstreamRetryEpisode,
 } from "./codex-daemon-client.js";
 import {
 	GOAL_OBJECTIVE_MAX_CHARS,
@@ -487,6 +490,19 @@ export function readCodexGateHoldLatch(executionId: string): boolean {
 		throw new Error(`invalid gateHold in ${p}`);
 	}
 	return state.gateHold;
+}
+
+/**
+ * FLY-2925: the raw persisted same-thread upstream retry episode. The goal loop
+ * validates the shape; a malformed value is treated as "no episode".
+ */
+export function readCodexUpstreamRetryEpisode(executionId: string): unknown {
+	const p = join(codexSessionStateDir(executionId), "session.json");
+	if (!existsSync(p)) return null;
+	const state = JSON.parse(readFileSync(p, "utf-8")) as {
+		upstreamRetryEpisode?: unknown;
+	};
+	return state.upstreamRetryEpisode ?? null;
 }
 
 function capabilityDigest(
@@ -2323,6 +2339,21 @@ export class CodexTmuxAdapter implements IAdapter {
 						!(ctx.processLifecycle?.retirementApproved?.() ?? false),
 					onRestartDecision: (decision) =>
 						this.recordRestartDecision(ctx.executionId, socketPath, decision),
+					// FLY-2925: a resident body sends no wake/resume/retry input once
+					// the engine terminated it or approved its retirement.
+					mayProceed: () =>
+						(termination?.reason() ?? null) === null &&
+						!(ctx.processLifecycle?.retirementApproved?.() ?? false),
+					onResidentWait: (observation) =>
+						this.recordResidentWait(ctx, observation),
+					readUpstreamRetryEpisode: () =>
+						readCodexUpstreamRetryEpisode(
+							ctx.executionId,
+						) as UpstreamRetryEpisode | null,
+					writeUpstreamRetryEpisode: (episode) =>
+						this.mergeSessionState(ctx.executionId, {
+							upstreamRetryEpisode: episode,
+						}),
 				},
 				{
 					onNotification: (method, params) => {
@@ -3256,6 +3287,86 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (behavior === "fail-close")
 			void this.emitGateTimedOut(ctx, marker, waitedMs);
 		return "timedOut";
+	}
+
+	/**
+	 * FLY-2925: a resident body is WAITING (native blocked / upstream error) or
+	 * retrying on the same thread — observation for the operator and Lead, never
+	 * a terminal. Persisted for the display and posted once per observation.
+	 */
+	private recordResidentWait(
+		ctx: AdapterExecutionContext,
+		observation: ResidentWaitObservation,
+	): void {
+		const error = observation.error
+			? sanitizeCodexTurnError({ message: observation.error.message })
+			: undefined;
+		const record = {
+			reason: observation.reason,
+			threadId: observation.threadId,
+			...(observation.turnId ? { turnId: observation.turnId } : {}),
+			...(observation.category ? { category: observation.category } : {}),
+			...(observation.attempt !== undefined
+				? { attempt: observation.attempt }
+				: {}),
+			...(observation.delayMs !== undefined
+				? { delayMs: observation.delayMs }
+				: {}),
+			...(observation.error?.code &&
+			/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(observation.error.code)
+				? { errorCode: observation.error.code }
+				: {}),
+			...(observation.error?.httpStatusCode !== undefined
+				? { httpStatusCode: observation.error.httpStatusCode }
+				: {}),
+			...(error ? { errorMessage: error.message } : {}),
+			observedAt: new Date().toISOString(),
+		};
+		this.log(
+			`[CodexTmuxAdapter] resident_wait exec=${ctx.executionId} reason=${record.reason}${record.category ? ` category=${record.category}` : ""}${record.attempt !== undefined ? ` attempt=${record.attempt}` : ""}`,
+		);
+		try {
+			this.mergeSessionState(ctx.executionId, { residentWait: record });
+		} catch (err) {
+			this.log(
+				`[CodexTmuxAdapter] resident_wait persist failed (ignored): ${safeErr(err)}`,
+			);
+		}
+		void this.emitResidentWait(ctx, record);
+	}
+
+	private async emitResidentWait(
+		ctx: AdapterExecutionContext,
+		record: Record<string, unknown>,
+	): Promise<void> {
+		if (!ctx.bridgeUrl || !ctx.projectName) return;
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+		};
+		if (ctx.bridgeIngestToken)
+			headers.Authorization = `Bearer ${ctx.bridgeIngestToken}`;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 2000);
+		try {
+			await fetch(`${ctx.bridgeUrl}/events`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({
+					event_id: randomUUID(),
+					execution_id: ctx.executionId,
+					issue_id: ctx.issueId,
+					project_name: ctx.projectName,
+					event_type: "codex_resident_wait",
+					source: "codex-tmux-adapter",
+					payload: record,
+				}),
+				signal: controller.signal,
+			});
+		} catch {
+			// best-effort observation — the durable session state keeps it
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	/** FLY-159-isomorphic gate_timed_out payload via the Bridge /events route. */

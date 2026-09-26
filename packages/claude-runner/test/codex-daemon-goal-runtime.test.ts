@@ -555,7 +555,12 @@ describe("CodexDaemonGoalRuntime", () => {
 			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
 		});
 		const rt = new CodexDaemonGoalRuntime(h.opts);
-		await rt.runGoal({ objective: "phase", phaseLifecycle });
+		// FLY-2925: a resident body restarts only through an explicit engine gate.
+		await rt.runGoal({
+			objective: "phase",
+			phaseLifecycle,
+			mayRestartAfterTransportDeath: () => true,
+		});
 
 		expect(calls).toHaveLength(2);
 		expect(calls[0]?.phaseLifecycle).toBe(phaseLifecycle);
@@ -1345,5 +1350,80 @@ describe("FLY-2903 restart gate (mayRestartAfterTransportDeath)", () => {
 			},
 		});
 		expect(out.restarts).toBe(1);
+	});
+});
+
+describe("FLY-2925 resident restart gate + resident wait forwarding", () => {
+	const residentPhase = {
+		getPhaseHold: () => null,
+		observeBoundary: () => ({ kind: "active" as const }),
+		enterHold: async () => {},
+		confirmHoldPaused: async () => {},
+		observe: () => ({ kind: "active" as const }),
+		waitForActivity: async () => {},
+		markWakeStarted: () => "started" as const,
+		finishWake: () => {},
+		leaveHold: async () => {},
+	};
+
+	it("a resident body without an engine restart gate is never restarted", async () => {
+		const death = new GoalRunError("daemon died", "transport_closed");
+		const h = makeHarness({ runGoalScript: [death, COMPLETE] });
+		const decisions: unknown[] = [];
+		await expect(
+			new CodexDaemonGoalRuntime(h.opts).runGoal({
+				objective: "x",
+				phaseLifecycle: residentPhase,
+				onRestartDecision: (d) => decisions.push(d),
+			}),
+		).rejects.toBe(death);
+		expect(h.spawns).toEqual(["/home/a"]);
+		expect(decisions).toEqual([
+			{ restarts: 0, allowed: false, reason: "missing_resident_gate" },
+		]);
+	});
+
+	it("a non-resident run keeps the legacy default restart", async () => {
+		const h = makeHarness({
+			runGoalScript: [new GoalRunError("d", "transport_closed"), COMPLETE],
+		});
+		const out = await new CodexDaemonGoalRuntime(h.opts).runGoal({
+			objective: "x",
+		});
+		expect(out.restarts).toBe(1);
+	});
+
+	it("forwards the resident predicates and retry episode to every goal-loop call", async () => {
+		const seen: Array<Record<string, unknown>> = [];
+		const h = makeHarness({
+			runGoalScript: [],
+			runGoalFn: (async (_client: unknown, input: Record<string, unknown>) => {
+				seen.push(input);
+				if (seen.length === 1) {
+					throw new GoalRunError("d", "transport_closed");
+				}
+				return COMPLETE;
+			}) as unknown as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const mayProceed = () => true;
+		const onResidentWait = () => {};
+		const readUpstreamRetryEpisode = () => null;
+		const writeUpstreamRetryEpisode = () => {};
+		await new CodexDaemonGoalRuntime(h.opts).runGoal({
+			objective: "x",
+			phaseLifecycle: residentPhase,
+			mayRestartAfterTransportDeath: () => true,
+			mayProceed,
+			onResidentWait,
+			readUpstreamRetryEpisode,
+			writeUpstreamRetryEpisode,
+		});
+		expect(seen).toHaveLength(2);
+		for (const input of seen) {
+			expect(input.mayProceed).toBe(mayProceed);
+			expect(input.onResidentWait).toBe(onResidentWait);
+			expect(input.readUpstreamRetryEpisode).toBe(readUpstreamRetryEpisode);
+			expect(input.writeUpstreamRetryEpisode).toBe(writeUpstreamRetryEpisode);
+		}
 	});
 });

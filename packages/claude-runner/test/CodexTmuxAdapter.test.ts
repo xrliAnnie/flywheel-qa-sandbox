@@ -58,6 +58,7 @@ import type {
 	RunGoalInput,
 	RunGoalOutcome,
 } from "../src/codex-daemon-goal-runtime.js";
+import { codexSessionStateDir } from "../src/codex-daemon-runtime.js";
 import { CodexExecutionOwnershipRegistry } from "../src/codex-execution-ownership.js";
 import {
 	admitCodexAgentHome,
@@ -4733,6 +4734,48 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			await execution;
 
 			expect(harness.restarts()).toBe(0);
+			await expect(stopped).resolves.toBe("stopped");
+		});
+
+		it("FLY-2925: the resident continuation predicate withdraws on requestStop; waits and retry episodes persist", async () => {
+			const harness = blockingRuntime();
+			runtime = harness.rt;
+			const execution = makeAdapter().execute(ctx());
+			await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+			const input = runtime.runGoalInputs[0]!;
+			expect(input.mayProceed?.()).toBe(true);
+
+			input.onResidentWait?.({
+				reason: "native_blocked",
+				threadId: THREAD_ID,
+			});
+			const episode = {
+				v: 1 as const,
+				threadId: THREAD_ID,
+				category: "server_overloaded" as const,
+				attempts: 2,
+				lastFailedTurnId: "turn-9",
+				nextAt: 123,
+			};
+			input.writeUpstreamRetryEpisode?.(episode);
+			expect(input.readUpstreamRetryEpisode?.()).toEqual(episode);
+			const state = JSON.parse(
+				readFileSync(
+					join(codexSessionStateDir(execId), "session.json"),
+					"utf-8",
+				),
+			) as { residentWait?: { reason?: string; threadId?: string } };
+			expect(state.residentWait).toMatchObject({
+				reason: "native_blocked",
+				threadId: THREAD_ID,
+			});
+
+			const stopped = executionOwners.requestStop(execId, "terminate", {
+				timeoutMs: 5_000,
+			});
+			expect(input.mayProceed?.()).toBe(false);
+			harness.killDaemon();
+			await execution;
 			await expect(stopped).resolves.toBe("stopped");
 		});
 

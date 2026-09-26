@@ -1224,7 +1224,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						params: {
 							threadId: "t",
 							goal: {
-								status: "blocked",
+								status: "usageLimited",
 								objective: "phase objective",
 							},
 						},
@@ -1257,7 +1257,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		expect(phase.confirmed).toBe(1);
 		expect(phase.finished).toEqual(["park-wake"]);
@@ -1276,7 +1276,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 					params: {
 						threadId: "t",
 						goal: {
-							status: "blocked",
+							status: "usageLimited",
 							objective: "phase objective",
 						},
 					},
@@ -1303,7 +1303,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		const statuses = d.sent
 			.filter((frame) => frame.method === "thread/goal/set")
@@ -1330,7 +1330,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						method: "goal/updated",
 						params: {
 							threadId: "t",
-							goal: { status: "blocked", objective: "phase objective" },
+							goal: { status: "usageLimited", objective: "phase objective" },
 						},
 					});
 				}
@@ -1379,7 +1379,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseControlPollIntervalMs: 1,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		expect(phase.confirmed).toBe(1);
 		expect(phase.started).toEqual(["wake-1"]);
@@ -1424,7 +1424,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 									? "paused"
 									: activeSets === 1
 										? "complete"
-										: "blocked",
+										: "usageLimited",
 							objective: "phase objective",
 						},
 					}
@@ -1444,7 +1444,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			pollIntervalMs: 1,
 			phaseLifecycle: phase,
 		});
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(1);
 		expect(phase.finished).toEqual(["poll-wake"]);
 	});
@@ -1459,7 +1459,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 					method: "goal/updated",
 					params: {
 						threadId: "t",
-						goal: { status: "blocked", objective: "phase objective" },
+						goal: { status: "usageLimited", objective: "phase objective" },
 					},
 				});
 			}
@@ -1492,7 +1492,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 			onRecoveryOwnershipEstablished: recoveryCommit,
 		});
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(0);
 		expect(recoveryCommit).toHaveBeenCalledTimes(1);
 		expect(recoveryCommit).toHaveBeenCalledWith({
@@ -1523,7 +1523,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						params: {
 							threadId: "t",
 							goal: {
-								status: activeSets === 2 ? "complete" : "blocked",
+								status: activeSets === 2 ? "complete" : "usageLimited",
 								objective: "phase objective",
 							},
 						},
@@ -1569,7 +1569,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			sleep: async () => {},
 			phaseLifecycle: phase,
 		});
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(phase.entered).toHaveLength(2);
 		expect(phase.finished).toEqual(["wake-a", "wake-b"]);
 	});
@@ -1644,7 +1644,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 						method: "goal/updated",
 						params: {
 							threadId: "t",
-							goal: { status: "blocked", objective: "phase objective" },
+							goal: { status: "usageLimited", objective: "phase objective" },
 						},
 					});
 				}
@@ -1686,7 +1686,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			phaseLifecycle: phase,
 		});
 
-		expect(result.status).toBe("blocked");
+		expect(result.status).toBe("usageLimited");
 		expect(turns).toBe(2);
 		expect(phase.started).toEqual(["bookkeeping-wake"]);
 		expect(phase.finished).toEqual(["bookkeeping-wake"]);
@@ -1753,25 +1753,33 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 		});
 		let gateOpen = true;
 		const latchWrites: boolean[] = [];
+		const residentWaits: string[] = [];
+		phase.onWait = () => {
+			if (residentWaits.length > 0) d.triggerClose("engine stop");
+		};
 
-		const result = await runGoalToTerminal(makeClient(d), {
-			threadId: "t",
-			objective: "phase objective",
-			now: () => 0,
-			// Mid-run: the Lead answers the gate, and phase 1 hands off (parks) —
-			// the ordinary flow, which reaches the phase hold with the gate episode
-			// still latched.
-			sleep: async () => {
-				gateOpen = false;
-				phase.boundary = { kind: "parked", reason: "phase handoff" };
-			},
-			isWaiting: () => gateOpen,
-			writeGateHoldLatch: (v: boolean) => latchWrites.push(v),
-			phaseLifecycle: phase,
-		});
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "phase objective",
+				now: () => 0,
+				// Mid-run: the Lead answers the gate, and phase 1 hands off (parks) —
+				// the ordinary flow, which reaches the phase hold with the gate episode
+				// still latched.
+				sleep: async () => {
+					gateOpen = false;
+					phase.boundary = { kind: "parked", reason: "phase handoff" };
+				},
+				isWaiting: () => gateOpen,
+				writeGateHoldLatch: (v: boolean) => latchWrites.push(v),
+				phaseLifecycle: phase,
+				onResidentWait: (o) => residentWaits.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
 
-		// Phase 2's blocked is a REAL terminal — never masked by phase 1's episode.
-		expect(result.status).toBe("blocked");
+		// Phase 2's blocked is its OWN observation — never masked by phase 1's
+		// episode — and FLY-2925 keeps the resident body waiting instead of dying.
+		expect(residentWaits).toEqual(["native_blocked"]);
 		// Entering the phase hold released the durable gate latch, so a crash
 		// leaves the phase hold as the single durable hold.
 		expect(latchWrites).toEqual([true, false]);
@@ -3043,5 +3051,377 @@ describe("runGoalToTerminal — FLY-2018 owned turn failures", () => {
 		});
 
 		expect(result.lastTurnError).toBeUndefined();
+	});
+});
+
+// ── FLY-2925: goal observation never decides a resident body's death ─────
+describe("runGoalToTerminal — FLY-2925 resident goal observation", () => {
+	type Scripted = {
+		daemon: FakeDaemon;
+		statuses: () => GoalStatus[];
+		starts: () => string[];
+	};
+
+	/**
+	 * A daemon that streams `steps[0]` from the kick turn and `steps[n]` from
+	 * the nth later `goal/set(active)` (a retry resume or a wake activation): a
+	 * goal status, optionally preceded by a failure of the latest turn. Every
+	 * turn/start gets a distinct turn id.
+	 */
+	function scriptedDaemon(
+		steps: Array<{
+			status: GoalStatus;
+			error?: { message: string; codexErrorInfo: unknown };
+		}>,
+	): Scripted {
+		const daemon = new FakeDaemon();
+		let current: GoalStatus = "active";
+		let activeSets = 0;
+		let stepIndex = 0;
+		let turnSeq = 0;
+		let lastTurn = "none";
+		const emitNext = (push: (n: unknown) => void): void => {
+			const step = steps[stepIndex];
+			stepIndex += 1;
+			if (!step) return;
+			if (step.error) {
+				push({
+					method: "turn/completed",
+					params: {
+						threadId: "t",
+						turn: { id: lastTurn, status: "failed", error: step.error },
+					},
+				});
+			}
+			current = step.status;
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					goal: { status: step.status, objective: "OURS" },
+				},
+			});
+		};
+		daemon.responders.set("thread/goal/set", (params, _id, push) => {
+			current = (params as { status: GoalStatus }).status;
+			if (current !== "active") return {};
+			activeSets += 1;
+			if (activeSets > 1) {
+				// A resumed native goal continues in its own autonomous turn.
+				lastTurn = `auto-${activeSets}`;
+				emitNext(push);
+			}
+			return {};
+		});
+		daemon.responders.set("turn/start", (_params, _id, push) => {
+			turnSeq += 1;
+			lastTurn = `turn-${turnSeq}`;
+			if (turnSeq === 1) emitNext(push);
+			return { turn: { id: lastTurn } };
+		});
+		daemon.responders.set("thread/goal/get", () => ({
+			goal: { status: current, objective: "OURS" },
+		}));
+		return {
+			daemon,
+			statuses: () =>
+				daemon.sent
+					.filter((frame) => frame.method === "thread/goal/set")
+					.map((frame) => (frame.params as { status: GoalStatus }).status),
+			starts: () =>
+				daemon.sent
+					.filter((frame) => frame.method === "turn/start")
+					.map(
+						(frame) =>
+							(
+								(frame.params as { input: Array<{ text: string }> }).input[0] ??
+								{ text: "" }
+							).text,
+					),
+		};
+	}
+
+	it("keeps a resident body alive on blocked-without-gate and resumes the SAME thread on a doorbell wake", async () => {
+		const { daemon, statuses, starts } = scriptedDaemon([
+			{ status: "blocked" },
+			{ status: "complete" },
+		]);
+		const phase = new FakePhaseLifecycle();
+		const observations: string[] = [];
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:1", content: "run flywheel-comm inbox" },
+				});
+			}
+			if (phase.hold) daemon.triggerClose("engine stop");
+		};
+
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				onResidentWait: (o) => observations.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+
+		// blocked parked the body without an engine resident hold; the wake reused
+		// the thread (no fresh thread, no generic kick) and only a later native
+		// complete entered the phase hold.
+		expect(observations).toEqual(["native_blocked"]);
+		expect(starts()).toEqual([
+			"Begin working toward the goal now.",
+			"[phase-wake doorbell:1] run flywheel-comm inbox",
+		]);
+		expect(phase.started).toEqual(["doorbell:1"]);
+		expect(phase.finished).toEqual(["doorbell:1"]);
+		expect(phase.entered).toHaveLength(1);
+		expect(statuses()).toEqual(["active", "paused", "active", "paused"]);
+	});
+
+	it("retries a capacity failure on the same thread with 10s/30s/120s backoff, then waits", async () => {
+		const overloaded = {
+			message: "Selected model is at capacity",
+			codexErrorInfo: "serverOverloaded",
+		};
+		const { daemon, statuses, starts } = scriptedDaemon([
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked", error: overloaded },
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		let episode: unknown = null;
+		const observations: Array<{ reason: string; attempt?: number }> = [];
+
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+				},
+				onResidentWait: (o) =>
+					observations.push({ reason: o.reason, attempt: o.attempt }),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+
+		expect(sleeps.filter((ms) => ms >= 10_000)).toEqual([
+			10_000, 30_000, 120_000,
+		]);
+		// Retries resume the native goal; they never start a new turn or thread.
+		expect(starts()).toHaveLength(1);
+		expect(statuses()).toEqual(["active", "active", "active", "active", "paused"]);
+		expect(observations.map((o) => o.reason)).toEqual([
+			"upstream_retry",
+			"upstream_retry",
+			"upstream_retry",
+			"upstream_retry_exhausted",
+		]);
+		expect(episode).toMatchObject({
+			threadId: "t",
+			category: "server_overloaded",
+			attempts: 3,
+		});
+	});
+
+	it("parses object-form codexErrorInfo: HTTP 429 is retryable, HTTP 400 waits without retry", async () => {
+		for (const [status, retried] of [
+			[429, true],
+			[400, false],
+		] as const) {
+			const failure = {
+				message: `upstream ${status}`,
+				codexErrorInfo: { httpConnectionFailed: { httpStatusCode: status } },
+			};
+			const { daemon, statuses } = scriptedDaemon([
+				{ status: "blocked", error: failure },
+				{ status: "blocked" },
+			]);
+			const phase = new FakePhaseLifecycle();
+			let waits = 0;
+			phase.onWait = () => {
+				waits += 1;
+				daemon.triggerClose("engine stop");
+			};
+			await expect(
+				runGoalToTerminal(makeClient(daemon), {
+					threadId: "t",
+					objective: "OURS",
+					now: () => 0,
+					sleep: async () => {},
+					pollIntervalMs: 1,
+					phaseLifecycle: phase,
+					readUpstreamRetryEpisode: () => null,
+					writeUpstreamRetryEpisode: () => {},
+				}),
+			).rejects.toMatchObject({ kind: "transport_closed" });
+			expect(waits).toBe(1);
+			expect(statuses()[1]).toBe(retried ? "active" : "paused");
+		}
+	});
+
+	it("never blind-retries unauthorized; the body waits for correction instead of dying", async () => {
+		const { daemon, statuses } = scriptedDaemon([
+			{
+				status: "blocked",
+				error: { message: "token revoked", codexErrorInfo: "unauthorized" },
+			},
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		const reasons: string[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => null,
+				writeUpstreamRetryEpisode: () => {},
+				onResidentWait: (o) => reasons.push(o.reason),
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(sleeps.some((ms) => ms >= 10_000)).toBe(false);
+		expect(statuses()).toEqual(["active", "paused"]);
+		expect(reasons).toEqual(["upstream_error_wait"]);
+	});
+
+	it("a persisted exhausted episode is not reset by a restart re-observing the same failure", async () => {
+		const overloaded = { message: "at capacity", codexErrorInfo: "serverOverloaded" };
+		const { daemon, statuses } = scriptedDaemon([
+			{ status: "blocked", error: overloaded },
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => ({
+					v: 1,
+					threadId: "t",
+					category: "server_overloaded",
+					attempts: 3,
+					lastFailedTurnId: "turn-0",
+					nextAt: 0,
+				}),
+				writeUpstreamRetryEpisode: () => {},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(sleeps.some((ms) => ms >= 10_000)).toBe(false);
+		expect(statuses()).toEqual(["active", "paused"]);
+	});
+
+	it("a restart re-observing the failure it already scheduled replays that retry without consuming another attempt", async () => {
+		const overloaded = { message: "at capacity", codexErrorInfo: "serverOverloaded" };
+		const { daemon, statuses } = scriptedDaemon([
+			{ status: "blocked", error: overloaded },
+			{ status: "blocked" },
+		]);
+		const phase = new FakePhaseLifecycle();
+		phase.onWait = () => daemon.triggerClose("engine stop");
+		const sleeps: number[] = [];
+		let episode: unknown = {
+			v: 1,
+			threadId: "t",
+			category: "server_overloaded",
+			attempts: 1,
+			lastFailedTurnId: "turn-1",
+			nextAt: 0,
+		};
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async (ms) => {
+					sleeps.push(ms);
+				},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				readUpstreamRetryEpisode: () => episode as never,
+				writeUpstreamRetryEpisode: (next) => {
+					episode = next;
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(sleeps.filter((ms) => ms >= 10_000)).toEqual([10_000]);
+		expect(episode).toMatchObject({ attempts: 1, lastFailedTurnId: "turn-1" });
+		expect(statuses()).toEqual(["active", "active", "paused"]);
+	});
+
+	it("sends no wake or retry input once the engine withdrew the body (mayProceed=false)", async () => {
+		const { daemon, starts, statuses } = scriptedDaemon([{ status: "blocked" }]);
+		const phase = new FakePhaseLifecycle();
+		let waits = 0;
+		phase.onWait = () => {
+			waits += 1;
+			if (waits === 1) {
+				phase.observations.push({
+					kind: "wake",
+					message: { id: "doorbell:late", content: "late" },
+				});
+			}
+			if (waits >= 3) daemon.triggerClose("engine stop");
+		};
+		let proceed = true;
+		await expect(
+			runGoalToTerminal(makeClient(daemon), {
+				threadId: "t",
+				objective: "OURS",
+				now: () => 0,
+				sleep: async () => {},
+				pollIntervalMs: 1,
+				phaseLifecycle: phase,
+				mayProceed: () => proceed,
+				onResidentWait: () => {
+					proceed = false;
+				},
+			}),
+		).rejects.toMatchObject({ kind: "transport_closed" });
+		expect(starts()).toHaveLength(1);
+		expect(phase.started).toEqual([]);
+		expect(statuses()).toEqual(["active", "paused"]);
+	});
+
+	it("a non-resident run keeps the legacy blocked terminal", async () => {
+		const { daemon } = scriptedDaemon([{ status: "blocked" }]);
+		const result = await runGoalToTerminal(makeClient(daemon), {
+			threadId: "t",
+			objective: "OURS",
+			now: () => 0,
+			sleep: async () => {},
+			pollIntervalMs: 1,
+		});
+		expect(result.status).toBe("blocked");
 	});
 });

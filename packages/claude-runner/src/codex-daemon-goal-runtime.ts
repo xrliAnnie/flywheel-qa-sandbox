@@ -32,7 +32,9 @@ import {
 	type GoalStatus,
 	type GoalTurnLifecycle,
 	type RecoveryOwnershipReceipt,
+	type ResidentWaitObservation,
 	runGoalToTerminal,
+	type UpstreamRetryEpisode,
 } from "./codex-daemon-client.js";
 import {
 	type DaemonHandle,
@@ -226,12 +228,27 @@ export interface RunGoalInput {
 	mayRestartAfterTransportDeath?: () => boolean;
 	/** FLY-2903: observes each restart decision; a throwing handler is swallowed. */
 	onRestartDecision?: (decision: RestartDecision) => void;
+	/**
+	 * FLY-2925: engine continuation predicate for a resident body, forwarded to
+	 * the goal loop (checked before any wake/resume/retry input).
+	 */
+	mayProceed?: () => boolean;
+	/** FLY-2925: resident wait/retry observations, forwarded across restarts. */
+	onResidentWait?: (observation: ResidentWaitObservation) => void;
+	/** FLY-2925: durable upstream retry episode, shared across daemon restarts. */
+	readUpstreamRetryEpisode?: () => UpstreamRetryEpisode | null;
+	writeUpstreamRetryEpisode?: (episode: UpstreamRetryEpisode | null) => void;
 }
 
 export interface RestartDecision {
 	restarts: number;
 	allowed: boolean;
-	reason: "allowed" | "refused_by_owner" | "predicate_threw";
+	reason:
+		| "allowed"
+		| "refused_by_owner"
+		| "predicate_threw"
+		/** FLY-2925: a resident body must carry an engine restart gate. */
+		| "missing_resident_gate";
 }
 
 export interface RunGoalOutcome {
@@ -763,6 +780,18 @@ export class CodexDaemonGoalRuntime {
 											input.onRecoveryOwnershipEstablished,
 									}
 								: {}),
+							...(input.mayProceed ? { mayProceed: input.mayProceed } : {}),
+							...(input.onResidentWait
+								? { onResidentWait: input.onResidentWait }
+								: {}),
+							...(input.readUpstreamRetryEpisode
+								? { readUpstreamRetryEpisode: input.readUpstreamRetryEpisode }
+								: {}),
+							...(input.writeUpstreamRetryEpisode
+								? {
+										writeUpstreamRetryEpisode: input.writeUpstreamRetryEpisode,
+									}
+								: {}),
 						},
 						events,
 					);
@@ -849,7 +878,13 @@ export class CodexDaemonGoalRuntime {
 		input: RunGoalInput,
 	): { allowed: true } | { allowed: false; reason: RestartDecision["reason"] } {
 		const predicate = input.mayRestartAfterTransportDeath;
-		if (!predicate) return { allowed: true };
+		if (!predicate) {
+			// FLY-2925: a resident (DAG) body never inherits "missing predicate
+			// means allowed"; only the engine's gate may authorize a restart.
+			return input.phaseLifecycle
+				? { allowed: false, reason: "missing_resident_gate" }
+				: { allowed: true };
+		}
 		try {
 			return predicate() === true
 				? { allowed: true }

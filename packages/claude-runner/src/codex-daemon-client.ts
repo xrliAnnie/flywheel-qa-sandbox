@@ -144,7 +144,109 @@ export interface GoalRunResult {
 		turnId: string;
 		message: string;
 		code?: string;
+		httpStatusCode?: number;
 	};
+}
+
+/**
+ * FLY-2925: why a RESIDENT body is waiting instead of ending. Observation
+ * only — it never grants or withdraws engine authority.
+ */
+export type ResidentWaitReason =
+	| "native_blocked"
+	| "upstream_error_wait"
+	| "upstream_retry"
+	| "upstream_retry_exhausted";
+
+export interface ResidentWaitObservation {
+	reason: ResidentWaitReason;
+	threadId: string;
+	turnId?: string;
+	category?: UpstreamRetryCategory;
+	attempt?: number;
+	delayMs?: number;
+	error?: { message: string; code?: string; httpStatusCode?: number };
+}
+
+/** FLY-2925: the only upstream failures a resident body retries by itself. */
+export type UpstreamRetryCategory =
+	| "server_overloaded"
+	| "rate_limited"
+	| "server_error";
+
+/**
+ * FLY-2925: durable same-thread retry episode. It survives daemon and Bridge
+ * restarts so a restart never re-arms the retry budget; only legitimate model
+ * progress (a successful turn) or a different failure category ends it.
+ */
+export interface UpstreamRetryEpisode {
+	v: 1;
+	threadId: string;
+	category: UpstreamRetryCategory;
+	/** Retries scheduled so far in this episode (max {@link UPSTREAM_RETRY_BACKOFF_MS}.length). */
+	attempts: number;
+	/** The failed turn the latest retry answered; a re-observation is not a new attempt. */
+	lastFailedTurnId: string;
+	nextAt: number;
+}
+
+/** FLY-2925: bounded same-thread backoff for capacity / 429 / 5xx. */
+export const UPSTREAM_RETRY_BACKOFF_MS: readonly number[] = [
+	10_000, 30_000, 120_000,
+];
+
+const HTTP_STATUS_ERROR_VARIANTS = new Set([
+	"httpConnectionFailed",
+	"responseStreamConnectionFailed",
+	"responseStreamDisconnected",
+	"responseTooManyFailedAttempts",
+]);
+
+/**
+ * FLY-2925: classify a structured Codex turn error. Only an explicit
+ * `serverOverloaded`, `internalServerError`, or an HTTP 429/5xx status is
+ * transient; unauthorized, bad requests, unknown codes and free text never
+ * authorize a retry.
+ */
+export function classifyRetryableUpstreamError(
+	error: { code?: string; httpStatusCode?: number } | undefined,
+): UpstreamRetryCategory | undefined {
+	if (!error?.code) return undefined;
+	if (error.code === "serverOverloaded") return "server_overloaded";
+	if (error.code === "internalServerError") return "server_error";
+	if (
+		HTTP_STATUS_ERROR_VARIANTS.has(error.code) &&
+		typeof error.httpStatusCode === "number"
+	) {
+		if (error.httpStatusCode === 429) return "rate_limited";
+		if (error.httpStatusCode >= 500 && error.httpStatusCode <= 599) {
+			return "server_error";
+		}
+	}
+	return undefined;
+}
+
+function parseUpstreamRetryEpisode(
+	value: unknown,
+): UpstreamRetryEpisode | null {
+	if (typeof value !== "object" || value === null) return null;
+	const e = value as Record<string, unknown>;
+	if (
+		e.v !== 1 ||
+		typeof e.threadId !== "string" ||
+		(e.category !== "server_overloaded" &&
+			e.category !== "rate_limited" &&
+			e.category !== "server_error") ||
+		typeof e.attempts !== "number" ||
+		!Number.isInteger(e.attempts) ||
+		e.attempts < 0 ||
+		typeof e.lastFailedTurnId !== "string" ||
+		typeof e.nextAt !== "number" ||
+		!Number.isFinite(e.nextAt)
+	) {
+		return null;
+	}
+	return e as unknown as UpstreamRetryEpisode;
 }
 
 export interface LegacyGoalPhaseHold {
@@ -757,8 +859,15 @@ export function parseThreadReadTurns(
  * What a goal status observed by `runGoalToTerminal` actually means for the run.
  * `none` = nothing observed yet. The two `*_held` verdicts are the run staying
  * RESIDENT: the daemon reported a terminal, but this run is not over.
+ * `resident` (FLY-2925) = a resident body entered a wait or armed a same-thread
+ * retry; like `phase_held`, the loop must restart from the top.
  */
-type TerminalVerdict = "terminal" | "gate_held" | "phase_held" | "none";
+type TerminalVerdict =
+	| "terminal"
+	| "gate_held"
+	| "phase_held"
+	| "resident"
+	| "none";
 
 /**
  * Drive a goal to a terminal status. Sets the goal, kicks the first turn, and
@@ -847,6 +956,19 @@ export async function runGoalToTerminal(
 		onRecoveryOwnershipEstablished?: (
 			receipt: RecoveryOwnershipReceipt,
 		) => void | Promise<void>;
+		/**
+		 * FLY-2925: engine-owned continuation predicate for a RESIDENT body. It is
+		 * consulted before every wake turn, native resume and upstream retry; a
+		 * false answer (or a throw) sends no input and leaves the body waiting for
+		 * the engine's stop. Absent → allowed.
+		 */
+		mayProceed?: () => boolean;
+		/** FLY-2925: observes resident waits/retries; a throwing handler is swallowed. */
+		onResidentWait?: (observation: ResidentWaitObservation) => void;
+		/** FLY-2925: durable upstream retry episode reader (throw → no retry). */
+		readUpstreamRetryEpisode?: () => UpstreamRetryEpisode | null;
+		/** FLY-2925: durable upstream retry episode writer (throw → no retry). */
+		writeUpstreamRetryEpisode?: (episode: UpstreamRetryEpisode | null) => void;
 		now?: () => number;
 		sleep?: (ms: number) => Promise<void>;
 	},
@@ -926,6 +1048,11 @@ export async function runGoalToTerminal(
 		}
 	};
 	let lastTurnError: GoalRunResult["lastTurnError"];
+	// FLY-2925: the latest turn failure on OUR thread, including autonomous
+	// goal-continuation turns this run did not start. Used ONLY to classify a
+	// resident wait/retry — never as failure attribution (that stays owned-only).
+	let lastThreadTurnError: GoalRunResult["lastTurnError"];
+	let retryEpisodeOpen = false;
 	let pendingTurnDispatch:
 		| { notifications: Array<{ method: string; params: unknown }> }
 		| undefined;
@@ -937,11 +1064,36 @@ export async function runGoalToTerminal(
 			return;
 		}
 		if (completion.error) {
-			lastTurnError = {
-				turnId: completion.turnId,
-				message: completion.error.message,
-				...(completion.error.code ? { code: completion.error.code } : {}),
-			};
+			lastTurnError = toTurnError(completion.turnId, completion.error);
+		}
+	};
+	const observeThreadTurnOutcome = (method: string, params: unknown): void => {
+		if (
+			!goalArmed ||
+			method !== "turn/completed" ||
+			notificationThreadId(params) !== input.threadId
+		) {
+			return;
+		}
+		const completion = extractTurnCompletion(params);
+		if (!completion) return;
+		if (completion.error) {
+			lastThreadTurnError = toTurnError(completion.turnId, completion.error);
+			return;
+		}
+		if (completion.status === "completed") {
+			lastThreadTurnError = undefined;
+			// Legitimate model progress ends the retry episode.
+			if (retryEpisodeOpen) {
+				try {
+					input.writeUpstreamRetryEpisode?.(null);
+					retryEpisodeOpen = false;
+				} catch (error) {
+					client.logDiagnostic(
+						`upstream retry episode clear failed (kept for the next boundary): ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
 		}
 	};
 	const observeTurnNotification = (method: string, params: unknown): void => {
@@ -1044,6 +1196,7 @@ export async function runGoalToTerminal(
 		onNotification: (method, params) => {
 			events?.onNotification?.(method, params);
 			observeTurnNotification(method, params);
+			observeThreadTurnOutcome(method, params);
 			// R19 HIGH-1: only count turns for OUR thread (a daemon can host
 			// multiple threads; a stray notification must not inflate the count).
 			// R24 MEDIUM: and only AFTER our goal is armed — a prior goal's turn
@@ -1507,6 +1660,216 @@ export async function runGoalToTerminal(
 	 *    deadline check would time out a healthy parked runner.
 	 * Anything else is this run's real terminal.
 	 */
+	// ── FLY-2925: resident wait — a native goal status is observation only ────
+	// A resident (DAG) body is never ended by `blocked`: the engine alone decides
+	// death. The body parks locally (no engine resident hold — the phase is NOT
+	// done), keeps its thread, and resumes the SAME thread when a doorbell wake
+	// (any Lead instruction) arrives. Its active budget is frozen while waiting.
+	let residentWait: {
+		deadlineRemainingMs: number;
+		hardDeadlineRemainingMs: number;
+	} | null = null;
+	const proceedAllowed = (): boolean => {
+		if (!input.mayProceed) return true;
+		try {
+			return input.mayProceed() === true;
+		} catch {
+			return false;
+		}
+	};
+	const observeResidentWait = (observation: ResidentWaitObservation): void => {
+		try {
+			input.onResidentWait?.(observation);
+		} catch {
+			/* observation only */
+		}
+	};
+	const describeError = (
+		error: NonNullable<GoalRunResult["lastTurnError"]>,
+	): ResidentWaitObservation["error"] => ({
+		message: error.message,
+		...(error.code ? { code: error.code } : {}),
+		...(error.httpStatusCode !== undefined
+			? { httpStatusCode: error.httpStatusCode }
+			: {}),
+	});
+	const enterResidentWait = async (
+		observation: ResidentWaitObservation,
+	): Promise<void> => {
+		await settleTurnBarrier();
+		const t = now();
+		residentWait = {
+			deadlineRemainingMs: Math.max(0, deadline - t),
+			hardDeadlineRemainingMs: Math.max(0, hardDeadline - t),
+		};
+		terminalSeen = null;
+		try {
+			await setGoalStatus("paused", phaseControlRpcTimeoutMs);
+		} catch (error) {
+			if (client.isClosed()) {
+				failClose(
+					`daemon transport closed entering resident wait: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			// A blocked goal does not continue on its own; pausing is a safety
+			// layer over the local wait, never a precondition for staying alive.
+			client.logDiagnostic(
+				`goal pause failed entering resident wait (continuing local wait): ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		observeResidentWait(observation);
+	};
+	const reactivateResidentWake = async (
+		message: Extract<GoalPhaseObservation, { kind: "wake" }>["message"],
+	): Promise<boolean> => {
+		if (!phase || !residentWait) return false;
+		const claim = phase.markWakeStarted(message.id);
+		if (claim === "disposed" || claim === "missing") return false;
+		try {
+			beginTurnDispatch();
+			const turnId = await client.startTurn(
+				input.threadId,
+				`[phase-wake ${message.id}] ${message.content}`,
+				phaseControlRpcTimeoutMs,
+			);
+			claimTurnDispatch(turnId);
+			await settleTurnBarrier();
+			terminalSeen = null;
+			lastTurnError = undefined;
+			await setGoalStatus("active", phaseControlRpcTimeoutMs);
+			const restoredAt = now();
+			deadline = restoredAt + residentWait.deadlineRemainingMs;
+			hardDeadline = restoredAt + residentWait.hardDeadlineRemainingMs;
+			try {
+				input.onBudgetRestored?.({
+					deadlineMs: deadline,
+					hardDeadlineMs: hardDeadline,
+				});
+			} catch {
+				/* budget carry callback must not break activation */
+			}
+		} catch (error) {
+			abortTurnDispatch();
+			if (client.isClosed()) {
+				failClose(
+					`daemon transport closed reactivating resident wake ${message.id}: ${error instanceof Error ? error.message : error}`,
+				);
+			}
+			return false;
+		}
+		// The wake turn already committed: only retry the idempotent bookkeeping.
+		for (;;) {
+			try {
+				phase.finishWake(message.id);
+				break;
+			} catch (error) {
+				if (client.isClosed()) {
+					failClose(
+						`daemon transport closed finalizing resident wake ${message.id}: ${error instanceof Error ? error.message : error}`,
+					);
+				}
+				await waitForPhaseActivity();
+			}
+		}
+		residentWait = null;
+		return true;
+	};
+	/**
+	 * FLY-2925: one bounded same-thread retry of a transient upstream failure.
+	 * `retried` = the native goal was resumed; `exhausted` = the episode used
+	 * every backoff step; `refused` = persistence, budget or engine authority
+	 * forbids retrying (the body waits instead).
+	 */
+	const tryUpstreamRetry = async (
+		failure: NonNullable<GoalRunResult["lastTurnError"]>,
+		category: UpstreamRetryCategory,
+	): Promise<"retried" | "exhausted" | "refused"> => {
+		if (!input.readUpstreamRetryEpisode || !input.writeUpstreamRetryEpisode) {
+			return "refused";
+		}
+		let prior: UpstreamRetryEpisode | null;
+		try {
+			prior = parseUpstreamRetryEpisode(input.readUpstreamRetryEpisode());
+		} catch {
+			return "refused";
+		}
+		const sameEpisode =
+			prior !== null &&
+			prior.threadId === input.threadId &&
+			prior.category === category;
+		const reobserved =
+			sameEpisode && prior !== null && prior.lastFailedTurnId === failure.turnId;
+		const attempts = sameEpisode && prior ? prior.attempts : 0;
+		// A re-observed failure (duplicate notification / restart) never consumes
+		// another attempt; it only replays the retry it already scheduled.
+		const attempt = reobserved ? attempts : attempts + 1;
+		if (attempt > UPSTREAM_RETRY_BACKOFF_MS.length || attempt < 1) {
+			return "exhausted";
+		}
+		if (!proceedAllowed()) return "refused";
+		const delayMs = UPSTREAM_RETRY_BACKOFF_MS[attempt - 1] ?? 0;
+		if (remainingBudget() <= delayMs) return "refused";
+		try {
+			input.writeUpstreamRetryEpisode({
+				v: 1,
+				threadId: input.threadId,
+				category,
+				attempts: attempt,
+				lastFailedTurnId: failure.turnId,
+				nextAt: now() + delayMs,
+			});
+			retryEpisodeOpen = true;
+		} catch {
+			return "refused";
+		}
+		observeResidentWait({
+			reason: "upstream_retry",
+			threadId: input.threadId,
+			turnId: failure.turnId,
+			category,
+			attempt,
+			delayMs,
+			error: describeError(failure),
+		});
+		await sleep(delayMs);
+		if (client.isClosed()) {
+			failClose("daemon transport closed during upstream retry backoff");
+		}
+		if (!proceedAllowed()) return "refused";
+		terminalSeen = null;
+		lastTurnError = undefined;
+		lastThreadTurnError = undefined;
+		await setGoalStatus("active", remainingBudget());
+		return "retried";
+	};
+	const settleResidentBlocked = async (): Promise<TerminalVerdict> => {
+		const failure = lastThreadTurnError;
+		const category = classifyRetryableUpstreamError(failure);
+		if (failure && category) {
+			const retry = await tryUpstreamRetry(failure, category);
+			if (retry === "retried") return "resident";
+			await enterResidentWait({
+				reason:
+					retry === "exhausted"
+						? "upstream_retry_exhausted"
+						: "upstream_error_wait",
+				threadId: input.threadId,
+				turnId: failure.turnId,
+				category,
+				error: describeError(failure),
+			});
+			return "resident";
+		}
+		await enterResidentWait({
+			reason: failure ? "upstream_error_wait" : "native_blocked",
+			threadId: input.threadId,
+			...(failure
+				? { turnId: failure.turnId, error: describeError(failure) }
+				: {}),
+		});
+		return "resident";
+	};
+
 	const settleTerminal = async (): Promise<TerminalVerdict> => {
 		await settleTurnBarrier();
 		const status = terminalSeen;
@@ -1515,6 +1878,9 @@ export async function runGoalToTerminal(
 		if (phase && status === "complete") {
 			await enterPhaseHold();
 			return "phase_held";
+		}
+		if (phase && status === "blocked") {
+			return settleResidentBlocked();
 		}
 		return "terminal";
 	};
@@ -1718,8 +2084,26 @@ export async function runGoalToTerminal(
 				if (client.isClosed())
 					failClose("daemon transport closed in phase hold");
 				const observation = phase?.observe() ?? { kind: "unknown" as const };
-				if (observation.kind === "wake") {
+				// FLY-2925: an engine-withdrawn body sends no wake input.
+				if (observation.kind === "wake" && proceedAllowed()) {
 					if (await reactivateWake(observation.message)) continue;
+				}
+				await waitForPhaseActivity();
+				continue;
+			}
+			// FLY-2925: a resident body waiting on `blocked` / an upstream error —
+			// zero tokens, no budget drain, woken only by a durable doorbell wake.
+			if (residentWait) {
+				if (client.isClosed())
+					failClose("daemon transport closed in resident wait");
+				if (phase?.observeBoundary().kind === "parked") {
+					residentWait = null;
+					await enterPhaseHold();
+					continue;
+				}
+				const observation = phase?.observe() ?? { kind: "unknown" as const };
+				if (observation.kind === "wake" && proceedAllowed()) {
+					if (await reactivateResidentWake(observation.message)) continue;
 				}
 				await waitForPhaseActivity();
 				continue;
@@ -1734,12 +2118,12 @@ export async function runGoalToTerminal(
 			// notifications cannot duplicate that resume.
 			let verdict = await settleTerminal();
 			if (verdict === "terminal") break;
-			if (verdict === "phase_held") continue;
+			if (verdict === "phase_held" || verdict === "resident") continue;
 			if (gateHoldActive) {
 				if (input.isWaiting?.()) {
 					terminalSeen = null;
 					await pauseGateGoal();
-				} else {
+				} else if (proceedAllowed()) {
 					terminalSeen = null;
 					await resumeHeldGoal();
 					gateHoldActive = false;
@@ -1751,7 +2135,7 @@ export async function runGoalToTerminal(
 			// (remainingBudget extends the deadline when a gate is open — MED-7.)
 			verdict = await settleTerminal();
 			if (verdict === "terminal") break;
-			if (verdict === "phase_held") continue;
+			if (verdict === "phase_held" || verdict === "resident") continue;
 			if (client.isClosed()) failClose("daemon transport closed mid-run");
 			if (remainingBudget() <= 0) timedOut("waiting for terminal status");
 
@@ -1764,7 +2148,7 @@ export async function runGoalToTerminal(
 			// transport_closed failure.
 			verdict = await settleTerminal();
 			if (verdict === "terminal") break;
-			if (verdict === "phase_held") continue;
+			if (verdict === "phase_held" || verdict === "resident") continue;
 			// R22 HIGH: a close that landed during the sleep (with no terminal
 			// seen before it) fails the run now — no need for a getGoal round-trip
 			// to discover the dead socket.
@@ -1783,7 +2167,7 @@ export async function runGoalToTerminal(
 				// getGoal failure — never fail-close over a real terminal status.
 				verdict = await settleTerminal();
 				if (verdict === "terminal") break;
-				if (verdict === "phase_held") continue;
+				if (verdict === "phase_held" || verdict === "resident") continue;
 				if (client.isClosed())
 					failClose(`getGoal failed on a closed transport: ${err}`);
 				if (remainingBudget() <= 0) timedOut("polling goal status");
@@ -1796,7 +2180,7 @@ export async function runGoalToTerminal(
 			// we already legitimately reached (R21 "first terminal wins").
 			verdict = await settleTerminal();
 			if (verdict === "terminal") break;
-			if (verdict === "phase_held") continue;
+			if (verdict === "phase_held" || verdict === "resident") continue;
 			if (goal?.status) {
 				// R24 HIGH: the poll reads the thread's CURRENT goal. If another
 				// control end replaced our goal, its objective no longer matches
@@ -1813,7 +2197,7 @@ export async function runGoalToTerminal(
 					terminalSeen = goal.status;
 					verdict = await settleTerminal();
 					if (verdict === "terminal") break;
-					if (verdict === "phase_held") continue;
+					if (verdict === "phase_held" || verdict === "resident") continue;
 				}
 			}
 		}
@@ -1871,7 +2255,7 @@ function extractTurnCompletion(params: unknown):
 	| {
 			turnId: string;
 			status?: string;
-			error?: { message: string; code?: string };
+			error?: { message: string; code?: string; httpStatusCode?: number };
 	  }
 	| undefined {
 	if (typeof params !== "object" || params === null) return undefined;
@@ -1895,28 +2279,71 @@ function extractTurnCompletion(params: unknown):
 		codex_error_info?: unknown;
 	};
 	if (typeof error.message !== "string") return undefined;
-	if (
-		(Object.hasOwn(error, "codexErrorInfo") &&
-			error.codexErrorInfo !== undefined &&
-			typeof error.codexErrorInfo !== "string") ||
-		(Object.hasOwn(error, "codex_error_info") &&
-			error.codex_error_info !== undefined &&
-			typeof error.codex_error_info !== "string")
-	) {
-		return undefined;
-	}
-	const code =
-		typeof error.codexErrorInfo === "string"
-			? error.codexErrorInfo
-			: typeof error.codex_error_info === "string"
-				? error.codex_error_info
-				: undefined;
+	const raw = Object.hasOwn(error, "codexErrorInfo")
+		? error.codexErrorInfo
+		: error.codex_error_info;
+	const info = parseCodexErrorInfo(raw);
+	// A present but malformed codexErrorInfo drops the whole error payload.
+	if (info === null) return undefined;
 	return {
 		...base,
 		error: {
 			message: error.message,
-			...(code ? { code } : {}),
+			...(info?.code ? { code: info.code } : {}),
+			...(info?.httpStatusCode !== undefined
+				? { httpStatusCode: info.httpStatusCode }
+				: {}),
 		},
+	};
+}
+
+/**
+ * app-server v2 `CodexErrorInfo`: a camelCase unit variant (`"serverOverloaded"`)
+ * or a single-key struct variant carrying the upstream HTTP status
+ * (`{ httpConnectionFailed: { httpStatusCode: 429 } }`, FLY-2925). `undefined` =
+ * absent; `null` = present but malformed (unknown struct key, extra keys, or a
+ * non-integer status).
+ */
+function parseCodexErrorInfo(
+	raw: unknown,
+): { code: string; httpStatusCode?: number } | undefined | null {
+	if (raw === undefined) return undefined;
+	if (typeof raw === "string") return { code: raw };
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		return null;
+	}
+	const keys = Object.keys(raw);
+	if (keys.length !== 1) return null;
+	const code = keys[0] as string;
+	if (!HTTP_STATUS_ERROR_VARIANTS.has(code)) return null;
+	const body = (raw as Record<string, unknown>)[code];
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		return null;
+	}
+	const status = (body as { httpStatusCode?: unknown }).httpStatusCode;
+	if (status === undefined || status === null) return { code };
+	if (
+		typeof status !== "number" ||
+		!Number.isInteger(status) ||
+		status < 100 ||
+		status > 599
+	) {
+		return null;
+	}
+	return { code, httpStatusCode: status };
+}
+
+function toTurnError(
+	turnId: string,
+	error: { message: string; code?: string; httpStatusCode?: number },
+): NonNullable<GoalRunResult["lastTurnError"]> {
+	return {
+		turnId,
+		message: error.message,
+		...(error.code ? { code: error.code } : {}),
+		...(error.httpStatusCode !== undefined
+			? { httpStatusCode: error.httpStatusCode }
+			: {}),
 	};
 }
 
