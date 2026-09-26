@@ -155,7 +155,7 @@ FLY-2796（PR #1309）已关，最终头 `96915fd36`（`origin/archive/FLY-2796-
 | voice-codex 房间 | `discord-room.ts`、`audio.ts` 取 main（引擎 B 与旧引擎跑在上面：流式 SpeechStream、pre-roll、人数）；引擎 A 的 RoomIO 包装移到 `roomio-room.ts`，`cli.ts` 按引擎选房间。`UplinkSpeechGate` 仍是 voice-bridge 的共享实现，main 的 pre-roll 改动移植进去。Silero 模型从 voice-bridge 包解析（2796 已把模型搬过去） |
 | voice-codex 配置 | 同时保留 `FLYWHEEL_VOICE_ENGINE`（引擎 A）与 `FLYWHEEL_VOICE_BACKEND`（引擎 B）；两者同开启动即失败 |
 | voice-core | 按 FLY-2860 删 Gemini 后端与配置，保留 OpenAI Live；main 的会话事件载荷改名 `ConversationUtterance`，V1 模式层的 `VoiceUtterance` 形状不变；`SpeakReceipt` 只留一份；main 的 `AudibleTailEstimate`（只给 `canArmVoiceAction` 用）改名 `ArmAudibleTail`；`TranscriptSink.append/flush` 用 main 的回执，失败状态与 durable 索引共用 |
-| teamlead huddle | ProjectConfig 取 main（huddle 退役成无类型标记）；2796 的 resident 认领逻辑改为从标记里按字段读取，编译通过但已无客户端（见 9.4） |
+| teamlead huddle | ProjectConfig 取 main（huddle 退役成无类型标记）；2796 的 resident 载体随后删除（见 9.4） |
 | Lead 运行时 | 同时保留 2798 的 runtime timeline 事件与 main FLY-2862 的空回复上报 |
 | flywheel-comm | 用 main 的 `voice_minutes` origin 解析；`voiceHandoff` 只允许 `origin=voice` |
 
@@ -163,7 +163,15 @@ FLY-2796（PR #1309）已关，最终头 `96915fd36`（`origin/archive/FLY-2796-
 
 main 的 FLY-2799 在同一个 teamlead.db 建了 `voice_handoffs`（schema 完全不同，且 intent-kind 迁移会按自己的 schema 重建该表）。本分支的 Lead handoff 载体改用 `voice_lead_handoffs` / `voice_lead_handoff_results`，main 的表不动；retention 登记与 schema 清单同步。新测试在两种建表顺序下都验证两套表各自保持 schema；负对照：改回旧表名即报 `no such column: lead_id`。两套 handoff（2799 的 `voice-handoff.ts` 与 2796 的 `voice-handoff-routes.ts`）不在本单合并。跑过 2796/2863 旧版本的 QA 房数据库里会留下旧 `voice_handoffs` 孤表，QA 需用新房。
 
-### 9.4 死代码（未删除，交 Lead 决定）
+### 9.4 删除 2796 的 resident 语音载体（Lead 裁定：无生产调用方就删）
 
-- teamlead 的 resident voice 载体（`resolveResident`、resident 认领路由、`StateStore` 的 resident 列与测试）：它唯一的客户端随 FLY-2860 删除，main 的准入守卫也拒绝带 huddle 的项目。
-- 原有清单（§4）不变。
+它唯一的客户端是 voice-bridge 给 /gemini、/eleven、/glaw 用的 resident 会话，已随 FLY-2860 删除；main 的准入守卫也拒绝带 huddle 的项目。证据（2026-09-26T21:45Z，`git grep`）：`/resident/claim` 除路由本身外零调用方；`reserveAndClaimResidentVoiceSession`、`resolveResidentStart`、`ResidentVoiceBindingProof`、`carrier_kind`、`owner_boot_id`、`resident_binding_proof` 只出现在 StateStore、voice-session 路由/服务及其测试里；本机插件缓存零命中。
+
+删除：`/resident/claim` 路由、renew/state 的 resident 身份与绑定证明校验、`resolveResident`、`carrier_kind`/`owner_boot_id`/`resident_binding_proof` 三列及查询里的 `carrier_kind='daemon'` 过滤、`StateStore.voice-resident.test.ts` 与各 voice-session 套件里的 resident 用例。voice-health 需求触发器恢复成 main 的版本，本分支 resident 变体的摘要登记为 legacy，旧 QA 房数据库能迁回。保留：`session_generation`（引擎 A 与耳机、议程、handoff 路由都按它做代次鉴权）、引擎 A 关闭旧的出站轮询、非 desired 会话拒绝准入。耳机收件箱测试夹具改为认领 daemon 会话。
+
+### 9.5 测试对账（合并后本机只跑相关测试时发现并修掉）
+
+- voice-bridge `room-io` 的架构守卫原来断言 voice-codex 的 `discord-room.ts` 只是 RoomIO 包装（「Discord 物理实现只在 voice-bridge 一处」）；两套房间实现并存后改为约束引擎 A 的 `roomio-room.ts`（Lead 已认可）。RoomIO 版 `WaitingMouth` 的排队用例移到 voice-bridge 旁边（`room-audio.test.ts`）；`discord-room.test.ts` 用 main 的，RoomIO 身份用例移到 `roomio-room.test.ts`。
+- daemon：main 让运行时原因带上错误名前缀（`Error:…`），导致 2798 的 causeCode 分类回落为 `unknown_runtime_error`；分类前先去掉前缀。
+- voice-core 配置键清单：Gemini 退役后 `openaiLive` 仍在。
+- 负载相关：rotation（假时钟推进 8 天）与 voice-minutes（真 carrier 子进程）在宿主负载 94–119 时越过 5 秒默认超时，负载降下后按默认超时复跑通过，没有改代码。
