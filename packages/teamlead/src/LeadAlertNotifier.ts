@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ReadinessSubject } from "./bridge/release-readiness/subject.js";
 /**
  * FLY-83: Bridge-side alert emitter for Lead lifecycle incidents.
@@ -451,6 +451,11 @@ export type AlertSeverity = "info" | "warning" | "severe";
  * out of the eventId string (Codex design R1 HIGH-2).
  */
 export interface AlertMetadata {
+	pressureSampler?: {
+		kind: "pause" | "resume" | "degraded";
+		reason: string;
+		sampledAtMs: number | null;
+	};
 	codexQuota?: { vendor: "codex"; incidentId: string; generation: number };
 	workflowEngine?: {
 		runId: string;
@@ -965,7 +970,10 @@ export class LeadAlertNotifier {
 		try {
 			mkdirSync(this.deadLetterDir, { recursive: true });
 			const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-			const file = `${stamp}-${payload.leadId}-${payload.eventType}.json`;
+			const transitionSuffix = payload.metadata?.pressureSampler
+				? `-${createHash("sha256").update(payload.eventId).digest("hex").slice(0, 16)}`
+				: "";
+			const file = `${stamp}-${payload.leadId}-${payload.eventType}${transitionSuffix}.json`;
 			writeFileSync(
 				join(this.deadLetterDir, file),
 				JSON.stringify(
@@ -1969,7 +1977,10 @@ export class LeadAlertNotifier {
 
 	private enqueue(payload: AlertPayload, reason: string): void {
 		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-		const file = `${stamp}-${payload.leadId}-${payload.eventType}.json`;
+		const transitionSuffix = payload.metadata?.pressureSampler
+			? `-${createHash("sha256").update(payload.eventId).digest("hex").slice(0, 16)}`
+			: "";
+		const file = `${stamp}-${payload.leadId}-${payload.eventType}${transitionSuffix}.json`;
 		const path = join(this.queueDir, file);
 		const record = {
 			...payload,

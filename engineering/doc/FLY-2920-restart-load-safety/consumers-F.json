@@ -1,49 +1,127 @@
 {
-  "status": "provisional-initial-chunk-F",
-  "asOfHead": "49d8d9ddad11236ec0e01f698bb731a72f53382c",
+  "status": "final-frozen-source-verified",
+  "asOfHead": "b93747db9c5fe95214ab848832946d0c95b07018",
   "turnAuthority": "yours phase=implement epoch=6 observed before this document write",
-  "method": "git grep -lF -- <query>, separately for each expected changed full path, file name, parent directory, module stem and old/new symbols; all test-file matches individually disposed using concrete test scopes. New/untracked files need final refresh. No tests run by audit.",
+  "method": "Each full changed source/test/retention-fragment path, basename and parent queried via git grep -lF -- <literal>; distinctive module stems and old/new functions, flag names, table names, metadata and filename templates supplemented. Untracked test text scanned with exact substring matching for the same queries. Prior unrelated D/E audits not rerun. No tests run by audit.",
   "files": [
-    "packages/teamlead/src/bridge/machine-watermark.ts",
-    "packages/teamlead/src/bridge/fleet-sensors.ts",
-    "packages/teamlead/src/bridge/runner-admission.ts",
+    "packages/config/src/__tests__/feature-flags-drift.test.ts",
+    "packages/config/src/__tests__/feature-flags-registry.test.ts",
+    "packages/config/src/feature-flags/registry.ts",
+    "packages/config/src/feature-flags/store-policy.ts",
+    "packages/teamlead/src/LeadAlertNotifier.ts",
+    "packages/teamlead/src/StateStore.ts",
+    "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts",
+    "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts",
+    "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts",
+    "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts",
+    "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
     "packages/teamlead/src/bridge/capacity-snapshot.ts",
+    "packages/teamlead/src/bridge/flag-store-runtime.ts",
+    "packages/teamlead/src/bridge/fleet-sensors.ts",
+    "packages/teamlead/src/bridge/machine-watermark.ts",
     "packages/teamlead/src/bridge/plugin.ts",
     "packages/teamlead/src/bridge/pressure-sampler.ts",
-    "packages/teamlead/src/bridge/lead-reconcile-pass.ts",
-    "packages/teamlead/src/StateStore.ts",
-    "packages/teamlead/src/lead-backends/codex/runner-action-http.ts"
+    "packages/teamlead/src/bridge/runner-admission.ts",
+    "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json"
   ],
   "queries": [
+    "\"startBridge\"",
+    "\"startBridgeInternal\"",
+    "${stamp}-${payload.leadId}-${payload.eventType}${transitionSuffix}.json",
+    "${stamp}-${payload.leadId}-${payload.eventType}.json",
+    "AdmissionProbe",
+    "AlertMetadata",
+    "FEATURE_FLAGS",
     "FLYWHEEL_FLEET_SENSOR_SWAP",
     "FLYWHEEL_SWAP_SENSOR_CMD",
+    "FlagStoreRuntime",
+    "FlagValueStore",
+    "LeadAlertNotifier",
+    "LeadAlertNotifier.replay-freshness.test",
+    "LeadAlertNotifier.replay-freshness.test.ts",
+    "LeadAlertNotifier.ts",
+    "MemoryEvaluation",
     "MemoryPressureMonitor",
     "PRESSURE_READ_TIMEOUT_MS",
     "PRESSURE_SAMPLE_INTERVAL_MS",
+    "PressureMonitorState",
+    "PressureSample",
+    "PressureSampler",
+    "PressureSamplerOptions",
+    "PressureSamplerRecord",
     "PressureSnapshot",
+    "STORE_MANAGED_FLAGS",
     "StateStore",
+    "StateStore.pressure-sampler.test",
     "StateStore.pressure-sampler.test.ts",
     "StateStore.ts",
+    "assessPressure",
+    "attachAlertSink",
+    "cache_unavailable",
     "capacity-snapshot",
+    "capacity-snapshot.test",
+    "capacity-snapshot.test.ts",
     "capacity-snapshot.ts",
     "createPressureSampler",
+    "deadLetterDir",
+    "degradedEpisodeId",
+    "degradedSequence",
     "ensureSensorHold",
+    "evidenceHostVerified",
+    "evidenceValidUntilMs",
+    "feature-flags-drift.test.ts",
+    "feature-flags-registry.test.ts",
+    "flag-store-runtime",
+    "flag-store-runtime.ts",
     "fleet-sensors",
+    "fleet-sensors.test",
+    "fleet-sensors.test.ts",
     "fleet-sensors.ts",
     "fleet_pressure_hold",
     "fleet_pressure_sampler_state",
     "fly-2006-retention-consumer-gate",
+    "getFlagStoreCodec",
     "getFleetPressureHold",
+    "getManualFleetPressureHold",
     "getPressureSamplerState",
+    "getPressureSnapshot",
+    "initializeFlagStore",
     "lead-reconcile-pass",
     "lead-reconcile-pass.ts",
     "liftSensorHold",
     "machine-watermark",
+    "machine-watermark.test",
+    "machine-watermark.test.ts",
     "machine-watermark.ts",
+    "memPressureThresholdsFromEnv",
+    "normalizeNotifications",
+    "packages/config/src/__tests__",
+    "packages/config/src/__tests__/feature-flags-drift.test.ts",
+    "packages/config/src/__tests__/feature-flags-registry.test.ts",
+    "packages/config/src/feature-flags",
+    "packages/config/src/feature-flags/registry.ts",
+    "packages/config/src/feature-flags/store-policy.ts",
     "packages/teamlead/src",
+    "packages/teamlead/src/LeadAlertNotifier.ts",
     "packages/teamlead/src/StateStore.ts",
+    "packages/teamlead/src/__tests__",
+    "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts",
+    "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts",
     "packages/teamlead/src/bridge",
+    "packages/teamlead/src/bridge/__tests__",
+    "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts",
+    "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts",
+    "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
     "packages/teamlead/src/bridge/capacity-snapshot.ts",
+    "packages/teamlead/src/bridge/flag-store-runtime.ts",
     "packages/teamlead/src/bridge/fleet-sensors.ts",
     "packages/teamlead/src/bridge/lead-reconcile-pass.ts",
     "packages/teamlead/src/bridge/machine-watermark.ts",
@@ -52,49 +130,118 @@
     "packages/teamlead/src/bridge/runner-admission.ts",
     "packages/teamlead/src/lead-backends/codex",
     "packages/teamlead/src/lead-backends/codex/runner-action-http.ts",
+    "parseVmStat",
     "plugin",
     "plugin.ts",
+    "preserveUnverifiedEnvelope",
+    "pressure-hold.test",
+    "pressure-hold.test.ts",
     "pressure-sampler",
+    "pressure-sampler-flag-store.test",
+    "pressure-sampler-flag-store.test.ts",
+    "pressure-sampler-wiring.test",
     "pressure-sampler-wiring.test.ts",
+    "pressure-sampler.test",
     "pressure-sampler.test.ts",
     "pressure-sampler.ts",
     "pressureHoldProbe",
+    "pressureNoticeDurable",
+    "pressureNotificationPayload",
+    "pressureSampler",
+    "pressureSensorEnabled",
+    "pressureSnapshotDetail",
+    "pressureSnapshotForStore",
     "pressure_hold",
+    "pressure_sampler_state",
+    "pressure_sampler_state.json",
+    "pressure_snapshot_unavailable",
+    "queueDir",
+    "readAutoNarrowRuntimeControl",
     "readMemoryPressure",
+    "registry.ts",
+    "resolveAllFlags",
     "runner-action-http",
     "runner-action-http.ts",
     "runner-admission",
     "runner-admission.ts",
+    "sampledAtMs",
     "scripts/lib/fly-2006-retention-tables/teamlead",
+    "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json",
+    "sensor_control_unavailable",
+    "sensor_disabled",
     "setPressureHoldProbe",
     "setPressureSamplerState",
+    "setPressureSnapshotProvider",
+    "startBridge",
+    "startBridgeInternal",
+    "startPressureSampling",
+    "store-policy.ts",
+    "storeAccountSwitchWakeSweepEnabled",
+    "storeAlertSystemEnabled",
+    "storeCmuxRebindDisabled",
+    "storeCmuxWatcherRebuildDisabled",
+    "storeCodexQuotaAutoSwitchEnabled",
+    "storeCodexTerminalReapEnabled",
+    "storeLoopProfilerEnabled",
+    "storeReviewQuotaAutoRetryEnabled",
+    "storeShippedHuskForceEnabled",
+    "storeSummaryAbsorptionCadenceMs",
+    "storeSummaryDueActivityGateEnabled",
+    "storeSwapPressureSensorEnabled",
     "swap-sensor",
     "swapPressureRepair",
-    "swapTick"
+    "swapTick",
+    "swap_pressure_sensor",
+    "transitionSuffix",
+    "warmupUntilMs",
+    "withPressureSamplerBoot"
   ],
   "retained": [
     "packages/claude-runner/test/kill-path-inventory.test.ts",
+    "packages/config/src/__tests__/feature-flags-direct-toggle.test.ts",
     "packages/config/src/__tests__/feature-flags-drift.test.ts",
+    "packages/config/src/__tests__/feature-flags-registry.test.ts",
+    "packages/config/src/__tests__/feature-flags-resolve.test.ts",
+    "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
+    "packages/config/src/__tests__/flag-truth.test.ts",
+    "packages/config/src/__tests__/fly1981-final-ledgers.test.ts",
+    "packages/flywheel-comm/src/commands/__tests__/feature-flags.test.ts",
+    "packages/teamlead/src/__tests__/LeadAlertNotifier.fleet-identity.test.ts",
+    "packages/teamlead/src/__tests__/LeadAlertNotifier.queue-replay.test.ts",
     "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts",
+    "packages/teamlead/src/__tests__/LeadAlertNotifier.test.ts",
+    "packages/teamlead/src/__tests__/StateStore.flag-value-store.test.ts",
     "packages/teamlead/src/__tests__/StateStore.fly663-migration.test.ts",
     "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts",
     "packages/teamlead/src/__tests__/StateStore.test.ts",
     "packages/teamlead/src/__tests__/bridge-child-process-census.test.ts",
     "packages/teamlead/src/__tests__/bridge.test.ts",
     "packages/teamlead/src/__tests__/capacity-route.test.ts",
+    "packages/teamlead/src/__tests__/feature-flag-render.test.ts",
+    "packages/teamlead/src/__tests__/flag-routes.test.ts",
+    "packages/teamlead/src/__tests__/fleet-console-model-flags.test.ts",
     "packages/teamlead/src/__tests__/fly-2413-retention-registry.test.ts",
+    "packages/teamlead/src/__tests__/lead-alert-episode-delivery.test.ts",
+    "packages/teamlead/src/__tests__/lead-alert-queue-order.test.ts",
+    "packages/teamlead/src/__tests__/management-existing-writers.test.ts",
     "packages/teamlead/src/__tests__/patrol-tick-render.test.ts",
     "packages/teamlead/src/__tests__/patrol-tick.test.ts",
     "packages/teamlead/src/__tests__/run-dispatcher.test.ts",
+    "packages/teamlead/src/__tests__/runs-route-registration.test.ts",
     "packages/teamlead/src/__tests__/start-e2e.test.ts",
+    "packages/teamlead/src/bridge/__tests__/alert-drain-switch.integration.test.ts",
     "packages/teamlead/src/bridge/__tests__/automated-message-inventory.test.ts",
     "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts",
+    "packages/teamlead/src/bridge/__tests__/epic-residual-plugin-wiring.test.ts",
+    "packages/teamlead/src/bridge/__tests__/flag-provenance.test.ts",
+    "packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts",
     "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts",
     "packages/teamlead/src/bridge/__tests__/fly1560-teardown-guard.test.ts",
     "packages/teamlead/src/bridge/__tests__/gate-poller-lead-reconcile.test.ts",
     "packages/teamlead/src/bridge/__tests__/lead-reconcile-pass.test.ts",
     "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts",
     "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts",
     "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts",
     "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
     "packages/teamlead/src/bridge/__tests__/runner-admission.test.ts",
@@ -155,76 +302,167 @@
       "disposition": "retained: FLY-2211 scans process signals across sources and tests; bounded pressure child cleanup can add kill entries"
     },
     {
+      "path": "packages/config/src/__tests__/auto-narrow-flag.test.ts",
+      "matched": [
+        "FEATURE_FLAGS",
+        "getFlagStoreCodec"
+      ],
+      "disposition": "excluded: named auto_merge_narrow_gate codec/default stays unchanged; only its registry readSite owner anchor renamed, covered by real-source drift guard"
+    },
+    {
       "path": "packages/config/src/__tests__/drift-scan.test.ts",
       "matched": [
+        "flag-store-runtime",
+        "flag-store-runtime.ts",
         "packages/teamlead/src",
         "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/flag-store-runtime.ts",
         "packages/teamlead/src/bridge/plugin.ts",
         "plugin",
         "plugin.ts"
       ],
-      "disposition": "excluded: scanner implementation fixture/unit behavior is unchanged; actual production read sites are checked by retained feature-flags-drift.test.ts"
+      "disposition": "excluded: scanner algorithms and synthetic source fixtures unchanged; retained feature-flags-drift checks actual new wrapper and renamed production symbols"
+    },
+    {
+      "path": "packages/config/src/__tests__/drift-scan/index.ts",
+      "matched": [
+        "feature-flags-drift.test.ts"
+      ],
+      "scope": "drift-scan support module; comment names the guard consumer",
+      "disposition": "excluded as standalone invocation: not a test file; scanner helper behavior is exercised by retained feature-flags-drift.test.ts, and implementation is unchanged"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-direct-toggle.test.ts",
+      "matched": [
+        "FEATURE_FLAGS"
+      ],
+      "disposition": "retained: iterates every direct registry flag and proves live env resolver semantics"
     },
     {
       "path": "packages/config/src/__tests__/feature-flags-drift.test.ts",
       "matched": [
+        "\"startBridge\"",
+        "FEATURE_FLAGS",
+        "FlagStoreRuntime",
+        "STORE_MANAGED_FLAGS",
+        "flag-store-runtime",
+        "flag-store-runtime.ts",
+        "getFlagStoreCodec",
         "packages/teamlead/src",
         "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/flag-store-runtime.ts",
         "packages/teamlead/src/bridge/plugin.ts",
         "packages/teamlead/src/lead-backends/codex",
         "plugin",
-        "plugin.ts"
+        "plugin.ts",
+        "readAutoNarrowRuntimeControl",
+        "startBridge",
+        "startBridgeInternal",
+        "storeAccountSwitchWakeSweepEnabled",
+        "storeAlertSystemEnabled",
+        "storeCmuxRebindDisabled",
+        "storeCmuxWatcherRebuildDisabled",
+        "storeCodexQuotaAutoSwitchEnabled",
+        "storeCodexTerminalReapEnabled",
+        "storeLoopProfilerEnabled",
+        "storeReviewQuotaAutoRetryEnabled",
+        "storeShippedHuskForceEnabled",
+        "storeSummaryAbsorptionCadenceMs",
+        "storeSummaryDueActivityGateEnabled",
+        "storeSwapPressureSensorEnabled",
+        "swap_pressure_sensor"
       ],
-      "disposition": "retained: production AST env/config read-site accounting includes relocated existing sensor switches even without new flags"
+      "disposition": "retained: production AST readSite accounting checks new global SWAP reader and every renamed startBridgeInternal symbol anchor"
     },
     {
       "path": "packages/config/src/__tests__/feature-flags-registry.test.ts",
       "matched": [
+        "FEATURE_FLAGS",
+        "STORE_MANAGED_FLAGS",
+        "flag-store-runtime",
+        "flag-store-runtime.ts",
+        "getFlagStoreCodec",
         "packages/teamlead/src",
         "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/flag-store-runtime.ts",
         "packages/teamlead/src/bridge/plugin.ts",
         "plugin",
-        "plugin.ts"
+        "plugin.ts",
+        "swap_pressure_sensor"
       ],
-      "disposition": "excluded: registry definitions/codec and managed flag metadata are unchanged; moving existing reads is covered by the retained drift guard; refresh if a flag definition changes"
+      "disposition": "retained: actual registry metadata/whenOn/readSite contract including new swap_pressure_sensor and renamed Bridge owner anchors"
+    },
+    {
+      "path": "packages/config/src/__tests__/feature-flags-resolve.test.ts",
+      "matched": [
+        "FEATURE_FLAGS",
+        "getFlagStoreCodec",
+        "resolveAllFlags"
+      ],
+      "disposition": "retained: resolveAllFlags iterates the actual current registry and default semantics"
     },
     {
       "path": "packages/config/src/__tests__/feature-flags-store-policy.test.ts",
       "matched": [
+        "FEATURE_FLAGS",
+        "STORE_MANAGED_FLAGS",
+        "flag-store-runtime",
+        "flag-store-runtime.ts",
+        "getFlagStoreCodec",
         "packages/teamlead/src",
         "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/flag-store-runtime.ts",
         "packages/teamlead/src/bridge/plugin.ts",
         "plugin",
         "plugin.ts"
       ],
-      "disposition": "excluded: no managed store flag policy or wrapper changes; sensor enable/QA platform branches covered by new sampler wiring and drift guard"
+      "disposition": "retained: full current registry codec/default/polarity closure includes the new default-on global boolean"
     },
     {
       "path": "packages/config/src/__tests__/flag-truth.test.ts",
       "matched": [
-        "packages/teamlead/src"
+        "FEATURE_FLAGS",
+        "STORE_MANAGED_FLAGS",
+        "packages/teamlead/src",
+        "packages/teamlead/src/__tests__"
       ],
-      "disposition": "excluded: FLY-1393 flag truth; rejects every SQLite-managed flag from persistent environments; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "retained: every managed env key is rejected as persistent env authority; new SWAP store migration changes current managed set"
     },
     {
       "path": "packages/config/src/__tests__/fly1808-wave-a.test.ts",
       "matched": [
+        "FEATURE_FLAGS",
+        "LeadAlertNotifier",
+        "LeadAlertNotifier.ts",
         "StateStore",
         "StateStore.ts",
         "packages/teamlead/src",
+        "packages/teamlead/src/LeadAlertNotifier.ts",
         "packages/teamlead/src/StateStore.ts",
         "packages/teamlead/src/bridge",
         "packages/teamlead/src/lead-backends/codex"
       ],
-      "disposition": "excluded: FLY-1808 retirement guards; removes the five Wave A rows and tombstones four flags plus one companion; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: checks enumerated retired Wave A/B flags and retired alert-kind tokens; no edited literals intersect those predicates"
     },
     {
       "path": "packages/config/src/__tests__/fly1981-final-ledgers.test.ts",
       "matched": [
+        "FEATURE_FLAGS",
+        "STORE_MANAGED_FLAGS",
+        "packages/config/src/feature-flags",
+        "packages/config/src/feature-flags/store-policy.ts",
         "packages/teamlead/src",
-        "packages/teamlead/src/lead-backends/codex"
+        "packages/teamlead/src/lead-backends/codex",
+        "store-policy.ts"
       ],
-      "disposition": "excluded: FLY-1981 final governance ledgers; pins the production collector census and keeps generated/test artifacts separate; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "retained: current production registry/store ledgers and actual-source accounting must remain closed over managed growth"
+    },
+    {
+      "path": "packages/config/src/__tests__/node-type-registry.test.ts",
+      "matched": [
+        "registry.ts"
+      ],
+      "disposition": "excluded: generalized workflow node-type registry; derives DAG workflow identity from the registry; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
     },
     {
       "path": "packages/config/src/__tests__/non-lead-forbidden-plugins.test.ts",
@@ -312,6 +550,13 @@
       "disposition": "excluded: FLY-1574 Discord mailbox ingest; preserves attachment identity and exposes missing identity as unavailable metadata; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
     },
     {
+      "path": "packages/flywheel-comm/src/__tests__/lead-registry-cli.test.ts",
+      "matched": [
+        "registry.ts"
+      ],
+      "disposition": "excluded: flywheel-comm lead-registry; prints the shared generic Codex profile without registry access; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
+    },
+    {
       "path": "packages/flywheel-comm/src/__tests__/mailbox-queue-capabilities.test.ts",
       "matched": [
         "StateStore"
@@ -366,6 +611,13 @@
         "StateStore"
       ],
       "disposition": "excluded: verifyLifecycleConsent (FLY-245 D-c); APPROVES a fresh, founder-signed, fully-bound confirmation; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+    },
+    {
+      "path": "packages/flywheel-comm/src/commands/__tests__/feature-flags.test.ts",
+      "matched": [
+        "STORE_MANAGED_FLAGS"
+      ],
+      "disposition": "retained: CLI uses current STORE_MANAGED_FLAGS and first managed entry to exercise set/clear command path; new leading flag changes fixture choice"
     },
     {
       "path": "packages/flywheel-comm/src/commands/__tests__/progress.test.ts",
@@ -448,16 +700,25 @@
     {
       "path": "packages/teamlead/src/__tests__/AlertChannelHub.contract-escalate.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: AlertChannelHub — FLY-2075 never auto-escalates; zombie_session_backlog stays NEW with no founder post; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: AlertChannelHub — FLY-2075 never auto-escalates; zombie_session_backlog stays NEW with no founder post; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/AlertChannelHub.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: AlertChannelHub (FLY-368); first alert opens a thread + posts ack (no bot); StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: AlertChannelHub (FLY-368); first alert opens a thread + posts ack (no bot); exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/AutoRepairBot.test.ts",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: AutoRepairBot (FLY-368); keeps Codex quota under its durable coordinator and never invokes Claude switching; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/ChatThreadCreator.attach-pin.test.ts",
@@ -569,41 +830,59 @@
     {
       "path": "packages/teamlead/src/__tests__/LeadAlertNotifier.fleet-identity.test.ts",
       "matched": [
-        "StateStore"
+        "LeadAlertNotifier",
+        "StateStore",
+        "deadLetterDir",
+        "queueDir"
       ],
-      "disposition": "excluded: LeadAlertNotifier — FLY-1082 fleet identity (Task 1.4); fleet payload delivers to the unified channel (no projects.json lead) for all Bridge-side fleet kinds; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: fleet swap kinds queue/dead-letter through existing identity/send chain with pressure metadata optional"
     },
     {
       "path": "packages/teamlead/src/__tests__/LeadAlertNotifier.queue-replay.test.ts",
       "matched": [
-        "StateStore"
+        "LeadAlertNotifier",
+        "StateStore",
+        "queueDir"
       ],
-      "disposition": "excluded: FLY-2075 legacy alert queue replay; ignores serialized ESCALATED status across root POST, thread, and ledger; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: legacy non-pressure queue records replay without requiring new metadata or filename shape"
     },
     {
       "path": "packages/teamlead/src/__tests__/LeadAlertNotifier.release-readiness.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: alert readiness capture; records capture gaps and keeps double-write failures until acknowledged without blocking delivery; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: alert readiness capture; records capture gaps and keeps double-write failures until acknowledged without blocking delivery; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts",
       "matched": [
+        "LeadAlertNotifier",
+        "PressureSnapshot",
         "StateStore",
+        "attachAlertSink",
+        "deadLetterDir",
+        "degradedEpisodeId",
+        "evidenceValidUntilMs",
         "fleet-sensors",
-        "getFleetPressureHold",
         "machine-watermark",
+        "pressure-sampler",
+        "pressureNotificationPayload",
+        "queueDir",
+        "sampledAtMs",
         "swap-sensor"
       ],
-      "disposition": "retained: direct FleetSensors consumer and swap episode liveness replay"
+      "disposition": "retained: changed direct test: pressure transition metadata, eventId-hashed queue/dead-letter filenames and replay freshness"
     },
     {
       "path": "packages/teamlead/src/__tests__/LeadAlertNotifier.test.ts",
       "matched": [
-        "StateStore"
+        "LeadAlertNotifier",
+        "StateStore",
+        "deadLetterDir",
+        "queueDir"
       ],
-      "disposition": "excluded: LeadAlertNotifier; POSTs to alertChannel with resolved bot token and claims dedup row; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: ordinary queue/dead-letter paths and filename behavior must remain compatible with pressure-only eventId suffix"
     },
     {
       "path": "packages/teamlead/src/__tests__/REDESIGN-ACCEPTANCE.fly1204-ship-gate.test.ts",
@@ -776,16 +1055,19 @@
     {
       "path": "packages/teamlead/src/__tests__/StateStore.flag-value-scope.test.ts",
       "matched": [
+        "STORE_MANAGED_FLAGS",
         "StateStore"
       ],
-      "disposition": "excluded: StateStore FLY-2100 scoped flag values; migrates six legacy rows to ; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: project/star scope schema and project row migration unchanged; SWAP is global and global row seeding is retained in StateStore.flag-value-store"
     },
     {
       "path": "packages/teamlead/src/__tests__/StateStore.flag-value-store.test.ts",
       "matched": [
+        "FEATURE_FLAGS",
+        "STORE_MANAGED_FLAGS",
         "StateStore"
       ],
-      "disposition": "excluded: StateStore FLY-1778 flag value store; migrates the value, changelog, and single-key meta schema idempotently; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: ensureFlagValueRows loops every current global flag; new SWAP seed row and audit expectations"
     },
     {
       "path": "packages/teamlead/src/__tests__/StateStore.fly1099-founder-ledgers.test.ts",
@@ -1001,9 +1283,18 @@
     },
     {
       "path": "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts",
-      "matched": [],
-      "disposition": "retained: NEW expected: pressure singleton persistence, invalid cache/migration handling and restart continuity",
-      "discovery": "predicate audit or expected new test; refresh after file exists"
+      "matched": [
+        "PressureSample",
+        "PressureSampler",
+        "StateStore",
+        "getFleetPressureHold",
+        "getManualFleetPressureHold",
+        "getPressureSamplerState",
+        "setPressureSamplerState",
+        "swap-sensor",
+        "warmupUntilMs"
+      ],
+      "disposition": "retained: new actual file: pressure singleton persistence, invalid cache/migration handling and restart continuity"
     },
     {
       "path": "packages/teamlead/src/__tests__/StateStore.quiet-wake-notified.test.ts",
@@ -1343,12 +1634,20 @@
       "disposition": "excluded: StateStore FLY-1436 work-kind cutover; keeps an exact-only binding read separate from wildcard fallback; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/__tests__/account-limit.test.ts",
+      "matched": [
+        "AlertMetadata"
+      ],
+      "disposition": "excluded: buildAccountLimitMetadata; 5h cap → provider/scope/observed snapshot + the 5h reset instant; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
       "path": "packages/teamlead/src/__tests__/account-selfheal-bytecompat.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "plugin",
         "plugin.ts"
       ],
-      "disposition": "excluded: FLY-696 reverse-compat sentinel (isEnabled false); account-switch repair is dormant when isEnabled forced false: canAttempt false, enqueue needs_human; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "excluded: FLY-696 reverse-compat sentinel (isEnabled false); account-switch repair is dormant when isEnabled forced false: canAttempt false, enqueue needs_human; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/account-switch-e2e.test.ts",
@@ -1356,6 +1655,13 @@
         "StateStore"
       ],
       "disposition": "excluded: FLY-2452 disabled-account recovery chain; parks a 403 review, switches immediately, redrives it, and wakes only Claude work; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/account-switch-repair.test.ts",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: account-switch-repair · canAttempt; true when flag on + accountLimit metadata + an available account; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/account-switch-route.test.ts",
@@ -1459,7 +1765,8 @@
       "matched": [
         "StateStore",
         "plugin",
-        "runner-admission"
+        "runner-admission",
+        "startBridge"
       ],
       "disposition": "retained: admission pause ownership/TTL and start HTTP refusal mapping"
     },
@@ -1503,9 +1810,11 @@
       "path": "packages/teamlead/src/__tests__/codex-quota-launch-flag-wiring.test.ts",
       "matched": [
         "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore",
         "plugin"
       ],
-      "disposition": "excluded: Bridge launch fences observe live quota flag writes without clearing persisted pauses; releases a proven rolled-back install while retaining a genuinely uncertain install guard; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: Bridge launch fences observe live quota flag writes without clearing persisted pauses; releases a proven rolled-back install while retaining a genuinely uncertain install; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/commdb-fsm-reconcile.test.ts",
@@ -1588,6 +1897,13 @@
         "StateStore"
       ],
       "disposition": "excluded: /api/deployments/report validation; 400 without projectName/source; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/derive-account-limit.test.ts",
+      "matched": [
+        "AlertMetadata"
+      ],
+      "disposition": "excluded: extractTimezone; pulls the IANA zone from the ; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/design-review-manifest.test.ts",
@@ -1754,10 +2070,12 @@
       "path": "packages/teamlead/src/__tests__/event-route.test.ts",
       "matched": [
         "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore",
         "plugin",
         "plugin.ts"
       ],
-      "disposition": "excluded: Event route; FLY-2143 refreshes session_started only when the persisted status changes; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: Event route; FLY-2143 refreshes session_started only when the persisted status changes; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/events-routing.integration.test.ts",
@@ -1768,11 +2086,32 @@
       "disposition": "excluded: FLY-96 Integration: Event routing; routes Frontend-labelled event to lead-alpha; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/__tests__/feature-flag-render.test.ts",
+      "matched": [
+        "resolveAllFlags"
+      ],
+      "disposition": "retained: renders the full actual flag collection, with global direct-toggle and provenance controls"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/feature-flag-report-controls.test.ts",
+      "matched": [
+        "resolveAllFlags"
+      ],
+      "disposition": "excluded: mounts only doc_flow project/star fixture; SWAP is global and full registry render consumer is retained separately"
+    },
+    {
       "path": "packages/teamlead/src/__tests__/flag-routes.test.ts",
       "matched": [
-        "StateStore"
+        "FEATURE_FLAGS",
+        "STORE_MANAGED_FLAGS",
+        "StateStore",
+        "flag-store-runtime",
+        "getFlagStoreCodec",
+        "initializeFlagStore",
+        "storeCodexQuotaAutoSwitchEnabled",
+        "storeSummaryAbsorptionCadenceMs"
       ],
-      "disposition": "excluded: handleFlagStage; FLY-2391 manages customer release global/project set and clear through SQLite only; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: loops every bridge-global spec through declared runtime resolver and stage/apply/clear state transitions"
     },
     {
       "path": "packages/teamlead/src/__tests__/flag-scan-route-mount.test.ts",
@@ -1784,12 +2123,30 @@
       "disposition": "excluded: POST /api/flag-scan/run mount; is reachable before the catch-all and invokes a real forced run; imports admission for unrelated route setup using existing injected/alwaysAdmit behavior; no pressure provider installation or refusal contract asserted here"
     },
     {
+      "path": "packages/teamlead/src/__tests__/flag-toggle.test.ts",
+      "matched": [
+        "FEATURE_FLAGS"
+      ],
+      "disposition": "excluded: checks unchanged named loop_profiler direct metadata and retired writer exports; new SWAP direct membership covered by registry, dynamic direct-toggle, and routes tests"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/fleet-console-model-flags.test.ts",
+      "matched": [
+        "resolveAllFlags"
+      ],
+      "disposition": "retained: projects entire resolved registry into Fleet console snapshot and preserves count/metadata"
+    },
+    {
       "path": "packages/teamlead/src/__tests__/fleet-routes-mount.test.ts",
       "matched": [
+        "FlagStoreRuntime",
         "StateStore",
-        "plugin"
+        "flag-store-runtime",
+        "initializeFlagStore",
+        "plugin",
+        "resolveAllFlags"
       ],
-      "disposition": "excluded: FLY-247 inc2a — fleet console route mounting; GET /api/fleet/snapshot returns the versioned secret-free aggregate with NO Bearer; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: tests existing DAG/turn-divergence route controls; full added flag projection covered by fleet-console-model-flags and management-existing-writers; no mount route changes"
     },
     {
       "path": "packages/teamlead/src/__tests__/fly-1648-hot-loop-closeout.test.ts",
@@ -1823,9 +2180,10 @@
       "path": "packages/teamlead/src/__tests__/fly1262-ssot-acceptance.test.ts",
       "matched": [
         "StateStore",
-        "plugin"
+        "plugin",
+        "resolveAllFlags"
       ],
-      "disposition": "excluded: FLY-1262 PRD section 6 acceptance; serves one secret-free aggregate and a UI with no manual ingest or copied inventory; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-1262 PRD section 6 acceptance; serves one secret-free aggregate and a UI with no manual ingest or copied inventory; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/fly1505-approval-preservation.integration.test.ts",
@@ -2069,7 +2427,8 @@
     {
       "path": "packages/teamlead/src/__tests__/fly247-bash-suites.test.ts",
       "matched": [
-        "packages/teamlead/src"
+        "packages/teamlead/src",
+        "packages/teamlead/src/__tests__"
       ],
       "disposition": "excluded: FLY-247 bash suites (hermetic); daemon plist model env + safe generation; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
     },
@@ -2105,7 +2464,8 @@
     {
       "path": "packages/teamlead/src/__tests__/fly574-bash-suites.test.ts",
       "matched": [
-        "packages/teamlead/src"
+        "packages/teamlead/src",
+        "packages/teamlead/src/__tests__"
       ],
       "disposition": "excluded: FLY-574 companion single-process bash suites (hermetic); decommission-legacy-companion-daemon: bootout + plist archive + start.sh fail-close + verify; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
     },
@@ -2216,16 +2576,22 @@
     {
       "path": "packages/teamlead/src/__tests__/lead-alert-episode-delivery.test.ts",
       "matched": [
-        "StateStore"
+        "LeadAlertNotifier",
+        "StateStore",
+        "deadLetterDir",
+        "queueDir"
       ],
-      "disposition": "excluded: FLY-1309 episode-aware alert drain; acks delivery in SQLite before unlinking the queue file; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: episode-aware queue receipt ordering and durable delivery before unlink compatibility"
     },
     {
       "path": "packages/teamlead/src/__tests__/lead-alert-queue-order.test.ts",
       "matched": [
-        "StateStore"
+        "LeadAlertNotifier",
+        "StateStore",
+        "deadLetterDir",
+        "queueDir"
       ],
-      "disposition": "excluded: FLY-1309 mixed alert queue chronology; caps by queuedAt across TS, shell, and lease-audit filenames; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: mixed TS/shell/lease queue chronology and cap remain based on queuedAt despite new filename suffix"
     },
     {
       "path": "packages/teamlead/src/__tests__/lead-config-bridge.test.ts",
@@ -2258,6 +2624,13 @@
       "disposition": "excluded: refuses old runtime capabilities before recording or writing; binds confirmation to content and records applied only after the matching runtime receipt; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/__tests__/lead-dual-active-scan.test.ts",
+      "matched": [
+        "queueDir"
+      ],
+      "disposition": "excluded: FLY-1309 dual-active process parsing; matches exact Claude executable and both agent spellings; directory configuration or other queue consumer unchanged; pressure hash changes only TS pressure transition file stems, retaining .json and queued payload fields"
+    },
+    {
       "path": "packages/teamlead/src/__tests__/lead-event-delivery-migration.test.ts",
       "matched": [
         "StateStore"
@@ -2281,9 +2654,11 @@
     {
       "path": "packages/teamlead/src/__tests__/lead-lease-diagnostics.test.ts",
       "matched": [
-        "plugin"
+        "deadLetterDir",
+        "plugin",
+        "queueDir"
       ],
-      "disposition": "excluded: FLY-1309 Bridge lead lease diagnostics endpoint; requires the master bearer token; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "excluded: reads queue counts/diagnostics without filename stem assumptions; pressure queue hash retains .json and payload structure"
     },
     {
       "path": "packages/teamlead/src/__tests__/lead-lease-self-check.test.ts",
@@ -2330,9 +2705,10 @@
     {
       "path": "packages/teamlead/src/__tests__/lead-token-savings.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime"
       ],
-      "disposition": "excluded: defaults ON and reads OFF/ON immediately without rebuilding the runtime; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: defaults ON and reads OFF/ON immediately without rebuilding the runtime; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/linear-comment-and-lookup.test.ts",
@@ -2373,9 +2749,10 @@
     {
       "path": "packages/teamlead/src/__tests__/management-console-projection-dom.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "resolveAllFlags"
       ],
-      "disposition": "excluded: management DAG source-to-DOM contract; renders projected manifest endpoints and responds to graph DTO mutations; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: management DAG source-to-DOM contract; renders projected manifest endpoints and responds to graph DTO mutations; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/management-dag-source.test.ts",
@@ -2392,18 +2769,31 @@
       "disposition": "excluded: management DAG writer; shares managed publication guards and durable audit receipts; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/__tests__/management-existing-writers.test.ts",
+      "matched": [
+        "FEATURE_FLAGS",
+        "STORE_MANAGED_FLAGS",
+        "resolveAllFlags"
+      ],
+      "disposition": "retained: iterates every store-managed flag to enforce writer refusal and registry-backed management projection"
+    },
+    {
       "path": "packages/teamlead/src/__tests__/node-dwell-control.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore"
       ],
-      "disposition": "excluded: FLY-2210 node dwell control; reads and projects the hot project-scoped master switch; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-2210 node dwell control; reads and projects the hot project-scoped master switch; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/opus-model-sync-cli.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore"
       ],
-      "disposition": "excluded: FLY-2775 opus-model-sync CLI; honors the kill switch without calling the sync, and still derives alerts; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-2775 opus-model-sync CLI; honors the kill switch without calling the sync, and still derives alerts; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/outbound-pressure.test.ts",
@@ -2416,9 +2806,40 @@
     {
       "path": "packages/teamlead/src/__tests__/pane-live-region-fly927-echo.test.ts",
       "matched": [
-        "packages/teamlead/src"
+        "LeadAlertNotifier",
+        "LeadAlertNotifier.ts",
+        "packages/teamlead/src",
+        "packages/teamlead/src/LeadAlertNotifier.ts"
       ],
-      "disposition": "excluded: FLY-927 echo-immunity parity (kind table ↔ ALERT_ECHO_START); EVERY AlertEventType; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "excluded: FLY-927 echo-immunity parity (kind table ↔ ALERT_ECHO_START); EVERY AlertEventType; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/patrol-continuity-cli.test.ts",
+      "matched": [
+        "sampledAtMs"
+      ],
+      "disposition": "excluded: patrol helper CLI; projects verified package queue fields into machine evidence; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/patrol-continuity-store.test.ts",
+      "matched": [
+        "sampledAtMs"
+      ],
+      "disposition": "excluded: continuity sidecar; persists baseline and resumes negative coverage with restrictive mode; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/patrol-continuity.test.ts",
+      "matched": [
+        "sampledAtMs"
+      ],
+      "disposition": "excluded: patrol continuity semantics; establishes a baseline, then stalls only at 3600 seconds of complete coverage; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
+    },
+    {
+      "path": "packages/teamlead/src/__tests__/patrol-report.test.ts",
+      "matched": [
+        "sampledAtMs"
+      ],
+      "disposition": "excluded: patrol report closure; rejects the recorded baseline gap; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
     },
     {
       "path": "packages/teamlead/src/__tests__/patrol-tick-loop.integration.test.ts",
@@ -2503,9 +2924,10 @@
       "path": "packages/teamlead/src/__tests__/publish-fable-template-alias.test.ts",
       "matched": [
         "StateStore",
-        "plugin"
+        "plugin",
+        "resolveAllFlags"
       ],
-      "disposition": "excluded: publish-fable-template-alias CLI; requires exact same-origin HTTP and the CLI supplies base.origin; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: publish-fable-template-alias CLI; requires exact same-origin HTTP and the CLI supplies base.origin; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/publish-html-route.test.ts",
@@ -2606,16 +3028,18 @@
     {
       "path": "packages/teamlead/src/__tests__/runner-auth-scan.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: makeRunnerAuthScan; confirmed login_expired → severe runner_login_expired with runner identity; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: makeRunnerAuthScan; confirmed login_expired → severe runner_login_expired with runner identity; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/runner-quota-scan.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: makeRunnerQuotaScan (FLY-696 M1/③); real cap → one usage_limit alert with accountLimit metadata + runner identity; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: makeRunnerQuotaScan (FLY-696 M1/③); real cap → one usage_limit alert with accountLimit metadata + runner identity; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/runner-ready-to-close-notifier.test.ts",
@@ -2661,9 +3085,10 @@
       "path": "packages/teamlead/src/__tests__/runs-route-registration.test.ts",
       "matched": [
         "plugin",
-        "runner-admission"
+        "runner-admission",
+        "startBridge"
       ],
-      "disposition": "excluded: FLY-22: /api/runs routes always registered; startBridge without startDispatcher → /api/runs/active returns 200 (not 404); imports admission for unrelated route setup using existing injected/alwaysAdmit behavior; no pressure provider installation or refusal contract asserted here"
+      "disposition": "retained: calls actual startBridge/close and verifies start routes remain registered through new boot wrapper"
     },
     {
       "path": "packages/teamlead/src/__tests__/session-lifecycle.integration.test.ts",
@@ -2676,9 +3101,11 @@
     {
       "path": "packages/teamlead/src/__tests__/shuttle-alert-delivery.test.ts",
       "matched": [
-        "StateStore"
+        "LeadAlertNotifier",
+        "StateStore",
+        "queueDir"
       ],
-      "disposition": "excluded: shuttle alert routing; routes every origin through one configurable primary and only explicit copies; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: shuttle alert routing; routes every origin through one configurable primary and only explicit copies; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/__tests__/shuttle-projection.test.ts",
@@ -2716,6 +3143,8 @@
       "path": "packages/teamlead/src/__tests__/start-e2e.test.ts",
       "matched": [
         "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore",
         "plugin",
         "runner-admission"
       ],
@@ -2842,11 +3271,20 @@
       "disposition": "excluded: durable voice utterances; persists a sole-room-user Codex execution delegation in voice_handoffs and the Lead mailbox; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/__tests__/voice-health-alert-delivery.test.ts",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: voice health alert contract; uses the engineering primary route without project fan-out; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
       "path": "packages/teamlead/src/__tests__/work-kind-config-source.test.ts",
       "matched": [
-        "StateStore"
+        "FlagStoreRuntime",
+        "StateStore",
+        "flag-store-runtime"
       ],
-      "disposition": "excluded: readPipelineEnrollment; defaults absent rows to DAG-on with work-kind disabled; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: readPipelineEnrollment; defaults absent rows to DAG-on with work-kind disabled; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/__tests__/workflow-catalog-migration.test.ts",
@@ -3069,13 +3507,26 @@
       "disposition": "excluded: POST /api/actions/retry — D2 boundary validation; 400 when gateway_request_id is sent without successor_execution_id; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/bridge/__tests__/alert-dirs.test.ts",
+      "matched": [
+        "LeadAlertNotifier",
+        "deadLetterDir",
+        "queueDir"
+      ],
+      "disposition": "excluded: pure queue/dead-letter directory env normalization unchanged; pressure change only appends hash to filenames"
+    },
+    {
       "path": "packages/teamlead/src/bridge/__tests__/alert-drain-switch.integration.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore",
+        "deadLetterDir",
         "plugin",
-        "runner-admission"
+        "queueDir",
+        "runner-admission",
+        "startBridge"
       ],
-      "disposition": "excluded: FLY-2076 alert queue drain master switch; preserves a queued item without paging drain_stuck while OFF; imports admission for unrelated route setup using existing injected/alwaysAdmit behavior; no pressure provider installation or refusal contract asserted here"
+      "disposition": "retained: calls actual startBridge, exercises flag-store boot wiring and queue drain suppression across changed sampler boot lifetime"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/alert-duty-router.test.ts",
@@ -3101,9 +3552,10 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/alert-ticket-lifecycle.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: FLY-927 Hub ticket lifecycle; open seeds ticket columns from the enriched payload; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-927 Hub ticket lifecycle; open seeds ticket columns from the enriched payload; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/alert-wake-dedup.test.ts",
@@ -3136,6 +3588,8 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/automated-message-inventory.test.ts",
       "matched": [
+        "LeadAlertNotifier",
+        "LeadAlertNotifier.ts",
         "plugin",
         "plugin.ts"
       ],
@@ -3180,7 +3634,9 @@
       "path": "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts",
       "matched": [
         "capacity-snapshot",
+        "evidenceValidUntilMs",
         "getFleetPressureHold",
+        "sampledAtMs",
         "swap-sensor"
       ],
       "disposition": "retained: shared cached pressure projection and admission reason mapping"
@@ -3275,16 +3731,18 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/codex-quota-outbox.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: delivers one plain informational N11 for every durable quota event; renders one bounded legacy-batch N11 and explains why first flag enable stays manual; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: delivers one plain informational N11 for every durable quota event; renders one bounded legacy-batch N11 and explains why first flag enable stays manual; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/codex-quota-readiness-fallback.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: replays the 9-11 shape as immediate manual fallback plus visible N11; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: replays the 9-11 shape as immediate manual fallback plus visible N11; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/codex-quota-recovery-factory.test.ts",
@@ -3435,9 +3893,11 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/customer-release-runtime.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore"
       ],
-      "disposition": "excluded: defaults customer auto release off and observes project on/off writes without restart; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: defaults customer auto release off and observes project on/off writes without restart; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/customer-release-store.test.ts",
@@ -3496,6 +3956,13 @@
       "disposition": "excluded: reconcileDoneThreads (FLY-1165); 1. Done + no session → archives + marks archived_at; second run has no candidates (idempotent); StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/bridge/__tests__/drained-alert-routing.test.ts",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: FLY-1256 drained alert routing; reports only actual dead letters, never expected stale suppression; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
       "path": "packages/teamlead/src/bridge/__tests__/epic-intake-delivery.test.ts",
       "matched": [
         "StateStore"
@@ -3543,9 +4010,10 @@
       "matched": [
         "plugin",
         "plugin.ts",
-        "runner-admission"
+        "runner-admission",
+        "startBridge"
       ],
-      "disposition": "excluded: FLY-2141 production plugin wiring; creates one scan, emits boot warnings once, and injects the production owner resolver; imports admission for unrelated route setup using existing injected/alwaysAdmit behavior; no pressure provider installation or refusal contract asserted here"
+      "disposition": "retained: calls actual startBridge/close; new boot wrapper and cleanup may affect initialization/lifetime"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/epic-residual-scan.test.ts",
@@ -3578,42 +4046,68 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/fd-pressure-alert.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: keeps one boot/episode identity across rejected attempts and requires receipt evidence for duplicates; resolves only the matching episode, preserves failures, and creates a new identity after recovery; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: keeps one boot/episode identity across rejected attempts and requires receipt evidence for duplicates; resolves only the matching episode, preserves failures, and creates; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/flag-provenance.test.ts",
+      "matched": [
+        "FEATURE_FLAGS",
+        "packages/config/src/feature-flags",
+        "packages/config/src/feature-flags/registry.ts",
+        "registry.ts"
+      ],
+      "disposition": "retained: extracts all names from actual edited registry source and compares to FEATURE_FLAGS"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/flag-retirement-scan.test.ts",
       "matched": [
         "StateStore"
       ],
-      "disposition": "excluded: FlagRetirementScanner; anchors the schedule to Sunday 08:00 America/Los_Angeles across PST and PDT; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: flag retirement state machine uses its own synthetic flag set; newly registered SWAP causes no algorithm change"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/flag-store-auto-narrow.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore",
+        "readAutoNarrowRuntimeControl",
+        "resolveAllFlags"
       ],
-      "disposition": "excluded: auto narrow runtime flag; defaults to dry_run and never inherits a wildcard auto row; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: auto narrow runtime flag; defaults to dry_run and never inherits a wildcard auto row; named flag reader behavior/codec is unchanged; registry containing-function anchors alone moved to startBridgeInternal and are validated by retained production drift guard"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore",
+        "resolveAllFlags",
+        "storeAccountSwitchWakeSweepEnabled",
+        "storeAlertSystemEnabled",
+        "storeCmuxRebindDisabled",
+        "storeCmuxWatcherRebuildDisabled",
+        "storeCodexQuotaAutoSwitchEnabled",
+        "storeCodexTerminalReapEnabled",
+        "storeLoopProfilerEnabled",
+        "storeReviewQuotaAutoRetryEnabled",
+        "storeShippedHuskForceEnabled",
+        "storeSummaryAbsorptionCadenceMs",
+        "storeSummaryDueActivityGateEnabled"
       ],
-      "disposition": "excluded: FLY-1778 flag store boot lifecycle and read-on-use; reads every managed flag through a named wrapper and observes the next write; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "retained: initializeFlagStore and enrichment consume the expanded registry, live read-on-use and persisted precedence"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts",
       "matched": [
-        "FLYWHEEL_FLEET_SENSOR_SWAP",
+        "LeadAlertNotifier",
         "StateStore",
-        "ensureSensorHold",
+        "evidenceValidUntilMs",
         "fleet-sensors",
-        "getFleetPressureHold",
-        "machine-watermark",
-        "pressure_hold",
-        "swap-sensor",
+        "sampledAtMs",
         "swapPressureRepair"
       ],
       "disposition": "retained: remove pressure DB-hold authority while preserving bot/zombie cadence and fleet episode consumer behavior"
@@ -3621,9 +4115,10 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/fleet-ticket-enrich.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: FLY-1082 fleet ticket enrichment (routed sink); infra_bot_down: dead CLAUDE bot → CODEX bot owns (explicit metadata field); StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-1082 fleet ticket enrichment (routed sink); infra_bot_down: dead CLAUDE bot → CODEX bot owns (explicit metadata field); exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/fly1505-boot-drain-order.test.ts",
@@ -3810,20 +4305,29 @@
       "disposition": "excluded: FLY-1374 holder wake activation; revives awaiting_review through legal edges and emits display hooks at each write; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/bridge/__tests__/infra-alert-mailbox.test.ts",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: formatInfraAlertMailboxContent; describes a review failure as owned by the receiving Lead; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
       "path": "packages/teamlead/src/bridge/__tests__/infra-alert-wiring.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore",
         "plugin",
         "plugin.ts"
       ],
-      "disposition": "excluded: router/AlertEventType funnel and issue-thread leg unchanged; pressure episode transition is covered by sampler/fleet/replay tests; retain if sink payload event types or router contracts change"
+      "disposition": "excluded: buildInfraAlertRouting (plugin glue, real StateStore); routes a review failure to its owning Lead and never posts the founder thread; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/infra-event-router.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: classifyInfraEvent (FLY-927 D1 matrix); routes FLY-1364 actionable incidents to tickets; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: classifyInfraEvent (FLY-927 D1 matrix); routes FLY-1364 actionable incidents to tickets; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/issue-display-refresher.test.ts",
@@ -3842,9 +4346,10 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/kind-contract.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "plugin"
       ],
-      "disposition": "excluded: keeps activation_probe root-only with no ticket or ARC lifecycle; FLY-1082 kind contract (Task 1.1); shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "excluded: keeps activation_probe root-only with no ticket or ARC lifecycle; FLY-1082 kind contract (Task 1.1); exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/land-alert-delivery.test.ts",
@@ -3990,9 +4495,12 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/lead-inbox-runtime.test.ts",
       "matched": [
-        "StateStore"
+        "LeadAlertNotifier",
+        "StateStore",
+        "deadLetterDir",
+        "queueDir"
       ],
-      "disposition": "excluded: LeadInboxRuntime; FLY-2910 reads a late-bound dispatcher identity for real Discord ingress; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: LeadInboxRuntime; FLY-2910 reads a late-bound dispatcher identity for real Discord ingress; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/lead-note-route.test.ts",
@@ -4078,6 +4586,8 @@
         "FLYWHEEL_SWAP_SENSOR_CMD",
         "MemoryPressureMonitor",
         "machine-watermark",
+        "memPressureThresholdsFromEnv",
+        "parseVmStat",
         "readMemoryPressure"
       ],
       "disposition": "retained: vm_stat parse/read timeout, bounded baseline and snapshot classification"
@@ -4113,9 +4623,11 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/pipeline-config-source.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore"
       ],
-      "disposition": "excluded: FLY-1981 fleet DAG default binding reconcile; converges a six-project fleet to six exact category rows per project; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-1981 fleet DAG default binding reconcile; converges a six-project fleet to six exact category rows per project; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/playwright-orphan-census.test.ts",
@@ -4143,27 +4655,84 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts",
       "matched": [
+        "PressureSnapshot",
         "StateStore",
+        "evidenceValidUntilMs",
         "fleet_pressure_hold",
         "getFleetPressureHold",
         "pressure_hold",
         "runner-admission",
+        "sampledAtMs",
         "setPressureHoldProbe",
+        "setPressureSnapshotProvider",
         "swap-sensor"
       ],
       "disposition": "retained: manual hold persistence and precedence; obsolete sensor row purge and admission API compatibility"
     },
     {
+      "path": "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts",
+      "matched": [
+        "FEATURE_FLAGS",
+        "FLYWHEEL_FLEET_SENSOR_SWAP",
+        "STORE_MANAGED_FLAGS",
+        "StateStore",
+        "flag-store-runtime",
+        "getFlagStoreCodec",
+        "initializeFlagStore",
+        "pressure-sampler",
+        "runner-admission",
+        "sampledAtMs",
+        "startPressureSampling",
+        "storeSwapPressureSensorEnabled",
+        "swap_pressure_sensor"
+      ],
+      "disposition": "retained: new exact SWAP global flag metadata/codec and env-seed-once, live enable/disable-during-await behavior"
+    },
+    {
       "path": "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts",
-      "matched": [],
-      "disposition": "retained: NEW expected: production start before admission, shutdown before store close, real timer bounded scenario and sensor switches",
-      "discovery": "predicate audit or expected new test; refresh after file exists"
+      "matched": [
+        "PressureSample",
+        "PressureSampler",
+        "getPressureSamplerState",
+        "initializeFlagStore",
+        "lead-reconcile-pass",
+        "plugin",
+        "plugin.ts",
+        "pressure-sampler",
+        "pressureSampler",
+        "runner-admission",
+        "setPressureSamplerState",
+        "startPressureSampling"
+      ],
+      "disposition": "retained: new actual file: production start before admission, shutdown before store close, real timer bounded scenario and sensor switches"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
-      "matched": [],
-      "disposition": "retained: NEW expected: scheduling, bounded read, versioned durable baseline/cache, freshness/warmup, episode state independent of admission",
-      "discovery": "predicate audit or expected new test; refresh after file exists"
+      "matched": [
+        "FLYWHEEL_SWAP_SENSOR_CMD",
+        "MemoryPressureMonitor",
+        "PRESSURE_READ_TIMEOUT_MS",
+        "PRESSURE_SAMPLE_INTERVAL_MS",
+        "PressureSample",
+        "PressureSampler",
+        "attachAlertSink",
+        "cache_unavailable",
+        "createPressureSampler",
+        "degradedEpisodeId",
+        "degradedSequence",
+        "evidenceHostVerified",
+        "evidenceValidUntilMs",
+        "getPressureSamplerState",
+        "machine-watermark",
+        "pressure-sampler",
+        "pressureSensorEnabled",
+        "sampledAtMs",
+        "sensor_disabled",
+        "setPressureSamplerState",
+        "warmupUntilMs",
+        "withPressureSamplerBoot"
+      ],
+      "disposition": "retained: new actual file: scheduling, bounded read, versioned durable baseline/cache, freshness/warmup, episode state independent of admission"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/progress-resume.test.ts",
@@ -4398,9 +4967,11 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/runs-route.dag-entry.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore"
       ],
-      "disposition": "excluded: FLY-1707 workflow resume entry; FLY-1981 admits resume before the legacy start-key guard even when the retired env is 0; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-1707 workflow resume entry; FLY-1981 admits resume before the legacy start-key guard even when the retired env is 0; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/runs-route.founder-message-ref.test.ts",
@@ -4426,16 +4997,18 @@
     {
       "path": "packages/teamlead/src/bridge/__tests__/server-loss-hold.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: ServerLossCoordinator durable tmux holds (FLY-1285); helper failure fail-closes every running tmux session without migration; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: ServerLossCoordinator durable tmux holds (FLY-1285); helper failure fail-closes every running tmux session without migration; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/server-loss.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: ServerLossCoordinator (FLY-1082 Task 2.3); server DOWN: ONE episode, one migration per runner, one grouped notify per Lead; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: ServerLossCoordinator (FLY-1082 Task 2.3); server DOWN: ONE episode, one migration per runner, one grouped notify per Lead; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/session-wait.test.ts",
@@ -4583,6 +5156,13 @@
         "StateStore"
       ],
       "disposition": "excluded: M9 targeted mode — happy path + archive-once; FLY-2554: send-trigger selects the exact archived thread among issue aliases; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+    },
+    {
+      "path": "packages/teamlead/src/bridge/__tests__/ticket-owner-map.test.ts",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: resolveTicketOwner (PRD CH-1 whitelist matrix); review failures resolve to the trusted owning Lead; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/timer-sql-coverage.test.ts",
@@ -4766,9 +5346,11 @@
       "path": "packages/teamlead/src/bridge/__tests__/workflow-gate-question-recovery-config.test.ts",
       "matched": [
         "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore",
         "plugin"
       ],
-      "disposition": "excluded: workflow gate question recovery flag; FLY-2427 fails closed when the call-time project flag read throws; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: workflow gate question recovery flag; FLY-2427 fails closed when the call-time project flag read throws; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/bridge/__tests__/workflow-launch-outcome.test.ts",
@@ -4896,9 +5478,10 @@
     {
       "path": "packages/teamlead/src/codex-quota/__tests__/pool-exhausted-alert.test.ts",
       "matched": [
+        "LeadAlertNotifier",
         "StateStore"
       ],
-      "disposition": "excluded: FLY-2830 pool-exhausted alert snapshot; ① takes each account; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: FLY-2830 pool-exhausted alert snapshot; ① takes each account; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "packages/teamlead/src/codex-quota/__tests__/runtime.test.ts",
@@ -4936,11 +5519,20 @@
       "disposition": "excluded: FLY-2143 Epic signal aggregation; combines all five kinds and falls back to the run id for held-run identity; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "packages/teamlead/src/lead-backends/__tests__/codexLeadBridgeWiring.test.ts",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: buildResolveBotToken (mirrors LeadAlertNotifier); resolves by (projectName, leadId): inline botToken, then botTokenEnv, else undefined; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
       "path": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.rotation.test.ts",
       "matched": [
-        "StateStore"
+        "StateStore",
+        "flag-store-runtime",
+        "initializeFlagStore"
       ],
-      "disposition": "excluded: TUI stable visibility proof; does not publish healthy or rotation readiness until the five-second proof resolves; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: TUI stable visibility proof; does not publish healthy or rotation readiness until the five-second proof resolves; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "packages/teamlead/src/lead-backends/codex/__tests__/codex-lead-tui-runtime.test.ts",
@@ -4976,6 +5568,13 @@
         "StateStore"
       ],
       "disposition": "excluded: Discord canonical thread resolve; checks canonical ownership and actual parent, returning only catalog evidence; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+    },
+    {
+      "path": "packages/teamlead/src/lead-capabilities/__tests__/patrol-judgment.test.ts",
+      "matched": [
+        "sampledAtMs"
+      ],
+      "disposition": "excluded: updates the same report, preserves pane facts, and returns actual completion gates; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
     },
     {
       "path": "packages/teamlead/src/lead-capabilities/__tests__/skill-discovery.test.ts",
@@ -5084,7 +5683,9 @@
       "matched": [
         "fly-2006-retention-consumer-gate",
         "packages/teamlead/src",
-        "packages/teamlead/src/bridge"
+        "packages/teamlead/src/__tests__",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/__tests__"
       ],
       "disposition": "excluded: CI workflow shape and retention gate step commands unchanged; actual gate is retained without rerunning unrelated CI structure assertions"
     },
@@ -5148,6 +5749,13 @@
       "disposition": "excluded: dry-run is physically read-only; apply is explicit, audited, and idempotent; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "scripts/__tests__/fly1577-alert-arrival.test.sh",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: bin integrity drift; restart-storm-gate.py; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
+    },
+    {
       "path": "scripts/__tests__/fly1645-receipt-residue-gate.test.mjs",
       "matched": [
         "packages/teamlead/src",
@@ -5160,17 +5768,24 @@
     {
       "path": "scripts/__tests__/fly1674-residue.test.sh",
       "matched": [
+        "LeadAlertNotifier",
+        "LeadAlertNotifier.ts",
         "StateStore",
         "StateStore.ts",
+        "packages/config/src/feature-flags",
         "packages/teamlead/src",
+        "packages/teamlead/src/LeadAlertNotifier.ts",
         "packages/teamlead/src/StateStore.ts",
+        "packages/teamlead/src/__tests__",
         "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/__tests__",
         "packages/teamlead/src/bridge/plugin.ts",
         "plugin",
         "plugin.ts",
+        "registry.ts",
         "scripts/lib/fly-2006-retention-tables/teamlead"
       ],
-      "disposition": "excluded: FLY-1674: the retired three-stage dispatcher must not remain executable,; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: fly1674-residue.test.sh; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
@@ -5195,12 +5810,26 @@
       "disposition": "excluded: FLY-1726: the Bridge's explicit default Lead reaches both upgrade and fresh-install paths.; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
     },
     {
+      "path": "scripts/__tests__/fly2030-summary-registry-activation.test.sh",
+      "matched": [
+        "registry.ts"
+      ],
+      "disposition": "excluded: fly2030-summary-registry-activation.test.sh; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
+    },
+    {
       "path": "scripts/__tests__/fly2102-flag-freeze.test.sh",
       "matched": [
+        "feature-flags-registry.test.ts",
+        "flag-store-runtime",
+        "packages/config/src/__tests__",
+        "packages/config/src/__tests__/feature-flags-registry.test.ts",
+        "packages/config/src/feature-flags",
         "packages/teamlead/src",
-        "packages/teamlead/src/bridge"
+        "packages/teamlead/src/__tests__",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/__tests__"
       ],
-      "disposition": "excluded: FLY-2102: the nine Batch-B2 startup/CLI flag names may survive only in exact; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "excluded: fly2102-flag-freeze.test.sh; uses named existing flag or injected registry/runtime fixture, not added SWAP identity or full current-registry enumeration; actual global enumeration retained in registry/store/routes/render consumers"
     },
     {
       "path": "scripts/__tests__/fly2403-design-model-comparison.test.sh",
@@ -5253,9 +5882,12 @@
     {
       "path": "scripts/__tests__/lead-alert-strict-delivery.test.sh",
       "matched": [
-        "packages/teamlead/src"
+        "LeadAlertNotifier",
+        "LeadAlertNotifier.ts",
+        "packages/teamlead/src",
+        "packages/teamlead/src/LeadAlertNotifier.ts"
       ],
-      "disposition": "excluded: FLY-913: lead-alert.sh --strict-delivery machine-readable result channel.; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "excluded: tests shell lead-alert producer and AlertEventType parity; pressure-only TS filename suffix leaves shell producer and existing type union unchanged"
     },
     {
       "path": "scripts/__tests__/lead-patrol-snapshot.test.sh",
@@ -5282,6 +5914,20 @@
         "plugin"
       ],
       "disposition": "excluded: FLY-1062 P0 install smoke — the REAL npm full chain on the REAL repo:; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+    },
+    {
+      "path": "scripts/__tests__/package-onboard-version-injection.test.sh",
+      "matched": [
+        "startBridge"
+      ],
+      "disposition": "excluded: startBridge is an invented packages/alpha export in version injection fixture; real sampler boot wrapper is not loaded"
+    },
+    {
+      "path": "scripts/__tests__/package-onboard.test.sh",
+      "matched": [
+        "startBridge"
+      ],
+      "disposition": "excluded: startBridge is an invented packages/alpha export in isolated packaging fixtures; real plugin API implementation is not loaded"
     },
     {
       "path": "scripts/__tests__/packaged-seams.test.sh",
@@ -5507,13 +6153,21 @@
       "disposition": "excluded: FLY-2860: the legacy voice-bridge daemon (/gemini, /eleven, /glaw) is retired.; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
     },
     {
+      "path": "scripts/__tests__/restart-summary-source-preflight.test.sh",
+      "matched": [
+        "registry.ts"
+      ],
+      "disposition": "excluded: restart-summary-source-preflight.test.sh; common filename/parent or unrelated field match; no changed pressure, global SWAP, notification filename, or actual startBridge lifetime contract"
+    },
+    {
       "path": "scripts/__tests__/run-bridge-isolation-boot.test.sh",
       "matched": [
         "StateStore",
         "packages/teamlead/src",
-        "plugin"
+        "plugin",
+        "startBridge"
       ],
-      "disposition": "excluded: Boot wiring fixture: classifier and fatal semantics have real-SDK child tests.; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
+      "disposition": "excluded: writes a stub plugin startBridge into temp fixture; checks unchanged boot isolation script, not real plugin implementation"
     },
     {
       "path": "scripts/__tests__/runner-test-discipline.test.mjs",
@@ -5532,10 +6186,14 @@
     {
       "path": "scripts/__tests__/runtime-role-auto-qa-retirement.test.sh",
       "matched": [
+        "LeadAlertNotifier",
+        "LeadAlertNotifier.ts",
         "packages/teamlead/src",
-        "packages/teamlead/src/bridge"
+        "packages/teamlead/src/LeadAlertNotifier.ts",
+        "packages/teamlead/src/bridge",
+        "packages/teamlead/src/bridge/__tests__"
       ],
-      "disposition": "excluded: shell/fixture assertions in runtime-role-auto-qa-retirement.test.sh; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+      "disposition": "excluded: runtime-role-auto-qa-retirement.test.sh; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "scripts/__tests__/setup-mcp-on-demand.test.sh",
@@ -5594,6 +6252,14 @@
       "disposition": "excluded: FLY-1775: hermetic contracts for the generalized 529 room helpers.; StateStore fixture/import exercises its own unchanged tables and methods; pressure singleton/admission migration covered by retained exact files"
     },
     {
+      "path": "scripts/__tests__/test-verify-flag-verdicts.test.sh",
+      "matched": [
+        "FEATURE_FLAGS",
+        "registry.ts"
+      ],
+      "disposition": "excluded: writes temporary keep_me/clear_me registry source; does not read actual added SWAP row"
+    },
+    {
       "path": "scripts/__tests__/update-flywheel-sources.test.sh",
       "matched": [
         "StateStore"
@@ -5604,10 +6270,18 @@
       "path": "scripts/__tests__/v2-retirement-cleanup.test.sh",
       "matched": [
         "packages/teamlead/src",
+        "packages/teamlead/src/__tests__",
         "packages/teamlead/src/bridge",
         "packages/teamlead/src/lead-backends/codex"
       ],
       "disposition": "excluded: FLY-1631: retired runtime-v2 code must not be able to ship or start again.; shared directory/plugin reference, while this named behavior has no changed pressure sampling, admission, episode, or StateStore table contract"
+    },
+    {
+      "path": "scripts/__tests__/voice-health-alert-route.test.sh",
+      "matched": [
+        "LeadAlertNotifier"
+      ],
+      "disposition": "excluded: voice-health-alert-route.test.sh; exercises unchanged alert routing/type metadata for another event family, without pressureSampler metadata or queue filename contract; ordinary notifier queue compatibility retained separately"
     },
     {
       "path": "scripts/__tests__/voice-health.test.py",
@@ -5641,7 +6315,7 @@
     {
       "guard": "flags drift",
       "disposition": "retained",
-      "predicate": "existing readSite moves/new env gates require real AST accounting even with no registry addition"
+      "predicate": "New swap_pressure_sensor bridge_global default-on flag, global bool codec, runtime store wrapper, and renamed startBridgeInternal readSite anchors require registry/store-policy/truth/drift plus actual enumerating runtime/route/consumer checks"
     },
     {
       "guard": "notification inventory",
@@ -5664,9 +6338,14 @@
       "predicate": "no CommDB source/schema/trigger/template change planned; StateStore-only pressure singleton is outside its predicate; reconsider if CommDB changes"
     },
     {
-      "guard": "D inherited recovery-notice SQL observation",
-      "disposition": "context-only; root owns D corrections",
-      "predicate": "Review recovery notices in StateStore join codex_review_job/codex_review_reuse_binding, neither in targetTables. CommDB readActionableReviewRecovery joins mailbox (existing db.ts/mailbox/read candidate_guarded registration). mailbox_message_projection SELECT is interpolated from MAILBOX_MESSAGE_PROJECTION_SELECT; static viewDefinitions regex does not resolve that interpolation to its runtime base. Scanner deduplicates by file/relation/baseTable/usage; new call sites sharing a registered key need no duplicate entry. A table-retention fragment is independent and mandatory. Root should run final runtime gate."
+      "guard": "Bridge boot cleanup wrapper",
+      "disposition": "retained",
+      "predicate": "startBridge now wraps startBridgeInternal with sampler cleanup; actual production startBridge integration callers retained, isolated scripts that replace plugin with stub explicitly excluded"
+    },
+    {
+      "guard": "pressure notification queue filename",
+      "disposition": "retained",
+      "predicate": "enqueue/deadLetter append a sha256 eventId suffix only for pressureSampler metadata; pressure replay and ordinary/fleet/episode queue consumers retained"
     }
   ],
   "verificationInstructions": {
@@ -5677,10 +6356,245 @@
       "packages/teamlead/src/__tests__/StateStore.test.ts": "migrate() idempotence and fresh DB retired-table assertions; retain concrete file with -t if narrowing runtime"
     }
   },
-  "refreshRequired": [
-    "Replace expected files with frozen actual diff, including table retention fragment path and optional runner-action-http.ts",
-    "Run git grep -lF for final new literals/symbols/table names and changed test paths; include untracked file contents explicitly before commit",
-    "Recheck every exclusion if scope changes; especially any CommDB change, flag registry changes, new sender type or retention deletion-target classification",
-    "Capture actual new test filenames and real timer scenario duration; this document is selection evidence, not a passing result"
-  ]
+  "refreshRequired": false,
+  "auditedAtUtc": "2026-09-26T20:45:46.976361+00:00",
+  "sourceHashes": {
+    "algorithm": "sha256",
+    "atDiscovery": {
+      "packages/config/src/feature-flags/registry.ts": "039859256e09e52a20dc6651687d5ffc07988fd4d787d4eb2a0b5a516b093ad2",
+      "packages/config/src/feature-flags/store-policy.ts": "9ddb3205e68a00abb2354d9ec8ed8a3dcfa486421e24748a3abcb8444227a243",
+      "packages/teamlead/src/LeadAlertNotifier.ts": "215e86a2067ec90e998ff311e90dd75baf1d36607ab8497143fc992602feeaea",
+      "packages/teamlead/src/StateStore.ts": "c3ad8923721fc88455915a8bbea7c86a519f9a22b7d80a33d3191a6e72d830cc",
+      "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts": "46879678ef246012785b7a1596790404452197ef8bd52ef136f870ea0a0bf1df",
+      "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts": "4c701b01e83d52abe24dd4bb1d910eb059107bf8750d1039f85695e68b30d17f",
+      "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts": "2ebc9db8c834d18de7c567ad9a13af0da0cba6d613b41c42b3ff6aeca36ab95d",
+      "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts": "a03ddcf33f4e72625744badf4ee8105dbbc6948b44d4fc5fb51dae7c0179a5dd",
+      "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts": "96d16b855102b108db3187e6fd0959ca2abc28d975c22b08ee83762364b46bd7",
+      "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts": "3162708eb4bff4e467fc9be4515494ff7ad3f24d6fb57382ac5906fad4f806bb",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts": "fc03adb04f0cbee2e0ed016385ee484f9cb5e0e0727538cfb4dce76845dd0460",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts": "1d4fe86d4901ec6ae9d547f9201abed1df6f29fe68cb175e442027a4832e9a74",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts": "e31fe396d3c38e17a3de2344f5f60411e9a266d568cfe5590be85025310b8754",
+      "packages/teamlead/src/bridge/capacity-snapshot.ts": "ef3df3451baa4989af54225fe901faae9754e5424feb904e2322795ed1233089",
+      "packages/teamlead/src/bridge/flag-store-runtime.ts": "b6fe34e8909aba5b393b51f4210445965fa393cac39e23744d083834f414536d",
+      "packages/teamlead/src/bridge/fleet-sensors.ts": "70c07c32e7357999478c84814731e1552ad923418ab24aeb26aff21ecd78c7a5",
+      "packages/teamlead/src/bridge/machine-watermark.ts": "0b4fbd0e2846b668ab96f9fbf65d46535d4a0dae3b6eafef36064bdb6e78d865",
+      "packages/teamlead/src/bridge/plugin.ts": "81a368912dfe294851977966c530086e16a55894302bb765aafbb03cde60ba0d",
+      "packages/teamlead/src/bridge/pressure-sampler.ts": "ae3e9d73c4f2aa2d45334e01033f6253ba7484235cef1177acd79960e659001a",
+      "packages/teamlead/src/bridge/runner-admission.ts": "190a495589d0663229cb09b9298166f911750ec91284ca33c53842a3dd8ac0e4",
+      "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json": "e4fac13c2223c4ba3a2af0fa13a0dda60144111e81cf62eebe5aaa0bb767ca66",
+      "packages/config/src/__tests__/feature-flags-drift.test.ts": "abe58d5dec22838a26b489c7a3ceccae92a6a5266eabc593cddebdbd7bec0a56",
+      "packages/config/src/__tests__/feature-flags-registry.test.ts": "727c0c34978121f92e483f80f22e90d8c88977fbc2a6f85a6050b6052f8f6832"
+    },
+    "atDocumentWrite": {
+      "packages/config/src/__tests__/feature-flags-drift.test.ts": "abe58d5dec22838a26b489c7a3ceccae92a6a5266eabc593cddebdbd7bec0a56",
+      "packages/config/src/__tests__/feature-flags-registry.test.ts": "727c0c34978121f92e483f80f22e90d8c88977fbc2a6f85a6050b6052f8f6832",
+      "packages/config/src/feature-flags/registry.ts": "7d1de58e5fd6711bba08066a760db2e952ce5b8aeeda2dd3276be77c3e6079e3",
+      "packages/config/src/feature-flags/store-policy.ts": "9ddb3205e68a00abb2354d9ec8ed8a3dcfa486421e24748a3abcb8444227a243",
+      "packages/teamlead/src/LeadAlertNotifier.ts": "30337233805cc699a15963107761483382a3d3cdb610dd39bfd1f1d228870345",
+      "packages/teamlead/src/StateStore.ts": "c3ad8923721fc88455915a8bbea7c86a519f9a22b7d80a33d3191a6e72d830cc",
+      "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts": "ef7b64e651b8a2589e1fe7a66d0ac80148107d152618a2cb42acf1416d31d0a8",
+      "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts": "7334347cfab89429761346c1115949ff4c3aeb69159c90c912ff067d25c310e5",
+      "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts": "63fd8d539b3cb79a5e5f3e460f6856f0ecc147dcada1f73f9d3a3cfe14d6d99e",
+      "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts": "21ebe684189dfda5ed64d8066599843cb33ceaa2849c5b81d618f840396ea765",
+      "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts": "723611018d0c5229899a41cd3271bc8e4d2b8205a580a0cac0ce161f6c0b63ed",
+      "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts": "edbb739ae5107d9e905a1378cebf1de6338e75ff2e92bb1c2886e1d79ba3b5c3",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts": "fb5eb10efdbb13a4b220b02709f6a7916cb40fcf74d2f04d413dddec5b5891f5",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts": "31e38d7bf6e9704a53d9145b7045988312e7db68df2bc092618ad10059681c81",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts": "e7324818cdf75160820bf52216ebaba38ae61d9749cd3afefc2313066ef625d9",
+      "packages/teamlead/src/bridge/capacity-snapshot.ts": "6a01147b9eeac44f8a9babcbf9687bb7fcabd5a4180e76ee7d4af194f3a161ea",
+      "packages/teamlead/src/bridge/flag-store-runtime.ts": "576c9c58a7cb1cbcb62db3c34734b2c661eb774bb8e5c2d21741819f024955ed",
+      "packages/teamlead/src/bridge/fleet-sensors.ts": "ac4fd4c684cab83f02d5b8077ad590bc38cf5497152e4b4b8da55d419a07f401",
+      "packages/teamlead/src/bridge/machine-watermark.ts": "56794b0614badfbbfe54031e968d95ccc8e2c2d19e9eca75b3f2beecd0961afc",
+      "packages/teamlead/src/bridge/plugin.ts": "fa396a6ddad1ee2952a2ef9b998d621ab0eddf1bc71e0f834ed0ee5482a64c73",
+      "packages/teamlead/src/bridge/pressure-sampler.ts": "d6d0fa4fd53319cee4ba26a465ba5721999e2ac93d056d2985f24610b1e1061f",
+      "packages/teamlead/src/bridge/runner-admission.ts": "62c5a7397d5fc1063ffc3ad1d1f735902bba36359360646c87fd98f97fef9fbc",
+      "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json": "b74196cc765e54f392429f3957197a38b5f0874013c907619a8e86c2a028c4ec"
+    },
+    "changedDuringAudit": [
+      "packages/config/src/feature-flags/registry.ts",
+      "packages/teamlead/src/LeadAlertNotifier.ts",
+      "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts",
+      "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts",
+      "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts",
+      "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts",
+      "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts",
+      "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
+      "packages/teamlead/src/bridge/capacity-snapshot.ts",
+      "packages/teamlead/src/bridge/flag-store-runtime.ts",
+      "packages/teamlead/src/bridge/fleet-sensors.ts",
+      "packages/teamlead/src/bridge/machine-watermark.ts",
+      "packages/teamlead/src/bridge/plugin.ts",
+      "packages/teamlead/src/bridge/pressure-sampler.ts",
+      "packages/teamlead/src/bridge/runner-admission.ts",
+      "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json"
+    ],
+    "newChangedPathsAfterDiscovery": [],
+    "atFreeze": {
+      "packages/config/src/__tests__/feature-flags-drift.test.ts": "4603b71c5f041d1e6cb23bea02000d54be27b5278b7b558bfe83d74618e57d33",
+      "packages/config/src/__tests__/feature-flags-registry.test.ts": "727c0c34978121f92e483f80f22e90d8c88977fbc2a6f85a6050b6052f8f6832",
+      "packages/config/src/feature-flags/registry.ts": "7d1de58e5fd6711bba08066a760db2e952ce5b8aeeda2dd3276be77c3e6079e3",
+      "packages/config/src/feature-flags/store-policy.ts": "9ddb3205e68a00abb2354d9ec8ed8a3dcfa486421e24748a3abcb8444227a243",
+      "packages/teamlead/src/LeadAlertNotifier.ts": "30337233805cc699a15963107761483382a3d3cdb610dd39bfd1f1d228870345",
+      "packages/teamlead/src/StateStore.ts": "c3ad8923721fc88455915a8bbea7c86a519f9a22b7d80a33d3191a6e72d830cc",
+      "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts": "ef7b64e651b8a2589e1fe7a66d0ac80148107d152618a2cb42acf1416d31d0a8",
+      "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts": "7334347cfab89429761346c1115949ff4c3aeb69159c90c912ff067d25c310e5",
+      "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts": "63fd8d539b3cb79a5e5f3e460f6856f0ecc147dcada1f73f9d3a3cfe14d6d99e",
+      "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts": "21ebe684189dfda5ed64d8066599843cb33ceaa2849c5b81d618f840396ea765",
+      "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts": "723611018d0c5229899a41cd3271bc8e4d2b8205a580a0cac0ce161f6c0b63ed",
+      "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts": "edbb739ae5107d9e905a1378cebf1de6338e75ff2e92bb1c2886e1d79ba3b5c3",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts": "fb5eb10efdbb13a4b220b02709f6a7916cb40fcf74d2f04d413dddec5b5891f5",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts": "31e38d7bf6e9704a53d9145b7045988312e7db68df2bc092618ad10059681c81",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts": "f93eb20898db337eea78e2ebdfd63a329500d0a7cf628d9c548aaf4a4235caa9",
+      "packages/teamlead/src/bridge/capacity-snapshot.ts": "3c1ca8a060e51fa860372cfbbcd2ac1f09a0b5db3b19da544a14d43e66b0d291",
+      "packages/teamlead/src/bridge/flag-store-runtime.ts": "576c9c58a7cb1cbcb62db3c34734b2c661eb774bb8e5c2d21741819f024955ed",
+      "packages/teamlead/src/bridge/fleet-sensors.ts": "ac4fd4c684cab83f02d5b8077ad590bc38cf5497152e4b4b8da55d419a07f401",
+      "packages/teamlead/src/bridge/machine-watermark.ts": "56794b0614badfbbfe54031e968d95ccc8e2c2d19e9eca75b3f2beecd0961afc",
+      "packages/teamlead/src/bridge/plugin.ts": "7f6bf9daffed5c4b260335120b6c4edca32cb79cc9b9be732d721c94b3b2368f",
+      "packages/teamlead/src/bridge/pressure-sampler.ts": "cf5a45cc071255008a5ecc9354f57a836460fa5b8fcdde10027f1edbb8dee36d",
+      "packages/teamlead/src/bridge/runner-admission.ts": "62c5a7397d5fc1063ffc3ad1d1f735902bba36359360646c87fd98f97fef9fbc",
+      "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json": "b74196cc765e54f392429f3957197a38b5f0874013c907619a8e86c2a028c4ec"
+    },
+    "atR1Freeze": {
+      "packages/config/src/__tests__/feature-flags-drift.test.ts": "4603b71c5f041d1e6cb23bea02000d54be27b5278b7b558bfe83d74618e57d33",
+      "packages/config/src/__tests__/feature-flags-registry.test.ts": "727c0c34978121f92e483f80f22e90d8c88977fbc2a6f85a6050b6052f8f6832",
+      "packages/config/src/feature-flags/registry.ts": "7d1de58e5fd6711bba08066a760db2e952ce5b8aeeda2dd3276be77c3e6079e3",
+      "packages/config/src/feature-flags/store-policy.ts": "9ddb3205e68a00abb2354d9ec8ed8a3dcfa486421e24748a3abcb8444227a243",
+      "packages/teamlead/src/LeadAlertNotifier.ts": "30337233805cc699a15963107761483382a3d3cdb610dd39bfd1f1d228870345",
+      "packages/teamlead/src/StateStore.ts": "c3ad8923721fc88455915a8bbea7c86a519f9a22b7d80a33d3191a6e72d830cc",
+      "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts": "b618dd279e336a39117c0066be1799c5d95d7e421523f84d6b24d1c133664eb8",
+      "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts": "7334347cfab89429761346c1115949ff4c3aeb69159c90c912ff067d25c310e5",
+      "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts": "2ea256213a0cff0c3849c525bb0d6ad0bf75e1909c924e952b49a2ec33f008c0",
+      "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts": "21ebe684189dfda5ed64d8066599843cb33ceaa2849c5b81d618f840396ea765",
+      "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts": "723611018d0c5229899a41cd3271bc8e4d2b8205a580a0cac0ce161f6c0b63ed",
+      "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts": "edbb739ae5107d9e905a1378cebf1de6338e75ff2e92bb1c2886e1d79ba3b5c3",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts": "fb5eb10efdbb13a4b220b02709f6a7916cb40fcf74d2f04d413dddec5b5891f5",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts": "31e38d7bf6e9704a53d9145b7045988312e7db68df2bc092618ad10059681c81",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts": "0d39c0760cce412d76459761a7d4bdb46fbc04b00af959362d0cc7786fad463f",
+      "packages/teamlead/src/bridge/capacity-snapshot.ts": "dd623143228b6ad06a5e5f63b244bcefc7998494dc03d00a8832999c94debf05",
+      "packages/teamlead/src/bridge/flag-store-runtime.ts": "576c9c58a7cb1cbcb62db3c34734b2c661eb774bb8e5c2d21741819f024955ed",
+      "packages/teamlead/src/bridge/fleet-sensors.ts": "ac4fd4c684cab83f02d5b8077ad590bc38cf5497152e4b4b8da55d419a07f401",
+      "packages/teamlead/src/bridge/machine-watermark.ts": "56794b0614badfbbfe54031e968d95ccc8e2c2d19e9eca75b3f2beecd0961afc",
+      "packages/teamlead/src/bridge/plugin.ts": "7f6bf9daffed5c4b260335120b6c4edca32cb79cc9b9be732d721c94b3b2368f",
+      "packages/teamlead/src/bridge/pressure-sampler.ts": "5abad15c9459be83c3190e6383b368eff4a46fd7be1a29f2ac3e2f9a38abba39",
+      "packages/teamlead/src/bridge/runner-admission.ts": "870df66157527660435839bc4461b2179ccdadd6da177fd12bc8694824496d83",
+      "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json": "b74196cc765e54f392429f3957197a38b5f0874013c907619a8e86c2a028c4ec"
+    },
+    "atQualityFreeze": {
+      "packages/config/src/__tests__/feature-flags-drift.test.ts": "4603b71c5f041d1e6cb23bea02000d54be27b5278b7b558bfe83d74618e57d33",
+      "packages/config/src/__tests__/feature-flags-registry.test.ts": "727c0c34978121f92e483f80f22e90d8c88977fbc2a6f85a6050b6052f8f6832",
+      "packages/config/src/feature-flags/registry.ts": "7d1de58e5fd6711bba08066a760db2e952ce5b8aeeda2dd3276be77c3e6079e3",
+      "packages/config/src/feature-flags/store-policy.ts": "9ddb3205e68a00abb2354d9ec8ed8a3dcfa486421e24748a3abcb8444227a243",
+      "packages/teamlead/src/LeadAlertNotifier.ts": "30337233805cc699a15963107761483382a3d3cdb610dd39bfd1f1d228870345",
+      "packages/teamlead/src/StateStore.ts": "c3ad8923721fc88455915a8bbea7c86a519f9a22b7d80a33d3191a6e72d830cc",
+      "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts": "b618dd279e336a39117c0066be1799c5d95d7e421523f84d6b24d1c133664eb8",
+      "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts": "7334347cfab89429761346c1115949ff4c3aeb69159c90c912ff067d25c310e5",
+      "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts": "2ea256213a0cff0c3849c525bb0d6ad0bf75e1909c924e952b49a2ec33f008c0",
+      "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts": "21ebe684189dfda5ed64d8066599843cb33ceaa2849c5b81d618f840396ea765",
+      "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts": "723611018d0c5229899a41cd3271bc8e4d2b8205a580a0cac0ce161f6c0b63ed",
+      "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts": "edbb739ae5107d9e905a1378cebf1de6338e75ff2e92bb1c2886e1d79ba3b5c3",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts": "fb5eb10efdbb13a4b220b02709f6a7916cb40fcf74d2f04d413dddec5b5891f5",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts": "31e38d7bf6e9704a53d9145b7045988312e7db68df2bc092618ad10059681c81",
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts": "edad7f0a999c0f007660591f6dd181572d0839383c042282f19e65dd3735b68d",
+      "packages/teamlead/src/bridge/capacity-snapshot.ts": "dd623143228b6ad06a5e5f63b244bcefc7998494dc03d00a8832999c94debf05",
+      "packages/teamlead/src/bridge/flag-store-runtime.ts": "576c9c58a7cb1cbcb62db3c34734b2c661eb774bb8e5c2d21741819f024955ed",
+      "packages/teamlead/src/bridge/fleet-sensors.ts": "ac4fd4c684cab83f02d5b8077ad590bc38cf5497152e4b4b8da55d419a07f401",
+      "packages/teamlead/src/bridge/machine-watermark.ts": "56794b0614badfbbfe54031e968d95ccc8e2c2d19e9eca75b3f2beecd0961afc",
+      "packages/teamlead/src/bridge/plugin.ts": "7f6bf9daffed5c4b260335120b6c4edca32cb79cc9b9be732d721c94b3b2368f",
+      "packages/teamlead/src/bridge/pressure-sampler.ts": "55f3aecf2f024caec1027f7f5a1fe3794cb398246904593b64b792458fce2527",
+      "packages/teamlead/src/bridge/runner-admission.ts": "870df66157527660435839bc4461b2179ccdadd6da177fd12bc8694824496d83",
+      "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json": "b74196cc765e54f392429f3957197a38b5f0874013c907619a8e86c2a028c4ec"
+    }
+  },
+  "untrackedContentFiles": [
+    "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts"
+  ],
+  "counts": {
+    "queries": 166,
+    "retainedConcreteTestFiles": 50,
+    "matchRecordsIncludingOneHelper": 776,
+    "excludedRecords": 726
+  },
+  "freezeRefresh": {
+    "atUtc": "2026-09-26T20:50:17.726272+00:00",
+    "query": "attachAlertSink",
+    "matches": [
+      "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
+      "packages/teamlead/src/bridge/plugin.ts"
+    ],
+    "changesSinceDocumentWrite": [
+      "sampler post-alert freshness seam and two regression cases",
+      "plugin uses attachAlertSink seam",
+      "capacity skipped-probe placeholder type fix"
+    ],
+    "newTestMatches": 0,
+    "sourceFrozen": true
+  },
+  "guardInventoryRefresh": {
+    "evidence": "/tmp/fly2920-F-guard-refresh.json",
+    "red": "/tmp/fly2920-F-explicit-config-02.log",
+    "change": "Add exact swap_pressure_sensor/storeSwapPressureSensorEnabled tuple; preserve pattern-aware resolver and registry-accounting checks",
+    "newStandaloneTests": 0
+  },
+  "r1Refresh": {
+    "atUtc": "2026-09-26T20:58:08.807104+00:00",
+    "queries": {
+      "degradedEpisodeId": [
+        "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts",
+        "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
+        "packages/teamlead/src/bridge/pressure-sampler.ts"
+      ],
+      "degradedSequence": [
+        "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
+        "packages/teamlead/src/bridge/pressure-sampler.ts"
+      ],
+      "normalizeNotifications": [
+        "packages/teamlead/src/bridge/pressure-sampler.ts"
+      ],
+      "assessPressure": [
+        "packages/teamlead/src/bridge/runner-admission.ts"
+      ],
+      "AdmissionProbe": [
+        "engineering/doc/FLY-2144-dispatch-capacity-inputs/implementation-notes.md",
+        "engineering/doc/FLY-2144-dispatch-capacity-inputs/plan.md",
+        "engineering/doc/FLY-2144-dispatch-capacity-inputs/research.md",
+        "packages/teamlead/src/bridge/capacity-snapshot.ts",
+        "packages/teamlead/src/bridge/runner-admission.ts"
+      ],
+      "attachAlertSink": [
+        "engineering/doc/FLY-2920-restart-load-safety/consumers-F.json",
+        "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts",
+        "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
+        "packages/teamlead/src/bridge/plugin.ts",
+        "packages/teamlead/src/bridge/pressure-sampler.ts"
+      ]
+    },
+    "newTestMatches": 0,
+    "sourceFrozen": true,
+    "note": "Config precise drift identity correction and six R1 sampler/admission/capacity source/test changes included; no test exclusion relaxed"
+  },
+  "qualityRefresh": {
+    "atUtc": "2026-09-26T21:08:58.025682+00:00",
+    "queries": {
+      "evidenceHostVerified": [
+        "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts",
+        "packages/teamlead/src/bridge/pressure-sampler.ts"
+      ],
+      "preserveUnverifiedEnvelope": [
+        "packages/teamlead/src/bridge/pressure-sampler.ts"
+      ]
+    },
+    "newTestMatches": 0,
+    "changes": [
+      "production notification generation fence and stop drain",
+      "unknown host notice persistence with evidence explicitly unverified"
+    ],
+    "sourceFrozen": true
+  },
+  "finalVerification": "verification-F.json"
 }

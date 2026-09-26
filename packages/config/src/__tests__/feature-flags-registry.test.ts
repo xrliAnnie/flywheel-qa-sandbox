@@ -12,6 +12,8 @@ import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 const EXPECTED_WHEN_ON = {
+	swap_pressure_sensor:
+		"持续检测机器内存压力；压力持续或读数不明时暂停新任务派发，恢复后放行",
 	auto_release_on_silence_enabled:
 		"满足启用授权、送达和健康条件后，在否决窗口到期时默认发布客户版本",
 	lead_token_savings:

@@ -37,6 +37,9 @@ import { readFileSync } from "node:fs";
 import { cpus, freemem, loadavg } from "node:os";
 import { withSyncOpMarker } from "flywheel-claude-runner";
 
+import type { PressureSnapshot } from "./machine-watermark.js";
+import { pressureSnapshotDetail } from "./pressure-sampler.js";
+
 export type AdmissionReason =
 	| "load_pressure"
 	| "memory_pressure"
@@ -54,6 +57,8 @@ export type AdmissionDecision =
 			reason: AdmissionReason;
 			detail: string;
 			retryAfterSeconds?: number;
+			subreason?: "manual" | PressureSnapshot["state"];
+			pressure?: PressureSnapshot;
 	  };
 
 export interface AdmissionProbe {
@@ -62,6 +67,8 @@ export interface AdmissionProbe {
 	perCore: number;
 	thresholdPerCore: number;
 	decision: AdmissionDecision;
+	/** The exact pressure assessment used for decision, also consumed by capacity. */
+	pressure?: PressureSnapshot;
 }
 
 /**
@@ -195,6 +202,13 @@ export class RunnerAdmissionController {
 	private readonly availMemFn: () => number;
 	private readonly cpuCount: number;
 	/** FLY-1082: fleet pressure-hold probe (null = no hold). Late-bound. */
+	private pressureSnapshotProvider: (() => PressureSnapshot) | null = null;
+	setPressureSnapshotProvider(provider: (() => PressureSnapshot) | null): void {
+		this.pressureSnapshotProvider = provider;
+	}
+	getPressureSnapshot(): PressureSnapshot | undefined {
+		return this.pressureSnapshotProvider?.();
+	}
 	private pressureHoldProbe: (() => string | null) | null = null;
 	/** FLY-1638: bounded operator pause (null = inactive/expired). */
 	private admissionPauseProbe:
@@ -261,12 +275,14 @@ export class RunnerAdmissionController {
 	/** Read-only inputs for Lead capacity judgment; admission behavior is unchanged. */
 	probe(): AdmissionProbe {
 		const load1 = this.loadavgFn()[0] ?? 0;
+		const pressure = this.assessPressure();
 		return {
 			load1,
 			cpuCount: this.cpuCount,
 			perCore: load1 / this.cpuCount,
 			thresholdPerCore: this.loadPerCore,
-			decision: this.tryAdmit(),
+			decision: this.decide(pressure),
+			...(pressure ? { pressure } : {}),
 		};
 	}
 
@@ -275,6 +291,27 @@ export class RunnerAdmissionController {
 	 * FIRST (an ARC-placed hand brake beats the live probes), then memory
 	 * (when enabled), then load. */
 	tryAdmit(): AdmissionDecision {
+		return this.decide(this.assessPressure());
+	}
+
+	private assessPressure(): PressureSnapshot | undefined {
+		try {
+			return this.pressureSnapshotProvider?.();
+		} catch {
+			return {
+				source: "vm_stat",
+				state: "unknown",
+				reason: "pressure_snapshot_unavailable",
+				sampledAtMs: null,
+				baselineAtMs: null,
+				freePct: null,
+				swapoutDeltaPages: null,
+				evidenceValidUntilMs: null,
+			};
+		}
+	}
+
+	private decide(pressure: PressureSnapshot | undefined): AdmissionDecision {
 		// FLY-1638: an explicit deploy brake wins over every implicit resource
 		// signal and carries the remaining TTL to HTTP Retry-After.
 		if (this.admissionPauseProbe) {
@@ -306,8 +343,22 @@ export class RunnerAdmissionController {
 				held = null;
 			}
 			if (held !== null) {
-				return { admit: false, reason: "pressure_hold", detail: held };
+				return {
+					admit: false,
+					reason: "pressure_hold",
+					subreason: "manual",
+					detail: held,
+				};
 			}
+		}
+		if (pressure && pressure.state !== "healthy") {
+			return {
+				admit: false,
+				reason: "pressure_hold",
+				subreason: pressure.state,
+				detail: pressureSnapshotDetail(pressure),
+				pressure,
+			};
 		}
 		// Memory gate is opt-in: only when an operator set a positive floor.
 		if (this.minFreeMemBytes > 0) {

@@ -1,37 +1,10 @@
-/**
- * FLY-1082 (Task 2.1) → FLY-1142: the machine memory-pressure sensor — the
- * OOM early warning the 2026-07-09 incident never got.
- *
- * FLY-1142 root-cure: the first generation watched the sysctl swap watermark
- * (swap used-%). macOS swap usage is MONOTONIC — it never shrinks without
- * a reboot — so one OOM scar left the watermark above LOW forever and the
- * 2026-07-10 pressure-hold stayed stranded for 8+ hours on a measurably
- * healthy machine (41–50% free, zero swapout). The sensor now reads REAL
- * pressure from `vm_stat`:
- *
- *  - free%        = (Pages free + Pages inactive) / Σ(all seven visible
- *                   buckets) — a pure page-count ratio, so the 16384-vs-4096
- *                   page-size trap (vm_stat header vs `sysctl hw.pagesize`)
- *                   never enters the formula;
- *  - swapout-delta = the `Swapouts` cumulative counter's increment between
- *                   two sensor ticks — "is the machine thrashing NOW",
- *                   which (unlike the watermark) returns to zero.
- *
- * Deliberately a STANDALONE module: pure detection + hysteresis; the
- * ticket/ARC wiring lives in fleet-sensors.ts.
- *
- * Trigger is OR (either low free% or sustained swapout), sustained for 2
- * consecutive ticks (FLY-1048 multi-frame precedent). Release is AND with
- * three-state health evidence: clear/lift happens ONLY on a sample that
- * PROVES health (free% ≥ HIGH and delta ≤ MIN with delta computable) —
- * an unknown delta (first sample after restart, counter regression, probe
- * failure) is `healthy = null` and never releases anything.
- */
-
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+export const PRESSURE_SAMPLE_INTERVAL_MS = 30_000;
+export const PRESSURE_READ_TIMEOUT_MS = 5_000;
 
 /** One vm_stat reading reduced to the sensor's business fields. */
 export interface MemoryPressure {
@@ -97,12 +70,21 @@ export function parseVmStat(out: string): MemoryPressure | null {
  */
 export async function readMemoryPressure(
 	env: NodeJS.ProcessEnv = process.env,
+	signal?: AbortSignal,
 ): Promise<MemoryPressure | null> {
 	try {
 		const override = env.FLYWHEEL_SWAP_SENSOR_CMD?.trim();
 		const { stdout } = override
-			? await execFileAsync("/bin/sh", ["-c", override], { timeout: 5000 })
-			: await execFileAsync("vm_stat", [], { timeout: 5000 });
+			? await execFileAsync("/bin/sh", ["-c", override], {
+					timeout: PRESSURE_READ_TIMEOUT_MS,
+					signal,
+					killSignal: "SIGKILL",
+				})
+			: await execFileAsync("vm_stat", [], {
+					timeout: PRESSURE_READ_TIMEOUT_MS,
+					signal,
+					killSignal: "SIGKILL",
+				});
 		return parseVmStat(stdout);
 	} catch {
 		return null;
@@ -133,56 +115,50 @@ export function memPressureThresholdsFromEnv(
 	const rawMin = Number(env.FLYWHEEL_MEM_SWAPOUT_MIN_PAGES);
 	const swapoutMinPages = Number.isInteger(rawMin) && rawMin >= 0 ? rawMin : 0;
 	const freeHighPct = pct("FLYWHEEL_MEM_FREE_HIGH_PCT", 15);
-	let freeLowPct = pct("FLYWHEEL_MEM_FREE_LOW_PCT", 8);
-	// An inverted band (LOW ≥ HIGH) would clear the moment free% crosses the
-	// trigger line — clamp to HIGH so misconfiguration degrades to a plain
-	// threshold instead of a flapping episode.
-	if (freeLowPct > freeHighPct) freeLowPct = freeHighPct;
+	const freeLowPct = pct("FLYWHEEL_MEM_FREE_LOW_PCT", 8);
+	// HIGH remains parse-compatible for existing diagnostics; admission uses LOW only.
 	return { freeLowPct, freeHighPct, swapoutMinPages };
 }
 
-/** One tick's full verdict — fleet-sensors consumes this, not raw numbers. */
+/** Admission consumes this evidence at its own current time, never a latched hold. */
+export interface PressureSnapshot {
+	sampledAtMs: number | null;
+	source: "vm_stat";
+	freePct: number | null;
+	swapoutDeltaPages: number | null;
+	baselineAtMs: number | null;
+	state: "healthy" | "pressure" | "warming" | "unknown";
+	reason: string;
+	evidenceValidUntilMs: number | null;
+}
+export interface PressureSample extends MemoryPressure {
+	sampledAtMs: number;
+}
+export interface PressureMonitorState {
+	samples: PressureSample[];
+	pressureEvidenceAtMs: number | null;
+	pressureValidUntilMs: number | null;
+	established: boolean;
+	consecutiveDanger: number;
+}
 export interface MemoryEvaluation {
 	event: "none" | "trigger" | "clear";
 	freePct: number | null;
-	/** Swapouts increment since the previous computable sample; null = unknown. */
 	swapoutDelta: number | null;
-	/** OR of the two danger dimensions (see class doc). */
 	danger: boolean;
-	/**
-	 * Three-state health: true = PROVEN healthy (free% ≥ HIGH and delta ≤ MIN),
-	 * false = proven not-healthy (hysteresis band / active swapout),
-	 * null = no evidence (unknown delta / failed reading). Only `true` may
-	 * release a hold — unknown never fail-opens.
-	 */
 	healthy: boolean | null;
 	inPressure: boolean;
 }
-
-/**
- * The three-state hysteresis machine. `tick()` is fed one reading per
- * sensor poll (~30s):
- *  - normal → danger (free% < LOW OR delta > MIN) for 2 consecutive ticks →
- *    "trigger" (enter pressure);
- *  - pressure → healthy === true → "clear" (exit); healthy false/null →
- *    stay in the episode (never re-trigger inside it);
- *  - a null reading never changes state (probe failure ≠ recovery), and the
- *    swapout baseline survives the gap (the next delta just spans it).
- *
- * There is NO consecutive-healthy requirement: recovery = the FIRST sample
- * whose delta is computable and healthy. The restart case ("second sample
- * lifts") falls out of the baseline mechanics (first sample delta unknown),
- * not an extra rule.
- */
 export class MemoryPressureMonitor {
-	/** The monitor owns the Swapouts baseline — nobody else touches it. */
-	private lastSwapoutsTotal: number | null = null;
-	private lastEval: MemoryEvaluation | null = null;
+	private samples: PressureSample[] = [];
+	private pressureEvidenceAtMs: number | null = null;
+	private pressureValidUntilMs: number | null = null;
+	private established: boolean;
 	private consecutiveDanger = 0;
-	private pressure = false;
-	/** Stamp of the trigger instant — the episode identity for dedup. */
+	private lastEval: MemoryEvaluation | null = null;
 	private episodeStartedAt: number | null = null;
-
+	private readonly maxAgeMs: number;
+	private readonly warmupUntilMs: number;
 	constructor(
 		private readonly thresholds: {
 			freeLowPct: number;
@@ -190,82 +166,172 @@ export class MemoryPressureMonitor {
 			swapoutMinPages: number;
 		},
 		private readonly confirmTicks = 2,
-	) {}
-
-	get inPressure(): boolean {
-		return this.pressure;
+		options?: {
+			warmupUntilMs: number;
+			maxAgeMs?: number;
+			restored?: PressureMonitorState;
+		},
+	) {
+		this.maxAgeMs = options?.maxAgeMs ?? 3 * PRESSURE_SAMPLE_INTERVAL_MS;
+		this.warmupUntilMs = options?.warmupUntilMs ?? 0;
+		// Legacy standalone callers have no boot admission contract.
+		this.established = !options;
+		if (options?.restored) {
+			const r = options.restored;
+			this.samples = r.samples.slice(-2);
+			this.pressureEvidenceAtMs = r.pressureEvidenceAtMs;
+			this.pressureValidUntilMs = r.pressureValidUntilMs;
+			this.established = r.established;
+			this.consecutiveDanger = r.consecutiveDanger;
+		}
 	}
-
+	get inPressure(): boolean {
+		return this.pressureEvidenceAtMs !== null;
+	}
 	get episodeStart(): number | null {
 		return this.episodeStartedAt;
 	}
-
-	/** Latest verdict — the fleet recovery probe reads the three-state health. */
 	get lastEvaluation(): MemoryEvaluation | null {
 		return this.lastEval;
 	}
-
+	exportState(): PressureMonitorState {
+		return {
+			samples: this.samples.map((s) => ({ ...s })),
+			pressureEvidenceAtMs: this.pressureEvidenceAtMs,
+			pressureValidUntilMs: this.pressureValidUntilMs,
+			established: this.established,
+			consecutiveDanger: this.consecutiveDanger,
+		};
+	}
+	private delta(): number | null {
+		const [a, b] = this.samples;
+		if (
+			!a ||
+			!b ||
+			b.sampledAtMs - a.sampledAtMs > this.maxAgeMs ||
+			b.sampledAtMs < a.sampledAtMs ||
+			b.swapoutsTotal < a.swapoutsTotal
+		)
+			return null;
+		return b.swapoutsTotal - a.swapoutsTotal;
+	}
+	evaluatePressure(nowMs: number): PressureSnapshot {
+		const last = this.samples.at(-1);
+		const delta = this.delta();
+		const pressureUntil =
+			this.pressureEvidenceAtMs === null
+				? null
+				: Math.min(
+						this.pressureValidUntilMs ?? 0,
+						this.pressureEvidenceAtMs + this.maxAgeMs,
+					);
+		const fresh =
+			!!last &&
+			nowMs >= last.sampledAtMs &&
+			nowMs < last.sampledAtMs + this.maxAgeMs;
+		let state: PressureSnapshot["state"];
+		let reason: string;
+		if (
+			pressureUntil !== null &&
+			nowMs < pressureUntil &&
+			nowMs >= this.pressureEvidenceAtMs!
+		) {
+			state = "pressure";
+			reason = "confirmed_pressure";
+		} else if (fresh && delta !== null && this.established) {
+			state = "healthy";
+			reason =
+				last!.freePct < this.thresholds.freeLowPct ||
+				delta > this.thresholds.swapoutMinPages
+					? "danger_unconfirmed"
+					: "non_danger";
+		} else if (!this.established && nowMs < this.warmupUntilMs) {
+			state = "warming";
+			reason = "sampling_warmup";
+		} else {
+			state = "unknown";
+			reason = "pressure_evidence_unavailable";
+		}
+		// An expired pressure verdict cannot become healthy merely because its last reading is still present.
+		if (this.pressureEvidenceAtMs !== null && state === "healthy") {
+			state = "unknown";
+			reason = "pressure_evidence_expired";
+		}
+		return {
+			sampledAtMs: last?.sampledAtMs ?? null,
+			source: "vm_stat",
+			freePct: last?.freePct ?? null,
+			swapoutDeltaPages: delta,
+			baselineAtMs:
+				this.samples.length === 2 ? this.samples[0]!.sampledAtMs : null,
+			state,
+			reason,
+			evidenceValidUntilMs:
+				state === "pressure"
+					? pressureUntil
+					: fresh && delta !== null
+						? last!.sampledAtMs + this.maxAgeMs
+						: null,
+		};
+	}
 	tick(p: MemoryPressure | null | undefined, nowMs: number): MemoryEvaluation {
+		const wasPressure = this.evaluatePressure(nowMs).state === "pressure";
 		if (p == null) {
-			// Probe/parse failure: hold state, keep the baseline. healthy=null —
-			// a failed reading is NO evidence of recovery.
-			const ev: MemoryEvaluation = {
+			this.consecutiveDanger = 0;
+			this.lastEval = {
 				event: "none",
 				freePct: null,
 				swapoutDelta: null,
 				danger: false,
 				healthy: null,
-				inPressure: this.pressure,
+				inPressure: wasPressure,
 			};
-			this.lastEval = ev;
-			return ev;
+			return this.lastEval;
 		}
-		const { freeLowPct, freeHighPct, swapoutMinPages } = this.thresholds;
-		// Delta: unknown on the first sample and on counter regression (reboot /
-		// wrap) — both re-baseline without pretending to know.
-		let swapoutDelta: number | null = null;
-		if (this.lastSwapoutsTotal != null) {
-			const d = p.swapoutsTotal - this.lastSwapoutsTotal;
-			swapoutDelta = d >= 0 ? d : null;
-		}
-		this.lastSwapoutsTotal = p.swapoutsTotal;
-
+		this.samples.push({ ...p, sampledAtMs: nowMs });
+		this.samples = this.samples.slice(-2);
+		const swapoutDelta = this.delta();
 		const danger =
-			p.freePct < freeLowPct ||
-			(swapoutDelta != null && swapoutDelta > swapoutMinPages);
-		const healthy: boolean | null =
-			swapoutDelta == null
-				? null
-				: p.freePct >= freeHighPct && swapoutDelta <= swapoutMinPages;
-
+			p.freePct < this.thresholds.freeLowPct ||
+			(swapoutDelta !== null && swapoutDelta > this.thresholds.swapoutMinPages);
+		const healthy = swapoutDelta === null ? null : !danger;
 		let event: MemoryEvaluation["event"] = "none";
-		if (this.pressure) {
-			if (healthy === true) {
-				this.pressure = false;
-				this.consecutiveDanger = 0;
-				this.episodeStartedAt = null;
-				event = "clear";
-			}
+		if (healthy === true) {
+			if (this.pressureEvidenceAtMs !== null) event = "clear";
+			this.pressureEvidenceAtMs = null;
+			this.pressureValidUntilMs = null;
+			this.episodeStartedAt = null;
+			this.consecutiveDanger = 0;
+			this.established = true;
 		} else if (danger) {
-			this.consecutiveDanger++;
-			if (this.consecutiveDanger >= this.confirmTicks) {
-				this.pressure = true;
-				this.episodeStartedAt = nowMs;
-				event = "trigger";
+			this.consecutiveDanger = Math.min(
+				this.confirmTicks,
+				this.consecutiveDanger + 1,
+			);
+			if (
+				wasPressure ||
+				this.consecutiveDanger >= this.confirmTicks ||
+				(!this.established && swapoutDelta !== null)
+			) {
+				if (!wasPressure) {
+					event = "trigger";
+					this.episodeStartedAt = nowMs;
+				}
+				this.pressureEvidenceAtMs = nowMs;
+				this.pressureValidUntilMs = nowMs + this.maxAgeMs;
+				this.established = true;
 			}
 		} else {
 			this.consecutiveDanger = 0;
 		}
-
-		const ev: MemoryEvaluation = {
+		this.lastEval = {
 			event,
 			freePct: p.freePct,
 			swapoutDelta,
 			danger,
 			healthy,
-			inPressure: this.pressure,
+			inPressure: this.evaluatePressure(nowMs).state === "pressure",
 		};
-		this.lastEval = ev;
-		return ev;
+		return this.lastEval;
 	}
 }

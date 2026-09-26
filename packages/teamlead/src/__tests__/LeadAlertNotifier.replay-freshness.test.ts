@@ -1,15 +1,13 @@
-import {
-	mkdtempSync,
-	readdirSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FleetSensors } from "../bridge/fleet-sensors.js";
-import type { MemoryPressure } from "../bridge/machine-watermark.js";
+import type { PressureSnapshot } from "../bridge/machine-watermark.js";
+import {
+	createPressureSampler,
+	pressureNotificationPayload,
+} from "../bridge/pressure-sampler.js";
 import {
 	type AlertPayload,
 	FLEET_ALERT_PROJECT,
@@ -75,6 +73,7 @@ describe("FLY-1764 replay freshness", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		rmSync(queueDir, { recursive: true, force: true });
 		rmSync(deadLetterDir, { recursive: true, force: true });
 		for (const [key, value] of [
@@ -267,85 +266,55 @@ describe("FLY-1764 replay freshness", () => {
 		).toBeNull();
 	});
 
-	it("real FleetSensors payloads retain episode identity: old A suppresses while live B delivers", async () => {
+	it("real pressure notices retain pause/resume/degraded identities through notifier dedup and queued replay", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date("2026-09-26T12:00:00Z"));
 		process.env.FLYWHEEL_ALERT_REPLAY_FRESHNESS = "drop_stale";
-		const seedFetch = vi.fn(async () => ({
-			ok: false,
-			status: 503,
-			statusText: "down",
-			text: async () => "down",
-		}));
 		const seed = new LeadAlertNotifier({
 			store,
 			projects: [],
-			fetchFn: seedFetch,
+			fetchFn: vi.fn(async () => ({
+				ok: false,
+				status: 503,
+				statusText: "down",
+				text: async () => "down",
+			})),
 			queueDir,
 			deadLetterDir,
 			unifiedAlert,
 		});
-		let now = 1_720_000_000_000;
-		let reading: MemoryPressure | null = null;
-		let hold:
-			| { set_by: string; set_at: string; watermark: string | null }
-			| undefined;
-		const holdStore = {
-			setFleetPressureHold(input: { setBy: string; watermark?: string }) {
-				if (hold) return false;
-				hold = {
-					set_by: input.setBy,
-					set_at: String(now),
-					watermark: input.watermark ?? null,
-				};
-				return true;
-			},
-			getFleetPressureHold: () => hold,
-			clearFleetPressureHold() {
-				hold = undefined;
-				return true;
-			},
+		const snapshot: PressureSnapshot = {
+			sampledAtMs: Date.now(),
+			source: "vm_stat",
+			freePct: 12,
+			swapoutDeltaPages: 0,
+			baselineAtMs: Date.now() - 30_000,
+			state: "healthy",
+			reason: "non_danger",
+			evidenceValidUntilMs: Date.now() + 90_000,
 		};
 		const sensors = new FleetSensors({
-			store: holdStore as unknown as StateStore,
-			alert: (record) => seed.alert(record),
-			readPressure: async () => reading,
-			env: {
-				FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC: "0",
-				FLYWHEEL_FLEET_SENSOR_BOT: "0",
-				FLYWHEEL_FLEET_SENSOR_ZOMBIE: "0",
-			},
-			now: () => now,
-			logger: () => {},
+			store,
+			alert: vi.fn(),
+			pressureSnapshot: () => snapshot,
 		});
-		const high: MemoryPressure = {
-			freePct: 5,
-			swapoutsTotal: 1000,
-			pageSize: 16384,
-		};
-		const healthy: MemoryPressure = {
-			freePct: 45,
-			swapoutsTotal: 1000,
-			pageSize: 16384,
-		};
-
-		reading = high;
-		await sensors.tick();
-		await sensors.tick(); // A queued
-		reading = healthy;
-		now += 10_000;
-		await sensors.tick(); // A recovered
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		reading = high;
-		now += 10_000;
-		await sensors.tick();
-		await sensors.tick(); // B queued and still live
-
-		const queued = readdirSync(queueDir).map((file) =>
-			JSON.parse(readFileSync(join(queueDir, file), "utf8")),
+		const records = (["pause", "resume", "degraded"] as const).map((kind) =>
+			pressureNotificationPayload(
+				{
+					id: `swap-pressure:one-episode:${kind}`,
+					episodeId: "one-episode",
+					kind,
+					snapshot,
+				},
+				snapshot,
+			),
 		);
-		expect(queued).toHaveLength(2);
-		expect(queued.every((record) => typeof record.episodeId === "string")).toBe(
-			true,
-		);
+		for (const record of records)
+			expect(await seed.alert(record)).toMatchObject({ queued: true });
+		expect(await seed.alert(records[1]!)).toMatchObject({
+			skipped: "duplicate",
+		});
+		expect(readdirSync(queueDir)).toHaveLength(3);
 		const fetchFn = okFetch();
 		const result = await new LeadAlertNotifier({
 			store,
@@ -356,12 +325,84 @@ describe("FLY-1764 replay freshness", () => {
 			unifiedAlert,
 			replayFreshnessProbe: (input) => sensors.replayFreshness(input),
 		}).drainQueue();
-
 		expect(result.staleSuppressed).toBe(1);
-		expect(result.sent).toBe(1);
-		expect(fetchFn).toHaveBeenCalledTimes(1);
-		expect(result.delivered[0]?.payload.eventId).toBe(
-			`swap-pressure:${String(now)}`,
-		);
+		expect(result.sent).toBe(2);
+		expect(result.delivered.map((d) => d.payload.eventId).sort()).toEqual([
+			"swap-pressure:one-episode:degraded",
+			"swap-pressure:one-episode:resume",
+		]);
+	});
+	it("two standalone sensor outages in one boot survive restart and permanent notifier dedup", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-09-26T12:00:00Z"));
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: [],
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+			unifiedAlert,
+		});
+		const delivered: AlertPayload[] = [];
+		let reading: {
+			freePct: number;
+			swapoutsTotal: number;
+			pageSize: number;
+		} | null = null;
+		const options = {
+			store,
+			hostBootId: "same-boot",
+			readPressure: async () => reading,
+			monotonicNow: Date.now,
+		};
+		const attach = (sampler: ReturnType<typeof createPressureSampler>) =>
+			sampler.attachAlertSink({
+				alert: async (payload) => {
+					const result = await notifier.alert(payload);
+					if (result.sent) delivered.push(payload);
+					return result;
+				},
+			});
+		const first = createPressureSampler(options);
+		attach(first);
+		first.start();
+		await vi.advanceTimersByTimeAsync(60_000);
+		reading = { freePct: 12, swapoutsTotal: 100, pageSize: 16384 };
+		await vi.advanceTimersByTimeAsync(90_000);
+		expect(delivered.map((p) => p.metadata?.pressureSampler?.kind)).toEqual([
+			"degraded",
+			"resume",
+		]);
+		await first.stop();
+		reading = null;
+		const second = createPressureSampler(options);
+		attach(second);
+		second.start();
+		await vi.advanceTimersByTimeAsync(90_000);
+		const pendingEpisode = JSON.parse(
+			store.getPressureSamplerState()!.cacheJson,
+		).notifications.degradedEpisodeId;
+		await second.stop();
+		const resumed = createPressureSampler(options);
+		attach(resumed);
+		resumed.start();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(
+			JSON.parse(store.getPressureSamplerState()!.cacheJson).notifications
+				.degradedEpisodeId,
+		).toBe(pendingEpisode);
+		reading = { freePct: 12, swapoutsTotal: 100, pageSize: 16384 };
+		await vi.advanceTimersByTimeAsync(90_000);
+		await resumed.stop();
+		expect(delivered.map((p) => p.metadata?.pressureSampler?.kind)).toEqual([
+			"degraded",
+			"resume",
+			"degraded",
+			"resume",
+		]);
+		expect(new Set(delivered.map((p) => p.eventId)).size).toBe(4);
+		expect(delivered[0]!.episodeId).toBe(delivered[1]!.episodeId);
+		expect(delivered[2]!.episodeId).toBe(delivered[3]!.episodeId);
 	});
 });

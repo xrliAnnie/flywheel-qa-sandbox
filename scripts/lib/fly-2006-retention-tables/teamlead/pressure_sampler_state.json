@@ -1,0 +1,5 @@
+{
+	"database": "teamlead",
+	"table": "pressure_sampler_state",
+	"classification": "protectedCurrentOrReference"
+}

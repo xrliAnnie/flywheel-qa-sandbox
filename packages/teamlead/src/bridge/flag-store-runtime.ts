@@ -731,3 +731,9 @@ export function storeAutoReleaseOnSilenceEnabled(
 		projectName,
 	);
 }
+
+export function storeSwapPressureSensorEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "swap_pressure_sensor");
+}

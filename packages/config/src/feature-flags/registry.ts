@@ -242,7 +242,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeCmuxWatcherRebuildDisabled",
 			),
 		],
@@ -250,6 +250,31 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2207 opt-in disable observes the next store write",
 		note: "Unset/default false keeps bounded rebuild enabled; =1 disables only rebuild, never tickets or escalation.",
+	},
+	{
+		name: "swap_pressure_sensor",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FLEET_SENSOR_SWAP",
+		polarity: "default_on",
+		valueKind: "bool",
+		onMeans: "enables",
+		default: true,
+		description:
+			"FLY-2920: independently sample memory pressure and gate new runner admission with fresh evidence",
+		whenOn:
+			"持续检测机器内存压力；压力持续或读数不明时暂停新任务派发，恢复后放行",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridgeInternal",
+				"storeSwapPressureSensorEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts: seeds the existing env disable once, then observes store writes in the live sampler",
 	},
 	{
 		name: "opus_model_sync_disabled",
@@ -319,7 +344,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeCmuxRebindDisabled",
 			),
 		],
@@ -343,7 +368,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeSummaryAbsorptionCadenceMs",
 			),
 		],
@@ -369,7 +394,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeSummaryDueActivityGateEnabled",
 			),
 		],
@@ -394,7 +419,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeAlertSystemEnabled",
 			),
 		],
@@ -418,7 +443,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeReviewQuotaAutoRetryEnabled",
 			),
 		],
@@ -442,7 +467,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeCodexQuotaAutoSwitchEnabled",
 			),
 		],
@@ -467,7 +492,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeAccountSwitchWakeSweepEnabled",
 			),
 		],
@@ -492,7 +517,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeLoopProfilerEnabled",
 			),
 		],
@@ -517,7 +542,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeShippedHuskForceEnabled",
 			),
 		],
@@ -544,7 +569,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"storeCodexTerminalReapEnabled",
 			),
 		],
@@ -962,7 +987,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
+				"startBridgeInternal",
 				"readAutoNarrowRuntimeControl",
 			),
 		],

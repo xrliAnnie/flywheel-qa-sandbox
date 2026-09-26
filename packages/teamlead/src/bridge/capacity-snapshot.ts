@@ -49,6 +49,7 @@ import {
 	isCapacityUnavailableToken,
 	type MemoryFreePctReading,
 } from "./machine-free-pct.js";
+import type { PressureSnapshot } from "./machine-watermark.js";
 import type {
 	AdmissionDecision,
 	AdmissionProbe,
@@ -98,7 +99,7 @@ export interface CapacitySnapshot {
 		unavailable?: CapacityUnavailable;
 	};
 	memory: {
-		source: "memory_pressure";
+		source: "memory_pressure" | "vm_stat";
 		freePct: number | null;
 		observedAt: string | null;
 		tightBelowPct: number;
@@ -115,6 +116,7 @@ export interface CapacitySnapshot {
 	};
 	brakes: {
 		pressureHold: {
+			sensor?: PressureSnapshot;
 			active: boolean | null;
 			setBy?: string;
 			setAt?: string;
@@ -411,6 +413,7 @@ export interface CapacitySnapshotDeps {
 		"getActiveSessions" | "getFleetPressureHold" | "getAdmissionPause"
 	>;
 	admission?: Pick<RunnerAdmissionController, "probe">;
+	pressureSnapshot?: () => PressureSnapshot | undefined;
 	readMemoryFreePct: () => Promise<MemoryFreePctReading>;
 	readDataDisk?: typeof readSharedDataDisk;
 	accountStorePath?: string;
@@ -539,13 +542,28 @@ export async function buildCapacitySnapshot(
 			unavailable: ["transient: data_volume_unreadable"],
 		};
 	}
+	let probe: AdmissionProbe | undefined;
+	let admissionUnavailable: string | undefined;
+	if (!deps.admission) {
+		admissionUnavailable = "structural: admission_controller_absent";
+	} else {
+		try {
+			probe = deps.admission.probe();
+		} catch {
+			admissionUnavailable = "transient: load_probe_failed";
+		}
+	}
+	const pressureSensor = probe?.pressure ?? deps.pressureSnapshot?.();
 	let memoryReading: {
 		freePct: number | null;
 		observedAt: string | null;
 		unavailable?: string;
 	};
+	const hasPressureProvider = pressureSensor !== undefined;
 	try {
-		const reading = await deps.readMemoryFreePct();
+		const reading = hasPressureProvider
+			? { freePct: null, observedAt: null, unavailable: undefined }
+			: await deps.readMemoryFreePct();
 		const freePct = validPct(reading.freePct);
 		const readingObservedAt = validInstant(reading.observedAt);
 		memoryReading =
@@ -565,23 +583,28 @@ export async function buildCapacitySnapshot(
 			unavailable: "transient: memory_pressure_timeout",
 		};
 	}
-	let probe: AdmissionProbe | undefined;
-	let admissionUnavailable: string | undefined;
-	if (!deps.admission) {
-		admissionUnavailable = "structural: admission_controller_absent";
-	} else {
-		try {
-			probe = deps.admission.probe();
-		} catch {
-			admissionUnavailable = "transient: load_probe_failed";
-		}
-	}
 	let pressureHold: ReturnType<StateStore["getFleetPressureHold"]>;
 	let pressureHoldUnavailable: string | undefined;
 	try {
 		pressureHold = deps.store.getFleetPressureHold();
+		if (pressureHold?.set_by === "swap-sensor") pressureHold = undefined;
 	} catch {
 		pressureHoldUnavailable = "transient: state_store_unreadable";
+	}
+	if (pressureSensor) {
+		memoryReading =
+			pressureSensor.sampledAtMs !== null &&
+			pressureSensor.state !== "unknown" &&
+			pressureSensor.reason !== "sensor_disabled"
+				? {
+						freePct: pressureSensor.freePct,
+						observedAt: new Date(pressureSensor.sampledAtMs).toISOString(),
+					}
+				: {
+						freePct: null,
+						observedAt: null,
+						unavailable: "transient: pressure_evidence_unavailable",
+					};
 	}
 	let admissionPause: ReturnType<StateStore["getAdmissionPause"]>;
 	let admissionPauseUnavailable: string | undefined;
@@ -784,7 +807,7 @@ export async function buildCapacitySnapshot(
 		disk_avail_gb: diskAvailGb,
 		disk,
 		memory: {
-			source: "memory_pressure",
+			source: pressureSensor ? "vm_stat" : "memory_pressure",
 			freePct: memoryReading.freePct,
 			observedAt: memoryReading.observedAt,
 			tightBelowPct: CAPACITY_MEMORY_TIGHT_BELOW_PCT,
@@ -813,27 +836,34 @@ export async function buildCapacitySnapshot(
 					unavailable: [admissionUnavailable!],
 				},
 		brakes: {
-			pressureHold: pressureHoldUnavailable
-				? { active: null, unavailable: [pressureHoldUnavailable] }
-				: pressureHold
-					? (() => {
-							const setAt = validSqliteUtcInstant(pressureHold.set_at);
-							return setAt === undefined
-								? {
-										active: null,
-										unavailable: ["transient: state_store_unreadable"],
-									}
-								: {
-										active: true,
-										setBy: canonicalCapacityToken(pressureHold.set_by),
-										setAt,
-										watermark:
-											pressureHold.watermark === null
-												? null
-												: canonicalCapacityWatermark(pressureHold.watermark),
-									};
-						})()
-					: { active: false },
+			pressureHold: {
+				...(pressureSensor ? { sensor: pressureSensor } : {}),
+				...(pressureHoldUnavailable
+					? { active: null, unavailable: [pressureHoldUnavailable] }
+					: pressureHold
+						? (() => {
+								const setAt = validSqliteUtcInstant(pressureHold.set_at);
+								return setAt === undefined
+									? {
+											active: null,
+											unavailable: ["transient: state_store_unreadable"],
+										}
+									: {
+											active: true,
+											setBy: canonicalCapacityToken(pressureHold.set_by),
+											setAt,
+											watermark:
+												pressureHold.watermark === null
+													? null
+													: canonicalCapacityWatermark(pressureHold.watermark),
+										};
+							})()
+						: {
+								active: pressureSensor
+									? pressureSensor.state !== "healthy"
+									: false,
+							}),
+			},
 			admissionPause: admissionPauseUnavailable
 				? {
 						active: null,

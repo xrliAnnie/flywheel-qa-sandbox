@@ -390,6 +390,7 @@ describe("RunnerAdmissionController pressure_hold (Task 2.2)", () => {
 		expect(decision).toEqual({
 			admit: false,
 			reason: "pressure_hold",
+			subreason: "manual",
 			detail: "swap 90% — hold active",
 		});
 	});
@@ -528,5 +529,52 @@ describe("policyForKind (Task 2.2 per-kind escalation)", () => {
 		expect(decideTicketEscalation(row, t0, swapPolicy)).toBe("none");
 		const past = Date.parse("2026-07-09T21:31:00Z");
 		expect(decideTicketEscalation(row, past, swapPolicy)).toBe("none");
+	});
+});
+
+describe("FLY-2920 shared pressure snapshot admission", () => {
+	it("denies warming/unknown with pressure_hold and admits immediate band recovery", () => {
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		let state: "warming" | "unknown" | "healthy" | "pressure" = "warming";
+		admission.setPressureSnapshotProvider(() => ({
+			source: "vm_stat",
+			sampledAtMs: 1000,
+			baselineAtMs: 0,
+			freePct: 12,
+			swapoutDeltaPages: 0,
+			state,
+			reason: state,
+			evidenceValidUntilMs: 91_000,
+		}));
+		expect(admission.tryAdmit()).toMatchObject({
+			admit: false,
+			reason: "pressure_hold",
+			subreason: "warming",
+		});
+		state = "unknown";
+		expect(admission.tryAdmit()).toMatchObject({
+			admit: false,
+			subreason: "unknown",
+		});
+		state = "healthy";
+		expect(admission.tryAdmit()).toEqual({ admit: true });
+		admission.setPressureHoldProbe(() => "manual maintenance");
+		expect(admission.tryAdmit()).toMatchObject({
+			admit: false,
+			reason: "pressure_hold",
+			subreason: "manual",
+			detail: "manual maintenance",
+		});
+	});
+	it("snapshot errors deny unknown rather than silently bypassing the pressure gate", () => {
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		admission.setPressureSnapshotProvider(() => {
+			throw Error("snapshot unavailable");
+		});
+		expect(admission.tryAdmit()).toMatchObject({
+			admit: false,
+			reason: "pressure_hold",
+			subreason: "unknown",
+		});
 	});
 });

@@ -550,6 +550,7 @@ import {
 	storeSkillFrameworkModeControl,
 	storeSummaryAbsorptionCadenceMs,
 	storeSummaryDueActivityGateEnabled,
+	storeSwapPressureSensorEnabled,
 	storeWorkflowGateQuestionRecoveryEnabled,
 	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
@@ -805,6 +806,12 @@ import {
 	makeFinalizeWorkflowPhaseRoles,
 	runResumablePostShipFinalization,
 } from "./post-ship-finalization.js";
+import {
+	type PressureSampler,
+	pressureSnapshotForStore,
+	startPressureSampling,
+	withPressureSamplerBoot,
+} from "./pressure-sampler.js";
 import {
 	type FdHealth,
 	ProcessResourceMonitor,
@@ -1996,6 +2003,7 @@ function makeCapacitySnapshotDeps(
 	return {
 		store,
 		admission: config.runnerAdmission ?? undefined,
+		pressureSnapshot: () => pressureSnapshotForStore(store),
 		readMemoryFreePct:
 			config.capacityProbes?.readMemoryFreePct ?? readMemoryFreePct,
 		readDataDisk: config.capacityProbes?.readDataDisk,
@@ -6227,7 +6235,17 @@ export function createBridgeApp(
 	return app;
 }
 
-export async function startBridge(
+export function startBridge(
+	config: BridgeConfig,
+	projects: ProjectEntry[],
+	opts?: Parameters<typeof startBridgeInternal>[2],
+): ReturnType<typeof startBridgeInternal> {
+	return withPressureSamplerBoot((register) =>
+		startBridgeInternal(config, projects, opts, register),
+	);
+}
+
+async function startBridgeInternal(
 	config: BridgeConfig,
 	projects: ProjectEntry[],
 	opts?: {
@@ -6238,6 +6256,7 @@ export async function startBridge(
 		memoryService?: MemoryService;
 		registry?: RuntimeRegistry;
 	},
+	registerPressureCleanup?: (sampler: PressureSampler) => void,
 ): Promise<{
 	app: express.Application;
 	store: StateStore;
@@ -6435,6 +6454,13 @@ export async function startBridge(
 		else console.warn(message);
 	}
 	const flagStore = initializeFlagStore(store, process.env);
+	const pressureSampler = startPressureSampling({
+		store,
+		enabled: () => storeSwapPressureSensorEnabled(flagStore),
+		admission: config.runnerAdmission,
+		manualHold: () => store.getManualFleetPressureHold(),
+	});
+	registerPressureCleanup?.(pressureSampler);
 	store.codexQuotaLaunchEnabled = () =>
 		storeCodexQuotaAutoSwitchEnabled(flagStore);
 	const databaseArchiveEnabled = (projectName: string): boolean => {
@@ -6648,15 +6674,6 @@ export async function startBridge(
 		await shipRelevantDiffService.refresh(runs, options);
 	};
 
-	// FLY-1082 (Task 2.2): the fleet pressure-hold gates runner admission —
-	// late-bind the probe now that the store exists. Fail-open inside tryAdmit.
-	// runnerAdmission is optional on the config (scaffold/test bridges omit it).
-	config.runnerAdmission?.setPressureHoldProbe(() => {
-		const hold = store.getFleetPressureHold();
-		return hold
-			? `fleet pressure-hold active since ${hold.set_at} (by ${hold.set_by}, memory ${hold.watermark ?? "?"}) — lifts automatically once real memory pressure is proven healthy (free% recovered + swapout quiet)`
-			: null;
-	});
 	config.runnerAdmission?.setAdmissionPauseProbe(() => {
 		const pause = store.getAdmissionPause();
 		return pause?.active
@@ -16032,6 +16049,7 @@ export async function startBridge(
 	};
 	fleetSensorsHolder.current = new FleetSensors({
 		store,
+		pressureSnapshot: () => pressureSampler.evaluatePressure(),
 		alert: (p) => routedAlertSink.alert(p),
 		resolveTicket: alertHub ? (ck) => alertHub.resolve(ck) : undefined,
 		probeBots: probeInfraBots,
@@ -16040,6 +16058,12 @@ export async function startBridge(
 		// never read as recovered — the probe consults the live coordinator.
 		serverLossPending: () =>
 			serverLossHolder.current?.hasPendingMigrations() ?? false,
+	});
+	pressureSampler.attachAlertSink({
+		alert: (payload) => routedAlertSink.alert(payload),
+		resolve: async () => {
+			await alertHub?.resolve("machine|swap|swap_pressure_high|");
+		},
 	});
 	const canonicalTmuxSocketPath = canonicalDefaultTmuxSocketPath();
 	const tmuxRescueClient = createTmuxRescueClient({
@@ -16530,6 +16554,7 @@ export async function startBridge(
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		await terminalCommDbSync.close(1_000);
+		await pressureSampler.stop();
 		store.close();
 	};
 

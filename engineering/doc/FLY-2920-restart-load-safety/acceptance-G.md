@@ -11,6 +11,7 @@ G 尚未实现。此页记录按已批准计划进行的只读核对，不是测
 
 - `progress-resume.ts:computeProgressResume` 目前从 prior session 的 `session_stage` 推导 phase，再与 ledger 比对。`run-infra.ts` 的真实 resumeComputer 传入该旧值；`RunDispatcher.ResumeComputer` 目前只有 issue/role/project 三个参数，缺少当前 engine execution 绑定。
 - `workflow_run_node` 保存 run/node/attempt/execution，但没有 phase 字段。phase 必须结合持久 run snapshot 中对应节点的 type 解析，不能假设 node ID 就是 phase，不能只相信调用者 role。
+- 当前 engine 会把合法的非 phase node 映射为 role `main`；不能把缺失/未知绑定的拒绝扩大为拒绝所有合法 generic node。QA 的旧“不读 ledger”早退也不能绕过当前 engine 绑定校验。实现应保留这些既有入口语义，以真实调用链控制测试确认。
 - 旧 session 可以是被替换的 execution；新请求的当前绑定和被恢复的历史内容来源是两件事。停止/取消由现有 run/node terminal receipt 判定，不能把所有 terminated prior session 都当作禁止人工重试。
 - `computeProgressResumeAcrossRefs` 已优先 local ref，并先解析一次 commit，再用同一 SHA 读取目录、文件和 tip。该保护以及 branch description/未推提交必须保留。
 - `rescue-runtime.ts:makeCloseAndDispatchSuccessor` 是现有登录失效救援：读取 engine ownership 失败或确属 engine-owned 均在破坏性步骤前拒绝；只有 running session 才能 terminate/close/start。批准计划明确保留这一功能，不能用删除它代替证明历史 boot fallback 已不可达。

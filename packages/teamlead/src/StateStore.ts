@@ -11680,6 +11680,20 @@ export class StateStore {
 			)
 		`);
 
+		// FLY-2920: sensor evidence is separate from operator authority. Legacy
+		// sensor rows are retired; compatible readers also ignore them if cleanup fails.
+		this.db.run(`CREATE TABLE IF NOT EXISTS pressure_sampler_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			host_boot_id TEXT NOT NULL,
+			warmup_until_ms REAL NOT NULL,
+			cache_json TEXT NOT NULL
+		)`);
+		try {
+			this.db.run("DELETE FROM fleet_pressure_hold WHERE set_by = 'swap-sensor'", []);
+		} catch (error) {
+			console.warn(`[StateStore] legacy pressure hold cleanup deferred: ${String(error)}`);
+		}
+
 		// FLY-1638: operator/deploy admission brake. Unlike the sensor-owned
 		// fleet pressure hold this lease has a hard expiry, so a crashed restart
 		// script cannot freeze the fleet indefinitely. The row is retained after
@@ -26331,6 +26345,29 @@ export class StateStore {
 		}
 		stmt.free();
 		return out;
+	}
+
+	/** Manual authority only; a legacy sensor row is never an admission brake. */
+	getManualFleetPressureHold(): ReturnType<StateStore["getFleetPressureHold"]> {
+		const row = this.getFleetPressureHold();
+		return row?.set_by === "swap-sensor" ? undefined : row;
+	}
+
+	getPressureSamplerState(): { hostBootId: string; warmupUntilMs: number; cacheJson: string } | undefined {
+		const stmt = this.db.prepare("SELECT host_boot_id, warmup_until_ms, cache_json FROM pressure_sampler_state WHERE id = 1");
+		try {
+			if (!stmt.step()) return undefined;
+			const row = stmt.getAsObject();
+			return { hostBootId: row.host_boot_id as string, warmupUntilMs: row.warmup_until_ms as number, cacheJson: row.cache_json as string };
+		} finally { stmt.free(); }
+	}
+
+	setPressureSamplerState(record: { hostBootId: string; warmupUntilMs: number; cacheJson: string }): void {
+		this.db.run(`INSERT INTO pressure_sampler_state (id, host_boot_id, warmup_until_ms, cache_json)
+			VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+			host_boot_id = excluded.host_boot_id, warmup_until_ms = excluded.warmup_until_ms, cache_json = excluded.cache_json`,
+			[record.hostBootId, record.warmupUntilMs, record.cacheJson]);
+		this.save();
 	}
 
 	/** Lift the fleet pressure-hold. IDEMPOTENT; true when a hold existed. */

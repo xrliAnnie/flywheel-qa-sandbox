@@ -25,6 +25,8 @@ import {
 	buildCapacitySnapshot,
 	codexTokenState,
 } from "../capacity-snapshot.js";
+import { MemoryPressureMonitor } from "../machine-watermark.js";
+import { RunnerAdmissionController } from "../runner-admission.js";
 
 const scratch: string[] = [];
 const TOKEN_STATE_VECTORS = JSON.parse(
@@ -538,7 +540,7 @@ describe("buildCapacitySnapshot", () => {
 						{ status: "ship_parked", project_name: "growth" },
 					] as never,
 				getFleetPressureHold: () => ({
-					set_by: "swap-sensor",
+					set_by: "operator",
 					set_at: "2026-09-03T03:58:00Z",
 					watermark: "7.1% free",
 				}),
@@ -572,7 +574,7 @@ describe("buildCapacitySnapshot", () => {
 			brakes: {
 				pressureHold: {
 					active: true,
-					setBy: "swap-sensor",
+					setBy: "operator",
 					setAt: "2026-09-03T03:58:00.000Z",
 					watermark: "7.1% free",
 				},
@@ -934,7 +936,7 @@ describe("buildCapacitySnapshot", () => {
 			store: {
 				getActiveSessions: () => [],
 				getFleetPressureHold: () => ({
-					set_by: "swap-sensor",
+					set_by: "operator",
 					set_at: "2026-09-03 04:56:26",
 					watermark: "7.1% free",
 				}),
@@ -973,7 +975,7 @@ describe("buildCapacitySnapshot", () => {
 			store: {
 				getActiveSessions: () => [],
 				getFleetPressureHold: () => ({
-					set_by: "swap-sensor",
+					set_by: "operator",
 					set_at: "not-a-timestamp",
 					watermark: "7.1% free",
 				}),
@@ -1015,7 +1017,7 @@ describe("buildCapacitySnapshot", () => {
 			store: {
 				getActiveSessions: () => [],
 				getFleetPressureHold: () => ({
-					set_by: "swap-sensor",
+					set_by: "operator",
 					set_at: "2026-09-03T04:39:00.000Z",
 					watermark: null,
 				}),
@@ -1997,5 +1999,100 @@ describe("FLY-2864 — research responses end to end", () => {
 		]) {
 			expect(html).not.toContain(absent);
 		}
+	});
+});
+
+describe("FLY-2920 current sensor evidence", () => {
+	it("ignores legacy sensor holds and exposes the same reason/time/source/delta as admission", async () => {
+		const pressure = {
+			sampledAtMs: 1000,
+			source: "vm_stat" as const,
+			freePct: 12,
+			swapoutDeltaPages: 0,
+			baselineAtMs: 0,
+			state: "healthy" as const,
+			reason: "non_danger",
+			evidenceValidUntilMs: 91_000,
+		};
+		const readMemory = vi.fn(async () => ({
+			freePct: 99,
+			observedAt: new Date(1000).toISOString(),
+		}));
+		const result = await buildCapacitySnapshot({
+			now: () => 2000,
+			store: {
+				getActiveSessions: () => [] as never,
+				getFleetPressureHold: () => ({
+					set_by: "swap-sensor",
+					set_at: "2026-09-26 00:00:00",
+					watermark: "5%",
+				}),
+				getAdmissionPause: () => undefined,
+			},
+			pressureSnapshot: () => pressure,
+			readMemoryFreePct: readMemory,
+			accountStorePath: missingAccountStorePath(),
+			codexAccountStorePath: missingAccountStorePath(),
+		});
+		expect(result.brakes.pressureHold.active).toBe(false);
+		expect(result.brakes.pressureHold.sensor).toEqual(pressure);
+		expect(readMemory).not.toHaveBeenCalled();
+		expect(result.memory).toMatchObject({
+			source: "vm_stat",
+			freePct: 12,
+			observedAt: new Date(1000).toISOString(),
+		});
+	});
+});
+
+describe("FLY-2920 one pressure assessment per capacity response", () => {
+	it("does not disagree with admission when a store read crosses evidence expiry", async () => {
+		const monitor = new MemoryPressureMonitor(
+			{ freeLowPct: 8, freeHighPct: 15, swapoutMinPages: 0 },
+			2,
+			{ warmupUntilMs: 60_000 },
+		);
+		monitor.tick({ freePct: 12, swapoutsTotal: 100, pageSize: 16384 }, 0);
+		monitor.tick({ freePct: 12, swapoutsTotal: 100, pageSize: 16384 }, 30_000);
+		let now = 119_999;
+		const pressure = vi.fn(() => monitor.evaluatePressure(now));
+		const admission = RunnerAdmissionController.alwaysAdmit();
+		admission.setPressureSnapshotProvider(pressure);
+		const deps = {
+			now: () => now,
+			admission,
+			pressureSnapshot: pressure,
+			store: {
+				getActiveSessions: () => [] as never,
+				getFleetPressureHold: () => {
+					now = 120_000;
+					return undefined;
+				},
+				getAdmissionPause: () => undefined,
+			},
+			readMemoryFreePct: async () => ({
+				freePct: 99,
+				observedAt: new Date(now).toISOString(),
+			}),
+			accountStorePath: missingAccountStorePath(),
+			codexAccountStorePath: missingAccountStorePath(),
+		};
+		const before = await buildCapacitySnapshot(deps);
+		expect(before.brakes.admission.admit).toBe(true);
+		expect(before.brakes.pressureHold).toMatchObject({
+			active: false,
+			sensor: { state: "healthy", evidenceValidUntilMs: 120_000 },
+		});
+		expect(pressure).toHaveBeenCalledTimes(1);
+		const after = await buildCapacitySnapshot(deps);
+		expect(after.brakes.admission).toMatchObject({
+			admit: false,
+			reason: "pressure_hold",
+		});
+		expect(after.brakes.pressureHold).toMatchObject({
+			active: true,
+			sensor: { state: "unknown" },
+		});
+		expect(pressure).toHaveBeenCalledTimes(2);
 	});
 });

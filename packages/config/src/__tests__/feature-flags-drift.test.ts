@@ -384,11 +384,12 @@ describe("feature-flag drift guard", () => {
 		).toEqual([
 			...[
 				["cmux_watcher_rebuild_disabled", "storeCmuxWatcherRebuildDisabled"],
+				["swap_pressure_sensor", "storeSwapPressureSensorEnabled"],
 			].map(([name, resolverSymbol]) => ({
 				name,
 				site: {
 					file: "packages/teamlead/src/bridge/plugin.ts",
-					symbol: "startBridge",
+					symbol: "startBridgeInternal",
 					pattern: "delegated",
 					timing: "call_time",
 					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
@@ -435,7 +436,7 @@ describe("feature-flag drift guard", () => {
 				name,
 				site: {
 					file: "packages/teamlead/src/bridge/plugin.ts",
-					symbol: "startBridge",
+					symbol: "startBridgeInternal",
 					pattern: "delegated",
 					timing: "call_time",
 					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
@@ -577,7 +578,7 @@ describe("feature-flag drift guard", () => {
 				[
 					"auto_merge_narrow_gate",
 					"packages/teamlead/src/bridge/plugin.ts",
-					"startBridge",
+					"startBridgeInternal",
 					"readAutoNarrowRuntimeControl",
 				],
 				[

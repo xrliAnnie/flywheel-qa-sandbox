@@ -1,0 +1,134 @@
+{
+  "status": "F-targeted-verification-pass-internal-reviews-pass",
+  "head": "b93747db9c5fe95214ab848832946d0c95b07018",
+  "atUtc": "2026-09-26T21:23:04.277949+00:00",
+  "planBlob": "da53ca9012d3c9894d14df4f70e15ead060d55c6",
+  "sourceSha256": {
+    "packages/config/src/__tests__/feature-flags-drift.test.ts": "4603b71c5f041d1e6cb23bea02000d54be27b5278b7b558bfe83d74618e57d33",
+    "packages/config/src/__tests__/feature-flags-registry.test.ts": "727c0c34978121f92e483f80f22e90d8c88977fbc2a6f85a6050b6052f8f6832",
+    "packages/config/src/feature-flags/registry.ts": "7d1de58e5fd6711bba08066a760db2e952ce5b8aeeda2dd3276be77c3e6079e3",
+    "packages/config/src/feature-flags/store-policy.ts": "9ddb3205e68a00abb2354d9ec8ed8a3dcfa486421e24748a3abcb8444227a243",
+    "packages/teamlead/src/LeadAlertNotifier.ts": "30337233805cc699a15963107761483382a3d3cdb610dd39bfd1f1d228870345",
+    "packages/teamlead/src/StateStore.ts": "c3ad8923721fc88455915a8bbea7c86a519f9a22b7d80a33d3191a6e72d830cc",
+    "packages/teamlead/src/__tests__/LeadAlertNotifier.replay-freshness.test.ts": "b618dd279e336a39117c0066be1799c5d95d7e421523f84d6b24d1c133664eb8",
+    "packages/teamlead/src/__tests__/StateStore.pressure-sampler.test.ts": "7334347cfab89429761346c1115949ff4c3aeb69159c90c912ff067d25c310e5",
+    "packages/teamlead/src/bridge/__tests__/capacity-snapshot.test.ts": "2ea256213a0cff0c3849c525bb0d6ad0bf75e1909c924e952b49a2ec33f008c0",
+    "packages/teamlead/src/bridge/__tests__/fleet-sensors.test.ts": "21ebe684189dfda5ed64d8066599843cb33ceaa2849c5b81d618f840396ea765",
+    "packages/teamlead/src/bridge/__tests__/machine-watermark.test.ts": "723611018d0c5229899a41cd3271bc8e4d2b8205a580a0cac0ce161f6c0b63ed",
+    "packages/teamlead/src/bridge/__tests__/pressure-hold.test.ts": "edbb739ae5107d9e905a1378cebf1de6338e75ff2e92bb1c2886e1d79ba3b5c3",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-flag-store.test.ts": "fb5eb10efdbb13a4b220b02709f6a7916cb40fcf74d2f04d413dddec5b5891f5",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler-wiring.test.ts": "31e38d7bf6e9704a53d9145b7045988312e7db68df2bc092618ad10059681c81",
+    "packages/teamlead/src/bridge/__tests__/pressure-sampler.test.ts": "edad7f0a999c0f007660591f6dd181572d0839383c042282f19e65dd3735b68d",
+    "packages/teamlead/src/bridge/capacity-snapshot.ts": "dd623143228b6ad06a5e5f63b244bcefc7998494dc03d00a8832999c94debf05",
+    "packages/teamlead/src/bridge/flag-store-runtime.ts": "576c9c58a7cb1cbcb62db3c34734b2c661eb774bb8e5c2d21741819f024955ed",
+    "packages/teamlead/src/bridge/fleet-sensors.ts": "ac4fd4c684cab83f02d5b8077ad590bc38cf5497152e4b4b8da55d419a07f401",
+    "packages/teamlead/src/bridge/machine-watermark.ts": "56794b0614badfbbfe54031e968d95ccc8e2c2d19e9eca75b3f2beecd0961afc",
+    "packages/teamlead/src/bridge/plugin.ts": "7f6bf9daffed5c4b260335120b6c4edca32cb79cc9b9be732d721c94b3b2368f",
+    "packages/teamlead/src/bridge/pressure-sampler.ts": "55f3aecf2f024caec1027f7f5a1fe3794cb398246904593b64b792458fce2527",
+    "packages/teamlead/src/bridge/runner-admission.ts": "870df66157527660435839bc4461b2179ccdadd6da177fd12bc8694824496d83",
+    "scripts/lib/fly-2006-retention-tables/teamlead/pressure_sampler_state.json": "b74196cc765e54f392429f3957197a38b5f0874013c907619a8e86c2a028c4ec"
+  },
+  "internalReview": {
+    "specR1": "CHANGES: repeated degradation key and capacity expiry consistency",
+    "specR2": "PASS: repeated degradation identity and same-assessment capacity gaps closed",
+    "quality": "PASS R2: post-alert generation fence, notification drain before close, unverified-host outbox separate from evidence"
+  },
+  "checks": {
+    "configExplicit": {
+      "status": "pass after precise drift inventory fix",
+      "files": 7,
+      "tests": 183,
+      "firstRun": "/tmp/fly2920-F-explicit-config-results.json",
+      "driftGreen": "/tmp/fly2920-F-drift-green.log"
+    },
+    "configRelated": {
+      "status": "pass",
+      "files": 7,
+      "tests": 183,
+      "log": "/tmp/fly2920-F-config-related.log",
+      "config": "/tmp/fly2920-F-config-related.config.mts"
+    },
+    "lint": {
+      "status": "pass final quality-frozen source",
+      "warnings": 25,
+      "log": "/tmp/fly2920-F-final-lint.log"
+    },
+    "build": {
+      "status": "pass final quality-frozen source",
+      "command": "pnpm --filter 'flywheel-teamlead...' build",
+      "log": "/tmp/fly2920-F-final-build.log"
+    },
+    "remainingExplicit": {
+      "status": "43 files finished; one unchanged timeout passed focused retry",
+      "files": 43,
+      "vitestPassedInitial": 809,
+      "vitestFailedInitial": 1,
+      "unselectedStateStoreGroups": 95,
+      "nodeTestsPassed": 10,
+      "results": "/tmp/fly2920-F-explicit-remaining-results.json",
+      "bridgeTimeoutRetry": {
+        "status": "pass",
+        "tests": 1,
+        "unselected": 38,
+        "unchangedTimeoutMs": 5000,
+        "log": "/tmp/fly2920-F-bridge-timeout-retry.log",
+        "wholeFileFinalRelated": "39 tests passed at unchanged timeout"
+      },
+      "note": "Quality revision changed sampler source/test during run; final teamlead related validates final frozen bytes; config sources stayed unchanged"
+    },
+    "teamleadRelated": {
+      "status": "pass",
+      "commandFile": "/tmp/fly2920-F-teamlead-related-command.json",
+      "config": "/tmp/fly2920-F-teamlead-related.config.mts",
+      "log": "/tmp/fly2920-F-teamlead-related.log",
+      "concreteIncludeFiles": 40,
+      "files": 32,
+      "tests": 808,
+      "exitCode": 0
+    },
+    "dependentTypes": {
+      "status": "pass",
+      "command": "pnpm --workspace-concurrency=1 --filter '...flywheel-teamlead' typecheck",
+      "log": "/tmp/fly2920-F-dependent-types.log",
+      "packages": [
+        "flywheel-teamlead",
+        "voice-codex"
+      ],
+      "exitCode": 0
+    },
+    "retentionConsumer": {
+      "status": "pass",
+      "ok": true,
+      "errors": [],
+      "log": "/tmp/fly2920-F-retention-consumer-scan.log"
+    },
+    "explicitTotals": {
+      "vitestFiles": 49,
+      "vitestTestsPassed": 993,
+      "nodeFiles": 1,
+      "nodeTestsPassed": 10,
+      "note": "Union of final explicit results; initial single Bridge timeout retained above and closed by focused retry plus whole-file final related"
+    }
+  },
+  "limits": [
+    "Targeted local evidence only; no full-suite, CI, QA, production, ship or formal gate evidence",
+    "Production30-second cadence and actual65-second host interval reserved for QA",
+    "Full exact-head CI owned by QA frozen-head request"
+  ],
+  "redGreen": {
+    "repeatDegradation": {
+      "red": "/tmp/fly2920-F-r1-outage-red.log",
+      "green": "/tmp/fly2920-F-r1-outage-green.log"
+    },
+    "capacityExpiry": {
+      "red": "/tmp/fly2920-F-r1-capacity-red.log",
+      "green": "/tmp/fly2920-F-r1-capacity-green.log"
+    },
+    "shutdownAndUnknownHost": {
+      "red": "/tmp/fly2920-F-quality-red.log",
+      "green": "/tmp/fly2920-F-quality-green2.log",
+      "notifierRegression": "/tmp/fly2920-F-quality-notifier.log",
+      "typecheck": "/tmp/fly2920-F-quality-typecheck.log"
+    }
+  }
+}

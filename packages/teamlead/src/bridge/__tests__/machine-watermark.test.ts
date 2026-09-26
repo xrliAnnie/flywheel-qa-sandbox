@@ -212,7 +212,7 @@ describe("memPressureThresholdsFromEnv", () => {
 		).toEqual({ freeLowPct: 8, freeHighPct: 15, swapoutMinPages: 0 });
 	});
 
-	it("inverted band (LOW ≥ HIGH) clamps LOW down to HIGH", () => {
+	it("legacy HIGH does not alter the active LOW threshold", () => {
 		expect(
 			memPressureThresholdsFromEnv(
 				env({
@@ -220,7 +220,7 @@ describe("memPressureThresholdsFromEnv", () => {
 					FLYWHEEL_MEM_FREE_HIGH_PCT: "12",
 				}),
 			),
-		).toEqual({ freeLowPct: 12, freeHighPct: 12, swapoutMinPages: 0 });
+		).toEqual({ freeLowPct: 30, freeHighPct: 12, swapoutMinPages: 0 });
 	});
 
 	it("SWAPOUT_MIN has its OWN validator: 0 and >100 are both legal, not percent-clamped", () => {
@@ -316,14 +316,14 @@ describe("MemoryPressureMonitor (three-state health, OR-trigger / AND-clear)", (
 		expect(m.episodeStart).toBeNull();
 	});
 
-	it("hysteresis band (LOW ≤ free% < HIGH): healthy=false — no clear, no re-trigger", () => {
+	it("LOW ≤ free% < HIGH immediately clears pressure when swapout is quiet", () => {
 		const m = new MemoryPressureMonitor(TH);
 		m.tick(p(5, 1000), 1);
 		m.tick(p(5, 1000), 2); // trigger
 		const ev = m.tick(p(12, 1000), 3); // in the band, delta 0
-		expect(ev.event).toBe("none");
-		expect(ev.healthy).toBe(false); // EVIDENCE of not-healthy, not unknown
-		expect(m.inPressure).toBe(true);
+		expect(ev.event).toBe("clear");
+		expect(ev.healthy).toBe(true);
+		expect(m.inPressure).toBe(false);
 		const ev2 = m.tick(p(5, 2000), 4); // danger again inside the episode
 		expect(ev2.event).toBe("none"); // never re-trigger
 	});
@@ -368,12 +368,12 @@ describe("MemoryPressureMonitor (three-state health, OR-trigger / AND-clear)", (
 		expect(ev2.event).toBe("clear");
 	});
 
-	it("free% boundary on recovery is inclusive: exactly HIGH clears, just below does not", () => {
+	it("free% boundary on recovery is inclusive: exactly LOW clears, just below does not", () => {
 		const m = new MemoryPressureMonitor(TH);
 		m.tick(p(5, 1000), 1);
 		m.tick(p(5, 1000), 2);
-		expect(m.tick(p(14.999, 1000), 3).event).toBe("none");
-		expect(m.tick(p(15, 1000), 4).event).toBe("clear");
+		expect(m.tick(p(7.999, 1000), 3).event).toBe("none");
+		expect(m.tick(p(8, 1000), 4).event).toBe("clear");
 	});
 
 	it("lastEvaluation exposes the three-state verdict (null before any tick)", () => {
@@ -384,7 +384,7 @@ describe("MemoryPressureMonitor (three-state health, OR-trigger / AND-clear)", (
 		m.tick(p(50, 100), 2);
 		expect(m.lastEvaluation?.healthy).toBe(true); // proven: free high + delta 0
 		m.tick(p(12, 100), 3);
-		expect(m.lastEvaluation?.healthy).toBe(false); // proven NOT healthy (band)
+		expect(m.lastEvaluation?.healthy).toBe(true); // non-danger band releases
 	});
 
 	it("a fresh episode after clear re-triggers with a new episode stamp", () => {
@@ -423,6 +423,17 @@ describe("readMemoryPressure (command selection + injection seam)", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("abort terminates an in-flight QA probe within the bounded read budget", async () => {
+		const started = performance.now();
+		expect(
+			await readMemoryPressure(
+				{ FLYWHEEL_SWAP_SENSOR_CMD: "exec /bin/sleep 30" },
+				AbortSignal.timeout(30),
+			),
+		).toBeNull();
+		expect(performance.now() - started).toBeLessThan(1000);
 	});
 
 	it("a failing override command returns null (skip the tick, never fake health)", async () => {
