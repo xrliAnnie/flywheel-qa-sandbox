@@ -35,6 +35,12 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * FLY-2921: waiting wakes are skipped for free (see the drain loop); this caps
+ * how many one pass may step over before waits count against the budget.
+ */
+const MAX_DEFERRED_WAKES_PER_PASS = 1_000;
+
 export async function drainTurnWakeOutbox(input: {
 	projectNames: string[];
 	commDbPathForProject: (projectName: string) => string;
@@ -106,6 +112,14 @@ export async function drainTurnWakeOutbox(input: {
 					if (guard.disposition === "wait") {
 						db.releaseTurnWakeClaim(claim.wake_id, claim.claim_token!);
 						deferredWakeIds.add(claim.wake_id);
+						// FLY-2921: a wait (e.g. a rework returned to the Lead that a
+						// resume will re-arm) does not spend this pass's delivery
+						// budget, or a batch of old waiting rows would starve every
+						// later due wake of the project on every pass. The exclusion
+						// set guarantees progress; the cap bounds a single pass.
+						if (deferredWakeIds.size < MAX_DEFERRED_WAKES_PER_PASS) {
+							index -= 1;
+						}
 						continue;
 					}
 				}
