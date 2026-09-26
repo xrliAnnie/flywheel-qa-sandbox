@@ -514,7 +514,11 @@ describe("StateStore voice sessions", () => {
 			leaseToken: claim.leaseToken,
 			now: "2026-09-08T20:00:02.000Z",
 		});
-		expect(attempt).toMatch(/^[0-9a-f-]{36}$/);
+		expect(attempt).toMatchObject({
+			status: "claimed",
+			attemptToken: expect.stringMatching(/^[0-9a-f-]{36}$/),
+		});
+		if (attempt.status !== "claimed") throw new Error("expected claimed");
 		expect(
 			store.finishVoiceOutbound({
 				sessionId: reservation().sessionId,
@@ -530,7 +534,7 @@ describe("StateStore voice sessions", () => {
 				sessionId: reservation().sessionId,
 				seq: 1,
 				leaseToken: claim.leaseToken,
-				attemptToken: attempt!,
+				attemptToken: attempt.attemptToken,
 				status: "confirmed",
 				now: "2026-09-08T20:00:03.000Z",
 			}),
@@ -540,7 +544,7 @@ describe("StateStore voice sessions", () => {
 				sessionId: reservation().sessionId,
 				seq: 1,
 				leaseToken: claim.leaseToken,
-				attemptToken: attempt!,
+				attemptToken: attempt.attemptToken,
 				status: "confirmed",
 				now: "2026-09-08T20:00:04.000Z",
 			}),

@@ -48,6 +48,7 @@ export interface VoiceSessionRouterDeps {
 
 const DAEMON_ONLY = "daemon_credential_required";
 const LEASE_CONFLICT = { error: "voice_lease_conflict" };
+const OUTBOUND_NOT_CLAIMABLE = { error: "voice_outbound_not_claimable" };
 
 function tier(res: express.Response): VoiceCredentialTier {
 	return res.locals.voiceCredentialTier as VoiceCredentialTier;
@@ -596,17 +597,21 @@ export function createVoiceSessionRouter(
 			res.status(400).json({ error: "voice_outbound_seq_invalid" });
 			return;
 		}
-		const attemptToken = deps.store.claimVoiceOutbound({
+		const claimResult = deps.store.claimVoiceOutbound({
 			sessionId: param(req.params.sessionId),
 			seq,
 			leaseToken: lease(req),
 			now: now(),
 		});
-		if (!attemptToken) {
+		if (claimResult.status === "lease_conflict") {
 			res.status(409).json(LEASE_CONFLICT);
 			return;
 		}
-		res.json({ attemptToken });
+		if (claimResult.status === "not_claimable") {
+			res.status(410).json(OUTBOUND_NOT_CLAIMABLE);
+			return;
+		}
+		res.json({ attemptToken: claimResult.attemptToken });
 	});
 
 	router.post("/:sessionId/outbound/:seq/receipt", masterOnly(), (req, res) => {

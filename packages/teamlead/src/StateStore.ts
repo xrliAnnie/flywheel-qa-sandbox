@@ -2832,6 +2832,11 @@ export interface VoiceOutboundRow {
 	finishedAt: string | null;
 }
 
+export type VoiceOutboundClaimResult =
+	| { status: "claimed"; attemptToken: string }
+	| { status: "lease_conflict" }
+	| { status: "not_claimable" };
+
 export interface VoiceIntentRow {
 	projectName: string;
 	leadId: string;
@@ -6565,20 +6570,26 @@ export class StateStore {
 		seq: number;
 		leaseToken: string;
 		now: string;
-	}): string | undefined {
-		let attemptToken: string | undefined;
+	}): VoiceOutboundClaimResult {
+		const result: { value: VoiceOutboundClaimResult } = {
+			value: { status: "lease_conflict" },
+		};
 		this.db.transaction(() => {
-			if (!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now)) return;
+			if (!this.getActiveVoiceLease(input.sessionId, input.leaseToken, input.now))
+				return;
+			result.value = { status: "not_claimable" };
 			const candidate = randomUUID();
 			this.db.run(
 				`UPDATE voice_outbound SET phase = 'claimed', attempt_token = ?, claimed_at = ?
 				 WHERE seq = ? AND session_id = ? AND phase = 'queued'`,
 				[candidate, input.now, input.seq, input.sessionId],
 			);
-			if (this.db.getRowsModified() === 1) attemptToken = candidate;
+			if (this.db.getRowsModified() === 1) {
+				result.value = { status: "claimed", attemptToken: candidate };
+			}
 		});
-		if (attemptToken) this.save();
-		return attemptToken;
+		if (result.value.status === "claimed") this.save();
+		return result.value;
 	}
 
 	finishVoiceOutbound(input: {

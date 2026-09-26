@@ -254,6 +254,87 @@ describe("voice session routes", () => {
 		).toMatchObject({ status: 200, body: { status: "confirmed" } });
 	});
 
+	it("returns not-claimable when a listed outbound mirror is withdrawn before claim", async () => {
+		const { base } = await start();
+		await call(base, "", {
+			method: "POST",
+			token: INGEST,
+			body: { meetingId: "20000000-0000-4000-8000-000000000001" },
+		});
+		const claimed = await call(base, `/${SESSION_ID}/claim`, {
+			method: "POST",
+			token: MASTER,
+			body: { daemonBootId: "boot-a" },
+		});
+		const lease = (claimed.body as { leaseToken: string }).leaseToken;
+		for (const state of ["warming", "live"] as const) {
+			await call(base, `/${SESSION_ID}/state`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+				body: { state },
+			});
+		}
+		store.recordVoiceUtterance({
+			sessionId: SESSION_ID,
+			leaseToken: lease,
+			transcriptId: "transcript-mirrored-after-list",
+			utteranceId: "utterance-mirrored-after-list",
+			sessionGeneration: 1,
+			sequence: 1,
+			source: "room_audio",
+			role: "user",
+			text: "谁在做 FLY-2799？",
+			final: true,
+			attribution: { kind: "known", speakerUserId: "founder" },
+			captureDigest: "c".repeat(64),
+			now: NOW,
+		});
+		store.recordVoiceOutboundPage({
+			sessionId: SESSION_ID,
+			leaseToken: lease,
+			channelId: "100000000000000003",
+			cursor: "100000000000000050",
+			messages: [
+				{
+					messageId: "100000000000000050",
+					authorId: "100000000000000004",
+					text: "谁在做 FLY-2799？",
+					observedAt: NOW,
+				},
+			],
+			now: NOW,
+		});
+		const outbound = await call(base, `/${SESSION_ID}/outbound`, {
+			token: MASTER,
+			lease,
+		});
+		expect(outbound).toMatchObject({
+			status: 200,
+			body: { items: [{ seq: 1 }] },
+		});
+		expect(
+			store.recordVoiceUtteranceMirror({
+				sessionId: SESSION_ID,
+				leaseToken: lease,
+				transcriptId: "transcript-mirrored-after-list",
+				messageId: "100000000000000050",
+				now: NOW,
+			}),
+		).toBe("recorded");
+
+		expect(
+			await call(base, `/${SESSION_ID}/outbound/1/claim`, {
+				method: "POST",
+				token: MASTER,
+				lease,
+			}),
+		).toEqual({
+			status: 410,
+			body: { error: "voice_outbound_not_claimable" },
+		});
+	});
+
 	it("serves context only to the master holding the current session lease", async () => {
 		const { base, getSessionContext } = await start();
 		await call(base, "", {
