@@ -30,14 +30,24 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+	appendRunnerTestPolicyHookSettings,
 	buildNonLeadClaudeSettings,
+	buildRunnerTestPolicyHookCommand,
 	type CompiledRunnerPrefixProfile,
 	getModelConfigSnapshot,
 	type RoleEffort,
 	resolveAllowedCanonicalModel,
 	resolveAllowedEffort,
 } from "flywheel-config";
+
+const RUNNER_TEST_POLICY_HOOK = fileURLToPath(
+	new URL(
+		"../../../../scripts/hooks/inject-runner-test-policy.mjs",
+		import.meta.url,
+	),
+);
 
 const washReviewEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
 	Object.fromEntries(
@@ -171,8 +181,17 @@ export function buildClaudeReviewArgv(
 		canonicalModel,
 		...(effort ? (["--effort", effort] as const) : []),
 		"--settings",
-		// FLY-2913: the role-v1 profile merges first; forced denies still win.
-		JSON.stringify(buildNonLeadClaudeSettings(inv.prefixProfile?.settings)),
+		JSON.stringify(
+			appendRunnerTestPolicyHookSettings(
+				// FLY-2913: the role-v1 profile merges first; forced denies still win.
+				buildNonLeadClaudeSettings(inv.prefixProfile?.settings),
+				inv.prompt,
+				buildRunnerTestPolicyHookCommand(
+					process.execPath,
+					RUNNER_TEST_POLICY_HOOK,
+				),
+			),
+		),
 	];
 }
 

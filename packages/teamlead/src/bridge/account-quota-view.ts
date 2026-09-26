@@ -1,4 +1,11 @@
 import {
+	type ClaudeChargeFacts,
+	type ClaudeChargeReading,
+	type ClaudeChargeStore,
+	claudeChargeMailboxKey,
+	normalizeClaudeChargeMailbox,
+} from "../claude-quota/charge-receipt-store.js";
+import {
 	type AccountQuotaPageOptions,
 	formatAccountQuotaPageCalendarDate,
 	formatAccountQuotaPageClock,
@@ -72,6 +79,11 @@ export interface AccountQuotaRow {
 	 * unknown. Display only: never part of grouping, ordering or any decision.
 	 */
 	nextCharge: QuotaCell;
+	/**
+	 * FLY-2897, Claude only: when this account's receipt mailbox was last read
+	 * (null = never). Absent = not shown (Codex rows, founder-confirmed cells).
+	 */
+	receiptReadAt?: string | null;
 	/** Any machine window at 100% (Claude: also an exhausted-until in the future). */
 	exhausted: boolean;
 	/** Credentials cannot be used until someone re-logs in; never a quota cap. */
@@ -107,6 +119,11 @@ export type AccountQuotaRowSources =
 			usage: string | null;
 			/** account-details.json observedAt: cards, tier, cancellation. */
 			detail: string | null;
+			/**
+			 * FLY-2897: what dated the next-charge cell — the receipt reading's
+			 * readAt, or the detail reading when there is no receipt reading.
+			 */
+			charge: string | null;
 	  };
 
 export const CODEX_MACHINE_SOURCE_LABEL = "机器读数 · account/rateLimits/read";
@@ -126,6 +143,8 @@ export interface AccountQuotaView {
 
 export interface AccountQuotaViewOptions {
 	claudeEmails?: Readonly<Record<string, string>>;
+	/** FLY-2897: charge-receipts.json (null or absent = never read). */
+	claudeCharges?: ClaudeChargeStore | null;
 	/** FLY-2803 manual confirmations, now read only for the next-charge cell. */
 	subscriptionManual?: {
 		confirmations?: readonly SubscriptionConfirmation[];
@@ -644,25 +663,176 @@ function manualCanceledCell(confirmation: SubscriptionConfirmation): QuotaCell {
 	};
 }
 
+const CHARGE_CARRY_MS = 48 * 3_600_000;
+const CHARGE_FUTURE_SKEW_MS = 60_000;
+
+const CHARGE_READ_FAILURE_TEXT: Readonly<Record<string, string>> = {
+	timeout: "读邮箱超时",
+	gog_missing: "本机没装 gog",
+	rate_limited: "Gmail 限流",
+	retryable: "Gmail 暂时不可用",
+	permission_denied: "邮箱授权范围不够",
+	gog_config: "gog 凭据未配置",
+	output_too_large: "邮件太大",
+	malformed: "gog 返回格式不对",
+	not_found: "邮件已不存在",
+	candidate_limit: "非订阅收据太多，没读到订阅收据",
+	search_truncated: "Anthropic 邮件太多，没读完",
+};
+
+/** FLY-2897: why a mailbox gave no charge facts, in the founder's words. */
+function chargeFailureText(reading: ClaudeChargeReading): string {
+	switch (reading.status) {
+		case "no_mailbox":
+			return "账号没有登记邮箱";
+		case "auth_missing":
+			return "邮箱未授权 gog";
+		case "auth_invalid":
+			return reading.reason === "invalid_grant"
+				? "邮箱授权失效 invalid_grant，需重新授权"
+				: "邮箱授权失效，需重新授权";
+		case "no_receipt":
+			return "邮箱里没找到 Anthropic 收据";
+		case "parse_failed":
+			return "收据格式没认出";
+		default:
+			return (
+				(reading.reason && CHARGE_READ_FAILURE_TEXT[reading.reason]) ??
+				"读邮箱失败"
+			);
+	}
+}
+
+function formatCents(cents: number): string {
+	return `${cents < 0 ? "-" : ""}$${(Math.abs(cents) / 100).toFixed(2)}`;
+}
+
+function shortDay(day: string): string {
+	const [, month, date] = day.split("-");
+	return `${Number(month)}/${Number(date)}`;
+}
+
+/** The cell a set of receipt facts says, given what the detail knows. */
+function chargeFactsCell(
+	facts: ClaudeChargeFacts,
+	readAt: string,
+	account: ClaudeAccount | undefined,
+	generatedAt: string,
+	observedAt: string,
+): QuotaCell {
+	const detailAt = validInstant(account?.detailObservedAt ?? null);
+	const lastMail = Math.max(
+		Date.parse(facts.receiptAt),
+		facts.resumedAt === null ? 0 : Date.parse(facts.resumedAt),
+	);
+	// Two sources, merged: a cancellation mail, or an OAuth detail reading that
+	// saw "canceled" after the last receipt / resubscription mail.
+	const canceled =
+		facts.canceledAt !== null ||
+		(account?.subscriptionStatus === "canceled" &&
+			detailAt !== null &&
+			Date.parse(detailAt) > lastMail);
+	const today = pacificDayKey(generatedAt);
+	const end = formatAccountQuotaPageCalendarDate(facts.periodEnd);
+	if (canceled) {
+		return machineCell(
+			facts.periodEnd >= today
+				? `已取消 · ${end} 到期`
+				: `已取消 · ${end} 已到期`,
+			observedAt,
+			false,
+		);
+	}
+	if (facts.periodEnd < today) {
+		return {
+			...missingCell(
+				pacificDayKey(readAt) <= facts.periodEnd
+					? "读不到（读数早于扣费日，待重读）"
+					: `读不到（${end} 应扣费，未见新收据）`,
+			),
+			observedAt,
+		};
+	}
+	const paid =
+		facts.amountCents === null
+			? ""
+			: ` · 已付 ${formatCents(facts.amountCents)}`;
+	return machineCell(
+		`${end}\n本期 ${shortDay(facts.periodStart)}–${shortDay(facts.periodEnd)}${paid}`,
+		observedAt,
+		false,
+	);
+}
+
 /**
- * FLY-2864: Anthropic exposes no renewal date to OAuth tokens, so a Claude row
- * only knows cancellation (machine or founder-confirmed) and otherwise says so.
+ * FLY-2864 / FLY-2897: the Claude next charge — a founder-confirmed
+ * cancellation first, then the receipt mailbox reading (merged with the
+ * detail's cancellation), else the detail alone.
  */
 function claudeNextChargeCell(
 	account: ClaudeAccount | undefined,
 	manual: SubscriptionConfirmation | null,
+	charge: ClaudeChargeReading | undefined,
+	mailboxChanged: boolean,
+	generatedAt: string,
 ): QuotaCell {
 	if (manual?.status === "canceled") return manualCanceledCell(manual);
-	if (account?.subscriptionStatus === "canceled") {
+	// Free or paid comes only from the current account detail — never from
+	// when a receipt round happened to finish.
+	if (account?.subscriptionTier?.subscriptionType === "free") {
 		return machineCell(
-			"已取消",
+			"免费号，无扣费",
 			validInstant(account.detailObservedAt ?? null),
 			false,
 		);
 	}
-	return missingCell(
-		"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
-	);
+	// Another mailbox's facts never describe this account.
+	if (mailboxChanged) return missingCell("读不到（邮箱已变更，待重读）");
+	const detailCanceled = account?.subscriptionStatus === "canceled";
+	const detailCell = () =>
+		machineCell(
+			"已取消",
+			validInstant(account?.detailObservedAt ?? null),
+			false,
+		);
+	if (charge === undefined) {
+		return detailCanceled
+			? detailCell()
+			: missingCell("读不到（收据还没读过）");
+	}
+	const readAt = charge.readAt;
+	if (
+		(charge.status === "ok" || charge.status === "canceled") &&
+		charge.facts !== null
+	) {
+		return chargeFactsCell(charge.facts, readAt, account, generatedAt, readAt);
+	}
+	const good = charge.lastGood;
+	const goodAgeMs =
+		good === null ? null : Date.parse(generatedAt) - Date.parse(good.readAt);
+	if (
+		good !== null &&
+		goodAgeMs !== null &&
+		goodAgeMs <= CHARGE_CARRY_MS &&
+		goodAgeMs >= -CHARGE_FUTURE_SKEW_MS
+	) {
+		const cell = chargeFactsCell(
+			good.facts,
+			good.readAt,
+			account,
+			generatedAt,
+			readAt,
+		);
+		return {
+			...cell,
+			display: `${cell.display}\n沿用 ${formatAccountQuotaPageClock(good.readAt, generatedAt)} 读数 · 本次读不到：${chargeFailureText(charge)}`,
+		};
+	}
+	if (detailCanceled) return detailCell();
+	return {
+		...missingCell(`读不到（${chargeFailureText(charge)}）`),
+		observedAt: readAt,
+	};
 }
 
 function codexSubscriptionReason(note: string | null): string {
@@ -798,9 +968,28 @@ function buildClaudeRows(
 			return match ? [match[1]!] : [];
 		}),
 	);
+	const chargeByName = new Map(
+		(options.claudeCharges?.accounts ?? []).map((reading) => [
+			reading.name,
+			reading,
+		]),
+	);
 	const rows = order.map((name): AccountQuotaRow => {
 		const account = byName.get(name);
 		const manual = manualByName.get(name);
+		const storedCharge = chargeByName.get(name);
+		const mailbox = normalizeClaudeChargeMailbox(options.claudeEmails?.[name]);
+		// FLY-2897: a reading counts only for the mailbox it was read from.
+		const mailboxChanged =
+			storedCharge !== undefined &&
+			storedCharge.mailboxKey !==
+				(mailbox === null ? null : claudeChargeMailboxKey(mailbox));
+		const charge = mailboxChanged ? undefined : storedCharge;
+		const claudeManual = manualSubscription(
+			"Claude",
+			name,
+			options.subscriptionManual,
+		);
 		if (!account) warnings.push(`Claude ${name}：容量快照中无该账号`);
 		const weeklyMachine = account
 			? machinePctCell(account.sevenDPct, account)
@@ -947,8 +1136,14 @@ function buildClaudeRows(
 					),
 			nextCharge: claudeNextChargeCell(
 				account,
-				manualSubscription("Claude", name, options.subscriptionManual),
+				claudeManual,
+				charge,
+				mailboxChanged,
+				snapshot.generatedAt,
 			),
+			...(claudeManual?.status === "canceled"
+				? {}
+				: { receiptReadAt: charge?.readAt ?? null }),
 			expiry: canceled
 				? canceledCell()
 				: (expiryMachine ??
@@ -981,6 +1176,10 @@ function buildClaudeRows(
 							provider: "Claude" as const,
 							usage: validInstant(account.observedAt),
 							detail: validInstant(account.detailObservedAt ?? null),
+							charge: mailboxChanged
+								? null
+								: (charge?.readAt ??
+									validInstant(account.detailObservedAt ?? null)),
 						},
 					}
 				: {}),

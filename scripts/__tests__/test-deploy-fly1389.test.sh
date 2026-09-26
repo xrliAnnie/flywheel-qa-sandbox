@@ -78,7 +78,7 @@ trap cleanup EXIT
 FR="$SB/repo"
 mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/scripts" \
   "$FR/packages/teamlead/dist/bin" \
-  "$FR/packages/flywheel-comm" "$FR/packages/inbox-mcp" \
+  "$FR/packages/flywheel-comm" "$FR/packages/inbox-mcp/dist" \
   "$FR/packages/edge-worker/dist" \
   "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release"
 cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" \

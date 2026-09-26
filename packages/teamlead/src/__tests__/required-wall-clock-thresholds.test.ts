@@ -13,7 +13,11 @@ const OBSERVATION_BUDGET_EXACT_ASSERTION_TESTS = [
 ] as const;
 
 function trackedFiles(): string[] {
-	return execFileSync("git", ["ls-files"], { cwd: ROOT, encoding: "utf8" })
+	return execFileSync("git", ["ls-files"], {
+		cwd: ROOT,
+		encoding: "utf8",
+		maxBuffer: 64 * 1024 * 1024,
+	})
 		.split("\n")
 		.filter(Boolean);
 }

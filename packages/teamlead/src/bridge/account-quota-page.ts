@@ -296,14 +296,15 @@ const CODEX_CELL_SOURCE: Partial<
 	credits: "resetCredits",
 	nextCharge: "subscription",
 };
-const CLAUDE_CELL_SOURCE: Record<MarkedCell, "usage" | "detail"> = {
+const CLAUDE_CELL_SOURCE: Record<MarkedCell, "usage" | "detail" | "charge"> = {
 	tier: "detail",
 	weeklyReset: "usage",
 	fiveHReset: "usage",
 	weeklyUsage: "usage",
 	fableUsage: "usage",
 	credits: "detail",
-	nextCharge: "detail",
+	// FLY-2897: the receipt mailbox reading (or the detail, without one).
+	nextCharge: "charge",
 };
 
 function cellOf(row: AccountQuotaRow, key: MarkedCell): QuotaCell {
@@ -417,8 +418,17 @@ function renderCards(cell: QuotaCell): string {
 		.join("")}</div>`;
 }
 
+/** FLY-2897: first line is the date; later lines are notes; then when read. */
 function renderNextCharge(row: AccountQuotaRow, context: MarkContext): string {
-	return `<td><span class="next-charge">${escapeHtml(row.nextCharge.display)}</span>${renderMark(row, "nextCharge", context)}</td>`;
+	const [first = "", ...notes] = row.nextCharge.display.split("\n");
+	const noteSpans = notes
+		.map((line) => `<span class="charge-note">${escapeHtml(line)}</span>`)
+		.join("");
+	const readAt =
+		row.receiptReadAt === undefined
+			? ""
+			: `<span class="charge-read-time">收据读于 ${escapeHtml(readingTime(row.receiptReadAt, context.generatedAt))}</span>`;
+	return `<td><span class="next-charge">${escapeHtml(first)}</span>${noteSpans}${readAt}${renderMark(row, "nextCharge", context)}</td>`;
 }
 
 function renderPageRow(
@@ -553,7 +563,7 @@ export function renderAccountQuotaPageHtml(
 	<title>账号额度一览</title>
 	<style>
 		:root{color-scheme:light;--ink:#1d1d1f;--muted:#6e6e73;--line:#e3e1dc;--paper:#fbfaf7;--page:#f0efec;--ok:#1f7a68;--active-bg:#e3f4ec;--full:#c0392b;--full-bg:#fdf0ee;--track:#e9e7e2}
-		*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",system-ui,sans-serif}main{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh;padding:38px 28px 48px}header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}h1{margin:0;font-size:25px;letter-spacing:-.02em}.generated{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}section{margin-top:30px}h2{font-size:17px;margin:0 0 8px}.table-wrap{overflow-x:auto}table{width:100%;min-width:990px;border-collapse:collapse;border:1px solid var(--line)}th,td{text-align:left;padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:middle}th{font-size:11px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}.provider-unavailable td{color:var(--muted);font-size:12px}.provider-unavailable span{display:block}.quota-group-spacer td{height:10px;padding:0;border:0;background:var(--paper)}.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}.group-title td{background:var(--paper);color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.04em;padding-top:15px;padding-bottom:6px}.active-account td{background:var(--active-bg)!important}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--ok)}.account-name{display:flex;align-items:center;gap:7px;font-weight:700}.active-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}.active-chip{font-size:10px;color:var(--ok);background:#d8eee6;border-radius:5px;padding:1px 6px}.account-tier,.account-note{display:block;color:var(--muted);font-size:11px;margin-top:4px;max-width:240px;white-space:normal}.reset-time,.card-lines{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.card-lines{display:flex;flex-direction:column}.quota-na{color:#a1a1a6}.quota-meter{min-width:118px}.meter-copy{display:flex;align-items:baseline;gap:6px;margin-bottom:5px}.quota-pct{font:650 13px ui-monospace,SFMono-Regular,Menlo,monospace}.dimension-label{font-size:10px;color:var(--muted)}.dimension-full{font-size:10px;font-weight:700;color:var(--full)}progress{display:block;width:100%;height:6px;border:0;border-radius:3px;overflow:hidden;background:var(--track);accent-color:var(--ok)}progress::-webkit-progress-bar{background:var(--track)}progress::-webkit-progress-value{background:var(--ok)}progress::-moz-progress-bar{background:var(--ok)}.dimension-is-full progress{accent-color:var(--full)}.dimension-is-full progress::-webkit-progress-value{background:var(--full)}.dimension-is-full progress::-moz-progress-bar{background:var(--full)}.dimension-is-full .quota-pct{color:var(--full)}.next-charge{white-space:nowrap}table.vercel-table{min-width:640px}.section-caption{font-size:12px;color:var(--muted);margin:-4px 0 8px}.retired-account td{color:var(--muted)}.reading-time{display:block;color:var(--muted);font-size:11px;margin-top:4px}.switch-stale{display:block;color:#b25e00;font-size:11px;margin-top:4px;white-space:normal}.switch-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff9500;background:#fff6e8;font-size:13px}@media(max-width:700px){main{padding:26px 14px 40px}header{display:block}.generated{margin-top:8px}h1{font-size:23px}}
+		*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",system-ui,sans-serif}main{max-width:1280px;margin:0 auto;background:var(--paper);min-height:100vh;padding:38px 28px 48px}header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}h1{margin:0;font-size:25px;letter-spacing:-.02em}.generated{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}section{margin-top:30px}h2{font-size:17px;margin:0 0 8px}.table-wrap{overflow-x:auto}table{width:100%;min-width:990px;border-collapse:collapse;border:1px solid var(--line)}th,td{text-align:left;padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:middle}th{font-size:11px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}.provider-unavailable td{color:var(--muted);font-size:12px}.provider-unavailable span{display:block}.quota-group-spacer td{height:10px;padding:0;border:0;background:var(--paper)}.quota-group[data-group="full"] .quota-row td{background:var(--full-bg)}.group-title td{background:var(--paper);color:var(--muted);font-size:12px;font-weight:650;letter-spacing:.04em;padding-top:15px;padding-bottom:6px}.active-account td{background:var(--active-bg)!important}.active-account td:first-child{box-shadow:inset 4px 0 0 var(--ok)}.account-name{display:flex;align-items:center;gap:7px;font-weight:700}.active-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}.active-chip{font-size:10px;color:var(--ok);background:#d8eee6;border-radius:5px;padding:1px 6px}.account-tier,.account-note{display:block;color:var(--muted);font-size:11px;margin-top:4px;max-width:240px;white-space:normal}.reset-time,.card-lines{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.card-lines{display:flex;flex-direction:column}.quota-na{color:#a1a1a6}.quota-meter{min-width:118px}.meter-copy{display:flex;align-items:baseline;gap:6px;margin-bottom:5px}.quota-pct{font:650 13px ui-monospace,SFMono-Regular,Menlo,monospace}.dimension-label{font-size:10px;color:var(--muted)}.dimension-full{font-size:10px;font-weight:700;color:var(--full)}progress{display:block;width:100%;height:6px;border:0;border-radius:3px;overflow:hidden;background:var(--track);accent-color:var(--ok)}progress::-webkit-progress-bar{background:var(--track)}progress::-webkit-progress-value{background:var(--ok)}progress::-moz-progress-bar{background:var(--ok)}.dimension-is-full progress{accent-color:var(--full)}.dimension-is-full progress::-webkit-progress-value{background:var(--full)}.dimension-is-full progress::-moz-progress-bar{background:var(--full)}.dimension-is-full .quota-pct{color:var(--full)}.next-charge{white-space:nowrap}.charge-note,.charge-read-time{display:block;color:var(--muted);font-size:11px;margin-top:4px;white-space:nowrap}table.vercel-table{min-width:640px}.section-caption{font-size:12px;color:var(--muted);margin:-4px 0 8px}.retired-account td{color:var(--muted)}.reading-time{display:block;color:var(--muted);font-size:11px;margin-top:4px}.switch-stale{display:block;color:#b25e00;font-size:11px;margin-top:4px;white-space:normal}.switch-banner{margin-top:14px;padding:8px 12px;border-left:4px solid #ff9500;background:#fff6e8;font-size:13px}@media(max-width:700px){main{padding:26px 14px 40px}header{display:block}.generated{margin-top:8px}h1{font-size:23px}}
 	</style>
 </head>
 <body><main><header><h1>账号额度一览</h1><div class="generated">${escapeHtml(formatAccountQuotaPageInstant(view.generatedAt))}</div></header>${renderSwitchBanner(view, context)}${renderTable("Claude", view.claude, view.claudeUnavailable, context)}${renderTable("Codex", view.codex, view.codexUnavailable, context)}${vercel === undefined ? "" : renderVercelTable(vercel)}</main></body>

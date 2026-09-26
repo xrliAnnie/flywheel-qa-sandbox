@@ -237,10 +237,10 @@ assert_contains "$test_deploy_source" \
 assert_contains "$test_deploy_source" \
 	'"FLYWHEEL_STATE_DIR=${state}"' \
 	'QA Lead manifest pins the slot-local state directory'
-assert_contains "$test_deploy_source" \
+assert_contains "$qa_generalized_source" \
 	'([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]' \
 	'generalized code-menu readiness follows stable backend node ids'
-if [[ "$test_deploy_source" == *'["design","implement","qa"]'* ]]; then
+if [[ "$qa_generalized_source" == *'["design","implement","qa"]'* ]]; then
 	echo 'FAIL: generalized code-menu readiness still asserts retired role names' >&2
 	failures=$((failures + 1))
 else
@@ -508,6 +508,15 @@ assert_contains "$test_deploy_source" \
 assert_contains "$test_deploy_source" \
 	'qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" "$QA_CONFIG_RUNNER"' \
 	'529 deploy forwards the selected runner into the generated project config'
+assert_contains "$test_deploy_source" \
+	"printf '%s: [generic]\\n' \"\$AGENT_ID\"" \
+	'standalone test-discipline rooms adopt the generic menu so node overrides are load-bearing'
+assert_contains "$test_deploy_source" \
+	'--required-binding generic=tpl_generic_menu' \
+	'standalone test-discipline readiness verifies the generic menu binding'
+assert_contains "$test_deploy_source" \
+	'standalone test-discipline readiness: generic menu + exact built head' \
+	'standalone test-discipline readiness proves the menu-backed dispatch surface'
 
 retired_workflow_env_names=(
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES
