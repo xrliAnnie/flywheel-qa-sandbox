@@ -132,6 +132,42 @@ describe("GenericVoiceSession", () => {
 		}
 	});
 
+	it("settles an enabled background obligation through the coordinated speech floor", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+		try {
+			const test = fixture({
+				coordinatedSpeech: true,
+				appendSpeech: async () => "confirmed",
+			});
+			await test.session.start();
+			await test.session.markLive();
+
+			test.getFrontendHandlers().onBackgroundHandoff?.({
+				handoffId: "handoff-a",
+				inputTranscript: "查 FLY-2886",
+			});
+			test.getFrontendHandlers().onBackgroundTurnStarted?.("turn-a");
+			test.getFrontendHandlers().onBackgroundTurnTerminal?.({
+				turnId: "turn-a",
+				outcome: "completed",
+				spokenSegments: ["FLY-2886 在 PR #1324。"],
+			});
+
+			await vi.advanceTimersByTimeAsync(800);
+			await vi.waitFor(() =>
+				expect(test.frontend.appendSpeech).toHaveBeenCalledWith(
+					expect.objectContaining({
+						spokenText: "FLY-2886 在 PR #1324。",
+					}),
+				),
+			);
+			expect(test.postThread).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("routes an audio-attributed final exactly once with a deterministic transcript id", async () => {
 		const test = fixture();
 		await test.session.start();

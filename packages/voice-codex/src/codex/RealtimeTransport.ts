@@ -232,6 +232,7 @@ export class CodexRealtimeTransport {
 			threadId: string;
 			generation: number;
 			start: Record<string, unknown>;
+			backgroundExecution?: "interrupt" | "allow";
 			onAudio?(delta: CodexRealtimeAudioDelta): void;
 			onTranscript?(transcript: CodexRealtimeTranscript): void;
 			onItem?(item: CodexRealtimeItem): void;
@@ -482,6 +483,7 @@ export class CodexRealtimeTransport {
 
 		if (this.state !== "active") return;
 		if (method === "turn/started") {
+			if (this.options.backgroundExecution === "allow") return;
 			this.backgroundTurnStarted(params);
 			return;
 		}
@@ -551,6 +553,7 @@ export class CodexRealtimeTransport {
 			return;
 		}
 		if (method === "item/started") {
+			if (this.options.backgroundExecution === "allow") return;
 			const item = record(params.item);
 			const kind = item?.type;
 			if (!item || (kind !== "commandExecution" && kind !== "mcpToolCall"))

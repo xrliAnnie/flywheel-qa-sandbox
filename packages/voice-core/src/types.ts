@@ -272,6 +272,18 @@ export type ConversationEventMap = {
 	"speech-started": [input?: { generation: number; itemId: string }];
 	"speech-stopped": [input?: { generation: number; itemId: string }];
 	"generation-changed": [generation: number];
+	"background-handoff": [input: { handoffId: string; inputTranscript: string }];
+	"background-turn-started": [turnId: string];
+	"background-turn-terminal": [
+		turn: {
+			turnId: string;
+			outcome: "completed" | "failed" | "interrupted";
+			spokenSegments?: string[];
+			reasonCategory?: "额度" | "权限" | "出错" | string;
+			hadWriteReceipt?: boolean;
+			writeReceiptUnknown?: boolean;
+		},
+	];
 	/** FLY-1065: final:true events are TURN-LEVEL aggregates (full turn text,
 	 * scrubbed); final:false stays the raw fragment passthrough. `interrupted`
 	 * marks an assistant turn flushed half-said by a barge-in / manual

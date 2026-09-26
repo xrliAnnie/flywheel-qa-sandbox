@@ -84,7 +84,10 @@ class FakeRpc implements CodexRealtimeRpc {
 	}
 }
 
-function harness(generation = 7) {
+function harness(
+	generation = 7,
+	backgroundExecution: "interrupt" | "allow" = "interrupt",
+) {
 	const rpc = new FakeRpc();
 	const audio = vi.fn();
 	const transcript = vi.fn();
@@ -100,6 +103,7 @@ function harness(generation = 7) {
 		sessionId: "session-a",
 		threadId: "thread-a",
 		generation,
+		backgroundExecution,
 		start: {
 			outputModality: "audio",
 			clientManagedHandoffs: true,
@@ -575,6 +579,45 @@ describe("Codex V2 realtime transport", () => {
 				ownerUserId: "founder",
 			}),
 		).toMatch(/^sent/u);
+	});
+
+	it("leaves enabled background turns running and keeps tool items out of the realtime lane", async () => {
+		const h = harness(7, "allow");
+		await start(h);
+		h.rpc.emit("thread/realtime/itemAdded", {
+			threadId: "thread-a",
+			item: {
+				type: "handoff_request",
+				handoff_id: "handoff-enabled",
+				input_transcript: "查 FLY-2886",
+			},
+		});
+		h.rpc.emit("turn/started", {
+			threadId: "thread-a",
+			turn: { id: "turn-enabled", status: "inProgress" },
+		});
+		h.rpc.emit("item/started", {
+			threadId: "thread-a",
+			turnId: "turn-enabled",
+			item: {
+				id: "exec-enabled",
+				type: "commandExecution",
+				status: "inProgress",
+			},
+		});
+
+		expect(h.executionIntents).toHaveBeenCalledOnce();
+		expect(h.executionIntents).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "handoffRequest",
+				itemId: "handoff-enabled",
+			}),
+		);
+		expect(
+			h.rpc.requests.filter((request) => request.method === "turn/interrupt"),
+		).toEqual([]);
+		expect(h.backgroundTurns).not.toHaveBeenCalled();
+		expect(h.violations).not.toHaveBeenCalled();
 	});
 
 	it("fails closed without delegating when a background turn cannot be interrupted", async () => {

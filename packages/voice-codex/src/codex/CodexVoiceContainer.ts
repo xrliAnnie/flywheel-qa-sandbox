@@ -12,6 +12,7 @@ import {
 	assertVoiceCodexHome,
 	VOICE_CODEX_HOME_CONFIG,
 } from "../codex-home.js";
+import type { BackgroundTurnTerminal } from "./BrainCoordinator.js";
 import {
 	type CodexRealtimeAudioDelta,
 	type CodexRealtimeBackgroundTurn,
@@ -20,6 +21,10 @@ import {
 	type CodexRealtimeTranscript,
 	CodexRealtimeTransport,
 } from "./RealtimeTransport.js";
+import {
+	type ThreadCompletedItem,
+	ThreadEventRouter,
+} from "./ThreadEventRouter.js";
 
 export const CODEX_VOICE_BINARY_VERSION = "codex-cli 0.156.1";
 export const CODEX_VOICE_BINARY_SHA256 =
@@ -413,6 +418,10 @@ export class CodexVoiceConversation {
 			generation: number,
 		) => CodexRealtimeTransport,
 		private readonly evidence: EvidenceSink,
+		private readonly threadEvents?: {
+			router: ThreadEventRouter;
+			unregister(): void;
+		},
 	) {
 		this.currentTransport = transport;
 	}
@@ -468,6 +477,29 @@ export class CodexVoiceConversation {
 	private async closeOnce(reason: string): Promise<void> {
 		try {
 			await this.restartPromise?.catch(() => undefined);
+			const activeTurnId = this.threadEvents?.router.activeTurnId(
+				this.threadId,
+			);
+			if (activeTurnId) {
+				try {
+					const interrupted = await withTimeout(
+						this.process.request("turn/interrupt", {
+							threadId: this.threadId,
+							turnId: activeTurnId,
+						}),
+						CLOSE_RPC_TIMEOUT_MS,
+						"codex_open_failed",
+					);
+					if (interrupted.error) throw new Error(interrupted.error.message);
+				} catch (error) {
+					this.evidence({
+						kind: "codex_background_turn_interrupt_failed",
+						threadId: this.threadId,
+						turnId: activeTurnId,
+						reason: error instanceof Error ? error.message : "unknown_error",
+					});
+				}
+			}
 			await withTimeout(
 				this.currentTransport.cancel(),
 				CLOSE_RPC_TIMEOUT_MS,
@@ -483,6 +515,7 @@ export class CodexVoiceConversation {
 			});
 			throw new CodexVoiceContainerError("cleanup_pending");
 		}
+		this.threadEvents?.unregister();
 		await rm(this.root, { recursive: true, force: true });
 		this.evidence({
 			kind: "codex_voice_container_closed",
@@ -517,6 +550,12 @@ export interface CodexVoiceOpenInput {
 		onBackgroundTurn?(input: CodexRealtimeBackgroundTurn): void;
 		onClosed?(input: { generation: number; reason: string }): void;
 		onError?(error: Error): void;
+	};
+	background?: {
+		enabled: true;
+		onTurnStarted(turnId: string): void;
+		onTurnTerminal(turn: BackgroundTurnTerminal): void;
+		onItemCompleted?(item: ThreadCompletedItem): void;
 	};
 }
 
@@ -647,6 +686,7 @@ export class CodexVoiceContainer {
 				maxJsonLineBytes: CODEX_VOICE_MAX_JSON_LINE_BYTES,
 			};
 			const process = this.createProcess(processOptions);
+			const threadEventRouter = new ThreadEventRouter(process);
 			resources.process = process;
 			process.on("exit", () => {
 				if (!conversation) violation ??= "process_exited_during_open";
@@ -693,12 +733,24 @@ export class CodexVoiceContainer {
 					threadId: opened.id,
 					generation,
 					start: realtimeStart,
+					backgroundExecution: input.background?.enabled
+						? "allow"
+						: "interrupt",
 					...input.realtime,
 				});
 			const transport = createTransport(1);
 			await transport.start();
 			assertActive();
 			if (violation) throw new Error(violation);
+			const unregisterBackground = input.background
+				? threadEventRouter.register(opened.id, {
+						onTurnStarted: input.background.onTurnStarted,
+						onTurnTerminal: input.background.onTurnTerminal,
+						...(input.background.onItemCompleted
+							? { onItemCompleted: input.background.onItemCompleted }
+							: {}),
+					})
+				: undefined;
 			conversation = new CodexVoiceConversation(
 				input.sessionId,
 				opened.id,
@@ -710,6 +762,12 @@ export class CodexVoiceContainer {
 				transport,
 				createTransport,
 				this.evidence,
+				unregisterBackground
+					? {
+							router: threadEventRouter,
+							unregister: unregisterBackground,
+						}
+					: undefined,
 			);
 			this.evidence({
 				kind: "codex_voice_container_opened",

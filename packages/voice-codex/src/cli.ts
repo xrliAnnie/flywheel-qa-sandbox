@@ -481,6 +481,7 @@ export async function main(): Promise<void> {
 								...record,
 							}),
 						allowSpokenParaphrase: voiceBackground.enabled,
+						backgroundEnabled: voiceBackground.enabled,
 					}),
 			);
 			codexBackend = (await registry.create(

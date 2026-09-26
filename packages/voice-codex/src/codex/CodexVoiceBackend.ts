@@ -13,6 +13,7 @@ import {
 	type VoiceUtterance,
 } from "flywheel-voice-core";
 import type { RealtimeAudioOwner } from "../realtime.js";
+import type { BackgroundTurnTerminal } from "./BrainCoordinator.js";
 import { CodexProofSpeaker } from "./CodexProofSpeaker.js";
 import type {
 	CodexVoiceContextSnapshot,
@@ -123,6 +124,7 @@ export interface CodexVoiceBackendOptions {
 	onEvidence?: (record: Record<string, unknown>) => void;
 	confirmTimeoutMs?: number;
 	allowSpokenParaphrase?: boolean;
+	backgroundEnabled?: boolean;
 }
 
 /** One assistant item's playback, fed while its audio is still arriving. */
@@ -163,6 +165,17 @@ export class CodexVoiceBackend implements VoiceBackend {
 				onClosed: (input) => callbacks.session?.transportClosed(input),
 				onError: (error) => callbacks.session?.transportError(error),
 			},
+			...(this.options.backgroundEnabled
+				? {
+						background: {
+							enabled: true,
+							onTurnStarted: (turnId: string) =>
+								callbacks.session?.observeProcessTurnStarted(turnId),
+							onTurnTerminal: (turn: BackgroundTurnTerminal) =>
+								callbacks.session?.observeProcessTurnTerminal(turn),
+						},
+					}
+				: {}),
 		});
 		const session = new CodexVoiceSession({
 			...this.options,
@@ -586,6 +599,10 @@ class CodexVoiceSession implements ConversationSession {
 			intent.generation !== this.generation
 		)
 			return;
+		if (this.options.backgroundEnabled) {
+			this.registerBackgroundHandoff(intent);
+			return;
+		}
 		const candidate = this.latestKnownUser;
 		if (!candidate || !this.options.handoffToLead) {
 			// A later execution item of a request that already went to the Lead
@@ -654,6 +671,67 @@ class CodexVoiceSession implements ConversationSession {
 			});
 	}
 
+	private registerBackgroundHandoff(
+		intent: CodexRealtimeExecutionIntent,
+	): void {
+		if (intent.kind !== "handoffRequest") return;
+		const candidate = this.latestKnownUser;
+		if (!candidate) {
+			const alreadyRegistered =
+				this.latestUserTranscriptId !== undefined &&
+				this.latestUserTranscriptId === this.handedOffTranscriptId;
+			this.options.onEvidence?.({
+				kind: "codex_background_handoff_skipped",
+				generation: intent.generation,
+				reason: alreadyRegistered ? "already_registered" : "known_user_missing",
+			});
+			if (!alreadyRegistered)
+				this.askForRepeat(
+					CODEX_HANDOFF_UNCONFIRMED_PROMPT,
+					"known_user_missing",
+				);
+			return;
+		}
+		const handoffId = intent.itemId;
+		if (!handoffId) {
+			this.options.onEvidence?.({
+				kind: "codex_background_handoff_skipped",
+				generation: intent.generation,
+				reason: "handoff_id_missing",
+			});
+			this.askForRepeat(CODEX_HANDOFF_UNCONFIRMED_PROMPT, "handoff_id_missing");
+			return;
+		}
+		const key = `${intent.generation}:background:${handoffId}:${candidate.utterance.transcriptId}`;
+		if (this.handoffKeys.has(key)) return;
+		this.handoffKeys.add(key);
+		this.latestKnownUser = undefined;
+		this.handedOffTranscriptId = candidate.utterance.transcriptId;
+		this.events.emit("background-handoff", {
+			handoffId,
+			inputTranscript: candidate.utterance.text,
+		});
+		this.options.onEvidence?.({
+			kind: "codex_background_handoff_registered",
+			generation: intent.generation,
+			handoffId,
+			transcriptId: candidate.utterance.transcriptId,
+		});
+		void candidate.persisted
+			.then((durable) => {
+				if (!durable) throw new Error("codex_handoff_transcript_not_durable");
+			})
+			.catch((error) => {
+				this.options.onEvidence?.({
+					kind: "codex_background_handoff_durability_failed",
+					generation: intent.generation,
+					handoffId,
+					transcriptId: candidate.utterance.transcriptId,
+					reason: error instanceof Error ? error.message : "unknown_error",
+				});
+			});
+	}
+
 	/**
 	 * The model may already have said it is passing the request on; say out
 	 * loud that it did not happen, instead of leaving only a thread note.
@@ -673,6 +751,24 @@ class CodexVoiceSession implements ConversationSession {
 	observeBackgroundTurn(turn: CodexRealtimeBackgroundTurn): void {
 		if (this.closing) return;
 		this.options.onEvidence?.({ kind: "codex_background_turn", ...turn });
+	}
+
+	observeProcessTurnStarted(turnId: string): void {
+		if (this.closing || !this.options.backgroundEnabled) return;
+		this.events.emit("background-turn-started", turnId);
+		this.options.onEvidence?.({
+			kind: "codex_background_turn_started",
+			turnId,
+		});
+	}
+
+	observeProcessTurnTerminal(turn: BackgroundTurnTerminal): void {
+		if (this.closing || !this.options.backgroundEnabled) return;
+		this.events.emit("background-turn-terminal", turn);
+		this.options.onEvidence?.({
+			kind: "codex_background_turn_terminal",
+			...turn,
+		});
 	}
 
 	transportClosed(input: { generation: number; reason: string }): void {

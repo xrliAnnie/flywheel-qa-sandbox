@@ -97,6 +97,15 @@ class FakeProcess implements CodexVoiceProcess {
 	startThreadError?: Error;
 	realtimeError?: { code: number; message: string };
 	onStartThread?: () => void;
+	requestHook?: (
+		method: string,
+		params: unknown,
+	) =>
+		| Promise<{
+				result?: unknown;
+				error?: { code: number; message: string };
+		  }>
+		| undefined;
 
 	constructor(
 		readonly threadId: string,
@@ -139,6 +148,8 @@ class FakeProcess implements CodexVoiceProcess {
 
 	async request(method: string, params?: unknown) {
 		this.requests.push({ method, params });
+		const hooked = this.requestHook?.(method, params);
+		if (hooked) return hooked;
 		if (!this.realtimeError && method === "thread/realtime/start") {
 			const threadId = (params as { threadId: string }).threadId;
 			queueMicrotask(() =>
@@ -340,6 +351,141 @@ describe("Codex voice container", () => {
 
 		await opened.close();
 		expect(h.processes[0]?.stopCount).toBe(1);
+	});
+
+	it.each(["old_cancel_wait", "new_opening", "new_started"] as const)(
+		"keeps process-level background completion during %s",
+		async (phase) => {
+			const h = harness();
+			const started = vi.fn();
+			const terminal = vi.fn();
+			const opened = await h.container.open({
+				sessionId: `session-${phase}`,
+				voice: "marin",
+				loadContext: async () => context(`session-${phase}`),
+				background: {
+					enabled: true,
+					onTurnStarted: started,
+					onTurnTerminal: terminal,
+				},
+			});
+			const process = h.processes[0]!;
+			process.emit("turn/started", {
+				threadId: opened.threadId,
+				turn: { id: "turn-background", status: "inProgress" },
+			});
+			process.emit("item/started", {
+				threadId: opened.threadId,
+				turnId: "turn-background",
+				item: {
+					id: "tool-background",
+					type: "commandExecution",
+					status: "inProgress",
+				},
+			});
+			expect(started).toHaveBeenCalledWith("turn-background");
+			expect(
+				process.requests.filter(
+					(request) => request.method === "turn/interrupt",
+				),
+			).toEqual([]);
+
+			let release!: () => void;
+			const held = new Promise<{
+				result?: unknown;
+				error?: { code: number; message: string };
+			}>((resolve) => {
+				release = () => resolve({ result: {} });
+			});
+			if (phase === "old_cancel_wait") {
+				process.requestHook = (method) =>
+					method === "thread/realtime/stop" ? held : undefined;
+			} else if (phase === "new_opening") {
+				process.requestHook = (method) =>
+					method === "thread/realtime/start" ? held : undefined;
+			}
+
+			const restart = opened.restart();
+			if (phase === "old_cancel_wait") {
+				await vi.waitFor(() =>
+					expect(process.requests.at(-1)?.method).toBe("thread/realtime/stop"),
+				);
+			} else if (phase === "new_opening") {
+				await vi.waitFor(() =>
+					expect(
+						process.requests.filter(
+							(request) => request.method === "thread/realtime/start",
+						),
+					).toHaveLength(2),
+				);
+			} else {
+				await restart;
+			}
+
+			process.emit("item/completed", {
+				threadId: opened.threadId,
+				turnId: "turn-background",
+				item: {
+					id: "answer-background",
+					type: "agentMessage",
+					text: "【口语】FLY-2886 在 PR #1324。",
+				},
+			});
+			process.emit("turn/completed", {
+				threadId: opened.threadId,
+				turn: { id: "turn-background", status: "completed" },
+			});
+			expect(terminal).toHaveBeenCalledWith({
+				turnId: "turn-background",
+				outcome: "completed",
+				spokenSegments: ["FLY-2886 在 PR #1324。"],
+			});
+
+			if (phase === "old_cancel_wait") {
+				release();
+				process.emit("thread/realtime/closed", {
+					threadId: opened.threadId,
+					reason: "client_stop",
+				});
+				await restart;
+			} else if (phase === "new_opening") {
+				release();
+				process.emit("thread/realtime/started", {
+					threadId: opened.threadId,
+					version: "v2",
+					realtimeSessionId: "realtime-restarted",
+				});
+				await restart;
+			}
+			process.requestHook = undefined;
+			await opened.close();
+		},
+	);
+
+	it("interrupts an enabled active background turn when the conversation closes", async () => {
+		const h = harness();
+		const opened = await h.container.open({
+			sessionId: "session-close-background",
+			voice: "marin",
+			loadContext: async () => context("session-close-background"),
+			background: {
+				enabled: true,
+				onTurnStarted: vi.fn(),
+				onTurnTerminal: vi.fn(),
+			},
+		});
+		const process = h.processes[0]!;
+		process.emit("turn/started", {
+			threadId: opened.threadId,
+			turn: { id: "turn-active", status: "inProgress" },
+		});
+
+		await opened.close();
+
+		expect(process.requests).toContainEqual({
+			method: "turn/interrupt",
+			params: { threadId: opened.threadId, turnId: "turn-active" },
+		});
 	});
 
 	it.each([

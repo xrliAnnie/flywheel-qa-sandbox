@@ -476,6 +476,108 @@ describe("Codex room composition", () => {
 		await session.close();
 	});
 
+	it("registers an enabled handoff locally and forwards process-level turn terminals", async () => {
+		let realtimeCallbacks!: Record<string, (...args: never[]) => void>;
+		let backgroundCallbacks!: {
+			onTurnStarted(turnId: string): void;
+			onTurnTerminal(turn: {
+				turnId: string;
+				outcome: "completed" | "failed" | "interrupted";
+				spokenSegments?: string[];
+			}): void;
+		};
+		const handoffToLead = vi.fn();
+		let finishPersist!: () => void;
+		const persistPending = new Promise<void>((resolve) => {
+			finishPersist = resolve;
+		});
+		const actual = new CodexVoiceBackend({
+			sessionId: "session-background",
+			voice: "marin",
+			backgroundEnabled: true,
+			container: {
+				open: vi.fn(
+					async (input: {
+						realtime: typeof realtimeCallbacks;
+						background: typeof backgroundCallbacks;
+					}) => {
+						realtimeCallbacks = input.realtime;
+						backgroundCallbacks = input.background;
+						return {
+							generation: 1,
+							transport: {
+								appendAudio: vi.fn(() => "sent" as const),
+								appendSpeech: vi.fn(async () => undefined),
+								appendText: vi.fn(async () => undefined),
+								cancel: vi.fn(async () => undefined),
+							},
+							close: vi.fn(async () => undefined),
+						};
+					},
+				),
+			},
+			loadContext: vi.fn(),
+			persistUtterance: vi.fn(async () => persistPending),
+			handoffToLead,
+		});
+		const session = await actual.createConversation({ brain });
+		const handoffs: unknown[] = [];
+		const starts: unknown[] = [];
+		const terminals: unknown[] = [];
+		session.on("background-handoff", (input) => handoffs.push(input));
+		session.on("background-turn-started", (turnId) => starts.push(turnId));
+		session.on("background-turn-terminal", (turn) => terminals.push(turn));
+
+		realtimeCallbacks.onTranscript({
+			generation: 1,
+			itemId: "founder-item",
+			association: "provider_item",
+			role: "user",
+			text: "查 FLY-2886",
+			final: true,
+			inputOwner: {
+				utteranceId: "founder-utterance",
+				ownerUserId: "founder",
+			},
+			raw: {},
+		} as never);
+		realtimeCallbacks.onExecutionIntent({
+			generation: 1,
+			kind: "handoffRequest",
+			method: "thread/realtime/itemAdded",
+			itemId: "handoff-background",
+			params: {},
+		} as never);
+		// The internal obligation must exist before remote transcript durability:
+		// a fast background terminal cannot wait behind a slow Bridge write.
+		expect(handoffs).toHaveLength(1);
+		expect(handoffs).toEqual([
+			{
+				handoffId: "handoff-background",
+				inputTranscript: "查 FLY-2886",
+			},
+		]);
+		expect(handoffToLead).not.toHaveBeenCalled();
+
+		backgroundCallbacks.onTurnStarted("turn-background");
+		backgroundCallbacks.onTurnTerminal({
+			turnId: "turn-background",
+			outcome: "completed",
+			spokenSegments: ["FLY-2886 在 PR #1324。"],
+		});
+		expect(starts).toEqual(["turn-background"]);
+		expect(terminals).toEqual([
+			{
+				turnId: "turn-background",
+				outcome: "completed",
+				spokenSegments: ["FLY-2886 在 PR #1324。"],
+			},
+		]);
+
+		finishPersist();
+		await session.close();
+	});
+
 	it("records backpressure as a gap without ending the room session", async () => {
 		let callbacks!: Record<string, (...args: never[]) => void>;
 		const appendAudio = vi

@@ -1,5 +1,9 @@
 import type { ReceiveHealth } from "flywheel-voice-core";
 import type { VoiceSessionProjection } from "./bridge-client.js";
+import {
+	type BackgroundTurnTerminal,
+	BrainCoordinator,
+} from "./codex/BrainCoordinator.js";
 import { SpeechArbiter } from "./codex/SpeechArbiter.js";
 import type { ActiveVoiceSession, VoiceEnd } from "./daemon.js";
 import type { CapturedTranscript } from "./delivery.js";
@@ -11,6 +15,12 @@ export interface FrontendHandlers {
 	onProviderSpeechStarted?(input: { generation: number; itemId: string }): void;
 	onProviderSpeechStopped?(input: { generation: number; itemId: string }): void;
 	onGenerationChanged?(generation: number): void;
+	onBackgroundHandoff?(input: {
+		handoffId: string;
+		inputTranscript: string;
+	}): void;
+	onBackgroundTurnStarted?(turnId: string): void;
+	onBackgroundTurnTerminal?(turn: BackgroundTurnTerminal): void;
 	onTranscript(input: {
 		itemId: string;
 		contentIndex: number;
@@ -113,6 +123,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 	private readonly ended = deferred<VoiceEnd>();
 	private readonly now: () => Date;
 	private readonly speechArbiter?: SpeechArbiter;
+	private readonly brainCoordinator?: BrainCoordinator;
 	private readonly coordinatedSpeech = new Map<string, PreparedSpeech>();
 	private live = false;
 	private admitted = false;
@@ -158,6 +169,12 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				),
 			onGenerationChanged: (generation) =>
 				this.speechArbiter?.generationChanged(generation),
+			onBackgroundHandoff: (input) =>
+				this.guarded(() => this.brainCoordinator?.registerHandoff(input)),
+			onBackgroundTurnStarted: (turnId) =>
+				this.guarded(() => this.brainCoordinator?.turnStarted(turnId)),
+			onBackgroundTurnTerminal: (turn) =>
+				this.guarded(() => this.brainCoordinator?.turnTerminal(turn)),
 			onTranscript: (input) => this.transcript(input),
 			onUnattributedTranscript: () =>
 				this.status("📻 有一句话没能确认说话人，请再说一遍"),
@@ -223,6 +240,9 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 				},
 				cancelSpeech: (pendingKey) => this.cancelPendingSpeech(pendingKey),
 				postThread: options.speechCoordination.postThread,
+			});
+			this.brainCoordinator = new BrainCoordinator({
+				speech: this.speechArbiter,
 			});
 		}
 	}
@@ -475,6 +495,7 @@ export class GenericVoiceSession implements ActiveVoiceSession {
 		this.stopping = true;
 		this.admitted = false;
 		this.frontendResponseActive = false;
+		this.brainCoordinator?.close();
 		this.speechArbiter?.close();
 		const pending = this.pendingSpeech;
 		if (pending) {

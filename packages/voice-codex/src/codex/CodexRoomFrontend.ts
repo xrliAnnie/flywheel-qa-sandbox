@@ -8,6 +8,7 @@ import type {
 import type { VoiceEnd } from "../daemon.js";
 import type { RealtimeAudioOwner } from "../realtime.js";
 import type { PreparedSpeech } from "../speech.js";
+import type { BackgroundTurnTerminal } from "./BrainCoordinator.js";
 import { CodexVoiceContainerError } from "./CodexVoiceContainer.js";
 
 export interface CodexRoomFrontendHandlers {
@@ -15,6 +16,12 @@ export interface CodexRoomFrontendHandlers {
 	onProviderSpeechStarted?(input: { generation: number; itemId: string }): void;
 	onProviderSpeechStopped?(input: { generation: number; itemId: string }): void;
 	onGenerationChanged?(generation: number): void;
+	onBackgroundHandoff?(input: {
+		handoffId: string;
+		inputTranscript: string;
+	}): void;
+	onBackgroundTurnStarted?(turnId: string): void;
+	onBackgroundTurnTerminal?(turn: BackgroundTurnTerminal): void;
 	onTranscript(input: {
 		itemId: string;
 		contentIndex: number;
@@ -171,6 +178,15 @@ export class CodexRoomFrontend {
 		});
 		session.on("generation-changed", (generation) =>
 			this.handlers?.onGenerationChanged?.(generation),
+		);
+		session.on("background-handoff", (input) =>
+			this.handlers?.onBackgroundHandoff?.(input),
+		);
+		session.on("background-turn-started", (turnId) =>
+			this.handlers?.onBackgroundTurnStarted?.(turnId),
+		);
+		session.on("background-turn-terminal", (turn) =>
+			this.handlers?.onBackgroundTurnTerminal?.(turn),
 		);
 		session.on("response-started", () => this.handlers?.onResponseState(true));
 		session.on("response-done", () => this.handlers?.onResponseState(false));
