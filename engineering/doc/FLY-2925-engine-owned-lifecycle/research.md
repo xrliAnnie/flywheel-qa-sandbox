@@ -97,7 +97,7 @@ FLY-2893 以执行体创建时间 [09-11 22:00Z,09-25 22:00Z) 入组，并综合
 1. adapter / goal loop / transport / turn & phase lifecycle / launch snapshots：拆运行宿主后的传参和回执契约。
 2. Bridge reowner / dispatcher / plugin / heartbeat / process-body controller：重连、真实故障恢复、standby 按需恢复三条语义。
 3. ownership / teardown / terminal sweep / event-route：活体等待、终态与远端 owner。
-4. per-runner CODEX_HOME、账号切换、凭据物理副本与运行时实际账号回执：以 FLY-2902 最新版本为准。
+4. per-runner CODEX_HOME、账号槽绑定与运行时实际账号回执：以 FLY-2902 最新版本为准，见下节更新；不新增凭据副本。
 5. runs-route / Lead start-action 返回值消费者：run 已接纳与物理启动失败不能互相伪装。
 6. feature flag registry / default consumer / frozen snapshots / rollback / tests：不能只改默认声明。
 
@@ -110,3 +110,13 @@ FLY-2893 以执行体创建时间 [09-11 22:00Z,09-25 22:00Z) 入组，并综合
 本机仅设计取证；后续实现按失败相关用例→最小实现→相关文件验证，禁止全仓/全包 suite。TypeScript 变化需显式测试文件与 owning package 的 vitest related；精确 head CI 才是全套证据。
 
 尚待 Lead 回答：独立宿主是否有更晚的架构裁决、FLY-2902 合同，以及 FLY-2689 的最小响应语义修正是否已有归属。问题 `8221ee32-6265-4da8-b341-7e100b14926a`，本轮一次 check 返回 not yet。未请求 brainstorm 或 ship approval。
+
+## 9. 恢复回合补充：FLY-2902 当前合同
+
+2026-09-26 只读核查相邻 worktree `flywheel-FLY-2902`，HEAD `94bda21e9`，其 `engineering/doc/FLY-2902-codex-credential-isolation/plan.md` §2、C2、§6：标题中的“独立副本”已被**按账号钉槽**替代，不能继续照旧标题设计。进度为 implement 10/10，仍不代表生产部署/真号验收。
+
+`codex_execution_credential_slot(execution_id, slot, recorded_at)` 保存首次槽归属，daemon 起跑前必须成功写入。`new_execution` 选活跃槽；`process_resume` 回原槽；原家被其他槽占用返回 credential_slot_resume_conflict，不偷换当前活跃号。旧 legacy 可恢复会话无槽行时，仅按离线迁移回执 legacySlot 推导，不能凭时间猜。
+
+FLY-2902 还要求同号重登通过原子槽更新，迁移未 done 时准入 fail closed，测试房不写生产槽。切换新启动的默认号不迁移在飞 runner；原号被服务端真正作废仍可能需要外部纠正。本单不承诺“在飞体静默换新号”，不重做槽布局/令牌刷新协议，不在 design 阶段运行其迁移脚本。
+
+独立宿主保持这些入参与启动回执；新 TUI 客户端也继承受管 launcher 的凭据保护环境。旧 exploration §4 中“独立副本/账号代数”仅是待查假设，以本节及 plan 的原槽合同替代。
