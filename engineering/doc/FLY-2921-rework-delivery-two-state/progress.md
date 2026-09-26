@@ -1,14 +1,13 @@
 ---
 issue: FLY-2921
-phase: implement
-phaseCursor: 6/8
-updated: 2026-09-26T20:31:43.276Z
-nextStep: Codex 全量复核新 head → 里程碑更新为最后提交 → 推送 → ask --report（含 shard4 容量护栏）→
-  complete needs_review
+phase: qa
+phaseCursor: 1/8
+updated: 2026-09-26T21:59:38.758Z
+nextStep: 审计 PR/issue 验收矩阵并完成 changed-file 测试发现；随后 targeted tests + build/lint + real 529
 chunks: []
 pointers: {}
 ---
 
 # FLY-2921 progress
-**phase**: implement (6/8)
-**next**: Codex 全量复核新 head → 里程碑更新为最后提交 → 推送 → ask --report（含 shard4 容量护栏）→ complete needs_review
+**phase**: qa (1/8)
+**next**: 审计 PR/issue 验收矩阵并完成 changed-file 测试发现；随后 targeted tests + build/lint + real 529
