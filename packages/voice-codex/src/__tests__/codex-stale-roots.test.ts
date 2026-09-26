@@ -1,7 +1,9 @@
+import { spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -10,8 +12,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	listProcessCwds,
 	parseLsofCwds,
 	sweepStaleCodexContainers,
 } from "../codex/stale-roots.js";
@@ -101,4 +104,69 @@ describe("stale Codex container sweep (FLY-2885 T7)", () => {
 		});
 		expect(evidence).toEqual([]);
 	});
+
+	it("leaves no root and no child after launchd kills a daemon mid-session and it starts again (Lead bfcaeb10)", async () => {
+		const { containers } = scratch();
+		const root = join(containers, "container-truncated");
+		const work = join(root, "work");
+		mkdirSync(work, { recursive: true });
+		// A daemon stand-in running an app-server stand-in in the root's
+		// workdir with stdin piped, as the container spawns codex app-server
+		// (which exits on stdin EOF).
+		const appServer =
+			"process.stdin.resume(); process.stdin.on('end', () => process.exit(0)); setInterval(() => {}, 1000);";
+		const daemon = spawn(
+			process.execPath,
+			[
+				"-e",
+				`const app = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(appServer)}], { cwd: ${JSON.stringify(work)}, stdio: ["pipe", "ignore", "ignore"] }); console.log(app.pid); setInterval(() => {}, 1000);`,
+			],
+			{ stdio: ["ignore", "pipe", "ignore"] },
+		);
+		let appPid = 0;
+		try {
+			appPid = await new Promise<number>((resolve, reject) => {
+				daemon.stdout.once("data", (chunk) => resolve(Number(String(chunk))));
+				daemon.once("exit", () => reject(new Error("stand-in exited")));
+			});
+			const alive = (pid: number) => {
+				try {
+					process.kill(pid, 0);
+					return true;
+				} catch {
+					return false;
+				}
+			};
+			expect(alive(appPid)).toBe(true);
+			// While the session runs, a start keeps its root: someone works there.
+			const listCwds = listProcessCwds;
+			await sweepStaleCodexContainers(containers, {
+				listCwds,
+				evidence: () => undefined,
+			});
+			expect(existsSync(root)).toBe(true);
+			// launchd's SIGKILL at the exit timeout: no cleanup runs in the daemon.
+			daemon.kill("SIGKILL");
+			// The app-server loses its stdin and exits on its own.
+			await vi.waitFor(() => expect(alive(appPid)).toBe(false), {
+				timeout: 5_000,
+			});
+			// The next start sweeps what the cut shutdown left behind.
+			const evidence: Record<string, unknown>[] = [];
+			await sweepStaleCodexContainers(containers, {
+				listCwds,
+				evidence: (record) => evidence.push(record),
+			});
+			expect(readdirSync(containers)).toEqual([]);
+			expect(evidence).toContainEqual(
+				expect.objectContaining({
+					kind: "codex_voice_stale_root_removed",
+					root,
+				}),
+			);
+		} finally {
+			if (daemon.exitCode === null && daemon.signalCode === null)
+				daemon.kill("SIGKILL");
+		}
+	}, 30_000);
 });

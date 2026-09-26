@@ -1,7 +1,10 @@
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { VoiceHealthAlertDispatcher } from "../health-alert.js";
+import { runAlertSender, VoiceHealthAlertDispatcher } from "../health-alert.js";
 
 const INTENT_A = "a".repeat(64);
 const INTENT_B = "b".repeat(64);
@@ -232,4 +235,83 @@ describe("VoiceHealthAlertDispatcher shutdown (FLY-2885 QA@1 review)", () => {
 			vi.useRealTimers();
 		}
 	});
+});
+
+describe("alert sender process groups (FLY-2885 rework review R3)", () => {
+	it("still SIGKILLs the group after its shell closed on SIGTERM (H2)", async () => {
+		vi.useFakeTimers();
+		try {
+			const sender = Object.assign(new EventEmitter(), { pid: 777 });
+			const killGroup = vi.fn((_pid: number, signal: NodeJS.Signals) => {
+				// The shell dies on TERM; the curl it started ignores TERM.
+				if (signal === "SIGTERM") queueMicrotask(() => sender.emit("close"));
+			});
+			const dispatcher = new VoiceHealthAlertDispatcher({
+				leadAlertPath: "/trusted/lead-alert.sh",
+				execFile: () => sender as unknown as ChildProcess,
+				killGroup,
+			});
+			dispatcher.notify(INTENT_A);
+			const done = dispatcher.shutdown(1_000);
+			await vi.advanceTimersByTimeAsync(5_000);
+			await done;
+			expect(killGroup.mock.calls).toEqual([
+				[777, "SIGTERM"],
+				[777, "SIGKILL"],
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("reports a timed-out sender only once its whole group is gone (H3)", async () => {
+		const scratch = mkdtempSync(join(tmpdir(), "fly2885-sender-"));
+		let passed = false;
+		try {
+			// bash ignores TERM and waits on a grandchild that ignores it too.
+			const script = join(scratch, "stubborn.sh");
+			const pids = join(scratch, "pids");
+			writeFileSync(
+				script,
+				`#!/bin/bash\ntrap '' TERM\n(trap '' TERM; exec sleep 60) &\necho "$! $$" > "${pids}"\nwait\n`,
+				{ mode: 0o700 },
+			);
+			const started = Date.now();
+			const error = await new Promise<Error | null>((resolve) => {
+				runAlertSender(
+					"/bin/bash",
+					[script],
+					{
+						detached: true,
+						encoding: "utf8",
+						maxBuffer: 4096,
+						shell: false,
+						timeout: 300,
+						windowsHide: true,
+					},
+					(caught) => resolve(caught),
+				);
+			});
+			expect(error?.message).toMatch(/timed out/u);
+			// TERM is ignored: the callback waits for the KILL escalation.
+			expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
+			for (const pid of readFileSync(pids, "utf8").trim().split(/\s+/u)) {
+				expect(() => process.kill(Number(pid), 0)).toThrow();
+			}
+			passed = true;
+		} finally {
+			// A failing case must not leave the stubborn sender running (only
+			// then: after a pass these pids are gone and may be reused).
+			if (!passed)
+				try {
+					for (const pid of readFileSync(join(scratch, "pids"), "utf8")
+						.trim()
+						.split(/\s+/u))
+						process.kill(Number(pid), "SIGKILL");
+				} catch {
+					// Already gone, or never started.
+				}
+			rmSync(scratch, { recursive: true, force: true });
+		}
+	}, 15_000);
 });

@@ -4,7 +4,7 @@
 // - a lead alert is in flight, its shell waiting on a grandchild like curl.
 // The process must still end within the grace and leave no alert process.
 // Usage: node --experimental-transform-types leaky-daemon.mjs
-//        <sigterm|idle|hang> <graceMs> <drainMs> <alertScript>
+//        <sigterm|idle|hang> <idleGraceMs> <signalGraceMs> <drainMs> <alertScript>
 import { createRequire } from "node:module";
 
 const { createShutdownExit, superviseDaemon } = await import(
@@ -17,7 +17,8 @@ const require = createRequire(import.meta.url);
 const { RTCPeerConnection, RTCRtpCodecParameters, MediaStreamTrack } =
 	require("werift");
 
-const [mode, graceArg, drainArg, alertScript] = process.argv.slice(2);
+const [mode, idleGraceArg, signalGraceArg, drainArg, alertScript] =
+	process.argv.slice(2);
 const udp = () =>
 	process.getActiveResourcesInfo().filter((kind) => kind === "UDPWrap").length;
 
@@ -57,7 +58,10 @@ await answerer.close();
 await new Promise((resolve) => setTimeout(resolve, 300));
 console.log(`LEAKED ${udp()}`);
 
-const shutdownExit = createShutdownExit({ graceMs: Number(graceArg) });
+const shutdownExit = createShutdownExit({
+	graceMs: Number(idleGraceArg),
+	signalGraceMs: Number(signalGraceArg),
+});
 const alerts = new VoiceHealthAlertDispatcher({ leadAlertPath: alertScript });
 shutdownExit.onForcedExit(() => alerts.killNow());
 alerts.notify("a".repeat(64));

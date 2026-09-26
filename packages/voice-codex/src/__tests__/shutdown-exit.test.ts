@@ -13,15 +13,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createShutdownExit,
 	SHUTDOWN_EXIT_GRACE_MS,
+	SHUTDOWN_SIGNAL_GRACE_MS,
 } from "../shutdown-exit.js";
 
-const children: ChildProcess[] = [];
+const children: Array<{ child: ChildProcess; pidFile?: string }> = [];
 afterEach(() => {
 	vi.useRealTimers();
-	// A failing case must not leave its daemon stand-in running.
-	for (const child of children.splice(0))
-		if (child.exitCode === null && child.signalCode === null)
-			child.kill("SIGKILL");
+	// A failing case must not leave its daemon stand-in, or the detached
+	// alert group it started, running. Only then: after a pass those pids are
+	// gone and may already be reused.
+	for (const { child, pidFile } of children.splice(0)) {
+		if (child.exitCode !== null || child.signalCode !== null) continue;
+		child.kill("SIGKILL");
+		try {
+			for (const pid of readFileSync(pidFile ?? "", "utf8")
+				.trim()
+				.split(/\s+/u))
+				process.kill(Number(pid), "SIGKILL");
+		} catch {
+			// No alert was started, or it is already gone.
+		}
+	}
 });
 
 describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
@@ -59,9 +71,10 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 		});
 		const deadline = shutdownExit.begin("run_returned");
 		expect(deadline.hasRef()).toBe(false);
-		// A second begin keeps the first deadline.
-		shutdownExit.begin("signal");
-		vi.advanceTimersByTime(4_999);
+		// A second begin of the same kind keeps the first deadline.
+		vi.advanceTimersByTime(1_000);
+		expect(shutdownExit.begin("run_returned")).toBe(deadline);
+		vi.advanceTimersByTime(3_999);
 		expect(exit).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(1);
 		expect(exit).toHaveBeenCalledWith(1);
@@ -78,11 +91,38 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 		expect(exit).toHaveBeenLastCalledWith(0);
 	});
 
+	it("brings the deadline forward to the signal grace, never back (Lead bfcaeb10)", () => {
+		vi.useFakeTimers();
+		const exit = vi.fn();
+		const shutdownExit = createShutdownExit({
+			graceMs: 60_000,
+			signalGraceMs: 4_000,
+			resources: () => [],
+			exit,
+			log: () => undefined,
+		});
+		// The idle exit's cleanup is under way when launchd sends SIGTERM.
+		shutdownExit.begin("run_returned");
+		vi.advanceTimersByTime(1_000);
+		shutdownExit.begin("signal");
+		// A later run_returned does not push it back out.
+		shutdownExit.begin("run_returned");
+		vi.advanceTimersByTime(3_999);
+		expect(exit).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1);
+		expect(exit).toHaveBeenCalledWith(1);
+	});
+
+	it("keeps the signal grace inside launchd's 5 s exit timeout", () => {
+		// `launchctl print gui/$UID/com.flywheel.voice` → "exit timeout = 5".
+		expect(SHUTDOWN_SIGNAL_GRACE_MS).toBeLessThan(5_000);
+	});
+
 	it("stops child process trees before a forced exit", () => {
 		vi.useFakeTimers();
 		const order: string[] = [];
 		const shutdownExit = createShutdownExit({
-			graceMs: 1_000,
+			signalGraceMs: 1_000,
 			resources: () => [],
 			exit: () => order.push("exit"),
 			log: () => undefined,
@@ -114,7 +154,11 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 			rmSync(scratch, { recursive: true, force: true });
 		});
 
-		function run(mode: "sigterm" | "idle" | "hang", graceMs: number) {
+		function run(
+			mode: "sigterm" | "idle" | "hang",
+			idleGraceMs: number,
+			signalGraceMs: number,
+		) {
 			// The lead alert: bash waits on a grandchild, as it would on curl.
 			const alertScript = join(scratch, "lead-alert.sh");
 			const pidFile = join(scratch, "alert.pids");
@@ -130,7 +174,8 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 					"--no-warnings",
 					fixture,
 					mode,
-					String(graceMs),
+					String(idleGraceMs),
+					String(signalGraceMs),
 					"1000",
 					alertScript,
 				],
@@ -139,7 +184,7 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 					env: { ...process.env, FIXTURE_PIDS: pidFile },
 				},
 			);
-			children.push(child);
+			children.push({ child, pidFile });
 			let stdout = "";
 			let stderr = "";
 			child.stdout.on("data", (chunk) => {
@@ -179,8 +224,9 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 		] as const)(
 			"ends within the grace after SIGTERM and leaves no alert process (%s)",
 			async (mode, expectedCode) => {
-				const graceMs = 4_000;
-				const daemon = run(mode, graceMs);
+				// The idle grace is far away: only the signal grace can end it.
+				const signalGraceMs = 2_500;
+				const daemon = run(mode, 60_000, signalGraceMs);
 				await vi.waitFor(
 					() => {
 						expect(daemon.out()).toContain("READY");
@@ -195,7 +241,7 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 				const sentAt = Date.now();
 				daemon.child.kill("SIGTERM");
 				const { code, at } = await daemon.exited;
-				expect(at - sentAt).toBeLessThan(graceMs + 1_500);
+				expect(at - sentAt).toBeLessThan(signalGraceMs + 1_500);
 				expect(code).toBe(expectedCode);
 				expect(daemon.err()).toMatch(/UDPWrap×\d+/u);
 				await vi.waitFor(
@@ -208,7 +254,7 @@ describe("bounded shutdown exit (FLY-2885 QA@1, Lead c8e10764 ②)", () => {
 		);
 
 		it("ends on the idle exit and leaves no alert process", async () => {
-			const daemon = run("idle", 4_000);
+			const daemon = run("idle", 60_000, 2_500);
 			const { code } = await daemon.exited;
 			expect(leaked(daemon.out())).toBeGreaterThan(0);
 			expect(code).toBe(0);

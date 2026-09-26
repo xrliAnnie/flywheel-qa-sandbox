@@ -49,12 +49,25 @@ async function within(promise: Promise<unknown>, ms: number): Promise<void> {
 	if (timer) clearTimeout(timer);
 }
 
+/** Signals a whole process group; a group already gone is not an error. */
+function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
+	if (pid === undefined) return;
+	try {
+		process.kill(-pid, signal);
+	} catch {
+		// Already gone.
+	}
+}
+
 /**
  * execFile semantics (utf8 output, maxBuffer, timeout) on spawn: execFile
  * drops `detached`, and the sender must lead its own process group so
- * shutdown can stop bash together with the curl it waits on.
+ * shutdown can stop bash together with the curl it waits on. A sender over
+ * its timeout or buffer is stopped as a group (TERM, then KILL 2 s later),
+ * and the callback runs only on `close`, once every process holding its
+ * output is gone (FLY-2885 rework review R3).
  */
-function defaultExecFile(
+export function runAlertSender(
 	file: string,
 	args: string[],
 	options: VoiceHealthAlertExecOptions,
@@ -68,19 +81,18 @@ function defaultExecFile(
 	});
 	let stdout = "";
 	let stderr = "";
+	let failure: Error | null = null;
 	let settled = false;
-	const stopGroup = () => {
-		try {
-			if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
-		} catch {
-			// Already gone.
-		}
-	};
-	const done = (error: Error | null) => {
-		if (settled) return;
-		settled = true;
+	let escalation: ReturnType<typeof setTimeout> | undefined;
+	const stop = (error: Error) => {
+		if (failure || settled) return;
+		failure = error;
 		clearTimeout(timer);
-		callback(error, stdout, stderr);
+		signalGroup(child.pid, "SIGTERM");
+		escalation = setTimeout(
+			() => signalGroup(child.pid, "SIGKILL"),
+			SENDER_STOP_MS,
+		);
 	};
 	const collect = (stream: "stdout" | "stderr") => (chunk: string) => {
 		if (stream === "stdout") stdout += chunk;
@@ -88,21 +100,23 @@ function defaultExecFile(
 		if (
 			Buffer.byteLength(stdout, "utf8") > options.maxBuffer ||
 			Buffer.byteLength(stderr, "utf8") > options.maxBuffer
-		) {
-			stopGroup();
-			done(new Error("maxBuffer exceeded"));
-		}
+		)
+			stop(new Error("maxBuffer exceeded"));
+	};
+	const done = (error: Error | null) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timer);
+		if (escalation) clearTimeout(escalation);
+		callback(error, stdout, stderr);
 	};
 	child.stdout?.setEncoding(options.encoding);
 	child.stderr?.setEncoding(options.encoding);
 	child.stdout?.on("data", collect("stdout"));
 	child.stderr?.on("data", collect("stderr"));
-	const timer = setTimeout(() => {
-		stopGroup();
-		done(new Error("timed out"));
-	}, options.timeout);
+	const timer = setTimeout(() => stop(new Error("timed out")), options.timeout);
 	child.once("error", (error) => done(error));
-	child.once("close", () => done(null));
+	child.once("close", () => done(failure));
 	return child;
 }
 
@@ -118,11 +132,13 @@ export class VoiceHealthAlertDispatcher {
 	private settlers: Array<() => void> = [];
 	/** The sender now running, stopped if shutdown outlasts its bound. */
 	private current?: ChildProcess;
+	/** The group being stopped; its shell may close before its curl does. */
+	private stoppingGroup?: number;
 	private currentExited?: Promise<void>;
 	private closed = false;
 
 	constructor(private readonly options: VoiceHealthAlertDispatcherOptions) {
-		this.run = options.execFile ?? defaultExecFile;
+		this.run = options.execFile ?? runAlertSender;
 	}
 
 	notify(intentId: string): void {
@@ -166,31 +182,34 @@ export class VoiceHealthAlertDispatcher {
 
 	/** Forced exit: stop the sender's whole process group right now. */
 	killNow(): void {
-		this.signalSender("SIGKILL");
+		this.signal(this.current?.pid ?? this.stoppingGroup, "SIGKILL");
 	}
 
 	/** SIGTERM the sender's group, wait for it, then SIGKILL what is left. */
 	private async stopSender(): Promise<void> {
 		const exited = this.currentExited;
-		if (!exited) return;
-		this.signalSender("SIGTERM");
+		const group = this.current?.pid;
+		if (!exited || group === undefined) return;
+		this.stoppingGroup = group;
+		this.signal(group, "SIGTERM");
 		await within(exited, SENDER_STOP_MS);
-		// bash may be gone while its curl lives on: the group goes either way.
-		this.signalSender("SIGKILL");
+		// bash may have closed on TERM while its curl lives on: the captured
+		// group gets the KILL either way.
+		this.signal(group, "SIGKILL");
 		await within(exited, SENDER_STOP_MS);
 	}
 
-	private signalSender(signal: NodeJS.Signals): void {
-		const pid = this.current?.pid;
-		if (pid === undefined) return;
-		try {
-			(this.options.killGroup ?? ((group, sig) => process.kill(-group, sig)))(
-				pid,
-				signal,
-			);
-		} catch {
-			// The group is already gone.
+	private signal(group: number | undefined, signal: NodeJS.Signals): void {
+		if (group === undefined) return;
+		if (this.options.killGroup) {
+			try {
+				this.options.killGroup(group, signal);
+			} catch {
+				// The group is already gone.
+			}
+			return;
 		}
+		signalGroup(group, signal);
 	}
 
 	whenSettled(): Promise<void> {

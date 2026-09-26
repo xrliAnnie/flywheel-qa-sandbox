@@ -10,7 +10,8 @@
  */
 
 /**
- * Longer than every bounded cleanup step together, so it only ever ends a
+ * Idle exit (run() returned on its own; no one is waiting to kill us):
+ * longer than every bounded cleanup step together, so it only ever ends a
  * hang, never a cleanup still within its own bounds:
  * - a live session: realtime stop 5 s + pc.close 3 s + transport stops 4 s
  *   + app-server stop (50 ms + 5 s TERM + 5 s KILL) ≈ 22 s;
@@ -22,12 +23,27 @@
  */
 export const SHUTDOWN_EXIT_GRACE_MS = 60_000;
 
+/**
+ * A signal: launchd's exit timeout for com.flywheel.voice is 5 s (the plist
+ * sets none; `launchctl print` shows "exit timeout = 5"), after which it
+ * SIGKILLs the daemon and no hook runs. The daemon forces its own exit a
+ * second earlier so the lead alert's process group is killed first. A live
+ * session's longer close steps are cut here, as launchd would cut them; the
+ * app-server exits on stdin EOF and the next start sweeps its root
+ * (FLY-2885 rework review R3, Lead ruling bfcaeb10).
+ */
+export const SHUTDOWN_SIGNAL_GRACE_MS = 4_000;
+
 /** Handle kinds that never keep a process alive on their own. */
 const IDLE_KINDS = new Set(["Timeout", "Immediate", "TTYWrap"]);
 
 export interface ShutdownExit {
-	/** Shutdown started (a signal, or run() returning on the idle exit). */
-	begin(reason: string): ReturnType<typeof setTimeout>;
+	/**
+	 * Shutdown started: a signal (SHUTDOWN_SIGNAL_GRACE_MS) or run()
+	 * returning (SHUTDOWN_EXIT_GRACE_MS). A later begin only ever brings the
+	 * deadline forward.
+	 */
+	begin(reason: "signal" | "run_returned"): ReturnType<typeof setTimeout>;
 	/** Cleanup is done: exit now rather than wait for leaked handles. */
 	finish(code: number | string | undefined | null): void;
 	/** Runs synchronously before a forced exit (stop child process trees). */
@@ -37,12 +53,14 @@ export interface ShutdownExit {
 export function createShutdownExit(
 	options: {
 		graceMs?: number;
+		signalGraceMs?: number;
 		resources?: () => string[];
 		exit?: (code: number) => void;
 		log?: (line: string) => void;
 	} = {},
 ): ShutdownExit {
 	const graceMs = options.graceMs ?? SHUTDOWN_EXIT_GRACE_MS;
+	const signalGraceMs = options.signalGraceMs ?? SHUTDOWN_SIGNAL_GRACE_MS;
 	const exit = options.exit ?? ((code: number) => process.exit(code));
 	const log = options.log ?? ((line: string) => console.error(line));
 	const hooks: Array<() => void> = [];
@@ -55,11 +73,17 @@ export function createShutdownExit(
 		return [...counts].map(([kind, count]) => `${kind}×${count}`).join(", ");
 	};
 	let deadline: ReturnType<typeof setTimeout> | undefined;
+	let deadlineAt = Number.POSITIVE_INFINITY;
 	return {
 		begin(reason) {
-			deadline ??= setTimeout(() => {
+			const grace = reason === "signal" ? signalGraceMs : graceMs;
+			const at = Date.now() + grace;
+			if (deadline && deadlineAt <= at) return deadline;
+			if (deadline) clearTimeout(deadline);
+			deadlineAt = at;
+			deadline = setTimeout(() => {
 				log(
-					`[voice] shutdown (${reason}) overran ${graceMs} ms with handles still open (${lingering()}); forcing exit`,
+					`[voice] shutdown (${reason}) overran ${grace} ms with handles still open (${lingering()}); forcing exit`,
 				);
 				for (const hook of hooks) {
 					try {
@@ -69,7 +93,7 @@ export function createShutdownExit(
 					}
 				}
 				exit(1);
-			}, graceMs);
+			}, grace);
 			// The deadline itself never keeps the process alive.
 			deadline.unref();
 			return deadline;
