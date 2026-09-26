@@ -136,3 +136,12 @@ D1 根因（真宿主探针，订阅、零桩）：代理把 `lead_operation` �
 D2 根因（真宿主对照组）：不加开关时，订阅账号会话中途自装 `openai-curated-remote` 插件，其后 `skills/list` 核验变成 `capability_skills_unverified`；换代时重跑全量自检就把这一漂移变成整场失败。修法三层：插件不许装（开关，实测生效）、换代不重跑全量自检（只核租约 + 漂移记证据）、结果遇 `not_live` 续播不丢。
 
 验证（定向）：voice-codex `vitest related`（7 个改动文件）8 文件 191/191；teamlead `vitest related`（3 个叶子文件）29 文件 491/491 + `voice-handoff` 13/13；`pnpm lint` 退出 0；voice-codex 及依赖构建、teamlead/voice-codex 依赖方 typecheck 通过；已合入 `origin/main`（`a082f110a`）。消费者排除：`codex-home` / `session` 在 claude-runner、edge-worker、flywheel-comm 的命中是同名不同模块。完整语音会话（realtime 需 API key）、换代续播的真房复现、写操作与 founder 门归 529 房 QA。
+
+### 续：Lead 指令 1c8019f8（founder 2026-09-26 12:19 PDT）——要不要说 + 自由口语转述
+
+| 提交 | 内容 |
+|---|---|
+| `67b9ae533` | 关键事实守卫加「是否结论」极性（先认否定词再认肯定词）；`repairSpokenScript` 逐句修复：事实对不上的整句去掉、结尾改说「这条我发到 thread 了，编号以文字为准。」，不截半句；ScriptWriter 输出加 `tell` / `skipReason`（`ack_only` / `receipt_only` / `no_new_information`），事实不符改为修复而非整条拒绝；会话记她最近 10 分钟内 ≤6 句原话，消息在问她或提到她刚说过的关键事实时推翻跳过（`voice_tell_skip_overridden`），其余跳过记 `voice_tell_skipped`（原因 + 原文）；后台结果同样逐句修复，thread 贴保留的句子 + 工具原始结果，不贴被去掉的错句 |
+| 本提交 | daemon 把跳过记为终态 `dropped` 回执；`rewriteSpeech` 管线类型改为 `ScriptWriterInput` |
+
+验收用例：跳过留痕（`session.test` tell relevance 三条）、改了关键事实被抓（`spoken-script` 结论翻转 / PR 号 / 时间、`script-writer` 伪造编号整句去掉、`brain-coordinator` 保留正确句）、同事实的自由转述通过（`spoken-script`「passes a free paraphrase…」）。验证：voice-codex `vitest related`（10 个改动文件）13 文件 276/276；teamlead `voice-handoff` 13/13；lint 退出 0；voice-codex 及依赖构建、依赖方 typecheck 通过。
