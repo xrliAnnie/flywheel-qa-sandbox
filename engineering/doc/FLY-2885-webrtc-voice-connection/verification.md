@@ -357,3 +357,17 @@ kill-path 清单新增的 3 条及理由：
   - `kill-path-inventory.test.ts` 5/5。
   - 本轮没有新增进程、kill 或真实时长断言：新测试全部使用 fake timers。
 - CI 按包分片跑 voice-codex，没有逐个列出测试文件，新测试文件不需要登记。
+
+### 返工评审 R1 的修复（`c1770ef0b`）
+
+Codex R1（xhigh，线程 `01a0deae-a3b0-7390-8544-05306aac5885`）：2 HIGH、1 MEDIUM，全部成立，全部修复。
+
+| 问题 | 修复 | 回归测试 | 负对照 |
+|---|---|---|---|
+| HIGH：增量上判出越界后，这块的 final 没有归属。丢弃态结束后才到的旧 final 会被续读块当成自己的，二次截断，标记也可能贴错镜像 | 越界块登记为「仍欠 final」，挡住下一块；final 到达只接走标记；标记绑定所属块；她插话、新回合不丢，过期/换代/关闭才丢 | `codex-speak`：续读等旧 final（5 s 内不发）、只截一次、续读自己的 final 不截；旧 final 丢失时等满 30 s 再发、不在 8 s 放弃；她先开口时旧 final 仍截断、她那轮的回答不截。`codex-room-webrtc`：下一块等到越界回合的 final 才发 | 不登记 → 3 条红；她插话即丢 → 2 条红（含回放）；等 final 不算进展 → 1 条红 |
+| HIGH：`spokenPrefix` 用整块全局 LCS，任一句对上就推进前缀，重复措辞会把没念的句子判成已念 | 逐句按顺序对齐，每句只在上一句之后找连续一段，缺字、多字都在容差内；第一句没对上就停 | `speech-overrun`：评审反例（「第一项完成。第二项完成。」）、后一句只念一半、后句重复前句措辞 | 换回旧算法 → 评审反例和重复措辞 2 条红 |
+| MEDIUM：提示只播出一个包就算 `submitted`，thread 不发文字 | 提示没有 `completed` 就发 thread 文字 | `codex-room-webrtc`：提示播出一个包后被打断 → thread 有文字 | 改回按 `transport` 判 → 1 条红 |
+
+测试顺序修正：3 条原有 T5c 用例和 3 条本轮用例原先直接调 `truncateAssistantFinal`，或者没发越界回合的 app-server final。现在按生产顺序（`turn.done` 后约 12 ms 到 final）经 `assistantTranscript` 投递 final，断言含义不变。
+
+验证：`pnpm lint` exit 0；voice-codex `tsc --noEmit` 通过；`vitest related`（7 个源文件）12 个文件 245 条通过（`realtime-live` 3 条按环境门控跳过）；teamlead 消费者 36/36。
