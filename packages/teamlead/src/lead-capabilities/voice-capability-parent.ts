@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
 	existsSync,
 	lstatSync,
@@ -11,6 +11,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { resolveLeadIdentityRow } from "flywheel-comm/lead-identity";
 
 import type { VoiceBackgroundBrowserMode } from "../ProjectConfig.js";
@@ -60,6 +61,25 @@ export interface VoiceCapabilityParentInput {
 }
 
 /** Build one subscription-backed capability parent without claiming the resident carrier. */
+const execFileAsync = promisify(execFile);
+
+/**
+ * Asynchronous: the voice daemon's event loop keeps its lease heartbeat while
+ * a loaded host takes seconds to start codex (QA@5 B2 measured 4.5 s sync).
+ */
+export async function readCodexVersion(
+	codexPath: string,
+	hostHome: string,
+): Promise<string> {
+	const { stdout } = await execFileAsync(codexPath, ["--version"], {
+		encoding: "utf8",
+		timeout: 5000,
+		maxBuffer: 4096,
+		env: { PATH: "/usr/bin:/bin", HOME: hostHome },
+	});
+	return stdout.trim().replace(/^codex-cli\s+/, "");
+}
+
 export async function startVoiceCapabilityParent(
 	input: VoiceCapabilityParentInput,
 ) {
@@ -92,15 +112,7 @@ export async function startVoiceCapabilityParent(
 	const codexHome = realpathSync(input.codexHome);
 	const codexPath = realpathSync(input.codexBin);
 	const nodePath = realpathSync(process.execPath);
-	const version = execFileSync(codexPath, ["--version"], {
-		encoding: "utf8",
-		timeout: 5000,
-		maxBuffer: 4096,
-		stdio: ["ignore", "pipe", "ignore"],
-		env: { PATH: "/usr/bin:/bin", HOME: hostHome },
-	})
-		.trim()
-		.replace(/^codex-cli\s+/, "");
+	const version = await readCodexVersion(codexPath, hostHome);
 	const env: NodeJS.ProcessEnv = Object.freeze({
 		...sourceEnv,
 		HOME: hostHome,

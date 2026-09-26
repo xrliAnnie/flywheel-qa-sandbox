@@ -263,6 +263,47 @@ describe("subscription-backed voice ScriptWriter", () => {
 		});
 	});
 
+	// QA@5 B1: the real scribe (6/6 on the production account) answers a pure
+	// ack with an empty spoken string. That is a legal skip, not invalid output;
+	// rejecting it degraded 7/9 admissions (the self-check says 准备好了。).
+	it("accepts the real skip shape with an empty spoken string", async () => {
+		const process = new FakeProcess();
+		const writer = new ScriptWriter({ process, threadId: "thread-1" });
+		const result = writer.rewrite({
+			sourceText: "准备好了。",
+			rosterNames: [],
+		});
+		await started(process);
+		complete(process, {
+			spoken: "",
+			threadText: null,
+			tell: false,
+			skipReason: "ack_only",
+		});
+		await expect(result).resolves.toMatchObject({
+			spoken: "",
+			tell: false,
+			skipReason: "ack_only",
+		});
+	});
+
+	it("still rejects an empty script the writer says should be told", async () => {
+		const process = new FakeProcess();
+		const writer = new ScriptWriter({ process, threadId: "thread-1" });
+		const result = writer.rewrite({
+			sourceText: "FLY-2886 已合并。",
+			rosterNames: [],
+		});
+		await started(process);
+		complete(process, {
+			spoken: " ",
+			threadText: null,
+			tell: true,
+			skipReason: null,
+		});
+		await expect(result).rejects.toThrow("script_writer_output_invalid");
+	});
+
 	it("interrupts at 15 seconds and discards a late successful result", async () => {
 		vi.useFakeTimers();
 		const process = new FakeProcess();

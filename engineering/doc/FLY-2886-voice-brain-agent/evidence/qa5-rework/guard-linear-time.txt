@@ -1,0 +1,5 @@
+# guard cost on a 436901-byte tool output (dist SpokenScript)
+before: validate did not finish within 300 s (timeout 124)
+sourceBytes 436901
+validate ms 52
+repair ms 107

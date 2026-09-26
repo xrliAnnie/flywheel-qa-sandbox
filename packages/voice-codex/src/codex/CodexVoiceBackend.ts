@@ -899,7 +899,13 @@ class CodexVoiceSession implements ConversationSession {
 	observeProcessItemCompleted(item: ThreadCompletedItem): void {
 		if (!this.options.backgroundEnabled || this.closing || !item.itemId) return;
 		this.recordLeadOperation(item);
-		if (item.raw.status !== "completed") return;
+		// A failed Lead operation is still a result the answer may report
+		// ("查询出错"), so its broker reply is a source too (QA@5 M1).
+		const failedLeadOperation =
+			item.type === "mcpToolCall" &&
+			item.raw.status === "failed" &&
+			item.raw.server === "lead_actions";
+		if (item.raw.status !== "completed" && !failedLeadOperation) return;
 		let text: string | undefined;
 		if (
 			item.type === "commandExecution" &&

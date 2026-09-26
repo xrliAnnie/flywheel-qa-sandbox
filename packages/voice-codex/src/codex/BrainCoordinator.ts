@@ -13,6 +13,9 @@ import {
 
 export type BrainSpeechRequest = SpeechArbiterRequest;
 
+const NOTHING_CHECKABLE =
+	"这件我没拿到能核对的结果，你再说一下编号，我重新查。";
+
 type ObligationState = "pending" | "attached" | "unconfirmed" | "settled";
 
 export interface BrainObligation {
@@ -313,6 +316,23 @@ export class BrainCoordinator {
 				.filter(Boolean)
 				.join("\n\n");
 		}
+		// Nothing checkable left and nothing to post: never send an empty thread
+		// message and never point to one; say so plainly (QA@5 M1).
+		if (
+			turn.outcome === "completed" &&
+			repaired &&
+			kept.length === 0 &&
+			!threadText.trim()
+		) {
+			this.pendingResults.delete(businessId);
+			void this.options.speech.enqueue({
+				businessId: `turn:${turn.turnId}:result:0`,
+				kind: "result",
+				text: NOTHING_CHECKABLE,
+				threadText: NOTHING_CHECKABLE,
+			});
+			return;
+		}
 		const needsPost =
 			!valid ||
 			repaired ||
@@ -333,6 +353,7 @@ export class BrainCoordinator {
 			);
 			try {
 				if (!this.options.postThread) throw new Error("thread_sink_missing");
+				if (!threadText.trim()) throw new Error("thread_material_empty");
 				await this.options.postThread({ businessId, text: threadText });
 				posted = true;
 			} catch {

@@ -240,3 +240,28 @@ it("close() revokes before it tears anything down", async () => {
 	await parent.close();
 	expect(revokedFirst).toBe(true);
 });
+
+// QA@5 B2: at load 95–180 the synchronous `codex --version` blocked the voice
+// daemon's event loop for 4.5 s during admission; it must not block at all.
+it("reads the codex version without blocking the event loop", async () => {
+	const { chmodSync, writeFileSync } = await import("node:fs");
+	const { readCodexVersion } = await import("../voice-capability-parent.js");
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), "vcap-ver-")));
+	try {
+		const bin = join(dir, "codex");
+		writeFileSync(bin, "#!/bin/sh\nsleep 0.6\necho 'codex-cli 0.156.1'\n");
+		chmodSync(bin, 0o755);
+		let ticks = 0;
+		const timer = setInterval(() => {
+			ticks += 1;
+		}, 50);
+		try {
+			await expect(readCodexVersion(bin, dir)).resolves.toBe("0.156.1");
+		} finally {
+			clearInterval(timer);
+		}
+		expect(ticks).toBeGreaterThanOrEqual(5);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

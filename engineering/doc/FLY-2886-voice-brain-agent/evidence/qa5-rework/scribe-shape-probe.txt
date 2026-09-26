@@ -1,0 +1,4 @@
+# real scribe shape probe (codex exec --output-schema, production auth by symlink, prompt = ScriptWriter rewritePrompt with the QA@5 empty-spoken clause)
+准备好了。 => {"spoken":"","threadText":null,"tell":false,"skipReason":"ack_only"}
+收到，已记录。 => {"spoken":"","threadText":null,"tell":false,"skipReason":"receipt_only"}
+FLY-2886 的 PR #1360 已合并，CI 全绿。 => {"spoken":"FLY-2886 的 PR #1360 已经合并了，CI 也全绿。","threadText":null,"tell":true,"skipReason":null}

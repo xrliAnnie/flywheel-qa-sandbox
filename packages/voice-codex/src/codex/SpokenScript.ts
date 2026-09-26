@@ -48,17 +48,19 @@ function comparisonKey(value: string): string {
 	return normalizedText(value).toLocaleLowerCase("en-US");
 }
 
+/**
+ * The edge class is ASCII-only, so UTF-16 indexing sees the same neighbours
+ * as code points. Linear per match: the old per-match Array.from(value) made a
+ * large tool output quadratic and blocked the event loop (QA@5 B2).
+ */
 function hasTokenBoundaries(
 	value: string,
 	start: number,
 	length: number,
 	edge = TOKEN_EDGE,
 ): boolean {
-	const chars = Array.from(value);
-	const prefixLength = Array.from(value.slice(0, start)).length;
-	const tokenLength = Array.from(value.slice(start, start + length)).length;
-	const before = chars[prefixLength - 1];
-	const after = chars[prefixLength + tokenLength];
+	const before = value[start - 1];
+	const after = value[start + length];
 	return (!before || !edge.test(before)) && (!after || !edge.test(after));
 }
 
@@ -225,45 +227,54 @@ function approvedThreadPointer(spoken: string): boolean {
 	);
 }
 
-export function validateSpokenScript(input: {
-	spoken: string;
-	sources: readonly SpokenScriptSource[];
-	rosterNames: readonly string[];
-	mode?: "background_result" | "rewrite";
-}): SpokenScriptValidation {
-	const spokenTokens = extractProtectedTokens(input.spoken, input.rosterNames);
-	const sourceTokens = input.sources.flatMap((source) =>
-		extractProtectedTokens(source.text, input.rosterNames).map((token) => ({
+type SourceIndex = {
+	tokens: ProtectedTokenEvidence[];
+	byKey: Map<string, ProtectedTokenEvidence>;
+};
+
+function indexSources(
+	sources: readonly SpokenScriptSource[],
+	rosterNames: readonly string[],
+): SourceIndex {
+	const tokens = sources.flatMap((source) =>
+		extractProtectedTokens(source.text, rosterNames).map((token) => ({
 			...token,
 			sourceItemId: source.itemId,
 		})),
 	);
-	const sourceByToken = new Map<string, ProtectedTokenEvidence>();
-	for (const token of sourceTokens) {
-		sourceByToken.set(
-			`${token.kind}:${comparisonKey(token.token)}`,
-			sourceByToken.get(`${token.kind}:${comparisonKey(token.token)}`) ?? token,
-		);
+	const byKey = new Map<string, ProtectedTokenEvidence>();
+	for (const token of tokens) {
+		const key = `${token.kind}:${comparisonKey(token.token)}`;
+		if (!byKey.has(key)) byKey.set(key, token);
 	}
+	return { tokens, byKey };
+}
 
+function validateAgainst(
+	index: SourceIndex,
+	spoken: string,
+	rosterNames: readonly string[],
+	mode: "background_result" | "rewrite" | undefined,
+): SpokenScriptValidation {
+	const spokenTokens = extractProtectedTokens(spoken, rosterNames);
 	const evidence: ProtectedTokenEvidence[] = [];
 	const unsupported: ProtectedToken[] = [];
 	for (const token of spokenTokens) {
-		const source = sourceByToken.get(
+		const source = index.byKey.get(
 			`${token.kind}:${comparisonKey(token.token)}`,
 		);
 		if (source) evidence.push({ ...token, sourceItemId: source.sourceItemId });
 		else unsupported.push(token);
 	}
 
-	const usedThreadPointer = approvedThreadPointer(input.spoken);
+	const usedThreadPointer = approvedThreadPointer(spoken);
 	const spokenKeys = new Set(
 		spokenTokens.map((token) => `${token.kind}:${comparisonKey(token.token)}`),
 	);
 	const missingRequired =
-		input.mode === "rewrite" && !usedThreadPointer
+		mode === "rewrite" && !usedThreadPointer
 			? unique(
-					sourceTokens
+					index.tokens
 						.filter(
 							(token) =>
 								token.kind === "issue" || token.kind === "pull_request",
@@ -286,6 +297,20 @@ export function validateSpokenScript(input: {
 		missingRequired,
 		usedThreadPointer,
 	};
+}
+
+export function validateSpokenScript(input: {
+	spoken: string;
+	sources: readonly SpokenScriptSource[];
+	rosterNames: readonly string[];
+	mode?: "background_result" | "rewrite";
+}): SpokenScriptValidation {
+	return validateAgainst(
+		indexSources(input.sources, input.rosterNames),
+		input.spoken,
+		input.rosterNames,
+		input.mode,
+	);
 }
 
 export const THREAD_POINTER_SENTENCE = "这条我发到 thread 了，编号以文字为准。";
@@ -312,28 +337,24 @@ export function repairSpokenScript(input: {
 }): SpokenScriptRepair {
 	const sentences =
 		input.spoken.match(/[^。！？!?；;\n]+[。！？!?；;\n]*/gu) ?? [];
+	const index = indexSources(input.sources, input.rosterNames);
 	const kept: string[] = [];
 	const droppedSentences: string[] = [];
 	for (const sentence of sentences) {
 		if (!sentence.trim()) continue;
-		const check = validateSpokenScript({
-			spoken: sentence,
-			sources: input.sources,
-			rosterNames: input.rosterNames,
-			mode: "background_result",
-		});
+		const check = validateAgainst(
+			index,
+			sentence,
+			input.rosterNames,
+			"background_result",
+		);
 		if (check.ok) kept.push(sentence);
 		else droppedSentences.push(sentence.trim());
 	}
 	const keptText = kept.join("").trim();
 	const missingRequired =
 		input.mode === "rewrite" &&
-		!validateSpokenScript({
-			spoken: keptText,
-			sources: input.sources,
-			rosterNames: input.rosterNames,
-			mode: "rewrite",
-		}).ok;
+		!validateAgainst(index, keptText, input.rosterNames, "rewrite").ok;
 	const needsThread = droppedSentences.length > 0 || missingRequired;
 	if (!needsThread)
 		return { spoken: input.spoken, droppedSentences, needsThread };

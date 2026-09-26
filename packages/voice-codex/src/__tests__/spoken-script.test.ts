@@ -251,3 +251,30 @@ it("does not read 过了十分钟 / 没过多久 as a yes/no outcome", () => {
 		),
 	).toEqual([]);
 });
+
+// QA@5 B2: a succeeded github.pr.view result (hundreds of KB of JSON) is a
+// source; the guard re-scanned the whole text per token match (quadratic) and
+// blocked the daemon's event loop for 13 s, fencing the voice lease.
+it("checks a paraphrase against a large tool output in linear time", () => {
+	const big = JSON.stringify({
+		items: Array.from({ length: 1500 }, (_, i) => ({
+			id: i,
+			n: `PR #${1000 + i}`,
+			t: "2026-09-26T21:14:44Z",
+			sha: "a1b2c3d4e5",
+		})),
+	});
+	expect(big.length).toBeGreaterThan(100_000);
+	const started = performance.now();
+	const repaired = repairSpokenScript({
+		spoken: "PR #1360 过了。CI 全绿。20:19 合并的。Tadashi 确认了。",
+		sources: [
+			{ itemId: "tool", text: big },
+			{ itemId: "lead", text: "PR #1360 passed, merged 20:19 by Tadashi" },
+		],
+		rosterNames: ["Tadashi"],
+		mode: "background_result",
+	});
+	expect(performance.now() - started).toBeLessThan(500);
+	expect(repaired.needsThread).toBe(false);
+});

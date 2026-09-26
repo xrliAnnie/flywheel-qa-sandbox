@@ -415,3 +415,42 @@ it("keeps the supported sentences of a background answer and points to the threa
 	expect(posted[0]).toContain("FLY-2886 PR #2886 CI passed");
 	expect(posted[0]).not.toContain("FLY-9999");
 });
+
+// QA@5 M1: every sentence dropped and no tool text ⇒ the thread got "" and she
+// heard a promise nothing would keep. Never post empty material and never
+// claim the thread has it; say plainly that it could not be checked.
+it("never posts an empty thread message or points to it when nothing checkable is left", async () => {
+	const queued: BrainSpeechRequest[] = [];
+	const posted: string[] = [];
+	const coordinator = new BrainCoordinator({
+		speech: {
+			enqueue: async (request) => {
+				queued.push(request);
+				return "spoken";
+			},
+			drop: () => {},
+			retire: () => {},
+		},
+		postThread: async (request) => {
+			posted.push(request.text);
+		},
+	});
+	coordinator.registerHandoff({
+		handoffId: "h",
+		inputTranscript: "拉2886的TR",
+	});
+	coordinator.turnStarted("t");
+	coordinator.turnTerminal({
+		turnId: "t",
+		outcome: "completed",
+		spokenSegments: ["PR #2886 的查询接口这次报错了。"],
+		sources: [{ itemId: "founder:h", text: "拉2886的TR" }],
+	});
+	await flush();
+	await flush();
+	expect(posted.every((text) => text.trim().length > 0)).toBe(true);
+	expect(posted).toEqual([]);
+	expect(queued.map((row) => row.text)).toEqual([
+		"这件我没拿到能核对的结果，你再说一下编号，我重新查。",
+	]);
+});

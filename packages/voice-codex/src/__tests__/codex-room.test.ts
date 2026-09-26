@@ -2390,3 +2390,70 @@ it("records each background lead_operation call as evidence without its values",
 	expect(JSON.stringify(events)).not.toMatch(/SECRET|1360/u);
 	await session.close();
 });
+
+// QA@5 M1: a failed lead_operation is still a result ("查询出错"); its
+// broker reply must be a source so the thread can carry it.
+it("keeps a failed lead_operation result as a source for the answer", async () => {
+	let callbacks!: Parameters<
+		ConstructorParameters<typeof CodexVoiceBackend>[0]["container"]["open"]
+	>[0];
+	const backend = new CodexVoiceBackend({
+		sessionId: "failed-source",
+		voice: "marin",
+		backgroundEnabled: true,
+		loadContext: async () =>
+			({
+				realtimePrompt: "Trusted",
+				baseInstructions: "background",
+				snapshotDigest: "a".repeat(64),
+			}) as never,
+		container: {
+			open: async (input) => {
+				callbacks = input;
+				await input.loadContext();
+				return {
+					transport: {
+						appendAudio: () => "sent",
+						appendText: async () => {},
+						appendSpeech: async () => {},
+						cancel: async () => {},
+					},
+					close: async () => {},
+				};
+			},
+		},
+	});
+	const session = await backend.createConversation({ brain });
+	const terminal = vi.fn();
+	session.on("background-turn-terminal", terminal);
+	callbacks.background!.onTurnStarted("t");
+	callbacks.background!.onItemCompleted?.({
+		turnId: "t",
+		itemId: "failed-op",
+		type: "mcpToolCall",
+		raw: {
+			server: "lead_actions",
+			tool: "lead_operation",
+			status: "failed",
+			arguments: { operationId: "github.pr.view" },
+			result: {
+				content: [{ type: "text", text: '{"errorCode":"provider_failure"}' }],
+			},
+		},
+	});
+	callbacks.background!.onTurnTerminal({
+		turnId: "t",
+		outcome: "completed",
+		spokenSegments: ["查询报错了。"],
+	});
+	const result = terminal.mock.calls[0]?.[0];
+	expect(result.sources).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				itemId: "failed-op",
+				text: expect.stringContaining("provider_failure"),
+			}),
+		]),
+	);
+	await session.close();
+});

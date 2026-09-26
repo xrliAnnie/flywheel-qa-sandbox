@@ -1364,8 +1364,9 @@ describe("tell relevance", () => {
 	}
 
 	it("skips a pure receipt, logs the reason and the original text, and speaks nothing", async () => {
+		// The real scribe's skip shape (QA@5 B1): empty spoken.
 		const test = await live(async () => ({
-			spoken: "收到。",
+			spoken: "",
 			threadText: null,
 			protectedFieldEvidence: [],
 			tell: false,
@@ -1489,6 +1490,45 @@ it("always tells a message that reports a pass/fail outcome, even if the writer 
 			expect.objectContaining({
 				kind: "voice_tell_skip_overridden",
 				override: "reports_result",
+			}),
+		);
+		await test.session.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+// QA@5 B1: when the floor overrides a skip there is no script to say; the
+// exact text goes to the thread and the pointer is spoken — never silence.
+it("falls back to thread + pointer when a skip with an empty script is overridden", async () => {
+	vi.useFakeTimers();
+	try {
+		const test = fixture({
+			coordinatedSpeech: true,
+			appendSpeech: async () => "confirmed",
+			rewriteSpeech: async () => ({
+				spoken: "",
+				threadText: null,
+				protectedFieldEvidence: [],
+				tell: false,
+				skipReason: "no_new_information",
+			}),
+		});
+		await test.session.start();
+		await test.session.markLive();
+		const result = test.session.deliverTell({
+			businessId: "tell:empty",
+			text: "FLY-1234 失败了。",
+		});
+		await vi.advanceTimersByTimeAsync(1_500);
+		await expect(result).resolves.toBe("fallback_posted");
+		expect(test.postThread).toHaveBeenCalledWith({
+			businessId: "tell:empty",
+			text: "FLY-1234 失败了。",
+		});
+		expect(test.frontend.appendSpeech).toHaveBeenCalledWith(
+			expect.objectContaining({
+				spokenText: "这条我发到 thread 了，编号以文字为准。",
 			}),
 		);
 		await test.session.stop();
