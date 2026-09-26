@@ -634,6 +634,10 @@ describe("engine B read-aloud overrun in the room (FLY-2885 T5c)", () => {
 		expect(h.appendSpeech).toHaveBeenCalledTimes(1);
 		h.turn("turn.done", "r1", "assistant", `${line}另外今天还有两件事。`);
 		await h.step("s".repeat(50));
+		// Review R1: the overrun turn's own final still fences the next chunk.
+		expect(h.appendSpeech).toHaveBeenCalledTimes(1);
+		h.final(`${line}另外今天还有两件事。`);
+		await h.step("s".repeat(5));
 		expect(h.appendSpeech).toHaveBeenCalledTimes(2);
 		h.turn("turn.created", "r2", "assistant");
 		await h.step("vvv");
@@ -810,5 +814,33 @@ describe("engine B says when a Lead reply could not be read to the end (FLY-2885
 		h.final("你好。");
 		await expect(receipt).resolves.toMatchObject({ outcome: "completed" });
 		expect(h.statuses).not.toContain(READBACK_REMAINDER_STATUS);
+	});
+
+	it("still posts it when she cuts the spoken notice after its first packet (review R1)", async () => {
+		const h = await harness();
+		const receipt = readReply(h.session, "第一句。第二句。", {
+			pendingKey: "notice-cut",
+			verification: "required",
+			chunkCharacters: 4,
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		h.turn("turn.created", "r1", "assistant");
+		await h.step("vvvvv");
+		h.session.interrupt();
+		h.turn("turn.done", "r1", "assistant", "第一");
+		h.final("第一");
+		for (let i = 0; i < 8 && h.appendSpeech.mock.calls.length < 2; i += 1)
+			await h.step("ssssssssssssssssssssssssssssssssssssssssssssssssss");
+		expect(h.appendSpeech).toHaveBeenLastCalledWith(
+			READBACK_REMAINDER_NOTICE,
+			1,
+		);
+		h.turn("turn.created", "notice", "assistant");
+		await h.step("v");
+		h.session.interrupt();
+		await expect(receipt).resolves.toMatchObject({
+			reason: "speech_interrupted",
+		});
+		expect(h.statuses).toContain(READBACK_REMAINDER_STATUS);
 	});
 });

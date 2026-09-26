@@ -336,7 +336,7 @@ class CodexVoiceSession implements ConversationSession {
 	 * FLY-2885 founder rework: a Lead reply, read to the end or honestly cut
 	 * short. When sentences are left unread (no pause in time, her barge-in,
 	 * a new generation, the session ending), she hears that the rest is in the
-	 * channel; if even that cannot be heard, the thread says it.
+	 * channel; unless that notice is read to the end, the thread says it.
 	 */
 	async readReply(
 		text: string,
@@ -366,7 +366,9 @@ class CodexVoiceSession implements ConversationSession {
 						{ ceilingMs: READBACK_NOTICE_CEILING_MS },
 					);
 		if (notice) this.receiptEvidence("cue", notice.receipt);
-		if (notice?.receipt.transport !== "submitted")
+		// One played packet is not a heard notice (review R1): unless it was
+		// read to the end, the thread says it too.
+		if (notice?.receipt.outcome !== "completed")
 			this.status(READBACK_REMAINDER_STATUS);
 		return receipt;
 	}

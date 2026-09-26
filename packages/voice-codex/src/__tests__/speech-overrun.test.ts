@@ -147,6 +147,41 @@ describe("where a Lead reply resumes after an overrun (FLY-2885 founder rework A
 		});
 	});
 
+	it("never lets shared wording further on mark an unread sentence as read (review R1)", () => {
+		// "完" of the invented text used to complete sentence two's "第二项完成".
+		expect(
+			spokenPrefix(
+				"第一项完成。第二项完成。",
+				"第一项完成。第二项。这里是完全编造的额外内容",
+			),
+		).toMatchObject({ remainder: "第二项完成。", spokenSentences: 1 });
+	});
+
+	it("does not count the next sentence when only its first half was read", () => {
+		expect(
+			spokenPrefix(
+				"会议改到明天。地点还是三楼的大会议室。",
+				"会议改到明天。地点还是另外我再说一件别的事情",
+			),
+		).toMatchObject({
+			remainder: "地点还是三楼的大会议室。",
+			spokenSentences: 1,
+		});
+	});
+
+	it("keeps the prefix contiguous when a later sentence repeats earlier wording", () => {
+		// Sentence two is skipped; sentence three repeats sentence one's words.
+		expect(
+			spokenPrefix(
+				"我们今天开会。明天出结果。我们今天开会。",
+				"我们今天开会。然后今天大家都很开心我们今天开会",
+			),
+		).toMatchObject({
+			remainder: "明天出结果。我们今天开会。",
+			spokenSentences: 1,
+		});
+	});
+
 	it("never leaves a punctuation-only remainder to read", () => {
 		expect(
 			spokenPrefix("好的。\n\n", "好的。我再说点别的内容吧"),

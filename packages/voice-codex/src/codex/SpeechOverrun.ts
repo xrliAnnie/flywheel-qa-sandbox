@@ -75,57 +75,27 @@ export interface SpokenPrefix {
 
 /**
  * FLY-2885 founder rework A: after an overrun, which sentences of the chunk
- * were actually read. A sentence counts as read when the transcript aligns
- * (in order, LCS) to all of it but a 1–6 character rewrite — the same
- * tolerance the overrun guard gives (research R4). Reading resumes after the
- * last read sentence, so nothing already heard is repeated.
+ * were actually read. Sentences are matched in order, each against the
+ * transcript right after the previous one: a sentence counts as read when a
+ * contiguous stretch of transcript there misses at most `tolerance` of its
+ * characters and adds at most as many (the 1–6 character rewrite the overrun
+ * guard allows, research R4). The first sentence that does not match ends the
+ * prefix, so shared wording further on can never mark an unread sentence as
+ * read. Reading resumes after the prefix.
  */
 export function spokenPrefix(expected: string, observed: string): SpokenPrefix {
 	const sentences = readbackSentences(expected);
-	const want = sentences.map((sentence) =>
-		Array.from(canonicalSpeech(sentence)),
-	);
-	const flat = want.flat();
-	const owner = want.flatMap((chars, index) => chars.map(() => index));
-	const got = Array.from(canonicalSpeech(observed)).slice(
-		0,
-		2 * flat.length + 64,
-	);
-	const width = flat.length + 1;
-	const table = new Uint16Array((got.length + 1) * width);
-	for (let row = 1; row <= got.length; row += 1) {
-		for (let column = 1; column <= flat.length; column += 1) {
-			table[row * width + column] =
-				got[row - 1] === flat[column - 1]
-					? table[(row - 1) * width + column - 1]! + 1
-					: Math.max(
-							table[(row - 1) * width + column]!,
-							table[row * width + column - 1]!,
-						);
-		}
-	}
-	const matched = want.map(() => 0);
-	let row = got.length;
-	let column = flat.length;
-	while (row > 0 && column > 0) {
-		if (got[row - 1] === flat[column - 1]) {
-			matched[owner[column - 1]!]! += 1;
-			row -= 1;
-			column -= 1;
-		} else if (
-			table[row * width + column - 1]! >= table[(row - 1) * width + column]!
-		) {
-			column -= 1;
-		} else {
-			row -= 1;
-		}
-	}
+	const got = Array.from(canonicalSpeech(observed));
+	let at = 0;
 	let last = -1;
-	for (const [index, chars] of want.entries()) {
+	for (const [index, sentence] of sentences.entries()) {
+		const want = Array.from(canonicalSpeech(sentence));
 		// Punctuation-only pieces carry nothing to hear.
-		if (chars.length === 0) continue;
-		const tolerance = Math.min(6, Math.floor(chars.length / 4));
-		if (chars.length - matched[index]! <= tolerance) last = index;
+		if (want.length === 0) continue;
+		const end = sentenceEnd(want, got, at);
+		if (end === undefined) break;
+		at = end;
+		last = index;
 	}
 	const rest = sentences.slice(last + 1).join("");
 	return {
@@ -134,6 +104,41 @@ export function spokenPrefix(expected: string, observed: string): SpokenPrefix {
 		spokenSentences: last + 1,
 		totalSentences: sentences.length,
 	};
+}
+
+/**
+ * Where in `got` (from `start`) the sentence `want` ends, if a stretch there
+ * reads it within tolerance; the closest such stretch wins.
+ */
+function sentenceEnd(
+	want: string[],
+	got: string[],
+	start: number,
+): number | undefined {
+	const tolerance = Math.min(6, Math.floor(want.length / 4));
+	// More than `tolerance` extra characters can never qualify.
+	const limit = Math.min(got.length, start + want.length + tolerance);
+	let previous = new Uint16Array(want.length + 1);
+	let current = new Uint16Array(want.length + 1);
+	let best: { cost: number; end: number } | undefined;
+	for (let end = start + 1; end <= limit; end += 1) {
+		const char = got[end - 1];
+		for (let index = 1; index <= want.length; index += 1) {
+			current[index] =
+				want[index - 1] === char
+					? previous[index - 1]! + 1
+					: Math.max(previous[index]!, current[index - 1]!);
+		}
+		[previous, current] = [current, previous];
+		current.fill(0);
+		const aligned = previous[want.length]!;
+		const missing = want.length - aligned;
+		const extra = end - start - aligned;
+		if (missing > tolerance || extra > tolerance) continue;
+		if (!best || missing + extra < best.cost)
+			best = { cost: missing + extra, end };
+	}
+	return best?.end;
 }
 
 /**

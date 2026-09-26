@@ -327,9 +327,14 @@ describe("Codex v3 read-aloud overrun and silence (FLY-2885 T5c)", () => {
 			transport: "submitted",
 		});
 		// The late final is mirrored only up to the line.
+		h.speaker.assistantTranscript({
+			text: `${expected}另外今天还有两件事。`,
+			final: true,
+		});
 		expect(
 			h.speaker.truncateAssistantFinal(`${expected}另外今天还有两件事。`),
 		).toBe(`${spoken(expected)}${SPEECH_TRUNCATED_NOTE}`);
+		expect(h.overrun).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(600);
 		const audit = h.evidence.find(
 			(record) => record.kind === "codex_speech_overrun",
@@ -806,15 +811,23 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 			final: false,
 		});
 		expect(h.overrun).toHaveBeenCalledWith("t1");
-		// The mirror keeps only what was read.
-		expect(
-			h.speaker.truncateAssistantFinal(
-				"第一句话已经说完了。另外今天还有两件事情完成了呢。",
-			),
-		).toBe(`第一句话已经说完了。${SPEECH_TRUNCATED_NOTE}`);
+		// The overrun turn's own final is still to come: nothing is sent first.
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(h.sent).toEqual([expected]);
+		const oldFinal = "第一句话已经说完了。另外今天还有两件事情完成了呢。";
+		h.speaker.assistantTranscript({ text: oldFinal, final: true });
+		// The mirror keeps only what was read, and it is not cut twice.
+		expect(h.speaker.truncateAssistantFinal(oldFinal)).toBe(
+			`第一句话已经说完了。${SPEECH_TRUNCATED_NOTE}`,
+		);
+		expect(h.overrun).toHaveBeenCalledOnce();
 		await vi.advanceTimersByTimeAsync(60);
 		expect(h.sent).toEqual([expected, "第二句话还没有念。"]);
 		await h.answer("t2", "第二句话还没有念。");
+		// The continuation's own final is mirrored in full.
+		expect(h.speaker.truncateAssistantFinal("第二句话还没有念。")).toBe(
+			"第二句话还没有念。",
+		);
 		await expect(result).resolves.toEqual({
 			receipt: expect.objectContaining({
 				outcome: "failed",
@@ -848,6 +861,10 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 			final: false,
 		});
 		expect(h.overrun).toHaveBeenCalledOnce();
+		h.speaker.assistantTranscript({
+			text: "第一句。然后我们还要讨论很多其他的事情。",
+			final: true,
+		});
 		await vi.advanceTimersByTimeAsync(60);
 		expect(h.sent).toEqual(["第一句。", "第二句。"]);
 		await h.answer("t2", "第二句。");
@@ -869,6 +886,10 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 			h.speaker.assistantTranscript({
 				text: "我现在去帮你查一下这个问题的具体情况。",
 				final: false,
+			});
+			h.speaker.assistantTranscript({
+				text: "我现在去帮你查一下这个问题的具体情况。",
+				final: true,
 			});
 		}
 		await expect(result).resolves.toEqual({
@@ -1038,5 +1059,58 @@ describe("Codex Lead reply read to the end (FLY-2885 founder rework 2026-09-26)"
 		await expect(reply).resolves.toMatchObject({
 			receipt: { outcome: "completed" },
 		});
+	});
+
+	it("waits out a lost overrun final (30 s), then never truncates the continuation's own (review R1)", async () => {
+		const h = harness();
+		const expected = "第一句话已经说完了。第二句话还没有念。";
+		const result = h.speaker.readReply(expected, { pendingKey: "lost-final" });
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			final: false,
+		});
+		// No final ever comes for t1. The quiet-room limit does not fire on it.
+		await vi.advanceTimersByTimeAsync(29_000);
+		expect(h.sent).toEqual([expected]);
+		await vi.advanceTimersByTimeAsync(1_100);
+		expect(h.sent).toEqual([expected, "第二句话还没有念。"]);
+		await h.answer("t2", "第二句话还没有念。");
+		expect(h.speaker.truncateAssistantFinal("第二句话还没有念。")).toBe(
+			"第二句话还没有念。",
+		);
+		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
+		expect(h.overrun).toHaveBeenCalledOnce();
+	});
+
+	it("still truncates the overrun final when she speaks first, and leaves her answer alone (review R1)", async () => {
+		const h = harness();
+		const expected = "第一句话已经说完了。第二句话还没有念。";
+		const result = h.speaker.readReply(expected, { pendingKey: "she-spoke" });
+		await h.flush();
+		h.speaker.turnCreated({ turnId: "t1", role: "assistant" });
+		h.state.consumed += 10;
+		h.speaker.assistantTranscript({
+			text: "第一句话已经说完了。另外今天还有两件事情完成了呢。",
+			final: false,
+		});
+		// She starts before the overrun turn's final lands.
+		h.speaker.userEvidence();
+		h.speaker.turnCreated({ turnId: "answer", role: "assistant" });
+		const oldFinal = "第一句话已经说完了。另外今天还有两件事情完成了呢。";
+		h.speaker.assistantTranscript({ text: oldFinal, final: true });
+		expect(h.speaker.truncateAssistantFinal(oldFinal)).toBe(
+			`第一句话已经说完了。${SPEECH_TRUNCATED_NOTE}`,
+		);
+		const answer = "这是对新问题的完整回答，内容与刚才那句朗读完全不同。";
+		h.speaker.assistantTranscript({ text: answer, final: true });
+		expect(h.speaker.truncateAssistantFinal(answer)).toBe(answer);
+		expect(h.overrun).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(60);
+		expect(h.sent.at(-1)).toBe("第二句话还没有念。");
+		await h.answer("t2", "第二句话还没有念。");
+		await expect(result).resolves.toMatchObject({ unreadChunks: 0 });
 	});
 });
