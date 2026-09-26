@@ -94,3 +94,20 @@ plan §12 第 4 轮复核 APPROVED（`7d7299528`，blob `9813d70d`）后，设�
   - tokenizer 不一致、逐条复算不符、缺逐条计数、合计不符、超过 7,600、计数器抛错，都报 `context_invalid`，不 spawn 进程；
   - 默认计数器是真实 o200k。
 - **前端提示**（`codex-room.test.ts`）：两类原因走到前端回调，文案准确，不含任何上下文内容。
+
+### 自查修复（`c699f3078`、`a1d7d05e0`）
+
+开评审前自查 §12 代码，修了两处：
+- **切段退回丢行**（`c699f3078`）：一段按逐行累加估算放得下、整段复算却超过 2,000 时，要把尾部几行退回给下一段。原来的递归实现在文件末尾会**丢掉**退回的行；遇到只能进 prompt 的超长行时，退回的行会**排到它后面**。
+  - 修复：改成按下标推进的循环。
+  - 新增两条测试：换行按 50 token 计的 11 行夹具；标题与正文拼接后多出 500 token 的夹具。两条在旧代码下都失败（前者 `[5, 5]` 丢了最后一行，后者丢了 `b`），修复后通过。
+  - 真实 o200k 下整段计数通常不超过逐行之和，这条路径很少走到；但一旦走到就是丢记忆。
+- **details 白名单放过了路径**（`a1d7d05e0`）：标识正则允许 `/`，`memory/MEMORY.md` 这样的相对路径也能放出去。
+  - 修复：标识只允许字母、数字、`.`、`_`、`-`；`tokenizer` 只放行契约里那一个值。
+  - 路由测试改成在 `block` 里放路径、在数字字段里放中文，修复前失败，修复后通过。
+
+修复后重跑：teamlead `voice-session-context` + `voice-session-routes` 44/44；voice-codex `bridge-client` + `codex-container` 83/83。
+
+修复后的最终一轮：
+- `pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-teamlead" --filter "...flywheel-voice-codex" typecheck` 全部 exit 0；
+- teamlead `vitest related src/voice-context-contract.ts src/bridge/voice-session-context.ts`：110 个文件，1,329/1,329 过。
