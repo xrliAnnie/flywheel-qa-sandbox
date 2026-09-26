@@ -1,3 +1,8 @@
+import { NotificationAuditStore, type NotificationAuditRange } from "./bridge/notification-audit-store.js";
+import { buildSessionKey } from "./bridge/hook-payload.js";
+import { leadNotificationDecision, type LeadNotificationDecision } from "./bridge/EventFilter.js";
+import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
+import type { NotificationBinding, NotificationEvidenceV2 } from "./bridge/lead-notification-evidence.js";
 import {
 	assertStandingAuthorityConfirmationRecord,
 	STANDING_AUTHORITY_CONFIRMATION_DDL,
@@ -12650,6 +12655,7 @@ export class StateStore {
 			PRIMARY KEY (project_name, issue_uuid, role)
 		)`);
 		installTerminalRowArchiveSchema(this.db.raw);
+        new NotificationAuditStore(this.db.raw).install();
 		this.db.run(`CREATE TABLE IF NOT EXISTS founder_ask (
 			ask_id TEXT PRIMARY KEY, project_name TEXT NOT NULL, issue_id TEXT NOT NULL,
 			channel_id TEXT NOT NULL, thread_id TEXT NOT NULL, lead_id TEXT NOT NULL,
@@ -26351,6 +26357,87 @@ export class StateStore {
 			(...args) => this.appendLeadEvent(...args));
 	}
 
+
+	/** Event-correlated recovery context, never a global pending-question veto. */
+	getMonitoringRecoveryContext(input: {
+		projectName: string; leadId: string; executionId: string;
+	}): { recoveredLostEventIds: string[]; openFailure: boolean; checkedRefs: string[] } {
+		const session = this.getSession(input.executionId);
+		if (!session || session.project_name !== input.projectName) {
+			return { recoveredLostEventIds: [], openFailure: true, checkedRefs: [] };
+		}
+		const rows = this.db.raw.prepare(`SELECT event_id,event_type,payload,seq,delivery_disposition FROM lead_events
+			WHERE lead_id=? AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.execution_id') END=?
+			AND (json_extract(payload,'$.project_name')=? OR json_extract(payload,'$.project_name') IS NULL)
+			ORDER BY seq DESC LIMIT 1001`).all(input.leadId, input.executionId, input.projectName) as Array<{event_id:string;event_type:string;payload:string;seq:number;delivery_disposition:string}>;
+		const lastRecovery = rows.findIndex((row) => row.event_type === "session_monitoring_reestablished" && row.delivery_disposition === "audit_only");
+		const sinceRecovery = rows.slice(0, lastRecovery < 0 ? rows.length : lastRecovery);
+		const recoveredLostEventIds = sinceRecovery.filter((row) => row.event_type === "session_monitoring_lost").map((row) => row.event_id);
+		const faultTypes = new Set(["session_zombie_detected", "session_failed", "session_stuck", "session_orphaned", "gate_timed_out"]);
+		const fault = sinceRecovery.some((row) => {
+			const payload = JSON.parse(row.payload) as Record<string, unknown>;
+			if (faultTypes.has(row.event_type)) return true;
+            // Only inspect content belonging to this recovery episode; independent ASK/founder
+            // traffic retains its original immediate route without vetoing unrelated notices.
+            if (!["session_monitoring_lost", "session_monitoring_reestablished"].includes(row.event_type)) return false;
+            return payload.status === "failed" || payload.status === "blocked" || ["last_error", "error", "failure_kind", "failureKind", "needs_action", "requires_action", "action_required", "question_id", "question", "ask", "prompt", "checkpoint", "founder_message", "messages"].some((key) => payload[key] !== undefined && payload[key] !== null && payload[key] !== "" && payload[key] !== false);
+		});
+		const sessionKey = buildSessionKey(session);
+		const alerts = this.db.raw.prepare(`SELECT correlation_key,event_id FROM alert_threads
+			WHERE project_name=? AND lead_id=? AND resolved_at IS NULL AND
+			(session_key=? OR event_id IN (SELECT event_id FROM session_events WHERE execution_id=? AND project_name=?))
+			UNION SELECT correlation_key,event_id FROM alert_mailbox_ledger
+			WHERE project_name=? AND resolved_at IS NULL AND
+			(session_key=? OR event_id IN (SELECT event_id FROM session_events WHERE execution_id=? AND project_name=?))
+			LIMIT 1`).all(input.projectName, input.leadId, sessionKey, input.executionId, input.projectName, input.projectName, sessionKey, input.executionId, input.projectName) as Array<{correlation_key:string;event_id:string}>;
+		return {
+			recoveredLostEventIds,
+			openFailure: rows.length > 1000 || fault || alerts.length > 0 || Boolean(session.last_error) || ["failed", "blocked"].includes(session.status),
+			checkedRefs: [`session:${input.executionId}`, ...sinceRecovery.map((row) => `lead-event:${row.event_id}`), ...alerts.map((row) => `alert:${row.correlation_key}:${row.event_id}`)],
+		};
+	}
+
+	/** Freeze producer evidence and delivery policy together; replays retain the first decision. */
+	appendLeadNotification(input: {
+		binding: NotificationBinding;
+		eventType: string;
+		payload: string;
+		sessionKey?: string;
+		evidence?: NotificationEvidenceV2;
+		decision: LeadNotificationDecision;
+	}): number {
+		return this.db.raw.transaction(() => {
+			const { binding } = input;
+			const existing = this.getLeadEventByLeadAndId(binding.leadId, binding.eventId);
+			if (existing) return existing.seq;
+			const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [binding.leadId, binding.eventId]);
+			if (archived) return Number(archived.seq);
+			let decision = input.decision;
+			if (input.evidence) {
+				const inserted = this.insertEvent({
+					event_id: `${binding.eventId}:proof`, execution_id: binding.executionId,
+					issue_id: binding.issueId, project_name: binding.projectName,
+					event_type: "lead_notification_proof", source: "bridge-notification-policy-v2",
+					payload: input.evidence,
+				});
+                if (!inserted) {
+                    const proofId = `${binding.eventId}:proof`;
+                    const prior = this.db.raw.prepare("SELECT * FROM session_events WHERE event_id=?").get(proofId) as Record<string, unknown> | undefined
+                        ?? findArchivedTerminalRow(this.db.raw, "session_events", [proofId]);
+                    let matches = false;
+                    try {
+                        matches = Boolean(prior && prior.execution_id === binding.executionId && prior.issue_id === binding.issueId
+                            && prior.project_name === binding.projectName && prior.event_type === "lead_notification_proof"
+                            && prior.source === "bridge-notification-policy-v2"
+                            && canonicalSubmissionDigest(JSON.parse(String(prior.payload))) === canonicalSubmissionDigest(input.evidence));
+                    } catch { /* Invalid prior proof is never quiet authority. */ }
+                    if (!matches) decision = { disposition: "model", policyVersion: "notification-v2", reason: "proof_record_conflict" };
+                }
+			}
+			return this.appendLeadEvent(binding.leadId, binding.eventId, input.eventType, input.payload, input.sessionKey, decision.disposition, decision);
+		})();
+	}
+
 	/** Append a lead event. Returns seq. Dedup on (lead_id, event_id). */
 	appendLeadEvent(
 		leadId: string,
@@ -26359,6 +26446,7 @@ export class StateStore {
 		payload: string,
 		sessionKey?: string,
 		deliveryDisposition: "model" | "audit_only" = "model",
+		auditDecision?: LeadNotificationDecision,
 	): number {
 		const archived = findArchivedTerminalRow(this.db.raw, "lead_events", [
 			leadId,
@@ -26388,8 +26476,9 @@ export class StateStore {
 				`INSERT INTO lead_events (
 				   lead_id, event_id, event_type, payload, session_key,
 				   ack_required, ack_policy, ack_protocol_version,
-				   routing_snapshot, ack_owner_lead_id, delivery_disposition
-				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				   routing_snapshot, ack_owner_lead_id, delivery_disposition,
+                   notification_policy_version, notification_reason, notification_proof_ref
+				 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					leadId,
 					eventId,
@@ -26402,6 +26491,9 @@ export class StateStore {
 					routingSnapshot,
 					leadId,
 					deliveryDisposition,
+                    auditDecision?.policyVersion ?? null,
+                    auditDecision?.reason ?? null,
+                    auditDecision?.proofRef ?? null,
 				],
 			);
 		} catch (err) {
@@ -26869,12 +26961,22 @@ export class StateStore {
 		return row?.lead_id === leadId && row?.delivery_disposition === "audit_only";
 	}
 
+    getNotificationAuditGeneration() { return new NotificationAuditStore(this.db.raw).reconcile(); }
+    readLeadAuditSummary(input: {projectName:string;leadId:string}, cursor?: {storeEpoch:string;offeredThroughSeq:number;anchorEventId:string|null}) {
+        return new NotificationAuditStore(this.db.raw).snapshot(input,cursor);
+    }
+
 	/** On-demand audit history, including retained cold rows; never a delivery input. */
 	getLeadAuditEventPage(
 		leadId: string,
 		limit = 50,
 		beforeSeq = Number.MAX_SAFE_INTEGER,
-	): { items: LeadEventRow[]; nextCursor: string | null } {
+        scope?: Omit<NotificationAuditRange, "leadId"|"limit"|"beforeSeq">,
+	): { items: LeadEventRow[]; nextCursor: string | null; storeEpoch?: string } {
+        if (scope) {
+            const page = new NotificationAuditStore(this.db.raw).page({...scope,leadId,limit,beforeSeq});
+            return {...page,items:page.items.map(mapLeadEventRow)};
+        }
 		if (
 			!Number.isSafeInteger(limit) ||
 			limit < 1 ||
@@ -30672,6 +30774,9 @@ export class StateStore {
 			);
 		}
 		const additions: Array<[string, string]> = [
+            ["notification_policy_version", "TEXT"],
+            ["notification_reason", "TEXT"],
+            ["notification_proof_ref", "TEXT"],
 			["delivery_disposition", "TEXT NOT NULL DEFAULT 'model' CHECK(delivery_disposition IN ('model','audit_only'))"],
 			["ack_required", "INTEGER NOT NULL DEFAULT 0"],
 			["ack_policy", "TEXT"],
@@ -50016,13 +50121,35 @@ export class StateStore {
 			next_check_at: nextCheckAt,
 			next_check_disposition: nextCheckDisposition,
 		};
-		return this.appendLeadEvent(
-			input.leadIntent.leadId,
-			eventId,
-			"workflow_replacement_eligibility",
-			JSON.stringify(payload),
-			`wf:${context.binding.run_id}`,
-		);
+		const binding: NotificationBinding = { projectName: context.run.project_name, leadId: input.leadIntent.leadId, eventId, executionId: input.executionId, issueId: context.run.issue_id };
+        const evidence: NotificationEvidenceV2 = {
+            version: 2, kind: "replacement_notice", binding,
+            proof: { sourceRef: `session-event:${eventId}:proof`, executionId: input.executionId, action: { state: "unknown" } },
+            workflow: { runId: context.binding.run_id, nodeId: context.binding.node_id, attempt: context.binding.attempt, activationId: context.binding.activation_id, launchOrdinal, dispatchCreatedAt: sqliteCreatedAt },
+            attemptRef: context.binding.activation_id,
+            scheduleRef: `workflow-dispatch:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}:${launchOrdinal}:replacement-delays-v1`,
+            nextCheckAt, observedAt: input.now, disposition: nextCheckDisposition,
+        };
+        // A generalized failure may have no other Lead path. Only an independently
+        // accepted notification of this exact source can make the future check quiet.
+        try {
+            const teardowns = this.listWorkflowRunEvents(context.binding.run_id).filter((row) => row.kind === "generalized_teardown_recorded" && row.execution_id === input.executionId && row.node_id === context.binding.node_id).map((row) => row.payload as Record<string, unknown>);
+            const latestTeardown = teardowns.at(-1);
+            const required = new Set(["goal_blocked", "goal_usage_limited", "worktree_takeover_failed", "reown_exhausted"]);
+            if (Number.isFinite(parsedCreatedAt) && nextCheckDisposition === "replacement_candidate" && latestTeardown && !teardowns.some((row) => required.has(String(row.failureKind))) && typeof latestTeardown.sourceEventId === "string") {
+                const source = this.workflowSelectAll("SELECT execution_id,project_name,issue_id,payload FROM session_events WHERE event_id=?", [latestTeardown.sourceEventId])[0];
+                const accepted = this.getLeadEventByLeadAndId(binding.leadId, latestTeardown.sourceEventId);
+                const fault = accepted && JSON.parse(accepted.payload) as Record<string, unknown> | undefined;
+                const original = source && JSON.parse(String(source.payload)) as Record<string, unknown> | undefined;
+                if (source?.execution_id === binding.executionId && source.project_name === binding.projectName && source.issue_id === binding.issueId && accepted?.event_type === "session_failed" && accepted.delivery_disposition === "model" && accepted.delivered_at && fault?.execution_id === binding.executionId && fault.project_name === binding.projectName && fault.issue_id === binding.issueId && (fault.failure_kind ?? fault.failureKind ?? null) === (original?.failureKind ?? null) && (fault.last_error ?? null) === (original?.lastError ?? null)) {
+                    evidence.proof.action = { state: "none", checkedRefs: [evidence.attemptRef, evidence.scheduleRef, `accepted-lead-event:${accepted.event_id}:${accepted.seq}`] };
+                }
+            }
+        } catch {
+            // Missing or unreadable fault evidence preserves the immediate path.
+        }
+        const decision = leadNotificationDecision("workflow_replacement_eligibility", { ...payload }, evidence, { binding, enabled: storeLeadTokenSavingsEnabled({ store: this }, binding.projectName) });
+        return this.appendLeadNotification({ binding, eventType: "workflow_replacement_eligibility", payload: JSON.stringify(payload), sessionKey: `wf:${context.binding.run_id}`, evidence, decision });
 	}
 
 	/**
@@ -89723,6 +89850,9 @@ export interface WorkflowLedgerBatchResult {
 }
 
 export interface LeadEventRow {
+    notification_policy_version?: string;
+    notification_reason?: string;
+    notification_proof_ref?: string;
 	delivery_disposition?: "model" | "audit_only";
 	seq: number;
 	lead_id: string;
@@ -89920,6 +90050,9 @@ export function readEpicItemFacts(
 
 function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {
 	return {
+        notification_policy_version: (row.notification_policy_version as string | null) ?? undefined,
+        notification_reason: (row.notification_reason as string | null) ?? undefined,
+        notification_proof_ref: (row.notification_proof_ref as string | null) ?? undefined,
 		delivery_disposition: row.delivery_disposition === "audit_only" ? "audit_only" : "model",
 		seq: Number(row.seq),
 		lead_id: String(row.lead_id),

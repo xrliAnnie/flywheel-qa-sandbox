@@ -44,6 +44,7 @@ import {
 	ALERT_DUTY_LEAD_ID,
 	classifyInfraLetter,
 } from "./infra-event-router.js";
+import { buildLeadAuditSummaryOffer } from "./lead-audit-summary.js";
 import {
 	ClaudeLeadDeliveryAdapter,
 	CodexLeadDeliveryAdapter,
@@ -353,6 +354,15 @@ export class LeadInboxRuntime {
 						leadId: lead.agentId,
 						ownerEpoch: this.ownerEpoch,
 						adapter: adapterForLead(project, lead),
+						prepareAuditSummary: (input) =>
+							buildLeadAuditSummaryOffer({
+								store: opts.store,
+								queue,
+								projectName: project.projectName,
+								leadId: lead.agentId,
+								ownerEpoch: this.ownerEpoch,
+								...input,
+							}),
 						queueConfig: resolveMailboxQueueConfig,
 						recipientState: () =>
 							readLeadRecipientState({

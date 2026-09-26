@@ -12,6 +12,7 @@ import {
 	parseDiscordChatRoute,
 } from "flywheel-comm/discord-chat-ingest";
 import type {
+	LeadAuditSummaryReceipt,
 	MailboxAuditDecision,
 	MailboxQueue,
 	MailboxRecipientState,
@@ -71,6 +72,13 @@ export interface LeadInboxLoopOptions {
 	/** Durable audit mirror update, called only after the adapter receipt. */
 	markAuditDelivered?: (row: MailboxRow) => Promise<void> | void;
 	renderModelBatch?: (rows: readonly MailboxRow[]) => string;
+	/** Freeze a read-only summary for this existing transport batch. */
+	prepareAuditSummary?: (input: {
+		batchId: string;
+		transportBatchId: string;
+		memberIds: readonly string[];
+		now: string;
+	}) => { content: string; receipt: LeadAuditSummaryReceipt } | undefined;
 	/** FLY-1573: resolved exactly once at the beginning of a tick. */
 	queueConfig?: () => MailboxQueueConfig;
 	/** Process-incarnation liveness; unknown holds expired batches in place. */
@@ -491,6 +499,17 @@ export class LeadInboxLoop {
 			...route,
 		};
 		try {
+			const summary = this.opts.prepareAuditSummary?.({
+				batchId,
+				transportBatchId,
+				memberIds: transportMemberIds,
+				now: this.isoNow(),
+			});
+			if (summary?.content) {
+				const lastMember = batch.members.at(-1)!;
+				lastMember.content += `\n\n${summary.content}`;
+				batch.modelPayload += `\n\n${summary.content}`;
+			}
 			const receipt = await this.opts.adapter.deliverBatch(batch);
 			if (receipt.status === "membership_conflict") {
 				if (discord) {
@@ -530,6 +549,7 @@ export class LeadInboxLoop {
 					ownerEpoch: this.opts.ownerEpoch,
 					now: this.isoNow(),
 					ackLeaseTtlMs: queueConfig.ackLeaseMs,
+					auditSummaryReceipt: summary?.receipt,
 				}) === "lost_race"
 			) {
 				throw new Error("owner fence lost before queue delivery receipt");

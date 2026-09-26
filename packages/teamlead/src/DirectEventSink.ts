@@ -31,9 +31,19 @@ import {
 	reactivateChatThreadForStartedSession,
 	stateTimestampMs,
 } from "./bridge/done-thread-archiver.js";
-import type { EventFilter } from "./bridge/EventFilter.js";
+import {
+	type EventFilter,
+	leadNotificationDecision,
+} from "./bridge/EventFilter.js";
+import { storeLeadTokenSavingsEnabled } from "./bridge/flag-store-runtime.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
+import {
+	type StartupResult,
+	startupIngressPayload,
+	startupNotificationEvidence,
+	startupNotificationIdentity,
+} from "./bridge/lead-notification-evidence.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
 import {
@@ -237,6 +247,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const now = sqliteDatetime();
 		const existingSession = this.store.getSession(env.executionId);
 		const startedAt = existingSession?.started_at ?? now;
+		const notificationId = startupNotificationIdentity(
+			this.store,
+			env.executionId,
+			startedAt,
+		);
+		const startupResult: StartupResult = {
+			threadOutcome:
+				this.config.chatThreadsEnabled === false ? "not_required" : "unknown",
+			completed: false,
+		};
+
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
 		);
@@ -408,6 +429,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 								// the SAME (issue, channel) thread. `chat_thread_role` is still
 								// persisted on the session row (above) as the phase MARKER.
 							});
+							const persistedThread = this.store.getChatThreadByIssue(
+								env.issueId,
+								ctLead.chatChannel,
+							);
+							startupResult.threadOutcome =
+								result.threadId &&
+								!result.error &&
+								persistedThread?.thread_id === result.threadId &&
+								!persistedThread.archived_at
+									? "ready"
+									: "failed";
 							console.log(
 								`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
 							);
@@ -436,9 +468,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// FLY-907: a fresh session row (incl. an operator-reset's replacement
 			// exec) changes what all three display faces should show.
 			this.notifyDisplayChanged(env.issueId);
+			startupResult.completed = true;
 		} finally {
 			try {
-				this.pushNotification(env, "session_started");
+				this.pushNotification(env, "session_started", {
+					eventId: notificationId,
+					result: startupResult,
+				});
 			} finally {
 				const starter = makeLinearIssueStarter(this.config);
 				if (starter) {
@@ -1643,7 +1679,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		});
 	}
 
-	private pushNotification(env: EventEnvelope, eventType: string): void {
+	private pushNotification(
+		env: EventEnvelope,
+		eventType: string,
+		startup?: { eventId: string; result: StartupResult },
+	): void {
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
 
@@ -1653,17 +1693,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				`status=${session.status}`,
 		);
 
-		if (!this.registry) {
-			return;
-		}
+		const tokenSavingsEnabled = storeLeadTokenSavingsEnabled(
+			{ store: this.store },
+			env.projectName,
+		);
+		if (!this.registry && !(startup && tokenSavingsEnabled)) return;
 
 		try {
 			const labels = this.store.getSessionLabels(env.executionId);
-			const { runtime, lead } = this.registry.resolveWithLead(
-				this.projects,
-				env.projectName,
-				labels,
-			);
+			const { runtime, lead } = this.registry
+				? this.registry.resolveWithLead(this.projects, env.projectName, labels)
+				: {
+						...resolveLeadForIssue(this.projects, env.projectName, labels),
+						runtime: undefined,
+					};
 			const sessionKey = buildSessionKey(session);
 			const hookPayload: HookPayload = {
 				event_type: eventType,
@@ -1706,14 +1749,56 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				}
 
 				// FLY-47: Always deliver ALL events to Lead
-				const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
-				const seq = this.store.appendLeadEvent(
-					lead.agentId,
+				const eventId =
+					startup?.eventId ??
+					`direct-${env.executionId}-${eventType}-${Date.now()}`;
+				const binding = {
+					projectName: env.projectName,
+					leadId: lead.agentId,
 					eventId,
+					executionId: env.executionId,
+					issueId: env.issueId,
+				};
+				const evidence = startup
+					? startupNotificationEvidence(this.store, binding, startup.result)
+					: undefined;
+				if (evidence && hookPayload.notification_context)
+					evidence.templates = {
+						notification_context: hookPayload.notification_context,
+					};
+				const decision = leadNotificationDecision(
 					eventType,
-					JSON.stringify(hookPayload),
-					sessionKey,
+					startupIngressPayload(env),
+					evidence,
+					{
+						binding,
+						enabled: tokenSavingsEnabled,
+						projection: { ...hookPayload },
+					},
 				);
+				// ON retains model rows for durable replay even while the registry is absent.
+				const seq = startup
+					? this.store.appendLeadNotification({
+							binding,
+							eventType,
+							payload: JSON.stringify(hookPayload),
+							sessionKey,
+							evidence,
+							decision,
+						})
+					: this.store.appendLeadEvent(
+							lead.agentId,
+							eventId,
+							eventType,
+							JSON.stringify(hookPayload),
+							sessionKey,
+						);
+				if (
+					this.store.isLeadEventAuditOnly(seq, lead.agentId) ||
+					this.store.isLeadEventDelivered(lead.agentId, eventId) ||
+					!this.registry
+				)
+					return;
 				const envelope: LeadEventEnvelope = {
 					seq,
 					eventId,
@@ -1724,7 +1809,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				};
 				const result = await dispatchLeadEventCompat(
 					this.registry!,
-					runtime,
+					runtime!,
 					envelope,
 				);
 				if (result.delivered) this.store.markLeadEventDelivered(seq);

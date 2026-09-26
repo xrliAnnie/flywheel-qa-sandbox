@@ -525,6 +525,47 @@ describe("FLY-2912 notification v2", () => {
 			).toBe("model");
 		},
 	);
+	it("validates producer-bound monitoring details and numeric PR metadata", () => {
+		const probe = {
+			method: "tmux_pane_probe",
+			target: "runner:0",
+			result: "alive" as const,
+			probed_at: "2026-09-26T04:59:00Z",
+		};
+		const evidence = { ...cases[2][2], livenessProbe: probe };
+		const payload = {
+			status: "approved_to_ship",
+			liveness_probe: probe,
+			minutes_since_activity: 1.5,
+			concurrent_reestablished: 2,
+		};
+		expect(decide(cases[2][0], payload, evidence).disposition).toBe(
+			"audit_only",
+		);
+		expect(
+			decide(
+				cases[2][0],
+				{ ...payload, liveness_probe: { ...probe, target: "other" } },
+				evidence,
+			).disposition,
+		).toBe("model");
+		expect(
+			decide(
+				cases[2][0],
+				{ ...payload, liveness_probe: { ...probe, question: "reply" } },
+				evidence,
+			).disposition,
+		).toBe("model");
+		expect(
+			decide(cases[0][0], { ...cases[0][1], pr_number: 123 }, cases[0][2])
+				.disposition,
+		).toBe("audit_only");
+		expect(
+			decide(cases[0][0], { ...cases[0][1], pr_number: "123" }, cases[0][2])
+				.disposition,
+		).toBe("model");
+	});
+
 	it("does not resolve an inherited decision from running or unrelated receipt", () => {
 		const [type, payload, evidence] = cases[0];
 		const mixed = {

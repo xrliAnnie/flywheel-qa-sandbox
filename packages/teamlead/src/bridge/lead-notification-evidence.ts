@@ -19,6 +19,15 @@ interface NotificationProof {
 }
 
 interface NotificationEvidenceBase {
+	workflow?: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		activationId: string;
+		launchOrdinal?: number;
+		dispatchCreatedAt?: string;
+		purpose?: string;
+	};
 	version: 2;
 	binding: NotificationBinding;
 	proof: NotificationProof;
@@ -44,6 +53,13 @@ export type NotificationEvidenceV2 = NotificationEvidenceBase &
 				alertState: "none" | "resolved" | "open" | "unknown";
 				resolutionRef?: string;
 				legalPark?: boolean;
+				livenessProbe?: {
+					method: string;
+					target: string;
+					result: "alive";
+					probed_at: string;
+				};
+
 				recoveredLostEventIds?: readonly string[];
 		  }
 		| {
@@ -63,6 +79,10 @@ export interface NotificationDecisionContext {
 }
 
 const TEXT_METADATA = new Set([
+	"generated_at",
+	"workflow_event_id",
+	"workflow_run_id",
+	"workflow_node_id",
 	"event_type",
 	"execution_id",
 	"issue_id",
@@ -91,6 +111,11 @@ const TEXT_METADATA = new Set([
 	"next_check_disposition",
 ]);
 const NUMBER_METADATA = new Set([
+	"workflow_attempt",
+	"blind_replacements",
+	"max_blind_replacements",
+	"pr_number",
+	"concurrent_reestablished",
 	"commit_count",
 	"lines_added",
 	"lines_removed",
@@ -188,7 +213,12 @@ export function notificationPayloadIsPure(
 				!(
 					evidence.kind === "monitoring" &&
 					evidence.legalPark &&
-					["ship_parked", "phase_parked", "parked"].includes(String(value))
+					[
+						"ship_parked",
+						"awaiting_review",
+						"design_done",
+						"approved_to_ship",
+					].includes(String(value))
 				)
 			)
 				return false;
@@ -198,6 +228,40 @@ export function notificationPayloadIsPure(
 			key === "stage_context"
 		) {
 			if (value !== "" && value !== evidence.templates?.[key]) return false;
+		} else if (key === "liveness_probe") {
+			if (
+				evidence.kind !== "monitoring" ||
+				!evidence.livenessProbe ||
+				typeof value !== "object" ||
+				Array.isArray(value)
+			)
+				return false;
+			const probe = value as Record<string, unknown>;
+			if (
+				Object.keys(probe).length !== 4 ||
+				probe.method !== "tmux_pane_probe" ||
+				probe.result !== "alive" ||
+				typeof probe.target !== "string" ||
+				!probe.target ||
+				typeof probe.probed_at !== "string" ||
+				!Number.isFinite(Date.parse(probe.probed_at)) ||
+				!Object.keys(evidence.livenessProbe).every(
+					(field) =>
+						probe[field] ===
+						evidence.livenessProbe![
+							field as keyof typeof evidence.livenessProbe
+						],
+				)
+			)
+				return false;
+		} else if (key === "minutes_since_activity") {
+			if (
+				evidence.kind !== "monitoring" ||
+				typeof value !== "number" ||
+				!Number.isFinite(value) ||
+				value < 0
+			)
+				return false;
 		} else if (key === "filter_priority") {
 			if (!["high", "normal", "low"].includes(String(value))) return false;
 		} else if (key === "issue_labels") {
@@ -215,4 +279,178 @@ export function notificationPayloadIsPure(
 		}
 	}
 	return true;
+}
+
+export interface StartupResult {
+	threadOutcome: "not_required" | "ready" | "failed" | "unknown";
+	completed: boolean;
+}
+
+/** Read already committed admission/dispatch facts; never require future worktree CAS. */
+export function startupNotificationIdentity(
+	store: import("../StateStore.js").StateStore,
+	executionId: string,
+	startedAt: string,
+): string {
+	try {
+		const node = store.getWorkflowRunNodeForExecution(executionId);
+		const activation =
+			node &&
+			store.getWorkflowActivationForAttempt({
+				executionId,
+				runId: node.run_id,
+				nodeId: node.node_id,
+				attempt: node.attempt,
+			});
+		return `direct-started:${executionId}:${activation?.activation_id ?? startedAt}`;
+	} catch {
+		return `direct-started:${executionId}:${startedAt}`;
+	}
+}
+
+export function startupNotificationEvidence(
+	store: import("../StateStore.js").StateStore,
+	binding: NotificationBinding,
+	outcome: StartupResult,
+): NotificationEvidenceV2 {
+	const sourceRef = `session-event:${binding.eventId}:proof`;
+	const evidence: NotificationEvidenceV2 = {
+		version: 2,
+		kind: "startup",
+		binding,
+		proof: {
+			sourceRef,
+			executionId: binding.executionId,
+			action: { state: "unknown" },
+		},
+		registrationRef: "",
+		handoff: "unknown",
+		threadOutcome: outcome.threadOutcome,
+	};
+	try {
+		const session = store.getSession(binding.executionId);
+		if (
+			!session ||
+			session.project_name !== binding.projectName ||
+			session.issue_id !== binding.issueId ||
+			session.status !== "running"
+		)
+			return evidence;
+		evidence.registrationRef = `session:${session.execution_id}:${session.started_at}`;
+		const node = store.getWorkflowRunNodeForExecution(binding.executionId);
+		if (!node) return evidence;
+		const run = store.getWorkflowRun(node.run_id);
+		const activation = store.getWorkflowActivationForAttempt({
+			executionId: binding.executionId,
+			runId: node.run_id,
+			nodeId: node.node_id,
+			attempt: node.attempt,
+		});
+		const latest = store.listWorkflowRunNodes(node.run_id, node.node_id).at(-1);
+		if (
+			!run ||
+			run.engine_owned !== 1 ||
+			run.status !== "active" ||
+			run.project_name !== binding.projectName ||
+			run.issue_id !== binding.issueId ||
+			run.current_node_id !== node.node_id ||
+			!["admitted", "running"].includes(node.state) ||
+			latest?.attempt !== node.attempt ||
+			latest.execution_id !== binding.executionId ||
+			!activation ||
+			session.workflow_node_id !== node.node_id
+		)
+			return evidence;
+		const dispatch = store
+			.listWorkflowSideEffects(node.run_id)
+			.filter(
+				(row) =>
+					row.kind === "dispatch" &&
+					row.node_id === node.node_id &&
+					row.attempt === node.attempt,
+			)
+			.at(-1);
+		if (
+			!dispatch ||
+			dispatch.execution_id !== binding.executionId ||
+			dispatch.state === "abandoned"
+		)
+			return evidence;
+		if (
+			session.retry_predecessor ||
+			(session.run_attempt ?? 1) > 1 ||
+			activation.mode !== "spawn" ||
+			dispatch.purpose !== "initial"
+		) {
+			evidence.handoff = "lead_required";
+			return evidence;
+		}
+		evidence.handoff = "initial_notice";
+		evidence.workflow = {
+			runId: node.run_id,
+			nodeId: node.node_id,
+			attempt: node.attempt,
+			activationId: activation.activation_id,
+			launchOrdinal: dispatch.launch_ordinal,
+			dispatchCreatedAt: dispatch.created_at,
+			purpose: dispatch.purpose,
+		};
+		// Failures in the try body still execute finally; a running row cannot erase them.
+		if (outcome.completed && !session.decision_route && !session.last_error) {
+			evidence.proof.action = {
+				state: "none",
+				checkedRefs: [
+					evidence.registrationRef,
+					activation.activation_id,
+					`workflow-dispatch:${dispatch.id}:${dispatch.launch_ordinal}`,
+				],
+			};
+		}
+		return evidence;
+	} catch {
+		// Unavailable authority restores immediate delivery, never drops the notification.
+		evidence.proof.action = { state: "unknown" };
+		return evidence;
+	}
+}
+
+/** Preserve unrecognised extensions for the conservative payload guard. */
+export function startupIngressPayload(
+	env: import("flywheel-edge-worker").EventEnvelope,
+): Record<string, unknown> {
+	const fields: Record<string, string> = {
+		executionId: "execution_id",
+		issueId: "issue_id",
+		projectName: "project_name",
+		issueIdentifier: "issue_identifier",
+		issueTitle: "issue_title",
+		labels: "issue_labels",
+		sessionRole: "session_role",
+		designBackend: "design_backend",
+		runnerBackend: "runner_backend",
+		runnerModel: "runner_model",
+		runAttempt: "run_attempt",
+	};
+	const trustedMetadata = new Set([
+		"routeSummary",
+		"chatThreadRole",
+		"ponytailCondition",
+		"skillFrameworkMode",
+		"skillFrameworkModeVia",
+		"docTier",
+		"issueUrl",
+	]);
+	const payload: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (
+			trustedMetadata.has(key) &&
+			(value == null || typeof value === "string")
+		)
+			continue;
+		if (key === "codexSkip" && (value == null || typeof value === "boolean"))
+			continue;
+		if (key === "retryPredecessor" && !value) continue;
+		payload[fields[key] ?? key] = value;
+	}
+	return payload;
 }
