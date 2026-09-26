@@ -1,20 +1,19 @@
 sequenceDiagram
   participant N as Node（start 或 stop）
-  participant H as 持锁 helper（lockf / flock / python3）
+  participant C as 加锁子进程（lockf / flock / python3）
   participant K as 内核锁 slotDir/voice-run.guard
   participant O as 同 slot 的另一个 start/stop
-  N->>H: spawn，stdin 用管道系留
-  H->>K: 申请独占锁（最多等 15 秒）
-  K-->>H: 拿到
-  H-->>N: 打印 held
-  Note over N: 进入关键区：查回执 / 建锁 / 写回执 / 收尾
-  O->>K: 申请独占锁
-  Note over O,K: 被挡住，直到 helper 退出
+  N->>N: 自己 open 锁文件得到 fd（文件永不删除）
+  N->>C: spawn，把 fd 映射为子进程的 fd 3
+  C->>K: 对 fd 3 申请独占锁（最多等 15 秒）
+  K-->>C: 拿到（锁落在 Node 也持有的那个打开文件上）
+  C-->>N: 退出码 0 = 已持锁；75/1 = 忙
+  Note over N: 进入关键区：查回执 / 建锁 / 写回执 / 收尾（持锁者就是改文件的进程）
+  O->>K: 另一个加锁子进程申请
+  Note over O,K: 被挡住，直到 Node 关闭 fd
   alt N 正常结束
-    N->>H: 关闭 stdin
-    H->>K: 进程退出，内核自动释放
+    N->>K: finally 关闭 fd → 内核释放
   else N 崩溃或被 SIGKILL
-    Note over N,H: 管道断开 → helper 读到 EOF 退出
-    H->>K: 内核自动释放（没有回收步骤）
+    Note over N,K: 进程消失，内核关闭它的 fd → 自动释放，没有回收步骤
   end
   K-->>O: 拿到，进入关键区并先重读回执

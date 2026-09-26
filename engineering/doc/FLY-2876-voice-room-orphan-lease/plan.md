@@ -187,6 +187,47 @@ D2 用协议模型证明了两点：(D2-1 HIGH) 第 17 条把房间租约的 ren
 
 **评审环境说明。** Codex 沙箱内 `ps` 为 `EPERM`；T10–T18 依赖真实子进程与 `lockf`/`flock`/`python3`，实现节点需在本机与 CI 各跑一次。
 
+## 设计评审 D3 后修订（2026-09-26，Codex gpt-6-astra xhigh，CHANGES REQUESTED）— 持锁者改为 Node 自己保留的 fd
+
+D3 接受了"取消目录回收、保留第 29 条关键区、阻塞式时序测试"三个方向，但用执行证据指出第 25–27 条的 stdin 系留 helper 协议不能直接实现：
+(D3-1 HIGH) helper 独占持锁 fd，而改文件的是 Node：helper 先被 SIGKILL 时内核释放锁，Node 的同步关键区并不会停下，竞争者进来后旧 Node 仍完成删除/写回（实测 `parentMutatedAfterLockLost=true`）；
+(D3-2 HIGH) macOS `lockf file command` 默认在命令结束时**删除**文件，需 `-k` 才保留，与第 24 条矛盾（实测 `retainedGuardExists=false`，且旧 inode 持有者与新 inode 持有者并存）；
+(D3-3 HIGH) `lockf/flock … cat` 不会打印 `held`，python `print` 未 flush 又阻塞在 `stdin.read()` ⇒ 首次无竞争取锁即死等。
+
+三条都接受。修法采用 Codex 实测可行、也是仓库 `scripts/lib/qa-slot-bridge.sh` `qa_slot_bridge_guard_acquire`（fd 6 由父进程保留，子进程只通过继承 fd 加锁后退出）的模式。第 25–27 条整体作废，由下列条款替代；第 24、28–32 条保持。
+
+33. **持锁者 = 执行关键区的 Node 进程本身。** `withVoiceRunGuard(slotDir, fn, {timeoutMs=15000})`（async）每次调用独立
+    `fd = openSync(<slotDir>/voice-run.guard, O_CREAT|O_RDWR|O_NOFOLLOW, 0o600)`（路径先经 `trusted()`，文件永不 unlink），
+    然后 spawn 一个**只负责加锁的子进程**，把 `fd` 显式映射到子进程的 fd 3：`stdio: ['ignore','ignore','pipe', fd]`。
+    锁作用在共享的 open file description 上：子进程加锁成功后退出，锁仍由 Node 持有的 `fd` 承载。
+34. **加锁子进程按仓库既有顺序选后端，且全部用 fd 形式（不接触路径，因此不删文件、不换 inode）：**
+    `lockf -t <s> 3`（macOS/BSD，fd 模式隐含保留）→ `flock -w <s> 3`（Linux util-linux fd 形式）→ `python3 -c "import fcntl,sys,time; … fcntl.flock(3, LOCK_EX|LOCK_NB) 轮询到期限 … sys.exit(0) / sys.exit(75)"`。
+    三者都不存在 ⇒ `closeSync(fd)` 后 `voice_run_guard_unavailable`，fail closed。
+35. **确认 = 子进程退出码**，没有文本握手：rc 0 ⇒ 已持锁，进入 `fn`；rc 75（lockf/python）或 1（flock）⇒ `closeSync(fd)` 后 `voice_run_guard_busy`；
+    其他 rc、被信号杀死、spawn 失败 ⇒ `closeSync(fd)` 后 `voice_run_guard_failed`（不进入 `fn`）。子进程 stderr 捕获进错误信息。
+    子进程超过 `timeoutMs + 2s` 仍未退出 ⇒ `SIGKILL` 它并按失败处理（锁若已在 open file description 上，随 Node 的 `closeSync` 一并释放）。
+36. **释放合同**：`fn` 的 `finally` 里 `closeSync(fd)`；Node 进程崩溃 / 被 SIGKILL 时内核关闭其 fd ⇒ 释放。没有任何回收步骤。
+    D3-1 的"持锁者与改文件者分离"不再存在：持锁者就是改文件的进程，锁的生命周期 ⊇ 关键区。
+37. **daemon 不继承 guard fd（第 28 条加强）**：`fd` 只在加锁子进程的 `stdio` 中显式传递；daemon 的 spawn 使用 `['ignore', logFd, logFd]`，libuv 不传递未列出的 fd
+    （macOS `POSIX_SPAWN_CLOEXEC_DEFAULT`，Linux exec 前关闭未显式传递的 fd；Codex 已在 macOS 实测"daemon 存活、Node 被杀、锁仍释放"）。`openSync` 得到的 fd 在 Node 内默认 CLOEXEC。
+38. **同一 Node 进程内的重入**：`withVoiceRunGuard` 不可重入（同进程第二次调用会因同一 open file description 已持锁而……
+    实际上 `flock` 对同一进程新打开的 fd 是**不同** open file description，会互斥 ⇒ 死等到超时）。实现禁止在 `fn` 内再次调用 guard；`start`/`stop` 的三段关键区各自独立进出。
+39. **等待**在加锁子进程内（`-t/-w`/轮询），Node 事件循环不阻塞；不使用 `Atomics.wait`。
+40. 第 24 条"永不 unlink"的保障现在由 fd 形式给出：任何后端都不接触路径。第 31 条跨 slot 论证在本节前提下成立（同 slot 关键区由同一 guard 文件的 open file description 锁串行）。
+
+**测试修订（在 D2 的 T10–T18 基础上）：**
+
+| # | 修订 |
+|---|------|
+| T14 | 杀的是**执行关键区的 Node**（`SIGKILL`）⇒ 下一次 guard 立即成功；活持有者时 `timeoutMs=300` ⇒ `voice_run_guard_busy` |
+| T16 | 三竞争者 + 被 SIGKILL 的前持有者：并发计数 ≤ 1；**正常释放后 guard 的 inode 不变**；本机可用后端混合竞争（lockf 与 python3 各持一方）仍互斥 |
+| T19（新） | 每后端单进程无竞争 smoke：`fn` 及时进入并返回；`fn` 抛异常仍释放（随后另一进程能立即取锁）；guard 文件仍在 |
+| T20（新） | 加锁子进程在退出前被父级 SIGKILL ⇒ 不进入 `fn`，报 `voice_run_guard_failed`，fd 已关，另一进程能立即取锁 |
+| T17 | 与"Node 被 SIGKILL"组合：daemon 存活、Node 死 ⇒ 锁释放，`stop` 能进 guard |
+| T18 | 三后端都缺 ⇒ `voice_run_guard_unavailable`，guard 文件可存在但无锁，不建锁、不写回执 |
+
+**评审环境说明。** Codex 在 macOS + Node v25 上实测了 fd 模式（`lockf -t 1 3` 与 `fcntl.flock(3)`）：加锁子进程退出 0 后竞争者得 75，父进程 close 后竞争者得 0，guard 文件仍在；Linux `flock -w <s> 3` 只核对了 util-linux 源码，须在 CI 验证。
+
 ## 已知限制
 
 - 合入前遗留的租约没有 `holder`/`daemon` 字段；若其回执也已删除，但一个未登记的旧 daemon 仍在跑，本判定无法识别，会按孤儿回收。
@@ -194,7 +235,8 @@ D2 用协议模型证明了两点：(D2-1 HIGH) 第 17 条把房间租约的 ren
 - 两个并发回收者同时抢一把**真正的孤儿**锁时，沿用 #1323 的墓碑 rename→复核→放回流程；「放回」那一步与第三个创建者之间的理论窗口
   是 #1323 已有行为，本单不另加互斥锁（Lead 裁定）。
 - 回执停在 `STARTED` 而 `stop` 又因 Bridge 不可用 / 会话不存在（404）失败时，该锁要等该 slot 下一次 teardown（Step 6b）才释放。
-- guard 依赖 `lockf` / `flock` / `python3` 三者之一；都缺失时 `start`/`stop` fail closed（`voice_run_guard_unavailable`），这是接受的可用性限制。
+- guard 依赖 `lockf` / `flock` / `python3` 三者之一（均为 fd 形式）；都缺失时 `start`/`stop` fail closed（`voice_run_guard_unavailable`），这是接受的可用性限制。
+- `withVoiceRunGuard` 不可重入（同进程新 fd 是不同的 open file description，会自我互斥到超时）；实现以约定 + T19 保证不嵌套。
 - teardown 与 `stop` 并发操作同一 slot 仍不受保护（两者都是该 slot 的操作者）。
 
 ## 测试（先红后绿，`scripts/__tests__/fly2655-voice-room.test.mjs`，用临时 `root` + 临时 slot 目录，不碰真实 `/tmp` 租约）
