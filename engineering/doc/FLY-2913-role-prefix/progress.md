@@ -1,13 +1,15 @@
 ---
 issue: FLY-2913
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-26T04:15:32.357Z
-nextStep: Validate evidence and plan; commit and request effective design review
+phaseCursor: 4/6
+updated: 2026-09-26T04:21:02.863Z
+nextStep: Poll design gate c2bc9590-4a99-4032-97fd-aad2ddc17fb5 request
+  82f72478-f361-485a-be8c-4d1affa2035f; after effective approval publish
+  report.html, verify hosted content, report, complete and park
 chunks: []
 pointers: {}
 ---
 
 # FLY-2913 progress
-**phase**: design (3/6)
-**next**: Validate evidence and plan; commit and request effective design review
+**phase**: design (4/6)
+**next**: Poll design gate c2bc9590-4a99-4032-97fd-aad2ddc17fb5 request 82f72478-f361-485a-be8c-4d1affa2035f; after effective approval publish report.html, verify hosted content, report, complete and park
