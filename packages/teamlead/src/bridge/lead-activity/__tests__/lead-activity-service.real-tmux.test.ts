@@ -113,6 +113,8 @@ describe.skipIf(!hasTools)(
 					].join("\n"),
 				);
 				rows.push({ label, plist, manifest });
+				// Registered first: a client timeout can still leave a live server.
+				sockets.push(socket);
 				execFileSync(
 					"tmux",
 					[
@@ -133,7 +135,6 @@ describe.skipIf(!hasTools)(
 					],
 					{ env: launchdLikeEnv(process.env), timeout: 5000 },
 				);
-				sockets.push(socket);
 			}
 			writeFileSync(registry, JSON.stringify(rows));
 			// Ready once the pane's bash has its Claude child (screen printed).
