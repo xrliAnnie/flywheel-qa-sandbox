@@ -131,3 +131,20 @@ Codex 代码评审 R1（gpt-5.6-sol xhigh）给了 1 HIGH、1 MEDIUM，都已修
 - teamlead：`vitest related src/bridge/voice-session-context.ts src/__tests__/voice-handoff.test.ts` 共 110 个文件，1,323 过、7 失败。
   - 7 条都是 5 s 超时，出现在 `bridge.test.ts` 和 `event-route.codex-trigger.test.ts`，当时 load1 81–135。
   - 两个文件单独重跑，65/66 过；剩下的 `routes QA report publishing` 单独跑也过（3.1 s）。
+
+## 代码评审 R2 的修复（`407daf94d`）
+
+R2 确认 container 复算的修复完整。剩 1 条 HIGH：final 晚于 2 s 等待时限到达时，块已结算、pending 已清掉，晚到的 final 仍然绕过越界检查和截断，还可能被当成下一个块的 final。上游没有 2 s 送达保证。
+
+修复：
+- 已发出的块若在 final 到达前结算，留下一个「final 待核」记录（最长 30 s，与计划 T5c ③ 截断标记的上限一致）。晚到的 final 按该块自己的期望文本检查；越界就静音、截断镜像，并写审计（`late: true`）。
+- 记录存在期间不发出任何别的朗读块。
+- final 不带回合 id，所以一出现新的用户回合或另一个 assistant 回合，记录立即作废，之后的回答不会拿旧句子去对齐。
+- 越界已处置、确认无声（重试念的是同一句）、换代和关闭这四种情况都不留记录。
+
+新增测试：
+- speaker 四条：晚到 final 越界 ⇒ 截断、审计，下一块等它落地后才发出；插话后晚到的 final 仍截断；founder 新回合 / 另一 assistant 回合之后的 final 不被误判，且阻挡解除；换代清掉记录。
+- 房间一条：2 s 后到的 final 仍截断镜像，随后 founder 新问题的回答原样保留。
+- 负对照：不留记录时，房间和插话两条失败。
+
+验证：`pnpm lint`、`pnpm --filter "flywheel-voice-codex..." build`、`pnpm --filter "...flywheel-voice-codex" typecheck` 全部 exit 0；voice-codex `vitest related src/codex/CodexProofSpeaker.ts` 4 个文件 81/81 过。
