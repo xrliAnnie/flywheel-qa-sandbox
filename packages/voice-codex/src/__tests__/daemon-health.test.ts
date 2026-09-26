@@ -413,7 +413,7 @@ describe("VoiceDaemon health observations", () => {
 			await expect(daemon.runOnce()).resolves.toEqual({
 				kind: "session_failed",
 				sessionId: SESSION_ID,
-				reason: "Error:runtime primary raw secret",
+				reason: `Error:${runtimeError}`,
 			});
 			expect(order).toEqual(["health", "evidence", "terminal"]);
 			expect(health.observe).toHaveBeenCalledWith(
@@ -437,7 +437,7 @@ describe("VoiceDaemon health observations", () => {
 			);
 			expect(remove).not.toHaveBeenCalled();
 			const logged = log.mock.calls.flat().join(" ");
-			expect(logged).toContain("Error:runtime primary raw secret");
+			expect(logged).toContain(`Error:${runtimeError}`);
 			expect(logged).not.toContain(raw);
 		} finally {
 			log.mockRestore();

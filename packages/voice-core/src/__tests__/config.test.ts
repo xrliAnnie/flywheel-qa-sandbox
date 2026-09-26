@@ -32,7 +32,7 @@ describe("resolveConfig", () => {
 		expect(c.timeouts.brainMs).toBe(120_000);
 	});
 
-	it("carries no retired converse-backend config (FLY-2860)", () => {
+	it("carries no retired converse-backend config (FLY-2860); OpenAI Live stays (FLY-2798)", () => {
 		const c = resolveConfig({}, {} as NodeJS.ProcessEnv);
 		expect(Object.keys(c).sort()).toEqual([
 			"afplayBin",
@@ -44,6 +44,7 @@ describe("resolveConfig", () => {
 			"ffplayBin",
 			"identityFile",
 			"micDevice",
+			"openaiLive",
 			"timeouts",
 			"transcriptDir",
 			"voice",

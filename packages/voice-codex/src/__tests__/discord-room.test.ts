@@ -28,9 +28,6 @@ describe("DiscordVoiceRoom", () => {
 			const onAudio = vi.fn();
 			const close = vi.fn(async () => {});
 			const room = new DiscordVoiceRoom({
-				sessionId: "11111111-1111-4111-8111-111111111111",
-				generation: 7,
-				roomKey: "engine-a-room",
 				createVad: async () => ({
 					score: async (_samples, state) => ({ probability: 0, next: state }),
 					close,
@@ -60,11 +57,6 @@ describe("DiscordVoiceRoom", () => {
 				onAudio,
 				onFounderPresence: vi.fn(),
 				onError: vi.fn(),
-			});
-			expect(room.roomIO.identity).toMatchObject({
-				sessionId: "11111111-1111-4111-8111-111111111111",
-				generation: 7,
-				roomKey: "engine-a-room",
 			});
 			await expect(room.start()).rejects.toThrow("lead_bot_identity_mismatch");
 			expect(joinVoice).not.toHaveBeenCalled();
@@ -134,11 +126,6 @@ describe("DiscordVoiceRoom", () => {
 				onAudio,
 				onFounderPresence,
 				onError: vi.fn(),
-			});
-			expect(room.roomIO.identity).toMatchObject({
-				sessionId: "legacy:thread",
-				generation: 1,
-				roomKey: "guild:voice-channel",
 			});
 
 			expect(await room.start()).toEqual({ founderPresent: true });

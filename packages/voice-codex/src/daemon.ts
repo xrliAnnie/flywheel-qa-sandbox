@@ -835,7 +835,10 @@ export class VoiceDaemon {
 		return this.runtimeReason(String(error));
 	}
 
-	private safeRuntimeCauseCode(reason: string): string {
+	private safeRuntimeCauseCode(raw: string): string {
+		// A thrown error's reason carries its name (runtimeErrorReason); a
+		// session outcome's does not. Classify both the same way.
+		const reason = raw.replace(/^[A-Za-z]*Error:/u, "");
 		if (reason === "discord_audio:Cannot perform IP discovery - socket closed")
 			return "discord_audio_ip_discovery_socket_closed";
 		if (reason.startsWith("discord_audio:")) return "discord_audio_failure";
