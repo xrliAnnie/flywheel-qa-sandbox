@@ -120,3 +120,19 @@ QA@3 在 `f8e5d048` 判 FAIL：B1（生产布局 broker socket 111 字节 > 100�
 
 续（Lead `86cd5924` 与 R6 之后）：voice-codex related（容器 + 守护进程）3 文件 112/112；teamlead `vitest related broker-socket/voice-capability-parent` 23 文件 380/381，唯一红为 `codex-lead-tui-runtime.rotation` 一例 5s 超时（该文件自 `f8e5d048` 未改，负载 108–175 下单独以 30s 超时复跑 53/53 通过，归负载）；wall-clock 守卫、census、kill-path 通过；lint 0 error；构建与依赖方 typecheck 通过；`/private/tmp/fw-vcap-*` 零残留。评审按 Lead 改走 Bridge 评审门（`request-review --type code`）。
 
+
+## 第五次恢复（QA@4 FAIL 返工，claim 1656，2026-09-26）
+
+QA@4 在 `f86fb1385` 判 FAIL：D1 后台不会用 Lead 能力、D2 结果回来整场断掉、D3 capability home 被 Codex 自装 4 个远端插件。上一具体 f14ad10b 的未交卷改动由 Lead 原样提交为 `c5f25ae33`（D2 续播 / 退役 / 重开不重跑全量自检 + 插件开关与准入校验），本体在其上续做并用真宿主探针定因（`evidence/qa4-rework/`，verification §8）。
+
+| 提交 | 内容 |
+|---|---|
+| `c5f25ae33` | （接手的 WIP）cue 退役不打断、`not_live` 视为 deferred 续播、换代只核租约、`features.plugins/remote_plugin=false` + 准入校验、后台指南初版 |
+| `80c6b4610` | D1：共享 `describeOperationInput` 展开判别联合（`bridge.read` 原为 `{request: any}`）；语音会话参数校验失败回有界字段提示 + 期望结构（常驻回包逐字节不变）；每次后台 `lead_operation` 记 `codex_background_lead_operation` 证据（只含 id 与 status/errorCode） |
+| `98a489496` | D3：scribe home 也加 `remote_plugin = false` |
+
+D1 根因（真宿主探针，订阅、零桩）：代理把 `lead_operation` 的 inputSchema 声明为顶层 `oneOf`，Codex 交给模型时结构丢失；无指南时模型传 `{}`，有旧指南时 `bridge.read` 被渲染成 `any`，连猜三次都只拿到裸 `invalid_operation_request`，于是说「没有查询入口」。修后首发即合法调用。读操作按设计不落 `lead_operation_receipts`（只有写才有回执），QA@4 用该表 0 行判「一次都没调用」只对写成立；读的取证改看 `codex_background_lead_operation` 证据或写操作回执。
+
+D2 根因（真宿主对照组）：不加开关时，订阅账号会话中途自装 `openai-curated-remote` 插件，其后 `skills/list` 核验变成 `capability_skills_unverified`；换代时重跑全量自检就把这一漂移变成整场失败。修法三层：插件不许装（开关，实测生效）、换代不重跑全量自检（只核租约 + 漂移记证据）、结果遇 `not_live` 续播不丢。
+
+验证（定向）：voice-codex `vitest related`（7 个改动文件）8 文件 191/191；teamlead `vitest related`（3 个叶子文件）29 文件 491/491 + `voice-handoff` 13/13；`pnpm lint` 退出 0；voice-codex 及依赖构建、teamlead/voice-codex 依赖方 typecheck 通过；已合入 `origin/main`（`a082f110a`）。消费者排除：`codex-home` / `session` 在 claude-runner、edge-worker、flywheel-comm 的命中是同名不同模块。完整语音会话（realtime 需 API key）、换代续播的真房复现、写操作与 founder 门归 529 房 QA。

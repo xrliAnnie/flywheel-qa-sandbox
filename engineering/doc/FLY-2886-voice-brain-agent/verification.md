@@ -104,3 +104,15 @@ Issue: FLY-2886 (https://linear.app/geoforge3d/issue/FLY-2886/语音b核心大�
 - 真 `codesign --verify --deep`：旧同步形态单次阻塞 26,963 ms；异步实现 23 s 内事件循环最大阻塞 19 ms。
 - §4 的预演用短临时根，遮住了 B1；此后真宿主预演一律用生产同长的根。
 
+
+## 8. QA@4 返工：后台真宿主探针（`evidence/qa4-rework/`）
+
+脚本 `bg-lead-operation-probe.mjs`：生产同长 voice 根、真 codex 0.156.1、订阅 auth realpath 到生产 `auth.json`、零桩；capability app-server 用容器同一 argv 与 `thread/start` 参数，发一条「查 FLY-2886 状态」回合。Bridge 指向不可达地址，所以成功派发的读返回 `provider_unknown`。
+
+| 场景 | 结果 |
+|---|---|
+| 无操作指南（QA@4 头形态） | `lead_operation` 参数 `{}` → `invalid_operation_request`，答「没有 Bridge 状态查询入口」（复现 D1） |
+| 旧指南（联合渲染成 `any`） | 连猜 3 种 `input.request` 形状全被拒 |
+| 新指南 | 首发 `bridge.read {request:{resource:"sessions.list",limit:50}}` 合法派发；强制 code mode 同样合法派发并追加 `list_runners` |
+| 不加插件开关（对照） | features `remote_plugin=true`；回合后 `plugins/cache/openai-curated-remote` 出现；`skills/list` 核验 `capability_skills_unverified`（复现 D2 触发点 / D3） |
+| 加 `features.plugins=false` + `remote_plugin=false` | 回合前后都零插件目录，技能核验前后都通过 |
