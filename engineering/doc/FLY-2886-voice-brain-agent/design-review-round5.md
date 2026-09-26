@@ -28,3 +28,17 @@ NEW_BLOCKERS: none
 ## 结论
 
 APPROVED。可以按 plan.md v5 进入实现；代码评审必须按 plan §4.3 Lead 条件 3 专门核查「终态证据分类」和「draining 只检查约束」。
+
+## §5.3 scoped 复核追记（v6–v10）
+
+Bridge `request-review` 因本 execution 缺 immutable worktree binding 持续返回 422；Lead 因而在 runner sandbox 外用 `gpt-6-astra`、`xhigh`、read-only 连续执行五轮 scoped 复核，并以回执 `c757cb0b-fefc-47a6-acd1-863a3686df68` 裁定这五轮构成本修正的 effective design review。原件路径如下：
+
+| 版本 / 固定提交 | 结论 | 原件 |
+|---|---|---|
+| v6 / `72a46686a` | `CHANGES_REQUESTED` | `~/.flywheel/qa-evidence/FLY-2886/review-v6-s5.3-72a46686a.out` |
+| v7 / `1acd3ae2e` | `CHANGES_REQUESTED` | `~/.flywheel/qa-evidence/FLY-2886/review-v7-s5.3-1acd3ae2e.out` |
+| v8 / `ca14cbea1` | `CHANGES_REQUESTED` | `~/.flywheel/qa-evidence/FLY-2886/review-v8-s5.3-ca14cbea1.out` |
+| v9 / `c0b3d907a` | `CHANGES_REQUESTED` | `~/.flywheel/qa-evidence/FLY-2886/review-v9-s5.3-c0b3d907a.out` |
+| v10 / `87cce6869` | `APPROVED`，prior 两条均 `CLOSED`，`FINDINGS: none` | `~/.flywheel/qa-evidence/FLY-2886/review-v10-s5.3-87cce6869.out` |
+
+v10 批准的实现边界：逐帧 owner ledger 保留到消费或撤回；选择性重建只移除目标 `speechId`，其他未消费帧按原序且恰好重放一次；整个 live-context 撤回路径对 realtime `cancel/stop` 的调用数为零。真实语音 build-bound 准入仍属于 QA 门，不由设计批准替代。
