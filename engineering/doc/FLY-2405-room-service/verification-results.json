@@ -2,10 +2,13 @@
   "schema": 1,
   "issue": "FLY-2405",
   "partial": true,
-  "recorded_at": "2026-09-26T19:32:15.238138+00:00",
-  "observed_head": "e5fba9aeddccff3c081c4dcf8e9fbf45fcfb0380",
+  "recorded_at": "2026-09-26T19:36:25.500620+00:00",
+  "observed_head": "a9857f3f734f9c193014dcc08be179f2a1f7839a",
   "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
-  "subsequent_changes": "progress.md only; source-byte identity preserved",
+  "subsequent_changes": [
+    "engineering/doc/FLY-2405-room-service/progress.md",
+    "engineering/doc/FLY-2405-room-service/verification-results.json"
+  ],
   "source_sha256": {
     ".flywheel/agents/nodes/qa.md": "fff1ccf344f4f919168033a0bace2e0a540400dec8696745b9c111d5ba985524",
     "packages/claude-runner/test/fixtures/kill-path-inventory.json": "c972dbc98eea918b4ae0ac9886e8e1b0a5c10d19c211b1af1a0096c3c666c247",
@@ -398,10 +401,46 @@
       ],
       "failures": [],
       "unhandled": []
+    },
+    {
+      "name": "teamlead-event-route.test",
+      "cwd": "packages/teamlead",
+      "args": [
+        "pnpm",
+        "exec",
+        "vitest",
+        "run",
+        "src/__tests__/event-route.test.ts",
+        "--maxWorkers=1"
+      ],
+      "log": "/tmp/fly2405-postsync-teamlead-event-route.test.log",
+      "exit": 1,
+      "seconds": 447.46,
+      "source_revision": "9821cb8dfa2bf71bce3cdffab79cc59fad1f28ec",
+      "log_sha256": "6a058912a2cecd54daf674684ad94bb66729c08c4df61432d0cf434afee27e67",
+      "summary": [
+        "\n\n Test Files  1 failed (1)",
+        "      Tests  4 failed | 108 passed (112)"
+      ],
+      "failures": [
+        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > admits same-repository distinct PR declarations and freezes their authoritative heads",
+        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects declared PR authority when duplicates_primary",
+        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > rejects a forged generalized completion until the current artifact has founder_review pass",
+        " FAIL  |serial| src/__tests__/event-route.test.ts > Event route > books replacement completion against the explicit activation and TURN epoch"
+      ],
+      "unhandled": []
     }
   ],
   "pending_commands_file": "/tmp/fly2405-postsync-commands.json",
-  "post_sync_session": 3117,
+  "post_sync_scheduling": {
+    "at": "2026-09-26T19:35:23.697551+00:00",
+    "reason": "host load observed 205.42 and large compressed memory; serialize our own test jobs",
+    "original_session": 89513,
+    "stopped_session": 3117,
+    "interrupted_concrete_test": "src/__tests__/flag-routes.test.ts",
+    "interrupted_log": "/tmp/fly2405-postsync-teamlead-flag-routes.test.log",
+    "resume": "After original related finishes, resume commands skipping completed names. event-route finished exit1 immediately before cancellation; retain its result and inspect failures for exact retries. flag-routes is interrupted and must rerun; it has no completed result."
+  },
   "original_related": {
     "session": 89513,
     "log": "/tmp/fly2405-related-teamlead.log",
@@ -448,6 +487,16 @@
         "records each lifecycle revision once without reusing an event UID"
       ],
       "reason": "5s timeout; pending default-threshold retry"
+    },
+    "event-route": {
+      "file": "src/__tests__/event-route.test.ts",
+      "cases": [
+        "admits same-repository distinct PR declarations and freezes their authoritative heads",
+        "rejects declared PR authority when duplicates_primary",
+        "rejects a forged generalized completion until the current artifact has founder_review pass",
+        "books replacement completion against the explicit activation and TURN epoch"
+      ],
+      "reason": "3 test timeouts and one 409-vs-200 assertion; unresolved pending exact retry"
     }
   },
   "review_policy": {
