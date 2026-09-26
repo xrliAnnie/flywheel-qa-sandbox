@@ -53,5 +53,6 @@ teamlead 的 `tsc` 不清理已删源文件的旧产物：已部署机器上 `di
 - parity drill 的 P15 代表操作改为 `memory.search` 后，`parity-drill.test.ts` 的 fixture 里没有 `memory.*` 调用，所以 drill 汇总里 P15 从 `representative_fixture_exercised` 变为 `unverified`——这是如实的结果（原先由 gbrain 的 `knowledge.search` 撑着），不是回归；`LEAD_PARITY_COVERAGE` 的 P15 标签同步改为 `catalog`（`memory.*` 走 Bridge 处理器）。
 - 部署窗口的版本错位：新 proxy 用收窄后的枚举解析 manifest，旧 dist 生成的带 `{id:"gbrain"}` 的语音 manifest 会被拒；只在新旧 dist 并存的窗口出现，且语音后台默认关闭。
 - 仓库外遗留（不在本 PR）：GeoForge3D `.lead/shared/common-rules.md` 的「Project Wiki (gbrain)」段仍要求 Lead 调 `mcp__gbrain__query`，已复制进 `~/.flywheel/lead-rules/{cos,ops,product}-lead/` 与当前生效 bundle；已报 Lead 另开单。
-- 背景：旧 dist 的 `gbrain-host` 要求 `~/.gbrain/config.json` 存在，常驻 Codex Lead 默认 fail_closed；gbrain 卸载后，本 PR 部署前常驻 Codex Lead 若重启会激活失败。
+- 更正（Lead 核实，问询 `f417f226`）：评审曾推测「本 PR 部署前常驻 Codex Lead 重启会因旧 `gbrain-host` 检查激活失败」，不成立。`~/.gbrain` 自 2026-09-15 下线即不存在，旧 dist 上 `pinGbrainHost` 一直在校验这一步被拒，而常驻 Codex Lead 2026-09-26 00:0x PDT 班车重启照常起来；今天卸载 gbrain 程序后结果相同，部署前重启没有新增风险。
+- GeoForge3D 规则遗留由 Lead 转交 GeoForge3D 侧处理，本 PR 不碰；teamlead 不接入 retired-outputs（Lead 裁定不扩范围）。
 
