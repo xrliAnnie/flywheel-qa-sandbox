@@ -54,6 +54,79 @@ export async function waitFor(label, probe, timeoutMs) {
 	);
 }
 
+export function classifyDesignCompletion(input) {
+	const {
+		node,
+		session,
+		park,
+		processBody,
+		liveness,
+		downstreamNodes = [],
+		standbyResumeEnabled,
+	} = input ?? {};
+	if (node?.state !== "done" || !node.execution_id) return null;
+	const dispatchedNodeIds = new Set(
+		downstreamNodes
+			.filter((candidate) => candidate?.attempt === 1 && candidate.execution_id)
+			.map((candidate) => candidate.node_id),
+	);
+	if (!dispatchedNodeIds.has("implement") || !dispatchedNodeIds.has("qa")) {
+		return null;
+	}
+	if (
+		standbyResumeEnabled === true &&
+		processBody != null &&
+		session?.status === "ship_parked" &&
+		session.terminal_at == null &&
+		park?.event === "park_opened" &&
+		park.reason === "process_retirement_pending" &&
+		processBody.state === "standby" &&
+		liveness?.liveness === "dead"
+	) {
+		return "resumable_standby";
+	}
+	if (
+		standbyResumeEnabled === false &&
+		processBody == null &&
+		session?.status === "completed" &&
+		session.terminal_at != null
+	) {
+		return "completed_unenrolled";
+	}
+	return null;
+}
+
+export function classifyImplementPark(input) {
+	const { node, session, park, processBody, liveness, standbyResumeEnabled } =
+		input ?? {};
+	if (
+		node?.state !== "done" ||
+		!node.execution_id ||
+		session?.status !== "ship_parked" ||
+		session.terminal_at != null ||
+		park?.event !== "park_opened"
+	) {
+		return null;
+	}
+	if (
+		standbyResumeEnabled === true &&
+		park.reason === "process_retirement_pending" &&
+		processBody?.state === "standby" &&
+		liveness?.liveness === "dead"
+	) {
+		return "resumable_standby";
+	}
+	if (
+		standbyResumeEnabled === false &&
+		park.reason === "rework_reachable_wait" &&
+		processBody == null &&
+		liveness?.liveness === "alive"
+	) {
+		return "rework_reachable_wait";
+	}
+	return null;
+}
+
 const A3_QA_TERMINATION_REASON =
 	"FLY-1775 A3 diagnostic exit: retire the QA session before the driver exits";
 
@@ -900,4 +973,67 @@ export function validateQaShipPreconditions(input) {
 				failures,
 				predictedServerReason: "land_head_unavailable",
 			};
+}
+
+// Exercise the same completion protocol as a resident runner. Retry only the
+// server-issued drain challenge; never evaluate the printed shell command.
+export function completeStubWithDrain(args, { runComm, acknowledgeWakes }) {
+	const checked = (command) => {
+		const result = runComm(command);
+		if (!result.ok)
+			throw new Error(`stub ${command[0]} failed: ${result.output}`);
+		return result;
+	};
+	const readInbox = () => {
+		const inbox = checked(["inbox"]);
+		for (const match of inbox.output.matchAll(
+			/^Pending question response: run flywheel-comm check ([A-Za-z0-9:._-]+)\.$/gm,
+		))
+			checked(["check", match[1]]);
+	};
+	readInbox();
+	const result = runComm(args);
+	if (result.ok || !result.output.includes("consume_pending_mail"))
+		return result;
+	const guidance = result.output.match(
+		/\(mailbox (\[[^\n]*?\]) \/ phase-wake (\[[^\n]*?\])\), then retry the exact challenge:\n[^\n]* --drain-receipt ([A-Za-z0-9:._-]{1,512})(?=\r?\n|$)/,
+	);
+	if (!guidance)
+		throw new Error("stub completion has no valid drain challenge");
+	const wakeIds = JSON.parse(guidance[2]);
+	const mailIds = JSON.parse(guidance[1]);
+	for (const ids of [wakeIds, mailIds]) {
+		if (
+			!Array.isArray(ids) ||
+			ids.some(
+				(id) => typeof id !== "string" || !/^[A-Za-z0-9:._-]{1,512}$/.test(id),
+			)
+		) {
+			throw new Error("stub completion has invalid drain challenge mail ids");
+		}
+	}
+	readInbox();
+	const turn = checked(["turn"]);
+	if (!/^yours(?:\s|$)/.test(turn.output))
+		throw new Error("stub completion lost TURN");
+	acknowledgeWakes(wakeIds);
+	return runComm([...args, "--drain-receipt", guidance[3]]);
+}
+
+export function acknowledgeStubPhaseWakes(db, executionId, wakeIds, onRead) {
+	const wakes = db.listRunnerPhaseWakes(executionId);
+	for (const id of wakeIds) {
+		const wake = wakes.find(
+			(candidate) =>
+				candidate.message_id === id && candidate.execution_id === executionId,
+		);
+		if (!wake || !wake.content?.trim())
+			throw new Error(`stub wake missing: ${id}`);
+		// Persist the content that this fixture actor consumed before its receipt.
+		onRead(wake);
+		const claim = db.claimRunnerPhaseWakeStart(executionId, id, Date.now());
+		if (claim !== "started" && claim !== "replay") {
+			throw new Error(`stub wake not acknowledged: ${id} (${claim})`);
+		}
+	}
 }

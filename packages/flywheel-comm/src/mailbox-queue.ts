@@ -1276,6 +1276,107 @@ export class MailboxQueue {
 			.immediate();
 	}
 
+	settleClaimAsAudit(input: {
+		id: string;
+		ownerEpoch: string;
+		batchId: string;
+		decision: MailboxAuditDecision;
+	}): boolean {
+		const id = requiredText(input.id, "id");
+		const ownerEpoch = requiredText(input.ownerEpoch, "ownerEpoch");
+		const batchId = requiredText(input.batchId, "batchId");
+		const policyVersion = requiredText(
+			input.decision.policyVersion,
+			"policyVersion",
+		);
+		const reason = requiredText(input.decision.reason, "reason");
+		const proofRef = input.decision.proofRef?.trim() || null;
+		assertUtcIsoTimestamp(input.decision.decidedAt, "decidedAt");
+		return this.db
+			.transaction(() => {
+				const row = this.db
+					.prepare(
+						`SELECT id,delivery_id,ref_id FROM mailbox
+						 WHERE id = ? AND recipient_kind = 'lead' AND msg_class = 'model'
+						   AND state = 'LEASED' AND claimed_by = ? AND batch_id = ?
+						   AND delivery_disposition = 'model'
+						   AND delivered_at IS NULL AND notified_at IS NULL`,
+					)
+					.get(id, ownerEpoch, batchId) as
+					| { id: string; delivery_id: string; ref_id: string | null }
+					| undefined;
+				if (!row) return false;
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET state = 'ACKED', acked_at = ?,
+						   resolved_via = 'alert_wake_dedup',
+						   claimed_by = NULL, claim_expires_at = NULL, batch_id = NULL,
+						   delivery_disposition = 'audit_only',
+						   notification_policy_version = ?, notification_reason = ?,
+						   notification_proof_ref = ?, notification_decided_at = ?,
+						   next_retry_at = NULL, last_error = NULL
+						 WHERE id = ? AND recipient_kind = 'lead' AND msg_class = 'model'
+						   AND state = 'LEASED' AND claimed_by = ? AND batch_id = ?
+						   AND delivery_disposition = 'model'
+						   AND delivered_at IS NULL AND notified_at IS NULL`,
+					)
+					.run(
+						input.decision.decidedAt,
+						policyVersion,
+						reason,
+						proofRef,
+						input.decision.decidedAt,
+						id,
+						ownerEpoch,
+						batchId,
+					);
+				if (updated.changes !== 1) return false;
+				this.db
+					.prepare(
+						`INSERT INTO mailbox_log
+						 (event_id,message_id,subject_id,event,at,row_json)
+						 VALUES (?, ?, ?, 'processed', ?, ?)`,
+					)
+					.run(
+						`notification-audit:${row.delivery_id}:${policyVersion}`,
+						id,
+						row.ref_id ?? id,
+						input.decision.decidedAt,
+						JSON.stringify({
+							deliveryId: row.delivery_id,
+							disposition: "audit_only",
+							policyVersion,
+							reason,
+							proofRef,
+						}),
+					);
+				return true;
+			})
+			.immediate();
+	}
+
+	annotateLeadDelivery(input: {
+		id: string;
+		ownerEpoch: string;
+		batchId: string;
+		deliveryContent: string;
+	}): boolean {
+		const id = requiredText(input.id, "id");
+		const ownerEpoch = requiredText(input.ownerEpoch, "ownerEpoch");
+		const batchId = requiredText(input.batchId, "batchId");
+		return (
+			this.db
+				.prepare(
+					`UPDATE mailbox SET delivery_content = ?
+					 WHERE id = ? AND recipient_kind = 'lead' AND msg_class = 'model'
+					   AND state = 'LEASED' AND claimed_by = ? AND batch_id = ?
+					   AND delivery_disposition = 'model'
+					   AND delivered_at IS NULL AND notified_at IS NULL`,
+				)
+				.run(input.deliveryContent, id, ownerEpoch, batchId).changes === 1
+		);
+	}
+
 	recordTickStarted(leadId: string, now: string): void {
 		this.db
 			.prepare(

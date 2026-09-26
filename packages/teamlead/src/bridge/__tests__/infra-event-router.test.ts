@@ -195,6 +195,26 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		}
 	});
 
+	// FLY-2901: the rescue receipt is issue progress exactly like the refusal —
+	// the responder is the issue's Lead, who reads it where the work is.
+	it("FLY-2901 routes the takeover rescue receipt like the takeover refusal", () => {
+		expect(ISSUE_PROGRESS_KINDS.has("worktree_takeover_rescued")).toBe(true);
+		expect(TICKET_KINDS.has("worktree_takeover_rescued")).toBe(false);
+		expect(LEAD_INBOX_KINDS.has("worktree_takeover_rescued")).toBe(false);
+		expect(
+			classifyInfraEvent({
+				eventType: "worktree_takeover_rescued",
+				boundIssueThread: THREAD,
+			}),
+		).toBe("issue_thread");
+		expect(
+			classifyInfraEvent({
+				eventType: "worktree_takeover_rescued",
+				boundIssueThread: null,
+			}),
+		).toBe("ticket");
+	});
+
 	it("the two kind sets are disjoint and cover the WHOLE AlertEventType union", () => {
 		for (const kind of TICKET_KINDS) {
 			expect(ISSUE_PROGRESS_KINDS.has(kind)).toBe(false);

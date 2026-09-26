@@ -24,7 +24,9 @@ import {
 	buildGeneralizedStartRequest,
 	buildSlotCommEnv,
 	buildStubFatalAbortError,
+	classifyDesignCompletion,
 	classifyDurableLaunchDrain,
+	classifyImplementPark,
 	classifyStubFatal,
 	generalizedEntryAuthorityIsReady,
 	hasOwnedPrMarker,
@@ -139,6 +141,37 @@ function all(db, sql, ...params) {
 
 function one(db, sql, ...params) {
 	return db.prepare(sql).get(...params);
+}
+
+function resolveScopedBooleanFlag(db, config, name, project) {
+	const spec = config.FEATURE_FLAGS.find(
+		(candidate) => candidate.name === name,
+	);
+	const codec = config.getFlagStoreCodec(name);
+	if (!spec || typeof spec.default !== "boolean" || !codec) {
+		throw new Error(`missing scoped boolean flag policy: ${name}`);
+	}
+	const row = one(
+		db,
+		`SELECT has_override, raw_value
+		   FROM flag_values
+		  WHERE flag_name = ? AND scope IN (?, '*')
+		  ORDER BY CASE WHEN scope = ? THEN 0 ELSE 1 END
+		  LIMIT 1`,
+		name,
+		project,
+		project,
+	);
+	const effective = row
+		? codec.parse({
+				hasOverride: Number(row.has_override) === 1,
+				raw: row.raw_value ?? null,
+			})
+		: spec.default;
+	if (typeof effective !== "boolean") {
+		throw new Error(`scoped flag is not boolean: ${name}`);
+	}
+	return effective;
 }
 
 function parseSnapshot(value) {
@@ -648,6 +681,12 @@ async function runDrillSteps(context) {
 			`${room.hostRepo}-${issue}`,
 		]);
 	}
+	const nodeStandbyResumeEnabledAtStart = resolveScopedBooleanFlag(
+		db,
+		config,
+		"node_standby_resume",
+		room.projectName,
+	);
 
 	const idempotencyKey = `qa529-${issue.toLowerCase()}-${Date.now()}`;
 	const request = buildGeneralizedStartRequest({
@@ -678,6 +717,7 @@ async function runDrillSteps(context) {
 		projectName: room.projectName,
 		runId,
 		executionIds: [start.executionId],
+		nodeStandbyResumeEnabledAtStart,
 		createdAt: new Date().toISOString(),
 	};
 	writeJsonAtomic(ownerPath, owner);
@@ -819,7 +859,7 @@ async function runDrillSteps(context) {
 				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'eng_design' ORDER BY attempt DESC LIMIT 1",
 				runId,
 			);
-			if (node?.state !== "done" || !node.execution_id) return false;
+			if (!node?.execution_id) return false;
 			const session = one(
 				db,
 				"SELECT * FROM sessions WHERE execution_id = ?",
@@ -832,16 +872,36 @@ async function runDrillSteps(context) {
 				node.execution_id,
 			);
 			const liveness = probeExecution(slotDir, commDb, node.execution_id);
-			if (
-				session?.status !== "ship_parked" ||
-				session.terminal_at != null ||
-				park?.event !== "park_opened" ||
-				park.reason !== "process_retirement_pending" ||
-				processBody?.state !== "standby" ||
-				liveness.liveness !== "dead"
-			)
-				return false;
-			return { node, session, park, processBody, liveness };
+			const downstreamNodes = all(
+				db,
+				`SELECT node_id, attempt, state, execution_id
+				   FROM workflow_run_node
+				  WHERE run_id = ?
+				    AND node_id IN ('implement', 'qa')
+				    AND attempt = 1`,
+				runId,
+			);
+			const lifecycle = classifyDesignCompletion({
+				node,
+				session,
+				park,
+				processBody,
+				liveness,
+				downstreamNodes,
+				standbyResumeEnabled: nodeStandbyResumeEnabledAtStart,
+			});
+			return lifecycle
+				? {
+						node,
+						session,
+						park,
+						processBody,
+						liveness,
+						downstreamNodes,
+						nodeStandbyResumeEnabledAtStart,
+						lifecycle,
+					}
+				: false;
 		},
 		timeoutMs,
 	);
@@ -849,7 +909,7 @@ async function runDrillSteps(context) {
 		...new Set([...owner.executionIds, design.node.execution_id]),
 	];
 	writeJsonAtomic(ownerPath, owner);
-	writeStep(2, "design retired into resumable standby", design);
+	writeStep(2, "design completion matched its admitted lifecycle", design);
 
 	const implement1 = await waitFor(
 		"step 3 implement dispatch",
@@ -901,22 +961,33 @@ async function runDrillSteps(context) {
 				currentExecutionId,
 			);
 			const liveness = probeExecution(slotDir, commDb, currentExecutionId);
-			if (
-				session?.status !== "ship_parked" ||
-				session.terminal_at != null ||
-				park?.event !== "park_opened" ||
-				park.reason !== "process_retirement_pending" ||
-				processBody?.state !== "standby" ||
-				liveness.liveness !== "dead"
-			)
-				return false;
+			const lifecycle = classifyImplementPark({
+				node,
+				session,
+				park,
+				processBody,
+				liveness,
+				standbyResumeEnabled: nodeStandbyResumeEnabledAtStart,
+			});
+			if (!lifecycle) return false;
 			const pr = resolveOwnedPrEvidence(
 				null,
 				liveness.stub ? [liveness.stub] : [],
 				runId,
 				owner.executionIds,
 			);
-			return pr ? { node, session, park, processBody, liveness, pr } : false;
+			return pr
+				? {
+						node,
+						session,
+						park,
+						processBody,
+						liveness,
+						pr,
+						lifecycle,
+						nodeStandbyResumeEnabledAtStart,
+					}
+				: false;
 		},
 		timeoutMs,
 	);
@@ -924,7 +995,7 @@ async function runDrillSteps(context) {
 	const attempt1ExecutionId = implementExecutionId;
 	owner.pr = parked1.pr;
 	writeJsonAtomic(ownerPath, owner);
-	writeStep(4, "implement retired into resumable standby", parked1);
+	writeStep(4, "implement park matched its admitted lifecycle", parked1);
 
 	const qa1Ready = await waitFor(
 		"QA attempt 1 release boundary",
@@ -972,18 +1043,44 @@ async function runDrillSteps(context) {
 		},
 	);
 
+	let qaFailRequestId = null;
 	const rework = await waitFor(
 		"step 6 QA fail rework wake",
 		() => {
 			guardStubFatal(6);
+			// Pin the released QA failure, not the later implement -> QA request.
+			if (!qaFailRequestId) {
+				const requests = all(
+					db,
+					`SELECT request_id FROM workflow_rework_request
+					  WHERE run_id = ? AND authority = 'qa'
+					    AND source_node_id = 'qa' AND source_attempt = 1
+					    AND json_extract(authority_context_json, '$.outcome') = 'qa_fail'
+					    AND json_extract(authority_context_json, '$.sourceExecutionId') = ?`,
+					runId,
+					qa1Ready.row.execution_id,
+				);
+				if (requests.length !== 1) return false;
+				qaFailRequestId = requests[0].request_id;
+			}
 			const delivery = one(
 				db,
 				`SELECT d.*, r.authority, r.source_attempt AS sourceAttempt
 				   FROM workflow_rework_delivery d
 				   JOIN workflow_rework_request r ON r.request_id = d.request_id
-				  WHERE r.run_id = ? AND r.authority = 'qa'
-				  ORDER BY r.requested_at DESC LIMIT 1`,
+				  WHERE r.run_id = ? AND r.request_id = ?`,
 				runId,
+				qaFailRequestId,
+			);
+			// completion_implied records the receipt and completes delivery in one
+			// transaction. The durable event proves the unobservable intermediate state.
+			const wakeEvent = one(
+				db,
+				`SELECT * FROM workflow_run_event
+				  WHERE run_id = ? AND kind = 'rework_delivery_wake_delivered'
+				    AND json_extract(payload, '$.requestId') = ?`,
+				runId,
+				qaFailRequestId,
 			);
 			const currentRun = one(
 				db,
@@ -993,19 +1090,20 @@ async function runDrillSteps(context) {
 			const dangerous = dangerousReworkRows(db, runId);
 			syncOwnedExecutions(db, runId, owner, ownerPath);
 			if (
-				delivery?.state !== "wake_delivered" ||
+				!["wake_delivered", "completed"].includes(delivery?.state) ||
+				!wakeEvent ||
 				currentRun?.status !== "active" ||
 				dangerous.length
 			) {
 				return false;
 			}
-			return { delivery, currentRun, dangerous };
+			return { delivery, wakeEvent, currentRun, dangerous };
 		},
 		timeoutMs,
 	);
 	writeStep(
 		6,
-		"QA FAIL reached wake_delivered without held/needs_lead",
+		"QA FAIL request has a durable wake receipt without held/needs_lead",
 		rework,
 	);
 

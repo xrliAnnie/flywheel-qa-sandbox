@@ -39,6 +39,8 @@ git commit -m "feat(<scope>): <description>"
 
 ## Step 3: Push & Create PR
 
+The injected local-test policy overrides any generic finishing checklist. Report only the concrete related-file commands actually run locally; exact-head PR CI owns the full suite.
+
 \`\`\`bash
 git push -u origin HEAD
 
@@ -48,7 +50,8 @@ gh pr create \\
 - <变更点>
 
 ## Test Plan
-- [ ] \\\`{{testCommand}}\\\` passes
+- [ ] Concrete related test files pass (list exact commands)
+- [ ] Exact-head PR CI status is reported separately
 - [ ] Manual verification
 
 ## Linear Issue
@@ -59,7 +62,7 @@ gh pr create \\
 
 \`\`\`bash
 {{lintCommand}}
-{{testCommand}}
+# Run only the concrete related-file commands selected under the injected local-test policy.
 git diff --staged
 \`\`\`
 

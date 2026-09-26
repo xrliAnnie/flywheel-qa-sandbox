@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
 	buildAccountQuotaView,
@@ -902,7 +903,7 @@ describe("FLY-2864 — Claude next charge date", () => {
 		sourceRef: "FLY-2792#founder-confirmation",
 	});
 
-	it("says Anthropic does not expose it, and shows cancellation when known", () => {
+	it("without a receipt reading says so, and shows cancellation when known", () => {
 		const failures: unknown[] = [];
 		const view = claudeView(
 			[
@@ -936,15 +937,12 @@ describe("FLY-2864 — Claude next charge date", () => {
 			view.claude.map((row) => [row.name, row.nextCharge.display]),
 		);
 		expect(next).toMatchObject({
-			business:
-				"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
+			business: "读不到（收据还没读过）",
 			personal1: "已取消",
 			"manual-canceled": "已取消 · 10/05 周一 到期",
 			"manual-canceled-undated": "已取消",
-			"manual-active":
-				"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
-			"manual-mismatch":
-				"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
+			"manual-active": "读不到（收据还没读过）",
+			"manual-mismatch": "读不到（收据还没读过）",
 		});
 		expect(failures).toEqual([
 			{
@@ -1242,13 +1240,11 @@ describe("FLY-2830 — presentation: card minutes, reading times, reasons", () =
 		expect(html).toContain("&lt;script&gt;");
 	});
 
-	it("says exactly why the Claude next charge day is not read", () => {
+	it("says the Claude receipts were not read yet without a receipt reading", () => {
 		const view = buildAccountQuotaView(base());
 		expect(
 			view.claude.find((row) => row.name === "shopping")!.nextCharge.display,
-		).toBe(
-			"读不到：Anthropic 只在 claude.ai 网页账单页给出（需浏览器登录，已决定不取）",
-		);
+		).toBe("读不到（收据还没读过）");
 		expect(
 			view.claude.find((row) => row.name === "personal1")!.nextCharge.display,
 		).toBe("已取消");
@@ -1285,6 +1281,8 @@ describe("FLY-2830 — presentation: card minutes, reading times, reasons", () =
 				provider: "Claude",
 				usage: "2026-09-18T00:40:00.000Z",
 				detail: "2026-09-18T00:41:00.000Z",
+				// FLY-2897: no receipt reading, so the detail dates the next charge.
+				charge: "2026-09-18T00:41:00.000Z",
 			},
 		);
 		// The Claude tier cell is dated by its own detail reading now.
@@ -1367,5 +1365,453 @@ describe("FLY-2830 rework — canceled and in-use-carried cells are not 'pending
 			provider: "Codex",
 			resetCredits: "2026-09-18T00:40:00.000Z",
 		});
+	});
+});
+
+describe("FLY-2897 — Claude next charge from the receipt mailbox", () => {
+	type Reading =
+		import("../../claude-quota/charge-receipt-store.js").ClaudeChargeReading;
+	type Facts =
+		import("../../claude-quota/charge-receipt-store.js").ClaudeChargeFacts;
+	const READ_AT = "2026-09-24T23:20:00.000Z";
+	const mailbox = (name: string) => `${name}@example.com`;
+	const keyOf = (name: string) =>
+		createHash("sha256").update(mailbox(name)).digest("hex");
+	const FACTS: Facts = {
+		periodStart: "2026-09-16",
+		periodEnd: "2026-10-16",
+		paidOn: "2026-09-16",
+		amountCents: 20001,
+		receiptCount: 2,
+		receiptAt: "2026-09-17T00:05:00.000Z",
+		canceledAt: null,
+		resumedAt: null,
+	};
+	const reading = (name: string, extra: Partial<Reading> = {}): Reading => ({
+		name,
+		mailboxKey: keyOf(name),
+		readAt: READ_AT,
+		status: "ok",
+		reason: null,
+		facts: FACTS,
+		lastGood: null,
+		...extra,
+	});
+	const failed = (
+		name: string,
+		status: Reading["status"],
+		reason: Reading["reason"] = null,
+		extra: Partial<Reading> = {},
+	) => reading(name, { status, reason, facts: null, ...extra });
+
+	function chargeView(
+		accounts: ClaudeFixture[],
+		readings: Reading[] | null,
+		extra: Record<string, unknown> = {},
+	) {
+		return buildAccountQuotaView(
+			{
+				generatedAt: NOW_2864,
+				quota: {
+					claude: {
+						source: "claude-accounts.json" as const,
+						activeAccount: null,
+						staleAfterMinutes: 30,
+						accounts: accounts as never,
+					},
+					codex: {
+						source: null,
+						unavailable: ["structural: codex_no_usage_api"],
+					},
+				},
+			},
+			{
+				claudeEmails: Object.fromEntries(
+					accounts.map((account) => [account.name, mailbox(account.name)]),
+				),
+				claudeCharges:
+					readings === null
+						? null
+						: { version: 1, generatedAt: READ_AT, accounts: readings },
+				...extra,
+			},
+		);
+	}
+	const row = (view: ReturnType<typeof chargeView>, name: string) =>
+		view.claude.find((r) => r.name === name)!;
+
+	it("shows the receipt's period end as the next charge, with the period and amount", () => {
+		const view = chargeView(
+			[claudeAccount("business"), claudeAccount("shopping")],
+			[
+				reading("business"),
+				reading("shopping", {
+					facts: {
+						...FACTS,
+						periodStart: "2026-09-20",
+						periodEnd: "2026-10-20",
+						amountCents: null,
+						receiptCount: 1,
+					},
+				}),
+			],
+		);
+		expect(row(view, "business").nextCharge).toEqual({
+			display: "10/16 周五\n本期 9/16–10/16 · 已付 $200.01",
+			source: "machine",
+			observedAt: READ_AT,
+			stale: false,
+		});
+		expect(row(view, "business").receiptReadAt).toBe(READ_AT);
+		expect(row(view, "shopping").nextCharge.display).toBe(
+			"10/20 周二\n本期 9/20–10/20",
+		);
+	});
+
+	it("never shows a charge day that has passed as the next one", () => {
+		const past = {
+			...FACTS,
+			periodStart: "2026-08-23",
+			periodEnd: "2026-09-23",
+		};
+		const view = chargeView(
+			[claudeAccount("early"), claudeAccount("late")],
+			[
+				reading("early", { facts: past, readAt: "2026-09-23T20:00:00.000Z" }),
+				reading("late", { facts: past, readAt: "2026-09-24T20:00:00.000Z" }),
+			],
+		);
+		expect(row(view, "early").nextCharge).toMatchObject({
+			display: "读不到（读数早于扣费日，待重读）",
+			source: "missing",
+		});
+		expect(row(view, "late").nextCharge).toMatchObject({
+			display: "读不到（09/23 周三 应扣费，未见新收据）",
+			source: "missing",
+		});
+	});
+
+	it("shows a cancellation from the mailbox with the day access ends", () => {
+		const canceledAt = "2026-09-20T18:00:00.000Z";
+		const view = chargeView(
+			[claudeAccount("business"), claudeAccount("gone")],
+			[
+				reading("business", {
+					status: "canceled",
+					facts: { ...FACTS, canceledAt },
+				}),
+				reading("gone", {
+					status: "canceled",
+					facts: {
+						...FACTS,
+						periodStart: "2026-08-20",
+						periodEnd: "2026-09-20",
+						canceledAt: "2026-09-01T18:00:00.000Z",
+					},
+				}),
+			],
+		);
+		expect(row(view, "business").nextCharge).toMatchObject({
+			display: "已取消 · 10/16 周五 到期",
+			source: "machine",
+		});
+		expect(row(view, "gone").nextCharge.display).toBe(
+			"已取消 · 09/20 周日 已到期",
+		);
+	});
+
+	it("keeps a cancellation the account detail saw after the latest receipt", () => {
+		const view = chargeView(
+			[
+				claudeAccount("newer", {
+					subscriptionStatus: "canceled",
+					detailObservedAt: "2026-09-24T23:25:00.000Z",
+				}),
+				claudeAccount("older", {
+					subscriptionStatus: "canceled",
+					detailObservedAt: "2026-09-10T00:00:00.000Z",
+				}),
+				claudeAccount("resumed", {
+					subscriptionStatus: "canceled",
+					detailObservedAt: "2026-09-20T00:00:00.000Z",
+				}),
+			],
+			[
+				reading("newer"),
+				reading("older"),
+				reading("resumed", {
+					facts: { ...FACTS, resumedAt: "2026-09-22T18:00:00.000Z" },
+				}),
+			],
+		);
+		expect(row(view, "newer").nextCharge.display).toBe(
+			"已取消 · 10/16 周五 到期",
+		);
+		expect(row(view, "older").nextCharge.display).toBe(
+			"10/16 周五\n本期 9/16–10/16 · 已付 $200.01",
+		);
+		expect(row(view, "resumed").nextCharge.display).toBe(
+			"10/16 周五\n本期 9/16–10/16 · 已付 $200.01",
+		);
+	});
+
+	it("says a free account has no charge", () => {
+		const view = chargeView(
+			[
+				claudeAccount("personal1", {
+					subscriptionStatus: "canceled",
+					subscriptionTier: {
+						subscriptionType: "free",
+						rateLimitTier: "default_claude_ai",
+					},
+				}),
+			],
+			[failed("personal1", "auth_missing")],
+		);
+		expect(row(view, "personal1").nextCharge).toMatchObject({
+			display: "免费号，无扣费",
+			source: "machine",
+			observedAt: "2026-09-24T23:25:00.000Z",
+		});
+		expect(row(view, "personal1").receiptReadAt).toBe(READ_AT);
+	});
+
+	it("takes free or paid only from the current account detail", () => {
+		const free = { subscriptionType: "free", rateLimitTier: null };
+		const view = chargeView(
+			[
+				// Now free, although the receipts still describe a paid period.
+				claudeAccount("downgraded", { subscriptionTier: free }),
+				// Free by a detail read before the receipt round finished: still
+				// free — the round's finish time says nothing about the plan.
+				claudeAccount("raced", {
+					subscriptionTier: free,
+					detailObservedAt: "2026-09-24T23:00:00.000Z",
+				}),
+				// Paid: the receipts decide, whatever an older round thought.
+				claudeAccount("paid"),
+			],
+			[reading("downgraded"), reading("raced"), reading("paid")],
+		);
+		expect(row(view, "raced").nextCharge.display).toBe("免费号，无扣费");
+		// Free is a fact of the current detail; an old mailbox's reading is moot.
+		const moved = chargeView(
+			[claudeAccount("personal1", { subscriptionTier: free })],
+			[reading("personal1", { mailboxKey: keyOf("old") })],
+		);
+		expect(moved.claude[0]!.nextCharge.display).toBe("免费号，无扣费");
+		expect(row(view, "downgraded").nextCharge).toMatchObject({
+			display: "免费号，无扣费",
+			source: "machine",
+		});
+		expect(row(view, "paid").nextCharge.display).toBe(
+			"10/16 周五\n本期 9/16–10/16 · 已付 $200.01",
+		);
+	});
+
+	it("never shows another mailbox's reading after the account's mailbox changed", () => {
+		const view = chargeView(
+			[claudeAccount("business"), claudeAccount("personal1")],
+			[
+				reading("business", {
+					mailboxKey: keyOf("old-business"),
+					lastGood: { readAt: READ_AT, status: "ok", facts: FACTS },
+				}),
+				failed("personal1", "auth_missing", null, {
+					mailboxKey: keyOf("old"),
+				}),
+			],
+		);
+		for (const name of ["business", "personal1"]) {
+			expect(row(view, name).nextCharge).toMatchObject({
+				display: "读不到（邮箱已变更，待重读）",
+				source: "missing",
+			});
+			expect(row(view, name).receiptReadAt).toBeNull();
+			expect(row(view, name).sources).toMatchObject({ charge: null });
+		}
+	});
+
+	it("keeps a newer detail 'active' from clearing a cancellation mail", () => {
+		// Stripe keeps a cancel-at-period-end subscription active until it ends.
+		const view = chargeView(
+			[
+				claudeAccount("business", {
+					subscriptionStatus: "active",
+					detailObservedAt: "2026-09-24T23:25:00.000Z",
+				}),
+			],
+			[
+				reading("business", {
+					status: "canceled",
+					facts: { ...FACTS, canceledAt: "2026-09-20T18:00:00.000Z" },
+				}),
+			],
+		);
+		expect(row(view, "business").nextCharge.display).toBe(
+			"已取消 · 10/16 周五 到期",
+		);
+	});
+
+	it("names the real reason a mailbox could not be read", () => {
+		const cases: Array<[Reading["status"], Reading["reason"], string]> = [
+			["no_mailbox", null, "读不到（账号没有登记邮箱）"],
+			["auth_missing", null, "读不到（邮箱未授权 gog）"],
+			[
+				"auth_invalid",
+				"invalid_grant",
+				"读不到（邮箱授权失效 invalid_grant，需重新授权）",
+			],
+			["auth_invalid", "unauthorized", "读不到（邮箱授权失效，需重新授权）"],
+			["no_receipt", null, "读不到（邮箱里没找到 Anthropic 收据）"],
+			["parse_failed", null, "读不到（收据格式没认出）"],
+			["read_failed", "timeout", "读不到（读邮箱超时）"],
+			["read_failed", "gog_missing", "读不到（本机没装 gog）"],
+			["read_failed", "rate_limited", "读不到（Gmail 限流）"],
+			["read_failed", "retryable", "读不到（Gmail 暂时不可用）"],
+			["read_failed", "permission_denied", "读不到（邮箱授权范围不够）"],
+			["read_failed", "gog_config", "读不到（gog 凭据未配置）"],
+			["read_failed", "output_too_large", "读不到（邮件太大）"],
+			["read_failed", "malformed", "读不到（gog 返回格式不对）"],
+			["read_failed", "not_found", "读不到（邮件已不存在）"],
+			[
+				"read_failed",
+				"candidate_limit",
+				"读不到（非订阅收据太多，没读到订阅收据）",
+			],
+			[
+				"read_failed",
+				"search_truncated",
+				"读不到（Anthropic 邮件太多，没读完）",
+			],
+			["read_failed", "error", "读不到（读邮箱失败）"],
+			["read_failed", null, "读不到（读邮箱失败）"],
+		];
+		for (const [status, reason, text] of cases) {
+			const view = chargeView(
+				[claudeAccount("school")],
+				[failed("school", status, reason)],
+			);
+			expect(row(view, "school").nextCharge).toEqual({
+				display: text,
+				source: "missing",
+				observedAt: READ_AT,
+				stale: false,
+			});
+		}
+	});
+
+	it("carries a recent good reading through a failed round, saying so", () => {
+		const view = chargeView(
+			[claudeAccount("recent"), claudeAccount("old")],
+			[
+				failed("recent", "auth_invalid", "invalid_grant", {
+					lastGood: {
+						readAt: "2026-09-24T08:00:00.000Z",
+						status: "ok",
+						facts: FACTS,
+					},
+				}),
+				failed("old", "read_failed", "timeout", {
+					lastGood: {
+						readAt: "2026-09-22T23:00:00.000Z",
+						status: "ok",
+						facts: FACTS,
+					},
+				}),
+			],
+		);
+		expect(row(view, "recent").nextCharge).toEqual({
+			display:
+				"10/16 周五\n本期 9/16–10/16 · 已付 $200.01\n沿用 01:00 读数 · 本次读不到：邮箱授权失效 invalid_grant，需重新授权",
+			source: "machine",
+			observedAt: READ_AT,
+			stale: false,
+		});
+		expect(row(view, "old").nextCharge.display).toBe("读不到（读邮箱超时）");
+		const future = chargeView(
+			[claudeAccount("future")],
+			[
+				failed("future", "read_failed", "timeout", {
+					lastGood: {
+						readAt: "2026-09-25T08:00:00.000Z",
+						status: "ok",
+						facts: FACTS,
+					},
+				}),
+			],
+		);
+		expect(row(future, "future").nextCharge.display).toBe(
+			"读不到（读邮箱超时）",
+		);
+	});
+
+	it("falls back to the account detail without a receipt reading", () => {
+		const view = chargeView(
+			[
+				claudeAccount("business"),
+				claudeAccount("canceled", { subscriptionStatus: "canceled" }),
+			],
+			null,
+		);
+		expect(row(view, "business").nextCharge).toMatchObject({
+			display: "读不到（收据还没读过）",
+			source: "missing",
+		});
+		expect(row(view, "business").receiptReadAt).toBeNull();
+		expect(row(view, "canceled").nextCharge.display).toBe("已取消");
+		const failing = chargeView(
+			[claudeAccount("canceled", { subscriptionStatus: "canceled" })],
+			[failed("canceled", "auth_missing")],
+		);
+		expect(row(failing, "canceled").nextCharge.display).toBe("已取消");
+	});
+
+	it("keeps a founder-confirmed cancellation first", () => {
+		const KEY = "a".repeat(64);
+		const view = chargeView(
+			[claudeAccount("business")],
+			[reading("business")],
+			{
+				subscriptionManual: {
+					confirmations: [
+						{
+							provider: "Claude" as const,
+							profile: "business",
+							identityKey: KEY,
+							status: "canceled" as const,
+							expiresOn: "2026-10-16",
+							confirmedBy: "founder",
+							confirmedAt: "2026-09-24T18:00:00.000Z",
+							sourceRef: "FLY-2792#founder-confirmation",
+						},
+					],
+					identityKeys: { "Claude:business": KEY },
+				},
+			},
+		);
+		expect(row(view, "business").nextCharge).toMatchObject({
+			display: "已取消 · 10/16 周五 到期",
+			source: "manual",
+		});
+		expect(row(view, "business").receiptReadAt).toBeUndefined();
+	});
+
+	it("dates the next-charge switch mark by the receipt reading", () => {
+		const view = chargeView(
+			[claudeAccount("business"), claudeAccount("unread")],
+			[reading("business")],
+		);
+		expect(row(view, "business").sources).toEqual({
+			provider: "Claude",
+			usage: "2026-09-24T23:20:00.000Z",
+			detail: "2026-09-24T23:25:00.000Z",
+			charge: READ_AT,
+		});
+		// No receipt reading yet: the cell comes from the account detail.
+		expect(row(view, "unread").sources).toMatchObject({
+			charge: "2026-09-24T23:25:00.000Z",
+		});
+		expect(row(view, "unread").receiptReadAt).toBeNull();
 	});
 });

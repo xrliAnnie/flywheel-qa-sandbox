@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  participant L as Lead / 引擎
+  participant B as Bridge 关闭路径
+  participant G as 所有权登记 registry
+  participant A as adapter + goal runtime
+  participant D as Codex daemon
+  participant K as 终态收尸账本
+  L->>B: terminate / closeRunner / 退役
+  B->>G: requestStop(exec, reason)
+  G->>A: onStopRequested
+  A->>A: runtime.stop()，stopped=true
+  A->>D: SIGTERM → 等退出 → 必要时 SIGKILL
+  D--xA: socket 断开
+  Note over A: 重启闸门：已请停 → 拒绝复活
+  A->>G: drain 完成后 release lease
+  G-->>B: stopped
+  B->>D: reap 进程组（兜底，已退出则 absent）
+  B->>K: 探测一次，记 pending_confirm
+  Note over K: 下一轮巡检再测一次 + token 未涨 → closed

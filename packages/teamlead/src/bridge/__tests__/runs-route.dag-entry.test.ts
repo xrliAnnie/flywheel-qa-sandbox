@@ -1795,6 +1795,61 @@ describe("FLY-1436 menu start contract", () => {
 		expect(h.calls[0]?.startPoint).toBeUndefined();
 	});
 
+	it("keeps Codex off the bundled generic menu's automatic candidates", async () => {
+		const h = await startHarness({
+			menuMode: true,
+			bindingCategory: "generic",
+			bindingTemplateId: "tpl_generic_menu",
+		});
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "generic",
+			agentName: "engineer",
+			overrides: { general: { model: "codex" } },
+		});
+
+		expect(status).toBe(400);
+		expect(json).toMatchObject({
+			success: false,
+			code: "MODEL_NOT_ALLOWED_FOR_NODE",
+			legal: ["opus"],
+		});
+		expect(h.calls).toHaveLength(0);
+	});
+
+	it("routes an explicit off-menu generic Codex override through the shared menu model resolver", async () => {
+		const h = await startHarness({
+			menuMode: true,
+			bindingCategory: "generic",
+			bindingTemplateId: "tpl_generic_menu",
+		});
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "generic",
+			agentName: "engineer",
+			overrides: { general: { model: "codex", effort: "xhigh" } },
+		});
+
+		expect(status).toBe(200);
+		expect(json).toMatchObject({
+			success: true,
+			generalized: true,
+			workflowNodeId: "general",
+			resolved: {
+				nodeModels: {
+					general: expect.objectContaining({
+						model: "codex (= gpt-5.6-sol)",
+						overridden: true,
+					}),
+				},
+			},
+		});
+		expect(h.calls[0]!.generalizedExecution?.dispatch).toMatchObject({
+			vendor: "codex",
+			model: "gpt-5.6-sol",
+		});
+	});
+
 	it("accepts the node-scoped same-vendor QA assignment", async () => {
 		const h = await startHarness({
 			menuMode: true,

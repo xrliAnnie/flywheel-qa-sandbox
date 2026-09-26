@@ -43,7 +43,12 @@ import {
 import { createReadonlySqliteFounderReviewStateReader } from "../founder-review-sqlite.js";
 import { collectRunnerMemoryCloseout } from "../runner-memory-closeout.js";
 import { resolveRunnerStateDir } from "../runner-state.js";
+import { shellQuote } from "../shell-quote.js";
 import { truncateCodePoints } from "../text-truncate.js";
+import {
+	DRAIN_PENDING_EXIT_CODE,
+	renderConsumePendingMail,
+} from "./completion-drain.js";
 import { resolveStateDbPath } from "./verify-approval.js";
 import { currentWorkflowCompletionActivationFromEnv } from "./workflow-activation.js";
 
@@ -74,6 +79,8 @@ const ATTEMPT_COUNT = 4;
 const ATTEMPT_TIMEOUT_MS = 5000;
 const BACKOFF_MS = [1000, 2000, 4000] as const;
 const FULL_SHA = /^[0-9a-f]{40}$/;
+/** FLY-2373: parse the whole Bridge answer; only log lines are truncated. */
+const MAX_RESPONSE_CHARS = 4 * 1024 * 1024;
 export const MAX_DECLARED_PRS_PER_COMPLETION = 8;
 
 interface DeclaredPrEvidence {
@@ -317,7 +324,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		const pending = pendingGates[0];
 		if (pending) {
 			console.error(
-				`[complete] gate/review pending is not blocked; refusing route=blocked while ${pending.checkpoint} gate ${pending.id} is unanswered. Continue polling with flywheel-comm check ${pending.id}.`,
+				`[complete] gate/review pending is not blocked; refusing route=blocked while ${pending.checkpoint} gate ${pending.id} is unanswered. Wait for it across turns: one flywheel-comm check ${pending.id} per turn, never an in-turn sleep/check loop; with no independent work left, park and end the current turn.`,
 			);
 			process.exit(1);
 		}
@@ -503,6 +510,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 
 	let lastError: string | undefined;
 	let reworkRefusal: Record<string, unknown> | undefined;
+	let drainPending: Record<string, unknown> | undefined;
 	let attemptsMade = 0;
 	for (let attempt = 1; attempt <= ATTEMPT_COUNT; attempt += 1) {
 		attemptsMade = attempt;
@@ -519,6 +527,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 				console.log(
 					`[complete] session_completed delivered (attempt ${attempt}/${ATTEMPT_COUNT})`,
 				);
+				clearDrainPendingRecord(execId);
 				try {
 					const parsed = JSON.parse(await response.text()) as {
 						completionDisposition?: unknown;
@@ -542,8 +551,11 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 			let responseText = "";
 			let responseJson: Record<string, unknown> | undefined;
 			try {
-				responseText = (await response.text()).slice(0, 1000);
-				const parsed = responseText ? JSON.parse(responseText) : undefined;
+				responseText = await response.text();
+				const parsed =
+					responseText && responseText.length <= MAX_RESPONSE_CHARS
+						? JSON.parse(responseText)
+						: undefined;
 				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 					responseJson = parsed as Record<string, unknown>;
 				}
@@ -555,7 +567,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 					? responseJson.reason
 					: typeof responseJson?.error === "string"
 						? responseJson.error
-						: responseText.trim();
+						: responseText.slice(0, 1000).trim();
 			lastError = `Bridge returned ${response.status}${detail ? `: ${detail}` : ""}`;
 			if (
 				response.status === 409 &&
@@ -569,7 +581,10 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 				response.status === 409 &&
 				responseJson?.reason === "consume_pending_mail"
 			) {
-				printDrainRetryGuidance(responseJson, opts);
+				// FLY-2373: a recoverable state resolved inside the current turn,
+				// never a FAIL-CLOSE marker the reconciler could replay unread.
+				drainPending = responseJson;
+				break;
 			}
 			console.error(
 				`[complete] attempt ${attempt}/${ATTEMPT_COUNT} failed: ${lastError}`,
@@ -594,6 +609,27 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 			const delay = BACKOFF_MS[attempt - 1] ?? 0;
 			await sleep(delay);
 		}
+	}
+
+	if (drainPending) {
+		const v2 = renderConsumePendingMail(
+			drainPending,
+			renderCompleteRetryCommand(opts),
+		);
+		if (v2) {
+			console.error(v2.text);
+			writeDrainPendingRecord({
+				execId,
+				eventId: body.event_id,
+				route: opts.route,
+				readId: v2.readId,
+				challengeId: drainPending.challengeId,
+				pageCount: v2.pageCount,
+			});
+		} else {
+			printDrainRetryGuidance(drainPending, opts);
+		}
+		process.exit(DRAIN_PENDING_EXIT_CODE);
 	}
 
 	if (reworkRefusal) {
@@ -648,26 +684,93 @@ function printDrainRetryGuidance(
 	const phaseWakes = Array.isArray(response.phaseWakes)
 		? response.phaseWakes.filter((id): id is string => typeof id === "string")
 		: [];
-	const retry = [
-		'node "$FLYWHEEL_COMM_CLI" complete',
-		`--route ${opts.route}`,
-		...(opts.pr !== undefined ? [`--pr ${opts.pr}`] : []),
-		...(opts.merged ? ["--merged"] : []),
-		...(opts.targetRepo
-			? [`--target-repo ${JSON.stringify(opts.targetRepo)}`]
-			: []),
-		...(opts.declarePr ?? []).map(
-			(declaration) => `--declare-pr ${JSON.stringify(declaration)}`,
-		),
-		...(opts.questionId
-			? [`--question-id ${JSON.stringify(opts.questionId)}`]
-			: []),
-		`--drain-receipt ${challengeId}`,
-	].join(" ");
+	const retry = renderCompleteRetryCommand(opts, challengeId);
 	console.error(
 		`[complete] completion deferred: acknowledge ${mailbox.length} mailbox item(s) and ${phaseWakes.length} wake(s) ` +
 			`(mailbox ${JSON.stringify(mailbox)} / phase-wake ${JSON.stringify(phaseWakes)}), then retry the exact challenge:\n  ${retry}`,
 	);
+}
+
+function renderCompleteRetryCommand(
+	opts: CompleteOpts,
+	drainReceipt?: string,
+): string {
+	// FLY-2373: replay every parsed option so the retry is the same completion
+	// (same business payload); values are shell-quoted, never interpolated.
+	const quoted = (flag: string, value: string | undefined): string[] =>
+		value === undefined ? [] : [`${flag} ${shellQuote(value)}`];
+	return [
+		'node "$FLYWHEEL_COMM_CLI" complete',
+		`--route ${opts.route}`,
+		...(opts.pr !== undefined ? [`--pr ${opts.pr}`] : []),
+		...(opts.merged ? ["--merged"] : []),
+		...quoted("--session-role", opts.sessionRole),
+		...quoted("--summary", opts.summary),
+		...quoted("--exit-reason", opts.exitReason),
+		...quoted("--base-ref", opts.baseRef),
+		...quoted("--target-repo", opts.targetRepo),
+		...(opts.declarePr ?? []).flatMap((declaration) =>
+			quoted("--declare-pr", declaration),
+		),
+		...quoted("--question-id", opts.questionId),
+		...(drainReceipt ? [`--drain-receipt ${drainReceipt}`] : []),
+	].join(" ");
+}
+
+/** FLY-2373: recoverable pending-read record; never a FAIL-CLOSE marker. */
+function writeDrainPendingRecord(args: {
+	execId: string;
+	eventId: string;
+	route: string;
+	readId: string;
+	challengeId: unknown;
+	pageCount: number;
+}): void {
+	const dir = resolveRunnerStateDir(args.execId);
+	const target = join(dir, "completion-drain-pending.json");
+	const temp = join(
+		dir,
+		`.completion-drain-pending.${process.pid}.${randomUUID()}.tmp`,
+	);
+	try {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			temp,
+			`${JSON.stringify({
+				v: 1,
+				executionId: args.execId,
+				completionEventId: args.eventId,
+				route: args.route,
+				readId: args.readId,
+				...(typeof args.challengeId === "string"
+					? { challengeId: args.challengeId }
+					: {}),
+				pageCount: args.pageCount,
+				createdAt: new Date().toISOString(),
+			})}\n`,
+			{ encoding: "utf8", mode: 0o600 },
+		);
+		renameSync(temp, target);
+	} catch (error) {
+		try {
+			unlinkSync(temp);
+		} catch {
+			// Nothing to clean up.
+		}
+		console.error(
+			`[complete] drain pending record write failed (continuing): ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
+
+function clearDrainPendingRecord(execId: string): void {
+	try {
+		unlinkSync(
+			join(resolveRunnerStateDir(execId), "completion-drain-pending.json"),
+		);
+	} catch {
+		// Absent is the normal case.
+	}
 }
 
 function writeRunnerStopBreadcrumb(args: {

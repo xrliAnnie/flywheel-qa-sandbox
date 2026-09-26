@@ -58,7 +58,7 @@ If you skip this step, `test-deploy.sh` will fail at clone with a pointer back t
 scripts/test-deploy.sh --from-branch <branch> <N>
 ```
 
-`<N>` is the slot number (1–4). `--from-branch` is optional; default is sandbox `main`.
+`<N>` is the configured slot number (1–6). `--from-branch` is optional; default is sandbox `main`.
 
 On success, stdout is JSON with:
 

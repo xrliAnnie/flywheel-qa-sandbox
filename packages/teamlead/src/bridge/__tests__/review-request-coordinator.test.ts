@@ -1012,7 +1012,7 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		);
 	});
 
-	it("FLY-1278: policy-off prompt stays byte-identical while policy-on teaches severity and stable ids", async () => {
+	it("FLY-1278: severity policy-off preserves its output contract while policy-on teaches severity and stable ids", async () => {
 		const legacy = await makeHarness({ reviewSeverityPolicyEnabled: false });
 		registerSession(legacy.store, "source");
 		registerSession(legacy.store, "e1");
@@ -1046,11 +1046,21 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			questionId: "q1",
 		});
 		await settle();
+		const localTestPolicy = readFileSync(
+			fileURLToPath(
+				new URL(
+					"../../../phase-protocols/local-test-policy.md",
+					import.meta.url,
+				),
+			),
+			"utf8",
+		).trim();
 		const legacyContract =
+			`${localTestPolicy}\n\n` +
 			`You are the CROSS-FAMILY REVIEWER for FLY-1188 ` +
 			`(a codex-authored change; you are the independent Claude lane). ` +
 			`Actively explore this repository — do not rely on any diff alone. ` +
-			`Run only single-package tests for the changed package and related test files. Never run \`pnpm -r\`. ` +
+			`Follow the marked local-test policy above exactly; review does not authorize a package test alias or any other local full-suite command. ` +
 			// FLY-2547 turn-lifecycle clause — see the dedicated test below.
 			`Run every command in the FOREGROUND and wait for it to finish before you judge. ` +
 			`Never background a command and then end your turn to wait for a completion notification — ` +
@@ -1088,16 +1098,55 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		});
 		await settle();
 		const prompt = enabled.invocations[0]?.prompt ?? "";
+		expect(prompt).toContain(localTestPolicy);
 		expect(prompt).toContain(
-			"Run only single-package tests for the changed package and related test files.",
+			"review does not authorize a package test alias or any other local full-suite command",
 		);
-		expect(prompt).toContain("Never run `pnpm -r`");
 		expect(prompt).toContain("CHANGES_REQUESTED ONLY");
 		expect(prompt).toContain(
 			"correctness, security, data loss, or authorization",
 		);
 		expect(prompt).toContain('stable "id"');
 		expect(prompt).toContain("reuse the same id");
+	});
+
+	it("FLY-2802: every cross-family reviewer receives the exact marked local-test policy", async () => {
+		const canonical = readFileSync(
+			fileURLToPath(
+				new URL(
+					"../../../phase-protocols/local-test-policy.md",
+					import.meta.url,
+				),
+			),
+			"utf8",
+		).trim();
+		for (const policyEnabled of [false, true]) {
+			const h = await makeHarness({
+				reviewSeverityPolicyEnabled: policyEnabled,
+			});
+			registerSession(h.store, "e1");
+			openGate(h.comm, "q1");
+			h.outcomes.push({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: HEAD,
+				raw: "",
+			});
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId: `local-test-policy-${String(policyEnabled)}`,
+				reviewType: "code",
+				questionId: "q1",
+			});
+			await settle();
+			const prompt = h.invocations[0]?.prompt ?? "";
+			expect(prompt).toContain(canonical);
+			expect(prompt.match(/FLYWHEEL_LOCAL_TEST_POLICY:BEGIN/g)).toHaveLength(1);
+			expect(prompt).not.toContain(
+				"Run only single-package tests for the changed package",
+			);
+		}
 	});
 
 	// FLY-2547: the reviewer used to background a long suite and then END ITS

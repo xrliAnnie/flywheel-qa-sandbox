@@ -423,6 +423,18 @@ export function createAlertDutyRouter(deps: AlertDutyRouterDeps): Router {
 		});
 		res.status(200).json({
 			generatedAt: new Date().toISOString(),
+			wakeDedup: deps.store
+				.listAlertWakeDedup(new Date(Date.now() - 24 * 3_600_000).toISOString())
+				.map((row) => ({
+					leadId: row.leadId,
+					eventType: row.eventType,
+					categoryTitle: row.categoryTitle,
+					infoOnly: row.infoOnly,
+					occurrences: row.occurrences,
+					suppressed: row.suppressed,
+					windowStartedAt: row.windowStartedAt,
+					lastSeenAt: row.lastSeenAt,
+				})),
 			dutyWritePath: "configured",
 			ledgerWriteErrors: deps.ledgerWriteErrors?.() ?? 0,
 			reroutedCount: deps.reroutedCount?.() ?? 0,

@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
+import { DRAIN_READ_ID_PATTERN } from "flywheel-comm/completion-obligations";
 import { CommDB } from "flywheel-comm/db";
 import { resolveFounderId } from "flywheel-comm/founder-attribution";
 import {
@@ -26,6 +28,8 @@ import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import {
 	extractDimensions,
 	generatePatternKeys,
+	TAKEOVER_CLEANED_EVENT_KIND,
+	TAKEOVER_RESCUED_EVENT_KIND,
 	WorktreeManager,
 } from "flywheel-edge-worker";
 import {
@@ -63,7 +67,12 @@ import {
 import type { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import type { CodexReviewIngest } from "./codex-review-ingest.js";
 import { commDbPathForProject } from "./commdb-path.js";
-import { parseCompletionDrainEnvelope } from "./completion-drain.js";
+import {
+	type CompletionDrainProof,
+	parseCompletionDrainEnvelope,
+	reconcileCompletionDrainSettlement,
+	runSemanticCompletionDrain,
+} from "./completion-drain.js";
 import {
 	DESIGN_HTML_EVIDENCE_ERROR,
 	validateDesignHtmlCompletion,
@@ -1418,6 +1427,165 @@ export function createEventRouter(
 		return result();
 	}
 
+	/**
+	 * FLY-2373: runner read-envelope endpoints. Same ingest-token trust boundary
+	 * as /events session_completed; the read id selects a server-persisted
+	 * envelope and never carries evidence, digests or a source kind itself.
+	 */
+	const resolveDrainRead = (
+		body: unknown,
+	):
+		| {
+				ok: true;
+				executionId: string;
+				readId: string;
+				envelope: NonNullable<ReturnType<StateStore["getDrainReadEnvelope"]>>;
+				projectName: string;
+		  }
+		| { ok: false; status: number; error: string } => {
+		const record =
+			body && typeof body === "object" && !Array.isArray(body)
+				? (body as Record<string, unknown>)
+				: {};
+		const executionId = asString(record.execution_id);
+		const readId = asString(record.read_id);
+		if (!executionId || !readId || !DRAIN_READ_ID_PATTERN.test(readId)) {
+			return { ok: false, status: 400, error: "invalid_drain_read_request" };
+		}
+		const envelope = store.getDrainReadEnvelope(readId);
+		if (!envelope || envelope.executionId !== executionId) {
+			return { ok: false, status: 404, error: "drain_read_not_found" };
+		}
+		// Same caller-identity strength as session_completed: the runner's exact
+		// activation (run/node/attempt) and its TURN epoch must match the current
+		// binding. A body execution id or a known read id alone is never enough.
+		const current = store.resolveCurrentWorkflowActivation(executionId);
+		const supplied = asWorkflowCompletionActivation(record.workflowActivation);
+		const carrier =
+			record.carrierActivation &&
+			typeof record.carrierActivation === "object" &&
+			!Array.isArray(record.carrierActivation)
+				? (record.carrierActivation as Record<string, unknown>)
+				: undefined;
+		const turn = supplied
+			? store.getWorkflowActivationTurn(supplied.activationId)
+			: undefined;
+		const nodeActivationOk =
+			supplied !== undefined &&
+			supplied.activationId === envelope.activationId &&
+			current.kind === "current" &&
+			supplied.runId === current.binding.run_id &&
+			supplied.nodeId === current.binding.node_id &&
+			supplied.attempt === current.binding.attempt &&
+			turn !== undefined &&
+			turn.execution_id === executionId &&
+			turn.epoch === supplied.turnEpoch;
+		// A ship carrier sends its carrier activation instead (session_completed
+		// resolves it by execution); it must map to this execution and epoch.
+		const carrierOk =
+			supplied === undefined &&
+			carrier !== undefined &&
+			typeof carrier.activationId === "string" &&
+			typeof carrier.turnEpoch === "number" &&
+			store.isShipCarrierReader({
+				executionId,
+				carrierActivationId: carrier.activationId,
+				turnEpoch: carrier.turnEpoch,
+			});
+		if (
+			current.kind !== "current" ||
+			current.binding.activation_id !== envelope.activationId ||
+			!(nodeActivationOk || carrierOk)
+		) {
+			return { ok: false, status: 409, error: "reader_identity_changed" };
+		}
+		return {
+			ok: true,
+			executionId,
+			readId,
+			envelope,
+			projectName: current.run.project_name,
+		};
+	};
+
+	router.post("/completion-drain/page", (req, res) => {
+		const read = resolveDrainRead(req.body);
+		if (!read.ok) {
+			res.status(read.status).json({ error: read.error });
+			return;
+		}
+		const page = Number((req.body as Record<string, unknown>).page);
+		if (
+			!Number.isSafeInteger(page) ||
+			page < 1 ||
+			page > read.envelope.pages.length
+		) {
+			res.status(400).json({
+				error: "invalid_drain_page",
+				count: read.envelope.pages.length,
+			});
+			return;
+		}
+		const text = store.markDrainReadPageServed(read.readId, page);
+		res.json({
+			ok: true,
+			readId: read.readId,
+			page: {
+				index: page,
+				count: read.envelope.pages.length,
+				sha256: createHash("sha256").update(text, "utf8").digest("hex"),
+				text,
+			},
+		});
+	});
+
+	router.post("/completion-drain/ack", (req, res) => {
+		const read = resolveDrainRead(req.body);
+		if (!read.ok) {
+			res.status(read.status).json({ error: read.error });
+			return;
+		}
+		const missingPages = read.envelope.pages
+			.map((_, index) => index + 1)
+			.filter((page) => !read.envelope.pagesServed.includes(page));
+		if (missingPages.length > 0) {
+			res.status(409).json({
+				error: "pages_not_read",
+				readId: read.readId,
+				missingPages,
+			});
+			return;
+		}
+		let comm: CommDB | undefined;
+		try {
+			comm = new CommDB(commDbPathForProject(read.projectName), false, false);
+			const result = comm.acknowledgeCompletionDrainRead({
+				executionId: read.executionId,
+				activationId: read.envelope.activationId,
+				readId: read.readId,
+				subjects: read.envelope.subjects,
+				nowMs: Date.now(),
+			});
+			res.status(result.rejected.length === 0 ? 200 : 409).json({
+				ok: result.rejected.length === 0,
+				readId: read.readId,
+				accepted: result.accepted.length,
+				rejected: result.rejected.map((subject) => ({
+					subjectKind: subject.subjectKind,
+					subjectId: subject.subjectId,
+					reason: subject.reason,
+				})),
+			});
+		} catch (error) {
+			console.warn(
+				`[completion-drain] ack failed for ${read.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			res.status(503).json({ error: "drain_ack_unavailable", retryable: true });
+		} finally {
+			comm?.close();
+		}
+	});
+
 	router.post("/", async (req, res) => {
 		let event = req.body as IngestEvent | undefined;
 		if (!event || typeof event !== "object") {
@@ -1515,6 +1683,35 @@ export function createEventRouter(
 			res.status(400).json({
 				error: "pre_adapter_failure_kind_http_forbidden",
 				failureKind: normalizedTerminalFailure.failureKind,
+			});
+			return;
+		}
+
+		// FLY-2901 §4.5: the two takeover-rescue events are Bridge-local
+		// authority (DirectEventSink → checked workflow run-event ledger). The
+		// generic path below persists any event_type, so an HTTP client claiming
+		// one of these kinds is refused outright — same anti-forgery shape as the
+		// pre-adapter receipt above: nothing of the claimed event is stored, only
+		// a rejection receipt for forensics.
+		if (
+			event.event_type === TAKEOVER_RESCUED_EVENT_KIND ||
+			event.event_type === TAKEOVER_CLEANED_EVENT_KIND
+		) {
+			store.insertEvent({
+				event_id: `takeover-rescue-rejected:${event.event_id}`,
+				execution_id: event.execution_id,
+				issue_id: event.issue_id,
+				project_name: event.project_name,
+				event_type: "events_takeover_rescue_kind_rejected",
+				source: "bridge.event-route",
+				payload: {
+					claimedKind: event.event_type,
+					claimedSource: event.source,
+				},
+			});
+			res.status(400).json({
+				error: "takeover_rescue_kind_http_forbidden",
+				eventType: event.event_type,
 			});
 			return;
 		}
@@ -1962,14 +2159,27 @@ export function createEventRouter(
 					});
 					return;
 				}
-				let drainChallenge:
-					| {
-							challengeId: string;
-							verification: {
-								mailbox: Record<string, string>;
-								phaseWakes: Record<string, string>;
-							};
-					  }
+				const completionExecutionId = event.execution_id;
+				const completionSourceEventId = event.event_id;
+				const commitCompletion = (drainProof?: CompletionDrainProof) =>
+					store.commitEnrolledCompletion({
+						nodeReuseEnabled: workflowNodeReuseEnabled?.() ?? false,
+						executionId: completionExecutionId,
+						route: completionRoute,
+						sourceEventId: completionSourceEventId,
+						completionSubmission: drainEnvelope.completionSubmission,
+						...(drainProof ? { drainProof } : {}),
+						...(completionHead ? { subjectDigest: completionHead } : {}),
+						...(workflowActivation ? { workflowActivation } : {}),
+						...(prBinding ? { prBinding } : {}),
+						...(worktreeBranchObservation ? { worktreeBranchObservation } : {}),
+						...(declaredPrs?.length ? { declaredPrs } : {}),
+						...(noCodeAttestation ? { noCodeAttestation } : {}),
+						alertIdentity,
+					});
+				let completion: ReturnType<typeof commitCompletion>;
+				let drainReplay:
+					| { runId: string; activationId: string; commDbPath: string }
 					| undefined;
 				if (
 					generalizedContext &&
@@ -1979,126 +2189,64 @@ export function createEventRouter(
 					)
 				) {
 					const activationId = generalizedContext.binding.activation_id;
-					const businessDigest = canonicalSubmissionDigest(
-						drainEnvelope.completionSubmission,
+					const commDbPath = commDbPathForProject(
+						generalizedContext.run.project_name,
 					);
 					const priorCompletion = store.getWorkflowNodeCompletion(
 						generalizedContext.binding.run_id,
 						generalizedContext.binding.node_id,
 						generalizedContext.binding.attempt,
 					);
-					if (!priorCompletion) {
-						const issued = store.findIssuedDrainChallenge({
+					if (priorCompletion) {
+						drainReplay = {
+							runId: generalizedContext.binding.run_id,
+							activationId,
+							commDbPath,
+						};
+						completion = commitCompletion();
+					} else {
+						// FLY-2373: obligations are re-resolved under the CommDB lock on
+						// every attempt; a legacy --drain-receipt is advisory only.
+						if (drainEnvelope.receiptChallengeId) {
+							console.info(
+								`[completion-drain] ${event.execution_id}: legacy drain receipt ${drainEnvelope.receiptChallengeId} ignored; obligations re-verified`,
+							);
+						}
+						const drain = runSemanticCompletionDrain({
+							commDbPath,
+							store,
 							executionId: event.execution_id,
 							activationId,
-							businessDigest,
+							businessDigest: canonicalSubmissionDigest(
+								drainEnvelope.completionSubmission,
+							),
+							commit: (proof) => commitCompletion(proof),
 						});
-						let comm: CommDB | undefined;
-						try {
-							comm = CommDB.openReadonly(
-								commDbPathForProject(generalizedContext.run.project_name),
-							);
-							if (!drainEnvelope.receiptChallengeId) {
-								if (issued) {
-									res.status(409).json({
-										error: "workflow_completion_rejected",
-										reason: "consume_pending_mail",
-										challengeId: issued.challengeId,
-										mailbox: issued.mailbox,
-										phaseWakes: issued.phaseWakes,
-									});
-									return;
-								}
-								const pending = comm.getCompletionDrainPending(
-									event.execution_id,
-								);
-								if (pending.mailbox.length + pending.phaseWakes.length > 0) {
-									const challenge = store.issueDrainChallenge({
-										executionId: event.execution_id,
-										activationId,
-										businessDigest,
-										mailSet: pending,
-										watermark: pending.watermark,
-									});
-									res.status(409).json({
-										error: "workflow_completion_rejected",
-										reason: "consume_pending_mail",
-										challengeId: challenge.challengeId,
-										mailbox: challenge.mailbox,
-										phaseWakes: challenge.phaseWakes,
-									});
-									return;
-								}
-							} else if (
-								issued &&
-								issued.challengeId === drainEnvelope.receiptChallengeId
-							) {
-								const verification = comm.getCompletionDrainVerification(
-									event.execution_id,
-									issued.mailbox,
-									issued.phaseWakes,
-								);
-								const unacked = [
-									...issued.mailbox.filter(
-										(id) => verification.mailbox[id] !== "ACKED",
-									),
-									...issued.phaseWakes.filter(
-										(id) =>
-											!["started", "finished"].includes(
-												verification.phaseWakes[id] ?? "",
-											),
-									),
-								];
-								if (unacked.length > 0) {
-									res.status(409).json({
-										error: "workflow_completion_rejected",
-										reason: "drain_receipt_rejected",
-										unacked,
-									});
-									return;
-								}
-								drainChallenge = {
-									challengeId: issued.challengeId,
-									verification,
-								};
-							} else {
-								// Preserve idempotent completion replay: StateStore returns the
-								// existing receipt before attempting this empty CAS.
-								drainChallenge = {
-									challengeId: drainEnvelope.receiptChallengeId,
-									verification: { mailbox: {}, phaseWakes: {} },
-								};
-							}
-						} catch (error) {
+						if (drain.kind === "unread") {
+							res.status(409).json(drain.response);
+							return;
+						}
+						if (drain.kind === "unavailable") {
 							console.warn(
-								`[completion-drain] CommDB verification failed for ${event.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+								`[completion-drain] obligation authority unavailable for ${event.execution_id}: ${drain.error}`,
 							);
 							res.status(409).json({
 								error: "workflow_completion_rejected",
 								reason: "completion_deferred_pending_mail",
-								detail: "commdb_unreadable",
+								detail: drain.detail,
 							});
 							return;
-						} finally {
-							comm?.close();
 						}
+						if (drain.settlementError) {
+							console.warn(
+								`[completion-drain] wake settlement deferred for ${event.execution_id}: ${drain.settlementError}; a completion replay reconciles it`,
+							);
+						}
+						completion = drain.completion;
 					}
+				} else {
+					completion = commitCompletion();
 				}
-				const completion = store.commitEnrolledCompletion({
-					nodeReuseEnabled: workflowNodeReuseEnabled?.() ?? false,
-					executionId: event.execution_id,
-					route: completionRoute,
-					sourceEventId: event.event_id,
-					completionSubmission: drainEnvelope.completionSubmission,
-					...(drainChallenge ? { drainChallenge } : {}),
-					...(completionHead ? { subjectDigest: completionHead } : {}),
-					...(workflowActivation ? { workflowActivation } : {}),
-					...(prBinding ? { prBinding } : {}),
-					...(worktreeBranchObservation ? { worktreeBranchObservation } : {}),
-					...(declaredPrs?.length ? { declaredPrs } : {}),
-					...(noCodeAttestation ? { noCodeAttestation } : {}),
-					alertIdentity,
-				});
 				if (
 					!(completion.ok === false && completion.reason === "not_enrolled")
 				) {
@@ -2109,13 +2257,6 @@ export function createEventRouter(
 						"[event-route]",
 					);
 					if (!completion.ok) {
-						if (completion.reason === "drain_challenge_not_issued") {
-							res.status(409).json({
-								error: "workflow_completion_rejected",
-								reason: "drain_receipt_rejected",
-							});
-							return;
-						}
 						if (completion.reason === "stale_execution_superseded") {
 							res.json({
 								ok: true,
@@ -2152,6 +2293,27 @@ export function createEventRouter(
 								: {}),
 						});
 						return;
+					}
+					if (completion.idempotentReplay && drainReplay) {
+						try {
+							const reconciled = reconcileCompletionDrainSettlement({
+								commDbPath: drainReplay.commDbPath,
+								store,
+								runId: drainReplay.runId,
+								executionId: event.execution_id,
+								activationId: drainReplay.activationId,
+								completionEventId: completion.eventUid,
+							});
+							if (reconciled > 0) {
+								console.warn(
+									`[completion-drain] replay reconciled ${reconciled} wake settlement(s) for ${event.execution_id}`,
+								);
+							}
+						} catch (error) {
+							console.warn(
+								`[completion-drain] replay settlement reconcile failed for ${event.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
 					}
 					store.insertEvent({
 						event_id: `wfca:${completion.eventUid.slice("wfc:".length)}`,
