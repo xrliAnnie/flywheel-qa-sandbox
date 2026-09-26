@@ -9,12 +9,13 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 | --- | --- |
 | origin | `https://github.com/xrliAnnie/flywheel-qa-sandbox.git` |
 | 当前分支 | `project-slot-6-FLY-202` |
-| base | `origin/main` at `1855f7a1a` |
-| divergence | ahead 1（仅 `chore(progress): FLY-202 design 1/7`），behind 0 |
-| 远端同名分支 | 不存在 |
+| base | `origin/main` at `1855f7a1a`（review round 1 复核） |
+| divergence | review round 1 时 ahead 8、behind 0；均为本 issue design/progress commits |
+| 远端同名分支 | 已存在，指向 `341728fdd`（当时本地 HEAD） |
 | 同 head 的历史 PR | `gh pr list` 返回空数组 |
+| 并行同 issue PR | sandbox PR #203 open，head=`project-slot-3-FLY-202`，也修改 `doc/qa/sandbox-notes.md` |
 
-因此 implement 节点不需要重锚、rebase 或 force-push。它应在同一 feature branch 上追加 docs commit，首次 push 使用 `git push -u origin project-slot-6-FLY-202`，然后对 sandbox `main` 开 PR。
+因此 implement 节点不应重锚、rebase 或 force-push。它应先 fetch；若 `origin/main` 已前进，用普通 merge 同步后再生成快照。之后在同一 feature branch 上追加 docs commit，普通 fast-forward `git push`，然后对 sandbox `main` 开 PR。
 
 ## 2. 目标文件与消费者
 
@@ -26,7 +27,7 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 
 ## 3. 顶层目录事实
 
-现场命令 `find . -mindepth 1 -maxdepth 1 -type d -not -name .git` 得到 17 个顶层目录：
+现场命令 `git ls-tree -d --name-only HEAD | LC_ALL=C sort` 得到 17 个已跟踪顶层目录：
 
 | 目录 | 一行职责描述的事实来源 |
 | --- | --- |
@@ -48,7 +49,7 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 | `scripts/` | 开发、部署、维护与 QA 自动化 |
 | `supabase/` | Supabase metadata 与 migrations |
 
-隐藏目录也属于“every top-level directory”，所以不能用只显示非隐藏项的裸 `ls` 生成表格。`.git/` 是 worktree 元数据，不属于仓库内容，必须排除。implement 节点仍需在写入前重跑发现命令，以当前状态为准。
+隐藏目录也属于“every top-level directory”，所以不能用只显示非隐藏项的裸 `ls` 生成表格。Git tree 查询会自然排除 `.git/`、`node_modules/`、`dist/` 与其它未跟踪工具产物。implement 节点仍需在写入前重跑发现命令，以当前 HEAD 为准。
 
 ## 4. README 摘要范围
 
@@ -69,13 +70,13 @@ Issue: FLY-202 (https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-s
 
 ## 5. 命令输出与顺序
 
-issue 指定的命令是 `ls -R doc/ | head -50`。当前输出从 `FLY-145-s6-retry-product-test`、`FLY-202-qa-sandbox-fixture` 开始，与目标文件里的旧快照不同。implement 节点应在所有目标文档内容写完后运行该命令，把 stdout 原样放入 `text` fenced block，并在最终验证时提取该 block 与重新执行的输出逐字比较。
+issue 指定的命令是 `ls -R doc/ | head -50`。实测表明它随 locale 改变：`LC_ALL=C` 从 `FLY-145-s6-retry-product-test` 开始，而 `LC_ALL=en_US.UTF-8` 从 `architecture` 开始，前 50 行因此覆盖不同子树。implement 节点应在所有目标文档内容写完后用 `LC_ALL=C ls -R doc/ | head -50` 固定排序，把 stdout 原样放入 `text` fenced block，同时记录原命令与 locale；最终验证和 QA 必须使用同一 locale 逐字比较。
 
 由于设计文档位于 `engineering/doc/` 而非 `doc/`，本设计阶段新增文件不会改变该命令输出。后续若其他节点同时改变 `doc/`，应以目标文件最后写入时的同一 worktree 快照为准。
 
 ## 6. 安全与验证边界
 
 - 内容是纯 Markdown，不渲染用户输入，也没有 SQL 或外部输入边界；HTML escaping / parameterized queries 不适用目标文件。
-- founder HTML 会内联本地渲染 SVG，并只通过 `textContent` / `value` 写运行时评论，避免 derived data 进入 `innerHTML` 或 script。
+- founder HTML 的两次本地 `mmdc` 渲染均因 sandbox 禁止 Chromium macOS rendezvous port 而失败；按合同保留 Mermaid 源并显示 `DIAGRAM PENDING LOCAL RENDER`，未使用远程渲染或 CSS 假图。运行时评论只通过 `textContent` / `value` 写入，避免 derived data 进入 `innerHTML` 或 script。
 - 本任务不需要运行 package 或 repository test suite。验证应使用具体的 shell assertions、`git diff --check`、集合比对、bullet 计数、tree block 比对和 `gh pr view`。
 - 最终 diff 允许本 issue 的 design artifacts、progress ledger 与目标 notes；不允许生产代码、config 或无关文档改动。

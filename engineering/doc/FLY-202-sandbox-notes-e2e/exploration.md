@@ -12,7 +12,7 @@ FLY-202 不是产品功能，而是 test-slot harness 的常驻 QA fixture（测
 ## 2. 当前状态与约束
 
 - 当前仓库是 `xrliAnnie/flywheel-qa-sandbox` 的 slot-6 clone，分支为 `project-slot-6-FLY-202`。
-- 当前 HEAD 仅比 `origin/main` 多一笔本轮 progress ledger commit，且远端同名分支尚不存在；不存在历史重写或 force-push 需求。
+- 本轮开始时 HEAD 仅比 `origin/main` 多一笔 progress ledger commit，远端同名分支尚不存在；design artifacts 随后已正常发布到同名远端分支。后续节点只能 fast-forward push；若 main 前进则普通 merge，同样不存在 rebase 或 force-push 需求。
 - `doc/qa/sandbox-notes.md` 已存在。因此 issue 中的 “Create” 在本轮解释为：对同一稳定路径做完整、可审查的原位刷新，而不是另建 run-stamped 文件。
 - 目标文件只能描述当前 sandbox clone。生产仓库、生产 Discord、生产数据库与 merge 均不在范围内。
 - 输出中的目录表和 `ls -R doc/ | head -50` 必须由 implement 节点现场读取，不能把本 design 阶段的快照当成最终内容。

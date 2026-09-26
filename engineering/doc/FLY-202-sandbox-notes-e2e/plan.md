@@ -32,10 +32,10 @@ Run:
 
 ```bash
 node "$FLYWHEEL_COMM_CLI" turn
-node "$FLYWHEEL_COMM_CLI" inbox --exec-id 2b58ef47-da8c-41e0-ad5c-04574fceaa54
+node "$FLYWHEEL_COMM_CLI" inbox --exec-id "$FLYWHEEL_EXEC_ID"
 ```
 
-Expected: `turn` 返回 `yours phase=implement` 后才可写 shared worktree；mailbox 指令逐条处理并按协议回执。
+Expected: `turn` 返回 `yours phase=implement` 后才可写 shared worktree；mailbox 使用 implement phase-session 自己的 exec-id，指令逐条处理并按协议回执。禁止复制 design / QA session 的 exec-id，否则会读取并 ACK 另一个 session 的 mail。
 
 - [ ] **Step 2: 确认分支没有漂移或已发布历史冲突**
 
@@ -47,9 +47,21 @@ git branch --show-current
 git rev-list --count origin/main..HEAD
 git rev-list --count HEAD..origin/main
 git ls-remote --heads origin project-slot-6-FLY-202
+git merge-base --is-ancestor origin/project-slot-6-FLY-202 HEAD
 ```
 
-Expected: branch=`project-slot-6-FLY-202`；behind=`0`；ahead 只包含本 issue 的 design/progress commits。若远端分支存在，先确认它是当前 HEAD 的祖先；否则不得 rewrite 或 force-push，走 Lead question gate。
+Expected: branch=`project-slot-6-FLY-202`；ahead 只包含本 issue 的 design/progress commits；已发布 remote head 是当前 HEAD 的祖先。
+
+若 `git rev-list --count HEAD..origin/main` 大于 0，在生成目录表或 tree snapshot **之前**执行技术同步：
+
+```bash
+node "$FLYWHEEL_COMM_CLI" turn
+git merge --no-edit origin/main
+git push
+git rev-list --count HEAD..origin/main
+```
+
+Expected after sync: behind=`0`。合并 `origin/main` 不需要 ship approval，也不得改写历史。若只在 `doc/qa/sandbox-notes.md` 冲突，以 `origin/main` 的最新文件为刷新起点，再按本计划重新生成四个区块；若冲突超出本 issue 文档范围，保持 merge state 并通过 Lead question gate 请求裁决。任何路径都不得 rebase 已发布分支或 force-push。
 
 - [ ] **Step 3: 按本地测试政策发现受 literal 影响的文件**
 
@@ -73,7 +85,7 @@ Run:
 
 ```bash
 diff -u \
-  <(ls -R doc/ | head -50) \
+  <(LC_ALL=C ls -R doc/ | head -50) \
   <(awk '/^## `doc\/` listing/{s=1} s && /^```text$/{c=1;next} c && /^```$/{exit} c{print}' doc/qa/sandbox-notes.md)
 ```
 
@@ -98,24 +110,24 @@ Expected: FAIL/non-zero；diff 显示旧 block 含 `FLY-202-generalized-e2e`，�
 Run:
 
 ```bash
-find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \; | LC_ALL=C sort
+git ls-tree -d --name-only HEAD | LC_ALL=C sort
 ```
 
-Expected on the researched baseline: 17 rows—`.claude`、`.flywheel`、`.github`、`.lead`、`.serena`、`agents`、`doc`、`docs`、`engineering`、`fleet`、`packages`、`patches`、`product`、`qa-fly294`、`qa-fly310`、`scripts`、`supabase`。若现场集合变化，以现场为准并为每个新目录查证后写一行描述。
+Expected on the researched baseline: 17 tracked rows—`.claude`、`.flywheel`、`.github`、`.lead`、`.serena`、`agents`、`doc`、`docs`、`engineering`、`fleet`、`packages`、`patches`、`product`、`qa-fly294`、`qa-fly310`、`scripts`、`supabase`。使用 Git tree 而不是 filesystem `find`，避免把 `node_modules/`、`dist/` 或工具临时目录写入仓库说明。若现场 tracked 集合变化，以现场为准并为每个新目录查证后写一行描述。
 
 - [ ] **Step 3: 写目录表**
 
-在 `## Top-level directories` 下写 `Directory | Description` 两列表。第一列用反引号和尾随 `/`；第二列使用 `research.md` §3 的职责描述。不得加入 `.git/`、普通文件或符号链接。
+在 `## Top-level directories` 下写 `Directory | Description` 两列表。第一列用反引号和尾随 `/`；第二列把 `research.md` §3 的事实职责转述成英文，确保整份 target notes 语言一致。不得加入 `.git/`、普通文件、符号链接或未跟踪目录。
 
 - [ ] **Step 4: 重读 README 并写恰好 10 条转述 bullet**
 
 Run:
 
 ```bash
-sed -n '1,316p' packages/qa-framework/README.md
+cat packages/qa-framework/README.md
 ```
 
-在 `## packages/qa-framework/README.md summary` 下覆盖 `research.md` §4 的十个主题。每条 bullet 一句话；保留脚本、环境变量和 contract 文件名的准确拼写，不复制整段原文。
+使用精确 heading ``## `packages/qa-framework/README.md` summary``，并覆盖 `research.md` §4 的十个主题。每条 bullet 一句话；保留脚本、环境变量和 contract 文件名的准确拼写，不复制整段原文。
 
 ### Task 3: 捕获指定命令的真实输出
 
@@ -126,14 +138,14 @@ sed -n '1,316p' packages/qa-framework/README.md
 Run:
 
 ```bash
-ls -R doc/ | head -50
+LC_ALL=C ls -R doc/ | head -50
 ```
 
-Expected: 50 行 stdout；当前 baseline 首个 issue folder 为 `FLY-145-s6-retry-product-test`。
+Expected: 50 行 stdout；`LC_ALL=C` 固定排序，使 implement 和 QA phase-session 复跑一致。当前 baseline 首个 issue folder 为 `FLY-145-s6-retry-product-test`。
 
 - [ ] **Step 2: 原样写入 fenced block**
 
-在 `## doc/ listing` 下写明 `Command: ls -R doc/ | head -50`，随后使用 `text` fenced block。复制 stdout 原文，不修正 `ls` 产生的 `doc//...` 显示，也不手工排序。
+使用精确 heading ``## `doc/` listing``。写明 `Command: ls -R doc/ | head -50` 和 `Locale: LC_ALL=C`，随后使用 `text` fenced block。复制 stdout 原文，不修正 `ls` 产生的 `doc//...` 显示，也不手工排序。
 
 ### Task 4: 运行 docs-only 定向验证
 
@@ -145,7 +157,7 @@ Run:
 
 ```bash
 diff -u \
-  <(find . -mindepth 1 -maxdepth 1 -type d -not -name .git -exec basename {} \; | LC_ALL=C sort) \
+  <(git ls-tree -d --name-only HEAD | LC_ALL=C sort) \
   <(sed -n '/^## Top-level directories$/,/^## /p' doc/qa/sandbox-notes.md | awk -F'`' '/^\| `/{gsub(/\/$/, "", $2); print $2}' | LC_ALL=C sort)
 ```
 
@@ -167,7 +179,7 @@ Run:
 
 ```bash
 diff -u \
-  <(ls -R doc/ | head -50) \
+  <(LC_ALL=C ls -R doc/ | head -50) \
   <(awk '/^## `doc\/` listing/{s=1} s && /^```text$/{c=1;next} c && /^```$/{exit} c{print}' doc/qa/sandbox-notes.md)
 ```
 
@@ -222,10 +234,32 @@ gh pr create \
   --base main \
   --head project-slot-6-FLY-202 \
   --title "docs(FLY-202): refresh QA sandbox fixture notes" \
-  --body-file /tmp/FLY-202-pr-body.md
+  --body-file - <<'EOF'
+## Linear Issue
+
+FLY-202 — https://linear.app/geoforge3d/issue/FLY-202/qa-sandbox-fixture-slot-harness-real-runner-e2e-task-do-not-pick-up
+
+## Summary
+
+- refresh the 2–3 paragraph sandbox purpose statement
+- inventory every tracked top-level directory with a one-line description
+- summarize `packages/qa-framework/README.md` in 10 bullets
+- capture `LC_ALL=C ls -R doc/ | head -50` in a fenced block
+
+## Verification
+
+- directory set matches `git ls-tree -d --name-only HEAD`
+- README summary contains exactly 10 bullets
+- fenced tree block matches the locale-pinned command output
+- `git diff --check` passes and the PR is docs-only
+
+## Boundary
+
+Open PR only. Not merged; awaiting downstream QA and founder gate.
+EOF
 ```
 
-`/tmp/FLY-202-pr-body.md` 必须包含：Linear issue URL、四项文档变更摘要、上面四类定向验证结果、docs-only scope、以及“未 merge；等待后续 QA / founder gate”。用 `apply_patch` 创建该临时文件，不得把 secret 或本机 credential 写入 body。
+`--body-file -` 从当前命令 stdin 读取正文，因此并行 slot 不共享临时文件，也不会复用旧证据。正文不得加入 secret、本机 credential 或未经本轮验证的结果。
 
 - [ ] **Step 4: 验证 PR 证据**
 
