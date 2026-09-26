@@ -12,8 +12,16 @@ const request = {
 };
 describe("QA room request boundary", () => {
 	it("uses the actual deployment script timeout flag names", () => {
-		const body = parseRoomDeploy({ ...request, lead_ready_timeout_sec: 60, lead_channel_timeout_sec: 90 }, 4);
-		expect(deployArguments(body, 1).slice(-4)).toEqual(["--lead-ready-timeout", "60", "--lead-channel-timeout", "90"]);
+		const body = parseRoomDeploy(
+			{ ...request, lead_ready_timeout_sec: 60, lead_channel_timeout_sec: 90 },
+			4,
+		);
+		expect(deployArguments(body, 1).slice(-4)).toEqual([
+			"--lead-ready-timeout",
+			"60",
+			"--lead-channel-timeout",
+			"90",
+		]);
 	});
 	it("normalizes defaults and builds only fixed script argv", () => {
 		const parsed = parseRoomDeploy(

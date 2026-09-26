@@ -83,7 +83,36 @@ Keep `branchSha` handy — you'll use it to verify the Runner worktree HEAD.
 
 ---
 
-## 4. Inject a Linear issue
+### Generalized E2E: service-run drill
+
+Both Codex and Claude callers use the room service to run the generalized driver outside the runner sandbox. For the deterministic model-stub lane:
+
+```bash
+node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha> --generalized --stub-runner --env TEST_REPLY_BY_ISSUE=1
+node "$FLYWHEEL_COMM_CLI" room drill --room <room-id> --issue FLY-202
+```
+
+For the real lane, deploy a generalized **Claude runner** room with the same env and without `--stub-runner`, then add `--real` to `room drill`. This describes the room's runner configuration, not the caller's model. Drill requires sandbox `main`, slot mode, and exactly `TEST_REPLY_BY_ISSUE=1` in the deploy env. `--codex-runner`, `--no-lead`, alerts, test-discipline, and Codex-home reconciliation are not reproducible under this driver contract and are refused with `drill_config_not_reproducible`. `--lead-label` and `--extra-lead` are supported. A non-main `--from-branch` remains valid for ordinary rooms, but not service drills.
+
+Never run `qa-529-generalized-e2e.mjs` directly inside a runner sandbox: real-lane host pretrust writes are unavailable, and process observation can misclassify a live worker as dead. Direct driver scripts and restart drills requiring `launchctl kickstart` are Lead-only manual work outside the runner sandbox; the room service does not expose arbitrary commands.
+
+Drill waits by default. `--timeout-sec` controls only CLI waiting (1..1800, default 1800); `--timeout-ms` controls each driver stage (10000..3600000, default 900000). Exit 3 preserves the running operation; resume the exact operation, not merely the ready room:
+
+```bash
+node "$FLYWHEEL_COMM_CLI" room wait --room <room-id> --operation <operation-id>
+node "$FLYWHEEL_COMM_CLI" room status --room <room-id>
+```
+
+CLI exit 0 means driver exit 0; 4 means the driver completed with a nonzero exit; 1 means refusal/service failure; 2 means transport failure. Status includes `operation_kind`, selected `operation`, and the latest five `drills`; operation-bound wait also retrieves older operations. Keep `driver_exit_code`, `outcome`, `evidence_copy`, `evidence_copy_dir`, `rerun_spec`, `deadline_at`, and `phase_bound`. A room staying `ready` or an operation becoming `succeeded` is not a test verdict.
+
+Before `qa-result` and teardown, the runner calls `evidence-run record` with its own execution identity, ingest token, and current workflow submission credential. Save the selected operation's service-generated `rerun_spec` unchanged as JSON for `--rerun-spec`, and pass `driver_exit_code` unchanged as `--driver-exit-code`. Pass `evidence_copy_dir` as `--local-copy` only when `evidence_copy=ok`; `failed`/`empty` is not a complete copy even if driver exit is 0. Inspect the required step evidence, rerun or report any gap, and record the evidence before submitting the dispatch-specific `qa-result` for that same head.
+
+---
+
+## 4. Inject a Linear issue (ordinary rooms)
+
+Generalized rooms use `room drill` above; direct injection is rejected for those rooms.
+
 
 ```
 scripts/inject-linear-issue.sh <N> <FLY-XXX>

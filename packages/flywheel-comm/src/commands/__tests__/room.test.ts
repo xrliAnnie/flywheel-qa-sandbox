@@ -556,11 +556,14 @@ describe("room CLI", () => {
 		const h = harness();
 		const apiTokenPath = "/tmp/qa-room/generalized/api-token";
 		const tokenPath = "/tmp/qa-room/report-host/token";
+		const alertDutyTokenPath = "/tmp/qa-room/alert-duty-token";
 		h.fetchImpl.mockResolvedValue(
 			response({
 				...room(),
 				roomInfo: {
 					apiTokenPath,
+					alertDutyTokenPath,
+					alertDutyToken: "private-duty-token",
 					apiToken: "private-room-token",
 					credential: "private-room-credential",
 					reportHost: {
@@ -575,10 +578,11 @@ describe("room CLI", () => {
 		expect(await runRoomCommand(["status", "--room", ROOM], h.opts)).toBe(0);
 		expect(JSON.parse(h.stdout[0]!).roomInfo).toEqual({
 			apiTokenPath,
+			alertDutyTokenPath,
 			reportHost: { url: "http://127.0.0.1:19321", tokenPath },
 		});
 		expect(h.stdout.join(" ")).not.toMatch(
-			/private-room-token|private-room-credential|private-report-token|ingest-secret|submission-secret/,
+			/private-room-token|private-room-credential|private-report-token|private-duty-token|ingest-secret|submission-secret/,
 		);
 	});
 
@@ -661,6 +665,239 @@ describe("room CLI", () => {
 			await runRoomCommand(["deploy", "--help"], { ...h.opts, env: {} }),
 		).toBe(0);
 		expect(h.stdout.join(" ")).toContain("--head");
+		expect(h.fetchImpl).not.toHaveBeenCalled();
+	});
+});
+
+function drill(status = "running", exitCode: number | null = null) {
+	const operation = {
+		operation_id: OPERATION,
+		status,
+		reason: status === "failed" ? "service_deadline" : null,
+		driver_exit_code: exitCode,
+		outcome:
+			exitCode === null ? null : exitCode === 0 ? "passed" : "driver_failed",
+		evidence_copy: exitCode === null ? null : "ok",
+		evidence_copy_dir: exitCode === null ? null : "/tmp/drill/evidence",
+		rerun_spec: { driver: { issue: "FLY-2405", timeoutMs: 900000 } },
+		deadline_at: "2026-09-26T22:00:00.000Z",
+		phase_bound: 16,
+	};
+	return {
+		...room(),
+		operation_status: status,
+		operation_kind: "drill",
+		operation,
+		drills: [operation],
+	};
+}
+
+describe("room drill CLI", () => {
+	const args = ["drill", "--room", ROOM, "--issue", "FLY-2405"];
+
+	it("posts the fixed driver and bounded defaults, retaining identity and request ID", async () => {
+		const h = harness();
+		h.fetchImpl.mockResolvedValue(response(drill("succeeded", 0)));
+		expect(await runRoomCommand(args, h.opts)).toBe(0);
+		expect(h.fetchImpl.mock.calls[0]![0]).toBe(
+			`http://127.0.0.1:9876/api/qa-rooms/${ROOM}/drills`,
+		);
+		expect(JSON.parse(String(h.fetchImpl.mock.calls[0]![1]?.body))).toEqual({
+			driver: "qa529_generalized_e2e",
+			issue: "FLY-2405",
+			real: false,
+			timeout_ms: 900000,
+			request_id: REQUEST,
+			execution_id: EXEC,
+			credential: "submission-secret",
+		});
+	});
+
+	it("retries the identical real drill request without minting another operation request", async () => {
+		const h = harness();
+		h.fetchImpl
+			.mockRejectedValueOnce(new Error("lost response"))
+			.mockResolvedValue(response(drill("succeeded", 20)));
+		expect(
+			await runRoomCommand(
+				[...args, "--real", "--timeout-ms", "10000", "--request-id", REQUEST],
+				h.opts,
+			),
+		).toBe(4);
+		expect(h.randomId).not.toHaveBeenCalled();
+		expect(h.fetchImpl.mock.calls[0]![1]?.body).toBe(
+			h.fetchImpl.mock.calls[1]![1]?.body,
+		);
+		expect(
+			JSON.parse(String(h.fetchImpl.mock.calls[0]![1]?.body)),
+		).toMatchObject({ real: true, timeout_ms: 10000 });
+	});
+
+	it.each([
+		["succeeded", 0, 0],
+		["succeeded", 20, 4],
+		["succeeded", 21, 4],
+		["succeeded", 1, 4],
+		["failed", null, 1],
+		["refused", null, 1],
+		["queued", null, 3],
+		["spawning", null, 3],
+		["running", null, 3],
+	] as const)(
+		"maps operation %s exit %s independently of the ready room",
+		async (status, driverExit, expected) => {
+			const h = harness();
+			h.fetchImpl.mockResolvedValue(response(drill(status, driverExit)));
+			expect(await runRoomCommand([...args, "--no-wait"], h.opts)).toBe(
+				expected,
+			);
+			expect(JSON.parse(h.stdout[0]!)).toMatchObject({
+				operation_kind: "drill",
+				operation_status: status,
+				operation: { driver_exit_code: driverExit },
+			});
+			if (expected === 3)
+				expect(h.stderr.join(" ")).toContain(
+					`room wait --room ${ROOM} --operation ${OPERATION}`,
+				);
+		},
+	);
+
+	it("polls the POST operation even when a later drill completes first", async () => {
+		const h = harness();
+		const pending = {
+			...drill(),
+			drills: [{ ...drill("succeeded", 0).operation, operation_id: REQUEST }],
+		};
+		h.fetchImpl
+			.mockResolvedValueOnce(response(drill(), 202))
+			.mockResolvedValueOnce(response(pending))
+			.mockResolvedValueOnce(response(drill("succeeded", 21)));
+		expect(await runRoomCommand(args, h.opts)).toBe(4);
+		expect(h.fetchImpl.mock.calls.slice(1).map(([url]) => url)).toEqual(
+			Array(2).fill(
+				`http://127.0.0.1:9876/api/qa-rooms/${ROOM}?operation_id=${OPERATION}`,
+			),
+		);
+	});
+
+	it("resumes the selected operation even when absent from the last five drills", async () => {
+		const h = harness();
+		h.fetchImpl.mockResolvedValue(
+			response({
+				...drill("succeeded", 20),
+				drills: Array(5).fill({
+					...drill("succeeded", 0).operation,
+					operation_id: REQUEST,
+				}),
+			}),
+		);
+		expect(
+			await runRoomCommand(
+				["wait", "--room", ROOM, "--operation", OPERATION],
+				h.opts,
+			),
+		).toBe(4);
+		expect(h.fetchImpl.mock.calls[0]![0]).toBe(
+			`http://127.0.0.1:9876/api/qa-rooms/${ROOM}?operation_id=${OPERATION}`,
+		);
+	});
+
+	it("prints a bound resume command when the local wait expires without cancelling the driver", async () => {
+		const h = harness();
+		h.fetchImpl.mockImplementation(async () => response(drill()));
+		expect(await runRoomCommand([...args, "--timeout-sec", "1"], h.opts)).toBe(
+			3,
+		);
+		expect(h.fetchImpl).toHaveBeenCalledTimes(1);
+		expect(h.stderr.join(" ")).toContain(
+			`room wait --room ${ROOM} --operation ${OPERATION}`,
+		);
+	});
+
+	it("rejects a selected operation from a different room without leaking error payload", async () => {
+		const h = harness();
+		h.fetchImpl.mockResolvedValue(
+			response(
+				{ ok: false, reason: "operation_not_in_room", secret: "private" },
+				404,
+			),
+		);
+		expect(
+			await runRoomCommand(
+				["wait", "--room", ROOM, "--operation", OPERATION],
+				h.opts,
+			),
+		).toBe(1);
+		expect(h.stderr.join(" ")).toContain("operation_not_in_room");
+		expect(h.stderr.join(" ")).not.toContain("private");
+	});
+
+	it.each([
+		{ ...drill(), status: "torn_down" },
+		{ ...drill(), operation: { ...drill().operation, operation_id: REQUEST } },
+		{ ...drill(), operation_status: "succeeded" },
+		drill("succeeded", null),
+	])("fails closed on an inconsistent operation view", async (view) => {
+		const h = harness();
+		h.fetchImpl.mockResolvedValue(response(view));
+		expect(
+			await runRoomCommand(
+				["wait", "--room", ROOM, "--operation", OPERATION],
+				h.opts,
+			),
+		).toBe(1);
+		expect(h.stderr.join(" ")).toContain("inconsistent_state");
+	});
+
+	it("keeps room wait semantics without an operation and renders status drill evidence, including copy failure", async () => {
+		const h = harness();
+		const view = drill("succeeded", 0);
+		const operation = {
+			...view.operation,
+			evidence_copy: "failed",
+			evidence_copy_dir: null,
+			log_tail: "ingest-secret",
+			credential: "hidden",
+		};
+		h.fetchImpl.mockImplementation(async () =>
+			response({ ...view, operation, drills: [operation] }),
+		);
+		expect(await runRoomCommand(["status", "--room", ROOM], h.opts)).toBe(0);
+		expect(JSON.parse(h.stdout[0]!)).toMatchObject({
+			operation: { evidence_copy: "failed", evidence_copy_dir: null },
+			drills: [{ evidence_copy: "failed" }],
+		});
+		expect(h.stdout.join(" ")).not.toMatch(/ingest-secret|hidden/);
+		h.fetchImpl.mockResolvedValue(response(drill()));
+		expect(await runRoomCommand(["wait", "--room", ROOM], h.opts)).toBe(0);
+	});
+
+	it("reports HTTP service failure as 1 after retries and transport loss as 2", async () => {
+		const h = harness();
+		h.fetchImpl.mockImplementation(async () =>
+			response({ ok: false, reason: "room_service_failure" }, 503),
+		);
+		expect(await runRoomCommand(args, h.opts)).toBe(1);
+		expect(h.fetchImpl).toHaveBeenCalledTimes(3);
+		h.fetchImpl.mockRejectedValue(new Error("private transport failure"));
+		expect(await runRoomCommand(args, h.opts)).toBe(2);
+		expect(h.stderr.join(" ")).not.toContain("private transport");
+	});
+
+	it.each([
+		["--issue", "fly-1"],
+		["--issue", "FLY-1;true"],
+		["--timeout-ms", "9999"],
+		["--timeout-ms", "3600001"],
+		["--timeout-ms", "1.5"],
+		["--driver", "arbitrary"],
+		["--timeout-sec", "1801"],
+		["--wait", "--no-wait"],
+	])("rejects invalid drill options before HTTP %j", async (...flags) => {
+		const h = harness();
+		const input = flags[0] === "--issue" ? args.slice(0, 3) : args;
+		expect(await runRoomCommand([...input, ...flags], h.opts)).toBe(1);
 		expect(h.fetchImpl).not.toHaveBeenCalled();
 	});
 });

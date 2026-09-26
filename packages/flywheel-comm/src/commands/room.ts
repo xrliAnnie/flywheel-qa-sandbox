@@ -29,7 +29,7 @@ const ENV_VALUES: Record<string, readonly string[]> = {
 	TEST_BRIDGE_DEPT_SCOPE_REJECT: ["on", "off"],
 	TEST_CODEX_LEAD_OUTBOUND_MODE: ["direct", "bridge"],
 };
-const HELP = `Usage: flywheel-comm room deploy|teardown|status|wait|list [options]
+const HELP = `Usage: flywheel-comm room deploy|teardown|status|wait|list|drill [options]
   deploy --head <lowercase-sha40> [--expect-head <same source SHA>]
     [--slot auto|<positive-int>] [--mode slot|mirror|roundtable] [--from-branch main]
     [--generalized] [--test-discipline] [--codex-runner] [--stub-runner] [--no-lead]
@@ -39,16 +39,18 @@ const HELP = `Usage: flywheel-comm room deploy|teardown|status|wait|list [option
     [--env TEST_REPLY_BY_ISSUE=0|1] [--env TEST_BRIDGE_DEPT_SCOPE_REJECT=on|off]
     [--env TEST_CODEX_LEAD_OUTBOUND_MODE=direct|bridge]
   teardown --room <uuid> [--skip-snapshot --reason <1..200 characters>]
-  status|wait --room <uuid>
-  deploy|teardown: [--request-id <uuid>] [--wait|--no-wait] (default: wait)
-  deploy|teardown|wait: [--timeout-sec <1..1800>] (default: 1800)
+  drill --room <uuid> --issue <FLY-N> [--real] [--timeout-ms <10000..3600000>] (default: 900000)
+  status|wait --room <uuid> (wait also accepts --operation <uuid>)
+  deploy|teardown|drill: [--request-id <uuid>] [--wait|--no-wait] (default: wait)
+  deploy|teardown|drill|wait: [--timeout-sec <1..1800>] (default: 1800)
   Authentication: [--exec-id <uuid>] or FLYWHEEL_EXEC_ID with FLYWHEEL_INGEST_TOKEN
     and the current workflow submission credential when available. Lead: [--lead], TEAMLEAD_API_TOKEN,
     FLYWHEEL_LEAD_ID. Runner identity takes precedence unless --lead is explicit.
   Bridge: FLYWHEEL_BRIDGE_URL (default: http://127.0.0.1:9876).
   Output: JSON lines; waiting prints the initial room handle and changed snapshots.
-  Exit: 0 ready/torn_down/list, 1 refused/failed/request error, 2 transport failure,
-    3 still running (resume with room wait --room <room_id>).`;
+  Exit: 0 ready/torn_down/list or drill driver exit 0, 1 refused/failed/request error,
+    2 transport failure, 3 still running, 4 completed drill with nonzero driver exit.
+  Resume drills with room wait --room <room_id> --operation <operation_id>.`;
 
 export interface RoomCommandOptions {
 	env?: NodeJS.ProcessEnv;
@@ -79,6 +81,7 @@ interface Command {
 	action: string;
 	values: Values;
 	roomId?: string;
+	operationId?: string;
 	requestId?: string;
 	body?: Record<string, unknown>;
 	wait: boolean;
@@ -213,10 +216,14 @@ function deployBody(values: Values): Record<string, unknown> {
 function parseCommand(args: string[], randomId: () => string): Command {
 	const [action, ...rest] = args;
 	requireValid(
-		action && ["deploy", "teardown", "status", "wait", "list"].includes(action),
-		"expected deploy|teardown|status|wait|list",
+		action &&
+			["deploy", "teardown", "status", "wait", "list", "drill"].includes(
+				action,
+			),
+		"expected deploy|teardown|status|wait|list|drill",
 	);
-	const mutation = action === "deploy" || action === "teardown";
+	const mutation =
+		action === "deploy" || action === "teardown" || action === "drill";
 	const options: NonNullable<ParseArgsConfig["options"]> = {
 		"exec-id": { type: "string" },
 		lead: { type: "boolean" },
@@ -227,6 +234,12 @@ function parseCommand(args: string[], randomId: () => string): Command {
 		options.room = { type: "string" };
 	if (mutation || action === "wait")
 		options["timeout-sec"] = { type: "string" };
+	if (action === "wait") options.operation = { type: "string" };
+	if (action === "drill") {
+		options.issue = { type: "string" };
+		options.real = { type: "boolean" };
+		options["timeout-ms"] = { type: "string" };
+	}
 	if (mutation) {
 		options["request-id"] = { type: "string" };
 		options.wait = { type: "boolean" };
@@ -290,13 +303,33 @@ function parseCommand(args: string[], randomId: () => string): Command {
 	const roomId = values.room as string | undefined;
 	if (action !== "deploy" && action !== "list")
 		requireValid(roomId && UUID.test(roomId), "--room must be a UUID");
+	const operationId = values.operation as string | undefined;
+	if (operationId !== undefined)
+		requireValid(UUID.test(operationId), "--operation must be a UUID");
 	let body: Record<string, unknown> | undefined;
 	let requestId: string | undefined;
 	if (mutation) {
 		requestId = (values["request-id"] as string | undefined) ?? randomId();
 		requireValid(UUID.test(requestId), "--request-id must be a UUID");
 		if (action === "deploy") body = deployBody(values);
-		else {
+		else if (action === "drill") {
+			requireValid(
+				typeof values.issue === "string" && /^[A-Z]+-\d+$/.test(values.issue),
+				"--issue must be an issue identifier such as FLY-2405",
+			);
+			const driverTimeout = integer(
+				values["timeout-ms"] ?? "900000",
+				"--timeout-ms",
+				3600000,
+			);
+			requireValid(driverTimeout >= 10000, "--timeout-ms is out of range");
+			body = {
+				driver: "qa529_generalized_e2e",
+				issue: values.issue,
+				real: values.real === true,
+				timeout_ms: driverTimeout,
+			};
+		} else {
 			const skip = values["skip-snapshot"] === true;
 			const reason = (values.reason as string | undefined)?.trim();
 			requireValid(
@@ -315,6 +348,7 @@ function parseCommand(args: string[], randomId: () => string): Command {
 		action,
 		values,
 		roomId,
+		operationId,
 		requestId,
 		body,
 		wait: action === "wait" || (mutation && !values["no-wait"]),
@@ -340,6 +374,10 @@ function printableRoom(room: RoomResponse, secrets: string[]): unknown {
 	const fields = [
 		"room_id",
 		"operation_id",
+		"operation_status",
+		"operation_kind",
+		"operation",
+		"drills",
 		"status",
 		"status_reason",
 		"roomInfo",
@@ -374,6 +412,7 @@ function printableRoom(room: RoomResponse, secrets: string[]): unknown {
 							// QA consumes these file locations, never their token contents.
 							key === "apiTokenPath" ||
 							key === "tokenPath" ||
+							key === "alertDutyTokenPath" ||
 							!/token|credential|authorization|password|secret/i.test(key),
 					)
 					.map(([key, child]) => [key, redact(child)]),
@@ -395,6 +434,13 @@ export async function runRoomCommand(
 	}
 	let command: Command | undefined;
 	let lastRoom: RoomResponse | undefined;
+	const pending = (): number => {
+		if (command?.operationId && (lastRoom?.room_id || command.roomId))
+			stderr(
+				`room: still running; resume with room wait --room ${lastRoom?.room_id ?? command.roomId} --operation ${command.operationId}`,
+			);
+		return 3;
+	};
 	try {
 		command = parseCommand(args, opts.randomId ?? randomUUID);
 		if (command.values.help) {
@@ -497,7 +543,9 @@ export async function runRoomCommand(
 					requestHeaders["X-Flywheel-Submission-Credential"] = credential;
 			}
 			const serialized = body ? JSON.stringify(body) : undefined;
+			let lastHttpStatus: number | undefined;
 			for (let attempt = 0; attempt < 3; attempt++) {
+				lastHttpStatus = undefined;
 				if (until !== undefined && now() >= until)
 					throw new RoomCommandError("wait deadline reached", 3);
 				const controller = new AbortController();
@@ -527,10 +575,22 @@ export async function runRoomCommand(
 						response.status !== 408 &&
 						response.status !== 429 &&
 						response.status < 500
-					)
+					) {
+						// Only fixed protocol reason literals may enter error output.
+						const errorBody = (await response.json().catch(() => null)) as {
+							reason?: unknown;
+						} | null;
+						const reason = [
+							"operation_not_in_room",
+							"inconsistent_state",
+						].includes(String(errorBody?.reason))
+							? `: ${errorBody!.reason}`
+							: "";
 						throw new RoomCommandError(
-							`request refused (HTTP ${response.status})`,
+							`request refused (HTTP ${response.status})${reason}`,
 						);
+					}
+					lastHttpStatus = response.status;
 					await response.body?.cancel();
 				} catch (error) {
 					if (error instanceof RoomCommandError) throw error;
@@ -549,9 +609,13 @@ export async function runRoomCommand(
 			}
 			if (until !== undefined && now() >= until)
 				throw new RoomCommandError("wait deadline reached", 3);
+			if (lastHttpStatus !== undefined)
+				throw new RoomCommandError(
+					`service request failed after 3 attempts (HTTP ${lastHttpStatus})`,
+				);
 			throw new RoomCommandError("transport failure after 3 attempts", 2);
 		};
-		const path = `/api/qa-rooms${command.roomId ? `/${command.roomId}` : ""}${command.action === "teardown" ? "/teardown" : ""}`;
+		const path = `/api/qa-rooms${command.roomId ? `/${command.roomId}` : ""}${command.action === "teardown" ? "/teardown" : command.action === "drill" ? "/drills" : ""}${command.operationId ? `?operation_id=${command.operationId}` : ""}`;
 		let body = await request(path, command.body);
 		if (command.action === "list") {
 			const list = body as { ok?: unknown; rooms?: unknown } | null;
@@ -578,19 +642,68 @@ export async function runRoomCommand(
 				"invalid room response",
 			);
 			lastRoom = body;
+			if (command.action === "drill" && !command.operationId) {
+				requireValid(
+					typeof lastRoom.operation_id === "string" &&
+						UUID.test(lastRoom.operation_id),
+					"invalid drill operation response",
+				);
+				command.operationId = lastRoom.operation_id;
+			}
+			let operationExit: number | undefined;
+			if (command.operationId) {
+				const operation = lastRoom.operation as Record<string, unknown> | null;
+				requireValid(
+					operation &&
+						typeof operation === "object" &&
+						!Array.isArray(operation) &&
+						operation.operation_id === command.operationId &&
+						lastRoom.operation_id === command.operationId &&
+						lastRoom.operation_kind === "drill" &&
+						lastRoom.operation_status === operation.status &&
+						[
+							"queued",
+							"spawning",
+							"running",
+							"succeeded",
+							"failed",
+							"refused",
+						].includes(String(operation.status)),
+					"inconsistent_state",
+				);
+				if (operation.status === "succeeded") {
+					requireValid(
+						typeof operation.driver_exit_code === "number" &&
+							Number.isSafeInteger(operation.driver_exit_code) &&
+							operation.driver_exit_code >= 0,
+						"inconsistent_state",
+					);
+					operationExit = operation.driver_exit_code === 0 ? 0 : 4;
+				} else if (
+					operation.status === "failed" ||
+					operation.status === "refused"
+				)
+					operationExit = 1;
+				else
+					requireValid(lastRoom.status !== "torn_down", "inconsistent_state");
+			}
 			const output = JSON.stringify({
 				ok: true,
 				...(printableRoom(lastRoom, secrets) as object),
 			});
 			if (output !== previousOutput) stdout(output);
 			previousOutput = output;
-			if (SUCCEEDED.has(lastRoom.status)) return 0;
-			if (FAILED.has(lastRoom.status)) return 1;
-			if (!command.wait || now() >= deadline) return 3;
+			if (command.operationId) {
+				if (operationExit !== undefined) return operationExit;
+			} else {
+				if (SUCCEEDED.has(lastRoom.status)) return 0;
+				if (FAILED.has(lastRoom.status)) return 1;
+			}
+			if (!command.wait || now() >= deadline) return pending();
 			await sleep(Math.min(2000, deadline - now()));
-			if (now() >= deadline) return 3;
+			if (now() >= deadline) return pending();
 			body = await request(
-				`/api/qa-rooms/${lastRoom.room_id}`,
+				`/api/qa-rooms/${lastRoom.room_id}${command.operationId ? `?operation_id=${command.operationId}` : ""}`,
 				undefined,
 				deadline,
 			);
@@ -603,6 +716,6 @@ export async function runRoomCommand(
 		stderr(
 			`room: ${failure.message}${command?.requestId ? `; request_id=${command.requestId}` : ""}${lastRoom?.room_id || command?.roomId ? `; room_id=${lastRoom?.room_id ?? command?.roomId}` : ""}`,
 		);
-		return failure.exitCode;
+		return failure.exitCode === 3 ? pending() : failure.exitCode;
 	}
 }

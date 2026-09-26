@@ -136,23 +136,36 @@ PYCODE
   FLYWHEEL_ALERT_DUTY_SEAT_CLI="$TEST_ROOT/seat.cjs"
   cat > "$TEST_ROOT/seat.cjs" <<'JS'
 const fs=require('node:fs');
+const path=require('node:path');
+const root=process.env.FLY2405_TEST_REPO_ROOT;
+const {tsImport}=require(require.resolve('tsx/esm/api',{paths:[root]}));
 const url=process.env.FLYWHEEL_BRIDGE_URL;
 const argv=process.argv;
 if(url !== 'http://localhost:19801' || argv[argv.indexOf('--bridge-url')+1] !== url) process.exit(3);
-// Stub fetch records the exact seat endpoint, without opening a socket.
-const fetch = async url => { fs.writeFileSync(process.env.FLYWHEEL_ISOLATION_ROOT+'/fetch-url',url); return {dispatcherBotUserId:'333'}; };
-fetch(url+'/api/alert-duty/seat').then(r=>console.log(JSON.stringify({...r,isDutySeat:true,alertChannelId:'999'})));
+// Exercise the real CLI and resolver; stub only the external project source
+// and fetch, recording the endpoint actually requested by production code.
+tsImport(path.join(root,'packages/teamlead/src/alert-duty-seat-cli.ts'),__filename).then(async ({runAlertDutySeatCli})=>{
+  process.exitCode=await runAlertDutySeatCli(argv.slice(2),{
+    loadProjects:()=>[{projectName:'room',leads:[{agentId:'flywheel-test-1',alertChannel:'999'}]}],
+    fetchImpl:async target=>{
+      fs.writeFileSync(path.join(process.env.FLYWHEEL_ISOLATION_ROOT,'fetch-url'),target);
+      return new Response(JSON.stringify({dispatcherBotUserId:'333',dutyWritePath:'configured'}),{status:200});
+    },
+  });
+}).catch(error=>{console.error(error);process.exitCode=1;});
 JS
   local pane_entries=() pane_i
   for ((pane_i=1; pane_i<${#env_args[@]}; pane_i+=2)); do pane_entries+=("${env_args[$pane_i]}"); done
   env -i HOME="$TEST_ROOT" PATH="$PATH" LEAD_ID="$LEAD_ID" PROJECT_NAME=room \
     DISCORD_STATE_DIR="$TEST_ROOT" SCRIPT_DIR="$SCRIPT_DIR" \
+    FLY2405_TEST_REPO_ROOT="$ROOT" \
     FLYWHEEL_ALERT_DUTY_SEAT_CLI="$FLYWHEEL_ALERT_DUTY_SEAT_CLI" "${pane_entries[@]}" \
     /bin/bash -c 'source "$1"; /usr/bin/env > "$2"' _ \
     "$ROOT/packages/teamlead/scripts/lead-duty-provision.sh" "$TEST_ROOT/pane.env" > "$TEST_ROOT/status"
   rg -q '^FLYWHEEL_ALERT_DUTY_TOKEN=fixture-duty$' "$TEST_ROOT/pane.env" || return 1
   rg -q 'seat=true.*token=set' "$TEST_ROOT/status" || return 1
   [[ $(cat "$TEST_ROOT/fetch-url") == http://localhost:19801/api/alert-duty/seat ]] || return 1
+  jq -e '.groups["999"].requireMention == false and (.allowBots | index("333") != null)' "$TEST_ROOT/access.json" >/dev/null || return 1
   for LEAD_ID in flywheel-test-2 ordinary-production; do
     FLYWHEEL_ALERT_DUTY_TOKEN=fixture-duty
     [[ "$LEAD_ID" != ordinary-production ]] || unset FLYWHEEL_ISOLATION_ROOT

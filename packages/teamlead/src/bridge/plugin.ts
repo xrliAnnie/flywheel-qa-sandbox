@@ -104,6 +104,7 @@ import {
 import { defaultMachinePoolDir } from "../account-heal/machine-account.js";
 import { quarantinePendingSwitches } from "../account-heal/pending-store.js";
 import { writeSweepRequest } from "../account-heal/sweep-request.js";
+import { resolveAlertDutyLeadId } from "../alert-duty-seat.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -607,7 +608,6 @@ import {
 	makeIdleThreadArchiveSweep,
 	resolveIdleThreadSweepChannelIds,
 } from "./idle-thread-archive-sweep.js";
-import { resolveAlertDutyLeadId } from "../alert-duty-seat.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatRotationDigest,
@@ -801,6 +801,12 @@ import {
 	buildProjectRunnerDefaults,
 } from "./project-runner-model-source.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import {
+	createLocalQaRoomService,
+	qaRoomServiceEnabled,
+} from "./qa-room-host.js";
+import { createQaRoomRouter } from "./qa-room-routes.js";
+import type { QaRoomService } from "./qa-room-service.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
 import {
 	createQuotaDaemonWaker,
@@ -954,9 +960,6 @@ import {
 	type StateStoreGhostDeps,
 } from "./statestore-ghost-reconcile.js";
 import { createStrengthTwoEvidenceRouter } from "./strength-two-evidence-route.js";
-import { createLocalQaRoomService, qaRoomServiceEnabled } from "./qa-room-host.js";
-import { createQaRoomRouter } from "./qa-room-routes.js";
-import type { QaRoomService } from "./qa-room-service.js";
 import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
@@ -6171,9 +6174,16 @@ export function createBridgeApp(
 	app.use(
 		"/api/qa-rooms",
 		opts?.qaRoomService
-			? createQaRoomRouter({ store, service: opts.qaRoomService, apiToken: config.apiToken,
-				ingestToken: config.ingestToken, enabled: () => qaRoomServiceEnabled() })
-			: ((_req, res) => { res.status(503).json({ ok: false, reason: "room_service_disabled" }); }),
+			? createQaRoomRouter({
+					store,
+					service: opts.qaRoomService,
+					apiToken: config.apiToken,
+					ingestToken: config.ingestToken,
+					enabled: () => qaRoomServiceEnabled(),
+				})
+			: (_req, res) => {
+					res.status(503).json({ ok: false, reason: "room_service_disabled" });
+				},
 	);
 
 	// Catch-all 404 (must be after all routes)

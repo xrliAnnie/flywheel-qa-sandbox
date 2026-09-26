@@ -15,7 +15,9 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
 	deployArguments,
+	drillArguments,
 	parseRoomDeploy,
+	parseRoomDrill,
 	QaRoomError,
 } from "./qa-room-contract.js";
 import type { QaRoom, QaRoomOperation } from "./qa-room-store.js";
@@ -33,6 +35,8 @@ export interface RoomJobReceipt {
 	phase_reached: string;
 	exit_code: number;
 	finished_at: string;
+	evidence_copy?: "ok" | "failed" | "empty";
+	failure_reason?: string;
 }
 export interface RoomJobObservation {
 	alive: boolean;
@@ -44,6 +48,7 @@ export interface QaRoomRuntime {
 	claim(room: QaRoom, slots: number[]): boolean;
 	release(room: QaRoom, slots: number[]): number[];
 	start(room: QaRoom, op: QaRoomOperation): number;
+	drillPhaseBound(room: QaRoom): number;
 	observe(op: QaRoomOperation): Promise<RoomJobObservation>;
 	terminate(op: QaRoomOperation): Promise<void>;
 	verifyDeploy(room: QaRoom, op: QaRoomOperation): Promise<RoomInfo>;
@@ -54,6 +59,13 @@ export interface QaRoomRuntime {
 	removeSource(room: QaRoom): Promise<void>;
 	evidence(op: QaRoomOperation): string | null;
 	logTail(op: QaRoomOperation): string[];
+}
+export function driverPhaseBound(source: string): number {
+	const waits = source
+		.split("\n")
+		.filter((line) => line.includes("await waitFor(")).length;
+	if (!waits) throw new QaRoomError("driver_shape_unknown");
+	return waits + 1;
 }
 export function minimalRoomEnvironment(
 	ambient: NodeJS.ProcessEnv,
@@ -264,6 +276,18 @@ export class LocalQaRoomRuntime implements QaRoomRuntime {
 		}
 		return conflicts;
 	}
+	drillPhaseBound(room: QaRoom): number {
+		try {
+			return driverPhaseBound(
+				readFileSync(
+					join(room.src_dir, "scripts/qa-529-generalized-e2e.mjs"),
+					"utf8",
+				),
+			);
+		} catch {
+			throw new QaRoomError("driver_shape_unknown");
+		}
+	}
 	start(room: QaRoom, op: QaRoomOperation): number {
 		mkdirSync(op.operation_dir, { recursive: true, mode: 0o700 });
 		const request = JSON.parse(room.request_json);
@@ -283,7 +307,17 @@ export class LocalQaRoomRuntime implements QaRoomRuntime {
 					room.slot,
 				),
 			);
-		else {
+		else if (op.kind === "drill") {
+			args.push(
+				room.src_dir,
+				`/tmp/flywheel-test-slot-${room.slot}`,
+				"--",
+				...drillArguments(
+					parseRoomDrill(JSON.parse(op.request_json)),
+					room.slot,
+				),
+			);
+		} else {
 			const info = room.deploy_json
 				? JSON.parse(room.deploy_json)
 				: {
@@ -339,8 +373,6 @@ export class LocalQaRoomRuntime implements QaRoomRuntime {
 				? (raw as unknown as RoomJobReceipt)
 				: undefined;
 		const phase = read(join(op.operation_dir, "phase"))?.trim();
-		if (receipt?.operation_id === op.operation_id)
-			return { alive: false, receipt, phase };
 		const owner = readJson(join(op.operation_dir, "owner.json"));
 		const processes = await this.processes();
 		let alive = false;
@@ -360,6 +392,11 @@ export class LocalQaRoomRuntime implements QaRoomRuntime {
 			// repeating the operation. Observation errors propagate; not evidence of death.
 			alive = processes.some((p) => this.jobCommand(p.command, op));
 		}
+		// A dead wrapper does not prove that its detached job group is gone.
+		const groupId =
+			owner?.operation_id === op.operation_id ? Number(owner.pid) : op.pid;
+		if (!alive && groupId && !processes.some((p) => p.pid === groupId))
+			alive = processes.some((p) => p.group === groupId);
 		return { alive, phase, receipt };
 	}
 	private started(value: string): string {
@@ -408,7 +445,11 @@ export class LocalQaRoomRuntime implements QaRoomRuntime {
 		if (!pid || pid <= 0) throw new QaRoomError("job_owner_missing");
 		const before = await this.processes();
 		const current = before.find((p) => p.pid === pid);
-		if (!current) return;
+		if (!current) {
+			if (before.some((p) => p.group === pid))
+				throw new QaRoomError("job_group_residual");
+			return;
+		}
 		const matches =
 			owner?.operation_id === op.operation_id &&
 			typeof owner.lstart === "string"
@@ -440,8 +481,19 @@ export class LocalQaRoomRuntime implements QaRoomRuntime {
 					p.group === pid &&
 					group.some((old) => old.pid === p.pid && old.started === p.started),
 			)
-		)
+		) {
 			signal(-pid, "SIGKILL");
+			const remaining = await this.processes();
+			const newLeader = remaining.find((p) => p.pid === pid);
+			const reused = newLeader && newLeader.started !== current.started;
+			if (!reused && remaining.some((p) => p.group === pid))
+				throw new QaRoomError("job_group_residual");
+		} else if (
+			!after.some((p) => p.pid === pid) &&
+			after.some((p) => p.group === pid)
+		) {
+			throw new QaRoomError("job_group_residual");
+		}
 	}
 	async verifyDeploy(room: QaRoom, op: QaRoomOperation): Promise<RoomInfo> {
 		const info = parseRoomOutput(
@@ -522,12 +574,19 @@ export class LocalQaRoomRuntime implements QaRoomRuntime {
 		return read(join(op.operation_dir, "evidence-dir"))?.trim() || null;
 	}
 	logTail(op: QaRoomOperation): string[] {
-		const lines = (read(join(op.operation_dir, "stderr")) ?? "")
-			.split("\n")
-			.filter((line) =>
-				/^\[(test-deploy|test-teardown|qa-room-job)\]/.test(line),
-			)
-			.slice(-40);
+		const stderr = (read(join(op.operation_dir, "stderr")) ?? "").split("\n");
+		const lines = (
+			op.kind === "drill"
+				? [
+						...(read(join(op.operation_dir, "stdout")) ?? "")
+							.split("\n")
+							.filter((line) => line.startsWith("[qa529]")),
+						...stderr.filter(Boolean),
+					]
+				: stderr.filter((line) =>
+						/^\[(test-deploy|test-teardown|qa-room-job)\]/.test(line),
+					)
+		).slice(-40);
 		while (Buffer.byteLength(lines.join("\n")) > 8192) lines.shift();
 		return lines;
 	}

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validateRerunSpecV1 } from "flywheel-comm/strength-two-contract";
 import { canonicalJsonString } from "flywheel-config";
 import { z } from "zod";
 
@@ -6,6 +7,7 @@ export class QaRoomError extends Error {
 	constructor(
 		readonly reason: string,
 		readonly code = 400,
+		readonly fields?: string[],
 	) {
 		super(reason);
 	}
@@ -182,4 +184,86 @@ export function deployArguments(
 		if (body[key] !== undefined) args.push(flag, String(body[key]));
 	}
 	return args;
+}
+
+const drillSchema = z
+	.object({
+		...identity,
+		driver: z.literal("qa529_generalized_e2e"),
+		issue: z.string().regex(/^[A-Z]+-\d+$/),
+		real: z.boolean().default(false),
+		timeout_ms: z.number().int().min(10_000).max(3_600_000).default(900_000),
+	})
+	.strict();
+export type RoomDrillRequest = z.infer<typeof drillSchema>;
+export function parseRoomDrill(input: unknown): RoomDrillRequest {
+	return parse(drillSchema, input);
+}
+export function roomDrillRerunSpec(
+	deploy: RoomDeployRequest,
+	drill: RoomDrillRequest,
+) {
+	if (!deploy.generalized) throw new QaRoomError("room_not_drillable", 409);
+	const fields: string[] = [];
+	if (deploy.from_branch !== "main") fields.push("from_branch");
+	if (deploy.mode !== "slot") fields.push("mode");
+	if (
+		Object.keys(deploy.env).length !== 1 ||
+		deploy.env.TEST_REPLY_BY_ISSUE !== "1"
+	)
+		fields.push("env");
+	for (const key of [
+		"codex_runner",
+		"alerts",
+		"alert_duty",
+		"no_lead",
+		"test_discipline",
+		"codex_home_reconcile",
+	] as const) {
+		if (deploy[key]) fields.push(key);
+	}
+	if (fields.length)
+		throw new QaRoomError("drill_config_not_reproducible", 409, fields);
+	if (drill.real === deploy.stub_runner)
+		throw new QaRoomError("drill_mode_mismatch", 409);
+	const result = validateRerunSpecV1({
+		schemaVersion: 1,
+		lane: drill.real ? "generalized_e2e_real" : "generalized_e2e_stub",
+		deploy: {
+			...(deploy.lead_label ? { leadLabel: deploy.lead_label } : {}),
+			...(deploy.extra_leads.length
+				? {
+						extraLeads: deploy.extra_leads.map((e) => ({
+							slot: e.slot,
+							deptLabel: e.label,
+						})),
+					}
+				: {}),
+		},
+		driver: { issue: drill.issue, timeoutMs: drill.timeout_ms },
+	});
+	if (!result.ok)
+		throw new QaRoomError("drill_config_not_reproducible", 409, [
+			result.reason,
+		]);
+	return result.value;
+}
+export function drillArguments(body: RoomDrillRequest, slot: number): string[] {
+	return [
+		String(slot),
+		"--issue",
+		body.issue,
+		...(body.real ? ["--real"] : []),
+		"--timeout-ms",
+		String(body.timeout_ms),
+	];
+}
+export function drillOutcome(code: number): string {
+	return code === 0
+		? "passed"
+		: code === 20
+			? "a3_diagnosis"
+			: code === 21
+				? "stub_fatal_diagnosis"
+				: "driver_failed";
 }

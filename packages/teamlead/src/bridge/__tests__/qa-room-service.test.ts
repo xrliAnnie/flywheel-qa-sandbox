@@ -53,6 +53,7 @@ describe("QA room lifecycle", () => {
 			claim: vi.fn(() => true),
 			release: vi.fn(() => []),
 			start: vi.fn(() => 1234),
+			drillPhaseBound: vi.fn(() => 16),
 			observe: vi.fn(async () => observation),
 			terminate: vi.fn(async () => {}),
 			verifyDeploy: vi.fn(async (room) => ({
@@ -435,5 +436,295 @@ describe("QA room lifecycle", () => {
 		expect(() => service.deploy(lead, request())).toThrow(
 			"room_service_disabled",
 		);
+	});
+	const drillRequest = (extra = {}) => ({
+		request_id: randomUUID(),
+		driver: "qa529_generalized_e2e",
+		issue: "FLY-2405",
+		...extra,
+	});
+	const readyDrillRoom = async (extra = {}) => {
+		const room = service.deploy(
+			actor,
+			request({
+				generalized: true,
+				stub_runner: true,
+				env: { TEST_REPLY_BY_ISSUE: "1" },
+				...extra,
+			}),
+		);
+		await finishDeploy(room.room_id);
+		observation = { alive: true, phase: "drill" };
+		return room.room_id;
+	};
+	it("drill validates ownership, journals idempotently, and mutually excludes runner teardown", async () => {
+		const id = await readyDrillRoom();
+		expect(() =>
+			service.drill({ ...actor, key: "runner:other" }, id, drillRequest()),
+		).toThrow("room_not_owned");
+		const body = drillRequest();
+		const first = service.drill(actor, id, body);
+		expect(service.drill(actor, id, body).operation_id).toBe(
+			first.operation_id,
+		);
+		expect(() => service.drill(actor, id, { ...body, issue: "FLY-2" })).toThrow(
+			"request_conflict",
+		);
+		expect(() => service.drill(actor, id, drillRequest())).toThrow(
+			"drill_in_progress",
+		);
+		expect(() =>
+			service.teardown(actor, id, { request_id: randomUUID() }),
+		).toThrow("drill_in_progress");
+		expect(service.status(actor, id).status).toBe("ready");
+	});
+	it("accepts same-issue takeover only after owner terminal and accepts Lead", async () => {
+		const id = await readyDrillRoom();
+		terminalOwners.add(actor.key);
+		const takeover = { ...actor, key: "runner:next" };
+		service.drill(takeover, id, drillRequest());
+		expect(store.audits().at(-1)?.reason).toContain("takeover_from=runner:one");
+		await service.tick();
+		observation = { alive: false };
+		await service.tick();
+		expect(() => service.drill(lead, id, drillRequest())).not.toThrow();
+	});
+	it("audits invalid drill schema, production targets, and unready rooms", async () => {
+		const id = service.deploy(actor, request()).room_id;
+		expect(() => service.drill(actor, id, drillRequest())).toThrow(
+			"room_not_drillable",
+		);
+		expect(() => service.drill(actor, id, drillRequest({ argv: [] }))).toThrow(
+			"field_not_supported",
+		);
+		expect(() =>
+			service.drill(actor, id, drillRequest({ target: "com.flywheel.bridge" })),
+		).toThrow("production_target_refused");
+		expect(store.audits().at(-1)).toMatchObject({
+			action: "drill",
+			decision: "refused",
+			reason: "production_target_refused",
+		});
+	});
+	it.each([0, 20, 21, 1])(
+		"preserves driver code %s independently of room health",
+		async (code) => {
+			const id = await readyDrillRoom();
+			const drill = service.drill(actor, id, drillRequest());
+			load = 144;
+			await service.tick();
+			expect(store.getOperation(drill.operation_id!)?.status).toBe("running");
+			observation = {
+				alive: false,
+				receipt: {
+					operation_id: drill.operation_id!,
+					phase_reached: "drill",
+					exit_code: code,
+					evidence_copy: "ok",
+					finished_at: new Date(clock).toISOString(),
+				},
+			};
+			await service.tick();
+			const status = service.status(actor, id, drill.operation_id);
+			expect(status.status).toBe("ready");
+			expect(status.operation).toMatchObject({
+				status: "succeeded",
+				driver_exit_code: code,
+				evidence_copy: "ok",
+			});
+			expect(status.operation?.evidence_copy_dir).toContain("/evidence");
+			expect(store.audits().at(-1)?.action).toBe("drill");
+		},
+	);
+	it("keeps passed outcome but exposes incomplete evidence without a copy path", async () => {
+		const id = await readyDrillRoom();
+		const d = service.drill(actor, id, drillRequest());
+		await service.tick();
+		observation = {
+			alive: false,
+			receipt: {
+				operation_id: d.operation_id!,
+				phase_reached: "drill",
+				exit_code: 0,
+				evidence_copy: "failed",
+				finished_at: new Date(clock).toISOString(),
+			},
+		};
+		await service.tick();
+		expect(service.status(actor, id).operation).toMatchObject({
+			outcome: "passed",
+			evidence_copy: "failed",
+			evidence_copy_dir: null,
+		});
+	});
+	it("persists a multistage deadline across restart and kills only after that bound", async () => {
+		const id = await readyDrillRoom();
+		const d = service.drill(actor, id, drillRequest({ timeout_ms: 10000 }));
+		await service.tick();
+		const op = store.getOperation(d.operation_id!)!;
+		expect(op.phase_bound).toBe(16);
+		expect(Date.parse(op.deadline_at!) - clock).toBe(16 * 10000 + 15 * 60000);
+		clock += 30000;
+		await service.tick();
+		expect(runtime.terminate).not.toHaveBeenCalled();
+		service = recreate();
+		await service.tick();
+		expect(store.getOperation(op.operation_id)?.deadline_at).toBe(
+			op.deadline_at,
+		);
+		clock = Date.parse(op.deadline_at!) + 1;
+		await service.tick();
+		expect(runtime.terminate).toHaveBeenCalledTimes(1);
+		expect(service.status(actor, id).operation).toMatchObject({
+			status: "failed",
+			reason: "service_deadline",
+		});
+		expect(service.status(actor, id).status).toBe("ready");
+	});
+	it("recovers a dead drill without respawn and refuses an unknown driver shape", async () => {
+		const id = await readyDrillRoom();
+		service.drill(actor, id, drillRequest());
+		await service.tick();
+		service = recreate();
+		observation = { alive: false };
+		await service.tick();
+		expect(service.status(actor, id).operation).toMatchObject({
+			reason: "interrupted",
+			status: "failed",
+		});
+		vi.mocked(runtime.drillPhaseBound).mockImplementation(() => {
+			throw new Error("unknown shape");
+		});
+		service.drill(actor, id, drillRequest());
+		await service.tick();
+		expect(service.status(actor, id).operation).toMatchObject({
+			reason: "driver_shape_unknown",
+			status: "failed",
+		});
+	});
+	it("Lead teardown cancels a live drill before running the teardown job", async () => {
+		const id = await readyDrillRoom();
+		const d = service.drill(actor, id, drillRequest());
+		await service.tick();
+		const teardown = service.teardown(lead, id, { request_id: randomUUID() });
+		await service.tick();
+		expect(runtime.terminate).toHaveBeenCalledWith(
+			expect.objectContaining({ operation_id: d.operation_id }),
+		);
+		expect(
+			JSON.parse(store.getOperation(d.operation_id!)!.result_json!),
+		).toMatchObject({ reason: "cancelled_by_teardown" });
+		expect(store.getOperation(teardown.operation_id!)?.status).toBe("running");
+	});
+	it("looks up older operations directly and rejects an operation from another room", async () => {
+		const id = await readyDrillRoom();
+		const ids: string[] = [];
+		for (let n = 0; n < 7; n++) {
+			const d = service.drill(actor, id, drillRequest());
+			ids.push(d.operation_id!);
+			await service.tick();
+			observation = {
+				alive: false,
+				receipt: {
+					operation_id: d.operation_id!,
+					phase_reached: "drill",
+					exit_code: 0,
+					evidence_copy: "ok",
+					finished_at: new Date(clock).toISOString(),
+				},
+			};
+			await service.tick();
+			observation = { alive: true };
+		}
+		expect(service.status(actor, id).drills).toHaveLength(5);
+		expect(service.status(actor, id, ids[0]).operation_id).toBe(ids[0]);
+		const other = service.deploy(lead, request());
+		expect(() => service.status(lead, other.room_id, ids[0])).toThrow(
+			"operation_not_in_room",
+		);
+	});
+	it("cancels drill before teardown when Lead submits during an awaited observation", async () => {
+		const id = await readyDrillRoom();
+		const drill = service.drill(actor, id, drillRequest());
+		await service.tick();
+		let resume!: (value: RoomJobObservation) => void;
+		vi.mocked(runtime.observe).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resume = resolve;
+				}),
+		);
+		const events: string[] = [];
+		vi.mocked(runtime.start).mockImplementation((_room, op) => {
+			events.push(op.kind);
+			return 1234;
+		});
+		vi.mocked(runtime.terminate).mockImplementation(async (op) => {
+			events.push(`cancel:${op.operation_id}`);
+		});
+		const tick = service.tick();
+		service.teardown(lead, id, { request_id: randomUUID() });
+		resume({ alive: true });
+		await tick;
+		expect(events).toEqual([`cancel:${drill.operation_id}`, "teardown"]);
+	});
+
+	it("does not launch a queued drill whose room entered teardown during another cancellation", async () => {
+		const a = await readyDrillRoom();
+		const b = service.deploy(
+			lead,
+			request({
+				generalized: true,
+				stub_runner: true,
+				env: { TEST_REPLY_BY_ISSUE: "1" },
+			}),
+		).room_id;
+		await finishDeploy(b);
+		observation = { alive: true };
+		service.drill(actor, a, drillRequest());
+		await service.tick();
+		let resume!: (value: RoomJobObservation) => void;
+		vi.mocked(runtime.observe).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					resume = resolve;
+				}),
+		);
+		const tick = service.tick();
+		service.teardown(lead, a, { request_id: randomUUID() });
+		const queued = service.drill(lead, b, drillRequest());
+		vi.mocked(runtime.terminate).mockImplementationOnce(async () => {
+			service.teardown(lead, b, { request_id: randomUUID() });
+		});
+		vi.mocked(runtime.start).mockClear();
+		resume({ alive: true });
+		await tick;
+		expect(
+			vi.mocked(runtime.start).mock.calls.map(([, op]) => op.kind),
+		).toEqual(["teardown"]);
+		expect(
+			service.status(lead, b, queued.operation_id).operation,
+		).toMatchObject({ status: "failed", reason: "cancelled_by_teardown" });
+	});
+	it("does not accept a receipt until the wrapper process group is gone", async () => {
+		const id = await readyDrillRoom();
+		const d = service.drill(actor, id, drillRequest());
+		await service.tick();
+		observation = {
+			alive: true,
+			receipt: {
+				operation_id: d.operation_id!,
+				phase_reached: "drill",
+				exit_code: 143,
+				evidence_copy: "empty",
+				finished_at: new Date(clock).toISOString(),
+			},
+		};
+		service = recreate();
+		await service.tick();
+		expect(service.status(actor, id).operation_status).toBe("running");
+		observation = { ...observation, alive: false };
+		await service.tick();
+		expect(service.status(actor, id).operation_status).toBe("succeeded");
 	});
 });

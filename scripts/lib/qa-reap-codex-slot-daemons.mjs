@@ -103,7 +103,9 @@ async function liveSockets(socketRoot) {
 			}
 			const daemonRoot = `/private/tmp/codex-daemon-${process.getuid()}/`;
 			if (!socketPath.startsWith(daemonRoot)) {
-				throw new Error("socket symlink resolves outside the Codex daemon root");
+				throw new Error(
+					"socket symlink resolves outside the Codex daemon root",
+				);
 			}
 		}
 		if (await socketIsLive(socketPath)) live.push(socketPath);

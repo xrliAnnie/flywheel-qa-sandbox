@@ -101,7 +101,11 @@ export function createQaRoomRouter(options: Options): express.Router {
 	const router = express.Router();
 	router.use((req, res, next) => {
 		const mutation = req.method === "POST";
-		const action = req.path.endsWith("/teardown") ? "teardown" : "deploy";
+		const action = req.path.endsWith("/teardown")
+			? "teardown"
+			: req.path.endsWith("/drills")
+				? "drill"
+				: "deploy";
 		try {
 			if (rejectNonLoopback(req, res)) {
 				if (mutation)
@@ -131,7 +135,13 @@ export function createQaRoomRouter(options: Options): express.Router {
 					failure.reason,
 					req.body,
 				);
-			res.status(failure.code).json({ ok: false, reason: failure.reason });
+			res
+				.status(failure.code)
+				.json({
+					ok: false,
+					reason: failure.reason,
+					...(failure.fields ? { fields: failure.fields } : {}),
+				});
 		}
 	});
 	const handle =
@@ -146,7 +156,13 @@ export function createQaRoomRouter(options: Options): express.Router {
 					error instanceof QaRoomError
 						? error
 						: new QaRoomError("room_service_failure", 500);
-				res.status(failure.code).json({ ok: false, reason: failure.reason });
+				res
+					.status(failure.code)
+					.json({
+						ok: false,
+						reason: failure.reason,
+						...(failure.fields ? { fields: failure.fields } : {}),
+					});
 			}
 		};
 	router.post(
@@ -176,6 +192,25 @@ export function createQaRoomRouter(options: Options): express.Router {
 				.json(options.service.teardown(res.locals.qaRoomActor, id, req.body));
 		}),
 	);
+	router.post(
+		"/:room/drills",
+		handle((req, res) => {
+			const id = String(req.params.room);
+			if (!uuid.test(id)) {
+				options.service.refuse(
+					res.locals.qaRoomActor,
+					"drill",
+					"room_id_invalid",
+					req.body,
+					id,
+				);
+				throw new QaRoomError("room_id_invalid");
+			}
+			res
+				.status(202)
+				.json(options.service.drill(res.locals.qaRoomActor, id, req.body));
+		}),
+	);
 	router.get(
 		"/",
 		handle((_req, res) => {
@@ -189,7 +224,13 @@ export function createQaRoomRouter(options: Options): express.Router {
 		"/:room",
 		handle((req, res) => {
 			res.json(
-				options.service.status(res.locals.qaRoomActor, String(req.params.room)),
+				options.service.status(
+					res.locals.qaRoomActor,
+					String(req.params.room),
+					typeof req.query.operation_id === "string"
+						? req.query.operation_id
+						: undefined,
+				),
 			);
 		}),
 	);

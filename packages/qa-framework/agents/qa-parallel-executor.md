@@ -126,8 +126,8 @@ Fallback: source config-bridge.sh + state.sh directly.
 ```bash
 # 1. 部署 test slot（自动分配可用 slot）
 ROOM=$(node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha>)
-ROOM_ID=$(echo "$ROOM" | jq -r '.room_id')
-SLOT_INFO=$(echo "$ROOM" | jq -c '.roomInfo')
+ROOM_ID=$(echo "$ROOM" | jq -sr 'last.room_id')
+SLOT_INFO=$(echo "$ROOM" | jq -sc 'last.roomInfo')
 
 # 2. 运行 Discord E2E 测试
 scripts/discord-e2e.sh basic "$SLOT_INFO"   # 或 lifecycle, error, all
@@ -137,6 +137,25 @@ node "$FLYWHEEL_COMM_CLI" room teardown --room "$ROOM_ID"
 ```
 
 Codex / Claude 都走服务；先推精确 SHA 到 origin。`--head` 选择 Bridge / Lead 源码，`--from-branch` 只选择已推到 sandbox remote 的 fixture 分支。退出码 3 用 `room wait --room <id>` 续等；拆房前记录证据，拆房后保存 `evidence_dir`。裸脚本只供 Lead 维护。
+
+### Generalized driver：用 room drill
+
+Codex / Claude 调用者都让服务在沙箱外跑 generalized driver：
+
+```bash
+node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha> --generalized --stub-runner --env TEST_REPLY_BY_ISSUE=1
+node "$FLYWHEEL_COMM_CLI" room drill --room <room-id> --issue FLY-202
+node "$FLYWHEEL_COMM_CLI" room wait --room <room-id> --operation <operation-id>
+node "$FLYWHEEL_COMM_CLI" room status --room <room-id>
+```
+
+上面的 stub lane 只替换模型推理，适用于明确验收 generalized 控制面的场景，不能代替产品要求的真实用户路径。真实模型 lane 必须用 generalized **Claude runner** 房：不传 `--stub-runner`，保留同一 env，drill 加 `--real`。房型须为 slot、sandbox main、env 恰好 `{TEST_REPLY_BY_ISSUE:"1"}`；Codex-runner 配置、`--no-lead`、alerts、test-discipline、Codex-home reconciliation 会被 `drill_config_not_reproducible` 有意拒绝。可用 `--lead-label` / `--extra-lead`。
+
+**禁止在 runner 沙箱内直接跑 `qa-529-generalized-e2e.mjs`**：宿主 pretrust 无法写入，进程存活探测也可能把权限错误误判成死亡。直接 driver / restart drill（含 `launchctl kickstart`）仅供 Lead 在沙箱外手工执行，不是服务的任意命令入口。
+
+CLI 退出 0 = driver exit 0；4 = driver 已结束但非零；1 = 拒绝/服务失败；2 = 传输失败；3 = 仍进行中。默认等 1800 秒，退出 3 用本次 `operation_id` 续等，不取消作业；不带 `--operation` 的 wait 只看房状态。`--timeout-ms` 是各阶段预算（10000..3600000，默认 900000），不是 `--timeout-sec`（1..1800）的 CLI 等待上限。status 的 `operation` / 最近五次 `drills` 返回结果，绑定操作的 wait 可查更早记录。
+
+`evidence-run record` 仍由 runner 用自身 execution、ingest token 和当前 workflow submission credential 提交。原样保存服务所选 operation 的 `rerun_spec` JSON 给 `--rerun-spec`，把 `driver_exit_code` 给 `--driver-exit-code`；只有 `evidence_copy=ok` 才把 `evidence_copy_dir` 给 `--local-copy`。`succeeded` 只代表 driver 结束；退出 0 但副本失败/为空或步骤不全不能算 PASS，须重跑或报告缺口。先 record，再 qa-result，最后 teardown；不要用后一次 drill 的结果替代目标操作。
 
 **Slot 池**: 4 个 slot（端口 19871-19874），配置在 `~/.flywheel/test-slots.json`（模板: `scripts/test-slots.example.json`）。
 每个 slot 包含：独立 Bridge 进程、独立 test Lead、独立 Discord bot/channel、独立 CommDB。

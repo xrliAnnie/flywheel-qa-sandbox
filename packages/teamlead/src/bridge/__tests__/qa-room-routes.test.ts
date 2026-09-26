@@ -239,4 +239,83 @@ describe("QA room HTTP authorization", () => {
 		expect((await post()).status).toBe(503);
 		expect(store.rooms()).toHaveLength(0);
 	});
+	it("authenticates drill mutations and serves the exact selected operation", async () => {
+		const deployed = await post({
+			generalized: true,
+			stub_runner: true,
+			env: { TEST_REPLY_BY_ISSUE: "1" },
+		});
+		const id = String(deployed.body.room_id);
+		store.updateRoom(id, { status: "ready", physically_claimed: 1 });
+		const body = {
+			execution_id: execution,
+			request_id: randomUUID(),
+			driver: "qa529_generalized_e2e",
+			issue: "FLY-2405",
+		};
+		const response = await fetch(`${base}/${id}/drills`, {
+			method: "POST",
+			headers: {
+				authorization: "Bearer runner",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+		expect(response.status).toBe(202);
+		const accepted = await response.json();
+		expect(accepted.operation_kind).toBe("drill");
+		const selected = await fetch(
+			`${base}/${id}?operation_id=${accepted.operation_id}`,
+			{
+				headers: {
+					authorization: "Bearer runner",
+					"X-Flywheel-Execution-Id": execution,
+				},
+			},
+		);
+		expect((await selected.json()).operation.operation_id).toBe(
+			accepted.operation_id,
+		);
+		const foreign = await fetch(`${base}/${id}?operation_id=${randomUUID()}`, {
+			headers: {
+				authorization: "Bearer runner",
+				"X-Flywheel-Execution-Id": execution,
+			},
+		});
+		expect(foreign.status).toBe(404);
+	});
+	it("returns reproducibility conflict fields and audits drill auth refusals", async () => {
+		const deployed = await post({ generalized: true, stub_runner: true });
+		const id = String(deployed.body.room_id);
+		store.updateRoom(id, { status: "ready" });
+		const body = {
+			execution_id: execution,
+			request_id: randomUUID(),
+			driver: "qa529_generalized_e2e",
+			issue: "FLY-2405",
+		};
+		const response = await fetch(`${base}/${id}/drills`, {
+			method: "POST",
+			headers: {
+				authorization: "Bearer runner",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+		});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			reason: "drill_config_not_reproducible",
+			fields: ["env"],
+		});
+		const denied = await fetch(`${base}/${id}/drills`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+		expect(denied.status).toBe(401);
+		expect(store.audits().at(-1)).toMatchObject({
+			action: "drill",
+			decision: "refused",
+		});
+	});
 });

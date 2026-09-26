@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -16,6 +17,10 @@ import {
 } from "../qa-room-runtime.js";
 import type { QaRoom, QaRoomOperation } from "../qa-room-store.js";
 
+vi.mock("node:child_process", async (original) => ({
+	...(await original<typeof import("node:child_process")>()),
+	spawn: vi.fn(() => ({ pid: 999, once: vi.fn(), unref: vi.fn() })),
+}));
 const roots: string[] = [];
 const fixture = () => {
 	const root = mkdtempSync(join(tmpdir(), "fly2405-runtime-"));
@@ -264,7 +269,8 @@ describe("QA room host boundary", () => {
 		exec.mockResolvedValueOnce(
 			`1234 1234 Sat Sep 26 10:00:00 2026 bash /repo/scripts/lib/qa-room-job.sh deploy ${o.operation_dir} abc\n1235 1234 Sat Sep 26 10:00:01 2026 pnpm build`,
 		);
-		exec.mockResolvedValue("1235 1234 Sat Sep 26 10:00:01 2026 pnpm build");
+		exec.mockResolvedValueOnce("1235 1234 Sat Sep 26 10:00:01 2026 pnpm build");
+		exec.mockResolvedValue("");
 		const runtime = new LocalQaRoomRuntime({
 			repoRoot: root,
 			signal,
@@ -321,5 +327,131 @@ describe("QA room host boundary", () => {
 		});
 		await runtime.terminate(o);
 		expect(signal.mock.calls).toEqual([[-1234, "SIGTERM"]]);
+	});
+	it("builds drill wrapper argv and minimal environment without falling into teardown", () => {
+		const root = fixture();
+		const r = room(root);
+		const operation = {
+			...op(root),
+			kind: "drill" as const,
+			request_json: JSON.stringify({
+				request_id: "67b97fa0-a914-4a99-9915-a95dfd9756b7",
+				driver: "qa529_generalized_e2e",
+				issue: "FLY-2405",
+				real: true,
+				timeout_ms: 10000,
+			}),
+		};
+		r.request_json = JSON.stringify({ env: { TEST_REPLY_BY_ISSUE: "1" } });
+		const runtime = new LocalQaRoomRuntime({
+			repoRoot: root,
+			env: { HOME: root, GH_TOKEN: "secret", TEAMLEAD_API_TOKEN: "secret" },
+		});
+		runtime.start(r, operation);
+		expect(spawn).toHaveBeenLastCalledWith(
+			"/bin/bash",
+			[
+				join(root, "scripts/lib/qa-room-job.sh"),
+				"drill",
+				operation.operation_dir,
+				r.src_dir,
+				"/tmp/flywheel-test-slot-1",
+				"--",
+				"1",
+				"--issue",
+				"FLY-2405",
+				"--real",
+				"--timeout-ms",
+				"10000",
+			],
+			expect.objectContaining({
+				detached: true,
+				env: expect.objectContaining({ TEST_REPLY_BY_ISSUE: "1" }),
+			}),
+		);
+		const env = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env;
+		expect(env).not.toHaveProperty("GH_TOKEN");
+		expect(env).not.toHaveProperty("TEAMLEAD_API_TOKEN");
+		expect(existsSync(join(operation.operation_dir, "room.json"))).toBe(false);
+		mkdirSync(join(r.src_dir, "scripts"), { recursive: true });
+		writeFileSync(
+			join(r.src_dir, "scripts/qa-529-generalized-e2e.mjs"),
+			"await waitFor(\nawait waitFor(",
+		);
+		expect(runtime.drillPhaseBound(r)).toBe(3);
+	});
+	it("does not consider a dead wrapper with surviving group members cancelled", async () => {
+		const root = fixture(),
+			operation = op(root);
+		mkdirSync(operation.operation_dir, { recursive: true });
+		writeFileSync(
+			join(operation.operation_dir, "owner.json"),
+			JSON.stringify({
+				operation_id: "op",
+				pid: 1234,
+				lstart: "Sat Sep 26 10:00:00 2026",
+			}),
+		);
+		const exec = vi.fn(
+			async () =>
+				"1235 1234 Sat Sep 26 10:00:01 2026 node /fixture/src/scripts/qa-529-generalized-e2e.mjs",
+		);
+		const signal = vi.fn();
+		const runtime = new LocalQaRoomRuntime({ repoRoot: root, exec, signal });
+		expect((await runtime.observe(operation)).alive).toBe(true);
+		await expect(runtime.terminate(operation)).rejects.toThrow(
+			"job_group_residual",
+		);
+		expect(signal).not.toHaveBeenCalled();
+	});
+
+	it("does not let a receipt conceal surviving job descendants", async () => {
+		const root = fixture(),
+			operation = op(root);
+		mkdirSync(operation.operation_dir, { recursive: true });
+		writeFileSync(
+			join(operation.operation_dir, "owner.json"),
+			JSON.stringify({
+				operation_id: "op",
+				pid: 1234,
+				lstart: "Sat Sep 26 10:00:00 2026",
+			}),
+		);
+		writeFileSync(
+			join(operation.operation_dir, "receipt.json"),
+			JSON.stringify({
+				operation_id: "op",
+				phase_reached: "drill",
+				exit_code: 143,
+				finished_at: "now",
+			}),
+		);
+		const exec = vi.fn(
+			async () => "1235 1234 Sat Sep 26 10:00:01 2026 node driver",
+		);
+		const runtime = new LocalQaRoomRuntime({ repoRoot: root, exec });
+		const observed = await runtime.observe(operation);
+		expect(observed.receipt?.exit_code).toBe(143);
+		expect(observed.alive).toBe(true);
+	});
+	it("requires the whole group gone after escalation, including later-born children", async () => {
+		const root = fixture(),
+			operation = op(root);
+		const exec = vi
+			.fn()
+			.mockResolvedValueOnce(
+				`1234 1234 Sat Sep 26 10:00:00 2026 bash /repo/scripts/lib/qa-room-job.sh deploy ${operation.operation_dir}`,
+			)
+			.mockResolvedValueOnce("1234 1234 Sat Sep 26 10:00:00 2026 bash")
+			.mockResolvedValue("1236 1234 Sat Sep 26 10:00:02 2026 driver-child");
+		const runtime = new LocalQaRoomRuntime({
+			repoRoot: root,
+			exec,
+			signal: vi.fn(),
+			sleep: async () => {},
+		});
+		await expect(runtime.terminate(operation)).rejects.toThrow(
+			"job_group_residual",
+		);
 	});
 });

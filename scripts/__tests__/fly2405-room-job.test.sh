@@ -96,6 +96,8 @@ if name == 'pnpm' and args[0] == os.getenv('TEST_FAIL_PNPM'):
         args = [kind, str(op)]
         if kind == 'deploy':
             args += ['a' * 40, str(self.src), str(self.root / 'bridge'), '--', '1', '--lead-label', 'two words']
+        elif kind == 'drill':
+            args += [str(self.src), str(self.slot), '--', '1', '--issue', 'FLY-2405', '--real', '--timeout-ms', '10000']
         else:
             args += [str(self.src), '1', str(self.evidence)]
             if env.pop('skip', False):
@@ -265,6 +267,76 @@ if name == 'pnpm' and args[0] == os.getenv('TEST_FAIL_PNPM'):
                     self.assertNotIn(secret, file.read_text())
         self.assertFalse(any(x.name in ('api-token', '.env', 'unrelated.txt', 'ignored.db') for x in dest.rglob('*')))
         self.assertEqual(self.effects.read_text(), 'teardown:1\n')
+
+    def drill_fixture(self):
+        shutil.copytree(self.seed.parent, self.src)
+        self.slot.mkdir()
+        home = self.root / 'home'
+        home.mkdir()
+        self.env['HOME'] = str(home)
+        (self.src / 'scripts/qa-529-generalized-e2e.mjs').write_text("""
+import fs from 'node:fs';
+import path from 'node:path';
+const op = process.env.TEST_OPERATION;
+if (!fs.existsSync(path.join(op, 'owner.json'))) process.exit(89);
+fs.writeFileSync(process.env.TEST_EFFECTS, JSON.stringify({argv: process.argv.slice(2), cwd: process.cwd()}));
+const dest = path.join(process.env.TEST_SLOT, 'e2e-evidence', 'new-run');
+fs.mkdirSync(dest, {recursive: true});
+fs.writeFileSync(path.join(dest, 'step-1.json'), '{"ok":true}');
+if (process.env.TEST_EVIDENCE_LINK) fs.symlinkSync('/etc/passwd', path.join(dest, 'escape'));
+process.exit(Number(process.env.TEST_DRIVER_EXIT || 0));
+""")
+        old = self.slot / 'e2e-evidence/old-run'
+        old.mkdir(parents=True)
+        (old / 'keep.json').write_text('{}')
+
+    def test_drill_preserves_driver_exit_and_copies_only_new_evidence(self):
+        self.drill_fixture()
+        for code in (0, 20, 21, 1):
+            with self.subTest(code=code):
+                shutil.rmtree(self.slot / 'e2e-evidence/new-run', ignore_errors=True)
+                op = self.operation('drill-' + str(code))
+                self.assertEqual(self.run_job(op, 'drill', TEST_DRIVER_EXIT=str(code)), code)
+                self.receipt(op, 'drill', code)
+                receipt = json.loads((op / 'receipt.json').read_text())
+                self.assertEqual(receipt['evidence_copy'], 'ok')
+                self.assertFalse((op / 'evidence/old-run').exists())
+                manifest = json.loads((op / 'evidence/manifest.json').read_text())
+                self.assertEqual(len(manifest['files']), 1)
+                entry = manifest['files'][0]
+                self.assertEqual(entry['path'], 'new-run/step-1.json')
+                self.assertEqual(entry['sha256'], hashlib.sha256((op / 'evidence' / entry['path']).read_bytes()).hexdigest())
+                effects = json.loads(self.effects.read_text())
+                self.assertEqual(effects, {'argv':['1', '--issue', 'FLY-2405', '--real', '--timeout-ms', '10000'], 'cwd': str(self.src)})
+                self.assertFalse(list(Path(self.env['HOME']).glob('.flywheel-qa-room-probe.*')))
+
+    def test_drill_home_probe_refuses_before_driver(self):
+        self.drill_fixture()
+        op = self.operation('drill-readonly')
+        home = Path(self.env['HOME'])
+        home.chmod(0o500)
+        try:
+            self.assertEqual(self.run_job(op, 'drill'), 96)
+            self.receipt(op, 'drill', 96)
+            self.assertFalse(self.effects.exists())
+        finally:
+            home.chmod(0o700)
+
+    def test_drill_copy_failure_does_not_hide_successful_driver(self):
+        self.drill_fixture()
+        op = self.operation('drill-copy-failed')
+        self.assertEqual(self.run_job(op, 'drill', TEST_EVIDENCE_LINK='1'), 0)
+        self.assertEqual(json.loads((op / 'receipt.json').read_text())['evidence_copy'], 'failed')
+        self.assertFalse((op / 'evidence/new-run/escape').exists())
+
+    def test_teardown_snapshot_includes_driver_evidence(self):
+        self.room()
+        evidence = self.slot / 'e2e-evidence/run-1'
+        evidence.mkdir(parents=True)
+        (evidence / 'step-1.json').write_text('{"ok":true}')
+        op = self.operation('drill-snapshot')
+        self.assertEqual(self.run_job(op, 'teardown'), 0)
+        self.assertEqual((self.published(op) / 'e2e-evidence/run-1/step-1.json').read_text(), '{"ok":true}')
 
     def test_missing_required_snapshot_retains_partial_then_new_attempt_succeeds(self):
         shutil.copytree(self.seed.parent, self.src)

@@ -191,7 +191,7 @@ Commands:
             --lane <generalized_e2e_stub|generalized_e2e_real|manual_test_deploy>
             [--driver-exit-code <int>] --record-url <https-url>
             --rerun-spec <path.json> [--local-copy <path>] [--record-id <uuid>]
-  room      Manage QA rooms through Bridge: deploy|teardown|status|wait|list
+  room      Manage QA rooms through Bridge: deploy|teardown|status|wait|list|drill
             deploy --head <sha40> [--slot auto|<n>] [--mode slot|mirror|roundtable]
             teardown|status|wait --room <uuid>; mutations wait by default.
             [--no-wait] [--timeout-sec <1..1800>] [--request-id <uuid>]

@@ -4,19 +4,25 @@
 
 ## 1. Quickstart
 
-Codex 和 Claude runner 都通过 Bridge 起房服务，fixture 固定使用 `FLY-202`。先把候选 40 位 SHA 推到 origin，再通过 `--head`（别名 `--expect-head`）明确选择 Bridge / Lead 源码。Bridge 在沙箱外建立独立源码目录、安装锁定依赖并构建。`--from-branch` 只选 sandbox 仓里的 runner fixture 分支，默认 `main`；它不选择 Bridge 源码。裸 `test-deploy.sh` / `test-teardown.sh` 仅供 Lead 维护。
+Codex 和 Claude runner 都通过 Bridge 起房服务，fixture 固定使用 `FLY-202`。先把候选 40 位 SHA 推到 origin，再通过 `--head`（别名 `--expect-head`）明确选择 Bridge / Lead 源码。Bridge 在沙箱外建立独立源码目录、安装锁定依赖并构建。`--from-branch` 只选 sandbox 仓里的 runner fixture 分支，默认 `main`；它不选择 Bridge 源码。非 main fixture 分支须另推到 sandbox remote。裸 `test-deploy.sh` / `test-teardown.sh` 仅供 Lead 在 runner 沙箱外维护。
 
 ```bash
-node "$FLYWHEEL_COMM_CLI" room deploy --slot 2 --head <candidate-sha> --generalized --stub-runner --no-lead
-scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202
+node "$FLYWHEEL_COMM_CLI" room deploy --slot 2 --head <candidate-sha> --generalized --stub-runner --env TEST_REPLY_BY_ISSUE=1
+node "$FLYWHEEL_COMM_CLI" room drill --room <room-id> --issue FLY-202
 ```
 
-FLY-2211 的重启杀伤专项必须换成真实 Codex 房型，并且不能同时传
-`--stub-runner`：
+需要真实模型时，另起 **Claude runner** generalized 房：省略 `--stub-runner`，保留 `--env TEST_REPLY_BY_ISSUE=1`，然后调用 `room drill --room <room-id> --issue FLY-202 --real`。调用者可以是 Codex 或 Claude；这里的 Claude runner 指房内被测 runner 配置。
+
+服务 drill 只接受可完整复跑的配置：`mode=slot`、sandbox `from_branch=main`、`env` 恰好为 `{TEST_REPLY_BY_ISSUE:"1"}`，不带 `--codex-runner`、`--no-lead`、`--alerts`、`--alert-duty`、`--test-discipline` 或 `--codex-home-reconcile`；可带 `--lead-label` / `--extra-lead`。不符会明确拒绝 `drill_config_not_reproducible`。
+
+**沙箱内禁止直接跑 `qa-529-generalized-e2e.mjs`**：`--real` 的宿主 pretrust 写入会失败，进程存活探测还可能把权限拒绝误判为进程已死。Codex / Claude 都用 `room drill`，服务在沙箱外运行固定 driver。
+
+FLY-2211 的重启杀伤专项是 **Lead 在 runner 沙箱外手工执行** 的例外；`launchctl kickstart` 等 restart drill 不属于 room service 动作。它必须换成真实 Codex 房型，并且不能同时传 `--stub-runner`；这个房可以部署，但调用 `room drill` 会被 `drill_config_not_reproducible` 有意拒绝：
 
 ```bash
 node "$FLYWHEEL_COMM_CLI" room deploy --slot 2 --head <candidate-sha> --generalized --codex-runner --no-lead
-scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202 --real
+# 仅 Lead 在 runner 沙箱外手工运行；不是 room drill 支持的配置
+node scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202 --real
 ```
 
 这个入口让生成的项目配置同时声明 `runners.default: codex`、可用的
@@ -36,7 +42,7 @@ ledger，至少观察 30 分钟。默认 Quickstart 仍保持原来的双 stub �
 
 FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本不再注入、断言或 attestation；generalized authority 只读 scoped flag store、engine schema 与 category bindings。
 
-第二条命令把每一步证据原子写入 `/tmp/flywheel-test-slot-2/e2e-evidence/<runId>-<timestamp>/step-N.json`。它的退出语义是：
+服务调用的 driver 把每一步证据原子写入 `/tmp/flywheel-test-slot-2/e2e-evidence/<runId>-<timestamp>/step-N.json`，退出后服务将本次新证据拷入 operation 目录。以下是输出中 **`driver_exit_code`** 的语义，不是 `room drill` 的 CLI 退出码：
 
 - step 1 认当前 `/api/runs/start` 的 `entry_kind=workflow_v2`，不会把已退役的 legacy `pipeline_dag_v1` 当成新房入口；
 - design 固定为 Claude `fable`，implement 固定为 Codex，QA 沿模板默认 Claude；房内 `claude` / `codex` 双 stub 不调用真实模型，但 StateStore 的 producer / reviewer vendor 与生产拓扑一致，QA claim 不会在 `same_vendor_review` 停住。
@@ -45,6 +51,19 @@ FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本
 - `20`：1–7 步已走完，第 8 步证实 F2 的 PR authority 链不完整，QA PASS 未发送；这是一份可直接开产品侧 issue 的诊断包，不是假绿，也不表示装房失败；
 - `21`：某个 stub 已把 fatal 写入 `stub-state` 且当前进程死亡；driver 已先落对应 step evidence，再输出明确分类与整改建议，而不是等 15 分钟通用超时；
 - 其他非零：装房、所有权、断言或基础设施失败，按错误停手。
+
+### 等待结果与记录证据
+
+`room drill` 默认等待，`--timeout-sec` 为 1..1800 秒（默认 1800）；`--timeout-ms` 为 driver 每阶段预算，10000..3600000 毫秒（默认 900000），不是 CLI 等待时限。CLI 退出码：0 = driver 完成且退出 0；4 = driver 完成但非零；1 = 拒绝或服务侧失败；2 = 传输失败；3 = 仍在运行。退出 3 不会取消 driver，按输出的 operation id 续等：
+
+```bash
+node "$FLYWHEEL_COMM_CLI" room wait --room <room-id> --operation <operation-id>
+node "$FLYWHEEL_COMM_CLI" room status --room <room-id>
+```
+
+`room status` 展示最近五次 `drills` 和 `operation`，包含 `driver_exit_code`、`outcome`、`evidence_copy`、`evidence_copy_dir`、`rerun_spec`、`deadline_at`、`phase_bound`。带 `--operation` 的 wait 始终查询指定操作，即使它已不在最近五条；不带该参数只等房状态。`succeeded` 只表示 driver 已退出；`outcome=passed` 也不能掩盖 `evidence_copy=failed|empty`。先核对九步证据完整，再谈通过。
+
+**先 record，再 qa-result，再 teardown。** runner 仍用自己的执行身份、ingest token 和当前 workflow submission credential 调 `evidence-run record`，服务不代发 QA verdict，也不替 runner 铸证据凭据。把所选 operation 的 `rerun_spec` 原样保存为 JSON 文件供 `--rerun-spec`，`driver_exit_code` 原样传 `--driver-exit-code`；只有 `evidence_copy=ok` 时才把 `evidence_copy_dir` 传给 `--local-copy`。副本失败或为空时不能把部分目录登记成完整副本，应重跑 drill 或报 Lead；不要手拼复跑配置或拿后一次 drill 的结果覆盖目标操作。成功 record 后才提交 dispatch 指定的 `qa-result`，并保留相同被测 SHA。
 
 测试结束后：
 
@@ -157,13 +176,13 @@ exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保
 | 3 | slot 偷带 roundtable / cross-dept 行为 | shell 从调用环境继承 `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS` 与 `FLYWHEEL_ROUNDTABLE_*` 全族变量 | **自动**：单一 scrub 清单同时驱动 Bridge `env -u` 与 Lead launchd-v2 manifest 空值覆盖；生产 `.env` 新增的已知 roundtable 坐标不会只漏进一侧 | 仍按原房语义继承 |
 | 4 | `set -a; source .env` 后告警全部 403 / 死信 | ambient `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 把发送链塌缩到错误 token identity | **自动**：generalized Bridge / Lead exec boundary 明确 unset；不会把生产 `.env` 热改写成修复手段 | 仍需操作者避免污染 env |
 | 5 | slot 1 bot 可发告警，slot 2 bot 403 | bot 看得到频道不等于有 POST + DELETE 权限；频道邀请矩阵不完整 | **预检**：对每个配置 sender 发唯一 marker，再 DELETE；POST/DELETE 任一非 2xx 都在 readiness 前报 bot identity，且不打印 token | 仍需手工确认每个 bot 的邀请与发送/删除权 |
-| 6 | 无 Runner 演练误加 `--from-branch`，以为它决定 Bridge 被测字节 | `--from-branch` 只选择 Runner sandbox clone；没有 Runner 时它没有被测对象，Bridge 始终跑脚本所在 worktree | **路书**：无 Runner 演练必须省略 `--from-branch`；只有明确要指定 Runner sandbox 基线的活体 Runner QA 才传，且仍不能把它当 Bridge source ref | 同样遵守；先按 QA 是否真的生成 Runner 判断，不要例行照抄该参数 |
+| 6 | 无 Runner 演练误加 `--from-branch`，以为它决定 Bridge 被测字节 | `--from-branch` 只选择 Runner sandbox clone；没有 Runner 时它没有被测对象，Bridge 由 `room deploy --head` 选择源码；Lead 手工脚本则使用脚本所在 worktree | **路书**：无 Runner 演练必须省略 `--from-branch`；只有明确要指定 Runner sandbox 基线的活体 Runner QA 才传，且仍不能把它当 Bridge source ref | 同样遵守；先按 QA 是否真的生成 Runner 判断，不要例行照抄该参数 |
 | 7 | sandbox clone 偶发一直不返回 | `git clone` 可能无进度 stall，单看 wall clock 无法区分慢与死 | **自动**：按目标目录字节增长采样；停滞则杀整个 process group、删 partial clone，只重试一次 | 仍使用旧 clone 路径 |
 | 8 | `--lead-label '*'` 仍然 scope 403 | label 是精确传真，不是 glob；字面 `*` 永远匹配不到真实 label | **自动/路书**：generalized 默认关闭 Bridge dept-scope reject；若显式测 scope，`--lead-label` 必须传真实 label，不能传星号 | 必须传真实 label 或按房目的配置 scope |
 | 9 | `TEST_REPLY_BY_ISSUE=1` 后 API 变 401 | reply-by-issue 打开 token auth，旧 inject 脚本没带 `TEST_API_TOKEN` | **自动/预检**：generalized room 只允许本 driver，读取 mode `0600` 的 slot master token 并带 Bearer；`inject-linear-issue.sh` 会拒绝 generalized 房并指出 driver | 普通房 inject 兼容无 token / 有 token 两态 |
 | 10 | Bridge 启动前报 dist / package 不存在 | 新 worktree 没装依赖，或 package build 不完整 | **预检**：错误直接给出 `pnpm install --frozen-lockfile` 和 build 指令；装房前先执行该安装 | 普通房唯一允许的行为变化也是更可执行的错误提示 |
 | 11 | teardown 被 cmux maintenance lease 挡住，或每轮残留 Codex stub daemon | watcher/teardown 短时争抢同一 maintenance lease；app-server stub 不属于 tmux 子树且继承 Bridge cwd；terminal prune 后 `workflow_actor` 可能已无执行行 | **自动**：一次完整 timeout 后，从 acquisition 开始再试恰好一次；第二次仍失败才停手。清房按 exact stub argv + live socket 回收 daemon；所有权优先取 slot `workflow_actor`，并用 filename / schema / executionId 全一致的 bounded `stub-state/*.json` 补回已 prune execution，不碰并发 slot；缺 `shasum` / `lsof` 会显式告警而非静默假装回收成功 | lease retry 惠及普通房；stub reap 只命中 generalized stub |
-| 12 | slot 内 launchd-v2 bootstrap Lead 失败 | 九步 engine 演练并不需要常驻 Lead，却先被 Lead bootstrap 卡住 | **路书**：九步用 `--no-lead`；step 5 的 `question` gate delivery 由 driver 以 QA execution attribution 走 CommDB 真路径，step 8 走真实 ship holder | 需要 Lead 的消息类 QA 仍应起 Lead 并修 bootstrap，不得借 `--no-lead` 假装覆盖 |
+| 12 | slot 内 launchd-v2 bootstrap Lead 失败 | 九步 engine 演练并不需要常驻 Lead，却先被 Lead bootstrap 卡住 | **服务**：`room drill` 不接受 `--no-lead`，须修复 Lead bootstrap；仅 Lead 在沙箱外的手工专项可用该旧房型，不能混记成服务 drill 证据 | 需要 Lead 的消息类 QA 仍应起 Lead 并修 bootstrap，不得借 `--no-lead` 假装覆盖 |
 | 13 | sensor 演练“什么都没发生” | watchdog 默认 interval 不适合作为短时观测窗口 | **路书**：sensor 专项演练必须显式设置 `FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS`；它不是 generalized 九步 Quickstart 的隐式环境要求 | sensor 单同样必须显式设置并在证据中记录值 |
 | 14 | QA PASS 后 409 `land_head_unavailable` | QA execution 无可信 worktree / PR identity；producer session、`workflow_node_pr_binding`、remote PR head 任一断链都不能铸 gate authority | **预检 + 诊断**：driver 发 PASS 前检查四段链；缺项则永不写 release，落 `step-8.json`、预测 server reason、退出 20。机制修复属于 FLY-1768 F2 后续，不在本单伪造 binding | 手工 verdict 也不得绕过；必须修产品侧身份传播 |
 | 15 | step 2 静默超时、design 永远 `running` | 沙箱 main 已有与旧 stub 逐字节相同的 design fixture，提交塌空；`stub-state` fatal 中 FLY-1404 区间两端是同一 SHA | **自动 + 诊断**：1.1.0 fixture 带 run/execution marker，不再与残留同字节；driver 识别同 SHA 区间，先落 `diagnosed_stub_fatal` evidence，再退出 21。旧房可换 `--issue`；共享残留清理见 FLY-2164 | 先读 fatal；不要把 15 分钟通用超时当成模型慢 |

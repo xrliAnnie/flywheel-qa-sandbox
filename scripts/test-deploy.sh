@@ -61,8 +61,23 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: ${ENV_FILE} not found. Create it with TEST_BOT_TOKEN_N values." >&2
   exit 1
 fi
+# Service requests own the three admitted controls, including their absence.
+# Host credentials still come from .env, but cannot silently change a recipe.
+qa_service_controls=()
+qa_service_controlled=0
+if [[ -n "${FLYWHEEL_QA_ROOM_CLAIM:-}" ]]; then
+  qa_service_controlled=1
+  for qa_control in TEST_REPLY_BY_ISSUE TEST_BRIDGE_DEPT_SCOPE_REJECT TEST_CODEX_LEAD_OUTBOUND_MODE; do
+    if [[ -n "${!qa_control+x}" ]]; then qa_service_controls+=("$qa_control=${!qa_control}"); fi
+  done
+fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+if [[ "$qa_service_controlled" == 1 ]]; then
+  unset TEST_REPLY_BY_ISSUE TEST_BRIDGE_DEPT_SCOPE_REJECT TEST_CODEX_LEAD_OUTBOUND_MODE
+  for qa_assignment in "${qa_service_controls[@]}"; do export "$qa_assignment"; done
+fi
+unset qa_service_controls qa_service_controlled qa_control qa_assignment
 
 SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
 if [[ ! -f "$SLOTS_FILE" ]]; then

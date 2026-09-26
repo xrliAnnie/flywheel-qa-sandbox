@@ -40,17 +40,19 @@ fi
 
 umask 077
 phase=prepare
+evidence_copy=empty
+failure_reason=
 finish() {
   local code=$?
   trap - EXIT
-  python3 - "$operation_dir" "$operation_id" "$phase" "$code" <<'PY'
+  python3 - "$operation_dir" "$operation_id" "$phase" "$code" "$evidence_copy" "$failure_reason" <<'PY'
 import datetime, json, os, pathlib, sys, tempfile
-op, operation_id, phase, code = sys.argv[1:]
+op, operation_id, phase, code, evidence_copy, failure_reason = sys.argv[1:]
 fd, tmp = tempfile.mkstemp(prefix='.receipt.', dir=op)
 try:
     with os.fdopen(fd, 'w') as out:
         json.dump({'operation_id': operation_id, 'phase_reached': phase,
-                   'exit_code': int(code), 'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}, out)
+                   'exit_code': int(code), **({'evidence_copy': evidence_copy, 'failure_reason': failure_reason or None} if phase == 'drill' else {}), 'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}, out)
         out.write('\n')
         out.flush()
         os.fsync(out.fileno())
@@ -77,6 +79,7 @@ from pathlib import Path
 import plistlib
 import re
 import sqlite3
+import shutil
 import sys
 import tempfile
 
@@ -191,6 +194,8 @@ try:
             metadata[source] = ('plist' if is_plist else 'json', data)
         elif is_log:
             metadata[source] = ('log', None)
+        elif relative.parts[0] == 'e2e-evidence':
+            metadata[source] = ('driver-evidence', None)
     databases = {
         slot / 'teamlead.db': ('sessions',),
         slot / 'state/comm' / project / 'comm.db': ('sessions', 'mailbox'),
@@ -243,6 +248,8 @@ try:
                     dest.write_bytes(plistlib.dumps(sanitize(data)))
                 else:
                     dest.write_text(json.dumps(sanitize(data), indent=2) + '\n')
+            elif item['kind'] == 'driver-evidence':
+                shutil.copyfile(source, dest)
             else:
                 dest.write_text(redact_text(source.read_text(errors='replace')))
             manifest['exported'].append(dict(item, size=dest.stat().st_size,
@@ -314,6 +321,63 @@ case "$kind" in
     (cd "$src_dir" && pnpm install --frozen-lockfile --prefer-offline && pnpm -r build)
     set_phase deploy
     bash "$src_dir/scripts/test-deploy.sh" "$@"
+    ;;
+  drill)
+    set_phase drill
+    [[ $# -ge 6 && "$5" == -- ]] || { log 'invalid drill arguments'; exit 2; }
+    src_dir="$3"; slot_dir="$4"
+    shift 5
+    probe="$HOME/.flywheel-qa-room-probe.$operation_id"
+    if ! mkdir "$probe"; then failure_reason=sandboxed_executor; log 'sandboxed_executor'; exit 96; fi
+    rmdir "$probe"
+    # The driver runs from the exact source checkout, using only server-built
+    # arguments. Preserve its exit status even if evidence publication fails.
+    python3 - "$slot_dir" "$operation_dir" <<'PYDRILL'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]) / 'e2e-evidence'
+before = [p.name for p in root.iterdir()] if root.is_dir() else []
+(pathlib.Path(sys.argv[2]) / 'evidence-before.json').write_text(json.dumps(before))
+PYDRILL
+    driver_exit=0
+    (cd "$src_dir" && node "$src_dir/scripts/qa-529-generalized-e2e.mjs" "$@") || driver_exit=$?
+    evidence_copy=$(python3 - "$slot_dir" "$operation_dir" <<'PYDRILL'
+import hashlib, json, os, pathlib, shutil, sys
+root = pathlib.Path(sys.argv[1]) / 'e2e-evidence'
+op = pathlib.Path(sys.argv[2])
+try:
+    before = set(json.loads((op / 'evidence-before.json').read_text()))
+    new = sorted((p for p in root.iterdir() if p.name not in before), key=lambda p: p.name) if root.is_dir() else []
+    if not new:
+        print('empty')
+    else:
+        dest = op / 'evidence'
+        dest.mkdir(mode=0o700)
+        files = []
+        for run in new:
+            if run.is_symlink() or not run.is_dir():
+                raise ValueError('unsafe driver evidence directory')
+            for directory, dirs, names in os.walk(run, followlinks=False):
+                for name in sorted(dirs + names):
+                    source = pathlib.Path(directory) / name
+                    if source.is_symlink():
+                        raise ValueError('unsafe driver evidence link')
+                    if source.is_dir():
+                        continue
+                    if not source.is_file():
+                        raise ValueError('unsafe driver evidence file')
+                    relative = source.relative_to(root)
+                    target = dest / relative
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    shutil.copyfile(source, target)
+                    files.append({'path': str(relative), 'size': target.stat().st_size,
+                                  'sha256': hashlib.sha256(target.read_bytes()).hexdigest()})
+        (dest / 'manifest.json').write_text(json.dumps({'files': files}, indent=2) + '\n')
+        print('ok' if files else 'empty')
+except Exception:
+    print('failed')
+PYDRILL
+    ) || evidence_copy=failed
+    exit "$driver_exit"
     ;;
   teardown)
     set_phase snapshot

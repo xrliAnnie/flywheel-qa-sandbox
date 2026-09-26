@@ -53,7 +53,7 @@ TypeScript types: `import { QaConfig } from 'flywheel-qa-framework'`
 
 ## Test Slot Framework — Real Runner E2E (FLY-115)
 
-The slot-based E2E framework (FLY-96 + FLY-115) spawns parallel isolated test environments, each running a **real Runner** against `xrliAnnie/flywheel-qa-sandbox`. No synthetic / fixture mode is supported — every slot is a real Runner end-to-end.
+The slot-based E2E framework (FLY-96 + FLY-115) spawns parallel isolated test environments, each running a **real Runner** against `xrliAnnie/flywheel-qa-sandbox`. The generalized driver additionally supports deterministic model stubs while exercising the real Bridge, workflow, git, and mailbox paths; select the lane explicitly.
 
 QA tmux session names MUST use the `qa-` prefix (for example,
 `qa-fly1659-storm`). Never use the production-reserved `flywheel` session name
@@ -81,12 +81,32 @@ and returns `evidence_dir`. Snapshot failure retains the room: inspect prior
 evidence before an explicit `--skip-snapshot --reason <reason>` retry. Owner,
 Lead, or a same-issue successor after owner termination may tear down a room.
 
+### Generalized drills
+
+Codex and Claude callers both use `room drill`; Bridge runs the fixed generalized driver outside the runner sandbox:
+
+```bash
+node "$FLYWHEEL_COMM_CLI" room deploy --head <candidate-sha> --generalized --stub-runner --env TEST_REPLY_BY_ISSUE=1
+node "$FLYWHEEL_COMM_CLI" room drill --room <room-id> --issue FLY-202
+node "$FLYWHEEL_COMM_CLI" room wait --room <room-id> --operation <operation-id>
+node "$FLYWHEEL_COMM_CLI" room status --room <room-id>
+```
+
+For real inference, deploy a generalized **Claude runner** room without `--stub-runner`, keep the same env, and add `--real` to drill. Service drills require sandbox `main`, slot mode, and deploy env exactly `{TEST_REPLY_BY_ISSUE:"1"}`. Codex-runner rooms and configurations with `--no-lead`, alerts, test-discipline, or Codex-home reconciliation are intentionally refused with `drill_config_not_reproducible`; `--lead-label` and `--extra-lead` are supported. Non-main fixtures remain available for ordinary room tests.
+
+Never run `qa-529-generalized-e2e.mjs` inside the runner sandbox: host pretrust fails and process observation can report live workers as dead. Raw driver/restart-drill procedures are Lead-only manual actions outside the runner sandbox; room service does not expose `launchctl kickstart` or arbitrary commands.
+
+Drill waits by default (`--timeout-sec` 1..1800, default 1800); `--timeout-ms` is a separate per-stage driver budget (10000..3600000, default 900000). CLI exits: 0 driver exit 0; 4 completed driver with nonzero exit; 1 refusal/service failure; 2 transport failure; 3 pending. Exit 3 does not cancel the job: use the returned operation ID with `room wait --operation`, which also finds operations older than the latest five `drills`. Ordinary `room wait` only observes room state.
+
+`room status` exposes `operation_kind`, `operation`, and `drills`, including `driver_exit_code`, `outcome`, `evidence_copy`, `evidence_copy_dir`, `rerun_spec`, `deadline_at`, and `phase_bound`. The runner still owns `evidence-run record`, using its execution identity and current workflow credential. Use the service's unchanged `rerun_spec` JSON for `--rerun-spec`, its `driver_exit_code` for `--driver-exit-code`, and its `evidence_copy_dir` for `--local-copy` **only if `evidence_copy=ok`**. Copy failure/empty evidence or missing required steps must be rerun or reported, even when the driver exited 0. Record evidence before `qa-result` and teardown; neither `succeeded` nor a partial directory proves QA passed.
+
 ### Commands
 
 | Script | Purpose |
 |--------|---------|
 | `node "$FLYWHEEL_COMM_CLI" room deploy --head <sha> --slot <N> [--from-branch <fixture-br>]` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>`, start the slot Bridge, then start each real test Lead as its own isolated launchd v2 job and private tmux server. Default branch is sandbox `main`. |
-| `scripts/inject-linear-issue.sh <N> <FLY-XXX>` | POST `/api/runs/start` directly to the slot's Bridge to spawn a real Runner. |
+| `node "$FLYWHEEL_COMM_CLI" room drill --room <id> --issue <FLY-N> [--real]` | Run the fixed generalized E2E driver through the room service and return operation-bound results and copied evidence. |
+| `scripts/inject-linear-issue.sh <N> <FLY-XXX>` | Ordinary rooms only: POST `/api/runs/start` directly to the slot's Bridge to spawn a real Runner. |
 | `node "$FLYWHEEL_COMM_CLI" room teardown --room <id>` | `bootout` slot Lead labels first, then stop Runner/Bridge, clean FLY-95 worktrees + slot-local branches, and remove `SLOT_DIR` + CommDB. |
 
 ### Lead carrier evidence (FLY-1663)

@@ -40,7 +40,7 @@ export interface QaRoom {
 export interface QaRoomOperation {
 	operation_id: string;
 	room_id: string;
-	kind: "deploy" | "teardown";
+	kind: "deploy" | "teardown" | "drill";
 	actor_key: string;
 	request_id: string;
 	request_digest: string;
@@ -55,6 +55,9 @@ export interface QaRoomOperation {
 	operation_dir: string;
 	pid: number | null;
 	residue_check: string | null;
+	result_json?: string | null;
+	deadline_at?: string | null;
+	phase_bound?: number | null;
 	request_json: string;
 	queued_at: string;
 	created_at: string;
@@ -65,7 +68,7 @@ export interface QaRoomAudit {
 	at: string;
 	actor_key: string;
 	actor_issue: string | null;
-	action: "deploy" | "teardown";
+	action: "deploy" | "teardown" | "drill";
 	room_id: string | null;
 	slot: number | null;
 	decision: "accepted" | "refused" | "completed" | "failed";
@@ -88,7 +91,14 @@ type RoomPatch = Partial<
 type OperationPatch = Partial<
 	Pick<
 		QaRoomOperation,
-		"status" | "pid" | "residue_check" | "started_at" | "finished_at"
+		| "status"
+		| "pid"
+		| "residue_check"
+		| "result_json"
+		| "deadline_at"
+		| "phase_bound"
+		| "started_at"
+		| "finished_at"
 	>
 >;
 
@@ -127,7 +137,7 @@ export class QaRoomStore {
 			CREATE TABLE IF NOT EXISTS qa_room_operation (
 				operation_id TEXT PRIMARY KEY NOT NULL,
 				room_id TEXT NOT NULL REFERENCES qa_room(room_id),
-				kind TEXT NOT NULL CHECK(kind IN ('deploy','teardown')),
+				kind TEXT NOT NULL CHECK(kind IN ('deploy','teardown','drill')),
 				actor_key TEXT NOT NULL CHECK(length(actor_key) > 0),
 				request_id TEXT NOT NULL CHECK(length(request_id) > 0),
 				request_digest TEXT NOT NULL,
@@ -136,6 +146,9 @@ export class QaRoomStore {
 				operation_dir TEXT NOT NULL,
 				pid INTEGER,
 				residue_check TEXT,
+				result_json TEXT,
+				deadline_at TEXT,
+				phase_bound INTEGER,
 				request_json TEXT NOT NULL,
 				queued_at TEXT NOT NULL,
 				created_at TEXT NOT NULL,
@@ -150,7 +163,7 @@ export class QaRoomStore {
 				at TEXT NOT NULL,
 				actor_key TEXT NOT NULL CHECK(length(actor_key) > 0),
 				actor_issue TEXT,
-				action TEXT NOT NULL CHECK(action IN ('deploy','teardown')),
+				action TEXT NOT NULL CHECK(action IN ('deploy','teardown','drill')),
 				room_id TEXT,
 				slot INTEGER,
 				decision TEXT NOT NULL CHECK(decision IN ('accepted','refused','completed','failed')),
@@ -197,10 +210,15 @@ export class QaRoomStore {
 		this.db
 			.prepare(`INSERT INTO qa_room_operation
 			(operation_id,room_id,kind,actor_key,request_id,request_digest,attempt,status,operation_dir,
-			 pid,residue_check,request_json,queued_at,created_at,started_at,finished_at)
+			 pid,residue_check,result_json,deadline_at,phase_bound,request_json,queued_at,created_at,started_at,finished_at)
 			VALUES (@operation_id,@room_id,@kind,@actor_key,@request_id,@request_digest,@attempt,@status,@operation_dir,
-			 @pid,@residue_check,@request_json,@queued_at,@created_at,@started_at,@finished_at)`)
-			.run(operation);
+			 @pid,@residue_check,@result_json,@deadline_at,@phase_bound,@request_json,@queued_at,@created_at,@started_at,@finished_at)`)
+			.run({
+				result_json: null,
+				deadline_at: null,
+				phase_bound: null,
+				...operation,
+			});
 	}
 
 	getRoom(id: string): QaRoom | undefined {
@@ -275,7 +293,16 @@ export class QaRoomStore {
 	}
 	updateOperation(id: string, patch: OperationPatch): void {
 		const keys = (
-			["status", "pid", "residue_check", "started_at", "finished_at"] as const
+			[
+				"status",
+				"pid",
+				"residue_check",
+				"result_json",
+				"deadline_at",
+				"phase_bound",
+				"started_at",
+				"finished_at",
+			] as const
 		).filter((key) => patch[key] !== undefined);
 		if (keys.length)
 			this.db

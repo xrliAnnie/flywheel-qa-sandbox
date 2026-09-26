@@ -297,5 +297,24 @@ if rg 'rm -rf "(/tmp/flywheel-test-slot-.*\.lock|\$(lock|xlock))"' "$ROOT/script
   echo 'FAIL: deploy contains a direct slot-lock removal' >&2
   failures=$((failures + 1))
 fi
+# Execute the actual deployment env-loading block, with a fixture-only .env.
+python3 - "$ROOT" "$TEST_ROOT" <<'PYENV' || failures=$((failures + 1))
+import os, pathlib, subprocess, sys
+root, temp = map(pathlib.Path, sys.argv[1:])
+text = (root / 'scripts/test-deploy.sh').read_text()
+block = text[text.index('# ── Load environment'):text.index('SLOTS_FILE=')]
+home = temp / 'env-home'
+(home / '.flywheel').mkdir(parents=True)
+(home / '.flywheel/.env').write_text('TEST_REPLY_BY_ISSUE=0\nTEST_BRIDGE_DEPT_SCOPE_REJECT=off\nTEST_CODEX_LEAD_OUTBOUND_MODE=bridge\n')
+script = 'source "' + str(root / 'scripts/lib/qa-slot-claim.sh') + '"\n' + block + '\nprintf "%s|%s|%s" "${TEST_REPLY_BY_ISSUE-unset}" "${TEST_BRIDGE_DEPT_SCOPE_REJECT-unset}" "${TEST_CODEX_LEAD_OUTBOUND_MODE-unset}"\n'
+base = dict(os.environ, HOME=str(home))
+for key in ('TEST_REPLY_BY_ISSUE','TEST_BRIDGE_DEPT_SCOPE_REJECT','TEST_CODEX_LEAD_OUTBOUND_MODE','FLYWHEEL_QA_ROOM_CLAIM'):
+    base.pop(key, None)
+for env, expected in [(dict(base,FLYWHEEL_QA_ROOM_CLAIM='fixture',TEST_REPLY_BY_ISSUE='1'), '1|unset|unset'), (dict(base,FLYWHEEL_QA_ROOM_CLAIM='fixture',TEST_REPLY_BY_ISSUE='0',TEST_BRIDGE_DEPT_SCOPE_REJECT='on',TEST_CODEX_LEAD_OUTBOUND_MODE='direct'), '0|on|direct'), (base, '0|off|bridge')]:
+    result = subprocess.run(['bash','-euc',script],env=env,capture_output=True,text=True)
+    if result.returncode or result.stdout != expected:
+        raise AssertionError((result.returncode,result.stdout,expected,result.stderr))
+print('PASS: explicit service controls survive host .env and absent controls stay unset; manual path unchanged')
+PYENV
 printf 'FLY-2405 service claims: %s failure(s)\n' "$failures"
 [[ "$failures" == 0 ]]

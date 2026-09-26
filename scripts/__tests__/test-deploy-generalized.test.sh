@@ -1150,7 +1150,7 @@ assert_contains "$(<"$playbook")" \
 	'无 Runner 演练必须省略 `--from-branch`' \
 	'529 room playbook preserves the no-Runner from-branch rule'
 assert_contains "$(<"$playbook")" \
-	'scripts/test-deploy.sh 2 --generalized --codex-runner --no-lead' \
+	'node "$FLYWHEEL_COMM_CLI" room deploy --slot 2 --head <candidate-sha> --generalized --codex-runner --no-lead' \
 	'529 room playbook publishes the real Codex restart-drill room command'
 assert_contains "$(<"$playbook")" \
 	'换 head 孤儿 sandbox PR' \

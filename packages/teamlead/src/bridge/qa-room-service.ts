@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+	drillOutcome,
 	parseRoomDeploy,
+	parseRoomDrill,
 	parseRoomTeardown,
 	QaRoomError,
+	roomDrillRerunSpec,
 	roomRequestDigest,
 	withoutRoomCredential,
 } from "./qa-room-contract.js";
@@ -80,7 +83,7 @@ export class QaRoomService {
 
 	refuse(
 		actor: QaRoomActor,
-		action: "deploy" | "teardown",
+		action: QaRoomOperation["kind"],
 		reason: string,
 		input: unknown,
 		roomId: string | null = null,
@@ -104,7 +107,7 @@ export class QaRoomService {
 	}
 	private mutation<T>(
 		actor: QaRoomActor,
-		action: "deploy" | "teardown",
+		action: QaRoomOperation["kind"],
 		input: unknown,
 		roomId: string | null,
 		fn: () => T,
@@ -267,6 +270,8 @@ export class QaRoomService {
 					throw new QaRoomError("request_conflict", 409);
 				return this.view(room, existing);
 			}
+			if (!actor.lead && this.pendingDrill(roomId))
+				throw new QaRoomError("drill_in_progress", 409);
 			if (
 				!["ready", "failed", "interrupted", "teardown_failed"].includes(
 					room.status,
@@ -303,19 +308,135 @@ export class QaRoomService {
 			return this.status(actor, roomId);
 		});
 	}
+	private pendingDrill(roomId: string) {
+		return this.store
+			.operations(roomId)
+			.find(
+				(op) =>
+					op.kind === "drill" &&
+					(op.status === "queued" || activeOperation(op)),
+			);
+	}
+	drill(actor: QaRoomActor, roomId: string, input: unknown) {
+		return this.mutation(actor, "drill", input, roomId, () => {
+			const body = withoutRoomCredential(parseRoomDrill(input));
+			const room = this.room(roomId);
+			const takeover = !actor.lead && actor.key !== room.owner_actor_key;
+			if (
+				takeover &&
+				!(
+					actor.issue !== null &&
+					actor.issue === room.owner_issue &&
+					this.options.ownerTerminal(room.owner_actor_key)
+				)
+			)
+				throw new QaRoomError("room_not_owned", 403);
+			const digest = roomRequestDigest("drill", { ...body, room_id: roomId });
+			const existing = this.store.findRequest(actor.key, body.request_id);
+			if (existing) {
+				if (
+					existing.request_digest !== digest ||
+					existing.kind !== "drill" ||
+					existing.room_id !== roomId
+				)
+					throw new QaRoomError("request_conflict", 409);
+				return this.view(room, existing);
+			}
+			if (room.status !== "ready")
+				throw new QaRoomError("room_not_drillable", 409);
+			const spec = roomDrillRerunSpec(
+				parseRoomDeploy(JSON.parse(room.request_json), this.options.slotCount),
+				body,
+			);
+			if (this.pendingDrill(roomId))
+				throw new QaRoomError("drill_in_progress", 409);
+			const op = this.operation(
+				actor,
+				roomId,
+				"drill",
+				body,
+				this.store.operations(roomId).filter((o) => o.kind === "drill").length +
+					1,
+			);
+			op.result_json = JSON.stringify({ rerun_spec: spec });
+			this.store.transaction(() => {
+				this.store.addOperation(op);
+				this.store.audit(
+					this.audit(
+						actor,
+						room,
+						op,
+						"accepted",
+						takeover ? `takeover_from=${room.owner_actor_key}` : null,
+					),
+				);
+			});
+			return this.view(room, op);
+		});
+	}
+	private drillResult(op: QaRoomOperation) {
+		const result = op.result_json ? JSON.parse(op.result_json) : {};
+		return {
+			operation_id: op.operation_id,
+			status: op.status,
+			reason: null,
+			driver_exit_code: null,
+			outcome: null,
+			evidence_copy: null,
+			evidence_copy_dir: null,
+			rerun_spec: null,
+			...result,
+			deadline_at: op.deadline_at ?? null,
+			phase_bound: op.phase_bound ?? null,
+		};
+	}
+	private settleDrill(
+		room: QaRoom,
+		op: QaRoomOperation,
+		reason: string | null,
+		result = {},
+	) {
+		this.store.transaction(() => {
+			this.store.updateOperation(op.operation_id, {
+				status: reason ? "failed" : "succeeded",
+				finished_at: this.now(),
+				result_json: JSON.stringify({
+					...JSON.parse(op.result_json ?? "{}"),
+					...result,
+					reason,
+				}),
+			});
+			this.store.audit(
+				this.audit(
+					{
+						key: op.actor_key,
+						issue: room.owner_issue,
+						lead: op.actor_key.startsWith("lead:"),
+					},
+					room,
+					op,
+					reason ? "failed" : "completed",
+					reason,
+				),
+			);
+		});
+	}
 	private room(id: string): QaRoom {
 		const room = this.store.getRoom(id);
 		if (!room) throw new QaRoomError("room_not_found", 404);
 		return room;
 	}
-	status(actor: QaRoomActor, id: string) {
+	status(actor: QaRoomActor, id: string, operationId?: string) {
 		const room = this.room(id);
 		if (
 			!actor.lead &&
 			(actor.issue === null || actor.issue !== room.owner_issue)
 		)
 			throw new QaRoomError("room_not_visible", 403);
-		return this.view(room);
+		const op = operationId ? this.store.getOperation(operationId) : undefined;
+		if (operationId && (!op || op.room_id !== id))
+			throw new QaRoomError("operation_not_in_room", 404);
+		return this.view(room, op);
 	}
 	list(actor: QaRoomActor) {
 		return this.store
@@ -336,6 +457,13 @@ export class QaRoomService {
 			room_id: room.room_id,
 			operation_id: op?.operation_id,
 			operation_status: op?.status,
+			operation_kind: op?.kind,
+			operation: op ? this.drillResult(op) : null,
+			drills: this.store
+				.operations(room.room_id)
+				.filter((o) => o.kind === "drill")
+				.slice(-5)
+				.map((o) => this.drillResult(o)),
 			status: room.status,
 			status_reason: room.status_reason,
 			head: room.head,
@@ -437,10 +565,46 @@ export class QaRoomService {
 	}
 	private async poll(room: QaRoom, op: QaRoomOperation): Promise<void> {
 		const observed = await this.options.runtime.observe(op);
+		// EXIT may publish a receipt before the last group member exits. It is
+		// completion evidence only once that operation has no live job processes.
+		if (op.kind === "drill") {
+			const receipt = observed.alive ? undefined : observed.receipt;
+			if (
+				receipt?.operation_id === op.operation_id &&
+				receipt.phase_reached === "drill"
+			) {
+				if (receipt.failure_reason === "sandboxed_executor") {
+					this.settleDrill(room, op, "sandboxed_executor");
+				} else {
+					const copy = ["ok", "failed", "empty"].includes(
+						receipt.evidence_copy ?? "",
+					)
+						? receipt.evidence_copy!
+						: "failed";
+					this.settleDrill(room, op, null, {
+						driver_exit_code: receipt.exit_code,
+						outcome: drillOutcome(receipt.exit_code),
+						evidence_copy: copy,
+						evidence_copy_dir:
+							copy === "ok" ? join(op.operation_dir, "evidence") : null,
+						log_tail: this.options.runtime.logTail(op),
+					});
+				}
+			} else if (
+				op.deadline_at &&
+				this.options.now() > Date.parse(op.deadline_at)
+			) {
+				await this.options.runtime.terminate(op);
+				this.settleDrill(room, op, "service_deadline");
+			} else if (!observed.alive) {
+				this.settleDrill(room, op, "interrupted");
+			}
+			return;
+		}
 		const evidence = this.options.runtime.evidence(op);
 		if (evidence)
 			this.store.updateRoom(room.room_id, { evidence_dir: evidence });
-		const receipt = observed.receipt;
+		const receipt = observed.alive ? undefined : observed.receipt;
 		if (receipt?.operation_id === op.operation_id) {
 			if (op.kind === "deploy") {
 				if (receipt.phase_reached === "prepare" && receipt.exit_code !== 0) {
@@ -525,6 +689,16 @@ export class QaRoomService {
 		try {
 			for (const room of this.store
 				.rooms()
+				.filter((r) => r.status === "tearing_down")) {
+				const drill = this.pendingDrill(room.room_id);
+				if (drill) {
+					if (activeOperation(drill))
+						await this.options.runtime.terminate(drill);
+					this.settleDrill(room, drill, "cancelled_by_teardown");
+				}
+			}
+			for (const room of this.store
+				.rooms()
 				.filter(
 					(r) =>
 						r.release_state === "releasing" && !QA_ROOM_TERMINAL.has(r.status),
@@ -541,6 +715,18 @@ export class QaRoomService {
 				.operations()
 				.filter((o) => o.status === "queued")) {
 				const room = this.room(op.room_id);
+				if (this.store.getOperation(op.operation_id)?.status !== "queued")
+					continue;
+				if (op.kind === "drill" && room.status !== "ready") {
+					this.settleDrill(
+						room,
+						op,
+						room.status === "tearing_down"
+							? "cancelled_by_teardown"
+							: "room_not_drillable",
+					);
+					continue;
+				}
 				if (
 					op.kind === "deploy" &&
 					this.options.now() - Date.parse(op.queued_at) >= 60 * 60_000
@@ -554,6 +740,7 @@ export class QaRoomService {
 					continue;
 				}
 				if (
+					op.kind !== "drill" &&
 					this.store
 						.operations()
 						.some((o) => o.kind === op.kind && activeOperation(o))
@@ -574,15 +761,46 @@ export class QaRoomService {
 					this.settle(room, op, "refused", "slot_taken_while_queued");
 					continue;
 				}
+				// A teardown may have arrived while poll awaited an observation above.
+				// Recheck at the actual launch boundary, not only at tick entry.
+				if (op.kind === "teardown") {
+					const drill = this.pendingDrill(room.room_id);
+					if (drill) {
+						if (activeOperation(drill))
+							await this.options.runtime.terminate(drill);
+						this.settleDrill(room, drill, "cancelled_by_teardown");
+					}
+				}
+				let phaseBound: number | null = null;
+				if (op.kind === "drill") {
+					try {
+						phaseBound = this.options.runtime.drillPhaseBound(room);
+					} catch {
+						this.settleDrill(room, op, "driver_shape_unknown");
+						continue;
+					}
+				}
 				this.store.transaction(() => {
-					this.store.updateRoom(room.room_id, {
-						status: op.kind === "deploy" ? "preparing" : "tearing_down",
-						physically_claimed: 1,
-						updated_at: this.now(),
-					});
+					if (op.kind !== "drill")
+						this.store.updateRoom(room.room_id, {
+							status: op.kind === "deploy" ? "preparing" : "tearing_down",
+							physically_claimed: 1,
+							updated_at: this.now(),
+						});
 					this.store.updateOperation(op.operation_id, {
 						status: "spawning",
 						started_at: this.now(),
+						...(phaseBound === null
+							? {}
+							: {
+									phase_bound: phaseBound,
+									deadline_at: new Date(
+										this.options.now() +
+											phaseBound *
+												parseRoomDrill(JSON.parse(op.request_json)).timeout_ms +
+											15 * 60_000,
+									).toISOString(),
+								}),
 					});
 				});
 				let pid: number | undefined;
@@ -598,6 +816,14 @@ export class QaRoomService {
 				} catch {
 					if (pid !== undefined)
 						await this.options.runtime.terminate({ ...op, pid });
+					if (op.kind === "drill") {
+						this.settleDrill(
+							room,
+							op,
+							pid !== undefined ? "spawn_record_failed" : "spawn_failed",
+						);
+						continue;
+					}
 					this.settle(
 						room,
 						op,
