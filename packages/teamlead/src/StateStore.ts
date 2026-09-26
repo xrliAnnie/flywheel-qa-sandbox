@@ -78600,8 +78600,9 @@ export class StateStore {
 		const reworkDelivery = binding.rework_request_id
 			? this.getWorkflowReworkDelivery(binding.rework_request_id)
 			: undefined;
-		// FLY-2828 C6: see the carrier branch above; `returned_to_lead|pending`
-		// stay with the no-receipt alert because a resume may revive them.
+		// FLY-2828 C6: see the carrier branch above. FLY-2921: a
+		// `returned_to_lead|pending` obligation still owned by this actor waits
+		// (below) because a Lead resume re-arms this same wake.
 		if (reworkDelivery?.state === "completed") {
 			return { disposition: "cancel", reason: "rework_obligation_completed" };
 		}
@@ -78623,6 +78624,25 @@ export class StateStore {
 			return { disposition: "cancel", reason: "activation_target_terminal" };
 		}
 		if (binding.rework_request_id && !activeReworkObligation) {
+			// FLY-2921 (Codex code review R2): a rework that is still this
+			// actor's to receive — re-delivery pending after a Lead resume, or
+			// returned to the Lead and awaiting one — keeps its wake. A Lead
+			// resume re-arms this same wake id (push budget reset) before the
+			// coordinator moves the delivery to `turn_granted`; cancelling here
+			// in that window would turn every later resume into a noop on a
+			// cancelled wake. The coordinator pushes once it has granted.
+			const route = this.getLatestWorkflowReworkRoute(binding.rework_request_id);
+			if (
+				(reworkDelivery?.state === "pending" ||
+					reworkDelivery?.state === "returned_to_lead") &&
+				route !== undefined &&
+				reworkDelivery.route_revision === route.revision &&
+				route.preferred_actor_execution_id === input.executionId &&
+				route.target_node_id === binding.node_id &&
+				route.target_attempt === binding.attempt
+			) {
+				return { disposition: "wait", reason: "rework_awaiting_redelivery" };
+			}
 			return { disposition: "cancel", reason: "rework_obligation_settled" };
 		}
 		if (

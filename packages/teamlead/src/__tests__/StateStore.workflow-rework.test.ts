@@ -10,9 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { CommDB } from "flywheel-comm/db";
+import { buildReworkWakeId, CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
 import { DeliveryContractWatch } from "../bridge/delivery-contract/watch.js";
+import { drainTurnWakeOutbox } from "../bridge/turn-wake-patrol.js";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
@@ -1146,9 +1147,10 @@ describe("FLY-2828 exhausted rework wake guard", () => {
 					"UPDATE workflow_rework_delivery SET state = 'returned_to_lead' WHERE request_id = ?",
 				).run(requestId);
 			},
+			// FLY-2921: a Lead resume re-arms this same wake; keep it.
 			expected: {
-				disposition: "cancel",
-				reason: "rework_obligation_settled",
+				disposition: "wait",
+				reason: "rework_awaiting_redelivery",
 			},
 		},
 		{
@@ -5692,6 +5694,16 @@ describe("FLY-2828 terminal guard for push-exhausted wakes", () => {
 					"UPDATE workflow_rework_delivery SET state = 'returned_to_lead' WHERE request_id = ?",
 				)
 				.run(requestId);
+			// FLY-2921: still this actor's to receive after a Lead resume.
+			expect(inspect()).toEqual({
+				disposition: "wait",
+				reason: "rework_awaiting_redelivery",
+			});
+			raw
+				.prepare(
+					"UPDATE workflow_rework_delivery SET state = 'wake_delivered' WHERE request_id = ?",
+				)
+				.run(requestId);
 			expect(inspect()).toEqual({
 				disposition: "cancel",
 				reason: "rework_obligation_settled",
@@ -6625,6 +6637,150 @@ describe("FLY-2921 C3 returned to Lead", () => {
 			expect(
 				store.listWorkflowHolds("run-heavy").map((hold) => hold.shape),
 			).toEqual(["rework_returned_to_lead"]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps a re-armed wake alive across a crash between the CommDB re-arm and the grant", async () => {
+		// Codex code review R2: a Lead resume resets the SAME wake in CommDB
+		// before the coordinator advances the delivery to turn_granted. If the
+		// Bridge dies in between, the patrol must not cancel the wake of a
+		// rework that is still this actor's to receive.
+		const { store, requestId } = await createPendingHeavyRework();
+		const dir = mkdtempSync(join(tmpdir(), "fly2921-rearm-crash-"));
+		roots.push(dir);
+		const commPath = join(dir, "comm.db");
+		try {
+			const { activationId, epoch, generation } = fly2828Wake(
+				store,
+				requestId,
+				{ to: "turn_granted" },
+			);
+			const wakeId = buildReworkWakeId({ requestId, activationId, epoch });
+			const t0 = Date.parse("2026-07-23T00:12:00.000Z");
+			const seed = new CommDB(commPath);
+			seed.enqueueTurnWake({
+				wakeId,
+				executionId: "implement-exec",
+				activationId,
+				epoch,
+				issueId: "FLY-1423",
+				purpose: "workflow_rework",
+				envelope: { fromAgent: "bridge", content: "rework wake" },
+				backend: "claude-code",
+				createdAtMs: t0,
+			});
+			for (let push = 0; push < 2; push += 1) {
+				const claim = seed.claimDueTurnWake({
+					nowMs: t0 + push * 5 * 60_000,
+					retryAfterMs: 0,
+					leaseMs: 30_000,
+				});
+				expect(claim?.wake_id).toBe(wakeId);
+				seed.finishTurnWakePush({
+					wakeId,
+					claimToken: claim!.claim_token!,
+					pushedAtMs: t0 + push * 5 * 60_000,
+					result: "ok",
+				});
+			}
+			seed.close();
+			// Two unacked pushes, then the delivery is returned to the Lead.
+			expect(
+				store.settleWorkflowReworkFailure({
+					requestId,
+					ownerId: "coordinator",
+					generation,
+					reason: "liveness_unknown_timeout:fixture",
+					forceReturn: true,
+					alertIdentity: FLY2921_ALERT,
+					now: "2026-07-23T00:30:00.000Z",
+				}),
+			).toMatchObject({ ok: true, state: "returned_to_lead" });
+			expect(
+				fly2921Resume(
+					store,
+					`rework_returned_to_lead:${requestId}:1`,
+					"fly2921-rearm-crash",
+					"2026-07-23T00:31:00.000Z",
+				),
+			).toMatchObject({ ok: true });
+			const receiptId = `rework-rearm:${requestId}:2`;
+			const nowMs = Date.parse("2026-07-23T00:32:00.000Z");
+			// The coordinator's re-arm commits in CommDB ... then the Bridge dies
+			// before the delivery reaches turn_granted.
+			const comm = new CommDB(commPath);
+			try {
+				expect(
+					comm.resumeTurnWakeHold({ sourceId: wakeId, receiptId, nowMs }),
+				).toEqual({ kind: "reset" });
+			} finally {
+				comm.close();
+			}
+			expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe("pending");
+			const pushes: string[] = [];
+			const canDeliver = async (row: {
+				wake_id: string;
+				execution_id: string;
+				activation_id: string | null;
+				epoch: number;
+			}) =>
+				store.inspectWorkflowTurnWakeRetry({
+					wakeId: row.wake_id,
+					executionId: row.execution_id,
+					activationId: row.activation_id ?? undefined,
+					epoch: row.epoch,
+				});
+			const drained = await drainTurnWakeOutbox({
+				projectNames: ["flywheel"],
+				commDbPathForProject: () => commPath,
+				wake: async (input) => {
+					pushes.push(input.execId);
+					return { ok: true };
+				},
+				nowMs,
+				canDeliver,
+			});
+			expect(drained.cancelled).toBe(0);
+			expect(pushes).toEqual([]);
+			const after = new CommDB(commPath);
+			try {
+				expect(after.getTurnWake(wakeId)).toMatchObject({
+					state: "pending",
+					push_count: 0,
+				});
+				// The restarted coordinator replays the same receipt: no second
+				// reset, and the wake is still there to push once granted.
+				expect(
+					after.resumeTurnWakeHold({ sourceId: wakeId, receiptId, nowMs }),
+				).toEqual({ kind: "idempotent_replay" });
+			} finally {
+				after.close();
+			}
+			const generation2 = fly2921Claim(
+				store,
+				requestId,
+				"2026-07-23T00:33:00.000Z",
+			);
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					generation: generation2,
+					from: "pending",
+					to: "turn_granted",
+					now: "2026-07-23T00:33:00.000Z",
+				}),
+			).toEqual({ ok: true });
+			expect(
+				store.inspectWorkflowTurnWakeRetry({
+					wakeId,
+					executionId: "implement-exec",
+					activationId,
+					epoch,
+				}),
+			).toEqual({ disposition: "deliver" });
 		} finally {
 			store.close();
 		}
